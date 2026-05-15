@@ -1,0 +1,9 @@
+ 
+9,7G	/usr/share/ollama/.ollama/models/blobs
+9,7G	/usr/share/ollama/.ollama/models
+9,7G	/usr/share/ollama/.ollama
+9,7G	/usr/share/ollama
+20K	/usr/share/ollama/.ollama/models/manifests
+16K	/usr/share/ollama/.ollama/models/manifests/hf.co
+8,0K	/usr/share/ollama/.ollama/cache
+4,0K	/usr/share/ollama/.nv

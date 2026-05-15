@@ -1,0 +1,14 @@
+[Unit]
+Description=Set GPU EXCLUSIVE_PROCESS compute mode for VRAM isolation
+DefaultDependencies=no
+Before=comfyui-image.service comfyui.service ollama.service open-webui.service
+Wants=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStartPre=/bin/sleep 5
+ExecStart=/bin/bash -c 'nvidia-smi -c 3 -i 0; nvidia-smi -c 3 -i 1; nvidia-smi -c 3 -i 2'
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

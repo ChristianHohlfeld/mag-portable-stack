@@ -1,0 +1,12 @@
+[Unit]
+Description=Hotspot interface forwarding isolation
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/hotspot-isolation-fw.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

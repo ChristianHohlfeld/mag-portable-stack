@@ -1,0 +1,4 @@
+#!/bin/bash
+# Wrapper for open-webui: patches uv cache before starting
+python3 /home/chris/patch-open-webui.py
+exec /home/chris/.local/bin/uvx --python 3.11 open-webui@latest serve --host 0.0.0.0 --port 3000 "$@"

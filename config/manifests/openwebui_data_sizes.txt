@@ -1,0 +1,27 @@
+ 
+882M	/home/chris/.open-webui
+21M	/home/chris/.open-webui/vector_db
+16M	/home/chris/.open-webui/uploads
+13M	/home/chris/.open-webui/cache/audio
+13M	/home/chris/.open-webui/cache
+7,5M	/home/chris/.open-webui/cache/audio/speech
+5,0M	/home/chris/.open-webui/cache/audio/transcriptions
+176K	/home/chris/.open-webui/vector_db/f4bd6a05-3cd6-4b2d-93b2-9f6b1e12a2c0
+176K	/home/chris/.open-webui/vector_db/d98edb92-e99f-4bff-9414-865264e7fb56
+176K	/home/chris/.open-webui/vector_db/c699efae-90ec-4c12-a21a-6ddfa9c94bf5
+176K	/home/chris/.open-webui/vector_db/abca4afd-f932-4775-94dc-9f31ed305021
+176K	/home/chris/.open-webui/vector_db/a807a1b6-868c-4480-8812-5a8a3ffe7f1c
+176K	/home/chris/.open-webui/vector_db/946e3a66-8c5d-44bf-8d3e-12835aac39c0
+176K	/home/chris/.open-webui/vector_db/841abb7b-0e3b-491c-8eda-ecf6078ff03a
+176K	/home/chris/.open-webui/vector_db/73c62260-8a36-4148-bbae-a738a7d8c15f
+176K	/home/chris/.open-webui/vector_db/69dea391-c726-49b3-bc82-1937a5d28e5a
+176K	/home/chris/.open-webui/vector_db/5c2e34f1-6e36-4e51-a4cc-47e4f8fde6e9
+176K	/home/chris/.open-webui/vector_db/5510f6a6-1e0a-4d5c-a29f-cb69e0993fe7
+176K	/home/chris/.open-webui/vector_db/2dbf8dbb-c4cf-4858-9064-5e177438a518
+176K	/home/chris/.open-webui/vector_db/2d7e4ca6-6bcd-4221-ae2d-2cb90cba1090
+176K	/home/chris/.open-webui/vector_db/140deb99-43ec-4a83-90b7-1f3bc3d988e4
+176K	/home/chris/.open-webui/vector_db/08bcdfba-2d49-415e-a780-c73e30746ba0
+176K	/home/chris/.open-webui/vector_db/047fe75d-11b0-4b5e-8b87-62a255daff9b
+8,0K	/home/chris/.open-webui/cache/image
+4,0K	/home/chris/.open-webui/cache/image/generations
+4,0K	/home/chris/.open-webui/cache/functions

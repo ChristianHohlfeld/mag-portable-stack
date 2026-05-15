@@ -1,0 +1,15 @@
+[Unit]
+Description=Mount unit for lxd, revision 38767
+After=snapd.mounts-pre.target
+Before=snapd.mounts.target
+
+[Mount]
+What=/var/lib/snapd/snaps/lxd_38767.snap
+Where=/snap/lxd/38767
+Type=squashfs
+Options=nodev,ro,x-gdu.hide,x-gvfs-hide
+LazyUnmount=yes
+
+[Install]
+WantedBy=snapd.mounts.target
+WantedBy=multi-user.target

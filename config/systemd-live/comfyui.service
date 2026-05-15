@@ -1,0 +1,22 @@
+[Unit]
+Description=ComfyUI WAN Video (GPU1 NUMA1) - 22GB
+After=network-online.target set-gpu-compute-mode.service
+Wants=network-online.target set-gpu-compute-mode.service
+
+[Service]
+Type=simple
+User=chris
+Group=chris
+WorkingDirectory=/home/chris/ComfyUI
+Environment="CUDA_VISIBLE_DEVICES=GPU-e08a4736-1289-51f3-f4a9-bbb480bb15a7"
+Environment="PYTHONUNBUFFERED=1"
+Environment="PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True"
+Environment="COMFY_MEMORY_FRACTION=0.95"
+Environment="COMFY_GPU_INDEX=0"
+Environment="OMP_NUM_THREADS=7"
+ExecStart=/usr/bin/numactl --physcpubind=14-20,42-48 --membind=1 /home/chris/ComfyUI/venv/bin/python main.py --listen 127.0.0.1 --port 8188 --disable-auto-launch --database-url sqlite:////home/chris/ComfyUI/user/comfyui-gpu1.db
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

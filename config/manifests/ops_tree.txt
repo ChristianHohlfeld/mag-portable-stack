@@ -1,0 +1,11 @@
+ 
+/home/chris/ops/archive/20260514-210350/stabilize-workflow.sh
+/home/chris/ops/archive/20260514-210350/test-workflow.sh
+/home/chris/ops/scripts/openwebui_guard.sh
+/home/chris/ops/scripts/openwebui_media_fix.py
+/home/chris/ops/scripts/openwebui_media_preflight.sh
+/home/chris/ops/scripts/openwebui_tool_fallback_patch.py
+/home/chris/ops/scripts/stabilize-workflow.sh
+/home/chris/ops/tests/full-workflow.sh
+/home/chris/ops/tests/openwebui_media_e2e_test.py
+/home/chris/ops/tests/regression-comfyui-route.sh

@@ -1,0 +1,17 @@
+[Unit]
+Description=OpenCode headless server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=chris
+Group=chris
+WorkingDirectory=/home/chris
+Environment="HOME=/home/chris"
+ExecStart=/home/chris/.opencode/bin/opencode serve --hostname 127.0.0.1 --port 4096 --cors https://mag.tail3e02ae.ts.net --cors http://127.0.0.1:3000 --cors http://localhost:3000
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

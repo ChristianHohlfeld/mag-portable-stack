@@ -1,0 +1,13 @@
+[Unit]
+Description=Isolated WiFi Hotspot DHCP (dnsmasq)
+Requires=hotspot-net-setup.service
+After=hotspot-net-setup.service
+
+[Service]
+Type=simple
+ExecStart=/usr/sbin/dnsmasq --conf-file=/etc/dnsmasq.d/hotspot-isolated.conf --keep-in-foreground
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

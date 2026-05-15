@@ -1,0 +1,22 @@
+[Unit]
+Description=ComfyUI FLUX Image (GPU2 NUMA1) - 11GB
+After=network-online.target set-gpu-compute-mode.service
+Wants=network-online.target set-gpu-compute-mode.service
+
+[Service]
+Type=simple
+User=chris
+Group=chris
+WorkingDirectory=/home/chris/ComfyUI
+Environment="CUDA_VISIBLE_DEVICES=GPU-fd2d1476-0240-48f4-4d15-ee78171fa09a"
+Environment="PYTHONUNBUFFERED=1"
+Environment="PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True"
+Environment="COMFY_MEMORY_FRACTION=0.95"
+Environment="COMFY_GPU_INDEX=0"
+Environment="OMP_NUM_THREADS=7"
+ExecStart=/usr/bin/numactl --physcpubind=21-27,49-55 --membind=1 /home/chris/ComfyUI/venv/bin/python main.py --listen 127.0.0.1 --port 8187 --disable-auto-launch --database-url sqlite:////home/chris/ComfyUI/user/comfyui-gpu2.db
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

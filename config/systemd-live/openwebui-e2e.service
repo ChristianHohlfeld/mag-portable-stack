@@ -1,0 +1,12 @@
+[Unit]
+Description=OpenWebUI full media E2E test
+After=network-online.target open-webui.service ollama.service comfyui.service comfyui-image.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/home/chris/ops/tests/openwebui_media_e2e_test.py
+User=chris
+Group=chris
+TimeoutStartSec=5400
+

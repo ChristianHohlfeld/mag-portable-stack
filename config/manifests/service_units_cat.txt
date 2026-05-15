@@ -1,0 +1,142 @@
+ 
+# /etc/systemd/system/comfyui-image.service
+[Unit]
+Description=ComfyUI FLUX Image (GPU2 NUMA1) - 11GB
+After=network-online.target set-gpu-compute-mode.service
+Wants=network-online.target set-gpu-compute-mode.service
+
+[Service]
+Type=simple
+User=chris
+Group=chris
+WorkingDirectory=/home/chris/ComfyUI
+Environment="CUDA_VISIBLE_DEVICES=GPU-fd2d1476-0240-48f4-4d15-ee78171fa09a"
+Environment="PYTHONUNBUFFERED=1"
+Environment="PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True"
+Environment="COMFY_MEMORY_FRACTION=0.95"
+Environment="COMFY_GPU_INDEX=0"
+Environment="OMP_NUM_THREADS=7"
+ExecStart=/usr/bin/numactl --physcpubind=21-27,49-55 --membind=1 /home/chris/ComfyUI/venv/bin/python main.py --listen 127.0.0.1 --port 8187 --disable-auto-launch --database-url sqlite:////home/chris/ComfyUI/user/comfyui-gpu2.db
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+
+# /etc/systemd/system/comfyui.service
+[Unit]
+Description=ComfyUI WAN Video (GPU1 NUMA1) - 22GB
+After=network-online.target set-gpu-compute-mode.service
+Wants=network-online.target set-gpu-compute-mode.service
+
+[Service]
+Type=simple
+User=chris
+Group=chris
+WorkingDirectory=/home/chris/ComfyUI
+Environment="CUDA_VISIBLE_DEVICES=GPU-e08a4736-1289-51f3-f4a9-bbb480bb15a7"
+Environment="PYTHONUNBUFFERED=1"
+Environment="PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True"
+Environment="COMFY_MEMORY_FRACTION=0.95"
+Environment="COMFY_GPU_INDEX=0"
+Environment="OMP_NUM_THREADS=7"
+ExecStart=/usr/bin/numactl --physcpubind=14-20,42-48 --membind=1 /home/chris/ComfyUI/venv/bin/python main.py --listen 127.0.0.1 --port 8188 --disable-auto-launch --database-url sqlite:////home/chris/ComfyUI/user/comfyui-gpu1.db
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+
+# /etc/systemd/system/open-webui.service
+[Unit]
+Description=Open WebUI bare metal
+After=network-online.target tailscaled.service ollama.service open-terminal.service opencode-server.service
+Wants=network-online.target tailscaled.service ollama.service open-terminal.service opencode-server.service
+
+[Service]
+Type=simple
+User=chris
+Group=chris
+WorkingDirectory=/home/chris
+Environment="HOME=/home/chris"
+Environment="DATA_DIR=/home/chris/.open-webui"
+Environment="HOST=0.0.0.0"
+Environment="PORT=3000"
+Environment="ENABLE_WEBSOCKET_SUPPORT=true"
+Environment="UVICORN_WORKERS=1"
+Environment="OLLAMA_BASE_URL=http://127.0.0.1:11434"
+Environment="WEBUI_URL=https://mag.tail3e02ae.ts.net"
+Environment="CORS_ALLOW_ORIGIN=http://100.123.114.16:3000;https://mag.tail3e02ae.ts.net;http://127.0.0.1:3000;http://localhost:3000"
+ExecStart=/home/chris/.local/bin/open-webui-wrapper.sh
+# Original: /home/chris/.local/bin/uvx --python 3.11 open-webui@latest serve --host 0.0.0.0 --port 3000
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+Environment="ENABLE_EVALUATION_ARENA_MODELS=false"
+
+# /etc/systemd/system/open-webui.service.d/20-tool-fallback.conf
+[Service]
+ExecStartPre=/usr/bin/python3 /home/chris/ops/scripts/openwebui_tool_fallback_patch.py
+
+# /etc/systemd/system/open-webui.service.d/override.conf
+
+# /etc/systemd/system/ollama.service
+[Unit]
+Description=Ollama Service (GPU0 NUMA0) - 11GB A3B LLM
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ollama
+Group=ollama
+Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+Environment="CUDA_VISIBLE_DEVICES=GPU-f112862b-acde-003c-f294-4d4fcaa5a775"
+Environment="OLLAMA_HOST=127.0.0.1:11434"
+Environment="OLLAMA_KEEP_ALIVE=10m"
+Environment="OLLAMA_FLASH_ATTENTION=1"
+Environment="OLLAMA_MAX_LOADED_MODELS=1"
+Environment="OLLAMA_NUM_PARALLEL=1"
+Environment="OLLAMA_CONTEXT_LENGTH=8192"
+Environment="OMP_NUM_THREADS=6"
+ExecStart=/usr/bin/numactl --cpunodebind=0 --membind=0 /usr/local/bin/ollama serve
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=default.target
+
+# /usr/lib/systemd/system/nginx.service
+# Stop dance for nginx
+# =======================
+#
+# ExecStop sends SIGQUIT (graceful stop) to the nginx process.
+# If, after 5s (--retry QUIT/5) nginx is still running, systemd takes control
+# and sends SIGTERM (fast shutdown) to the main process.
+# After another 5s (TimeoutStopSec=5), and if nginx is alive, systemd sends
+# SIGKILL to all the remaining processes in the process group (KillMode=mixed).
+#
+# nginx signals reference doc:
+# http://nginx.org/en/docs/control.html
+#
+[Unit]
+Description=A high performance web server and a reverse proxy server
+Documentation=man:nginx(8)
+After=network-online.target remote-fs.target nss-lookup.target
+Wants=network-online.target
+ConditionFileIsExecutable=/usr/sbin/nginx
+
+[Service]
+Type=forking
+PIDFile=/run/nginx.pid
+ExecStartPre=/usr/sbin/nginx -t -q -g 'daemon on; master_process on;'
+ExecStart=/usr/sbin/nginx -g 'daemon on; master_process on;'
+ExecReload=/usr/sbin/nginx -g 'daemon on; master_process on;' -s reload
+ExecStop=-/sbin/start-stop-daemon --quiet --stop --retry QUIT/5 --pidfile /run/nginx.pid
+TimeoutStopSec=5
+KillMode=mixed
+
+[Install]
+WantedBy=multi-user.target

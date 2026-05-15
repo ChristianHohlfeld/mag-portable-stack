@@ -1,0 +1,6 @@
+ 
+ollama version is 0.23.1
+NAME                                           ID              SIZE     MODIFIED     
+hf.co/unsloth/Qwen3-30B-A3B-GGUF:UD-IQ2_XXS    bb288eaa489f    10 GB    29 hours ago    
+---
+NAME    ID    SIZE    PROCESSOR    CONTEXT    UNTIL 

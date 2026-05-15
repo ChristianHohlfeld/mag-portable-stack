@@ -1,0 +1,12 @@
+[Unit]
+Description=OpenWebUI media guard (auto-heal + smoke)
+After=network-online.target open-webui.service ollama.service comfyui.service comfyui-image.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/home/chris/ops/scripts/openwebui_guard.sh
+User=chris
+Group=chris
+TimeoutStartSec=600
+

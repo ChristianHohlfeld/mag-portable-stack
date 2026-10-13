@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# Root-only control of guest VMs for the MAG room service (create / delete agent).
+# Usage: magbot-agent-ctl spawn|despawn agentN
+set -euo pipefail
+
+action="${1:-}"
+vm="${2:-}"
+
+if [[ "$action" != "spawn" && "$action" != "despawn" ]]; then
+  echo "usage: magbot-agent-ctl spawn|despawn agentN" >&2
+  exit 2
+fi
+if [[ ! "$vm" =~ ^agent[0-9]+$ ]]; then
+  echo "ungueltige VM-Kennung: $vm" >&2
+  exit 2
+fi
+
+exec /usr/local/bin/magbot "$action" "$vm"

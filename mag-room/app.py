@@ -1343,7 +1343,9 @@ def run_turn(bot, room_messages, autotalk, other, web, emit, cancel=None):
     tools = [LIST_FILES, SPEAK, SEE_IMAGE]
     if vm:
         tools += [RUN_COMMAND, FETCH_FILE, SHARE_FILE, DOWNLOAD_FRONTEND,
-                  PUBLISH_FRONTEND, SCREENSHOT_ROOM]
+                  PUBLISH_FRONTEND, SCREENSHOT_ROOM, BROWSER_OPEN, BROWSER_CLICK,
+                  BROWSER_TYPE, BROWSER_READ, BROWSER_SCREENSHOT, BROWSER_BACK,
+                  BROWSER_SCROLL]
     if web and BRAVE_KEY:
         tools.append(WEB_SEARCH)
     messages = [

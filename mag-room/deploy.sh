@@ -39,6 +39,7 @@ echo "[6/9] Backup App"
 
 echo "[7/9] App + Dienst installieren"
 install -o root -g root -m 0755 "$DIR/app.py" /opt/magbot/app.py
+install -o root -g root -m 0755 "$DIR/browserd.py" /opt/magbot/browserd.py 2>/dev/null || true
 install -d -o root -g root -m 0755 /opt/magbot/static
 install -o root -g root -m 0644 "$DIR"/static/* /opt/magbot/static/
 install -o root -g root -m 0644 "$DIR/mag-120.service" /etc/systemd/system/mag-120.service

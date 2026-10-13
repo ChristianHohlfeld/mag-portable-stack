@@ -653,6 +653,86 @@ SCREENSHOT_ROOM = {
     },
 }
 
+
+BROWSER_OPEN = {
+    "type": "function",
+    "function": {
+        "name": "browser_open",
+        "description": "Open a URL in your own VM browser (persistent).",
+        "parameters": {
+            "type": "object",
+            "properties": {"url": {"type": "string"}},
+            "required": ["url"],
+            "additionalProperties": False
+        }
+    }
+}
+
+BROWSER_CLICK = {
+    "type": "function",
+    "function": {
+        "name": "browser_click",
+        "description": "Click in your VM browser by CSS selector or visible text.",
+        "parameters": {
+            "type": "object",
+            "properties": {"selector": {"type": "string"}, "text": {"type": "string"}},
+            "required": [],
+            "additionalProperties": False
+        }
+    }
+}
+
+BROWSER_TYPE = {
+    "type": "function",
+    "function": {
+        "name": "browser_type",
+        "description": "Type text into your VM browser; optional selector and enter.",
+        "parameters": {
+            "type": "object",
+            "properties": {"text": {"type": "string"}, "selector": {"type": "string"}, "enter": {"type": "boolean"}},
+            "required": ["text"],
+            "additionalProperties": False
+        }
+    }
+}
+
+BROWSER_READ = {
+    "type": "function",
+    "function": {
+        "name": "browser_read",
+        "description": "Read current URL, title and visible text from your VM browser.",
+        "parameters": {"type": "object", "properties": {}, "additionalProperties": False}
+    }
+}
+
+BROWSER_SCREENSHOT = {
+    "type": "function",
+    "function": {
+        "name": "browser_screenshot",
+        "description": "Take a screenshot of your VM browser and share into the room.",
+        "parameters": {"type": "object", "properties": {}, "additionalProperties": False}
+    }
+}
+
+BROWSER_BACK = {
+    "type": "function",
+    "function": {
+        "name": "browser_back",
+        "description": "Go back in your VM browser.",
+        "parameters": {"type": "object", "properties": {}, "additionalProperties": False}
+    }
+}
+
+BROWSER_SCROLL = {
+    "type": "function",
+    "function": {
+        "name": "browser_scroll",
+        "description": "Scroll your VM browser vertically (dy in pixels, positive down).",
+        "parameters": {"type": "object", "properties": {"dy": {"type": "integer"}}, "required": [], "additionalProperties": False}
+    }
+}
+
+
 ROOMSHOT_PY = (
     'import sys, json\n'
     'from playwright.sync_api import sync_playwright\n'
@@ -2026,6 +2106,19 @@ class BridgeHandler(BaseHTTPRequestHandler):
         if path.startswith('/files/'):
             stored = os.path.basename(urllib.parse.unquote(path[len('/files/'):]))
             return self._file(stored)
+        if path == '/tool/browserd.py':
+            try:
+                with open(BROWSERD_SRC, encoding='utf-8') as handle:
+                    body = handle.read().encode()
+            except OSError:
+                return self._json(404, {'error': 'browserd source missing'})
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/x-python')
+            self.send_header('Content-Length', str(len(body)))
+            self.send_header('Connection', 'close')
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if path in ('/room', '/room/'):
             return self._proxy('GET', '/', set_cookie=True)
         if path.startswith('/static/') or path.startswith('/api/'):

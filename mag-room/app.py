@@ -25,7 +25,8 @@ MAX_TOKENS = int(os.environ.get('MAG_ROOM_MAX_TOKENS', '700'))
 API_KEY = os.environ.get('MAG_ROOM_API_KEY', 'local-llama')
 GUEST_RUN = os.environ.get('MAG_ROOM_GUEST_RUN', '/usr/local/sbin/magbot-guest-run')
 MAX_HISTORY = 30
-MAX_TOOL_ROUNDS = 5
+MAX_TOOL_ROUNDS = 6
+MAX_ROOM_MESSAGES = int(os.environ.get('MAG_ROOM_MAX_MESSAGES', '400'))
 MAX_AUTOTALK = int(os.environ.get('MAG_ROOM_MAX_ROUNDS', '60'))
 TOOL_OUTPUT_LIMIT = 8000
 STATIC_DIR = os.environ.get(
@@ -35,6 +36,8 @@ STATE_DIR = os.environ.get('MAG_ROOM_STATE', '/var/lib/magbot/room')
 FILES_DIR = os.path.join(STATE_DIR, 'files')
 AGENTS_JSON = os.path.join(STATE_DIR, 'agents.json')
 FILES_JSON = os.path.join(STATE_DIR, 'files.json')
+ROOM_JSON = os.path.join(STATE_DIR, 'room.json')
+FRONTEND_FILE = os.path.join(STATE_DIR, 'frontend.html')
 TOKEN_FILE = os.path.join(STATE_DIR, 'token')
 BRIDGE_IP = os.environ.get('MAG_ROOM_BRIDGE_IP', '192.168.122.1')
 BRIDGE_PORT = int(os.environ.get('MAG_ROOM_BRIDGE_PORT', '8767'))
@@ -229,6 +232,111 @@ def file_manifest(limit=40):
     return '\n'.join(rows)
 
 
+# ------------------------------------------------------ shared room transcript
+
+def load_room():
+    _ensure_state()
+    try:
+        with open(ROOM_JSON, encoding='utf-8') as handle:
+            data = json.load(handle)
+        if isinstance(data, list):
+            return data
+    except (OSError, ValueError):
+        pass
+    return []
+
+
+def save_room(messages):
+    _write_json(ROOM_JSON, messages[-MAX_ROOM_MESSAGES:])
+
+
+def append_room(role, name, content, bot=None, file=None):
+    message = {'id': secrets.token_hex(6), 'role': role,
+               'name': str(name or '')[:40], 'content': content or '',
+               'ts': int(time.time())}
+    if bot:
+        message['bot'] = bot
+    if file:
+        message['file'] = file
+    with STATE_LOCK:
+        room = load_room()
+        room.append(message)
+        save_room(room)
+    return message
+
+
+def reset_room():
+    with STATE_LOCK:
+        save_room([])
+
+
+# ------------------------------------------------------- frontend overrides
+
+def frontend_version():
+    try:
+        return int(os.path.getmtime(FRONTEND_FILE))
+    except OSError:
+        return 0
+
+
+def current_frontend():
+    try:
+        with open(FRONTEND_FILE, encoding='utf-8') as handle:
+            text = handle.read()
+        if text.strip():
+            return text
+    except OSError:
+        pass
+    return HTML
+
+
+def save_frontend(text):
+    text = (text or '')
+    if len(text) < 200 or len(text) > 524288:
+        raise ValueError('Frontend-Groesse ungueltig (%d Bytes)' % len(text))
+    if '</html>' not in text.lower():
+        raise ValueError('Frontend muss ein vollstaendiges HTML-Dokument sein')
+    with STATE_LOCK:
+        with open(FRONTEND_FILE, 'w', encoding='utf-8') as handle:
+            handle.write(text)
+        try:
+            os.chmod(FRONTEND_FILE, 0o640)
+        except OSError:
+            pass
+    version = frontend_version()
+    publish({'type': 'frontend', 'version': version})
+    return version
+
+
+def clear_frontend():
+    try:
+        os.unlink(FRONTEND_FILE)
+    except OSError:
+        pass
+    version = frontend_version()
+    publish({'type': 'frontend', 'version': version})
+    return version
+
+
+# ---------------------------------------------------------------- run control
+
+CURRENT_CANCEL = {'event': None}
+
+
+def begin_run():
+    event = threading.Event()
+    CURRENT_CANCEL['event'] = event
+    return event
+
+
+def cancel_run():
+    event = CURRENT_CANCEL.get('event')
+    if event is not None:
+        event.set()
+        return True
+    return False
+
+
 # ---------------------------------------------------------------- host tools
 
 def _tools_python():
@@ -380,6 +488,68 @@ SEE_IMAGE = {
     },
 }
 
+DOWNLOAD_FRONTEND = {
+    'type': 'function',
+    'function': {
+        'name': 'download_frontend',
+        'description': ('Download the CURRENT room user interface (index.html) '
+                        'into your VM at /home/bot/room/index.html so you can '
+                        'read and edit it there.'),
+        'parameters': {'type': 'object', 'properties': {},
+                       'additionalProperties': False},
+    },
+}
+
+PUBLISH_FRONTEND = {
+    'type': 'function',
+    'function': {
+        'name': 'publish_frontend',
+        'description': ('Publish an edited HTML file from your VM as the new '
+                        'room UI. Everyone\'s page reloads automatically. The '
+                        'file must be a complete HTML document (contain '
+                        '</html>). Default path: /home/bot/room/index.html.'),
+        'parameters': {
+            'type': 'object',
+            'properties': {'path': {'type': 'string'}},
+            'additionalProperties': False,
+        },
+    },
+}
+
+SCREENSHOT_ROOM = {
+    'type': 'function',
+    'function': {
+        'name': 'screenshot_room',
+        'description': ('Open the live room UI in a headless Chromium inside '
+                        'your VM, take a screenshot and report console errors '
+                        'and visible text. Use it to VISUALLY review the current '
+                        'frontend before and after your changes. The screenshot '
+                        'is shared into the room.'),
+        'parameters': {'type': 'object', 'properties': {},
+                       'additionalProperties': False},
+    },
+}
+
+ROOMSHOT_PY = (
+    'import sys, json\n'
+    'from playwright.sync_api import sync_playwright\n'
+    'url, out = sys.argv[1], sys.argv[2]\n'
+    'console, errors = [], []\n'
+    'with sync_playwright() as p:\n'
+    '    b = p.chromium.launch()\n'
+    '    pg = b.new_page(viewport={"width": 1440, "height": 1000})\n'
+    '    pg.on("console", lambda m: console.append(m.type + ": " + m.text))\n'
+    '    pg.on("pageerror", lambda e: errors.append(str(e)))\n'
+    '    pg.goto(url, wait_until="load", timeout=45000)\n'
+    '    pg.wait_for_timeout(2000)\n'
+    '    title = pg.title()\n'
+    '    text = pg.inner_text("body")[:4000]\n'
+    '    pg.screenshot(path=out, full_page=True)\n'
+    '    b.close()\n'
+    'print(json.dumps({"title": title, "text": text,\n'
+    '                  "console": console[-40:], "errors": errors[-20:]}))\n'
+)
+
 
 def brave_search(query):
     if not BRAVE_KEY:
@@ -433,6 +603,8 @@ ROOM_RULES = (
     'unprivilegierter Nutzer bot. Nutze run_command, wenn du deine VM '
     'untersuchen oder etwas ueber sie belegen sollst. Stuetze Aussagen ueber '
     'deine VM immer auf echte Werkzeugausgaben und erfinde nichts. '
+    'Wenn du Werkzeuge benutzt hast, schliesse IMMER mit einer kurzen, '
+    'sichtbaren Antwort an den Raum ab (was du getan hast und das Ergebnis). '
     'Der Raumverlauf mit Sprecherlabels folgt.'
 )
 
@@ -463,8 +635,23 @@ FILES_RULES = (
     'Screenshots: Playwright/Chromium ist in deiner VM installiert '
     '(PLAYWRIGHT_BROWSERS_PATH ist gesetzt); speichere ein PNG in deiner VM und '
     'teile es mit share_room_file, um es zu veroeffentlichen, und lies Text daraus '
-    'mit see_image. Stuetze dich nur auf echte Werkzeugausgaben. '
-    'Aktuell geteilte Dateien:\n{files}'
+     'mit see_image. Stuetze dich nur auf echte Werkzeugausgaben. '
+     'Aktuell geteilte Dateien:\n{files}'
+ )
+
+FRONTEND_RULES = (
+    '\n\n[Frontend-Wartung] Du kannst die Raum-Oberflaeche selbst verbessern. '
+    'Ablauf: (1) screenshot_room, um die aktuelle UI visuell zu pruefen '
+    '(Screenshot wird in den Raum geteilt, dazu Konsolenfehler und sichtbarer '
+    'Text). (2) download_frontend, um die aktuelle index.html nach '
+    '/home/bot/room/index.html zu laden. (3) Aendere sie dort mit run_command '
+    '(z.B. python3 oder sed) und halte ein vollstaendiges HTML-Dokument ein. '
+    '(4) publish_frontend veroeffentlicht die Datei; alle Seiten laden '
+    'automatisch neu. (5) Mit screenshot_room erneut pruefen. '
+    'Mache kleine, gezielte Fixes und behalte vorhandene Funktionen '
+    '(/api/bots, /api/stream, /api/files, /api/upload, /api/agents, /api/events, '
+    '/static/*) bei. Wenn keine VM verfuegbar ist, sage, dass du die UI nicht '
+    'aendern kannst.'
 )
 
 HTML = r'''<!doctype html>
@@ -566,6 +753,10 @@ button.stop{background:#5a2330;border-color:#8a3a4a}
 .drop{outline:2px dashed #4c7a49;outline-offset:-6px}
 .canvas{width:100%;height:380px;border:1px solid #2a3140;border-radius:10px;
  background:#fff;margin-top:8px;display:block}
+#toast{position:fixed;left:50%;bottom:96px;transform:translateX(-50%) translateY(20px);
+ background:#1b2432;border:1px solid #33507a;color:#dbe7f7;padding:10px 18px;
+ border-radius:10px;font-size:13px;opacity:0;pointer-events:none;transition:.25s;z-index:50}
+#toast.on{opacity:1;transform:translateX(-50%) translateY(0)}
 #upload{padding:11px 12px;font-size:16px}
 .welcome{text-align:center;margin:auto;color:#9da9bd;line-height:1.8;max-width:560px}
 .welcome h1{font-size:30px;margin:0 0 10px;color:#edf3ff}
@@ -582,6 +773,8 @@ textarea{flex:1;resize:none;min-height:46px;max-height:170px;background:transpar
 small{display:block;text-align:center;color:#748197;margin-top:9px}
 .typing .body::after{content:'▋';animation:blink 1s steps(2) infinite;
  color:#7fb0ff;margin-left:1px}
+.msg.streaming .body{white-space:pre-wrap;word-break:break-word;
+ font-variant-ligatures:none}
 @keyframes blink{0%,50%{opacity:1}50.01%,100%{opacity:0}}
 @media(max-width:600px){.msg.user{max-width:93%}}
 </style>
@@ -661,11 +854,12 @@ function enhance(root){
  });
 }
 function mdInto(el,text){el.innerHTML=safeParse(text||'');enhance(el);}
-try{const s=JSON.parse(localStorage.getItem('mag-room')||'[]');
- if(Array.isArray(s))history=s.filter(m=>typeof m.content==='string');}catch(e){}
-function persist(){try{localStorage.setItem('mag-room',JSON.stringify(history.slice(-80)))}catch(e){}}
-const me='c'+Math.random().toString(36).slice(2);
-function botById(id){return bots.find(b=>b.id===id);}
+ function persist(){}
+ const me='c'+Math.random().toString(36).slice(2);
+ function showToast(msg){let t=document.getElementById('toast');
+  if(!t){t=document.createElement('div');t.id='toast';document.body.appendChild(t);}
+  t.textContent=msg;t.classList.add('on');}
+ function botById(id){return bots.find(b=>b.id===id);}
 function whoRow(div,role,name,color){
  if(role==='tool')return;
  const who=document.createElement('div');who.className='who';
@@ -773,10 +967,17 @@ function syncToggles(){autoBtn.classList.toggle('on',auto);
  webBtn.classList.toggle('on',web);webBtn.textContent='Websuche: '+(web?'an':'aus');}
 autoBtn.onclick=()=>{auto=!auto;syncToggles();saveSettings();if(auto&&!busy)kickoff();};
 webBtn.onclick=()=>{web=!web;syncToggles();saveSettings();};
-stopBtn.onclick=()=>{pending=null;if(controller)controller.abort();};
+stopBtn.onclick=async()=>{pending=null;
+ try{await fetch('/api/stop',{method:'POST'});}catch(e){}
+ if(controller)controller.abort();};
 document.getElementById('add').onclick=addAgent;
-document.getElementById('new').onclick=()=>{if(busy||!confirm('Raumverlauf loeschen?'))return;
- history=[];persist();render();};
+document.getElementById('new').onclick=async()=>{if(busy||!confirm('Raumverlauf loeschen?'))return;
+ try{await fetch('/api/reset',{method:'POST'});}catch(e){}
+ history=[];render();};
+document.addEventListener('paste',e=>{
+ const items=(e.clipboardData&&e.clipboardData.items)||[];const files=[];
+ for(const it of items){if(it.type&&it.type.indexOf('image/')===0){const f=it.getAsFile();if(f)files.push(f);}}
+ if(files.length){e.preventDefault();uploadFiles(files);}});
 input.onkeydown=e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();submit();}};
 send.onclick=submit;
 const fileInput=document.getElementById('file');
@@ -809,11 +1010,12 @@ const liveTimers=new WeakMap();
 function pushDelta(body,part){
  body.dataset.t=(body.dataset.t||'')+part;
  if(liveTimers.has(body))return;
- liveTimers.set(body,setTimeout(()=>{liveTimers.delete(body);
-  mdInto(body,body.dataset.t);box.scrollTop=box.scrollHeight;},70));
+ liveTimers.set(body,requestAnimationFrame(()=>{liveTimers.delete(body);
+  body.textContent=body.dataset.t;box.scrollTop=box.scrollHeight;}));
 }
 function liveBubble(bot){const b=botById(bot);
- const el=message('assistant',b.name,b.color,'');el.classList.add('typing');return el;}
+ const el=message('assistant',b.name,(b&&b.color)||null,'');
+ el.classList.add('typing','streaming');return el;}
 function handleEvent(o,live){
  if(o.type==='status'){status.textContent=o.text;return;}
  if(o.type==='round'){status.textContent='Autogespräch · Runde '+o.n;return;}
@@ -826,8 +1028,17 @@ function handleEvent(o,live){
   message('assistant',o.name,b?b.color:null,'',null,o.record);
   history.push({role:'assistant',name:o.name,bot:o.bot,content:'',file:o.record});
   persist();return;}
- if(o.type==='bot_done'&&live[o.bot]){const L=live[o.bot];L.classList.remove('typing');
-  if(liveTimers.has(L)){clearTimeout(liveTimers.get(L));liveTimers.delete(L);}
+ if(o.type==='add'&&o.message){const m=o.message;
+  if(box.querySelector('.welcome'))box.replaceChildren();
+  const b=botById(m.bot);
+  message(m.role,m.name,b?b.color:null,m.content||'',null,m.file);
+  history.push(m);persist();return;}
+ if(o.type==='reset'){history=[];render();return;}
+ if(o.type==='frontend'){showToast('Frontend aktualisiert – Seite wird neu geladen ...');
+  setTimeout(()=>location.reload(),1200);return;}
+ if(o.type==='bot_done'&&live[o.bot]){const L=live[o.bot];
+  L.classList.remove('typing','streaming');
+  if(liveTimers.has(L)){cancelAnimationFrame(liveTimers.get(L));liveTimers.delete(L);}
   mdInto(L,o.content);box.scrollTop=box.scrollHeight;
   if(o.tps)status.textContent=o.name+' fertig · '+o.tps.toFixed(1)+' Token/s';
   history.push({role:'assistant',name:o.name,bot:o.bot,content:o.content});persist();return;}
@@ -851,17 +1062,17 @@ async function streamUI(body){
    for(const line of lines){if(!line.trim())continue;handleEvent(JSON.parse(line),live);}}
  }catch(e){if(e.name!=='AbortError')status.textContent='Fehler: '+e.message;
   else if(pending===null)status.textContent='Gestoppt.';}
- finally{Object.values(live).forEach(l=>l.classList.remove('typing'));
-  busy=false;send.disabled=false;stopBtn.disabled=true;controller=null;input.focus();
+ finally{Object.values(live).forEach(l=>l.classList.remove('typing','streaming'));
+   busy=false;send.disabled=false;stopBtn.disabled=true;controller=null;input.focus();
   if(pending!==null){const q=pending;pending=null;await sendNow(q);}}
 }
 function payload(extra){return Object.assign({
- messages:history.slice(-30).map(m=>({role:m.role,name:m.name,bot:m.bot,content:m.content})),
- bots:[...selected],web_search:web,client:me},extra||{});}
+ text:'',bots:[...selected],web_search:web,client:me},extra||{});}
 async function sendNow(q){
  history.push({role:'user',name:'Du',content:q});persist();
+ if(box.querySelector('.welcome'))box.replaceChildren();
  message('user','Du',null,q);
- await streamUI(payload({autotalk:auto}));}
+ await streamUI(payload({text:q,autotalk:auto}));}
 async function submit(){const q=input.value.trim();if(!q)return;
  if(!selected.size){status.textContent='Waehle mindestens einen Bot.';return;}
  if(busy){
@@ -882,8 +1093,11 @@ function connectEvents(){
   es.onerror=()=>{es.close();setTimeout(connectEvents,3000);};
  }catch(e){setTimeout(connectEvents,3000);}
 }
+async function loadRoom(){try{const r=await fetch('/api/room');const j=await r.json();
+ if(Array.isArray(j.messages))history=j.messages;}catch(e){}
+ render();}
 loadSettings();syncToggles();
-loadBots().then(()=>{render();connectEvents();});
+loadBots().then(loadRoom).then(connectEvents);
 </script>
 </body>
 </html>'''
@@ -894,6 +1108,8 @@ def build_system(bot, autotalk, other, web):
                                vm=bot.get('vm', 'keine'))
     system += WEB_RULES if web else '\nWebsuche ist AUS.'
     system += FILES_RULES.format(files=file_manifest())
+    if bot.get('vm'):
+        system += FRONTEND_RULES
     if autotalk:
         system += AUTOTALK_RULES.format(other=other or 'der Nutzer')
     return system
@@ -905,6 +1121,10 @@ def build_transcript(messages):
         role = m.get('role')
         name = m.get('name') or ('Nutzer' if role == 'user' else 'Bot')
         content = (m.get('content') or '')[:4000]
+        file = m.get('file')
+        if file:
+            note = '📎 %s (%s)' % (file.get('name', '?'), file.get('mime', ''))
+            content = (content + ' ' + note).strip()
         lines.append(str(name)[:40] + ': ' + content)
     return '[Raumverlauf]\n' + '\n'.join(lines)
 
@@ -981,13 +1201,14 @@ def backend_turn(messages, tools, on_delta):
     return content, ordered
 
 
-def run_turn(bot, room_messages, autotalk, other, web, emit):
+def run_turn(bot, room_messages, autotalk, other, web, emit, cancel=None):
     system = build_system(bot, autotalk, other, web)
     transcript = build_transcript(room_messages)
     vm = bot.get('vm')
     tools = [LIST_FILES, SPEAK, SEE_IMAGE]
     if vm:
-        tools += [RUN_COMMAND, FETCH_FILE, SHARE_FILE]
+        tools += [RUN_COMMAND, FETCH_FILE, SHARE_FILE, DOWNLOAD_FRONTEND,
+                  PUBLISH_FRONTEND, SCREENSHOT_ROOM]
     if web and BRAVE_KEY:
         tools.append(WEB_SEARCH)
     messages = [
@@ -1004,6 +1225,8 @@ def run_turn(bot, room_messages, autotalk, other, web, emit):
         emit({'type': 'delta', 'bot': bot['id'], 'text': part})
 
     for _ in range(MAX_TOOL_ROUNDS):
+        if cancel is not None and cancel.is_set():
+            break
         content, calls = backend_turn(messages, tools or None, on_delta)
         text += content
         if not calls:
@@ -1092,11 +1315,14 @@ def run_turn(bot, room_messages, autotalk, other, web, emit):
                 try:
                     info = json.loads(output.strip().splitlines()[-1])
                     if isinstance(info, dict) and info.get('url'):
+                        record = {'name': info.get('name', nm),
+                                  'mime': info.get('mime', ''),
+                                  'size': info.get('size', 0),
+                                  'url': info['url']}
+                        append_room('assistant', bot['name'], '',
+                                    bot=bot['id'], file=record)
                         emit({'type': 'file', 'bot': bot['id'], 'name': bot['name'],
-                              'record': {'name': info.get('name', nm),
-                                         'mime': info.get('mime', ''),
-                                         'size': info.get('size', 0),
-                                         'url': info['url']}})
+                              'record': record})
                 except (ValueError, IndexError):
                     pass
             elif name == 'speak':
@@ -1106,9 +1332,12 @@ def run_turn(bot, room_messages, autotalk, other, web, emit):
                               'size': rec['size']}
                     emit({'type': 'tool', 'bot': bot['id'], 'name': name,
                           'command': 'Sprachausgabe', 'output': result['url']})
+                    record = {'name': rec['name'], 'mime': rec['mime'],
+                              'size': rec['size'], 'url': result['url']}
+                    append_room('assistant', bot['name'], '',
+                                bot=bot['id'], file=record)
                     emit({'type': 'file', 'bot': bot['id'], 'name': bot['name'],
-                          'record': {'name': rec['name'], 'mime': rec['mime'],
-                                     'size': rec['size'], 'url': result['url']}})
+                          'record': record})
                 except Exception as error:
                     result = {'error': str(error)}
                     emit({'type': 'tool', 'bot': bot['id'], 'name': name,
@@ -1125,6 +1354,76 @@ def run_turn(bot, room_messages, autotalk, other, web, emit):
                     emit({'type': 'tool', 'bot': bot['id'], 'name': name,
                           'command': 'OCR ' + str(args.get('name', '')),
                           'output': 'Fehler: ' + str(error)})
+            elif name == 'download_frontend' and vm:
+                url = 'http://%s:%d/room?token=%s' % (
+                    BRIDGE_IP, BRIDGE_PORT, urllib.parse.quote(bridge_token()))
+                cmd = ('mkdir -p /home/bot/room && curl -fsS ' + shlex.quote(url)
+                       + ' -o /home/bot/room/index.html && wc -c '
+                         '/home/bot/room/index.html')
+                code, output = guest_command(vm, cmd)
+                result = {'exit_code': code, 'path': '/home/bot/room/index.html',
+                          'output': output[:1000]}
+                emit({'type': 'tool', 'bot': bot['id'], 'name': name,
+                      'command': 'lade index.html in die VM',
+                      'output': output[:TOOL_OUTPUT_LIMIT]})
+            elif name == 'publish_frontend' and vm:
+                path = str(args.get('path')
+                           or '/home/bot/room/index.html')[:400]
+                url = 'http://%s:%d/api/frontend?token=%s' % (
+                    BRIDGE_IP, BRIDGE_PORT, urllib.parse.quote(bridge_token()))
+                cmd = ('test -f ' + shlex.quote(path)
+                       + " && curl -fsS -X POST -H 'Content-Type: text/html'"
+                       + ' --data-binary @' + shlex.quote(path) + ' '
+                       + shlex.quote(url))
+                code, output = guest_command(vm, cmd)
+                result = {'exit_code': code, 'output': output[:1000]}
+                emit({'type': 'tool', 'bot': bot['id'], 'name': name,
+                      'command': 'veroeffentliche ' + path,
+                      'output': output[:TOOL_OUTPUT_LIMIT]})
+            elif name == 'screenshot_room' and vm:
+                room_url = 'http://%s:%d/room?token=%s' % (
+                    BRIDGE_IP, BRIDGE_PORT, urllib.parse.quote(bridge_token()))
+                ingest = 'http://%s:%d/ingest?token=%s&name=room.png' % (
+                    BRIDGE_IP, BRIDGE_PORT, urllib.parse.quote(bridge_token()))
+                blob = base64.b64encode(ROOMSHOT_PY.encode()).decode()
+                cmd = ('mkdir -p /home/bot/room && printf %s '
+                       + shlex.quote(blob) + ' | base64 -d '
+                         '> /home/bot/room/roomshot.py'
+                       + ' && /opt/magbot/venv/bin/python '
+                         '/home/bot/room/roomshot.py '
+                       + shlex.quote(room_url) + ' /home/bot/room/room.png'
+                       + " && echo '===SHARE===' && curl -fsS -X POST "
+                         '--data-binary @/home/bot/room/room.png '
+                       + shlex.quote(ingest))
+                code, output = guest_command(vm, cmd, timeout=120)
+                report, share = {}, {}
+                if '===SHARE===' in output:
+                    head, tail = output.split('===SHARE===', 1)
+                    try:
+                        report = json.loads(head.strip().splitlines()[-1])
+                    except (ValueError, IndexError):
+                        report = {}
+                    try:
+                        share = json.loads(tail.strip().splitlines()[-1])
+                    except (ValueError, IndexError):
+                        share = {}
+                errors = report.get('errors') or []
+                summary = 'Titel: %s\nFehler: %s\nText: %s' % (
+                    report.get('title', '?'), '; '.join(errors) or 'keine',
+                    (report.get('text') or '')[:800])
+                result = {'exit_code': code, 'report': report}
+                emit({'type': 'tool', 'bot': bot['id'], 'name': name,
+                      'command': 'Screenshot der UI',
+                      'output': summary[:TOOL_OUTPUT_LIMIT]})
+                if share.get('url'):
+                    record = {'name': share.get('name', 'room.png'),
+                              'mime': share.get('mime', 'image/png'),
+                              'size': share.get('size', 0),
+                              'url': share['url']}
+                    append_room('assistant', bot['name'], '',
+                                bot=bot['id'], file=record)
+                    emit({'type': 'file', 'bot': bot['id'], 'name': bot['name'],
+                          'record': record})
             else:
                 result = {'error': 'Nicht erlaubtes Werkzeug: ' + name}
             messages.append({
@@ -1188,6 +1487,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.respond(200, {'ok': True, 'room': 'MAG'})
         if self.path == '/api/events':
             return self.events()
+        if self.path == '/api/room':
+            return self.respond(200, {'messages': load_room()})
         if self.path in ('/api/bots', '/api/agents'):
             return self.respond(200, {'bots': [
                 {'id': a['id'], 'name': a['name'], 'color': a['color'],
@@ -1201,11 +1502,16 @@ class Handler(BaseHTTPRequestHandler):
         if self.path.startswith('/api/file/'):
             return self.serve_file(urllib.parse.unquote(
                 self.path[len('/api/file/'):]))
+        if self.path == '/api/frontend':
+            custom = os.path.isfile(FRONTEND_FILE)
+            return self.respond(200, {'html': current_frontend(),
+                                      'version': frontend_version(),
+                                      'custom': custom})
         if self.path.startswith('/static/'):
             return self.serve_static(self.path[len('/static/'):])
         if self.path != '/':
             return self.respond(404, {'error': 'Not found'})
-        body = HTML.encode('utf-8')
+        body = current_frontend().encode('utf-8')
         self.send_response(200)
         self.send_header('Content-Type', 'text/html; charset=utf-8')
         self.send_header('Content-Length', str(len(body)))
@@ -1267,6 +1573,9 @@ class Handler(BaseHTTPRequestHandler):
         return self.rfile.read(length)
 
     def do_DELETE(self):
+        if self.path == '/api/frontend':
+            version = clear_frontend()
+            return self.respond(200, {'ok': True, 'version': version})
         if self.path.startswith('/api/agents/'):
             return self.delete_agent(
                 urllib.parse.unquote(self.path[len('/api/agents/'):]))
@@ -1287,14 +1596,13 @@ class Handler(BaseHTTPRequestHandler):
 
     def delete_agent(self, agent_id):
         with STATE_LOCK:
-            current = [a for a in AGENTS if a['id'] != agent_id]
-            removed = len(current) != len(AGENTS)
-        if not removed:
-            return self.respond(404, {'error': 'Agent nicht gefunden'})
-        if len(AGENTS) <= 1:
-            return self.respond(400, {'error': 'Mindestens ein Agent muss bleiben'})
-        target = next(a for a in AGENTS if a['id'] == agent_id)
-        set_agents(current)
+            target = next((a for a in AGENTS if a['id'] == agent_id), None)
+            if target is None:
+                return self.respond(404, {'error': 'Agent nicht gefunden'})
+            if len(AGENTS) <= 1:
+                return self.respond(400,
+                                    {'error': 'Mindestens ein Agent muss bleiben'})
+            set_agents([a for a in AGENTS if a['id'] != agent_id])
         vm = target.get('vm')
         if vm:
             subprocess.run(['sudo', '-n', AGENT_CTL, 'despawn', vm],
@@ -1312,6 +1620,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.respond(400, {'error': 'Name fehlt'})
         persona = str(data.get('persona') or '').strip()[:600]
         with STATE_LOCK:
+            if any(a['name'].lower() == name.lower() for a in AGENTS):
+                return self.respond(409, {'error': 'Name bereits vergeben'})
             agent_id = slug_id(name)
             vm = next_vm()
             color = COLORS[len(AGENTS) % len(COLORS)]
@@ -1323,14 +1633,35 @@ class Handler(BaseHTTPRequestHandler):
             set_agents(AGENTS + [agent])
         proc = subprocess.run(['sudo', '-n', AGENT_CTL, 'spawn', vm],
                               capture_output=True, text=True, timeout=180)
-        ok = proc.returncode == 0
-        return self.respond(200 if ok else 500, {
-            'agent': agent, 'spawned': ok,
-            'output': (proc.stdout or proc.stderr or '')[-800:]})
+        output = ((proc.stdout or '') + (proc.stderr or '')).strip()[-800:]
+        if proc.returncode != 0:
+            status = subprocess.run(['sudo', '-n', AGENT_CTL, 'status', vm],
+                                    capture_output=True, text=True, timeout=60)
+            ready = status.returncode == 0 and \
+                re.search(r'\b(ready|booting|running)\b', status.stdout)
+            if not ready:
+                with STATE_LOCK:
+                    set_agents([a for a in AGENTS if a['id'] != agent_id])
+                return self.respond(500, {'error': 'VM-Start fehlgeschlagen',
+                                          'output': output})
+        return self.respond(200, {'agent': agent, 'spawned': True,
+                                  'output': output})
 
     def do_POST(self):
         if self.path == '/api/agents':
             return self.create_agent()
+        if self.path == '/api/frontend':
+            try:
+                ctype = self.headers.get('Content-Type', '')
+                raw = self.read_body(524288)
+                if ctype.startswith('application/json'):
+                    text = json.loads(raw or b'{}').get('html', '')
+                else:
+                    text = raw.decode('utf-8', 'replace')
+                version = save_frontend(text)
+            except Exception as e:
+                return self.respond(400, {'error': str(e)})
+            return self.respond(200, {'ok': True, 'version': version})
         if self.path == '/api/upload':
             try:
                 raw = self.read_body(MAX_UPLOAD)
@@ -1344,6 +1675,12 @@ class Handler(BaseHTTPRequestHandler):
             return self.respond(200, {'file': {
                 'name': rec['name'], 'mime': rec['mime'], 'size': rec['size'],
                 'url': public_url(rec['stored'])}})
+        if self.path == '/api/stop':
+            return self.respond(200, {'stopped': cancel_run()})
+        if self.path == '/api/reset':
+            reset_room()
+            publish({'type': 'reset'})
+            return self.respond(200, {'ok': True})
         if self.path != '/api/stream':
             return self.respond(404, {'error': 'Not found'})
         if not self.headers.get('Content-Type', '').startswith(
@@ -1351,24 +1688,22 @@ class Handler(BaseHTTPRequestHandler):
             return self.respond(415, {'error': 'JSON erforderlich'})
         try:
             length = int(self.headers.get('Content-Length', '0'))
-            if length < 1 or length > 4194304:
+            if length < 1 or length > 1048576:
                 return self.respond(413, {'error': 'Anfrage zu gross'})
             data = json.loads(self.rfile.read(length))
-            incoming = data.get('messages', [])
-            if not isinstance(incoming, list):
-                raise ValueError('Ungueltige Nachrichten')
-            messages = []
-            for m in incoming:
-                if not isinstance(m, dict):
-                    raise ValueError('Ungueltige Nachricht')
-                role = m.get('role')
-                content = m.get('content')
-                if role not in ('user', 'assistant'):
-                    raise ValueError('Ungueltige Rolle')
-                if not isinstance(content, str) or len(content) > 524288:
-                    raise ValueError('Nachricht zu lang')
-                messages.append({'role': role, 'name': str(m.get('name') or '')[:40],
-                                 'bot': m.get('bot'), 'content': content})
+            text = data.get('text')
+            if not isinstance(text, str) or not text.strip():
+                text = ''
+                incoming = data.get('messages')
+                if isinstance(incoming, list) and incoming:
+                    last = incoming[-1]
+                    if (isinstance(last, dict) and last.get('role') == 'user'
+                            and isinstance(last.get('content'), str)):
+                        text = last['content'].strip()
+            text = text[:20000]
+            autotalk = bool(data.get('autotalk'))
+            if not text and not autotalk:
+                raise ValueError('Leere Nachricht')
             current = agents_map()
             wanted = data.get('bots')
             if not isinstance(wanted, list):
@@ -1376,22 +1711,18 @@ class Handler(BaseHTTPRequestHandler):
             selected = [k for k in current if k in wanted]
             if not selected:
                 raise ValueError('Kein gueltiger Bot ausgewaehlt')
-            autotalk = bool(data.get('autotalk'))
             web = data.get('web_search', True)
             if not isinstance(web, bool):
                 raise ValueError('web_search muss true oder false sein.')
-            if messages and messages[-1]['role'] == 'user':
-                pass
-            elif autotalk and messages:
-                pass
-            else:
-                raise ValueError('Letzte Nachricht muss vom Nutzer sein')
         except Exception as e:
             return self.respond(400, {'error': str(e)})
         client = str(data.get('client') or '')[:40]
-        return self.stream(messages, selected, autotalk, web, client)
+        if text:
+            user_msg = append_room('user', 'Du', text)
+            publish({'type': 'add', 'message': user_msg, 'src': client})
+        return self.stream(selected, autotalk, web, client, has_user=bool(text))
 
-    def stream(self, messages, selected, autotalk, web, client=''):
+    def stream(self, selected, autotalk, web, client='', has_user=False):
         self.send_response(200)
         self.send_header('Content-Type', 'application/x-ndjson')
         self.send_header('Cache-Control', 'no-store')
@@ -1409,13 +1740,20 @@ class Handler(BaseHTTPRequestHandler):
                 (json.dumps(value, ensure_ascii=False) + '\n').encode())
             self.wfile.flush()
 
-        convo = list(messages)
+        cancel = begin_run()
+        convo = load_room()
         current = agents_map()
+
+        def remember(bot, text):
+            append_room('assistant', bot['name'], text, bot=bot['id'])
+            convo.append({'role': 'assistant', 'name': bot['name'],
+                          'bot': bot['id'], 'content': text})
+
         try:
             # Direct reply round: every selected bot answers the user once.
-            if convo and convo[-1]['role'] == 'user':
+            if has_user:
                 for key in selected:
-                    if key not in current:
+                    if cancel.is_set() or key not in current:
                         continue
                     bot = dict(current[key])
                     bot['id'] = key
@@ -1424,14 +1762,14 @@ class Handler(BaseHTTPRequestHandler):
                     emit({'type': 'status', 'text': bot['name'] + ' denkt ...'})
                     emit({'type': 'bot_start', 'bot': key, 'name': bot['name']})
                     text = run_turn(bot, convo, False,
-                                    others[0] if others else None, web, emit)
-                    convo.append({'role': 'assistant', 'name': bot['name'],
-                                  'bot': key, 'content': text})
+                                    others[0] if others else None, web, emit,
+                                    cancel)
+                    remember(bot, text)
             if autotalk:
                 keys = [k for k in selected if k in current]
                 turn = 0
                 for n in range(1, MAX_AUTOTALK + 1):
-                    if not keys:
+                    if cancel.is_set() or not keys:
                         break
                     key = keys[(turn) % len(keys)]
                     turn += 1
@@ -1443,10 +1781,12 @@ class Handler(BaseHTTPRequestHandler):
                     emit({'type': 'status', 'text': bot['name'] + ' spricht ...'})
                     emit({'type': 'bot_start', 'bot': key, 'name': bot['name']})
                     text = run_turn(bot, convo, True,
-                                    others[0] if others else None, web, emit)
-                    convo.append({'role': 'assistant', 'name': bot['name'],
-                                  'bot': key, 'content': text})
+                                    others[0] if others else None, web, emit,
+                                    cancel)
+                    remember(bot, text)
                     time.sleep(0.4)
+            if cancel.is_set():
+                emit({'type': 'status', 'text': 'Gestoppt.'})
             emit({'type': 'done'})
         except (BrokenPipeError, ConnectionResetError):
             pass
@@ -1474,11 +1814,65 @@ class BridgeHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _auth(self):
+    def _token(self):
         query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
         token = (query.get('token') or [''])[0] or \
             self.headers.get('X-Room-Token', '')
+        if not token:
+            match = re.search(r'(?:^|;\s*)magroom=([^;]+)',
+                              self.headers.get('Cookie', ''))
+            if match:
+                token = urllib.parse.unquote(match.group(1))
+        return token
+
+    def _auth(self):
+        token = self._token()
         return bool(bridge_token()) and secrets.compare_digest(token, bridge_token())
+
+    def _proxy(self, method, host_path, body=None, ctype=None, set_cookie=False):
+        host_path = host_path.split('?', 1)[0]
+        request = urllib.request.Request(
+            'http://127.0.0.1:8766' + host_path, data=body, method=method)
+        if ctype:
+            request.add_header('Content-Type', ctype)
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                data = response.read()
+                status = response.status
+                kind = response.headers.get('Content-Type',
+                                            'application/octet-stream')
+        except urllib.error.HTTPError as error:
+            data = error.read()
+            status = error.code
+            kind = error.headers.get('Content-Type', 'application/json')
+        except Exception as error:
+            return self._json(502, {'error': 'proxy: %s' % error})
+        self.send_response(status)
+        self.send_header('Content-Type', kind)
+        self.send_header('Content-Length', str(len(data)))
+        self.send_header('Connection', 'close')
+        if set_cookie:
+            self.send_header('Set-Cookie',
+                             'magroom=%s; Path=/; SameSite=Lax'
+                             % urllib.parse.quote(bridge_token()))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _sse(self):
+        self.send_response(200)
+        self.send_header('Content-Type', 'text/event-stream')
+        self.send_header('Cache-Control', 'no-store')
+        self.send_header('Connection', 'close')
+        self.end_headers()
+        try:
+            self.wfile.write(b': proxy\n\n')
+            self.wfile.flush()
+            while True:
+                time.sleep(20)
+                self.wfile.write(b': ping\n\n')
+                self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass
 
     def do_GET(self):
         path = urllib.parse.urlparse(self.path).path
@@ -1494,12 +1888,24 @@ class BridgeHandler(BaseHTTPRequestHandler):
         if path.startswith('/files/'):
             stored = os.path.basename(urllib.parse.unquote(path[len('/files/'):]))
             return self._file(stored)
+        if path in ('/room', '/room/'):
+            return self._proxy('GET', '/', set_cookie=True)
+        if path.startswith('/static/') or path.startswith('/api/'):
+            if path == '/api/events':
+                return self._sse()
+            return self._proxy('GET', self.path)
         return self._json(404, {'error': 'not found'})
 
     def do_POST(self):
         if not self._auth():
             return self._json(403, {'error': 'token'})
         parsed = urllib.parse.urlparse(self.path)
+        if parsed.path == '/api/frontend':
+            length = int(self.headers.get('Content-Length', '0'))
+            body = self.rfile.read(length) if 0 < length <= 524288 else b''
+            return self._proxy('POST', '/api/frontend', body=body,
+                               ctype=self.headers.get('Content-Type',
+                                                      'text/html'))
         if parsed.path != '/ingest':
             return self._json(404, {'error': 'not found'})
         params = urllib.parse.parse_qs(parsed.query)

@@ -53,6 +53,13 @@ echo "[9/9] Endpunkte + Wrapper-Test"
 echo -n "  healthz: "; curl -fsS -m5 http://127.0.0.1:8766/healthz; echo
 echo -n "  bots:    "; curl -fsS -m5 http://127.0.0.1:8766/api/bots; echo
 echo -n "  files:   "; curl -fsS -m5 http://127.0.0.1:8766/api/files; echo
-/usr/local/sbin/magbot-guest-run agent1 'echo wrapper-ok; uname -r' | sed 's/^/  /'
+VM="$(curl -fsS -m5 http://127.0.0.1:8766/api/bots | python3 -c 'import sys,json;b=json.load(sys.stdin).get("bots",[]);print(next((x["vm"] for x in b if x.get("vm")),""))' 2>/dev/null || true)"
+if [ -n "$VM" ]; then
+  echo -n "  wrapper ($VM): "
+  /usr/local/sbin/magbot-guest-run "$VM" 'echo wrapper-ok; uname -r' | tr '\n' ' ' | sed 's/^/ /'
+  echo
+else
+  echo "  wrapper: kein Agent mit VM vorhanden"
+fi
 
 echo "Fertig. Tailscale: https://mag.tail3e02ae.ts.net:8446"

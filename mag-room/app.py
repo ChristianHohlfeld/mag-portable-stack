@@ -400,20 +400,27 @@ def _guest_ip(vm):
     return None
 
 
-def vm_ip(vm):
+def vm_ip(vm, force=False):
     with VM_IP_LOCK:
         c = VM_IP_CACHE.get(vm)
-        if c and time.time() - c[1] < 300:
+        if not force and c and time.time() - c[1] < 60:
             return c[0]
     ip = _guest_ip(vm)
     if ip:
         with VM_IP_LOCK:
             VM_IP_CACHE[vm] = (ip, time.time())
-    return ip
+        return ip
+    # invalidate
+    with VM_IP_LOCK:
+        VM_IP_CACHE.pop(vm, None)
+    return None
+
 
 
 def ensure_browser(vm):
     ip = vm_ip(vm)
+    if not ip:
+        ip = vm_ip(vm, force=True)
     if not ip:
         raise ValueError('Kann VM-IP fuer %s nicht ermitteln.' % vm)
     try:
@@ -435,6 +442,8 @@ def ensure_browser(vm):
            '>browserd.log 2>&1 < /dev/null & sleep 5; echo ready' % token)
     code, out = guest_command(vm, cmd, timeout=60)
     if code != 0:
+        with VM_IP_LOCK:
+            VM_IP_CACHE.pop(vm, None)
         raise ValueError('browserd Start fehlgeschlagen: %s' % out)
     deadline = time.time() + 25
     while time.time() < deadline:

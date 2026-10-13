@@ -1641,6 +1641,54 @@ def run_turn(bot, room_messages, autotalk, other, web, emit, cancel=None):
                                 bot=bot['id'], file=record)
                     emit({'type': 'file', 'bot': bot['id'], 'name': bot['name'],
                           'record': record})
+            elif name == 'browser_open' and vm:
+                url = str(args.get('url',''))[:2000]
+                r = browser_req(vm, '/navigate?url=%s' % urllib.parse.quote(url))
+                st = browser_state(vm)
+                result = st
+                emit({'type':'tool','bot':bot['id'],'name':name,'command':'browser_open '+url,'output':json.dumps(st)[:TOOL_OUTPUT_LIMIT]})
+            elif name == 'browser_click' and vm:
+                sel = args.get('selector') or args.get('text')
+                if not sel:
+                    raise ValueError('selector or text required')
+                if args.get('selector'):
+                    r = browser_req(vm, '/click', method='POST', data={'selector': str(sel)})
+                else:
+                    r = browser_req(vm, '/click', method='POST', data={'text': str(sel)})
+                st = browser_state(vm)
+                result = st
+                emit({'type':'tool','bot':bot['id'],'name':name,'command':'browser_click','output':json.dumps(st)[:TOOL_OUTPUT_LIMIT]})
+            elif name == 'browser_type' and vm:
+                txt = str(args.get('text',''))
+                data = {'text': txt}
+                if args.get('selector'):
+                    data['selector'] = str(args.get('selector'))
+                if args.get('enter'):
+                    data['enter'] = bool(args.get('enter'))
+                r = browser_req(vm, '/type', method='POST', data=data)
+                st = browser_state(vm)
+                result = st
+                emit({'type':'tool','bot':bot['id'],'name':name,'command':'browser_type','output':json.dumps(st)[:TOOL_OUTPUT_LIMIT]})
+            elif name == 'browser_read' and vm:
+                r = browser_req(vm, '/read')
+                result = r.get('data') if r.get('type')=='json' else {}
+                emit({'type':'tool','bot':bot['id'],'name':name,'command':'browser_read','output':json.dumps(result)[:TOOL_OUTPUT_LIMIT]})
+            elif name == 'browser_screenshot' and vm:
+                rec = browser_screenshot_share(vm, bot)
+                result = {'url': rec['url'], 'name': rec['name']}
+                emit({'type':'tool','bot':bot['id'],'name':name,'command':'browser_screenshot','output':rec['url']})
+                emit({'type':'file','bot':bot['id'],'name':bot['name'],'record':{'name':rec['name'],'mime':rec['mime'],'size':rec['size'],'url':rec['url']}})
+            elif name == 'browser_back' and vm:
+                r = browser_req(vm, '/back')
+                st = browser_state(vm)
+                result = st
+                emit({'type':'tool','bot':bot['id'],'name':name,'command':'browser_back','output':json.dumps(st)[:TOOL_OUTPUT_LIMIT]})
+            elif name == 'browser_scroll' and vm:
+                data = {'dy': int(args.get('dy', 600))}
+                r = browser_req(vm, '/scroll', method='POST', data=data)
+                st = browser_state(vm)
+                result = st
+                emit({'type':'tool','bot':bot['id'],'name':name,'command':'browser_scroll','output':json.dumps(st)[:TOOL_OUTPUT_LIMIT]})
             else:
                 result = {'error': 'Nicht erlaubtes Werkzeug: ' + name}
             messages.append({

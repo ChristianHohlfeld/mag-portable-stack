@@ -855,7 +855,7 @@ FILES_RULES = (
  )
 
 FRONTEND_RULES = (
-    '\n\n[Frontend-Wartung] Du kannst die Raum-Oberflaeche selbst verbessern. '
+    '\n\n[Browser] Du hast einen eigenen persistenten Chromium in deiner VM. Verwende browser_open, browser_click, browser_type, browser_read, browser_screenshot, browser_back, browser_scroll. [Frontend-Wartung] Du kannst die Raum-Oberflaeche selbst verbessern. '
     'Ablauf: (1) screenshot_room, um die aktuelle UI visuell zu pruefen '
     '(Screenshot wird in den Raum geteilt, dazu Konsolenfehler und sichtbarer '
     'Text). (2) download_frontend, um die aktuelle index.html nach '

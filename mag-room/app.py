@@ -44,12 +44,18 @@ BRIDGE_PORT = int(os.environ.get('MAG_ROOM_BRIDGE_PORT', '8767'))
 TOOLS_VENV = os.environ.get('MAG_ROOM_TOOLS_VENV', '/opt/magbot/tools-venv')
 ROOM_TOOLS = os.environ.get('MAG_ROOM_TOOLS', os.path.join(
     os.path.dirname(os.path.abspath(__file__)), 'roomtools.py'))
+BROWSERD_SRC = os.environ.get('MAG_ROOM_BROWSERD', os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), 'browserd.py'))
+BROWSERD_PORT = int(os.environ.get('MAG_ROOM_BROWSERD_PORT', '9225'))
+STT_MODEL = os.environ.get('MAG_ROOM_STT_MODEL', 'small')
 AGENT_CTL = os.environ.get('MAG_ROOM_AGENT_CTL', '/usr/local/sbin/magbot-agent-ctl')
 MAX_UPLOAD = int(os.environ.get('MAG_ROOM_MAX_UPLOAD', str(64 * 1024 * 1024)))
 COLLECTION = os.environ.get('MAG_ROOM_COLLECTION', 'gpt-oss-120b')
 STATE_LOCK = threading.Lock()
 SUBSCRIBERS = []
 SUB_LOCK = threading.Lock()
+VM_IP_CACHE = {}
+VM_IP_LOCK = threading.Lock()
 
 
 def publish(event):
@@ -374,6 +380,121 @@ def host_ocr(name):
     if proc.returncode != 0:
         raise ValueError('OCR fehlgeschlagen: ' + (proc.stderr or '')[:200])
     return proc.stdout.strip()[:6000] or '(kein Text erkannt)'
+
+
+# ---------------------------------------------------------------- browser
+
+def _guest_ip(vm):
+    try:
+        proc = subprocess.run(
+            ['sudo', '-n', GUEST_RUN, vm, 'hostname -I'],
+            capture_output=True, text=True, timeout=20)
+        if proc.returncode != 0:
+            return None
+        out = (proc.stdout or '')
+        for token in out.split():
+            if token.startswith('192.168.'):
+                return token.strip()
+    except Exception:
+        pass
+    return None
+
+
+def vm_ip(vm):
+    with VM_IP_LOCK:
+        c = VM_IP_CACHE.get(vm)
+        if c and time.time() - c[1] < 300:
+            return c[0]
+    ip = _guest_ip(vm)
+    if ip:
+        with VM_IP_LOCK:
+            VM_IP_CACHE[vm] = (ip, time.time())
+    return ip
+
+
+def ensure_browser(vm):
+    ip = vm_ip(vm)
+    if not ip:
+        raise ValueError('Kann VM-IP fuer %s nicht ermitteln.' % vm)
+    try:
+        req = urllib.request.Request('http://%s:%d/state' % (ip, BROWSERD_PORT),
+                                     timeout=2)
+        with urllib.request.urlopen(req, timeout=3) as resp:
+            if resp.status == 200:
+                return ip
+    except Exception:
+        pass
+    token = bridge_token()
+    if not token:
+        raise ValueError('Bridge-Token nicht verfuegbar.')
+    cmd = ('mkdir -p /home/bot/browserd && '
+           "curl -fsS 'http://192.168.122.1:8767/tool/browserd.py?token=%s' "
+           '-o /home/bot/browserd/browserd.py && '
+           'cd /home/bot/browserd && setsid nohup '
+           '/opt/magbot/venv/bin/python browserd.py --daemon '
+           '>browserd.log 2>&1 < /dev/null & sleep 5; echo ready' % token)
+    code, out = guest_command(vm, cmd, timeout=60)
+    if code != 0:
+        raise ValueError('browserd Start fehlgeschlagen: %s' % out)
+    deadline = time.time() + 25
+    while time.time() < deadline:
+        try:
+            req = urllib.request.Request('http://%s:%d/state' % (ip, BROWSERD_PORT),
+                                         timeout=2)
+            with urllib.request.urlopen(req, timeout=3) as resp:
+                if resp.status == 200:
+                    return ip
+        except Exception:
+            time.sleep(0.5)
+    raise ValueError('browserd antwortet nicht auf %s:%d' % (ip, BROWSERD_PORT))
+
+
+def browser_req(vm, path, method='GET', data=None):
+    ip = ensure_browser(vm)
+    url = 'http://%s:%d%s' % (ip, BROWSERD_PORT, path)
+    try:
+        if method == 'POST':
+            body = data
+            if isinstance(body, (dict, list)):
+                body = json.dumps(body).encode()
+            req = urllib.request.Request(url, data=body or b'{}',
+                                         method='POST',
+                                         headers={'Content-Type': 'application/json'})
+        else:
+            req = urllib.request.Request(url, method='GET')
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            raw = resp.read()
+            ctype = resp.headers.get('Content-Type', '')
+            if 'application/json' in ctype:
+                return {'type': 'json', 'data': json.loads(raw) if raw else {}}
+            if 'image/png' in ctype:
+                return {'type': 'png', 'data': raw}
+            return {'type': 'raw', 'data': raw}
+    except urllib.error.HTTPError as error:
+        try:
+            raw = error.read()
+            val = json.loads(raw) if raw else {}
+            raise ValueError('Browser HTTP %s: %s' % (error.code, val))
+        except Exception:
+            raise ValueError('Browser HTTP %s' % error.code)
+    except Exception as error:
+        raise ValueError('Browser-Fehler: %s' % error)
+
+
+def browser_state(vm):
+    r = browser_req(vm, '/state')
+    if r['type'] != 'json':
+        raise ValueError('Unerwartete Antwort vom Browser')
+    return r['data']
+
+
+def browser_screenshot_share(vm, bot):
+    r = browser_req(vm, '/screenshot.png')
+    if r['type'] != 'png' or not r['data']:
+        raise ValueError('Kein Screenshot erhalten')
+    rec = add_file('browser.png', r['data'], by='Browser')
+    append_room('assistant', bot['name'], '', bot=bot['id'], file=rec)
+    return rec
 
 
 RUN_COMMAND = {

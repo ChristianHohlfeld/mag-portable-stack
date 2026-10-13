@@ -10,3 +10,8 @@ open-webui-data/.open-webui/cache/
 open-webui-data/.open-webui/uploads/
 comfyui/output/
 comfyui/temp/
+__pycache__/
+*.pyc
+mag-room/.env
+mag-room/.env.*
+!mag-room/.env.example

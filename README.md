@@ -158,9 +158,26 @@ This writes `dist/mag-portable-stack-<timestamp>.tar.zst`.
 
 Also review `config/nginx-live/tailscale/` and other mirrored production config before publishing.
 
-## 9) Reference Docs
+## 9) MAG Agent Stack (Bots mit eigener VM und eigenem Web-Zugriff)
+
+Zusätzlich zum generativen Stack enthält dieses Repository den **MAG Agent Stack**:
+mehrere Bots auf einer einzigen Modellinstanz, jeder mit **eigener KVM-VM**, eigenem
+Dateisystem und **eigenem Brave-Web-Zugriff (standardmäßig an)**.
+
+- `magbot/` — KVM/Playwright-Lebenszyklus (`spawn`/`despawn`/`status`/`exec`), read-only
+  Golden Image mit qcow2-Overlay je Bot.
+- `mag-room/` — warmes Gruppenchat-Frontend: Bots chatten untereinander, führen Befehle
+  in ihrer VM aus (`run_command`) und suchen im Web (`web_search`, Brave, default an).
+- `docs/MAG_AGENT_STACK_CONTRACT.md` — gemeinsamer Architektur-/Handoff-Contract.
+- `docs/MAG_AGENT_STACK_IMPLEMENTATION.md` — tatsächlich umgesetzter und verifizierter Stand.
+
+## 10) Reference Docs
 
 - `docs/ARCHITECTURE.md`
 - `docs/MODEL_MANIFEST.md`
 - `docs/FULL_CAPTURE.md`
 - `docs/TESTING.md`
+- `docs/MAG_AGENT_STACK_CONTRACT.md`
+- `docs/MAG_AGENT_STACK_IMPLEMENTATION.md`
+- `magbot/README.md`
+- `mag-room/README.md`

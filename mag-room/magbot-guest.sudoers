@@ -1,0 +1,2 @@
+Cmnd_Alias MAGROOM_GUEST = /usr/local/sbin/magbot-guest-run
+magbot ALL=(root) NOPASSWD: MAGROOM_GUEST

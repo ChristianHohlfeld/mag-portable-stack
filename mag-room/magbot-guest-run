@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+set -euo pipefail
+vm="${1:?VM fehlt}"; shift || true
+cmd="${1:-}"; shift || true
+case "$vm" in
+  agent[0-9]*) ;;
+  *) echo "Ungueltige VM: $vm" >&2; exit 64 ;;
+esac
+if [ -z "$cmd" ]; then echo "Leerer Befehl" >&2; exit 64; fi
+if [ "${#cmd}" -gt 4000 ]; then echo "Befehl zu lang" >&2; exit 64; fi
+exec /usr/local/bin/magbot exec "$vm" -- /bin/bash -lc "$cmd" 2>&1

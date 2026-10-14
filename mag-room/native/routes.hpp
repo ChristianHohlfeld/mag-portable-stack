@@ -241,7 +241,7 @@ static void route(int fd, Req &r, bool bridge = false) {
     }
     const std::vector<std::string> allowed{"navigate", "click", "type",
                                            "scroll",   "back",  "forward",
-                                           "reload",   "key",   "read"};
+                                           "reload",   "key",   "read", "pointer"};
     if (std::find(allowed.begin(), allowed.end(), action) == allowed.end()) {
       error_json(fd, 400, "Unknown browser action");
       return;

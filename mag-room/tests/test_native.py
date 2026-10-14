@@ -140,6 +140,27 @@ class Native(unittest.TestCase):
    self.assertTrue(state['autotalk'],'Autonomy may remain enabled while idle')
   finally:
    self.request('/api/stop',{});Model.script=[]
+ def test_11_empty_model_response_never_leaves_a_blank_bot(self):
+  Model.reply=''
+  try:
+   self.request('/api/message',{'text':'Antworte auch bei leerem Backend','bots':['test']})
+   for _ in range(100):
+    state=self.request('/api/state')
+    if any('Es wurde keine Antwort erzeugt.' in m.get('content','') for m in state['room']):break
+    time.sleep(.05)
+   else:self.fail('Blank model response left the bot without feedback')
+  finally:Model.reply=None
+ def test_11_frontend_live_contract(self):
+  html=self.request('/',raw=True).decode()
+  self.assertIn('id="console-output"',html)
+  self.assertIn('id="console-form"',html)
+  self.assertIn('id="left-panel"',html)
+  self.assertIn('id="right-panel"',html)
+  self.assertIn('id="screen"',html)
+  self.assertIn("content.innerHTML=safeMarkdown(s.text)",html)
+  self.assertIn("createImageBitmap",html)
+  self.assertNotIn('notice();screen();',html)
+  self.error(404,'/api/console/test',{'command':'whoami'}) # no HTTP terminal fallback
  def test_11_browser_live_requires_known_bot(self):
   self.error(404,'/api/browser-live/offer?bot=not-a-bot',{'type':'offer','sdp':'sdp'})
   self.error(404,'/api/browser/not-a-bot/pointer',{'x':1,'y':1})

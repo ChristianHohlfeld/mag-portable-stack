@@ -12,12 +12,19 @@
 #include <cstring>
 #include <string>
 #include <vector>
+#include <atomic>
+#include <thread>
+#include <map>
+#include <openssl/evp.h>
 
 class BrowserUDP {
   int fd_ = -1;
   sockaddr_in server_{};
-  std::string secret_, vm_;
+  std::string secret_, vm_, nonce_;
   uint32_t frame_seq_ = 0, ctrl_seq_ = 0;
+  std::thread console_worker_;
+  std::atomic<bool> console_busy_{false};
+  std::atomic<uint32_t> console_seq_{0};
   std::chrono::steady_clock::time_point subscribed_{}, hello_{}, frame_{};
   static constexpr size_t HEADER = 13, TAG = 16, CHUNK = 1000;
   static void put16(std::string &s, uint16_t n) {
@@ -60,13 +67,33 @@ class BrowserUDP {
     (void)sendto(fd_, packet.data(), packet.size(), MSG_DONTWAIT,
                  (sockaddr *)&server_, sizeof(server_));
   }
+  static std::string as_b64(const std::string &data) {
+    if (data.empty()) return "";
+    std::string out(((data.size() + 2) / 3) * 4, '\0');
+    EVP_EncodeBlock((unsigned char *)out.data(),
+                    (const unsigned char *)data.data(), (int)data.size());
+    return out;
+  }
+  void console_reply(const std::string &id, int exit_code,
+                     const std::string &data) {
+    const size_t total = std::max<size_t>(1, (data.size() + 479) / 480);
+    for (size_t i = 0; i < total; ++i) {
+      mj::Val part = mj::Val::object();
+      part["id"] = id;
+      part["index"] = (int)i;
+      part["total"] = (int)total;
+      part["exit"] = exit_code;
+      part["data"] = as_b64(data.substr(i * 480, 480));
+      send(4, ++console_seq_, 0, 1, mj::dump(part));
+    }
+  }
   static std::string str(const mj::Val &v, const char *key) {
     auto p = v.find(key);
     return p ? p->asStr() : "";
   }
 public:
   BrowserUDP(const std::string &secret, const std::string &vm)
-      : secret_(secret), vm_(vm) {
+      : secret_(secret), vm_(vm), nonce_(mag::randomhex()) {
     fd_ = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
     if (fd_ < 0) throw std::runtime_error("Browser UDP socket failed");
     sockaddr_in local{};
@@ -83,7 +110,10 @@ public:
     if (inet_pton(AF_INET, host.c_str(), &server_.sin_addr) != 1)
       throw std::runtime_error("Invalid MAG bridge IP");
   }
-  ~BrowserUDP() { if (fd_ >= 0) close(fd_); }
+  ~BrowserUDP() {
+    if (console_worker_.joinable()) console_worker_.join();
+    if (fd_ >= 0) close(fd_);
+  }
   int fd() const { return fd_; }
   void receive(CDP &cdp) {
     unsigned char packet[1400];
@@ -100,14 +130,42 @@ public:
     if (!mj::parse(raw, obj) || !obj.isObj()) return;
     std::string kind = str(obj, "kind");
     if (kind == "subscribe") {
-      // Authenticated subscription also starts a new control sequence after
-      // a relay restart; existing Chrome and its tabs remain untouched.
       ctrl_seq_ = seq;
       subscribed_ = std::chrono::steady_clock::now();
       return;
     }
     if (seq <= ctrl_seq_) return;
     ctrl_seq_ = seq;
+    if (kind == "unsubscribe") {
+      subscribed_ = {};
+      return;
+    }
+    if (kind == "console") {
+      const std::string id = str(obj, "id");
+      const std::string command = str(obj, "command");
+      if (id.empty() || id.size() > 24 ||
+          id.find_first_not_of("0123456789abcdefghijklmnopqrstuvwxyz") !=
+              std::string::npos ||
+          command.empty() || command.size() > 640 ||
+          command.find('\0') != std::string::npos) return;
+      if (console_busy_.exchange(true)) {
+        console_reply(id, 125, "Konsole beschaeftigt.\n");
+        return;
+      }
+      if (console_worker_.joinable()) console_worker_.join();
+      console_worker_ = std::thread([this, id, command] {
+        try {
+          // The daemon runs as the isolated guest's unprivileged 'bot'.
+          // Time + output limits avoid a stuck command monopolizing the VM.
+          mag::Result result = mag::run({"/bin/bash", "-lc", command}, 12, 12000);
+          console_reply(id, result.code, result.out);
+        } catch (const std::exception &e) {
+          console_reply(id, 124, std::string("Konsole: ") + e.what() + "\n");
+        }
+        console_busy_ = false;
+      });
+      return;
+    }
     if (kind == "pointer") {
       auto px = obj.find("x"), py = obj.find("y");
       if (!px || !py || px->type != mj::Val::NUM || py->type != mj::Val::NUM)
@@ -141,11 +199,48 @@ public:
       cdp.call("Input.dispatchMouseEvent", p);
     } else if (kind == "key") {
       std::string key = str(obj, "key");
-      if (key.empty() || key.size() > 40) return;
+      // Chromium needs the native VK code for non-text keys such as
+      // Enter, Backspace and the arrows; key/code alone is insufficient.
+      static const std::map<std::string, int> keys{
+          {"Enter", 13}, {"NumpadEnter", 13}, {"Tab", 9},
+          {"Backspace", 8}, {"Escape", 27}, {"Delete", 46},
+          {"ArrowLeft", 37}, {"ArrowUp", 38}, {"ArrowRight", 39},
+          {"ArrowDown", 40}, {"Home", 36}, {"End", 35},
+          {"PageUp", 33}, {"PageDown", 34}, {"Insert", 45},
+          {" ", 32}};
+      auto it = keys.find(key);
+      int vk = 0;
+      std::string code = key;
+      if (it != keys.end()) vk = it->second;
+      else if (key.size() == 1 && key[0] >= 'a' && key[0] <= 'z') {
+        vk = 65 + key[0] - 'a';
+        code = "Key" + std::string(1, (char)toupper(key[0]));
+      } else if (key.size() == 1 && key[0] >= 'A' && key[0] <= 'Z') {
+        vk = 65 + key[0] - 'A';
+        code = "Key" + key;
+      } else if (key.size() == 1 && key[0] >= '0' && key[0] <= '9') {
+        vk = 48 + key[0] - '0';
+        code = "Digit" + key;
+      } else return;
+      int modifiers = 0;
+      if (obj.find("alt") && obj.find("alt")->asBool()) modifiers |= 1;
+      if (obj.find("ctrl") && obj.find("ctrl")->asBool()) modifiers |= 2;
+      if (obj.find("meta") && obj.find("meta")->asBool()) modifiers |= 4;
+      if (obj.find("shift") && obj.find("shift")->asBool()) modifiers |= 8;
       mj::Val p = mj::Val::object();
-      p["type"] = "keyDown"; p["key"] = key; p["code"] = key;
+      p["type"] = "keyDown";
+      p["key"] = key == "NumpadEnter" ? "Enter" : key;
+      p["code"] = code;
+      p["modifiers"] = modifiers;
+      p["windowsVirtualKeyCode"] = vk;
+      p["nativeVirtualKeyCode"] = vk;
+      if (key == "Enter" || key == "NumpadEnter")
+        p["text"] = "\r";
+      if (key == "Tab") p["text"] = "\t";
       cdp.call("Input.dispatchKeyEvent", p);
-      p["type"] = "keyUp"; cdp.call("Input.dispatchKeyEvent", p);
+      p["type"] = "keyUp";
+      p["text"] = "";
+      cdp.call("Input.dispatchKeyEvent", p);
     } else if (kind == "text") {
       std::string value = str(obj, "text");
       if (value.size() > 600) return;
@@ -157,7 +252,7 @@ public:
     const auto now = std::chrono::steady_clock::now();
     if (now - hello_ >= std::chrono::seconds(1)) {
       hello_ = now;
-      send(1, 0, 0, 1, vm_);
+      send(1, 0, 0, 1, vm_ + "|" + nonce_);
     }
     if (now - subscribed_ > std::chrono::seconds(8) ||
         now - frame_ < std::chrono::milliseconds(180)) return;

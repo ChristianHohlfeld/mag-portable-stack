@@ -61,13 +61,16 @@ type fragments struct {
 type peer struct {
  conn *webrtc.PeerConnection
  frames *webrtc.DataChannel
+ console *webrtc.DataChannel
  closed atomic.Bool
 }
 type bot struct {
  vm string
+ nonce string
  addr *net.UDPAddr
  seen time.Time
  frame fragments
+ lastFrame uint32
  peers map[*peer]struct{}
 }
 type relay struct {
@@ -120,8 +123,11 @@ func (r *relay) receive() {
   if ip==nil||ip[0]!=192||ip[1]!=168||ip[2]!=122 {continue}
   if n<29 || string(buf[:4])!="MGB1" {continue}
   var vm string
-  if buf[4]==1 {vm=string(buf[13:n-16])}
-  if buf[4]==2 {
+  if buf[4]==1 {
+   fields:=strings.SplitN(string(buf[13:n-16]),"|",2)
+   vm=fields[0]
+  }
+  if buf[4]==2 || buf[4]==4 {
    r.mu.Lock()
    vm=r.addresses[addr.IP.String()]
    r.mu.Unlock()
@@ -129,24 +135,51 @@ func (r *relay) receive() {
   secret,ok:=r.key(vm);if !ok{continue}
   p,err:=authenticate(buf[:n],secret);if err!=nil{continue}
   if p.kind==1 {
-   if string(p.body)!=vm {continue}
+   fields:=strings.SplitN(string(p.body),"|",2)
+   if len(fields)!=2||fields[0]!=vm||len(fields[1])!=32 {continue}
    r.mu.Lock()
    b:=r.bots[vm]
    if b==nil{b=&bot{vm:vm,peers:make(map[*peer]struct{})};r.bots[vm]=b}
+   if b.nonce!=fields[1] {
+    b.nonce=fields[1]
+    b.lastFrame=0
+    b.frame=fragments{} // new browser controller, existing Chromium stays live
+   }
    b.addr=addr;b.seen=time.Now()
    r.addresses[addr.IP.String()]=vm
    r.mu.Unlock()
+   continue
+  }
+  if p.kind==4 {
+   if p.total!=1 || len(p.body)>1000 || !json.Valid(p.body) {continue}
+   r.mu.Lock()
+   b:=r.bots[vm]
+   var watchers []*peer
+   if b!=nil && time.Since(b.seen)<10*time.Second {
+    for viewer:=range b.peers {watchers=append(watchers,viewer)}
+   }
+   r.mu.Unlock()
+   for _,viewer:=range watchers {
+    if viewer.closed.Load() || viewer.console==nil ||
+       viewer.console.ReadyState()!=webrtc.DataChannelStateOpen ||
+       viewer.console.BufferedAmount()>64000 {continue}
+    _=viewer.console.SendText(string(p.body))
+   }
    continue
   }
   if p.kind!=2 {continue}
   r.mu.Lock()
   b:=r.bots[vm]
   if b==nil||time.Since(b.seen)>10*time.Second{r.mu.Unlock();continue}
-  if b.frame.seq!=p.seq {
-   b.frame=fragments{seq:p.seq,data:make([][]byte,p.total),deadline:time.Now().Add(time.Second)}
+  // Never let a late/out-of-order fragment replace a newer frame.
+  // Cap to one in-flight JPEG for this VM; expire incomplete frames.
+  if p.seq<=b.lastFrame {r.mu.Unlock();continue}
+  if p.seq<b.frame.seq {r.mu.Unlock();continue}
+  if p.seq>b.frame.seq || time.Now().After(b.frame.deadline) {
+   b.frame=fragments{seq:p.seq,data:make([][]byte,p.total),deadline:time.Now().Add(450*time.Millisecond)}
   }
   f:=&b.frame
-  if f.seq!=p.seq||len(f.data)!=p.total||time.Now().After(f.deadline) {r.mu.Unlock();continue}
+  if len(f.data)!=p.total || time.Now().After(f.deadline) {r.mu.Unlock();continue}
   if f.data[p.index]==nil {
    f.data[p.index]=append([]byte{},p.body...)
    f.received++
@@ -157,6 +190,7 @@ func (r *relay) receive() {
   if size<4||size>maxImage{b.frame=fragments{};r.mu.Unlock();continue}
   jpeg:=make([]byte,0,size)
   for _,v:=range f.data {jpeg=append(jpeg,v...)}
+  b.lastFrame=p.seq
   b.frame=fragments{}
   receivers:=make([]*peer,0,len(b.peers))
   for p:=range b.peers {receivers=append(receivers,p)}
@@ -178,6 +212,25 @@ func (r *relay) receive() {
     if err:=viewer.frames.Send(out);err!=nil{break}
    }
   }
+ }
+}
+// Bound relay memory even when the sender disappears mid-frame.
+func (r *relay) reap() {
+ ticker:=time.NewTicker(5*time.Second)
+ defer ticker.Stop()
+ for range ticker.C {
+  r.mu.Lock()
+  now:=time.Now()
+  for vm,b:=range r.bots {
+   if b.frame.received>0 && now.After(b.frame.deadline) {
+    b.frame=fragments{}
+   }
+   if len(b.peers)==0 && !b.seen.IsZero() && now.Sub(b.seen)>90*time.Second {
+    delete(r.bots,vm)
+    if b.addr!=nil{delete(r.addresses,b.addr.IP.String())}
+   }
+  }
+  r.mu.Unlock()
  }
 }
 func (r *relay) resolveVM(id string)(string,error) {
@@ -210,18 +263,44 @@ func (r *relay) offer(w http.ResponseWriter,req *http.Request){
  channel,err:=pc.CreateDataChannel("frames",&webrtc.DataChannelInit{Ordered:boolptr(false),MaxRetransmits:uint16ptr(0)})
  if err!=nil{_ =pc.Close();http.Error(w,"frames",500);return}
  viewer.frames=channel
+ console,err:=pc.CreateDataChannel("console",nil)
+ if err!=nil{_ =pc.Close();http.Error(w,"console",500);return}
+ viewer.console=console
+ console.OnMessage(func(m webrtc.DataChannelMessage){
+  if viewer.closed.Load()||len(m.Data)>800||!json.Valid(m.Data){return}
+  var msg struct {Kind string `json:"kind"`; ID string `json:"id"`; Command string `json:"command"`}
+  if json.Unmarshal(m.Data,&msg)!=nil||msg.Kind!="console"||
+     len(msg.ID)==0||len(msg.ID)>24||len(msg.Command)==0||len(msg.Command)>640{return}
+  r.send(vm,m.Data)
+ })
  r.mu.Lock()
  b:=r.bots[vm]
  if b==nil {b=&bot{vm:vm,peers:make(map[*peer]struct{})};r.bots[vm]=b}
  b.peers[viewer]=struct{}{}
  r.mu.Unlock()
+ cleanup:=func(){
+  if viewer.closed.Swap(true){return}
+  r.mu.Lock()
+  delete(b.peers,viewer)
+  noViewers:=len(b.peers)==0
+  r.mu.Unlock()
+  if noViewers{r.send(vm,[]byte(`{"kind":"unsubscribe"}`))}
+  _=pc.Close()
+ }
  pc.OnConnectionStateChange(func(s webrtc.PeerConnectionState){
-  if s==webrtc.PeerConnectionStateFailed||s==webrtc.PeerConnectionStateClosed{
-   viewer.closed.Store(true)
-   r.mu.Lock();delete(b.peers,viewer);r.mu.Unlock()
-   _=pc.Close()
+  if s==webrtc.PeerConnectionStateFailed||s==webrtc.PeerConnectionStateClosed||
+     s==webrtc.PeerConnectionStateDisconnected{cleanup()}
+ })
+ // Also clear offers abandoned before ICE ever connects.
+ connected:=atomic.Bool{}
+ pc.OnICEConnectionStateChange(func(s webrtc.ICEConnectionState){
+  if s==webrtc.ICEConnectionStateConnected || s==webrtc.ICEConnectionStateCompleted{
+   connected.Store(true)
   }
  })
+ time.AfterFunc(25*time.Second,func(){if !connected.Load(){cleanup()}})
+ complete:=false
+ defer func(){if !complete{cleanup()}}()
  pc.OnDataChannel(func(dc *webrtc.DataChannel){
   if dc.Label()!="control"{return}
   dc.OnMessage(func(m webrtc.DataChannelMessage){
@@ -244,6 +323,7 @@ func (r *relay) offer(w http.ResponseWriter,req *http.Request){
  select {case <-gathered: case <-time.After(10*time.Second):
   _=pc.Close();http.Error(w,"ICE timeout",504);return}
  w.Header().Set("Content-Type","application/json")
+ complete=true
  _=json.NewEncoder(w).Encode(pc.LocalDescription())
 }
 func boolptr(v bool)*bool{return &v}
@@ -253,6 +333,7 @@ func main(){
  if state==""{state="/var/lib/magbot/room";_=os.Setenv("MAG_ROOM_STATE",state)}
  relay,err:=newRelay();if err!=nil{log.Fatal(err)}
  go relay.receive()
+ go relay.reap()
  mux:=http.NewServeMux()
  mux.HandleFunc("POST /offer",relay.offer)
  mux.HandleFunc("GET /status",func(w http.ResponseWriter,_ *http.Request){

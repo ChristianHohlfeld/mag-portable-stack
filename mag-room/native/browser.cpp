@@ -391,7 +391,6 @@ int main(int argc, char **argv) {
           p["y"] = vy->num;
           if (action == "move") {
             p["type"] = "mouseMoved";
-            p["button"] = button;
             c.call("Input.dispatchMouseEvent", p);
           } else if (action == "down" || action == "up" ||
                      action == "click") {

@@ -384,7 +384,7 @@ int main(int argc, char **argv) {
         } else if (r.path == "/pointer") {
           // Browser viewport is fixed at 1440x900 CDP CSS pixels.
           auto px = body.find("x"), py = body.find("y");
-          if (!px || !py || !px->isNum() || !py->isNum())
+          if (!px || !py || px->type != Val::NUM || py->type != Val::NUM)
             throw std::runtime_error("Numeric pointer coordinates required");
           const double x = px->asNum(), y = py->asNum();
           if (!std::isfinite(x) || !std::isfinite(y) ||

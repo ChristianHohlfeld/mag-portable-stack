@@ -73,20 +73,30 @@ type bot struct {
 type relay struct {
  mu sync.Mutex
  udp *net.UDPConn
- secret []byte
+ keys sync.Map // VM name -> private HMAC secret
  bots map[string]*bot
  addresses map[string]string
  seq atomic.Uint32
 }
-func newRelay(secret []byte)(*relay,error) {
+func newRelay()(*relay,error) {
  addr:=&net.UDPAddr{IP:net.IPv4zero,Port:listenPort}
  udp,err:=net.ListenUDP("udp4",addr)
  if err!=nil{return nil,err}
- r:=&relay{udp:udp,secret:secret,bots:make(map[string]*bot),addresses:make(map[string]string)}
+ r:=&relay{udp:udp,bots:make(map[string]*bot),addresses:make(map[string]string)}
  // Start with an unpredictable sequence. Signed subscriptions can reset
  // the bot's control sequence after relay restart without resetting tabs.
  r.seq.Store(uint32(time.Now().UnixNano()))
  return r,nil
+}
+func (r *relay) key(vm string)([]byte,bool){
+ if len(vm)<1||len(vm)>32||strings.ContainsAny(vm,"/\\ \n\r\t"){return nil,false}
+ if value,ok:=r.keys.Load(vm);ok{return value.([]byte),true}
+ raw,err:=os.ReadFile(os.Getenv("MAG_ROOM_STATE")+"/browser-udp-keys/"+vm+".key")
+ if err!=nil{return nil,false}
+ secret:=[]byte(strings.TrimSpace(string(raw)))
+ if len(secret)!=64{return nil,false}
+ r.keys.Store(vm,secret)
+ return secret,true
 }
 func (r *relay) send(vm string, message []byte) {
  r.mu.Lock()
@@ -95,7 +105,9 @@ func (r *relay) send(vm string, message []byte) {
  target:=*b.addr
  target.Port=controlVMPort
  r.mu.Unlock()
- p:=encode(r.secret,3,r.seq.Add(1),message)
+ secret,ok:=r.key(vm)
+ if !ok{return}
+ p:=encode(secret,3,r.seq.Add(1),message)
  _,_=r.udp.WriteToUDP(p,&target)
 }
 func (r *relay) subscribe(vm string){r.send(vm,[]byte(`{"kind":"subscribe"}`))}
@@ -106,10 +118,18 @@ func (r *relay) receive() {
   // The browser guest network is the only authorized source.
   ip:=addr.IP.To4()
   if ip==nil||ip[0]!=192||ip[1]!=168||ip[2]!=122 {continue}
-  p,err:=authenticate(buf[:n],r.secret);if err!=nil {continue}
+  if n<29 || string(buf[:4])!="MGB1" {continue}
+  var vm string
+  if buf[4]==1 {vm=string(buf[13:n-16])}
+  if buf[4]==2 {
+   r.mu.Lock()
+   vm=r.addresses[addr.IP.String()]
+   r.mu.Unlock()
+  }
+  secret,ok:=r.key(vm);if !ok{continue}
+  p,err:=authenticate(buf[:n],secret);if err!=nil{continue}
   if p.kind==1 {
-   vm:=string(p.body)
-   if len(vm)<1||len(vm)>60||strings.ContainsAny(vm,"/\\ \n\r\t") {continue}
+   if string(p.body)!=vm {continue}
    r.mu.Lock()
    b:=r.bots[vm]
    if b==nil{b=&bot{vm:vm,peers:make(map[*peer]struct{})};r.bots[vm]=b}
@@ -120,7 +140,6 @@ func (r *relay) receive() {
   }
   if p.kind!=2 {continue}
   r.mu.Lock()
-  vm:=r.addresses[addr.IP.String()]
   b:=r.bots[vm]
   if b==nil||time.Since(b.seen)>10*time.Second{r.mu.Unlock();continue}
   if b.frame.seq!=p.seq {
@@ -232,11 +251,7 @@ func uint16ptr(v uint16)*uint16{return &v}
 func main(){
  state:=os.Getenv("MAG_ROOM_STATE")
  if state==""{state="/var/lib/magbot/room";_=os.Setenv("MAG_ROOM_STATE",state)}
- key,err:=os.ReadFile(state+"/token")
- if err!=nil{log.Fatal(err)}
- secret:=[]byte(strings.TrimSpace(string(key)))
- if len(secret)<24{log.Fatal("MAG browser UDP token missing")}
- relay,err:=newRelay(secret);if err!=nil{log.Fatal(err)}
+ relay,err:=newRelay();if err!=nil{log.Fatal(err)}
  go relay.receive()
  mux:=http.NewServeMux()
  mux.HandleFunc("POST /offer",relay.offer)

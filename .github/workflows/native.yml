@@ -11,6 +11,17 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y ninja-build libssl-dev
       - name: Build
         run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release && cmake --build build -j 4
+      - name: Browser frontend JavaScript syntax
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          text = Path('mag-room/web/index.html').read_text()
+          scripts = re.findall(r'<script>(.*?)</script>', text, re.S)
+          assert len(scripts) == 1, 'Expected exactly one inline app script'
+          Path('/tmp/mag-room.js').write_text(scripts[0])
+          PY
+          node --check /tmp/mag-room.js
       - name: Native integration checks
         run: python3 mag-room/tests/test_native.py
       - name: Shell syntax

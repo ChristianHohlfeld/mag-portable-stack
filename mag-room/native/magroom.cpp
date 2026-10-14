@@ -2428,10 +2428,11 @@ int main() {
         auto r=run_argv({"sudo","-n",ROOT_CTL,"renew",vm},30,1024);
         if(r.code){
           std::lock_guard<std::mutex> lk(ROOT_MTX);
-          ROOT_ENABLED.erase(vm);
-          ROOT_REVOKE_PENDING.insert(vm);
-          pending.insert(vm);
-          agents_event();
+          if(ROOT_ENABLED.erase(vm)){
+            ROOT_REVOKE_PENDING.insert(vm);
+            pending.insert(vm);
+            agents_event();
+          }
         }
       }
       for(auto &vm:pending){

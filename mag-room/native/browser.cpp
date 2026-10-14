@@ -184,6 +184,7 @@ static std::string chromium() {
   throw std::runtime_error("Golden image Chromium missing");
 }
 static std::string js(const std::string &s) { return mj::dump(Val(s)); }
+#include "browser_udp.hpp"
 int main(int argc, char **argv) {
   try {
     signal(SIGPIPE, SIG_IGN);
@@ -293,10 +294,29 @@ int main(int argc, char **argv) {
     auto snapshot = [&]() {
       return c.eval("({url:location.href,title:document.title})");
     };
+    char host[128]{};
+    if (gethostname(host, sizeof(host) - 1) != 0)
+      throw std::runtime_error("Unable to identify VM");
+    BrowserUDP udp(token, host);
     for (;;) {
+      // CDP and UDP input run against exactly the same hot tab on one thread.
+      // Do not race a second CDP connection from an auxiliary process.
+      try { udp.tick(c); }
+      catch (const std::exception &e) {
+        std::cerr << "UDP capture: " << e.what() << std::endl;
+      }
+      pollfd sources[2]{{server, POLLIN, 0}, {udp.fd(), POLLIN, 0}};
+      int nready = poll(sources, 2, 70);
+      if (nready < 0) continue;
+      if (sources[1].revents & POLLIN) {
+        try { udp.receive(c); }
+        catch (const std::exception &e) {
+          std::cerr << "UDP control: " << e.what() << std::endl;
+        }
+      }
+      if (!(sources[0].revents & POLLIN)) continue;
       int fd = accept4(server, nullptr, nullptr, SOCK_CLOEXEC);
-      if (fd < 0)
-        continue;
+      if (fd < 0) continue;
       timeval timeout{15, 0};
       setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof timeout);
       setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof timeout);

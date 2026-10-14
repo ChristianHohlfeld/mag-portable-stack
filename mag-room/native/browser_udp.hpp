@@ -17,6 +17,8 @@
 #include <map>
 #include <openssl/evp.h>
 #include "guest_pty.hpp"
+#include <sys/un.h>
+#include <cerrno>
 
 class BrowserUDP {
   int fd_ = -1;
@@ -24,7 +26,36 @@ class BrowserUDP {
   std::string secret_, vm_, nonce_;
   uint32_t frame_seq_ = 0, ctrl_seq_ = 0;
   GuestPTY terminal_;
+  int root_fd_ = -1;
   uint32_t terminal_seq_ = 0;
+  void clear_terminal_history() {
+    terminal_history_.clear();
+    terminal_written_ = 0;
+  }
+  bool connect_root() {
+    if(root_fd_ >= 0)return true;
+    int fd=socket(AF_UNIX,SOCK_SEQPACKET|SOCK_CLOEXEC|SOCK_NONBLOCK,0);
+    if(fd<0)return false;
+    sockaddr_un addr{};
+    addr.sun_family=AF_UNIX;
+    strncpy(addr.sun_path,"/run/mag-root-shell.sock",sizeof(addr.sun_path)-1);
+    if(connect(fd,(sockaddr *)&addr,sizeof(addr))!=0){
+      close(fd);return false;
+    }
+    root_fd_=fd;
+    clear_terminal_history();
+    return true;
+  }
+  void drop_root() {
+    if(root_fd_>=0){close(root_fd_);root_fd_=-1;clear_terminal_history();}
+  }
+  bool root_packet(const std::string &payload){
+    if(!connect_root())return false;
+    if(send(root_fd_,payload.data(),payload.size(),MSG_NOSIGNAL|MSG_DONTWAIT)!=(ssize_t)payload.size()){
+      drop_root();return false;
+    }
+    return true;
+  }
   std::string terminal_history_;
   uint64_t terminal_written_ = 0;
   static constexpr size_t MAX_HISTORY_BYTES = 32768;
@@ -100,7 +131,7 @@ public:
     if (inet_pton(AF_INET, host.c_str(), &server_.sin_addr) != 1)
       throw std::runtime_error("Invalid MAG bridge IP");
   }
-  ~BrowserUDP() { if (fd_ >= 0) close(fd_); }
+  ~BrowserUDP() { drop_root(); if (fd_ >= 0) close(fd_); }
   int fd() const { return fd_; }
   void receive(CDP &cdp) {
     unsigned char packet[1400];
@@ -128,7 +159,7 @@ public:
       return;
     }
     if (kind == "terminal_open") {
-      terminal_.start();
+      if(!connect_root())terminal_.start();
       return;
     }
     if (kind == "terminal_resize") {
@@ -138,8 +169,9 @@ public:
       double cols = c->asNum(), rows = r->asNum();
       if (!std::isfinite(cols) || !std::isfinite(rows) ||
           cols < 20 || cols > 300 || rows < 5 || rows > 120) return;
-      terminal_.resize(static_cast<unsigned>(cols),
-                       static_cast<unsigned>(rows));
+      if(!connect_root()) terminal_.resize(static_cast<unsigned>(cols),
+                                           static_cast<unsigned>(rows));
+      else root_packet("R"+std::to_string((int)cols)+":"+std::to_string((int)rows));
       return;
     }
     if (kind == "terminal_input") {
@@ -155,8 +187,9 @@ public:
         --n;
       if (n <= 0 || n > 600) return;
       decoded.resize(n);
-      terminal_.start();
-      terminal_.input(decoded);
+      if(!connect_root()) {terminal_.start();terminal_.input(decoded);}
+      else if(!root_packet("I"+decoded))
+        throw std::runtime_error("Root terminal disconnected");
       return;
     }
     if (kind == "pointer") {
@@ -241,12 +274,18 @@ public:
       cdp.call("Input.insertText", p);
     }
   }
-  int terminal_fd() const { return terminal_.fd(); }
+  int terminal_fd() const { return root_fd_ >= 0 ? root_fd_ : terminal_.fd(); }
+  bool terminal_root() { return connect_root(); }
   uint64_t terminal_cursor() const { return terminal_written_; }
-  void terminal_input(const std::string &data) {
-    if (data.empty() || data.size() > 600) throw std::runtime_error("Terminal input too long");
-    terminal_.start();
-    terminal_.input(data);
+  void terminal_input(const std::string &data, bool require_root = false) {
+    if (data.empty() || data.size() > 500)
+      throw std::runtime_error("Terminal input too long");
+    if(connect_root()){
+      if(!root_packet("I"+data))throw std::runtime_error("Root terminal disconnected");
+    }else{
+      if(require_root)throw std::runtime_error("Root access is OFF");
+      terminal_.start();terminal_.input(data);
+    }
   }
   mj::Val terminal_read(uint64_t after = 0) const {
     const auto first = terminal_written_ - terminal_history_.size();
@@ -255,14 +294,23 @@ public:
     out["cursor"] = (double)terminal_written_;
     out["truncated"] = after < first;
     out["text"] = terminal_history_.substr((size_t)(std::min(offset, terminal_written_) - first));
-    out["user"] = "bot";
+    out["user"] = root_fd_>=0?"root":"bot";
     return out;
   }
   void terminal_output() {
     // Drain stdout/stderr without blocking browser/CDP. One bounded UDP
     // datagram per PTY chunk, signed with this VM's private media key.
-    for (int i = 0; i < 24 && terminal_.fd() >= 0; ++i) {
-      auto bytes = terminal_.output();
+    for (int i = 0; i < 24 && terminal_fd() >= 0; ++i) {
+      std::string bytes;
+      if(root_fd_>=0){
+        char packet[700];
+        ssize_t n=recv(root_fd_,packet,sizeof(packet),MSG_DONTWAIT);
+        if(n>1 && packet[0]=='O') bytes.assign(packet+1,(size_t)n-1);
+        else if(n==0 || (n<0 && errno!=EAGAIN && errno!=EINTR)){
+          drop_root();
+          bytes="\r\n[MAG root revoked · unprivileged terminal restored]\r\n";
+        }else break;
+      }else bytes=terminal_.output();
       if (bytes.empty()) break;
       terminal_history_ += bytes;
       terminal_written_ += bytes.size();

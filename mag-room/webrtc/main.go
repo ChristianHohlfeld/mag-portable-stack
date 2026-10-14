@@ -146,7 +146,6 @@ func (r *relay) receive() {
   for _,viewer:=range receivers {
    if viewer.closed.Load() || viewer.frames.ReadyState()!=webrtc.DataChannelStateOpen ||
       viewer.frames.BufferedAmount()>1000000 {continue}
-   }
    parts:=(len(jpeg)+frameChunk-1)/frameChunk
    if parts>32{continue}
    for i:=0;i<parts;i++ {

@@ -10,4 +10,9 @@ if [[ -f "$BACKUP/previous-release" ]]; then ln -sfn "$(cat "$BACKUP/previous-re
 if [[ -f "$BACKUP/frontend.html" ]]; then cp -a "$BACKUP/frontend.html" /var/lib/magbot/room/frontend.html; fi
 systemctl daemon-reload
 systemctl restart mag-120.service
+if [[ -x /opt/mag-stack/current/bin/mag-browser-webrtc ]]; then
+  systemctl restart mag-browser-webrtc.service
+else
+  systemctl stop mag-browser-webrtc.service >/dev/null 2>&1 || true
+fi
 curl -fsS --max-time 10 http://127.0.0.1:8766/healthz

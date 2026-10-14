@@ -537,6 +537,18 @@ static int agent_index(const std::string &id) {
       return (int)i;
   return -1;
 }
+// Browser routes additionally accept the VM alias shown by magbot status.
+// Keep task ownership and all other APIs bound to stable agent IDs.
+static int browser_agent_index(const std::string &id_or_vm) {
+  std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
+  int idx = agent_index(id_or_vm);
+  if (idx >= 0) return idx;
+  for (size_t i = 0; i < AGENTS.size(); ++i) {
+    auto vm = AGENTS[i].find("vm");
+    if (vm && vm->asStr() == id_or_vm) return (int)i;
+  }
+  return -1;
+}
 static std::string next_vm() {
   std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
   std::vector<std::string> used;
@@ -855,6 +867,8 @@ static const char *T_BROWSER_READ =
     R"({"type":"function","function":{"name":"browser_read","description":"Read current URL, title and visible text from your VM browser.","parameters":{"type":"object","properties":{},"additionalProperties":false}}})";
 static const char *T_BROWSER_SHOT =
     R"({"type":"function","function":{"name":"browser_screenshot","description":"Take a screenshot of your VM browser and share it into the room.","parameters":{"type":"object","properties":{},"additionalProperties":false}}})";
+static const char *T_BROWSER_POINTER =
+    R"({"type":"function","function":{"name":"browser_pointer","description":"Control your own hot Chromium viewport by CSS pixel coordinates x=0..1439, y=0..899. Use action tap, move, down, or up and optional button left, right, or middle. Shares the same browser session the human sees.","parameters":{"type":"object","properties":{"x":{"type":"number"},"y":{"type":"number"},"action":{"type":"string"},"button":{"type":"string"}},"required":["x","y"],"additionalProperties":false}}})";
 static const char *T_BROWSER_BACK =
     R"({"type":"function","function":{"name":"browser_back","description":"Go back in your VM browser.","parameters":{"type":"object","properties":{},"additionalProperties":false}}})";
 static const char *T_BROWSER_SCROLL =
@@ -919,7 +933,7 @@ static const char *FILES_RULES =
     "Dateien:\n{files}";
 static const char *FRONTEND_RULES =
     "\n\n[Browser] Eigener persistenter Chromium in deiner VM: browser_open, "
-    "browser_click, browser_type, browser_read, browser_screenshot, "
+    "browser_click, browser_type, browser_pointer, browser_read, browser_screenshot, "
     "browser_back, browser_scroll. [Frontend-Wartung] Du kannst die "
     "Raum-Oberflaeche verbessern: screenshot_room (UI pruefen), "
     "download_frontend, mit run_command editieren, publish_frontend (alle "
@@ -1180,14 +1194,62 @@ static HttpResp browser_call(const std::string &ip, int port,
 static std::mutex BROWSER_START_MTX;
 static std::string ensure_browser(const std::string &vm) {
   std::lock_guard<std::mutex> start(BROWSER_START_MTX);
+  // Each VM owns a unique cryptographic UDP key. The room bridge token
+  // must not permit one bot to impersonate another bot's video/input.
+  if (vm.empty() || vm.size() > 32 ||
+      vm.find_first_not_of("abcdefghijklmnopqrstuvwxyz0123456789-") !=
+          std::string::npos)
+    throw std::runtime_error("Invalid browser VM identity");
+  const std::string keydir = STATE_DIR + "/browser-udp-keys";
+  std::filesystem::create_directories(keydir);
+  chmod(keydir.c_str(), 0700);
+  const std::string keypath = keydir + "/" + vm + ".key";
+  bool has_key = false;
+  std::string udp_key = trim(read_file(keypath, &has_key));
+  if (!has_key || udp_key.size() != 64) {
+    udp_key = mag::randomhex() + mag::randomhex();
+    if (!write_file_atomic(keypath, udp_key))
+      throw std::runtime_error("Could not persist VM UDP secret");
+    chmod(keypath.c_str(), 0600);
+  }
   auto ip = vm_ip(vm);
   if (ip.empty())
     ip = vm_ip(vm, true);
   if (ip.empty())
     throw std::runtime_error("Guest IP unavailable");
   auto status = browser_call(ip, BROWSERD_PORT, "GET", "/state", "", 1500);
-  if (status.ok && status.status == 200)
-    return ip;
+  if (status.ok && status.status == 200) {
+    Val state;
+    if (mj::parse(status.body, state) && state.find("udp_transport") &&
+        state.find("udp_transport")->asStr() == "MGB2")
+      return ip;
+    // Old controller from a previous release: attach the new controller
+    // to the same already-running Chromium without touching its profile.
+  }
+  // A stale mag-browser can still own :9225 after a release or token
+  // change. Never launch over an occupied port: stop only this VM user's
+  // browser controller. Chromium and its persistent profile stay alive.
+  if (status.ok || status.status != 0) {
+    auto stale = guest_command(
+        vm, "pkill -TERM -u bot -x mag-browser >/dev/null 2>&1 || true; "
+            "sleep 1; if pgrep -u bot -x mag-browser >/dev/null; then "
+            "echo stale-browser-controller-still-running; exit 1; fi", 10);
+    if (stale.code)
+      throw std::runtime_error(
+          "Browser controller restart blocked (VM " + vm + "): " +
+          stale.out.substr(0, 240));
+  } else {
+    // Even a broken HTTP response may mean the port is occupied. Check for
+    // our exact controller process before attempting the single restart.
+    auto stale = guest_command(
+        vm, "if pgrep -u bot -x mag-browser >/dev/null; then "
+            "pkill -TERM -u bot -x mag-browser; sleep 1; "
+            "pgrep -u bot -x mag-browser >/dev/null && exit 1; fi", 10);
+    if (stale.code)
+      throw std::runtime_error(
+          "Existing browser controller could not be stopped in " + vm +
+          ": " + stale.out.substr(0, 200));
+  }
   ip = vm_ip(vm, true);
   if (ip.empty())
     throw std::runtime_error("Guest IP unavailable");
@@ -1210,6 +1272,9 @@ static std::string ensure_browser(const std::string &vm) {
           "printf %s " + mag::quote(token) +
           " > /home/bot/browserd/token && "
           "chmod 600 /home/bot/browserd/token && "
+          "printf %s " + mag::quote(udp_key) +
+          " > /home/bot/browserd/udp-key && "
+          "chmod 600 /home/bot/browserd/udp-key && "
           "/home/bot/browserd/mag-browser --daemon",
       35);
   if (launch.code) {
@@ -1236,6 +1301,18 @@ static std::string ensure_browser(const std::string &vm) {
   }
   throw std::runtime_error("Native browser unavailable");
 }
+// Prewarm a bot browser without blocking the HTTP room or inference slot.
+static void warm_browser_async(const std::string &vm) {
+  if (vm.empty() || vm == "keine") return;
+  std::thread([vm] {
+    try {
+      (void)ensure_browser(vm);
+    } catch (const std::exception &e) {
+      std::cerr << "Browser warmup (" << vm << "): " << e.what()
+                << std::endl;
+    }
+  }).detach();
+}
 static Val browser_json(const std::string &vm, const std::string &path,
                         const std::string &method = "GET",
                         const std::string &body = "") {
@@ -1250,8 +1327,9 @@ static Val browser_json(const std::string &vm, const std::string &path,
     return o;
   }
   if (r.status != 200) {
-    if (v.find("error"))
-      throw std::runtime_error("Browser: " + v.find("error")->asStr());
+    throw std::runtime_error(
+        "Browser HTTP " + std::to_string(r.status) + ": " +
+        (v.find("error") ? v.find("error")->asStr() : r.body.substr(0, 200)));
   }
   return v;
 }
@@ -1289,7 +1367,7 @@ static std::string tools_json(int bot_idx, bool web) {
   if (!vm.empty() && vm != "keine") {
     for (const char *d :
          {T_BROWSER_OPEN, T_BROWSER_CLICK, T_BROWSER_TYPE, T_BROWSER_READ,
-          T_BROWSER_SHOT, T_BROWSER_BACK, T_BROWSER_SCROLL, T_SCREENSHOT_ROOM,
+          T_BROWSER_SHOT, T_BROWSER_POINTER, T_BROWSER_BACK, T_BROWSER_SCROLL, T_SCREENSHOT_ROOM,
           T_DL_FRONTEND, T_PUB_FRONTEND})
       defs.push_back(d);
   }
@@ -1668,6 +1746,17 @@ static std::string dispatch_tool(int bot_idx, const std::string &name,
       b["url"] = getstr("url");
       return mj::dump(
           browser_json(vm, "/navigate?url=" + url_encode(getstr("url"))));
+    }
+    if (name == "browser_pointer") {
+      auto px = a.find("x"), py = a.find("y");
+      if (!px || !py || px->type != Val::NUM || py->type != Val::NUM)
+        throw std::runtime_error("Numeric x/y coordinates required");
+      Val b = Val::object();
+      b["x"] = px->asNum();
+      b["y"] = py->asNum();
+      if (a.find("action")) b["action"] = getstr("action");
+      if (a.find("button")) b["button"] = getstr("button");
+      return mj::dump(browser_json(vm, "/pointer", "POST", mj::dump(b)));
     }
     if (name == "browser_click") {
       Val b = Val::object();
@@ -2288,6 +2377,18 @@ int main() {
       std::cerr << "Bridge bind failed: " << strerror(errno) << std::endl;
       std::exit(1);
     }
+    std::thread([] {
+      // The bridge is listening now, so guest bootstrap downloads can work.
+      std::vector<std::string> vms;
+      {
+        std::lock_guard<std::recursive_mutex> lock(STATE_MTX);
+        for (const auto &a : AGENTS) {
+          auto vm = a.find("vm");
+          if (vm && !vm->asStr().empty()) vms.push_back(vm->asStr());
+        }
+      }
+      for (const auto &vm : vms) warm_browser_async(vm);
+    }).detach();
     for (;;) {
       int fd = accept4(bridge, nullptr, nullptr, SOCK_CLOEXEC);
       if (fd < 0) {

@@ -133,3 +133,54 @@ cycles. `POST /api/stop` cancels the active stream, clears the task and
 disables autonomy. Explicit `POST /api/message` always works whether or not
 autonomy is enabled. The eight-step ceiling is a deliberate safety limit;
 follow-up tasks are started with another explicit user instruction.
+
+## Per-bot live browser (WebRTC/UDP)
+
+MAG reuses the transport pattern from the S23 native UDP stack, while
+keeping **one persistent Chromium + profile inside each bot's own KVM**.
+
+- In the VM, \`mag-browser\` owns the one CDP connection to the hot Chromium
+  tab. It reattaches on controller upgrades without resetting tabs or cookies.
+- Each browser sends per-VM-key HMAC-SHA256-authenticated, bounded JPEG packets over
+  **VM's UDP :9227 → MAG UDP :18783**; no second browser or video transcoder.
+- The dedicated Go/Pion \`mag-browser-webrtc\` gateway forwards assembled JPEG
+  frames on an unordered WebRTC SCTP DataChannel over DTLS/ICE UDP
+  (ICE UDP 18840–18890). Pointer/touch/keyboard/wheel commands travel back
+  on a reliable WebRTC DataChannel and signed UDP into that same VM browser.
+- Normal agent tools use the same existing CDP controller, not a separate
+  browser. The MAG frontend is signaling-only over HTTPS; live video and
+  interactive input do **not** use the old 600ms HTTP screenshot polling.
+- A paused viewer stops subscribing and the guest stops captures after eight
+  seconds; Chromium stays open. Each VM emits only a one-second UDP heartbeat.
+- The S23's Android hardware provides native H.264; this Chromium route uses
+  JPEG screenshots over WebRTC data, so S23's 60fps figures **do not apply**.
+  Actual FPS and latency require measurement on MAG.
+
+Port :18783 is permitted only for guest-to-host UDP on virbr0. The
+WebRTC gateway's HTTP offer API binds **127.0.0.1:18784**, and MAG validates
+the selected bot ID/VM name before relaying signaling. Browser UDP packets use separate persistent, random keys per VM under
+`/var/lib/magbot/room/browser-udp-keys/`, never the shared HTTP bridge token.
+They are validated per VM and limited to the VM subnet.
+Do not expose the gateway's HTTP endpoint outside loopback.
+
+Release prerequisites: Go 1.23 or newer available on MAG for the relay build,
+KVM guest address 192.168.122.1, and allowed Tailscale/WebRTC UDP. The existing
+\`ops/deploy.sh\` builds, installs and starts the gateway; it backs up the prior
+room service and supports rollback. The Chrome profiles and overlays do not
+move or get recreated.
+
+Check deployment using:
+
+\`\`\`bash
+sudo bash ops/health.sh
+curl -fsS http://127.0.0.1:8766/api/browser-live/status
+curl -fsS http://127.0.0.1:8766/api/state
+\`\`\`
+
+Select a bot in the MAG room, enable the live-browser checkbox, then open
+\`https://example.com\`. The URL, browser image and mouse/keyboard interaction
+must all refer to that bot's same Chrome tab; switching to the other bot must
+not change the first bot's tab. The status endpoint reports each VM and viewer
+count; a VM's age must remain below a few seconds when its controller is up.
+A CI-green build proves protocol compilation, not actual Tailscale ICE
+connectivity or runtime VM screenshot FPS.

@@ -140,8 +140,24 @@ class Native(unittest.TestCase):
    self.assertTrue(state['autotalk'],'Autonomy may remain enabled while idle')
   finally:
    self.request('/api/stop',{});Model.script=[]
- def test_11_malformed_http_rejected(self):
+ def test_11_browser_live_requires_known_bot(self):
+  self.error(404,'/api/browser-live/offer?bot=not-a-bot',{'type':'offer','sdp':'sdp'})
+  self.error(404,'/api/browser/not-a-bot/pointer',{'x':1,'y':1})
+ def test_12_malformed_http_rejected(self):
   for headers in ['Content-Length: -1\r\n','Content-Length: 2\r\nContent-Length: 3\r\n','Transfer-Encoding: chunked\r\n']:
    with socket.create_connection(('127.0.0.1',self.ui),timeout=3) as s:
     s.sendall(('POST /api/message HTTP/1.1\r\nHost: localhost\r\n'+headers+'\r\n').encode());self.assertIn(b'500',s.recv(4096))
+ def test_12_browser_routes_accept_vm_alias_without_touching_legacy_vms(self):
+  # Run last: restart the isolated temporary fixture with a synthetic VM alias.
+  agents=json.loads(self.state.joinpath('agents.json').read_text())
+  agents[0]['vm']='agent1'
+  self.proc.terminate();self.proc.wait(timeout=5);self.log.close()
+  self.state.joinpath('agents.json').write_text(json.dumps(agents))
+  self.start()
+  # An authorized bot alias reaches action validation (400, not 404).
+  self.error(400,'/api/browser/agent1/not-an-action',{})
+  self.error(400,'/api/browser/test/not-an-action',{})
+  self.error(404,'/api/browser/unknown/not-an-action',{})
+  self.error(404,'/api/screen/unknown')
+
 if __name__=='__main__':unittest.main(verbosity=2)

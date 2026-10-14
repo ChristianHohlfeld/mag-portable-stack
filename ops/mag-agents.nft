@@ -3,7 +3,7 @@ table inet mag_agents {
  chain input {
   type filter hook input priority -10; policy accept;
   iifname "virbr0" ct state established,related accept
-  iifname "virbr0" udp dport 67 accept
+  iifname "virbr0" udp dport { 67, 18783 } accept
   iifname "virbr0" ip daddr 192.168.122.1 udp dport 53 accept
   iifname "virbr0" ip daddr 192.168.122.1 tcp dport { 53, 3001, 8767 } accept
   iifname "virbr0" reject with icmpx type admin-prohibited

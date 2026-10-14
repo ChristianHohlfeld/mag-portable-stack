@@ -212,18 +212,65 @@ static void route(int fd, Req &r, bool bridge = false) {
     return;
   }
   if (m == "GET" && path.rfind("/api/screen/", 0) == 0) {
-    int idx = agent_index(url_decode(path.substr(12)));
+    int idx = browser_agent_index(url_decode(path.substr(12)));
     if (idx < 0) {
-      error_json(fd, 404, "Unknown agent");
+      error_json(fd, 404, "Unknown bot ID or VM name");
       return;
     }
     std::string vm = bot_field(idx, "vm");
+    const bool jpeg = qparam(r.query, "format") == "jpeg";
     HttpResp shot = browser_call(ensure_browser(vm), BROWSERD_PORT, "GET",
-                                 "/screenshot.png", "", 10000);
+                                 jpeg ? "/screenshot.jpg" : "/screenshot.png",
+                                 "", 10000);
     if (!shot.ok || shot.status != 200)
-      error_json(fd, 502, "Screenshot unavailable");
+      error_json(fd, 502, "Browser screenshot unavailable");
     else
-      send_response(fd, 200, "image/png", shot.body);
+      send_response(fd, 200, jpeg ? "image/jpeg" : "image/png", shot.body,
+                    {{"Cache-Control", "no-store"}});
+    return;
+  }
+  if (m == "GET" && path == "/api/browser-live/status") {
+    std::string status;
+    long code = 0;
+    if (!http_simple("127.0.0.1", 18784, "GET", "/status", "", {},
+                     status, &code, nullptr, 1500) || code != 200) {
+      error_json(fd, 503, "Browser UDP gateway unavailable");
+      return;
+    }
+    send_response(fd, 200, "application/json", status,
+                  {{"Cache-Control", "no-store"}});
+    return;
+  }
+  // Only the authenticated MAG origin can signal the local WebRTC gateway.
+  // The gateway and the VM browser remain on the same persistent page.
+  if (m == "POST" && path == "/api/browser-live/offer") {
+    std::string requested = qparam(r.query, "bot");
+    int idx = browser_agent_index(requested);
+    if (idx < 0) {
+      error_json(fd, 404, "Unknown browser or VM");
+      return;
+    }
+    if (r.body.empty() || r.body.size() > 65536) {
+      error_json(fd, 400, "SDP offer required");
+      return;
+    }
+    std::string vm = bot_field(idx, "vm");
+    ensure_browser(vm); // triggers one VM-owned hot browser only if necessary
+    std::string answer;
+    long status = 0;
+    if (!http_simple("127.0.0.1", 18784, "POST",
+                     "/offer?bot=" + url_encode(vm), r.body,
+                     {{"Content-Type", "application/json"}}, answer,
+                     &status, nullptr, 15000)) {
+      error_json(fd, 503, "WebRTC/UDP browser gateway unavailable");
+      return;
+    }
+    if (status != 200) {
+      error_json(fd, 502, "WebRTC/UDP gateway rejected offer");
+      return;
+    }
+    send_response(fd, 200, "application/json", answer,
+                  {{"Cache-Control", "no-store"}});
     return;
   }
   if (m == "POST" && path.rfind("/api/browser/", 0) == 0) {
@@ -234,14 +281,15 @@ static void route(int fd, Req &r, bool bridge = false) {
       return;
     }
     auto id = rest.substr(0, slash), action = rest.substr(slash + 1);
-    int idx = agent_index(id);
+    int idx = browser_agent_index(url_decode(id));
     if (idx < 0) {
-      error_json(fd, 404, "Unknown agent");
+      error_json(fd, 404, "Unknown bot ID or VM name");
       return;
     }
     const std::vector<std::string> allowed{"navigate", "click", "type",
                                            "scroll",   "back",  "forward",
-                                           "reload",   "key",   "read"};
+                                           "reload",   "key",   "read",
+                                           "pointer"};
     if (std::find(allowed.begin(), allowed.end(), action) == allowed.end()) {
       error_json(fd, 400, "Unknown browser action");
       return;
@@ -337,6 +385,7 @@ static void route(int fd, Req &r, bool bridge = false) {
       throw;
     }
     agents_event();
+    warm_browser_async(vm);
     send_json(fd, 201, mj::dump(agent));
     return;
   }

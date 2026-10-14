@@ -184,6 +184,7 @@ static std::string chromium() {
   throw std::runtime_error("Golden image Chromium missing");
 }
 static std::string js(const std::string &s) { return mj::dump(Val(s)); }
+#include "browser_udp.hpp"
 int main(int argc, char **argv) {
   try {
     signal(SIGPIPE, SIG_IGN);
@@ -224,57 +225,63 @@ int main(int argc, char **argv) {
       close(log);
     }
     fs::create_directories("/home/bot/browserd/profile");
-    std::string binary = chromium();
-    auto sandbox = fs::path(binary).parent_path() / "chrome_sandbox";
-    if (fs::exists(sandbox))
-      setenv("CHROME_DEVEL_SANDBOX", sandbox.c_str(), 1);
-    std::vector<std::string> a{binary,
-                               "--headless=new",
-                               "--disable-dev-shm-usage",
-                               "--remote-debugging-address=127.0.0.1",
-                               "--remote-debugging-port=9226",
-                               "--user-data-dir=/home/bot/browserd/profile",
-                               "--window-size=1440,900",
-                               "--no-first-run",
-                               "about:blank"};
-    std::vector<char *> args;
-    for (auto &s : a)
-      args.push_back(s.data());
-    args.push_back(nullptr);
-    posix_spawn_file_actions_t acts;
-    posix_spawn_file_actions_init(&acts);
-    int log = open("/home/bot/browserd/chromium.log",
-                   O_CREAT | O_WRONLY | O_APPEND, 0600);
-    posix_spawn_file_actions_adddup2(&acts, log, 1);
-    posix_spawn_file_actions_adddup2(&acts, log, 2);
-    pid_t child;
-    int err = posix_spawn(&child, binary.c_str(), &acts, nullptr, args.data(),
-                          environ);
-    posix_spawn_file_actions_destroy(&acts);
-    close(log);
-    if (err)
-      throw std::runtime_error("Chromium spawn failed");
     CDP c;
     bool ready = false;
-    for (int i = 0; i < 100; ++i) {
+    pid_t child = -1;
+    // Reattach the new controller to the original hot Chromium session
+    // after a server release. Never relaunch Chromium if CDP is already up:
+    // doing so would lose the current page and conflict with profile locks.
+    auto try_connect = [&]() -> bool {
       try {
         auto pages = json(http("127.0.0.1", 9226, "/json/list"));
         for (auto &pg : pages.asArr())
           if (str(pg, "type") == "page") {
             c.connect(str(pg, "webSocketDebuggerUrl"));
-            ready = true;
-            break;
+            return true;
           }
       } catch (const std::exception &e) {
-        std::cerr << "CDP setup: " << e.what() << std::endl;
+        std::cerr << "CDP probe: " << e.what() << std::endl;
       }
-      if (ready)
-        break;
-      std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    }
+      return false;
+    };
+    ready = try_connect();
     if (!ready) {
-      kill(child, SIGTERM);
-      throw std::runtime_error("Chromium CDP startup failed");
+      std::string binary = chromium();
+      auto sandbox = fs::path(binary).parent_path() / "chrome_sandbox";
+      if (fs::exists(sandbox))
+        setenv("CHROME_DEVEL_SANDBOX", sandbox.c_str(), 1);
+      std::vector<std::string> a{binary,
+                                 "--headless=new",
+                                 "--disable-dev-shm-usage",
+                                 "--remote-debugging-address=127.0.0.1",
+                                 "--remote-debugging-port=9226",
+                                 "--user-data-dir=/home/bot/browserd/profile",
+                                 "--window-size=1440,900",
+                                 "--no-first-run",
+                                 "about:blank"};
+      std::vector<char *> args;
+      for (auto &arg : a) args.push_back(arg.data());
+      args.push_back(nullptr);
+      posix_spawn_file_actions_t acts;
+      posix_spawn_file_actions_init(&acts);
+      int log = open("/home/bot/browserd/chromium.log",
+                     O_CREAT | O_WRONLY | O_APPEND, 0600);
+      posix_spawn_file_actions_adddup2(&acts, log, 1);
+      posix_spawn_file_actions_adddup2(&acts, log, 2);
+      int err = posix_spawn(&child, binary.c_str(), &acts, nullptr, args.data(),
+                            environ);
+      posix_spawn_file_actions_destroy(&acts);
+      close(log);
+      if (err) throw std::runtime_error("Chromium spawn failed");
+      for (int i = 0; i < 100 && !ready; ++i) {
+        ready = try_connect();
+        if (!ready)
+          std::this_thread::sleep_for(std::chrono::milliseconds(100));
+      }
+      if (!ready) {
+        kill(child, SIGTERM);
+        throw std::runtime_error("Chromium CDP startup failed");
+      }
     }
     c.call("Page.enable");
     c.call("Runtime.enable");
@@ -285,12 +292,44 @@ int main(int argc, char **argv) {
     metrics["mobile"] = false;
     c.call("Emulation.setDeviceMetricsOverride", metrics);
     auto snapshot = [&]() {
-      return c.eval("({url:location.href,title:document.title})");
+      Val state = c.eval("({url:location.href,title:document.title})");
+      state["udp_transport"] = "MGB2";
+      state["udp_port"] = 9227;
+      return state;
     };
+    char host[128]{};
+    if (gethostname(host, sizeof(host) - 1) != 0)
+      throw std::runtime_error("Unable to identify VM");
+    std::string vm_name = host;
+    if (vm_name.rfind("magbot-", 0) == 0)
+      vm_name.erase(0, 7); // cloud-init uses magbot-<VM name>
+    const std::string udp_key =
+        trim(read(env("MAG_BROWSER_UDP_KEY_FILE", "/home/bot/browserd/udp-key")));
+    if (udp_key.size() != 64)
+      throw std::runtime_error("Per-VM browser UDP key missing");
+    BrowserUDP udp(udp_key, vm_name);
     for (;;) {
+      // CDP and UDP input run against exactly the same hot tab on one thread.
+      // Do not race a second CDP connection from an auxiliary process.
+      try { udp.tick(c); }
+      catch (const std::exception &e) {
+        std::cerr << "UDP capture: " << e.what() << std::endl;
+      }
+      pollfd sources[2]{{server, POLLIN, 0}, {udp.fd(), POLLIN, 0}};
+      int nready = poll(sources, 2, 70);
+      if (nready < 0) continue;
+      if (sources[1].revents & POLLIN) {
+        for (int i = 0; i < 24; ++i) {
+          try { udp.receive(c); }
+          catch (const std::exception &e) {
+            std::cerr << "UDP control: " << e.what() << std::endl;
+            break;
+          }
+        }
+      }
+      if (!(sources[0].revents & POLLIN)) continue;
       int fd = accept4(server, nullptr, nullptr, SOCK_CLOEXEC);
-      if (fd < 0)
-        continue;
+      if (fd < 0) continue;
       timeval timeout{15, 0};
       setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof timeout);
       setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof timeout);
@@ -312,13 +351,16 @@ int main(int argc, char **argv) {
         else if (r.path == "/read")
           out = c.eval("({url:location.href,title:document.title,text:document."
                        "body.innerText.slice(0,12000)})");
-        else if (r.path == "/screenshot.png") {
+        else if (r.path == "/screenshot.png" ||
+                 r.path == "/screenshot.jpg") {
           Val p = Val::object();
-          p["format"] = "png";
+          const bool jpeg = r.path == "/screenshot.jpg";
+          p["format"] = jpeg ? "jpeg" : "png";
+          if (jpeg) p["quality"] = 72;
           p["captureBeyondViewport"] = false;
           response(fd, 200,
                    unbase64(str(c.call("Page.captureScreenshot", p), "data")),
-                   "image/png");
+                   jpeg ? "image/jpeg" : "image/png");
           close(fd);
           continue;
         } else if (r.path == "/navigate" || r.path == "/snapshot") {
@@ -370,6 +412,51 @@ int main(int argc, char **argv) {
             p["button"] = "left";
             p["clickCount"] = 1;
             c.call("Input.dispatchMouseEvent", p);
+          }
+          out = snapshot();
+        } else if (r.path == "/pointer") {
+          // Browser viewport is fixed at 1440x900 CDP CSS pixels.
+          auto px = body.find("x"), py = body.find("y");
+          if (!px || !py || px->type != Val::NUM || py->type != Val::NUM)
+            throw std::runtime_error("Numeric pointer coordinates required");
+          const double x = px->asNum(), y = py->asNum();
+          if (!std::isfinite(x) || !std::isfinite(y) ||
+              x < 0 || x >= 1440 || y < 0 || y >= 900)
+            throw std::runtime_error("Pointer outside browser viewport");
+          std::string action = value("action");
+          if (action.empty()) action = "tap";
+          std::string button = value("button");
+          if (button.empty()) button = "left";
+          if (button != "left" && button != "right" && button != "middle")
+            throw std::runtime_error("Unsupported pointer button");
+          if (action != "tap" && action != "move" && action != "down" &&
+              action != "up")
+            throw std::runtime_error("Unsupported pointer action");
+          bool held = body.find("held") && body.find("held")->asBool();
+          auto mouse = [&](const std::string &type) {
+            Val p = Val::object();
+            p["type"] = type;
+            p["x"] = x;
+            p["y"] = y;
+            p["button"] =
+                type == "mouseMoved" && !held ? "none" : button;
+            p["buttons"] = (type == "mousePressed" ||
+                            (type == "mouseMoved" && held))
+                               ? (button == "left" ? 1 : button == "right" ? 2 : 4)
+                               : 0;
+            p["clickCount"] = 1;
+            c.call("Input.dispatchMouseEvent", p);
+          };
+          if (action == "tap") {
+            mouse("mouseMoved");
+            mouse("mousePressed");
+            mouse("mouseReleased");
+          } else if (action == "move") {
+            mouse("mouseMoved");
+          } else if (action == "down") {
+            mouse("mousePressed");
+          } else {
+            mouse("mouseReleased");
           }
           out = snapshot();
         } else if (r.path == "/type") {

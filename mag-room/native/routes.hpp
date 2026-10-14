@@ -375,6 +375,7 @@ static void route(int fd, Req &r, bool bridge = false) {
         std::lock_guard<std::mutex> lk(VM_IP_MTX);
         VM_IP_CACHE.erase(vm);
       }
+      {std::lock_guard<std::mutex> privilege(ROOT_MTX); ROOT_ENABLED.erase(vm);}
       agents_event();
       send_json(fd, 200, "{\"ok\":true}");
       return;
@@ -386,6 +387,37 @@ static void route(int fd, Req &r, bool bridge = false) {
     auto v = body.find(key);
     return v ? v->asStr(fallback) : fallback;
   };
+  // Owner-controlled, per-VM ephemeral root lease. Never forwarded on the
+  // VM bridge or enabled merely by a model asking for privilege.
+  if(m=="POST" && path.rfind("/api/agents/",0)==0 &&
+     path.size()>17 && path.compare(path.size()-5,5,"/root")==0){
+    if(!has_json || !body.find("on") || body.find("on")->type!=Val::BOOL){
+      error_json(fd,400,"Boolean on required");return;
+    }
+    const std::string id=url_decode(path.substr(12,path.size()-17));
+    const int idx=agent_index(id);
+    if(idx<0){error_json(fd,404,"Unknown bot");return;}
+    const std::string vm=bot_field(idx,"vm");
+    const bool enable=body.find("on")->asBool();
+    std::lock_guard<std::mutex> grant(ROOT_MTX);
+    if(!enable) ROOT_ENABLED.erase(vm); // stop new model tools first
+    if(enable && ROOT_ENABLED.count(vm)){
+      send_json(fd,200,"{\"root_enabled\":true}");return;
+    }
+    std::vector<std::string> argv{"sudo","-n",ROOT_CTL,enable?"on":"off",vm};
+    if(enable)argv.push_back(bridge_token());
+    auto result=run_argv(argv,65,4096);
+    // OFF script accepts two arguments, ON accepts three. Do not pass an
+    // empty token as a third argument to the privileged wrapper.
+    if(result.code){
+      error_json(fd,502,"Guest root lease change failed: "+
+                        result.out.substr(0,400));return;
+    }
+    if(enable) ROOT_ENABLED.insert(vm);
+    agents_event();
+    send_json(fd,200,enable?"{\"root_enabled\":true}":"{\"root_enabled\":false}");
+    return;
+  }
   if (m == "POST" && path == "/api/agents") {
     if (!has_json || trim(str("name")).empty() || str("name").size() > 40) {
       error_json(fd, 400, "Agent name required (1-40 bytes)");

@@ -375,7 +375,7 @@ static void route(int fd, Req &r, bool bridge = false) {
         std::lock_guard<std::mutex> lk(VM_IP_MTX);
         VM_IP_CACHE.erase(vm);
       }
-      {std::lock_guard<std::mutex> privilege(ROOT_MTX); ROOT_ENABLED.erase(vm);}
+      {std::lock_guard<std::mutex> privilege(ROOT_MTX); ROOT_ENABLED.erase(vm);ROOT_REVOKE_PENDING.erase(vm);}
       agents_event();
       send_json(fd, 200, "{\"ok\":true}");
       return;
@@ -400,6 +400,9 @@ static void route(int fd, Req &r, bool bridge = false) {
     const std::string vm=bot_field(idx,"vm");
     const bool enable=body.find("on")->asBool();
     std::lock_guard<std::mutex> grant(ROOT_MTX);
+    if(enable && ROOT_REVOKE_PENDING.count(vm)){
+      error_json(fd,409,"Previous VM root lease revocation is still pending");return;
+    }
     if(!enable) ROOT_ENABLED.erase(vm); // stop new model tools first
     if(enable && ROOT_ENABLED.count(vm)){
       send_json(fd,200,"{\"root_enabled\":true}");return;
@@ -407,12 +410,13 @@ static void route(int fd, Req &r, bool bridge = false) {
     std::vector<std::string> argv{"sudo","-n",ROOT_CTL,enable?"on":"off",vm};
     if(enable)argv.push_back(bridge_token());
     auto result=run_argv(argv,65,4096);
-    // OFF script accepts two arguments, ON accepts three. Do not pass an
-    // empty token as a third argument to the privileged wrapper.
     if(result.code){
+      if(!enable) ROOT_REVOKE_PENDING.insert(vm);
+      agents_event();
       error_json(fd,502,"Guest root lease change failed: "+
                         result.out.substr(0,400));return;
     }
+    ROOT_REVOKE_PENDING.erase(vm);
     if(enable) ROOT_ENABLED.insert(vm);
     agents_event();
     send_json(fd,200,enable?"{\"root_enabled\":true}":"{\"root_enabled\":false}");

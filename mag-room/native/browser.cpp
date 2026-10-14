@@ -381,30 +381,6 @@ int main(int argc, char **argv) {
                         "use the authorized Brave web_search tool for research "
                         "or ask the human to complete any permitted verification.";
         }
-        else if (r.path == "/terminal/input") {
-          if (r.method != "POST") throw std::runtime_error("POST required");
-          std::string text = value("text");
-          if (text.size() > 500) throw std::runtime_error("Terminal input too long");
-          bool require_root = body.find("require_root") && body.find("require_root")->asBool();
-          if(require_root && !udp.terminal_root())
-            throw std::runtime_error("Root access is OFF in this VM");
-          uint64_t cursor = udp.terminal_cursor();
-          if (body.find("enter") && body.find("enter")->asBool()) text += "\r";
-          udp.terminal_input(text,require_root);
-          out["cursor"] = (double)cursor;
-          out["user"] = udp.terminal_root()?"root":"bot";
-          out["sent"] = true;
-        } else if (r.path == "/terminal/output") {
-          uint64_t after = 0;
-          std::string raw = value("after");
-          if (!raw.empty()) {
-            if (raw.find_first_not_of("0123456789") != std::string::npos)
-              throw std::runtime_error("Invalid output cursor");
-            after = std::stoull(raw);
-          }
-          (void)udp.terminal_root();
-          out = udp.terminal_read(after);
-        }
         else if (r.path == "/screenshot.png" ||
                  r.path == "/screenshot.jpg") {
           Val p = Val::object();

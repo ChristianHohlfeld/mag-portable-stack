@@ -184,3 +184,56 @@ not change the first bot's tab. The status endpoint reports each VM and viewer
 count; a VM's age must remain below a few seconds when its controller is up.
 A CI-green build proves protocol compilation, not actual Tailscale ICE
 connectivity or runtime VM screenshot FPS.
+
+## MAG operator UX and isolated live consoles (14 October 2026)
+
+The room is a three-column, dark workbench. The left (bots) and right
+(browser/terminal) rails resize independently by dragging their inner
+edge; either can be collapsed from the header. Widths and desktop collapse
+state persist in browser local storage. On narrow screens, one rail can be
+opened at a time without obscuring the main chat controls.
+
+Each bot still owns its **own guest VM, Chromium profile, and terminal**.
+Selecting a bot chooses both its hot browser and its VM terminal. The
+console is not a host shell. The only interactive console transport is the
+same authenticated VM-specific UDP path as the browser, relayed over a
+separate reliable WebRTC DataChannel named `console` to that selected
+bot's controller. Commands run with the guest's unprivileged bot account,
+have a 12-second timeout, a 640-byte command cap, and bounded output. The
+older duplicate HTTP console endpoint is intentionally absent.
+
+WebRTC teardown now closes abandoned offers and disconnected peers, sends
+a signed unsubscribe as soon as the last viewer disconnects, and stops
+screenshot capture while preserving Chromium and all VM disks. Browser
+controller restarts carry an authenticated instance nonce to reset frame
+sequence tracking without discarding the open tab. The Go relay holds at
+most one incomplete JPEG per VM and rejects old or expired fragments;
+the frontend decodes onto a canvas, closes each ImageBitmap, and discards
+incomplete frames and console fragment buffers on disconnect. Browser
+navigation automatically expands plain hostnames such as `example.com`
+to `https://example.com`; explicit HTTP(S) URLs remain intact.
+
+For a new user request the selected bot immediately shows a pulsing,
+visible status, then `Denkt nach`, tool activity and progressively
+formatted/sanitized Markdown as the model streams. A backend failure or
+empty generation is reported in chat rather than leaving a name-only
+message.
+
+Runtime smoke-check on MAG after installing the release:
+
+1. Select bot A, open `example.com`, click the page, type into a field,
+   press Enter and Backspace. Verify the same browser remains open during
+   panel collapse/expand and that `/api/browser-live/status` reports viewers.
+2. Run `pwd`, `whoami` in bot A's terminal, then switch to bot B and run
+   them again. Both must execute as `bot` in *different* guest VMs.
+3. Start a long bot task: pulsing progress must appear immediately, tool
+   activity must update, Markdown formatting must appear during the stream,
+   and the placeholder must disappear on completion or error.
+4. Close the right sidebar and verify the viewer count falls to zero and
+   UDP guest screenshot sending stops promptly. Switch back: the browser
+   profile, previous tab, and VM filesystem must be unchanged.
+5. `sudo bash ops/health.sh` and
+   `curl -fsS http://127.0.0.1:8766/api/browser-live/status`
+   check services and VM heartbeats. GitHub CI cannot prove ICE/network
+   connectivity or native guest keyboards on the actual MAG host.
+

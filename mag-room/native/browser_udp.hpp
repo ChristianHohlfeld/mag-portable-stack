@@ -20,7 +20,7 @@
 class BrowserUDP {
   int fd_ = -1;
   sockaddr_in server_{};
-  std::string secret_, vm_;
+  std::string secret_, vm_, nonce_;
   uint32_t frame_seq_ = 0, ctrl_seq_ = 0;
   std::thread console_worker_;
   std::atomic<bool> console_busy_{false};
@@ -93,7 +93,7 @@ class BrowserUDP {
   }
 public:
   BrowserUDP(const std::string &secret, const std::string &vm)
-      : secret_(secret), vm_(vm) {
+      : secret_(secret), vm_(vm), nonce_(mag::randomhex()) {
     fd_ = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
     if (fd_ < 0) throw std::runtime_error("Browser UDP socket failed");
     sockaddr_in local{};
@@ -250,7 +250,7 @@ public:
     const auto now = std::chrono::steady_clock::now();
     if (now - hello_ >= std::chrono::seconds(1)) {
       hello_ = now;
-      send(1, 0, 0, 1, vm_);
+      send(1, 0, 0, 1, vm_ + "|" + nonce_);
     }
     if (now - subscribed_ > std::chrono::seconds(8) ||
         now - frame_ < std::chrono::milliseconds(180)) return;

@@ -528,15 +528,37 @@ int main(int argc, char **argv) {
                                         : "location.reload()");
           out = snapshot();
         } else if (r.path == "/key") {
-          auto key = value("key");
-          Val p = Val::object();
-          p["type"] = "keyDown";
-          p["key"] = key;
-          p["code"] = key;
-          c.call("Input.dispatchKeyEvent", p);
-          p["type"] = "keyUp";
-          c.call("Input.dispatchKeyEvent", p);
-          out = snapshot();
+          const auto key = value("key");
+          static const std::map<std::string,int> special{
+            {"Enter",13},{"Backspace",8},{"Tab",9},{"Escape",27},
+            {"Delete",46},{"ArrowLeft",37},{"ArrowUp",38},
+            {"ArrowRight",39},{"ArrowDown",40},{"Home",36},{"End",35},
+            {"PageUp",33},{"PageDown",34},{"Insert",45}};
+          int vk=0;
+          auto it=special.find(key);
+          if(it!=special.end())vk=it->second;
+          else if(key.size()==1&&isalnum((unsigned char)key[0]))
+            vk=toupper((unsigned char)key[0]);
+          else throw std::runtime_error("Unsupported browser key");
+          Val p=Val::object();
+          p["type"]="keyDown";
+          p["key"]=key;
+          p["code"]=key;
+          p["windowsVirtualKeyCode"]=vk;
+          p["nativeVirtualKeyCode"]=vk;
+          if(key=="Enter")p["text"]="\r";
+          else if(key=="Tab")p["text"]="\t";
+          int mods=0;
+          if(body.find("alt")&&body.find("alt")->asBool())mods|=1;
+          if(body.find("ctrl")&&body.find("ctrl")->asBool())mods|=2;
+          if(body.find("meta")&&body.find("meta")->asBool())mods|=4;
+          if(body.find("shift")&&body.find("shift")->asBool())mods|=8;
+          p["modifiers"]=mods;
+          c.call("Input.dispatchKeyEvent",p);
+          p["type"]="keyUp";
+          p["text"]="";
+          c.call("Input.dispatchKeyEvent",p);
+          out=snapshot();
         } else {
           response(fd, 404, "{\"error\":\"Unknown browser route\"}");
           close(fd);

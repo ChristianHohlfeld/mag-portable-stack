@@ -60,7 +60,8 @@ int main() {
           if(client>=0)close(client);
           client=next;
           const char notice[]="\r\n[MAG VM root shell · temporary access]\r\n";
-          (void)send(client,std::string("O")+std::string(notice,sizeof(notice)-1),MSG_NOSIGNAL|MSG_DONTWAIT);
+          const std::string packet=std::string("O")+std::string(notice,sizeof(notice)-1);
+          (void)send(client,packet.data(),packet.size(),MSG_NOSIGNAL|MSG_DONTWAIT);
         }
       }
     }
@@ -77,9 +78,10 @@ int main() {
       for(int i=0;i<16;i++){
         std::string output=shell.output();
         if(output.empty())break;
-        if(client>=0&&send(client,std::string("O")+output,
-              MSG_DONTWAIT|MSG_NOSIGNAL)<0&&errno!=EAGAIN){
-          close(client);client=-1;
+        if(client>=0){
+          std::string packet="O"+output;
+          if(send(client,packet.data(),packet.size(),MSG_DONTWAIT|MSG_NOSIGNAL)<0 &&
+             errno!=EAGAIN){close(client);client=-1;}
         }
       }
     }

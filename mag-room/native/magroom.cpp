@@ -889,8 +889,11 @@ static const char *ROOM_RULES =
     "Deine ERINNERUNG (dauerhaft, raumunabhaengig; ergaenze sie mit "
     "remember):\n{memory}\n"
     "Wenn du Werkzeuge benutzt hast, schliesse IMMER mit einer kurzen "
-    "sichtbaren Antwort an den Raum ab. Der Raumverlauf mit Sprecherlabels "
-    "folgt.";
+    "sichtbaren Antwort an den Raum ab. Falls nach erfolgreicher "
+    "Werkzeugaktion ein konkreter weiterer Schritt zum Nutzerziel noetig "
+    "ist, beende mit [[MAG:WEITER]], andernfalls mit [[MAG:ENDE]]. "
+    "Marker sind interne Steuerzeichen und werden vor dem Speichern "
+    "entfernt. Der Raumverlauf mit Sprecherlabels folgt.";
 static const char *AUTOTALK_RULES =
     "\nDies ist die Fortsetzung eines bereits vom Nutzer beauftragten "
     "Arbeitsvorgangs. Reagiere NICHT auf die letzte Botnachricht als neue "

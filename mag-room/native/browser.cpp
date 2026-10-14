@@ -451,11 +451,40 @@ int main(int argc, char **argv) {
                                         : "location.reload()");
           out = snapshot();
         } else if (r.path == "/key") {
-          auto key = value("key");
+          const std::string key = value("key"), code = value("code");
+          if (key.empty() || key.size() > 64 || code.size() > 64)
+            throw std::runtime_error("Invalid keyboard event");
+          const auto flag = [&](const char *field) {
+            const Val *v = body.find(field);
+            return v && v->type == Val::BOOL && v->asBool();
+          };
+          int modifiers = (flag("alt") ? 1 : 0) |
+                          (flag("ctrl") ? 2 : 0) |
+                          (flag("meta") ? 4 : 0) |
+                          (flag("shift") ? 8 : 0);
           Val p = Val::object();
           p["type"] = "keyDown";
           p["key"] = key;
-          p["code"] = key;
+          p["code"] = code.empty() ? key : code;
+          p["modifiers"] = modifiers;
+          int vk = 0;
+          if (key == "Enter") vk = 13;
+          else if (key == "Tab") vk = 9;
+          else if (key == "Backspace") vk = 8;
+          else if (key == "Escape") vk = 27;
+          else if (key == "Delete") vk = 46;
+          else if (key == "ArrowLeft") vk = 37;
+          else if (key == "ArrowUp") vk = 38;
+          else if (key == "ArrowRight") vk = 39;
+          else if (key == "ArrowDown") vk = 40;
+          else if (key == "Home") vk = 36;
+          else if (key == "End") vk = 35;
+          else if (key.size() == 1 && (unsigned char)key[0] < 128)
+            vk = std::toupper((unsigned char)key[0]);
+          if (vk) p["windowsVirtualKeyCode"] = vk;
+          if (key.size() == 1 && !flag("ctrl") && !flag("alt") &&
+              !flag("meta"))
+            p["text"] = key;
           c.call("Input.dispatchKeyEvent", p);
           p["type"] = "keyUp";
           c.call("Input.dispatchKeyEvent", p);

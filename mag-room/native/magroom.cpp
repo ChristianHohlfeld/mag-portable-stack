@@ -1194,6 +1194,24 @@ static HttpResp browser_call(const std::string &ip, int port,
 static std::mutex BROWSER_START_MTX;
 static std::string ensure_browser(const std::string &vm) {
   std::lock_guard<std::mutex> start(BROWSER_START_MTX);
+  // Each VM owns a unique cryptographic UDP key. The room bridge token
+  // must not permit one bot to impersonate another bot's video/input.
+  if (vm.empty() || vm.size() > 32 ||
+      vm.find_first_not_of("abcdefghijklmnopqrstuvwxyz0123456789-") !=
+          std::string::npos)
+    throw std::runtime_error("Invalid browser VM identity");
+  const std::string keydir = STATE_DIR + "/browser-udp-keys";
+  std::filesystem::create_directories(keydir);
+  chmod(keydir.c_str(), 0700);
+  const std::string keypath = keydir + "/" + vm + ".key";
+  bool has_key = false;
+  std::string udp_key = trim(read_file(keypath, &has_key));
+  if (!has_key || udp_key.size() != 64) {
+    udp_key = mag::randomhex() + mag::randomhex();
+    if (!write_file_atomic(keypath, udp_key))
+      throw std::runtime_error("Could not persist VM UDP secret");
+    chmod(keypath.c_str(), 0600);
+  }
   auto ip = vm_ip(vm);
   if (ip.empty())
     ip = vm_ip(vm, true);
@@ -1203,7 +1221,7 @@ static std::string ensure_browser(const std::string &vm) {
   if (status.ok && status.status == 200) {
     Val state;
     if (mj::parse(status.body, state) && state.find("udp_transport") &&
-        state.find("udp_transport")->asStr() == "MGB1")
+        state.find("udp_transport")->asStr() == "MGB2")
       return ip;
     // Old controller from a previous release: attach the new controller
     // to the same already-running Chromium without touching its profile.
@@ -1254,6 +1272,9 @@ static std::string ensure_browser(const std::string &vm) {
           "printf %s " + mag::quote(token) +
           " > /home/bot/browserd/token && "
           "chmod 600 /home/bot/browserd/token && "
+          "printf %s " + mag::quote(udp_key) +
+          " > /home/bot/browserd/udp-key && "
+          "chmod 600 /home/bot/browserd/udp-key && "
           "/home/bot/browserd/mag-browser --daemon",
       35);
   if (launch.code) {

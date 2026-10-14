@@ -348,8 +348,8 @@ Server-side diagnostics (without resetting the bot):
 
 ```bash
 sudo magbot status
-sudo magbot exec agent2 -- "ps -u bot -o pid,ppid,stat,comm | grep -E 'mag-browser|chrom' || true"
-sudo magbot exec agent2 -- "tail -n 20 /home/bot/browserd/browser.log 2>/dev/null || true"
+sudo magbot exec agent2 -- /bin/bash -lc "ps -u bot -o pid,ppid,stat,comm | grep -E 'mag-browser|chrom' || true"
+sudo magbot exec agent2 -- /bin/bash -lc "tail -n 20 /home/bot/browserd/browser.log 2>/dev/null || true"
 curl -fsS http://127.0.0.1:8766/api/browser-live/status
 ```
 

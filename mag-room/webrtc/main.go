@@ -109,8 +109,7 @@ func (r *relay) receive() {
   p,err:=authenticate(buf[:n],r.secret);if err!=nil {continue}
   if p.kind==1 {
    vm:=string(p.body)
-   if len(vm)<1||len(vm)>60||strings.ContainsAny(vm,"/\ 
-	") {continue}
+   if len(vm)<1||len(vm)>60||strings.ContainsAny(vm,"/\\ \n\r\t") {continue}
    r.mu.Lock()
    b:=r.bots[vm]
    if b==nil{b=&bot{vm:vm,peers:make(map[*peer]struct{})};r.bots[vm]=b}
@@ -243,8 +242,7 @@ func main(){
  mux:=http.NewServeMux()
  mux.HandleFunc("POST /offer",relay.offer)
  mux.HandleFunc("GET /health",func(w http.ResponseWriter,_ *http.Request){
-  w.Header().Set("Content-Type","text/plain");_,_=w.Write([]byte("ok
-"))
+  w.Header().Set("Content-Type","text/plain");_,_=w.Write([]byte("ok\n"))
  })
  server:=&http.Server{Addr:"127.0.0.1:18784",Handler:mux,ReadHeaderTimeout:5*time.Second}
  log.Printf("MAG browser WebRTC/UDP gateway ready: localhost:18784 and UDP :18783")

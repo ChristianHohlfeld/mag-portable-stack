@@ -1,3 +1,4 @@
-models/** filter=lfs diff=lfs merge=lfs -text
-open-webui-data/** filter=lfs diff=lfs merge=lfs -text
-config/*.db filter=lfs diff=lfs merge=lfs -text
+* text=auto
+*.sh text eol=lf
+*.cpp text eol=lf
+*.hpp text eol=lf

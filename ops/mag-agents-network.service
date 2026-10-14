@@ -1,0 +1,10 @@
+[Unit]
+Description=Isolated MAG VM access policy
+After=libvirtd.service
+Before=mag-120.service
+[Service]
+Type=oneshot
+ExecStart=/opt/mag-stack/current/ops/firewall.sh
+RemainAfterExit=yes
+[Install]
+WantedBy=multi-user.target

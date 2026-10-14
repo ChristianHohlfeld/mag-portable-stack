@@ -1,183 +1,107 @@
-# MAG Portable Stack
+# MAG — native agent server
 
-Portable, self-contained MAG stack snapshot for transfer to a new machine.
+One repository, one deployed application stack. No Docker, Ollama, Open WebUI,
+ComfyUI, Python room server or PM2 orchestration.
 
-## GitHub Export Note
+MAG keeps one existing **GPT-OSS-120B / llama.cpp** instance warm on the host.
+Every room bot owns a **KVM virtual machine**, a persistent **Chromium browser**,
+a dedicated **Gitea administrator account**, files and durable memories.
+The room, scheduler, browser controller and VM lifecycle are **C++17**.
+The frontend is plain HTML/CSS/JavaScript with local Markdown rendering.
 
-This GitHub copy is infra-first and excludes large runtime payloads due Git LFS quota limits:
+Canonical source on mag: `/home/chris/mag-stack`.
 
-- `models/`
-- `open-webui-data/.open-webui`
-- `config/comfyui-gpu1.db`, `config/comfyui-gpu2.db`, `config/comfyui.db`
+Production room: **https://mag.tail3e02ae.ts.net:8446/** (Tailscale).
+Gitea and the S23 have their own independent endpoints and services.
 
-Use `scripts/sync-from-mag.sh` (and optional `scripts/sync-protected-from-mag.sh`) to reconstruct full runtime data.
+## Source and runtime
 
-Included runtime stack:
+| Source | Runtime responsibility |
+| --- | --- |
+| `mag-room/native/magroom.cpp`, `routes.hpp` | HTTP/SSE, shared files, tools, model streaming, server-owned scheduler |
+| `mag-room/native/browser.cpp` | Persistent Chromium/CDP in each guest; browser API requires authentication |
+| `mag-room/native/vm.cpp` | Guarded spawn/despawn, guest execution, quotas, dedicated Git accounts |
+| `mag-room/native/common.hpp`, `json.hpp` | Process, HTTP and JSON primitives |
+| `mag-room/web/index.html` | Chat, code rendering, files/canvas, browser controls, microphone, local preferences |
+| `ops/` | Versioned deployment, systemd units, health and rollback |
+| `mag-room/tests/` | Isolated regression tests; Python is a test driver, not a production server |
 
-- `nginx` reverse proxy with `/comfyui` regression-safe routing
-- `open-webui`
-- `ollama`
-- `comfyui-flux` (port 8187)
-- `comfyui-wan` (port 8188)
+Application releases live at `/opt/mag-stack/releases/<release>`; `current`
+selects the active release. Room data lives at `/var/lib/magbot/room`.
+VM overlays/registry live at `/var/lib/libvirt/images/magbot/bots`, and the
+read-only shared backing disk stays at `base/golden.qcow2`.
+Model weights and credentials are runtime data and never belong in Git.
 
-Snapshot metadata:
+## Build and verify
 
-- Captured: `2026-05-15`
-- Manifest timestamp: `2026-05-15T23:15:17+02:00`
-- ComfyUI commit: `c9589f29`
-- Original local full bundle size: ~`62G`
-- Original local models payload: ~`60G` (ComfyUI models + Ollama model store)
-
-## 1) What Is Included (GitHub Infra Bundle)
-
-- Infra code: `docker-compose.yml`, `Dockerfile`, `comfyui/Dockerfile`, Nginx config, scripts, tests
-- Full ComfyUI runtime tree from production (`comfyui/`, including custom nodes)
-- Workflow blueprints (`workflows/blueprints`, currently 66 blueprint files)
-- Production config mirrors (`config/systemd-live`, `config/nginx-live`, `config/openwebui-local-config`, `config/ops`, `config/bin`)
-- Audit manifests and checksums (`config/manifests/*.txt`)
-
-## 2) Ports And Routing
-
-Default host ports:
-
-- `80` -> `nginx`
-- `3000` -> `open-webui` (container `8080`)
-- `11434` -> `ollama`
-- `8187` -> `comfyui-flux`
-- `8188` -> `comfyui-wan`
-
-Nginx route behavior:
-
-- `/` -> Open WebUI
-- `/comfyui` -> HTTP redirect to `/comfyui/`
-- `/comfyui/*` -> proxied to FLUX ComfyUI (`8187`)
-
-The redirect is intentionally enforced to prevent the historical `/comfyui` 404 regression.
-
-## 3) Host Requirements
-
-- Linux host
-- Docker Engine + Compose (`docker compose` or `docker-compose`)
-- NVIDIA driver + NVIDIA Container Toolkit for real FLUX/WAN generation
-- Recommended free disk: `>120G` (bundle + image layers + generated outputs)
-
-## 4) Quick Start
+Ubuntu 24.04 x86_64: C++ compiler, CMake, Ninja, OpenSSL development headers.
 
 ```bash
-cd /home/chris/hrm_flashrenderer/mag-portable-stack
-export DOCKER_RUNTIME=nvidia
-./scripts/stack-up.sh
-./scripts/health.sh
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j 4
+python3 mag-room/tests/test_native.py
 ```
 
-Run full regression/E2E suite:
+Local voice: pinned whisper.cpp (see `ops/whisper.lock`), FFmpeg and a multilingual
+Whisper model. TTS uses local espeak-ng; OCR uses local Tesseract (`deu+eng`).
+`ops/bootstrap-voice.sh` builds the pinned transcriber without containers.
+
+## Deploy
+
+The host must already provide libvirt/KVM, an immutable prepared golden image,
+Gitea, the warm llama.cpp endpoint and Tailscale. The deployment preserves their
+existing data and does not reload the inference model.
 
 ```bash
-./tests/full-e2e.sh
+sudo bash ops/deploy.sh
+sudo bash ops/health.sh
 ```
 
-If ports are occupied:
+The installer snapshots the previous unit, native lifecycle and room state under
+`/var/backups/mag-stack/<release>`, installs a versioned release and checks
+readiness before retiring the old service entries. Keep `/etc/default/mag-room`
+(root-only) for the existing Brave key. The primary UI stays loopback-only; the
+VM bridge binds only the VM gateway. Gitea VM access is a socket proxy bound to
+`192.168.122.1:3001`, with each bot's own account credentials.
+
+Rollback selects the previous executable/unit, preserving subsequent room data:
 
 ```bash
-export HOST_HTTP_PORT=18080
-export HOST_OPENWEBUI_PORT=13000
-export HOST_OLLAMA_PORT=11444
-export HOST_COMFY_FLUX_PORT=18187
-export HOST_COMFY_WAN_PORT=18188
+sudo bash ops/rollback.sh RELEASE_ID
 ```
 
-Stop stack:
+A room-state restore is deliberately separate: stop the room, restore the saved
+state directory from that release's backup, then start it. Do not overwrite
+current data casually during an executable rollback.
 
-```bash
-./scripts/stack-down.sh
-```
+## Operating behavior
 
-## 5) Sync From Production MAG
+- Autonomy runs on the server without browser viewers, and its enabled/paused
+  state survives a service restart. Human turns queue ahead of the next automatic
+  turn; the single inference slot is never duplicated.
+- Stop disables autonomy and cancels the active model stream/queued turns.
+- Creating a bot uses an existing warm golden disk with a private qcow2 overlay,
+  cloud-init identity and DHCP identification by MAC. Admission limits are checked
+  before provisioning. No browser installation occurs per spawn.
+- Each guest runs commands as `bot`. Its own Git administrator credentials are
+  provisioned only inside that guest; deletion revokes that dedicated account.
+- Agent deletion checks its registry ownership, destroys only its own VM and
+  private files, and never removes the shared backing disk or another VM.
+- Room reset purges shared files/transcript/published UI while preserving bot
+  memories. It does not destroy bots.
+- Shared HTML previews run in sandboxed iframes. Bots can download/publish the
+  room frontend and verify it in their own browser.
+- Microphone transcription is local; the existing model may correct context when
+  its inference slot is free. The result is editable and never sent automatically.
 
-Default source: `chris@mag.tail3e02ae.ts.net`
+## Practical limits
 
-Full sync (default, includes all ComfyUI models + full Ollama store):
+GPT-OSS here is a text model. Image text can be read with OCR and browser content
+with CDP; this does not provide a general multimodal vision model. Local espeak-ng
+is functional speech, not a natural neural voice. Browser display uses bounded
+snapshot polling; it is not a video stream. Real speech quality requires personal
+DE/EN samples. The model's CPU inference remains the dominant response latency.
 
-```bash
-MAG_HOST=mag.tail3e02ae.ts.net MAG_USER=chris ./scripts/sync-from-mag.sh --full
-```
-
-Minimal sync (only required FLUX/WAN test models):
-
-```bash
-MAG_HOST=mag.tail3e02ae.ts.net MAG_USER=chris ./scripts/sync-from-mag.sh --minimal-models
-```
-
-Protected sync (root-owned files via sudo tar; requires password env):
-
-```bash
-export MAG_HOST=mag.tail3e02ae.ts.net
-export MAG_USER=chris
-export MAG_SUDO_PASSWORD='...'
-./scripts/sync-protected-from-mag.sh
-```
-
-## 6) Verification And Regression
-
-Targeted `/comfyui` route regression check:
-
-```bash
-./tests/regression-comfyui-route.sh http://127.0.0.1
-```
-
-What `tests/full-e2e.sh` verifies:
-
-- Compose containers up and running
-- Ollama API health
-- Open WebUI API health
-- ComfyUI FLUX/WAN queue API health
-- `/comfyui` redirect + path routing regression
-- FLUX image generation execution
-- WAN video generation execution
-- GPU snapshot via `nvidia-smi`
-
-## 7) Transfer Packaging
-
-Create compressed transfer artifact:
-
-```bash
-./scripts/package-bundle.sh
-```
-
-This writes `dist/mag-portable-stack-<timestamp>.tar.zst`.
-
-## 8) GitHub Push Notes
-
-- This is a very large bundle (models + data). Plain GitHub push usually fails without LFS.
-- Use Git LFS or object storage for large folders (`models/`, `open-webui-data/`).
-- If pushing to any shared remote, scrub sensitive material first:
-
-```bash
-./scripts/sanitize-for-git.sh
-```
-
-Also review `config/nginx-live/tailscale/` and other mirrored production config before publishing.
-
-## 9) MAG Agent Stack (Bots mit eigener VM und eigenem Web-Zugriff)
-
-Zusätzlich zum generativen Stack enthält dieses Repository den **MAG Agent Stack**:
-mehrere Bots auf einer einzigen Modellinstanz, jeder mit **eigener KVM-VM**, eigenem
-Dateisystem und **eigenem Brave-Web-Zugriff (standardmäßig an)**.
-
-- `magbot/` — KVM/Playwright-Lebenszyklus (`spawn`/`despawn`/`status`/`exec`), read-only
-  Golden Image mit qcow2-Overlay je Bot.
-- `mag-room/` — warmes Gruppenchat-Frontend: Bots chatten untereinander, führen Befehle
-  in ihrer VM aus (`run_command`) und suchen im Web (`web_search`, Brave, default an).
-- `docs/MAG_AGENT_STACK_CONTRACT.md` — gemeinsamer Architektur-/Handoff-Contract.
-- `docs/MAG_AGENT_STACK_IMPLEMENTATION.md` — tatsächlich umgesetzter und verifizierter Stand.
-
-## 10) Reference Docs
-
-- `docs/ARCHITECTURE.md`
-- `docs/MODEL_MANIFEST.md`
-- `docs/FULL_CAPTURE.md`
-- `docs/TESTING.md`
-- `docs/MAG_AGENT_STACK_CONTRACT.md`
-- `docs/MAG_AGENT_STACK_IMPLEMENTATION.md`
-- `magbot/README.md`
-- `mag-room/README.md`
+See `docs/CONSOLIDATION_PLAN.md` and `docs/VALIDATION.md` for the migration and
+measured results. Historical stacks are removed from the active tree and remain
+only in pre-migration backups and Git history.

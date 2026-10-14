@@ -1,0 +1,8 @@
+[Unit]
+Description=Observe MAG service and bot health
+[Timer]
+OnBootSec=90s
+OnUnitActiveSec=60s
+Unit=mag-stack-check.service
+[Install]
+WantedBy=timers.target

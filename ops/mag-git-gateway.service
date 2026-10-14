@@ -1,0 +1,11 @@
+[Unit]
+Description=Forward VM Git requests to loopback Gitea
+Requires=mag-git-gateway.socket
+After=gitea.service
+[Service]
+ExecStart=/usr/lib/systemd/systemd-socket-proxyd 127.0.0.1:3000
+DynamicUser=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+NoNewPrivileges=yes

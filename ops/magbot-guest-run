@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+set -euo pipefail
+[[ $# == 2 && $1 =~ ^agent[0-9]+$ && ${#2} -le 8000 ]] || { echo 'Invalid guest invocation' >&2; exit 64; }
+exec /usr/local/bin/magbot exec "$1" -- /bin/bash -lc "$2"

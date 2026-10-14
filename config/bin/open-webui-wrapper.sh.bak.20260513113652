@@ -1,3 +1,0 @@
-#!/bin/bash
-# Stable wrapper: run upstream open-webui directly (no runtime patch injection)
-exec /home/chris/.local/bin/uvx --python 3.11 open-webui@latest serve --host 0.0.0.0 --port 3000 "$@"

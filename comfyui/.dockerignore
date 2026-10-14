@@ -1,8 +1,0 @@
-.git
-.github
-.ci
-__pycache__
-models
-output
-temp
-venv

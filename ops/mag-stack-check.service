@@ -1,0 +1,8 @@
+[Unit]
+Description=Read-only MAG native stack health check
+After=mag-120.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/mag-stack/current/ops/health.sh
+TimeoutStartSec=60

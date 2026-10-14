@@ -1,0 +1,434 @@
+// Persistent Chromium controller. CDP is loopback-only; VM HTTP requires a
+// token.
+#include "common.hpp"
+#include <openssl/evp.h>
+#include <openssl/sha.h>
+#include <signal.h>
+using namespace mag;
+static std::string b64(const unsigned char *p, size_t n) {
+  std::string s(4 * ((n + 2) / 3), '\0');
+  EVP_EncodeBlock((unsigned char *)s.data(), p, (int)n);
+  return s;
+}
+class CDP {
+  int fd = -1;
+  std::string pending;
+  int id = 0;
+  void exact(char *p, size_t n) {
+    while (n) {
+      if (!pending.empty()) {
+        size_t k = std::min(n, pending.size());
+        memcpy(p, pending.data(), k);
+        pending.erase(0, k);
+        p += k;
+        n -= k;
+        continue;
+      }
+      ssize_t k = recv(fd, p, n, 0);
+      if (k <= 0)
+        throw std::runtime_error("CDP disconnected");
+      p += k;
+      n -= k;
+    }
+  }
+  void frame(const std::string &s, int op = 1) {
+    std::string out;
+    out += (char)(0x80 | op);
+    if (s.size() < 126)
+      out += (char)(0x80 | s.size());
+    else if (s.size() < 65536) {
+      out += (char)0xfe;
+      out += (char)(s.size() >> 8);
+      out += (char)s.size();
+    } else {
+      out += (char)0xff;
+      for (int i = 7; i >= 0; --i)
+        out += (char)((uint64_t)s.size() >> (i * 8));
+    }
+    std::string mask =
+        unbase64(b64((const unsigned char *)randomhex().data(), 4));
+    out += mask;
+    for (size_t i = 0; i < s.size(); ++i)
+      out += (char)(s[i] ^ mask[i % 4]);
+    if (!sendall(fd, out))
+      throw std::runtime_error("CDP write failed");
+  }
+  std::string receive() {
+    std::string s;
+    for (;;) {
+      unsigned char h[2];
+      exact((char *)h, 2);
+      uint64_t n = h[1] & 127;
+      if (n == 126) {
+        unsigned char b[2];
+        exact((char *)b, 2);
+        n = ((unsigned)b[0] << 8) | b[1];
+      } else if (n == 127) {
+        unsigned char b[8];
+        exact((char *)b, 8);
+        n = 0;
+        for (auto c : b)
+          n = (n << 8) | c;
+      }
+      if (n > 32 * 1024 * 1024)
+        throw std::runtime_error("CDP message too large");
+      char mask[4]{};
+      if (h[1] & 128)
+        exact(mask, 4);
+      std::string part(n, '\0');
+      exact(part.data(), n);
+      if (h[1] & 128)
+        for (size_t i = 0; i < n; ++i)
+          part[i] ^= mask[i % 4];
+      int op = h[0] & 15;
+      if (op == 8)
+        throw std::runtime_error("CDP closed");
+      if (op == 9) {
+        frame(part, 10);
+        continue;
+      }
+      if (op == 10)
+        continue;
+      s += part;
+      if (h[0] & 128)
+        return s;
+    }
+  }
+
+public:
+  ~CDP() {
+    if (fd >= 0)
+      close(fd);
+  }
+  void connect(const std::string &url) {
+    auto start = url.find("://");
+    auto slash = url.find('/', start + 3);
+    std::string authority = url.substr(start + 3, slash - start - 3);
+    auto colon = authority.find(':');
+    int port = std::stoi(authority.substr(colon + 1));
+    std::string path = url.substr(slash);
+    fd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    timeval t{45, 0};
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &t, sizeof t);
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &t, sizeof t);
+    sockaddr_in a{};
+    a.sin_family = AF_INET;
+    a.sin_port = htons(port);
+    inet_pton(AF_INET, "127.0.0.1", &a.sin_addr);
+    if (::connect(fd, (sockaddr *)&a, sizeof a))
+      throw std::runtime_error("CDP connect failed");
+    std::string key = b64((const unsigned char *)randomhex().data(), 16);
+    sendall(fd, "GET " + path + " HTTP/1.1\r\nHost: " + authority +
+                    "\r\nUpgrade: websocket\r\nConnection: "
+                    "Upgrade\r\nSec-WebSocket-Key: " +
+                    key + "\r\nSec-WebSocket-Version: 13\r\n\r\n");
+    std::string hdr;
+    char b[4096];
+    size_t end;
+    while ((end = hdr.find("\r\n\r\n")) == hdr.npos) {
+      auto n = recv(fd, b, sizeof b, 0);
+      if (n <= 0)
+        throw std::runtime_error("CDP handshake failed");
+      hdr.append(b, n);
+    }
+    unsigned char hash[SHA_DIGEST_LENGTH];
+    auto material = key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+    SHA1((const unsigned char *)material.data(), material.size(), hash);
+    if (hdr.substr(0, end).find("101") == std::string::npos ||
+        hdr.substr(0, end).find(b64(hash, sizeof hash)) == std::string::npos)
+      throw std::runtime_error("Invalid CDP handshake");
+    pending = hdr.substr(end + 4);
+  }
+  Val call(const std::string &method, Val params = Val::object()) {
+    int seq = ++id;
+    Val q = Val::object();
+    q["id"] = seq;
+    q["method"] = method;
+    q["params"] = params;
+    frame(mj::dump(q));
+    auto end = std::chrono::steady_clock::now() + std::chrono::seconds(45);
+    while (std::chrono::steady_clock::now() < end) {
+      auto v = json(receive());
+
+      if (num(v, "id") == seq) {
+        if (v.find("error"))
+          throw std::runtime_error(mj::dump(*v.find("error")));
+        return v.find("result") ? *v.find("result") : Val::object();
+      }
+    }
+    throw std::runtime_error("CDP deadline");
+  }
+  Val eval(const std::string &js) {
+    Val p = Val::object();
+    p["expression"] = js;
+    p["returnByValue"] = true;
+    p["awaitPromise"] = true;
+    auto r = call("Runtime.evaluate", p);
+    if (r.find("exceptionDetails"))
+      throw std::runtime_error("Browser script: " +
+                               mj::dump(*r.find("exceptionDetails")));
+    auto v = r.find("result");
+    return v && v->find("value") ? *v->find("value") : Val();
+  }
+};
+static std::string chromium() {
+  auto override = env("MAG_CHROMIUM");
+  if (!override.empty())
+    return override;
+  for (auto &d : fs::directory_iterator("/opt/magbot/browsers"))
+    for (auto p :
+         {d.path() / "chrome-linux/chrome", d.path() / "chrome-linux64/chrome",
+          d.path() / "chrome-headless-shell-linux64/headless_shell"})
+      if (fs::exists(p))
+        return p.string();
+  throw std::runtime_error("Golden image Chromium missing");
+}
+static std::string js(const std::string &s) { return mj::dump(Val(s)); }
+int main(int argc, char **argv) {
+  try {
+    signal(SIGPIPE, SIG_IGN);
+    if (argc == 3 && std::string(argv[1]) == "--cdp-test") {
+      CDP c;
+      c.connect(argv[2]);
+      c.call("Page.enable");
+      std::cout << mj::dump(c.eval("document.title")) << std::endl;
+      return 0;
+    }
+    bool daemon = false;
+    for (int i = 1; i < argc; ++i)
+      if (std::string(argv[i]) == "--daemon")
+        daemon = true;
+    int port = std::stoi(env("BROWSERD_PORT", "9225"));
+    auto token =
+        trim(read(env("MAG_BROWSER_TOKEN_FILE", "/home/bot/browserd/token")));
+    if (token.size() < 24)
+      throw std::runtime_error("Browser token missing");
+    int server = mag::listen(env("MAG_BROWSER_BIND", "0.0.0.0"), port);
+    if (daemon) {
+      pid_t p = fork();
+      if (p < 0)
+        throw std::runtime_error("fork failed");
+      if (p > 0)
+        return 0;
+      setsid();
+      p = fork();
+      if (p > 0)
+        _exit(0);
+      int log = open("/home/bot/browserd/browser.log",
+                     O_CREAT | O_WRONLY | O_APPEND, 0600);
+      int null = open("/dev/null", O_RDONLY);
+      dup2(null, 0);
+      dup2(log, 1);
+      dup2(log, 2);
+      close(null);
+      close(log);
+    }
+    fs::create_directories("/home/bot/browserd/profile");
+    std::string binary = chromium();
+    auto sandbox = fs::path(binary).parent_path() / "chrome_sandbox";
+    if (fs::exists(sandbox))
+      setenv("CHROME_DEVEL_SANDBOX", sandbox.c_str(), 1);
+    std::vector<std::string> a{binary,
+                               "--headless=new",
+                               "--disable-dev-shm-usage",
+                               "--remote-debugging-address=127.0.0.1",
+                               "--remote-debugging-port=9226",
+                               "--user-data-dir=/home/bot/browserd/profile",
+                               "--window-size=1440,900",
+                               "--no-first-run",
+                               "about:blank"};
+    std::vector<char *> args;
+    for (auto &s : a)
+      args.push_back(s.data());
+    args.push_back(nullptr);
+    posix_spawn_file_actions_t acts;
+    posix_spawn_file_actions_init(&acts);
+    int log = open("/home/bot/browserd/chromium.log",
+                   O_CREAT | O_WRONLY | O_APPEND, 0600);
+    posix_spawn_file_actions_adddup2(&acts, log, 1);
+    posix_spawn_file_actions_adddup2(&acts, log, 2);
+    pid_t child;
+    int err = posix_spawn(&child, binary.c_str(), &acts, nullptr, args.data(),
+                          environ);
+    posix_spawn_file_actions_destroy(&acts);
+    close(log);
+    if (err)
+      throw std::runtime_error("Chromium spawn failed");
+    CDP c;
+    bool ready = false;
+    for (int i = 0; i < 100; ++i) {
+      try {
+        auto pages = json(http("127.0.0.1", 9226, "/json/list"));
+        for (auto &pg : pages.asArr())
+          if (str(pg, "type") == "page") {
+            c.connect(str(pg, "webSocketDebuggerUrl"));
+            ready = true;
+            break;
+          }
+      } catch (const std::exception &e) {
+        std::cerr << "CDP setup: " << e.what() << std::endl;
+      }
+      if (ready)
+        break;
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+    if (!ready) {
+      kill(child, SIGTERM);
+      throw std::runtime_error("Chromium CDP startup failed");
+    }
+    c.call("Page.enable");
+    c.call("Runtime.enable");
+    Val metrics = Val::object();
+    metrics["width"] = 1440;
+    metrics["height"] = 900;
+    metrics["deviceScaleFactor"] = 1;
+    metrics["mobile"] = false;
+    c.call("Emulation.setDeviceMetricsOverride", metrics);
+    auto snapshot = [&]() {
+      return c.eval("({url:location.href,title:document.title})");
+    };
+    for (;;) {
+      int fd = accept4(server, nullptr, nullptr, SOCK_CLOEXEC);
+      if (fd < 0)
+        continue;
+      timeval timeout{15, 0};
+      setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof timeout);
+      setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof timeout);
+      try {
+        auto r = request(fd, 1024 * 1024);
+        if (r.headers["authorization"] != "Bearer " + token) {
+          response(fd, 401, "{\"error\":\"Browser token required\"}");
+          close(fd);
+          continue;
+        }
+        Val body = r.body.empty() ? Val::object() : json(r.body);
+        auto value = [&](const char *k) {
+          auto x = str(body, k);
+          return x.empty() ? param(r.query, k) : x;
+        };
+        Val out = Val::object();
+        if (r.path == "/state")
+          out = snapshot();
+        else if (r.path == "/read")
+          out = c.eval("({url:location.href,title:document.title,text:document."
+                       "body.innerText.slice(0,12000)})");
+        else if (r.path == "/screenshot.png") {
+          Val p = Val::object();
+          p["format"] = "png";
+          p["captureBeyondViewport"] = false;
+          response(fd, 200,
+                   unbase64(str(c.call("Page.captureScreenshot", p), "data")),
+                   "image/png");
+          close(fd);
+          continue;
+        } else if (r.path == "/navigate" || r.path == "/snapshot") {
+          auto url = value("url");
+          if (url.rfind("http://", 0) != 0 && url.rfind("https://", 0) != 0)
+            throw std::runtime_error("HTTP(S) URL required");
+          Val p = Val::object();
+          p["url"] = url;
+          auto n = c.call("Page.navigate", p);
+          if (n.find("errorText"))
+            throw std::runtime_error(str(n, "errorText"));
+          std::this_thread::sleep_for(std::chrono::milliseconds(400));
+          for (int i = 0; i < 100; ++i) {
+            try {
+              auto state = c.eval("document.readyState");
+              if (state.asStr() == "complete")
+                break;
+            } catch (...) {
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+          }
+          out = snapshot();
+          if (r.path == "/snapshot") {
+            Val p = Val::object();
+            p["format"] = "png";
+            out["png"] = str(c.call("Page.captureScreenshot", p), "data");
+            out["text"] = c.eval("document.body.innerText.slice(0,8000)");
+            out["errors"] = Val::array();
+            out["console"] = Val::array();
+          }
+        } else if (r.path == "/click") {
+          std::string selector = value("selector"), text = value("text");
+          if (selector.empty() && text.empty())
+            throw std::runtime_error("Selector or text required");
+          std::string find =
+              !selector.empty()
+                  ? "document.querySelector(" + js(selector) + ")"
+                  : "[...document.querySelectorAll('button,a,input,label,[role="
+                    "button]')].find(e=>e.innerText?.trim()===" +
+                        js(text) + ")";
+          auto pos = c.eval("(()=>{let e=" + find +
+                            ";if(!e)throw Error('Element not "
+                            "found');e.scrollIntoView({block:'center'});let "
+                            "r=e.getBoundingClientRect();return "
+                            "{x:r.x+r.width/2,y:r.y+r.height/2}})()");
+          for (auto type : {"mousePressed", "mouseReleased"}) {
+            Val p = pos;
+            p["type"] = type;
+            p["button"] = "left";
+            p["clickCount"] = 1;
+            c.call("Input.dispatchMouseEvent", p);
+          }
+          out = snapshot();
+        } else if (r.path == "/type") {
+          auto selector = value("selector");
+          if (!selector.empty())
+            c.eval("(()=>{let e=document.querySelector(" + js(selector) +
+                   ");if(!e)throw Error('Element not "
+                   "found');e.focus();e.value='';})()");
+          Val p = Val::object();
+          p["text"] = value("text");
+          c.call("Input.insertText", p);
+          auto enter = body.find("enter");
+          if (enter && enter->asBool()) {
+            Val k = Val::object();
+            k["type"] = "keyDown";
+            k["key"] = "Enter";
+            k["code"] = "Enter";
+            k["windowsVirtualKeyCode"] = 13;
+            c.call("Input.dispatchKeyEvent", k);
+            k["type"] = "keyUp";
+            c.call("Input.dispatchKeyEvent", k);
+          }
+          out = snapshot();
+        } else if (r.path == "/scroll") {
+          auto dy = value("dy");
+          c.eval("window.scrollBy(0," +
+                 std::to_string(dy.empty() ? 600 : std::stoi(dy)) + ")");
+          out = snapshot();
+        } else if (r.path == "/back" || r.path == "/forward" ||
+                   r.path == "/reload") {
+          c.eval(r.path == "/back"      ? "history.back()"
+                 : r.path == "/forward" ? "history.forward()"
+                                        : "location.reload()");
+          out = snapshot();
+        } else if (r.path == "/key") {
+          auto key = value("key");
+          Val p = Val::object();
+          p["type"] = "keyDown";
+          p["key"] = key;
+          p["code"] = key;
+          c.call("Input.dispatchKeyEvent", p);
+          p["type"] = "keyUp";
+          c.call("Input.dispatchKeyEvent", p);
+          out = snapshot();
+        } else {
+          response(fd, 404, "{\"error\":\"Unknown browser route\"}");
+          close(fd);
+          continue;
+        }
+        response(fd, 200, mj::dump(out));
+      } catch (const std::exception &e) {
+        Val error = Val::object();
+        error["error"] = e.what();
+        response(fd, 500, mj::dump(error));
+      }
+      close(fd);
+    }
+  } catch (const std::exception &e) {
+    std::cerr << e.what() << '\n';
+    return 1;
+  }
+}

@@ -523,7 +523,7 @@ static std::vector<Val> AGENTS;
 // Elevated rights exist only for the current server process; default OFF.
 // No sudoers or setuid capability is ever installed in the guests.
 static std::mutex ROOT_MTX;
-static std::set<std::string> ROOT_ENABLED;
+static std::set<std::string> ROOT_ENABLED, ROOT_REVOKE_PENDING;
 static bool root_enabled(const std::string &vm) {
   std::lock_guard<std::mutex> lk(ROOT_MTX);
   return !vm.empty() && ROOT_ENABLED.count(vm) != 0;
@@ -2324,6 +2324,8 @@ static std::string state_json() {
       {Val item=public_agent((int)i);
        auto vm=AGENTS[i].find("vm");
        item["root_enabled"]=root_enabled(vm?vm->asStr():"");
+       {std::lock_guard<std::mutex> privilege(ROOT_MTX);
+        item["root_revoke_pending"]=vm&&ROOT_REVOKE_PENDING.count(vm->asStr())!=0;}
        ag.push(item);}
   }
   root["agents"] = ag;
@@ -2404,6 +2406,44 @@ int main() {
 
   ensure_state();
   load_agents();
+  // Default-off on every MAG restart. Clean up any orphaned guest root
+  // services BEFORE accepting a client; watch retries if a VM is offline.
+  if(access(ROOT_CTL.c_str(),X_OK)==0)
+    for(const auto &agent:AGENTS){
+      auto vm=agent.find("vm");
+      if(!vm||vm->asStr().empty()||vm->asStr()=="keine")continue;
+      auto result=set_root_capability(vm->asStr(),false);
+      if(result.code){
+        std::lock_guard<std::mutex> lk(ROOT_MTX);
+        ROOT_REVOKE_PENDING.insert(vm->asStr());
+      }
+    }
+  std::thread([]{
+    for(;;){
+      std::this_thread::sleep_for(std::chrono::seconds(20));
+      std::set<std::string> active,pending;
+      {std::lock_guard<std::mutex> lk(ROOT_MTX);
+       active=ROOT_ENABLED;pending=ROOT_REVOKE_PENDING;}
+      for(auto &vm:active){
+        auto r=run_argv({"sudo","-n",ROOT_CTL,"renew",vm},30,1024);
+        if(r.code){
+          std::lock_guard<std::mutex> lk(ROOT_MTX);
+          ROOT_ENABLED.erase(vm);
+          ROOT_REVOKE_PENDING.insert(vm);
+          pending.insert(vm);
+          agents_event();
+        }
+      }
+      for(auto &vm:pending){
+        auto r=set_root_capability(vm,false);
+        if(!r.code){
+          std::lock_guard<std::mutex> lk(ROOT_MTX);
+          ROOT_REVOKE_PENDING.erase(vm);
+          agents_event();
+        }
+      }
+    }
+  }).detach();
   FILES = load_json_array(FILES_JSON);
   ROOM = load_json_array(ROOM_JSON);
   UI_DEFAULT = read_file(UI_FILE);

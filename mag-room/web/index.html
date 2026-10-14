@@ -89,11 +89,18 @@ body.remote-mode #terminal-panel{margin:20px 0}
 body.remote-mode #terminal{height:clamp(220px,32vh,500px);max-height:70vh}
 .agent .actions a{font-size:12px;padding:4px 8px;border:1px solid var(--line);border-radius:8px;text-decoration:none;white-space:nowrap}
 .agent .actions a:hover{background:#344156}
+.agent{cursor:pointer;transition:border-color .14s,background .14s;position:relative}
+.agent:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.agent.active{border-color:#96b9ea;background:#202d42}
+.agent.active:before{content:"";position:absolute;background:#8ec2ff;width:3px;height:calc(100% - 24px);left:0;top:12px;border-radius:3px}
+.agent .actions{cursor:default}
+#browser-agent{display:none!important}
+#focused-bot{color:var(--accent);font-size:12px;font-weight:700}
 </style></head>
 <body><header><strong>MAG</strong><small>Ein Raum. Eigene Welten.</small><button class="side-toggle" id="toggle-agents" aria-controls="left-panel" aria-expanded="true" title="Bot-Leiste umschalten">☰ Bots</button><button class="side-toggle" id="toggle-tools" aria-controls="right-panel" aria-expanded="true" title="Werkzeuge umschalten">▣ Werkzeuge</button><span class="status" id="connection"><span class="dot"></span>Verbinde…</span></header>
 <div class="layout" id="layout"><aside class="left" id="left-panel"><div class="section"><h2>Im Raum</h2><div id="agents"></div><button id="add-agent">+ Bot hinzufügen</button></div><div class="section"><h2>Zusammenarbeit</h2><label><input type="checkbox" id="autotalk"> Autonom arbeiten</label><p class="hint">Läuft auch, wenn du den Browser schließt.</p><label><input type="checkbox" id="web" checked> Websuche</label><p><button class="danger" id="stop">Alle pausieren</button></p></div><div class="section"><h2>Einstellungen</h2><label><input type="checkbox" id="tts"> Antworten vorlesen</label><p><select id="language"><option value="auto">Sprache automatisch</option><option value="de">Deutsch</option><option value="en">English</option></select></p><button id="reset">Raum leeren</button><p class="hint">Entfernt Nachrichten und Raumdateien. Die Erinnerungen der Bots bleiben.</p></div></aside>
 <main class="main"><div class="conversation" id="conversation"></div><div class="composer"><div class="notice" id="notice" role="status"></div><form id="send-form"><textarea id="message" placeholder="Sprich mit den Bots oder gib ihnen eine Aufgabe…" aria-label="Nachricht"></textarea><div class="row"><button type="button" id="upload">Datei</button><button type="button" id="mic">Mikrofon</button><span class="hint">Enter senden · Shift+Enter neue Zeile</span><span class="spacer"></span><button class="primary" type="submit">Senden</button></div></form><input id="file-input" type="file" multiple hidden></div></main>
-<aside class="right" id="right-panel"><div id="remote-bar" hidden><a href="/">← Raum</a><strong id="remote-bot-name"></strong></div><div class="section"><h2>Browser</h2><select id="browser-agent" aria-label="Browser auswählen"></select><p><label><input id="live" type="checkbox" checked> Live-Browser anzeigen</label></p><div id="browser-view"><div class="browser-view-bar" role="toolbar" aria-label="Browsernavigation"><button id="browser-back" class="browser-nav-btn" type="button" title="Zurück" aria-label="Zurück" disabled>←</button><button id="browser-forward" class="browser-nav-btn" type="button" title="Vorwärts" aria-label="Vorwärts" disabled>→</button><button id="browser-reload" class="browser-nav-btn" type="button" title="Neu laden" aria-label="Neu laden">↻</button><input id="browser-url" type="text" spellcheck="false" inputmode="url" placeholder="https://…" aria-label="Adresse oder Suchbegriff"><button id="browser-open" class="browser-nav-btn" type="button" title="Adresse öffnen" aria-label="Adresse öffnen">↵</button><button id="browser-fullscreen" class="mini-fullscreen" type="button" aria-label="Browser im Vollbild anzeigen" title="Browser-Vollbild umschalten" aria-pressed="false">⛶</button></div><canvas id="screen" width="1440" height="900" role="img" aria-label="Live-Browser des ausgewählten Bots. Klicken und Tastatur zum Steuern." tabindex="0" hidden></canvas></div><p class="hint" id="browser-status">Ein Browser pro Bot. Du und der Bot steuern dieselbe Sitzung.</p><p id="browser-access" class="browser-access" role="status" hidden></p></div><div class="section" id="shared-files-panel"><h2>Gemeinsame Dateien</h2><div id="files"></div><iframe id="canvas" title="Gemeinsame Vorschau" sandbox="allow-scripts" hidden></iframe></div><div class="section" id="terminal-panel"><div class="terminal-heading"><h2>Konsole · <span id="console-agent">Bot</span></h2><button id="terminal-fullscreen" class="mini-fullscreen" type="button" aria-label="Konsole im Vollbild anzeigen" title="Konsole-Vollbild umschalten" aria-pressed="false">⛶</button><button id="terminal-clear" type="button">Leeren</button><button id="terminal-focus" type="button">Fokus</button></div><div id="terminal" role="application" aria-label="Interaktive Shell des ausgewählten Bots" tabindex="0"></div><div id="terminal-status">Terminal startet beim Verbinden …</div></div></aside></div>
+<aside class="right" id="right-panel"><div id="remote-bar" hidden><a href="/">← Raum</a><strong id="remote-bot-name"></strong></div><div class="section"><h2>Browser · <span id="focused-bot">Bot auswählen</span></h2><input id="browser-agent" type="hidden"><p><label><input id="live" type="checkbox" checked> Live-Browser anzeigen</label></p><div id="browser-view"><div class="browser-view-bar" role="toolbar" aria-label="Browsernavigation"><button id="browser-back" class="browser-nav-btn" type="button" title="Zurück" aria-label="Zurück" disabled>←</button><button id="browser-forward" class="browser-nav-btn" type="button" title="Vorwärts" aria-label="Vorwärts" disabled>→</button><button id="browser-reload" class="browser-nav-btn" type="button" title="Neu laden" aria-label="Neu laden">↻</button><input id="browser-url" type="text" spellcheck="false" inputmode="url" placeholder="https://…" aria-label="Adresse oder Suchbegriff"><button id="browser-open" class="browser-nav-btn" type="button" title="Adresse öffnen" aria-label="Adresse öffnen">↵</button><button id="browser-fullscreen" class="mini-fullscreen" type="button" aria-label="Browser im Vollbild anzeigen" title="Browser-Vollbild umschalten" aria-pressed="false">⛶</button></div><canvas id="screen" width="1440" height="900" role="img" aria-label="Live-Browser des ausgewählten Bots. Klicken und Tastatur zum Steuern." tabindex="0" hidden></canvas></div><p class="hint" id="browser-status">Ein Browser pro Bot. Du und der Bot steuern dieselbe Sitzung.</p><p id="browser-access" class="browser-access" role="status" hidden></p></div><div class="section" id="shared-files-panel"><h2>Gemeinsame Dateien</h2><div id="files"></div><iframe id="canvas" title="Gemeinsame Vorschau" sandbox="allow-scripts" hidden></iframe></div><div class="section" id="terminal-panel"><div class="terminal-heading"><h2>Konsole · <span id="console-agent">Bot</span></h2><button id="terminal-fullscreen" class="mini-fullscreen" type="button" aria-label="Konsole im Vollbild anzeigen" title="Konsole-Vollbild umschalten" aria-pressed="false">⛶</button><button id="terminal-clear" type="button">Leeren</button><button id="terminal-focus" type="button">Fokus</button></div><div id="terminal" role="application" aria-label="Interaktive Shell des ausgewählten Bots" tabindex="0"></div><div id="terminal-status">Terminal startet beim Verbinden …</div></div></aside></div>
 <dialog id="new-agent"><form id="agent-form"><h3>Ein neuer Entdecker</h3><input id="agent-name" required maxlength="40" placeholder="Name"><textarea id="agent-persona" placeholder="Persönlichkeit und Interessen"></textarea><div class="row"><button type="button" onclick="document.getElementById('new-agent').close()">Abbrechen</button><button class="primary">Bot erstellen</button></div></form></dialog><dialog id="memory-dialog"><h3 id="memory-title"></h3><div id="memory"></div><p><button onclick="document.getElementById('memory-dialog').close()">Schließen</button></p></dialog>
 <script>
 'use strict';
@@ -127,28 +134,71 @@ function updateStream(botId,immediate=false){
  else if(!s.frame)s.frame=requestAnimationFrame(update);
 }
 function render(){const area=$('conversation');const bottom=!rendered||area.scrollHeight-area.scrollTop-area.clientHeight<130;const oldScroll=area.scrollTop;rendered=true;area.replaceChildren();if(!state.room.length)area.innerHTML='<div class="empty"><h1>Was entdecken wir heute?</h1><p>Jeder Bot hat seine eigene VM, einen eigenen Browser und bleibende Erinnerungen. Dateien und Ideen teilt ihr hier.</p></div>';state.room.forEach(m=>append(m,false));for(const s of Object.values(streams)){s.node=append({role:'assistant',name:s.name,content:s.text||s.status||'Denkt nach …'},false);if(!s.text)s.node.classList.add('processing')}if(!bottom)area.scrollTop=oldScroll;if(bottom)area.scrollTop=area.scrollHeight;renderAgents();renderFiles();$('autotalk').checked=!!state.autotalk;}
-function renderAgents(){const list=$('agents');list.replaceChildren();const old=$('browser-agent').value;$('browser-agent').replaceChildren();for(const a of state.agents){if(!selected.has(a.id)&&!sessionStorage.getItem('mag-selected'))selected.add(a.id);const card=document.createElement('div');card.className='agent';const label=document.createElement('label');const check=document.createElement('input');check.type='checkbox';check.checked=selected.has(a.id);check.onchange=()=>{check.checked?selected.add(a.id):selected.delete(a.id);sessionStorage.setItem('mag-selected',JSON.stringify([...selected]))};const name=document.createElement('span');name.textContent=a.name;name.style.color=a.color;label.append(check,name);const info=document.createElement('small');info.textContent=a.vm+' · '+(a.memory_count||0)+' Erinnerungen';const actions=document.createElement('div');actions.className='actions';for(const [title,fn] of [['Erinnerung',()=>memory(a)],['Entfernen',()=>removeAgent(a)]]){const b=document.createElement('button');b.textContent=title;b.onclick=fn;actions.append(b)}
-const remote=document.createElement('a');
-remote.href='/bot/'+encodeURIComponent(a.id)+'/';
-remote.textContent='Fernzugriff ↗';remote.target='_blank';remote.rel='noopener noreferrer';
-remote.title='Fester Tailscale-Link für '+a.name;
-actions.append(remote);
-card.append(label,info,actions);list.append(card);const option=document.createElement('option');option.value=a.id;option.textContent=a.name;$('browser-agent').append(option)}if(remoteBotId){
- const own=state.agents.find(a=>a.id===remoteBotId);
- if(own){
-  $('browser-agent').value=own.id;
-  $('remote-bot-name').textContent=own.name+' · eigener Rechner';
-  $('browser-open').disabled=false;
-  document.title=own.name+' · MAG Fernzugriff';
- }else{
-  // A deleted bot instantly loses its remote viewer; the URL also becomes 404.
-  $('remote-bot-name').textContent='Bot entfernt oder nicht erreichbar';
-  $('browser-agent').replaceChildren();
-  $('browser-open').disabled=true;
-  if(livePeer)disconnectLive();
+let focusedBotId=remoteBotId||sessionStorage.getItem('mag-focused-bot')||'';
+function focusBot(id){
+ if(remoteBotId&&id!==remoteBotId)return;
+ if(!state.agents.some(a=>a.id===id))return;
+ const changed=$('browser-agent').value!==id;
+ focusedBotId=id;
+ sessionStorage.setItem('mag-focused-bot',id);
+ $('browser-agent').value=id;
+ $('focused-bot').textContent=state.agents.find(a=>a.id===id)?.name||id;
+ for(const card of $('agents').querySelectorAll('.agent')){
+  const isActive=card.dataset.bot===id;
+  card.classList.toggle('active',isActive);
+  card.setAttribute('aria-pressed',String(isActive));
  }
-}else if(state.agents.some(a=>a.id===old))$('browser-agent').value=old;
-updateConsoleLabel();}
+ updateConsoleLabel();
+ if(changed&&(remoteBotId||(rightOpen&&(!isCompact()||layout.classList.contains('mobile-right')))))connectLive();
+ else if(changed)disconnectLive();
+}
+function renderAgents(){
+ const list=$('agents');list.replaceChildren();
+ const old=$('browser-agent').value;
+ for(const a of state.agents){
+  if(!selected.has(a.id)&&!sessionStorage.getItem('mag-selected'))selected.add(a.id);
+  const card=document.createElement('div');
+  card.className='agent';card.dataset.bot=a.id;card.tabIndex=0;
+  card.setAttribute('role','button');
+  card.setAttribute('aria-label',a.name+' rechts anzeigen');
+  card.onclick=e=>{if(e.target.closest('button,a'))return;focusBot(a.id)};
+  card.onkeydown=e=>{if(e.target===card&&(e.key==='Enter'||e.key===' ')){e.preventDefault();focusBot(a.id)}};
+  const label=document.createElement('label'),check=document.createElement('input');
+  check.type='checkbox';check.checked=selected.has(a.id);
+  check.onchange=()=>{check.checked?selected.add(a.id):selected.delete(a.id);
+   sessionStorage.setItem('mag-selected',JSON.stringify([...selected]))};
+  const name=document.createElement('span');name.textContent=a.name;name.style.color=a.color;
+  label.append(check,name);
+  const info=document.createElement('small');
+  info.textContent=a.vm+' · '+(a.memory_count||0)+' Erinnerungen';
+  const actions=document.createElement('div');actions.className='actions';
+  for(const [title,fn] of [['Erinnerung',()=>memory(a)],['Entfernen',()=>removeAgent(a)]]){
+   const b=document.createElement('button');b.textContent=title;
+   b.onclick=fn;actions.append(b);
+  }
+  const remote=document.createElement('a');
+  remote.href='/bot/'+encodeURIComponent(a.id)+'/';
+  remote.textContent='Fernzugriff ↗';remote.target='_blank';remote.rel='noopener noreferrer';
+  remote.title='Fester Tailscale-Link für '+a.name;
+  actions.append(remote);
+  card.append(label,info,actions);list.append(card);
+ }
+ const candidate=remoteBotId||([remoteBotId,old,focusedBotId].find(id=>id&&state.agents.some(a=>a.id===id)))||state.agents[0]?.id;
+ if(remoteBotId){
+  const own=state.agents.find(a=>a.id===remoteBotId);
+  if(own){
+   $('remote-bot-name').textContent=own.name+' · eigener Rechner';
+   $('browser-open').disabled=false;document.title=own.name+' · MAG Fernzugriff';
+  }else{
+   $('remote-bot-name').textContent='Bot entfernt oder nicht erreichbar';
+   $('browser-agent').value='';$('browser-open').disabled=true;
+   if(livePeer)disconnectLive();
+   updateConsoleLabel();return;
+  }
+ }
+ if(candidate)focusBot(candidate);
+ else{$('browser-agent').value='';$('focused-bot').textContent='Bot auswählen';updateConsoleLabel();if(livePeer)disconnectLive()}
+}
 function renderFiles(){const list=$('files');list.replaceChildren();for(const f of state.files){const row=document.createElement('div');row.className='file';const a=document.createElement('a');a.href='/api/file/'+encodeURIComponent(f.stored);a.textContent=f.name;row.append(a);const size=document.createElement('small');size.textContent=' · '+Math.ceil(f.size/1024)+' KB';row.append(size);if(f.mime==='text/html'){const b=document.createElement('button');b.textContent='Vorschau';b.onclick=async()=>{try{$('canvas').srcdoc=await(await fetch(a.href)).text();$('canvas').hidden=false}catch(e){notice(e.message)}};row.append(b)}list.append(row)}}
 async function refresh(){const seq=++refreshSeq;const r=await fetch('/api/state');if(!r.ok)throw Error('Raum nicht erreichbar');const next=await r.json();if(seq!==refreshSeq)return;state=next;render()}
 async function memory(a){try{const m=await api('/api/agents/'+a.id+'/memory',undefined,'GET');$('memory-title').textContent=a.name+' · Erinnerungen';$('memory').textContent=m.map(x=>'• '+(x.text||x)).join('\n\n')||'Noch keine gespeicherten Erinnerungen.';$('memory-dialog').showModal()}catch(e){notice(e.message)}}
@@ -481,7 +531,7 @@ $('live').addEventListener('change',()=>{
  if(!livePeer){connectLive();return}
  liveSend({kind:$('live').checked?'subscribe':'unsubscribe'});
 });
-$('browser-agent').addEventListener('change',()=>{updateConsoleLabel();if(rightOpen&&(!isCompact()||layout.classList.contains('mobile-right')))connectLive();else disconnectLive()});
+// Right-side selection comes from left bot card; no duplicate dropdown.
 function browserCoords(e){
  const img=$('screen'),r=img.getBoundingClientRect(),w=img.width||1440,h=img.height||900;
  const scale=Math.min(r.width/w,r.height/h),left=r.left+(r.width-w*scale)/2,top=r.top+(r.height-h*scale)/2;

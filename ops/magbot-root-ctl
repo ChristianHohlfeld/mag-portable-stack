@@ -13,5 +13,9 @@ case "$action" in
     [[ ${#@} == 2 ]] || exit 64
     exec /usr/local/bin/magbot privilege-off "$vm"
     ;;
+  renew)
+    [[ ${#@} == 2 ]] || exit 64
+    exec /usr/local/bin/magbot privilege-renew "$vm"
+    ;;
   *) exit 64;;
 esac

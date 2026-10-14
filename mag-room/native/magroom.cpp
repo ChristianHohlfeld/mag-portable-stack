@@ -2,6 +2,7 @@
 // VM/browser tool loop and bridge. No frameworks, no JSON library.
 #include "common.hpp"
 #include "json.hpp"
+#include <set>
 #include "browser_recovery.hpp"
 
 #include <arpa/inet.h>

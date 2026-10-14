@@ -1,0 +1,21 @@
+[Unit]
+Description=MAG per-bot Chromium WebRTC/UDP gateway
+After=network-online.target mag-120.service mag-agents-network.service
+Wants=network-online.target
+[Service]
+Type=simple
+User=magbot
+Group=magbot
+WorkingDirectory=/opt/mag-stack/current
+Environment=MAG_ROOM_STATE=/var/lib/magbot/room
+ExecStart=/opt/mag-stack/current/bin/mag-browser-webrtc
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+UMask=0027
+LimitNOFILE=8192
+[Install]
+WantedBy=multi-user.target

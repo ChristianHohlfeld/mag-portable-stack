@@ -240,6 +240,19 @@ func main(){
  go relay.receive()
  mux:=http.NewServeMux()
  mux.HandleFunc("POST /offer",relay.offer)
+ mux.HandleFunc("GET /status",func(w http.ResponseWriter,_ *http.Request){
+  type status struct {VM string `json:"vm"`; SeenSeconds float64 `json:"seen_seconds"`; Viewers int `json:"viewers"`}
+  all:=make([]status,0)
+  relay.mu.Lock()
+  for _,b:=range relay.bots{
+   age:=time.Since(b.seen).Seconds()
+   if b.seen.IsZero(){age=-1}
+   all=append(all,status{VM:b.vm,SeenSeconds:age,Viewers:len(b.peers)})
+  }
+  relay.mu.Unlock()
+  w.Header().Set("Content-Type","application/json")
+  _=json.NewEncoder(w).Encode(map[string]any{"transport":"WebRTC/SCTP/UDP + authenticated VM UDP JPEG","bots":all})
+ })
  mux.HandleFunc("GET /health",func(w http.ResponseWriter,_ *http.Request){
   w.Header().Set("Content-Type","text/plain");_,_=w.Write([]byte("ok\n"))
  })

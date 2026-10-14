@@ -134,8 +134,8 @@ function makeTerminal(botId){
   fontFamily:'ui-monospace, SFMono-Regular, Consolas, monospace',
   theme:{background:'#0a0d13',foreground:'#d8e0ef',cursor:'#b8d5ff',selectionBackground:'#566b9b66'}
  });
- const fit=new FitAddon.FitAddon();term.loadAddon(fit);term.open(host);
- const entry={term,fit,host};terminals.set(botId,entry);
+ const fit=new FitAddon.FitAddon();term.loadAddon(fit);
+ const entry={term,fit,host,opened:false};terminals.set(botId,entry);
  term.onData(data=>{
   if($('browser-agent').value!==botId)return;
   const encoded=utf8Encoder.encode(data);
@@ -165,6 +165,10 @@ function updateConsoleLabel(){
  activeTerminal=makeTerminal(id);
  if(!activeTerminal){$('terminal').textContent='Terminal-Emulator nicht verfügbar';return}
  $('terminal').replaceChildren(activeTerminal.host);
+ if(!activeTerminal.opened){
+  activeTerminal.term.open(activeTerminal.host);
+  activeTerminal.opened=true;
+ }
  requestAnimationFrame(terminalResize);
  terminalStatus(liveConsole?.readyState==='open'?'Shell verbunden':'Verbinde VM-Terminal …');
 }

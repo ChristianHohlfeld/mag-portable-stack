@@ -372,6 +372,53 @@ int main(int argc, char **argv) {
             c.call("Input.dispatchMouseEvent", p);
           }
           out = snapshot();
+        } else if (r.path == "/pointer") {
+          // Coordinates are in the Chromium viewport, never host desktop pixels.
+          // Fail closed on malformed input before forwarding anything to CDP.
+          const Val *vx = body.find("x"), *vy = body.find("y");
+          if (!vx || !vy || vx->type != Val::NUM || vy->type != Val::NUM ||
+              !std::isfinite(vx->num) || !std::isfinite(vy->num) ||
+              vx->num < 0 || vx->num > 1440 || vy->num < 0 ||
+              vy->num > 900)
+            throw std::runtime_error("Invalid viewport coordinates");
+          const std::string action = value("action");
+          const std::string button = value("button").empty()
+                                         ? "left" : value("button");
+          if (button != "left" && button != "middle" && button != "right")
+            throw std::runtime_error("Invalid mouse button");
+          Val p = Val::object();
+          p["x"] = vx->num;
+          p["y"] = vy->num;
+          if (action == "move") {
+            p["type"] = "mouseMoved";
+            p["button"] = button;
+            c.call("Input.dispatchMouseEvent", p);
+          } else if (action == "down" || action == "up" ||
+                     action == "click") {
+            p["button"] = button;
+            p["clickCount"] = 1;
+            if (action != "up") {
+              p["type"] = "mousePressed";
+              c.call("Input.dispatchMouseEvent", p);
+            }
+            if (action != "down") {
+              p["type"] = "mouseReleased";
+              c.call("Input.dispatchMouseEvent", p);
+            }
+          } else if (action == "wheel") {
+            const Val *dx = body.find("deltaX"), *dy = body.find("deltaY");
+            if (!dy || dy->type != Val::NUM || !std::isfinite(dy->num) ||
+                std::abs(dy->num) > 1200 ||
+                (dx && (dx->type != Val::NUM || !std::isfinite(dx->num) ||
+                        std::abs(dx->num) > 1200)))
+              throw std::runtime_error("Invalid wheel delta");
+            p["type"] = "mouseWheel";
+            p["deltaX"] = dx ? dx->num : 0.0;
+            p["deltaY"] = dy->num;
+            c.call("Input.dispatchMouseEvent", p);
+          } else
+            throw std::runtime_error("Invalid pointer action");
+          out = snapshot();
         } else if (r.path == "/type") {
           auto selector = value("selector");
           if (!selector.empty())

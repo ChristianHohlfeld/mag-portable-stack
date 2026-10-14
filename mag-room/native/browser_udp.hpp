@@ -25,6 +25,9 @@ class BrowserUDP {
   uint32_t frame_seq_ = 0, ctrl_seq_ = 0;
   GuestPTY terminal_;
   uint32_t terminal_seq_ = 0;
+  std::string terminal_history_;
+  uint64_t terminal_written_ = 0;
+  static constexpr size_t MAX_HISTORY_BYTES = 32768;
   std::chrono::steady_clock::time_point subscribed_{}, hello_{}, frame_{};
   static constexpr size_t HEADER = 13, TAG = 16, CHUNK = 1000;
   static void put16(std::string &s, uint16_t n) {
@@ -239,12 +242,32 @@ public:
     }
   }
   int terminal_fd() const { return terminal_.fd(); }
+  uint64_t terminal_cursor() const { return terminal_written_; }
+  void terminal_input(const std::string &data) {
+    if (data.empty() || data.size() > 600) throw std::runtime_error("Terminal input too long");
+    terminal_.start();
+    terminal_.input(data);
+  }
+  mj::Val terminal_read(uint64_t after = 0) const {
+    const auto first = terminal_written_ - terminal_history_.size();
+    const auto offset = std::max(after, first);
+    mj::Val out = mj::Val::object();
+    out["cursor"] = (double)terminal_written_;
+    out["truncated"] = after < first;
+    out["text"] = terminal_history_.substr((size_t)(std::min(offset, terminal_written_) - first));
+    out["user"] = "bot";
+    return out;
+  }
   void terminal_output() {
     // Drain stdout/stderr without blocking browser/CDP. One bounded UDP
     // datagram per PTY chunk, signed with this VM's private media key.
     for (int i = 0; i < 24 && terminal_.fd() >= 0; ++i) {
       auto bytes = terminal_.output();
       if (bytes.empty()) break;
+      terminal_history_ += bytes;
+      terminal_written_ += bytes.size();
+      if(terminal_history_.size()>MAX_HISTORY_BYTES)
+        terminal_history_.erase(0,terminal_history_.size()-MAX_HISTORY_BYTES);
       mj::Val msg = mj::Val::object();
       msg["kind"] = "terminal_output";
       msg["data"] = as_b64(bytes);

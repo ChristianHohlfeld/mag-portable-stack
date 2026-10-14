@@ -66,6 +66,7 @@ type peer struct {
 }
 type bot struct {
  vm string
+ nonce string
  addr *net.UDPAddr
  seen time.Time
  frame fragments
@@ -122,7 +123,10 @@ func (r *relay) receive() {
   if ip==nil||ip[0]!=192||ip[1]!=168||ip[2]!=122 {continue}
   if n<29 || string(buf[:4])!="MGB1" {continue}
   var vm string
-  if buf[4]==1 {vm=string(buf[13:n-16])}
+  if buf[4]==1 {
+   fields:=strings.SplitN(string(buf[13:n-16]),"|",2)
+   vm=fields[0]
+  }
   if buf[4]==2 || buf[4]==4 {
    r.mu.Lock()
    vm=r.addresses[addr.IP.String()]
@@ -131,10 +135,16 @@ func (r *relay) receive() {
   secret,ok:=r.key(vm);if !ok{continue}
   p,err:=authenticate(buf[:n],secret);if err!=nil{continue}
   if p.kind==1 {
-   if string(p.body)!=vm {continue}
+   fields:=strings.SplitN(string(p.body),"|",2)
+   if len(fields)!=2||fields[0]!=vm||len(fields[1])!=32 {continue}
    r.mu.Lock()
    b:=r.bots[vm]
    if b==nil{b=&bot{vm:vm,peers:make(map[*peer]struct{})};r.bots[vm]=b}
+   if b.nonce!=fields[1] {
+    b.nonce=fields[1]
+    b.lastFrame=0
+    b.frame=fragments{} // new browser controller, existing Chromium stays live
+   }
    b.addr=addr;b.seen=time.Now()
    r.addresses[addr.IP.String()]=vm
    r.mu.Unlock()

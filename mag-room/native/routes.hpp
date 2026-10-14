@@ -411,7 +411,12 @@ static void route(int fd, Req &r, bool bridge = false) {
     if(enable)argv.push_back(bridge_token());
     auto result=run_argv(argv,65,4096);
     if(result.code){
-      if(!enable) ROOT_REVOKE_PENDING.insert(vm);
+      if(enable){
+        // A failed ON could still have started the guest service before
+        // a late readiness timeout. Never leave that privileged socket up.
+        auto cleanup=run_argv({"sudo","-n",ROOT_CTL,"off",vm},65,4096);
+        if(cleanup.code)ROOT_REVOKE_PENDING.insert(vm);
+      }else ROOT_REVOKE_PENDING.insert(vm);
       agents_event();
       error_json(fd,502,"Guest root lease change failed: "+
                         result.out.substr(0,400));return;

@@ -95,16 +95,19 @@ public:
         !verified(packet, (size_t)n) || packet[4] != 3 ||
         get16(packet + 9) != 0 || get16(packet + 11) != 1) return;
     const uint32_t seq = get32(packet + 5);
-    if (seq <= ctrl_seq_) return; // replay protection per controller lifetime
-    ctrl_seq_ = seq;
     std::string raw((const char *)packet + HEADER, (size_t)n - HEADER - TAG);
     mj::Val obj;
     if (!mj::parse(raw, obj) || !obj.isObj()) return;
     std::string kind = str(obj, "kind");
     if (kind == "subscribe") {
+      // Authenticated subscription also starts a new control sequence after
+      // a relay restart; existing Chrome and its tabs remain untouched.
+      ctrl_seq_ = seq;
       subscribed_ = std::chrono::steady_clock::now();
       return;
     }
+    if (seq <= ctrl_seq_) return;
+    ctrl_seq_ = seq;
     if (kind == "pointer") {
       auto px = obj.find("x"), py = obj.find("y");
       if (!px || !py || px->type != mj::Val::NUM || py->type != mj::Val::NUM)

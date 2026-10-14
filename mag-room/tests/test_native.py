@@ -152,8 +152,13 @@ class Native(unittest.TestCase):
   finally:Model.reply=None
  def test_11_frontend_live_contract(self):
   html=self.request('/',raw=True).decode()
-  self.assertIn('id="console-output"',html)
-  self.assertIn('id="console-form"',html)
+  self.assertIn('id="terminal"',html)
+  self.assertIn('id="terminal-panel"',html)
+  self.assertIn('new Terminal(',html)
+  self.assertIn('terminal_input',html)
+  self.assertIn('terminal_resize',html)
+  self.assertNotIn('id="activity"',html)
+  self.assertNotIn('id="console-form"',html)
   self.assertIn('id="left-panel"',html)
   self.assertIn('id="right-panel"',html)
   self.assertIn('id="screen"',html)

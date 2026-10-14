@@ -130,14 +130,16 @@ public:
     if (!mj::parse(raw, obj) || !obj.isObj()) return;
     std::string kind = str(obj, "kind");
     if (kind == "subscribe") {
-      // Authenticated subscription also starts a new control sequence after
-      // a relay restart; existing Chrome and its tabs remain untouched.
       ctrl_seq_ = seq;
       subscribed_ = std::chrono::steady_clock::now();
       return;
     }
     if (seq <= ctrl_seq_) return;
     ctrl_seq_ = seq;
+    if (kind == "unsubscribe") {
+      subscribed_ = {};
+      return;
+    }
     if (kind == "console") {
       const std::string id = str(obj, "id");
       const std::string command = str(obj, "command");

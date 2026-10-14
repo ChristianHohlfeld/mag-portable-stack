@@ -354,6 +354,25 @@ int main(int argc, char **argv) {
         else if (r.path == "/read")
           out = c.eval("({url:location.href,title:document.title,text:document."
                        "body.innerText.slice(0,12000)})");
+        else if (r.path == "/terminal/input") {
+          if (r.method != "POST") throw std::runtime_error("POST required");
+          std::string text = value("text");
+          if (text.size() > 500) throw std::runtime_error("Terminal input too long");
+          uint64_t cursor = udp.terminal_cursor();
+          if (body.find("enter") && body.find("enter")->asBool()) text += "\r";
+          udp.terminal_input(text);
+          out["cursor"] = (double)cursor;
+          out["sent"] = true;
+        } else if (r.path == "/terminal/output") {
+          uint64_t after = 0;
+          std::string raw = value("after");
+          if (!raw.empty()) {
+            if (raw.find_first_not_of("0123456789") != std::string::npos)
+              throw std::runtime_error("Invalid output cursor");
+            after = std::stoull(raw);
+          }
+          out = udp.terminal_read(after);
+        }
         else if (r.path == "/screenshot.png" ||
                  r.path == "/screenshot.jpg") {
           Val p = Val::object();

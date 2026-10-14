@@ -1352,7 +1352,7 @@ struct Turn {
   std::string error;
 };
 struct TurnReport {
-  std::string text, progress_key;
+  std::string text, progress_key, error;
   int successful_tools = 0, failed_tools = 0;
   bool continue_requested = false;
 };
@@ -1837,7 +1837,8 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
     Turn t = backend_turn(messages, round == MAX_TOOL_ROUNDS ? "[]" : tools,
                           autotalk ? 0.75 : 0.55, on_delta);
     if (!t.error.empty()) {
-      emit_event("error", bot_id, bot_name, t.error);
+      report.error = t.error.substr(0, 280);
+      emit_event("error", bot_id, bot_name, report.error);
       break;
     }
     Val asst = Val::object();
@@ -1924,8 +1925,15 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
   replaceAll(final_text, "[[MAG:WEITER]]", "");
   replaceAll(final_text, "[[MAG:ENDE]]", "");
   report.text = trim(final_text);
-  if (report.text.empty() && report.failed_tools && !STOP.load())
-    report.text = "Werkzeugfehler. Details stehen im Aktivitaetsprotokoll.";
+  if (report.text.empty() && !STOP.load()) {
+    if (!report.error.empty())
+      report.text = "Antwort fehlgeschlagen: " + report.error;
+    else if (report.failed_tools)
+      report.text = "Werkzeugfehler. Details stehen im Aktivitaetsprotokoll.";
+    else
+      report.text = "Es wurde keine Antwort erzeugt. Bitte erneut versuchen.";
+    report.continue_requested = false;
+  }
   return report;
 }
 

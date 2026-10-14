@@ -364,9 +364,18 @@ int main(int argc, char **argv) {
           close(fd);
           continue;
         } else if (r.path == "/navigate" || r.path == "/snapshot") {
-          auto url = value("url");
+          auto url = trim(value("url"));
+          // Treat a bare domain as HTTPS, exactly like the address bar.
+          // Explicit schemes must still be HTTP(S); do not allow file/JS.
+          if (url.find("://") == std::string::npos &&
+              url.find(':') == std::string::npos &&
+              url.find_first_of(" \t\r\n") == std::string::npos &&
+              url.find('.') != std::string::npos)
+            url = "https://" + url;
           if (url.rfind("http://", 0) != 0 && url.rfind("https://", 0) != 0)
-            throw std::runtime_error("HTTP(S) URL required");
+            throw std::runtime_error("Please enter a valid HTTP(S) address");
+          if (url.find_first_of(" \t\r\n") != std::string::npos)
+            throw std::runtime_error("URL must not contain whitespace");
           Val p = Val::object();
           p["url"] = url;
           auto n = c.call("Page.navigate", p);

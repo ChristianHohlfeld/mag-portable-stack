@@ -444,6 +444,50 @@ int main(int argc, char **argv) {
       std::cout << r.out;
       return r.code;
     }
+    if (action == "privilege-on" || action == "privilege-off") {
+      marker(n); // Enforce ownership before any privileged guest action.
+      if (state(n) != "ready")
+        throw std::runtime_error("Guest not ready for root lease change");
+      std::string command;
+      if (action == "privilege-off") {
+        command = "systemctl kill --kill-who=all mag-root-shell.service "
+                  ">/dev/null 2>&1 || true; "
+                  "systemctl stop mag-root-shell.service >/dev/null 2>&1 || true; "
+                  "rm -f /run/mag-root-shell.sock /usr/local/sbin/mag-root-console; "
+                  "if systemctl is-active --quiet mag-root-shell.service; then "
+                  "echo 'root service still active'; exit 1; fi; "
+                  "test ! -S /run/mag-root-shell.sock";
+      } else {
+        if (argc != 4 ||
+            !std::regex_match(argv[3], std::regex("[A-Fa-f0-9]{24,128}")))
+          throw std::runtime_error("Invalid root lease token");
+        const std::string url =
+            "http://192.168.122.1:8767/tool/mag-root-console?token=" +
+            std::string(argv[3]);
+        command =
+            "set -e; "
+            "systemctl stop mag-root-shell.service >/dev/null 2>&1 || true; "
+            "curl --fail --silent --show-error --connect-timeout 5 "
+            "--max-time 25 " + quote(url) +
+            " -o /usr/local/sbin/.mag-root-console-new; "
+            "test -s /usr/local/sbin/.mag-root-console-new; "
+            "install -o root -g root -m 0700 "
+            "/usr/local/sbin/.mag-root-console-new "
+            "/usr/local/sbin/mag-root-console; "
+            "rm -f /usr/local/sbin/.mag-root-console-new; "
+            "systemd-run --quiet --collect --unit=mag-root-shell "
+            "--property=KillMode=control-group "
+            "--property=TimeoutStopSec=2s "
+            "/usr/local/sbin/mag-root-console; "
+            "i=0; until test -S /run/mag-root-shell.sock; do "
+            "i=$((i+1)); if test \"$i\" -ge 40; then "
+            "echo 'root PTY socket unavailable'; exit 1; fi; sleep 0.1; "
+            "done";
+      }
+      auto result = guest(n,{"/bin/bash","-lc",command},55);
+      std::cout << result.out;
+      return result.code;
+    }
     if (action == "browser-sandbox") {
       marker(n);
       prepare_browser(n);

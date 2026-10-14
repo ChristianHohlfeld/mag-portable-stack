@@ -537,6 +537,18 @@ static int agent_index(const std::string &id) {
       return (int)i;
   return -1;
 }
+// Browser routes additionally accept the VM alias shown by magbot status.
+// Keep task ownership and all other APIs bound to stable agent IDs.
+static int browser_agent_index(const std::string &id_or_vm) {
+  std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
+  int idx = agent_index(id_or_vm);
+  if (idx >= 0) return idx;
+  for (size_t i = 0; i < AGENTS.size(); ++i) {
+    auto vm = AGENTS[i].find("vm");
+    if (vm && vm->asStr() == id_or_vm) return (int)i;
+  }
+  return -1;
+}
 static std::string next_vm() {
   std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
   std::vector<std::string> used;
@@ -1188,6 +1200,30 @@ static std::string ensure_browser(const std::string &vm) {
   auto status = browser_call(ip, BROWSERD_PORT, "GET", "/state", "", 1500);
   if (status.ok && status.status == 200)
     return ip;
+  // A stale mag-browser can still own :9225 after a release or token
+  // change. Never launch over an occupied port: stop only this VM user's
+  // browser controller. Chromium and its persistent profile stay alive.
+  if (status.ok || status.status != 0) {
+    auto stale = guest_command(
+        vm, "pkill -TERM -u bot -x mag-browser >/dev/null 2>&1 || true; "
+            "sleep 1; if pgrep -u bot -x mag-browser >/dev/null; then "
+            "echo stale-browser-controller-still-running; exit 1; fi", 10);
+    if (stale.code)
+      throw std::runtime_error(
+          "Browser controller restart blocked (VM " + vm + "): " +
+          stale.out.substr(0, 240));
+  } else {
+    // Even a broken HTTP response may mean the port is occupied. Check for
+    // our exact controller process before attempting the single restart.
+    auto stale = guest_command(
+        vm, "if pgrep -u bot -x mag-browser >/dev/null; then "
+            "pkill -TERM -u bot -x mag-browser; sleep 1; "
+            "pgrep -u bot -x mag-browser >/dev/null && exit 1; fi", 10);
+    if (stale.code)
+      throw std::runtime_error(
+          "Existing browser controller could not be stopped in " + vm +
+          ": " + stale.out.substr(0, 200));
+  }
   ip = vm_ip(vm, true);
   if (ip.empty())
     throw std::runtime_error("Guest IP unavailable");
@@ -1250,8 +1286,9 @@ static Val browser_json(const std::string &vm, const std::string &path,
     return o;
   }
   if (r.status != 200) {
-    if (v.find("error"))
-      throw std::runtime_error("Browser: " + v.find("error")->asStr());
+    throw std::runtime_error(
+        "Browser HTTP " + std::to_string(r.status) + ": " +
+        (v.find("error") ? v.find("error")->asStr() : r.body.substr(0, 200)));
   }
   return v;
 }

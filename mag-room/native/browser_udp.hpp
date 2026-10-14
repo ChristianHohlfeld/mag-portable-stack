@@ -12,12 +12,18 @@
 #include <cstring>
 #include <string>
 #include <vector>
+#include <atomic>
+#include <thread>
+#include <map>
+#include <openssl/evp.h>
 
 class BrowserUDP {
   int fd_ = -1;
   sockaddr_in server_{};
   std::string secret_, vm_;
   uint32_t frame_seq_ = 0, ctrl_seq_ = 0;
+  std::thread console_worker_;
+  std::atomic<bool> console_busy_{false};
   std::chrono::steady_clock::time_point subscribed_{}, hello_{}, frame_{};
   static constexpr size_t HEADER = 13, TAG = 16, CHUNK = 1000;
   static void put16(std::string &s, uint16_t n) {
@@ -60,6 +66,26 @@ class BrowserUDP {
     (void)sendto(fd_, packet.data(), packet.size(), MSG_DONTWAIT,
                  (sockaddr *)&server_, sizeof(server_));
   }
+  static std::string as_b64(const std::string &data) {
+    if (data.empty()) return "";
+    std::string out(((data.size() + 2) / 3) * 4, '\0');
+    EVP_EncodeBlock((unsigned char *)out.data(),
+                    (const unsigned char *)data.data(), (int)data.size());
+    return out;
+  }
+  void console_reply(const std::string &id, int exit_code,
+                     const std::string &data) {
+    const size_t total = std::max<size_t>(1, (data.size() + 479) / 480);
+    for (size_t i = 0; i < total; ++i) {
+      mj::Val part = mj::Val::object();
+      part["id"] = id;
+      part["index"] = (int)i;
+      part["total"] = (int)total;
+      part["exit"] = exit_code;
+      part["data"] = as_b64(data.substr(i * 480, 480));
+      send(4, ++frame_seq_, 0, 1, mj::dump(part));
+    }
+  }
   static std::string str(const mj::Val &v, const char *key) {
     auto p = v.find(key);
     return p ? p->asStr() : "";
@@ -83,7 +109,10 @@ public:
     if (inet_pton(AF_INET, host.c_str(), &server_.sin_addr) != 1)
       throw std::runtime_error("Invalid MAG bridge IP");
   }
-  ~BrowserUDP() { if (fd_ >= 0) close(fd_); }
+  ~BrowserUDP() {
+    if (console_worker_.joinable()) console_worker_.join();
+    if (fd_ >= 0) close(fd_);
+  }
   int fd() const { return fd_; }
   void receive(CDP &cdp) {
     unsigned char packet[1400];
@@ -108,6 +137,32 @@ public:
     }
     if (seq <= ctrl_seq_) return;
     ctrl_seq_ = seq;
+    if (kind == "console") {
+      const std::string id = str(obj, "id");
+      const std::string command = str(obj, "command");
+      if (id.empty() || id.size() > 24 ||
+          id.find_first_not_of("0123456789abcdefghijklmnopqrstuvwxyz") !=
+              std::string::npos ||
+          command.empty() || command.size() > 640 ||
+          command.find('\0') != std::string::npos) return;
+      if (console_busy_.exchange(true)) {
+        console_reply(id, 125, "Konsole beschaeftigt.\n");
+        return;
+      }
+      if (console_worker_.joinable()) console_worker_.join();
+      console_worker_ = std::thread([this, id, command] {
+        try {
+          // The daemon runs as the isolated guest's unprivileged 'bot'.
+          // Time + output limits avoid a stuck command monopolizing the VM.
+          mag::Result result = mag::run({"/bin/bash", "-lc", command}, 12, 12000);
+          console_reply(id, result.code, result.out);
+        } catch (const std::exception &e) {
+          console_reply(id, 124, std::string("Konsole: ") + e.what() + "\n");
+        }
+        console_busy_ = false;
+      });
+      return;
+    }
     if (kind == "pointer") {
       auto px = obj.find("x"), py = obj.find("y");
       if (!px || !py || px->type != mj::Val::NUM || py->type != mj::Val::NUM)

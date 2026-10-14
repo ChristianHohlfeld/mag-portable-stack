@@ -293,7 +293,7 @@ int main(int argc, char **argv) {
     c.call("Emulation.setDeviceMetricsOverride", metrics);
     auto snapshot = [&]() {
       Val state = c.eval("({url:location.href,title:document.title})");
-      state["udp_transport"] = "MGB2";
+      state["udp_transport"] = "MGB3";
       state["udp_port"] = 9227;
       return state;
     };

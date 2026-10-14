@@ -71,7 +71,8 @@ int main() {
       if(n>1 && input[0]=='I')shell.input(std::string((char *)input+1,(size_t)n-1));
       else if(n>2 && input[0]=='R'){
         unsigned cols=0,rows=0;
-        if(sscanf((const char *)input+1,"%u:%u",&cols,&rows)==2)
+        std::string safe((const char *)input+1,(size_t)n-1);
+        if(safe.size()<24 && sscanf(safe.c_str(),"%u:%u",&cols,&rows)==2)
           shell.resize(cols,rows);
       }else if(n==0||(n<0&&errno!=EAGAIN)){close(client);client=-1;}
     }

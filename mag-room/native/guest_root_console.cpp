@@ -7,6 +7,7 @@
 #include <csignal>
 #include <cstdio>
 #include <cstring>
+#include <ctime>
 #include <filesystem>
 #include <poll.h>
 #include <pwd.h>
@@ -39,6 +40,12 @@ int main() {
   shell.start(100,30);
   int client=-1;
   while(running){
+    // Fail closed if MAG disappears: no permanent root session after
+    // host service crash, lost Tailscale link or QGA heartbeat failure.
+    FILE *lease=fopen("/run/mag-root-shell.heartbeat","r");
+    long long last=0;
+    if(lease){(void)fscanf(lease,"%lld",&last);fclose(lease);}
+    if(last<=0 || std::time(nullptr)-last>90)break;
     pollfd p[3]{{server,POLLIN,0},{shell.fd(),POLLIN,0},{client,POLLIN,0}};
     int count=poll(p,3,100);
     if(count<0&&errno==EINTR)continue;

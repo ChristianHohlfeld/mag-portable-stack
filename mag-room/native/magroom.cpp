@@ -867,6 +867,8 @@ static const char *T_BROWSER_READ =
     R"({"type":"function","function":{"name":"browser_read","description":"Read current URL, title and visible text from your VM browser.","parameters":{"type":"object","properties":{},"additionalProperties":false}}})";
 static const char *T_BROWSER_SHOT =
     R"({"type":"function","function":{"name":"browser_screenshot","description":"Take a screenshot of your VM browser and share it into the room.","parameters":{"type":"object","properties":{},"additionalProperties":false}}})";
+static const char *T_BROWSER_POINTER =
+    R"({"type":"function","function":{"name":"browser_pointer","description":"Control your own hot Chromium viewport by CSS pixel coordinates x=0..1439, y=0..899. Use action tap, move, down, or up and optional button left, right, or middle. Shares the same browser session the human sees.","parameters":{"type":"object","properties":{"x":{"type":"number"},"y":{"type":"number"},"action":{"type":"string"},"button":{"type":"string"}},"required":["x","y"],"additionalProperties":false}}})";
 static const char *T_BROWSER_BACK =
     R"({"type":"function","function":{"name":"browser_back","description":"Go back in your VM browser.","parameters":{"type":"object","properties":{},"additionalProperties":false}}})";
 static const char *T_BROWSER_SCROLL =
@@ -931,7 +933,7 @@ static const char *FILES_RULES =
     "Dateien:\n{files}";
 static const char *FRONTEND_RULES =
     "\n\n[Browser] Eigener persistenter Chromium in deiner VM: browser_open, "
-    "browser_click, browser_type, browser_read, browser_screenshot, "
+    "browser_click, browser_type, browser_pointer, browser_read, browser_screenshot, "
     "browser_back, browser_scroll. [Frontend-Wartung] Du kannst die "
     "Raum-Oberflaeche verbessern: screenshot_room (UI pruefen), "
     "download_frontend, mit run_command editieren, publish_frontend (alle "
@@ -1326,7 +1328,7 @@ static std::string tools_json(int bot_idx, bool web) {
   if (!vm.empty() && vm != "keine") {
     for (const char *d :
          {T_BROWSER_OPEN, T_BROWSER_CLICK, T_BROWSER_TYPE, T_BROWSER_READ,
-          T_BROWSER_SHOT, T_BROWSER_BACK, T_BROWSER_SCROLL, T_SCREENSHOT_ROOM,
+          T_BROWSER_SHOT, T_BROWSER_POINTER, T_BROWSER_BACK, T_BROWSER_SCROLL, T_SCREENSHOT_ROOM,
           T_DL_FRONTEND, T_PUB_FRONTEND})
       defs.push_back(d);
   }
@@ -1705,6 +1707,17 @@ static std::string dispatch_tool(int bot_idx, const std::string &name,
       b["url"] = getstr("url");
       return mj::dump(
           browser_json(vm, "/navigate?url=" + url_encode(getstr("url"))));
+    }
+    if (name == "browser_pointer") {
+      auto px = a.find("x"), py = a.find("y");
+      if (!px || !py || px->type != Val::NUM || py->type != Val::NUM)
+        throw std::runtime_error("Numeric x/y coordinates required");
+      Val b = Val::object();
+      b["x"] = px->asNum();
+      b["y"] = py->asNum();
+      if (a.find("action")) b["action"] = getstr("action");
+      if (a.find("button")) b["button"] = getstr("button");
+      return mj::dump(browser_json(vm, "/pointer", "POST", mj::dump(b)));
     }
     if (name == "browser_click") {
       Val b = Val::object();

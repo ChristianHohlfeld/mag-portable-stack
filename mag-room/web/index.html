@@ -253,8 +253,11 @@ let videoChunks=null,paintBusy=false,lastFrameSeq=-1,frameLastAt=0;
 const terminals=new Map(),utf8Encoder=new TextEncoder();
 let activeTerminal=null;
 function terminalStatus(t){$('terminal-status').textContent=t}
+function selectedBotVM(){
+ return state.agents.find(a=>a.id===$('browser-agent').value)?.vm||'';
+}
 function terminalSend(kind,payload={}){
- if(!liveConsole||liveConsole.readyState!=='open')return false;
+ if(!liveVM||liveVM!==selectedBotVM()||!liveConsole||liveConsole.readyState!=='open')return false;
  liveConsole.send(JSON.stringify({kind,...payload}));
  return true;
 }
@@ -331,7 +334,7 @@ function updateConsoleLabel(){
  terminalStatus(liveConsole?.readyState==='open'?'Shell verbunden':'Verbinde VM-Terminal …');
 }
 function receiveConsole(data){
- if(!activeTerminal)return;
+ if(!activeTerminal||!liveVM||liveVM!==selectedBotVM())return;
  let message;try{message=JSON.parse(data)}catch{return}
  if(message?.kind!=='terminal_output'||typeof message.data!=='string'||message.data.length>950)return;
  try{
@@ -391,7 +394,7 @@ new ResizeObserver(()=>{
 
 function liveStatus(v){$('browser-status').textContent=v}
 function liveSend(data){
- if(!liveControl||liveControl.readyState!=='open')return false;
+ if(!liveVM||liveVM!==selectedBotVM()||!liveControl||liveControl.readyState!=='open')return false;
  liveControl.send(JSON.stringify(data));
  return true;
 }

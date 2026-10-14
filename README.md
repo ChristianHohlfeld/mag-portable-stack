@@ -142,9 +142,9 @@ keeping **one persistent Chromium + profile inside each bot's own KVM**.
 - In the VM, \`mag-browser\` owns the one CDP connection to the hot Chromium
   tab. It reattaches on controller upgrades without resetting tabs or cookies.
 - Each browser sends HMAC-SHA256-authenticated, bounded JPEG packets over
-  **guest UDP :9227 → MAG UDP :18783**; no second browser or video transcoder.
+  **VM's UDP :9227 → MAG UDP :18783**; no second browser or video transcoder.
 - The dedicated Go/Pion \`mag-browser-webrtc\` gateway forwards assembled JPEG
-  frames on an unordered WebRTC SCTP DataChannel through SRTP/DTLS over UDP
+  frames on an unordered WebRTC SCTP DataChannel over DTLS/ICE UDP
   (ICE UDP 18840–18890). Pointer/touch/keyboard/wheel commands travel back
   on a reliable WebRTC DataChannel and signed UDP into that same VM browser.
 - Normal agent tools use the same existing CDP controller, not a separate

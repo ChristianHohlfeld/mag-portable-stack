@@ -214,6 +214,25 @@ func (r *relay) receive() {
   }
  }
 }
+// Bound relay memory even when the sender disappears mid-frame.
+func (r *relay) reap() {
+ ticker:=time.NewTicker(5*time.Second)
+ defer ticker.Stop()
+ for range ticker.C {
+  r.mu.Lock()
+  now:=time.Now()
+  for vm,b:=range r.bots {
+   if b.frame.received>0 && now.After(b.frame.deadline) {
+    b.frame=fragments{}
+   }
+   if len(b.peers)==0 && !b.seen.IsZero() && now.Sub(b.seen)>90*time.Second {
+    delete(r.bots,vm)
+    if b.addr!=nil{delete(r.addresses,b.addr.IP.String())}
+   }
+  }
+  r.mu.Unlock()
+ }
+}
 func (r *relay) resolveVM(id string)(string,error) {
  f,err:=os.ReadFile(os.Getenv("MAG_ROOM_STATE")+"/agents.json")
  if err!=nil{return "",fmt.Errorf("agents: %w",err)}
@@ -314,6 +333,7 @@ func main(){
  if state==""{state="/var/lib/magbot/room";_=os.Setenv("MAG_ROOM_STATE",state)}
  relay,err:=newRelay();if err!=nil{log.Fatal(err)}
  go relay.receive()
+ go relay.reap()
  mux:=http.NewServeMux()
  mux.HandleFunc("POST /offer",relay.offer)
  mux.HandleFunc("GET /status",func(w http.ResponseWriter,_ *http.Request){

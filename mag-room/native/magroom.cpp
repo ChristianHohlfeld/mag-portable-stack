@@ -1200,8 +1200,14 @@ static std::string ensure_browser(const std::string &vm) {
   if (ip.empty())
     throw std::runtime_error("Guest IP unavailable");
   auto status = browser_call(ip, BROWSERD_PORT, "GET", "/state", "", 1500);
-  if (status.ok && status.status == 200)
-    return ip;
+  if (status.ok && status.status == 200) {
+    Val state;
+    if (mj::parse(status.body, state) && state.find("udp_transport") &&
+        state.find("udp_transport")->asStr() == "MGB1")
+      return ip;
+    // Old controller from a previous release: attach the new controller
+    // to the same already-running Chromium without touching its profile.
+  }
   // A stale mag-browser can still own :9225 after a release or token
   // change. Never launch over an occupied port: stop only this VM user's
   // browser controller. Chromium and its persistent profile stay alive.

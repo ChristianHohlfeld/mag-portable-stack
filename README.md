@@ -277,3 +277,44 @@ terminal with the mouse to read older lines, scroll down again, type
 `pwd` and press Enter. Both the command prompt and new output must stay
 visible within the terminal, with no outer sidebar jump. Repeat after
 resizing the right panel and in Joe's terminal **if Joe's VM exists**.
+
+## Tailscale HTTPS: one remote desktop URL per bot
+
+MAG reuses its existing Tailnet HTTPS origin, not one Tailscale proxy or
+certificate per VM. Every bot's **persistent name slug / agent ID** is also
+its dedicated URL. Example:
+
+- `https://mag.tail3e02ae.ts.net:8446/bot/ab/`
+- `https://mag.tail3e02ae.ts.net:8446/bot/joe/`
+
+The examples resolve only if bots with IDs `ab` and `joe` currently
+exist. The room lists an **Fernzugriff** link next to each registered bot,
+derived from its actual persisted ID. Bot creation immediately enables the
+URL; deletion immediately returns HTTP 404, without rewriting proxy config,
+restarting TailScale or leaving an orphan web route. VM registry and room
+files are the source of truth; no parallel URL database or bot router.
+
+The remote desktop is a focused version of the **same MAG web client**:
+live Chromium screenshots/keyboard/mouse and a real xterm.js PTY on
+separate per-bot authenticated WebRTC/UDP channels. The URL locks the
+browser/console selection to that bot and omits chat/other bots' controls.
+Opening multiple remote viewers never creates a new Chromium browser
+instance or changes the persistent guest profile. Normal browser and
+terminal fullscreen controls remain available. Remote sessions tear down
+WebRTC peers when the page is closed; Chromium and the guest VM remain up.
+
+**Access scope:** The dedicated URL is a navigation link, not an
+independent security credential. MAG remains accessible only to devices
+allowed by your existing Tailscale ACL and HTTPS Serve configuration.
+Do not enable public Funnel or expose localhost ports to the public
+Internet to make these links work. Anyone authorized to use the MAG room
+within the Tailnet already has its normal operator permissions.
+
+**Verify after deployment:** open the actual room over Tailscale,
+click the listed Fernzugriff links and verify Browser+PTY control of Ab
+and Joe independently. Closing one remote page must not close the
+corresponding Chromium window or change the other bot's screen. Test
+`curl -I` or GET on a nonexistent `/bot/unknown/` path to confirm 404,
+then create/delete a temporary test bot only if resource capacity permits.
+GitHub CI checks routes/UI/streaming compilation but not your Tailnet
+ACL, HTTPS certificate or live UDP ICE traversal on MAG.

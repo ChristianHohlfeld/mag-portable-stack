@@ -229,6 +229,38 @@ static void route(int fd, Req &r, bool bridge = false) {
                     {{"Cache-Control", "no-store"}});
     return;
   }
+  // Only the authenticated MAG origin can signal the local WebRTC gateway.
+  // The gateway and the VM browser remain on the same persistent page.
+  if (m == "POST" && path == "/api/browser-live/offer") {
+    std::string requested = qparam(r.query, "bot");
+    int idx = browser_agent_index(requested);
+    if (idx < 0) {
+      error_json(fd, 404, "Unknown browser or VM");
+      return;
+    }
+    if (r.body.empty() || r.body.size() > 65536) {
+      error_json(fd, 400, "SDP offer required");
+      return;
+    }
+    std::string vm = bot_field(idx, "vm");
+    ensure_browser(vm); // triggers one VM-owned hot browser only if necessary
+    std::string answer;
+    long status = 0;
+    if (!http_simple("127.0.0.1", 18784, "POST",
+                     "/offer?bot=" + url_encode(vm), r.body,
+                     {{"Content-Type", "application/json"}}, answer,
+                     &status, nullptr, 15000)) {
+      error_json(fd, 503, "WebRTC/UDP browser gateway unavailable");
+      return;
+    }
+    if (status != 200) {
+      error_json(fd, 502, "WebRTC/UDP gateway rejected offer");
+      return;
+    }
+    send_response(fd, 200, "application/json", answer,
+                  {{"Cache-Control", "no-store"}});
+    return;
+  }
   if (m == "POST" && path.rfind("/api/browser/", 0) == 0) {
     auto rest = path.substr(13);
     auto slash = rest.find('/');

@@ -4,7 +4,7 @@ ROOT=pathlib.Path(__file__).resolve().parents[2]
 def port():
  with socket.socket() as s:s.bind(('127.0.0.1',0));return s.getsockname()[1]
 class Model(http.server.BaseHTTPRequestHandler):
- protocol_version='HTTP/1.1';calls=[];delay=0
+ protocol_version='HTTP/1.1';calls=[];delay=0;reply=None;script=[]
  def log_message(self,*a):pass
  def do_GET(self):
   data=b'{"data":[{"id":"gpt-oss:120b"}]}'
@@ -14,8 +14,11 @@ class Model(http.server.BaseHTTPRequestHandler):
   self.send_response(200);self.send_header('Transfer-Encoding','chunked');self.end_headers()
   if self.delay:time.sleep(self.delay)
   try:
-   for text in ['Hallo ','aus dem ','Modell.']:
-    event=json.dumps({'choices':[{'delta':{'content':text}}]}).encode()
+   scripted=type(self).script.pop(0) if type(self).script else None
+   chunks=scripted if scripted is not None else ([type(self).reply] if type(self).reply is not None else ['Hallo ','aus dem ','Modell.'])
+   for piece in chunks:
+    delta=piece if isinstance(piece,dict) else {'content':piece}
+    event=json.dumps({'choices':[{'delta':delta}]}).encode()
     for payload in [b'data: '+event+b'\n\n',b'']:
      if payload:self.wfile.write(('%x\r\n'%len(payload)).encode()+payload+b'\r\n');self.wfile.flush()
    end=b'data: [DONE]\n\n';self.wfile.write(('%x\r\n'%len(end)).encode()+end+b'\r\n0\r\n\r\n');self.wfile.flush()
@@ -82,16 +85,62 @@ class Native(unittest.TestCase):
   self.error(404,'/static/%2e%2e%2fagents.json');self.error(404,'/api/file/../../etc/passwd')
  def test_06_stop_interrupts_and_human_input_stays_responsive(self):
   Model.delay=3;self.request('/api/autotalk',{'on':True})
+  time.sleep(.15)
+  self.assertFalse(self.request('/api/state')['busy'],'Autonomy must be idle without a new task')
+  start=time.monotonic();self.request('/api/message',{'text':'Ich bin auch hier','bots':['test']});self.assertLess(time.monotonic()-start,.5)
   for _ in range(100):
    if self.request('/api/state')['busy']:break
    time.sleep(.02)
-  start=time.monotonic();self.request('/api/message',{'text':'Ich bin auch hier','bots':['test']});self.assertLess(time.monotonic()-start,.5)
+  self.assertTrue(self.request('/api/state')['busy'])
   start=time.monotonic();self.request('/api/stop',{});s=self.wait_idle();self.assertLess(time.monotonic()-start,1)
   self.assertFalse(s['autotalk']);Model.delay=0
  def test_07_persistence(self):
   before=self.request('/api/state');self.proc.terminate();self.proc.wait(timeout=5);self.log.close();self.start();after=self.request('/api/state')
   self.assertEqual(before['room'],after['room']);self.assertEqual(before['agents'],after['agents']);self.assertFalse(after['autotalk'])
- def test_08_malformed_http_rejected(self):
+ def test_08_idle_autonomy_does_not_make_up_work(self):
+  self.request('/api/autotalk',{'on':True})
+  calls_before=len(Model.calls)
+  time.sleep(1.2)
+  self.assertEqual(len(Model.calls),calls_before,'Autonomy should not run without new user work')
+  self.assertTrue(self.request('/api/state')['autotalk'],'Keep the enabled switch ON')
+  self.request('/api/stop',{})
+ def test_09_task_without_tools_stops_after_one_answer(self):
+  Model.reply='Erledigt. [[MAG:WEITER]]'
+  try:
+   self.request('/api/autotalk',{'on':True})
+   initial=len(Model.calls)
+   self.request('/api/message',{'text':'Pruefe einen Sachverhalt','bots':['test']})
+   for _ in range(100):
+    state=self.request('/api/state')
+    if len(Model.calls)>initial and any(m.get('content')=='Erledigt.' for m in state['room']):break
+    time.sleep(.05)
+   else:self.fail('Expected model answer without visible control marker')
+   time.sleep(1.2)
+   self.assertEqual(len(Model.calls),initial+1,'No tools: never trigger an automatic continuation')
+   self.assertTrue(state['autotalk'])
+  finally:
+   self.request('/api/stop',{});Model.reply=None
+ def test_10_verified_tool_step_can_continue_once(self):
+  command={'tool_calls':[{'index':0,'id':'call_test_1','function':{'name':'remember','arguments':'{"fact":"autonomy test","source":"test"}'}}]}
+  Model.script=[[command],['Arbeit begonnen [[MAG:WEITER]]'],['Arbeit abgeschlossen [[MAG:ENDE]]']]
+  try:
+   self.request('/api/autotalk',{'on':True})
+   initial=len(Model.calls)
+   self.request('/api/message',{'text':'Merke eine Testnotiz und pruefe sie weiter','bots':['test']})
+   for _ in range(160):
+    state=self.request('/api/state')
+    bot_messages=[m.get('content','') for m in state['room'] if m.get('role')=='assistant']
+    if len(Model.calls)>=initial+3 and 'Arbeit abgeschlossen' in bot_messages:break
+    time.sleep(.05)
+   else:self.fail('Verified tool action did not yield one controlled continuation')
+   self.assertEqual(len(Model.calls),initial+3)
+   self.assertFalse(any('[[MAG:' in x for x in bot_messages),'Do not persist internal markers')
+   time.sleep(1.2)
+   self.assertEqual(len(Model.calls),initial+3,'Final status must not trigger another bot turn')
+   self.assertTrue(state['autotalk'],'Autonomy may remain enabled while idle')
+  finally:
+   self.request('/api/stop',{});Model.script=[]
+ def test_11_malformed_http_rejected(self):
   for headers in ['Content-Length: -1\r\n','Content-Length: 2\r\nContent-Length: 3\r\n','Transfer-Encoding: chunked\r\n']:
    with socket.create_connection(('127.0.0.1',self.ui),timeout=3) as s:
     s.sendall(('POST /api/message HTTP/1.1\r\nHost: localhost\r\n'+headers+'\r\n').encode());self.assertIn(b'500',s.recv(4096))

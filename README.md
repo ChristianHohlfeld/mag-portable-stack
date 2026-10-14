@@ -77,8 +77,18 @@ current data casually during an executable rollback.
 ## Operating behavior
 
 - Autonomy runs on the server without browser viewers, and its enabled/paused
-  state survives a service restart. Human turns queue ahead of the next automatic
-  turn; the single inference slot is never duplicated.
+  state survives a service restart. **Autonomy ON does not mean continuous chat.**
+  A new user turn arms one accountable task owner (the first selected bot).
+  Other selected bots may answer the explicit human request but do not create
+  autonomous tasks by talking to each other.
+- Continuations require a successful tool action, a distinct tool-result
+  fingerprint and the model's `[[MAG:WEITER]]` marker. `[[MAG:ENDE]]` ends
+  the task. Markers are stripped from persisted responses. A failed/no-tool
+  step, repeated result, repeated reply, cancelled task or eight automatic
+  continuations ends execution, while the Autonomy toggle can remain ON.
+- Human turns preempt active work; the single inference slot is never duplicated.
+  Restarts preserve the ON switch, but do not silently resurrect stale tasks.
+  A new user instruction is needed to resume autonomous work.
 - Stop disables autonomy and cancels the active model stream/queued turns.
 - Creating a bot uses an existing warm golden disk with a private qcow2 overlay,
   cloud-init identity and DHCP identification by MAC. Admission limits are checked
@@ -105,3 +115,21 @@ DE/EN samples. The model's CPU inference remains the dominant response latency.
 See `docs/CONSOLIDATION_PLAN.md` and `docs/VALIDATION.md` for the migration and
 measured results. Historical stacks are removed from the active tree and remain
 only in pre-migration backups and Git history.
+
+## Task-oriented autonomy
+
+The server in `mag-room/native/magroom.cpp` owns the workflow; no per-VM
+prompt copies, second scheduler, Python application server or browser-side
+agent orchestration. Bots continue work only for a real user request, not for
+another bot's chatter. Every turn records tool results, and identical failing
+commands are cut off within a turn. A browser boot failure now reports guest
+filesystem diagnostics and keeps the previous browser binary untouched if
+download fails. A successful browser installation or site access must be
+verified on the actual MAG host; CI cannot reach user VMs.
+
+Use `POST /api/autotalk {"on":true}` (or the UI toggle) to enable autonomous
+continuations for **future user turns**. When idle it consumes no inference
+cycles. `POST /api/stop` cancels the active stream, clears the task and
+disables autonomy. Explicit `POST /api/message` always works whether or not
+autonomy is enabled. The eight-step ceiling is a deliberate safety limit;
+follow-up tasks are started with another explicit user instruction.

@@ -935,7 +935,12 @@ static const char *FILES_RULES =
 static const char *FRONTEND_RULES =
     "\n\n[Browser] Eigener persistenter Chromium in deiner VM: browser_open, "
     "browser_click, browser_type, browser_pointer, browser_read, browser_screenshot, "
-    "browser_back, browser_scroll. [Frontend-Wartung] Du kannst die "
+    "browser_back, browser_scroll. Fuer Webrecherchen nutze zuerst web_search "
+    "(Brave-Such-API), wenn verfuegbar, und oeffne konkrete Fundstellen "
+    "mit browser_open. Bei CAPTCHA, ungewöhnlichem Traffic oder "
+    "Verifikationsseite nicht automatisch erneut probieren; benenne "
+    "die Sperre wahrheitsgemaess, nutze erlaubte Quellen oder warte "
+    "auf eine manuelle Verifikation des Nutzers. [Frontend-Wartung] Du kannst die "
     "Raum-Oberflaeche verbessern: screenshot_room (UI pruefen), "
     "download_frontend, mit run_command editieren, publish_frontend (alle "
     "laden neu), screenshot_room zur Kontrolle.";

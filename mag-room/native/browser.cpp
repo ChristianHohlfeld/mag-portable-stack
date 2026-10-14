@@ -293,7 +293,7 @@ int main(int argc, char **argv) {
     c.call("Emulation.setDeviceMetricsOverride", metrics);
     auto snapshot = [&]() {
       Val state = c.eval("({url:location.href,title:document.title})");
-      state["udp_transport"] = "MGB1";
+      state["udp_transport"] = "MGB2";
       state["udp_port"] = 9227;
       return state;
     };
@@ -303,7 +303,11 @@ int main(int argc, char **argv) {
     std::string vm_name = host;
     if (vm_name.rfind("magbot-", 0) == 0)
       vm_name.erase(0, 7); // cloud-init uses magbot-<VM name>
-    BrowserUDP udp(token, vm_name);
+    const std::string udp_key =
+        trim(read(env("MAG_BROWSER_UDP_KEY_FILE", "/home/bot/browserd/udp-key")));
+    if (udp_key.size() != 64)
+      throw std::runtime_error("Per-VM browser UDP key missing");
+    BrowserUDP udp(udp_key, vm_name);
     for (;;) {
       // CDP and UDP input run against exactly the same hot tab on one thread.
       // Do not race a second CDP connection from an auxiliary process.

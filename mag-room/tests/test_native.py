@@ -227,4 +227,18 @@ class Native(unittest.TestCase):
   self.error(404,'/api/browser/unknown/not-an-action',{})
   self.error(404,'/api/screen/unknown')
 
+ def test_13_remote_route_disappears_when_bot_deleted(self):
+  # Test agent has vm="" so deleting it requires no guest lifecycle.
+  # Keep the original fixture intact for future test runs.
+  saved=self.state.joinpath('agents.json').read_text()
+  try:
+   self.assertIn(b'<html',self.request('/bot/test/',raw=True))
+   self.assertTrue(self.request('/api/agents/test',method='DELETE')['ok'])
+   self.error(404,'/bot/test/')
+  finally:
+   self.proc.terminate();self.proc.wait(timeout=5);self.log.close()
+   self.state.joinpath('agents.json').write_text(saved)
+   self.start()
+  self.assertIn(b'<html',self.request('/bot/test/',raw=True))
+
 if __name__=='__main__':unittest.main(verbosity=2)

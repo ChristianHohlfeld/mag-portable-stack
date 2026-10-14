@@ -12,12 +12,20 @@ jobs:
       - name: Build
         run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release && cmake --build build -j 4
       - name: Native integration checks
-        run: python3 mag-room/tests/test_native.py
+        run: |
+          ./build/test-guest-pty
+          python3 mag-room/tests/test_native.py
       - uses: actions/setup-go@v5
         with:
           go-version: '1.23'
       - name: Browser WebRTC UDP gateway
         run: cd mag-room/webrtc && go test -mod=mod ./... && go build -mod=mod -o /tmp/mag-browser-webrtc .
+      - name: Vendor terminal and verify UI assets
+        run: |
+          bash ops/vendor-terminal-assets.sh /tmp/mag-terminal-assets
+          test -s /tmp/mag-terminal-assets/xterm.js
+          test -s /tmp/mag-terminal-assets/xterm-addon-fit.js
+          test -s /tmp/mag-terminal-assets/xterm.css
       - name: Frontend script syntax
         run: |
           python3 -c 'from pathlib import Path; s=Path("mag-room/web/index.html").read_text(); Path("/tmp/mag-room-web.js").write_text(s.split("<script>")[-1].split("</script>")[0])'

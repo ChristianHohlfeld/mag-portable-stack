@@ -2,8 +2,11 @@
 <html lang="de">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>MAG · Raum</title>
 <script src="/static/marked.min.js"></script><script src="/static/purify.min.js"></script><script src="/static/highlight.min.js"></script><link rel="stylesheet" href="/static/github-dark.min.css">
+<link rel="stylesheet" href="/static/xterm.css">
+<script src="/static/xterm.js"></script>
+<script src="/static/xterm-addon-fit.js"></script>
 <style>
-:root{color-scheme:dark;--bg:#101218;--panel:#181c25;--line:#2c3341;--muted:#98a4b7;--accent:#b8d5ff;font:15px/1.55 system-ui,sans-serif}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:#eef2f8}button,input,textarea,select{font:inherit;color:inherit}button{cursor:pointer;border:1px solid var(--line);background:#232b39;border-radius:10px;padding:8px 13px}button:hover{background:#344156}button.primary{background:#b8d5ff;color:#142238}button.danger{color:#ffb3b3}button:disabled{opacity:.5;cursor:wait}input,textarea,select{border:1px solid var(--line);border-radius:10px;background:#10151f;padding:9px}header{height:70px;padding:0 24px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:14px}header strong{font-size:21px;letter-spacing:.04em}header small{color:var(--muted)}header .status{margin-left:auto;font-size:13px;color:var(--muted)}.dot{display:inline-block;background:#76dbac;width:8px;height:8px;border-radius:50%;margin-right:7px}.layout{display:grid;grid-template-columns:240px minmax(0,1fr) 340px;height:calc(100dvh - 70px)}aside{padding:20px;border-right:1px solid var(--line);overflow:auto}aside.right{border-right:0;border-left:1px solid var(--line)}h2{font-size:12px;text-transform:uppercase;letter-spacing:.11em;color:var(--muted);margin:8px 0 14px}.section{margin-bottom:28px}.agent{border:1px solid var(--line);background:var(--panel);border-radius:12px;padding:12px;margin:10px 0}.agent label{display:flex;align-items:center;gap:9px;font-weight:600}.agent small{display:block;color:var(--muted);margin:5px 0}.agent .actions{display:flex;gap:7px}.agent .actions button{font-size:12px;padding:4px 8px}.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.row input{min-width:0;flex:1}.main{display:flex;flex-direction:column;min-width:0;min-height:0}.conversation{flex:1;overflow:auto;padding:28px clamp(18px,5vw,70px);scroll-behavior:smooth}.empty{max-width:490px;margin:15vh auto;color:var(--muted)}.empty h1{font-size:29px;color:#eef2f8;font-weight:550}.message{margin:0 0 28px;max-width:900px}.message .meta{font-size:12px;color:var(--muted);display:flex;gap:10px;align-items:center;margin-bottom:8px}.message .meta strong{font-size:14px;color:var(--accent)}.message.user{background:var(--panel);padding:16px 20px;border-radius:14px}.content{overflow-wrap:anywhere}.content>:first-child{margin-top:0}.content img{max-width:100%;border-radius:10px}.content pre{overflow:auto;padding:14px;border:1px solid var(--line);border-radius:10px;background:#0c1018;position:relative}.copy{position:absolute;right:5px;top:5px;font-size:11px;padding:3px 7px}.content table{border-collapse:collapse;display:block;overflow:auto}.content th,.content td{padding:8px 12px;border:1px solid var(--line)}a{color:var(--accent)}details{color:var(--muted);font-size:12px}.composer{padding:15px 24px 20px;border-top:1px solid var(--line)}.composer textarea{resize:none;width:100%;min-height:78px;max-height:180px}.composer .row{margin-top:9px}.hint{font-size:12px;color:var(--muted)}.spacer{flex:1}.notice{color:#ffcfa6;font-size:13px;min-height:20px}.file{display:block;padding:9px 0;border-bottom:1px solid var(--line);font-size:13px}.file small{color:var(--muted)}#screen{width:100%;border:1px solid var(--line);border-radius:8px;margin-top:10px;cursor:crosshair;touch-action:none;user-select:none;aspect-ratio:8/5;object-fit:contain;background:#070a0e}#screen:focus{outline:2px solid var(--accent);outline-offset:2px}#screen:fullscreen{height:100%;width:100%;object-fit:contain;background:#080c12}#browser-status{min-height:18px}#canvas{width:100%;height:320px;background:white;border:1px solid var(--line);border-radius:8px;margin-top:10px}audio{max-width:100%;height:38px}dialog{background:var(--panel);border:1px solid var(--line);border-radius:16px;color:inherit;max-width:560px;width:90%;padding:25px}dialog::backdrop{background:#0009}dialog input,dialog textarea{display:block;width:100%;margin:10px 0}#memory{white-space:pre-wrap;max-height:400px;overflow:auto}#activity{font-size:12px;max-height:120px;overflow:auto;color:var(--muted)}.mobile-toggle{display:none}@media(max-width:1150px){.layout{grid-template-columns:210px minmax(0,1fr)}aside.right{display:none}.layout.show-tools{grid-template-columns:minmax(0,1fr) 320px}.show-tools aside.left{display:none}.show-tools aside.right{display:block}.mobile-toggle{display:inline-block}}@media(max-width:650px){header{padding:0 15px;gap:8px}header small{display:none}.layout{grid-template-columns:1fr}.layout aside{display:none}.layout.show-agents{grid-template-columns:220px minmax(0,1fr)}.layout.show-agents aside.left{display:block}.layout.show-tools{grid-template-columns:1fr}.show-tools .main{display:none}.show-tools aside.right{display:block}.composer{padding:12px}.conversation{padding:20px 15px}.hint{display:none}}
+:root{color-scheme:dark;--bg:#101218;--panel:#181c25;--line:#2c3341;--muted:#98a4b7;--accent:#b8d5ff;font:15px/1.55 system-ui,sans-serif}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:#eef2f8}button,input,textarea,select{font:inherit;color:inherit}button{cursor:pointer;border:1px solid var(--line);background:#232b39;border-radius:10px;padding:8px 13px}button:hover{background:#344156}button.primary{background:#b8d5ff;color:#142238}button.danger{color:#ffb3b3}button:disabled{opacity:.5;cursor:wait}input,textarea,select{border:1px solid var(--line);border-radius:10px;background:#10151f;padding:9px}header{height:70px;padding:0 24px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:14px}header strong{font-size:21px;letter-spacing:.04em}header small{color:var(--muted)}header .status{margin-left:auto;font-size:13px;color:var(--muted)}.dot{display:inline-block;background:#76dbac;width:8px;height:8px;border-radius:50%;margin-right:7px}.layout{display:grid;grid-template-columns:240px minmax(0,1fr) 340px;height:calc(100dvh - 70px)}aside{padding:20px;border-right:1px solid var(--line);overflow:auto}aside.right{border-right:0;border-left:1px solid var(--line)}h2{font-size:12px;text-transform:uppercase;letter-spacing:.11em;color:var(--muted);margin:8px 0 14px}.section{margin-bottom:28px}.agent{border:1px solid var(--line);background:var(--panel);border-radius:12px;padding:12px;margin:10px 0}.agent label{display:flex;align-items:center;gap:9px;font-weight:600}.agent small{display:block;color:var(--muted);margin:5px 0}.agent .actions{display:flex;gap:7px}.agent .actions button{font-size:12px;padding:4px 8px}.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.row input{min-width:0;flex:1}.main{display:flex;flex-direction:column;min-width:0;min-height:0}.conversation{flex:1;overflow:auto;padding:28px clamp(18px,5vw,70px);scroll-behavior:smooth}.empty{max-width:490px;margin:15vh auto;color:var(--muted)}.empty h1{font-size:29px;color:#eef2f8;font-weight:550}.message{margin:0 0 28px;max-width:900px}.message .meta{font-size:12px;color:var(--muted);display:flex;gap:10px;align-items:center;margin-bottom:8px}.message .meta strong{font-size:14px;color:var(--accent)}.message.user{background:var(--panel);padding:16px 20px;border-radius:14px}.content{overflow-wrap:anywhere}.content>:first-child{margin-top:0}.content img{max-width:100%;border-radius:10px}.content pre{overflow:auto;padding:14px;border:1px solid var(--line);border-radius:10px;background:#0c1018;position:relative}.copy{position:absolute;right:5px;top:5px;font-size:11px;padding:3px 7px}.content table{border-collapse:collapse;display:block;overflow:auto}.content th,.content td{padding:8px 12px;border:1px solid var(--line)}a{color:var(--accent)}details{color:var(--muted);font-size:12px}.composer{padding:15px 24px 20px;border-top:1px solid var(--line)}.composer textarea{resize:none;width:100%;min-height:78px;max-height:180px}.composer .row{margin-top:9px}.hint{font-size:12px;color:var(--muted)}.spacer{flex:1}.notice{color:#ffcfa6;font-size:13px;min-height:20px}.file{display:block;padding:9px 0;border-bottom:1px solid var(--line);font-size:13px}.file small{color:var(--muted)}#screen{width:100%;border:1px solid var(--line);border-radius:8px;margin-top:10px;cursor:crosshair;touch-action:none;user-select:none;aspect-ratio:8/5;object-fit:contain;background:#070a0e}#screen:focus{outline:2px solid var(--accent);outline-offset:2px}#screen:fullscreen{height:100%;width:100%;object-fit:contain;background:#080c12}#browser-status{min-height:18px}#canvas{width:100%;height:320px;background:white;border:1px solid var(--line);border-radius:8px;margin-top:10px}audio{max-width:100%;height:38px}dialog{background:var(--panel);border:1px solid var(--line);border-radius:16px;color:inherit;max-width:560px;width:90%;padding:25px}dialog::backdrop{background:#0009}dialog input,dialog textarea{display:block;width:100%;margin:10px 0}#memory{white-space:pre-wrap;max-height:400px;overflow:auto}.mobile-toggle{display:none}@media(max-width:1150px){.layout{grid-template-columns:210px minmax(0,1fr)}aside.right{display:none}.layout.show-tools{grid-template-columns:minmax(0,1fr) 320px}.show-tools aside.left{display:none}.show-tools aside.right{display:block}.mobile-toggle{display:inline-block}}@media(max-width:650px){header{padding:0 15px;gap:8px}header small{display:none}.layout{grid-template-columns:1fr}.layout aside{display:none}.layout.show-agents{grid-template-columns:220px minmax(0,1fr)}.layout.show-agents aside.left{display:block}.layout.show-tools{grid-template-columns:1fr}.show-tools .main{display:none}.show-tools aside.right{display:block}.composer{padding:12px}.conversation{padding:20px 15px}.hint{display:none}}
 </style>
 <style>
 /* Three-panel workbench. Both side widths are independently adjustable. */
@@ -23,15 +26,14 @@
 .left .rail-handle{right:0}.right .rail-handle{left:0}
 .rail-handle:hover,.rail-handle.dragging{background:#b8d5ff55}
 body.resizing,body.resizing *{cursor:col-resize!important;user-select:none!important}
-#console-output{white-space:pre-wrap;overflow:auto;overflow-wrap:anywhere;max-height:220px;min-height:110px;background:#0a0d13;border:1px solid var(--line);border-radius:9px;padding:12px;font:12px/1.55 ui-monospace,Consolas,monospace;color:#c0d0e7;margin:12px 0}
-#console-form{flex-wrap:nowrap;margin-bottom:16px}#console-command{font:12px ui-monospace,Consolas,monospace;min-width:0;width:100%}
-#screen{width:100%;height:auto;aspect-ratio:8/5;display:block;cursor:crosshair;touch-action:none}
-#screen[hidden]{display:none}
-#screen:fullscreen{width:100vw;height:100vh;object-fit:contain}
-#browser-status{overflow-wrap:anywhere}
-.message.processing .content{color:#9cacc7}
-.message.processing .content::before{content:'';display:inline-block;width:7px;height:7px;margin:0 9px 1px 0;border-radius:50%;background:#a8cdff;animation:magPulse 1.15s ease-in-out infinite}
-@keyframes magPulse{0%,100%{opacity:.28;transform:scale(.7)}50%{opacity:1;transform:scale(1.3)}}
+#terminal-panel{margin:12px -8px 24px;border:1px solid var(--line);border-radius:12px;background:#0a0d13;overflow:hidden}
+#terminal-panel .terminal-heading{display:flex;align-items:center;gap:8px;padding:8px 11px;border-bottom:1px solid #293243}
+#terminal-panel .terminal-heading h2{margin:0;flex:1}
+#terminal-panel .terminal-heading button{font-size:11px;padding:3px 8px}
+#terminal{height:290px;min-height:160px;max-height:67vh;overflow:hidden;resize:vertical;padding:7px 5px}
+#terminal .xterm{height:100%;width:100%}
+#terminal-status{font-size:11px;color:var(--muted);padding:2px 11px 8px}
+#terminal:focus-within{outline:1px solid #49628c}
 @media(max-width:850px){
  .layout,.layout.hide-left,.layout.hide-right,.layout.hide-left.hide-right{grid-template-columns:minmax(0,1fr)}
  .layout .main,.layout.hide-right .main,.layout.hide-left .main,.layout.hide-left.hide-right .main{grid-column:1;display:flex}
@@ -47,13 +49,12 @@ body.resizing,body.resizing *{cursor:col-resize!important;user-select:none!impor
 <body><header><strong>MAG</strong><small>Ein Raum. Eigene Welten.</small><button class="side-toggle" id="toggle-agents" aria-controls="left-panel" aria-expanded="true" title="Bot-Leiste umschalten">☰ Bots</button><button class="side-toggle" id="toggle-tools" aria-controls="right-panel" aria-expanded="true" title="Werkzeuge umschalten">▣ Werkzeuge</button><span class="status" id="connection"><span class="dot"></span>Verbinde…</span></header>
 <div class="layout" id="layout"><aside class="left" id="left-panel"><div class="section"><h2>Im Raum</h2><div id="agents"></div><button id="add-agent">+ Bot hinzufügen</button></div><div class="section"><h2>Zusammenarbeit</h2><label><input type="checkbox" id="autotalk"> Autonom arbeiten</label><p class="hint">Läuft auch, wenn du den Browser schließt.</p><label><input type="checkbox" id="web" checked> Websuche</label><p><button class="danger" id="stop">Alle pausieren</button></p></div><div class="section"><h2>Einstellungen</h2><label><input type="checkbox" id="tts"> Antworten vorlesen</label><p><select id="language"><option value="auto">Sprache automatisch</option><option value="de">Deutsch</option><option value="en">English</option></select></p><button id="reset">Raum leeren</button><p class="hint">Entfernt Nachrichten und Raumdateien. Die Erinnerungen der Bots bleiben.</p></div></aside>
 <main class="main"><div class="conversation" id="conversation"></div><div class="composer"><div class="notice" id="notice" role="status"></div><form id="send-form"><textarea id="message" placeholder="Sprich mit den Bots oder gib ihnen eine Aufgabe…" aria-label="Nachricht"></textarea><div class="row"><button type="button" id="upload">Datei</button><button type="button" id="mic">Mikrofon</button><span class="hint">Enter senden · Shift+Enter neue Zeile</span><span class="spacer"></span><button class="primary" type="submit">Senden</button></div></form><input id="file-input" type="file" multiple hidden></div></main>
-<aside class="right" id="right-panel"><div class="section"><h2>Browser</h2><select id="browser-agent" aria-label="Browser auswählen"></select><div class="row" style="margin-top:10px"><input id="browser-url" placeholder="https://…"><button id="browser-open">Öffnen</button></div><p><label><input id="live" type="checkbox" checked> Live-Browser anzeigen</label></p><canvas id="screen" width="1440" height="900" role="img" aria-label="Live-Browser des ausgewählten Bots. Klicken und Tastatur zum Steuern." tabindex="0" hidden></canvas><p class="hint" id="browser-status">Ein Browser pro Bot. Du und der Bot steuern dieselbe Sitzung.</p><button id="browser-fullscreen" type="button">Vollbild</button><div class="row"><input id="browser-selector" placeholder="CSS-Selektor oder sichtbarer Text"><button id="browser-click">Klick</button></div><div class="row" style="margin-top:8px"><input id="browser-text" placeholder="Text eingeben"><button id="browser-type">Tippen</button></div><div class="row" style="margin-top:8px"><button id="browser-back">Zurück</button><button id="browser-scroll">Scrollen</button><button id="browser-read">Seite lesen</button></div></div><div class="section" id="console-panel"><div class="row" style="justify-content:space-between"><h2 style="margin:0">Konsole · <span id="console-agent">Bot</span></h2><button id="console-clear" type="button">Leeren</button></div><pre id="console-output" role="log">Bereit. Befehle laufen ausschließlich in der ausgewählten Bot-VM.</pre><form class="row" id="console-form"><input id="console-command" aria-label="Bot-Shell-Befehl" autocomplete="off" spellcheck="false" placeholder="Befehl in Bot-VM ..."><button id="console-run" type="submit">↵</button></form></div><div class="section"><h2>Gemeinsame Dateien</h2><div id="files"></div><iframe id="canvas" title="Gemeinsame Vorschau" sandbox="allow-scripts" hidden></iframe></div><div class="section"><h2>Aktivität</h2><div id="activity"></div></div></aside></div>
+<aside class="right" id="right-panel"><div class="section"><h2>Browser</h2><select id="browser-agent" aria-label="Browser auswählen"></select><div class="row" style="margin-top:10px"><input id="browser-url" placeholder="https://…"><button id="browser-open">Öffnen</button></div><p><label><input id="live" type="checkbox" checked> Live-Browser anzeigen</label></p><canvas id="screen" width="1440" height="900" role="img" aria-label="Live-Browser des ausgewählten Bots. Klicken und Tastatur zum Steuern." tabindex="0" hidden></canvas><p class="hint" id="browser-status">Ein Browser pro Bot. Du und der Bot steuern dieselbe Sitzung.</p><button id="browser-fullscreen" type="button">Vollbild</button><div class="row"><input id="browser-selector" placeholder="CSS-Selektor oder sichtbarer Text"><button id="browser-click">Klick</button></div><div class="row" style="margin-top:8px"><input id="browser-text" placeholder="Text eingeben"><button id="browser-type">Tippen</button></div><div class="row" style="margin-top:8px"><button id="browser-back">Zurück</button><button id="browser-scroll">Scrollen</button><button id="browser-read">Seite lesen</button></div></div><div class="section"><h2>Gemeinsame Dateien</h2><div id="files"></div><iframe id="canvas" title="Gemeinsame Vorschau" sandbox="allow-scripts" hidden></iframe></div><div class="section" id="terminal-panel"><div class="terminal-heading"><h2>Konsole · <span id="console-agent">Bot</span></h2><button id="terminal-clear" type="button">Leeren</button><button id="terminal-focus" type="button">Fokus</button></div><div id="terminal" role="application" aria-label="Interaktive Shell des ausgewählten Bots" tabindex="0"></div><div id="terminal-status">Terminal startet beim Verbinden …</div></div></aside></div>
 <dialog id="new-agent"><form id="agent-form"><h3>Ein neuer Entdecker</h3><input id="agent-name" required maxlength="40" placeholder="Name"><textarea id="agent-persona" placeholder="Persönlichkeit und Interessen"></textarea><div class="row"><button type="button" onclick="document.getElementById('new-agent').close()">Abbrechen</button><button class="primary">Bot erstellen</button></div></form></dialog><dialog id="memory-dialog"><h3 id="memory-title"></h3><div id="memory"></div><p><button onclick="document.getElementById('memory-dialog').close()">Schließen</button></p></dialog>
 <script>
 'use strict';
 const $=id=>document.getElementById(id);let state={agents:[],room:[],files:[]},streams={},selected=new Set(),recorder=null,chunks=[],rendered=false,refreshSeq=0;
-function notice(t=''){$('notice').textContent=t}function activity(t){const e=document.createElement('div');e.textContent=new Date().toLocaleTimeString()+' · '+t;$('activity').prepend(e);while($('activity').children.length>20)$('activity').lastChild.remove()}
-async function api(path,body,method='POST'){const options={method};if(body!==undefined){options.body=typeof body==='string'?body:JSON.stringify(body);options.headers={'Content-Type':'application/json'}}const r=await fetch(path,options);const text=await r.text();let data;try{data=JSON.parse(text)}catch{data={error:text}}if(!r.ok)throw Error(data.error||r.statusText);return data}
+function notice(t=''){$('notice').textContent=t}async function api(path,body,method='POST'){const options={method};if(body!==undefined){options.body=typeof body==='string'?body:JSON.stringify(body);options.headers={'Content-Type':'application/json'}}const r=await fetch(path,options);const text=await r.text();let data;try{data=JSON.parse(text)}catch{data={error:text}}if(!r.ok)throw Error(data.error||r.statusText);return data}
 function safeMarkdown(t){return DOMPurify.sanitize(marked.parse(t||'',{breaks:true}))}function decorate(el){el.querySelectorAll('pre code').forEach(c=>{hljs.highlightElement(c);const b=document.createElement('button');b.textContent='Kopieren';b.className='copy';b.onclick=()=>navigator.clipboard.writeText(c.textContent);c.parentNode.appendChild(b)});el.querySelectorAll('a').forEach(a=>{a.target='_blank';a.rel='noopener noreferrer'})}
 function append(msg,scroll=true){const area=$('conversation');area.querySelector('.empty')?.remove();const div=document.createElement('article');div.className='message '+(msg.role==='user'?'user':'');div.dataset.id=msg.id||'';const meta=document.createElement('div');meta.className='meta';const name=document.createElement('strong');name.textContent=msg.name||'Bot';const time=document.createElement('span');time.textContent=new Date((msg.ts||Date.now()/1000)*1000).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});meta.append(name,time);div.append(meta);const content=document.createElement('div');content.className='content';content.innerHTML=safeMarkdown(msg.content);decorate(content);div.append(content);if(msg.file){const f=msg.file;const a=document.createElement('a');a.href='/api/file/'+encodeURIComponent(f.stored);a.textContent=f.name;div.append(a);if(f.mime?.startsWith('audio/')){const audio=document.createElement('audio');audio.controls=true;audio.src=a.href;div.append(audio)}if(f.mime?.startsWith('image/')){const image=document.createElement('img');image.src=a.href;image.alt=f.name;content.append(image)}}area.append(div);if(scroll)area.scrollTop=area.scrollHeight;return div}
 function updateStream(botId,immediate=false){
@@ -91,7 +92,7 @@ $('send-form').onsubmit=async e=>{
  try{await api('/api/message',{text,bots:[...selected],web_search:$('web').checked});$('message').value='';notice();if(streams[botId]){streams[botId].status='Wartet auf Modell …';updateStream(botId)}}
  catch(err){delete streams[botId];render();notice(err.message)}
 };$('message').onkeydown=e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();$('send-form').requestSubmit()}};
-$('autotalk').onchange=async()=>{try{await api('/api/autotalk',{on:$('autotalk').checked});notice()}catch(e){notice(e.message);await refresh()}};$('stop').onclick=async()=>{try{await api('/api/stop',{});$('autotalk').checked=false;activity('Alle Bots pausiert')}catch(e){notice(e.message)}};
+$('autotalk').onchange=async()=>{try{await api('/api/autotalk',{on:$('autotalk').checked});notice()}catch(e){notice(e.message);await refresh()}};$('stop').onclick=async()=>{try{await api('/api/stop',{});$('autotalk').checked=false;notice('Bots pausiert')}catch(e){notice(e.message)}};
 $('reset').onclick=async()=>{if(!confirm('Nachrichten, Raumdateien und veröffentlichte Oberfläche entfernen? Bot-Erinnerungen bleiben erhalten.'))return;try{await api('/api/reset',{});streams={};await refresh()}catch(e){notice(e.message)}};
 $('upload').onclick=()=>$('file-input').click();$('file-input').onchange=async()=>{for(const file of $('file-input').files){try{notice('Lade '+file.name+'…');const r=await fetch('/api/upload?name='+encodeURIComponent(file.name),{method:'POST',body:file});if(!r.ok)throw Error((await r.json()).error);await refresh();notice()}catch(e){notice(e.message)}}$('file-input').value=''};
 for(const id of ['web','tts','language','live']){const stored=localStorage.getItem('mag-'+id);if(stored!==null){if($(id).type==='checkbox')$(id).checked=stored==='true';else $(id).value=stored}$(id).addEventListener('change',()=>localStorage.setItem('mag-'+id,$(id).type==='checkbox'?$(id).checked:$(id).value))}try{selected=new Set(JSON.parse(sessionStorage.getItem('mag-selected')||'[]'))}catch{}
@@ -106,28 +107,86 @@ $('browser-fullscreen').onclick=()=>{$('screen').requestFullscreen?.().catch(e=>
 // Each selected bot retains its own already-running Chromium and VM profile.
 let livePeer=null,liveControl=null,liveConsole=null,liveGeneration=0,liveVM='',pointerHeld=false,pointerMoveAt=0;
 let videoChunks=null,paintBusy=false,lastFrameSeq=-1,frameLastAt=0;
-const consoleBuffers=new Map(),consoleParts=new Map();let consoleSeq=0;
-function updateConsoleLabel(){const bot=state.agents.find(a=>a.id===$('browser-agent').value);$('console-agent').textContent=bot?.name||'Bot';$('console-output').textContent=consoleBuffers.get(bot?.id)||'Bereit. Befehle laufen nur in dieser Bot-VM.'}
-function consoleLog(id,text){const previous=consoleBuffers.get(id)||'';const result=(previous+text).slice(-12000);consoleBuffers.set(id,result);if(consoleBuffers.size>16)consoleBuffers.delete(consoleBuffers.keys().next().value);if(id===$('browser-agent').value){$('console-output').textContent=result;$('console-output').scrollTop=$('console-output').scrollHeight}}
-function receiveConsole(data){
- let msg;try{msg=JSON.parse(data)}catch{return}
- if(!msg||typeof msg.id!=='string'||!Number.isInteger(msg.index)||!Number.isInteger(msg.total)||msg.total<1||msg.total>32||msg.index<0||msg.index>=msg.total||typeof msg.data!=='string')return;
- const id=liveVM+':'+msg.id;let task=consoleParts.get(id);
- if(!task||task.parts.length!==msg.total){task={parts:Array(msg.total),started:performance.now(),bot:$('browser-agent').value,exit:msg.exit};consoleParts.set(id,task)}
- if(task.parts[msg.index]===undefined){task.parts[msg.index]=msg.data;task.count=(task.count||0)+1}
- if(task.count===msg.total){
-  try{const bytes=task.parts.map(x=>Uint8Array.from(atob(x),c=>c.charCodeAt(0))),length=bytes.reduce((a,x)=>a+x.length,0),joined=new Uint8Array(length);let at=0;for(const part of bytes){joined.set(part,at);at+=part.length}
-    consoleLog(task.bot,new TextDecoder().decode(joined)+'\n[exit '+task.exit+']\n');
-  }catch{consoleLog(task.bot,'[Ausgabe konnte nicht dekodiert werden]\n')}
-  consoleParts.delete(id);
- }
+// True xterm.js terminal, backed by a persistent Bash PTY in each selected
+// bot's KVM. These instances preserve scrollback across bot switches.
+const terminals=new Map(),utf8Encoder=new TextEncoder();
+let activeTerminal=null;
+function terminalStatus(t){$('terminal-status').textContent=t}
+function terminalSend(kind,payload={}){
+ if(!liveConsole||liveConsole.readyState!=='open')return false;
+ liveConsole.send(JSON.stringify({kind,...payload}));
+ return true;
 }
-$('console-form').onsubmit=e=>{e.preventDefault();const cmd=$('console-command').value.trim();if(!cmd)return;const botId=$('browser-agent').value;
- if(!liveConsole||liveConsole.readyState!=='open'){consoleLog(botId,'[UDP-Konsole nicht verbunden]\n');return}
- if(cmd.length>640){consoleLog(botId,'[Maximal 640 Zeichen pro Befehl]\n');return}
- const id=(++consoleSeq).toString(36);consoleLog(botId,'$ '+cmd+'\n');liveConsole.send(JSON.stringify({kind:'console',id,command:cmd}));$('console-command').value='';
-};
-$('console-clear').onclick=()=>{consoleBuffers.delete($('browser-agent').value);updateConsoleLabel()};
+function terminalResize(){
+ if(!activeTerminal||!activeTerminal.host.isConnected)return;
+ try{activeTerminal.fit.fit()}catch{}
+ terminalSend('terminal_resize',{cols:activeTerminal.term.cols,rows:activeTerminal.term.rows});
+}
+function makeTerminal(botId){
+ if(!window.Terminal||!window.FitAddon?.FitAddon){
+  terminalStatus('xterm.js konnte nicht geladen werden. Netzwerk prüfen.');
+  return null;
+ }
+ let existing=terminals.get(botId);if(existing)return existing;
+ const host=document.createElement('div');host.className='terminal-host';
+ const term=new Terminal({
+  cursorBlink:true,scrollback:2500,fontSize:12,convertEol:false,
+  fontFamily:'ui-monospace, SFMono-Regular, Consolas, monospace',
+  theme:{background:'#0a0d13',foreground:'#d8e0ef',cursor:'#b8d5ff',selectionBackground:'#566b9b66'}
+ });
+ const fit=new FitAddon.FitAddon();term.loadAddon(fit);
+ const entry={term,fit,host,opened:false};terminals.set(botId,entry);
+ term.onData(data=>{
+  if($('browser-agent').value!==botId)return;
+  const encoded=utf8Encoder.encode(data);
+  for(let offset=0;offset<encoded.length;offset+=300){
+   const piece=encoded.subarray(offset,offset+300);
+   const base64=btoa(String.fromCharCode(...piece));
+   if(!terminalSend('terminal_input',{data:base64})){
+    terminalStatus('Terminal nicht verbunden');return;
+   }
+  }
+ });
+ term.onResize(({cols,rows})=>{
+  if($('browser-agent').value===botId)
+   terminalSend('terminal_resize',{cols,rows});
+ });
+ if(terminals.size>12){
+  const first=terminals.keys().next().value;
+  if(first!==botId){terminals.get(first)?.term.dispose();terminals.delete(first)}
+ }
+ return entry;
+}
+function updateConsoleLabel(){
+ const bot=state.agents.find(a=>a.id===$('browser-agent').value);
+ $('console-agent').textContent=bot?.name||'Bot';
+ const id=bot?.id;
+ if(!id){activeTerminal=null;$('terminal').textContent='Bot auswählen';return}
+ activeTerminal=makeTerminal(id);
+ if(!activeTerminal){$('terminal').textContent='Terminal-Emulator nicht verfügbar';return}
+ $('terminal').replaceChildren(activeTerminal.host);
+ if(!activeTerminal.opened){
+  activeTerminal.term.open(activeTerminal.host);
+  activeTerminal.opened=true;
+ }
+ requestAnimationFrame(terminalResize);
+ terminalStatus(liveConsole?.readyState==='open'?'Shell verbunden':'Verbinde VM-Terminal …');
+}
+function receiveConsole(data){
+ if(!activeTerminal)return;
+ let message;try{message=JSON.parse(data)}catch{return}
+ if(message?.kind!=='terminal_output'||typeof message.data!=='string'||message.data.length>950)return;
+ try{
+  const bytes=Uint8Array.from(atob(message.data),c=>c.charCodeAt(0));
+  activeTerminal.term.write(bytes);
+ }catch{terminalStatus('Terminalausgabe nicht lesbar')}
+}
+$('terminal-clear').onclick=()=>activeTerminal?.term.clear();
+$('terminal-focus').onclick=()=>activeTerminal?.term.focus();
+$('terminal').addEventListener('click',()=>activeTerminal?.term.focus());
+new ResizeObserver(()=>{
+ if($('terminal').getBoundingClientRect().width>0)terminalResize();
+}).observe($('terminal'));
 
 function liveStatus(v){$('browser-status').textContent=v}
 function liveSend(data){
@@ -139,7 +198,8 @@ function disconnectLive(){
  ++liveGeneration;
  if(livePeer){livePeer.close();livePeer=null}
  liveControl=null;liveConsole=null;liveVM='';videoChunks=null;pointerHeld=false;
- paintBusy=false;lastFrameSeq=-1;frameLastAt=0;consoleParts.clear();
+ paintBusy=false;lastFrameSeq=-1;frameLastAt=0;
+ terminalStatus('Shell getrennt · Sitzung bleibt in VM erhalten');
  $('screen').hidden=true;
 }
 async function displayFrame(parts,sequence,generation){
@@ -173,7 +233,7 @@ function receiveFrame(bytes){
 }
 async function connectLive(){
  disconnectLive();
- if(!$('live').checked||!$('browser-agent').value)return;
+ if(!$('browser-agent').value)return;
  const gen=liveGeneration,id=$('browser-agent').value;
  const bot=state.agents.find(a=>a.id===id);
  if(!bot){liveStatus('Bot unbekannt');return}
@@ -182,14 +242,19 @@ async function connectLive(){
  liveStatus('WebRTC/UDP · verbinde '+bot.name+' …');
  const ctrl=pc.createDataChannel('control',{ordered:true});
  liveControl=ctrl;
- ctrl.onopen=()=>{liveSend({kind:'subscribe'});liveStatus('WebRTC/UDP · verbunden, erwarte Browserbild')};
+ ctrl.onopen=()=>{if($('live').checked)liveSend({kind:'subscribe'});liveStatus('WebRTC/UDP · verbunden')};
  ctrl.onclose=()=>{if(gen===liveGeneration)liveStatus('Steuerkanal geschlossen')};
  pc.ondatachannel=e=>{
   if(e.channel.label==='console'){
    liveConsole=e.channel;
-   e.channel.onopen=()=>{if(gen===liveGeneration)consoleLog(id,'[UDP-Konsole verbunden]\n')};
+   e.channel.onopen=()=>{
+    if(gen!==liveGeneration)return;
+    terminalStatus('Shell · '+bot.name+' · verbunden');
+    terminalSend('terminal_open');
+    terminalResize();
+   };
    e.channel.onmessage=m=>{if(gen===liveGeneration)receiveConsole(m.data)};
-   e.channel.onclose=()=>{if(gen===liveGeneration)consoleLog(id,'[UDP-Konsole getrennt]\n')};
+   e.channel.onclose=()=>{if(gen===liveGeneration)terminalStatus('Shell getrennt · Sitzung bleibt in VM')};
    return;
   }
   if(e.channel.label!=='frames')return;
@@ -215,7 +280,7 @@ async function connectLive(){
   if(gen!==liveGeneration){pc.close();return}
   await pc.setRemoteDescription(await r.json());
  }catch(e){
-  if(gen===liveGeneration){liveStatus('WebRTC/UDP: '+e.message);activity('Browser UDP: '+e.message)}
+  if(gen===liveGeneration){liveStatus('WebRTC/UDP: '+e.message);notice('Browser UDP: '+e.message)}
   pc.close();
  }
 }
@@ -225,9 +290,13 @@ setInterval(()=>{
   if(videoChunks&&performance.now()-videoChunks.stamp>550)videoChunks=null;
   if(frameLastAt&&performance.now()-frameLastAt>5000)liveStatus('UDP verbunden · keine neuen Browserframes');
  }
- for(const [id,task] of consoleParts)if(performance.now()-task.started>5000){consoleLog(task.bot,'[Unvollständige UDP-Konsolenausgabe verworfen]\n');consoleParts.delete(id)}
+ // PTY output arrives as independent bounded datagrams; no fragment cache.
 },2000);
-$('live').addEventListener('change',()=>{if(rightOpen&&(!isCompact()||layout.classList.contains('mobile-right')))connectLive();else disconnectLive()});
+$('live').addEventListener('change',()=>{
+ if(!rightOpen||(isCompact()&&!layout.classList.contains('mobile-right'))){disconnectLive();return}
+ if(!livePeer){connectLive();return}
+ liveSend({kind:$('live').checked?'subscribe':'unsubscribe'});
+});
 $('browser-agent').addEventListener('change',()=>{updateConsoleLabel();if(rightOpen&&(!isCompact()||layout.classList.contains('mobile-right')))connectLive();else disconnectLive()});
 function browserCoords(e){
  const img=$('screen'),r=img.getBoundingClientRect(),w=img.width||1440,h=img.height||900;
@@ -271,7 +340,7 @@ function layoutApply(){
  $('toggle-tools').setAttribute('aria-expanded',String(rightOpen));
  // Closing tools detaches WebRTC and drops pending image buffers.
  if(!rightOpen||(!layout.classList.contains('mobile-right')&&isCompact()))disconnectLive();
- else if($('live').checked&&!livePeer)connectLive();
+ else if(!livePeer)connectLive();
 }
 function toggleRail(side){
  if(isCompact()){
@@ -329,7 +398,7 @@ window.addEventListener('resize',()=>{
  }
  layoutApply();
 });
-document.addEventListener('visibilitychange',()=>{if(document.hidden)disconnectLive();else if(rightOpen&&$('live').checked)connectLive()});
+document.addEventListener('visibilitychange',()=>{if(document.hidden)disconnectLive();else if(rightOpen)connectLive()});
 window.addEventListener('pagehide',()=>{disconnectLive();events.close()});
 
 const events=new EventSource('/api/events');
@@ -348,7 +417,7 @@ events.onmessage=e=>{
    const s=streams[id];if(s&&!s.text){s.status='Denkt nach …';updateStream(id)}
   }else if(event.type==='tool'){
    const s=streams[id];if(s&&!s.text){s.status='Werkzeug: '+(event.tool||'Aktion')+' …';updateStream(id)}
-   activity((event.name||'Bot')+' · '+(event.tool||'Werkzeug'));
+   
   }else if(event.type==='tool_result'){
    const s=streams[id];if(s&&!s.text){s.status='Verarbeitet Ergebnis …';updateStream(id)}
   }else if(event.type==='bot_done'){
@@ -362,14 +431,14 @@ events.onmessage=e=>{
    refresh().catch(err=>notice(err.message));
   }else if(event.type==='autotalk')$('autotalk').checked=event.on;
   else if(event.type==='error'){
-   notice(event.text);activity(event.text);
+   notice(event.text);
    const s=streams[id];if(s&&!s.text){s.status='Fehler · '+(event.text||'Backend');updateStream(id)}
   }else if(event.type==='frontend')location.reload();
   else if(event.type==='stopped'||event.type==='cancelled'){
    for(const s of Object.values(streams))if(s.frame)cancelAnimationFrame(s.frame);
-   streams={};activity('Pausiert');refresh().catch(err=>notice(err.message));
+   streams={};notice('Pausiert');refresh().catch(err=>notice(err.message));
   }
  }catch(err){notice(err.message)}
 };
-refresh().then(()=>{if(rightOpen&&!isCompact()&&$('live').checked)connectLive()}).catch(e=>notice(e.message));
+refresh().then(()=>{if(rightOpen&&!isCompact())connectLive()}).catch(e=>notice(e.message));
 </script></body></html>

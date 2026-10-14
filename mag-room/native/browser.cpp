@@ -293,7 +293,7 @@ int main(int argc, char **argv) {
     c.call("Emulation.setDeviceMetricsOverride", metrics);
     auto snapshot = [&]() {
       Val state = c.eval("({url:location.href,title:document.title})");
-      state["udp_transport"] = "MGB3";
+      state["udp_transport"] = "MGB4";
       state["udp_port"] = 9227;
       return state;
     };
@@ -315,8 +315,9 @@ int main(int argc, char **argv) {
       catch (const std::exception &e) {
         std::cerr << "UDP capture: " << e.what() << std::endl;
       }
-      pollfd sources[2]{{server, POLLIN, 0}, {udp.fd(), POLLIN, 0}};
-      int nready = poll(sources, 2, 70);
+      pollfd sources[3]{{server, POLLIN, 0}, {udp.fd(), POLLIN, 0},
+                        {udp.terminal_fd(), POLLIN, 0}};
+      int nready = poll(sources, 3, 70);
       if (nready < 0) continue;
       if (sources[1].revents & POLLIN) {
         for (int i = 0; i < 24; ++i) {
@@ -327,6 +328,8 @@ int main(int argc, char **argv) {
           }
         }
       }
+      if (sources[2].revents & (POLLIN | POLLHUP | POLLERR))
+        udp.terminal_output();
       if (!(sources[0].revents & POLLIN)) continue;
       int fd = accept4(server, nullptr, nullptr, SOCK_CLOEXEC);
       if (fd < 0) continue;

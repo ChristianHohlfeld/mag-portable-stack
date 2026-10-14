@@ -267,11 +267,24 @@ func (r *relay) offer(w http.ResponseWriter,req *http.Request){
  if err!=nil{_ =pc.Close();http.Error(w,"console",500);return}
  viewer.console=console
  console.OnMessage(func(m webrtc.DataChannelMessage){
-  if viewer.closed.Load()||len(m.Data)>800||!json.Valid(m.Data){return}
-  var msg struct {Kind string `json:"kind"`; ID string `json:"id"`; Command string `json:"command"`}
-  if json.Unmarshal(m.Data,&msg)!=nil||msg.Kind!="console"||
-     len(msg.ID)==0||len(msg.ID)>24||len(msg.Command)==0||len(msg.Command)>640{return}
-  r.send(vm,m.Data)
+  if viewer.closed.Load()||len(m.Data)>960||!json.Valid(m.Data){return}
+  var msg struct {
+   Kind string `json:"kind"`
+   Data string `json:"data"`
+   Cols int `json:"cols"`
+   Rows int `json:"rows"`
+  }
+  if json.Unmarshal(m.Data,&msg)!=nil{return}
+  switch msg.Kind {
+  case "terminal_open":
+   r.send(vm,m.Data)
+  case "terminal_input":
+   if len(msg.Data)<1||len(msg.Data)>800{return}
+   r.send(vm,m.Data)
+  case "terminal_resize":
+   if msg.Cols<20||msg.Cols>300||msg.Rows<5||msg.Rows>120{return}
+   r.send(vm,m.Data)
+  }
  })
  r.mu.Lock()
  b:=r.bots[vm]

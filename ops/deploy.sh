@@ -32,6 +32,10 @@ install -m 0755 "$SOURCE/build/magroom" "$SOURCE/build/mag-browser" "$SOURCE/bui
 cp -a "$SOURCE/mag-room/web/." "$RELEASE/web/"
 install -d "$RELEASE/web/static"
 cp -a "$SOURCE/mag-room/static/." "$RELEASE/web/static/"
+# Vendor once into a persistent local cache. Existing assets work offline;
+# no CDN dependencies at runtime and no half-installed web release.
+bash "$SOURCE/ops/vendor-terminal-assets.sh" "$SOURCE/build/terminal-assets"
+cp -a "$SOURCE/build/terminal-assets/." "$RELEASE/web/static/"
 cp -a "$SOURCE/ops/." "$RELEASE/ops/"
 install -d -o magbot -g magbot -m 0750 /var/lib/mag-stack/models
 install -o magbot -g magbot -m 0640 "$WHISPER_MODEL" /var/lib/mag-stack/models/ggml-large-v3-turbo.bin

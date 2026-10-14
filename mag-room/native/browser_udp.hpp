@@ -16,15 +16,15 @@
 #include <thread>
 #include <map>
 #include <openssl/evp.h>
+#include "guest_pty.hpp"
 
 class BrowserUDP {
   int fd_ = -1;
   sockaddr_in server_{};
   std::string secret_, vm_, nonce_;
   uint32_t frame_seq_ = 0, ctrl_seq_ = 0;
-  std::thread console_worker_;
-  std::atomic<bool> console_busy_{false};
-  std::atomic<uint32_t> console_seq_{0};
+  GuestPTY terminal_;
+  uint32_t terminal_seq_ = 0;
   std::chrono::steady_clock::time_point subscribed_{}, hello_{}, frame_{};
   static constexpr size_t HEADER = 13, TAG = 16, CHUNK = 1000;
   static void put16(std::string &s, uint16_t n) {
@@ -74,19 +74,6 @@ class BrowserUDP {
                     (const unsigned char *)data.data(), (int)data.size());
     return out;
   }
-  void console_reply(const std::string &id, int exit_code,
-                     const std::string &data) {
-    const size_t total = std::max<size_t>(1, (data.size() + 479) / 480);
-    for (size_t i = 0; i < total; ++i) {
-      mj::Val part = mj::Val::object();
-      part["id"] = id;
-      part["index"] = (int)i;
-      part["total"] = (int)total;
-      part["exit"] = exit_code;
-      part["data"] = as_b64(data.substr(i * 480, 480));
-      send(4, ++console_seq_, 0, 1, mj::dump(part));
-    }
-  }
   static std::string str(const mj::Val &v, const char *key) {
     auto p = v.find(key);
     return p ? p->asStr() : "";
@@ -110,10 +97,7 @@ public:
     if (inet_pton(AF_INET, host.c_str(), &server_.sin_addr) != 1)
       throw std::runtime_error("Invalid MAG bridge IP");
   }
-  ~BrowserUDP() {
-    if (console_worker_.joinable()) console_worker_.join();
-    if (fd_ >= 0) close(fd_);
-  }
+  ~BrowserUDP() { if (fd_ >= 0) close(fd_); }
   int fd() const { return fd_; }
   void receive(CDP &cdp) {
     unsigned char packet[1400];
@@ -140,30 +124,36 @@ public:
       subscribed_ = {};
       return;
     }
-    if (kind == "console") {
-      const std::string id = str(obj, "id");
-      const std::string command = str(obj, "command");
-      if (id.empty() || id.size() > 24 ||
-          id.find_first_not_of("0123456789abcdefghijklmnopqrstuvwxyz") !=
-              std::string::npos ||
-          command.empty() || command.size() > 640 ||
-          command.find('\0') != std::string::npos) return;
-      if (console_busy_.exchange(true)) {
-        console_reply(id, 125, "Konsole beschaeftigt.\n");
-        return;
-      }
-      if (console_worker_.joinable()) console_worker_.join();
-      console_worker_ = std::thread([this, id, command] {
-        try {
-          // The daemon runs as the isolated guest's unprivileged 'bot'.
-          // Time + output limits avoid a stuck command monopolizing the VM.
-          mag::Result result = mag::run({"/bin/bash", "-lc", command}, 12, 12000);
-          console_reply(id, result.code, result.out);
-        } catch (const std::exception &e) {
-          console_reply(id, 124, std::string("Konsole: ") + e.what() + "\n");
-        }
-        console_busy_ = false;
-      });
+    if (kind == "terminal_open") {
+      terminal_.start();
+      return;
+    }
+    if (kind == "terminal_resize") {
+      auto c = obj.find("cols"), r = obj.find("rows");
+      if (!c || !r || c->type != mj::Val::NUM ||
+          r->type != mj::Val::NUM) return;
+      double cols = c->asNum(), rows = r->asNum();
+      if (!std::isfinite(cols) || !std::isfinite(rows) ||
+          cols < 20 || cols > 300 || rows < 5 || rows > 120) return;
+      terminal_.resize(static_cast<unsigned>(cols),
+                       static_cast<unsigned>(rows));
+      return;
+    }
+    if (kind == "terminal_input") {
+      std::string encoded = str(obj, "data");
+      if (encoded.empty() || encoded.size() > 800 ||
+          encoded.size() % 4 != 0) return;
+      std::string decoded(encoded.size() * 3 / 4, '\0');
+      int n = EVP_DecodeBlock(
+          (unsigned char *)decoded.data(),
+          (const unsigned char *)encoded.data(), (int)encoded.size());
+      if (n < 0) return;
+      for (size_t i = encoded.size(); i > 0 && encoded[i - 1] == '='; --i)
+        --n;
+      if (n <= 0 || n > 600) return;
+      decoded.resize(n);
+      terminal_.start();
+      terminal_.input(decoded);
       return;
     }
     if (kind == "pointer") {
@@ -246,6 +236,19 @@ public:
       if (value.size() > 600) return;
       mj::Val p = mj::Val::object(); p["text"] = value;
       cdp.call("Input.insertText", p);
+    }
+  }
+  int terminal_fd() const { return terminal_.fd(); }
+  void terminal_output() {
+    // Drain stdout/stderr without blocking browser/CDP. One bounded UDP
+    // datagram per PTY chunk, signed with this VM's private media key.
+    for (int i = 0; i < 24 && terminal_.fd() >= 0; ++i) {
+      auto bytes = terminal_.output();
+      if (bytes.empty()) break;
+      mj::Val msg = mj::Val::object();
+      msg["kind"] = "terminal_output";
+      msg["data"] = as_b64(bytes);
+      send(4, ++terminal_seq_, 0, 1, mj::dump(msg));
     }
   }
   void tick(CDP &cdp) {

@@ -140,7 +140,10 @@ class Native(unittest.TestCase):
    self.assertTrue(state['autotalk'],'Autonomy may remain enabled while idle')
   finally:
    self.request('/api/stop',{});Model.script=[]
- def test_11_malformed_http_rejected(self):
+ def test_11_browser_live_requires_known_bot(self):
+  self.error(404,'/api/browser-live/offer?bot=not-a-bot',{'type':'offer','sdp':'sdp'})
+  self.error(404,'/api/browser/not-a-bot/pointer',{'x':1,'y':1})
+ def test_12_malformed_http_rejected(self):
   for headers in ['Content-Length: -1\r\n','Content-Length: 2\r\nContent-Length: 3\r\n','Transfer-Encoding: chunked\r\n']:
    with socket.create_connection(('127.0.0.1',self.ui),timeout=3) as s:
     s.sendall(('POST /api/message HTTP/1.1\r\nHost: localhost\r\n'+headers+'\r\n').encode());self.assertIn(b'500',s.recv(4096))

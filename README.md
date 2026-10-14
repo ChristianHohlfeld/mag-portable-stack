@@ -355,3 +355,82 @@ curl -fsS http://127.0.0.1:8766/api/browser-live/status
 
 Check MAG's browser in the Tailnet UI after deploying. A successful CI run
 does not establish live browser/CDP connectivity on the private KVM host.
+
+## Per-bot direct control and temporary root shell (2026-10-14)
+
+The left bot card is the **only browser/terminal selector**. Clicking or
+keyboard-activating a card highlights it and loads the selected bot's
+existing browser + VM PTY in the right panel, without creating a second
+Chromium, PTY, browser profile or machine. Chat recipient checkboxes remain
+independent. The obsolete right-side dropdown is a hidden internal state
+field; the remote `/bot/<id>/` view stays locked to that specific bot.
+
+Agents have native model tools `terminal_input(text, enter)`,
+`terminal_read(after)`, and `browser_key(key)` in addition to existing
+`browser_open/click/type/pointer/read/back/scroll/screenshot`. They operate
+on the *same owner* `mag-browser` CDP and PTY sessions as the human, not
+on a separate virtual browser or fake command form. Human inputs use
+the signed per-VM UDP bridge and WebRTC; model tools use authenticated
+per-VM controller API calls. The PTY output reaches the browser via the
+existing signed UDP console DataChannel. A bounded 32 KiB text ring with
+monotonic cursor supports incremental model inspection.
+
+### Superuser: VM scope and revocation
+
+Per-bot **Root** toggle is OFF by default. Only an operator on the
+existing Tailscale-protected MAG UI can request ON for the currently
+focused bot. MAG uses the QEMU guest agent to install and start a
+transient `mag-root-shell` systemd service *inside that guest alone*.
+That service owns a real root Bash PTY and a `/run/mag-root-shell.sock`
+Unix seqpacket socket restricted to the VM's `bot` account. The existing
+browser daemon changes its terminal transport to that socket when ON.
+The human and the model's gated `root_command` then operate on the
+same real root shell. No host root terminal, persistent sudoers rule,
+password or setuid binary is given to the bot. The root model tool is
+absent from the tool list when the lease is OFF.
+
+OFF removes the model capability before asking the guest agent to
+stop the transient service and kill its entire cgroup, then removes
+the socket, binary and heartbeat. Pending revocation is indicated
+separately if QGA cannot reach the guest and automatically retried.
+The root PTY self-expires within **90 seconds** after host heartbeat
+renewals stop (MAG renews every 20 seconds), including after MAG crashes.
+On MAG restart all known guest root leases are revoked by default before
+clients are accepted. Existing bot disks and browser profiles are
+preserved throughout these operations.
+
+**Security caveat:** Arbitrary VM root is full control of the guest. A
+root command can permanently modify files, install services or escape
+a temporary cgroup by reconfiguring the guest's init system. Turning
+OFF stops the managed PTY and its cgroup and removes the *granted
+capability*, but it cannot undo prior root filesystem changes or
+guarantee removal of persistence deliberately installed while root was
+enabled. Only enable it when you accept that authority inside that VM.
+Root never means permission to the MAG host or to other bots.
+
+The `root_command` is a native model function tool (MCP-like), not a
+separately network-exposed unauthenticated MCP server. It is checked on
+every tool call against the owner-controlled per-VM lease.
+
+### Manual live verification
+
+After a successful CI build, deploy to the MAG host and verify:
+1. Click Ab on the left, then Joe; the right browser and terminal follow
+   the highlighted card with no extra dropdown or Chromium reload.
+2. With Root OFF in each VM, `whoami` prints `bot`. Both bots can call
+   `terminal_input` and `terminal_read` on the exact same visible PTY.
+3. Turn Root ON for Ab; `whoami` prints `root` in Ab's terminal;
+   Joe remains `bot`. Root commands are visible on Ab's live terminal.
+4. Turn Ab Root OFF while a long-running command is active. The
+   transient `mag-root-shell` systemd service, its cgroup and Unix
+   socket must disappear, the model root tool must be unavailable,
+   and subsequent `whoami` must print `bot` without restarting Chromium.
+5. Close and reopen MAG: all per-VM Root states must default to OFF.
+   Check any pending-revocation warning if a VM was unreachable.
+6. Verify normal browser keyboard, pointer and console after Root cycles,
+   plus `sudo magbot status`, `sudo bash ops/health.sh` and
+   `curl -fsS http://127.0.0.1:8766/api/browser-live/status`.
+
+GitHub CI tests real root PTY socket traffic and teardown in an isolated
+Linux runner, but does not emulate systemd/QGA control on the live MAG
+KVMs; the final host tests are required.

@@ -12,6 +12,7 @@
 #include <poll.h>
 #include <pwd.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/un.h>
 
 static constexpr const char *SOCK = "/run/mag-root-shell.sock";

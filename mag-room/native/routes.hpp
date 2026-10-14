@@ -52,6 +52,15 @@ static void route(int fd, Req &r, bool bridge = false) {
       error_json(fd, 401, "Bridge token required");
       return;
     }
+    if (m == "GET" && p == "/tool/mag-root-console") {
+      bool ok;
+      auto binary = read_file(
+          env("MAG_ROOT_CONSOLE_BINARY",
+              "/opt/mag-stack/current/bin/mag-root-console"), &ok);
+      if (!ok) error_json(fd, 404, "Root console binary missing");
+      else send_response(fd, 200, "application/octet-stream", binary);
+      return;
+    }
     if (m == "GET" && p == "/tool/mag-browser") {
       bool ok;
       auto binary = read_file(

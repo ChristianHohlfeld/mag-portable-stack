@@ -106,6 +106,28 @@ static void route(int fd, Req &r, bool bridge = false) {
     send_text(fd, 200, current_frontend(), "text/html; charset=utf-8");
     return;
   }
+  // Dynamic Tailnet HTTPS remote desktop. A registered bot's *stable name
+  // slug* is its URL; no per-bot Tailscale proxy, token or VM re-provision.
+  // Deleting the agent removes the route immediately, even if a guest disk
+  // is left behind after a failed teardown.
+  if (m == "GET" && path.rfind("/bot/", 0) == 0) {
+    std::string id = path.substr(5);
+    if (!id.empty() && id.back() == '/') id.pop_back();
+    bool safe = id.size() >= 1 && id.size() <= 32 &&
+                id[0] >= 'a' && id[0] <= 'z';
+    for (char c : id)
+      if (!((c >= 'a' && c <= 'z') ||
+            (c >= '0' && c <= '9') || c == '-')) safe = false;
+    if (!safe || agent_index(id) < 0) {
+      send_response(fd, 404, "text/plain; charset=utf-8",
+                    "Bot nicht vorhanden oder bereits entfernt.\n",
+                    {{"Cache-Control", "no-store"}});
+      return;
+    }
+    send_response(fd, 200, "text/html; charset=utf-8",
+                  current_frontend(), {{"Cache-Control", "no-store"}});
+    return;
+  }
   if (m == "GET" && path == "/healthz") {
     send_text(fd, 200, "ok\n");
     return;

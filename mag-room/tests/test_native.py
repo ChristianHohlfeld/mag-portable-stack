@@ -231,6 +231,12 @@ class Native(unittest.TestCase):
   # Test agent has vm="" so deleting it requires no guest lifecycle.
   # Keep the original fixture intact for future test runs.
   saved=self.state.joinpath('agents.json').read_text()
+  # test_12 installs a synthetic VM name to verify aliases; clear that
+  # fixture before exercising DELETE so no host lifecycle is invoked.
+  self.proc.terminate();self.proc.wait(timeout=5);self.log.close()
+  stub=json.loads(saved);stub[0]['vm']=''
+  self.state.joinpath('agents.json').write_text(json.dumps(stub))
+  self.start()
   try:
    self.assertIn(b'<html',self.request('/bot/test/',raw=True))
    self.assertTrue(self.request('/api/agents/test',method='DELETE')['ok'])

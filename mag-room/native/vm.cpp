@@ -464,7 +464,7 @@ int main(int argc, char **argv) {
                   "test ! -S /run/mag-root-shell.sock";
       } else {
         if (argc != 4 ||
-            !std::regex_match(argv[3], std::regex("[A-Fa-f0-9]{24,128}")))
+            !std::regex_match(argv[3], std::regex("[A-Za-z0-9_-]{24,128}")))
           throw std::runtime_error("Invalid root lease token");
         const std::string url =
             "http://192.168.122.1:8767/tool/mag-root-console?token=" +

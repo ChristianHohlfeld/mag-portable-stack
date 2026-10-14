@@ -6,7 +6,7 @@ action="$1"; vm="$2"
 [[ "$vm" =~ ^agent[0-9]+$ ]] || exit 64
 case "$action" in
   on)
-    [[ ${#@} == 3 && "$3" =~ ^[a-fA-F0-9]{24,128}$ ]] || exit 64
+    [[ ${#@} == 3 && "$3" =~ ^[A-Za-z0-9_-]{24,128}$ ]] || exit 64
     exec /usr/local/bin/magbot privilege-on "$vm" "$3"
     ;;
   off)

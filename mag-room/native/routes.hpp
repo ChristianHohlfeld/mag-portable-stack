@@ -341,6 +341,7 @@ static void route(int fd, Req &r, bool bridge = false) {
       throw;
     }
     agents_event();
+    warm_browser_async(vm);
     send_json(fd, 201, mj::dump(agent));
     return;
   }

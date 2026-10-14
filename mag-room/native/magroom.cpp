@@ -2,6 +2,7 @@
 // VM/browser tool loop and bridge. No frameworks, no JSON library.
 #include "common.hpp"
 #include "json.hpp"
+#include "browser_recovery.hpp"
 
 #include <arpa/inet.h>
 #include <fcntl.h>
@@ -1217,39 +1218,37 @@ static std::string ensure_browser(const std::string &vm) {
     ip = vm_ip(vm, true);
   if (ip.empty())
     throw std::runtime_error("Guest IP unavailable");
-  auto status = browser_call(ip, BROWSERD_PORT, "GET", "/state", "", 1500);
-  if (status.ok && status.status == 200) {
+  // A busy VM can miss a short health probe. Retry before replacing a
+  // controller to avoid interrupting a healthy browser's live session.
+  auto current_controller = [](const HttpResp &reply) {
+    if (!reply.ok || reply.status != 200) return false;
     Val state;
-    if (mj::parse(status.body, state) && state.find("udp_transport") &&
-        state.find("udp_transport")->asStr() == "MGB4")
-      return ip;
-    // Old controller from a previous release: attach the new controller
-    // to the same already-running Chromium without touching its profile.
+    if (!mj::parse(reply.body, state)) return false;
+    auto ver = state.find("udp_transport");
+    return ver && ver->asStr() == "MGB4";
+  };
+  for (int probe = 0; probe < 3; ++probe) {
+    auto status = browser_call(ip, BROWSERD_PORT, "GET", "/state", "",
+                               probe ? 3000 : 1500);
+    if (current_controller(status)) return ip;
+    if (status.ok && (status.status == 401 || status.status == 403))
+      break; // stale authentication requires a controller upgrade
+    if (status.ok && status.status == 200) {
+      Val state;
+      if (mj::parse(status.body, state) && state.find("udp_transport"))
+        break; // older protocol requires a controller upgrade
+    }
+    if (probe < 2) usleep(200000);
   }
-  // A stale mag-browser can still own :9225 after a release or token
-  // change. Never launch over an occupied port: stop only this VM user's
-  // browser controller. Chromium and its persistent profile stay alive.
-  if (status.ok || status.status != 0) {
-    auto stale = guest_command(
-        vm, "pkill -TERM -u bot -x mag-browser >/dev/null 2>&1 || true; "
-            "sleep 1; if pgrep -u bot -x mag-browser >/dev/null; then "
-            "echo stale-browser-controller-still-running; exit 1; fi", 10);
-    if (stale.code)
-      throw std::runtime_error(
-          "Browser controller restart blocked (VM " + vm + "): " +
-          stale.out.substr(0, 240));
-  } else {
-    // Even a broken HTTP response may mean the port is occupied. Check for
-    // our exact controller process before attempting the single restart.
-    auto stale = guest_command(
-        vm, "if pgrep -u bot -x mag-browser >/dev/null; then "
-            "pkill -TERM -u bot -x mag-browser; sleep 1; "
-            "pgrep -u bot -x mag-browser >/dev/null && exit 1; fi", 10);
-    if (stale.code)
-      throw std::runtime_error(
-          "Existing browser controller could not be stopped in " + vm +
-          ": " + stale.out.substr(0, 200));
-  }
+  // A stale controller may still own guest port 9225. Only the specific
+  // mag-browser process belonging to this guest's user may be stopped.
+  // Ignore orphaned zombies: they do not hold sockets.
+  auto stale = guest_command(vm, browser_controller_stop_script(), 20);
+  if (stale.code)
+    throw std::runtime_error(
+        "Browser controller recovery blocked (VM " + vm + "): " +
+        stale.out.substr(0, 500) + " [exit " +
+        std::to_string(stale.code) + "]");
   ip = vm_ip(vm, true);
   if (ip.empty())
     throw std::runtime_error("Guest IP unavailable");
@@ -1291,7 +1290,7 @@ static std::string ensure_browser(const std::string &vm) {
   }
   for (int i = 0; i < 60; ++i) {
     auto ready = browser_call(ip, BROWSERD_PORT, "GET", "/state", "", 1000);
-    if (ready.ok && ready.status == 200)
+    if (current_controller(ready))
       return ip;
     usleep(250000);
   }
@@ -1299,7 +1298,14 @@ static std::string ensure_browser(const std::string &vm) {
     std::lock_guard<std::mutex> lock(VM_IP_MTX);
     VM_IP_CACHE.erase(vm);
   }
-  throw std::runtime_error("Native browser unavailable");
+  auto diag = guest_command(
+      vm, "id; ps -u bot -o pid=,stat=,comm= | grep -E "
+          "'mag-browser$|chrom(e|ium)$' || true; "
+          "tail -n 12 /home/bot/browserd/browser.log 2>/dev/null || true",
+      10);
+  throw std::runtime_error(
+      "Native browser unavailable after controller recovery (VM " + vm +
+      "): " + diag.out.substr(0, 700));
 }
 // Prewarm a bot browser without blocking the HTTP room or inference slot.
 static void warm_browser_async(const std::string &vm) {

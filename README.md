@@ -318,3 +318,40 @@ corresponding Chromium window or change the other bot's screen. Test
 then create/delete a temporary test bot only if resource capacity permits.
 GitHub CI checks routes/UI/streaming compilation but not your Tailnet
 ACL, HTTPS certificate or live UDP ICE traversal on MAG.
+
+## Resilient per-VM browser-controller recovery
+
+When MAG restarts or deploys a new browser controller, each existing bot
+**keeps the same Chromium process, CDP page, cookies and profile**. MAG first
+tries the authenticated controller state endpoint up to three times to
+avoid interrupting a temporarily busy but healthy controller.
+
+If an upgrade is genuinely necessary, only the selected VM's unprivileged
+`mag-browser` process is stopped. The guest script ignores zombie/defunct
+processes (which cannot own a listening socket), waits up to five seconds
+for SIGTERM, then gives an unresponsive controller a narrowly scoped
+SIGKILL and waits another three seconds. It does **not** signal `chrome`,
+`chromium`, the guest itself or other bots. The replacement binary is
+downloaded into a temporary file, atomically installed, and accepted only
+after its signed `/state` endpoint reports the current `MGB4` protocol.
+Failures include short guest-local process/log diagnostics rather than
+unconditionally retrying or attempting to recreate the VM.
+
+A Linux process regression in `test-browser-recovery` verifies ordinary
+termination, stubborn processes that ignore SIGTERM, preserved unrelated
+processes and ignored zombies. It runs in GitHub Actions before deployment.
+Actual guest kernel/process state still needs confirmation on MAG.
+
+If a VM temporarily reports `Existing browser controller could not be
+stopped`, first deploy this recovery fix; do not delete/recreate its disk.
+Server-side diagnostics (without resetting the bot):
+
+```bash
+sudo magbot status
+sudo magbot exec agent2 -- /bin/bash -lc "ps -u bot -o pid,ppid,stat,comm | grep -E 'mag-browser|chrom' || true"
+sudo magbot exec agent2 -- /bin/bash -lc "tail -n 20 /home/bot/browserd/browser.log 2>/dev/null || true"
+curl -fsS http://127.0.0.1:8766/api/browser-live/status
+```
+
+Check MAG's browser in the Tailnet UI after deploying. A successful CI run
+does not establish live browser/CDP connectivity on the private KVM host.

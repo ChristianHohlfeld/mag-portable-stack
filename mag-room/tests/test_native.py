@@ -91,6 +91,23 @@ class Native(unittest.TestCase):
  def test_07_persistence(self):
   before=self.request('/api/state');self.proc.terminate();self.proc.wait(timeout=5);self.log.close();self.start();after=self.request('/api/state')
   self.assertEqual(before['room'],after['room']);self.assertEqual(before['agents'],after['agents']);self.assertFalse(after['autotalk'])
+ def test_09_pointer_route_is_agent_scoped(self):
+  # A viewer cannot address an arbitrary guest or launch native input by VM name.
+  self.error(404,'/api/browser/unknown/pointer',
+             {'action':'click','x':25,'y':30})
+  self.error(404,'/api/browser/magbot-agent1/pointer',
+             {'action':'down','x':25,'y':30})
+  # Guest bridge deliberately exposes no browser control routes.
+  token=self.state.joinpath('token').read_text().strip()
+  self.error(403,'/api/browser/test/pointer',
+             {'action':'click','x':20,'y':20},bridge=True,
+             headers={'Authorization':'Bearer '+token,
+                      'Content-Type':'application/json'})
+ def test_10_browser_live_controls_present(self):
+  ui=self.request('/',raw=True)
+  self.assertIn(b"viewportPoint(e)",ui)
+  self.assertIn(b"pointerAction('down'",ui)
+  self.assertIn(b"pointerAction('wheel'",ui)
  def test_08_malformed_http_rejected(self):
   for headers in ['Content-Length: -1\r\n','Content-Length: 2\r\nContent-Length: 3\r\n','Transfer-Encoding: chunked\r\n']:
    with socket.create_connection(('127.0.0.1',self.ui),timeout=3) as s:

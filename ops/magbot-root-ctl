@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# Privileged QGA bridge for one explicitly selected KVM. Never runs host shell.
+set -euo pipefail
+[[ ${#@} -ge 2 ]] || exit 64
+action="$1"; vm="$2"
+[[ "$vm" =~ ^agent[0-9]+$ ]] || exit 64
+case "$action" in
+  on)
+    [[ ${#@} == 3 && "$3" =~ ^[a-fA-F0-9]{24,128}$ ]] || exit 64
+    exec /usr/local/bin/magbot privilege-on "$vm" "$3"
+    ;;
+  off)
+    [[ ${#@} == 2 ]] || exit 64
+    exec /usr/local/bin/magbot privilege-off "$vm"
+    ;;
+  *) exit 64;;
+esac

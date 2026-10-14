@@ -1221,7 +1221,7 @@ static std::string ensure_browser(const std::string &vm) {
   if (status.ok && status.status == 200) {
     Val state;
     if (mj::parse(status.body, state) && state.find("udp_transport") &&
-        state.find("udp_transport")->asStr() == "MGB3")
+        state.find("udp_transport")->asStr() == "MGB4")
       return ip;
     // Old controller from a previous release: attach the new controller
     // to the same already-running Chromium without touching its profile.

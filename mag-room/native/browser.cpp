@@ -292,7 +292,10 @@ int main(int argc, char **argv) {
     metrics["mobile"] = false;
     c.call("Emulation.setDeviceMetricsOverride", metrics);
     auto snapshot = [&]() {
-      return c.eval("({url:location.href,title:document.title})");
+      Val state = c.eval("({url:location.href,title:document.title})");
+      state["udp_transport"] = "MGB1";
+      state["udp_port"] = 9227;
+      return state;
     };
     char host[128]{};
     if (gethostname(host, sizeof(host) - 1) != 0)
@@ -309,9 +312,12 @@ int main(int argc, char **argv) {
       int nready = poll(sources, 2, 70);
       if (nready < 0) continue;
       if (sources[1].revents & POLLIN) {
-        try { udp.receive(c); }
-        catch (const std::exception &e) {
-          std::cerr << "UDP control: " << e.what() << std::endl;
+        for (int i = 0; i < 24; ++i) {
+          try { udp.receive(c); }
+          catch (const std::exception &e) {
+            std::cerr << "UDP control: " << e.what() << std::endl;
+            break;
+          }
         }
       }
       if (!(sources[0].revents & POLLIN)) continue;

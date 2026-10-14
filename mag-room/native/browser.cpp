@@ -300,7 +300,10 @@ int main(int argc, char **argv) {
     char host[128]{};
     if (gethostname(host, sizeof(host) - 1) != 0)
       throw std::runtime_error("Unable to identify VM");
-    BrowserUDP udp(token, host);
+    std::string vm_name = host;
+    if (vm_name.rfind("magbot-", 0) == 0)
+      vm_name.erase(0, 7); // cloud-init uses magbot-<VM name>
+    BrowserUDP udp(token, vm_name);
     for (;;) {
       // CDP and UDP input run against exactly the same hot tab on one thread.
       // Do not race a second CDP connection from an auxiliary process.

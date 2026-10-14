@@ -154,7 +154,7 @@ function renderAgents(){
   card.className='agent';card.dataset.bot=a.id;card.tabIndex=0;
   card.setAttribute('role','button');
   card.setAttribute('aria-label',a.name+' rechts anzeigen');
-  card.onclick=e=>{if(e.target.closest('button,a,input,label'))return;focusBot(a.id)};
+  card.onclick=e=>{if(e.target.closest('button,a'))return;focusBot(a.id)};
   card.onkeydown=e=>{if(e.target===card&&(e.key==='Enter'||e.key===' ')){e.preventDefault();focusBot(a.id)}};
   const label=document.createElement('label'),check=document.createElement('input');
   check.type='checkbox';check.checked=selected.has(a.id);

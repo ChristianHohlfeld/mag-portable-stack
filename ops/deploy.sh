@@ -9,7 +9,7 @@ WHISPER_CLI="${MAG_WHISPER_SOURCE:-/home/chris/.cache/mag-stack/whisper-build/bi
 WHISPER_MODEL="${MAG_WHISPER_SOURCE_MODEL:-/home/chris/models/whisper/ggml-large-v3-turbo.bin}"
 [[ $EUID == 0 ]] || { echo 'Run with sudo' >&2; exit 1; }
 [[ "$RELEASE_ID" =~ ^[a-zA-Z0-9._-]+$ ]] || exit 1
-for binary in magroom mag-browser magbot-native; do test -x "$SOURCE/build/$binary"; done
+for binary in magroom mag-browser magbot-native mag-root-console; do test -x "$SOURCE/build/$binary"; done
 # Go is used only for WebRTC/UDP; the room, browsers and VM lifecycle remain C++.
 if [[ ! -x "$SOURCE/build/mag-browser-webrtc" ]]; then
   command -v go >/dev/null || { echo 'Go >=1.23 required to build browser WebRTC gateway' >&2; exit 1; }
@@ -28,7 +28,7 @@ fi
 cp -a /usr/local/bin/magbot "$BACKUP/magbot"
 cp -a /var/lib/magbot/room "$BACKUP/room"
 if [[ -L /opt/mag-stack/current ]]; then readlink /opt/mag-stack/current > "$BACKUP/previous-release"; fi
-install -m 0755 "$SOURCE/build/magroom" "$SOURCE/build/mag-browser" "$SOURCE/build/magbot-native" "$SOURCE/build/mag-browser-webrtc" "$WHISPER_CLI" "$RELEASE/bin/"
+install -m 0755 "$SOURCE/build/magroom" "$SOURCE/build/mag-browser" "$SOURCE/build/magbot-native" "$SOURCE/build/mag-root-console" "$SOURCE/build/mag-browser-webrtc" "$WHISPER_CLI" "$RELEASE/bin/"
 cp -a "$SOURCE/mag-room/web/." "$RELEASE/web/"
 install -d "$RELEASE/web/static"
 cp -a "$SOURCE/mag-room/static/." "$RELEASE/web/static/"
@@ -73,7 +73,7 @@ mv -Tf /opt/mag-stack/.current-next /opt/mag-stack/current
 # Compatibility name is deliberately retained for existing guest wrappers/sudoers.
 install -m 0755 "$RELEASE/bin/magbot-native" /usr/local/bin/magbot
 install -m 0755 "$SOURCE/ops/spawnbot" "$SOURCE/ops/despawnbot" /usr/local/bin/
-install -m 0755 "$SOURCE/ops/magbot-guest-run" "$SOURCE/ops/magbot-agent-ctl" /usr/local/sbin/
+install -m 0755 "$SOURCE/ops/magbot-guest-run" "$SOURCE/ops/magbot-agent-ctl" "$SOURCE/ops/magbot-root-ctl" /usr/local/sbin/
 install -m 0440 "$SOURCE/ops/magbot-guest.sudoers" /etc/sudoers.d/magbot-guest
 visudo -cf /etc/sudoers.d/magbot-guest >/dev/null
 install -m 0644 "$SOURCE/ops/mag-120.service" "$SOURCE/ops/mag-browser-webrtc.service" /etc/systemd/system/

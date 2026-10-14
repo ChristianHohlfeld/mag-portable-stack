@@ -30,8 +30,12 @@ body.resizing,body.resizing *{cursor:col-resize!important;user-select:none!impor
 #terminal-panel .terminal-heading{display:flex;align-items:center;gap:8px;padding:8px 11px;border-bottom:1px solid #293243}
 #terminal-panel .terminal-heading h2{margin:0;flex:1}
 #terminal-panel .terminal-heading button{font-size:11px;padding:3px 8px}
-#terminal{height:290px;min-height:160px;max-height:67vh;overflow:hidden;resize:vertical;padding:7px 5px}
-#terminal .xterm{height:100%;width:100%}
+/* Terminal scrolls internally. Its shell must never increase sidebar height. */
+#terminal{height:290px;min-height:160px;max-height:67vh;overflow:hidden;resize:vertical;padding:7px 5px;position:relative;overscroll-behavior:contain}
+#terminal .terminal-host{display:block;width:100%;height:100%;min-height:0;min-width:0;overflow:hidden;contain:layout size}
+#terminal .xterm{width:100%;height:100%;overflow:hidden}
+#terminal .xterm-viewport{overscroll-behavior:contain!important;overflow-y:scroll!important}
+#terminal .xterm-screen{overflow:hidden}
 #terminal-status{font-size:11px;color:var(--muted);padding:2px 11px 8px}
 #terminal:focus-within{outline:1px solid #49628c}
 @media(max-width:850px){
@@ -117,10 +121,19 @@ function terminalSend(kind,payload={}){
  liveConsole.send(JSON.stringify({kind,...payload}));
  return true;
 }
+let terminalFitFrame=0;
 function terminalResize(){
- if(!activeTerminal||!activeTerminal.host.isConnected)return;
- try{activeTerminal.fit.fit()}catch{}
- terminalSend('terminal_resize',{cols:activeTerminal.term.cols,rows:activeTerminal.term.rows});
+ if(terminalFitFrame)cancelAnimationFrame(terminalFitFrame);
+ terminalFitFrame=requestAnimationFrame(()=>{
+  terminalFitFrame=0;
+  const entry=activeTerminal,el=$('terminal');
+  if(!entry||!entry.opened||entry.host.parentElement!==el||
+     el.offsetWidth<60||el.offsetHeight<90)return;
+  try{
+   entry.fit.fit();
+   terminalSend('terminal_resize',{cols:entry.term.cols,rows:entry.term.rows});
+  }catch(e){terminalStatus('Terminalgröße: '+e.message)}
+ });
 }
 function makeTerminal(botId){
  if(!window.Terminal||!window.FitAddon?.FitAddon){
@@ -138,6 +151,9 @@ function makeTerminal(botId){
  const entry={term,fit,host,opened:false};terminals.set(botId,entry);
  term.onData(data=>{
   if($('browser-agent').value!==botId)return;
+  // Rejoin the live cursor before forwarding user input if the viewer
+  // previously scrolled into terminal history.
+  if(term.buffer.active.viewportY<term.buffer.active.baseY)term.scrollToBottom();
   const encoded=utf8Encoder.encode(data);
   for(let offset=0;offset<encoded.length;offset+=300){
    const piece=encoded.subarray(offset,offset+300);
@@ -164,12 +180,13 @@ function updateConsoleLabel(){
  if(!id){activeTerminal=null;$('terminal').textContent='Bot auswählen';return}
  activeTerminal=makeTerminal(id);
  if(!activeTerminal){$('terminal').textContent='Terminal-Emulator nicht verfügbar';return}
- $('terminal').replaceChildren(activeTerminal.host);
+ if(activeTerminal.host.parentElement!==$('terminal'))
+  $('terminal').replaceChildren(activeTerminal.host);
  if(!activeTerminal.opened){
   activeTerminal.term.open(activeTerminal.host);
   activeTerminal.opened=true;
  }
- requestAnimationFrame(terminalResize);
+ terminalResize();
  terminalStatus(liveConsole?.readyState==='open'?'Shell verbunden':'Verbinde VM-Terminal …');
 }
 function receiveConsole(data){
@@ -184,6 +201,25 @@ function receiveConsole(data){
 $('terminal-clear').onclick=()=>activeTerminal?.term.clear();
 $('terminal-focus').onclick=()=>activeTerminal?.term.focus();
 $('terminal').addEventListener('click',()=>activeTerminal?.term.focus());
+// Wheel is handled by the terminal, not by the outer right sidebar.
+// Capture before xterm and the sidebar can scroll. Preserve pixel-smooth
+// touchpads by accumulating fractional line deltas.
+let terminalWheelLines=0;
+$('terminal').addEventListener('wheel',e=>{
+ const entry=activeTerminal;
+ if(!entry||!entry.opened||!entry.host.contains(e.target))return;
+ e.preventDefault();
+ e.stopPropagation();
+ const rowPx=Math.max(12,entry.term.options.fontSize*1.25);
+ const delta=e.deltaMode===1?e.deltaY:e.deltaMode===2?
+   e.deltaY*entry.term.rows:e.deltaY/rowPx;
+ terminalWheelLines+=delta;
+ const lines=Math.trunc(terminalWheelLines);
+ if(lines!==0){
+  entry.term.scrollLines(lines);
+  terminalWheelLines-=lines;
+ }
+},{capture:true,passive:false});
 new ResizeObserver(()=>{
  if($('terminal').getBoundingClientRect().width>0)terminalResize();
 }).observe($('terminal'));

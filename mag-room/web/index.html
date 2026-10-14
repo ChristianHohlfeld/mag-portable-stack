@@ -32,7 +32,8 @@ for(const id of ['web','tts','language','live']){const stored=localStorage.getIt
 async function browser(action,body={}){const id=$('browser-agent').value;if(!id)throw Error('Bot auswählen');return api('/api/browser/'+encodeURIComponent(id)+'/'+action,body)}
 $('browser-open').onclick=async()=>{try{await browser('navigate',{url:$('browser-url').value});notice()}catch(e){notice(e.message)}};$('browser-click').onclick=async()=>{try{const v=$('browser-selector').value;await browser('click',v.startsWith('text=')?{text:v.slice(5)}:{selector:v});notice()}catch(e){notice(e.message)}};$('browser-type').onclick=async()=>{try{await browser('type',{text:$('browser-text').value});notice()}catch(e){notice(e.message)}};for(const action of ['back','scroll','read'])$('browser-'+action).onclick=async()=>{try{const r=await browser(action,{dy:600});if(action==='read'){$('memory-title').textContent=r.title;$('memory').textContent=r.text;$('memory-dialog').showModal()}}catch(e){notice(e.message)}};
 async function screen(){if(!$('live').checked||screenBusy||!$('browser-agent').value)return;screenBusy=true;try{const r=await fetch('/api/screen/'+$('browser-agent').value);if(!r.ok)throw Error((await r.json()).error);const old=$('screen').src;$('screen').src=URL.createObjectURL(await r.blob());$('screen').hidden=false;if(old.startsWith('blob:'))URL.revokeObjectURL(old)}catch(e){activity(e.message)}finally{screenBusy=false}}setInterval(()=>{if(document.visibilityState==='visible')screen()},500);
-$('live').addEventListener('change',()=>{$('screen').hidden=!$('live').checked;$('screen').classList.toggle('interactive',$('live').checked);screen()});
+$('live').addEventListener('change',()=>{$('screen').hidden=!$('live').checked;$('screen').classList.toggle('interactive',$('live').checked);
+$('screen').tabIndex=0;$('screen').title='Bot-Browser direkt bedienen: Klicken, Ziehen, Scrollen oder fokussieren und tippen';screen()});
 $('screen').classList.toggle('interactive',$('live').checked);
 // Direct control works in Chromium viewport coordinates, never host pixels.
 // Events are serialized: down -> move -> up cannot overtake one another.
@@ -59,7 +60,7 @@ function pointerAction(action,point,extra={}){
 function mouseButton(e){return e.button===2?'right':e.button===1?'middle':'left'}
 $('screen').addEventListener('pointerdown',e=>{
  if(!$('live').checked)return;
- e.preventDefault();activePointer=e.pointerId;
+ e.preventDefault();e.currentTarget.focus({preventScroll:true});activePointer=e.pointerId;
  try{e.currentTarget.setPointerCapture(e.pointerId)}catch{}
  pointerAction('down',viewportPoint(e),{button:mouseButton(e)});
 });
@@ -83,6 +84,17 @@ $('screen').addEventListener('wheel',e=>{
  const dx=Math.max(-1200,Math.min(1200,e.deltaX));
  pointerAction('wheel',viewportPoint(e),{deltaX:dx,deltaY:dy});
 },{passive:false});
+$('screen').addEventListener('keydown',e=>{
+ if(!$('live').checked)return;
+ // Keep shortcuts scoped to the focused preview, not to the MAG room.
+ e.preventDefault();
+ const id=$('browser-agent').value;if(!id)return;
+ const details={key:e.key,code:e.code,shift:e.shiftKey,
+                ctrl:e.ctrlKey,alt:e.altKey,meta:e.metaKey};
+ pointerChain=pointerChain.catch(()=>{}).then(()=>
+   api('/api/browser/'+encodeURIComponent(id)+'/key',details)
+ ).catch(err=>notice('Tastatur: '+err.message));
+});
 
 $('mic').onclick=async()=>{if(recorder?.state==='recording'){recorder.stop();return}try{const stream=await navigator.mediaDevices.getUserMedia({audio:true});chunks=[];recorder=new MediaRecorder(stream);recorder.ondataavailable=e=>{if(e.data.size)chunks.push(e.data)};recorder.onstop=async()=>{stream.getTracks().forEach(t=>t.stop());$('mic').textContent='Mikrofon';notice('Transkribiere lokal…');try{const r=await fetch('/api/stt?lang='+$('language').value,{method:'POST',body:new Blob(chunks,{type:recorder.mimeType})});const result=await r.json();if(!r.ok)throw Error(result.error);$('message').value=result.corrected||result.text;notice(result.correction_pending?'Text erkannt; Kontextkorrektur war ausgelastet.':'Text bereit — prüfe ihn vor dem Senden.')}catch(e){notice(e.message)}};recorder.start();$('mic').textContent='Aufnahme stoppen';notice('Aufnahme läuft…')}catch(e){notice('Mikrofon: '+e.message)}};
 $('toggle-agents').onclick=()=>$('layout').classList.toggle('show-agents');$('toggle-tools').onclick=()=>$('layout').classList.toggle('show-tools');

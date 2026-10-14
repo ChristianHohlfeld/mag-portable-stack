@@ -1,1 +1,1 @@
-magbot ALL=(root) NOPASSWD: /usr/local/sbin/magbot-guest-run, /usr/local/sbin/magbot-agent-ctl
+magbot ALL=(root) NOPASSWD: /usr/local/sbin/magbot-guest-run, /usr/local/sbin/magbot-agent-ctl, /usr/local/sbin/magbot-root-ctl

@@ -256,3 +256,24 @@ resize to the sidebar width and preserve its scrollback when switching bots.
 The Browser live toggle only controls picture frames, **not** the terminal
 channel. This is not an SSH emulator or a command input field: Bash reads
 real PTY keystrokes in the corresponding isolated VM.
+
+### Console viewport/scrolling (14 October 2026)
+
+The selected bot's xterm is a fixed-height panel with its own bounded
+scrollback. Its terminal host and screen are constrained to that panel,
+rather than expanding the right sidebar as new shell output arrives.
+Mouse-wheel/touchpad events over the terminal scroll **xterm history**
+only; outside the terminal, the right sidebar scrolls normally.
+Typing after reviewing history returns to the live shell cursor.
+Resizing the right sidebar or the terminal panel fits the PTY once per
+animation frame and reports the rows/columns to the selected VM.
+Changing the selected bot keeps per-bot scrollback and does not recreate
+the remote shell. This is only a UI scroll fix; no guest images/disks,
+model settings or browser profiles are touched.
+
+To check it on the MAG host: in Ab's terminal execute
+`for i in $(seq 1 150); do echo "line $i"; done`, scroll over the
+terminal with the mouse to read older lines, scroll down again, type
+`pwd` and press Enter. Both the command prompt and new output must stay
+visible within the terminal, with no outer sidebar jump. Repeat after
+resizing the right panel and in Joe's terminal **if Joe's VM exists**.

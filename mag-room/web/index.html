@@ -56,6 +56,27 @@ function notice(t=''){$('notice').textContent=t}function activity(t){const e=doc
 async function api(path,body,method='POST'){const options={method};if(body!==undefined){options.body=typeof body==='string'?body:JSON.stringify(body);options.headers={'Content-Type':'application/json'}}const r=await fetch(path,options);const text=await r.text();let data;try{data=JSON.parse(text)}catch{data={error:text}}if(!r.ok)throw Error(data.error||r.statusText);return data}
 function safeMarkdown(t){return DOMPurify.sanitize(marked.parse(t||'',{breaks:true}))}function decorate(el){el.querySelectorAll('pre code').forEach(c=>{hljs.highlightElement(c);const b=document.createElement('button');b.textContent='Kopieren';b.className='copy';b.onclick=()=>navigator.clipboard.writeText(c.textContent);c.parentNode.appendChild(b)});el.querySelectorAll('a').forEach(a=>{a.target='_blank';a.rel='noopener noreferrer'})}
 function append(msg,scroll=true){const area=$('conversation');area.querySelector('.empty')?.remove();const div=document.createElement('article');div.className='message '+(msg.role==='user'?'user':'');div.dataset.id=msg.id||'';const meta=document.createElement('div');meta.className='meta';const name=document.createElement('strong');name.textContent=msg.name||'Bot';const time=document.createElement('span');time.textContent=new Date((msg.ts||Date.now()/1000)*1000).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});meta.append(name,time);div.append(meta);const content=document.createElement('div');content.className='content';content.innerHTML=safeMarkdown(msg.content);decorate(content);div.append(content);if(msg.file){const f=msg.file;const a=document.createElement('a');a.href='/api/file/'+encodeURIComponent(f.stored);a.textContent=f.name;div.append(a);if(f.mime?.startsWith('audio/')){const audio=document.createElement('audio');audio.controls=true;audio.src=a.href;div.append(audio)}if(f.mime?.startsWith('image/')){const image=document.createElement('img');image.src=a.href;image.alt=f.name;content.append(image)}}area.append(div);if(scroll)area.scrollTop=area.scrollHeight;return div}
+function updateStream(botId,immediate=false){
+ const s=streams[botId];if(!s)return;
+ if(!s.node||!s.node.isConnected){s.node=append({role:'assistant',name:s.name,content:s.text||s.status||'Denkt nach …'});}
+ const update=()=>{
+  s.frame=0;
+  if(!s.node?.isConnected)return;
+  const content=s.node.querySelector('.content');
+  if(!s.text){
+   s.node.classList.add('processing');
+   content.textContent=s.status||'Denkt nach …';
+  }else{
+   s.node.classList.remove('processing');
+   // Sanitize on every incremental render, never inject untrusted Markdown.
+   content.innerHTML=safeMarkdown(s.text);
+  }
+  const area=$('conversation');
+  if(area.scrollHeight-area.scrollTop-area.clientHeight<180)area.scrollTop=area.scrollHeight;
+ };
+ if(immediate){if(s.frame)cancelAnimationFrame(s.frame);update()}
+ else if(!s.frame)s.frame=requestAnimationFrame(update);
+}
 function render(){const area=$('conversation');const bottom=!rendered||area.scrollHeight-area.scrollTop-area.clientHeight<130;const oldScroll=area.scrollTop;rendered=true;area.replaceChildren();if(!state.room.length)area.innerHTML='<div class="empty"><h1>Was entdecken wir heute?</h1><p>Jeder Bot hat seine eigene VM, einen eigenen Browser und bleibende Erinnerungen. Dateien und Ideen teilt ihr hier.</p></div>';state.room.forEach(m=>append(m,false));for(const s of Object.values(streams)){s.node=append({role:'assistant',name:s.name,content:s.text||s.status||'Denkt nach …'},false);if(!s.text)s.node.classList.add('processing')}if(!bottom)area.scrollTop=oldScroll;if(bottom)area.scrollTop=area.scrollHeight;renderAgents();renderFiles();$('autotalk').checked=!!state.autotalk;}
 function renderAgents(){const list=$('agents');list.replaceChildren();const old=$('browser-agent').value;$('browser-agent').replaceChildren();for(const a of state.agents){if(!selected.has(a.id)&&!sessionStorage.getItem('mag-selected'))selected.add(a.id);const card=document.createElement('div');card.className='agent';const label=document.createElement('label');const check=document.createElement('input');check.type='checkbox';check.checked=selected.has(a.id);check.onchange=()=>{check.checked?selected.add(a.id):selected.delete(a.id);sessionStorage.setItem('mag-selected',JSON.stringify([...selected]))};const name=document.createElement('span');name.textContent=a.name;name.style.color=a.color;label.append(check,name);const info=document.createElement('small');info.textContent=a.vm+' · '+(a.memory_count||0)+' Erinnerungen';const actions=document.createElement('div');actions.className='actions';for(const [title,fn] of [['Erinnerung',()=>memory(a)],['Entfernen',()=>removeAgent(a)]]){const b=document.createElement('button');b.textContent=title;b.onclick=fn;actions.append(b)}card.append(label,info,actions);list.append(card);const option=document.createElement('option');option.value=a.id;option.textContent=a.name;$('browser-agent').append(option)}if(state.agents.some(a=>a.id===old))$('browser-agent').value=old; updateConsoleLabel();}
 function renderFiles(){const list=$('files');list.replaceChildren();for(const f of state.files){const row=document.createElement('div');row.className='file';const a=document.createElement('a');a.href='/api/file/'+encodeURIComponent(f.stored);a.textContent=f.name;row.append(a);const size=document.createElement('small');size.textContent=' · '+Math.ceil(f.size/1024)+' KB';row.append(size);if(f.mime==='text/html'){const b=document.createElement('button');b.textContent='Vorschau';b.onclick=async()=>{try{$('canvas').srcdoc=await(await fetch(a.href)).text();$('canvas').hidden=false}catch(e){notice(e.message)}};row.append(b)}list.append(row)}}
@@ -93,8 +114,8 @@ function receiveConsole(data){
  if(!msg||typeof msg.id!=='string'||!Number.isInteger(msg.index)||!Number.isInteger(msg.total)||msg.total<1||msg.total>32||msg.index<0||msg.index>=msg.total||typeof msg.data!=='string')return;
  const id=liveVM+':'+msg.id;let task=consoleParts.get(id);
  if(!task||task.parts.length!==msg.total){task={parts:Array(msg.total),started:performance.now(),bot:$('browser-agent').value,exit:msg.exit};consoleParts.set(id,task)}
- if(task.parts[msg.index]===undefined)task.parts[msg.index]=msg.data;
- if(task.parts.every(x=>typeof x==='string')){
+ if(task.parts[msg.index]===undefined){task.parts[msg.index]=msg.data;task.count=(task.count||0)+1}
+ if(task.count===msg.total){
   try{const bytes=task.parts.map(x=>Uint8Array.from(atob(x),c=>c.charCodeAt(0))),length=bytes.reduce((a,x)=>a+x.length,0),joined=new Uint8Array(length);let at=0;for(const part of bytes){joined.set(part,at);at+=part.length}
     consoleLog(task.bot,new TextDecoder().decode(joined)+'\n[exit '+task.exit+']\n');
   }catch{consoleLog(task.bot,'[Ausgabe konnte nicht dekodiert werden]\n')}
@@ -235,7 +256,98 @@ $('screen').addEventListener('keydown',e=>{
  else if(allowed.includes(e.key)||e.key.length===1){e.preventDefault();liveSend({kind:'key',key:e.key,shift:e.shiftKey,ctrl:e.ctrlKey,alt:e.altKey,meta:e.metaKey})}
 });
 $('mic').onclick=async()=>{if(recorder?.state==='recording'){recorder.stop();return}try{const stream=await navigator.mediaDevices.getUserMedia({audio:true});chunks=[];recorder=new MediaRecorder(stream);recorder.ondataavailable=e=>{if(e.data.size)chunks.push(e.data)};recorder.onstop=async()=>{stream.getTracks().forEach(t=>t.stop());$('mic').textContent='Mikrofon';notice('Transkribiere lokal…');try{const r=await fetch('/api/stt?lang='+$('language').value,{method:'POST',body:new Blob(chunks,{type:recorder.mimeType})});const result=await r.json();if(!r.ok)throw Error(result.error);$('message').value=result.corrected||result.text;notice(result.correction_pending?'Text erkannt; Kontextkorrektur war ausgelastet.':'Text bereit — prüfe ihn vor dem Senden.')}catch(e){notice(e.message)}};recorder.start();$('mic').textContent='Aufnahme stoppen';notice('Aufnahme läuft…')}catch(e){notice('Mikrofon: '+e.message)}};
-$('toggle-agents').onclick=()=>$('layout').classList.toggle('show-agents');$('toggle-tools').onclick=()=>$('layout').classList.toggle('show-tools');
-const events=new EventSource('/api/events');events.onopen=()=>{$('connection').innerHTML='<span class="dot"></span>Verbunden';refresh().catch(e=>notice(e.message))};events.onerror=()=>{$('connection').textContent='Verbindung wird erneuert…'};events.onmessage=e=>{try{const event=JSON.parse(e.data);if(event.type==='bot_start'){streams[event.bot]={text:'',name:event.name,node:append({role:'assistant',name:event.name,content:''})};activity(event.name+' arbeitet')}else if(event.type==='delta'){const s=streams[event.bot];if(s){s.text+=event.text;s.node.querySelector('.content').textContent=s.text;const area=$('conversation');if(area.scrollHeight-area.scrollTop-area.clientHeight<200)area.scrollTop=area.scrollHeight}}else if(event.type==='reasoning'){activity('Denkt nach…')}else if(['bot_done','message','file','agents','reset','idle'].includes(event.type)){if(event.type==='bot_done')delete streams[event.bot];if(event.type==='bot_done'&&$('tts').checked&&event.content&&'speechSynthesis'in window){const u=new SpeechSynthesisUtterance(event.content);u.lang=$('language').value==='en'?'en-US':'de-DE';speechSynthesis.speak(u)}refresh().catch(e=>notice(e.message))}else if(event.type==='autotalk')$('autotalk').checked=event.on;else if(event.type==='error'){notice(event.text);activity(event.text)}else if(event.type==='frontend')location.reload();else if(event.type==='tool')activity(event.name||event.text||'Werkzeug');else if(event.type==='stopped'||event.type==='cancelled'){streams={};activity('Pausiert');refresh()}}catch(err){notice(err.message)}};
-refresh().then(()=>connectLive()).catch(e=>notice(e.message));
+// Resize handles are per-sidebar, client-side only, and never intercept chat.
+const layout=$('layout'),isCompact=()=>matchMedia('(max-width:850px)').matches;
+let leftOpen=localStorage.getItem('mag-left-open')!=='false';
+let rightOpen=localStorage.getItem('mag-right-open')!=='false';
+let leftWidth=Math.max(170,Math.min(480,Number(localStorage.getItem('mag-left-width'))||240));
+let rightWidth=Math.max(270,Math.min(760,Number(localStorage.getItem('mag-right-width'))||370));
+function layoutApply(){
+ layout.style.setProperty('--left-width',leftWidth+'px');
+ layout.style.setProperty('--right-width',rightWidth+'px');
+ layout.classList.toggle('hide-left',!leftOpen);
+ layout.classList.toggle('hide-right',!rightOpen);
+ $('toggle-agents').setAttribute('aria-expanded',String(leftOpen));
+ $('toggle-tools').setAttribute('aria-expanded',String(rightOpen));
+ // Closing tools detaches WebRTC and drops pending image buffers.
+ if(!rightOpen||(!layout.classList.contains('mobile-right')&&isCompact()))disconnectLive();
+ else if($('live').checked&&!livePeer)connectLive();
+}
+function toggleRail(side){
+ const mobile=isCompact();
+ if(side==='left'){leftOpen=!leftOpen;localStorage.setItem('mag-left-open',leftOpen);if(mobile)layout.classList.remove('mobile-right');layout.classList.toggle('mobile-left',leftOpen&&mobile)}
+ else {rightOpen=!rightOpen;localStorage.setItem('mag-right-open',rightOpen);if(mobile)layout.classList.remove('mobile-left');layout.classList.toggle('mobile-right',rightOpen&&mobile)}
+ layoutApply();
+}
+$('toggle-agents').onclick=()=>toggleRail('left');
+$('toggle-tools').onclick=()=>toggleRail('right');
+for(const [side,panel] of [['left','left-panel'],['right','right-panel']]){
+ const handle=document.createElement('div');handle.className='rail-handle';
+ handle.setAttribute('role','separator');handle.setAttribute('aria-label',side==='left'?'Bot-Leiste verbreitern':'Werkzeugleiste verbreitern');
+ $(panel).append(handle);
+ handle.addEventListener('pointerdown',e=>{
+  if(isCompact())return;e.preventDefault();handle.setPointerCapture(e.pointerId);
+  handle.classList.add('dragging');document.body.classList.add('resizing');
+  const startX=e.clientX,initial=side==='left'?leftWidth:rightWidth;
+  function move(ev){
+   const delta=side==='left'?ev.clientX-startX:startX-ev.clientX;
+   const max=Math.max(side==='left'?170:270,window.innerWidth-(side==='left'?rightOpen?rightWidth:0:leftOpen?leftWidth:0)-310);
+   const width=Math.min(max,Math.max(side==='left'?170:270,initial+delta));
+   if(side==='left')leftWidth=width;else rightWidth=width;
+   layoutApply();
+  }
+  const end=()=>{
+   handle.removeEventListener('pointermove',move);handle.removeEventListener('pointerup',end);handle.removeEventListener('pointercancel',end);
+   handle.classList.remove('dragging');document.body.classList.remove('resizing');
+   localStorage.setItem('mag-'+side+'-width',Math.round(side==='left'?leftWidth:rightWidth));
+  };
+  handle.addEventListener('pointermove',move);
+  handle.addEventListener('pointerup',end);handle.addEventListener('pointercancel',end);
+ });
+}
+layoutApply();
+window.addEventListener('resize',()=>{layoutApply()});
+document.addEventListener('visibilitychange',()=>{if(document.hidden)disconnectLive();else if(rightOpen&&$('live').checked)connectLive()});
+window.addEventListener('pagehide',()=>{disconnectLive();events.close()});
+
+const events=new EventSource('/api/events');
+events.onopen=()=>{$('connection').innerHTML='<span class="dot"></span>Verbunden';refresh().catch(e=>notice(e.message))};
+events.onerror=()=>{$('connection').textContent='Verbindung wird erneuert…'};
+events.onmessage=e=>{
+ try{
+  const event=JSON.parse(e.data),id=event.bot;
+  if(event.type==='bot_start'){
+   const prev=streams[id];
+   streams[id]={name:event.name,text:'',status:'Denkt nach …',node:prev?.node||null,frame:0};
+   updateStream(id,true);
+  }else if(event.type==='delta'){
+   const s=streams[id];if(s){s.text+=event.text||'';updateStream(id)}
+  }else if(event.type==='reasoning'){
+   const s=streams[id];if(s&&!s.text){s.status='Denkt nach …';updateStream(id)}
+  }else if(event.type==='tool'){
+   const s=streams[id];if(s&&!s.text){s.status='Werkzeug: '+(event.tool||'Aktion')+' …';updateStream(id)}
+   activity((event.name||'Bot')+' · '+(event.tool||'Werkzeug'));
+  }else if(event.type==='tool_result'){
+   const s=streams[id];if(s&&!s.text){s.status='Verarbeitet Ergebnis …';updateStream(id)}
+  }else if(event.type==='bot_done'){
+   const s=streams[id];if(s?.frame)cancelAnimationFrame(s.frame);
+   delete streams[id];
+   if($('tts').checked&&event.content&&'speechSynthesis'in window){
+    const u=new SpeechSynthesisUtterance(event.content);u.lang=$('language').value==='en'?'en-US':'de-DE';speechSynthesis.speak(u);
+   }
+   refresh().catch(err=>notice(err.message));
+  }else if(['message','file','agents','reset','idle'].includes(event.type)){
+   refresh().catch(err=>notice(err.message));
+  }else if(event.type==='autotalk')$('autotalk').checked=event.on;
+  else if(event.type==='error'){
+   notice(event.text);activity(event.text);
+   const s=streams[id];if(s&&!s.text){s.status='Fehler · '+(event.text||'Backend');updateStream(id)}
+  }else if(event.type==='frontend')location.reload();
+  else if(event.type==='stopped'||event.type==='cancelled'){
+   for(const s of Object.values(streams))if(s.frame)cancelAnimationFrame(s.frame);
+   streams={};activity('Pausiert');refresh().catch(err=>notice(err.message));
+  }
+ }catch(err){notice(err.message)}
+};
+refresh().then(()=>{if(rightOpen&&!isCompact()&&$('live').checked)connectLive()}).catch(e=>notice(e.message));
 </script></body></html>

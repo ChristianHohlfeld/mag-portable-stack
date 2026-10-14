@@ -259,14 +259,29 @@ func (r *relay) offer(w http.ResponseWriter,req *http.Request){
  if b==nil {b=&bot{vm:vm,peers:make(map[*peer]struct{})};r.bots[vm]=b}
  b.peers[viewer]=struct{}{}
  r.mu.Unlock()
+ cleanup:=func(){
+  if viewer.closed.Swap(true){return}
+  r.mu.Lock()
+  delete(b.peers,viewer)
+  noViewers:=len(b.peers)==0
+  r.mu.Unlock()
+  if noViewers{r.send(vm,[]byte(`{"kind":"unsubscribe"}`))}
+  _=pc.Close()
+ }
  pc.OnConnectionStateChange(func(s webrtc.PeerConnectionState){
   if s==webrtc.PeerConnectionStateFailed||s==webrtc.PeerConnectionStateClosed||
-     s==webrtc.PeerConnectionStateDisconnected{
-   viewer.closed.Store(true)
-   r.mu.Lock();delete(b.peers,viewer);r.mu.Unlock()
-   _=pc.Close()
+     s==webrtc.PeerConnectionStateDisconnected{cleanup()}
+ })
+ // Also clear offers abandoned before ICE ever connects.
+ connected:=atomic.Bool{}
+ pc.OnICEConnectionStateChange(func(s webrtc.ICEConnectionState){
+  if s==webrtc.ICEConnectionStateConnected || s==webrtc.ICEConnectionStateCompleted{
+   connected.Store(true)
   }
  })
+ time.AfterFunc(25*time.Second,func(){if !connected.Load(){cleanup()}})
+ complete:=false
+ defer func(){if !complete{cleanup()}}()
  pc.OnDataChannel(func(dc *webrtc.DataChannel){
   if dc.Label()!="control"{return}
   dc.OnMessage(func(m webrtc.DataChannelMessage){
@@ -289,6 +304,7 @@ func (r *relay) offer(w http.ResponseWriter,req *http.Request){
  select {case <-gathered: case <-time.After(10*time.Second):
   _=pc.Close();http.Error(w,"ICE timeout",504);return}
  w.Header().Set("Content-Type","application/json")
+ complete=true
  _=json.NewEncoder(w).Encode(pc.LocalDescription())
 }
 func boolptr(v bool)*bool{return &v}

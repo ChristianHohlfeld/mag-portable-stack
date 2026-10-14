@@ -444,16 +444,21 @@ int main(int argc, char **argv) {
       std::cout << r.out;
       return r.code;
     }
-    if (action == "privilege-on" || action == "privilege-off") {
+    if (action == "privilege-on" || action == "privilege-off" ||
+        action == "privilege-renew") {
       marker(n); // Enforce ownership before any privileged guest action.
       if (state(n) != "ready")
         throw std::runtime_error("Guest not ready for root lease change");
       std::string command;
-      if (action == "privilege-off") {
+      if (action == "privilege-renew") {
+        command="systemctl is-active --quiet mag-root-shell.service && "
+                "test -S /run/mag-root-shell.sock && "
+                "date +%s > /run/mag-root-shell.heartbeat";
+      }else if (action == "privilege-off") {
         command = "systemctl kill --kill-who=all mag-root-shell.service "
                   ">/dev/null 2>&1 || true; "
                   "systemctl stop mag-root-shell.service >/dev/null 2>&1 || true; "
-                  "rm -f /run/mag-root-shell.sock /usr/local/sbin/mag-root-console; "
+                  "rm -f /run/mag-root-shell.sock /run/mag-root-shell.heartbeat /usr/local/sbin/mag-root-console; "
                   "if systemctl is-active --quiet mag-root-shell.service; then "
                   "echo 'root service still active'; exit 1; fi; "
                   "test ! -S /run/mag-root-shell.sock";
@@ -475,6 +480,8 @@ int main(int argc, char **argv) {
             "/usr/local/sbin/.mag-root-console-new "
             "/usr/local/sbin/mag-root-console; "
             "rm -f /usr/local/sbin/.mag-root-console-new; "
+            "date +%s > /run/mag-root-shell.heartbeat; "
+            "chmod 0600 /run/mag-root-shell.heartbeat; "
             "systemd-run --quiet --collect --unit=mag-root-shell "
             "--property=KillMode=control-group "
             "--property=TimeoutStopSec=2s "

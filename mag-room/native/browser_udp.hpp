@@ -24,6 +24,7 @@ class BrowserUDP {
   uint32_t frame_seq_ = 0, ctrl_seq_ = 0;
   std::thread console_worker_;
   std::atomic<bool> console_busy_{false};
+  std::atomic<uint32_t> console_seq_{0};
   std::chrono::steady_clock::time_point subscribed_{}, hello_{}, frame_{};
   static constexpr size_t HEADER = 13, TAG = 16, CHUNK = 1000;
   static void put16(std::string &s, uint16_t n) {
@@ -83,7 +84,7 @@ class BrowserUDP {
       part["total"] = (int)total;
       part["exit"] = exit_code;
       part["data"] = as_b64(data.substr(i * 480, 480));
-      send(4, ++frame_seq_, 0, 1, mj::dump(part));
+      send(4, ++console_seq_, 0, 1, mj::dump(part));
     }
   }
   static std::string str(const mj::Val &v, const char *key) {

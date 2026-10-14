@@ -142,7 +142,7 @@ function focusBot(id){
   card.setAttribute('aria-pressed',String(isActive));
  }
  updateConsoleLabel();
- if(changed&&(!isCompact()||layout.classList.contains('mobile-right')))connectLive();
+ if(changed&&(remoteBotId||(rightOpen&&(!isCompact()||layout.classList.contains('mobile-right')))))connectLive();
  else if(changed)disconnectLive();
 }
 function renderAgents(){

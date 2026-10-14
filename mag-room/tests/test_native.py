@@ -179,7 +179,7 @@ class Native(unittest.TestCase):
   self.assertIn('id="root-switch"',html)
   self.assertIn('id="root-label"',html)
   self.assertIn("terminal_input",html)
-  self.assertIn("terminal_read",html)
+  self.assertIn("terminalSend(",html)
   self.assertIn('id="browser-url"',html)
   self.assertIn('id="browser-open"',html)
   self.assertIn('id="live"',html)

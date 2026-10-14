@@ -419,12 +419,18 @@ int main(int argc, char **argv) {
           if (action != "tap" && action != "move" && action != "down" &&
               action != "up")
             throw std::runtime_error("Unsupported pointer action");
+          bool held = body.find("held") && body.find("held")->asBool();
           auto mouse = [&](const std::string &type) {
             Val p = Val::object();
             p["type"] = type;
             p["x"] = x;
             p["y"] = y;
-            p["button"] = button;
+            p["button"] =
+                type == "mouseMoved" && !held ? "none" : button;
+            p["buttons"] = (type == "mousePressed" ||
+                            (type == "mouseMoved" && held))
+                               ? (button == "left" ? 1 : button == "right" ? 2 : 4)
+                               : 0;
             p["clickCount"] = 1;
             c.call("Input.dispatchMouseEvent", p);
           };

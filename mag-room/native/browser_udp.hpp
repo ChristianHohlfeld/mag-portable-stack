@@ -141,11 +141,30 @@ public:
       cdp.call("Input.dispatchMouseEvent", p);
     } else if (kind == "key") {
       std::string key = str(obj, "key");
-      if (key.empty() || key.size() > 40) return;
+      // Chromium needs the native VK code for non-text keys such as
+      // Enter, Backspace and the arrows; key/code alone is insufficient.
+      static const std::map<std::string, int> keys{
+          {"Enter", 13}, {"NumpadEnter", 13}, {"Tab", 9},
+          {"Backspace", 8}, {"Escape", 27}, {"Delete", 46},
+          {"ArrowLeft", 37}, {"ArrowUp", 38}, {"ArrowRight", 39},
+          {"ArrowDown", 40}, {"Home", 36}, {"End", 35},
+          {"PageUp", 33}, {"PageDown", 34}, {"Insert", 45},
+          {" ", 32}};
+      auto it = keys.find(key);
+      if (it == keys.end()) return;
       mj::Val p = mj::Val::object();
-      p["type"] = "keyDown"; p["key"] = key; p["code"] = key;
+      p["type"] = "keyDown";
+      p["key"] = key == "NumpadEnter" ? "Enter" : key;
+      p["code"] = key == "Enter" ? "Enter" : key;
+      p["windowsVirtualKeyCode"] = it->second;
+      p["nativeVirtualKeyCode"] = it->second;
+      if (key == "Enter" || key == "NumpadEnter")
+        p["text"] = "\r";
+      if (key == "Tab") p["text"] = "\t";
       cdp.call("Input.dispatchKeyEvent", p);
-      p["type"] = "keyUp"; cdp.call("Input.dispatchKeyEvent", p);
+      p["type"] = "keyUp";
+      p["text"] = "";
+      cdp.call("Input.dispatchKeyEvent", p);
     } else if (kind == "text") {
       std::string value = str(obj, "text");
       if (value.size() > 600) return;

@@ -51,7 +51,7 @@ static std::atomic<bool> WEB_ENABLED{true};
 // ------------------------------------------------------------------ config
 static std::string MODEL, BACKEND, BIND_HOST, STATE_DIR, FILES_DIR, AGENTS_JSON,
     FILES_JSON, ROOM_JSON, FRONTEND_FILE, TOKEN_FILE, STATIC_DIR, GUEST_RUN,
-    AGENT_CTL, BRIDGE_IP, BRAVE_KEY, API_KEY, UI_FILE,
+    AGENT_CTL, ROOT_CTL, BRIDGE_IP, BRAVE_KEY, API_KEY, UI_FILE,
     BACKEND_HOST = "127.0.0.1", STT_LANG = "de";
 static int PORT = 8766, BRIDGE_PORT = 8767, BROWSERD_PORT = 9225,
            BACKEND_PORT = 8080, MAX_TOKENS = 700, MAX_HISTORY = 30,
@@ -519,6 +519,22 @@ static void save_json_array(const std::string &path,
 
 // ---------------------------------------------------------------- agents
 static std::vector<Val> AGENTS;
+// Elevated rights exist only for the current server process; default OFF.
+// No sudoers or setuid capability is ever installed in the guests.
+static std::mutex ROOT_MTX;
+static std::set<std::string> ROOT_ENABLED;
+static bool root_enabled(const std::string &vm) {
+  std::lock_guard<std::mutex> lk(ROOT_MTX);
+  return !vm.empty() && ROOT_ENABLED.count(vm) != 0;
+}
+static CmdResult set_root_capability(const std::string &vm, bool enabled,
+                                     const std::string &token = "") {
+  if(vm.empty()||vm=="keine")return {64,"Bot has no VM"};
+  std::vector<std::string> a{"sudo","-n",ROOT_CTL,enabled?"on":"off",vm};
+  if(enabled)a.push_back(token);
+  return run_argv(a,65,4096);
+}
+
 
 static void save_agents(); // fwd
 static void load_agents() {
@@ -840,6 +856,12 @@ static void replaceAll(std::string &s, const std::string &from,
 // ---------------------------------------------------------------- tool schemas
 static const char *T_RUN_COMMAND =
     R"({"type":"function","function":{"name":"run_command","description":"Run a bash command as unprivileged user bot inside YOUR OWN isolated Linux VM. Use to inspect the VM OS, read files, check versions, test programs.","parameters":{"type":"object","properties":{"command":{"type":"string","description":"bash command"}},"required":["command"],"additionalProperties":false}}})";
+static const char *T_TERMINAL_INPUT =
+    R"({"type":"function","function":{"name":"terminal_input","description":"Send text or Enter into the SAME live PTY shell visible to the human in your own VM; command output streams live over UDP. Use terminal_read to inspect completion. This shell may be root ONLY while the owner enables its temporary root lease.","parameters":{"type":"object","properties":{"text":{"type":"string"},"enter":{"type":"boolean"}},"required":["text"],"additionalProperties":false}}})";
+static const char *T_TERMINAL_READ =
+    R"({"type":"function","function":{"name":"terminal_read","description":"Read bounded live PTY output from your own VM; cursor optionally selects only newer output.","parameters":{"type":"object","properties":{"after":{"type":"integer"}},"additionalProperties":false}}})";
+static const char *T_ROOT_COMMAND =
+    R"({"type":"function","function":{"name":"root_command","description":"Execute input in the SAME live ROOT PTY in your isolated VM. Only available while the owner explicitly granted this VM a temporary root lease. Never runs on MAG host. Output is visible in the operator terminal, inspect with terminal_read.","parameters":{"type":"object","properties":{"command":{"type":"string"}},"required":["command"],"additionalProperties":false}}})";
 static const char *T_WEB_SEARCH =
     R"({"type":"function","function":{"name":"web_search","description":"Search the public web via Brave for current facts and source URLs. Formulate a specific query from the conversation context.","parameters":{"type":"object","properties":{"query":{"type":"string"}},"required":["query"],"additionalProperties":false}}})";
 static const char *T_LIST_FILES =
@@ -870,6 +892,8 @@ static const char *T_BROWSER_SHOT =
     R"({"type":"function","function":{"name":"browser_screenshot","description":"Take a screenshot of your VM browser and share it into the room.","parameters":{"type":"object","properties":{},"additionalProperties":false}}})";
 static const char *T_BROWSER_POINTER =
     R"({"type":"function","function":{"name":"browser_pointer","description":"Control your own hot Chromium viewport by CSS pixel coordinates x=0..1439, y=0..899. Use action tap, move, down, or up and optional button left, right, or middle. Shares the same browser session the human sees.","parameters":{"type":"object","properties":{"x":{"type":"number"},"y":{"type":"number"},"action":{"type":"string"},"button":{"type":"string"}},"required":["x","y"],"additionalProperties":false}}})";
+static const char *T_BROWSER_KEY =
+    R"({"type":"function","function":{"name":"browser_key","description":"Press a real keyboard key in the SAME live Chromium tab that the human is watching. Supports Enter, Backspace, Tab and navigation keys.","parameters":{"type":"object","properties":{"key":{"type":"string"}},"required":["key"],"additionalProperties":false}}})";
 static const char *T_BROWSER_BACK =
     R"({"type":"function","function":{"name":"browser_back","description":"Go back in your VM browser.","parameters":{"type":"object","properties":{},"additionalProperties":false}}})";
 static const char *T_BROWSER_SCROLL =
@@ -966,6 +990,10 @@ static std::string build_system(int bot_idx, bool autotalk,
   system += fr;
   if (vm != "keine" && !vm.empty())
     system += FRONTEND_RULES;
+  if(root_enabled(vm))
+    system += "\nVM ROOT-ZUGANG: Der Betreiber hat fuer DEINE VM Root explizit eingeschaltet. "
+              "Benutze root_command nur bei sinnvoller, nachvollziehbarer Systemarbeit. "
+              "Kein Zugriff auf den MAG-Host. Abschalten widerruft diese Faehigkeit.";
   if (autotalk) {
     std::string at = AUTOTALK_RULES;
     replaceAll(at, "{other}", other.empty() ? "der Nutzer" : other);
@@ -1373,9 +1401,11 @@ static std::string tools_json(int bot_idx, bool web) {
   if (!vm.empty() && vm != "keine") {
     for (const char *d :
          {T_BROWSER_OPEN, T_BROWSER_CLICK, T_BROWSER_TYPE, T_BROWSER_READ,
-          T_BROWSER_SHOT, T_BROWSER_POINTER, T_BROWSER_BACK, T_BROWSER_SCROLL, T_SCREENSHOT_ROOM,
+          T_BROWSER_SHOT, T_BROWSER_POINTER, T_BROWSER_KEY, T_BROWSER_BACK,
+          T_BROWSER_SCROLL, T_TERMINAL_INPUT,T_TERMINAL_READ,T_SCREENSHOT_ROOM,
           T_DL_FRONTEND, T_PUB_FRONTEND})
       defs.push_back(d);
+    if (root_enabled(vm)) defs.push_back(T_ROOT_COMMAND);
   }
   std::string arr = "[";
   for (size_t i = 0; i < defs.size(); i++) {
@@ -1612,6 +1642,27 @@ static std::string dispatch_tool(int bot_idx, const std::string &name,
     return v ? v->asStr() : "";
   };
 
+  if(name=="terminal_input" || name=="root_command"){
+    need_vm();
+    const bool root = name=="root_command";
+    if(root && !root_enabled(vm))
+      throw std::runtime_error("Root lease is OFF for this bot VM");
+    std::string command = root?getstr("command"):getstr("text");
+    if(command.empty() || command.size()>490)
+      throw std::runtime_error("Terminal input required (max 490 bytes)");
+    Val body=Val::object();
+    body["text"]=command;
+    body["enter"]= root || (a.find("enter") && a.find("enter")->asBool());
+    body["require_root"]=root;
+    auto result=browser_json(vm,"/terminal/input","POST",mj::dump(body));
+    return mj::dump(result);
+  }
+  if(name=="terminal_read"){
+    need_vm();
+    auto cursor=a.find("after");
+    const auto after=cursor ? (uint64_t)std::max(0.0,cursor->asNum()) : 0ULL;
+    return mj::dump(browser_json(vm,"/terminal/output?after="+std::to_string(after))).substr(0,TOOL_OUTPUT_LIMIT);
+  }
   if (name == "run_command") {
     need_vm();
     std::string cmd = getstr("command");
@@ -1784,6 +1835,10 @@ static std::string dispatch_tool(int bot_idx, const std::string &name,
     }
     if (name == "browser_read")
       return mj::dump(browser_json(vm, "/read"));
+    if(name=="browser_key"){
+      Val b=Val::object();b["key"]=getstr("key");
+      return mj::dump(browser_json(vm,"/key","POST",mj::dump(b)));
+    }
     if (name == "browser_back")
       return mj::dump(browser_json(vm, "/back"));
     if (name == "browser_scroll") {
@@ -2265,7 +2320,10 @@ static std::string state_json() {
   {
     std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
     for (size_t i = 0; i < AGENTS.size(); i++)
-      ag.push(public_agent((int)i));
+      {Val item=public_agent((int)i);
+       auto vm=AGENTS[i].find("vm");
+       item["root_enabled"]=root_enabled(vm?vm->asStr():"");
+       ag.push(item);}
   }
   root["agents"] = ag;
   {
@@ -2324,6 +2382,7 @@ int main() {
   UI_FILE = env("MAG_ROOM_UI", STATIC_DIR + "/index.html");
   GUEST_RUN = env("MAG_ROOM_GUEST_RUN", "/usr/local/sbin/magbot-guest-run");
   AGENT_CTL = env("MAG_ROOM_AGENT_CTL", "/usr/local/sbin/magbot-agent-ctl");
+  ROOT_CTL = env("MAG_ROOM_ROOT_CTL", "/usr/local/sbin/magbot-root-ctl");
   BRIDGE_IP = env("MAG_ROOM_BRIDGE_IP", "192.168.122.1");
 
   {

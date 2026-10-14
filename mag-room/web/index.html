@@ -86,11 +86,14 @@ body.remote-mode #terminal{height:clamp(220px,32vh,500px);max-height:70vh}
 .agent{cursor:pointer;transition:border-color .14s,background .14s}.agent:focus-visible{outline:2px solid var(--accent);outline-offset:2px}.agent.active{border-color:#96b9ea;background:#202d42}.agent.active:before{content:"";position:absolute;background:#8ec2ff;width:3px;height:calc(100% - 24px);left:0;top:12px;border-radius:3px}.agent{position:relative}.agent .actions{cursor:default}
 #browser-agent{display:none!important}
 #focused-bot{color:var(--accent);font-size:12px;font-weight:700}
+.root-mode-label{display:inline-flex;align-items:center;gap:5px;font-size:11px;color:#ffca91;white-space:nowrap;cursor:pointer}
+.root-mode-label input{accent-color:#f6b35a}
+.root-mode-label.pending{color:#ff7777;font-weight:700}
 </style></head>
 <body><header><strong>MAG</strong><small>Ein Raum. Eigene Welten.</small><button class="side-toggle" id="toggle-agents" aria-controls="left-panel" aria-expanded="true" title="Bot-Leiste umschalten">☰ Bots</button><button class="side-toggle" id="toggle-tools" aria-controls="right-panel" aria-expanded="true" title="Werkzeuge umschalten">▣ Werkzeuge</button><span class="status" id="connection"><span class="dot"></span>Verbinde…</span></header>
 <div class="layout" id="layout"><aside class="left" id="left-panel"><div class="section"><h2>Im Raum</h2><div id="agents"></div><button id="add-agent">+ Bot hinzufügen</button></div><div class="section"><h2>Zusammenarbeit</h2><label><input type="checkbox" id="autotalk"> Autonom arbeiten</label><p class="hint">Läuft auch, wenn du den Browser schließt.</p><label><input type="checkbox" id="web" checked> Websuche</label><p><button class="danger" id="stop">Alle pausieren</button></p></div><div class="section"><h2>Einstellungen</h2><label><input type="checkbox" id="tts"> Antworten vorlesen</label><p><select id="language"><option value="auto">Sprache automatisch</option><option value="de">Deutsch</option><option value="en">English</option></select></p><button id="reset">Raum leeren</button><p class="hint">Entfernt Nachrichten und Raumdateien. Die Erinnerungen der Bots bleiben.</p></div></aside>
 <main class="main"><div class="conversation" id="conversation"></div><div class="composer"><div class="notice" id="notice" role="status"></div><form id="send-form"><textarea id="message" placeholder="Sprich mit den Bots oder gib ihnen eine Aufgabe…" aria-label="Nachricht"></textarea><div class="row"><button type="button" id="upload">Datei</button><button type="button" id="mic">Mikrofon</button><span class="hint">Enter senden · Shift+Enter neue Zeile</span><span class="spacer"></span><button class="primary" type="submit">Senden</button></div></form><input id="file-input" type="file" multiple hidden></div></main>
-<aside class="right" id="right-panel"><div id="remote-bar" hidden><a href="/">← Raum</a><strong id="remote-bot-name"></strong></div><div class="section"><h2>Browser · <span id="focused-bot">Bot auswählen</span></h2><input id="browser-agent" type="hidden"><div class="row" style="margin-top:10px"><input id="browser-url" placeholder="https://…"><button id="browser-open">Öffnen</button></div><p><label><input id="live" type="checkbox" checked> Live-Browser anzeigen</label></p><div id="browser-view"><div class="browser-view-bar"><span>Live-Browser</span><button id="browser-fullscreen" class="mini-fullscreen" type="button" aria-label="Browser im Vollbild anzeigen" title="Browser-Vollbild umschalten" aria-pressed="false">⛶</button></div><canvas id="screen" width="1440" height="900" role="img" aria-label="Live-Browser des ausgewählten Bots. Klicken und Tastatur zum Steuern." tabindex="0" hidden></canvas></div><p class="hint" id="browser-status">Ein Browser pro Bot. Du und der Bot steuern dieselbe Sitzung.</p></div><div class="section" id="shared-files-panel"><h2>Gemeinsame Dateien</h2><div id="files"></div><iframe id="canvas" title="Gemeinsame Vorschau" sandbox="allow-scripts" hidden></iframe></div><div class="section" id="terminal-panel"><div class="terminal-heading"><h2>Konsole · <span id="console-agent">Bot</span></h2><button id="terminal-fullscreen" class="mini-fullscreen" type="button" aria-label="Konsole im Vollbild anzeigen" title="Konsole-Vollbild umschalten" aria-pressed="false">⛶</button><button id="terminal-clear" type="button">Leeren</button><button id="terminal-focus" type="button">Fokus</button></div><div id="terminal" role="application" aria-label="Interaktive Shell des ausgewählten Bots" tabindex="0"></div><div id="terminal-status">Terminal startet beim Verbinden …</div></div></aside></div>
+<aside class="right" id="right-panel"><div id="remote-bar" hidden><a href="/">← Raum</a><strong id="remote-bot-name"></strong></div><div class="section"><h2>Browser · <span id="focused-bot">Bot auswählen</span></h2><input id="browser-agent" type="hidden"><div class="row" style="margin-top:10px"><input id="browser-url" placeholder="https://…"><button id="browser-open">Öffnen</button></div><p><label><input id="live" type="checkbox" checked> Live-Browser anzeigen</label></p><div id="browser-view"><div class="browser-view-bar"><span>Live-Browser</span><button id="browser-fullscreen" class="mini-fullscreen" type="button" aria-label="Browser im Vollbild anzeigen" title="Browser-Vollbild umschalten" aria-pressed="false">⛶</button></div><canvas id="screen" width="1440" height="900" role="img" aria-label="Live-Browser des ausgewählten Bots. Klicken und Tastatur zum Steuern." tabindex="0" hidden></canvas></div><p class="hint" id="browser-status">Ein Browser pro Bot. Du und der Bot steuern dieselbe Sitzung.</p></div><div class="section" id="shared-files-panel"><h2>Gemeinsame Dateien</h2><div id="files"></div><iframe id="canvas" title="Gemeinsame Vorschau" sandbox="allow-scripts" hidden></iframe></div><div class="section" id="terminal-panel"><div class="terminal-heading"><h2>Konsole · <span id="console-agent">Bot</span></h2><label class="root-mode-label" id="root-label" title="Temporärer Superuser nur in dieser VM"><input type="checkbox" id="root-switch" aria-label="Root nur für ausgewählte Bot-VM freischalten">Root</label><button id="terminal-fullscreen" class="mini-fullscreen" type="button" aria-label="Konsole im Vollbild anzeigen" title="Konsole-Vollbild umschalten" aria-pressed="false">⛶</button><button id="terminal-clear" type="button">Leeren</button><button id="terminal-focus" type="button">Fokus</button></div><div id="terminal" role="application" aria-label="Interaktive Shell des ausgewählten Bots" tabindex="0"></div><div id="terminal-status">Terminal startet beim Verbinden …</div></div></aside></div>
 <dialog id="new-agent"><form id="agent-form"><h3>Ein neuer Entdecker</h3><input id="agent-name" required maxlength="40" placeholder="Name"><textarea id="agent-persona" placeholder="Persönlichkeit und Interessen"></textarea><div class="row"><button type="button" onclick="document.getElementById('new-agent').close()">Abbrechen</button><button class="primary">Bot erstellen</button></div></form></dialog><dialog id="memory-dialog"><h3 id="memory-title"></h3><div id="memory"></div><p><button onclick="document.getElementById('memory-dialog').close()">Schließen</button></p></dialog>
 <script>
 'use strict';
@@ -311,6 +314,10 @@ function updateConsoleLabel(){
  const bot=state.agents.find(a=>a.id===$('browser-agent').value);
  $('console-agent').textContent=bot?.name||'Bot';
  const id=bot?.id;
+ $('root-switch').disabled=!bot||!!bot.root_revoke_pending;
+ $('root-switch').checked=!!bot?.root_enabled;
+ $('root-label').classList.toggle('pending',!!bot?.root_revoke_pending);
+ $('root-label').title=bot?.root_revoke_pending?'Root-Widerruf noch nicht bestätigt – wird automatisch wiederholt':'Root nur in dieser Bot-VM';
  if(!id){activeTerminal=null;$('terminal').textContent='Bot auswählen';return}
  activeTerminal=makeTerminal(id);
  if(!activeTerminal){$('terminal').textContent='Terminal-Emulator nicht verfügbar';return}
@@ -332,6 +339,30 @@ function receiveConsole(data){
   activeTerminal.term.write(bytes);
  }catch{terminalStatus('Terminalausgabe nicht lesbar')}
 }
+$('root-switch').onchange=async()=>{
+ const id=$('browser-agent').value;
+ const on=$('root-switch').checked;
+ if(!id){$('root-switch').checked=false;return}
+ if(on&&!confirm('Root nur in der ausgewählten Bot-VM freischalten? Der Bot kann dann sein eigenes Linux-System vollständig verändern.')){
+  $('root-switch').checked=false;return;
+ }
+ $('root-switch').disabled=true;
+ terminalStatus(on?'Starte VM-Root-Shell …':'Beende VM-Root-Shell und alle Prozesse …');
+ try{
+  const result=await api('/api/agents/'+encodeURIComponent(id)+'/root',{on});
+  const bot=state.agents.find(a=>a.id===id);
+  if(bot){bot.root_enabled=!!result.root_enabled;bot.root_revoke_pending=false}
+  activeTerminal?.term.clear();
+  terminalSend('terminal_open');
+  terminalResize();
+  await refresh();
+  terminalStatus(result.root_enabled?'Root-Shell in dieser VM aktiv':'Root widerrufen · Shell wieder als bot');
+ }catch(err){
+  terminalStatus('Root-Änderung fehlgeschlagen: '+err.message);
+  notice('Root-Änderung: '+err.message);
+  await refresh().catch(()=>{});
+ }finally{$('root-switch').disabled=!!state.agents.find(a=>a.id===id)?.root_revoke_pending}
+};
 $('terminal-clear').onclick=()=>activeTerminal?.term.clear();
 $('terminal-focus').onclick=()=>activeTerminal?.term.focus();
 $('terminal').addEventListener('click',()=>activeTerminal?.term.focus());

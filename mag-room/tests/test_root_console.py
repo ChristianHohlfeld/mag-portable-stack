@@ -19,7 +19,7 @@ class RootGuestPTY(unittest.TestCase):
 s=socket.socket(socket.AF_UNIX,socket.SOCK_SEQPACKET)
 s.settimeout(2)
 s.connect("/run/mag-root-shell.sock")
-s.sendall(b"Iid -u\\n")
+s.sendall(b"Iid -u"+bytes([13]))
 out=b""
 until=time.monotonic()+6
 while time.monotonic()<until:
@@ -27,7 +27,7 @@ while time.monotonic()<until:
  except socket.timeout:continue
  if not buf:break
  if buf.startswith(b"O"):out+=buf[1:]
- if b"0\\r" in out or b"0\\n" in out:break
+ if bytes([48,13]) in out or bytes([48,10]) in out:break
 assert b"0\\r" in out or b"0\\n" in out,repr(out[-1000:])
 print("root terminal PTY verified")
 '''

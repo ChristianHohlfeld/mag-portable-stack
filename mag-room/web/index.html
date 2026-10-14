@@ -36,7 +36,7 @@ $('browser-click').onclick=()=>{const v=$('browser-selector').value;browserActio
 $('browser-type').onclick=()=>browserAction('type',{text:$('browser-text').value}).catch(()=>{});
 for(const action of ['back','scroll','read'])$('browser-'+action).onclick=async()=>{try{const r=await browserAction(action,{dy:600});if(action==='read'){$('memory-title').textContent=r.title;$('memory').textContent=r.text;$('memory-dialog').showModal()}}catch(e){}};
 $('browser-fullscreen').onclick=()=>{$('screen').requestFullscreen?.().catch(e=>notice(e.message))};
-let screenError='',screenAgent='',pointerHeld=false,pointerQueue=Promise.resolve(),pointerMoveAt=0;
+let screenError='',pointerHeld=false,pointerQueue=Promise.resolve(),pointerMoveAt=0,pointerMoving=false;
 async function screen(){
  if(!$('live').checked||screenBusy||!$('browser-agent').value||document.hidden)return;
  screenBusy=true;
@@ -55,7 +55,7 @@ async function screen(){
 }
 setInterval(screen,600);
 $('live').addEventListener('change',()=>{$('screen').hidden=!$('live').checked;screen()});
-$('browser-agent').addEventListener('change',()=>{screenAgent=$('browser-agent').value;pointerHeld=false;screen()});
+$('browser-agent').addEventListener('change',()=>{pointerHeld=false;screen()});
 function browserCoords(e){
  const img=$('screen'),r=img.getBoundingClientRect(),w=img.naturalWidth||1440,h=img.naturalHeight||900;
  const scale=Math.min(r.width/w,r.height/h),left=r.left+(r.width-w*scale)/2,top=r.top+(r.height-h*scale)/2;
@@ -65,16 +65,18 @@ function browserCoords(e){
 }
 function sendPointer(e,action,extra={}){
  const coords=browserCoords(e);if(!coords)return;
+ if(action==='move'&&pointerMoving)return; // bound network backlog
+ if(action==='move')pointerMoving=true;
  const id=$('browser-agent').value;
- pointerQueue=pointerQueue.catch(()=>{}).then(()=>api('/api/browser/'+encodeURIComponent(id)+'/pointer',{...coords,action,...extra})).catch(err=>{notice(err.message)});
+ pointerQueue=pointerQueue.catch(()=>{}).then(()=>api('/api/browser/'+encodeURIComponent(id)+'/pointer',{...coords,action,...extra})).catch(err=>{notice(err.message)}).finally(()=>{if(action==='move')pointerMoving=false});
 }
 $('screen').addEventListener('pointerdown',e=>{if(e.button>2)return; e.preventDefault();$('screen').focus({preventScroll:true});pointerHeld=true;try{$('screen').setPointerCapture(e.pointerId)}catch{}sendPointer(e,'down',{button:e.button===2?'right':e.button===1?'middle':'left'})});
-$('screen').addEventListener('pointermove',e=>{if(!pointerHeld)return;const now=performance.now();if(now-pointerMoveAt<90)return;pointerMoveAt=now;sendPointer(e,'move',{held:true})});
+$('screen').addEventListener('pointermove',e=>{const now=performance.now();if(now-pointerMoveAt<110)return;pointerMoveAt=now;sendPointer(e,'move',{held:pointerHeld})});
 function pointerEnd(e){if(!pointerHeld)return;pointerHeld=false;sendPointer(e,'up',{button:e.button===2?'right':e.button===1?'middle':'left'});screen()}
 $('screen').addEventListener('pointerup',pointerEnd);$('screen').addEventListener('pointercancel',pointerEnd);
 $('screen').addEventListener('contextmenu',e=>e.preventDefault());
 $('screen').addEventListener('wheel',e=>{e.preventDefault();browserAction('scroll',{dy:Math.round(e.deltaY)}).catch(()=>{})},{passive:false});
-$('screen').addEventListener('keydown',e=>{const allowed=['Enter','Escape','Backspace','Tab','ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Delete','Home','End','PageUp','PageDown'];if(!allowed.includes(e.key))return;e.preventDefault();browserAction('key',{key:e.key}).catch(()=>{})});
+$('screen').addEventListener('keydown',e=>{if(e.ctrlKey||e.metaKey||e.altKey)return;const allowed=['Enter','Escape','Backspace','Tab','ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Delete','Home','End','PageUp','PageDown'];if(e.key.length===1){e.preventDefault();browserAction('type',{text:e.key}).catch(()=>{})}else if(allowed.includes(e.key)){e.preventDefault();browserAction('key',{key:e.key}).catch(()=>{})}});
 $('mic').onclick=async()=>{if(recorder?.state==='recording'){recorder.stop();return}try{const stream=await navigator.mediaDevices.getUserMedia({audio:true});chunks=[];recorder=new MediaRecorder(stream);recorder.ondataavailable=e=>{if(e.data.size)chunks.push(e.data)};recorder.onstop=async()=>{stream.getTracks().forEach(t=>t.stop());$('mic').textContent='Mikrofon';notice('Transkribiere lokal…');try{const r=await fetch('/api/stt?lang='+$('language').value,{method:'POST',body:new Blob(chunks,{type:recorder.mimeType})});const result=await r.json();if(!r.ok)throw Error(result.error);$('message').value=result.corrected||result.text;notice(result.correction_pending?'Text erkannt; Kontextkorrektur war ausgelastet.':'Text bereit — prüfe ihn vor dem Senden.')}catch(e){notice(e.message)}};recorder.start();$('mic').textContent='Aufnahme stoppen';notice('Aufnahme läuft…')}catch(e){notice('Mikrofon: '+e.message)}};
 $('toggle-agents').onclick=()=>$('layout').classList.toggle('show-agents');$('toggle-tools').onclick=()=>$('layout').classList.toggle('show-tools');
 const events=new EventSource('/api/events');events.onopen=()=>{$('connection').innerHTML='<span class="dot"></span>Verbunden';refresh().catch(e=>notice(e.message))};events.onerror=()=>{$('connection').textContent='Verbindung wird erneuert…'};events.onmessage=e=>{try{const event=JSON.parse(e.data);if(event.type==='bot_start'){streams[event.bot]={text:'',name:event.name,node:append({role:'assistant',name:event.name,content:''})};activity(event.name+' arbeitet')}else if(event.type==='delta'){const s=streams[event.bot];if(s){s.text+=event.text;s.node.querySelector('.content').textContent=s.text;const area=$('conversation');if(area.scrollHeight-area.scrollTop-area.clientHeight<200)area.scrollTop=area.scrollHeight}}else if(event.type==='reasoning'){activity('Denkt nach…')}else if(['bot_done','message','file','agents','reset','idle'].includes(event.type)){if(event.type==='bot_done')delete streams[event.bot];if(event.type==='bot_done'&&$('tts').checked&&event.content&&'speechSynthesis'in window){const u=new SpeechSynthesisUtterance(event.content);u.lang=$('language').value==='en'?'en-US':'de-DE';speechSynthesis.speak(u)}refresh().catch(e=>notice(e.message))}else if(event.type==='autotalk')$('autotalk').checked=event.on;else if(event.type==='error'){notice(event.text);activity(event.text)}else if(event.type==='frontend')location.reload();else if(event.type==='tool')activity(event.name||event.text||'Werkzeug');else if(event.type==='stopped'||event.type==='cancelled'){streams={};activity('Pausiert');refresh()}}catch(err){notice(err.message)}};

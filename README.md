@@ -195,12 +195,15 @@ opened at a time without obscuring the main chat controls.
 
 Each bot still owns its **own guest VM, Chromium profile, and terminal**.
 Selecting a bot chooses both its hot browser and its VM terminal. The
-console is not a host shell. The only interactive console transport is the
-same authenticated VM-specific UDP path as the browser, relayed over a
-separate reliable WebRTC DataChannel named `console` to that selected
-bot's controller. Commands run with the guest's unprivileged bot account,
-have a 12-second timeout, a 640-byte command cap, and bounded output. The
-older duplicate HTTP console endpoint is intentionally absent.
+console is not a host shell. Its dedicated WebRTC DataChannel
+(`console`) relays signed per-VM UDP to a real persistent `forkpty` Bash
+session, running as the guest's unprivileged `bot` account. This replaces
+the former one-shot HTML command input entirely: xterm.js now renders the
+native ANSI terminal with keyboard shortcuts, Ctrl+C, colors, history and
+dynamic rows/columns. The terminal lives where the Activity panel used to
+be. It stays open inside the VM when the viewer closes or changes bots,
+but will restart if the guest's controller process is upgraded or restarted.
+No HTTP host-shell endpoint exists.
 
 WebRTC teardown now closes abandoned offers and disconnected peers, sends
 a signed unsubscribe as soon as the last viewer disconnects, and stops
@@ -237,3 +240,19 @@ Runtime smoke-check on MAG after installing the release:
    check services and VM heartbeats. GitHub CI cannot prove ICE/network
    connectivity or native guest keyboards on the actual MAG host.
 
+
+### Native terminal release contract
+
+MAG vendors pinned xterm.js and FitAddon assets during deployment into
+`/static/` for first-party serving. Browser clients never depend on the
+CDN, and missing assets block installation rather than leaving a fake input
+fallback. The local GitHub Actions build also downloads and validates the
+same assets. Guest PTY behavior is independently tested for interactive
+input, output and resize in `build/test-guest-pty`.
+
+Use the xterm terminal to type `whoami`, `pwd`, `ls --color=auto`, and
+`sleep 30` followed by Ctrl+C. The shell should return a prompt after Ctrl+C,
+resize to the sidebar width and preserve its scrollback when switching bots.
+The Browser live toggle only controls picture frames, **not** the terminal
+channel. This is not an SSH emulator or a command input field: Bash reads
+real PTY keystrokes in the corresponding isolated VM.

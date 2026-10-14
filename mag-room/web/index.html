@@ -26,6 +26,16 @@
 .left .rail-handle{right:0}.right .rail-handle{left:0}
 .rail-handle:hover,.rail-handle.dragging{background:#b8d5ff55}
 body.resizing,body.resizing *{cursor:col-resize!important;user-select:none!important}
+/* Compact fullscreen controls live in the local toolbar, never over content. */
+.mini-fullscreen{font:16px/1 ui-monospace,Consolas,monospace!important;min-width:28px;min-height:26px;display:inline-flex;align-items:center;justify-content:center;border-radius:6px;padding:3px 6px!important;color:var(--muted);background:transparent;border:1px solid transparent}
+.mini-fullscreen:hover,.mini-fullscreen:focus-visible{color:#eef2f8;border-color:var(--line);background:#263142}
+#browser-view{overflow:hidden;border:1px solid var(--line);border-radius:10px;background:#070a0e;min-width:0}
+.browser-view-bar{height:32px;padding:3px 7px 3px 11px;display:flex;align-items:center;justify-content:space-between;gap:10px;border-bottom:1px solid #293243;color:var(--muted);font-size:11px;letter-spacing:.035em}
+#browser-view #screen{display:block;width:100%;height:auto;margin:0;max-width:100%;min-width:0;border:0;border-radius:0;object-fit:contain;background:#070a0e}
+#browser-view #screen[hidden]{display:none}
+#browser-view:fullscreen{width:100vw;height:100vh;border:0;border-radius:0;background:#070a0e;display:flex;flex-direction:column}
+#browser-view:fullscreen .browser-view-bar{flex:0 0 40px;padding-inline:16px}
+#browser-view:fullscreen #screen{flex:1 1 auto;width:100%;height:calc(100vh - 40px);min-height:0;aspect-ratio:auto;object-fit:contain}
 #terminal-panel{margin:12px -8px 24px;border:1px solid var(--line);border-radius:12px;background:#0a0d13;overflow:hidden}
 #terminal-panel .terminal-heading{display:flex;align-items:center;gap:8px;padding:8px 11px;border-bottom:1px solid #293243}
 #terminal-panel .terminal-heading h2{margin:0;flex:1}
@@ -38,6 +48,10 @@ body.resizing,body.resizing *{cursor:col-resize!important;user-select:none!impor
 #terminal .xterm-screen{overflow:hidden}
 #terminal-status{font-size:11px;color:var(--muted);padding:2px 11px 8px}
 #terminal:focus-within{outline:1px solid #49628c}
+#terminal-panel:fullscreen{width:100vw;height:100vh;margin:0;border:0;border-radius:0;background:#0a0d13;display:flex;flex-direction:column}
+#terminal-panel:fullscreen .terminal-heading{flex:0 0 44px;padding-inline:16px}
+#terminal-panel:fullscreen #terminal{flex:1 1 auto;height:auto;min-height:0;max-height:none;resize:none;overflow:hidden;padding:12px}
+#terminal-panel:fullscreen #terminal-status{flex:0 0 auto;padding:5px 15px 10px}
 @media(max-width:850px){
  .layout,.layout.hide-left,.layout.hide-right,.layout.hide-left.hide-right{grid-template-columns:minmax(0,1fr)}
  .layout .main,.layout.hide-right .main,.layout.hide-left .main,.layout.hide-left.hide-right .main{grid-column:1;display:flex}
@@ -53,7 +67,7 @@ body.resizing,body.resizing *{cursor:col-resize!important;user-select:none!impor
 <body><header><strong>MAG</strong><small>Ein Raum. Eigene Welten.</small><button class="side-toggle" id="toggle-agents" aria-controls="left-panel" aria-expanded="true" title="Bot-Leiste umschalten">☰ Bots</button><button class="side-toggle" id="toggle-tools" aria-controls="right-panel" aria-expanded="true" title="Werkzeuge umschalten">▣ Werkzeuge</button><span class="status" id="connection"><span class="dot"></span>Verbinde…</span></header>
 <div class="layout" id="layout"><aside class="left" id="left-panel"><div class="section"><h2>Im Raum</h2><div id="agents"></div><button id="add-agent">+ Bot hinzufügen</button></div><div class="section"><h2>Zusammenarbeit</h2><label><input type="checkbox" id="autotalk"> Autonom arbeiten</label><p class="hint">Läuft auch, wenn du den Browser schließt.</p><label><input type="checkbox" id="web" checked> Websuche</label><p><button class="danger" id="stop">Alle pausieren</button></p></div><div class="section"><h2>Einstellungen</h2><label><input type="checkbox" id="tts"> Antworten vorlesen</label><p><select id="language"><option value="auto">Sprache automatisch</option><option value="de">Deutsch</option><option value="en">English</option></select></p><button id="reset">Raum leeren</button><p class="hint">Entfernt Nachrichten und Raumdateien. Die Erinnerungen der Bots bleiben.</p></div></aside>
 <main class="main"><div class="conversation" id="conversation"></div><div class="composer"><div class="notice" id="notice" role="status"></div><form id="send-form"><textarea id="message" placeholder="Sprich mit den Bots oder gib ihnen eine Aufgabe…" aria-label="Nachricht"></textarea><div class="row"><button type="button" id="upload">Datei</button><button type="button" id="mic">Mikrofon</button><span class="hint">Enter senden · Shift+Enter neue Zeile</span><span class="spacer"></span><button class="primary" type="submit">Senden</button></div></form><input id="file-input" type="file" multiple hidden></div></main>
-<aside class="right" id="right-panel"><div class="section"><h2>Browser</h2><select id="browser-agent" aria-label="Browser auswählen"></select><div class="row" style="margin-top:10px"><input id="browser-url" placeholder="https://…"><button id="browser-open">Öffnen</button></div><p><label><input id="live" type="checkbox" checked> Live-Browser anzeigen</label></p><canvas id="screen" width="1440" height="900" role="img" aria-label="Live-Browser des ausgewählten Bots. Klicken und Tastatur zum Steuern." tabindex="0" hidden></canvas><p class="hint" id="browser-status">Ein Browser pro Bot. Du und der Bot steuern dieselbe Sitzung.</p></div><div class="section"><h2>Gemeinsame Dateien</h2><div id="files"></div><iframe id="canvas" title="Gemeinsame Vorschau" sandbox="allow-scripts" hidden></iframe></div><div class="section" id="terminal-panel"><div class="terminal-heading"><h2>Konsole · <span id="console-agent">Bot</span></h2><button id="terminal-clear" type="button">Leeren</button><button id="terminal-focus" type="button">Fokus</button></div><div id="terminal" role="application" aria-label="Interaktive Shell des ausgewählten Bots" tabindex="0"></div><div id="terminal-status">Terminal startet beim Verbinden …</div></div></aside></div>
+<aside class="right" id="right-panel"><div class="section"><h2>Browser</h2><select id="browser-agent" aria-label="Browser auswählen"></select><div class="row" style="margin-top:10px"><input id="browser-url" placeholder="https://…"><button id="browser-open">Öffnen</button></div><p><label><input id="live" type="checkbox" checked> Live-Browser anzeigen</label></p><div id="browser-view"><div class="browser-view-bar"><span>Live-Browser</span><button id="browser-fullscreen" class="mini-fullscreen" type="button" aria-label="Browser im Vollbild anzeigen" title="Browser-Vollbild umschalten" aria-pressed="false">⛶</button></div><canvas id="screen" width="1440" height="900" role="img" aria-label="Live-Browser des ausgewählten Bots. Klicken und Tastatur zum Steuern." tabindex="0" hidden></canvas></div><p class="hint" id="browser-status">Ein Browser pro Bot. Du und der Bot steuern dieselbe Sitzung.</p></div><div class="section"><h2>Gemeinsame Dateien</h2><div id="files"></div><iframe id="canvas" title="Gemeinsame Vorschau" sandbox="allow-scripts" hidden></iframe></div><div class="section" id="terminal-panel"><div class="terminal-heading"><h2>Konsole · <span id="console-agent">Bot</span></h2><button id="terminal-fullscreen" class="mini-fullscreen" type="button" aria-label="Konsole im Vollbild anzeigen" title="Konsole-Vollbild umschalten" aria-pressed="false">⛶</button><button id="terminal-clear" type="button">Leeren</button><button id="terminal-focus" type="button">Fokus</button></div><div id="terminal" role="application" aria-label="Interaktive Shell des ausgewählten Bots" tabindex="0"></div><div id="terminal-status">Terminal startet beim Verbinden …</div></div></aside></div>
 <dialog id="new-agent"><form id="agent-form"><h3>Ein neuer Entdecker</h3><input id="agent-name" required maxlength="40" placeholder="Name"><textarea id="agent-persona" placeholder="Persönlichkeit und Interessen"></textarea><div class="row"><button type="button" onclick="document.getElementById('new-agent').close()">Abbrechen</button><button class="primary">Bot erstellen</button></div></form></dialog><dialog id="memory-dialog"><h3 id="memory-title"></h3><div id="memory"></div><p><button onclick="document.getElementById('memory-dialog').close()">Schließen</button></p></dialog>
 <script>
 'use strict';
@@ -103,6 +117,39 @@ for(const id of ['web','tts','language','live']){const stored=localStorage.getIt
 async function browser(action,body={}){const id=$('browser-agent').value;if(!id)throw Error('Bot auswählen');return api('/api/browser/'+encodeURIComponent(id)+'/'+action,body)}
 async function browserAction(action,body){try{const result=await browser(action,body);notice();return result}catch(e){notice(e.message);throw e}}
 $('browser-open').onclick=()=>{let url=$('browser-url').value.trim();if(url&&!/^[a-z][\w+.-]*:\/\//i.test(url)&&!url.includes(':'))url='https://'+url;$('browser-url').value=url;browserAction('navigate',{url}).catch(()=>{})};
+// Browser and terminal use the platform Fullscreen API; no second viewer,
+// no reloading and no duplicate browser/PTY state.
+async function togglePanelFullscreen(panelId){
+ const panel=$(panelId);
+ try{
+  if(document.fullscreenElement===panel)await document.exitFullscreen();
+  else if(document.fullscreenElement){
+   await document.exitFullscreen();
+   await panel.requestFullscreen();
+  }else await panel.requestFullscreen();
+ }catch(e){notice('Vollbild: '+e.message)}
+}
+$('browser-fullscreen').onclick=()=>togglePanelFullscreen('browser-view');
+$('terminal-fullscreen').onclick=()=>togglePanelFullscreen('terminal-panel');
+document.addEventListener('fullscreenchange',()=>{
+ const browserFull=document.fullscreenElement===$('browser-view');
+ const terminalFull=document.fullscreenElement===$('terminal-panel');
+ for(const [id,active,label] of [
+  ['browser-fullscreen',browserFull,'Browser'],
+  ['terminal-fullscreen',terminalFull,'Konsole']
+ ]){
+  const b=$(id);
+  b.setAttribute('aria-pressed',String(active));
+  b.setAttribute('aria-label',active?label+'-Vollbild verlassen':label+' im Vollbild anzeigen');
+  b.title=active?'Vollbild verlassen (Esc)':label+'-Vollbild umschalten';
+  b.textContent=active?'⤢':'⛶';
+ }
+ // xterm FitAddon must recompute PTY rows/columns when entering and exiting
+ // fullscreen, without destroying the session or replacing its DOM.
+ terminalResize();
+ if(terminalFull)requestAnimationFrame(()=>activeTerminal?.term.focus());
+});
+
 // S23-style WebRTC/UDP browser view; there is NO HTTP screenshot polling.
 // Each selected bot retains its own already-running Chromium and VM profile.
 let livePeer=null,liveControl=null,liveConsole=null,liveGeneration=0,liveVM='',pointerHeld=false,pointerMoveAt=0;

@@ -63,7 +63,13 @@ async function refresh(){const seq=++refreshSeq;const r=await fetch('/api/state'
 async function memory(a){try{const m=await api('/api/agents/'+a.id+'/memory',undefined,'GET');$('memory-title').textContent=a.name+' · Erinnerungen';$('memory').textContent=m.map(x=>'• '+(x.text||x)).join('\n\n')||'Noch keine gespeicherten Erinnerungen.';$('memory-dialog').showModal()}catch(e){notice(e.message)}}
 async function removeAgent(a){if(!confirm(a.name+' und die eigene VM mit ihren Dateien entfernen?'))return;try{notice('Bot wird entfernt…');await api('/api/agents/'+a.id,undefined,'DELETE');await refresh();notice()}catch(e){notice(e.message)}}
 $('add-agent').onclick=()=>$('new-agent').showModal();$('agent-form').onsubmit=async e=>{e.preventDefault();const submit=e.target.querySelector('.primary');submit.disabled=true;try{notice('Eigene VM wird vorbereitet…');await api('/api/agents',{name:$('agent-name').value,persona:$('agent-persona').value});$('new-agent').close();await refresh();notice()}catch(e){notice(e.message)}finally{submit.disabled=false}};
-$('send-form').onsubmit=async e=>{e.preventDefault();const text=$('message').value.trim();if(!text)return;try{await api('/api/message',{text,bots:[...selected],web_search:$('web').checked});$('message').value='';notice()}catch(e){notice(e.message)}};$('message').onkeydown=e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();$('send-form').requestSubmit()}};
+$('send-form').onsubmit=async e=>{
+ e.preventDefault();const text=$('message').value.trim();if(!text)return;
+ const botId=[...selected][0],bot=state.agents.find(a=>a.id===botId);
+ if(bot){streams[botId]={name:bot.name,text:'',status:'Auftrag wird gesendet …'};render()}
+ try{await api('/api/message',{text,bots:[...selected],web_search:$('web').checked});$('message').value='';notice();if(streams[botId]){streams[botId].status='Wartet auf Modell …';updateStream(botId)}}
+ catch(err){delete streams[botId];render();notice(err.message)}
+};$('message').onkeydown=e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();$('send-form').requestSubmit()}};
 $('autotalk').onchange=async()=>{try{await api('/api/autotalk',{on:$('autotalk').checked});notice()}catch(e){notice(e.message);await refresh()}};$('stop').onclick=async()=>{try{await api('/api/stop',{});$('autotalk').checked=false;activity('Alle Bots pausiert')}catch(e){notice(e.message)}};
 $('reset').onclick=async()=>{if(!confirm('Nachrichten, Raumdateien und veröffentlichte Oberfläche entfernen? Bot-Erinnerungen bleiben erhalten.'))return;try{await api('/api/reset',{});streams={};await refresh()}catch(e){notice(e.message)}};
 $('upload').onclick=()=>$('file-input').click();$('file-input').onchange=async()=>{for(const file of $('file-input').files){try{notice('Lade '+file.name+'…');const r=await fetch('/api/upload?name='+encodeURIComponent(file.name),{method:'POST',body:file});if(!r.ok)throw Error((await r.json()).error);await refresh();notice()}catch(e){notice(e.message)}}$('file-input').value=''};
@@ -77,8 +83,31 @@ for(const action of ['back','scroll','read'])$('browser-'+action).onclick=async(
 $('browser-fullscreen').onclick=()=>{$('screen').requestFullscreen?.().catch(e=>notice(e.message))};
 // S23-style WebRTC/UDP browser view; there is NO HTTP screenshot polling.
 // Each selected bot retains its own already-running Chromium and VM profile.
-let livePeer=null,liveControl=null,liveGeneration=0,liveVM='',pointerHeld=false,pointerMoveAt=0;
-let lastImage='',videoChunks=null;
+let livePeer=null,liveControl=null,liveConsole=null,liveGeneration=0,liveVM='',pointerHeld=false,pointerMoveAt=0;
+let videoChunks=null,paintBusy=false,lastFrameSeq=-1,frameLastAt=0;
+const consoleBuffers=new Map(),consoleParts=new Map();let consoleSeq=0;
+function updateConsoleLabel(){const bot=state.agents.find(a=>a.id===$('browser-agent').value);$('console-agent').textContent=bot?.name||'Bot';$('console-output').textContent=consoleBuffers.get(bot?.id)||'Bereit. Befehle laufen nur in dieser Bot-VM.'}
+function consoleLog(id,text){const previous=consoleBuffers.get(id)||'';const result=(previous+text).slice(-12000);consoleBuffers.set(id,result);if(consoleBuffers.size>16)consoleBuffers.delete(consoleBuffers.keys().next().value);if(id===$('browser-agent').value){$('console-output').textContent=result;$('console-output').scrollTop=$('console-output').scrollHeight}}
+function receiveConsole(data){
+ let msg;try{msg=JSON.parse(data)}catch{return}
+ if(!msg||typeof msg.id!=='string'||!Number.isInteger(msg.index)||!Number.isInteger(msg.total)||msg.total<1||msg.total>32||msg.index<0||msg.index>=msg.total||typeof msg.data!=='string')return;
+ const id=liveVM+':'+msg.id;let task=consoleParts.get(id);
+ if(!task||task.parts.length!==msg.total){task={parts:Array(msg.total),started:performance.now(),bot:$('browser-agent').value,exit:msg.exit};consoleParts.set(id,task)}
+ if(task.parts[msg.index]===undefined)task.parts[msg.index]=msg.data;
+ if(task.parts.every(x=>typeof x==='string')){
+  try{const bytes=task.parts.map(x=>Uint8Array.from(atob(x),c=>c.charCodeAt(0))),length=bytes.reduce((a,x)=>a+x.length,0),joined=new Uint8Array(length);let at=0;for(const part of bytes){joined.set(part,at);at+=part.length}
+    consoleLog(task.bot,new TextDecoder().decode(joined)+'\n[exit '+task.exit+']\n');
+  }catch{consoleLog(task.bot,'[Ausgabe konnte nicht dekodiert werden]\n')}
+  consoleParts.delete(id);
+ }
+}
+$('console-form').onsubmit=e=>{e.preventDefault();const cmd=$('console-command').value.trim();if(!cmd)return;const botId=$('browser-agent').value;
+ if(!liveConsole||liveConsole.readyState!=='open'){consoleLog(botId,'[UDP-Konsole nicht verbunden]\n');return}
+ if(cmd.length>640){consoleLog(botId,'[Maximal 640 Zeichen pro Befehl]\n');return}
+ const id=(++consoleSeq).toString(36);consoleLog(botId,'$ '+cmd+'\n');liveConsole.send(JSON.stringify({kind:'console',id,command:cmd}));$('console-command').value='';
+};
+$('console-clear').onclick=()=>{consoleBuffers.delete($('browser-agent').value);updateConsoleLabel()};
+
 function liveStatus(v){$('browser-status').textContent=v}
 function liveSend(data){
  if(!liveControl||liveControl.readyState!=='open')return false;
@@ -88,27 +117,38 @@ function liveSend(data){
 function disconnectLive(){
  ++liveGeneration;
  if(livePeer){livePeer.close();livePeer=null}
- liveControl=null;liveVM='';videoChunks=null;pointerHeld=false;
- if(lastImage.startsWith('blob:'))URL.revokeObjectURL(lastImage);
- lastImage='';$('screen').hidden=true;
+ liveControl=null;liveConsole=null;liveVM='';videoChunks=null;pointerHeld=false;
+ paintBusy=false;lastFrameSeq=-1;frameLastAt=0;consoleParts.clear();
+ $('screen').hidden=true;
+}
+async function displayFrame(parts,sequence,generation){
+ if(paintBusy)return;paintBusy=true;
+ let bitmap=null;
+ try{
+  bitmap=await createImageBitmap(new Blob(parts,{type:'image/jpeg'}));
+  if(generation!==liveGeneration||sequence<lastFrameSeq)return;
+  const canvas=$('screen'),context=canvas.getContext('2d',{alpha:false});
+  if(canvas.width!==bitmap.width||canvas.height!==bitmap.height){canvas.width=bitmap.width;canvas.height=bitmap.height}
+  context.drawImage(bitmap,0,0);
+  canvas.hidden=false;
+  lastFrameSeq=sequence;frameLastAt=performance.now();
+  liveStatus('WebRTC/UDP · '+liveVM+' · live');
+ }catch(e){liveStatus('Frame: '+e.message)}
+ finally{bitmap?.close();paintBusy=false}
 }
 function receiveFrame(bytes){
  const b=new Uint8Array(bytes);
  if(b.length<8)return;
  const view=new DataView(b.buffer,b.byteOffset,b.byteLength);
- const seq=view.getUint32(0),index=view.getUint16(4),total=view.getUint16(6);
- if(!total||total>32||index>=total)return;
- if(!videoChunks||videoChunks.seq!==seq)
-  videoChunks={seq,parts:Array(total),count:0,stamp:performance.now()};
- if(videoChunks.parts.length!==total)return;
+ const seq=view.getUint32(0),index=view.getUint16(4),total=view.getUint16(6),now=performance.now();
+ if(!total||total>32||index>=total||seq<=lastFrameSeq)return;
+ if(videoChunks&&(now-videoChunks.stamp>550||seq>videoChunks.seq))videoChunks=null;
+ if(!videoChunks)videoChunks={seq,parts:Array(total),count:0,stamp:now};
+ if(videoChunks.seq!==seq||videoChunks.parts.length!==total)return;
  if(!videoChunks.parts[index]){videoChunks.parts[index]=b.slice(8);videoChunks.count++}
  if(videoChunks.count!==total)return;
- const jpg=new Blob(videoChunks.parts,{type:'image/jpeg'});
- videoChunks=null;
- const url=URL.createObjectURL(jpg),prev=lastImage;lastImage=url;
- $('screen').src=url;$('screen').hidden=false;
- if(prev.startsWith('blob:'))URL.revokeObjectURL(prev);
- liveStatus('WebRTC/UDP · '+liveVM+' · Chromium live');
+ const parts=videoChunks.parts;videoChunks=null;
+ if(!paintBusy)void displayFrame(parts,seq,liveGeneration);
 }
 async function connectLive(){
  disconnectLive();
@@ -122,7 +162,15 @@ async function connectLive(){
  const ctrl=pc.createDataChannel('control',{ordered:true});
  liveControl=ctrl;
  ctrl.onopen=()=>{liveSend({kind:'subscribe'});liveStatus('WebRTC/UDP · verbunden, erwarte Browserbild')};
+ ctrl.onclose=()=>{if(gen===liveGeneration)liveStatus('Steuerkanal geschlossen')};
  pc.ondatachannel=e=>{
+  if(e.channel.label==='console'){
+   liveConsole=e.channel;
+   e.channel.onopen=()=>{if(gen===liveGeneration)consoleLog(id,'[UDP-Konsole verbunden]\n')};
+   e.channel.onmessage=m=>{if(gen===liveGeneration)receiveConsole(m.data)};
+   e.channel.onclose=()=>{if(gen===liveGeneration)consoleLog(id,'[UDP-Konsole getrennt]\n')};
+   return;
+  }
   if(e.channel.label!=='frames')return;
   e.channel.binaryType='arraybuffer';
   e.channel.onmessage=m=>{if(gen===liveGeneration)receiveFrame(m.data)};
@@ -151,13 +199,17 @@ async function connectLive(){
  }
 }
 setInterval(()=>{
- if($('live').checked&&liveControl?.readyState==='open')
+ if($('live').checked&&liveControl?.readyState==='open'){
   liveSend({kind:'subscribe'});
+  if(videoChunks&&performance.now()-videoChunks.stamp>550)videoChunks=null;
+  if(frameLastAt&&performance.now()-frameLastAt>5000)liveStatus('UDP verbunden · keine neuen Browserframes');
+ }
+ for(const [id,task] of consoleParts)if(performance.now()-task.started>5000){consoleLog(task.bot,'[Unvollständige UDP-Konsolenausgabe verworfen]\n');consoleParts.delete(id)}
 },2000);
 $('live').addEventListener('change',connectLive);
-$('browser-agent').addEventListener('change',connectLive);
+$('browser-agent').addEventListener('change',()=>{updateConsoleLabel();connectLive()});
 function browserCoords(e){
- const img=$('screen'),r=img.getBoundingClientRect(),w=img.naturalWidth||1440,h=img.naturalHeight||900;
+ const img=$('screen'),r=img.getBoundingClientRect(),w=img.width||1440,h=img.height||900;
  const scale=Math.min(r.width/w,r.height/h),left=r.left+(r.width-w*scale)/2,top=r.top+(r.height-h*scale)/2;
  const x=(e.clientX-left)/scale,y=(e.clientY-top)/scale;
  if(!Number.isFinite(x)||!Number.isFinite(y)||x<0||y<0||x>=w||y>=h)return null;
@@ -177,10 +229,10 @@ $('screen').addEventListener('pointerup',pointerEnd);$('screen').addEventListene
 $('screen').addEventListener('contextmenu',e=>e.preventDefault());
 $('screen').addEventListener('wheel',e=>{e.preventDefault();liveSend({kind:'wheel',dy:e.deltaY,dx:e.deltaX})},{passive:false});
 $('screen').addEventListener('keydown',e=>{
- if(e.ctrlKey||e.metaKey||e.altKey)return;
- const allowed=['Enter','Escape','Backspace','Tab','ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Delete','Home','End','PageUp','PageDown'];
- if(e.key.length===1){e.preventDefault();liveSend({kind:'text',text:e.key})}
- else if(allowed.includes(e.key)){e.preventDefault();liveSend({kind:'key',key:e.key})}
+ const allowed=['Enter','Escape','Backspace','Tab','ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Delete','Home','End','PageUp','PageDown','Insert'];
+ if(e.isComposing)return;
+ if(e.key.length===1&&!e.ctrlKey&&!e.metaKey&&!e.altKey){e.preventDefault();liveSend({kind:'text',text:e.key})}
+ else if(allowed.includes(e.key)||e.key.length===1){e.preventDefault();liveSend({kind:'key',key:e.key,shift:e.shiftKey,ctrl:e.ctrlKey,alt:e.altKey,meta:e.metaKey})}
 });
 $('mic').onclick=async()=>{if(recorder?.state==='recording'){recorder.stop();return}try{const stream=await navigator.mediaDevices.getUserMedia({audio:true});chunks=[];recorder=new MediaRecorder(stream);recorder.ondataavailable=e=>{if(e.data.size)chunks.push(e.data)};recorder.onstop=async()=>{stream.getTracks().forEach(t=>t.stop());$('mic').textContent='Mikrofon';notice('Transkribiere lokal…');try{const r=await fetch('/api/stt?lang='+$('language').value,{method:'POST',body:new Blob(chunks,{type:recorder.mimeType})});const result=await r.json();if(!r.ok)throw Error(result.error);$('message').value=result.corrected||result.text;notice(result.correction_pending?'Text erkannt; Kontextkorrektur war ausgelastet.':'Text bereit — prüfe ihn vor dem Senden.')}catch(e){notice(e.message)}};recorder.start();$('mic').textContent='Aufnahme stoppen';notice('Aufnahme läuft…')}catch(e){notice('Mikrofon: '+e.message)}};
 $('toggle-agents').onclick=()=>$('layout').classList.toggle('show-agents');$('toggle-tools').onclick=()=>$('layout').classList.toggle('show-tools');

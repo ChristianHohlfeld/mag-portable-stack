@@ -172,6 +172,14 @@ class Native(unittest.TestCase):
   self.assertIn('id="right-panel"',html)
   self.assertIn('id="screen"',html)
   self.assertIn('id="browser-agent"',html)
+  self.assertNotIn('<select id="browser-agent"',html)
+  self.assertIn("card.onclick=e=>",html)
+  self.assertIn("focusBot(a.id)",html)
+  self.assertIn("card.classList.toggle('active'",html)
+  self.assertIn('id="root-switch"',html)
+  self.assertIn('id="root-label"',html)
+  self.assertIn("terminal_input",html)
+  self.assertIn("terminal_read",html)
   self.assertIn('id="browser-url"',html)
   self.assertIn('id="browser-open"',html)
   self.assertIn('id="live"',html)
@@ -195,7 +203,9 @@ class Native(unittest.TestCase):
   html=self.request('/bot/test/',raw=True).decode()
   self.assertIn('const remoteBotId=',html)
   self.assertIn("remote.href='/bot/'+encodeURIComponent(a.id)+'/'",html)
-  self.assertIn("$('browser-agent').value=own.id",html)
+  self.assertIn("const remoteBotId=remotePath?remotePath[1]:null",html)
+  self.assertIn("const candidate=remoteBotId",html)
+  self.assertIn("if(candidate)focusBot(candidate)",html)
   self.assertIn('id="browser-fullscreen"',html)
   self.assertIn('id="terminal-fullscreen"',html)
   self.assertIn('id="remote-bar"',html)
@@ -210,6 +220,14 @@ class Native(unittest.TestCase):
  def test_11_browser_live_requires_known_bot(self):
   self.error(404,'/api/browser-live/offer?bot=not-a-bot',{'type':'offer','sdp':'sdp'})
   self.error(404,'/api/browser/not-a-bot/pointer',{'x':1,'y':1})
+ def test_11_root_off_by_default_and_guest_bridge_rejected(self):
+  agents=self.request('/api/state')['agents']
+  self.assertFalse(agents[0]['root_enabled'])
+  self.assertFalse(agents[0]['root_revoke_pending'])
+  self.error(404,'/api/agents/not-here/root',{'on':True})
+  self.error(400,'/api/agents/test/root',{})
+  self.error(403,'/api/agents/test/root',{'on':True},bridge=True,
+             headers={'Authorization':'Bearer '+self.state.joinpath('token').read_text().strip()})
  def test_12_malformed_http_rejected(self):
   for headers in ['Content-Length: -1\r\n','Content-Length: 2\r\nContent-Length: 3\r\n','Transfer-Encoding: chunked\r\n']:
    with socket.create_connection(('127.0.0.1',self.ui),timeout=3) as s:

@@ -207,13 +207,31 @@ public:
           {"PageUp", 33}, {"PageDown", 34}, {"Insert", 45},
           {" ", 32}};
       auto it = keys.find(key);
-      if (it == keys.end()) return;
+      int vk = 0;
+      std::string code = key;
+      if (it != keys.end()) vk = it->second;
+      else if (key.size() == 1 && key[0] >= 'a' && key[0] <= 'z') {
+        vk = 65 + key[0] - 'a';
+        code = "Key" + std::string(1, (char)toupper(key[0]));
+      } else if (key.size() == 1 && key[0] >= 'A' && key[0] <= 'Z') {
+        vk = 65 + key[0] - 'A';
+        code = "Key" + key;
+      } else if (key.size() == 1 && key[0] >= '0' && key[0] <= '9') {
+        vk = 48 + key[0] - '0';
+        code = "Digit" + key;
+      } else return;
+      int modifiers = 0;
+      if (obj.find("alt") && obj.find("alt")->asBool()) modifiers |= 1;
+      if (obj.find("ctrl") && obj.find("ctrl")->asBool()) modifiers |= 2;
+      if (obj.find("meta") && obj.find("meta")->asBool()) modifiers |= 4;
+      if (obj.find("shift") && obj.find("shift")->asBool()) modifiers |= 8;
       mj::Val p = mj::Val::object();
       p["type"] = "keyDown";
       p["key"] = key == "NumpadEnter" ? "Enter" : key;
-      p["code"] = key == "Enter" ? "Enter" : key;
-      p["windowsVirtualKeyCode"] = it->second;
-      p["nativeVirtualKeyCode"] = it->second;
+      p["code"] = code;
+      p["modifiers"] = modifiers;
+      p["windowsVirtualKeyCode"] = vk;
+      p["nativeVirtualKeyCode"] = vk;
       if (key == "Enter" || key == "NumpadEnter")
         p["text"] = "\r";
       if (key == "Tab") p["text"] = "\t";

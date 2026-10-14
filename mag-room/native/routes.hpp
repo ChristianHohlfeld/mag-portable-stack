@@ -520,6 +520,32 @@ static void route(int fd, Req &r, bool bridge = false) {
     send_json(fd, 201, mj::dump(f));
     return;
   }
+  // Human operator console: always run inside the selected bot's KVM,
+  // never on MAG host. The VM gateway cannot access this route.
+  if (m == "POST" && path.rfind("/api/console/", 0) == 0) {
+    if (!has_json) {
+      error_json(fd, 400, "JSON required");
+      return;
+    }
+    int idx = browser_agent_index(url_decode(path.substr(13)));
+    if (idx < 0) {
+      error_json(fd, 404, "Unknown bot");
+      return;
+    }
+    std::string command = str("command");
+    if (command.empty() || command.size() > 1024 ||
+        command.find('\0') != std::string::npos) {
+      error_json(fd, 400, "Command must be 1-1024 bytes");
+      return;
+    }
+    auto result = guest_command(bot_field(idx, "vm"), command, 15);
+    Val output = Val::object();
+    output["bot"] = bot_field(idx, "id");
+    output["exit_code"] = result.code;
+    output["output"] = result.out.substr(0, 16384);
+    send_json(fd, 200, mj::dump(output));
+    return;
+  }
   if (m == "POST" && path.rfind("/api/agent/", 0) == 0) {
     std::string rest = path.substr(11);
     auto slash = rest.find('/');

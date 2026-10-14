@@ -292,9 +292,29 @@ int main(int argc, char **argv) {
     metrics["mobile"] = false;
     c.call("Emulation.setDeviceMetricsOverride", metrics);
     auto snapshot = [&]() {
-      Val state = c.eval("({url:location.href,title:document.title})");
+      Val state = c.eval("({url:location.href,title:document.title,"
+                         "blocked:(()=>{const t=(document.title+' '+"
+                         "(document.body?.innerText||'').slice(0,1000)).toLowerCase();"
+                         "return (t.includes('unusual traffic')||"
+                         "t.includes('verify you are human')||"
+                         "t.includes('checking your browser')||"
+                         "t.includes('are you a robot')||"
+                         "t.includes('security check')||"
+                         "t.includes('captcha'))})()})");
       state["udp_transport"] = "MGB4";
       state["udp_port"] = 9227;
+      try{
+        auto nav=c.call("Page.getNavigationHistory");
+        auto entries=nav.find("entries");
+        const auto idx=nav.find("currentIndex");
+        if(entries&&entries->isArr()&&idx){
+          state["can_go_back"]=idx->asNum()>0;
+          state["can_go_forward"]=idx->asNum()+1<(double)entries->asArr().size();
+        }
+      }catch(...){
+        state["can_go_back"]=false;
+        state["can_go_forward"]=false;
+      }
       return state;
     };
     char host[128]{};
@@ -351,9 +371,40 @@ int main(int argc, char **argv) {
         Val out = Val::object();
         if (r.path == "/state")
           out = snapshot();
-        else if (r.path == "/read")
+        else if (r.path == "/read") {
           out = c.eval("({url:location.href,title:document.title,text:document."
                        "body.innerText.slice(0,12000)})");
+          auto meta=snapshot();
+          out["blocked"]=meta.find("blocked")?*meta.find("blocked"):Val(false);
+          if(out.find("blocked") && out.find("blocked")->asBool())
+            out["hint"]="Website access challenge. Stop automated retries; "
+                        "use the authorized Brave web_search tool for research "
+                        "or ask the human to complete any permitted verification.";
+        }
+        else if (r.path == "/terminal/input") {
+          if (r.method != "POST") throw std::runtime_error("POST required");
+          std::string text = value("text");
+          if (text.size() > 500) throw std::runtime_error("Terminal input too long");
+          bool require_root = body.find("require_root") && body.find("require_root")->asBool();
+          if(require_root && !udp.terminal_root())
+            throw std::runtime_error("Root access is OFF in this VM");
+          uint64_t cursor = udp.terminal_cursor();
+          if (body.find("enter") && body.find("enter")->asBool()) text += "\r";
+          udp.terminal_input(text,require_root);
+          out["cursor"] = (double)cursor;
+          out["user"] = udp.terminal_root()?"root":"bot";
+          out["sent"] = true;
+        } else if (r.path == "/terminal/output") {
+          uint64_t after = 0;
+          std::string raw = value("after");
+          if (!raw.empty()) {
+            if (raw.find_first_not_of("0123456789") != std::string::npos)
+              throw std::runtime_error("Invalid output cursor");
+            after = std::stoull(raw);
+          }
+          (void)udp.terminal_root();
+          out = udp.terminal_read(after);
+        }
         else if (r.path == "/screenshot.png" ||
                  r.path == "/screenshot.jpg") {
           Val p = Val::object();

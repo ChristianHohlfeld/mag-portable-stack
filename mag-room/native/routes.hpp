@@ -229,6 +229,18 @@ static void route(int fd, Req &r, bool bridge = false) {
                     {{"Cache-Control", "no-store"}});
     return;
   }
+  if (m == "GET" && path == "/api/browser-live/status") {
+    std::string status;
+    long code = 0;
+    if (!http_simple("127.0.0.1", 18784, "GET", "/status", "", {},
+                     status, &code, nullptr, 1500) || code != 200) {
+      error_json(fd, 503, "Browser UDP gateway unavailable");
+      return;
+    }
+    send_response(fd, 200, "application/json", status,
+                  {{"Cache-Control", "no-store"}});
+    return;
+  }
   // Only the authenticated MAG origin can signal the local WebRTC gateway.
   // The gateway and the VM browser remain on the same persistent page.
   if (m == "POST" && path == "/api/browser-live/offer") {

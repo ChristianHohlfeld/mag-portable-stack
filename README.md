@@ -141,7 +141,7 @@ keeping **one persistent Chromium + profile inside each bot's own KVM**.
 
 - In the VM, \`mag-browser\` owns the one CDP connection to the hot Chromium
   tab. It reattaches on controller upgrades without resetting tabs or cookies.
-- Each browser sends HMAC-SHA256-authenticated, bounded JPEG packets over
+- Each browser sends per-VM-key HMAC-SHA256-authenticated, bounded JPEG packets over
   **VM's UDP :9227 → MAG UDP :18783**; no second browser or video transcoder.
 - The dedicated Go/Pion \`mag-browser-webrtc\` gateway forwards assembled JPEG
   frames on an unordered WebRTC SCTP DataChannel over DTLS/ICE UDP
@@ -158,8 +158,9 @@ keeping **one persistent Chromium + profile inside each bot's own KVM**.
 
 Port :18783 is permitted only for guest-to-host UDP on virbr0. The
 WebRTC gateway's HTTP offer API binds **127.0.0.1:18784**, and MAG validates
-the selected bot ID/VM name before relaying signaling. Browser UDP packets
-are signed using the existing room bridge token and limited to the VM subnet.
+the selected bot ID/VM name before relaying signaling. Browser UDP packets use separate persistent, random keys per VM under
+`/var/lib/magbot/room/browser-udp-keys/`, never the shared HTTP bridge token.
+They are validated per VM and limited to the VM subnet.
 Do not expose the gateway's HTTP endpoint outside loopback.
 
 Release prerequisites: Go 1.23 or newer available on MAG for the relay build,

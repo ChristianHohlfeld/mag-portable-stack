@@ -33,6 +33,7 @@ class Native(unittest.TestCase):
  @classmethod
  def start(cls):
   env=dict(os.environ,MAG_ROOM_STATE=str(cls.state),MAG_ROOM_PORT=str(cls.ui),MAG_ROOM_BRIDGE_PORT=str(cls.bridge),MAG_ROOM_BRIDGE_IP='127.0.0.1',MAG_ROOM_BACKEND=f'http://127.0.0.1:{cls.model.server_port}/v1/chat/completions',MAG_ROOM_UI=str(ROOT/'mag-room/web/index.html'),MAG_ROOM_STATIC=str(ROOT/'mag-room/static'),MAG_ROOM_AUTOTALK_SLEEP='1')
+  if getattr(cls,'root_test_ctl',None):env['MAG_ROOM_ROOT_CTL']=cls.root_test_ctl
   cls.log=open(pathlib.Path(cls.tmp.name)/'server.log','a');cls.proc=subprocess.Popen([str(ROOT/'build/magroom')],env=env,stdout=cls.log,stderr=cls.log)
   for _ in range(100):
    try:cls.request('/healthz',raw=True);return
@@ -264,5 +265,39 @@ class Native(unittest.TestCase):
    self.state.joinpath('agents.json').write_text(saved)
    self.start()
   self.assertIn(b'<html',self.request('/bot/test/',raw=True))
+
+ def test_14_root_lease_is_bot_scoped_and_tool_is_removed_when_off(self):
+  ctl=pathlib.Path(self.tmp.name)/'mock-root-ctl'
+  ctl.write_text('#!/usr/bin/env bash\nexit 0\n')
+  ctl.chmod(0o755)
+  old=self.state.joinpath('agents.json').read_text()
+  try:
+   self.proc.terminate();self.proc.wait(timeout=5);self.log.close()
+   agents=json.loads(old);agents[0]['vm']='agent1'
+   self.state.joinpath('agents.json').write_text(json.dumps(agents))
+   type(self).root_test_ctl=str(ctl)
+   self.start()
+   self.assertFalse(self.request('/api/state')['agents'][0]['root_enabled'])
+   self.assertTrue(self.request('/api/agents/test/root',{'on':True})['root_enabled'])
+   self.assertTrue(self.request('/api/state')['agents'][0]['root_enabled'])
+   before=len(Model.calls)
+   self.request('/api/message',{'text':'Prüfe Werkzeuge','bots':['test']})
+   self.wait_idle()
+   self.assertGreater(len(Model.calls),before)
+   tools=json.dumps(Model.calls[-1]['tools'])
+   self.assertIn('"root_command"',tools)
+   self.assertFalse(self.request('/api/agents/test/root',{'on':False})['root_enabled'])
+   self.assertFalse(self.request('/api/state')['agents'][0]['root_enabled'])
+   before=len(Model.calls)
+   self.request('/api/message',{'text':'Prüfe Werkzeugfreigabe','bots':['test']})
+   self.wait_idle()
+   self.assertGreater(len(Model.calls),before)
+   tools=json.dumps(Model.calls[-1]['tools'])
+   self.assertNotIn('"root_command"',tools)
+  finally:
+   self.proc.terminate();self.proc.wait(timeout=5);self.log.close()
+   self.state.joinpath('agents.json').write_text(old)
+   type(self).root_test_ctl=None
+   self.start()
 
 if __name__=='__main__':unittest.main(verbosity=2)

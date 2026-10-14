@@ -28,7 +28,7 @@ while time.monotonic()<until:
  if not buf:break
  if buf.startswith(b"O"):out+=buf[1:]
  if bytes([48,13]) in out or bytes([48,10]) in out:break
-assert b"0\\r" in out or b"0\\n" in out,repr(out[-1000:])
+assert bytes([48,13]) in out or bytes([48,10]) in out,repr(out[-1000:])
 print("root terminal PTY verified")
 '''
    result=subprocess.run(["runuser","-u","bot","--","python3","-c",script],capture_output=True,text=True,timeout=12)

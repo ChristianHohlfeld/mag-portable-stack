@@ -171,6 +171,15 @@ class Native(unittest.TestCase):
   self.assertIn('id="left-panel"',html)
   self.assertIn('id="right-panel"',html)
   self.assertIn('id="screen"',html)
+  self.assertIn('id="browser-agent"',html)
+  self.assertIn('id="browser-url"',html)
+  self.assertIn('id="browser-open"',html)
+  self.assertIn('id="live"',html)
+  self.assertIn("browserAction('navigate'",html)
+  for obsolete in ('browser-fullscreen','browser-selector','browser-click',
+                   'browser-text','browser-type','browser-back',
+                   'browser-scroll','browser-read','requestFullscreen'):
+   self.assertNotIn(obsolete,html)
   self.assertIn("content.innerHTML=safeMarkdown(s.text)",html)
   self.assertIn("createImageBitmap",html)
   self.assertNotIn('notice();screen();',html)

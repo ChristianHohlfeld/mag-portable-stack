@@ -51,7 +51,7 @@ class BrowserUDP {
   }
   bool root_packet(const std::string &payload){
     if(!connect_root())return false;
-    if(send(root_fd_,payload.data(),payload.size(),MSG_NOSIGNAL|MSG_DONTWAIT)!=(ssize_t)payload.size()){
+    if(::send(root_fd_,payload.data(),payload.size(),MSG_NOSIGNAL|MSG_DONTWAIT)!=(ssize_t)payload.size()){
       drop_root();return false;
     }
     return true;

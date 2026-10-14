@@ -20,4 +20,4 @@ download() {
 }
 download "$BASE/@xterm/xterm@5.5.0/lib/xterm.js" "xterm.js" 100000
 download "$BASE/@xterm/xterm@5.5.0/css/xterm.css" "xterm.css" 1000
-download "$BASE/@xterm/addon-fit@0.10.0/lib/addon-fit.js" "xterm-addon-fit.js" 2000
+download "$BASE/@xterm/addon-fit@0.10.0/lib/addon-fit.js" "xterm-addon-fit.js" 500

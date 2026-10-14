@@ -1274,6 +1274,18 @@ static std::string ensure_browser(const std::string &vm) {
   }
   throw std::runtime_error("Native browser unavailable");
 }
+// Prewarm a bot browser without blocking the HTTP room or inference slot.
+static void warm_browser_async(const std::string &vm) {
+  if (vm.empty() || vm == "keine") return;
+  std::thread([vm] {
+    try {
+      (void)ensure_browser(vm);
+    } catch (const std::exception &e) {
+      std::cerr << "Browser warmup (" << vm << "): " << e.what()
+                << std::endl;
+    }
+  }).detach();
+}
 static Val browser_json(const std::string &vm, const std::string &path,
                         const std::string &method = "GET",
                         const std::string &body = "") {
@@ -2338,6 +2350,18 @@ int main() {
       std::cerr << "Bridge bind failed: " << strerror(errno) << std::endl;
       std::exit(1);
     }
+    std::thread([] {
+      // The bridge is listening now, so guest bootstrap downloads can work.
+      std::vector<std::string> vms;
+      {
+        std::lock_guard<std::recursive_mutex> lock(STATE_MTX);
+        for (const auto &a : AGENTS) {
+          auto vm = a.find("vm");
+          if (vm && !vm->asStr().empty()) vms.push_back(vm->asStr());
+        }
+      }
+      for (const auto &vm : vms) warm_browser_async(vm);
+    }).detach();
     for (;;) {
       int fd = accept4(bridge, nullptr, nullptr, SOCK_CLOEXEC);
       if (fd < 0) {

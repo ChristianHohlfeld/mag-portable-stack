@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# Kontrolliertes Stoppen/Neustarten von mag-llm trotz RefuseManualStop=yes.
+#   sudo mag-llm-maint stop|restart
+# Setzt RefuseManualStop nur zur Laufzeit (/run, verschwindet beim Reboot) kurz außer Kraft.
+set -euo pipefail
+[[ $EUID -eq 0 ]] || { echo "bitte als root"; exit 1; }
+act="${1:?stop|restart}"
+d=/run/systemd/system/mag-llm.service.d
+install -d "$d"
+printf '[Unit]\nRefuseManualStop=no\n' > "$d/50-maint.conf"
+systemctl daemon-reload
+trap 'rm -f "$d/50-maint.conf"; systemctl daemon-reload' EXIT
+case "$act" in
+  stop)    systemctl stop mag-120.service 2>/dev/null || true; systemctl stop mag-llm.service ;;
+  restart) systemctl restart mag-llm.service ;;
+  *) echo "unbekannt: $act"; exit 2 ;;
+esac
+systemctl --no-pager --lines=0 status mag-llm.service || true

@@ -18,7 +18,10 @@ fi
 test -x "$SOURCE/build/mag-browser-webrtc"
 test -x "$WHISPER_CLI"; test -r "$WHISPER_MODEL"
 test ! -e "$RELEASE"
-curl -fsS --max-time 5 http://127.0.0.1:8080/v1/models >/dev/null
+# Das Modell ist unabhängig vom Raum-Release (lädt evtl. noch herunter / wird geprüft).
+# Nur informieren; der Raum zeigt den Modellstatus selbst an.
+curl -fsS --max-time 5 http://127.0.0.1:8080/v1/models >/dev/null \
+  || echo 'Hinweis: Modell-Backend noch nicht bereit – Deploy läuft weiter.' >&2
 install -d -m 0755 /opt/mag-stack/releases "$RELEASE/bin" "$RELEASE/web" "$RELEASE/ops"
 install -d -m 0700 "$BACKUP"
 cp -a /etc/systemd/system/mag-120.service "$BACKUP/mag-120.service"
@@ -87,6 +90,7 @@ systemctl enable mag-120.service
 systemctl restart mag-120.service
 systemctl enable --now mag-browser-webrtc.service
 systemctl restart mag-browser-webrtc.service
+# /readyz = Raum bereit (Modellstatus steht im JSON, ist aber kein Rollback-Grund)
 for i in {1..30}; do if curl -fsS --max-time 2 http://127.0.0.1:8766/readyz >/dev/null; then break; fi; sleep 1; done
 curl -fsS --max-time 5 http://127.0.0.1:8766/readyz
 curl -fsS --max-time 5 http://127.0.0.1:18784/health

@@ -1,0 +1,44 @@
+# Protokollierender Web-Proxy (mitmproxy) für alle Web- und Browser-Zugriffe der Bots/VMs.
+# Host-Prozesse (magbot):   HTTP(S)_PROXY=http://127.0.0.1:8888
+# Agent-VMs (virbr0):       http://192.168.122.1:8888, CA + Proxy richtet `magbot audit-proxy` ein
+# Erzwingung: nftables (ops/audit/mag-audit.nft) – ohne Proxy kein Port 80/443 nach draußen.
+[Unit]
+Description=MAG audit web proxy (mitmproxy, full web/browser audit log)
+After=network-online.target
+Wants=network-online.target
+Before=mag-120.service
+
+[Service]
+Type=simple
+User=mag-audit
+Group=mag-audit
+UMask=0027
+Environment=MAG_AUDIT_LOG_DIR=/var/log/mag-audit
+Environment=MAG_AUDIT_SECRETS_FILE=/etc/mag-audit/secrets.list
+# Client-IP/Netz -> Agent-Name (erzeugt von install-audit.sh aus der libvirt-Konfiguration)
+EnvironmentFile=-/etc/mag-audit/webproxy.env
+ExecStart=/opt/mag-audit/venv/bin/mitmdump \
+  --mode regular \
+  --listen-host 0.0.0.0 --listen-port 8888 \
+  --set confdir=/var/lib/mag-audit/mitmproxy \
+  --set block_global=false \
+  --set connection_strategy=lazy \
+  --set stream_large_bodies=200m \
+  --set termlog_verbosity=warn \
+  --set flow_detail=0 \
+  -s /opt/mag-audit/mitm_audit_addon.py
+Restart=always
+RestartSec=3
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/log/mag-audit /var/lib/mag-audit
+ReadOnlyPaths=/etc/mag-audit /opt/mag-audit
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+
+[Install]
+WantedBy=multi-user.target

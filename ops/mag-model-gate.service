@@ -1,0 +1,13 @@
+# Beobachtet den Modell-Download, prüft SHA-256 aller Teile und startet mag-llm erst danach.
+# Schreibt /var/lib/mag-llm/status.json, das der Raum als "Modell lädt …" anzeigt.
+[Unit]
+Description=MAG model gate (download -> SHA-256 verify -> start mag-llm)
+After=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/mag-deepseek/model-gate.sh run
+Nice=10
+IOSchedulingClass=idle
+# Vollprüfung liest ~155 GB
+TimeoutStartSec=3h

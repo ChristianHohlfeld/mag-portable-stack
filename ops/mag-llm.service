@@ -1,7 +1,17 @@
+# MAG Local LLM – DeepSeek-V4-Flash-0731 (unsloth UD-Q4_K_XL, ~155 GB) via llama.cpp, CPU-only.
+# Installiert durch ops/deepseek/install-deepseek.sh nach /etc/systemd/system (Kopie, nicht Symlink).
+# Vorher: GPT-OSS-120B (Git-Verlauf, ~/mag-infra/systemd/mag-llm.service.bak-gpt-oss).
+#
+# - Lauscht NUR intern auf 127.0.0.1:8090. Raum, Grok und Ali sprechen mit :8080 = mag-audit-gateway,
+#   das jeden Aufruf vollständig protokolliert; :8090 ist per nftables nur für root/mag-audit offen.
+# - Startet erst nach bestandener SHA-256-Vollprüfung: mag-model-gate.timer prüft nach dem Download,
+#   schreibt den Freigabe-Stempel und startet die Unit. Vorher ist der Start ein No-op (Condition).
+# - Flags gegen `llama serve --help` (build 11630) geprüft; install-deepseek.sh bricht bei unbekannten ab.
 [Unit]
-Description=MAG Local LLM - GPT-OSS 120B via llama.cpp
-After=network-online.target
+Description=MAG Local LLM - DeepSeek-V4-Flash-0731 via llama.cpp (CPU)
+After=network-online.target mag-audit-nft.service
 Wants=network-online.target
+ConditionPathExists=/var/lib/mag-llm/verified.stamp
 RefuseManualStop=yes
 
 [Service]
@@ -10,42 +20,45 @@ User=chris
 Group=chris
 WorkingDirectory=/home/chris
 
-ExecStartPre=/usr/bin/test -r /home/chris/models/gpt-oss-120b/gpt-oss-120b.gguf
-ExecStartPre=/usr/bin/test -r /home/chris/llama-templates/openai-gpt-oss-120b.jinja
+ExecStartPre=/usr/local/lib/mag-deepseek/model-gate.sh check-stamp
+ExecStartPre=/usr/bin/test -r /home/chris/llama-templates/deepseek-ai-DeepSeek-V4-Flash-0731.jinja
+# Page-Cache leeren, damit --numa distribute die Seiten auf beide NUMA-Knoten verteilt ("+" = root)
+ExecStartPre=+/bin/sh -c 'sync; echo 3 > /proc/sys/vm/drop_caches'
 
 ExecStart=/home/chris/.local/bin/llama serve \
-  -m /home/chris/models/gpt-oss-120b/gpt-oss-120b.gguf \
-  --alias gpt-oss:120b \
+  --model /home/chris/models/deepseek-v4/DeepSeek-V4-Flash-0731-UD-Q4_K_XL-00001-of-00005.gguf \
+  --alias deepseek-v4-flash-0731 \
   --host 127.0.0.1 \
-  --port 8080 \
-  -c 32768 \
-  -np 1 \
-  -t 28 \
-  -tb 28 \
+  --port 8090 \
+  --ctx-size 32768 \
+  --parallel 1 \
+  --threads 28 \
+  --threads-batch 28 \
   --numa distribute \
-  --swa-full \
+  --batch-size 1024 \
+  --ubatch-size 1024 \
+  --load-mode mmap+mlock \
   --cache-ram 8192 \
-  --ctx-checkpoints 32 \
-  --checkpoint-min-step 8192 \
-  -b 1024 \
-  -ub 1024 \
-  --jinja \
-  --chat-template-file /home/chris/llama-templates/openai-gpt-oss-120b.jinja \
-  --reasoning-format auto \
   --flash-attn auto \
+  --jinja \
+  --chat-template-file /home/chris/llama-templates/deepseek-ai-DeepSeek-V4-Flash-0731.jinja \
+  --reasoning-format deepseek \
+  --temp 1.0 \
+  --top-p 0.95 \
+  --min-p 0.01 \
+  --metrics \
   --no-webui
 
-Restart=always
-RestartSec=2
+Restart=on-failure
+RestartSec=30
+# Laden von ~155 GB + mlock dauert Minuten (Type=simple: kein Start-Timeout nötig)
+TimeoutStopSec=120
 
 MemorySwapMax=0
-MemoryLow=80G
+MemoryLow=180G
 OOMScoreAdjust=-900
-
 LimitNOFILE=1048576
 LimitMEMLOCK=infinity
-
-TimeoutStopSec=30
 
 [Install]
 WantedBy=multi-user.target

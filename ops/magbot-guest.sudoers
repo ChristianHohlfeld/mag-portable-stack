@@ -1,1 +1,6 @@
+# magroom (User magbot) darf nur diese zwei Wrapper als root ausführen.
+# !syslog: sudo protokolliert sonst jede Kommandozeile ins Journal – darin übergibt magroom beim
+# Browser-Start den Raum-Bridge-Token und den UDP-Schlüssel der VM. Die Aktionen selbst stehen im
+# zentralen Audit-Log (Tool-Aufrufe und -Ergebnisse über das Gateway).
+Defaults:magbot !syslog
 magbot ALL=(root) NOPASSWD: /usr/local/sbin/magbot-guest-run, /usr/local/sbin/magbot-agent-ctl

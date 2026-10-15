@@ -132,16 +132,22 @@ static void route(int fd, Req &r, bool bridge = false) {
     send_text(fd, 200, "ok\n");
     return;
   }
-  if (m == "GET" && path == "/readyz") {
-    std::string body;
-    long status = 0;
-    if (!http_simple(BACKEND_HOST, BACKEND_PORT, "GET", "/v1/models", "",
-                     {{"Authorization", "Bearer " + API_KEY}}, body, &status,
-                     nullptr, 3000) ||
-        status != 200)
-      error_json(fd, 503, "Model backend unavailable");
+  // /readyz: the room itself is ready (deploy/rollback gate). A model that
+  // is still downloading, being verified or loading must not roll back a
+  // room release; its state is reported alongside. /readyz/model is strict.
+  if (m == "GET" && (path == "/readyz" || path == "/readyz/model")) {
+    ModelStatus st = model_status(true);
+    Val out = Val::object();
+    out["ready"] = path == "/readyz" ? true : st.ready;
+    out["model"] = model_status_val(st);
+    if (path == "/readyz/model" && !st.ready)
+      send_response(fd, 503, "application/json; charset=utf-8", mj::dump(out));
     else
-      send_json(fd, 200, "{\"ready\":true}");
+      send_json(fd, 200, mj::dump(out));
+    return;
+  }
+  if (m == "GET" && path == "/api/model-status") {
+    send_json(fd, 200, mj::dump(model_status_val(model_status(true))));
     return;
   }
   if (m == "GET" && path == "/api/events") {
@@ -382,13 +388,20 @@ static void route(int fd, Req &r, bool bridge = false) {
       error_json(fd, 400, "Agent name required (1-40 bytes)");
       return;
     }
+    // "vm": false creates a chat-only bot (no KVM, no browser/terminal);
+    // default remains a bot with its own isolated VM.
+    const auto vm_flag = body.find("vm");
+    const bool with_vm = !(vm_flag && vm_flag->type == Val::BOOL &&
+                           !vm_flag->asBool());
     cancel_active();
     std::lock_guard<std::mutex> turn(TURN_MTX);
-    std::string id = slug_id(str("name")), vm = next_vm();
-    auto result = run_argv({"sudo", "-n", AGENT_CTL, "spawn", vm}, 600);
-    if (result.code != 0) {
-      error_json(fd, 502, result.out);
-      return;
+    std::string id = slug_id(str("name")), vm = with_vm ? next_vm() : "";
+    if (with_vm) {
+      auto result = run_argv({"sudo", "-n", AGENT_CTL, "spawn", vm}, 600);
+      if (result.code != 0) {
+        error_json(fd, 502, result.out);
+        return;
+      }
     }
     Val agent = Val::object();
     agent["id"] = id;
@@ -403,11 +416,13 @@ static void route(int fd, Req &r, bool bridge = false) {
       AGENTS.push_back(agent);
       save_agents();
     } catch (...) {
-      run_argv({"sudo", "-n", AGENT_CTL, "despawn", vm}, 180);
+      if (with_vm)
+        run_argv({"sudo", "-n", AGENT_CTL, "despawn", vm}, 180);
       throw;
     }
     agents_event();
-    warm_browser_async(vm);
+    if (with_vm)
+      warm_browser_async(vm);
     send_json(fd, 201, mj::dump(agent));
     return;
   }
@@ -520,8 +535,10 @@ static void route(int fd, Req &r, bool bridge = false) {
         Val user = Val::object();
         user["role"] = "user";
         user["content"] = raw;
+        // Transcript correction: no reasoning needed (faster on CPU).
         Turn t = backend_turn({system, user}, "[]", 0,
-                              [](const std::string &, const std::string &) {});
+                              [](const std::string &, const std::string &) {},
+                              false);
         if (t.error.empty() && !trim(t.text).empty())
           out["corrected"] = trim(t.text);
         else

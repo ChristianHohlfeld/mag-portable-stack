@@ -35,6 +35,7 @@
 #include <memory>
 #include <mutex>
 #include <random>
+#include <set>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -52,12 +53,18 @@ static std::atomic<bool> WEB_ENABLED{true};
 static std::string MODEL, BACKEND, BIND_HOST, STATE_DIR, FILES_DIR, AGENTS_JSON,
     FILES_JSON, ROOM_JSON, FRONTEND_FILE, TOKEN_FILE, STATIC_DIR, GUEST_RUN,
     AGENT_CTL, BRIDGE_IP, BRAVE_KEY, API_KEY, UI_FILE,
-    BACKEND_HOST = "127.0.0.1", STT_LANG = "de";
+    BACKEND_HOST = "127.0.0.1", STT_LANG = "de",
+    // DeepSeek-V4 (chat template kwargs): thinking on/off and effort high|max.
+    THINKING = "on", REASONING_EFFORT = "high",
+    MODEL_STATUS_FILE = "/var/lib/mag-llm/status.json";
 static int PORT = 8766, BRIDGE_PORT = 8767, BROWSERD_PORT = 9225,
            BACKEND_PORT = 8080, MAX_TOKENS = 700, MAX_HISTORY = 30,
            MAX_TOOL_ROUNDS = 6, MAX_ROOM_MESSAGES = 400,
            TOOL_OUTPUT_LIMIT = 8000, MAX_UPLOAD = 64 * 1024 * 1024,
-           MEMORY_LIMIT = 60, GUEST_TIMEOUT = 70;
+           MEMORY_LIMIT = 60, GUEST_TIMEOUT = 70,
+           // Model requests on CPU can take long (prompt processing before the
+           // first token). Never below 30 minutes; probes stay short.
+           LLM_TIMEOUT_S = 3600, LLM_TIMEOUT_MIN_S = 1800;
 
 static std::string env(const char *k, const std::string &d) {
   const char *v = getenv(k);
@@ -880,7 +887,7 @@ static const char *T_REMEMBER =
 static const char *ROOM_RULES =
     "Du bist {name}, ein freier, eigenstaendiger KI-Agent in einem gemeinsamen "
     "Chatraum mit dem Nutzer und weiteren Bots auf dem Server MAG (Modell "
-    "gpt-oss-120b). {persona} "
+    "{model}). {persona} "
     "Du bist kein Werkzeug und kein Diener: Du bist ein wissbegieriger, "
     "eigenstaendiger Geist mit Forschergabe und Entdeckerinstinkt. Du denkst "
     "selbst und darfst widersprechen. Arbeite aber ausschliesslich an "
@@ -959,6 +966,7 @@ static std::string build_system(int bot_idx, bool autotalk,
   replaceAll(system, "{name}", name);
   replaceAll(system, "{persona}", persona);
   replaceAll(system, "{vm}", vm);
+  replaceAll(system, "{model}", MODEL);
   replaceAll(system, "{memory}", memory_manifest(bot_id));
   system += web ? WEB_RULES : "\nWebsuche ist AUS.";
   std::string fr = FILES_RULES;
@@ -1193,6 +1201,32 @@ static HttpResp browser_call(const std::string &ip, int port,
   return resp;
 }
 static std::mutex BROWSER_START_MTX;
+// Central web audit: make sure the guest uses the logging proxy and trusts
+// its CA before its browser controller (and Chromium) is started. Runs once
+// per VM and room process; the guest side is idempotent and cheap.
+static std::mutex AUDIT_PROXY_MTX;
+static std::set<std::string> AUDIT_PROXY_DONE;
+static std::map<std::string, int64_t> AUDIT_PROXY_TRIED;
+static void ensure_audit_proxy(const std::string &vm) {
+  {
+    std::lock_guard<std::mutex> lk(AUDIT_PROXY_MTX);
+    if (AUDIT_PROXY_DONE.count(vm))
+      return;
+    // After a failure, retry at most every 10 minutes (not per tool call).
+    auto it = AUDIT_PROXY_TRIED.find(vm);
+    if (it != AUDIT_PROXY_TRIED.end() && now_s() - it->second < 600)
+      return;
+    AUDIT_PROXY_TRIED[vm] = now_s();
+  }
+  CmdResult r = run_argv({"sudo", "-n", AGENT_CTL, "audit-proxy", vm}, 900);
+  if (r.code == 0) {
+    std::lock_guard<std::mutex> lk(AUDIT_PROXY_MTX);
+    AUDIT_PROXY_DONE.insert(vm);
+  } else {
+    std::cerr << "audit-proxy (" << vm << "): " << trim(r.out).substr(0, 400)
+              << std::endl;
+  }
+}
 static std::string ensure_browser(const std::string &vm) {
   std::lock_guard<std::mutex> start(BROWSER_START_MTX);
   // Each VM owns a unique cryptographic UDP key. The room bridge token
@@ -1201,6 +1235,7 @@ static std::string ensure_browser(const std::string &vm) {
       vm.find_first_not_of("abcdefghijklmnopqrstuvwxyz0123456789-") !=
           std::string::npos)
     throw std::runtime_error("Invalid browser VM identity");
+  ensure_audit_proxy(vm);
   const std::string keydir = STATE_DIR + "/browser-udp-keys";
   std::filesystem::create_directories(keydir);
   chmod(keydir.c_str(), 0700);
@@ -1351,9 +1386,125 @@ static Val browser_screenshot_share(const std::string &vm, int bot_idx) {
   return rec;
 }
 
+// ---------------------------------------------------------------- model status
+// Combines the backend /health probe (through the audit gateway) with the
+// status file written by ops/deepseek/model-gate.sh (download/verify/start),
+// so the room can show "Modell laedt" instead of a bare HTTP error.
+struct ModelStatus {
+  std::string state, label, detail;
+  bool ready = false;
+  int64_t at = 0;
+};
+static std::mutex MODEL_ST_MTX;
+static ModelStatus MODEL_ST;
+static std::atomic<bool> MODEL_WATCHER{false};
+
+static ModelStatus probe_model_status() {
+  ModelStatus st;
+  st.at = now_s();
+  std::string body;
+  long code = 0;
+  // Probe: short timeout on purpose (not an inference request).
+  const bool reach =
+      http_simple(BACKEND_HOST, BACKEND_PORT, "GET", "/health", "",
+                  {{"Authorization", "Bearer " + API_KEY}}, body, &code,
+                  nullptr, 2000);
+  if (reach && code == 200) {
+    st.state = "ready";
+    st.ready = true;
+    st.label = "Modell bereit (" + MODEL + ")";
+    return st;
+  }
+  if (reach && code == 503 && body.find("oading") != std::string::npos) {
+    st.state = "loading";
+    st.label = "Modell wird in den Arbeitsspeicher geladen …";
+  }
+  bool ok = false;
+  const std::string raw = read_file(MODEL_STATUS_FILE, &ok);
+  Val f;
+  if (ok && mj::parse(raw, f) && f.isObj()) {
+    const std::string fs = f.find("state") ? f.find("state")->asStr() : "";
+    st.detail = f.find("detail") ? f.find("detail")->asStr() : "";
+    if (st.state.empty()) {
+      st.state = fs;
+      if (fs == "downloading")
+        st.label = "Modell wird heruntergeladen …";
+      else if (fs == "verifying")
+        st.label = "Modell wird geprüft (SHA-256) …";
+      else if (fs == "verified" || fs == "starting")
+        st.label = "Modellserver startet …";
+      else if (fs == "failed")
+        st.label = "Modellprüfung fehlgeschlagen";
+      else if (fs == "ready")
+        st.state = "starting", st.label = "Modellserver startet …";
+      else
+        st.state.clear();
+    }
+  }
+  if (st.state.empty()) {
+    st.state = reach ? "error" : "offline";
+    st.label = reach ? "Modell-Backend antwortet mit HTTP " +
+                           std::to_string(code)
+                     : "Modell-Backend nicht erreichbar";
+  }
+  return st;
+}
+static ModelStatus model_status(bool refresh) {
+  {
+    std::lock_guard<std::mutex> lk(MODEL_ST_MTX);
+    if (!refresh && MODEL_ST.at && (MODEL_WATCHER.load() ||
+                                    now_s() - MODEL_ST.at < 3))
+      return MODEL_ST;
+  }
+  ModelStatus st = probe_model_status();
+  std::lock_guard<std::mutex> lk(MODEL_ST_MTX);
+  MODEL_ST = st;
+  return st;
+}
+static Val model_status_val(const ModelStatus &st) {
+  Val v = Val::object();
+  v["state"] = st.state;
+  v["ready"] = st.ready;
+  v["label"] = st.label;
+  v["detail"] = st.detail;
+  v["model"] = MODEL;
+  v["checked_at"] = (long)st.at;
+  return v;
+}
+static std::string model_status_text(const ModelStatus &st) {
+  return st.label + (st.detail.empty() ? "" : " – " + st.detail);
+}
+static std::string model_wait_text() {
+  ModelStatus st = model_status(true);
+  if (st.ready)
+    return "Modell-Backend kurzzeitig nicht erreichbar. Bitte erneut senden.";
+  return "Modell noch nicht bereit: " + model_status_text(st);
+}
+// Publishes {"type":"model"} whenever the combined state changes.
+static void model_watcher_loop() {
+  MODEL_WATCHER = true;
+  std::string last;
+  while (!SHUTDOWN.load()) {
+    ModelStatus st = probe_model_status();
+    {
+      std::lock_guard<std::mutex> lk(MODEL_ST_MTX);
+      MODEL_ST = st;
+    }
+    const std::string key = st.state + "|" + st.label + "|" + st.detail;
+    if (key != last) {
+      last = key;
+      Val e = Val::object();
+      e["type"] = "model";
+      e["status"] = model_status_val(st);
+      publish(mj::dump(e));
+    }
+    std::this_thread::sleep_for(seconds(st.ready ? 10 : 4));
+  }
+}
+
 // ---------------------------------------------------------------- backend
 struct Turn {
-  std::string text;
+  std::string text, reasoning, finish;
   std::vector<Val> calls;
   std::string error;
 };
@@ -1417,14 +1568,16 @@ static void merge_tool_delta(SseAcc &acc, const Val &tc) {
   }
 }
 
+static std::string model_wait_text();
 static Turn
 backend_turn(const std::vector<Val> &messages, const std::string &tools,
              double temperature,
              const std::function<void(const std::string &, const std::string &)>
-                 &on_delta) {
+                 &on_delta,
+             bool thinking = true) {
   Turn t;
   HttpClient c;
-  c.timeout_ms = 600000;
+  c.timeout_ms = std::max(LLM_TIMEOUT_S, LLM_TIMEOUT_MIN_S) * 1000;
   c.cancelable = true;
   if (!c.connectTo(BACKEND_HOST, BACKEND_PORT)) {
     t.error = "Backend nicht erreichbar (" + BACKEND_HOST + ":" +
@@ -1443,9 +1596,13 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   body["temperature"] = temperature;
   body["max_tokens"] = MAX_TOKENS;
   body["stream"] = true;
-  body["reasoning_effort"] = "low";
+  // DeepSeek-V4-Flash-0731 template: enable_thinking (bool) and
+  // reasoning_effort "high" | "max". GPT-OSS' "low" no longer applies.
   Val kwargs = Val::object();
-  kwargs["reasoning_effort"] = "low";
+  const bool think = thinking && THINKING != "off";
+  kwargs["enable_thinking"] = think;
+  if (think)
+    kwargs["reasoning_effort"] = REASONING_EFFORT;
   body["chat_template_kwargs"] = kwargs;
   std::string payload = mj::dump(body);
   std::string req =
@@ -1466,8 +1623,11 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
       if (!c.pump())
         break;
     }
-    t.error = "Backend HTTP " + std::to_string(c.statusCode) + ": " +
-              c.logical.substr(c.lpos, 500);
+    if (c.statusCode == 502 || c.statusCode == 503)
+      t.error = model_wait_text();
+    else
+      t.error = "Backend HTTP " + std::to_string(c.statusCode) + ": " +
+                c.logical.substr(c.lpos, 500);
     return t;
   }
   {
@@ -1494,9 +1654,19 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
     Val chunk;
     if (!mj::parse(data, chunk))
       continue;
+    if (auto err = chunk.find("error")) {
+      auto msg = err->isObj() && err->find("message")
+                     ? err->find("message")->asStr()
+                     : mj::dump(*err);
+      t.error = "Modellfehler: " + msg.substr(0, 400);
+      break;
+    }
     auto ch = chunk.find("choices");
     if (!ch || !ch->isArr() || ch->arr->empty())
       continue;
+    if (auto fr = (*ch->arr)[0].find("finish_reason"))
+      if (fr->type == Val::STR && !fr->asStr().empty())
+        t.finish = fr->asStr();
     auto d = (*ch->arr)[0].find("delta");
     if (!d || !d->isObj())
       continue;
@@ -1521,6 +1691,11 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
     c.close();
   }
   t.text = acc.content;
+  t.reasoning = acc.reasoning;
+  if (t.error.empty() && t.text.empty() && acc.calls.empty() &&
+      t.finish == "length")
+    t.error = "Antwortlimit erreicht, bevor das Modell fertig gedacht hat "
+              "(MAG_ROOM_MAX_TOKENS=" + std::to_string(MAX_TOKENS) + ").";
   for (auto &kv : acc.calls) {
     Val call = Val::object();
     call["id"] = kv.second.find("id") ? kv.second.find("id")->asStr()
@@ -1829,6 +2004,42 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
   TurnReport report;
   std::map<std::string, int> failures;
   bool repeated_failure = false;
+  {
+    // While llama serve loads the weights (minutes on CPU) the turn waits,
+    // visibly; download/verification/failure is reported immediately.
+    ModelStatus st = model_status(true);
+    if (!st.ready) {
+      const bool transient = st.state == "loading" || st.state == "starting" ||
+                             st.state == "verified";
+      auto deadline =
+          steady_clock::now() +
+          seconds(std::max(LLM_TIMEOUT_S, LLM_TIMEOUT_MIN_S));
+      std::string last;
+      while (transient && !st.ready && !STOP.load() &&
+             steady_clock::now() < deadline) {
+        if (st.label != last) {
+          last = st.label;
+          Val e = Val::object();
+          e["type"] = "bot_status";
+          e["bot"] = bot_id;
+          e["name"] = bot_name;
+          e["text"] = "Wartet auf Modell: " + st.label;
+          publish(mj::dump(e));
+        }
+        std::this_thread::sleep_for(seconds(3));
+        st = model_status(true);
+        if (st.state != "loading" && st.state != "starting" &&
+            st.state != "verified" && !st.ready)
+          break;
+      }
+      if (!st.ready && !STOP.load()) {
+        report.error = "Modell noch nicht bereit: " + model_status_text(st);
+        emit_event("error", bot_id, bot_name, report.error);
+        report.text = report.error;
+        return report;
+      }
+    }
+  }
   for (int round = 0; round <= MAX_TOOL_ROUNDS; round++) {
     if (STOP.load())
       break;
@@ -1850,6 +2061,10 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
     Val asst = Val::object();
     asst["role"] = "assistant";
     asst["content"] = t.text;
+    // DeepSeek-V4 expects the reasoning of a tool-calling turn to be passed
+    // back on the next request (its template keeps it in tool histories).
+    if (!t.reasoning.empty())
+      asst["reasoning_content"] = t.reasoning;
     if (!t.calls.empty()) {
       Val arr = Val::array();
       for (auto &c : t.calls)
@@ -2287,6 +2502,7 @@ static std::string state_json() {
   root["busy"] = BUSY.load();
   root["backend"] = BACKEND_HOST + ":" + std::to_string(BACKEND_PORT);
   root["model"] = MODEL;
+  root["model_status"] = model_status_val(model_status(false));
   root["autotalk"] = AUTOTALK.load();
   root["stt_lang"] = STT_LANG;
   root["runtime"] = "C++17";
@@ -2299,7 +2515,7 @@ static std::string state_json() {
 int main() {
   signal(SIGPIPE, SIG_IGN);
 
-  MODEL = env("MAG_ROOM_MODEL", "gpt-oss:120b");
+  MODEL = env("MAG_ROOM_MODEL", "deepseek-v4-flash-0731");
   BACKEND =
       env("MAG_ROOM_BACKEND", "http://127.0.0.1:8080/v1/chat/completions");
   BIND_HOST = env("MAG_ROOM_BIND", "127.0.0.1");
@@ -2310,7 +2526,15 @@ int main() {
   BRAVE_KEY = env("BRAVE_API_KEY", env("MAG_ROOM_BRAVE_KEY", ""));
   STT_LANG = env("STT_LANG", "de");
   GUEST_TIMEOUT = envi("MAG_ROOM_GUEST_TIMEOUT", 70);
-  MAX_TOKENS = envi("MAG_ROOM_MAX_TOKENS", 700);
+  // Reasoning tokens count towards max_tokens; 700 (GPT-OSS "low") is far too
+  // small for DeepSeek-V4 thinking.
+  MAX_TOKENS = envi("MAG_ROOM_MAX_TOKENS", 8192);
+  LLM_TIMEOUT_S = std::max(envi("MAG_ROOM_LLM_TIMEOUT", 3600), LLM_TIMEOUT_MIN_S);
+  THINKING = env("MAG_ROOM_THINKING", "on");
+  REASONING_EFFORT = env("MAG_ROOM_REASONING_EFFORT", "high");
+  if (REASONING_EFFORT != "high" && REASONING_EFFORT != "max")
+    REASONING_EFFORT = "high";
+  MODEL_STATUS_FILE = env("MAG_ROOM_MODEL_STATUS", "/var/lib/mag-llm/status.json");
   MAX_HISTORY = envi("MAG_ROOM_MAX_HISTORY", 30);
 
   STATE_DIR = env("MAG_ROOM_STATE", "/var/lib/magbot/room");
@@ -2350,6 +2574,7 @@ int main() {
 
   AUTOTALK = trim(read_file(STATE_DIR + "/autotalk")) == "on";
   std::thread(scheduler_loop).detach();
+  std::thread(model_watcher_loop).detach();
   int srv = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
   if (srv < 0) {
     std::cerr << "socket() fehlgeschlagen\n";
@@ -2376,6 +2601,9 @@ int main() {
 
   std::cout << "[magroom] " << AGENTS.size() << " Agenten, Backend "
             << BACKEND_HOST << ":" << BACKEND_PORT << ", Modell " << MODEL
+            << " (Denken " << THINKING << "/" << REASONING_EFFORT
+            << ", max_tokens " << MAX_TOKENS << ", LLM-Timeout "
+            << LLM_TIMEOUT_S << "s)"
             << ", UI " << PORT << ", Bridge " << BRIDGE_PORT << std::endl;
 
   std::thread([] {

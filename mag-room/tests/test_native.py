@@ -4,11 +4,15 @@ ROOT=pathlib.Path(__file__).resolve().parents[2]
 def port():
  with socket.socket() as s:s.bind(('127.0.0.1',0));return s.getsockname()[1]
 class Model(http.server.BaseHTTPRequestHandler):
- protocol_version='HTTP/1.1';calls=[];delay=0;reply=None;script=[]
+ protocol_version='HTTP/1.1';calls=[];delay=0;reply=None;script=[];health=200
  def log_message(self,*a):pass
  def do_GET(self):
-  data=b'{"data":[{"id":"gpt-oss:120b"}]}'
-  self.send_response(200);self.send_header('Content-Length',str(len(data)));self.end_headers();self.wfile.write(data)
+  code=200
+  if self.path=='/health':
+   code=type(self).health
+   data={200:b'{"status":"ok"}',503:b'{"error":{"code":503,"message":"Loading model","type":"unavailable_error"}}'}.get(code,b'{"error":"upstream unavailable"}')
+  else:data=b'{"data":[{"id":"deepseek-v4-flash-0731"}]}'
+  self.send_response(code);self.send_header('Content-Length',str(len(data)));self.end_headers();self.wfile.write(data)
  def do_POST(self):
   obj=json.loads(self.rfile.read(int(self.headers['Content-Length'])));self.calls.append(obj)
   self.send_response(200);self.send_header('Transfer-Encoding','chunked');self.end_headers()
@@ -32,7 +36,7 @@ class Native(unittest.TestCase):
   cls.start()
  @classmethod
  def start(cls):
-  env=dict(os.environ,MAG_ROOM_STATE=str(cls.state),MAG_ROOM_PORT=str(cls.ui),MAG_ROOM_BRIDGE_PORT=str(cls.bridge),MAG_ROOM_BRIDGE_IP='127.0.0.1',MAG_ROOM_BACKEND=f'http://127.0.0.1:{cls.model.server_port}/v1/chat/completions',MAG_ROOM_UI=str(ROOT/'mag-room/web/index.html'),MAG_ROOM_STATIC=str(ROOT/'mag-room/static'),MAG_ROOM_AUTOTALK_SLEEP='1')
+  env=dict(os.environ,MAG_ROOM_STATE=str(cls.state),MAG_ROOM_PORT=str(cls.ui),MAG_ROOM_BRIDGE_PORT=str(cls.bridge),MAG_ROOM_BRIDGE_IP='127.0.0.1',MAG_ROOM_BACKEND=f'http://127.0.0.1:{cls.model.server_port}/v1/chat/completions',MAG_ROOM_UI=str(ROOT/'mag-room/web/index.html'),MAG_ROOM_STATIC=str(ROOT/'mag-room/static'),MAG_ROOM_AUTOTALK_SLEEP='1',MAG_ROOM_MODEL_STATUS=str(pathlib.Path(cls.tmp.name)/'model-status.json'))
   cls.log=open(pathlib.Path(cls.tmp.name)/'server.log','a');cls.proc=subprocess.Popen([str(ROOT/'build/magroom')],env=env,stdout=cls.log,stderr=cls.log)
   for _ in range(100):
    try:cls.request('/healthz',raw=True);return
@@ -66,7 +70,7 @@ class Native(unittest.TestCase):
    if any(m.get('content')=='Hallo aus dem Modell.' for m in s['room']):break
    time.sleep(.05)
   else:self.fail('Chunked model response lost')
-  self.assertEqual(Model.calls[-1]['model'],'gpt-oss:120b');self.assertFalse(s['web']);self.assertTrue(Model.calls[-1]['stream'])
+  self.assertEqual(Model.calls[-1]['model'],'deepseek-v4-flash-0731');self.assertFalse(s['web']);self.assertTrue(Model.calls[-1]['stream'])
  def test_03_upload_reset_preserves_memory(self):
   self.request('/api/agent/test/remember',{'fact':'Merke mich'})
   f=self.request('/api/upload?name=hello.txt',b'hello')
@@ -77,7 +81,7 @@ class Native(unittest.TestCase):
  def test_04_bridge_auth_and_routes(self):
   self.error(401,'/api/state',bridge=True)
   token=self.state.joinpath('token').read_text().strip();h={'Authorization':'Bearer '+token}
-  self.assertEqual(self.request('/api/state',bridge=True,headers=h)['model'],'gpt-oss:120b')
+  self.assertEqual(self.request('/api/state',bridge=True,headers=h)['model'],'deepseek-v4-flash-0731')
   self.error(403,'/api/stop',{},bridge=True,headers=h)
  def test_05_validation_origin_and_traversal(self):
   self.error(400,'/api/message',{'text':''});self.error(400,'/api/autotalk',{'on':'yes'})
@@ -120,6 +124,81 @@ class Native(unittest.TestCase):
    self.assertTrue(state['autotalk'])
   finally:
    self.request('/api/stop',{});Model.reply=None
+ # ---- DeepSeek-V4-Flash-0731 integration -------------------------------------------------
+ def wait_room(self,needle,loops=240):
+  for _ in range(loops):
+   s=self.request('/api/state')
+   if any(needle in m.get('content','') for m in s['room']):return s
+   time.sleep(.05)
+  self.fail('Room message not found: '+needle)
+ def test_09a_deepseek_request_parameters(self):
+  self.request('/api/message',{'text':'Parameter','bots':['test']})
+  self.wait_room('Hallo aus dem Modell.');self.wait_idle()
+  call=Model.calls[-1]
+  self.assertNotIn('reasoning_effort',call,'GPT-OSS top-level reasoning_effort must be gone')
+  self.assertEqual(call['chat_template_kwargs'],{'enable_thinking':True,'reasoning_effort':'high'})
+  self.assertEqual(call['max_tokens'],8192)
+  self.assertIn('deepseek-v4-flash-0731',call['messages'][0]['content'])
+  self.assertNotIn('gpt-oss',json.dumps(call))
+ def test_09b_reasoning_is_returned_with_tool_history(self):
+  first=[{'reasoning_content':'Ich merke mir das.'},{'tool_calls':[{'index':0,'id':'call_ds_1','function':{'name':'remember','arguments':'{"fact":"DeepSeek-Test"}'}}]}]
+  Model.script=[first,['Notiert.']]
+  try:
+   initial=len(Model.calls)
+   self.request('/api/message',{'text':'Merke DeepSeek-Test','bots':['test']})
+   self.wait_room('Notiert.');self.wait_idle()
+   self.assertEqual(len(Model.calls),initial+2)
+   msgs=Model.calls[-1]['messages']
+   asst=[m for m in msgs if m['role']=='assistant' and m.get('tool_calls')]
+   self.assertEqual(asst[-1]['reasoning_content'],'Ich merke mir das.')
+   self.assertEqual(asst[-1]['tool_calls'][0]['function']['name'],'remember')
+   tool=[m for m in msgs if m['role']=='tool']
+   self.assertEqual(tool[-1]['tool_call_id'],'call_ds_1')
+  finally:Model.script=[]
+ def test_09c_model_status_ready(self):
+  st=self.request('/api/model-status')
+  self.assertTrue(st['ready']);self.assertEqual(st['state'],'ready');self.assertEqual(st['model'],'deepseek-v4-flash-0731')
+  self.assertTrue(self.request('/readyz/model')['ready'])
+  self.assertIn('model_status',self.request('/api/state'))
+ def test_09d_download_in_progress_is_reported_not_called(self):
+  status=pathlib.Path(self.tmp.name)/'model-status.json'
+  status.write_text(json.dumps({'state':'downloading','detail':'Teil 4/5: 61 %'}))
+  Model.health=502
+  try:
+   st=self.request('/api/model-status')
+   self.assertFalse(st['ready']);self.assertEqual(st['state'],'downloading');self.assertIn('heruntergeladen',st['label'])
+   self.assertTrue(self.request('/readyz')['ready'],'Room readiness must not depend on the model (deploy gate)')
+   self.error(503,'/readyz/model')
+   initial=len(Model.calls)
+   self.request('/api/message',{'text':'Bist du da?','bots':['test']})
+   self.wait_room('Modell wird heruntergeladen');self.wait_idle()
+   self.assertEqual(len(Model.calls),initial,'No inference request while the model is not available')
+  finally:
+   Model.health=200;status.unlink()
+ def test_09e_turn_waits_while_model_loads(self):
+  Model.health=503
+  def ready_later():
+   time.sleep(2.5);Model.health=200
+  threading.Thread(target=ready_later,daemon=True).start()
+  start=time.monotonic()
+  self.request('/api/message',{'text':'Warte bitte','bots':['test']})
+  for _ in range(300):
+   s=self.request('/api/state')
+   if not s['busy'] and any(m.get('content')=='Hallo aus dem Modell.' and m.get('ts',0)>=0 for m in s['room'][-1:]):break
+   time.sleep(.05)
+  else:self.fail('Turn did not continue after the model became ready')
+  self.assertGreater(time.monotonic()-start,2.0,'Must wait while the model is loading')
+ def test_09f_chat_only_bot_without_vm(self):
+  a=self.request('/api/agents',{'name':'DeepSeek Chat','vm':False})
+  try:
+   self.assertEqual(a['vm'],'');self.assertEqual(a['id'],'deepseek-chat')
+   self.assertIn('deepseek-chat',[x['id'] for x in self.request('/api/state')['agents']])
+  finally:
+   self.assertTrue(self.request('/api/agents/deepseek-chat',method='DELETE')['ok'])
+ def test_09g_frontend_model_status_contract(self):
+  html=self.request('/',raw=True).decode()
+  for needle in ('id="model-state"','id="model-banner"',"event.type==='model'","event.type==='bot_status'",'id="agent-chat-only"','vm:false'):
+   self.assertIn(needle,html)
  def test_10_verified_tool_step_can_continue_once(self):
   command={'tool_calls':[{'index':0,'id':'call_test_1','function':{'name':'remember','arguments':'{"fact":"autonomy test","source":"test"}'}}]}
   Model.script=[[command],['Arbeit begonnen [[MAG:WEITER]]'],['Arbeit abgeschlossen [[MAG:ENDE]]']]

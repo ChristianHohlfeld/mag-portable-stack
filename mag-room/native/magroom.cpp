@@ -47,6 +47,9 @@ using namespace std::chrono;
 using mj::Val;
 
 static std::atomic<bool> STOP{false};
+// Set by the composer Stop button (/api/cancel): end only the running turn,
+// keep the queue running, label the partial answer "abgebrochen".
+static std::atomic<bool> USER_CANCEL{false};
 static std::atomic<int> BACKEND_FD{-1};
 static std::mutex BACKEND_FD_MTX;
 static std::atomic<bool> SHUTDOWN{false};
@@ -226,8 +229,9 @@ struct CmdResult {
 };
 
 static CmdResult run_argv(const std::vector<std::string> &argv,
-                          int timeout_sec = 60, size_t cap = 4 << 20) {
-  auto result = mag::run(argv, timeout_sec, cap);
+                          int timeout_sec = 60, size_t cap = 4 << 20,
+                          const std::atomic<bool> *cancel = nullptr) {
+  auto result = mag::run(argv, timeout_sec, cap, cancel);
   return {result.code, result.out};
 }
 
@@ -1812,9 +1816,11 @@ static Val brave_search(const std::string &query) {
 // ---------------------------------------------------------------- guest /
 // browser
 static CmdResult guest_command(const std::string &vm,
-                               const std::string &command, int timeout = 70) {
+                               const std::string &command, int timeout = 70,
+                               bool cancelable = false) {
   CmdResult r =
-      run_argv({"sudo", "-n", GUEST_RUN, vm, command}, timeout, 4 << 20);
+      run_argv({"sudo", "-n", GUEST_RUN, vm, command}, timeout, 4 << 20,
+               cancelable ? &STOP : nullptr);
   if (r.out.size() > (size_t)TOOL_OUTPUT_LIMIT)
     r.out = r.out.substr(0, TOOL_OUTPUT_LIMIT) + "\n...[gekuerzt]";
   if (r.timedout) {
@@ -2993,7 +2999,7 @@ static std::string dispatch_tool(int bot_idx, const std::string &name,
     std::string cmd = getstr("command");
     if (trim(cmd).empty())
       throw std::runtime_error("Kein Befehl angegeben.");
-    CmdResult r = guest_command(vm, cmd, GUEST_TIMEOUT);
+    CmdResult r = guest_command(vm, cmd, GUEST_TIMEOUT, true);
     std::string out = "exit=" + std::to_string(r.code) + "\n" + r.out;
     if (r.code != 0)
       out += "\n[hint] Befehl fehlgeschlagen; pruefe Pfad/Rechte/Programmname "
@@ -3921,9 +3927,9 @@ static TurnReport generate_and_post(int idx, bool automatic) {
     // transcript stays valid and only grows at its end (prompt cache).
     std::string partial = trim(report.text);
     if (partial.rfind("Antwort fehlgeschlagen", 0) == 0) partial.clear();
+    const std::string note = USER_CANCEL.load() ? "(abgebrochen)" : "(unterbrochen)";
     Val msg = append_room("assistant", name,
-                          partial.empty() ? "(unterbrochen)"
-                                          : partial + "\n\n(unterbrochen)",
+                          partial.empty() ? note : partial + "\n\n" + note,
                           id);
     attach_work(msg, report);
     {
@@ -4016,6 +4022,7 @@ static void scheduler_loop() {
       if (automatic && !AUTOTALK.load())
         continue;
       STOP = false;
+      USER_CANCEL = false;
       BUSY = true;
       for (const auto &id : ids) {
         if (STOP.load())

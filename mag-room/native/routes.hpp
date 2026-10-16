@@ -896,6 +896,15 @@ static void route(int fd, Req &r, bool bridge = false) {
     send_json(fd, 200, std::string("{\"offline\":") + (off ? "true" : "false") + "}");
     return;
   }
+  if (m == "POST" && path == "/api/cancel") {
+    // ChatGPT-style stop: cancel only the running turn (closes the llama
+    // stream, kills a running run_command); the queue is NOT paused.
+    if (!BUSY.load()) { send_json(fd, 200, "{\"cancelled\":false}"); return; }
+    USER_CANCEL = true;
+    cancel_active();
+    send_json(fd, 200, "{\"cancelled\":true}");
+    return;
+  }
   if (m == "POST" && path == "/api/stop") {
     stop_autotalk(true);
     Val e = Val::object();

@@ -374,6 +374,15 @@ class Native(unittest.TestCase):
   self.assertNotIn('confirm(',html.replace('magConfirm(',''))
   self.request('/api/jobs/'+j['id'],method='DELETE');Model.reply=None
 
+ def test_15k_composer_stop_cancels_turn_keeps_queue(self):
+  self.wait_idle();Model.script=[self._slow('out',60),['Weiter normal.']]
+  self.request('/api/message',{'text':'Stop-Test','bots':['test']});self._busy();time.sleep(1.0)
+  self.assertEqual(self.request('/api/cancel',{})['cancelled'],True)
+  s=self.wait_idle();self.assertFalse(s.get('queue_paused'),'composer stop must not pause the queue')
+  part=s['room'][-1];self.assertTrue(part['content'].startswith('Wort0 '));self.assertTrue(part['content'].endswith('(abgebrochen)'));self.assertTrue(part.get('interrupted'))
+  self.assertEqual(self.request('/api/cancel',{})['cancelled'],False,'idle cancel is a no-op')
+  self.request('/api/message',{'text':'Danach','bots':['test']});self._busy();s=self.wait_idle()
+  self.assertEqual(s['room'][-1]['content'],'Weiter normal.')
  def test_15j_reload_mid_stream_replays_and_continues(self):
   self.wait_idle();Model.script=[self._slow('out',25)]
   self.request('/api/message',{'text':'Stream-Reload','bots':['test']});self._busy();time.sleep(1.0)

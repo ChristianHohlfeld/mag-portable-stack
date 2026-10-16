@@ -993,7 +993,10 @@ static const char *VM_RULES =
     "ueber run_command; Befehle laufen als unprivilegierter Nutzer bot. Du "
     "hast einen eigenen Gitea-Administrationsaccount. Lies "
     "/home/bot/GIT_ACCESS.md fuer Git clone/push und API-Zugriff; verrate "
-    "niemals Zugangsdaten. Du "
+    "niemals Zugangsdaten. Versionierter Langzeitspeicher (git-memory, auch "
+    "als MCP-Server in ~/.config/mcp/servers.d): gitmem remember KEY WERT | "
+    "retrieve KEY | history KEY | search TEXT - committet und pusht "
+    "automatisch auf dein Gitea-Repo memory. Du "
     "hast ausserdem einen eigenen persistenten Browser in deiner VM und kannst "
     "damit surfen. Stuetze Aussagen ueber deine VM auf echte Werkzeugausgaben "
     "und erfinde nichts. ";

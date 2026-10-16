@@ -910,7 +910,13 @@ class Native(unittest.TestCase):
   names=[t['function']['name'] for t in first_call['tools']]
   self.assertIn('react',names);self.assertIn('unreact',names)
   self.assertIn('Reagiere statt zu antworten',first_call['messages'][0]['content'])
+  before_calls=len(Model.calls)
   self.request('/api/message',{'text':'Ohne neue Reaktion','bots':['test']})
+  for _ in range(120):
+   if len(Model.calls)>before_calls and 'Ohne neue Reaktion' in Model.calls[-1]['messages'][1]['content']:
+    second_call=Model.calls[-1];break
+   time.sleep(.05)
+  else:self.fail('Second turn did not reach the fake model')
   self.wait_idle()
   self.assertNotIn('[Reaktion]',second_call['messages'][1]['content'])
   uid=user['id']

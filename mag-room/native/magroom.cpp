@@ -22,6 +22,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
@@ -46,6 +47,9 @@ using namespace std::chrono;
 using mj::Val;
 
 static std::atomic<bool> STOP{false};
+// Set by the composer Stop button (/api/cancel): end only the running turn,
+// keep the queue running, label the partial answer "abgebrochen".
+static std::atomic<bool> USER_CANCEL{false};
 static std::atomic<int> BACKEND_FD{-1};
 static std::mutex BACKEND_FD_MTX;
 static std::atomic<bool> SHUTDOWN{false};
@@ -225,8 +229,9 @@ struct CmdResult {
 };
 
 static CmdResult run_argv(const std::vector<std::string> &argv,
-                          int timeout_sec = 60, size_t cap = 4 << 20) {
-  auto result = mag::run(argv, timeout_sec, cap);
+                          int timeout_sec = 60, size_t cap = 4 << 20,
+                          const std::atomic<bool> *cancel = nullptr) {
+  auto result = mag::run(argv, timeout_sec, cap, cancel);
   return {result.code, result.out};
 }
 
@@ -841,9 +846,11 @@ static Val append_room(const std::string &role, const std::string &name,
   }
   return m;
 }
+static void clear_reaction_notes();
 static void reset_room(bool purge) {
   std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
   ROOM.clear();
+  clear_reaction_notes();
   save_json_array(ROOM_JSON, ROOM);
   if (purge) {
     for (auto &r : FILES) {
@@ -875,19 +882,85 @@ static bool ct_eq(const std::string &a, const std::string &b) {
   return d == 0;
 }
 static std::string raw_frontend();
-// Frontend as served to the browser: favicon + UI token injected into <head>.
+// Build id for the app shell. MAG_ROOM_VERSION wins; otherwise the running
+// binary and the UI file change the id, so a deploy is not served from an old
+// cache. The value is safe to embed in HTML and URLs.
+static std::string build_version() {
+  std::string out;
+  for (unsigned char c : env("MAG_ROOM_VERSION", "")) {
+    if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+        (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-')
+      out.push_back((char)c);
+    if (out.size() >= 64)
+      break;
+  }
+  if (!out.empty())
+    return out;
+  struct stat st;
+  long long exe = 0, ui = 0;
+  if (stat("/proc/self/exe", &st) == 0)
+    exe = (long long)st.st_mtime;
+  if (!UI_FILE.empty() && stat(UI_FILE.c_str(), &st) == 0)
+    ui = (long long)st.st_mtime;
+  return "b" + std::to_string(exe) + "-u" + std::to_string(ui);
+}
+// Hashed URLs: /static/name and the favicons gain ?v=<build> so a new build
+// never matches an old cache entry.
+static void version_asset_urls(std::string &html) {
+  const std::string add = "?v=" + build_version();
+  const std::string key = "/static/";
+  std::string out;
+  out.reserve(html.size() + 128);
+  size_t i = 0;
+  while (i < html.size()) {
+    auto p = html.find(key, i);
+    if (p == std::string::npos) {
+      out.append(html, i, std::string::npos);
+      break;
+    }
+    char prev = p == 0 ? 0 : html[p - 1];
+    bool urlish = prev == '"' || prev == '\'' || prev == '(' || prev == '=';
+    size_t end = p + key.size();
+    while (end < html.size()) {
+      char c = html[end];
+      if (c == '"' || c == '\'' || c == ')' || c == ' ' || c == '\n' ||
+          c == '#' || c == '?')
+        break;
+      ++end;
+    }
+    bool has_q = end < html.size() && html[end] == '?';
+    out.append(html, i, p - i);
+    out.append(html, p, end - p);
+    if (urlish && !has_q)
+      out += add;
+    i = end;
+  }
+  html.swap(out);
+}
+// Frontend as served to the browser: token, version, manifest, favicon.
 static std::string current_frontend() {
   std::string t = raw_frontend();
+  const std::string ver = build_version();
   const std::string head =
       "<meta name=\"mag-token\" content=\"" + ui_token() +
-      "\"><link rel=\"icon\" href=\"/favicon.svg\" type=\"image/svg+xml\">"
-      "<link rel=\"icon\" href=\"/favicon.ico\" sizes=\"any\">"
-      "<link rel=\"apple-touch-icon\" href=\"/static/apple-touch-icon.png\">";
+      "\"><meta name=\"mag-version\" content=\"" + ver +
+      "\"><meta name=\"theme-color\" content=\"#050505\">"
+      "<meta name=\"mobile-web-app-capable\" content=\"yes\">"
+      "<meta name=\"apple-mobile-web-app-capable\" content=\"yes\">"
+      "<meta name=\"apple-mobile-web-app-title\" content=\"MAG\">"
+      "<meta name=\"apple-mobile-web-app-status-bar-style\" content=\"black-translucent\">"
+      "<link rel=\"manifest\" href=\"/manifest.webmanifest\">"
+      "<link rel=\"icon\" href=\"/favicon.svg?v=" + ver +
+      "\" type=\"image/svg+xml\">"
+      "<link rel=\"icon\" href=\"/favicon.ico?v=" + ver + "\" sizes=\"any\">"
+      "<link rel=\"apple-touch-icon\" href=\"/static/apple-touch-icon.png?v=" +
+      ver + "\">";
   auto pos = t.find("<head>");
   if (pos != std::string::npos)
     t.insert(pos + 6, head);
   else
     t = head + t;
+  version_asset_urls(t);
   return t;
 }
 static std::string raw_frontend() {
@@ -992,6 +1065,319 @@ static void publish(const std::string &jsonLine) {
   }
 }
 
+// ---------------------------------------------------------------- reactions
+// One row per (message, emoji, actor). actor is "user" or a bot id. A second
+// reaction with the same emoji from the same actor removes it. Rows live on
+// the message, so they follow room history and disappear with that message.
+// They are not bot memory and not guest working data.
+static const char *USER_ACTOR = "user";
+static bool is_hex_id(const std::string &s);
+static bool room_has_id(const std::string &id);
+
+struct ReactResult {
+  int code = 200;
+  bool added = false;
+  bool removed = false;
+  bool on = false;
+  std::string error, json, wake_bot;
+};
+
+static std::string notes_path() {
+  return STATE_DIR + "/reaction_notices.json";
+}
+static std::string user_display_name() {
+  std::string n = trim(env("MAG_ROOM_USER_NAME", "Nutzer"));
+  std::string out;
+  for (unsigned char c : n) {
+    if (c < 32)
+      continue;
+    out.push_back((char)c);
+    if (out.size() >= 40)
+      break;
+  }
+  return out.empty() ? "Nutzer" : out;
+}
+static bool valid_emoji(const std::string &s) {
+  if (s.empty() || s.size() > 64)
+    return false;
+  int points = 0;
+  for (size_t i = 0; i < s.size();) {
+    unsigned char c = (unsigned char)s[i];
+    int need = 1;
+    if (c < 0x80)
+      return false;
+    else if ((c & 0xE0) == 0xC0)
+      need = 2;
+    else if ((c & 0xF0) == 0xE0)
+      need = 3;
+    else if ((c & 0xF8) == 0xF0)
+      need = 4;
+    else
+      return false;
+    if (i + (size_t)need > s.size())
+      return false;
+    for (int k = 1; k < need; k++)
+      if (((unsigned char)s[i + k] & 0xC0) != 0x80)
+        return false;
+    i += (size_t)need;
+    if (++points > 16)
+      return false;
+  }
+  return points > 0;
+}
+static std::string reaction_preview(const std::string &content) {
+  std::string o;
+  bool sp = false;
+  for (unsigned char c : content) {
+    if (c == '"' || c == '\n' || c == '\r' || c == '\t')
+      c = ' ';
+    if (c < 32)
+      continue;
+    if (c == ' ') {
+      if (sp || o.empty())
+        continue;
+      sp = true;
+    } else
+      sp = false;
+    o.push_back((char)c);
+    if (o.size() >= 80)
+      break;
+  }
+  while (!o.empty() && o.back() == ' ')
+    o.pop_back();
+  return o;
+}
+struct ReactionNote {
+  std::string bot, emoji, message_id, preview, actor_name;
+};
+static std::vector<ReactionNote> REACTION_NOTES;
+
+static void save_reaction_notes_locked() {
+  Val arr = Val::array();
+  for (auto &n : REACTION_NOTES) {
+    Val o = Val::object();
+    o["bot"] = n.bot;
+    o["emoji"] = n.emoji;
+    o["message_id"] = n.message_id;
+    o["preview"] = n.preview;
+    o["actor_name"] = n.actor_name;
+    arr.push(o);
+  }
+  save_json_array(notes_path(), arr.asArr());
+}
+static void load_reaction_notes() {
+  REACTION_NOTES.clear();
+  for (auto &v : load_json_array(notes_path())) {
+    ReactionNote n;
+    if (auto x = v.find("bot"))
+      n.bot = x->asStr();
+    if (auto x = v.find("emoji"))
+      n.emoji = x->asStr();
+    if (auto x = v.find("message_id"))
+      n.message_id = x->asStr();
+    if (auto x = v.find("preview"))
+      n.preview = x->asStr();
+    if (auto x = v.find("actor_name"))
+      n.actor_name = x->asStr();
+    if (!n.bot.empty() && !n.emoji.empty() && !n.message_id.empty())
+      REACTION_NOTES.push_back(n);
+  }
+}
+static void clear_reaction_notes() {
+  // Caller holds STATE_MTX.
+  REACTION_NOTES.clear();
+  save_reaction_notes_locked();
+}
+static void drop_reaction_notes(const std::string &message_id,
+                                const std::string &emoji) {
+  // Caller holds STATE_MTX. An empty emoji drops every note for the message.
+  size_t before = REACTION_NOTES.size();
+  REACTION_NOTES.erase(
+      std::remove_if(REACTION_NOTES.begin(), REACTION_NOTES.end(),
+                     [&](const ReactionNote &n) {
+                       return n.message_id == message_id &&
+                              (emoji.empty() || n.emoji == emoji);
+                     }),
+      REACTION_NOTES.end());
+  if (REACTION_NOTES.size() != before)
+    save_reaction_notes_locked();
+}
+static std::string actor_label_locked(const std::string &actor) {
+  if (actor == USER_ACTOR)
+    return user_display_name();
+  for (auto &a : AGENTS) {
+    auto id = a.find("id");
+    if (id && id->asStr() == actor) {
+      auto name = a.find("name");
+      if (name && !name->asStr().empty())
+        return name->asStr();
+    }
+  }
+  return "Bot";
+}
+static Val reactions_public_locked(const Val &msg) {
+  Val out = Val::array();
+  auto rx = msg.find("reactions");
+  if (!rx || !rx->isArr())
+    return out;
+  for (auto &r : rx->asArr()) {
+    std::string emoji = r.find("emoji") ? r.find("emoji")->asStr() : "";
+    std::string actor = r.find("actor") ? r.find("actor")->asStr() : "";
+    if (emoji.empty() || actor.empty())
+      continue;
+    Val o = Val::object();
+    o["emoji"] = emoji;
+    o["actor"] = actor;
+    o["name"] = actor_label_locked(actor);
+    out.push(o);
+  }
+  return out;
+}
+static std::string take_reaction_context(const std::string &bot_id) {
+  std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
+  std::string out;
+  std::vector<ReactionNote> keep;
+  for (auto &n : REACTION_NOTES) {
+    if (n.bot != bot_id || !room_has_id(n.message_id)) {
+      if (n.bot != bot_id)
+        keep.push_back(n);
+      continue;
+    }
+    out += "[Reaktion] " + n.actor_name + ": " + n.emoji +
+           " auf deine Nachricht";
+    if (!n.preview.empty())
+      out += " \"" + n.preview + "\"";
+    out += "\n";
+  }
+  if (keep.size() != REACTION_NOTES.size()) {
+    REACTION_NOTES.swap(keep);
+    save_reaction_notes_locked();
+  }
+  if (out.empty())
+    return "";
+  return "\nNeue Reaktionen auf deine Nachrichten (kein neuer Auftrag, nur "
+         "zur Kenntnis):\n" +
+         out;
+}
+enum class ReactMode { Add, Remove, Toggle };
+static bool react_wake_enabled() {
+  std::string v = env("MAG_ROOM_REACT_WAKE", "off");
+  return v == "1" || v == "on" || v == "true";
+}
+static ReactResult apply_reaction(const std::string &message_id,
+                                  const std::string &actor,
+                                  const std::string &emoji, ReactMode mode) {
+  ReactResult result;
+  if (!is_hex_id(message_id)) {
+    result.code = 400;
+    result.error = "Ungültige Nachrichten-ID";
+    return result;
+  }
+  if (!valid_emoji(emoji)) {
+    result.code = 400;
+    result.error = "Ungültiges Emoji";
+    return result;
+  }
+  if (actor != USER_ACTOR && agent_index(actor) < 0) {
+    result.code = 400;
+    result.error = "Unbekannter Akteur";
+    return result;
+  }
+  std::string event;
+  {
+    std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
+    Val *msg = nullptr;
+    for (auto &m : ROOM)
+      if (m.find("id") && m.find("id")->asStr() == message_id) {
+        msg = &m;
+        break;
+      }
+    if (!msg) {
+      result.code = 404;
+      result.error = "Nachricht nicht gefunden";
+      return result;
+    }
+    if (!msg->find("reactions") || !msg->find("reactions")->isArr())
+      (*msg)["reactions"] = Val::array();
+    auto &arr = *(*msg)["reactions"].arr;
+    int found = -1;
+    for (size_t i = 0; i < arr.size(); i++) {
+      auto em = arr[i].find("emoji");
+      auto ac = arr[i].find("actor");
+      if (em && ac && em->asStr() == emoji && ac->asStr() == actor) {
+        found = (int)i;
+        break;
+      }
+    }
+    bool change = false;
+    if (found >= 0 && (mode == ReactMode::Remove || mode == ReactMode::Toggle)) {
+      arr.erase(arr.begin() + found);
+      result.removed = true;
+      result.on = false;
+      change = true;
+      if (actor == USER_ACTOR)
+        drop_reaction_notes(message_id, emoji);
+    } else if (found < 0 && mode != ReactMode::Remove) {
+      Val row = Val::object();
+      row["emoji"] = emoji;
+      row["actor"] = actor;
+      arr.push_back(row);
+      result.added = true;
+      result.on = true;
+      change = true;
+      std::string role = msg->find("role") ? msg->find("role")->asStr() : "";
+      std::string author = msg->find("bot") ? msg->find("bot")->asStr() : "";
+      if (actor == USER_ACTOR && role == "assistant" && !author.empty()) {
+        ReactionNote note;
+        note.bot = author;
+        note.emoji = emoji;
+        note.message_id = message_id;
+        note.preview =
+            reaction_preview(msg->find("content") ? msg->find("content")->asStr()
+                                                  : "");
+        note.actor_name = user_display_name();
+        REACTION_NOTES.push_back(note);
+        if (REACTION_NOTES.size() > 200)
+          REACTION_NOTES.erase(REACTION_NOTES.begin());
+        save_reaction_notes_locked();
+        result.wake_bot = author;
+      }
+    } else {
+      result.on = found >= 0;
+    }
+    Val pub = reactions_public_locked(*msg);
+    if (change) {
+      save_room();
+      Val e = Val::object();
+      e["type"] = "reaction";
+      e["message_id"] = message_id;
+      e["emoji"] = emoji;
+      e["on"] = result.on;
+      e["reactions"] = pub;
+      event = mj::dump(e);
+      result.json = event;
+    } else {
+      Val e = Val::object();
+      e["ok"] = true;
+      e["message_id"] = message_id;
+      e["emoji"] = emoji;
+      e["on"] = result.on;
+      e["reactions"] = pub;
+      result.json = mj::dump(e);
+    }
+  }
+  if (!event.empty()) {
+    // The published object is the state. The HTTP body adds ok.
+    publish(event);
+    Val e;
+    if (mj::parse(event, e) && e.isObj()) {
+      e["ok"] = true;
+      result.json = mj::dump(e);
+    }
+  }
+  return result;
+}
+
 static void replaceAll(std::string &s, const std::string &from,
                        const std::string &to) {
   if (from.empty())
@@ -1042,6 +1428,12 @@ static const char *T_GITHUB =
     R"({"type":"function","function":{"name":"github","description":"GitHub API with the user's connected account (token stays on the server). Actions: list_repos, get_repo, list_issues, get_issue, create_issue, comment_issue, list_prs, get_pr, pr_files, get_file, list_dir, search_code, search_issues. Only create_issue/comment_issue write; use them only when the user asked.","parameters":{"type":"object","properties":{"action":{"type":"string"},"repo":{"type":"string","description":"owner/name"},"number":{"type":"integer"},"path":{"type":"string"},"ref":{"type":"string"},"query":{"type":"string"},"title":{"type":"string"},"body":{"type":"string"},"state":{"type":"string"}},"required":["action"],"additionalProperties":false}}})";
 static const char *T_REMEMBER =
     R"({"type":"function","function":{"name":"remember","description":"Store a durable fact in your own persistent memory (survives room reset). Use for what you learned, decided or care about.","parameters":{"type":"object","properties":{"fact":{"type":"string"},"source":{"type":"string"}},"required":["fact"],"additionalProperties":false}}})";
+static const char *T_REACT =
+    R"({"type":"function","function":{"name":"react","description":"Put one emoji on a room message. message_id is the id in parentheses in the room transcript. Same emoji again from you removes it. Use this instead of a reply when a short acknowledgement, thanks, or agreement is enough. Do not react to every message.","parameters":{"type":"object","properties":{"message_id":{"type":"string"},"emoji":{"type":"string"}},"required":["message_id","emoji"],"additionalProperties":false}}})";
+static const char *T_UNREACT =
+    R"({"type":"function","function":{"name":"unreact","description":"Remove your own emoji reaction from a room message.","parameters":{"type":"object","properties":{"message_id":{"type":"string"},"emoji":{"type":"string"}},"required":["message_id","emoji"],"additionalProperties":false}}})";
+
+#include "jobs_tools.hpp"
 
 static const char *ROOM_RULES =
     "Du bist {name}, ein freier, eigenstaendiger KI-Agent in einem gemeinsamen "
@@ -1059,12 +1451,19 @@ static const char *ROOM_RULES =
     "Du schreibst ausschliesslich als {name}; niemals fuer den Nutzer oder "
     "einen anderen Bot, ohne Namenspraefix. Sprich standardmaessig Deutsch, "
     "kurz und praezise. "
+    "Reaktionen (Werkzeuge react und unreact, fuer jeden Bot gleich): "
+    "message_id steht in Klammern im Raumverlauf. Reagiere statt zu "
+    "antworten, wenn eine kurze Bestaetigung, ein Dank oder Zustimmung "
+    "genuegt. Reagiere und antworte, wenn beides passt. Reagiere nicht auf "
+    "jede Nachricht. "
     "{vmrules}"
     "Deine ERINNERUNG (dauerhaft, raumunabhaengig; ergaenze sie mit "
     "remember) und die aktuell geteilten Raumdateien stehen im Abschnitt "
     "[Kontext] am Ende des Raumverlaufs.\n"
-    "Wenn du Werkzeuge benutzt hast, schliesse IMMER mit einer kurzen "
-    "sichtbaren Antwort an den Raum ab. Falls nach erfolgreicher "
+    "Wenn du andere Werkzeuge als react oder unreact benutzt hast, schliesse "
+    "IMMER mit einer kurzen sichtbaren Antwort an den Raum ab. Eine Runde, "
+    "die nur react oder unreact war, endet ohne weiteren Text. Falls nach "
+    "erfolgreicher "
     "Werkzeugaktion ein konkreter weiterer Schritt zum Nutzerziel noetig "
     "ist, beende mit [[MAG:WEITER]], andernfalls mit [[MAG:ENDE]]. "
     "Marker sind interne Steuerzeichen und werden vor dem Speichern "
@@ -1127,7 +1526,9 @@ static const char *FRONTEND_RULES =
     "per share_room_file teilst, oeffnen sich automatisch in deinem Browser und "
     "erscheinen als Vorschau im Chat. Bei Captcha/\"ungewoehnlicher Traffic\"-Seiten: "
     "NICHT loesen oder umgehen, sondern abbrechen und dem Nutzer Bescheid geben (oder "
-    "eine andere Quelle/die Websuche nehmen). [Frontend-Wartung] Du kannst die "
+    "eine andere Quelle/die Websuche nehmen). Bei Bedarf zuerst das autorisierte "
+    "web_search nutzen und konkrete Quellen im vorhandenen Browser aufrufen. "
+    "[Frontend-Wartung] Du kannst die "
     "Raum-Oberflaeche verbessern: screenshot_room (UI pruefen), "
     "download_frontend, mit run_command editieren, publish_frontend (alle "
     "laden neu), screenshot_room zur Kontrolle.";
@@ -1180,6 +1581,7 @@ static std::string build_context_tail(int bot_idx, bool autotalk,
     replaceAll(at, "{other}", other.empty() ? "der Nutzer" : other);
     out += "\n" + at;
   }
+  out += take_reaction_context(bot_field(bot_idx, "id"));
   return out;
 }
 static std::string build_transcript() {
@@ -1198,6 +1600,9 @@ static std::string build_transcript() {
     std::string role = m.find("role") ? m.find("role")->asStr() : "";
     std::string name = m.find("name") ? m.find("name")->asStr()
                                       : (role == "user" ? "Nutzer" : "Bot");
+    std::string id = m.find("id") ? m.find("id")->asStr() : "";
+    if (!id.empty())
+      name += " (" + id + ")";
     std::string content = m.find("content") ? m.find("content")->asStr() : "";
     if (content.size() > 4000)
       content = content.substr(0, 4000);
@@ -1424,9 +1829,11 @@ static Val brave_search(const std::string &query) {
 // ---------------------------------------------------------------- guest /
 // browser
 static CmdResult guest_command(const std::string &vm,
-                               const std::string &command, int timeout = 70) {
+                               const std::string &command, int timeout = 70,
+                               bool cancelable = false) {
   CmdResult r =
-      run_argv({"sudo", "-n", GUEST_RUN, vm, command}, timeout, 4 << 20);
+      run_argv({"sudo", "-n", GUEST_RUN, vm, command}, timeout, 4 << 20,
+               cancelable ? &STOP : nullptr);
   if (r.out.size() > (size_t)TOOL_OUTPUT_LIMIT)
     r.out = r.out.substr(0, TOOL_OUTPUT_LIMIT) + "\n...[gekuerzt]";
   if (r.timedout) {
@@ -2010,8 +2417,12 @@ struct Turn {
 };
 struct TurnReport {
   std::string text, progress_key, error;
+  std::vector<std::string> steps;
+  long elapsed_s = 0;
   int successful_tools = 0, failed_tools = 0;
   bool continue_requested = false;
+  bool reacted = false;
+  bool react_only = false;
 };
 
 static std::string tools_json(int bot_idx, bool web) {
@@ -2025,9 +2436,12 @@ static std::string tools_json(int bot_idx, bool web) {
             T_SPEAK,       T_SEE_IMAGE,  T_REMEMBER};
   else
     defs = {T_LIST_FILES, T_SPEAK, T_SEE_IMAGE, T_REMEMBER};
+  defs.push_back(T_REACT);
+  defs.push_back(T_UNREACT);
   (void)web; // always registered: a changing tool list breaks the prompt cache
   defs.push_back(T_WEB_SEARCH);
   defs.push_back(T_GITHUB); // always registered (cache); token checked at call
+  for (const char *d : JOBS_TOOL_DEFS) defs.push_back(d);
   if (has_vm) {
     for (const char *d :
          {T_BROWSER_OPEN, T_BROWSER_CLICK, T_BROWSER_TYPE, T_BROWSER_READ,
@@ -2244,6 +2658,7 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
 }
 
 // ---------------------------------------------------------------- emit helpers
+#include "push.hpp"
 static void emit_event(const std::string &type, const std::string &bot,
                        const std::string &name, const std::string &text) {
   Val e = Val::object();
@@ -2254,6 +2669,9 @@ static void emit_event(const std::string &type, const std::string &bot,
     e["name"] = name;
   e["text"] = text;
   publish(mj::dump(e));
+  if (type == "error" && !trim(text).empty())
+    notify(PushNote("error", name.empty() ? "Fehler" : name, text, "/",
+                    bot.empty() ? "error" : "error-" + bot));
 }
 static void emit_file(const std::string &bot, const Val &rec) {
   Val e = Val::object();
@@ -2263,6 +2681,277 @@ static void emit_file(const std::string &bot, const Val &rec) {
   e["file"] = rec;
   e["url"] = public_url(rec.find("stored")->asStr());
   publish(mj::dump(e));
+}
+
+// One compact work-status per bot run. Interim narration and tool phases are
+// steps (replaced, not appended). Only the concluding round is the answer.
+struct RunActivity {
+  bool on = false;
+  bool thought = false;
+  int narr_lines = 0;
+  std::string bot, name, phase, label, error;
+  std::vector<std::string> steps;
+  long started = 0, last = 0;
+  long processed = 0, total = 0, cache = 0;
+  long long published_ms = 0;
+};
+static RunActivity RUN;
+static std::mutex RUN_MTX;
+
+static std::string one_line(std::string t) {
+  replaceAll(t, "[[MAG:WEITER]]", "");
+  replaceAll(t, "[[MAG:ENDE]]", "");
+  std::string o;
+  bool sp = false;
+  for (unsigned char c : t) {
+    if (c == '\n' || c == '\r' || c == '\t')
+      c = ' ';
+    if (c < 32)
+      continue;
+    if (c == ' ') {
+      if (sp || o.empty())
+        continue;
+      sp = true;
+      o.push_back(' ');
+      continue;
+    }
+    sp = false;
+    o.push_back((char)c);
+    if (o.size() >= 160)
+      break;
+  }
+  while (!o.empty() && o.back() == ' ')
+    o.pop_back();
+  return o;
+}
+static std::string tool_step_label(const std::string &tool) {
+  if (tool == "web_search") return "Prüft Quellen";
+  if (tool == "browser_open") return "Öffnet die Seite";
+  if (tool == "browser_read") return "Liest die Seite";
+  if (tool == "browser_click" || tool == "browser_pointer")
+    return "Klickt auf der Seite";
+  if (tool == "browser_type") return "Tippt im Browser";
+  if (tool == "browser_screenshot" || tool == "screenshot_room")
+    return "Macht einen Screenshot";
+  if (tool == "browser_scroll") return "Scrollt die Seite";
+  if (tool == "browser_back") return "Geht zurück";
+  if (tool == "run_command") return "Führt einen Befehl aus";
+  if (tool == "remember") return "Merkt sich etwas";
+  if (tool == "react") return "Reagiert";
+  if (tool == "unreact") return "Nimmt die Reaktion zurück";
+  if (tool == "list_room_files") return "Sieht die Dateien an";
+  if (tool == "fetch_room_file") return "Holt eine Datei";
+  if (tool == "share_room_file") return "Teilt eine Datei";
+  if (tool == "see_image") return "Liest ein Bild";
+  if (tool == "speak") return "Spricht";
+  if (tool == "download_frontend") return "Lädt die Oberfläche";
+  if (tool == "publish_frontend") return "Veröffentlicht die Oberfläche";
+  if (tool.empty()) return "Arbeitet";
+  return "Arbeitet · " + tool;
+}
+static void commit_label_locked(const std::string &label) {
+  std::string l = one_line(label);
+  if (l.empty())
+    return;
+  if (!RUN.steps.empty() && RUN.steps.back() == l)
+    return;
+  if (RUN.steps.size() >= 40)
+    RUN.steps.erase(RUN.steps.begin());
+  RUN.steps.push_back(l);
+}
+static void commit_phase_locked() {
+  if (RUN.phase == "prompt")
+    commit_label_locked("Liest Verlauf");
+  else if (RUN.phase == "think" && RUN.thought)
+    commit_label_locked("Denkt nach");
+  else if (RUN.phase == "tool" || RUN.phase == "narration")
+    commit_label_locked(RUN.label);
+}
+static Val run_val_locked() {
+  Val e = Val::object();
+  e["on"] = RUN.on;
+  e["bot"] = RUN.bot;
+  e["name"] = RUN.name;
+  e["phase"] = RUN.phase;
+  e["label"] = RUN.label;
+  e["error"] = RUN.error;
+  e["started"] = RUN.started;
+  e["last"] = RUN.last;
+  e["processed"] = RUN.processed;
+  e["total"] = RUN.total;
+  e["cache"] = RUN.cache;
+  Val st = Val::array();
+  for (auto &s : RUN.steps)
+    st.push(s);
+  e["steps"] = st;
+  return e;
+}
+static void publish_run_locked() {
+  RUN.last = (long)now_s();
+  RUN.published_ms =
+      duration_cast<milliseconds>(steady_clock::now().time_since_epoch())
+          .count();
+  Val e = run_val_locked();
+  e["type"] = "step";
+  publish(mj::dump(e));
+}
+static void run_begin(const std::string &bot, const std::string &name) {
+  std::lock_guard<std::mutex> lk(RUN_MTX);
+  RUN = RunActivity{};
+  RUN.on = true;
+  RUN.bot = bot;
+  RUN.name = name;
+  RUN.phase = "think";
+  RUN.label = "Denkt nach";
+  RUN.started = (long)now_s();
+  publish_run_locked();
+}
+static void run_end() {
+  std::lock_guard<std::mutex> lk(RUN_MTX);
+  RUN.on = false;
+}
+static std::vector<std::string> run_copy_steps() {
+  std::lock_guard<std::mutex> lk(RUN_MTX);
+  return RUN.steps;
+}
+static void run_seal() {
+  std::lock_guard<std::mutex> lk(RUN_MTX);
+  if (!RUN.on)
+    return;
+  if (RUN.phase == "tool" || RUN.phase == "prompt" ||
+      (RUN.phase == "think" && RUN.thought)) {
+    commit_phase_locked();
+    publish_run_locked();
+  }
+}
+static void run_show(const std::string &phase, const std::string &label,
+                     bool commit_previous, bool throttle) {
+  std::lock_guard<std::mutex> lk(RUN_MTX);
+  if (!RUN.on)
+    return;
+  std::string l = one_line(label);
+  const bool phase_changed = phase != RUN.phase;
+  if (phase_changed && commit_previous)
+    commit_phase_locked();
+  RUN.phase = phase;
+  if (!l.empty())
+    RUN.label = l;
+  RUN.error.clear();
+  auto now =
+      duration_cast<milliseconds>(steady_clock::now().time_since_epoch())
+          .count();
+  if (!phase_changed && throttle && now - RUN.published_ms < 280)
+    return;
+  publish_run_locked();
+}
+static void run_prompt(long processed, long total, long cache) {
+  std::lock_guard<std::mutex> lk(RUN_MTX);
+  if (!RUN.on || total <= 0)
+    return;
+  if (RUN.phase != "prompt") {
+    if (!(RUN.phase == "think" && !RUN.thought))
+      commit_phase_locked();
+    RUN.phase = "prompt";
+    RUN.label = "Liest Verlauf";
+  }
+  RUN.processed = processed;
+  RUN.total = total;
+  RUN.cache = cache;
+  RUN.error.clear();
+  auto now =
+      duration_cast<milliseconds>(steady_clock::now().time_since_epoch())
+          .count();
+  if (now - RUN.published_ms < 200 && processed < total)
+    return;
+  publish_run_locked();
+}
+static void run_think() {
+  std::lock_guard<std::mutex> lk(RUN_MTX);
+  if (!RUN.on)
+    return;
+  RUN.thought = true;
+  if (RUN.phase == "think")
+    return;
+  commit_phase_locked();
+  RUN.phase = "think";
+  RUN.label = "Denkt nach";
+  RUN.error.clear();
+  publish_run_locked();
+}
+static void run_narration(const std::string &live) {
+  std::lock_guard<std::mutex> lk(RUN_MTX);
+  if (!RUN.on)
+    return;
+  const int before = RUN.narr_lines;
+  const bool entered = RUN.phase != "narration";
+  if (entered) {
+    commit_phase_locked();
+    RUN.phase = "narration";
+    RUN.narr_lines = 0;
+    RUN.error.clear();
+  }
+  int idx = 0;
+  std::string cur;
+  for (char c : live) {
+    if (c != '\n') {
+      cur.push_back(c);
+      continue;
+    }
+    std::string l = one_line(cur);
+    cur.clear();
+    if (l.empty())
+      continue;
+    if (idx >= RUN.narr_lines)
+      commit_label_locked(l);
+    ++idx;
+    RUN.label = l;
+  }
+  RUN.narr_lines = idx;
+  std::string tail = one_line(cur);
+  if (tail.size() > 140)
+    tail = tail.substr(0, 137) + "…";
+  if (!tail.empty())
+    RUN.label = tail;
+  auto now =
+      duration_cast<milliseconds>(steady_clock::now().time_since_epoch())
+          .count();
+  if (!entered && idx == before && now - RUN.published_ms < 280)
+    return;
+  publish_run_locked();
+}
+static void run_tool_step(const std::string &tool) {
+  run_show("tool", tool_step_label(tool), true, false);
+}
+static void run_answer_phase() {
+  std::lock_guard<std::mutex> lk(RUN_MTX);
+  if (!RUN.on)
+    return;
+  // The live line was the answer itself, not an interim step.
+  if (RUN.phase != "narration")
+    commit_phase_locked();
+  RUN.phase = "answer";
+  RUN.label = "Schreibt die Antwort";
+  RUN.error.clear();
+  publish_run_locked();
+}
+static void run_fail(const std::string &text) {
+  std::lock_guard<std::mutex> lk(RUN_MTX);
+  if (!RUN.on)
+    return;
+  if (RUN.phase != "narration")
+    commit_phase_locked();
+  else
+    commit_label_locked(RUN.label);
+  RUN.phase = "error";
+  RUN.error = one_line(text).substr(0, 140);
+  RUN.label = "Fehler";
+  publish_run_locked();
+}
+static void emit_answer_deltas(const std::string &bot, const std::string &name,
+                               const std::string &text) {
+  const size_t chunk = 240;
+  for (size_t i = 0; i < text.size(); i += chunk)
+    emit_event("delta", bot, name, text.substr(i, chunk));
 }
 
 static std::string shell_quote(const std::string &s) {
@@ -2310,6 +2999,7 @@ static std::string dispatch_tool(int bot_idx, const std::string &name,
   std::string vm = bot_field(bot_idx, "vm", "keine");
   std::string bot_id = bot_field(bot_idx, "id");
   std::string bot_name = bot_field(bot_idx, "name", "Bot");
+  if (is_jobs_tool(name)) return jobs_dispatch_tool(bot_idx, name, a);
   auto need_vm = [&]() {
     if (vm.empty() || vm == "keine")
       throw std::runtime_error("Dieser Bot hat keine eigene VM.");
@@ -2324,7 +3014,7 @@ static std::string dispatch_tool(int bot_idx, const std::string &name,
     std::string cmd = getstr("command");
     if (trim(cmd).empty())
       throw std::runtime_error("Kein Befehl angegeben.");
-    CmdResult r = guest_command(vm, cmd, GUEST_TIMEOUT);
+    CmdResult r = guest_command(vm, cmd, GUEST_TIMEOUT, true);
     std::string out = "exit=" + std::to_string(r.code) + "\n" + r.out;
     if (r.code != 0)
       out += "\n[hint] Befehl fehlgeschlagen; pruefe Pfad/Rechte/Programmname "
@@ -2543,6 +3233,20 @@ static std::string dispatch_tool(int bot_idx, const std::string &name,
     remember_fact(bot_id, getstr("fact"), getstr("source"));
     return "Gemerkt.";
   }
+  if (name == "react" || name == "unreact") {
+    ReactResult r =
+        apply_reaction(getstr("message_id"), bot_id, getstr("emoji"),
+                       name == "unreact" ? ReactMode::Remove : ReactMode::Toggle);
+    if (r.code != 200)
+      throw std::runtime_error(r.error.empty() ? "Reaktion fehlgeschlagen"
+                                               : r.error);
+    if (r.added)
+      return "Reaktion gesetzt: " + getstr("emoji");
+    if (r.removed)
+      return "Reaktion entfernt: " + getstr("emoji");
+    return name == "unreact" ? "Keine solche Reaktion."
+                             : "Reaktion unveraendert.";
+  }
   throw std::runtime_error("Unbekanntes Werkzeug: " + name);
 }
 
@@ -2582,6 +3286,10 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
   std::string tools = tools_json(bot_idx, web);
   std::string final_text;
   TurnReport report;
+  auto finish_steps = [&]() {
+    run_seal();
+    report.steps = run_copy_steps();
+  };
   std::map<std::string, int> failures;
   bool repeated_failure = false;
   {
@@ -2605,6 +3313,7 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
           e["name"] = bot_name;
           e["text"] = "Wartet auf Modell: " + st.label;
           publish(mj::dump(e));
+          run_narration("Wartet auf Modell");
         }
         std::this_thread::sleep_for(seconds(3));
         st = model_status(true);
@@ -2615,14 +3324,18 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
       if (!st.ready && !STOP.load()) {
         report.error = "Modell noch nicht bereit: " + model_status_text(st);
         emit_event("error", bot_id, bot_name, report.error);
+        run_fail(report.error);
         report.text = report.error;
+        finish_steps();
         return report;
       }
     }
   }
+  std::string fallback_narration;
   for (int round = 0; round <= MAX_TOOL_ROUNDS; round++) {
     if (STOP.load())
       break;
+    std::string live;
     auto on_delta = [&](const std::string &kind, const std::string &piece) {
       Val e = Val::object();
       if (kind == "progress") {
@@ -2636,13 +3349,26 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
           if (auto v = pr.find(k))
             e[k] = *v;
         publish(mj::dump(e));
+        auto num = [&](const char *k) {
+          auto v = pr.find(k);
+          return v && v->type == Val::NUM ? (long)v->asNum() : 0L;
+        };
+        run_prompt(num("processed"), num("total"), num("cache"));
         return;
       }
-      e["type"] = kind == "reasoning" ? "reasoning" : "delta";
-      e["bot"] = bot_id;
-      e["name"] = bot_name;
-      e["text"] = piece;
-      publish(mj::dump(e));
+      if (kind == "reasoning") {
+        run_think();
+        e["type"] = "reasoning";
+        e["bot"] = bot_id;
+        e["name"] = bot_name;
+        e["text"] = piece;
+        publish(mj::dump(e));
+        return;
+      }
+      // Content stays a provisional step until the round ends. Tool-round
+      // narration must not be appended to the visible answer.
+      live += piece;
+      run_narration(live);
     };
     // Last round: keep the SAME tool list (the template renders tools right
     // after the system prompt; dropping them changed the prefix at ~token 770
@@ -2661,7 +3387,23 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
     if (!t.error.empty()) {
       report.error = t.error.substr(0, 280);
       emit_event("error", bot_id, bot_name, report.error);
+      run_fail(report.error);
       break;
+    }
+    // Ignore malformed DSML arguments; execute only one valid tool call per round.
+    if (!t.calls.empty()) {
+      std::vector<Val> valid;
+      for (const Val &candidate : t.calls) {
+        const Val *fn = candidate.find("function");
+        const Val *raw = fn ? fn->find("arguments") : nullptr;
+        const Val *nm = fn ? fn->find("name") : nullptr;
+        Val parsed;
+        if (!nm || nm->asStr().empty() || !raw || raw->type != Val::STR ||
+            !mj::parse(raw->asStr(), parsed) || !parsed.isObj()) continue;
+        valid.push_back(candidate);
+        break;
+      }
+      t.calls.swap(valid);
     }
     Val asst = Val::object();
     asst["role"] = "assistant";
@@ -2677,9 +3419,18 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
       asst["tool_calls"] = arr;
     }
     messages.push_back(asst);
-    if (!t.text.empty())
-      final_text += t.text;
-    if (t.calls.empty() || last_round)
+    const bool tool_round = !t.calls.empty() && !last_round;
+    if (!t.text.empty()) {
+      if (tool_round) {
+        fallback_narration = trim(t.text);
+        run_narration(t.text);
+      } else {
+        final_text += t.text;
+        run_answer_phase();
+        emit_answer_deltas(bot_id, bot_name, t.text);
+      }
+    }
+    if (!tool_round)
       break;
     for (auto &call : t.calls) {
       if (STOP.load())
@@ -2691,36 +3442,40 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
       std::string argStr =
           fn && fn->find("arguments") ? fn->find("arguments")->asStr() : "{}";
       Val args;
-      if (!mj::parse(argStr, args))
-        args = Val::object();
+      if (!mj::parse(argStr, args) || !args.isObj()) break;
       {
         Val e = Val::object();
         e["type"] = "tool";
         e["bot"] = bot_id;
         e["name"] = bot_name;
         e["tool"] = fname;
+        e["label"] = tool_step_label(fname);
         e["args"] = args;
         publish(mj::dump(e));
       }
+      run_tool_step(fname);
       std::string result;
       try {
         result = dispatch_tool(bot_idx, fname, args);
       } catch (std::exception &ex) {
         result = "Fehler: " + std::string(ex.what());
       }
+      result = mj::utf8_fix(result); // tool output may hold any bytes
       const bool failed =
           result.rfind("Fehler:", 0) == 0 ||
           (fname == "run_command" && result.rfind("exit=0\n", 0) != 0) ||
           (fname == "web_search" && trim(result).empty());
+      if (!failed && (fname == "react" || fname == "unreact"))
+        report.reacted = true;
       if (failed) {
         ++report.failed_tools;
         const std::string key = fname + "|" + argStr + "|" +
                                 result.substr(0, 240);
         if (++failures[key] >= 2) {
           repeated_failure = true;
-          emit_event("error", bot_id, bot_name,
-                     "Wiederholter identischer Werkzeugfehler: " + fname +
-                         ". Automatischer Versuch beendet.");
+          std::string why = "Wiederholter Fehler: " + fname;
+          emit_event("error", bot_id, bot_name, why);
+          run_fail(why);
         }
       } else {
         ++report.successful_tools;
@@ -2731,7 +3486,7 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
         e["type"] = "tool_result";
         e["bot"] = bot_id;
         e["tool"] = fname;
-        e["result"] = result.substr(0, 1500);
+        e["result"] = mj::utf8_cut(result, 1500);
         publish(mj::dump(e));
       }
       Val tr = Val::object();
@@ -2750,7 +3505,19 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
       final_text.find("[[MAG:WEITER]]") != std::string::npos;
   replaceAll(final_text, "[[MAG:WEITER]]", "");
   replaceAll(final_text, "[[MAG:ENDE]]", "");
+  replaceAll(fallback_narration, "[[MAG:WEITER]]", "");
+  replaceAll(fallback_narration, "[[MAG:ENDE]]", "");
+  if (trim(final_text).empty() && !trim(fallback_narration).empty() &&
+      report.error.empty() && !STOP.load())
+    final_text = fallback_narration;
   report.text = trim(final_text);
+  if (report.text.empty() && report.reacted && report.failed_tools == 0 &&
+      report.error.empty() && !STOP.load()) {
+    report.react_only = true;
+    report.continue_requested = false;
+    finish_steps();
+    return report;
+  }
   if (report.text.empty() && !STOP.load()) {
     if (!report.error.empty())
       report.text = "Antwort fehlgeschlagen: " + report.error;
@@ -2760,6 +3527,7 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
       report.text = "Es wurde keine Antwort erzeugt. Bitte erneut versuchen.";
     report.continue_requested = false;
   }
+  finish_steps();
   return report;
 }
 
@@ -2786,11 +3554,17 @@ static void send_response(
                        : code == 413 ? "Payload Too Large"
                        : code == 405 ? "Method Not Allowed"
                                      : "Internal Server Error";
+  bool cache_set = false;
+  for (auto &e : extra)
+    if (lc(e.first) == "cache-control")
+      cache_set = true;
   std::string h = "HTTP/1.1 " + std::to_string(code) + " " + reason +
                   "\r\nContent-Type: " + ctype +
                   "\r\nContent-Length: " + std::to_string(body.size()) +
-                  "\r\nX-Content-Type-Options: nosniff\r\nCache-Control: "
-                  "no-store\r\nConnection: close\r\n";
+                  "\r\nX-Content-Type-Options: nosniff\r\n";
+  if (!cache_set)
+    h += "Cache-Control: no-store\r\n";
+  h += "Connection: close\r\n";
   for (auto &e : extra)
     h += e.first + ": " + e.second + "\r\n";
   h += "\r\n";
@@ -2837,6 +3611,34 @@ static std::string qparam(const std::string &query, const std::string &key) {
       return url_decode(kv.substr(eq + 1));
   }
   return "";
+}
+// Versioned assets are immutable. Anything else, including the app shell,
+// must not be stored.
+static std::string asset_cache_control(const std::string &query) {
+  if (!qparam(query, "v").empty() && qparam(query, "v") == build_version())
+    return "public, max-age=31536000, immutable";
+  return "no-store";
+}
+static std::string sw_file() {
+  auto slash = UI_FILE.find_last_of('/');
+  std::string dir = slash == std::string::npos ? "." : UI_FILE.substr(0, slash);
+  return dir + "/sw.js";
+}
+static std::string manifest_body() {
+  const std::string q = "?v=" + build_version();
+  return std::string("{\"name\":\"MAG\",\"short_name\":\"MAG\",") +
+         "\"start_url\":\"/\",\"scope\":\"/\",\"display\":\"standalone\","
+         "\"background_color\":\"#050505\",\"theme_color\":\"#050505\","
+         "\"lang\":\"de\",\"icons\":["
+         "{\"src\":\"/static/icon-192.png" + q +
+         "\",\"sizes\":\"192x192\",\"type\":\"image/png\",\"purpose\":\"any\"},"
+         "{\"src\":\"/static/icon-512.png" + q +
+         "\",\"sizes\":\"512x512\",\"type\":\"image/png\",\"purpose\":\"any\"},"
+         "{\"src\":\"/static/icon-maskable-192.png" + q +
+         "\",\"sizes\":\"192x192\",\"type\":\"image/png\",\"purpose\":\"maskable\"},"
+         "{\"src\":\"/static/icon-maskable-512.png" + q +
+         "\",\"sizes\":\"512x512\",\"type\":\"image/png\",\"purpose\":\"maskable\"}"
+         "]}";
 }
 
 // One persistent scheduler owns model turns, independent of browser clients.
@@ -3008,6 +3810,27 @@ static bool queue_edit(const std::string &id, const std::string &text) {
     if (p.id == id) { p.text = text; save_queue_locked(); queue_event_locked(); return true; }
   return false;
 }
+// Atomic persistent reorder. "before" is another pending ID, or empty
+// to move to the tail. No stale client index can reorder the wrong message.
+static bool queue_move(const std::string &id, const std::string &before) {
+  std::lock_guard<std::mutex> lk(JOB_MTX);
+  auto source = std::find_if(PENDING.begin(), PENDING.end(),
+                             [&](const Pending &p) { return p.id == id; });
+  if (source == PENDING.end()) return false;
+  if (before == id) return true;
+  if (!before.empty() &&
+      std::none_of(PENDING.begin(), PENDING.end(),
+                   [&](const Pending &p) { return p.id == before; }))
+    return false;
+  Pending moving = *source;
+  PENDING.erase(source);
+  auto target = before.empty() ? PENDING.end()
+      : std::find_if(PENDING.begin(), PENDING.end(),
+                     [&](const Pending &p) { return p.id == before; });
+  PENDING.insert(target, std::move(moving));
+  save_queue_locked(); queue_event_locked(); JOB_CV.notify_all();
+  return true;
+}
 static bool queue_delete(const std::string &id) {
   std::lock_guard<std::mutex> lk(JOB_MTX);
   for (auto it = PENDING.begin(); it != PENDING.end(); ++it)
@@ -3080,6 +3903,33 @@ static std::string other_name(int idx) {
       return bot_field((int)i, "name", "Bot");
   return "der Nutzer";
 }
+static void attach_work(Val &msg, const TurnReport &report) {
+  auto mid = msg.find("id");
+  if (!mid)
+    return;
+  std::string id = mid->asStr();
+  std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
+  for (auto it = ROOM.rbegin(); it != ROOM.rend(); ++it) {
+    if (!it->find("id") || it->find("id")->asStr() != id)
+      continue;
+    if (!report.steps.empty()) {
+      Val st = Val::array();
+      for (auto &s : report.steps)
+        st.push(s);
+      (*it)["steps"] = st;
+      msg["steps"] = st;
+    }
+    (*it)["elapsed_s"] = report.elapsed_s;
+    msg["elapsed_s"] = report.elapsed_s;
+    if (!report.error.empty()) {
+      std::string err = one_line(report.error).substr(0, 140);
+      (*it)["work_error"] = err;
+      msg["work_error"] = err;
+    }
+    break;
+  }
+  save_room();
+}
 static TurnReport generate_and_post(int idx, bool automatic) {
   const uint64_t epoch = EPOCH.load();
   std::string id = bot_field(idx, "id"), name = bot_field(idx, "name");
@@ -3089,9 +3939,25 @@ static TurnReport generate_and_post(int idx, bool automatic) {
   start["name"] = name;
   start["color"] = bot_field(idx, "color");
   publish(mj::dump(start));
-  TurnReport report = run_turn(idx, automatic,
-                               automatic ? other_name(idx) : "");
-  if (epoch == EPOCH.load() && !STOP.load() && !report.text.empty()) {
+  auto started = steady_clock::now();
+  run_begin(id, name);
+  TurnReport report;
+  try {
+    report = run_turn(idx, automatic, automatic ? other_name(idx) : "");
+  } catch (...) {
+    run_end();
+    throw;
+  }
+  report.elapsed_s = (long)duration_cast<seconds>(steady_clock::now() - started).count();
+  if (report.elapsed_s < 0)
+    report.elapsed_s = 0;
+  run_end();
+  if (epoch == EPOCH.load() && !STOP.load() && report.react_only) {
+    Val msg = append_room("assistant", name, "", id);
+    attach_work(msg, report);
+    msg["type"] = "bot_done";
+    publish(mj::dump(msg));
+  } else if (epoch == EPOCH.load() && !STOP.load() && !report.text.empty()) {
     bool duplicate = false;
     if (automatic) {
       std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
@@ -3106,8 +3972,20 @@ static TurnReport generate_and_post(int idx, bool automatic) {
     }
     if (!duplicate) {
       Val msg = append_room("assistant", name, report.text, id);
+      attach_work(msg, report);
       msg["type"] = "bot_done";
       publish(mj::dump(msg));
+      // A long run notifies devices that opted in. The service worker shows
+      // it only when no room tab is visible. Jobs call notify() themselves;
+      // there is no job-completion site in this tree (see push.hpp).
+      int run_after = envi("MAG_ROOM_PUSH_RUN_S", 15);
+      if (run_after < 0)
+        run_after = 15;
+      if (report.error.empty() && report.elapsed_s >= run_after) {
+        std::string mid = msg.find("id") ? msg.find("id")->asStr() : "";
+        notify(PushNote("run", name, one_line(report.text), "/",
+                        mid.empty() ? "run" : "run-" + mid));
+      }
     } else {
       report.continue_requested = false;
       emit_event("error", id, name, "Autonomie gestoppt: doppelte Antwort.");
@@ -3119,10 +3997,11 @@ static TurnReport generate_and_post(int idx, bool automatic) {
     // transcript stays valid and only grows at its end (prompt cache).
     std::string partial = trim(report.text);
     if (partial.rfind("Antwort fehlgeschlagen", 0) == 0) partial.clear();
+    const std::string note = USER_CANCEL.load() ? "(abgebrochen)" : "(unterbrochen)";
     Val msg = append_room("assistant", name,
-                          partial.empty() ? "(unterbrochen)"
-                                          : partial + "\n\n(unterbrochen)",
+                          partial.empty() ? note : partial + "\n\n" + note,
                           id);
+    attach_work(msg, report);
     {
       std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
       for (auto it = ROOM.rbegin(); it != ROOM.rend(); ++it)
@@ -3141,6 +4020,7 @@ static TurnReport generate_and_post(int idx, bool automatic) {
   return report;
 }
 #include "jobs.hpp"
+#include "jobs_mcp.hpp"
 static void scheduler_loop() {
   while (!SHUTDOWN.load()) {
     std::vector<std::string> ids;
@@ -3214,6 +4094,7 @@ static void scheduler_loop() {
       if (automatic && !AUTOTALK.load())
         continue;
       STOP = false;
+      USER_CANCEL = false;
       BUSY = true;
       for (const auto &id : ids) {
         if (STOP.load())
@@ -3427,6 +4308,11 @@ static std::string state_json(const Actor *actor = nullptr) {
   root["offline"] = OFFLINE.load();
   root["busy"] = BUSY.load();
   {
+    std::lock_guard<std::mutex> lk(RUN_MTX);
+    if (RUN.on)
+      root["activity"] = run_val_locked();
+  }
+  {
     std::lock_guard<std::mutex> lk(JOB_MTX);
     root["queue"] = (double)(JOBS.size() + PENDING.size());
     Val qv = queue_view_locked();
@@ -3443,6 +4329,475 @@ static std::string state_json(const Actor *actor = nullptr) {
   if (actor && actor->ok)
     root["you"] = actor_json(*actor);
   return mj::dump(root);
+}
+
+// ---------------------------------------------------------------- scoped delete + undo
+// Room messages/files and bot memory can be restored for MAG_ROOM_UNDO_S
+// (default 10). Bot workspace reset cannot: logins live only in the guest.
+// /api/reset still purges immediately and drops this log.
+static int UNDO_WINDOW = 10;
+
+struct UndoItem {
+  std::string id, kind, bot, trash;
+  int index = -1;
+  int64_t expires = 0;
+  Val data;
+};
+static std::mutex UNDO_MTX;
+static std::vector<UndoItem> UNDO_LOG;
+
+struct ScopedResult {
+  int code = 200;
+  std::string body;
+};
+static ScopedResult scoped_ok(const Val &v) { return {200, mj::dump(v)}; }
+static ScopedResult scoped_err(int code, const std::string &msg) {
+  Val e = Val::object();
+  e["error"] = msg;
+  return {code, mj::dump(e)};
+}
+static bool is_hex_id(const std::string &s) {
+  if (s.empty() || s.size() > 64)
+    return false;
+  for (unsigned char c : s)
+    if (!std::isxdigit(c))
+      return false;
+  return true;
+}
+static bool is_stored_name(const std::string &s) {
+  if (s.empty() || s.size() > 120 || s == "." || s == "..")
+    return false;
+  if (s.find('/') != std::string::npos || s.find('\\') != std::string::npos)
+    return false;
+  for (unsigned char c : s)
+    if (!(std::isalnum(c) || c == '.' || c == '_' || c == '-'))
+      return false;
+  return true;
+}
+static void erase_tree(const std::string &p) {
+  if (p.empty())
+    return;
+  std::error_code ec;
+  std::filesystem::remove_all(p, ec);
+}
+static void expire_undo_locked() {
+  int64_t now = now_s();
+  for (auto it = UNDO_LOG.begin(); it != UNDO_LOG.end();) {
+    if (it->expires <= now) {
+      erase_tree(it->trash);
+      it = UNDO_LOG.erase(it);
+    } else
+      ++it;
+  }
+}
+static std::string undo_commit(UndoItem item) {
+  if (item.id.empty())
+    item.id = token_hex(8);
+  item.expires = now_s() + std::max(1, UNDO_WINDOW);
+  std::string id = item.id;
+  std::lock_guard<std::mutex> lk(UNDO_MTX);
+  expire_undo_locked();
+  UNDO_LOG.push_back(std::move(item));
+  return id;
+}
+static void undo_drop_all() {
+  std::lock_guard<std::mutex> lk(UNDO_MTX);
+  for (auto &u : UNDO_LOG)
+    erase_tree(u.trash);
+  UNDO_LOG.clear();
+  erase_tree(STATE_DIR + "/trash");
+}
+static void room_changed() { publish("{\"type\":\"room\"}"); }
+static void agents_changed() { publish("{\"type\":\"agents\"}"); }
+static void drop_key(Val &o, const std::string &key) {
+  if (!o.isObj())
+    return;
+  auto &v = *o.obj;
+  v.erase(std::remove_if(v.begin(), v.end(),
+                         [&](const auto &kv) { return kv.first == key; }),
+          v.end());
+}
+static bool path_exists(const std::string &p) {
+  std::error_code ec;
+  return std::filesystem::exists(p, ec) && !ec;
+}
+static bool move_path(const std::string &from, const std::string &to) {
+  if (!path_exists(from))
+    return false;
+  std::error_code ec;
+  auto parent = std::filesystem::path(to).parent_path();
+  if (!parent.empty())
+    std::filesystem::create_directories(parent, ec);
+  std::filesystem::rename(from, to, ec);
+  if (!ec)
+    return true;
+  bool ok = false;
+  std::string data = read_file(from, &ok);
+  if (!ok || !write_file(to, data))
+    return false;
+  unlink(from.c_str());
+  return true;
+}
+static std::string trash_slot(const std::string &id) {
+  std::string parent = STATE_DIR + "/trash";
+  std::string dir = parent + "/" + id;
+  std::error_code ec;
+  std::filesystem::create_directories(dir, ec);
+  chmod(parent.c_str(), 0750);
+  chmod(dir.c_str(), 0750);
+  return dir;
+}
+static bool room_has_id(const std::string &id) {
+  for (auto &m : ROOM)
+    if (m.find("id") && m.find("id")->asStr() == id)
+      return true;
+  return false;
+}
+static std::string undo_memory_snapshot(const std::string &bot, int index,
+                                        const Val &previous,
+                                        const std::string &kind) {
+  UndoItem u;
+  u.kind = kind;
+  u.bot = bot;
+  u.index = index;
+  u.data = previous;
+  return undo_commit(std::move(u));
+}
+static ScopedResult delete_room_message(const std::string &id) {
+  if (!is_hex_id(id))
+    return scoped_err(400, "Ungültige Nachrichten-ID");
+  UndoItem u;
+  u.kind = "message";
+  {
+    std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
+    int found = -1;
+    for (size_t i = 0; i < ROOM.size(); ++i)
+      if (ROOM[i].find("id") && ROOM[i].find("id")->asStr() == id) {
+        found = (int)i;
+        break;
+      }
+    if (found < 0)
+      return scoped_err(404, "Nachricht nicht gefunden");
+    u.index = found;
+    u.data = ROOM[found];
+    ROOM.erase(ROOM.begin() + found);
+    drop_reaction_notes(id, "");
+    save_room();
+  }
+  std::string uid = undo_commit(std::move(u));
+  room_changed();
+  Val out = Val::object();
+  out["ok"] = true;
+  out["undo"] = uid;
+  return scoped_ok(out);
+}
+static ScopedResult delete_room_file(const std::string &stored) {
+  if (!is_stored_name(stored))
+    return scoped_err(400, "Ungültiger Dateiname");
+  UndoItem u;
+  u.kind = "file";
+  u.id = token_hex(8);
+  {
+    std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
+    Val *rec = nullptr;
+    for (auto &f : FILES) {
+      if (f.find("removed"))
+        continue;
+      auto s = f.find("stored");
+      if (s && s->asStr() == stored) {
+        rec = &f;
+        break;
+      }
+    }
+    if (!rec)
+      return scoped_err(404, "Datei nicht gefunden");
+    std::string dir = trash_slot(u.id);
+    u.trash = dir;
+    move_path(FILES_DIR + "/" + stored, dir + "/" + stored);
+    (*rec)["removed"] = (long)now_s();
+    u.data = *rec;
+    drop_key(u.data, "removed");
+    save_json_array(FILES_JSON, FILES);
+  }
+  std::string uid = undo_commit(std::move(u));
+  room_changed();
+  Val out = Val::object();
+  out["ok"] = true;
+  out["undo"] = uid;
+  return scoped_ok(out);
+}
+static ScopedResult clear_room_data() {
+  UndoItem u;
+  u.kind = "room";
+  u.id = token_hex(8);
+  std::string dir = trash_slot(u.id);
+  u.trash = dir;
+  {
+    std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
+    Val room = Val::array(), files = Val::array();
+    for (auto &m : ROOM)
+      room.push(m);
+    for (auto &f : FILES)
+      files.push(f);
+    u.data = Val::object();
+    u.data["room"] = room;
+    u.data["files"] = files;
+    for (auto &f : FILES) {
+      if (f.find("removed"))
+        continue;
+      auto s = f.find("stored");
+      if (!s)
+        continue;
+      std::string name = basename_of(s->asStr());
+      if (!is_stored_name(name))
+        continue;
+      move_path(FILES_DIR + "/" + name, dir + "/" + name);
+    }
+    ROOM.clear();
+    clear_reaction_notes();
+    save_room();
+    FILES.clear();
+    save_json_array(FILES_JSON, FILES);
+  }
+  std::string uid = u.id;
+  undo_commit(std::move(u));
+  room_changed();
+  Val out = Val::object();
+  out["ok"] = true;
+  out["undo"] = uid;
+  return scoped_ok(out);
+}
+static ScopedResult clear_bot_memory(const std::string &id) {
+  UndoItem u;
+  u.kind = "memory";
+  u.bot = id;
+  {
+    std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
+    int idx = agent_index(id);
+    if (idx < 0)
+      return scoped_err(404, "Unbekannter Bot");
+    Val &mem = AGENTS[idx]["memory"];
+    if (!mem.isArr())
+      mem = Val::array();
+    u.data = mem;
+    mem = Val::array();
+    save_agents();
+  }
+  std::string uid = undo_commit(std::move(u));
+  agents_changed();
+  Val out = Val::object();
+  out["ok"] = true;
+  out["undo"] = uid;
+  out["memory"] = Val::array();
+  return scoped_ok(out);
+}
+static void restore_message(const UndoItem &item) {
+  std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
+  auto idv = item.data.find("id");
+  if (idv && room_has_id(idv->asStr()))
+    return;
+  int at = item.index < 0 ? (int)ROOM.size() : item.index;
+  if (at > (int)ROOM.size())
+    at = (int)ROOM.size();
+  ROOM.insert(ROOM.begin() + at, item.data);
+  save_room();
+}
+static void restore_file_record(Val rec, const std::string &trash_dir) {
+  auto s = rec.find("stored");
+  if (!s)
+    return;
+  std::string stored = basename_of(s->asStr());
+  if (!is_stored_name(stored))
+    return;
+  if (!trash_dir.empty())
+    move_path(trash_dir + "/" + stored, FILES_DIR + "/" + stored);
+  if (path_exists(FILES_DIR + "/" + stored))
+    drop_key(rec, "removed");
+  else
+    rec["removed"] = (long)now_s();
+  std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
+  bool found = false;
+  for (auto &f : FILES) {
+    auto st = f.find("stored");
+    if (st && st->asStr() == stored) {
+      f = rec;
+      found = true;
+      break;
+    }
+  }
+  if (!found)
+    FILES.push_back(rec);
+  save_json_array(FILES_JSON, FILES);
+}
+static void restore_room(const UndoItem &item) {
+  auto room = item.data.find("room");
+  auto files = item.data.find("files");
+  std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
+  if (room && room->isArr()) {
+    std::vector<Val> missing;
+    for (auto &m : *room->arr) {
+      auto idv = m.find("id");
+      if (!idv || !room_has_id(idv->asStr()))
+        missing.push_back(m);
+    }
+    if (!missing.empty()) {
+      ROOM.insert(ROOM.begin(), missing.begin(), missing.end());
+      save_room();
+    }
+  }
+  if (files && files->isArr()) {
+    for (auto &f : *files->arr) {
+      auto s = f.find("stored");
+      if (!s)
+        continue;
+      std::string stored = basename_of(s->asStr());
+      if (!is_stored_name(stored))
+        continue;
+      bool exists = false;
+      for (auto &cur : FILES)
+        if (cur.find("stored") && cur.find("stored")->asStr() == stored)
+          exists = true;
+      if (exists)
+        continue;
+      std::string src = item.trash + "/" + stored;
+      if (path_exists(src))
+        move_path(src, FILES_DIR + "/" + stored);
+      Val rec = f;
+      if (path_exists(FILES_DIR + "/" + stored))
+        drop_key(rec, "removed");
+      else
+        rec["removed"] = (long)now_s();
+      FILES.push_back(std::move(rec));
+    }
+    save_json_array(FILES_JSON, FILES);
+  }
+}
+static std::string memory_text(const Val &e) {
+  if (e.isObj())
+    return e.find("text") ? e.find("text")->asStr() : "";
+  return e.asStr();
+}
+static void restore_memory(const UndoItem &item) {
+  std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
+  int idx = agent_index(item.bot);
+  if (idx < 0)
+    return;
+  Val &mem = AGENTS[idx]["memory"];
+  if (!mem.isArr())
+    mem = Val::array();
+  if (item.kind == "memory" && item.data.isArr()) {
+    std::vector<Val> add;
+    for (auto &e : *item.data.arr) {
+      std::string t = memory_text(e);
+      bool dup = false;
+      for (auto &c : *mem.arr)
+        if (memory_text(c) == t)
+          dup = true;
+      if (!dup)
+        add.push_back(e);
+    }
+    mem.arr->insert(mem.arr->begin(), add.begin(), add.end());
+  } else if (item.kind == "memory_one") {
+    int at = item.index;
+    if (at < 0 || at > (int)mem.arr->size())
+      at = (int)mem.arr->size();
+    mem.arr->insert(mem.arr->begin() + at, item.data);
+  } else if (item.kind == "memory_edit") {
+    if (item.index >= 0 && (size_t)item.index < mem.arr->size())
+      (*mem.arr)[item.index] = item.data;
+  }
+  save_agents();
+}
+static void remove_if_empty_dir(const std::string &p) {
+  std::error_code ec;
+  if (p.empty() || !std::filesystem::is_directory(p, ec) || ec)
+    return;
+  if (!std::filesystem::is_empty(p, ec) || ec)
+    return;
+  std::filesystem::remove(p, ec);
+}
+static ScopedResult undo_action(const std::string &id) {
+  if (!is_hex_id(id))
+    return scoped_err(404, "Nichts zum Rückgängigmachen.");
+  UndoItem item;
+  {
+    std::lock_guard<std::mutex> lk(UNDO_MTX);
+    expire_undo_locked();
+    auto it = std::find_if(UNDO_LOG.begin(), UNDO_LOG.end(),
+                           [&](const UndoItem &u) { return u.id == id; });
+    if (it == UNDO_LOG.end())
+      return scoped_err(404, "Nichts zum Rückgängigmachen.");
+    item = std::move(*it);
+    UNDO_LOG.erase(it);
+  }
+  bool memory = item.kind == "memory" || item.kind == "memory_one" ||
+                item.kind == "memory_edit";
+  if (item.kind == "message")
+    restore_message(item);
+  else if (item.kind == "file")
+    restore_file_record(item.data, item.trash);
+  else if (item.kind == "room")
+    restore_room(item);
+  else if (memory)
+    restore_memory(item);
+  else
+    return scoped_err(404, "Nichts zum Rückgängigmachen.");
+  if (memory)
+    agents_changed();
+  room_changed();
+  if (item.kind == "file" || item.kind == "room")
+    remove_if_empty_dir(item.trash);
+  Val out = Val::object();
+  out["ok"] = true;
+  return scoped_ok(out);
+}
+static ScopedResult reset_bot_workspace(const std::string &id) {
+  int idx = agent_index(id);
+  if (idx < 0)
+    return scoped_err(404, "Unbekannter Bot");
+  std::string vm = bot_field(idx, "vm");
+  if (vm.empty())
+    return scoped_err(400, "Nur-Chat-Bot hat keine Arbeitsdaten.");
+  if (BUSY.load())
+    return scoped_err(409, "Bot arbeitet gerade. Erst stoppen, dann zurücksetzen.");
+  std::lock_guard<std::mutex> turn(TURN_MTX);
+  if (BUSY.load())
+    return scoped_err(409, "Bot arbeitet gerade. Erst stoppen, dann zurücksetzen.");
+  // Runs as the guest user. Leaves the browser binary, bridge token, UDP key
+  // and git identity in place; only the profile, cookies and work files go.
+  const std::string script =
+      "pkill -TERM -x mag-browser 2>/dev/null || true; "
+      "pkill -TERM -x chrome 2>/dev/null || true; "
+      "pkill -TERM -x chromium 2>/dev/null || true; "
+      "pkill -TERM -x google-chrome 2>/dev/null || true; "
+      "pkill -TERM -x chrome_crashpad_handler 2>/dev/null || true; "
+      "sleep 0.3; "
+      "pkill -KILL -x mag-browser 2>/dev/null || true; "
+      "pkill -KILL -x chrome 2>/dev/null || true; "
+      "pkill -KILL -x chromium 2>/dev/null || true; "
+      "pkill -KILL -x google-chrome 2>/dev/null || true; "
+      "pkill -KILL -x chrome_crashpad_handler 2>/dev/null || true; "
+      "rm -rf -- /home/bot/browserd/profile /home/bot/browserd/nav.log "
+      "/home/bot/browserd/chromium.log; "
+      "mkdir -p /home/bot/browserd/profile; "
+      "chmod 700 /home/bot/browserd/profile; "
+      "rm -rf -- /home/bot/room /home/bot/Downloads; "
+      "mkdir -p /home/bot/room; "
+      "echo reset-ok";
+  auto ran = guest_command(vm, script, 40);
+  if (ran.code)
+    return scoped_err(502, "Arbeitsdaten konnten nicht geleert werden.");
+  try {
+    ensure_browser(vm);
+  } catch (const std::exception &e) {
+    std::string why = one_line(e.what());
+    if (why.size() > 140)
+      why.resize(140);
+    return scoped_err(502, "Browser-Neustart fehlgeschlagen: " + why);
+  }
+  Val out = Val::object();
+  out["ok"] = true;
+  return scoped_ok(out);
 }
 
 #include "routes.hpp"
@@ -3549,6 +4904,7 @@ int main() {
   BRAVE_KEY = env("BRAVE_API_KEY", env("MAG_ROOM_BRAVE_KEY", ""));
   STT_LANG = env("STT_LANG", "de");
   GUEST_TIMEOUT = envi("MAG_ROOM_GUEST_TIMEOUT", 70);
+  UNDO_WINDOW = std::max(1, envi("MAG_ROOM_UNDO_S", 10));
   // Reasoning tokens count towards max_tokens; 700 (GPT-OSS "low") is far too
   // small for DeepSeek-V4 thinking.
   MAX_TOKENS = envi("MAG_ROOM_MAX_TOKENS", 8192);
@@ -3594,6 +4950,7 @@ int main() {
   }
 
   ensure_state();
+  undo_drop_all();
   load_agents();
   // MAG_ROOM_SINGLE_BOT_VM=on: the single bot keeps its full sandbox (own KVM VM
   // with shell, git/Gitea, MCP, browser) via the existing spawn path instead of
@@ -3619,6 +4976,7 @@ int main() {
     }).detach();
   FILES = load_json_array(FILES_JSON);
   ROOM = load_json_array(ROOM_JSON);
+  load_reaction_notes();
   UI_DEFAULT = read_file(UI_FILE);
 
   AUTOTALK = trim(read_file(STATE_DIR + "/autotalk")) == "on";

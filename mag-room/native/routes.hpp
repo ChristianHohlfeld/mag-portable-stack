@@ -156,8 +156,145 @@ static void route(int fd, Req &r, bool bridge = false) {
     }
   }
   const std::string path = r.path;
+  if (path == "/mcp/jobs") {
+    // Optional remote MCP transport: disabled until a long random server-only
+    // token is explicitly configured. The model itself uses in-process tools.
+    if (m != "POST") { error_json(fd, 405, "POST required"); return; }
+    if (r.body.size() > 65536) { error_json(fd, 413, "Request too large"); return; }
+    const std::string secret = env("MAG_JOBS_MCP_TOKEN", "");
+    std::string bearer;
+    auto it = r.hdrs.find("authorization");
+    if (it != r.hdrs.end() && it->second.rfind("Bearer ", 0) == 0)
+      bearer = it->second.substr(7);
+    unsigned mismatch = 0;
+    if (secret.size() != bearer.size()) mismatch = 1;
+    else for (size_t i=0; i<secret.size(); ++i)
+      mismatch |= (unsigned)(unsigned char)(secret[i] ^ bearer[i]);
+    if (secret.size() < 32 || mismatch) {
+      error_json(fd, 401, "MCP token required"); return;
+    }
+    Val req;
+    if (!mj::parse(r.body, req) || !req.isObj()) {
+      send_json(fd, 400, mj::dump(jobs_mcp_rpc_error(nullptr,-32700,"Parse error")));
+      return;
+    }
+    // 2026-07-28 Streamable HTTP requires method/name headers and per-call
+    // metadata. Older 2025-era MCP clients retain the initialize path.
+    auto protocol = r.hdrs.find("mcp-protocol-version");
+    if (protocol != r.hdrs.end() && protocol->second == "2026-07-28") {
+      const std::string method = req.find("method") ? req.find("method")->asStr() : "";
+      auto mh = r.hdrs.find("mcp-method");
+      const Val *params = req.find("params");
+      const Val *meta = params ? params->find("_meta") : nullptr;
+      if (mh == r.hdrs.end() || mh->second != method ||
+          !meta || !meta->find("io.modelcontextprotocol/protocolVersion") ||
+          meta->find("io.modelcontextprotocol/protocolVersion")->asStr() != "2026-07-28" ||
+          !meta->find("io.modelcontextprotocol/clientCapabilities")) {
+        send_json(fd, 400, mj::dump(jobs_mcp_rpc_error(req.find("id"),-32602,
+                       "MCP method/header/_meta mismatch"))); return;
+      }
+      if (method == "tools/call") {
+        auto nh = r.hdrs.find("mcp-name");
+        const std::string name = params && params->find("name") ? params->find("name")->asStr() : "";
+        if (nh == r.hdrs.end() || nh->second != name) {
+          send_json(fd, 400, mj::dump(jobs_mcp_rpc_error(req.find("id"),-32602,
+                         "Mcp-Name mismatch"))); return;
+        }
+      }
+    }
+    if (!req.find("id")) {
+      // JSON-RPC notifications never receive a JSON-RPC response.
+      send_response(fd, 202, "application/json", "");
+      return;
+    }
+    send_json(fd, 200, mj::dump(jobs_mcp_rpc(req, JobsActor{})));
+    return;
+  }
   if (m == "GET" && (path == "/" || path == "/index.html")) {
-    send_text(fd, 200, current_frontend(), "text/html; charset=utf-8");
+    send_response(fd, 200, "text/html; charset=utf-8", current_frontend(),
+                  {{"Cache-Control", "no-store"}});
+    return;
+  }
+  if (m == "GET" && path == "/sw.js") {
+    bool ok = false;
+    std::string js = read_file(sw_file(), &ok);
+    if (!ok) {
+      error_json(fd, 404, "Service worker missing");
+      return;
+    }
+    const std::string token = "%%MAG_VERSION%%";
+    const std::string ver = build_version();
+    for (size_t at = js.find(token); at != std::string::npos; at = js.find(token, at)) {
+      js.replace(at, token.size(), ver);
+      at += ver.size();
+    }
+    send_response(fd, 200, "text/javascript; charset=utf-8", js,
+                  {{"Cache-Control", "no-store"},
+                   {"Service-Worker-Allowed", "/"}});
+    return;
+  }
+  if (m == "GET" && path == "/manifest.webmanifest") {
+    send_response(fd, 200, "application/manifest+json; charset=utf-8",
+                  manifest_body(), {{"Cache-Control", "no-store"}});
+    return;
+  }
+  if (m == "GET" && path == "/api/version") {
+    send_response(fd, 200, "application/json; charset=utf-8",
+                  "{\"version\":\"" + build_version() + "\"}",
+                  {{"Cache-Control", "no-store"}});
+    return;
+  }
+  if (path == "/api/push/vapid" && m == "GET") {
+    Val out = Val::object();
+    out["configured"] = push_configured();
+    out["publicKey"] = push_configured() ? push_public_b64() : "";
+    out["subject"] = push_configured() ? push_subject() : "";
+    send_response(fd, 200, "application/json; charset=utf-8", mj::dump(out),
+                  {{"Cache-Control", "no-store"}});
+    return;
+  }
+  if (path == "/api/push/subscription" && m == "GET") {
+    std::string js = push_subscription_json(qparam(r.query, "endpoint"));
+    if (js.empty())
+      error_json(fd, 404, "Kein Gerät");
+    else
+      send_response(fd, 200, "application/json; charset=utf-8", js,
+                    {{"Cache-Control", "no-store"}});
+    return;
+  }
+  if (path == "/api/push/subscribe" && m == "POST") {
+    std::string err;
+    int code = 400;
+    std::string js = push_subscribe_body(r.body, err, code);
+    if (js.empty())
+      error_json(fd, code, err.empty() ? "Ungültige Anmeldung" : err);
+    else
+      send_json(fd, 200, js);
+    return;
+  }
+  if (path == "/api/push/subscribe" && m == "DELETE") {
+    Val body;
+    std::string endpoint;
+    if (!r.body.empty() && mj::parse(r.body, body) && body.isObj() &&
+        body.find("endpoint"))
+      endpoint = trim(body.find("endpoint")->asStr());
+    if (endpoint.empty())
+      endpoint = qparam(r.query, "endpoint");
+    if (!push_good_endpoint(endpoint)) {
+      error_json(fd, 400, "Push-Endpunkt ungültig");
+      return;
+    }
+    push_unsubscribe(endpoint);
+    send_json(fd, 200, "{\"ok\":true}");
+    return;
+  }
+  if (path == "/api/push/prefs" && m == "PUT") {
+    std::string err;
+    if (!push_set_prefs(r.body, err))
+      error_json(fd, err == "Kein Gerät" ? 404 : 400,
+                 err.empty() ? "Ungültige Einstellung" : err);
+    else
+      send_json(fd, 200, "{\"ok\":true}");
     return;
   }
   // Legacy /bot/<slug>/ links (stable Tailnet path per bot) redirect to the
@@ -192,7 +329,7 @@ static void route(int fd, Req &r, bool bridge = false) {
       error_json(fd, 404, "Unknown asset");
     else
       send_response(fd, 200, mime_for(path), data,
-                    {{"Cache-Control", "public, max-age=86400"}});
+                    {{"Cache-Control", asset_cache_control(r.query)}});
     return;
   }
   // Connectors: secrets stay server-side (STATE_DIR/connectors, 0600) and
@@ -298,7 +435,8 @@ static void route(int fd, Req &r, bool bridge = false) {
     if (!ok)
       error_json(fd, 404, "Unknown asset");
     else
-      send_response(fd, 200, mime_for(name), data);
+      send_response(fd, 200, mime_for(name), data,
+                    {{"Cache-Control", asset_cache_control(r.query)}});
     return;
   }
   if (m == "GET" && path.rfind("/api/file/", 0) == 0) {
@@ -456,7 +594,7 @@ static void route(int fd, Req &r, bool bridge = false) {
     const std::vector<std::string> allowed{"navigate", "click", "type",
                                            "scroll",   "back",  "forward",
                                            "reload",   "key",   "read",
-                                           "pointer"};
+                                           "pointer", "state"};
     if (std::find(allowed.begin(), allowed.end(), action) == allowed.end()) {
       error_json(fd, 400, "Unknown browser action");
       return;
@@ -507,6 +645,7 @@ static void route(int fd, Req &r, bool bridge = false) {
         error_json(fd, 409, "Erinnerung wurde inzwischen geändert – bitte neu öffnen.");
         return;
       }
+      Val previous = entry;
       if (m == "DELETE") {
         mem.arr->erase(mem.arr->begin() + pos);
       } else {
@@ -521,9 +660,12 @@ static void route(int fd, Req &r, bool bridge = false) {
       }
       save_agents();
       memory_git_sync(id, m == "DELETE" ? "delete" : "edit");
+      std::string uid = undo_memory_snapshot(
+          id, (int)pos, previous, m == "DELETE" ? "memory_one" : "memory_edit");
       Val out = Val::object();
       out["ok"] = true;
       out["memory"] = mem;
+      out["undo"] = uid;
       send_json(fd, 200, mj::dump(out));
       return;
     }
@@ -538,6 +680,20 @@ static void route(int fd, Req &r, bool bridge = false) {
         auto mem = AGENTS[idx].find("memory");
         send_json(fd, 200, mem ? mj::dump(*mem) : "[]");
       }
+      return;
+    }
+    if (slash != std::string::npos && id.substr(slash + 1) == "memory" &&
+        m == "DELETE") {
+      id.resize(slash);
+      auto result = clear_bot_memory(id);
+      send_json(fd, result.code, result.body);
+      return;
+    }
+    if (slash != std::string::npos &&
+        id.substr(slash + 1) == "workspace/reset" && m == "POST") {
+      id.resize(slash);
+      auto result = reset_bot_workspace(id);
+      send_json(fd, result.code, result.body);
       return;
     }
     if (m == "DELETE") {
@@ -703,7 +859,15 @@ static void route(int fd, Req &r, bool bridge = false) {
       }
     }
     bool ok = false;
-    if (action == "now" && m == "POST") ok = queue_send_now(qid);
+    if (action == "move" && m == "POST") {
+      const Val *target = has_json ? body.find("before") : nullptr;
+      if (!target || target->type != Val::STR ||
+          target->asStr().size() > 128) {
+        error_json(fd, 400, "before must be a pending ID or empty string"); return;
+      }
+      ok = queue_move(qid, target->asStr());
+    }
+    else if (action == "now" && m == "POST") ok = queue_send_now(qid);
     else if (action.empty() && m == "DELETE") ok = queue_delete(qid);
     else if (action.empty() && m == "PUT") {
       std::string text = has_json ? trim(str("text")) : "";
@@ -731,82 +895,9 @@ static void route(int fd, Req &r, bool bridge = false) {
     return;
   }
   if (path == "/api/jobs" || path.rfind("/api/jobs/", 0) == 0) {
-    std::string rest = path.size() > 10 ? path.substr(10) : "";
-    std::string id = rest.substr(0, rest.find('/'));
-    std::string action = rest.find('/') == std::string::npos ? "" : rest.substr(rest.find('/') + 1);
-    std::lock_guard<std::mutex> lk(JOBDEF_MTX);
-    auto view = [&](const JobDef &j, const std::string &secret) {
-      Val v = job_to_val(j, false);
-      if (!secret.empty()) v["secret"] = secret; // shown exactly once
-      return v;
-    };
-    auto new_secret = [&](JobDef &j) { std::string sec = token_hex(24); j.hook_hash = sha256_hex(sec); return sec; };
-    if (path == "/api/jobs" && m == "GET") {
-      Val a = Val::array();
-      for (auto &j : JOBDEFS) { Val v = view(j, ""); a.push(v); }
-      Val o = Val::object(); o["jobs"] = a; o["now"] = (double)now_s(); o["paused"] = QUEUE_PAUSED;
-      send_json(fd, 200, mj::dump(o));
-      return;
-    }
-    if (path == "/api/jobs" && m == "POST") {
-      if (!has_json) { error_json(fd, 400, "JSON required"); return; }
-      if (JOBDEFS.size() >= 100) { error_json(fd, 400, "Zu viele Jobs"); return; }
-      JobDef j; j.id = token_hex(6); j.created = now_s();
-      std::string err = job_apply(j, body, true);
-      if (!err.empty()) { error_json(fd, 400, err); return; }
-      std::string sec;
-      if (body.find("webhook") && body.find("webhook")->asBool(false)) sec = new_secret(j);
-      JOBDEFS.push_back(j); jobs_save_locked(); jobs_event_locked();
-      send_json(fd, 201, mj::dump(view(j, sec)));
-      return;
-    }
-    JobDef *j = job_find_locked(id);
-    if (!j) { error_json(fd, 404, "Unbekannter Job"); return; }
-    if (action.empty() && m == "GET") { send_json(fd, 200, mj::dump(view(*j, ""))); return; }
-    if (action.empty() && m == "PUT") {
-      if (!has_json) { error_json(fd, 400, "JSON required"); return; }
-      JobDef copy = *j;
-      std::string err = job_apply(copy, body, false);
-      if (!err.empty()) { error_json(fd, 400, err); return; }
-      std::string sec;
-      if (body.find("webhook")) {
-        if (!body.find("webhook")->asBool(false)) copy.hook_hash.clear();
-        else if (copy.hook_hash.empty()) sec = new_secret(copy);
-      }
-      copy.version = j->version + 1; // a running run keeps its own copy
-      *j = copy; jobs_save_locked(); jobs_event_locked();
-      send_json(fd, 200, mj::dump(view(*j, sec)));
-      return;
-    }
-    if (action.empty() && m == "DELETE") {
-      for (auto it = JOBDEFS.begin(); it != JOBDEFS.end(); ++it)
-        if (it->id == id) { JOBDEFS.erase(it); break; }
-      { std::lock_guard<std::mutex> jl(JOB_MTX);
-        for (auto it = JOBRUNS.begin(); it != JOBRUNS.end();) it = it->job_id == id ? JOBRUNS.erase(it) : it + 1; }
-      jobs_save_locked(); jobs_event_locked();
-      send_json(fd, 200, "{\"deleted\":true}");
-      return;
-    }
-    if (m == "POST" && action == "run") {
-      std::string rid = j->id + ":manual:" + std::to_string(now_s()) + token_hex(3);
-      if (!job_enqueue_locked(*j, rid, "manuell")) { error_json(fd, 409, "läuft bereits"); return; }
-      send_json(fd, 202, "{\"accepted\":true,\"run_id\":\"" + rid + "\"}");
-      return;
-    }
-    if (m == "POST" && action == "pause") {
-      j->paused = !has_json || !body.find("paused") || body.find("paused")->asBool(true);
-      if (!j->paused && j->next_run > 0 && j->next_run < now_s()) j->next_run = schedule_next(j->schedule, now_s() - 1, 0);
-      jobs_save_locked(); jobs_event_locked();
-      send_json(fd, 200, mj::dump(view(*j, "")));
-      return;
-    }
-    if (m == "POST" && action == "secret") {
-      std::string sec = new_secret(*j); j->version++;
-      jobs_save_locked(); jobs_event_locked();
-      send_json(fd, 200, mj::dump(view(*j, sec)));
-      return;
-    }
-    error_json(fd, 404, "Unknown job action");
+    // Same authoritative request path for UI and the in-process MCP tools.
+    JobsResponse response = jobs_request(m, path, body, has_json, JobsActor{});
+    send_json(fd, response.status, mj::dump(response.value));
     return;
   }
   if (m == "POST" && path == "/api/offline") {
@@ -816,6 +907,15 @@ static void route(int fd, Req &r, bool bridge = false) {
       return;
     }
     send_json(fd, 200, std::string("{\"offline\":") + (off ? "true" : "false") + "}");
+    return;
+  }
+  if (m == "POST" && path == "/api/cancel") {
+    // ChatGPT-style stop: cancel only the running turn (closes the llama
+    // stream, kills a running run_command); the queue is NOT paused.
+    if (!BUSY.load()) { send_json(fd, 200, "{\"cancelled\":false}"); return; }
+    USER_CANCEL = true;
+    cancel_active();
+    send_json(fd, 200, "{\"cancelled\":true}");
     return;
   }
   if (m == "POST" && path == "/api/stop") {
@@ -846,10 +946,53 @@ static void route(int fd, Req &r, bool bridge = false) {
     }
     reset_room(true);
     clear_frontend();
+    undo_drop_all();
     Val e = Val::object();
     e["type"] = "reset";
     publish(mj::dump(e));
     send_json(fd, 200, "{\"ok\":true,\"memory_preserved\":true}");
+    return;
+  }
+  if (m == "POST" && path == "/api/room/clear") {
+    auto result = clear_room_data();
+    send_json(fd, result.code, result.body);
+    return;
+  }
+  if ((m == "POST" || m == "DELETE") && path.rfind("/api/messages/", 0) == 0 &&
+      path.size() > std::string("/api/messages//reactions").size() &&
+      path.compare(path.size() - 10, 10, "/reactions") == 0) {
+    std::string id = url_decode(path.substr(
+        std::string("/api/messages/").size(),
+        path.size() - std::string("/api/messages/").size() - 10));
+    std::string emoji = has_json ? str("emoji") : "";
+    if (emoji.empty())
+      emoji = qparam(r.query, "emoji");
+    ReactResult result = apply_reaction(
+        id, "user", emoji, m == "DELETE" ? ReactMode::Remove : ReactMode::Toggle);
+    if (result.code != 200) {
+      error_json(fd, result.code, result.error);
+      return;
+    }
+    // Default: a human reaction does not start a model turn. MAG_ROOM_REACT_WAKE
+    // opts into spending one run so the bot sees the note immediately.
+    if (result.added && !result.wake_bot.empty() && react_wake_enabled())
+      schedule({result.wake_bot});
+    send_json(fd, 200, result.json);
+    return;
+  }
+  if (m == "DELETE" && path.rfind("/api/room/messages/", 0) == 0) {
+    auto result = delete_room_message(url_decode(path.substr(std::string("/api/room/messages/").size())));
+    send_json(fd, result.code, result.body);
+    return;
+  }
+  if (m == "DELETE" && path.rfind("/api/room/files/", 0) == 0) {
+    auto result = delete_room_file(url_decode(path.substr(std::string("/api/room/files/").size())));
+    send_json(fd, result.code, result.body);
+    return;
+  }
+  if (m == "POST" && path.rfind("/api/undo/", 0) == 0) {
+    auto result = undo_action(url_decode(path.substr(std::string("/api/undo/").size())));
+    send_json(fd, result.code, result.body);
     return;
   }
   if (m == "POST" && path == "/api/upload") {

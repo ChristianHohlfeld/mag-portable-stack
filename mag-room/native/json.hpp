@@ -12,6 +12,9 @@
 #include <utility>
 #include <vector>
 
+#include <unicode/ucnv.h>
+#include <unicode/ustring.h>
+#include <unicode/utf8.h>
 namespace mj {
 
 struct Val;
@@ -124,7 +127,37 @@ struct Val {
   }
 };
 
-inline void escapeTo(const std::string &s, std::string &out) {
+// Valid UTF-8 everywhere, one entry point: utf8_fix(). Conversion is done by
+// ICU (UTF-8 converter with default U+FFFD substitution), which follows the
+// Unicode/WHATWG "maximal subpart" practice (Unicode Core Spec 3.9, Table 3-8).
+inline std::string utf8_fix(const std::string &s) {
+  bool ascii = true;
+  for (unsigned char c : s) if (c >= 0x80) { ascii = false; break; }
+  if (ascii) return s;
+  UErrorCode e = U_ZERO_ERROR;
+  UConverter *cv = ucnv_open("UTF-8", &e);
+  if (U_FAILURE(e)) return std::string();
+  std::u16string u(s.size() + 1, u'\0');
+  int32_t n = ucnv_toUChars(cv, (UChar *)u.data(), (int32_t)u.size(), s.data(), (int32_t)s.size(), &e);
+  ucnv_close(cv);
+  if (U_FAILURE(e)) return std::string();
+  std::string o((size_t)n * 3 + 1, '\0'); int32_t m = 0; e = U_ZERO_ERROR;
+  u_strToUTF8WithSub(o.data(), (int32_t)o.size(), &m, (const UChar *)u.data(), n, 0xFFFD, nullptr, &e);
+  if (U_FAILURE(e)) return std::string();
+  o.resize((size_t)m); return o;
+}
+inline bool utf8_valid(const std::string &s) { return utf8_fix(s) == s; }
+// Cut to at most max bytes without splitting a code point (ICU U8 macros).
+inline std::string utf8_cut(const std::string &sIn, size_t max) {
+  std::string s = utf8_fix(sIn);
+  if (s.size() <= max) return s;
+  int32_t i = (int32_t)max;
+  U8_SET_CP_START((const uint8_t *)s.data(), 0, i);
+  return s.substr(0, (size_t)i);
+}
+
+inline void escapeTo(const std::string &sIn, std::string &out) {
+  const std::string s = utf8_fix(sIn);
   out.push_back('"');
   for (unsigned char c : s) {
     switch (c) {

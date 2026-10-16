@@ -64,7 +64,7 @@ class Native(unittest.TestCase):
   self.fail('Scheduler failed to become idle')
  def test_01_state_ui_and_readiness(self):
   self.assertEqual(self.request('/api/state')['runtime'],'C++17');self.assertTrue(self.request('/readyz')['ready'])
-  self.assertIn(b'Ein Raum',self.request('/',raw=True));self.assertIn(b'function',self.request('/static/marked.min.js',raw=True))
+  self.assertIn(b'Privater Raum',self.request('/',raw=True));self.assertIn(b'function',self.request('/static/marked.min.js',raw=True))
  def test_02_chunked_model_and_selected_agents(self):
   self.request('/api/message',{'text':'Test','bots':['test'],'web_search':False})
   for _ in range(100):

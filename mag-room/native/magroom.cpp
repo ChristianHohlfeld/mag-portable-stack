@@ -1633,6 +1633,23 @@ static Val probe_model_info() {
   v["gguf"] = path.empty() ? alias : gguf_display_name(path);
   v["alias"] = alias;
   v["engine"] = engine;
+  if (build.empty()) {
+    // ik_llama's /props has no build info: take it from the installed binary
+    // path in llm.env (IK_BIN=~/.local/ik/<commit>-<variant>/bin/llama-server).
+    std::string envtxt =
+        read_file(env("MAG_ROOM_LLM_ENV", "/etc/mag-llm/llm.env"));
+    auto pos = envtxt.find("\nIK_BIN=");
+    if (pos != std::string::npos) {
+      auto end = envtxt.find('\n', pos + 8);
+      std::string bin = envtxt.substr(pos + 8, end == std::string::npos
+                                                   ? std::string::npos
+                                                   : end - pos - 8);
+      bin.erase(std::remove(bin.begin(), bin.end(), '"'), bin.end());
+      auto dir = std::filesystem::path(trim(bin)).parent_path();
+      if (dir.filename() == "bin")
+        build = dir.parent_path().filename().string();
+    }
+  }
   v["build"] = build.empty() ? "unbekannt" : build;
   v["checked_at"] = (long)now_s();
   return v;

@@ -458,6 +458,7 @@ class SingleBot(unittest.TestCase):
   self.assertIn('alt',stored,'Saving must not drop parked bots')
  def test_frontend_single_bot_contract(self):
   html=self.request('/',raw=True).decode()
+  self.assertIn("[hidden]{display:none!important}",html)
   for needle in ("html-preview","sandbox','allow-scripts'","$('message').focus()","autofocus","e.key==='Enter'&&!e.shiftKey"):self.assertIn(needle,html)
   for needle in ("state.single_bot","$('add-agent').hidden=!!single","a.id===single"):self.assertIn(needle,html)
 class SingleBotVM(unittest.TestCase):

@@ -38,3 +38,21 @@ Probes und Verbindungsaufbau bleiben kurz (Health 5 s, Connect 5 s, `/health`-Pr
 - Audit-Log lesen (Gruppe `mag-audit-readers`): `mag-audit-tail -f`, `mag-audit-tail --verify`.
 - mag-llm stoppen/neu starten (RefuseManualStop): `sudo bash ops/deepseek/mag-llm-maint stop|restart`.
 - Modell neu prüfen erzwingen: `sudo rm /var/lib/mag-llm/verified.stamp && sudo systemctl start mag-model-gate`.
+
+## Engine ab 3.8: ik_llama.cpp, auf mag zugeschnitten
+
+`ENGINE=ik` in `/etc/mag-llm/llm.env` (gesetzt von `upgrade-3.8.sh`) schaltet mag-llm von llama.cpp auf
+ik_llama.cpp um – gleiches Modell, gleiche GGUF-Dateien, gleiche Vorlage `ops/mag-llm.service`
+(`render-ik-unit.sh` ersetzt nur ExecStart). `ENGINE=-` (bzw. `upgrade-3.8.sh --rollback`) schaltet zurück.
+
+| Baustein | Wirkung auf mag (2x E5-2680 v4, AVX2, 2 NUMA-Knoten) |
+|---|---|
+| `build-ik.sh` | fester ik-Stand + `ik-patches/`, GCC, `GGML_NATIVE` (Broadwell), mit Symbolen |
+| `-rtr` | Q8_0 → Q8_0_R8, MXFP4 → MXFP4_R8: AVX2-Kernels für 16 Zeilen je Durchgang (mainline: kein Q8_0-Repack auf x86) |
+| `0002-numa-local.patch`, `MAG_NUMA_LOCAL=<t>` | Zeilenblock *i* jeder Gewichtsmatrix (auch jedes Experten) liegt im RAM des Sockels, auf dem Thread *i* läuft; Threads blockweise je Sockel auf feste Kerne; Experten statisch statt dynamisch verteilt; Lokalität wird nach dem Laden gemessen (`journalctl -u mag-llm | grep mag_numa`) |
+| `MAG_THP=1` | Huge Pages für die Gewichte (2-MiB-Raster) |
+| `-muge` | up/gate der Experten in einem Tensor |
+| `0001-server-prompt-progress.patch` | `prompt_progress` im Stream → Fortschrittsanzeige im Raum |
+
+Welche Kombination läuft, entscheidet `upgrade-3.8.sh` per HTTP-A/B (nur übernommen, wenn ≥ 5 % besser
+als vorher und die Generierung nicht langsamer, danach Go/No-Go mit `preflight-tests.py`).

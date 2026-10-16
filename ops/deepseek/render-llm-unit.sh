@@ -18,9 +18,16 @@ if [[ -n "${MAG_LLM_ENV:-}" || -z "${HELP_FILE:-}" ]]; then
   if [[ -r "$_envf" ]]; then
     while IFS='=' read -r k v; do
       v=${v%\"}; v=${v#\"}
-      case "$k" in LOAD_ARGS|THREADS|THREADS_BATCH|BATCH|UBATCH|LLAMA_BIN|EXTRA_ARGS|NUMA_ARGS|LLAMA_NUMA) [[ -n "${!k:-}" ]] || printf -v "$k" '%s' "$v" ;; esac
-    done < <(grep -E '^(LOAD_ARGS|THREADS|THREADS_BATCH|BATCH|UBATCH|LLAMA_BIN|EXTRA_ARGS|NUMA_ARGS|LLAMA_NUMA)=' "$_envf" || true)
+      case "$k" in LOAD_ARGS|THREADS|THREADS_BATCH|BATCH|UBATCH|LLAMA_BIN|EXTRA_ARGS|NUMA_ARGS|LLAMA_NUMA|ENGINE|IK_BIN|IK_RTR|IK_ARGS|IK_ENV) [[ -n "${!k:-}" ]] || printf -v "$k" '%s' "$v" ;; esac
+    done < <(grep -E '^(LOAD_ARGS|THREADS|THREADS_BATCH|BATCH|UBATCH|LLAMA_BIN|EXTRA_ARGS|NUMA_ARGS|LLAMA_NUMA|ENGINE|IK_BIN|IK_RTR|IK_ARGS|IK_ENV)=' "$_envf" || true)
   fi
+fi
+# ab 3.8: ik_llama.cpp -> eigener Renderer (gleiche Vorlage, anderer ExecStart)
+if [[ "${ENGINE:-llama}" == ik ]]; then
+  export IK_BIN="${IK_BIN:-}" THREADS="${THREADS:-28}" THREADS_BATCH="${THREADS_BATCH:-28}" UBATCH="${UBATCH:-1024}"
+  export BATCH="${BATCH:-$UBATCH}" NUMA_ARGS="${NUMA_ARGS:-}" LLAMA_NUMA="${LLAMA_NUMA:-}" IK_RTR="${IK_RTR:-1}" IK_ARGS="${IK_ARGS:-}" IK_ENV="${IK_ENV:-}"
+  [[ "$NUMA_ARGS" == - ]] && NUMA_ARGS=""; [[ "$LLAMA_NUMA" == - ]] && LLAMA_NUMA=""
+  exec bash "$(dirname "$(readlink -f "$0")")/render-ik-unit.sh" "$TPL" "$DST"
 fi
 # ab 3.7: anderes llama-Binary (selbst gebaut, ops/deepseek/build-llama.sh); Hilfe und Flags kommen dann von dort
 if [[ -n "${LLAMA_BIN:-}" ]]; then

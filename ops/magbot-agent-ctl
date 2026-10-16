@@ -1,4 +1,4 @@
 #!/usr/bin/env bash
 set -euo pipefail
-[[ $# == 2 && ($1 == spawn || $1 == despawn) && $2 =~ ^agent[0-9]+$ ]] || { echo 'Invalid lifecycle invocation' >&2; exit 64; }
+[[ $# == 2 && ($1 == spawn || $1 == despawn || $1 == audit-proxy) && $2 =~ ^agent[0-9]+$ ]] || { echo 'Invalid lifecycle invocation' >&2; exit 64; }
 exec /usr/local/bin/magbot "$1" "$2"

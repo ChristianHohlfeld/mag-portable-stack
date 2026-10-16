@@ -1,5 +1,7 @@
 # MAG — native agent server
 
+> **Stack-Stand 3.8 (Tag `mag-stack-3.8`):** Hardware, Dienste/Ports, Engine/Flags, RAM-Regeln, Sandbox/Browser, git-memory-MCP, bekannte Bugs und Rollback in [docs/MAG-STACK-3.8.md](docs/MAG-STACK-3.8.md).
+
 One repository, one deployed application stack. No Docker, Ollama, Open WebUI,
 ComfyUI, Python room server or PM2 orchestration.
 
@@ -355,6 +357,7 @@ curl -fsS http://127.0.0.1:8766/api/browser-live/status
 
 Check MAG's browser in the Tailnet UI after deploying. A successful CI run
 does not establish live browser/CDP connectivity on the private KVM host.
+
 
 ## Browser navigation and website verification (2026-10-14)
 

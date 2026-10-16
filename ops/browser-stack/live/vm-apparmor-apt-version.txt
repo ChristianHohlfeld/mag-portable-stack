@@ -1,0 +1,13 @@
+abi <abi/4.0>,
+include <tunables/global>
+profile mag-chromium /opt/magbot/browsers/chromium-*/chrome-linux/chrome flags=(unconfined) {
+ userns,
+}
+profile mag-google-chrome /opt/google/chrome/chrome flags=(unconfined) {
+ userns,
+}
+Google Chrome 155.0.8059.84 
+
+cat: /etc/apt/sources.list.d/google-chrome.list: No such file or directory
+[1016/115313.385298:WARNING:chrome/app/chrome_main_linux.cc:84] Read channel stable from /opt/google/chrome/CHROME_VERSION_EXTRA
+

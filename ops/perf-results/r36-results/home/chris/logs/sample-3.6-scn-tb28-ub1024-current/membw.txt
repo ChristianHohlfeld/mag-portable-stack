@@ -1,0 +1,12 @@
+07:07:44
+          20223.03 MiB  uncore_imc/cas_count_read/                                            
+          14513.08 MiB  uncore_imc/cas_count_write/                                           
+       5.001870609 seconds time elapsed
+07:08:05
+          62854.40 MiB  uncore_imc/cas_count_read/                                            
+          22361.49 MiB  uncore_imc/cas_count_write/                                           
+       5.002307246 seconds time elapsed
+07:08:15
+          97148.68 MiB  uncore_imc/cas_count_read/                                            
+           9986.15 MiB  uncore_imc/cas_count_write/                                           
+       5.002415084 seconds time elapsed

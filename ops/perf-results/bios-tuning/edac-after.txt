@@ -1,0 +1,49 @@
+Oct 16 07:19:15 mag kernel: EDAC MC: Ver: 3.0.0
+Oct 16 07:19:19 mag kernel: EDAC sbridge: Seeking for: PCI ID 8086:6fa0
+Oct 16 07:19:19 mag kernel: EDAC sbridge: Seeking for: PCI ID 8086:6fa0
+Oct 16 07:19:19 mag kernel: EDAC sbridge: Seeking for: PCI ID 8086:6fa0
+Oct 16 07:19:19 mag kernel: EDAC sbridge: Seeking for: PCI ID 8086:6f60
+Oct 16 07:19:19 mag kernel: EDAC sbridge: Seeking for: PCI ID 8086:6f60
+Oct 16 07:19:19 mag kernel: EDAC sbridge: Seeking for: PCI ID 8086:6f60
+Oct 16 07:19:19 mag kernel: EDAC sbridge: Seeking for: PCI ID 8086:6fa8
+Oct 16 07:19:19 mag kernel: EDAC sbridge: Seeking for: PCI ID 8086:6fa8
+Oct 16 07:19:19 mag kernel: EDAC sbridge: Seeking for: PCI ID 8086:6fa8
+Oct 16 07:19:19 mag kernel: EDAC sbridge: Seeking for: PCI ID 8086:6f71
+Oct 16 07:19:19 mag kernel: EDAC sbridge: Seeking for: PCI ID 8086:6f71
+Oct 16 07:19:19 mag kernel: EDAC sbridge: Seeking for: PCI ID 8086:6f71
+Oct 16 07:19:19 mag kernel: EDAC sbridge: Seeking for: PCI ID 8086:6faa
+Oct 16 07:19:19 mag kernel: EDAC sbridge: Seeking for: PCI ID 8086:6faa
+Oct 16 07:19:19 mag kernel: EDAC sbridge: Seeking for: PCI ID 8086:6faa
+Oct 16 07:19:19 mag kernel: EDAC sbridge: Seeking for: PCI ID 8086:6fab
+Oct 16 07:19:19 mag kernel: EDAC sbridge: Seeking for: PCI ID 8086:6fab
+Oct 16 07:19:19 mag kernel: EDAC sbridge: Seeking for: PCI ID 8086:6fab
+Oct 16 07:19:19 mag kernel: EDAC sbridge: Seeking for: PCI ID 8086:6fac
+Oct 16 07:19:19 mag kernel: EDAC sbridge: Seeking for: PCI ID 8086:6fad
+Oct 16 07:19:19 mag kernel: EDAC sbridge: Seeking for: PCI ID 8086:6f68
+Oct 16 07:19:19 mag kernel: EDAC sbridge: Seeking for: PCI ID 8086:6f68
+Oct 16 07:19:19 mag kernel: EDAC sbridge: Seeking for: PCI ID 8086:6f68
+Oct 16 07:19:19 mag kernel: EDAC sbridge: Seeking for: PCI ID 8086:6f79
+Oct 16 07:19:19 mag kernel: EDAC sbridge: Seeking for: PCI ID 8086:6f79
+Oct 16 07:19:19 mag kernel: EDAC sbridge: Seeking for: PCI ID 8086:6f79
+Oct 16 07:19:19 mag kernel: EDAC sbridge: Seeking for: PCI ID 8086:6f6a
+Oct 16 07:19:19 mag kernel: EDAC sbridge: Seeking for: PCI ID 8086:6f6a
+Oct 16 07:19:19 mag kernel: EDAC sbridge: Seeking for: PCI ID 8086:6f6a
+Oct 16 07:19:19 mag kernel: EDAC sbridge: Seeking for: PCI ID 8086:6f6b
+Oct 16 07:19:19 mag kernel: EDAC sbridge: Seeking for: PCI ID 8086:6f6b
+Oct 16 07:19:19 mag kernel: EDAC sbridge: Seeking for: PCI ID 8086:6f6b
+Oct 16 07:19:19 mag kernel: EDAC sbridge: Seeking for: PCI ID 8086:6f6c
+Oct 16 07:19:19 mag kernel: EDAC sbridge: Seeking for: PCI ID 8086:6f6d
+Oct 16 07:19:19 mag kernel: EDAC sbridge: Seeking for: PCI ID 8086:6ffc
+Oct 16 07:19:19 mag kernel: EDAC sbridge: Seeking for: PCI ID 8086:6ffc
+Oct 16 07:19:19 mag kernel: EDAC sbridge: Seeking for: PCI ID 8086:6ffc
+Oct 16 07:19:19 mag kernel: EDAC sbridge: Seeking for: PCI ID 8086:6ffd
+Oct 16 07:19:19 mag kernel: EDAC sbridge: Seeking for: PCI ID 8086:6ffd
+Oct 16 07:19:19 mag kernel: EDAC sbridge: Seeking for: PCI ID 8086:6ffd
+Oct 16 07:19:19 mag kernel: EDAC sbridge: Seeking for: PCI ID 8086:6faf
+Oct 16 07:19:19 mag kernel: EDAC sbridge: Seeking for: PCI ID 8086:6faf
+Oct 16 07:19:19 mag kernel: EDAC sbridge: Seeking for: PCI ID 8086:6faf
+Oct 16 07:19:19 mag kernel: EDAC MC0: Giving out device to module sb_edac controller Broadwell SrcID#1_Ha#0: DEV 0000:ff:12.0 (INTERRUPT)
+Oct 16 07:19:19 mag kernel: EDAC MC1: Giving out device to module sb_edac controller Broadwell SrcID#0_Ha#0: DEV 0000:7f:12.0 (INTERRUPT)
+Oct 16 07:19:19 mag kernel: EDAC MC2: Giving out device to module sb_edac controller Broadwell SrcID#1_Ha#1: DEV 0000:ff:12.4 (INTERRUPT)
+Oct 16 07:19:19 mag kernel: EDAC MC3: Giving out device to module sb_edac controller Broadwell SrcID#0_Ha#1: DEV 0000:7f:12.4 (INTERRUPT)
+Oct 16 07:19:19 mag kernel: EDAC sbridge:  Ver: 1.1.2 

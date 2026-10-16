@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# Offline mode for all agent VMs (virbr0): host-level nftables, not just prompt.
+# offline: VMs keep only what the room needs for control and the local live
+#          view (DHCP, bridge 8767, UDP stream 18783). No DNS, no audit/web
+#          proxies (8888/8889), no git gateway (3001), no forwarding at all.
+#          Established connections are dropped too, except replies to the
+#          host-initiated browserd control channel (tcp sport 9225), which the
+#          live view/shell signaling needs.
+#          Exec runs via qemu-guest-agent (virtio), unaffected.
+# online:  removes the table; the normal mag_agents policy applies again.
+set -euo pipefail
+[[ $# == 1 && ($1 == offline || $1 == online || $1 == status) ]] || { echo 'usage: magbot-netmode offline|online|status' >&2; exit 64; }
+case $1 in
+ offline)
+  nft -f - <<'NFT'
+table inet mag_offline
+delete table inet mag_offline
+table inet mag_offline {
+ chain input {
+  type filter hook input priority -20; policy accept;
+  iifname "virbr0" udp dport { 67, 18783, 18840-18890 } accept
+  iifname "virbr0" ip daddr 192.168.122.1 tcp dport 8767 accept
+  iifname "virbr0" ip daddr 192.168.122.1 tcp sport 9225 ct state established accept
+  iifname "virbr0" counter drop
+ }
+ chain forward {
+  type filter hook forward priority -20; policy accept;
+  iifname "virbr0" counter drop
+  oifname "virbr0" counter drop
+ }
+}
+NFT
+  ;;
+ online) nft delete table inet mag_offline 2>/dev/null || true ;;
+ status) nft list table inet mag_offline >/dev/null 2>&1 && echo offline || echo online ;;
+esac

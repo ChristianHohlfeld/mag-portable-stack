@@ -1,0 +1,18 @@
+# Lädt die nftables-Tabelle inet mag_audit (Erzwingung des zentralen Loggings).
+# Eigene Tabelle -> unabhängig von /etc/nftables.conf, libvirt- und Docker-Regeln.
+[Unit]
+Description=MAG audit firewall rules (enforce central LLM/web interface)
+After=network-pre.target libvirtd.service
+Wants=network-pre.target
+Before=mag-llm.service mag-120.service mag-audit-gateway.service
+RefuseManualStop=yes
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/nft -f /etc/nftables.d/mag-audit.nft
+ExecReload=/usr/sbin/nft -f /etc/nftables.d/mag-audit.nft
+ExecStop=/usr/sbin/nft delete table inet mag_audit
+
+[Install]
+WantedBy=multi-user.target

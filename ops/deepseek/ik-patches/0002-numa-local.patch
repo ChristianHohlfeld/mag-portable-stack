@@ -1,0 +1,366 @@
+From 4026d2d72f60a19a787c78421d1651f3a6653e42 Mon Sep 17 00:00:00 2001
+From: mag <mag@localhost>
+Date: Fri, 16 Oct 2026 10:49:58 +0200
+Subject: [PATCH 2/2] mag: NUMA-local weights, static expert split and thread
+ blocks (MAG_NUMA_LOCAL, MAG_THP), locality check
+
+---
+ ggml/src/ggml.c |  85 ++++++++++++++++++++++--
+ src/llama.cpp   | 172 ++++++++++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 250 insertions(+), 7 deletions(-)
+
+diff --git a/ggml/src/ggml.c b/ggml/src/ggml.c
+index c5fd7ec2..ed0c31a6 100644
+--- a/ggml/src/ggml.c
++++ b/ggml/src/ggml.c
+@@ -18587,6 +18587,8 @@ static int ggml_compute_forward_mul_mat(
+ 
+ // ggml_compute_forward_mul_mat_id
+ 
++static int mag_numa_local(void);  // mag: NUMA-lokaler Betrieb, s.u.
++
+ static void ggml_compute_forward_mul_mat_id(
+         const struct ggml_compute_params * params,
+               struct ggml_tensor * dst) {
+@@ -18702,7 +18704,8 @@ static void ggml_compute_forward_mul_mat_id(
+ 
+ #if GGML_USE_IQK_MULMAT
+ #if defined GGML_EXPERT_CHUNKING
+-    if (ne13 == 1 && dst->type == GGML_TYPE_F32) {
++    // mag: im NUMA-lokalen Modus statisch (Thread i -> Zeilenblock i jedes Experten), sonst dynamische Chunks
++    if (ne13 == 1 && dst->type == GGML_TYPE_F32 && !mag_numa_local()) {
+         const void * wdata_mm    = (src1->type == vec_dot_type) ? src1->data : params->wdata;
+         const size_t row_size_mm = ggml_row_size(vec_dot_type, ne10);
+ 
+@@ -19024,6 +19027,8 @@ static void ggml_compute_forward_mul_mat_id_up_gate(
+     }
+ 
+ #if defined GGML_EXPERT_CHUNKING
++    // mag: im NUMA-lokalen Modus der statische Weg unten (Thread i -> Zeilenblock i jedes Experten)
++    if (!mag_numa_local()) {
+ 
+     if (ith == 0) {
+         atomic_store(&params->shared->current_chunk, nth);
+@@ -19089,8 +19094,10 @@ static void ggml_compute_forward_mul_mat_id_up_gate(
+ 
+         chunk_id_ug = atomic_fetch_add(&params->shared->current_chunk, 1);
+     }
+-
+-#else
++    return;
++    }
++#endif
++    {
+ 
+     ggml_barrier(params->shared);
+ 
+@@ -19136,7 +19143,7 @@ static void ggml_compute_forward_mul_mat_id_up_gate(
+                             matrix_rows + cur_a*ne12, limit, ith, nth)) GGML_ABORT("fatal error");
+ 
+     }
+-#endif
++    }
+ #undef MMID_MATRIX_ROW
+ }
+ 
+@@ -28960,10 +28967,73 @@ typedef int ggml_lock_t;
+ 
+ // Android's libc implementation "bionic" does not support setting affinity
+ #if defined(__gnu_linux__)
+-static void set_numa_thread_affinity(int thread_n) {
++// mag: NUMA-lokaler Betrieb (MAG_NUMA_LOCAL=<threads>). Die iqk-Matmuls teilen die Zeilen jeder
++// Gewichtsmatrix statisch und zusammenhängend auf die Threads auf (Thread i -> Zeilenblock i).
++// Hier bekommt jeder Knoten einen zusammenhängenden Block von Threads (statt reihum), jeder Thread
++// eine feste CPU (physische Kerne zuerst); llama legt die Zeilenblöcke passend auf die Knoten
++// (mag_numa_place_weights). So liest jeder Kern seine Gewichte aus dem RAM des eigenen Sockels.
++static int mag_numa_local(void) {
++    static int v = -1;
++    if (v < 0) {
++        const char * s = getenv("MAG_NUMA_LOCAL");
++        v = (s && atoi(s) > 0) ? 1 : 0;
++    }
++    return v;
++}
++static uint32_t mag_cpu_order[GGML_NUMA_MAX_NODES][GGML_NUMA_MAX_CPUS];
++static pthread_once_t mag_cpu_order_once = PTHREAD_ONCE_INIT;
++static int mag_cpu_is_primary(uint32_t cpu) {
++    char path[160];
++    snprintf(path, sizeof(path), "/sys/devices/system/cpu/cpu%u/topology/thread_siblings_list", cpu);
++    FILE * f = fopen(path, "r");
++    if (!f) return 1;
++    unsigned first = cpu;
++    const int ok = fscanf(f, "%u", &first);
++    fclose(f);
++    return ok != 1 || first == cpu;
++}
++static void mag_build_cpu_order(void) {
++    for (uint32_t n = 0; n < g_state.numa.n_nodes; ++n) {
++        const struct ggml_numa_node * node = &g_state.numa.nodes[n];
++        uint32_t k = 0;
++        for (int pass = 0; pass < 2; ++pass) {
++            for (uint32_t i = 0; i < node->n_cpus; ++i) {
++                const int prim = mag_cpu_is_primary(node->cpus[i]);
++                if ((pass == 0) == (prim != 0)) mag_cpu_order[n][k++] = node->cpus[i];
++            }
++        }
++    }
++}
++static int mag_set_numa_local_affinity(int thread_n, int n_threads) {
++    if (!mag_numa_local() || g_state.numa.numa_strategy != GGML_NUMA_STRATEGY_DISTRIBUTE || n_threads <= 0) {
++        return 0;
++    }
++    const int64_t N = g_state.numa.n_nodes;
++    const uint32_t node_num = (uint32_t)(((int64_t) thread_n * N) / n_threads);
++    const int64_t first = ((int64_t) node_num * n_threads + N - 1) / N; // erster Thread dieses Knotens
++    const struct ggml_numa_node * node = &g_state.numa.nodes[node_num];
++    if (node->n_cpus == 0) return 0;
++    pthread_once(&mag_cpu_order_once, mag_build_cpu_order);
++    const uint32_t cpu = mag_cpu_order[node_num][(uint32_t)(thread_n - first) % node->n_cpus];
++    const size_t setsize = CPU_ALLOC_SIZE(g_state.numa.total_cpus);
++    cpu_set_t * cpus = CPU_ALLOC(g_state.numa.total_cpus);
++    CPU_ZERO_S(setsize, cpus);
++    CPU_SET_S(cpu, setsize, cpus);
++    const int rv = pthread_setaffinity_np(pthread_self(), setsize, cpus);
++    if (rv) {
++        fprintf(stderr, "warning: pthread_setaffinity_np() failed: %s\n", strerror(rv));
++    }
++    CPU_FREE(cpus);
++    return 1;
++}
++
++static void set_numa_thread_affinity(int thread_n, int n_threads) {
+     if (!ggml_is_numa()) {
+         return;
+     }
++    if (mag_set_numa_local_affinity(thread_n, n_threads)) {
++        return;
++    }
+ 
+     int node_num;
+     int rv;
+@@ -29058,7 +29128,8 @@ static void set_cpu_thread_affinity(const struct ggml_cplan * cplan, int thread_
+ #else
+ // TODO: Windows etc.
+ // (the linux implementation may also work on BSD, someone should test)
+-static void set_numa_thread_affinity(int thread_n) { UNUSED(thread_n);  }
++static void set_numa_thread_affinity(int thread_n, int n_threads) { UNUSED(thread_n); UNUSED(n_threads); }
++static int mag_numa_local(void) { return 0; }
+ static void clear_numa_thread_affinity(void) {}
+ static void set_cpu_thread_affinity(const struct ggml_cplan * cplan, int thread_n) { UNUSED(cplan); UNUSED(thread_n); }
+ #endif
+@@ -29560,7 +29631,7 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
+     const struct ggml_cgraph * cgraph = state->shared->cgraph;
+     const struct ggml_cplan  * cplan  = state->shared->cplan;
+ 
+-    set_numa_thread_affinity(state->ith);
++    set_numa_thread_affinity(state->ith, state->shared->n_threads);
+     set_cpu_thread_affinity(cplan, state->ith); // explicit affinity takes precedence over NUMA
+ 
+     struct ggml_compute_params params = {
+diff --git a/src/llama.cpp b/src/llama.cpp
+index a074c624..b9f2f709 100644
+--- a/src/llama.cpp
++++ b/src/llama.cpp
+@@ -129,6 +129,13 @@ void llama_set_mtp_n_heads(struct llama_context * ctx, int32_t mtp_n_heads);
+ #include <regex>
+ #include <tuple>
+ 
++#if defined(__linux__)
++#include <sys/mman.h>
++#include <sys/syscall.h>
++#include <unistd.h>
++#include <cerrno>
++#endif
++
+ #if defined(_MSC_VER)
+ #pragma warning(disable: 4244 4267) // possible loss of data
+ #endif
+@@ -4522,6 +4529,165 @@ static std::pair<std::vector<double>, double> get_layer_sizes(const llama_model_
+     return std::make_pair(std::move(result), max_compute);
+ }
+ 
++// mag: NUMA-lokale Gewichte (MAG_NUMA_LOCAL=<Threads der Generierung>, nur ohne mmap, z.B. mit -rtr).
++// Die iqk-Matmuls geben Thread i den zusammenhängenden Zeilenblock i jeder Gewichtsmatrix (bei Experten:
++// jedes Experten). ggml pinnt im gleichen Modus die Threads blockweise auf die Knoten. Hier wird jeder
++// Zeilenblock per mbind(MPOL_PREFERRED) dem Knoten zugewiesen, dessen Threads ihn rechnen – BEVOR die
++// Seiten angefasst werden (mlock/Laden belegen sie dann gleich auf dem richtigen Knoten).
++// Nur Leistung, nie Korrektheit: falsch platzierte Seiten werden lediglich über QPI gelesen.
++// MAG_NUMA_ALIGN=<Bytes> Grenzen-Raster (Standard 4096), MAG_THP=1 zusätzlich MADV_HUGEPAGE (Raster 2 MiB).
++// Nach dem Laden misst mag_numa_verify_weights per move_pages(), wie viele Seiten wirklich lokal liegen.
++#if defined(__linux__)
++struct mag_numa_cfg {
++    int nth = 0, n_nodes = 0, test_nodes = 0;
++    bool thp = false;
++    size_t align = 4096;
++};
++static bool mag_numa_config(mag_numa_cfg & c) {
++    const char * s = getenv("MAG_NUMA_LOCAL");
++    c.nth = s ? atoi(s) : 0;
++    if (c.nth <= 0) return false;
++    for (c.n_nodes = 0; c.n_nodes < 64; ++c.n_nodes) {
++        char path[96];
++        snprintf(path, sizeof(path), "/sys/devices/system/node/node%d", c.n_nodes);
++        if (access(path, F_OK) != 0) break;
++    }
++    // Test ohne NUMA-Hardware: MAG_NUMA_TEST_NODES=<n> rechnet die Aufteilung für n Knoten, bindet aber alles an Knoten 0
++    c.test_nodes = getenv("MAG_NUMA_TEST_NODES") ? atoi(getenv("MAG_NUMA_TEST_NODES")) : 0;
++    if (c.test_nodes >= 2) c.n_nodes = c.test_nodes;
++    if (c.n_nodes < 2) {
++        LLAMA_LOG_INFO("mag_numa: MAG_NUMA_LOCAL gesetzt, aber nur %d NUMA-Knoten – nichts zu tun\n", c.n_nodes);
++        return false;
++    }
++    c.thp = getenv("MAG_THP") && atoi(getenv("MAG_THP")) > 0;
++    c.align = c.thp ? (size_t) 2 << 20 : (size_t) sysconf(_SC_PAGESIZE);
++    if (const char * a = getenv("MAG_NUMA_ALIGN")) {
++        const size_t v = strtoull(a, nullptr, 10);
++        if (v >= 4096 && (v & (v - 1)) == 0) c.align = v;
++    }
++    return true;
++}
++// Ruft fn(p0, p1, node) für jeden Zeilenblock jeder Gewichtsmatrix von t auf (gleiche Rechnung wie iqk_mul_mat*:
++// Gruppen je Thread = ceil(G/nth), Thread i -> Gruppen [i*per, (i+1)*per); Knoten k hat die Threads
++// [ceil(k*nth/N), ceil((k+1)*nth/N)) – genau die, die ggml im NUMA-lokalen Modus auf Knoten k pinnt).
++static bool mag_is_interleaved(ggml_type type) {   // schon umsortiert (…_r4/_r8/_r16)
++    const char * n = ggml_type_name(type);
++    const char * r = n ? strrchr(n, '_') : nullptr;
++    return r && r[1] == 'r' && r[2] >= '0' && r[2] <= '9';
++}
++template <typename F>
++static bool mag_numa_ranges(const ggml_tensor * t, const mag_numa_cfg & c, F && fn) {
++    if (t->view_src != nullptr || t->data == nullptr || ggml_n_dims(t) < 2) return false;
++    const bool merged = strstr(t->name, "gate_up_exps") != nullptr;   // -muge: je Experte [gate-Zeilen][up-Zeilen], jede Hälfte eigener Matmul
++    const int64_t nr = t->ne[1] / (merged ? 2 : 1);
++    if (nr < 32 * (int64_t) c.nth) return false;              // kleine Matrizen: iqk verteilt Kacheln reihum
++    // iqk teilt in Gruppen von MulMat::num_rows() Zeilen: auf AVX2 16 für Q8_0_R8/MXFP4_R8 (und für die
++    // Q8_0_R8-Umwandlung beim Prompt-Lesen), sonst 1
++    const int64_t g = (ggml_type) iqk_repacked_type(t) != t->type || mag_is_interleaved(t->type) ? 16 : 1;
++    if (nr % g) return false;
++    const int64_t G = nr / g, per = (G + c.nth - 1) / c.nth;
++    const size_t slice = merged ? (size_t) nr * t->nb[1] : t->nb[2];   // Abstand der Experten-Matrizen
++    const int64_t n_slices = t->ne[2] * t->ne[3] * (merged ? 2 : 1);
++    for (int64_t is = 0; is < n_slices; ++is) {
++        uint8_t * sb = (uint8_t *) t->data + (merged ? is * slice : (is % t->ne[2]) * t->nb[2] + (is / t->ne[2]) * t->nb[3]);
++        for (int k = 0; k < c.n_nodes; ++k) {
++            const int64_t th0 = ((int64_t) k * c.nth + c.n_nodes - 1) / c.n_nodes;
++            const int64_t th1 = ((int64_t)(k + 1) * c.nth + c.n_nodes - 1) / c.n_nodes;
++            const int64_t r0 = std::min(G, th0 * per) * g;
++            const int64_t r1 = k == c.n_nodes - 1 ? nr : std::min(G, th1 * per) * g;
++            if (r1 > r0) fn(sb + r0 * t->nb[1], sb + r1 * t->nb[1], k);
++        }
++    }
++    return true;
++}
++#endif
++
++static void mag_numa_place_weights(ggml_context * ctx, ggml_backend_buffer_t buf) {
++#if defined(__linux__)
++    mag_numa_cfg c;
++    if (buf == nullptr || !ggml_backend_buffer_is_host(buf) || !mag_numa_config(c)) {
++        return;
++    }
++    const size_t align = c.align;
++    uint8_t * base = (uint8_t *) ggml_backend_buffer_get_base(buf);
++    const size_t bsize = ggml_backend_buffer_get_size(buf);
++    const uintptr_t lo = ((uintptr_t) base + align - 1) & ~(uintptr_t)(align - 1);
++    const uintptr_t hi = ((uintptr_t) base + bsize) & ~(uintptr_t)(align - 1);
++    auto rnd = [&](uintptr_t x) { return (x + align/2) & ~(uintptr_t)(align - 1); };   // auf das nächste Raster
++    if (c.thp && hi > lo && madvise((void *) lo, hi - lo, MADV_HUGEPAGE) != 0) {
++        LLAMA_LOG_WARN("mag_numa: madvise(MADV_HUGEPAGE) fehlgeschlagen: %s\n", strerror(errno));
++    }
++    std::vector<size_t> per_node(c.n_nodes, 0);
++    size_t n_calls = 0, n_fail = 0, n_tensors = 0;
++    for (ggml_tensor * t = ggml_get_first_tensor(ctx); t != nullptr; t = ggml_get_next_tensor(ctx, t)) {
++        if (t->buffer != buf) continue;
++        n_tensors += mag_numa_ranges(t, c, [&](uint8_t * p0, uint8_t * p1, int node) {
++            uintptr_t a0 = std::max(rnd((uintptr_t) p0), lo), a1 = std::min(rnd((uintptr_t) p1), hi);
++            if (a1 <= a0) return;
++            const int bind = c.test_nodes >= 2 ? 0 : node;
++            unsigned long mask[2] = {0, 0};
++            mask[bind / 64] |= 1ul << (bind % 64);
++            ++n_calls;
++            // MPOL_PREFERRED = 1 (fällt bei vollem Knoten zurück statt zu scheitern), MPOL_MF_MOVE = 2
++            if (syscall(SYS_mbind, (void *) a0, (unsigned long)(a1 - a0), 1, mask, (unsigned long) 128, 2u) != 0) {
++                ++n_fail;
++                return;
++            }
++            per_node[node] += a1 - a0;
++        }) ? 1 : 0;
++    }
++    std::string msg;
++    for (int k = 0; k < c.n_nodes; ++k) msg += format(" node%d=%.2f GiB", k, per_node[k] / 1073741824.0);
++    LLAMA_LOG_INFO("mag_numa: Platzierung für %d Threads: %zu Tensoren, %zu Bereiche (%zu fehlgeschlagen), Raster %zu KiB%s,%s\n",
++            c.nth, n_tensors, n_calls, n_fail, align / 1024, c.thp ? ", THP" : "", msg.c_str());
++#else
++    GGML_UNUSED(ctx); GGML_UNUSED(buf);
++#endif
++}
++
++// Stichprobe: auf welchem Knoten liegen die Seiten jedes Zeilenblocks wirklich? (move_pages ohne Ziel = Abfrage)
++static void mag_numa_verify_weights(const std::vector<std::pair<std::string, ggml_tensor *>> & tensors) {
++#if defined(__linux__)
++    mag_numa_cfg c;
++    if (!mag_numa_config(c)) return;
++    const size_t page = (size_t) sysconf(_SC_PAGESIZE);
++    const size_t step = std::max<size_t>(page, (size_t) 64 * page);    // jede 64. Seite
++    size_t n_local = 0, n_remote = 0, n_other = 0;
++    double bytes = 0;
++    std::vector<void *> pages; std::vector<int> want, status;
++    auto flush = [&]() {
++        if (pages.empty()) return;
++        status.assign(pages.size(), -1);
++        if (syscall(SYS_move_pages, 0, (unsigned long) pages.size(), pages.data(), nullptr, status.data(), 0) == 0) {
++            for (size_t i = 0; i < pages.size(); ++i) {
++                const int expect = c.test_nodes >= 2 ? 0 : want[i];
++                if (status[i] < 0) ++n_other; else if (status[i] == expect) ++n_local; else ++n_remote;
++            }
++        } else {
++            n_other += pages.size();
++        }
++        pages.clear(); want.clear();
++    };
++    for (const auto & it : tensors) {
++        const ggml_tensor * t = it.second;
++        if (t->buffer == nullptr || !ggml_backend_buffer_is_host(t->buffer)) continue;
++        mag_numa_ranges(t, c, [&](uint8_t * p0, uint8_t * p1, int node) {
++            bytes += (double)(p1 - p0);
++            for (uintptr_t a = ((uintptr_t) p0 + page - 1) & ~(uintptr_t)(page - 1); a + page <= (uintptr_t) p1; a += step) {
++                pages.push_back((void *) a); want.push_back(node);
++                if (pages.size() >= 4096) flush();
++            }
++        });
++    }
++    flush();
++    const size_t n = n_local + n_remote;
++    LLAMA_LOG_INFO("mag_numa: Lokalität der Gewichte (Stichprobe %zu Seiten von %.1f GiB): %.2f %% lokal, %zu entfernt, %zu ohne Auskunft\n",
++            n + n_other, bytes / 1073741824.0, n ? 100.0 * n_local / n : 0.0, n_remote, n_other);
++#else
++    GGML_UNUSED(tensors);
++#endif
++}
++
+ // Returns false if canceled by progress_callback
+ static bool llm_load_tensors(
+         llama_model_loader & ml,
+@@ -5216,6 +5382,9 @@ static bool llm_load_tensors(
+                     throw std::runtime_error("unable to allocate backend buffer");
+                 }
+                 model.bufs.push_back(buf);
++                if (!ml.use_mmap && !ggml_backend_buffer_is_multi_buffer(buf)) {
++                    mag_numa_place_weights(ctx, buf);   // mag: vor mlock/Laden, s.o.
++                }
+                 if (use_mlock && ggml_backend_buffer_is_host(buf) && !ggml_backend_buffer_is_multi_buffer(buf)) {
+                     model.mlock_bufs.emplace_back(new llama_mlock);
+                     auto & mlock_buf = model.mlock_bufs.back();
+@@ -5518,6 +5687,9 @@ static bool llm_load_tensors(
+         }
+         LLAMA_LOG_INFO("============ Repacked %d tensors (%d skipped file-aliased)\n", n_repacked, n_skipped);
+     }
++    if (!ml.use_mmap) {
++        mag_numa_verify_weights(model.tensors_by_name);   // mag: echte Lokalität ins Log
++    }
+ 
+     if (model.arch == LLM_ARCH_BITNET) {
+         auto set_scale = [] (ggml_tensor * w, ggml_tensor * s) {
+-- 
+2.43.0
+

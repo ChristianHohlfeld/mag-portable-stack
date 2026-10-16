@@ -115,7 +115,13 @@ public:
         if (h->isObj())
           for (auto &kv : *h->obj)
             if (strcasecmp(kv.first.c_str(), k) == 0) e[k] = kv.second.asStr();
-    last_nav = e;
+    // Main frame id is stable across navigations (= frame used for the
+    // isolated world). iframes (e.g. reCAPTCHA) are logged marked "sub" and
+    // never replace last_nav.
+    const std::string fid = str(*p, "frameId");
+    const bool main = world_frame.empty() || fid == world_frame;
+    e["frame"] = main ? "main" : "sub";
+    if (main) last_nav = e;
     std::ofstream("/home/bot/browserd/nav.log", std::ios::app) << mj::dump(e) << "\n";
   }
   Val last_nav;

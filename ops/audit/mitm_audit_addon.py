@@ -13,6 +13,7 @@ Start (siehe mag-audit-webproxy.service):
 import hashlib
 import json
 import os
+import socket
 import sys
 import time
 
@@ -169,6 +170,28 @@ class BrowserPassthrough:
         WRITER.write({"type": "browser_tunnel", "flow_id": flow.id, "client": _client(flow),
                       "host": host, "port": port, "blocked": _blocked(host),
                       "started": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())})
+
+    def server_connect(self, data):
+        # Optional: Browser-Tunnel über IPv4 ausleiten (MAG_BROWSER_EGRESS=ipv4 in webproxy.env).
+        # Test 16.10.: v4 (92.209.235.110) ebenso 429/sorry wie v6 -> Default aus.
+        if os.environ.get("MAG_BROWSER_EGRESS", "any") != "ipv4":
+            return
+        if not _browser_port(data.client):
+            return
+        host, port = data.server.address
+        try:
+            import ipaddress
+            if ipaddress.ip_address(host).version == 4:
+                return
+        except ValueError:
+            pass
+        try:
+            v4 = socket.getaddrinfo(host, port, socket.AF_INET, socket.SOCK_STREAM)[0][4][0]
+        except OSError:
+            return  # kein A-Record: Standardverhalten
+        data.server.address = (v4, port)
+        if not data.server.sni:
+            data.server.sni = host
 
     def tls_clienthello(self, data):
         if _browser_port(data.context.client):

@@ -41,7 +41,7 @@ Nichts davon startet `mag-llm` neu. Der Modellserver bleibt unangetastet.
 
 1. Raum idle lassen. Release wie sonst mit `ops/deploy.sh` (nur `mag-120`,
    nicht `mag-llm`). Vor nginx-Umstellung bleibt der bisherige Eingang aktiv. Danach muss jeder externe Aufruf mag-whois durchlaufen.
-2. Owner-Datei anlegen, **bevor** Caddy neu lädt. Login von Chris holen mit
+2. Owner-Datei anlegen, **bevor** nginx neu lädt. Login von Chris holen mit
    `tailscale whois <seine-tailscale-ip>` (Feld LoginName), nicht raten:
 
    ```json

@@ -374,6 +374,28 @@ class Native(unittest.TestCase):
   self.assertNotIn('confirm(',html.replace('magConfirm(',''))
   self.request('/api/jobs/'+j['id'],method='DELETE');Model.reply=None
 
+ def test_15k_queue_move_persists_and_broadcasts(self):
+  self.wait_idle();self.request('/api/stop',{})
+  try:
+   created=[self.request('/api/message',{'text':t,'bots':['test']})['item']
+            for t in ['Sort-A','Sort-B','Sort-C']]
+   ids=[p['id'] for p in created]
+   self.assertEqual([p['id'] for p in self.request('/api/queue',method='GET')['pending']],ids)
+   self.request('/api/queue/'+ids[2]+'/move',{'before':ids[0]})
+   expected=[ids[2],ids[0],ids[1]]
+   self.assertEqual([p['id'] for p in self.request('/api/queue',method='GET')['pending']],expected)
+   self.assertEqual([p['id'] for p in json.loads((self.state/'queue.json').read_text())['pending']],expected)
+   self.request('/api/queue/'+ids[2]+'/move',{'before':''})
+   self.assertEqual([p['id'] for p in self.request('/api/queue',method='GET')['pending']],[ids[0],ids[1],ids[2]])
+   self.error(404,'/api/queue/'+ids[0]+'/move',{'before':'not-a-job'})
+   html=self.request('/',raw=True).decode()
+   for needle in ("queueDropAt(","queueShift(","dragstart","pointerup","/move","photo-preview","upload-photo"):
+    self.assertIn(needle,html)
+   self.assertIn("btn.addEventListener('wheel'",html)
+   self.assertNotIn("btn.addEventListener('wheel',e=>{e.preventDefault()",html)
+  finally:
+   self.request('/api/queue',method='DELETE');self.request('/api/queue/resume',{})
+
  def test_15k_composer_stop_cancels_turn_keeps_queue(self):
   self.wait_idle();Model.script=[self._slow('out',60),['Weiter normal.']]
   self.request('/api/message',{'text':'Stop-Test','bots':['test']});self._busy();time.sleep(1.0)
@@ -904,7 +926,12 @@ class Native(unittest.TestCase):
   names=[t['function']['name'] for t in Model.calls[-1]['tools']]
   self.assertIn('react',names);self.assertIn('unreact',names)
   self.assertIn('Reagiere statt zu antworten',Model.calls[-1]['messages'][0]['content'])
+  before_calls=len(Model.calls)
   self.request('/api/message',{'text':'Ohne neue Reaktion','bots':['test']})
+  for _ in range(120):
+   if len(Model.calls)>before_calls and 'Ohne neue Reaktion' in Model.calls[-1]['messages'][1]['content']:break
+   time.sleep(.05)
+  else:self.fail('Second turn did not reach the fake model')
   self.wait_idle()
   self.assertNotIn('[Reaktion]',Model.calls[-1]['messages'][1]['content'])
   uid=user['id']

@@ -34,6 +34,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <regex>
 #include <random>
 #include <set>
 #include <sstream>
@@ -1534,6 +1535,131 @@ static Val model_status_val(const ModelStatus &st) {
   v["checked_at"] = (long)st.at;
   return v;
 }
+// Exact backend identity for the header: GGUF name, engine + build, and the
+// t/s of the last reply. Read dynamically from llama-server /props and
+// /v1/models (through the gateway), cached briefly, so a backend switch
+// (llama.cpp <-> ik_llama) shows up without a room restart.
+static std::mutex MODEL_INFO_MTX;
+static Val MODEL_INFO_CACHE;
+static int64_t MODEL_INFO_AT = 0;
+static Val LAST_TIMINGS;
+static std::string gguf_display_name(std::string path) {
+  auto slash = path.find_last_of('/');
+  if (slash != std::string::npos)
+    path = path.substr(slash + 1);
+  if (path.size() > 5 && path.substr(path.size() - 5) == ".gguf")
+    path.resize(path.size() - 5);
+  static const std::regex split("-\\d{5}-of-\\d{5}$");
+  return std::regex_replace(path, split, "");
+}
+static Val probe_model_info() {
+  Val v = Val::object();
+  auto str = [](const Val *o, const char *k) -> std::string {
+    if (!o || !o->isObj())
+      return "";
+    auto x = o->find(k);
+    if (!x)
+      return "";
+    if (x->type == Val::STR)
+      return x->asStr();
+    if (x->type == Val::NUM)
+      return std::to_string((long long)x->asNum());
+    return "";
+  };
+  std::string body, path, engine, build, alias, owner;
+  long code = 0;
+  Val props;
+  if (http_simple(BACKEND_HOST, BACKEND_PORT, "GET", "/props", "",
+                  {{"Authorization", "Bearer " + API_KEY}}, body, &code,
+                  nullptr, 2000) &&
+      code == 200 && mj::parse(body, props) && props.isObj()) {
+    path = str(&props, "model_path");
+    alias = str(&props, "model_alias");
+    build = str(&props, "build_info");
+    if (build.empty()) {
+      std::string num = str(&props, "build_number"),
+                  commit = str(&props, "build_commit");
+      build = num.empty() ? commit
+                          : "b" + num + (commit.empty() ? "" : "-" + commit);
+    }
+    engine = str(&props, "engine");
+    if (path.empty())
+      if (auto dg = props.find("default_generation_settings"))
+        path = str(dg, "model");
+  }
+  body.clear();
+  code = 0;
+  Val models;
+  if (http_simple(BACKEND_HOST, BACKEND_PORT, "GET", "/v1/models", "",
+                  {{"Authorization", "Bearer " + API_KEY}}, body, &code,
+                  nullptr, 2000) &&
+      code == 200 && mj::parse(body, models) && models.isObj()) {
+    if (auto d = models.find("data"))
+      if (d->isArr() && !d->arr->empty()) {
+        const Val &m0 = (*d->arr)[0];
+        if (alias.empty())
+          alias = str(&m0, "id");
+        owner = str(&m0, "owned_by");
+        if (path.empty())
+          path = str(&m0, "id");
+      }
+  }
+  if (engine.empty()) {
+    const char *forced = std::getenv("MAG_LLM_ENGINE");
+    if (forced && *forced)
+      engine = forced;
+    else if (path.empty() && alias.empty())
+      engine = "";
+    else if (build.empty() || owner.find("ik") != std::string::npos)
+      engine = "ik_llama.cpp";
+    else
+      engine = "llama.cpp";
+  }
+  v["gguf"] = path.empty() ? alias : gguf_display_name(path);
+  v["alias"] = alias;
+  v["engine"] = engine;
+  v["build"] = build.empty() ? "unbekannt" : build;
+  v["checked_at"] = (long)now_s();
+  return v;
+}
+static Val model_info_val() {
+  bool stale;
+  {
+    std::lock_guard<std::mutex> lk(MODEL_INFO_MTX);
+    const std::string g = MODEL_INFO_CACHE.isObj() && MODEL_INFO_CACHE.find("gguf")
+                              ? MODEL_INFO_CACHE.find("gguf")->asStr()
+                              : "";
+    stale = !MODEL_INFO_AT || now_s() - MODEL_INFO_AT >= (g.empty() ? 5 : 30);
+  }
+  if (stale) {
+    Val fresh = probe_model_info();
+    std::lock_guard<std::mutex> lk(MODEL_INFO_MTX);
+    MODEL_INFO_CACHE = fresh;
+    MODEL_INFO_AT = now_s();
+  }
+  std::lock_guard<std::mutex> lk(MODEL_INFO_MTX);
+  Val out = MODEL_INFO_CACHE.isObj() ? MODEL_INFO_CACHE : Val::object();
+  if (LAST_TIMINGS.isObj())
+    out["last"] = LAST_TIMINGS;
+  return out;
+}
+static void record_timings(const Val &t) {
+  if (!t.isObj())
+    return;
+  auto num = [&](const char *k) {
+    auto v = t.find(k);
+    return v && v->type == Val::NUM ? v->asNum() : -1.0;
+  };
+  Val r = Val::object();
+  r["prompt_per_second"] = num("prompt_per_second");
+  r["predicted_per_second"] = num("predicted_per_second");
+  r["prompt_n"] = num("prompt_n");
+  r["predicted_n"] = num("predicted_n");
+  r["cache_n"] = num("cache_n");
+  r["at"] = (long)now_s();
+  std::lock_guard<std::mutex> lk(MODEL_INFO_MTX);
+  LAST_TIMINGS = r;
+}
 static std::string model_status_text(const ModelStatus &st) {
   return st.label + (st.detail.empty() ? "" : " – " + st.detail);
 }
@@ -1746,6 +1872,8 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
         on_delta("progress", mj::dump(pr));
       }
     }
+    if (auto tm = chunk.find("timings"))
+      record_timings(*tm);
     if (auto err = chunk.find("error")) {
       auto msg = err->isObj() && err->find("message")
                      ? err->find("message")->asStr()
@@ -2647,6 +2775,7 @@ static std::string state_json() {
   root["backend"] = BACKEND_HOST + ":" + std::to_string(BACKEND_PORT);
   root["model"] = MODEL;
   root["model_status"] = model_status_val(model_status(false));
+  root["model_info"] = model_info_val();
   root["autotalk"] = AUTOTALK.load();
   root["stt_lang"] = STT_LANG;
   root["runtime"] = "C++17";

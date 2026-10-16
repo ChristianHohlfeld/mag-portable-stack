@@ -733,12 +733,14 @@ static const Val *find_file(const std::string &name) {
   if (n.empty())
     return nullptr;
   for (auto &r : FILES) {
+    if (r.find("removed")) continue;
     auto s = r.find("stored"), nm = r.find("name");
     if ((s && s->asStr() == n) || (nm && nm->asStr() == n))
       return &(snapshot = r);
   }
   std::string ln = lc(n);
   for (auto &r : FILES) {
+    if (r.find("removed")) continue;
     auto nm = r.find("name");
     if (nm && lc(nm->asStr()).find(ln) != std::string::npos)
       return &(snapshot = r);
@@ -753,6 +755,7 @@ static std::string file_manifest(size_t limit = 40) {
   std::string out;
   for (size_t i = start; i < FILES.size(); i++) {
     const Val &r = FILES[i];
+    if (r.find("removed")) continue;
     out += "- " + r.find("name")->asStr() + " (" + r.find("mime")->asStr() +
            ", " + std::to_string((long)r.find("size")->asNum() / 1024) +
            " KB) " + public_url(r.find("stored")->asStr()) + "\n";
@@ -760,6 +763,42 @@ static std::string file_manifest(size_t limit = 40) {
   if (!out.empty())
     out.pop_back();
   return out;
+}
+
+// Room files follow the VM filesystem: records carry their origin (vm, src).
+static void set_file_origin(const std::string &stored, const std::string &vm,
+                            const std::string &src, Val *rec = nullptr) {
+  std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
+  for (auto &f : FILES)
+    if (f.find("stored") && f.find("stored")->asStr() == stored) {
+      f["vm"] = vm;
+      f["src"] = src;
+      if (rec) *rec = f;
+    }
+  save_json_array(FILES_JSON, FILES);
+}
+static int mark_files_removed(const std::string &vm, const std::string &src,
+                              const std::string &only_stored = "") {
+  std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
+  int n = 0;
+  for (auto &f : FILES) {
+    if (f.find("removed") || !f.find("vm") || !f.find("src")) continue;
+    if (f.find("vm")->asStr() != vm || f.find("src")->asStr() != src) continue;
+    auto st = f.find("stored")->asStr();
+    if (!only_stored.empty() && st != only_stored) continue;
+    f["removed"] = (long)now_s();
+    unlink((FILES_DIR + "/" + basename_of(st)).c_str());
+    ++n;
+  }
+  if (n) save_json_array(FILES_JSON, FILES);
+  return n;
+}
+static std::string safe_file_name(const std::string &name) {
+  std::string safe;
+  for (char c : basename_of(name))
+    safe.push_back(isalnum((unsigned char)c) || c == '.' || c == '_' || c == '-' ? c : '_');
+  if (safe.empty()) safe = "datei";
+  return safe.substr(0, 80);
 }
 
 // ---------------------------------------------------------------- room
@@ -2118,9 +2157,12 @@ static std::string dispatch_tool(int bot_idx, const std::string &name,
     auto filename = getstr("name");
     if (filename.empty())
       filename = basename_of(path);
+    auto abs = guest_command(vm, "readlink -f -- " + shell_quote(path), 20);
+    std::string src = abs.code ? "" : trim(abs.out);
     auto url = "http://" + BRIDGE_IP + ":" + std::to_string(BRIDGE_PORT) +
                "/ingest?token=" + bridge_token() +
-               "&name=" + url_encode(filename) + "&bot=" + url_encode(bot_id);
+               "&name=" + url_encode(filename) + "&bot=" + url_encode(bot_id) +
+               (src.empty() ? "" : "&src=" + url_encode(src));
     auto result =
         guest_command(vm,
                       "curl -fSs --max-time 60 -X POST --data-binary @" +
@@ -2846,12 +2888,24 @@ static std::string state_json() {
   root["thinking"] = turn_thinking();
   {
     std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
+    std::set<std::string> gone;
+    for (auto &f : FILES)
+      if (f.find("removed")) gone.insert(f.find("stored")->asStr());
     Val rm = Val::array();
-    for (auto &m : ROOM)
-      rm.push(m);
+    for (auto &m : ROOM) {
+      auto mf = m.find("file");
+      if (mf && mf->isObj() && mf->find("stored") &&
+          gone.count(mf->find("stored")->asStr())) {
+        Val c = m;
+        c["file"]["removed"] = true;
+        rm.push(c);
+      } else
+        rm.push(m);
+    }
     root["room"] = rm;
     Val fl = Val::array();
     for (auto &f : FILES) {
+      if (f.find("removed")) continue;
       Val c = f;
       c["url"] = public_url(f.find("stored")->asStr());
       fl.push(c);
@@ -2874,6 +2928,91 @@ static std::string state_json() {
 #include "routes.hpp"
 
 // ---------------------------------------------------------------- main
+// ---------------------------------------------------------------- file sync
+// Every MAG_ROOM_FILE_SYNC_SECONDS (default 10, 0 = off) each bot VM is
+// checked: shared files whose source path vanished (rm/mv in the console) are
+// marked removed (link -> 404 "Datei entfernt"), changed files are
+// re-published, and new files in /home/bot/room appear automatically.
+static void sync_vm_files(const std::string &bot, const std::string &vm) {
+  std::map<std::string, std::pair<std::string, long>> srcs;  // src -> stored,size
+  std::set<std::string> known;                                // name|size
+  {
+    std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
+    for (auto &f : FILES) {
+      if (f.find("removed")) continue;
+      known.insert(f.find("name")->asStr() + "|" +
+                   std::to_string((long)f.find("size")->asNum()));
+      if (f.find("vm") && f.find("src") && f.find("vm")->asStr() == vm &&
+          !f.find("src")->asStr().empty())
+        srcs[f.find("src")->asStr()] = {f.find("stored")->asStr(),
+                                        (long)f.find("size")->asNum()};
+    }
+  }
+  std::string cmd = "for p in";
+  for (auto &kv : srcs) cmd += " " + shell_quote(kv.first);
+  cmd += "; do if [ -f \"$p\" ]; then printf 'HAVE\\t%s\\t%s\\n' "
+         "\"$(stat -c %s -- \"$p\")\" \"$p\"; else printf 'GONE\\t0\\t%s\\n' "
+         "\"$p\"; fi; done; [ -d /home/bot/room ] && find /home/bot/room "
+         "-maxdepth 1 -type f ! -name '.*' -printf 'DIR\\t%s\\t%p\\n'; true";
+  auto r = guest_command(vm, cmd, 30);
+  if (r.code) return;  // VM down or busy: change nothing
+  auto ingest = [&](const std::string &path) {
+    auto url = "http://" + BRIDGE_IP + ":" + std::to_string(BRIDGE_PORT) +
+               "/ingest?token=" + bridge_token() + "&name=" +
+               url_encode(basename_of(path)) + "&bot=" + url_encode(bot) +
+               "&src=" + url_encode(path);
+    return guest_command(vm, "curl -fSs --max-time 60 -X POST --data-binary @" +
+                                 shell_quote(path) + " " + shell_quote(url),
+                         70).code == 0;
+  };
+  int added = 0;
+  std::istringstream in(r.out);
+  std::string line;
+  while (std::getline(in, line)) {
+    auto t1 = line.find('\t'), t2 = line.find('\t', t1 + 1);
+    if (t1 == std::string::npos || t2 == std::string::npos) continue;
+    std::string kind = line.substr(0, t1), path = line.substr(t2 + 1);
+    long size = std::atol(line.substr(t1 + 1, t2 - t1 - 1).c_str());
+    if (kind == "GONE") {
+      if (mark_files_removed(vm, path))
+        emit_event("file_removed", bot, "", path);
+    } else if (kind == "HAVE") {
+      auto it = srcs.find(path);
+      if (it != srcs.end() && it->second.second != size &&
+          size <= MAX_UPLOAD && ingest(path)) {
+        mark_files_removed(vm, path, it->second.first);
+        emit_event("file_removed", bot, "", path);
+      }
+    } else if (kind == "DIR") {
+      if (srcs.count(path) || size > MAX_UPLOAD || added >= 10) continue;
+      if (known.count(safe_file_name(path) + "|" + std::to_string(size)))
+        continue;  // e.g. fetched copy of an existing room file
+      if (ingest(path)) ++added;
+    }
+  }
+}
+static void file_sync_loop() {
+  int every = envi("MAG_ROOM_FILE_SYNC_SECONDS", 10);
+  if (every <= 0) return;
+  for (;;) {
+    std::this_thread::sleep_for(std::chrono::seconds(every));
+    std::vector<std::pair<std::string, std::string>> bots;
+    {
+      std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
+      for (auto &a : AGENTS)
+        if (a.find("id") && a.find("vm") && !a.find("vm")->asStr().empty())
+          bots.push_back({a.find("id")->asStr(), a.find("vm")->asStr()});
+    }
+    for (auto &b : bots) {
+      try {
+        sync_vm_files(b.first, b.second);
+      } catch (const std::exception &e) {
+        std::cerr << "file sync " << b.second << ": " << e.what() << "\n";
+      }
+    }
+  }
+}
+
 int main() {
   signal(SIGPIPE, SIG_IGN);
 
@@ -2963,6 +3102,7 @@ int main() {
   AUTOTALK = trim(read_file(STATE_DIR + "/autotalk")) == "on";
   std::thread(scheduler_loop).detach();
   std::thread(model_watcher_loop).detach();
+  std::thread(file_sync_loop).detach();
   int srv = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
   if (srv < 0) {
     std::cerr << "socket() fehlgeschlagen\n";

@@ -73,6 +73,9 @@ static void route(int fd, Req &r, bool bridge = false) {
       auto idx = agent_index(bot);
       auto sender = idx < 0 ? "VM" : bot_field(idx, "name");
       Val f = add_file(qparam(r.query, "name"), r.body, sender);
+      auto src = qparam(r.query, "src");
+      if (!src.empty() && src[0] == '/' && idx >= 0)
+        set_file_origin(f.find("stored")->asStr(), bot_field(idx, "vm"), src, &f);
       append_room("assistant", sender, "", bot, &f);
       emit_file(bot, f);
       send_json(fd, 201, mj::dump(f));
@@ -210,6 +213,10 @@ static void route(int fd, Req &r, bool bridge = false) {
     }
     if (!found || stored != basename_of(stored)) {
       error_json(fd, 404, "Unknown file");
+      return;
+    }
+    if (record.find("removed")) {
+      error_json(fd, 404, "Datei entfernt");
       return;
     }
     bool ok;

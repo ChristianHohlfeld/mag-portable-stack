@@ -150,7 +150,7 @@ else
 fi
 
 # ---------------------------------------------------------------- 2. mag-llm neu
-say "2. mag-llm: Laden ohne mmap, Pin aus 3.2 entfernen, Neustart"
+say "2. mag-llm: Laden ohne mmap, Pin bleibt, Neustart"
 install -d -m 0755 "$LIB"
 install -m 0755 "$SRC/ops/deepseek/post-load.sh" "$LIB/post-load.sh"
 install -D -m 0644 "$SRC/ops/warm/needrestart-mag.conf" /etc/needrestart/conf.d/mag-llm.conf
@@ -170,14 +170,7 @@ systemctl start mag-llm.service
 relock; trap - EXIT
 echo "   lädt … (Seiten sind meist noch im Page-Cache, dann geht es deutlich schneller als von der Platte)"
 wait_ready 10800 || rollback
-# erst jetzt den Pin aus 3.2 entfernen (neues llama hält die Gewichte selbst)
-if systemctl cat mag-model-pin.service >/dev/null 2>&1; then
-  unlock
-  systemctl disable --now mag-model-pin.service || true
-  rm -f "$PIN"
-  relock
-  systemctl reset-failed mag-model-pin.service 2>/dev/null || true
-fi
+# mag-model-pin bleibt (Chris): Neustarts/Rollbacks laden aus dem RAM
 printf '   bereit nach %d min %02d s\n' $(((SECONDS - t0) / 60)) $(((SECONDS - t0) % 60))
 pid=$(systemctl show -p MainPID --value mag-llm.service)
 if grep -q 'DeepSeek-V4-Flash-0731.*\.gguf' "/proc/$pid/maps" 2>/dev/null; then
@@ -185,8 +178,9 @@ if grep -q 'DeepSeek-V4-Flash-0731.*\.gguf' "/proc/$pid/maps" 2>/dev/null; then
 fi
 
 # ---------------------------------------------------------------- 3. Page-Cache freigeben
-say "3. Page-Cache-Kopie freigeben"
-bash "$SRC/ops/deepseek/warm.sh" evict-cache
+say "3. mag-model-pin sicherstellen (Page-Cache-Pin bleibt)"
+install -m 0644 "$SRC/ops/mag-model-pin.service" "$PIN"
+systemctl daemon-reload; systemctl enable mag-model-pin.service; systemctl start --no-block mag-model-pin.service
 
 # ---------------------------------------------------------------- 4. Raum
 say "4. mag-120: Drop-in (3.4.1-Fix, Thinking-Standard) und Neustart"

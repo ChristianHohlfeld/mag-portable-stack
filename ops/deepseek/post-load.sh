@@ -14,6 +14,7 @@ for _ in $(seq 1 1080); do          # bis 3 h
   sleep 10
 done
 [[ "${code:-}" == 200 ]] || { echo "mag-llm nach 3 h nicht bereit – nichts geändert"; exit 0; }
+systemctl is-active --quiet mag-model-pin && { echo "mag-model-pin aktiv – Page-Cache bleibt"; exit 0; }
 pid=$(systemctl show -p MainPID --value mag-llm.service)
 if [[ -n "$pid" && "$pid" != 0 ]] && grep -q 'DeepSeek-V4-Flash-0731.*\.gguf' "/proc/$pid/maps" 2>/dev/null; then
   echo "llama nutzt die Dateien per mmap – Page-Cache bleibt"; exit 0

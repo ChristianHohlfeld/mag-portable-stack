@@ -39,7 +39,8 @@ for want in '--threads 28 ' '--threads-batch 28 ' '--batch-size 2048 ' '--ubatch
 done
 grep -qE '^(Wants|After)=.*mag-model-pin' "$T/u1" && fail "Unit hängt noch an mag-model-pin"
 grep -qE '^Exec.*drop_caches' "$T/u1" && fail "drop_caches in der Unit"
-[[ ! -e ops/mag-model-pin.service ]] || fail "mag-model-pin.service noch im Repo"
+grep -q "vmtouch -q -l" ops/mag-model-pin.service || fail "mag-model-pin.service fehlt oder sperrt nicht (vmtouch -l)"
+grep -qE "^(BindsTo|PartOf|Requires)=.*mag-llm" ops/mag-model-pin.service && fail "Pin darf nicht an mag-llm hängen"
 ok "Unit-Inhalt"
 if command -v systemd-analyze >/dev/null; then
   mkdir -p "$T/v"; cp "$T/u1" "$T/v/mag-llm.service"

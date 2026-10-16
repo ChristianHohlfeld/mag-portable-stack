@@ -14,8 +14,9 @@
 #  2. Nichts von außen wirft es raus: Paket-Updates (needrestart) und unattended-upgrades starten
 #     nichts neu, systemd-oomd lässt die Unit in Ruhe, OOMScoreAdjust=-900, RefuseManualStop.
 #  3. NUMA-Balancing/Zone-Reclaim/Verdichtung verschieben keine Modellseiten (sysctl).
-# Grenze: Ein Reboot oder Absturz von llama lädt neu von der Platte (einige Minuten). Ein zusätzlicher
-# Pin des Page-Caches würde das verkürzen, hielte aber eine zweite 144-GiB-Kopie – bewusst nicht mehr.
+#  4. mag-model-pin (vmtouch -l) hält die GGUF-Dateien zusätzlich gesperrt im Page-Cache. Kostet eine
+#     zweite 144-GiB-Kopie (Chris: gewollt), dafür lädt jeder Neustart/Rollback von llama aus dem RAM.
+# Grenze: Nach einem Reboot liest der Pin die Dateien einmal von der Platte vor.
 set -euo pipefail
 SRC=$(cd "$(dirname "$(readlink -f "$0")")/../.." && pwd)
 LIB=/usr/local/lib/mag-deepseek
@@ -77,7 +78,8 @@ status() {
     "$(cat /proc/sys/vm/compact_unevictable_allowed 2>/dev/null)"
   [[ -f /etc/needrestart/conf.d/mag-llm.conf ]] && echo "  needrestart: mag-llm ausgenommen" || echo "  needrestart: NICHT ausgenommen"
   [[ -f /etc/apt/apt.conf.d/52mag-no-auto-reboot ]] && echo "  unattended-upgrades: kein Auto-Reboot" || echo "  unattended-upgrades: Auto-Reboot nicht abgeschaltet"
-  systemctl cat mag-model-pin.service >/dev/null 2>&1 && echo "  WARNUNG: mag-model-pin.service noch vorhanden (ab 3.5 entfernt)" || true
+  echo "== mag-model-pin: $(systemctl is-active mag-model-pin 2>/dev/null || true) ($(systemctl is-enabled mag-model-pin 2>/dev/null || echo fehlt))"
+  command -v vmtouch >/dev/null && vmtouch "${FILES[@]}" 2>/dev/null | grep -E 'Files|Resident' | sed 's/^ */  /' || true
 }
 
 numa() {
@@ -89,6 +91,9 @@ numa() {
 }
 
 evict() {
+  if systemctl is-active --quiet mag-model-pin; then
+    echo "mag-model-pin aktiv – Page-Cache bleibt absichtlich (Neustarts laden aus dem RAM)"; return
+  fi
   pid=$(llm_pid)
   if [[ -n "$pid" && "$pid" != 0 ]] && grep -q 'DeepSeek-V4-Flash-0731.*\.gguf' "/proc/$pid/maps" 2>/dev/null; then
     echo "llama nutzt die Dateien per mmap – Page-Cache wird NICHT freigegeben"; return
@@ -106,7 +111,16 @@ PY
   page_cache
 }
 
-# Entfernt den Page-Cache-Pin aus 3.2 (RefuseManualStop nur für diesen Vorgang per Laufzeit-Drop-in aufheben)
+# Richtet den Page-Cache-Pin ein (startet NUR mag-model-pin, nie mag-llm)
+install_pin() {
+  echo "== mag-model-pin einrichten"
+  run install -m 0644 "$SRC/ops/mag-model-pin.service" /etc/systemd/system/mag-model-pin.service
+  run systemctl daemon-reload
+  run systemctl enable mag-model-pin.service
+  [[ -f /var/lib/mag-llm/verified.stamp ]] && run systemctl start --no-block mag-model-pin.service || true
+}
+
+# (alt, nicht mehr aufgerufen) Entfernt den Page-Cache-Pin aus 3.2 (RefuseManualStop nur für diesen Vorgang per Laufzeit-Drop-in aufheben)
 remove_pin() {
   systemctl cat mag-model-pin.service >/dev/null 2>&1 || return 0
   echo "== mag-model-pin (Page-Cache-Pin aus 3.2) entfernen"
@@ -128,7 +142,7 @@ case "$cmd" in
   evict-cache) evict ;;
   install)
     for f in "$SRC/ops/mag-llm.service" "$SRC"/ops/warm/{needrestart-mag.conf,apt-no-auto-reboot.conf,sysctl-mag-llm.conf} \
-             "$SRC/ops/deepseek/render-llm-unit.sh" "$SRC/ops/deepseek/post-load.sh"; do
+             "$SRC/ops/deepseek/render-llm-unit.sh" "$SRC/ops/deepseek/post-load.sh" "$SRC/ops/mag-model-pin.service"; do
       [[ -f "$f" ]] || { echo "fehlt: $f"; exit 1; }
     done
     echo "== 1. Pakete"
@@ -147,7 +161,7 @@ case "$cmd" in
     run install -D -m 0644 "$SRC/ops/warm/apt-no-auto-reboot.conf" /etc/apt/apt.conf.d/52mag-no-auto-reboot
     run install -D -m 0644 "$SRC/ops/warm/sysctl-mag-llm.conf" /etc/sysctl.d/60-mag-llm.conf
     run sysctl -q --load=/etc/sysctl.d/60-mag-llm.conf
-    remove_pin
+    install_pin
     run systemctl daemon-reload
     run systemctl enable mag-llm.service
     echo "(mag-llm läuft unverändert weiter; die neue Unit gilt ab dem nächsten Start)"

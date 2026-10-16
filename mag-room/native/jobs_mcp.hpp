@@ -120,12 +120,11 @@ static std::string jobs_mcp_call(const std::string &name, const Val &args,
       if (auto v = jobs_mcp_field(args,key)) body[key] = *v;
     }
     if (create) {
-      if (!actor.is_bot) return "Fehler: bot-Identität fehlt";
       const auto key = jobs_mcp_field(args, "idempotency_key");
       if (!key || key->type != Val::STR || !jobs_valid_key(key->asStr()))
         return "Fehler: idempotency_key (8-128 Zeichen) fehlt";
       body["idempotency_key"] = *key;
-      body["bot"] = actor.bot;
+      if (actor.is_bot) body["bot"] = actor.bot;
     }
     if (auto spec = jobs_mcp_field(args, "schedule")) {
       Val native; bool hook = false;

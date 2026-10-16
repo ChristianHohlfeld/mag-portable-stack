@@ -1,0 +1,26 @@
+name: Screenshot paste browser emulation
+on:
+  push:
+    paths:
+      - 'mag-room/web/index.html'
+      - 'mag-room/tests/test_image_paste.py'
+      - '.github/workflows/image-paste.yml'
+  pull_request:
+    paths:
+      - 'mag-room/web/index.html'
+      - 'mag-room/tests/test_image_paste.py'
+      - '.github/workflows/image-paste.yml'
+jobs:
+  chromium:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Chromium emulation
+        run: |
+          python -m pip install playwright
+          python -m playwright install --with-deps chromium
+      - name: Test screenshot paste at 375 390 412 and desktop
+        run: python mag-room/tests/test_image_paste.py

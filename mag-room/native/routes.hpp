@@ -111,8 +111,8 @@ static void route(int fd, Req &r, bool bridge = false) {
     send_text(fd, 200, current_frontend(), "text/html; charset=utf-8");
     return;
   }
-  // Dynamic Tailnet HTTPS remote desktop. A registered bot's *stable name
-  // slug* is its URL; no per-bot Tailscale proxy, token or VM re-provision.
+  // Legacy /bot/<slug>/ links (stable Tailnet path per bot) redirect to the
+  // main room; no per-bot Tailscale proxy, token or VM re-provision.
   // Deleting the agent removes the route immediately, even if a guest disk
   // is left behind after a failed teardown.
   if (m == "GET" && path.rfind("/bot/", 0) == 0) {
@@ -129,8 +129,10 @@ static void route(int fd, Req &r, bool bridge = false) {
                     {{"Cache-Control", "no-store"}});
       return;
     }
-    send_response(fd, 200, "text/html; charset=utf-8",
-                  current_frontend(), {{"Cache-Control", "no-store"}});
+    // One interface only: the old remote-desktop view is gone; the link
+    // opens the main room with this bot's browser panel selected.
+    send_response(fd, 302, "text/plain; charset=utf-8", "",
+                  {{"Location", "/?bot=" + id}, {"Cache-Control", "no-store"}});
     return;
   }
   if (m == "GET" && path == "/healthz") {

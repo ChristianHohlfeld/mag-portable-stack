@@ -1,3 +1,4 @@
+#include <unistd.h>
 // Persistent Chromium controller. CDP is loopback-only; VM HTTP requires a
 // token.
 #include "common.hpp"
@@ -250,8 +251,34 @@ int main(int argc, char **argv) {
       auto sandbox = fs::path(binary).parent_path() / "chrome_sandbox";
       if (fs::exists(sandbox))
         setenv("CHROME_DEVEL_SANDBOX", sandbox.c_str(), 1);
+      // Headful Chromium on a private Xvfb display when available: a normal
+      // browser (regular "Chrome/<v>" user agent, no headless signals) with
+      // the persistent profile below. Plain CDP launch, no --enable-automation.
+      // Falls back to headless only if the VM has no Xvfb.
+      bool headful = fs::exists("/usr/bin/Xvfb");
+      if (headful) {
+        setenv("DISPLAY", ":99", 1);
+        if (!fs::exists("/tmp/.X11-unix/X99")) {
+          std::vector<std::string> x{"/usr/bin/Xvfb", ":99", "-screen", "0",
+                                     "1440x900x24", "-nolisten", "tcp"};
+          std::vector<char *> xa;
+          for (auto &arg : x) xa.push_back(arg.data());
+          xa.push_back(nullptr);
+          pid_t xp;
+          if (posix_spawn(&xp, x[0].c_str(), nullptr, nullptr, xa.data(),
+                          environ) != 0)
+            headful = false;
+          for (int i = 0; headful && i < 50 && !fs::exists("/tmp/.X11-unix/X99"); ++i)
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+          if (!fs::exists("/tmp/.X11-unix/X99")) headful = false;
+        }
+      }
       std::vector<std::string> a{binary,
-                                 "--headless=new",
+                                 headful ? "--kiosk" : "--headless=new",
+                                 "--window-position=0,0",
+                                 "--no-default-browser-check",
+                                 "--password-store=basic",
+                                 "--disable-session-crashed-bubble",
                                  "--disable-dev-shm-usage",
                                  "--remote-debugging-address=127.0.0.1",
                                  "--remote-debugging-port=9226",
@@ -418,6 +445,14 @@ int main(int argc, char **argv) {
                             "found');e.scrollIntoView({block:'center'});let "
                             "r=e.getBoundingClientRect();return "
                             "{x:r.x+r.width/2,y:r.y+r.height/2}})()");
+          // Visible approach for the live view: hover first, short pause.
+          {
+            Val mv = pos;
+            mv["type"] = "mouseMoved";
+            mv["button"] = "none";
+            c.call("Input.dispatchMouseEvent", mv);
+            usleep(250000);
+          }
           for (auto type : {"mousePressed", "mouseReleased"}) {
             Val p = pos;
             p["type"] = type;
@@ -426,6 +461,7 @@ int main(int argc, char **argv) {
             c.call("Input.dispatchMouseEvent", p);
           }
           out = snapshot();
+          out["click"] = pos;
         } else if (r.path == "/pointer") {
           // Browser viewport is fixed at 1440x900 CDP CSS pixels.
           auto px = body.find("x"), py = body.find("y");
@@ -477,9 +513,21 @@ int main(int argc, char **argv) {
             c.eval("(()=>{let e=document.querySelector(" + js(selector) +
                    ");if(!e)throw Error('Element not "
                    "found');e.focus();e.value='';})()");
-          Val p = Val::object();
-          p["text"] = value("text");
-          c.call("Input.insertText", p);
+          // Type in small chunks so the live view shows text appearing
+          // (about 2.5 s at most, independent of the text length).
+          const std::string text = value("text");
+          const size_t n = text.size(),
+                       step = std::max<size_t>(1, n / 100 + 1);
+          for (size_t i = 0; i < n;) {
+            size_t j = std::min(n, i + step);
+            while (j < n && (static_cast<unsigned char>(text[j]) & 0xC0) == 0x80)
+              ++j;  // never split a UTF-8 sequence
+            Val p = Val::object();
+            p["text"] = text.substr(i, j - i);
+            c.call("Input.insertText", p);
+            i = j;
+            if (i < n) usleep(25000);
+          }
           auto enter = body.find("enter");
           if (enter && enter->asBool()) {
             Val k = Val::object();

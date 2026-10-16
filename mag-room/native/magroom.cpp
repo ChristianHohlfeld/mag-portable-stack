@@ -992,7 +992,9 @@ static const char *FRONTEND_RULES =
     "browser_click, browser_type, browser_pointer, browser_read, browser_screenshot, "
     "browser_back, browser_scroll (Startseite google.de). HTML-Seiten, die du "
     "per share_room_file teilst, oeffnen sich automatisch in deinem Browser und "
-    "erscheinen als Vorschau im Chat. [Frontend-Wartung] Du kannst die "
+    "erscheinen als Vorschau im Chat. Bei Captcha/\"ungewoehnlicher Traffic\"-Seiten: "
+    "NICHT loesen oder umgehen, sondern abbrechen und dem Nutzer Bescheid geben (oder "
+    "eine andere Quelle/die Websuche nehmen). [Frontend-Wartung] Du kannst die "
     "Raum-Oberflaeche verbessern: screenshot_room (UI pruefen), "
     "download_frontend, mit run_command editieren, publish_frontend (alle "
     "laden neu), screenshot_room zur Kontrolle.";
@@ -1420,6 +1422,21 @@ static void warm_browser_async(const std::string &vm) {
                 << std::endl;
     }
   }).detach();
+}
+// Live overlay for the room's browser view: where the bot points/clicks/types.
+static void emit_browser_action(const std::string &bot, const std::string &action,
+                                const Val *pos, const std::string &text = "") {
+  Val e = Val::object();
+  e["type"] = "browser_action";
+  e["bot"] = bot;
+  e["action"] = action;
+  if (pos && pos->isObj() && pos->find("x") && pos->find("y")) {
+    e["x"] = pos->find("x")->asNum();
+    e["y"] = pos->find("y")->asNum();
+  }
+  if (!text.empty())
+    e["text"] = text.substr(0, 400);
+  publish(mj::dump(e));
 }
 static Val browser_json(const std::string &vm, const std::string &path,
                         const std::string &method = "GET",
@@ -2213,6 +2230,7 @@ static std::string dispatch_tool(int bot_idx, const std::string &name,
       b["y"] = py->asNum();
       if (a.find("action")) b["action"] = getstr("action");
       if (a.find("button")) b["button"] = getstr("button");
+      emit_browser_action(bot_id, getstr("action") == "move" ? "move" : "click", &b);
       return mj::dump(browser_json(vm, "/pointer", "POST", mj::dump(b)));
     }
     if (name == "browser_click") {
@@ -2221,7 +2239,9 @@ static std::string dispatch_tool(int bot_idx, const std::string &name,
         b["selector"] = getstr("selector");
       if (a.find("text"))
         b["text"] = getstr("text");
-      return mj::dump(browser_json(vm, "/click", "POST", mj::dump(b)));
+      Val out = browser_json(vm, "/click", "POST", mj::dump(b));
+      emit_browser_action(bot_id, "click", out.find("click"));
+      return mj::dump(out);
     }
     if (name == "browser_type") {
       Val b = Val::object();
@@ -2231,6 +2251,7 @@ static std::string dispatch_tool(int bot_idx, const std::string &name,
       auto e = a.find("enter");
       if (e)
         b["enter"] = e->truthy();
+      emit_browser_action(bot_id, "type", nullptr, getstr("text"));
       return mj::dump(browser_json(vm, "/type", "POST", mj::dump(b)));
     }
     if (name == "browser_read")

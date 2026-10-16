@@ -1069,8 +1069,11 @@ class Native(unittest.TestCase):
   Model.script=[[{'tool_calls':[{'index':0,'id':'call_react','function':{'name':'react','arguments':json.dumps({'message_id':uid,'emoji':'🎉'})}}]}]]
   try:
    self.request('/api/message',{'text':'Kurzes Danke','bots':['test']})
+   st=self._settle(lambda s:any(
+    m.get('id')==uid and any(r['actor']=='test' and r['emoji']=='🎉'
+                               for r in m.get('reactions') or [])
+    for m in s['room']))
    self.wait_idle()
-   st=self.request('/api/state')
    target=next(m for m in st['room'] if m['id']==uid)
    self.assertTrue(any(r['actor']=='test' and r['emoji']=='🎉' for r in target.get('reactions') or []))
    ack=next(m for m in reversed(st['room']) if m.get('role')=='assistant' and m.get('bot')=='test' and m.get('content')=='')

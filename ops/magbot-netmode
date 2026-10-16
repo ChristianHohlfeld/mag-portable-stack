@@ -16,7 +16,7 @@ delete table inet mag_offline
 table inet mag_offline {
  chain input {
   type filter hook input priority -20; policy accept;
-  iifname "virbr0" udp dport { 67, 18783 } accept
+  iifname "virbr0" udp dport { 67, 18783, 18840-18890 } accept
   iifname "virbr0" ip daddr 192.168.122.1 tcp dport 8767 accept
   iifname "virbr0" counter drop
  }

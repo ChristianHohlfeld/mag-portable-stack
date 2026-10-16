@@ -291,6 +291,12 @@ class Native(unittest.TestCase):
   self.assertTrue(self.request('/api/state')['busy'],'reply keeps running while toggling');self.wait_idle()
   self.assertNotIn('(unterbrochen)',self.request('/api/state')['room'][-1]['content']);self.assertTrue(self.request('/api/state')['offline'])
   self.request('/api/offline',{'on':False});self.assertEqual(NETLOG.read_text().split()[-1],'online');self.assertFalse(self.request('/api/state')['offline'])
+
+ def test_15i_shell_never_silently_drops_input(self):
+  html=self.request('/',raw=True).decode()
+  for needle in ["message?.kind==='hb'","consoleHbAt","scheduleReconnect()","termPending.push(","Shell-Verbindung verloren"]:self.assertIn(needle,html)
+  go=(ROOT/'mag-room/webrtc/main.go').read_text();self.assertIn('{"kind":"hb"',go)
+  self.assertIn('18840-18890',(ROOT/'ops/magbot-netmode').read_text(),'offline must keep local WebRTC ICE ports')
  def test_08_idle_autonomy_does_not_make_up_work(self):
   self.request('/api/autotalk',{'on':True})
   calls_before=len(Model.calls)

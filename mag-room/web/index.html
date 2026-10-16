@@ -494,6 +494,18 @@ let videoChunks=null,paintBusy=false,lastFrameSeq=-1,frameLastAt=0;
 // True xterm.js terminal, backed by a persistent Bash PTY in each selected
 // bot's KVM. These instances preserve scrollback across bot switches.
 const terminals=new Map(),utf8Encoder=new TextEncoder();
+let termPending=[],consoleHbAt=0,reconnectTimer=0,reconnectDelay=1000;
+function scheduleReconnect(){
+ if(reconnectTimer||document.hidden||!rightOpen)return;
+ reconnectTimer=setTimeout(()=>{reconnectTimer=0;reconnectDelay=Math.min(reconnectDelay*2,10000);try{connectLive()}catch(e){}},reconnectDelay);
+}
+// Watchdog: the gateway sends {"kind":"hb"} every 2 s on the console channel.
+// Missing heartbeats = dead session (gateway restart, lost ICE path): show it
+// and reconnect instead of claiming "verbunden" while input goes nowhere.
+setInterval(()=>{
+ if(!liveConsole||liveConsole.readyState!=='open'||!consoleHbAt)return;
+ if(performance.now()-consoleHbAt>6000){consoleHbAt=0;terminalStatus('Shell-Verbindung verloren · verbinde neu …');scheduleReconnect()}
+},2000);
 let activeTerminal=null;
 function terminalStatus(t){$('terminal-status').textContent=t}
 function terminalSend(kind,payload={}){
@@ -539,7 +551,9 @@ function makeTerminal(botId){
    const piece=encoded.subarray(offset,offset+300);
    const base64=btoa(String.fromCharCode(...piece));
    if(!terminalSend('terminal_input',{data:base64})){
-    terminalStatus('Terminal nicht verbunden');return;
+    // Keep keystrokes while (re)connecting; flushed after terminal_open.
+    if(termPending.length<64)termPending.push(base64);
+    terminalStatus('Shell verbindet neu … Eingabe wird nachgereicht');scheduleReconnect();
    }
   }
  });
@@ -570,8 +584,12 @@ function updateConsoleLabel(){
  terminalStatus(liveConsole?.readyState==='open'?'Shell verbunden':'Verbinde VM-Terminal …');
 }
 function receiveConsole(data){
- if(!activeTerminal)return;
  let message;try{message=JSON.parse(data)}catch{return}
+ if(message?.kind==='hb'){consoleHbAt=performance.now();
+  if(message.vm_age>5)terminalStatus('VM antwortet nicht ('+Math.round(message.vm_age)+' s) · Eingabe wird ggf. verworfen');
+  else if(/VM antwortet nicht|verbinde neu/.test($('terminal-status').textContent))terminalStatus('Shell verbunden');
+  return}
+ if(!activeTerminal)return;
  if(message?.kind!=='terminal_output'||typeof message.data!=='string'||message.data.length>950)return;
  try{
   const bytes=Uint8Array.from(atob(message.data),c=>c.charCodeAt(0));
@@ -667,11 +685,13 @@ async function connectLive(){
    e.channel.onopen=()=>{
     if(gen!==liveGeneration)return;
     terminalStatus('Shell · '+bot.name+' · verbunden');
+    reconnectDelay=1000;consoleHbAt=0;
     terminalSend('terminal_open');
     terminalResize();
+    const q=termPending;termPending=[];for(const d of q)terminalSend('terminal_input',{data:d});
    };
    e.channel.onmessage=m=>{if(gen===liveGeneration)receiveConsole(m.data)};
-   e.channel.onclose=()=>{if(gen===liveGeneration)terminalStatus('Shell getrennt · Sitzung bleibt in VM')};
+   e.channel.onclose=()=>{if(gen===liveGeneration){terminalStatus('Shell getrennt · verbinde neu …');scheduleReconnect()}};
    return;
   }
   if(e.channel.label!=='frames')return;
@@ -680,8 +700,10 @@ async function connectLive(){
  };
  pc.onconnectionstatechange=()=>{
   if(gen!==liveGeneration)return;
-  if(['failed','disconnected','closed'].includes(pc.connectionState))
-   liveStatus('WebRTC/UDP · Verbindung '+pc.connectionState);
+  if(['failed','disconnected','closed'].includes(pc.connectionState)){
+   liveStatus('WebRTC/UDP · Verbindung '+pc.connectionState+' · verbinde neu …');
+   terminalStatus('Shell getrennt · verbinde neu …');scheduleReconnect();
+  }
  };
  try{
   await pc.setLocalDescription(await pc.createOffer());

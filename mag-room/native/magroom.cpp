@@ -1065,7 +1065,9 @@ static const char *FILES_RULES_CHAT =
     "\n\nGemeinsamer Raum-Dateispeicher: Werkzeuge list_room_files, "
     "speak(text) (Sprachausgabe), see_image(name) (OCR).";
 static const char *FRONTEND_RULES =
-    "\n\n[Browser] Eigener persistenter Chromium in deiner VM: browser_open, "
+    "\n\n[Browser] Echter Google Chrome (stable) in deiner VM, sichtbar "
+    "(headful) auf Xvfb 1920x1080, de-DE, persistentes Profil; Chris sieht ihn "
+    "live im Raum. HTTPS laeuft ohne MITM ueber einen Tunnel. Werkzeuge: browser_open, "
     "browser_click, browser_type, browser_pointer, browser_read, browser_screenshot, "
     "browser_back, browser_scroll (Startseite google.de). HTML-Seiten, die du "
     "per share_room_file teilst, oeffnen sich automatisch in deinem Browser und "

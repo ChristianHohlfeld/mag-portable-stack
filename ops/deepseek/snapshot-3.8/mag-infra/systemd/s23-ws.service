@@ -1,0 +1,19 @@
+[Unit]
+Description=S23 websocket streaming backend
+Wants=network-online.target
+After=network-online.target tailscaled.service
+
+[Service]
+Type=simple
+User=chris
+Group=chris
+WorkingDirectory=/home/chris/s23ctl
+Environment=HOME=/home/chris
+Environment=PATH=/home/chris/node-v20.18.0-linux-x64/bin:/home/chris/platform-tools:/usr/local/bin:/usr/bin:/bin
+ExecStart=/bin/bash /home/chris/s23ctl/ws.sh
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

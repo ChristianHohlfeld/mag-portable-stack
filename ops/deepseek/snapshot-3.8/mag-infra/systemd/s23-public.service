@@ -1,0 +1,19 @@
+[Unit]
+Description=S23 additional web backend
+Wants=network-online.target
+After=network-online.target tailscaled.service
+
+[Service]
+Type=simple
+User=chris
+Group=chris
+WorkingDirectory=/home/chris/s23pub
+Environment=HOME=/home/chris
+Environment=PATH=/home/chris/node-v20.18.0-linux-x64/bin:/home/chris/platform-tools:/usr/local/bin:/usr/bin:/bin
+ExecStart=/home/chris/s23venv/bin/python /home/chris/s23pub/s23pub.py
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

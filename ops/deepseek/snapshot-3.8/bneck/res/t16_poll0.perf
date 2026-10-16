@@ -1,0 +1,17 @@
+event syntax error: '..ount_read/,uncore_imc/cas_count_write/,uncore_qpi_0/tx..'
+                                  \___ Bad event or PMU
+
+Unable to find PMU or event on a PMU of 'uncore_qpi_0'
+
+Initial error:
+event syntax error: 'uncore_imc/cas_count_read/,uncore_imc/cas_count_write/,u..'
+                     \___ Cannot find PMU `uncore_imc'. Missing kernel support?
+Run 'perf list' for a list of valid events
+
+ Usage: perf stat [<options>] [<command>]
+
+    -e, --event <event>   event selector. use 'perf list' to list available events
+Average:    NODE    %usr   %nice    %sys %iowait    %irq   %soft  %steal  %guest  %gnice   %idle
+Average:     all    4.42    0.04    0.56    0.01    0.00    0.00    0.00    0.00    0.00   94.97
+Average:       0    4.21    0.00    0.88    0.02    0.00    0.00    0.00    0.00    0.00   94.90
+Average:       1    4.64    0.07    0.25    0.00    0.00    0.00    0.00    0.00    0.00   95.04

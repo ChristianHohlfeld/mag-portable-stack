@@ -3773,6 +3773,27 @@ static bool queue_edit(const std::string &id, const std::string &text) {
     if (p.id == id) { p.text = text; save_queue_locked(); queue_event_locked(); return true; }
   return false;
 }
+// Atomic persistent reorder. "before" is another pending ID, or empty
+// to move to the tail. No stale client index can reorder the wrong message.
+static bool queue_move(const std::string &id, const std::string &before) {
+  std::lock_guard<std::mutex> lk(JOB_MTX);
+  auto source = std::find_if(PENDING.begin(), PENDING.end(),
+                             [&](const Pending &p) { return p.id == id; });
+  if (source == PENDING.end()) return false;
+  if (before == id) return true;
+  if (!before.empty() &&
+      std::none_of(PENDING.begin(), PENDING.end(),
+                   [&](const Pending &p) { return p.id == before; }))
+    return false;
+  Pending moving = *source;
+  PENDING.erase(source);
+  auto target = before.empty() ? PENDING.end()
+      : std::find_if(PENDING.begin(), PENDING.end(),
+                     [&](const Pending &p) { return p.id == before; });
+  PENDING.insert(target, std::move(moving));
+  save_queue_locked(); queue_event_locked(); JOB_CV.notify_all();
+  return true;
+}
 static bool queue_delete(const std::string &id) {
   std::lock_guard<std::mutex> lk(JOB_MTX);
   for (auto it = PENDING.begin(); it != PENDING.end(); ++it)

@@ -920,10 +920,53 @@ struct Sub {
 static std::mutex SUBS_MTX;
 static std::vector<std::shared_ptr<Sub>> SUBS;
 
+// Replay buffer of the running answer (guarded by SUBS_MTX): a page that
+// (re)connects mid-stream gets bot_start + tools + reasoning + text so far,
+// then continues with live deltas - no gap, no duplicate, no new generation.
+struct LiveTurn { std::string start, bot, name, text, reasoning; std::vector<std::string> tools; bool on = false; };
+static LiveTurn LIVE;
+static std::string event_type_of(const std::string &j) {
+  static const std::string k = "\"type\":\"";
+  auto p = j.find(k); // top-level key; string values have escaped quotes
+  if (p == std::string::npos) return "";
+  p += k.size();
+  auto e = j.find('"', p);
+  return e == std::string::npos ? "" : j.substr(p, e - p);
+}
+static void live_track_locked(const std::string &j) {
+  std::string t = event_type_of(j);
+  if (t.empty()) return;
+  if (t == "bot_start") { LIVE = LiveTurn(); LIVE.on = true; LIVE.start = j;
+    Val v; if (mj::parse(j, v)) { if (auto b = v.find("bot")) LIVE.bot = b->asStr(); if (auto n = v.find("name")) LIVE.name = n->asStr(); }
+    return; }
+  if (!LIVE.on) return;
+  if (t == "delta" || t == "reasoning") {
+    Val v; if (!mj::parse(j, v)) return;
+    std::string piece = v.find("text") ? v.find("text")->asStr() : "";
+    (t == "delta" ? LIVE.text : LIVE.reasoning) += piece;
+    return; }
+  if (t == "tool" || t == "tool_result") { if (LIVE.tools.size() < 200) LIVE.tools.push_back(j); return; }
+  if (t == "bot_done" || t == "cancelled" || t == "idle" || t == "reset") LIVE = LiveTurn();
+}
+static std::vector<std::string> live_replay_locked() {
+  std::vector<std::string> out;
+  if (!LIVE.on) return out;
+  out.push_back(LIVE.start);
+  auto piece = [&](const char *type, const std::string &text) {
+    if (text.empty()) return;
+    Val e = Val::object(); e["type"] = type; e["bot"] = LIVE.bot; e["name"] = LIVE.name;
+    e["text"] = text; e["replay"] = true; out.push_back(mj::dump(e));
+  };
+  piece("reasoning", LIVE.reasoning);
+  for (auto &t : LIVE.tools) out.push_back(t);
+  piece("delta", LIVE.text);
+  return out;
+}
 static void publish(const std::string &jsonLine) {
   std::vector<std::shared_ptr<Sub>> live;
   {
     std::lock_guard<std::mutex> lk(SUBS_MTX);
+    live_track_locked(jsonLine);
     for (auto it = SUBS.begin(); it != SUBS.end();) {
       if ((*it)->dead)
         it = SUBS.erase(it);
@@ -3121,6 +3164,8 @@ static void handle_sse(int fd) {
   {
     std::lock_guard<std::mutex> lk(SUBS_MTX);
     SUBS.push_back(sub);
+    // Same critical section as publish(): replay + live stream are gapless.
+    for (auto &line : live_replay_locked()) sub->q.push_back(line);
   }
   std::string hdr =
       "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: "

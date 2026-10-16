@@ -372,6 +372,27 @@ class Native(unittest.TestCase):
   for n in ['id="job-dialog"','Jetzt ausführen','jf-secret','/api/jobs']:self.assertIn(n,html)
   self.assertNotIn('confirm(',html.replace('magConfirm(',''))
   self.request('/api/jobs/'+j['id'],method='DELETE');Model.reply=None
+
+ def test_15j_reload_mid_stream_replays_and_continues(self):
+  self.wait_idle();Model.script=[self._slow('out',25)]
+  self.request('/api/message',{'text':'Stream-Reload','bots':['test']});self._busy();time.sleep(1.0)
+  r=urllib.request.urlopen(f'http://127.0.0.1:{self.ui}/api/events',timeout=10)
+  ev=[];text='';t0=time.time()
+  while time.time()-t0<8:
+   line=r.readline().decode()
+   if not line.startswith('data: '):continue
+   e=json.loads(line[6:]);ev.append(e.get('type'))
+   if e.get('type')=='delta':text+=e.get('text','')
+   if e.get('type') in('bot_done','idle'):break
+  r.close()
+  self.assertEqual(ev[0],'bot_start','replay starts the running turn');self.assertEqual(ev[1],'delta')
+  self.assertEqual(text,''.join('Wort%d '%i for i in range(25)),'replay + live = exact answer, no gap/duplicate')
+  s=self.wait_idle();self.assertEqual(s['room'][-1]['content'].strip(),text.strip())
+  r=urllib.request.urlopen(f'http://127.0.0.1:{self.ui}/api/events',timeout=3)
+  try:
+   r.fp.raw._sock.settimeout(1.0);line=r.readline().decode()
+  except Exception:line=''
+  r.close();self.assertNotIn('bot_start',line,'no replay after the turn finished')
  def test_08_idle_autonomy_does_not_make_up_work(self):
   self.request('/api/autotalk',{'on':True})
   calls_before=len(Model.calls)

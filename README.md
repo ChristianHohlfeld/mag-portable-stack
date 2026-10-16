@@ -1,5 +1,7 @@
 # MAG — native agent server
 
+> **Stack-Stand 3.8 (Tag `mag-stack-3.8`):** Hardware, Dienste/Ports, Engine/Flags, RAM-Regeln, Sandbox/Browser, git-memory-MCP, bekannte Bugs und Rollback in [docs/MAG-STACK-3.8.md](docs/MAG-STACK-3.8.md).
+
 One repository, one deployed application stack. No Docker, Ollama, Open WebUI,
 ComfyUI, Python room server or PM2 orchestration.
 

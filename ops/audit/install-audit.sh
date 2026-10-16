@@ -105,8 +105,8 @@ if [[ $APPLY -eq 1 ]]; then
   cat > /etc/systemd/system/mag-120.service.d/21-audit-net.conf <<EOF
 # erzeugt von ops/audit/install-audit.sh – VM-Netz/Bridge direkt, alles andere über den Audit-Proxy
 [Service]
-Environment=NO_PROXY=$NOPROXY
-Environment=no_proxy=$NOPROXY
+Environment="NO_PROXY=$NOPROXY"
+Environment="no_proxy=$NOPROXY"
 EOF
 else
   echo "+ 21-audit-net.conf: NO_PROXY=$NOPROXY"

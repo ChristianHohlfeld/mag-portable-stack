@@ -18,8 +18,8 @@ Environment=MAG_AUDIT_SECRETS_FILE=/etc/mag-audit/secrets.list
 # Client-IP/Netz -> Agent-Name (erzeugt von install-audit.sh aus der libvirt-Konfiguration)
 EnvironmentFile=-/etc/mag-audit/webproxy.env
 ExecStart=/opt/mag-audit/venv/bin/mitmdump \
-  --mode regular \
-  --listen-host 0.0.0.0 --listen-port 8888 \
+  --mode regular@8888 --mode regular@8889 \
+  --listen-host 0.0.0.0 \
   --set confdir=/var/lib/mag-audit/mitmproxy \
   --set block_global=false \
   --set connection_strategy=lazy \

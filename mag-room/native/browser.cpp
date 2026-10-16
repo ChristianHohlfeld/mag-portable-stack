@@ -1,3 +1,6 @@
+#include <ctime>
+#include <strings.h>
+#include <fstream>
 #include <unistd.h>
 // Persistent Chromium controller. CDP is loopback-only; VM HTTP requires a
 // token.
@@ -97,6 +100,25 @@ class CDP {
   }
 
 public:
+  // Navigation log: one JSON line per top-level document response.
+  void nav_event(const Val &v) {
+    auto p = v.find("params");
+    if (!p || str(*p, "type") != "Document") return;
+    auto r = p->find("response");
+    if (!r) return;
+    Val e = Val::object();
+    e["ts"] = (double)time(nullptr);
+    e["url"] = str(*r, "url");
+    e["status"] = num(*r, "status");
+    if (auto h = r->find("headers"))
+      for (const char *k : {"cf-ray", "x-datadome", "server", "cf-mitigated"})
+        if (h->isObj())
+          for (auto &kv : *h->obj)
+            if (strcasecmp(kv.first.c_str(), k) == 0) e[k] = kv.second.asStr();
+    last_nav = e;
+    std::ofstream("/home/bot/browserd/nav.log", std::ios::app) << mj::dump(e) << "\n";
+  }
+  Val last_nav;
   ~CDP() {
     if (fd >= 0)
       close(fd);
@@ -150,7 +172,8 @@ public:
     auto end = std::chrono::steady_clock::now() + std::chrono::seconds(45);
     while (std::chrono::steady_clock::now() < end) {
       auto v = json(receive());
-
+      if (str(v, "method") == "Network.responseReceived") nav_event(v);
+      if (str(v, "method") == "Runtime.executionContextsCleared") world = -1;
       if (num(v, "id") == seq) {
         if (v.find("error"))
           throw std::runtime_error(mj::dump(*v.find("error")));
@@ -159,12 +182,37 @@ public:
     }
     throw std::runtime_error("CDP deadline");
   }
+  long world = -1;
+  std::string world_frame;
+  long isolated_world() {
+    auto ft = call("Page.getFrameTree");
+    std::string fid;
+    if (auto t = ft.find("frameTree"))
+      if (auto f = t->find("frame"))
+        if (auto i = f->find("id")) fid = i->asStr();
+    Val p = Val::object();
+    p["frameId"] = fid;
+    p["worldName"] = "mag";
+    auto w = call("Page.createIsolatedWorld", p);
+    world_frame = fid;
+    world = (long)num(w, "executionContextId");
+    return world;
+  }
   Val eval(const std::string &js) {
     Val p = Val::object();
     p["expression"] = js;
     p["returnByValue"] = true;
     p["awaitPromise"] = true;
-    auto r = call("Runtime.evaluate", p);
+    if (world < 0) isolated_world();
+    p["contextId"] = (double)world;
+    Val r;
+    try {
+      r = call("Runtime.evaluate", p);
+    } catch (const std::exception &) {
+      // context gone after a navigation: new isolated world, retry once
+      p["contextId"] = (double)isolated_world();
+      r = call("Runtime.evaluate", p);
+    }
     if (r.find("exceptionDetails"))
       throw std::runtime_error("Browser script: " +
                                mj::dump(*r.find("exceptionDetails")));
@@ -176,6 +224,8 @@ static std::string chromium() {
   auto override = env("MAG_CHROMIUM");
   if (!override.empty())
     return override;
+  if (fs::exists("/opt/google/chrome/chrome"))
+    return "/opt/google/chrome/chrome";  // real Google Chrome stable
   for (auto &d : fs::directory_iterator("/opt/magbot/browsers"))
     for (auto p :
          {d.path() / "chrome-linux/chrome", d.path() / "chrome-linux64/chrome",
@@ -258,9 +308,12 @@ int main(int argc, char **argv) {
       bool headful = fs::exists("/usr/bin/Xvfb");
       if (headful) {
         setenv("DISPLAY", ":99", 1);
+        setenv("TZ", "Europe/Berlin", 1);
+        setenv("LANG", "de_DE.UTF-8", 1);
+        setenv("LANGUAGE", "de_DE:de", 1);
         if (!fs::exists("/tmp/.X11-unix/X99")) {
           std::vector<std::string> x{"/usr/bin/Xvfb", ":99", "-screen", "0",
-                                     "1440x900x24", "-nolisten", "tcp"};
+                                     "1920x1080x24", "-nolisten", "tcp"};
           std::vector<char *> xa;
           for (auto &arg : x) xa.push_back(arg.data());
           xa.push_back(nullptr);
@@ -274,8 +327,13 @@ int main(int argc, char **argv) {
         }
       }
       std::vector<std::string> a{binary,
-                                 headful ? "--kiosk" : "--headless=new",
+                                 headful ? "--start-maximized" : "--headless=new",
                                  "--window-position=0,0",
+                                 "--lang=de-DE",
+                                 "--accept-lang=de-DE,de,en-US,en",
+                                 // Google Chrome disables software WebGL by
+                                 // default (M137+); the VM has no GPU.
+                                 "--enable-unsafe-swiftshader",
                                  "--no-default-browser-check",
                                  "--password-store=basic",
                                  "--disable-session-crashed-bubble",
@@ -283,7 +341,7 @@ int main(int argc, char **argv) {
                                  "--remote-debugging-address=127.0.0.1",
                                  "--remote-debugging-port=9226",
                                  "--user-data-dir=/home/bot/browserd/profile",
-                                 "--window-size=1440,900",
+                                 "--window-size=1920,1080",
                                  "--no-first-run",
                                  "https://google.de"};  // Startseite des Bot-Browsers
       std::vector<char *> args;
@@ -311,10 +369,15 @@ int main(int argc, char **argv) {
       }
     }
     c.call("Page.enable");
-    c.call("Runtime.enable");
+    // No Runtime.enable (detectable console-serialization side effect):
+    // scripts run in an isolated world (see CDP::eval). Network events only
+    // feed the navigation log (status, cf-ray, x-datadome).
+    c.call("Network.enable");
     Val metrics = Val::object();
     metrics["width"] = 1440;
     metrics["height"] = 900;
+    metrics["screenWidth"] = 1920;
+    metrics["screenHeight"] = 1080;
     metrics["deviceScaleFactor"] = 1;
     metrics["mobile"] = false;
     c.call("Emulation.setDeviceMetricsOverride", metrics);
@@ -422,6 +485,13 @@ int main(int argc, char **argv) {
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
           }
           out = snapshot();
+          if (c.last_nav.isObj()) {
+            Val nav = c.last_nav;
+            nav["title"] = str(out, "title");
+            out["nav"] = nav;  // status, cf-ray, x-datadome of the document
+            std::ofstream("/home/bot/browserd/nav.log", std::ios::app)
+                << mj::dump(nav) << "\n";
+          }
           if (r.path == "/snapshot") {
             Val p = Val::object();
             p["format"] = "png";

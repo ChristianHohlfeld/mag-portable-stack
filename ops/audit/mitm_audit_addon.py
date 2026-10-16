@@ -129,4 +129,52 @@ class MagAudit:
         WRITER.write(rec)
 
 
-addons = [MagAudit()]
+BROWSER_PORT = int(os.environ.get("MAG_AUDIT_BROWSER_PORT", "8889"))
+BLOCKLIST_FILE = os.environ.get("MAG_AUDIT_BLOCKLIST", "/etc/mag-audit/blocklist.txt")
+
+
+def _blocklist():
+    try:
+        with open(BLOCKLIST_FILE) as fh:
+            return {l.strip().lower().lstrip(".") for l in fh if l.strip() and not l.startswith("#")}
+    except OSError:
+        return set()
+
+
+def _blocked(host):
+    host = (host or "").lower().rstrip(".")
+    bl = _blocklist()
+    return any(host == d or host.endswith("." + d) for d in bl)
+
+
+def _browser_port(conn):
+    try:
+        return conn.sockname and conn.sockname[1] == BROWSER_PORT
+    except Exception:
+        return False
+
+
+class BrowserPassthrough:
+    """Port 8889 = Bot-Browser: HTTPS als CONNECT-Tunnel OHNE TLS-Aufbruch (echter Chrome-
+    Handshake/JA4 zum Ziel). Protokolliert nur Host/Port/SNI; Domain-Blockliste gilt weiter.
+    Port 8888 (Shell/Git/Tools) bleibt vollständig auditiert."""
+
+    def http_connect(self, flow):
+        if not _browser_port(flow.client_conn):
+            return
+        host, port = flow.request.host, flow.request.port
+        if _blocked(host):
+            from mitmproxy import http
+            flow.response = http.Response.make(403, b"blocked by mag-audit blocklist\n")
+        WRITER.write({"type": "browser_tunnel", "flow_id": flow.id, "client": _client(flow),
+                      "host": host, "port": port, "blocked": _blocked(host),
+                      "started": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())})
+
+    def tls_clienthello(self, data):
+        if _browser_port(data.context.client):
+            data.ignore_connection = True
+            WRITER.write({"type": "browser_tls", "sni": data.client_hello.sni,
+                          "client": {"ip": (data.context.client.peername or [None])[0]}})
+
+
+addons = [BrowserPassthrough(), MagAudit()]

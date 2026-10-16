@@ -50,7 +50,7 @@ fi
 echo "== Chromium/Chrome-Policy (falls eine Policy-fähige Installation vorhanden ist)"
 POLICY=$(cat <<EOF
 {
-  "ProxySettings": {"ProxyMode": "fixed_servers", "ProxyServer": "$hostport",
+  "ProxySettings": {"ProxyMode": "fixed_servers", "ProxyServer": "${host}:8889",
                     "ProxyBypassList": "<-loopback>;$host;192.168.122.1"},
   "QuicAllowed": false,
   "DnsOverHttpsMode": "off",

@@ -42,6 +42,9 @@ table inet mag_audit {
 		tcp dport 8888 iifname "lo" accept
 		tcp dport 8888 iifname { @VM_IFACES@ } accept
 		tcp dport 8888 counter drop
+		# 4b) Browser-Port 8889 (CONNECT ohne MITM): nur aus dem VM-Netz.
+		tcp dport 8889 iifname { @VM_IFACES@ } accept
+		tcp dport 8889 counter drop
 		# Gateway (8080) und Backend (8090) lauschen ohnehin nur auf 127.0.0.1.
 	}
 }

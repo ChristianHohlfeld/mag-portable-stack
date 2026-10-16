@@ -272,10 +272,24 @@ include <tunables/global>
 profile mag-chromium /opt/magbot/browsers/chromium-*/chrome-linux/chrome flags=(unconfined) {
  userns,
 }
+profile mag-google-chrome /opt/google/chrome/chrome flags=(unconfined) {
+ userns,
+}
 PROFILE
+# Real Google Chrome (stable) from Google's signed apt repo instead of the
+# Playwright "Chrome for Testing" build (userAgentData brand, auto updates).
+if [ ! -x /opt/google/chrome/chrome ]; then
+  [ -r /etc/profile.d/mag-audit-proxy.sh ] && . /etc/profile.d/mag-audit-proxy.sh
+  install -d -m 0755 /etc/apt/keyrings
+  curl -fsSL https://dl.google.com/linux/linux_signing_key.pub | gpg --dearmor --yes -o /etc/apt/keyrings/google-chrome.gpg
+  echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/google-chrome.gpg] https://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list
+  apt-get -o Acquire::Retries=2 update -qq -o Dir::Etc::sourcelist=sources.list.d/google-chrome.list -o Dir::Etc::sourceparts=- -o APT::Get::List-Cleanup=0
+  DEBIAN_FRONTEND=noninteractive apt-get install -y -qq google-chrome-stable fonts-liberation
+fi
+locale -a | grep -qi de_DE.utf8 || { locale-gen de_DE.UTF-8 >/dev/null 2>&1 || true; }
 apparmor_parser -r /etc/apparmor.d/mag-chromium
 )SH";
-  auto result = guest(n, {"/bin/bash", "-lc", script}, 30);
+  auto result = guest(n, {"/bin/bash", "-lc", script}, 900);
   if (result.code)
     throw std::runtime_error("Browser namespace profile failed");
 }

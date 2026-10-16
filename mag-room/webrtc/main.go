@@ -266,6 +266,20 @@ func (r *relay) offer(w http.ResponseWriter,req *http.Request){
  console,err:=pc.CreateDataChannel("console",nil)
  if err!=nil{_ =pc.Close();http.Error(w,"console",500);return}
  viewer.console=console
+ // Liveness: the browser reconnects when these stop (gateway restart, dead
+ // ICE path) instead of silently dropping keystrokes into a dead session.
+ console.OnOpen(func(){
+  go func(){
+   t:=time.NewTicker(2*time.Second);defer t.Stop()
+   for range t.C {
+    if viewer.closed.Load()||console.ReadyState()!=webrtc.DataChannelStateOpen{return}
+    r.mu.Lock();age:=-1.0
+    if bb:=r.bots[vm];bb!=nil&&!bb.seen.IsZero(){age=time.Since(bb.seen).Seconds()}
+    r.mu.Unlock()
+    _=console.SendText(fmt.Sprintf(`{"kind":"hb","vm_age":%.1f}`,age))
+   }
+  }()
+ })
  console.OnMessage(func(m webrtc.DataChannelMessage){
   if viewer.closed.Load()||len(m.Data)>960||!json.Valid(m.Data){return}
   var msg struct {

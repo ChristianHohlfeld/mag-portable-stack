@@ -1,0 +1,1 @@
+# mag-audit Domain-Blockliste (eine Domain pro Zeile, gilt inkl. Subdomains)

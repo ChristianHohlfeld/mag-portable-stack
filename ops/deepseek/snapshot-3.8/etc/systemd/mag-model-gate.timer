@@ -1,0 +1,10 @@
+[Unit]
+Description=MAG model gate – periodic check
+
+[Timer]
+OnBootSec=1min
+OnUnitInactiveSec=2min
+Unit=mag-model-gate.service
+
+[Install]
+WantedBy=timers.target

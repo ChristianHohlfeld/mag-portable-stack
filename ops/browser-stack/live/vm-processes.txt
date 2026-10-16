@@ -1,0 +1,4 @@
+/usr/bin/Xvfb :99 -screen 0 1920x1080x24 -nolisten tcp
+/opt/google/chrome/chrome --start-maximized --window-position=0,0 --lang=de-DE --accept-lang=de-DE,de,en-US,en --enable-unsafe-swiftshader --no-default-browser-check --password-store=basic --disable-session-crashed-bubble --disable-dev-shm-usage --remote-debugging-address=127.0.0.1 --remote-debugging-port=9226 --user-data-dir=/home/bot/browserd/profile --window-size=1920,1080 --no-first-run https://google.de
+
+

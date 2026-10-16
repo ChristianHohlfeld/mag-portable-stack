@@ -5,7 +5,8 @@ table inet mag_agents {
   iifname "virbr0" ct state established,related accept
   iifname "virbr0" udp dport { 67, 18783 } accept
   iifname "virbr0" ip daddr 192.168.122.1 udp dport 53 accept
-  iifname "virbr0" ip daddr 192.168.122.1 tcp dport { 53, 3001, 8767 } accept
+  # 8888: mag-audit-webproxy, full audit (shell/git/tools); 8889: browser CONNECT passthrough (host/SNI only)
+  iifname "virbr0" ip daddr 192.168.122.1 tcp dport { 53, 3001, 8767, 8888, 8889 } accept
   iifname "virbr0" reject with icmpx type admin-prohibited
  }
  chain forward {

@@ -1,0 +1,39 @@
+# Hält die DeepSeek-GGUF-Dateien (~155 GB) dauerhaft gesperrt im RAM (Page-Cache + mlock),
+# unabhängig vom llama-Prozess. Stirbt oder startet mag-llm neu, bleiben die Seiten im RAM;
+# llama mappt sie per mmap erneut, statt 155 GB von der Platte zu lesen.
+# Nach einem Reboot liest dieser Dienst das Modell einmal vor (NUMA: über beide Knoten verteilt).
+# Installiert durch ops/deepseek/warm.sh install.
+[Unit]
+Description=MAG model pin - DeepSeek-V4-Flash GGUF dauerhaft im RAM halten
+After=local-fs.target
+# nur verifizierte Dateien sperren (nie einen halben Download)
+ConditionPathExists=/var/lib/mag-llm/verified.stamp
+RefuseManualStop=yes
+
+[Service]
+Type=simple
+User=chris
+Group=chris
+# -l: mmap + mlock jeder Datei, Prozess bleibt bestehen;  -m: Dateigrößenlimit (Standard 500M)
+# numactl --interleave=all: beim Vorlesen nach dem Boot Seiten gleichmäßig auf beide NUMA-Knoten
+ExecStart=/usr/bin/numactl --interleave=all /usr/bin/vmtouch -q -l -m 64G \
+  /home/chris/models/deepseek-v4/DeepSeek-V4-Flash-0731-UD-Q4_K_XL-00001-of-00005.gguf \
+  /home/chris/models/deepseek-v4/DeepSeek-V4-Flash-0731-UD-Q4_K_XL-00002-of-00005.gguf \
+  /home/chris/models/deepseek-v4/DeepSeek-V4-Flash-0731-UD-Q4_K_XL-00003-of-00005.gguf \
+  /home/chris/models/deepseek-v4/DeepSeek-V4-Flash-0731-UD-Q4_K_XL-00004-of-00005.gguf \
+  /home/chris/models/deepseek-v4/DeepSeek-V4-Flash-0731-UD-Q4_K_XL-00005-of-00005.gguf
+Restart=always
+RestartSec=10
+LimitMEMLOCK=infinity
+MemorySwapMax=0
+OOMScoreAdjust=-1000
+ManagedOOMPreference=omit
+Nice=5
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+NoNewPrivileges=yes
+ProtectSystem=strict
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

@@ -18,7 +18,10 @@ fi
 test -x "$SOURCE/build/mag-browser-webrtc"
 test -x "$WHISPER_CLI"; test -r "$WHISPER_MODEL"
 test ! -e "$RELEASE"
-curl -fsS --max-time 5 http://127.0.0.1:8080/v1/models >/dev/null
+# Das Modell ist unabhängig vom Raum-Release (lädt evtl. noch herunter / wird geprüft).
+# Nur informieren; der Raum zeigt den Modellstatus selbst an.
+curl -fsS --max-time 5 http://127.0.0.1:8080/v1/models >/dev/null \
+  || echo 'Hinweis: Modell-Backend noch nicht bereit – Deploy läuft weiter.' >&2
 install -d -m 0755 /opt/mag-stack/releases "$RELEASE/bin" "$RELEASE/web" "$RELEASE/ops"
 install -d -m 0700 "$BACKUP"
 cp -a /etc/systemd/system/mag-120.service "$BACKUP/mag-120.service"
@@ -65,6 +68,24 @@ rollback() {
    systemctl restart mag-browser-webrtc.service
  fi
 }
+# Drain: never cut a running reply or a queued message. Wait until the room is
+# idle (no turn running, queue empty). MAG_DEPLOY_DRAIN_S (default 900 s);
+# on timeout the deploy is deferred (exit 75) unless MAG_DEPLOY_FORCE=1 –
+# the queue is persisted and resumed after the restart either way.
+drain_s="${MAG_DEPLOY_DRAIN_S:-900}"; waited=0
+while :; do
+  st=$(curl -fsS --max-time 5 http://127.0.0.1:8766/api/state 2>/dev/null \
+       | python3 -c 'import json,sys;d=json.load(sys.stdin);print("%d %d"%(bool(d.get("busy")),0 if d.get("queue_paused") else int(d.get("queue",0))))' 2>/dev/null || echo "0 0")
+  read -r busy queued <<<"$st"
+  [[ "$busy" == 0 && "$queued" == 0 ]] && break
+  if (( waited == 0 )); then echo "Deploy wartet: Antwort läuft ($busy) / $queued in der Warteschlange – warte bis max. ${drain_s}s …" >&2; fi
+  if (( waited >= drain_s )); then
+    if [[ "${MAG_DEPLOY_FORCE:-0}" == 1 ]]; then echo "Drain-Timeout – MAG_DEPLOY_FORCE=1: deploye trotzdem (Warteschlange wird nach dem Neustart fortgesetzt)." >&2; break; fi
+    echo "Drain-Timeout nach ${drain_s}s: Raum ist nicht leer – Deploy verschoben (Release $RELEASE_ID bleibt unbenutzt). Später erneut ausführen oder MAG_DEPLOY_FORCE=1." >&2
+    rm -rf "$RELEASE"; exit 75
+  fi
+  sleep 5; waited=$((waited + 5))
+done
 trap rollback ERR
 # Retire the old installer timer before changing its service executable.
 if systemctl cat mag-120-finalize.timer >/dev/null 2>&1; then systemctl disable --now mag-120-finalize.timer; fi
@@ -73,7 +94,7 @@ mv -Tf /opt/mag-stack/.current-next /opt/mag-stack/current
 # Compatibility name is deliberately retained for existing guest wrappers/sudoers.
 install -m 0755 "$RELEASE/bin/magbot-native" /usr/local/bin/magbot
 install -m 0755 "$SOURCE/ops/spawnbot" "$SOURCE/ops/despawnbot" /usr/local/bin/
-install -m 0755 "$SOURCE/ops/magbot-guest-run" "$SOURCE/ops/magbot-agent-ctl" /usr/local/sbin/
+install -m 0755 "$SOURCE/ops/magbot-guest-run" "$SOURCE/ops/magbot-agent-ctl" "$SOURCE/ops/magbot-netmode" /usr/local/sbin/
 install -m 0440 "$SOURCE/ops/magbot-guest.sudoers" /etc/sudoers.d/magbot-guest
 visudo -cf /etc/sudoers.d/magbot-guest >/dev/null
 install -m 0644 "$SOURCE/ops/mag-120.service" "$SOURCE/ops/mag-browser-webrtc.service" /etc/systemd/system/
@@ -87,6 +108,7 @@ systemctl enable mag-120.service
 systemctl restart mag-120.service
 systemctl enable --now mag-browser-webrtc.service
 systemctl restart mag-browser-webrtc.service
+# /readyz = Raum bereit (Modellstatus steht im JSON, ist aber kein Rollback-Grund)
 for i in {1..30}; do if curl -fsS --max-time 2 http://127.0.0.1:8766/readyz >/dev/null; then break; fi; sleep 1; done
 curl -fsS --max-time 5 http://127.0.0.1:8766/readyz
 curl -fsS --max-time 5 http://127.0.0.1:18784/health

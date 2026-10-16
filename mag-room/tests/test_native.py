@@ -282,7 +282,14 @@ class Native(unittest.TestCase):
   self._settle(lambda s:not s['busy'] and len(Model.calls)>0)
   u=Model.calls[-1]['messages'][1]['content'];self.assertIn('Netz: OFFLINE',u.split('[Kontext]')[-1])
   self.proc.kill();self.proc.wait(timeout=5);self.log.close();self.start()
-  self.assertEqual(NETLOG.read_text().split()[-1],'offline','offline re-applied at startup');self.assertTrue(self.request('/api/state')['offline'])
+  self.assertEqual(NETLOG.read_text().split()[-1],'offline','offline re-applied at startup')
+  # 20 quick toggles, also while a reply streams: no errors, state stays consistent
+  Model.script=[self._slow('out',30)];self.request('/api/message',{'text':'Off-busy','bots':['test']});self._busy()
+  import concurrent.futures as cf
+  with cf.ThreadPoolExecutor(4) as ex:list(ex.map(lambda i:self.request('/api/offline',{'on':i%2==0}),range(20)))
+  self.request('/api/offline',{'on':True});self.assertEqual(NETLOG.read_text().split()[-1],'offline');self.assertTrue(self.request('/api/state')['offline'])
+  self.assertTrue(self.request('/api/state')['busy'],'reply keeps running while toggling');self.wait_idle()
+  self.assertNotIn('(unterbrochen)',self.request('/api/state')['room'][-1]['content']);self.assertTrue(self.request('/api/state')['offline'])
   self.request('/api/offline',{'on':False});self.assertEqual(NETLOG.read_text().split()[-1],'online');self.assertFalse(self.request('/api/state')['offline'])
  def test_08_idle_autonomy_does_not_make_up_work(self):
   self.request('/api/autotalk',{'on':True})

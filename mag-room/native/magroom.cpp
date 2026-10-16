@@ -3049,7 +3049,9 @@ static bool apply_offline(bool off) {
   }
   return true;
 }
+static std::mutex NETMODE_MTX; // serialises toggles: UI state == nft state
 static bool set_offline(bool off) {
+  std::lock_guard<std::mutex> nl(NETMODE_MTX);
   bool ok = apply_offline(off);
   if (!ok && off) return false; // never claim offline if not enforced
   OFFLINE = off;
@@ -3382,9 +3384,11 @@ int main() {
   UI_DEFAULT = read_file(UI_FILE);
 
   AUTOTALK = trim(read_file(STATE_DIR + "/autotalk")) == "on";
-  if (trim(read_file(STATE_DIR + "/offline")) == "on") {
-    OFFLINE = true; WEB_ENABLED = false;
-    if (!env("MAG_TEST_NO_NETMODE", "").size()) apply_offline(true);
+  {
+    // Reconcile nft with the persisted choice in both directions (idempotent).
+    const bool off = trim(read_file(STATE_DIR + "/offline")) == "on";
+    OFFLINE = off; WEB_ENABLED = !off;
+    apply_offline(off);
   }
   // Resume the queue of a previous process. A turn that was running when the
   // room stopped is marked "unterbrochen" in the room and answered again

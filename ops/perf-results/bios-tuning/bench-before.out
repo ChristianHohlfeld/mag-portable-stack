@@ -1,0 +1,16 @@
+== bios-before: Generierung (kurzer Prompt, 128 Tokens)
+  tg128 Lauf 1: prompt_n=89 pp=19.41 t/s  gen_n=128 tg=3.72 t/s  TTFT=4.6 s
+  tg128 Lauf 2: prompt_n=86 pp=18.76 t/s  gen_n=128 tg=3.72 t/s  TTFT=4.6 s
+== bios-before: Prompt 512 Tokens
+  pp512 Lauf 1: prompt_n=849 pp=22.16 t/s  gen_n=16 tg=3.31 t/s  TTFT=38.3 s
+  pp512 Lauf 2: prompt_n=849 pp=21.06 t/s  gen_n=16 tg=3.29 t/s  TTFT=40.3 s
+== Prompt-Cache: 1. Lauf prompt_n=3334 cache_n=1 157.6 s  |  2. Lauf prompt_n=4 cache_n=3331 0.4 s
+
+| bios-before | prompt_n | pp t/s | gen_n | tg t/s | TTFT s | gesamt s |
+|---|---:|---:|---:|---:|---:|---:|
+| tg128 | 88 | 19.09 | 128 | 3.72 | 4.6 | 38.8 |
+| pp512 | 849 | 21.61 | 16 | 3.30 | 39.3 | 43.9 |
+
+Prompt-Cache (2.048-Token-Prompt doppelt): 1. Lauf 157.6 s (cache_n=1), 2. Lauf 0.4 s (cache_n=3331)
+
+Gespeichert: /var/tmp/mag-httpbench-20261016-0710-bios-before.md

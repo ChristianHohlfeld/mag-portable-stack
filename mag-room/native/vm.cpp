@@ -272,12 +272,93 @@ include <tunables/global>
 profile mag-chromium /opt/magbot/browsers/chromium-*/chrome-linux/chrome flags=(unconfined) {
  userns,
 }
+profile mag-google-chrome /opt/google/chrome/chrome flags=(unconfined) {
+ userns,
+}
 PROFILE
+# Real Google Chrome (stable) from Google's signed apt repo instead of the
+# Playwright "Chrome for Testing" build (userAgentData brand, auto updates).
+if [ ! -x /opt/google/chrome/chrome ]; then
+  [ -r /etc/profile.d/mag-audit-proxy.sh ] && . /etc/profile.d/mag-audit-proxy.sh
+  install -d -m 0755 /etc/apt/keyrings
+  curl -fsSL https://dl.google.com/linux/linux_signing_key.pub | gpg --dearmor --yes -o /etc/apt/keyrings/google-chrome.gpg
+  echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/google-chrome.gpg] https://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list
+  apt-get -o Acquire::Retries=2 update -qq -o Dir::Etc::sourcelist=sources.list.d/google-chrome.list -o Dir::Etc::sourceparts=- -o APT::Get::List-Cleanup=0
+  DEBIAN_FRONTEND=noninteractive apt-get install -y -qq google-chrome-stable fonts-liberation
+fi
+locale -a | grep -qi de_DE.utf8 || { locale-gen de_DE.UTF-8 >/dev/null 2>&1 || true; }
 apparmor_parser -r /etc/apparmor.d/mag-chromium
 )SH";
-  auto result = guest(n, {"/bin/bash", "-lc", script}, 30);
+  auto result = guest(n, {"/bin/bash", "-lc", script}, 900);
   if (result.code)
     throw std::runtime_error("Browser namespace profile failed");
+}
+// Central web audit (ops/audit): every guest reaches the web only through the
+// logging proxy on the VM gateway and trusts its CA. Inputs are installed by
+// ops/audit/install-audit.sh into /etc/mag-audit/vm/; without them (audit not
+// installed) the guest stays unchanged. Idempotent: a checksum of CA, script
+// and proxy URL is stored in the guest and identical runs return early.
+static std::string base64(const std::string &in) {
+  static const char *abc =
+      "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  std::string out;
+  size_t i = 0;
+  for (; i + 2 < in.size(); i += 3) {
+    unsigned v = ((unsigned char)in[i] << 16) |
+                 ((unsigned char)in[i + 1] << 8) | (unsigned char)in[i + 2];
+    out += abc[(v >> 18) & 63];
+    out += abc[(v >> 12) & 63];
+    out += abc[(v >> 6) & 63];
+    out += abc[v & 63];
+  }
+  if (i < in.size()) {
+    unsigned v = (unsigned char)in[i] << 16;
+    if (i + 1 < in.size())
+      v |= (unsigned char)in[i + 1] << 8;
+    out += abc[(v >> 18) & 63];
+    out += abc[(v >> 12) & 63];
+    out += i + 1 < in.size() ? abc[(v >> 6) & 63] : '=';
+    out += '=';
+  }
+  return out;
+}
+static std::string audit_proxy(const std::string &n) {
+  const fs::path vmdir = env("MAG_AUDIT_VM_DIR", "/etc/mag-audit/vm");
+  if (!fs::exists(vmdir / "mag-audit-ca.crt") ||
+      !fs::exists(vmdir / "vm-proxy-setup.sh") ||
+      !fs::exists(vmdir / "proxy.env"))
+    return "skipped (central audit not installed)";
+  std::string proxy;
+  std::istringstream pe(read(vmdir / "proxy.env"));
+  for (std::string line; std::getline(pe, line);)
+    if (line.rfind("MAG_PROXY=", 0) == 0)
+      proxy = trim(line.substr(10));
+  if (!std::regex_match(proxy, std::regex("http://[0-9.]+:[0-9]{2,5}")))
+    throw std::runtime_error("Invalid audit proxy in proxy.env");
+  const std::string wrapper = R"SH(set -e
+sum=$(printf '%s\n%s\n%s' "$1" "$2" "$3" | sha256sum | cut -d' ' -f1)
+if [ "$(cat /var/lib/magbot/audit-proxy.sum 2>/dev/null)" = "$sum" ]; then
+  echo "audit proxy unchanged"; exit 0
+fi
+t=$(mktemp -d)
+printf %s "$1" | base64 -d > "$t/ca.crt"
+printf %s "$2" | base64 -d > "$t/setup.sh"
+bash "$t/setup.sh" "$3" "$t/ca.crt"
+rm -rf "$t"
+install -d -m 0755 /var/lib/magbot
+printf %s "$sum" > /var/lib/magbot/audit-proxy.sum
+)SH";
+  auto r = guest(n,
+                 {"/bin/bash", "-c", wrapper, "mag-audit-proxy",
+                  base64(read(vmdir / "mag-audit-ca.crt")),
+                  base64(read(vmdir / "vm-proxy-setup.sh")), proxy},
+                 600);
+  if (r.code)
+    throw std::runtime_error("Audit proxy setup failed: " +
+                             r.out.substr(r.out.size() > 800
+                                              ? r.out.size() - 800
+                                              : 0));
+  return trim(r.out);
 }
 static void spawn(const std::string &n, int cpu, int ram, int disk,
                   const Val &c) {
@@ -385,6 +466,13 @@ static void spawn(const std::string &n, int cpu, int ram, int disk,
     write(d / "metadata.json", mj::dump(r));
     provision_git(n);
     prepare_browser(n);
+    try {
+      std::cerr << "audit-proxy: " << audit_proxy(n) << '\n';
+    } catch (const std::exception &e) {
+      // The bot stays usable; its web access is blocked until the proxy
+      // setup succeeds (sudo magbot audit-proxy <id>).
+      std::cerr << "WARNING: " << e.what() << '\n';
+    }
   } catch (...) {
     teardown(n);
     throw;
@@ -398,7 +486,8 @@ int main(int argc, char **argv) {
       throw std::runtime_error("Run with sudo");
     if (argc < 2)
       throw std::runtime_error(
-          "Usage: magbot status|inspect|exec|spawn|despawn|doctor [ID]");
+          "Usage: magbot status|inspect|exec|spawn|despawn|doctor|audit-proxy "
+          "[ID]");
     auto c = cfg();
     std::string action = argv[1], n = argc > 2 ? argv[2] : "";
     if (!n.empty())
@@ -447,6 +536,13 @@ int main(int argc, char **argv) {
     if (action == "browser-sandbox") {
       marker(n);
       prepare_browser(n);
+      return 0;
+    }
+    if (action == "audit-proxy") {
+      marker(n);
+      if (state(n) != "ready")
+        throw std::runtime_error("Guest not ready");
+      std::cout << audit_proxy(n) << '\n';
       return 0;
     }
     if (action == "git-sync") {

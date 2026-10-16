@@ -1,0 +1,8 @@
+== ik_il_t16  avail=214G  08:24:56Z
+| model                          |       size |     params | backend    | threads |          test |              t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | ------: | ------------: | ---------------: |
+| deepseek4 ?B MXFP4 - 4.25 bpw  | 144.44 GiB |   284.33 B | CPU        |      16 |         pp512 |     28.22 ± 0.47 |
+| deepseek4 ?B MXFP4 - 4.25 bpw  | 144.44 GiB |   284.33 B | CPU        |      16 |          tg32 |      5.91 ± 0.00 |
+
+build: 8d21687c (5071)
+exit=0

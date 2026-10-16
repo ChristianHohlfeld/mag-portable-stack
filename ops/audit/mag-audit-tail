@@ -1,0 +1,111 @@
+#!/usr/bin/env python3
+"""
+mag-audit-tail – Audit-Log lesbar anzeigen / verfolgen / prüfen.
+
+  mag-audit-tail                 # heutige Ereignisse (LLM + Web), kompakt
+  mag-audit-tail -f              # live verfolgen
+  mag-audit-tail -d 2026-10-15   # bestimmter Tag
+  mag-audit-tail --full ID       # einen Datensatz komplett (JSON) anzeigen
+  mag-audit-tail --verify        # Hash-Ketten aller Tage prüfen (Manipulation erkennen)
+"""
+import argparse
+import glob
+import hashlib
+import json
+import os
+import sys
+import time
+from datetime import date
+
+BASE = os.environ.get("MAG_AUDIT_LOG_DIR", "/var/log/mag-audit")
+
+
+def files_for(day):
+    y, m, d = day.split("-")
+    return [p for p in (os.path.join(BASE, y, m, d, n) for n in ("events.jsonl", "web.jsonl"))
+            if os.path.exists(p)]
+
+
+def short(r):
+    t, ts = r.get("type"), r.get("ts", "")[11:19]
+    who = (r.get("caller") or {}).get("bot") or (r.get("caller") or {}).get("user") \
+        or (r.get("client") or {}).get("agent") or "-"
+    if t == "llm_request":
+        msgs = (r.get("body") or {}).get("messages") or []
+        last = msgs[-1] if msgs else {}
+        c = last.get("content")
+        c = c if isinstance(c, str) else json.dumps(c, ensure_ascii=False)
+        return f"{ts} {who:8} → LLM  [{last.get('role')}] {c[:140]!r}"
+    if t == "llm_response":
+        ch = ((r.get("body") or {}).get("choices") or [{}])[0]
+        msg = ch.get("message") or {}
+        tc = ", ".join(f"{c['function']['name']}({c['function']['arguments'][:60]})"
+                       for c in msg.get("tool_calls") or [])
+        rs = (msg.get("reasoning_content") or "")
+        return (f"{ts} {who:8} ← LLM  {r.get('duration_s')}s reasoning={len(rs)}Z "
+                f"content={(msg.get('content') or '')[:100]!r}" + (f" tools=[{tc}]" if tc else ""))
+    if t == "bot_event":
+        return f"{ts} {who:8} ⚙ EVENT {json.dumps(r.get('event'), ensure_ascii=False)[:160]}"
+    if t == "web_request":
+        st = (r.get("response") or {}).get("status", r.get("error", "?"))
+        return f"{ts} {who:8} 🌐 {r.get('method')} {st} {r.get('url', '')[:150]}"
+    if t == "web_ws_message":
+        return f"{ts} {who:8} 🌐 WS {'→' if r.get('from_client') else '←'} {r.get('url', '')[:100]}"
+    return f"{ts} {who:8} {t} {json.dumps({k: v for k, v in r.items() if k not in ('hash', 'prev_hash', 'ts')})[:150]}"
+
+
+def verify():
+    ok = True
+    for p in sorted(glob.glob(os.path.join(BASE, "*", "*", "*", "*.jsonl"))):
+        prev, n = None, 0
+        with open(p, encoding="utf-8") as fh:
+            for i, line in enumerate(fh, 1):
+                r = json.loads(line)
+                h = r.pop("hash")
+                body = json.dumps(r, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+                if hashlib.sha256((r["prev_hash"] + body).encode()).hexdigest() != h \
+                        or (prev is not None and r["prev_hash"] != prev):
+                    print(f"KAPUTT: {p}:{i}")
+                    ok = False
+                    break
+                prev, n = h, n + 1
+        print(f"ok  {p} ({n} Datensätze)")
+    return 0 if ok else 2
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("-d", "--day", default=date.today().isoformat())
+    ap.add_argument("-f", "--follow", action="store_true")
+    ap.add_argument("--full")
+    ap.add_argument("--verify", action="store_true")
+    a = ap.parse_args()
+    if a.verify:
+        return verify()
+    fs = files_for(a.day)
+    if a.full:
+        for p in fs:
+            for line in open(p, encoding="utf-8"):
+                r = json.loads(line)
+                if a.full in (r.get("id"), r.get("flow_id")):
+                    print(json.dumps(r, ensure_ascii=False, indent=2))
+        return 0
+    recs = []
+    for p in fs:
+        recs += [json.loads(line) for line in open(p, encoding="utf-8")]
+    for r in sorted(recs, key=lambda r: r.get("ts", "")):
+        print(short(r))
+    if a.follow:
+        pos = {p: os.path.getsize(p) for p in fs}
+        while True:
+            time.sleep(1)
+            for p in files_for(date.today().isoformat()):
+                with open(p, encoding="utf-8") as fh:
+                    fh.seek(pos.get(p, 0))
+                    for line in fh:
+                        print(short(json.loads(line)), flush=True)
+                    pos[p] = fh.tell()
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,7 @@
+{
+  "ProxySettings": {"ProxyMode": "fixed_servers", "ProxyServer": "192.168.122.1:8889",
+                    "ProxyBypassList": "<-loopback>;192.168.122.1;192.168.122.1"},
+  "QuicAllowed": false,
+  "DnsOverHttpsMode": "off",
+  "WebRtcIPHandling": "disable_non_proxied_udp"
+}

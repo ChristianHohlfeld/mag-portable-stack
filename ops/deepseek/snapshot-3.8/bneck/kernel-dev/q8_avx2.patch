@@ -1,0 +1,587 @@
+diff --git a/ggml/src/ggml-cpu/arch-fallback.h b/ggml/src/ggml-cpu/arch-fallback.h
+index 4e59d0a..f00b9ed 100644
+--- a/ggml/src/ggml-cpu/arch-fallback.h
++++ b/ggml/src/ggml-cpu/arch-fallback.h
+@@ -101,7 +101,6 @@
+ #define ggml_gemv_iq4_nl_4x4_q8_0_generic ggml_gemv_iq4_nl_4x4_q8_0
+ #define ggml_gemv_mxfp4_4x4_q8_0_generic ggml_gemv_mxfp4_4x4_q8_0
+ #define ggml_gemv_q8_0_4x4_q8_0_generic ggml_gemv_q8_0_4x4_q8_0
+-#define ggml_gemv_q8_0_4x8_q8_0_generic ggml_gemv_q8_0_4x8_q8_0
+ #define ggml_gemm_q1_0_4x4_q8_0_generic ggml_gemm_q1_0_4x4_q8_0
+ #define ggml_gemm_q1_0_4x8_q8_0_generic ggml_gemm_q1_0_4x8_q8_0
+ #define ggml_gemm_q4_0_4x4_q8_0_generic ggml_gemm_q4_0_4x4_q8_0
+@@ -114,7 +113,6 @@
+ #define ggml_gemm_iq4_nl_4x4_q8_0_generic ggml_gemm_iq4_nl_4x4_q8_0
+ #define ggml_gemm_mxfp4_4x4_q8_0_generic ggml_gemm_mxfp4_4x4_q8_0
+ #define ggml_gemm_q8_0_4x4_q8_0_generic ggml_gemm_q8_0_4x4_q8_0
+-#define ggml_gemm_q8_0_4x8_q8_0_generic ggml_gemm_q8_0_4x8_q8_0
+ #elif defined(__POWERPC__) || defined(__powerpc__)
+ // ref: https://github.com/ggml-org/llama.cpp/pull/14146#issuecomment-2972561679
+ // quants.c
+diff --git a/ggml/src/ggml-cpu/arch/x86/repack.cpp b/ggml/src/ggml-cpu/arch/x86/repack.cpp
+index af1ceba..80b827c 100644
+--- a/ggml/src/ggml-cpu/arch/x86/repack.cpp
++++ b/ggml/src/ggml-cpu/arch/x86/repack.cpp
+@@ -6405,3 +6405,210 @@ void ggml_gemm_q2_K_8x8_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const vo
+ 
+ #endif
+ }
++
++// ---------------------------------------------------------------------------------------------------------
++// Q8_0 x Q8_0, weights repacked 4 rows x 8-byte interleave (block_q8_0x4, see make_block_q8_0x4):
++//   qs[32*k .. 32*k+31] = rows 0..3, bytes 8k..8k+7 of the 32-value block   (k = 0..3)
++// One 256-bit load therefore holds the same 8 activation positions for 4 output rows, so a single
++// broadcast of 8 activation bytes feeds 4 rows, and the per-row scale multiply / horizontal sums of
++// ggml_vec_dot_q8_0_q8_0 are paid once per 4 rows instead of once per row.
++// AVX2 only (no VNNI): signed x signed int8 via |w| (maddubs needs one unsigned operand) and sign(a, w).
++// ---------------------------------------------------------------------------------------------------------
++#if defined(__AVX2__)
++// int8 dot of 8 bytes per row: w = 4 rows x 8 bytes, a = the same 8 activation bytes in every 64-bit lane.
++// Result: 8 x int32 = 2 partial sums per row: [r0 r0 r1 r1 | r2 r2 r3 r3].
++static inline __m256i q8_0_4x8_dot8(const __m256i w_abs, const __m256i w, const __m256i a) {
++    const __m256i p16 = _mm256_maddubs_epi16(w_abs, _mm256_sign_epi8(a, w));
++    return _mm256_madd_epi16(p16, _mm256_set1_epi16(1));
++}
++
++static inline __m256i q8_0_4x8_bcast8(const int8_t * p) {
++    int64_t v;
++    memcpy(&v, p, sizeof(v));
++    return _mm256_set1_epi64x(v);
++}
++
++// full 32-value block for 4 rows -> [r0 r0 r1 r1 | r2 r2 r3 r3] (int32)
++static inline __m256i q8_0_4x8_dot_block(const block_q8_0x4 * GGML_RESTRICT b, const int8_t * GGML_RESTRICT a) {
++    __m256i acc = _mm256_setzero_si256();
++    for (int k = 0; k < 4; ++k) {
++        const __m256i w = _mm256_loadu_si256((const __m256i *) (b->qs + 32 * k));
++        acc = _mm256_add_epi32(acc, q8_0_4x8_dot8(_mm256_abs_epi8(w), w, q8_0_4x8_bcast8(a + 8 * k)));
++    }
++    return acc;
++}
++
++// [r0a r0b r1a r1b | r2a r2b r3a r3b] (float) -> [r0 r1 r2 r3] with a and b summed
++static inline __m128 q8_0_4x8_fold(const __m256 acc) {
++    const __m128 lo = _mm256_castps256_ps128(acc);
++    const __m128 hi = _mm256_extractf128_ps(acc, 1);
++    return _mm_movelh_ps(_mm_add_ps(lo, _mm_movehl_ps(lo, lo)), _mm_add_ps(hi, _mm_movehl_ps(hi, hi)));
++}
++#endif // __AVX2__
++
++void ggml_gemv_q8_0_4x8_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, const void * GGML_RESTRICT vy, int nr, int nc) {
++#if defined(__AVX2__)
++    const int qk = QK8_0;
++    const int nb = n / qk;
++
++    assert(nr == 1);
++    assert(n % qk == 0);
++    assert(nc % 4 == 0);
++    UNUSED(bs);
++    UNUSED(nr);
++
++    const block_q8_0 * a_ptr = (const block_q8_0 *) vy;
++    // per pair of blocks the 8 int32 sums are hadd-ed to [r0 r1 | r0' r1' || r2 r3 | r2' r3'], so the
++    // matching weight scales are [d0 d1 d0' d1' | d2 d3 d2' d3']
++    const __m256i scale_perm = _mm256_setr_epi32(0, 1, 4, 5, 2, 3, 6, 7);
++
++    int x = 0;
++    // two groups of 4 rows at once: each 8-byte activation broadcast feeds 8 rows, and the two
++    // independent accumulation chains keep both vector ports busy
++    for (; x + 1 < nc / 4; x += 2) {
++        const block_q8_0x4 * b0 = (const block_q8_0x4 *) vx + (size_t) x * nb;
++        const block_q8_0x4 * b1 = b0 + nb;
++        __m256 acc0 = _mm256_setzero_ps();
++        __m256 acc1 = _mm256_setzero_ps();
++        int l = 0;
++        for (; l + 1 < nb; l += 2) {
++            __m256i s00 = _mm256_setzero_si256(), s01 = _mm256_setzero_si256();
++            __m256i s10 = _mm256_setzero_si256(), s11 = _mm256_setzero_si256();
++            for (int k = 0; k < 4; ++k) {
++                const __m256i a0 = q8_0_4x8_bcast8(a_ptr[l].qs + 8 * k);
++                const __m256i a1 = q8_0_4x8_bcast8(a_ptr[l + 1].qs + 8 * k);
++                const __m256i w00 = _mm256_loadu_si256((const __m256i *) (b0[l].qs + 32 * k));
++                const __m256i w01 = _mm256_loadu_si256((const __m256i *) (b0[l + 1].qs + 32 * k));
++                const __m256i w10 = _mm256_loadu_si256((const __m256i *) (b1[l].qs + 32 * k));
++                const __m256i w11 = _mm256_loadu_si256((const __m256i *) (b1[l + 1].qs + 32 * k));
++                s00 = _mm256_add_epi32(s00, q8_0_4x8_dot8(_mm256_abs_epi8(w00), w00, a0));
++                s01 = _mm256_add_epi32(s01, q8_0_4x8_dot8(_mm256_abs_epi8(w01), w01, a1));
++                s10 = _mm256_add_epi32(s10, q8_0_4x8_dot8(_mm256_abs_epi8(w10), w10, a0));
++                s11 = _mm256_add_epi32(s11, q8_0_4x8_dot8(_mm256_abs_epi8(w11), w11, a1));
++            }
++            const float  fa0 = GGML_CPU_FP16_TO_FP32(a_ptr[l].d);
++            const float  fa1 = GGML_CPU_FP16_TO_FP32(a_ptr[l + 1].d);
++            const __m256 da  = _mm256_setr_ps(fa0, fa0, fa1, fa1, fa0, fa0, fa1, fa1);
++            int64_t d00, d01, d10, d11;
++            memcpy(&d00, b0[l].d, 8); memcpy(&d01, b0[l + 1].d, 8);
++            memcpy(&d10, b1[l].d, 8); memcpy(&d11, b1[l + 1].d, 8);
++            const __m256 db0 = _mm256_permutevar8x32_ps(_mm256_cvtph_ps(_mm_set_epi64x(d01, d00)), scale_perm);
++            const __m256 db1 = _mm256_permutevar8x32_ps(_mm256_cvtph_ps(_mm_set_epi64x(d11, d10)), scale_perm);
++            acc0 = _mm256_fmadd_ps(_mm256_cvtepi32_ps(_mm256_hadd_epi32(s00, s01)), _mm256_mul_ps(db0, da), acc0);
++            acc1 = _mm256_fmadd_ps(_mm256_cvtepi32_ps(_mm256_hadd_epi32(s10, s11)), _mm256_mul_ps(db1, da), acc1);
++        }
++        __m128 res0 = q8_0_4x8_fold(acc0);
++        __m128 res1 = q8_0_4x8_fold(acc1);
++        if (l < nb) {
++            const __m128 fa = _mm_set1_ps(GGML_CPU_FP16_TO_FP32(a_ptr[l].d));
++            const __m256i h0 = _mm256_hadd_epi32(q8_0_4x8_dot_block(b0 + l, a_ptr[l].qs), q8_0_4x8_dot_block(b1 + l, a_ptr[l].qs));
++            // h0 = [g0r0 g0r1 g1r0 g1r1 | g0r2 g0r3 g1r2 g1r3]
++            const __m128i lo = _mm256_castsi256_si128(h0), hi = _mm256_extracti128_si256(h0, 1);
++            const __m128i r0 = _mm_unpacklo_epi64(lo, hi), r1 = _mm_unpackhi_epi64(lo, hi);
++            res0 = _mm_fmadd_ps(_mm_cvtepi32_ps(r0), _mm_mul_ps(_mm_cvtph_ps(_mm_loadl_epi64((const __m128i *) b0[l].d)), fa), res0);
++            res1 = _mm_fmadd_ps(_mm_cvtepi32_ps(r1), _mm_mul_ps(_mm_cvtph_ps(_mm_loadl_epi64((const __m128i *) b1[l].d)), fa), res1);
++        }
++        _mm_storeu_ps(s + x * 4, res0);
++        _mm_storeu_ps(s + x * 4 + 4, res1);
++    }
++    for (; x < nc / 4; x++) {
++        const block_q8_0x4 * b_ptr = (const block_q8_0x4 *) vx + (size_t) x * nb;
++        __m256 acc = _mm256_setzero_ps();
++        int l = 0;
++        for (; l + 1 < nb; l += 2) {
++            const __m256i s0 = q8_0_4x8_dot_block(b_ptr + l,     a_ptr[l].qs);
++            const __m256i s1 = q8_0_4x8_dot_block(b_ptr + l + 1, a_ptr[l + 1].qs);
++            const __m256i h  = _mm256_hadd_epi32(s0, s1);
++
++            int64_t d0, d1;
++            memcpy(&d0, b_ptr[l].d, sizeof(d0));
++            memcpy(&d1, b_ptr[l + 1].d, sizeof(d1));
++            const __m256 db = _mm256_permutevar8x32_ps(_mm256_cvtph_ps(_mm_set_epi64x(d1, d0)), scale_perm);
++            const float  a0 = GGML_CPU_FP16_TO_FP32(a_ptr[l].d);
++            const float  a1 = GGML_CPU_FP16_TO_FP32(a_ptr[l + 1].d);
++            const __m256 da = _mm256_setr_ps(a0, a0, a1, a1, a0, a0, a1, a1);
++
++            acc = _mm256_fmadd_ps(_mm256_cvtepi32_ps(h), _mm256_mul_ps(db, da), acc);
++        }
++        __m128 res = q8_0_4x8_fold(acc);
++        if (l < nb) { // odd number of blocks
++            const __m256i s0 = q8_0_4x8_dot_block(b_ptr + l, a_ptr[l].qs);
++            const __m256i h  = _mm256_hadd_epi32(s0, s0); // [r0 r1 r0 r1 | r2 r3 r2 r3]
++            const __m128i r  = _mm_unpacklo_epi64(_mm256_castsi256_si128(h), _mm256_extracti128_si256(h, 1));
++            const __m128  db = _mm_cvtph_ps(_mm_loadl_epi64((const __m128i *) b_ptr[l].d));
++            res = _mm_fmadd_ps(_mm_cvtepi32_ps(r), _mm_mul_ps(db, _mm_set1_ps(GGML_CPU_FP16_TO_FP32(a_ptr[l].d))), res);
++        }
++        _mm_storeu_ps(s + x * 4, res);
++    }
++    return;
++#else
++    ggml_gemv_q8_0_4x8_q8_0_generic(n, s, bs, vx, vy, nr, nc);
++#endif
++}
++
++void ggml_gemm_q8_0_4x8_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, const void * GGML_RESTRICT vy, int nr, int nc) {
++#if defined(__AVX2__)
++    const int qk = QK8_0;
++    const int nb = n / qk;
++
++    assert(n % qk == 0);
++    assert(nr % 4 == 0);
++    assert(nc % 4 == 0);
++
++    // activations: block_q8_0x4 from ggml_quantize_mat_q8_0_4x8, same 8-byte interleave over 4 rows:
++    //   a.qs[32*k + 8*m .. +7] = activation row m, bytes 8k..8k+7
++    // 4 activation rows x 4 weight rows per tile; |w| is computed once and reused for all 4 rows.
++    const __m256i scale_perm = _mm256_setr_epi32(0, 1, 4, 5, 2, 3, 6, 7);
++
++    for (int y = 0; y < nr / 4; y++) {
++        const block_q8_0x4 * a_ptr = (const block_q8_0x4 *) vy + (size_t) y * nb;
++        for (int x = 0; x < nc / 4; x++) {
++            const block_q8_0x4 * b_ptr = (const block_q8_0x4 *) vx + (size_t) x * nb;
++            __m256 acc[4] = { _mm256_setzero_ps(), _mm256_setzero_ps(), _mm256_setzero_ps(), _mm256_setzero_ps() };
++            int l = 0;
++            for (; l + 1 < nb; l += 2) {
++                __m256i s0[4], s1[4];
++                for (int m = 0; m < 4; ++m) { s0[m] = _mm256_setzero_si256(); s1[m] = _mm256_setzero_si256(); }
++                for (int k = 0; k < 4; ++k) {
++                    const __m256i w0 = _mm256_loadu_si256((const __m256i *) (b_ptr[l].qs + 32 * k));
++                    const __m256i w1 = _mm256_loadu_si256((const __m256i *) (b_ptr[l + 1].qs + 32 * k));
++                    const __m256i w0a = _mm256_abs_epi8(w0);
++                    const __m256i w1a = _mm256_abs_epi8(w1);
++                    for (int m = 0; m < 4; ++m) {
++                        s0[m] = _mm256_add_epi32(s0[m], q8_0_4x8_dot8(w0a, w0, q8_0_4x8_bcast8(a_ptr[l].qs + 32 * k + 8 * m)));
++                        s1[m] = _mm256_add_epi32(s1[m], q8_0_4x8_dot8(w1a, w1, q8_0_4x8_bcast8(a_ptr[l + 1].qs + 32 * k + 8 * m)));
++                    }
++                }
++                int64_t d0, d1;
++                memcpy(&d0, b_ptr[l].d, sizeof(d0));
++                memcpy(&d1, b_ptr[l + 1].d, sizeof(d1));
++                const __m256 db = _mm256_permutevar8x32_ps(_mm256_cvtph_ps(_mm_set_epi64x(d1, d0)), scale_perm);
++                for (int m = 0; m < 4; ++m) {
++                    const float  a0 = GGML_CPU_FP16_TO_FP32(a_ptr[l].d[m]);
++                    const float  a1 = GGML_CPU_FP16_TO_FP32(a_ptr[l + 1].d[m]);
++                    const __m256 da = _mm256_setr_ps(a0, a0, a1, a1, a0, a0, a1, a1);
++                    acc[m] = _mm256_fmadd_ps(_mm256_cvtepi32_ps(_mm256_hadd_epi32(s0[m], s1[m])), _mm256_mul_ps(db, da), acc[m]);
++                }
++            }
++            for (int m = 0; m < 4; ++m) {
++                __m128 res = q8_0_4x8_fold(acc[m]);
++                if (l < nb) {
++                    __m256i s0 = _mm256_setzero_si256();
++                    for (int k = 0; k < 4; ++k) {
++                        const __m256i w = _mm256_loadu_si256((const __m256i *) (b_ptr[l].qs + 32 * k));
++                        s0 = _mm256_add_epi32(s0, q8_0_4x8_dot8(_mm256_abs_epi8(w), w, q8_0_4x8_bcast8(a_ptr[l].qs + 32 * k + 8 * m)));
++                    }
++                    const __m256i h  = _mm256_hadd_epi32(s0, s0);
++                    const __m128i r  = _mm_unpacklo_epi64(_mm256_castsi256_si128(h), _mm256_extracti128_si256(h, 1));
++                    const __m128  db = _mm_cvtph_ps(_mm_loadl_epi64((const __m128i *) b_ptr[l].d));
++                    res = _mm_fmadd_ps(_mm_cvtepi32_ps(r), _mm_mul_ps(db, _mm_set1_ps(GGML_CPU_FP16_TO_FP32(a_ptr[l].d[m]))), res);
++                }
++                _mm_storeu_ps(s + (size_t) (y * 4 + m) * bs + x * 4, res);
++            }
++        }
++    }
++    return;
++#else
++    ggml_gemm_q8_0_4x8_q8_0_generic(n, s, bs, vx, vy, nr, nc);
++#endif
++}
+diff --git a/ggml/src/ggml-cpu/ggml-cpu.c b/ggml/src/ggml-cpu/ggml-cpu.c
+index ab82e3d..0167451 100644
+--- a/ggml/src/ggml-cpu/ggml-cpu.c
++++ b/ggml/src/ggml-cpu/ggml-cpu.c
+@@ -3098,6 +3098,66 @@ static int ggml_cpu_try_fuse_ops(
+     return 0;
+ }
+ 
++// Opt-in per-op profile (GGML_CPU_OP_PROFILE=1): thread 0 times each node's own compute and the barrier
++// wait after it (= time until the slowest thread finished that node). Printed to stderr at exit, sorted by
++// wall time. Shows where barrier spin comes from (load imbalance, many tiny nodes) on a real model.
++#if !defined(_WIN32)
++static int     ggml_cpu_op_prof_on = -1;
++static int64_t ggml_cpu_op_prof_cnt [GGML_OP_COUNT];
++static int64_t ggml_cpu_op_prof_comp[GGML_OP_COUNT];
++static int64_t ggml_cpu_op_prof_wait[GGML_OP_COUNT];
++
++static inline int64_t ggml_cpu_op_prof_ns(void) {
++    struct timespec ts;
++    clock_gettime(CLOCK_MONOTONIC, &ts);
++    return (int64_t) ts.tv_sec * 1000000000LL + ts.tv_nsec;
++}
++
++static void ggml_cpu_op_prof_dump(void) {
++    int     idx[GGML_OP_COUNT];
++    int64_t total = 0;
++    for (int i = 0; i < GGML_OP_COUNT; ++i) {
++        idx[i] = i;
++        total += ggml_cpu_op_prof_comp[i] + ggml_cpu_op_prof_wait[i];
++    }
++    for (int i = 0; i < GGML_OP_COUNT; ++i) { // tiny selection sort, runs once at exit
++        for (int j = i + 1; j < GGML_OP_COUNT; ++j) {
++            const int64_t wi = ggml_cpu_op_prof_comp[idx[i]] + ggml_cpu_op_prof_wait[idx[i]];
++            const int64_t wj = ggml_cpu_op_prof_comp[idx[j]] + ggml_cpu_op_prof_wait[idx[j]];
++            if (wj > wi) { const int t = idx[i]; idx[i] = idx[j]; idx[j] = t; }
++        }
++    }
++    fprintf(stderr, "\nggml-cpu op profile (thread 0)          calls    wall ms   share   compute ms  barrier ms   us/call\n");
++    for (int k = 0; k < GGML_OP_COUNT; ++k) {
++        const int i = idx[k];
++        if (ggml_cpu_op_prof_cnt[i] == 0) {
++            continue;
++        }
++        const int64_t w = ggml_cpu_op_prof_comp[i] + ggml_cpu_op_prof_wait[i];
++        fprintf(stderr, "  %-34s %9lld %10.1f %6.1f%% %12.1f %11.1f %9.2f\n", ggml_op_name((enum ggml_op) i),
++                (long long) ggml_cpu_op_prof_cnt[i], w / 1e6, total ? 100.0 * w / total : 0.0,
++                ggml_cpu_op_prof_comp[i] / 1e6, ggml_cpu_op_prof_wait[i] / 1e6, w / 1e3 / ggml_cpu_op_prof_cnt[i]);
++    }
++}
++
++static inline bool ggml_cpu_op_prof_enabled(void) {
++    if (ggml_cpu_op_prof_on < 0) {
++        const char * e = getenv("GGML_CPU_OP_PROFILE");
++        ggml_cpu_op_prof_on = (e && atoi(e) != 0) ? 1 : 0;
++        if (ggml_cpu_op_prof_on) {
++            atexit(ggml_cpu_op_prof_dump);
++        }
++    }
++    return ggml_cpu_op_prof_on == 1;
++}
++#else
++static inline bool    ggml_cpu_op_prof_enabled(void) { return false; }
++static inline int64_t ggml_cpu_op_prof_ns(void) { return 0; }
++static int64_t ggml_cpu_op_prof_cnt [GGML_OP_COUNT];
++static int64_t ggml_cpu_op_prof_comp[GGML_OP_COUNT];
++static int64_t ggml_cpu_op_prof_wait[GGML_OP_COUNT];
++#endif
++
+ static thread_ret_t ggml_graph_compute_thread(void * data) {
+     struct ggml_compute_state * state = (struct ggml_compute_state *) data;
+     struct ggml_threadpool    * tp    = state->threadpool;
+@@ -3138,6 +3198,9 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
+             continue;
+         }
+ 
++        const bool    prof = state->ith == 0 && ggml_cpu_op_prof_enabled();
++        const int64_t t0   = prof ? ggml_cpu_op_prof_ns() : 0;
++
+         // TODO: move fused-op detection into ggml_graph_plan so fusion decisions are made once at planning time
+         // Try fused ops, fall back to normal compute
+         const int n_fused = ggml_cpu_try_fuse_ops(cgraph, node_n, &params, cplan);
+@@ -3147,6 +3210,8 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
+             ggml_compute_forward(&params, node);
+         }
+ 
++        const int64_t t1 = prof ? ggml_cpu_op_prof_ns() : 0;
++
+         if (state->ith == 0 && cplan->abort_callback &&
+                 cplan->abort_callback(cplan->abort_callback_data)) {
+             atomic_store_explicit(&tp->abort, node_n + 1, memory_order_relaxed);
+@@ -3156,6 +3221,13 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
+         if (node_n + 1 < cgraph->n_nodes) {
+             ggml_barrier(state->threadpool);
+         }
++
++        if (prof) {
++            const int64_t t2 = ggml_cpu_op_prof_ns();
++            ggml_cpu_op_prof_cnt [node->op] += 1;
++            ggml_cpu_op_prof_comp[node->op] += t1 - t0;
++            ggml_cpu_op_prof_wait[node->op] += t2 - t1;
++        }
+     }
+ 
+ #ifdef GGML_USE_OPENMP
+diff --git a/ggml/src/ggml-cpu/repack.cpp b/ggml/src/ggml-cpu/repack.cpp
+index 2632ae3..eab2832 100644
+--- a/ggml/src/ggml-cpu/repack.cpp
++++ b/ggml/src/ggml-cpu/repack.cpp
+@@ -5103,6 +5103,11 @@ static const ggml::cpu::tensor_traits * ggml_repack_get_optimal_repack_type(cons
+             }
+         }
+     } else if (cur->type == GGML_TYPE_Q8_0) {
++        if (ggml_cpu_has_avx2()) {
++            if (cur->ne[1] % 4 == 0) {
++                return &q8_0_4x8_q8_0;
++            }
++        }
+         if (ggml_cpu_has_neon() && ggml_cpu_has_matmul_int8()) {
+             if (cur->ne[1] % 4 == 0) {
+                 return &q8_0_4x8_q8_0;
+diff --git a/tests/CMakeLists.txt b/tests/CMakeLists.txt
+index 991bf54..a4b1c5a 100644
+--- a/tests/CMakeLists.txt
++++ b/tests/CMakeLists.txt
+@@ -314,6 +314,7 @@ if (GGML_METAL AND NOT GGML_BACKEND_DL)
+ endif()
+ 
+ llama_build(test-backend-ops.cpp LINK ggml)
++llama_build(test-repack-cpu.cpp LINK ggml)
+ 
+ llama_build_and_test(test-tiled-mulmat.cpp LINK ggml)
+ llama_build_and_test(test-model-load-cancel.cpp LABEL "model")
+diff --git a/tests/test-repack-cpu.cpp b/tests/test-repack-cpu.cpp
+new file mode 100644
+index 0000000..14af913
+--- /dev/null
++++ b/tests/test-repack-cpu.cpp
+@@ -0,0 +1,214 @@
++// test-repack-cpu: correctness + speed of the CPU repack (extra buffer) path against the plain CPU path.
++//
++// For each weight type / shape / batch size it builds  y = mul_mat(W, x)  twice:
++//   ref : W in the normal CPU buffer  -> ggml_vec_dot_* path
++//   rep : W in the CPU_REPACK buffer  -> ggml_gemv_* / ggml_gemm_* path (if the type is repacked on this CPU)
++// and reports NMSE between the two plus the time per evaluation.
++// MUL_MAT_ID (MoE experts) is covered with a small expert tensor and random routing.
++//
++// usage: test-repack-cpu [-t threads] [-r reps] [--quick]
++// exit code != 0 if any NMSE exceeds the tolerance.
++
++#include "ggml.h"
++#include "ggml-alloc.h"
++#include "ggml-backend.h"
++#include "ggml-cpu.h"
++
++#include <chrono>
++#include <cmath>
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++#include <random>
++#include <string>
++#include <vector>
++
++static ggml_backend_buffer_type_t find_repack_buft() {
++    ggml_backend_dev_t dev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
++    ggml_backend_reg_t reg = ggml_backend_dev_backend_reg(dev);
++    auto get_extra = (ggml_backend_dev_get_extra_bufts_t) ggml_backend_reg_get_proc_address(reg, "ggml_backend_dev_get_extra_bufts");
++    if (!get_extra) {
++        return nullptr;
++    }
++    for (ggml_backend_buffer_type_t * b = get_extra(dev); b && *b; ++b) {
++        if (strcmp(ggml_backend_buft_name(*b), "CPU_REPACK") == 0) {
++            return *b;
++        }
++    }
++    return nullptr;
++}
++
++struct result {
++    double nmse;
++    double ms_ref;
++    double ms_rep;
++    bool   repacked;
++};
++
++static void fill_uniform(std::vector<float> & v, std::mt19937 & rng, float lo = -1.0f, float hi = 1.0f) {
++    std::uniform_real_distribution<float> d(lo, hi);
++    for (auto & x : v) {
++        x = d(rng);
++    }
++}
++
++// one experiment: weights [K, N] (x E experts if E > 0), activations [K, B]
++static result run_case(ggml_backend_t backend, ggml_backend_buffer_type_t repack_buft, ggml_type wtype,
++                       int K, int N, int B, int E, int reps) {
++    std::mt19937 rng(1234 + K + N + B + E + (int) wtype);
++    const bool moe = E > 0;
++    const int  n_used = moe ? 2 : 0;
++
++    // ---- host data
++    std::vector<float> wf((size_t) K * N * (moe ? E : 1));
++    fill_uniform(wf, rng);
++    std::vector<uint8_t> wq(ggml_row_size(wtype, K) * (size_t) N * (moe ? E : 1));
++    ggml_quantize_chunk(wtype, wf.data(), wq.data(), 0, (int64_t) N * (moe ? E : 1), K, nullptr);
++
++    std::vector<float> xf((size_t) K * B * (moe ? n_used : 1));
++    fill_uniform(xf, rng);
++    std::vector<int32_t> ids;
++    if (moe) {
++        ids.resize((size_t) n_used * B);
++        std::uniform_int_distribution<int> de(0, E - 1);
++        for (int b = 0; b < B; ++b) {
++            int a = de(rng), c = de(rng);
++            while (c == a) c = de(rng);
++            ids[b * n_used + 0] = a;
++            ids[b * n_used + 1] = c;
++        }
++    }
++
++    auto build_and_run = [&](ggml_backend_buffer_type_t wbuft, std::vector<float> & out, double & ms, bool & extra_used) {
++        ggml_init_params ip = { ggml_tensor_overhead() * 16 + ggml_graph_overhead(), nullptr, true };
++        ggml_context * ctx_w = ggml_init(ip);
++        ggml_context * ctx   = ggml_init(ip);
++
++        ggml_tensor * w = moe ? ggml_new_tensor_3d(ctx_w, wtype, K, N, E) : ggml_new_tensor_2d(ctx_w, wtype, K, N);
++        ggml_backend_buffer_t wbuf = ggml_backend_alloc_ctx_tensors_from_buft(ctx_w, wbuft);
++        extra_used = w->extra != nullptr; // set by the repack buffer's init_tensor only if this type/shape is repacked
++        if (wbuft != ggml_backend_cpu_buffer_type() && !extra_used) {
++            // not repacked on this CPU: the repack buffer can't hold it -> plain buffer (same as llama.cpp's loader)
++            ggml_backend_buffer_free(wbuf);
++            ggml_free(ctx_w);
++            ctx_w = ggml_init(ip);
++            w = moe ? ggml_new_tensor_3d(ctx_w, wtype, K, N, E) : ggml_new_tensor_2d(ctx_w, wtype, K, N);
++            wbuf = ggml_backend_alloc_ctx_tensors_from_buft(ctx_w, ggml_backend_cpu_buffer_type());
++        }
++        ggml_backend_tensor_set(w, wq.data(), 0, wq.size()); // repack buffer repacks here
++
++        ggml_tensor * x;
++        ggml_tensor * y;
++        ggml_tensor * idt = nullptr;
++        if (moe) {
++            x   = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, K, n_used, B);
++            idt = ggml_new_tensor_2d(ctx, GGML_TYPE_I32, n_used, B);
++            y   = ggml_mul_mat_id(ctx, w, x, idt);
++        } else {
++            x = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, K, B);
++            y = ggml_mul_mat(ctx, w, x);
++        }
++        ggml_cgraph * gf = ggml_new_graph(ctx);
++        ggml_build_forward_expand(gf, y);
++        ggml_backend_buffer_t abuf = ggml_backend_alloc_ctx_tensors(ctx, backend);
++        ggml_backend_tensor_set(x, xf.data(), 0, xf.size() * sizeof(float));
++        if (idt) {
++            ggml_backend_tensor_set(idt, ids.data(), 0, ids.size() * sizeof(int32_t));
++        }
++
++        ggml_backend_graph_compute(backend, gf); // warm-up
++        auto t0 = std::chrono::steady_clock::now();
++        for (int r = 0; r < reps; ++r) {
++            ggml_backend_graph_compute(backend, gf);
++        }
++        auto t1 = std::chrono::steady_clock::now();
++        ms = std::chrono::duration<double, std::milli>(t1 - t0).count() / reps;
++
++        out.resize(ggml_nelements(y));
++        ggml_backend_tensor_get(y, out.data(), 0, out.size() * sizeof(float));
++
++        ggml_backend_buffer_free(abuf);
++        ggml_backend_buffer_free(wbuf);
++        ggml_free(ctx);
++        ggml_free(ctx_w);
++    };
++
++    result r{};
++    std::vector<float> yref, yrep;
++    bool dummy = false;
++    build_and_run(ggml_backend_cpu_buffer_type(), yref, r.ms_ref, dummy);
++    build_and_run(repack_buft, yrep, r.ms_rep, r.repacked);
++
++    double num = 0, den = 0;
++    for (size_t i = 0; i < yref.size(); ++i) {
++        const double d = (double) yref[i] - yrep[i];
++        num += d * d;
++        den += (double) yref[i] * yref[i];
++    }
++    r.nmse = den > 0 ? num / den : num;
++    return r;
++}
++
++int main(int argc, char ** argv) {
++    int  n_threads = 1;
++    int  reps      = 20;
++    bool quick     = false;
++    for (int i = 1; i < argc; ++i) {
++        std::string a = argv[i];
++        if (a == "-t" && i + 1 < argc) {
++            n_threads = atoi(argv[++i]);
++        } else if (a == "-r" && i + 1 < argc) {
++            reps = atoi(argv[++i]);
++        } else if (a == "--quick") {
++            quick = true;
++        }
++    }
++
++    ggml_backend_load_all();
++    ggml_backend_t backend = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_CPU, nullptr);
++    ggml_backend_cpu_set_n_threads(backend, n_threads);
++    ggml_backend_buffer_type_t repack = find_repack_buft();
++    if (!repack) {
++        printf("no CPU_REPACK buffer type (built without GGML_CPU_REPACK?)\n");
++        return 1;
++    }
++
++    struct tcase { ggml_type t; int K, N, B, E; };
++    std::vector<tcase> cases;
++    const ggml_type types[] = { GGML_TYPE_Q8_0, GGML_TYPE_MXFP4, GGML_TYPE_Q4_0 };
++    const int batches_full[]  = { 1, 2, 3, 4, 5, 8, 16, 33 };
++    const int batches_quick[] = { 1, 4, 7 };
++    for (ggml_type t : types) {
++        // dense: hidden 4096 -> 4096, and a "wide" projection
++        for (int B : (quick ? std::vector<int>(std::begin(batches_quick), std::end(batches_quick))
++                            : std::vector<int>(std::begin(batches_full), std::end(batches_full)))) {
++            cases.push_back({ t, 4096, 4096, B, 0 });
++        }
++        if (!quick) {
++            cases.push_back({ t, 7168, 2048, 1, 0 });
++            cases.push_back({ t, 2048, 7168, 1, 0 });
++        }
++        // odd block count (K/32 = 65) and odd number of 4-row groups (N/4 = 257): tail paths
++        cases.push_back({ t, 2080, 1032, 1, 0 });
++        cases.push_back({ t, 2080, 1028, 1, 0 });
++        cases.push_back({ t, 2080, 1028, 6, 0 });
++        // MoE: 8 experts, 2 used per token
++        cases.push_back({ t, 2048, 1024, 1, 8 });
++        cases.push_back({ t, 2048, 1024, 9, 8 });
++    }
++
++    const double tol = 5e-4; // activations are q8_0-quantized on both paths; differences are summation order only
++    int failures = 0;
++    printf("%-6s %6s %6s %4s %3s | %10s | %9s %9s %7s | %s\n", "type", "K", "N", "B", "E", "nmse", "ref ms", "repack ms", "speedup", "path");
++    for (const auto & c : cases) {
++        result r = run_case(backend, repack, c.t, c.K, c.N, c.B, c.E, reps);
++        const bool ok = r.nmse < tol;
++        failures += ok ? 0 : 1;
++        printf("%-6s %6d %6d %4d %3d | %10.3e | %9.3f %9.3f %6.2fx | %s%s\n", ggml_type_name(c.t), c.K, c.N, c.B, c.E,
++               r.nmse, r.ms_ref, r.ms_rep, r.ms_ref / r.ms_rep, r.repacked ? "repack" : "plain (not repacked)",
++               ok ? "" : "  <-- FAIL");
++    }
++    ggml_backend_free(backend);
++    printf("%s (%d failure%s)\n", failures ? "FAILED" : "OK", failures, failures == 1 ? "" : "s");
++    return failures ? 1 : 0;
++}

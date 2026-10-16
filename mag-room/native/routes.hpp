@@ -7,6 +7,11 @@ static void error_json(int fd, int code, const std::string &message) {
 static std::vector<std::string> selected_ids(const Val &body) {
   std::vector<std::string> ids;
   std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
+  if (!SINGLE_BOT.empty()) {  // exactly this one bot answers, whatever the client sent
+    if (agent_index(SINGLE_BOT) >= 0)
+      ids.push_back(SINGLE_BOT);
+    return ids;
+  }
   auto selected = body.find("bots");
   if (selected && selected->isArr()) {
     for (const auto &id : selected->asArr())
@@ -68,6 +73,9 @@ static void route(int fd, Req &r, bool bridge = false) {
       auto idx = agent_index(bot);
       auto sender = idx < 0 ? "VM" : bot_field(idx, "name");
       Val f = add_file(qparam(r.query, "name"), r.body, sender);
+      auto src = qparam(r.query, "src");
+      if (!src.empty() && src[0] == '/' && idx >= 0)
+        set_file_origin(f.find("stored")->asStr(), bot_field(idx, "vm"), src, &f);
       append_room("assistant", sender, "", bot, &f);
       emit_file(bot, f);
       send_json(fd, 201, mj::dump(f));
@@ -92,6 +100,25 @@ static void route(int fd, Req &r, bool bridge = false) {
       return;
     }
   } else {
+    if (m == "POST" && r.path.rfind("/hook/jobs/", 0) == 0) {
+      // Webhook trigger: authenticated only by the per-job secret.
+      std::string id = r.path.substr(11), secret;
+      auto h = r.hdrs.find("x-mag-job-secret");
+      if (h != r.hdrs.end()) secret = h->second;
+      auto au = r.hdrs.find("authorization");
+      if (secret.empty() && au != r.hdrs.end() && au->second.rfind("Bearer ", 0) == 0) secret = au->second.substr(7);
+      std::lock_guard<std::mutex> lk(JOBDEF_MTX);
+      JobDef *j = job_find_locked(id);
+      if (!j || j->hook_hash.empty() || secret.empty() || !ct_eq(sha256_hex(secret), j->hook_hash)) {
+        error_json(fd, 401, "Unauthorized");
+        return;
+      }
+      if (j->paused) { error_json(fd, 409, "Job pausiert"); return; }
+      std::string rid = j->id + ":hook:" + std::to_string(now_s()) + token_hex(3);
+      if (!job_enqueue_locked(*j, rid, "Webhook")) { error_json(fd, 409, "läuft bereits"); return; }
+      send_json(fd, 202, "{\"accepted\":true,\"run_id\":\"" + rid + "\"}");
+      return;
+    }
     auto origin = r.hdrs.find("origin");
     auto host = r.hdrs.find("host");
     if (origin != r.hdrs.end() && host != r.hdrs.end() &&
@@ -100,14 +127,27 @@ static void route(int fd, Req &r, bool bridge = false) {
       error_json(fd, 403, "Wrong origin");
       return;
     }
+    if (m != "GET" && m != "HEAD" && m != "OPTIONS") {
+      // Accept the page token, or a browser-attested same-origin request
+      // (Sec-Fetch-Site is set by the browser and cannot be forged by
+      // another site). Scripts without either are rejected.
+      auto tok = r.hdrs.find("x-mag-token");
+      auto sfs = r.hdrs.find("sec-fetch-site");
+      bool same_site = sfs != r.hdrs.end() && sfs->second == "same-origin";
+      if (!same_site &&
+          (tok == r.hdrs.end() || !ct_eq(tok->second, ui_token()))) {
+        error_json(fd, 403, "UI token required (Seite neu laden)");
+        return;
+      }
+    }
   }
   const std::string path = r.path;
   if (m == "GET" && (path == "/" || path == "/index.html")) {
     send_text(fd, 200, current_frontend(), "text/html; charset=utf-8");
     return;
   }
-  // Dynamic Tailnet HTTPS remote desktop. A registered bot's *stable name
-  // slug* is its URL; no per-bot Tailscale proxy, token or VM re-provision.
+  // Legacy /bot/<slug>/ links (stable Tailnet path per bot) redirect to the
+  // main room; no per-bot Tailscale proxy, token or VM re-provision.
   // Deleting the agent removes the route immediately, even if a guest disk
   // is left behind after a failed teardown.
   if (m == "GET" && path.rfind("/bot/", 0) == 0) {
@@ -124,24 +164,89 @@ static void route(int fd, Req &r, bool bridge = false) {
                     {{"Cache-Control", "no-store"}});
       return;
     }
-    send_response(fd, 200, "text/html; charset=utf-8",
-                  current_frontend(), {{"Cache-Control", "no-store"}});
+    // One interface only: the old remote-desktop view is gone; the link
+    // opens the main room with this bot's browser panel selected.
+    send_response(fd, 302, "text/plain; charset=utf-8", "",
+                  {{"Location", "/?bot=" + id}, {"Cache-Control", "no-store"}});
+    return;
+  }
+  if (m == "GET" && (path == "/favicon.ico" || path == "/favicon.svg" ||
+                     path == "/apple-touch-icon.png")) {
+    bool ok;
+    std::string data = read_file(STATIC_DIR + path, &ok);
+    if (!ok)
+      error_json(fd, 404, "Unknown asset");
+    else
+      send_response(fd, 200, mime_for(path), data,
+                    {{"Cache-Control", "public, max-age=86400"}});
+    return;
+  }
+  // Connectors: secrets stay server-side (STATE_DIR/connectors, 0600) and
+  // are never returned to the browser or written to the repo.
+  if (path == "/api/connectors" && m == "GET") {
+    Val out = Val::object();
+    for (const char *name : {"github"}) {
+      bool ok = false;
+      std::string tok = read_file(STATE_DIR + "/connectors/" + name + ".token", &ok);
+      Val c = Val::object();
+      c["connected"] = ok && !trim(tok).empty();
+      out[name] = c;
+    }
+    send_json(fd, 200, mj::dump(out));
+    return;
+  }
+  if (path == "/api/connectors/github" && (m == "POST" || m == "DELETE")) {
+    const std::string dir = STATE_DIR + "/connectors";
+    const std::string file = dir + "/github.token";
+    if (m == "DELETE") {
+      std::remove(file.c_str());
+      send_json(fd, 200, "{\"ok\":true,\"connected\":false}");
+      return;
+    }
+    Val body = Val::object();
+    std::string tok;
+    if (!r.body.empty() && mj::parse(r.body, body) && body.isObj() && body.find("token"))
+      tok = trim(body.find("token")->asStr());
+    bool valid = tok.size() >= 20 && tok.size() <= 255;
+    for (char c : tok)
+      if (!(isalnum((unsigned char)c) || c == '_')) valid = false;
+    if (!valid) {
+      error_json(fd, 400, "Ungültiges GitHub-Token (ghp_…/github_pat_…)");
+      return;
+    }
+    std::filesystem::create_directories(dir);
+    chmod(dir.c_str(), 0700);
+    std::string tmp = file + ".tmp";
+    int tfd = open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    bool wrote = tfd >= 0 && write(tfd, tok.data(), tok.size()) == (ssize_t)tok.size();
+    if (tfd >= 0) close(tfd);
+    if (!wrote || rename(tmp.c_str(), file.c_str()) != 0) {
+      error_json(fd, 500, "Token konnte nicht gespeichert werden");
+      return;
+    }
+    send_json(fd, 200, "{\"ok\":true,\"connected\":true}");
     return;
   }
   if (m == "GET" && path == "/healthz") {
     send_text(fd, 200, "ok\n");
     return;
   }
-  if (m == "GET" && path == "/readyz") {
-    std::string body;
-    long status = 0;
-    if (!http_simple(BACKEND_HOST, BACKEND_PORT, "GET", "/v1/models", "",
-                     {{"Authorization", "Bearer " + API_KEY}}, body, &status,
-                     nullptr, 3000) ||
-        status != 200)
-      error_json(fd, 503, "Model backend unavailable");
+  // /readyz: the room itself is ready (deploy/rollback gate). A model that
+  // is still downloading, being verified or loading must not roll back a
+  // room release; its state is reported alongside. /readyz/model is strict.
+  if (m == "GET" && (path == "/readyz" || path == "/readyz/model")) {
+    ModelStatus st = model_status(true);
+    Val out = Val::object();
+    out["ready"] = path == "/readyz" ? true : st.ready;
+    out["model"] = model_status_val(st);
+    if (path == "/readyz/model" && !st.ready)
+      send_response(fd, 503, "application/json; charset=utf-8", mj::dump(out));
     else
-      send_json(fd, 200, "{\"ready\":true}");
+      send_json(fd, 200, mj::dump(out));
+    return;
+  }
+  if (m == "GET" && path == "/api/model-status") {
+    send_json(fd, 200, mj::dump(model_status_val(model_status(true))));
     return;
   }
   if (m == "GET" && path == "/api/events") {
@@ -199,6 +304,10 @@ static void route(int fd, Req &r, bool bridge = false) {
       error_json(fd, 404, "Unknown file");
       return;
     }
+    if (record.find("removed")) {
+      error_json(fd, 404, "Datei entfernt");
+      return;
+    }
     bool ok;
     auto data = read_file(FILES_DIR + "/" + stored, &ok);
     if (!ok) {
@@ -211,11 +320,18 @@ static void route(int fd, Req &r, bool bridge = false) {
                                mime == "text/javascript")
                                   ? "attachment"
                                   : "inline";
+    // ?view=1 renders an HTML page in place (bot browser, preview), still in
+    // a CSP sandbox: opaque origin, scripts only, no access to room cookies.
+    std::string csp = "sandbox";
+    if (mime == "text/html" && qparam(r.query, "view") == "1") {
+      disposition = "inline";
+      csp = "sandbox allow-scripts";
+    }
     send_response(
         fd, 200, mime, data,
         {{"Content-Disposition",
           disposition + "; filename=\"" + record.find("name")->asStr() + "\""},
-         {"Content-Security-Policy", "sandbox"}});
+         {"Content-Security-Policy", csp}});
     return;
   }
   if (path == "/api/frontend") {
@@ -237,6 +353,11 @@ static void route(int fd, Req &r, bool bridge = false) {
     int idx = browser_agent_index(url_decode(path.substr(12)));
     if (idx < 0) {
       error_json(fd, 404, "Unknown bot ID or VM name");
+      return;
+    }
+    // Chat-only bots (vm "") own no VM: no browser, screen or console.
+    if (bot_field(idx, "vm").empty()) {
+      error_json(fd, 400, "Nur-Chat-Bot ohne eigene VM: kein Browser und keine Konsole");
       return;
     }
     std::string vm = bot_field(idx, "vm");
@@ -270,6 +391,11 @@ static void route(int fd, Req &r, bool bridge = false) {
     int idx = browser_agent_index(requested);
     if (idx < 0) {
       error_json(fd, 404, "Unknown browser or VM");
+      return;
+    }
+    // Chat-only bots (vm "") own no VM: no browser, screen or console.
+    if (bot_field(idx, "vm").empty()) {
+      error_json(fd, 400, "Nur-Chat-Bot ohne eigene VM: kein Browser und keine Konsole");
       return;
     }
     if (r.body.empty() || r.body.size() > 65536) {
@@ -308,6 +434,11 @@ static void route(int fd, Req &r, bool bridge = false) {
       error_json(fd, 404, "Unknown bot ID or VM name");
       return;
     }
+    // Chat-only bots (vm "") own no VM: no browser, screen or console.
+    if (bot_field(idx, "vm").empty()) {
+      error_json(fd, 400, "Nur-Chat-Bot ohne eigene VM: kein Browser und keine Konsole");
+      return;
+    }
     const std::vector<std::string> allowed{"navigate", "click", "type",
                                            "scroll",   "back",  "forward",
                                            "reload",   "key",   "read",
@@ -328,6 +459,60 @@ static void route(int fd, Req &r, bool bridge = false) {
   if (path.rfind("/api/agents/", 0) == 0) {
     std::string id = url_decode(path.substr(12));
     auto slash = id.find('/');
+    if (slash != std::string::npos &&
+        id.compare(slash + 1, 7, "memory/") == 0 &&
+        (m == "PUT" || m == "DELETE")) {
+      std::string tail = id.substr(slash + 8);
+      id.resize(slash);
+      char *end = nullptr;
+      long pos = tail.empty() ? -1 : strtol(tail.c_str(), &end, 10);
+      if (pos < 0 || !end || *end) {
+        error_json(fd, 400, "Bad memory index");
+        return;
+      }
+      Val body = Val::object();
+      bool has = !r.body.empty() && mj::parse(r.body, body) && body.isObj();
+      std::string expect = m == "PUT"
+          ? (has && body.find("old") ? body.find("old")->asStr() : "")
+          : qparam(r.query, "old");
+      std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
+      int idx = agent_index(id);
+      if (idx < 0) {
+        error_json(fd, 404, "Unknown agent");
+        return;
+      }
+      Val &mem = AGENTS[idx]["memory"];
+      if (!mem.isArr() || (size_t)pos >= mem.arr->size()) {
+        error_json(fd, 404, "Unknown memory entry");
+        return;
+      }
+      Val &entry = (*mem.arr)[pos];
+      std::string cur = entry.isObj() ? (entry.find("text") ? entry.find("text")->asStr() : "") : entry.asStr();
+      // Optimistic check: the entry must still be the one the user saw.
+      if (!expect.empty() && cur.substr(0, expect.size()) != expect) {
+        error_json(fd, 409, "Erinnerung wurde inzwischen geändert – bitte neu öffnen.");
+        return;
+      }
+      if (m == "DELETE") {
+        mem.arr->erase(mem.arr->begin() + pos);
+      } else {
+        std::string text = has && body.find("text") ? trim(body.find("text")->asStr()) : "";
+        if (text.empty() || text.size() > 500) {
+          error_json(fd, 400, "Text required (max 500)");
+          return;
+        }
+        if (!entry.isObj()) { Val o = Val::object(); entry = std::move(o); }
+        entry["text"] = text;
+        entry["edited"] = (long)now_s();
+      }
+      save_agents();
+      memory_git_sync(id, m == "DELETE" ? "delete" : "edit");
+      Val out = Val::object();
+      out["ok"] = true;
+      out["memory"] = mem;
+      send_json(fd, 200, mj::dump(out));
+      return;
+    }
     if (slash != std::string::npos && id.substr(slash + 1) == "memory" &&
         m == "GET") {
       id.resize(slash);
@@ -342,6 +527,10 @@ static void route(int fd, Req &r, bool bridge = false) {
       return;
     }
     if (m == "DELETE") {
+      if (!SINGLE_BOT.empty() && id == SINGLE_BOT) {
+        error_json(fd, 409, "Der einzige Bot des Raums kann nicht entfernt werden (MAG_ROOM_SINGLE_BOT).");
+        return;
+      }
       stop_autotalk();
       std::lock_guard<std::mutex> turn(TURN_MTX);
       int idx = agent_index(id);
@@ -378,17 +567,29 @@ static void route(int fd, Req &r, bool bridge = false) {
     return v ? v->asStr(fallback) : fallback;
   };
   if (m == "POST" && path == "/api/agents") {
+    if (!SINGLE_BOT.empty()) {
+      error_json(fd, 409, "Nur ein Bot erlaubt: Der Raum laeuft fest mit '" +
+                              SINGLE_BOT_NAME + "' (MAG_ROOM_SINGLE_BOT).");
+      return;
+    }
     if (!has_json || trim(str("name")).empty() || str("name").size() > 40) {
       error_json(fd, 400, "Agent name required (1-40 bytes)");
       return;
     }
+    // "vm": false creates a chat-only bot (no KVM, no browser/terminal);
+    // default remains a bot with its own isolated VM.
+    const auto vm_flag = body.find("vm");
+    const bool with_vm = !(vm_flag && vm_flag->type == Val::BOOL &&
+                           !vm_flag->asBool());
     cancel_active();
     std::lock_guard<std::mutex> turn(TURN_MTX);
-    std::string id = slug_id(str("name")), vm = next_vm();
-    auto result = run_argv({"sudo", "-n", AGENT_CTL, "spawn", vm}, 600);
-    if (result.code != 0) {
-      error_json(fd, 502, result.out);
-      return;
+    std::string id = slug_id(str("name")), vm = with_vm ? next_vm() : "";
+    if (with_vm) {
+      auto result = run_argv({"sudo", "-n", AGENT_CTL, "spawn", vm}, 600);
+      if (result.code != 0) {
+        error_json(fd, 502, result.out);
+        return;
+      }
     }
     Val agent = Val::object();
     agent["id"] = id;
@@ -403,11 +604,13 @@ static void route(int fd, Req &r, bool bridge = false) {
       AGENTS.push_back(agent);
       save_agents();
     } catch (...) {
-      run_argv({"sudo", "-n", AGENT_CTL, "despawn", vm}, 180);
+      if (with_vm)
+        run_argv({"sudo", "-n", AGENT_CTL, "despawn", vm}, 180);
       throw;
     }
     agents_event();
-    warm_browser_async(vm);
+    if (with_vm)
+      warm_browser_async(vm);
     send_json(fd, 201, mj::dump(agent));
     return;
   }
@@ -421,13 +624,70 @@ static void route(int fd, Req &r, bool bridge = false) {
       error_json(fd, 400, "Select an agent");
       return;
     }
-    if (body.find("web_search"))
-      WEB_ENABLED = body.find("web_search")->asBool(true);
+    int think = -1;
+    if (auto th = body.find("think"); th && th->type == Val::BOOL)
+      think = th->asBool() ? 1 : 0;
+    bool interrupt = false;
+    if (auto in = body.find("interrupt"); in && in->type == Val::BOOL)
+      interrupt = in->asBool();
+    bool has_pending;
+    {
+      std::lock_guard<std::mutex> lk(JOB_MTX);
+      has_pending = !PENDING.empty() || QUEUE_PAUSED;
+    }
+    if ((BUSY.load() || has_pending) && !interrupt) {
+      // Not in the transcript yet: shown as a queue chip, dispatched later.
+      Val item = enqueue_pending(str("text"), ids, think);
+      JOB_CV.notify_all();
+      Val out = Val::object();
+      out["accepted"] = true;
+      out["queued"] = true;
+      out["item"] = item;
+      send_json(fd, 202, mj::dump(out));
+      return;
+    }
+    if (interrupt && (BUSY.load() || QUEUE_PAUSED)) {
+      // Same path as "Jetzt senden": the cancelled turn first stores its
+      // partial answer, then this message follows as the next user turn.
+      Val item = enqueue_pending(str("text"), ids, think);
+      queue_send_now(item.find("id")->asStr());
+      send_json(fd, 202, "{\"accepted\":true,\"interrupted\":true}");
+      return;
+    }
     Val msg = append_room("user", "Nutzer", str("text"));
     msg["type"] = "message";
     publish(mj::dump(msg));
-    schedule(ids);
-    send_json(fd, 202, "{\"accepted\":true}");
+    const bool queued = BUSY.load() && !interrupt;
+    schedule(ids, think, interrupt);
+    send_json(fd, 202, queued ? "{\"accepted\":true,\"queued\":true}"
+                              : "{\"accepted\":true}");
+    return;
+  }
+  if (path == "/api/queue" || path.rfind("/api/queue/", 0) == 0) {
+    std::string rest = path.size() > 11 ? path.substr(11) : "";
+    if (path == "/api/queue" && m == "GET") {
+      std::lock_guard<std::mutex> lk(JOB_MTX);
+      send_json(fd, 200, mj::dump(queue_view_locked()));
+      return;
+    }
+    if (path == "/api/queue" && m == "DELETE") { queue_clear(); send_json(fd, 200, "{\"ok\":true}"); return; }
+    if (rest == "merge" && m == "POST") {
+      if (!queue_merge()) { error_json(fd, 409, "Nichts zum Zusammenführen"); return; }
+      send_json(fd, 200, "{\"ok\":true}"); return;
+    }
+    if (rest == "resume" && m == "POST") { queue_resume(); send_json(fd, 200, "{\"ok\":true}"); return; }
+    std::string qid = rest, action;
+    if (auto sl = rest.find('/'); sl != std::string::npos) { qid = rest.substr(0, sl); action = rest.substr(sl + 1); }
+    bool ok = false;
+    if (action == "now" && m == "POST") ok = queue_send_now(qid);
+    else if (action.empty() && m == "DELETE") ok = queue_delete(qid);
+    else if (action.empty() && m == "PUT") {
+      std::string text = has_json ? trim(str("text")) : "";
+      if (text.empty() || text.size() > 32768) { error_json(fd, 400, "Text required (max 32 KiB)"); return; }
+      ok = queue_edit(qid, text);
+    } else { error_json(fd, 405, "Method not allowed"); return; }
+    if (!ok) { error_json(fd, 404, "Unbekannter Eintrag"); return; }
+    send_json(fd, 200, "{\"ok\":true}");
     return;
   }
   if (m == "POST" && path == "/api/autotalk") {
@@ -446,8 +706,96 @@ static void route(int fd, Req &r, bool bridge = false) {
     send_json(fd, 200, mj::dump(e));
     return;
   }
+  if (path == "/api/jobs" || path.rfind("/api/jobs/", 0) == 0) {
+    std::string rest = path.size() > 10 ? path.substr(10) : "";
+    std::string id = rest.substr(0, rest.find('/'));
+    std::string action = rest.find('/') == std::string::npos ? "" : rest.substr(rest.find('/') + 1);
+    std::lock_guard<std::mutex> lk(JOBDEF_MTX);
+    auto view = [&](const JobDef &j, const std::string &secret) {
+      Val v = job_to_val(j, false);
+      if (!secret.empty()) v["secret"] = secret; // shown exactly once
+      return v;
+    };
+    auto new_secret = [&](JobDef &j) { std::string sec = token_hex(24); j.hook_hash = sha256_hex(sec); return sec; };
+    if (path == "/api/jobs" && m == "GET") {
+      Val a = Val::array();
+      for (auto &j : JOBDEFS) { Val v = view(j, ""); a.push(v); }
+      Val o = Val::object(); o["jobs"] = a; o["now"] = (double)now_s(); o["paused"] = QUEUE_PAUSED;
+      send_json(fd, 200, mj::dump(o));
+      return;
+    }
+    if (path == "/api/jobs" && m == "POST") {
+      if (!has_json) { error_json(fd, 400, "JSON required"); return; }
+      if (JOBDEFS.size() >= 100) { error_json(fd, 400, "Zu viele Jobs"); return; }
+      JobDef j; j.id = token_hex(6); j.created = now_s();
+      std::string err = job_apply(j, body, true);
+      if (!err.empty()) { error_json(fd, 400, err); return; }
+      std::string sec;
+      if (body.find("webhook") && body.find("webhook")->asBool(false)) sec = new_secret(j);
+      JOBDEFS.push_back(j); jobs_save_locked(); jobs_event_locked();
+      send_json(fd, 201, mj::dump(view(j, sec)));
+      return;
+    }
+    JobDef *j = job_find_locked(id);
+    if (!j) { error_json(fd, 404, "Unbekannter Job"); return; }
+    if (action.empty() && m == "GET") { send_json(fd, 200, mj::dump(view(*j, ""))); return; }
+    if (action.empty() && m == "PUT") {
+      if (!has_json) { error_json(fd, 400, "JSON required"); return; }
+      JobDef copy = *j;
+      std::string err = job_apply(copy, body, false);
+      if (!err.empty()) { error_json(fd, 400, err); return; }
+      std::string sec;
+      if (body.find("webhook")) {
+        if (!body.find("webhook")->asBool(false)) copy.hook_hash.clear();
+        else if (copy.hook_hash.empty()) sec = new_secret(copy);
+      }
+      copy.version = j->version + 1; // a running run keeps its own copy
+      *j = copy; jobs_save_locked(); jobs_event_locked();
+      send_json(fd, 200, mj::dump(view(*j, sec)));
+      return;
+    }
+    if (action.empty() && m == "DELETE") {
+      for (auto it = JOBDEFS.begin(); it != JOBDEFS.end(); ++it)
+        if (it->id == id) { JOBDEFS.erase(it); break; }
+      { std::lock_guard<std::mutex> jl(JOB_MTX);
+        for (auto it = JOBRUNS.begin(); it != JOBRUNS.end();) it = it->job_id == id ? JOBRUNS.erase(it) : it + 1; }
+      jobs_save_locked(); jobs_event_locked();
+      send_json(fd, 200, "{\"deleted\":true}");
+      return;
+    }
+    if (m == "POST" && action == "run") {
+      std::string rid = j->id + ":manual:" + std::to_string(now_s()) + token_hex(3);
+      if (!job_enqueue_locked(*j, rid, "manuell")) { error_json(fd, 409, "läuft bereits"); return; }
+      send_json(fd, 202, "{\"accepted\":true,\"run_id\":\"" + rid + "\"}");
+      return;
+    }
+    if (m == "POST" && action == "pause") {
+      j->paused = !has_json || !body.find("paused") || body.find("paused")->asBool(true);
+      if (!j->paused && j->next_run > 0 && j->next_run < now_s()) j->next_run = schedule_next(j->schedule, now_s() - 1, 0);
+      jobs_save_locked(); jobs_event_locked();
+      send_json(fd, 200, mj::dump(view(*j, "")));
+      return;
+    }
+    if (m == "POST" && action == "secret") {
+      std::string sec = new_secret(*j); j->version++;
+      jobs_save_locked(); jobs_event_locked();
+      send_json(fd, 200, mj::dump(view(*j, sec)));
+      return;
+    }
+    error_json(fd, 404, "Unknown job action");
+    return;
+  }
+  if (m == "POST" && path == "/api/offline") {
+    bool off = has_json && body.find("on") && body.find("on")->asBool(false);
+    if (!set_offline(off)) {
+      error_json(fd, 500, "Netzwerkregel konnte nicht gesetzt werden");
+      return;
+    }
+    send_json(fd, 200, std::string("{\"offline\":") + (off ? "true" : "false") + "}");
+    return;
+  }
   if (m == "POST" && path == "/api/stop") {
-    stop_autotalk();
+    stop_autotalk(true);
     Val e = Val::object();
     e["type"] = "stopped";
     publish(mj::dump(e));
@@ -520,8 +868,10 @@ static void route(int fd, Req &r, bool bridge = false) {
         Val user = Val::object();
         user["role"] = "user";
         user["content"] = raw;
+        // Transcript correction: no reasoning needed (faster on CPU).
         Turn t = backend_turn({system, user}, "[]", 0,
-                              [](const std::string &, const std::string &) {});
+                              [](const std::string &, const std::string &) {},
+                              false);
         if (t.error.empty() && !trim(t.text).empty())
           out["corrected"] = trim(t.text);
         else

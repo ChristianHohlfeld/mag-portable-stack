@@ -1,0 +1,138 @@
+From 21c055d1d5143ae61bd42d5290ea91999b787b9b Mon Sep 17 00:00:00 2001
+From: mag <mag@localhost>
+Date: Fri, 16 Oct 2026 10:34:52 +0200
+Subject: [PATCH 1/2] server: stream prompt_progress when return_progress is
+ set (like mainline)
+
+---
+ examples/server/server-context.cpp | 40 ++++++++++++++++++++++++++++++
+ examples/server/server-context.h   |  2 ++
+ examples/server/server-task.cpp    | 10 ++++++++
+ examples/server/server-task.h      |  5 ++++
+ 4 files changed, 57 insertions(+)
+
+diff --git a/examples/server/server-context.cpp b/examples/server/server-context.cpp
+index cd1a916f..8646a05d 100644
+--- a/examples/server/server-context.cpp
++++ b/examples/server/server-context.cpp
+@@ -1205,6 +1205,7 @@ bool server_context::launch_slot_with_task(server_slot& slot, server_task& task)
+     slot.oai_resp_message_id = "msg_" + random_string();
+     slot.oai_resp_fc_id.clear();
+     slot.params.timings_per_token = json_value(data, "timings_per_token", false);
++    slot.params.return_progress = json_value(data, "return_progress", false);
+     slot.params.stream = json_value(data, "stream", false);
+     auto stream_opt = json_value(data, "stream_options", json::object());
+     slot.params.include_usage = json_value(stream_opt, "include_usage", false);
+@@ -2500,6 +2501,33 @@ bool server_context::check_no_mtmd(const int id_task) {
+     return true;
+ }
+ 
++void server_context::send_prompt_progress(server_slot & slot, int32_t n_processed) {
++    if (slot.task == nullptr) {
++        return;
++    }
++    auto res = std::make_unique<server_task_result_cmpl_partial>();
++    res->final_result = false;
++    res->id = slot.id_task;
++    res->id_multi = slot.id_multi;
++    res->index = slot.task->index;
++    res->error = false;
++    res->stream = true;
++    res->oaicompat = slot.params.oaicompat;
++    res->oaicompat_model = slot.task->params.oaicompat_model;
++    res->oaicompat_cmpl_id = slot.params.oaicompat_cmpl_id;
++    res->n_decoded = 0;
++    res->n_prompt_tokens = slot.n_prompt_tokens;
++    res->is_progress = true;
++    res->progress = json{
++        {"total",     slot.n_prompt_tokens},
++        {"cache",     slot.n_prompt_tokens_cache},
++        {"processed", std::max<int32_t>(0, std::min<int32_t>(n_processed, slot.n_prompt_tokens))},
++        {"time_ms",   (ggml_time_us() - slot.t_start_process_prompt) / 1000},
++    };
++    res->data = json{ {"content", ""}, {"stop", false}, {"id_slot", slot.id}, {"prompt_progress", res->progress} };
++    queue_results.send(std::move(res));
++}
++
+ void server_context::send_partial_response(server_slot& slot, completion_token_output tkn) {
+     if (slot.task == nullptr) {
+         return;
+@@ -4987,6 +5015,18 @@ void server_context::process_batch_tokens(int32_t & n_batch) {
+             continue; // continue loop of n_batch
+         }
+ 
++        // mag: Fortschritt des Prompt-Lesens nach jedem Teil-Batch melden (nur Stream + return_progress)
++        for (auto & slot : slots) {
++            if (slot.task == nullptr || !slot.params.stream || !slot.params.return_progress ||
++                slot.params.oaicompat != OAICOMPAT_TYPE_CHAT) {
++                continue;
++            }
++            if (!server_slot_prompt_batch_overlaps(slot, i, i + n_tokens)) {
++                continue;
++            }
++            send_prompt_progress(slot, slot.n_past_prompt - std::max(0, slot.prompt_batch_i1 - (i + n_tokens)));
++        }
++
+     if (server_speculative_uses_target_features(params_base.speculative)) {
+         for (auto & slot : slots) {
+             if (!slot.spec || !server_speculative_uses_target_features(slot.params.speculative)) {
+diff --git a/examples/server/server-context.h b/examples/server/server-context.h
+index bcc9f79c..eca647a2 100644
+--- a/examples/server/server-context.h
++++ b/examples/server/server-context.h
+@@ -329,6 +329,8 @@ struct server_context {
+     // if multimodal is enabled, send an error and return false
+     bool check_no_mtmd(const int id_task);
+ 
++    void send_prompt_progress(server_slot & slot, int32_t n_processed);
++
+     void send_partial_response(server_slot& slot, completion_token_output tkn);
+ 
+     void send_final_response(server_slot& slot);
+diff --git a/examples/server/server-task.cpp b/examples/server/server-task.cpp
+index 8db48ea0..f1979a92 100644
+--- a/examples/server/server-task.cpp
++++ b/examples/server/server-task.cpp
+@@ -186,6 +186,16 @@ json server_task_result_cmpl_final::to_json_oaicompat_final() {
+ json server_task_result_cmpl_partial::to_json_oaicompat_chat_partial() {
+     bool first = n_decoded == 1;
+     std::time_t t = std::time(0);
++    if (is_progress) {
++        return json::array({ json {
++            {"choices", json::array()},
++            {"created", t},
++            {"id", oaicompat_cmpl_id},
++            {"model", oaicompat_model},
++            {"object", "chat.completion.chunk"},
++            {"prompt_progress", progress},
++        } });
++    }
+     json choices;
+ 
+     std::vector<json> deltas;
+diff --git a/examples/server/server-task.h b/examples/server/server-task.h
+index 891342df..bd62789d 100644
+--- a/examples/server/server-task.h
++++ b/examples/server/server-task.h
+@@ -63,6 +63,7 @@ struct slot_params {
+     std::vector<std::string> antiprompt;
+ 
+     bool timings_per_token = false;
++    bool return_progress = false; // mag: prompt_progress im Stream (wie mainline)
+     bool post_sampling_probs = false;
+     json input_prefix;
+     json input_suffix;
+@@ -212,6 +213,10 @@ struct server_task_result {
+ };
+ 
+ struct server_task_result_cmpl_partial : server_task_result {
++    // mag: Fortschritt des Prompt-Lesens (wie mainline: total, cache, processed, time_ms)
++    bool is_progress = false;
++    json progress;
++
+     bool anthropic_has_reasoning = false;
+     bool anthropic_thinking_block_started = false;
+     bool anthropic_text_block_started = false;
+-- 
+2.43.0
+

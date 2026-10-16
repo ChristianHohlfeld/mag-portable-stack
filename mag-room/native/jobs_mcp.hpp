@@ -192,6 +192,13 @@ static Val jobs_mcp_rpc(const Val &req, const JobsActor &actor) {
   const bool modern = params && params->find("_meta") &&
       params->find("_meta")->find("io.modelcontextprotocol/protocolVersion") &&
       params->find("_meta")->find("io.modelcontextprotocol/protocolVersion")->asStr() == "2026-07-28";
+  auto stamp_modern = [&](Val &result) {
+    if (!modern) return;
+    Val meta = Val::object(); Val info = Val::object();
+    info["name"] = "mag-jobs"; info["version"] = "1.0.0";
+    meta["io.modelcontextprotocol/serverInfo"] = info;
+    result["_meta"] = meta;
+  };
   if (method == "initialize") {
     Val out = Val::object(); out["protocolVersion"] = "2025-11-25";
     Val caps = Val::object(); Val tools = Val::object(); tools["listChanged"] = false;
@@ -202,15 +209,19 @@ static Val jobs_mcp_rpc(const Val &req, const JobsActor &actor) {
   }
   if (method == "server/discover") {
     Val out = Val::object();
-    Val info = Val::object(); info["name"] = "mag-jobs"; info["version"] = "1.0.0";
-    out["serverInfo"] = info; Val cap = Val::object(); cap["tools"] = Val::object();
+    Val versions = Val::array(); versions.push("2026-07-28");
+    versions.push("2025-11-25"); out["supportedVersions"] = versions;
+    Val cap = Val::object(); Val tool_cap = Val::object();
+    tool_cap["listChanged"] = false; cap["tools"] = tool_cap;
     out["capabilities"] = cap;
+    out["resultType"] = "complete"; out["ttlMs"] = 3600000;
+    out["cacheScope"] = "public"; stamp_modern(out);
     r["result"] = out; return r;
   }
-  if (method == "ping") { r["result"] = Val::object(); return r; }
+  if (method == "ping") { Val out = Val::object(); stamp_modern(out); r["result"] = out; return r; }
   if (method == "tools/list") {
     Val out = Val::object(); out["tools"] = jobs_mcp_list();
-    if (modern) { out["resultType"] = "complete"; out["ttlMs"] = 3600000; out["cacheScope"] = "public"; }
+    if (modern) { out["resultType"] = "complete"; out["ttlMs"] = 3600000; out["cacheScope"] = "public"; stamp_modern(out); }
     r["result"] = out; return r;
   }
   if (method == "tools/call") {
@@ -225,7 +236,7 @@ static Val jobs_mcp_rpc(const Val &req, const JobsActor &actor) {
     Val blocks = Val::array(); Val b = Val::object(); b["type"] = "text";
     b["text"] = output; blocks.push(b); out["content"] = blocks;
     out["isError"] = output.rfind("Fehler:",0) == 0;
-    r["result"] = out; return r;
+    stamp_modern(out); r["result"] = out; return r;
   }
   return jobs_mcp_rpc_error(id,-32601,"Method not found");
 }

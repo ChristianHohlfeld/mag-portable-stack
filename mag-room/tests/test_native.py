@@ -47,7 +47,7 @@ class Native(unittest.TestCase):
   cls.start()
  @classmethod
  def start(cls):
-  env=dict(os.environ,MAG_ROOM_STATE=str(cls.state),MAG_ROOM_PORT=str(cls.ui),MAG_ROOM_BRIDGE_PORT=str(cls.bridge),MAG_ROOM_BRIDGE_IP='127.0.0.1',MAG_ROOM_BACKEND=f'http://127.0.0.1:{cls.model.server_port}/v1/chat/completions',MAG_ROOM_UI=str(ROOT/'mag-room/web/index.html'),MAG_ROOM_STATIC=str(ROOT/'mag-room/static'),MAG_ROOM_AUTOTALK_SLEEP='1',MAG_ROOM_MODEL_STATUS=str(pathlib.Path(cls.tmp.name)/'model-status.json'),MAG_NETMODE=str(NETMODE),MAG_TEST_NO_MEMGIT='1',MAG_JOBS_ALLOW_SECONDS='1',MAG_JOBS_TICK_MS='200',MAG_JOBS_BACKOFF_S='1',MAG_GITHUB_API=f'http://127.0.0.1:{GHPORT}')
+  env=dict(os.environ,MAG_ROOM_STATE=str(cls.state),MAG_ROOM_PORT=str(cls.ui),MAG_ROOM_BRIDGE_PORT=str(cls.bridge),MAG_ROOM_BRIDGE_IP='127.0.0.1',MAG_ROOM_BACKEND=f'http://127.0.0.1:{cls.model.server_port}/v1/chat/completions',MAG_ROOM_UI=str(ROOT/'mag-room/web/index.html'),MAG_ROOM_STATIC=str(ROOT/'mag-room/static'),MAG_ROOM_AUTOTALK_SLEEP='1',MAG_JOBS_MCP_TOKEN='local-unit-test-mcp-token-0123456789',MAG_ROOM_MODEL_STATUS=str(pathlib.Path(cls.tmp.name)/'model-status.json'),MAG_NETMODE=str(NETMODE),MAG_TEST_NO_MEMGIT='1',MAG_JOBS_ALLOW_SECONDS='1',MAG_JOBS_TICK_MS='200',MAG_JOBS_BACKOFF_S='1',MAG_GITHUB_API=f'http://127.0.0.1:{GHPORT}')
   cls.log=open(pathlib.Path(cls.tmp.name)/'server.log','a');cls.proc=subprocess.Popen([str(ROOT/'build/magroom')],env=env,stdout=cls.log,stderr=cls.log)
   for _ in range(100):
    try:cls.request('/healthz',raw=True);return
@@ -804,4 +804,80 @@ class SingleBotVM(unittest.TestCase):
   self.assertIn('spawn agent2',(self.ctl.parent/'ctl.log').read_text())
   stored={a['id']:a for a in json.loads(self.state.joinpath('agents.json').read_text())}
   self.assertEqual(stored['deepseek-chat']['vm'],'agent2');self.assertEqual(stored['alt']['vm'],'agent1')
+
+ # ---------------- native Jobs MCP: one service, identical UI representation
+ def _mcp(self,method,params=None,token=True):
+  req={'jsonrpc':'2.0','id':17,'method':method}
+  if params is not None:req['params']=params
+  headers={'Content-Type':'application/json'}
+  if token:headers['Authorization']='Bearer local-unit-test-mcp-token-0123456789'
+  return self.request('/mcp/jobs',req,headers=headers)
+ def _bot_tool_turn(self,tool,args,text='Erledigt.'):
+  self.wait_idle();Model.script=[[{'tool_calls':[{'index':0,'id':'call_jobs_'+str(time.monotonic_ns()),'function':{'name':tool,'arguments':json.dumps(args)}}]}],[text]]
+  self.request('/api/message',{'text':'Führe das Jobs-Tool aus','bots':['test']})
+  for _ in range(150):
+   if not Model.script and not self.request('/api/state')['busy']:break
+   time.sleep(.05)
+  self.wait_idle()
+ def test_17a_mcp_schema_order_and_ui_shared_service(self):
+  self.wait_idle()
+  self.error(401,'/mcp/jobs',{'jsonrpc':'2.0','id':1,'method':'tools/list'})
+  v=self._mcp('tools/list')['result']['tools']
+  names=[t['name'] for t in v]
+  self.assertEqual(names,['jobs_list','jobs_get','jobs_create','jobs_update','jobs_delete','jobs_pause','jobs_resume','jobs_run_now','jobs_history'])
+  for t in v:self.assertIn('Example:',t['description']);self.assertFalse(t['inputSchema'].get('additionalProperties',True))
+  self.assertEqual(names,[t['name'] for t in self._mcp('tools/list')['result']['tools']])
+  meta={'io.modelcontextprotocol/protocolVersion':'2026-07-28'}
+  new=self._mcp('tools/list',{'_meta':meta})['result']
+  self.assertEqual(new['resultType'],'complete')
+  arg={'name':'MCP Nutzer','prompt':'Antwort mit OK','schedule':{'kind':'weekdays','time':'08:00'},'idempotency_key':'mcp-user-20261016'}
+  out=self._mcp('tools/call',{'name':'jobs_create','arguments':arg})['result']
+  self.assertFalse(out['isError'])
+  j=json.loads(out['content'][0]['text']);self.assertEqual(j['created_by'],'user')
+  ui=self._jget(j['id']);self.assertEqual(ui,j)
+  self.assertEqual(ui['schedule'],{'type':'daily','time':'08:00','days':[1,2,3,4,5]})
+  self.assertIn(j,self.request('/api/jobs',method='GET')['jobs'])
+  self.assertFalse(self._mcp('tools/call',{'name':'jobs_pause','arguments':{'id':j['id']}})['result']['isError'])
+  self.assertTrue(self._jget(j['id'])['paused'])
+  self.assertTrue(self.request('/api/jobs/'+j['id'],method='DELETE')['deleted'])
+ def test_17b_bot_create_idempotency_and_secret_boundary(self):
+  self.wait_idle()
+  args={'name':'Von Bot','prompt':'Bot Erinnerung','schedule':{'kind':'webhook'},'idempotency_key':'bot-create-once-20261016'}
+  try:
+   self._bot_tool_turn('jobs_create',args)
+   matches=[j for j in self.request('/api/jobs',method='GET')['jobs'] if j['name']=='Von Bot']
+   self.assertEqual(len(matches),1);j=matches[0]
+   self.assertEqual(j['created_by'],'bot');self.assertEqual(j['created_by_bot'],'test')
+   self.assertTrue(j['webhook']);self.assertNotIn('secret',j)
+   self.assertNotIn('hook_hash',json.dumps(j))
+   self._bot_tool_turn('jobs_create',args)
+   self.assertEqual(len([x for x in self.request('/api/jobs',method='GET')['jobs'] if x['name']=='Von Bot']),1)
+   self._restart()
+   self._bot_tool_turn('jobs_create',args)
+   self.assertEqual(len([x for x in self.request('/api/jobs',method='GET')['jobs'] if x['name']=='Von Bot']),1)
+   self.assertEqual(self._jget(j['id'])['id'],j['id'])
+   self._bot_tool_turn('jobs_delete',{'id':j['id']})
+   self.error(404,'/api/jobs/'+j['id'],method='GET')
+  finally:
+   for v in self.request('/api/jobs',method='GET')['jobs']:
+    if v['name']=='Von Bot':self.request('/api/jobs/'+v['id'],method='DELETE')
+   Model.script=[]
+ def test_17c_bot_cannot_delete_foreign_and_malformed_call_is_not_executed(self):
+  self.wait_idle();j=self._job(name='Nur Mensch')
+  try:
+   self._bot_tool_turn('jobs_delete',{'id':j['id']})
+   self.assertEqual(self._jget(j['id'])['created_by'],'user')
+   self.assertTrue(any('Fremden Job' in str(p) for p in Model.calls[-1]['messages']))
+   n=len(Model.calls)
+   Model.script=[[{'content':'Kein Aufruf.', 'tool_calls':[{'index':0,'id':'bad_call','function':{'name':'jobs_delete','arguments':'{'}}]}]]
+   self.request('/api/message',{'text':'Unlesbarer Tool Call','bots':['test']})
+   for _ in range(100):
+    if len(Model.calls)>n and not self.request('/api/state')['busy']:break
+    time.sleep(.05)
+   self.wait_idle()
+   self.assertEqual(len(Model.calls),n+1,'malformed DSML must not trigger retry')
+   self.assertEqual(self._jget(j['id'])['id'],j['id'])
+  finally:
+   self.request('/api/jobs/'+j['id'],method='DELETE');Model.script=[]
+
 if __name__=='__main__':unittest.main(verbosity=2)

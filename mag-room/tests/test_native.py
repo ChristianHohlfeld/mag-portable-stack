@@ -1028,7 +1028,12 @@ class Native(unittest.TestCase):
   notes=json.loads(self.state.joinpath('reaction_notices.json').read_text())
   self.assertTrue(any(n['message_id']==bot['id'] and n['emoji']=='👍' and n['bot']=='test' for n in notes))
   self.assertNotIn('👍',self.state.joinpath('agents.json').read_text())
+  before_calls=len(Model.calls)
   self.request('/api/message',{'text':'Und noch etwas','bots':['test']})
+  for _ in range(120):
+   if len(Model.calls)>before_calls and 'Und noch etwas' in Model.calls[-1]['messages'][1]['content']:break
+   time.sleep(.05)
+  else:self.fail('Reaction-aware follow-up did not reach the fake model')
   self.wait_idle()
   ctx=Model.calls[-1]['messages'][1]['content']
   self.assertIn('[Reaktion] Nutzer: 👍 auf deine Nachricht "Hallo aus dem Modell."',ctx)

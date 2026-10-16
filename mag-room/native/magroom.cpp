@@ -1462,6 +1462,7 @@ struct ModelStatus {
 static std::mutex MODEL_ST_MTX;
 static ModelStatus MODEL_ST;
 static std::atomic<bool> MODEL_WATCHER{false};
+static std::atomic<int64_t> LAST_HEALTH_OK{0};
 
 static ModelStatus probe_model_status() {
   ModelStatus st;
@@ -1477,6 +1478,17 @@ static ModelStatus probe_model_status() {
     st.state = "ready";
     st.ready = true;
     st.label = "Modell bereit (" + MODEL + ")";
+    LAST_HEALTH_OK = st.at;
+    return st;
+  }
+  // ik_llama.cpp answers /health through its task queue, so while a long
+  // prompt batch runs the 2 s probe times out (mainline answers from the HTTP
+  // thread). A backend that was healthy shortly before is busy, not starting.
+  if (!reach && LAST_HEALTH_OK.load() > 0 &&
+      st.at - LAST_HEALTH_OK.load() < 900) {
+    st.state = "ready";
+    st.ready = true;
+    st.label = "Modell bereit (" + MODEL + ", rechnet)";
     return st;
   }
   if (reach && code == 503 && body.find("oading") != std::string::npos) {

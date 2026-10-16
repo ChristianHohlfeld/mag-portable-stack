@@ -2699,6 +2699,7 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
       } catch (std::exception &ex) {
         result = "Fehler: " + std::string(ex.what());
       }
+      result = mj::utf8_fix(result); // tool output may hold any bytes
       const bool failed =
           result.rfind("Fehler:", 0) == 0 ||
           (fname == "run_command" && result.rfind("exit=0\n", 0) != 0) ||
@@ -2722,7 +2723,7 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
         e["type"] = "tool_result";
         e["bot"] = bot_id;
         e["tool"] = fname;
-        e["result"] = result.substr(0, 1500);
+        e["result"] = mj::utf8_cut(result, 1500);
         publish(mj::dump(e));
       }
       Val tr = Val::object();

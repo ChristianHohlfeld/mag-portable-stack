@@ -124,7 +124,47 @@ struct Val {
   }
 };
 
-inline void escapeTo(const std::string &s, std::string &out) {
+// Valid UTF-8 everywhere: invalid / truncated sequences -> U+FFFD.
+inline size_t utf8_seq_len(const std::string &s, size_t i) {
+  const unsigned char c = (unsigned char)s[i];
+  size_t n; unsigned cp;
+  if (c < 0x80) return 1;
+  else if (c >= 0xC2 && c <= 0xDF) { n = 2; cp = c & 0x1F; }
+  else if (c >= 0xE0 && c <= 0xEF) { n = 3; cp = c & 0x0F; }
+  else if (c >= 0xF0 && c <= 0xF4) { n = 4; cp = c & 0x07; }
+  else return 0;
+  if (i + n > s.size()) return 0;
+  for (size_t k = 1; k < n; k++) {
+    const unsigned char d = (unsigned char)s[i + k];
+    if ((d & 0xC0) != 0x80) return 0;
+    cp = (cp << 6) | (d & 0x3F);
+  }
+  if ((n == 3 && (cp < 0x800 || (cp >= 0xD800 && cp <= 0xDFFF))) || (n == 4 && (cp < 0x10000 || cp > 0x10FFFF))) return 0;
+  return n;
+}
+inline bool utf8_valid(const std::string &s) {
+  for (size_t i = 0; i < s.size();) { size_t n = utf8_seq_len(s, i); if (!n) return false; i += n; }
+  return true;
+}
+inline std::string utf8_fix(const std::string &s) {
+  if (utf8_valid(s)) return s;
+  std::string o; o.reserve(s.size() + 8);
+  for (size_t i = 0; i < s.size();) {
+    size_t n = utf8_seq_len(s, i);
+    if (!n) { o += "\xEF\xBF\xBD"; i++; } else { o.append(s, i, n); i += n; }
+  }
+  return o;
+}
+// Cut to at most max bytes without splitting a code point.
+inline std::string utf8_cut(const std::string &s, size_t max) {
+  if (s.size() <= max) return s;
+  size_t e = max;
+  while (e > 0 && ((unsigned char)s[e] & 0xC0) == 0x80) e--;
+  return utf8_fix(s.substr(0, e));
+}
+
+inline void escapeTo(const std::string &sIn, std::string &out) {
+  const std::string s = utf8_fix(sIn);
   out.push_back('"');
   for (unsigned char c : s) {
     switch (c) {

@@ -736,7 +736,11 @@ class Native(unittest.TestCase):
  def _mcp(self,method,params=None,token=True):
   req={'jsonrpc':'2.0','id':17,'method':method}
   if params is not None:req['params']=params
-  headers={'Content-Type':'application/json'}
+  headers={'Content-Type':'application/json','Accept':'application/json, text/event-stream'}
+  if params and params.get('_meta',{}).get('io.modelcontextprotocol/protocolVersion')=='2026-07-28':
+   headers['MCP-Protocol-Version']='2026-07-28'
+   headers['Mcp-Method']=method
+   if method=='tools/call':headers['Mcp-Name']=params['name']
   if token:headers['Authorization']='Bearer local-unit-test-mcp-token-0123456789'
   return self.request('/mcp/jobs',req,headers=headers)
  def _bot_tool_turn(self,tool,args,text='Erledigt.'):
@@ -754,13 +758,19 @@ class Native(unittest.TestCase):
   self.assertEqual(names,['jobs_list','jobs_get','jobs_create','jobs_update','jobs_delete','jobs_pause','jobs_resume','jobs_run_now','jobs_history'])
   for t in v:self.assertIn('Example:',t['description']);self.assertFalse(t['inputSchema'].get('additionalProperties',True))
   self.assertEqual(names,[t['name'] for t in self._mcp('tools/list')['result']['tools']])
-  meta={'io.modelcontextprotocol/protocolVersion':'2026-07-28'}
+  meta={'io.modelcontextprotocol/protocolVersion':'2026-07-28','io.modelcontextprotocol/clientCapabilities':{}}
+  discover=self._mcp('server/discover',{'_meta':meta})['result']
+  self.assertIn('2026-07-28',discover['supportedVersions'])
+  self.assertEqual(discover['resultType'],'complete')
   new=self._mcp('tools/list',{'_meta':meta})['result']
   self.assertEqual(new['resultType'],'complete')
+  self.assertEqual(new['_meta']['io.modelcontextprotocol/serverInfo']['name'],'mag-jobs')
   arg={'name':'MCP Nutzer','prompt':'Antwort mit OK','schedule':{'kind':'weekdays','time':'08:00'},'idempotency_key':'mcp-user-20261016'}
   out=self._mcp('tools/call',{'name':'jobs_create','arguments':arg})['result']
   self.assertFalse(out['isError'])
   j=json.loads(out['content'][0]['text']);self.assertEqual(j['created_by'],'user')
+  modern=self._mcp('tools/call',{'_meta':meta,'name':'jobs_get','arguments':{'id':j['id']}})['result']
+  self.assertEqual(json.loads(modern['content'][0]['text']),j)
   ui=self._jget(j['id']);self.assertEqual(ui,j)
   self.assertEqual(ui['schedule'],{'type':'daily','time':'08:00','days':[1,2,3,4,5]})
   self.assertIn(j,self.request('/api/jobs',method='GET')['jobs'])

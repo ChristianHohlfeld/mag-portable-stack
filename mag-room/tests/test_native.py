@@ -796,14 +796,14 @@ class Native(unittest.TestCase):
    call=Model.calls[-1]
    self.assertNotIn('Ada',call['messages'][0]['content'])
    self.assertNotIn('Ada',json.dumps(call.get('tools')))
-   self.assertIn('[Ada Lovelace]: ich bin ada',call['messages'][1]['content'])
+   self.assertRegex(call['messages'][1]['content'],r'\[Ada Lovelace \([0-9a-f]+\)\]: ich bin ada')
    sys1=call['messages'][0];tools=json.dumps(call.get('tools'))
    self.request('/api/message',{'text':'ich bin bob','bots':['test']},headers=self._ts('bob@github','Bob'))
    self.wait_room('Hallo Bob.');self.wait_idle()
    call2=Model.calls[-1]
    self.assertEqual(call2['messages'][0],sys1,'sender must not touch the system prompt')
    self.assertEqual(json.dumps(call2.get('tools')),tools)
-   self.assertIn('[Bob]: ich bin bob',call2['messages'][1]['content'])
+   self.assertRegex(call2['messages'][1]['content'],r'\[Bob \([0-9a-f]+\)\]: ich bin bob')
    self.assertNotIn('Bob',call2['messages'][0]['content'])
   finally:
    Model.script=[]

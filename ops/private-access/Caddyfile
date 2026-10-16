@@ -1,0 +1,15 @@
+{
+	auto_https off
+	admin off
+	servers {
+		protocols h1 h2
+	}
+}
+
+https://mag.stardenburg.de:443 {
+	bind 100.123.114.16
+	tls /etc/mag-caddy/tls/cert.pem /etc/mag-caddy/tls/key.pem
+	reverse_proxy 127.0.0.1:8766 {
+		flush_interval -1
+	}
+}

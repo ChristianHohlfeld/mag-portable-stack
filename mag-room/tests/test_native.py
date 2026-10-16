@@ -138,7 +138,8 @@ class Native(unittest.TestCase):
   self.wait_room('Hallo aus dem Modell.');self.wait_idle()
   call=Model.calls[-1]
   self.assertNotIn('reasoning_effort',call,'GPT-OSS top-level reasoning_effort must be gone')
-  self.assertEqual(call['chat_template_kwargs'],{'enable_thinking':True,'reasoning_effort':'high'})
+  # reasoning_effort would put a preamble BEFORE the system prompt (cache miss) -> not sent by default
+  self.assertEqual(call['chat_template_kwargs'],{'enable_thinking':True})
   self.assertEqual(call['max_tokens'],8192)
   self.assertIn('deepseek-v4-flash-0731',call['messages'][0]['content'])
   self.assertNotIn('gpt-oss',json.dumps(call))
@@ -241,7 +242,7 @@ class Native(unittest.TestCase):
   for needle in ("event.type==='progress'",'Liest Verlauf','streamClock'):self.assertIn(needle,html)
  def test_09k_thinking_toggle_per_message(self):
   self.request('/api/message',{'text':'Denk nach','bots':['test'],'think':True});self.wait_room('Hallo aus dem Modell.');self.wait_idle()
-  self.assertEqual(Model.calls[-1]['chat_template_kwargs'],{'enable_thinking':True,'reasoning_effort':'high'})
+  self.assertEqual(Model.calls[-1]['chat_template_kwargs'],{'enable_thinking':True})
   self.assertTrue(self.request('/api/state')['thinking'])
   self.request('/api/message',{'text':'Schnell bitte','bots':['test'],'think':False});self.wait_room('Hallo aus dem Modell.');self.wait_idle()
   self.assertEqual(Model.calls[-1]['chat_template_kwargs'],{'enable_thinking':False})
@@ -252,6 +253,44 @@ class Native(unittest.TestCase):
   self.assertTrue(Model.calls[-1]['chat_template_kwargs']['enable_thinking'],'Without a choice the room default applies')
   html=self.request('/',raw=True).decode()
   for needle in ('id="think"',"think:$('think').checked","mag-think",'state.thinking_default'):self.assertIn(needle,html)
+ def test_09l_new_message_is_queued_not_aborting(self):
+  Model.delay=1.5
+  try:
+   before=len(Model.calls)
+   self.request('/api/message',{'text':'Erste Frage','bots':['test']})
+   for _ in range(100):
+    if self.request('/api/state')['busy']:break
+    time.sleep(.02)
+   r=self.request('/api/message',{'text':'Zweite Frage','bots':['test']})
+   self.assertTrue(r.get('queued'),'Second message must be queued while a turn runs')
+   r3=self.request('/api/message',{'text':'Dritte Frage','bots':['test']})
+   self.assertTrue(r3.get('queued'))
+   for _ in range(200):
+    s=self.request('/api/state')
+    if not s['busy'] and len(Model.calls)>=before+2:break
+    time.sleep(.05)
+   time.sleep(.3)
+   self.assertEqual(len(Model.calls),before+2,'Queued messages for the same bot are merged into one turn')
+   answers=[m for m in self.request('/api/state')['room'] if m.get('role')=='assistant' and m.get('content')=='Hallo aus dem Modell.']
+   self.assertGreaterEqual(len(answers),2,'The running turn must finish instead of being aborted')
+   last=Model.calls[-1]['messages'][1]['content']
+   self.assertIn('Zweite Frage',last);self.assertIn('Dritte Frage',last)
+   html=self.request('/',raw=True).decode()
+   self.assertIn("event.type==='queued'",html);self.assertIn('r&&r.queued',html)
+  finally:Model.delay=0
+ def test_09m_interrupt_still_aborts(self):
+  Model.delay=2
+  try:
+   self.request('/api/message',{'text':'Lange Aufgabe','bots':['test']})
+   for _ in range(100):
+    if self.request('/api/state')['busy']:break
+    time.sleep(.02)
+   start=time.monotonic()
+   r=self.request('/api/message',{'text':'Sofort','bots':['test'],'interrupt':True})
+   self.assertFalse(r.get('queued'))
+   self.wait_idle()
+   self.assertLess(time.monotonic()-start,4.5)
+  finally:Model.delay=0
  def test_10_verified_tool_step_can_continue_once(self):
   command={'tool_calls':[{'index':0,'id':'call_test_1','function':{'name':'remember','arguments':'{"fact":"autonomy test","source":"test"}'}}]}
   Model.script=[[command],['Arbeit begonnen [[MAG:WEITER]]'],['Arbeit abgeschlossen [[MAG:ENDE]]']]

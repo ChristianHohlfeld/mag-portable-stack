@@ -160,7 +160,7 @@ $('send-form').onsubmit=async e=>{
  e.preventDefault();const text=$('message').value.trim();if(!text)return;
  const botId=[...selected][0],bot=state.agents.find(a=>a.id===botId);
  if(bot){streams[botId]={name:bot.name,text:'',status:'Auftrag wird gesendet …'};render()}
- try{await api('/api/message',{text,bots:[...selected],web_search:$('web').checked,think:$('think').checked});$('message').value='';notice();if(streams[botId]){streams[botId].status='Wartet auf Modell …';updateStream(botId)}}
+ try{const r=await api('/api/message',{text,bots:[...selected],web_search:$('web').checked,think:$('think').checked});$('message').value='';notice(r&&r.queued?'Eingereiht – kommt direkt nach der laufenden Antwort dran (Abbrechen: „Alle pausieren“)':'')}
  catch(err){delete streams[botId];render();notice(err.message)}
 };$('message').onkeydown=e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();$('send-form').requestSubmit()}};
 $('autotalk').onchange=async()=>{try{await api('/api/autotalk',{on:$('autotalk').checked});notice()}catch(e){notice(e.message);await refresh()}};$('stop').onclick=async()=>{try{await api('/api/stop',{});$('autotalk').checked=false;notice('Bots pausiert')}catch(e){notice(e.message)}};
@@ -571,6 +571,7 @@ events.onmessage=e=>{
   }else if(['message','file','agents','reset','idle'].includes(event.type)){
    refresh().catch(err=>notice(err.message));
   }else if(event.type==='autotalk')$('autotalk').checked=event.on;
+  else if(event.type==='queued')notice(event.merged?'Weitere Nachricht – wird mit der eingereihten zusammen beantwortet':'Eingereiht – kommt direkt nach der laufenden Antwort dran (Abbrechen: „Alle pausieren“)');
   else if(event.type==='model')modelStatus(event.status);
   else if(event.type==='bot_status'){
    const s=streams[id];if(s&&!s.text){s.status=event.text||'Wartet …';updateStream(id)}

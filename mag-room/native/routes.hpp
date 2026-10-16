@@ -467,15 +467,19 @@ static void route(int fd, Req &r, bool bridge = false) {
     }
     if (body.find("web_search"))
       WEB_ENABLED = body.find("web_search")->asBool(true);
-    {
-      auto th = body.find("think");
-      TURN_THINK = th && th->type == Val::BOOL ? (th->asBool() ? 1 : 0) : -1;
-    }
+    int think = -1;
+    if (auto th = body.find("think"); th && th->type == Val::BOOL)
+      think = th->asBool() ? 1 : 0;
+    bool interrupt = false;
+    if (auto in = body.find("interrupt"); in && in->type == Val::BOOL)
+      interrupt = in->asBool();
     Val msg = append_room("user", "Nutzer", str("text"));
     msg["type"] = "message";
     publish(mj::dump(msg));
-    schedule(ids);
-    send_json(fd, 202, "{\"accepted\":true}");
+    const bool queued = BUSY.load() && !interrupt;
+    schedule(ids, think, interrupt);
+    send_json(fd, 202, queued ? "{\"accepted\":true,\"queued\":true}"
+                              : "{\"accepted\":true}");
     return;
   }
   if (m == "POST" && path == "/api/autotalk") {

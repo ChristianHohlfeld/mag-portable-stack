@@ -55,7 +55,7 @@ static std::string MODEL, BACKEND, BIND_HOST, STATE_DIR, FILES_DIR, AGENTS_JSON,
     AGENT_CTL, BRIDGE_IP, BRAVE_KEY, API_KEY, UI_FILE,
     BACKEND_HOST = "127.0.0.1", STT_LANG = "de",
     // DeepSeek-V4 (chat template kwargs): thinking on/off and effort high|max.
-    THINKING = "on", REASONING_EFFORT = "high",
+    THINKING = "on", REASONING_EFFORT = "",
     MODEL_STATUS_FILE = "/var/lib/mag-llm/status.json";
 static int PORT = 8766, BRIDGE_PORT = 8767, BROWSERD_PORT = 9225,
            BACKEND_PORT = 8080, MAX_TOKENS = 700, MAX_HISTORY = 30,
@@ -1669,14 +1669,17 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   // the prompt is evaluated (minutes on CPU) instead of staying silent.
   body["return_progress"] = true;
   body["cache_prompt"] = true;
-  // DeepSeek-V4-Flash-0731 template: enable_thinking (bool) and
-  // reasoning_effort "high" | "max". GPT-OSS' "low" no longer applies.
+  // DeepSeek-V4-Flash-0731 template: enable_thinking only changes the
+  // generation prompt at the END -> toggling it keeps the prompt cache.
+  // reasoning_effort is different: the template puts a "Reasoning Effort"
+  // preamble right after BOS, i.e. BEFORE the system prompt, so sending it
+  // only for thinking turns invalidated the whole cached prefix (measured on
+  // mag: 1 of 1.212 tokens reused). It is therefore not sent by default; if
+  // MAG_ROOM_REASONING_EFFORT is set it is sent on EVERY request so the prefix
+  // stays identical across the toggle.
   Val kwargs = Val::object();
-  // The caller decides (per user message / room default, see TURN_THINK);
-  // only the generation prompt's tail differs, so the prompt cache stays valid.
-  const bool think = thinking;
-  kwargs["enable_thinking"] = think;
-  if (think)
+  kwargs["enable_thinking"] = thinking;
+  if (!REASONING_EFFORT.empty())
     kwargs["reasoning_effort"] = REASONING_EFFORT;
   body["chat_template_kwargs"] = kwargs;
   std::string payload = mj::dump(body);
@@ -2350,7 +2353,12 @@ static std::string qparam(const std::string &query, const std::string &key) {
 static std::atomic<bool> AUTOTALK{false}, BUSY{false};
 static std::mutex TURN_MTX, JOB_MTX;
 static std::condition_variable JOB_CV;
-static std::deque<std::vector<std::string>> JOBS;
+// A queued user turn: who answers and whether to think (-1 = room default).
+struct Job {
+  std::vector<std::string> ids;
+  int think = -1;
+};
+static std::deque<Job> JOBS;
 static std::atomic<uint64_t> EPOCH{0};
 static std::string AUTO_OWNER, AUTO_LAST_PROGRESS;
 static bool AUTO_READY = false;
@@ -2364,15 +2372,37 @@ static void cancel_active() {
   if (BACKEND_FD.load() >= 0)
     shutdown(BACKEND_FD.load(), SHUT_RDWR);
 }
-static void schedule(const std::vector<std::string> &ids) {
-  cancel_active();
+// A new user message no longer aborts the running turn (on CPU that threw
+// away minutes of prompt evaluation while llama kept computing): it is queued
+// and answered right after, with the message already in the transcript.
+// Consecutive messages for the same bots are merged into one queued turn.
+// interrupt=true keeps the old behaviour (abort, then answer).
+static void schedule(const std::vector<std::string> &ids, int think = -1,
+                     bool interrupt = false) {
+  if (interrupt)
+    cancel_active();
+  size_t position = 0;
+  bool merged = false;
   {
     std::lock_guard<std::mutex> lk(JOB_MTX);
     AUTO_OWNER = ids.empty() ? "" : ids.front();
     AUTO_LAST_PROGRESS.clear();
     AUTO_TURNS_LEFT = AUTO_MAX_TURNS;
     AUTO_READY = false;
-    JOBS.push_back(ids);
+    if (!JOBS.empty() && JOBS.back().ids == ids) {
+      JOBS.back().think = think; // latest choice wins
+      merged = true;
+    } else {
+      JOBS.push_back(Job{ids, think});
+    }
+    position = JOBS.size();
+  }
+  if (BUSY.load() && !interrupt) {
+    Val e = Val::object();
+    e["type"] = "queued";
+    e["position"] = (double)position;
+    e["merged"] = merged;
+    publish(mj::dump(e));
   }
   JOB_CV.notify_all();
 }
@@ -2437,7 +2467,8 @@ static void scheduler_loop() {
       if (SHUTDOWN.load())
         break;
       if (!JOBS.empty()) {
-        ids = std::move(JOBS.front());
+        ids = std::move(JOBS.front().ids);
+        TURN_THINK = JOBS.front().think;
         JOBS.pop_front();
       } else if (AUTOTALK.load() && AUTO_READY &&
                  AUTO_TURNS_LEFT > 0 && !AUTO_OWNER.empty()) {
@@ -2644,9 +2675,10 @@ int main() {
   MAX_TOKENS = envi("MAG_ROOM_MAX_TOKENS", 8192);
   LLM_TIMEOUT_S = std::max(envi("MAG_ROOM_LLM_TIMEOUT", 3600), LLM_TIMEOUT_MIN_S);
   THINKING = env("MAG_ROOM_THINKING", "on");
-  REASONING_EFFORT = env("MAG_ROOM_REASONING_EFFORT", "high");
-  if (REASONING_EFFORT != "high" && REASONING_EFFORT != "max")
-    REASONING_EFFORT = "high";
+  REASONING_EFFORT = env("MAG_ROOM_REASONING_EFFORT", "");
+  if (!REASONING_EFFORT.empty() && REASONING_EFFORT != "high" &&
+      REASONING_EFFORT != "max")
+    REASONING_EFFORT = "";
   MODEL_STATUS_FILE = env("MAG_ROOM_MODEL_STATUS", "/var/lib/mag-llm/status.json");
   MAX_HISTORY = envi("MAG_ROOM_MAX_HISTORY", 30);
   HISTORY_STEP = envi("MAG_ROOM_HISTORY_STEP", 10);
@@ -2717,7 +2749,8 @@ int main() {
 
   std::cout << "[magroom] " << AGENTS.size() << " Agenten, Backend "
             << BACKEND_HOST << ":" << BACKEND_PORT << ", Modell " << MODEL
-            << " (Denken " << THINKING << "/" << REASONING_EFFORT
+            << " (Denken " << THINKING << "/"
+            << (REASONING_EFFORT.empty() ? "Standard" : REASONING_EFFORT)
             << ", max_tokens " << MAX_TOKENS << ", LLM-Timeout "
             << LLM_TIMEOUT_S << "s)"
             << ", UI " << PORT << ", Bridge " << BRIDGE_PORT << std::endl;

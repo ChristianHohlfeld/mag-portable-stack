@@ -11,6 +11,17 @@
 set -euo pipefail
 TPL=${1:?Vorlage fehlt}; DST=${2:?Ziel oder --check fehlt}
 BIN=/home/chris/.local/bin/llama
+# ab 3.6: gespeicherte Startwerte aus /etc/mag-llm/llm.env (tune.sh / upgrade-3.6.sh); die Umgebung hat
+# Vorrang. Mit HELP_FILE (Tests) nur, wenn MAG_LLM_ENV ausdrücklich gesetzt ist.
+if [[ -n "${MAG_LLM_ENV:-}" || -z "${HELP_FILE:-}" ]]; then
+  _envf=${MAG_LLM_ENV:-/etc/mag-llm/llm.env}
+  if [[ -r "$_envf" ]]; then
+    while IFS='=' read -r k v; do
+      v=${v%\"}; v=${v#\"}
+      case "$k" in LOAD_ARGS|THREADS|THREADS_BATCH|BATCH|UBATCH) [[ -n "${!k:-}" ]] || printf -v "$k" '%s' "$v" ;; esac
+    done < <(grep -E '^(LOAD_ARGS|THREADS|THREADS_BATCH|BATCH|UBATCH)=' "$_envf" || true)
+  fi
+fi
 if [[ -n "${HELP_FILE:-}" ]]; then help=$(cat "$HELP_FILE")
 elif [[ $EUID -eq 0 ]]; then help=$(runuser -u chris -- "$BIN" serve --help 2>&1 || true)
 else help=$("$BIN" serve --help 2>&1 || true); fi
@@ -47,6 +58,13 @@ PY
 fi
 
 unit=$(sed "/^#/!s|@LOAD_ARGS@|$LOAD_ARGS|" "$TPL")
+# ab 3.6: gemessene Startwerte einsetzen (nur gesetzte Werte, nur Zahlen)
+for _kv in "threads:${THREADS:-}" "threads-batch:${THREADS_BATCH:-}" "batch-size:${BATCH:-}" "ubatch-size:${UBATCH:-}"; do
+  _f=${_kv%%:*}; _v=${_kv#*:}
+  [[ -z "$_v" ]] && continue
+  [[ "$_v" =~ ^[0-9]+$ ]] || { echo "render: ungültiger Wert für --$_f: '$_v'" >&2; exit 4; }
+  unit=$(sed -E "s/^(  --$_f )[0-9]+ \\\\$/\\1$_v \\\\/" <<<"$unit")
+done
 grep -q '@LOAD_ARGS@' <<<"$(grep -v '^#' <<<"$unit")" && { echo "render: Platzhalter nicht ersetzt" >&2; exit 4; }
 
 missing=()

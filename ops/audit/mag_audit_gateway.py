@@ -26,6 +26,7 @@ import http.server
 import json
 import os
 import re
+import select
 import signal
 import socket
 import socketserver
@@ -361,6 +362,31 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self._send_json(200, {"ok": True, "id": rid})
         return self._send_json(404, {"error": "unknown audit endpoint"})
 
+    def _watch_client(self, up_sock, done, flag):
+        """Bricht der Client ab (Raum: 'Alle pausieren'), wird die Verbindung zu llama sofort
+        geschlossen. llama erkennt das und bricht die Anfrage ab, statt sie zu Ende zu rechnen
+        und die nächste dahinter warten zu lassen. Prüft alle 0,5 s, ob der Client die Verbindung
+        geschlossen hat (FIN/RST); ohne Lesen von Nutzdaten."""
+        sock = self.connection
+        while not done.is_set():
+            try:
+                r, _, _ = select.select([sock], [], [], 0.5)
+                if not r:
+                    continue
+                if sock.recv(1, socket.MSG_PEEK | socket.MSG_DONTWAIT) != b"":
+                    done.wait(0.5)      # Daten statt Ende (z.B. Pipelining): weiter beobachten
+                    continue
+            except (BlockingIOError, InterruptedError):
+                continue
+            except OSError:
+                pass                    # Reset/Fehler = Client weg
+            flag.set()
+            try:
+                up_sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            return
+
     def _proxy(self):
         if self.path.startswith("/audit/"):
             return self._audit_endpoint()
@@ -387,10 +413,23 @@ class Handler(http.server.BaseHTTPRequestHandler):
         fwd_headers["Host"] = f"{UPSTREAM_HOST}:{UPSTREAM_PORT}"
         fwd_headers["X-Mag-Audit-Id"] = rid
         conn = http.client.HTTPConnection(UPSTREAM_HOST, UPSTREAM_PORT, timeout=UPSTREAM_TIMEOUT)
+        done, aborted = threading.Event(), threading.Event()
         try:
+            conn.connect()
+            up_sock = conn.sock   # http.client gibt conn.sock später an die Antwort ab (dann None)
+            if is_llm and not quiet:
+                threading.Thread(target=self._watch_client, args=(up_sock, done, aborted), daemon=True).start()
             conn.request(self.command, self.path, body=body or None, headers=fwd_headers)
             resp = conn.getresponse()
         except Exception as e:
+            done.set()
+            if aborted.is_set():
+                WRITER.write({"type": "llm_response", "id": rid, "caller": caller, "path": self.path,
+                              "status": None, "client_disconnected": True, "aborted": True,
+                              "duration_s": round(time.time() - t0, 3), "body": None})
+                conn.close()
+                self.close_connection = True
+                return
             WRITER.write({"type": "gateway_error", "id": rid, "caller": caller,
                           "path": self.path, "error": repr(e)})
             conn.close()
@@ -410,7 +449,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.end_headers()
             asm = StreamAssembler()
             while True:
-                chunk = resp.read1(65536)
+                try:
+                    chunk = resp.read1(65536)
+                except (OSError, http.client.HTTPException):
+                    if aborted.is_set():
+                        break           # Client hat abgebrochen, Verbindung zu llama ist geschlossen
+                    raise
                 if not chunk:
                     break
                 asm.feed(chunk)
@@ -419,7 +463,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
                         self.wfile.write(b"%x\r\n%s\r\n" % (len(chunk), chunk))
                         self.wfile.flush()
                     except (BrokenPipeError, ConnectionResetError):
-                        client_gone = True  # weiterlesen, damit die Antwort vollständig geloggt wird
+                        # Client weg: llama sofort stoppen (Verbindung schließen); geloggt wird,
+                        # was bis dahin kam
+                        client_gone = True
+                        aborted.set()
+                        try:
+                            up_sock.shutdown(socket.SHUT_RDWR)
+                        except OSError:
+                            pass
+                        break
             if not client_gone:
                 try:
                     self.wfile.write(b"0\r\n\r\n")
@@ -428,7 +480,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     client_gone = True
             resp_record = asm.result()
         else:
-            data = resp.read()
+            try:
+                data = resp.read()
+            except (OSError, http.client.HTTPException):
+                if not aborted.is_set():
+                    raise
+                data = b""
             self.send_header("Content-Length", str(len(data)))
             self.end_headers()
             try:
@@ -439,12 +496,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 resp_record = json.loads(data) if data else None
             except ValueError:
                 resp_record = data.decode("utf-8", "replace")
+        done.set()
         conn.close()
+        client_gone = client_gone or aborted.is_set()
 
         if not quiet:
             WRITER.write({"type": "llm_response" if is_llm else "http_response", "id": rid,
                           "caller": caller, "path": self.path, "status": resp.status,
                           "streamed": streaming, "client_disconnected": client_gone,
+                          "aborted": aborted.is_set(),
                           "duration_s": round(time.time() - t0, 3), "body": resp_record})
         if client_gone:
             self.close_connection = True

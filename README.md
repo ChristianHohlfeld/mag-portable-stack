@@ -357,3 +357,40 @@ curl -fsS http://127.0.0.1:8766/api/browser-live/status
 
 Check MAG's browser in the Tailnet UI after deploying. A successful CI run
 does not establish live browser/CDP connectivity on the private KVM host.
+
+
+## Browser navigation and website verification (2026-10-14)
+
+The operator's **single existing Chromium tab** has a conventional compact
+toolbar immediately above its UDP video: Back, Forward, Reload, editable URL,
+Open, and Fullscreen. The address and navigation availability follow the real
+Chromium CDP `Page.getNavigationHistory` state (read-only
+`POST /api/browser/<bot>/state`, refreshing only while the viewer is visible).
+Enter in the address bar navigates; text without a hostname is treated as a
+search query. No second browser, new profile or page refresh is created when
+switching controls. Back/Forward/Reload are native CDP routes already present
+on the guest and are now exposed in the toolbar.
+
+If Chromium sees an **unusual traffic / verify-human / CAPTCHA** page,
+`browser_read` reports `blocked: true` and a clear warning, and the human
+viewer shows a visible verification notice. Bots must not hammer the blocked
+page or claim to have read the protected site. For search queries they should
+use the authorized **Brave Search API** via `web_search` and follow source
+links with the normal persistent browser.
+
+The installed guest presently launches Chromium with `--headless=new`.
+This is modern real Chrome headless, but a real website can still detect
+automation or restrict requests based on the MAG server's public egress IP.
+Neither a User-Agent spoof, stealth plugin nor switching to Xvfb guarantees
+access to protected pages. This change **does not bypass** CAPTCHA, site
+policy, paywalls or search rate limits, and does not claim to. Sites requiring
+human verification may need manual verification in the existing live viewer.
+A future migration to graphical Chromium would require a tested guest
+display server and a one-time browser restart, not a fake UI-only switch.
+
+To verify after deploying the MAG C++ rebuild: click Back/Forward/Reload and
+watch the URL update even when the bot navigates, test `example.com` and
+another non-search page independently, verify blocked-page notices and the
+Brave API fallback, and check both Ab and Joe remain on their existing VM
+profiles with no disk changes. CI checks logic but cannot assert real
+accessibility from the private MAG server IP.

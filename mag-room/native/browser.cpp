@@ -388,9 +388,28 @@ int main(int argc, char **argv) {
     metrics["mobile"] = false;
     c.call("Emulation.setDeviceMetricsOverride", metrics);
     auto snapshot = [&]() {
-      Val state = c.eval("({url:location.href,title:document.title})");
+      Val state = c.eval("({url:location.href,title:document.title,"
+                         "blocked:(()=>{const t=(document.title+' '+"
+                         "(document.body?.innerText||'').slice(0,1000)).toLowerCase();"
+                         "return (t.includes('unusual traffic')||"
+                         "t.includes('verify you are human')||"
+                         "t.includes('checking your browser')||"
+                         "t.includes('are you a robot')||"
+                         "t.includes('security check')||"
+                         "t.includes('captcha'))})()})");
       state["udp_transport"] = "MGB4";
       state["udp_port"] = 9227;
+      try {
+        const Val nav = c.call("Page.getNavigationHistory");
+        const auto entries = nav.find("entries");
+        const auto idx = nav.find("currentIndex");
+        if (entries && entries->isArr() && idx) {
+          state["can_go_back"] = idx->asNum() > 0;
+          state["can_go_forward"] = idx->asNum() + 1 < (double)entries->asArr().size();
+        }
+      } catch (...) {
+        state["can_go_back"] = false; state["can_go_forward"] = false;
+      }
       return state;
     };
     char host[128]{};
@@ -447,9 +466,15 @@ int main(int argc, char **argv) {
         Val out = Val::object();
         if (r.path == "/state")
           out = snapshot();
-        else if (r.path == "/read")
+        else if (r.path == "/read") {
           out = c.eval("({url:location.href,title:document.title,text:document."
                        "body.innerText.slice(0,12000)})");
+          Val meta = snapshot();
+          out["blocked"] = meta.find("blocked") ? *meta.find("blocked") : Val(false);
+          if (out.find("blocked") && out.find("blocked")->asBool())
+            out["hint"] = "Website access challenge. Avoid repeated retries; "
+                          "use authorized web_search or request manual verification.";
+        }
         else if (r.path == "/screenshot.png" ||
                  r.path == "/screenshot.jpg") {
           Val p = Val::object();

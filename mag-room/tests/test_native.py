@@ -974,6 +974,14 @@ class Native(unittest.TestCase):
   for bad in ('confirm(','alert(','prompt('):
    self.assertNotIn(bad,html)
 
+ def test_11z_main_browser_focus_navigation_contract(self):
+  html=self.request('/',raw=True).decode()
+  for needle in ("function focusBot(", "card.onclick=e=>", "card.onkeydown=e=>",
+                 "card.classList.toggle('active'", "sessionStorage.setItem('mag-focused-bot'",
+                 "browser('state',{})", "id=\"browser-access\"", "can_go_back",
+                 "can_go_forward"):
+   self.assertIn(needle,html)
+
 class SingleBot(unittest.TestCase):
  """MAG_ROOM_SINGLE_BOT: exactly one bot; other stored bots are parked, never lost."""
  @classmethod

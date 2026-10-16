@@ -1517,7 +1517,9 @@ static const char *FRONTEND_RULES =
     "per share_room_file teilst, oeffnen sich automatisch in deinem Browser und "
     "erscheinen als Vorschau im Chat. Bei Captcha/\"ungewoehnlicher Traffic\"-Seiten: "
     "NICHT loesen oder umgehen, sondern abbrechen und dem Nutzer Bescheid geben (oder "
-    "eine andere Quelle/die Websuche nehmen). [Frontend-Wartung] Du kannst die "
+    "eine andere Quelle/die Websuche nehmen). Bei Bedarf zuerst das autorisierte "
+    "web_search nutzen und konkrete Quellen im vorhandenen Browser aufrufen. "
+    "[Frontend-Wartung] Du kannst die "
     "Raum-Oberflaeche verbessern: screenshot_room (UI pruefen), "
     "download_frontend, mit run_command editieren, publish_frontend (alle "
     "laden neu), screenshot_room zur Kontrolle.";

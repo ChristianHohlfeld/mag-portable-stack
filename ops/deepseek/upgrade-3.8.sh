@@ -45,6 +45,9 @@ unlock() { install -d /run/systemd/system/mag-llm.service.d
            printf '[Unit]\nRefuseManualStop=no\n' > /run/systemd/system/mag-llm.service.d/99-upgrade.conf; systemctl daemon-reload; }
 relock() { rm -f /run/systemd/system/mag-llm.service.d/99-upgrade.conf; systemctl daemon-reload; }
 VARIANT_DROPIN=${MAG_TEST_DROPIN:-/etc/systemd/system/mag-llm.service.d/60-mag-variant.conf}   # aus 3.7; ab 3.8 nie gesetzt
+# mag-Fix (Ali, 16.10.): seit 9e7bbcc läuft ik per Drop-in 50-ik.conf; der überschreibt ExecStart der gerenderten Unit.
+IK_DROPIN=${MAG_TEST_IK_DROPIN:-/etc/systemd/system/mag-llm.service.d/50-ik.conf}
+MIN_AVAIL_GIB=${MAG_UPGRADE_MIN_AVAIL_GIB:-40}
 
 wait_ready() {   # $1 = Sekunden
   local deadline=$((SECONDS + $1)) last=0 code r0 r
@@ -68,6 +71,7 @@ restore() {   # $1 = Exit-Code danach
   cp -a "$BACKUP/mag-llm.service" "$UNIT"
   if [[ -f "$BACKUP/60-mag-variant.conf" ]]; then cp -a "$BACKUP/60-mag-variant.conf" "$VARIANT_DROPIN"; else rm -f "$VARIANT_DROPIN"; fi
   if [[ -f "$BACKUP/llm.env" ]]; then cp -a "$BACKUP/llm.env" "$MAG_LLM_ENV"; else rm -f "$MAG_LLM_ENV"; fi
+  if [[ -f "$BACKUP/50-ik.conf" ]]; then cp -a "$BACKUP/50-ik.conf" "$IK_DROPIN"; fi
   unlock; systemctl restart mag-llm.service; relock
   if wait_ready 7200; then echo "Stand vor 3.8 läuft wieder. Log: $LOG"; else echo "Stand vor 3.8 nicht bereit – journalctl -u mag-llm prüfen"; exit 1; fi
   exit "$rc"
@@ -77,7 +81,7 @@ restore() {   # $1 = Exit-Code danach
 start_ik() {
   local name=$1 rtr=$2 ikenv=$3 ikargs=$4 th=$5 tb=$6 t0=$SECONDS since
   echo "   Neustart: $name (rtr=$rtr${ikenv:+, $ikenv}${ikargs:+, $ikargs}, threads $th/$tb)"
-  rm -f "$VARIANT_DROPIN"
+  rm -f "$VARIANT_DROPIN" "$IK_DROPIN"
   ENGINE=ik IK_BIN=$IK_NEW IK_RTR=$rtr IK_ENV=${ikenv:--} IK_ARGS=${ikargs:--} NUMA_ARGS=- LLAMA_NUMA=- \
     THREADS=$th THREADS_BATCH=$tb render_unit "$UNIT" || return 1
   since=$(date '+%Y-%m-%d %H:%M:%S')
@@ -184,7 +188,19 @@ install -d -o chris -g chris "$BACKUP"
 cp -aL "$UNIT" "$BACKUP/mag-llm.service"
 [[ -f "$MAG_LLM_ENV" ]] && cp -a "$MAG_LLM_ENV" "$BACKUP/llm.env"
 [[ -f "$VARIANT_DROPIN" ]] && cp -a "$VARIANT_DROPIN" "$BACKUP/60-mag-variant.conf"
+[[ -f "$IK_DROPIN" ]] && cp -a "$IK_DROPIN" "$BACKUP/50-ik.conf"
 echo "   $BACKUP"
+# mag-Fix: RAM-Watchdog. Fällt MemAvailable unter MIN_AVAIL_GIB, wird das Upgrade abgebrochen und auf den
+# Stand vor 3.8 zurückgesetzt (der Pin bleibt unberührt, kein drop_caches).
+( while kill -0 $$ 2>/dev/null; do
+    a=$(awk '/^MemAvailable:/{print int($2/1048576)}' /proc/meminfo)
+    if (( a < MIN_AVAIL_GIB )); then
+      echo "!! WATCHDOG: MemAvailable ${a} GiB < ${MIN_AVAIL_GIB} GiB – Abbruch + Rollback"
+      kill -TERM $$ 2>/dev/null; sleep 2
+      bash "$SRC/ops/deepseek/upgrade-3.8.sh" --rollback "$BACKUP"; exit 0
+    fi
+    sleep 5
+  done ) &
 llm_config_load
 BASE_T=$THREADS; BASE_TB=$THREADS_BATCH
 echo "   bisher: ENGINE=$ENGINE threads $BASE_T/$BASE_TB batch $BATCH/$UBATCH"

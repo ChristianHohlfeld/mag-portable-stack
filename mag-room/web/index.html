@@ -171,6 +171,13 @@ html,body{overflow-x:hidden;max-width:100vw}
 .q-now:hover,.q-btn:hover{background:var(--hover)}.q-now{border-color:color-mix(in srgb,var(--accent),var(--line) 55%)}
 #conversation img{cursor:zoom-in}
 @media(max-width:850px){.q-icon,.q-now,.q-btn{min-height:40px;height:40px}.q-icon{width:40px}}
+.message.user.other{margin-left:0;margin-right:auto;align-items:flex-start}
+.message.user.other .meta{padding-right:0;padding-left:3px}
+.message.user.other .content{border-radius:5px 17px 17px 17px}
+.message.user.other .message-tools{justify-content:flex-start}
+#you-badge{max-width:34vw;overflow:hidden;text-overflow:ellipsis}
+.q-who{flex:none;max-width:88px;overflow:hidden;text-overflow:ellipsis;font-size:11px;color:var(--muted)}
+@media(max-width:600px){#you-badge{max-width:26vw;font-size:10px;padding:6px 8px}.message.user.other{max-width:91%}}
 .q-chip{gap:6px;touch-action:pan-y}.q-chip.dragging{opacity:.5;border-color:var(--sb-red)}.q-chip.drop-before{box-shadow:inset 0 3px var(--sb-red)}.q-grip{cursor:grab;touch-action:none;user-select:none;font-size:18px;color:var(--muted);padding:0 6px;min-height:34px;display:grid;place-items:center}.q-grip:active{cursor:grabbing}.q-step{width:30px;min-width:30px;padding:0;font-size:15px}#stop-generation{display:none!important}
 .photo-preview{display:flex;gap:9px;flex-wrap:wrap;padding:8px 0}.photo-card{position:relative;width:80px;height:80px;border-radius:10px;overflow:hidden;border:1px solid var(--line);background:var(--panel)}.photo-card img{width:100%;height:100%;object-fit:cover}.photo-card button{position:absolute;right:3px;top:3px;width:26px;height:26px;border-radius:50%;background:var(--surface);color:var(--text);border:1px solid var(--line);font-size:16px}
 #send-button.is-stop{min-width:40px;padding-inline:10px}.sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
@@ -677,10 +684,12 @@ function append(msg,scroll=true,trace=null,position=-1){
  const area=$('conversation');let inner=area.querySelector('.conversation-inner');
  if(!inner){inner=document.createElement('div');inner.className='conversation-inner';area.append(inner)}
  inner.querySelector('.empty')?.remove();
- const div=document.createElement('article');div.className='message '+(msg.role==='user'?'user':'assistant');div.dataset.id=msg.id||'';
+ const mine=isMine(msg),human=msg.role==='user';
+ const div=document.createElement('article');div.className='message '+(human?'user'+(mine?' mine':' other'):'assistant');div.dataset.id=msg.id||'';
  const meta=document.createElement('div');meta.className='meta';
- const avatar=document.createElement('span');avatar.className='avatar';avatar.textContent=msg.role==='user'?'Du':(msg.name||'Bot').trim().slice(0,1).toUpperCase();
- const name=document.createElement('strong');name.textContent=msg.name||(msg.role==='user'?'Du':'Bot');
+ const avatar=document.createElement('span');avatar.className='avatar';avatar.textContent=human?initials(msg.name||'Nutzer'):(msg.name||'Bot').trim().slice(0,1).toUpperCase();
+ if(human&&!mine){avatar.style.background=avatarColor(msg.login||msg.name||'Gast');avatar.style.color='#fff'}
+ const name=document.createElement('strong');name.textContent=msg.name||(human?'Nutzer':'Bot');
  const time=document.createElement('time');const date=new Date((msg.ts||Date.now()/1000)*1000);time.textContent=date.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
  meta.append(avatar,name,time);if(msg.id){const trash=document.createElement('button');trash.type='button';trash.className='msg-trash';trash.title='Nachricht löschen';trash.setAttribute('aria-label','Nachricht löschen');trash.innerHTML='<svg class="i sm" aria-hidden="true"><use href="#ic-trash"></use></svg>';trash.onclick=()=>askDeleteMessage(msg);meta.append(trash)}div.append(meta);
  const content=document.createElement('div');content.className='content';content.innerHTML=safeMarkdown(msg.content);decorate(content);
@@ -759,8 +768,9 @@ function ensureWork(node,s){
 setInterval(()=>{const now=Date.now();for(const id of Object.keys(streams)){const s=streams[id];if(!s)continue;const hung=!s.error&&now-(s.lastEvent||s.started||now)>60000;if(hung!==!!s.hung){s.hung=hung;updateStream(id,true);continue}const label=s.node?.querySelector?.('.work-label');if(label&&s.node.classList.contains('work-live'))label.textContent=workLabelText(s)}},1000);
 
 function streamControls(){
- const running=Object.keys(streams).length>0;
+ const running=Object.keys(streams).length>0&&can('stop');
  $('stop-generation').classList.toggle('active',running);
+ $('stop-generation').hidden=!running;
  $('stop-generation').setAttribute('aria-hidden',String(!running));
 }
 function renderPromptProgress(s,node){
@@ -1471,7 +1481,7 @@ function schedText(s){s=s||{};const U={m:'Min.',h:'Std.',d:'Tage',w:'Wochen',s:'
  if(s.type==='monthly')return 'monatlich am '+s.day+'. '+s.time;
  if(s.type==='once')return 'einmalig '+(s.at||'').replace('T',' ');
  return 'nur Webhook/manuell'}
-async function loadJobs(){try{jobsState=await api('/api/jobs',undefined,'GET');renderJobs()}catch(e){}}
+async function loadJobs(){if(state.you&&!can('jobs')){$('jobs-section').hidden=true;return}try{jobsState=await api('/api/jobs',undefined,'GET');renderJobs()}catch(e){}}
 function renderJobs(){const box=$('jobs');if(!box)return;box.replaceChildren();
  if(!jobsState.jobs.length){const p=document.createElement('p');p.className='control-desc';p.textContent='Noch keine Jobs.';box.append(p);return}
  for(const j of jobsState.jobs){const el=document.createElement('div');el.className='job';

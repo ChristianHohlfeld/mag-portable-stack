@@ -612,6 +612,22 @@ static void route(int fd, Req &r, bool bridge = false) {
     bool interrupt = false;
     if (auto in = body.find("interrupt"); in && in->type == Val::BOOL)
       interrupt = in->asBool();
+    bool has_pending;
+    {
+      std::lock_guard<std::mutex> lk(JOB_MTX);
+      has_pending = !PENDING.empty();
+    }
+    if ((BUSY.load() || has_pending) && !interrupt) {
+      // Not in the transcript yet: shown as a queue chip, dispatched later.
+      Val item = enqueue_pending(str("text"), ids, think);
+      JOB_CV.notify_all();
+      Val out = Val::object();
+      out["accepted"] = true;
+      out["queued"] = true;
+      out["item"] = item;
+      send_json(fd, 202, mj::dump(out));
+      return;
+    }
     Val msg = append_room("user", "Nutzer", str("text"));
     msg["type"] = "message";
     publish(mj::dump(msg));
@@ -619,6 +635,33 @@ static void route(int fd, Req &r, bool bridge = false) {
     schedule(ids, think, interrupt);
     send_json(fd, 202, queued ? "{\"accepted\":true,\"queued\":true}"
                               : "{\"accepted\":true}");
+    return;
+  }
+  if (path == "/api/queue" || path.rfind("/api/queue/", 0) == 0) {
+    std::string rest = path.size() > 11 ? path.substr(11) : "";
+    if (path == "/api/queue" && m == "GET") {
+      std::lock_guard<std::mutex> lk(JOB_MTX);
+      send_json(fd, 200, mj::dump(queue_view_locked()));
+      return;
+    }
+    if (path == "/api/queue" && m == "DELETE") { queue_clear(); send_json(fd, 200, "{\"ok\":true}"); return; }
+    if (rest == "merge" && m == "POST") {
+      if (!queue_merge()) { error_json(fd, 409, "Nichts zum Zusammenführen"); return; }
+      send_json(fd, 200, "{\"ok\":true}"); return;
+    }
+    if (rest == "resume" && m == "POST") { queue_resume(); send_json(fd, 200, "{\"ok\":true}"); return; }
+    std::string qid = rest, action;
+    if (auto sl = rest.find('/'); sl != std::string::npos) { qid = rest.substr(0, sl); action = rest.substr(sl + 1); }
+    bool ok = false;
+    if (action == "now" && m == "POST") ok = queue_send_now(qid);
+    else if (action.empty() && m == "DELETE") ok = queue_delete(qid);
+    else if (action.empty() && m == "PUT") {
+      std::string text = has_json ? trim(str("text")) : "";
+      if (text.empty() || text.size() > 32768) { error_json(fd, 400, "Text required (max 32 KiB)"); return; }
+      ok = queue_edit(qid, text);
+    } else { error_json(fd, 405, "Method not allowed"); return; }
+    if (!ok) { error_json(fd, 404, "Unbekannter Eintrag"); return; }
+    send_json(fd, 200, "{\"ok\":true}");
     return;
   }
   if (m == "POST" && path == "/api/autotalk") {

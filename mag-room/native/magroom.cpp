@@ -2674,8 +2674,54 @@ static Job val_job(const Val &v) {
   if (auto t = v.find("think")) j.think = (int)t->asNum(-1);
   return j;
 }
+// Messages sent while a reply runs: NOT in the transcript yet (history stays
+// append-only and cache-stable). Dispatched in order after the current turn,
+// or immediately via "Jetzt senden" (clean stop at a token boundary).
+struct Pending {
+  std::string id, text;
+  std::vector<std::string> ids;
+  int think = -1;
+  long ts = 0;
+};
+static std::deque<Pending> PENDING;
+static bool QUEUE_PAUSED = false;
+static Val pending_val(const Pending &p) {
+  Val o = Val::object();
+  o["id"] = p.id;
+  o["text"] = p.text;
+  Val ids = Val::array();
+  for (auto &i : p.ids) ids.push(Val(i));
+  o["bots"] = ids;
+  o["think"] = (double)p.think;
+  o["ts"] = (double)p.ts;
+  return o;
+}
+static Pending val_pending(const Val &v) {
+  Pending p;
+  if (auto x = v.find("id")) p.id = x->asStr();
+  if (auto x = v.find("text")) p.text = x->asStr();
+  if (auto x = v.find("bots"); x && x->isArr())
+    for (auto &i : x->asArr()) p.ids.push_back(i.asStr());
+  if (auto x = v.find("think")) p.think = (int)x->asNum(-1);
+  if (auto x = v.find("ts")) p.ts = (long)x->asNum(0);
+  return p;
+}
+static Val queue_view_locked() {
+  Val o = Val::object();
+  Val arr = Val::array();
+  for (auto &p : PENDING) arr.push(pending_val(p));
+  o["pending"] = arr;
+  o["paused"] = QUEUE_PAUSED;
+  return o;
+}
 static void save_queue_locked() {
   Val q = Val::object();
+  {
+    Val pend = Val::array();
+    for (auto &p : PENDING) pend.push(pending_val(p));
+    q["pending"] = pend;
+    q["paused"] = QUEUE_PAUSED;
+  }
   Val jobs = Val::array();
   for (auto &j : JOBS) jobs.push(job_val(j));
   q["jobs"] = jobs;
@@ -2683,6 +2729,11 @@ static void save_queue_locked() {
   const std::string f = STATE_DIR + "/queue.json";
   write_file(f + ".tmp", mj::dump(q));
   rename((f + ".tmp").c_str(), f.c_str());
+}
+static void queue_event_locked() {
+  Val e = queue_view_locked();
+  e["type"] = "queue";
+  publish(mj::dump(e));
 }
 static std::atomic<uint64_t> EPOCH{0};
 static std::string AUTO_OWNER, AUTO_LAST_PROGRESS;
@@ -2732,6 +2783,83 @@ static void schedule(const std::vector<std::string> &ids, int think = -1,
   }
   JOB_CV.notify_all();
 }
+// Queue API (routes.hpp). All return false if the id is unknown.
+static Val enqueue_pending(const std::string &text,
+                           const std::vector<std::string> &ids, int think) {
+  std::lock_guard<std::mutex> lk(JOB_MTX);
+  Pending p;
+  p.id = token_hex(8);
+  p.text = text;
+  p.ids = ids;
+  p.think = think;
+  p.ts = (long)now_s();
+  PENDING.push_back(p);
+  QUEUE_PAUSED = false;
+  save_queue_locked();
+  queue_event_locked();
+  return pending_val(p);
+}
+static bool queue_edit(const std::string &id, const std::string &text) {
+  std::lock_guard<std::mutex> lk(JOB_MTX);
+  for (auto &p : PENDING)
+    if (p.id == id) { p.text = text; save_queue_locked(); queue_event_locked(); return true; }
+  return false;
+}
+static bool queue_delete(const std::string &id) {
+  std::lock_guard<std::mutex> lk(JOB_MTX);
+  for (auto it = PENDING.begin(); it != PENDING.end(); ++it)
+    if (it->id == id) {
+      PENDING.erase(it);
+      if (PENDING.empty()) QUEUE_PAUSED = false;
+      save_queue_locked(); queue_event_locked(); JOB_CV.notify_all();
+      return true;
+    }
+  return false;
+}
+static void queue_clear() {
+  std::lock_guard<std::mutex> lk(JOB_MTX);
+  PENDING.clear();
+  QUEUE_PAUSED = false;
+  save_queue_locked(); queue_event_locked();
+}
+static void queue_resume() {
+  { std::lock_guard<std::mutex> lk(JOB_MTX); QUEUE_PAUSED = false; save_queue_locked(); queue_event_locked(); }
+  JOB_CV.notify_all();
+}
+static bool queue_merge() {
+  std::lock_guard<std::mutex> lk(JOB_MTX);
+  if (PENDING.size() < 2) return false;
+  Pending first = PENDING.front();
+  for (size_t i = 1; i < PENDING.size(); ++i)
+    first.text += "\n\n" + PENDING[i].text;
+  if (first.text.size() > 32768) return false;
+  PENDING.clear();
+  PENDING.push_back(first);
+  save_queue_locked(); queue_event_locked();
+  return true;
+}
+// "Jetzt senden": move to the front, stop the running turn cleanly (token
+// boundary; a running tool step finishes first), then the item is dispatched
+// as the next regular turn.
+static bool queue_send_now(const std::string &id) {
+  {
+    std::lock_guard<std::mutex> lk(JOB_MTX);
+    auto it = PENDING.begin();
+    for (; it != PENDING.end(); ++it)
+      if (it->id == id) break;
+    if (it == PENDING.end()) return false;
+    Pending p = *it;
+    PENDING.erase(it);
+    PENDING.push_front(p);
+    QUEUE_PAUSED = false;
+    JOBS.clear(); // no other turn may sneak in before it
+    AUTO_READY = false;
+    save_queue_locked(); queue_event_locked();
+  }
+  if (BUSY.load()) cancel_active();
+  JOB_CV.notify_all();
+  return true;
+}
 static std::string other_name(int idx) {
   std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
   for (size_t i = 0; i < AGENTS.size(); i++)
@@ -2773,6 +2901,25 @@ static TurnReport generate_and_post(int idx, bool automatic) {
     }
   } else {
     report.continue_requested = false;
+    // Clean interruption: keep what was streamed (content only, never the
+    // reasoning or half tool calls) as a closed assistant message, so the
+    // transcript stays valid and only grows at its end (prompt cache).
+    std::string partial = trim(report.text);
+    if (partial.rfind("Antwort fehlgeschlagen", 0) == 0) partial.clear();
+    Val msg = append_room("assistant", name,
+                          partial.empty() ? "(unterbrochen)"
+                                          : partial + "\n\n(unterbrochen)",
+                          id);
+    {
+      std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
+      for (auto it = ROOM.rbegin(); it != ROOM.rend(); ++it)
+        if (it->find("id") && msg.find("id") &&
+            it->find("id")->asStr() == msg.find("id")->asStr()) {
+          (*it)["interrupted"] = true;
+          break;
+        }
+      save_room();
+    }
     Val e = Val::object();
     e["type"] = "cancelled";
     e["bot"] = id;
@@ -2788,10 +2935,25 @@ static void scheduler_loop() {
       std::unique_lock<std::mutex> lk(JOB_MTX);
       JOB_CV.wait(lk, [] {
         return SHUTDOWN.load() || !JOBS.empty() ||
+               (!PENDING.empty() && !QUEUE_PAUSED) ||
                (AUTOTALK.load() && AUTO_READY);
       });
       if (SHUTDOWN.load())
         break;
+      if (JOBS.empty() && !PENDING.empty() && !QUEUE_PAUSED) {
+        // Dispatch the next queued message as a regular new user turn.
+        Pending p = PENDING.front();
+        PENDING.pop_front();
+        Val msg = append_room("user", "Nutzer", p.text);
+        msg["type"] = "message";
+        publish(mj::dump(msg));
+        JOBS.push_back(Job{p.ids, p.think});
+        AUTO_OWNER = p.ids.empty() ? "" : p.ids.front();
+        AUTO_LAST_PROGRESS.clear();
+        AUTO_TURNS_LEFT = AUTO_MAX_TURNS;
+        AUTO_READY = false;
+        queue_event_locked();
+      }
       if (!JOBS.empty()) {
         ACTIVE_JOB = JOBS.front();
         ACTIVE_SET = true;
@@ -2880,6 +3042,10 @@ static void stop_autotalk() {
     std::lock_guard<std::mutex> lk(JOB_MTX);
     JOBS.clear();
     ACTIVE_SET = false;
+    if (!PENDING.empty()) {
+      QUEUE_PAUSED = true; // Stop only stops; the queue waits for the user.
+      queue_event_locked();
+    }
     save_queue_locked();
     AUTO_READY = false;
     AUTO_OWNER.clear();
@@ -2993,7 +3159,10 @@ static std::string state_json() {
   root["busy"] = BUSY.load();
   {
     std::lock_guard<std::mutex> lk(JOB_MTX);
-    root["queue"] = (double)JOBS.size();
+    root["queue"] = (double)(JOBS.size() + PENDING.size());
+    Val qv = queue_view_locked();
+    root["pending"] = *qv.find("pending");
+    root["queue_paused"] = QUEUE_PAUSED;
   }
   root["backend"] = BACKEND_HOST + ":" + std::to_string(BACKEND_PORT);
   root["model"] = MODEL;
@@ -3189,6 +3358,12 @@ int main() {
     std::string raw = read_file(STATE_DIR + "/queue.json", &ok);
     if (ok && mj::parse(raw, q) && q.isObj()) {
       std::lock_guard<std::mutex> lk(JOB_MTX);
+      if (auto pend = q.find("pending"); pend && pend->isArr())
+        for (auto &x : pend->asArr()) {
+          Pending pp = val_pending(x);
+          if (!pp.id.empty() && !pp.text.empty()) PENDING.push_back(pp);
+        }
+      if (auto pz = q.find("paused")) QUEUE_PAUSED = pz->asBool(false);
       if (auto jobs = q.find("jobs"); jobs && jobs->isArr())
         for (auto &j : jobs->asArr()) {
           Job job = val_job(j);

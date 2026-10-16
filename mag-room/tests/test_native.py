@@ -25,6 +25,8 @@ class Model(http.server.BaseHTTPRequestHandler):
    scripted=type(self).script.pop(0) if type(self).script else None
    chunks=scripted if scripted is not None else ([type(self).reply] if type(self).reply is not None else ['Hallo ','aus dem ','Modell.'])
    for piece in chunks:
+    if isinstance(piece,dict) and '_sleep' in piece:
+     time.sleep(piece['_sleep']);continue
     if isinstance(piece,dict) and '_chunk' in piece:event=json.dumps(piece['_chunk']).encode()
     else:
      delta=piece if isinstance(piece,dict) else {'content':piece}
@@ -147,7 +149,7 @@ class Native(unittest.TestCase):
    time.sleep(.02)
   r=self.request('/api/message',{'text':'Zweite Frage','bots':['test']});self.assertTrue(r.get('queued'))
   st=self.request('/api/state');self.assertEqual(st['queue'],1)
-  q=json.loads(self.state.joinpath('queue.json').read_text());self.assertIn('active',q);self.assertEqual(len(q['jobs']),1)
+  q=json.loads(self.state.joinpath('queue.json').read_text());self.assertIn('active',q);self.assertEqual(len(q['pending']),1)
   self.proc.kill();self.proc.wait(timeout=5);self.log.close();Model.delay=0;self.start()
   for _ in range(200):
    s=self.request('/api/state')
@@ -157,6 +159,85 @@ class Native(unittest.TestCase):
   self.assertTrue(any('unterbrochen' in t for t in texts),'interrupted turn must be marked')
   self.assertEqual(s['queue'],0);self.assertFalse(s['busy'])
   q=json.loads(self.state.joinpath('queue.json').read_text());self.assertNotIn('active',q);self.assertEqual(q['jobs'],[])
+
+ # ---------------- queue / "Jetzt senden"
+ def _busy(self):
+  for _ in range(200):
+   if self.request('/api/state')['busy']:return
+   time.sleep(.02)
+  self.fail('never busy')
+ def _settle(self,pred,n=300):
+  for _ in range(n):
+   s=self.request('/api/state')
+   if pred(s):return s
+   time.sleep(.05)
+  self.fail('condition not reached: '+json.dumps(s)[:600])
+ def _slow(self,kind,steps=40):
+  pieces=[]
+  for i in range(steps):
+   pieces.append({'reasoning_content':'denke %d '%i} if kind=='think' else 'Wort%d '%i);pieces.append({'_sleep':.1})
+  return pieces
+ def _roles_ok(self,msgs):
+  roles=[m['role'] for m in msgs]
+  self.assertEqual(roles[0],'system')
+  for i,m in enumerate(msgs):
+   if m['role']=='tool':self.assertEqual(msgs[i-1]['role'] in('assistant','tool'),True)
+   if m['role']=='assistant' and m.get('tool_calls'):
+    ids={c['id'] for c in m['tool_calls']};got={x.get('tool_call_id') for x in msgs[i+1:i+1+len(ids)]}
+    self.assertEqual(ids,got,'orphaned tool call')
+  self.assertEqual(roles[-1],'user')
+ def test_15a_queue_while_thinking_then_auto(self):
+  self.wait_idle();Model.calls.clear();Model.script=[self._slow('think',15)+['Erste Antwort.'],['Zweite Antwort.']]
+  self.request('/api/message',{'text':'Q-Eins','bots':['test']});self._busy()
+  r=self.request('/api/message',{'text':'Q-Zwei','bots':['test']});self.assertTrue(r['queued']);qid=r['item']['id']
+  st=self.request('/api/state');self.assertEqual([p['id'] for p in st['pending']],[qid])
+  self.assertFalse(any(m.get('content')=='Q-Zwei' for m in st['room']),'queued message must not enter history early')
+  s=self._settle(lambda s:not s['busy'] and not s['pending'] and s['room'][-1].get('content')=='Zweite Antwort.')
+  txt=[m.get('content') for m in s['room']][-4:];self.assertEqual(txt,['Q-Eins','Erste Antwort.','Q-Zwei','Zweite Antwort.'])
+ def test_15b_send_now_while_thinking(self):
+  self.wait_idle();Model.script=[self._slow('think'),['Sofort.']]
+  self.request('/api/message',{'text':'N-Eins','bots':['test']});self._busy();time.sleep(.5)
+  r=self.request('/api/message',{'text':'N-Zwei','bots':['test']});self.request('/api/queue/'+r['item']['id']+'/now',{})
+  s=self._settle(lambda s:not s['busy'] and not s['pending'] and s['room'][-1].get('content')=='Sofort.')
+  tail=s['room'][-4:];self.assertEqual(tail[0]['content'],'N-Eins');self.assertEqual(tail[1]['content'],'(unterbrochen)');self.assertTrue(tail[1].get('interrupted'))
+  self.assertEqual(tail[2]['content'],'N-Zwei')
+  last=Model.calls[-1]['messages'];self._roles_ok(last);self.assertNotIn('denke',json.dumps(last),'partial reasoning must not leak into history')
+ def test_15c_send_now_during_output_keeps_partial_and_prefix(self):
+  self.wait_idle();Model.calls.clear();Model.script=[self._slow('out'),['Danach.']]
+  self.request('/api/message',{'text':'O-Eins','bots':['test']});self._busy();time.sleep(1.0)
+  r=self.request('/api/message',{'text':'O-Zwei','bots':['test']});self.request('/api/queue/'+r['item']['id']+'/now',{})
+  s=self._settle(lambda s:not s['busy'] and s['room'][-1].get('content')=='Danach.')
+  part=s['room'][-3];self.assertTrue(part['content'].startswith('Wort0 '));self.assertTrue(part['content'].endswith('(unterbrochen)'))
+  a,b=Model.calls[-2]['messages'],Model.calls[-1]['messages']
+  ja,jb=json.dumps(a[:1]),json.dumps(b[:1]);self.assertEqual(ja,jb,'system prompt must stay identical (cache prefix)')
+  ua=a[-1]['content'];ub=b[-1]['content'];k=ua.find('[Kontext]') if '[Kontext]' in ua else len(ua)
+  self.assertTrue(ub.startswith(ua[:k].rstrip()[:max(0,k-1)]),'history must only grow at its end')
+  self._roles_ok(b)
+ def test_15d_send_now_during_tool_call(self):
+  self.wait_idle();Model.calls.clear()
+  Model.script=[[{'tool_calls':[{'index':0,'id':'call_q1','function':{'name':'remember','arguments':'{"fact":"Queue-Tool"}'}}]}],self._slow('out'),['Nach Tool.']]
+  self.request('/api/message',{'text':'T-Eins','bots':['test']});self._busy()
+  for _ in range(100):
+   if len(Model.calls)>=2:break
+   time.sleep(.02)
+  r=self.request('/api/message',{'text':'T-Zwei','bots':['test']});self.request('/api/queue/'+r['item']['id']+'/now',{})
+  s=self._settle(lambda s:not s['busy'] and s['room'][-1].get('content')=='Nach Tool.')
+  self.assertIn('unterbrochen',s['room'][-3]['content']);self._roles_ok(Model.calls[-1]['messages'])
+  self.assertNotIn('call_q1',json.dumps(Model.calls[-1]['messages']),'tool calls of the interrupted turn must not be carried over')
+ def test_15e_queue_edit_delete_merge_stop_and_persist(self):
+  self.wait_idle();Model.script=[self._slow('out',60)]
+  self.request('/api/message',{'text':'P-Eins','bots':['test']});self._busy()
+  ids=[self.request('/api/message',{'text':t,'bots':['test']})['item']['id'] for t in ['P-a','P-b','P-c']]
+  self.request('/api/queue/'+ids[0],{'text':'P-A'},method='PUT');self.request('/api/queue/'+ids[2],method='DELETE')
+  self.assertEqual([p['text'] for p in self.request('/api/state')['pending']],['P-A','P-b'])
+  self.request('/api/stop',{});s=self.wait_idle();self.assertEqual(len(s['pending']),2,'stop must not clear the queue');self.assertTrue(s['queue_paused'])
+  self.proc.kill();self.proc.wait(timeout=5);self.log.close();self.start()
+  s=self.request('/api/state');self.assertEqual([p['text'] for p in s['pending']],['P-A','P-b']);self.assertTrue(s['queue_paused'])
+  self.request('/api/queue/merge',{});s=self.request('/api/state');self.assertEqual([p['text'] for p in s['pending']],['P-A\n\nP-b'])
+  Model.script=[['Zusammen.']];self.request('/api/queue/resume',{})
+  s=self._settle(lambda s:not s['busy'] and not s['pending'] and s['room'][-1].get('content')=='Zusammen.')
+  self.assertEqual(s['room'][-2]['content'],'P-A\n\nP-b')
+  self.request('/api/queue',method='DELETE')
  def test_08_idle_autonomy_does_not_make_up_work(self):
   self.request('/api/autotalk',{'on':True})
   calls_before=len(Model.calls)
@@ -321,16 +402,16 @@ class Native(unittest.TestCase):
    self.assertTrue(r3.get('queued'))
    for _ in range(200):
     s=self.request('/api/state')
-    if not s['busy'] and len(Model.calls)>=before+2:break
+    if not s['busy'] and len(Model.calls)>=before+3:break
     time.sleep(.05)
    time.sleep(.3)
-   self.assertEqual(len(Model.calls),before+2,'Queued messages for the same bot are merged into one turn')
+   self.assertEqual(len(Model.calls),before+3,"Queued messages run in order, one turn each (merge is explicit)")
    answers=[m for m in self.request('/api/state')['room'] if m.get('role')=='assistant' and m.get('content')=='Hallo aus dem Modell.']
    self.assertGreaterEqual(len(answers),2,'The running turn must finish instead of being aborted')
    last=Model.calls[-1]['messages'][1]['content']
    self.assertIn('Zweite Frage',last);self.assertIn('Dritte Frage',last)
    html=self.request('/',raw=True).decode()
-   self.assertIn("event.type==='queued'",html);self.assertIn('r&&r.queued',html)
+   self.assertIn("event.type==='queue'",html);self.assertIn('queue-chips',html);self.assertIn('Jetzt senden',html);self.assertNotIn('Eingereiht',html)
   finally:Model.delay=0
  def test_09m_interrupt_still_aborts(self):
   Model.delay=2

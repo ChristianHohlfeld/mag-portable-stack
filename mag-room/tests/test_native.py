@@ -1,6 +1,8 @@
 """Isolated native integration checks. Uses temporary state and a fake model."""
 import http.server,json,os,pathlib,socket,subprocess,tempfile,threading,time,unittest,urllib.request,urllib.error
 ROOT=pathlib.Path(__file__).resolve().parents[2]
+NETMODE=pathlib.Path(tempfile.mkdtemp(prefix='magnet-'))/'netmode.sh';NETLOG=NETMODE.with_suffix('.log')
+NETMODE.write_text('#!/bin/sh\necho "$1" >> %s\n'%NETLOG);NETMODE.chmod(0o755)
 def port():
  with socket.socket() as s:s.bind(('127.0.0.1',0));return s.getsockname()[1]
 def _ui_token(ui):
@@ -44,7 +46,7 @@ class Native(unittest.TestCase):
   cls.start()
  @classmethod
  def start(cls):
-  env=dict(os.environ,MAG_ROOM_STATE=str(cls.state),MAG_ROOM_PORT=str(cls.ui),MAG_ROOM_BRIDGE_PORT=str(cls.bridge),MAG_ROOM_BRIDGE_IP='127.0.0.1',MAG_ROOM_BACKEND=f'http://127.0.0.1:{cls.model.server_port}/v1/chat/completions',MAG_ROOM_UI=str(ROOT/'mag-room/web/index.html'),MAG_ROOM_STATIC=str(ROOT/'mag-room/static'),MAG_ROOM_AUTOTALK_SLEEP='1',MAG_ROOM_MODEL_STATUS=str(pathlib.Path(cls.tmp.name)/'model-status.json'))
+  env=dict(os.environ,MAG_ROOM_STATE=str(cls.state),MAG_ROOM_PORT=str(cls.ui),MAG_ROOM_BRIDGE_PORT=str(cls.bridge),MAG_ROOM_BRIDGE_IP='127.0.0.1',MAG_ROOM_BACKEND=f'http://127.0.0.1:{cls.model.server_port}/v1/chat/completions',MAG_ROOM_UI=str(ROOT/'mag-room/web/index.html'),MAG_ROOM_STATIC=str(ROOT/'mag-room/static'),MAG_ROOM_AUTOTALK_SLEEP='1',MAG_ROOM_MODEL_STATUS=str(pathlib.Path(cls.tmp.name)/'model-status.json'),MAG_NETMODE=str(NETMODE))
   cls.log=open(pathlib.Path(cls.tmp.name)/'server.log','a');cls.proc=subprocess.Popen([str(ROOT/'build/magroom')],env=env,stdout=cls.log,stderr=cls.log)
   for _ in range(100):
    try:cls.request('/healthz',raw=True);return
@@ -79,8 +81,8 @@ class Native(unittest.TestCase):
   self.error(403,'/api/stop',{},headers={'Content-Type':'application/json','X-MAG-Token':'x'*43})
   self.error(403,'/api/reset',{},headers={'Content-Type':'application/json','X-No-Token':'1'})
   self.error(403,'/api/connectors/github',{'token':'ghp_'+'a'*36},headers={'Content-Type':'application/json','X-No-Token':'1'})
-  self.request('/api/stop',{})
-  self.request('/api/stop',{},headers={'Content-Type':'application/json','X-No-Token':'1','Sec-Fetch-Site':'same-origin'})
+  self.request('/api/stop',{});self.request('/api/queue/resume',{})
+  self.request('/api/stop',{},headers={'Content-Type':'application/json','X-No-Token':'1','Sec-Fetch-Site':'same-origin'});self.request('/api/queue/resume',{})
   self.error(403,'/api/stop',{},headers={'Content-Type':'application/json','X-No-Token':'1','Sec-Fetch-Site':'cross-site'})
   html=self.request('/',raw=True).decode()
   self.assertIn('rel="icon" href="/favicon.svg"',html);self.assertIn('rel="icon" href="/favicon.ico"',html)
@@ -96,13 +98,13 @@ class Native(unittest.TestCase):
   f=self.state/'connectors'/'github.token';self.assertEqual(oct(f.stat().st_mode&0o777),'0o600')
   self.request('/api/connectors/github',method='DELETE');self.assertFalse(self.request('/api/connectors')['github']['connected'])
  def test_02_chunked_model_and_selected_agents(self):
-  self.request('/api/message',{'text':'Test','bots':['test'],'web_search':False})
+  self.request('/api/message',{'text':'Test','bots':['test']})
   for _ in range(100):
    s=self.request('/api/state')
    if any(m.get('content')=='Hallo aus dem Modell.' for m in s['room']):break
    time.sleep(.05)
   else:self.fail('Chunked model response lost')
-  self.assertEqual(Model.calls[-1]['model'],'deepseek-v4-flash-0731');self.assertFalse(s['web']);self.assertTrue(Model.calls[-1]['stream'])
+  self.assertEqual(Model.calls[-1]['model'],'deepseek-v4-flash-0731');self.assertFalse(s['offline']);self.assertTrue(Model.calls[-1]['stream'])
  def test_03_upload_reset_preserves_memory(self):
   self.request('/api/agent/test/remember',{'fact':'Merke mich'})
   f=self.request('/api/upload?name=hello.txt',b'hello')
@@ -136,7 +138,7 @@ class Native(unittest.TestCase):
    if self.request('/api/state')['busy']:break
    time.sleep(.02)
   self.assertTrue(self.request('/api/state')['busy'])
-  start=time.monotonic();self.request('/api/stop',{});s=self.wait_idle();self.assertLess(time.monotonic()-start,1)
+  start=time.monotonic();self.request('/api/stop',{});self.request('/api/queue/resume',{});s=self.wait_idle();self.assertLess(time.monotonic()-start,1)
   self.assertFalse(s['autotalk']);Model.delay=0
  def test_07_persistence(self):
   before=self.request('/api/state');self.proc.terminate();self.proc.wait(timeout=5);self.log.close();self.start();after=self.request('/api/state')
@@ -171,7 +173,7 @@ class Native(unittest.TestCase):
    s=self.request('/api/state')
    if pred(s):return s
    time.sleep(.05)
-  self.fail('condition not reached: '+json.dumps(s)[:600])
+  self.fail('condition not reached: '+json.dumps([(m.get('role'),m.get('content')) for m in s['room'][-5:]])+' busy=%s'%s['busy'])
  def _slow(self,kind,steps=40):
   pieces=[]
   for i in range(steps):
@@ -238,13 +240,57 @@ class Native(unittest.TestCase):
   s=self._settle(lambda s:not s['busy'] and not s['pending'] and s['room'][-1].get('content')=='Zusammen.')
   self.assertEqual(s['room'][-2]['content'],'P-A\n\nP-b')
   self.request('/api/queue',method='DELETE')
+
+ def test_15f_prefix_stable_across_web_toggle_and_memory(self):
+  self.wait_idle();Model.script=[];Model.reply=None;Model.calls.clear()
+  seq=[True,False,True,False]
+  for i,w in enumerate(seq):
+   self.request('/api/offline',{'on':not w});self.request('/api/message',{'text':'Cache-%d'%i,'bots':['test']})
+   for _ in range(200):
+    if len(Model.calls)>i and not self.request('/api/state')['busy']:break
+    time.sleep(.05)
+   if i==1:self.request('/api/agent/test/remember',{'fact':'Zwischendurch gemerkt'})
+  c=Model.calls[-4:];trims=0
+  for a,b in zip(c,c[1:]):
+   self.assertEqual(a['messages'][0],b['messages'][0],'system prompt must be byte-identical')
+   self.assertEqual(json.dumps(a.get('tools')),json.dumps(b.get('tools')),'tool list must be byte-identical')
+   ua=a['messages'][1]['content'];ub=b['messages'][1]['content'];k=ua.index('\n[Kontext]')
+   if ua.split('\n')[1]!=ub.split('\n')[1]:trims+=1;continue  # planned block trim (HISTORY_STEP)
+   d=next((j for j in range(k) if j>=len(ub) or ua[j]!=ub[j]),k);self.assertEqual(d,k,'transcript may only grow at its end: '+repr(ua[max(0,d-150):d+80])+' VS '+repr(ub[max(0,d-150):d+80]))
+  self.assertLessEqual(trims,1)
+  self.assertIn('Netz: OFFLINE',c[-1]['messages'][1]['content']);self.request('/api/offline',{'on':False})
+  self.assertTrue(any(t['function']['name']=='web_search' for t in c[-1]['tools']))
+
+ def test_15g_stop_pauses_permanently(self):
+  self.wait_idle();Model.script=[self._slow('out',60)];self.request('/api/autotalk',{'on':True})
+  self.request('/api/message',{'text':'S-Eins','bots':['test']});self._busy()
+  self.request('/api/message',{'text':'S-Zwei','bots':['test']})
+  self.request('/api/stop',{});s=self.wait_idle();self.assertTrue(s['queue_paused']);self.assertFalse(s['autotalk'])
+  self.proc.kill();self.proc.wait(timeout=5);self.log.close();self.start()
+  n=len(Model.calls);time.sleep(2.5);s=self.request('/api/state')
+  self.assertTrue(s['queue_paused'],'pause survives restart');self.assertEqual(len(Model.calls),n,'nothing may run while paused')
+  self.request('/api/autotalk',{'on':True});r=self.request('/api/message',{'text':'S-Drei','bots':['test']});self.assertTrue(r['queued'])
+  time.sleep(1.5);self.assertEqual(len(Model.calls),n,'neither autonomy nor a new message resumes a pause')
+  Model.script=[];self.request('/api/queue/resume',{})
+  s=self._settle(lambda s:not s['busy'] and not s['pending'] and s['room'][-2].get('content')=='S-Drei')
+  self.assertFalse(s['queue_paused']);self.request('/api/autotalk',{'on':False})
+ def test_15h_offline_is_enforced_and_persistent(self):
+  self.wait_idle();NETLOG.unlink(missing_ok=True)
+  self.request('/api/offline',{'on':True});self.assertEqual(NETLOG.read_text().split(),['offline'])
+  s=self.request('/api/state');self.assertTrue(s['offline'])
+  Model.calls.clear();self.request('/api/message',{'text':'Off-1','bots':['test']})
+  self._settle(lambda s:not s['busy'] and len(Model.calls)>0)
+  u=Model.calls[-1]['messages'][1]['content'];self.assertIn('Netz: OFFLINE',u.split('[Kontext]')[-1])
+  self.proc.kill();self.proc.wait(timeout=5);self.log.close();self.start()
+  self.assertEqual(NETLOG.read_text().split()[-1],'offline','offline re-applied at startup');self.assertTrue(self.request('/api/state')['offline'])
+  self.request('/api/offline',{'on':False});self.assertEqual(NETLOG.read_text().split()[-1],'online');self.assertFalse(self.request('/api/state')['offline'])
  def test_08_idle_autonomy_does_not_make_up_work(self):
   self.request('/api/autotalk',{'on':True})
   calls_before=len(Model.calls)
   time.sleep(1.2)
   self.assertEqual(len(Model.calls),calls_before,'Autonomy should not run without new user work')
   self.assertTrue(self.request('/api/state')['autotalk'],'Keep the enabled switch ON')
-  self.request('/api/stop',{})
+  self.request('/api/stop',{});self.request('/api/queue/resume',{})
  def test_09_task_without_tools_stops_after_one_answer(self):
   Model.reply='Erledigt. [[MAG:WEITER]]'
   try:
@@ -260,7 +306,7 @@ class Native(unittest.TestCase):
    self.assertEqual(len(Model.calls),initial+1,'No tools: never trigger an automatic continuation')
    self.assertTrue(state['autotalk'])
   finally:
-   self.request('/api/stop',{});Model.reply=None
+   self.request('/api/stop',{});self.request('/api/queue/resume',{});Model.reply=None
  # ---- DeepSeek-V4-Flash-0731 integration -------------------------------------------------
  def wait_room(self,needle,loops=240):
   for _ in range(loops):
@@ -424,6 +470,7 @@ class Native(unittest.TestCase):
    r=self.request('/api/message',{'text':'Sofort','bots':['test'],'interrupt':True})
    self.assertFalse(r.get('queued'))
    self.wait_idle()
+   self._settle(lambda s:not s['busy'] and s['room'][-2].get('content')=='Sofort')
    self.assertLess(time.monotonic()-start,4.5)
   finally:Model.delay=0
  def test_10_verified_tool_step_can_continue_once(self):
@@ -438,14 +485,14 @@ class Native(unittest.TestCase):
     bot_messages=[m.get('content','') for m in state['room'] if m.get('role')=='assistant']
     if len(Model.calls)>=initial+3 and 'Arbeit abgeschlossen' in bot_messages:break
     time.sleep(.05)
-   else:self.fail('Verified tool action did not yield one controlled continuation')
+   else:self.fail('Verified tool action did not yield one controlled continuation %d %r'%(len(Model.calls)-initial,bot_messages[-4:]))
    self.assertEqual(len(Model.calls),initial+3)
    self.assertFalse(any('[[MAG:' in x for x in bot_messages),'Do not persist internal markers')
    time.sleep(1.2)
    self.assertEqual(len(Model.calls),initial+3,'Final status must not trigger another bot turn')
    self.assertTrue(state['autotalk'],'Autonomy may remain enabled while idle')
   finally:
-   self.request('/api/stop',{});Model.script=[]
+   self.request('/api/stop',{});self.request('/api/queue/resume',{});Model.script=[]
  def test_11_empty_model_response_never_leaves_a_blank_bot(self):
   Model.reply=''
   try:
@@ -558,7 +605,7 @@ class SingleBot(unittest.TestCase):
   cls.tmp=tempfile.TemporaryDirectory();cls.state=pathlib.Path(cls.tmp.name)/'state';cls.state.mkdir()
   cls.state.joinpath('agents.json').write_text(json.dumps([{'id':'alt','name':'Alter Bot','vm':'','memory':[{'text':'bleibt erhalten'}]}]))
   cls.model=http.server.ThreadingHTTPServer(('127.0.0.1',0),Model);threading.Thread(target=cls.model.serve_forever,daemon=True).start();cls.ui=port();cls.bridge=port()
-  env=dict(os.environ,MAG_ROOM_STATE=str(cls.state),MAG_ROOM_PORT=str(cls.ui),MAG_ROOM_BRIDGE_PORT=str(cls.bridge),MAG_ROOM_BRIDGE_IP='127.0.0.1',MAG_ROOM_BACKEND=f'http://127.0.0.1:{cls.model.server_port}/v1/chat/completions',MAG_ROOM_UI=str(ROOT/'mag-room/web/index.html'),MAG_ROOM_STATIC=str(ROOT/'mag-room/static'),MAG_ROOM_MODEL_STATUS=str(pathlib.Path(cls.tmp.name)/'model-status.json'),MAG_ROOM_SINGLE_BOT='deepseek-chat')
+  env=dict(os.environ,MAG_ROOM_STATE=str(cls.state),MAG_ROOM_PORT=str(cls.ui),MAG_ROOM_BRIDGE_PORT=str(cls.bridge),MAG_ROOM_BRIDGE_IP='127.0.0.1',MAG_ROOM_BACKEND=f'http://127.0.0.1:{cls.model.server_port}/v1/chat/completions',MAG_ROOM_UI=str(ROOT/'mag-room/web/index.html'),MAG_ROOM_STATIC=str(ROOT/'mag-room/static'),MAG_ROOM_MODEL_STATUS=str(pathlib.Path(cls.tmp.name)/'model-status.json'),MAG_NETMODE=str(NETMODE),MAG_ROOM_SINGLE_BOT='deepseek-chat')
   cls.log=open(pathlib.Path(cls.tmp.name)/'server.log','a');cls.proc=subprocess.Popen([str(ROOT/'build/magroom')],env=env,stdout=cls.log,stderr=cls.log)
   for _ in range(100):
    try:Native.request.__func__(cls,'/healthz',raw=True);return
@@ -604,7 +651,7 @@ class SingleBotVM(unittest.TestCase):
   cls.ctl=pathlib.Path(cls.tmp.name)/'ctl';cls.ctl.write_text('#!/bin/sh\necho "$@" >> "$(dirname "$0")/ctl.log"\n');cls.ctl.chmod(0o755)
   cls.state.joinpath('agents.json').write_text(json.dumps([{'id':'alt','name':'Alter Bot','vm':'agent1','memory':[]}]))
   cls.model=http.server.ThreadingHTTPServer(('127.0.0.1',0),Model);threading.Thread(target=cls.model.serve_forever,daemon=True).start();cls.ui=port();cls.bridge=port()
-  env=dict(os.environ,MAG_ROOM_STATE=str(cls.state),MAG_ROOM_PORT=str(cls.ui),MAG_ROOM_BRIDGE_PORT=str(cls.bridge),MAG_ROOM_BRIDGE_IP='127.0.0.1',MAG_ROOM_BACKEND=f'http://127.0.0.1:{cls.model.server_port}/v1/chat/completions',MAG_ROOM_UI=str(ROOT/'mag-room/web/index.html'),MAG_ROOM_STATIC=str(ROOT/'mag-room/static'),MAG_ROOM_MODEL_STATUS=str(pathlib.Path(cls.tmp.name)/'model-status.json'),MAG_ROOM_SINGLE_BOT='deepseek-chat',MAG_ROOM_SINGLE_BOT_VM='on',MAG_ROOM_AGENT_CTL=str(cls.ctl))
+  env=dict(os.environ,MAG_ROOM_STATE=str(cls.state),MAG_ROOM_PORT=str(cls.ui),MAG_ROOM_BRIDGE_PORT=str(cls.bridge),MAG_ROOM_BRIDGE_IP='127.0.0.1',MAG_ROOM_BACKEND=f'http://127.0.0.1:{cls.model.server_port}/v1/chat/completions',MAG_ROOM_UI=str(ROOT/'mag-room/web/index.html'),MAG_ROOM_STATIC=str(ROOT/'mag-room/static'),MAG_ROOM_MODEL_STATUS=str(pathlib.Path(cls.tmp.name)/'model-status.json'),MAG_NETMODE=str(NETMODE),MAG_ROOM_SINGLE_BOT='deepseek-chat',MAG_ROOM_SINGLE_BOT_VM='on',MAG_ROOM_AGENT_CTL=str(cls.ctl))
   cls.log=open(pathlib.Path(cls.tmp.name)/'server.log','a');cls.proc=subprocess.Popen([str(ROOT/'build/magroom')],env=env,stdout=cls.log,stderr=cls.log)
   for _ in range(100):
    try:Native.request.__func__(cls,'/healthz',raw=True);return

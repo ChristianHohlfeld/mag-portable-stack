@@ -75,7 +75,7 @@ rollback() {
 drain_s="${MAG_DEPLOY_DRAIN_S:-900}"; waited=0
 while :; do
   st=$(curl -fsS --max-time 5 http://127.0.0.1:8766/api/state 2>/dev/null \
-       | python3 -c 'import json,sys;d=json.load(sys.stdin);print("%d %d"%(bool(d.get("busy")),int(d.get("queue",0))))' 2>/dev/null || echo "0 0")
+       | python3 -c 'import json,sys;d=json.load(sys.stdin);print("%d %d"%(bool(d.get("busy")),0 if d.get("queue_paused") else int(d.get("queue",0))))' 2>/dev/null || echo "0 0")
   read -r busy queued <<<"$st"
   [[ "$busy" == 0 && "$queued" == 0 ]] && break
   if (( waited == 0 )); then echo "Deploy wartet: Antwort läuft ($busy) / $queued in der Warteschlange – warte bis max. ${drain_s}s …" >&2; fi
@@ -94,7 +94,7 @@ mv -Tf /opt/mag-stack/.current-next /opt/mag-stack/current
 # Compatibility name is deliberately retained for existing guest wrappers/sudoers.
 install -m 0755 "$RELEASE/bin/magbot-native" /usr/local/bin/magbot
 install -m 0755 "$SOURCE/ops/spawnbot" "$SOURCE/ops/despawnbot" /usr/local/bin/
-install -m 0755 "$SOURCE/ops/magbot-guest-run" "$SOURCE/ops/magbot-agent-ctl" /usr/local/sbin/
+install -m 0755 "$SOURCE/ops/magbot-guest-run" "$SOURCE/ops/magbot-agent-ctl" "$SOURCE/ops/magbot-netmode" /usr/local/sbin/
 install -m 0440 "$SOURCE/ops/magbot-guest.sudoers" /etc/sudoers.d/magbot-guest
 visudo -cf /etc/sudoers.d/magbot-guest >/dev/null
 install -m 0644 "$SOURCE/ops/mag-120.service" "$SOURCE/ops/mag-browser-webrtc.service" /etc/systemd/system/

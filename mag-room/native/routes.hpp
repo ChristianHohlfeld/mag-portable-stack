@@ -604,8 +604,6 @@ static void route(int fd, Req &r, bool bridge = false) {
       error_json(fd, 400, "Select an agent");
       return;
     }
-    if (body.find("web_search"))
-      WEB_ENABLED = body.find("web_search")->asBool(true);
     int think = -1;
     if (auto th = body.find("think"); th && th->type == Val::BOOL)
       think = th->asBool() ? 1 : 0;
@@ -615,7 +613,7 @@ static void route(int fd, Req &r, bool bridge = false) {
     bool has_pending;
     {
       std::lock_guard<std::mutex> lk(JOB_MTX);
-      has_pending = !PENDING.empty();
+      has_pending = !PENDING.empty() || QUEUE_PAUSED;
     }
     if ((BUSY.load() || has_pending) && !interrupt) {
       // Not in the transcript yet: shown as a queue chip, dispatched later.
@@ -626,6 +624,14 @@ static void route(int fd, Req &r, bool bridge = false) {
       out["queued"] = true;
       out["item"] = item;
       send_json(fd, 202, mj::dump(out));
+      return;
+    }
+    if (interrupt && (BUSY.load() || QUEUE_PAUSED)) {
+      // Same path as "Jetzt senden": the cancelled turn first stores its
+      // partial answer, then this message follows as the next user turn.
+      Val item = enqueue_pending(str("text"), ids, think);
+      queue_send_now(item.find("id")->asStr());
+      send_json(fd, 202, "{\"accepted\":true,\"interrupted\":true}");
       return;
     }
     Val msg = append_room("user", "Nutzer", str("text"));
@@ -680,8 +686,17 @@ static void route(int fd, Req &r, bool bridge = false) {
     send_json(fd, 200, mj::dump(e));
     return;
   }
+  if (m == "POST" && path == "/api/offline") {
+    bool off = has_json && body.find("on") && body.find("on")->asBool(false);
+    if (!set_offline(off)) {
+      error_json(fd, 500, "Netzwerkregel konnte nicht gesetzt werden");
+      return;
+    }
+    send_json(fd, 200, std::string("{\"offline\":") + (off ? "true" : "false") + "}");
+    return;
+  }
   if (m == "POST" && path == "/api/stop") {
-    stop_autotalk();
+    stop_autotalk(true);
     Val e = Val::object();
     e["type"] = "stopped";
     publish(mj::dump(e));

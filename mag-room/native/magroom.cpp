@@ -2305,7 +2305,19 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
       e["text"] = piece;
       publish(mj::dump(e));
     };
-    Turn t = backend_turn(messages, round == MAX_TOOL_ROUNDS ? "[]" : tools,
+    // Last round: keep the SAME tool list (the template renders tools right
+    // after the system prompt; dropping them changed the prefix at ~token 770
+    // and forced llama to re-read the whole history). Ask for the answer with
+    // a note at the END instead, and ignore any further tool calls.
+    const bool last_round = round == MAX_TOOL_ROUNDS;
+    if (last_round) {
+      Val note = Val::object();
+      note["role"] = "user";
+      note["content"] = "[System] Werkzeug-Limit erreicht. Antworte jetzt "
+                        "direkt, ohne weitere Werkzeugaufrufe.";
+      messages.push_back(note);
+    }
+    Turn t = backend_turn(messages, tools,
                           autotalk ? 0.75 : 0.55, on_delta, turn_thinking());
     if (!t.error.empty()) {
       report.error = t.error.substr(0, 280);
@@ -2328,7 +2340,7 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
     messages.push_back(asst);
     if (!t.text.empty())
       final_text += t.text;
-    if (t.calls.empty())
+    if (t.calls.empty() || last_round)
       break;
     for (auto &call : t.calls) {
       if (STOP.load())

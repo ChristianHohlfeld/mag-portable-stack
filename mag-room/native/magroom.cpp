@@ -2376,6 +2376,9 @@ static bool turn_thinking() {
   int v = TURN_THINK.load();
   return v < 0 ? THINKING != "off" : v == 1;
 }
+struct JobRun;
+static thread_local const JobRun *CURRENT_JOB = nullptr;
+static std::string job_user_content(const JobRun *r);
 static TurnReport run_turn(int bot_idx, bool autotalk,
                            const std::string &other) {
   std::string bot_id = bot_field(bot_idx, "id");
@@ -2392,7 +2395,9 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
   {
     Val u = Val::object();
     u["role"] = "user";
-    u["content"] = build_transcript() + build_context_tail(bot_idx, autotalk, other);
+    // A job run is its own conversation: job prompt + volatile tail only.
+    u["content"] = (CURRENT_JOB ? job_user_content(CURRENT_JOB) : build_transcript()) +
+                   build_context_tail(bot_idx, autotalk, other);
     messages.push_back(u);
   }
   std::string tools = tools_json(bot_idx, web);
@@ -2936,6 +2941,7 @@ static TurnReport generate_and_post(int idx, bool automatic) {
   }
   return report;
 }
+#include "jobs.hpp"
 static void scheduler_loop() {
   while (!SHUTDOWN.load()) {
     std::vector<std::string> ids;
@@ -2946,11 +2952,28 @@ static void scheduler_loop() {
         // Paused by Stop: nothing runs (jobs, queue, autonomy) until the
         // user explicitly resumes ("Fortsetzen" / "Jetzt senden").
         return SHUTDOWN.load() ||
-               (!QUEUE_PAUSED && (!JOBS.empty() || !PENDING.empty() ||
+               (!QUEUE_PAUSED && (!JOBS.empty() || !PENDING.empty() || !JOBRUNS.empty() ||
                                   (AUTOTALK.load() && AUTO_READY)));
       });
       if (SHUTDOWN.load())
         break;
+      if (JOBS.empty() && PENDING.empty() && !JOBRUNS.empty() && !QUEUE_PAUSED) {
+        // Scheduled job: runs alone, in the same global queue as chat.
+        JobRun run = JOBRUNS.front();
+        JOBRUNS.pop_front();
+        lk.unlock();
+        {
+          std::lock_guard<std::mutex> turn(TURN_MTX);
+          STOP = false;
+          BUSY = true;
+          try { run_job(run); } catch (const std::exception &e) { emit_event("error", "", "", e.what()); }
+          BUSY = false;
+        }
+        Val idle = Val::object(); idle["type"] = "idle"; idle["autotalk"] = AUTOTALK.load();
+        publish(mj::dump(idle));
+        JOB_CV.notify_all();
+        continue;
+      }
       if (JOBS.empty() && !PENDING.empty() && !QUEUE_PAUSED) {
         // Dispatch the next queued message as a regular new user turn.
         Pending p = PENDING.front();
@@ -3300,6 +3323,8 @@ static void file_sync_loop() {
 }
 
 int main() {
+  setenv("TZ", env("MAG_TZ", "Europe/Berlin").c_str(), 1);
+  tzset();
   signal(SIGPIPE, SIG_IGN);
 
   MODEL = env("MAG_ROOM_MODEL", "deepseek-v4-flash-0731");
@@ -3433,6 +3458,8 @@ int main() {
       save_queue_locked();
     }
   }
+  jobs_load();
+  std::thread(jobs_ticker).detach();
   std::thread(scheduler_loop).detach();
   std::thread(model_watcher_loop).detach();
   std::thread(file_sync_loop).detach();

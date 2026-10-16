@@ -100,6 +100,25 @@ static void route(int fd, Req &r, bool bridge = false) {
       return;
     }
   } else {
+    if (m == "POST" && r.path.rfind("/hook/jobs/", 0) == 0) {
+      // Webhook trigger: authenticated only by the per-job secret.
+      std::string id = r.path.substr(11), secret;
+      auto h = r.hdrs.find("x-mag-job-secret");
+      if (h != r.hdrs.end()) secret = h->second;
+      auto au = r.hdrs.find("authorization");
+      if (secret.empty() && au != r.hdrs.end() && au->second.rfind("Bearer ", 0) == 0) secret = au->second.substr(7);
+      std::lock_guard<std::mutex> lk(JOBDEF_MTX);
+      JobDef *j = job_find_locked(id);
+      if (!j || j->hook_hash.empty() || secret.empty() || !ct_eq(sha256_hex(secret), j->hook_hash)) {
+        error_json(fd, 401, "Unauthorized");
+        return;
+      }
+      if (j->paused) { error_json(fd, 409, "Job pausiert"); return; }
+      std::string rid = j->id + ":hook:" + std::to_string(now_s()) + token_hex(3);
+      if (!job_enqueue_locked(*j, rid, "Webhook")) { error_json(fd, 409, "läuft bereits"); return; }
+      send_json(fd, 202, "{\"accepted\":true,\"run_id\":\"" + rid + "\"}");
+      return;
+    }
     auto origin = r.hdrs.find("origin");
     auto host = r.hdrs.find("host");
     if (origin != r.hdrs.end() && host != r.hdrs.end() &&
@@ -684,6 +703,85 @@ static void route(int fd, Req &r, bool bridge = false) {
     e["on"] = AUTOTALK.load();
     publish(mj::dump(e));
     send_json(fd, 200, mj::dump(e));
+    return;
+  }
+  if (path == "/api/jobs" || path.rfind("/api/jobs/", 0) == 0) {
+    std::string rest = path.size() > 10 ? path.substr(10) : "";
+    std::string id = rest.substr(0, rest.find('/'));
+    std::string action = rest.find('/') == std::string::npos ? "" : rest.substr(rest.find('/') + 1);
+    std::lock_guard<std::mutex> lk(JOBDEF_MTX);
+    auto view = [&](const JobDef &j, const std::string &secret) {
+      Val v = job_to_val(j, false);
+      if (!secret.empty()) v["secret"] = secret; // shown exactly once
+      return v;
+    };
+    auto new_secret = [&](JobDef &j) { std::string sec = token_hex(24); j.hook_hash = sha256_hex(sec); return sec; };
+    if (path == "/api/jobs" && m == "GET") {
+      Val a = Val::array();
+      for (auto &j : JOBDEFS) { Val v = view(j, ""); a.push(v); }
+      Val o = Val::object(); o["jobs"] = a; o["now"] = (double)now_s(); o["paused"] = QUEUE_PAUSED;
+      send_json(fd, 200, mj::dump(o));
+      return;
+    }
+    if (path == "/api/jobs" && m == "POST") {
+      if (!has_json) { error_json(fd, 400, "JSON required"); return; }
+      if (JOBDEFS.size() >= 100) { error_json(fd, 400, "Zu viele Jobs"); return; }
+      JobDef j; j.id = token_hex(6); j.created = now_s();
+      std::string err = job_apply(j, body, true);
+      if (!err.empty()) { error_json(fd, 400, err); return; }
+      std::string sec;
+      if (body.find("webhook") && body.find("webhook")->asBool(false)) sec = new_secret(j);
+      JOBDEFS.push_back(j); jobs_save_locked(); jobs_event_locked();
+      send_json(fd, 201, mj::dump(view(j, sec)));
+      return;
+    }
+    JobDef *j = job_find_locked(id);
+    if (!j) { error_json(fd, 404, "Unbekannter Job"); return; }
+    if (action.empty() && m == "GET") { send_json(fd, 200, mj::dump(view(*j, ""))); return; }
+    if (action.empty() && m == "PUT") {
+      if (!has_json) { error_json(fd, 400, "JSON required"); return; }
+      JobDef copy = *j;
+      std::string err = job_apply(copy, body, false);
+      if (!err.empty()) { error_json(fd, 400, err); return; }
+      std::string sec;
+      if (body.find("webhook")) {
+        if (!body.find("webhook")->asBool(false)) copy.hook_hash.clear();
+        else if (copy.hook_hash.empty()) sec = new_secret(copy);
+      }
+      copy.version = j->version + 1; // a running run keeps its own copy
+      *j = copy; jobs_save_locked(); jobs_event_locked();
+      send_json(fd, 200, mj::dump(view(*j, sec)));
+      return;
+    }
+    if (action.empty() && m == "DELETE") {
+      for (auto it = JOBDEFS.begin(); it != JOBDEFS.end(); ++it)
+        if (it->id == id) { JOBDEFS.erase(it); break; }
+      { std::lock_guard<std::mutex> jl(JOB_MTX);
+        for (auto it = JOBRUNS.begin(); it != JOBRUNS.end();) it = it->job_id == id ? JOBRUNS.erase(it) : it + 1; }
+      jobs_save_locked(); jobs_event_locked();
+      send_json(fd, 200, "{\"deleted\":true}");
+      return;
+    }
+    if (m == "POST" && action == "run") {
+      std::string rid = j->id + ":manual:" + std::to_string(now_s()) + token_hex(3);
+      if (!job_enqueue_locked(*j, rid, "manuell")) { error_json(fd, 409, "läuft bereits"); return; }
+      send_json(fd, 202, "{\"accepted\":true,\"run_id\":\"" + rid + "\"}");
+      return;
+    }
+    if (m == "POST" && action == "pause") {
+      j->paused = !has_json || !body.find("paused") || body.find("paused")->asBool(true);
+      if (!j->paused && j->next_run > 0 && j->next_run < now_s()) j->next_run = schedule_next(j->schedule, now_s() - 1, 0);
+      jobs_save_locked(); jobs_event_locked();
+      send_json(fd, 200, mj::dump(view(*j, "")));
+      return;
+    }
+    if (m == "POST" && action == "secret") {
+      std::string sec = new_secret(*j); j->version++;
+      jobs_save_locked(); jobs_event_locked();
+      send_json(fd, 200, mj::dump(view(*j, sec)));
+      return;
+    }
+    error_json(fd, 404, "Unknown job action");
     return;
   }
   if (m == "POST" && path == "/api/offline") {

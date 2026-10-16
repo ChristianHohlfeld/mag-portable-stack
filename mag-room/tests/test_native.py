@@ -46,7 +46,7 @@ class Native(unittest.TestCase):
   cls.start()
  @classmethod
  def start(cls):
-  env=dict(os.environ,MAG_ROOM_STATE=str(cls.state),MAG_ROOM_PORT=str(cls.ui),MAG_ROOM_BRIDGE_PORT=str(cls.bridge),MAG_ROOM_BRIDGE_IP='127.0.0.1',MAG_ROOM_BACKEND=f'http://127.0.0.1:{cls.model.server_port}/v1/chat/completions',MAG_ROOM_UI=str(ROOT/'mag-room/web/index.html'),MAG_ROOM_STATIC=str(ROOT/'mag-room/static'),MAG_ROOM_AUTOTALK_SLEEP='1',MAG_ROOM_MODEL_STATUS=str(pathlib.Path(cls.tmp.name)/'model-status.json'),MAG_NETMODE=str(NETMODE))
+  env=dict(os.environ,MAG_ROOM_STATE=str(cls.state),MAG_ROOM_PORT=str(cls.ui),MAG_ROOM_BRIDGE_PORT=str(cls.bridge),MAG_ROOM_BRIDGE_IP='127.0.0.1',MAG_ROOM_BACKEND=f'http://127.0.0.1:{cls.model.server_port}/v1/chat/completions',MAG_ROOM_UI=str(ROOT/'mag-room/web/index.html'),MAG_ROOM_STATIC=str(ROOT/'mag-room/static'),MAG_ROOM_AUTOTALK_SLEEP='1',MAG_ROOM_MODEL_STATUS=str(pathlib.Path(cls.tmp.name)/'model-status.json'),MAG_NETMODE=str(NETMODE),MAG_JOBS_ALLOW_SECONDS='1',MAG_JOBS_TICK_MS='200',MAG_JOBS_BACKOFF_S='1')
   cls.log=open(pathlib.Path(cls.tmp.name)/'server.log','a');cls.proc=subprocess.Popen([str(ROOT/'build/magroom')],env=env,stdout=cls.log,stderr=cls.log)
   for _ in range(100):
    try:cls.request('/healthz',raw=True);return
@@ -297,6 +297,81 @@ class Native(unittest.TestCase):
   for needle in ["message?.kind==='hb'","consoleHbAt","scheduleReconnect()","termPending.push(","Shell-Verbindung verloren"]:self.assertIn(needle,html)
   go=(ROOT/'mag-room/webrtc/main.go').read_text();self.assertIn('{"kind":"hb"',go)
   self.assertIn('18840-18890',(ROOT/'ops/magbot-netmode').read_text(),'offline must keep local WebRTC ICE ports')
+
+ # ---------------- Jobs
+ def _job(self,**kw):
+  b={'name':'J','prompt':'Sag Job-OK','schedule':{'type':'none'}};b.update(kw);return self.request('/api/jobs',b)
+ def _jget(self,jid):return self.request('/api/jobs/'+jid,method='GET')
+ def _jwait(self,jid,pred,n=200):
+  for _ in range(n):
+   j=self._jget(jid)
+   if pred(j):return j
+   time.sleep(.05)
+  self.fail('job condition not reached: '+json.dumps(j)[:500])
+ def _restart(self):
+  self.proc.kill();self.proc.wait(timeout=5);self.log.close();self.start()
+ def test_16a_job_runs_on_schedule_as_own_run(self):
+  self.wait_idle();Model.script=[];Model.reply='Job erledigt.';Model.calls.clear()
+  j=self._job(schedule={'type':'interval','every':1,'unit':'s'})
+  self._jwait(j['id'],lambda x:x['last_status']=='ok')
+  self.request('/api/jobs/'+j['id'],method='DELETE');Model.reply=None
+  s=self.wait_idle();self.assertTrue(any((m.get('content') or '').startswith('🗓 Job „J“') for m in s['room']))
+  c=[x for x in Model.calls if x['messages'][1]['content'].startswith('[Geplanter Job')][0]
+  self.assertIn('Sag Job-OK',c['messages'][1]['content']);self.assertNotIn('Sag Job-OK',c['messages'][0]['content'],'job prompt never in system prompt')
+ def test_16b_no_double_run_and_webhook_auth(self):
+  self.wait_idle();Model.script=[self._slow('out',15)]
+  j=self._job(webhook=True);sec=j['secret'];self.assertNotIn('secret',self._jget(j['id']));self.assertNotIn('hook_hash',json.dumps(self._jget(j['id'])))
+  r1=self.request('/api/jobs/'+j['id']+'/run',{});self.error(409,'/api/jobs/'+j['id']+'/run',{})
+  hdr={'Content-Type':'application/json','X-No-Token':'1'}
+  self.error(401,'/hook/jobs/'+j['id'],{},headers=dict(hdr,**{'X-MAG-Job-Secret':'falsch'}))
+  self.error(409,'/hook/jobs/'+j['id'],{},headers=dict(hdr,**{'X-MAG-Job-Secret':sec}))
+  self._jwait(j['id'],lambda x:not x['running'] and x['last_status']=='ok',400)
+  r=self.request('/hook/jobs/'+j['id'],{},headers=dict(hdr,**{'X-MAG-Job-Secret':sec}));self.assertTrue(r['accepted'])
+  x=self._jwait(j['id'],lambda x:len(x['history'])==2,400);self.assertEqual([h['reason'] for h in x['history']],['manuell','Webhook'])
+  n=self.request('/api/jobs/'+j['id']+'/secret',{})['secret'];self.assertNotEqual(n,sec)
+  self.error(401,'/hook/jobs/'+j['id'],{},headers=dict(hdr,**{'X-MAG-Job-Secret':sec}))
+  self.request('/api/jobs/'+j['id'],method='DELETE')
+ def test_16c_restart_catch_up_exactly_once_and_lease(self):
+  self.wait_idle();Model.script=[];Model.reply='Nachgeholt.'
+  j=self._job(schedule={'type':'interval','every':1,'unit':'h'});k=self._job(name='K')
+  self._restart();self.proc.kill();self.proc.wait(timeout=5);self.log.close()
+  f=self.state/'jobs.json';data=json.loads(f.read_text())
+  for d in data:
+   if d['id']==j['id']:d['next_run']=time.time()-5*3600  # 5 missed periods
+   if d['id']==k['id']:d['queued_run']=k['id']+':lease-1'   # crashed mid-run
+  f.write_text(json.dumps(data));self.start()
+  x=self._jwait(j['id'],lambda x:len(x['history'])>=1);time.sleep(1.5);x=self._jget(j['id'])
+  self.assertEqual(len(x['history']),1,'catch-up exactly once');self.assertGreater(x['next_run'],time.time()+3000)
+  y=self._jwait(k['id'],lambda y:len(y['history'])>=1);time.sleep(.5)
+  self.assertEqual([h['run_id'] for h in self._jget(k['id'])['history']],[k['id']+':lease-1'])
+  self._restart();time.sleep(1.5);self.assertEqual(len(self._jget(k['id'])['history']),1,'no double run after restart')
+  for i in (j,k):self.request('/api/jobs/'+i['id'],method='DELETE')
+  Model.reply=None
+ def test_16d_edit_and_delete_while_running(self):
+  self.wait_idle();Model.calls.clear();Model.script=[self._slow('out',15),['Neu.']]
+  j=self._job(prompt='ALT-PROMPT');self.request('/api/jobs/'+j['id']+'/run',{});self._busy()
+  self.request('/api/jobs/'+j['id'],{'prompt':'NEU-PROMPT','name':'J2'},method='PUT')
+  x=self._jwait(j['id'],lambda x:len(x['history'])==1,400);self.assertEqual(x['history'][0]['version'],1);self.assertEqual(x['version'],2)
+  self.request('/api/jobs/'+j['id']+'/run',{});x=self._jwait(j['id'],lambda x:len(x['history'])==2,400)
+  self.assertIn('NEU-PROMPT',Model.calls[-1]['messages'][1]['content']);self.assertIn('ALT-PROMPT',Model.calls[-2]['messages'][1]['content'])
+  Model.script=[self._slow('out',15)];self.request('/api/jobs/'+j['id']+'/run',{});self._busy()
+  self.request('/api/jobs/'+j['id'],method='DELETE');self.wait_idle();n=len(Model.calls);time.sleep(1.5)
+  self.assertEqual(len(Model.calls),n,'no further run after delete');self.error(404,'/api/jobs/'+j['id'],method='GET')
+ def test_16e_retry_backoff_then_error(self):
+  self.wait_idle();Model.script=[[''],[''],['']];Model.reply=''
+  j=self._job();self.request('/api/jobs/'+j['id']+'/run',{})
+  x=self._jwait(j['id'],lambda x:x['last_status']=='error',300)
+  self.assertEqual(len(x['history']),3);self.assertTrue(x['history'][1]['run_id'].endswith('#r2'));self.assertIn('3 Versuchen',x['last_error'])
+  Model.reply=None;Model.script=[];self.request('/api/jobs/'+j['id'],method='DELETE')
+ def test_16f_jobs_respect_stop_pause(self):
+  self.wait_idle();Model.reply='P.';self.request('/api/stop',{})
+  j=self._job();self.request('/api/jobs/'+j['id']+'/run',{});n=len(Model.calls);time.sleep(1.5)
+  self.assertEqual(len(Model.calls),n,'no job runs while paused');self.assertTrue(self._jget(j['id'])['running'])
+  self.request('/api/queue/resume',{});self._jwait(j['id'],lambda x:x['last_status']=='ok')
+  html=self.request('/',raw=True).decode()
+  for n in ['id="job-dialog"','Jetzt ausführen','jf-secret','/api/jobs']:self.assertIn(n,html)
+  self.assertNotIn('confirm(',html.replace('magConfirm(',''))
+  self.request('/api/jobs/'+j['id'],method='DELETE');Model.reply=None
  def test_08_idle_autonomy_does_not_make_up_work(self):
   self.request('/api/autotalk',{'on':True})
   calls_before=len(Model.calls)
@@ -618,7 +693,7 @@ class SingleBot(unittest.TestCase):
   cls.tmp=tempfile.TemporaryDirectory();cls.state=pathlib.Path(cls.tmp.name)/'state';cls.state.mkdir()
   cls.state.joinpath('agents.json').write_text(json.dumps([{'id':'alt','name':'Alter Bot','vm':'','memory':[{'text':'bleibt erhalten'}]}]))
   cls.model=http.server.ThreadingHTTPServer(('127.0.0.1',0),Model);threading.Thread(target=cls.model.serve_forever,daemon=True).start();cls.ui=port();cls.bridge=port()
-  env=dict(os.environ,MAG_ROOM_STATE=str(cls.state),MAG_ROOM_PORT=str(cls.ui),MAG_ROOM_BRIDGE_PORT=str(cls.bridge),MAG_ROOM_BRIDGE_IP='127.0.0.1',MAG_ROOM_BACKEND=f'http://127.0.0.1:{cls.model.server_port}/v1/chat/completions',MAG_ROOM_UI=str(ROOT/'mag-room/web/index.html'),MAG_ROOM_STATIC=str(ROOT/'mag-room/static'),MAG_ROOM_MODEL_STATUS=str(pathlib.Path(cls.tmp.name)/'model-status.json'),MAG_NETMODE=str(NETMODE),MAG_ROOM_SINGLE_BOT='deepseek-chat')
+  env=dict(os.environ,MAG_ROOM_STATE=str(cls.state),MAG_ROOM_PORT=str(cls.ui),MAG_ROOM_BRIDGE_PORT=str(cls.bridge),MAG_ROOM_BRIDGE_IP='127.0.0.1',MAG_ROOM_BACKEND=f'http://127.0.0.1:{cls.model.server_port}/v1/chat/completions',MAG_ROOM_UI=str(ROOT/'mag-room/web/index.html'),MAG_ROOM_STATIC=str(ROOT/'mag-room/static'),MAG_ROOM_MODEL_STATUS=str(pathlib.Path(cls.tmp.name)/'model-status.json'),MAG_NETMODE=str(NETMODE),MAG_JOBS_ALLOW_SECONDS='1',MAG_JOBS_TICK_MS='200',MAG_JOBS_BACKOFF_S='1',MAG_ROOM_SINGLE_BOT='deepseek-chat')
   cls.log=open(pathlib.Path(cls.tmp.name)/'server.log','a');cls.proc=subprocess.Popen([str(ROOT/'build/magroom')],env=env,stdout=cls.log,stderr=cls.log)
   for _ in range(100):
    try:Native.request.__func__(cls,'/healthz',raw=True);return
@@ -664,7 +739,7 @@ class SingleBotVM(unittest.TestCase):
   cls.ctl=pathlib.Path(cls.tmp.name)/'ctl';cls.ctl.write_text('#!/bin/sh\necho "$@" >> "$(dirname "$0")/ctl.log"\n');cls.ctl.chmod(0o755)
   cls.state.joinpath('agents.json').write_text(json.dumps([{'id':'alt','name':'Alter Bot','vm':'agent1','memory':[]}]))
   cls.model=http.server.ThreadingHTTPServer(('127.0.0.1',0),Model);threading.Thread(target=cls.model.serve_forever,daemon=True).start();cls.ui=port();cls.bridge=port()
-  env=dict(os.environ,MAG_ROOM_STATE=str(cls.state),MAG_ROOM_PORT=str(cls.ui),MAG_ROOM_BRIDGE_PORT=str(cls.bridge),MAG_ROOM_BRIDGE_IP='127.0.0.1',MAG_ROOM_BACKEND=f'http://127.0.0.1:{cls.model.server_port}/v1/chat/completions',MAG_ROOM_UI=str(ROOT/'mag-room/web/index.html'),MAG_ROOM_STATIC=str(ROOT/'mag-room/static'),MAG_ROOM_MODEL_STATUS=str(pathlib.Path(cls.tmp.name)/'model-status.json'),MAG_NETMODE=str(NETMODE),MAG_ROOM_SINGLE_BOT='deepseek-chat',MAG_ROOM_SINGLE_BOT_VM='on',MAG_ROOM_AGENT_CTL=str(cls.ctl))
+  env=dict(os.environ,MAG_ROOM_STATE=str(cls.state),MAG_ROOM_PORT=str(cls.ui),MAG_ROOM_BRIDGE_PORT=str(cls.bridge),MAG_ROOM_BRIDGE_IP='127.0.0.1',MAG_ROOM_BACKEND=f'http://127.0.0.1:{cls.model.server_port}/v1/chat/completions',MAG_ROOM_UI=str(ROOT/'mag-room/web/index.html'),MAG_ROOM_STATIC=str(ROOT/'mag-room/static'),MAG_ROOM_MODEL_STATUS=str(pathlib.Path(cls.tmp.name)/'model-status.json'),MAG_NETMODE=str(NETMODE),MAG_JOBS_ALLOW_SECONDS='1',MAG_JOBS_TICK_MS='200',MAG_JOBS_BACKOFF_S='1',MAG_ROOM_SINGLE_BOT='deepseek-chat',MAG_ROOM_SINGLE_BOT_VM='on',MAG_ROOM_AGENT_CTL=str(cls.ctl))
   cls.log=open(pathlib.Path(cls.tmp.name)/'server.log','a');cls.proc=subprocess.Popen([str(ROOT/'build/magroom')],env=env,stdout=cls.log,stderr=cls.log)
   for _ in range(100):
    try:Native.request.__func__(cls,'/healthz',raw=True);return

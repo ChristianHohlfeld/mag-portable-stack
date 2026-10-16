@@ -781,7 +781,15 @@ static void route(int fd, Req &r, bool bridge = false) {
     std::string qid = rest, action;
     if (auto sl = rest.find('/'); sl != std::string::npos) { qid = rest.substr(0, sl); action = rest.substr(sl + 1); }
     bool ok = false;
-    if (action == "now" && m == "POST") ok = queue_send_now(qid);
+    if (action == "move" && m == "POST") {
+      const Val *target = has_json ? body.find("before") : nullptr;
+      if (!target || target->type != Val::STR ||
+          target->asStr().size() > 128) {
+        error_json(fd, 400, "before must be a pending ID or empty string"); return;
+      }
+      ok = queue_move(qid, target->asStr());
+    }
+    else if (action == "now" && m == "POST") ok = queue_send_now(qid);
     else if (action.empty() && m == "DELETE") ok = queue_delete(qid);
     else if (action.empty() && m == "PUT") {
       std::string text = has_json ? trim(str("text")) : "";
@@ -894,6 +902,15 @@ static void route(int fd, Req &r, bool bridge = false) {
       return;
     }
     send_json(fd, 200, std::string("{\"offline\":") + (off ? "true" : "false") + "}");
+    return;
+  }
+  if (m == "POST" && path == "/api/cancel") {
+    // ChatGPT-style stop: cancel only the running turn (closes the llama
+    // stream, kills a running run_command); the queue is NOT paused.
+    if (!BUSY.load()) { send_json(fd, 200, "{\"cancelled\":false}"); return; }
+    USER_CANCEL = true;
+    cancel_active();
+    send_json(fd, 200, "{\"cancelled\":true}");
     return;
   }
   if (m == "POST" && path == "/api/stop") {

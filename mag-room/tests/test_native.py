@@ -161,7 +161,12 @@ class Native(unittest.TestCase):
   texts=[m.get('content') or '' for m in s['room']]
   self.assertTrue(any('unterbrochen' in t for t in texts),'interrupted turn must be marked')
   self.assertEqual(s['queue'],0);self.assertFalse(s['busy'])
-  q=json.loads(self.state.joinpath('queue.json').read_text());self.assertNotIn('active',q);self.assertEqual(q['jobs'],[])
+  # Disk flush of the drained active lease follows the public idle event.
+  for _ in range(100):
+   q=json.loads(self.state.joinpath('queue.json').read_text())
+   if 'active' not in q:break
+   time.sleep(.05)
+  self.assertNotIn('active',q);self.assertEqual(q['jobs'],[])
 
  # ---------------- queue / "Jetzt senden"
  def _busy(self):
@@ -374,6 +379,37 @@ class Native(unittest.TestCase):
   self.assertNotIn('confirm(',html.replace('magConfirm(',''))
   self.request('/api/jobs/'+j['id'],method='DELETE');Model.reply=None
 
+ def test_15k_queue_move_persists_and_broadcasts(self):
+  self.wait_idle();self.request('/api/stop',{})
+  try:
+   created=[self.request('/api/message',{'text':t,'bots':['test']})['item']
+            for t in ['Sort-A','Sort-B','Sort-C']]
+   ids=[p['id'] for p in created]
+   self.assertEqual([p['id'] for p in self.request('/api/queue',method='GET')['pending']],ids)
+   self.request('/api/queue/'+ids[2]+'/move',{'before':ids[0]})
+   expected=[ids[2],ids[0],ids[1]]
+   self.assertEqual([p['id'] for p in self.request('/api/queue',method='GET')['pending']],expected)
+   self.assertEqual([p['id'] for p in json.loads((self.state/'queue.json').read_text())['pending']],expected)
+   self.request('/api/queue/'+ids[2]+'/move',{'before':''})
+   self.assertEqual([p['id'] for p in self.request('/api/queue',method='GET')['pending']],[ids[0],ids[1],ids[2]])
+   self.error(404,'/api/queue/'+ids[0]+'/move',{'before':'not-a-job'})
+   html=self.request('/',raw=True).decode()
+   for needle in ("queueDropAt(","queueShift(","dragstart","pointerup","/move","photo-preview","upload-photo"):
+    self.assertIn(needle,html)
+   self.assertIn("btn.addEventListener('wheel'",html)
+   self.assertNotIn("btn.addEventListener('wheel',e=>{e.preventDefault()",html)
+  finally:
+   self.request('/api/queue',method='DELETE');self.request('/api/queue/resume',{})
+
+ def test_15k_composer_stop_cancels_turn_keeps_queue(self):
+  self.wait_idle();Model.script=[self._slow('out',60),['Weiter normal.']]
+  self.request('/api/message',{'text':'Stop-Test','bots':['test']});self._busy();time.sleep(1.0)
+  self.assertEqual(self.request('/api/cancel',{})['cancelled'],True)
+  s=self.wait_idle();self.assertFalse(s.get('queue_paused'),'composer stop must not pause the queue')
+  part=s['room'][-1];self.assertTrue(part['content'].startswith('Wort0 '));self.assertTrue(part['content'].endswith('(abgebrochen)'));self.assertTrue(part.get('interrupted'))
+  self.assertEqual(self.request('/api/cancel',{})['cancelled'],False,'idle cancel is a no-op')
+  self.request('/api/message',{'text':'Danach','bots':['test']});self.wait_room('Weiter normal.');s=self.wait_idle()
+  self.assertEqual(s['room'][-1]['content'],'Weiter normal.')
  def test_15j_reload_mid_stream_replays_and_continues(self):
   self.wait_idle();Model.script=[self._slow('out',25)]
   self.request('/api/message',{'text':'Stream-Reload','bots':['test']});self._busy();time.sleep(1.0)
@@ -732,15 +768,6 @@ class Native(unittest.TestCase):
    self.start()
   self.assertIn(b'<html',self.request('/bot/test/',raw=True))
 
-
- def test_11z_main_browser_focus_navigation_contract(self):
-  html=self.request('/',raw=True).decode()
-  for needle in ("function focusBot(", "card.onclick=e=>", "card.onkeydown=e=>",
-                 "card.classList.toggle('active'", "sessionStorage.setItem('mag-focused-bot'",
-                 "browser('state',{})", "id=\"browser-access\"", "can_go_back",
-                 "can_go_forward"):
-   self.assertIn(needle,html)
-
  def test_16_interim_narration_is_a_step_not_the_answer(self):
   first=[{'content':'Ich prüfe die Webseite.\n'},{'tool_calls':[{'index':0,'id':'call_step','function':{'name':'remember','arguments':'{"fact":"aus dem schritt"}'}}]}]
   Model.script=[first,['Die Seite ist gelesen.']]
@@ -958,6 +985,14 @@ class Native(unittest.TestCase):
    self.assertIn(needle,html)
   for bad in ('confirm(','alert(','prompt('):
    self.assertNotIn(bad,html)
+
+ def test_11z_main_browser_focus_navigation_contract(self):
+  html=self.request('/',raw=True).decode()
+  for needle in ("function focusBot(", "card.onclick=e=>", "card.onkeydown=e=>",
+                 "card.classList.toggle('active'", "sessionStorage.setItem('mag-focused-bot'",
+                 "browser('state',{})", "id=\"browser-access\"", "can_go_back",
+                 "can_go_forward"):
+   self.assertIn(needle,html)
 
 class SingleBot(unittest.TestCase):
  """MAG_ROOM_SINGLE_BOT: exactly one bot; other stored bots are parked, never lost."""

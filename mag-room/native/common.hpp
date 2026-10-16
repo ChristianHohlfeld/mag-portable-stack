@@ -1,3 +1,4 @@
+#include <atomic>
 #pragma once
 #include "json.hpp"
 #include <algorithm>
@@ -103,7 +104,8 @@ struct Result {
   std::string out;
 };
 inline Result run(const std::vector<std::string> &args, int seconds = 120,
-                  size_t cap = 4 * 1024 * 1024) {
+                  size_t cap = 4 * 1024 * 1024,
+                  const std::atomic<bool> *cancel = nullptr) {
   if (args.empty())
     throw std::runtime_error("Empty process");
   int p[2];
@@ -162,6 +164,15 @@ inline Result run(const std::vector<std::string> &args, int seconds = 120,
         waitpid(pid, &st, 0);
       close(p[0]);
       throw std::runtime_error("Process timeout");
+    }
+    if (cancel && cancel->load()) { // user pressed Stop: end the whole group
+      kill(-pid, SIGTERM); kill(pid, SIGTERM);
+      for (int i = 0; i < 40 && !exited; i++) {
+        if (waitpid(pid, &st, WNOHANG) == pid) exited = true; else usleep(50000);
+      }
+      if (!exited) { kill(-pid, SIGKILL); kill(pid, SIGKILL); waitpid(pid, &st, 0); }
+      close(p[0]);
+      throw std::runtime_error("Abgebrochen (Stop)");
     }
     pollfd q{p[0], POLLIN, 0};
     poll(&q, 1, 30);

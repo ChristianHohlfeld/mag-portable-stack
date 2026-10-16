@@ -1,5 +1,8 @@
 // Direct unit tests for the native schedule translation and stable tool list.
 // Compiles the production translation unit once under a renamed entry point.
+#ifdef NDEBUG
+#undef NDEBUG // keep assertions active in CI Release builds
+#endif
 #define main magroom_real_server_main
 #include "../native/magroom.cpp"
 #undef main

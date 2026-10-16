@@ -662,6 +662,7 @@ static std::string memory_manifest(const std::string &bot_id) {
   out.pop_back();
   return out;
 }
+static void memory_git_sync(const std::string &bot_id, const std::string &why);
 static void remember_fact(const std::string &bot_id, const std::string &fact,
                           const std::string &src) {
   std::string f = trim(fact).substr(0, 500);
@@ -689,6 +690,7 @@ static void remember_fact(const std::string &bot_id, const std::string &fact,
   if (mem.arr->size() > (size_t)MEMORY_LIMIT)
     mem.arr->erase(mem.arr->begin(), mem.arr->end() - MEMORY_LIMIT);
   save_agents();
+  memory_git_sync(bot_id, "remember");
 }
 
 // ---------------------------------------------------------------- files
@@ -1033,6 +1035,8 @@ static const char *T_BROWSER_BACK =
     R"({"type":"function","function":{"name":"browser_back","description":"Go back in your VM browser.","parameters":{"type":"object","properties":{},"additionalProperties":false}}})";
 static const char *T_BROWSER_SCROLL =
     R"({"type":"function","function":{"name":"browser_scroll","description":"Scroll your VM browser vertically (dy pixels, positive down).","parameters":{"type":"object","properties":{"dy":{"type":"integer"}},"additionalProperties":false}}})";
+static const char *T_GITHUB =
+    R"({"type":"function","function":{"name":"github","description":"GitHub API with the user's connected account (token stays on the server). Actions: list_repos, get_repo, list_issues, get_issue, create_issue, comment_issue, list_prs, get_pr, pr_files, get_file, list_dir, search_code, search_issues. Only create_issue/comment_issue write; use them only when the user asked.","parameters":{"type":"object","properties":{"action":{"type":"string"},"repo":{"type":"string","description":"owner/name"},"number":{"type":"integer"},"path":{"type":"string"},"ref":{"type":"string"},"query":{"type":"string"},"title":{"type":"string"},"body":{"type":"string"},"state":{"type":"string"}},"required":["action"],"additionalProperties":false}}})";
 static const char *T_REMEMBER =
     R"({"type":"function","function":{"name":"remember","description":"Store a durable fact in your own persistent memory (survives room reset). Use for what you learned, decided or care about.","parameters":{"type":"object","properties":{"fact":{"type":"string"},"source":{"type":"string"}},"required":["fact"],"additionalProperties":false}}})";
 
@@ -1261,6 +1265,95 @@ static Val host_stt(const std::string &audio, const std::string &language) {
 }
 
 // ---------------------------------------------------------------- brave
+static std::string base64_decode(const std::string &in);
+// GitHub REST via curl; the token goes through a 0600 header file, never argv.
+static std::string github_api(const std::string &method, const std::string &path,
+                              const std::string &body = "") {
+  bool ok = false;
+  std::string tok = trim(read_file(STATE_DIR + "/connectors/github.token", &ok));
+  if (!ok || tok.empty()) throw std::runtime_error("GitHub ist nicht verbunden (Plus-Menü → Connectors → GitHub).");
+  if (OFFLINE.load()) throw std::runtime_error("Offline-Modus: keine GitHub-Verbindung.");
+  std::string hf = STATE_DIR + "/connectors/.gh-hdr-" + token_hex(6);
+  int fd = open(hf.c_str(), O_WRONLY | O_CREAT | O_EXCL, 0600);
+  if (fd < 0) throw std::runtime_error("GitHub: Header-Datei");
+  std::string hdr = "Authorization: Bearer " + tok + "\nAccept: application/vnd.github+json\nX-GitHub-Api-Version: 2022-11-28\nUser-Agent: mag-room\n";
+  if (write(fd, hdr.data(), hdr.size()) != (ssize_t)hdr.size()) { close(fd); unlink(hf.c_str()); throw std::runtime_error("GitHub: Header"); }
+  close(fd);
+  std::vector<std::string> argv = {"curl", "-sS", "-m", "30", "-X", method, "-H", "@" + hf,
+                                   "-w", "\n%{http_code}", env("MAG_GITHUB_API", "https://api.github.com") + path};
+  if (!body.empty()) { argv.push_back("-H"); argv.push_back("Content-Type: application/json"); argv.push_back("--data-binary"); argv.push_back(body); }
+  CmdResult res = run_argv(argv, 40, 4 << 20);
+  unlink(hf.c_str());
+  if (res.code != 0) throw std::runtime_error("GitHub nicht erreichbar.");
+  auto nl = res.out.rfind('\n');
+  int code = nl == std::string::npos ? 0 : atoi(res.out.c_str() + nl + 1);
+  std::string out = nl == std::string::npos ? res.out : res.out.substr(0, nl);
+  if (code >= 400) {
+    Val e; std::string msg = mj::parse(out, e) && e.find("message") ? e.find("message")->asStr() : out.substr(0, 200);
+    throw std::runtime_error("GitHub " + std::to_string(code) + ": " + msg);
+  }
+  return out;
+}
+static bool gh_repo_ok(const std::string &r) {
+  if (r.empty() || r.size() > 140 || std::count(r.begin(), r.end(), '/') != 1) return false;
+  for (char c : r) if (!(isalnum((unsigned char)c) || c == '-' || c == '_' || c == '.' || c == '/')) return false;
+  return r.find("..") == std::string::npos;
+}
+static std::string gh_pick(const std::string &json, std::initializer_list<const char *> keys, size_t max_items = 30) {
+  Val v; if (!mj::parse(json, v)) return json.substr(0, 6000);
+  auto one = [&](const Val &x) {
+    Val o = Val::object();
+    for (const char *k : keys) {
+      std::string key = k; auto dot = key.find('.');
+      const Val *f = x.find(key.substr(0, dot).c_str());
+      if (f && dot != std::string::npos) f = f->find(key.substr(dot + 1).c_str());
+      if (f) { Val c = *f; if (c.type == Val::STR && c.str.size() > 3000) c.str = c.str.substr(0, 3000) + "…"; o[key] = c; }
+    }
+    return o;
+  };
+  if (v.find("items") && v.find("items")->isArr()) v = *v.find("items");
+  if (v.isArr()) { Val a = Val::array(); size_t n = 0; for (auto &x : v.asArr()) { if (n++ >= max_items) break; Val o = one(x); a.push(o); } return mj::dump(a); }
+  return mj::dump(one(v));
+}
+static std::string github_tool(const Val &a) {
+  auto gs = [&](const char *k) { auto x = a.find(k); return x ? trim(x->asStr()) : std::string(); };
+  std::string act = gs("action"), repo = gs("repo"), path = gs("path"), ref = gs("ref");
+  int num = a.find("number") ? (int)a.find("number")->asNum(0) : 0;
+  auto need_repo = [&] { if (!gh_repo_ok(repo)) throw std::runtime_error("repo als owner/name angeben"); };
+  std::string st = gs("state"); if (st != "closed" && st != "all") st = "open";
+  if (act == "list_repos") return gh_pick(github_api("GET", "/user/repos?per_page=50&sort=updated"), {"full_name", "private", "description", "default_branch", "updated_at"}, 50);
+  if (act == "get_repo") { need_repo(); return gh_pick(github_api("GET", "/repos/" + repo), {"full_name", "description", "default_branch", "open_issues_count", "stargazers_count", "pushed_at", "html_url"}); }
+  if (act == "list_issues") { need_repo(); return gh_pick(github_api("GET", "/repos/" + repo + "/issues?per_page=30&state=" + st), {"number", "title", "state", "user.login", "pull_request.url", "updated_at"}); }
+  if (act == "get_issue") { need_repo(); return gh_pick(github_api("GET", "/repos/" + repo + "/issues/" + std::to_string(num)), {"number", "title", "state", "body", "user.login", "html_url", "comments"}); }
+  if (act == "list_prs") { need_repo(); return gh_pick(github_api("GET", "/repos/" + repo + "/pulls?per_page=30&state=" + st), {"number", "title", "state", "user.login", "head.ref", "base.ref", "updated_at"}); }
+  if (act == "get_pr") { need_repo(); return gh_pick(github_api("GET", "/repos/" + repo + "/pulls/" + std::to_string(num)), {"number", "title", "state", "body", "head.ref", "base.ref", "mergeable", "additions", "deletions", "changed_files", "html_url"}); }
+  if (act == "pr_files") { need_repo(); return gh_pick(github_api("GET", "/repos/" + repo + "/pulls/" + std::to_string(num) + "/files?per_page=50"), {"filename", "status", "additions", "deletions", "patch"}, 50); }
+  if (act == "get_file" || act == "list_dir") {
+    need_repo(); if (path.find("..") != std::string::npos) throw std::runtime_error("path ungültig");
+    std::string q = "/repos/" + repo + "/contents/" + path + (ref.empty() ? "" : "?ref=" + url_encode(ref));
+    std::string out = github_api("GET", q);
+    Val v; if (!mj::parse(out, v)) return out.substr(0, 6000);
+    if (v.isArr()) return gh_pick(out, {"name", "type", "size", "path"}, 200);
+    std::string content = v.find("content") ? v.find("content")->asStr() : "";
+    content.erase(std::remove(content.begin(), content.end(), '\n'), content.end());
+    std::string dec = base64_decode(content);
+    if (dec.size() > 20000) dec = dec.substr(0, 20000) + "\n…[gekürzt]";
+    return dec;
+  }
+  if (act == "search_code") { std::string q = gs("query"); if (!repo.empty()) { need_repo(); q += " repo:" + repo; } return gh_pick(github_api("GET", "/search/code?per_page=20&q=" + url_encode(q)), {"path", "repository.full_name", "html_url"}, 20); }
+  if (act == "search_issues") { std::string q = gs("query"); if (!repo.empty()) { need_repo(); q += " repo:" + repo; } return gh_pick(github_api("GET", "/search/issues?per_page=20&q=" + url_encode(q)), {"number", "title", "state", "html_url"}, 20); }
+  if (act == "create_issue") {
+    need_repo(); Val b = Val::object(); b["title"] = gs("title"); b["body"] = gs("body");
+    if (gs("title").empty()) throw std::runtime_error("title fehlt");
+    return gh_pick(github_api("POST", "/repos/" + repo + "/issues", mj::dump(b)), {"number", "html_url"});
+  }
+  if (act == "comment_issue") {
+    need_repo(); if (num <= 0 || gs("body").empty()) throw std::runtime_error("number und body nötig");
+    Val b = Val::object(); b["body"] = gs("body");
+    return gh_pick(github_api("POST", "/repos/" + repo + "/issues/" + std::to_string(num) + "/comments", mj::dump(b)), {"id", "html_url"});
+  }
+  throw std::runtime_error("Unbekannte GitHub-Aktion: " + act);
+}
 static Val brave_search(const std::string &query) {
   if (BRAVE_KEY.empty())
     throw std::runtime_error("Brave API-Key fehlt.");
@@ -1332,6 +1425,37 @@ static CmdResult guest_command(const std::string &vm,
     r.out = "Zeitlimit (" + std::to_string(timeout) + "s) ueberschritten.";
   }
   return r;
+}
+// Room memory is versioned in the bot's git-memory (gitmem -> Gitea): one
+// commit per change (remember/edit/delete). Best effort, async, serialised;
+// skipped while offline (Gitea is not reachable then) and re-synced later.
+static std::mutex MEMGIT_MTX;
+static std::atomic<bool> MEMGIT_DIRTY{false};
+static void memory_git_sync(const std::string &bot_id, const std::string &why) {
+  std::string vm, json;
+  {
+    std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
+    int idx = agent_index(bot_id);
+    if (idx < 0) return;
+    auto v = AGENTS[idx].find("vm"); vm = v ? v->asStr() : "";
+    auto mem = AGENTS[idx].find("memory");
+    json = mem ? mj::dump(*mem) : "[]";
+  }
+  if (vm.empty() || vm == "keine" || !env("MAG_TEST_NO_MEMGIT", "").empty()) return;
+  if (OFFLINE.load()) { MEMGIT_DIRTY = true; return; }
+  std::thread([vm, json, why] {
+    std::lock_guard<std::mutex> g(MEMGIT_MTX);
+    std::string b64;
+    { static const char *t = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+      size_t i = 0; for (; i + 2 < json.size(); i += 3) { unsigned n = ((unsigned char)json[i] << 16) | ((unsigned char)json[i+1] << 8) | (unsigned char)json[i+2];
+        b64 += t[n >> 18]; b64 += t[(n >> 12) & 63]; b64 += t[(n >> 6) & 63]; b64 += t[n & 63]; }
+      if (i + 1 == json.size()) { unsigned n = (unsigned char)json[i] << 16; b64 += t[n >> 18]; b64 += t[(n >> 12) & 63]; b64 += "=="; }
+      else if (i + 2 == json.size()) { unsigned n = ((unsigned char)json[i] << 16) | ((unsigned char)json[i+1] << 8); b64 += t[n >> 18]; b64 += t[(n >> 12) & 63]; b64 += t[(n >> 6) & 63]; b64 += '='; } }
+    if (b64.size() > 7000) return; // guest-run argument limit
+    CmdResult r = guest_command(vm, "f=$(mktemp) && echo " + b64 + " | base64 -d > \"$f\" && gitmem remember room-memory \"$(cat \"$f\")\" >/dev/null 2>&1; rc=$?; rm -f \"$f\"; exit $rc", 60);
+    if (r.code != 0) { MEMGIT_DIRTY = true; std::cerr << "memory git sync (" << why << ") failed: " << r.out.substr(0, 200) << "\n"; }
+    else MEMGIT_DIRTY = false;
+  }).detach();
 }
 static std::mutex VM_IP_MTX;
 static std::map<std::string, std::pair<std::string, int64_t>> VM_IP_CACHE;
@@ -1894,6 +2018,7 @@ static std::string tools_json(int bot_idx, bool web) {
     defs = {T_LIST_FILES, T_SPEAK, T_SEE_IMAGE, T_REMEMBER};
   (void)web; // always registered: a changing tool list breaks the prompt cache
   defs.push_back(T_WEB_SEARCH);
+  defs.push_back(T_GITHUB); // always registered (cache); token checked at call
   if (has_vm) {
     for (const char *d :
          {T_BROWSER_OPEN, T_BROWSER_CLICK, T_BROWSER_TYPE, T_BROWSER_READ,
@@ -2403,6 +2528,8 @@ static std::string dispatch_tool(int bot_idx, const std::string &name,
       return "Screenshot geteilt: " + public_url(rec.find("stored")->asStr());
     }
   }
+  if (name == "github")
+    return github_tool(a);
   if (name == "remember") {
     remember_fact(bot_id, getstr("fact"), getstr("source"));
     return "Gemerkt.";
@@ -3125,6 +3252,12 @@ static bool set_offline(bool off) {
   OFFLINE = off;
   WEB_ENABLED = !off;
   write_file(STATE_DIR + "/offline", off ? "on" : "off");
+  if (!off && MEMGIT_DIRTY.load()) {
+    std::vector<std::string> ids;
+    { std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
+      for (auto &ag : AGENTS) if (auto i = ag.find("id")) ids.push_back(i->asStr()); }
+    for (auto &i : ids) memory_git_sync(i, "resync");
+  }
   Val e = Val::object();
   e["type"] = "offline";
   e["offline"] = off;

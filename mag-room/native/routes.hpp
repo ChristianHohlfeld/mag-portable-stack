@@ -506,6 +506,7 @@ static void route(int fd, Req &r, bool bridge = false) {
         entry["edited"] = (long)now_s();
       }
       save_agents();
+      memory_git_sync(id, m == "DELETE" ? "delete" : "edit");
       Val out = Val::object();
       out["ok"] = true;
       out["memory"] = mem;

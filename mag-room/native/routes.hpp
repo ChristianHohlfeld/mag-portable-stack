@@ -164,6 +164,30 @@ static void route(int fd, Req &r, bool bridge = false) {
       send_json(fd, 400, mj::dump(jobs_mcp_rpc_error(nullptr,-32700,"Parse error")));
       return;
     }
+    // 2026-07-28 Streamable HTTP requires method/name headers and per-call
+    // metadata. Older 2025-era MCP clients retain the initialize path.
+    auto protocol = r.hdrs.find("mcp-protocol-version");
+    if (protocol != r.hdrs.end() && protocol->second == "2026-07-28") {
+      const std::string method = req.find("method") ? req.find("method")->asStr() : "";
+      auto mh = r.hdrs.find("mcp-method");
+      const Val *params = req.find("params");
+      const Val *meta = params ? params->find("_meta") : nullptr;
+      if (mh == r.hdrs.end() || mh->second != method ||
+          !meta || !meta->find("io.modelcontextprotocol/protocolVersion") ||
+          meta->find("io.modelcontextprotocol/protocolVersion")->asStr() != "2026-07-28" ||
+          !meta->find("io.modelcontextprotocol/clientCapabilities")) {
+        send_json(fd, 400, mj::dump(jobs_mcp_rpc_error(req.find("id"),-32602,
+                       "MCP method/header/_meta mismatch"))); return;
+      }
+      if (method == "tools/call") {
+        auto nh = r.hdrs.find("mcp-name");
+        const std::string name = params && params->find("name") ? params->find("name")->asStr() : "";
+        if (nh == r.hdrs.end() || nh->second != name) {
+          send_json(fd, 400, mj::dump(jobs_mcp_rpc_error(req.find("id"),-32602,
+                         "Mcp-Name mismatch"))); return;
+        }
+      }
+    }
     if (!req.find("id")) {
       // JSON-RPC notifications never receive a JSON-RPC response.
       send_response(fd, 202, "application/json", "");

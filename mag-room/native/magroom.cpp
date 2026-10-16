@@ -596,11 +596,12 @@ static int browser_agent_index(const std::string &id_or_vm) {
 static std::string next_vm() {
   std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
   std::vector<std::string> used;
-  for (auto &a : AGENTS) {
-    auto v = a.find("vm");
-    if (v)
-      used.push_back(v->asStr());
-  }
+  for (auto *list : {&AGENTS, &PARKED})
+    for (auto &a : *list) {
+      auto v = a.find("vm");
+      if (v)
+        used.push_back(v->asStr());
+    }
   for (int n = 1;; n++) {
     std::string c = "agent" + std::to_string(n);
     if (std::find(used.begin(), used.end(), c) == used.end())
@@ -2857,6 +2858,28 @@ int main() {
 
   ensure_state();
   load_agents();
+  // MAG_ROOM_SINGLE_BOT_VM=on: the single bot keeps its full sandbox (own KVM VM
+  // with shell, git/Gitea, MCP, browser) via the existing spawn path instead of
+  // running chat-only. Spawned in the background; tools appear once it is up.
+  if (!SINGLE_BOT.empty() && env("MAG_ROOM_SINGLE_BOT_VM", "off") == "on")
+    std::thread([] {
+      int idx = agent_index(SINGLE_BOT);
+      if (idx < 0 || !bot_field(idx, "vm").empty())
+        return;
+      std::string vm = next_vm();
+      auto result = run_argv({"sudo", "-n", AGENT_CTL, "spawn", vm}, 600);
+      if (result.code != 0) {
+        std::cerr << "single-bot VM spawn failed: " << result.out << "\n";
+        return;
+      }
+      std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
+      idx = agent_index(SINGLE_BOT);
+      if (idx >= 0) {
+        AGENTS[idx]["vm"] = vm;
+        save_agents();
+      }
+      std::cerr << "single-bot VM " << vm << " ready\n";
+    }).detach();
   FILES = load_json_array(FILES_JSON);
   ROOM = load_json_array(ROOM_JSON);
   UI_DEFAULT = read_file(UI_FILE);

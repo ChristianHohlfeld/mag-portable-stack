@@ -459,4 +459,32 @@ class SingleBot(unittest.TestCase):
  def test_frontend_single_bot_contract(self):
   html=self.request('/',raw=True).decode()
   for needle in ("state.single_bot","$('add-agent').hidden=!!single","a.id===single"):self.assertIn(needle,html)
+class SingleBotVM(unittest.TestCase):
+ """MAG_ROOM_SINGLE_BOT_VM=on: the single bot gets its own VM (full sandbox) via the normal spawn path."""
+ @classmethod
+ def setUpClass(cls):
+  if subprocess.run(['sudo','-n','true'],capture_output=True).returncode!=0:raise unittest.SkipTest('needs sudo -n (spawn runs via sudo -n AGENT_CTL)')
+  cls.tmp=tempfile.TemporaryDirectory();cls.state=pathlib.Path(cls.tmp.name)/'state';cls.state.mkdir()
+  cls.ctl=pathlib.Path(cls.tmp.name)/'ctl';cls.ctl.write_text('#!/bin/sh\necho "$@" >> "$(dirname "$0")/ctl.log"\n');cls.ctl.chmod(0o755)
+  cls.state.joinpath('agents.json').write_text(json.dumps([{'id':'alt','name':'Alter Bot','vm':'agent1','memory':[]}]))
+  cls.model=http.server.ThreadingHTTPServer(('127.0.0.1',0),Model);threading.Thread(target=cls.model.serve_forever,daemon=True).start();cls.ui=port();cls.bridge=port()
+  env=dict(os.environ,MAG_ROOM_STATE=str(cls.state),MAG_ROOM_PORT=str(cls.ui),MAG_ROOM_BRIDGE_PORT=str(cls.bridge),MAG_ROOM_BRIDGE_IP='127.0.0.1',MAG_ROOM_BACKEND=f'http://127.0.0.1:{cls.model.server_port}/v1/chat/completions',MAG_ROOM_UI=str(ROOT/'mag-room/web/index.html'),MAG_ROOM_STATIC=str(ROOT/'mag-room/static'),MAG_ROOM_MODEL_STATUS=str(pathlib.Path(cls.tmp.name)/'model-status.json'),MAG_ROOM_SINGLE_BOT='deepseek-chat',MAG_ROOM_SINGLE_BOT_VM='on',MAG_ROOM_AGENT_CTL=str(cls.ctl))
+  cls.log=open(pathlib.Path(cls.tmp.name)/'server.log','a');cls.proc=subprocess.Popen([str(ROOT/'build/magroom')],env=env,stdout=cls.log,stderr=cls.log)
+  for _ in range(100):
+   try:Native.request.__func__(cls,'/healthz',raw=True);return
+   except Exception:time.sleep(.03)
+  raise RuntimeError('Native startup failed')
+ @classmethod
+ def tearDownClass(cls):
+  cls.proc.terminate();cls.proc.wait(timeout=5);cls.log.close();cls.model.shutdown();cls.tmp.cleanup()
+ request=classmethod(Native.request.__func__)
+ def test_single_bot_gets_own_vm_not_a_parked_one(self):
+  for _ in range(100):
+   vm=self.request('/api/state')['agents'][0]['vm']
+   if vm:break
+   time.sleep(.05)
+  self.assertEqual(vm,'agent2','must not reuse the parked bot VM agent1')
+  self.assertIn('spawn agent2',(self.ctl.parent/'ctl.log').read_text())
+  stored={a['id']:a for a in json.loads(self.state.joinpath('agents.json').read_text())}
+  self.assertEqual(stored['deepseek-chat']['vm'],'agent2');self.assertEqual(stored['alt']['vm'],'agent1')
 if __name__=='__main__':unittest.main(verbosity=2)

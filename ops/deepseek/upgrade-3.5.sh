@@ -160,10 +160,7 @@ sysctl -q --load=/etc/sysctl.d/60-mag-llm.conf
 unlock
 trap 'relock' EXIT
 systemctl stop mag-llm.service
-if systemctl cat mag-model-pin.service >/dev/null 2>&1; then
-  systemctl disable --now mag-model-pin.service || true
-  rm -f "$PIN"
-fi
+# Pin bleibt aktiv, bis das neue llama bereit ist: so lädt Neustart UND ein Rollback aus dem RAM.
 install -m 0644 "$tmpunit" "$UNIT"; rm -f "$tmpunit"
 systemctl daemon-reload
 systemctl reset-failed mag-model-pin.service 2>/dev/null || true
@@ -173,6 +170,14 @@ systemctl start mag-llm.service
 relock; trap - EXIT
 echo "   lädt … (Seiten sind meist noch im Page-Cache, dann geht es deutlich schneller als von der Platte)"
 wait_ready 10800 || rollback
+# erst jetzt den Pin aus 3.2 entfernen (neues llama hält die Gewichte selbst)
+if systemctl cat mag-model-pin.service >/dev/null 2>&1; then
+  unlock
+  systemctl disable --now mag-model-pin.service || true
+  rm -f "$PIN"
+  relock
+  systemctl reset-failed mag-model-pin.service 2>/dev/null || true
+fi
 printf '   bereit nach %d min %02d s\n' $(((SECONDS - t0) / 60)) $(((SECONDS - t0) % 60))
 pid=$(systemctl show -p MainPID --value mag-llm.service)
 if grep -q 'DeepSeek-V4-Flash-0731.*\.gguf' "/proc/$pid/maps" 2>/dev/null; then

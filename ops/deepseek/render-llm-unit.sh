@@ -26,9 +26,13 @@ m = re.search(r'--load-mode\b(.*?)(?=\n\s*-{1,2}[a-z]|\Z)', h, re.S)
 block = m.group(1) if m else ""
 def tok(v): return re.search(r'(?<![\w+-])' + re.escape(v) + r'(?![\w+-])', block) is not None
 base = ["read", "load", "ram", "memory", "copy", "malloc", "alloc", "buffer", "host", "nommap", "no-mmap", "dio", "direct", "directio"]
+# nur echte Aufzählungswerte ("- wert: …"), nicht Wörter aus Beschreibungen ("slower load")
+vals = set(re.findall(r'^\s*-\s+([\w+]+):', block, re.M))
+if m and "mlock" in vals and "mmap" in vals:
+    print("--load-mode mlock"); sys.exit(0)   # mlock ohne mmap (eigener Prozessspeicher)
 if m:
     for v in [b + "+mlock" for b in base] + base:
-        if tok(v):
+        if (v in vals if vals else tok(v)) and v not in ("dio", "direct", "directio"):
             print(f"--load-mode {v}"); sys.exit(0)
 if has_flag("--no-mmap"):
     print("--no-mmap --mlock" if has_flag("--mlock") else "--no-mmap"); sys.exit(0)

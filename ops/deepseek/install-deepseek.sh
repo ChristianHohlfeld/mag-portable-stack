@@ -37,7 +37,7 @@ help=$(runuser -u chris -- "$BIN" serve --help 2>&1 || true)
 missing=0
 while read -r f; do
   if grep -qE -- "(^|[[:space:],])${f}([[:space:],=]|$)" <<<"$help"; then echo "   ok    $f"; else echo "   FEHLT $f"; missing=1; fi
-done < <(sed -n '/^ExecStart=/,/^[^ ]/p' "$UNIT" | grep -oE '(^|[[:space:]])--[a-z0-9-]+' | tr -d ' ' | sort -u)
+done < <(sed -n '/^ExecStart=/,/^[^ ]/p' "$UNIT" | sed 's|^ExecStart=/usr/bin/numactl --interleave=all ||' | grep -oE '(^|[[:space:]])--[a-z0-9-]+' | tr -d ' ' | grep -vx -- '--interleave' | sort -u)
 [[ $missing -eq 0 ]] || { echo "   FEHLER: unbekannte Flags – ops/mag-llm.service anpassen"; exit 1; }
 grep -q 'mmap+mlock' <<<"$help" || echo "   WARNUNG: --help nennt 'mmap+mlock' nicht wörtlich – Ausgabe von --load-mode prüfen"
 
@@ -66,6 +66,7 @@ if [[ -e /etc/systemd/system/deepseek.service ]]; then
 fi
 
 echo "== 6. mag-llm.service (DeepSeek, :8090, Start erst nach Freigabe) + Gate-Timer"
+command -v numactl >/dev/null || run apt-get install -y --no-install-recommends numactl   # ExecStart nutzt numactl
 if [[ -e /etc/systemd/system/mag-llm.service ]]; then
   run cp -aL /etc/systemd/system/mag-llm.service "$BACKUP/mag-llm.service.bak-$ts"
   run rm -f /etc/systemd/system/mag-llm.service

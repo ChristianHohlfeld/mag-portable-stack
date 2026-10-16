@@ -21,8 +21,10 @@ class Model(http.server.BaseHTTPRequestHandler):
    scripted=type(self).script.pop(0) if type(self).script else None
    chunks=scripted if scripted is not None else ([type(self).reply] if type(self).reply is not None else ['Hallo ','aus dem ','Modell.'])
    for piece in chunks:
-    delta=piece if isinstance(piece,dict) else {'content':piece}
-    event=json.dumps({'choices':[{'delta':delta}]}).encode()
+    if isinstance(piece,dict) and '_chunk' in piece:event=json.dumps(piece['_chunk']).encode()
+    else:
+     delta=piece if isinstance(piece,dict) else {'content':piece}
+     event=json.dumps({'choices':[{'delta':delta}]}).encode()
     for payload in [b'data: '+event+b'\n\n',b'']:
      if payload:self.wfile.write(('%x\r\n'%len(payload)).encode()+payload+b'\r\n');self.wfile.flush()
    end=b'data: [DONE]\n\n';self.wfile.write(('%x\r\n'%len(end)).encode()+end+b'\r\n0\r\n\r\n');self.wfile.flush()
@@ -207,6 +209,36 @@ class Native(unittest.TestCase):
   for needle in ('id="model-state"','id="model-banner"',"event.type==='model'","event.type==='bot_status'",'id="agent-chat-only"','vm:false',
                  "if(!a.vm)continue","if(!bot.vm){","Zeichen Überlegung","#model-state .txt{display:none}"):
    self.assertIn(needle,html)
+ def test_09h_prompt_is_cache_friendly(self):
+  # Stable system prompt; volatile memory/files only in the [Kontext] tail; transcript grows at its end.
+  def turn(text):
+   n=len(self.request('/api/state')['room'])
+   self.request('/api/message',{'text':text,'bots':['test']});self.wait_room('Hallo aus dem Modell.');self.wait_idle()
+   return n,Model.calls[-1]['messages']
+  n1,m1=turn('Cache eins')
+  self.request('/api/agent/test/remember',{'fact':'Neue Erinnerung zwischen zwei Runden'})
+  n2,m2=turn('Cache zwei')
+  self.assertEqual(m1[0]['content'],m2[0]['content'],'System prompt must not change between turns')
+  self.assertNotIn('Neue Erinnerung',m2[0]['content'])
+  self.assertIn('[Kontext]',m2[1]['content']);self.assertIn('Neue Erinnerung',m2[1]['content'].split('[Kontext]')[1])
+  start=lambda n:((n+1-30)//10)*10 if n+1>30 else 0   # +1: the new user message
+  if start(n1)==start(n2):
+   self.assertTrue(m2[1]['content'].startswith(m1[1]['content'].split('\n[Kontext]')[0]),'Transcript must only grow at its end')
+  self.assertTrue(Model.calls[-1]['return_progress']);self.assertTrue(Model.calls[-1]['cache_prompt'])
+ def test_09i_chat_only_bot_has_no_vm_tools(self):
+  names=[t['function']['name'] for t in Model.calls[-1]['tools']]
+  for vm_tool in ('run_command','fetch_room_file','share_room_file','browser_open'):self.assertNotIn(vm_tool,names)
+  self.assertIn('remember',names)
+  self.assertIn('KEINE eigene VM',Model.calls[-1]['messages'][0]['content'])
+ def test_09j_prompt_progress_does_not_break_reply(self):
+  prog={'_chunk':{'choices':[],'prompt_progress':{'total':4694,'cache':0,'processed':2048,'time_ms':100000}}}
+  Model.script=[[prog,'Fertig ','gelesen.']]
+  try:
+   self.request('/api/message',{'text':'Fortschritt','bots':['test']})
+   self.wait_room('Fertig gelesen.');self.wait_idle()
+  finally:Model.script=[]
+  html=self.request('/',raw=True).decode()
+  for needle in ("event.type==='progress'",'Liest Verlauf','streamClock'):self.assertIn(needle,html)
  def test_10_verified_tool_step_can_continue_once(self):
   command={'tool_calls':[{'index':0,'id':'call_test_1','function':{'name':'remember','arguments':'{"fact":"autonomy test","source":"test"}'}}]}
   Model.script=[[command],['Arbeit begonnen [[MAG:WEITER]]'],['Arbeit abgeschlossen [[MAG:ENDE]]']]

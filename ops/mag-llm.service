@@ -27,7 +27,9 @@ WorkingDirectory=/home/chris
 ExecStartPre=/usr/local/lib/mag-deepseek/model-gate.sh check-stamp
 ExecStartPre=/usr/bin/test -r /home/chris/llama-templates/deepseek-ai-DeepSeek-V4-Flash-0731.jinja
 
-ExecStart=/home/chris/.local/bin/llama serve \
+# NUMA: Speicherrichtlinie "verschränkt" -> auch llamas eigene Puffer (umsortierte Gewichte, KV-Cache)
+# liegen gleichmäßig auf beiden Sockeln; --numa distribute verteilt die Threads passend dazu.
+ExecStart=/usr/bin/numactl --interleave=all /home/chris/.local/bin/llama serve \
   --model /home/chris/models/deepseek-v4/DeepSeek-V4-Flash-0731-UD-Q4_K_XL-00001-of-00005.gguf \
   --alias deepseek-v4-flash-0731 \
   --host 127.0.0.1 \
@@ -35,7 +37,7 @@ ExecStart=/home/chris/.local/bin/llama serve \
   --ctx-size 32768 \
   --parallel 1 \
   --threads 28 \
-  --threads-batch 56 \
+  --threads-batch 28 \
   --numa distribute \
   --batch-size 1024 \
   --ubatch-size 1024 \
@@ -55,8 +57,7 @@ ExecStart=/home/chris/.local/bin/llama serve \
 Restart=always
 RestartSec=10
 # Laden von ~155 GB + mlock dauert Minuten (Type=simple: kein Start-Timeout nötig)
-TimeoutStartSec=infinity
-TimeoutStopSec=180
+TimeoutStopSec=120
 
 MemorySwapMax=0
 MemoryLow=180G

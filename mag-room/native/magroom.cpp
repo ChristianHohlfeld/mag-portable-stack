@@ -59,6 +59,7 @@ static std::string MODEL, BACKEND, BIND_HOST, STATE_DIR, FILES_DIR, AGENTS_JSON,
     MODEL_STATUS_FILE = "/var/lib/mag-llm/status.json";
 static int PORT = 8766, BRIDGE_PORT = 8767, BROWSERD_PORT = 9225,
            BACKEND_PORT = 8080, MAX_TOKENS = 700, MAX_HISTORY = 30,
+           HISTORY_STEP = 10,
            MAX_TOOL_ROUNDS = 6, MAX_ROOM_MESSAGES = 400,
            TOOL_OUTPUT_LIMIT = 8000, MAX_UPLOAD = 64 * 1024 * 1024,
            MEMORY_LIMIT = 60, GUEST_TIMEOUT = 70,
@@ -900,6 +901,19 @@ static const char *ROOM_RULES =
     "Du schreibst ausschliesslich als {name}; niemals fuer den Nutzer oder "
     "einen anderen Bot, ohne Namenspraefix. Sprich standardmaessig Deutsch, "
     "kurz und praezise. "
+    "{vmrules}"
+    "Deine ERINNERUNG (dauerhaft, raumunabhaengig; ergaenze sie mit "
+    "remember) und die aktuell geteilten Raumdateien stehen im Abschnitt "
+    "[Kontext] am Ende des Raumverlaufs.\n"
+    "Wenn du Werkzeuge benutzt hast, schliesse IMMER mit einer kurzen "
+    "sichtbaren Antwort an den Raum ab. Falls nach erfolgreicher "
+    "Werkzeugaktion ein konkreter weiterer Schritt zum Nutzerziel noetig "
+    "ist, beende mit [[MAG:WEITER]], andernfalls mit [[MAG:ENDE]]. "
+    "Marker sind interne Steuerzeichen und werden vor dem Speichern "
+    "entfernt. Der Raumverlauf mit Sprecherlabels folgt.";
+// Stable per bot: kept in the system prompt so llama's prompt cache can reuse
+// it. Everything that changes between turns goes to the [Kontext] tail.
+static const char *VM_RULES =
     "Du besitzt eine EIGENE, isolierte Linux-VM namens {vm}. Du erreichst sie "
     "ueber run_command; Befehle laufen als unprivilegierter Nutzer bot. Du "
     "hast einen eigenen Gitea-Administrationsaccount. Lies "
@@ -907,21 +921,11 @@ static const char *ROOM_RULES =
     "niemals Zugangsdaten. Du "
     "hast ausserdem einen eigenen persistenten Browser in deiner VM und kannst "
     "damit surfen. Stuetze Aussagen ueber deine VM auf echte Werkzeugausgaben "
-    "und erfinde nichts. "
-    "Deine ERINNERUNG (dauerhaft, raumunabhaengig; ergaenze sie mit "
-    "remember):\n{memory}\n"
-    "Wenn du Werkzeuge benutzt hast, schliesse IMMER mit einer kurzen "
-    "sichtbaren Antwort an den Raum ab. Falls nach erfolgreicher "
-    "Werkzeugaktion ein konkreter weiterer Schritt zum Nutzerziel noetig "
-    "ist, beende mit [[MAG:WEITER]], andernfalls mit [[MAG:ENDE]]. "
-    "Marker sind interne Steuerzeichen und werden vor dem Speichern "
-    "entfernt. Der Raumverlauf mit Sprecherlabels folgt.";
+    "und erfinde nichts. ";
 static const char *CHAT_ONLY_RULES =
-    "Du bist {name}, ein Chat-Bot auf MAG (Modell {model}). {persona} "
-    "Kein eigener Rechner/Browser. Kurz und praezise auf Deutsch antworten. "
-    "Keine unaufgeforderten Listen. Du schreibst nur als {name}. "
-    "Erinnerung (ergaenze mit remember):\n{memory}\n"
-    "Raumverlauf mit Sprecherlabels folgt.";
+    "Du bist ein reiner Gespraechs-Bot: Du hast KEINE eigene VM, keine "
+    "Konsole und keinen Browser. Behaupte nie, Befehle ausgefuehrt oder "
+    "Seiten geoeffnet zu haben. ";
 static const char *AUTOTALK_RULES =
     "\nDies ist die Fortsetzung eines bereits vom Nutzer beauftragten "
     "Arbeitsvorgangs. Reagiere NICHT auf die letzte Botnachricht als neue "
@@ -943,8 +947,10 @@ static const char *FILES_RULES =
     "\n\nGemeinsamer Raum-Dateispeicher: Werkzeuge list_room_files, "
     "fetch_room_file(name) (in deine VM nach /home/bot/room/), "
     "share_room_file(path,name) (aus deiner VM in den Raum), speak(text) "
-    "(Sprachausgabe), see_image(name) (OCR). Aktuell geteilte "
-    "Dateien:\n{files}";
+    "(Sprachausgabe), see_image(name) (OCR).";
+static const char *FILES_RULES_CHAT =
+    "\n\nGemeinsamer Raum-Dateispeicher: Werkzeuge list_room_files, "
+    "speak(text) (Sprachausgabe), see_image(name) (OCR).";
 static const char *FRONTEND_RULES =
     "\n\n[Browser] Eigener persistenter Chromium in deiner VM: browser_open, "
     "browser_click, browser_type, browser_pointer, browser_read, browser_screenshot, "
@@ -968,46 +974,55 @@ static std::string build_system(int bot_idx, bool autotalk,
   std::string persona = bot_field(bot_idx, "persona");
   std::string vm = bot_field(bot_idx, "vm", "keine");
   std::string bot_id = bot_field(bot_idx, "id");
-  const bool chat_only = vm.empty() || vm == "keine";
-  // Chat-only: short stable system (no VM/browser/Gitea walls of text).
-  // Keeps prompt prefix small + cacheable across turns.
-  std::string system = chat_only ? CHAT_ONLY_RULES : ROOM_RULES;
+  const bool has_vm = vm != "keine" && !vm.empty();
+  (void)bot_id;
+  (void)autotalk;
+  (void)other;
+  // Only stable text here (cacheable prefix). Memory, file list and the
+  // autotalk instruction change between turns -> build_context_tail().
+  std::string system = ROOM_RULES;
+  replaceAll(system, "{vmrules}", has_vm ? VM_RULES : CHAT_ONLY_RULES);
   replaceAll(system, "{name}", name);
   replaceAll(system, "{persona}", persona);
-  replaceAll(system, "{vm}", vm.empty() ? "keine" : vm);
+  replaceAll(system, "{vm}", vm);
   replaceAll(system, "{model}", MODEL);
-  replaceAll(system, "{memory}", memory_manifest(bot_id));
-  if (chat_only) {
-    system += web ? WEB_RULES : "\nWebsuche ist AUS.";
-    // Skip FILES_RULES / FRONTEND_RULES — huge and unused without a VM.
-  } else {
-    system += web ? WEB_RULES : "\nWebsuche ist AUS.";
-    std::string fr = FILES_RULES;
-    replaceAll(fr, "{files}", file_manifest());
-    system += fr;
+  system += web ? WEB_RULES : "\nWebsuche ist AUS.";
+  system += has_vm ? FILES_RULES : FILES_RULES_CHAT;
+  if (has_vm)
     system += FRONTEND_RULES;
-  }
+  return system;
+}
+static std::string build_context_tail(int bot_idx, bool autotalk,
+                                      const std::string &other) {
+  std::string out = "\n[Kontext]\nDeine ERINNERUNG:\n";
+  out += memory_manifest(bot_field(bot_idx, "id"));
+  out += "\nAktuell geteilte Raumdateien:\n" + file_manifest();
   if (autotalk) {
     std::string at = AUTOTALK_RULES;
     replaceAll(at, "{other}", other.empty() ? "der Nutzer" : other);
-    system += at;
+    out += "\n" + at;
   }
-  return system;
+  return out;
 }
 static std::string build_transcript() {
   std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
   std::string out = "[Raumverlauf]\n";
-  size_t start =
-      ROOM.size() > (size_t)MAX_HISTORY ? ROOM.size() - MAX_HISTORY : 0;
+  // Trim in blocks of HISTORY_STEP instead of sliding by one message: the
+  // transcript then only grows at its end and llama reuses the cached prefix
+  // for up to HISTORY_STEP turns (keeps MAX_HISTORY .. MAX_HISTORY+STEP-1).
+  size_t start = 0;
+  if (ROOM.size() > (size_t)MAX_HISTORY) {
+    size_t step = (size_t)std::max(1, HISTORY_STEP);
+    start = ((ROOM.size() - MAX_HISTORY) / step) * step;
+  }
   for (size_t i = start; i < ROOM.size(); i++) {
     const Val &m = ROOM[i];
     std::string role = m.find("role") ? m.find("role")->asStr() : "";
     std::string name = m.find("name") ? m.find("name")->asStr()
                                       : (role == "user" ? "Nutzer" : "Bot");
     std::string content = m.find("content") ? m.find("content")->asStr() : "";
-    // Keep transcript short: long posts dominated DeepSeek PP (4.5k tok / ~4 min).
-    if (content.size() > 1200)
-      content = content.substr(0, 1200) + "…";
+    if (content.size() > 4000)
+      content = content.substr(0, 4000);
     auto f = m.find("file");
     if (f && f->isObj())
       content +=
@@ -1247,14 +1262,8 @@ static std::string ensure_browser(const std::string &vm) {
   // must not permit one bot to impersonate another bot's video/input.
   if (vm.empty() || vm.size() > 32 ||
       vm.find_first_not_of("abcdefghijklmnopqrstuvwxyz0123456789-") !=
-          std::string::npos) {
-    std::cerr << "Invalid browser VM identity: received='" << vm
-              << "' (len=" << vm.size()
-              << ") expected non-empty [a-z0-9-]{1,32}; chat-only bots have "
-                 "empty vm and must not call ensure_browser"
-              << std::endl;
+          std::string::npos)
     throw std::runtime_error("Invalid browser VM identity");
-  }
   ensure_audit_proxy(vm);
   const std::string keydir = STATE_DIR + "/browser-udp-keys";
   std::filesystem::create_directories(keydir);
@@ -1536,23 +1545,22 @@ struct TurnReport {
 
 static std::string tools_json(int bot_idx, bool web) {
   std::string vm = bot_field(bot_idx, "vm", "keine");
-  const bool chat_only = vm.empty() || vm == "keine";
-  // Chat-only: tiny tool set (no run_command/browser — those need a VM and
-  // inflate the prompt by thousands of tokens every turn).
+  const bool has_vm = !vm.empty() && vm != "keine";
+  // Chat-only bots get no VM tools (no run_command/fetch/share): fewer prompt
+  // tokens and no tool calls that can only fail.
   std::vector<std::string> defs;
-  if (chat_only) {
-    defs = {T_REMEMBER};
-    if (web)
-      defs.push_back(T_WEB_SEARCH);
-  } else {
+  if (has_vm)
     defs = {T_RUN_COMMAND, T_LIST_FILES, T_FETCH_FILE, T_SHARE_FILE,
             T_SPEAK,       T_SEE_IMAGE,  T_REMEMBER};
-    if (web)
-      defs.push_back(T_WEB_SEARCH);
+  else
+    defs = {T_LIST_FILES, T_SPEAK, T_SEE_IMAGE, T_REMEMBER};
+  if (web)
+    defs.push_back(T_WEB_SEARCH);
+  if (has_vm) {
     for (const char *d :
          {T_BROWSER_OPEN, T_BROWSER_CLICK, T_BROWSER_TYPE, T_BROWSER_READ,
-          T_BROWSER_SHOT, T_BROWSER_POINTER, T_BROWSER_BACK, T_BROWSER_SCROLL,
-          T_SCREENSHOT_ROOM, T_DL_FRONTEND, T_PUB_FRONTEND})
+          T_BROWSER_SHOT, T_BROWSER_POINTER, T_BROWSER_BACK, T_BROWSER_SCROLL, T_SCREENSHOT_ROOM,
+          T_DL_FRONTEND, T_PUB_FRONTEND})
       defs.push_back(d);
   }
   std::string arr = "[";
@@ -1623,7 +1631,9 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   body["temperature"] = temperature;
   body["max_tokens"] = MAX_TOKENS;
   body["stream"] = true;
-  // llama.cpp prompt cache: reuse KV for stable system/tool prefix across turns.
+  // llama.cpp: stream prompt_progress {total,cache,processed,time_ms} while
+  // the prompt is evaluated (minutes on CPU) instead of staying silent.
+  body["return_progress"] = true;
   body["cache_prompt"] = true;
   // DeepSeek-V4-Flash-0731 template: enable_thinking (bool) and
   // reasoning_effort "high" | "max". GPT-OSS' "low" no longer applies.
@@ -1683,6 +1693,20 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
     Val chunk;
     if (!mj::parse(data, chunk))
       continue;
+    if (auto pp = chunk.find("prompt_progress")) {
+      if (pp->isObj()) {
+        auto num = [&](const char *k) {
+          auto v = pp->find(k);
+          return v && v->type == Val::NUM ? (long long)v->asNum() : -1LL;
+        };
+        Val pr = Val::object();
+        pr["total"] = (double)num("total");
+        pr["cache"] = (double)num("cache");
+        pr["processed"] = (double)num("processed");
+        pr["time_ms"] = (double)num("time_ms");
+        on_delta("progress", mj::dump(pr));
+      }
+    }
     if (auto err = chunk.find("error")) {
       auto msg = err->isObj() && err->find("message")
                      ? err->find("message")->asStr()
@@ -2025,7 +2049,7 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
   {
     Val u = Val::object();
     u["role"] = "user";
-    u["content"] = build_transcript();
+    u["content"] = build_transcript() + build_context_tail(bot_idx, autotalk, other);
     messages.push_back(u);
   }
   std::string tools = tools_json(bot_idx, web);
@@ -2074,11 +2098,23 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
       break;
     auto on_delta = [&](const std::string &kind, const std::string &piece) {
       Val e = Val::object();
+      if (kind == "progress") {
+        Val pr;
+        if (!mj::parse(piece, pr) || !pr.isObj())
+          return;
+        e["type"] = "progress";
+        e["bot"] = bot_id;
+        e["name"] = bot_name;
+        for (const char *k : {"total", "cache", "processed", "time_ms"})
+          if (auto v = pr.find(k))
+            e[k] = *v;
+        publish(mj::dump(e));
+        return;
+      }
       e["type"] = kind == "reasoning" ? "reasoning" : "delta";
       e["bot"] = bot_id;
       e["name"] = bot_name;
       e["text"] = piece;
-      e["delta"] = piece; // frontend streams event.delta || event.text
       publish(mj::dump(e));
     };
     Turn t = backend_turn(messages, round == MAX_TOOL_ROUNDS ? "[]" : tools,
@@ -2566,6 +2602,7 @@ int main() {
     REASONING_EFFORT = "high";
   MODEL_STATUS_FILE = env("MAG_ROOM_MODEL_STATUS", "/var/lib/mag-llm/status.json");
   MAX_HISTORY = envi("MAG_ROOM_MAX_HISTORY", 30);
+  HISTORY_STEP = envi("MAG_ROOM_HISTORY_STEP", 10);
 
   STATE_DIR = env("MAG_ROOM_STATE", "/var/lib/magbot/room");
   FILES_DIR = STATE_DIR + "/files";

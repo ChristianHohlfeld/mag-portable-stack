@@ -99,6 +99,9 @@ let state={agents:[],room:[],files:[]},streams={},selected=new Set(),recorder=nu
 function notice(t=''){$('notice').textContent=t}async function api(path,body,method='POST'){const options={method};if(body!==undefined){options.body=typeof body==='string'?body:JSON.stringify(body);options.headers={'Content-Type':'application/json'}}const r=await fetch(path,options);const text=await r.text();let data;try{data=JSON.parse(text)}catch{data={error:text}}if(!r.ok)throw Error(data.error||r.statusText);return data}
 function safeMarkdown(t){return DOMPurify.sanitize(marked.parse(t||'',{breaks:true}))}function decorate(el){el.querySelectorAll('pre code').forEach(c=>{hljs.highlightElement(c);const b=document.createElement('button');b.textContent='Kopieren';b.className='copy';b.onclick=()=>navigator.clipboard.writeText(c.textContent);c.parentNode.appendChild(b)});el.querySelectorAll('a').forEach(a=>{a.target='_blank';a.rel='noopener noreferrer'})}
 function append(msg,scroll=true){const area=$('conversation');area.querySelector('.empty')?.remove();const div=document.createElement('article');div.className='message '+(msg.role==='user'?'user':'');div.dataset.id=msg.id||'';const meta=document.createElement('div');meta.className='meta';const name=document.createElement('strong');name.textContent=msg.name||'Bot';const time=document.createElement('span');time.textContent=new Date((msg.ts||Date.now()/1000)*1000).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});meta.append(name,time);div.append(meta);const content=document.createElement('div');content.className='content';content.innerHTML=safeMarkdown(msg.content);decorate(content);div.append(content);if(msg.file){const f=msg.file;const a=document.createElement('a');a.href='/api/file/'+encodeURIComponent(f.stored);a.textContent=f.name;div.append(a);if(f.mime?.startsWith('audio/')){const audio=document.createElement('audio');audio.controls=true;audio.src=a.href;div.append(audio)}if(f.mime?.startsWith('image/')){const image=document.createElement('img');image.src=a.href;image.alt=f.name;content.append(image)}}area.append(div);if(scroll)area.scrollTop=area.scrollHeight;return div}
+function streamClock(s){if(!s.started)return '';const t=Math.floor((Date.now()-s.started)/1000);return t<2?'':' · '+(t<60?t+' s':Math.floor(t/60)+' min '+String(t%60).padStart(2,'0')+' s')}
+function fmtN(n){return Number(n||0).toLocaleString('de-DE')}
+setInterval(()=>{for(const id of Object.keys(streams)){if(!streams[id].text)updateStream(id)}},1000);
 function updateStream(botId,immediate=false){
  const s=streams[botId];if(!s)return;
  if(!s.node||!s.node.isConnected){s.node=append({role:'assistant',name:s.name,content:s.text||s.status||'Denkt nach …'});}
@@ -108,7 +111,7 @@ function updateStream(botId,immediate=false){
   const content=s.node.querySelector('.content');
   if(!s.text){
    s.node.classList.add('processing');
-   content.textContent=s.status||'Denkt nach …';
+   content.textContent=(s.status||'Denkt nach …')+streamClock(s);
   }else{
    s.node.classList.remove('processing');
    // Sanitize on every incremental render, never inject untrusted Markdown.
@@ -540,10 +543,13 @@ events.onmessage=e=>{
   const event=JSON.parse(e.data),id=event.bot;
   if(event.type==='bot_start'){
    const prev=streams[id];
-   streams[id]={name:event.name,text:'',status:'Denkt nach …',node:prev?.node||null,frame:0};
+   streams[id]={name:event.name,text:'',status:'Denkt nach …',node:prev?.node||null,frame:0,started:Date.now()};
    updateStream(id,true);
   }else if(event.type==='delta'){
    const s=streams[id];if(s){s.text+=event.text||'';updateStream(id)}
+  }else if(event.type==='progress'){
+   // llama.cpp prompt_progress: Verlauf lesen (auf CPU minutenlang, vorher stumm)
+   const s=streams[id];if(s&&!s.text&&!s.thought){const total=+event.total||0,cache=Math.max(0,+event.cache||0),done=Math.max(0,+event.processed||0);if(total>0){const pct=Math.min(100,Math.round(done/total*100));s.status='Liest Verlauf … '+fmtN(done)+' / '+fmtN(total)+' Tokens ('+pct+' %'+(cache>0?', '+fmtN(cache)+' aus Cache':'')+')';updateStream(id)}}
   }else if(event.type==='reasoning'){
    const s=streams[id];if(s&&!s.text){s.thought=(s.thought||0)+(event.text||'').length;const now=Date.now();if(!s.thoughtAt||now-s.thoughtAt>700){s.thoughtAt=now;s.status='Denkt nach … ('+s.thought+' Zeichen Überlegung)';updateStream(id)}}
   }else if(event.type==='tool'){

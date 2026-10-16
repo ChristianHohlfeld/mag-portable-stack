@@ -5,6 +5,9 @@
 #   sudo bash ops/deepseek/warm.sh install --apply    einrichten (startet mag-llm NICHT neu)
 #   sudo bash ops/deepseek/warm.sh status             liegt das Modell im RAM? gesperrt?
 #   sudo bash ops/deepseek/warm.sh restart-llm        gewollter Neustart von llama, Modell bleibt im RAM
+#   sudo bash ops/deepseek/warm.sh numa               Verteilung des Modells auf die NUMA-Knoten anzeigen
+#   sudo bash ops/deepseek/warm.sh renuma --yes       EINMALIG kalt neu laden, gleichmäßig auf beide Sockel
+#                                                     (nur wenn 'numa' fast alles auf einem Knoten zeigt)
 #
 # Drei Schichten:
 #  1. llama sperrt seine Seiten selbst (--load-mode mmap+mlock, LimitMEMLOCK=infinity).
@@ -57,7 +60,51 @@ status() {
   [[ -f /etc/apt/apt.conf.d/52mag-no-auto-reboot ]] && echo "  unattended-upgrades: kein Auto-Reboot" || echo "  unattended-upgrades: Auto-Reboot nicht abgeschaltet"
 }
 
+numa() {
+  command -v numastat >/dev/null || { echo "numastat fehlt (apt install numactl)"; return; }
+  for u in mag-model-pin mag-llm; do
+    pid=$(systemctl show -p MainPID --value "$u" 2>/dev/null || echo 0)
+    [[ -n "$pid" && "$pid" != 0 ]] || { echo "== $u läuft nicht"; continue; }
+    echo "== $u (PID $pid), MB pro Knoten"
+    numastat -p "$pid" 2>/dev/null | grep -E 'Node|Private|File|Total|^-+' | sed 's/^/  /'
+  done
+  echo "== Page-Cache der Modelldateien pro Knoten (Summe aller Prozesse)"
+  numastat -m 2>/dev/null | grep -E 'Node|FilePages|Mlocked|AnonPages|MemFree' | sed 's/^/  /'
+}
+
+renuma() {
+  [[ "${2:-}" == "--yes" ]] || { echo "Lädt das Modell EINMAL kalt neu (Dauer = 155 GB von der Platte). Mit '--yes' bestätigen."; exit 1; }
+  command -v vmtouch >/dev/null || { echo "vmtouch fehlt – erst 'warm.sh install --apply'"; exit 1; }
+  grep -q 'numactl --interleave=all' /etc/systemd/system/mag-llm.service \
+    || { echo "mag-llm.service ohne 'numactl --interleave=all' – erst 'warm.sh install --apply'"; exit 1; }
+  # RefuseManualStop nur für diesen Vorgang aufheben (Laufzeit-Drop-in, verschwindet spätestens beim Reboot)
+  for u in mag-llm mag-model-pin; do
+    install -d /run/systemd/system/$u.service.d
+    printf '[Unit]\nRefuseManualStop=no\n' > /run/systemd/system/$u.service.d/99-renuma.conf
+  done
+  trap 'rm -f /run/systemd/system/mag-llm.service.d/99-renuma.conf /run/systemd/system/mag-model-pin.service.d/99-renuma.conf; systemctl daemon-reload' EXIT
+  systemctl daemon-reload
+  echo "== 1. llama und Pin stoppen"
+  systemctl stop mag-llm.service mag-model-pin.service
+  echo "== 2. Modellseiten aus dem Page-Cache entfernen"
+  vmtouch -q -e -m 64G "${FILES[@]}"
+  echo "== 3. Pin liest verschränkt neu (Fortschritt alle 30 s)"
+  systemctl start mag-model-pin.service
+  for _ in $(seq 1 720); do
+    line=$(vmtouch -m 64G "${FILES[@]}" 2>/dev/null | grep 'Resident Pages' || true)
+    echo "   $line"
+    grep -q ' 100%' <<<"$line" && break
+    systemctl is-active --quiet mag-model-pin || { echo "mag-model-pin ist ausgefallen"; journalctl -u mag-model-pin -n 20 --no-pager; exit 1; }
+    sleep 30
+  done
+  echo "== 4. llama starten (lädt aus dem RAM)"
+  systemctl start mag-llm.service
+  echo "Fertig. Bereit, sobald: curl -s 127.0.0.1:8766/api/model-status -> ready. Danach: warm.sh numa"
+}
+
 case "$cmd" in
+  numa) numa ;;
+  renuma) renuma "$@" ;;
   install)
     for f in "$SRC/ops/mag-model-pin.service" "$SRC/ops/mag-llm.service" "$SRC"/ops/warm/{needrestart-mag.conf,apt-no-auto-reboot.conf,sysctl-mag-llm.conf}; do
       [[ -f "$f" ]] || { echo "fehlt: $f"; exit 1; }

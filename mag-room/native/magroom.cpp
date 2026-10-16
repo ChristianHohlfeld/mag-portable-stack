@@ -2119,11 +2119,18 @@ static std::string dispatch_tool(int bot_idx, const std::string &name,
       return lower.size() >= x.size() &&
              lower.compare(lower.size() - x.size(), x.size(), x) == 0;
     };
-    if (ends(".html") || ends(".htm")) {
-      std::string abs = path[0] == '/' ? path : "/home/bot/" + path;
+    Val rec;
+    if ((ends(".html") || ends(".htm")) && mj::parse(result.out, rec) &&
+        rec.isObj() && rec.find("stored")) {
+      // The VM browser only opens http(s): use the room file URL on the VM
+      // bridge, rendered in place (?view=1, CSP sandbox).
+      std::string page = "http://" + BRIDGE_IP + ":" +
+                         std::to_string(BRIDGE_PORT) +
+                         public_url(rec.find("stored")->asStr()) +
+                         "?view=1&token=" + bridge_token();
       try {
-        (void)browser_json(vm, "/navigate?url=" + url_encode("file://" + abs));
-        return result.out + "\nIn deinem Browser geoeffnet: file://" + abs;
+        (void)browser_json(vm, "/navigate?url=" + url_encode(page));
+        return result.out + "\nIn deinem Browser geoeffnet (Live-Ansicht im Raum).";
       } catch (const std::exception &e) {
         return result.out + "\nBrowser-Oeffnen fehlgeschlagen: " + e.what();
       }

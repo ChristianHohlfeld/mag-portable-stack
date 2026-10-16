@@ -21,6 +21,9 @@ NOPROXY="localhost,127.0.0.1,::1,$host,192.168.122.1"
 echo "== System-Trust-Store"
 install -D -m 0644 "$CA" /usr/local/share/ca-certificates/mag-audit-ca.crt
 update-ca-certificates >/dev/null
+# certutil laeuft als jeweiliger Nutzer: die CA aus dem (root-only) Temp-Verzeichnis ist fuer ihn
+# nicht lesbar -> ab hier die weltlesbare installierte Kopie verwenden.
+CA=/usr/local/share/ca-certificates/mag-audit-ca.crt
 
 echo "== Proxy-Variablen (System, Login-Shells, apt)"
 for v in http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY; do

@@ -222,11 +222,18 @@ static void route(int fd, Req &r, bool bridge = false) {
                                mime == "text/javascript")
                                   ? "attachment"
                                   : "inline";
+    // ?view=1 renders an HTML page in place (bot browser, preview), still in
+    // a CSP sandbox: opaque origin, scripts only, no access to room cookies.
+    std::string csp = "sandbox";
+    if (mime == "text/html" && qparam(r.query, "view") == "1") {
+      disposition = "inline";
+      csp = "sandbox allow-scripts";
+    }
     send_response(
         fd, 200, mime, data,
         {{"Content-Disposition",
           disposition + "; filename=\"" + record.find("name")->asStr() + "\""},
-         {"Content-Security-Policy", "sandbox"}});
+         {"Content-Security-Policy", csp}});
     return;
   }
   if (path == "/api/frontend") {

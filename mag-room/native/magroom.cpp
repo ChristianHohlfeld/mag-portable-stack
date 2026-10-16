@@ -990,7 +990,9 @@ static const char *FILES_RULES_CHAT =
 static const char *FRONTEND_RULES =
     "\n\n[Browser] Eigener persistenter Chromium in deiner VM: browser_open, "
     "browser_click, browser_type, browser_pointer, browser_read, browser_screenshot, "
-    "browser_back, browser_scroll. [Frontend-Wartung] Du kannst die "
+    "browser_back, browser_scroll (Startseite google.de). HTML-Seiten, die du "
+    "per share_room_file teilst, oeffnen sich automatisch in deinem Browser und "
+    "erscheinen als Vorschau im Chat. [Frontend-Wartung] Du kannst die "
     "Raum-Oberflaeche verbessern: screenshot_room (UI pruefen), "
     "download_frontend, mit run_command editieren, publish_frontend (alle "
     "laden neu), screenshot_room zur Kontrolle.";
@@ -2092,6 +2094,23 @@ static std::string dispatch_tool(int bot_idx, const std::string &name,
                       70);
     if (result.code)
       throw std::runtime_error("Guest upload failed");
+    // HTML pages the bot writes open right away in its own browser, so the
+    // room's live browser shows them (chat shows an inline preview card).
+    auto lower = filename;
+    std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+    auto ends = [&](const std::string &x) {
+      return lower.size() >= x.size() &&
+             lower.compare(lower.size() - x.size(), x.size(), x) == 0;
+    };
+    if (ends(".html") || ends(".htm")) {
+      std::string abs = path[0] == '/' ? path : "/home/bot/" + path;
+      try {
+        (void)browser_json(vm, "/navigate?url=" + url_encode("file://" + abs));
+        return result.out + "\nIn deinem Browser geoeffnet: file://" + abs;
+      } catch (const std::exception &e) {
+        return result.out + "\nBrowser-Oeffnen fehlgeschlagen: " + e.what();
+      }
+    }
     return result.out;
   }
   if (name == "speak") {

@@ -258,7 +258,7 @@ int main(int argc, char **argv) {
                                  "--user-data-dir=/home/bot/browserd/profile",
                                  "--window-size=1440,900",
                                  "--no-first-run",
-                                 "about:blank"};
+                                 "https://google.de"};  // Startseite des Bot-Browsers
       std::vector<char *> args;
       for (auto &arg : a) args.push_back(arg.data());
       args.push_back(nullptr);

@@ -1,20 +1,21 @@
 # MAG Local LLM – DeepSeek-V4-Flash-0731 (unsloth UD-Q4_K_XL, ~155 GB) via llama.cpp, CPU-only.
 # Installiert durch ops/deepseek/install-deepseek.sh nach /etc/systemd/system (Kopie, nicht Symlink).
+# Vorher: GPT-OSS-120B (Git-Verlauf, ~/mag-infra/systemd/mag-llm.service.bak-gpt-oss).
 #
-# PERSISTENCE (Chris): Model must NEVER be unloaded — reload takes ~30+ min.
-# - Restart=always, RefuseManualStop=yes, OOMScoreAdjust=-1000, LimitMEMLOCK=infinity
-# - No PartOf/BindsTo to mag-120/audit; deploy/rollout must not restart this unit unless ExecStart flags change
-# - No idle/sleep unload; --load-mode mmap+mlock keeps weights resident
-# - Do NOT drop_caches on start (keeps page cache / vmtouch warm)
-#
-# - Listen 127.0.0.1:8090 only; clients use :8080 mag-audit-gateway
-# - Starts after SHA-256 gate stamp (ConditionPathExists)
+# - Lauscht NUR intern auf 127.0.0.1:8090. Raum, Grok und Ali sprechen mit :8080 = mag-audit-gateway,
+#   das jeden Aufruf vollständig protokolliert; :8090 ist per nftables nur für root/mag-audit offen.
+# - Startet erst nach bestandener SHA-256-Vollprüfung: mag-model-gate.timer prüft nach dem Download,
+#   schreibt den Freigabe-Stempel und startet die Unit. Vorher ist der Start ein No-op (Condition).
+# - Flags gegen `llama serve --help` (build 11630) geprüft; install-deepseek.sh bricht bei unbekannten ab.
+# - Warm halten: llama sperrt seine Seiten (mmap+mlock); zusätzlich hält mag-model-pin.service die
+#   GGUF-Dateien unabhängig vom llama-Prozess gesperrt im Page-Cache. Ein Neustart von llama liest
+#   dann aus dem RAM statt von der Platte. Hier deshalb KEIN drop_caches mehr.
+#   Gewollter Neustart (z.B. neue Flags):  sudo bash ops/deepseek/warm.sh restart-llm
 [Unit]
 Description=MAG Local LLM - DeepSeek-V4-Flash-0731 via llama.cpp (CPU)
-After=network-online.target mag-audit-nft.service
-Wants=network-online.target
+After=network-online.target mag-audit-nft.service mag-model-pin.service
+Wants=network-online.target mag-model-pin.service
 ConditionPathExists=/var/lib/mag-llm/verified.stamp
-# Block accidental systemctl stop/restart (use systemctl kill only in emergencies)
 RefuseManualStop=yes
 
 [Service]
@@ -25,7 +26,6 @@ WorkingDirectory=/home/chris
 
 ExecStartPre=/usr/local/lib/mag-deepseek/model-gate.sh check-stamp
 ExecStartPre=/usr/bin/test -r /home/chris/llama-templates/deepseek-ai-DeepSeek-V4-Flash-0731.jinja
-# NOTE: deliberately NO drop_caches here — unloading page cache forces a cold mlock next time.
 
 ExecStart=/home/chris/.local/bin/llama serve \
   --model /home/chris/models/deepseek-v4/DeepSeek-V4-Flash-0731-UD-Q4_K_XL-00001-of-00005.gguf \
@@ -51,20 +51,20 @@ ExecStart=/home/chris/.local/bin/llama serve \
   --metrics \
   --no-webui
 
-# Always come back after crash/OOM/kill; never stay down
+# immer wieder hochkommen (auch nach sauberem Ende); manuelles Stoppen ist gesperrt (RefuseManualStop)
 Restart=always
-RestartSec=5
-# Loading 155GB+mlock takes many minutes — no start timeout (Type=simple)
+RestartSec=10
+# Laden von ~155 GB + mlock dauert Minuten (Type=simple: kein Start-Timeout nötig)
 TimeoutStartSec=infinity
 TimeoutStopSec=180
 
 MemorySwapMax=0
 MemoryLow=180G
 OOMScoreAdjust=-1000
+# systemd-oomd darf diese Unit nie als Opfer wählen
+ManagedOOMPreference=omit
 LimitNOFILE=1048576
 LimitMEMLOCK=infinity
-# Prefer staying alive under memory pressure
-OOMPolicy=continue
 
 [Install]
 WantedBy=multi-user.target

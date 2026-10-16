@@ -13,7 +13,10 @@ printf '%s\n' "$ready"
 state=$(python3 -I -c 'import json,sys; print(json.loads(sys.argv[1]).get("model",{}).get("state",""))' "$ready")
 case "$state" in
   ready)
-    systemctl is-active --quiet mag-llm.service ;;
+    systemctl is-active --quiet mag-llm.service
+    if systemctl cat mag-model-pin.service >/dev/null 2>&1 && ! systemctl is-active --quiet mag-model-pin.service; then
+      echo "WARN: mag-model-pin inaktiv – ein llama-Neustart würde das Modell von der Platte laden" >&2
+    fi ;;
   downloading|verifying|verified|starting|loading)
     echo "WARN: Modell noch nicht bereit ($state)" >&2 ;;
   *)

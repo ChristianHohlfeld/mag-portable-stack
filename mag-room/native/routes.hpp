@@ -245,11 +245,12 @@ static void route(int fd, Req &r, bool bridge = false) {
       error_json(fd, 404, "Unknown bot ID or VM name");
       return;
     }
-    std::string vm = bot_field(idx, "vm");
-    if (vm.empty()) {
-      error_json(fd, 400, "Chat-Bot ohne VM (kein Browser)");
+    // Chat-only bots (vm "") own no VM: no browser, screen or console.
+    if (bot_field(idx, "vm").empty()) {
+      error_json(fd, 400, "Nur-Chat-Bot ohne eigene VM: kein Browser und keine Konsole");
       return;
     }
+    std::string vm = bot_field(idx, "vm");
     const bool jpeg = qparam(r.query, "format") == "jpeg";
     HttpResp shot = browser_call(ensure_browser(vm), BROWSERD_PORT, "GET",
                                  jpeg ? "/screenshot.jpg" : "/screenshot.png",
@@ -282,15 +283,16 @@ static void route(int fd, Req &r, bool bridge = false) {
       error_json(fd, 404, "Unknown browser or VM");
       return;
     }
+    // Chat-only bots (vm "") own no VM: no browser, screen or console.
+    if (bot_field(idx, "vm").empty()) {
+      error_json(fd, 400, "Nur-Chat-Bot ohne eigene VM: kein Browser und keine Konsole");
+      return;
+    }
     if (r.body.empty() || r.body.size() > 65536) {
       error_json(fd, 400, "SDP offer required");
       return;
     }
     std::string vm = bot_field(idx, "vm");
-    if (vm.empty()) {
-      error_json(fd, 400, "Chat-Bot ohne VM (kein Browser/UDP)");
-      return;
-    }
     ensure_browser(vm); // triggers one VM-owned hot browser only if necessary
     std::string answer;
     long status = 0;
@@ -320,6 +322,11 @@ static void route(int fd, Req &r, bool bridge = false) {
     int idx = browser_agent_index(url_decode(id));
     if (idx < 0) {
       error_json(fd, 404, "Unknown bot ID or VM name");
+      return;
+    }
+    // Chat-only bots (vm "") own no VM: no browser, screen or console.
+    if (bot_field(idx, "vm").empty()) {
+      error_json(fd, 400, "Nur-Chat-Bot ohne eigene VM: kein Browser und keine Konsole");
       return;
     }
     const std::vector<std::string> allowed{"navigate", "click", "type",

@@ -193,11 +193,19 @@ class Native(unittest.TestCase):
   try:
    self.assertEqual(a['vm'],'');self.assertEqual(a['id'],'deepseek-chat')
    self.assertIn('deepseek-chat',[x['id'] for x in self.request('/api/state')['agents']])
+   # No browser/console for chat-only bots: clear 400 instead of "Invalid browser VM identity"
+   with self.assertRaises(urllib.error.HTTPError) as ctx:
+    self.request('/api/browser-live/offer?bot=deepseek-chat',{'type':'offer','sdp':'x'})
+   self.assertEqual(ctx.exception.code,400)
+   self.assertIn('Nur-Chat-Bot',json.loads(ctx.exception.read())['error'])
+   self.error(400,'/api/screen/deepseek-chat')
+   self.error(400,'/api/browser/deepseek-chat/read',{})
   finally:
    self.assertTrue(self.request('/api/agents/deepseek-chat',method='DELETE')['ok'])
  def test_09g_frontend_model_status_contract(self):
   html=self.request('/',raw=True).decode()
-  for needle in ('id="model-state"','id="model-banner"',"event.type==='model'","event.type==='bot_status'",'id="agent-chat-only"','vm:false'):
+  for needle in ('id="model-state"','id="model-banner"',"event.type==='model'","event.type==='bot_status'",'id="agent-chat-only"','vm:false',
+                 "if(!a.vm)continue","if(!bot.vm){","Zeichen Überlegung","#model-state .txt{display:none}"):
    self.assertIn(needle,html)
  def test_10_verified_tool_step_can_continue_once(self):
   command={'tool_calls':[{'index':0,'id':'call_test_1','function':{'name':'remember','arguments':'{"fact":"autonomy test","source":"test"}'}}]}

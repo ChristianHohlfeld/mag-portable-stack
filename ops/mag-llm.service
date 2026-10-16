@@ -33,7 +33,7 @@ ExecStart=/home/chris/.local/bin/llama serve \
   --ctx-size 32768 \
   --parallel 1 \
   --threads 28 \
-  --threads-batch 28 \
+  --threads-batch 56 \
   --numa distribute \
   --batch-size 1024 \
   --ubatch-size 1024 \

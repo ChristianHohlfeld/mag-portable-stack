@@ -246,6 +246,10 @@ static void route(int fd, Req &r, bool bridge = false) {
       return;
     }
     std::string vm = bot_field(idx, "vm");
+    if (vm.empty()) {
+      error_json(fd, 400, "Chat-Bot ohne VM (kein Browser)");
+      return;
+    }
     const bool jpeg = qparam(r.query, "format") == "jpeg";
     HttpResp shot = browser_call(ensure_browser(vm), BROWSERD_PORT, "GET",
                                  jpeg ? "/screenshot.jpg" : "/screenshot.png",
@@ -283,6 +287,10 @@ static void route(int fd, Req &r, bool bridge = false) {
       return;
     }
     std::string vm = bot_field(idx, "vm");
+    if (vm.empty()) {
+      error_json(fd, 400, "Chat-Bot ohne VM (kein Browser/UDP)");
+      return;
+    }
     ensure_browser(vm); // triggers one VM-owned hot browser only if necessary
     std::string answer;
     long status = 0;

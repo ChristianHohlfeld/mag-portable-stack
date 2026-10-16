@@ -835,9 +835,18 @@ class Native(unittest.TestCase):
   self.assertEqual((login,name),('ada@github','Ada Lovelace'));self.assertEqual(mod.header_name(name),'Ada%20Lovelace')
   self.assertEqual(mod.valid_remote('100.123.114.16:443'),'100.123.114.16:443');self.assertEqual(mod.valid_remote('8.8.8.8'),'')
   self.assertRaises(ValueError,mod.parse_whois,{'UserProfile':{'LoginName':'bad login'}})
-  caddy=(ROOT/'ops/private-access/Caddyfile').read_text()
-  for needle in ('request_header -X-Tailscale-User','request_header -X-Tailscale-Name','request_header -X-Tailscale-Login','forward_auth 127.0.0.1:8765','copy_headers X-Tailscale-User X-Tailscale-Name X-Tailscale-Login','header_up X-Mag-Remote','bind 100.123.114.16','reverse_proxy 127.0.0.1:8766'):
-   self.assertIn(needle,caddy)
+  self.assertFalse((ROOT/'ops/private-access/Caddyfile').exists())
+  nginx=(ROOT/'ops/private-access/mag-room.nginx.conf').read_text()
+  for needle in ('listen 100.123.114.16:443','auth_request /_mag_whois',
+                 'proxy_pass http://127.0.0.1:8765/whois',
+                 'proxy_set_header X-Tailscale-User ""',
+                 'proxy_set_header X-Tailscale-Name ""',
+                 'proxy_set_header X-Tailscale-Login ""',
+                 'proxy_set_header X-Tailscale-User $mag_user',
+                 'proxy_set_header X-Mag-Remote "$remote_addr:$remote_port"',
+                 'proxy_pass http://127.0.0.1:8766',
+                 'proxy_buffering off','"no-store"'):
+   self.assertIn(needle,nginx)
   policy=(ROOT/'ops/tailscale/policy.hujson').read_text()
   self.assertIn('100.123.114.16',policy);self.assertIn('tcp:443',policy);self.assertIn('group:mag-guests',policy)
   self.assertNotIn('tcp:22',policy);self.assertNotIn('"*"',policy)

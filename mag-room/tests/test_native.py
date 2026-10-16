@@ -86,7 +86,7 @@ class Native(unittest.TestCase):
   self.request('/api/stop',{},headers={'Content-Type':'application/json','X-No-Token':'1','Sec-Fetch-Site':'same-origin'});self.request('/api/queue/resume',{})
   self.error(403,'/api/stop',{},headers={'Content-Type':'application/json','X-No-Token':'1','Sec-Fetch-Site':'cross-site'})
   html=self.request('/',raw=True).decode()
-  self.assertIn('rel="icon" href="/favicon.svg"',html);self.assertIn('rel="icon" href="/favicon.ico"',html)
+  self.assertIn('rel="icon" href="/favicon.svg?v=',html);self.assertIn('rel="icon" href="/favicon.ico?v=',html)
   for bad in ['confirm(','alert(','prompt(','Eigene Modelle','Montserrat','fonts.googleapis']:self.assertNotIn(bad,html)
   for f,ct in [('/favicon.svg','image/svg+xml'),('/favicon.ico','image/x-icon'),('/static/InterVariable.woff2','font/woff2')]:
    with urllib.request.urlopen(f'http://127.0.0.1:{self.ui}'+f,timeout=10) as r:self.assertEqual(r.headers['Content-Type'].split(';')[0],ct)
@@ -386,7 +386,7 @@ class Native(unittest.TestCase):
    if e.get('type')=='delta':text+=e.get('text','')
    if e.get('type') in('bot_done','idle'):break
   r.close()
-  self.assertEqual(ev[0],'bot_start','replay starts the running turn');self.assertEqual(ev[1],'delta')
+  self.assertEqual(ev[0],'bot_start','replay starts the running turn');self.assertEqual([e for e in ev[1:] if e!='step'][0],'delta','status steps may precede the replayed text')
   self.assertEqual(text,''.join('Wort%d '%i for i in range(25)),'replay + live = exact answer, no gap/duplicate')
   s=self.wait_idle();self.assertEqual(s['room'][-1]['content'].strip(),text.strip())
   r=urllib.request.urlopen(f'http://127.0.0.1:{self.ui}/api/events',timeout=3)
@@ -731,6 +731,212 @@ class Native(unittest.TestCase):
    self.state.joinpath('agents.json').write_text(saved)
    self.start()
   self.assertIn(b'<html',self.request('/bot/test/',raw=True))
+
+ def test_16_interim_narration_is_a_step_not_the_answer(self):
+  first=[{'content':'Ich prüfe die Webseite.\n'},{'tool_calls':[{'index':0,'id':'call_step','function':{'name':'remember','arguments':'{"fact":"aus dem schritt"}'}}]}]
+  Model.script=[first,['Die Seite ist gelesen.']]
+  try:
+   self.request('/api/message',{'text':'Schau auf die Seite','bots':['test']})
+   self.wait_room('Die Seite ist gelesen.');self.wait_idle()
+  finally:
+   Model.script=[]
+  ans=[m for m in self.request('/api/state')['room'] if m.get('role')=='assistant' and 'Seite ist gelesen' in (m.get('content') or '')]
+  self.assertTrue(ans)
+  self.assertNotIn('Ich prüfe die Webseite', ans[-1]['content'])
+  steps=ans[-1].get('steps') or []
+  self.assertTrue(any('Webseite' in s for s in steps), steps)
+  self.assertTrue(any('Merkt sich' in s for s in steps), steps)
+  self.assertGreaterEqual(ans[-1].get('elapsed_s', -1), 0)
+  self.assertNotIn('[[MAG:', ans[-1]['content'])
+  html=self.request('/',raw=True).decode()
+  for needle in ('work-status','hängt?','Fertig ·',"event.type==='step'",'phase-hung','phase-error','Liest Verlauf'):
+   self.assertIn(needle, html)
+ def test_17_scoped_room_memory_and_workspace(self):
+  self.wait_idle()
+  self.request('/api/agent/test/remember',{'fact':'trennung-bleibt'})
+  self.request('/api/agent/test/say',{'text':'Trennungsnachricht'})
+  room=self.request('/api/state')['room']
+  mid=[m['id'] for m in room if m.get('content')=='Trennungsnachricht'][-1]
+  uploaded=self.request('/api/upload?name=trennung.txt',b'trennung')
+  stored=uploaded['stored']
+  self.error(400,'/api/room/messages/nicht-hex',method='DELETE')
+  self.error(400,'/api/room/files/..%2Fetc%2Fpasswd',method='DELETE')
+  self.error(404,'/api/undo/abcdef12',{})
+  self.error(403,'/api/room/clear',{},headers={'Content-Type':'application/json','X-No-Token':'1'})
+  gone=self.request('/api/room/messages/'+mid,method='DELETE')
+  self.assertNotIn(mid,[m['id'] for m in self.request('/api/state')['room']])
+  self.request('/api/undo/'+gone['undo'],{})
+  self.assertIn(mid,[m['id'] for m in self.request('/api/state')['room']])
+  removed=self.request('/api/room/files/'+stored,method='DELETE')
+  self.assertFalse(any(f.get('stored')==stored for f in self.request('/api/state')['files']))
+  self.error(404,'/api/file/'+stored)
+  self.request('/api/undo/'+removed['undo'],{})
+  self.assertEqual(self.request('/api/file/'+stored,raw=True),b'trennung')
+  self.assertTrue(any(x.get('text')=='trennung-bleibt' for x in self.request('/api/agents/test/memory')))
+  cleared=self.request('/api/agents/test/memory',method='DELETE')
+  self.assertEqual(self.request('/api/agents/test/memory'),[])
+  self.request('/api/undo/'+cleared['undo'],{})
+  self.assertTrue(any(x.get('text')=='trennung-bleibt' for x in self.request('/api/agents/test/memory')))
+  mem=self.request('/api/agents/test/memory')
+  wiped=self.request('/api/room/clear',{})
+  st=self.request('/api/state')
+  self.assertFalse(st['room']);self.assertFalse(st['files'])
+  self.assertEqual(self.request('/api/agents/test/memory'),mem)
+  self.assertFalse((self.state/'files'/stored).exists())
+  self.request('/api/undo/'+wiped['undo'],{})
+  st=self.request('/api/state')
+  self.assertTrue(any(m.get('id')==mid for m in st['room']))
+  self.assertTrue(any(f.get('stored')==stored for f in st['files']))
+  self.assertEqual(self.request('/api/file/'+stored,raw=True),b'trennung')
+  self.error(404,'/api/agents/kein-bot/workspace/reset',{})
+  html=self.request('/',raw=True).decode()
+  for needle in ('id="purge-dialog"','id="data-areas"','id="area-room"','id="area-memory"','id="area-work"','/api/room/clear','workspace/reset','Rückgängig','id="reset"','id="jump-bottom"','stickToBottom','AT_BOTTOM_PX','overflow-anchor:none','ResizeObserver','aria-label="Nach unten scrollen"'):
+   self.assertIn(needle, html)
+  self.assertNotIn('confirm(', html)
+  # Earlier tests may leave a synthetic VM alias. Clear it before /api/reset,
+  # which still cleans guest rooms, and before the chat-only workspace check.
+  agents=json.loads(self.state.joinpath('agents.json').read_text())
+  for a in agents:a['vm']=''
+  self.proc.terminate();self.proc.wait(timeout=5);self.log.close()
+  self.state.joinpath('agents.json').write_text(json.dumps(agents));self.start()
+  self.request('/api/agent/test/say',{'text':'Undo faellt weg'})
+  mid2=[m['id'] for m in self.request('/api/state')['room'] if m.get('content')=='Undo faellt weg'][-1]
+  dropped=self.request('/api/room/messages/'+mid2,method='DELETE')
+  self.request('/api/reset',{})
+  self.error(404,'/api/undo/'+dropped['undo'],{})
+  self.assertFalse(list(self.state.joinpath('files').iterdir()))
+  with self.assertRaises(urllib.error.HTTPError) as ctx:
+   self.request('/api/agents/test/workspace/reset',{})
+  self.assertEqual(ctx.exception.code,400)
+  self.assertIn('Nur-Chat-Bot',json.loads(ctx.exception.read())['error'])
+ def test_18_pwa_shell_is_not_cached(self):
+  import base64
+  def headers(path):
+   req=urllib.request.Request('http://127.0.0.1:%s%s'%(self.ui,path))
+   with urllib.request.urlopen(req,timeout=10) as r:
+    return dict(r.headers), r.read()
+  version=self.request('/api/version')['version']
+  self.assertTrue(version)
+  html_h, html=headers('/')
+  text=html.decode()
+  self.assertIn('no-store', html_h['Cache-Control']); self.assertNotIn('immutable', html_h['Cache-Control'])
+  self.assertIn('name="mag-version" content="%s"'%version, text)
+  self.assertIn('/static/marked.min.js?v=%s'%version, text)
+  for needle in ('rel="manifest"','beforeinstallprompt','Neue Version – aktualisieren',"serviceWorker.register('/sw.js')",'id="pwa-install"','id="pwa-push"','Zum Home-Bildschirm','Mitteilungen einschalten','id="update-toast"'):
+   self.assertIn(needle, text)
+  for bad in ('confirm(', 'alert(', 'prompt('):
+   self.assertNotIn(bad, text)
+  sw_h, sw=headers('/sw.js')
+  self.assertIn('no-store', sw_h['Cache-Control']); self.assertNotIn('%%MAG_VERSION%%', sw.decode()); self.assertIn(version, sw.decode())
+  man_h, man=headers('/manifest.webmanifest')
+  self.assertEqual(man_h['Content-Type'].split(';')[0], 'application/manifest+json')
+  self.assertIn('no-store', man_h['Cache-Control'])
+  manifest=json.loads(man)
+  self.assertEqual(manifest['name'], 'MAG'); self.assertEqual(manifest['short_name'], 'MAG')
+  self.assertEqual(manifest['display'], 'standalone')
+  self.assertEqual(manifest['theme_color'], '#050505'); self.assertEqual(manifest['background_color'], '#050505')
+  self.assertEqual({i['purpose'] for i in manifest['icons']}, {'any','maskable'})
+  st_h, body=headers('/static/marked.min.js?v='+urllib.request.quote(version))
+  self.assertIn('immutable', st_h['Cache-Control']); self.assertNotIn('no-store', st_h['Cache-Control']); self.assertIn(b'function', body)
+  plain_h, _=headers('/static/marked.min.js')
+  self.assertIn('no-store', plain_h['Cache-Control']); self.assertNotIn('immutable', plain_h['Cache-Control'])
+  api_h, _=headers('/api/state')
+  self.assertIn('no-store', api_h['Cache-Control'])
+  vapid=self.request('/api/push/vapid')
+  self.assertFalse(vapid['configured']); self.assertEqual(vapid['publicKey'], '')
+  pub=base64.urlsafe_b64encode(b'\x04'+b'\x11'*64).rstrip(b'=').decode()
+  auth=base64.urlsafe_b64encode(b'\x22'*16).rstrip(b'=').decode()
+  with self.assertRaises(urllib.error.HTTPError) as ctx:
+   self.request('/api/push/subscribe', {'endpoint':'https://push.example/p/1','keys':{'p256dh':pub,'auth':auth}})
+  self.assertEqual(ctx.exception.code, 503)
+  self.assertIn('nicht eingerichtet', json.loads(ctx.exception.read().decode())['error'])
+  icon_h, icon=headers('/static/icon-512.png?v='+urllib.request.quote(version))
+  self.assertTrue(icon.startswith(b'\x89PNG')); self.assertIn('immutable', icon_h['Cache-Control'])
+ def test_19_reactions_toggle_context_and_bot_turns(self):
+  self.wait_idle();Model.script=[];Model.reply=None
+  before=len(self.request('/api/state')['room'])
+  self.request('/api/message',{'text':'Danke fuer die Hilfe','bots':['test']})
+  for _ in range(120):
+   room=self.request('/api/state')['room']
+   if any(m.get('content')=='Danke fuer die Hilfe' for m in room[before:]) and any(m.get('role')=='assistant' and m.get('content')=='Hallo aus dem Modell.' for m in room[before:]):
+    break
+   time.sleep(.05)
+  else:self.fail('seed turn missing')
+  self.wait_idle()
+  room=self.request('/api/state')['room']
+  user=next(m for m in room if m.get('content')=='Danke fuer die Hilfe')
+  bot=next(m for m in reversed(room) if m.get('role')=='assistant' and m.get('bot')=='test' and m.get('content')=='Hallo aus dem Modell.')
+  path='/api/messages/'+bot['id']+'/reactions'
+  self.error(403,path,{'emoji':'👍'},headers={'Content-Type':'application/json','X-No-Token':'1'})
+  token=self.state.joinpath('token').read_text().strip()
+  self.error(403,path,{'emoji':'👍'},bridge=True,headers={'Authorization':'Bearer '+token,'Content-Type':'application/json'})
+  self.error(400,path,{'emoji':'lol'})
+  self.error(404,'/api/messages/abcd/reactions',{'emoji':'👍'})
+  calls=len(Model.calls)
+  added=self.request(path,{'emoji':'👍'})
+  self.assertTrue(added['ok']);self.assertTrue(added['on'])
+  self.assertEqual(added['reactions'],[{'emoji':'👍','actor':'user','name':'Nutzer'}])
+  time.sleep(.35)
+  self.assertEqual(len(Model.calls),calls,'a reaction must not start a model run')
+  off=self.request(path,{'emoji':'👍'})
+  self.assertFalse(off['on']);self.assertEqual(off['reactions'],[])
+  on=self.request(path,{'emoji':'👍'})
+  self.assertTrue(on['on'])
+  disk=json.loads(self.state.joinpath('room.json').read_text())
+  stored=next(m for m in disk if m['id']==bot['id'])
+  self.assertEqual(stored['reactions'],[{'emoji':'👍','actor':'user'}])
+  notes=json.loads(self.state.joinpath('reaction_notices.json').read_text())
+  self.assertTrue(any(n['message_id']==bot['id'] and n['emoji']=='👍' and n['bot']=='test' for n in notes))
+  self.assertNotIn('👍',self.state.joinpath('agents.json').read_text())
+  self.request('/api/message',{'text':'Und noch etwas','bots':['test']})
+  self.wait_idle()
+  ctx=Model.calls[-1]['messages'][1]['content']
+  self.assertIn('[Reaktion] Nutzer: 👍 auf deine Nachricht "Hallo aus dem Modell."',ctx)
+  names=[t['function']['name'] for t in Model.calls[-1]['tools']]
+  self.assertIn('react',names);self.assertIn('unreact',names)
+  self.assertIn('Reagiere statt zu antworten',Model.calls[-1]['messages'][0]['content'])
+  self.request('/api/message',{'text':'Ohne neue Reaktion','bots':['test']})
+  self.wait_idle()
+  self.assertNotIn('[Reaktion]',Model.calls[-1]['messages'][1]['content'])
+  uid=user['id']
+  Model.reply=''
+  Model.script=[[{'tool_calls':[{'index':0,'id':'call_react','function':{'name':'react','arguments':json.dumps({'message_id':uid,'emoji':'🎉'})}}]}]]
+  try:
+   self.request('/api/message',{'text':'Kurzes Danke','bots':['test']})
+   self.wait_idle()
+   st=self.request('/api/state')
+   target=next(m for m in st['room'] if m['id']==uid)
+   self.assertTrue(any(r['actor']=='test' and r['emoji']=='🎉' for r in target.get('reactions') or []))
+   ack=next(m for m in reversed(st['room']) if m.get('role')=='assistant' and m.get('bot')=='test' and m.get('content')=='')
+   self.assertIsInstance(ack.get('elapsed_s'),(int,float))
+   self.assertNotIn('work_error',ack);self.assertNotIn('interrupted',ack)
+   self.assertTrue(any('Reagiert' in s for s in (ack.get('steps') or [])))
+   self.assertNotIn('keine Antwort erzeugt',ack.get('content') or '')
+  finally:
+   Model.reply=None;Model.script=[]
+  Model.script=[[{'tool_calls':[{'index':0,'id':'call_both','function':{'name':'react','arguments':json.dumps({'message_id':uid,'emoji':'👀'})}}]}],['Beides passt.']]
+  try:
+   self.request('/api/message',{'text':'Bitte beides','bots':['test']})
+   self.wait_room('Beides passt.');self.wait_idle()
+  finally:
+   Model.script=[]
+  st=self.request('/api/state')
+  target=next(m for m in st['room'] if m['id']==uid)
+  self.assertTrue(any(r['emoji']=='👀' and r['actor']=='test' for r in target.get('reactions') or []))
+  self.assertTrue(any(m.get('content')=='Beides passt.' for m in st['room']))
+  self.request('/api/room/messages/'+uid,method='DELETE')
+  st=self.request('/api/state')
+  self.assertFalse(any(m.get('id')==uid for m in st['room']))
+  disk=json.loads(self.state.joinpath('room.json').read_text())
+  self.assertFalse(any(m.get('id')==uid for m in disk))
+  note_path=self.state.joinpath('reaction_notices.json')
+  notes=json.loads(note_path.read_text()) if note_path.exists() else []
+  self.assertFalse(any(n.get('message_id')==uid for n in notes))
+  html=self.request('/',raw=True).decode()
+  for needle in ('react-bar','react-pill',"event.type==='reaction'",'/api/messages/'):
+   self.assertIn(needle,html)
+  for bad in ('confirm(','alert(','prompt('):
+   self.assertNotIn(bad,html)
 
 class SingleBot(unittest.TestCase):
  """MAG_ROOM_SINGLE_BOT: exactly one bot; other stored bots are parked, never lost."""

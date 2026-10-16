@@ -143,7 +143,90 @@ static void route(int fd, Req &r, bool bridge = false) {
   }
   const std::string path = r.path;
   if (m == "GET" && (path == "/" || path == "/index.html")) {
-    send_text(fd, 200, current_frontend(), "text/html; charset=utf-8");
+    send_response(fd, 200, "text/html; charset=utf-8", current_frontend(),
+                  {{"Cache-Control", "no-store"}});
+    return;
+  }
+  if (m == "GET" && path == "/sw.js") {
+    bool ok = false;
+    std::string js = read_file(sw_file(), &ok);
+    if (!ok) {
+      error_json(fd, 404, "Service worker missing");
+      return;
+    }
+    const std::string token = "%%MAG_VERSION%%";
+    const std::string ver = build_version();
+    for (size_t at = js.find(token); at != std::string::npos; at = js.find(token, at)) {
+      js.replace(at, token.size(), ver);
+      at += ver.size();
+    }
+    send_response(fd, 200, "text/javascript; charset=utf-8", js,
+                  {{"Cache-Control", "no-store"},
+                   {"Service-Worker-Allowed", "/"}});
+    return;
+  }
+  if (m == "GET" && path == "/manifest.webmanifest") {
+    send_response(fd, 200, "application/manifest+json; charset=utf-8",
+                  manifest_body(), {{"Cache-Control", "no-store"}});
+    return;
+  }
+  if (m == "GET" && path == "/api/version") {
+    send_response(fd, 200, "application/json; charset=utf-8",
+                  "{\"version\":\"" + build_version() + "\"}",
+                  {{"Cache-Control", "no-store"}});
+    return;
+  }
+  if (path == "/api/push/vapid" && m == "GET") {
+    Val out = Val::object();
+    out["configured"] = push_configured();
+    out["publicKey"] = push_configured() ? push_public_b64() : "";
+    out["subject"] = push_configured() ? push_subject() : "";
+    send_response(fd, 200, "application/json; charset=utf-8", mj::dump(out),
+                  {{"Cache-Control", "no-store"}});
+    return;
+  }
+  if (path == "/api/push/subscription" && m == "GET") {
+    std::string js = push_subscription_json(qparam(r.query, "endpoint"));
+    if (js.empty())
+      error_json(fd, 404, "Kein Gerät");
+    else
+      send_response(fd, 200, "application/json; charset=utf-8", js,
+                    {{"Cache-Control", "no-store"}});
+    return;
+  }
+  if (path == "/api/push/subscribe" && m == "POST") {
+    std::string err;
+    int code = 400;
+    std::string js = push_subscribe_body(r.body, err, code);
+    if (js.empty())
+      error_json(fd, code, err.empty() ? "Ungültige Anmeldung" : err);
+    else
+      send_json(fd, 200, js);
+    return;
+  }
+  if (path == "/api/push/subscribe" && m == "DELETE") {
+    Val body;
+    std::string endpoint;
+    if (!r.body.empty() && mj::parse(r.body, body) && body.isObj() &&
+        body.find("endpoint"))
+      endpoint = trim(body.find("endpoint")->asStr());
+    if (endpoint.empty())
+      endpoint = qparam(r.query, "endpoint");
+    if (!push_good_endpoint(endpoint)) {
+      error_json(fd, 400, "Push-Endpunkt ungültig");
+      return;
+    }
+    push_unsubscribe(endpoint);
+    send_json(fd, 200, "{\"ok\":true}");
+    return;
+  }
+  if (path == "/api/push/prefs" && m == "PUT") {
+    std::string err;
+    if (!push_set_prefs(r.body, err))
+      error_json(fd, err == "Kein Gerät" ? 404 : 400,
+                 err.empty() ? "Ungültige Einstellung" : err);
+    else
+      send_json(fd, 200, "{\"ok\":true}");
     return;
   }
   // Legacy /bot/<slug>/ links (stable Tailnet path per bot) redirect to the
@@ -178,7 +261,7 @@ static void route(int fd, Req &r, bool bridge = false) {
       error_json(fd, 404, "Unknown asset");
     else
       send_response(fd, 200, mime_for(path), data,
-                    {{"Cache-Control", "public, max-age=86400"}});
+                    {{"Cache-Control", asset_cache_control(r.query)}});
     return;
   }
   // Connectors: secrets stay server-side (STATE_DIR/connectors, 0600) and
@@ -284,7 +367,8 @@ static void route(int fd, Req &r, bool bridge = false) {
     if (!ok)
       error_json(fd, 404, "Unknown asset");
     else
-      send_response(fd, 200, mime_for(name), data);
+      send_response(fd, 200, mime_for(name), data,
+                    {{"Cache-Control", asset_cache_control(r.query)}});
     return;
   }
   if (m == "GET" && path.rfind("/api/file/", 0) == 0) {
@@ -493,6 +577,7 @@ static void route(int fd, Req &r, bool bridge = false) {
         error_json(fd, 409, "Erinnerung wurde inzwischen geändert – bitte neu öffnen.");
         return;
       }
+      Val previous = entry;
       if (m == "DELETE") {
         mem.arr->erase(mem.arr->begin() + pos);
       } else {
@@ -507,9 +592,12 @@ static void route(int fd, Req &r, bool bridge = false) {
       }
       save_agents();
       memory_git_sync(id, m == "DELETE" ? "delete" : "edit");
+      std::string uid = undo_memory_snapshot(
+          id, (int)pos, previous, m == "DELETE" ? "memory_one" : "memory_edit");
       Val out = Val::object();
       out["ok"] = true;
       out["memory"] = mem;
+      out["undo"] = uid;
       send_json(fd, 200, mj::dump(out));
       return;
     }
@@ -524,6 +612,20 @@ static void route(int fd, Req &r, bool bridge = false) {
         auto mem = AGENTS[idx].find("memory");
         send_json(fd, 200, mem ? mj::dump(*mem) : "[]");
       }
+      return;
+    }
+    if (slash != std::string::npos && id.substr(slash + 1) == "memory" &&
+        m == "DELETE") {
+      id.resize(slash);
+      auto result = clear_bot_memory(id);
+      send_json(fd, result.code, result.body);
+      return;
+    }
+    if (slash != std::string::npos &&
+        id.substr(slash + 1) == "workspace/reset" && m == "POST") {
+      id.resize(slash);
+      auto result = reset_bot_workspace(id);
+      send_json(fd, result.code, result.body);
       return;
     }
     if (m == "DELETE") {
@@ -822,10 +924,53 @@ static void route(int fd, Req &r, bool bridge = false) {
     }
     reset_room(true);
     clear_frontend();
+    undo_drop_all();
     Val e = Val::object();
     e["type"] = "reset";
     publish(mj::dump(e));
     send_json(fd, 200, "{\"ok\":true,\"memory_preserved\":true}");
+    return;
+  }
+  if (m == "POST" && path == "/api/room/clear") {
+    auto result = clear_room_data();
+    send_json(fd, result.code, result.body);
+    return;
+  }
+  if ((m == "POST" || m == "DELETE") && path.rfind("/api/messages/", 0) == 0 &&
+      path.size() > std::string("/api/messages//reactions").size() &&
+      path.compare(path.size() - 10, 10, "/reactions") == 0) {
+    std::string id = url_decode(path.substr(
+        std::string("/api/messages/").size(),
+        path.size() - std::string("/api/messages/").size() - 10));
+    std::string emoji = has_json ? str("emoji") : "";
+    if (emoji.empty())
+      emoji = qparam(r.query, "emoji");
+    ReactResult result = apply_reaction(
+        id, "user", emoji, m == "DELETE" ? ReactMode::Remove : ReactMode::Toggle);
+    if (result.code != 200) {
+      error_json(fd, result.code, result.error);
+      return;
+    }
+    // Default: a human reaction does not start a model turn. MAG_ROOM_REACT_WAKE
+    // opts into spending one run so the bot sees the note immediately.
+    if (result.added && !result.wake_bot.empty() && react_wake_enabled())
+      schedule({result.wake_bot});
+    send_json(fd, 200, result.json);
+    return;
+  }
+  if (m == "DELETE" && path.rfind("/api/room/messages/", 0) == 0) {
+    auto result = delete_room_message(url_decode(path.substr(std::string("/api/room/messages/").size())));
+    send_json(fd, result.code, result.body);
+    return;
+  }
+  if (m == "DELETE" && path.rfind("/api/room/files/", 0) == 0) {
+    auto result = delete_room_file(url_decode(path.substr(std::string("/api/room/files/").size())));
+    send_json(fd, result.code, result.body);
+    return;
+  }
+  if (m == "POST" && path.rfind("/api/undo/", 0) == 0) {
+    auto result = undo_action(url_decode(path.substr(std::string("/api/undo/").size())));
+    send_json(fd, result.code, result.body);
     return;
   }
   if (m == "POST" && path == "/api/upload") {

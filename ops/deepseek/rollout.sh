@@ -19,7 +19,7 @@ case "$step" in
   status)
     echo "Repo:    $SRC ($(runuser -u chris -- git -C "$SRC" rev-parse --abbrev-ref HEAD 2>/dev/null || echo '?'))"
     echo "Release: $(readlink -f /opt/mag-stack/current) ($(cat /opt/mag-stack/current/SOURCE_COMMIT 2>/dev/null | cut -c1-12))"
-    for u in mag-audit-nft mag-audit-gateway mag-audit-webproxy mag-model-gate.timer mag-model-pin mag-llm mag-120 mag-browser-webrtc deepseek; do
+    for u in mag-audit-nft mag-audit-gateway mag-audit-webproxy mag-model-gate.timer mag-llm mag-120 mag-browser-webrtc deepseek; do
       printf '  %-24s %-10s %s\n' "$u" "$(systemctl is-active "$u" 2>/dev/null)" "$(systemctl is-enabled "$u" 2>/dev/null)"
     done
     echo "Modell-Gate:"; /usr/local/lib/mag-deepseek/model-gate.sh status 2>/dev/null | sed 's/^/  /' || echo "  (noch nicht installiert)"

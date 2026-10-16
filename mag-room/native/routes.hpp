@@ -467,6 +467,10 @@ static void route(int fd, Req &r, bool bridge = false) {
     }
     if (body.find("web_search"))
       WEB_ENABLED = body.find("web_search")->asBool(true);
+    {
+      auto th = body.find("think");
+      TURN_THINK = th && th->type == Val::BOOL ? (th->asBool() ? 1 : 0) : -1;
+    }
     Val msg = append_room("user", "Nutzer", str("text"));
     msg["type"] = "message";
     publish(mj::dump(msg));

@@ -239,6 +239,19 @@ class Native(unittest.TestCase):
   finally:Model.script=[]
   html=self.request('/',raw=True).decode()
   for needle in ("event.type==='progress'",'Liest Verlauf','streamClock'):self.assertIn(needle,html)
+ def test_09k_thinking_toggle_per_message(self):
+  self.request('/api/message',{'text':'Denk nach','bots':['test'],'think':True});self.wait_room('Hallo aus dem Modell.');self.wait_idle()
+  self.assertEqual(Model.calls[-1]['chat_template_kwargs'],{'enable_thinking':True,'reasoning_effort':'high'})
+  self.assertTrue(self.request('/api/state')['thinking'])
+  self.request('/api/message',{'text':'Schnell bitte','bots':['test'],'think':False});self.wait_room('Hallo aus dem Modell.');self.wait_idle()
+  self.assertEqual(Model.calls[-1]['chat_template_kwargs'],{'enable_thinking':False})
+  st=self.request('/api/state');self.assertFalse(st['thinking']);self.assertTrue(st['thinking_default'])
+  # Same stable system prompt either way -> prompt cache unaffected by the toggle
+  self.assertEqual(Model.calls[-1]['messages'][0]['content'],Model.calls[-2]['messages'][0]['content'])
+  self.request('/api/message',{'text':'Standard','bots':['test']});self.wait_room('Hallo aus dem Modell.');self.wait_idle()
+  self.assertTrue(Model.calls[-1]['chat_template_kwargs']['enable_thinking'],'Without a choice the room default applies')
+  html=self.request('/',raw=True).decode()
+  for needle in ('id="think"',"think:$('think').checked","mag-think",'state.thinking_default'):self.assertIn(needle,html)
  def test_10_verified_tool_step_can_continue_once(self):
   command={'tool_calls':[{'index':0,'id':'call_test_1','function':{'name':'remember','arguments':'{"fact":"autonomy test","source":"test"}'}}]}
   Model.script=[[command],['Arbeit begonnen [[MAG:WEITER]]'],['Arbeit abgeschlossen [[MAG:ENDE]]']]

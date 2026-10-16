@@ -1,20 +1,25 @@
-# MAG Local LLM – DeepSeek-V4-Flash-0731 (unsloth UD-Q4_K_XL, ~155 GB) via llama.cpp, CPU-only.
-# Installiert durch ops/deepseek/install-deepseek.sh nach /etc/systemd/system (Kopie, nicht Symlink).
-# Vorher: GPT-OSS-120B (Git-Verlauf, ~/mag-infra/systemd/mag-llm.service.bak-gpt-oss).
+# MAG Local LLM – DeepSeek-V4-Flash-0731 (unsloth UD-Q4_K_XL, ~144 GiB) via llama.cpp, CPU-only.
+# VORLAGE: @LOAD_ARGS@ setzt ops/deepseek/render-llm-unit.sh passend zum llama-Build ein
+# (Laden ohne mmap, mit mlock). Installiert durch ops/deepseek/upgrade-3.5.sh / install-deepseek.sh.
 #
 # - Lauscht NUR intern auf 127.0.0.1:8090. Raum, Grok und Ali sprechen mit :8080 = mag-audit-gateway,
 #   das jeden Aufruf vollständig protokolliert; :8090 ist per nftables nur für root/mag-audit offen.
-# - Startet erst nach bestandener SHA-256-Vollprüfung: mag-model-gate.timer prüft nach dem Download,
-#   schreibt den Freigabe-Stempel und startet die Unit. Vorher ist der Start ein No-op (Condition).
-# - Flags gegen `llama serve --help` (build 11630) geprüft; install-deepseek.sh bricht bei unbekannten ab.
-# - Warm halten: llama sperrt seine Seiten (mmap+mlock); zusätzlich hält mag-model-pin.service die
-#   GGUF-Dateien unabhängig vom llama-Prozess gesperrt im Page-Cache. Ein Neustart von llama liest
-#   dann aus dem RAM statt von der Platte. Hier deshalb KEIN drop_caches mehr.
-#   Gewollter Neustart (z.B. neue Flags):  sudo bash ops/deepseek/warm.sh restart-llm
+# - Startet erst nach bestandener SHA-256-Vollprüfung (mag-model-gate, Freigabe-Stempel).
+# - Speicher: Gewichte liegen im eigenen Prozessspeicher (kein mmap) -> llama kann sie für AVX2
+#   umsortieren. Gesperrt (mlock) und nie ausgelagert (MemorySwapMax=0). Die beim Laden entstandenen
+#   Page-Cache-Seiten gibt mag-llm-postload danach frei -> keine zweite Kopie im RAM.
+# - NUMA: numactl --interleave=all verteilt die Gewichte gleichmäßig auf beide Sockel,
+#   --numa distribute die Threads (gemessen auf mag: Generierung +31 % gegenüber vorher).
+# - Threads: 28 = physische Kerne. Hyperthreads teilen sich die AVX2-Einheiten und die Bandbreite.
+# - Batch: 2048/2048 – größere Mikro-Batches lassen jeden MoE-Experten mehr Tokens pro Durchgang
+#   rechnen (Prompt-Lesen); die Generierung betrifft das nicht.
+# Basis auf mag vor 3.5 (mmap+mlock, t28/tb28, b/ub 1024, interleave; http-bench 16.10.):
+#   Prompt 19-22 t/s, Generierung 3,3-3,6 t/s, Prompt-Cache-Treffer 0,5 s statt 155 s (3.331 Tokens).
+# Gewollter Neustart (lädt ~144 GiB neu, einige Minuten):  sudo bash ops/deepseek/warm.sh restart-llm
 [Unit]
 Description=MAG Local LLM - DeepSeek-V4-Flash-0731 via llama.cpp (CPU)
-After=network-online.target mag-audit-nft.service mag-model-pin.service
-Wants=network-online.target mag-model-pin.service
+After=network-online.target mag-audit-nft.service
+Wants=network-online.target
 ConditionPathExists=/var/lib/mag-llm/verified.stamp
 RefuseManualStop=yes
 
@@ -27,8 +32,6 @@ WorkingDirectory=/home/chris
 ExecStartPre=/usr/local/lib/mag-deepseek/model-gate.sh check-stamp
 ExecStartPre=/usr/bin/test -r /home/chris/llama-templates/deepseek-ai-DeepSeek-V4-Flash-0731.jinja
 
-# NUMA: Speicherrichtlinie "verschränkt" -> auch llamas eigene Puffer (umsortierte Gewichte, KV-Cache)
-# liegen gleichmäßig auf beiden Sockeln; --numa distribute verteilt die Threads passend dazu.
 ExecStart=/usr/bin/numactl --interleave=all /home/chris/.local/bin/llama serve \
   --model /home/chris/models/deepseek-v4/DeepSeek-V4-Flash-0731-UD-Q4_K_XL-00001-of-00005.gguf \
   --alias deepseek-v4-flash-0731 \
@@ -39,10 +42,10 @@ ExecStart=/usr/bin/numactl --interleave=all /home/chris/.local/bin/llama serve \
   --threads 28 \
   --threads-batch 28 \
   --numa distribute \
-  --batch-size 1024 \
-  --ubatch-size 1024 \
-  --load-mode mmap+mlock \
-  --cache-ram 8192 \
+  --batch-size 2048 \
+  --ubatch-size 2048 \
+  @LOAD_ARGS@ \
+  --cache-ram 16384 \
   --flash-attn auto \
   --jinja \
   --chat-template-file /home/chris/llama-templates/deepseek-ai-DeepSeek-V4-Flash-0731.jinja \
@@ -53,10 +56,14 @@ ExecStart=/usr/bin/numactl --interleave=all /home/chris/.local/bin/llama serve \
   --metrics \
   --no-webui
 
+# Nach dem Laden die Page-Cache-Kopie der Modelldateien freigeben (eigene transiente Unit, blockiert nichts)
+# ("-": ein Fehler hier darf den Start von llama nie verhindern)
+ExecStartPost=-+/usr/bin/systemd-run --no-block --collect --quiet --description=mag-llm-postload \
+  --property=Nice=10 /usr/local/lib/mag-deepseek/post-load.sh
+
 # immer wieder hochkommen (auch nach sauberem Ende); manuelles Stoppen ist gesperrt (RefuseManualStop)
 Restart=always
 RestartSec=10
-# Laden von ~155 GB + mlock dauert Minuten (Type=simple: kein Start-Timeout nötig)
 TimeoutStopSec=120
 
 MemorySwapMax=0

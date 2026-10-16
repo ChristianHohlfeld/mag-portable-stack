@@ -1,24 +1,24 @@
 #!/usr/bin/env bash
-# DeepSeek dauerhaft im RAM halten.
+# DeepSeek dauerhaft im RAM halten (ab 3.5: Gewichte im eigenen Prozessspeicher, ohne mmap).
 #
 #   sudo bash ops/deepseek/warm.sh install            Trockenlauf
-#   sudo bash ops/deepseek/warm.sh install --apply    einrichten (startet mag-llm NICHT neu)
-#   sudo bash ops/deepseek/warm.sh status             liegt das Modell im RAM? gesperrt?
-#   sudo bash ops/deepseek/warm.sh restart-llm        gewollter Neustart von llama, Modell bleibt im RAM
-#   sudo bash ops/deepseek/warm.sh numa               Verteilung des Modells auf die NUMA-Knoten anzeigen
-#   sudo bash ops/deepseek/warm.sh renuma --yes       EINMALIG kalt neu laden, gleichmäßig auf beide Sockel
-#                                                     (nur wenn 'numa' fast alles auf einem Knoten zeigt)
+#   sudo bash ops/deepseek/warm.sh install --apply    Schutz einrichten + Unit rendern (startet mag-llm NICHT neu)
+#   sudo bash ops/deepseek/warm.sh status             Modell im RAM? gesperrt? Page-Cache-Kopie weg?
+#   sudo bash ops/deepseek/warm.sh numa               Verteilung auf die NUMA-Knoten
+#   sudo bash ops/deepseek/warm.sh evict-cache        Page-Cache-Kopie der Modelldateien freigeben
+#   sudo bash ops/deepseek/warm.sh restart-llm        gewollter Neustart (lädt ~144 GiB neu, einige Minuten)
 #
-# Drei Schichten:
-#  1. llama sperrt seine Seiten selbst (--load-mode mmap+mlock, LimitMEMLOCK=infinity).
-#  2. mag-model-pin.service sperrt die GGUF-Dateien zusätzlich, unabhängig vom llama-Prozess
-#     -> ein Absturz/Neustart von llama liest aus dem RAM statt von der Platte.
-#  3. Nichts von außen wirft es raus: kein drop_caches mehr, Paket-Updates (needrestart) und
-#     unattended-upgrades starten nichts neu, systemd-oomd lässt beide Units in Ruhe,
-#     NUMA-Balancing/Zone-Reclaim/Verdichtung verschieben keine Modellseiten.
-# Grenze: ein Reboot leert den RAM. Danach liest mag-model-pin das Modell automatisch einmal vor.
+# Was das Modell im RAM hält:
+#  1. llama lädt die Gewichte in den eigenen Speicher und sperrt ihn (mlock, LimitMEMLOCK=infinity);
+#     MemorySwapMax=0 verbietet zusätzlich jedes Auslagern.
+#  2. Nichts von außen wirft es raus: Paket-Updates (needrestart) und unattended-upgrades starten
+#     nichts neu, systemd-oomd lässt die Unit in Ruhe, OOMScoreAdjust=-900, RefuseManualStop.
+#  3. NUMA-Balancing/Zone-Reclaim/Verdichtung verschieben keine Modellseiten (sysctl).
+# Grenze: Ein Reboot oder Absturz von llama lädt neu von der Platte (einige Minuten). Ein zusätzlicher
+# Pin des Page-Caches würde das verkürzen, hielte aber eine zweite 144-GiB-Kopie – bewusst nicht mehr.
 set -euo pipefail
 SRC=$(cd "$(dirname "$(readlink -f "$0")")/../.." && pwd)
+LIB=/usr/local/lib/mag-deepseek
 DIR=/home/chris/models/deepseek-v4
 FILES=("$DIR"/DeepSeek-V4-Flash-0731-UD-Q4_K_XL-0000{1..5}-of-00005.gguf)
 BACKUP=/home/chris/mag-infra/systemd
@@ -27,121 +27,135 @@ cmd=${1:-status}; APPLY=0; [[ "${2:-}" == "--apply" ]] && APPLY=1
 run() { echo "+ $*"; if [[ $APPLY -eq 1 ]]; then "$@"; fi; }
 gib() { awk '{printf "%.1f GiB", $1/1048576}'; }   # kB -> GiB
 
+llm_pid() { systemctl show -p MainPID --value mag-llm.service 2>/dev/null || echo 0; }
+
+page_cache() {   # Anteil der Modelldateien im Page-Cache (mincore, ohne Zusatzpakete)
+  python3 -I - "${FILES[@]}" <<'PY'
+import ctypes, mmap, os, sys
+libc = ctypes.CDLL(None, use_errno=True)
+libc.mmap.restype = ctypes.c_void_p
+libc.mmap.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_long]
+libc.munmap.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
+libc.mincore.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_char_p]
+PS = os.sysconf("SC_PAGE_SIZE"); tot = res = 0
+for f in sys.argv[1:]:
+    try:
+        fd = os.open(f, os.O_RDONLY); size = os.fstat(fd).st_size
+    except OSError:
+        continue
+    addr = libc.mmap(None, size, mmap.PROT_READ, mmap.MAP_SHARED, fd, 0)
+    n = (size + PS - 1) // PS; vec = ctypes.create_string_buffer(n)
+    if addr not in (None, ctypes.c_void_p(-1).value) and libc.mincore(addr, size, vec) == 0:
+        res += sum(b & 1 for b in vec.raw) * PS
+    libc.munmap(addr, size); os.close(fd); tot += size
+print(f"  Modelldateien im Page-Cache: {res/2**30:.1f} von {tot/2**30:.1f} GiB" + ("  (ok: keine zweite Kopie)" if res < 2**30 else ""))
+PY
+}
+
 status() {
-  echo "== Units"
-  for u in mag-model-pin mag-llm; do
-    printf '  %-16s %s\n' "$u" "$(systemctl is-active "$u" 2>/dev/null || true)"
-  done
-  echo "== RAM gesamt"
-  grep -E '^(MemTotal|MemAvailable|Cached|Mlocked):' /proc/meminfo | while read -r k v _; do printf '  %-14s %s\n' "$k" "$(gib <<<"$v")"; done
-  echo "== Gesperrt pro Prozess (VmLck)"
-  for u in mag-model-pin mag-llm; do
-    pid=$(systemctl show -p MainPID --value "$u" 2>/dev/null || echo 0)
-    if [[ -n "$pid" && "$pid" != 0 && -r /proc/$pid/status ]]; then
-      printf '  %-16s VmLck %s, RSS %s\n' "$u" \
-        "$(awk '/^VmLck/{print $2}' /proc/$pid/status | gib)" "$(awk '/^VmRSS/{print $2}' /proc/$pid/status | gib)"
+  echo "== mag-llm: $(systemctl is-active mag-llm 2>/dev/null || true)"
+  pid=$(llm_pid)
+  if [[ -n "$pid" && "$pid" != 0 && -r /proc/$pid/status ]]; then
+    printf '  VmLck %s, VmRSS %s (davon Datei-Seiten %s)\n' \
+      "$(awk '/^VmLck/{print $2}' /proc/$pid/status | gib)" "$(awk '/^VmRSS/{print $2}' /proc/$pid/status | gib)" \
+      "$(awk '/^RssFile/{print $2}' /proc/$pid/status | gib)"
+    if grep -q 'DeepSeek-V4-Flash-0731.*\.gguf' "/proc/$pid/maps" 2>/dev/null; then
+      echo "  Lademodus: mmap (Gewichte = Page-Cache)"
     else
-      printf '  %-16s läuft nicht\n' "$u"
+      echo "  Lademodus: eigener Speicher (kein mmap)"
     fi
-  done
-  echo "== Modelldateien im Page-Cache"
-  if command -v vmtouch >/dev/null; then
-    vmtouch -m 64G "${FILES[@]}" 2>/dev/null | grep -E 'Files|Resident Pages' | sed 's/^ */  /'
-  else
-    echo "  (vmtouch fehlt – 'warm.sh install --apply')"
+    tr '\0' ' ' < "/proc/$pid/cmdline" | grep -oE -- '--(load-mode [^ ]+|no-mmap|mlock|threads(-batch)? [0-9]+|(u)?batch-size [0-9]+)' | sed 's/^/  /'
   fi
+  echo "== Bereit"
+  printf '  /health: %s\n' "$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 http://127.0.0.1:8090/health; true)"
+  echo "== RAM"
+  grep -E '^(MemTotal|MemAvailable|Cached|Mlocked|AnonPages):' /proc/meminfo | while read -r k v _; do printf '  %-14s %s\n' "$k" "$(gib <<<"$v")"; done
+  page_cache
   echo "== Schutz"
   printf '  numa_balancing=%s zone_reclaim_mode=%s compact_unevictable_allowed=%s\n' \
     "$(cat /proc/sys/kernel/numa_balancing 2>/dev/null)" "$(cat /proc/sys/vm/zone_reclaim_mode)" \
     "$(cat /proc/sys/vm/compact_unevictable_allowed 2>/dev/null)"
-  grep -qE '^Exec.*drop_caches' /etc/systemd/system/mag-llm.service 2>/dev/null \
-    && echo "  WARNUNG: mag-llm.service leert noch den Page-Cache beim Start (alte Unit)" || echo "  mag-llm.service ohne drop_caches"
-  [[ -f /etc/needrestart/conf.d/mag-llm.conf ]] && echo "  needrestart: mag-llm/mag-model-pin ausgenommen" || echo "  needrestart: NICHT ausgenommen"
+  [[ -f /etc/needrestart/conf.d/mag-llm.conf ]] && echo "  needrestart: mag-llm ausgenommen" || echo "  needrestart: NICHT ausgenommen"
   [[ -f /etc/apt/apt.conf.d/52mag-no-auto-reboot ]] && echo "  unattended-upgrades: kein Auto-Reboot" || echo "  unattended-upgrades: Auto-Reboot nicht abgeschaltet"
+  systemctl cat mag-model-pin.service >/dev/null 2>&1 && echo "  WARNUNG: mag-model-pin.service noch vorhanden (ab 3.5 entfernt)" || true
 }
 
 numa() {
   command -v numastat >/dev/null || { echo "numastat fehlt (apt install numactl)"; return; }
-  for u in mag-model-pin mag-llm; do
-    pid=$(systemctl show -p MainPID --value "$u" 2>/dev/null || echo 0)
-    [[ -n "$pid" && "$pid" != 0 ]] || { echo "== $u läuft nicht"; continue; }
-    echo "== $u (PID $pid), MB pro Knoten"
-    numastat -p "$pid" 2>/dev/null | grep -E 'Node|Private|File|Total|^-+' | sed 's/^/  /'
-  done
-  echo "== Page-Cache der Modelldateien pro Knoten (Summe aller Prozesse)"
-  numastat -m 2>/dev/null | grep -E 'Node|FilePages|Mlocked|AnonPages|MemFree' | sed 's/^/  /'
+  pid=$(llm_pid)
+  [[ -n "$pid" && "$pid" != 0 ]] || { echo "mag-llm läuft nicht"; return; }
+  echo "== mag-llm (PID $pid), MB pro Knoten"
+  numastat -p "$pid" 2>/dev/null | grep -E 'Node|Private|Heap|Total|^-+' | sed 's/^/  /'
 }
 
-renuma() {
-  [[ "${2:-}" == "--yes" ]] || { echo "Lädt das Modell EINMAL kalt neu (Dauer = 155 GB von der Platte). Mit '--yes' bestätigen."; exit 1; }
-  command -v vmtouch >/dev/null || { echo "vmtouch fehlt – erst 'warm.sh install --apply'"; exit 1; }
-  grep -q 'numactl --interleave=all' /etc/systemd/system/mag-llm.service \
-    || { echo "mag-llm.service ohne 'numactl --interleave=all' – erst 'warm.sh install --apply'"; exit 1; }
-  # RefuseManualStop nur für diesen Vorgang aufheben (Laufzeit-Drop-in, verschwindet spätestens beim Reboot)
-  for u in mag-llm mag-model-pin; do
-    install -d /run/systemd/system/$u.service.d
-    printf '[Unit]\nRefuseManualStop=no\n' > /run/systemd/system/$u.service.d/99-renuma.conf
-  done
-  trap 'rm -f /run/systemd/system/mag-llm.service.d/99-renuma.conf /run/systemd/system/mag-model-pin.service.d/99-renuma.conf; systemctl daemon-reload' EXIT
+evict() {
+  pid=$(llm_pid)
+  if [[ -n "$pid" && "$pid" != 0 ]] && grep -q 'DeepSeek-V4-Flash-0731.*\.gguf' "/proc/$pid/maps" 2>/dev/null; then
+    echo "llama nutzt die Dateien per mmap – Page-Cache wird NICHT freigegeben"; return
+  fi
+  python3 -I - "${FILES[@]}" <<'PY'
+import os, sys
+for f in sys.argv[1:]:
+    try:
+        fd = os.open(f, os.O_RDONLY); os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED); os.close(fd)
+    except FileNotFoundError:
+        pass
+    except OSError as e:
+        print(f"{f}: {e}")
+PY
+  page_cache
+}
+
+# Entfernt den Page-Cache-Pin aus 3.2 (RefuseManualStop nur für diesen Vorgang per Laufzeit-Drop-in aufheben)
+remove_pin() {
+  systemctl cat mag-model-pin.service >/dev/null 2>&1 || return 0
+  echo "== mag-model-pin (Page-Cache-Pin aus 3.2) entfernen"
+  [[ $APPLY -eq 1 ]] || { echo "+ stop/disable/rm mag-model-pin.service"; return 0; }
+  install -d -o chris -g chris "$BACKUP"
+  cp -a /etc/systemd/system/mag-model-pin.service "$BACKUP/mag-model-pin.service.bak-$(date +%Y%m%d%H%M)" 2>/dev/null || true
+  install -d /run/systemd/system/mag-model-pin.service.d
+  printf '[Unit]\nRefuseManualStop=no\n' > /run/systemd/system/mag-model-pin.service.d/99-remove.conf
   systemctl daemon-reload
-  echo "== 1. llama und Pin stoppen"
-  systemctl stop mag-llm.service mag-model-pin.service
-  echo "== 2. Modellseiten aus dem Page-Cache entfernen"
-  vmtouch -q -e -m 64G "${FILES[@]}"
-  echo "== 3. Pin liest verschränkt neu (Fortschritt alle 30 s)"
-  systemctl start mag-model-pin.service
-  for _ in $(seq 1 720); do
-    line=$(vmtouch -m 64G "${FILES[@]}" 2>/dev/null | grep 'Resident Pages' || true)
-    echo "   $line"
-    grep -q ' 100%' <<<"$line" && break
-    systemctl is-active --quiet mag-model-pin || { echo "mag-model-pin ist ausgefallen"; journalctl -u mag-model-pin -n 20 --no-pager; exit 1; }
-    sleep 30
-  done
-  echo "== 4. llama starten (lädt aus dem RAM)"
-  systemctl start mag-llm.service
-  echo "Fertig. Bereit, sobald: curl -s 127.0.0.1:8766/api/model-status -> ready. Danach: warm.sh numa"
+  systemctl disable --now mag-model-pin.service || true
+  rm -f /etc/systemd/system/mag-model-pin.service /run/systemd/system/mag-model-pin.service.d/99-remove.conf
+  systemctl daemon-reload
+  systemctl reset-failed mag-model-pin.service 2>/dev/null || true
 }
 
 case "$cmd" in
+  status) status ;;
   numa) numa ;;
-  renuma) renuma "$@" ;;
+  evict-cache) evict ;;
   install)
-    for f in "$SRC/ops/mag-model-pin.service" "$SRC/ops/mag-llm.service" "$SRC"/ops/warm/{needrestart-mag.conf,apt-no-auto-reboot.conf,sysctl-mag-llm.conf}; do
+    for f in "$SRC/ops/mag-llm.service" "$SRC"/ops/warm/{needrestart-mag.conf,apt-no-auto-reboot.conf,sysctl-mag-llm.conf} \
+             "$SRC/ops/deepseek/render-llm-unit.sh" "$SRC/ops/deepseek/post-load.sh"; do
       [[ -f "$f" ]] || { echo "fehlt: $f"; exit 1; }
     done
-    grep -qE '^Exec.*drop_caches' "$SRC/ops/mag-llm.service" && { echo "Repo-Unit enthält noch drop_caches"; exit 1; }
-    echo "== 1. Pakete (vmtouch, numactl)"
-    if ! command -v vmtouch >/dev/null || ! command -v numactl >/dev/null; then
-      run apt-get install -y --no-install-recommends vmtouch numactl
-    fi
-    echo "== 2. Units"
+    echo "== 1. Pakete"
+    command -v numactl >/dev/null || run apt-get install -y --no-install-recommends numactl
+    echo "== 2. Unit rendern und prüfen (Lademodus ohne mmap)"
+    bash "$SRC/ops/deepseek/render-llm-unit.sh" "$SRC/ops/mag-llm.service" --check
+    echo "== 3. Dateien"
+    run install -d -m 0755 "$LIB"
+    run install -m 0755 "$SRC/ops/deepseek/post-load.sh" "$LIB/post-load.sh"
     run install -d -o chris -g chris "$BACKUP"
     ts=$(date +%Y%m%d%H%M)
     [[ -e /etc/systemd/system/mag-llm.service ]] && run cp -aL /etc/systemd/system/mag-llm.service "$BACKUP/mag-llm.service.bak-$ts"
-    run install -m 0644 "$SRC/ops/mag-llm.service" /etc/systemd/system/mag-llm.service
-    run install -m 0644 "$SRC/ops/mag-model-pin.service" /etc/systemd/system/mag-model-pin.service
-    echo "== 3. Keine Neustarts/Verdrängung von außen"
+    if [[ $APPLY -eq 1 ]]; then bash "$SRC/ops/deepseek/render-llm-unit.sh" "$SRC/ops/mag-llm.service" /etc/systemd/system/mag-llm.service
+    else echo "+ render -> /etc/systemd/system/mag-llm.service"; fi
     run install -D -m 0644 "$SRC/ops/warm/needrestart-mag.conf" /etc/needrestart/conf.d/mag-llm.conf
     run install -D -m 0644 "$SRC/ops/warm/apt-no-auto-reboot.conf" /etc/apt/apt.conf.d/52mag-no-auto-reboot
     run install -D -m 0644 "$SRC/ops/warm/sysctl-mag-llm.conf" /etc/sysctl.d/60-mag-llm.conf
     run sysctl -q --load=/etc/sysctl.d/60-mag-llm.conf
-    echo "== 4. Aktivieren (mag-llm läuft ungestört weiter; die neue Unit gilt ab dem nächsten Start)"
+    remove_pin
     run systemctl daemon-reload
-    run systemctl enable mag-model-pin.service
-    if [[ -f /var/lib/mag-llm/verified.stamp ]]; then
-      run systemctl start --no-block mag-model-pin.service
-    else
-      echo "   Modell noch nicht freigegeben – mag-model-pin startet zusammen mit mag-llm nach der Prüfung"
-    fi
-    [[ $APPLY -eq 0 ]] && { echo "(Trockenlauf – mit 'install --apply' ausführen)"; exit 0; }
-    sleep 3; status ;;
-  status)
-    status ;;
+    run systemctl enable mag-llm.service
+    echo "(mag-llm läuft unverändert weiter; die neue Unit gilt ab dem nächsten Start)"
+    [[ $APPLY -eq 0 ]] && echo "(Trockenlauf – mit 'install --apply' ausführen)"
+    exit 0 ;;
   restart-llm)
-    # RefuseManualStop sperrt stop/restart; kill + Restart=always ist der gewollte Weg.
-    systemctl is-active --quiet mag-model-pin || { echo "mag-model-pin läuft nicht – Neustart würde von der Platte laden. Abbruch."; exit 1; }
-    echo "Beende llama (Modell bleibt über mag-model-pin im RAM), systemd startet es in 10 s neu …"
-    systemctl kill -s TERM mag-llm.service
+    echo "Neustart von llama: lädt ~144 GiB neu (einige Minuten). Der Raum zeigt solange 'Modell lädt'."
+    systemctl kill -s TERM mag-llm.service      # RefuseManualStop sperrt stop/restart; Restart=always startet neu
     echo "Verlauf: journalctl -fu mag-llm   |   bereit: curl -s 127.0.0.1:8766/api/model-status" ;;
-  *) sed -n '2,8p' "$0"; exit 1 ;;
+  *) sed -n '2,9p' "$0"; exit 1 ;;
 esac

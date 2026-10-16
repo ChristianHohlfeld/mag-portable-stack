@@ -1672,7 +1672,9 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   // DeepSeek-V4-Flash-0731 template: enable_thinking (bool) and
   // reasoning_effort "high" | "max". GPT-OSS' "low" no longer applies.
   Val kwargs = Val::object();
-  const bool think = thinking && THINKING != "off";
+  // The caller decides (per user message / room default, see TURN_THINK);
+  // only the generation prompt's tail differs, so the prompt cache stays valid.
+  const bool think = thinking;
   kwargs["enable_thinking"] = think;
   if (think)
     kwargs["reasoning_effort"] = REASONING_EFFORT;
@@ -2067,6 +2069,14 @@ static std::string dispatch_tool(int bot_idx, const std::string &name,
 }
 
 // ---------------------------------------------------------------- turn
+// Thinking for the current task: -1 = room default (MAG_ROOM_THINKING),
+// 0/1 = chosen with the user message (UI toggle). Autotalk continuations of
+// that task keep the choice.
+static std::atomic<int> TURN_THINK{-1};
+static bool turn_thinking() {
+  int v = TURN_THINK.load();
+  return v < 0 ? THINKING != "off" : v == 1;
+}
 static TurnReport run_turn(int bot_idx, bool autotalk,
                            const std::string &other) {
   std::string bot_id = bot_field(bot_idx, "id");
@@ -2152,7 +2162,7 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
       publish(mj::dump(e));
     };
     Turn t = backend_turn(messages, round == MAX_TOOL_ROUNDS ? "[]" : tools,
-                          autotalk ? 0.75 : 0.55, on_delta);
+                          autotalk ? 0.75 : 0.55, on_delta, turn_thinking());
     if (!t.error.empty()) {
       report.error = t.error.substr(0, 280);
       emit_event("error", bot_id, bot_name, report.error);
@@ -2584,6 +2594,8 @@ static std::string state_json() {
   }
   root["agents"] = ag;
   root["single_bot"] = SINGLE_BOT;
+  root["thinking_default"] = THINKING != "off";
+  root["thinking"] = turn_thinking();
   {
     std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
     Val rm = Val::array();

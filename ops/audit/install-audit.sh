@@ -37,7 +37,7 @@ echo "== 1. Benutzer/Gruppen (Leser: ${READERS[*]})"
 getent group mag-audit-readers >/dev/null || run groupadd --system mag-audit-readers
 id mag-audit >/dev/null 2>&1 || run useradd --system --home-dir /var/lib/mag-audit --shell /usr/sbin/nologin mag-audit
 for u in "${READERS[@]}"; do
-  id -nG "$u" | tr ' ' '\n' | grep -qx mag-audit-readers || run usermod -aG mag-audit-readers "$u"
+  grep -qx mag-audit-readers <<<"$(id -nG "$u" | tr ' ' '\n')" || run usermod -aG mag-audit-readers "$u"
 done
 
 echo "== 2. Verzeichnisse"
@@ -120,7 +120,7 @@ sed -e "s/@UID_MAG_AUDIT@/$UID_AUDIT/g" -e "s/@UID_MAGBOT@/$UID_MAGBOT/g" \
     "$SRC/ops/audit/mag-audit.nft" > "$TMP/mag-audit.nft"
 nft -c -f "$TMP/mag-audit.nft" && echo "   Syntax OK"
 run install -D -o root -g root -m 0640 "$TMP/mag-audit.nft" /etc/nftables.d/mag-audit.nft
-if ! nft list table inet mag_agents 2>/dev/null | grep -q 8888; then
+if ! grep -q 8888 <<<"$(nft list table inet mag_agents 2>/dev/null || true)"; then
   echo "   HINWEIS: Tabelle mag_agents erlaubt VM->Host :8888 erst nach dem Deploy dieses Branches"
   echo "            (ops/mag-agents.nft). Bis dahin haben die VMs keinen Web-Zugriff."
 fi

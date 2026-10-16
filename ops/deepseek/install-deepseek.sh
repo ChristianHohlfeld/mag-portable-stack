@@ -32,14 +32,8 @@ commit=$(sed -nE 's/.*build ([0-9]+), commit ([0-9a-f]+).*/\2/p' <<<"$ver" | hea
 echo "   build=$build commit=$commit"
 [[ $build -ge $MIN_BUILD ]] || { echo "   FEHLER: Build < $MIN_BUILD"; exit 1; }
 
-echo "== 2. Flags der Unit gegen 'llama serve --help'"
-help=$(runuser -u chris -- "$BIN" serve --help 2>&1 || true)
-missing=0
-while read -r f; do
-  if grep -qE -- "(^|[[:space:],])${f}([[:space:],=]|$)" <<<"$help"; then echo "   ok    $f"; else echo "   FEHLT $f"; missing=1; fi
-done < <(sed -n '/^ExecStart=/,/^[^ ]/p' "$UNIT" | sed 's|^ExecStart=/usr/bin/numactl --interleave=all ||' | grep -oE '(^|[[:space:]])--[a-z0-9-]+' | tr -d ' ' | grep -vx -- '--interleave' | sort -u)
-[[ $missing -eq 0 ]] || { echo "   FEHLER: unbekannte Flags – ops/mag-llm.service anpassen"; exit 1; }
-grep -q 'mmap+mlock' <<<"$help" || echo "   WARNUNG: --help nennt 'mmap+mlock' nicht wörtlich – Ausgabe von --load-mode prüfen"
+echo "== 2. Unit für diesen Build rendern und prüfen (Lademodus ohne mmap, alle Flags bekannt)"
+bash "$SRC/ops/deepseek/render-llm-unit.sh" "$UNIT" --check
 
 echo "== 3. Chat-Template vom Build-Commit $commit"
 url="https://raw.githubusercontent.com/ggml-org/llama.cpp/${commit}/models/templates/deepseek-ai-DeepSeek-V4-Flash-0731.jinja"
@@ -71,7 +65,10 @@ if [[ -e /etc/systemd/system/mag-llm.service ]]; then
   run cp -aL /etc/systemd/system/mag-llm.service "$BACKUP/mag-llm.service.bak-$ts"
   run rm -f /etc/systemd/system/mag-llm.service
 fi
-run install -m 0644 "$UNIT" /etc/systemd/system/mag-llm.service
+run install -d -m 0755 "$LIB"
+run install -m 0755 "$SRC/ops/deepseek/post-load.sh" "$LIB/post-load.sh"
+if [[ $APPLY -eq 1 ]]; then bash "$SRC/ops/deepseek/render-llm-unit.sh" "$UNIT" /etc/systemd/system/mag-llm.service
+else echo "+ render $UNIT -> /etc/systemd/system/mag-llm.service"; fi
 run install -m 0644 "$SRC/ops/mag-model-gate.service" "$SRC/ops/mag-model-gate.timer" /etc/systemd/system/
 run systemctl daemon-reload
 run systemctl enable mag-llm.service
@@ -80,7 +77,7 @@ if [[ $APPLY -eq 1 ]]; then
   systemctl start --no-block mag-model-gate.service
   sleep 2; "$LIB/model-gate.sh" status || true
 fi
-echo "== 7. Warm halten (mag-model-pin, kein drop_caches, keine Neustarts von außen)"
+echo "== 7. Warm halten (mlock ohne mmap, keine Neustarts/Verdrängung von außen)"
 if [[ $APPLY -eq 1 ]]; then bash "$SRC/ops/deepseek/warm.sh" install --apply; else bash "$SRC/ops/deepseek/warm.sh" install; fi
 echo
 echo "mag-llm startet automatisch nach bestandener Prüfung. Verlauf: journalctl -fu mag-model-gate -u mag-llm"

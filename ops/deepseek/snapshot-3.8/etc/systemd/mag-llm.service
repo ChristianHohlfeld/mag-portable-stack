@@ -34,7 +34,7 @@ WorkingDirectory=/home/chris
 ExecStartPre=/usr/local/lib/mag-deepseek/model-gate.sh check-stamp
 ExecStartPre=/usr/bin/test -r /home/chris/llama-templates/deepseek-ai-DeepSeek-V4-Flash-0731.jinja
 
-ExecStart=/usr/bin/numactl --interleave=all /home/chris/.local/ik/8d21687cc7-mag-abe5bad6/bin/llama-server \
+ExecStart=/usr/bin/numactl --interleave=all /home/chris/.local/ik/8d21687cc7-mag-c96826ab/bin/llama-server \
   --model /home/chris/models/deepseek-v4/DeepSeek-V4-Flash-0731-UD-Q4_K_XL-00001-of-00005.gguf \
   --alias deepseek-v4-flash-0731 \
   --host 127.0.0.1 \

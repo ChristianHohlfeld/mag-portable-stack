@@ -29,7 +29,7 @@ export IK_BIN THREADS THREADS_BATCH BATCH UBATCH NUMA_ARGS LLAMA_NUMA IK_RTR IK_
 [[ -z "$IK_ARGS" || "$IK_ARGS" =~ ^-{1,2}[a-z0-9-]+([[:space:]]+-{0,2}[A-Za-z0-9._+/:=-]+)*$ ]] \
   || { echo "render-ik: IK_ARGS '$IK_ARGS' ungültig" >&2; exit 4; }
 for kv in $IK_ENV; do
-  [[ "$kv" =~ ^(MAG_NUMA_LOCAL=[0-9]{1,3}|MAG_THP=[01]|MAG_NUMA_ALIGN=[0-9]{4,9})$ ]] \
+  [[ "$kv" =~ ^(MAG_NUMA_LOCAL=[0-9]{1,3}|MAG_THP=[01]|MAG_NUMA_ALIGN=[0-9]{4,9}|GGML_Q8_PF=[0-9]{1,6}|GGML_MXFP4_PF=[0-9]{1,6})$ ]] \
     || { echo "render-ik: IK_ENV-Eintrag '$kv' ungültig" >&2; exit 4; }
 done
 if [[ -n "${HELP_FILE:-}" ]]; then help=$(cat "$HELP_FILE")

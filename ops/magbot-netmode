@@ -3,7 +3,9 @@
 # offline: VMs keep only what the room needs for control and the local live
 #          view (DHCP, bridge 8767, UDP stream 18783). No DNS, no audit/web
 #          proxies (8888/8889), no git gateway (3001), no forwarding at all.
-#          Established connections are dropped too (no ct-accept here).
+#          Established connections are dropped too, except replies to the
+#          host-initiated browserd control channel (tcp sport 9225), which the
+#          live view/shell signaling needs.
 #          Exec runs via qemu-guest-agent (virtio), unaffected.
 # online:  removes the table; the normal mag_agents policy applies again.
 set -euo pipefail
@@ -18,6 +20,7 @@ table inet mag_offline {
   type filter hook input priority -20; policy accept;
   iifname "virbr0" udp dport { 67, 18783, 18840-18890 } accept
   iifname "virbr0" ip daddr 192.168.122.1 tcp dport 8767 accept
+  iifname "virbr0" ip daddr 192.168.122.1 tcp sport 9225 ct state established accept
   iifname "virbr0" counter drop
  }
  chain forward {

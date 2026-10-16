@@ -40,8 +40,7 @@ anderen Geräte.
 Nichts davon startet `mag-llm` neu. Der Modellserver bleibt unangetastet.
 
 1. Raum idle lassen. Release wie sonst mit `ops/deploy.sh` (nur `mag-120`,
-   nicht `mag-llm`). Bis Caddy umgestellt ist, kommt der Browser weiter ohne
-   Identity-Header von 127.0.0.1 und ist Owner — der bisherige Zugang bleibt.
+   nicht `mag-llm`). Vor nginx-Umstellung bleibt der bisherige Eingang aktiv. Danach muss jeder externe Aufruf mag-whois durchlaufen.
 2. Owner-Datei anlegen, **bevor** Caddy neu lädt. Login von Chris holen mit
    `tailscale whois <seine-tailscale-ip>` (Feld LoginName), nicht raten:
 
@@ -67,18 +66,17 @@ Nichts davon startet `mag-llm` neu. Der Modellserver bleibt unangetastet.
    Nicht ins Git. Vorlage: `ops/private-access/access.json.example`.
    Ein Recht für Gäste freigeben heißt `"guest"` in die Liste setzen.
    Die Datei wird bei Änderung neu gelesen, dafür ist kein Neustart nötig.
-3. `sudo ops/private-access/install.sh` — legt Caddyfile, `mag-whois` und
+3. `sudo ops/private-access/install.sh` — installiert `mag-room.nginx.conf`, `mag-whois` und
    das Beispiel ab, startet `mag-whois` (127.0.0.1:8765, LocalAPI-Socket)
-   und startet **nur** `mag-caddy` neu. Nicht `mag-llm`, nicht von Hand
+   und lädt **nur** nginx neu. Nicht `mag-llm`, nicht von Hand
    `mag-120` noch einmal, wenn `deploy.sh` das schon getan hat.
 4. ACL aus `ops/tailscale/policy.hujson` in der Tailscale-Konsole mergen.
    Prüfen, dass Gäste weder `tcp:22` noch `*` als Ziel haben.
 5. Kurz testen: Chris sieht `Besitzer · Chris` und die Admin-Knöpfe. Ein
    Gast sieht `Gast · …`, kann schreiben, bekommt auf Offline/Stop/Jobs 403.
-   Fällt `mag-whois` aus, antwortet Caddy mit einem Fehler (kein stiller
+   Fällt `mag-whois` aus, antwortet nginx mit einem Fehler (kein stiller
    Owner-Zugang von außen). Chris erreicht den Raum dann weiter per
    `curl http://127.0.0.1:8766/` auf mag.
 
-Rollback des Eingangs: `sudo ops/private-access/rollback.sh` (Caddy und
-Whois-Helfer weg, `tailscale serve :8446` bleibt). Room-Binary zurück mit
+Rollback des Eingangs: `sudo ops/private-access/rollback.sh` (vorige nginx-Site wiederherstellen; `tailscale serve :8446` bleibt). Room-Binary zurück mit
 `ops/rollback.sh`. `access.json` bleibt liegen und enthält nur den Login.

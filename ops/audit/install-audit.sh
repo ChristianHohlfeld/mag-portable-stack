@@ -26,7 +26,7 @@ id magbot >/dev/null 2>&1 || { echo "User magbot fehlt"; exit 1; }
 owner=$(ss -Hltnp 'sport = :8080' 2>/dev/null | grep -oE 'users:\(\("[^"]+"' | head -1 | cut -d'"' -f2 || true)
 if [[ -n "$owner" && "$owner" != python3* ]]; then
   echo "Port 8080 ist von '$owner' belegt (alter mag-llm oder deepseek.service?). Erst stoppen:"
-  echo "  sudo systemctl disable --now deepseek.service; sudo systemctl stop mag-llm.service"; exit 1
+  echo "  sudo systemctl disable --now deepseek.service; echo "NEVER stop mag-llm (model unload); leave it running""; exit 1
 fi
 
 READERS=(chris)

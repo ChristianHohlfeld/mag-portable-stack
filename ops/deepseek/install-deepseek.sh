@@ -66,18 +66,38 @@ if [[ -e /etc/systemd/system/deepseek.service ]]; then
 fi
 
 echo "== 6. mag-llm.service (DeepSeek, :8090, Start erst nach Freigabe) + Gate-Timer"
+# NEVER unload a running model (mlock reload ~30+ min). Install/replace unit + daemon-reload only.
+# Restart mag-llm only when ExecStart flags change AND MAG_LLM_FORCE_RESTART=1.
+LLM_RUNNING=0
+systemctl is-active --quiet mag-llm.service 2>/dev/null && LLM_RUNNING=1
+OLD_EXEC=""; NEW_EXEC=$(grep -E '^[[:space:]]*--|^ExecStart=' "$UNIT" | tr -s ' \n' ' ')
+[[ -e /etc/systemd/system/mag-llm.service ]] && OLD_EXEC=$(grep -E '^[[:space:]]*--|^ExecStart=' /etc/systemd/system/mag-llm.service | tr -s ' \n' ' ')
 if [[ -e /etc/systemd/system/mag-llm.service ]]; then
   run cp -aL /etc/systemd/system/mag-llm.service "$BACKUP/mag-llm.service.bak-$ts"
-  run rm -f /etc/systemd/system/mag-llm.service
 fi
 run install -m 0644 "$UNIT" /etc/systemd/system/mag-llm.service
 run install -m 0644 "$SRC/ops/mag-model-gate.service" "$SRC/ops/mag-model-gate.timer" /etc/systemd/system/
+# optional page-cache warmer (does not restart llama)
+if [[ -f $SRC/ops/mag-llm-vmtouch.service ]]; then
+  run install -m 0644 "$SRC/ops/mag-llm-vmtouch.service" "$SRC/ops/mag-llm-vmtouch.timer" /etc/systemd/system/
+fi
 run systemctl daemon-reload
 run systemctl enable mag-llm.service
 run systemctl enable --now mag-model-gate.timer
+if [[ -f /etc/systemd/system/mag-llm-vmtouch.timer ]]; then
+  run systemctl enable --now mag-llm-vmtouch.timer
+fi
 if [[ $APPLY -eq 1 ]]; then
-  systemctl start --no-block mag-model-gate.service
-  sleep 2; "$LIB/model-gate.sh" status || true
+  if [[ $LLM_RUNNING -eq 1 ]]; then
+    echo "   mag-llm läuft – kein Restart (Modell bleibt geladen)."
+    if [[ "$OLD_EXEC" != "$NEW_EXEC" ]]; then
+      echo "   HINWEIS: ExecStart-Flags geändert. Einmaliger Restart nur mit MAG_LLM_FORCE_RESTART=1"
+      echo "   (systemctl kill mag-llm; systemctl start mag-llm) – absichtlich nicht automatisch."
+    fi
+  else
+    systemctl start --no-block mag-model-gate.service
+    sleep 2; "$LIB/model-gate.sh" status || true
+  fi
 fi
 echo
 echo "mag-llm startet automatisch nach bestandener Prüfung. Verlauf: journalctl -fu mag-model-gate -u mag-llm"

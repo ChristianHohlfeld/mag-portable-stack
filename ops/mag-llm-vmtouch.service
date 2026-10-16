@@ -1,0 +1,16 @@
+[Unit]
+Description=MAG keep DeepSeek GGUF pages warm in cache (vmtouch, no unload)
+After=network-online.target
+ConditionPathExists=/home/chris/models/deepseek-v4/DeepSeek-V4-Flash-0731-UD-Q4_K_XL-00001-of-00005.gguf
+
+[Service]
+Type=oneshot
+Nice=19
+IOSchedulingClass=idle
+# -t touch / -m lock into RAM if vmtouch built with mlock; -l stay resident briefly
+# We only touch to warm page cache; mag-llm's own mmap+mlock owns residency.
+ExecStart=/bin/bash -c 'command -v vmtouch >/dev/null || apt-get install -y vmtouch; vmtouch -t /home/chris/models/deepseek-v4/DeepSeek-V4-Flash-0731-UD-Q4_K_XL-*-of-00005.gguf'
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

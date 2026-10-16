@@ -108,9 +108,13 @@ cmd_run() {
   chmod 0644 "$STAMP.tmp"; mv -f "$STAMP.tmp" "$STAMP"
   rm -f "$FAILED"
   write_status verified "SHA-256 aller 5 Teile geprüft"
-  echo "Modell geprüft – starte mag-llm"
-  systemctl reset-failed mag-llm.service 2>/dev/null || true
-  systemctl start --no-block mag-llm.service
+  echo "Modell geprüft – starte mag-llm (nur wenn nicht schon aktiv; nie restart/unload)"
+  if systemctl is-active --quiet mag-llm.service; then
+    echo "mag-llm läuft bereits – kein Eingriff"
+  else
+    systemctl reset-failed mag-llm.service 2>/dev/null || true
+    systemctl start --no-block mag-llm.service
+  fi
 }
 
 case "${1:-run}" in

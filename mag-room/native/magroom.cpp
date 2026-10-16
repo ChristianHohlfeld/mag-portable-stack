@@ -1790,7 +1790,9 @@ static std::string model_wait_text() {
   ModelStatus st = model_status(true);
   if (st.ready)
     return "Modell-Backend kurzzeitig nicht erreichbar. Bitte erneut senden.";
-  return "Modell noch nicht bereit: " + model_status_text(st);
+  // Short user-facing text; technical detail stays in the header tooltip/log.
+  (void)st;
+  return "Modell lädt noch – bitte gleich erneut senden.";
 }
 // Publishes {"type":"model"} whenever the combined state changes.
 static void model_watcher_loop() {

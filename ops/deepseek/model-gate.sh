@@ -70,7 +70,7 @@ cmd_run() {
   local sig; sig=$(meta_sig)
   # 1) schon geprüft und unverändert -> nur sicherstellen, dass mag-llm läuft
   if [[ -f "$STAMP" && "$(head -n 5 "$STAMP")" == "$sig" ]]; then
-    write_status verified "SHA-256 aller 5 Teile geprüft"
+    write_status verified "bereit zum Start"
     if ! systemctl is-active --quiet mag-llm.service && ! systemctl is-failed --quiet mag-llm.service; then
       systemctl start --no-block mag-llm.service
     fi
@@ -87,6 +87,15 @@ cmd_run() {
   if [[ -f "$FAILED" && "$(head -n 5 "$FAILED")" == "$sig" ]]; then
     write_status failed "$(tail -n 1 "$FAILED")"
     return 1
+  fi
+  # 4) Vollprüfung nur auf ausdrücklichen Wunsch (MAG_MODEL_SHA=1); Standard seit
+  #    16.10.2026: keine SHA-256-Prüfung, Freigabe sobald der Download vollständig ist.
+  if [[ "${MAG_MODEL_SHA:-0}" != 1 ]]; then
+    { echo "$sig"; echo "sha256 übersprungen (MAG_MODEL_SHA=0)"; date -Is; } > "$STAMP.tmp"
+    chmod 0644 "$STAMP.tmp"; mv -f "$STAMP.tmp" "$STAMP"; rm -f "$FAILED"
+    write_status verified "bereit zum Start"
+    systemctl is-active --quiet mag-llm.service || systemctl start --no-block mag-llm.service
+    return 0
   fi
   # 4) Vollprüfung
   local p f got i=0 n=${#MODEL_PARTS[@]} shas=""

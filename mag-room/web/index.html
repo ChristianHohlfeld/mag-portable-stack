@@ -981,6 +981,18 @@ function makeTerminal(botId){
   theme:termTheme()
  });
  const fit=new FitAddon.FitAddon();term.loadAddon(fit);
+ // Plain Ctrl+C without selection continues to interrupt the shell.
+ term.attachCustomKeyEventHandler(ev=>{
+  if(ev.type!=='keydown'||!(ev.ctrlKey||ev.metaKey)||ev.altKey)return true;
+  const key=ev.key.toLowerCase();
+  if(key==='c'){
+   const selected=term.getSelection();
+   if(selected){navigator.clipboard?.writeText(selected).catch(()=>{});return false}
+   return true;
+  }
+  if(key==='v')return false; // allow native browser paste event
+  return true;
+ });
  const entry={term,fit,host,opened:false};terminals.set(botId,entry);
  term.onData(data=>{
   if($('browser-agent').value!==botId)return;

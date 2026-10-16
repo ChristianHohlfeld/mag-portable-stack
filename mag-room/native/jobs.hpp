@@ -9,6 +9,7 @@
 
 struct JobDef {
   std::string id, name, prompt, bot;
+  std::string created_by = "user", created_by_bot, idempotency_key;
   Val schedule;          // {type: interval|daily|monthly|once|none, ...}
   bool paused = false;
   std::string hook_hash; // sha256 hex of the webhook secret ("" = none)
@@ -40,13 +41,14 @@ static std::string sha256_hex(const std::string &s) {
 static Val job_to_val(const JobDef &j, bool internal) {
   Val v = Val::object();
   v["id"] = j.id; v["name"] = j.name; v["prompt"] = j.prompt; v["bot"] = j.bot;
+  v["created_by"] = j.created_by; v["created_by_bot"] = j.created_by_bot;
   v["schedule"] = j.schedule; v["paused"] = j.paused; v["version"] = j.version;
   v["next_run"] = (double)j.next_run; v["retry_at"] = (double)j.retry_at;
   v["attempts"] = j.attempts; v["queued_run"] = j.queued_run;
   v["last_run_id"] = j.last_run_id; v["last_status"] = j.last_status;
   v["last_error"] = j.last_error; v["last_run"] = (double)j.last_run;
   v["created"] = (double)j.created; v["history"] = j.history;
-  if (internal) v["hook_hash"] = j.hook_hash;
+  if (internal) { v["hook_hash"] = j.hook_hash; v["idempotency_key"] = j.idempotency_key; }
   else { v["webhook"] = !j.hook_hash.empty(); if (!j.hook_hash.empty()) v["webhook_path"] = "/hook/jobs/" + j.id; v["running"] = !j.queued_run.empty(); }
   return v;
 }
@@ -55,6 +57,8 @@ static JobDef job_from_val(const Val &v) {
   auto s = [&](const char *k) { auto x = v.find(k); return x ? x->asStr() : std::string(); };
   auto n = [&](const char *k) { auto x = v.find(k); return x ? (int64_t)x->asNum(0) : (int64_t)0; };
   j.id = s("id"); j.name = s("name"); j.prompt = s("prompt"); j.bot = s("bot");
+  j.created_by = s("created_by") == "bot" ? "bot" : "user";
+  j.created_by_bot = s("created_by_bot"); j.idempotency_key = s("idempotency_key");
   if (auto x = v.find("schedule")) j.schedule = *x; else j.schedule = Val::object();
   if (auto x = v.find("paused")) j.paused = x->asBool(false);
   j.hook_hash = s("hook_hash"); j.version = (int)std::max<int64_t>(1, n("version"));
@@ -269,4 +273,145 @@ static std::string job_apply(JobDef &j, const Val &b, bool create) {
   }
   if (b.find("paused")) j.paused = b.find("paused")->asBool(false);
   return "";
+}
+
+struct JobsActor { bool is_bot = false; std::string bot; };
+struct JobsResponse { int status = 200; Val value = Val::object(); };
+static JobsResponse jobs_error(int status, const std::string &reason) {
+  JobsResponse r; r.status = status; r.value["error"] = reason; return r;
+}
+static bool jobs_valid_key(const std::string &key) {
+  if (key.size() < 8 || key.size() > 128) return false;
+  for (unsigned char c : key)
+    if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+          (c >= '0' && c <= '9') || c == '_' || c == '-' || c == '.'))
+      return false;
+  return true;
+}
+// One authoritative service for both /api/jobs (UI) and jobs MCP tools.
+// Authorization, persistence, queue insertion, retry and version semantics
+// stay here; tool adapters NEVER mutate JOBDEFS on their own.
+static JobsResponse jobs_request(const std::string &method,
+                                 const std::string &path, const Val &body,
+                                 bool has_json, const JobsActor &actor) {
+  const std::string prefix = "/api/jobs";
+  if (path != prefix && path.rfind(prefix + "/", 0) != 0)
+    return jobs_error(404, "Unbekannte Job-Route");
+  const std::string rest = path.size() > prefix.size() + 1 ? path.substr(prefix.size()+1) : "";
+  const std::string id = rest.substr(0, rest.find('/'));
+  const std::string action = rest.find('/') == std::string::npos ? "" : rest.substr(rest.find('/')+1);
+  std::lock_guard<std::mutex> lk(JOBDEF_MTX);
+  auto view = [&](const JobDef &j, const std::string &secret = "") {
+    Val v = job_to_val(j, false);
+    if (!secret.empty() && !actor.is_bot) v["secret"] = secret;
+    return v;
+  };
+  auto new_secret = [&](JobDef &j) {
+    std::string sec = token_hex(24);
+    j.hook_hash = sha256_hex(sec);
+    return sec;
+  };
+  if (path == prefix && method == "GET") {
+    Val a = Val::array();
+    for (const auto &j : JOBDEFS) a.push(view(j));
+    Val v = Val::object(); v["jobs"] = a;
+    v["now"] = (double)now_s(); v["paused"] = QUEUE_PAUSED;
+    return {200, v};
+  }
+  if (path == prefix && method == "POST") {
+    if (!has_json) return jobs_error(400, "JSON erforderlich");
+    if (actor.is_bot) {
+      const auto *key = body.find("idempotency_key");
+      if (!key || key->type != Val::STR || !jobs_valid_key(key->asStr()))
+        return jobs_error(400, "idempotency_key: 8-128 Zeichen [A-Za-z0-9_.-]");
+      JobDef proposal; const auto err = job_apply(proposal, body, true);
+      if (!err.empty()) return jobs_error(400, err);
+      for (const auto &existing : JOBDEFS) {
+        if (existing.created_by == "bot" && existing.created_by_bot == actor.bot &&
+            existing.idempotency_key == key->asStr()) {
+          if (existing.name != proposal.name || existing.prompt != proposal.prompt ||
+              existing.bot != actor.bot ||
+              mj::dump(existing.schedule) != mj::dump(proposal.schedule))
+            return jobs_error(409, "Schlüssel bereits anders verwendet; neuen idempotency_key wählen");
+          return {200, view(existing)};
+        }
+      }
+    }
+    if (JOBDEFS.size() >= 100) return jobs_error(400, "Zu viele Jobs (max. 100)");
+    JobDef j; j.id = token_hex(6); j.created = now_s();
+    j.created_by = actor.is_bot ? "bot" : "user";
+    j.created_by_bot = actor.is_bot ? actor.bot : "";
+    if (actor.is_bot) { j.bot = actor.bot; j.idempotency_key = body.find("idempotency_key")->asStr(); }
+    const std::string err = job_apply(j, body, true);
+    if (!err.empty()) return jobs_error(400, err);
+    if (actor.is_bot) j.bot = actor.bot; // Bot cannot impersonate another bot
+    std::string secret;
+    if (body.find("webhook") && body.find("webhook")->asBool(false)) secret = new_secret(j);
+    JOBDEFS.push_back(j);
+    jobs_save_locked(); jobs_event_locked();
+    return {201, view(j, secret)};
+  }
+  if (id.empty() || id.find('/') != std::string::npos)
+    return jobs_error(404, "Unbekannter Job");
+  JobDef *j = job_find_locked(id);
+  if (!j) return jobs_error(404, "Unbekannter Job");
+  if (action.empty() && method == "GET") return {200, view(*j)};
+  if (action == "history" && method == "GET") {
+    Val v = Val::object(); v["id"] = id; v["history"] = j->history;
+    v["last_status"] = j->last_status;
+    return {200, v};
+  }
+  if (action.empty() && method == "PUT") {
+    if (!has_json) return jobs_error(400, "JSON erforderlich");
+    if (actor.is_bot && body.find("webhook"))
+      return jobs_error(403, "Webhook-Secrets nur in der UI ändern");
+    JobDef copy = *j;
+    const std::string err = job_apply(copy, body, false);
+    if (!err.empty()) return jobs_error(400, err);
+    std::string secret;
+    if (body.find("webhook")) {
+      if (!body.find("webhook")->asBool(false)) copy.hook_hash.clear();
+      else if (copy.hook_hash.empty()) secret = new_secret(copy);
+    }
+    copy.version = j->version + 1;
+    *j = copy;
+    jobs_save_locked(); jobs_event_locked();
+    return {200, view(*j, secret)};
+  }
+  if (action.empty() && method == "DELETE") {
+    if (actor.is_bot && (j->created_by != "bot" || j->created_by_bot != actor.bot))
+      return jobs_error(403, "Fremden Job in der UI vom Nutzer bestätigen und löschen lassen");
+    for (auto it = JOBDEFS.begin(); it != JOBDEFS.end(); ++it)
+      if (it->id == id) { JOBDEFS.erase(it); break; }
+    {
+      std::lock_guard<std::mutex> jl(JOB_MTX);
+      for (auto it = JOBRUNS.begin(); it != JOBRUNS.end();)
+        it = it->job_id == id ? JOBRUNS.erase(it) : it + 1;
+    }
+    jobs_save_locked(); jobs_event_locked();
+    Val v = Val::object(); v["deleted"] = true;
+    return {200, v};
+  }
+  if (action == "run" && method == "POST") {
+    const std::string rid = j->id + ":manual:" + std::to_string(now_s()) + token_hex(3);
+    if (!job_enqueue_locked(*j, rid, "manuell"))
+      return jobs_error(409, "Job läuft bereits");
+    Val v = Val::object(); v["accepted"] = true; v["run_id"] = rid;
+    return {202, v};
+  }
+  if (action == "pause" && method == "POST") {
+    j->paused = !has_json || !body.find("paused") || body.find("paused")->asBool(true);
+    if (!j->paused && j->next_run > 0 && j->next_run < now_s())
+      j->next_run = schedule_next(j->schedule, now_s()-1, 0);
+    jobs_save_locked(); jobs_event_locked();
+    return {200, view(*j)};
+  }
+  if (action == "secret" && method == "POST") {
+    if (actor.is_bot) return jobs_error(403, "Webhook-Secret nur über UI");
+    const std::string sec = new_secret(*j);
+    j->version++;
+    jobs_save_locked(); jobs_event_locked();
+    return {200, view(*j, sec)};
+  }
+  return jobs_error(404, "Unbekannte Job-Aktion");
 }

@@ -1430,6 +1430,8 @@ static const char *T_REACT =
 static const char *T_UNREACT =
     R"({"type":"function","function":{"name":"unreact","description":"Remove your own emoji reaction from a room message.","parameters":{"type":"object","properties":{"message_id":{"type":"string"},"emoji":{"type":"string"}},"required":["message_id","emoji"],"additionalProperties":false}}})";
 
+#include "jobs_tools.hpp"
+
 static const char *ROOM_RULES =
     "Du bist {name}, ein freier, eigenstaendiger KI-Agent in einem gemeinsamen "
     "Chatraum mit dem Nutzer und weiteren Bots auf dem Server MAG (Modell "
@@ -2430,6 +2432,7 @@ static std::string tools_json(int bot_idx, bool web) {
   (void)web; // always registered: a changing tool list breaks the prompt cache
   defs.push_back(T_WEB_SEARCH);
   defs.push_back(T_GITHUB); // always registered (cache); token checked at call
+  for (const char *d : JOBS_TOOL_DEFS) defs.push_back(d);
   if (has_vm) {
     for (const char *d :
          {T_BROWSER_OPEN, T_BROWSER_CLICK, T_BROWSER_TYPE, T_BROWSER_READ,
@@ -2987,6 +2990,7 @@ static std::string dispatch_tool(int bot_idx, const std::string &name,
   std::string vm = bot_field(bot_idx, "vm", "keine");
   std::string bot_id = bot_field(bot_idx, "id");
   std::string bot_name = bot_field(bot_idx, "name", "Bot");
+  if (is_jobs_tool(name)) return jobs_dispatch_tool(bot_idx, name, a);
   auto need_vm = [&]() {
     if (vm.empty() || vm == "keine")
       throw std::runtime_error("Dieser Bot hat keine eigene VM.");
@@ -3377,6 +3381,21 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
       run_fail(report.error);
       break;
     }
+    // Ignore malformed DSML arguments; execute only one valid tool call per round.
+    if (!t.calls.empty()) {
+      std::vector<Val> valid;
+      for (const Val &candidate : t.calls) {
+        const Val *fn = candidate.find("function");
+        const Val *raw = fn ? fn->find("arguments") : nullptr;
+        const Val *nm = fn ? fn->find("name") : nullptr;
+        Val parsed;
+        if (!nm || nm->asStr().empty() || !raw || raw->type != Val::STR ||
+            !mj::parse(raw->asStr(), parsed) || !parsed.isObj()) continue;
+        valid.push_back(candidate);
+        break;
+      }
+      t.calls.swap(valid);
+    }
     Val asst = Val::object();
     asst["role"] = "assistant";
     asst["content"] = t.text;
@@ -3414,8 +3433,7 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
       std::string argStr =
           fn && fn->find("arguments") ? fn->find("arguments")->asStr() : "{}";
       Val args;
-      if (!mj::parse(argStr, args))
-        args = Val::object();
+      if (!mj::parse(argStr, args) || !args.isObj()) break;
       {
         Val e = Val::object();
         e["type"] = "tool";
@@ -3973,6 +3991,7 @@ static TurnReport generate_and_post(int idx, bool automatic) {
   return report;
 }
 #include "jobs.hpp"
+#include "jobs_mcp.hpp"
 static void scheduler_loop() {
   while (!SHUTDOWN.load()) {
     std::vector<std::string> ids;

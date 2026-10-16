@@ -900,18 +900,19 @@ class Native(unittest.TestCase):
   before_calls=len(Model.calls)
   self.request('/api/message',{'text':'Und noch etwas','bots':['test']})
   for _ in range(120):
-   if len(Model.calls)>before_calls and 'Und noch etwas' in Model.calls[-1]['messages'][1]['content']:break
+   if len(Model.calls)>before_calls and 'Und noch etwas' in Model.calls[-1]['messages'][1]['content']:
+    first_call=Model.calls[-1];break
    time.sleep(.05)
   else:self.fail('Reaction-aware follow-up did not reach the fake model')
   self.wait_idle()
-  ctx=Model.calls[-1]['messages'][1]['content']
+  ctx=first_call['messages'][1]['content']
   self.assertIn('[Reaktion] Nutzer: 👍 auf deine Nachricht "Hallo aus dem Modell."',ctx)
-  names=[t['function']['name'] for t in Model.calls[-1]['tools']]
+  names=[t['function']['name'] for t in first_call['tools']]
   self.assertIn('react',names);self.assertIn('unreact',names)
-  self.assertIn('Reagiere statt zu antworten',Model.calls[-1]['messages'][0]['content'])
+  self.assertIn('Reagiere statt zu antworten',first_call['messages'][0]['content'])
   self.request('/api/message',{'text':'Ohne neue Reaktion','bots':['test']})
   self.wait_idle()
-  self.assertNotIn('[Reaktion]',Model.calls[-1]['messages'][1]['content'])
+  self.assertNotIn('[Reaktion]',second_call['messages'][1]['content'])
   uid=user['id']
   Model.reply=''
   Model.script=[[{'tool_calls':[{'index':0,'id':'call_react','function':{'name':'react','arguments':json.dumps({'message_id':uid,'emoji':'🎉'})}}]}]]

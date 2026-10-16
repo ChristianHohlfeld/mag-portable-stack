@@ -1233,8 +1233,14 @@ static std::string ensure_browser(const std::string &vm) {
   // must not permit one bot to impersonate another bot's video/input.
   if (vm.empty() || vm.size() > 32 ||
       vm.find_first_not_of("abcdefghijklmnopqrstuvwxyz0123456789-") !=
-          std::string::npos)
+          std::string::npos) {
+    std::cerr << "Invalid browser VM identity: received='" << vm
+              << "' (len=" << vm.size()
+              << ") expected non-empty [a-z0-9-]{1,32}; chat-only bots have "
+                 "empty vm and must not call ensure_browser"
+              << std::endl;
     throw std::runtime_error("Invalid browser VM identity");
+  }
   ensure_audit_proxy(vm);
   const std::string keydir = STATE_DIR + "/browser-udp-keys";
   std::filesystem::create_directories(keydir);
@@ -2049,6 +2055,7 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
       e["bot"] = bot_id;
       e["name"] = bot_name;
       e["text"] = piece;
+      e["delta"] = piece; // frontend streams event.delta || event.text
       publish(mj::dump(e));
     };
     Turn t = backend_turn(messages, round == MAX_TOOL_ROUNDS ? "[]" : tools,

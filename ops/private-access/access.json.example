@@ -1,0 +1,15 @@
+{
+  "owners": ["chris@github"],
+  "owner_name": "Chris",
+  "permissions": {
+    "offline": ["owner"],
+    "stop": ["owner"],
+    "jobs": ["owner"],
+    "memory": ["owner"],
+    "reset": ["owner"],
+    "delete": ["owner"],
+    "autotalk": ["owner"],
+    "connectors": ["owner"],
+    "browser": ["owner"]
+  }
+}

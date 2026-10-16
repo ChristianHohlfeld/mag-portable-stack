@@ -1,7 +1,7 @@
 [Unit]
 Description=MAG private TLS entry (mag.stardenburg.de, tailnet only)
-After=network-online.target tailscaled.service
-Wants=network-online.target
+After=network-online.target tailscaled.service mag-whois.service
+Wants=network-online.target mag-whois.service
 Requires=tailscaled.service
 
 [Service]

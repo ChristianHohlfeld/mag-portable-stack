@@ -6,10 +6,30 @@
 	}
 }
 
+# Identity: stock Caddy has no Tailscale module. Rebuilding Caddy with
+# caddy-tailscale would put a second Tailscale stack next to tailscaled and
+# tailscale serve :8446, which stays untouched. Instead, `route` runs in
+# source order:
+#   1. drop any client-supplied X-Tailscale-* (spoofing)
+#   2. forward_auth asks mag-whois, which calls tailscaled LocalAPI whois
+#      for the real TCP peer (ip:port). Non-2xx fails closed.
+#   3. copy_headers puts the helper's headers on the upstream request.
+# magroom trusts those headers only from 127.0.0.1 and ignores them from
+# any other peer. Do not strip the headers again on reverse_proxy.
 https://mag.stardenburg.de:443 {
 	bind 100.123.114.16
 	tls /etc/mag-caddy/tls/cert.pem /etc/mag-caddy/tls/key.pem
-	reverse_proxy 127.0.0.1:8766 {
-		flush_interval -1
+	route {
+		request_header -X-Tailscale-User
+		request_header -X-Tailscale-Name
+		request_header -X-Tailscale-Login
+		forward_auth 127.0.0.1:8765 {
+			uri /whois
+			header_up X-Mag-Remote {http.request.remote.host}:{http.request.remote.port}
+			copy_headers X-Tailscale-User X-Tailscale-Name X-Tailscale-Login
+		}
+		reverse_proxy 127.0.0.1:8766 {
+			flush_interval -1
+		}
 	}
 }

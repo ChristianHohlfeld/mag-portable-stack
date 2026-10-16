@@ -1,0 +1,31 @@
+// Fragment for the tailnet policy (HuJSON). Merge into the admin console.
+// Guests reach ONLY mag (100.123.114.16) on tcp/443. No SSH, no other devices.
+// Invite steps and revoke: docs/guest-access.md
+// Do not add these users to autogroup:admin, tag:server, or any ssh src.
+{
+  "groups": {
+    "group:mag-guests": [
+      // "ada@github",
+    ],
+  },
+
+  "tagOwners": {
+    // Optional: a device Chris shares instead of listing the user.
+    // Only an admin may assign the tag. The tag itself owns nothing else.
+    "tag:mag-guest": ["autogroup:admin"],
+  },
+
+  "grants": [
+    {
+      "src": ["group:mag-guests", "tag:mag-guest"],
+      "dst": ["100.123.114.16"],
+      "ip": ["tcp:443"],
+    },
+  ],
+
+  // Older tailnets without grants: one accept rule, nothing else.
+  // "acls": [
+  //   {"action": "accept", "src": ["group:mag-guests"], "dst": ["100.123.114.16:443"]},
+  //   {"action": "accept", "src": ["tag:mag-guest"], "dst": ["100.123.114.16:443"]},
+  // ],
+}

@@ -510,6 +510,8 @@ let activeTerminal=null;
 function terminalStatus(t){$('terminal-status').textContent=t}
 function terminalSend(kind,payload={}){
  if(!liveConsole||liveConsole.readyState!=='open')return false;
+ // Heartbeat overdue: the session is probably dead; buffer instead of losing input.
+ if(kind==='terminal_input'&&consoleHbAt&&performance.now()-consoleHbAt>3000)return false;
  liveConsole.send(JSON.stringify({kind,...payload}));
  return true;
 }

@@ -18,9 +18,15 @@ if [[ -n "${MAG_LLM_ENV:-}" || -z "${HELP_FILE:-}" ]]; then
   if [[ -r "$_envf" ]]; then
     while IFS='=' read -r k v; do
       v=${v%\"}; v=${v#\"}
-      case "$k" in LOAD_ARGS|THREADS|THREADS_BATCH|BATCH|UBATCH) [[ -n "${!k:-}" ]] || printf -v "$k" '%s' "$v" ;; esac
-    done < <(grep -E '^(LOAD_ARGS|THREADS|THREADS_BATCH|BATCH|UBATCH)=' "$_envf" || true)
+      case "$k" in LOAD_ARGS|THREADS|THREADS_BATCH|BATCH|UBATCH|LLAMA_BIN|EXTRA_ARGS|NUMA_ARGS|LLAMA_NUMA) [[ -n "${!k:-}" ]] || printf -v "$k" '%s' "$v" ;; esac
+    done < <(grep -E '^(LOAD_ARGS|THREADS|THREADS_BATCH|BATCH|UBATCH|LLAMA_BIN|EXTRA_ARGS|NUMA_ARGS|LLAMA_NUMA)=' "$_envf" || true)
   fi
+fi
+# ab 3.7: anderes llama-Binary (selbst gebaut, ops/deepseek/build-llama.sh); Hilfe und Flags kommen dann von dort
+if [[ -n "${LLAMA_BIN:-}" ]]; then
+  [[ "$LLAMA_BIN" =~ ^/[A-Za-z0-9._/+-]+$ ]] || { echo "render: LLAMA_BIN '$LLAMA_BIN' ist kein gültiger absoluter Pfad" >&2; exit 4; }
+  [[ -x "$LLAMA_BIN" || -n "${HELP_FILE:-}" ]] || { echo "render: LLAMA_BIN '$LLAMA_BIN' ist nicht ausführbar" >&2; exit 4; }
+  BIN=$LLAMA_BIN
 fi
 if [[ -n "${HELP_FILE:-}" ]]; then help=$(cat "$HELP_FILE")
 elif [[ $EUID -eq 0 ]]; then help=$(runuser -u chris -- "$BIN" serve --help 2>&1 || true)
@@ -65,12 +71,35 @@ for _kv in "threads:${THREADS:-}" "threads-batch:${THREADS_BATCH:-}" "batch-size
   [[ "$_v" =~ ^[0-9]+$ ]] || { echo "render: ungültiger Wert für --$_f: '$_v'" >&2; exit 4; }
   unit=$(sed -E "s/^(  --$_f )[0-9]+ \\\\$/\\1$_v \\\\/" <<<"$unit")
 done
+# ab 3.7: Binary-Pfad und zusätzliche Flags (z.B. --no-repack) einsetzen; Flags werden unten mitgeprüft
+if [[ "$BIN" != /home/chris/.local/bin/llama ]]; then
+  unit=$(sed "s| /home/chris/.local/bin/llama serve | $BIN serve |" <<<"$unit")
+  grep -qF -- " $BIN serve " <<<"$unit" || { echo "render: Binary-Pfad nicht ersetzt" >&2; exit 4; }
+fi
+# ab 3.7: NUMA-Variante (Standard: Gewichte verschränkt über beide Sockel, Threads verteilt)
+if [[ -n "${NUMA_ARGS:-}" && "$NUMA_ARGS" != "--interleave=all" ]]; then
+  [[ "$NUMA_ARGS" =~ ^--cpunodebind=[0-9]+([[:space:]]+--(preferred|membind)=[0-9]+)?$ ]] \
+    || { echo "render: NUMA_ARGS '$NUMA_ARGS' ungültig" >&2; exit 4; }
+  unit=$(sed "s|^ExecStart=/usr/bin/numactl --interleave=all |ExecStart=/usr/bin/numactl $NUMA_ARGS |" <<<"$unit")
+  grep -qF -- "ExecStart=/usr/bin/numactl $NUMA_ARGS " <<<"$unit" || { echo "render: NUMA_ARGS nicht eingesetzt" >&2; exit 4; }
+fi
+if [[ -n "${LLAMA_NUMA:-}" && "$LLAMA_NUMA" != distribute ]]; then
+  [[ "$LLAMA_NUMA" =~ ^(numactl|isolate)$ ]] || { echo "render: LLAMA_NUMA '$LLAMA_NUMA' ungültig" >&2; exit 4; }
+  unit=$(sed -E "s/^(  --numa )distribute \\\\$/\\1$LLAMA_NUMA \\\\/" <<<"$unit")
+  grep -qF -- "  --numa $LLAMA_NUMA \\" <<<"$unit" || { echo "render: --numa nicht eingesetzt" >&2; exit 4; }
+fi
+if [[ -n "${EXTRA_ARGS:-}" ]]; then
+  [[ "$EXTRA_ARGS" =~ ^--[a-z0-9-]+([[:space:]]+[A-Za-z0-9._+/:=-]+)*$ ]] \
+    || { echo "render: EXTRA_ARGS '$EXTRA_ARGS' ungültig" >&2; exit 4; }
+  grep -qE '^  --no-webui$' <<<"$unit" || { echo "render: Vorlage endet nicht mit '  --no-webui'" >&2; exit 4; }
+  unit=$(sed "s|^  --no-webui$|  --no-webui \\\\\n  $EXTRA_ARGS|" <<<"$unit")
+fi
 grep -q '@LOAD_ARGS@' <<<"$(grep -v '^#' <<<"$unit")" && { echo "render: Platzhalter nicht ersetzt" >&2; exit 4; }
 
 missing=()
 while read -r f; do
   grep -qE -- "(^|[[:space:],])${f}([[:space:],=]|$)" <<<"$help" || missing+=("$f")
-done < <(sed -n '/^ExecStart=/,/^[^ ]/p' <<<"$unit" | sed 's|^ExecStart=/usr/bin/numactl --interleave=all ||' \
+done < <(sed -n '/^ExecStart=/,/^[^ ]/p' <<<"$unit" | sed -E 's#^ExecStart=/usr/bin/numactl( --[a-z]+=[a-z0-9,]+)+ ##' \
          | grep -oE '(^|[[:space:]])--[a-z0-9-]+' | tr -d ' ' | sort -u)
 if [[ ${#missing[@]} -gt 0 ]]; then
   echo "render: unbekannte Flags für diesen Build: ${missing[*]}" >&2; exit 5

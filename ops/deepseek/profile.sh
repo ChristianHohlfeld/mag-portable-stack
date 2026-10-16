@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
 # Wo verbringt llama seine Zeit? CPU-Profil des LAUFENDEN mag-llm (perf, nur lesend, kein zweiter
 # Modellprozess). Die Last kommt per HTTP über das Audit-Gateway:
-#   1) Generierung: eine Anfrage mit 400 Tokens, 30 s Profil
+#   1) Generierung: eine Anfrage mit 260 Tokens, 30 s Profil
 #   2) Prompt-Lesen: eine Anfrage mit ~1.700 Prompt-Tokens, 30 s Profil
-# Ausgabe: /var/tmp/mag-profile-<zeit>.txt (Funktionen nach Anteil) – bitte zurückschicken.
+# Ausgabe: /var/tmp/mag-profile-<zeit>.txt – bitte zurückschicken. Je Phase:
+#   - Funktionen nach Selbstanteil (Symbole nur mit nicht gestripptem Binary, ab 3.7: build-llama.sh)
+#   - Anteil je Thread (skaliert die Arbeit über die Threads, oder hängt alles an einem?)
+#   - Maschinencode der heißesten Funktion (perf annotate)
+#   - perf stat: IPC, Cache-Misses, genutzte CPUs
 #
 #   sudo bash ops/deepseek/profile.sh
 # Benötigt perf (linux-tools-$(uname -r)); fehlt es, wird es per apt installiert, sonst übersprungen.
@@ -39,23 +43,36 @@ PY
 }
 
 profile() {   # $1 = Name, $2 = Wartezeit bis zur Messung
-  local name=$1 lead=$2
+  local name=$1 lead=$2 top
   sleep "$lead"
-  perf record -q -F 499 -g -p "$pid" -o "$TMP/$name.data" -- sleep "$SECS" >/dev/null 2>&1
+  perf stat -e task-clock,cycles,instructions,cache-references,cache-misses -p "$pid" -o "$TMP/$name.stat" -- sleep 8 >/dev/null 2>&1 || true
+  perf record -q -F 499 -p "$pid" -o "$TMP/$name.data" -- sleep "$SECS" >/dev/null 2>&1
   {
     echo "===== $name: Funktionen (Selbstanteil) ====="
     perf report -i "$TMP/$name.data" --stdio --no-children --sort dso,sym --percent-limit 0.5 2>/dev/null \
-      | grep -vE '^#|^$' | grep -E '%' | head -45
+      | grep -vE '^#|^$' | grep -E '%' | head -40
     echo
-    echo "===== $name: nach Thread-Name ====="
-    perf report -i "$TMP/$name.data" --stdio --no-children --sort comm --percent-limit 1 2>/dev/null | grep -E '%' | head -10
+    echo "===== $name: Anteil je Thread (gleichmäßig = skaliert; einer dominiert = serieller Engpass) ====="
+    perf report -i "$TMP/$name.data" --stdio --no-children --sort tid --percent-limit 0.5 2>/dev/null | grep -E '%' | head -40
     echo
+    echo "===== $name: perf stat (8 s) ====="
+    grep -vE '^#|^$' "$TMP/$name.stat" 2>/dev/null | sed 's/^ *//' | head -12
+    echo
+    top=$(perf report -i "$TMP/$name.data" --stdio --no-children --sort sym 2>/dev/null | grep -E '%' | head -1 | sed -E 's/.*\[[.k]\] +//')
+    if [[ -n "$top" && "$top" != 0x* ]]; then
+      echo "===== $name: Maschinencode der heißesten Funktion ($top), heißeste Zeilen ====="
+      perf annotate -i "$TMP/$name.data" --stdio -s "$top" 2>/dev/null | grep -E '^ +[0-9]+\.[0-9]+ ' | sort -rn | head -25
+      echo
+    fi
   } >> "$OUT"
 }
 
 { echo "# mag-llm Profil $(date -Is)  PID $pid"; tr '\0' ' ' < "/proc/$pid/cmdline" | grep -oE -- '--(load-mode [^ ]+|threads(-batch)? [0-9]+|(u)?batch-size [0-9]+)' | tr '\n' ' '; echo; echo; } > "$OUT"
 echo "== Generierung (Profil ${SECS}s)"
-lp=$(load 30 400); profile generierung 8; wait "$lp" 2>/dev/null
+# Lastprozess läuft in einer Subshell -> kein Kind dieser Shell; "wait" würde nicht warten.
+# Bis 3.6 lief dadurch die Prompt-Messung noch in die Generierung hinein (beide Profile gleich).
+wait_gone() { local i; for i in $(seq 1 900); do kill -0 "$1" 2>/dev/null || return 0; sleep 1; done; }
+lp=$(load 30 260); profile generierung 8; wait_gone "$lp"
 echo "== Prompt-Lesen (Profil ${SECS}s)"
-lp=$(load 1300 4); profile prompt 3; wait "$lp" 2>/dev/null
+lp=$(load 1300 4); profile prompt 3; wait_gone "$lp"
 echo "Profil: $OUT"; head -60 "$OUT"

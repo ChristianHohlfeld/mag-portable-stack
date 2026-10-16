@@ -5,6 +5,7 @@
 #   bash ops/deepseek/http-bench.sh                 Standard: pp 512/2048/4096 + tg 128, je 3 Läufe
 #   bash ops/deepseek/http-bench.sh --quick         nur pp 512 + tg 128, 2 Läufe
 #   LABEL="t28-tb56-interleave" bash ops/deepseek/http-bench.sh   Label für den A/B-Vergleich
+#   SKIP_CACHE=1 …                                                ohne Prompt-Cache-Test (spart ~160 s)
 # Ausgabe: Tabelle + /var/tmp/mag-httpbench-<zeit>-<label>.md (Median je Messung)
 # Voraussetzung: Raum ruht (wird geprüft). Läuft als normaler Nutzer.
 set -euo pipefail
@@ -68,12 +69,16 @@ def cached():
            "temperature": 0, "stream": False, "cache_prompt": True, "chat_template_kwargs": {"enable_thinking": False}}
     d = json.load(urllib.request.urlopen(urllib.request.Request(url, json.dumps(req).encode(), {"Content-Type": "application/json"}), timeout=3600))
     t = d.get("timings") or {}; return t.get("prompt_n"), t.get("cache_n"), (t.get("prompt_ms") or 0) / 1000
-a = cached(); b = cached()
-print(f"== Prompt-Cache: 1. Lauf prompt_n={a[0]} cache_n={a[1]} {a[2]:.1f} s  |  2. Lauf prompt_n={b[0]} cache_n={b[1]} {b[2]:.1f} s")
+import os
+if os.environ.get("SKIP_CACHE") == "1":          # A/B-Läufe: Cache-Test kostet ~160 s und hängt nicht vom Build ab
+    a = b = (None, None, 0.0)
+else:
+    a = cached(); b = cached()
+    print(f"== Prompt-Cache: 1. Lauf prompt_n={a[0]} cache_n={a[1]} {a[2]:.1f} s  |  2. Lauf prompt_n={b[0]} cache_n={b[1]} {b[2]:.1f} s")
 
 hdr = f"| {label} | prompt_n | pp t/s | gen_n | tg t/s | TTFT s | gesamt s |\n|---|---:|---:|---:|---:|---:|---:|\n"
 tab = "".join(f"| {r[0]} | {r[1]:.0f} | {r[2]:.2f} | {r[3]:.0f} | {r[4]:.2f} | {r[5]:.1f} | {r[6]:.1f} |\n" for r in rows)
-cache = f"\nPrompt-Cache (2.048-Token-Prompt doppelt): 1. Lauf {a[2]:.1f} s (cache_n={a[1]}), 2. Lauf {b[2]:.1f} s (cache_n={b[1]})\n"
+cache = "" if a[0] is None else f"\nPrompt-Cache (2.048-Token-Prompt doppelt): 1. Lauf {a[2]:.1f} s (cache_n={a[1]}), 2. Lauf {b[2]:.1f} s (cache_n={b[1]})\n"
 open(out, "w").write(f"# mag HTTP-Bench {label} {time.strftime('%Y-%m-%d %H:%M')}\n\n" + hdr + tab + cache)
 print("\n" + hdr + tab + cache + f"\nGespeichert: {out}")
 PY

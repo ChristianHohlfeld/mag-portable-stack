@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Local whois proxy for Caddy forward_auth.
+"""Local Tailscale whois identity helper for nginx auth_request.
 
-Caddy (stock binary, no tailscale module) strips client identity headers, then
+nginx drops all client-supplied identity headers, then
 calls this process on 127.0.0.1. We ask tailscaled's LocalAPI who is on the
 TCP connection and return X-Tailscale-User / X-Tailscale-Name / X-Tailscale-Login.
-Anything that is not a positive whois answer is a non-2xx response so Caddy
+Anything that is not a positive whois answer is a non-2xx response so nginx
 fails closed.
 
 The display name is percent-encoded (UTF-8) so the header stays ASCII.

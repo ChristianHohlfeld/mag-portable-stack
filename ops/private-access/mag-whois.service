@@ -1,5 +1,5 @@
 [Unit]
-Description=MAG Tailscale whois header helper (loopback, for Caddy forward_auth)
+Description=MAG Tailscale whois helper for nginx auth_request
 After=tailscaled.service
 Requires=tailscaled.service
 
@@ -8,7 +8,6 @@ ExecStart=/usr/bin/python3 /usr/local/lib/mag-private/tailscale-whois.py
 Restart=on-failure
 RestartSec=1
 User=root
-# tailscaled.sock is root-only on this host. The helper binds 127.0.0.1 only.
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true

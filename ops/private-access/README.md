@@ -4,11 +4,11 @@
   `CNAME _acme-challenge.mag.stardenburg.de -> <acme-dns fulldomain>.auth.acme-dns.io`.
 - Certificate: lego (DNS-01 via acme-dns, https://auth.acme-dns.io). Credentials live only on mag in
   `/etc/mag-acme/acme-dns.json` (root, 0600, lego ACME_DNS_STORAGE_PATH format). Never in this repo.
-- TLS proxy: Caddy (official release binary), bound only to 100.123.114.16:443 -> 127.0.0.1:8766
+- TLS proxy: existing nginx 1.24+ server, bound only to 100.123.114.16:443 -> 127.0.0.1:8766
   (WebSocket/SSE pass through, flush_interval -1). `tailscale serve :8446` stays untouched.
-- Origin check: the room compares `Origin` with `Host`; Caddy forwards the original Host, so no code change.
-- Renewal: `mag-acme-renew.timer` (twice daily, lego decides when to renew; deploy hook restarts Caddy).
-- Identity: stock Caddy has no Tailscale module. `Caddyfile` uses `route` so the order is fixed:
+- Origin check: the room compares `Origin` with `Host`; nginx forwards the original Host, so no code change.
+- Renewal: `mag-acme-renew.timer` (twice daily, lego decides when to renew; deploy hook validates certificates and reloads nginx).
+- Identity: nginx `auth_request` calls mag-whois using the real socket peer; 2xx is required, otherwise the external request is blocked:
   client `X-Tailscale-*` headers are deleted, `forward_auth` calls `mag-whois`
   (`tailscale-whois.py` on 127.0.0.1:8765), which asks tailscaled LocalAPI
   `whois?addr=<client-ip>:<port>` and returns `X-Tailscale-User` (LoginName),

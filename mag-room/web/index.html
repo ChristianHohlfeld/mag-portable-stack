@@ -856,7 +856,7 @@ function applyAccess(){const y=state.you;document.body.classList.toggle('is-gues
  hide('jobs-section',!can('jobs'));
  hide('add-agent',!can('delete')||!!(state.single_bot));
  hide('offline-row',!can('offline'));hide('autotalk-row',!can('autotalk'));hide('autotalk-desc',!can('autotalk'));
- hide('stop',!can('stop'));hide('reset-wrap',!can('reset'));hide('plus-web',!can('offline'));hide('plus-github',!can('connectors'));
+ hide('stop',!can('stop'));hide('reset',!can('reset'));hide('plus-web',!can('offline'));hide('plus-github',!can('connectors'));
  const badge=$('you-badge');if(!badge)return;if(!y){badge.hidden=true;return}badge.hidden=false;badge.textContent=(y.role==='owner'?'Besitzer':'Gast')+' · '+(y.name||'');badge.title=(y.login||y.role);}
 function renderAgents(){const list=$('agents');list.replaceChildren();const single=state.single_bot||'';$('add-agent').hidden=!!single;if(single){selected.clear();selected.add(single)}const old=$('browser-agent').value;$('browser-agent').replaceChildren();for(const a of state.agents){if(!selected.has(a.id)&&!sessionStorage.getItem('mag-selected'))selected.add(a.id);const card=document.createElement('div');card.className='agent';card.dataset.bot=a.id;card.tabIndex=0;
 card.setAttribute('role','button');card.setAttribute('aria-label',a.name+' Browser und Terminal anzeigen');

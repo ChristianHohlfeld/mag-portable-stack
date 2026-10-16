@@ -78,6 +78,8 @@ class Native(unittest.TestCase):
   self.error(403,'/api/reset',{},headers={'Content-Type':'application/json','X-No-Token':'1'})
   self.error(403,'/api/connectors/github',{'token':'ghp_'+'a'*36},headers={'Content-Type':'application/json','X-No-Token':'1'})
   self.request('/api/stop',{})
+  self.request('/api/stop',{},headers={'Content-Type':'application/json','X-No-Token':'1','Sec-Fetch-Site':'same-origin'})
+  self.error(403,'/api/stop',{},headers={'Content-Type':'application/json','X-No-Token':'1','Sec-Fetch-Site':'cross-site'})
   html=self.request('/',raw=True).decode()
   self.assertIn('rel="icon" href="/favicon.svg"',html);self.assertIn('rel="icon" href="/favicon.ico"',html)
   for bad in ['confirm(','alert(','prompt(','Eigene Modelle','Montserrat','fonts.googleapis']:self.assertNotIn(bad,html)

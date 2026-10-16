@@ -109,8 +109,14 @@ static void route(int fd, Req &r, bool bridge = false) {
       return;
     }
     if (m != "GET" && m != "HEAD" && m != "OPTIONS") {
+      // Accept the page token, or a browser-attested same-origin request
+      // (Sec-Fetch-Site is set by the browser and cannot be forged by
+      // another site). Scripts without either are rejected.
       auto tok = r.hdrs.find("x-mag-token");
-      if (tok == r.hdrs.end() || !ct_eq(tok->second, ui_token())) {
+      auto sfs = r.hdrs.find("sec-fetch-site");
+      bool same_site = sfs != r.hdrs.end() && sfs->second == "same-origin";
+      if (!same_site &&
+          (tok == r.hdrs.end() || !ct_eq(tok->second, ui_token()))) {
         error_json(fd, 403, "UI token required (Seite neu laden)");
         return;
       }

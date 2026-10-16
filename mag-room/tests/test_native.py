@@ -139,6 +139,24 @@ class Native(unittest.TestCase):
  def test_07_persistence(self):
   before=self.request('/api/state');self.proc.terminate();self.proc.wait(timeout=5);self.log.close();self.start();after=self.request('/api/state')
   self.assertEqual(before['room'],after['room']);self.assertEqual(before['agents'],after['agents']);self.assertFalse(after['autotalk'])
+ def test_07a_queue_survives_room_restart(self):
+  Model.delay=3
+  self.request('/api/message',{'text':'Erste Frage','bots':['test']})
+  for _ in range(100):
+   if self.request('/api/state')['busy']:break
+   time.sleep(.02)
+  r=self.request('/api/message',{'text':'Zweite Frage','bots':['test']});self.assertTrue(r.get('queued'))
+  st=self.request('/api/state');self.assertEqual(st['queue'],1)
+  q=json.loads(self.state.joinpath('queue.json').read_text());self.assertIn('active',q);self.assertEqual(len(q['jobs']),1)
+  self.proc.kill();self.proc.wait(timeout=5);self.log.close();Model.delay=0;self.start()
+  for _ in range(200):
+   s=self.request('/api/state')
+   if not s['busy'] and s['queue']==0 and any('Hallo aus dem Modell' in (m.get('content') or '') for m in s['room'][-2:]):break
+   time.sleep(.05)
+  texts=[m.get('content') or '' for m in s['room']]
+  self.assertTrue(any('unterbrochen' in t for t in texts),'interrupted turn must be marked')
+  self.assertEqual(s['queue'],0);self.assertFalse(s['busy'])
+  q=json.loads(self.state.joinpath('queue.json').read_text());self.assertNotIn('active',q);self.assertEqual(q['jobs'],[])
  def test_08_idle_autonomy_does_not_make_up_work(self):
   self.request('/api/autotalk',{'on':True})
   calls_before=len(Model.calls)

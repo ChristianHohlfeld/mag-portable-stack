@@ -2655,6 +2655,35 @@ struct Job {
   int think = -1;
 };
 static std::deque<Job> JOBS;
+// Queue persistence: pending jobs + the job being answered survive a room
+// restart (deploy). Caller holds JOB_MTX.
+static bool ACTIVE_SET = false;
+static Job ACTIVE_JOB;
+static Val job_val(const Job &j) {
+  Val o = Val::object();
+  Val ids = Val::array();
+  for (auto &i : j.ids) ids.push(Val(i));
+  o["ids"] = ids;
+  o["think"] = (double)j.think;
+  return o;
+}
+static Job val_job(const Val &v) {
+  Job j;
+  if (auto ids = v.find("ids"); ids && ids->isArr())
+    for (auto &i : ids->asArr()) j.ids.push_back(i.asStr());
+  if (auto t = v.find("think")) j.think = (int)t->asNum(-1);
+  return j;
+}
+static void save_queue_locked() {
+  Val q = Val::object();
+  Val jobs = Val::array();
+  for (auto &j : JOBS) jobs.push(job_val(j));
+  q["jobs"] = jobs;
+  if (ACTIVE_SET) q["active"] = job_val(ACTIVE_JOB);
+  const std::string f = STATE_DIR + "/queue.json";
+  write_file(f + ".tmp", mj::dump(q));
+  rename((f + ".tmp").c_str(), f.c_str());
+}
 static std::atomic<uint64_t> EPOCH{0};
 static std::string AUTO_OWNER, AUTO_LAST_PROGRESS;
 static bool AUTO_READY = false;
@@ -2692,6 +2721,7 @@ static void schedule(const std::vector<std::string> &ids, int think = -1,
       JOBS.push_back(Job{ids, think});
     }
     position = JOBS.size();
+    save_queue_locked();
   }
   if (BUSY.load() && !interrupt) {
     Val e = Val::object();
@@ -2763,9 +2793,12 @@ static void scheduler_loop() {
       if (SHUTDOWN.load())
         break;
       if (!JOBS.empty()) {
+        ACTIVE_JOB = JOBS.front();
+        ACTIVE_SET = true;
         ids = std::move(JOBS.front().ids);
         TURN_THINK = JOBS.front().think;
         JOBS.pop_front();
+        save_queue_locked();
       } else if (AUTOTALK.load() && AUTO_READY &&
                  AUTO_TURNS_LEFT > 0 && !AUTO_OWNER.empty()) {
         automatic = true;
@@ -2812,6 +2845,10 @@ static void scheduler_loop() {
     }
     {
       std::lock_guard<std::mutex> lk(JOB_MTX);
+      if (ACTIVE_SET) {
+        ACTIVE_SET = false;
+        save_queue_locked();
+      }
       if (epoch == EPOCH.load() && AUTOTALK.load() &&
           more && AUTO_TURNS_LEFT > 0 &&
           progress != AUTO_LAST_PROGRESS) {
@@ -2842,6 +2879,8 @@ static void stop_autotalk() {
   {
     std::lock_guard<std::mutex> lk(JOB_MTX);
     JOBS.clear();
+    ACTIVE_SET = false;
+    save_queue_locked();
     AUTO_READY = false;
     AUTO_OWNER.clear();
     AUTO_LAST_PROGRESS.clear();
@@ -2952,6 +2991,10 @@ static std::string state_json() {
   root["version"] = (long)frontend_version();
   root["web"] = WEB_ENABLED.load();
   root["busy"] = BUSY.load();
+  {
+    std::lock_guard<std::mutex> lk(JOB_MTX);
+    root["queue"] = (double)JOBS.size();
+  }
   root["backend"] = BACKEND_HOST + ":" + std::to_string(BACKEND_PORT);
   root["model"] = MODEL;
   root["model_status"] = model_status_val(model_status(false));
@@ -3137,6 +3180,41 @@ int main() {
   UI_DEFAULT = read_file(UI_FILE);
 
   AUTOTALK = trim(read_file(STATE_DIR + "/autotalk")) == "on";
+  // Resume the queue of a previous process. A turn that was running when the
+  // room stopped is marked "unterbrochen" in the room and answered again
+  // first; pending messages follow automatically.
+  {
+    Val q = Val::object();
+    bool ok = false;
+    std::string raw = read_file(STATE_DIR + "/queue.json", &ok);
+    if (ok && mj::parse(raw, q) && q.isObj()) {
+      std::lock_guard<std::mutex> lk(JOB_MTX);
+      if (auto jobs = q.find("jobs"); jobs && jobs->isArr())
+        for (auto &j : jobs->asArr()) {
+          Job job = val_job(j);
+          if (!job.ids.empty()) JOBS.push_back(job);
+        }
+      if (auto a = q.find("active"); a && a->isObj()) {
+        Job job = val_job(*a);
+        if (!job.ids.empty()) {
+          for (auto &id : job.ids) {
+            int idx = agent_index(id);
+            if (idx < 0) continue;
+            Val m = append_room("assistant", bot_field(idx, "name"),
+                                "(Antwort unterbrochen – Raum wurde neu gestartet, wird fortgesetzt)", id);
+            (void)m;
+          }
+          if (JOBS.empty() || JOBS.front().ids != job.ids)
+            JOBS.push_front(job);
+        }
+      }
+      if (!JOBS.empty()) {
+        AUTO_OWNER = JOBS.front().ids.front();
+        std::cerr << "queue resumed: " << JOBS.size() << " job(s)\n";
+      }
+      save_queue_locked();
+    }
+  }
   std::thread(scheduler_loop).detach();
   std::thread(model_watcher_loop).detach();
   std::thread(file_sync_loop).detach();

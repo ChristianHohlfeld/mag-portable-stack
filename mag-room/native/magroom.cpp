@@ -527,18 +527,52 @@ static void save_json_array(const std::string &path,
 
 // ---------------------------------------------------------------- agents
 static std::vector<Val> AGENTS;
+// Single-bot mode (MAG_ROOM_SINGLE_BOT=<id>): only this bot is active. All
+// other stored bots are parked: invisible, never scheduled, but kept verbatim
+// in agents.json (memory included) so nothing is lost and the mode is
+// reversible by unsetting the variable.
+static std::vector<Val> PARKED;
+static std::string SINGLE_BOT, SINGLE_BOT_NAME = "DeepSeek Chat";
 
 static void save_agents(); // fwd
 static void load_agents() {
   ensure_state();
   bool exists = std::filesystem::exists(AGENTS_JSON);
   AGENTS = load_json_array(AGENTS_JSON);
-  if (!exists) {
+  PARKED.clear();
+  bool dirty = !exists;
+  if (!exists)
     AGENTS.clear();
-    save_agents();
+  if (!SINGLE_BOT.empty()) {
+    std::vector<Val> active;
+    for (auto &a : AGENTS) {
+      auto id = a.find("id");
+      if (id && id->asStr() == SINGLE_BOT && active.empty())
+        active.push_back(a);
+      else
+        PARKED.push_back(a);
+    }
+    if (active.empty()) {
+      Val agent = Val::object();
+      agent["id"] = SINGLE_BOT;
+      agent["name"] = SINGLE_BOT_NAME;
+      agent["vm"] = "";
+      agent["color"] = "#8fd0ff";
+      agent["persona"] = "Neugierig, freundlich und eigenstaendig.";
+      agent["memory"] = Val::array();
+      active.push_back(agent);
+      dirty = true;
+    }
+    AGENTS = active;
   }
+  if (dirty)
+    save_agents();
 }
-static void save_agents() { save_json_array(AGENTS_JSON, AGENTS); }
+static void save_agents() {
+  std::vector<Val> all = AGENTS;
+  all.insert(all.end(), PARKED.begin(), PARKED.end());
+  save_json_array(AGENTS_JSON, all);
+}
 static int agent_index(const std::string &id) {
   std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
   for (size_t i = 0; i < AGENTS.size(); i++)
@@ -2549,6 +2583,7 @@ static std::string state_json() {
       ag.push(public_agent((int)i));
   }
   root["agents"] = ag;
+  root["single_bot"] = SINGLE_BOT;
   {
     std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
     Val rm = Val::array();
@@ -2603,6 +2638,8 @@ int main() {
   MODEL_STATUS_FILE = env("MAG_ROOM_MODEL_STATUS", "/var/lib/mag-llm/status.json");
   MAX_HISTORY = envi("MAG_ROOM_MAX_HISTORY", 30);
   HISTORY_STEP = envi("MAG_ROOM_HISTORY_STEP", 10);
+  SINGLE_BOT = env("MAG_ROOM_SINGLE_BOT", "");
+  SINGLE_BOT_NAME = env("MAG_ROOM_SINGLE_BOT_NAME", "DeepSeek Chat");
 
   STATE_DIR = env("MAG_ROOM_STATE", "/var/lib/magbot/room");
   FILES_DIR = STATE_DIR + "/files";

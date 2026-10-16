@@ -366,4 +366,45 @@ class Native(unittest.TestCase):
    self.start()
   self.assertIn(b'<html',self.request('/bot/test/',raw=True))
 
+class SingleBot(unittest.TestCase):
+ """MAG_ROOM_SINGLE_BOT: exactly one bot; other stored bots are parked, never lost."""
+ @classmethod
+ def setUpClass(cls):
+  cls.tmp=tempfile.TemporaryDirectory();cls.state=pathlib.Path(cls.tmp.name)/'state';cls.state.mkdir()
+  cls.state.joinpath('agents.json').write_text(json.dumps([{'id':'alt','name':'Alter Bot','vm':'','memory':[{'text':'bleibt erhalten'}]}]))
+  cls.model=http.server.ThreadingHTTPServer(('127.0.0.1',0),Model);threading.Thread(target=cls.model.serve_forever,daemon=True).start();cls.ui=port();cls.bridge=port()
+  env=dict(os.environ,MAG_ROOM_STATE=str(cls.state),MAG_ROOM_PORT=str(cls.ui),MAG_ROOM_BRIDGE_PORT=str(cls.bridge),MAG_ROOM_BRIDGE_IP='127.0.0.1',MAG_ROOM_BACKEND=f'http://127.0.0.1:{cls.model.server_port}/v1/chat/completions',MAG_ROOM_UI=str(ROOT/'mag-room/web/index.html'),MAG_ROOM_STATIC=str(ROOT/'mag-room/static'),MAG_ROOM_MODEL_STATUS=str(pathlib.Path(cls.tmp.name)/'model-status.json'),MAG_ROOM_SINGLE_BOT='deepseek-chat')
+  cls.log=open(pathlib.Path(cls.tmp.name)/'server.log','a');cls.proc=subprocess.Popen([str(ROOT/'build/magroom')],env=env,stdout=cls.log,stderr=cls.log)
+  for _ in range(100):
+   try:Native.request.__func__(cls,'/healthz',raw=True);return
+   except Exception:time.sleep(.03)
+  raise RuntimeError('Native startup failed')
+ @classmethod
+ def tearDownClass(cls):
+  cls.proc.terminate();cls.proc.wait(timeout=5);cls.log.close();cls.model.shutdown();cls.tmp.cleanup()
+ request=classmethod(Native.request.__func__)
+ error=Native.error
+ def test_only_one_bot_and_others_parked(self):
+  st=self.request('/api/state')
+  self.assertEqual([a['id'] for a in st['agents']],['deepseek-chat']);self.assertEqual(st['single_bot'],'deepseek-chat')
+  self.assertEqual(st['agents'][0]['vm'],'')
+  stored={a['id']:a for a in json.loads(self.state.joinpath('agents.json').read_text())}
+  self.assertEqual(stored['alt']['memory'],[{'text':'bleibt erhalten'}],'Parked bot must keep its data')
+  self.error(409,'/api/agents',{'name':'Zweiter'})
+  self.error(409,'/api/agents/deepseek-chat',method='DELETE')
+  self.error(404,'/api/agents/alt',method='DELETE')
+ def test_message_always_goes_to_the_single_bot(self):
+  before=len(Model.calls)
+  self.request('/api/message',{'text':'Hallo','bots':['alt']})
+  for _ in range(100):
+   if any(m.get('bot')=='deepseek-chat' or m.get('name')=='DeepSeek Chat' for m in self.request('/api/state')['room'] if m.get('role')=='assistant'):break
+   time.sleep(.05)
+  else:self.fail('Single bot did not answer')
+  self.assertGreater(len(Model.calls),before)
+  self.request('/api/agent/deepseek-chat/remember',{'fact':'neu'})
+  stored={a['id']:a for a in json.loads(self.state.joinpath('agents.json').read_text())}
+  self.assertIn('alt',stored,'Saving must not drop parked bots')
+ def test_frontend_single_bot_contract(self):
+  html=self.request('/',raw=True).decode()
+  for needle in ("state.single_bot","$('add-agent').hidden=!!single","a.id===single"):self.assertIn(needle,html)
 if __name__=='__main__':unittest.main(verbosity=2)

@@ -7,6 +7,11 @@ static void error_json(int fd, int code, const std::string &message) {
 static std::vector<std::string> selected_ids(const Val &body) {
   std::vector<std::string> ids;
   std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
+  if (!SINGLE_BOT.empty()) {  // exactly this one bot answers, whatever the client sent
+    if (agent_index(SINGLE_BOT) >= 0)
+      ids.push_back(SINGLE_BOT);
+    return ids;
+  }
   auto selected = body.find("bots");
   if (selected && selected->isArr()) {
     for (const auto &id : selected->asArr())
@@ -363,6 +368,10 @@ static void route(int fd, Req &r, bool bridge = false) {
       return;
     }
     if (m == "DELETE") {
+      if (!SINGLE_BOT.empty() && id == SINGLE_BOT) {
+        error_json(fd, 409, "Der einzige Bot des Raums kann nicht entfernt werden (MAG_ROOM_SINGLE_BOT).");
+        return;
+      }
       stop_autotalk();
       std::lock_guard<std::mutex> turn(TURN_MTX);
       int idx = agent_index(id);
@@ -399,6 +408,11 @@ static void route(int fd, Req &r, bool bridge = false) {
     return v ? v->asStr(fallback) : fallback;
   };
   if (m == "POST" && path == "/api/agents") {
+    if (!SINGLE_BOT.empty()) {
+      error_json(fd, 409, "Nur ein Bot erlaubt: Der Raum laeuft fest mit '" +
+                              SINGLE_BOT_NAME + "' (MAG_ROOM_SINGLE_BOT).");
+      return;
+    }
     if (!has_json || trim(str("name")).empty() || str("name").size() > 40) {
       error_json(fd, 400, "Agent name required (1-40 bytes)");
       return;

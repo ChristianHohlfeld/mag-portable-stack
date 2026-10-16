@@ -916,6 +916,12 @@ static const char *ROOM_RULES =
     "ist, beende mit [[MAG:WEITER]], andernfalls mit [[MAG:ENDE]]. "
     "Marker sind interne Steuerzeichen und werden vor dem Speichern "
     "entfernt. Der Raumverlauf mit Sprecherlabels folgt.";
+static const char *CHAT_ONLY_RULES =
+    "Du bist {name}, ein Chat-Bot auf MAG (Modell {model}). {persona} "
+    "Kein eigener Rechner/Browser. Kurz und praezise auf Deutsch antworten. "
+    "Keine unaufgeforderten Listen. Du schreibst nur als {name}. "
+    "Erinnerung (ergaenze mit remember):\n{memory}\n"
+    "Raumverlauf mit Sprecherlabels folgt.";
 static const char *AUTOTALK_RULES =
     "\nDies ist die Fortsetzung eines bereits vom Nutzer beauftragten "
     "Arbeitsvorgangs. Reagiere NICHT auf die letzte Botnachricht als neue "
@@ -962,18 +968,25 @@ static std::string build_system(int bot_idx, bool autotalk,
   std::string persona = bot_field(bot_idx, "persona");
   std::string vm = bot_field(bot_idx, "vm", "keine");
   std::string bot_id = bot_field(bot_idx, "id");
-  std::string system = ROOM_RULES;
+  const bool chat_only = vm.empty() || vm == "keine";
+  // Chat-only: short stable system (no VM/browser/Gitea walls of text).
+  // Keeps prompt prefix small + cacheable across turns.
+  std::string system = chat_only ? CHAT_ONLY_RULES : ROOM_RULES;
   replaceAll(system, "{name}", name);
   replaceAll(system, "{persona}", persona);
-  replaceAll(system, "{vm}", vm);
+  replaceAll(system, "{vm}", vm.empty() ? "keine" : vm);
   replaceAll(system, "{model}", MODEL);
   replaceAll(system, "{memory}", memory_manifest(bot_id));
-  system += web ? WEB_RULES : "\nWebsuche ist AUS.";
-  std::string fr = FILES_RULES;
-  replaceAll(fr, "{files}", file_manifest());
-  system += fr;
-  if (vm != "keine" && !vm.empty())
+  if (chat_only) {
+    system += web ? WEB_RULES : "\nWebsuche ist AUS.";
+    // Skip FILES_RULES / FRONTEND_RULES — huge and unused without a VM.
+  } else {
+    system += web ? WEB_RULES : "\nWebsuche ist AUS.";
+    std::string fr = FILES_RULES;
+    replaceAll(fr, "{files}", file_manifest());
+    system += fr;
     system += FRONTEND_RULES;
+  }
   if (autotalk) {
     std::string at = AUTOTALK_RULES;
     replaceAll(at, "{other}", other.empty() ? "der Nutzer" : other);
@@ -992,8 +1005,9 @@ static std::string build_transcript() {
     std::string name = m.find("name") ? m.find("name")->asStr()
                                       : (role == "user" ? "Nutzer" : "Bot");
     std::string content = m.find("content") ? m.find("content")->asStr() : "";
-    if (content.size() > 4000)
-      content = content.substr(0, 4000);
+    // Keep transcript short: long posts dominated DeepSeek PP (4.5k tok / ~4 min).
+    if (content.size() > 1200)
+      content = content.substr(0, 1200) + "…";
     auto f = m.find("file");
     if (f && f->isObj())
       content +=
@@ -1521,17 +1535,24 @@ struct TurnReport {
 };
 
 static std::string tools_json(int bot_idx, bool web) {
-  std::vector<std::string> defs = {T_RUN_COMMAND, T_LIST_FILES, T_FETCH_FILE,
-                                   T_SHARE_FILE,  T_SPEAK,      T_SEE_IMAGE,
-                                   T_REMEMBER};
-  if (web)
-    defs.push_back(T_WEB_SEARCH);
   std::string vm = bot_field(bot_idx, "vm", "keine");
-  if (!vm.empty() && vm != "keine") {
+  const bool chat_only = vm.empty() || vm == "keine";
+  // Chat-only: tiny tool set (no run_command/browser — those need a VM and
+  // inflate the prompt by thousands of tokens every turn).
+  std::vector<std::string> defs;
+  if (chat_only) {
+    defs = {T_REMEMBER};
+    if (web)
+      defs.push_back(T_WEB_SEARCH);
+  } else {
+    defs = {T_RUN_COMMAND, T_LIST_FILES, T_FETCH_FILE, T_SHARE_FILE,
+            T_SPEAK,       T_SEE_IMAGE,  T_REMEMBER};
+    if (web)
+      defs.push_back(T_WEB_SEARCH);
     for (const char *d :
          {T_BROWSER_OPEN, T_BROWSER_CLICK, T_BROWSER_TYPE, T_BROWSER_READ,
-          T_BROWSER_SHOT, T_BROWSER_POINTER, T_BROWSER_BACK, T_BROWSER_SCROLL, T_SCREENSHOT_ROOM,
-          T_DL_FRONTEND, T_PUB_FRONTEND})
+          T_BROWSER_SHOT, T_BROWSER_POINTER, T_BROWSER_BACK, T_BROWSER_SCROLL,
+          T_SCREENSHOT_ROOM, T_DL_FRONTEND, T_PUB_FRONTEND})
       defs.push_back(d);
   }
   std::string arr = "[";
@@ -1602,6 +1623,8 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   body["temperature"] = temperature;
   body["max_tokens"] = MAX_TOKENS;
   body["stream"] = true;
+  // llama.cpp prompt cache: reuse KV for stable system/tool prefix across turns.
+  body["cache_prompt"] = true;
   // DeepSeek-V4-Flash-0731 template: enable_thinking (bool) and
   // reasoning_effort "high" | "max". GPT-OSS' "low" no longer applies.
   Val kwargs = Val::object();

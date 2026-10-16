@@ -108,6 +108,13 @@ static void route(int fd, Req &r, bool bridge = false) {
       error_json(fd, 403, "Wrong origin");
       return;
     }
+    if (m != "GET" && m != "HEAD" && m != "OPTIONS") {
+      auto tok = r.hdrs.find("x-mag-token");
+      if (tok == r.hdrs.end() || !ct_eq(tok->second, ui_token())) {
+        error_json(fd, 403, "UI token required (Seite neu laden)");
+        return;
+      }
+    }
   }
   const std::string path = r.path;
   if (m == "GET" && (path == "/" || path == "/index.html")) {
@@ -136,6 +143,63 @@ static void route(int fd, Req &r, bool bridge = false) {
     // opens the main room with this bot's browser panel selected.
     send_response(fd, 302, "text/plain; charset=utf-8", "",
                   {{"Location", "/?bot=" + id}, {"Cache-Control", "no-store"}});
+    return;
+  }
+  if (m == "GET" && (path == "/favicon.ico" || path == "/favicon.svg" ||
+                     path == "/apple-touch-icon.png")) {
+    bool ok;
+    std::string data = read_file(STATIC_DIR + path, &ok);
+    if (!ok)
+      error_json(fd, 404, "Unknown asset");
+    else
+      send_response(fd, 200, mime_for(path), data,
+                    {{"Cache-Control", "public, max-age=86400"}});
+    return;
+  }
+  // Connectors: secrets stay server-side (STATE_DIR/connectors, 0600) and
+  // are never returned to the browser or written to the repo.
+  if (path == "/api/connectors" && m == "GET") {
+    Val out = Val::object();
+    for (const char *name : {"github"}) {
+      bool ok = false;
+      std::string tok = read_file(STATE_DIR + "/connectors/" + name + ".token", &ok);
+      Val c = Val::object();
+      c["connected"] = ok && !trim(tok).empty();
+      out[name] = c;
+    }
+    send_json(fd, 200, mj::dump(out));
+    return;
+  }
+  if (path == "/api/connectors/github" && (m == "POST" || m == "DELETE")) {
+    const std::string dir = STATE_DIR + "/connectors";
+    const std::string file = dir + "/github.token";
+    if (m == "DELETE") {
+      std::remove(file.c_str());
+      send_json(fd, 200, "{\"ok\":true,\"connected\":false}");
+      return;
+    }
+    Val body = Val::object();
+    std::string tok;
+    if (!r.body.empty() && mj::parse(r.body, body) && body.isObj() && body.find("token"))
+      tok = trim(body.find("token")->asStr());
+    bool valid = tok.size() >= 20 && tok.size() <= 255;
+    for (char c : tok)
+      if (!(isalnum((unsigned char)c) || c == '_')) valid = false;
+    if (!valid) {
+      error_json(fd, 400, "Ungültiges GitHub-Token (ghp_…/github_pat_…)");
+      return;
+    }
+    std::filesystem::create_directories(dir);
+    chmod(dir.c_str(), 0700);
+    std::string tmp = file + ".tmp";
+    int tfd = open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    bool wrote = tfd >= 0 && write(tfd, tok.data(), tok.size()) == (ssize_t)tok.size();
+    if (tfd >= 0) close(tfd);
+    if (!wrote || rename(tmp.c_str(), file.c_str()) != 0) {
+      error_json(fd, 500, "Token konnte nicht gespeichert werden");
+      return;
+    }
+    send_json(fd, 200, "{\"ok\":true,\"connected\":true}");
     return;
   }
   if (m == "GET" && path == "/healthz") {
@@ -370,6 +434,59 @@ static void route(int fd, Req &r, bool bridge = false) {
   if (path.rfind("/api/agents/", 0) == 0) {
     std::string id = url_decode(path.substr(12));
     auto slash = id.find('/');
+    if (slash != std::string::npos &&
+        id.compare(slash + 1, 7, "memory/") == 0 &&
+        (m == "PUT" || m == "DELETE")) {
+      std::string tail = id.substr(slash + 8);
+      id.resize(slash);
+      char *end = nullptr;
+      long pos = tail.empty() ? -1 : strtol(tail.c_str(), &end, 10);
+      if (pos < 0 || !end || *end) {
+        error_json(fd, 400, "Bad memory index");
+        return;
+      }
+      Val body = Val::object();
+      bool has = !r.body.empty() && mj::parse(r.body, body) && body.isObj();
+      std::string expect = m == "PUT"
+          ? (has && body.find("old") ? body.find("old")->asStr() : "")
+          : qparam(r.query, "old");
+      std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
+      int idx = agent_index(id);
+      if (idx < 0) {
+        error_json(fd, 404, "Unknown agent");
+        return;
+      }
+      Val &mem = AGENTS[idx]["memory"];
+      if (!mem.isArr() || (size_t)pos >= mem.arr->size()) {
+        error_json(fd, 404, "Unknown memory entry");
+        return;
+      }
+      Val &entry = (*mem.arr)[pos];
+      std::string cur = entry.isObj() ? (entry.find("text") ? entry.find("text")->asStr() : "") : entry.asStr();
+      // Optimistic check: the entry must still be the one the user saw.
+      if (!expect.empty() && cur.substr(0, expect.size()) != expect) {
+        error_json(fd, 409, "Erinnerung wurde inzwischen geändert – bitte neu öffnen.");
+        return;
+      }
+      if (m == "DELETE") {
+        mem.arr->erase(mem.arr->begin() + pos);
+      } else {
+        std::string text = has && body.find("text") ? trim(body.find("text")->asStr()) : "";
+        if (text.empty() || text.size() > 500) {
+          error_json(fd, 400, "Text required (max 500)");
+          return;
+        }
+        if (!entry.isObj()) { Val o = Val::object(); entry = std::move(o); }
+        entry["text"] = text;
+        entry["edited"] = (long)now_s();
+      }
+      save_agents();
+      Val out = Val::object();
+      out["ok"] = true;
+      out["memory"] = mem;
+      send_json(fd, 200, mj::dump(out));
+      return;
+    }
     if (slash != std::string::npos && id.substr(slash + 1) == "memory" &&
         m == "GET") {
       id.resize(slash);

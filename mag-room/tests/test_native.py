@@ -3,6 +3,10 @@ import http.server,json,os,pathlib,socket,subprocess,tempfile,threading,time,uni
 ROOT=pathlib.Path(__file__).resolve().parents[2]
 def port():
  with socket.socket() as s:s.bind(('127.0.0.1',0));return s.getsockname()[1]
+def _ui_token(ui):
+ import re as _re
+ html=urllib.request.urlopen(f'http://127.0.0.1:{ui}/',timeout=10).read().decode()
+ return _re.search(r'name="mag-token" content="([^"]+)"',html).group(1)
 class Model(http.server.BaseHTTPRequestHandler):
  protocol_version='HTTP/1.1';calls=[];delay=0;reply=None;script=[];health=200
  def log_message(self,*a):pass
@@ -50,7 +54,10 @@ class Native(unittest.TestCase):
  @classmethod
  def request(cls,path,body=None,method=None,raw=False,bridge=False,headers=None):
   data=body if isinstance(body,bytes) else json.dumps(body).encode() if body is not None else None
-  req=urllib.request.Request(f'http://127.0.0.1:{cls.bridge if bridge else cls.ui}'+path,data=data,method=method,headers=headers or ({'Content-Type':'application/json'} if body is not None else {}))
+  headers=dict(headers or ({'Content-Type':'application/json'} if body is not None else {}))
+  m=(method or ('POST' if data is not None else 'GET')).upper()
+  if not bridge and m not in ('GET','HEAD') and not headers.pop('X-No-Token',None) and 'X-MAG-Token' not in headers:headers['X-MAG-Token']=_ui_token(cls.ui)
+  req=urllib.request.Request(f'http://127.0.0.1:{cls.bridge if bridge else cls.ui}'+path,data=data,method=method,headers=headers)
   with urllib.request.urlopen(req,timeout=10) as r:
    data=r.read();return data if raw else json.loads(data)
  def error(self,code,*args,**kw):
@@ -65,6 +72,25 @@ class Native(unittest.TestCase):
  def test_01_state_ui_and_readiness(self):
   self.assertEqual(self.request('/api/state')['runtime'],'C++17');self.assertTrue(self.request('/readyz')['ready'])
   self.assertIn(b'Privater Raum',self.request('/',raw=True));self.assertIn(b'function',self.request('/static/marked.min.js',raw=True))
+ def test_01a_mutating_api_requires_ui_token(self):
+  self.error(403,'/api/stop',{},headers={'Content-Type':'application/json','X-No-Token':'1'})
+  self.error(403,'/api/stop',{},headers={'Content-Type':'application/json','X-MAG-Token':'x'*43})
+  self.error(403,'/api/reset',{},headers={'Content-Type':'application/json','X-No-Token':'1'})
+  self.error(403,'/api/connectors/github',{'token':'ghp_'+'a'*36},headers={'Content-Type':'application/json','X-No-Token':'1'})
+  self.request('/api/stop',{})
+  html=self.request('/',raw=True).decode()
+  self.assertIn('rel="icon" href="/favicon.svg"',html);self.assertIn('rel="icon" href="/favicon.ico"',html)
+  for bad in ['confirm(','alert(','prompt(','Eigene Modelle','Montserrat','fonts.googleapis']:self.assertNotIn(bad,html)
+  for f,ct in [('/favicon.svg','image/svg+xml'),('/favicon.ico','image/x-icon'),('/static/InterVariable.woff2','font/woff2')]:
+   with urllib.request.urlopen(f'http://127.0.0.1:{self.ui}'+f,timeout=10) as r:self.assertEqual(r.headers['Content-Type'].split(';')[0],ct)
+ def test_01c_connector_secret_stays_server_side(self):
+  self.error(400,'/api/connectors/github',{'token':'nope'})
+  tok='ghp_'+'b'*36
+  self.assertTrue(self.request('/api/connectors/github',{'token':tok})['connected'])
+  st=self.request('/api/connectors');self.assertTrue(st['github']['connected']);self.assertNotIn(tok,json.dumps(st))
+  self.assertNotIn(tok,self.request('/api/state',raw=True).decode())
+  f=self.state/'connectors'/'github.token';self.assertEqual(oct(f.stat().st_mode&0o777),'0o600')
+  self.request('/api/connectors/github',method='DELETE');self.assertFalse(self.request('/api/connectors')['github']['connected'])
  def test_02_chunked_model_and_selected_agents(self):
   self.request('/api/message',{'text':'Test','bots':['test'],'web_search':False})
   for _ in range(100):
@@ -80,6 +106,14 @@ class Native(unittest.TestCase):
   self.request('/api/reset',{})
   self.assertFalse(self.request('/api/state')['files']);self.assertEqual(self.request('/api/agents/test/memory')[0]['text'],'Merke mich')
   self.assertFalse(list(self.state.joinpath('files').iterdir()));self.error(404,'/api/file/'+f['stored'])
+ def test_03a_memory_entries_edit_and_delete(self):
+  mem=self.request('/api/agents/test/memory');self.assertEqual(mem[0]['text'],'Merke mich')
+  self.error(409,'/api/agents/test/memory/0',{'text':'Neu','old':'Anders'},method='PUT')
+  self.error(404,'/api/agents/test/memory/99',{'text':'Neu'},method='PUT')
+  r=self.request('/api/agents/test/memory/0',{'text':'Geaendert','old':'Merke mich'},method='PUT')
+  self.assertEqual(r['memory'][0]['text'],'Geaendert')
+  stored=json.loads(self.state.joinpath('agents.json').read_text());self.assertEqual(stored[0]['memory'][0]['text'],'Geaendert')
+  r=self.request('/api/agents/test/memory/0?old=Geaendert',method='DELETE');self.assertEqual(r['memory'],[])
  def test_04_bridge_auth_and_routes(self):
   self.error(401,'/api/state',bridge=True)
   token=self.state.joinpath('token').read_text().strip();h={'Authorization':'Bearer '+token}

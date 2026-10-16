@@ -187,6 +187,10 @@ static std::string mime_for(const std::string &name) {
     return "image/webp";
   if (e == ".svg")
     return "image/svg+xml";
+  if (e == ".woff2")
+    return "font/woff2";
+  if (e == ".ico")
+    return "image/x-icon";
   if (e == ".mp3")
     return "audio/mpeg";
   if (e == ".wav")
@@ -852,7 +856,35 @@ static int64_t frontend_version() {
   struct stat st;
   return stat(FRONTEND_FILE.c_str(), &st) == 0 ? (int64_t)st.st_mtime : 0;
 }
+// Per-process token for mutating UI requests (CSRF/drive-by protection).
+// Delivered only inside the same-origin HTML; never persisted or logged.
+static const std::string &ui_token() {
+  static const std::string t = token_urlsafe(43);
+  return t;
+}
+static bool ct_eq(const std::string &a, const std::string &b) {
+  if (a.size() != b.size() || a.empty()) return false;
+  unsigned char d = 0;
+  for (size_t i = 0; i < a.size(); ++i) d |= (unsigned char)(a[i] ^ b[i]);
+  return d == 0;
+}
+static std::string raw_frontend();
+// Frontend as served to the browser: favicon + UI token injected into <head>.
 static std::string current_frontend() {
+  std::string t = raw_frontend();
+  const std::string head =
+      "<meta name=\"mag-token\" content=\"" + ui_token() +
+      "\"><link rel=\"icon\" href=\"/favicon.svg\" type=\"image/svg+xml\">"
+      "<link rel=\"icon\" href=\"/favicon.ico\" sizes=\"any\">"
+      "<link rel=\"apple-touch-icon\" href=\"/static/apple-touch-icon.png\">";
+  auto pos = t.find("<head>");
+  if (pos != std::string::npos)
+    t.insert(pos + 6, head);
+  else
+    t = head + t;
+  return t;
+}
+static std::string raw_frontend() {
   bool ok = false;
   std::string t = read_file(FRONTEND_FILE, &ok);
   if (ok && !trim(t).empty())

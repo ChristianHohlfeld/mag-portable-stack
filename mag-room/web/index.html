@@ -171,6 +171,13 @@ html,body{overflow-x:hidden;max-width:100vw}
 .q-now:hover,.q-btn:hover{background:var(--hover)}.q-now{border-color:color-mix(in srgb,var(--accent),var(--line) 55%)}
 #conversation img{cursor:zoom-in}
 @media(max-width:850px){.q-icon,.q-now,.q-btn{min-height:40px;height:40px}.q-icon{width:40px}}
+.message.user.other{margin-left:0;margin-right:auto;align-items:flex-start}
+.message.user.other .meta{padding-right:0;padding-left:3px}
+.message.user.other .content{border-radius:5px 17px 17px 17px}
+.message.user.other .message-tools{justify-content:flex-start}
+#you-badge{max-width:34vw;overflow:hidden;text-overflow:ellipsis}
+.q-who{flex:none;max-width:88px;overflow:hidden;text-overflow:ellipsis;font-size:11px;color:var(--muted)}
+@media(max-width:600px){#you-badge{max-width:26vw;font-size:10px;padding:6px 8px}.message.user.other{max-width:91%}}
 .q-chip{gap:6px;touch-action:pan-y}.q-chip.dragging{opacity:.5;border-color:var(--sb-red)}.q-chip.drop-before{box-shadow:inset 0 3px var(--sb-red)}.q-grip{cursor:grab;touch-action:none;user-select:none;font-size:18px;color:var(--muted);padding:0 6px;min-height:34px;display:grid;place-items:center}.q-grip:active{cursor:grabbing}.q-step{width:30px;min-width:30px;padding:0;font-size:15px}#stop-generation{display:none!important}
 .photo-preview{display:flex;gap:9px;flex-wrap:wrap;padding:8px 0}.photo-card{position:relative;width:80px;height:80px;border-radius:10px;overflow:hidden;border:1px solid var(--line);background:var(--panel)}.photo-card img{width:100%;height:100%;object-fit:cover}.photo-card button{position:absolute;right:3px;top:3px;width:26px;height:26px;border-radius:50%;background:var(--surface);color:var(--text);border:1px solid var(--line);font-size:16px}
 #send-button.is-stop{min-width:40px;padding-inline:10px}.sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
@@ -267,10 +274,10 @@ dialog{border-radius:10px;border-color:var(--line);background:var(--surface)}
 }
 .agent.active{background:var(--panel);border-color:var(--accent)!important;box-shadow:inset 3px 0 var(--accent)}.agent[role=button]:focus-visible{outline:2px solid var(--accent);outline-offset:2px}.browser-access{font-size:12px;color:var(--orange);padding:8px 0}.browser-access[hidden]{display:none}
 </style><script>try{document.documentElement.dataset.theme=localStorage.getItem('mag-theme')||((matchMedia('(prefers-color-scheme: light)').matches)?'light':'dark')}catch(e){document.documentElement.dataset.theme='dark'}</script></head><body><svg xmlns="http://www.w3.org/2000/svg" aria-hidden="true" style="position:absolute;width:0;height:0;overflow:hidden"><defs><symbol id="ic-menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></symbol><symbol id="ic-tools" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></symbol><symbol id="ic-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol><symbol id="ic-send" viewBox="0 0 24 24"><path d="m5 12 14-8-4 16-3-7-7-1Z"/><path d="m12 13 7-9"/></symbol><symbol id="ic-paperclip" viewBox="0 0 24 24"><path d="m20.5 11.6-8 8a5 5 0 0 1-7-7l9-9a3.5 3.5 0 0 1 5 5L10 18a2 2 0 1 1-3-3l8-8"/></symbol><symbol id="ic-mic" viewBox="0 0 24 24"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0M12 17v5m-4 0h8"/></symbol><symbol id="ic-moon" viewBox="0 0 24 24"><path d="M20.6 15.5A9 9 0 0 1 8.5 3.4 9 9 0 1 0 20.6 15.5Z"/></symbol><symbol id="ic-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M4.9 4.9l1.4 1.4m11.4 11.4 1.4 1.4M2 12h2m16 0h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></symbol><symbol id="ic-lock" viewBox="0 0 24 24"><rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></symbol><symbol id="ic-file" viewBox="0 0 24 24"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9Z"/><path d="M13 2v7h7"/></symbol><symbol id="ic-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></symbol><symbol id="ic-pause" viewBox="0 0 24 24"><rect x="5" y="5" width="5" height="14" rx="1"/><rect x="14" y="5" width="5" height="14" rx="1"/></symbol><symbol id="ic-stop" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/></symbol><symbol id="ic-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c5 5 5 13 0 18M12 3c-5 5-5 13 0 18"/></symbol><symbol id="ic-terminal" viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="18" rx="2"/><path d="m6 8 4 4-4 4m7 0h5"/></symbol><symbol id="ic-brain" viewBox="0 0 24 24"><path d="M12 18V5a3 3 0 0 0-6 0 4 4 0 0 0-2 7 4 4 0 0 0 2 7 3 3 0 0 0 6-1Zm0 0V5a3 3 0 0 1 6 0 4 4 0 0 1 2 7 4 4 0 0 1-2 7 3 3 0 0 1-6-1Z"/></symbol><symbol id="ic-arrow" viewBox="0 0 24 24"><path d="M5 12h14m-6-6 6 6-6 6"/></symbol><symbol id="ic-trash" viewBox="0 0 24 24"><path d="M3 6h18m-2 0-1 15H6L5 6m3 0V3h8v3M10 10v7m4-7v7"/></symbol><symbol id="ic-spark" viewBox="0 0 24 24"><path d="m12 2 2.2 7.8L22 12l-7.8 2.2L12 22l-2.2-7.8L2 12l7.8-2.2L12 2Z"/></symbol><symbol id="ic-expand" viewBox="0 0 24 24"><path d="M9 3H3v6m12-6h6v6M3 15v6h6m12-6v6h-6"/></symbol><symbol id="ic-cpu" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 2v4m6-4v4M9 18v4m6-4v4M2 9h4m-4 6h4m12-6h4m-4 6h4"/></symbol><symbol id="ic-check" viewBox="0 0 24 24"><path d="m4 12 5 5L20 6"/></symbol></defs></svg>
-<header id="app-header"><div class="brand"><div class="brand-mark"><svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="square" stroke-linejoin="miter" aria-hidden="true"><path d="M3 22V8h18v14"/><path d="M3 8V3h4v4h3V3h4v4h3V3h4v5"/><rect x="8" y="12" width="8" height="10"/></svg></div><span class="brand-word">MAG</span><span class="brand-caption">Stardenburg · privat</span></div><span class="header-divider"></span><span class="header-title">Unterhaltung</span><button class="side-toggle" id="toggle-agents" aria-controls="left-panel" aria-expanded="true" title="Bot-Leiste umschalten"><svg class="i " aria-hidden="true"><use href="#ic-menu"></use></svg> <span>Bots</span></button><button class="side-toggle" id="toggle-tools" aria-controls="right-panel" aria-expanded="true" title="Werkzeuge umschalten"><svg class="i " aria-hidden="true"><use href="#ic-tools"></use></svg> <span>Werkzeuge</span></button><div class="header-actions"><span id="model-info" title="Aktives Modell, Engine und Geschwindigkeit"></span><span id="model-state" class="top-stat" role="status" title="Modellstatus"><span class="dot"></span><span class="txt">Modell lädt …</span></span><span class="top-stat" id="connection" title="Verbindung zum Raum"><span class="dot"></span><span class="txt">Verbinde …</span></span><button type="button" class="icon-btn" id="theme-toggle" title="Hell-/Dunkelmodus wechseln" aria-label="Farbschema wechseln"><svg class="i " aria-hidden="true"><use href="#ic-moon"></use></svg></button></div></header>
+<header id="app-header"><div class="brand"><div class="brand-mark"><svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="square" stroke-linejoin="miter" aria-hidden="true"><path d="M3 22V8h18v14"/><path d="M3 8V3h4v4h3V3h4v4h3V3h4v5"/><rect x="8" y="12" width="8" height="10"/></svg></div><span class="brand-word">MAG</span><span class="brand-caption">Stardenburg · privat</span></div><span class="header-divider"></span><span class="header-title">Unterhaltung</span><button class="side-toggle" id="toggle-agents" aria-controls="left-panel" aria-expanded="true" title="Bot-Leiste umschalten"><svg class="i " aria-hidden="true"><use href="#ic-menu"></use></svg> <span>Bots</span></button><button class="side-toggle" id="toggle-tools" aria-controls="right-panel" aria-expanded="true" title="Werkzeuge umschalten"><svg class="i " aria-hidden="true"><use href="#ic-tools"></use></svg> <span>Werkzeuge</span></button><div class="header-actions"><span id="model-info" title="Aktives Modell, Engine und Geschwindigkeit"></span><span id="model-state" class="top-stat" role="status" title="Modellstatus"><span class="dot"></span><span class="txt">Modell lädt …</span></span><span class="top-stat" id="you-badge" hidden></span><span class="top-stat" id="connection" title="Verbindung zum Raum"><span class="dot"></span><span class="txt">Verbinde …</span></span><button type="button" class="icon-btn" id="theme-toggle" title="Hell-/Dunkelmodus wechseln" aria-label="Farbschema wechseln"><svg class="i " aria-hidden="true"><use href="#ic-moon"></use></svg></button></div></header>
 <div class="layout" id="layout">
 <aside class="left" id="left-panel"><div class="section"><div class="side-section-head"><h2>Im Raum</h2></div><div id="agents"></div><button class="side-add" id="add-agent"><svg class="i sm" aria-hidden="true"><use href="#ic-plus"></use></svg> Bot hinzufügen</button></div>
-<div class="section" id="jobs-section"><div class="side-section-head"><h2>Jobs</h2><button type="button" class="pill-btn ghost" id="job-new" title="Neuen Job anlegen">+ Neu</button></div><div id="jobs" class="jobs-list"></div></div><div class="section"><div class="side-section-head"><h2>Zusammenarbeit</h2></div><label class="control-row"><input type="checkbox" id="autotalk"><span>Autonom arbeiten</span></label><p class="control-desc">Läuft auch bei geschlossenem Browser.</p><label class="control-row"><input type="checkbox" id="offline"><span>Offline</span></label><div class="sidebar-actions"><button class="pill-btn ghost" id="stop"><svg class="i sm" aria-hidden="true"><use href="#ic-pause"></use></svg> Alle pausieren</button></div></div>
+<div class="section" id="jobs-section"><div class="side-section-head"><h2>Jobs</h2><button type="button" class="pill-btn ghost" id="job-new" title="Neuen Job anlegen">+ Neu</button></div><div id="jobs" class="jobs-list"></div></div><div class="section"><div class="side-section-head"><h2>Zusammenarbeit</h2></div><label class="control-row" id="autotalk-row"><input type="checkbox" id="autotalk"><span>Autonom arbeiten</span></label><p class="control-desc" id="autotalk-desc">Läuft auch bei geschlossenem Browser.</p><label class="control-row" id="offline-row"><input type="checkbox" id="offline"><span>Offline</span></label><div class="sidebar-actions"><button class="pill-btn ghost" id="stop"><svg class="i sm" aria-hidden="true"><use href="#ic-pause"></use></svg> Alle pausieren</button></div></div>
 <div class="section" id="settings-section"><div class="side-section-head"><h2>Einstellungen</h2></div><label class="control-row"><input type="checkbox" id="tts"><span>Antworten vorlesen</span></label><div style="padding:8px 10px"><select class="side-select" id="language" aria-label="Sprache"><option value="auto">Sprache automatisch</option><option value="de">Deutsch</option><option value="en">English</option></select></div><div class="pwa-block" id="pwa-install-block"><p class="hint">App auf diesem Gerät</p><button type="button" class="pill-btn" id="pwa-install" hidden>Installieren</button><p class="hint" id="pwa-ios" hidden>Auf dem iPhone: Teilen, dann „Zum Home-Bildschirm“.</p><p class="hint" id="pwa-install-note"></p></div><div id="pwa-notify"><div class="pwa-block" id="pwa-push-block"><button type="button" class="pill-btn" id="pwa-push">Mitteilungen einschalten</button><p class="hint" id="pwa-push-note"></p><button type="button" class="pill-btn ghost" id="pwa-unsub" hidden>Mitteilungen aus</button></div><label class="control-row"><input type="checkbox" id="pwa-job" checked><span>Fertige Jobs</span></label><label class="control-row"><input type="checkbox" id="pwa-run" checked><span>Lange Antworten</span></label><label class="control-row"><input type="checkbox" id="pwa-error" checked><span>Fehler</span></label></div></div>
 <div class="section" id="data-areas"><div class="side-section-head"><h2>Daten</h2></div>
 <div class="data-area" id="area-room"><h3>Raum</h3><p class="data-count" id="room-count">0 Nachrichten, 0 Dateien</p><p class="hint">Chatverlauf und hochgeladene Dateien.</p><button class="pill-btn ghost-danger" id="reset" type="button">Raum leeren</button></div>
@@ -677,10 +684,12 @@ function append(msg,scroll=true,trace=null,position=-1){
  const area=$('conversation');let inner=area.querySelector('.conversation-inner');
  if(!inner){inner=document.createElement('div');inner.className='conversation-inner';area.append(inner)}
  inner.querySelector('.empty')?.remove();
- const div=document.createElement('article');div.className='message '+(msg.role==='user'?'user':'assistant');div.dataset.id=msg.id||'';
+ const mine=isMine(msg),human=msg.role==='user';
+ const div=document.createElement('article');div.className='message '+(human?'user'+(mine?' mine':' other'):'assistant');div.dataset.id=msg.id||'';
  const meta=document.createElement('div');meta.className='meta';
- const avatar=document.createElement('span');avatar.className='avatar';avatar.textContent=msg.role==='user'?'Du':(msg.name||'Bot').trim().slice(0,1).toUpperCase();
- const name=document.createElement('strong');name.textContent=msg.name||(msg.role==='user'?'Du':'Bot');
+ const avatar=document.createElement('span');avatar.className='avatar';avatar.textContent=human?initials(msg.name||'Nutzer'):(msg.name||'Bot').trim().slice(0,1).toUpperCase();
+ if(human&&!mine){avatar.style.background=avatarColor(msg.login||msg.name||'Gast');avatar.style.color='#fff'}
+ const name=document.createElement('strong');name.textContent=msg.name||(human?'Nutzer':'Bot');
  const time=document.createElement('time');const date=new Date((msg.ts||Date.now()/1000)*1000);time.textContent=date.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
  meta.append(avatar,name,time);if(msg.id){const trash=document.createElement('button');trash.type='button';trash.className='msg-trash';trash.title='Nachricht löschen';trash.setAttribute('aria-label','Nachricht löschen');trash.innerHTML='<svg class="i sm" aria-hidden="true"><use href="#ic-trash"></use></svg>';trash.onclick=()=>askDeleteMessage(msg);meta.append(trash)}div.append(meta);
  const content=document.createElement('div');content.className='content';content.innerHTML=safeMarkdown(msg.content);decorate(content);
@@ -759,8 +768,9 @@ function ensureWork(node,s){
 setInterval(()=>{const now=Date.now();for(const id of Object.keys(streams)){const s=streams[id];if(!s)continue;const hung=!s.error&&now-(s.lastEvent||s.started||now)>60000;if(hung!==!!s.hung){s.hung=hung;updateStream(id,true);continue}const label=s.node?.querySelector?.('.work-label');if(label&&s.node.classList.contains('work-live'))label.textContent=workLabelText(s)}},1000);
 
 function streamControls(){
- const running=Object.keys(streams).length>0;
+ const running=Object.keys(streams).length>0&&can('stop');
  $('stop-generation').classList.toggle('active',running);
+ $('stop-generation').hidden=!running;
  $('stop-generation').setAttribute('aria-hidden',String(!running));
 }
 function renderPromptProgress(s,node){
@@ -828,7 +838,7 @@ function render(){
   lastScrollTop=area.scrollTop;syncJump();
  });
  syncJump();
- renderAgents();renderFiles();renderData();$('autotalk').checked=!!state.autotalk;streamControls();
+ renderAgents();renderFiles();renderData();if($('autotalk'))$('autotalk').checked=!!state.autotalk;applyAccess();streamControls();
 }
 let focusedBotId=remoteBotId||sessionStorage.getItem('mag-focused-bot')||'';
 function focusBot(id) {
@@ -847,11 +857,25 @@ function focusBot(id) {
   syncBrowserUrl();
  }
 }
+function initials(name){const p=String(name||'?').trim().split(/\s+/).filter(Boolean);if(p.length>=2)return (p[0][0]+p[p.length-1][0]).toUpperCase();return (p[0]||'?').slice(0,1).toUpperCase()}
+function avatarColor(name){let h=0;for(const c of String(name))h=(h*33+c.codePointAt(0))>>>0;return 'hsl('+(h%360)+' 42% 36%)'}
+function isMine(msg){if(msg.role!=='user')return false;const y=state.you||{};if(msg.login&&y.login)return msg.login===y.login;if(!msg.login&&!y.login&&y.role!=='guest')return true;return false}
+function can(p){if(!state.you)return true;if(state.you.role==='owner')return true;return !!(state.you.permissions&&state.you.permissions[p])}
+function applyAccess(){const y=state.you;document.body.classList.toggle('is-guest',!!(y&&y.role==='guest'));
+ const hide=(id,on)=>{const el=$(id);if(el)el.hidden=!!on};
+ hide('jobs-section',!can('jobs'));
+ hide('add-agent',!can('delete')||!!(state.single_bot));
+ hide('offline-row',!can('offline'));hide('autotalk-row',!can('autotalk'));hide('autotalk-desc',!can('autotalk'));
+ hide('stop',!can('stop'));hide('reset',!can('reset'));hide('plus-web',!can('offline'));hide('plus-github',!can('connectors'));
+ const badge=$('you-badge');if(!badge)return;if(!y){badge.hidden=true;return}badge.hidden=false;badge.textContent=(y.role==='owner'?'Besitzer':'Gast')+' · '+(y.name||'');badge.title=(y.login||y.role);}
 function renderAgents(){const list=$('agents');list.replaceChildren();const single=state.single_bot||'';$('add-agent').hidden=!!single;if(single){selected.clear();selected.add(single)}const old=$('browser-agent').value;$('browser-agent').replaceChildren();for(const a of state.agents){if(!selected.has(a.id)&&!sessionStorage.getItem('mag-selected'))selected.add(a.id);const card=document.createElement('div');card.className='agent';card.dataset.bot=a.id;card.tabIndex=0;
 card.setAttribute('role','button');card.setAttribute('aria-label',a.name+' Browser und Terminal anzeigen');
 card.onclick=e=>{if(e.target.closest('button,a,input,label,textarea,select'))return;focusBot(a.id)};
 card.onkeydown=e=>{if(e.target===card&&(e.key==='Enter'||e.key===' ')){e.preventDefault();focusBot(a.id)}};
-const label=document.createElement('label');const check=document.createElement('input');check.type='checkbox';check.checked=selected.has(a.id);check.onchange=()=>{check.checked?selected.add(a.id):selected.delete(a.id);sessionStorage.setItem('mag-selected',JSON.stringify([...selected]))};const name=document.createElement('span');name.textContent=a.name;name.style.color=a.color;label.append(check,name);const info=document.createElement('small');info.textContent=(a.vm||'nur Chat')+' · '+(a.memory_count||0)+' Erinnerungen';const actions=document.createElement('div');actions.className='actions';for(const [title,fn] of (a.id===single?[['Erinnerung',()=>memory(a)]]:[['Erinnerung',()=>memory(a)],['Entfernen',()=>removeAgent(a)]])){const b=document.createElement('button');b.textContent=title;b.onclick=fn;actions.append(b)}
+const label=document.createElement('label');const check=document.createElement('input');check.type='checkbox';check.checked=selected.has(a.id);check.onchange=()=>{check.checked?selected.add(a.id):selected.delete(a.id);sessionStorage.setItem('mag-selected',JSON.stringify([...selected]))};const name=document.createElement('span');name.textContent=a.name;name.style.color=a.color;label.append(check,name);const info=document.createElement('small');info.textContent=(a.vm||'nur Chat')+' · '+(a.memory_count||0)+' Erinnerungen';const actions=document.createElement('div');actions.className='actions';const actList=[];
+if(can('memory'))actList.push(['Erinnerung',()=>memory(a)]);
+if(a.id===single){}else if(can('delete'))actList.push(['Entfernen',()=>removeAgent(a)]);
+for(const [title,fn] of actList){const b=document.createElement('button');b.textContent=title;b.onclick=fn;actions.append(b)}
 const remote=document.createElement('a');
 remote.href='/?bot='+encodeURIComponent(a.id);
 remote.textContent='Browser';
@@ -1427,10 +1451,12 @@ function wireQueueDrag(chip,p){
 let queueState={pending:[],paused:false};
 function renderQueue(q){queueState={pending:q.pending||[],paused:!!q.paused};const box=$('queue-chips');if(!box)return;box.replaceChildren();const list=queueState.pending;box.hidden=!list.length&&!queueState.paused;if(box.hidden)return;box.classList.toggle('paused',queueState.paused);
  const head=document.createElement('div');head.className='queue-head';const lbl=document.createElement('span');lbl.textContent=queueState.paused?(list.length?'KI pausiert · wartet':'KI pausiert'):'Als Nächstes';head.append(lbl);
- if(queueState.paused){const b=document.createElement('button');b.type='button';b.className='q-btn';b.textContent='Fortsetzen';b.onclick=()=>api('/api/queue/resume',{}).catch(e=>notice(e.message));head.append(b)}
- if(list.length>1){const b=document.createElement('button');b.type='button';b.className='q-btn';b.textContent='Zusammenführen';b.title='Alle wartenden Nachrichten als eine senden';b.onclick=()=>api('/api/queue/merge',{}).catch(e=>notice(e.message));head.append(b)}
+ if(queueState.paused&&can('stop')){const b=document.createElement('button');b.type='button';b.className='q-btn';b.textContent='Fortsetzen';b.onclick=()=>api('/api/queue/resume',{}).catch(e=>notice(e.message));head.append(b)}
+ if(list.length>1&&can('stop')){const b=document.createElement('button');b.type='button';b.className='q-btn';b.textContent='Zusammenführen';b.title='Alle wartenden Nachrichten als eine senden';b.onclick=()=>api('/api/queue/merge',{}).catch(e=>notice(e.message));head.append(b)}
  box.append(head);
  for(const p of list){const chip=document.createElement('div');chip.className='q-chip';chip.dataset.id=p.id;
+ const own=!state.you||state.you.role==='owner'||(!!p.login&&p.login===state.you.login);
+ if(p.sender){const who=document.createElement('span');who.className='q-who';who.textContent=p.sender;chip.append(who)}
  const grip=document.createElement('span');grip.className='q-grip';grip.title='Zum Umsortieren ziehen';grip.textContent='⠿';
  const up=document.createElement('button');up.type='button';up.className='q-icon q-step';up.title='Nach oben';up.textContent='↑';up.disabled=list[0].id===p.id;up.onclick=()=>queueShift(p.id,-1);
  const down=document.createElement('button');down.type='button';down.className='q-icon q-step';down.title='Nach unten';down.textContent='↓';down.disabled=list[list.length-1].id===p.id;down.onclick=()=>queueShift(p.id,1);
@@ -1441,7 +1467,9 @@ function renderQueue(q){queueState={pending:q.pending||[],paused:!!q.paused};con
   ed.onclick=()=>{const ta=document.createElement('textarea');ta.className='q-edit';ta.value=p.text;ta.rows=Math.min(6,Math.max(1,p.text.split('\n').length));const save=async()=>{const v=ta.value.trim();if(!v){return}try{await api('/api/queue/'+encodeURIComponent(p.id),{text:v},'PUT')}catch(e){notice(e.message)}};ta.onkeydown=e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();save()}else if(e.key==='Escape'){renderQueue(queueState)}};ta.onblur=()=>{if(ta.value.trim()&&ta.value.trim()!==p.text)save();else renderQueue(queueState)};t.replaceWith(ta);ta.focus()};
   del.onclick=()=>api('/api/queue/'+encodeURIComponent(p.id),undefined,'DELETE').catch(e=>notice(e.message));
   now.onclick=async()=>{now.disabled=true;try{await api('/api/queue/'+encodeURIComponent(p.id)+'/now',{})}catch(e){notice(e.message)}finally{now.disabled=false}};
-  chip.append(grip,t,up,down,ed,del,now);wireQueueDrag(chip,p);box.append(chip)}}
+  if(own){chip.append(grip,t,up,down,ed,del,now);wireQueueDrag(chip,p)}
+ else chip.append(t);
+ box.append(chip)}}
 
 // ---- Jobs (scheduled prompts, like ChatGPT Tasks)
 let jobsState={jobs:[]},jobEdit=null;
@@ -1453,7 +1481,7 @@ function schedText(s){s=s||{};const U={m:'Min.',h:'Std.',d:'Tage',w:'Wochen',s:'
  if(s.type==='monthly')return 'monatlich am '+s.day+'. '+s.time;
  if(s.type==='once')return 'einmalig '+(s.at||'').replace('T',' ');
  return 'nur Webhook/manuell'}
-async function loadJobs(){try{jobsState=await api('/api/jobs',undefined,'GET');renderJobs()}catch(e){}}
+async function loadJobs(){if(state.you&&!can('jobs')){$('jobs-section').hidden=true;return}try{jobsState=await api('/api/jobs',undefined,'GET');renderJobs()}catch(e){}}
 function renderJobs(){const box=$('jobs');if(!box)return;box.replaceChildren();
  if(!jobsState.jobs.length){const p=document.createElement('p');p.className='control-desc';p.textContent='Noch keine Jobs.';box.append(p);return}
  for(const j of jobsState.jobs){const el=document.createElement('div');el.className='job';

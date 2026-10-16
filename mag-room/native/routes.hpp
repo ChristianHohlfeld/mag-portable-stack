@@ -36,6 +36,7 @@ static void agents_event() {
 static void route(int fd, Req &r, bool bridge = false) {
   const std::string &p = r.path;
   const std::string &m = r.method;
+  Actor actor;
   if (bridge) {
     std::string token = qparam(r.query, "token"), expected = bridge_token();
     auto auth = r.hdrs.find("authorization");
@@ -101,6 +102,12 @@ static void route(int fd, Req &r, bool bridge = false) {
     }
   } else {
     if (m == "POST" && r.path.rfind("/hook/jobs/", 0) == 0) {
+      // Same loopback rule as the UI. The per-job secret is the credential;
+      // a non-loopback caller cannot reach it by spoofing headers.
+      if (!is_loopback_ip(connection_peer(fd))) {
+        error_json(fd, 403, "Kein Zugang");
+        return;
+      }
       // Webhook trigger: authenticated only by the per-job secret.
       std::string id = r.path.substr(11), secret;
       auto h = r.hdrs.find("x-mag-job-secret");
@@ -139,6 +146,13 @@ static void route(int fd, Req &r, bool bridge = false) {
         error_json(fd, 403, "UI token required (Seite neu laden)");
         return;
       }
+    }
+    // Identity is the Tailscale user Caddy put on this loopback hop.
+    // Non-loopback peers are denied here, including forged identity headers.
+    if (!identify_actor(connection_peer(fd), r.hdrs, actor) ||
+        !permit_request(m, r.path, actor)) {
+      error_json(fd, 403, actor.ok ? "Nur der Besitzer" : "Kein Zugang");
+      return;
     }
   }
   const std::string path = r.path;
@@ -391,13 +405,13 @@ static void route(int fd, Req &r, bool bridge = false) {
     return;
   }
   if (m == "GET" && path == "/api/state") {
-    send_json(fd, 200, state_json());
+    send_json(fd, 200, state_json(bridge ? nullptr : &actor));
     return;
   }
   if (m == "GET" &&
       (path == "/api/bots" || path == "/api/room" || path == "/api/files")) {
     Val state;
-    mj::parse(state_json(), state);
+    mj::parse(state_json(bridge ? nullptr : &actor), state);
     Val result = Val::object();
     std::string key = path == "/api/bots"   ? "bots"
                       : path == "/api/room" ? "messages"
@@ -793,7 +807,7 @@ static void route(int fd, Req &r, bool bridge = false) {
     }
     if ((BUSY.load() || has_pending) && !interrupt) {
       // Not in the transcript yet: shown as a queue chip, dispatched later.
-      Val item = enqueue_pending(str("text"), ids, think);
+      Val item = enqueue_pending(str("text"), ids, think, actor.name, actor.login);
       JOB_CV.notify_all();
       Val out = Val::object();
       out["accepted"] = true;
@@ -805,12 +819,13 @@ static void route(int fd, Req &r, bool bridge = false) {
     if (interrupt && (BUSY.load() || QUEUE_PAUSED)) {
       // Same path as "Jetzt senden": the cancelled turn first stores its
       // partial answer, then this message follows as the next user turn.
-      Val item = enqueue_pending(str("text"), ids, think);
+      Val item = enqueue_pending(str("text"), ids, think, actor.name, actor.login);
       queue_send_now(item.find("id")->asStr());
       send_json(fd, 202, "{\"accepted\":true,\"interrupted\":true}");
       return;
     }
-    Val msg = append_room("user", "Nutzer", str("text"));
+    Val msg = append_room("user", actor.name.empty() ? "Nutzer" : actor.name,
+                          str("text"), "", nullptr, actor.login);
     msg["type"] = "message";
     publish(mj::dump(msg));
     const bool queued = BUSY.load() && !interrupt;
@@ -834,6 +849,15 @@ static void route(int fd, Req &r, bool bridge = false) {
     if (rest == "resume" && m == "POST") { queue_resume(); send_json(fd, 200, "{\"ok\":true}"); return; }
     std::string qid = rest, action;
     if (auto sl = rest.find('/'); sl != std::string::npos) { qid = rest.substr(0, sl); action = rest.substr(sl + 1); }
+    if (!bridge && actor.role != "owner" && action.empty() &&
+        (m == "PUT" || m == "DELETE")) {
+      std::string owner_login;
+      if (!pending_sender(qid, owner_login) || owner_login.empty() ||
+          owner_login != actor.login) {
+        error_json(fd, 403, "Nur eigene Nachrichten");
+        return;
+      }
+    }
     bool ok = false;
     if (action == "move" && m == "POST") {
       const Val *target = has_json ? body.find("before") : nullptr;
@@ -979,8 +1003,9 @@ static void route(int fd, Req &r, bool bridge = false) {
       error_json(fd, 400, "Empty file");
       return;
     }
-    Val f = add_file(name.empty() ? "upload" : name, r.body, "Nutzer");
-    append_room("user", "Nutzer", "", "", &f);
+    std::string who = actor.name.empty() ? "Nutzer" : actor.name;
+    Val f = add_file(name.empty() ? "upload" : name, r.body, who);
+    append_room("user", who, "", "", &f, actor.login);
     emit_file("", f);
     send_json(fd, 201, mj::dump(f));
     return;

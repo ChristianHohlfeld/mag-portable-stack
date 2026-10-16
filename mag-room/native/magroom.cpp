@@ -825,13 +825,16 @@ static void save_room() {
 }
 static Val append_room(const std::string &role, const std::string &name,
                        const std::string &content, const std::string &bot = "",
-                       const Val *file = nullptr) {
+                       const Val *file = nullptr,
+                       const std::string &login = "") {
   Val m = Val::object();
   m["id"] = token_hex(6);
   m["role"] = role;
   m["name"] = name.substr(0, 40);
   m["content"] = content;
   m["ts"] = (long)now_s();
+  if (!login.empty())
+    m["login"] = login.substr(0, 160);
   if (!bot.empty())
     m["bot"] = bot;
   if (file)
@@ -1464,7 +1467,11 @@ static const char *ROOM_RULES =
     "Werkzeugaktion ein konkreter weiterer Schritt zum Nutzerziel noetig "
     "ist, beende mit [[MAG:WEITER]], andernfalls mit [[MAG:ENDE]]. "
     "Marker sind interne Steuerzeichen und werden vor dem Speichern "
-    "entfernt. Der Raumverlauf mit Sprecherlabels folgt.";
+    "entfernt. Im Raum schreiben mehrere Menschen und du. Jede Zeile im "
+    "Raumverlauf beginnt mit [Name]: — der Name steht nur dort, nie in "
+    "diesem Systemtext und nie in der Werkzeugliste. Daran erkennst du, "
+    "wer geschrieben hat, und antwortest in den gemeinsamen Raum, so dass "
+    "alle dich lesen. Der Raumverlauf folgt.";
 // Stable per bot: kept in the system prompt so llama's prompt cache can reuse
 // it. Everything that changes between turns goes to the [Kontext] tail.
 static const char *VM_RULES =
@@ -1603,7 +1610,9 @@ static std::string build_transcript() {
     if (f && f->isObj())
       content +=
           " [" + (f->find("name") ? f->find("name")->asStr() : "?") + "]";
-    out += name + ": " + content + "\n";
+    // Sender lives inside this user-message body so the system prompt and
+    // the tool list stay byte-stable (prompt cache). No name in the prefix.
+    out += "[" + name + "]: " + content + "\n";
   }
   return out;
 }
@@ -3667,7 +3676,7 @@ static Job val_job(const Val &v) {
 // append-only and cache-stable). Dispatched in order after the current turn,
 // or immediately via "Jetzt senden" (clean stop at a token boundary).
 struct Pending {
-  std::string id, text;
+  std::string id, text, sender, login;
   std::vector<std::string> ids;
   int think = -1;
   long ts = 0;
@@ -3678,6 +3687,8 @@ static Val pending_val(const Pending &p) {
   Val o = Val::object();
   o["id"] = p.id;
   o["text"] = p.text;
+  o["sender"] = p.sender;
+  o["login"] = p.login;
   Val ids = Val::array();
   for (auto &i : p.ids) ids.push(Val(i));
   o["bots"] = ids;
@@ -3689,6 +3700,8 @@ static Pending val_pending(const Val &v) {
   Pending p;
   if (auto x = v.find("id")) p.id = x->asStr();
   if (auto x = v.find("text")) p.text = x->asStr();
+  if (auto x = v.find("sender")) p.sender = x->asStr();
+  if (auto x = v.find("login")) p.login = x->asStr();
   if (auto x = v.find("bots"); x && x->isArr())
     for (auto &i : x->asArr()) p.ids.push_back(i.asStr());
   if (auto x = v.find("think")) p.think = (int)x->asNum(-1);
@@ -3774,11 +3787,15 @@ static void schedule(const std::vector<std::string> &ids, int think = -1,
 }
 // Queue API (routes.hpp). All return false if the id is unknown.
 static Val enqueue_pending(const std::string &text,
-                           const std::vector<std::string> &ids, int think) {
+                           const std::vector<std::string> &ids, int think,
+                           const std::string &sender = "Nutzer",
+                           const std::string &login = "") {
   std::lock_guard<std::mutex> lk(JOB_MTX);
   Pending p;
   p.id = token_hex(8);
   p.text = text;
+  p.sender = sender.substr(0, 40);
+  p.login = login.substr(0, 160);
   p.ids = ids;
   p.think = think;
   p.ts = (long)now_s();
@@ -3833,12 +3850,24 @@ static void queue_resume() {
   { std::lock_guard<std::mutex> lk(JOB_MTX); QUEUE_PAUSED = false; save_queue_locked(); queue_event_locked(); }
   JOB_CV.notify_all();
 }
+static bool pending_sender(const std::string &id, std::string &login) {
+  std::lock_guard<std::mutex> lk(JOB_MTX);
+  for (const auto &p : PENDING)
+    if (p.id == id) {
+      login = p.login;
+      return true;
+    }
+  return false;
+}
 static bool queue_merge() {
   std::lock_guard<std::mutex> lk(JOB_MTX);
   if (PENDING.size() < 2) return false;
   Pending first = PENDING.front();
-  for (size_t i = 1; i < PENDING.size(); ++i)
+  for (size_t i = 1; i < PENDING.size(); ++i) {
+    if (PENDING[i].login != first.login || PENDING[i].sender != first.sender)
+      return false;
     first.text += "\n\n" + PENDING[i].text;
+  }
   if (first.text.size() > 32768) return false;
   PENDING.clear();
   PENDING.push_back(first);
@@ -4028,7 +4057,8 @@ static void scheduler_loop() {
         // Dispatch the next queued message as a regular new user turn.
         Pending p = PENDING.front();
         PENDING.pop_front();
-        Val msg = append_room("user", "Nutzer", p.text);
+        Val msg = append_room("user", p.sender.empty() ? "Nutzer" : p.sender,
+                              p.text, "", nullptr, p.login);
         msg["type"] = "message";
         publish(mj::dump(msg));
         JOBS.push_back(Job{p.ids, p.think});
@@ -4224,6 +4254,7 @@ static void handle_sse(int fd) {
 }
 
 // ---------------------------------------------------------------- routing
+#include "access.hpp"
 static Val public_agent(int idx) {
   Val o = Val::object();
   o["id"] = bot_field(idx, "id");
@@ -4234,7 +4265,7 @@ static Val public_agent(int idx) {
   o["memory_count"] = mem && mem->isArr() ? (long)mem->arr->size() : 0;
   return o;
 }
-static std::string state_json() {
+static std::string state_json(const Actor *actor = nullptr) {
   Val root = Val::object();
   Val ag = Val::array();
   {
@@ -4295,6 +4326,8 @@ static std::string state_json() {
   root["autotalk"] = AUTOTALK.load();
   root["stt_lang"] = STT_LANG;
   root["runtime"] = "C++17";
+  if (actor && actor->ok)
+    root["you"] = actor_json(*actor);
   return mj::dump(root);
 }
 

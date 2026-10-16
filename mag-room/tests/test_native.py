@@ -768,6 +768,124 @@ class Native(unittest.TestCase):
    self.start()
   self.assertIn(b'<html',self.request('/bot/test/',raw=True))
 
+ def _ts(self, login, name, body=True):
+  h={'X-Tailscale-User':login,'X-Tailscale-Name':name}
+  if body:h['Content-Type']='application/json'
+  return h
+ def _access(self, owners, perms=None, owner_name='Chris'):
+  base={k:['owner'] for k in ('offline','stop','jobs','memory','reset','delete','autotalk','connectors','browser')}
+  if perms:base.update(perms)
+  self.state.joinpath('access.json').write_text(json.dumps({'owners':owners,'owner_name':owner_name,'permissions':base}))
+ def test_17_guest_identity_roles_and_prompt_cache(self):
+  self.wait_idle();self._access(['chris@github'])
+  st=self.request('/api/state',headers={'X-Forwarded-For':'8.8.8.8'})
+  self.assertEqual(st['you']['role'],'owner');self.assertEqual(st['you']['login'],'');self.assertEqual(st['you']['name'],'Chris')
+  st=self.request('/api/state',headers=self._ts('ada@github','Ada Lovelace',False))
+  self.assertEqual(st['you']['role'],'guest');self.assertEqual(st['you']['name'],'Ada Lovelace');self.assertEqual(st['you']['login'],'ada@github')
+  for key in ('offline','stop','jobs','memory','reset','delete'):self.assertFalse(st['you']['permissions'][key])
+  st=self.request('/api/state',headers=self._ts('Chris@GitHub','Chris',False))
+  self.assertEqual(st['you']['role'],'owner');self.assertEqual(st['you']['login'],'chris@github')
+  self.error(403,'/api/state',headers={'X-Tailscale-User':'not a login'})
+  h=self._ts('ada@github','Ada')
+  for path,body,method in (('/api/offline',{'on':True},'POST'),('/api/stop',{},'POST'),('/api/reset',{},'POST'),('/api/autotalk',{'on':True},'POST'),('/api/jobs',{'name':'x','prompt':'y','schedule':{'type':'none'}},'POST'),('/api/agents/test/memory/0',{'text':'nein','old':'nope'},'PUT'),('/api/browser/test/read',{},'POST')):
+   self.error(403,path,body,method=method,headers=h)
+  self.error(403,'/api/agents/test',method='DELETE',headers=self._ts('ada@github','Ada',False))
+  self.error(403,'/api/jobs',method='GET',headers=self._ts('ada@github','Ada',False))
+  self.assertFalse(self.request('/api/state')['offline'],'denied guest offline must not flip the switch')
+  Model.calls.clear();Model.script=[['Hallo Ada.'],['Hallo Bob.']]
+  try:
+   self.request('/api/message',{'text':'ich bin ada','bots':['test']},headers=self._ts('ada@github','Ada Lovelace'))
+   self.wait_room('Hallo Ada.');self.wait_idle()
+   user=[m for m in self.request('/api/state')['room'] if m.get('content')=='ich bin ada'][-1]
+   self.assertEqual(user['name'],'Ada Lovelace');self.assertEqual(user['login'],'ada@github');self.assertEqual(user['role'],'user')
+   call=Model.calls[-1]
+   self.assertNotIn('Ada',call['messages'][0]['content'])
+   self.assertNotIn('Ada',json.dumps(call.get('tools')))
+   self.assertRegex(call['messages'][1]['content'],r'\[Ada Lovelace \([0-9a-f]+\)\]: ich bin ada')
+   sys1=call['messages'][0];tools=json.dumps(call.get('tools'))
+   self.request('/api/message',{'text':'ich bin bob','bots':['test']},headers=self._ts('bob@github','Bob'))
+   self.wait_room('Hallo Bob.');self.wait_idle()
+   call2=Model.calls[-1]
+   self.assertEqual(call2['messages'][0],sys1,'sender must not touch the system prompt')
+   self.assertEqual(json.dumps(call2.get('tools')),tools)
+   self.assertRegex(call2['messages'][1]['content'],r'\[Bob \([0-9a-f]+\)\]: ich bin bob')
+   self.assertNotIn('Bob',call2['messages'][0]['content'])
+  finally:
+   Model.script=[]
+  self._access(['chris@github'],{'offline':['owner','guest']})
+  self.request('/api/offline',{'on':True},headers=h);self.assertTrue(self.request('/api/state')['offline'])
+  self.request('/api/offline',{'on':False},headers=h);self.assertFalse(self.request('/api/state')['offline'])
+  self._access(['chris@github'])
+  self.error(403,'/api/offline',{'on':True},headers=h)
+  Model.script=[self._slow('out',25)]
+  try:
+   self.request('/api/message',{'text':'owner-hold','bots':['test']});self._busy()
+   r=self.request('/api/message',{'text':'gast-wartet','bots':['test']},headers=self._ts('ada@github','Ada'))
+   self.assertTrue(r['queued']);qid=r['item']['id'];self.assertEqual(r['item']['sender'],'Ada');self.assertEqual(r['item']['login'],'ada@github')
+   self.request('/api/queue/'+qid,{'text':'gast-neu'},method='PUT',headers=self._ts('ada@github','Ada'))
+   self.error(403,'/api/queue/'+qid,method='DELETE',headers=self._ts('bob@github','Bob',False))
+   self.error(403,'/api/queue/'+qid+'/now',{},headers=self._ts('ada@github','Ada'))
+   self.request('/api/queue/'+qid,method='DELETE',headers=self._ts('ada@github','Ada',False))
+   self.assertFalse(any(p['id']==qid for p in self.request('/api/state')['pending']))
+  finally:
+   Model.script=[];self.request('/api/stop',{});self.wait_idle();self.request('/api/queue/resume',{});self.wait_idle()
+  html=self.request('/',raw=True).decode()
+  for needle in ('id="you-badge"','function isMine','function applyAccess','message.user.other','avatarColor'):
+   self.assertIn(needle,html)
+  for bad in ('alert(','confirm(','prompt('):self.assertNotIn(bad,html)
+  import importlib.util
+  spec=importlib.util.spec_from_file_location('mag_whois',ROOT/'ops/private-access/tailscale-whois.py')
+  mod=importlib.util.module_from_spec(spec);spec.loader.exec_module(mod)
+  login,name=mod.parse_whois({'UserProfile':{'LoginName':'ada@github','DisplayName':'Ada Lovelace'}})
+  self.assertEqual((login,name),('ada@github','Ada Lovelace'));self.assertEqual(mod.header_name(name),'Ada%20Lovelace')
+  self.assertEqual(mod.valid_remote('100.123.114.16:443'),'100.123.114.16:443');self.assertEqual(mod.valid_remote('8.8.8.8'),'')
+  self.assertRaises(ValueError,mod.parse_whois,{'UserProfile':{'LoginName':'bad login'}})
+  self.assertFalse((ROOT/'ops/private-access/Caddyfile').exists())
+  nginx=(ROOT/'ops/private-access/mag-room.nginx.conf').read_text()
+  for needle in ('listen 100.123.114.16:443','auth_request /_mag_whois',
+                 'proxy_pass http://127.0.0.1:8765/whois',
+                 'proxy_set_header X-Tailscale-User ""',
+                 'proxy_set_header X-Tailscale-Name ""',
+                 'proxy_set_header X-Tailscale-Login ""',
+                 'proxy_set_header X-Tailscale-User $mag_user',
+                 'proxy_set_header X-Mag-Remote "$remote_addr:$remote_port"',
+                 'proxy_pass http://127.0.0.1:8766',
+                 'proxy_buffering off','"no-store"'):
+   self.assertIn(needle,nginx)
+  policy=(ROOT/'ops/tailscale/policy.hujson').read_text()
+  self.assertIn('100.123.114.16',policy);self.assertIn('tcp:443',policy);self.assertIn('group:mag-guests',policy)
+  self.assertNotIn('tcp:22',policy);self.assertNotIn('"*"',policy)
+  self.state.joinpath('access.json').unlink(missing_ok=True)
+ def test_17b_non_loopback_identity_headers_are_denied(self):
+  ui,bridge=port(),port();tmp=pathlib.Path(tempfile.mkdtemp(prefix='magspoof-'));state=tmp/'state';state.mkdir()
+  state.joinpath('agents.json').write_text(json.dumps([{'id':'test','name':'Test','vm':'','memory':[]}]))
+  state.joinpath('access.json').write_text(json.dumps({'owners':['chris@github'],'owner_name':'Chris'}))
+  env=dict(os.environ,MAG_ROOM_STATE=str(state),MAG_ROOM_PORT=str(ui),MAG_ROOM_BRIDGE_PORT=str(bridge),MAG_ROOM_BRIDGE_IP='127.0.0.1',MAG_ROOM_BIND='0.0.0.0',MAG_ROOM_BACKEND=f'http://127.0.0.1:{self.model.server_port}/v1/chat/completions',MAG_ROOM_UI=str(ROOT/'mag-room/web/index.html'),MAG_ROOM_STATIC=str(ROOT/'mag-room/static'),MAG_NETMODE=str(NETMODE),MAG_TEST_NO_MEMGIT='1',MAG_ROOM_MODEL_STATUS=str(tmp/'ms.json'))
+  log=open(tmp/'log','w');proc=subprocess.Popen([str(ROOT/'build/magroom')],env=env,stdout=log,stderr=log)
+  try:
+   for _ in range(100):
+    try:urllib.request.urlopen(f'http://127.0.0.1:{ui}/healthz',timeout=2);break
+    except Exception:time.sleep(.03)
+   else:log.flush();self.fail('spoof server: '+tmp.joinpath('log').read_text()[-2000:])
+   local=json.loads(urllib.request.urlopen(urllib.request.Request(f'http://127.0.0.1:{ui}/api/state',headers={'X-Tailscale-User':'chris@github','X-Tailscale-Name':'Chris'}),timeout=5).read())
+   self.assertEqual(local['you']['role'],'owner')
+   plain=json.loads(urllib.request.urlopen(f'http://127.0.0.1:{ui}/api/state',timeout=5).read())
+   self.assertEqual(plain['you']['role'],'owner');self.assertEqual(plain['you']['login'],'')
+   host=''
+   for cand in ('172.30.0.2','172.17.0.1'):
+    try:
+     with socket.create_connection((cand,ui),timeout=2):host=cand;break
+    except OSError:continue
+   self.assertTrue(host,'need a non-loopback local address')
+   req=urllib.request.Request(f'http://{host}:{ui}/api/state',headers={'X-Tailscale-User':'chris@github','X-Tailscale-Name':'Chris'})
+   with self.assertRaises(urllib.error.HTTPError) as ctx:urllib.request.urlopen(req,timeout=5)
+   self.assertEqual(ctx.exception.code,403);self.assertIn('Kein Zugang',ctx.exception.read().decode())
+   req=urllib.request.Request(f'http://{host}:{ui}/healthz')
+   with self.assertRaises(urllib.error.HTTPError) as ctx:urllib.request.urlopen(req,timeout=5)
+   self.assertEqual(ctx.exception.code,403)
+  finally:
+   proc.terminate();proc.wait(timeout=5);log.close()
+
  def test_16_interim_narration_is_a_step_not_the_answer(self):
   first=[{'content':'Ich prüfe die Webseite.\n'},{'tool_calls':[{'index':0,'id':'call_step','function':{'name':'remember','arguments':'{"fact":"aus dem schritt"}'}}]}]
   Model.script=[first,['Die Seite ist gelesen.']]
@@ -951,8 +1069,11 @@ class Native(unittest.TestCase):
   Model.script=[[{'tool_calls':[{'index':0,'id':'call_react','function':{'name':'react','arguments':json.dumps({'message_id':uid,'emoji':'🎉'})}}]}]]
   try:
    self.request('/api/message',{'text':'Kurzes Danke','bots':['test']})
+   st=self._settle(lambda s:any(
+    m.get('id')==uid and any(r['actor']=='test' and r['emoji']=='🎉'
+                               for r in m.get('reactions') or [])
+    for m in s['room']))
    self.wait_idle()
-   st=self.request('/api/state')
    target=next(m for m in st['room'] if m['id']==uid)
    self.assertTrue(any(r['actor']=='test' and r['emoji']=='🎉' for r in target.get('reactions') or []))
    ack=next(m for m in reversed(st['room']) if m.get('role')=='assistant' and m.get('bot')=='test' and m.get('content')=='')

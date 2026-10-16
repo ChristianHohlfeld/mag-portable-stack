@@ -1,0 +1,21 @@
+[Unit]
+Description=MAG Tailscale whois helper for nginx auth_request
+After=tailscaled.service
+Requires=tailscaled.service
+
+[Service]
+ExecStart=/usr/bin/python3 /usr/local/lib/mag-private/tailscale-whois.py
+Restart=on-failure
+RestartSec=1
+User=root
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadOnlyPaths=/run/tailscale /var/run/tailscale
+RestrictAddressFamilies=AF_UNIX AF_INET
+Environment=MAG_WHOIS_PORT=8765
+Environment=TAILSCALED_SOCKET=/var/run/tailscale/tailscaled.sock
+
+[Install]
+WantedBy=multi-user.target

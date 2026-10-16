@@ -866,7 +866,7 @@ function applyAccess(){const y=state.you;document.body.classList.toggle('is-gues
  hide('jobs-section',!can('jobs'));
  hide('add-agent',!can('delete')||!!(state.single_bot));
  hide('offline-row',!can('offline'));hide('autotalk-row',!can('autotalk'));hide('autotalk-desc',!can('autotalk'));
- hide('stop',!can('stop'));hide('reset',!can('reset'));hide('plus-web',!can('offline'));hide('plus-github',!can('connectors'));
+ hide('stop',!can('stop'));hide('reset-wrap',!can('reset'));hide('plus-web',!can('offline'));hide('plus-github',!can('connectors'));
  const badge=$('you-badge');if(!badge)return;if(!y){badge.hidden=true;return}badge.hidden=false;badge.textContent=(y.role==='owner'?'Besitzer':'Gast')+' · '+(y.name||'');badge.title=(y.login||y.role);}
 function renderAgents(){const list=$('agents');list.replaceChildren();const single=state.single_bot||'';$('add-agent').hidden=!!single;if(single){selected.clear();selected.add(single)}const old=$('browser-agent').value;$('browser-agent').replaceChildren();for(const a of state.agents){if(!selected.has(a.id)&&!sessionStorage.getItem('mag-selected'))selected.add(a.id);const card=document.createElement('div');card.className='agent';card.dataset.bot=a.id;card.tabIndex=0;
 card.setAttribute('role','button');card.setAttribute('aria-label',a.name+' Browser und Terminal anzeigen');
@@ -904,7 +904,7 @@ $('send-form').onsubmit=async e=>{if($('send-button').classList.contains('is-sto
  jumpForSend();
  const botId=[...selected][0],bot=state.agents.find(a=>a.id===botId);
  const willQueue=!!(state.busy||state.queue_paused||(state.pending||[]).length);if(bot&&!willQueue){streams[botId]={name:bot.name,text:'',status:'Denkt nach …'};render()}
- try{if(stagedPhotos.length)await flushStagedPhotos();if(!text){notice('Bilder geteilt');return}const r=await api('/api/message',{text,bots:[...selected],think:$('think').checked});$('message').value='';fitMessageHeight();$('message').focus();if(r&&r.queued){if(!willQueue){delete streams[botId];render()}if(r.item)renderQueue({pending:[...(queueState.pending||[]).filter(p=>p.id!==r.item.id),r.item],paused:false})}notice('')}
+ try{if(stagedPhotos.length)await flushStagedPhotos();if(!text){if(bot&&!willQueue){delete streams[botId];render()}notice('Bilder geteilt');return}const r=await api('/api/message',{text,bots:[...selected],think:$('think').checked});$('message').value='';fitMessageHeight();$('message').focus();if(r&&r.queued){if(!willQueue){delete streams[botId];render()}if(r.item)renderQueue({pending:[...(queueState.pending||[]).filter(p=>p.id!==r.item.id),r.item],paused:false})}notice('')}
  catch(err){delete streams[botId];render();notice(err.message)}
 };window.addEventListener('load',()=>$('message').focus());$('message').onkeydown=e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();$('send-form').requestSubmit()}};
 $('autotalk').onchange=async()=>{try{await api('/api/autotalk',{on:$('autotalk').checked});notice()}catch(e){notice(e.message);await refresh()}};$('stop').onclick=async()=>{try{await api('/api/stop',{});$('autotalk').checked=false;notice('')}catch(e){notice(e.message)}};
@@ -936,9 +936,12 @@ async function stagePhotos(files){
   if(stagedPhotos.length>=8){notice('Maximal 8 Bilder pro Nachricht');break}
   if(!(/^image\//.test(file.type)||/\.(heic|heif)$/i.test(file.name)))continue;
   try{
-   let bitmap;
-   if(window.createImageBitmap)bitmap=await createImageBitmap(file,{imageOrientation:'from-image'});
-   else bitmap=await new Promise((resolve,reject)=>{const img=new Image(),src=URL.createObjectURL(file);
+   if(file.size>30*1024*1024)throw Error('Bild über 30 MB; bitte vorher verkleinern');
+   let bitmap=null;
+   // Safari/iOS sometimes exposes HEIC as an image file yet createImageBitmap
+   // rejects it. Fallback to the native Image decoder before giving up.
+   if(window.createImageBitmap)try{bitmap=await createImageBitmap(file,{imageOrientation:'from-image'})}catch{}
+   if(!bitmap)bitmap=await new Promise((resolve,reject)=>{const img=new Image(),src=URL.createObjectURL(file);
     img.onload=()=>{URL.revokeObjectURL(src);resolve(img)};img.onerror=()=>{URL.revokeObjectURL(src);reject(Error('Format nicht unterstützt'))};img.src=src});
    const factor=Math.min(1,1920/Math.max(bitmap.width,bitmap.height));
    const canvas=document.createElement('canvas');canvas.width=Math.max(1,Math.round(bitmap.width*factor));canvas.height=Math.max(1,Math.round(bitmap.height*factor));
@@ -964,8 +967,14 @@ async function flushStagedPhotos(){
 }
 $('upload-photo').onclick=()=>$('photo-input').click();
 $('photo-input').onchange=async e=>{await stagePhotos(e.target.files);e.target.value=''};
-$('message').addEventListener('paste',e=>{const files=[...(e.clipboardData?.items||[])].filter(x=>x.kind==='file').map(x=>x.getAsFile()).filter(Boolean);
- if(files.length){e.preventDefault();stagePhotos(files)}});
+// Textarea paste bubbles here on macOS, Windows, iOS long-press → Paste and
+// Android; do not intercept plain text, HTML or terminal/VM paste.
+$('send-form').addEventListener('paste',e=>{
+ const data=e.clipboardData,fromItems=[...(data?.items||[])].filter(x=>x.kind==='file').map(x=>x.getAsFile()).filter(Boolean);
+ const files=fromItems.length?fromItems:[...(data?.files||[])];
+ const images=files.filter(file=>/^image\//.test(file.type)||/\.(heic|heif)$/i.test(file.name));
+ if(images.length){e.preventDefault();void stagePhotos(images)}
+});
 for(const target of [$('send-form'),$('conversation')]){
  target.addEventListener('dragover',e=>{if([...(e.dataTransfer?.types||[])].includes('Files'))e.preventDefault()});
  target.addEventListener('drop',e=>{const images=[...(e.dataTransfer?.files||[])].filter(f=>/^image\//.test(f.type)||/\.(heic|heif)$/i.test(f.name));if(images.length){e.preventDefault();stagePhotos(images)}});

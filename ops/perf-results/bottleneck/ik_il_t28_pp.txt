@@ -1,0 +1,12 @@
+== ik_il_t28_pp  avail=214G  08:34:04Z
+| model                          |       size |     params | backend    | threads | n_ubatch |          test |              t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | ------: | -------: | ------------: | ---------------: |
+| deepseek4 ?B MXFP4 - 4.25 bpw  | 144.44 GiB |   284.33 B | CPU        |      28 |      512 |         pp512 |     40.97 ± 0.00 |
+| deepseek4 ?B MXFP4 - 4.25 bpw  | 144.44 GiB |   284.33 B | CPU        |      28 |      512 |        pp2048 |     41.44 ± 0.00 |
+| deepseek4 ?B MXFP4 - 4.25 bpw  | 144.44 GiB |   284.33 B | CPU        |      28 |     1024 |         pp512 |     42.33 ± 0.00 |
+| deepseek4 ?B MXFP4 - 4.25 bpw  | 144.44 GiB |   284.33 B | CPU        |      28 |     1024 |        pp2048 |     43.87 ± 0.00 |
+| deepseek4 ?B MXFP4 - 4.25 bpw  | 144.44 GiB |   284.33 B | CPU        |      28 |     2048 |         pp512 |     42.47 ± 0.00 |
+| deepseek4 ?B MXFP4 - 4.25 bpw  | 144.44 GiB |   284.33 B | CPU        |      28 |     2048 |        pp2048 |     44.25 ± 0.00 |
+
+build: 8d21687c (5071)
+exit=0

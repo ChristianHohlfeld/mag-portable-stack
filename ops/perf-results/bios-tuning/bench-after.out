@@ -1,0 +1,16 @@
+== bios-after: Generierung (kurzer Prompt, 128 Tokens)
+  tg128 Lauf 1: prompt_n=89 pp=19.10 t/s  gen_n=128 tg=3.75 t/s  TTFT=4.7 s
+  tg128 Lauf 2: prompt_n=86 pp=19.46 t/s  gen_n=128 tg=3.75 t/s  TTFT=4.4 s
+== bios-after: Prompt 512 Tokens
+  pp512 Lauf 1: prompt_n=849 pp=22.46 t/s  gen_n=16 tg=3.46 t/s  TTFT=37.8 s
+  pp512 Lauf 2: prompt_n=849 pp=22.22 t/s  gen_n=16 tg=3.03 t/s  TTFT=38.2 s
+== Prompt-Cache: 1. Lauf prompt_n=3334 cache_n=1 156.0 s  |  2. Lauf prompt_n=4 cache_n=3331 0.4 s
+
+| bios-after | prompt_n | pp t/s | gen_n | tg t/s | TTFT s | gesamt s |
+|---|---:|---:|---:|---:|---:|---:|
+| tg128 | 88 | 19.28 | 128 | 3.75 | 4.5 | 38.4 |
+| pp512 | 849 | 22.34 | 16 | 3.24 | 38.0 | 42.7 |
+
+Prompt-Cache (2.048-Token-Prompt doppelt): 1. Lauf 156.0 s (cache_n=1), 2. Lauf 0.4 s (cache_n=3331)
+
+Gespeichert: /var/tmp/mag-httpbench-20261016-0733-bios-after.md

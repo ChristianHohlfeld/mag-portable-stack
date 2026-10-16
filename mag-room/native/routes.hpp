@@ -142,6 +142,36 @@ static void route(int fd, Req &r, bool bridge = false) {
     }
   }
   const std::string path = r.path;
+  if (path == "/mcp/jobs") {
+    // Optional remote MCP transport: disabled until a long random server-only
+    // token is explicitly configured. The model itself uses in-process tools.
+    if (m != "POST") { error_json(fd, 405, "POST required"); return; }
+    if (r.body.size() > 65536) { error_json(fd, 413, "Request too large"); return; }
+    const std::string secret = env("MAG_JOBS_MCP_TOKEN", "");
+    std::string bearer;
+    auto it = r.hdrs.find("authorization");
+    if (it != r.hdrs.end() && it->second.rfind("Bearer ", 0) == 0)
+      bearer = it->second.substr(7);
+    unsigned mismatch = 0;
+    if (secret.size() != bearer.size()) mismatch = 1;
+    else for (size_t i=0; i<secret.size(); ++i)
+      mismatch |= (unsigned)(unsigned char)(secret[i] ^ bearer[i]);
+    if (secret.size() < 32 || mismatch) {
+      error_json(fd, 401, "MCP token required"); return;
+    }
+    Val req;
+    if (!mj::parse(r.body, req) || !req.isObj()) {
+      send_json(fd, 400, mj::dump(jobs_mcp_rpc_error(nullptr,-32700,"Parse error")));
+      return;
+    }
+    if (!req.find("id")) {
+      // JSON-RPC notifications never receive a JSON-RPC response.
+      send_response(fd, 202, "application/json", "");
+      return;
+    }
+    send_json(fd, 200, mj::dump(jobs_mcp_rpc(req, JobsActor{})));
+    return;
+  }
   if (m == "GET" && (path == "/" || path == "/index.html")) {
     send_text(fd, 200, current_frontend(), "text/html; charset=utf-8");
     return;
@@ -707,82 +737,9 @@ static void route(int fd, Req &r, bool bridge = false) {
     return;
   }
   if (path == "/api/jobs" || path.rfind("/api/jobs/", 0) == 0) {
-    std::string rest = path.size() > 10 ? path.substr(10) : "";
-    std::string id = rest.substr(0, rest.find('/'));
-    std::string action = rest.find('/') == std::string::npos ? "" : rest.substr(rest.find('/') + 1);
-    std::lock_guard<std::mutex> lk(JOBDEF_MTX);
-    auto view = [&](const JobDef &j, const std::string &secret) {
-      Val v = job_to_val(j, false);
-      if (!secret.empty()) v["secret"] = secret; // shown exactly once
-      return v;
-    };
-    auto new_secret = [&](JobDef &j) { std::string sec = token_hex(24); j.hook_hash = sha256_hex(sec); return sec; };
-    if (path == "/api/jobs" && m == "GET") {
-      Val a = Val::array();
-      for (auto &j : JOBDEFS) { Val v = view(j, ""); a.push(v); }
-      Val o = Val::object(); o["jobs"] = a; o["now"] = (double)now_s(); o["paused"] = QUEUE_PAUSED;
-      send_json(fd, 200, mj::dump(o));
-      return;
-    }
-    if (path == "/api/jobs" && m == "POST") {
-      if (!has_json) { error_json(fd, 400, "JSON required"); return; }
-      if (JOBDEFS.size() >= 100) { error_json(fd, 400, "Zu viele Jobs"); return; }
-      JobDef j; j.id = token_hex(6); j.created = now_s();
-      std::string err = job_apply(j, body, true);
-      if (!err.empty()) { error_json(fd, 400, err); return; }
-      std::string sec;
-      if (body.find("webhook") && body.find("webhook")->asBool(false)) sec = new_secret(j);
-      JOBDEFS.push_back(j); jobs_save_locked(); jobs_event_locked();
-      send_json(fd, 201, mj::dump(view(j, sec)));
-      return;
-    }
-    JobDef *j = job_find_locked(id);
-    if (!j) { error_json(fd, 404, "Unbekannter Job"); return; }
-    if (action.empty() && m == "GET") { send_json(fd, 200, mj::dump(view(*j, ""))); return; }
-    if (action.empty() && m == "PUT") {
-      if (!has_json) { error_json(fd, 400, "JSON required"); return; }
-      JobDef copy = *j;
-      std::string err = job_apply(copy, body, false);
-      if (!err.empty()) { error_json(fd, 400, err); return; }
-      std::string sec;
-      if (body.find("webhook")) {
-        if (!body.find("webhook")->asBool(false)) copy.hook_hash.clear();
-        else if (copy.hook_hash.empty()) sec = new_secret(copy);
-      }
-      copy.version = j->version + 1; // a running run keeps its own copy
-      *j = copy; jobs_save_locked(); jobs_event_locked();
-      send_json(fd, 200, mj::dump(view(*j, sec)));
-      return;
-    }
-    if (action.empty() && m == "DELETE") {
-      for (auto it = JOBDEFS.begin(); it != JOBDEFS.end(); ++it)
-        if (it->id == id) { JOBDEFS.erase(it); break; }
-      { std::lock_guard<std::mutex> jl(JOB_MTX);
-        for (auto it = JOBRUNS.begin(); it != JOBRUNS.end();) it = it->job_id == id ? JOBRUNS.erase(it) : it + 1; }
-      jobs_save_locked(); jobs_event_locked();
-      send_json(fd, 200, "{\"deleted\":true}");
-      return;
-    }
-    if (m == "POST" && action == "run") {
-      std::string rid = j->id + ":manual:" + std::to_string(now_s()) + token_hex(3);
-      if (!job_enqueue_locked(*j, rid, "manuell")) { error_json(fd, 409, "läuft bereits"); return; }
-      send_json(fd, 202, "{\"accepted\":true,\"run_id\":\"" + rid + "\"}");
-      return;
-    }
-    if (m == "POST" && action == "pause") {
-      j->paused = !has_json || !body.find("paused") || body.find("paused")->asBool(true);
-      if (!j->paused && j->next_run > 0 && j->next_run < now_s()) j->next_run = schedule_next(j->schedule, now_s() - 1, 0);
-      jobs_save_locked(); jobs_event_locked();
-      send_json(fd, 200, mj::dump(view(*j, "")));
-      return;
-    }
-    if (m == "POST" && action == "secret") {
-      std::string sec = new_secret(*j); j->version++;
-      jobs_save_locked(); jobs_event_locked();
-      send_json(fd, 200, mj::dump(view(*j, sec)));
-      return;
-    }
-    error_json(fd, 404, "Unknown job action");
+    // Same authoritative request path for UI and the in-process MCP tools.
+    JobsResponse response = jobs_request(m, path, body, has_json, JobsActor{});
+    send_json(fd, response.status, mj::dump(response.value));
     return;
   }
   if (m == "POST" && path == "/api/offline") {

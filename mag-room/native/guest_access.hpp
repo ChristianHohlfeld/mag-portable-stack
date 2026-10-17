@@ -255,16 +255,17 @@ static bool guest_revoke(const std::string &id, const std::string &who) {
   {
     std::lock_guard<std::mutex> guard(GUEST_MTX);
     Val cfg;
-    if (!guest_load(cfg)) return false;
+    if (!guest_load(cfg)) throw std::runtime_error("Gastregister konnte nicht geladen werden");
     auto arr = guest_records(cfg);
     if (!arr) return false;
-    bool found = false;
+    bool found = false, newly_revoked = false;
     for (auto &r : *arr->arr) if (guest_field(r,"id") == id) {
-      found = true; r["revoked"] = true; target = r; break;
+      found = true; newly_revoked = !guest_flag(r,"revoked");
+      r["revoked"] = true; target = r; break;
     }
     if (!found) return true;  // idempotent DELETE
-    if (!guest_save(cfg)) return false;
-    guest_audit("revoke", who, id);
+    if (!guest_save(cfg)) throw std::runtime_error("Gastregister konnte nicht gesperrt werden");
+    if (newly_revoked) guest_audit("revoke", who, id);
   }
   bool remote_done = guest_revoke_remote(target);
   if (remote_done) {
@@ -297,8 +298,10 @@ static void guest_cleanup() {
         expired.push_back(guest_field(r,"id"));
     }
   }
-  for (auto &id : expired) if (guest_ident(id))
-    (void)guest_revoke(id, "scheduler");
+  for (auto &id : expired) if (guest_ident(id)) {
+    try { (void)guest_revoke(id, "scheduler"); }
+    catch (...) { std::cerr << "Gastablauf: Register nicht beschreibbar\n"; }
+  }
 }
 static void guest_cleanup_loop() {
   for (;;) { std::this_thread::sleep_for(std::chrono::seconds(60)); guest_cleanup(); }

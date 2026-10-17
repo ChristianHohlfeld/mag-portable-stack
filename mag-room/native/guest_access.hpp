@@ -160,6 +160,23 @@ static GuestHTTP guest_http(const std::string &url, const std::string &method,
   if (res.ok) mj::parse(data, res.json);
   return res;
 }
+// Optional systemd LoadCredential. Missing/malformed credential disables ONLY
+// new Tailscale guest invitations; ordinary room/auth state must not depend
+// on this file. Never log or expose the client ID/secret.
+static bool guest_oauth_configured() {
+  const auto dir = env("CREDENTIALS_DIRECTORY", "");
+  if (dir.empty()) return false;
+  const auto path = dir + "/mag-guest-oauth";
+  struct stat st{};
+  if (lstat(path.c_str(), &st) != 0 || !S_ISREG(st.st_mode) ||
+      st.st_size < 2 || st.st_size > 4096) return false;
+  bool ok = false;
+  Val cred;
+  auto raw = read_file(path, &ok);
+  return ok && mj::parse(raw, cred) && cred.isObj() &&
+         !guest_field(cred,"client_id").empty() &&
+         !guest_field(cred,"client_secret").empty();
+}
 static std::string guest_oauth() {
   if (!GUEST_TOKEN.empty() && now_s() < GUEST_TOKEN_UNTIL) return GUEST_TOKEN;
   auto dir = env("CREDENTIALS_DIRECTORY", "");
@@ -246,7 +263,8 @@ static Val guest_list() {
     }
   }
   out["guests"] = visible;
-  out["configured"] = !env("CREDENTIALS_DIRECTORY", "").empty();
+  out["configured"] = guest_oauth_configured();
+  if (!guest_oauth_configured()) out["notice"] = "Tailscale-OAuth fehlt: Einladen deaktiviert. Raum und Besitzer bleiben aktiv.";
   return out;
 }
 static bool guest_revoke_remote(const Val &r) {
@@ -330,6 +348,11 @@ struct GuestIssue {
 };
 static GuestIssue guest_issue(const Actor &owner, const Val &request) {
   GuestIssue out;
+  if (!guest_oauth_configured()) {
+    out.code = 503;
+    out.body["error"] = "Tailscale-OAuth ist nicht eingerichtet. Einladen deaktiviert; der Raum bleibt nutzbar.";
+    return out;
+  }
   std::string name = clean_display_name(guest_field(request, "name"));
   std::string note = mj::utf8_cut(guest_field(request,"note"), 160);
   for (char &ch : note) if ((unsigned char)ch < 32) ch = ' ';
@@ -460,6 +483,10 @@ static GuestIssue guest_claim(const Actor &candidate, const Val &request) {
 }
 static Val guest_list_live() {
   Val out = guest_list();
+  if (!guest_oauth_configured()) {
+    out["live_status"] = "disabled";
+    return out;
+  }
   auto arr = out.find("guests");
   if (!arr || !arr->isArr()) return out;
   auto status = guest_api("GET", "tailnet/-/devices");

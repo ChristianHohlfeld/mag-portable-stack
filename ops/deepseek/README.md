@@ -67,3 +67,7 @@ Env auf mag vorbereiten: sudo bash ops/deepseek/prompt-cache-switch.sh apply. De
 **Ein-Befehl-Konfigurationsrollback:** sudo bash ops/deepseek/prompt-cache-switch.sh rollback. Original-Env und Original-Unit werden wiederhergestellt. Es erfolgt weder beim Apply noch beim Rollback ein mag-llm Neustart; die geänderte Unit wird erst bei dem separat genehmigten Neustart wirksam. Slots und Secrets gehören ausschließlich auf den Host.
 
 **Explizit ausgeschlossen:** Der BLAS=OFF-Build aus stardenburg.de PR #10 ist nicht Teil dieses Prompt-Cache-PRs. Auch das laufende ik-Binary, produktive nginx-Site und alle Gast-/Jobs-/Stop-Verträge bleiben unverändert. nginx-CI verwendet nur eine Loopback-Adresse.
+
+## Sequenzieller Modell-Hot-Swap Q4 ↔ IQ3 (PR #31, nach PR #33)
+
+Auf NUMA 0 passen Q4 und IQ3 **nicht gleichzeitig**. Der native C++-Supervisor stoppt daher das aktive Modell und prüft, dass dessen Prozess vollständig entladen ist, bevor er das Zielmodell auf demselben NUMA-Knoten startet. Erst nach Health-/NUMA-Gate wird die persistente Auswahl wirksam, andernfalls läuft der vorherige Server erneut an. **Node 1 wird weder für Modellgewichte noch Threads verwendet.** Das Modell-Swap-Setup ändert den vorhandenen Q4-ExecStart nicht und führt insbesondere während `hotswap.sh apply` keinerlei Modell-Neustart aus. Der einmalige NUMA0-Neustart gehört zu #33 und wird von Ali manuell durchgeführt. Nur der Owner kann danach im MAG-Raum wechseln. Anweisungen: `ops/deepseek/hotswap/{README,OPERATIONS,ROLLBACK}.md`.

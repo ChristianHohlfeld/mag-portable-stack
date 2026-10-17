@@ -27,12 +27,15 @@ jobs:
           python3 mag-room/tests/test_large_tools.py
           python3 mag-room/tests/test_native.py
           python3 mag-room/tests/test_tailscale_auth.py
+          python3 ops/audit/tests/test_native_gateway.py
           python3 mag-room/tests/test_whois_deploy.py
           bash -n ops/deploy.sh ops/rollback.sh ops/private-access/*.sh
       - name: IK prompt cache regression and rollback shell syntax
         run: |
           bash ops/deepseek/tests/test-ops-38.sh
           bash ops/deepseek/tests/test-numa-isolation.sh
+          bash ops/deepseek/tests/test-hotswap.sh
+          bash -n ops/deepseek/verify-iq3.sh ops/deepseek/start-iq3.sh ops/deepseek/hotswap.sh
           bash -n ops/deepseek/numa-isolation.sh ops/deepseek/numa-bench.sh
           bash -n ops/deepseek/prompt-cache-switch.sh
       - name: nginx syntax without a real Tailnet listener

@@ -904,6 +904,23 @@ class Native(unittest.TestCase):
   base={k:['owner'] for k in ('offline','stop','jobs','memory','reset','delete','autotalk','connectors','browser')}
   if perms:base.update(perms)
   self.state.joinpath('access.json').write_text(json.dumps({'owners':owners,'owner_name':owner_name,'permissions':base}))
+ def test_17h_model_switch_owner_api_keeps_room_unchanged(self):
+  self.wait_idle();self._access(['chris@github'])
+  try:
+   h=self._ts('ada@github','Ada')
+   before=self.request('/api/state')['room']
+   self.error(403,'/api/models',method='GET',headers=self._ts('ada@github','Ada',False))
+   self.error(403,'/api/models',{'id':'iq3'},method='PUT',headers=h)
+   self.error(400,'/api/models',{'id':'invalid'},method='PUT',headers=self._ts('chris@github','Chris'))
+   self.error(403,'/api/models',{'id':'iq3'},method='PUT',headers=self._ts('mallory@github','Mallory'))
+   owner=self.request('/api/models',headers=self._ts('chris@github','Chris',False))
+   self.assertIn('error',owner,'without gateway the API must fail closed')
+   self.assertEqual(self.request('/api/state')['room'],before,'model switching must not mutate chat')
+   html=self.request('/',raw=True).decode()
+   self.assertIn('id="model-switch"',html)
+   self.assertIn("api('/api/models',{id},'PUT')",html)
+   self.assertIn("modelChoice(next.model_switch)",html)
+  finally:self.state.joinpath('access.json').unlink(missing_ok=True)
  def test_17p_no_nginx_whois_or_oauth_keeps_owner_and_local_services(self):
   # This is the outage regression: no credential directory/secret, no nginx
   # attestation headers on local host calls. Existing room must remain usable.

@@ -1838,7 +1838,8 @@ static CmdResult guest_command(const std::string &vm,
                                bool cancelable = false) {
   if (command.size() > 32u * 1024 * 1024)
     throw std::runtime_error("Shell-Befehl groesser als 32 MiB; bitte aufteilen.");
-  CmdResult r = run_argv({"sudo", "-n", GUEST_RUN, vm, "--stdin"}, timeout,
+  CmdResult r = run_argv({"sudo", "-n", GUEST_RUN, vm, "--stdin",
+                          std::to_string(timeout)}, timeout + 30,
                          4 << 20, cancelable ? &STOP : nullptr, &command);
   if (r.out.size() > (size_t)TOOL_OUTPUT_LIMIT)
     r.out = r.out.substr(0, TOOL_OUTPUT_LIMIT) + "\n...[gekuerzt]";

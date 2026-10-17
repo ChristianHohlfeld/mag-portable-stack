@@ -349,23 +349,29 @@ inline void reconcile(const fs::path& root,const std::string& token) {
   // All source archives, policy and conflicts checked BEFORE changing served sites.
   fs::create_directories(root/"public");
   fs::create_directories(root/"tailnet");
-  std::set<std::string> active,visible;
+  fs::create_directories(root/"custom");
+  std::set<std::string> active,visible,custom_active;
   for(const auto& site:sites){
     active.insert(site.slug);
     link_atomic(root/"tailnet",site.slug,site.content);
     if(site.access=="public"){
       visible.insert(site.slug);
       link_atomic(root/"public",site.slug,site.content);
+      if(!site.custom.empty()) {
+        custom_active.insert(site.custom);
+        link_atomic(root/"custom",site.custom,site.content);
+      }
     }
   }
   // Remove stale routes; only known symlink names are touched. Nothing is
   // recursively removed, so immutable published content remains for rollback.
-  for(const auto& which:{std::string("public"),std::string("tailnet")}){
+  for(const auto& which:{std::string("public"),std::string("tailnet"),std::string("custom")}){
     auto dir=root/which;
     for(const auto& e:fs::directory_iterator(dir)){
       if(!e.is_symlink())continue;
       auto name=e.path().filename().string();
-      if((which=="public"?visible:active).count(name)==0)fs::remove(e.path());
+      const auto& keep = which=="public"?visible:(which=="tailnet"?active:custom_active);
+      if(keep.count(name)==0)fs::remove(e.path());
     }
   }
   write_atomic(root/"custom-domains.tsv",aliases);

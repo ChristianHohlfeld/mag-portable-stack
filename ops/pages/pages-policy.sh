@@ -45,15 +45,15 @@ if [[ "$mode" == tailnet || "$mode" == delete ]]; then
       [[ "$slug" =~ ^[a-z0-9][a-z0-9-]{0,62}$ ]] || exit 1
       [[ ! -L "$root/public" && ! -L "$root/tailnet" && ! -L "$root/custom" ]] || exit 1
       [[ ! -e "$root/public/$slug" || -L "$root/public/$slug" ]] || exit 1
-      [[ -L "$root/public/$slug" ]] && rm -f -- "$root/public/$slug"
+      if [[ -L "$root/public/$slug" ]]; then rm -f -- "$root/public/$slug"; fi
       if [[ "$mode" == delete ]]; then
-        [[ -L "$root/tailnet/$slug" ]] && rm -f -- "$root/tailnet/$slug"
+        if [[ -L "$root/tailnet/$slug" ]]; then rm -f -- "$root/tailnet/$slug"; fi
       fi
     fi
     if [[ -n "$custom" ]]; then
       [[ "$custom" =~ ^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$ &&
          "$custom" == *.* && "$custom" != *".."* ]] || exit 1
-      [[ -L "$root/custom/$custom" ]] && rm -f -- "$root/custom/$custom"
+      if [[ -L "$root/custom/$custom" ]]; then rm -f -- "$root/custom/$custom"; fi
     fi
   fi
 fi

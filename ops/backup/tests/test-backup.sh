@@ -15,9 +15,10 @@ mkdir -p "$MAG_BACKUP_CONFIG" "$MAG_BACKUP_SOURCE/var/lib/magbot/room/files" \
  "$MAG_BACKUP_SOURCE/etc/magbot" "$MAG_BACKUP_SOURCE/var/lib/mag-llm" \
  "$MAG_BACKUP_SOURCE/var/lib/tailscale" "$MAG_BACKUP_SOURCE/var/spool/cron/crontabs" "$MAG_BACKUP_SOURCE/etc/cron.d" \
  "$MAG_BACKUP_SOURCE/etc/mag-stack" "$MAG_BACKUP_SOURCE/etc/credstore"
-printf '%s\n' 'local-only-recovery-password' > "$MAG_BACKUP_CONFIG/restic-password"
-chmod 0600 "$MAG_BACKUP_CONFIG/restic-password"
-export RESTIC_PASSWORD_FILE="$MAG_BACKUP_CONFIG/restic-password"
+# Passwordless: zero credential files and no password environment variables.
+unset RESTIC_PASSWORD RESTIC_PASSWORD_FILE RESTIC_PASSWORD_COMMAND
+restic() { command restic --insecure-no-password "$@"; }
+test ! -e "$MAG_BACKUP_CONFIG/restic-password"
 printf 'forbidden model\\n' > "$MAG_BACKUP_SOURCE/var/lib/magbot/room/files/not-backed-up.gguf"
 printf '{"messages":["do not lose me"]}\n' > "$MAG_BACKUP_SOURCE/var/lib/magbot/room/room.json"
 printf 'payload\n' > "$MAG_BACKUP_SOURCE/var/lib/magbot/room/files/upload.txt"
@@ -82,6 +83,8 @@ if find "$tmp/partial" -name '*.gguf' | grep -q .; then echo 'GGUF leaked' >&2; 
 "$here/maintenance.sh" status | jq -e '.stale == false and .last_restore_test_ok == true' >/dev/null
 ! grep -R -E '(systemctl|service) (stop|restart) mag-llm' "$here"/*.sh
 test -s "$MAG_BACKUP_CONFIG/aws.env"
+test ! -e "$MAG_BACKUP_CONFIG/restic-password"
+restic -r "$MAG_BACKUP_REPO" check >/dev/null
 "$here/maintenance.sh" status | jq -e '.offsite_ok == false and .healthy == true' >/dev/null
 # Explicit S3 opt-in without credentials must error rather than silently
 # reporting a local-only backup as fully successful.

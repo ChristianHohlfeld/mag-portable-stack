@@ -21,10 +21,15 @@ MAG_BACKUP_OFFSITE_ENABLED="${MAG_BACKUP_OFFSITE_ENABLED:-0}"
 case "$MAG_BACKUP_OFFSITE_ENABLED" in 0|1) ;; *)
  echo 'MAG_BACKUP_OFFSITE_ENABLED must be exactly 0 or 1' >&2; exit 2;;
 esac
-export RESTIC_PASSWORD_FILE="${RESTIC_PASSWORD_FILE:-$MAG_BACKUP_CONFIG/restic-password}"
+# Empty-password repo explicitly approved for on-host local-only use.
+# This disables *effective confidentiality*: filesystem ACLs are mandatory.
+# Every restic call must pass the flag; no secret, stdin, env or prompt.
+unset RESTIC_PASSWORD RESTIC_PASSWORD_FILE RESTIC_PASSWORD_COMMAND RESTIC_KEY_HINT
 export RESTIC_REPOSITORY="$MAG_BACKUP_REPO"
-[[ -r "$RESTIC_PASSWORD_FILE" ]] || { echo 'Missing restic password file' >&2; exit 1; }
 command -v restic >/dev/null
+restic --help | grep -Fq -- '--insecure-no-password' ||
+  { echo 'restic >=0.17 required (--insecure-no-password)' >&2; exit 1; }
+restic() { command restic --insecure-no-password "$@"; }
 command -v jq >/dev/null
 command -v flock >/dev/null
 mkdir -p "$(dirname "$MAG_BACKUP_LOCK")" "$(dirname "$MAG_BACKUP_STATUS")" "$MAG_BACKUP_WORK"

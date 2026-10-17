@@ -28,10 +28,25 @@ bash "$NGINX_SYNC" preflight
 systemctl is-enabled --quiet mag-backup-daily.timer || {
   echo 'Backup not installed/enabled. Run sudo bash ops/backup/install.sh first.' >&2; exit 1;
 }
+# The unit runs the installed copy. Refresh it first so the snapshot is a
+# verified full archive under /var/backups/mag-full (keep the last 3).
+install -d -m 0755 /usr/local/lib/mag-backup
+for name in common.sh backup.sh restore.sh maintenance.sh; do
+  install -m 0755 "$SOURCE/ops/backup/$name" "/usr/local/lib/mag-backup/$name"
+done
 printf '%s\n' "$RELEASE_ID" > /run/mag-backup-release
 chmod 0644 /run/mag-backup-release
 systemctl start mag-backup-deploy.service || {
-  echo 'Pre-deploy snapshot failed; deploy refused.' >&2; exit 1;
+  echo 'Pre-deploy snapshot failed; deploy refused. No release was switched and no old backup was deleted.' >&2; exit 1;
+}
+verified_full=$(find /var/backups/mag-full -mindepth 2 -maxdepth 2 -name VERIFIED -print -quit 2>/dev/null || true)
+if [[ -z "$verified_full" ]]; then
+  echo 'Deploy snapshot left no verified full backup; running backup.sh directly.' >&2
+  /usr/local/lib/mag-backup/backup.sh deploy
+  verified_full=$(find /var/backups/mag-full -mindepth 2 -maxdepth 2 -name VERIFIED -print -quit 2>/dev/null || true)
+fi
+[[ -n "$verified_full" ]] || {
+  echo 'No verified full backup; deploy refused. No release was switched and no old backup was deleted.' >&2; exit 1;
 }
 # Das Modell ist unabhängig vom Raum-Release (lädt evtl. noch herunter / wird geprüft).
 # Nur informieren; der Raum zeigt den Modellstatus selbst an.
@@ -208,5 +223,13 @@ trap - EXIT INT TERM
 MAG_RELEASE_ID="$RELEASE_ID" MAG_RELEASE_PREVIOUS_FILE="$BACKUP/previous-release" \
   bash "$SOURCE/ops/prune-releases.sh"
 # One-shot removal of pre-4.0 leftovers; report in /var/lib/mag-stack/cleanup-report.txt.
+# Backup removal and loose home files run again on later deploys.
 bash "$SOURCE/ops/cleanup-legacy.sh" || echo 'WARN: legacy cleanup incomplete (deploy itself succeeded)' >&2
+install -m 0755 "$SOURCE/ops/agent-drift.sh" /usr/local/sbin/mag-agent-drift
+install -m 0644 "$SOURCE/ops/mag-agent-drift.service" /etc/systemd/system/mag-agent-drift.service
+install -m 0644 "$SOURCE/ops/mag-agent-drift.timer" /etc/systemd/system/mag-agent-drift.timer
+systemctl daemon-reload
+systemctl enable --now mag-agent-drift.timer || echo 'WARN: agent drift timer not enabled' >&2
+# Unreferenced half-created bot VMs only. Does not restart mag-llm or mag-llm-iq3.
+bash /usr/local/sbin/mag-agent-drift || echo 'WARN: agent drift check incomplete (deploy itself succeeded)' >&2
 printf '\nInstalled release %s; rollback snapshot %s\n' "$RELEASE_ID" "$BACKUP"

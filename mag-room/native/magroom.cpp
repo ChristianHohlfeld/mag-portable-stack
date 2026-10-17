@@ -1533,6 +1533,7 @@ static const char *T_UNREACT =
 
 #include "jobs_tools.hpp"
 #include "pages_tools.hpp"
+#include "s23_tools.hpp"
 
 static const char *ROOM_RULES =
     "Du bist {name}, ein freier, eigenstaendiger KI-Agent in einem gemeinsamen "
@@ -2736,6 +2737,7 @@ static std::string tools_json(int bot_idx, bool web) {
   defs.push_back(T_WEB_SEARCH);
   defs.push_back(T_GITHUB); // always registered (cache); token checked at call
   for (const char *d : JOBS_TOOL_DEFS) defs.push_back(d);
+  for (const char *d : S23_TOOL_DEFS) defs.push_back(d);
   if (has_vm) for (const char *d : PAGES_TOOL_DEFS) defs.push_back(d);
   if (has_vm) {
     for (const char *d :
@@ -3401,6 +3403,7 @@ static std::string dispatch_tool(int bot_idx, const std::string &name,
   std::string bot_name = bot_field(bot_idx, "name", "Bot");
   if (is_jobs_tool(name)) return jobs_dispatch_tool(bot_idx, name, a);
   if (is_pages_tool(name)) return pages_dispatch_tool(bot_idx, name, a);
+  if (is_s23_tool(name)) return s23_dispatch_tool(bot_idx, name, a);
   auto need_vm = [&]() {
     if (vm.empty() || vm == "keine")
       throw std::runtime_error("Dieser Bot hat keine eigene VM.");
@@ -5672,6 +5675,7 @@ int main() {
       auto result = run_argv({"sudo", "-n", AGENT_CTL, "spawn", vm}, 600);
       if (result.code != 0) {
         std::cerr << "single-bot VM spawn failed: " << result.out << "\n";
+        run_argv({"sudo", "-n", AGENT_CTL, "despawn", vm}, 180);
         return;
       }
       std::lock_guard<std::recursive_mutex> lk(STATE_MTX);

@@ -20,6 +20,15 @@ printf '[Service]\nExecStart=-%s/gone --flag\n' "$t" > "$t/units/mag-dead.servic
 printf '[Service]\nExecStart=%s/apply-iac\n' "$t" > "$t/units/mag-alive.service"
 printf '[Service]\nExecStart=%s/nope\n' "$t" > "$t/units/mag-llm-iq3.service"
 echo '[{"id":"a","vm":"agent1"}]' > "$t/room/agents.json"
+echo loose > "$h/stage-a9.sh"
+echo loose > "$h/numa-bench.log"
+echo loose > "$h/crontab.bak-old"
+mkdir -p "$h/server-audit-20261014" "$h/s23pub" "$h/models" "$h/src/ik_llama.cpp" "$h/rtl8812au" "$h/llama-templates"
+echo 'historical credential fixture' > "$h/server-audit-20261014/notes.txt"
+echo keep > "$h/s23pub/s23pub.py"
+echo model > "$h/models/a.gguf"
+echo keep > "$h/fix-gitea.sh"
+echo "uses $h/fix-gitea.sh" > "$t/etc/uses-fix"
 env_common=(MAG_CLEANUP_STAMP="$t/stamp" MAG_CLEANUP_REPORT="$t/report" MAG_CLEANUP_HOME="$h"
   MAG_CLEANUP_BUNDLES="$t/bundles" MAG_ROOM_STATE="$t/room" MAG_BACKUP_ROOT="$t/full"
   MAG_CLEANUP_UNIT_DIR="$t/units" MAG_CLEANUP_TMP="$t/tmp" MAG_CLEANUP_REF_DIRS="$t/etc $t/units"
@@ -43,6 +52,14 @@ test ! -e "$t/tmp/mag-leftover" && test -d "$t/tmp/mag-fresh" && test -d "$t/tmp
 test ! -e "$t/units/mag-dead.service"
 # kept
 test -d "$h/mag-stack/.git" && test -d "$h/bneck/ik_llama.cpp" && test -d "$h/with-model" && test -d "$h/s23-native"
+test ! -e "$h/stage-a9.sh" && test ! -e "$h/numa-bench.log" && test ! -e "$h/crontab.bak-old"
+test ! -e "$h/server-audit-20261014"
+archive=$(echo "$t/bundles"/loose-home-*.tar.gz)
+tar -tzf "$archive" | grep -qx 'stage-a9.sh'
+tar -tzf "$archive" | grep -qx 'server-audit-20261014/notes.txt'
+test -d "$h/s23pub" && test -d "$h/models" && test -d "$h/src/ik_llama.cpp" && test -d "$h/rtl8812au" && test -d "$h/llama-templates"
+test -e "$h/fix-gitea.sh"
+grep -Fq "kept $h/fix-gitea.sh" "$t/report"
 test -e "$t/apply-iac" && test -e "$t/lib-common.sh"   # a live unit runs apply-iac
 test -e "$t/units/mag-alive.service" && test -e "$t/units/mag-llm-iq3.service"
 grep -Fq "kept VM agent1: used by a room bot" "$t/report"
@@ -50,7 +67,9 @@ grep -Fq "kept $t/collect: referenced by $t/etc/still-used" "$t/report"
 test -e "$t/stamp"
 # one-shot: a new checkout made later is not touched by the next deploy
 mkrepo "$h/new-work"
+echo later > "$h/stage-a-later.sh"
 env "${env_common[@]}" bash "$root/ops/cleanup-legacy.sh"
 test -d "$h/new-work"
+test ! -e "$h/stage-a-later.sh"
 ! grep -n 'mag-llm' "$root/ops/cleanup-legacy.sh" | grep -v '^[0-9]*:#' | grep -vF 'mag-llm*|mag-120*' | grep -vF 'mag-llm-*' | grep -q .
 echo 'cleanup-legacy PASS'

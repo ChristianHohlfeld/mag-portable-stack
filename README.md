@@ -12,11 +12,11 @@ trees. A run checks free space first (default 4096 MiB, `MAG_BACKUP_MIN_FREE_MIB
 and exits before writing if the disk is below that. After the snapshot it
 runs `restic check`, restores the archive to a temp directory and checks the
 SHA256 manifest plus the required paths. Only then is the archive marked
-verified. Older archives are deleted only at that point: keep the newest
-verified archive (`MAG_BACKUP_KEEP`, default 1) and the pre-deploy archive
-of the current release, and never delete the newest good one. A failed run deletes only its own
-incomplete directory. The directory is root-owned and mode 0700. AWS/S3
-stays off. `mag-llm` is not restarted.
+verified. Older archives are deleted only at that point: keep the last 3
+verified archives (`MAG_BACKUP_KEEP`, default 3) and the pre-deploy archive
+of the current release. A failed run deletes only its own incomplete
+directory and does not delete any verified archive. The directory is
+root-owned and mode 0700. AWS/S3 stays off. `mag-llm` is not restarted.
 
 Restore one archive on its own (stop `mag-120` and `gitea` first; do not
 stop `mag-llm`):
@@ -30,19 +30,24 @@ sudo bash ops/backup/restore.sh --snapshot 20261017T120000123456789Z-daily --par
 Inspect `/var/tmp/mag-restore/var/lib/magbot/room`, `var/lib/gitea/data/gitea.db`,
 `var/lib/gitea/data/repositories`, `etc/gitea/app.ini`, `etc/mag-nginx/tls`
 and `var/lib/mag-pages` before any live `--apply`. Release directories keep
-the current release, the previous release, and any release a symlink still
-points at (`ops/prune-releases.sh`).
+the current release and one previous release (`ops/prune-releases.sh`). A
+release that a running process still has open is kept and reported.
 
-The first deploy of 4.0.1 runs `ops/cleanup-legacy.sh` once (marker
+Deploy refreshes `/usr/local/lib/mag-backup` and refuses to switch the
+release unless a verified full backup exists. The first deploy of 4.0.1 runs
+the one-shot part of `ops/cleanup-legacy.sh` (marker
 `/var/lib/mag-stack/cleanup-legacy.done`, report
-`/var/lib/mag-stack/cleanup-report.txt`). It removes the old shared restic
-repo and ad-hoc unit/browser backups (only once a verified full backup
-exists), the pre-4.0 tools in `/usr/local`, Git checkouts in `/home/chris`
-other than `mag-stack` (bundled first to `/var/backups/mag-legacy-checkouts`),
-day-old `/tmp/mag-*` test leftovers, the orphan VM `magbot-agent2`, and
-`mag-*` units whose program no longer exists. Anything referenced from
-`/etc` or `/usr/local`, used by a running process, holding `*.gguf` files or
-belonging to `mag-llm*`/`mag-120` is kept and listed in the report.
+`/var/lib/mag-stack/cleanup-report.txt`): pre-4.0 tools, Git checkouts in
+`/home/chris` other than `mag-stack` (bundled first to
+`/var/backups/mag-legacy-checkouts`), day-old `/tmp/mag-*` leftovers, the
+orphan VM `magbot-agent2`, and `mag-*` units whose program no longer exists.
+Removing old restic/browser/unit backups, and archiving the named loose
+files in the home directory (`stage-a*`, `mag-deploy-*`, `gw-swap*`,
+`reload-q4.*`, `numa-*.log` and the other names in the script), runs on
+every later deploy as well. Old backups are removed only when a verified
+full backup exists. Anything referenced, in use, holding `*.gguf`, or
+belonging to `mag-llm*`/`mag-120` is kept. `s23`, models, `src`,
+`mag-stack`, `rtl8812au`, `whisper.cpp` and `~/.codex` are not in the list.
 `MAG_CLEANUP_DRY_RUN=1 sudo -E bash ops/cleanup-legacy.sh` previews it.
 
 Owner login is only `chris.hohlfeld@gmail.com`. Localhost without that login
@@ -544,7 +549,7 @@ Anleitung einschließlich des Root-only `/etc/credstore/mag-guest-oauth`:
 
 ### Gruppenchat mit mehreren Bots (Q4 und IQ3)
 
-Ein globaler Raum für alle Bots. `ops/mag-120.d/30-multibot.conf` hebt die Einzelbot-Sperre auf, `deploy.sh` installiert das Drop-in (Rollback entfernt oder stellt es wieder her). Gespeicherte, bisher geparkte Bots erscheinen nach dem Deploy wieder. Jeder Bot hat weiter seine eigene KVM-VM. Anlegen und Entfernen laufen über den bestehenden `spawn`/`despawn`-Pfad, beim Entfernen werden auch Warteschlange und Auto-Besitzer des Bots bereinigt. Das Modell wählt jeder Bot selbst (Q4 `deepseek-v4-flash-0731`, IQ3 `deepseek-v4-flash-0731-iq3`) über `POST /api/agents/<id>/model` oder im Frontend. Das setzt nur das Modellfeld der Anfrage; `mag-llm` und `mag-llm-iq3` bleiben dauerhaft im RAM und werden nie gestoppt oder neu gestartet. Zurück zum Einzelbot: `30-multibot.conf` entfernen, `daemon-reload`, nur `mag-120` neu starten.
+Ein globaler Raum für alle Bots. `ops/mag-120.d/30-multibot.conf` hebt die Einzelbot-Sperre auf, `deploy.sh` installiert das Drop-in (Rollback entfernt oder stellt es wieder her). Gespeicherte, bisher geparkte Bots erscheinen nach dem Deploy wieder. Jeder Bot hat weiter seine eigene KVM-VM. Anlegen und Entfernen laufen über einen Weg: `POST /api/agents` prüft den Namen, das Modell (Q4 auf NUMA 0, IQ3 auf NUMA 1) und `magbot preflight` (KVM, Golden Image, Netz, Datenverzeichnis, libvirt), bevor ein Raumeintrag entsteht. Schlägt `spawn` fehl, ruft der Raum `despawn` auf und entfernt den Eintrag. Ein Neustart mitten im Spawn übernimmt die schon eingetragene VM. `ops/agent-drift.sh` läuft beim Deploy und alle 15 Minuten (`mag-agent-drift.timer`) und entfernt nur Domains, Platten und Units ohne `vm`/`pending_vm` im Raum. Gesunde Bots und die Raumdaten bleiben. Das Modell wählt jeder Bot selbst (Q4 `deepseek-v4-flash-0731`, IQ3 `deepseek-v4-flash-0731-iq3`) über `POST /api/agents/<id>/model` oder im Frontend. Das setzt nur das Modellfeld der Anfrage; `mag-llm` und `mag-llm-iq3` bleiben dauerhaft im RAM und werden nie gestoppt oder neu gestartet. Zurück zum Einzelbot: `30-multibot.conf` entfernen, `daemon-reload`, nur `mag-120` neu starten.
 
 Der Gruppenchat blockiert nicht. Pro Modellserver gibt es eine Spur: Bots auf Q4 und IQ3 antworten gleichzeitig, Bots auf demselben Modell nacheinander. Das Eingabefeld bleibt immer frei; eine Nachricht an einen freien Bot wird sofort beantwortet, an einen beschäftigten Bot wird sie eingereiht. Jeder antwortende Bot hat ein eigenes „Stoppen“ an seiner Antwort und einen „Stopp“ in der Leiste über dem Eingabefeld.
 

@@ -404,29 +404,42 @@ static void provision_git(const std::string &n) {
   if (result.code)
     throw std::runtime_error("Guest Git configuration failed");
 }
+static void undefine_domain(const std::string &n) {
+  if (!exists(n))
+    return;
+  auto s = trim(virsh({"domstate", domain(n)}));
+  if (s == "running" || s == "paused" || s == "idle")
+    virsh({"destroy", domain(n)});
+  auto r = run({"/usr/bin/virsh", "-c", "qemu:///system", "undefine",
+                domain(n), "--nvram"});
+  if (r.code && exists(n))
+    virsh({"undefine", domain(n)});
+  if (exists(n))
+    throw std::runtime_error("VM remains defined; refusing disk deletion");
+}
 static void teardown(const std::string &n) {
   auto d = dir(n);
+  // A domain without a directory is the half-created case: remove the
+  // domain and leave nothing behind.
   if (!fs::exists(d)) {
-    if (exists(n))
-      throw std::runtime_error("Orphan VM without ownership marker");
+    undefine_domain(n);
     return;
   }
-  auto owned = marker(n);
   if (exists(n)) {
-    auto s = trim(virsh({"domstate", domain(n)}));
-    if (s == "running" || s == "paused" || s == "idle")
-      virsh({"destroy", domain(n)});
-    auto r = run({"/usr/bin/virsh", "-c", "qemu:///system", "undefine",
-                  domain(n), "--nvram"});
-    if (r.code && exists(n))
-      virsh({"undefine", domain(n)});
-    if (exists(n))
-      throw std::runtime_error("VM remains defined; refusing disk deletion");
+    // Ownership is checked only when a marker exists. A directory with a
+    // mismatched marker is someone else's and is kept.
+    if (fs::exists(d / "metadata.json"))
+      marker(n);
+    undefine_domain(n);
   }
-  auto git_user = str(owned, "git_user");
-  if (!git_user.empty()) {
-    if (git_user != domain(n))
+  std::string git_user;
+  if (fs::exists(d / "metadata.json")) {
+    auto owned = marker(n);
+    git_user = str(owned, "git_user");
+    if (!git_user.empty() && git_user != domain(n))
       throw std::runtime_error("Gitea ownership mismatch");
+  }
+  if (!git_user.empty()) {
     auto result =
         run(gitea_args({"delete", "--username", git_user, "--purge"}), 30);
     if (result.code)
@@ -434,6 +447,10 @@ static void teardown(const std::string &n) {
           "Could not revoke bot Git account; registry retained");
   }
   fs::remove_all(d);
+  std::error_code ec;
+  fs::path unit = fs::path("/etc/systemd/system") / (domain(n) + ".service");
+  if (fs::is_regular_file(unit) && !fs::is_symlink(unit))
+    fs::remove(unit, ec);
 }
 static void prepare_browser(const std::string &n) {
   const std::string script = R"SH(set -e
@@ -531,20 +548,45 @@ printf %s "$sum" > /var/lib/magbot/audit-proxy.sum
                                               : 0));
   return trim(r.out);
 }
+// Checks only. Creates nothing: no domain, directory, unit or room entry.
+static void preflight(const Val &c) {
+  if (!fs::exists("/dev/kvm"))
+    throw std::runtime_error("preflight failed: kvm");
+  auto golden = root / "base/golden.qcow2";
+  if (fs::is_symlink(root) || fs::is_symlink(root / "bots") ||
+      fs::is_symlink(golden))
+    throw std::runtime_error("preflight failed: datadir");
+  if (!fs::is_regular_file(golden) || fs::file_size(golden) < 100 * 1024 * 1024)
+    throw std::runtime_error("preflight failed: golden");
+  if ((fs::status(golden).permissions() & fs::perms::owner_write) !=
+      fs::perms::none)
+    throw std::runtime_error("preflight failed: golden");
+  for (const char *tool : {"/usr/bin/qemu-img", "/usr/bin/virt-install",
+                           "/usr/bin/cloud-localds", "/usr/bin/virsh"})
+    if (!fs::is_regular_file(tool))
+      throw std::runtime_error(std::string("preflight failed: unit"));
+  auto network = str(c, "network");
+  if (!std::regex_match(network, std::regex("[A-Za-z0-9._-]{1,64}")))
+    throw std::runtime_error("preflight failed: network");
+  try {
+    virsh({"net-info", network});
+  } catch (const std::exception &) {
+    throw std::runtime_error("preflight failed: network");
+  }
+  try {
+    virsh({"version"});
+  } catch (const std::exception &) {
+    throw std::runtime_error("preflight failed: unit");
+  }
+}
 static void spawn(const std::string &n, int cpu, int ram, int disk,
                   const Val &c) {
   auto d = dir(n);
   if (fs::exists(d) || exists(n))
     throw std::runtime_error("Bot already exists");
   auto rows = registry();
-  std::istringstream domains(virsh({"list", "--all", "--name"}));
-  std::string name;
-  while (std::getline(domains, name)) {
-    if (name.rfind("magbot-", 0) == 0 &&
-        !std::any_of(rows.begin(), rows.end(),
-                     [&](const Val &r) { return str(r, "domain") == name; }))
-      throw std::runtime_error("Orphan domain: " + name);
-  }
+  // Unreferenced domains are removed by ops/agent-drift.sh. Refusing the
+  // spawn here left the new bot uncreated and the old orphan in place.
   admission(c, rows, cpu, ram, disk);
   auto golden = root / "base/golden.qcow2";
   if (!fs::is_regular_file(golden) || fs::is_symlink(golden) ||
@@ -657,10 +699,17 @@ int main(int argc, char **argv) {
       throw std::runtime_error("Run with sudo");
     if (argc < 2)
       throw std::runtime_error(
-          "Usage: magbot status|inspect|exec|spawn|despawn|doctor|audit-proxy "
+          "Usage: magbot status|inspect|exec|spawn|despawn|doctor|preflight|audit-proxy "
           "[ID]");
     auto c = cfg();
     std::string action = argv[1], n = argc > 2 ? argv[2] : "";
+    if (action == "preflight") {
+      if (argc != 2)
+        throw std::runtime_error("Usage: magbot preflight");
+      preflight(c);
+      std::cout << "preflight ok\n";
+      return 0;
+    }
     if (!n.empty())
       valid(n);
     fs::create_directories(root / "bots");

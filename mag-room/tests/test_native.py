@@ -500,6 +500,16 @@ class Native(unittest.TestCase):
    self.assertFalse([p for p in (self.state/'connectors').iterdir() if p.name.startswith('.gh-hdr')],'header file removed')
    self.request('/api/connectors/github',method='DELETE')
   finally:srv.shutdown()
+ def test_16h_s23_tool_does_not_touch_s23pub_when_unconfigured(self):
+  self.wait_idle()
+  call={'tool_calls':[{'index':0,'id':'call_s23','function':{'name':'s23_status','arguments':'{}'}}]}
+  Model.calls.clear();Model.script=[[call],['S23 nicht gestartet.']]
+  self.request('/api/message',{'text':'S23-Status','bots':['test']});self.wait_idle();time.sleep(.2)
+  self.assertTrue(any(t['function']['name']=='s23_status' for t in Model.calls[0]['tools']))
+  blob=json.dumps(Model.calls[-1]['messages'])
+  self.assertIn('nicht konfiguriert',blob)
+  self.assertIn('s23pub',blob)
+  self.assertNotIn('8720',blob)
  def test_08_idle_autonomy_does_not_make_up_work(self):
   self.request('/api/autotalk',{'on':True})
   calls_before=len(Model.calls)
@@ -1600,6 +1610,10 @@ class SingleBotVM(unittest.TestCase):
 MULTIBOT_CTL="""#!/bin/sh
 d="$(dirname "$0")"
 echo "$@" >> "$d/ctl.log"
+if [ "$1" = preflight ]; then
+ if [ -f "$d/fail-preflight" ]; then echo "preflight failed: $(cat "$d/fail-preflight")" >&2; exit 1; fi
+ exit 0
+fi
 if [ "$1" = spawn ]; then
  [ -f "$d/slow" ] && sleep "$(cat "$d/slow")"
  if grep -qx "$2" "$d/exists" 2>/dev/null; then echo "Bot already exists" >&2; exit 1; fi
@@ -1711,6 +1725,7 @@ class MultiBot(unittest.TestCase):
   try:
    b=self.request('/api/agents',{'name':'Nach Waise'});self.assertEqual(b['pending_vm'],orphan)
    a=self._ready(b['id']);self.assertNotEqual(a['vm'],orphan);self.assertTrue(a['vm'].startswith('agent'))
+   self.assertIn('despawn '+orphan,(self.ctl.parent/'ctl.log').read_text())
   finally:self._flag('exists')
   self.request('/api/agents/'+b['id'],method='DELETE')
  def test_04e_failed_spawn_removes_bot_and_reports(self):
@@ -1723,7 +1738,25 @@ class MultiBot(unittest.TestCase):
    else:self.fail('bot with failed VM stayed')
   finally:self._flag('fail')
   self.assertNotIn(b['id'],[a['id'] for a in json.loads(self.state.joinpath('agents.json').read_text())])
+  self.assertIn('despawn '+b['pending_vm'],(self.ctl.parent/'ctl.log').read_text())
   self.log.flush();self.assertIn('golden',(pathlib.Path(self.tmp.name)/'server.log').read_text(errors='replace'))
+ def test_04f_preflight_failure_leaves_nothing(self):
+  self._sudo()
+  before=set(self._agents())
+  logp=self.ctl.parent/'ctl.log'
+  start=logp.stat().st_size if logp.exists() else 0
+  for step in ('kvm','golden','network','datadir','unit'):
+   self._flag('fail-preflight',step)
+   try:self.error(503,'/api/agents',{'name':'Halb '+step,'model':self.Q4})
+   finally:self._flag('fail-preflight')
+   self.assertEqual(before,set(self._agents()))
+  new=logp.read_text()[start:]
+  self.assertEqual(new.count('preflight'),5)
+  self.assertNotIn('spawn ',new)
+ def test_04g_unknown_model_is_rejected(self):
+  before=set(self._agents())
+  self.error(400,'/api/agents',{'name':'Falsches Modell','model':'nope'})
+  self.assertEqual(before,set(self._agents()))
  def test_05_room_never_stops_or_reloads_models(self):
   src=(ROOT/'mag-room/native/routes.hpp').read_text()+(ROOT/'mag-room/native/magroom.cpp').read_text()
   for needle in ('mag-llm-iq3','"mag-llm"','restart mag-llm','stop mag-llm','"unload"','action=unload'):self.assertNotIn(needle,src)

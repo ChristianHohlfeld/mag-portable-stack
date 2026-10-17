@@ -1,0 +1,11 @@
+[Unit]
+Description=Periodic check for half-created MAG bot VMs
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=15min
+AccuracySec=1min
+Persistent=false
+
+[Install]
+WantedBy=timers.target

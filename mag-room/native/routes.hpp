@@ -1039,7 +1039,7 @@ static void route(int fd, Req &r, bool bridge = false) {
         // Transcript correction: no reasoning needed (faster on CPU).
         Turn t = backend_turn({system, user}, "[]", 0,
                               [](const std::string &, const std::string &) {},
-                              false);
+                              false, slot_for_key("stt"));
         if (t.error.empty() && !trim(t.text).empty())
           out["corrected"] = trim(t.text);
         else

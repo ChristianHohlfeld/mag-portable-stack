@@ -26,8 +26,10 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <deque>
 #include <fstream>
 #include <functional>
@@ -68,7 +70,8 @@ static int PORT = 8766, BRIDGE_PORT = 8767, BROWSERD_PORT = 9225,
            HISTORY_STEP = 10,
            MAX_RUN_STEPS = 96, RUN_BUDGET_S = 14400, MAX_ROOM_MESSAGES = 400,
            TOOL_OUTPUT_LIMIT = 32768, MAX_UPLOAD = 64 * 1024 * 1024,
-           MEMORY_LIMIT = 60, GUEST_TIMEOUT = 600,
+           MEMORY_LIMIT = 60, MEMORY_CHUNK = 20, PROMPT_SLOTS = 1,
+           GUEST_TIMEOUT = 600,
            // Model requests on CPU can take long (prompt processing before the
            // first token). Never below 30 minutes; probes stay short.
            LLM_TIMEOUT_S = 3600, LLM_TIMEOUT_MIN_S = 1800;
@@ -645,28 +648,88 @@ static std::string slug_id(const std::string &name) {
   return cand;
 }
 
+// Rendered memory block, keyed by bot. The hash is the canonical line list.
+// Unchanged hash returns the previous string (byte-identical). New facts are
+// appended, so the old text stays a prefix. Edits and deletes rebuild from
+// the first changed line; everything before that line is unchanged.
+struct MemRender {
+  std::string hash, text;
+  std::vector<std::string> lines;
+};
+static std::map<std::string, MemRender> MEM_RENDER;
+
+static std::string fnv_hex(const std::string &s) {
+  uint64_t h = 14695981039346656037ull;
+  for (unsigned char c : s) {
+    h ^= c;
+    h *= 1099511628211ull;
+  }
+  char buf[17];
+  snprintf(buf, sizeof buf, "%016llx", (unsigned long long)h);
+  return buf;
+}
+static std::string memory_line_text(const Val &m) {
+  std::string t =
+      m.isObj() ? (m.find("text") ? m.find("text")->asStr() : "") : m.asStr();
+  if (t.size() > 500)
+    t.resize(500);
+  for (char &c : t)
+    if (c == '\n' || c == '\r')
+      c = ' ';
+  return t;
+}
+static std::string join_memory(const std::vector<std::string> &lines) {
+  // No counts, timestamps, or sorting: appending a line only adds a suffix.
+  std::string text = "[Erinnerungen]";
+  for (const auto &ln : lines)
+    text += "\n" + ln;
+  return text;
+}
 static std::string memory_manifest(const std::string &bot_id) {
   std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
   int idx = agent_index(bot_id);
-  if (idx < 0)
-    return "(keine)";
-  auto mem = AGENTS[idx].find("memory");
-  if (!mem || !mem->isArr() || mem->arr->empty())
-    return "(noch keine)";
-  std::string out;
-  size_t start = mem->arr->size() > (size_t)MEMORY_LIMIT
-                     ? mem->arr->size() - MEMORY_LIMIT
-                     : 0;
-  for (size_t i = start; i < mem->arr->size(); i++) {
-    const Val &m = (*mem->arr)[i];
-    std::string t =
-        m.isObj() ? (m.find("text") ? m.find("text")->asStr() : "") : m.asStr();
-    out += "- " + t.substr(0, 500) + "\n";
+  std::vector<std::string> lines;
+  if (idx >= 0) {
+    auto mem = AGENTS[idx].find("memory");
+    if (mem && mem->isArr()) {
+      // Window advances in MEMORY_CHUNK steps, not one entry per turn, so a
+      // new fact does not shift the cached prefix.
+      size_t n = mem->arr->size();
+      size_t start = 0;
+      if (n > (size_t)MEMORY_LIMIT) {
+        size_t step = (size_t)std::max(1, MEMORY_CHUNK);
+        start = ((n - (size_t)MEMORY_LIMIT) / step) * step;
+      }
+      for (size_t i = start; i < n; i++)
+        lines.push_back("- " + memory_line_text((*mem->arr)[i]));
+    }
   }
-  if (out.empty())
-    return "(noch keine)";
-  out.pop_back();
-  return out;
+  std::string canon;
+  for (const auto &ln : lines) {
+    canon += ln;
+    canon.push_back('\n');
+  }
+  std::string hash = fnv_hex(canon);
+  MemRender &cache = MEM_RENDER[bot_id];
+  if (cache.hash == hash && !cache.text.empty())
+    return cache.text;
+  std::string text;
+  size_t same = 0;
+  while (same < lines.size() && same < cache.lines.size() &&
+         lines[same] == cache.lines[same])
+    same++;
+  // Append (including the first fact after an empty block): keep the exact
+  // bytes already sent. Edit/delete: rebuild; the shared line prefix matches.
+  if (!cache.text.empty() && same == cache.lines.size()) {
+    text = cache.text;
+    for (size_t i = same; i < lines.size(); i++)
+      text += "\n" + lines[i];
+  } else
+    text = join_memory(lines);
+  cache.hash = hash;
+  cache.text = text;
+  cache.lines = std::move(lines);
+  return cache.text;
 }
 static void memory_git_sync(const std::string &bot_id, const std::string &why);
 static void remember_fact(const std::string &bot_id, const std::string &fact,
@@ -693,8 +756,17 @@ static void remember_fact(const std::string &bot_id, const std::string &fact,
       e["src"] = src.substr(0, 200);
     mem.push(std::move(e));
   }
-  if (mem.arr->size() > (size_t)MEMORY_LIMIT)
-    mem.arr->erase(mem.arr->begin(), mem.arr->end() - MEMORY_LIMIT);
+  // Drop a chunk, not one entry: sliding by one would rewrite the prompt prefix
+  // on every new fact once the list is full.
+  if (mem.arr->size() > (size_t)MEMORY_LIMIT) {
+    size_t step = (size_t)std::max(1, MEMORY_CHUNK);
+    size_t drop = step;
+    if (mem.arr->size() > (size_t)MEMORY_LIMIT + step)
+      drop = mem.arr->size() - (size_t)MEMORY_LIMIT;
+    if (drop > mem.arr->size())
+      drop = mem.arr->size();
+    mem.arr->erase(mem.arr->begin(), mem.arr->begin() + (std::ptrdiff_t)drop);
+  }
   save_agents();
   memory_git_sync(bot_id, "remember");
 }
@@ -1463,8 +1535,9 @@ static const char *ROOM_RULES =
     "jede Nachricht. "
     "{vmrules}"
     "Deine ERINNERUNG (dauerhaft, raumunabhaengig; ergaenze sie mit "
-    "remember) und die aktuell geteilten Raumdateien stehen im Abschnitt "
-    "[Kontext] am Ende des Raumverlaufs.\n"
+    "remember) steht direkt unter [Erinnerungen] im Anschluss an diesen Text, "
+    "in fester Reihenfolge. Geteilte Dateien, Netzstatus und die Uhrzeit "
+    "stehen nur im Abschnitt [Kontext] ganz am Ende des Raumverlaufs.\n"
     "Wenn du andere Werkzeuge als react oder unreact benutzt hast, schliesse "
     "IMMER mit einer kurzen sichtbaren Antwort an den Raum ab. Eine Runde, "
     "die nur react oder unreact war, endet ohne weiteren Text. Falls nach "
@@ -1557,8 +1630,9 @@ static std::string build_system(int bot_idx, bool autotalk,
   (void)bot_id;
   (void)autotalk;
   (void)other;
-  // Only stable text here (cacheable prefix). Memory, file list and the
-  // autotalk instruction change between turns -> build_context_tail().
+  // Only stable text here (cacheable prefix). No clock, no ids, no memory.
+  // Memory is appended after this string; files, network and the clock live
+  // in the [Kontext] tail.
   std::string system = ROOM_RULES;
   replaceAll(system, "{vmrules}", has_vm ? VM_RULES : CHAT_ONLY_RULES);
   replaceAll(system, "{name}", name);
@@ -1572,15 +1646,24 @@ static std::string build_system(int bot_idx, bool autotalk,
     system += FRONTEND_RULES;
   return system;
 }
+static std::string server_clock_minute() {
+  std::time_t t = std::time(nullptr);
+  std::tm tm{};
+  localtime_r(&t, &tm);
+  char buf[32];
+  if (!std::strftime(buf, sizeof buf, "%Y-%m-%d %H:%M", &tm))
+    return "";
+  return buf;
+}
 static std::string build_context_tail(int bot_idx, bool autotalk,
                                       const std::string &other) {
-  // Everything volatile (toggles, memory, files) only here, at the very end
-  // of the newest user turn, so the cached prompt prefix stays byte-identical.
+  // Volatile only, and only after the transcript: network, files, clock,
+  // autotalk. Memory is not here; it sits in the cached prefix.
+  (void)bot_idx;
   std::string out = "\n[Kontext]\nNetz: ";
   out += OFFLINE.load() ? "OFFLINE" : "online";
-  out += "\nDeine ERINNERUNG:\n";
-  out += memory_manifest(bot_field(bot_idx, "id"));
   out += "\nAktuell geteilte Raumdateien:\n" + file_manifest();
+  out += "\nZeit: " + server_clock_minute();
   if (autotalk) {
     std::string at = AUTOTALK_RULES;
     replaceAll(at, "{other}", other.empty() ? "der Nutzer" : other);
@@ -1588,6 +1671,23 @@ static std::string build_context_tail(int bot_idx, bool autotalk,
   }
   out += take_reaction_context(bot_field(bot_idx, "id"));
   return out;
+}
+// Once a room line has been sent, later turns reuse that exact text. The
+// window start moves only in HISTORY_STEP-sized jumps.
+static std::map<std::string, std::string> TRANSCRIPT_RENDERED;
+static std::string render_room_line(const Val &m) {
+  std::string role = m.find("role") ? m.find("role")->asStr() : "";
+  std::string name = m.find("name") ? m.find("name")->asStr()
+                                    : (role == "user" ? "Nutzer" : "Bot");
+  if (auto id = m.find("id"); id && !id->asStr().empty())
+    name += " (" + id->asStr() + ")";
+  std::string content = m.find("content") ? m.find("content")->asStr() : "";
+  if (content.size() > 4000)
+    content.resize(4000);
+  auto f = m.find("file");
+  if (f && f->isObj())
+    content += " [" + (f->find("name") ? f->find("name")->asStr() : "?") + "]";
+  return "[" + name + "]: " + content + "\n";
 }
 static std::string build_transcript() {
   std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
@@ -1600,24 +1700,29 @@ static std::string build_transcript() {
     size_t step = (size_t)std::max(1, HISTORY_STEP);
     start = ((ROOM.size() - MAX_HISTORY) / step) * step;
   }
+  std::set<std::string> keep;
   for (size_t i = start; i < ROOM.size(); i++) {
     const Val &m = ROOM[i];
-    std::string role = m.find("role") ? m.find("role")->asStr() : "";
-    std::string name = m.find("name") ? m.find("name")->asStr()
-                                      : (role == "user" ? "Nutzer" : "Bot");
     std::string id = m.find("id") ? m.find("id")->asStr() : "";
-    if (!id.empty())
-      name += " (" + id + ")";
-    std::string content = m.find("content") ? m.find("content")->asStr() : "";
-    if (content.size() > 4000)
-      content = content.substr(0, 4000);
-    auto f = m.find("file");
-    if (f && f->isObj())
-      content +=
-          " [" + (f->find("name") ? f->find("name")->asStr() : "?") + "]";
-    // Sender lives inside this user-message body so the system prompt and
-    // the tool list stay byte-stable (prompt cache). No name in the prefix.
-    out += "[" + name + "]: " + content + "\n";
+    std::string line;
+    if (!id.empty()) {
+      auto it = TRANSCRIPT_RENDERED.find(id);
+      if (it != TRANSCRIPT_RENDERED.end())
+        line = it->second;
+      else {
+        line = render_room_line(m);
+        TRANSCRIPT_RENDERED[id] = line;
+      }
+      keep.insert(id);
+    } else
+      line = render_room_line(m);
+    out += line;
+  }
+  for (auto it = TRANSCRIPT_RENDERED.begin(); it != TRANSCRIPT_RENDERED.end();) {
+    if (!keep.count(it->first))
+      it = TRANSCRIPT_RENDERED.erase(it);
+    else
+      ++it;
   }
   return out;
 }
@@ -2380,11 +2485,13 @@ static Val model_info_val() {
     out["last"] = LAST_TIMINGS;
   return out;
 }
-static void record_timings(const Val &t) {
-  if (!t.isObj())
-    return;
+// Debug only: journal line + model_info.last. The header does not show it.
+static void publish_prompt_cache(int slot, const Val *timings, double cached,
+                                 double evaluated) {
   auto num = [&](const char *k) {
-    auto v = t.find(k);
+    if (!timings || !timings->isObj())
+      return -1.0;
+    auto v = timings->find(k);
     return v && v->type == Val::NUM ? v->asNum() : -1.0;
   };
   Val r = Val::object();
@@ -2392,10 +2499,73 @@ static void record_timings(const Val &t) {
   r["predicted_per_second"] = num("predicted_per_second");
   r["prompt_n"] = num("prompt_n");
   r["predicted_n"] = num("predicted_n");
-  r["cache_n"] = num("cache_n");
+  r["cache_n"] = cached >= 0 ? cached : num("cache_n");
+  r["tokens_cached"] = cached;
+  r["tokens_evaluated"] = evaluated;
+  r["id_slot"] = slot;
   r["at"] = (long)now_s();
-  std::lock_guard<std::mutex> lk(MODEL_INFO_MTX);
-  LAST_TIMINGS = r;
+  {
+    std::lock_guard<std::mutex> lk(MODEL_INFO_MTX);
+    LAST_TIMINGS = r;
+  }
+  std::cerr << "prompt-cache slot=" << slot << " tokens_cached="
+            << (long long)(cached < 0 ? -1 : cached) << " tokens_evaluated="
+            << (long long)(evaluated < 0 ? -1 : evaluated) << std::endl;
+}
+// One llama slot per conversation. With --parallel 1 (bug #25259) every key
+// maps to slot 0, which is still stable across turns. MAG_ROOM_SLOTS must
+// match the server's --parallel before it is raised above 1.
+static int slot_for_key(const std::string &key) {
+  if (PROMPT_SLOTS <= 1 || key.empty())
+    return 0;
+  uint32_t h = 2166136261u;
+  for (unsigned char c : key)
+    h = (h ^ c) * 16777619u;
+  return (int)(h % (uint32_t)PROMPT_SLOTS);
+}
+static bool SLOT_SAVE = false;
+static std::mutex SLOT_FLAG_MTX;
+static std::map<int, bool> SLOT_NEEDS_RESTORE;
+static bool slot_rpc(int slot, const char *action) {
+  std::string path =
+      "/slots/" + std::to_string(slot) + "?action=" + action;
+  std::string body = "{\"filename\":\"mag-slot-" + std::to_string(slot) +
+                     ".bin\"}";
+  std::string out;
+  long code = 0;
+  bool ok = http_simple(BACKEND_HOST, BACKEND_PORT, "POST", path, body,
+                         {{"Authorization", "Bearer " + API_KEY},
+                          {"Content-Type", "application/json"}},
+                         out, &code, nullptr, 120000);
+  if (!ok || (code != 0 && code != 200)) {
+    std::cerr << "prompt-cache " << action << " slot=" << slot
+              << " http=" << code << "\n";
+    return false;
+  }
+  return true;
+}
+static void slot_restore_if_cold(int slot) {
+  if (!SLOT_SAVE)
+    return;
+  bool need = true;
+  {
+    std::lock_guard<std::mutex> lk(SLOT_FLAG_MTX);
+    auto it = SLOT_NEEDS_RESTORE.find(slot);
+    if (it != SLOT_NEEDS_RESTORE.end())
+      need = it->second;
+    SLOT_NEEDS_RESTORE[slot] = false;
+  }
+  if (need)
+    slot_rpc(slot, "restore");
+}
+static void slot_save_after(int slot, double cached, double evaluated) {
+  if (!SLOT_SAVE)
+    return;
+  if (cached == 0 && evaluated > 0) {
+    std::lock_guard<std::mutex> lk(SLOT_FLAG_MTX);
+    SLOT_NEEDS_RESTORE[slot] = true;
+  }
+  slot_rpc(slot, "save");
 }
 static std::string model_status_text(const ModelStatus &st) {
   return st.label + (st.detail.empty() ? "" : " – " + st.detail);
@@ -2517,8 +2687,9 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
              double temperature,
              const std::function<void(const std::string &, const std::string &)>
                  &on_delta,
-             bool thinking = true) {
+             bool thinking, int id_slot) {
   Turn t;
+  slot_restore_if_cold(id_slot);
   HttpClient c;
   c.timeout_ms = std::max(LLM_TIMEOUT_S, LLM_TIMEOUT_MIN_S) * 1000;
   c.cancelable = true;
@@ -2543,6 +2714,9 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   // the prompt is evaluated (minutes on CPU) instead of staying silent.
   body["return_progress"] = true;
   body["cache_prompt"] = true;
+  // Pin this conversation to one slot so another caller cannot evict it by
+  // being handed a "free" slot. Same id on every turn of the same bot.
+  body["id_slot"] = id_slot;
   // DeepSeek-V4-Flash-0731 template: enable_thinking only changes the
   // generation prompt at the END -> toggling it keeps the prompt cache.
   // reasoning_effort is different: the template puts a "Reasoning Effort"
@@ -2587,6 +2761,10 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
     BACKEND_FD = c.fd;
   }
   SseAcc acc;
+  double saw_cached = -1, saw_evaluated = -1;
+  bool have_cached_field = false, have_eval_field = false;
+  Val timings_seen;
+  bool saw_timings = false;
   while (!c.eof) {
     if (STOP.load())
       break;
@@ -2618,10 +2796,27 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
         pr["processed"] = (double)num("processed");
         pr["time_ms"] = (double)num("time_ms");
         on_delta("progress", mj::dump(pr));
+        if (!have_cached_field && num("cache") >= 0)
+          saw_cached = (double)num("cache");
+        if (!have_eval_field && num("total") >= 0)
+          saw_evaluated = (double)num("total");
       }
     }
-    if (auto tm = chunk.find("timings"))
-      record_timings(*tm);
+    auto take_num = [&](const char *k, double &dst, bool &flag) {
+      auto v = chunk.find(k);
+      if (v && v->type == Val::NUM) {
+        dst = v->asNum();
+        flag = true;
+      }
+    };
+    take_num("tokens_cached", saw_cached, have_cached_field);
+    take_num("tokens_evaluated", saw_evaluated, have_eval_field);
+    if (auto tm = chunk.find("timings")) {
+      if (tm->isObj()) {
+        saw_timings = true;
+        timings_seen = *tm;
+      }
+    }
     if (auto err = chunk.find("error")) {
       auto msg = err->isObj() && err->find("message")
                      ? err->find("message")->asStr()
@@ -2676,6 +2871,28 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
     call["function"] = fn;
     t.calls.push_back(call);
   }
+  if (saw_timings && !have_cached_field && saw_cached < 0) {
+    auto cn = timings_seen.find("cache_n");
+    if (cn && cn->type == Val::NUM && cn->asNum() >= 0)
+      saw_cached = cn->asNum();
+    else if (auto np = timings_seen.find("n_past"))
+      if (np->type == Val::NUM && np->asNum() >= 0)
+        saw_cached = np->asNum();
+  }
+  if (saw_timings && !have_eval_field) {
+    auto pn = timings_seen.find("prompt_n");
+    double processed = pn && pn->type == Val::NUM ? pn->asNum() : -1;
+    // timings.prompt_n is the part evaluated this request. The prompt length
+    // is that plus the reused prefix.
+    if (processed >= 0 && saw_cached >= 0)
+      saw_evaluated = saw_cached + processed;
+    else if (processed >= 0)
+      saw_evaluated = processed;
+  }
+  publish_prompt_cache(id_slot, saw_timings ? &timings_seen : nullptr,
+                       saw_cached, saw_evaluated);
+  if (t.error.empty())
+    slot_save_after(id_slot, saw_cached, saw_evaluated);
   return t;
 }
 
@@ -3307,11 +3524,14 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
   std::string bot_name = bot_field(bot_idx, "name", "Bot");
   bool web = WEB_ENABLED.load();
   std::string system = build_system(bot_idx, autotalk, other, web);
+  // Memories sit directly after the stable rules. Unchanged block is
+  // byte-identical; a new fact is a suffix, so the prefix stays cached.
+  std::string memory = memory_manifest(bot_id);
   std::vector<Val> messages;
   {
     Val s = Val::object();
     s["role"] = "system";
-    s["content"] = system;
+    s["content"] = system + "\n" + memory;
     messages.push_back(s);
   }
   {
@@ -3430,7 +3650,8 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
     };
     // Tools remain available on every step, without a forced early final.
     Turn t = backend_turn(messages, tools,
-                          autotalk ? 0.75 : 0.55, on_delta, turn_thinking());
+                          autotalk ? 0.75 : 0.55, on_delta, turn_thinking(),
+                          slot_for_key(bot_id));
     if (!t.error.empty()) {
       report.error = t.error.substr(0, 280);
       emit_event("error", bot_id, bot_name, report.error);
@@ -4997,7 +5218,10 @@ int main() {
     REASONING_EFFORT = "";
   MODEL_STATUS_FILE = env("MAG_ROOM_MODEL_STATUS", "/var/lib/mag-llm/status.json");
   MAX_HISTORY = envi("MAG_ROOM_MAX_HISTORY", 30);
-  HISTORY_STEP = envi("MAG_ROOM_HISTORY_STEP", 10);
+  HISTORY_STEP = std::max(1, envi("MAG_ROOM_HISTORY_STEP", 10));
+  MEMORY_CHUNK = std::max(1, envi("MAG_ROOM_MEMORY_CHUNK", 20));
+  PROMPT_SLOTS = std::max(1, envi("MAG_ROOM_SLOTS", 1));
+  SLOT_SAVE = env("MAG_ROOM_SLOT_SAVE", "0") == "1";
   SINGLE_BOT = env("MAG_ROOM_SINGLE_BOT", "");
   SINGLE_BOT_NAME = env("MAG_ROOM_SINGLE_BOT_NAME", "DeepSeek Chat");
 

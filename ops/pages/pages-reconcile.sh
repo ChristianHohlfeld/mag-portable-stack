@@ -13,11 +13,11 @@ if [[ -e "$req" ]]; then
   jq -e 'type=="object" and (keys|sort)==["action","repo"] and
          (.action=="public" or .action=="tailnet" or .action=="delete") and
          (.repo|test("^magbot-[a-z][a-z0-9-]{0,31}/[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$"))' "$req" >/dev/null
-  "$policy" "$req"
+  /usr/bin/bash "$policy" "$req"
   rm -f -- "$req"
   # A policy change needs a subsequent native C++ sync BEFORE new root TLS.
   exit 0
 fi
 # This call follows the native publisher commit and immediately activates TLS.
-"$gc"
+/usr/bin/bash "$gc"
 rm -f "$root/gc.pending"

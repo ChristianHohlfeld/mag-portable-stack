@@ -327,6 +327,7 @@ inline void cleanup_releases(const fs::path& directory,const std::vector<Site>& 
     }
   }
 }
+inline std::mutex TOOL_MTX; // serialize all model requests vs periodic sync
 inline std::mutex SYNC_MTX;
 inline void run_root_reconcile() {
   // systemd starts a new root oneshot OUTSIDE mag-120's read-only /etc mount.
@@ -511,6 +512,7 @@ inline void ticker(const std::atomic<bool>& stopping) {
       if(token.empty() || token.find_first_of("\r\n")!=std::string::npos)
         throw std::runtime_error("missing/invalid Gitea service token");
       {
+        std::lock_guard<std::mutex> operation(TOOL_MTX);
         std::lock_guard<std::mutex> guard(SYNC_MTX);
         reconcile(root,token);
         if(fs::exists(root/"gc.pending") || fs::exists(root/"request.json"))

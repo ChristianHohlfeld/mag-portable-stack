@@ -23,6 +23,7 @@ CONFIG = Path("/etc/mag-pages/config.json")
 VISIBILITY = Path("/etc/mag-pages/visibility.json")
 TOKEN = Path("/etc/mag-pages/gitea-token")
 STATE = Path("/var/lib/mag-pages/state.json")
+RELEASES = Path("/var/lib/mag-pages/releases")
 CONF = Path("/etc/nginx/conf.d/mag-pages-generated.conf")
 LOCK = Path("/run/lock/mag-pages.lock")
 MAX_FILES = 10000
@@ -264,12 +265,12 @@ def render_nginx(c, state):
              "    location / { return 404; }", "}", ""]
     # Prevent catch-all mismatched Host/SNI from reaching a private vhost.
     for ip in (public_ip, tailnet):
-        lines.extend(["server {", f"    listen {ip}:443 ssl default_server;",
+        lines.extend(["server {", f"    listen {ip}:443 ssl;",
                       "    server_name _;", f"    ssl_certificate {cert};",
                       f"    ssl_certificate_key {key};", "    return 444;", "}", ""])
     for keyid, s in sorted(state.items()):
         root = s["root"]
-        if not Path(root).is_absolute() or not re.fullmatch(r"/var/lib/mag-pages/releases/[a-z0-9-]+/[a-f0-9]{40}", root):
+        if not Path(root).is_absolute() or Path(root).parent.parent != RELEASES or not re.fullmatch(r"[a-z0-9-]+/[a-f0-9]{40}", "/".join(Path(root).parts[-2:])):
             raise ValueError("unsafe release root")
         ips = [tailnet] if s["visibility"] == "tailnet" else [public_ip, tailnet]
         lines.append(site_server(s["domain"], root, ips, cert, key))
@@ -342,7 +343,7 @@ def sync(c):
                 custom = cname(files)
                 if not files:
                     continue
-                root = Path("/var/lib/mag-pages/releases") / key / sha.lower()
+                root = RELEASES / key / sha.lower()
                 if not root.exists():
                     root.parent.mkdir(parents=True, exist_ok=True)
                     tmp = Path(tempfile.mkdtemp(prefix=".stage-", dir=root.parent))

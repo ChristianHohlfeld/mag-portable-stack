@@ -19,7 +19,7 @@ while (( $# )); do
 done
 case "$part" in room|gitea|pages|cron|tailscale|config|all) ;; *) exit 2;; esac
 case "$repo" in local|offsite) ;; *) exit 2;; esac
-[[ "$snapshot" == latest || "$snapshot" =~ ^[a-f0-9]{8,64}$ ]] || exit 2
+[[ "$snapshot" == latest || "$snapshot" =~ ^[a-f0-9]{8,64}$ || "$snapshot" =~ ^[0-9]{8}T[0-9]+Z-(daily|deploy|clear)$ ]] || exit 2
 [[ $use_lock == 0 ]] || backup_lock
 # Never restore to / without an explicit apply; staging is mandatory.
 if [[ $apply == 0 ]]; then
@@ -38,6 +38,24 @@ if [[ "$repo" == offsite ]]; then
  mkdir -p "$scratch/repo"
  aws s3 sync "s3://$MAG_BACKUP_BUCKET/archives/$archive/" "$scratch/repo/" --no-progress --only-show-errors --region eu-central-1
  export RESTIC_REPOSITORY="$scratch/repo"
+fi
+if [[ "$repo" == local ]]; then
+  root="${MAG_BACKUP_ROOT:-/var/backups/mag-full}"
+  if [[ ! -f "${RESTIC_REPOSITORY:-}/config" ]]; then
+    chosen=""
+    if [[ "$snapshot" != latest && -d "$root/$snapshot/repo" && -f "$root/$snapshot/VERIFIED" ]]; then
+      chosen="$root/$snapshot"
+      snapshot=latest
+    else
+      while IFS= read -r id; do
+        [[ -f "$root/$id/VERIFIED" && -d "$root/$id/repo" ]] || continue
+        chosen="$root/$id"
+      done < <(find "$root" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null | LC_ALL=C sort)
+    fi
+    [[ -n "$chosen" ]] || { echo 'No verified full backup' >&2; exit 1; }
+    export RESTIC_REPOSITORY="$chosen/repo"
+    echo "Restoring independent archive $(basename "$chosen")"
+  fi
 fi
 mkdir -p "$scratch/recovered"
 restic restore "$snapshot" --target "$scratch/recovered"

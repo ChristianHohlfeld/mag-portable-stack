@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# Entry point for a blank MAG host. See ops/bootstrap.sh.
+exec bash "$(cd -- "$(dirname -- "$(readlink -f "$0")")" && pwd)/ops/bootstrap.sh" "$@"

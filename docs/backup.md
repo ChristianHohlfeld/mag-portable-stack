@@ -38,6 +38,31 @@ pre-deploy restic snapshots remain synchronous as before.
 
 ---
 
+# Vollständige Einzelarchive (mag-stack 4.0)
+
+Jeder Lauf legt ein **eigenes** passwortloses restic-Repository unter
+`/var/backups/mag-full/<Zeit>-<daily|deploy|clear>/` an. Es gibt keine
+inkrementelle Kette: dieses eine Verzeichnis genügt für einen Restore.
+Enthalten sind Raum, Gitea-Datenbank und Repositories, Konfiguration,
+Zertifikate und Pages, sofern die Pfade existieren. Nicht enthalten sind
+GGUF, VM-Images und Build-Verzeichnisse. Vor dem Schreiben muss auf dem
+Dateisystem mindestens `MAG_BACKUP_MIN_FREE_MIB` (Standard 4096) frei sein,
+sonst bricht der Lauf ab und löscht nichts. Nach dem Snapshot folgen
+`restic check`, ein Test-Restore und der SHA256-Vergleich. Erst danach
+gilt das Archiv als verifiziert. Gelöscht wird dann höchstens so, dass die
+letzten 3 verifizierten Archive und das Pre-Deploy-Archiv des aktuellen
+Releases bleiben. Der letzte gute Stand bleibt immer. Ein Fehlschlag löscht
+nur das unvollständige neue Verzeichnis.
+
+Die Abschnitte weiter unten zur gemeinsamen restic-Kette (`forget`/`prune`,
+7/4/6) beschreiben das alte Modell und gelten nicht mehr. AWS bleibt aus.
+Das alte `/var/backups/mag-restic` und `/var/backups/restic` werden von
+diesem Lauf nicht angefasst.
+
+```bash
+sudo bash ops/backup/restore.sh --part all --target /var/tmp/mag-restore
+```
+
 # MAG-Backup und Disaster Recovery (17. Oktober 2026)
 
 ## Umfang und Grenzen

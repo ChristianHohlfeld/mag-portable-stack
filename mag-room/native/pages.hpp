@@ -298,6 +298,8 @@ inline std::pair<std::string,std::string> branch_sha(const std::string& token,co
 }
 inline void reconcile(const fs::path& root,const std::string& token) {
   const Val access=policy(env("MAG_PAGES_VISIBILITY","/etc/mag-pages/visibility.json"));
+  // Host public bind + explicit per-repo policy are BOTH required.
+  const bool public_enabled=!env("MAG_PAGES_PUBLIC_BIND","").empty();
   const auto repositories=repo_list(token);
   const fs::path manifest=root/"sites.json";
   if(repositories.empty() && fs::exists(manifest))
@@ -346,7 +348,9 @@ inline void reconcile(const fs::path& root,const std::string& token) {
          !domains.insert(cname).second)
         throw std::runtime_error("unsafe/duplicate CNAME");
     }
-    Site s{full,page,branch.second,branch.first,cname,mode(access,full),release};
+    const auto requested=mode(access,full);
+    Site s{full,page,branch.second,branch.first,cname,
+           public_enabled && requested=="public" ? "public" : "tailnet",release};
     Val v=Val::object();
     v["sha"]=s.sha;v["branch"]=s.branch;v["custom"]=s.custom;v["slug"]=s.slug;v["access"]=s.access;
     state[full]=v;

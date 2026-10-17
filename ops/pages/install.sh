@@ -9,8 +9,8 @@ command -v dig >/dev/null
 command -v python3 >/dev/null
 test -s /etc/mag-pages/config.json || { echo 'Copy and edit config.example.json to /etc/mag-pages/config.json' >&2; exit 1; }
 test -s /etc/mag-pages/gitea-token || { echo 'Add Gitea read-only access token to /etc/mag-pages/gitea-token (0600)' >&2; exit 1; }
-test -s /etc/mag-pages/tls/wildcard.crt
-test -s /etc/mag-pages/tls/wildcard.key
+test -s /etc/mag-pages/tls/current/cert.pem
+test -s /etc/mag-pages/tls/current/key.pem
 nginx -t
 # Fail before any nginx changes if the configured bind IPs are not on MAG.
 for ip in $(python3 -c 'import json; c=json.load(open("/etc/mag-pages/config.json")); print(c["public_ip"], c["tailnet_ip"])'); do

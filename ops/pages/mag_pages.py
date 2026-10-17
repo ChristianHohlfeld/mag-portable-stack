@@ -47,9 +47,19 @@ def atomic_text(path, text, mode=0o644):
     os.replace(tmp, path)
 
 
+class NoApiRedirect(urllib.request.HTTPRedirectHandler):
+    """Do not send the Gitea PAT to another host after an HTTP redirect."""
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise ValueError("Gitea API redirect refused (token stays on loopback)")
+
+
 def settings(path=CONFIG):
     c = json.loads(Path(path).read_text())
-    assert c["gitea_url"].startswith("http://127.0.0.1:") or c["gitea_url"].startswith("http://[::1]:"), "Gitea API must be loopback"
+    parsed = urllib.parse.urlsplit(c["gitea_url"])
+    if (parsed.scheme != "http" or parsed.hostname not in ("127.0.0.1", "::1") or
+            not parsed.port or parsed.username or parsed.password or
+            parsed.path not in ("", "/") or parsed.query or parsed.fragment):
+        raise ValueError("Gitea API URL must be loopback HTTP, with no credentials or path")
     c["public_ip"] = str(ipaddress.IPv4Address(c["public_ip"]))
     c["public_dns_ip"] = str(ipaddress.IPv4Address(c.get("public_dns_ip", c["public_ip"])))
     c["tailnet_ip"] = str(ipaddress.IPv4Address(c["tailnet_ip"]))
@@ -62,7 +72,8 @@ def settings(path=CONFIG):
 
 def api(c, uri, *, binary=False):
     base = c["gitea_url"].rstrip("/")
-    with urllib.request.urlopen(urllib.request.Request(
+    opener = urllib.request.build_opener(NoApiRedirect)
+    with opener.open(urllib.request.Request(
             base + "/api/v1/" + uri.lstrip("/"),
             headers={"Authorization": "token " + TOKEN.read_text().strip(),
                      "Accept": "application/json" if not binary else "application/octet-stream"}),

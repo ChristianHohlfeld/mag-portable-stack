@@ -31,15 +31,39 @@ key="$(printf %s "$found" | sed 's/\.crt$/.key/')"
 test -s "$key"
 openssl x509 -in "$found" -noout -checkend 86400 >/dev/null
 openssl pkey -in "$key" -noout >/dev/null
-install -m 0644 "$found" /etc/mag-pages/tls/wildcard.crt.next
-install -m 0640 -g www-data "$key" /etc/mag-pages/tls/wildcard.key.next
-cert_pub="$(openssl x509 -in /etc/mag-pages/tls/wildcard.crt.next -pubkey -noout | openssl sha256)"
-key_pub="$(openssl pkey -in /etc/mag-pages/tls/wildcard.key.next -pubout | openssl sha256)"
+# Stage both files in a versioned directory, then switch ONE symlink atomically.
+revision="$(openssl x509 -in "$found" -outform DER | sha256sum | cut -c1-16)"
+dest="/etc/mag-pages/tls/releases/$revision"
+install -d -m 0750 -o root -g www-data "$dest"
+install -m 0644 -o root -g www-data "$found" "$dest/cert.pem"
+install -m 0640 -o root -g www-data "$key" "$dest/key.pem"
+openssl x509 -in "$dest/cert.pem" -noout -checkend 86400 >/dev/null
+cert_pub="$(openssl x509 -in "$dest/cert.pem" -pubkey -noout | openssl sha256)"
+key_pub="$(openssl pkey -in "$dest/key.pem" -pubout | openssl sha256)"
 [[ "$cert_pub" = "$key_pub" ]] || { echo 'Certificate/key mismatch' >&2; exit 1; }
-mv -f /etc/mag-pages/tls/wildcard.crt.next /etc/mag-pages/tls/wildcard.crt
-mv -f /etc/mag-pages/tls/wildcard.key.next /etc/mag-pages/tls/wildcard.key
+current=/etc/mag-pages/tls/current
+previous="$(readlink "$current" 2>/dev/null || true)"
+restore_cert() {
+    if [[ -n "$previous" ]]; then
+        ln -sfn "$previous" /etc/mag-pages/tls/.current-next
+        mv -Tf /etc/mag-pages/tls/.current-next "$current"
+    else
+        rm -f "$current"
+    fi
+}
+ln -sfn "$dest" /etc/mag-pages/tls/.current-next
+mv -Tf /etc/mag-pages/tls/.current-next "$current"
 if test -e /etc/nginx/conf.d/mag-pages-generated.conf; then
-    nginx -t
-    systemctl reload nginx.service
+    if ! nginx -t; then
+        restore_cert
+        echo 'New wildcard certificate failed nginx -t; previous certificate restored' >&2
+        exit 1
+    fi
+    if ! systemctl reload nginx.service; then
+        restore_cert
+        nginx -t && systemctl reload nginx.service || true
+        echo 'nginx reload failed; previous wildcard certificate restored' >&2
+        exit 1
+    fi
 fi
 echo "MAG Pages wildcard TLS ready; mag-llm untouched"

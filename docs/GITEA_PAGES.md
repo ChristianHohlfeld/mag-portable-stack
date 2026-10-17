@@ -47,7 +47,8 @@ credentials, **not** the placeholder. DNS-01 issues a single Let's Encrypt
 wildcard cert for *.pages.stardenburg.de.
 
 The nginx config's public_ip must be the IPv4 address **bound locally on mag**;
-behind NAT it may differ from the DomainFactory public A record, in which case
+behind NAT it may differ from the DomainFactory public A record (configure
+public_dns_ip with that externally advertised IPv4), in which case
 forward inbound TCP 80/443 to mag. The tailnet_ip example is
 100.123.114.16:443, matching the existing private MAG nginx listener.
 Do not accidentally expose the existing mag.stardenburg.de room on the public
@@ -110,8 +111,8 @@ sudo nginx -t
 ~~~
 
 The wildcard uses a dedicated /etc/mag-acme/lego-pages directory and
-existing /etc/mag-acme/lego.env + acme-dns storage. Certificates are copied
-to /etc/mag-pages/tls. Do not commit the storage JSON, credentials, PAT,
+existing /etc/mag-acme/lego.env + acme-dns storage. Certificate/key pairs are atomically switched
+under /etc/mag-pages/tls/current. Do not commit the storage JSON, credentials, PAT,
 private keys or certbot account details. Renewals use
 mag-pages-cert.timer; HTTPS is never downgraded to HTTP on a failure.
 
@@ -162,8 +163,8 @@ nginx serves HTTPS on the custom name only after successful issuance and
 config validation. If issuance fails, the default hostname remains active;
 the next timer run retries.
 
-Note for NAT: the current apex A validation compares against the configured
-local public_ip, so use CNAME for custom subdomains or ensure the A record
+Note for NAT: apex A validation compares against the configured
+public_dns_ip, so use CNAME for custom subdomains or ensure the A record
 and local bind IP are the same for an apex. Custom domains for Tailnet-only
 pages are intentionally not automatically certified by public HTTP-01.
 

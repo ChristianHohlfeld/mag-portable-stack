@@ -5,6 +5,6 @@
   "public_dns_ip": "192.0.2.10",
   "tailnet_ip": "100.123.114.16",
   "acme_email": "operator@example.com",
-  "wildcard_cert": "/etc/mag-pages/tls/wildcard.crt",
-  "wildcard_key": "/etc/mag-pages/tls/wildcard.key"
+  "wildcard_cert": "/etc/mag-pages/tls/current/cert.pem",
+  "wildcard_key": "/etc/mag-pages/tls/current/key.pem"
 }

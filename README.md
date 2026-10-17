@@ -394,3 +394,8 @@ another non-search page independently, verify blocked-page notices and the
 Brave API fallback, and check both Ab and Joe remain on their existing VM
 profiles with no disk changes. CI checks logic but cannot assert real
 accessibility from the private MAG server IP.
+
+## Gitea Pages (nginx only)
+
+Automatic gh-pages / docs publishing, wildcard HTTPS, Tailnet/public policy,
+custom CNAME certificates and safe rollback: see [MAG Pages](docs/GITEA_PAGES.md).

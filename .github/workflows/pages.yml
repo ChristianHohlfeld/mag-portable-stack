@@ -4,6 +4,8 @@ on:
     paths:
       - 'ops/pages/**'
       - '.github/workflows/pages.yml'
+      - 'docs/GITEA_PAGES.md'
+      - 'README.md'
   pull_request:
     paths:
       - 'ops/pages/**'

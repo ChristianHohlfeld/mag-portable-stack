@@ -699,10 +699,14 @@ int main(int argc, char **argv) {
       std::cout << r.out;
       return r.code;
     }
-    if (action == "exec" && argc == 4 && std::string(argv[3]) == "--stdin") {
+    if (action == "exec" && argc >= 4 && std::string(argv[3]) == "--stdin") {
       marker(n);
       if (state(n) != "ready") throw std::runtime_error("Guest not ready");
-      auto r = guest_payload(n, from_stdin(), "", "", 600);
+      if (argc > 5) throw std::runtime_error("Invalid guest timeout arguments");
+      int deadline = argc == 5 ? std::stoi(argv[4]) : 600;
+      if (deadline < 1 || deadline > 3600)
+        throw std::runtime_error("Guest timeout must be 1..3600 seconds");
+      auto r = guest_payload(n, from_stdin(), "", "", deadline);
       std::cout << r.out;
       return r.code;
     }

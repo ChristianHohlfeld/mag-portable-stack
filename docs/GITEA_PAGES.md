@@ -1,143 +1,161 @@
-# MAG Pages — native C++ + nginx
+# MAG Pages – native C++ plus nginx, lego 5.5.2
 
-**Invariant: MAG is a C++ stack.** The publisher runs as a thread within
-the existing C++17 magroom executable (native/pages.hpp). No independent
-Python, Node, Go, webhook or polling service is added.
+The publisher is already compiled into magroom (C++17); there is no
+Python/Node publisher or new timer. Nginx is the static serving layer.
+The read-only Gitea service token stays on the host at
+/etc/mag-pages/gitea-token (root:magbot 0640, read:repository scope).
+install.sh uses the existing token and never overwrites its contents.
 
-## Publishing
+## Default: Tailnet-only DomainFactory records
 
-- Every 60 seconds magroom reads the Gitea API on loopback (127.0.0.1:3000)
-  with a host-local read-only token.
-- Priority: gh-pages branch root; otherwise /docs on default branch.
-- libarchive rejects path traversal, symlinks and special files; files and
-  sizes are bounded. Only static files are served, never executed.
-- Files are staged as immutable releases; only atomic symlinks within
-  /var/lib/mag-pages/public, /tailnet and /custom are changed on pushes.
-  nginx is NOT reloaded for normal pushes.
-- Standard URL: https://REPO--OWNER.pages.stardenburg.de/.
-  A flat hostname is essential: *.pages.stardenburg.de wildcard TLS does
-  not cover repo.owner.pages.stardenburg.de.
-- Default is always Tailnet-only, regardless of the Gitea source visibility.
-  To publish publicly, the root operator sets owner/repo to public in
-  /etc/mag-pages/visibility.json (format: JSON object of repo => public or
-  tailnet). The magbot service can read this file but cannot modify it.
-  Reversion to tailnet removes public and custom webroot links at next poll.
-- On a scan error, last functioning routes remain in place. A Gitea API token
-  must have read access to all repositories you want to publish.
+Set these records in the stardenburg.de zone:
 
-## DomainFactory DNS template
-
-| Record | Host in stardenburg.de | Value |
+| Type | Host | Value |
 | --- | --- | --- |
-| A | pages | PUBLIC_IPV4 |
-| A | *.pages | PUBLIC_IPV4 |
-| CNAME | _acme-challenge.pages | ASSIGNED-ACME-DNS-NAME.auth.acme-dns.io. |
+| A | pages | 100.123.114.16 |
+| A | *.pages | 100.123.114.16 |
+| CNAME | _acme-challenge.pages | YOUR-REGISTERED-UUID.auth.acme-dns.io. |
 
-Use the true assigned acme-dns hostname, not the placeholder, and set
-PUBLIC_IPV4 to the Internet-facing endpoint. If NAT applies, forward ports
-80/443 to the local address configured in PAGES_PUBLIC_BIND. The nginx
-private vhost listens only on PAGES_TAILNET_BIND, e.g. 100.123.114.16.
-For ordinary HTTPS names from tailnet, use split DNS to resolve *.pages
-to that Tailscale IPv4 (public DomainFactory DNS points to PUBLIC_IPV4).
+The CNAME value is NOT a placeholder to copy. Run the wildcard script
+first to register with the existing MAG acme-dns provider. On the first
+registration it prints the actual UUID and exits 78, until the DomainFactory
+CNAME is visible in public DNS. Both the wildcard and apex DNS-01
+challenges use that delegation. Public port 80/443 is not needed for
+DNS-01; nginx only adds the private Tailscale listener on
+100.123.114.16:443.
 
-DNS and HTTP check:
+Verification commands:
 
 ~~~sh
 dig +short A hello--alice.pages.stardenburg.de @1.1.1.1
+dig +short A pages.stardenburg.de @1.1.1.1
 dig +short CNAME _acme-challenge.pages.stardenburg.de @1.1.1.1
-curl -I --resolve hello--alice.pages.stardenburg.de:443:PUBLIC_IPV4 https://hello--alice.pages.stardenburg.de/
+curl -I --resolve hello--alice.pages.stardenburg.de:443:100.123.114.16 \
+  https://hello--alice.pages.stardenburg.de/
 ~~~
 
-## Install (host operator / Ali, not GitHub CI)
+The first two commands should show 100.123.114.16; the CNAME must show
+the registered UUID. The curl command needs a device connected to the
+appropriate Tailscale network. DNS visibility does not grant Tailnet
+access; existing Tailscale ACLs still apply.
 
-New compile-time dependencies: libarchive-dev and libcurl4-openssl-dev,
-besides the existing MAG OpenSSL, ICU and C++17 toolchain. The existing
-lego / acme-dns binary and nginx remain the certificate/delivery stack.
+## Optional public setup (separate from the default)
+
+Only when deliberately exposing Pages on the Internet:
+
+| Type | Host | Value |
+| --- | --- | --- |
+| A | pages | PUBLIC_IPV4 |
+| A | *.pages | PUBLIC_IPV4 |
+| CNAME | _acme-challenge.pages | SAME-REGISTERED-UUID.auth.acme-dns.io. |
+
+Set PAGES_PUBLIC_BIND to the actual IPv4 bound on MAG's public-facing
+local interface and PAGES_PUBLIC_DNS to the Internet-facing IPv4.
+If NAT applies, forward ports 80 and 443 to MAG. Public Bind must be
+different from PAGES_TAILNET_BIND and must not be on tailscale0.
+
+Making Pages public requires BOTH the explicitly configured public bind
+AND a per-repository public entry in the root-owned
+/etc/mag-pages/visibility.json. A public bind alone does not publish
+sites. Default policy is Tailnet-only. The C++ publisher also checks
+MAG_PAGES_PUBLIC_BIND (a systemd environment drop-in produced only
+when public bind is explicitly set). Nginx public virtual hosts do
+not exist with empty PAGES_PUBLIC_BIND.
+
+In public DNS mode, use Tailscale split DNS to resolve private Pages
+hostnames to 100.123.114.16 from Tailnet clients.
+
+## Repair and activation on MAG
+
+Dependencies: existing nginx, lego 5.5.2, MAG acme-dns credentials,
+native C++ publisher, jq and dig utilities. No additional runtime
+services, Python processes, or Caddy.
 
 ~~~sh
-sudo apt-get install -y libarchive-dev libcurl4-openssl-dev nginx dnsutils
-sudo install -d -m 0750 -o root -g magbot /etc/mag-pages
-sudo install -m 0600 ops/pages/pages.env.example /etc/mag-pages/pages.env
+sudo apt-get install -y jq dnsutils
+sudo ls -l /etc/mag-pages/gitea-token
+sudo -u magbot test -r /etc/mag-pages/gitea-token
+# Keep the token already there; DO NOT create a new one.
+
 sudoedit /etc/mag-pages/pages.env
-# Set actual host-local IPv4, public DNS IPv4, Tailnet IPv4 and ACME email.
-# Issue a dedicated read-only Gitea API token for all repositories to publish:
-sudo sh -c 'umask 077; cat > /etc/mag-pages/gitea-token'
-# Paste token then Ctrl+D. Never put it in Git.
-# Delegate _acme-challenge.pages in DomainFactory first:
+# For Tailnet-only, set:
+# PAGES_PUBLIC_BIND=
+# PAGES_PUBLIC_DNS=
+# PAGES_TAILNET_BIND=100.123.114.16
+# PAGES_ZONE=pages.stardenburg.de
+# PAGES_ACME_EMAIL=your-real-email@example.net
+
+# The first attempt may register acme-dns, print the CNAME, exit 78:
+sudo ops/pages/issue-wildcard.sh run
+# Configure the printed UUID in DomainFactory, verify propagation:
+dig +short CNAME _acme-challenge.pages.stardenburg.de @1.1.1.1
+# Repeat after delegation is visible:
 sudo ops/pages/issue-wildcard.sh run
 sudo ops/pages/install.sh
-
-# Install the C++ magroom binary using existing ops/deploy.sh first.
-# Enable the native publisher only after mag-120 has drained:
-sudo install -d /etc/systemd/system/mag-120.service.d
-sudo install -m 0644 ops/pages/mag-pages-room.conf /etc/systemd/system/mag-120.service.d/30-pages.conf
-sudo systemctl daemon-reload
-sudo systemctl restart mag-120.service
 sudo nginx -t
-sudo journalctl -u mag-120.service --since -5min
+sudo ss -ltnp | grep -E ':(80|443)[[:space:]]'
 ~~~
 
-No mag-llm restart. The optional room drop-in enables the worker; the
-installer alone does not touch the live MAG model or room process.
+The old pages.env may contain 192.0.2.10 in PAGES_PUBLIC_BIND.
+Remove it explicitly; do not use the old example's placeholder.
 
-## Per-repository visibility
+The installer does not restart mag-llm or even mag-120. To activate the
+already deployed C++ publisher, install the existing
+ops/pages/mag-pages-room.conf into
+/etc/systemd/system/mag-120.service.d/30-pages.conf and restart mag-120
+in an idle window after daemon-reload. Nothing in this PR touches
+the inference process.
 
-Initially all sites are Tailnet-only. Edit the root-controlled file:
+## lego 5 syntax and renewal
+
+lego v5 has no renew subcommand. Both first issuance and renewal use:
+
+~~~sh
+lego run --accept-tos --email YOUR_EMAIL --path DIR --dns acmedns \
+  --dns.resolvers 8.8.8.8:53,1.1.1.1:53 \
+  -d '*.pages.stardenburg.de' -d pages.stardenburg.de
+~~~
+
+The Pages script sources the existing /etc/mag-acme/lego.env, preserving
+ACME_DNS_API_BASE and ACME_DNS_STORAGE_PATH, and uses a separate
+/etc/mag-acme/lego-pages certificate directory. Using jq, it reads
+ONLY fulldomain values for the registered Pages domain from that
+storage. If lego registered only the wildcard or apex name, its root-only
+JSON account entry is safely shared between both identifiers (one CNAME
+for the two DNS-01 TXT values), preserving the other MAG registrations. If the required CNAME is absent, differs, or multiple
+incompatible targets exist, issuance halts before changing nginx.
+
+The existing mag-acme-renew.service invokes
+refresh-custom.sh run through ExecStartPost. This calls
+issue-wildcard.sh run. No new timer is installed.
+Custom-domain certificates also use lego run with HTTP-01 webroot;
+custom HTTP-01 is disabled when the Public Bind is empty.
+
+For a public repo, a CNAME file containing e.g. www.example.org and
+an external DNS CNAME from www.example.org to the canonical
+repo--owner.pages.stardenburg.de host can provision an HTTPS vhost.
+Only explicit public sites use this mechanism.
+
+## Per-repository visibility and rollback
+
+Edit /etc/mag-pages/visibility.json (root:magbot 0640) as root:
 
 ~~~json
-{"alice/hello":"public","alice/internal":"tailnet"}
+{"alice/public-site":"public","alice/internal":"tailnet"}
 ~~~
 
-~~~sh
-sudoedit /etc/mag-pages/visibility.json
-sudo chown root:magbot /etc/mag-pages/visibility.json
-sudo chmod 0640 /etc/mag-pages/visibility.json
-~~~
+The default for absent entries is tailnet. Changes are applied by the
+C++ publisher on its next polling cycle. An empty public bind
+prevents public symlinks even when the policy says public.
 
-Only explicit public enables an Internet-facing symlink. Changes take up
-to one 60-second polling cycle, not an nginx reload.
-
-## Custom domains (Gitea CNAME + lego)
-
-For a repo explicitly marked public, commit CNAME containing just a hostname
-(e.g. www.example.org) at the published root. In DomainFactory for that
-domain set CNAME www -> hello--alice.pages.stardenburg.de.
-
-Only exact DNS CNAME pointing to the canonical repository host is accepted;
-apex A-only custom domains are excluded to prevent cross-repo takeover.
-The C++ worker maintains /var/lib/mag-pages/custom/[hostname] links and
-writes validated custom-domains.tsv. A root-owned shell helper invokes the
-already installed lego CLI with HTTP-01 webroot via nginx (port 80), then
-validates the new certificate and nginx config before reloading nginx.
-
-Certificate reconciliation is attached to the **existing**
-mag-acme-renew.service using an ExecStartPost drop-in; NO new timer or
-runtime service is created. Default periodic renewal means custom TLS may
-take until the next existing ACME check (normally twice daily); run an
-immediate check after DNS propagates using:
-
-~~~sh
-sudo /usr/local/lib/mag-pages/refresh-custom.sh custom-only
-~~~
-
-Remove CNAME or revert a repository to Tailnet-only to revoke access on
-the next C++ poll: nginx's old custom vhost then points to a missing
-custom symlink and returns 404 without waiting for a certificate refresh.
-
-## Rollback and checks
+Rollback Pages without restarting mag-llm:
 
 ~~~sh
 sudo ops/pages/rollback.sh
-sudo nginx -t
-sudo journalctl -u mag-120.service --since -1h | grep 'MAG Pages'
 ~~~
 
-Rollback removes Pages-specific nginx vhosts and systemd drop-ins and
-restarts only mag-120, not mag-llm. Site files and credentials remain on
-the host for diagnosis.
-
-CI checks the C++ archive safety and atomic publication, links the native
-MAG binary, parses nginx configuration using nonprivileged loopback ports,
-runs Bash syntax checks and gitleaks. CI cannot verify live Gitea private
-repo permissions, actual DomainFactory delegation, ACME or Tailscale
-connectivity; those must be checked on MAG at install time.
+Rollback restores nginx config, removes Pages-specific systemd
+drop-ins and restarts only mag-120, preserving token, certs and files.
+CI covers the lego v5 command arguments, first-run DNS gate, private
+and opt-in public nginx templates, existing C++ tests and gitleaks.
+Live DNS, ACME issuance and Tailscale access require host checks.

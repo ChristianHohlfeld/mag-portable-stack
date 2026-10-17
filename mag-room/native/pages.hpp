@@ -229,6 +229,9 @@ inline Val policy(const fs::path& file) {
       throw std::runtime_error("invalid visibility policy value");
   return v;
 }
+inline bool publicly_served(const std::string& public_bind,const std::string& requested_mode) {
+  return !public_bind.empty() && requested_mode=="public";
+}
 inline std::string mode(const Val& p,const std::string& repo) {
   auto v=p.find(repo);
   return v?v->asStr():"tailnet";
@@ -298,6 +301,8 @@ inline std::pair<std::string,std::string> branch_sha(const std::string& token,co
 }
 inline void reconcile(const fs::path& root,const std::string& token) {
   const Val access=policy(env("MAG_PAGES_VISIBILITY","/etc/mag-pages/visibility.json"));
+  // Host public bind + explicit per-repo policy are BOTH required.
+  const auto public_bind=env("MAG_PAGES_PUBLIC_BIND","");
   const auto repositories=repo_list(token);
   const fs::path manifest=root/"sites.json";
   if(repositories.empty() && fs::exists(manifest))
@@ -346,7 +351,9 @@ inline void reconcile(const fs::path& root,const std::string& token) {
          !domains.insert(cname).second)
         throw std::runtime_error("unsafe/duplicate CNAME");
     }
-    Site s{full,page,branch.second,branch.first,cname,mode(access,full),release};
+    const auto requested=mode(access,full);
+    Site s{full,page,branch.second,branch.first,cname,
+           publicly_served(public_bind,requested) ? "public" : "tailnet",release};
     Val v=Val::object();
     v["sha"]=s.sha;v["branch"]=s.branch;v["custom"]=s.custom;v["slug"]=s.slug;v["access"]=s.access;
     state[full]=v;

@@ -324,6 +324,23 @@ inline void cleanup_releases(const fs::path& directory,const std::vector<Site>& 
     }
   }
 }
+inline std::mutex SYNC_MTX;
+inline void run_root_reconcile() {
+  // systemd starts a new root oneshot OUTSIDE mag-120's read-only /etc mount.
+  // sudoers grants exactly this fixed systemctl invocation, no arguments.
+  if(std::system("sudo -n /usr/bin/systemctl start mag-pages-reconcile.service")!=0)
+    throw std::runtime_error("Pages root reconciliation failed (check journalctl -u mag-pages-reconcile)");
+}
+inline void submit_policy(const std::string& repo,const std::string& mode) {
+  if(repo.find('/')==std::string::npos || (mode!="public" && mode!="tailnet" && mode!="delete"))
+    throw std::runtime_error("invalid Pages request");
+  const auto root=fs::path(env("MAG_PAGES_ROOT","/var/lib/mag-pages"));
+  Val req=Val::object();req["repo"]=repo;req["action"]=mode;
+  const auto path=root/"request.json";
+  if(fs::is_symlink(path))throw std::runtime_error("Pages request symlink");
+  write_atomic(path,mj::dump(req)+"\n");
+  run_root_reconcile();
+}
 inline void reconcile(const fs::path& root,const std::string& token) {
   const Val access=policy(env("MAG_PAGES_VISIBILITY","/etc/mag-pages/visibility.json"));
   // Host public bind + explicit per-repo policy are BOTH required.
@@ -431,18 +448,43 @@ inline void reconcile(const fs::path& root,const std::string& token) {
     write_atomic(manifest,new_state);
     write_atomic(root/"gc.pending","1\n"); // retry until privileged GC succeeds
   }
-  const auto gc=root/"gc.pending";
-  if(fs::exists(gc) && fs::is_regular_file(gc) &&
-     fs::exists("/usr/local/lib/mag-pages/pages-gc.sh")) {
-    // Narrow sudoers rule permits only this root-owned, argument-free script.
-    // The model and bot VM never receive a root token or command execution.
-    int rc=std::system("sudo -n /usr/local/lib/mag-pages/pages-gc.sh");
-    if(rc==0)fs::remove(gc);
-    else std::cerr<<"MAG Pages GC deferred: sudo lifecycle reconcile failed\n";
-  }
+  // Root reconciliation is invoked after this transaction by the native
+  // synchronous tool adapter or the ticker, not in this read-only namespace.
 }
 // A native Pages tool push requests prompt reconciliation without extra
 // polling services. Ticker wakes within one second (and keeps its fallback).
+// Both background sync and tool sync serialize webroot mutation and service
+// activation; systemctl Type=oneshot returns only after root cleanup.
+inline void sync_now(const std::string& repo="",bool expect_absent=false) {
+  std::lock_guard<std::mutex> guard(SYNC_MTX);
+  const auto root=fs::path(env("MAG_PAGES_ROOT","/var/lib/mag-pages"));
+  const auto token=trim(read(env("MAG_PAGES_TOKEN_FILE","/etc/mag-pages/gitea-token")));
+  if(token.empty() || token.find_first_of("\r\n")!=std::string::npos)
+    throw std::runtime_error("missing or invalid server-side Pages token");
+  reconcile(root,token);
+  if(!repo.empty()) {
+    // Repo visibility is checked using the ACTUAL read:repository token.
+    // Fail visibly if a VM-created private repo is absent from the index.
+    auto visible=repo_list(token);
+    bool exists=false;
+    for(const auto& v:visible)if(field(v,"full_name")==repo)exists=true;
+    if(!expect_absent && !exists)
+      throw std::runtime_error("read:repository publisher token cannot list private owner repo "+repo);
+    const auto site_state=json(read(root/"sites.json"));
+    if(expect_absent && site_state.find(repo))
+      throw std::runtime_error("Page still published after deletion");
+    if(!expect_absent && !site_state.find(repo))
+      throw std::runtime_error("Page source not visible to publisher");
+    if(!expect_absent) {
+      auto slash=repo.find('/');
+      const auto r=request("repos/"+encode(repo.substr(0,slash))+"/"+
+                           encode(repo.substr(slash+1)),token);
+      if(r.status!=200)
+        throw std::runtime_error("read:repository token cannot read created private repo");
+    }
+  }
+  run_root_reconcile(); // immediate custom TLS and nginx -t/reload
+}
 inline std::atomic<bool> SYNC_REQUESTED{false};
 inline void request_sync() { SYNC_REQUESTED.store(true); }
 inline void ticker(const std::atomic<bool>& stopping) {
@@ -457,7 +499,12 @@ inline void ticker(const std::atomic<bool>& stopping) {
       const auto token=trim(read(tokenfile));
       if(token.empty() || token.find_first_of("\r\n")!=std::string::npos)
         throw std::runtime_error("missing/invalid Gitea service token");
-      reconcile(root,token);
+      {
+        std::lock_guard<std::mutex> guard(SYNC_MTX);
+        reconcile(root,token);
+        if(fs::exists(root/"gc.pending") || fs::exists(root/"request.json"))
+          run_root_reconcile();
+      }
     }catch(const std::exception& e){
       std::cerr<<"MAG Pages sync failed, last webroots kept: "<<e.what()<<"\n";
     }

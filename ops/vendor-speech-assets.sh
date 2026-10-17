@@ -13,6 +13,7 @@ out = pathlib.Path(sys.argv[1])
 try:
     cfg = json.loads((out / "speech-config.json").read_text())
     assert cfg["arch"] == 4
+    assert cfg.get("runtimeSource") == "moonshine-v0.1.5-release"
     assert all(re.fullmatch(r"speech-[0-9a-f]{12}", cfg[k])
                for k in ("model", "runtime"))
     for f in ("index.js", "stt-worker.js", "moonshine.mjs", "moonshine.wasm"):
@@ -34,9 +35,15 @@ fi
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 mkdir -p "$TMP/runtime" "$TMP/model" "$OUT"
-npm pack '@moonshine-ai/moonshine-wasm@0.1.5' --pack-destination "$TMP" --silent >/dev/null
-tar -xzf "$TMP/moonshine-ai-moonshine-wasm-0.1.5.tgz" -C "$TMP"
-cp -a "$TMP/package/dist/." "$TMP/runtime/"
+# Pin the official 0.1.5 *release* WASM bundle by SHA-256. The npm
+# archive contains an outdated native core which rejects split frontend files.
+WASM_BUNDLE='https://github.com/moonshine-ai/moonshine/releases/download/v0.1.5/moonshine-voice-wasm.tar.gz'
+curl --fail --location --retry 3 --retry-delay 2 --silent --show-error \
+  --proto '=https' --proto-redir '=https' "$WASM_BUNDLE" \
+  -o "$TMP/moonshine-voice-wasm.tar.gz"
+echo 'c515bf7691e12048f70a92cc82b3b0894c16c3773ffcacb7d48944fb150e4837  '"$TMP/moonshine-voice-wasm.tar.gz" | sha256sum -c -
+tar -xzf "$TMP/moonshine-voice-wasm.tar.gz" -C "$TMP"
+cp -a "$TMP/dist/." "$TMP/runtime/"
 for f in index.js stt-worker.js moonshine.mjs moonshine.wasm; do
   test -s "$TMP/runtime/$f" || { echo "Missing Moonshine runtime file: $f" >&2; exit 1; }
 done
@@ -71,7 +78,7 @@ cp -a "$TMP/runtime" "$STAGE/$RUNTIME"
 cp -a "$TMP/model" "$STAGE/$MODEL"
 python3 - "$RUNTIME" "$MODEL" > "$STAGE/speech-config.json" <<'PY'
 import json,sys
-print(json.dumps({"runtime":sys.argv[1],"model":sys.argv[2],"arch":4},separators=(',',':')))
+print(json.dumps({"runtime":sys.argv[1],"model":sys.argv[2],"arch":4,"runtimeSource":"moonshine-v0.1.5-release"},separators=(',',':')))
 PY
 cp -a "$STAGE/." "$OUT/"
 echo "Moonshine assets prepared: $RUNTIME / $MODEL"

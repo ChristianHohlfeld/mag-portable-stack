@@ -1,7 +1,7 @@
 // Tailscale identity and owner/guest permissions for the single room.
 // Included once from magroom.cpp. Trusted identity comes only from loopback
-// (Caddy on 127.0.0.1) after it has stripped client-supplied headers and
-// copied X-Tailscale-User / X-Tailscale-Name from the whois helper.
+// (nginx on 127.0.0.1) after it has stripped client-supplied headers and
+// copied X-Tailscale-User / X-Tailscale-Name from the native whois endpoint.
 // A non-loopback peer is denied even if those headers are present.
 // Loopback without an identity header stays the owner (local admin, tests,
 // deploy health checks). No secrets live here; owners are logins in access.json.
@@ -66,7 +66,7 @@ static bool valid_login(const std::string &s) {
 }
 
 static bool is_loopback_ip(const std::string &ip) {
-  // 127.0.0.0/8. The room binds 127.0.0.1; Caddy and local tools arrive there.
+  // 127.0.0.0/8. The room binds 127.0.0.1; nginx and local tools arrive there.
   // Any other peer is the network and cannot be trusted, headers included.
   return ip.size() >= 4 && ip.compare(0, 4, "127.") == 0;
 }

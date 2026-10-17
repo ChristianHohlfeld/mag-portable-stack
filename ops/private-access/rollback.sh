@@ -1,11 +1,19 @@
 #!/usr/bin/env bash
-# Restore the prior private nginx vhost; do not stop nginx or mag-llm.
+# Emergency/manual or timed nginx rollback. Never restarts mag-llm/room.
 set -euo pipefail
-[[ $EUID -eq 0 ]] || exit 1
-backup=/etc/nginx/sites-available/mag-room.conf.pre-whois
-[[ -s "$backup" ]] || { echo "No prior nginx config backup. Manual rollback required." >&2; exit 1; }
-cp -a "$backup" /etc/nginx/sites-available/mag-room.conf
+[[ $EUID == 0 ]] || exit 1
+site=/etc/nginx/sites-available/mag-room.conf
+backup=$site.pre-whois
+enabled=/etc/nginx/sites-enabled/mag-room.conf
+state=/var/lib/mag-private-cutover
+[[ -s $backup && ! -L $backup ]] || { echo "Original config missing; manual recovery needed" >&2; exit 1; }
+original=$(cat "$state/enabled.before" 2>/dev/null || echo ABSENT)
+cp -a -- "$backup" "$site.rollback"
+mv -f -- "$site.rollback" "$site"
+if [[ $original == ABSENT ]]; then rm -f -- "$enabled"
+else ln -sfn -- "$original" "$enabled"; fi
 nginx -t
 systemctl reload nginx.service
-systemctl disable --now mag-whois.service 2>/dev/null || true
-echo "Previous nginx vhost restored. mag-llm untouched."
+rm -f "$state/pending" "$state/confirmed"
+systemctl stop mag-private-rollback.timer 2>/dev/null || true
+echo "Previous nginx site restored; mag-llm untouched."

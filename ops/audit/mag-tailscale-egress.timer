@@ -1,0 +1,8 @@
+[Unit]
+Description=Periodic IP refresh for api.tailscale.com
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=10min
+Unit=mag-tailscale-egress.service
+[Install]
+WantedBy=timers.target

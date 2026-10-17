@@ -1,0 +1,9 @@
+[Unit]
+Description=Refresh Tailscale API IPv4/IPv6 egress exceptions
+After=mag-audit-nft.service network-online.target
+Requires=mag-audit-nft.service
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/mag-audit/refresh-tailscale-egress.sh
+NoNewPrivileges=yes
+ProtectHome=yes

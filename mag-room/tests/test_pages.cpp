@@ -1,0 +1,84 @@
+#include "../native/pages.hpp"
+#include <cassert>
+#include <cstdlib>
+#include <cstring>
+#include <iostream>
+#include <archive.h>
+#include <archive_entry.h>
+#include <sys/stat.h>
+
+static std::string make_tar(const std::vector<std::pair<std::string,int>>& entries) {
+  std::string buffer(4*1024*1024,'\0');
+  size_t used=0;
+  archive* a=archive_write_new();
+  archive_write_set_format_pax_restricted(a);
+  archive_write_add_filter_gzip(a);
+  assert(archive_write_open_memory(a,buffer.data(),buffer.size(),&used)==ARCHIVE_OK);
+  for(const auto& [path,kind]:entries) {
+    archive_entry* entry=archive_entry_new();
+    archive_entry_set_pathname(entry,path.c_str());
+    if(kind==AE_IFLNK) {
+      archive_entry_set_filetype(entry,AE_IFLNK);
+      archive_entry_set_symlink(entry,"/etc/passwd");
+      archive_entry_set_size(entry,0);
+    }else{
+      archive_entry_set_filetype(entry,AE_IFREG);
+      archive_entry_set_perm(entry,0644);
+      archive_entry_set_size(entry,5);
+    }
+    assert(archive_write_header(a,entry)==ARCHIVE_OK);
+    if(kind!=AE_IFLNK) assert(archive_write_data(a,"hello",5)==5);
+    archive_entry_free(entry);
+  }
+  assert(archive_write_close(a)==ARCHIVE_OK);
+  archive_write_free(a);
+  buffer.resize(used);
+  return buffer;
+}
+static bool throws(const std::function<void()>& f) {
+  try{f();return false;}catch(const std::exception&){return true;}
+}
+int main() {
+  using namespace magpages;
+  assert(slug("alice/hello")=="hello--alice");
+  assert(slug("alice/my_repo")!=slug("alice/my-repo"));
+  assert(slug("bob/"+std::string(90,'a')).size()<=63);
+  assert(throws([]{slug("alice/../bad");}));
+  assert(dns("www.example.org"));
+  for(const auto& host:{"*.example.org","www..example.org","a","www/evil.org","-a.example.org"})
+    assert(!dns(host));
+  auto files=unpack(make_tar({{"archive/index.html",AE_IFREG},
+    {"archive/docs/index.html",AE_IFREG},{"archive/.env",AE_IFREG},
+    {"archive/docs/.secret",AE_IFREG},{"archive/../../etc/passwd",AE_IFREG}}),false);
+  assert(files.at("index.html")=="hello");
+  assert(files.find(".env")==files.end());
+  assert(files.find("../../etc/passwd")==files.end());
+  auto docs=unpack(make_tar({{"archive/index.html",AE_IFREG},
+    {"archive/docs/index.html",AE_IFREG}}),true);
+  assert(docs.size()==1 && docs.at("index.html")=="hello");
+  assert(throws([]{unpack(make_tar({{"archive/unsafe",AE_IFLNK}}),false);}));
+  auto c=files;
+  c["CNAME"]="www.example.org\n";
+  assert(custom(c)=="www.example.org");
+  assert(c.count("CNAME")==0);
+  c["CNAME"]="evil.org; echo leaked";
+  assert(throws([&]{custom(c);}));
+  auto base=std::filesystem::temp_directory_path()/
+    ("mag-pages-native-test-"+std::to_string(getpid()));
+  std::filesystem::remove_all(base);
+  std::filesystem::create_directories(base);
+  materialize(base/"release",docs);
+  assert(read(base/"release/index.html")=="hello");
+  link_atomic(base/"public","hello--alice",base/"release");
+  assert(read(base/"public/hello--alice/index.html")=="hello");
+  link_atomic(base/"public","hello--alice",base/"release");
+  std::filesystem::remove(base/"public/hello--alice");
+  assert(!std::filesystem::exists(base/"public/hello--alice"));
+  Val v=Val::object();
+  assert(mode(v,"alice/hello")=="tailnet");
+  v["alice/hello"]="public";
+  assert(mode(v,"alice/hello")=="public");
+  std::filesystem::remove_all(base);
+  std::cout<<"MAG Pages C++ archive, policy, hostname and atomic webroot tests passed\n";
+  return 0;
+}

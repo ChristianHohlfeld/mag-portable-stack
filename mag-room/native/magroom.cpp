@@ -1564,7 +1564,11 @@ static const char *VM_RULES =
     "niemals Zugangsdaten. Versionierter Langzeitspeicher (git-memory, auch "
     "als MCP-Server in ~/.config/mcp/servers.d): gitmem remember KEY WERT | "
     "retrieve KEY | history KEY | search TEXT - committet und pusht "
-    "automatisch auf dein Gitea-Repo memory. Du "
+    "automatisch auf dein Gitea-Repo memory. Gitea Actions: Workflows in "
+    ".gitea/workflows mit runs-on: mag laufen auf dem Runner des MAG-Hosts "
+    "(bauen, testen, deployen; Status in der Gitea-Oberflaeche). Ein Schritt "
+    "`date > /var/lib/mag-deploy/request` startet den normalen MAG-Deploy "
+    "von main (Backup, Smoke-Test, automatischer Rollback). Du "
     "hast ausserdem einen eigenen persistenten Browser in deiner VM und kannst "
     "damit surfen. Stuetze Aussagen ueber deine VM auf echte Werkzeugausgaben "
     "und erfinde nichts. ";

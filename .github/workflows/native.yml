@@ -82,3 +82,9 @@ jobs:
         run: bash ops/tests/test-bootstrap.sh
       - name: Update script dry run
         run: bash ops/tests/test-update.sh
+      - name: Action runner guards
+        run: bash ops/tests/test-runners.sh
+      - name: Green promotion
+        run: bash ops/tests/test-green.sh
+      - name: Boot persistence
+        run: bash ops/tests/test-boot.sh

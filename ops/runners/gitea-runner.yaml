@@ -1,0 +1,13 @@
+log:
+  level: info
+runner:
+  file: /var/lib/mag-runner/.runner
+  capacity: 1
+  timeout: 1h
+  labels:
+    - "mag:host"
+    - "self-hosted:host"
+cache:
+  enabled: false
+host:
+  workdir_parent: /var/lib/mag-runner/work

@@ -1,0 +1,31 @@
+[Unit]
+Description=MAG Gitea Actions runner (host mode, unprivileged)
+After=gitea.service network-online.target
+Wants=network-online.target
+
+[Service]
+User=mag-runner
+Group=mag-runner
+SupplementaryGroups=mag-deploy
+WorkingDirectory=/var/lib/mag-runner
+Environment=HOME=/var/lib/mag-runner
+ExecStart=/usr/local/bin/gitea-runner --config /etc/mag-runner/config.yaml daemon
+Restart=always
+RestartSec=10
+# Never compete with the resident models.
+Nice=15
+IOSchedulingClass=idle
+CPUQuota=200%
+MemoryMax=6G
+MemorySwapMax=0
+OOMScoreAdjust=1000
+TasksMax=512
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/mag-runner /var/lib/mag-deploy
+InaccessiblePaths=-/etc/credstore -/var/backups -/var/lib/magbot -/var/lib/mag-llm -/etc/mag-backup -/var/lib/gitea -/etc/gitea -/var/lib/mag-ghrunner
+
+[Install]
+WantedBy=multi-user.target

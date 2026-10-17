@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Runs as root from mag-auto-update.timer. If origin/main has a new commit:
-# fast-forward the checkout, build as the checkout owner, then deploy.
-# deploy.sh keeps its backup and automatic rollback. A commit whose build or
-# deploy failed is not retried. mag-llm is never touched.
+# Runs as root from mag-auto-update.timer. Branch `green` is the newest main
+# commit on which all CI checks passed (.github/workflows/green.yml). If it
+# moved: fast-forward the checkout, build as the checkout owner, then deploy.
+# deploy.sh keeps its backup and automatic rollback. A failed commit is retried
+# once an hour. No network or no `green` yet: nothing happens. mag-llm is never touched.
 set -euo pipefail
 ROOT="$(cd -- "$(dirname "$0")/../.." && pwd)"
 STATE=/var/lib/mag-stack/auto-update
@@ -17,16 +18,15 @@ as() { runuser -u "$OWNER" -- "$@"; }
 branch="$(as git -C "$ROOT" symbolic-ref --short HEAD 2>/dev/null || true)"
 [[ "$branch" == main ]] || { log "checkout is on '$branch', not main; skipping"; exit 0; }
 [[ -z "$(as git -C "$ROOT" status --porcelain --untracked-files=no)" ]] || { log 'local changes in checkout; skipping'; exit 0; }
-as git -C "$ROOT" fetch -q origin main
-new="$(as git -C "$ROOT" rev-parse origin/main)"
+as git -C "$ROOT" fetch -q origin green 2>/dev/null || { log 'origin/green not reachable yet; nothing to do'; exit 0; }
+new="$(as git -C "$ROOT" rev-parse origin/green)"
 [[ "$new" != "$(cat "$STATE/deployed-sha" 2>/dev/null || true)" ]] || exit 0
-[[ "$new" != "$(cat "$STATE/failed-sha" 2>/dev/null || true)" ]] || { log "$new failed before; waiting for a newer commit"; exit 0; }
+if [[ "$new" == "$(cat "$STATE/failed-sha" 2>/dev/null || true)" && -z "$(find "$STATE/failed-sha" -mmin +60)" ]]; then
+  log "$new failed less than an hour ago; retrying later"; exit 0
+fi
 fail() { echo "$new" > "$STATE/failed-sha"; log "FAILED at $1 for $new"; exit 1; }
 log "updating to $new"
-as git -C "$ROOT" merge -q --ff-only origin/main || fail merge
-as nice -n 19 ionice -c 3 bash "$ROOT/ops/update.sh" --no-pull --no-deploy --no-auto || fail build
-bash "$ROOT/ops/deploy.sh" || fail deploy
-echo "$new" > "$STATE/deployed-sha"
-rm -f "$STATE/failed-sha"
-bash "$ROOT/ops/auto-update/install.sh" --units-only || true
-log "deployed $new"
+as git -C "$ROOT" merge -q --ff-only origin/green || fail merge
+[[ "$(as git -C "$ROOT" rev-parse HEAD)" == "$new" ]] || { log 'checkout is ahead of green; skipping'; exit 0; }
+# Continue with the freshly merged code; the lock (fd 9) is inherited.
+exec bash "$ROOT/ops/auto-update/apply.sh" "$new"

@@ -1,0 +1,18 @@
+# Disabled, NON-INSTALLABLE TEMPLATE. Do NOT create or enable a unit until a GGUF and parser pass tests.
+[Unit]
+Description=MAG secondary CPU model on NUMA node1 (not a Q4/IQ3 swap)
+After=network-online.target
+ConditionPathExists=@VERIFIED_STAMP@
+
+[Service]
+Type=simple
+User=chris
+Group=chris
+CPUAffinity=14-27 42-55
+NUMAPolicy=bind
+NUMAMask=1
+ExecStart=/usr/bin/numactl --cpunodebind=1 --membind=1 @IK_BIN@ --model @MODEL_GGUF@ --host 127.0.0.1 --port 8092 --numa numactl --threads 16 --threads-batch 16 --parallel 1 --jinja --chat-template-file @JINJA@
+MemorySwapMax=0
+LimitMEMLOCK=infinity
+Restart=on-failure
+# No [Install] section: intentionally not enabled or installed by ops/deploy.sh

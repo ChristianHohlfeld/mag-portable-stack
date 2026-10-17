@@ -504,13 +504,44 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
       send_json(fd, 200, mj::dump(out));
     return;
   }
+  // Selects the model id on the next completion. Does not restart Q4, IQ3,
+  // the gateway, or this process, and does not drop other clients.
+  if (m == "GET" && path == "/api/model") {
+    Val out = Val::object();
+    out["model"] = active_room_model();
+    out["models"] = room_model_catalog();
+    send_json(fd, 200, mj::dump(out));
+    return;
+  }
+  if (m == "POST" && path == "/api/model") {
+    if (bridge || !actor.ok || actor.role != "owner") {
+      error_json(fd, 403, "Nur der Besitzer"); return;
+    }
+    Val choice;
+    if (!mj::parse(r.body, choice) || !choice.isObj()) {
+      error_json(fd, 400, "Modell fehlt"); return;
+    }
+    std::string id;
+    if (auto picked = choice.find("id")) id = picked->asStr();
+    else if (auto picked = choice.find("model")) id = picked->asStr();
+    if (!set_room_model(id)) {
+      error_json(fd, 400, "Unbekanntes Modell"); return;
+    }
+    Val out = Val::object();
+    out["ok"] = true;
+    out["model"] = active_room_model();
+    out["restart"] = false;
+    send_json(fd, 200, mj::dump(out));
+    return;
+  }
   if (path == "/api/models") {
     error_json(fd, 410, "Modellwechsel deaktiviert. Q4 bleibt aktiv.");
     return;
   }
   // Owner-only, read-only summary without credentials or repository paths.
   if (m == "GET" && path == "/api/backup/status") {
-    if (bridge || !actor.ok || actor.role != "owner") {
+    if (bridge || !actor.ok || actor.role != "owner" ||
+        actor.login.empty() || !ts_proof_valid(r.hdrs)) {
       error_json(fd, 403, "Nur der Besitzer"); return;
     }
     bool ok = false;

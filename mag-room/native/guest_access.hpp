@@ -1,6 +1,7 @@
 // Owner-controlled, tag-scoped Tailscale guest provisioning.
 // Private state is kept in access.json; no auth-key plaintext is persisted.
 #pragma once
+#include "guest_curl.hpp"
 #include "guest_key_description.hpp"
 #include <curl/curl.h>
 #include <openssl/sha.h>
@@ -125,7 +126,7 @@ static size_t guest_curl_write(char *p, size_t s, size_t n, void *ctx) {
   out.append(p, len);
   return len;
 }
-struct GuestHTTP { long status = 0; Val json; bool ok = false; };
+struct GuestHTTP { long status = 0; Val json; bool ok = false; std::string curl_error; };
 static GuestHTTP guest_http(const std::string &url, const std::string &method,
                             const std::string &auth, const std::string &payload = "",
                             bool basic = false) {
@@ -146,6 +147,8 @@ static GuestHTTP guest_http(const std::string &url, const std::string &method,
   curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, guest_curl_write);
   curl_easy_setopt(c, CURLOPT_WRITEDATA, &data);
   curl_easy_setopt(c, CURLOPT_NOSIGNAL, 1L);
+  std::string ca = mag_guest_ca_file();
+  mag_guest_apply_ca(c, ca);
   if (basic) curl_easy_setopt(c, CURLOPT_USERPWD, auth.c_str());
   if (method == "DELETE") curl_easy_setopt(c, CURLOPT_CUSTOMREQUEST, "DELETE");
   if (method == "POST") {
@@ -157,6 +160,7 @@ static GuestHTTP guest_http(const std::string &url, const std::string &method,
   curl_easy_getinfo(c, CURLINFO_RESPONSE_CODE, &res.status);
   curl_slist_free_all(headers);
   curl_easy_cleanup(c);
+  res.curl_error = mag_guest_curl_error(rc);
   res.ok = rc == CURLE_OK;
   if (res.ok) mj::parse(data, res.json);
   return res;
@@ -202,13 +206,20 @@ static std::string guest_oauth() {
   curl_easy_setopt(c, CURLOPT_CONNECTTIMEOUT, 4L);
   curl_easy_setopt(c, CURLOPT_TIMEOUT, 9L);
   curl_easy_setopt(c, CURLOPT_NOSIGNAL, 1L);
+  std::string ca = mag_guest_ca_file();
+  mag_guest_apply_ca(c, ca);
   curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, guest_curl_write);
   curl_easy_setopt(c, CURLOPT_WRITEDATA, &data);
   long status = 0;
   auto rc = curl_easy_perform(c);
   curl_easy_getinfo(c, CURLINFO_RESPONSE_CODE, &status);
   curl_easy_cleanup(c);
-  if (rc != CURLE_OK || status != 200) return "";
+  if (rc != CURLE_OK || status != 200) {
+    std::cerr << "MAG guest oauth: Tailscale HTTP " << status
+              << "; curl: " << (rc == CURLE_OK ? "ok" : mag_guest_curl_error(rc))
+              << "\n";
+    return "";
+  }
   Val v;
   if (!mj::parse(data, v)) return "";
   GUEST_TOKEN = guest_field(v, "access_token");
@@ -354,12 +365,6 @@ static GuestIssue guest_issue(const Actor &owner, const Val &request) {
     out.body["error"] = "Tailscale-OAuth ist nicht eingerichtet. Einladen deaktiviert; der Raum bleibt nutzbar.";
     return out;
   }
-  const std::string email = guest_field(request, "email");
-  if (!email.empty() && !mag_guest_email_valid(email)) {
-    out.code = 400;
-    out.body["error"] = "Invalid invitation email";
-    return out;
-  }
   std::string name = clean_display_name(guest_field(request, "name"));
   std::string note = mj::utf8_cut(guest_field(request,"note"), 160);
   for (char &ch : note) if ((unsigned char)ch < 32) ch = ' ';
@@ -394,6 +399,7 @@ static GuestIssue guest_issue(const Actor &owner, const Val &request) {
     // HTTP status + a known-safe upstream message only. Never log raw JSON,
     // OAuth credentials, access tokens, key descriptions or user names.
     std::cerr << "MAG guest auth-key create: Tailscale HTTP " << reply.status
+              << "; curl: " << (reply.curl_error.empty() ? "ok" : reply.curl_error)
               << "; message: "
               << mag_guest_safe_api_error(guest_field(reply.json, "message"))
               << "\n";
@@ -437,27 +443,6 @@ static GuestIssue guest_issue(const Actor &owner, const Val &request) {
                            "&key=" + url_encode(key);
   out.body["expires"] = (long)expires;
   out.body["key_expires"] = (long)(now_s() + 86400);
-  if (!email.empty()) {
-    Val invited = Val::object(), batch = Val::array();
-    invited["role"] = "member";
-    invited["email"] = email;
-    batch.push(invited);
-    auto sent = guest_api("POST", "tailnet/-/user-invites", mj::dump(batch));
-    bool accepted = sent.ok && (sent.status == 200 || sent.status == 201) &&
-                    sent.json.isArr() && !sent.json.asArr().empty() &&
-                    guest_field(sent.json.asArr().front(),"email")==email;
-    out.body["tailnet_email_sent"] = accepted;
-    if (!accepted) {
-      out.body["tailnet_email_notice"] =
-         "Tailscale email not sent: check user_invites scope and tailnet "
-         "email invitation eligibility. MAG key URL remains owner-only.";
-    } else {
-      guest_audit("mail_invite", owner.login, id);
-      out.body["tailnet_email_notice"] =
-         "Tailscale member email sent. Send separate MAG guest invite_url "
-         "privately; Tailscale email does not contain the MAG auth key.";
-    }
-  }
   return out;
 }
 static GuestIssue guest_claim(const Actor &candidate, const Val &request) {

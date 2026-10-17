@@ -62,6 +62,8 @@ class Autoscroll(unittest.TestCase):
         threading.Thread(target=cls.model.serve_forever, daemon=True).start()
         cls.ui, cls.bridge = port(), port()
         env = dict(os.environ,
+            MAG_OWNER_CANONICAL_LOGIN='chris@github',
+            MAG_TEST_ALLOW_LOCAL_OWNER='1',
             MAG_ROOM_STATE=str(state),
             MAG_ROOM_PORT=str(cls.ui),
             MAG_ROOM_BRIDGE_PORT=str(cls.bridge),

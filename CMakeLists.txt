@@ -27,6 +27,8 @@ target_link_libraries(test-jobs-mcp PRIVATE Threads::Threads OpenSSL::Crypto CUR
 add_executable(test-large-stdin mag-room/tests/test_large_stdin.cpp)
 target_link_libraries(test-large-stdin PRIVATE Threads::Threads)
 add_executable(test-guest-description mag-room/tests/test_guest_description.cpp)
+add_executable(test-guest-curl mag-room/tests/test_guest_curl.cpp)
+target_link_libraries(test-guest-curl PRIVATE CURL::libcurl)
 add_executable(test-pages-native mag-room/tests/test_pages.cpp)
 target_link_libraries(test-pages-native PRIVATE OpenSSL::Crypto CURL::libcurl LibArchive::LibArchive icuuc Threads::Threads)
 install(TARGETS magroom mag-browser magbot-native mag-audit-gateway RUNTIME DESTINATION bin)

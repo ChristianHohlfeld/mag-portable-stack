@@ -58,6 +58,8 @@ cp -a "$SOURCE/build/terminal-assets/." "$RELEASE/web/static/"
 bash "$SOURCE/ops/vendor-speech-assets.sh" "$SOURCE/build/speech-assets"
 cp -a "$SOURCE/build/speech-assets/." "$RELEASE/web/static/"
 cp -a "$SOURCE/ops/." "$RELEASE/ops/"
+find "$RELEASE/ops" -type d -name '__pycache__' -prune -exec rm -rf {} +
+find "$RELEASE/ops" -name '*.pyc' -delete
 install -d -o magbot -g magbot -m 0750 /var/lib/mag-stack/models
 install -o magbot -g magbot -m 0640 "$WHISPER_MODEL" /var/lib/mag-stack/models/ggml-large-v3-turbo.bin
 # Preserve the previous bot-published Python-era UI, which has incompatible APIs.
@@ -87,6 +89,10 @@ rollback() {
  fi
  if [[ -f "$BACKUP/frontend.html" ]]; then
    cp -a "$BACKUP/frontend.html" /var/lib/magbot/room/frontend.html
+ fi
+ if [[ -d "$BACKUP/mag-120.service.d" ]]; then
+   rm -rf /etc/systemd/system/mag-120.service.d
+   cp -a "$BACKUP/mag-120.service.d" /etc/systemd/system/mag-120.service.d
  fi
  systemctl daemon-reload
  systemctl restart mag-120.service
@@ -150,6 +156,23 @@ install -m 0644 "$SOURCE/ops/mag-120.service" "$SOURCE/ops/mag-browser-webrtc.se
 install -m 0644 "$SOURCE/ops/mag-stack-check.service" "$SOURCE/ops/mag-stack-check.timer" "$SOURCE/ops/mag-git-gateway.socket" "$SOURCE/ops/mag-git-gateway.service" "$SOURCE/ops/mag-agents-network.service" /etc/systemd/system/
 # Read-only backing image; existing VM overlays remain untouched.
 chmod 0440 /var/lib/libvirt/images/magbot/base/golden.qcow2
+# Replace a drop-in that still points at an old release before pruning.
+# Snapshot first so a failed smoke restores the previous unit drop-ins.
+if [[ -d /etc/systemd/system/mag-120.service.d ]]; then
+  cp -a /etc/systemd/system/mag-120.service.d "$BACKUP/mag-120.service.d"
+fi
+audit_drop=/etc/systemd/system/mag-120.service.d/20-audit.conf
+if [[ -L "$audit_drop" ]]; then
+  audit_target=$(readlink -f "$audit_drop" || true)
+  case "$audit_target" in
+    /opt/mag-stack/releases/*)
+      install -d -m 0755 /etc/systemd/system/mag-120.service.d
+      install -m 0644 "$SOURCE/ops/mag-120.d/20-deepseek-audit.conf" \
+        /etc/systemd/system/mag-120.service.d/20-deepseek-audit.conf
+      rm -f "$audit_drop"
+      ;;
+  esac
+fi
 systemctl daemon-reload
 systemctl enable --now mag-agents-network.service
 systemctl restart mag-agents-network.service
@@ -173,4 +196,6 @@ systemctl enable --now mag-stack-check.timer mag-git-gateway.socket
 bash "$NGINX_SYNC" commit
 deployment_started=0
 trap - EXIT INT TERM
+MAG_RELEASE_ID="$RELEASE_ID" MAG_RELEASE_PREVIOUS_FILE="$BACKUP/previous-release" \
+  bash "$SOURCE/ops/prune-releases.sh"
 printf '\nInstalled release %s; rollback snapshot %s\n' "$RELEASE_ID" "$BACKUP"

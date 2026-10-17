@@ -2761,6 +2761,50 @@ static void merge_tool_delta(SseAcc &acc, const Val &tc) {
   }
 }
 
+static std::mutex ROOM_MODEL_MTX;
+static std::string ROOM_MODEL_ID;
+static bool known_room_model(const std::string &id) {
+  return id == "deepseek-v4-flash-0731" || id == "deepseek-v4-flash-0731-iq3";
+}
+static std::string room_model_file() { return STATE_DIR + "/room-model.txt"; }
+static std::string active_room_model() {
+  std::lock_guard<std::mutex> lk(ROOM_MODEL_MTX);
+  return known_room_model(ROOM_MODEL_ID) ? ROOM_MODEL_ID : MODEL;
+}
+static void load_room_model() {
+  bool ok = false;
+  std::string saved = read_file(room_model_file(), &ok);
+  while (!saved.empty() &&
+         (saved.back() == '\n' || saved.back() == '\r' || saved.back() == ' '))
+    saved.pop_back();
+  std::lock_guard<std::mutex> lk(ROOM_MODEL_MTX);
+  ROOM_MODEL_ID = (ok && known_room_model(saved)) ? saved : MODEL;
+}
+static bool set_room_model(const std::string &id) {
+  if (!known_room_model(id)) return false;
+  {
+    std::lock_guard<std::mutex> lk(ROOM_MODEL_MTX);
+    ROOM_MODEL_ID = id;
+  }
+  try {
+    mag::write(room_model_file(), id + "\n");
+  } catch (...) {
+    return false;
+  }
+  return true;
+}
+static Val room_model_catalog() {
+  Val models = Val::array();
+  Val q4 = Val::object();
+  q4["id"] = "deepseek-v4-flash-0731";
+  q4["label"] = "Q4 · NUMA 0";
+  Val iq3 = Val::object();
+  iq3["id"] = "deepseek-v4-flash-0731-iq3";
+  iq3["label"] = "IQ3 · NUMA 1";
+  models.push(q4);
+  models.push(iq3);
+  return models;
+}
 static std::string model_wait_text();
 static Turn
 backend_turn(const std::vector<Val> &messages, const std::string &tools,
@@ -2779,7 +2823,7 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
     return t;
   }
   Val body = Val::object();
-  body["model"] = MODEL;
+  body["model"] = active_room_model();
   Val msgs = Val::array();
   for (auto &m : messages)
     msgs.push(const_cast<Val &>(m));
@@ -4722,7 +4766,8 @@ static std::string state_json(const Actor *actor = nullptr) {
     root["queue_paused"] = QUEUE_PAUSED;
   }
   root["backend"] = BACKEND_HOST + ":" + std::to_string(BACKEND_PORT);
-  root["model"] = MODEL;
+  root["model"] = active_room_model();
+  root["models"] = room_model_catalog();
   root["model_status"] = model_status_val(model_status(false));
   root["model_info"] = model_info_val();
   root["autotalk"] = AUTOTALK.load();
@@ -5350,6 +5395,7 @@ int main() {
   SINGLE_BOT_NAME = env("MAG_ROOM_SINGLE_BOT_NAME", "DeepSeek Chat");
 
   STATE_DIR = env("MAG_ROOM_STATE", "/var/lib/magbot/room");
+  load_room_model();
   FILES_DIR = STATE_DIR + "/files";
   AGENTS_JSON = STATE_DIR + "/agents.json";
   FILES_JSON = STATE_DIR + "/files.json";

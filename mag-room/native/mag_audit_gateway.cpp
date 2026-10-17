@@ -1,6 +1,6 @@
-// Native MAG audit gateway and model switch. One public loopback listener :8080,
-// one private, group-restricted Unix control socket for the C++ room.
-// No subprocesses, model restarts, shell execution, or external dependencies at runtime.
+// Native MAG audit gateway. One public loopback listener :8080.
+// Requests name a model; Q4 stays on :8090 and IQ3 on :8091. Neither process
+// is started, stopped, or restarted here.
 #include "json.hpp"
 #include <arpa/inet.h>
 #include <fcntl.h>
@@ -51,7 +51,7 @@ static int connect_loopback(int port,int timeout_s=3){
   if(connect(fd,(sockaddr*)&a,sizeof(a))){close(fd);return -1;}return fd;
 }
 struct Config {
-  int q4=8090,listen=8080;
+  int q4=8090,iq3=8091,listen=8080;
   std::string logs="/var/log/mag-audit";
   std::string secrets="/etc/mag-audit/secrets.list";
 } cfg;
@@ -60,7 +60,14 @@ static std::string iso_time(){
   auto now=std::chrono::system_clock::now();auto t=std::chrono::system_clock::to_time_t(now);
   std::tm tm{};gmtime_r(&t,&tm);char b[40];strftime(b,sizeof(b),"%Y-%m-%dT%H:%M:%SZ",&tm);return b;
 }
-static int port_of(const std::string &){return cfg.q4;}
+static bool upstream_up(int port){
+  int fd=connect_loopback(port,1); if(fd<0)return false;
+  bool ok=write_all(fd,"GET /health HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
+  std::string s; char b[512];
+  if(ok){ssize_t n=recv(fd,b,sizeof(b),0); if(n>0)s.append(b,(size_t)n);}
+  close(fd);
+  return s.find(" 200 ")!=std::string::npos;
+}
 static std::string redact(std::string s){
   std::ifstream in(cfg.secrets);std::vector<std::pair<std::string,std::string>> pairs;
   std::string line;while(std::getline(in,line)){auto p=line.find('=');if(p!=std::string::npos&&p+7<=line.size()&&line[0]!='#')pairs.push_back({line.substr(p+1),line.substr(0,p)});}
@@ -170,6 +177,16 @@ static Val sse_assemble(const std::string &wire){
 struct Http {
   std::string method,path,head,body;std::map<std::string,std::string> headers;
 };
+static void choose_model(const Http &r,std::string &selected,int &port){
+  selected="q4"; port=cfg.q4;
+  std::string asked;
+  auto header=r.headers.find("x-mag-model");
+  if(header!=r.headers.end()) asked=header->second;
+  if(asked.empty()&&!r.body.empty()){
+    Val body; if(mj::parse(r.body,body)&&body.isObj()) if(auto model=body.find("model")) asked=model->asStr();
+  }
+  if(asked=="iq3"||asked=="deepseek-v4-flash-0731-iq3"){selected="iq3"; port=cfg.iq3;}
+}
 static bool request_read(int fd,Http &r){
   std::string s;char b[8192];size_t pos=std::string::npos;
   while((pos=s.find("\r\n\r\n"))==std::string::npos){
@@ -221,9 +238,19 @@ static int peer_uid(int fd,int server_port){
 static void proxy(int fd){
   Http r;if(!request_read(fd,r))return;
   const bool quiet=r.path=="/health"||r.path=="/v1/models"||r.path=="/props"||r.path=="/metrics"||r.path=="/slots";
-  // Q4 is the only client-facing route. IQ3 serves on isolated :8091 for
-  // controlled readiness tests; no model choice or service lifecycle here.
   std::string id=audit_id(),selected="q4";
+  int upstream=cfg.q4;
+  if((r.method=="GET"||r.method=="HEAD")&&(r.path=="/v1/models"||r.path=="/v1/models/")){
+    Val data=Val::array();
+    auto add=[&](const char *name,const char *label,int port){
+      Val row=Val::object(); row["id"]=name; row["object"]="model"; row["owned_by"]="mag"; row["label"]=label; row["ready"]=upstream_up(port); data.push(row);
+    };
+    add("deepseek-v4-flash-0731","Q4 NUMA0",cfg.q4);
+    add("deepseek-v4-flash-0731-iq3","IQ3 NUMA1",cfg.iq3);
+    Val listed=Val::object(); listed["object"]="list"; listed["data"]=data;
+    json_response(fd,200,listed); return;
+  }
+  choose_model(r,selected,upstream);
   if(r.path=="/audit/v1/health"){Val v=Val::object();v["ok"]=true;json_response(fd,200,v);return;}
   if(r.path=="/audit/v1/event"&&r.method=="POST"){
     Val ev=parse_or_text(r.body);Val v=Val::object();v["type"]="bot_event";v["id"]=id;v["event"]=ev;audit(v);
@@ -241,10 +268,10 @@ static void proxy(int fd){
     Val v=Val::object();v["type"]=is_llm?"llm_request":"http_request";v["id"]=id;v["caller"]=caller;v["method"]=r.method;v["path"]=r.path;v["model_variant"]=selected;v["body"]=parse_or_text(r.body);
     Val hs=Val::object();for(auto &kv:r.headers){std::string k=kv.first;hs[k]=(k=="authorization"||k=="cookie"||k=="x-api-key"||k=="proxy-authorization"||k=="x-auth-token")?"[REDACTED]":kv.second;}v["headers"]=hs;audit(v);
   }
-  int up=connect_loopback(port_of(selected),3);
+  int up=connect_loopback(upstream,3);
   if(up<0){json_response(fd,502,message("upstream unavailable"));return;}
   // Preserve transparent SSE/chunked framing, request bodies, and cancellation.
-  std::ostringstream request;request<<r.method<<" "<<r.path<<" HTTP/1.1\r\nHost: 127.0.0.1:"<<port_of(selected)<<"\r\n";
+  std::ostringstream request;request<<r.method<<" "<<r.path<<" HTTP/1.1\r\nHost: 127.0.0.1:"<<upstream<<"\r\n";
   for(auto &kv:r.headers){
     const std::string &k=kv.first;
     if(k=="host"||k=="connection"||k=="keep-alive"||k=="transfer-encoding"||k=="proxy-authorization"||k=="x-mag-audit-id"||k=="content-length"||k.rfind("x-mag-",0)==0)continue;
@@ -307,7 +334,7 @@ static int server(int port){
 }
 int main(){
   try{
-    cfg.listen=number("MAG_AUDIT_LISTEN_PORT",8080);cfg.q4=number("MAG_MODEL_Q4_PORT",8090);
+    cfg.listen=number("MAG_AUDIT_LISTEN_PORT",8080);cfg.q4=number("MAG_MODEL_Q4_PORT",8090);cfg.iq3=number("MAG_MODEL_IQ3_PORT",8091);
     cfg.logs=env("MAG_AUDIT_LOG_DIR",cfg.logs);cfg.secrets=env("MAG_AUDIT_SECRETS_FILE",cfg.secrets);
     int public_fd=server(cfg.listen);
     Val start=Val::object();start["type"]="gateway";start["event"]="start";start["upstream"]="8090";audit(start);

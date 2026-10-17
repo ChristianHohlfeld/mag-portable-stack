@@ -21,7 +21,9 @@ else
   [[ -z "$PAGES_PUBLIC_DNS" ]] || { echo 'PAGES_PUBLIC_DNS requires PAGES_PUBLIC_BIND' >&2; exit 2; }
 fi
 if [[ -n "$PAGES_PUBLIC_DNS" ]]; then valid_ip "$PAGES_PUBLIC_DNS" || exit 2; fi
-zone_regex="$(printf %s "$PAGES_ZONE" | sed 's/[.]/\\./g')"
+# The following sed eats one backslash in the replacement, so the variable
+# must contain a doubled backslash to leave `\.` in the nginx regex.
+zone_regex="$(printf %s "$PAGES_ZONE" | sed 's/[.]/\\\\./g')"
 sed -e "s|@TAILNET_BIND@|$PAGES_TAILNET_BIND|g" \
     -e "s|@ZONE@|$PAGES_ZONE|g" \
     -e "s|@ZONE_REGEX@|$zone_regex|g" "$here/mag-pages.nginx.in"

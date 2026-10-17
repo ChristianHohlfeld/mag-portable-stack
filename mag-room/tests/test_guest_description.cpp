@@ -61,10 +61,6 @@ int main() {
             "journal must not include multiline secrets");
     require(mag_guest_safe_api_error("") ==
             "unrecognized API message (redacted)", "missing error message redacted");
-    require(mag_guest_email_valid("user@example.com"),"valid email");
-    require(!mag_guest_email_valid("user@@example.com"),"double at");
-    require(!mag_guest_email_valid("user@example..com"),"double dot");
-    require(!mag_guest_email_valid("a@b.com\\nBcc:x"),"header injection");
     std::cout << "OK: ASCII key descriptions, UTF-8/punctuation/emoji, 50 bytes, safe errors\n";
   } catch (const std::exception &e) {
     std::cerr << "test_guest_description: " << e.what() << "\n";

@@ -33,6 +33,16 @@ restic() { command restic --insecure-no-password "$@"; }
 command -v jq >/dev/null
 command -v flock >/dev/null
 mkdir -p "$(dirname "$MAG_BACKUP_LOCK")" "$(dirname "$MAG_BACKUP_STATUS")" "$MAG_BACKUP_WORK"
+# Never use a non-root-owned or group/world-readable archive root.
+if [[ "${MAG_BACKUP_TEST_MODE:-0}" != 1 && -e "$MAG_BACKUP_REPO" ]]; then
+  [[ -d "$MAG_BACKUP_REPO" && ! -L "$MAG_BACKUP_REPO" ]] ||
+    { echo "Unsafe backup path $MAG_BACKUP_REPO" >&2; exit 1; }
+  [[ "$(stat -c %u "$MAG_BACKUP_REPO")" == 0 ]] ||
+    { echo "Backup repository must be root-owned ($MAG_BACKUP_REPO)" >&2; exit 1; }
+  mode=$(stat -c %a "$MAG_BACKUP_REPO")
+  [[ "$mode" == 700 || "$mode" == 0700 ]] ||
+    { echo "Backup repository must be inaccessible to group/other ($MAG_BACKUP_REPO)" >&2; exit 1; }
+fi
 # Owner-visible file, staging inaccessible.
 chmod 0700 "$MAG_BACKUP_WORK"
 chmod 0711 "$(dirname "$MAG_BACKUP_STATUS")"

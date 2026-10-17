@@ -144,10 +144,10 @@ echo -n 403''',
   self.assertFalse(self.enabled.is_symlink())
  def test_userspace_socks5_owner_smoke_with_pinned_box(self):
   self.probe.write_text(
-   'MAG_DEPLOY_OWNER_SSH=chris@trusted-box\\n'
-   'MAG_DEPLOY_OWNER_LOGIN=chris.hohlfeld@gmail.com\\n'
-   'MAG_DEPLOY_OWNER_IP=100.101.102.103\\n'
-   'MAG_DEPLOY_OWNER_SOCKS5=127.0.0.1:1055\\n')
+   'MAG_DEPLOY_OWNER_SSH=chris@trusted-box\n'
+   'MAG_DEPLOY_OWNER_LOGIN=chris.hohlfeld@gmail.com\n'
+   'MAG_DEPLOY_OWNER_IP=100.101.102.103\n'
+   'MAG_DEPLOY_OWNER_SOCKS5=127.0.0.1:1055\n')
   # No OAuth credential, no kernel TUN. Real external-origin HTTPS remains
   # mandatory; mock rejects any curl that omits --socks5-hostname.
   env={**self.env,'MOCK_OWNER_FAIL':'0','MOCK_EXPECT_SOCKS':'1'}
@@ -159,25 +159,25 @@ echo -n 403''',
   self.assertTrue(self.enabled.is_symlink())
 
  def test_userspace_bad_proxy_or_spoofed_box_is_fail_closed(self):
-  base='MAG_DEPLOY_OWNER_SSH=chris@trusted-box\\nMAG_DEPLOY_OWNER_LOGIN=chris.hohlfeld@gmail.com\\nMAG_DEPLOY_OWNER_IP=100.101.102.103\\n'
+  base='MAG_DEPLOY_OWNER_SSH=chris@trusted-box\nMAG_DEPLOY_OWNER_LOGIN=chris.hohlfeld@gmail.com\nMAG_DEPLOY_OWNER_IP=100.101.102.103\n'
   for proxy in ('0.0.0.0:1055','10.0.0.1:1055','127.0.0.1:0',
                 '127.0.0.1:65536','127.0.0.1:1055;echo pwn'):
-   self.probe.write_text(base+f'MAG_DEPLOY_OWNER_SOCKS5="{proxy}"\\n')
+   self.probe.write_text(base+f'MAG_DEPLOY_OWNER_SOCKS5="{proxy}"\n')
    r=self.run_script('preflight')
    self.assertNotEqual(r.returncode,0,proxy)
    self.assertEqual(self.original,self.site.read_bytes())
   self.probe.write_text(base.replace('100.101.102.103','100.99.255.98')+
-                        'MAG_DEPLOY_OWNER_SOCKS5=127.0.0.1:1055\\n')
+                        'MAG_DEPLOY_OWNER_SOCKS5=127.0.0.1:1055\n')
   r=self.run_script('preflight')
   self.assertNotEqual(r.returncode,0,'Pinned SSH node mismatch must block')
   self.assertIn('not the pinned Tailnet node',r.stderr)
 
  def test_userspace_tagged_guest_cannot_satisfy_owner_smoke(self):
   self.probe.write_text(
-   'MAG_DEPLOY_OWNER_SSH=chris@trusted-box\\n'
-   'MAG_DEPLOY_OWNER_LOGIN=chris.hohlfeld@gmail.com\\n'
-   'MAG_DEPLOY_OWNER_IP=100.101.102.103\\n'
-   'MAG_DEPLOY_OWNER_SOCKS5=127.0.0.1:1055\\n')
+   'MAG_DEPLOY_OWNER_SSH=chris@trusted-box\n'
+   'MAG_DEPLOY_OWNER_LOGIN=chris.hohlfeld@gmail.com\n'
+   'MAG_DEPLOY_OWNER_IP=100.101.102.103\n'
+   'MAG_DEPLOY_OWNER_SOCKS5=127.0.0.1:1055\n')
   r=self.run_script('standalone')
   self.assertEqual(r.returncode,0,r.stderr) # baseline Owner device succeeds
   saved=self.site.read_bytes()
@@ -190,10 +190,10 @@ echo -n 403''',
 
  def test_userspace_proxy_unavailable_rolls_back(self):
   self.probe.write_text(
-   'MAG_DEPLOY_OWNER_SSH=chris@trusted-box\\n'
-   'MAG_DEPLOY_OWNER_LOGIN=chris.hohlfeld@gmail.com\\n'
-   'MAG_DEPLOY_OWNER_IP=100.101.102.103\\n'
-   'MAG_DEPLOY_OWNER_SOCKS5=127.0.0.1:1055\\n')
+   'MAG_DEPLOY_OWNER_SSH=chris@trusted-box\n'
+   'MAG_DEPLOY_OWNER_LOGIN=chris.hohlfeld@gmail.com\n'
+   'MAG_DEPLOY_OWNER_IP=100.101.102.103\n'
+   'MAG_DEPLOY_OWNER_SOCKS5=127.0.0.1:1055\n')
   env={**self.env,'MOCK_OWNER_FAIL':'0','MOCK_EXPECT_SOCKS':'1',
        'MOCK_PROXY_DOWN':'1'}
   r=subprocess.run(['bash',str(self.script),'standalone'],env=env,

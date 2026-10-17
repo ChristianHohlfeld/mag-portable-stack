@@ -215,3 +215,25 @@ Die verschlüsselte Sicherung enthält `/etc/mag-stack` für die Owner-Deploy-Pr
 sowie, falls vorhanden, `/etc/credstore/mag-guest-oauth` für die Gästeverwaltung.
 Das Restic-Passwort selbst wird nicht mitgesichert und muss offline aufbewahrt
 werden. Nach einem Bare-Metal-Restore Berechtigungen (root:root, 0600) prüfen.
+
+## October 17 2026 – LOCAL-ONLY release gate
+
+Chris has approved local encrypted backups; AWS remains stopped. The
+default is `MAG_BACKUP_OFFSITE_ENABLED=0`, even if a stale `aws.env`
+exists. Local `restic` needs no AWS CLI, bucket access, credentials,
+`aws.env` or network. `ops/backup/install.sh` creates/protects the local
+password, runs an encrypted backup, then enables backup timers. The
+generic `ops/deploy.sh` requires this local timer and synchronously
+runs `mag-backup-deploy.service` before changing a release. Pages
+directories are optional until Pages has been activated.
+
+On MAG, configure `/etc/mag-backup/config.env` (0600) explicitly with
+`MAG_BACKUP_OFFSITE_ENABLED=0`, then:
+```sh
+sudo bash ops/backup/install.sh
+sudo systemctl is-enabled mag-backup-daily.timer
+sudo systemctl start mag-backup-deploy.service
+sudo /usr/local/lib/mag-backup/maintenance.sh status
+```
+Expect `healthy=true` and `offsite_ok=false`. Do NOT set
+`MAG_BACKUP_OFFSITE_ENABLED=1` until Chris separately authorizes AWS.

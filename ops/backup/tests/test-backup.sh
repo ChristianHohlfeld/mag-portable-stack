@@ -31,7 +31,26 @@ printf 'encrypted-tailnet-state\n' > "$MAG_BACKUP_SOURCE/var/lib/tailscale/tails
 printf '* * * * * /usr/bin/true\n' > "$MAG_BACKUP_SOURCE/var/spool/cron/crontabs/chris"
 printf '15 4 * * * root /usr/bin/true\n' > "$MAG_BACKUP_SOURCE/etc/cron.d/mag-health"
 sqlite3 "$MAG_BACKUP_SOURCE/var/lib/gitea/data/gitea.db" 'create table keep(v text); insert into keep values ("persisted");'
+# A residual aws.env must not turn on S3. Local-only is the default.
+cat > "$MAG_BACKUP_CONFIG/aws.env" <<'AWS'
+AWS_ACCESS_KEY_ID=DO_NOT_USE_TEST_KEY
+AWS_SECRET_ACCESS_KEY=DO_NOT_USE_TEST_SECRET
+AWS_DEFAULT_REGION=eu-central-1
+AWS
+mkdir -p "$tmp/fakebin"
+cat > "$tmp/fakebin/aws" <<'AWS'
+#!/usr/bin/env bash
+echo 'FAIL: AWS invoked during local-only backup' >&2
+exit 99
+AWS
+chmod +x "$tmp/fakebin/aws"
+export PATH="$tmp/fakebin:$PATH"
+# First, a local encrypted backup WITHOUT any aws.env at all.
+mv "$MAG_BACKUP_CONFIG/aws.env" "$MAG_BACKUP_CONFIG/aws.env.test-pending"
 "$here/backup.sh" daily
+"$here/maintenance.sh" status | jq -e '.offsite_ok == false and .healthy == true' >/dev/null
+# Next, a stale aws.env present: still NO AWS requests.
+mv "$MAG_BACKUP_CONFIG/aws.env.test-pending" "$MAG_BACKUP_CONFIG/aws.env"
 "$here/backup.sh" deploy
 "$here/backup.sh" clear
 [[ "$(restic -r "$MAG_BACKUP_REPO" snapshots --json | jq length)" -eq 3 ]]
@@ -62,5 +81,13 @@ if find "$tmp/partial" -name '*.gguf' | grep -q .; then echo 'GGUF leaked' >&2; 
 "$here/maintenance.sh" retain
 "$here/maintenance.sh" status | jq -e '.stale == false and .last_restore_test_ok == true' >/dev/null
 ! grep -R -E '(systemctl|service) (stop|restart) mag-llm' "$here"/*.sh
-test ! -f "$tmp/host/etc/mag-backup/aws.env"
+test -s "$MAG_BACKUP_CONFIG/aws.env"
+"$here/maintenance.sh" status | jq -e '.offsite_ok == false and .healthy == true' >/dev/null
+# Explicit S3 opt-in without credentials must error rather than silently
+# reporting a local-only backup as fully successful.
+mv "$MAG_BACKUP_CONFIG/aws.env" "$MAG_BACKUP_CONFIG/aws.env.disabled"
+if MAG_BACKUP_OFFSITE_ENABLED=1 "$here/backup.sh" daily >"$tmp/offsite-error.out" 2>&1; then
+ echo 'Missing AWS credentials wrongly accepted with offsite explicitly on' >&2; exit 1
+fi
+grep -Fq 'Offsite enabled but AWS credentials missing/unsafe' "$tmp/offsite-error.out"
 echo 'MAG encrypted backup / selective restore / checksum / retention OK'

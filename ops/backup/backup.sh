@@ -52,8 +52,10 @@ snapshot_room() {
 }
 snapshot_room
 if [[ "${MAG_BACKUP_TEST_MODE:-0}" != 1 ]]; then
+  # Pages is optional until first activation. Missing Pages paths must not
+  # block the first LOCAL backup required by ops/deploy.sh.
   for essential in /var/lib/gitea/data/gitea.db /etc/gitea/app.ini \
-     /etc/magbot /var/lib/mag-pages /etc/mag-pages /etc/mag-acme /etc/nginx; do
+     /etc/magbot /etc/mag-acme /etc/nginx; do
     [[ -e "$src$essential" ]] || { echo "Essential MAG data missing: $essential" >&2; exit 1; }
   done
 fi

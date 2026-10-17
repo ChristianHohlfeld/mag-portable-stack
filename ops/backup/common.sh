@@ -9,11 +9,18 @@ MAG_BACKUP_SOURCE="${MAG_BACKUP_SOURCE:-/}"
 MAG_BACKUP_STATUS="${MAG_BACKUP_STATUS:-/var/lib/mag-backup/status.json}"
 MAG_BACKUP_LOCK="${MAG_BACKUP_LOCK:-/run/lock/mag-backup.lock}"
 MAG_BACKUP_BUCKET="${MAG_BACKUP_BUCKET:-mag-backup-595505951010-euc1}"
+MAG_BACKUP_OFFSITE_ENABLED="${MAG_BACKUP_OFFSITE_ENABLED:-0}"
 if [[ -f "$MAG_BACKUP_CONFIG/config.env" ]]; then
   [[ ! -L "$MAG_BACKUP_CONFIG/config.env" ]] || { echo "Symlink config refused" >&2; exit 1; }
   # shellcheck disable=SC1091
   source "$MAG_BACKUP_CONFIG/config.env"
 fi
+# Offsite must be opted in explicitly; a residual aws.env must NEVER
+# trigger an S3 request while AWS is administratively stopped.
+MAG_BACKUP_OFFSITE_ENABLED="${MAG_BACKUP_OFFSITE_ENABLED:-0}"
+case "$MAG_BACKUP_OFFSITE_ENABLED" in 0|1) ;; *)
+ echo 'MAG_BACKUP_OFFSITE_ENABLED must be exactly 0 or 1' >&2; exit 2;;
+esac
 export RESTIC_PASSWORD_FILE="${RESTIC_PASSWORD_FILE:-$MAG_BACKUP_CONFIG/restic-password}"
 export RESTIC_REPOSITORY="$MAG_BACKUP_REPO"
 [[ -r "$RESTIC_PASSWORD_FILE" ]] || { echo 'Missing restic password file' >&2; exit 1; }
@@ -24,10 +31,12 @@ mkdir -p "$(dirname "$MAG_BACKUP_LOCK")" "$(dirname "$MAG_BACKUP_STATUS")" "$MAG
 # Owner-visible file, staging inaccessible.
 chmod 0700 "$MAG_BACKUP_WORK"
 chmod 0711 "$(dirname "$MAG_BACKUP_STATUS")"
-# Test for the presence of a credential file, not an AWS network probe.
-s3_enabled() { [[ -s "$MAG_BACKUP_CONFIG/aws.env" && ! -L "$MAG_BACKUP_CONFIG/aws.env" ]]; }
+# Only a deliberate opt-in enables S3. Creds alone are NEVER consent.
+s3_enabled() { [[ "$MAG_BACKUP_OFFSITE_ENABLED" == 1 ]]; }
 load_aws() {
-  s3_enabled || return 1
+  s3_enabled || { echo 'AWS offsite disabled by config' >&2; return 1; }
+  [[ -s "$MAG_BACKUP_CONFIG/aws.env" && ! -L "$MAG_BACKUP_CONFIG/aws.env" ]] ||
+    { echo 'Offsite enabled but AWS credentials missing/unsafe' >&2; return 1; }
   # shellcheck disable=SC1091
   source "$MAG_BACKUP_CONFIG/aws.env"
   export AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_DEFAULT_REGION

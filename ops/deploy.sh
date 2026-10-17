@@ -18,6 +18,9 @@ fi
 test -x "$SOURCE/build/mag-browser-webrtc"
 test -x "$WHISPER_CLI"; test -r "$WHISPER_MODEL"
 test ! -e "$RELEASE"
+# No release state mutation before complete nginx/Tailnet/Owner-probe validation.
+NGINX_SYNC="$SOURCE/ops/private-access/deploy-nginx.sh"
+bash "$NGINX_SYNC" preflight
 # Das Modell ist unabhängig vom Raum-Release (lädt evtl. noch herunter / wird geprüft).
 # Nur informieren; der Raum zeigt den Modellstatus selbst an.
 curl -fsS --max-time 5 http://127.0.0.1:8080/v1/models >/dev/null \
@@ -54,8 +57,10 @@ fi
 git -C "$SOURCE" rev-parse HEAD > "$RELEASE/SOURCE_COMMIT"
 chown -R root:root "$RELEASE"
 chmod -R a+rX "$RELEASE"
+# All changes after this point must unwind both the native room and nginx.
+# Never restart or stop mag-llm (including on failed deploy).
 rollback() {
- echo 'Deployment failed; restoring previous room service' >&2
+ echo 'Deployment failed; restoring previous room service and nginx' >&2
  cp -a "$BACKUP/mag-120.service" /etc/systemd/system/mag-120.service
  if [[ -f "$BACKUP/mag-browser-webrtc.service" ]]; then
    cp -a "$BACKUP/mag-browser-webrtc.service" /etc/systemd/system/mag-browser-webrtc.service
@@ -64,14 +69,30 @@ rollback() {
    rm -f /etc/systemd/system/mag-browser-webrtc.service
  fi
  cp -a "$BACKUP/magbot" /usr/local/bin/magbot
- if [[ -f "$BACKUP/previous-release" ]]; then ln -sfn "$(cat "$BACKUP/previous-release")" /opt/mag-stack/current; fi
- if [[ -f "$BACKUP/frontend.html" ]]; then cp -a "$BACKUP/frontend.html" /var/lib/magbot/room/frontend.html; fi
+ if [[ -f "$BACKUP/previous-release" ]]; then
+   ln -sfn "$(cat "$BACKUP/previous-release")" /opt/mag-stack/.previous-rollback
+   mv -Tf /opt/mag-stack/.previous-rollback /opt/mag-stack/current
+ fi
+ if [[ -f "$BACKUP/frontend.html" ]]; then
+   cp -a "$BACKUP/frontend.html" /var/lib/magbot/room/frontend.html
+ fi
  systemctl daemon-reload
  systemctl restart mag-120.service
  if [[ -f "$BACKUP/mag-browser-webrtc.service" ]]; then
    systemctl restart mag-browser-webrtc.service
  fi
+ bash "$NGINX_SYNC" rollback
 }
+deployment_started=0
+deploy_exit() {
+ local rc=$?
+ trap - EXIT ERR INT TERM
+ if (( rc != 0 && deployment_started )); then
+   rollback || echo 'Rollback incomplete: retain SSH rescue channel and inspect /var/backups/mag-stack' >&2
+ fi
+ exit "$rc"
+}
+
 # Drain: never cut a running reply or a queued message. Wait until the room is
 # idle (no turn running, queue empty). MAG_DEPLOY_DRAIN_S (default 900 s);
 # on timeout the deploy is deferred (exit 75) unless MAG_DEPLOY_FORCE=1 –
@@ -90,7 +111,15 @@ while :; do
   fi
   sleep 5; waited=$((waited + 5))
 done
-trap rollback ERR
+# Owner smoke must come from a second authenticated Tailnet device.
+# nginx.stage snapshots the old vhost and validates the candidate BEFORE
+# switching symlinks or restarting the room.
+MAG_NGINX_TXN="$BACKUP"; export MAG_NGINX_TXN
+deployment_started=1
+trap deploy_exit EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+bash "$NGINX_SYNC" stage
 # Retire the old installer timer before changing its service executable.
 if systemctl cat mag-120-finalize.timer >/dev/null 2>&1; then systemctl disable --now mag-120-finalize.timer; fi
 ln -s "$RELEASE" /opt/mag-stack/.current-next
@@ -116,8 +145,14 @@ systemctl restart mag-browser-webrtc.service
 for i in {1..30}; do if curl -fsS --max-time 2 http://127.0.0.1:8766/readyz >/dev/null; then break; fi; sleep 1; done
 curl -fsS --max-time 5 http://127.0.0.1:8766/readyz
 curl -fsS --max-time 5 http://127.0.0.1:18784/health
+# Test effective nginx configuration and reload, then assert actual Owner
+# identity + both public frontend routes across the Tailnet from Owner device.
+bash "$NGINX_SYNC" activate
+bash "$NGINX_SYNC" smoke
 /usr/local/bin/magbot status
 for unit in mag-chat.service pm2-chris.service; do if systemctl cat "$unit" >/dev/null 2>&1; then systemctl disable --now "$unit"; fi; done
 systemctl enable --now mag-stack-check.timer mag-git-gateway.socket
-trap - ERR
+rm -f "$MAG_NGINX_TXN/nginx.staged"
+deployment_started=0
+trap - EXIT INT TERM
 printf '\nInstalled release %s; rollback snapshot %s\n' "$RELEASE_ID" "$BACKUP"

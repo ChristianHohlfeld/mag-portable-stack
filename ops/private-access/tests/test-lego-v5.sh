@@ -9,7 +9,7 @@ curl -fsSL "$url/lego_v5.5.2_linux_amd64.tar.gz" -o "$tmp/lego.tgz"
 curl -fsSL "$url/lego_5.5.2_checksums.txt" -o "$tmp/checksums.txt"
 # Release checksums detect incomplete/misnamed assets.
 cp "$tmp/lego.tgz" "$tmp/lego_v5.5.2_linux_amd64.tar.gz"
-(cd "$tmp" && grep -F 'lego_v5.5.2_linux_amd64.tar.gz' checksums.txt | sha256sum -c -)
+(cd "$tmp" && awk '$2=="lego_v5.5.2_linux_amd64.tar.gz" || $2=="*lego_v5.5.2_linux_amd64.tar.gz" {print}' checksums.txt | sha256sum -c -)
 tar -xzf "$tmp/lego.tgz" -C "$tmp" lego
 "$tmp/lego" --version | grep -F '5.5.2'
 cat > "$tmp/lego.env" <<'ENV'

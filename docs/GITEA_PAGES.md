@@ -280,3 +280,63 @@ Run sudo bash ops/pages/tests/test-pages-sandbox.sh on a disposable host
 for direct reproduction. On MAG, use systemctl status and journalctl
 -u mag-pages-reconcile.service to diagnose root failures without
 restarting mag-llm.
+
+
+## Tailnet apex and no-backup deployment (17 October 2026)
+
+With `PAGES_PUBLIC_BIND=` the **exact** apex `https://pages.stardenburg.de/`
+displays a private landing page. `https://pages.stardenburg.de/healthz`
+returns `ok` (HTTP 200); both use the same wildcard-plus-apex certificate
+at `/etc/mag-pages/tls/current`. Repository sites remain under
+`slug.pages.stardenburg.de`. There is **no** public :80/:443 listener.
+
+The landing file `ops/pages/index.html` is installed under
+`/var/lib/mag-pages/portal/index.html`, only by the root-run Pages
+installer. It is removed by Pages rollback; the shared wildcard TLS and
+other MAG sites remain untouched.
+
+**Never run `ops/deploy.sh` while backup #35 is held**. The generic
+deployment currently insists on `mag-backup-daily.timer` and explicitly
+runs `mag-backup-deploy.service`, which violates the operator's freeze
+on restic, AWS and backup timers. Run the *Pages-only* host entrypoint
+`sudo bash ops/pages/activate.sh` **after the other MAG updates finish**,
+and only if the already deployed `magroom` binary contains the native
+Pages publisher and six tool functions. It uses `issue-wildcard.sh run`,
+`install.sh`, enables the existing Pages drop-in, and restarts
+**only mag-120**, not `mag-llm`, after dependency checks.
+
+Configuration must exist in `/etc/mag-pages/pages.env` with a **real
+PAGES_ACME_EMAIL**, PAGES_PUBLIC_BIND/PAGES_PUBLIC_DNS both empty,
+PAGES_TAILNET_BIND=100.123.114.16 and
+PAGES_ZONE=pages.stardenburg.de. Preserve existing root-only
+`/etc/mag-acme/lego.env`, acme-dns registration storage, lego-pages
+and `/etc/mag-pages/gitea-token`. The known public
+`_acme-challenge.pages` target is
+`1e915301-9bda-4d2d-b261-6c20c635aca4.auth.acme-dns.io`.
+**The local acme-dns account's `fulldomain` must match this DNS target**;
+do not overwrite another account or its secrets to force a match.
+A mismatch is a hard stop requiring deliberate DNS correction.
+
+```sh
+# Run ONLY when MAG updates are finished and the host state is checked.
+sudo bash ops/pages/activate.sh
+# Live verification (MAG / Tailnet client):
+sudo bash ops/pages/verify.sh
+curl -fsS --resolve pages.stardenburg.de:443:100.123.114.16 \
+  https://pages.stardenburg.de/healthz
+# From a separate device connected to the Tailnet:
+curl -fsS https://pages.stardenburg.de/healthz
+```
+
+A green local loopback check does not prove a second Tailnet device's
+ACL or connectivity. A 404 for a project hostname before any repository
+has been published is expected; it is not a certificate/nginx failure.
+The Page itself is ready when the root portal returns HTTPS 200 over
+Tailnet, `nginx -t` succeeds, no public Page bind exists and
+`mag-acme-renew.timer` retains the Pages drop-in. No backup timer,
+restic or AWS command is run.
+
+**Rollback:** `sudo bash ops/pages/rollback.sh`; nginx reloads, the
+Pages-specific `mag-120` drop-in is removed, and only `mag-120`
+restarts. The portal, Pages routes and custom certs are removed, but
+the shared wildcard certificate, MAG nginx ingress and `mag-llm` are not.

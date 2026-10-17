@@ -448,3 +448,5 @@ Tailscale-OAuth-Client deaktiviert nur die Einladungsschaltfläche und sperrt
 weder Owner noch lokale Anwendungen. Keine Default-Gast-Freigabe.
 Anleitung einschließlich des Root-only `/etc/credstore/mag-guest-oauth`:
 [docs/guest-access.md](docs/guest-access.md).
+
+**MAG Pages (Tailnet-only):** The apex [pages.stardenburg.de](https://pages.stardenburg.de/) has its own private nginx landing page and `/healthz` beside per-repo subdomains. Activate on MAG after the other updates with `sudo bash ops/pages/activate.sh` (requires the previously deployed native Pages binary and existing credentials); verify with `sudo bash ops/pages/verify.sh`. This Pages-only path deliberately never invokes `ops/deploy.sh`, which currently requires a backup snapshot; backup #35 remains held. See [GITEA_PAGES.md](docs/GITEA_PAGES.md) for DNS, certificate onboarding, exact host instructions and rollback.

@@ -23,6 +23,7 @@ fi
 if [[ -n "$PAGES_PUBLIC_DNS" ]]; then valid_ip "$PAGES_PUBLIC_DNS" || exit 2; fi
 zone_regex="$(printf %s "$PAGES_ZONE" | sed 's/[.]/\\./g')"
 sed -e "s|@TAILNET_BIND@|$PAGES_TAILNET_BIND|g" \
+    -e "s|@ZONE@|$PAGES_ZONE|g" \
     -e "s|@ZONE_REGEX@|$zone_regex|g" "$here/mag-pages.nginx.in"
 if [[ -n "$PAGES_PUBLIC_BIND" ]]; then
   sed -e "s|@PUBLIC_BIND@|$PAGES_PUBLIC_BIND|g" \

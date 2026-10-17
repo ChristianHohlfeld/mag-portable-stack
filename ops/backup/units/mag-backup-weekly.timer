@@ -1,0 +1,9 @@
+[Unit]
+Description=MAG weekly restic retention and check
+[Timer]
+OnCalendar=Mon *-*-* 04:30:00 Europe/Berlin
+Persistent=true
+RandomizedDelaySec=15m
+Unit=mag-backup-weekly.service
+[Install]
+WantedBy=timers.target

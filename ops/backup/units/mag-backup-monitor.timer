@@ -1,0 +1,8 @@
+[Unit]
+Description=MAG backup health evaluated hourly
+[Timer]
+OnCalendar=hourly
+Persistent=true
+Unit=mag-backup-monitor.service
+[Install]
+WantedBy=timers.target

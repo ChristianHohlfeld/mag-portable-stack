@@ -1,0 +1,217 @@
+# MAG-Backup und Disaster Recovery (17. Oktober 2026)
+
+## Umfang und Grenzen
+
+**Werkzeug:** restic 0.16.4+, AES-256-verschlüsselt, dedupliziert, keine neue
+Server-Runtime. `mag-llm` wird weder gestoppt noch neu gestartet.
+
+Sicherung: Raum unter `/var/lib/magbot/room` einschließlich Owner/Gast-Rollen,
+Chats, Uploads, Queue, Jobs und Connector-Zugängen; Gitea-Daten/Repos inklusive
+`magbot-agent1/memory.git` und SQLite-Online-Backup; Pages-Webroots und
+Metadaten; `/etc/gitea`, `/etc/mag-pages`, `/etc/mag-acme` (lego,
+Zertifikate, acme-dns), `/etc/mag-nginx`, `/etc/nginx`, `/etc/magbot`,
+`/etc/default/mag-room`, `/etc/mag-audit`, `/var/lib/mag-audit`,
+`/etc/mag-llm`, MAG-/Gitea-Systemd-Units samt Drop-ins,
+`/var/lib/mag-deploy`, `/var/lib/mag-private-cutover`,
+`/home/chris/llama-templates`, `/usr/local/lib/mag-deepseek`.
+Crontabs (`/etc/crontab`, `/etc/cron.*`, `/var/spool/cron/crontabs`)
+einschließlich S23-/chris-Aufgaben sowie Tailscale-Zustand
+(`/var/lib/tailscale` einschließlich Node-Key) liegen **nur im
+verschlüsselten restic-Backup**, niemals im Git-Repository.
+
+Release-ID und `current`-Verweis sowie Modell-Verifikationsstempel werden
+dokumentiert. Der Backup-Repository-Schlüssel liegt **nicht** im Backup
+(selbstrettendes Passwort wäre keine Wiederherstellungsmethode).
+
+**Ausgeschlossen:** `*.gguf`, Whisper-Modell-Binaries,
+`/var/lib/mag-llm/slots` (KV), VM-QCOW2 (laufende VMs nicht konsistent online
+kopierbar), alte
+restic-/Gitea-Tar-Backups, alte Releases, Cache, Gitea-Indexer/Sessions/
+Queues/TMP. Das ist **kein vollständiges Image der VM-Overlays**: für
+Wiederanlauf müssen Bot-VMs neu provisioniert werden; persistente Gitea-Memory
+ist gesichert. Für eine vollständige Bit-für-Bit-Wiederherstellung der
+laufenden Browser-/VM-Profile braucht es zusätzlich ein geplantes,
+quiesced Libvirt-Overlay-Backup; diese Inkonsistenz darf nicht verschwiegen
+werden.
+
+Gitea wird nicht gestoppt. SQLite wird mittels `.backup` gesichert; Repo-
+Dateien werden kurz kopiert. Raum-Dateien werden vor dem restic-Lauf kurz in ein
+privates Staging kopiert, bei Veränderung bis zu drei Mal versucht und bei
+weiterer Abweichung **fail-closed** abgebrochen. Das ist dateikonsistent, aber
+ohne gemeinsame Anwendungssperre keine globale Datenbanktransaktion zwischen
+Chat, Uploads und VM-Status. Kein `fsfreeze` der einzigen Root-Platte.
+
+## Standorte, Zeitplan, Aufbewahrung
+
+MAG hat **nur eine SSD/HDD** (`/dev/sda`, ext4 `/`), keine zweite Platte.
+`/var/backups/mag-restic` ist daher schneller **lokaler Wiederherstellungs-
+Cache, kein zweites Ausfallmedium**. Für 3-2-1 muss S3 bzw. eine physisch
+getrennte Platte aktiv sein.
+
+Nach `/etc/mag-backup/aws.env` (root 0600) aktiviert sich automatisch
+eine **immutable Offsite-Kopie** jedes vollständigen verschlüsselten restic-
+Repositories nach
+`s3://mag-backup-595505951010-euc1/archives/<UTC>-<snapshot>/`.
+S3: `eu-central-1`, Bucket-Object-Lock **COMPLIANCE 30 Tage** als Default,
+Versionierung, Block Public Access, SSE-S3, IAM nur für diesen Bucket.
+Stabschef richtet Bucket und IAM-User im Konto 595505951010 erst
+nach Chris' ausdrücklichem Ja ein; keine AWS-Ressourcen werden im PR erzeugt.
+`latest.json` bezeichnet das letzte **fertig hochgeladene** Archiv.
+**Wichtig:** Nicht `restic -r s3:... backup/forget/prune` in einen
+30-Tage-Object-Lock-Bucket schreiben: restic benötigt kurzlebige Locks und
+Löschrechte; mit COMPLIANCE würde es hängen oder korrumpiert wirkende
+Sperren hinterlassen. Stattdessen immutable Kopie des *fertigen* lokalen
+Restic-Repos; Offsite-Restore holt dieses Archiv herunter und benutzt dann
+lokal `restic restore`. Das dupliziert deduplizierte Daten täglich; mit
+großen Datenbeständen müssen Volumen und Kosten neu bemessen werden.
+
+Tag `daily`: 7 Tages-/4 Wochen-/6 Monatsstände (`forget` + `prune`
+wöchentlich). `hook-deploy` und `hook-clear`: je 14 Tage. S3 ist
+WORM-geschützt für **mindestens 30 Tage**; Bucket-Lifecycle für
+`archives/` aktuell etwa **35 Tage** plus nichtaktuelle Versionen später
+ablaufen lassen. Lokale Langzeit-Monatsstände bleiben nach 35 Tagen nur
+lokal; **S3 schützt sie nicht dauerhaft**. Die aktuelle monatliche 6-Monats-
+Retention ist Offsite daher nur in den jeweils jüngsten Vollarchiven
+mit enthalten. Das ist ein Risiko bei vollständigem lokalen Datenverlust
+und einer unbemerkten mehrwöchigen Offsite-Störung.
+
+`mag-backup-daily.timer` um **03:30 Europe/Berlin** (Persistent, 0–10 Min
+Zufallsverzögerung); wöchentlich Montag 04:30 Retention/Metadaten-Check,
+monatlich am 1. um 05:15 Daten-Check mit `--read-data-subset=10%`,
+monatlich 06:30 verschlüsselter Test-Restore mit SHA256-Dateivergleich.
+Zusätzlich `mag-backup-monitor.timer` stündlich: letzter Erfolg älter
+als **26 Stunden** oder expliziter Fehler → Journal-Fehler, Owner-
+`GET /api/backup/status` und sichtbare Warnung im Raum.
+
+Die Oneshots laufen als root mit `nice=19`, idle-IO,
+`CPUQuota=15%`, `MemoryHigh=512M`, `MemoryMax=2G`,
+`MemorySwapMax=0`, `CPUAffinity=14-27 42-55`,
+`NUMAPolicy=bind` / `NUMAMask=1` und
+`numactl --cpunodebind=1 --membind=1`.
+Der aktuelle Modell-Supervisor auf `main` wechselt Q4/IQ3 noch
+sequenziell auf NUMA 0. Sollte künftig IQ3 parallel auf NUMA 1 laufen,
+darf restic nur die begrenzte CPU-/RAM-/I/O-Kapazität beanspruchen;
+ein Backup-Fehler blockiert den destruktiven Hook, nicht IQ3.
+Keine Modell-Unit wird durch diese Sicherung geändert. Doppelläufe blockiert `flock`; bei fehlgeschlagenem
+Backup scheitert Deploy bzw. Clear, bevor Daten verändert werden.
+
+**Kostenbeispiel, Schätzung:** 30 immutable Archive à 50 MB ergeben ~1,5 GB
+S3 Standard, bei illustrativen 0,025–0,03 EUR/GB-Monat
+ca. 0,04–0,05 EUR/Monat Storage **zuzüglich** PUT/GET, Versionen,
+Transfer und MwSt. Kein verlässlicher Tarif-/Nutzungswert: echte
+monatliche Kosten mit S3-Metriken und AWS-Preisliste nach 30 Tagen prüfen.
+
+## Installation/Cutover (Ali, nicht automatisch deployt)
+
+```bash
+sudo apt-get install restic sqlite3 jq util-linux numactl awscli
+sudo bash ops/backup/install.sh
+sudo systemctl list-timers 'mag-backup*'
+sudo /usr/local/lib/mag-backup/maintenance.sh status
+sudo systemctl start mag-backup-restore-test.service
+sudo journalctl -u mag-backup-daily.service -u mag-backup-restore-test.service -n 80
+```
+
+`install.sh` erstellt ein **neues** Passwort in
+`/etc/mag-backup/restic-password` (0600), initialisiert und sichert lokal
+erstmals erfolgreich, aktiviert dann Timer und deaktiviert erst danach
+`gitea-backup.timer`. Alte Daten **nicht löschen**: `/etc/mag-dr`,
+`/var/backups/restic` (55 GB mit Mai-2026-Snapshots),
+`/var/backups/gitea` (262 MB). Nach mehreren realen Backup-/Restore-
+Erfolgen ausdrücklich archivieren/löschen; Alt-Hilfsskripte, die noch von
+`mag-bootstrap-blank-ubuntu`, `mag-apply-iac` oder
+`mag-collect-live-state` referenziert werden, dürfen erst nach Prüfung
+umgestellt werden.
+
+**AWS:** Stabschef erstellt erst nach Chris' Ja den S3-Bucket mit Object Lock bei Erstellung, Default
+COMPLIANCE 30 Tage, Versioning, SSE-S3, Public-Access-Block und Lifecycle.
+IAM-Zugriff auf Bucket und `archives/*`, `latest.json`: minimale
+`ListBucket`, `GetObject`, `PutObject`,
+`GetBucketObjectLockConfiguration`; **keine Delete-Rechte**.
+Datei `/etc/mag-backup/aws.env` mit
+`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`,
+`AWS_DEFAULT_REGION=eu-central-1`, Rechte root:root 0600.
+Ein erster Lauf muss `offsite_ok=true` melden. Fehlende/ungültige
+Credentials dürfen **nie** als erfolgreicher Offsite-Lauf gelten.
+
+**Offline für Chris:** restic-Passwort, Bucketname, AWS-Konto/Region,
+Wiedererlangung der minimalen IAM-Zugangsdaten (getrennt und nicht im Repo),
+GitHub-Repo-Zugang und Tailscale-Admin-Zugang. Offline-Schlüsselprobe durchführen.
+Keine Passwörter/Kopien in GitHub oder Gitea committen.
+
+## Teil-Restore und echter Wiederanlauf
+
+Zuerst **nur in ein Zielverzeichnis**, ohne laufende Dienste zu verändern:
+
+```bash
+sudo bash ops/backup/restore.sh --part room --target /var/tmp/mag-restore
+sudo bash ops/backup/restore.sh --part gitea --target /var/tmp/mag-gitea-test
+sudo bash ops/backup/restore.sh --part pages --target /var/tmp/mag-pages-test
+sudo bash ops/backup/restore.sh --part config --target /var/tmp/mag-config-test
+sudo bash ops/backup/restore.sh --part cron --target /var/tmp/mag-cron-test
+sudo bash ops/backup/restore.sh --part tailscale --target /var/tmp/mag-tailscale-test
+sudo bash ops/backup/restore.sh --part all --target /var/tmp/mag-all-test
+sudo bash ops/backup/restore.sh --repo offsite --part all --target /var/tmp/mag-offsite-test
+```
+
+Der Staging-Restore liegt im Ziel unter dem relativen Originalpfad
+(`/var/tmp/mag-restore/var/lib/magbot/room`). Vor dem Live-Restore:
+`mag-120` für Raum und `gitea` für Gitea stoppen, **nicht mag-llm**.
+`--apply` schreibt ausgewählte Pfade an den Originalort und verweigert
+Raum-/Gitea-Restore bei laufenden Units. Danach Besitzrechte, Service-
+Konfiguration und Repositories prüfen, gezielt Dienste starten.
+Niemals einen Zielordner aus dem Internet übernehmen.
+
+**Bare Metal auf neuer Hardware:**
+
+1. Ubuntu, Pakete, libvirt/KVM, nginx, Gitea, restic, sqlite3, jq, numactl
+   installieren. Datenträger und separate Offsite-Verbindung prüfen.
+2. GitHub-Repo `ChristianHohlfeld/mag-portable-stack` klonen und
+   versionsgleich `install.sh`/Stack-Voraussetzungen herstellen.
+   Nicht mit einem leeren Raum erfolgreich starten und danach überschreiben.
+3. Offline-restic-Passwort nach `/etc/mag-backup/restic-password` (0600),
+   `aws.env` nur wenn S3-Restore, `ops/backup/install.sh` **noch nicht**
+   ausführen (er würde auf frischer Hardware einen leeren Raum sichern).
+   Stattdessen `/usr/local/lib/mag-backup`-Skripte aus dem Repo
+   installieren oder direkt mit den lokalen Skripten und korrekt gesetzten
+   `MAG_BACKUP_CONFIG`-Variablen arbeiten.
+4. Offsite-Archiv laden oder lokales Repository einhängen; zuerst
+   `--part all --target /var/tmp/recovered` und
+   `sha256sum -c` aus dem Snapshot ausführen.
+5. `--apply` erst nach bewusster Auswahl, dann `systemctl daemon-reload`.
+   Gitea-DB/Repos/Secret-Key, Pages/TLS, Owner-Zugriff und
+   `/opt/mag-stack/current`-Release-ID prüfen; Build aus Repo,
+   neues Versioned-Release installieren und nginx -t/reload.
+6. Modelle **nicht** im Backup: Q4 (fünf Shards) und IQ3 (vier Shards)
+   werden auf frischer Hardware mit den gepinnten SHA256-Manifesten
+   `ops/backup/models.sha256` und `ops/backup/models-iq3.sha256`
+   wiederhergestellt. Nur wenn keine Modell-Unit läuft:
+   `sudo bash ops/backup/bootstrap-models.sh download all`;
+   anschließend `sudo bash ops/backup/bootstrap-models.sh verify all`.
+   Quelle IQ3:
+   https://huggingface.co/unsloth/DeepSeek-V4-Flash-0731-GGUF/tree/main/UD-IQ3_XXS.
+   Das Skript startet keine Modelle.
+   Whisper `.bin` separat downloaden und gegen vertrauenswürdigen
+   Hersteller-Hash prüfen. `mag-llm` nur auf Ersatzhost nach Modellprüfung
+   neu starten; auf bisherigem MAG niemals durch den Backup-Cutover.
+7. Tailscale-Zustand ist optional wiederherstellbar: vor einem
+   `--part tailscale --apply` `tailscaled` auf dem Ersatzgerät stoppen.
+   Den alten MAG-Host endgültig außer Betrieb nehmen oder dessen Node-Key
+   deaktivieren: niemals dieselbe Tailnet-Identität parallel benutzen.
+   Alternativ neues Tailnet-Gerät per `tailscale up` freigeben.
+   Cronjobs vor Aktivierung auf der neuen Hardware prüfen, insbesondere S23.
+   Zertifikate und lego/acme-dns-Konten vor Live-Traffic prüfen.
+8. Neuer Gitea-/Raum-/Pages-Smoketest und Test-Restore, dann Backup-Timer
+   installieren/aktivieren und ersten Snapshot protokollieren.
+
+Prüfprotokoll für Ali: Snapshot-ID, Bytes, Laufzeit, Status
+`offsite_ok`, Monatstest `last_restore_test_ok`, Journal-Checks. Kein
+CI-Test ist Ersatz für den echten Host-Probelauf.
+
+
+### Recovery der Owner- und Gästezugänge
+
+Die verschlüsselte Sicherung enthält `/etc/mag-stack` für die Owner-Deploy-Probe
+sowie, falls vorhanden, `/etc/credstore/mag-guest-oauth` für die Gästeverwaltung.
+Das Restic-Passwort selbst wird nicht mitgesichert und muss offline aufbewahrt
+werden. Nach einem Bare-Metal-Restore Berechtigungen (root:root, 0600) prüfen.

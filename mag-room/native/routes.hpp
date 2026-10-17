@@ -508,6 +508,25 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
     error_json(fd, 410, "Modellwechsel deaktiviert. Q4 bleibt aktiv.");
     return;
   }
+  // Owner-only, read-only summary without credentials or repository paths.
+  if (m == "GET" && path == "/api/backup/status") {
+    if (bridge || !actor.ok || actor.role != "owner") {
+      error_json(fd, 403, "Nur der Besitzer"); return;
+    }
+    bool ok = false;
+    std::string raw = read_file(
+        env("MAG_BACKUP_STATUS", "/var/lib/mag-backup/status.json"), &ok);
+    Val out = Val::object();
+    if (ok && raw.size() <= 8192) mj::parse(raw, out);
+    if (!out.isObj()) out = Val::object();
+    const Val *last = out.find("last_success");
+    const bool stale = !last || last->asNum() < now_s() - 26 * 3600;
+    const Val *reported = out.find("healthy");
+    out["stale"] = stale;
+    out["healthy"] = !stale && reported && reported->asBool();
+    send_json(fd, 200, mj::dump(out));
+    return;
+  }
   if (m == "GET" && path == "/api/model-status") {
     send_json(fd, 200, mj::dump(model_status_val(model_status(true))));
     return;
@@ -1111,6 +1130,15 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
     if (BUSY.load()) { error_json(fd,409,"Bot arbeitet noch"); return; }
     std::lock_guard<std::mutex> turn(TURN_MTX);
     if (BUSY.load()) { error_json(fd,409,"Bot arbeitet noch"); return; }
+    // A synchronous fixed-command root oneshot archives the encrypted
+    // pre-clear state before the existing #32 durable snapshot machinery.
+    // The owner proof, BUSY gate and TURN_MTX above remain unchanged.
+    if (std::system(
+            "/usr/bin/sudo -n /usr/bin/systemctl start mag-backup-clear.service "
+            ">/dev/null 2>&1") != 0) {
+      error_json(fd, 503, "Sicherung vor Raum leeren fehlgeschlagen");
+      return;
+    }
     auto result = clear_room_data();
     if (result.code == 200) {
       Val response;

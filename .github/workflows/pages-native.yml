@@ -37,6 +37,7 @@ jobs:
         run: |
           bash ops/pages/tests/test-pages-lifecycle.sh
           bash ops/pages/tests/test-pages-tools.sh
+          sudo bash ops/pages/tests/test-pages-sandbox.sh
           bash -n ops/pages/*.sh ops/pages/tests/*.sh
       - name: Shell syntax; no new runtime units
         run: |

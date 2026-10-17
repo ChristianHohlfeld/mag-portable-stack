@@ -41,6 +41,7 @@ jobs:
         run: |
           bash ops/deepseek/tests/test-ops-38.sh
           bash ops/deepseek/tests/test-numa-isolation.sh
+          bash ops/deepseek/tests/test-node0-available.sh
           bash ops/deepseek/tests/test-iq3-parallel.sh
           bash -n ops/deepseek/verify-iq3.sh ops/deepseek/start-iq3.sh ops/deepseek/iq3-parallel.sh ops/deepseek/hotswap.sh
           bash -n ops/deepseek/numa-isolation.sh ops/deepseek/numa-bench.sh

@@ -4,7 +4,8 @@ set -euo pipefail
 cd "$(dirname "$0")/../../.."
 bash -n ops/deepseek/numa-isolation.sh ops/deepseek/numa-bench.sh ops/deepseek/warm.sh
 s=ops/deepseek/numa-isolation.sh
-grep -Fq 'free0 + local_anon >= rssanon + 12*1024*1024' "$s" || { echo 'missing node0 memory capacity gate' >&2; exit 1; }
+grep -Fq 'node0_available + local_anon >= rssanon + 12*1024*1024' "$s" ||
+ { echo 'missing node0 MemAvailable + own Q4 memory capacity gate' >&2; exit 1; }
 for expected in '--cpunodebind=0 --membind=0' '--numa numactl' '--threads 16' '--threads-batch 16' 'ConditionPathExists=/run/mag-model-pin-explicitly-enabled' 'ExecStartPre=/usr/bin/false' 'systemctl disable --now mag-model-pin.service' 'render_unit "$TMP/unit"' "assert cache(live)==cache(new)"; do
   grep -Fq -- "$expected" "$s" || { echo "missing safety contract: $expected" >&2; exit 1; }
 done

@@ -148,9 +148,30 @@ static void native_tailscale_auth(int fd, const Req &r) {
     send_text(fd, 403, "tailscale identity unavailable\n");
     return;
   }
+  // A tagged device has a Node identity and tags, not a UserProfile.
+  auto node = obj.find("Node");
+  std::string node_id, remote_ip = remote.substr(0, remote.rfind(':'));
+  bool tagged = false;
+  if (node && node->isObj()) {
+    auto id = node->find("ID");
+    if (id && id->type == Val::NUM && id->asNum() > 0 &&
+        id->asNum() < 9007199254740991.0)
+      node_id = std::to_string((uint64_t)id->asNum());
+    auto tags = node->find("Tags");
+    if (tags && tags->isArr())
+      for (const auto &tag : tags->asArr())
+        if (tag.asStr() == "tag:mag-guest") tagged = true;
+  }
+  if (tagged && !node_id.empty()) {
+    send_response(fd, 200, "text/plain; charset=utf-8", "",
+                  {{"X-Tailscale-Node", node_id},
+                   {"X-Tailscale-IP", remote_ip},
+                   {"X-Tailscale-Guest", "1"}});
+    return;
+  }
   auto user = obj.find("UserProfile");
   if (!user || !user->isObj()) {
-    send_text(fd, 403, "missing Tailscale user\n");
+    send_text(fd, 403, "missing authenticated Tailscale identity\n");
     return;
   }
   auto field = [&](const char *key) -> std::string {
@@ -168,5 +189,6 @@ static void native_tailscale_auth(int fd, const Req &r) {
   send_response(fd, 200, "text/plain; charset=utf-8", "",
                 {{"X-Tailscale-User", login},
                  {"X-Tailscale-Login", login},
-                 {"X-Tailscale-Name", url_encode(name)}});
+                 {"X-Tailscale-Name", url_encode(name)},
+                 {"X-Tailscale-IP", remote_ip}});
 }

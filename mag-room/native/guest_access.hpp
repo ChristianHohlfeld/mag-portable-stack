@@ -1,6 +1,7 @@
 // Owner-controlled, tag-scoped Tailscale guest provisioning.
 // Private state is kept in access.json; no auth-key plaintext is persisted.
 #pragma once
+#include "guest_key_description.hpp"
 #include <curl/curl.h>
 #include <openssl/sha.h>
 #include <openssl/rand.h>
@@ -381,9 +382,15 @@ static GuestIssue guest_issue(const Actor &owner, const Val &request) {
   capabilities["devices"] = dev;
   params["capabilities"] = capabilities;
   params["expirySeconds"] = 86400;
-  params["description"] = "MAG guest (" + (name.empty() ? "guest" : name) + ")";
+  params["description"] = mag_guest_key_description(name);
   auto reply = guest_api("POST", "tailnet/-/keys", mj::dump(params));
   if (!reply.ok || (reply.status != 200 && reply.status != 201)) {
+    // HTTP status + a known-safe upstream message only. Never log raw JSON,
+    // OAuth credentials, access tokens, key descriptions or user names.
+    std::cerr << "MAG guest auth-key create: Tailscale HTTP " << reply.status
+              << "; message: "
+              << mag_guest_safe_api_error(guest_field(reply.json, "message"))
+              << "\n";
     out.body["error"] = "Tailscale-Einladung konnte nicht erstellt werden"; return out;
   }
   std::string key = guest_field(reply.json, "key");

@@ -12,6 +12,10 @@ test -s /etc/mag-pages/gitea-token || { echo 'Add Gitea read-only access token t
 test -s /etc/mag-pages/tls/wildcard.crt
 test -s /etc/mag-pages/tls/wildcard.key
 nginx -t
+# Fail before any nginx changes if the configured bind IPs are not on MAG.
+for ip in $(python3 -c 'import json; c=json.load(open("/etc/mag-pages/config.json")); print(c["public_ip"], c["tailnet_ip"])'); do
+    ip -4 -o addr show | grep -Fq " $ip/" || { echo "Configured bind IP not present on mag: $ip" >&2; exit 1; }
+done
 install -d -m 0755 /usr/local/lib/mag-pages /var/lib/mag-pages/releases /var/lib/mag-pages/acme
 install -d -m 0700 /etc/mag-pages
 install -m 0755 "$src/mag_pages.py" "$src/issue-wildcard.sh" /usr/local/lib/mag-pages/

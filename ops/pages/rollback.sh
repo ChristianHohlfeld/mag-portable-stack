@@ -25,4 +25,14 @@ rm -f /etc/systemd/system/mag-120.service.d/31-pages-public.conf
 rm -f /etc/systemd/system/mag-120.service.d/30-pages.conf
 systemctl daemon-reload
 systemctl restart mag-120.service
-echo 'Pages disabled, mag-120 restarted; mag-llm untouched.'
+# All Pages-owned state and per-custom-domain ACME keys are now unreachable
+# from nginx. Purge them; shared wildcard cert and lego account stay.
+rm -rf --one-file-system -- /var/lib/mag-pages/releases /var/lib/mag-pages/public /var/lib/mag-pages/tailnet /var/lib/mag-pages/custom /var/lib/mag-pages/acme
+rm -f /var/lib/mag-pages/sites.json /var/lib/mag-pages/custom-domains.tsv /var/lib/mag-pages/gc.pending /var/lib/mag-pages/gc-retired.json /var/lib/mag-pages/.gc.lock
+rm -rf --one-file-system -- /etc/mag-pages/tls/custom
+if [[ -f /etc/mag-pages/visibility.json && ! -L /etc/mag-pages/visibility.json ]]; then
+  printf '{}\n' > /etc/mag-pages/visibility.json
+  chown root:magbot /etc/mag-pages/visibility.json
+  chmod 0640 /etc/mag-pages/visibility.json
+fi
+echo 'Pages disabled, site state/cert accounts removed; shared wildcard retained; mag-llm untouched.'

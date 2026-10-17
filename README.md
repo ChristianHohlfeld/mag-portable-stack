@@ -394,3 +394,10 @@ another non-search page independently, verify blocked-page notices and the
 Brave API fallback, and check both Ab and Joe remain on their existing VM
 profiles with no disk changes. CI checks logic but cannot assert real
 accessibility from the private MAG server IP.
+
+## Gitea Pages: native C++ + nginx
+
+The existing MAG C++ room publishes Gitea gh-pages or docs into nginx webroots,
+with wildcard HTTPS, per-repository Tailnet/public access, optional CNAME,
+and a one-command rollback. No additional publisher process or Python service.
+See [MAG Pages operations and DNS](docs/GITEA_PAGES.md).

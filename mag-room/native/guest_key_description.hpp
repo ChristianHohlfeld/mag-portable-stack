@@ -42,3 +42,18 @@ inline std::string mag_guest_safe_api_error(std::string_view message) {
   if (message == "rate limit exceeded") return "rate limit exceeded";
   return "unrecognized API message (redacted)";
 }
+
+inline bool mag_guest_email_valid(std::string_view e) {
+  if (e.size() < 6 || e.size() > 254) return false;
+  auto at=e.find('@');
+  if (at==0 || at==std::string_view::npos || at!=e.rfind('@')) return false;
+  auto domain=e.substr(at+1);
+  if (domain.size()<4 || domain.front()=='.' || domain.back()=='.' ||
+      domain.find('.')==std::string_view::npos ||
+      domain.find("..")!=std::string_view::npos) return false;
+  for (unsigned char ch:e) {
+    if (!(std::isalnum(ch) || ch=='@' || ch=='.' ||
+          ch=='_' || ch=='+' || ch=='-')) return false;
+  }
+  return true;
+}

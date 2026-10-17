@@ -34,6 +34,8 @@ preflight(){
   done
   [[ -f $template && -d /etc/nginx/sites-available && -d /etc/nginx/sites-enabled ]] ||
     die 'nginx template or site directories missing'
+  [[ ! -e /var/lib/mag-private-cutover/pending ]] ||
+    die 'Unconfirmed initial ingress cutover in progress; confirm/rollback first'
   nginx -t || die 'Current nginx config already invalid'
   systemctl is-active --quiet nginx.service || die 'nginx not active'
   systemctl is-active --quiet tailscaled.service || die 'tailscaled not active'

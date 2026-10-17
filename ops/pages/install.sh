@@ -1,63 +1,80 @@
 #!/usr/bin/env bash
-# Configuration only: no new publisher/ACME service or timer; mag-llm untouched.
+# Host-only nginx configuration. Never restart mag-llm or mag-120 here.
 set -euo pipefail
-[[ $EUID == 0 ]] || exit 1
+[[ $EUID == 0 ]] || { echo 'Root required' >&2; exit 1; }
 here="$(cd "$(dirname "$0")" && pwd)"
-[[ -f /etc/mag-pages/pages.env ]] || { echo 'Install pages.env.example first' >&2; exit 1; }
+[[ -r /etc/mag-pages/pages.env ]] || { echo 'Configure /etc/mag-pages/pages.env' >&2; exit 1; }
 . /etc/mag-pages/pages.env
-for val in "$PAGES_PUBLIC_BIND" "$PAGES_PUBLIC_DNS" "$PAGES_TAILNET_BIND"; do
- [[ "$val" =~ ^[0-9.]+$ ]] || exit 1
-done
-[[ "$PAGES_ZONE" =~ ^[a-z0-9.-]+$ && "$PAGES_PUBLIC_BIND" != "$PAGES_TAILNET_BIND" ]] || exit 1
-for bind in "$PAGES_PUBLIC_BIND" "$PAGES_TAILNET_BIND"; do
- ip -4 -o addr show | grep -Fq " $bind/" || { echo "Missing local IP: $bind" >&2; exit 1; }
-done
-# Explicitly require the existing ACME timer; no new timer is installed.
-systemctl cat mag-acme-renew.service >/dev/null ||
- { echo 'Existing mag-acme-renew.service not installed' >&2; exit 1; }
-systemctl is-enabled --quiet mag-acme-renew.timer ||
- { echo 'Existing MAG ACME renewal timer not enabled' >&2; exit 1; }
-# Private listener MUST be bound by Tailscale, never another public NIC.
-ip -4 -o addr show dev tailscale0 | grep -Fq " $PAGES_TAILNET_BIND/" ||
- { echo 'Tailnet-only IP is not on tailscale0' >&2; exit 1; }
-if ip -4 -o addr show dev tailscale0 | grep -Fq " $PAGES_PUBLIC_BIND/"; then
- echo 'Public Pages bind IP cannot be on tailscale0' >&2; exit 1
-fi
-test -s /etc/mag-pages/gitea-token || { echo 'Create read-only Gitea service token first' >&2; exit 1; }
-test -s /etc/mag-pages/tls/current/cert.pem
-test -s /etc/mag-pages/tls/current/key.pem
+: "${PAGES_PUBLIC_BIND:=}"
+: "${PAGES_PUBLIC_DNS:=}"
+: "${PAGES_TAILNET_BIND:=100.123.114.16}"
+"$here/render-nginx.sh" >/dev/null # validates both addresses and zone
 command -v nginx >/dev/null
-command -v /usr/local/bin/lego >/dev/null
+command -v jq >/dev/null
 command -v dig >/dev/null
+command -v /usr/local/bin/lego >/dev/null
 getent passwd magbot >/dev/null
-chown root:magbot /etc/mag-pages /etc/mag-pages/gitea-token
+systemctl cat mag-acme-renew.service >/dev/null
+systemctl is-enabled --quiet mag-acme-renew.timer || { echo 'Enable existing MAG ACME timer first' >&2; exit 1; }
+ip -4 -o addr show dev tailscale0 | grep -Fq " $PAGES_TAILNET_BIND/" ||
+ { echo 'Tailnet address must be on tailscale0' >&2; exit 1; }
+if [[ -n "$PAGES_PUBLIC_BIND" ]]; then
+  ip -4 -o addr show | grep -Fq " $PAGES_PUBLIC_BIND/" || { echo 'Public bind must be local interface IP' >&2; exit 1; }
+  if ip -4 -o addr show dev tailscale0 | grep -Fq " $PAGES_PUBLIC_BIND/"; then
+    echo 'Public bind cannot be on tailscale0' >&2; exit 1
+  fi
+fi
+# Existing PAT: preserve its bytes; enforce least-privilege filesystem permissions.
+token=/etc/mag-pages/gitea-token
+[[ -s "$token" && ! -L "$token" ]] || { echo 'Existing Gitea read:repository PAT missing' >&2; exit 1; }
+chown root:magbot /etc/mag-pages "$token"
 chmod 0750 /etc/mag-pages
-chmod 0640 /etc/mag-pages/gitea-token
+chmod 0640 "$token"
+runuser -u magbot -- test -r "$token" || { echo 'magbot cannot read Pages Gitea PAT' >&2; exit 1; }
+[[ -s /etc/mag-pages/tls/current/cert.pem && -s /etc/mag-pages/tls/current/key.pem ]] ||
+ { echo 'Issue DNS-01 Pages wildcard first (issue-wildcard.sh run)' >&2; exit 1; }
 if [[ ! -e /etc/mag-pages/visibility.json ]]; then printf '{}\n' > /etc/mag-pages/visibility.json; fi
 chown root:magbot /etc/mag-pages/visibility.json
 chmod 0640 /etc/mag-pages/visibility.json
 install -d -m 0755 -o magbot -g magbot /var/lib/mag-pages \
- /var/lib/mag-pages/releases /var/lib/mag-pages/public /var/lib/mag-pages/tailnet \
- /var/lib/mag-pages/custom
-install -d -m 0755 -o root -g root /var/lib/mag-pages/acme
-install -d -m 0755 /usr/local/lib/mag-pages /etc/nginx/conf.d
-install -m 0755 "$here/issue-wildcard.sh" "$here/refresh-custom.sh" /usr/local/lib/mag-pages/
-backup=/etc/nginx/conf.d/mag-pages.conf.pre-pages
-if [[ -e /etc/nginx/conf.d/mag-pages.conf && ! -e "$backup" ]]; then cp -a /etc/nginx/conf.d/mag-pages.conf "$backup"; fi
-zone_regex="$(printf %s "$PAGES_ZONE" | sed 's/[.]/\\\\./g')"
-sed -e "s|@PUBLIC_BIND@|$PAGES_PUBLIC_BIND|g" \
-    -e "s|@TAILNET_BIND@|$PAGES_TAILNET_BIND|g" \
-    -e "s|@ZONE_REGEX@|$zone_regex|g" "$here/mag-pages.nginx.in" \
-    > /etc/nginx/conf.d/mag-pages.conf
-if ! nginx -t; then
- if [[ -f "$backup" ]]; then cp -a "$backup" /etc/nginx/conf.d/mag-pages.conf
- else rm -f /etc/nginx/conf.d/mag-pages.conf; fi
- echo 'nginx -t failed: old config restored and NOT reloaded' >&2; exit 1
+ /var/lib/mag-pages/releases /var/lib/mag-pages/public /var/lib/mag-pages/tailnet /var/lib/mag-pages/custom
+install -d -m 0755 -o root -g root /var/lib/mag-pages/acme /usr/local/lib/mag-pages /etc/nginx/conf.d
+install -m 0755 "$here/issue-wildcard.sh" "$here/refresh-custom.sh" "$here/render-nginx.sh" /usr/local/lib/mag-pages/
+# Save every existing Pages vhost for fail-closed recovery.
+main_conf=/etc/nginx/conf.d/mag-pages.conf
+custom_conf=/etc/nginx/conf.d/mag-pages-custom.conf
+snapshot="$(mktemp -d /etc/nginx/.pages-install.XXXXXXXX)"
+trap 'rm -rf "$snapshot"' EXIT
+[[ ! -f "$main_conf" ]] || cp -a "$main_conf" "$snapshot/main"
+[[ ! -f "$custom_conf" ]] || cp -a "$custom_conf" "$snapshot/custom"
+restore_nginx() {
+  if [[ -f "$snapshot/main" ]]; then cp -a "$snapshot/main" "$main_conf"; else rm -f "$main_conf"; fi
+  if [[ -f "$snapshot/custom" ]]; then cp -a "$snapshot/custom" "$custom_conf"; else rm -f "$custom_conf"; fi
+}
+# Existing rollback keeps the pre-Pages snapshot.
+[[ ! -f "$main_conf" || -e "$main_conf.pre-pages" ]] || cp -a "$main_conf" "$main_conf.pre-pages"
+"$here/render-nginx.sh" > "$snapshot/rendered"
+install -m 0644 "$snapshot/rendered" "$main_conf"
+# Disabling public mode MUST also discard previously generated custom public vhosts.
+if [[ -z "$PAGES_PUBLIC_BIND" ]]; then rm -f "$custom_conf"; fi
+if ! nginx -t; then restore_nginx; echo 'nginx test failed: reverted before reload' >&2; exit 1; fi
+if ! systemctl reload nginx.service; then
+  restore_nginx
+  nginx -t && systemctl reload nginx.service || true
+  echo 'nginx reload failed: reverted Pages listeners' >&2; exit 1
 fi
-systemctl reload nginx.service
-# Attach to the EXISTING MAG ACME timer without creating a new timer.
+# Existing timer only; pages renewal via lego v5 RUN, not a separate service.
 install -d -m 0755 /etc/systemd/system/mag-acme-renew.service.d
-printf '[Service]\nExecStartPost=-/usr/local/lib/mag-pages/refresh-custom.sh\n' \
+printf '[Service]\nExecStartPost=-/usr/local/lib/mag-pages/refresh-custom.sh run\n' \
  > /etc/systemd/system/mag-acme-renew.service.d/30-pages.conf
+# Native publisher enables public links only with an explicitly configured bind.
+install -d -m 0755 /etc/systemd/system/mag-120.service.d
+if [[ -n "$PAGES_PUBLIC_BIND" ]]; then
+  printf '[Service]\nEnvironment=MAG_PAGES_PUBLIC_BIND=%s\n' "$PAGES_PUBLIC_BIND" \
+   > /etc/systemd/system/mag-120.service.d/31-pages-public.conf
+else
+  rm -f /etc/systemd/system/mag-120.service.d/31-pages-public.conf
+fi
 systemctl daemon-reload
-echo 'Pages nginx ready. Enable magroom C++ using mag-pages-room.conf when drained.'
+echo "MAG Pages nginx ready: Tailnet $PAGES_TAILNET_BIND:443; public listener ${PAGES_PUBLIC_BIND:-disabled}."
+echo 'Enable/restart mag-120 when idle to apply native Pages env; no mag-llm restart.'

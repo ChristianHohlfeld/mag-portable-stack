@@ -353,7 +353,7 @@ inline void reconcile(const fs::path& root,const std::string& token) {
       auto r=request("repos/"+encode(owner)+"/"+encode(name)+"/archive/"+encode(branch.first)+".tar.gz",token);
       if(r.status!=200)throw std::runtime_error("Gitea archive not found");
       auto files=unpack(r.body,docs);
-      if(files.empty())continue; // no docs: do not publish
+      if(files.empty() || files.count("PAGES_DISABLED"))continue; // deliberately disabled or no docs
       cname=custom(files);
       if(files.empty())continue;
       if(!fs::exists(release)){

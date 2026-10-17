@@ -83,6 +83,7 @@ systemd-run --unit=mag-pages-ci-readonly --wait --collect --quiet \
  -p Type=oneshot -p User=root -p ProtectSystem=full \
  /bin/bash -c 'if touch /etc/mag-pages-ci-should-never-exist; then exit 1; fi'
 test ! -e /etc/mag-pages-ci-should-never-exist
+chown -R magbot:magbot "$tmp/state"
 cat >"$tmp/client" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail

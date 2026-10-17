@@ -1,10 +1,8 @@
-# IQ3 sequential alternate on NUMA node 0; Q4 MUST be stopped before start.
+# Independent, parallel DeepSeek IQ3 on NUMA node 1; Q4 remains node0.
 [Unit]
-Description=MAG DeepSeek V4 IQ3 alternate (NUMA node 0 only)
-After=network-online.target mag-llm.service
+Description=MAG DeepSeek IQ3 parallel CPU instance, NUMA node 1
+After=network-online.target
 Wants=network-online.target
-# No Conflicts=: a direct systemctl start must NEVER implicitly stop Q4.
-# start-iq3.sh independently rejects startup while Q4 is still active.
 ConditionPathExists=/home/chris/models/deepseek-v4-UD-IQ3_XXS/SHA256SUMS
 StartLimitIntervalSec=1800
 StartLimitBurst=2
@@ -14,22 +12,27 @@ User=chris
 Group=chris
 WorkingDirectory=/home/chris
 Environment=MAG_IQ3_DIR=/home/chris/models/deepseek-v4-UD-IQ3_XXS
-Environment=MAG_IQ3_REQUIRE_EXCLUSIVE=1
 ExecStartPre=/usr/local/lib/mag-deepseek/verify-iq3.sh
 ExecStart=/usr/local/lib/mag-deepseek/start-iq3.sh
-Restart=no
+Restart=on-failure
+RestartSec=60
 TimeoutStartSec=10800
 TimeoutStopSec=120
-CPUAffinity=0-13 28-41
+CPUAffinity=14-25 42-53
 NUMAPolicy=bind
-NUMAMask=0
+NUMAMask=1
+MemoryAccounting=yes
+MemoryHigh=155G
+MemoryMax=176G
 MemorySwapMax=0
 LimitMEMLOCK=infinity
-OOMScoreAdjust=-900
+OOMScoreAdjust=-600
+Nice=10
+IOSchedulingClass=idle
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=no
 ReadWritePaths=/var/lib/mag-llm/slots/iq3
 PrivateTmp=yes
 RestrictAddressFamilies=AF_INET AF_UNIX
-# No [Install]: only the exclusive supervisor may start this unit.
+# Intentionally no [Install] section: Ali starts once after independent preflight.

@@ -51,19 +51,16 @@ static int connect_loopback(int port,int timeout_s=3){
   if(connect(fd,(sockaddr*)&a,sizeof(a))){close(fd);return -1;}return fd;
 }
 struct Config {
-  int q4=8090,iq3=8091,listen=8080;
-  std::string control="/run/mag-model-switch/control.sock";
+  int q4=8090,listen=8080;
   std::string logs="/var/log/mag-audit";
   std::string secrets="/etc/mag-audit/secrets.list";
 } cfg;
-static std::mutex audit_mtx, traffic_mtx;
-static unsigned active_inference=0;
-static bool gate_switch=false;
+static std::mutex audit_mtx;
 static std::string iso_time(){
   auto now=std::chrono::system_clock::now();auto t=std::chrono::system_clock::to_time_t(now);
   std::tm tm{};gmtime_r(&t,&tm);char b[40];strftime(b,sizeof(b),"%Y-%m-%dT%H:%M:%SZ",&tm);return b;
 }
-static int port_of(const std::string &id){return id=="iq3"?cfg.iq3:cfg.q4;}
+static int port_of(const std::string &){return cfg.q4;}
 static std::string redact(std::string s){
   std::ifstream in(cfg.secrets);std::vector<std::pair<std::string,std::string>> pairs;
   std::string line;while(std::getline(in,line)){auto p=line.find('=');if(p!=std::string::npos&&p+7<=line.size()&&line[0]!='#')pairs.push_back({line.substr(p+1),line.substr(0,p)});}
@@ -196,86 +193,6 @@ static Val message(const std::string &e){Val v=Val::object();v["error"]=e;return
 // Root-owned C++ model supervisor is the only process allowed to manage
 // systemd model units. A 0660 Unix socket and SO_PEERCRED on the supervisor
 // separate the unprivileged audit gateway from systemd.
-static Val supervisor_request(const std::string &method,const std::string &body=""){
-  Val err=Val::object();err["error"]="Modellverwaltung nicht erreichbar";
-  std::string path=env("MAG_MODEL_SUPERVISOR_SOCKET","/run/mag-model-supervisor/supervisor.sock");
-  if(path.size()>=sizeof(sockaddr_un::sun_path))return err;
-  int fd=socket(AF_UNIX,SOCK_STREAM|SOCK_CLOEXEC,0);if(fd<0)return err;
-  timeval timeout{3,0};setsockopt(fd,SOL_SOCKET,SO_RCVTIMEO,&timeout,sizeof(timeout));setsockopt(fd,SOL_SOCKET,SO_SNDTIMEO,&timeout,sizeof(timeout));
-  sockaddr_un a{};a.sun_family=AF_UNIX;strncpy(a.sun_path,path.c_str(),sizeof(a.sun_path)-1);
-  if(connect(fd,(sockaddr*)&a,sizeof(a))){close(fd);return err;}
-  std::string req=method+" /models HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Length: "+
-      std::to_string(body.size())+"\r\n\r\n"+body;
-  if(!write_all(fd,req)){close(fd);return err;}
-  char b[4096];std::string raw;
-  for(;;){ssize_t n=recv(fd,b,sizeof(b),0);if(n<=0)break;raw.append(b,n);if(raw.size()>65536)break;}
-  close(fd);auto p=raw.find("\r\n\r\n");
-  Val result;if(p==std::string::npos||raw.size()>65536||!mj::parse(raw.substr(p+4),result)||!result.isObj())return err;
-  if(raw.rfind("HTTP/1.1 200",0)!=0&&raw.rfind("HTTP/1.1 202",0)!=0){
-    if(!result.find("error"))result["error"]="Modellverwaltung nicht bereit";
-  }
-  return result;
-}
-static bool switching_or_unready(const Val &state){
-  const std::string id=value(state,"active");
-  return (id!="q4"&&id!="iq3") || !value(state,"pending").empty();
-}
-static void control(int fd){
-  Http r;if(!request_read(fd,r))return;
-  if(r.path!="/models"){json_response(fd,400,message("unknown control route"));return;}
-  if(r.method=="GET"){
-    Val result=supervisor_request("GET");
-    // A completed switch must clear the traffic gate even if no new chat
-    // arrived yet. Otherwise the owner cannot switch back without first
-    // sending a (potentially unwanted) inference request.
-    if(result.find("active") && !value(result,"active").empty() &&
-       result.find("pending") && value(result,"pending").empty()){
-      std::lock_guard<std::mutex> lock(traffic_mtx);
-      gate_switch=false;
-    }
-    json_response(fd,result.find("error")&& !result.find("active")?503:200,result);
-    return;
-  }
-  if(r.method!="PUT"){json_response(fd,400,message("invalid method"));return;}
-  Val data;if(!mj::parse(r.body,data)||!data.isObj()||!data.find("id")){json_response(fd,400,message("invalid model"));return;}
-  std::string id=value(data,"id");if(id!="q4"&&id!="iq3"){json_response(fd,400,message("invalid model"));return;}
-  {
-    std::lock_guard<std::mutex> lock(traffic_mtx);
-    if(gate_switch ||active_inference){json_response(fd,409,message("Bitte laufende Antwort beenden, bevor das Modell gewechselt wird"));return;}
-    gate_switch=true;
-  }
-  Val j=Val::object();j["id"]=id;
-  Val res=supervisor_request("PUT",mj::dump(j));
-  if(res.find("error") && !value(res,"error").empty()){
-    std::lock_guard<std::mutex> lock(traffic_mtx);gate_switch=false;
-    json_response(fd,503,res);
-  } else {
-    std::lock_guard<std::mutex> lock(traffic_mtx);
-    // Same model requested -> no transaction was opened.
-    gate_switch=!res.find("pending")?false:!res.find("pending")->asStr().empty();
-    json_response(fd,202,res);
-  }
-}
-static bool await_active(std::string &choice,int fd){
-  for(int i=0;i<1800;i++){
-    Val state=supervisor_request("GET");
-    if(!switching_or_unready(state)){
-      std::lock_guard<std::mutex> lock(traffic_mtx);
-      if(!gate_switch ||(state.find("pending")&&state.find("pending")->asStr().empty())) {
-        gate_switch=false;
-        choice=value(state,"active");
-        if(choice=="q4"||choice=="iq3"){++active_inference;return true;}
-      }
-    }
-    if(i%10==0){char tmp;ssize_t n=recv(fd,&tmp,1,MSG_PEEK|MSG_DONTWAIT);if(n==0)return false;}
-    std::this_thread::sleep_for(std::chrono::seconds(1));
-  }
-  return false;
-}
-struct InferenceLease{
-  bool held=false;
-  ~InferenceLease(){if(held){std::lock_guard<std::mutex>lock(traffic_mtx);if(active_inference) --active_inference;}}
-};
 static std::string audit_id(){return sha(std::to_string(std::time(nullptr))+"-"+std::to_string(getpid())+"-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count())).substr(0,24);}
 static Val parse_or_text(const std::string &s){
   Val j;if(mj::parse(s,j))return j;return Val(s);
@@ -304,29 +221,9 @@ static int peer_uid(int fd,int server_port){
 static void proxy(int fd){
   Http r;if(!request_read(fd,r))return;
   const bool quiet=r.path=="/health"||r.path=="/v1/models"||r.path=="/props"||r.path=="/metrics"||r.path=="/slots";
-  std::string id=audit_id(),selected;
-  InferenceLease lease;
-  // A model transaction temporarily halts only inference; the control/status
-  // endpoints and the room itself remain available throughout the load.
-  const bool inference=r.path=="/v1/chat/completions"||r.path=="/completion"||r.path=="/chat/completions";
-  if(r.path=="/health"){
-    Val selection=supervisor_request("GET");
-    if(switching_or_unready(selection)){
-      Val m=Val::object();m["status"]="loading";
-      json_response(fd,503,m);return;
-    }
-  }
-  if(inference){
-    if(!await_active(selected,fd)){
-      Val m=Val::object();m["error"]="Modell wird geladen. Anfrage bitte erneut senden.";
-      json_response(fd,503,m);return;
-    }
-    lease.held=true;
-  }else{
-    Val selection=supervisor_request("GET");
-    if(switching_or_unready(selection)){Val m=Val::object();m["status"]="loading";json_response(fd,503,m);return;}
-    selected=value(selection,"active");
-  }
+  // Q4 is the only client-facing route. IQ3 serves on isolated :8091 for
+  // controlled readiness tests; no model choice or service lifecycle here.
+  std::string id=audit_id(),selected="q4";
   if(r.path=="/audit/v1/health"){Val v=Val::object();v["ok"]=true;json_response(fd,200,v);return;}
   if(r.path=="/audit/v1/event"&&r.method=="POST"){
     Val ev=parse_or_text(r.body);Val v=Val::object();v["type"]="bot_event";v["id"]=id;v["event"]=ev;audit(v);
@@ -408,31 +305,19 @@ static int server(int port){
   if(bind(fd,(sockaddr*)&a,sizeof(a))||listen(fd,128))throw std::runtime_error("failed to bind loopback gateway");
   return fd;
 }
-static int unix_server(const std::string &path){
-  fs::create_directories(fs::path(path).parent_path());
-  int fd=socket(AF_UNIX,SOCK_STREAM|SOCK_CLOEXEC,0);sockaddr_un a{};a.sun_family=AF_UNIX;
-  if(path.size()>=sizeof(a.sun_path))throw std::runtime_error("control path too long");
-  strcpy(a.sun_path,path.c_str());unlink(path.c_str());
-  if(bind(fd,(sockaddr*)&a,sizeof(a))||listen(fd,16))throw std::runtime_error("cannot bind private control socket");
-  struct group *g=getgrnam(env("MAG_MODEL_CONTROL_GROUP","magbot").c_str());
-  if(!g||chown(path.c_str(),-1,g->gr_gid)||chmod(path.c_str(),0660))throw std::runtime_error("control socket owner/group failed (fail closed)");
-  return fd;
-}
 int main(){
   try{
-    cfg.listen=number("MAG_AUDIT_LISTEN_PORT",8080);cfg.q4=number("MAG_MODEL_Q4_PORT",8090);cfg.iq3=number("MAG_MODEL_IQ3_PORT",8091);
-    cfg.control=env("MAG_MODEL_CONTROL_SOCKET",cfg.control);
+    cfg.listen=number("MAG_AUDIT_LISTEN_PORT",8080);cfg.q4=number("MAG_MODEL_Q4_PORT",8090);
     cfg.logs=env("MAG_AUDIT_LOG_DIR",cfg.logs);cfg.secrets=env("MAG_AUDIT_SECRETS_FILE",cfg.secrets);
-    int public_fd=server(cfg.listen);int private_fd=unix_server(cfg.control);
-    Val start=Val::object();start["type"]="gateway";start["event"]="start";start["upstream"]="8090/8091";audit(start);
+    int public_fd=server(cfg.listen);
+    Val start=Val::object();start["type"]="gateway";start["event"]="start";start["upstream"]="8090";audit(start);
     for(;;){
-      pollfd fds[2]={{public_fd,POLLIN,0},{private_fd,POLLIN,0}};
-      if(poll(fds,2,-1)<0){if(errno==EINTR)continue;break;}
-      for(int i=0;i<2;i++)if(fds[i].revents&POLLIN){
-        int fd=accept4(fds[i].fd,nullptr,nullptr,SOCK_CLOEXEC);
+      pollfd pfd{public_fd,POLLIN,0};
+      if(poll(&pfd,1,-1)<0){if(errno==EINTR)continue;break;}
+      if(pfd.revents&POLLIN){
+        int fd=accept4(public_fd,nullptr,nullptr,SOCK_CLOEXEC);
         if(fd<0)continue;
-        std::thread([fd,i]{timeval timeout{7200,0};setsockopt(fd,SOL_SOCKET,SO_RCVTIMEO,&timeout,sizeof(timeout));
-          if(i==0)proxy(fd);else control(fd);close(fd);}).detach();
+        std::thread([fd]{timeval timeout{7200,0};setsockopt(fd,SOL_SOCKET,SO_RCVTIMEO,&timeout,sizeof(timeout));proxy(fd);close(fd);}).detach();
       }
     }
   }catch(const std::exception &e){std::cerr<<"mag-audit-gateway: "<<e.what()<<"\n";return 1;}

@@ -71,3 +71,8 @@ Env auf mag vorbereiten: sudo bash ops/deepseek/prompt-cache-switch.sh apply. De
 ## Sequenzieller Modell-Hot-Swap Q4 ↔ IQ3 (PR #31, nach PR #33)
 
 Auf NUMA 0 passen Q4 und IQ3 **nicht gleichzeitig**. Der native C++-Supervisor stoppt daher das aktive Modell und prüft, dass dessen Prozess vollständig entladen ist, bevor er das Zielmodell auf demselben NUMA-Knoten startet. Erst nach Health-/NUMA-Gate wird die persistente Auswahl wirksam, andernfalls läuft der vorherige Server erneut an. **Node 1 wird weder für Modellgewichte noch Threads verwendet.** Das Modell-Swap-Setup ändert den vorhandenen Q4-ExecStart nicht und führt insbesondere während `hotswap.sh apply` keinerlei Modell-Neustart aus. Der einmalige NUMA0-Neustart gehört zu #33 und wird von Ali manuell durchgeführt. Nur der Owner kann danach im MAG-Raum wechseln. Anweisungen: `ops/deepseek/hotswap/{README,OPERATIONS,ROLLBACK}.md`.
+
+
+## Änderung 17.10.2026: IQ3 parallel auf NUMA1
+
+Die ältere sequenzielle Q4/IQ3-Umschaltlösung ist stillgelegt. Q4 bleibt auf NUMA0 und ist das alleinige Raum-Modell. IQ3 wird separat auf NUMA1 nur nach SHA-/RAM-/Backup-Gates gestartet. Anleitung: [IQ3_PARALLEL.md](IQ3_PARALLEL.md). `hotswap.sh` ist deaktiviert; `iq3-parallel.sh` übernimmt das Staging. Keine automatische mag-llm-Modell-Neustarts.

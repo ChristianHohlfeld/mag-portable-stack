@@ -328,3 +328,4 @@ cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j 4 --target test-guest-description
 ./build/test-guest-description
 ```
+\n### Sichere Owner-Probe ohne Kernel-TUN\n\nWenn nur `grokbot-box-2` (100.99.255.98) mit Tailscale-Userspace verfügbar ist, unterstützt das Release einen **lokalen** SOCKS5-Tailscale-Proxy als Transport des externen Owner-Checks. Die Box muss dabei weiterhin ein persönliches, ungetaggtes Owner-Gerät und für MAG root sicher per SSH erreichbar sein; andernfalls **kein Deploy**. Vollständige Checkliste: [Owner-Probe Userspace](owner-probe-userspace.md).\n

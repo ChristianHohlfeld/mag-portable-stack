@@ -13,8 +13,8 @@ SRC=$(cd "$(dirname "$(readlink -f "$0")")/../.." && pwd)
 APPLY=0; [[ "${1:-}" == "--apply" ]] && APPLY=1
 # Legacy bootstrap uses the previous Python gateway. Once the native sequential
 # supervisor is installed, this old installer must never downgrade its unit.
-if [[ $APPLY -eq 1 && -f /etc/systemd/system/mag-model-supervisor.service ]]; then
-  echo "Native MAG model supervisor is installed. Use ops/deepseek/hotswap.sh for gateway maintenance; refusing legacy overwrite." >&2
+if [[ $APPLY -eq 1 ]]; then
+  echo "Native C++ Q4-only gateway is managed by ops/deepseek/iq3-parallel.sh; legacy audit installer may not overwrite it." >&2
   exit 4
 fi
 run() { echo "+ $*"; if [[ $APPLY -eq 1 ]]; then "$@"; fi; }

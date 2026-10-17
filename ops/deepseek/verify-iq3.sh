@@ -3,9 +3,6 @@ set -euo pipefail
 DIR=${MAG_IQ3_DIR:-/home/chris/models/deepseek-v4-UD-IQ3_XXS}
 [[ -d "$DIR" && -f "$DIR/SHA256SUMS" && ! -L "$DIR/SHA256SUMS" ]] || { echo "IQ3: manifest missing" >&2; exit 4; }
 cd "$DIR"
-if [[ "${MAG_IQ3_REQUIRE_EXCLUSIVE:-0}" == 1 ]] && systemctl is-active --quiet mag-llm.service;then echo "IQ3: Q4 is still resident" >&2;exit 4;fi
-MAG_IQ3_MIN_PART_BYTES=${MAG_IQ3_MIN_PART_BYTES:-1000000000}
-[[ "$MAG_IQ3_MIN_PART_BYTES" =~ ^[0-9]+$ ]] || exit 4
 shopt -s nullglob
 parts=( *.gguf )
 (( ${#parts[@]} == 4 )) || { echo "IQ3: exactly four GGUF splits required" >&2; exit 4; }
@@ -15,7 +12,7 @@ for f in "${parts[@]}"; do
   [[ -f "$f" && ! -L "$f" && "$f" =~ ^(.+)-0000([1-4])-of-00004[.]gguf$ ]] || { echo "IQ3: bad split $f" >&2; exit 4; }
   n=${BASH_REMATCH[2]}; [[ -z "${seen[$n]:-}" ]] || exit 4; seen[$n]=1
   prefix=${BASH_REMATCH[1]}; [[ -z "$stem" || "$stem" == "$prefix" ]] || exit 4; stem=$prefix
-  [[ $(stat -c %s "$f") -gt "$MAG_IQ3_MIN_PART_BYTES" ]] || { echo "IQ3: incomplete $f" >&2; exit 4; }
+  [[ $(stat -c %s "$f") -gt 0 ]] || { echo "IQ3: incomplete $f" >&2; exit 4; }
   for suffix in .part .aria2 .incomplete .lock; do [[ ! -e "$f$suffix" ]] || exit 4; done
 done
 for n in 1 2 3 4; do [[ -n "${seen[$n]:-}" ]] || exit 4; done
@@ -30,5 +27,17 @@ while IFS= read -r line || [[ -n "$line" ]]; do
 done < SHA256SUMS
 (( count == 4 )) || exit 4
 for f in "${parts[@]}"; do [[ -n "${checks[$f]:-}" ]] || exit 4; done
-sha256sum --check --strict --status SHA256SUMS || { echo "IQ3: SHA failed" >&2; exit 4; }
+# The model-local manifest is insufficient: hashes must equal audited upstream.
+PINNED=${MAG_IQ3_PINNED_MANIFEST:-$(dirname "$(readlink -f "$0")")/iq3.sha256}
+[[ -f "$PINNED" && ! -L "$PINNED" ]] || { echo "IQ3: pinned manifest missing" >&2;exit 4; }
+# Four official names, four known hashes; disallow added lines or renamed parts.
+expected=(DeepSeek-V4-Flash-0731-UD-IQ3_XXS-0000{1..4}-of-00004.gguf)
+pinned_count=$(wc -l < "$PINNED")
+(( pinned_count == 4 )) || exit 4
+for n in "${expected[@]}"; do grep -Eq "^[a-f0-9]{64}  $n$" "$PINNED" || { echo "IQ3: expected name missing" >&2;exit 4; };done
+# Normalize both tables: pairs must be identical, irrespective of row order.
+# Bash awk version is more portable than sed's GNU case conversion here.
+normalize(){ awk 'NF==2 && length($1)==64 && $1~/^[a-fA-F0-9]+$/ {sub(/^\\*/,"",$2);print tolower($1)"  "$2;next} {exit 4}' "$1" | LC_ALL=C sort; }
+[[ "$(normalize "$PINNED")" == "$(normalize SHA256SUMS)" ]] || { echo "IQ3: local manifest differs from pinned hashes" >&2;exit 4; }
+sha256sum --check --strict --status "$PINNED" || { echo "IQ3: pinned SHA verification failed" >&2;exit 4; }
 printf '%s/%s-00001-of-00004.gguf\n' "$DIR" "$stem"

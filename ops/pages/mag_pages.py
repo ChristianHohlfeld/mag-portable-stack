@@ -13,6 +13,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import time
 import tarfile
 import tempfile
 import urllib.error
@@ -50,6 +51,7 @@ def settings(path=CONFIG):
     c = json.loads(Path(path).read_text())
     assert c["gitea_url"].startswith("http://127.0.0.1:") or c["gitea_url"].startswith("http://[::1]:"), "Gitea API must be loopback"
     c["public_ip"] = str(ipaddress.IPv4Address(c["public_ip"]))
+    c["public_dns_ip"] = str(ipaddress.IPv4Address(c.get("public_dns_ip", c["public_ip"])))
     c["tailnet_ip"] = str(ipaddress.IPv4Address(c["tailnet_ip"]))
     assert ipaddress.IPv4Address(c["tailnet_ip"]) in ipaddress.IPv4Network("100.64.0.0/10")
     assert c["public_ip"] != c["tailnet_ip"]
@@ -266,7 +268,7 @@ def render_nginx(c, state):
              "    }",
              "    location / { return 404; }", "}", ""]
     # Prevent catch-all mismatched Host/SNI from reaching a private vhost.
-    for ip in (public_ip, tailnet):
+    for ip in (public_ip,):
         lines.extend(["server {", f"    listen {ip}:443 ssl;",
                       "    server_name _;", f"    ssl_certificate {cert};",
                       f"    ssl_certificate_key {key};", "    return 444;", "}", ""])
@@ -303,7 +305,7 @@ def publish_nginx(config, nginx=CONF):
 def attempt_cert(c, custom, canonical):
     if custom_cert(c, custom):
         return
-    if not dns_points_to_site(custom, canonical, c["public_ip"]):
+    if not dns_points_to_site(custom, canonical, c.get("public_dns_ip", c["public_ip"])):
         print(f"Custom domain {custom}: DNS not pointing at {canonical} / {c['public_ip']}; retry later", file=sys.stderr)
         return
     # HTTP-01 requires port 80 reachable through nginx. certbot stores renewal config on host.
@@ -378,11 +380,15 @@ def sync(c):
     publish_nginx(render_nginx(c, state))
     atomic_text(STATE, json.dumps(state, indent=2, sort_keys=True) + "\n", 0o600)
     for s in state.values():
-        if s["visibility"] == "public" and s.get("custom") and not custom_cert(c, s["custom"]):
+        if (s["visibility"] == "public" and s.get("custom") and
+                not custom_cert(c, s["custom"]) and
+                time.time() - s.get("cert_attempt_at", 0) >= 3600):
+            s["cert_attempt_at"] = time.time()  # prevent rate-limit loops on DNS/ACME failures
             try:
                 attempt_cert(c, s["custom"], s["domain"])
             except (OSError, subprocess.SubprocessError) as ex:
                 print(f"Custom cert for {s['custom']} pending: {ex}", file=sys.stderr)
+    atomic_text(STATE, json.dumps(state, indent=2, sort_keys=True) + "\n", 0o600)
     publish_nginx(render_nginx(c, state))
     print(f"MAG Pages: {len(state)} site(s); no mag-llm changes")
 

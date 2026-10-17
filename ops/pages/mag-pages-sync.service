@@ -15,5 +15,5 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=true
 ProtectSystem=strict
-ReadWritePaths=/var/lib/mag-pages /etc/nginx/conf.d /etc/mag-pages /run/lock
+ReadWritePaths=/var/lib/mag-pages /etc/nginx/conf.d /etc/mag-pages /run/lock /etc/letsencrypt /var/lib/letsencrypt /var/log/letsencrypt
 TimeoutStartSec=10min

@@ -44,6 +44,7 @@ echo 'inet 100.123.114.16/32 scope global tailscale0' ''',
    "openssl":'''#!/usr/bin/env bash
 if [[ "$*" == *-checkhost* ]]; then echo 'Hostname does match certificate'; fi''',
    "ssh":'''#!/usr/bin/env bash
+if [[ "§{MOCK_SSH_DOWN:-0}" == 1 ]]; then echo "ssh: connect timed out" >&2; exit 255; fi
 arg="§{@: -1}"
 if [[ "$arg" == true ]]; then exit 0; fi
 if [[ "$arg" == 'tailscale ip -4' ]]; then
@@ -74,7 +75,7 @@ elif [[ "$arg" == *'https://mag.stardenburg.de/'* ]]; then
  echo 200
 else exit 8; fi''',
    "curl":'''#!/usr/bin/env bash
-echo -n 403''',
+echo -n "§{MOCK_CURL_CODE:-403}"''',
   }
   for name,body in programs.items():
    f=mock/name
@@ -111,11 +112,40 @@ echo -n 403''',
   self.assertEqual(r.returncode,0,r.stderr)
   self.assertIn("OAuth absent",r.stderr)
   self.assertEqual(self.original,self.site.read_bytes())
- def test_missing_owner_probe_fails_before_cutover(self):
-  self.probe.unlink()
-  r=self.run_script("preflight")
+ def run_env(self,subcmd,**env):
+  return subprocess.run(["bash",str(self.script),subcmd],
+    env={**self.env,"MOCK_OWNER_FAIL":"0",**env},text=True,capture_output=True)
+ def test_configured_probe_still_gates_nginx_changes(self):
+  r=self.run_env("preflight",MOCK_SSH_DOWN="1")
   self.assertNotEqual(r.returncode,0)
+  self.assertIn("Owner SSH probe unavailable",r.stderr)
   self.assertEqual(self.original,self.site.read_bytes())
+ def test_without_probe_device_nginx_change_uses_local_check(self):
+  self.probe.unlink()
+  self.assertIn("no Owner probe device configured",self.run_env("preflight").stderr)
+  for command in ("preflight","stage","activate","smoke"):
+   r=self.run_env(command,MOCK_SSH_DOWN="1")
+   self.assertEqual(r.returncode,0,(command,r.stderr))
+  self.assertIn("Smoke OK (local)",r.stdout)
+  self.assertIn("auth_request /_mag_whois;",self.site.read_text())
+ def test_local_check_failure_rolls_back(self):
+  self.probe.unlink()
+  for command in ("preflight","stage","activate"):
+   self.assertEqual(self.run_env(command).returncode,0,command)
+  r=self.run_env("smoke",MOCK_CURL_CODE="502")
+  self.assertNotEqual(r.returncode,0)
+  self.assertIn("Local ingress check failed (HTTP 502)",r.stderr)
+  self.assertEqual(self.run_script("rollback").returncode,0)
+  self.assertEqual(self.original,self.site.read_bytes())
+ def test_unchanged_nginx_needs_no_probe_device(self):
+  self.assertEqual(self.run_script("standalone").returncode,0)
+  txn=self.p/"var/backups/mag-stack/check2";txn.mkdir()
+  env={"MAG_NGINX_TXN":str(txn),"MOCK_SSH_DOWN":"1"}
+  for command in ("preflight","stage","activate","smoke"):
+   r=self.run_env(command,**env)
+   self.assertEqual(r.returncode,0,(command,r.stderr))
+  self.assertIn("Smoke OK (local)",r.stdout)
+  self.assertFalse((txn/"nginx.changed").exists())
  def test_same_host_is_not_a_valid_external_owner_probe(self):
   env={**self.env,"MOCK_OWNER_FAIL":"0","MOCK_PROBE_SELF":"1"}
   r=subprocess.run(["bash",str(self.script),"preflight"],env=env,
@@ -188,6 +218,7 @@ echo -n 403''',
    'MAG_DEPLOY_OWNER_SOCKS5=127.0.0.1:1055\n')
   r=self.run_script('standalone')
   self.assertEqual(r.returncode,0,r.stderr) # baseline Owner device succeeds
+  self.site.write_text("old legacy vhost\n") # the next run is an nginx change again
   saved=self.site.read_bytes()
   env={**self.env,'MOCK_OWNER_FAIL':'0','MOCK_EXPECT_SOCKS':'1',
        'MOCK_GUEST_ROLE':'1'}

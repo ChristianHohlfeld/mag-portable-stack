@@ -136,7 +136,8 @@ while :; do
   fi
   sleep 5; waited=$((waited + 5))
 done
-# Owner smoke must come from a second authenticated Tailnet device.
+# A changed nginx/whois config needs the Owner smoke from a second Tailnet
+# device; otherwise smoke is the local 443 ingress check (deploy-nginx.sh).
 # nginx.stage snapshots the old vhost and validates the candidate BEFORE
 # switching symlinks or restarting the room.
 MAG_NGINX_TXN="$BACKUP"; export MAG_NGINX_TXN

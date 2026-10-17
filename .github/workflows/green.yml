@@ -1,15 +1,9 @@
 name: Green main
-# When every check on the newest main commit is green, move branch `green` to
-# it. MAG deploys only `green` (ops/auto-update). Red or unfinished: nothing.
+# On every push to main: wait until all other checks on that commit finished.
+# All green -> move branch `green` there. MAG deploys only `green`
+# (ops/auto-update). Red, cancelled or superseded by a newer push: nothing.
 on:
-  workflow_run:
-    workflows:
-      - Native MAG stack
-      - MAG encrypted backup and restore
-      - Screenshot paste browser emulation
-      - MAG Pages native C++ / nginx / secrets
-      - Private nginx cutover security
-    types: [completed]
+  push:
     branches: [main]
   workflow_dispatch:
 permissions:
@@ -17,10 +11,11 @@ permissions:
   checks: read
 concurrency:
   group: green-main
-  cancel-in-progress: false
+  cancel-in-progress: true
 jobs:
   promote-green:
     runs-on: ubuntu-latest
+    timeout-minutes: 120
     outputs:
       promoted: ${{ steps.promote.outputs.promoted }}
     steps:

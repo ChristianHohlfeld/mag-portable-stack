@@ -121,6 +121,12 @@ sudo bash ops/health.sh
 
 `ops/deploy.sh` alone does not build: it needs the binaries in `build/`.
 
+Deploy smoke: by default `ops/deploy.sh` checks locally that nginx and the room
+answer on 443 and rolls nginx and room back otherwise. An external Owner probe
+device (`/etc/mag-stack/deploy-owner-probe.conf`, see
+[docs/owner-probe-userspace.md](docs/owner-probe-userspace.md)) is optional; if
+configured, it is required whenever the nginx/whois config changes.
+
 **Automatic updates.** Every push to `main` runs CI. When every check on the
 newest `main` commit is green, `.github/workflows/green.yml` moves branch
 `green` to it; red or unfinished commits never move it. After the first

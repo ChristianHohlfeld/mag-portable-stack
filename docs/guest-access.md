@@ -43,7 +43,7 @@ einer Sekunde geschlossen; neue Requests sind unmittelbar gesperrt.
    sudo chmod 0600 /etc/credstore/mag-guest-oauth
    sudo systemctl daemon-reload
    ```
-3. `mag-120.service` verwendet `LoadCredential=mag-guest-oauth:...`.
+3. `mag-120.service` verwendet `LoadCredential=mag-guest-oauth` (systemd-Credstore).
    systemd kopiert die Datei geschützt nach `/run/credentials/...`, ohne sie
    per Environment-Variable oder Kommandozeilenargument zu veröffentlichen.
    Ohne Credential bleibt die Gäste-Einladung deaktiviert, der Raum

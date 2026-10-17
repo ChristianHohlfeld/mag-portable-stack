@@ -268,6 +268,12 @@ static std::string required_perm(const std::string &method,
         path == "/api/upload" || path == "/api/stt" || path == "/api/speak")) ||
       ((method == "POST" || method == "DELETE") && guest_reaction_path(path)))
     return "chat";
+  if (path == "/api/offline" && method == "POST") return "offline";
+  if (path == "/api/queue" && method == "GET") return "read";
+  if (path.rfind("/api/queue/", 0) == 0 && path.size() > 11 &&
+      path.find('/', 11) == std::string::npos &&
+      path != "/api/queue/merge" && path != "/api/queue/resume" &&
+      (method == "PUT" || method == "DELETE")) return "queue-own";
   // Never let a config-based guest permission accidentally authorize one
   // of the destructive operations (or future routes).
   if (path == "/api/room/clear" || path == "/api/reset" ||
@@ -301,5 +307,7 @@ static bool permit_request(const std::string &method, const std::string &path,
   if (!a.ok) return false;
   if (a.role == "owner") return true;
   std::string required = required_perm(method, path);
-  return required == "read" || required == "chat";
+  return required == "read" || required == "chat" ||
+         required == "queue-own" ||
+         (required == "offline" && actor_can(a,"offline"));
 }

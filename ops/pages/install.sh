@@ -39,7 +39,12 @@ chmod 0640 /etc/mag-pages/visibility.json
 install -d -m 0755 -o magbot -g magbot /var/lib/mag-pages \
  /var/lib/mag-pages/releases /var/lib/mag-pages/public /var/lib/mag-pages/tailnet /var/lib/mag-pages/custom
 install -d -m 0755 -o root -g root /var/lib/mag-pages/acme /usr/local/lib/mag-pages /etc/nginx/conf.d
-install -m 0755 "$here/issue-wildcard.sh" "$here/refresh-custom.sh" "$here/render-nginx.sh" /usr/local/lib/mag-pages/
+install -m 0755 -o root -g root "$here/issue-wildcard.sh" "$here/refresh-custom.sh" "$here/render-nginx.sh" "$here/pages-gc.sh" "$here/pages-policy.sh" /usr/local/lib/mag-pages/
+# Only these two root-owned argv entrypoints are delegated to native magroom.
+# No shell, user-provided command path, or wildcard sudo permissions.
+printf '%s\n' 'magbot ALL=(root) NOPASSWD: /usr/local/lib/mag-pages/pages-gc.sh, /usr/local/lib/mag-pages/pages-policy.sh *' > /etc/sudoers.d/mag-pages
+chmod 0440 /etc/sudoers.d/mag-pages
+visudo -cf /etc/sudoers.d/mag-pages
 # Save every existing Pages vhost for fail-closed recovery.
 main_conf=/etc/nginx/conf.d/mag-pages.conf
 custom_conf=/etc/nginx/conf.d/mag-pages-custom.conf
@@ -65,7 +70,7 @@ if ! systemctl reload nginx.service; then
 fi
 # Existing timer only; pages renewal via lego v5 RUN, not a separate service.
 install -d -m 0755 /etc/systemd/system/mag-acme-renew.service.d
-printf '[Service]\nExecStartPost=-/usr/local/lib/mag-pages/refresh-custom.sh run\n' \
+printf '[Service]\nExecStartPost=-/usr/local/lib/mag-pages/refresh-custom.sh run\nExecStartPost=-/usr/local/lib/mag-pages/pages-gc.sh\n' \
  > /etc/systemd/system/mag-acme-renew.service.d/30-pages.conf
 # Native publisher enables public links only with an explicitly configured bind.
 install -d -m 0755 /etc/systemd/system/mag-120.service.d

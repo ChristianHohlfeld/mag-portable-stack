@@ -14,8 +14,10 @@ if [[ -e "$req" ]]; then
          (.action=="public" or .action=="tailnet" or .action=="delete") and
          (.repo|test("^magbot-[a-z][a-z0-9-]{0,31}/[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$"))' "$req" >/dev/null
   "$policy" "$req"
+  rm -f -- "$req"
+  # A policy change needs a subsequent native C++ sync BEFORE new root TLS.
+  exit 0
 fi
-# Custom cert issuance and nginx reload happen NOW, not at timer-only cadence.
+# This call follows the native publisher commit and immediately activates TLS.
 "$gc"
-if [[ -e "$req" ]]; then rm -f -- "$req"; fi
 rm -f "$root/gc.pending"

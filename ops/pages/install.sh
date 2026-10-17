@@ -33,7 +33,7 @@ install -d -m 0755 /usr/local/lib/mag-pages /etc/nginx/conf.d
 install -m 0755 "$here/issue-wildcard.sh" "$here/refresh-custom.sh" /usr/local/lib/mag-pages/
 backup=/etc/nginx/conf.d/mag-pages.conf.pre-pages
 if [[ -e /etc/nginx/conf.d/mag-pages.conf && ! -e "$backup" ]]; then cp -a /etc/nginx/conf.d/mag-pages.conf "$backup"; fi
-zone_regex="$(printf %s "$PAGES_ZONE" | sed 's/[.]/\\./g')"
+zone_regex="$(printf %s "$PAGES_ZONE" | sed 's/[.]/\\\\./g')"
 sed -e "s|@PUBLIC_BIND@|$PAGES_PUBLIC_BIND|g" \
     -e "s|@TAILNET_BIND@|$PAGES_TAILNET_BIND|g" \
     -e "s|@ZONE_REGEX@|$zone_regex|g" "$here/mag-pages.nginx.in" \

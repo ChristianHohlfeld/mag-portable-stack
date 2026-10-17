@@ -12,9 +12,9 @@ trees. A run checks free space first (default 4096 MiB, `MAG_BACKUP_MIN_FREE_MIB
 and exits before writing if the disk is below that. After the snapshot it
 runs `restic check`, restores the archive to a temp directory and checks the
 SHA256 manifest plus the required paths. Only then is the archive marked
-verified. Older archives are deleted only at that point: keep the last 3
-verified archives and the pre-deploy archive of the current release, and
-never delete the newest good one. A failed run deletes only its own
+verified. Older archives are deleted only at that point: keep the newest
+verified archive (`MAG_BACKUP_KEEP`, default 1) and the pre-deploy archive
+of the current release, and never delete the newest good one. A failed run deletes only its own
 incomplete directory. The directory is root-owned and mode 0700. AWS/S3
 stays off. `mag-llm` is not restarted.
 
@@ -32,6 +32,18 @@ Inspect `/var/tmp/mag-restore/var/lib/magbot/room`, `var/lib/gitea/data/gitea.db
 and `var/lib/mag-pages` before any live `--apply`. Release directories keep
 the current release, the previous release, and any release a symlink still
 points at (`ops/prune-releases.sh`).
+
+The first deploy of 4.0.1 runs `ops/cleanup-legacy.sh` once (marker
+`/var/lib/mag-stack/cleanup-legacy.done`, report
+`/var/lib/mag-stack/cleanup-report.txt`). It removes the old shared restic
+repo and ad-hoc unit/browser backups (only once a verified full backup
+exists), the pre-4.0 tools in `/usr/local`, Git checkouts in `/home/chris`
+other than `mag-stack` (bundled first to `/var/backups/mag-legacy-checkouts`),
+day-old `/tmp/mag-*` test leftovers, the orphan VM `magbot-agent2`, and
+`mag-*` units whose program no longer exists. Anything referenced from
+`/etc` or `/usr/local`, used by a running process, holding `*.gguf` files or
+belonging to `mag-llm*`/`mag-120` is kept and listed in the report.
+`MAG_CLEANUP_DRY_RUN=1 sudo -E bash ops/cleanup-legacy.sh` previews it.
 
 Owner login is only `chris.hohlfeld@gmail.com`. Localhost without that login
 is not an admin. The SSH console lockdown script is not started by deploy.
@@ -533,3 +545,5 @@ Anleitung einschließlich des Root-only `/etc/credstore/mag-guest-oauth`:
 ### Gruppenchat mit mehreren Bots (Q4 und IQ3)
 
 Ein globaler Raum für alle Bots. `ops/mag-120.d/30-multibot.conf` hebt die Einzelbot-Sperre auf, `deploy.sh` installiert das Drop-in (Rollback entfernt oder stellt es wieder her). Gespeicherte, bisher geparkte Bots erscheinen nach dem Deploy wieder. Jeder Bot hat weiter seine eigene KVM-VM. Anlegen und Entfernen laufen über den bestehenden `spawn`/`despawn`-Pfad, beim Entfernen werden auch Warteschlange und Auto-Besitzer des Bots bereinigt. Das Modell wählt jeder Bot selbst (Q4 `deepseek-v4-flash-0731`, IQ3 `deepseek-v4-flash-0731-iq3`) über `POST /api/agents/<id>/model` oder im Frontend. Das setzt nur das Modellfeld der Anfrage; `mag-llm` und `mag-llm-iq3` bleiben dauerhaft im RAM und werden nie gestoppt oder neu gestartet. Zurück zum Einzelbot: `30-multibot.conf` entfernen, `daemon-reload`, nur `mag-120` neu starten.
+
+Der Gruppenchat blockiert nicht. Pro Modellserver gibt es eine Spur: Bots auf Q4 und IQ3 antworten gleichzeitig, Bots auf demselben Modell nacheinander. Das Eingabefeld bleibt immer frei; eine Nachricht an einen freien Bot wird sofort beantwortet, an einen beschäftigten Bot wird sie eingereiht. Über dem Eingabefeld zeigt eine Leiste jeden antwortenden Bot mit eigenem „Stopp“ (ab zwei Bots zusätzlich „Alle stoppen“). `POST /api/cancel {"bot": "<id>"}` stoppt nur diesen Bot, ohne `bot` alle. `/api/state` und das `idle`-Event liefern `busy_bots`. Autonomie bleibt bei genau einem Besitzer (erster Bot der Nutzeranfrage).

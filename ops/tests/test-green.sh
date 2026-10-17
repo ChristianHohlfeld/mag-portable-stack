@@ -19,7 +19,7 @@ jq "$jqexpr" <<<"$FAKE_RUNS"
 GH
 chmod +x "$tmp/bin/gh"
 export PATH="$tmp/bin:$PATH" GITHUB_REPOSITORY=o/r
-promote() { FAKE_RUNS="$1" bash "$root/ops/ci/promote-green.sh" >/dev/null; git fetch -q origin; git rev-parse -q --verify origin/green || true; }
+promote() { PROMOTE_WAIT=0 FAKE_RUNS="$1" bash "$root/ops/ci/promote-green.sh" >/dev/null; git fetch -q origin; git rev-parse -q --verify origin/green || true; }
 run() { printf '{"name":"%s","status":"%s","conclusion":%s}' "$1" "$2" "$3"; }
 sha=$(git rev-parse origin/main)
 [[ -z $(promote '{"check_runs":[]}') ]]
@@ -29,8 +29,20 @@ sha=$(git rev-parse origin/main)
 git -c user.name=t -c user.email=t@t commit -q --allow-empty -m two && git push -q origin HEAD:main && git fetch -q origin
 [[ $(promote "{\"check_runs\":[$(run native completed '"cancelled"')]}") == "$sha" ]]
 [[ $(promote "{\"check_runs\":[$(run native completed '"success"')]}") == "$(git rev-parse origin/main)" ]]
+# Waiting mode: running first, then all green -> promoted after polling.
+git -c user.name=t -c user.email=t@t commit -q --allow-empty -m three && git push -q origin HEAD:main && git fetch -q origin
+cat > "$tmp/bin/gh" <<'GH'
+#!/usr/bin/env bash
+jqexpr=""; while (( $# )); do [[ $1 == --jq ]] && { jqexpr=$2; shift; }; shift; done
+n=$(cat "$COUNTER" 2>/dev/null || echo 0); echo $((n + 1)) > "$COUNTER"
+if (( n < 2 )); then st=in_progress; c=null; else st=completed; c='"success"'; fi
+jq "$jqexpr" <<<"{\"check_runs\":[{\"name\":\"native\",\"status\":\"$st\",\"conclusion\":$c}]}"
+GH
+COUNTER="$tmp/n" PROMOTE_SLEEP=0 bash "$root/ops/ci/promote-green.sh" >/dev/null
+git fetch -q origin; [[ $(git rev-parse origin/green) == "$(git rev-parse origin/main)" && $(cat "$tmp/n") == 3 ]]
 grep -Fq 'fetch -q origin green' "$root/ops/auto-update/auto-update.sh"
 grep -Fq 'merge -q --ff-only origin/green' "$root/ops/auto-update/auto-update.sh"
 ! grep -Eq 'origin/main' "$root/ops/auto-update/auto-update.sh"
 grep -Fq 'promote-green.sh' "$root/.github/workflows/green.yml"
+! grep -Fq 'workflow_run' "$root/.github/workflows/green.yml"
 echo 'Green promotion PASS'

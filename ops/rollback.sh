@@ -16,7 +16,7 @@ else
   systemctl stop mag-browser-webrtc.service >/dev/null 2>&1 || true
 fi
 # Restore the paired nginx vhost if this release used transactional whois.
-if [[ -f "$BACKUP/nginx.staged" ]]; then
+if [[ -f "$BACKUP/nginx.staged" || -f "$BACKUP/nginx.verified" ]]; then
   [[ -x "$BACKUP/deploy-nginx.sh" ]] || { echo "Missing ingress rollback helper" >&2; exit 1; }
   MAG_NGINX_TXN="$BACKUP" bash "$BACKUP/deploy-nginx.sh" rollback
 fi

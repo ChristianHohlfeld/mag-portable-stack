@@ -36,6 +36,7 @@ jobs:
       - name: Full Pages lifecycle and root cleanup regressions
         run: |
           bash ops/pages/tests/test-pages-lifecycle.sh
+          bash ops/pages/tests/test-pages-tools.sh
           bash -n ops/pages/*.sh ops/pages/tests/*.sh
       - name: Shell syntax; no new runtime units
         run: |

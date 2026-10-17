@@ -1,7 +1,7 @@
 # Independent, parallel DeepSeek IQ3 on NUMA node 1; Q4 remains node0.
 [Unit]
 Description=MAG DeepSeek IQ3 parallel CPU instance, NUMA node 1
-After=network-online.target
+After=network-online.target mag-llm.service
 Wants=network-online.target
 ConditionPathExists=/home/chris/models/deepseek-v4-UD-IQ3_XXS/SHA256SUMS
 StartLimitIntervalSec=1800
@@ -37,4 +37,7 @@ ProtectHome=no
 ReadWritePaths=/var/lib/mag-llm/slots/iq3
 PrivateTmp=yes
 RestrictAddressFamilies=AF_INET AF_UNIX
-# Intentionally no [Install] section: Ali starts once after independent preflight.
+# Comes back after a reboot/power cut, like Q4 (ops/boot/ensure-boot.sh links it
+# on hosts that installed the older unit without this section).
+[Install]
+WantedBy=multi-user.target

@@ -137,6 +137,16 @@ the checkout owner. Logs: `journalctl -u mag-auto-update`. Pause with
 `ops/auto-update/install.sh`) to resume. A deploy restarts `mag-120`, which
 interrupts a running bot turn.
 
+**Reboot and power cuts.** After every deploy `ops/boot/ensure-boot.sh` makes
+sure that everything running now comes back after a reboot: both models
+(`mag-llm` Q4 and `mag-llm-iq3`, which load into RAM again on boot), room,
+gateway, Gitea, nginx, Tailscale, libvirt and the bot VMs (`virsh autostart`),
+runners, the auto-update timer and the backup timers. It only enables units for
+the next boot and never starts, stops or restarts anything. With a BMC it sets
+the power policy to always-on; without one, set "Restore on AC power loss:
+Power On" once in the BIOS. Units that are deliberately off (console lockdown,
+retired model pin/supervisor) stay off.
+
 **Action runners.** After each successful deploy, `ops/runners/install.sh` sets up
 a Gitea runner (`runs-on: mag` in `.gitea/workflows`, bots included) and, once a
 registration token is provided, a GitHub runner (`runs-on: [self-hosted, mag]`).

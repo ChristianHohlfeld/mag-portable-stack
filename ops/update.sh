@@ -65,4 +65,10 @@ if (( DEPLOY && AUTO )); then
 else
   echo 'skipped'
 fi
+phase boot
+if (( DEPLOY )); then
+  run sudo bash "$ROOT/ops/boot/ensure-boot.sh" || echo 'boot persistence check failed (deploy itself succeeded)' >&2
+else
+  echo 'skipped'
+fi
 echo 'update done'

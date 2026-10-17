@@ -141,6 +141,10 @@ systemctl daemon-reload
 systemctl enable --now mag-agents-network.service
 systemctl restart mag-agents-network.service
 systemctl enable mag-120.service
+# Switch nginx while the previous native whois backend is still available.
+# A failed ingress check rolls back BEFORE replacing the running room process.
+bash "$NGINX_SYNC" activate
+bash "$NGINX_SYNC" smoke
 systemctl restart mag-120.service
 systemctl enable --now mag-browser-webrtc.service
 systemctl restart mag-browser-webrtc.service
@@ -148,9 +152,7 @@ systemctl restart mag-browser-webrtc.service
 for i in {1..30}; do if curl -fsS --max-time 2 http://127.0.0.1:8766/readyz >/dev/null; then break; fi; sleep 1; done
 curl -fsS --max-time 5 http://127.0.0.1:8766/readyz
 curl -fsS --max-time 5 http://127.0.0.1:18784/health
-# Test effective nginx configuration and reload, then assert actual Owner
-# identity + both public frontend routes across the Tailnet from Owner device.
-bash "$NGINX_SYNC" activate
+# Revalidate the new room through the already-verified nginx ingress.
 bash "$NGINX_SYNC" smoke
 /usr/local/bin/magbot status
 for unit in mag-chat.service pm2-chris.service; do if systemctl cat "$unit" >/dev/null 2>&1; then systemctl disable --now "$unit"; fi; done

@@ -433,6 +433,10 @@ inline void reconcile(const fs::path& root,const std::string& token) {
     else std::cerr<<"MAG Pages GC deferred: sudo lifecycle reconcile failed\n";
   }
 }
+// A native Pages tool push requests prompt reconciliation without extra
+// polling services. Ticker wakes within one second (and keeps its fallback).
+inline std::atomic<bool> SYNC_REQUESTED{false};
+inline void request_sync() { SYNC_REQUESTED.store(true); }
 inline void ticker(const std::atomic<bool>& stopping) {
   const auto root=fs::path(env("MAG_PAGES_ROOT","/var/lib/mag-pages"));
   const auto tokenfile=fs::path(env("MAG_PAGES_TOKEN_FILE","/etc/mag-pages/gitea-token"));
@@ -449,8 +453,10 @@ inline void ticker(const std::atomic<bool>& stopping) {
     }catch(const std::exception& e){
       std::cerr<<"MAG Pages sync failed, last webroots kept: "<<e.what()<<"\n";
     }
-    for(int t=0;t<60 && !stopping.load();++t)
+    for(int t=0;t<60 && !stopping.load();++t) {
+      if(SYNC_REQUESTED.exchange(false))break;
       std::this_thread::sleep_for(std::chrono::seconds(1));
+    }
   }
   curl_global_cleanup();
 }

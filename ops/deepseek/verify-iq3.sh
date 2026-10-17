@@ -37,7 +37,7 @@ pinned_count=$(wc -l < "$PINNED")
 for n in "${expected[@]}"; do grep -Eq "^[a-f0-9]{64}  $n$" "$PINNED" || { echo "IQ3: expected name missing" >&2;exit 4; };done
 # Normalize both tables: pairs must be identical, irrespective of row order.
 # Bash awk version is more portable than sed's GNU case conversion here.
-normalize(){ awk 'NF==2 && length($1)==64 && $1~/^[a-fA-F0-9]+$/ {sub(/^\\*/,"",$2);print tolower($1)"  "$2;next} {exit 4}' "$1" | LC_ALL=C sort; }
+normalize(){ awk 'NF==2 && length($1)==64 && $1~/^[a-fA-F0-9]+$/ {sub(/^\*/,"",$2);print tolower($1)"  "$2;next} {exit 4}' "$1" | LC_ALL=C sort; }
 [[ "$(normalize "$PINNED")" == "$(normalize SHA256SUMS)" ]] || { echo "IQ3: local manifest differs from pinned hashes" >&2;exit 4; }
 sha256sum --check --strict --status "$PINNED" || { echo "IQ3: pinned SHA verification failed" >&2;exit 4; }
 printf '%s/%s-00001-of-00004.gguf\n' "$DIR" "$stem"

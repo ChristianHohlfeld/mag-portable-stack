@@ -1,0 +1,11 @@
+# RETIRED 2026-10-17: never run this old stop/start supervisor.
+# Path retained for the no-live-file-deletion contract.
+[Unit]
+Description=RETIRED MAG model-switch supervisor - MUST NOT RUN
+ConditionPathExists=/run/mag-model-supervisor-retired-never-enable
+RefuseManualStart=yes
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/false
+RemainAfterExit=no
+# No [Install].

@@ -23,7 +23,7 @@ jobs:
       - name: Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y ninja-build libssl-dev
+          sudo apt-get install -y ninja-build libssl-dev libcurl4-openssl-dev libarchive-dev
           python3 -m pip install --user playwright
           python3 -m playwright install --with-deps chromium
       - name: Compile native MAG for browser tests

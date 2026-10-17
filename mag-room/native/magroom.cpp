@@ -3,6 +3,7 @@
 #include "common.hpp"
 #include "json.hpp"
 #include "browser_recovery.hpp"
+#include "pages.hpp"
 
 #include <arpa/inet.h>
 #include <fcntl.h>
@@ -5357,6 +5358,8 @@ int main() {
   std::thread(scheduler_loop).detach();
   std::thread(model_watcher_loop).detach();
   std::thread(file_sync_loop).detach();
+  if (env("MAG_PAGES_ENABLE", "0") == "1")
+    std::thread([] { magpages::ticker(SHUTDOWN); }).detach();
   int srv = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
   if (srv < 0) {
     std::cerr << "socket() fehlgeschlagen\n";

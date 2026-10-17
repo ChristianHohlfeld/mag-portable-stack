@@ -11,6 +11,13 @@
 #   IK_RTR=1|0 (Gewichte für AVX2 umsortieren: Q8_0->Q8_0_R8, MXFP4->MXFP4_R8; 0 = mmap, eine Kopie)
 #   IK_ARGS="..." zusätzliche Flags (z.B. -muge)   IK_ENV="MAG_NUMA_LOCAL=16 MAG_THP=1"
 #   HELP_FILE=<datei> Hilfetext statt `llama-server --help` (Tests)
+# Optionale Prompt-Cache-Flags (Standard aus = bisheriger Start, einfach zurück):
+#   IK_SLOT_SAVE=1          --slot-save-path, nur wenn das Binary es kennt
+#   IK_SLOT_SAVE_PATH=...   Verzeichnis (Standard /var/lib/mag-llm/slots)
+#   IK_CRS=0.20             -crs / --cache-ram-similarity (RAM-Cache-Treffer ab 20 % Überlappung)
+#   --cache-ram 16384 (-cram) bleibt in der Vorlage; nicht doppelt setzen.
+#   Aus: IK_SLOT_SAVE=0 und IK_CRS leer (oder "-" in llm.env), Unit neu rendern. Nicht neu starten,
+#   solange der bisherige mag-llm laufen soll.
 set -euo pipefail
 TPL=${1:?Vorlage fehlt}; DST=${2:?Ziel oder --check fehlt}
 : "${IK_BIN:?IK_BIN fehlt}"
@@ -21,7 +28,11 @@ for v in THREADS THREADS_BATCH BATCH UBATCH; do
 done
 NUMA_ARGS=${NUMA_ARGS:---interleave=all}; LLAMA_NUMA=${LLAMA_NUMA:-distribute}; IK_RTR=${IK_RTR:-1}
 IK_ARGS=${IK_ARGS:-}; IK_ENV=${IK_ENV:-}
-export IK_BIN THREADS THREADS_BATCH BATCH UBATCH NUMA_ARGS LLAMA_NUMA IK_RTR IK_ARGS IK_ENV
+IK_SLOT_SAVE=${IK_SLOT_SAVE:-0}; IK_SLOT_SAVE_PATH=${IK_SLOT_SAVE_PATH:-/var/lib/mag-llm/slots}; IK_CRS=${IK_CRS:-}
+[[ "$IK_SLOT_SAVE" =~ ^[01]$ ]] || { echo "render-ik: IK_SLOT_SAVE '$IK_SLOT_SAVE' ungültig" >&2; exit 4; }
+[[ "$IK_SLOT_SAVE" == 0 || "$IK_SLOT_SAVE_PATH" =~ ^/[A-Za-z0-9._/-]+$ ]] || { echo "render-ik: IK_SLOT_SAVE_PATH '$IK_SLOT_SAVE_PATH' ungültig" >&2; exit 4; }
+[[ -z "$IK_CRS" || "$IK_CRS" =~ ^(0\.[0-9]{1,4}|1(\.0+)?)$ ]] || { echo "render-ik: IK_CRS '$IK_CRS' ungültig" >&2; exit 4; }
+export IK_BIN THREADS THREADS_BATCH BATCH UBATCH NUMA_ARGS LLAMA_NUMA IK_RTR IK_ARGS IK_ENV IK_SLOT_SAVE IK_SLOT_SAVE_PATH IK_CRS
 [[ "$NUMA_ARGS" == --interleave=all || "$NUMA_ARGS" =~ ^--cpunodebind=[0-9]+([[:space:]]+--(preferred|membind)=[0-9]+)?$ ]] \
   || { echo "render-ik: NUMA_ARGS '$NUMA_ARGS' ungültig" >&2; exit 4; }
 [[ "$LLAMA_NUMA" =~ ^(distribute|isolate|numactl)$ ]] || { echo "render-ik: LLAMA_NUMA '$LLAMA_NUMA' ungültig" >&2; exit 4; }
@@ -79,6 +90,23 @@ args += [("--metrics", None), ("--webui", "none")]
 if E.get("IK_RTR", "1") == "1": args.append(("-rtr", None))
 extra = E.get("IK_ARGS", "").split()
 def has_flag(f): return re.search(r"(^|[\s,])" + re.escape(f) + r"([\s,=]|$)", help_text, re.M) is not None
+# Optional, and only when this binary advertises the flag. Unknown -> skip, do not abort.
+skipped = []
+if E.get("IK_SLOT_SAVE", "0") == "1":
+    if has_flag("--slot-save-path"):
+        args.append(("--slot-save-path", E.get("IK_SLOT_SAVE_PATH") or "/var/lib/mag-llm/slots"))
+    else:
+        skipped.append("--slot-save-path")
+crs = E.get("IK_CRS", "")
+if crs:
+    if has_flag("-crs"):
+        args.append(("-crs", crs))
+    elif has_flag("--cache-ram-similarity"):
+        args.append(("--cache-ram-similarity", crs))
+    else:
+        skipped.append("-crs")
+if skipped:
+    print("render-ik: optionale Flags nicht im Binary, ausgelassen: " + " ".join(skipped), file=sys.stderr)
 missing = [f for f, _ in args if not has_flag(f)] + [x for x in extra if x.startswith("-") and not has_flag(x)]
 if missing:
     sys.exit("render-ik: unbekannte Flags für dieses Binary: " + " ".join(missing))

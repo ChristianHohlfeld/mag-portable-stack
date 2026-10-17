@@ -94,4 +94,36 @@ for w in 'mag-model-pin.service' 'preflight-tests.py' 'restore 1' '>= 1.05' 'tg\
   grep -qE -- "$w" "$u" || fail "upgrade-3.8: '$w' fehlt"
 done
 ok "upgrade-3.8: Pin-Pflicht, Schnelltest, Go/No-Go mit Rollback, nur übernehmen wenn >= 5 % besser und tg nicht schlechter"
+# 8) Prompt-Cache-Flags optional: Standard bleibt der bisherige Start; an nur mit Unterstützung im Binary
+cp "$T/ikhelp" "$T/ikhelp-cache"
+printf '%s\n' '  --slot-save-path PATH' '  -crs N' '  -cram N' >> "$T/ikhelp-cache"
+env "${base[@]}" IK_SLOT_SAVE=0 IK_CRS= bash ops/deepseek/render-ik-unit.sh ops/mag-llm.service "$T/uoff" 2>/dev/null
+! grep -q -- '--slot-save-path' "$T/uoff" && ! grep -qE -- '(^|[[:space:]])-crs( |\\|$)' "$T/uoff" || fail "Standard-Unit enthält Cache-Optionen"
+env "${base[@]}" HELP_FILE=$T/ikhelp-cache IK_SLOT_SAVE=1 IK_CRS=0.20 bash ops/deepseek/render-ik-unit.sh ops/mag-llm.service "$T/ucache" 2>/dev/null \
+  || fail "optionale Cache-Flags abgelehnt"
+grep -qF -- '  --slot-save-path /var/lib/mag-llm/slots' "$T/ucache" || fail "slot-save-path fehlt"
+grep -qF -- '  -crs 0.20' "$T/ucache" || fail "-crs 0.20 fehlt"
+grep -qF -- '  --cache-ram 16384' "$T/ucache" || fail "--cache-ram 16384 (=-cram) fehlt"
+! grep -qE -- '(^|[[:space:]])-cram( |\\|$)' "$T/ucache" || fail "-cram doppelt neben --cache-ram"
+# Binary ohne die Flags: Wunsch wird ausgelassen, Unit entsteht trotzdem
+env "${base[@]}" IK_SLOT_SAVE=1 IK_CRS=0.20 bash ops/deepseek/render-ik-unit.sh ops/mag-llm.service "$T/uskip" 2>"$T/uskip.err" \
+  || fail "fehlende optionale Flags dürfen nicht abbrechen"
+! grep -q -- '--slot-save-path' "$T/uskip" && grep -q 'ausgelassen' "$T/uskip.err" || fail "optionale Flags nicht still übersprungen"
+if env "${base[@]}" IK_CRS=nope bash ops/deepseek/render-ik-unit.sh ops/mag-llm.service "$T/ubad" 2>/dev/null; then fail "ungültiges IK_CRS angenommen"; fi
+(
+  export MAG_LLM_ENV=$T/cfg-cache/llm.env
+  # shellcheck disable=SC1091
+  source ops/deepseek/llm-config.sh
+  ENGINE=ik IK_BIN=$fake IK_SLOT_SAVE=1 IK_CRS=0.20 llm_config_load
+  llm_config_save
+  grep -q '^IK_SLOT_SAVE=1$' "$MAG_LLM_ENV" && grep -q '^IK_CRS=0.20$' "$MAG_LLM_ENV" || fail "llm.env ohne Cache-Optionen"
+  unset IK_SLOT_SAVE IK_CRS; llm_config_load
+  [[ $IK_SLOT_SAVE == 1 && $IK_CRS == 0.20 ]] || fail "Roundtrip Cache-Optionen"
+  IK_SLOT_SAVE=- IK_CRS=- llm_config_load; llm_config_save
+  ! grep -qE '^(IK_SLOT_SAVE|IK_CRS)=' "$MAG_LLM_ENV" || fail "'-' löscht Cache-Optionen nicht"
+  unset IK_SLOT_SAVE IK_CRS; llm_config_load
+  [[ $IK_SLOT_SAVE == 0 && -z $IK_CRS ]] || fail "Standard Cache-Optionen aus"
+  if IK_CRS=9 llm_config_load 2>/dev/null; then fail "IK_CRS=9 angenommen"; fi
+) || fail "llm-config Cache-Optionen"
+ok "Prompt-Cache: --slot-save-path und -crs 0.20 optional, --cache-ram 16384 bleibt, Aus ist der bisherige Start"
 echo "== 3.8-Tests grün"

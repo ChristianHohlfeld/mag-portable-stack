@@ -1,3 +1,17 @@
+# MAG — C++ room, local DeepSeek, Tailnet nginx
+
+**Release baseline:** `ad0ad69` (includes #22 Moonshine, #23 Prompt-Cache, #24 agent/large IO and #25 Pages). This PR hardens private ingress before installing the nginx guest entry on MAG. Model process `mag-llm` must remain in RAM and **must never be restarted as part of this release**.
+
+MAG runs a single local DeepSeek-V4-Flash inference service via ik_llama.cpp, a native C++ room with jobs/MCP and shared SSE, KVM-isolated bot browsers/terminals, and a client-rendered PWA. The private host name is `mag.stardenburg.de` on **100.123.114.16:443** through nginx; the existing `mag.tail3e02ae.ts.net:8446` fallback must stay available.
+
+**Release documentation:** [ARCHITECTURE](docs/ARCHITECTURE.md) · [STRUCTURE](docs/STRUCTURE.md) · [CODE](docs/CODE.md) · [HARDWARE](docs/HARDWARE.md) · [INSTALL](docs/INSTALL.md) · [OPS](docs/OPS.md).
+
+**Safety-critical sequence:** `preflight.sh` → existing lego certificate validation → `install.sh` (backup + nginx test + 180s automatic rollback) → external authenticated Owner check → `confirm.sh --owner-verified` → guest test → `remove-caddy.sh`. The old Caddy unit/config/binary are never removed until Owner confirmation. `/_mag_whois` explicitly uses `auth_request off` to avoid recursion; all external access otherwise uses C++ magroom → tailscaled Unix LocalAPI and fails closed. No separate whois daemon.
+
+The older sections below retain historical context for previous versions; their GPT-OSS/transport descriptions are not the current MAG release contract.
+
+---
+
 # MAG — native agent server
 
 > **Stack-Stand 3.8 (Tag `mag-stack-3.8`):** Hardware, Dienste/Ports, Engine/Flags, RAM-Regeln, Sandbox/Browser, git-memory-MCP, bekannte Bugs und Rollback in [docs/MAG-STACK-3.8.md](docs/MAG-STACK-3.8.md).

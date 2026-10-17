@@ -1,16 +1,26 @@
 #!/usr/bin/env bash
-# lego deploy hook. Only reload nginx after atomically installing a validated
-# certificate. Never touch mag-llm or magroom.
+# lego DNS-01 hook. --no-reload stages certs before cutover.
 set -euo pipefail
+[[ $EUID == 0 ]] || exit 1
+(( $# <= 1 )) || exit 2
+if (( $# == 1 )); then [[ $1 == --no-reload ]] || exit 2; fi
 . /etc/mag-acme/lego.env
+[[ $MAG_ACME_DOMAIN == mag.stardenburg.de ]] || exit 1
 src=/etc/mag-acme/lego/certificates
 dst=/etc/mag-nginx/tls
-install -d -m 0750 -o root -g www-data "$dst"
-install -m 0644 -o root -g www-data "$src/$MAG_ACME_DOMAIN.crt" "$dst/cert.pem.new"
-install -m 0640 -o root -g www-data "$src/$MAG_ACME_DOMAIN.key" "$dst/key.pem.new"
-openssl x509 -in "$dst/cert.pem.new" -noout -checkend 86400 >/dev/null
-openssl pkey -in "$dst/key.pem.new" -noout >/dev/null
+install -d -m 0700 -o root -g root "$dst"
+install -m 0644 -o root -g root "$src/$MAG_ACME_DOMAIN.crt" "$dst/cert.pem.new"
+install -m 0600 -o root -g root "$src/$MAG_ACME_DOMAIN.key" "$dst/key.pem.new"
+trap 'rm -f "$dst/cert.pem.new" "$dst/key.pem.new"' EXIT
+openssl x509 -in "$dst/cert.pem.new" -checkend 86400 -noout >/dev/null
+openssl x509 -in "$dst/cert.pem.new" -checkhost "$MAG_ACME_DOMAIN" -noout | grep -F 'does match' >/dev/null
+a=$(openssl x509 -in "$dst/cert.pem.new" -pubkey -noout | openssl pkey -pubin -outform DER | sha256sum | cut -d' ' -f1)
+b=$(openssl pkey -in "$dst/key.pem.new" -pubout -outform DER | sha256sum | cut -d' ' -f1)
+[[ $a == "$b" ]] || { echo "TLS key mismatch" >&2; exit 1; }
 mv -f "$dst/cert.pem.new" "$dst/cert.pem"
 mv -f "$dst/key.pem.new" "$dst/key.pem"
-nginx -t
-systemctl reload nginx.service
+trap - EXIT
+if (( $# == 0 )); then
+ nginx -t
+ systemctl reload nginx.service
+fi

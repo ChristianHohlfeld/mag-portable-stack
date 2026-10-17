@@ -4575,6 +4575,7 @@ static void handle_sse(int fd) {
 
 // ---------------------------------------------------------------- routing
 #include "access.hpp"
+#include "tailscale_auth.hpp"
 static Val public_agent(int idx) {
   Val o = Val::object();
   o["id"] = bot_field(idx, "id");

@@ -12,6 +12,9 @@
 # ab 3.8: ENGINE=llama|ik (Standard llama). ik = ik_llama.cpp (build-ik.sh) mit
 #   IK_BIN (Pfad zu llama-server), IK_RTR=1|0 (Umsortieren für AVX2), IK_ARGS (z.B. -muge),
 #   IK_ENV (mag-Varianten: MAG_NUMA_LOCAL=<threads> MAG_THP=1) – Unit über render-ik-unit.sh
+#   Prompt-Cache, optional (Standard aus = bisheriger Start):
+#   IK_SLOT_SAVE=0|1  IK_SLOT_SAVE_PATH=/var/lib/mag-llm/slots  IK_CRS=0.20
+#   Aus: IK_SLOT_SAVE=0 und IK_CRS=- (löscht), dann render_unit. mag-llm nicht mitstarten.
 # render_unit ZIEL|--check  erzeugt die Unit aus ops/mag-llm.service über render-llm-unit.sh
 #   bzw. render-ik-unit.sh (ENGINE=ik) und prüft das Ergebnis.
 MAG_LLM_ENV=${MAG_LLM_ENV:-/etc/mag-llm/llm.env}
@@ -21,6 +24,7 @@ llm_config_load() {
   local _env_load=${LOAD_ARGS-} _env_t=${THREADS-} _env_tb=${THREADS_BATCH-} _env_b=${BATCH-} _env_ub=${UBATCH-}
   local _env_bin=${LLAMA_BIN-} _env_extra=${EXTRA_ARGS-} _env_na=${NUMA_ARGS-} _env_ln=${LLAMA_NUMA-}
   local _env_eng=${ENGINE-} _env_ikb=${IK_BIN-} _env_ikr=${IK_RTR-} _env_ika=${IK_ARGS-} _env_ike=${IK_ENV-}
+  local _env_iss=${IK_SLOT_SAVE-} _env_isp=${IK_SLOT_SAVE_PATH-} _env_crs=${IK_CRS-}
   if [[ -r "$MAG_LLM_ENV" ]]; then
     # nur bekannte Schlüssel, keine Ausführung von Fremdinhalt
     while IFS='=' read -r k v; do
@@ -30,8 +34,9 @@ llm_config_load() {
         BATCH) BATCH=$v ;; UBATCH) UBATCH=$v ;; LLAMA_BIN) LLAMA_BIN=$v ;; EXTRA_ARGS) EXTRA_ARGS=$v ;;
         NUMA_ARGS) NUMA_ARGS=$v ;; LLAMA_NUMA) LLAMA_NUMA=$v ;;
         ENGINE) ENGINE=$v ;; IK_BIN) IK_BIN=$v ;; IK_RTR) IK_RTR=$v ;; IK_ARGS) IK_ARGS=$v ;; IK_ENV) IK_ENV=$v ;;
+        IK_SLOT_SAVE) IK_SLOT_SAVE=$v ;; IK_SLOT_SAVE_PATH) IK_SLOT_SAVE_PATH=$v ;; IK_CRS) IK_CRS=$v ;;
       esac
-    done < <(grep -E '^(LOAD_ARGS|THREADS|THREADS_BATCH|BATCH|UBATCH|LLAMA_BIN|EXTRA_ARGS|NUMA_ARGS|LLAMA_NUMA|ENGINE|IK_BIN|IK_RTR|IK_ARGS|IK_ENV)=' "$MAG_LLM_ENV")
+    done < <(grep -E '^(LOAD_ARGS|THREADS|THREADS_BATCH|BATCH|UBATCH|LLAMA_BIN|EXTRA_ARGS|NUMA_ARGS|LLAMA_NUMA|ENGINE|IK_BIN|IK_RTR|IK_ARGS|IK_ENV|IK_SLOT_SAVE|IK_SLOT_SAVE_PATH|IK_CRS)=' "$MAG_LLM_ENV")
   fi
   [[ -n "$_env_load" ]] && LOAD_ARGS=$_env_load
   [[ -n "$_env_t" ]] && THREADS=$_env_t
@@ -47,6 +52,9 @@ llm_config_load() {
   [[ -n "$_env_ikr" ]] && IK_RTR=$_env_ikr
   [[ -n "$_env_ika" ]] && IK_ARGS=$_env_ika
   [[ -n "$_env_ike" ]] && IK_ENV=$_env_ike
+  [[ -n "$_env_iss" ]] && IK_SLOT_SAVE=$_env_iss
+  [[ -n "$_env_isp" ]] && IK_SLOT_SAVE_PATH=$_env_isp
+  [[ -n "$_env_crs" ]] && IK_CRS=$_env_crs
   # leerer Wert = Standard (mitgeliefertes Binary, keine Zusatzflags); "-" löscht einen gespeicherten Wert
   [[ "${LLAMA_BIN:-}" == - ]] && LLAMA_BIN=""
   [[ "${EXTRA_ARGS:-}" == - ]] && EXTRA_ARGS=""
@@ -57,6 +65,9 @@ llm_config_load() {
   [[ "${IK_RTR:-}" == - ]] && IK_RTR=""
   [[ "${IK_ARGS:-}" == - ]] && IK_ARGS=""
   [[ "${IK_ENV:-}" == - ]] && IK_ENV=""
+  [[ "${IK_SLOT_SAVE:-}" == - ]] && IK_SLOT_SAVE=""
+  [[ "${IK_SLOT_SAVE_PATH:-}" == - ]] && IK_SLOT_SAVE_PATH=""
+  [[ "${IK_CRS:-}" == - ]] && IK_CRS=""
   LOAD_ARGS=${LOAD_ARGS:---load-mode mmap+mlock}
   THREADS=${THREADS:-28}; THREADS_BATCH=${THREADS_BATCH:-28}; UBATCH=${UBATCH:-1024}; BATCH=${BATCH:-$UBATCH}
   local x
@@ -67,9 +78,13 @@ llm_config_load() {
   LLAMA_BIN=${LLAMA_BIN:-}; EXTRA_ARGS=${EXTRA_ARGS:-}
   NUMA_ARGS=${NUMA_ARGS:---interleave=all}; LLAMA_NUMA=${LLAMA_NUMA:-distribute}
   ENGINE=${ENGINE:-llama}; IK_BIN=${IK_BIN:-}; IK_RTR=${IK_RTR:-1}; IK_ARGS=${IK_ARGS:-}; IK_ENV=${IK_ENV:-}
+  IK_SLOT_SAVE=${IK_SLOT_SAVE:-0}; IK_SLOT_SAVE_PATH=${IK_SLOT_SAVE_PATH:-}; IK_CRS=${IK_CRS:-}
   [[ "$ENGINE" =~ ^(llama|ik)$ ]] || { echo "llm-config: ENGINE '$ENGINE' unbekannt" >&2; return 1; }
   [[ "$ENGINE" != ik || -n "$IK_BIN" ]] || { echo "llm-config: ENGINE=ik ohne IK_BIN" >&2; return 1; }
-  export LOAD_ARGS THREADS THREADS_BATCH BATCH UBATCH LLAMA_BIN EXTRA_ARGS NUMA_ARGS LLAMA_NUMA ENGINE IK_BIN IK_RTR IK_ARGS IK_ENV
+  [[ "$IK_SLOT_SAVE" =~ ^[01]$ ]] || { echo "llm-config: IK_SLOT_SAVE '$IK_SLOT_SAVE' ungültig" >&2; return 1; }
+  [[ -z "$IK_CRS" || "$IK_CRS" =~ ^(0\.[0-9]{1,4}|1(\.0+)?)$ ]] || { echo "llm-config: IK_CRS '$IK_CRS' ungültig" >&2; return 1; }
+  [[ -z "$IK_SLOT_SAVE_PATH" || "$IK_SLOT_SAVE_PATH" =~ ^/[A-Za-z0-9._/-]+$ ]] || { echo "llm-config: IK_SLOT_SAVE_PATH ungültig" >&2; return 1; }
+  export LOAD_ARGS THREADS THREADS_BATCH BATCH UBATCH LLAMA_BIN EXTRA_ARGS NUMA_ARGS LLAMA_NUMA ENGINE IK_BIN IK_RTR IK_ARGS IK_ENV IK_SLOT_SAVE IK_SLOT_SAVE_PATH IK_CRS
 }
 
 llm_config_save() {   # schreibt die aktuellen Werte nach $MAG_LLM_ENV
@@ -88,6 +103,9 @@ llm_config_save() {   # schreibt die aktuellen Werte nach $MAG_LLM_ENV
     [[ "${IK_RTR:-1}" != 1 ]] && echo "IK_RTR=$IK_RTR"
     [[ -n "${IK_ARGS:-}" ]] && echo "IK_ARGS=\"$IK_ARGS\""
     [[ -n "${IK_ENV:-}" ]] && echo "IK_ENV=\"$IK_ENV\""
+    [[ "${IK_SLOT_SAVE:-0}" != 0 ]] && echo "IK_SLOT_SAVE=$IK_SLOT_SAVE"
+    [[ -n "${IK_SLOT_SAVE_PATH:-}" ]] && echo "IK_SLOT_SAVE_PATH=$IK_SLOT_SAVE_PATH"
+    [[ -n "${IK_CRS:-}" ]] && echo "IK_CRS=$IK_CRS"
     true
   } > "$tmp"
   chmod 0644 "$tmp"; mv -f "$tmp" "$MAG_LLM_ENV"

@@ -56,3 +56,14 @@ ik_llama.cpp um – gleiches Modell, gleiche GGUF-Dateien, gleiche Vorlage `ops/
 
 Welche Kombination läuft, entscheidet `upgrade-3.8.sh` per HTTP-A/B (nur übernommen, wenn ≥ 5 % besser
 als vorher und die Generierung nicht langsamer, danach Go/No-Go mit `preflight-tests.py`).
+
+
+## Prompt-Cache 2026-10-17 (separater PR, kein Neustart)
+
+Der Raum sendet cache_prompt=true und dieselbe id_slot pro Bot (bei --parallel 1: Slot 0). Systemregeln, Speicher und Transkript bleiben als Präfix unverändert; Zeit und Dateien liegen am Ende. Journal und model_info.last melden tokens_cached/tokens_evaluated. Die CI benutzt ein Fake-Modell, keine echten Laufzeitmessungen.
+
+Env auf mag vorbereiten: sudo bash ops/deepseek/prompt-cache-switch.sh apply. Der Befehl legt eine root-only Sicherung von /etc/mag-llm/llm.env und der systemd-Unit unter /var/lib/mag-llm/prompt-cache-rollback an, setzt IK_CRS=0.20, IK_SLOT_SAVE=1, IK_SLOT_SAVE_PATH=/var/lib/mag-llm/slots und prüft, ob das aktive ik-Binary beide Flags unterstützt. Ein unbekanntes Flag verhindert die Aktivierung. --cache-ram 16384, --parallel 1 und f16 KV bleiben bestehen.
+
+**Ein-Befehl-Konfigurationsrollback:** sudo bash ops/deepseek/prompt-cache-switch.sh rollback. Original-Env und Original-Unit werden wiederhergestellt. Es erfolgt weder beim Apply noch beim Rollback ein mag-llm Neustart; die geänderte Unit wird erst bei dem separat genehmigten Neustart wirksam. Slots und Secrets gehören ausschließlich auf den Host.
+
+**Explizit ausgeschlossen:** Der BLAS=OFF-Build aus stardenburg.de PR #10 ist nicht Teil dieses Prompt-Cache-PRs. Auch das laufende ik-Binary, produktive nginx-Site und alle Gast-/Jobs-/Stop-Verträge bleiben unverändert. nginx-CI verwendet nur eine Loopback-Adresse.

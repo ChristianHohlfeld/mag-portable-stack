@@ -1,5 +1,5 @@
 """Isolated native integration checks. Uses temporary state and a fake model."""
-import http.server,json,os,pathlib,socket,subprocess,tempfile,threading,time,unittest,urllib.request,urllib.error
+import hashlib,http.server,json,os,pathlib,socket,subprocess,tempfile,threading,time,unittest,urllib.request,urllib.error
 ROOT=pathlib.Path(__file__).resolve().parents[2]
 NETMODE=pathlib.Path(tempfile.mkdtemp(prefix='magnet-'))/'netmode.sh';NETLOG=NETMODE.with_suffix('.log')
 NETMODE.write_text('#!/bin/sh\necho "$1" >> %s\n'%NETLOG);NETMODE.chmod(0o755)
@@ -10,8 +10,12 @@ def _ui_token(ui):
  import re as _re
  html=urllib.request.urlopen(f'http://127.0.0.1:{ui}/',timeout=10).read().decode()
  return _re.search(r'name="mag-token" content="([^"]+)"',html).group(1)
+def _rules(content):
+ i=content.index('\n[Erinnerungen]');return content[:i]
+def _mem(content):
+ i=content.index('\n[Erinnerungen]');return content[i+1:]
 class Model(http.server.BaseHTTPRequestHandler):
- protocol_version='HTTP/1.1';calls=[];delay=0;reply=None;script=[];health=200
+ protocol_version='HTTP/1.1';calls=[];delay=0;reply=None;script=[];health=200;last_prompt={}
  def log_message(self,*a):pass
  def do_GET(self):
   code=200
@@ -36,6 +40,19 @@ class Model(http.server.BaseHTTPRequestHandler):
      event=json.dumps({'choices':[{'delta':delta}]}).encode()
     for payload in [b'data: '+event+b'\n\n',b'']:
      if payload:self.wfile.write(('%x\r\n'%len(payload)).encode()+payload+b'\r\n');self.wfile.flush()
+   parts=[]
+   for m in obj.get('messages') or []:
+    c=m.get('content');parts.append(c if isinstance(c,str) else json.dumps(c,ensure_ascii=False,sort_keys=True))
+   text='\x1e'.join(parts);evaluated=max(1,len(text));cached=0;slot=obj.get('id_slot',None)
+   if obj.get('cache_prompt') is True and slot is not None:
+    prev=type(self).last_prompt.get(slot)
+    if isinstance(prev,str):
+     n=0;lim=min(len(prev),len(text))
+     while n<lim and prev[n]==text[n]:n+=1
+     cached=n
+    type(self).last_prompt[slot]=text
+   stat=json.dumps({'choices':[],'tokens_cached':cached,'tokens_evaluated':evaluated,'timings':{'prompt_n':max(0,evaluated-cached),'prompt_per_second':40.0,'predicted_n':3,'predicted_per_second':8.0,'cache_n':cached}}).encode()
+   payload=b'data: '+stat+b'\n\n';self.wfile.write(('%x\r\n'%len(payload)).encode()+payload+b'\r\n');self.wfile.flush()
    end=b'data: [DONE]\n\n';self.wfile.write(('%x\r\n'%len(end)).encode()+end+b'\r\n0\r\n\r\n');self.wfile.flush()
   except (BrokenPipeError,ConnectionResetError):pass
 class Native(unittest.TestCase):
@@ -258,7 +275,10 @@ class Native(unittest.TestCase):
    if i==1:self.request('/api/agent/test/remember',{'fact':'Zwischendurch gemerkt'})
   c=Model.calls[-4:];trims=0
   for a,b in zip(c,c[1:]):
-   self.assertEqual(a['messages'][0],b['messages'][0],'system prompt must be byte-identical')
+   self.assertEqual(_rules(a['messages'][0]['content']),_rules(b['messages'][0]['content']),'system rules must be byte-identical')
+   ma,mb=_mem(a['messages'][0]['content']),_mem(b['messages'][0]['content'])
+   self.assertTrue(ma==mb or mb.startswith(ma) or ma.startswith(mb),'memory block must stay identical or change only from the edit point')
+   if ma==mb:self.assertEqual(a['messages'][0]['content'],b['messages'][0]['content'])
    self.assertEqual(json.dumps(a.get('tools')),json.dumps(b.get('tools')),'tool list must be byte-identical')
    ua=a['messages'][1]['content'];ub=b['messages'][1]['content'];k=ua.index('\n[Kontext]')
    if ua.split('\n')[1]!=ub.split('\n')[1]:trims+=1;continue  # planned block trim (HISTORY_STEP)
@@ -562,21 +582,69 @@ class Native(unittest.TestCase):
                  "if(!a.vm)continue","if(!bot.vm){","Zeichen Überlegung","#model-state .txt{display:none}"):
    self.assertIn(needle,html)
  def test_09h_prompt_is_cache_friendly(self):
-  # Stable system prompt; volatile memory/files only in the [Kontext] tail; transcript grows at its end.
+  # Stable rules, memories directly after them, volatile clock/files only in the [Kontext] tail.
   def turn(text):
-   n=len(self.request('/api/state')['room'])
-   self.request('/api/message',{'text':text,'bots':['test']});self.wait_room('Hallo aus dem Modell.');self.wait_idle()
+   n=len(self.request('/api/state')['room']);calls=len(Model.calls)
+   self.request('/api/message',{'text':text,'bots':['test']})
+   self._settle(lambda s: not s['busy'] and len(Model.calls)>calls and len(s['room'])>n)
    return n,Model.calls[-1]['messages']
   n1,m1=turn('Cache eins')
   self.request('/api/agent/test/remember',{'fact':'Neue Erinnerung zwischen zwei Runden'})
   n2,m2=turn('Cache zwei')
-  self.assertEqual(m1[0]['content'],m2[0]['content'],'System prompt must not change between turns')
-  self.assertNotIn('Neue Erinnerung',m2[0]['content'])
-  self.assertIn('[Kontext]',m2[1]['content']);self.assertIn('Neue Erinnerung',m2[1]['content'].split('[Kontext]')[1])
+  self.assertEqual(_rules(m1[0]['content']),_rules(m2[0]['content']),'System rules must not change between turns')
+  self.assertNotIn('Neue Erinnerung',_rules(m2[0]['content']))
+  mem1,mem2=_mem(m1[0]['content']),_mem(m2[0]['content'])
+  self.assertTrue(mem2.startswith(mem1),'New memory is appended; the previous block stays a prefix')
+  self.assertTrue(mem2.endswith('- Neue Erinnerung zwischen zwei Runden'))
+  self.assertNotIn('Neue Erinnerung',m2[1]['content'])
+  self.assertIn('[Kontext]',m2[1]['content']);self.assertIn('Zeit:',m2[1]['content'].split('[Kontext]')[1])
+  self.assertNotIn('Zeit:',_rules(m2[0]['content']))
   start=lambda n:((n+1-30)//10)*10 if n+1>30 else 0   # +1: the new user message
   if start(n1)==start(n2):
    self.assertTrue(m2[1]['content'].startswith(m1[1]['content'].split('\n[Kontext]')[0]),'Transcript must only grow at its end')
   self.assertTrue(Model.calls[-1]['return_progress']);self.assertTrue(Model.calls[-1]['cache_prompt'])
+  self.assertEqual(Model.calls[-1]['id_slot'],Model.calls[-2]['id_slot'])
+ def test_09n_prompt_cache_reuses_identical_prefix(self):
+  # Fake llama: tokens_cached is the shared prefix. A stable slot + identical
+  # memory bytes must make the second turn a cache hit. Appending a memory
+  # keeps the old block as a prefix; an edit rewrites only from that line.
+  Model.last_prompt.clear()
+  self.request('/api/agent/test/remember',{'fact':'Alpha bleibt'})
+  self.request('/api/agent/test/remember',{'fact':'Beta aendert sich'})
+  def turn(text):
+   calls=len(Model.calls)
+   self.request('/api/message',{'text':text,'bots':['test']})
+   self._settle(lambda s: not s['busy'] and len(Model.calls)>calls and any(m.get('content')==text for m in s['room']))
+   return Model.calls[-1]
+  a=turn('Prefix eins');b=turn('Prefix zwei')
+  self.assertTrue(a['cache_prompt'] and b['cache_prompt'])
+  self.assertEqual(a['id_slot'],b['id_slot'])
+  ma,mb=_mem(a['messages'][0]['content']),_mem(b['messages'][0]['content'])
+  self.assertEqual(ma,mb,'unchanged memory must be byte-identical')
+  self.assertEqual(hashlib.sha256(ma.encode()).hexdigest(),hashlib.sha256(mb.encode()).hexdigest())
+  st=self.request('/api/state')['model_info']['last']
+  self.assertGreater(st['tokens_evaluated'],0)
+  self.assertGreaterEqual(st['tokens_cached']*2,st['tokens_evaluated'],'second identical-prefix request must reuse the cache')
+  html=self.request('/',raw=True).decode()
+  self.assertIn("txt+=' · Prompt '",html)
+  self.assertIn('Cache (Debug)',html)
+  self.assertNotIn("txt+=' · Cache'",html)
+  before=mb
+  self.request('/api/agent/test/remember',{'fact':'Gamma neu'})
+  c=turn('Prefix drei');after=_mem(c['messages'][0]['content'])
+  self.assertTrue(after.startswith(before),'appended memory keeps the previous block as a prefix')
+  self.assertTrue(after.rstrip().endswith('Gamma neu'))
+  self.assertEqual(_rules(b['messages'][0]['content']),_rules(c['messages'][0]['content']))
+  mem=self.request('/api/agents/test/memory')
+  idx=next(i for i,x in enumerate(mem) if x.get('text')=='Beta aendert sich')
+  self.request('/api/agents/test/memory/%d'%idx,{'text':'Beta geaendert','old':'Beta aendert sich'},method='PUT')
+  d=turn('Prefix vier');edited=_mem(d['messages'][0]['content'])
+  head=before.split('\n- Beta aendert sich')[0]
+  self.assertTrue(edited.startswith(head),'edit re-renders only from the changed line')
+  self.assertLess(edited.find('- Beta geaendert'),edited.find('- Gamma neu'))
+  self.assertTrue(edited.rstrip().endswith('Gamma neu'))
+  log=(pathlib.Path(self.tmp.name)/'server.log').read_text(errors='replace')
+  self.assertIn('tokens_cached=',log);self.assertIn('tokens_evaluated=',log)
  def test_09i_chat_only_bot_has_no_vm_tools(self):
   names=[t['function']['name'] for t in Model.calls[-1]['tools']]
   for vm_tool in ('run_command','fetch_room_file','share_room_file','browser_open'):self.assertNotIn(vm_tool,names)

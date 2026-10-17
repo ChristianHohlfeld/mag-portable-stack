@@ -159,3 +159,148 @@ Notfall: Zuerst Host-/Filesystem-Backups sichern; Snapshot-Dateien
 nicht in Logs kopieren. Alte Daten vom um 07:16 gemeldeten ungeschützten
 Clear sind NICHT rückwirkend durch diese Funktion wiederherstellbar.
 Eventuell noch vorhandene Host-Backups/Undo-/Trash-Reste separat prüfen.
+
+
+## Hotfix nach dem 403-Ausfall vom 17. Oktober 2026
+
+**Ursache:** Das Room-Binary aus 8e2d045 prüft den signierten nativen
+Tailscale-whois-Nachweis für Identitäten hinter nginx; der damalige
+`ops/deploy.sh` installierte die dafür nötige nginx-vHost-Konfiguration
+jedoch nicht. Ein bloßer localhost-`/readyz`-Check bemerkt diesen Fehler
+nicht. Die fehlende OAuth-Credential hat **keinen Einfluss auf die
+Whois-Prüfung**: Sie darf niemals als Umgehungsgrund verwendet werden.
+
+**Ab diesem Hotfix:** `ops/deploy.sh` validiert vor der ersten
+Release-Änderung Voraussetzungen, sichert die bisherige nginx-Site und deren
+enabled-Symlink, installiert idempotent
+`ops/private-access/mag-room.nginx.conf`, validiert `nginx -t/-T`,
+lädt nginx neu und prüft **beide** Pfade `/` und `/api/state` über
+einen *externen echten Owner-Tailscale-Client*. Eine fehlende OAuth-Credential
+deaktiviert nur Einladungen. Fehler (einschließlich 403, 5xx, ungültige Ownerrolle
+oder fehlender SSH-Probe) führen zu Abbruch **vor dem Umschalten** oder
+automatischem Room- **und** nginx-Rollback. Weder Caddy noch `mag-llm`
+werden angefasst.
+
+### Schritt 1: unabhängiges Owner-Testgerät (für echten Smoke-Test)
+
+Voraussetzung ist eine **zweite** Linux/macOS/Box-Maschine im Tailnet, die
+mit *Chris' normaler Owner-Tailscale-Identität* verbunden ist und auf MAG via
+SSH **nicht-interaktiv** erreichbar ist. Sie darf **nicht** das MAG-Gerät
+selbst, ein `tag:mag-guest`-Gerät oder eine simulierte HTTP-Header-Identität
+sein. Auf dieser Maschine müssen `curl`, normale Systemzertifikate und
+Tailscale vorhanden sein. Von dieser Maschine prüfen:
+
+```bash
+curl -fsS https://mag.stardenburg.de/api/state | jq '.you'
+# role=owner, login=chris.hohlfeld@gmail.com NACH dem nginx-Fix
+```
+
+Auf MAG das Root-only Probe-Profil einmalig anlegen:
+
+```bash
+sudo install -d -o root -g root -m 0700 /etc/mag-stack
+sudo install -o root -g root -m 0600 /dev/null /etc/mag-stack/deploy-owner-probe.conf
+sudoedit /etc/mag-stack/deploy-owner-probe.conf
+```
+
+Inhalt der Datei (Ziel passend zum SSH-erreichbaren **Owner-Gerät** ändern):
+
+```ini
+MAG_DEPLOY_OWNER_SSH=chris@owner-tailnet-host
+MAG_DEPLOY_OWNER_LOGIN=chris.hohlfeld@gmail.com
+```
+
+`sudo ssh -o BatchMode=yes -o StrictHostKeyChecking=yes chris@owner-tailnet-host true`
+muss ohne Passwort, Interaktion oder unbekannten Hostkey funktionieren.
+Den SSH-Hostkey **vorher** auf MAG getrennt prüfen und in
+`/root/.ssh/known_hosts` vertrauenswürdig hinterlegen. Kein
+`StrictHostKeyChecking=no`. Wenn der Owner-Probe noch nicht verfügbar ist,
+**nicht deployen**; der Preflight bricht ohne Serviceänderung ab. Das ist
+Absicht und schützt gegen den erneuten Totalausfall.
+
+### Schritt 2: nginx/TLS und Native Whois vorbereiten
+
+Auf MAG aus dem neuen PR-Checkout:
+
+```bash
+sudo bash ops/private-access/deploy-hook.sh --no-reload
+sudo nginx -t
+sudo bash ops/private-access/deploy-nginx.sh preflight
+```
+
+Benötigt werden `tailscaled`, die IP `100.123.114.16`,
+gültige Zertifikate unter `/etc/mag-nginx/tls/{cert,key}.pem`,
+ein echtes `/var/lib/magbot/room/access.json` mit Owner-Login,
+ein `magroom` mit `/_internal/tailscale/whois` sowie das extern
+erreichbare Owner-Gerät. Der Preflight ist read-only. Er stellt zusätzlich
+sicher, dass das bisher laufende Binary unbekannte Whois-Anfragen mit 403
+verweigert. Fehlende OAuth-Credentials **blockieren nicht**.
+
+### Schritt 3: Optionales OAuth-Secret nur für Gast-Einladungen
+
+In Tailscale Admin → **Trust credentials → OAuth clients** einen Client
+`MAG Guest Manager` mit ausschließlich `auth_keys` und `devices:core`,
+auf `tag:mag-guest` beschränkt, erstellen. Credentials **nie**
+in Git, Logfiles, Terminalargumente, Umgebungsvariablen oder Tickets
+kopieren.
+
+```bash
+sudo install -d -o root -g root -m 0700 /etc/credstore
+sudo install -o root -g root -m 0600 /dev/null /etc/credstore/mag-guest-oauth
+sudoedit /etc/credstore/mag-guest-oauth
+sudo chown root:root /etc/credstore/mag-guest-oauth
+sudo chmod 0600 /etc/credstore/mag-guest-oauth
+sudo stat -c '%U:%G %a %n' /etc/credstore/mag-guest-oauth
+```
+
+Dateiinhalt **reines JSON**, ohne Shell-Zitate, echte Werte nur auf MAG:
+
+```json
+{"client_id":"<TAILSCALE_CLIENT_ID>","client_secret":"<TAILSCALE_CLIENT_SECRET>"}
+```
+
+Die schon bestehende Unit-Zeile `LoadCredential=mag-guest-oauth` lädt
+diesen Credential-Store-Namen sicher zur Dienstaktivierung in
+`$CREDENTIALS_DIRECTORY/mag-guest-oauth`. **Wenn die Datei fehlt,
+startet der Raum trotzdem.** Die Owner-Gästeliste zeigt „OAuth fehlt:
+Einladen deaktiviert“; alle bestehenden normalen Raum-/Owner-/Box-/lokalen
+Browseraktionen bleiben erreichbar. Es erfolgt kein Fallback mit
+unsignierten Gast-Identitäten. Nach dem Anlegen genügt das nächste
+`mag-120`-Deployment bzw. ein gezielter Restart **nur dieser Unit**;
+`mag-llm` bleibt in Betrieb.
+
+### Schritt 4: Rollout und Rückfall
+
+```bash
+# erst wenn Schritte 1+2 fehlerfrei sind:
+sudo bash ops/deploy.sh
+# optional: nur bereits betriebsbereites nginx idempotent reparieren:
+sudo bash ops/private-access/deploy-nginx.sh standalone
+```
+
+Deploy-Reihenfolge: Preflight → Room/Unit/nginx-Snapshots →
+Release-Staging/Queue-Drain → neues nginx-Config testen →
+nginx reload → **echter Owner-Probe vor Raum-Restart** →
+nur `mag-120` neu starten → `/readyz` → erneut **echter Owner-Probe**
+(`/api/state` muss `you.role=owner` **und** genauen Login zeigen,
+`/` muss 200 sein) → Commit. Bei 403/5xx/Timeout oder falscher Identität
+wird automatisch die vorige Room-Version **samt ursprünglicher nginx-Site**
+wiederhergestellt. Alle nginx-Vorgängerdaten bleiben im jeweiligen
+`/var/backups/mag-stack/<release-id>/` für manuellen
+`ops/rollback.sh <release-id>` erhalten. `mag-llm` wird **nie**
+angehalten oder neu gestartet.
+
+Bei geblocktem GitHub-Actions-Billing lokal prüfen:
+```bash
+bash -n ops/deploy.sh ops/rollback.sh ops/private-access/*.sh
+python3 mag-room/tests/test_whois_deploy.py
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j 4
+python3 mag-room/tests/test_native.py
+python3 mag-room/tests/test_tailscale_auth.py
+python3 mag-room/tests/test_private_nginx.py
+```
+Diese Tests ersetzen den externen Owner-Smoke **nicht**. GitHub Actions
+sind bei der Abrechnungssperre nicht ausführbar; **keine grünen
+CI-Ergebnisse behaupten**, bis Actions wieder läuft.
+

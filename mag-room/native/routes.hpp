@@ -1066,8 +1066,46 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
     send_json(fd, 200, "{\"ok\":true,\"memory_preserved\":true}");
     return;
   }
+  if (!bridge && (path == "/api/room/snapshots" ||
+      path.rfind("/api/room/snapshots/", 0) == 0)) {
+    // Direct local HTTP without a whois/HMAC attestation is NOT an Owner
+    // capability for durable history restore.
+    if (actor.role != "owner" || actor.login.empty() || !ts_proof_valid(r.hdrs)) {
+      error_json(fd,403,"Nur der Besitzer"); return;
+    }
+    if (path == "/api/room/snapshots" && m == "GET") {
+      send_json(fd,200,mj::dump(snapshot_overview())); return;
+    }
+    const std::string root="/api/room/snapshots/", suffix="/restore";
+    if (m == "POST" && path.rfind(root,0)==0 &&
+        path.size()>root.size()+suffix.size() &&
+        path.compare(path.size()-suffix.size(),suffix.size(),suffix)==0) {
+      auto id=path.substr(root.size(),path.size()-root.size()-suffix.size());
+      auto tok=r.hdrs.find("x-mag-token");
+      auto origin=r.hdrs.find("origin");
+      auto fetch_site=r.hdrs.find("sec-fetch-site");
+      if (tok==r.hdrs.end() || !ct_eq(tok->second,ui_token()) ||
+          origin==r.hdrs.end() || origin->second!="https://mag.stardenburg.de" ||
+          fetch_site==r.hdrs.end() || fetch_site->second!="same-origin") {
+        error_json(fd,403,"CSRF-Prüfung fehlgeschlagen"); return;
+      }
+      if (BUSY.load()) { error_json(fd,409,"Bot arbeitet noch"); return; }
+      std::lock_guard<std::mutex> turn(TURN_MTX);
+      if (BUSY.load()) { error_json(fd,409,"Bot arbeitet noch"); return; }
+      auto result=snapshot_restore(id);
+      send_json(fd,result.code,result.body);
+      return;
+    }
+    error_json(fd,405,"Methode nicht erlaubt");
+    return;
+  }
   if (m == "POST" && path == "/api/room/clear") {
-    if (actor.role != "owner") { error_json(fd, 403, "Nur der Besitzer"); return; }
+    if (actor.role != "owner" || actor.login.empty() || !ts_proof_valid(r.hdrs)) {
+      error_json(fd, 403, "Nur der Besitzer"); return;
+    }
+    if (BUSY.load()) { error_json(fd,409,"Bot arbeitet noch"); return; }
+    std::lock_guard<std::mutex> turn(TURN_MTX);
+    if (BUSY.load()) { error_json(fd,409,"Bot arbeitet noch"); return; }
     auto result = clear_room_data();
     send_json(fd, result.code, result.body);
     return;
@@ -1100,7 +1138,9 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
     return;
   }
   if (m == "DELETE" && path.rfind("/api/room/files/", 0) == 0) {
-    if (actor.role != "owner") { error_json(fd, 403, "Nur der Besitzer"); return; }
+    if (actor.role != "owner" || actor.login.empty() || !ts_proof_valid(r.hdrs)) {
+      error_json(fd, 403, "Nur der Besitzer"); return;
+    }
     auto result = delete_room_file(url_decode(path.substr(std::string("/api/room/files/").size())));
     send_json(fd, result.code, result.body);
     return;

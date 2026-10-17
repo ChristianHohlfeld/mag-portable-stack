@@ -7,8 +7,9 @@ here=$(cd -- "$(dirname -- "$0")" && pwd)
 # A confirmed private ingress can be refreshed any number of times without
 # hitting the one-time 180-second first-cutover snapshots. This is the same
 # transactional, Owner-verified nginx path used by every room release.
-if [[ ! -e /var/lib/mag-private-cutover/pending &&
-      -f /var/lib/mag-private-cutover/confirmed ]]; then
+if [[ ! -e /var/lib/mag-private-cutover/pending ]] &&
+   { [[ -f /var/lib/mag-private-cutover/confirmed ]] ||
+     nginx -T 2>&1 | grep -Fq 'auth_request /_mag_whois;'; }; then
   exec bash "$here/deploy-nginx.sh" standalone
 fi
 site=/etc/nginx/sites-available/mag-room.conf

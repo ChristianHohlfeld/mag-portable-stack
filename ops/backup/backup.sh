@@ -244,8 +244,10 @@ rotate_full_backups() {
   (( ${#verified[@]} > 0 )) || return 0
   newest=${verified[-1]}
   keep["$newest"]=1
-  local start=0 n=${#verified[@]}
-  (( n > 3 )) && start=$((n - 3))
+  # One current full backup is enough on this host (MAG_BACKUP_KEEP=1).
+  local start=0 n=${#verified[@]} want=${MAG_BACKUP_KEEP:-1}
+  [[ "$want" =~ ^[1-9][0-9]*$ ]] || want=1
+  (( n > want )) && start=$((n - want))
   local i
   for ((i=start; i<n; i++)); do keep["${verified[i]}"]=1; done
   protect=${MAG_BACKUP_PROTECT_RELEASE:-}

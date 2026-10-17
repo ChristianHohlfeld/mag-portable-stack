@@ -10,6 +10,8 @@ export MAG_BACKUP_ROOT="$tmp/full" MAG_BACKUP_WORK="$tmp/work"
 export MAG_BACKUP_SOURCE="$tmp/host" MAG_BACKUP_STATUS="$tmp/status/status.json"
 export MAG_BACKUP_LOCK="$tmp/run/backup.lock"
 export MAG_BACKUP_MIN_FREE_MIB=64
+# The multi-archive checks below need older archives; the default (1) is checked at the end.
+export MAG_BACKUP_KEEP=3
 unset RESTIC_REPOSITORY || true
 mkdir -p "$MAG_BACKUP_CONFIG" "$MAG_BACKUP_SOURCE/var/lib/magbot/room/files" \
  "$MAG_BACKUP_SOURCE/var/lib/gitea/data/repositories/magbot-agent1/memory.git" \
@@ -158,6 +160,10 @@ if MAG_BACKUP_OFFSITE_ENABLED=1 "$here/backup.sh" daily >"$tmp/offsite-error.out
  echo 'Missing AWS credentials wrongly accepted with offsite explicitly on' >&2; exit 1
 fi
 grep -Fq 'Offsite enabled but AWS credentials missing/unsafe' "$tmp/offsite-error.out"
+# Default: exactly one current full backup remains.
+unset MAG_BACKUP_PROTECT_RELEASE MAG_BACKUP_KEEP
+"$here/backup.sh" daily
+[[ "$(verified_n)" -eq 1 ]]
 pr="$tmp/prune"
 mkdir -p "$pr/releases"/{current-id,previous-id,old-id,linked-id} \
   "$pr/backups"/{current-id,previous-id,old-id,orphan} "$pr/scan"

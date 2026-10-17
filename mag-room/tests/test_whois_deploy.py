@@ -50,6 +50,14 @@ if [[ "$arg" == 'tailscale ip -4' ]]; then
  if [[ "§{MOCK_PROBE_SELF:-0}" == 1 ]]; then echo 100.123.114.16; else echo 100.101.102.103; fi
  exit 0
 fi
+if [[ "$arg" == 'tailscale status --json' ]]; then
+ if [[ "§{MOCK_TAGGED_BOX:-0}" == 1 ]]; then
+  echo '{"Self":{"Online":true,"UserID":0,"Tags":["tag:mag-guest"]},"User":{}}'
+ else
+  echo '{"Self":{"Online":true,"UserID":42,"Tags":[]},"User":{"42":{"ID":42,"LoginName":"chris.hohlfeld@gmail.com"}}}'
+ fi
+ exit 0
+fi
 if [[ "$MOCK_OWNER_FAIL" == 1 ]]; then exit 22; fi
 # For userspace clients the smoke MUST use the remote Tailscale SOCKS5 path.
 if [[ "${MOCK_EXPECT_SOCKS:-0}" == 1 &&
@@ -187,6 +195,20 @@ echo -n 403''',
                    text=True,capture_output=True)
   self.assertNotEqual(r.returncode,0,'A tagged guest is NOT an Owner')
   self.assertEqual(saved,self.site.read_bytes(),'Failing cutover restores live vhost')
+
+ def test_userspace_tagged_box_rejected_in_preflight_before_any_change(self):
+  self.probe.write_text(
+   'MAG_DEPLOY_OWNER_SSH=chris@trusted-box\n'
+   'MAG_DEPLOY_OWNER_LOGIN=chris.hohlfeld@gmail.com\n'
+   'MAG_DEPLOY_OWNER_IP=100.101.102.103\n'
+   'MAG_DEPLOY_OWNER_SOCKS5=127.0.0.1:1055\n')
+  env={**self.env,'MOCK_TAGGED_BOX':'1'}
+  r=subprocess.run(['bash',str(self.script),'preflight'],env=env,
+                   text=True,capture_output=True)
+  self.assertNotEqual(r.returncode,0)
+  self.assertIn('not an online, untagged Owner',r.stderr)
+  self.assertEqual(self.original,self.site.read_bytes())
+  self.assertFalse(self.enabled.is_symlink())
 
  def test_userspace_proxy_unavailable_rolls_back(self):
   self.probe.write_text(

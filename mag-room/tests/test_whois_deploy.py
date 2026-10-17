@@ -51,8 +51,17 @@ if [[ "$arg" == 'tailscale ip -4' ]]; then
  exit 0
 fi
 if [[ "$MOCK_OWNER_FAIL" == 1 ]]; then exit 22; fi
+# For userspace clients the smoke MUST use the remote Tailscale SOCKS5 path.
+if [[ "${MOCK_EXPECT_SOCKS:-0}" == 1 &&
+      "$arg" != *'--socks5-hostname 127.0.0.1:1055'* ]]; then exit 34; fi
+if [[ "${MOCK_PROXY_DOWN:-0}" == 1 &&
+      "$arg" == *'--socks5-hostname'* ]]; then exit 7; fi
 if [[ "$arg" == *'/api/state'* ]]; then
- echo '{"you":{"role":"owner","login":"chris.hohlfeld@gmail.com"}}'
+ if [[ "${MOCK_GUEST_ROLE:-0}" == 1 ]]; then
+  echo '{"you":{"role":"guest","login":"tag:mag-guest:123"}}'
+ else
+  echo '{"you":{"role":"owner","login":"chris.hohlfeld@gmail.com"}}'
+ fi
 elif [[ "$arg" == *'https://mag.stardenburg.de/'* ]]; then
  echo 200
 else exit 8; fi''',
@@ -133,6 +142,66 @@ echo -n 403''',
   self.assertNotEqual(r.returncode,0)
   self.assertEqual(self.site.read_bytes(),self.original)
   self.assertFalse(self.enabled.is_symlink())
+ def test_userspace_socks5_owner_smoke_with_pinned_box(self):
+  self.probe.write_text(
+   'MAG_DEPLOY_OWNER_SSH=chris@trusted-box\\n'
+   'MAG_DEPLOY_OWNER_LOGIN=chris.hohlfeld@gmail.com\\n'
+   'MAG_DEPLOY_OWNER_IP=100.101.102.103\\n'
+   'MAG_DEPLOY_OWNER_SOCKS5=127.0.0.1:1055\\n')
+  # No OAuth credential, no kernel TUN. Real external-origin HTTPS remains
+  # mandatory; mock rejects any curl that omits --socks5-hostname.
+  env={**self.env,'MOCK_OWNER_FAIL':'0','MOCK_EXPECT_SOCKS':'1'}
+  for command in ('preflight','stage','activate','smoke'):
+   r=subprocess.run(['bash',str(self.script),command],env=env,
+                    text=True,capture_output=True)
+   self.assertEqual(r.returncode,0,(command,r.stderr))
+  self.assertIn('auth_request /_mag_whois;',self.site.read_text())
+  self.assertTrue(self.enabled.is_symlink())
+
+ def test_userspace_bad_proxy_or_spoofed_box_is_fail_closed(self):
+  base='MAG_DEPLOY_OWNER_SSH=chris@trusted-box\\nMAG_DEPLOY_OWNER_LOGIN=chris.hohlfeld@gmail.com\\nMAG_DEPLOY_OWNER_IP=100.101.102.103\\n'
+  for proxy in ('0.0.0.0:1055','10.0.0.1:1055','127.0.0.1:0',
+                '127.0.0.1:65536','127.0.0.1:1055;echo pwn'):
+   self.probe.write_text(base+f'MAG_DEPLOY_OWNER_SOCKS5="{proxy}"\\n')
+   r=self.run_script('preflight')
+   self.assertNotEqual(r.returncode,0,proxy)
+   self.assertEqual(self.original,self.site.read_bytes())
+  self.probe.write_text(base.replace('100.101.102.103','100.99.255.98')+
+                        'MAG_DEPLOY_OWNER_SOCKS5=127.0.0.1:1055\\n')
+  r=self.run_script('preflight')
+  self.assertNotEqual(r.returncode,0,'Pinned SSH node mismatch must block')
+  self.assertIn('not the pinned Tailnet node',r.stderr)
+
+ def test_userspace_tagged_guest_cannot_satisfy_owner_smoke(self):
+  self.probe.write_text(
+   'MAG_DEPLOY_OWNER_SSH=chris@trusted-box\\n'
+   'MAG_DEPLOY_OWNER_LOGIN=chris.hohlfeld@gmail.com\\n'
+   'MAG_DEPLOY_OWNER_IP=100.101.102.103\\n'
+   'MAG_DEPLOY_OWNER_SOCKS5=127.0.0.1:1055\\n')
+  r=self.run_script('standalone')
+  self.assertEqual(r.returncode,0,r.stderr) # baseline Owner device succeeds
+  saved=self.site.read_bytes()
+  env={**self.env,'MOCK_OWNER_FAIL':'0','MOCK_EXPECT_SOCKS':'1',
+       'MOCK_GUEST_ROLE':'1'}
+  r=subprocess.run(['bash',str(self.script),'standalone'],env=env,
+                   text=True,capture_output=True)
+  self.assertNotEqual(r.returncode,0,'A tagged guest is NOT an Owner')
+  self.assertEqual(saved,self.site.read_bytes(),'Failing cutover restores live vhost')
+
+ def test_userspace_proxy_unavailable_rolls_back(self):
+  self.probe.write_text(
+   'MAG_DEPLOY_OWNER_SSH=chris@trusted-box\\n'
+   'MAG_DEPLOY_OWNER_LOGIN=chris.hohlfeld@gmail.com\\n'
+   'MAG_DEPLOY_OWNER_IP=100.101.102.103\\n'
+   'MAG_DEPLOY_OWNER_SOCKS5=127.0.0.1:1055\\n')
+  env={**self.env,'MOCK_OWNER_FAIL':'0','MOCK_EXPECT_SOCKS':'1',
+       'MOCK_PROXY_DOWN':'1'}
+  r=subprocess.run(['bash',str(self.script),'standalone'],env=env,
+                   text=True,capture_output=True)
+  self.assertNotEqual(r.returncode,0,'Proxy unavailable must block cutover')
+  self.assertEqual(self.original,self.site.read_bytes())
+  self.assertFalse(self.enabled.is_symlink())
+
  def test_idempotent_install_without_oauth(self):
   for i in range(2):
    r=self.run_script("standalone")

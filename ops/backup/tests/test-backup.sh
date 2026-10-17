@@ -45,7 +45,12 @@ exit 99
 AWS
 chmod +x "$tmp/fakebin/aws"
 export PATH="$tmp/fakebin:$PATH"
+# First, a local encrypted backup WITHOUT any aws.env at all.
+mv "$MAG_BACKUP_CONFIG/aws.env" "$MAG_BACKUP_CONFIG/aws.env.test-pending"
 "$here/backup.sh" daily
+"$here/maintenance.sh" status | jq -e '.offsite_ok == false and .healthy == true' >/dev/null
+# Next, a stale aws.env present: still NO AWS requests.
+mv "$MAG_BACKUP_CONFIG/aws.env.test-pending" "$MAG_BACKUP_CONFIG/aws.env"
 "$here/backup.sh" deploy
 "$here/backup.sh" clear
 [[ "$(restic -r "$MAG_BACKUP_REPO" snapshots --json | jq length)" -eq 3 ]]

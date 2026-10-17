@@ -1975,6 +1975,7 @@ static std::string guest_file_payload(const std::string &vm,
 // Native DeepSeek Pages tool router: no host Gitea PAT and no arbitrary sudo.
 static std::string pages_dispatch_tool(int bot_idx,const std::string& name,
                                        const Val& args) {
+  std::lock_guard<std::mutex> operation(magpages::TOOL_MTX);
   if(!is_pages_tool(name) || !args.isObj())return "Fehler: unknown Pages tool";
   const std::string vm=bot_field(bot_idx,"vm","keine");
   if(vm=="keine" || !pages_safe_vm(vm))return "Fehler: no authorized bot VM";

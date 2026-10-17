@@ -9,7 +9,7 @@ here=$(cd -- "$(dirname -- "$0")" && pwd)
 # transactional, Owner-verified nginx path used by every room release.
 if [[ ! -e /var/lib/mag-private-cutover/pending ]] &&
    { [[ -f /var/lib/mag-private-cutover/confirmed ]] ||
-     nginx -T 2>&1 | grep -Fq 'auth_request /_mag_whois;'; }; then
+     nginx -T 2>&1 | grep -F 'auth_request /_mag_whois;' >/dev/null; }; then
   exec bash "$here/deploy-nginx.sh" standalone
 fi
 site=/etc/nginx/sites-available/mag-room.conf

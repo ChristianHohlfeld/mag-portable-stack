@@ -55,6 +55,8 @@ jobs:
             grep -Fq 'Nice=19' "$f"
           done
           grep -Fq 'CPUAffinity=14-27 42-55' ops/backup/units/mag-backup-clear.service
+      - name: Migrate actual password-protected repo to no-password without data loss
+        run: bash ops/backup/tests/test-passwordless-migrate.sh
       - name: Disposable repository with Gitea SQLite, room and Pages restore
         run: bash ops/backup/tests/test-backup.sh
       - name: No committed secrets

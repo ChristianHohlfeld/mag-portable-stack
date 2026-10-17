@@ -52,4 +52,9 @@ if [[ -e "$visibility" && -f "$retired" && ! -L "$retired" ]]; then
   mv -f "$next" "$visibility"
  fi
 fi
+if [[ "${MAG_PAGES_TESTING:-}" != 1 ]]; then
+ nginx -t
+ systemctl reload nginx.service
+fi
+rm -f "$retired"
 echo 'Pages GC complete'

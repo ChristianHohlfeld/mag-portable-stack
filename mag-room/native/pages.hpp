@@ -13,6 +13,7 @@
 #include <chrono>
 #include <cctype>
 #include <filesystem>
+#include <functional>
 #include <fstream>
 #include <iostream>
 #include <map>
@@ -266,11 +267,12 @@ inline void link_atomic(const fs::path& directory,const std::string& name,const 
   fs::rename(temp,link);
 }
 struct Site {std::string id,slug,sha,branch,custom,access;fs::path content;};
-inline std::vector<Val> repo_list(const std::string& token) {
+inline std::vector<Val> repo_list(const std::string& token,
+      const std::function<Response(const std::string&,const std::string&)>& fetch=request) {
   std::vector<Val> out;
   std::set<int64_t> ids;
   for(int page=1;page<=200;++page){
-    const auto r=request("repos/search?limit=50&page="+std::to_string(page),token);
+    const auto r=fetch("repos/search?limit=50&page="+std::to_string(page),token);
     if(r.status!=200)throw std::runtime_error("Gitea repo list 404");
     auto v=json(r.body);
     auto data=v.find("data");

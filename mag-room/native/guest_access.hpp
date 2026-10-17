@@ -318,7 +318,8 @@ static void guest_cleanup() {
   }
 }
 static void guest_cleanup_loop() {
-  for (;;) { std::this_thread::sleep_for(std::chrono::seconds(60)); guest_cleanup(); }
+  const int every = std::clamp(envi("MAG_ROOM_GUEST_CLEANUP_SECONDS", 60), 1, 3600);
+  for (;;) { std::this_thread::sleep_for(std::chrono::seconds(every)); guest_cleanup(); }
 }
 
 // API results contain no keys beyond the new key in the immediate create

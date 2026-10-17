@@ -103,7 +103,7 @@ static Val qga(const std::string &n, Val command, int timeout = 10) {
 }
 static volatile sig_atomic_t payload_cancelled = 0;
 static Result guest(const std::string &n, const std::vector<std::string> &argv,
-                    int seconds = 120) {
+                     int seconds = 120, bool cancelable = false) {
   Val cmd = Val::object();
   cmd["execute"] = "guest-exec";
   Val args = Val::object();
@@ -259,7 +259,7 @@ cd /home/bot || exit 1
 export PLAYWRIGHT_BROWSERS_PATH=/opt/magbot/browsers
 umask 077
 mkdir -p /home/bot/.mag-shell
-bash "$1" > "$2" 2>&1
+bash -l "$1" > "$2" 2>&1
 rc=$?
 bytes=$(wc -c < "$2")
 printf '[Full output: %s (%s bytes)]\n' "$2" "$bytes"

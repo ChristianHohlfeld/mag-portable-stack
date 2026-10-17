@@ -415,3 +415,7 @@ The existing MAG C++ room publishes Gitea gh-pages or docs into nginx webroots,
 with wildcard HTTPS, per-repository Tailnet/public access, optional CNAME,
 and a one-command rollback. No additional publisher process or Python service.
 See [MAG Pages operations and DNS](docs/GITEA_PAGES.md).
+
+## Gästeverwaltung (Tailscale-only)
+
+Besitzer verwaltet Einladungen und getaggte Gastgeräte direkt im MAG-Raum: **Gäste → Einladen**, einmaliger Auth-Key (24 h), Aktivierung per Link/QR, Geräteübersicht, sofortiges Sperren und automatische Ablauf-Bereinigung. Die Tailscale-Policy beschränkt `tag:mag-guest` auf `100.123.114.16:443`; Gäste dürfen **nie** als reguläre Tailnet-Mitglieder freigeschaltet werden. Native C++-whois/HMAC-Identität, serverseitige Rollenprüfung, Owner-CSRF-Gate, auditierbare Widerrufe. OAuth-Client-Secrets bleiben in `/etc/mag-stack/secrets` mit systemd `LoadCredential`, **nicht in Git**. `mag-llm` ist unberührt. Siehe [docs/guest-access.md](docs/guest-access.md) für Einrichtung, Notfallwiderruf und Einschränkungen.

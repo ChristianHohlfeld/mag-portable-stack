@@ -1,5 +1,15 @@
 # MAG Owner-Probe ohne Kernel-TUN: grokbot-box-2
 
+> **Stand nach #53:** Der externe Owner-Probe ist optional. Ohne
+> `/etc/mag-stack/deploy-owner-probe.conf` prüft jeder Deploy lokal, ob nginx
+> und Raum auf 443 antworten (200/401/403), und rollt sonst nginx und Raum
+> zurück. Mit konfiguriertem Probe-Gerät bleibt die externe Owner-Prüfung
+> Pflicht, sobald sich die nginx/whois-Konfiguration ändert. `grokbot-box-2`
+> ist auf MAG nicht mehr als Probe vorgesehen (Datei entfernen). Der Rest
+> dieses Dokuments beschreibt die Einrichtung, falls später wieder ein
+> Probe-Gerät gewünscht ist. Es gibt weiterhin keine gefälschten
+> Whois-Header und keinen `MAG_DEPLOY_FORCE` für diese Prüfung.
+
 ## Entscheidung / Sicherheitsregel
 
 Der fehlende Owner-Probe darf **nicht** durch lokale HTTP-Aufrufe,

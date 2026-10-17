@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # Atomic nginx companion for MAG: preflight -> stage -> activate -> smoke.
-# An owner-origin probe is mandatory; localhost can never emulate whois.
+# If an Owner probe device is configured (/etc/mag-stack/deploy-owner-probe.conf)
+# and the nginx/whois config changes, an owner-origin smoke from that second
+# Tailnet device is mandatory; localhost can never emulate whois. Otherwise the
+# smoke is the local 443 ingress check. Any failure rolls nginx and room back.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 site=/etc/nginx/sites-available/mag-room.conf
@@ -72,6 +75,20 @@ probe_config(){
       die 'Remote Tailscale node is not an online, untagged Owner device'
   fi
 }
+nginx_changes(){
+  ! { [[ -f $site ]] && cmp -s "$site" "$template" &&
+      [[ $(readlink "$enabled" 2>/dev/null) == ../sites-available/mag-room.conf ]]; }
+}
+needs_owner_probe(){
+  [[ -e $probe_file ]] && nginx_changes
+}
+local_smoke(){
+  local status
+  status=$(curl -sS --max-time 10 -o /dev/null -w '%{http_code}' \
+    --resolve mag.stardenburg.de:443:100.123.114.16 https://mag.stardenburg.de/ || true)
+  [[ $status =~ ^(200|401|403)$ ]] || die "Local ingress check failed (HTTP $status)"
+  echo "Smoke OK (local): nginx and room answer on 443 (HTTP $status)"
+}
 preflight(){
   for bin in nginx curl jq openssl systemctl ssh ip flock; do
     command -v "$bin" >/dev/null || die "Missing $bin"
@@ -92,7 +109,13 @@ preflight(){
   openssl x509 -in /etc/mag-nginx/tls/cert.pem -checkend 86400 -noout ||
     die 'Certificate expires soon'
   [[ -f /var/lib/magbot/room/access.json ]] || die 'access.json missing'
-  probe_config
+  if needs_owner_probe; then
+    probe_config
+  elif nginx_changes; then
+    echo 'nginx config changes; no Owner probe device configured: local ingress check only' >&2
+  else
+    echo 'nginx config unchanged: external Owner probe not required'
+  fi
   # Native whois must be present in the old running room BEFORE switching.
   local status
   status=$(curl -sS --max-time 5 -o /dev/null -w '%{http_code}' \
@@ -118,6 +141,7 @@ stage(){
   else touch "$MAG_NGINX_TXN/nginx.site.absent"; fi
   if [[ -L $enabled ]]; then readlink "$enabled" > "$MAG_NGINX_TXN/nginx.link.old"
   else touch "$MAG_NGINX_TXN/nginx.link.absent"; fi
+  if needs_owner_probe; then touch "$MAG_NGINX_TXN/nginx.changed"; fi
   # Armed before first mutation, including syntax or disk failures.
   touch "$MAG_NGINX_TXN/nginx.staged"
   install -m 0644 "$template" "$site.next"
@@ -142,6 +166,10 @@ activate(){
   systemctl is-active --quiet nginx.service || die 'nginx unhealthy'
 }
 smoke(){
+  if [[ -n ${MAG_NGINX_TXN:-} && -d $MAG_NGINX_TXN && ! -f $MAG_NGINX_TXN/nginx.changed ]]; then
+    local_smoke
+    return
+  fi
   probe_config
   local data status
   # SSH target must be an independent Owner-authenticated Tailscale node.

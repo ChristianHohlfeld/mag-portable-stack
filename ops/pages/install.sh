@@ -39,6 +39,9 @@ chmod 0640 /etc/mag-pages/visibility.json
 install -d -m 0755 -o magbot -g magbot /var/lib/mag-pages \
  /var/lib/mag-pages/releases /var/lib/mag-pages/public /var/lib/mag-pages/tailnet /var/lib/mag-pages/custom
 install -d -m 0755 -o root -g root /var/lib/mag-pages/acme /usr/local/lib/mag-pages /etc/nginx/conf.d
+# Dedicated apex landing is root-owned; never served on a public listener.
+install -d -m 0755 -o root -g root /var/lib/mag-pages/portal
+install -m 0644 -o root -g root "$here/index.html" /var/lib/mag-pages/portal/index.html
 install -m 0755 -o root -g root "$here/issue-wildcard.sh" "$here/refresh-custom.sh" "$here/render-nginx.sh" "$here/pages-gc.sh" "$here/pages-policy.sh" "$here/pages-reconcile.sh" /usr/local/lib/mag-pages/
 # Exact fixed systemd start command. It enters a fresh ROOT mount namespace,
 # never the room's ProtectSystem=full namespace. No arbitrary args/wildcards.

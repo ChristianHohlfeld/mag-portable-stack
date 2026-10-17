@@ -74,6 +74,13 @@ set -e
 # PRIVATE ONLY: no port 80, no public listener, exactly Tailnet 443.
 "$here/render-nginx.sh" >"$tmp/private.conf"
 grep -Fq 'listen 100.123.114.16:443 ssl;' "$tmp/private.conf"
+# Exact apex vhost is separate from the repo-wildcard regex:
+# users can open https://pages.stardenburg.de/ without creating a repo.
+grep -Fq 'server_name pages.stardenburg.de;' "$tmp/private.conf"
+grep -Fq 'location = /healthz' "$tmp/private.conf"
+grep -Fq 'root /var/lib/mag-pages/portal;' "$tmp/private.conf"
+[[ "$(grep -Fc 'listen 100.123.114.16:443 ssl;' "$tmp/private.conf")" -eq 2 ]]
+grep -Fq 'server_name ~^(?<pageslug>' "$tmp/private.conf"
 ! grep -q ':80;' "$tmp/private.conf"
 ! grep -q '@PUBLIC_BIND@' "$tmp/private.conf"
 ! grep -q '192.0.2.10' "$tmp/private.conf"

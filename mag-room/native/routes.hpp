@@ -183,6 +183,7 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
         return;
       }
     } else if (actor.role == "guest") {
+      actor.name = guest_name_for_node(actor.node);
       // Fail closed: guest permissions in access.json must never enable
       // admin/Pages/Jobs/model/Bot control endpoints.
       const std::string &q = r.path;

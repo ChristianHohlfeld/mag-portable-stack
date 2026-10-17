@@ -87,6 +87,12 @@ chown -R magbot:magbot "$tmp/state"
 cat >"$tmp/client" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
+# Validate a real Pages visibility request from a sandboxed magbot process.
+printf '{"repo":"magbot-agent1/site","action":"tailnet"}\\n' > "$tmp/state/request.json"
+sudo -n /usr/bin/systemctl start mag-pages-reconcile.service
+grep -q '"magbot-agent1/site": "tailnet"' "$tmp/etc/visibility.json" ||
+ grep -q '"magbot-agent1/site":"tailnet"' "$tmp/etc/visibility.json"
+test ! -e "$tmp/state/request.json"
 # Simulate native C++ successful Pages DELETE after Gitea source removal.
 rm -f "$tmp/state/tailnet/site--magbot-agent1"
 rm -f "$tmp/state/public/site--magbot-agent1"

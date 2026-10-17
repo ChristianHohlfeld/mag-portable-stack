@@ -20,6 +20,21 @@ probe_config(){
     die 'MAG_DEPLOY_OWNER_SSH is not a safe SSH destination'
   [[ ${MAG_DEPLOY_OWNER_LOGIN:-} =~ ^[a-zA-Z0-9._@+-]+$ ]] ||
     die 'MAG_DEPLOY_OWNER_LOGIN invalid'
+  # A userspace Tailscale node has no kernel tun interface. Its SOCKS5
+  # connection still originates from the REAL remote Tailscale node, so nginx
+  # and native whois must independently attest that exact Owner identity.
+  # Proxy mode never relaxes authorization, the Owner role, or the HTTP gate.
+  if [[ -n ${MAG_DEPLOY_OWNER_SOCKS5:-} ]]; then
+    [[ $MAG_DEPLOY_OWNER_SOCKS5 =~ ^127[.]0[.]0[.]1:([0-9]{1,5})$ ]] ||
+      die 'Owner SOCKS5 must be IPv4 loopback 127.0.0.1:PORT on remote device'
+    local port=${BASH_REMATCH[1]}
+    (( 10#$port >= 1 && 10#$port <= 65535 )) ||
+      die 'Owner SOCKS5 port out of range'
+    [[ ${MAG_DEPLOY_OWNER_IP:-} =~ ^100[.]([0-9]{1,3}[.]){2}[0-9]{1,3}$ ]] ||
+      die 'Pin MAG_DEPLOY_OWNER_IP to the second real Tailnet node in SOCKS5 mode'
+    [[ $MAG_DEPLOY_OWNER_IP != 100.123.114.16 ]] ||
+      die 'MAG may never be its own Owner probe'
+  fi
   jq -e --arg id "$MAG_DEPLOY_OWNER_LOGIN" \
     '.owners|type=="array" and any(.[]; type=="string" and ascii_downcase==($id|ascii_downcase))' \
     /var/lib/magbot/room/access.json >/dev/null ||
@@ -35,6 +50,10 @@ probe_config(){
   [[ $remote_ip =~ ^100\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ &&
      $remote_ip != 100.123.114.16 ]] ||
     die 'Owner probe must be a SECOND real Tailscale device (not MAG)'
+  if [[ -n ${MAG_DEPLOY_OWNER_SOCKS5:-} ]]; then
+    [[ $remote_ip == "$MAG_DEPLOY_OWNER_IP" ]] ||
+      die 'Owner SSH target is not the pinned Tailnet node'
+  fi
 }
 preflight(){
   for bin in nginx curl jq openssl systemctl ssh ip flock; do
@@ -108,19 +127,25 @@ activate(){
 smoke(){
   probe_config
   local data status
-  # SSH client MUST be an independent Owner-logged-in Tailscale device.
-  # Curl uses real networking + CA verification: no spoofed identity headers.
+  # SSH target must be an independent Owner-authenticated Tailscale node.
+  # In userspace mode curl MUST dial through that node's loopback-only SOCKS5.
+  # A successful response is checked again against native whois owner+login;
+  # neither SSH identity nor self-reported tailscale status alone is trusted.
+  local proxy_args=""
+  if [[ -n ${MAG_DEPLOY_OWNER_SOCKS5:-} ]]; then
+    proxy_args="--noproxy '' --socks5-hostname $MAG_DEPLOY_OWNER_SOCKS5"
+  fi
   data=$(ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=5 \
     "$MAG_DEPLOY_OWNER_SSH" \
-    'curl --silent --show-error --fail --connect-timeout 3 --max-time 12 https://mag.stardenburg.de/api/state') ||
-    die 'Owner-origin /api/state failed (403/5xx/TLS/network)'
+    "curl -q --silent --show-error --fail --connect-timeout 3 --max-time 12 --proto '=https' $proxy_args https://mag.stardenburg.de/api/state") ||
+    die 'Owner-origin /api/state failed (403/5xx/TLS/proxy/network)'
   jq -e --arg id "$MAG_DEPLOY_OWNER_LOGIN" \
     '.you.role=="owner" and (.you.login|ascii_downcase)==($id|ascii_downcase)' \
     <<<"$data" >/dev/null || die 'Owner /api/state role/login mismatch'
   status=$(ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=5 \
     "$MAG_DEPLOY_OWNER_SSH" \
-    "curl --silent --show-error --fail --connect-timeout 3 --max-time 12 --output /dev/null --write-out '%{http_code}' https://mag.stardenburg.de/") ||
-    die 'Owner-origin / failed (403/5xx/TLS/network)'
+    "curl -q --silent --show-error --fail --connect-timeout 3 --max-time 12 --proto '=https' $proxy_args --output /dev/null --write-out '%{http_code}' https://mag.stardenburg.de/") ||
+    die 'Owner-origin / failed (403/5xx/TLS/proxy/network)'
   [[ $status == 200 ]] || die "Owner / not HTTP 200 ($status)"
   echo 'Smoke OK: / and /api/state through nginx from external Owner'
 }

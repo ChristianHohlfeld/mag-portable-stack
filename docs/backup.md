@@ -50,8 +50,8 @@ Dateisystem mindestens `MAG_BACKUP_MIN_FREE_MIB` (Standard 4096) frei sein,
 sonst bricht der Lauf ab und löscht nichts. Nach dem Snapshot folgen
 `restic check`, ein Test-Restore und der SHA256-Vergleich. Erst danach
 gilt das Archiv als verifiziert. Gelöscht wird dann höchstens so, dass die
-neueste verifizierte Archiv (`MAG_BACKUP_KEEP`, Standard 1) und das
-Pre-Deploy-Archiv des aktuellen Releases bleiben. Der letzte gute Stand bleibt immer. Ein Fehlschlag löscht
+letzten 3 verifizierten Archive (`MAG_BACKUP_KEEP`, Standard 3) und das
+Pre-Deploy-Archiv des aktuellen Releases bleiben. Ein Fehlschlag löscht
 nur das unvollständige neue Verzeichnis.
 
 Die Abschnitte weiter unten zur gemeinsamen restic-Kette (`forget`/`prune`,

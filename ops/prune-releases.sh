@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Keep the release just installed, the current symlink, the previous release,
-# and any release still targeted by a symlink. Delete every other release
+# Keep the release just installed and one fallback (the previous release).
+# A symlink elsewhere does not pin an older release. A release a running
+# process still has open is kept and reported. Delete every other release
 # directory and the matching rollback directory under /var/backups/mag-stack.
 set -euo pipefail
 root=${MAG_RELEASES_DIR:-/opt/mag-stack/releases}
@@ -20,14 +21,18 @@ if [[ -n "$prev_file" && -f "$prev_file" ]]; then
   id=$(basename "$(cat "$prev_file")")
   [[ "$id" =~ ^[A-Za-z0-9._-]+$ ]] && keep["$id"]=1
 fi
-# shellcheck disable=SC2086
-while IFS= read -r link; do
-  target=$(readlink -f "$link" 2>/dev/null || true)
-  [[ "$target" == "$root"/* ]] || continue
-  id=${target#"$root"/}
-  id=${id%%/*}
-  [[ "$id" =~ ^[A-Za-z0-9._-]+$ ]] && keep["$id"]=1
-done < <(find $scan -xdev -type l 2>/dev/null || true)
+# MAG_RELEASE_SCAN is unused. A symlink under /etc or /usr/local must not
+# keep a third release on disk.
+: "${scan:-}"
+release_in_use() {
+  local path=$1 exe cwd p
+  for p in /proc/[0-9]*; do
+    exe=$(readlink "$p/exe" 2>/dev/null || true)
+    cwd=$(readlink "$p/cwd" 2>/dev/null || true)
+    [[ "$exe" == "$path"/* || "$cwd" == "$path"/* ]] && return 0
+  done
+  return 1
+}
 prune_one() {
   local base=$1 id
   [[ -d "$base" ]] || return 0
@@ -36,7 +41,11 @@ prune_one() {
     id=$(basename "$dir")
     [[ "$id" =~ ^[A-Za-z0-9._-]+$ ]] || continue
     [[ -n "${keep[$id]:-}" ]] && continue
-    echo "Pruning unreferenced $base/$id"
+    if release_in_use "$dir"; then
+      echo "Keeping $dir: a running process is using it"
+      continue
+    fi
+    echo "Pruning $base/$id"
     rm -rf -- "$dir"
   done
 }

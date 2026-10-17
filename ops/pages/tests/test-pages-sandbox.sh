@@ -69,6 +69,7 @@ Environment=MAG_PAGES_ROOT=$tmp/state
 Environment=MAG_PAGES_POLICY_SCRIPT=$here/ops/pages/pages-policy.sh
 Environment=MAG_PAGES_GC_SCRIPT=$here/ops/pages/pages-gc.sh
 Environment=MAG_PAGES_POLICY_FILE=$tmp/etc/visibility.json
+Environment=MAG_PAGES_POLICY_ROOT=$tmp/state
 Environment=MAG_PAGES_CONFIG_FILE=$tmp/etc/pages.env
 Environment=MAG_PAGES_GC_ROOT=$tmp/state
 Environment=MAG_PAGES_GC_VISIBILITY=$tmp/etc/visibility.json
@@ -109,6 +110,9 @@ systemd-run --unit=mag-pages-ci-policy --wait --collect --quiet \
 test -f "$tmp/state/policy-completed"
 # Visibility policy in /etc is root-only; assert it here outside the sandbox.
 jq -e '."magbot-agent1/site"=="tailnet"' "$tmp/etc/visibility.json" >/dev/null
+test ! -L "$tmp/state/public/site--magbot-agent1"
+test ! -L "$tmp/state/custom/$host"
+test -L "$tmp/state/tailnet/site--magbot-agent1" # private route retained
 cat >"$tmp/client" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail

@@ -1,9 +1,9 @@
 name: Private nginx cutover security
 on:
   push:
-    paths: ['ops/private-access/**', 'mag-room/tests/test_private_nginx.py', 'mag-room/tests/test_native.py', 'mag-room/native/**', 'docs/**', '.github/workflows/private-nginx.yml']
+    paths: ['ops/private-access/**', 'ops/nginx/mag-speech.inc', 'mag-room/tests/test_private_nginx.py', 'mag-room/tests/test_native.py', 'mag-room/native/**', 'docs/**', '.github/workflows/private-nginx.yml']
   pull_request:
-    paths: ['ops/private-access/**', 'mag-room/tests/test_private_nginx.py', 'mag-room/tests/test_native.py', 'docs/**', '.github/workflows/private-nginx.yml']
+    paths: ['ops/private-access/**', 'ops/nginx/mag-speech.inc', 'mag-room/tests/test_private_nginx.py', 'mag-room/tests/test_native.py', 'docs/**', '.github/workflows/private-nginx.yml']
 permissions:
   contents: read
   pull-requests: read
@@ -17,8 +17,13 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.sha }} # checkout actual PR head, not merge-only ref
       - name: nginx and shell security dependencies
         run: sudo apt-get update && sudo apt-get install -y nginx openssl
-      - name: Check private-access script syntax
-        run: bash -n ops/private-access/*.sh
+      - name: Shell syntax and transactional TLS tests
+        run: |
+          bash -n ops/private-access/*.sh ops/private-access/tests/*.sh
+          bash ops/private-access/tests/test-deploy-hook.sh
+          bash ops/private-access/tests/test-rollback.sh
+      - name: Actual lego 5.5.2 CLI parsing (no ACME traffic)
+        run: bash ops/private-access/tests/test-lego-v5.sh
       - name: Real TLS nginx auth, fail-closed, header spoofing
         run: python3 mag-room/tests/test_private_nginx.py
       - name: Cutover guard and rollback contract
@@ -31,6 +36,10 @@ jobs:
           ! test -e ops/private-access/tailscale-whois.py
           ! test -e ops/private-access/mag-whois.service
           grep -F 'include /opt/mag-stack/current/ops/nginx/mag-speech*.inc;' ops/private-access/mag-room.nginx.conf
+          grep -F 'cp -a -- "$site" "$backup"' ops/private-access/install.sh
+          grep -F 'mode=$(stat -c %a "$backup")' ops/private-access/install.sh
+          grep -F 'rm -f -- "$backup"' ops/private-access/rollback.sh
+          ! grep -F 'python3 -' ops/private-access/install.sh
           grep -F 'proxy_pass http://127.0.0.1:8766/_internal/tailscale/whois;' ops/private-access/mag-room.nginx.conf
       - name: No committed secrets
         uses: gitleaks/gitleaks-action@v2

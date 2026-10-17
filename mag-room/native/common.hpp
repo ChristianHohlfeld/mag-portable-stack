@@ -105,17 +105,36 @@ struct Result {
 };
 inline Result run(const std::vector<std::string> &args, int seconds = 120,
                   size_t cap = 4 * 1024 * 1024,
-                  const std::atomic<bool> *cancel = nullptr) {
+                  const std::atomic<bool> *cancel = nullptr,
+                  const std::string *stdin_data = nullptr) {
   if (args.empty())
     throw std::runtime_error("Empty process");
   int p[2];
   if (pipe2(p, O_CLOEXEC))
     throw std::runtime_error("pipe failed");
+  // Never put model-supplied payloads in argv (Linux MAX_ARG_STRLEN ~= 128 KiB).
+  // A private, immediately unlinked stdin file also avoids blocking pipe writes.
+  int input = -1;
+  if (stdin_data) {
+    char name[] = "/tmp/mag-stdin-XXXXXX";
+    input = mkstemp(name);
+    if (input < 0) { close(p[0]); close(p[1]); throw std::runtime_error("stdin temp file failed"); }
+    unlink(name);
+    size_t off = 0;
+    while (off < stdin_data->size()) {
+      ssize_t n = ::write(input, stdin_data->data() + off, stdin_data->size() - off);
+      if (n < 0 && errno == EINTR) continue;
+      if (n <= 0) { close(input); close(p[0]); close(p[1]); throw std::runtime_error("stdin temp write failed"); }
+      off += (size_t)n;
+    }
+    if (lseek(input, 0, SEEK_SET) < 0) { close(input); close(p[0]); close(p[1]); throw std::runtime_error("stdin rewind failed"); }
+  }
   posix_spawn_file_actions_t acts;
   posix_spawn_file_actions_init(&acts);
   posix_spawn_file_actions_adddup2(&acts, p[1], 1);
   posix_spawn_file_actions_adddup2(&acts, p[1], 2);
-  posix_spawn_file_actions_addopen(&acts, 0, "/dev/null", O_RDONLY, 0);
+  if (input >= 0) posix_spawn_file_actions_adddup2(&acts, input, 0);
+  else posix_spawn_file_actions_addopen(&acts, 0, "/dev/null", O_RDONLY, 0);
   posix_spawn_file_actions_addclose(&acts, p[0]);
   posix_spawn_file_actions_addclose(&acts, p[1]);
   posix_spawnattr_t attr;
@@ -130,6 +149,7 @@ inline Result run(const std::vector<std::string> &args, int seconds = 120,
   int err = posix_spawnp(&pid, argv[0], &acts, &attr, argv.data(), environ);
   posix_spawn_file_actions_destroy(&acts);
   posix_spawnattr_destroy(&attr);
+  if (input >= 0) close(input);
   close(p[1]);
   if (err) {
     close(p[0]);

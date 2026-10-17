@@ -16,6 +16,8 @@ jobs:
           ./build/test-guest-pty
           ./build/test-browser-recovery
           ./build/test-jobs-mcp
+          ./build/test-large-stdin
+          python3 mag-room/tests/test_large_tools.py
           python3 mag-room/tests/test_native.py
       - uses: actions/setup-go@v5
         with:

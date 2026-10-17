@@ -19,3 +19,25 @@ The room installs as an app named MAG. Web Push is opt-in (VAPID keys from the e
 
 Build/deploy once from the repository root through `CMakeLists.txt` and `ops/`.
 There is no separate Python server or alternate room installer.
+
+## Long coding tasks / large files
+
+`run_command` transports commands through a private stdin file and the guest
+agent in 24 KiB chunks: no 8,000-character or Linux argv limit (max 32 MiB
+per call). Full shell output stays in a private
+`/home/bot/.mag-shell/*.log` inside that bot's VM; the tool result includes
+the path, byte count and a 32 KiB preview. No output is silently discarded.
+
+Use `write_file(path, content)` or `append_file(path, content)` for source
+files under `/home/bot` rather than heredocs. Writes use an atomic temporary
+sibling, fsync and rename. Append copies the old data before replacement.
+Maximum 32 MiB per payload; split more across append calls.
+
+A pending `Nächster Schritt` / `Next step` or `[[MAG:WEITER]]` is
+not completion: the agent continues using tools in the same turn even with
+autotalk off. Defaults: 96 steps and four hours (configurable via
+`MAG_ROOM_MAX_STEPS`, `MAG_ROOM_RUN_BUDGET_S`). On exhaustion the answer
+reports **incomplete**, preserving existing VM files.
+
+Deploy `magroom`, `magbot-native` and the guest wrapper only. **Never restart
+`mag-llm`** for this change.

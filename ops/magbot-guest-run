@@ -1,4 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
-[[ $# == 2 && $1 =~ ^agent[0-9]+$ && ${#2} -le 8000 ]] || { echo 'Invalid guest invocation' >&2; exit 64; }
-exec /usr/local/bin/magbot exec "$1" -- /bin/bash -lc "$2"
+[[ $# -ge 2 && $1 =~ ^agent[0-9]+$ ]] || { echo 'Invalid guest identity' >&2; exit 64; }
+vm=$1; shift
+case "${1:-}" in
+  --stdin)
+    [[ $# -le 2 && (${2:-600} =~ ^[0-9]+$) ]] || { echo 'Invalid guest timeout' >&2; exit 64; }
+    exec /usr/local/bin/magbot exec "$vm" --stdin "${2:-600}"
+    ;;
+  --write|--append)
+    [[ $# == 2 && -n $2 && ${#2} -le 4096 ]] || { echo 'Invalid guest file path' >&2; exit 64; }
+    exec /usr/local/bin/magbot file-write "$vm" "$2" "$1"
+    ;;
+  *)
+    # Legacy small commands are still accepted by existing operations.
+    [[ $# == 1 && ${#1} -le 8000 ]] || { echo 'Legacy command too large; use --stdin' >&2; exit 64; }
+    exec /usr/local/bin/magbot exec "$vm" -- /bin/bash -lc "$1"
+    ;;
+esac

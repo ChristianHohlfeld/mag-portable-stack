@@ -5,13 +5,14 @@
 # live system is touched. deploy.sh keeps its own backup and automatic rollback.
 set -euo pipefail
 ROOT="$(cd -- "$(dirname "$0")/.." && pwd)"
-DRY=0 PULL=1 DEPLOY=1
+DRY=0 PULL=1 DEPLOY=1 AUTO=1
 for a in "$@"; do
   case "$a" in
     --dry-run) DRY=1 ;;
     --no-pull) PULL=0 ;;
     --no-deploy) DEPLOY=0 ;;
-    -h|--help) echo 'usage: ops/update.sh [--dry-run] [--no-pull] [--no-deploy]'; exit 0 ;;
+    --no-auto) AUTO=0 ;;
+    -h|--help) echo 'usage: ops/update.sh [--dry-run] [--no-pull] [--no-deploy] [--no-auto]'; exit 0 ;;
     *) echo "unknown option: $a" >&2; exit 2 ;;
   esac
 done
@@ -44,5 +45,11 @@ if (( DEPLOY )); then
   run sudo bash "$ROOT/ops/deploy.sh"
 else
   echo 'skipped (--no-deploy)'
+fi
+phase auto-update
+if (( DEPLOY && AUTO )); then
+  run sudo bash "$ROOT/ops/auto-update/install.sh"
+else
+  echo 'skipped'
 fi
 echo 'update done'

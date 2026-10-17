@@ -121,6 +121,17 @@ sudo bash ops/health.sh
 
 `ops/deploy.sh` alone does not build: it needs the binaries in `build/`.
 
+**Automatic updates.** After the first successful `bash ops/update.sh`, the host
+updates itself: `mag-auto-update.timer` (every 10 minutes, `ops/auto-update/`)
+fetches `origin/main` and, on a new commit, fast-forwards, builds as the checkout
+owner and runs `ops/deploy.sh` (backup, smoke test, automatic rollback). A commit
+whose build or deploy failed is not retried until a newer commit arrives. It skips
+when the checkout is not on `main` or has local changes, and `mag-llm` is never
+touched. Only merge to `main` what CI has passed. The checkout's `origin` must be
+readable without a password for the checkout owner. Logs: `journalctl -u mag-auto-update`.
+Pause with `sudo touch /etc/mag-stack/auto-update.disabled`; remove the file (or run
+`ops/auto-update/install.sh`) to resume. A deploy restarts `mag-120`, which interrupts a running bot turn.
+
 The installer snapshots the previous unit, native lifecycle and room state under
 `/var/backups/mag-stack/<release>`, installs a versioned release and checks
 readiness before retiring the old service entries. Keep `/etc/default/mag-room`

@@ -156,13 +156,112 @@ static void route(int fd, Req &r, bool bridge = false) {
     }
     // Identity is the Tailscale user Caddy put on this loopback hop.
     // Non-loopback peers are denied here, including forged identity headers.
-    if (!identify_actor(connection_peer(fd), r.hdrs, actor) ||
+    if (!identify_actor(connection_peer(fd), r.hdrs, actor)) {
+      error_json(fd, 403, "Kein Zugang");
+      return;
+    }
+    if (!actor.login.empty() && !ts_proof_valid(r.hdrs)) {
+      error_json(fd,403,"Whois-Nachweis fehlt"); return;
+    }
+    if (actor.role == "guest" && !actor.node.empty() && !guest_live(actor.node)) {
+      if (m == "GET" && (r.path == "/" || r.path == "/index.html")) {
+        // No room state, script or endpoints are exposed before a valid claim.
+        std::string page = R"HTML(<!doctype html><html lang="de"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head><body style="font:16px system-ui;max-width:32rem;margin:5rem auto;padding:1rem"><h1>MAG · Gastzugang</h1><p>Zum Beitreten zuerst Tailscale installieren und den einmaligen Schlüssel in der Tailscale-App unter „Use an auth key“ eingeben. Danach diesen Einladungslink erneut öffnen.</p><p><a href="https://tailscale.com/download" rel="noopener">Tailscale installieren</a></p><p id="key" style="overflow-wrap:anywhere"></p><button id="copy" hidden>Schlüssel kopieren</button><p id="status">Einladung prüfen …</p><script>
+const p=new URLSearchParams(location.hash.slice(1)), code=p.get('invite'), key=p.get('key');
+if(key){document.getElementById('key').textContent=key;const b=document.getElementById('copy');b.hidden=false;b.onclick=()=>navigator.clipboard.writeText(key)}
+if(code){fetch('/api/guest/claim',{method:'POST',headers:{'Content-Type':'application/json','X-Mag-Token':'%%TOKEN%%'},body:JSON.stringify({code})}).then(async r=>{if(!r.ok)throw Error((await r.json()).error||'Nicht bestätigt');location.replace('/')}).catch(e=>document.getElementById('status').textContent=e.message)}
+else document.getElementById('status').textContent='Bitte den vollständigen Einladungslink öffnen.';
+</script></body></html>)HTML";
+        auto at = page.find("%%TOKEN%%");
+        if (at != std::string::npos) page.replace(at, 9, ui_token());
+        send_response(fd, 200, "text/html; charset=utf-8", page,
+                      {{"Cache-Control","no-store"},{"Referrer-Policy","no-referrer"}});
+        return;
+      }
+      if (!(m == "POST" && r.path == "/api/guest/claim")) {
+        error_json(fd, 403, "Einladung noch nicht bestätigt oder widerrufen");
+        return;
+      }
+    } else if (actor.role == "guest" && !actor.node.empty()) {
+      actor.name = guest_name_for_node(actor.node);
+      // Deliberately independent of configurable AccessCfg permissions: a
+      // tagged guest may never gain Jobs, Pages, Admin or model privileges.
+      const auto &q = r.path;
+      const bool read = m == "GET" &&
+          (q == "/" || q == "/index.html" || q == "/sw.js" ||
+           q == "/manifest.webmanifest" || q == "/api/state" ||
+           q == "/api/events" || q == "/api/bots" ||
+           q == "/api/room" || q == "/api/files" ||
+           q == "/api/version" || q == "/api/model-status" ||
+           q.rfind("/static/",0)==0 || q.rfind("/api/file/",0)==0);
+      const bool write = m == "POST" &&
+          (q == "/api/message" || q == "/api/upload");
+      if (!read && !write) {
+        error_json(fd,403,"Gäste dürfen diese Aktion nicht ausführen");
+        return;
+      }
+    }
+    if (!(m == "POST" && r.path == "/api/guest/claim" &&
+          actor.role == "guest" && !actor.node.empty()) &&
         !permit_request(m, r.path, actor)) {
-      error_json(fd, 403, actor.ok ? "Nur der Besitzer" : "Kein Zugang");
+      error_json(fd, 403, "Nur der Besitzer");
       return;
     }
   }
   const std::string path = r.path;
+  if (!bridge && path == "/api/guest/claim" && m == "POST") {
+    if (actor.role != "guest" || actor.node.empty() || r.body.size() > 2048) {
+      error_json(fd,403,"Kein Gastgerät"); return;
+    }
+    Val input;
+    if (!mj::parse(r.body,input) || !input.isObj()) {
+      error_json(fd,400,"Ungültige Anfrage"); return;
+    }
+    auto result = guest_claim(actor,input);
+    send_json(fd,result.code,mj::dump(result.body));
+    return;
+  }
+  if (!bridge && (path == "/api/guests" || path.rfind("/api/guests/",0)==0)) {
+    // Only the owner whose identity came from the native nginx/whois gate.
+    // Direct localhost without an attested LoginName never gains admin rights.
+    if (actor.role != "owner" || actor.login.empty() || !ts_proof_valid(r.hdrs)) {
+      error_json(fd,403,"Nur der Besitzer"); return;
+    }
+    if (m == "GET" && path == "/api/guests") {
+      Val result=guest_list_live();
+      send_json(fd,200,mj::dump(result)); return;
+    }
+    // Stricter than the normal UI: every mutation needs a fresh page token,
+    // same-origin fetch metadata and exact HTTPS Origin.
+    auto origin = r.hdrs.find("origin");
+    auto token = r.hdrs.find("x-mag-token");
+    auto site = r.hdrs.find("sec-fetch-site");
+    if (origin == r.hdrs.end() ||
+        origin->second != "https://mag.stardenburg.de" ||
+        token == r.hdrs.end() || !ct_eq(token->second, ui_token()) ||
+        site == r.hdrs.end() || site->second != "same-origin") {
+      error_json(fd,403,"CSRF-Prüfung fehlgeschlagen"); return;
+    }
+    if (m == "POST" && path == "/api/guests") {
+      if (r.body.size() > 4096) { error_json(fd,413,"Zu groß"); return; }
+      Val input;
+      if (!mj::parse(r.body,input) || !input.isObj()) {
+        error_json(fd,400,"Ungültige Anfrage"); return;
+      }
+      auto issue=guest_issue(actor,input);
+      send_json(fd,issue.code,mj::dump(issue.body)); return;
+    }
+    if (m == "DELETE" && path.rfind("/api/guests/",0)==0) {
+      auto id=path.substr(std::string("/api/guests/").size());
+      if (!guest_ident(id)) { error_json(fd,400,"Ungültige ID"); return; }
+      bool done=guest_revoke(id,actor.login);
+      if (done) send_json(fd,200,"{\"ok\":true}");
+      else send_json(fd,202,"{\"ok\":true,\"pending_cleanup\":true}");
+      return;
+    }
+    error_json(fd,405,"Methode nicht erlaubt");
+    return;
+  }
   if (path == "/mcp/jobs") {
     // Optional remote MCP transport: disabled until a long random server-only
     // token is explicitly configured. The model itself uses in-process tools.
@@ -410,7 +509,7 @@ static void route(int fd, Req &r, bool bridge = false) {
     return;
   }
   if (m == "GET" && path == "/api/events") {
-    handle_sse(fd);
+    handle_sse(fd, actor.role == "guest" ? actor.node : "");
     return;
   }
   if (m == "GET" && path == "/api/state") {
@@ -940,6 +1039,7 @@ static void route(int fd, Req &r, bool bridge = false) {
     return;
   }
   if (m == "POST" && path == "/api/reset") {
+    if (actor.role != "owner") { error_json(fd,403,"Nur der Besitzer"); return; }
     stop_autotalk();
     std::lock_guard<std::mutex> turn(TURN_MTX);
     std::vector<std::string> vms;
@@ -966,8 +1066,53 @@ static void route(int fd, Req &r, bool bridge = false) {
     send_json(fd, 200, "{\"ok\":true,\"memory_preserved\":true}");
     return;
   }
+  if (!bridge && (path == "/api/room/snapshots" ||
+      path.rfind("/api/room/snapshots/", 0) == 0)) {
+    // Direct local HTTP without a whois/HMAC attestation is NOT an Owner
+    // capability for durable history restore.
+    if (actor.role != "owner" || actor.login.empty() || !ts_proof_valid(r.hdrs)) {
+      error_json(fd,403,"Nur der Besitzer"); return;
+    }
+    if (path == "/api/room/snapshots" && m == "GET") {
+      send_json(fd,200,mj::dump(snapshot_overview())); return;
+    }
+    const std::string root="/api/room/snapshots/", suffix="/restore";
+    if (m == "POST" && path.rfind(root,0)==0 &&
+        path.size()>root.size()+suffix.size() &&
+        path.compare(path.size()-suffix.size(),suffix.size(),suffix)==0) {
+      auto id=path.substr(root.size(),path.size()-root.size()-suffix.size());
+      auto tok=r.hdrs.find("x-mag-token");
+      auto origin=r.hdrs.find("origin");
+      auto fetch_site=r.hdrs.find("sec-fetch-site");
+      if (tok==r.hdrs.end() || !ct_eq(tok->second,ui_token()) ||
+          origin==r.hdrs.end() || origin->second!="https://mag.stardenburg.de" ||
+          fetch_site==r.hdrs.end() || fetch_site->second!="same-origin") {
+        error_json(fd,403,"CSRF-Prüfung fehlgeschlagen"); return;
+      }
+      if (BUSY.load()) { error_json(fd,409,"Bot arbeitet noch"); return; }
+      std::lock_guard<std::mutex> turn(TURN_MTX);
+      if (BUSY.load()) { error_json(fd,409,"Bot arbeitet noch"); return; }
+      auto result=snapshot_restore(id);
+      if (result.code == 200) guest_audit("room_restore",actor.login,id);
+      send_json(fd,result.code,result.body);
+      return;
+    }
+    error_json(fd,405,"Methode nicht erlaubt");
+    return;
+  }
   if (m == "POST" && path == "/api/room/clear") {
+    if (actor.role != "owner" || actor.login.empty() || !ts_proof_valid(r.hdrs)) {
+      error_json(fd, 403, "Nur der Besitzer"); return;
+    }
+    if (BUSY.load()) { error_json(fd,409,"Bot arbeitet noch"); return; }
+    std::lock_guard<std::mutex> turn(TURN_MTX);
+    if (BUSY.load()) { error_json(fd,409,"Bot arbeitet noch"); return; }
     auto result = clear_room_data();
+    if (result.code == 200) {
+      Val response;
+      if (mj::parse(result.body,response))
+        guest_audit("room_clear",actor.login,guest_field(response,"snapshot"));
+    }
     send_json(fd, result.code, result.body);
     return;
   }
@@ -999,6 +1144,9 @@ static void route(int fd, Req &r, bool bridge = false) {
     return;
   }
   if (m == "DELETE" && path.rfind("/api/room/files/", 0) == 0) {
+    if (actor.role != "owner" || actor.login.empty() || !ts_proof_valid(r.hdrs)) {
+      error_json(fd, 403, "Nur der Besitzer"); return;
+    }
     auto result = delete_room_file(url_decode(path.substr(std::string("/api/room/files/").size())));
     send_json(fd, result.code, result.body);
     return;

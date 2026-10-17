@@ -5,6 +5,8 @@
 #include <sys/un.h>
 #include <cerrno>
 #include <climits>
+#include <openssl/hmac.h>
+#include <openssl/rand.h>
 
 static bool ts_remote(const std::string &raw, std::string &normalized) {
   // This nginx vhost listens on IPv4 only. No whitespace, DNS or URL escapes.
@@ -126,6 +128,55 @@ static bool ts_lookup(const std::string &remote, mj::Val &profile) {
   return ts_http_body(response, body) && mj::parse(body, profile) && profile.isObj();
 }
 
+
+// A local process may spoof identity headers. An HMAC from the native whois
+// subrequest proves the identity was actually attested via tailscaled; nginx
+// copies the proof only from that internal subrequest, never from the client.
+// The key is generated only in RAM and never exposed through page HTML.
+static const std::string &ts_proof_secret() {
+  static const std::string key = [] {
+    unsigned char bytes[32];
+    if (RAND_bytes(bytes, sizeof bytes) != 1) std::abort();
+    return std::string((char *)bytes, sizeof bytes);
+  }();
+  return key;
+}
+static std::string ts_proof(const std::string &user,
+                            const std::string &node,
+                            const std::string &ip,
+                            const std::string &tagged, int64_t epoch_min) {
+  std::string data = user + "\n" + node + "\n" + ip + "\n" + tagged +
+                     "\n" + std::to_string(epoch_min);
+  unsigned char digest[EVP_MAX_MD_SIZE];
+  unsigned n = 0;
+  if (!HMAC(EVP_sha256(), ts_proof_secret().data(),
+            (int)ts_proof_secret().size(),
+            (const unsigned char *)data.data(), data.size(), digest, &n))
+    return "";
+  static const char *hex = "0123456789abcdef";
+  std::string out;
+  for (unsigned i=0;i<n;++i) {out += hex[digest[i] >> 4]; out += hex[digest[i] & 15];}
+  return out;
+}
+static bool ts_proof_valid(const std::map<std::string,std::string> &h) {
+  auto get = [&](const char *name) -> std::string {
+    auto it = h.find(name); return it == h.end() ? "" : it->second;
+  };
+  std::string proof = get("x-mag-auth-proof");
+  if (proof.size() != 64) return false;
+  std::string user = get("x-tailscale-user"), node = get("x-tailscale-node"),
+              ip = get("x-tailscale-ip"), tag = get("x-tailscale-guest");
+  in_addr addr{};
+  if (inet_pton(AF_INET,ip.c_str(),&addr) != 1) return false;
+  if ((!user.empty() && !valid_login(user)) ||
+      (!node.empty() && (node.size()>20 || node.find_first_not_of("0123456789")!=std::string::npos)))
+    return false;
+  if (!(tag.empty() || tag == "1")) return false;
+  const int64_t minute = now_s()/60;
+  return ct_eq(proof,ts_proof(user,node,ip,tag,minute)) ||
+         ct_eq(proof,ts_proof(user,node,ip,tag,minute-1));
+}
+
 static void native_tailscale_auth(int fd, const Req &r) {
   // Only nginx on loopback may call this. Missing/invalid identity NEVER
   // becomes the implicit local owner used by ordinary direct loopback calls.
@@ -148,9 +199,31 @@ static void native_tailscale_auth(int fd, const Req &r) {
     send_text(fd, 403, "tailscale identity unavailable\n");
     return;
   }
+  // A tagged device has a Node identity and tags, not a UserProfile.
+  auto node = obj.find("Node");
+  std::string node_id, remote_ip = remote.substr(0, remote.rfind(':'));
+  bool tagged = false;
+  if (node && node->isObj()) {
+    auto id = node->find("ID");
+    if (id && id->type == Val::NUM && id->asNum() > 0 &&
+        id->asNum() < 9007199254740991.0)
+      node_id = std::to_string((uint64_t)id->asNum());
+    auto tags = node->find("Tags");
+    if (tags && tags->isArr())
+      for (const auto &tag : tags->asArr())
+        if (tag.asStr() == "tag:mag-guest") tagged = true;
+  }
+  if (tagged && !node_id.empty()) {
+    send_response(fd, 200, "text/plain; charset=utf-8", "",
+                  {{"X-Tailscale-Node", node_id},
+                   {"X-Tailscale-IP", remote_ip},
+                   {"X-Tailscale-Guest", "1"},
+                   {"X-Mag-Auth-Proof", ts_proof("",node_id,remote_ip,"1",now_s()/60)}});
+    return;
+  }
   auto user = obj.find("UserProfile");
   if (!user || !user->isObj()) {
-    send_text(fd, 403, "missing Tailscale user\n");
+    send_text(fd, 403, "missing authenticated Tailscale identity\n");
     return;
   }
   auto field = [&](const char *key) -> std::string {
@@ -168,5 +241,7 @@ static void native_tailscale_auth(int fd, const Req &r) {
   send_response(fd, 200, "text/plain; charset=utf-8", "",
                 {{"X-Tailscale-User", login},
                  {"X-Tailscale-Login", login},
-                 {"X-Tailscale-Name", url_encode(name)}});
+                 {"X-Tailscale-Name", url_encode(name)},
+                 {"X-Tailscale-IP", remote_ip},
+                 {"X-Mag-Auth-Proof", ts_proof(login,"",remote_ip,"",now_s()/60)}});
 }

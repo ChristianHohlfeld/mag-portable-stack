@@ -278,9 +278,12 @@ dialog{border-radius:10px;border-color:var(--line);background:var(--surface)}
 <div class="layout" id="layout">
 <aside class="left" id="left-panel"><div class="section"><div class="side-section-head"><h2>Im Raum</h2></div><div id="agents"></div><button class="side-add" id="add-agent"><svg class="i sm" aria-hidden="true"><use href="#ic-plus"></use></svg> Bot hinzufügen</button></div>
 <div class="section" id="jobs-section"><div class="side-section-head"><h2>Jobs</h2><button type="button" class="pill-btn ghost" id="job-new" title="Neuen Job anlegen">+ Neu</button></div><div id="jobs" class="jobs-list"></div></div><div class="section"><div class="side-section-head"><h2>Zusammenarbeit</h2></div><label class="control-row" id="autotalk-row"><input type="checkbox" id="autotalk"><span>Autonom arbeiten</span></label><p class="control-desc" id="autotalk-desc">Läuft auch bei geschlossenem Browser.</p><label class="control-row" id="offline-row"><input type="checkbox" id="offline"><span>Offline</span></label><div class="sidebar-actions"><button class="pill-btn ghost" id="stop"><svg class="i sm" aria-hidden="true"><use href="#ic-pause"></use></svg> Alle pausieren</button></div></div>
+
+<div class="section" id="guests-section" hidden><div class="side-section-head"><h2>Gäste</h2><button type="button" class="pill-btn ghost" id="guest-new">+ Einladen</button></div><div class="hint" id="guest-status"></div><div id="guest-list" class="jobs-list"></div></div>
+<dialog id="guest-dialog" class="mag-modal" aria-label="Gast einladen"><form id="guest-form"><h3>Gast einladen</h3><label>Name (optional)<input id="guest-name" maxlength="40" autocomplete="off" placeholder="Name"></label><label>Notiz (optional)<input id="guest-note" maxlength="160" autocomplete="off" placeholder="Zweck"></label><label>Zugang bis<input id="guest-expiry" type="datetime-local" required></label><p class="hint">Der Tailscale-Schlüssel ist einmalig und 24 Stunden gültig. Der Raumzugang endet zum ausgewählten Zeitpunkt.</p><div class="row"><button type="button" id="guest-cancel">Abbrechen</button><button type="submit" class="primary" id="guest-create">Einladung erstellen</button></div></form><div id="guest-created" hidden><h3>Einladung – nur jetzt sichtbar</h3><p>Schlüssel sicher übermitteln. Der Gast installiert Tailscale, wählt „Use an auth key“ und öffnet anschließend den Einladungslink.</p><label>Einmaliger Tailscale-Schlüssel<code id="guest-key" style="overflow-wrap:anywhere;display:block"></code></label><button id="guest-copy-key" type="button">Schlüssel kopieren</button><label>Einladungslink<input id="guest-url" readonly></label><button id="guest-copy-link" type="button">Link kopieren</button><div id="guest-qr" style="width:200px;min-height:200px;margin:16px auto;background:#fff;padding:8px"></div><p class="hint">Der QR-Code enthält den Einladungslink mit Schlüssel. Wer ihn besitzt, kann den einmaligen Schlüssel benutzen.</p><div class="row"><button type="button" id="guest-done" class="primary">Fertig – Schlüssel verwerfen</button></div></div></dialog>
 <div class="section" id="settings-section"><div class="side-section-head"><h2>Einstellungen</h2></div><label class="control-row"><input type="checkbox" id="tts"><span>Antworten vorlesen</span></label><div style="padding:8px 10px"><select class="side-select" id="language" aria-label="Sprache"><option value="auto">Sprache automatisch</option><option value="de">Deutsch</option><option value="en">English</option></select></div><div class="pwa-block" id="pwa-install-block"><p class="hint">App auf diesem Gerät</p><button type="button" class="pill-btn" id="pwa-install" hidden>Installieren</button><p class="hint" id="pwa-ios" hidden>Auf dem iPhone: Teilen, dann „Zum Home-Bildschirm“.</p><p class="hint" id="pwa-install-note"></p></div><div id="pwa-notify"><div class="pwa-block" id="pwa-push-block"><button type="button" class="pill-btn" id="pwa-push">Mitteilungen einschalten</button><p class="hint" id="pwa-push-note"></p><button type="button" class="pill-btn ghost" id="pwa-unsub" hidden>Mitteilungen aus</button></div><label class="control-row"><input type="checkbox" id="pwa-job" checked><span>Fertige Jobs</span></label><label class="control-row"><input type="checkbox" id="pwa-run" checked><span>Lange Antworten</span></label><label class="control-row"><input type="checkbox" id="pwa-error" checked><span>Fehler</span></label></div></div>
 <div class="section" id="data-areas"><div class="side-section-head"><h2>Daten</h2></div>
-<div class="data-area" id="area-room"><h3>Raum</h3><p class="data-count" id="room-count">0 Nachrichten, 0 Dateien</p><p class="hint">Chatverlauf und hochgeladene Dateien.</p><button class="pill-btn ghost-danger" id="reset" type="button">Raum leeren</button></div>
+<div class="data-area" id="area-room"><h3>Raum</h3><p class="data-count" id="room-count">0 Nachrichten, 0 Dateien</p><p class="hint">Chatverlauf und hochgeladene Dateien.</p><button class="pill-btn ghost-danger" id="reset" type="button" hidden>Raum leeren</button><div id="snapshot-tools" style="margin-top:10px" hidden><button class="pill-btn ghost" type="button" id="snapshots-open">Sicherungen ansehen</button><div id="snapshots-list" class="jobs-list" hidden></div></div></div>
 <div class="data-area" id="area-work"><h3>Arbeitsdaten</h3><div id="work-areas"></div></div>
 </div></aside>
 <main class="main"><div class="chat-scroll"><div class="conversation" id="conversation"></div>
@@ -309,6 +312,7 @@ dialog{border-radius:10px;border-color:var(--line);background:var(--surface)}
 <!-- Embedded, locally bundled libraries and app logic inserted below. No external assets. -->
 <script src="/static/marked.min.js"></script><script src="/static/purify.min.js"></script>
 <script src="/static/highlight.min.js"></script>
+<script src="/static/qrcode.min.js"></script>
 <script src="/static/xterm.js"></script><script src="/static/xterm-addon-fit.js"></script>
 <script>
 'use strict';
@@ -863,10 +867,126 @@ function can(p){if(!state.you)return true;if(state.you.role==='owner')return tru
 function applyAccess(){const y=state.you;document.body.classList.toggle('is-guest',!!(y&&y.role==='guest'));
  const hide=(id,on)=>{const el=$(id);if(el)el.hidden=!!on};
  hide('jobs-section',!can('jobs'));
+ hide('snapshot-tools',!(y&&y.role==='owner'));
+ hide('reset',!(y&&y.role==='owner'));
+ if(y&&y.role!=='owner')$('snapshots-list').hidden=true;
+ hide('guests-section',!(y&&y.role==='owner'));
+ if(y&&y.role==='owner')loadGuests();
  hide('add-agent',!can('delete')||!!(state.single_bot));
  hide('offline-row',!can('offline'));hide('autotalk-row',!can('autotalk'));hide('autotalk-desc',!can('autotalk'));
  hide('stop',!can('stop'));hide('reset-wrap',!can('reset'));hide('plus-web',!can('offline'));hide('plus-github',!can('connectors'));
  const badge=$('you-badge');if(!badge)return;if(!y){badge.hidden=true;return}badge.hidden=false;badge.textContent=(y.role==='owner'?'Besitzer':'Gast')+' · '+(y.name||'');badge.title=(y.login||y.role);}
+
+// Owner-only guest provisioning; the server performs independent authorization.
+let guestsLast=0,guestsBusy=false;
+const guestToken=()=>document.querySelector('meta[name="mag-token"]')?.content||'';
+async function guestAPI(path,body,method='GET'){
+ const headers={'X-Mag-Token':guestToken()};
+ if(body!==undefined)headers['Content-Type']='application/json';
+ const r=await fetch(path,{method,headers,body:body===undefined?undefined:JSON.stringify(body),cache:'no-store'});
+ const result=await r.json().catch(()=>({error:'Keine Antwort'}));
+ if(!r.ok)throw Error(result.error||'Gästeverwaltung nicht erreichbar');
+ return result;
+}
+const dt=t=>t?new Date(t*1000).toLocaleString('de-DE'):'–';
+async function loadGuests(force=false){
+ if(state.you?.role!=='owner')return;
+ if(guestsBusy||!force&&Date.now()-guestsLast<30000)return;
+ guestsBusy=true;
+ try{
+  const info=await guestAPI('/api/guests');
+  guestsLast=Date.now();
+  $('guest-status').textContent=info.configured?(info.live_status==='unavailable'?'Tailscale-Status derzeit nicht verfügbar':'Nur du kannst Gäste verwalten'):'OAuth-Zugang noch nicht eingerichtet';
+  const box=$('guest-list');box.replaceChildren();
+  for(const entry of info.guests||[]){
+   const row=document.createElement('div');row.className='job';
+   const name=document.createElement('strong');name.textContent=entry.name||entry.device_name||'Gast';
+   const details=document.createElement('div');details.className='hint';
+   const stateLabel=!entry.claimed?'Einladung offen':entry.online===true?'Online':entry.online===false?'Offline':'Status unbekannt';
+   details.textContent=stateLabel+(entry.device_name?' · '+entry.device_name:'')+' · Erstellt '+dt(entry.created)+' · Ablauf '+dt(entry.expires);
+   if(entry.last_seen)details.textContent+=' · Zuletzt '+new Date(entry.last_seen).toLocaleString('de-DE');
+   if(entry.note){const n=document.createElement('div');n.className='hint';n.textContent=entry.note;row.append(n)}
+   const remove=document.createElement('button');remove.type='button';remove.className='pill-btn ghost';remove.textContent='Entfernen';
+   remove.onclick=async()=>{
+    if(!await magConfirm({title:'Gast entfernen',text:(entry.name||entry.device_name||'Gast')+' verliert sofort den Raumzugang. Das Gerät wird aus Tailscale gelöscht und ungenutzte Schlüssel widerrufen.',ok:'Entfernen',danger:true}))return;
+    remove.disabled=true;
+    try{const x=await guestAPI('/api/guests/'+encodeURIComponent(entry.id),undefined,'DELETE');guestsLast=0;await loadGuests(true);if(x.pending_cleanup)notice('Raumzugang gesperrt, Tailscale-Löschung wird wiederholt.')}
+    catch(e){remove.disabled=false;notice(e.message)}
+   };
+   row.append(name,details,remove);box.append(row);
+  }
+  if(!(info.guests||[]).length)box.textContent='Keine Gäste oder offenen Einladungen.';
+ }catch(e){$('guest-status').textContent=e.message}
+ finally{guestsBusy=false}
+}
+function clearInvite(){
+ $('guest-created').hidden=true;$('guest-form').hidden=false;
+ $('guest-key').textContent='';$('guest-url').value='';$('guest-qr').replaceChildren();
+ $('guest-copy-key').onclick=null;$('guest-copy-link').onclick=null; // release secret-holding closures
+ $('guest-dialog').close();loadGuests(true);
+}
+$('guest-new').onclick=()=>{
+ const d=new Date(Date.now()+7*86400000);
+ $('guest-expiry').value=[d.getFullYear(),String(d.getMonth()+1).padStart(2,'0'),String(d.getDate()).padStart(2,'0')].join('-')+'T'+String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0');
+ $('guest-dialog').showModal();
+};
+$('guest-cancel').onclick=clearInvite;
+$('guest-done').onclick=clearInvite;
+$('guest-dialog').addEventListener('cancel',e=>{e.preventDefault();clearInvite()});
+$('guest-form').onsubmit=async e=>{
+ e.preventDefault();const btn=$('guest-create');btn.disabled=true;
+ try{
+  const at=Math.floor(new Date($('guest-expiry').value).getTime()/1000);
+  if(!Number.isFinite(at))throw Error('Ungültiges Ablaufdatum');
+  const result=await guestAPI('/api/guests',{name:$('guest-name').value,note:$('guest-note').value,expires_at:at},'POST');
+  $('guest-form').hidden=true;$('guest-created').hidden=false;
+  $('guest-key').textContent=result.key;$('guest-url').value=result.invite_url;
+  const target=$('guest-qr');target.replaceChildren();
+  if(typeof QRCode!=='undefined')new QRCode(target,{text:result.invite_url,width:184,height:184,correctLevel:QRCode.CorrectLevel.L});
+  $('guest-copy-key').onclick=()=>navigator.clipboard.writeText(result.key);
+  $('guest-copy-link').onclick=()=>navigator.clipboard.writeText(result.invite_url);
+  guestsLast=0;
+ }catch(err){notice(err.message)}
+ finally{btn.disabled=false}
+};
+
+
+async function snapshotsFetch(path,method='GET'){
+ const headers={'X-Mag-Token':document.querySelector('meta[name="mag-token"]')?.content||''};
+ const r=await fetch(path,{method,headers,cache:'no-store'});
+ const result=await r.json().catch(()=>({error:'Serverantwort ungültig'}));
+ if(!r.ok)throw Error(result.error||'Snapshot nicht verfügbar');
+ return result;
+}
+$('snapshots-open').onclick=async()=>{
+ const box=$('snapshots-list');
+ if(!box.hidden){box.hidden=true;return}
+ try{
+  const result=await snapshotsFetch('/api/room/snapshots');
+  box.replaceChildren();
+  for(const s of result.snapshots||[]){
+   const row=document.createElement('div');row.className='job';
+   const info=document.createElement('div');info.className='hint';
+   info.textContent=new Date((s.created||0)*1000).toLocaleString('de-DE')+
+     ' · '+(s.message_count||0)+' Nachrichten · '+(s.file_count||0)+' Dateien';
+   const btn=document.createElement('button');btn.className='pill-btn ghost';btn.type='button';
+   btn.textContent='Wiederherstellen';
+   btn.onclick=async()=>{
+    if(!await magConfirm({title:'Raum wiederherstellen',text:'Den gesamten Raum auf diese Sicherung zurücksetzen? Der aktuelle Zustand wird vorher ebenfalls gesichert.',ok:'Wiederherstellen',danger:true}))return;
+    btn.disabled=true;
+    try {
+     const restored=await snapshotsFetch('/api/room/snapshots/'+encodeURIComponent(s.id)+'/restore','POST');
+     box.hidden=true;streams={};await refresh();
+     notice('Raum wiederhergestellt. Vorheriger Zustand: '+restored.previous_snapshot);
+    } catch(e){btn.disabled=false;notice(e.message)}
+   };
+   row.append(info,btn);box.append(row);
+  }
+  if(!box.children.length)box.textContent='Noch keine Sicherungen.';
+  box.hidden=false;
+ }catch(e){notice(e.message)}
+};
+
 function renderAgents(){const list=$('agents');list.replaceChildren();const single=state.single_bot||'';$('add-agent').hidden=!!single;if(single){selected.clear();selected.add(single)}const old=$('browser-agent').value;$('browser-agent').replaceChildren();for(const a of state.agents){if(!selected.has(a.id)&&!sessionStorage.getItem('mag-selected'))selected.add(a.id);const card=document.createElement('div');card.className='agent';card.dataset.bot=a.id;card.tabIndex=0;
 card.setAttribute('role','button');card.setAttribute('aria-label',a.name+' Browser und Terminal anzeigen');
 card.onclick=e=>{if(e.target.closest('button,a,input,label,textarea,select'))return;focusBot(a.id)};
@@ -885,7 +1005,7 @@ if(!old&&state.agents.some(a=>a.id===focusedBotId&&a.vm))$('browser-agent').valu
 const current=$('browser-agent').value;
 for(const card of list.querySelectorAll('.agent')){const active=card.dataset.bot===current;card.classList.toggle('active',active);card.setAttribute('aria-pressed',String(active))}
 updateConsoleLabel();try{const nv=$('browser-agent').value;if(nv&&(!livePeer||nv!==old)&&rightOpen&&(!isCompact()||layout.classList.contains('mobile-right'))&&!document.hidden)connectLive()}catch(e){}}
-function renderFiles(){const list=$('files');list.replaceChildren();for(const f of state.files){const row=document.createElement('div');row.className='file';const a=document.createElement('a');a.href='/api/file/'+encodeURIComponent(f.stored);a.textContent=f.name;row.append(a);const size=document.createElement('small');size.textContent=' · '+Math.ceil(f.size/1024)+' KB';row.append(size);if(f.mime==='text/html'){const b=document.createElement('button');b.textContent='Vorschau';b.onclick=async()=>{try{$('canvas').srcdoc=await(await fetch(a.href)).text();$('canvas').hidden=false}catch(e){notice(e.message)}};row.append(b)}const del=document.createElement('button');del.type='button';del.className='file-trash';del.title='Datei löschen';del.setAttribute('aria-label','Datei löschen');del.innerHTML='<svg class="i sm" aria-hidden="true"><use href="#ic-trash"></use></svg>';del.onclick=()=>askDeleteFile(f);row.append(del);list.append(row)}}
+function renderFiles(){const list=$('files');list.replaceChildren();for(const f of state.files){const row=document.createElement('div');row.className='file';const a=document.createElement('a');a.href='/api/file/'+encodeURIComponent(f.stored);a.textContent=f.name;row.append(a);const size=document.createElement('small');size.textContent=' · '+Math.ceil(f.size/1024)+' KB';row.append(size);if(f.mime==='text/html'){const b=document.createElement('button');b.textContent='Vorschau';b.onclick=async()=>{try{$('canvas').srcdoc=await(await fetch(a.href)).text();$('canvas').hidden=false}catch(e){notice(e.message)}};row.append(b)}const del=document.createElement('button');del.type='button';del.className='file-trash';del.title='Datei löschen';del.setAttribute('aria-label','Datei löschen');del.innerHTML='<svg class="i sm" aria-hidden="true"><use href="#ic-trash"></use></svg>';del.onclick=()=>askDeleteFile(f);del.hidden=state.you?.role!=='owner';row.append(del);list.append(row)}}
 let thinkInit=false;function initThink(){if(thinkInit)return;thinkInit=true;let v=null;try{v=localStorage.getItem('mag-think')}catch(e){}$('think').checked=v===null?!!state.thinking_default:v==='1';$('think').onchange=()=>{try{localStorage.setItem('mag-think',$('think').checked?'1':'0')}catch(e){}}}
 async function refresh(){const seq=++refreshSeq;const r=await fetch('/api/state');if(!r.ok)throw Error('Raum nicht erreichbar');const next=await r.json();if(seq!==refreshSeq)return;state=next;if(state.activity&&state.activity.on)mergeActivity(state.activity);if(seq!==refreshSeq)return;render();renderQueue({pending:next.pending||[],paused:!!next.queue_paused});if($('offline')){$('offline').checked=!!next.offline;window.syncWeb&&window.syncWeb()}initThink();if(next.model_status)modelStatus(next.model_status);modelInfo(next.model_info)}
 function modelInfo(mi){const el=$('model-info');if(!el)return;el.replaceChildren();if(!mi||!mi.gguf){el.title='Modellinfo nicht verfügbar';return}const n=document.createElement('b');n.textContent=mi.gguf;el.append(n);const eng=(mi.engine||'Engine?')+(mi.build?' '+mi.build:'');let txt=' · '+eng;const l=mi.last;const f=v=>(typeof v==='number'&&v>=0)?v.toFixed(v<10?2:1):'–';if(l&&(l.prompt_per_second>=0||l.predicted_per_second>=0))txt+=' · Prompt '+f(l.prompt_per_second)+' t/s · Gen '+f(l.predicted_per_second)+' t/s';el.append(document.createTextNode(txt));let cacheTip='';if(l&&typeof l.tokens_evaluated==='number'&&l.tokens_evaluated>=0)cacheTip='\nCache (Debug): '+(typeof l.tokens_cached==='number'&&l.tokens_cached>=0?Math.round(l.tokens_cached):'?')+' gecacht / '+Math.round(l.tokens_evaluated)+' Prompt-Tokens';el.title='Modell: '+mi.gguf+'\nEngine: '+eng+(l?'\nLetzte Antwort: Prompt '+f(l.prompt_per_second)+' t/s ('+(l.prompt_n>=0?l.prompt_n:'?')+' Tokens), Gen '+f(l.predicted_per_second)+' t/s ('+(l.predicted_n>=0?l.predicted_n:'?')+' Tokens)':'\nNoch keine Antwort seit Raumstart')+cacheTip}
@@ -935,7 +1055,7 @@ function renderData(){
  }
 }
 $('memory-clear').onclick=()=>{if(!memAgent)return;askClearMemory(memAgent,$('memory').querySelectorAll('.mem-row').length)};
-$('reset').onclick=async()=>{const msgs=(state.room||[]).length,files=(state.files||[]).length;if(!await purgeAsk({title:'Raum leeren',lead:'Aus dem gemeinsamen Raum wird entfernt:',items:[deN(msgs,'Nachricht','Nachrichten'),deN(files,'Datei','Dateien')],note:'Gedächtnis und Bot-Arbeitsdaten bleiben. 10 Sekunden rückgängig.',ok:'Raum leeren'}))return;try{const r=await api('/api/room/clear',{});streams={};showUndo('Raum geleert',r.undo);await refresh()}catch(e){notice(e.message)}};
+$('reset').onclick=async()=>{const msgs=(state.room||[]).length,files=(state.files||[]).length;if(!await purgeAsk({title:'Raum leeren',lead:'Aus dem gemeinsamen Raum wird entfernt:',items:[deN(msgs,'Nachricht','Nachrichten'),deN(files,'Datei','Dateien')],note:'Vorher wird eine dauerhafte Sicherung erstellt (maximal 512 MiB). Zusätzlich 10 Sekunden rückgängig.',ok:'Raum leeren'}))return;try{const r=await api('/api/room/clear',{});streams={};showUndo('Raum geleert',r.undo);await refresh()}catch(e){notice(e.message)}};
 // Images are staged locally until sending. Canvas conversion strips EXIF/GPS
 // and standardizes HEIC/HEIF when supported by the current browser.
 let stagedPhotos=[];

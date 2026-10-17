@@ -1,5 +1,5 @@
 """Isolated native integration checks. Uses temporary state and a fake model."""
-import hashlib,http.server,json,os,pathlib,socket,subprocess,tempfile,threading,time,unittest,urllib.request,urllib.error
+import hashlib,http.server,json,os,pathlib,socket,socketserver,subprocess,tempfile,threading,time,unittest,urllib.request,urllib.error,urllib.parse
 ROOT=pathlib.Path(__file__).resolve().parents[2]
 NETMODE=pathlib.Path(tempfile.mkdtemp(prefix='magnet-'))/'netmode.sh';NETLOG=NETMODE.with_suffix('.log')
 NETMODE.write_text('#!/bin/sh\necho "$1" >> %s\n'%NETLOG);NETMODE.chmod(0o755)
@@ -55,16 +55,32 @@ class Model(http.server.BaseHTTPRequestHandler):
    payload=b'data: '+stat+b'\n\n';self.wfile.write(('%x\r\n'%len(payload)).encode()+payload+b'\r\n');self.wfile.flush()
    end=b'data: [DONE]\n\n';self.wfile.write(('%x\r\n'%len(end)).encode()+end+b'\r\n0\r\n\r\n');self.wfile.flush()
   except (BrokenPipeError,ConnectionResetError):pass
+# Exercise actual native whois/HMAC instead of trusting test-forged identity headers.
+WHOIS_PROFILES = {}
+class WhoisFixture(socketserver.StreamRequestHandler):
+ def handle(self):
+  first=self.rfile.readline().decode('ascii','replace')
+  while self.rfile.readline() not in (b'\r\n',b''):pass
+  if not first.startswith('GET /localapi/v0/whois?addr='):return
+  value=urllib.parse.parse_qs(urllib.parse.urlparse(first.split()[1]).query).get('addr',[''])[0]
+  login,name=WHOIS_PROFILES.get(value,('',''))
+  data=json.dumps({'UserProfile':{'LoginName':login,'DisplayName':name}}).encode()
+  self.wfile.write(b'HTTP/1.1 200 OK\r\nContent-Length: '+str(len(data)).encode()+b'\r\n\r\n'+data)
+class WhoisUnix(socketserver.ThreadingMixIn,socketserver.UnixStreamServer):
+ daemon_threads=True
 class Native(unittest.TestCase):
  @classmethod
  def setUpClass(cls):
   cls.tmp=tempfile.TemporaryDirectory();cls.state=pathlib.Path(cls.tmp.name)/'state';cls.state.mkdir()
   cls.state.joinpath('agents.json').write_text(json.dumps([{'id':'test','name':'Test','vm':'','memory':[]}]))
+  cls.whois_socket=str(pathlib.Path(cls.tmp.name)/'tailscaled.sock')
+  cls.whois=WhoisUnix(cls.whois_socket,WhoisFixture)
+  threading.Thread(target=cls.whois.serve_forever,daemon=True).start()
   cls.model=http.server.ThreadingHTTPServer(('127.0.0.1',0),Model);threading.Thread(target=cls.model.serve_forever,daemon=True).start();cls.ui=port();cls.bridge=port()
   cls.start()
  @classmethod
  def start(cls):
-  env=dict(os.environ,MAG_ROOM_STATE=str(cls.state),MAG_ROOM_PORT=str(cls.ui),MAG_ROOM_BRIDGE_PORT=str(cls.bridge),MAG_ROOM_BRIDGE_IP='127.0.0.1',MAG_ROOM_BACKEND=f'http://127.0.0.1:{cls.model.server_port}/v1/chat/completions',MAG_ROOM_UI=str(ROOT/'mag-room/web/index.html'),MAG_ROOM_STATIC=str(ROOT/'mag-room/static'),MAG_ROOM_AUTOTALK_SLEEP='1',MAG_JOBS_MCP_TOKEN='local-unit-test-mcp-token-0123456789',MAG_ROOM_MODEL_STATUS=str(pathlib.Path(cls.tmp.name)/'model-status.json'),MAG_NETMODE=str(NETMODE),MAG_TEST_NO_MEMGIT='1',MAG_JOBS_ALLOW_SECONDS='1',MAG_JOBS_TICK_MS='200',MAG_JOBS_BACKOFF_S='1',MAG_GITHUB_API=f'http://127.0.0.1:{GHPORT}')
+  env=dict(os.environ,MAG_ROOM_STATE=str(cls.state),MAG_ROOM_PORT=str(cls.ui),MAG_ROOM_BRIDGE_PORT=str(cls.bridge),MAG_ROOM_BRIDGE_IP='127.0.0.1',MAG_ROOM_BACKEND=f'http://127.0.0.1:{cls.model.server_port}/v1/chat/completions',MAG_ROOM_UI=str(ROOT/'mag-room/web/index.html'),MAG_ROOM_STATIC=str(ROOT/'mag-room/static'),MAG_ROOM_AUTOTALK_SLEEP='1',MAG_JOBS_MCP_TOKEN='local-unit-test-mcp-token-0123456789',MAG_ROOM_MODEL_STATUS=str(pathlib.Path(cls.tmp.name)/'model-status.json'),MAG_NETMODE=str(NETMODE),MAG_TEST_NO_MEMGIT='1',MAG_JOBS_ALLOW_SECONDS='1',MAG_JOBS_TICK_MS='200',MAG_JOBS_BACKOFF_S='1',MAG_GITHUB_API=f'http://127.0.0.1:{GHPORT}',MAG_TAILSCALED_SOCKET=cls.whois_socket)
   cls.log=open(pathlib.Path(cls.tmp.name)/'server.log','a');cls.proc=subprocess.Popen([str(ROOT/'build/magroom')],env=env,stdout=cls.log,stderr=cls.log)
   for _ in range(100):
    try:cls.request('/healthz',raw=True);return
@@ -72,7 +88,7 @@ class Native(unittest.TestCase):
   raise RuntimeError('Native startup failed')
  @classmethod
  def tearDownClass(cls):
-  cls.proc.terminate();cls.proc.wait(timeout=5);cls.log.close();cls.model.shutdown();cls.tmp.cleanup()
+  cls.proc.terminate();cls.proc.wait(timeout=5);cls.log.close();cls.model.shutdown();cls.whois.shutdown();cls.whois.server_close();cls.tmp.cleanup()
  @classmethod
  def request(cls,path,body=None,method=None,raw=False,bridge=False,headers=None):
   data=body if isinstance(body,bytes) else json.dumps(body).encode() if body is not None else None
@@ -874,7 +890,14 @@ class Native(unittest.TestCase):
   self.assertIn(b'<html',self.request('/bot/test/',raw=True))
 
  def _ts(self, login, name, body=True):
-  h={'X-Tailscale-User':login,'X-Tailscale-Name':name}
+  # Native LocalAPI attestation is part of the regression, not a bypass.
+  addr=f'100.101.102.103:{10000+len(WHOIS_PROFILES)%50000}'
+  WHOIS_PROFILES[addr]=(login,name)
+  req=urllib.request.Request(f'http://127.0.0.1:{self.ui}/_internal/tailscale/whois',
+                             headers={'X-Mag-Remote':addr})
+  with urllib.request.urlopen(req,timeout=5) as resp:
+   h={k:v for k,v in resp.headers.items()
+      if k.lower().startswith(('x-tailscale-','x-mag-auth-'))}
   if body:h['Content-Type']='application/json'
   return h
  def _access(self, owners, perms=None, owner_name='Chris'):
@@ -969,8 +992,11 @@ class Native(unittest.TestCase):
     try:urllib.request.urlopen(f'http://127.0.0.1:{ui}/healthz',timeout=2);break
     except Exception:time.sleep(.03)
    else:log.flush();self.fail('spoof server: '+tmp.joinpath('log').read_text()[-2000:])
-   local=json.loads(urllib.request.urlopen(urllib.request.Request(f'http://127.0.0.1:{ui}/api/state',headers={'X-Tailscale-User':'chris@github','X-Tailscale-Name':'Chris'}),timeout=5).read())
-   self.assertEqual(local['you']['role'],'owner')
+   # Native route must now reject identity-header forgery even from localhost.
+   forged=urllib.request.Request(f'http://127.0.0.1:{ui}/api/state',headers={'X-Tailscale-User':'chris@github','X-Tailscale-Name':'Chris'})
+   with self.assertRaises(urllib.error.HTTPError) as error:
+    urllib.request.urlopen(forged,timeout=5)
+   self.assertEqual(error.exception.code,403)
    plain=json.loads(urllib.request.urlopen(f'http://127.0.0.1:{ui}/api/state',timeout=5).read())
    self.assertEqual(plain['you']['role'],'owner');self.assertEqual(plain['you']['login'],'')
    # Discover an IPv4 address owned by THIS host, not fixed Docker/CI IPs.
@@ -1037,6 +1063,8 @@ class Native(unittest.TestCase):
    self.assertIn(needle, html)
  def test_17_scoped_room_memory_and_workspace(self):
   self.wait_idle()
+  self._access(["chris@github"])
+  owner=self._ts("chris@github","Chris")
   self.request('/api/agent/test/remember',{'fact':'trennung-bleibt'})
   self.request('/api/agent/test/say',{'text':'Trennungsnachricht'})
   room=self.request('/api/state')['room']
@@ -1044,14 +1072,14 @@ class Native(unittest.TestCase):
   uploaded=self.request('/api/upload?name=trennung.txt',b'trennung')
   stored=uploaded['stored']
   self.error(400,'/api/room/messages/nicht-hex',method='DELETE')
-  self.error(400,'/api/room/files/..%2Fetc%2Fpasswd',method='DELETE')
+  self.error(400,'/api/room/files/..%2Fetc%2Fpasswd',method='DELETE',headers=owner)
   self.error(404,'/api/undo/abcdef12',{})
   self.error(403,'/api/room/clear',{},headers={'Content-Type':'application/json','X-No-Token':'1'})
   gone=self.request('/api/room/messages/'+mid,method='DELETE')
   self.assertNotIn(mid,[m['id'] for m in self.request('/api/state')['room']])
   self.request('/api/undo/'+gone['undo'],{})
   self.assertIn(mid,[m['id'] for m in self.request('/api/state')['room']])
-  removed=self.request('/api/room/files/'+stored,method='DELETE')
+  removed=self.request('/api/room/files/'+stored,method='DELETE',headers=owner)
   self.assertFalse(any(f.get('stored')==stored for f in self.request('/api/state')['files']))
   self.error(404,'/api/file/'+stored)
   self.request('/api/undo/'+removed['undo'],{})
@@ -1062,7 +1090,8 @@ class Native(unittest.TestCase):
   self.request('/api/undo/'+cleared['undo'],{})
   self.assertTrue(any(x.get('text')=='trennung-bleibt' for x in self.request('/api/agents/test/memory')))
   mem=self.request('/api/agents/test/memory')
-  wiped=self.request('/api/room/clear',{})
+  wiped=self.request('/api/room/clear',{},headers=owner)
+  self.assertTrue((self.state/'snapshots'/wiped['snapshot']/'room.json').is_file())
   st=self.request('/api/state')
   self.assertFalse(st['room']);self.assertFalse(st['files'])
   self.assertEqual(self.request('/api/agents/test/memory'),mem)
@@ -1102,6 +1131,78 @@ class Native(unittest.TestCase):
    self.request('/api/agents/test/workspace/reset',{})
   self.assertEqual(ctx.exception.code,400)
   self.assertIn('Nur-Chat-Bot',json.loads(ctx.exception.read())['error'])
+ def test_17z_room_clear_snapshot_restore_and_guest_denial(self):
+  self.wait_idle()
+  self._access(['chris@github'])
+  owner=self._ts('chris@github','Chris')
+  guest=self._ts('ada@github','Ada')
+  self.request('/api/agent/test/say',{'text':'Snapshot dauerhaft'})
+  file=self.request('/api/upload?name=recovery.txt',b'RECOVER ME')
+  stored=file['stored']
+  before=self.request('/api/state')
+  room_disk=(self.state/'room.json').read_bytes()
+  files_disk=(self.state/'files.json').read_bytes()
+  forbidden=[
+   ('/api/room/clear','POST',{}),
+   ('/api/reset','POST',{}),
+   ('/api/room/messages/abcdef12','DELETE',None),
+   ('/api/room/files/'+stored,'DELETE',None),
+   ('/api/room/snapshots','GET',None),
+   ('/api/room/snapshots/1234567890-'+'a'*24+'/restore','POST',{}),
+   ('/api/undo/abcdef12','POST',{}),
+   ('/api/queue','DELETE',None),
+   ('/api/queue/merge','POST',{}),
+   ('/api/frontend','POST',{'html':'bad'}),
+   ('/api/pages','POST',{}),
+   ('/api/connectors/github','DELETE',None),
+   ('/api/jobs','GET',None),
+   ('/api/unknown-destructive','POST',{}),
+  ]
+  for uri,method,data in forbidden:
+   with self.subTest(uri=uri,method=method):
+    self.error(403,uri,data,method=method,headers=guest)
+  self.assertEqual((self.state/'room.json').read_bytes(),room_disk)
+  self.assertEqual((self.state/'files.json').read_bytes(),files_disk)
+  self.assertEqual(self.request('/api/file/'+stored,raw=True),b'RECOVER ME')
+  self.error(403,'/api/room/clear',{},headers={'X-Tailscale-User':'chris@github',
+               'X-Tailscale-IP':'100.101.102.103'})
+  self.error(403,'/api/room/clear',{}) # local loopback is NOT attested owner
+  cleared=self.request('/api/room/clear',{},headers=owner)
+  id=cleared['snapshot']
+  folder=self.state/'snapshots'/id
+  self.assertEqual(json.loads((folder/'room.json').read_text()),before['room'])
+  self.assertEqual((folder/'files'/stored).read_bytes(),b'RECOVER ME')
+  self.assertFalse(self.request('/api/state')['room'])
+  self.assertFalse(self.request('/api/state')['files'])
+  self.proc.terminate();self.proc.wait(timeout=5);self.log.close();self.start()
+  owner=self._ts('chris@github','Chris')
+  self.assertIn(id,[x['id'] for x in self.request('/api/room/snapshots',headers=owner)['snapshots']])
+  self.error(403,'/api/room/snapshots/'+id+'/restore',{},headers=owner)
+  h={**owner,'Host':'mag.stardenburg.de','Origin':'https://mag.stardenburg.de','Sec-Fetch-Site':'same-origin'}
+  restored=self.request('/api/room/snapshots/'+id+'/restore',{},headers=h)
+  self.assertEqual(restored['restored'],id)
+  self.assertTrue((self.state/'snapshots'/restored['previous_snapshot']).is_dir())
+  self.assertEqual(self.request('/api/file/'+stored,raw=True),b'RECOVER ME')
+  st=self.request('/api/state')
+  self.assertTrue(any(m.get('content')=='Snapshot dauerhaft' for m in st['room']))
+  self.assertTrue(any(f.get('stored')==stored for f in st['files']))
+  # A compromised/symlinked shared file must fail the snapshot, NOT clear.
+  target=self.state/'files'/stored
+  target.rename(target.with_suffix('.saved'))
+  target.symlink_to('/etc/passwd')
+  try:
+   original=self.request('/api/state')['room']
+   self.error(507,'/api/room/clear',{},headers=owner)
+   self.assertEqual(self.request('/api/state')['room'],original)
+  finally:
+   target.unlink()
+   target.with_suffix('.saved').rename(target)
+  for _ in range(6):
+   self.request('/api/room/clear',{},headers=owner)
+  remaining=self.request('/api/room/snapshots',headers=owner)['snapshots']
+  self.assertLessEqual(len(remaining),5)
+  self.assertTrue(all((self.state/'snapshots'/x['id']/'meta.json').is_file() for x in remaining))
+
  def test_18_pwa_shell_is_not_cached(self):
   import base64
   def headers(path):

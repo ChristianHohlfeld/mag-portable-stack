@@ -27,3 +27,12 @@ To recover locally:
 
 No changes to the model service. No new application runtime. Remote
 installation cannot turn on console-only policy without the real console.
+
+Guest email: a Tailscale member invitation grants broader network membership
+than a MAG guest enrollment. MAG_GUEST_TAILNET_MEMBER_EMAIL is disabled
+by default, pending explicit tailnet ACL review and owner authorization.
+The existing auth_keys OAuth credential cannot send user-invites, and
+Tailscale's published granular OAuth scopes list no user_invites scope.
+Do not put an all-access Tailscale credential in the MAG process.
+Maxim's seven-day MAG link must be privately sent by Chris; no email
+has been sent by this code deployment.

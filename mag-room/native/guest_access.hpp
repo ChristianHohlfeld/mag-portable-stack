@@ -3,11 +3,13 @@
 #pragma once
 #include <curl/curl.h>
 #include <openssl/sha.h>
+#include <openssl/rand.h>
 #include <sys/stat.h>
 #include <mutex>
 #include <map>
 
 static std::mutex GUEST_MTX;
+static std::mutex GUEST_API_MTX;
 static std::string GUEST_TOKEN;
 static int64_t GUEST_TOKEN_UNTIL = 0;
 static std::map<std::string, std::vector<int64_t>> GUEST_RATE;
@@ -184,6 +186,7 @@ static std::string guest_oauth() {
 }
 static GuestHTTP guest_api(const std::string &method, const std::string &path,
                            const std::string &payload = "") {
+  std::lock_guard<std::mutex> gate(GUEST_API_MTX);
   std::string t = guest_oauth();
   if (t.empty()) return {};
   auto result = guest_http("https://api.tailscale.com/api/v2/" + path, method, t, payload);
@@ -299,4 +302,166 @@ static void guest_cleanup() {
 }
 static void guest_cleanup_loop() {
   for (;;) { std::this_thread::sleep_for(std::chrono::seconds(60)); guest_cleanup(); }
+}
+
+// API results contain no keys beyond the new key in the immediate create
+// response, which is discarded after returning the single owner response.
+struct GuestIssue {
+  int code = 503;
+  Val body = Val::object();
+};
+static GuestIssue guest_issue(const Actor &owner, const Val &request) {
+  GuestIssue out;
+  std::string name = clean_display_name(guest_field(request, "name"));
+  std::string note = mj::utf8_cut(guest_field(request,"note"), 160);
+  for (char &ch : note) if ((unsigned char)ch < 32) ch = ' ';
+  int64_t expires = guest_number(request, "expires_at");
+  if (expires < now_s() + 3600 || expires > now_s() + 30LL*86400) {
+    out.code = 400; out.body["error"] = "Ablauf muss 1 Stunde bis 30 Tage in der Zukunft liegen";
+    return out;
+  }
+  std::lock_guard<std::mutex> guard(GUEST_MTX);
+  Val cfg;
+  if (!guest_load(cfg)) { out.body["error"] = "access.json nicht beschreibbar"; return out; }
+  if (guest_limited(owner.login)) {
+    out.code = 429; out.body["error"] = "Maximal sechs Einladungen in zehn Minuten"; return out;
+  }
+  auto arr = guest_records(cfg);
+  if (!arr || arr->size() >= 100) {
+    out.body["error"] = "Einladungslimit erreicht"; return out;
+  }
+  Val params = Val::object(), capabilities = Val::object(), dev = Val::object(), create = Val::object();
+  create["reusable"] = false;
+  create["ephemeral"] = false; // mobile devices should not vanish simply by going offline
+  create["preauthorized"] = true;
+  Val tags = Val::array(); tags.push("tag:mag-guest");
+  create["tags"] = tags;
+  dev["create"] = create;
+  capabilities["devices"] = dev;
+  params["capabilities"] = capabilities;
+  params["expirySeconds"] = 86400;
+  params["description"] = "MAG guest (" + (name.empty() ? "guest" : name) + ")";
+  auto reply = guest_api("POST", "tailnet/-/keys", mj::dump(params));
+  if (!reply.ok || (reply.status != 200 && reply.status != 201)) {
+    out.body["error"] = "Tailscale-Einladung konnte nicht erstellt werden"; return out;
+  }
+  std::string key = guest_field(reply.json, "key");
+  std::string key_id = guest_field(reply.json, "id");
+  if (key.empty() || !guest_ident(key_id)) {
+    out.body["error"] = "Tailscale lieferte keinen gültigen Auth-Key"; return out;
+  }
+  std::string code = guest_random();
+  if (code.size() != 32) {
+    (void)guest_api("DELETE", "tailnet/-/keys/" + key_id);
+    out.body["error"] = "Zufallsquelle nicht verfügbar"; return out;
+  }
+  std::string id = guest_random().substr(0, 16);
+  Val invite = Val::object();
+  invite["id"] = id;
+  invite["key_id"] = key_id;
+  invite["claim_hash"] = guest_hash(code);
+  invite["name"] = name;
+  invite["note"] = note;
+  invite["created"] = (long)now_s();
+  invite["expires"] = (long)expires;
+  invite["key_expires"] = (long)(now_s() + 86400);
+  invite["device"] = "";
+  invite["node"] = "";
+  invite["revoked"] = false;
+  arr->push(invite);
+  if (!guest_save(cfg)) {
+    // Never leak an orphaned invitation which cannot be revoked by the job.
+    (void)guest_api("DELETE", "tailnet/-/keys/" + key_id);
+    out.body["error"] = "Einladung konnte nicht sicher gespeichert werden"; return out;
+  }
+  guest_audit("invite", owner.login, id);
+  out.code = 201;
+  out.body["id"] = id;
+  out.body["name"] = name;
+  out.body["key"] = key; // deliberately single response, no server-side replay
+  out.body["invite_url"] = "https://mag.stardenburg.de/#invite=" + code +
+                           "&key=" + url_encode(key);
+  out.body["expires"] = (long)expires;
+  out.body["key_expires"] = (long)(now_s() + 86400);
+  return out;
+}
+static GuestIssue guest_claim(const Actor &candidate, const Val &request) {
+  GuestIssue out;
+  out.code = 403;
+  if (candidate.node.empty() || candidate.ip.empty()) {
+    out.body["error"] = "Kein getaggtes Tailscale-Gerät"; return out;
+  }
+  std::string code = guest_field(request,"code");
+  if (code.size() != 32 || code.find_first_not_of(
+       "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_") != std::string::npos) {
+    out.body["error"] = "Ungültiger Einladungscode"; return out;
+  }
+  // Rate limit before calling Tailscale; no attacker-controlled API IDs.
+  std::lock_guard<std::mutex> guard(GUEST_MTX);
+  if (guest_limited("claim:" + candidate.node)) {
+    out.code = 429; out.body["error"] = "Zu viele Versuche"; return out;
+  }
+  Val cfg;
+  if (!guest_load(cfg)) {
+    out.body["error"] = "Zugang derzeit nicht verfügbar"; return out;
+  }
+  auto arr = guest_records(cfg);
+  if (!arr) return out;
+  int idx = -1;
+  for (size_t i = 0; i < arr->size(); ++i) {
+    const Val &item = arr->asArr()[i];
+    if (!guest_flag(item,"revoked") &&
+        guest_field(item,"device").empty() &&
+        guest_number(item,"expires") > now_s() &&
+        guest_number(item,"key_expires") > now_s() &&
+        ct_eq(guest_field(item,"claim_hash"), guest_hash(code))) { idx = (int)i; break; }
+  }
+  if (idx < 0) { out.body["error"] = "Einladung abgelaufen oder bereits verwendet"; return out; }
+  auto devices = guest_api("GET","tailnet/-/devices");
+  if (!devices.ok || devices.status != 200) {
+    out.code = 503; out.body["error"] = "Geräteprüfung derzeit nicht erreichbar"; return out;
+  }
+  auto device = guest_device_for_ip(devices.json, candidate.ip);
+  if (device.empty()) {
+    out.body["error"] = "Tailscale-Gerät noch nicht synchronisiert"; return out;
+  }
+  for (const auto &item : arr->asArr())
+    if (!guest_flag(item,"revoked") &&
+        (guest_field(item,"node") == candidate.node ||
+         guest_field(item,"device") == device)) {
+      out.body["error"] = "Gerät ist bereits registriert"; return out;
+    }
+  auto &row = (*arr->arr)[(size_t)idx];
+  row["node"] = candidate.node;
+  row["device"] = device;
+  row["claim_hash"] = ""; // one-time proof cannot be replayed
+  if (!guest_save(cfg)) {out.code = 503; out.body["error"] = "Speichern fehlgeschlagen"; return out;}
+  guest_audit("claim", candidate.login, guest_field(row, "id"));
+  out.code = 200; out.body["ok"] = true;
+  return out;
+}
+static Val guest_list_live() {
+  Val out = guest_list();
+  auto arr = out.find("guests");
+  if (!arr || !arr->isArr()) return out;
+  auto status = guest_api("GET", "tailnet/-/devices");
+  if (!status.ok || status.status != 200) {
+    out["live_status"] = "unavailable";
+    return out;
+  }
+  out["live_status"] = "ok";
+  auto devices = status.json.find("devices");
+  if (!devices || !devices->isArr()) return out;
+  for (auto &r : *arr->arr) {
+    auto id = guest_field(r,"device");
+    if (id.empty()) continue;
+    for (auto &d : devices->asArr()) {
+      if (guest_field(d,"id") != id || !guest_tagged(d)) continue;
+      r["device_name"] = guest_field(d,"name");
+      if (auto p=d.find("online")) r["online"] = *p;
+      if (auto p=d.find("lastSeen")) r["last_seen"] = *p;
+      break;
+    }
+  }
+  return out;
 }

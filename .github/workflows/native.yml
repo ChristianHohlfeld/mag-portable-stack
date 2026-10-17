@@ -78,3 +78,5 @@ jobs:
           node --check /tmp/mag-room-web.js
       - name: Shell syntax
         run: bash -n ops/*.sh ops/magbot-guest-run ops/magbot-agent-ctl
+      - name: Blank-host bootstrap dry run
+        run: bash ops/tests/test-bootstrap.sh

@@ -1,0 +1,44 @@
+APP_NAME = MAG Gitea
+RUN_MODE = prod
+
+[server]
+PROTOCOL = http
+HTTP_ADDR = 127.0.0.1
+HTTP_PORT = 3000
+DOMAIN = mag.tail3e02ae.ts.net
+ROOT_URL = https://mag.tail3e02ae.ts.net:8445/
+DISABLE_SSH = false
+SSH_DOMAIN = mag.tail3e02ae.ts.net
+START_SSH_SERVER = true
+SSH_LISTEN_HOST = 127.0.0.1
+SSH_PORT = 2222
+LFS_START_SERVER = true
+OFFLINE_MODE = true
+
+[database]
+DB_TYPE = sqlite3
+PATH = /var/lib/gitea/data/gitea.db
+
+[security]
+INSTALL_LOCK = true
+SECRET_KEY = CHANGE_ME
+INTERNAL_TOKEN = CHANGE_ME
+
+[oauth2]
+JWT_SECRET = CHANGE_ME
+
+[service]
+DISABLE_REGISTRATION = true
+REQUIRE_SIGNIN_VIEW = true
+ENABLE_NOTIFY_MAIL = false
+
+[mailer]
+ENABLED = false
+
+[lfs]
+PATH = /var/lib/gitea/data/lfs
+
+[log]
+MODE = console
+LEVEL = Info
+ROOT_PATH = /var/log/gitea

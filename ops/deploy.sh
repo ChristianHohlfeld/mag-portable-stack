@@ -28,6 +28,8 @@ bash "$NGINX_SYNC" preflight
 systemctl is-enabled --quiet mag-backup-daily.timer || {
   echo 'Backup not installed/enabled. Run sudo bash ops/backup/install.sh first.' >&2; exit 1;
 }
+printf '%s\n' "$RELEASE_ID" > /run/mag-backup-release
+chmod 0644 /run/mag-backup-release
 systemctl start mag-backup-deploy.service || {
   echo 'Pre-deploy snapshot failed; deploy refused.' >&2; exit 1;
 }

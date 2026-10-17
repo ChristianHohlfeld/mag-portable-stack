@@ -10,7 +10,7 @@ numactl -H | grep -Eq '^available: 2 nodes \(0-1\)' || {
  echo 'NUMA node 1 must exist; refuse to bind to node 0' >&2; exit 1;
 }
 [[ ! -e /etc/mag-backup || ( -d /etc/mag-backup && ! -L /etc/mag-backup ) ]] || exit 1
-install -d -m 0700 -o root -g root /etc/mag-backup /var/lib/mag-backup/work /var/backups/mag-restic
+install -d -m 0700 -o root -g root /etc/mag-backup /var/lib/mag-backup/work /var/backups/mag-restic /var/backups/mag-full
 install -d -m 0711 -o root -g root /var/lib/mag-backup
 # Never generate a password file. Old encrypted repositories must be
 # explicitly converted with migrate-passwordless.sh BEFORE installation.

@@ -3,6 +3,9 @@
 set -euo pipefail
 umask 077
 MAG_BACKUP_CONFIG="${MAG_BACKUP_CONFIG:-/etc/mag-backup}"
+# Each run writes a new directory under this root. There is no shared
+# deduplicated chain. MAG_BACKUP_REPO remains only for the legacy repo.
+MAG_BACKUP_ROOT="${MAG_BACKUP_ROOT:-/var/backups/mag-full}"
 MAG_BACKUP_REPO="${MAG_BACKUP_REPO:-/var/backups/mag-restic}"
 MAG_BACKUP_WORK="${MAG_BACKUP_WORK:-/var/lib/mag-backup/work}"
 MAG_BACKUP_SOURCE="${MAG_BACKUP_SOURCE:-/}"
@@ -25,11 +28,27 @@ esac
 # This disables *effective confidentiality*: filesystem ACLs are mandatory.
 # Every restic call must pass the flag; no secret, stdin, env or prompt.
 unset RESTIC_PASSWORD RESTIC_PASSWORD_FILE RESTIC_PASSWORD_COMMAND RESTIC_KEY_HINT
-export RESTIC_REPOSITORY="$MAG_BACKUP_REPO"
-command -v restic >/dev/null
-restic --help | grep -Fq -- '--insecure-no-password' ||
+# Prefer the pinned binary. apt restic 0.16.4 does not support passwordless mode.
+if [[ -x /usr/local/bin/restic ]]; then
+  MAG_RESTIC_BIN=/usr/local/bin/restic
+else
+  command -v restic >/dev/null
+  MAG_RESTIC_BIN=$(command -v restic)
+fi
+"$MAG_RESTIC_BIN" --help | grep -Fq -- '--insecure-no-password' ||
   { echo 'restic >=0.17 required (--insecure-no-password)' >&2; exit 1; }
-restic() { command restic --insecure-no-password "$@"; }
+restic() { command "$MAG_RESTIC_BIN" --insecure-no-password "$@"; }
+# Passwordless restic is readable by anyone with filesystem access.
+# Never use a non-root-owned or group/world-readable archive root.
+if [[ "${MAG_BACKUP_TEST_MODE:-0}" != 1 && -e "$MAG_BACKUP_ROOT" ]]; then
+  [[ -d "$MAG_BACKUP_ROOT" && ! -L "$MAG_BACKUP_ROOT" ]] ||
+    { echo "Unsafe backup path $MAG_BACKUP_ROOT" >&2; exit 1; }
+  [[ "$(stat -c %u "$MAG_BACKUP_ROOT")" == 0 ]] ||
+    { echo "Backup repository must be root-owned ($MAG_BACKUP_ROOT)" >&2; exit 1; }
+  mode=$(stat -c %a "$MAG_BACKUP_ROOT")
+  (( (8#$mode & 077) == 0 )) ||
+    { echo "Backup repository must be inaccessible to group/other ($MAG_BACKUP_ROOT)" >&2; exit 1; }
+fi
 command -v jq >/dev/null
 command -v flock >/dev/null
 mkdir -p "$(dirname "$MAG_BACKUP_LOCK")" "$(dirname "$MAG_BACKUP_STATUS")" "$MAG_BACKUP_WORK"

@@ -36,14 +36,20 @@ finish() {
 trap finish EXIT
 case "$action" in
   retain)
-    # Never prune while S3 copying: all tasks share the same flock.
-    restic forget --tag daily --group-by host,tags --keep-daily 7 --keep-weekly 4 --keep-monthly 6
-    restic forget --tag hook-deploy --group-by host,tags --keep-within 14d
-    restic forget --tag hook-clear --group-by host,tags --keep-within 14d
-    restic prune
+    # Each archive is a complete repository. Deleting one is only safe after a
+    # newer archive has been written and verified, which backup.sh does.
+    # This command must not forget or prune.
+    echo 'Independent full backups: old archives are removed only by backup.sh after a new one verifies.'
     ;;
   check|deep-check)
-    if [[ "$action" == deep-check ]]; then restic check --read-data-subset=10%; else restic check; fi
+    checked=0
+    while IFS= read -r id; do
+      [[ -f "$MAG_BACKUP_ROOT/$id/VERIFIED" && -d "$MAG_BACKUP_ROOT/$id/repo" ]] || continue
+      export RESTIC_REPOSITORY="$MAG_BACKUP_ROOT/$id/repo"
+      if [[ "$action" == deep-check ]]; then restic check --read-data-subset=10%; else restic check; fi
+      checked=$((checked+1))
+    done < <(find "$MAG_BACKUP_ROOT" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | LC_ALL=C sort)
+    (( checked > 0 )) || { echo 'No verified full backup to check' >&2; exit 1; }
     status_update --arg kind "$action" --argjson at "$(date +%s)" \
       '.last_check=$at | .last_check_kind=$kind | .last_check_ok=true | .last_error=""'
     ;;

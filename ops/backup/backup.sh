@@ -10,11 +10,18 @@ backup_lock
 started=$(date +%s)
 work="$MAG_BACKUP_WORK/payload"
 payload="$work/root"
+run_dir=
+verified_ok=0
 finish() {
   local result=$?
   trap - EXIT
   rm -rf -- "$work"
+  # A failed run removes only its own incomplete directory. Verified archives stay.
   if (( result != 0 )); then
+    if [[ -n "${run_dir:-}" && "${verified_ok:-0}" != 1 && -d "$run_dir" ]]; then
+      rm -rf -- "$run_dir"
+      echo "Removed incomplete archive $(basename "$run_dir"); verified backups were not deleted" >&2
+    fi
     status_update --arg error "Backup ${kind} failed (exit ${result})" \
       --argjson at "$(date +%s)" '.last_error=$error | .last_failure=$at | .healthy=false' || :
     logger -p daemon.err -t mag-backup "FAILED ${kind}: exit ${result}" 2>/dev/null || :
@@ -22,8 +29,54 @@ finish() {
   exit "$result"
 }
 trap finish EXIT
+require_free_mib() {
+  local path=$1 need avail
+  need=${MAG_BACKUP_MIN_FREE_MIB:-4096}
+  mkdir -p -- "$path"
+  avail=$(df -k "$path" | awk 'NR==2 {print int($4/1024)}')
+  [[ "$avail" =~ ^[0-9]+$ ]] || {
+    echo "MAG backup refused: cannot read free space on $path" >&2
+    exit 1
+  }
+  if (( avail < need )); then
+    echo "MAG backup refused: ${avail} MiB free under ${path}, need ${need} MiB. No archive was written and no old backup was deleted." >&2
+    logger -p daemon.err -t mag-backup "REFUSED ${kind}: free ${avail} MiB < ${need} MiB on ${path}" 2>/dev/null || :
+    exit 1
+  fi
+}
+install -d -m 0700 "$MAG_BACKUP_ROOT"
+require_free_mib "$MAG_BACKUP_ROOT"
+require_free_mib "$MAG_BACKUP_WORK"
 rm -rf -- "$work"
 install -d -m 0700 "$payload"
+assert_payload() {
+  local tree=$1 repo_root="" candidate
+  [[ -d "$tree/var/lib/magbot/room" ]] || { echo 'Backup missing room state' >&2; return 1; }
+  [[ -s "$tree/var/lib/gitea/data/gitea.db" ]] || { echo 'Backup missing Gitea database' >&2; return 1; }
+  [[ -s "$tree/etc/gitea/app.ini" ]] || { echo 'Backup missing Gitea config' >&2; return 1; }
+  for candidate in var/lib/gitea/data/repositories var/lib/gitea/data/gitea-repositories; do
+    if [[ -d "$tree/$candidate" ]]; then repo_root=$candidate; break; fi
+  done
+  [[ -n "$repo_root" ]] || { echo 'Backup missing Gitea repository root' >&2; return 1; }
+  find "$tree/$repo_root" -mindepth 1 -print -quit | grep -q . || {
+    echo 'Backup Gitea repositories empty' >&2; return 1;
+  }
+  if [[ -e "$src/etc/mag-nginx/tls/cert.pem" || -e "$src/etc/nginx/mag-tls/cert.pem" ]]; then
+    [[ -s "$tree/etc/mag-nginx/tls/cert.pem" || -s "$tree/etc/nginx/mag-tls/cert.pem" ]] || {
+      echo 'Backup missing TLS certificate that exists on the host' >&2; return 1;
+    }
+  fi
+  if [[ -d "$src/etc/mag-pages" ]]; then
+    [[ -d "$tree/etc/mag-pages" ]] || { echo 'Backup missing /etc/mag-pages' >&2; return 1; }
+  fi
+  if [[ -d "$src/var/lib/mag-pages" ]]; then
+    [[ -d "$tree/var/lib/mag-pages" ]] || { echo 'Backup missing Pages webroots' >&2; return 1; }
+  fi
+  if find "$tree" -type f \( -name '*.gguf' -o -name 'ggml-*.bin' -o -name '*.qcow2' \) | grep -q .; then
+    echo 'Backup included a model, GGUF or VM image' >&2; return 1
+  fi
+  return 0
+}
 src="${MAG_BACKUP_SOURCE%/}"
 [[ -n "$src" ]] || src=""
 copy_path() {
@@ -116,51 +169,110 @@ find "$payload" -type f \( -name '*.gguf' -o -name 'ggml-*.bin' -o -name '*.qcow
  find . -type f ! -path './opt/mag-stack/checksums.sha256' -print0 |
    sort -z | xargs -0 -r sha256sum > opt/mag-stack/checksums.sha256
 )
-if ! restic snapshots --json >/dev/null 2>&1; then
-  # Initialize only a truly absent repository; existing damaged repos fail closed.
-  if [[ ! -e "$MAG_BACKUP_REPO/config" && ! -d "$MAG_BACKUP_REPO/snapshots" ]]; then
-    restic init
-  else
-    echo 'Local restic repo inaccessible or damaged' >&2; exit 1
-  fi
+assert_payload "$payload"
+payload_bytes=$(du -sb "$payload" | awk '{print $1}')
+echo "MAG backup payload ${payload_bytes} bytes (room, Gitea db+repos, config; no models)"
+# One fresh restic repository per run. Restoring it does not need any other backup.
+release=${MAG_BACKUP_RELEASE_ID:-}
+if [[ -z "$release" && -r /run/mag-backup-release ]]; then
+  release=$(tr -cd 'A-Za-z0-9._-' < /run/mag-backup-release)
 fi
+stamp=$(date -u +%Y%m%dT%H%M%S%NZ)
+run_dir="$MAG_BACKUP_ROOT/${stamp}-${kind}"
+install -d -m 0700 "$run_dir" "$run_dir/repo"
+printf 'kind=%s\nrelease=%s\ncreated=%s\n' "$kind" "$release" "$stamp" > "$run_dir/META"
+chmod 0600 "$run_dir/META"
+export RESTIC_REPOSITORY="$run_dir/repo"
+restic init >/dev/null
 case "$kind" in daily) tag=daily ;; deploy) tag=hook-deploy ;; clear) tag=hook-clear ;; esac
-# --json emits snapshot metadata, never secret content.
 snapshot_json=$(restic backup --json --host mag --tag "$tag" "$work" |
   jq -sc '[.[] | select(.message_type=="summary")][-1]')
 snapshot_id=$(jq -r '.snapshot_id // empty' <<<"$snapshot_json")
 [[ "$snapshot_id" =~ ^[0-9a-f]{8,64}$ ]] || { echo 'Restic snapshot ID missing' >&2; exit 1; }
 bytes=$(jq -r '.total_bytes_processed // 0' <<<"$snapshot_json")
-repo_bytes=$(du -sb "$MAG_BACKUP_REPO" | cut -f1)
-# One local encrypted repository; snapshots for events receive separate tags.
-# Offsite is an immutable COMPLETE COPY of the encrypted repo, never a directly
-# writable restic repo (restic prune/unlock conflict with Object Lock).
+# Test hook: snapshot exists, verification has not passed, so nothing is deleted.
+if [[ "${MAG_BACKUP_TEST_ABORT:-0}" == 1 ]]; then
+  echo 'MAG backup test abort before verify' >&2
+  exit 1
+fi
+restic check >/dev/null
+verify_tmp=$(mktemp -d "$MAG_BACKUP_WORK/verify.XXXXXXXX")
+restic restore latest --target "$verify_tmp/out" >/dev/null
+restored=$(find "$verify_tmp/out" -type d -name root -path '*/payload/root' -print -quit)
+[[ -n "$restored" && -s "$restored/opt/mag-stack/checksums.sha256" ]] || {
+  echo 'Verified extract missing MAG payload' >&2; exit 1;
+}
+(cd "$restored" && sha256sum --quiet -c opt/mag-stack/checksums.sha256)
+assert_payload "$restored"
+manifest_sha=$(sha256sum "$restored/opt/mag-stack/checksums.sha256" | awk '{print $1}')
+rm -rf -- "$verify_tmp"
+# Offsite stays opt-in and is not the retention mechanism. A failure here
+# still has verified_ok=0, so the new directory is discarded and no older
+# archive is removed.
 offsite=false
 if s3_enabled; then
   load_aws
-  # Refuse an unprotected bucket or a retention shorter than 30 days.
   aws s3api get-object-lock-configuration --bucket "$MAG_BACKUP_BUCKET" --output json |
     jq -e '.ObjectLockConfiguration.ObjectLockEnabled == "Enabled" and
       .ObjectLockConfiguration.Rule.DefaultRetention.Mode == "COMPLIANCE" and
       (.ObjectLockConfiguration.Rule.DefaultRetention.Days // 0) >= 30' >/dev/null || {
       echo 'S3 Object Lock COMPLIANCE >=30 days required' >&2; exit 1;
     }
-  # Limit AWS high-level multipart/sync transfer bandwidth on this run only.
   export AWS_CONFIG_FILE="$MAG_BACKUP_WORK/aws-cli-config"
   printf '[default]\ns3 =\n    max_bandwidth = %s\n' "${MAG_BACKUP_S3_BANDWIDTH:-4MB/s}" > "$AWS_CONFIG_FILE"
   chmod 0600 "$AWS_CONFIG_FILE"
   archive="$(date -u +%Y%m%dT%H%M%SZ)-${snapshot_id:0:12}"
-  aws s3 sync "$MAG_BACKUP_REPO/" "s3://$MAG_BACKUP_BUCKET/archives/$archive/" \
+  aws s3 sync "$run_dir/repo/" "s3://$MAG_BACKUP_BUCKET/archives/$archive/" \
     --exclude 'locks/*' --no-progress --only-show-errors --region eu-central-1
-  # Publish locator LAST; old versions are also protected by bucket Object Lock.
   printf '{"archive":"%s","snapshot":"%s"}\n' "$archive" "$snapshot_id" |
     aws s3 cp - "s3://$MAG_BACKUP_BUCKET/latest.json" --region eu-central-1 --only-show-errors
   offsite=true
 fi
+printf 'snapshot=%s\nmanifest=%s\n' "$snapshot_id" "$manifest_sha" >> "$run_dir/VERIFIED"
+chmod 0600 "$run_dir/VERIFIED"
+verified_ok=1
+rotate_full_backups() {
+  local -a ids=()
+  local id protect="" newest
+  mapfile -t ids < <(find "$MAG_BACKUP_ROOT" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | LC_ALL=C sort)
+  local -A keep=()
+  local verified=()
+  for id in "${ids[@]}"; do
+    [[ -f "$MAG_BACKUP_ROOT/$id/VERIFIED" && -d "$MAG_BACKUP_ROOT/$id/repo" ]] || continue
+    verified+=("$id")
+  done
+  (( ${#verified[@]} > 0 )) || return 0
+  newest=${verified[-1]}
+  keep["$newest"]=1
+  local start=0 n=${#verified[@]}
+  (( n > 3 )) && start=$((n - 3))
+  local i
+  for ((i=start; i<n; i++)); do keep["${verified[i]}"]=1; done
+  protect=${MAG_BACKUP_PROTECT_RELEASE:-}
+  if [[ -z "$protect" && -L /opt/mag-stack/current ]]; then
+    protect=$(basename "$(readlink -f /opt/mag-stack/current)")
+  fi
+  if [[ -n "$protect" ]]; then
+    for id in "${verified[@]}"; do
+      [[ -f "$MAG_BACKUP_ROOT/$id/META" ]] || continue
+      grep -Fq "kind=deploy" "$MAG_BACKUP_ROOT/$id/META" || continue
+      grep -Fq "release=$protect" "$MAG_BACKUP_ROOT/$id/META" || continue
+      keep["$id"]=1
+    done
+  fi
+  for id in "${verified[@]}"; do
+    [[ -n "${keep[$id]:-}" ]] && continue
+    echo "Removing old full backup $id"
+    rm -rf -- "$MAG_BACKUP_ROOT/$id"
+  done
+}
+rotate_full_backups
+repo_bytes=$(du -sb "$run_dir" | awk '{print $1}')
 finished=$(date +%s)
-status_update --arg id "$snapshot_id" --arg kind "$kind" \
+status_update --arg id "$snapshot_id" --arg kind "$kind" --arg archive "$(basename "$run_dir")" \
   --argjson at "$finished" --argjson bytes "$bytes" --argjson repo_bytes "$repo_bytes" \
   --argjson seconds "$((finished-started))" --argjson offsite "$offsite" \
-  '.last_success=$at | .last_snapshot=$id | .last_kind=$kind | .last_bytes=$bytes | .repo_bytes=$repo_bytes | .last_duration_sec=$seconds | .offsite_ok=$offsite | .last_error="" | .healthy=true'
-logger -t mag-backup "OK kind=$kind id=$snapshot_id bytes=$bytes seconds=$((finished-started)) offsite=$offsite" 2>/dev/null || :
-printf 'Backup %s: %s bytes=%s duration=%ss offsite=%s\n' "$kind" "$snapshot_id" "$bytes" "$((finished-started))" "$offsite"
+  '.last_success=$at | .last_snapshot=$id | .last_archive=$archive | .last_kind=$kind | .last_bytes=$bytes | .repo_bytes=$repo_bytes | .last_duration_sec=$seconds | .offsite_ok=$offsite | .last_error="" | .healthy=true'
+logger -t mag-backup "OK kind=$kind id=$snapshot_id bytes=$bytes seconds=$((finished-started)) offsite=$offsite archive=$(basename "$run_dir")" 2>/dev/null || :
+printf 'Backup %s: %s bytes=%s duration=%ss offsite=%s archive=%s\n' \
+  "$kind" "$snapshot_id" "$bytes" "$((finished-started))" "$offsite" "$(basename "$run_dir")"

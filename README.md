@@ -4,13 +4,46 @@
 
 MAG runs a single local DeepSeek-V4-Flash inference service via ik_llama.cpp, a native C++ room with jobs/MCP and shared SSE, KVM-isolated bot browsers/terminals, and a client-rendered PWA. The private host name is `mag.stardenburg.de` on **100.123.114.16:443** through nginx; the existing `mag.tail3e02ae.ts.net:8446` fallback must stay available.
 
-**Backup/Disaster Recovery:** [deutsche Restore- und Bare-Metal-Anleitung](docs/backup.md).
-Verschlüsselte lokale restic-Snapshots, NUMA-1-Oneshots mit täglichem 03:30-Timer,
-7/4/6- und 14-Tage-Aufbewahrung, Checks, monatlicher Test-Restore und
-owner-only 26h-Warnung. Ein separates WORM-Archiv in S3 eu-central-1 wird
-durch `/etc/mag-backup/aws.env` aktiviert. `ops/backup/install.sh` muss
-vor `ops/deploy.sh` ausgeführt werden. Eine Platte: lokal nur Restore-Cache,
-nicht offsite. Mag-LLM wird nicht neu gestartet.
+**Backup.** Each run writes a new passwordless restic repository under
+`/var/backups/mag-full/<timestamp>-<kind>/`. The archive contains the room,
+the Gitea database and repositories, config, certificates and Pages when
+those paths exist. It does not contain GGUF weights, VM images or build
+trees. A run checks free space first (default 4096 MiB, `MAG_BACKUP_MIN_FREE_MIB`)
+and exits before writing if the disk is below that. After the snapshot it
+runs `restic check`, restores the archive to a temp directory and checks the
+SHA256 manifest plus the required paths. Only then is the archive marked
+verified. Older archives are deleted only at that point: keep the last 3
+verified archives and the pre-deploy archive of the current release, and
+never delete the newest good one. A failed run deletes only its own
+incomplete directory. The directory is root-owned and mode 0700. AWS/S3
+stays off. `mag-llm` is not restarted.
+
+Restore one archive on its own (stop `mag-120` and `gitea` first; do not
+stop `mag-llm`):
+
+```bash
+sudo bash ops/backup/restore.sh --part all --target /var/tmp/mag-restore
+# or one verified directory name from /var/backups/mag-full:
+sudo bash ops/backup/restore.sh --snapshot 20261017T120000123456789Z-daily --part room --target /var/tmp/mag-room
+```
+
+Inspect `/var/tmp/mag-restore/var/lib/magbot/room`, `var/lib/gitea/data/gitea.db`,
+`var/lib/gitea/data/repositories`, `etc/gitea/app.ini`, `etc/mag-nginx/tls`
+and `var/lib/mag-pages` before any live `--apply`. Release directories keep
+the current release, the previous release, and any release a symlink still
+points at (`ops/prune-releases.sh`).
+
+Owner login is only `chris.hohlfeld@gmail.com`. Localhost without that login
+is not an admin. The SSH console lockdown script is not started by deploy.
+Details: [docs/owner-access-boundaries.md](docs/owner-access-boundaries.md).
+The longer German backup notes are in [docs/backup.md](docs/backup.md).
+
+**Blank host.** `./mag` (`ops/bootstrap.sh`) restores one verified archive,
+installs packages, pinned restic 0.18.1, Tailscale, Gitea 28.1.0, nginx and
+the C++ build, then runs `ops/deploy.sh`. It does not enable console lockdown
+and it does not restart `mag-llm` unless `--start-llm` is passed and the unit
+is inactive. `bash ops/bootstrap.sh --dry-run` prints every phase and changes
+nothing. Do not run it on a host where `mag-120` or `mag-llm` is already active.
 
 **Release documentation:** [ARCHITECTURE](docs/ARCHITECTURE.md) · [STRUCTURE](docs/STRUCTURE.md) · [CODE](docs/CODE.md) · [HARDWARE](docs/HARDWARE.md) · [INSTALL](docs/INSTALL.md) · [OPS](docs/OPS.md).
 

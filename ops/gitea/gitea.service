@@ -1,0 +1,25 @@
+# Local Gitea for MAG. HTTP stays on loopback; Tailscale Serve publishes :8445.
+[Unit]
+Description=Gitea
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=git
+Group=git
+WorkingDirectory=/var/lib/gitea
+Environment=USER=git
+Environment=HOME=/var/lib/gitea
+Environment=GITEA_WORK_DIR=/var/lib/gitea
+ExecStart=/usr/local/bin/gitea web --config /etc/gitea/app.ini
+Restart=always
+RestartSec=3
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/gitea /etc/gitea /var/log/gitea
+
+[Install]
+WantedBy=multi-user.target

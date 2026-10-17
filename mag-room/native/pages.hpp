@@ -289,7 +289,11 @@ inline std::pair<std::string,std::string> branch_sha(const std::string& token,co
   std::string prefix="repos/"+encode(owner)+"/"+encode(name)+"/branches/";
   auto r=request(prefix+encode("gh-pages"),token);
   std::string branch="gh-pages";
-  if(r.status==404) {branch=fallback;r=request(prefix+encode(branch),token);}
+  if(r.status==404) {
+    branch=fallback;
+    if(branch.empty())return {"",""};
+    r=request(prefix+encode(branch),token);
+  }
   // Empty Gitea repos and repositories whose Pages sources were removed
   // have no branch to publish. Other API/status errors already throw.
   if(r.status==404)return {"",""};

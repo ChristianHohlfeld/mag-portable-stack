@@ -94,7 +94,6 @@ rm -f "$tmp/state/custom/$host"
 rm -rf "$tmp/state/releases/site--magbot-agent1"
 printf '{}\\n' > "$tmp/state/sites.json"
 : > "$tmp/state/custom-domains.tsv"
-printf '{"repo":"magbot-agent1/site","action":"delete"}\\n' > "$tmp/state/request.json"
 sudo -n /usr/bin/systemctl start mag-pages-reconcile.service
 test ! -e "$tmp/state/request.json"
 touch "$tmp/state/completed"

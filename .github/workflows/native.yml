@@ -8,7 +8,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install build dependencies
-        run: sudo apt-get update && sudo apt-get install -y ninja-build libssl-dev
+        run: sudo apt-get update && sudo apt-get install -y ninja-build libssl-dev libcurl4-openssl-dev libarchive-dev
       - name: Build
         run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release && cmake --build build -j 4
       - name: Native integration checks
@@ -16,6 +16,7 @@ jobs:
           ./build/test-guest-pty
           ./build/test-browser-recovery
           ./build/test-jobs-mcp
+          ./build/test-pages-native
           ./build/test-large-stdin
           python3 mag-room/tests/test_large_tools.py
           python3 mag-room/tests/test_native.py

@@ -156,13 +156,109 @@ static void route(int fd, Req &r, bool bridge = false) {
     }
     // Identity is the Tailscale user Caddy put on this loopback hop.
     // Non-loopback peers are denied here, including forged identity headers.
-    if (!identify_actor(connection_peer(fd), r.hdrs, actor) ||
-        !permit_request(m, r.path, actor)) {
-      error_json(fd, 403, actor.ok ? "Nur der Besitzer" : "Kein Zugang");
+    if (!identify_actor(connection_peer(fd), r.hdrs, actor)) {
+      error_json(fd, 403, "Kein Zugang");
+      return;
+    }
+    if (actor.role == "guest" && !guest_live(actor.node)) {
+      if (m == "GET" && (r.path == "/" || r.path == "/index.html")) {
+        // No room state, script or endpoints are exposed before a valid claim.
+        std::string page = R"HTML(<!doctype html><html lang="de"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head><body style="font:16px system-ui;max-width:32rem;margin:5rem auto;padding:1rem"><h1>MAG · Gastzugang</h1><p>Zum Beitreten zuerst Tailscale installieren und den einmaligen Schlüssel in der Tailscale-App unter „Use an auth key“ eingeben. Danach diesen Einladungslink erneut öffnen.</p><p><a href="https://tailscale.com/download" rel="noopener">Tailscale installieren</a></p><p id="key" style="overflow-wrap:anywhere"></p><button id="copy" hidden>Schlüssel kopieren</button><p id="status">Einladung prüfen …</p><script>
+const p=new URLSearchParams(location.hash.slice(1)), code=p.get('invite'), key=p.get('key');
+if(key){document.getElementById('key').textContent=key;const b=document.getElementById('copy');b.hidden=false;b.onclick=()=>navigator.clipboard.writeText(key)}
+if(code){fetch('/api/guest/claim',{method:'POST',headers:{'Content-Type':'application/json','X-Mag-Token':'%%TOKEN%%'},body:JSON.stringify({code})}).then(async r=>{if(!r.ok)throw Error((await r.json()).error||'Nicht bestätigt');location.replace('/')}).catch(e=>document.getElementById('status').textContent=e.message)}
+else document.getElementById('status').textContent='Bitte den vollständigen Einladungslink öffnen.';
+</script></body></html>)HTML";
+        auto at = page.find("%%TOKEN%%");
+        if (at != std::string::npos) page.replace(at, 9, ui_token());
+        send_response(fd, 200, "text/html; charset=utf-8", page,
+                      {{"Cache-Control","no-store"},{"Referrer-Policy","no-referrer"}});
+        return;
+      }
+      if (!(m == "POST" && r.path == "/api/guest/claim")) {
+        error_json(fd, 403, "Einladung noch nicht bestätigt oder widerrufen");
+        return;
+      }
+    } else if (actor.role == "guest") {
+      // Fail closed: guest permissions in access.json must never enable
+      // admin/Pages/Jobs/model/Bot control endpoints.
+      const std::string &q = r.path;
+      const bool read = m == "GET" && (q == "/" || q == "/index.html" ||
+          q == "/sw.js" || q == "/manifest.webmanifest" ||
+          q == "/api/state" || q == "/api/events" || q == "/api/bots" ||
+          q == "/api/room" || q == "/api/files" || q == "/api/version" ||
+          q == "/api/model-status" || q.rfind("/static/",0)==0 ||
+          q.rfind("/api/file/",0)==0);
+      const bool write = m == "POST" && (q == "/api/message" ||
+          q == "/api/stream" || q == "/api/upload" ||
+          q == "/api/stt" || q == "/api/speak" ||
+          (q.rfind("/api/messages/",0)==0 &&
+           q.size()>10 && q.find("/reactions") != std::string::npos));
+      if (!read && !write) {
+        error_json(fd, 403, "Nur der Besitzer");
+        return;
+      }
+    }
+    if (!permit_request(m, r.path, actor)) {
+      error_json(fd, 403, "Nur der Besitzer");
       return;
     }
   }
   const std::string path = r.path;
+  if (!bridge && path == "/api/guest/claim" && m == "POST") {
+    if (actor.role != "guest" || actor.node.empty() || r.body.size() > 2048) {
+      error_json(fd,403,"Kein Gastgerät"); return;
+    }
+    Val input;
+    if (!mj::parse(r.body,input) || !input.isObj()) {
+      error_json(fd,400,"Ungültige Anfrage"); return;
+    }
+    auto result = guest_claim(actor,input);
+    send_json(fd,result.code,mj::dump(result.body));
+    return;
+  }
+  if (!bridge && (path == "/api/guests" || path.rfind("/api/guests/",0)==0)) {
+    // Only the owner whose identity came from the native nginx/whois gate.
+    // Direct localhost without an attested LoginName never gains admin rights.
+    if (actor.role != "owner" || actor.login.empty() ||
+        r.hdrs.find("x-tailscale-ip")==r.hdrs.end()) {
+      error_json(fd,403,"Nur der Besitzer"); return;
+    }
+    if (m == "GET" && path == "/api/guests") {
+      Val result=guest_list_live();
+      send_json(fd,200,mj::dump(result)); return;
+    }
+    // Stricter than the normal UI: every mutation needs a fresh page token,
+    // same-origin fetch metadata and exact HTTPS Origin.
+    auto origin = r.hdrs.find("origin");
+    auto token = r.hdrs.find("x-mag-token");
+    auto site = r.hdrs.find("sec-fetch-site");
+    if (origin == r.hdrs.end() ||
+        origin->second != "https://mag.stardenburg.de" ||
+        token == r.hdrs.end() || !ct_eq(token->second, ui_token()) ||
+        site == r.hdrs.end() || site->second != "same-origin") {
+      error_json(fd,403,"CSRF-Prüfung fehlgeschlagen"); return;
+    }
+    if (m == "POST" && path == "/api/guests") {
+      if (r.body.size() > 4096) { error_json(fd,413,"Zu groß"); return; }
+      Val input;
+      if (!mj::parse(r.body,input) || !input.isObj()) {
+        error_json(fd,400,"Ungültige Anfrage"); return;
+      }
+      auto issue=guest_issue(actor,input);
+      send_json(fd,issue.code,mj::dump(issue.body)); return;
+    }
+    if (m == "DELETE" && path.rfind("/api/guests/",0)==0) {
+      auto id=path.substr(std::string("/api/guests/").size());
+      if (!guest_ident(id)) { error_json(fd,400,"Ungültige ID"); return; }
+      bool done=guest_revoke(id,actor.login);
+      if (done) send_json(fd,200,"{\"ok\":true}");
+      else send_json(fd,202,"{\"ok\":true,\"pending_cleanup\":true}");
+      return;
+    }
+    error_json(fd,405,"Methode nicht erlaubt");
+    return;
+  }
   if (path == "/mcp/jobs") {
     // Optional remote MCP transport: disabled until a long random server-only
     // token is explicitly configured. The model itself uses in-process tools.
@@ -410,7 +506,7 @@ static void route(int fd, Req &r, bool bridge = false) {
     return;
   }
   if (m == "GET" && path == "/api/events") {
-    handle_sse(fd);
+    handle_sse(fd, actor.role == "guest" ? actor.node : "");
     return;
   }
   if (m == "GET" && path == "/api/state") {

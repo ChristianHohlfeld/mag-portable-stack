@@ -428,3 +428,15 @@ Besitzer verwaltet Einladungen und getaggte Gastgeräte direkt im MAG-Raum: **G�
 ### Sicheres Raum-Leeren
 
 Vor jedem Owner-Clear wird eine dauerhafte Sicherung unter /var/lib/magbot/room/snapshots erzeugt (5 Sicherungen, 7 Tage, 2 GiB; Einzel-Limit 512 MiB). Schlägt das Sichern fehl, wird nichts geleert. Owner-Restore im Frontend unter Daten → Raum → Sicherungen ansehen; vor Restore wird erneut gesichert. Gäste dürfen weder Raum noch einzelne geteilte Dateien löschen. Details in docs/guest-access.md.
+
+### Deploy-Schutz nach MAG-Whois-403
+
+Bei jedem Room-Deploy wird die signierte Tailnet-whois-nginx-Konfiguration
+transaktional installiert; ein externer Owner-Client muss vor **und** nach
+dem Room-Restart die Seite `/` (HTTP 200) und `/api/state` (echte Owner-Identität)
+erreichen. Fehlende Voraussetzungen/Smoke-403/5xx verhindern den Cutover bzw.
+stellen Room **und** nginx automatisch wieder her. Ein fehlender optionaler
+Tailscale-OAuth-Client deaktiviert nur die Einladungsschaltfläche und sperrt
+weder Owner noch lokale Anwendungen. Keine Default-Gast-Freigabe.
+Anleitung einschließlich des Root-only `/etc/credstore/mag-guest-oauth`:
+[docs/guest-access.md](docs/guest-access.md).

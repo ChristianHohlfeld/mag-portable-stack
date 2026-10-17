@@ -63,7 +63,15 @@ def verify():
                 r = json.loads(line)
                 h = r.pop("hash")
                 body = json.dumps(r, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-                if hashlib.sha256((r["prev_hash"] + body).encode()).hexdigest() != h \
+                # Legacy Python gateway used sorted canonical JSON; native C++
+                # gateways hash the exact redacted JSONL body before appending
+                # a final hash property. Both formats form the same SHA chain.
+                raw = line.rstrip("\n")
+                prefix, sep, final = raw.rpartition(',"hash":')
+                candidate = (prefix + "}") if sep else ""
+                legacy = hashlib.sha256((r["prev_hash"] + body).encode()).hexdigest()
+                native = hashlib.sha256((r["prev_hash"] + candidate).encode()).hexdigest() if sep else ""
+                if h not in (legacy, native) \
                         or (prev is not None and r["prev_hash"] != prev):
                     print(f"KAPUTT: {p}:{i}")
                     ok = False

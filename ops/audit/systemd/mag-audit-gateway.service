@@ -1,25 +1,29 @@
 # Zentrale LLM-Schnittstelle mit vollständigem Audit-Log (installiert von ops/audit/install-audit.sh;
 # Programm liegt rollback-stabil unter /opt/mag-audit, nicht im Raum-Release).
-# Clients -> 127.0.0.1:8080 (hier) -> 127.0.0.1:8090 (mag-llm / llama serve)
+# Clients -> 127.0.0.1:8080 (C++ gateway) -> :8090 Q4 or :8091 IQ3
 [Unit]
 Description=MAG audit gateway (central LLM interface, full audit log)
-After=network.target
+After=network.target mag-model-supervisor.service
+Requires=mag-model-supervisor.service
 Before=mag-120.service
 
 [Service]
 Type=simple
 User=mag-audit
 Group=mag-audit
+SupplementaryGroups=magbot
 UMask=0027
-Environment=PYTHONUNBUFFERED=1
 Environment=MAG_AUDIT_LISTEN_HOST=127.0.0.1
 Environment=MAG_AUDIT_LISTEN_PORT=8080
 Environment=MAG_AUDIT_UPSTREAM_HOST=127.0.0.1
-Environment=MAG_AUDIT_UPSTREAM_PORT=8090
-Environment=MAG_AUDIT_UPSTREAM_TIMEOUT=7200
+Environment=MAG_MODEL_Q4_PORT=8090
+Environment=MAG_MODEL_IQ3_PORT=8091
+Environment=MAG_MODEL_CONTROL_GROUP=magbot
+Environment=MAG_MODEL_CONTROL_SOCKET=/run/mag-model-switch/control.sock
+Environment=MAG_MODEL_SUPERVISOR_SOCKET=/run/mag-model-supervisor/supervisor.sock
 Environment=MAG_AUDIT_LOG_DIR=/var/log/mag-audit
 Environment=MAG_AUDIT_SECRETS_FILE=/etc/mag-audit/secrets.list
-ExecStart=/usr/bin/python3 -I /opt/mag-audit/mag_audit_gateway.py
+ExecStart=/opt/mag-audit/bin/mag-audit-gateway
 Restart=always
 RestartSec=3
 
@@ -28,7 +32,10 @@ NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict
 ProtectHome=yes
-ReadWritePaths=/var/log/mag-audit
+RuntimeDirectory=mag-model-switch
+RuntimeDirectoryMode=0711
+StateDirectory=mag-audit
+ReadWritePaths=/var/log/mag-audit /var/lib/mag-audit /run/mag-model-switch
 ReadOnlyPaths=/etc/mag-audit /opt/mag-audit
 ProtectKernelTunables=yes
 ProtectKernelModules=yes

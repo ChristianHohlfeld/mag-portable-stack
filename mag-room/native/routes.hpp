@@ -504,6 +504,36 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
       send_json(fd, 200, mj::dump(out));
     return;
   }
+  if (path == "/api/models" && (m == "GET" || m == "PUT")) {
+    if (bridge || !actor.ok || actor.role != "owner") {
+      error_json(fd, 403, "Nur der Besitzer");
+      return;
+    }
+    if (m == "PUT") {
+      if (r.body.size() > 256) { error_json(fd, 413, "Zu gross"); return; }
+      Val input;
+      if (!mj::parse(r.body, input) || !input.isObj() ||
+          !input.find("id") || input.find("id")->type != Val::STR) {
+        error_json(fd, 400, "Ungueltige Auswahl"); return;
+      }
+      const std::string id = input.find("id")->asStr();
+      if (id != "q4" && id != "iq3") {
+        error_json(fd, 400, "Modell nicht installiert"); return;
+      }
+      Val o = Val::object();o["id"] = id;
+      Val result = model_switch_request("PUT", mj::dump(o));
+      if (result.find("error")) {
+        std::string text = result.find("error")->asStr();
+        error_json(fd, text.rfind("Bitte laufende Antwort",0)==0 ? 409 : 503,
+                   text.empty() ? "Modellwechsel nicht verfügbar" : text);
+        return;
+      }
+      send_json(fd, 202, mj::dump(result));
+      return;
+    }
+    send_json(fd, 200, mj::dump(model_switch_request("GET")));
+    return;
+  }
   if (m == "GET" && path == "/api/model-status") {
     send_json(fd, 200, mj::dump(model_status_val(model_status(true))));
     return;

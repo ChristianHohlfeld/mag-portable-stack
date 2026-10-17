@@ -11,6 +11,12 @@
 set -euo pipefail
 SRC=$(cd "$(dirname "$(readlink -f "$0")")/../.." && pwd)
 APPLY=0; [[ "${1:-}" == "--apply" ]] && APPLY=1
+# Legacy bootstrap uses the previous Python gateway. Once the native sequential
+# supervisor is installed, this old installer must never downgrade its unit.
+if [[ $APPLY -eq 1 && -f /etc/systemd/system/mag-model-supervisor.service ]]; then
+  echo "Native MAG model supervisor is installed. Use ops/deepseek/hotswap.sh for gateway maintenance; refusing legacy overwrite." >&2
+  exit 4
+fi
 run() { echo "+ $*"; if [[ $APPLY -eq 1 ]]; then "$@"; fi; }
 [[ $EUID -eq 0 ]] || { echo "bitte mit sudo"; exit 1; }
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT

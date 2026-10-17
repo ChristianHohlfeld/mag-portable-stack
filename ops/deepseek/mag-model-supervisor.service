@@ -1,0 +1,41 @@
+# Root-only native model supervisor. Audit gateway cannot invoke systemctl.
+[Unit]
+Description=MAG exclusive NUMA0 model supervisor (Q4/IQ3)
+After=network.target mag-llm.service
+RequiresMountsFor=/var/lib/mag-model-supervisor
+[Service]
+Type=simple
+User=root
+Group=mag-audit
+CPUAffinity=0-13 28-41
+NUMAPolicy=bind
+NUMAMask=0
+UMask=0077
+RuntimeDirectory=mag-model-supervisor
+RuntimeDirectoryMode=0750
+StateDirectory=mag-model-supervisor
+StateDirectoryMode=0700
+Environment=MAG_MODEL_SUPERVISOR_SOCKET=/run/mag-model-supervisor/supervisor.sock
+Environment=MAG_MODEL_STATE_FILE=/var/lib/mag-model-supervisor/selector.json
+Environment=MAG_SUPERVISOR_GROUP=mag-audit
+Environment=MAG_SUPERVISOR_CLIENT=mag-audit
+Environment=MAG_MODEL_Q4_PORT=8090
+Environment=MAG_MODEL_IQ3_PORT=8091
+Environment=MAG_MODEL_SWITCH_TIMEOUT=1800
+ExecStart=/opt/mag-audit/bin/mag-model-supervisor
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=/var/lib/mag-model-supervisor /run/mag-model-supervisor
+RestrictAddressFamilies=AF_UNIX AF_INET
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+LimitNOFILE=4096
+[Install]
+WantedBy=multi-user.target

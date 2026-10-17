@@ -2646,6 +2646,23 @@ static void slot_save_after(int slot, double cached, double evaluated) {
   }
   slot_rpc(slot, "save");
 }
+#include "model_switch_client.hpp"
+static void model_variant_changed(const Val &selector) {
+  const Val *v=selector.find("active");
+  if(!v)return;
+  static std::mutex variant_mtx;
+  static std::string previous;
+  std::lock_guard<std::mutex> lk(variant_mtx);
+  const std::string now=v->asStr();
+  if(now.empty()||now==previous)return;
+  if(!previous.empty()) {
+    { std::lock_guard<std::mutex> il(MODEL_INFO_MTX);MODEL_INFO_AT=0;MODEL_INFO_CACHE=Val::object();LAST_TIMINGS=Val::object(); }
+    { std::lock_guard<std::mutex> sl(SLOT_FLAG_MTX);SLOT_NEEDS_RESTORE.clear(); }
+    { std::lock_guard<std::mutex> st(MODEL_ST_MTX);MODEL_ST.at=0; }
+    LAST_HEALTH_OK=0;
+  }
+  previous=now;
+}
 static std::string model_status_text(const ModelStatus &st) {
   return st.label + (st.detail.empty() ? "" : " – " + st.detail);
 }
@@ -2663,6 +2680,7 @@ static void model_watcher_loop() {
   std::string last;
   while (!SHUTDOWN.load()) {
     ModelStatus st = probe_model_status();
+    model_variant_changed(model_switch_request("GET"));
     {
       std::lock_guard<std::mutex> lk(MODEL_ST_MTX);
       MODEL_ST = st;
@@ -4725,6 +4743,9 @@ static std::string state_json(const Actor *actor = nullptr) {
   root["model"] = MODEL;
   root["model_status"] = model_status_val(model_status(false));
   root["model_info"] = model_info_val();
+  Val selector = model_switch_request("GET");
+  model_variant_changed(selector);
+  root["model_switch"] = selector;
   root["autotalk"] = AUTOTALK.load();
   root["stt_lang"] = STT_LANG;
   root["runtime"] = "C++17";

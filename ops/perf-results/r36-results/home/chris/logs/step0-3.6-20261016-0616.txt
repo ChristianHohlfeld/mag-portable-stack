@@ -1,8 +1,0 @@
-MainPID=3255848
-pid 3255848 /home/chris/.local/bin/llama serve --model /home/chris/models/deepseek-v4/DeepSe
-VmLck:	 7734536 kB
-pid 3297301 bash -c mkdir -p ~/logs; f=~/logs/step0-3.6-$(date +%Y%m%d-%H%M).txt; { journalc
-VmLck:	       0 kB
-pid 3297304 bash -c mkdir -p ~/logs; f=~/logs/step0-3.6-$(date +%Y%m%d-%H%M).txt; { journalc
-VmLck:	       0 kB
-MemAvailable:   217552964 kB

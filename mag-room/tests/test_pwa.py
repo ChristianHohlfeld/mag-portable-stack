@@ -92,6 +92,8 @@ def start_room(tmp, static, version, extra=None, ui=None, bridge=None):
     model = ThreadingHTTPServer(('127.0.0.1', 0), Health)
     threading.Thread(target=model.serve_forever, daemon=True).start()
     env = dict(os.environ,
+        MAG_OWNER_CANONICAL_LOGIN='chris@github',
+        MAG_TEST_ALLOW_LOCAL_OWNER='1',
         MAG_ROOM_STATE=str(state),
         MAG_ROOM_PORT=str(ui),
         MAG_ROOM_BRIDGE_PORT=str(bridge),

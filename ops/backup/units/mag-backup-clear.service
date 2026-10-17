@@ -1,5 +1,5 @@
 [Unit]
-Description=MAG encrypted snapshot BEFORE owner room clear
+Description=MAG restic archive of durable native pre-clear undo snapshots (debounced)
 [Service]
 Type=oneshot
 UMask=0077

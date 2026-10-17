@@ -329,3 +329,52 @@ cmake --build build -j 4 --target test-guest-description
 ./build/test-guest-description
 ```
 \n### Sichere Owner-Probe ohne Kernel-TUN\n\nWenn nur `grokbot-box-2` (100.99.255.98) mit Tailscale-Userspace verfügbar ist, unterstützt das Release einen **lokalen** SOCKS5-Tailscale-Proxy als Transport des externen Owner-Checks. Die Box muss dabei weiterhin ein persönliches, ungetaggtes Owner-Gerät und für MAG root sicher per SSH erreichbar sein; andernfalls **kein Deploy**. Vollständige Checkliste: [Owner-Probe Userspace](owner-probe-userspace.md).\n
+## Tailscale API 503 and owner invitation email (17 October 2026)
+
+If `POST /api/guests` returns 503 with `Tailscale HTTP 0`,
+MAG's audit nftables policy may block `magbot` UID **993** from
+`api.tailscale.com:443` even with correct OAuth credentials.
+
+After this commit is deployed, Ali applies ONLY the narrow outbound
+exception (v4 + v6), without replacing the MAG audit policy:
+
+```sh
+sudo bash ops/audit/install-tailscale-egress.sh
+sudo systemctl status mag-tailscale-egress.service --no-pager
+sudo nft list chain inet mag_audit output
+sudo nft list set inet mag_audit mag_tailscale_api_v4
+sudo nft list set inet mag_audit mag_tailscale_api_v6
+sudo systemctl list-timers 'mag-tailscale-egress.timer'
+sudo -u magbot curl --noproxy '*' -fsS --connect-timeout 5 \
+  -o /dev/null -w '%{http_code}\n' https://api.tailscale.com/api/v2/oauth/token
+```
+
+An unauthenticated HTTP 4xx is acceptable as a **network** smoke
+test; `HTTP 0`, timeout, or TLS failure is not. Ensure libcurl
+validates the certificate/hostname. The firewall limits UID+port+IP;
+it **cannot intrinsically verify an HTTPS hostname**, especially on
+shared CDN addresses. The DNS-refresh oneshot runs every 10 minutes
+and re-applies immediately after audit nftables reload.
+
+### Sending an invitation to Maxim
+
+The existing MAG `/api/guests` endpoint creates a one-time tagged
+device auth key and a URL like
+`https://mag.stardenburg.de/#invite=…&key=…`. This URL is
+**not emailed by Tailscale**. Chris copies the returned `invite_url`
+and sends it to Maxim over private e-mail or another private channel.
+It includes a sensitive enrollment key; do not paste it into public
+chats, ticket descriptions, logs, or analytics. Key lifetime is 24h.
+The actual guest/device is limited through MAG's existing owner-approved
+tag and claim restrictions.
+
+A **true Tailscale user invite by email** is also supported, but is a
+*different* tailnet user-membership workflow: grant an admin-managed
+OAuth credential with `user_invites` scope, then call
+`POST https://api.tailscale.com/api/v2/tailnet/-/user-invites`
+with a JSON **array**, e.g.
+`[{"role":"member","email":"ADDRESS_PROVIDED_BY_CHRIS"}]`.
+Tailscale sends the email when `email` is provided; without it the API
+returns an invite URL for manual sharing. Do not infer Maxim's email or
+issue an invite automatically. A user invite alone does **not**
+register a `tag:mag-guest` device or bypass MAG's access checks.

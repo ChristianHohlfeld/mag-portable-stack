@@ -1,8 +1,48 @@
+# Security notice — 17 October 2026
+
+Local restic now runs with `--insecure-no-password` (restic >=0.17).
+**No password prompt or password file exists after migration.**
+However, the encrypted master key is effectively unprotected: **anyone
+who can read the repository can recover its contents**, including
+Tailscale state and application secrets. Restrict repository access to
+root and trusted physical host administrators; do not send this copy to
+AWS (AWS remains disabled). This is an explicit reduction in security.
+
+Existing password-protected repositories are NEVER destroyed/reinitialized
+by `install.sh`. Before applying this release:
+
+```sh
+# Install pinned/restic SHA256-verified binary; does not modify backup data:
+sudo bash ops/backup/install-restic-0181.sh
+# Restic >=0.17 confirmed.
+sudo bash ops/backup/migrate-passwordless.sh
+# Once successful (old keys removed, integrity and restore verified):
+sudo bash ops/backup/install.sh
+# Only then securely remove old password file and backup copies on MAG.
+sudo rm -f /etc/mag-backup/restic-password
+```
+
+The migration adds a zero-password key using
+`restic key add --new-insecure-no-password`, tests the new key with
+`restic --insecure-no-password`, removes the old key(s) by verified ID,
+then performs `restic check` and a temporary restore before declaring
+success. On any error it fails closed without deleting repository data.
+A missing repository is initialized passwordlessly on the next backup.
+
+Room clear is no longer held hostage by the full restic archive.
+The native undo snapshot is written BEFORE the room clears, and
+`mag-backup-clear.timer` coalesces repeated clears and archives that
+snapshot asynchronously. During the interval before restic finishes,
+the native undo directory is the ONLY recovery copy. Daily and
+pre-deploy restic snapshots remain synchronous as before.
+
+---
+
 # MAG-Backup und Disaster Recovery (17. Oktober 2026)
 
 ## Umfang und Grenzen
 
-**Werkzeug:** restic 0.16.4+, AES-256-verschlüsselt, dedupliziert, keine neue
+**Werkzeug:** restic >=0.17, AES-256-kodiert (ohne wirksamen Passwortschutz), dedupliziert, keine neue
 Server-Runtime. `mag-llm` wird weder gestoppt noch neu gestartet.
 
 Sicherung: Raum unter `/var/lib/magbot/room` einschließlich Owner/Gast-Rollen,
@@ -16,8 +56,9 @@ Zertifikate, acme-dns), `/etc/mag-nginx`, `/etc/nginx`, `/etc/magbot`,
 `/home/chris/llama-templates`, `/usr/local/lib/mag-deepseek`.
 Crontabs (`/etc/crontab`, `/etc/cron.*`, `/var/spool/cron/crontabs`)
 einschließlich S23-/chris-Aufgaben sowie Tailscale-Zustand
-(`/var/lib/tailscale` einschließlich Node-Key) liegen **nur im
-verschlüsselten restic-Backup**, niemals im Git-Repository.
+(`/var/lib/tailscale` einschließlich Node-Key) liegen **im lokalen
+passwortlosen Restic-Repository**, niemals im Git-Repository. Zugriff darauf
+muss mittels root-only Dateirechten geschützt werden.
 
 Release-ID und `current`-Verweis sowie Modell-Verifikationsstempel werden
 dokumentiert. Der Backup-Repository-Schlüssel liegt **nicht** im Backup
@@ -48,7 +89,7 @@ MAG hat **nur eine SSD/HDD** (`/dev/sda`, ext4 `/`), keine zweite Platte.
 Cache, kein zweites Ausfallmedium**. Für 3-2-1 muss S3 bzw. eine physisch
 getrennte Platte aktiv sein.
 
-Nach `/etc/mag-backup/aws.env` (root 0600) aktiviert sich automatisch
+Nur nach `MAG_BACKUP_OFFSITE_ENABLED=1` UND sicherer `/etc/mag-backup/aws.env` aktiviert sich
 eine **immutable Offsite-Kopie** jedes vollständigen verschlüsselten restic-
 Repositories nach
 `s3://mag-backup-595505951010-euc1/archives/<UTC>-<snapshot>/`.
@@ -112,8 +153,8 @@ sudo systemctl start mag-backup-restore-test.service
 sudo journalctl -u mag-backup-daily.service -u mag-backup-restore-test.service -n 80
 ```
 
-`install.sh` erstellt ein **neues** Passwort in
-`/etc/mag-backup/restic-password` (0600), initialisiert und sichert lokal
+`install.sh` erstellt **keine Passwortdatei**. Vorhandene Restic-Repositories
+müssen zuerst mit `migrate-passwordless.sh` umgestellt werden; dann wird lokal
 erstmals erfolgreich, aktiviert dann Timer und deaktiviert erst danach
 `gitea-backup.timer`. Alte Daten **nicht löschen**: `/etc/mag-dr`,
 `/var/backups/restic` (55 GB mit Mai-2026-Snapshots),
@@ -134,7 +175,7 @@ Datei `/etc/mag-backup/aws.env` mit
 Ein erster Lauf muss `offsite_ok=true` melden. Fehlende/ungültige
 Credentials dürfen **nie** als erfolgreicher Offsite-Lauf gelten.
 
-**Offline für Chris:** restic-Passwort, Bucketname, AWS-Konto/Region,
+**Offline für Chris:** Repo-/Datenträgerzugang (kein Restic-Passwort), Bucketname, AWS-Konto/Region,
 Wiedererlangung der minimalen IAM-Zugangsdaten (getrennt und nicht im Repo),
 GitHub-Repo-Zugang und Tailscale-Admin-Zugang. Offline-Schlüsselprobe durchführen.
 Keine Passwörter/Kopien in GitHub oder Gitea committen.
@@ -169,9 +210,9 @@ Niemals einen Zielordner aus dem Internet übernehmen.
 2. GitHub-Repo `ChristianHohlfeld/mag-portable-stack` klonen und
    versionsgleich `install.sh`/Stack-Voraussetzungen herstellen.
    Nicht mit einem leeren Raum erfolgreich starten und danach überschreiben.
-3. Offline-restic-Passwort nach `/etc/mag-backup/restic-password` (0600),
-   `aws.env` nur wenn S3-Restore, `ops/backup/install.sh` **noch nicht**
-   ausführen (er würde auf frischer Hardware einen leeren Raum sichern).
+3. Kein Restic-Passwort nötig: `restic --insecure-no-password` (Version >=0.17).
+   `aws.env` nur nach gesonderter Offsite-Freigabe; `ops/backup/install.sh`
+   **noch nicht** ausführen (er würde auf frischer Hardware einen leeren Raum sichern).
    Stattdessen `/usr/local/lib/mag-backup`-Skripte aus dem Repo
    installieren oder direkt mit den lokalen Skripten und korrekt gesetzten
    `MAG_BACKUP_CONFIG`-Variablen arbeiten.
@@ -211,18 +252,18 @@ CI-Test ist Ersatz für den echten Host-Probelauf.
 
 ### Recovery der Owner- und Gästezugänge
 
-Die verschlüsselte Sicherung enthält `/etc/mag-stack` für die Owner-Deploy-Probe
+Das passwortlose Restic-Archiv enthält `/etc/mag-stack` für die Owner-Deploy-Probe
 sowie, falls vorhanden, `/etc/credstore/mag-guest-oauth` für die Gästeverwaltung.
-Das Restic-Passwort selbst wird nicht mitgesichert und muss offline aufbewahrt
-werden. Nach einem Bare-Metal-Restore Berechtigungen (root:root, 0600) prüfen.
+Es existiert **kein Restic-Passwort**; nach Bare-Metal-Restore den
+Dateisystemzugriff auf das Repository strikt auf root begrenzen (0700).
 
 ## October 17 2026 – LOCAL-ONLY release gate
 
 Chris has approved local encrypted backups; AWS remains stopped. The
 default is `MAG_BACKUP_OFFSITE_ENABLED=0`, even if a stale `aws.env`
 exists. Local `restic` needs no AWS CLI, bucket access, credentials,
-`aws.env` or network. `ops/backup/install.sh` creates/protects the local
-password, runs an encrypted backup, then enables backup timers. The
+`aws.env` or network. `ops/backup/install.sh` creates no password,
+runs a local restic backup, then enables backup timers. The
 generic `ops/deploy.sh` requires this local timer and synchronously
 runs `mag-backup-deploy.service` before changing a release. Pages
 directories are optional until Pages has been activated.

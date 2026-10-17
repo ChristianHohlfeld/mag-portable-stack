@@ -15,7 +15,13 @@ jobs:
         with:
           fetch-depth: 0
       - name: Install restic and test tools
-        run: sudo apt-get update && sudo apt-get install -y restic sqlite3 jq util-linux systemd
+        run: |
+          sudo apt-get update && sudo apt-get install -y sqlite3 jq util-linux systemd curl bzip2
+          curl -fsSLo /tmp/restic.bz2 https://github.com/restic/restic/releases/download/v0.18.1/restic_0.18.1_linux_amd64.bz2
+          echo '680838f19d67151adba227e1570cdd8af12c19cf1735783ed1ba928bc41f363d  /tmp/restic.bz2' | sha256sum -c -
+          bunzip2 -c /tmp/restic.bz2 | sudo tee /usr/local/bin/restic >/dev/null
+          sudo chmod 0755 /usr/local/bin/restic
+          /usr/local/bin/restic version
       - name: shell syntax, executable hook and no destructive model action
         run: |
           bash -n ops/backup/*.sh ops/backup/tests/*.sh ops/deploy.sh
@@ -25,14 +31,17 @@ jobs:
           grep -Fq '/var/lib/tailscale' ops/backup/backup.sh
           grep -Fq '/var/spool/cron/crontabs' ops/backup/backup.sh
           grep -Fq 'systemctl start mag-backup-deploy.service' ops/deploy.sh
-          grep -Fq 'mag-backup-clear.service' mag-room/native/routes.hpp
+          grep -Fq 'mag-backup-clear.timer' mag-room/native/routes.hpp
           grep -Fq 'actor.role != "owner"' mag-room/native/routes.hpp
           ! grep -R -E '(stop|restart) mag-llm.service' ops/backup
+          ! grep -R -q 'openssl rand -hex 32' ops/backup/install.sh
+          grep -Fq -- '--insecure-no-password' ops/backup/common.sh
+          test -f ops/backup/migrate-passwordless.sh
       - name: Validate calendar and systemd units
         run: |
           for f in ops/backup/units/*.timer; do
             expr=$(sed -n 's/^OnCalendar=//p' "$f")
-            systemd-analyze calendar "$expr" >/dev/null
+            [[ -z "$expr" ]] || systemd-analyze calendar "$expr" >/dev/null
           done
           for f in ops/backup/units/*.service ops/backup/units/*.timer; do
             systemd-analyze verify "$PWD/$f" 2>&1 | tee /tmp/mag-unit-verify.out
@@ -46,6 +55,8 @@ jobs:
             grep -Fq 'Nice=19' "$f"
           done
           grep -Fq 'CPUAffinity=14-27 42-55' ops/backup/units/mag-backup-clear.service
+      - name: Migrate actual password-protected repo to no-password without data loss
+        run: bash ops/backup/tests/test-passwordless-migrate.sh
       - name: Disposable repository with Gitea SQLite, room and Pages restore
         run: bash ops/backup/tests/test-backup.sh
       - name: No committed secrets

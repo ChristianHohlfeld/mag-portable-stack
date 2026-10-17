@@ -1,0 +1,8 @@
+[Unit]
+Description=Debounced MAG restic clear archive (native undo snapshot already committed)
+[Timer]
+OnActiveSec=30s
+AccuracySec=1s
+Unit=mag-backup-clear.service
+[Install]
+WantedBy=timers.target

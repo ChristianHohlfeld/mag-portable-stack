@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Real backup, never a dummy successful systemctl start.
+# Fixture-only manually invoked backup; CI room-clear no longer invokes it.
 set -euo pipefail
 [[ "${GITHUB_ACTIONS:-}" == true && "${MAG_BACKUP_TEST_MODE:-}" == 1 ]] || exit 4
 root=$(cd "$(dirname "$0")/../../.." && pwd)

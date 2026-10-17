@@ -1130,16 +1130,34 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
     if (BUSY.load()) { error_json(fd,409,"Bot arbeitet noch"); return; }
     std::lock_guard<std::mutex> turn(TURN_MTX);
     if (BUSY.load()) { error_json(fd,409,"Bot arbeitet noch"); return; }
-    // A synchronous fixed-command root oneshot archives the encrypted
-    // pre-clear state before the existing #32 durable snapshot machinery.
-    // The owner proof, BUSY gate and TURN_MTX above remain unchanged.
-    if (std::system(
-            "/usr/bin/sudo -n /usr/bin/systemctl start mag-backup-clear.service "
-            ">/dev/null 2>&1") != 0) {
-      error_json(fd, 503, "Sicherung vor Raum leeren fehlgeschlagen");
-      return;
-    }
+    // clear_room_data() first atomically creates the native durable undo
+    // snapshot (incl. room/files/memory), before mutating the room. The
+    // encrypted restic archive runs AFTER that under a debounced timer;
+    // never block an interactive request on a NUMA-throttled restic job.
     auto result = clear_room_data();
+    if (result.code == 200 && env("MAG_TEST_NO_CLEAR_BACKUP","0") != "1") {
+      // Fixed sudoers command; --no-block returns before the 30s timer and
+      // its I/O-bound service. Repeated clears RESTART the timer -> coalesce.
+      int rc = std::system(
+        "/usr/bin/sudo -n /usr/bin/systemctl --no-block restart "
+        "mag-backup-clear.timer >/dev/null 2>&1");
+      if (rc != 0) {
+        std::cerr << "MAG backup: asynchronous room clear scheduling failed; "
+                     "native undo snapshot retained\n";
+        Val body;
+        if (mj::parse(result.body,body) && body.isObj()) {
+          body["backup_queued"] = false;
+          body["backup_error"] = "Lokale Undo-Sicherung vorhanden; Restic-Archiv nicht eingeplant";
+          result.body = mj::dump(body);
+        }
+      } else {
+        Val body;
+        if (mj::parse(result.body,body) && body.isObj()) {
+          body["backup_queued"] = true;
+          result.body = mj::dump(body);
+        }
+      }
+    }
     if (result.code == 200) {
       Val response;
       if (mj::parse(result.body,response))

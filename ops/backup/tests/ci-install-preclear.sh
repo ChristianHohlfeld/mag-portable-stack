@@ -11,10 +11,7 @@ sudo install -d -m 0755 "$base" "$base/config" "$base/source" "$base/run" "$base
 # Native unprivileged fixture must publish the per-test room path. This is
 # restricted to the CI marker; the encrypted repo/config remains root-owned.
 sudo chown "$(id -u):$(id -g)" "$base"
-if [[ ! -f "$base/config/restic-password" ]]; then
-  printf '%s\n' "temporary-disposable-actions-fixture-password" | sudo tee "$base/config/restic-password" >/dev/null
-fi
-sudo chmod 0600 "$base/config/restic-password"
+test ! -e "$base/config/restic-password"
 sudo tee /etc/systemd/system/mag-backup-clear.service >/dev/null <<EOF
 [Unit]
 Description=CI fixture - actual encrypted restic snapshot before room clear

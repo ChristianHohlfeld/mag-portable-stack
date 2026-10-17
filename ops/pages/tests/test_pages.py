@@ -121,7 +121,7 @@ class PagesTests(unittest.TestCase):
             gen = base / "generated.conf"
             gen.write_text(p.render_nginx(c, {}))
             cfg = base / "nginx.conf"
-            cfg.write_text("worker_processes 1;\nerror_log stderr;\n"
+            cfg.write_text("worker_processes 1;\nerror_log stderr;\n"\n                           f"pid {base}/nginx.pid;\n"
                            "events { worker_connections 32; }\n"
                            f"http {{ access_log off; include {gen}; }}\n")
             result = subprocess.run(["nginx", "-t", "-p", str(base) + "/", "-c", str(cfg)],

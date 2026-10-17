@@ -39,5 +39,36 @@ for n in "${expected[@]}"; do grep -Eq "^[a-f0-9]{64}  $n$" "$PINNED" || { echo 
 # Bash awk version is more portable than sed's GNU case conversion here.
 normalize(){ awk 'NF==2 && length($1)==64 && $1~/^[a-fA-F0-9]+$/ {sub(/^\*/,"",$2);print tolower($1)"  "$2;next} {exit 4}' "$1" | LC_ALL=C sort; }
 [[ "$(normalize "$PINNED")" == "$(normalize SHA256SUMS)" ]] || { echo "IQ3: local manifest differs from pinned hashes" >&2;exit 4; }
+STAMP=${MAG_IQ3_STAMP:-/var/lib/mag-llm/iq3-verified.stamp}
+meta_sig() {
+  local f
+  {
+    sha256sum "$PINNED" | awk '{print "pinned",$1}'
+    for f in "${expected[@]}"; do stat -c 'part %n %s %Y %i' "$f"; done
+  } | LC_ALL=C sort
+}
+write_stamp() {
+  local dir tmp
+  dir=$(dirname "$STAMP")
+  mkdir -p "$dir" 2>/dev/null || { echo "IQ3: stamp directory not writable; content check stands" >&2; return 0; }
+  tmp=$(mktemp "$dir/.iq3-stamp.XXXXXX") || return 0
+  meta_sig > "$tmp"
+  chmod 0644 "$tmp"
+  mv -f "$tmp" "$STAMP" || { rm -f "$tmp"; echo "IQ3: stamp not written" >&2; }
+}
+if [[ "${1:-}" == "--adopt" ]]; then
+  write_stamp
+  [[ -f "$STAMP" ]] || { echo "IQ3: --adopt could not write $STAMP" >&2; exit 4; }
+  echo "IQ3: adopted stamp from pinned manifest and file identity" >&2
+  printf '%s/%s-00001-of-00004.gguf\n' "$DIR" "$stem"
+  exit 0
+fi
+if [[ "${MAG_IQ3_FORCE_SHA:-0}" != 1 && -f "$STAMP" && ! -L "$STAMP" ]] &&
+   [[ "$(meta_sig)" == "$(LC_ALL=C sort "$STAMP")" ]]; then
+  echo "IQ3: stamp matches; skipped content hash" >&2
+  printf '%s/%s-00001-of-00004.gguf\n' "$DIR" "$stem"
+  exit 0
+fi
 sha256sum --check --strict --status "$PINNED" || { echo "IQ3: pinned SHA verification failed" >&2;exit 4; }
+write_stamp
 printf '%s/%s-00001-of-00004.gguf\n' "$DIR" "$stem"

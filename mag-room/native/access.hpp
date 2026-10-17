@@ -3,8 +3,10 @@
 // (nginx on 127.0.0.1) after it has stripped client-supplied headers and
 // copied X-Tailscale-User / X-Tailscale-Name from the native whois endpoint.
 // A non-loopback peer is denied even if those headers are present.
-// Loopback without an identity header stays the owner (local admin, tests,
-// deploy health checks). No secrets live here; owners are logins in access.json.
+// Loopback without an identity header is not an owner. Tests opt in with
+// MAG_TEST_ALLOW_LOCAL_OWNER=1. No secrets live here; the owner login is
+// MAG_OWNER_CANONICAL_LOGIN (default chris.hohlfeld@gmail.com) and must
+// also be listed in access.json.
 #pragma once
 #include <cctype>
 #include <map>
@@ -157,9 +159,13 @@ static AccessCfg access_snapshot() {
 
 static bool login_is_owner(const AccessCfg &cfg, const std::string &login) {
   std::string key = lc(login);
+  // Production owner is the explicitly approved Tailscale identity.
+  // An extra name in access.json does not become owner.
+  const std::string canonical = lc(env("MAG_OWNER_CANONICAL_LOGIN",
+                                       "chris.hohlfeld@gmail.com"));
+  if (key != canonical) return false;
   for (const auto &o : cfg.owners)
-    if (o == key)
-      return true;
+    if (o == key) return true;
   return false;
 }
 
@@ -266,6 +272,11 @@ static bool guest_reaction_path(const std::string &p) {
 }
 static std::string required_perm(const std::string &method,
                                  const std::string &path) {
+  // Local health probes stay available to deploy/systemd. They grant no
+  // room, admin or backup data.
+  if (method == "GET" && (path == "/healthz" || path == "/readyz" ||
+                          path == "/readyz/model"))
+    return "read";
   if (public_guest_read(method, path)) return "read";
   if ((method == "POST" && (path == "/api/message" || path == "/api/stream" ||
         path == "/api/upload" || path == "/api/stt" || path == "/api/speak")) ||
@@ -308,8 +319,14 @@ static std::string required_perm(const std::string &method,
 static bool permit_request(const std::string &method, const std::string &path,
                            const Actor &a) {
   if (!a.ok) return false;
-  if (a.role == "owner") return true;
   std::string required = required_perm(method, path);
+  if (a.role == "owner") {
+    // No bare 127.0.0.1 admin shortcut. Owner routes need a nonempty login
+    // (and the WhoIs proof checked by the router) unless a unit test opts in.
+    if (required == "owner" && a.login.empty() &&
+        env("MAG_TEST_ALLOW_LOCAL_OWNER", "0") != "1") return false;
+    return true;
+  }
   return required == "read" || required == "chat" ||
          required == "queue-own" ||
          (required == "offline" && actor_can(a,"offline"));

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Install parallel IQ3 on NUMA1. Q4 mag-llm.service is NEVER touched.
-# Gateway Q4-only migration may restart :8080 between conversations.
+# Gateway install may restart :8080 between conversations. It routes Q4 and IQ3
+# by model id and does not restart either llama-server.
 set -euo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 ACTION=${1:-preflight}
@@ -98,6 +99,12 @@ install -m 0755 "$ROOT/ops/deepseek/start-iq3.sh" "$LIB/start-iq3.sh"
 install -m 0644 "$ROOT/ops/deepseek/mag-llm-iq3.service" "$IQUNIT"
 # #33 startup veto applied only to the retired sequential service.
 [[ ! -e "$IQGUARD" ]] || rm "$IQGUARD"
+# The temporary SHA skip blanks ExecStartPre. The stamp check replaces it.
+SKIP=/etc/systemd/system/mag-llm-iq3.service.d/99-temp-skip-sha.conf
+if [[ -f "$SKIP" ]]; then
+  grep -Fq 'ExecStartPre=' "$SKIP" || fail "unexpected IQ3 SHA skip drop-in"
+  rm -f "$SKIP"
+fi
 # Q4 manual-stop override from retired #31 is not required for parallel operation.
 if [[ -e "$Q4GUARD" ]];then
   cmp -s "$Q4GUARD" "$ROOT/ops/deepseek/91-sequential-switch.conf" || fail "unknown Q4 guard, inspect manually"

@@ -84,7 +84,7 @@ class NativeWhois(unittest.TestCase):
             }],
         }))
         cls.access_file = state / "access.json"
-        env = dict(os.environ, MAG_ROOM_BIND="127.0.0.1", MAG_ROOM_PORT=str(cls.port),
+        env = dict(os.environ, MAG_OWNER_CANONICAL_LOGIN="ada@github", MAG_TEST_ALLOW_LOCAL_OWNER="1", MAG_ROOM_BIND="127.0.0.1", MAG_ROOM_PORT=str(cls.port),
                    MAG_ROOM_BRIDGE_IP="127.0.0.1", MAG_ROOM_BRIDGE_PORT=str(cls.bridge_port),
                    MAG_ROOM_STATE=str(state), MAG_ROOM_STATIC=str(ROOT / "mag-room/static"),
                    MAG_ROOM_UI=str(ROOT / "mag-room/web/index.html"),

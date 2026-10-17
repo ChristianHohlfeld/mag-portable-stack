@@ -1,0 +1,11 @@
+[Unit]
+Description=MAG console-only host administration SSH deny (frontend :443 unaffected)
+After=network-pre.target
+Before=ssh.service ssh.socket tailscaled.service
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/lib/mag-private/console-lockdown-apply.sh
+ExecStop=/usr/sbin/nft delete table inet mag_console_only
+[Install]
+WantedBy=multi-user.target

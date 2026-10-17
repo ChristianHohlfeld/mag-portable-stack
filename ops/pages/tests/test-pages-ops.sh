@@ -95,7 +95,7 @@ grep -Fq 'bash "$here/verify.sh"' "$here/activate.sh"
 grep -Fq 'systemctl restart mag-120.service' "$here/activate.sh"
 grep -Fq 'expected=1e915301-9bda-4d2d-b261-6c20c635aca4.auth.acme-dns.io' "$here/verify.sh"
 [[ "$(grep -Fc 'listen 100.123.114.16:443 ssl;' "$tmp/private.conf")" -eq 2 ]]
-grep -Fq 'server_name ~^(?<pageslug>' "$tmp/private.conf"
+grep -Fq 'server_name ~^(?<pageslug>[a-z0-9-]+)\.pages\.stardenburg\.de$;' "$tmp/private.conf"
 ! grep -q ':80;' "$tmp/private.conf"
 ! grep -q '@PUBLIC_BIND@' "$tmp/private.conf"
 ! grep -q '192.0.2.10' "$tmp/private.conf"

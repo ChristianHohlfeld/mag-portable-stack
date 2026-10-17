@@ -67,12 +67,18 @@ fi
 [[ $(cat /sys/devices/system/node/node1/cpulist) == "14-27,42-55" ]] || fail "node1 CPU topology mismatch"
 command -v numactl >/dev/null && command -v numastat >/dev/null || fail "numactl required"
 curl --noproxy '*' -fsS --max-time 5 http://127.0.0.1:8090/health >/dev/null || fail "Q4 unhealthy"
+# Parallel Q4 on node0 and IQ3 on node1 is the steady state. Drop only the
+# old sequential lock (ExecStartPre=/usr/bin/false). A different guard stays.
+if [[ -f "$IQ_GUARD" ]] && grep -Fqx 'ExecStartPre=/usr/bin/false' "$IQ_GUARD"; then
+  rm -f "$IQ_GUARD"
+fi
 [[ ! -e "$BACK/READY" && ! -e "$GUARD" && ! -e "$IQ_GUARD" ]] || fail "already staged"
 [[ $(awk '/Node 0 MemTotal:/{print $4}' /sys/devices/system/node/node0/meminfo) -gt 230000000 ]] || fail "node0 capacity too small"
 tr '\0' '\n' < "/proc/$P/cmdline" | grep -Fxq -- '-rtr' || fail "Q4 not -rtr"
 tr '\0' '\n' < "/proc/$P/cmdline" | grep -Fxq -- '--mlock' || fail "Q4 not --mlock"
 if grep -Eq '/home/chris/models/deepseek-v4/.*[.]gguf' "/proc/$P/maps"; then fail "Q4 uses mmap; cache pin required"; fi
-systemctl is-active --quiet mag-llm-iq3.service && fail "IQ3 already resident; sequential swap required"
+# IQ3 may already be resident on node1. Parallel Q4+IQ3 is the steady state.
+# This script still does not stop or restart either llama-server.
 EXE=$(readlink -f "/proc/$P/exe")
 [[ -x "$EXE" && "$EXE" == */llama-server ]] || fail "not ik_llama.cpp server"
 for dir in /etc/systemd/system/mag-llm.service.d /run/systemd/system/mag-llm.service.d; do
@@ -145,18 +151,12 @@ EOF
 cat > "$TMP/node-guard" <<'EOF'
 [Service]
 # Hard node0 placement. Conflicts= is unsafe: it may stop an active Q4.
+# AllowedCPUs is the cgroup cpuset; CPUAffinity alone does not hold HTTP threads.
 CPUAffinity=0-13 28-41
+AllowedCPUs=0-13 28-41
 NUMAPolicy=bind
 NUMAMask=0
 EOF
-cat > "$TMP/iq3-guard" <<'EOF'
-[Service]
-# PR #31 concurrently starts Q4 and IQ3: cannot fit on node0.
-# Explicit startup lock. Remove only in a reviewed sequential hot-swap PR.
-# Unlike Conflicts=, this cannot implicitly stop a running Q4.
-ExecStartPre=/usr/bin/false
-EOF
-install -D -m 0644 "$TMP/iq3-guard" "$IQ_GUARD"
 install -D -m 0644 "$TMP/pin-guard" "$PIN_GUARD"
 systemctl daemon-reload
 systemctl disable --now mag-model-pin.service || fail "failed to stop double pin; DO NOT restart"

@@ -356,25 +356,17 @@ it **cannot intrinsically verify an HTTPS hostname**, especially on
 shared CDN addresses. The DNS-refresh oneshot runs every 10 minutes
 and re-applies immediately after audit nftables reload.
 
-### Sending an invitation to Maxim
+### Guest invite
 
-The existing MAG `/api/guests` endpoint creates a one-time tagged
-device auth key and a URL like
-`https://mag.stardenburg.de/#invite=…&key=…`. This URL is
-**not emailed by Tailscale**. Chris copies the returned `invite_url`
-and sends it to Maxim over private e-mail or another private channel.
-It includes a sensitive enrollment key; do not paste it into public
-chats, ticket descriptions, logs, or analytics. Key lifetime is 24h.
-The actual guest/device is limited through MAG's existing owner-approved
-tag and claim restrictions.
+`POST /api/guests` creates a one-time tagged device auth key and a URL
+`https://mag.stardenburg.de/#invite=…&key=…`. MAG does not send email
+and does not call Tailscale `user-invites`. Chris copies `invite_url`
+and delivers it himself. The URL contains the enrollment key. Key
+lifetime is 24 hours. The device is limited by the `tag:mag-guest`
+claim path.
 
-A **true Tailscale user invite by email** is also supported, but is a
-*different* tailnet user-membership workflow: grant an admin-managed
-OAuth credential with `user_invites` scope, then call
-`POST https://api.tailscale.com/api/v2/tailnet/-/user-invites`
-with a JSON **array**, e.g.
-`[{"role":"member","email":"ADDRESS_PROVIDED_BY_CHRIS"}]`.
-Tailscale sends the email when `email` is provided; without it the API
-returns an invite URL for manual sharing. Do not infer Maxim's email or
-issue an invite automatically. A user invite alone does **not**
-register a `tag:mag-guest` device or bypass MAG's access checks.
+libcurl does not read `CURL_CA_BUNDLE`. Guest OAuth and auth-key calls
+pass that path, or `SSL_CERT_FILE` when the bundle variable is unset,
+as `CURLOPT_CAINFO`, so the audit proxy CA is trusted. Failures log
+`curl_easy_strerror` next to the HTTP status. HTTP 0 means TLS failed
+before a status line.

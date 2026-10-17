@@ -19,6 +19,8 @@ RestartSec=60
 TimeoutStartSec=10800
 TimeoutStopSec=120
 CPUAffinity=14-25 42-53
+# cgroup cpuset: llama-server may widen pthread affinity; AllowedCPUs cannot.
+AllowedCPUs=14-25 42-53
 NUMAPolicy=bind
 NUMAMask=1
 MemoryAccounting=yes

@@ -1,0 +1,7 @@
+table inet mag_console_only {
+  chain input {
+    type filter hook input priority -20; policy accept;
+    # No remote SSH to host, via Tailnet or LAN. Console sessions survive.
+    iifname != "lo" tcp dport 22 counter reject with tcp reset
+  }
+}

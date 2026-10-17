@@ -37,7 +37,7 @@ cat > "$tmp/bin/nginx" <<EOF
 EOF
 cat > "$tmp/bin/systemctl" <<EOF
 #!/usr/bin/env bash
-echo "$*" >> "$tmp/systemctl.log"
+echo "\$*" >> "$tmp/systemctl.log"
 EOF
 chmod +x "$tmp/bin/"*
 sed -e "s|/etc/nginx/sites-available/mag-room.conf|$root/etc/nginx/sites-available/mag-room.conf|g" \

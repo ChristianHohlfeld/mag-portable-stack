@@ -33,4 +33,28 @@ fi
 chmod 0640 "$next"
 if [[ "${MAG_PAGES_TESTING:-}" != 1 ]]; then chown root:magbot "$next"; fi
 mv -f "$next" "$file"
-echo 'Pages policy set (next C++ synchronization)'
+# Fail closed at policy commit time. Do NOT wait for the C++ republisher to
+# remove old public links; an API/token failure must never keep public access.
+if [[ "$mode" == tailnet || "$mode" == delete ]]; then
+  root="${MAG_PAGES_POLICY_ROOT:-/var/lib/mag-pages}"
+  manifest="$root/sites.json"
+  if [[ -f "$manifest" && ! -L "$manifest" ]]; then
+    slug="$(jq -r --arg repo "$repo" '.[$repo].slug // empty' "$manifest")"
+    custom="$(jq -r --arg repo "$repo" '.[$repo].custom // empty' "$manifest")"
+    if [[ -n "$slug" ]]; then
+      [[ "$slug" =~ ^[a-z0-9][a-z0-9-]{0,62}$ ]] || exit 1
+      [[ ! -L "$root/public" && ! -L "$root/tailnet" && ! -L "$root/custom" ]] || exit 1
+      [[ ! -e "$root/public/$slug" || -L "$root/public/$slug" ]] || exit 1
+      [[ -L "$root/public/$slug" ]] && rm -f -- "$root/public/$slug"
+      if [[ "$mode" == delete ]]; then
+        [[ -L "$root/tailnet/$slug" ]] && rm -f -- "$root/tailnet/$slug"
+      fi
+    fi
+    if [[ -n "$custom" ]]; then
+      [[ "$custom" =~ ^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$ &&
+         "$custom" == *.* && "$custom" != *".."* ]] || exit 1
+      [[ -L "$root/custom/$custom" ]] && rm -f -- "$root/custom/$custom"
+    fi
+  fi
+fi
+echo 'Pages policy set; forbidden public routes revoked immediately'

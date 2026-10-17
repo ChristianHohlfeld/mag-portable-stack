@@ -179,5 +179,34 @@ class BrowserSpeech(unittest.TestCase):
             self.assertEqual(resp.headers.get('Cross-Origin-Opener-Policy'), 'same-origin')
             self.assertEqual(resp.headers.get('Cross-Origin-Embedder-Policy'), 'require-corp')
 
+    def test_coep_keeps_native_event_stream_and_same_origin_images(self):
+        # A pthread WASM worker needs isolation on the document itself.
+        self.assertTrue(self.page.evaluate("window.crossOriginIsolated"))
+        result = self.page.evaluate("""async () => {
+          const response = await fetch('/api/state', {cache:'no-store'});
+          const image = await new Promise(resolve => {
+            const pic = new Image();
+            pic.onload = () => resolve(true);
+            pic.onerror = () => resolve(false);
+            pic.src = '/static/icon-192.png';
+          });
+          const events = await new Promise(resolve => {
+            const source = new EventSource('/api/events');
+            let finished = false;
+            const done = value => {
+              if (finished) return;
+              finished = true;
+              clearTimeout(timer);
+              source.close();
+              resolve(value);
+            };
+            source.onopen = () => done(true);
+            source.onerror = () => done(false);
+            const timer = setTimeout(() => done(false), 5000);
+          });
+          return {state:response.status, image, events};
+        }""")
+        self.assertEqual(result, {'state': 200, 'image': True, 'events': True})
+
 if __name__ == '__main__':
     unittest.main()

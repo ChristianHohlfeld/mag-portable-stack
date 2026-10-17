@@ -22,8 +22,8 @@ systemctl is-active --quiet nginx.service
 systemctl is-active --quiet tailscaled.service
 systemctl is-active --quiet mag-120.service
 # Keep one cutover/recovery writer at a time.
-install -d -m 0700 /var/lock
-exec 9>/var/lock/mag-private-cutover.lock
+# /run/lock is system-shared; NEVER chmod /var/lock (often a symlink).
+exec 9>/run/lock/mag-private-cutover.lock
 flock -n 9 || { echo "Cutover already running" >&2; exit 1; }
 native_status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
   --max-time 5 -H 'X-Mag-Remote: 192.0.2.1:34567' \

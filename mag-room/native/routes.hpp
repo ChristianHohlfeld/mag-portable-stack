@@ -184,26 +184,10 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
       }
     } else if (actor.role == "guest" && !actor.node.empty()) {
       actor.name = guest_name_for_node(actor.node);
-      // Fail closed: guest permissions in access.json must never enable
-      // admin/Pages/Jobs/model/Bot control endpoints.
-      const std::string &q = r.path;
-      const bool read = m == "GET" && (q == "/" || q == "/index.html" ||
-          q == "/sw.js" || q == "/manifest.webmanifest" ||
-          q == "/api/state" || q == "/api/events" || q == "/api/bots" ||
-          q == "/api/room" || q == "/api/files" || q == "/api/version" ||
-          q == "/api/model-status" || q.rfind("/static/",0)==0 ||
-          q.rfind("/api/file/",0)==0);
-      const bool write = m == "POST" && (q == "/api/message" ||
-          q == "/api/stream" || q == "/api/upload" ||
-          q == "/api/stt" || q == "/api/speak" ||
-          (q.rfind("/api/messages/",0)==0 &&
-           q.size()>10 && q.find("/reactions") != std::string::npos));
-      if (!read && !write) {
-        error_json(fd, 403, "Nur der Besitzer");
-        return;
-      }
     }
-    if (!permit_request(m, r.path, actor)) {
+    if (!(m == "POST" && r.path == "/api/guest/claim" &&
+          actor.role == "guest" && !actor.node.empty()) &&
+        !permit_request(m, r.path, actor)) {
       error_json(fd, 403, "Nur der Besitzer");
       return;
     }
@@ -1039,6 +1023,7 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
     return;
   }
   if (m == "POST" && path == "/api/reset") {
+    if (actor.role != "owner") { error_json(fd,403,"Nur der Besitzer"); return; }
     stop_autotalk();
     std::lock_guard<std::mutex> turn(TURN_MTX);
     std::vector<std::string> vms;
@@ -1066,6 +1051,7 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
     return;
   }
   if (m == "POST" && path == "/api/room/clear") {
+    if (actor.role != "owner") { error_json(fd, 403, "Nur der Besitzer"); return; }
     auto result = clear_room_data();
     send_json(fd, result.code, result.body);
     return;
@@ -1098,6 +1084,7 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
     return;
   }
   if (m == "DELETE" && path.rfind("/api/room/files/", 0) == 0) {
+    if (actor.role != "owner") { error_json(fd, 403, "Nur der Besitzer"); return; }
     auto result = delete_room_file(url_decode(path.substr(std::string("/api/room/files/").size())));
     send_json(fd, result.code, result.body);
     return;

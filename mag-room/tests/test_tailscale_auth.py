@@ -44,7 +44,7 @@ class TailnetLocalAPI(socketserver.StreamRequestHandler):
             profile = {"Node": {"ID": 12345, "Tags": ["tag:mag-guest"]}}
         else:
             profile = {"UserProfile": {"LoginName": login,
-                                       "DisplayName": "\\u00c5da L\\u00f6velace"}}
+                                       "DisplayName": "Åda Lövelace"}}
         payload = json.dumps(profile).encode()
         if type(self).mode == "chunked":
             chunk = ("%X\r\n" % len(payload)).encode() + payload + b"\r\n0\r\n\r\n"

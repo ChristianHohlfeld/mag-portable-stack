@@ -6,7 +6,7 @@ set -euo pipefail
 [[ -f /etc/mag-pages/pages.env ]] || exit 0
 . /etc/mag-pages/pages.env
 [[ "$PAGES_ZONE" =~ ^[a-z0-9.-]+$ ]] || exit 1
-if [[ "$1" != custom-only ]]; then
+if [[ "${1:-}" != custom-only ]]; then
  /usr/local/lib/mag-pages/issue-wildcard.sh renew
 fi
 manifest=/var/lib/mag-pages/custom-domains.tsv

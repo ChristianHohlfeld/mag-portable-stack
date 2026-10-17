@@ -34,6 +34,10 @@ target_from_storage() {
 # Preserve every unrelated registration, including mag.stardenburg.de.
 share_acmedns_account() {
   [[ -s "$ACME_DNS_STORAGE_PATH" ]] || return 0
+  # Normal renewals must not rewrite the shared MAG ACME credential store.
+  if "$jq_bin" -e --arg d "$zone" '.[$d] != null and .[("*." + $d)] != null'       "$ACME_DNS_STORAGE_PATH" >/dev/null 2>&1; then
+    return 0
+  fi
   local tmp
   tmp="$(mktemp "$(dirname "$ACME_DNS_STORAGE_PATH")/.mag-pages-account.XXXXXXXX")"
   if ! "$jq_bin" --arg d "$zone" '

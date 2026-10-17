@@ -63,7 +63,8 @@ chmod -R a+rX "$RELEASE"
 # All changes after this point must unwind both the native room and nginx.
 # Never restart or stop mag-llm (including on failed deploy).
 rollback() {
- echo 'Deployment failed; restoring previous room service and nginx' >&2
+ echo 'Deployment failed; restoring previous room and nginx state' >&2
+ if (( room_switched )); then
  cp -a "$BACKUP/mag-120.service" /etc/systemd/system/mag-120.service
  if [[ -f "$BACKUP/mag-browser-webrtc.service" ]]; then
    cp -a "$BACKUP/mag-browser-webrtc.service" /etc/systemd/system/mag-browser-webrtc.service
@@ -84,9 +85,12 @@ rollback() {
  if [[ -f "$BACKUP/mag-browser-webrtc.service" ]]; then
    systemctl restart mag-browser-webrtc.service
  fi
+ fi
+ rm -f /opt/mag-stack/.current-next
  bash "$NGINX_SYNC" rollback
 }
 deployment_started=0
+room_switched=0
 deploy_exit() {
  local rc=$?
  trap - EXIT ERR INT TERM
@@ -125,7 +129,8 @@ trap 'exit 143' TERM
 bash "$NGINX_SYNC" stage
 # Retire the old installer timer before changing its service executable.
 if systemctl cat mag-120-finalize.timer >/dev/null 2>&1; then systemctl disable --now mag-120-finalize.timer; fi
-ln -s "$RELEASE" /opt/mag-stack/.current-next
+room_switched=1
+ln -sfn "$RELEASE" /opt/mag-stack/.current-next
 mv -Tf /opt/mag-stack/.current-next /opt/mag-stack/current
 # Compatibility name is deliberately retained for existing guest wrappers/sudoers.
 install -m 0755 "$RELEASE/bin/magbot-native" /usr/local/bin/magbot

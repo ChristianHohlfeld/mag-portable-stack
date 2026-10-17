@@ -15,6 +15,7 @@ import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 NGINX = ROOT / "ops/private-access/mag-room.nginx.conf"
+SPEECH = ROOT / "ops/nginx/mag-speech.inc"
 
 def free_port():
     with socket.socket() as sock:
@@ -66,6 +67,12 @@ class NginxAuth(unittest.TestCase):
             th=threading.Thread(target=srv.serve_forever,daemon=True);th.start();cls.threads.append(th)
         cls.port=free_port()
         text=NGINX.read_text()
+        speech_include = "include /opt/mag-stack/current/ops/nginx/mag-speech*.inc;"
+        assert text.count(speech_include) == 1, "Private server lost speech include"
+        assert SPEECH.is_file(), "Real speech include missing"
+        # Test the actual included source, not a wildcard silently ignored on CI.
+        text=text.replace(speech_include, f"include {SPEECH};")
+        assert 'location ~ "^/static/speech-[0-9a-f]{12}/' in SPEECH.read_text()
         assert "auth_request off;" in text.split("location = /_mag_whois {",1)[1].split("}",1)[0], "Recursive auth_request risk"
         text=text.replace("100.123.114.16:443",f"127.0.0.1:{cls.port}")
         text=text.replace("/etc/mag-nginx/tls/cert.pem",str(cls.cert))
@@ -108,6 +115,16 @@ class NginxAuth(unittest.TestCase):
             self.assertEqual(res.headers.get("Cache-Control"),"no-store")
         self.assertEqual(MockBackend.last_user,"chris@github")
         self.assertIn("/_internal/tailscale/whois", MockWhois.seen_paths)
+    def test_speech_assets_cannot_bypass_tailnet_auth(self):
+        MockWhois.authorized=False
+        before=MockBackend.requests
+        for path in ("/static/speech-config.json",
+                     "/static/speech-abcdef123456/frontend.ort"):
+            with self.assertRaises(urllib.error.HTTPError) as ctx:
+                self.opener.open(f"https://127.0.0.1:{self.port}{path}",timeout=3)
+            self.assertIn(ctx.exception.code,(401,403))
+        self.assertEqual(MockBackend.requests,before)
+
     def test_root_app_shell_no_store(self):
         MockWhois.authorized=True
         with self.opener.open(f"https://127.0.0.1:{self.port}/",timeout=3) as res:

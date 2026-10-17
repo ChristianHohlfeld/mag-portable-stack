@@ -4,11 +4,13 @@ on:
     paths:
       - 'mag-room/web/index.html'
       - 'mag-room/tests/test_image_paste.py'
+      - 'mag-room/tests/test_memory_ui.py'
       - '.github/workflows/image-paste.yml'
   pull_request:
     paths:
       - 'mag-room/web/index.html'
       - 'mag-room/tests/test_image_paste.py'
+      - 'mag-room/tests/test_memory_ui.py'
       - '.github/workflows/image-paste.yml'
 jobs:
   chromium:
@@ -24,3 +26,5 @@ jobs:
           python -m playwright install --with-deps chromium
       - name: Test screenshot paste at 375 390 412 and desktop
         run: python mag-room/tests/test_image_paste.py
+      - name: Memories dialog UI (mobile and desktop)
+        run: python mag-room/tests/test_memory_ui.py

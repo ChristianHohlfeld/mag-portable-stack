@@ -31,7 +31,7 @@ jobs:
           grep -Fq '/var/lib/tailscale' ops/backup/backup.sh
           grep -Fq '/var/spool/cron/crontabs' ops/backup/backup.sh
           grep -Fq 'systemctl start mag-backup-deploy.service' ops/deploy.sh
-          grep -Fq 'mag-backup-clear.service' mag-room/native/routes.hpp
+          grep -Fq 'mag-backup-clear.timer' mag-room/native/routes.hpp
           grep -Fq 'actor.role != "owner"' mag-room/native/routes.hpp
           ! grep -R -E '(stop|restart) mag-llm.service' ops/backup
           ! grep -R -q 'openssl rand -hex 32' ops/backup/install.sh

@@ -86,6 +86,8 @@ jobs:
         run: bash ops/tests/test-cleanup-legacy.sh
       - name: Unreferenced bot VM drift check
         run: bash ops/tests/test-agent-drift.sh
+      - name: S23 control API
+        run: python3 devices/s23/tests/test_s23ctl.py
       - name: Action runner guards
         run: bash ops/tests/test-runners.sh
       - name: Green promotion

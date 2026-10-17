@@ -85,15 +85,24 @@ systemd-run --unit=mag-pages-ci-readonly --wait --collect --quiet \
  /bin/bash -c 'if touch /etc/mag-pages-ci-should-never-exist; then exit 1; fi'
 test ! -e /etc/mag-pages-ci-should-never-exist
 chown -R magbot:magbot "$tmp/state"
+cat >"$tmp/client-policy" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+printf '{"repo":"magbot-agent1/site","action":"tailnet"}\\n' > "$tmp/state/request.json"
+sudo -n /usr/bin/systemctl start mag-pages-reconcile.service
+test ! -e "$tmp/state/request.json"
+touch "$tmp/state/policy-completed"
+EOF
+chmod 0755 "$tmp/client-policy"
+systemd-run --unit=mag-pages-ci-policy --wait --collect --quiet \
+ -p Type=oneshot -p User=magbot -p ProtectSystem=full \
+ /bin/bash "$tmp/client-policy"
+test -f "$tmp/state/policy-completed"
+# Visibility policy in /etc is root-only; assert it here outside the sandbox.
+jq -e '."magbot-agent1/site"=="tailnet"' "$tmp/etc/visibility.json" >/dev/null
 cat >"$tmp/client" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
-# Validate a real Pages visibility request from a sandboxed magbot process.
-printf '{"repo":"magbot-agent1/site","action":"tailnet"}\\n' > "$tmp/state/request.json"
-sudo -n /usr/bin/systemctl start mag-pages-reconcile.service
-grep -q '"magbot-agent1/site": "tailnet"' "$tmp/etc/visibility.json" ||
- grep -q '"magbot-agent1/site":"tailnet"' "$tmp/etc/visibility.json"
-test ! -e "$tmp/state/request.json"
 # Simulate native C++ successful Pages DELETE after Gitea source removal.
 rm -f "$tmp/state/tailnet/site--magbot-agent1"
 rm -f "$tmp/state/public/site--magbot-agent1"

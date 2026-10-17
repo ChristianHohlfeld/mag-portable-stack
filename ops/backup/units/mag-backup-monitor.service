@@ -1,0 +1,6 @@
+[Unit]
+Description=MAG backup health alert if last success older than 26 hours
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/mag-backup/maintenance.sh monitor
+NoNewPrivileges=yes

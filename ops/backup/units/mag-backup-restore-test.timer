@@ -1,0 +1,9 @@
+[Unit]
+Description=MAG monthly restore verification
+[Timer]
+OnCalendar=*-*-01 06:30:00 Europe/Berlin
+Persistent=true
+RandomizedDelaySec=15m
+Unit=mag-backup-restore-test.service
+[Install]
+WantedBy=timers.target

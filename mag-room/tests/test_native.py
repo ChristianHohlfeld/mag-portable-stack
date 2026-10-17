@@ -72,6 +72,9 @@ class Native(unittest.TestCase):
  @classmethod
  def setUpClass(cls):
   cls.tmp=tempfile.TemporaryDirectory();cls.state=pathlib.Path(cls.tmp.name)/'state';cls.state.mkdir()
+  # CI root oneshot snapshots exactly this temporary room before owner clear.
+  if os.environ.get('MAG_BACKUP_CI_INTEGRATION') == '1':
+   pathlib.Path('/tmp/mag-backup-ci/state-path').write_text(str(cls.state))
   cls.state.joinpath('agents.json').write_text(json.dumps([{'id':'test','name':'Test','vm':'','memory':[]}]))
   cls.whois_socket=str(pathlib.Path(cls.tmp.name)/'tailscaled.sock')
   cls.whois=WhoisUnix(cls.whois_socket,WhoisFixture)
@@ -89,6 +92,8 @@ class Native(unittest.TestCase):
  @classmethod
  def tearDownClass(cls):
   cls.proc.terminate();cls.proc.wait(timeout=5);cls.log.close();cls.model.shutdown();cls.whois.shutdown();cls.whois.server_close();cls.tmp.cleanup()
+  if os.environ.get('MAG_BACKUP_CI_INTEGRATION') == '1':
+   pathlib.Path('/tmp/mag-backup-ci/state-path').unlink(missing_ok=True)
  @classmethod
  def request(cls,path,body=None,method=None,raw=False,bridge=False,headers=None):
   data=body if isinstance(body,bytes) else json.dumps(body).encode() if body is not None else None

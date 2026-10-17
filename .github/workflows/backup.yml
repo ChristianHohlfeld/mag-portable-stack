@@ -1,0 +1,54 @@
+name: MAG encrypted backup and restore
+on:
+  push:
+    paths: ['ops/backup/**', 'ops/deploy.sh', 'mag-room/native/routes.hpp', 'mag-room/web/index.html', 'docs/backup.md', '.github/workflows/backup.yml']
+  pull_request:
+    paths: ['ops/backup/**', 'ops/deploy.sh', 'mag-room/native/routes.hpp', 'mag-room/web/index.html', 'docs/backup.md', '.github/workflows/backup.yml']
+permissions:
+  contents: read
+  pull-requests: read
+jobs:
+  recovery:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install restic and test tools
+        run: sudo apt-get update && sudo apt-get install -y restic sqlite3 jq util-linux systemd
+      - name: shell syntax, executable hook and no destructive model action
+        run: |
+          bash -n ops/backup/*.sh ops/backup/tests/*.sh ops/deploy.sh
+          test "$(grep -Ec '^[a-f0-9]{64}[[:space:]]+' ops/backup/models.sha256)" -eq 5
+          test "$(grep -Ec '^[a-f0-9]{64}[[:space:]]+' ops/backup/models-iq3.sha256)" -eq 4
+          grep -Fq 'sha256sum --check' ops/backup/bootstrap-models.sh
+          grep -Fq '/var/lib/tailscale' ops/backup/backup.sh
+          grep -Fq '/var/spool/cron/crontabs' ops/backup/backup.sh
+          grep -Fq 'systemctl start mag-backup-deploy.service' ops/deploy.sh
+          grep -Fq 'mag-backup-clear.service' mag-room/native/routes.hpp
+          grep -Fq 'actor.role != "owner"' mag-room/native/routes.hpp
+          ! grep -R -E '(stop|restart) mag-llm.service' ops/backup
+      - name: Validate calendar and systemd units
+        run: |
+          for f in ops/backup/units/*.timer; do
+            expr=$(sed -n 's/^OnCalendar=//p' "$f")
+            systemd-analyze calendar "$expr" >/dev/null
+          done
+          for f in ops/backup/units/*.service ops/backup/units/*.timer; do
+            systemd-analyze verify "$PWD/$f" 2>&1 | tee /tmp/mag-unit-verify.out
+            ! grep -E 'Failed to parse calendar|Unknown key|Invalid argument' /tmp/mag-unit-verify.out
+          done
+          grep -Fq 'NUMAMask=1' ops/backup/units/mag-backup-daily.service
+          for f in ops/backup/units/mag-backup-{daily,deploy,clear,weekly,monthly,restore-test}.service; do
+            grep -Fq 'CPUQuota=15%' "$f"
+            grep -Fq 'MemoryMax=2G' "$f"
+            grep -Fq 'MemorySwapMax=0' "$f"
+            grep -Fq 'Nice=19' "$f"
+          done
+          grep -Fq 'CPUAffinity=14-27 42-55' ops/backup/units/mag-backup-clear.service
+      - name: Disposable repository with Gitea SQLite, room and Pages restore
+        run: bash ops/backup/tests/test-backup.sh
+      - name: No committed secrets
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

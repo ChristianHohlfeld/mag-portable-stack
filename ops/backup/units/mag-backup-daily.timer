@@ -1,0 +1,10 @@
+[Unit]
+Description=MAG backup each day at 03:30 Europe/Berlin
+[Timer]
+OnCalendar=*-*-* 03:30:00 Europe/Berlin
+Persistent=true
+RandomizedDelaySec=10m
+AccuracySec=1m
+Unit=mag-backup-daily.service
+[Install]
+WantedBy=timers.target

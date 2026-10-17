@@ -1,0 +1,2 @@
+# Exact fixed command only. No wildcard, args, shell, or direct /etc writes.
+magbot ALL=(root) NOPASSWD: /usr/bin/systemctl start mag-backup-clear.service

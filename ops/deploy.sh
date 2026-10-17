@@ -23,6 +23,14 @@ test ! -e "$RELEASE"
 # No release state mutation before complete nginx/Tailnet/Owner-probe validation.
 NGINX_SYNC="$SOURCE/ops/private-access/deploy-nginx.sh"
 bash "$NGINX_SYNC" preflight
+# Fail-closed synchronous encrypted snapshot, only AFTER the read-only #36/#38
+# nginx/Whois/Owner preflight and BEFORE any release or service changes.
+systemctl is-enabled --quiet mag-backup-daily.timer || {
+  echo 'Backup not installed/enabled. Run sudo bash ops/backup/install.sh first.' >&2; exit 1;
+}
+systemctl start mag-backup-deploy.service || {
+  echo 'Pre-deploy snapshot failed; deploy refused.' >&2; exit 1;
+}
 # Das Modell ist unabhängig vom Raum-Release (lädt evtl. noch herunter / wird geprüft).
 # Nur informieren; der Raum zeigt den Modellstatus selbst an.
 curl -fsS --max-time 5 http://127.0.0.1:8080/v1/models >/dev/null \

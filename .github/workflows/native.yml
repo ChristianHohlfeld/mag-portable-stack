@@ -16,6 +16,10 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y ninja-build libssl-dev libcurl4-openssl-dev libarchive-dev
       - name: Build
         run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release && cmake --build build -j 4
+      - name: Install real encrypted pre-clear service for native regression
+        run: |
+          sudo apt-get install -y restic sqlite3 jq
+          bash ops/backup/tests/ci-install-preclear.sh
       - name: Native integration checks
         run: |
           ./build/test-guest-pty
@@ -25,7 +29,7 @@ jobs:
           ./build/test-guest-description
           ./build/test-large-stdin
           python3 mag-room/tests/test_large_tools.py
-          python3 mag-room/tests/test_native.py
+          MAG_BACKUP_CI_INTEGRATION=1 python3 mag-room/tests/test_native.py
           python3 mag-room/tests/test_tailscale_auth.py
           python3 ops/audit/tests/test_native_gateway.py
           python3 mag-room/tests/test_whois_deploy.py

@@ -4,6 +4,14 @@
 
 MAG runs a single local DeepSeek-V4-Flash inference service via ik_llama.cpp, a native C++ room with jobs/MCP and shared SSE, KVM-isolated bot browsers/terminals, and a client-rendered PWA. The private host name is `mag.stardenburg.de` on **100.123.114.16:443** through nginx; the existing `mag.tail3e02ae.ts.net:8446` fallback must stay available.
 
+**Backup/Disaster Recovery:** [deutsche Restore- und Bare-Metal-Anleitung](docs/backup.md).
+Verschlüsselte lokale restic-Snapshots, NUMA-1-Oneshots mit täglichem 03:30-Timer,
+7/4/6- und 14-Tage-Aufbewahrung, Checks, monatlicher Test-Restore und
+owner-only 26h-Warnung. Ein separates WORM-Archiv in S3 eu-central-1 wird
+durch `/etc/mag-backup/aws.env` aktiviert. `ops/backup/install.sh` muss
+vor `ops/deploy.sh` ausgeführt werden. Eine Platte: lokal nur Restore-Cache,
+nicht offsite. Mag-LLM wird nicht neu gestartet.
+
 **Release documentation:** [ARCHITECTURE](docs/ARCHITECTURE.md) · [STRUCTURE](docs/STRUCTURE.md) · [CODE](docs/CODE.md) · [HARDWARE](docs/HARDWARE.md) · [INSTALL](docs/INSTALL.md) · [OPS](docs/OPS.md).
 
 **Safety-critical sequence:** `preflight.sh` → existing lego certificate validation → `install.sh` (backup + nginx test + 180s automatic rollback) → external authenticated Owner check → `confirm.sh --owner-verified` → guest test → `remove-caddy.sh`. The old Caddy unit/config/binary are never removed until Owner confirmation. `/_mag_whois` explicitly uses `auth_request off` to avoid recursion; all external access otherwise uses C++ magroom → tailscaled Unix LocalAPI and fails closed. No separate whois daemon.

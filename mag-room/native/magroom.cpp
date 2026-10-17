@@ -2020,19 +2020,16 @@ static std::string pages_dispatch_tool(int bot_idx,const std::string& name,
     if(op=="domain" || op=="create" || op=="update")cmd+=" "+extra;
     auto result=guest_command(vm,cmd,120,true);
     if(result.code!=0)return "Fehler: Pages VM operation failed: "+result.out.substr(0,400);
-    if(name=="pages_delete") {
-      auto clear=run_argv({"sudo","-n",
-          "/usr/local/lib/mag-pages/pages-policy.sh",owner+"/"+repo,"delete"},20);
-      if(clear.code!=0)return "Fehler: Pages source deleted, root policy cleanup failed";
-    }
     if(name=="pages_set_visibility") {
-      auto policy=run_argv({"sudo","-n",
-        "/usr/local/lib/mag-pages/pages-policy.sh",owner+"/"+repo,extra},20);
-      if(policy.code!=0)return "Fehler: Pages policy refused change: "+policy.out.substr(0,300);
-      magpages::request_sync();
-      return "Pages "+owner+"/"+repo+" visibility = "+extra+" (sync requested)";
+      // A validated JSON request is consumed by a systemd ROOT unit.
+      // It runs outside ProtectSystem=full; errors propagate synchronously.
+      magpages::submit_policy(owner+"/"+repo,extra);
+      magpages::sync_now(owner+"/"+repo);
+      return "Pages "+owner+"/"+repo+" visibility = "+extra+"; nginx/TLS reconciled";
     }
-    if(name!="pages_list")magpages::request_sync();
+    if(name!="pages_list") {
+      magpages::sync_now(owner+"/"+repo,name=="pages_delete");
+    }
     return result.out.size()>6000?result.out.substr(0,6000):result.out;
   }catch(const std::exception& e) {
     return "Fehler: Pages operation unavailable: "+std::string(e.what()).substr(0,240);

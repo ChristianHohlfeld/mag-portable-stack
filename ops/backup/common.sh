@@ -26,6 +26,17 @@ esac
 # Every restic call must pass the flag; no secret, stdin, env or prompt.
 unset RESTIC_PASSWORD RESTIC_PASSWORD_FILE RESTIC_PASSWORD_COMMAND RESTIC_KEY_HINT
 export RESTIC_REPOSITORY="$MAG_BACKUP_REPO"
+# Passwordless restic is readable by anyone with filesystem access.
+# Never use a non-root-owned or group/world-readable local repository.
+if [[ -e "$MAG_BACKUP_REPO" && "${MAG_BACKUP_TEST_MODE:-0}" != 1 ]]; then
+  [[ -d "$MAG_BACKUP_REPO" && ! -L "$MAG_BACKUP_REPO" ]] ||
+    { echo 'Unsafe backup repo path' >&2; exit 1; }
+  [[ "$(stat -c %u "$MAG_BACKUP_REPO")" == 0 ]] ||
+    { echo 'Backup repository must be root-owned' >&2; exit 1; }
+  mode=$(stat -c %a "$MAG_BACKUP_REPO")
+  (( (8#$mode & 077) == 0 )) ||
+    { echo 'Backup repository must be inaccessible to group/other' >&2; exit 1; }
+fi
 command -v restic >/dev/null
 restic --help | grep -Fq -- '--insecure-no-password' ||
   { echo 'restic >=0.17 required (--insecure-no-password)' >&2; exit 1; }

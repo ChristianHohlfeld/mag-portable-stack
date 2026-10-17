@@ -2,6 +2,7 @@
   "gitea_url": "http://127.0.0.1:3000",
   "pages_domain": "pages.stardenburg.de",
   "public_ip": "192.0.2.10",
+  "public_dns_ip": "192.0.2.10",
   "tailnet_ip": "100.123.114.16",
   "acme_email": "operator@example.com",
   "wildcard_cert": "/etc/mag-pages/tls/wildcard.crt",

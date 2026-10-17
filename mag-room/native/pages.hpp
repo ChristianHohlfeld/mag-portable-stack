@@ -233,11 +233,16 @@ inline std::string mode(const Val& p,const std::string& repo) {
   auto v=p.find(repo);
   return v?v->asStr():"tailnet";
 }
+inline void readable_dir(const fs::path& p) {
+  fs::create_directories(p);
+  fs::permissions(p,fs::perms::owner_all|fs::perms::group_read|fs::perms::group_exec|
+                      fs::perms::others_read|fs::perms::others_exec,fs::perm_options::replace);
+}
 inline void materialize(const fs::path& dest,const std::map<std::string,std::string>& files) {
-  fs::create_directories(dest);
+  readable_dir(dest);
   for(const auto& item:files) {
     fs::path target=dest/item.first;
-    fs::create_directories(target.parent_path());
+    readable_dir(target.parent_path());
     std::ofstream f(target,std::ios::binary|std::ios::trunc);
     if(!f)throw std::runtime_error("site write failed");
     f.write(item.second.data(),static_cast<std::streamsize>(item.second.size()));
@@ -246,7 +251,7 @@ inline void materialize(const fs::path& dest,const std::map<std::string,std::str
   }
 }
 inline void link_atomic(const fs::path& directory,const std::string& name,const fs::path& target) {
-  fs::create_directories(directory);
+  readable_dir(directory);
   const fs::path link=directory/name, temp=directory/(name+".new-"+std::to_string(::getpid()));
   fs::remove(temp);
   fs::create_directory_symlink(target,temp);
@@ -324,7 +329,7 @@ inline void reconcile(const fs::path& root,const std::string& token) {
       cname=custom(files);
       if(files.empty())continue;
       if(!fs::exists(release)){
-        fs::create_directories(release.parent_path());
+        readable_dir(release.parent_path());
         auto stage=release.parent_path()/(".stage-"+std::to_string(::getpid()));
         fs::remove_all(stage);
         materialize(stage,files);

@@ -160,7 +160,7 @@ static void route(int fd, Req &r, bool bridge = false) {
       error_json(fd, 403, "Kein Zugang");
       return;
     }
-    if (actor.role == "guest" && !ts_proof_valid(r.hdrs)) {
+    if (!actor.login.empty() && !ts_proof_valid(r.hdrs)) {
       error_json(fd,403,"Whois-Nachweis fehlt"); return;
     }
     if (actor.role == "guest" && !guest_live(actor.node)) {

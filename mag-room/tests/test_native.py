@@ -940,6 +940,7 @@ class Native(unittest.TestCase):
   self.assertNotIn('key',err)
   # A non-owner is not elevated by missing nginx/OAuth.
   visitor=self._ts('ada@github','Ada')
+  self.assertEqual(self.request('/api/state',headers=visitor)['you']['role'],'guest')
   self.error(403,'/api/guests',headers=visitor)
   self.error(403,'/api/room/clear',{},headers=visitor)
   self.assertEqual(self.request('/api/state',headers=owner)['you']['role'],'owner')

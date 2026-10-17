@@ -69,7 +69,8 @@ if [[ ! -L /opt/mag-stack/current && -f /var/lib/magbot/room/frontend.html ]]; t
  mv /var/lib/magbot/room/frontend.html "$BACKUP/frontend.html"
 fi
 (cd "$RELEASE"; find bin web ops -type f -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS)
-git -C "$SOURCE" rev-parse HEAD > "$RELEASE/SOURCE_COMMIT"
+# Root reads the user's checkout; without sudo's SUDO_UID (timer) git refuses it.
+git -c safe.directory="$SOURCE" -C "$SOURCE" rev-parse HEAD > "$RELEASE/SOURCE_COMMIT"
 chown -R root:root "$RELEASE"
 chmod -R a+rX "$RELEASE"
 # All changes after this point must unwind both the native room and nginx.

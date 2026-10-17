@@ -2021,6 +2021,10 @@ static std::string pages_dispatch_tool(int bot_idx,const std::string& name,
     if(op=="domain" || op=="create" || op=="update")cmd+=" "+extra;
     auto result=guest_command(vm,cmd,120,true);
     if(result.code!=0)return "Fehler: Pages VM operation failed: "+result.out.substr(0,400);
+    if(name=="pages_delete") {
+      // Revoke public and private routes before attempting network resync.
+      magpages::submit_policy(owner+"/"+repo,"delete");
+    }
     if(name=="pages_set_visibility") {
       // A validated JSON request is consumed by a systemd ROOT unit.
       // It runs outside ProtectSystem=full; errors propagate synchronously.

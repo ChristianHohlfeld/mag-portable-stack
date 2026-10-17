@@ -4522,7 +4522,8 @@ static void stop_autotalk(bool pause = false) {
 }
 
 // ---------------------------------------------------------------- SSE handler
-static void handle_sse(int fd) {
+static bool guest_live(const std::string &node);
+static void handle_sse(int fd, const std::string &guest_node = "") {
   auto sub = std::make_shared<Sub>();
   sub->fd = fd;
   {
@@ -4545,12 +4546,13 @@ static void handle_sse(int fd) {
     std::deque<std::string> batch;
     {
       std::unique_lock<std::mutex> lk(sub->m);
-      sub->cv.wait_for(lk, std::chrono::seconds(15),
+      sub->cv.wait_for(lk, std::chrono::seconds(guest_node.empty() ? 15 : 1),
                        [&] { return !sub->q.empty() || sub->dead; });
       if (sub->dead)
         break;
       batch.swap(sub->q);
     }
+    if (!guest_node.empty() && !guest_live(guest_node)) break;
     std::string out;
     for (auto &line : batch)
       out += "data: " + line + "\n\n";
@@ -4576,6 +4578,7 @@ static void handle_sse(int fd) {
 // ---------------------------------------------------------------- routing
 #include "access.hpp"
 #include "tailscale_auth.hpp"
+#include "guest_access.hpp"
 static Val public_agent(int idx) {
   Val o = Val::object();
   o["id"] = bot_field(idx, "id");
@@ -5356,6 +5359,7 @@ int main() {
   }
   jobs_load();
   std::thread(jobs_ticker).detach();
+  std::thread(guest_cleanup_loop).detach();
   std::thread(scheduler_loop).detach();
   std::thread(model_watcher_loop).detach();
   std::thread(file_sync_loop).detach();

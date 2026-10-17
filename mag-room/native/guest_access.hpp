@@ -103,6 +103,20 @@ static bool guest_live(const std::string &node) {
       return true;
   return false;
 }
+static std::string guest_name_for_node(const std::string &node) {
+  if (!guest_ident(node)) return "Gast";
+  std::lock_guard<std::mutex> guard(GUEST_MTX);
+  Val cfg;
+  if (!guest_load(cfg)) return "Gast";
+  auto arr = cfg.find("guest_invites");
+  if (arr && arr->isArr()) for (const auto &r : arr->asArr())
+    if (guest_field(r,"node") == node && !guest_flag(r,"revoked") &&
+        guest_number(r,"expires") > now_s()) {
+      auto name = clean_display_name(guest_field(r,"name"));
+      return name.empty() ? "Gast" : name;
+    }
+  return "Gast";
+}
 static size_t guest_curl_write(char *p, size_t s, size_t n, void *ctx) {
   auto &out = *static_cast<std::string *>(ctx);
   size_t len = s*n;

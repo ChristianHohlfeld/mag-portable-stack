@@ -33,10 +33,19 @@ jobs:
           ./build/test-pages-native
       - name: Tailnet-only, public opt-in, lego v5 and DNS-01 onboarding tests
         run: bash ops/pages/tests/test-pages-ops.sh
+      - name: Full Pages lifecycle and root cleanup regressions
+        run: |
+          bash ops/pages/tests/test-pages-lifecycle.sh
+          bash ops/pages/tests/test-pages-tools.sh
+          sudo bash ops/pages/tests/test-pages-sandbox.sh
+          bash -n ops/pages/*.sh ops/pages/tests/*.sh
       - name: Shell syntax; no new runtime units
         run: |
           bash -n ops/pages/*.sh
-          test -z "$(find ops/pages \( -name '*.py' -o -name '*.service' -o -name '*.timer' \) -print)"
+          test -z "$(find ops/pages \( -name '*.py' -o -name '*.timer' \) -print)"
+          test "$(find ops/pages -name '*.service' -printf '%f\n')" = mag-pages-reconcile.service
+          grep -F 'ProtectHome=yes' ops/pages/mag-pages-reconcile.service
+          ! grep -R -E 'pages-policy.sh \*|sudo -n /usr/local/lib/mag-pages/pages-gc.sh' ops/pages
           ! grep -R -E 'systemctl (restart|stop) (mag-llm|deepseek)' ops/pages
   secrets:
     runs-on: ubuntu-24.04

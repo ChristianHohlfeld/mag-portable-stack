@@ -1,0 +1,15 @@
+[Unit]
+Description=MAG Pages root policy, HTTPS and nginx reconciliation
+After=nginx.service
+RequiresMountsFor=/var/lib/mag-pages /etc/mag-pages
+[Service]
+Type=oneshot
+User=root
+Group=root
+WorkingDirectory=/var/lib/mag-pages
+ExecStart=/usr/local/lib/mag-pages/pages-reconcile.sh
+TimeoutStartSec=180
+NoNewPrivileges=yes
+PrivateDevices=yes
+ProtectHome=yes
+# Outside mag-120's read-only /etc mount namespace.

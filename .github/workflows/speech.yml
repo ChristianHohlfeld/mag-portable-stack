@@ -1,0 +1,57 @@
+name: MAG German browser speech
+permissions:
+  contents: read
+  pull-requests: read
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'mag-room/**'
+      - 'ops/vendor-speech-assets.sh'
+      - 'ops/nginx/mag-speech.inc'
+      - 'ops/private-access/mag-room.nginx.conf'
+      - 'ops/deploy.sh'
+      - '.github/workflows/speech.yml'
+  workflow_dispatch:
+jobs:
+  speech:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build libssl-dev
+          python3 -m pip install --user playwright
+          python3 -m playwright install --with-deps chromium
+      - name: Compile native MAG for browser tests
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release && cmake --build build --target magroom -j 4
+      - name: Syntax and fake-model Playwright regressions
+        run: |
+          node --check mag-room/static/speech-ui.js
+          node --check mag-room/static/speech-capture.js
+          node --check mag-room/web/sw.js
+          bash -n ops/vendor-speech-assets.sh ops/deploy.sh
+          python3 -m unittest discover -s mag-room/tests -p test_speech.py -v
+      - name: Vendor pinned Moonshine German WASM and model
+        run: bash ops/vendor-speech-assets.sh build/speech-assets
+      - name: Playwright with actual WASM and German model
+        run: python3 -m unittest discover -s mag-room/tests -p test_speech_real.py -v
+      - name: Reject removal of live files
+        run: |
+          git fetch --no-tags origin main
+          if git diff --name-status origin/main...HEAD | grep -E '^D[[:space:]]'; then
+            echo 'Deleted live file in speech-only PR' >&2
+            exit 1
+          fi
+  gitleaks:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

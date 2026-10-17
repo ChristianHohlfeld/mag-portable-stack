@@ -41,3 +41,14 @@ reports **incomplete**, preserving existing VM files.
 
 Deploy `magroom`, `magbot-native` and the guest wrapper only. **Never restart
 `mag-llm`** for this change.
+
+
+## Browser-Spracherkennung – Deutsch (Moonshine WASM)
+
+Eine Runtime und das **Small Streaming German** Modell auf Desktop, iPhone Safari und Android; keine Server-Inferenz, kein CDN/Caddy, keine Änderungen an `mag-llm`. Mikrofon, Inferenz-Worker und Modell laden erst nach Klick. Zwischenergebnisse erscheinen direkt im Composer und endgültige Ergebnisse bleiben vor dem Senden editierbar.
+
+**Vorbereitung:** `bash ops/vendor-speech-assets.sh build/speech-assets`. Stellt das gepinnte Moonshine-WASM-Paket und acht Modell-Dateien bereit, überprüft die Byte-Längen und legt sie unter inhaltsgehashten Namen in `build/speech-assets/` ab. Die binären Modell-Dateien (~122 MB) werden **nicht in Git** versioniert, sondern bei Build/Deploy auf dem Host selbst gehostet. `ops/deploy.sh` kopiert sie noch vor dem atomaren Releasewechsel in `web/static/`. Ohne Modellpaket kein erfolgreicher Deploy; für Offline-Releases den geprüften Snapshot vorher behalten.
+
+**nginx:** Der bestehende private `mag-room.nginx.conf` bindet optional `/opt/mag-stack/current/ops/nginx/mag-speech*.inc` ein. Nach Release `nginx -t`, dann nginx reload. `auth_request` wird von der Server-Ebene geerbt; keine Freigabe für nicht authentifizierte Clients. MIME `application/wasm`, COOP/COEP/CORP und `speech-config.json` ohne Cache sind erforderlich. Gehashte Runtime/WASM-Dateien werden cache-first gespeichert, große Modellgewichte nur über den Moonshine-Cache (nicht doppelt im Service Worker).
+
+**Tests:** nach CMake-Build `python3 -m unittest discover -s mag-room/tests -p 'test_speech.py' -v`; nach Asset-Vendoring auch `test_speech_real.py`. Physisches iPhone/Android für deutsche Diktierqualität und Speicherverbrauch zusätzlich testen.

@@ -23,8 +23,9 @@ openssl x509 -in "$cert" -noout -checkend 86400 >/dev/null
 san="$(openssl x509 -in "$cert" -noout -ext subjectAltName)"
 grep -Fq 'DNS:*.pages.stardenburg.de' <<<"$san"
 grep -Fq 'DNS:pages.stardenburg.de' <<<"$san"
-[[ "$(openssl x509 -in "$cert" -pubkey -noout | openssl sha256)" ==
-   "$(openssl pkey -in "$key" -pubout | openssl sha256)" ]] ||
+cert_public_key_hash="$(openssl x509 -in "$cert" -pubkey -noout | openssl sha256)"
+private_key_public_hash="$(openssl pkey -in "$key" -pubout | openssl sha256)"
+[[ "$cert_public_key_hash" == "$private_key_public_hash" ]] ||
   { echo 'TLS key/certificate mismatch' >&2; exit 1; }
 conf=/etc/nginx/conf.d/mag-pages.conf
 grep -Fq 'server_name pages.stardenburg.de;' "$conf"

@@ -217,8 +217,10 @@ static std::string mime_for(const std::string &name) {
     return "text/plain";
   if (e == ".pdf")
     return "application/pdf";
-  if (e == ".js")
+  if (e == ".js" || e == ".mjs")
     return "text/javascript";
+  if (e == ".wasm")
+    return "application/wasm";
   if (e == ".css")
     return "text/css";
   return "application/octet-stream";
@@ -3913,7 +3915,25 @@ static std::string qparam(const std::string &query, const std::string &key) {
 }
 // Versioned assets are immutable. Anything else, including the app shell,
 // must not be stored.
-static std::string asset_cache_control(const std::string &query) {
+static bool hashed_speech_asset(const std::string &name) {
+  if (name.rfind("speech-", 0) != 0 || name.size() < 21 || name[19] != '/')
+    return false;
+  for (size_t i = 7; i < 19; ++i)
+    if (!((name[i] >= '0' && name[i] <= '9') ||
+          (name[i] >= 'a' && name[i] <= 'f')))
+      return false;
+  const auto leaf = name.substr(20);
+  if (leaf.empty() || leaf.find('/') != std::string::npos ||
+      leaf.find(char(92)) != std::string::npos || leaf.find("..") != std::string::npos)
+    return false;
+  for (unsigned char c : leaf)
+    if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ||
+          (c >= 'A' && c <= 'Z') || c == '.' || c == '_' || c == '-'))
+      return false;
+  return true;
+}
+static std::string asset_cache_control(const std::string &query, const std::string &name = "") {
+  if (hashed_speech_asset(name)) return "public, max-age=31536000, immutable";
   if (!qparam(query, "v").empty() && qparam(query, "v") == build_version())
     return "public, max-age=31536000, immutable";
   return "no-store";

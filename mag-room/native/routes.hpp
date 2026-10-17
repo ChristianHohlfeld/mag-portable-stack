@@ -90,7 +90,9 @@ static void route(int fd, Req &r, bool bridge = false) {
       send_response(
           fd, 200, "text/html; charset=utf-8", current_frontend(),
           {{"Set-Cookie",
-            "mag_bridge=" + expected + "; Path=/; HttpOnly; SameSite=Strict"}});
+            "mag_bridge=" + expected + "; Path=/; HttpOnly; SameSite=Strict"},
+           {"Cross-Origin-Opener-Policy", "same-origin"},
+           {"Cross-Origin-Embedder-Policy", "require-corp"}});
       return;
     }
     if (r.path != "/api/frontend" && r.path != "/api/events" &&
@@ -212,7 +214,9 @@ static void route(int fd, Req &r, bool bridge = false) {
   }
   if (m == "GET" && (path == "/" || path == "/index.html")) {
     send_response(fd, 200, "text/html; charset=utf-8", current_frontend(),
-                  {{"Cache-Control", "no-store"}});
+                  {{"Cache-Control", "no-store"},
+                   {"Cross-Origin-Opener-Policy", "same-origin"},
+                   {"Cross-Origin-Embedder-Policy", "require-corp"}});
     return;
   }
   if (m == "GET" && path == "/sw.js") {
@@ -424,8 +428,10 @@ static void route(int fd, Req &r, bool bridge = false) {
   }
   if (m == "GET" && path.rfind("/static/", 0) == 0) {
     std::string name = url_decode(path.substr(8));
-    if (name.empty() || name.find('/') != std::string::npos ||
+    if (name.empty() ||
+        (name.find('/') != std::string::npos && !hashed_speech_asset(name)) ||
         name.find("..") != std::string::npos ||
+        name.find(char(92)) != std::string::npos ||
         name.find('\0') != std::string::npos) {
       error_json(fd, 404, "Unknown asset");
       return;
@@ -436,7 +442,9 @@ static void route(int fd, Req &r, bool bridge = false) {
       error_json(fd, 404, "Unknown asset");
     else
       send_response(fd, 200, mime_for(name), data,
-                    {{"Cache-Control", asset_cache_control(r.query)}});
+                    {{"Cache-Control", asset_cache_control(r.query, name)},
+                     {"Cross-Origin-Embedder-Policy", "require-corp"},
+                     {"Cross-Origin-Resource-Policy", "same-origin"}});
     return;
   }
   if (m == "GET" && path.rfind("/api/file/", 0) == 0) {

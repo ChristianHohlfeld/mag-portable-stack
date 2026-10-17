@@ -39,6 +39,10 @@ cp -a "$SOURCE/mag-room/static/." "$RELEASE/web/static/"
 # no CDN dependencies at runtime and no half-installed web release.
 bash "$SOURCE/ops/vendor-terminal-assets.sh" "$SOURCE/build/terminal-assets"
 cp -a "$SOURCE/build/terminal-assets/." "$RELEASE/web/static/"
+# Stage pinned German Moonshine model/WASM while old room remains active.
+# If staging fails, set -e aborts before the current-release symlink changes.
+bash "$SOURCE/ops/vendor-speech-assets.sh" "$SOURCE/build/speech-assets"
+cp -a "$SOURCE/build/speech-assets/." "$RELEASE/web/static/"
 cp -a "$SOURCE/ops/." "$RELEASE/ops/"
 install -d -o magbot -g magbot -m 0750 /var/lib/mag-stack/models
 install -o magbot -g magbot -m 0640 "$WHISPER_MODEL" /var/lib/mag-stack/models/ggml-large-v3-turbo.bin

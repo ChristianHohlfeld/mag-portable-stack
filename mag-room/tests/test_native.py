@@ -914,20 +914,36 @@ class Native(unittest.TestCase):
   base={k:['owner'] for k in ('offline','stop','jobs','memory','reset','delete','autotalk','connectors','browser')}
   if perms:base.update(perms)
   self.state.joinpath('access.json').write_text(json.dumps({'owners':owners,'owner_name':owner_name,'permissions':base}))
- def test_17h_iq3_is_not_selectable_from_room(self):
+ def test_17h_owner_model_zero_one_switch_is_persistent_and_owner_only(self):
   self.wait_idle();self._access(['chris@github'])
+  owner=self._ts('chris@github','Chris')
+  guest=self._ts('ada@github','Ada')
+  q4='deepseek-v4-flash-0731';iq3='deepseek-v4-flash-0731-iq3'
   try:
-   owner=self._ts('chris@github','Chris')
-   guest=self._ts('ada@github','Ada')
    room=self.request('/api/state',headers=owner)['room']
-   self.error(403,'/api/models',{'id':'iq3'},method='PUT',headers=guest)
+   pid=self.proc.pid
+   catalog=self.request('/api/model',headers=owner)
+   self.assertEqual([m['id'] for m in catalog['models']],[q4,iq3])
+   self.error(403,'/api/model',{'id':iq3},headers=guest)
+   self.error(400,'/api/model',{'id':'unknown'},headers=owner)
    self.error(410,'/api/models',{'id':'iq3'},method='PUT',headers=owner)
-   self.assertEqual(room,self.request('/api/state',headers=owner)['room'])
-   self.assertNotIn('model_switch',self.request('/api/state',headers=owner))
+   reply=self.request('/api/model',{'id':iq3},headers=owner)
+   self.assertTrue(reply['ok']);self.assertFalse(reply['restart'])
+   self.assertEqual(self.request('/api/state',headers=owner)['model'],iq3)
+   self.assertEqual(self.request('/api/model',headers=owner)['model'],iq3)
+   self.assertEqual((self.state/'room-model.txt').read_text().strip(),iq3)
    html=self.request('/',raw=True).decode()
-   self.assertNotIn('id="model-switch"',html)
-   self.assertNotIn('modelChoice(next.model_switch)',html)
-  finally:self.state.joinpath('access.json').unlink(missing_ok=True)
+   self.assertIn('id="model-choice"',html)
+   self.assertIn('>0 · Q4</button>',html)
+   self.assertIn('>1 · IQ3</button>',html)
+   self.assertIn('aria-pressed=',html)
+   self.assertNotIn('id="model-pick"',html)
+   self.assertEqual(self.request('/api/state',headers=owner)['room'],room)
+   self.assertEqual(self.proc.pid,pid)
+  finally:
+   self.request('/api/model',{'id':q4},headers=owner)
+   self.state.joinpath('access.json').unlink(missing_ok=True)
+  self.assertEqual(self.request('/api/state')['model'],q4)
  def test_17p_no_nginx_whois_or_oauth_keeps_owner_and_local_services(self):
   # This is the outage regression: no credential directory/secret, no nginx
   # attestation headers on local host calls. Existing room must remain usable.

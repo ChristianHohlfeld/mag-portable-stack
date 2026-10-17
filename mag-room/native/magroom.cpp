@@ -1982,7 +1982,7 @@ static std::string pages_dispatch_tool(int bot_idx,const std::string& name,
   auto str=[&](const char* k)->std::string {
     auto v=args.find(k);return v?v->asStr():"";
   };
-  const std::string repo=str("repo");
+  const std::string repo=name=="pages_list"?"pages":str("repo");
   if(name!="pages_list" && !pages_safe_repo(repo))
     return "Fehler: repo must be a safe single name (not owner/repo)";
   const std::string content=str("content");

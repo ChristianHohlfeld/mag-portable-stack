@@ -34,13 +34,17 @@ if [[ -d "$tls/custom" ]]; then
   if [[ ! -v keep["$id"] ]]; then rm -rf --one-file-system -- "$dir"; fi
  done
 fi
-if [[ -e "$visibility" ]]; then
+# Remove ONLY retired Pages keys, not policies preconfigured for a new site.
+# The native publisher writes this tombstone in the same committed generation.
+retired="$root/gc-retired.json"
+if [[ -e "$visibility" && -f "$retired" && ! -L "$retired" ]]; then
+ jq -e 'type=="array" and all(.[]; type=="string")' "$retired" >/dev/null
  [[ -f "$visibility" && ! -L "$visibility" ]] || exit 1
  jq -e 'type=="object"' "$visibility" >/dev/null
  next="$(mktemp "$visibility.next.XXXXXXXX")"
  trap 'rm -f "$next"' EXIT
- jq --slurpfile live "$manifest" \
-   'with_entries(select(.key as $name | $live[0] | has($name)))' \
+ jq --slurpfile retired "$retired" \
+   'with_entries(select(.key as $name | ($retired[0] | index($name)) == null))' \
    "$visibility" >"$next"
  if ! cmp -s "$next" "$visibility"; then
   chmod --reference="$visibility" "$next"

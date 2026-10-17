@@ -992,8 +992,11 @@ class Native(unittest.TestCase):
     try:urllib.request.urlopen(f'http://127.0.0.1:{ui}/healthz',timeout=2);break
     except Exception:time.sleep(.03)
    else:log.flush();self.fail('spoof server: '+tmp.joinpath('log').read_text()[-2000:])
-   local=json.loads(urllib.request.urlopen(urllib.request.Request(f'http://127.0.0.1:{ui}/api/state',headers={'X-Tailscale-User':'chris@github','X-Tailscale-Name':'Chris'}),timeout=5).read())
-   self.assertEqual(local['you']['role'],'owner')
+   # Native route must now reject identity-header forgery even from localhost.
+   forged=urllib.request.Request(f'http://127.0.0.1:{ui}/api/state',headers={'X-Tailscale-User':'chris@github','X-Tailscale-Name':'Chris'})
+   with self.assertRaises(urllib.error.HTTPError) as error:
+    urllib.request.urlopen(forged,timeout=5)
+   self.assertEqual(error.exception.code,403)
    plain=json.loads(urllib.request.urlopen(f'http://127.0.0.1:{ui}/api/state',timeout=5).read())
    self.assertEqual(plain['you']['role'],'owner');self.assertEqual(plain['you']['login'],'')
    # Discover an IPv4 address owned by THIS host, not fixed Docker/CI IPs.

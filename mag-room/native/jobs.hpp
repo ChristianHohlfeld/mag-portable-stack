@@ -233,7 +233,7 @@ static void run_job(const JobRun &run) {
     try { rep = run_turn(idx, false, ""); } catch (const std::exception &e) { rep.error = e.what(); }
     CURRENT_JOB = nullptr;
     text = trim(rep.text);
-    if (STOP.load()) { status = "abgebrochen"; error = "gestoppt"; }
+    if (stop_flag().load()) { status = "abgebrochen"; error = "gestoppt"; }
     else if (!rep.error.empty()) { status = "error"; error = rep.error; }
     else if (text.empty() || text.rfind("Antwort fehlgeschlagen", 0) == 0 ||
              text.find("Es wurde keine Antwort erzeugt.") != std::string::npos) { status = "error"; error = text.empty() ? "leere Antwort" : text.substr(0, 300); }

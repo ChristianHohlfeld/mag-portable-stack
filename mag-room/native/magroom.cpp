@@ -38,6 +38,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <shared_mutex>
 #include <regex>
 #include <random>
 #include <set>
@@ -55,6 +56,23 @@ static std::atomic<bool> STOP{false};
 static std::atomic<bool> USER_CANCEL{false};
 static std::atomic<int> BACKEND_FD{-1};
 static std::mutex BACKEND_FD_MTX;
+// One lane per model server (Q4, IQ3): bots on different models answer at the
+// same time, bots sharing a model take turns on it. A lane runs at most one
+// turn; its worker thread sees the lane through TL_LANE. Code outside a lane
+// (HTTP helpers, transcript correction) keeps using the global flags.
+struct Lane {
+  std::string model;
+  std::atomic<bool> stop{false}, busy{false}, user_cancel{false};
+  std::atomic<int> backend_fd{-1};
+};
+static thread_local Lane *TL_LANE = nullptr;
+static std::atomic<bool> &stop_flag() { return TL_LANE ? TL_LANE->stop : STOP; }
+static std::atomic<bool> &user_cancel_flag() {
+  return TL_LANE ? TL_LANE->user_cancel : USER_CANCEL;
+}
+static std::atomic<int> &backend_fd_slot() {
+  return TL_LANE ? TL_LANE->backend_fd : BACKEND_FD;
+}
 static std::atomic<bool> SHUTDOWN{false};
 static std::atomic<bool> WEB_ENABLED{true}; // == !OFFLINE (kept for tool gate)
 static std::atomic<bool> OFFLINE{false};
@@ -316,7 +334,7 @@ struct HttpClient {
   bool fill() {
     auto deadline = steady_clock::now() + milliseconds(timeout_ms);
     for (;;) {
-      if (cancelable && STOP.load()) {
+      if (cancelable && stop_flag().load()) {
         eof = true;
         return false;
       }
@@ -1954,7 +1972,7 @@ static CmdResult guest_command(const std::string &vm,
     throw std::runtime_error("Shell-Befehl groesser als 32 MiB; bitte aufteilen.");
   CmdResult r = run_argv({"sudo", "-n", GUEST_RUN, vm, "--stdin",
                           std::to_string(timeout)}, timeout + 30,
-                         4 << 20, cancelable ? &STOP : nullptr, &command);
+                         4 << 20, cancelable ? &stop_flag() : nullptr, &command);
   if (r.out.size() > (size_t)TOOL_OUTPUT_LIMIT)
     r.out = r.out.substr(0, TOOL_OUTPUT_LIMIT) + "\n...[gekuerzt]";
   if (r.timedout) {
@@ -1972,7 +1990,7 @@ static std::string guest_file_payload(const std::string &vm,
     throw std::runtime_error("Datei-Inhalt groesser als 32 MiB; in Bloecken append_file nutzen.");
   auto r = run_argv({"sudo", "-n", GUEST_RUN, vm,
                      append ? "--append" : "--write", path},
-                    GUEST_TIMEOUT, 4 << 20, &STOP, &content);
+                    GUEST_TIMEOUT, 4 << 20, &stop_flag(), &content);
   if (r.code) throw std::runtime_error(
       "Atomares Schreiben in der VM fehlgeschlagen: " + r.out.substr(0, 1500));
   return r.out;
@@ -2894,7 +2912,7 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   }
   {
     std::lock_guard<std::mutex> lk(BACKEND_FD_MTX);
-    BACKEND_FD = c.fd;
+    backend_fd_slot() = c.fd;
   }
   SseAcc acc;
   double saw_cached = -1, saw_evaluated = -1;
@@ -2902,7 +2920,7 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   Val timings_seen;
   bool saw_timings = false;
   while (!c.eof) {
-    if (STOP.load())
+    if (stop_flag().load())
       break;
     std::string line;
     if (!c.nextLine(line)) {
@@ -2986,7 +3004,7 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   }
   {
     std::lock_guard<std::mutex> lk(BACKEND_FD_MTX);
-    BACKEND_FD = -1;
+    backend_fd_slot() = -1;
     c.close();
   }
   t.text = acc.content;
@@ -3070,8 +3088,12 @@ struct RunActivity {
   long processed = 0, total = 0, cache = 0;
   long long published_ms = 0;
 };
-static RunActivity RUN;
+// One live status per answering bot; a turn's thread addresses its own entry
+// through TL_RUN_BOT (set by run_begin). Guarded by RUN_MTX.
+static std::map<std::string, RunActivity> RUNS;
+static thread_local std::string TL_RUN_BOT;
 static std::mutex RUN_MTX;
+static RunActivity &run_cur() { return RUNS[TL_RUN_BOT]; }
 
 static std::string one_line(std::string t) {
   replaceAll(t, "[[MAG:WEITER]]", "");
@@ -3130,42 +3152,42 @@ static void commit_label_locked(const std::string &label) {
   std::string l = one_line(label);
   if (l.empty())
     return;
-  if (!RUN.steps.empty() && RUN.steps.back() == l)
+  if (!run_cur().steps.empty() && run_cur().steps.back() == l)
     return;
-  if (RUN.steps.size() >= 40)
-    RUN.steps.erase(RUN.steps.begin());
-  RUN.steps.push_back(l);
+  if (run_cur().steps.size() >= 40)
+    run_cur().steps.erase(run_cur().steps.begin());
+  run_cur().steps.push_back(l);
 }
 static void commit_phase_locked() {
-  if (RUN.phase == "prompt")
+  if (run_cur().phase == "prompt")
     commit_label_locked("Liest Verlauf");
-  else if (RUN.phase == "think" && RUN.thought)
+  else if (run_cur().phase == "think" && run_cur().thought)
     commit_label_locked("Denkt nach");
-  else if (RUN.phase == "tool" || RUN.phase == "narration")
-    commit_label_locked(RUN.label);
+  else if (run_cur().phase == "tool" || run_cur().phase == "narration")
+    commit_label_locked(run_cur().label);
 }
 static Val run_val_locked() {
   Val e = Val::object();
-  e["on"] = RUN.on;
-  e["bot"] = RUN.bot;
-  e["name"] = RUN.name;
-  e["phase"] = RUN.phase;
-  e["label"] = RUN.label;
-  e["error"] = RUN.error;
-  e["started"] = RUN.started;
-  e["last"] = RUN.last;
-  e["processed"] = RUN.processed;
-  e["total"] = RUN.total;
-  e["cache"] = RUN.cache;
+  e["on"] = run_cur().on;
+  e["bot"] = run_cur().bot;
+  e["name"] = run_cur().name;
+  e["phase"] = run_cur().phase;
+  e["label"] = run_cur().label;
+  e["error"] = run_cur().error;
+  e["started"] = run_cur().started;
+  e["last"] = run_cur().last;
+  e["processed"] = run_cur().processed;
+  e["total"] = run_cur().total;
+  e["cache"] = run_cur().cache;
   Val st = Val::array();
-  for (auto &s : RUN.steps)
+  for (auto &s : run_cur().steps)
     st.push(s);
   e["steps"] = st;
   return e;
 }
 static void publish_run_locked() {
-  RUN.last = (long)now_s();
-  RUN.published_ms =
+  run_cur().last = (long)now_s();
+  run_cur().published_ms =
       duration_cast<milliseconds>(steady_clock::now().time_since_epoch())
           .count();
   Val e = run_val_locked();
@@ -3174,29 +3196,30 @@ static void publish_run_locked() {
 }
 static void run_begin(const std::string &bot, const std::string &name) {
   std::lock_guard<std::mutex> lk(RUN_MTX);
-  RUN = RunActivity{};
-  RUN.on = true;
-  RUN.bot = bot;
-  RUN.name = name;
-  RUN.phase = "think";
-  RUN.label = "Denkt nach";
-  RUN.started = (long)now_s();
+  TL_RUN_BOT = bot;
+  run_cur() = RunActivity{};
+  run_cur().on = true;
+  run_cur().bot = bot;
+  run_cur().name = name;
+  run_cur().phase = "think";
+  run_cur().label = "Denkt nach";
+  run_cur().started = (long)now_s();
   publish_run_locked();
 }
 static void run_end() {
   std::lock_guard<std::mutex> lk(RUN_MTX);
-  RUN.on = false;
+  run_cur().on = false;
 }
 static std::vector<std::string> run_copy_steps() {
   std::lock_guard<std::mutex> lk(RUN_MTX);
-  return RUN.steps;
+  return run_cur().steps;
 }
 static void run_seal() {
   std::lock_guard<std::mutex> lk(RUN_MTX);
-  if (!RUN.on)
+  if (!run_cur().on)
     return;
-  if (RUN.phase == "tool" || RUN.phase == "prompt" ||
-      (RUN.phase == "think" && RUN.thought)) {
+  if (run_cur().phase == "tool" || run_cur().phase == "prompt" ||
+      (run_cur().phase == "think" && run_cur().thought)) {
     commit_phase_locked();
     publish_run_locked();
   }
@@ -3204,68 +3227,68 @@ static void run_seal() {
 static void run_show(const std::string &phase, const std::string &label,
                      bool commit_previous, bool throttle) {
   std::lock_guard<std::mutex> lk(RUN_MTX);
-  if (!RUN.on)
+  if (!run_cur().on)
     return;
   std::string l = one_line(label);
-  const bool phase_changed = phase != RUN.phase;
+  const bool phase_changed = phase != run_cur().phase;
   if (phase_changed && commit_previous)
     commit_phase_locked();
-  RUN.phase = phase;
+  run_cur().phase = phase;
   if (!l.empty())
-    RUN.label = l;
-  RUN.error.clear();
+    run_cur().label = l;
+  run_cur().error.clear();
   auto now =
       duration_cast<milliseconds>(steady_clock::now().time_since_epoch())
           .count();
-  if (!phase_changed && throttle && now - RUN.published_ms < 280)
+  if (!phase_changed && throttle && now - run_cur().published_ms < 280)
     return;
   publish_run_locked();
 }
 static void run_prompt(long processed, long total, long cache) {
   std::lock_guard<std::mutex> lk(RUN_MTX);
-  if (!RUN.on || total <= 0)
+  if (!run_cur().on || total <= 0)
     return;
-  if (RUN.phase != "prompt") {
-    if (!(RUN.phase == "think" && !RUN.thought))
+  if (run_cur().phase != "prompt") {
+    if (!(run_cur().phase == "think" && !run_cur().thought))
       commit_phase_locked();
-    RUN.phase = "prompt";
-    RUN.label = "Liest Verlauf";
+    run_cur().phase = "prompt";
+    run_cur().label = "Liest Verlauf";
   }
-  RUN.processed = processed;
-  RUN.total = total;
-  RUN.cache = cache;
-  RUN.error.clear();
+  run_cur().processed = processed;
+  run_cur().total = total;
+  run_cur().cache = cache;
+  run_cur().error.clear();
   auto now =
       duration_cast<milliseconds>(steady_clock::now().time_since_epoch())
           .count();
-  if (now - RUN.published_ms < 200 && processed < total)
+  if (now - run_cur().published_ms < 200 && processed < total)
     return;
   publish_run_locked();
 }
 static void run_think() {
   std::lock_guard<std::mutex> lk(RUN_MTX);
-  if (!RUN.on)
+  if (!run_cur().on)
     return;
-  RUN.thought = true;
-  if (RUN.phase == "think")
+  run_cur().thought = true;
+  if (run_cur().phase == "think")
     return;
   commit_phase_locked();
-  RUN.phase = "think";
-  RUN.label = "Denkt nach";
-  RUN.error.clear();
+  run_cur().phase = "think";
+  run_cur().label = "Denkt nach";
+  run_cur().error.clear();
   publish_run_locked();
 }
 static void run_narration(const std::string &live) {
   std::lock_guard<std::mutex> lk(RUN_MTX);
-  if (!RUN.on)
+  if (!run_cur().on)
     return;
-  const int before = RUN.narr_lines;
-  const bool entered = RUN.phase != "narration";
+  const int before = run_cur().narr_lines;
+  const bool entered = run_cur().phase != "narration";
   if (entered) {
     commit_phase_locked();
-    RUN.phase = "narration";
-    RUN.narr_lines = 0;
-    RUN.error.clear();
+    run_cur().phase = "narration";
+    run_cur().narr_lines = 0;
+    run_cur().error.clear();
   }
   int idx = 0;
   std::string cur;
@@ -3278,21 +3301,21 @@ static void run_narration(const std::string &live) {
     cur.clear();
     if (l.empty())
       continue;
-    if (idx >= RUN.narr_lines)
+    if (idx >= run_cur().narr_lines)
       commit_label_locked(l);
     ++idx;
-    RUN.label = l;
+    run_cur().label = l;
   }
-  RUN.narr_lines = idx;
+  run_cur().narr_lines = idx;
   std::string tail = one_line(cur);
   if (tail.size() > 140)
     tail = tail.substr(0, 137) + "…";
   if (!tail.empty())
-    RUN.label = tail;
+    run_cur().label = tail;
   auto now =
       duration_cast<milliseconds>(steady_clock::now().time_since_epoch())
           .count();
-  if (!entered && idx == before && now - RUN.published_ms < 280)
+  if (!entered && idx == before && now - run_cur().published_ms < 280)
     return;
   publish_run_locked();
 }
@@ -3301,27 +3324,27 @@ static void run_tool_step(const std::string &tool) {
 }
 static void run_answer_phase() {
   std::lock_guard<std::mutex> lk(RUN_MTX);
-  if (!RUN.on)
+  if (!run_cur().on)
     return;
   // The live line was the answer itself, not an interim step.
-  if (RUN.phase != "narration")
+  if (run_cur().phase != "narration")
     commit_phase_locked();
-  RUN.phase = "answer";
-  RUN.label = "Schreibt die Antwort";
-  RUN.error.clear();
+  run_cur().phase = "answer";
+  run_cur().label = "Schreibt die Antwort";
+  run_cur().error.clear();
   publish_run_locked();
 }
 static void run_fail(const std::string &text) {
   std::lock_guard<std::mutex> lk(RUN_MTX);
-  if (!RUN.on)
+  if (!run_cur().on)
     return;
-  if (RUN.phase != "narration")
+  if (run_cur().phase != "narration")
     commit_phase_locked();
   else
-    commit_label_locked(RUN.label);
-  RUN.phase = "error";
-  RUN.error = one_line(text).substr(0, 140);
-  RUN.label = "Fehler";
+    commit_label_locked(run_cur().label);
+  run_cur().phase = "error";
+  run_cur().error = one_line(text).substr(0, 140);
+  run_cur().label = "Fehler";
   publish_run_locked();
 }
 static void emit_answer_deltas(const std::string &bot, const std::string &name,
@@ -3637,11 +3660,11 @@ static std::string dispatch_tool(int bot_idx, const std::string &name,
 // Thinking for the current task: -1 = room default (MAG_ROOM_THINKING),
 // 0/1 = chosen with the user message (UI toggle). Autotalk continuations of
 // that task keep the choice.
-static std::atomic<int> TURN_THINK{-1};
-static bool turn_thinking() {
-  int v = TURN_THINK.load();
-  return v < 0 ? THINKING != "off" : v == 1;
-}
+static thread_local int TURN_THINK = -1;
+// The latest user-chosen value, for the room state (HTTP threads).
+static std::atomic<int> LAST_THINK{-1};
+static bool thinking_of(int v) { return v < 0 ? THINKING != "off" : v == 1; }
+static bool turn_thinking() { return thinking_of(TURN_THINK); }
 struct JobRun;
 static thread_local const JobRun *CURRENT_JOB = nullptr;
 static std::string job_user_content(const JobRun *r);
@@ -3699,7 +3722,7 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
           steady_clock::now() +
           seconds(std::max(LLM_TIMEOUT_S, LLM_TIMEOUT_MIN_S));
       std::string last;
-      while (transient && !st.ready && !STOP.load() &&
+      while (transient && !st.ready && !stop_flag().load() &&
              steady_clock::now() < deadline) {
         if (st.label != last) {
           last = st.label;
@@ -3717,7 +3740,7 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
             st.state != "verified" && !st.ready)
           break;
       }
-      if (!st.ready && !STOP.load()) {
+      if (!st.ready && !stop_flag().load()) {
         report.error = "Modell noch nicht bereit: " + model_status_text(st);
         emit_event("error", bot_id, bot_name, report.error);
         run_fail(report.error);
@@ -3732,7 +3755,7 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
   bool completed = false;
   auto run_deadline = steady_clock::now() + seconds(RUN_BUDGET_S);
   for (int round = 0; round < MAX_RUN_STEPS; round++) {
-    if (STOP.load()) break;
+    if (stop_flag().load()) break;
     if (steady_clock::now() >= run_deadline) {
       report.error = "Agent-Zeitbudget erreicht (" + std::to_string(RUN_BUDGET_S) +
                      "s). Aufgabe noch offen; Arbeit in VM erhalten.";
@@ -3857,7 +3880,7 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
       continue;
     }
     for (auto &call : t.calls) {
-      if (STOP.load())
+      if (stop_flag().load())
         break;
       std::string cid = call.find("id") ? call.find("id")->asStr() : "";
       auto fn = call.find("function");
@@ -3933,28 +3956,28 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
   // Long tasks continue within the same turn, including with Autonomy OFF.
   // The outer scheduler must not silently create a second task.
   report.continue_requested = false;
-  if (!STOP.load() && !completed && report.error.empty()) {
+  if (!stop_flag().load() && !completed && report.error.empty()) {
     report.error = "Agent-Step-Budget erreicht (" + std::to_string(MAX_RUN_STEPS) +
                    "). Aufgabe noch offen; VM-Dateien bleiben erhalten.";
   }
-  if (!STOP.load() && !report.error.empty() && trim(final_text).empty())
+  if (!stop_flag().load() && !report.error.empty() && trim(final_text).empty())
     final_text = report.error;
   replaceAll(final_text, "[[MAG:WEITER]]", "");
   replaceAll(final_text, "[[MAG:ENDE]]", "");
   replaceAll(fallback_narration, "[[MAG:WEITER]]", "");
   replaceAll(fallback_narration, "[[MAG:ENDE]]", "");
   if (trim(final_text).empty() && !trim(fallback_narration).empty() &&
-      report.error.empty() && !STOP.load())
+      report.error.empty() && !stop_flag().load())
     final_text = fallback_narration;
   report.text = trim(final_text);
   if (report.text.empty() && report.reacted && report.failed_tools == 0 &&
-      report.error.empty() && !STOP.load()) {
+      report.error.empty() && !stop_flag().load()) {
     report.react_only = true;
     report.continue_requested = false;
     finish_steps();
     return report;
   }
-  if (report.text.empty() && !STOP.load()) {
+  if (report.text.empty() && !stop_flag().load()) {
     if (!report.error.empty())
       report.text = "Antwort fehlgeschlagen: " + report.error;
     else if (report.failed_tools)
@@ -4098,8 +4121,12 @@ static std::string manifest_body() {
 // One persistent scheduler owns model turns, independent of browser clients.
 // Autonomy is task-bound: only a user turn arms one accountable bot.
 // Bot posts are context, never work triggers. The switch may stay ON while idle.
+// BUSY = at least one lane is answering. Turns hold TURN_MTX shared;
+// room-wide operations (reset, clear, bot removal) take it exclusively and so
+// wait for every running turn.
 static std::atomic<bool> AUTOTALK{false}, BUSY{false};
-static std::mutex TURN_MTX, JOB_MTX;
+static std::shared_mutex TURN_MTX;
+static std::mutex JOB_MTX;
 static std::condition_variable JOB_CV;
 // A queued user turn: who answers and whether to think (-1 = room default).
 struct Job {
@@ -4107,10 +4134,36 @@ struct Job {
   int think = -1;
 };
 static std::deque<Job> JOBS;
-// Queue persistence: pending jobs + the job being answered survive a room
-// restart (deploy). Caller holds JOB_MTX.
-static bool ACTIVE_SET = false;
-static Job ACTIVE_JOB;
+// Queue persistence: pending jobs + the jobs being answered survive a room
+// restart (deploy). Caller holds JOB_MTX. Key = dispatch number.
+static std::map<uint64_t, Job> ACTIVE_JOBS;
+static uint64_t DISPATCH_SEQ = 0;
+static std::mutex LANES_MTX;
+static std::map<std::string, std::unique_ptr<Lane>> LANES;
+static Lane &lane_named(const std::string &model) {
+  std::lock_guard<std::mutex> lk(LANES_MTX);
+  auto &slot = LANES[model];
+  if (!slot) {
+    slot = std::make_unique<Lane>();
+    slot->model = model;
+  }
+  return *slot;
+}
+static Lane *lane_of(const std::string &bot_id) {
+  int idx = agent_index(bot_id);
+  return idx < 0 ? nullptr : &lane_named(bot_model_id(idx));
+}
+static std::vector<Lane *> all_lanes() {
+  std::lock_guard<std::mutex> lk(LANES_MTX);
+  std::vector<Lane *> out;
+  for (auto &kv : LANES) out.push_back(kv.second.get());
+  return out;
+}
+static bool lanes_busy(const std::vector<std::string> &ids) {
+  for (auto &id : ids)
+    if (Lane *l = lane_of(id); l && l->busy.load()) return true;
+  return false;
+}
 static Val job_val(const Job &j) {
   Val o = Val::object();
   Val ids = Val::array();
@@ -4181,7 +4234,12 @@ static void save_queue_locked() {
   Val jobs = Val::array();
   for (auto &j : JOBS) jobs.push(job_val(j));
   q["jobs"] = jobs;
-  if (ACTIVE_SET) q["active"] = job_val(ACTIVE_JOB);
+  if (!ACTIVE_JOBS.empty()) {
+    Val act = Val::array();
+    for (auto &kv : ACTIVE_JOBS) act.push(job_val(kv.second));
+    q["active"] = job_val(ACTIVE_JOBS.begin()->second);
+    q["actives"] = act;
+  }
   const std::string f = STATE_DIR + "/queue.json";
   write_file(f + ".tmp", mj::dump(q));
   rename((f + ".tmp").c_str(), f.c_str());
@@ -4197,12 +4255,27 @@ static bool AUTO_READY = false;
 static int AUTO_TURNS_LEFT = 0;
 static constexpr int AUTO_MAX_TURNS = 8;
 
-static void cancel_active() {
+static void cancel_lane(Lane &l, bool user) {
+  if (!l.busy.load()) return;
+  if (user) l.user_cancel = true;
+  l.stop = true;
+  std::lock_guard<std::mutex> lk(BACKEND_FD_MTX);
+  if (l.backend_fd.load() >= 0)
+    shutdown(l.backend_fd.load(), SHUT_RDWR);
+}
+// Stop every lane. EPOCH tells finished turns that their result is stale.
+static void cancel_active(bool user = false) {
   STOP = true;
   ++EPOCH;
+  for (Lane *l : all_lanes()) cancel_lane(*l, user);
   std::lock_guard<std::mutex> lk(BACKEND_FD_MTX);
   if (BACKEND_FD.load() >= 0)
     shutdown(BACKEND_FD.load(), SHUT_RDWR);
+}
+// Stop only the lanes these bots answer on; other bots keep working.
+static void cancel_bots(const std::vector<std::string> &ids, bool user = false) {
+  for (auto &id : ids)
+    if (Lane *l = lane_of(id)) cancel_lane(*l, user);
 }
 // A new user message no longer aborts the running turn (on CPU that threw
 // away minutes of prompt evaluation while llama kept computing): it is queued
@@ -4212,7 +4285,7 @@ static void cancel_active() {
 static void schedule(const std::vector<std::string> &ids, int think = -1,
                      bool interrupt = false) {
   if (interrupt)
-    cancel_active();
+    cancel_bots(ids);
   size_t position = 0;
   bool merged = false;
   {
@@ -4230,7 +4303,7 @@ static void schedule(const std::vector<std::string> &ids, int think = -1,
     position = JOBS.size();
     save_queue_locked();
   }
-  if (BUSY.load() && !interrupt) {
+  if (lanes_busy(ids) && !interrupt) {
     Val e = Val::object();
     e["type"] = "queued";
     e["position"] = (double)position;
@@ -4332,6 +4405,7 @@ static bool queue_merge() {
 // boundary; a running tool step finishes first), then the item is dispatched
 // as the next regular turn.
 static bool queue_send_now(const std::string &id) {
+  std::vector<std::string> ids;
   {
     std::lock_guard<std::mutex> lk(JOB_MTX);
     auto it = PENDING.begin();
@@ -4342,11 +4416,22 @@ static bool queue_send_now(const std::string &id) {
     PENDING.erase(it);
     PENDING.push_front(p);
     QUEUE_PAUSED = false;
-    JOBS.clear(); // no other turn may sneak in before it
+    // No other turn may sneak in before it on its lanes; other bots' work stays.
+    std::set<Lane *> mine;
+    for (auto &b : p.ids)
+      if (Lane *l = lane_of(b)) mine.insert(l);
+    JOBS.erase(std::remove_if(JOBS.begin(), JOBS.end(),
+                              [&](const Job &j) {
+                                for (auto &b : j.ids)
+                                  if (Lane *l = lane_of(b); l && mine.count(l)) return true;
+                                return false;
+                              }),
+               JOBS.end());
     AUTO_READY = false;
     save_queue_locked(); queue_event_locked();
+    ids = p.ids;
   }
-  if (BUSY.load()) cancel_active();
+  cancel_bots(ids);
   JOB_CV.notify_all();
   return true;
 }
@@ -4366,7 +4451,7 @@ static void drop_bot_refs(const std::string &bot_id) {
     PENDING.erase(std::remove_if(PENDING.begin(), PENDING.end(),
                                  [](const Pending &p) { return p.ids.empty(); }),
                   PENDING.end());
-    if (ACTIVE_SET) strip(ACTIVE_JOB.ids);
+    for (auto &kv : ACTIVE_JOBS) strip(kv.second.ids);
     if (AUTO_OWNER == bot_id) {
       AUTO_OWNER.clear();
       AUTO_READY = false;
@@ -4438,12 +4523,12 @@ static TurnReport generate_and_post(int idx, bool automatic) {
   if (report.elapsed_s < 0)
     report.elapsed_s = 0;
   run_end();
-  if (epoch == EPOCH.load() && !STOP.load() && report.react_only) {
+  if (epoch == EPOCH.load() && !stop_flag().load() && report.react_only) {
     Val msg = append_room("assistant", name, "", id);
     attach_work(msg, report);
     msg["type"] = "bot_done";
     publish(mj::dump(msg));
-  } else if (epoch == EPOCH.load() && !STOP.load() && !report.text.empty()) {
+  } else if (epoch == EPOCH.load() && !stop_flag().load() && !report.text.empty()) {
     bool duplicate = false;
     if (automatic) {
       std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
@@ -4483,7 +4568,7 @@ static TurnReport generate_and_post(int idx, bool automatic) {
     // transcript stays valid and only grows at its end (prompt cache).
     std::string partial = trim(report.text);
     if (partial.rfind("Antwort fehlgeschlagen", 0) == 0) partial.clear();
-    const std::string note = USER_CANCEL.load() ? "(abgebrochen)" : "(unterbrochen)";
+    const std::string note = user_cancel_flag().load() ? "(abgebrochen)" : "(unterbrochen)";
     Val msg = append_room("assistant", name,
                           partial.empty() ? note : partial + "\n\n" + note,
                           id);
@@ -4507,92 +4592,61 @@ static TurnReport generate_and_post(int idx, bool automatic) {
 }
 #include "jobs.hpp"
 #include "jobs_mcp.hpp"
-static void scheduler_loop() {
-  while (!SHUTDOWN.load()) {
-    std::vector<std::string> ids;
-    bool automatic = false;
-    {
-      std::unique_lock<std::mutex> lk(JOB_MTX);
-      JOB_CV.wait(lk, [] {
-        // Paused by Stop: nothing runs (jobs, queue, autonomy) until the
-        // user explicitly resumes ("Fortsetzen" / "Jetzt senden").
-        return SHUTDOWN.load() ||
-               (!QUEUE_PAUSED && (!JOBS.empty() || !PENDING.empty() || !JOBRUNS.empty() ||
-                                  (AUTOTALK.load() && AUTO_READY)));
-      });
-      if (SHUTDOWN.load())
-        break;
-      if (JOBS.empty() && PENDING.empty() && !JOBRUNS.empty() && !QUEUE_PAUSED) {
-        // Scheduled job: runs alone, in the same global queue as chat.
-        JobRun run = JOBRUNS.front();
-        JOBRUNS.pop_front();
-        lk.unlock();
-        {
-          std::lock_guard<std::mutex> turn(TURN_MTX);
-          STOP = false;
-          BUSY = true;
-          try { run_job(run); } catch (const std::exception &e) { emit_event("error", "", "", e.what()); }
-          BUSY = false;
-        }
-        Val idle = Val::object(); idle["type"] = "idle"; idle["autotalk"] = AUTOTALK.load();
-        publish(mj::dump(idle));
-        JOB_CV.notify_all();
-        continue;
-      }
-      if (JOBS.empty() && !PENDING.empty() && !QUEUE_PAUSED) {
-        // Dispatch the next queued message as a regular new user turn.
-        Pending p = PENDING.front();
-        PENDING.pop_front();
-        Val msg = append_room("user", p.sender.empty() ? "Nutzer" : p.sender,
-                              p.text, "", nullptr, p.login);
-        msg["type"] = "message";
-        publish(mj::dump(msg));
-        JOBS.push_back(Job{p.ids, p.think});
-        AUTO_OWNER = p.ids.empty() ? "" : p.ids.front();
-        AUTO_LAST_PROGRESS.clear();
-        AUTO_TURNS_LEFT = AUTO_MAX_TURNS;
+// Lane worker: answers one dispatched turn for the bots of one lane, in
+// order. Only the task owner (first bot of the user request) can request an
+// autonomous continuation.
+static void lane_finish(Lane *lane, uint64_t run, bool owner_ran, bool more,
+                        const std::string &progress, uint64_t epoch) {
+  Val bb = Val::array();
+  {
+    std::lock_guard<std::mutex> lk(JOB_MTX);
+    lane->busy = false;
+    ACTIVE_JOBS.erase(run);
+    bool any = false;
+    for (Lane *l : all_lanes()) any = any || l->busy.load();
+    BUSY = any;
+    for (auto &kv : ACTIVE_JOBS)
+      for (auto &id : kv.second.ids) bb.push(Val(id));
+    save_queue_locked();
+    if (owner_ran) {
+      if (epoch == EPOCH.load() && AUTOTALK.load() && more &&
+          AUTO_TURNS_LEFT > 0 && progress != AUTO_LAST_PROGRESS) {
+        AUTO_LAST_PROGRESS = progress;
+        AUTO_READY = true;
+      } else if (epoch == EPOCH.load()) {
         AUTO_READY = false;
-        queue_event_locked();
-      }
-      if (!JOBS.empty()) {
-        ACTIVE_JOB = JOBS.front();
-        ACTIVE_SET = true;
-        ids = std::move(JOBS.front().ids);
-        TURN_THINK = JOBS.front().think;
-        JOBS.pop_front();
-        save_queue_locked();
-      } else if (AUTOTALK.load() && AUTO_READY &&
-                 AUTO_TURNS_LEFT > 0 && !AUTO_OWNER.empty()) {
-        automatic = true;
-        ids.push_back(AUTO_OWNER);
-        AUTO_READY = false;
-        --AUTO_TURNS_LEFT;
-      } else {
-        AUTO_READY = false;
-        continue;
       }
     }
-    const uint64_t epoch = EPOCH.load();
-    bool more = false;
-    std::string progress;
-    {
-      std::lock_guard<std::mutex> turn(TURN_MTX);
-      if (automatic && !AUTOTALK.load())
-        continue;
-      STOP = false;
-      USER_CANCEL = false;
-      BUSY = true;
+  }
+  Val state = Val::object();
+  state["type"] = "idle";
+  state["autotalk"] = AUTOTALK.load();
+  state["busy"] = BUSY.load();
+  state["busy_bots"] = bb;
+  publish(mj::dump(state));
+  JOB_CV.notify_all();
+}
+static void lane_turn(Lane *lane, uint64_t run, std::vector<std::string> ids,
+                      bool automatic, int think, std::string owner) {
+  const uint64_t epoch = EPOCH.load();
+  bool more = false, owner_ran = false;
+  std::string progress;
+  {
+    std::shared_lock<std::shared_mutex> turn(TURN_MTX);
+    TL_LANE = lane;
+    TURN_THINK = think;
+    LAST_THINK = think;
+    if (!(automatic && !AUTOTALK.load()))
       for (const auto &id : ids) {
-        if (STOP.load())
+        if (lane->stop.load())
           break;
         int idx = agent_index(id);
         if (idx < 0)
           continue;
         try {
           TurnReport report = generate_and_post(idx, automatic);
-          // Only the task owner can request an autonomous continuation.
-          if ((!automatic && !ids.empty() && id == ids.front()) ||
-              automatic) {
+          if (automatic || id == owner) {
+            owner_ran = true;
             more = report.continue_requested &&
                    report.successful_tools > 0 &&
                    report.failed_tools == 0 &&
@@ -4604,30 +4658,148 @@ static void scheduler_loop() {
           emit_event("error", id, "", e.what());
         }
       }
-      BUSY = false;
+    TL_LANE = nullptr;
+  }
+  lane_finish(lane, run, owner_ran, more, progress, epoch);
+}
+static void lane_job(Lane *lane, uint64_t run, JobRun job) {
+  {
+    std::shared_lock<std::shared_mutex> turn(TURN_MTX);
+    TL_LANE = lane;
+    TURN_THINK = -1;
+    try { run_job(job); } catch (const std::exception &e) { emit_event("error", "", "", e.what()); }
+    TL_LANE = nullptr;
+  }
+  lane_finish(lane, run, false, false, "", 0);
+}
+// Bots of one request grouped by lane, request order kept. Removed bots drop out.
+static std::vector<std::pair<Lane *, std::vector<std::string>>>
+split_lanes(const std::vector<std::string> &ids) {
+  std::vector<std::pair<Lane *, std::vector<std::string>>> out;
+  for (auto &id : ids) {
+    Lane *l = lane_of(id);
+    if (!l) continue;
+    auto it = std::find_if(out.begin(), out.end(),
+                           [&](auto &p) { return p.first == l; });
+    if (it == out.end()) out.push_back({l, {id}});
+    else it->second.push_back(id);
+  }
+  return out;
+}
+// Requests are answered oldest first per lane: an item may overtake older
+// waiting items only on lanes none of them needs.
+static bool dispatchable(const std::vector<std::pair<Lane *, std::vector<std::string>>> &parts,
+                         std::set<Lane *> &claimed) {
+  bool ok = true;
+  for (auto &p : parts)
+    if (p.first->busy.load() || claimed.count(p.first)) ok = false;
+  for (auto &p : parts) claimed.insert(p.first);
+  return ok;
+}
+static int AUTO_THINK = -1;
+static void start_lanes_locked(const Job &job, bool automatic) {
+  const std::string owner = job.ids.empty() ? "" : job.ids.front();
+  if (!automatic) AUTO_THINK = job.think;
+  STOP = false;
+  USER_CANCEL = false;
+  for (auto &[lane, ids] : split_lanes(job.ids)) {
+    const uint64_t run = ++DISPATCH_SEQ;
+    lane->busy = true;
+    lane->stop = false;
+    lane->user_cancel = false;
+    ACTIVE_JOBS[run] = Job{ids, job.think};
+    BUSY = true;
+    std::thread(lane_turn, lane, run, ids, automatic, job.think, owner).detach();
+  }
+  save_queue_locked();
+}
+// Starts at most one piece of work; true if the queue state changed.
+static bool dispatch_locked() {
+  std::set<Lane *> claimed;
+  for (auto it = JOBS.begin(); it != JOBS.end(); ++it) {
+    auto parts = split_lanes(it->ids);
+    if (parts.empty()) {
+      JOBS.erase(it);
+      save_queue_locked();
+      return true;
     }
-    {
-      std::lock_guard<std::mutex> lk(JOB_MTX);
-      if (ACTIVE_SET) {
-        ACTIVE_SET = false;
-        save_queue_locked();
-      }
-      if (epoch == EPOCH.load() && AUTOTALK.load() &&
-          more && AUTO_TURNS_LEFT > 0 &&
-          progress != AUTO_LAST_PROGRESS) {
-        AUTO_LAST_PROGRESS = progress;
-        AUTO_READY = true;
-      } else if (epoch == EPOCH.load()) {
-        AUTO_READY = false;
-      }
+    if (dispatchable(parts, claimed)) {
+      Job job = *it;
+      JOBS.erase(it);
+      start_lanes_locked(job, false);
+      return true;
     }
-    Val state = Val::object();
-    state["type"] = "idle";
-    state["autotalk"] = AUTOTALK.load();
-    publish(mj::dump(state));
-    JOB_CV.notify_all();
-    // No periodic chat generation. Re-arm only on a real user turn or
-    // verified continuation from the same task owner.
+  }
+  for (auto it = PENDING.begin(); it != PENDING.end(); ++it) {
+    if (!dispatchable(split_lanes(it->ids), claimed)) continue;
+    // A queued message enters the transcript only now, as a new user turn.
+    Pending p = *it;
+    PENDING.erase(it);
+    Val msg = append_room("user", p.sender.empty() ? "Nutzer" : p.sender,
+                          p.text, "", nullptr, p.login);
+    msg["type"] = "message";
+    publish(mj::dump(msg));
+    JOBS.push_back(Job{p.ids, p.think});
+    AUTO_OWNER = p.ids.empty() ? "" : p.ids.front();
+    AUTO_LAST_PROGRESS.clear();
+    AUTO_TURNS_LEFT = AUTO_MAX_TURNS;
+    AUTO_READY = false;
+    save_queue_locked();
+    queue_event_locked();
+    return true;
+  }
+  if (!JOBS.empty() || !PENDING.empty())
+    return false;
+  if (!JOBRUNS.empty()) {
+    // Scheduled job: runs on its bot's lane once no user work is waiting.
+    const std::string bot = JOBRUNS.front().bot;
+    Lane *lane = bot.empty() ? nullptr : lane_of(bot);
+    if (!lane) {
+      std::lock_guard<std::recursive_mutex> st(STATE_MTX);
+      lane = AGENTS.empty() ? &lane_named(active_room_model())
+                            : &lane_named(bot_model_id(0));
+    }
+    if (lane->busy.load())
+      return false;
+    JobRun run = JOBRUNS.front();
+    JOBRUNS.pop_front();
+    lane->busy = true;
+    lane->stop = false;
+    lane->user_cancel = false;
+    BUSY = true;
+    std::thread(lane_job, lane, ++DISPATCH_SEQ, run).detach();
+    return true;
+  }
+  if (AUTOTALK.load() && AUTO_READY) {
+    if (AUTO_TURNS_LEFT <= 0 || AUTO_OWNER.empty()) {
+      AUTO_READY = false;
+      return true;
+    }
+    Lane *lane = lane_of(AUTO_OWNER);
+    if (!lane) {
+      AUTO_READY = false;
+      return true;
+    }
+    if (lane->busy.load())
+      return false;
+    AUTO_READY = false;
+    --AUTO_TURNS_LEFT;
+    start_lanes_locked(Job{{AUTO_OWNER}, AUTO_THINK}, true);
+    return true;
+  }
+  return false;
+}
+// Paused by Stop: nothing runs (jobs, queue, autonomy) until the user
+// explicitly resumes ("Fortsetzen" / "Jetzt senden"). No periodic chat
+// generation: work is re-armed only by a real user turn or a verified
+// continuation of the same task owner. The timed wait only re-checks flags
+// that change without JOB_MTX (autonomy switch).
+static void scheduler_loop() {
+  std::unique_lock<std::mutex> lk(JOB_MTX);
+  while (!SHUTDOWN.load()) {
+    if (!QUEUE_PAUSED && dispatch_locked())
+      continue;
+    JOB_CV.wait_for(lk, seconds(1));
   }
 }
 // Offline = the agent VMs have no network at all (host nftables, not just the
@@ -4673,7 +4845,7 @@ static void stop_autotalk(bool pause = false) {
   {
     std::lock_guard<std::mutex> lk(JOB_MTX);
     JOBS.clear();
-    ACTIVE_SET = false;
+    ACTIVE_JOBS.clear();
     // Stop button: persistent pause; only "Fortsetzen" resumes. Other stops
     // (autonomy off, agent removal) only hold back pending messages.
     if (pause || !PENDING.empty()) QUEUE_PAUSED = true;
@@ -4770,7 +4942,7 @@ static std::string state_json(const Actor *actor = nullptr) {
   root["agents"] = ag;
   root["single_bot"] = SINGLE_BOT;
   root["thinking_default"] = THINKING != "off";
-  root["thinking"] = turn_thinking();
+  root["thinking"] = thinking_of(LAST_THINK.load());
   {
     std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
     std::set<std::string> gone;
@@ -4803,8 +4975,17 @@ static std::string state_json(const Actor *actor = nullptr) {
   root["busy"] = BUSY.load();
   {
     std::lock_guard<std::mutex> lk(RUN_MTX);
-    if (RUN.on)
-      root["activity"] = run_val_locked();
+    Val acts = Val::array();
+    const std::string self = TL_RUN_BOT;
+    for (auto &kv : RUNS) {
+      if (!kv.second.on) continue;
+      TL_RUN_BOT = kv.first;
+      Val a = run_val_locked();
+      if (!root.find("activity")) root["activity"] = a;
+      acts.push(std::move(a));
+    }
+    TL_RUN_BOT = self;
+    root["activities"] = acts;
   }
   {
     std::lock_guard<std::mutex> lk(JOB_MTX);
@@ -4812,6 +4993,10 @@ static std::string state_json(const Actor *actor = nullptr) {
     Val qv = queue_view_locked();
     root["pending"] = *qv.find("pending");
     root["queue_paused"] = QUEUE_PAUSED;
+    Val bb = Val::array();
+    for (auto &kv : ACTIVE_JOBS)
+      for (auto &id : kv.second.ids) bb.push(Val(id));
+    root["busy_bots"] = bb;
   }
   root["backend"] = BACKEND_HOST + ":" + std::to_string(BACKEND_PORT);
   root["model"] = active_room_model();
@@ -5276,7 +5461,7 @@ static ScopedResult reset_bot_workspace(const std::string &id) {
     return scoped_err(400, "Nur-Chat-Bot hat keine Arbeitsdaten.");
   if (BUSY.load())
     return scoped_err(409, "Bot arbeitet gerade. Erst stoppen, dann zurücksetzen.");
-  std::lock_guard<std::mutex> turn(TURN_MTX);
+  std::lock_guard<std::shared_mutex> turn(TURN_MTX);
   if (BUSY.load())
     return scoped_err(409, "Bot arbeitet gerade. Erst stoppen, dann zurücksetzen.");
   // Runs as the guest user. Leaves the browser binary, bridge token, UDP key
@@ -5529,19 +5714,35 @@ int main() {
           Job job = val_job(j);
           if (!job.ids.empty()) JOBS.push_back(job);
         }
-      if (auto a = q.find("active"); a && a->isObj()) {
-        Job job = val_job(*a);
-        if (!job.ids.empty()) {
-          for (auto &id : job.ids) {
-            int idx = agent_index(id);
-            if (idx < 0) continue;
-            Val m = append_room("assistant", bot_field(idx, "name"),
-                                "(Antwort unterbrochen – Raum wurde neu gestartet, wird fortgesetzt)", id);
-            (void)m;
+      std::vector<Job> running;
+      if (auto a = q.find("actives"); a && a->isArr())
+        for (auto &x : a->asArr()) running.push_back(val_job(x));
+      else if (auto a1 = q.find("active"); a1 && a1->isObj())
+        running.push_back(val_job(*a1));
+      const std::string note =
+          "(Antwort unterbrochen – Raum wurde neu gestartet, wird fortgesetzt)";
+      for (auto r = running.rbegin(); r != running.rend(); ++r) {
+        if (r->ids.empty()) continue;
+        for (auto &id : r->ids) {
+          int idx = agent_index(id);
+          if (idx < 0) continue;
+          // A crash loop must not stack one note per restart.
+          bool noted = false;
+          {
+            std::lock_guard<std::recursive_mutex> st(STATE_MTX);
+            for (auto it = ROOM.rbegin(); it != ROOM.rend(); ++it) {
+              if (it->find("role") && it->find("role")->asStr() == "user") break;
+              if (it->find("bot") && it->find("bot")->asStr() == id) {
+                noted = it->find("content") && it->find("content")->asStr() == note;
+                break;
+              }
+            }
           }
-          if (JOBS.empty() || JOBS.front().ids != job.ids)
-            JOBS.push_front(job);
+          if (!noted) append_room("assistant", bot_field(idx, "name"), note, id);
         }
+        if (std::none_of(JOBS.begin(), JOBS.end(),
+                         [&](const Job &j) { return j.ids == r->ids; }))
+          JOBS.push_front(*r);
       }
       if (!JOBS.empty()) {
         AUTO_OWNER = JOBS.front().ids.front();

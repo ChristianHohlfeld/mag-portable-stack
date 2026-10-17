@@ -167,7 +167,7 @@ html,body{overflow-x:hidden;max-width:100vw}
 }
 
 /* ---- queue chips */
-.queue-chips{display:flex;flex-direction:column;gap:6px;margin:0 0 8px}.queue-chips[hidden]{display:none}
+.queue-chips{display:flex;flex-direction:column;gap:6px;margin:0 0 8px}.bot-lanes{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin:0 0 8px}.bot-lanes[hidden]{display:none}.bot-lane{display:inline-flex;align-items:center;gap:7px;min-height:34px;border:1px solid var(--line);border-radius:999px;padding:2px 3px 2px 11px;font-size:12px;color:var(--secondary);background:var(--panel);max-width:100%}.bot-lane .pulse{width:7px;height:7px;border-radius:50%;flex:none}.bot-lane .lane-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text)}.bot-lane button,.bot-lanes .lane-all{border:1px solid var(--line);background:transparent;color:var(--secondary);border-radius:999px;min-height:28px;padding:0 10px;font-size:12px;cursor:pointer}.bot-lane button:hover,.bot-lanes .lane-all:hover{color:var(--red);border-color:color-mix(in srgb,var(--red),transparent 55%)}.queue-chips[hidden]{display:none}
 .queue-head{display:flex;align-items:center;gap:8px;font-size:11px;color:var(--muted);padding:0 2px}.queue-head span{margin-right:auto;text-transform:uppercase;letter-spacing:.04em}
 .q-chip{display:flex;align-items:center;gap:4px;background:var(--panel);border:1px solid var(--line);border-radius:var(--r-md,12px);padding:4px 4px 4px 12px;min-width:0}
 .q-text{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:13px;color:var(--text)}
@@ -186,7 +186,7 @@ html,body{overflow-x:hidden;max-width:100vw}
 @media(max-width:600px){#you-badge{max-width:26vw;font-size:10px;padding:6px 8px}.message.user.other{max-width:91%}}
 .q-chip{gap:6px;touch-action:pan-y}.q-chip.dragging{opacity:.5;border-color:var(--sb-red)}.q-chip.drop-before{box-shadow:inset 0 3px var(--sb-red)}.q-grip{cursor:grab;touch-action:none;user-select:none;font-size:18px;color:var(--muted);padding:0 6px;min-height:34px;display:grid;place-items:center}.q-grip:active{cursor:grabbing}.q-step{width:30px;min-width:30px;padding:0;font-size:15px}#stop-generation{display:none!important}
 .photo-preview{display:flex;gap:9px;flex-wrap:wrap;padding:8px 0}.photo-card{position:relative;width:80px;height:80px;border-radius:10px;overflow:hidden;border:1px solid var(--line);background:var(--panel)}.photo-card img{width:100%;height:100%;object-fit:cover}.photo-card button{position:absolute;right:3px;top:3px;width:26px;height:26px;border-radius:50%;background:var(--surface);color:var(--text);border:1px solid var(--line);font-size:16px}
-#send-button.is-stop{min-width:40px;padding-inline:10px}.sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
+.sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
 </style><style id="stardenburg-theme">/* Stardenburg-Theme · gleiche Tokens wie stardenburg.de (keine externen Fonts: Inter selbst gehostet) */
 :root{--sb-red:#e62b2b;--sb-glow:rgba(230,43,43,.35);--sb-grid:rgba(230,43,43,.045);--bg:#050505;--surface:#0a0a0c;--sidebar:#08080a;--panel:#121216;--panel-2:#17171c;--panel-3:#1f1f25;--text:#ffffff;--secondary:#c4c4cb;--muted:#8a8a93;--line:#2a2a30;--soft-line:#1b1b20;--accent:#e62b2b;--accent-ink:#ffffff;--hover:#16161b;--code:#070708;--bubble:#121216;--radius:8px;--shadow:0 20px 60px #000c;font-family:Inter,sans-serif}
 :root[data-theme=light]{--bg:#f6f6f7;--surface:#ffffff;--sidebar:#f1f1f3;--panel:#f4f4f6;--panel-2:#ececef;--panel-3:#e4e4e8;--text:#0a0a0c;--secondary:#3a3a40;--muted:#6b6b73;--line:#dcdce1;--soft-line:#e8e8ec;--accent:#c81f1f;--accent-ink:#fff;--hover:#ededf0;--bubble:#f1f1f3;--sb-grid:rgba(200,31,31,.05)}
@@ -294,7 +294,7 @@ dialog{border-radius:10px;border-color:var(--line);background:var(--surface)}
 </div></aside>
 <main class="main"><div class="chat-scroll"><div class="conversation" id="conversation"></div>
 <button type="button" id="jump-bottom" class="jump-bottom" hidden aria-label="Nach unten scrollen"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M6 13l6 6 6-6"/></svg><span class="jump-dot" aria-hidden="true"></span></button></div>
-<div class="composer-wrap"><div class="composer-inner"><div id="model-banner" role="status" hidden></div><div class="notice" id="notice" role="status" aria-live="polite"></div><div id="queue-chips" class="queue-chips" aria-label="Warteschlange" hidden></div><div id="photo-preview" class="photo-preview" aria-label="Foto-Vorschau" hidden></div><form id="send-form"><div class="composer-card"><textarea id="message" rows="2" placeholder="Schreibe eine Nachricht oder stelle eine Aufgabe …" aria-label="Nachricht" autofocus></textarea><span id="speech-status" class="speech-status" role="status" aria-live="polite" hidden></span><div class="composer-toolbar"><div class="plus-wrap"><button type="button" class="icon-btn plus-btn" id="plus" aria-label="Hinzufügen" title="Dateien, Connectors und Werkzeuge" aria-haspopup="menu" aria-expanded="false"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button><div class="plus-menu" id="plus-menu" role="menu" hidden><button type="button" role="menuitem" id="upload"><svg class="i sm" aria-hidden="true"><use href="#ic-paperclip"></use></svg><span>Datei hochladen</span></button><button type="button" role="menuitem" id="upload-photo"><svg class="i sm" aria-hidden="true"><use href="#ic-plus"></use></svg><span>Foto/Screenshot</span></button><button type="button" role="menuitemcheckbox" id="plus-web" aria-checked="true"><svg class="i sm" aria-hidden="true"><use href="#ic-globe"></use></svg><span>Offline</span><span class="menu-state" id="plus-web-state"></span></button><div class="menu-sep"></div><div class="menu-label">Connectors</div><button type="button" role="menuitem" id="plus-github"><svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor" aria-hidden="true"><path d="M12 .5a11.5 11.5 0 0 0-3.64 22.41c.58.1.79-.25.79-.56v-2c-3.2.7-3.88-1.37-3.88-1.37-.53-1.33-1.28-1.69-1.28-1.69-1.05-.72.08-.7.08-.7 1.16.08 1.77 1.19 1.77 1.19 1.03 1.77 2.7 1.26 3.36.96.1-.75.4-1.26.73-1.55-2.55-.29-5.24-1.28-5.24-5.69 0-1.26.45-2.29 1.19-3.1-.12-.29-.52-1.46.11-3.05 0 0 .97-.31 3.17 1.18a11 11 0 0 1 5.77 0c2.2-1.49 3.17-1.18 3.17-1.18.63 1.59.23 2.76.11 3.05.74.81 1.19 1.84 1.19 3.1 0 4.42-2.7 5.4-5.26 5.68.41.36.78 1.06.78 2.14v3.17c0 .31.21.67.8.56A11.5 11.5 0 0 0 12 .5z"/></svg><span>GitHub</span><span class="menu-state" id="plus-github-state">verbinden</span></button></div></div><button type="button" class="icon-btn" id="mic" aria-label="Spracheingabe" title="Sprache aufnehmen"><svg class="i " aria-hidden="true"><use href="#ic-mic"></use></svg></button><label class="think-toggle" title="Gründlich denken: mehr Rechenzeit für schwierige Aufgaben."><svg class="i sm" aria-hidden="true"><use href="#ic-brain"></use></svg><input type="checkbox" id="think"><span>Thinking</span></label><span class="spacer"></span><button type="button" class="pill-btn" id="stop-generation" title="Laufende Antworten abbrechen"><svg class="i sm" aria-hidden="true"><use href="#ic-stop"></use></svg> Stoppen</button><button type="submit" class="send-btn primary" id="send-button">Senden <svg class="i sm" aria-hidden="true"><use href="#ic-arrow"></use></svg></button></div></div></form><input id="file-input" type="file" multiple hidden><input id="photo-input" type="file" accept="image/*,.heic,.heif" multiple hidden></div></div></main>
+<div class="composer-wrap"><div class="composer-inner"><div id="model-banner" role="status" hidden></div><div class="notice" id="notice" role="status" aria-live="polite"></div><div id="bot-lanes" class="bot-lanes" role="status" aria-live="polite" aria-label="Antwortende Bots" hidden></div><div id="queue-chips" class="queue-chips" aria-label="Warteschlange" hidden></div><div id="photo-preview" class="photo-preview" aria-label="Foto-Vorschau" hidden></div><form id="send-form"><div class="composer-card"><textarea id="message" rows="2" placeholder="Schreibe eine Nachricht oder stelle eine Aufgabe …" aria-label="Nachricht" autofocus></textarea><span id="speech-status" class="speech-status" role="status" aria-live="polite" hidden></span><div class="composer-toolbar"><div class="plus-wrap"><button type="button" class="icon-btn plus-btn" id="plus" aria-label="Hinzufügen" title="Dateien, Connectors und Werkzeuge" aria-haspopup="menu" aria-expanded="false"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button><div class="plus-menu" id="plus-menu" role="menu" hidden><button type="button" role="menuitem" id="upload"><svg class="i sm" aria-hidden="true"><use href="#ic-paperclip"></use></svg><span>Datei hochladen</span></button><button type="button" role="menuitem" id="upload-photo"><svg class="i sm" aria-hidden="true"><use href="#ic-plus"></use></svg><span>Foto/Screenshot</span></button><button type="button" role="menuitemcheckbox" id="plus-web" aria-checked="true"><svg class="i sm" aria-hidden="true"><use href="#ic-globe"></use></svg><span>Offline</span><span class="menu-state" id="plus-web-state"></span></button><div class="menu-sep"></div><div class="menu-label">Connectors</div><button type="button" role="menuitem" id="plus-github"><svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor" aria-hidden="true"><path d="M12 .5a11.5 11.5 0 0 0-3.64 22.41c.58.1.79-.25.79-.56v-2c-3.2.7-3.88-1.37-3.88-1.37-.53-1.33-1.28-1.69-1.28-1.69-1.05-.72.08-.7.08-.7 1.16.08 1.77 1.19 1.77 1.19 1.03 1.77 2.7 1.26 3.36.96.1-.75.4-1.26.73-1.55-2.55-.29-5.24-1.28-5.24-5.69 0-1.26.45-2.29 1.19-3.1-.12-.29-.52-1.46.11-3.05 0 0 .97-.31 3.17 1.18a11 11 0 0 1 5.77 0c2.2-1.49 3.17-1.18 3.17-1.18.63 1.59.23 2.76.11 3.05.74.81 1.19 1.84 1.19 3.1 0 4.42-2.7 5.4-5.26 5.68.41.36.78 1.06.78 2.14v3.17c0 .31.21.67.8.56A11.5 11.5 0 0 0 12 .5z"/></svg><span>GitHub</span><span class="menu-state" id="plus-github-state">verbinden</span></button></div></div><button type="button" class="icon-btn" id="mic" aria-label="Spracheingabe" title="Sprache aufnehmen"><svg class="i " aria-hidden="true"><use href="#ic-mic"></use></svg></button><label class="think-toggle" title="Gründlich denken: mehr Rechenzeit für schwierige Aufgaben."><svg class="i sm" aria-hidden="true"><use href="#ic-brain"></use></svg><input type="checkbox" id="think"><span>Thinking</span></label><span class="spacer"></span><button type="button" class="pill-btn" id="stop-generation" title="Laufende Antworten abbrechen"><svg class="i sm" aria-hidden="true"><use href="#ic-stop"></use></svg> Stoppen</button><button type="submit" class="send-btn primary" id="send-button">Senden <svg class="i sm" aria-hidden="true"><use href="#ic-arrow"></use></svg></button></div></div></form><input id="file-input" type="file" multiple hidden><input id="photo-input" type="file" accept="image/*,.heic,.heif" multiple hidden></div></div></main>
 <aside class="right" id="right-panel"><div class="section"><div class="side-section-head"><h2><svg class="i sm" aria-hidden="true"><use href="#ic-globe"></use></svg> Browser</h2><span class="hint">Live</span></div><select id="browser-agent" aria-label="Browser auswählen"></select><input id="live" type="checkbox" checked hidden aria-hidden="true"><div id="browser-view"><div class="browser-view-bar browser-nav" role="toolbar" aria-label="Browser-Navigation"><button type="button" class="nav-btn" id="browser-back" title="Zurück" aria-label="Zurück">←</button><button type="button" class="nav-btn" id="browser-forward" title="Vorwärts" aria-label="Vorwärts">→</button><button type="button" class="nav-btn" id="browser-reload" title="Neu laden" aria-label="Neu laden">⟳</button><form id="browser-nav-form" class="nav-url"><input id="browser-url" type="text" placeholder="Adresse eingeben + Enter" aria-label="Webadresse" spellcheck="false" autocomplete="off"><button class="nav-btn" id="browser-open" type="submit" title="Öffnen" aria-label="Öffnen">↵</button></form><button id="browser-fullscreen" class="mini-fullscreen" type="button" aria-label="Browser im Vollbild anzeigen" title="Browser-Vollbild umschalten" aria-pressed="false"><svg class="i sm" aria-hidden="true"><use href="#ic-expand"></use></svg></button></div><div id="browser-overlay" aria-hidden="true"><div class="bo-cursor"><svg viewBox="0 0 24 24" width="22" height="22"><path d="M3 2l7.5 19 2.6-7.9L21 10.5z" fill="#fff" stroke="#111" stroke-width="1.6" stroke-linejoin="round"/></svg><span class="bo-type"></span></div></div><canvas id="screen" width="1440" height="900" role="img" aria-label="Live-Browser des ausgewählten Bots. Klicken und Tastatur zum Steuern." tabindex="0" hidden></canvas></div><p class="hint" id="browser-status">Ein Browser pro Bot. Du und der Bot steuern dieselbe Sitzung.</p><p id="browser-access" class="browser-access" role="status" hidden></p></div>
 <div class="section" id="shared-files-panel"><div class="side-section-head"><h2><svg class="i sm" aria-hidden="true"><use href="#ic-file"></use></svg> Gemeinsame Dateien</h2></div><div id="files"></div><iframe id="canvas" title="Gemeinsame Vorschau" sandbox="allow-scripts" hidden></iframe></div>
 <div class="section" id="terminal-panel"><div class="terminal-heading"><h2>Konsole · <span id="console-agent">Bot</span></h2><button id="terminal-fullscreen" class="mini-fullscreen" type="button" aria-label="Konsole im Vollbild anzeigen" title="Konsole-Vollbild umschalten" aria-pressed="false"><svg class="i sm" aria-hidden="true"><use href="#ic-expand"></use></svg></button><button id="terminal-clear" type="button">Leeren</button><button id="terminal-focus" type="button">Fokus</button></div><div id="terminal" role="application" aria-label="Interaktive Shell des ausgewählten Bots" tabindex="0"></div><div id="terminal-status">Terminal startet beim Verbinden …</div></div></aside></div>
@@ -747,16 +747,17 @@ function attachWork(div,msg,content){
  const list=stepsList(msg.steps);
  if(content){content.before(box);if(list)content.before(list)}else{div.append(box);if(list)div.append(list)}
 }
-function ensureWork(node,s){
+function ensureWork(node,s,botId){
  let box=[...node.children].find(el=>el.classList.contains('work-status'));
+ const known=box?.querySelector('.work-stop');if(known)known.dataset.bot=botId||'';
  if(!box){
   box=document.createElement('div');box.className='work-status';box.setAttribute('role','status');
   const dot=document.createElement('span');dot.className='pulse';
   const label=document.createElement('span');label.className='work-label';
   const stop=document.createElement('button');stop.type='button';stop.className='work-stop';stop.textContent='Stoppen';stop.title='Laufende Antwort abbrechen';
-  stop.onclick=()=>{$('stop-generation').click()};
+  stop.onclick=()=>stopBot(stop.dataset.bot||'');
   const bar=document.createElement('div');bar.className='work-bar';bar.hidden=true;const fill=document.createElement('i');bar.append(fill);
-  box.append(dot,label,stop,bar);
+  stop.dataset.bot=botId||'';box.append(dot,label,stop,bar);
   const content=node.querySelector('.content');content.before(box);
  }
  const phase=s.error?'error':(s.hung?'hung':(s.phase||'think'));
@@ -803,7 +804,7 @@ function updateStream(botId,immediate=false){
  const update=()=>{
   s.frame=0;if(!s.node?.isConnected)return;
   const content=s.node.querySelector('.content');
-  ensureWork(s.node,s);
+  ensureWork(s.node,s,botId);
   if(!s.text){s.node.classList.add('processing');content.replaceChildren()}
   else{s.node.classList.remove('processing');content.innerHTML=safeMarkdown(s.text);decorate(content)}
   s.node.querySelectorAll('.trace').forEach(el=>{
@@ -1044,7 +1045,7 @@ async function refreshBackup(){
   if(problem)el.textContent=b.stale?'Backup-Warnung: letzter Erfolg älter als 26 Stunden.':!b.healthy?'Backup-Fehler: Sicherung prüfen.':'Backup nur lokal – Offsite-S3 noch nicht aktiv.';
  }catch(e){el.hidden=false;el.textContent='Backup-Status nicht verfügbar.'}
 }
-async function refresh(){const seq=++refreshSeq;const r=await fetch('/api/state');if(!r.ok)throw Error('Raum nicht erreichbar');const next=await r.json();if(seq!==refreshSeq)return;state=next;if(state.you?.role==='owner'&&Date.now()-backupPollAt>60000){backupPollAt=Date.now();refreshBackup()}if(state.you?.role!=='owner'&&$('backup-warning'))$('backup-warning').hidden=true;if(state.activity&&state.activity.on)mergeActivity(state.activity);if(seq!==refreshSeq)return;render();renderQueue({pending:next.pending||[],paused:!!next.queue_paused});if($('offline')){$('offline').checked=!!next.offline;window.syncWeb&&window.syncWeb()}initThink();if(next.model_status)modelStatus(next.model_status);modelInfo(next.model_info);syncModelChoice(next)}
+async function refresh(){const seq=++refreshSeq;const r=await fetch('/api/state');if(!r.ok)throw Error('Raum nicht erreichbar');const next=await r.json();if(seq!==refreshSeq)return;state=next;if(state.you?.role==='owner'&&Date.now()-backupPollAt>60000){backupPollAt=Date.now();refreshBackup()}if(state.you?.role!=='owner'&&$('backup-warning'))$('backup-warning').hidden=true;for(const a of (state.activities||(state.activity?[state.activity]:[])))if(a&&a.on)mergeActivity(a);setBusyBots(next.busy_bots);if(seq!==refreshSeq)return;render();renderQueue({pending:next.pending||[],paused:!!next.queue_paused});if($('offline')){$('offline').checked=!!next.offline;window.syncWeb&&window.syncWeb()}initThink();if(next.model_status)modelStatus(next.model_status);modelInfo(next.model_info);syncModelChoice(next)}
 function syncModelChoice(next){
  if(!next)return;
  const allowed=new Set(Array.isArray(next.models)?next.models.map(m=>m.id):[]);
@@ -1065,14 +1066,21 @@ async function memory(a){memAgent=a;try{const m=await api('/api/agents/'+encodeU
 let memAgent=null;function renderMemory(m){const box=$('memory');box.replaceChildren();if(!m.length){box.textContent='Noch keine gespeicherten Erinnerungen.';return}m.forEach((x,i)=>{const text=typeof x==='string'?x:(x.text||'');const row=document.createElement('div');row.className='mem-row';const t=document.createElement('div');t.className='mem-text';t.textContent=text;const act=document.createElement('div');act.className='mem-actions';const ed=document.createElement('button');ed.type='button';ed.className='pill-btn';ed.textContent='Bearbeiten';const del=document.createElement('button');del.type='button';del.className='pill-btn danger';del.textContent='Löschen';ed.onclick=()=>{const ta=document.createElement('textarea');ta.value=text;ta.maxLength=500;ta.className='mem-edit';const save=document.createElement('button');save.type='button';save.className='pill-btn primary';save.textContent='Speichern';const cancel=document.createElement('button');cancel.type='button';cancel.className='pill-btn';cancel.textContent='Abbrechen';cancel.onclick=()=>renderMemory(m);save.onclick=async()=>{try{const r=await api('/api/agents/'+encodeURIComponent(memAgent.id)+'/memory/'+i,{text:ta.value,old:text},'PUT');showUndo('Eintrag geändert',r.undo);renderMemory(r.memory||[])}catch(e){notice(e.message)}};t.replaceChildren(ta);act.replaceChildren(save,cancel);ta.focus()};del.onclick=()=>askDeleteMemory(memAgent,i,text);act.append(ed,del);row.append(t,act);box.append(row)})}
 async function removeAgent(a){if(!await magConfirm({title:'Bot entfernen',text:a.name+' und die eigene VM mit ihren Dateien entfernen?',ok:'Entfernen',danger:true}))return;try{notice('Bot wird entfernt…');await api('/api/agents/'+a.id,undefined,'DELETE');await refresh();notice()}catch(e){notice(e.message)}}
 $('add-agent').onclick=()=>$('new-agent').showModal();$('agent-form').onsubmit=async e=>{e.preventDefault();const submit=e.target.querySelector('.primary');submit.disabled=true;try{const chatOnly=$('agent-chat-only').checked;notice(chatOnly?'Chat-Bot wird angelegt…':'Bot wird angelegt…');const made=await api('/api/agents',{name:$('agent-name').value,persona:$('agent-persona').value,model:$('agent-model').value,...(chatOnly?{vm:false}:{})});$('new-agent').close();await refresh();notice(made&&made.spawning?'Eigene VM wird erstellt – das dauert ein paar Minuten. Bis dahin antwortet der Bot nur im Chat.':'')}catch(e){notice(e.message)}finally{submit.disabled=false}};
-const STOP_SVG='<svg class="i sm" viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor" stroke="none"/></svg>';let sendHTML=null;
-function syncSendButton(){const b=$('send-button');if(!b)return;if(sendHTML===null)sendHTML=b.innerHTML;const stop=!!state.busy;if(stop===b.classList.contains('is-stop'))return;b.classList.toggle('is-stop',stop);b.innerHTML=stop?STOP_SVG+'<span class="sr-only">Stoppen</span>':sendHTML;b.setAttribute('aria-label',stop?'Antwort stoppen':'Senden');b.title=stop?'Antwort stoppen':''}
-setInterval(syncSendButton,250);$('message').addEventListener('input',syncSendButton);
-$('send-form').onsubmit=async e=>{if($('send-button').classList.contains('is-stop')){e.preventDefault();try{await api('/api/cancel',{})}catch(err){notice(err.message)}return}
+// Group chat: the composer is never blocked. Every answering bot gets its own
+// stop in the lane bar (and on its live reply); busy_bots and idle events are
+// the only source of who is answering.
+let busyBots=new Set();
+function setBusyBots(ids){busyBots=new Set(Array.isArray(ids)?ids:[]);renderLanes()}
+async function stopBot(id){try{await api('/api/cancel',id?{bot:id}:{})}catch(e){notice(e.message)}}
+function renderLanes(){const box=$('bot-lanes');if(!box)return;const ids=[...busyBots].filter(id=>state.agents.some(a=>a.id===id));box.replaceChildren();box.hidden=!ids.length;if(!ids.length)return;const allowed=can('stop');
+ for(const id of ids){const a=state.agents.find(x=>x.id===id);const chip=document.createElement('span');chip.className='bot-lane';chip.dataset.bot=id;const dot=document.createElement('span');dot.className='pulse';dot.style.background=a.color||'var(--accent)';const name=document.createElement('span');name.className='lane-name';name.textContent=(a.name||'Bot')+' antwortet …';chip.append(dot,name);
+  if(allowed){const b=document.createElement('button');b.type='button';b.textContent='Stopp';b.title=(a.name||'Bot')+' stoppen';b.setAttribute('aria-label',(a.name||'Bot')+' stoppen');b.onclick=()=>stopBot(id);chip.append(b)}box.append(chip)}
+ if(allowed&&ids.length>1){const all=document.createElement('button');all.type='button';all.className='lane-all';all.textContent='Alle stoppen';all.onclick=()=>stopBot('');box.append(all)}}
+$('send-form').onsubmit=async e=>{
  e.preventDefault();if(window.magSpeechBusy?.())await window.magSpeechStop();const text=$('message').value.trim();if(!text&&!stagedPhotos.length)return;
  jumpForSend();
  const botId=[...selected][0],bot=state.agents.find(a=>a.id===botId);
- const willQueue=!!(state.busy||state.queue_paused||(state.pending||[]).length);if(bot&&!willQueue){streams[botId]={name:bot.name,text:'',status:'Denkt nach …'};render()}
+ const willQueue=!!((state.busy_bots||[]).some(id=>selected.has(id))||state.queue_paused||(state.pending||[]).length);if(bot&&!willQueue){streams[botId]={name:bot.name,text:'',status:'Denkt nach …'};render()}
  try{if(stagedPhotos.length)await flushStagedPhotos();if(!text){if(bot&&!willQueue){delete streams[botId];render()}notice('Bilder geteilt');return}const r=await api('/api/message',{text,bots:[...selected],think:$('think').checked});$('message').value='';fitMessageHeight();$('message').focus();if(r&&r.queued){if(!willQueue){delete streams[botId];render()}if(r.item)renderQueue({pending:[...(queueState.pending||[]).filter(p=>p.id!==r.item.id),r.item],paused:false})}notice('')}
  catch(err){delete streams[botId];render();notice(err.message)}
 };window.addEventListener('load',()=>$('message').focus());$('message').onkeydown=e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();$('send-form').requestSubmit()}};
@@ -1140,7 +1148,7 @@ async function stagePhotos(files){
    stagedPhotos.push({blob,name,url:URL.createObjectURL(blob)});
   }catch(e){notice('Bild '+file.name+': '+e.message+'; bitte als JPEG/PNG wählen')}
  }
- paintStagedPhotos();syncSendButton();
+ paintStagedPhotos();
 }
 async function flushStagedPhotos(){
  const photos=[...stagedPhotos];let uploaded=0;
@@ -1722,7 +1730,7 @@ window.addEventListener('pagehide',()=>{disconnectLive();events.close()});
 
 function fitMessageHeight(){const input=$('message');input.style.height='auto';input.style.height=Math.min(180,Math.max(56,input.scrollHeight))+'px'}
 $('message').addEventListener('input',fitMessageHeight);
-$('stop-generation').onclick=async()=>{try{await api('/api/cancel',{})}catch(e){notice(e.message)}};
+$('stop-generation').onclick=()=>stopBot('');
 function updateThemeIcon(){
  const mode=document.documentElement.dataset.theme;
  $('theme-toggle').innerHTML='<svg class="i" aria-hidden="true"><use href="#ic-'+(mode==='dark'?'sun':'moon')+'"></use></svg>';
@@ -1745,7 +1753,7 @@ events.onmessage=e=>{
   if(event.type==='bot_start'){
    const prev=streams[id];
    streams[id]={name:event.name,text:'',status:'Denkt nach',label:'Denkt nach',phase:'think',steps:[],node:prev?.node||null,frame:0,started:Date.now(),lastEvent:Date.now(),reasoning:'',tools:[],error:'',hung:false,progress:null};
-   updateStream(id,true);
+   updateStream(id,true);busyBots.add(id);renderLanes();
   }else if(event.type==='step'){
    let s=streams[id];
    if(!s){streams[id]={name:event.name||'Bot',text:'',node:null,frame:0,started:event.started?event.started*1000:Date.now(),reasoning:'',tools:[]};s=streams[id]}
@@ -1781,6 +1789,7 @@ events.onmessage=e=>{
   }else if(event.type==='reaction'){
    applyReaction(event);
   }else if(['message','file','agents','reset','idle','room'].includes(event.type)){
+   if(event.type==='idle'&&Array.isArray(event.busy_bots))setBusyBots(event.busy_bots);
    refresh().catch(err=>notice(err.message));
   }else if(event.type==='autotalk')$('autotalk').checked=event.on;
   else if(event.type==='queue')renderQueue(event);
@@ -1794,9 +1803,12 @@ events.onmessage=e=>{
    notice(event.text);
    const s=streams[id];if(s){s.error=String(event.text||'Fehler').split('\n')[0].slice(0,140);s.phase='error';s.hung=false;s.lastEvent=Date.now();updateStream(id,true)}
   }else if(event.type==='frontend')location.reload();
-  else if(event.type==='stopped'||event.type==='cancelled'){
+  else if(event.type==='cancelled'&&event.bot){
+   const s=streams[event.bot];if(s?.frame)cancelAnimationFrame(s.frame);
+   delete streams[event.bot];busyBots.delete(event.bot);renderLanes();streamControls();notice('');refresh().catch(err=>notice(err.message));
+  }else if(event.type==='stopped'||event.type==='cancelled'){
    for(const s of Object.values(streams))if(s.frame)cancelAnimationFrame(s.frame);
-   streams={};streamControls();notice('');refresh().catch(err=>notice(err.message));
+   streams={};setBusyBots([]);streamControls();notice('');refresh().catch(err=>notice(err.message));
   }
  }catch(err){notice(err.message)}
 };

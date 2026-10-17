@@ -1,53 +1,124 @@
-# Gastzugang zum Raum
+# MAG – Gäste sicher einladen
 
-Ein Raum, eine Unterhaltung: Chris, Gäste und DeepSeek. Nur über Tailscale,
-nur `https://mag.stardenburg.de` (100.123.114.16, TCP 443). Kein SSH, keine
-anderen Geräte.
+## Sicherheitsgrenze
 
-## Einladen
+Der Raum ist ausschließlich unter \`https://mag.stardenburg.de\` auf
+\`100.123.114.16:443\` im Tailnet verfügbar. **Gäste werden niemals als
+Vollmitglieder mit allgemeinen 22/443/3000-Rechten eingeladen.** Der OAuth-Client
+stellt ausschließlich Einmal-Auth-Keys für \`tag:mag-guest\` aus. Für dieses Tag
+erlaubt die Tailscale-Policy nur \`100.123.114.16:443\`.
 
-1. Tailscale-Login des Gastes kennen (z. B. `ada@github`).
-2. In der Tailscale-ACL `ops/tailscale/policy.hujson` einfügen: den Login in
-   `group:mag-guests` eintragen. Alternativ ein Gerät mit `tag:mag-guest`
-   teilen (Node Sharing nur für mag). Speichern.
-3. Gast einladen: Tailscale-Admin → Users → Invite, **oder** mag per Node
-   Sharing an genau diesen Nutzer teilen. Nicht ins Admin-Netz aufnehmen,
-   keinen SSH-Zugang geben.
-4. `access.json` auf mag muss Chris als Owner nennen (siehe Deploy). Der Gast
-   steht dort nicht — unbekannte Logins sind Gäste.
+Ein getaggtes Gerät hat keine \`UserProfile\`-Identität. C++ \`whois\` prüft
+stattdessen \`Node.ID\` und \`Node.Tags\`, nginx übernimmt nur die vom lokalen
+Authentifizierungs-Subrequest zurückgegebenen Identitätsfelder und verwirft
+alle vom Browser eingesandten \`X-Tailscale-*\`-Header. Der C++-Raum prüft bei
+**jeder Anfrage** zusätzlich die aktive, nicht abgelaufene Gerätezuordnung in
+\`/var/lib/magbot/room/access.json\`. Ein neu getaggtes Gerät ohne Einladung
+sieht ausschließlich die Aktivierungsseite, nicht den Chat.
 
-## Was der Gast macht
+Gast-Endpunkte werden über eine harte Allowlist begrenzt. Kein Zugriff auf
+Jobs, Pages, Admin, Agentenverwaltung, Modellwahl, Reset, Bot-Speicher,
+Connectors oder privilegierte Browserkontrolle, auch wenn \`permissions\` in
+\`access.json\` versehentlich zu großzügig konfiguriert wird. SSE-Verbindungen
+werden nach Entfernung auch ohne Browser-Neuladen innerhalb von höchstens
+einer Sekunde geschlossen; neue Requests sind unmittelbar gesperrt.
 
-1. Tailscale installieren (tailscale.com/download) und die Einladung annehmen.
-2. Im Browser `https://mag.stardenburg.de` öffnen. Zertifikat ist gültig, die
-   Adresse ist nur im Tailnet erreichbar.
-3. Oben steht `Gast · Name`. Schreiben, Dateien, Sprache: ja. Offline, Stop,
-   Jobs, Erinnerungen ändern, Raum leeren, Bots löschen: nein, solange Chris
-   das nicht in `access.json` freigibt.
-4. Jede Nachricht zeigt den echten Namen. DeepSeek sieht `[Name]:` im Verlauf
-   und antwortet in denselben Raum. Alle offenen Seiten aktualisieren sich
-   über die bestehende Live-Verbindung.
+## Einmalige Einrichtung (Chris / Ali)
 
-## Widerrufen
+1. In der Tailscale-Admin-Konsole unter **Trust credentials → OAuth clients**
+   einen Client namens \`MAG Guest Manager\` erstellen. **Nur** die Scopes
+   \`auth_keys\` und \`devices:core\`, jeweils nur \`tag:mag-guest\`. Keine
+   \`users\`-, \`policy_file\`-, \`all\`- oder Owner-Scopes. Der Client ist nicht
+   als normales Tailnet-Mitglied einzuladen. Die Policy in
+   \`ops/tailscale/policy.hujson\` prüfen, insbesondere den Grant nur auf
+   \`100.123.114.16:443\` und die Tag-Owner-Regel.
+2. Client-ID/Secret direkt auf mag **außerhalb von Git** hinterlegen:
+   \`\`\`bash
+   sudo install -d -o root -g root -m 0700 /etc/mag-stack/secrets
+   sudo sh -c 'umask 077; cat > /etc/mag-stack/secrets/mag-guest-oauth.json'
+   # In diese Eingabe NUR folgendes JSON mit den echten Werten schreiben:
+   # {"client_id":"...","client_secret":"..."}
+   # Ende mit Ctrl-D. Niemals in die Shell-Befehlszeile eingeben!
+   sudo chown root:root /etc/mag-stack/secrets/mag-guest-oauth.json
+   sudo chmod 0600 /etc/mag-stack/secrets/mag-guest-oauth.json
+   sudo systemctl daemon-reload
+   \`\`\`
+3. \`mag-120.service\` verwendet \`LoadCredential=mag-guest-oauth:...\`.
+   systemd kopiert die Datei geschützt nach \`/run/credentials/...\`, ohne sie
+   per Environment-Variable oder Kommandozeilenargument zu veröffentlichen.
+   **Vor** dem Room-Deploy muss die Quelldatei existieren, andernfalls darf
+   systemd den Raumdienst nicht starten. Die normalen Build-/Deploy-Schritte
+   bleiben \`ops/deploy.sh\`. Nur \`mag-120\` neu starten, **niemals \`mag-llm\`**.
+4. Besitzeridentität unverändert unter
+   \`/var/lib/magbot/room/access.json\` konfigurieren:
+   \`\`\`json
+   {"owners":["chris.hohlfeld@gmail.com"],"owner_name":"Chris"}
+   \`\`\`
+   Bestehende Schlüssel und Permissions erhalten; das Backend ergänzt
+   \`guest_invites\` atomar selbst. Die Datei muss für den Dienstnutzer
+   \`magbot\` schreibbar sein und darf keine Welt-Lese-/Schreibrechte haben.
 
-- Login aus `group:mag-guests` streichen oder das geteilte Gerät entfernen
-  (Tailscale-Admin → Machines → Share → Remove, bzw. Users → entfernen).
-- Die Verbindung bricht ab, sobald Tailscale die ACL zieht. Es gibt kein
-  zweites Passwort im Raum.
+## Einladung im Raum
 
-## Für Ali (Deploy)
+Nur der Besitzer sieht **Gäste → Einladen**. Name und Notiz sind optional,
+das Ablaufdatum ist 1 Stunde bis 30 Tage in der Zukunft. Die API erstellt
+einen nicht wiederverwendbaren, preauthorized, getaggten Auth-Key mit 24 Stunden
+Schlüsselgültigkeit. Die Antwort zeigt **einmal** Schlüssel, Einladungslink
+und QR-Code. Der QR-Code enthält ebenfalls den Schlüssel, ist also ein
+Geheimnis; nur über einen geeigneten privaten Kanal weitergeben.
+Niemals Screenshots öffentlich posten. Der Server speichert nur die
+Schlüssel-ID zur Löschung und einen SHA-256-Hash des einmaligen
+Aktivierungscodes, **niemals den Auth-Key oder OAuth-Secret im Klartext**.
 
-Der Gastzugang ist mit nginx, nicht Caddy, umgesetzt. Owner-/Gast-Rechte sind
-bereits im C++-Backend. Den Live-Stand nicht neu aufbauen und **mag-llm niemals
-neu starten**.
+Der Gast:
+1. Tailscale für Windows/macOS/Linux/iOS/Android installieren.
+2. In Tailscale (mobil: Anmeldeseite → Menü → **Use an auth key**) den
+   Einmal-Schlüssel eingeben. Nicht mit einem normalen persönlichen
+   Tailnet-Login als Vollmitglied beitreten.
+3. Den erhaltenen Einladungslink auf demselben Gerät öffnen. Die
+   Aktivierungsseite bestätigt den privaten Code gegen \`Node.ID\`, Tag und
+   die zugehörige Tailscale-IP anhand der Geräte-API. Danach öffnet sich
+   derselbe MAG-Raum. Der Link-Code ist ab Claim nicht wiederverwendbar.
 
-Die verbindliche Sicherheitsanleitung steht unter
-[INSTALL.md](INSTALL.md) und [OPS.md](OPS.md).
-Vor dem neuen Eingang `/var/lib/magbot/room/access.json` korrekt mit dem
-per `tailscale whois` ermittelten Owner-Login konfigurieren; nicht raten,
-nicht in Git einchecken. `preflight.sh`, cert `--no-reload`,
-`install.sh` mit **180s automatischem Rollback**, Owner-Check von einem
-anderen Tailnet-Gerät, dann `confirm.sh --owner-verified`, anschließend
-Gastberechtigungen und SSE prüfen. Erst nach Erfolg `remove-caddy.sh`
-ausführen. Unbekannter oder nicht authentifizierter externer Zugriff
-bleibt gesperrt. Tailscale Serve :8446 bleibt unabhängig erhalten.
+**Wichtig:** Tailscale empfiehlt Tags primär für nicht-benutzergebundene
+Geräte. Mit einem Auth-Key wird das Gerät zu einem tag-owned Device statt
+einem persönlich zugeordneten Gerät. Darum verlangt MAG zusätzlich den
+zweiten, einmaligen Aktivierungsnachweis.
+
+## Übersicht, Widerruf, automatische Bereinigung
+
+Unter **Gäste**: Name/Notiz, Gerät, online/zuletzt gesehen (falls API
+erreichbar), erstellt, Ablauf, noch offene Einladungen. Der Besitzer
+bestätigt **Entfernen** ausdrücklich. C++ sperrt zuerst den Eintrag in
+\`access.json\`; dann werden unbenutzte Keys und Gerät via Tailscale-API
+gelöscht. Falls Tailscale nicht erreichbar ist, bleibt die Sperre lokal
+wirksam, die Löschung wird spätestens im nächsten minütlichen Tick
+erneut versucht. Abgelaufene Schlüssel, offene Einladungen und
+Geräte werden genauso abgeräumt.
+
+Der C++-Scheduler verwendet keinen neuen Dienst. Ein revisionsfähiges,
+geheimnisfreies Audit-Protokoll liegt unter
+\`/var/lib/magbot/room/guest-audit.log\` (Ersteller, Zeitpunkt, Aktion,
+Einladungs-ID). Das OAuth-Access-Token liegt nur kurz im Prozessspeicher.
+Einladungs-/Claim-POSTs sind rate-limitiert; Admin-Mutationen erfordern
+whois-Owner, \`X-Mag-Token\`, identische HTTPS-Origin und
+\`Sec-Fetch-Site: same-origin\`.
+
+## Notfall-Widerruf / Incident
+
+- **Sofort:** In der Tailscale-Konsole Geräte mit \`tag:mag-guest\` löschen und
+  zugehörige Auth-Keys widerrufen. Bei kompromittiertem OAuth-Client auch
+  diesen unter Trust credentials widerrufen und das Secret auf mag erneuern.
+- \`guest_invites\` in \`access.json\` mit fachkundiger Hilfe sperren
+  (\`revoked:true\`), \`mag-120\` kontrolliert neu starten, wenn nötig.
+  Es darf **nicht** das ganze \`access.json\` oder die Besitzerliste gelöscht
+  werden. Entfernte Geräte bekommen dadurch sofort 403, bestehende
+  SSE-Verbindungen werden beendet.
+- \`journalctl -u mag-120\`, \`guest-audit.log\`, Tailnet-Geräteliste und
+  \`ops/tailscale/policy.hujson\` prüfen. Im Audit dürfen keine Auth-Keys
+  oder OAuth-Zugangsdaten stehen.
+- Fail-closed: fehlt \`access.json\`, wertebedingt eine Zuordnung nicht mehr
+  stimmt oder ist das Ablaufdatum überschritten, erhält ein Gast keinen
+  Raumzugriff. Bereits angenommene Gäste werden nicht allein durch
+  das Verfallen ihres **Einladungs-Keys** gelöscht, sondern durch das
+  im Register gespeicherte Aufenthaltsende.

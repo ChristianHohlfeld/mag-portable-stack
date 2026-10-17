@@ -4850,38 +4850,56 @@ static ScopedResult delete_room_file(const std::string &stored) {
   out["undo"] = uid;
   return scoped_ok(out);
 }
+#include "room_snapshots.hpp"
 static ScopedResult clear_room_data() {
+  // Never clear even one byte unless the full room and every active file
+  // has already reached a durable snapshot. Holds STATE_MTX across both.
+  std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
+  std::string snapshot, error;
+  if (!snapshot_capture_locked(snapshot,error))
+    return scoped_err(507,"Raum nicht geleert: "+error);
   UndoItem u;
   u.kind = "room";
   u.id = token_hex(8);
   std::string dir = trash_slot(u.id);
   u.trash = dir;
-  {
-    std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
-    Val room = Val::array(), files = Val::array();
-    for (auto &m : ROOM)
-      room.push(m);
-    for (auto &f : FILES)
-      files.push(f);
-    u.data = Val::object();
-    u.data["room"] = room;
-    u.data["files"] = files;
-    for (auto &f : FILES) {
-      if (f.find("removed"))
-        continue;
-      auto s = f.find("stored");
-      if (!s)
-        continue;
-      std::string name = basename_of(s->asStr());
-      if (!is_stored_name(name))
-        continue;
-      move_path(FILES_DIR + "/" + name, dir + "/" + name);
+  Val room = snapshot_array(ROOM), files = snapshot_array(FILES);
+  u.data = Val::object();
+  u.data["room"] = room;
+  u.data["files"] = files;
+  std::vector<std::string> moved;
+  for (auto &f : FILES) {
+    if (f.find("removed")) continue;
+    auto s=f.find("stored");
+    if (!s || !is_stored_name(s->asStr())) {
+      error="Ungültiger Dateieintrag";
+      break;
     }
+    std::string name=s->asStr();
+    if (!move_path(FILES_DIR+"/"+name,dir+"/"+name)) {
+      error="Datei konnte nicht in den temporären Papierkorb verschoben werden";
+      break;
+    }
+    moved.push_back(name);
+  }
+  if (!error.empty()) {
+    for (auto it=moved.rbegin();it!=moved.rend();++it)
+      (void)move_path(dir+"/"+*it,FILES_DIR+"/"+*it);
+    return scoped_err(507,"Raum unverändert: "+error);
+  }
+  try {
     ROOM.clear();
+    FILES.clear();
     clear_reaction_notes();
     save_room();
-    FILES.clear();
-    save_json_array(FILES_JSON, FILES);
+    save_json_array(FILES_JSON,FILES);
+  } catch (...) {
+    ROOM=*room.arr;
+    FILES=*files.arr;
+    for (auto it=moved.rbegin();it!=moved.rend();++it)
+      (void)move_path(dir+"/"+*it,FILES_DIR+"/"+*it);
+    try {save_room();save_json_array(FILES_JSON,FILES);}catch(...){}
+    return scoped_err(507,"Raum unverändert: Persistenz fehlgeschlagen");
   }
   std::string uid = u.id;
   undo_commit(std::move(u));
@@ -4889,6 +4907,7 @@ static ScopedResult clear_room_data() {
   Val out = Val::object();
   out["ok"] = true;
   out["undo"] = uid;
+  out["snapshot"] = snapshot;
   return scoped_ok(out);
 }
 static ScopedResult clear_bot_memory(const std::string &id) {

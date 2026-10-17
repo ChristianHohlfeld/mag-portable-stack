@@ -468,27 +468,28 @@ inline void sync_now(const std::string& repo="",bool expect_absent=false) {
   const auto token=trim(read(env("MAG_PAGES_TOKEN_FILE","/etc/mag-pages/gitea-token")));
   if(token.empty() || token.find_first_of("\r\n")!=std::string::npos)
     throw std::runtime_error("missing or invalid server-side Pages token");
-  reconcile(root,token);
   if(!repo.empty()) {
     // Repo visibility is checked using the ACTUAL read:repository token.
     // Fail visibly if a VM-created private repo is absent from the index.
     auto visible=repo_list(token);
     bool exists=false;
     for(const auto& v:visible)if(field(v,"full_name")==repo)exists=true;
-    if(!expect_absent && !exists)
+    if(!exists)
       throw std::runtime_error("read:repository publisher token cannot list private owner repo "+repo);
+    auto slash=repo.find('/');
+    const auto permission=request("repos/"+encode(repo.substr(0,slash))+"/"+
+                                  encode(repo.substr(slash+1)),token);
+    if(permission.status!=200)
+      throw std::runtime_error("read:repository publisher token cannot read private repo");
+  }
+  // Validate the actual read:repository visibility BEFORE any webroot change.
+  reconcile(root,token);
+  if(!repo.empty()) {
     const auto site_state=json(read(root/"sites.json"));
     if(expect_absent && site_state.find(repo))
       throw std::runtime_error("Page still published after deletion");
     if(!expect_absent && !site_state.find(repo))
       throw std::runtime_error("Page source not visible to publisher");
-    if(!expect_absent) {
-      auto slash=repo.find('/');
-      const auto r=request("repos/"+encode(repo.substr(0,slash))+"/"+
-                           encode(repo.substr(slash+1)),token);
-      if(r.status!=200)
-        throw std::runtime_error("read:repository token cannot read created private repo");
-    }
   }
   run_root_reconcile(); // immediate custom TLS and nginx -t/reload
 }

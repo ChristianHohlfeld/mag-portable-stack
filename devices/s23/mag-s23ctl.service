@@ -1,0 +1,16 @@
+[Unit]
+Description=MAG S23 control (parallel to s23pub, not a replacement)
+After=network-online.target
+# No [Install] and no WantedBy. Start it by hand only after Chris confirms
+# that it is running beside s23pub. This unit does not listen on port 8720
+# and has no relationship to cloudflared, mag-llm, or mag-llm-iq3.
+
+[Service]
+Type=simple
+ExecStart=/opt/mag-stack/current/bin/s23ctl
+Environment=MAG_S23_BIND=127.0.0.1
+Environment=MAG_S23_PORT=18721
+EnvironmentFile=-/etc/mag-s23/s23ctl.env
+NoNewPrivileges=yes
+PrivateTmp=yes
+Nice=5

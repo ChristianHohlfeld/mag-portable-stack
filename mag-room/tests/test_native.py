@@ -500,6 +500,16 @@ class Native(unittest.TestCase):
    self.assertFalse([p for p in (self.state/'connectors').iterdir() if p.name.startswith('.gh-hdr')],'header file removed')
    self.request('/api/connectors/github',method='DELETE')
   finally:srv.shutdown()
+ def test_16h_s23_tool_does_not_touch_s23pub_when_unconfigured(self):
+  self.wait_idle()
+  call={'tool_calls':[{'index':0,'id':'call_s23','function':{'name':'s23_status','arguments':'{}'}}]}
+  Model.calls.clear();Model.script=[[call],['S23 nicht gestartet.']]
+  self.request('/api/message',{'text':'S23-Status','bots':['test']});self.wait_idle();time.sleep(.2)
+  self.assertTrue(any(t['function']['name']=='s23_status' for t in Model.calls[0]['tools']))
+  blob=json.dumps(Model.calls[-1]['messages'])
+  self.assertIn('nicht konfiguriert',blob)
+  self.assertIn('s23pub',blob)
+  self.assertNotIn('8720',blob)
  def test_08_idle_autonomy_does_not_make_up_work(self):
   self.request('/api/autotalk',{'on':True})
   calls_before=len(Model.calls)

@@ -290,6 +290,9 @@ inline std::pair<std::string,std::string> branch_sha(const std::string& token,co
   auto r=request(prefix+encode("gh-pages"),token);
   std::string branch="gh-pages";
   if(r.status==404) {branch=fallback;r=request(prefix+encode(branch),token);}
+  // Empty Gitea repos and repositories whose Pages sources were removed
+  // have no branch to publish. Other API/status errors already throw.
+  if(r.status==404)return {"",""};
   if(r.status!=200)throw std::runtime_error("missing default branch");
   auto v=json(r.body);
   auto commit=v.find("commit");
@@ -342,6 +345,7 @@ inline void reconcile(const fs::path& root,const std::string& token) {
     const auto page=slug(full);
     if(!slugs.insert(page).second)throw std::runtime_error("Pages slug collision");
     const auto branch=branch_sha(token,owner,name,field(repo,"default_branch"));
+    if(branch.first.empty())continue; // source absent: site must be retired
     const bool docs=branch.first!="gh-pages";
     const auto prev=prior.find(full);
     std::string cname;

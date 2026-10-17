@@ -53,6 +53,23 @@ probe_config(){
   if [[ -n ${MAG_DEPLOY_OWNER_SOCKS5:-} ]]; then
     [[ $remote_ip == "$MAG_DEPLOY_OWNER_IP" ]] ||
       die 'Owner SSH target is not the pinned Tailnet node'
+    # Early failure if this is an unattended/tagged agent box. No attempt
+    # to upgrade a tagged device into an Owner; the real HTTPS smoke below
+    # remains the authoritative end-to-end authorization test.
+    local tsstatus
+    tsstatus=$(ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=5 \
+      "$MAG_DEPLOY_OWNER_SSH" 'tailscale status --json') ||
+      die 'Cannot inspect remote Tailscale user identity'
+    jq -e --arg user "$MAG_DEPLOY_OWNER_LOGIN" '
+      . as $ts |
+      $ts.Self.Online == true and
+      (($ts.Self.Tags // []) | length == 0) and
+      ([($ts.User // {})[] |
+        select(.LoginName != null and
+               (.LoginName | ascii_downcase) == ($user | ascii_downcase) and
+               .ID == $ts.Self.UserID)] | length == 1)
+    ' <<<"$tsstatus" >/dev/null ||
+      die 'Remote Tailscale node is not an online, untagged Owner device'
   fi
 }
 preflight(){

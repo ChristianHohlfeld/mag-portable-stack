@@ -2000,6 +2000,12 @@ static std::string pages_dispatch_tool(int bot_idx,const std::string& name,
   else if(name=="pages_set_domain") {
     op="domain"; extra=str("domain");
     if(!magpages::dns(extra))return "Fehler: invalid custom domain";
+    // Custom ACME HTTP-01 cannot work with the private-only listener.
+    // Reject BEFORE committing CNAME; every reported success has HTTPS.
+    if(env("MAG_PAGES_PUBLIC_BIND","").empty() ||
+       magpages::mode(magpages::policy(env("MAG_PAGES_VISIBILITY",
+           "/etc/mag-pages/visibility.json")),owner+"/"+repo)!="public")
+      return "Fehler: custom HTTPS requires public Pages bind and repo policy";
   }else if(name=="pages_set_visibility") {
     op="verify";extra=str("visibility");
     if(extra!="tailnet" && extra!="public")return "Fehler: visibility must be tailnet|public";

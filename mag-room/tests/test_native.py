@@ -515,14 +515,22 @@ class Native(unittest.TestCase):
   self.assertIn('deepseek-v4-flash-0731',call['messages'][0]['content'])
   self.assertNotIn('gpt-oss',json.dumps(call))
  def test_09b_reasoning_is_returned_with_tool_history(self):
+  # A previous test may leave a background request; drain before injecting
+  # the two scripted responses to avoid racy Model.script consumption.
+  self.request('/api/autotalk',{'on':False})
+  self.wait_idle()
   first=[{'reasoning_content':'Ich merke mir das.'},{'tool_calls':[{'index':0,'id':'call_ds_1','function':{'name':'remember','arguments':'{"fact":"DeepSeek-Test"}'}}]}]
   Model.script=[first,['Notiert.']]
   try:
    initial=len(Model.calls)
    self.request('/api/message',{'text':'Merke DeepSeek-Test','bots':['test']})
    self.wait_room('Notiert.');self.wait_idle()
-   self.assertEqual(len(Model.calls),initial+2)
-   msgs=Model.calls[-1]['messages']
+   # Assert this test's tool roundtrip, not unrelated global Model.calls.
+   fresh=Model.calls[initial:]
+   own=[x for x in fresh if any('Merke DeepSeek-Test' in (msg.get('content') or '')
+                             for msg in x.get('messages',[]) if isinstance(msg.get('content'),str))]
+   self.assertEqual(len(own),2,repr([x.get('messages',[])[-1:] for x in fresh])[:1200])
+   msgs=own[-1]['messages']
    asst=[m for m in msgs if m['role']=='assistant' and m.get('tool_calls')]
    self.assertEqual(asst[-1]['reasoning_content'],'Ich merke mir das.')
    self.assertEqual(asst[-1]['tool_calls'][0]['function']['name'],'remember')
@@ -930,17 +938,14 @@ class Native(unittest.TestCase):
   for needle in ('id="you-badge"','function isMine','function applyAccess','message.user.other','avatarColor'):
    self.assertIn(needle,html)
   for bad in ('alert(','confirm(','prompt('):self.assertNotIn(bad,html)
-  import importlib.util
-  spec=importlib.util.spec_from_file_location('mag_whois',ROOT/'ops/private-access/tailscale-whois.py')
-  mod=importlib.util.module_from_spec(spec);spec.loader.exec_module(mod)
-  login,name=mod.parse_whois({'UserProfile':{'LoginName':'ada@github','DisplayName':'Ada Lovelace'}})
-  self.assertEqual((login,name),('ada@github','Ada Lovelace'));self.assertEqual(mod.header_name(name),'Ada%20Lovelace')
-  self.assertEqual(mod.valid_remote('100.123.114.16:443'),'100.123.114.16:443');self.assertEqual(mod.valid_remote('8.8.8.8'),'')
-  self.assertRaises(ValueError,mod.parse_whois,{'UserProfile':{'LoginName':'bad login'}})
+  # C++ local Auth endpoint, never a Python daemon; fail closed.
+  self.error(403,'/_internal/tailscale/whois',headers={'X-Mag-Remote':'bad-address'})
+  self.assertFalse((ROOT/'ops/private-access/tailscale-whois.py').exists())
+  self.assertFalse((ROOT/'ops/private-access/mag-whois.service').exists())
   self.assertFalse((ROOT/'ops/private-access/Caddyfile').exists())
   nginx=(ROOT/'ops/private-access/mag-room.nginx.conf').read_text()
   for needle in ('listen 100.123.114.16:443','auth_request /_mag_whois',
-                 'proxy_pass http://127.0.0.1:8765/whois',
+                 'proxy_pass http://127.0.0.1:8766/_internal/tailscale/whois;',
                  'proxy_set_header X-Tailscale-User ""',
                  'proxy_set_header X-Tailscale-Name ""',
                  'proxy_set_header X-Tailscale-Login ""',
@@ -968,17 +973,45 @@ class Native(unittest.TestCase):
    self.assertEqual(local['you']['role'],'owner')
    plain=json.loads(urllib.request.urlopen(f'http://127.0.0.1:{ui}/api/state',timeout=5).read())
    self.assertEqual(plain['you']['role'],'owner');self.assertEqual(plain['you']['login'],'')
-   host=''
-   for cand in ('172.30.0.2','172.17.0.1'):
+   # Discover an IPv4 address owned by THIS host, not fixed Docker/CI IPs.
+   # UDP connect chooses a local route but sends no packets.
+   import ipaddress
+   candidates=set()
+   for dest in ('192.0.2.1','198.51.100.1'):
     try:
-     with socket.create_connection((cand,ui),timeout=2):host=cand;break
-    except OSError:continue
-   self.assertTrue(host,'need a non-loopback local address')
+     with socket.socket(socket.AF_INET,socket.SOCK_DGRAM) as probe:
+      probe.connect((dest,9));candidates.add(probe.getsockname()[0])
+    except OSError:pass
+   try:
+    for item in socket.getaddrinfo(socket.gethostname(),None,socket.AF_INET):
+     candidates.add(item[4][0])
+   except OSError:pass
+   # Linux SIOCGIFADDR additionally handles hosts whose DNS has no local A.
+   if os.name=='posix':
+    try:
+     import fcntl,struct
+     for _,name in socket.if_nameindex():
+      with socket.socket(socket.AF_INET,socket.SOCK_DGRAM) as probe:
+       try:
+        raw=fcntl.ioctl(probe.fileno(),0x8915,struct.pack('256s',name[:15].encode()))
+        candidates.add(socket.inet_ntoa(raw[20:24]))
+       except OSError:pass
+    except (ImportError,OSError):pass
+   host=''
+   for cand in sorted(candidates):
+    try:
+     ip=ipaddress.ip_address(cand)
+     if ip.is_loopback or ip.is_unspecified or ip.is_multicast or ip.is_link_local:continue
+     with socket.create_connection((cand,ui),timeout=.5):host=cand;break
+    except (OSError,ValueError):continue
+   if not host:self.skipTest('No reachable non-loopback interface on this host')
+   # Bypass CI HTTP_PROXY: this must hit the real locally bound test server.
+   direct=urllib.request.build_opener(urllib.request.ProxyHandler({}))
    req=urllib.request.Request(f'http://{host}:{ui}/api/state',headers={'X-Tailscale-User':'chris@github','X-Tailscale-Name':'Chris'})
-   with self.assertRaises(urllib.error.HTTPError) as ctx:urllib.request.urlopen(req,timeout=5)
+   with self.assertRaises(urllib.error.HTTPError) as ctx:direct.open(req,timeout=5)
    self.assertEqual(ctx.exception.code,403);self.assertIn('Kein Zugang',ctx.exception.read().decode())
    req=urllib.request.Request(f'http://{host}:{ui}/healthz')
-   with self.assertRaises(urllib.error.HTTPError) as ctx:urllib.request.urlopen(req,timeout=5)
+   with self.assertRaises(urllib.error.HTTPError) as ctx:direct.open(req,timeout=5)
    self.assertEqual(ctx.exception.code,403)
   finally:
    proc.terminate();proc.wait(timeout=5);log.close()

@@ -45,13 +45,24 @@ jobs:
         run: bash ops/vendor-speech-assets.sh build/speech-assets
       - name: Playwright with actual WASM and German model
         run: python3 -m unittest discover -s mag-room/tests -p test_speech_real.py -v
-      - name: Reject removal of live files
+      - name: Reject unapproved removal of live files
         run: |
           git fetch --no-tags origin main
-          if git diff --name-status origin/main...HEAD | grep -E '^D[[:space:]]'; then
-            echo 'Deleted live file in speech-only PR' >&2
-            exit 1
-          fi
+          # #21 deliberately retires precisely two Python whois artifacts,
+          # and only with the native C++ LocalAPI replacement in place.
+          while IFS= read -r removed; do
+            [ -n "$removed" ] || continue
+            case "$removed" in
+              ops/private-access/tailscale-whois.py|ops/private-access/mag-whois.service)
+                test -s mag-room/native/tailscale_auth.hpp
+                grep -Fq 'proxy_pass http://127.0.0.1:8766/_internal/tailscale/whois;' ops/private-access/mag-room.nginx.conf
+                ;;
+              *)
+                echo "Unexpected deletion in speech integration: $removed" >&2
+                exit 1
+                ;;
+            esac
+          done < <(git diff --name-only --diff-filter=D origin/main...HEAD)
   gitleaks:
     runs-on: ubuntu-24.04
     steps:

@@ -36,6 +36,11 @@ static void agents_event() {
 static void route(int fd, Req &r, bool bridge = false) {
   const std::string &p = r.path;
   const std::string &m = r.method;
+  // Native nginx auth_request; no VM bridge or implicit local-owner fallback.
+  if (!bridge && p == "/_internal/tailscale/whois") {
+    native_tailscale_auth(fd, r);
+    return;
+  }
   Actor actor;
   if (bridge) {
     std::string token = qparam(r.query, "token"), expected = bridge_token();

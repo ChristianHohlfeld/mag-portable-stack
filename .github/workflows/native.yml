@@ -25,6 +25,7 @@ jobs:
           ./build/test-large-stdin
           python3 mag-room/tests/test_large_tools.py
           python3 mag-room/tests/test_native.py
+          python3 mag-room/tests/test_tailscale_auth.py
       - name: IK prompt cache regression and rollback shell syntax
         run: |
           bash ops/deepseek/tests/test-ops-38.sh

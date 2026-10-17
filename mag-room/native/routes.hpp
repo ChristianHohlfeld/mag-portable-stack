@@ -510,7 +510,8 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
   }
   // Owner-only, read-only summary without credentials or repository paths.
   if (m == "GET" && path == "/api/backup/status") {
-    if (bridge || !actor.ok || actor.role != "owner") {
+    if (bridge || !actor.ok || actor.role != "owner" ||
+        actor.login.empty() || !ts_proof_valid(r.hdrs)) {
       error_json(fd, 403, "Nur der Besitzer"); return;
     }
     bool ok = false;

@@ -1,7 +1,7 @@
 # Optional include INSIDE the existing nginx HTTPS server block; only nginx.
 # Avoids loading 122 MB weights into the native magroom C++ HTTP process.
 # All URLs are self-hosted under /opt/mag-stack/current/web/static.
-location ~ ^/static/speech-[0-9a-f]{12}/[A-Za-z0-9_.-]+$ {
+location ~ "^/static/speech-[0-9a-f]{12}/[A-Za-z0-9_.-]+$" {
     root /opt/mag-stack/current/web;
     types {
         text/javascript js mjs;

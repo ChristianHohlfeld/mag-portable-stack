@@ -8,6 +8,8 @@ BACKUP="/var/backups/mag-stack/$RELEASE_ID"
 WHISPER_CLI="${MAG_WHISPER_SOURCE:-/home/chris/.cache/mag-stack/whisper-build/bin/whisper-cli}"
 WHISPER_MODEL="${MAG_WHISPER_SOURCE_MODEL:-/home/chris/models/whisper/ggml-large-v3-turbo.bin}"
 [[ $EUID == 0 ]] || { echo 'Run with sudo' >&2; exit 1; }
+exec 8>/run/lock/mag-private-deploy.lock
+flock -n 8 || { echo 'Another MAG deploy/ingress install is running' >&2; exit 1; }
 [[ "$RELEASE_ID" =~ ^[a-zA-Z0-9._-]+$ ]] || exit 1
 for binary in magroom mag-browser magbot-native; do test -x "$SOURCE/build/$binary"; done
 # Go is used only for WebRTC/UDP; the room, browsers and VM lifecycle remain C++.
@@ -27,6 +29,7 @@ curl -fsS --max-time 5 http://127.0.0.1:8080/v1/models >/dev/null \
   || echo 'Hinweis: Modell-Backend noch nicht bereit – Deploy läuft weiter.' >&2
 install -d -m 0755 /opt/mag-stack/releases "$RELEASE/bin" "$RELEASE/web" "$RELEASE/ops"
 install -d -m 0700 "$BACKUP"
+install -m 0700 "$NGINX_SYNC" "$BACKUP/deploy-nginx.sh"
 cp -a /etc/systemd/system/mag-120.service "$BACKUP/mag-120.service"
 if [[ -f /etc/systemd/system/mag-browser-webrtc.service ]]; then
   cp -a /etc/systemd/system/mag-browser-webrtc.service "$BACKUP/mag-browser-webrtc.service"

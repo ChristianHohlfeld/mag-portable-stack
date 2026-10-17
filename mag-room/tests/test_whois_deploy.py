@@ -105,6 +105,17 @@ echo -n 403''',
   self.assertEqual(self.original,self.site.read_bytes())
   self.assertFalse(self.enabled.is_symlink())
   self.assertEqual(self.log.read_text().count("reload"),2)
+ def test_invalid_staged_nginx_syntax_cannot_become_live(self):
+  # Fake nginx -t refuses a broken candidate; transaction must restore
+  # the exact previous file before there is any chance to switch a binary.
+  with (self.script.parent/'mag-room.nginx.conf').open('a') as out:
+   out.write('\nBROKEN\n')
+  r=self.run_script('standalone')
+  self.assertNotEqual(r.returncode,0)
+  self.assertEqual(self.original,self.site.read_bytes())
+  self.assertFalse(self.enabled.is_symlink())
+  self.assertIn('nginx -t failed',r.stderr)
+
  def test_standalone_rolls_back_on_owner_403(self):
   r=self.run_script("standalone",fail=True)
   self.assertNotEqual(r.returncode,0)

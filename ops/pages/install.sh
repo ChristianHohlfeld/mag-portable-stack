@@ -39,10 +39,10 @@ chmod 0640 /etc/mag-pages/visibility.json
 install -d -m 0755 -o magbot -g magbot /var/lib/mag-pages \
  /var/lib/mag-pages/releases /var/lib/mag-pages/public /var/lib/mag-pages/tailnet /var/lib/mag-pages/custom
 install -d -m 0755 -o root -g root /var/lib/mag-pages/acme /usr/local/lib/mag-pages /etc/nginx/conf.d
-install -m 0755 -o root -g root "$here/issue-wildcard.sh" "$here/refresh-custom.sh" "$here/render-nginx.sh" "$here/pages-gc.sh" "$here/pages-policy.sh" /usr/local/lib/mag-pages/
-# Only these two root-owned argv entrypoints are delegated to native magroom.
-# No shell, user-provided command path, or wildcard sudo permissions.
-printf '%s\n' 'magbot ALL=(root) NOPASSWD: /usr/local/lib/mag-pages/pages-gc.sh, /usr/local/lib/mag-pages/pages-policy.sh *' > /etc/sudoers.d/mag-pages
+install -m 0755 -o root -g root "$here/issue-wildcard.sh" "$here/refresh-custom.sh" "$here/render-nginx.sh" "$here/pages-gc.sh" "$here/pages-policy.sh" "$here/pages-reconcile.sh" /usr/local/lib/mag-pages/
+# Exact fixed systemd start command. It enters a fresh ROOT mount namespace,
+# never the room's ProtectSystem=full namespace. No arbitrary args/wildcards.
+printf '%s\n' 'magbot ALL=(root) NOPASSWD: /usr/bin/systemctl start mag-pages-reconcile.service' > /etc/sudoers.d/mag-pages
 chmod 0440 /etc/sudoers.d/mag-pages
 visudo -cf /etc/sudoers.d/mag-pages
 # Save every existing Pages vhost for fail-closed recovery.
@@ -70,7 +70,7 @@ if ! systemctl reload nginx.service; then
 fi
 # Existing timer only; pages renewal via lego v5 RUN, not a separate service.
 install -d -m 0755 /etc/systemd/system/mag-acme-renew.service.d
-printf '[Service]\nExecStartPost=-/usr/local/lib/mag-pages/refresh-custom.sh run\nExecStartPost=-/usr/local/lib/mag-pages/pages-gc.sh\n' \
+printf '[Service]\nExecStartPost=-/usr/local/lib/mag-pages/refresh-custom.sh run\nExecStartPost=-/usr/local/lib/mag-pages/pages-reconcile.sh\n' \
  > /etc/systemd/system/mag-acme-renew.service.d/30-pages.conf
 # Native publisher enables public links only with an explicitly configured bind.
 install -d -m 0755 /etc/systemd/system/mag-120.service.d
@@ -80,6 +80,7 @@ if [[ -n "$PAGES_PUBLIC_BIND" ]]; then
 else
   rm -f /etc/systemd/system/mag-120.service.d/31-pages-public.conf
 fi
+install -m 0644 -o root -g root "$here/mag-pages-reconcile.service" /etc/systemd/system/mag-pages-reconcile.service
 systemctl daemon-reload
 echo "MAG Pages nginx ready: Tailnet $PAGES_TAILNET_BIND:443; public listener ${PAGES_PUBLIC_BIND:-disabled}."
 echo 'Enable/restart mag-120 when idle to apply native Pages env; no mag-llm restart.'

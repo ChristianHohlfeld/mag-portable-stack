@@ -119,7 +119,9 @@ class PagesTests(unittest.TestCase):
             c = {"public_ip": "127.0.0.2", "tailnet_ip": "127.0.0.3",
                  "wildcard_cert": str(cert), "wildcard_key": str(key)}
             gen = base / "generated.conf"
-            gen.write_text(p.render_nginx(c, {}))
+            # nginx -t binds sockets: use high loopback ports so CI needs no root.
+            generated = p.render_nginx(c, {}).replace(":80;", ":18080;").replace(":443 ssl;", ":18443 ssl;")
+            gen.write_text(generated)
             cfg = base / "nginx.conf"
             cfg.write_text("worker_processes 1;\nerror_log stderr;\n"
                            f"pid {base}/nginx.pid;\n"

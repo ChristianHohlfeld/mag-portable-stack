@@ -1735,6 +1735,97 @@ class MultiBot(unittest.TestCase):
   self.assertRegex(drop,r'(?m)^Environment=MAG_ROOM_SINGLE_BOT=\s*$')
   for forbidden in ('mag-llm','ExecStop','systemctl'):self.assertNotRegex(drop,r'(?m)^[^#]*'+forbidden)
   dep=(ROOT/'ops/deploy.sh').read_text();self.assertIn('30-multibot.conf',dep)
+ # Group chat: one lane per model server. Bots on different models answer at
+ # the same time; bots sharing a model take turns; nothing blocks the others.
+ def _idle(self,timeout=15):
+  for _ in range(int(timeout/.05)):
+   s=self.request('/api/state')
+   if not s['busy']:return s
+   time.sleep(.05)
+  self.fail('room never became idle')
+ def _calls_after(self,n,count,timeout):
+  end=time.time()+timeout
+  while time.time()<end:
+   if len(Model.calls)>=n+count:return Model.calls[n:]
+   time.sleep(.02)
+  return Model.calls[n:]
+ def _last_bot_text(self,bot):
+  for m in reversed(self.request('/api/state')['room']):
+   if m.get('bot')==bot:return m.get('content','')
+  return None
+ def test_08_bots_on_different_models_answer_in_parallel(self):
+  self._idle();n=len(Model.calls);Model.delay=2
+  try:
+   t=time.time();self.request('/api/message',{'text':'Beide bitte','bots':['q4bot','iq3bot']})
+   calls=self._calls_after(n,2,1.2)
+   self.assertEqual(sorted(c['model'] for c in calls[:2]),sorted([self.Q4,self.IQ3]),'second bot waited for the first')
+   st=self.request('/api/state');self.assertEqual(set(st['busy_bots']),{'q4bot','iq3bot'})
+   self.assertGreaterEqual(len(st['activities']),1)
+   self._idle();self.assertLess(time.time()-t,4.5)
+  finally:Model.delay=0
+  for b in ('q4bot','iq3bot'):self.assertEqual(self._last_bot_text(b),'Hallo aus dem Modell.')
+ def test_09_free_bot_is_not_queued_behind_busy_bot(self):
+  self._idle();n=len(Model.calls);Model.delay=2
+  try:
+   self.request('/api/message',{'text':'Lange Aufgabe','bots':['q4bot']})
+   self._calls_after(n,1,1)
+   r=self.request('/api/message',{'text':'Kurze Frage','bots':['iq3bot']})
+   self.assertFalse(r.get('queued'),r)
+   calls=self._calls_after(n,2,1)
+   self.assertEqual([c['model'] for c in calls[:2]],[self.Q4,self.IQ3])
+   self._idle()
+  finally:Model.delay=0
+ def test_10_same_model_bots_take_turns(self):
+  self._idle();self.request('/api/agents/iq3bot/model',{'model':self.Q4})
+  try:
+   n=len(Model.calls);Model.delay=1.5
+   self.request('/api/message',{'text':'Nacheinander','bots':['q4bot','iq3bot']})
+   self._calls_after(n,1,1);time.sleep(.6)
+   self.assertEqual(len(Model.calls)-n,1,'one model server must not run two turns at once')
+   self._idle();self.assertEqual(len(Model.calls)-n,2)
+  finally:
+   Model.delay=0;self._idle();self.request('/api/agents/iq3bot/model',{'model':self.IQ3})
+ def test_11_cancel_one_bot_keeps_the_other(self):
+  self._idle();n=len(Model.calls);Model.delay=2.5
+  try:
+   self.request('/api/message',{'text':'Beide arbeiten','bots':['q4bot','iq3bot']})
+   self._calls_after(n,2,1.5)
+   self.assertEqual(self.request('/api/cancel',{'bot':'q4bot'}),{'cancelled':True})
+   time.sleep(.5);self.assertEqual(self.request('/api/state')['busy_bots'],['iq3bot'])
+   # Writing stays possible while the other bot answers: the stopped bot's
+   # lane is free, so the new message is answered right away, not queued.
+   m=len(Model.calls);r=self.request('/api/message',{'text':'Weiter mit dir','bots':['q4bot']})
+   self.assertFalse(r.get('queued'),r)
+   self.assertEqual([c['model'] for c in self._calls_after(m,1,1)][:1],[self.Q4])
+   self.assertEqual(set(self.request('/api/state')['busy_bots']),{'q4bot','iq3bot'})
+   self._idle()
+  finally:Model.delay=0
+  room=self.request('/api/state')['room']
+  q4=[m.get('content','') for m in room if m.get('bot')=='q4bot']
+  self.assertIn('(abgebrochen)',q4[-2]);self.assertEqual(q4[-1],'Hallo aus dem Modell.')
+  self.assertEqual(self._last_bot_text('iq3bot'),'Hallo aus dem Modell.')
+  self.assertEqual(self.request('/api/cancel',{'bot':'q4bot'}),{'cancelled':False})
+ def test_12_parallel_lanes_keep_autonomy_single_owner_and_idle(self):
+  # Both bots ask to continue without a successful tool result: nobody may
+  # continue, and the second bot never becomes an owner.
+  self._idle();self.request('/api/autotalk',{'on':True})
+  try:
+   n=len(Model.calls);Model.reply='Ich mache weiter [[MAG:WEITER]]'
+   self.request('/api/message',{'text':'Aufgabe','bots':['q4bot','iq3bot']})
+   self._calls_after(n,2,3);self._idle();calls=len(Model.calls);time.sleep(1.5)
+   self.assertEqual(len(Model.calls),calls,'autonomy continued without verified progress')
+   room=self.request('/api/state')['room']
+   start=max(i for i,m in enumerate(room) if m.get('role')=='user' and m.get('content')=='Aufgabe')
+   turns=[m.get('bot') for m in room[start+1:] if m.get('role')=='assistant']
+   self.assertEqual(sorted(turns),['iq3bot','q4bot'])
+   self.assertFalse(self.request('/api/state')['busy'])
+  finally:
+   Model.reply=None;self.request('/api/autotalk',{'on':False})
+ def test_13_frontend_lane_contract(self):
+  html=self.request('/',raw=True).decode()
+  for needle in ("api('/api/cancel',id?{bot:id}:{})",'id="bot-lanes"','Alle stoppen','setBusyBots(next.busy_bots)',"event.type==='idle'&&Array.isArray(event.busy_bots)","event.type==='cancelled'&&event.bot",'state.activities'):self.assertIn(needle,html)
+  # The composer is never turned into a global stop button.
+  for gone in ('is-stop','syncSendButton'):self.assertNotIn(gone,html)
 class FakeTailscale(http.server.BaseHTTPRequestHandler):
  protocol_version='HTTP/1.1';calls=[]
  def log_message(self,*a):pass

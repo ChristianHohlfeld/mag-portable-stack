@@ -969,7 +969,7 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
         return;
       }
       stop_autotalk();
-      std::lock_guard<std::mutex> turn(TURN_MTX);
+      std::lock_guard<std::shared_mutex> turn(TURN_MTX);
       int idx = agent_index(id);
       if (idx < 0) {
         error_json(fd, 404, "Unknown agent");
@@ -1071,7 +1071,7 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
       std::lock_guard<std::mutex> lk(JOB_MTX);
       has_pending = !PENDING.empty() || QUEUE_PAUSED;
     }
-    if ((BUSY.load() || has_pending) && !interrupt) {
+    if ((lanes_busy(ids) || has_pending) && !interrupt) {
       // Not in the transcript yet: shown as a queue chip, dispatched later.
       Val item = enqueue_pending(str("text"), ids, think, actor.name, actor.login);
       JOB_CV.notify_all();
@@ -1082,7 +1082,7 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
       send_json(fd, 202, mj::dump(out));
       return;
     }
-    if (interrupt && (BUSY.load() || QUEUE_PAUSED)) {
+    if (interrupt && (lanes_busy(ids) || QUEUE_PAUSED)) {
       // Same path as "Jetzt senden": the cancelled turn first stores its
       // partial answer, then this message follows as the next user turn.
       Val item = enqueue_pending(str("text"), ids, think, actor.name, actor.login);
@@ -1094,7 +1094,7 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
                           str("text"), "", nullptr, actor.login);
     msg["type"] = "message";
     publish(mj::dump(msg));
-    const bool queued = BUSY.load() && !interrupt;
+    const bool queued = lanes_busy(ids) && !interrupt;
     schedule(ids, think, interrupt);
     send_json(fd, 202, queued ? "{\"accepted\":true,\"queued\":true}"
                               : "{\"accepted\":true}");
@@ -1178,9 +1178,13 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
   if (m == "POST" && path == "/api/cancel") {
     // ChatGPT-style stop: cancel only the running turn (closes the llama
     // stream, kills a running run_command); the queue is NOT paused.
-    if (!BUSY.load()) { send_json(fd, 200, "{\"cancelled\":false}"); return; }
-    USER_CANCEL = true;
-    cancel_active();
+    // Optional "bot": stop only that bot's lane; the others keep answering.
+    const std::string bot = str("bot");
+    if (!bot.empty() ? !lanes_busy({bot}) : !BUSY.load()) {
+      send_json(fd, 200, "{\"cancelled\":false}"); return;
+    }
+    if (!bot.empty()) cancel_bots({bot}, true);
+    else cancel_active(true);
     send_json(fd, 200, "{\"cancelled\":true}");
     return;
   }
@@ -1195,7 +1199,7 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
   if (m == "POST" && path == "/api/reset") {
     if (actor.role != "owner") { error_json(fd,403,"Nur der Besitzer"); return; }
     stop_autotalk();
-    std::lock_guard<std::mutex> turn(TURN_MTX);
+    std::lock_guard<std::shared_mutex> turn(TURN_MTX);
     std::vector<std::string> vms;
     {
       std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
@@ -1244,7 +1248,7 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
         error_json(fd,403,"CSRF-Prüfung fehlgeschlagen"); return;
       }
       if (BUSY.load()) { error_json(fd,409,"Bot arbeitet noch"); return; }
-      std::lock_guard<std::mutex> turn(TURN_MTX);
+      std::lock_guard<std::shared_mutex> turn(TURN_MTX);
       if (BUSY.load()) { error_json(fd,409,"Bot arbeitet noch"); return; }
       auto result=snapshot_restore(id);
       if (result.code == 200) guest_audit("room_restore",actor.login,id);
@@ -1259,7 +1263,7 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
       error_json(fd, 403, "Nur der Besitzer"); return;
     }
     if (BUSY.load()) { error_json(fd,409,"Bot arbeitet noch"); return; }
-    std::lock_guard<std::mutex> turn(TURN_MTX);
+    std::lock_guard<std::shared_mutex> turn(TURN_MTX);
     if (BUSY.load()) { error_json(fd,409,"Bot arbeitet noch"); return; }
     // clear_room_data() first atomically creates the native durable undo
     // snapshot (incl. room/files/memory), before mutating the room. The
@@ -1363,7 +1367,7 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
     out["corrected"] = raw;
     // Correction uses the same single model slot and returns editable text.
     if (!raw.empty()) {
-      std::unique_lock<std::mutex> turn(TURN_MTX, std::try_to_lock);
+      std::unique_lock<std::shared_mutex> turn(TURN_MTX, std::try_to_lock);
       if (turn.owns_lock()) {
         STOP = false;
         Val system = Val::object();

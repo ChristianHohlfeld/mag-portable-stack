@@ -5672,6 +5672,7 @@ int main() {
       auto result = run_argv({"sudo", "-n", AGENT_CTL, "spawn", vm}, 600);
       if (result.code != 0) {
         std::cerr << "single-bot VM spawn failed: " << result.out << "\n";
+        run_argv({"sudo", "-n", AGENT_CTL, "despawn", vm}, 180);
         return;
       }
       std::lock_guard<std::recursive_mutex> lk(STATE_MTX);

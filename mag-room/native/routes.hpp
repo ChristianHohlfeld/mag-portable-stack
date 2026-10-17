@@ -39,6 +39,19 @@ static void agents_event() {
 // adopts an already existing VM of that name, because it was recorded before
 // the spawn started). A fresh spawn never adopts: an existing VM of that
 // name is an orphan from an earlier failed run and the next free name is used.
+static bool vm_owned_by_other(const std::string &id, const std::string &vm) {
+  std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
+  for (auto *list : {&AGENTS, &PARKED})
+    for (auto &a : *list) {
+      auto aid = a.find("id");
+      if (aid && aid->asStr() == id) continue;
+      for (const char *key : {"vm", "pending_vm"}) {
+        auto v = a.find(key);
+        if (v && v->asStr() == vm) return true;
+      }
+    }
+  return false;
+}
 static void finish_spawn(const std::string &id, std::string vm, bool resume) {
   std::vector<std::string> tried;
   std::string error;
@@ -47,8 +60,12 @@ static void finish_spawn(const std::string &id, std::string vm, bool resume) {
     auto result = run_argv({"sudo", "-n", AGENT_CTL, "spawn", vm}, 600);
     if (result.code == 0) { ok = true; break; }
     error = trim(result.out).substr(0, 400);
+    // A restart adopts the VM this same spawn already created.
+    if (resume && error.find("already exists") != std::string::npos) { ok = true; break; }
+    // Roll back this attempt. A name that belongs to another bot is left alone.
+    if (!vm_owned_by_other(id, vm))
+      run_argv({"sudo", "-n", AGENT_CTL, "despawn", vm}, 180);
     if (error.find("already exists") == std::string::npos) break;
-    if (resume) { ok = true; break; }
     tried.push_back(vm);
     std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
     int idx = agent_index(id);
@@ -1014,11 +1031,26 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
       error_json(fd, 400, "Agent name required (1-40 bytes)");
       return;
     }
+    if (!str("model").empty() && !known_room_model(str("model"))) {
+      error_json(fd, 400, "Unbekanntes Modell");
+      return;
+    }
     // "vm": false creates a chat-only bot (no KVM, no browser/terminal);
     // default remains a bot with its own isolated VM.
     const auto vm_flag = body.find("vm");
     const bool with_vm = !(vm_flag && vm_flag->type == Val::BOOL &&
                            !vm_flag->asBool());
+    // One creation path. Preflight validates KVM, the golden image, the
+    // network, the data directory and the libvirt tools before any room
+    // entry, directory or domain exists. A later failure rolls all of that back.
+    if (with_vm) {
+      auto pre = run_argv({"sudo", "-n", AGENT_CTL, "preflight"}, 60);
+      if (pre.code != 0) {
+        error_json(fd, 503, "Bot-VM Vorprüfung fehlgeschlagen: " +
+                                trim(pre.out).substr(0, 400));
+        return;
+      }
+    }
     Val agent = Val::object();
     std::string id, vm;
     {

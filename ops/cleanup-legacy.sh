@@ -23,7 +23,11 @@ ORPHAN_VMS=${MAG_CLEANUP_ORPHAN_VMS:-agent2}
 MAGBOT=${MAG_CLEANUP_MAGBOT:-/usr/local/bin/magbot}
 DRY=${MAG_CLEANUP_DRY_RUN:-0}
 
-[[ -e "$STAMP" && "${MAG_CLEANUP_FORCE:-0}" != 1 ]] && exit 0
+# The one-shot (checkouts, tools, units, orphan VMs) is stamped. Backup
+# removal and the named loose-file pass run on every deploy: the first
+# 4.0.1 pass kept the old backups because no verified full backup existed yet.
+ONCE=1
+[[ -e "$STAMP" && "${MAG_CLEANUP_FORCE:-0}" != 1 ]] && ONCE=0
 mkdir -p "$(dirname "$REPORT")"
 : > "$REPORT"
 log() { printf '%s\n' "$*" | tee -a "$REPORT"; }
@@ -59,7 +63,9 @@ remove() {
   rm -rf -- "$path" && log "removed $path ($size): $why"
 }
 
-# 1. Legacy tools and the old shared restic repo / ad-hoc backups.
+# 1. Legacy tools, once. Old backups are removed on every pass, and only
+# after a verified full backup exists.
+if (( ONCE )); then
 declare -A tool_keep=()
 for t in $LEGACY_TOOLS; do
   [[ -e "$t" ]] || continue
@@ -80,6 +86,7 @@ done
 for t in $LEGACY_TOOLS; do
   if [[ -n "${tool_keep[$t]:-}" ]]; then log "kept $t: ${tool_keep[$t]}"; else remove "$t" "legacy tool"; fi
 done
+fi
 verified_full=$(find "$FULL_BACKUPS" -mindepth 2 -maxdepth 2 -name VERIFIED 2>/dev/null | head -1)
 for b in $LEGACY_BACKUPS; do
   [[ -e "$b" ]] || continue
@@ -89,6 +96,45 @@ for b in $LEGACY_BACKUPS; do
   remove "$b" "superseded by $(dirname "$verified_full")"
 done
 
+# Named leftovers in the home directory. Not a sweep: only these names,
+# and only after a reference and in-use check. s23, models, src, mag-stack
+# and the other kept trees are not in the list.
+loose_home() {
+  local pat f rel name tar list=()
+  shopt -s nullglob
+  for pat in stage-a\*.sh stage-a\*.out mag-deploy-\*.sh mag-deploy-\*.log gw-swap\* reload-q4.\* \
+    fix-gitea.sh install-gitea-mag.sh setup-mag-ap.sh \
+    numa-\*.log iq3-pre\*.log llama\*.log pages-activate\*.log s23-verify\*.log deploy-chain-a\*.log \
+    crontab.bak-\* server-audit-20261014 grok-agent-test cxtrust-test; do
+    for f in "$HOME_DIR"/$pat; do
+      [[ -e "$f" || -L "$f" ]] || continue
+      if ref=$(referenced "$f"); then log "kept $f: referenced by $ref"; continue; fi
+      if in_use "$f"; then log "kept $f: in use"; continue; fi
+      list+=("$f")
+    done
+  done
+  shopt -u nullglob
+  (( ${#list[@]} )) || return 0
+  name=loose-home-$(date -u +%Y%m%dT%H%M%SZ)
+  if [[ $DRY == 1 ]]; then
+    for f in "${list[@]}"; do log "would remove $f: loose leftover (archive $BUNDLES/$name.tar.gz)"; done
+    return 0
+  fi
+  install -d -m 0700 "$BUNDLES"
+  tar=$(mktemp)
+  : > "$tar"
+  for f in "${list[@]}"; do printf '%s\n' "${f#"$HOME_DIR"/}" >> "$tar"; done
+  if ! tar -C "$HOME_DIR" -czf "$BUNDLES/$name.tar.gz" -T "$tar"; then
+    rm -f -- "$tar"
+    log "kept loose leftovers: archive failed"
+    return 0
+  fi
+  rm -f -- "$tar"
+  for f in "${list[@]}"; do remove "$f" "loose leftover (archive: $BUNDLES/$name.tar.gz)"; done
+}
+loose_home
+
+if (( ONCE )); then
 # 2. Git checkouts in the home directory except the stack itself. Each one is
 # bundled first (all refs, plus a list of uncommitted files).
 while IFS= read -r git; do
@@ -154,10 +200,13 @@ for unit in "$UNIT_DIR"/mag-*.service "$UNIT_DIR"/mag-*.timer; do
   log "removed unit $name: $dangling"
 done
 if (( reload )); then systemctl daemon-reload || :; fi
+if [[ $DRY != 1 ]]; then date -u +%FT%TZ > "$STAMP"; fi
+else
+log "one-shot sections already done ($STAMP); backup and loose-file passes still ran"
+fi
 
 after=$(free_kib)
 log "freed $(( (after - before) / 1024 )) MiB; free on /: $(( after / 1024 / 1024 )) GiB"
 failed=$(systemctl list-units --failed --plain --no-legend 2>/dev/null | awk '{print $1}' | tr '\n' ' ')
 log "systemctl --failed: ${failed:-none}"
-if [[ $DRY != 1 ]]; then date -u +%FT%TZ > "$STAMP"; fi
 exit 0

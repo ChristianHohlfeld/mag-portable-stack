@@ -1,0 +1,10 @@
+[Unit]
+Description=Remove unreferenced half-created MAG bot VMs
+After=libvirtd.service
+# No relationship to mag-llm or mag-llm-iq3: this never starts or stops them.
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/mag-agent-drift
+Nice=10
+NoNewPrivileges=yes

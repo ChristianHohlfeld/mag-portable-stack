@@ -11,7 +11,7 @@ units=(
   mag-120.service mag-agents-network.service mag-browser-webrtc.service mag-git-gateway.socket
   gitea.service nginx.service tailscaled.service libvirtd.service ssh.service
   mag-gitea-runner.service mag-github-runner.service mag-deploy-request.path
-  mag-auto-update.timer mag-stack-check.timer mag-tailscale-egress.timer mag-acme-renew.timer
+  mag-auto-update.timer mag-stack-check.timer mag-agent-drift.timer mag-tailscale-egress.timer mag-acme-renew.timer
   mag-backup-daily.timer mag-backup-weekly.timer mag-backup-monthly.timer
   mag-backup-monitor.timer mag-backup-restore-test.timer mag-backup-clear.timer
 )

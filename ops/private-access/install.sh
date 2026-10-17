@@ -4,6 +4,13 @@
 set -euo pipefail
 [[ $EUID == 0 ]] || { echo "sudo required" >&2; exit 1; }
 here=$(cd -- "$(dirname -- "$0")" && pwd)
+# A confirmed private ingress can be refreshed any number of times without
+# hitting the one-time 180-second first-cutover snapshots. This is the same
+# transactional, Owner-verified nginx path used by every room release.
+if [[ ! -e /var/lib/mag-private-cutover/pending &&
+      -f /var/lib/mag-private-cutover/confirmed ]]; then
+  exec bash "$here/deploy-nginx.sh" standalone
+fi
 site=/etc/nginx/sites-available/mag-room.conf
 enabled=/etc/nginx/sites-enabled/mag-room.conf
 backup=$site.pre-whois

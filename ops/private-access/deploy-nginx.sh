@@ -27,6 +27,14 @@ probe_config(){
   ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=5 \
       "$MAG_DEPLOY_OWNER_SSH" true >/dev/null ||
     die 'Owner SSH probe unavailable: no safe deploy'
+  # Refuse accidentally using MAG itself as its own "external" owner probe.
+  local remote_ip
+  remote_ip=$(ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=5 \
+      "$MAG_DEPLOY_OWNER_SSH" 'tailscale ip -4') ||
+    die 'Owner probe must have the Tailscale CLI installed'
+  [[ $remote_ip =~ ^100\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ &&
+     $remote_ip != 100.123.114.16 ]] ||
+    die 'Owner probe must be a SECOND real Tailscale device (not MAG)'
 }
 preflight(){
   for bin in nginx curl jq openssl systemctl ssh ip flock; do

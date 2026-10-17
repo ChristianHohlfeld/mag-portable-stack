@@ -29,9 +29,6 @@ printf 'wildcard' > "$tmp/tls/releases/wild.pem"
 printf 'wildcard' > "$tmp/tls/current"
 host=www.example.org
 id="$(printf %s "$host" | sha256sum | cut -c1-16)"
-mkdir -p "$tmp/tls/custom/$id/accounts"
-printf 'LEGO_ACCOUNT' >"$tmp/tls/custom/$id/accounts/account.json"
-printf 'KEY' >"$tmp/tls/custom/$id/key.pem"
 mkdir -p "$tmp/state/releases/site--magbot-agent1/abc123"
 printf '<html>Hi</html>' >"$tmp/state/releases/site--magbot-agent1/abc123/index.html"
 ln -s "$tmp/state/releases/site--magbot-agent1/abc123" "$tmp/state/tailnet/site--magbot-agent1"
@@ -39,7 +36,6 @@ ln -s "$tmp/state/releases/site--magbot-agent1/abc123" "$tmp/state/public/site--
 ln -s "$tmp/state/releases/site--magbot-agent1/abc123" "$tmp/state/custom/$host"
 printf '{"magbot-agent1/site":{"sha":"abc123","slug":"site--magbot-agent1"}}\n' >"$tmp/state/sites.json"
 printf '%s\tsite--magbot-agent1.pages.stardenburg.de\tsite--magbot-agent1\n' "$host" >"$tmp/state/custom-domains.tsv"
-printf '["magbot-agent1/site"]\n' >"$tmp/state/gc-retired.json"
 printf '{"magbot-agent1/site":"public"}\n' >"$tmp/etc/visibility.json"
 printf 'PAGES_PUBLIC_BIND=\n' >"$tmp/etc/pages.env"
 chmod 0644 "$tmp/etc/"*
@@ -49,6 +45,13 @@ cat >"$tmp/refresh" <<EOF
 set -euo pipefail
 [[ "\$1" == custom-only ]]
 cp "$tmp/state/custom-domains.tsv" "$tmp/state/nginx-map"
+if [[ -s "$tmp/state/custom-domains.tsv" ]]; then
+  # Deterministic fake lego run: assert the root service issues immediately.
+  install -d -m 0700 "$tmp/tls/custom/$id/accounts"
+  printf 'LEGO_ACCOUNT' >"$tmp/tls/custom/$id/accounts/account.json"
+  printf 'KEY' >"$tmp/tls/custom/$id/key.pem"
+  printf 'issued' >"$tmp/state/issued-immediately"
+fi
 rm -f "$nginxfile"
 nginx -t
 systemctl reload nginx.service
@@ -84,6 +87,12 @@ systemd-run --unit=mag-pages-ci-readonly --wait --collect --quiet \
  -p Type=oneshot -p User=root -p ProtectSystem=full \
  /bin/bash -c 'if touch /etc/mag-pages-ci-should-never-exist; then exit 1; fi'
 test ! -e /etc/mag-pages-ci-should-never-exist
+# Model pages_set_domain invokes the same fixed-command service immediately;
+# fake ACME issuer materializes a key without any timer tick or DNS calls.
+systemctl start mag-pages-reconcile.service
+test -f "$tmp/state/issued-immediately"
+test -s "$tmp/tls/custom/$id/accounts/account.json"
+test -s "$tmp/tls/custom/$id/key.pem"
 chown -R magbot:magbot "$tmp/state"
 cat >"$tmp/client-policy" <<EOF
 #!/usr/bin/env bash
@@ -109,6 +118,7 @@ rm -f "$tmp/state/public/site--magbot-agent1"
 rm -f "$tmp/state/custom/$host"
 rm -rf "$tmp/state/releases/site--magbot-agent1"
 printf '{}\\n' > "$tmp/state/sites.json"
+printf '["magbot-agent1/site"]\\n' >"$tmp/state/gc-retired.json"
 : > "$tmp/state/custom-domains.tsv"
 sudo -n /usr/bin/systemctl start mag-pages-reconcile.service
 test ! -e "$tmp/state/request.json"

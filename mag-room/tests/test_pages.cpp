@@ -3,6 +3,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
+#include <functional>
 #include <archive.h>
 #include <archive_entry.h>
 #include <sys/stat.h>

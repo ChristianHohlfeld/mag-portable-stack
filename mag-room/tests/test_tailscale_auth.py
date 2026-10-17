@@ -90,6 +90,7 @@ class NativeWhois(unittest.TestCase):
                    MAG_ROOM_UI=str(ROOT / "mag-room/web/index.html"),
                    MAG_NETMODE="/bin/true", MAG_TEST_NO_MEMGIT="1",
                    MAG_ROOM_FILE_SYNC_SECONDS="0",
+                   MAG_ROOM_GUEST_CLEANUP_SECONDS="1",
                    MAG_ROOM_MODEL_STATUS=str(cls.path / "model.json"),
                    MAG_TAILSCALED_SOCKET=str(cls.sock))
         cls.log = open(cls.path / "server.log", "w")
@@ -230,6 +231,28 @@ class NativeWhois(unittest.TestCase):
             self.access_file.write_text(json.dumps(state))
             self.assertEqual(self.room_request("/api/state", attested)[0], 403)
             self.assertEqual(self.room_request("/", attested)[0], 200)
+            self.assertEqual(self.room_request("/api/events", attested)[0], 403)
+        finally:
+            self.access_file.write_text(original)
+
+
+    def test_expiry_worker_revokes_guest_and_closes_entitlement(self):
+        TailnetLocalAPI.mode = "tagged"
+        code, headers = self.request("100.101.102.103:54321")
+        self.assertEqual(code, 200)
+        attested = {key: val for key, val in headers.items()
+                    if key.lower().startswith(("x-tailscale-", "x-mag-auth-"))}
+        original = self.access_file.read_text()
+        try:
+            state = json.loads(original)
+            state["guest_invites"][0]["expires"] = int(time.time()) - 1
+            self.access_file.write_text(json.dumps(state))
+            self.assertEqual(self.room_request("/api/state", attested)[0], 403)
+            for _ in range(40):
+                row = json.loads(self.access_file.read_text())["guest_invites"][0]
+                if row.get("revoked"): break
+                time.sleep(.1)
+            else: self.fail("Native guest expiry job did not revoke expired guest")
             self.assertEqual(self.room_request("/api/events", attested)[0], 403)
         finally:
             self.access_file.write_text(original)

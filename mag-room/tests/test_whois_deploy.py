@@ -46,6 +46,7 @@ if [[ "$*" == *-checkhost* ]]; then echo 'Hostname does match certificate'; fi''
    "ssh":'''#!/usr/bin/env bash
 arg="§{@: -1}"
 if [[ "$arg" == true ]]; then exit 0; fi
+if [[ "$arg" == 'tailscale ip -4' ]]; then echo 100.101.102.103; exit 0; fi
 if [[ "$MOCK_OWNER_FAIL" == 1 ]]; then exit 22; fi
 if [[ "$arg" == *'/api/state'* ]]; then
  echo '{"you":{"role":"owner","login":"chris.hohlfeld@gmail.com"}}'

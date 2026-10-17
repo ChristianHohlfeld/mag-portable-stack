@@ -3290,6 +3290,16 @@ static bool turn_thinking() {
 struct JobRun;
 static thread_local const JobRun *CURRENT_JOB = nullptr;
 static std::string job_user_content(const JobRun *r);
+static bool has_next_step(const std::string &t) {
+  return t.find("[[MAG:WEITER]]") != std::string::npos ||
+         t.find("Nächster Schritt") != std::string::npos ||
+         t.find("Naechster Schritt") != std::string::npos ||
+         t.find("nächster Schritt") != std::string::npos ||
+         t.find("Als Nächstes") != std::string::npos ||
+         t.find("Als nächstes") != std::string::npos ||
+         t.find("Next step") != std::string::npos ||
+         t.find("next step") != std::string::npos;
+}
 static TurnReport run_turn(int bot_idx, bool autotalk,
                            const std::string &other) {
   std::string bot_id = bot_field(bot_idx, "id");
@@ -3359,10 +3369,29 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
       }
     }
   }
-  std::string fallback_narration;
-  for (int round = 0; round <= MAX_TOOL_ROUNDS; round++) {
-    if (STOP.load())
+  std::string fallback_narration, last_pending;
+  int stalled_plans = 0;
+  bool completed = false;
+  auto run_deadline = steady_clock::now() + seconds(RUN_BUDGET_S);
+  for (int round = 0; round < MAX_RUN_STEPS; round++) {
+    if (STOP.load()) break;
+    if (steady_clock::now() >= run_deadline) {
+      report.error = "Agent-Zeitbudget erreicht (" + std::to_string(RUN_BUDGET_S) +
+                     "s). Aufgabe noch offen; Arbeit in VM erhalten.";
       break;
+    }
+    // Bound the LLM context on long runs. Files and artifacts stay in the VM.
+    size_t context_bytes = 0;
+    for (const auto &m : messages) context_bytes += mj::dump(m).size();
+    while (context_bytes > 120000 && messages.size() > 5 &&
+           str(messages[2], "role") == "assistant") {
+      size_t n = 1;
+      while (2+n < messages.size() && str(messages[2+n], "role") == "tool") ++n;
+      for (size_t i = 0; i < n; ++i) {
+        context_bytes -= mj::dump(messages[2]).size();
+        messages.erase(messages.begin()+2);
+      }
+    }
     std::string live;
     auto on_delta = [&](const std::string &kind, const std::string &piece) {
       Val e = Val::object();
@@ -3398,18 +3427,7 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
       live += piece;
       run_narration(live);
     };
-    // Last round: keep the SAME tool list (the template renders tools right
-    // after the system prompt; dropping them changed the prefix at ~token 770
-    // and forced llama to re-read the whole history). Ask for the answer with
-    // a note at the END instead, and ignore any further tool calls.
-    const bool last_round = round == MAX_TOOL_ROUNDS;
-    if (last_round) {
-      Val note = Val::object();
-      note["role"] = "user";
-      note["content"] = "[System] Werkzeug-Limit erreicht. Antworte jetzt "
-                        "direkt, ohne weitere Werkzeugaufrufe.";
-      messages.push_back(note);
-    }
+    // Tools remain available on every step, without a forced early final.
     Turn t = backend_turn(messages, tools,
                           autotalk ? 0.75 : 0.55, on_delta, turn_thinking());
     if (!t.error.empty()) {
@@ -3447,9 +3465,11 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
       asst["tool_calls"] = arr;
     }
     messages.push_back(asst);
-    const bool tool_round = !t.calls.empty() && !last_round;
+    const bool tool_round = !t.calls.empty();
+    const bool pending = has_next_step(t.text) &&
+        t.text.find("[[MAG:ENDE]]") == std::string::npos;
     if (!t.text.empty()) {
-      if (tool_round) {
+      if (tool_round || pending) {
         fallback_narration = trim(t.text);
         run_narration(t.text);
       } else {
@@ -3458,8 +3478,25 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
         emit_answer_deltas(bot_id, bot_name, t.text);
       }
     }
-    if (!tool_round)
-      break;
+    if (!tool_round) {
+      if (!pending) { completed = true; break; }
+      const std::string p = trim(t.text);
+      if (p == last_pending) ++stalled_plans; else stalled_plans = 0;
+      last_pending = p;
+      if (stalled_plans >= 3) {
+        report.error = "Agent wiederholt nur den naechsten Schritt, ohne ihn auszufuehren.";
+        break;
+      }
+      Val reminder = Val::object();
+      reminder["role"] = "user";
+      reminder["content"] =
+          "[System] Aufgabe ist noch offen. Du hast einen naechsten Schritt "
+          "angekuendigt. Fuehre ihn jetzt mit den Werkzeugen tatsaechlich aus "
+          "und pruefe das Ergebnis. Kein blosses Vorhaben als Abschluss. "
+          "Bei echten Blockaden erklaere genau die Ursache und nutze [[MAG:ENDE]].";
+      messages.push_back(reminder);
+      continue;
+    }
     for (auto &call : t.calls) {
       if (STOP.load())
         break;
@@ -3500,10 +3537,16 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
         const std::string key = fname + "|" + argStr + "|" +
                                 result.substr(0, 240);
         if (++failures[key] >= 2) {
-          repeated_failure = true;
-          std::string why = "Wiederholter Fehler: " + fname;
-          emit_event("error", bot_id, bot_name, why);
-          run_fail(why);
+          result += "\n[Hinweis] Der gleiche Werkzeugfehler ist wiederholt "
+                    "aufgetreten. Andere Methode waehlen; fuer grosse "
+                    "Dateien write_file/append_file statt Heredoc nutzen.";
+          if (failures[key] >= 4) {
+            repeated_failure = true;
+            report.error = "Viermal identischer Werkzeugfehler: " + fname +
+                           ". Datei und Zwischenstand sind erhalten.";
+            emit_event("error", bot_id, bot_name, report.error);
+            run_fail(report.error);
+          }
         }
       } else {
         ++report.successful_tools;
@@ -3528,9 +3571,15 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
     if (repeated_failure)
       break;
   }
-  report.continue_requested =
-      !repeated_failure &&
-      final_text.find("[[MAG:WEITER]]") != std::string::npos;
+  // Long tasks continue within the same turn, including with Autonomy OFF.
+  // The outer scheduler must not silently create a second task.
+  report.continue_requested = false;
+  if (!STOP.load() && !completed && report.error.empty()) {
+    report.error = "Agent-Step-Budget erreicht (" + std::to_string(MAX_RUN_STEPS) +
+                   "). Aufgabe noch offen; VM-Dateien bleiben erhalten.";
+  }
+  if (!STOP.load() && !report.error.empty() && trim(final_text).empty())
+    final_text = report.error;
   replaceAll(final_text, "[[MAG:WEITER]]", "");
   replaceAll(final_text, "[[MAG:ENDE]]", "");
   replaceAll(fallback_narration, "[[MAG:WEITER]]", "");

@@ -1,0 +1,24 @@
+name: MAG Gitea Pages
+on:
+  push:
+    paths:
+      - 'ops/pages/**'
+      - '.github/workflows/pages.yml'
+  pull_request:
+    paths:
+      - 'ops/pages/**'
+      - '.github/workflows/pages.yml'
+jobs:
+  pages:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install nginx
+        run: sudo apt-get update && sudo apt-get install -y nginx openssl dnsutils
+      - name: Unit tests and nginx -t on loopback (no real MAG IP)
+        run: python3 -m unittest discover -s ops/pages/tests -v
+      - name: Shell syntax
+        run: bash -n ops/pages/*.sh
+      - name: No Caddy or mag-llm operations
+        run: |
+          ! grep -R -E '(restart|stop|kill) (mag-llm|deepseek)' ops/pages

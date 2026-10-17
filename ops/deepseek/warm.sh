@@ -113,6 +113,10 @@ PY
 
 # Richtet den Page-Cache-Pin ein (startet NUR mag-model-pin, nie mag-llm)
 install_pin() {
+  if [[ -f /etc/systemd/system/mag-model-pin.service.d/90-numa-retired.conf ]]; then
+    echo "mag-model-pin retired by node0 isolation: do not reinstall/reenable vmtouch"
+    return 0
+  fi
   echo "== mag-model-pin einrichten"
   run install -m 0644 "$SRC/ops/mag-model-pin.service" /etc/systemd/system/mag-model-pin.service
   run systemctl daemon-reload

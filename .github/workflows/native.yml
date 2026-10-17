@@ -32,6 +32,8 @@ jobs:
       - name: IK prompt cache regression and rollback shell syntax
         run: |
           bash ops/deepseek/tests/test-ops-38.sh
+          bash ops/deepseek/tests/test-numa-isolation.sh
+          bash -n ops/deepseek/numa-isolation.sh ops/deepseek/numa-bench.sh
           bash -n ops/deepseek/prompt-cache-switch.sh
       - name: nginx syntax without a real Tailnet listener
         run: |

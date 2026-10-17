@@ -45,7 +45,7 @@ if [[ "$action" == create && "$exists" == no ]]; then
   exists=yes
 fi
 [[ "$exists" == yes ]] || { echo 'Owner repository does not exist'; exit 4; }
-if [[ "$action" == list ]]; then exit; fi
+if [[ "$action" == verify ]]; then echo "Owner repository verified"; exit; fi
 git -c credential.helper=store clone --quiet "$server/$expected/$repo.git" "$work/checkout"
 dir="$work/checkout"
 default="$(jq -r '.default_branch // "main"' "$work/repo.json")"

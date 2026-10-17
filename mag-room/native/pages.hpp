@@ -297,7 +297,8 @@ inline void reconcile(const fs::path& root,const std::string& token) {
   if(fs::exists(manifest))prior=json(read(manifest));
   std::vector<Site> sites;
   std::set<std::string> slugs,domains;
-  Val state=Val::object(), aliases=Val::array();
+  Val state=Val::object();
+  std::string aliases;
   const std::string zone=env("MAG_PAGES_DOMAIN","pages.stardenburg.de");
   if(!dns(zone))throw std::runtime_error("bad Pages domain");
   for(const auto& repo:repositories) {
@@ -323,6 +324,7 @@ inline void reconcile(const fs::path& root,const std::string& token) {
       cname=custom(files);
       if(files.empty())continue;
       if(!fs::exists(release)){
+        fs::create_directories(release.parent_path());
         auto stage=release.parent_path()/(".stage-"+std::to_string(::getpid()));
         fs::remove_all(stage);
         materialize(stage,files);
@@ -340,7 +342,7 @@ inline void reconcile(const fs::path& root,const std::string& token) {
     v["sha"]=s.sha;v["branch"]=s.branch;v["custom"]=s.custom;v["slug"]=s.slug;v["access"]=s.access;
     state[full]=v;
     if(!cname.empty() && s.access=="public"){
-      Val a=Val::object();a["host"]=cname;a["canonical"]=page+"."+zone;a["slug"]=page;aliases.push(a);
+      aliases += cname+"\t"+page+"."+zone+"\t"+page+"\n";
     }
     sites.push_back(std::move(s));
   }
@@ -366,7 +368,7 @@ inline void reconcile(const fs::path& root,const std::string& token) {
       if((which=="public"?visible:active).count(name)==0)fs::remove(e.path());
     }
   }
-  write_atomic(root/"custom-domains.json",mj::dump(aliases)+"\n");
+  write_atomic(root/"custom-domains.tsv",aliases);
   write_atomic(manifest,mj::dump(state)+"\n");
 }
 inline void ticker(const std::atomic<bool>& stopping) {

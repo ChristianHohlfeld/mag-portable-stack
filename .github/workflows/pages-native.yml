@@ -38,10 +38,14 @@ jobs:
           bash ops/pages/tests/test-pages-lifecycle.sh
           bash ops/pages/tests/test-pages-tools.sh
           sudo bash ops/pages/tests/test-pages-sandbox.sh
-          bash -n ops/pages/*.sh ops/pages/tests/*.sh
+          for script in ops/pages/*.sh ops/pages/tests/*.sh; do
+            bash -n "$script"
+          done
       - name: Shell syntax; no new runtime units
         run: |
-          bash -n ops/pages/*.sh
+          for script in ops/pages/*.sh; do
+            bash -n "$script"
+          done
           test -z "$(find ops/pages \( -name '*.py' -o -name '*.timer' \) -print)"
           test "$(find ops/pages -name '*.service' -printf '%f\n')" = mag-pages-reconcile.service
           grep -F 'ProtectHome=yes' ops/pages/mag-pages-reconcile.service

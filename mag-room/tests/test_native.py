@@ -101,7 +101,12 @@ class Native(unittest.TestCase):
   m=(method or ('POST' if data is not None else 'GET')).upper()
   if not bridge and m not in ('GET','HEAD') and not headers.pop('X-No-Token',None) and 'X-MAG-Token' not in headers:headers['X-MAG-Token']=_ui_token(cls.ui)
   req=urllib.request.Request(f'http://127.0.0.1:{cls.bridge if bridge else cls.ui}'+path,data=data,method=method,headers=headers)
-  with urllib.request.urlopen(req,timeout=10) as r:
+  # /api/room/clear MUST finish the encrypted local restic snapshot before
+  # acknowledging destructive changes. NUMA/CPUQuota throttling makes the
+  # ~10-second CI backup exceed the normal 10s HTTP timeout.
+  # Keep the tight timeout for all unrelated API calls.
+  timeout=180 if path.split('?',1)[0]=='/api/room/clear' and m=='POST' else 10
+  with urllib.request.urlopen(req,timeout=timeout) as r:
    data=r.read();return data if raw else json.loads(data)
  def error(self,code,*args,**kw):
   with self.assertRaises(urllib.error.HTTPError) as ctx:self.request(*args,**kw)

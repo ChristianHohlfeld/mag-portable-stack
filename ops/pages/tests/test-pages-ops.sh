@@ -71,6 +71,11 @@ set -e
 [[ $rc -eq 80 ]] || { cat "$tmp/output"; exit 1; }
 [[ "$(wc -l < "$tmp/args")" -gt "$lines" ]]
 
+# Bash -n accepts a SINGLE script; "bash -n ops/pages/*.sh" checks only
+# the first globbed file. Parse the actual production verifier explicitly.
+bash -n "$here/verify.sh"
+grep -Fq 'cert_public_key_hash=' "$here/verify.sh"
+grep -Fq 'private_key_public_hash=' "$here/verify.sh"
 # PRIVATE ONLY: no port 80, no public listener, exactly Tailnet 443.
 "$here/render-nginx.sh" >"$tmp/private.conf"
 grep -Fq 'listen 100.123.114.16:443 ssl;' "$tmp/private.conf"

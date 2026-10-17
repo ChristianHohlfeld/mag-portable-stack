@@ -299,14 +299,33 @@ inline std::pair<std::string,std::string> branch_sha(const std::string& token,co
     throw std::runtime_error("invalid Gitea commit hash");
   return {branch,sha};
 }
+// Prune precisely the obsolete content, including retired commit SHA releases,
+// orphaned staging dirs and removed repositories. Reject unexpected symlinks.
+inline void cleanup_releases(const fs::path& directory,const std::vector<Site>& active) {
+  std::map<std::string,std::string> wanted;
+  for(const auto& s:active)wanted.emplace(s.slug,s.sha);
+  if(!fs::exists(directory))return;
+  for(const auto& entry:fs::directory_iterator(directory)) {
+    if(entry.is_symlink()) throw std::runtime_error("symlink in Pages releases");
+    const auto slug_name=entry.path().filename().string();
+    if(!entry.is_directory())throw std::runtime_error("foreign Pages release entry");
+    const auto it=wanted.find(slug_name);
+    if(it==wanted.end()) {fs::remove_all(entry.path());continue;}
+    for(const auto& revision:fs::directory_iterator(entry.path())) {
+      if(revision.is_symlink())throw std::runtime_error("symlink in Pages revision");
+      if(revision.path().filename()!=it->second)fs::remove_all(revision.path());
+    }
+  }
+}
 inline void reconcile(const fs::path& root,const std::string& token) {
   const Val access=policy(env("MAG_PAGES_VISIBILITY","/etc/mag-pages/visibility.json"));
   // Host public bind + explicit per-repo policy are BOTH required.
   const auto public_bind=env("MAG_PAGES_PUBLIC_BIND","");
   const auto repositories=repo_list(token);
   const fs::path manifest=root/"sites.json";
-  if(repositories.empty() && fs::exists(manifest))
-    throw std::runtime_error("empty repo scan: refuse to unpublish existing Pages");
+  // An authenticated HTTP 200 list with zero repos is authoritative:
+  // deleting the final Gitea repo must also delete its last Page.
+  // Transport/HTTP failures have already thrown from repo_list().
   Val prior=Val::object();
   if(fs::exists(manifest))prior=json(read(manifest));
   std::vector<Site> sites;
@@ -379,8 +398,8 @@ inline void reconcile(const fs::path& root,const std::string& token) {
       }
     }
   }
-  // Remove stale routes; only known symlink names are touched. Nothing is
-  // recursively removed, so immutable published content remains for rollback.
+  // Remove stale routes before their release directories. The release GC
+  // below never follows a symlink and keeps exactly one current SHA per site.
   for(const auto& which:{std::string("public"),std::string("tailnet"),std::string("custom")}){
     auto dir=root/which;
     for(const auto& e:fs::directory_iterator(dir)){
@@ -390,8 +409,25 @@ inline void reconcile(const fs::path& root,const std::string& token) {
       if(keep.count(name)==0)fs::remove(e.path());
     }
   }
-  write_atomic(root/"custom-domains.tsv",aliases);
-  write_atomic(manifest,mj::dump(state)+"\n");
+  cleanup_releases(root/"releases", sites);
+  const std::string new_state=mj::dump(state)+"\n";
+  const auto aliases_path=root/"custom-domains.tsv";
+  const bool changed=!fs::exists(manifest) || read(manifest)!=new_state ||
+                     !fs::exists(aliases_path) || read(aliases_path)!=aliases;
+  if(changed) {
+    write_atomic(aliases_path,aliases);
+    write_atomic(manifest,new_state);
+    write_atomic(root/"gc.pending","1\n"); // retry until privileged GC succeeds
+  }
+  const auto gc=root/"gc.pending";
+  if(fs::exists(gc) && fs::is_regular_file(gc) &&
+     fs::exists("/usr/local/lib/mag-pages/pages-gc.sh")) {
+    // Narrow sudoers rule permits only this root-owned, argument-free script.
+    // The model and bot VM never receive a root token or command execution.
+    int rc=std::system("sudo -n /usr/local/lib/mag-pages/pages-gc.sh");
+    if(rc==0)fs::remove(gc);
+    else std::cerr<<"MAG Pages GC deferred: sudo lifecycle reconcile failed\n";
+  }
 }
 inline void ticker(const std::atomic<bool>& stopping) {
   const auto root=fs::path(env("MAG_PAGES_ROOT","/var/lib/mag-pages"));

@@ -102,6 +102,15 @@ static Val qga(const std::string &n, Val command, int timeout = 10) {
   return *v.find("return");
 }
 static volatile sig_atomic_t payload_cancelled = 0;
+static void stop_guest_group(const std::string &n, long pid, const char *signal) {
+  // Only invoked for setsid guest payloads. No host PIDs are signalled.
+  Val sig = Val::object(), arg = Val::object(), av = Val::array();
+  sig["execute"] = "guest-exec";
+  arg["path"] = "/bin/kill";
+  av.push(signal); av.push("--"); av.push("-" + std::to_string(pid));
+  arg["arg"] = av; sig["arguments"] = arg;
+  try { qga(n, sig, 3); } catch (...) {}
+}
 static Result guest(const std::string &n, const std::vector<std::string> &argv,
                      int seconds = 120, bool cancelable = false) {
   Val cmd = Val::object();
@@ -118,13 +127,7 @@ static Result guest(const std::string &n, const std::vector<std::string> &argv,
   auto end = std::chrono::steady_clock::now() + std::chrono::seconds(seconds);
   while (std::chrono::steady_clock::now() < end) {
     if (cancelable && payload_cancelled) {
-      // The command runs in its own setsid process group inside the VM.
-      Val sig = Val::object(), arg = Val::object(), av = Val::array();
-      sig["execute"] = "guest-exec";
-      arg["path"] = "/bin/kill";
-      av.push("-TERM"); av.push("--"); av.push("-" + std::to_string(pid));
-      arg["arg"] = av; sig["arguments"] = arg;
-      try { qga(n, sig, 3); } catch (...) {}
+      stop_guest_group(n, pid, "-TERM");
       throw std::runtime_error("Abgebrochen (Stop)");
     }
     Val q = Val::object();
@@ -132,13 +135,24 @@ static Result guest(const std::string &n, const std::vector<std::string> &argv,
     Val a = Val::object();
     a["pid"] = pid;
     q["arguments"] = a;
-    auto st = qga(n, q);
+    Val st;
+    try { st = qga(n, q); }
+    catch (...) {
+      if (cancelable && payload_cancelled) {
+        // A host SIGTERM can interrupt a virsh status request. Kill the
+        // still-running guest process group through a fresh QGA request.
+        stop_guest_group(n, pid, "-KILL");
+        throw std::runtime_error("Abgebrochen (Stop)");
+      }
+      throw;
+    }
     auto exited = st.find("exited");
     if (exited && exited->asBool())
       return {(int)num(st, "exitcode", 1),
               unbase64(str(st, "out-data")) + unbase64(str(st, "err-data"))};
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
   }
+  if (cancelable) stop_guest_group(n, pid, "-KILL");
   throw std::runtime_error("Guest command timed out");
 }
 

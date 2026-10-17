@@ -1857,7 +1857,15 @@ class MultiBot(unittest.TestCase):
  def test_13_frontend_lane_contract(self):
   html=self.request('/',raw=True).decode()
   for needle in ("api('/api/cancel',id?{bot:id}:{})",'id="bot-lanes"','Alle stoppen','setBusyBots(next.busy_bots)',"event.type==='idle'&&Array.isArray(event.busy_bots)","event.type==='cancelled'&&event.bot",'state.activities'):self.assertIn(needle,html)
-  # The composer is never turned into a global stop button.
+  # Composer bar: round +, pill with mic, one round send button that stops
+  # only while the field is empty, and turns back into "Senden" on input.
+  for needle in ('<form id="send-form" class="gbar">','id="plus"','class="composer-card gbar-pill"','id="mic"','id="send-button"','id="plus-think"','id="upload-camera"','id="upload-screen"',
+                 "const stop=!typed&&ids.length>0&&can('stop')","ids.length>1?'Alle stoppen':'Stoppen'","dataset.mode==='stop'){e.preventDefault();stopBot('')}",
+                 "$('message').addEventListener('input',fitMessageHeight)","syncComposerButton()}"):self.assertIn(needle,html)
+  form=html[html.index('<form id="send-form"'):html.index('</form>',html.index('<form id="send-form"'))]
+  self.assertNotRegex(form,r'<textarea[^>]*\bdisabled','the message field is never blocked')
+  self.assertNotIn("message').disabled",html)
+  self.assertNotIn('id="stop-generation"',html)
   for gone in ('is-stop','syncSendButton'):self.assertNotIn(gone,html)
 class FakeTailscale(http.server.BaseHTTPRequestHandler):
  protocol_version='HTTP/1.1';calls=[]

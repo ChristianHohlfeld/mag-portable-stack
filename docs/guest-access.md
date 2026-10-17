@@ -122,3 +122,40 @@ whois-Owner, `X-Mag-Token`, identische HTTPS-Origin und
   Raumzugriff. Bereits angenommene Gäste werden nicht allein durch
   das Verfallen ihres **Einladungs-Keys** gelöscht, sondern durch das
   im Register gespeicherte Aufenthaltsende.
+
+
+## Wiederherstellbare Raum-Löschung (ab diesem PR)
+
+Alle Mutationen werden zentral im C++-Server geprüft (Default Deny).
+Nur Besitzer dürfen Raum, Nachrichten, Dateien, Undo oder Sicherungen löschen
+bzw. wiederherstellen. Ein Gast darf Chat-Nachrichten senden, reagieren und
+Dateien hochladen, aber nicht löschen: Historische Dateieinträge enthalten
+keine verlässlich verifizierbare Eigentümer-ID (nur einen Anzeigenamen).
+Eine Autorisierung per Anzeigename wäre unsicher.
+
+POST /api/room/clear erfordert eine per Tailscale-whois/HMAC signierte
+Owner-Identität. Vor der Löschung wird ein konsistenter Snapshot aller
+Raum-Metadaten und aktiven Dateiinhalte unter
+/var/lib/magbot/room/snapshots/<zeit>-<zufall>/ gespeichert.
+Die temporäre Sicherung wird erst nach erfolgreichem fsync atomar
+umbenannt. Fehler beim Sichern (z. B. fehlende Dateien, Symlinks,
+Speicherplatz oder Limit) geben HTTP 507 zurück: Der Raum bleibt bestehen.
+Der bisherige 10-Sekunden-Undo bleibt zusätzlich erhalten.
+
+Aufbewahrung: maximal 5 Sicherungen, höchstens 7 Tage und insgesamt
+maximal 2 GiB; eine Sicherung maximal 512 MiB. Die neuesten Sicherungen
+bleiben nach Browser-Neustart oder Raum-Neustart verfügbar. Die Daten
+bleiben im geschützten State-Pfad und sind nicht statisch veröffentlicht.
+
+Im Raum unter Daten -> Raum -> Sicherungen ansehen kann der Owner
+einen Stand nach Bestätigung wiederherstellen. Technische Endpunkte:
+GET /api/room/snapshots und POST /api/room/snapshots/{id}/restore.
+Vor Restore wird der aktuelle Zustand ebenfalls gesichert und dessen
+ID als previous_snapshot zurückgegeben. Während Bot-Arbeit: HTTP 409.
+Fehlender Owner-Nachweis/CSRF: HTTP 403. Archiv defekt: HTTP 422.
+Restore betrifft nur Chat-Dateien und Raumverlauf, nicht Bot-Memory/VMs.
+
+Notfall: Zuerst Host-/Filesystem-Backups sichern; Snapshot-Dateien
+nicht in Logs kopieren. Alte Daten vom um 07:16 gemeldeten ungeschützten
+Clear sind NICHT rückwirkend durch diese Funktion wiederherstellbar.
+Eventuell noch vorhandene Host-Backups/Undo-/Trash-Reste separat prüfen.

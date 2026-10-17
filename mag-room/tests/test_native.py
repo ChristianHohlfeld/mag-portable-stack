@@ -1063,6 +1063,8 @@ class Native(unittest.TestCase):
    self.assertIn(needle, html)
  def test_17_scoped_room_memory_and_workspace(self):
   self.wait_idle()
+  self._access(["chris@github"])
+  owner=self._ts("chris@github","Chris")
   self.request('/api/agent/test/remember',{'fact':'trennung-bleibt'})
   self.request('/api/agent/test/say',{'text':'Trennungsnachricht'})
   room=self.request('/api/state')['room']
@@ -1070,14 +1072,14 @@ class Native(unittest.TestCase):
   uploaded=self.request('/api/upload?name=trennung.txt',b'trennung')
   stored=uploaded['stored']
   self.error(400,'/api/room/messages/nicht-hex',method='DELETE')
-  self.error(400,'/api/room/files/..%2Fetc%2Fpasswd',method='DELETE')
+  self.error(400,'/api/room/files/..%2Fetc%2Fpasswd',method='DELETE',headers=owner)
   self.error(404,'/api/undo/abcdef12',{})
   self.error(403,'/api/room/clear',{},headers={'Content-Type':'application/json','X-No-Token':'1'})
   gone=self.request('/api/room/messages/'+mid,method='DELETE')
   self.assertNotIn(mid,[m['id'] for m in self.request('/api/state')['room']])
   self.request('/api/undo/'+gone['undo'],{})
   self.assertIn(mid,[m['id'] for m in self.request('/api/state')['room']])
-  removed=self.request('/api/room/files/'+stored,method='DELETE')
+  removed=self.request('/api/room/files/'+stored,method='DELETE',headers=owner)
   self.assertFalse(any(f.get('stored')==stored for f in self.request('/api/state')['files']))
   self.error(404,'/api/file/'+stored)
   self.request('/api/undo/'+removed['undo'],{})
@@ -1088,7 +1090,8 @@ class Native(unittest.TestCase):
   self.request('/api/undo/'+cleared['undo'],{})
   self.assertTrue(any(x.get('text')=='trennung-bleibt' for x in self.request('/api/agents/test/memory')))
   mem=self.request('/api/agents/test/memory')
-  wiped=self.request('/api/room/clear',{})
+  wiped=self.request('/api/room/clear',{},headers=owner)
+  self.assertTrue((self.state/'snapshots'/wiped['snapshot']/'room.json').is_file())
   st=self.request('/api/state')
   self.assertFalse(st['room']);self.assertFalse(st['files'])
   self.assertEqual(self.request('/api/agents/test/memory'),mem)
@@ -1128,6 +1131,78 @@ class Native(unittest.TestCase):
    self.request('/api/agents/test/workspace/reset',{})
   self.assertEqual(ctx.exception.code,400)
   self.assertIn('Nur-Chat-Bot',json.loads(ctx.exception.read())['error'])
+ def test_17z_room_clear_snapshot_restore_and_guest_denial(self):
+  self.wait_idle()
+  self._access(['chris@github'])
+  owner=self._ts('chris@github','Chris')
+  guest=self._ts('ada@github','Ada')
+  self.request('/api/agent/test/say',{'text':'Snapshot dauerhaft'})
+  file=self.request('/api/upload?name=recovery.txt',b'RECOVER ME')
+  stored=file['stored']
+  before=self.request('/api/state')
+  room_disk=(self.state/'room.json').read_bytes()
+  files_disk=(self.state/'files.json').read_bytes()
+  forbidden=[
+   ('/api/room/clear','POST',{}),
+   ('/api/reset','POST',{}),
+   ('/api/room/messages/abcdef12','DELETE',None),
+   ('/api/room/files/'+stored,'DELETE',None),
+   ('/api/room/snapshots','GET',None),
+   ('/api/room/snapshots/1234567890-'+'a'*24+'/restore','POST',{}),
+   ('/api/undo/abcdef12','POST',{}),
+   ('/api/queue','DELETE',None),
+   ('/api/queue/merge','POST',{}),
+   ('/api/frontend','POST',{'html':'bad'}),
+   ('/api/pages','POST',{}),
+   ('/api/connectors/github','DELETE',None),
+   ('/api/jobs','GET',None),
+   ('/api/unknown-destructive','POST',{}),
+  ]
+  for uri,method,data in forbidden:
+   with self.subTest(uri=uri,method=method):
+    self.error(403,uri,data,method=method,headers=guest)
+  self.assertEqual((self.state/'room.json').read_bytes(),room_disk)
+  self.assertEqual((self.state/'files.json').read_bytes(),files_disk)
+  self.assertEqual(self.request('/api/file/'+stored,raw=True),b'RECOVER ME')
+  self.error(403,'/api/room/clear',{},headers={'X-Tailscale-User':'chris@github',
+               'X-Tailscale-IP':'100.101.102.103'})
+  self.error(403,'/api/room/clear',{}) # local loopback is NOT attested owner
+  cleared=self.request('/api/room/clear',{},headers=owner)
+  id=cleared['snapshot']
+  folder=self.state/'snapshots'/id
+  self.assertEqual(json.loads((folder/'room.json').read_text()),before['room'])
+  self.assertEqual((folder/'files'/stored).read_bytes(),b'RECOVER ME')
+  self.assertFalse(self.request('/api/state')['room'])
+  self.assertFalse(self.request('/api/state')['files'])
+  self.proc.terminate();self.proc.wait(timeout=5);self.log.close();self.start()
+  owner=self._ts('chris@github','Chris')
+  self.assertIn(id,[x['id'] for x in self.request('/api/room/snapshots',headers=owner)['snapshots']])
+  self.error(403,'/api/room/snapshots/'+id+'/restore',{},headers=owner)
+  h={**owner,'Host':'mag.stardenburg.de','Origin':'https://mag.stardenburg.de','Sec-Fetch-Site':'same-origin'}
+  restored=self.request('/api/room/snapshots/'+id+'/restore',{},headers=h)
+  self.assertEqual(restored['restored'],id)
+  self.assertTrue((self.state/'snapshots'/restored['previous_snapshot']).is_dir())
+  self.assertEqual(self.request('/api/file/'+stored,raw=True),b'RECOVER ME')
+  st=self.request('/api/state')
+  self.assertTrue(any(m.get('content')=='Snapshot dauerhaft' for m in st['room']))
+  self.assertTrue(any(f.get('stored')==stored for f in st['files']))
+  # A compromised/symlinked shared file must fail the snapshot, NOT clear.
+  target=self.state/'files'/stored
+  target.rename(target.with_suffix('.saved'))
+  target.symlink_to('/etc/passwd')
+  try:
+   original=self.request('/api/state')['room']
+   self.error(507,'/api/room/clear',{},headers=owner)
+   self.assertEqual(self.request('/api/state')['room'],original)
+  finally:
+   target.unlink()
+   target.with_suffix('.saved').rename(target)
+  for _ in range(6):
+   self.request('/api/room/clear',{},headers=owner)
+  remaining=self.request('/api/room/snapshots',headers=owner)['snapshots']
+  self.assertLessEqual(len(remaining),5)
+  self.assertTrue(all((self.state/'snapshots'/x['id']/'meta.json').is_file() for x in remaining))
+
  def test_18_pwa_shell_is_not_cached(self):
   import base64
   def headers(path):

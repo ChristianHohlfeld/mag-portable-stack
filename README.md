@@ -416,6 +416,15 @@ with wildcard HTTPS, per-repository Tailnet/public access, optional CNAME,
 and a one-command rollback. No additional publisher process or Python service.
 See [MAG Pages operations and DNS](docs/GITEA_PAGES.md).
 
+MAG Pages lifecycle: the existing native C++ magroom automatically removes retired sites/releases and custom HTTPS certificates/accounts through the existing nginx/ACME timer. DeepSeek has six owner-scoped Pages tools. See docs/GITEA_PAGES.md for lifecycle, DomainFactory Tailnet-only DNS, cleanup, renewal, tools and rollback.
+
+Pages sandbox hardening: `mag-120` retains `ProtectSystem=full`. Root-only `/etc` changes are performed by the fixed-command `mag-pages-reconcile.service` oneshot outside the room namespace, triggered synchronously from native C++, never by sudo-executing GC scripts in the room. An atomic validated request under `/var/lib/mag-pages` carries visibility changes; `pages_delete` waits for nginx cleanup, custom TLS/lego account deletion and successful reload. `pages_set_domain` attempts custom ACME immediately. The existing `mag-acme-renew.timer` continues renewal. A sandbox CI regression verifies real systemd isolation; live private-Gitea-token access must be confirmed on MAG during deployment.
+
 ## Gästeverwaltung (Tailscale-only)
 
 Besitzer verwaltet Einladungen und getaggte Gastgeräte direkt im MAG-Raum: **Gäste → Einladen**, einmaliger Auth-Key (24 h), Aktivierung per Link/QR, Geräteübersicht, sofortiges Sperren und automatische Ablauf-Bereinigung. Die Tailscale-Policy beschränkt `tag:mag-guest` auf `100.123.114.16:443`; Gäste dürfen **nie** als reguläre Tailnet-Mitglieder freigeschaltet werden. Native C++-whois/HMAC-Identität, serverseitige Rollenprüfung, Owner-CSRF-Gate, auditierbare Widerrufe. OAuth-Client-Secrets bleiben in `/etc/credstore/mag-guest-oauth` mit systemd `LoadCredential`, **nicht in Git**. `mag-llm` ist unberührt. Siehe [docs/guest-access.md](docs/guest-access.md) für Einrichtung, Notfallwiderruf und Einschränkungen.
+
+
+### Sicheres Raum-Leeren
+
+Vor jedem Owner-Clear wird eine dauerhafte Sicherung unter /var/lib/magbot/room/snapshots erzeugt (5 Sicherungen, 7 Tage, 2 GiB; Einzel-Limit 512 MiB). Schlägt das Sichern fehl, wird nichts geleert. Owner-Restore im Frontend unter Daten → Raum → Sicherungen ansehen; vor Restore wird erneut gesichert. Gäste dürfen weder Raum noch einzelne geteilte Dateien löschen. Details in docs/guest-access.md.

@@ -32,6 +32,7 @@ manifest=/var/lib/mag-pages/custom-domains.tsv
 temp="$(mktemp /etc/nginx/conf.d/.pages-custom.XXXXXXXX)"
 prior="$(mktemp /etc/nginx/conf.d/.pages-prior.XXXXXXXX)"
 seen="$(mktemp)"
+failed=0
 trap 'rm -f "$temp" "$prior" "$seen"' EXIT
 [[ ! -f "$config" ]] || cp -a "$config" "$prior"
 : >"$temp"
@@ -45,6 +46,7 @@ while IFS=$'\t' read -r host canonical slug; do
  actual="$(dig +short CNAME "$host" @1.1.1.1 | sed 's/[.]$//' | tr '[:upper:]' '[:lower:]')"
  if [[ "$actual" != "$canonical" ]]; then
    echo "DNS not ready for $host: CNAME must point to $canonical" >&2
+   failed=1
    continue
  fi
  id="$(printf '%s' "$host" | sha256sum | cut -c1-16)"
@@ -53,16 +55,21 @@ while IFS=$'\t' read -r host canonical slug; do
  chmod 0700 "$dir"
  cert="$dir/certificates/$host.crt"
  key="$dir/certificates/$host.key"
- # lego 5: run is idempotent; there is NO renew subcommand.
- if ! /usr/local/bin/lego run --accept-tos --email "$PAGES_ACME_EMAIL" \
-     --path "$dir" --http --http.webroot /var/lib/mag-pages/acme -d "$host"; then
-    echo "Custom-domain lego run failed: $host" >&2
-    continue
+ # lego v5 run issues a new certificate. Skip when >30 days remain;
+ # first issuance for a new CNAME still happens synchronously on tool call.
+ if [[ ! -s "$cert" || ! -s "$key" ]] ||
+    ! openssl x509 -in "$cert" -noout -checkend 2592000 >/dev/null 2>&1; then
+   if ! /usr/local/bin/lego run --accept-tos --email "$PAGES_ACME_EMAIL" \
+       --path "$dir" --http --http.webroot /var/lib/mag-pages/acme -d "$host"; then
+      echo "Custom-domain lego run failed: $host" >&2
+      failed=1
+      continue
+   fi
  fi
- [[ -s "$cert" && -s "$key" ]] || continue
- openssl x509 -in "$cert" -noout -checkend 86400 >/dev/null || continue
+ [[ -s "$cert" && -s "$key" ]] || { failed=1; continue; }
+ openssl x509 -in "$cert" -noout -checkend 86400 >/dev/null || { failed=1; continue; }
  [[ "$(openssl x509 -in "$cert" -pubkey -noout | openssl sha256)" == \
-    "$(openssl pkey -in "$key" -pubout | openssl sha256)" ]] || continue
+    "$(openssl pkey -in "$key" -pubout | openssl sha256)" ]] || { failed=1; continue; }
  cat >> "$temp" <<EOF
 server {
     listen $PAGES_PUBLIC_BIND:443 ssl;
@@ -78,10 +85,19 @@ server {
 }
 EOF
 done <"$manifest"
-install -m 0644 "$temp" "$config"
+if [[ -s "$temp" ]]; then
+  install -m 0644 "$temp" "$config"
+else
+  rm -f "$config" # no stale empty custom-domain snippet
+fi
 if ! nginx -t || ! systemctl reload nginx.service; then
  if [[ -s "$prior" ]]; then cp -a "$prior" "$config"; else rm -f "$config"; fi
  nginx -t && systemctl reload nginx.service || true
  echo 'Custom vhost rejected; restored prior config' >&2
+ exit 1
+fi
+
+if [[ "$failed" -ne 0 ]]; then
+ echo 'Custom-domain certificate/DNS activation incomplete; will retry via existing ACME timer' >&2
  exit 1
 fi

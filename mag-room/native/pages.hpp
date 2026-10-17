@@ -13,9 +13,11 @@
 #include <chrono>
 #include <cctype>
 #include <filesystem>
+#include <functional>
 #include <fstream>
 #include <iostream>
 #include <map>
+#include <mutex>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -265,11 +267,12 @@ inline void link_atomic(const fs::path& directory,const std::string& name,const 
   fs::rename(temp,link);
 }
 struct Site {std::string id,slug,sha,branch,custom,access;fs::path content;};
-inline std::vector<Val> repo_list(const std::string& token) {
+inline std::vector<Val> repo_list(const std::string& token,
+      const std::function<Response(const std::string&,const std::string&)>& fetch=request) {
   std::vector<Val> out;
   std::set<int64_t> ids;
   for(int page=1;page<=200;++page){
-    const auto r=request("repos/search?limit=50&page="+std::to_string(page),token);
+    const auto r=fetch("repos/search?limit=50&page="+std::to_string(page),token);
     if(r.status!=200)throw std::runtime_error("Gitea repo list 404");
     auto v=json(r.body);
     auto data=v.find("data");
@@ -289,7 +292,14 @@ inline std::pair<std::string,std::string> branch_sha(const std::string& token,co
   std::string prefix="repos/"+encode(owner)+"/"+encode(name)+"/branches/";
   auto r=request(prefix+encode("gh-pages"),token);
   std::string branch="gh-pages";
-  if(r.status==404) {branch=fallback;r=request(prefix+encode(branch),token);}
+  if(r.status==404) {
+    branch=fallback;
+    if(branch.empty())return {"",""};
+    r=request(prefix+encode(branch),token);
+  }
+  // Empty Gitea repos and repositories whose Pages sources were removed
+  // have no branch to publish. Other API/status errors already throw.
+  if(r.status==404)return {"",""};
   if(r.status!=200)throw std::runtime_error("missing default branch");
   auto v=json(r.body);
   auto commit=v.find("commit");
@@ -299,14 +309,51 @@ inline std::pair<std::string,std::string> branch_sha(const std::string& token,co
     throw std::runtime_error("invalid Gitea commit hash");
   return {branch,sha};
 }
+// Prune precisely the obsolete content, including retired commit SHA releases,
+// orphaned staging dirs and removed repositories. Reject unexpected symlinks.
+inline void cleanup_releases(const fs::path& directory,const std::vector<Site>& active) {
+  std::map<std::string,std::string> wanted;
+  for(const auto& s:active)wanted.emplace(s.slug,s.sha);
+  if(!fs::exists(directory))return;
+  for(const auto& entry:fs::directory_iterator(directory)) {
+    if(entry.is_symlink()) throw std::runtime_error("symlink in Pages releases");
+    const auto slug_name=entry.path().filename().string();
+    if(!entry.is_directory())throw std::runtime_error("foreign Pages release entry");
+    const auto it=wanted.find(slug_name);
+    if(it==wanted.end()) {fs::remove_all(entry.path());continue;}
+    for(const auto& revision:fs::directory_iterator(entry.path())) {
+      if(revision.is_symlink())throw std::runtime_error("symlink in Pages revision");
+      if(revision.path().filename()!=it->second)fs::remove_all(revision.path());
+    }
+  }
+}
+inline std::mutex TOOL_MTX; // serialize all model requests vs periodic sync
+inline std::mutex SYNC_MTX;
+inline void run_root_reconcile() {
+  // systemd starts a new root oneshot OUTSIDE mag-120's read-only /etc mount.
+  // sudoers grants exactly this fixed systemctl invocation, no arguments.
+  if(std::system("sudo -n /usr/bin/systemctl start mag-pages-reconcile.service")!=0)
+    throw std::runtime_error("Pages root reconciliation failed (check journalctl -u mag-pages-reconcile)");
+}
+inline void submit_policy(const std::string& repo,const std::string& mode) {
+  if(repo.find('/')==std::string::npos || (mode!="public" && mode!="tailnet" && mode!="delete"))
+    throw std::runtime_error("invalid Pages request");
+  const auto root=fs::path(env("MAG_PAGES_ROOT","/var/lib/mag-pages"));
+  Val req=Val::object();req["repo"]=repo;req["action"]=mode;
+  const auto path=root/"request.json";
+  if(fs::is_symlink(path))throw std::runtime_error("Pages request symlink");
+  write_atomic(path,mj::dump(req)+"\n");
+  run_root_reconcile();
+}
 inline void reconcile(const fs::path& root,const std::string& token) {
   const Val access=policy(env("MAG_PAGES_VISIBILITY","/etc/mag-pages/visibility.json"));
   // Host public bind + explicit per-repo policy are BOTH required.
   const auto public_bind=env("MAG_PAGES_PUBLIC_BIND","");
   const auto repositories=repo_list(token);
   const fs::path manifest=root/"sites.json";
-  if(repositories.empty() && fs::exists(manifest))
-    throw std::runtime_error("empty repo scan: refuse to unpublish existing Pages");
+  // An authenticated HTTP 200 list with zero repos is authoritative:
+  // deleting the final Gitea repo must also delete its last Page.
+  // Transport/HTTP failures have already thrown from repo_list().
   Val prior=Val::object();
   if(fs::exists(manifest))prior=json(read(manifest));
   std::vector<Site> sites;
@@ -323,6 +370,7 @@ inline void reconcile(const fs::path& root,const std::string& token) {
     const auto page=slug(full);
     if(!slugs.insert(page).second)throw std::runtime_error("Pages slug collision");
     const auto branch=branch_sha(token,owner,name,field(repo,"default_branch"));
+    if(branch.first.empty())continue; // source absent: site must be retired
     const bool docs=branch.first!="gh-pages";
     const auto prev=prior.find(full);
     std::string cname;
@@ -334,7 +382,7 @@ inline void reconcile(const fs::path& root,const std::string& token) {
       auto r=request("repos/"+encode(owner)+"/"+encode(name)+"/archive/"+encode(branch.first)+".tar.gz",token);
       if(r.status!=200)throw std::runtime_error("Gitea archive not found");
       auto files=unpack(r.body,docs);
-      if(files.empty())continue; // no docs: do not publish
+      if(files.empty() || files.count("PAGES_DISABLED"))continue; // deliberately disabled or no docs
       cname=custom(files);
       if(files.empty())continue;
       if(!fs::exists(release)){
@@ -379,8 +427,8 @@ inline void reconcile(const fs::path& root,const std::string& token) {
       }
     }
   }
-  // Remove stale routes; only known symlink names are touched. Nothing is
-  // recursively removed, so immutable published content remains for rollback.
+  // Remove stale routes before their release directories. The release GC
+  // below never follows a symlink and keeps exactly one current SHA per site.
   for(const auto& which:{std::string("public"),std::string("tailnet"),std::string("custom")}){
     auto dir=root/which;
     for(const auto& e:fs::directory_iterator(dir)){
@@ -390,9 +438,67 @@ inline void reconcile(const fs::path& root,const std::string& token) {
       if(keep.count(name)==0)fs::remove(e.path());
     }
   }
-  write_atomic(root/"custom-domains.tsv",aliases);
-  write_atomic(manifest,mj::dump(state)+"\n");
+  cleanup_releases(root/"releases", sites);
+  const std::string new_state=mj::dump(state)+"\n";
+  const auto aliases_path=root/"custom-domains.tsv";
+  const bool changed=!fs::exists(manifest) || read(manifest)!=new_state ||
+                     !fs::exists(aliases_path) || read(aliases_path)!=aliases;
+  if(changed) {
+    Val retired=Val::array();
+    // Persist tombstones across failed root reconciliations.
+    const auto pending=root/"gc-retired.json";
+    if(fs::exists(pending)){
+      Val older=json(read(pending));
+      if(!older.isArr())throw std::runtime_error("invalid pending retired Pages");
+      for(const auto& item:older.asArr())retired.push(item);
+    }
+    if(prior.isObj())for(const auto& old:*prior.obj)
+      if(!state.find(old.first))retired.push(Val(old.first));
+    write_atomic(root/"gc-retired.json",mj::dump(retired)+"\n");
+    write_atomic(aliases_path,aliases);
+    write_atomic(manifest,new_state);
+    write_atomic(root/"gc.pending","1\n"); // retry until privileged GC succeeds
+  }
+  // Root reconciliation is invoked after this transaction by the native
+  // synchronous tool adapter or the ticker, not in this read-only namespace.
 }
+// A native Pages tool push requests prompt reconciliation without extra
+// polling services. Ticker wakes within one second (and keeps its fallback).
+// Both background sync and tool sync serialize webroot mutation and service
+// activation; systemctl Type=oneshot returns only after root cleanup.
+inline void sync_now(const std::string& repo="",bool expect_absent=false) {
+  std::lock_guard<std::mutex> guard(SYNC_MTX);
+  const auto root=fs::path(env("MAG_PAGES_ROOT","/var/lib/mag-pages"));
+  const auto token=trim(read(env("MAG_PAGES_TOKEN_FILE","/etc/mag-pages/gitea-token")));
+  if(token.empty() || token.find_first_of("\r\n")!=std::string::npos)
+    throw std::runtime_error("missing or invalid server-side Pages token");
+  if(!repo.empty()) {
+    // Repo visibility is checked using the ACTUAL read:repository token.
+    // Fail visibly if a VM-created private repo is absent from the index.
+    auto visible=repo_list(token);
+    bool exists=false;
+    for(const auto& v:visible)if(field(v,"full_name")==repo)exists=true;
+    if(!exists)
+      throw std::runtime_error("read:repository publisher token cannot list private owner repo "+repo);
+    auto slash=repo.find('/');
+    const auto permission=request("repos/"+encode(repo.substr(0,slash))+"/"+
+                                  encode(repo.substr(slash+1)),token);
+    if(permission.status!=200)
+      throw std::runtime_error("read:repository publisher token cannot read private repo");
+  }
+  // Validate the actual read:repository visibility BEFORE any webroot change.
+  reconcile(root,token);
+  if(!repo.empty()) {
+    const auto site_state=json(read(root/"sites.json"));
+    if(expect_absent && site_state.find(repo))
+      throw std::runtime_error("Page still published after deletion");
+    if(!expect_absent && !site_state.find(repo))
+      throw std::runtime_error("Page source not visible to publisher");
+  }
+  run_root_reconcile(); // immediate custom TLS and nginx -t/reload
+}
+inline std::atomic<bool> SYNC_REQUESTED{false};
+inline void request_sync() { SYNC_REQUESTED.store(true); }
 inline void ticker(const std::atomic<bool>& stopping) {
   const auto root=fs::path(env("MAG_PAGES_ROOT","/var/lib/mag-pages"));
   const auto tokenfile=fs::path(env("MAG_PAGES_TOKEN_FILE","/etc/mag-pages/gitea-token"));
@@ -405,12 +511,20 @@ inline void ticker(const std::atomic<bool>& stopping) {
       const auto token=trim(read(tokenfile));
       if(token.empty() || token.find_first_of("\r\n")!=std::string::npos)
         throw std::runtime_error("missing/invalid Gitea service token");
-      reconcile(root,token);
+      {
+        std::lock_guard<std::mutex> operation(TOOL_MTX);
+        std::lock_guard<std::mutex> guard(SYNC_MTX);
+        reconcile(root,token);
+        if(fs::exists(root/"gc.pending") || fs::exists(root/"request.json"))
+          run_root_reconcile();
+      }
     }catch(const std::exception& e){
       std::cerr<<"MAG Pages sync failed, last webroots kept: "<<e.what()<<"\n";
     }
-    for(int t=0;t<60 && !stopping.load();++t)
+    for(int t=0;t<60 && !stopping.load();++t) {
+      if(SYNC_REQUESTED.exchange(false))break;
       std::this_thread::sleep_for(std::chrono::seconds(1));
+    }
   }
   curl_global_cleanup();
 }

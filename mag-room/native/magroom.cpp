@@ -1514,6 +1514,7 @@ static const char *T_UNREACT =
     R"({"type":"function","function":{"name":"unreact","description":"Remove your own emoji reaction from a room message.","parameters":{"type":"object","properties":{"message_id":{"type":"string"},"emoji":{"type":"string"}},"required":["message_id","emoji"],"additionalProperties":false}}})";
 
 #include "jobs_tools.hpp"
+#include "pages_tools.hpp"
 
 static const char *ROOM_RULES =
     "Du bist {name}, ein freier, eigenstaendiger KI-Agent in einem gemeinsamen "
@@ -1971,6 +1972,81 @@ static std::string guest_file_payload(const std::string &vm,
       "Atomares Schreiben in der VM fehlgeschlagen: " + r.out.substr(0, 1500));
   return r.out;
 }
+// Native DeepSeek Pages tool router: no host Gitea PAT and no arbitrary sudo.
+static std::string pages_dispatch_tool(int bot_idx,const std::string& name,
+                                       const Val& args) {
+  std::lock_guard<std::mutex> operation(magpages::TOOL_MTX);
+  if(!is_pages_tool(name) || !args.isObj())return "Fehler: unknown Pages tool";
+  const std::string vm=bot_field(bot_idx,"vm","keine");
+  if(vm=="keine" || !pages_safe_vm(vm))return "Fehler: no authorized bot VM";
+  const std::string owner="magbot-"+vm;
+  auto str=[&](const char* k)->std::string {
+    auto v=args.find(k);return v?v->asStr():"";
+  };
+  const std::string repo=name=="pages_list"?"pages":str("repo");
+  if(name!="pages_list" && !pages_safe_repo(repo))
+    return "Fehler: repo must be a safe single name (not owner/repo)";
+  const std::string content=str("content");
+  if((name=="pages_create" || name=="pages_update") &&
+     (content.empty() || content.size()>1024*1024))
+    return "Fehler: content required (max 1 MiB)";
+  std::string op,extra;
+  if(name=="pages_list")op="list";
+  else if(name=="pages_create" || name=="pages_update") {
+    op=name=="pages_create"?"create":"update";
+    extra=name=="pages_create"?"index.html":str("path");
+    if(!pages_safe_path(extra))return "Fehler: unsafe site relative path";
+  }else if(name=="pages_delete")op="delete";
+  else if(name=="pages_set_domain") {
+    op="domain"; extra=str("domain");
+    if(!magpages::dns(extra))return "Fehler: invalid custom domain";
+    // Custom ACME HTTP-01 cannot work with the private-only listener.
+    // Reject BEFORE committing CNAME; every reported success has HTTPS.
+    if(env("MAG_PAGES_PUBLIC_BIND","").empty() ||
+       magpages::mode(magpages::policy(env("MAG_PAGES_VISIBILITY",
+           "/etc/mag-pages/visibility.json")),owner+"/"+repo)!="public")
+      return "Fehler: custom HTTPS requires public Pages bind and repo policy";
+  }else if(name=="pages_set_visibility") {
+    op="verify";extra=str("visibility");
+    if(extra!="tailnet" && extra!="public")return "Fehler: visibility must be tailnet|public";
+    if(extra=="public" && env("MAG_PAGES_PUBLIC_BIND","").empty())
+      return "Fehler: public Pages disabled by host operator (Tailnet-only)";
+  }else return "Fehler: invalid Pages action";
+  const std::string trusted=read_file(env("MAG_PAGES_VM_SCRIPT",
+                          "/opt/mag-stack/current/ops/pages/pages-vm.sh"));
+  if(trusted.size()<100 || trusted.size()>40000)
+    return "Fehler: trusted Pages VM helper missing on MAG host";
+  try {
+    guest_file_payload(vm,"/home/bot/.mag-pages-tool.sh",trusted,false);
+    if(op=="create" || op=="update") {
+      auto ready=guest_command(vm,"mkdir -p /home/bot/.mag-pages-input",15);
+      if(ready.code)return "Fehler: guest staging path unavailable";
+      guest_file_payload(vm,"/home/bot/.mag-pages-input/"+repo,content,false);
+    }
+    std::string cmd="bash /home/bot/.mag-pages-tool.sh "+op+" "+repo+" "+owner;
+    if(op=="domain" || op=="create" || op=="update")cmd+=" "+extra;
+    auto result=guest_command(vm,cmd,120,true);
+    if(result.code!=0)return "Fehler: Pages VM operation failed: "+result.out.substr(0,400);
+    if(name=="pages_delete") {
+      // Revoke public and private routes before attempting network resync.
+      magpages::submit_policy(owner+"/"+repo,"delete");
+    }
+    if(name=="pages_set_visibility") {
+      // A validated JSON request is consumed by a systemd ROOT unit.
+      // It runs outside ProtectSystem=full; errors propagate synchronously.
+      magpages::submit_policy(owner+"/"+repo,extra);
+      magpages::sync_now(owner+"/"+repo);
+      return "Pages "+owner+"/"+repo+" visibility = "+extra+"; nginx/TLS reconciled";
+    }
+    if(name!="pages_list") {
+      magpages::sync_now(owner+"/"+repo,name=="pages_delete");
+    }
+    return result.out.size()>6000?result.out.substr(0,6000):result.out;
+  }catch(const std::exception& e) {
+    return "Fehler: Pages operation unavailable: "+std::string(e.what()).substr(0,240);
+  }
+}
+
 // Room memory is versioned in the bot's git-memory (gitmem -> Gitea): one
 // commit per change (remember/edit/delete). Best effort, async, serialised;
 // skipped while offline (Gitea is not reachable then) and re-synced later.
@@ -2637,6 +2713,7 @@ static std::string tools_json(int bot_idx, bool web) {
   defs.push_back(T_WEB_SEARCH);
   defs.push_back(T_GITHUB); // always registered (cache); token checked at call
   for (const char *d : JOBS_TOOL_DEFS) defs.push_back(d);
+  if (has_vm) for (const char *d : PAGES_TOOL_DEFS) defs.push_back(d);
   if (has_vm) {
     for (const char *d :
          {T_BROWSER_OPEN, T_BROWSER_CLICK, T_BROWSER_TYPE, T_BROWSER_READ,
@@ -3244,6 +3321,7 @@ static std::string dispatch_tool(int bot_idx, const std::string &name,
   std::string bot_id = bot_field(bot_idx, "id");
   std::string bot_name = bot_field(bot_idx, "name", "Bot");
   if (is_jobs_tool(name)) return jobs_dispatch_tool(bot_idx, name, a);
+  if (is_pages_tool(name)) return pages_dispatch_tool(bot_idx, name, a);
   auto need_vm = [&]() {
     if (vm.empty() || vm == "keine")
       throw std::runtime_error("Dieser Bot hat keine eigene VM.");
@@ -4850,45 +4928,66 @@ static ScopedResult delete_room_file(const std::string &stored) {
   out["undo"] = uid;
   return scoped_ok(out);
 }
+#include "room_snapshots.hpp"
 static ScopedResult clear_room_data() {
+  // Never clear even one byte unless the full room and every active file
+  // has already reached a durable snapshot. Holds STATE_MTX across both.
+  std::string snapshot, error;
   UndoItem u;
+  {
+  std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
+  if (!snapshot_capture_locked(snapshot,error))
+    return scoped_err(507,"Raum nicht geleert: "+error);
   u.kind = "room";
   u.id = token_hex(8);
   std::string dir = trash_slot(u.id);
   u.trash = dir;
-  {
-    std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
-    Val room = Val::array(), files = Val::array();
-    for (auto &m : ROOM)
-      room.push(m);
-    for (auto &f : FILES)
-      files.push(f);
-    u.data = Val::object();
-    u.data["room"] = room;
-    u.data["files"] = files;
-    for (auto &f : FILES) {
-      if (f.find("removed"))
-        continue;
-      auto s = f.find("stored");
-      if (!s)
-        continue;
-      std::string name = basename_of(s->asStr());
-      if (!is_stored_name(name))
-        continue;
-      move_path(FILES_DIR + "/" + name, dir + "/" + name);
+  Val room = snapshot_array(ROOM), files = snapshot_array(FILES);
+  u.data = Val::object();
+  u.data["room"] = room;
+  u.data["files"] = files;
+  std::vector<std::string> moved;
+  for (auto &f : FILES) {
+    if (f.find("removed")) continue;
+    auto s=f.find("stored");
+    if (!s || !is_stored_name(s->asStr())) {
+      error="Ungültiger Dateieintrag";
+      break;
     }
+    std::string name=s->asStr();
+    if (!move_path(FILES_DIR+"/"+name,dir+"/"+name)) {
+      error="Datei konnte nicht in den temporären Papierkorb verschoben werden";
+      break;
+    }
+    moved.push_back(name);
+  }
+  if (!error.empty()) {
+    for (auto it=moved.rbegin();it!=moved.rend();++it)
+      (void)move_path(dir+"/"+*it,FILES_DIR+"/"+*it);
+    return scoped_err(507,"Raum unverändert: "+error);
+  }
+  try {
     ROOM.clear();
+    FILES.clear();
     clear_reaction_notes();
     save_room();
-    FILES.clear();
-    save_json_array(FILES_JSON, FILES);
+    save_json_array(FILES_JSON,FILES);
+  } catch (...) {
+    ROOM=*room.arr;
+    FILES=*files.arr;
+    for (auto it=moved.rbegin();it!=moved.rend();++it)
+      (void)move_path(dir+"/"+*it,FILES_DIR+"/"+*it);
+    try {save_room();save_json_array(FILES_JSON,FILES);}catch(...){}
+    return scoped_err(507,"Raum unverändert: Persistenz fehlgeschlagen");
   }
+  } // release STATE_MTX before notifying SSE and committing Undo
   std::string uid = u.id;
   undo_commit(std::move(u));
   room_changed();
   Val out = Val::object();
   out["ok"] = true;
   out["undo"] = uid;
+  out["snapshot"] = snapshot;
   return scoped_ok(out);
 }
 static ScopedResult clear_bot_memory(const std::string &id) {
@@ -5360,6 +5459,7 @@ int main() {
   jobs_load();
   std::thread(jobs_ticker).detach();
   std::thread(guest_cleanup_loop).detach();
+  std::thread(snapshot_retention_loop).detach();
   std::thread(scheduler_loop).detach();
   std::thread(model_watcher_loop).detach();
   std::thread(file_sync_loop).detach();

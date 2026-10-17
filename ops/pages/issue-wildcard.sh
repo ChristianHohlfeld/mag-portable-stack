@@ -94,10 +94,23 @@ if [[ "$actual" != "$target" ]]; then
   echo "DNS not delegated/propagated yet (observed: ${actual:-<none>}); skipping issuance." >&2
   exit 78
 fi
-# Only call lego after DNS propagation; do not retry failed issuance in a tight loop.
-"$lego" run --accept-tos --email "$PAGES_ACME_EMAIL" --path "$base" \
-  --dns acmedns --dns.resolvers 8.8.8.8:53,1.1.1.1:53 \
-  -d "*.$zone" -d "$zone"
+# lego v5 "run" is issuance, not a no-op renew. Avoid ACME rate
+# limits on the twice-daily existing timer: renew only within 30 days.
+needs_issue=1
+for candidate in "$base"/certificates/*.crt; do
+  [[ -s "$candidate" && -s "${candidate%.crt}.key" ]] || continue
+  san="$(openssl x509 -in "$candidate" -noout -ext subjectAltName 2>/dev/null || true)"
+  if grep -Fq "DNS:*.$zone" <<<"$san" && grep -Fq "DNS:$zone" <<<"$san" &&
+     openssl x509 -in "$candidate" -noout -checkend 2592000 >/dev/null 2>&1; then
+    needs_issue=0
+    break
+  fi
+done
+if [[ "$needs_issue" == 1 ]]; then
+  "$lego" run --accept-tos --email "$PAGES_ACME_EMAIL" --path "$base" \
+    --dns acmedns --dns.resolvers 8.8.8.8:53,1.1.1.1:53 \
+    -d "*.$zone" -d "$zone"
+fi
 crt=
 for cert in "$base"/certificates/*.crt; do
   [[ -f "$cert" ]] || continue

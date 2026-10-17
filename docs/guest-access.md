@@ -34,20 +34,20 @@ einer Sekunde geschlossen; neue Requests sind unmittelbar gesperrt.
    `100.123.114.16:443` und die Tag-Owner-Regel.
 2. Client-ID/Secret direkt auf mag **außerhalb von Git** hinterlegen:
    ```bash
-   sudo install -d -o root -g root -m 0700 /etc/mag-stack/secrets
-   sudo sh -c 'umask 077; cat > /etc/mag-stack/secrets/mag-guest-oauth.json'
+   sudo install -d -o root -g root -m 0700 /etc/credstore
+   sudo sh -c 'umask 077; cat > /etc/credstore/mag-guest-oauth'
    # In diese Eingabe NUR folgendes JSON mit den echten Werten schreiben:
    # {"client_id":"...","client_secret":"..."}
    # Ende mit Ctrl-D. Niemals in die Shell-Befehlszeile eingeben!
-   sudo chown root:root /etc/mag-stack/secrets/mag-guest-oauth.json
-   sudo chmod 0600 /etc/mag-stack/secrets/mag-guest-oauth.json
+   sudo chown root:root /etc/credstore/mag-guest-oauth
+   sudo chmod 0600 /etc/credstore/mag-guest-oauth
    sudo systemctl daemon-reload
    ```
 3. `mag-120.service` verwendet `LoadCredential=mag-guest-oauth:...`.
    systemd kopiert die Datei geschützt nach `/run/credentials/...`, ohne sie
    per Environment-Variable oder Kommandozeilenargument zu veröffentlichen.
-   **Vor** dem Room-Deploy muss die Quelldatei existieren, andernfalls darf
-   systemd den Raumdienst nicht starten. Die normalen Build-/Deploy-Schritte
+   Ohne Credential bleibt die Gäste-Einladung deaktiviert, der Raum
+   selbst startet weiterhin. Die normalen Build-/Deploy-Schritte
    bleiben `ops/deploy.sh`. Nur `mag-120` neu starten, **niemals `mag-llm`**.
 4. Besitzeridentität unverändert unter
    `/var/lib/magbot/room/access.json` konfigurieren:

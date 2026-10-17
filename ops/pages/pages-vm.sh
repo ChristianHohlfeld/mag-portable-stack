@@ -61,6 +61,7 @@ if [[ "$action" == delete ]]; then
     git -C "$dir" diff --cached --quiet ||
       { git -C "$dir" commit --quiet -m 'MAG Pages: remove docs publication'; git -C "$dir" push --quiet origin "$default"; }
   fi
+  rm -f -- "/home/bot/.mag-pages-input/$repo"
   echo 'Pages source deleted for owner repository'
   exit
 fi
@@ -85,8 +86,12 @@ elif [[ "$action" == create || "$action" == update ]]; then
   input="/home/bot/.mag-pages-input/$repo"
   [[ -s "$input" && ! -L "$input" ]] || { echo 'Missing staged content'; exit 5; }
   [[ "$(wc -c <"$input")" -le 1048576 ]] || exit 5
-  mkdir -p "$(dirname "$dir/$relative")"
-  cp "$input" "$dir/$relative"
+  destination="$dir/$relative"
+  canonical="$(realpath -m -- "$destination")"
+  [[ "$canonical" == "$dir/"* && ! -L "$destination" ]] ||
+    { echo 'Symlink/escape in page path forbidden' >&2; exit 5; }
+  mkdir -p "$(dirname "$destination")"
+  cp "$input" "$destination"
   git -C "$dir" add -- "$relative"
 else
   echo 'Unsupported Pages operation' >&2; exit 2
@@ -95,7 +100,13 @@ if ! git -C "$dir" diff --cached --quiet; then
  git -C "$dir" commit --quiet -m "MAG Pages $action"
  git -C "$dir" push --quiet origin HEAD:refs/heads/gh-pages
 else
+ if [[ "$action" == create || "$action" == update ]]; then
+   rm -f -- "/home/bot/.mag-pages-input/$repo"
+ fi
  echo 'Pages already up to date'
  exit
+fi
+if [[ "$action" == create || "$action" == update ]]; then
+  rm -f -- "/home/bot/.mag-pages-input/$repo"
 fi
 echo 'Pages source updated successfully; publisher will sync'

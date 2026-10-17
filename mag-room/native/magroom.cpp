@@ -2020,6 +2020,11 @@ static std::string pages_dispatch_tool(int bot_idx,const std::string& name,
     if(op=="domain" || op=="create" || op=="update")cmd+=" "+extra;
     auto result=guest_command(vm,cmd,120,true);
     if(result.code!=0)return "Fehler: Pages VM operation failed: "+result.out.substr(0,400);
+    if(name=="pages_delete") {
+      auto clear=run_argv({"sudo","-n",
+          "/usr/local/lib/mag-pages/pages-policy.sh",owner+"/"+repo,"delete"},20);
+      if(clear.code!=0)return "Fehler: Pages source deleted, root policy cleanup failed";
+    }
     if(name=="pages_set_visibility") {
       auto policy=run_argv({"sudo","-n",
         "/usr/local/lib/mag-pages/pages-policy.sh",owner+"/"+repo,extra},20);

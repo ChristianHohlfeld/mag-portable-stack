@@ -184,6 +184,22 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
       }
     } else if (actor.role == "guest" && !actor.node.empty()) {
       actor.name = guest_name_for_node(actor.node);
+      // Deliberately independent of configurable AccessCfg permissions: a
+      // tagged guest may never gain Jobs, Pages, Admin or model privileges.
+      const auto &q = r.path;
+      const bool read = m == "GET" &&
+          (q == "/" || q == "/index.html" || q == "/sw.js" ||
+           q == "/manifest.webmanifest" || q == "/api/state" ||
+           q == "/api/events" || q == "/api/bots" ||
+           q == "/api/room" || q == "/api/files" ||
+           q == "/api/version" || q == "/api/model-status" ||
+           q.rfind("/static/",0)==0 || q.rfind("/api/file/",0)==0);
+      const bool write = m == "POST" &&
+          (q == "/api/message" || q == "/api/upload");
+      if (!read && !write) {
+        error_json(fd,403,"Gäste dürfen diese Aktion nicht ausführen");
+        return;
+      }
     }
     if (!(m == "POST" && r.path == "/api/guest/claim" &&
           actor.role == "guest" && !actor.node.empty()) &&

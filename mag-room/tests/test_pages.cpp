@@ -70,8 +70,13 @@ int main() {
     ("mag-pages-native-test-"+std::to_string(getpid()));
   std::filesystem::remove_all(base);
   std::filesystem::create_directories(base);
+  docs["deep/nested/test.txt"]="nested";
   materialize(base/"release",docs);
   REQUIRE(read(base/"release/index.html")=="hello");
+  REQUIRE(read(base/"release/deep/nested/test.txt")=="nested");
+  using perms=std::filesystem::perms;
+  REQUIRE((std::filesystem::status(base/"release/deep").permissions() & perms::others_exec)!=perms::none);
+  REQUIRE((std::filesystem::status(base/"release/deep/nested").permissions() & perms::others_exec)!=perms::none);
   link_atomic(base/"public","hello--alice",base/"release");
   REQUIRE(read(base/"public/hello--alice/index.html")=="hello");
   link_atomic(base/"public","hello--alice",base/"release");

@@ -12,6 +12,17 @@ done
 for bind in "$PAGES_PUBLIC_BIND" "$PAGES_TAILNET_BIND"; do
  ip -4 -o addr show | grep -Fq " $bind/" || { echo "Missing local IP: $bind" >&2; exit 1; }
 done
+# Explicitly require the existing ACME timer; no new timer is installed.
+systemctl cat mag-acme-renew.service >/dev/null ||
+ { echo 'Existing mag-acme-renew.service not installed' >&2; exit 1; }
+systemctl is-enabled --quiet mag-acme-renew.timer ||
+ { echo 'Existing MAG ACME renewal timer not enabled' >&2; exit 1; }
+# Private listener MUST be bound by Tailscale, never another public NIC.
+ip -4 -o addr show dev tailscale0 | grep -Fq " $PAGES_TAILNET_BIND/" ||
+ { echo 'Tailnet-only IP is not on tailscale0' >&2; exit 1; }
+if ip -4 -o addr show dev tailscale0 | grep -Fq " $PAGES_PUBLIC_BIND/"; then
+ echo 'Public Pages bind IP cannot be on tailscale0' >&2; exit 1
+fi
 test -s /etc/mag-pages/gitea-token || { echo 'Create read-only Gitea service token first' >&2; exit 1; }
 test -s /etc/mag-pages/tls/current/cert.pem
 test -s /etc/mag-pages/tls/current/key.pem

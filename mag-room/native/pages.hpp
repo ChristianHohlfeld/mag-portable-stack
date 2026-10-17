@@ -392,6 +392,7 @@ inline void ticker(const std::atomic<bool>& stopping) {
   if(curl_global_init(CURL_GLOBAL_DEFAULT)!=CURLE_OK){
     std::cerr<<"MAG Pages: curl init failed\n";return;
   }
+  std::cerr<<"MAG Pages: native C++ polling enabled (nginx webroots)\n";
   while(!stopping.load()){
     try{
       const auto token=trim(read(tokenfile));

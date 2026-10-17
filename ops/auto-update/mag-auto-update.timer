@@ -1,0 +1,10 @@
+[Unit]
+Description=Check for a new MAG release on main
+
+[Timer]
+OnBootSec=5min
+OnUnitInactiveSec=10min
+RandomizedDelaySec=60
+
+[Install]
+WantedBy=timers.target

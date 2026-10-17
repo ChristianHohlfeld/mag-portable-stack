@@ -1,0 +1,11 @@
+[Unit]
+Description=MAG auto update (pull main, build, deploy)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash @ROOT@/ops/auto-update/auto-update.sh
+Nice=19
+IOSchedulingClass=idle
+TimeoutStartSec=3h

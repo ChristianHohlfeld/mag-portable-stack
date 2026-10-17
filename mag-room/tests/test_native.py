@@ -1735,6 +1735,71 @@ class MultiBot(unittest.TestCase):
   self.assertRegex(drop,r'(?m)^Environment=MAG_ROOM_SINGLE_BOT=\s*$')
   for forbidden in ('mag-llm','ExecStop','systemctl'):self.assertNotRegex(drop,r'(?m)^[^#]*'+forbidden)
   dep=(ROOT/'ops/deploy.sh').read_text();self.assertIn('30-multibot.conf',dep)
+class FakeTailscale(http.server.BaseHTTPRequestHandler):
+ protocol_version='HTTP/1.1';calls=[]
+ def log_message(self,*a):pass
+ def _send(self,obj,code=200):
+  data=json.dumps(obj).encode()
+  self.send_response(code);self.send_header('Content-Type','application/json');self.send_header('Content-Length',str(len(data)));self.end_headers();self.wfile.write(data)
+ def _body(self):
+  n=int(self.headers.get('Content-Length') or 0);return self.rfile.read(n) if n else b''
+ def do_GET(self):
+  self.calls.append(('GET',self.path))
+  if self.path=='/api/v2/tailnet/-/devices':
+   self._send({'devices':[{'id':'dev1','name':'maxim-phone','tags':['tag:mag-guest'],'addresses':['100.64.0.9'],'online':True,'lastSeen':'2026-10-17T18:00:00Z'},
+                          {'id':'dev2','name':'untagged','tags':[],'addresses':['100.64.0.10']}]})
+  else:self._send({'message':'not found'},404)
+ def do_POST(self):
+  self._body();self.calls.append(('POST',self.path))
+  if self.path=='/api/v2/oauth/token':self._send({'access_token':'fake-token','expires_in':3600})
+  elif self.path=='/api/v2/tailnet/-/keys':self._send({'key':'tskey-auth-fake','id':'key%d'%len(self.calls)})
+  else:self._send({'message':'not found'},404)
+ def do_DELETE(self):
+  self.calls.append(('DELETE',self.path));self._send({})
+class GuestsLive(unittest.TestCase):
+ """/api/guests with Tailscale OAuth configured and a live device list (the production path)."""
+ @classmethod
+ def setUpClass(cls):
+  cls.tmp=tempfile.TemporaryDirectory();root=pathlib.Path(cls.tmp.name);cls.state=root/'state';cls.state.mkdir()
+  cls.state.joinpath('agents.json').write_text(json.dumps([{'id':'test','name':'Test','vm':'','memory':[]}]))
+  base={k:['owner'] for k in ('offline','stop','jobs','memory','reset','delete','autotalk','connectors','browser')}
+  cls.state.joinpath('access.json').write_text(json.dumps({'owners':['chris@github'],'owner_name':'Chris','permissions':base,
+   'guest_invites':[{'id':'claimed1','key_id':'oldkey','claim_hash':'','name':'Maxim','note':'','created':int(time.time()),
+                     'expires':int(time.time())+86400,'key_expires':int(time.time())+86400,'device':'dev1','node':'n1','revoked':False}]}))
+  creds=root/'creds';creds.mkdir();(creds/'mag-guest-oauth').write_text(json.dumps({'client_id':'cid','client_secret':'secret'}))
+  cls.whois_socket=str(root/'tailscaled.sock');cls.whois=WhoisUnix(cls.whois_socket,WhoisFixture)
+  threading.Thread(target=cls.whois.serve_forever,daemon=True).start()
+  cls.ts=http.server.ThreadingHTTPServer(('127.0.0.1',0),FakeTailscale);threading.Thread(target=cls.ts.serve_forever,daemon=True).start()
+  cls.model=http.server.ThreadingHTTPServer(('127.0.0.1',0),Model);threading.Thread(target=cls.model.serve_forever,daemon=True).start()
+  cls.ui=port();cls.bridge=port()
+  env=dict(os.environ,MAG_OWNER_CANONICAL_LOGIN='chris@github',MAG_ROOM_STATE=str(cls.state),MAG_ROOM_PORT=str(cls.ui),MAG_ROOM_BRIDGE_PORT=str(cls.bridge),MAG_ROOM_BRIDGE_IP='127.0.0.1',MAG_ROOM_BACKEND=f'http://127.0.0.1:{cls.model.server_port}/v1/chat/completions',MAG_ROOM_UI=str(ROOT/'mag-room/web/index.html'),MAG_ROOM_STATIC=str(ROOT/'mag-room/static'),MAG_ROOM_MODEL_STATUS=str(root/'ms.json'),MAG_NETMODE=str(NETMODE),MAG_TEST_NO_MEMGIT='1',MAG_TAILSCALED_SOCKET=cls.whois_socket,CREDENTIALS_DIRECTORY=str(creds),MAG_TAILSCALE_API=f'http://127.0.0.1:{cls.ts.server_port}/api/v2')
+  env.pop('MAG_ROOM_SINGLE_BOT',None)
+  cls.log=open(root/'server.log','w');cls.proc=subprocess.Popen([str(ROOT/'build/magroom')],env=env,stdout=cls.log,stderr=cls.log)
+  for _ in range(100):
+   try:Native.request.__func__(cls,'/healthz',raw=True);return
+   except Exception:time.sleep(.03)
+  raise RuntimeError('Native startup failed')
+ @classmethod
+ def tearDownClass(cls):
+  cls.proc.terminate();cls.proc.wait(timeout=5);cls.log.close();cls.model.shutdown();cls.ts.shutdown();cls.whois.shutdown();cls.whois.server_close();cls.tmp.cleanup()
+ request=classmethod(Native.request.__func__)
+ _ts=Native._ts
+ def test_list_create_and_list_again_without_crash(self):
+  owner=self._ts('chris@github','Chris')
+  g=self.request('/api/guests',headers=owner)
+  self.assertIsNone(self.proc.poll(),'room crashed on GET /api/guests')
+  self.assertTrue(g['configured']);self.assertEqual(g['live_status'],'ok')
+  [maxim]=g['guests'];self.assertTrue(maxim['claimed']);self.assertEqual(maxim['device_name'],'maxim-phone');self.assertTrue(maxim['online'])
+  for k in ('key_id','claim_hash'):self.assertNotIn(k,maxim)
+  signed={**owner,'Host':'mag.stardenburg.de','Origin':'https://mag.stardenburg.de','Sec-Fetch-Site':'same-origin'}
+  made=self.request('/api/guests',{'name':'Neuer Gast','expires_at':int(time.time())+2*86400},headers=signed)
+  self.assertEqual(made['name'],'Neuer Gast');self.assertIn('#invite=',made['invite_url'])
+  for _ in range(3):
+   g=self.request('/api/guests',headers=owner)
+   self.assertIsNone(self.proc.poll(),'room crashed on GET /api/guests')
+  self.assertEqual(sorted(x['name'] for x in g['guests']),['Maxim','Neuer Gast'])
+  self.assertNotIn('tskey-auth-fake',json.dumps(g))
+  self.assertIn(('GET','/api/v2/tailnet/-/devices'),FakeTailscale.calls)
 class PendingSpawnResume(unittest.TestCase):
  """A room restart during a VM spawn adopts that VM instead of crashing or orphaning it."""
  def test_restart_adopts_recorded_vm(self):

@@ -619,8 +619,9 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
     const Val *last = out.find("last_success");
     const bool stale = !last || last->asNum() < now_s() - 26 * 3600;
     const Val *reported = out.find("healthy");
+    const bool healthy = !stale && reported && reported->asBool();
     out["stale"] = stale;
-    out["healthy"] = !stale && reported && reported->asBool();
+    out["healthy"] = healthy;
     send_json(fd, 200, mj::dump(out));
     return;
   }

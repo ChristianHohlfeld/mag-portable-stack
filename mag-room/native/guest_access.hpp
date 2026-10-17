@@ -140,7 +140,8 @@ static GuestHTTP guest_http(const std::string &url, const std::string &method,
   if (method == "POST") headers = curl_slist_append(headers, "Content-Type: application/json");
   curl_easy_setopt(c, CURLOPT_URL, url.c_str());
   curl_easy_setopt(c, CURLOPT_HTTPHEADER, headers);
-  curl_easy_setopt(c, CURLOPT_PROTOCOLS_STR, "https");
+  const bool loopback = url.rfind("http://127.0.0.1:", 0) == 0;
+  curl_easy_setopt(c, CURLOPT_PROTOCOLS_STR, loopback ? "http" : "https");
   curl_easy_setopt(c, CURLOPT_FOLLOWLOCATION, 0L);
   curl_easy_setopt(c, CURLOPT_CONNECTTIMEOUT, 4L);
   curl_easy_setopt(c, CURLOPT_TIMEOUT, 9L);
@@ -182,6 +183,10 @@ static bool guest_oauth_configured() {
          !guest_field(cred,"client_id").empty() &&
          !guest_field(cred,"client_secret").empty();
 }
+// Overridable only so the integration test can serve a fake Tailscale API.
+static std::string guest_api_base() {
+  return env("MAG_TAILSCALE_API", "https://api.tailscale.com/api/v2");
+}
 static std::string guest_oauth() {
   if (!GUEST_TOKEN.empty() && now_s() < GUEST_TOKEN_UNTIL) return GUEST_TOKEN;
   auto dir = env("CREDENTIALS_DIRECTORY", "");
@@ -200,7 +205,8 @@ static std::string guest_oauth() {
   CURL *c = curl_easy_init();
   if (!c) return "";
   std::string data;
-  curl_easy_setopt(c, CURLOPT_URL, "https://api.tailscale.com/api/v2/oauth/token");
+  const std::string token_url = guest_api_base() + "/oauth/token";
+  curl_easy_setopt(c, CURLOPT_URL, token_url.c_str());
   curl_easy_setopt(c, CURLOPT_POSTFIELDS, form.c_str());
   curl_easy_setopt(c, CURLOPT_POSTFIELDSIZE, (long)form.size());
   curl_easy_setopt(c, CURLOPT_CONNECTTIMEOUT, 4L);
@@ -232,7 +238,7 @@ static GuestHTTP guest_api(const std::string &method, const std::string &path,
   std::lock_guard<std::mutex> gate(GUEST_API_MTX);
   std::string t = guest_oauth();
   if (t.empty()) return {};
-  auto result = guest_http("https://api.tailscale.com/api/v2/" + path, method, t, payload);
+  auto result = guest_http(guest_api_base() + "/" + path, method, t, payload);
   if (result.status == 401) GUEST_TOKEN.clear();
   return result;
 }
@@ -506,14 +512,16 @@ static Val guest_list_live() {
     out["live_status"] = "disabled";
     return out;
   }
-  auto arr = out.find("guests");
-  if (!arr || !arr->isArr()) return out;
   auto status = guest_api("GET", "tailnet/-/devices");
   if (!status.ok || status.status != 200) {
     out["live_status"] = "unavailable";
     return out;
   }
   out["live_status"] = "ok";
+  // Val objects are vectors: look up "guests" only after the last insert
+  // into `out`, or the pointer dangles.
+  auto arr = out.find("guests");
+  if (!arr || !arr->isArr()) return out;
   auto devices = status.json.find("devices");
   if (!devices || !devices->isArr()) return out;
   for (auto &r : *arr->arr) {

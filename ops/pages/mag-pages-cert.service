@@ -1,0 +1,13 @@
+[Unit]
+Description=Renew MAG Pages wildcard and custom-domain certificates
+Wants=network-online.target
+After=network-online.target nginx.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/mag-pages/issue-wildcard.sh renew
+ExecStart=/usr/bin/certbot renew --quiet --deploy-hook "nginx -t && systemctl reload nginx.service"
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+TimeoutStartSec=12min

@@ -1,0 +1,19 @@
+[Unit]
+Description=MAG Gitea Pages publisher (nginx only)
+Wants=network-online.target
+After=network-online.target gitea.service nginx.service
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+ExecStart=/usr/local/lib/mag-pages/mag_pages.py sync
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/mag-pages /etc/nginx/conf.d /etc/mag-pages /run/lock
+TimeoutStartSec=10min

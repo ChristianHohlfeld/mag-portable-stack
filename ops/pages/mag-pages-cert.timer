@@ -1,0 +1,11 @@
+[Unit]
+Description=Twice-daily MAG Pages certificate renewal
+
+[Timer]
+OnCalendar=*-*-* 03,15:15:00
+RandomizedDelaySec=15min
+Persistent=true
+Unit=mag-pages-cert.service
+
+[Install]
+WantedBy=timers.target

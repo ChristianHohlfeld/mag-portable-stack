@@ -6,7 +6,7 @@ set -euo pipefail
 repo="$1"; mode="$2"
 [[ "$repo" =~ ^magbot-[a-z][a-z0-9-]{0,31}/[a-zA-Z0-9][a-zA-Z0-9_.-]{0,79}$ &&
    "$repo" != *".."* ]] || exit 2
-[[ "$mode" == public || "$mode" == tailnet ]] || exit 2
+[[ "$mode" == public || "$mode" == tailnet || "$mode" == delete ]] || exit 2
 file=/etc/mag-pages/visibility.json
 config=/etc/mag-pages/pages.env
 [[ -f "$file" && ! -L "$file" && -r "$config" && ! -L "$config" ]] || exit 1
@@ -20,7 +20,11 @@ flock -x 9
 jq -e 'type=="object"' "$file" >/dev/null
 next="$(mktemp /etc/mag-pages/.visibility.XXXXXXXX)"
 trap 'rm -f "$next"' EXIT
-jq --arg repo "$repo" --arg mode "$mode" '.[$repo]=$mode' "$file" >"$next"
+if [[ "$mode" == delete ]]; then
+ jq --arg repo "$repo" 'del(.[$repo])' "$file" >"$next"
+else
+ jq --arg repo "$repo" --arg mode "$mode" '.[$repo]=$mode' "$file" >"$next"
+fi
 chmod 0640 "$next"
 chown root:magbot "$next"
 mv -f "$next" "$file"

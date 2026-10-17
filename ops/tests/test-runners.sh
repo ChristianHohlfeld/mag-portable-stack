@@ -21,7 +21,7 @@ grep -Fq 'PathModified=/var/lib/mag-deploy/request' "$r/mag-deploy-request.path"
 ! grep -Eq 'mag-llm(\.service|-iq3)|systemctl (stop|restart) mag-llm' "$r"/* "$root/ops/auto-update"/*
 grep -Fq 'ops/runners/install.sh' "$root/ops/auto-update/apply.sh"
 grep -Fq 'exec bash "$ROOT/ops/auto-update/apply.sh"' "$root/ops/auto-update/auto-update.sh"
-grep -Fq "vars.MAG_SELF_HOSTED == 'on'" "$root/.github/workflows/deploy-mag.yml"
-grep -Fq "workflow_run.conclusion == 'success'" "$root/.github/workflows/deploy-mag.yml"
+grep -Fq "vars.MAG_SELF_HOSTED == 'on'" "$root/.github/workflows/green.yml"
+grep -Fq "needs.promote-green.outputs.promoted == 'true'" "$root/.github/workflows/green.yml"
 grep -Fq 'mag:host' "$r/gitea-runner.yaml"
 echo 'Runner guards PASS'

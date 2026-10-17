@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# One command on the MAG host: pull main, build the C++ binaries, deploy.
+# One command on the MAG host: pull the newest green main, build the C++ binaries, deploy.
 # Run as the normal user that owns the checkout (not as root); only the final
 # deploy step uses sudo. A failed pull or build stops before anything on the
 # live system is touched. deploy.sh keeps its own backup and automatic rollback.
@@ -25,8 +25,15 @@ fi
 
 phase pull
 if (( PULL )); then
-  run git -C "$ROOT" fetch origin main
-  run git -C "$ROOT" merge --ff-only origin/main
+  # `green` = newest main commit with all CI checks passed; main only until it exists.
+  ref=origin/green
+  if (( DRY )); then
+    echo "+ git -C $ROOT fetch origin green (falls back to main)"
+  elif ! git -C "$ROOT" fetch origin green 2>/dev/null; then
+    git -C "$ROOT" fetch origin main
+    ref=origin/main
+  fi
+  run git -C "$ROOT" merge --ff-only "$ref"
 else
   echo 'skipped (--no-pull)'
 fi

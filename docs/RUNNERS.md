@@ -22,14 +22,14 @@ to log in to the server. Downloads are pinned by SHA256.
   Settings → Actions → Runners → New self-hosted runner, copy the token
   (valid 1 hour) into `/etc/credstore/mag-github-runner.token` (root, 0600).
   The next deploy registers the runner and deletes the token file. Then set the
-  repository variable `MAG_SELF_HOSTED=on`; from then on
-  `.github/workflows/deploy-mag.yml` deploys right after green CI on `main`
-  instead of waiting for the 10-minute timer.
+  repository variable `MAG_SELF_HOSTED=on`; from then on the `deploy-live` job
+  in `.github/workflows/green.yml` deploys right after `green` moves instead of
+  waiting for the 2-minute timer.
 
 ## Deploying from a workflow
 
 Write to `/var/lib/mag-deploy/request`. `mag-deploy-request.path` then starts
-`mag-auto-update.service`: fast-forward `main`, build, `ops/deploy.sh` with
+`mag-auto-update.service`: fast-forward to `green` (newest all-green `main`), build, `ops/deploy.sh` with
 backup, smoke test and automatic rollback. Nothing else on the host can be
 changed from a job.
 

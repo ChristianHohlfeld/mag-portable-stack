@@ -1,0 +1,43 @@
+name: Green main
+# When every check on the newest main commit is green, move branch `green` to
+# it. MAG deploys only `green` (ops/auto-update). Red or unfinished: nothing.
+on:
+  workflow_run:
+    workflows:
+      - Native MAG stack
+      - MAG encrypted backup and restore
+      - Screenshot paste browser emulation
+      - MAG Pages native C++ / nginx / secrets
+      - Private nginx cutover security
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: write
+  checks: read
+concurrency:
+  group: green-main
+  cancel-in-progress: false
+jobs:
+  promote-green:
+    runs-on: ubuntu-latest
+    outputs:
+      promoted: ${{ steps.promote.outputs.promoted }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - id: promote
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash ops/ci/promote-green.sh
+  # Optional instant deploy on the self-hosted runner on MAG (docs/RUNNERS.md).
+  # Without it the MAG timer picks up `green` within 2 minutes.
+  deploy-live:
+    needs: promote-green
+    if: vars.MAG_SELF_HOSTED == 'on' && needs.promote-green.outputs.promoted == 'true'
+    runs-on: [self-hosted, mag]
+    timeout-minutes: 5
+    steps:
+      - run: date -u +%FT%TZ > /var/lib/mag-deploy/request

@@ -1,9 +1,9 @@
 [Unit]
-Description=Check for a new MAG release on main
+Description=Check whether branch green (all CI checks passed) moved
 
 [Timer]
 OnBootSec=5min
-OnUnitInactiveSec=10min
+OnUnitInactiveSec=2min
 RandomizedDelaySec=60
 
 [Install]

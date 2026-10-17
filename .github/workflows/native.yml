@@ -84,3 +84,5 @@ jobs:
         run: bash ops/tests/test-update.sh
       - name: Action runner guards
         run: bash ops/tests/test-runners.sh
+      - name: Green promotion
+        run: bash ops/tests/test-green.sh

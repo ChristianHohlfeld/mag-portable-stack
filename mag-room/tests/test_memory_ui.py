@@ -85,7 +85,8 @@ class Handler(BaseHTTPRequestHandler):
 class MemoryDialogBrowser(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        from playwright.sync_api import sync_playwright
+        from playwright.sync_api import sync_playwright, expect
+        cls.expect = expect
         cls.playwright = sync_playwright().start()
         cls.browser = cls.playwright.chromium.launch(headless=True)
         cls.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
@@ -113,7 +114,7 @@ class MemoryDialogBrowser(unittest.TestCase):
                     page = context.new_page()
                     page.goto(f"http://127.0.0.1:{self.server.server_port}/",
                               wait_until="domcontentloaded")
-                    page.locator("#agents .agent").wait_for()
+                    page.locator("#agents .agent").wait_for(state="attached")
                     self.assertEqual(page.locator("#area-memory").count(), 0)
                     self.assertEqual(page.locator("#memory-areas").count(), 0)
                     self.assertEqual(page.locator(".data-entry").count(), 0)
@@ -146,7 +147,7 @@ class MemoryDialogBrowser(unittest.TestCase):
                     page.locator("#purge-dialog").wait_for(state="visible")
                     page.locator("#purge-ok").click()
                     dialog.get_by_text("Bestehende Erinnerung B", exact=True).wait_for()
-                    self.assertEqual(dialog.locator(".mem-row").count(), 1)
+                    self.expect(dialog.locator(".mem-row")).to_have_count(1)
                     self.assertEqual(Handler.memories, [{"text": "Bestehende Erinnerung B"}])
                     self.assertEqual(page.locator("#area-memory").count(), 0)
                 finally:

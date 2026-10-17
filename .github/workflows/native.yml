@@ -23,6 +23,8 @@ jobs:
           ! grep -Fq 'start mag-backup-clear.service' mag-room/native/routes.hpp
       - name: Tailscale API nft IPv4/v6 egress regression without modifying host firewall
         run: sudo bash ops/audit/tests/test-tail-egress.sh
+      - name: Owner-only backup and console access contract
+        run: bash ops/private-access/tests/test-owner-boundaries.sh
       - name: Native integration checks
         run: |
           ./build/test-guest-pty

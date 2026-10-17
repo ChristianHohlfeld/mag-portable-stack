@@ -17,4 +17,4 @@ CI runs real C++ magroom against a fake tailscaled Unix LocalAPI and a throwaway
 ## Automatischer Release-Cutover ab 8e2d045
 
 `ops/deploy.sh` verwendet `deploy-nginx.sh` als transaktionalen vHost-Updater. Es prüft die wirksame nginx-Auth-Konfiguration und einen echten Tailnet-Owner per SSH-Probe, statt nur `/readyz` zu prüfen. Fehlende Credentials stoppen ausschließlich Gäste-Einladungen. Bei Owner-403/5xx werden nginx und Room gemeinsam zurückgerollt. Manuell idempotent: `sudo bash ops/private-access/deploy-nginx.sh standalone`. Für vollständige Einrichtung und geschützte `/etc/credstore/mag-guest-oauth`-Konfiguration siehe [docs/guest-access.md](../../docs/guest-access.md).
-
+\n**Userspace-Sonderfall (grokbot-box-2):** Die strikte externe Owner-Probe unterstützt optional einen auf der Box lokal gebundenen Tailscale-SOCKS5-Proxy, ohne die nginx-/C++-Whois-Anforderungen abzusenken. Einrichtung und Bedingungen: [docs/owner-probe-userspace.md](../../docs/owner-probe-userspace.md).\n

@@ -33,6 +33,72 @@ static void agents_event() {
   e["type"] = "agents";
   publish(mj::dump(e));
 }
+// A VM spawn takes minutes. The bot is stored at once with "pending_vm" and
+// works chat-only until its VM is ready; neither the HTTP request nor the
+// turn lock waits for it. A restart during the spawn resumes it (resume=true
+// adopts an already existing VM of that name, because it was recorded before
+// the spawn started). A fresh spawn never adopts: an existing VM of that
+// name is an orphan from an earlier failed run and the next free name is used.
+static void finish_spawn(const std::string &id, std::string vm, bool resume) {
+  std::vector<std::string> tried;
+  std::string error;
+  bool ok = false;
+  for (int attempt = 0; attempt < 8 && !ok; ++attempt) {
+    auto result = run_argv({"sudo", "-n", AGENT_CTL, "spawn", vm}, 600);
+    if (result.code == 0) { ok = true; break; }
+    error = trim(result.out).substr(0, 400);
+    if (error.find("already exists") == std::string::npos) break;
+    if (resume) { ok = true; break; }
+    tried.push_back(vm);
+    std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
+    int idx = agent_index(id);
+    if (idx < 0) return;
+    vm = next_vm(tried);
+    AGENTS[idx]["pending_vm"] = vm;
+    try { save_agents(); } catch (...) {}
+  }
+  bool orphan = false;
+  {
+    std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
+    int idx = agent_index(id);
+    if (idx < 0) {
+      orphan = ok;
+    } else if (ok) {
+      AGENTS[idx]["vm"] = vm;
+      drop_key(AGENTS[idx], "pending_vm");
+      try { save_agents(); } catch (...) {}
+    } else {
+      AGENTS.erase(AGENTS.begin() + idx);
+      try { save_agents(); } catch (...) {}
+    }
+  }
+  if (orphan) {
+    // Removed while its VM was being created: do not leave the VM behind.
+    run_argv({"sudo", "-n", AGENT_CTL, "despawn", vm}, 180);
+    return;
+  }
+  if (ok) {
+    agents_event();
+    warm_browser_async(vm);
+    return;
+  }
+  std::cerr << "spawn " << vm << " for " << id << " failed: " << error << std::endl;
+  drop_bot_refs(id);
+  agents_event();
+  emit_event("error", id, "", "VM für den neuen Bot konnte nicht erstellt werden: " + error);
+}
+static void resume_pending_spawns() {
+  std::vector<std::pair<std::string, std::string>> pending;
+  {
+    std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
+    for (size_t i = 0; i < AGENTS.size(); ++i) {
+      std::string vm = bot_field((int)i, "pending_vm");
+      if (!vm.empty()) pending.push_back({bot_field((int)i, "id"), vm});
+    }
+  }
+  for (auto &p : pending)
+    std::thread([p] { finish_spawn(p.first, p.second, true); }).detach();
+}
 static void route(int fd, Req &r, bool bridge = false) {
   const std::string &p = r.path;
   const std::string &m = r.method;
@@ -952,38 +1018,35 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
     const auto vm_flag = body.find("vm");
     const bool with_vm = !(vm_flag && vm_flag->type == Val::BOOL &&
                            !vm_flag->asBool());
-    cancel_active();
-    std::lock_guard<std::mutex> turn(TURN_MTX);
-    std::string id = slug_id(str("name")), vm = with_vm ? next_vm() : "";
-    if (with_vm) {
-      auto result = run_argv({"sudo", "-n", AGENT_CTL, "spawn", vm}, 600);
-      if (result.code != 0) {
-        error_json(fd, 502, result.out);
-        return;
-      }
-    }
     Val agent = Val::object();
-    agent["id"] = id;
-    agent["name"] = str("name");
-    agent["vm"] = vm;
-    agent["color"] = str("color", "#8fd0ff");
-    agent["persona"] =
-        str("persona", "Neugierig, freundlich und eigenstaendig.");
-    agent["memory"] = Val::array();
-    if (known_room_model(str("model"))) agent["model"] = str("model");
-    try {
+    std::string id, vm;
+    {
       std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
+      id = slug_id(str("name"));
+      vm = with_vm ? next_vm() : "";
+      agent["id"] = id;
+      agent["name"] = str("name");
+      agent["vm"] = "";
+      if (with_vm) agent["pending_vm"] = vm;
+      agent["color"] = str("color", "#8fd0ff");
+      agent["persona"] =
+          str("persona", "Neugierig, freundlich und eigenstaendig.");
+      agent["memory"] = Val::array();
+      if (known_room_model(str("model"))) agent["model"] = str("model");
       AGENTS.push_back(agent);
-      save_agents();
-    } catch (...) {
-      if (with_vm)
-        run_argv({"sudo", "-n", AGENT_CTL, "despawn", vm}, 180);
-      throw;
+      try {
+        save_agents();
+      } catch (...) {
+        AGENTS.pop_back();
+        throw;
+      }
     }
     agents_event();
     if (with_vm)
-      warm_browser_async(vm);
-    send_json(fd, 201, mj::dump(agent));
+      std::thread([id, vm] { finish_spawn(id, vm, false); }).detach();
+    Val out = agent;
+    if (with_vm) out["spawning"] = true;
+    send_json(fd, with_vm ? 202 : 201, mj::dump(out));
     return;
   }
   if (m == "POST" && (path == "/api/message" || path == "/api/stream")) {

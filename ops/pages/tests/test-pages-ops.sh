@@ -24,7 +24,7 @@ printf '\n' >>"$PAGES_TEST_ARGS_FILE"
 [[ "$1" == run ]] || exit 89
 if [[ ! -s "$ACME_DNS_STORAGE_PATH" ]]; then
   cat >"$ACME_DNS_STORAGE_PATH" <<'JSON'
-{"pages.stardenburg.de":{"fulldomain":"a1234567-1234-1234-1234-1234567890ab.auth.acme-dns.io"},"*.pages.stardenburg.de":{"fulldomain":"a1234567-1234-1234-1234-1234567890ab.auth.acme-dns.io"}}
+{"*.pages.stardenburg.de":{"fulldomain":"a1234567-1234-1234-1234-1234567890ab.auth.acme-dns.io"}}
 JSON
 fi
 exit 80
@@ -46,6 +46,7 @@ rc=$?
 set -e
 [[ $rc -eq 78 ]] || { cat "$tmp/output"; echo "Expected onboarding 78 got $rc"; exit 1; }
 grep -Fq 'CNAME  _acme-challenge.pages  a1234567-1234-1234-1234-1234567890ab.auth.acme-dns.io.' "$tmp/output"
+jq -e '."pages.stardenburg.de".fulldomain == .["*.pages.stardenburg.de"].fulldomain' "$tmp/storage.json" >/dev/null
 grep -Fq 'dig +short CNAME _acme-challenge.pages.stardenburg.de @1.1.1.1' "$tmp/output"
 [[ "$(head -1 "$tmp/args")" == run ]]
 ! grep -E '^renew$|^--days$' "$tmp/args"

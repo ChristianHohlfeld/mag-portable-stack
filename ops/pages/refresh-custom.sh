@@ -7,9 +7,6 @@ set -euo pipefail
 : "${PAGES_PUBLIC_BIND:=}"
 mode="${1:-run}"
 [[ "$mode" == run || "$mode" == custom-only ]] || { echo 'Usage: refresh-custom.sh run|custom-only' >&2; exit 2; }
-if [[ "$mode" == run ]]; then
- /usr/local/lib/mag-pages/issue-wildcard.sh run
-fi
 config=/etc/nginx/conf.d/mag-pages-custom.conf
 # Private-by-default: NEVER issue HTTP-01 or retain public custom vhosts.
 if [[ -z "$PAGES_PUBLIC_BIND" ]]; then
@@ -24,8 +21,10 @@ if [[ -z "$PAGES_PUBLIC_BIND" ]]; then
     fi
   fi
   echo 'Custom HTTPS disabled: PAGES_PUBLIC_BIND empty (Tailnet-only)'
+  if [[ "$mode" == run ]]; then /usr/local/lib/mag-pages/issue-wildcard.sh run; fi
   exit 0
 fi
+if [[ "$mode" == run ]]; then /usr/local/lib/mag-pages/issue-wildcard.sh run; fi
 [[ "$PAGES_PUBLIC_BIND" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || exit 2
 [[ "$PAGES_ACME_EMAIL" =~ ^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+$ && "$PAGES_ACME_EMAIL" != operator@example.com ]] || exit 2
 manifest=/var/lib/mag-pages/custom-domains.tsv

@@ -120,7 +120,9 @@ The Pages script sources the existing /etc/mag-acme/lego.env, preserving
 ACME_DNS_API_BASE and ACME_DNS_STORAGE_PATH, and uses a separate
 /etc/mag-acme/lego-pages certificate directory. Using jq, it reads
 ONLY fulldomain values for the registered Pages domain from that
-storage. If the required CNAME is absent, differs, or multiple
+storage. If lego registered only the wildcard or apex name, its root-only
+JSON account entry is safely shared between both identifiers (one CNAME
+for the two DNS-01 TXT values), preserving the other MAG registrations. If the required CNAME is absent, differs, or multiple
 incompatible targets exist, issuance halts before changing nginx.
 
 The existing mag-acme-renew.service invokes

@@ -28,6 +28,28 @@ target_from_storage() {
     '[ .[$d].fulldomain, .[("*." + $d)].fulldomain ] | map(select(type == "string" and length > 0)) | unique | .[]' \
     "$ACME_DNS_STORAGE_PATH"
 }
+# One CNAME serves both wildcard and apex. Lego/acme-dns may initially
+# register only the first domain, keyed separately in JSON. Reuse that SAME
+# account for both identifiers so both DNS-01 TXT values share the delegation.
+# Preserve every unrelated registration, including mag.stardenburg.de.
+share_acmedns_account() {
+  [[ -s "$ACME_DNS_STORAGE_PATH" ]] || return 0
+  local tmp
+  tmp="$(mktemp "$(dirname "$ACME_DNS_STORAGE_PATH")/.mag-pages-account.XXXXXXXX")"
+  if ! "$jq_bin" --arg d "$zone" '
+    if .[$d] != null and .[("*." + $d)] == null then
+       .[("*." + $d)] = .[$d]
+    elif .[("*." + $d)] != null and .[$d] == null then
+       .[$d] = .[("*." + $d)]
+    else . end' "$ACME_DNS_STORAGE_PATH" >"$tmp"; then
+      rm -f "$tmp"
+      echo 'Invalid acme-dns storage; accounts preserved' >&2
+      return 1
+  fi
+  chmod --reference="$ACME_DNS_STORAGE_PATH" "$tmp"
+  chown --reference="$ACME_DNS_STORAGE_PATH" "$tmp"
+  mv -f "$tmp" "$ACME_DNS_STORAGE_PATH"
+}
 show_required_dns() {
   echo "DomainFactory DNS-01: set this exact one-time CNAME before running Pages TLS:"
   echo "  CNAME  _acme-challenge.pages  $1."
@@ -37,6 +59,7 @@ show_required_dns() {
 # Per-domain registration persists in the existing ACME_DNS_STORAGE_PATH.
 # If no account exists yet, lego registers and normally exits with
 # ErrCNAMERequired. We read only the fulldomain, never passwords/credentials.
+share_acmedns_account
 targets="$(target_from_storage)" || { echo 'Invalid ACME-DNS storage JSON' >&2; exit 1; }
 if [[ -z "$targets" ]]; then
   log="$(mktemp)"
@@ -47,6 +70,7 @@ if [[ -z "$targets" ]]; then
     -d "*.$zone" -d "$zone" >"$log" 2>&1
   rc=$?
   set -e
+  share_acmedns_account
   targets="$(target_from_storage)" || { echo 'Invalid ACME-DNS storage after lego registration' >&2; exit 1; }
   if [[ -z "$targets" && $rc -ne 0 ]]; then
     echo 'lego acme-dns registration failed before returning a CNAME target (check API and account storage).' >&2

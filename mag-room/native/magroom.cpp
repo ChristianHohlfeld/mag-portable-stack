@@ -3384,9 +3384,9 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
     size_t context_bytes = 0;
     for (const auto &m : messages) context_bytes += mj::dump(m).size();
     while (context_bytes > 120000 && messages.size() > 5 &&
-           str(messages[2], "role") == "assistant") {
+           mag::str(messages[2], "role") == "assistant") {
       size_t n = 1;
-      while (2+n < messages.size() && str(messages[2+n], "role") == "tool") ++n;
+      while (2+n < messages.size() && mag::str(messages[2+n], "role") == "tool") ++n;
       for (size_t i = 0; i < n; ++i) {
         context_bytes -= mj::dump(messages[2]).size();
         messages.erase(messages.begin()+2);

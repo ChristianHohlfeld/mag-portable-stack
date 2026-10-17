@@ -1595,13 +1595,25 @@ class SingleBotVM(unittest.TestCase):
   self.assertIn('spawn agent2',(self.ctl.parent/'ctl.log').read_text())
   stored={a['id']:a for a in json.loads(self.state.joinpath('agents.json').read_text())}
   self.assertEqual(stored['deepseek-chat']['vm'],'agent2');self.assertEqual(stored['alt']['vm'],'agent1')
+# Fake VM lifecycle: "slow" holds the spawn for N seconds, "exists" lists VM
+# names magbot reports as already present, "fail" makes every spawn fail.
+MULTIBOT_CTL="""#!/bin/sh
+d="$(dirname "$0")"
+echo "$@" >> "$d/ctl.log"
+if [ "$1" = spawn ]; then
+ [ -f "$d/slow" ] && sleep "$(cat "$d/slow")"
+ if grep -qx "$2" "$d/exists" 2>/dev/null; then echo "Bot already exists" >&2; exit 1; fi
+ [ -f "$d/fail" ] && { echo "Warm golden image required" >&2; exit 1; }
+fi
+exit 0
+"""
 class MultiBot(unittest.TestCase):
  """One global room, several bots; each bot may use its own model (Q4/IQ3) without touching resident models."""
  Q4='deepseek-v4-flash-0731';IQ3='deepseek-v4-flash-0731-iq3'
  @classmethod
  def setUpClass(cls):
   cls.tmp=tempfile.TemporaryDirectory();cls.state=pathlib.Path(cls.tmp.name)/'state';cls.state.mkdir()
-  cls.ctl=pathlib.Path(cls.tmp.name)/'ctl';cls.ctl.write_text('#!/bin/sh\necho "$@" >> "$(dirname "$0")/ctl.log"\n');cls.ctl.chmod(0o755)
+  cls.ctl=pathlib.Path(cls.tmp.name)/'ctl';cls.ctl.write_text(MULTIBOT_CTL);cls.ctl.chmod(0o755)
   cls.state.joinpath('agents.json').write_text(json.dumps([{'id':'q4bot','name':'Q4 Bot','vm':'','memory':[]},{'id':'iq3bot','name':'IQ3 Bot','vm':'','model':cls.IQ3,'memory':[]}]))
   cls.model=http.server.ThreadingHTTPServer(('127.0.0.1',0),Model);threading.Thread(target=cls.model.serve_forever,daemon=True).start();cls.ui=port();cls.bridge=port()
   env=dict(os.environ,MAG_OWNER_CANONICAL_LOGIN='chris@github',MAG_TEST_ALLOW_LOCAL_OWNER='1',MAG_ROOM_STATE=str(cls.state),MAG_ROOM_PORT=str(cls.ui),MAG_ROOM_BRIDGE_PORT=str(cls.bridge),MAG_ROOM_BRIDGE_IP='127.0.0.1',MAG_ROOM_BACKEND=f'http://127.0.0.1:{cls.model.server_port}/v1/chat/completions',MAG_ROOM_UI=str(ROOT/'mag-room/web/index.html'),MAG_ROOM_STATIC=str(ROOT/'mag-room/static'),MAG_ROOM_MODEL_STATUS=str(pathlib.Path(cls.tmp.name)/'model-status.json'),MAG_NETMODE=str(NETMODE),MAG_TEST_NO_MEMGIT='1',MAG_GITHUB_API=f'http://127.0.0.1:{GHPORT}',MAG_ROOM_AGENT_CTL=str(cls.ctl))
@@ -1649,12 +1661,69 @@ class MultiBot(unittest.TestCase):
    self.assertEqual(b['model'],self.IQ3)
    self.request('/api/agents/'+b['id'],method='DELETE');self.assertNotIn(b['id'],self._agents());return
   b=self.request('/api/agents',{'name':'Dritter Bot','model':self.IQ3})
-  self.assertEqual(b['model'],self.IQ3);self.assertTrue(b['vm'])
-  log=(self.ctl.parent/'ctl.log').read_text();self.assertIn('spawn '+b['vm'],log)
+  self.assertEqual(b['model'],self.IQ3);self.assertTrue(b['spawning']);vm=b['pending_vm']
+  a=self._ready(b['id']);self.assertEqual(a['vm'],vm)
+  log=(self.ctl.parent/'ctl.log').read_text();self.assertIn('spawn '+vm,log)
   self.request('/api/agents/'+b['id'],method='DELETE')
   self.assertNotIn(b['id'],self._agents())
-  self.assertIn('despawn '+b['vm'],(self.ctl.parent/'ctl.log').read_text())
+  self.assertIn('despawn '+vm,(self.ctl.parent/'ctl.log').read_text())
   self.assertEqual(self.request('/api/state')['agents'][0]['id'] in ('q4bot','iq3bot'),True)
+ def _ready(self,bot,timeout=10):
+  for _ in range(int(timeout/.05)):
+   a=self._agents().get(bot)
+   if a and a.get('vm') and not a.get('spawning'):return a
+   time.sleep(.05)
+  self.fail('VM never became ready: %r'%self._agents().get(bot))
+ def _sudo(self):
+  if subprocess.run(['sudo','-n','true'],capture_output=True).returncode!=0:self.skipTest('needs sudo -n for the fake lifecycle')
+ def _flag(self,name,value=None):
+  f=self.ctl.parent/name
+  if value is None:f.unlink(missing_ok=True)
+  else:f.write_text(value)
+ def test_04b_spawn_never_blocks_room(self):
+  self._sudo();self._flag('slow','3')
+  try:
+   t=time.time();b=self.request('/api/agents',{'name':'Langsam'})
+   self.assertLess(time.time()-t,2);self.assertTrue(b['spawning']);self.assertEqual(b['vm'],'')
+   t=time.time();st=self.request('/api/state');self.assertLess(time.time()-t,1)
+   a={x['id']:x for x in st['agents']}[b['id']];self.assertTrue(a['spawning']);self.assertEqual(a['vm'],'')
+   self._ask('q4bot')
+   self.assertEqual(self._ready(b['id'])['vm'],b['pending_vm'])
+   saved={x['id']:x for x in json.loads(self.state.joinpath('agents.json').read_text())}[b['id']]
+   self.assertEqual(saved['vm'],b['pending_vm']);self.assertNotIn('pending_vm',saved)
+  finally:self._flag('slow')
+  self.request('/api/agents/'+b['id'],method='DELETE')
+ def test_04c_delete_during_spawn_removes_vm(self):
+  self._sudo();self._flag('slow','2')
+  try:
+   b=self.request('/api/agents',{'name':'Kurzlebig'});vm=b['pending_vm']
+   self.request('/api/agents/'+b['id'],method='DELETE');self.assertNotIn(b['id'],self._agents())
+   for _ in range(100):
+    if 'despawn '+vm in (self.ctl.parent/'ctl.log').read_text():break
+    time.sleep(.05)
+   else:self.fail('VM of a removed bot was left behind')
+  finally:self._flag('slow')
+ def test_04d_orphan_vm_name_is_skipped(self):
+  self._sudo()
+  used={a.get('vm') for a in self._agents().values()}
+  orphan=next('agent%d'%n for n in range(1,50) if 'agent%d'%n not in used)
+  self._flag('exists',orphan+'\n')
+  try:
+   b=self.request('/api/agents',{'name':'Nach Waise'});self.assertEqual(b['pending_vm'],orphan)
+   a=self._ready(b['id']);self.assertNotEqual(a['vm'],orphan);self.assertTrue(a['vm'].startswith('agent'))
+  finally:self._flag('exists')
+  self.request('/api/agents/'+b['id'],method='DELETE')
+ def test_04e_failed_spawn_removes_bot_and_reports(self):
+  self._sudo();self._flag('fail','1')
+  try:
+   b=self.request('/api/agents',{'name':'Kaputt'})
+   for _ in range(100):
+    if b['id'] not in self._agents():break
+    time.sleep(.05)
+   else:self.fail('bot with failed VM stayed')
+  finally:self._flag('fail')
+  self.assertNotIn(b['id'],[a['id'] for a in json.loads(self.state.joinpath('agents.json').read_text())])
+  self.log.flush();self.assertIn('golden',(pathlib.Path(self.tmp.name)/'server.log').read_text(errors='replace'))
  def test_05_room_never_stops_or_reloads_models(self):
   src=(ROOT/'mag-room/native/routes.hpp').read_text()+(ROOT/'mag-room/native/magroom.cpp').read_text()
   for needle in ('mag-llm-iq3','"mag-llm"','restart mag-llm','stop mag-llm','"unload"','action=unload'):self.assertNotIn(needle,src)
@@ -1666,4 +1735,26 @@ class MultiBot(unittest.TestCase):
   self.assertRegex(drop,r'(?m)^Environment=MAG_ROOM_SINGLE_BOT=\s*$')
   for forbidden in ('mag-llm','ExecStop','systemctl'):self.assertNotRegex(drop,r'(?m)^[^#]*'+forbidden)
   dep=(ROOT/'ops/deploy.sh').read_text();self.assertIn('30-multibot.conf',dep)
+class PendingSpawnResume(unittest.TestCase):
+ """A room restart during a VM spawn adopts that VM instead of crashing or orphaning it."""
+ def test_restart_adopts_recorded_vm(self):
+  if subprocess.run(['sudo','-n','true'],capture_output=True).returncode!=0:self.skipTest('needs sudo -n for the fake lifecycle')
+  with tempfile.TemporaryDirectory() as td:
+   tmp=pathlib.Path(td);state=tmp/'state';state.mkdir();ctl=tmp/'ctl';ctl.write_text(MULTIBOT_CTL);ctl.chmod(0o755)
+   (tmp/'exists').write_text('agent7\n')
+   state.joinpath('agents.json').write_text(json.dumps([{'id':'neu','name':'Neu','vm':'','pending_vm':'agent7','memory':[]}]))
+   model=http.server.ThreadingHTTPServer(('127.0.0.1',0),Model);threading.Thread(target=model.serve_forever,daemon=True).start();ui=port();bridge=port()
+   env=dict(os.environ,MAG_OWNER_CANONICAL_LOGIN='chris@github',MAG_TEST_ALLOW_LOCAL_OWNER='1',MAG_ROOM_STATE=str(state),MAG_ROOM_PORT=str(ui),MAG_ROOM_BRIDGE_PORT=str(bridge),MAG_ROOM_BRIDGE_IP='127.0.0.1',MAG_ROOM_BACKEND=f'http://127.0.0.1:{model.server_port}/v1/chat/completions',MAG_ROOM_UI=str(ROOT/'mag-room/web/index.html'),MAG_ROOM_STATIC=str(ROOT/'mag-room/static'),MAG_ROOM_MODEL_STATUS=str(tmp/'ms.json'),MAG_NETMODE=str(NETMODE),MAG_TEST_NO_MEMGIT='1',MAG_ROOM_AGENT_CTL=str(ctl),MAG_ROOM_GUEST_RUN='/bin/false')
+   env.pop('MAG_ROOM_SINGLE_BOT',None)
+   log=open(tmp/'log','w');proc=subprocess.Popen([str(ROOT/'build/magroom')],env=env,stdout=log,stderr=log)
+   try:
+    for _ in range(200):
+     saved=json.loads(state.joinpath('agents.json').read_text())[0]
+     if saved.get('vm'):break
+     time.sleep(.05)
+    self.assertEqual(saved.get('vm'),'agent7');self.assertNotIn('pending_vm',saved)
+    self.assertIsNone(proc.poll())
+    self.assertNotIn('despawn',(tmp/'ctl.log').read_text())
+   finally:
+    proc.terminate();proc.wait(timeout=5);log.close();model.shutdown()
 if __name__=='__main__':unittest.main(verbosity=2)

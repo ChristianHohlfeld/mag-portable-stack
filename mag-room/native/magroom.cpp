@@ -610,15 +610,15 @@ static int browser_agent_index(const std::string &id_or_vm) {
   }
   return -1;
 }
-static std::string next_vm() {
+static std::string next_vm(const std::vector<std::string> &skip = {}) {
   std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
   std::vector<std::string> used;
   for (auto *list : {&AGENTS, &PARKED})
-    for (auto &a : *list) {
-      auto v = a.find("vm");
-      if (v)
-        used.push_back(v->asStr());
-    }
+    for (auto &a : *list)
+      for (const char *key : {"vm", "pending_vm"})
+        if (auto v = a.find(key))
+          used.push_back(v->asStr());
+  used.insert(used.end(), skip.begin(), skip.end());
   for (int n = 1;; n++) {
     std::string c = "agent" + std::to_string(n);
     if (std::find(used.begin(), used.end(), c) == used.end())
@@ -4752,6 +4752,9 @@ static Val public_agent(int idx) {
   o["color"] = bot_field(idx, "color");
   o["vm"] = bot_field(idx, "vm");
   o["model"] = bot_model_id(idx);
+  if (!bot_field(idx, "pending_vm").empty()) o["spawning"] = true;
+  std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
+  if (idx < 0 || (size_t)idx >= AGENTS.size()) return o;
   auto mem = AGENTS[idx].find("memory");
   o["memory_count"] = mem && mem->isArr() ? (long)mem->arr->size() : 0;
   return o;
@@ -5548,6 +5551,7 @@ int main() {
     }
   }
   jobs_load();
+  resume_pending_spawns();
   std::thread(jobs_ticker).detach();
   std::thread(guest_cleanup_loop).detach();
   std::thread(snapshot_retention_loop).detach();

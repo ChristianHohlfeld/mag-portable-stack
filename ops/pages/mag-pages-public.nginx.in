@@ -1,0 +1,22 @@
+# Generated ONLY when PAGES_PUBLIC_BIND is explicitly nonempty.
+server {
+    listen @PUBLIC_BIND@:80;
+    server_name _;
+    location ^~ /.well-known/acme-challenge/ {
+        root /var/lib/mag-pages/acme;
+        default_type text/plain;
+    }
+    location / { return 404; }
+}
+server {
+    listen @PUBLIC_BIND@:443 ssl;
+    server_name ~^(?<pageslug>[a-z0-9-]+)\.@ZONE_REGEX@$;
+    ssl_certificate /etc/mag-pages/tls/current/cert.pem;
+    ssl_certificate_key /etc/mag-pages/tls/current/key.pem;
+    root /var/lib/mag-pages/public/$pageslug;
+    index index.html;
+    autoindex off;
+    add_header X-Content-Type-Options nosniff always;
+    location ~ (^|/)\. { return 404; }
+    location / { try_files $uri $uri/ =404; }
+}

@@ -163,7 +163,7 @@ static void route(int fd, Req &r, bool bridge = false) {
     if (!actor.login.empty() && !ts_proof_valid(r.hdrs)) {
       error_json(fd,403,"Whois-Nachweis fehlt"); return;
     }
-    if (actor.role == "guest" && !guest_live(actor.node)) {
+    if (actor.role == "guest" && !actor.node.empty() && !guest_live(actor.node)) {
       if (m == "GET" && (r.path == "/" || r.path == "/index.html")) {
         // No room state, script or endpoints are exposed before a valid claim.
         std::string page = R"HTML(<!doctype html><html lang="de"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head><body style="font:16px system-ui;max-width:32rem;margin:5rem auto;padding:1rem"><h1>MAG · Gastzugang</h1><p>Zum Beitreten zuerst Tailscale installieren und den einmaligen Schlüssel in der Tailscale-App unter „Use an auth key“ eingeben. Danach diesen Einladungslink erneut öffnen.</p><p><a href="https://tailscale.com/download" rel="noopener">Tailscale installieren</a></p><p id="key" style="overflow-wrap:anywhere"></p><button id="copy" hidden>Schlüssel kopieren</button><p id="status">Einladung prüfen …</p><script>
@@ -182,7 +182,7 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
         error_json(fd, 403, "Einladung noch nicht bestätigt oder widerrufen");
         return;
       }
-    } else if (actor.role == "guest") {
+    } else if (actor.role == "guest" && !actor.node.empty()) {
       actor.name = guest_name_for_node(actor.node);
       // Fail closed: guest permissions in access.json must never enable
       // admin/Pages/Jobs/model/Bot control endpoints.

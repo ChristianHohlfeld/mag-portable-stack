@@ -2029,8 +2029,10 @@ static std::string pages_dispatch_tool(int bot_idx,const std::string& name,
       auto policy=run_argv({"sudo","-n",
         "/usr/local/lib/mag-pages/pages-policy.sh",owner+"/"+repo,extra},20);
       if(policy.code!=0)return "Fehler: Pages policy refused change: "+policy.out.substr(0,300);
-      return "Pages "+owner+"/"+repo+" visibility = "+extra+" (next sync)";
+      magpages::request_sync();
+      return "Pages "+owner+"/"+repo+" visibility = "+extra+" (sync requested)";
     }
+    if(name!="pages_list")magpages::request_sync();
     return result.out.size()>6000?result.out.substr(0,6000):result.out;
   }catch(const std::exception& e) {
     return "Fehler: Pages operation unavailable: "+std::string(e.what()).substr(0,240);

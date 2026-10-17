@@ -55,12 +55,16 @@ while IFS=$'\t' read -r host canonical slug; do
  chmod 0700 "$dir"
  cert="$dir/certificates/$host.crt"
  key="$dir/certificates/$host.key"
- # lego 5: run is idempotent; there is NO renew subcommand.
- if ! /usr/local/bin/lego run --accept-tos --email "$PAGES_ACME_EMAIL" \
-     --path "$dir" --http --http.webroot /var/lib/mag-pages/acme -d "$host"; then
-    echo "Custom-domain lego run failed: $host" >&2
-    failed=1
-    continue
+ # lego v5 run issues a new certificate. Skip when >30 days remain;
+ # first issuance for a new CNAME still happens synchronously on tool call.
+ if [[ ! -s "$cert" || ! -s "$key" ]] ||
+    ! openssl x509 -in "$cert" -noout -checkend 2592000 >/dev/null 2>&1; then
+   if ! /usr/local/bin/lego run --accept-tos --email "$PAGES_ACME_EMAIL" \
+       --path "$dir" --http --http.webroot /var/lib/mag-pages/acme -d "$host"; then
+      echo "Custom-domain lego run failed: $host" >&2
+      failed=1
+      continue
+   fi
  fi
  [[ -s "$cert" && -s "$key" ]] || { failed=1; continue; }
  openssl x509 -in "$cert" -noout -checkend 86400 >/dev/null || { failed=1; continue; }

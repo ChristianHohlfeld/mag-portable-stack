@@ -462,7 +462,7 @@ class Native(unittest.TestCase):
   self.assertTrue(self.request('/api/state')['autotalk'],'Keep the enabled switch ON')
   self.request('/api/stop',{});self.request('/api/queue/resume',{})
  def test_09_task_without_tools_stops_after_one_answer(self):
-  Model.reply='Erledigt. [[MAG:WEITER]]'
+  Model.reply='Erledigt. [[MAG:ENDE]]'
   try:
    self.request('/api/autotalk',{'on':True})
    initial=len(Model.calls)
@@ -663,6 +663,35 @@ class Native(unittest.TestCase):
    self.assertTrue(state['autotalk'],'Autonomy may remain enabled while idle')
   finally:
    self.request('/api/stop',{});self.request('/api/queue/resume',{});Model.script=[]
+ def test_10b_coding_run_many_tool_steps(self):
+  """A single user instruction performs many tool calls without autotalk."""
+  self.wait_idle();Model.calls.clear()
+  script=[]
+  for i in range(18):
+   script.append([{'tool_calls':[{'index':0,'id':f'call_long_{i}',
+      'function':{'name':'remember','arguments':json.dumps({'fact':f'Long step {i}'})}}]}])
+  Model.script=script+[['Alle 18 Schritte abgeschlossen. [[MAG:ENDE]]']]
+  try:
+   self.request('/api/autotalk',{'on':False})
+   self.request('/api/message',{'text':'Fuehre 18 dokumentierte Schritte aus','bots':['test']})
+   state=self._settle(lambda s:not s['busy'] and any(
+       'Alle 18 Schritte abgeschlossen.' in m.get('content','') for m in s['room']),loops=400)
+   self.assertEqual(len(Model.calls),19,'do not stop at six tool rounds')
+   self.assertGreaterEqual(len(state['room'][-1].get('steps') or []),1)
+  finally:Model.script=[]
+ def test_10c_announced_next_step_is_not_final(self):
+  self.wait_idle();Model.calls.clear()
+  Model.script=[[{'content':'Nächster Schritt: Ausführung und Kontrolle.'}],
+    [{'tool_calls':[{'index':0,'id':'call_pending',
+      'function':{'name':'remember','arguments':'{"fact":"Kontrolle ausgefuehrt"}'}}]}],
+    ['Kontrolle durchgeführt. [[MAG:ENDE]]']]
+  try:
+   self.request('/api/message',{'text':'Pruefe mit Werkzeug statt Ankuendigung','bots':['test']})
+   state=self._settle(lambda s:not s['busy'] and any(
+      'Kontrolle durchgeführt.' in m.get('content','') for m in s['room']),loops=200)
+   self.assertEqual(len(Model.calls),3)
+   self.assertNotIn('Nächster Schritt',state['room'][-1].get('content',''))
+  finally:Model.script=[]
  def test_11_empty_model_response_never_leaves_a_blank_bot(self):
   Model.reply=''
   try:

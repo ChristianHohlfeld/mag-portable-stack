@@ -60,12 +60,12 @@ WHOIS_PROFILES = {}
 class WhoisFixture(socketserver.StreamRequestHandler):
  def handle(self):
   first=self.rfile.readline().decode('ascii','replace')
-  while self.rfile.readline() not in (b'\\r\\n',b''):pass
+  while self.rfile.readline() not in (b'\r\n',b''):pass
   if not first.startswith('GET /localapi/v0/whois?addr='):return
   value=urllib.parse.parse_qs(urllib.parse.urlparse(first.split()[1]).query).get('addr',[''])[0]
   login,name=WHOIS_PROFILES.get(value,('',''))
   data=json.dumps({'UserProfile':{'LoginName':login,'DisplayName':name}}).encode()
-  self.wfile.write(b'HTTP/1.1 200 OK\\r\\nContent-Length: '+str(len(data)).encode()+b'\\r\\n\\r\\n'+data)
+  self.wfile.write(b'HTTP/1.1 200 OK\r\nContent-Length: '+str(len(data)).encode()+b'\r\n\r\n'+data)
 class WhoisUnix(socketserver.ThreadingMixIn,socketserver.UnixStreamServer):
  daemon_threads=True
 class Native(unittest.TestCase):

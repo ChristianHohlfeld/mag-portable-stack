@@ -441,6 +441,13 @@ inline void reconcile(const fs::path& root,const std::string& token) {
                      !fs::exists(aliases_path) || read(aliases_path)!=aliases;
   if(changed) {
     Val retired=Val::array();
+    // Persist tombstones across failed root reconciliations.
+    const auto pending=root/"gc-retired.json";
+    if(fs::exists(pending)){
+      Val older=json(read(pending));
+      if(!older.isArr())throw std::runtime_error("invalid pending retired Pages");
+      for(const auto& item:older.asArr())retired.push(item);
+    }
     if(prior.isObj())for(const auto& old:*prior.obj)
       if(!state.find(old.first))retired.push(Val(old.first));
     write_atomic(root/"gc-retired.json",mj::dump(retired)+"\n");

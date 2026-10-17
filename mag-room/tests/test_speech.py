@@ -64,6 +64,7 @@ class BrowserSpeech(unittest.TestCase):
         self.work = pathlib.Path(self.tmp.name)
         static = self.work / 'static'
         shutil.copytree(ROOT / 'mag-room/static', static)
+        shutil.copytree(ROOT / 'build/terminal-assets', static, dirs_exist_ok=True)
         import json
         (static / 'speech-config.json').write_text(json.dumps({
             'runtime':'speech-0123456789ab',

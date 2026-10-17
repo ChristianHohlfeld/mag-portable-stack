@@ -10,6 +10,7 @@ import pathlib
 import shutil
 import tempfile
 import unittest
+import urllib.request
 
 HERE = pathlib.Path(__file__).resolve().parent
 spec = importlib.util.spec_from_file_location("mag_pwa_harness_real", HERE / "test_pwa.py")
@@ -64,6 +65,7 @@ class RealWasmLoad(unittest.TestCase):
             temp = pathlib.Path(temp)
             static = temp / 'static'
             shutil.copytree(ROOT / 'mag-room/static', static)
+            shutil.copytree(ROOT / 'build/terminal-assets', static, dirs_exist_ok=True)
             shutil.copy2(VENDORED / 'speech-config.json', static)
             for name in (cfg['runtime'],cfg['model']):
                 (static/name).symlink_to((VENDORED/name).resolve(),target_is_directory=True)
@@ -90,6 +92,12 @@ class RealWasmLoad(unittest.TestCase):
                         if not req.url.startswith(f'http://127.0.0.1:{port}/')
                         else None)
                 page.goto(f'http://127.0.0.1:{port}/', wait_until='domcontentloaded')
+                for terminal_asset in ('xterm.js', 'xterm-addon-fit.js', 'xterm.css'):
+                    with urllib.request.urlopen(
+                        f'http://127.0.0.1:{port}/static/{terminal_asset}') as resp:
+                        self.assertEqual(resp.status, 200)
+                        expected_mime = 'text/javascript' if terminal_asset.endswith('.js') else 'text/css'
+                        self.assertIn(expected_mime, resp.headers['Content-Type'])
                 self.assertTrue(page.evaluate('window.crossOriginIsolated'),
                                 'WASM threads need COOP/COEP')
                 self.assertEqual(page.locator('#mic').count(), 1)

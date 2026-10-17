@@ -80,3 +80,5 @@ jobs:
         run: bash -n ops/*.sh ops/magbot-guest-run ops/magbot-agent-ctl
       - name: Blank-host bootstrap dry run
         run: bash ops/tests/test-bootstrap.sh
+      - name: Update script dry run
+        run: bash ops/tests/test-update.sh

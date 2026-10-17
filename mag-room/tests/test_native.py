@@ -1595,4 +1595,75 @@ class SingleBotVM(unittest.TestCase):
   self.assertIn('spawn agent2',(self.ctl.parent/'ctl.log').read_text())
   stored={a['id']:a for a in json.loads(self.state.joinpath('agents.json').read_text())}
   self.assertEqual(stored['deepseek-chat']['vm'],'agent2');self.assertEqual(stored['alt']['vm'],'agent1')
+class MultiBot(unittest.TestCase):
+ """One global room, several bots; each bot may use its own model (Q4/IQ3) without touching resident models."""
+ Q4='deepseek-v4-flash-0731';IQ3='deepseek-v4-flash-0731-iq3'
+ @classmethod
+ def setUpClass(cls):
+  cls.tmp=tempfile.TemporaryDirectory();cls.state=pathlib.Path(cls.tmp.name)/'state';cls.state.mkdir()
+  cls.ctl=pathlib.Path(cls.tmp.name)/'ctl';cls.ctl.write_text('#!/bin/sh\necho "$@" >> "$(dirname "$0")/ctl.log"\n');cls.ctl.chmod(0o755)
+  cls.state.joinpath('agents.json').write_text(json.dumps([{'id':'q4bot','name':'Q4 Bot','vm':'','memory':[]},{'id':'iq3bot','name':'IQ3 Bot','vm':'','model':cls.IQ3,'memory':[]}]))
+  cls.model=http.server.ThreadingHTTPServer(('127.0.0.1',0),Model);threading.Thread(target=cls.model.serve_forever,daemon=True).start();cls.ui=port();cls.bridge=port()
+  env=dict(os.environ,MAG_OWNER_CANONICAL_LOGIN='chris@github',MAG_TEST_ALLOW_LOCAL_OWNER='1',MAG_ROOM_STATE=str(cls.state),MAG_ROOM_PORT=str(cls.ui),MAG_ROOM_BRIDGE_PORT=str(cls.bridge),MAG_ROOM_BRIDGE_IP='127.0.0.1',MAG_ROOM_BACKEND=f'http://127.0.0.1:{cls.model.server_port}/v1/chat/completions',MAG_ROOM_UI=str(ROOT/'mag-room/web/index.html'),MAG_ROOM_STATIC=str(ROOT/'mag-room/static'),MAG_ROOM_MODEL_STATUS=str(pathlib.Path(cls.tmp.name)/'model-status.json'),MAG_NETMODE=str(NETMODE),MAG_TEST_NO_MEMGIT='1',MAG_GITHUB_API=f'http://127.0.0.1:{GHPORT}',MAG_ROOM_AGENT_CTL=str(cls.ctl))
+  env.pop('MAG_ROOM_SINGLE_BOT',None)
+  cls.log=open(pathlib.Path(cls.tmp.name)/'server.log','a');cls.proc=subprocess.Popen([str(ROOT/'build/magroom')],env=env,stdout=cls.log,stderr=cls.log)
+  for _ in range(100):
+   try:Native.request.__func__(cls,'/healthz',raw=True);return
+   except Exception:time.sleep(.03)
+  raise RuntimeError('Native startup failed')
+ @classmethod
+ def tearDownClass(cls):
+  cls.proc.terminate();cls.proc.wait(timeout=5);cls.log.close();cls.model.shutdown();cls.tmp.cleanup()
+ request=classmethod(Native.request.__func__)
+ error=Native.error
+ wait_idle=Native.wait_idle
+ def _agents(self):return {a['id']:a for a in self.request('/api/state')['agents']}
+ def _ask(self,bot):
+  self.wait_idle();n=len(Model.calls)
+  self.request('/api/message',{'text':'Hallo '+bot,'bots':[bot]})
+  for _ in range(100):
+   if len(Model.calls)>n and not self.request('/api/state')['busy']:break
+   time.sleep(.05)
+  else:self.fail('no model call')
+  return Model.calls[n]
+ def test_01_all_bots_visible_with_own_model(self):
+  st=self.request('/api/state');self.assertFalse(st.get('single_bot'))
+  ag=self._agents();self.assertEqual(set(ag),{'q4bot','iq3bot'})
+  self.assertEqual(ag['q4bot']['model'],self.Q4);self.assertEqual(ag['iq3bot']['model'],self.IQ3)
+ def test_02_each_bot_talks_to_its_own_model(self):
+  self.assertEqual(self._ask('iq3bot')['model'],self.IQ3)
+  self.assertEqual(self._ask('q4bot')['model'],self.Q4)
+ def test_03_model_route_validation(self):
+  self.error(400,'/api/agents/q4bot/model',{'model':'unbekannt'})
+  self.error(400,'/api/agents/q4bot/model',{})
+  self.error(404,'/api/agents/gibtsnicht/model',{'model':self.Q4})
+  r=self.request('/api/agents/q4bot/model',{'model':self.IQ3})
+  self.assertTrue(r['ok']);self.assertFalse(r['restart'])
+  self.assertEqual(self._ask('q4bot')['model'],self.IQ3)
+  self.assertEqual(json.loads(self.state.joinpath('agents.json').read_text())[0]['model'],self.IQ3)
+  self.request('/api/agents/q4bot/model',{'model':self.Q4})
+  self.assertEqual(self._ask('q4bot')['model'],self.Q4)
+ def test_04_create_bot_with_model_and_clean_despawn(self):
+  if subprocess.run(['sudo','-n','true'],capture_output=True).returncode!=0:
+   b=self.request('/api/agents',{'name':'Chat Only','vm':False,'model':self.IQ3})
+   self.assertEqual(b['model'],self.IQ3)
+   self.request('/api/agents/'+b['id'],method='DELETE');self.assertNotIn(b['id'],self._agents());return
+  b=self.request('/api/agents',{'name':'Dritter Bot','model':self.IQ3})
+  self.assertEqual(b['model'],self.IQ3);self.assertTrue(b['vm'])
+  log=(self.ctl.parent/'ctl.log').read_text();self.assertIn('spawn '+b['vm'],log)
+  self.request('/api/agents/'+b['id'],method='DELETE')
+  self.assertNotIn(b['id'],self._agents())
+  self.assertIn('despawn '+b['vm'],(self.ctl.parent/'ctl.log').read_text())
+  self.assertEqual(self.request('/api/state')['agents'][0]['id'] in ('q4bot','iq3bot'),True)
+ def test_05_room_never_stops_or_reloads_models(self):
+  src=(ROOT/'mag-room/native/routes.hpp').read_text()+(ROOT/'mag-room/native/magroom.cpp').read_text()
+  for needle in ('mag-llm-iq3','"mag-llm"','restart mag-llm','stop mag-llm','"unload"','action=unload'):self.assertNotIn(needle,src)
+ def test_06_frontend_contract(self):
+  html=self.request('/',raw=True).decode()
+  for needle in ('id="agent-model"','chosenBots','/model'):self.assertIn(needle,html)
+ def test_07_multibot_dropin_installed_by_deploy(self):
+  drop=(ROOT/'ops/mag-120.d/30-multibot.conf').read_text()
+  self.assertRegex(drop,r'(?m)^Environment=MAG_ROOM_SINGLE_BOT=\s*$')
+  for forbidden in ('mag-llm','ExecStop','systemctl'):self.assertNotRegex(drop,r'(?m)^[^#]*'+forbidden)
+  dep=(ROOT/'ops/deploy.sh').read_text();self.assertIn('30-multibot.conf',dep)
 if __name__=='__main__':unittest.main(verbosity=2)

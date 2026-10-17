@@ -1624,6 +1624,7 @@ static std::string bot_field(int idx, const char *key,
   return v ? v->asStr(def) : def;
 }
 
+static std::string bot_model_id(int idx);
 static std::string build_system(int bot_idx, bool autotalk,
                                 const std::string &other, bool web) {
   std::string name = bot_field(bot_idx, "name", "Bot");
@@ -1642,7 +1643,7 @@ static std::string build_system(int bot_idx, bool autotalk,
   replaceAll(system, "{name}", name);
   replaceAll(system, "{persona}", persona);
   replaceAll(system, "{vm}", vm);
-  replaceAll(system, "{model}", MODEL);
+  replaceAll(system, "{model}", bot_model_id(bot_idx));
   (void)web; // byte-stable prefix: web state lives in the [Kontext] tail
   system += WEB_RULES;
   system += has_vm ? FILES_RULES : FILES_RULES_CHAT;
@@ -2805,13 +2806,20 @@ static Val room_model_catalog() {
   models.push(iq3);
   return models;
 }
+// Each bot answers with its own model id; the gateway routes Q4 and IQ3 to
+// their always-resident servers. Choosing a model only changes this request
+// field: no unit, process, slot or weight is touched.
+static std::string bot_model_id(int idx) {
+  const std::string own = bot_field(idx, "model");
+  return known_room_model(own) ? own : active_room_model();
+}
 static std::string model_wait_text();
 static Turn
 backend_turn(const std::vector<Val> &messages, const std::string &tools,
              double temperature,
              const std::function<void(const std::string &, const std::string &)>
                  &on_delta,
-             bool thinking, int id_slot) {
+             bool thinking, int id_slot, const std::string &model = "") {
   Turn t;
   slot_restore_if_cold(id_slot);
   HttpClient c;
@@ -2823,7 +2831,7 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
     return t;
   }
   Val body = Val::object();
-  body["model"] = active_room_model();
+  body["model"] = known_room_model(model) ? model : active_room_model();
   Val msgs = Val::array();
   for (auto &m : messages)
     msgs.push(const_cast<Val &>(m));
@@ -3776,7 +3784,7 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
     // Tools remain available on every step, without a forced early final.
     Turn t = backend_turn(messages, tools,
                           autotalk ? 0.75 : 0.55, on_delta, turn_thinking(),
-                          slot_for_key(bot_id));
+                          slot_for_key(bot_id), bot_model_id(bot_idx));
     if (!t.error.empty()) {
       report.error = t.error.substr(0, 280);
       emit_event("error", bot_id, bot_name, report.error);
@@ -4338,6 +4346,38 @@ static bool queue_send_now(const std::string &id) {
   JOB_CV.notify_all();
   return true;
 }
+// Despawn cleanup: nothing queued, owned or remembered for a removed bot may
+// outlive it. A queued message addressed only to that bot is dropped.
+static void drop_bot_refs(const std::string &bot_id) {
+  auto strip = [&](std::vector<std::string> &ids) {
+    ids.erase(std::remove(ids.begin(), ids.end(), bot_id), ids.end());
+  };
+  {
+    std::lock_guard<std::mutex> lk(JOB_MTX);
+    for (auto &j : JOBS) strip(j.ids);
+    JOBS.erase(std::remove_if(JOBS.begin(), JOBS.end(),
+                              [](const Job &j) { return j.ids.empty(); }),
+               JOBS.end());
+    for (auto &p : PENDING) strip(p.ids);
+    PENDING.erase(std::remove_if(PENDING.begin(), PENDING.end(),
+                                 [](const Pending &p) { return p.ids.empty(); }),
+                  PENDING.end());
+    if (ACTIVE_SET) strip(ACTIVE_JOB.ids);
+    if (AUTO_OWNER == bot_id) {
+      AUTO_OWNER.clear();
+      AUTO_READY = false;
+    }
+    save_queue_locked();
+    queue_event_locked();
+  }
+  std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
+  const size_t before = REACTION_NOTES.size();
+  REACTION_NOTES.erase(
+      std::remove_if(REACTION_NOTES.begin(), REACTION_NOTES.end(),
+                     [&](const ReactionNote &n) { return n.bot == bot_id; }),
+      REACTION_NOTES.end());
+  if (REACTION_NOTES.size() != before) save_reaction_notes_locked();
+}
 static std::string other_name(int idx) {
   std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
   for (size_t i = 0; i < AGENTS.size(); i++)
@@ -4707,6 +4747,7 @@ static Val public_agent(int idx) {
   o["name"] = bot_field(idx, "name");
   o["color"] = bot_field(idx, "color");
   o["vm"] = bot_field(idx, "vm");
+  o["model"] = bot_model_id(idx);
   auto mem = AGENTS[idx].find("memory");
   o["memory_count"] = mem && mem->isArr() ? (long)mem->arr->size() : 0;
   return o;

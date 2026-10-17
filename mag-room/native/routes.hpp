@@ -862,6 +862,40 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
       send_json(fd, result.code, result.body);
       return;
     }
+    if (slash != std::string::npos && id.substr(slash + 1) == "model" &&
+        m == "POST") {
+      id.resize(slash);
+      Val choice;
+      if (!mj::parse(r.body, choice) || !choice.isObj()) {
+        error_json(fd, 400, "Modell fehlt");
+        return;
+      }
+      std::string wanted;
+      if (auto picked = choice.find("id")) wanted = picked->asStr();
+      else if (auto picked = choice.find("model")) wanted = picked->asStr();
+      if (!known_room_model(wanted)) {
+        error_json(fd, 400, "Unbekanntes Modell");
+        return;
+      }
+      {
+        std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
+        int idx = agent_index(id);
+        if (idx < 0) {
+          error_json(fd, 404, "Unknown agent");
+          return;
+        }
+        AGENTS[idx]["model"] = wanted;
+        save_agents();
+      }
+      agents_event();
+      Val out = Val::object();
+      out["ok"] = true;
+      out["id"] = id;
+      out["model"] = wanted;
+      out["restart"] = false;
+      send_json(fd, 200, mj::dump(out));
+      return;
+    }
     if (m == "DELETE") {
       if (!SINGLE_BOT.empty() && id == SINGLE_BOT) {
         error_json(fd, 409, "Der einzige Bot des Raums kann nicht entfernt werden (MAG_ROOM_SINGLE_BOT).");
@@ -891,6 +925,7 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
         std::lock_guard<std::mutex> lk(VM_IP_MTX);
         VM_IP_CACHE.erase(vm);
       }
+      drop_bot_refs(id);
       agents_event();
       send_json(fd, 200, "{\"ok\":true}");
       return;
@@ -935,6 +970,7 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
     agent["persona"] =
         str("persona", "Neugierig, freundlich und eigenstaendig.");
     agent["memory"] = Val::array();
+    if (known_room_model(str("model"))) agent["model"] = str("model");
     try {
       std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
       AGENTS.push_back(agent);

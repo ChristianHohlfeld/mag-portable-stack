@@ -95,6 +95,8 @@ rollback() {
  if [[ -d "$BACKUP/mag-120.service.d" ]]; then
    rm -rf /etc/systemd/system/mag-120.service.d
    cp -a "$BACKUP/mag-120.service.d" /etc/systemd/system/mag-120.service.d
+ else
+   rm -f /etc/systemd/system/mag-120.service.d/30-multibot.conf
  fi
  systemctl daemon-reload
  systemctl restart mag-120.service
@@ -175,6 +177,9 @@ if [[ -L "$audit_drop" ]]; then
       ;;
   esac
 fi
+install -d -m 0755 /etc/systemd/system/mag-120.service.d
+install -m 0644 "$SOURCE/ops/mag-120.d/30-multibot.conf" \
+  /etc/systemd/system/mag-120.service.d/30-multibot.conf
 systemctl daemon-reload
 systemctl enable --now mag-agents-network.service
 systemctl restart mag-agents-network.service

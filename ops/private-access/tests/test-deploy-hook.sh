@@ -35,7 +35,7 @@ done
 # Before the cutover, renewing must update the live old AND staged new path.
 sudo env PATH="$tmp/bin:$PATH" bash "$tmp/hook.sh" --no-reload
 for d in old new; do
-  cmp "$tmp/src/mag.stardenburg.de.crt" "$tmp/$d/cert.pem"
+  sudo cmp "$tmp/src/mag.stardenburg.de.crt" "$tmp/$d/cert.pem"
   sudo cmp "$tmp/src/mag.stardenburg.de.key" "$tmp/$d/key.pem"
 done
 [[ ! -e $tmp/reloads.log ]]
@@ -50,14 +50,14 @@ if sudo env PATH="$tmp/bin:$PATH" bash "$tmp/hook.sh"; then
   exit 1
 fi
 for d in old new; do
-  grep -Fx 'previous cert' "$tmp/$d/cert.pem"
-  grep -Fx 'previous key' "$tmp/$d/key.pem"
+  sudo grep -Fx 'previous cert' "$tmp/$d/cert.pem"
+  sudo grep -Fx 'previous key' "$tmp/$d/key.pem"
 done
 [[ ! -e $tmp/reloads.log ]]
 rm -f "$tmp/fail-nginx"
 sudo env PATH="$tmp/bin:$PATH" bash "$tmp/hook.sh"
 for d in old new; do
-  cmp "$tmp/src/mag.stardenburg.de.crt" "$tmp/$d/cert.pem"
+  sudo cmp "$tmp/src/mag.stardenburg.de.crt" "$tmp/$d/cert.pem"
   sudo cmp "$tmp/src/mag.stardenburg.de.key" "$tmp/$d/key.pem"
 done
 grep -Fx 'reload nginx.service' "$tmp/reloads.log"

@@ -354,6 +354,12 @@ static GuestIssue guest_issue(const Actor &owner, const Val &request) {
     out.body["error"] = "Tailscale-OAuth ist nicht eingerichtet. Einladen deaktiviert; der Raum bleibt nutzbar.";
     return out;
   }
+  const std::string email = guest_field(request, "email");
+  if (!email.empty() && !mag_guest_email_valid(email)) {
+    out.code = 400;
+    out.body["error"] = "Invalid invitation email";
+    return out;
+  }
   std::string name = clean_display_name(guest_field(request, "name"));
   std::string note = mj::utf8_cut(guest_field(request,"note"), 160);
   for (char &ch : note) if ((unsigned char)ch < 32) ch = ' ';

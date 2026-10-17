@@ -19,7 +19,7 @@ if ! nginx -t; then
   exit 1
 fi
 systemctl reload nginx.service
-rm -f /etc/systemd/system/mag-acme-renew.service.d/30-pages.conf
+rm -f /etc/systemd/system/mag-acme-renew.service.d/30-pages.conf /etc/sudoers.d/mag-pages
 rm -f /etc/systemd/system/mag-120.service.d/30-pages-public.conf
 rm -f /etc/systemd/system/mag-120.service.d/31-pages-public.conf
 rm -f /etc/systemd/system/mag-120.service.d/30-pages.conf

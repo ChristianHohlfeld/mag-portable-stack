@@ -34,6 +34,9 @@ for unit in "$here"/units/*.service "$here"/units/*.timer; do
   install -m 0644 "$unit" "/etc/systemd/system/$(basename "$unit")"
 done
 install -m 0440 "$here/units/mag-backup-clear.sudoers" /etc/sudoers.d/mag-backup-clear
+# Clear timer is deliberately NOT enabled at boot; each owner clear schedules
+# a one-shot countdown with systemctl --no-block restart, collapsing bursts.
+# The ordinary daily, weekly and monitoring timers are unchanged.
 visudo -cf /etc/sudoers.d/mag-backup-clear >/dev/null
 systemctl daemon-reload
 # Snapshot before old Gitea timer is disabled: no protection gap.

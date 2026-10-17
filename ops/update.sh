@@ -52,4 +52,10 @@ if (( DEPLOY && AUTO )); then
 else
   echo 'skipped'
 fi
+phase runners
+if (( DEPLOY && AUTO )); then
+  run sudo bash "$ROOT/ops/runners/install.sh" || echo 'runner install failed (deploy itself succeeded)' >&2
+else
+  echo 'skipped'
+fi
 echo 'update done'

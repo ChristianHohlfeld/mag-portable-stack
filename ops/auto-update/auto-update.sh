@@ -24,9 +24,5 @@ new="$(as git -C "$ROOT" rev-parse origin/main)"
 fail() { echo "$new" > "$STATE/failed-sha"; log "FAILED at $1 for $new"; exit 1; }
 log "updating to $new"
 as git -C "$ROOT" merge -q --ff-only origin/main || fail merge
-as nice -n 19 ionice -c 3 bash "$ROOT/ops/update.sh" --no-pull --no-deploy --no-auto || fail build
-bash "$ROOT/ops/deploy.sh" || fail deploy
-echo "$new" > "$STATE/deployed-sha"
-rm -f "$STATE/failed-sha"
-bash "$ROOT/ops/auto-update/install.sh" --units-only || true
-log "deployed $new"
+# Continue with the freshly merged code; the lock (fd 9) is inherited.
+exec bash "$ROOT/ops/auto-update/apply.sh" "$new"

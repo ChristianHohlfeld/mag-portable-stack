@@ -1,0 +1,9 @@
+[Unit]
+Description=Deploy request from an action runner (starts the normal auto-update)
+
+[Path]
+PathModified=/var/lib/mag-deploy/request
+Unit=mag-auto-update.service
+
+[Install]
+WantedBy=paths.target

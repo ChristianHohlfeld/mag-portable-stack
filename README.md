@@ -132,6 +132,13 @@ readable without a password for the checkout owner. Logs: `journalctl -u mag-aut
 Pause with `sudo touch /etc/mag-stack/auto-update.disabled`; remove the file (or run
 `ops/auto-update/install.sh`) to resume. A deploy restarts `mag-120`, which interrupts a running bot turn.
 
+**Action runners.** After each successful deploy, `ops/runners/install.sh` sets up
+a Gitea runner (`runs-on: mag` in `.gitea/workflows`, bots included) and, once a
+registration token is provided, a GitHub runner (`runs-on: [self-hosted, mag]`).
+Jobs run unprivileged with CPU/RAM caps and deploy by writing
+`/var/lib/mag-deploy/request`, which starts the normal auto-update. See
+[docs/RUNNERS.md](docs/RUNNERS.md).
+
 The installer snapshots the previous unit, native lifecycle and room state under
 `/var/backups/mag-stack/<release>`, installs a versioned release and checks
 readiness before retiring the old service entries. Keep `/etc/default/mag-room`

@@ -4,7 +4,7 @@ set -euo pipefail
 root=$(cd -- "$(dirname "$0")/../.." && pwd)
 bash -n "$root/ops/update.sh"
 out=$(bash "$root/ops/update.sh" --dry-run)
-for phase in pull build deploy auto-update; do grep -Fq "PHASE $phase" <<<"$out"; done
+for phase in pull build deploy auto-update runners; do grep -Fq "PHASE $phase" <<<"$out"; done
 grep -Fq 'cmake --build' <<<"$out"
 grep -Fq 'ops/deploy.sh' <<<"$out"
 [[ $(grep -n 'PHASE build' <<<"$out" | cut -d: -f1) -lt $(grep -n 'PHASE deploy' <<<"$out" | cut -d: -f1) ]]

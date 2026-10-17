@@ -242,7 +242,11 @@ inline void materialize(const fs::path& dest,const std::map<std::string,std::str
   readable_dir(dest);
   for(const auto& item:files) {
     fs::path target=dest/item.first;
-    readable_dir(target.parent_path());
+    fs::path current=dest;
+    for(const auto& part:fs::path(item.first).parent_path()) {
+      current/=part;
+      readable_dir(current);
+    }
     std::ofstream f(target,std::ios::binary|std::ios::trunc);
     if(!f)throw std::runtime_error("site write failed");
     f.write(item.second.data(),static_cast<std::streamsize>(item.second.size()));

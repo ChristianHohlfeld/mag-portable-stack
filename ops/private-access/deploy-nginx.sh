@@ -116,7 +116,7 @@ smoke(){
 }
 rollback(){
   transaction
-  [[ -f $MAG_NGINX_TXN/nginx.staged ]] || return 0
+  [[ -f $MAG_NGINX_TXN/nginx.staged || -f $MAG_NGINX_TXN/nginx.verified ]] || return 0
   if [[ -f $MAG_NGINX_TXN/nginx.site.old ]]; then
     cp -a "$MAG_NGINX_TXN/nginx.site.old" "$site.old-next"
     mv -f "$site.old-next" "$site"
@@ -133,7 +133,7 @@ rollback(){
   else die 'Missing enabled-link snapshot'; fi
   nginx -t || die 'Restored nginx syntax invalid: manual recovery needed'
   systemctl reload nginx.service || die 'Restored nginx reload failed'
-  rm -f "$MAG_NGINX_TXN/nginx.staged"
+  rm -f "$MAG_NGINX_TXN/nginx.staged" "$MAG_NGINX_TXN/nginx.verified"
   echo 'Previous nginx ingress restored' >&2
 }
 case "${1:-}" in
@@ -142,6 +142,12 @@ case "${1:-}" in
  activate) activate ;;
  smoke) smoke ;;
  rollback) rollback ;;
+ commit)
+   transaction
+   [[ -f $MAG_NGINX_TXN/nginx.staged ]] || die "Unstaged nginx transaction"
+   touch "$MAG_NGINX_TXN/nginx.verified"
+   rm -f "$MAG_NGINX_TXN/nginx.staged"
+   ;;
  standalone)
    preflight
    exec 9>/run/lock/mag-private-deploy.lock
@@ -155,5 +161,5 @@ case "${1:-}" in
    trap - EXIT
    echo 'nginx whois installed and Owner-verified'
    ;;
- *) die 'Usage: deploy-nginx.sh {preflight|stage|activate|smoke|rollback|standalone}' ;;
+ *) die 'Usage: deploy-nginx.sh {preflight|stage|activate|smoke|rollback|commit|standalone}' ;;
 esac

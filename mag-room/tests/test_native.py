@@ -675,7 +675,7 @@ class Native(unittest.TestCase):
    self.request('/api/autotalk',{'on':False})
    self.request('/api/message',{'text':'Fuehre 18 dokumentierte Schritte aus','bots':['test']})
    state=self._settle(lambda s:not s['busy'] and any(
-       'Alle 18 Schritte abgeschlossen.' in m.get('content','') for m in s['room']),loops=400)
+       'Alle 18 Schritte abgeschlossen.' in m.get('content','') for m in s['room']),n=400)
    self.assertEqual(len(Model.calls),19,'do not stop at six tool rounds')
    self.assertGreaterEqual(len(state['room'][-1].get('steps') or []),1)
   finally:Model.script=[]
@@ -688,7 +688,7 @@ class Native(unittest.TestCase):
   try:
    self.request('/api/message',{'text':'Pruefe mit Werkzeug statt Ankuendigung','bots':['test']})
    state=self._settle(lambda s:not s['busy'] and any(
-      'Kontrolle durchgeführt.' in m.get('content','') for m in s['room']),loops=200)
+      'Kontrolle durchgeführt.' in m.get('content','') for m in s['room']),n=200)
    self.assertEqual(len(Model.calls),3)
    self.assertNotIn('Nächster Schritt',state['room'][-1].get('content',''))
   finally:Model.script=[]

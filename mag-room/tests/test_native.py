@@ -1,5 +1,5 @@
 """Isolated native integration checks. Uses temporary state and a fake model."""
-import hashlib,http.server,json,os,pathlib,socket,subprocess,tempfile,threading,time,unittest,urllib.request,urllib.error
+import hashlib,http.server,json,os,pathlib,socket,socketserver,subprocess,tempfile,threading,time,unittest,urllib.request,urllib.error,urllib.parse
 ROOT=pathlib.Path(__file__).resolve().parents[2]
 NETMODE=pathlib.Path(tempfile.mkdtemp(prefix='magnet-'))/'netmode.sh';NETLOG=NETMODE.with_suffix('.log')
 NETMODE.write_text('#!/bin/sh\necho "$1" >> %s\n'%NETLOG);NETMODE.chmod(0o755)
@@ -55,16 +55,32 @@ class Model(http.server.BaseHTTPRequestHandler):
    payload=b'data: '+stat+b'\n\n';self.wfile.write(('%x\r\n'%len(payload)).encode()+payload+b'\r\n');self.wfile.flush()
    end=b'data: [DONE]\n\n';self.wfile.write(('%x\r\n'%len(end)).encode()+end+b'\r\n0\r\n\r\n');self.wfile.flush()
   except (BrokenPipeError,ConnectionResetError):pass
+# Exercise actual native whois/HMAC instead of trusting test-forged identity headers.
+WHOIS_PROFILES = {}
+class WhoisFixture(socketserver.StreamRequestHandler):
+ def handle(self):
+  first=self.rfile.readline().decode('ascii','replace')
+  while self.rfile.readline() not in (b'\\r\\n',b''):pass
+  if not first.startswith('GET /localapi/v0/whois?addr='):return
+  value=urllib.parse.parse_qs(urllib.parse.urlparse(first.split()[1]).query).get('addr',[''])[0]
+  login,name=WHOIS_PROFILES.get(value,('',''))
+  data=json.dumps({'UserProfile':{'LoginName':login,'DisplayName':name}}).encode()
+  self.wfile.write(b'HTTP/1.1 200 OK\\r\\nContent-Length: '+str(len(data)).encode()+b'\\r\\n\\r\\n'+data)
+class WhoisUnix(socketserver.ThreadingMixIn,socketserver.UnixStreamServer):
+ daemon_threads=True
 class Native(unittest.TestCase):
  @classmethod
  def setUpClass(cls):
   cls.tmp=tempfile.TemporaryDirectory();cls.state=pathlib.Path(cls.tmp.name)/'state';cls.state.mkdir()
   cls.state.joinpath('agents.json').write_text(json.dumps([{'id':'test','name':'Test','vm':'','memory':[]}]))
+  cls.whois_socket=str(pathlib.Path(cls.tmp.name)/'tailscaled.sock')
+  cls.whois=WhoisUnix(cls.whois_socket,WhoisFixture)
+  threading.Thread(target=cls.whois.serve_forever,daemon=True).start()
   cls.model=http.server.ThreadingHTTPServer(('127.0.0.1',0),Model);threading.Thread(target=cls.model.serve_forever,daemon=True).start();cls.ui=port();cls.bridge=port()
   cls.start()
  @classmethod
  def start(cls):
-  env=dict(os.environ,MAG_ROOM_STATE=str(cls.state),MAG_ROOM_PORT=str(cls.ui),MAG_ROOM_BRIDGE_PORT=str(cls.bridge),MAG_ROOM_BRIDGE_IP='127.0.0.1',MAG_ROOM_BACKEND=f'http://127.0.0.1:{cls.model.server_port}/v1/chat/completions',MAG_ROOM_UI=str(ROOT/'mag-room/web/index.html'),MAG_ROOM_STATIC=str(ROOT/'mag-room/static'),MAG_ROOM_AUTOTALK_SLEEP='1',MAG_JOBS_MCP_TOKEN='local-unit-test-mcp-token-0123456789',MAG_ROOM_MODEL_STATUS=str(pathlib.Path(cls.tmp.name)/'model-status.json'),MAG_NETMODE=str(NETMODE),MAG_TEST_NO_MEMGIT='1',MAG_JOBS_ALLOW_SECONDS='1',MAG_JOBS_TICK_MS='200',MAG_JOBS_BACKOFF_S='1',MAG_GITHUB_API=f'http://127.0.0.1:{GHPORT}')
+  env=dict(os.environ,MAG_ROOM_STATE=str(cls.state),MAG_ROOM_PORT=str(cls.ui),MAG_ROOM_BRIDGE_PORT=str(cls.bridge),MAG_ROOM_BRIDGE_IP='127.0.0.1',MAG_ROOM_BACKEND=f'http://127.0.0.1:{cls.model.server_port}/v1/chat/completions',MAG_ROOM_UI=str(ROOT/'mag-room/web/index.html'),MAG_ROOM_STATIC=str(ROOT/'mag-room/static'),MAG_ROOM_AUTOTALK_SLEEP='1',MAG_JOBS_MCP_TOKEN='local-unit-test-mcp-token-0123456789',MAG_ROOM_MODEL_STATUS=str(pathlib.Path(cls.tmp.name)/'model-status.json'),MAG_NETMODE=str(NETMODE),MAG_TEST_NO_MEMGIT='1',MAG_JOBS_ALLOW_SECONDS='1',MAG_JOBS_TICK_MS='200',MAG_JOBS_BACKOFF_S='1',MAG_GITHUB_API=f'http://127.0.0.1:{GHPORT}',MAG_TAILSCALED_SOCKET=cls.whois_socket)
   cls.log=open(pathlib.Path(cls.tmp.name)/'server.log','a');cls.proc=subprocess.Popen([str(ROOT/'build/magroom')],env=env,stdout=cls.log,stderr=cls.log)
   for _ in range(100):
    try:cls.request('/healthz',raw=True);return
@@ -72,7 +88,7 @@ class Native(unittest.TestCase):
   raise RuntimeError('Native startup failed')
  @classmethod
  def tearDownClass(cls):
-  cls.proc.terminate();cls.proc.wait(timeout=5);cls.log.close();cls.model.shutdown();cls.tmp.cleanup()
+  cls.proc.terminate();cls.proc.wait(timeout=5);cls.log.close();cls.model.shutdown();cls.whois.shutdown();cls.whois.server_close();cls.tmp.cleanup()
  @classmethod
  def request(cls,path,body=None,method=None,raw=False,bridge=False,headers=None):
   data=body if isinstance(body,bytes) else json.dumps(body).encode() if body is not None else None
@@ -874,7 +890,14 @@ class Native(unittest.TestCase):
   self.assertIn(b'<html',self.request('/bot/test/',raw=True))
 
  def _ts(self, login, name, body=True):
-  h={'X-Tailscale-User':login,'X-Tailscale-Name':name}
+  # Native LocalAPI attestation is part of the regression, not a bypass.
+  addr=f'100.101.102.103:{10000+len(WHOIS_PROFILES)%50000}'
+  WHOIS_PROFILES[addr]=(login,name)
+  req=urllib.request.Request(f'http://127.0.0.1:{self.ui}/_internal/tailscale/whois',
+                             headers={'X-Mag-Remote':addr})
+  with urllib.request.urlopen(req,timeout=5) as resp:
+   h={k:v for k,v in resp.headers.items()
+      if k.lower().startswith(('x-tailscale-','x-mag-auth-'))}
   if body:h['Content-Type']='application/json'
   return h
  def _access(self, owners, perms=None, owner_name='Chris'):

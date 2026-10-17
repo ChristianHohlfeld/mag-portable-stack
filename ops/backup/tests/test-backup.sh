@@ -118,7 +118,7 @@ for id in "${archives[@]:1}"; do mv "$MAG_BACKUP_ROOT/$id" "$tmp/held/"; done
 grep -Rqs 'do not lose me' "$tmp/alone"
 for id in "${archives[@]:1}"; do mv "$tmp/held/$id" "$MAG_BACKUP_ROOT/"; done
 # Keep the last 3 verified archives plus the pre-deploy backup of one release.
-export MAG_BACKUP_RELEASE_ID=rel-keep MAG_BACKUP_PROTECT_RELEASE=rel-keep
+export MAG_BACKUP_RELEASE_ID=rel-keep MAG_BACKUP_PROTECT_RELEASE=rel-keep MAG_BACKUP_KEEP=3
 "$here/backup.sh" deploy
 unset MAG_BACKUP_RELEASE_ID
 for n in 1 2 3 4; do
@@ -158,6 +158,10 @@ if MAG_BACKUP_OFFSITE_ENABLED=1 "$here/backup.sh" daily >"$tmp/offsite-error.out
  echo 'Missing AWS credentials wrongly accepted with offsite explicitly on' >&2; exit 1
 fi
 grep -Fq 'Offsite enabled but AWS credentials missing/unsafe' "$tmp/offsite-error.out"
+# Default: exactly one current full backup remains.
+unset MAG_BACKUP_PROTECT_RELEASE MAG_BACKUP_KEEP
+"$here/backup.sh" daily
+[[ "$(verified_n)" -eq 1 ]]
 pr="$tmp/prune"
 mkdir -p "$pr/releases"/{current-id,previous-id,old-id,linked-id} \
   "$pr/backups"/{current-id,previous-id,old-id,orphan} "$pr/scan"

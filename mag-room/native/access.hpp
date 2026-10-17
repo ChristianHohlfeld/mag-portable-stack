@@ -270,6 +270,10 @@ static bool guest_reaction_path(const std::string &p) {
 }
 static std::string required_perm(const std::string &method,
                                  const std::string &path) {
+  // Local health probes must remain available to deployment/systemd; they
+  // grant no room/admin/backup information or mutation capability.
+  if (method == "GET" && (path == "/healthz" || path == "/readyz/model"))
+    return "read";
   if (public_guest_read(method, path)) return "read";
   if ((method == "POST" && (path == "/api/message" || path == "/api/stream" ||
         path == "/api/upload" || path == "/api/stt" || path == "/api/speak")) ||

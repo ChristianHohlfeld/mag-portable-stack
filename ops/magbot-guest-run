@@ -4,8 +4,8 @@ set -euo pipefail
 vm=$1; shift
 case "${1:-}" in
   --stdin)
-    [[ $# == 1 ]] || { echo 'Expected --stdin only' >&2; exit 64; }
-    exec /usr/local/bin/magbot exec "$vm" --stdin
+    [[ $# -le 2 && (${2:-600} =~ ^[0-9]+$) ]] || { echo 'Invalid guest timeout' >&2; exit 64; }
+    exec /usr/local/bin/magbot exec "$vm" --stdin "${2:-600}"
     ;;
   --write|--append)
     [[ $# == 2 && -n $2 && ${#2} -le 4096 ]] || { echo 'Invalid guest file path' >&2; exit 64; }

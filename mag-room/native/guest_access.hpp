@@ -438,6 +438,15 @@ static GuestIssue guest_issue(const Actor &owner, const Val &request) {
   out.body["expires"] = (long)expires;
   out.body["key_expires"] = (long)(now_s() + 86400);
   if (!email.empty()) {
+    // A Tailscale MEMBER is broader than a MAG guest device. Do not
+    // automatically grant tailnet membership without separate ACL review.
+    if (env("MAG_GUEST_TAILNET_MEMBER_EMAIL", "0") != "1") {
+      out.body["tailnet_email_sent"] = false;
+      out.body["tailnet_email_notice"] =
+        "Tailscale membership email disabled until Chris authorizes "
+        "tailnet ACLs. Share the MAG invite URL privately.";
+      return out;
+    }
     Val invited = Val::object(), batch = Val::array();
     invited["role"] = "member";
     invited["email"] = email;

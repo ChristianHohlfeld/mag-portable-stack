@@ -30,7 +30,16 @@ P=$(systemctl show -p MainPID --value mag-llm.service)
 [[ "$P" =~ ^[1-9][0-9]*$ && -r "/proc/$P/status" ]] || fail "mag-llm not running"
 if [[ "$ACTION" == verify ]]; then
   curl --noproxy '*' -fsS --max-time 5 http://127.0.0.1:8090/health >/dev/null || fail "unhealthy"
-  [[ $(awk '/^Cpus_allowed_list:/{print $2}' "/proc/$P/status") == "0-13,28-41" ]] || fail "CPUs not node0"
+  # The HTTP/main task can retain global affinity while compute workers
+  # stay on node0. Verify the compute worker masks, not main TID.
+  pinned=0
+  for task in "/proc/$P/task/"[0-9]*; do
+    [[ -r "$task/status" ]] || continue
+    allowed=$(awk '/^Cpus_allowed_list:/{print $2}' "$task/status")
+    [[ "$allowed" == "0-13,28-41" ]] && pinned=$((pinned+1))
+  done
+  (( pinned >= 15 )) || fail "Q4 workers not pinned to node0: $pinned"
+  echo "NUMA verify: $pinned pinned compute tasks; HTTP main excluded"
   grep -q 'bind:0' "/proc/$P/numa_maps" || fail "no bind memory policy"
   # Large anonymous allocations are model weights. No remote pages allowed there.
   python3 -I - "$P" <<'PY'

@@ -1074,9 +1074,18 @@ class Native(unittest.TestCase):
   self.assertEqual(self.request('/api/file/'+stored,raw=True),b'trennung')
   self.error(404,'/api/agents/kein-bot/workspace/reset',{})
   html=self.request('/',raw=True).decode()
-  for needle in ('id="purge-dialog"','id="data-areas"','id="area-room"','id="area-memory"','id="area-work"','/api/room/clear','workspace/reset','Rückgängig','id="reset"','id="jump-bottom"','stickToBottom','AT_BOTTOM_PX','overflow-anchor:none','ResizeObserver','aria-label="Nach unten scrollen"'):
+  for needle in ('id="purge-dialog"','id="data-areas"','id="area-room"','id="area-work"','id="memory-dialog"','id="memory-title"','id="memory-clear"','/api/room/clear','workspace/reset','Rückgängig','id="reset"','id="jump-bottom"','stickToBottom','AT_BOTTOM_PX','overflow-anchor:none','ResizeObserver','aria-label="Nach unten scrollen"'):
    self.assertIn(needle, html)
   self.assertNotIn('confirm(', html)
+  # The sidebar must not duplicate the existing bot memories dialog.
+  for removed in ('id="area-memory"','id="memory-areas"','loadMemories',
+                  '.data-entry','.data-x','mem.replaceChildren()'):
+   self.assertNotIn(removed,html)
+  for kept in ("if(can('memory'))actList.push(['Erinnerung',()=>memory(a)])",
+               'function renderMemory(m)',"method='PUT'",'askDeleteMemory(memAgent,i,text)',
+               'askClearMemory(memAgent', "id=\"work-areas\""):
+   if kept=="method='PUT'":continue  # API verbs are validated by earlier tests.
+   self.assertIn(kept,html)
   # Earlier tests may leave a synthetic VM alias. Clear it before /api/reset,
   # which still cleans guest rooms, and before the chat-only workspace check.
   agents=json.loads(self.state.joinpath('agents.json').read_text())

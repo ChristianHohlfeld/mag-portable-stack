@@ -159,3 +159,72 @@ drop-ins and restarts only mag-120, preserving token, certs and files.
 CI covers the lego v5 command arguments, first-run DNS gate, private
 and opt-in public nginx templates, existing C++ tests and gitleaks.
 Live DNS, ACME issuance and Tailscale access require host checks.
+
+## Complete lifecycle and automatic cleanup
+
+The native C++ publisher treats Gitea as source of truth. Removal of a repo,
+gh-pages and docs, or a source-level PAGES_DISABLED marker unpublishes the
+site. On each successful scan it removes obsolete static symlinks, SHA
+releases and staging files, and records retired Pages. A missing or invalid
+API response never means deletion; a valid empty list means the last repo
+was removed. The pending GC marker is retried until root cleanup succeeds.
+
+The existing root-owned pages-gc.sh reconciles the custom-domain nginx
+configuration, runs nginx -t and reloads, and only THEN removes retired
+per-custom-domain lego accounts, TLS certificates/keys, and obsolete
+visibility.json entries. Pending visibility policies for not-yet-published
+repos are preserved. No per-domain systemd timer exists. The shared
+wildcard certificate, TLS current symlink and wildcard acme-dns account
+are expressly excluded from deletion. Full Pages deactivation with
+sudo ops/pages/rollback.sh also deletes Pages webroots, state and custom
+cert/account directories, but preserves that shared wildcard and the
+host-only read:repository token.
+
+## Automatic TLS issuance and renewal
+
+The existing mag-acme-renew.timer runs twice per day. Pages attaches
+refresh-custom.sh run followed by pages-gc.sh to that SAME service.
+lego 5.5.2 is always invoked as lego run with flags after run (never
+lego renew). Wildcard plus apex use DNS-01 via existing acme-dns,
+the issued cert is installed through the nginx-referenced TLS symlink,
+and nginx -t plus reload follow. Every active publicly enabled CNAME
+gets its own HTTP-01 webroot certificate with automatic renewal;
+removed CNAME records are removed from nginx before their cert/account
+directory is deleted. The one-time DNS registration requires the
+actual DomainFactory _acme-challenge.pages CNAME supplied by
+issue-wildcard.sh; after that no periodic manual renewal is needed.
+
+## Six native DeepSeek Pages tools
+
+The existing magroom native tool mechanism exposes pages_create,
+pages_update, pages_list, pages_delete, pages_set_visibility and
+pages_set_domain to bots with a provisioned VM. pages_create sets up an
+own private Gitea repo when absent and commits gh-pages/index.html;
+pages_update commits another safe relative static path; pages_delete
+removes gh-pages and the default-branch docs while preserving the
+original repository. pages_set_domain commits a CNAME file; the host
+ACME reconciler does the rest. pages_set_visibility changes only the
+operator-owned policy; public still needs an explicit public host bind.
+pages_list enumerates repositories owned by that bot's actual Gitea login.
+
+Each VM already has a dedicated Gitea account named magbot-VMID and
+Git credentials in its private home. The C++ adapter derives the
+owner from the server-side VM ID, validates every repo/path/domain and
+copies the trusted pages-vm.sh helper on demand. The VM helper verifies
+its authenticated /user identity and constructs Gitea URLs only for
+that account. Credentials remain in the VM and are never returned to
+DeepSeek. The host read:repository token at
+/etc/mag-pages/gitea-token stays root:magbot 0640 and is never used for
+mutating requests. Root policy changes use only pages-policy.sh via
+a narrowly allowlisted sudoers command, never an arbitrary root shell.
+
+Re-run ops/pages/install.sh to install root-owned GC/policy helpers and
+the existing timer hook, then deploy compiled magroom normally while
+idle (restart mag-120 only, never mag-llm). No new Python/Node daemon,
+Caddy, or independent runtime service is introduced.
+
+CI covers schema and ownership validation, obsolete SHA/repo cleanup,
+root cleanup of a constructed site through deletion with zero custom
+TLS/key/account, nginx-map, or visibility remnants, and verifies the
+shared wildcard remains. Live Gitea and public ACME DNS checks require
+deployment-side verification.

@@ -415,3 +415,5 @@ The existing MAG C++ room publishes Gitea gh-pages or docs into nginx webroots,
 with wildcard HTTPS, per-repository Tailnet/public access, optional CNAME,
 and a one-command rollback. No additional publisher process or Python service.
 See [MAG Pages operations and DNS](docs/GITEA_PAGES.md).
+
+MAG Pages lifecycle: the existing native C++ magroom automatically removes retired sites/releases and custom HTTPS certificates/accounts through the existing nginx/ACME timer. DeepSeek has six owner-scoped Pages tools. See docs/GITEA_PAGES.md for lifecycle, DomainFactory Tailnet-only DNS, cleanup, renewal, tools and rollback.

@@ -896,7 +896,9 @@ async function loadGuests(force=false){
  try{
   const info=await guestAPI('/api/guests');
   guestsLast=Date.now();
-  $('guest-status').textContent=info.configured?(info.live_status==='unavailable'?'Tailscale-Status derzeit nicht verfügbar':'Nur du kannst Gäste verwalten'):'OAuth-Zugang noch nicht eingerichtet';
+  $('guest-new').disabled=!info.configured;
+  $('guest-new').title=info.configured?'Gast einladen':'OAuth-Client auf mag nicht eingerichtet';
+  $('guest-status').textContent=info.configured?(info.live_status==='unavailable'?'Tailscale-Status derzeit nicht verfügbar':'Nur du kannst Gäste verwalten'):(info.notice||'Tailscale-OAuth fehlt: Einladung deaktiviert, Chat voll verfügbar.');
   const box=$('guest-list');box.replaceChildren();
   for(const entry of info.guests||[]){
    const row=document.createElement('div');row.className='job';

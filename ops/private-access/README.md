@@ -13,3 +13,8 @@ Canonical step-by-step host installation: [docs/INSTALL.md](../../docs/INSTALL.m
 **Operator sequence:** `sudo bash ops/private-access/preflight.sh`; `sudo bash ops/private-access/deploy-hook.sh --no-reload`; `sudo bash ops/private-access/install.sh`; check role from another device; `sudo bash ops/private-access/confirm.sh --owner-verified`; guest verification; `sudo bash ops/private-access/remove-caddy.sh`.
 
 CI runs real C++ magroom against a fake tailscaled Unix LocalAPI and a throwaway nginx + mock auth/backend, testing fail closed, header spoofing and no-store, in addition to native room regression tests and a secrets scan. It does *not* replace the host Owner/Guest test.
+
+## Automatischer Release-Cutover ab 8e2d045
+
+`ops/deploy.sh` verwendet `deploy-nginx.sh` als transaktionalen vHost-Updater. Es prüft die wirksame nginx-Auth-Konfiguration und einen echten Tailnet-Owner per SSH-Probe, statt nur `/readyz` zu prüfen. Fehlende Credentials stoppen ausschließlich Gäste-Einladungen. Bei Owner-403/5xx werden nginx und Room gemeinsam zurückgerollt. Manuell idempotent: `sudo bash ops/private-access/deploy-nginx.sh standalone`. Für vollständige Einrichtung und geschützte `/etc/credstore/mag-guest-oauth`-Konfiguration siehe [docs/guest-access.md](../../docs/guest-access.md).
+

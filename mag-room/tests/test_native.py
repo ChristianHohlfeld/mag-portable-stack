@@ -904,6 +904,47 @@ class Native(unittest.TestCase):
   base={k:['owner'] for k in ('offline','stop','jobs','memory','reset','delete','autotalk','connectors','browser')}
   if perms:base.update(perms)
   self.state.joinpath('access.json').write_text(json.dumps({'owners':owners,'owner_name':owner_name,'permissions':base}))
+ def test_17p_no_nginx_whois_or_oauth_keeps_owner_and_local_services(self):
+  # This is the outage regression: no credential directory/secret, no nginx
+  # attestation headers on local host calls. Existing room must remain usable.
+  self.wait_idle()
+  self._access(["chris@github"])
+  html=self.request('/',raw=True)
+  self.assertIn(b'<html',html)
+  local=self.request('/api/state')
+  self.assertEqual(local['you']['role'],'owner')
+  self.assertEqual(local['you']['login'],'')
+  self.assertTrue(self.request('/readyz')['ready'])
+  self.assertEqual(self.request('/healthz',raw=True),b'ok\n')
+  # Local headless Chrome/Box operations must retain the existing loopback
+  # interface, not a guest or a forged remote-header identity.
+  self.assertIn('room',self.request('/api/state'))
+  self.error(403,'/api/guests')
+  self.error(403,'/api/room/clear',{})
+  self.error(403,'/api/state',headers={'X-Tailscale-User':'chris@github'})
+  owner=self._ts('chris@github','Chris')
+  self.assertEqual(self.request('/api/state',headers=owner)['you']['role'],'owner')
+  guests=self.request('/api/guests',headers=owner)
+  self.assertFalse(guests['configured'])
+  self.assertEqual(guests['live_status'],'disabled')
+  self.assertIn('deaktiviert',guests['notice'])
+  # Valid owner, valid CSRF, but optional OAuth absent: no key is created.
+  signed={**owner,'Host':'mag.stardenburg.de',
+          'Origin':'https://mag.stardenburg.de','Sec-Fetch-Site':'same-origin'}
+  with self.assertRaises(urllib.error.HTTPError) as caught:
+   self.request('/api/guests',{'name':'test','expires_at':int(time.time())+86400},
+                headers=signed)
+  self.assertEqual(caught.exception.code,503)
+  err=json.loads(caught.exception.read())
+  self.assertIn('OAuth',err['error'])
+  self.assertNotIn('key',err)
+  # A non-owner is not elevated by missing nginx/OAuth.
+  visitor=self._ts('ada@github','Ada')
+  self.assertEqual(self.request('/api/state',headers=visitor)['you']['role'],'guest')
+  self.error(403,'/api/guests',headers=visitor)
+  self.error(403,'/api/room/clear',{},headers=visitor)
+  self.assertEqual(self.request('/api/state',headers=owner)['you']['role'],'owner')
+
  def test_17_guest_identity_roles_and_prompt_cache(self):
   self.wait_idle();self._access(['chris@github'])
   st=self.request('/api/state',headers={'X-Forwarded-For':'8.8.8.8'})

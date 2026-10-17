@@ -4,6 +4,14 @@
 set -euo pipefail
 [[ $EUID == 0 ]] || { echo "sudo required" >&2; exit 1; }
 here=$(cd -- "$(dirname -- "$0")" && pwd)
+# A confirmed private ingress can be refreshed any number of times without
+# hitting the one-time 180-second first-cutover snapshots. This is the same
+# transactional, Owner-verified nginx path used by every room release.
+if [[ ! -e /var/lib/mag-private-cutover/pending ]] &&
+   { [[ -f /var/lib/mag-private-cutover/confirmed ]] ||
+     nginx -T 2>&1 | grep -F 'auth_request /_mag_whois;' >/dev/null; }; then
+  exec bash "$here/deploy-nginx.sh" standalone
+fi
 site=/etc/nginx/sites-available/mag-room.conf
 enabled=/etc/nginx/sites-enabled/mag-room.conf
 backup=$site.pre-whois
@@ -23,7 +31,7 @@ systemctl is-active --quiet tailscaled.service
 systemctl is-active --quiet mag-120.service
 # Keep one cutover/recovery writer at a time.
 # /run/lock is system-shared; NEVER chmod /var/lock (often a symlink).
-exec 9>/run/lock/mag-private-cutover.lock
+exec 9>/run/lock/mag-private-deploy.lock
 flock -n 9 || { echo "Cutover already running" >&2; exit 1; }
 native_status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
   --max-time 5 -H 'X-Mag-Remote: 192.0.2.1:34567' \

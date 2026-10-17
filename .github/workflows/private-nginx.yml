@@ -1,7 +1,7 @@
 name: Private nginx cutover security
 on:
   push:
-    paths: ['ops/private-access/**', 'ops/nginx/mag-speech.inc', 'mag-room/tests/test_private_nginx.py', 'mag-room/tests/test_native.py', 'mag-room/native/**', 'docs/**', '.github/workflows/private-nginx.yml']
+    paths: ['ops/private-access/**', 'ops/nginx/mag-speech.inc', 'mag-room/tests/test_private_nginx.py', 'mag-room/tests/test_whois_deploy.py', 'mag-room/tests/test_native.py', 'mag-room/native/**', 'docs/**', '.github/workflows/private-nginx.yml']
   pull_request:
     paths: ['ops/private-access/**', 'ops/nginx/mag-speech.inc', 'mag-room/tests/test_private_nginx.py', 'mag-room/tests/test_native.py', 'docs/**', '.github/workflows/private-nginx.yml']
 permissions:
@@ -16,7 +16,7 @@ jobs:
           fetch-depth: 0 # gitleaks PR range requires ancestor commits
           ref: ${{ github.event.pull_request.head.sha || github.sha }} # checkout actual PR head, not merge-only ref
       - name: nginx and shell security dependencies
-        run: sudo apt-get update && sudo apt-get install -y nginx openssl
+        run: sudo apt-get update && sudo apt-get install -y nginx openssl jq
       - name: Shell syntax and transactional TLS tests
         run: |
           bash -n ops/private-access/*.sh ops/private-access/tests/*.sh
@@ -26,6 +26,8 @@ jobs:
         run: bash ops/private-access/tests/test-lego-v5.sh
       - name: Real TLS nginx auth, fail-closed, header spoofing
         run: python3 mag-room/tests/test_private_nginx.py
+      - name: Disposable deploy/Owner-smoke/rollback regression
+        run: python3 mag-room/tests/test_whois_deploy.py
       - name: Cutover guard and rollback contract
         run: |
           grep -F 'systemd-run --quiet --unit=mag-private-rollback --on-active=180s' ops/private-access/install.sh

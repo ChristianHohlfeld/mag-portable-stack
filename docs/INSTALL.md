@@ -1,5 +1,17 @@
 # Host installation — private nginx access, fail-safe
 
+> **Wichtig – Hotfix für Release 20261017T061119Z (main 8e2d045):**
+> Der vorherige Room-Deploy führte zum globalen 403, weil er die
+> native nginx-Whois-Authentisierung nicht synchron installierte.
+> Der neue `ops/deploy.sh` ruft jetzt zwingend
+> `ops/private-access/deploy-nginx.sh preflight/stage/activate/smoke/commit`
+> auf. Vor und nach Neustart von **nur** `mag-120` wird ein echtes externes
+> Owner-Gerät via SSH auf `/` (200) und `/api/state` (Owner-Login) geprüft;
+> jeder Fehler führt zur Wiederherstellung von Binary/Unit **und** nginx.
+> Ohne Root-only Owner-Testgerät **kein Deploy**. Fehlendes OAuth-Secret
+> ist kein Blocker für den Raum. Ausführliche [Schritte und OAuth-Provisionierung](guest-access.md#hotfix-nach-dem-403-ausfall-vom-17-oktober-2026).
+>
+
 **Owner:** Ali. **Target:** `mag`. **Base release:** `9067692` (contains merged #21 and the later releases including #26). This PR repairs a failed host cutover; no `mag-llm` restart. Nothing here modifies model weights or restarts `mag-llm`.
 
 ## 0. Keep a rescue channel

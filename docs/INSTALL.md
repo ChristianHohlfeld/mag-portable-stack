@@ -74,3 +74,4 @@ sudo bash ops/private-access/rollback.sh
 sudo nginx -t
 ```
 On a successful rollback, `.pre-whois`, `enabled.before`, all temporary host snapshots and `pending` are deleted so a retry is not blocked; original permissions (for example 0644) are restored. If rollback **cannot** complete nginx validation/reload, backups intentionally remain for manual repair. Never restart `mag-llm`.
+\n> **Userspace-Tailscale Owner-Probe (grokbot-box-2):** Der SSH-erreichbare Testclient darf seinen HTTPS-Traffic über einen *lokalen* Tailscale-SOCKS5-Proxy senden; die reale Whois-Owner-Identität bleibt zwingend. Für den Host-Check, die Root-only-Konfiguration und Fail-Closed-Tests siehe [docs/owner-probe-userspace.md](owner-probe-userspace.md). Box mit Tags/falschem Login oder ohne gesicherten SSH-Zugriff bleibt ein Deploy-Blocker; keine Bypass-Flags.\n

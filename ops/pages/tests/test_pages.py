@@ -123,9 +123,10 @@ class PagesTests(unittest.TestCase):
             cfg = base / "nginx.conf"
             cfg.write_text("worker_processes 1;\nerror_log stderr;\n"
                            "events { worker_connections 32; }\n"
-                           f"http {{ include {gen}; }}\n")
-            subprocess.run(["nginx", "-t", "-p", str(base) + "/", "-c", str(cfg)],
-                           capture_output=True, check=True)
+                           f"http {{ access_log off; include {gen}; }}\n")
+            result = subprocess.run(["nginx", "-t", "-p", str(base) + "/", "-c", str(cfg)],
+                                    capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
 
 
 if __name__ == "__main__":

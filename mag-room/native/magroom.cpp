@@ -66,9 +66,9 @@ static std::string MODEL, BACKEND, BIND_HOST, STATE_DIR, FILES_DIR, AGENTS_JSON,
 static int PORT = 8766, BRIDGE_PORT = 8767, BROWSERD_PORT = 9225,
            BACKEND_PORT = 8080, MAX_TOKENS = 700, MAX_HISTORY = 30,
            HISTORY_STEP = 10,
-           MAX_TOOL_ROUNDS = 6, MAX_ROOM_MESSAGES = 400,
-           TOOL_OUTPUT_LIMIT = 8000, MAX_UPLOAD = 64 * 1024 * 1024,
-           MEMORY_LIMIT = 60, GUEST_TIMEOUT = 70,
+           MAX_RUN_STEPS = 96, RUN_BUDGET_S = 14400, MAX_ROOM_MESSAGES = 400,
+           TOOL_OUTPUT_LIMIT = 32768, MAX_UPLOAD = 64 * 1024 * 1024,
+           MEMORY_LIMIT = 60, GUEST_TIMEOUT = 600,
            // Model requests on CPU can take long (prompt processing before the
            // first token). Never below 30 minutes; probes stay short.
            LLM_TIMEOUT_S = 3600, LLM_TIMEOUT_MIN_S = 1800;
@@ -230,8 +230,9 @@ struct CmdResult {
 
 static CmdResult run_argv(const std::vector<std::string> &argv,
                           int timeout_sec = 60, size_t cap = 4 << 20,
-                          const std::atomic<bool> *cancel = nullptr) {
-  auto result = mag::run(argv, timeout_sec, cap, cancel);
+                          const std::atomic<bool> *cancel = nullptr,
+                          const std::string *stdin_data = nullptr) {
+  auto result = mag::run(argv, timeout_sec, cap, cancel, stdin_data);
   return {result.code, result.out};
 }
 
@@ -1390,6 +1391,10 @@ static void replaceAll(std::string &s, const std::string &from,
 // ---------------------------------------------------------------- tool schemas
 static const char *T_RUN_COMMAND =
     R"({"type":"function","function":{"name":"run_command","description":"Run a bash command as unprivileged user bot inside YOUR OWN isolated Linux VM. Use to inspect the VM OS, read files, check versions, test programs.","parameters":{"type":"object","properties":{"command":{"type":"string","description":"bash command"}},"required":["command"],"additionalProperties":false}}})";
+static const char *T_WRITE_FILE =
+    R"({"type":"function","function":{"name":"write_file","description":"Atomically create/replace a UTF-8 text file inside your own VM under /home/bot, up to 32 MiB. No heredoc/argv limit.","parameters":{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"],"additionalProperties":false}}})";
+static const char *T_APPEND_FILE =
+    R"({"type":"function","function":{"name":"append_file","description":"Atomically append UTF-8 text under /home/bot inside your own VM, up to 32 MiB.","parameters":{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"],"additionalProperties":false}}})";
 static const char *T_WEB_SEARCH =
     R"({"type":"function","function":{"name":"web_search","description":"Search the public web via Brave for current facts and source URLs. Formulate a specific query from the conversation context.","parameters":{"type":"object","properties":{"query":{"type":"string"}},"required":["query"],"additionalProperties":false}}})";
 static const char *T_LIST_FILES =
@@ -1831,9 +1836,10 @@ static Val brave_search(const std::string &query) {
 static CmdResult guest_command(const std::string &vm,
                                const std::string &command, int timeout = 70,
                                bool cancelable = false) {
-  CmdResult r =
-      run_argv({"sudo", "-n", GUEST_RUN, vm, command}, timeout, 4 << 20,
-               cancelable ? &STOP : nullptr);
+  if (command.size() > 32u * 1024 * 1024)
+    throw std::runtime_error("Shell-Befehl groesser als 32 MiB; bitte aufteilen.");
+  CmdResult r = run_argv({"sudo", "-n", GUEST_RUN, vm, "--stdin"}, timeout,
+                         4 << 20, cancelable ? &STOP : nullptr, &command);
   if (r.out.size() > (size_t)TOOL_OUTPUT_LIMIT)
     r.out = r.out.substr(0, TOOL_OUTPUT_LIMIT) + "\n...[gekuerzt]";
   if (r.timedout) {
@@ -1841,6 +1847,20 @@ static CmdResult guest_command(const std::string &vm,
     r.out = "Zeitlimit (" + std::to_string(timeout) + "s) ueberschritten.";
   }
   return r;
+}
+static std::string guest_file_payload(const std::string &vm,
+                                      const std::string &path,
+                                      const std::string &content, bool append) {
+  if (path.empty() || path.size() > 4096)
+    throw std::runtime_error("Dateipfad fehlt oder ist zu lang (4096 Zeichen).");
+  if (content.size() > 32u * 1024 * 1024)
+    throw std::runtime_error("Datei-Inhalt groesser als 32 MiB; in Bloecken append_file nutzen.");
+  auto r = run_argv({"sudo", "-n", GUEST_RUN, vm,
+                     append ? "--append" : "--write", path},
+                    GUEST_TIMEOUT, 4 << 20, &STOP, &content);
+  if (r.code) throw std::runtime_error(
+      "Atomares Schreiben in der VM fehlgeschlagen: " + r.out.substr(0, 1500));
+  return r.out;
 }
 // Room memory is versioned in the bot's git-memory (gitmem -> Gitea): one
 // commit per change (remember/edit/delete). Best effort, async, serialised;
@@ -2432,8 +2452,9 @@ static std::string tools_json(int bot_idx, bool web) {
   // tokens and no tool calls that can only fail.
   std::vector<std::string> defs;
   if (has_vm)
-    defs = {T_RUN_COMMAND, T_LIST_FILES, T_FETCH_FILE, T_SHARE_FILE,
-            T_SPEAK,       T_SEE_IMAGE,  T_REMEMBER};
+    defs = {T_RUN_COMMAND, T_WRITE_FILE, T_APPEND_FILE,
+            T_LIST_FILES, T_FETCH_FILE, T_SHARE_FILE,
+            T_SPEAK, T_SEE_IMAGE, T_REMEMBER};
   else
     defs = {T_LIST_FILES, T_SPEAK, T_SEE_IMAGE, T_REMEMBER};
   defs.push_back(T_REACT);
@@ -2736,6 +2757,8 @@ static std::string tool_step_label(const std::string &tool) {
   if (tool == "browser_scroll") return "Scrollt die Seite";
   if (tool == "browser_back") return "Geht zurück";
   if (tool == "run_command") return "Führt einen Befehl aus";
+  if (tool == "write_file") return "Schreibt eine Datei";
+  if (tool == "append_file") return "Ergänzt eine Datei";
   if (tool == "remember") return "Merkt sich etwas";
   if (tool == "react") return "Reagiert";
   if (tool == "unreact") return "Nimmt die Reaktion zurück";
@@ -3020,6 +3043,11 @@ static std::string dispatch_tool(int bot_idx, const std::string &name,
       out += "\n[hint] Befehl fehlgeschlagen; pruefe Pfad/Rechte/Programmname "
              "(als Nutzer bot).";
     return out;
+  }
+  if (name == "write_file" || name == "append_file") {
+    need_vm();
+    return guest_file_payload(vm, getstr("path"), getstr("content"),
+                              name == "append_file");
   }
   if (name == "web_search") {
     if (!WEB_ENABLED.load())
@@ -4903,7 +4931,10 @@ int main() {
   API_KEY = env("MAG_ROOM_API_KEY", "local-llama");
   BRAVE_KEY = env("BRAVE_API_KEY", env("MAG_ROOM_BRAVE_KEY", ""));
   STT_LANG = env("STT_LANG", "de");
-  GUEST_TIMEOUT = envi("MAG_ROOM_GUEST_TIMEOUT", 70);
+  GUEST_TIMEOUT = std::max(30, envi("MAG_ROOM_GUEST_TIMEOUT", 600));
+  MAX_RUN_STEPS = std::clamp(envi("MAG_ROOM_MAX_STEPS", 96), 1, 1000);
+  RUN_BUDGET_S = std::clamp(envi("MAG_ROOM_RUN_BUDGET_S", 14400), 60, 86400);
+  TOOL_OUTPUT_LIMIT = std::clamp(envi("MAG_ROOM_TOOL_OUTPUT_LIMIT", 32768), 1000, 256*1024);
   UNDO_WINDOW = std::max(1, envi("MAG_ROOM_UNDO_S", 10));
   // Reasoning tokens count towards max_tokens; 700 (GPT-OSS "low") is far too
   // small for DeepSeek-V4 thinking.

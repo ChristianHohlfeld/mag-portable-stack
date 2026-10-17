@@ -437,6 +437,27 @@ static GuestIssue guest_issue(const Actor &owner, const Val &request) {
                            "&key=" + url_encode(key);
   out.body["expires"] = (long)expires;
   out.body["key_expires"] = (long)(now_s() + 86400);
+  if (!email.empty()) {
+    Val invited = Val::object(), batch = Val::array();
+    invited["role"] = "member";
+    invited["email"] = email;
+    batch.push(invited);
+    auto sent = guest_api("POST", "tailnet/-/user-invites", mj::dump(batch));
+    bool accepted = sent.ok && (sent.status == 200 || sent.status == 201) &&
+                    sent.json.isArr() && !sent.json.asArr().empty() &&
+                    guest_field(sent.json.asArr().front(),"email")==email;
+    out.body["tailnet_email_sent"] = accepted;
+    if (!accepted) {
+      out.body["tailnet_email_notice"] =
+         "Tailscale email not sent: check user_invites scope and tailnet "
+         "email invitation eligibility. MAG key URL remains owner-only.";
+    } else {
+      guest_audit("mail_invite", owner.login, id);
+      out.body["tailnet_email_notice"] =
+         "Tailscale member email sent. Send separate MAG guest invite_url "
+         "privately; Tailscale email does not contain the MAG auth key.";
+    }
+  }
   return out;
 }
 static GuestIssue guest_claim(const Actor &candidate, const Val &request) {

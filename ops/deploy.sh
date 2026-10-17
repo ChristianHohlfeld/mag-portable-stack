@@ -157,7 +157,7 @@ bash "$NGINX_SYNC" smoke
 /usr/local/bin/magbot status
 for unit in mag-chat.service pm2-chris.service; do if systemctl cat "$unit" >/dev/null 2>&1; then systemctl disable --now "$unit"; fi; done
 systemctl enable --now mag-stack-check.timer mag-git-gateway.socket
-rm -f "$MAG_NGINX_TXN/nginx.staged"
+bash "$NGINX_SYNC" commit
 deployment_started=0
 trap - EXIT INT TERM
 printf '\nInstalled release %s; rollback snapshot %s\n' "$RELEASE_ID" "$BACKUP"

@@ -17,6 +17,8 @@ for ip in $(python3 -c 'import json; c=json.load(open("/etc/mag-pages/config.jso
     ip -4 -o addr show | grep -Fq " $ip/" || { echo "Configured bind IP not present on mag: $ip" >&2; exit 1; }
 done
 install -d -m 0755 /usr/local/lib/mag-pages /var/lib/mag-pages/releases /var/lib/mag-pages/acme
+# Required for certbot inside the restricted sync.service sandbox.
+install -d -m 0755 /etc/letsencrypt /var/lib/letsencrypt /var/log/letsencrypt
 install -d -m 0700 /etc/mag-pages
 install -m 0755 "$src/mag_pages.py" "$src/issue-wildcard.sh" /usr/local/lib/mag-pages/
 install -m 0644 "$src"/mag-pages-*.service "$src"/mag-pages-*.timer /etc/systemd/system/

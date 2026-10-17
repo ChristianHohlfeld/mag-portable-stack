@@ -107,6 +107,11 @@ class PagesTests(unittest.TestCase):
                 self.assertEqual(state["repo0--alice"]["visibility"], "public")
                 self.assertEqual(state["repo1--alice"]["visibility"], "tailnet")
 
+    def test_gitea_api_redirect_fails_closed(self):
+        handler = p.NoApiRedirect()
+        with self.assertRaisesRegex(ValueError, "redirect refused"):
+            handler.redirect_request(None, None, 302, "Found", {}, "https://evil.example/")
+
     def test_nginx_syntax_no_real_host_ip(self):
         if not shutil.which("nginx"):
             self.skipTest("nginx unavailable")
@@ -120,7 +125,12 @@ class PagesTests(unittest.TestCase):
                  "wildcard_cert": str(cert), "wildcard_key": str(key)}
             gen = base / "generated.conf"
             # nginx -t binds sockets: use high loopback ports so CI needs no root.
-            generated = p.render_nginx(c, {}).replace(":80;", ":18080;").replace(":443 ssl;", ":18443 ssl;")
+            site = {"domain": "hello--chris.pages.stardenburg.de",
+                    "root": "/var/lib/mag-pages/releases/hello--chris/" + "a" * 40,
+                    "visibility": "public", "custom": "www.example.org"}
+            with mock.patch.object(p, "custom_cert", return_value=(str(cert), str(key))):
+                generated = p.render_nginx(c, {"hello--chris": site})
+            generated = generated.replace(":80;", ":18080;").replace(":443 ssl;", ":18443 ssl;")
             gen.write_text(generated)
             cfg = base / "nginx.conf"
             cfg.write_text("worker_processes 1;\nerror_log stderr;\n"

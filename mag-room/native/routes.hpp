@@ -160,6 +160,9 @@ static void route(int fd, Req &r, bool bridge = false) {
       error_json(fd, 403, "Kein Zugang");
       return;
     }
+    if (actor.role == "guest" && !ts_proof_valid(r.hdrs)) {
+      error_json(fd,403,"Whois-Nachweis fehlt"); return;
+    }
     if (actor.role == "guest" && !guest_live(actor.node)) {
       if (m == "GET" && (r.path == "/" || r.path == "/index.html")) {
         // No room state, script or endpoints are exposed before a valid claim.
@@ -220,8 +223,7 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
   if (!bridge && (path == "/api/guests" || path.rfind("/api/guests/",0)==0)) {
     // Only the owner whose identity came from the native nginx/whois gate.
     // Direct localhost without an attested LoginName never gains admin rights.
-    if (actor.role != "owner" || actor.login.empty() ||
-        r.hdrs.find("x-tailscale-ip")==r.hdrs.end()) {
+    if (actor.role != "owner" || actor.login.empty() || !ts_proof_valid(r.hdrs)) {
       error_json(fd,403,"Nur der Besitzer"); return;
     }
     if (m == "GET" && path == "/api/guests") {

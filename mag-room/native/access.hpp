@@ -157,9 +157,13 @@ static AccessCfg access_snapshot() {
 
 static bool login_is_owner(const AccessCfg &cfg, const std::string &login) {
   std::string key = lc(login);
+  // Production owner is the explicitly approved Tailscale identity,
+  // not whoever is accidentally added to access.json.
+  const std::string canonical = lc(env("MAG_OWNER_CANONICAL_LOGIN",
+                                       "chris.hohlfeld@gmail.com"));
+  if (key != canonical) return false;
   for (const auto &o : cfg.owners)
-    if (o == key)
-      return true;
+    if (o == key) return true;
   return false;
 }
 
@@ -308,8 +312,14 @@ static std::string required_perm(const std::string &method,
 static bool permit_request(const std::string &method, const std::string &path,
                            const Actor &a) {
   if (!a.ok) return false;
-  if (a.role == "owner") return true;
   std::string required = required_perm(method, path);
+  if (a.role == "owner") {
+    // No bare 127.0.0.1 -> owner/admin shortcut. Browser owner requests
+    // carry WhoIs-HMAC proof and a canonical nonempty login.
+    if (required == "owner" && a.login.empty() &&
+        env("MAG_TEST_ALLOW_LOCAL_OWNER", "0") != "1") return false;
+    return true;
+  }
   return required == "read" || required == "chat" ||
          required == "queue-own" ||
          (required == "offline" && actor_can(a,"offline"));

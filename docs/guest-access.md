@@ -304,3 +304,27 @@ Diese Tests ersetzen den externen Owner-Smoke **nicht**. GitHub Actions
 sind bei der Abrechnungssperre nicht ausführbar; **keine grünen
 CI-Ergebnisse behaupten**, bis Actions wieder läuft.
 
+
+## Tailscale-Key-Beschreibung (403/400-Folgebefund, 17.10.2026)
+
+Die Tailscale-API erlaubt für `description` nur ASCII-Buchstaben,
+Ziffern, Leerzeichen, `-` und `_` mit maximal 50 Zeichen.
+`mag_guest_key_description()` entfernt/ersetzt in C++ Zeichen außerhalb
+dieser Menge (u. a. Klammern, Umlaute, Emoji, Steuerzeichen) und verwendet
+den Prefix `MAG guest ` und ggf. `guest` als Fallback. Der angezeigte
+Gastname wird **nicht** umgeschrieben: Er bleibt getrennt im internen
+Einladungsregister.
+
+Wenn `POST /api/guests` fehlschlägt, protokolliert der C++-Prozess im
+Journal den **Tailscale-HTTP-Status** und ausschließlich eine geprüfte
+Fehlermeldung aus dem JSON-`message`-Feld. Unbekannte Upstream-Texte
+werden als `unrecognized API message (redacted)` maskiert – keine
+rohen HTTP-Bodies, Auth-Keys, OAuth-Tokens oder Gastnamen.
+
+Regression (C++17, offline, ohne API-Credentials):
+
+```bash
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j 4 --target test-guest-description
+./build/test-guest-description
+```

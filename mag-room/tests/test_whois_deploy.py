@@ -46,7 +46,10 @@ if [[ "$*" == *-checkhost* ]]; then echo 'Hostname does match certificate'; fi''
    "ssh":'''#!/usr/bin/env bash
 arg="§{@: -1}"
 if [[ "$arg" == true ]]; then exit 0; fi
-if [[ "$arg" == 'tailscale ip -4' ]]; then echo 100.101.102.103; exit 0; fi
+if [[ "$arg" == 'tailscale ip -4' ]]; then
+ if [[ "§{MOCK_PROBE_SELF:-0}" == 1 ]]; then echo 100.123.114.16; else echo 100.101.102.103; fi
+ exit 0
+fi
 if [[ "$MOCK_OWNER_FAIL" == 1 ]]; then exit 22; fi
 if [[ "$arg" == *'/api/state'* ]]; then
  echo '{"you":{"role":"owner","login":"chris.hohlfeld@gmail.com"}}'
@@ -96,6 +99,14 @@ echo -n 403''',
   r=self.run_script("preflight")
   self.assertNotEqual(r.returncode,0)
   self.assertEqual(self.original,self.site.read_bytes())
+ def test_same_host_is_not_a_valid_external_owner_probe(self):
+  env={**self.env,"MOCK_OWNER_FAIL":"0","MOCK_PROBE_SELF":"1"}
+  r=subprocess.run(["bash",str(self.script),"preflight"],env=env,
+                   text=True,capture_output=True)
+  self.assertNotEqual(r.returncode,0)
+  self.assertIn("SECOND real Tailscale device",r.stderr)
+  self.assertEqual(self.original,self.site.read_bytes())
+
  def test_smoke_failure_rolls_back_config_and_enabled_link(self):
   for command in ("preflight","stage","activate"):
    r=self.run_script(command)

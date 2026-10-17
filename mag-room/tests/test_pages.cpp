@@ -1,4 +1,6 @@
 #include "../native/pages.hpp"
+using Val=mj::Val;
+#include "../native/pages_tools.hpp"
 #include <cassert>
 #include <stdexcept>
 #define REQUIRE(expression) do { if (!(expression)) throw std::runtime_error("REQUIRE failed: " #expression); } while (0)
@@ -89,6 +91,28 @@ int main() {
   REQUIRE(!publicly_served("",mode(v,"alice/hello")));
   REQUIRE(publicly_served("192.0.2.10",mode(v,"alice/hello")));
   REQUIRE(!publicly_served("192.0.2.10","tailnet"));
+  std::filesystem::create_directories(base/"releases"/"demo--alice"/"oldsha");
+  std::filesystem::create_directories(base/"releases"/"demo--alice"/"newsha");
+  std::filesystem::create_directories(base/"releases"/"obsolete--bob"/"garbage");
+  Site site{"alice/demo","demo--alice","newsha","gh-pages","","tailnet",
+            base/"releases"/"demo--alice"/"newsha"};
+  cleanup_releases(base/"releases",{site});
+  REQUIRE(!std::filesystem::exists(base/"releases"/"demo--alice"/"oldsha"));
+  REQUIRE(!std::filesystem::exists(base/"releases"/"obsolete--bob"));
+  REQUIRE(std::filesystem::exists(base/"releases"/"demo--alice"/"newsha"));
+  cleanup_releases(base/"releases",{});
+  REQUIRE(std::filesystem::is_empty(base/"releases"));
+  REQUIRE(pages_safe_repo("demo") && !pages_safe_repo("../escape"));
+  REQUIRE(pages_safe_vm("agent1") && !pages_safe_vm("../agent"));
+  REQUIRE(pages_safe_path("assets/index.css") && !pages_safe_path("../../secret"));
+  int count=0;
+  for(const char* definition:PAGES_TOOL_DEFS) {
+    Val v;REQUIRE(mj::parse(definition,v));
+    auto fn=v.find("function");
+    REQUIRE(fn && fn->find("name") && is_pages_tool(fn->find("name")->asStr()));
+    count++;
+  }
+  REQUIRE(count==6);
   std::filesystem::remove_all(base);
   std::cout<<"MAG Pages C++ archive, policy, hostname and atomic webroot tests passed\n";
   return 0;

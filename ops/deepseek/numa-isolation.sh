@@ -162,8 +162,12 @@ systemctl daemon-reload
 systemctl disable --now mag-model-pin.service || fail "failed to stop double pin; DO NOT restart"
 systemctl is-active --quiet mag-model-pin && fail "vmtouch still active"
 bash "$ROOT/ops/deepseek/warm.sh" evict-cache || true
-free0=$(awk '/Node 0 MemFree:/{print $4}' /sys/devices/system/node/node0/meminfo)
-[[ "$free0" =~ ^[0-9]+$ ]] && ((free0 >= 32*1024*1024)) || fail "node0 low free RAM: DO NOT restart Q4"
+# Page cache is reclaimable. Preserve it unless an operator explicitly
+# decides to evict caches before this stage.
+node0_available=$(bash "$ROOT/ops/deepseek/numa-node0-available.sh") ||
+  fail "node0 availability data unavailable"
+[[ "$node0_available" =~ ^[0-9]+$ ]] && (( node0_available >= 32*1024*1024 )) ||
+  fail "node0 low available memory: do not restart Q4"
 # Strict restart-fit gate: free node0 pages plus Q4 anonymous pages
 # releasable at Ali's manual restart must cover all current private weights
 # and 12 GiB of runtime headroom. Missing NUMA accounting -> FAIL CLOSED.
@@ -181,7 +185,9 @@ PY
 )
 [[ "$rssanon" =~ ^[0-9]+$ && "$local_anon" =~ ^[0-9]+$ ]] || fail "model NUMA accounting unavailable"
 (( rssanon >= 80*1024*1024 && local_anon >= 32*1024*1024 )) || fail "unexpected weight memory"
-(( free0 + local_anon >= rssanon + 12*1024*1024 )) || fail "node0 cannot fit private Q4 weights plus reserve: DO NOT RESTART"
+(( node0_available + local_anon >= rssanon + 12*1024*1024 )) ||
+  fail "node0 available RAM + Q4 local memory below required restart reserve"
+echo "node0 estimated available=$node0_available KiB; Q4 local anon=$local_anon KiB; RSSanon=$rssanon KiB"
 install -m 0600 "$TMP/env" "$ENVFILE"
 install -m 0644 "$TMP/unit" "$UNIT"
 rm -f "$OLD"

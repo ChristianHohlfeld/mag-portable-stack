@@ -10,6 +10,8 @@ export MAG_BACKUP_ROOT="$tmp/full" MAG_BACKUP_WORK="$tmp/work"
 export MAG_BACKUP_SOURCE="$tmp/host" MAG_BACKUP_STATUS="$tmp/status/status.json"
 export MAG_BACKUP_LOCK="$tmp/run/backup.lock"
 export MAG_BACKUP_MIN_FREE_MIB=64
+# The multi-archive checks below need older archives; the default (1) is checked at the end.
+export MAG_BACKUP_KEEP=3
 unset RESTIC_REPOSITORY || true
 mkdir -p "$MAG_BACKUP_CONFIG" "$MAG_BACKUP_SOURCE/var/lib/magbot/room/files" \
  "$MAG_BACKUP_SOURCE/var/lib/gitea/data/repositories/magbot-agent1/memory.git" \
@@ -118,7 +120,7 @@ for id in "${archives[@]:1}"; do mv "$MAG_BACKUP_ROOT/$id" "$tmp/held/"; done
 grep -Rqs 'do not lose me' "$tmp/alone"
 for id in "${archives[@]:1}"; do mv "$tmp/held/$id" "$MAG_BACKUP_ROOT/"; done
 # Keep the last 3 verified archives plus the pre-deploy backup of one release.
-export MAG_BACKUP_RELEASE_ID=rel-keep MAG_BACKUP_PROTECT_RELEASE=rel-keep MAG_BACKUP_KEEP=3
+export MAG_BACKUP_RELEASE_ID=rel-keep MAG_BACKUP_PROTECT_RELEASE=rel-keep
 "$here/backup.sh" deploy
 unset MAG_BACKUP_RELEASE_ID
 for n in 1 2 3 4; do

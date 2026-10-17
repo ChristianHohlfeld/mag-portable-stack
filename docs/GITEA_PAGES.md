@@ -183,7 +183,7 @@ host-only read:repository token.
 ## Automatic TLS issuance and renewal
 
 The existing mag-acme-renew.timer runs twice per day. Pages attaches
-refresh-custom.sh run followed by pages-gc.sh to that SAME service.
+refresh-custom.sh run followed by pages-reconcile.sh to that SAME service.
 lego 5.5.2 is always invoked as lego run with flags after run (never
 lego renew). Wildcard plus apex use DNS-01 via existing acme-dns,
 the issued cert is installed through the nginx-referenced TLS symlink,
@@ -215,16 +215,68 @@ its authenticated /user identity and constructs Gitea URLs only for
 that account. Credentials remain in the VM and are never returned to
 DeepSeek. The host read:repository token at
 /etc/mag-pages/gitea-token stays root:magbot 0640 and is never used for
-mutating requests. Root policy changes use only pages-policy.sh via
-a narrowly allowlisted sudoers command, never an arbitrary root shell.
+mutating requests. Root policy changes are validated JSON requests under
+/var/lib/mag-pages/request.json; the only sudoers privilege is the
+**exact** /usr/bin/systemctl start mag-pages-reconcile.service command.
+That root oneshot runs outside mag-120's ProtectSystem=full read-only
+/etc mount namespace. No wildcard sudo arguments or arbitrary root shell
+are available to DeepSeek.
 
-Re-run ops/pages/install.sh to install root-owned GC/policy helpers and
-the existing timer hook, then deploy compiled magroom normally while
-idle (restart mag-120 only, never mag-llm). No new Python/Node daemon,
-Caddy, or independent runtime service is introduced.
+Re-run ops/pages/install.sh to install root-owned GC, policy and
+reconcile scripts, the fixed-command systemd oneshot
+mag-pages-reconcile.service, its exact-command sudoers grant and the
+existing ACME timer hook. There is **one new short-lived oneshot**, not
+a new polling daemon or timer. Deploy compiled magroom while idle
+(restart mag-120 only, never mag-llm). No new Python/Node service or Caddy.
 
 CI covers schema and ownership validation, obsolete SHA/repo cleanup,
 root cleanup of a constructed site through deletion with zero custom
 TLS/key/account, nginx-map, or visibility remnants, and verifies the
 shared wildcard remains. Live Gitea and public ACME DNS checks require
 deployment-side verification.
+
+## Sandbox review and synchronous completion (PR #30 follow-up)
+
+**Why not ReadWritePaths:** The live mag-120.service has
+User=magbot and ProtectSystem=full. sudo inside the unit inherits that
+read-only /etc mount namespace: becoming root does not make /etc writable.
+Changing ReadWritePaths would expand the web-facing C++ room process's
+writable host surface. We instead delegate through PID 1 to a root oneshot
+with its own namespace and a single fixed-name sudoers permission.
+
+The native publisher serializes Gitea state/webroot reconciliation and
+initiates /usr/bin/systemctl start mag-pages-reconcile.service from within
+the sandbox. The root unit reads at most one validated JSON policy request
+from /var/lib/mag-pages/request.json, updates visibility.json in /etc,
+or reconciles nginx custom vhosts and custom certificates. A policy request
+is applied first, then C++ republishes according to the new policy, then
+a second root oneshot activates certificates and reloads nginx. Each tool
+awaits completion and returns an error on failures. A successful
+pages_delete has zero corresponding nginx routes, stale release trees,
+visibility entry or custom-domain lego account after root reconciliation.
+Wildcard TLS material is never deleted by a site cleanup.
+
+On pages_set_domain and pages_set_visibility public, custom HTTPS is
+attempted *immediately* after the publisher has materialized the site and
+the DNS CNAME exists; no 12-hour delay to first issuance. A DNS record
+that has not propagated or failed ACME issuance gives a clear error.
+The existing mag-acme-renew.timer remains the retry/renew path.
+
+The publisher now verifies that the **actual MAG read:repository token**
+can list and fetch each newly published private VM-owned Gitea repository
+before changing any site webroots. If not, it fails closed and reports an
+actionable token/ACL error; token bytes are never logged or exposed.
+CI exercises the authenticated private repo visibility and denied-scope
+logic with deterministic Gitea API mock replies, but CI cannot prove
+permissions of the token installed on the private MAG host. Ali should
+do a temporary pages_create/private repo smoke test after installing.
+
+The sandbox regression uses real systemd-run units with
+ProtectSystem=full to confirm even root inside the sandbox cannot write
+/etc, while the exact-command root oneshot can apply policy/cleanup.
+The test validates immediate deletion, nginx -t plus reload, intact
+wildcard certs, and idempotent reruns without a second runtime daemon.
+Run sudo bash ops/pages/tests/test-pages-sandbox.sh on a disposable host
+for direct reproduction. On MAG, use systemctl status and journalctl
+-u mag-pages-reconcile.service to diagnose root failures without
+restarting mag-llm.

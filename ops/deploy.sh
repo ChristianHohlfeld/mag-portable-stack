@@ -207,4 +207,6 @@ deployment_started=0
 trap - EXIT INT TERM
 MAG_RELEASE_ID="$RELEASE_ID" MAG_RELEASE_PREVIOUS_FILE="$BACKUP/previous-release" \
   bash "$SOURCE/ops/prune-releases.sh"
+# One-shot removal of pre-4.0 leftovers; report in /var/lib/mag-stack/cleanup-report.txt.
+bash "$SOURCE/ops/cleanup-legacy.sh" || echo 'WARN: legacy cleanup incomplete (deploy itself succeeded)' >&2
 printf '\nInstalled release %s; rollback snapshot %s\n' "$RELEASE_ID" "$BACKUP"

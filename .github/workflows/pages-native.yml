@@ -25,25 +25,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install nginx and C++ link dependencies
-        run: sudo apt-get update && sudo apt-get install -y nginx libcurl4-openssl-dev libarchive-dev libssl-dev
+        run: sudo apt-get update && sudo apt-get install -y nginx libcurl4-openssl-dev libarchive-dev libssl-dev jq dnsutils
       - name: Native C++ unit tests + MAG compilation
         run: |
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
           cmake --build build --target test-pages-native magroom -j 4
           ./build/test-pages-native
-      - name: nginx -t without real MAG IP or privileged bind
-        run: |
-          mkdir -p /tmp/mag-pages-ci
-          openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj '/CN=pages.stardenburg.de' -keyout /tmp/mag-pages-ci/key.pem -out /tmp/mag-pages-ci/cert.pem 2>/dev/null
-          sed -e 's/@PUBLIC_BIND@/127.0.0.2/g' \
-              -e 's/@TAILNET_BIND@/127.0.0.3/g' \
-              -e 's/@ZONE_REGEX@/pages\\.stardenburg\\.de/g' \
-              -e 's/:80;/:18080;/g' -e 's/:443 ssl;/:18443 ssl;/g' \
-              -e 's|/etc/mag-pages/tls/current/cert.pem|/tmp/mag-pages-ci/cert.pem|g' \
-              -e 's|/etc/mag-pages/tls/current/key.pem|/tmp/mag-pages-ci/key.pem|g' \
-            ops/pages/mag-pages.nginx.in > /tmp/mag-pages-ci/vhost.conf
-          printf 'worker_processes 1;\npid /tmp/mag-pages-ci/nginx.pid;\nerror_log stderr;\nevents {worker_connections 64;}\nhttp {access_log off; include /tmp/mag-pages-ci/vhost.conf;}\n' > /tmp/mag-pages-ci/nginx.conf
-          nginx -t -p /tmp/mag-pages-ci/ -c /tmp/mag-pages-ci/nginx.conf
+      - name: Tailnet-only, public opt-in, lego v5 and DNS-01 onboarding tests
+        run: bash ops/pages/tests/test-pages-ops.sh
       - name: Shell syntax; no new runtime units
         run: |
           bash -n ops/pages/*.sh

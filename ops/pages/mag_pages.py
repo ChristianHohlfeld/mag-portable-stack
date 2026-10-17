@@ -192,7 +192,9 @@ def materialize(files, root):
             p.chmod(0o755)
 
 
-def get_visibility(path=VISIBILITY):
+def get_visibility(path=None):
+    if path is None:
+        path = VISIBILITY
     if not Path(path).exists():
         return {}
     data = json.loads(Path(path).read_text())
@@ -202,7 +204,7 @@ def get_visibility(path=VISIBILITY):
 
 
 def visibility_change(key, visibility, path=VISIBILITY):
-    if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", key):
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", key) or any(part in (".", "..") or part.startswith(".") for part in key.split("/")):
         raise ValueError("expected owner/repo")
     if visibility not in ("public", "tailnet"):
         raise ValueError("visibility must be public or tailnet")

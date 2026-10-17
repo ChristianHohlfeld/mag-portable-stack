@@ -415,6 +415,10 @@ inline void reconcile(const fs::path& root,const std::string& token) {
   const bool changed=!fs::exists(manifest) || read(manifest)!=new_state ||
                      !fs::exists(aliases_path) || read(aliases_path)!=aliases;
   if(changed) {
+    Val retired=Val::array();
+    if(prior.isObj())for(const auto& old:*prior.obj)
+      if(!state.find(old.first))retired.push(Val(old.first));
+    write_atomic(root/"gc-retired.json",mj::dump(retired)+"\n");
     write_atomic(aliases_path,aliases);
     write_atomic(manifest,new_state);
     write_atomic(root/"gc.pending","1\n"); // retry until privileged GC succeeds

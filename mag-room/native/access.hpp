@@ -244,55 +244,62 @@ static bool identify_actor(const std::string &peer,
   return true;
 }
 
-// Empty string: any identified actor (chat, upload, read).
-// Otherwise the permission the actor must hold.
+// Central, fail-closed permission contract. Unknown methods/paths must NOT
+// silently grant any guest mutation. "owner" is an unconditional owner gate:
+// entries in access.json cannot promote guests to this permission.
+static bool public_guest_read(const std::string &method, const std::string &p) {
+  if (method != "GET" && method != "HEAD") return false;
+  return p == "/" || p == "/index.html" || p == "/sw.js" ||
+         p == "/manifest.webmanifest" || p == "/favicon.ico" ||
+         p == "/favicon.svg" || p == "/api/state" || p == "/api/events" ||
+         p == "/api/version" || p == "/api/model-status" ||
+         p == "/api/bots" || p == "/api/room" || p == "/api/files" ||
+         p.rfind("/static/", 0) == 0 || p.rfind("/api/file/", 0) == 0;
+}
+static bool guest_reaction_path(const std::string &p) {
+  const std::string root = "/api/messages/", end = "/reactions";
+  return p.rfind(root, 0) == 0 && p.size() > root.size() + end.size() &&
+         p.compare(p.size() - end.size(), end.size(), end) == 0;
+}
 static std::string required_perm(const std::string &method,
                                  const std::string &path) {
-  if (method == "GET" || method == "HEAD" || method == "OPTIONS") {
-    // Job definitions carry prompts and webhook paths.
-    if (path == "/api/jobs" || path.rfind("/api/jobs/", 0) == 0)
-      return "jobs";
-    return "";
-  }
-  if (path == "/api/offline")
-    return "offline";
-  if (path == "/api/stop" || path == "/api/queue/resume" ||
-      path == "/api/queue/merge" || (path == "/api/queue" && method == "DELETE"))
-    return "stop";
-  if (path.rfind("/api/queue/", 0) == 0 && path.size() >= 4 &&
-      path.compare(path.size() - 4, 4, "/now") == 0)
-    return "stop";
-  if (path == "/api/reset")
-    return "reset";
-  if (path == "/api/autotalk")
-    return "autotalk";
-  if (path == "/api/connectors" || path.rfind("/api/connectors/", 0) == 0)
-    return "connectors";
-  if (path == "/api/frontend" || path == "/api/agents")
-    return "delete";
-  if (path.rfind("/api/agents/", 0) == 0) {
-    if (path.find("/memory/") != std::string::npos)
-      return "memory";
-    if (method == "DELETE")
-      return "delete";
-    return "";
-  }
-  if (path == "/api/jobs" || path.rfind("/api/jobs/", 0) == 0)
-    return "jobs";
-  if (path.rfind("/api/browser/", 0) == 0 || path == "/api/browser-live/offer")
-    return "browser";
-  if (path.rfind("/api/agent/", 0) == 0) {
-    if (path.size() >= 9 && path.compare(path.size() - 9, 9, "/remember") == 0)
-      return "memory";
-    return "delete";
-  }
-  return "";
+  if (public_guest_read(method, path)) return "read";
+  if ((method == "POST" && (path == "/api/message" || path == "/api/stream" ||
+        path == "/api/upload" || path == "/api/stt" || path == "/api/speak")) ||
+      ((method == "POST" || method == "DELETE") && guest_reaction_path(path)))
+    return "chat";
+  // Never let a config-based guest permission accidentally authorize one
+  // of the destructive operations (or future routes).
+  if (path == "/api/room/clear" || path == "/api/reset" ||
+      path == "/api/room/snapshots" ||
+      path.rfind("/api/room/snapshots/", 0) == 0 ||
+      path.rfind("/api/room/files/", 0) == 0 ||
+      path.rfind("/api/room/messages/", 0) == 0 ||
+      path.rfind("/api/undo/", 0) == 0 ||
+      path == "/api/guests" || path.rfind("/api/guests/", 0) == 0 ||
+      path == "/api/frontend" || path == "/api/agents" ||
+      path.rfind("/api/agents/", 0) == 0 ||
+      path.rfind("/api/agent/", 0) == 0 ||
+      path == "/mcp/jobs" || path.rfind("/api/jobs", 0) == 0 ||
+      path.rfind("/api/pages", 0) == 0 ||
+      path.rfind("/api/model", 0) == 0 ||
+      path.rfind("/api/queue", 0) == 0 ||
+      path == "/api/cancel" || path == "/api/stop" ||
+      path == "/api/offline" || path == "/api/autotalk" ||
+      path.rfind("/api/connectors", 0) == 0 ||
+      path.rfind("/api/browser", 0) == 0 ||
+      path.rfind("/api/push", 0) == 0 ||
+      path.rfind("/api/screen/", 0) == 0 ||
+      path.rfind("/bot/", 0) == 0)
+    return "owner";
+  // Some routes are deliberately accessible to the owner for internal
+  // lifecycle/readiness calls; no guest access on any new/unknown route.
+  return "owner";
 }
-
 static bool permit_request(const std::string &method, const std::string &path,
                            const Actor &a) {
-  std::string perm = required_perm(method, path);
-  if (perm.empty())
-    return a.ok;
-  return actor_can(a, perm);
+  if (!a.ok) return false;
+  if (a.role == "owner") return true;
+  std::string required = required_perm(method, path);
+  return required == "read" || required == "chat";
 }

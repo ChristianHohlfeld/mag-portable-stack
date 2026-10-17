@@ -12,7 +12,9 @@ Existing password-protected repositories are NEVER destroyed/reinitialized
 by `install.sh`. Before applying this release:
 
 ```sh
-# Ensure restic >=0.17 first.
+# Install pinned/restic SHA256-verified binary; does not modify backup data:
+sudo bash ops/backup/install-restic-0181.sh
+# Restic >=0.17 confirmed.
 sudo bash ops/backup/migrate-passwordless.sh
 # Once successful (old keys removed, integrity and restore verified):
 sudo bash ops/backup/install.sh

@@ -34,7 +34,7 @@ printf '<html>Hi</html>' >"$tmp/state/releases/site--magbot-agent1/abc123/index.
 ln -s "$tmp/state/releases/site--magbot-agent1/abc123" "$tmp/state/tailnet/site--magbot-agent1"
 ln -s "$tmp/state/releases/site--magbot-agent1/abc123" "$tmp/state/public/site--magbot-agent1"
 ln -s "$tmp/state/releases/site--magbot-agent1/abc123" "$tmp/state/custom/$host"
-printf '{"magbot-agent1/site":{"sha":"abc123","slug":"site--magbot-agent1"}}\n' >"$tmp/state/sites.json"
+printf '{"magbot-agent1/site":{"sha":"abc123","slug":"site--magbot-agent1","custom":"www.example.org"}}\n' >"$tmp/state/sites.json"
 printf '%s\tsite--magbot-agent1.pages.stardenburg.de\tsite--magbot-agent1\n' "$host" >"$tmp/state/custom-domains.tsv"
 printf '{"magbot-agent1/site":"public"}\n' >"$tmp/etc/visibility.json"
 printf 'PAGES_PUBLIC_BIND=\n' >"$tmp/etc/pages.env"

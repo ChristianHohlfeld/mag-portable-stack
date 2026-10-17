@@ -3,7 +3,7 @@
 set -euo pipefail
 root="$(cd "$(dirname "$0")/../../.." && pwd)"
 tmp="$(mktemp -d)"
-trap 'rm -rf -- "$tmp"' EXIT
+trap 'sudo rm -rf -- "$tmp"' EXIT
 mkdir -p "$tmp/repo" "$tmp/data"
 printf 'KEEP_THIS_BEFORE_KEY_MIGRATION\n' > "$tmp/data/precious.txt"
 printf 'temporary-fixture-password-not-from-mag\n' > "$tmp/legacy-pw"

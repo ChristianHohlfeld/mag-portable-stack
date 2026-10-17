@@ -2,7 +2,8 @@
 # Host-like systemd isolation regression: root cannot write /etc inside
 # ProtectSystem=full, but fixed systemctl start delegates to a distinct
 # root oneshot. No network, ACME DNS, Gitea, or long-lived process needed.
-set -euo pipefail
+set -euxo pipefail
+trap 'echo "Pages sandbox failure at line $LINENO" >&2; systemctl status mag-pages-reconcile.service nginx.service --no-pager -l || true; journalctl -u mag-pages-reconcile.service -u mag-pages-ci-readonly -u mag-pages-ci-delete -n 50 --no-pager || true' ERR
 [[ "$EUID" == 0 ]] || { echo 'Run this CI test with sudo' >&2; exit 1; }
 here="$(cd "$(dirname "$0")/../../.." && pwd)"
 command -v systemd-run >/dev/null

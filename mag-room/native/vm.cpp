@@ -130,6 +130,151 @@ static Result guest(const std::string &n, const std::vector<std::string> &argv,
   }
   throw std::runtime_error("Guest command timed out");
 }
+
+// Large guest payload transport. qemu-guest-agent receives 24 KiB chunks, never
+// an enormous argv/QGA JSON argument. The stage is created by guest user bot
+// with mode 0600 and removed after dispatch. No host shell access is exposed.
+static std::string base64(const std::string &in);
+static volatile sig_atomic_t payload_cancelled = 0;
+static void payload_signal(int) { payload_cancelled = 1; }
+
+static std::string from_stdin(size_t limit = 32u * 1024 * 1024) {
+  std::string data;
+  char b[16384];
+  while (std::cin) {
+    std::cin.read(b, sizeof b);
+    auto n = std::cin.gcount();
+    if (n <= 0) break;
+    if (data.size() + (size_t)n > limit)
+      throw std::runtime_error("Guest input exceeds 32 MiB; split into append_file calls");
+    data.append(b, (size_t)n);
+  }
+  if (std::cin.bad()) throw std::runtime_error("Failed to read guest payload from stdin");
+  return data;
+}
+
+static void stage_payload(const std::string &n, const std::string &file,
+                          const std::string &data) {
+  Val cmd = Val::object(), args = Val::object();
+  cmd["execute"] = "guest-file-open";
+  args["path"] = file; args["mode"] = "w";
+  cmd["arguments"] = args;
+  long handle = num(qga(n, cmd), "handle", -1);
+  if (handle < 0) throw std::runtime_error("Guest file-open returned no handle");
+  try {
+    size_t at = 0;
+    while (at < data.size()) {
+      if (payload_cancelled) throw std::runtime_error("Abgebrochen (Stop)");
+      const size_t count = std::min<size_t>(24576, data.size() - at);
+      cmd = Val::object(); args = Val::object();
+      cmd["execute"] = "guest-file-write";
+      args["handle"] = handle;
+      args["buf-b64"] = base64(data.substr(at, count));
+      cmd["arguments"] = args;
+      long written = num(qga(n, cmd), "count", -1);
+      if (written <= 0 || (size_t)written > count)
+        throw std::runtime_error("Guest file-write incomplete");
+      at += (size_t)written;
+    }
+    cmd = Val::object(); args = Val::object();
+    cmd["execute"] = "guest-file-flush"; args["handle"] = handle; cmd["arguments"] = args;
+    qga(n, cmd);
+  } catch (...) {
+    cmd = Val::object(); args = Val::object();
+    cmd["execute"] = "guest-file-close"; args["handle"] = handle; cmd["arguments"] = args;
+    try { qga(n, cmd); } catch (...) {}
+    throw;
+  }
+  cmd = Val::object(); args = Val::object();
+  cmd["execute"] = "guest-file-close"; args["handle"] = handle; cmd["arguments"] = args;
+  qga(n, cmd);
+}
+
+// Executed as unprivileged bot. Its HOME is /home/bot; only the private VM
+// home can be written. A temp sibling + fsync + replace makes append atomic.
+static const char *ATOMIC_FILE_PY = R"MAGPY(import os,sys,tempfile,shutil,stat
+src,path,mode=sys.argv[1:]
+home=os.path.realpath(os.path.expanduser("~"))
+if not path: raise ValueError("empty target")
+if not os.path.isabs(path): path=os.path.join(home,path)
+path=os.path.realpath(path)
+if path==home or not path.startswith(home+os.sep): raise ValueError("target outside bot home")
+parent=os.path.dirname(path)
+os.makedirs(parent,mode=0o700,exist_ok=True)
+fd,tmp=tempfile.mkstemp(prefix=".mag-write-",dir=parent)
+try:
+    with os.fdopen(fd,"wb") as output:
+        if mode=="--append" and os.path.exists(path):
+            with open(path,"rb") as old: shutil.copyfileobj(old,output,1024*1024)
+        with open(src,"rb") as data: shutil.copyfileobj(data,output,1024*1024)
+        output.flush()
+        os.fsync(output.fileno())
+    if os.path.exists(path): os.chmod(tmp,stat.S_IMODE(os.stat(path).st_mode))
+    os.replace(tmp,path)
+    dfd=os.open(parent,os.O_DIRECTORY|os.O_RDONLY)
+    try: os.fsync(dfd)
+    finally: os.close(dfd)
+    print("saved",path,os.path.getsize(path),"bytes")
+finally:
+    if os.path.exists(tmp): os.unlink(tmp)
+)MAGPY";
+
+static Result guest_payload(const std::string &n, const std::string &data,
+                            const std::string &target = "",
+                            const std::string &mode = "", int seconds = 120) {
+  payload_cancelled = 0;
+  struct sigaction sa{}, old{};
+  sa.sa_handler = payload_signal;
+  sigemptyset(&sa.sa_mask);
+  sigaction(SIGTERM, &sa, &old);
+  std::string staged;
+  try {
+    auto mk = guest(n, {"/usr/sbin/runuser", "-u", "bot", "--", "/usr/bin/mktemp",
+                        "/home/bot/.mag-input-XXXXXXXX"}, 15);
+    if (mk.code || !std::regex_match(trim(mk.out),
+                      std::regex("/home/bot/\\.mag-input-[A-Za-z0-9]+")))
+      throw std::runtime_error("Cannot create secure guest staging file");
+    staged = trim(mk.out);
+    stage_payload(n, staged, data);
+    if (payload_cancelled) throw std::runtime_error("Abgebrochen (Stop)");
+    Result result;
+    if (mode.empty()) {
+      const std::string log = "/home/bot/.mag-shell/" + randomhex() + ".log";
+      // Full output stays in the guest; send a bounded preview and a clear
+      // pointer. This avoids QGA capture-output and model-context overflow.
+      const std::string shell = R"MAGSH(
+cd /home/bot || exit 1
+export PLAYWRIGHT_BROWSERS_PATH=/opt/magbot/browsers
+umask 077
+mkdir -p /home/bot/.mag-shell
+bash "$1" > "$2" 2>&1
+rc=$?
+bytes=$(wc -c < "$2")
+printf '[Full output: %s (%s bytes)]\n' "$2" "$bytes"
+head -c 32000 "$2"
+if [ "$bytes" -gt 32000 ]; then printf '\n[preview truncated; full log in guest file]\n'; fi
+exit "$rc"
+)MAGSH";
+      result = guest(n, {"/usr/bin/setsid", "/usr/sbin/runuser", "-u", "bot",
+                         "--", "/bin/bash", "-c", shell, "mag-shell", staged, log},
+                     seconds);
+    } else {
+      result = guest(n, {"/usr/bin/setsid", "/usr/sbin/runuser", "-u", "bot",
+                         "--", "/usr/bin/python3", "-c", ATOMIC_FILE_PY,
+                         staged, target, mode}, seconds);
+    }
+    try { guest(n, {"/bin/rm", "-f", "--", staged}, 10); } catch (...) {}
+    sigaction(SIGTERM, &old, nullptr);
+    return result;
+  } catch (...) {
+    if (!staged.empty()) {
+      try { guest(n, {"/bin/rm", "-f", "--", staged}, 10); } catch (...) {}
+    }
+    sigaction(SIGTERM, &old, nullptr);
+    throw;
+  }
+}
+
 static std::string state(const std::string &n) {
   try {
     auto s = trim(virsh({"domstate", domain(n)}, 10));
@@ -515,6 +660,26 @@ int main(int argc, char **argv) {
     }
     if (n.empty())
       throw std::runtime_error("Bot ID required");
+    if (action == "file-write") {
+      marker(n);
+      if (state(n) != "ready") throw std::runtime_error("Guest not ready");
+      if (argc != 5 || (std::string(argv[4]) != "--write" &&
+                        std::string(argv[4]) != "--append"))
+        throw std::runtime_error("Usage: magbot file-write ID PATH --write|--append");
+      std::string path = argv[3];
+      if (path.empty() || path.size() > 4096)
+        throw std::runtime_error("Invalid guest file path");
+      auto r = guest_payload(n, from_stdin(), path, argv[4], 180);
+      std::cout << r.out;
+      return r.code;
+    }
+    if (action == "exec" && argc == 4 && std::string(argv[3]) == "--stdin") {
+      marker(n);
+      if (state(n) != "ready") throw std::runtime_error("Guest not ready");
+      auto r = guest_payload(n, from_stdin(), "", "", 600);
+      std::cout << r.out;
+      return r.code;
+    }
     if (action == "exec") {
       marker(n);
       if (state(n) != "ready")

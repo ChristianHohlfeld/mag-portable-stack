@@ -101,6 +101,7 @@ static Val qga(const std::string &n, Val command, int timeout = 10) {
     throw std::runtime_error("Invalid guest agent reply");
   return *v.find("return");
 }
+static volatile sig_atomic_t payload_cancelled = 0;
 static Result guest(const std::string &n, const std::vector<std::string> &argv,
                     int seconds = 120) {
   Val cmd = Val::object();
@@ -116,6 +117,16 @@ static Result guest(const std::string &n, const std::vector<std::string> &argv,
   long pid = num(qga(n, cmd), "pid");
   auto end = std::chrono::steady_clock::now() + std::chrono::seconds(seconds);
   while (std::chrono::steady_clock::now() < end) {
+    if (cancelable && payload_cancelled) {
+      // The command runs in its own setsid process group inside the VM.
+      Val sig = Val::object(), arg = Val::object(), av = Val::array();
+      sig["execute"] = "guest-exec";
+      arg["path"] = "/bin/kill";
+      av.push("-TERM"); av.push("--"); av.push("-" + std::to_string(pid));
+      arg["arg"] = av; sig["arguments"] = arg;
+      try { qga(n, sig, 3); } catch (...) {}
+      throw std::runtime_error("Abgebrochen (Stop)");
+    }
     Val q = Val::object();
     q["execute"] = "guest-exec-status";
     Val a = Val::object();
@@ -135,7 +146,7 @@ static Result guest(const std::string &n, const std::vector<std::string> &argv,
 // an enormous argv/QGA JSON argument. The stage is created by guest user bot
 // with mode 0600 and removed after dispatch. No host shell access is exposed.
 static std::string base64(const std::string &in);
-static volatile sig_atomic_t payload_cancelled = 0;
+
 static void payload_signal(int) { payload_cancelled = 1; }
 
 static std::string from_stdin(size_t limit = 32u * 1024 * 1024) {
@@ -159,7 +170,8 @@ static void stage_payload(const std::string &n, const std::string &file,
   cmd["execute"] = "guest-file-open";
   args["path"] = file; args["mode"] = "w";
   cmd["arguments"] = args;
-  long handle = num(qga(n, cmd), "handle", -1);
+  Val opened = qga(n, cmd);
+  long handle = opened.type == Val::NUM ? (long)opened.asNum() : num(opened, "handle", -1);
   if (handle < 0) throw std::runtime_error("Guest file-open returned no handle");
   try {
     size_t at = 0;
@@ -257,11 +269,11 @@ exit "$rc"
 )MAGSH";
       result = guest(n, {"/usr/bin/setsid", "/usr/sbin/runuser", "-u", "bot",
                          "--", "/bin/bash", "-c", shell, "mag-shell", staged, log},
-                     seconds);
+                     seconds, true);
     } else {
       result = guest(n, {"/usr/bin/setsid", "/usr/sbin/runuser", "-u", "bot",
                          "--", "/usr/bin/python3", "-c", ATOMIC_FILE_PY,
-                         staged, target, mode}, seconds);
+                         staged, target, mode}, seconds, true);
     }
     try { guest(n, {"/bin/rm", "-f", "--", staged}, 10); } catch (...) {}
     sigaction(SIGTERM, &old, nullptr);

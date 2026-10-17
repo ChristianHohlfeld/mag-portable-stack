@@ -122,8 +122,17 @@ class NativeGateway(unittest.TestCase):
         code,_=request(self.gwp,"POST","/v1/chat/completions",
             {"model":"x","stream":True,"messages":[{"role":"user","content":"stream"}]})
         self.assertEqual(code,200)
-        events=[json.loads(l) for f in (self.dir/"logs").rglob("events.jsonl") for l in f.read_text().splitlines()]
-        responses=[e for e in events if e.get("type")=="llm_response" and e.get("streamed")]
+        # The gateway appends the streamed response record after the client
+        # already has the last chunk; wait for it instead of racing it.
+        for _ in range(100):
+            events=[]
+            for f in (self.dir/"logs").rglob("events.jsonl"):
+                for l in f.read_text().splitlines():
+                    try:events.append(json.loads(l))
+                    except ValueError:pass  # line still being written
+            responses=[e for e in events if e.get("type")=="llm_response" and e.get("streamed")]
+            if responses:break
+            time.sleep(.05)
         self.assertTrue(responses)
         msg=responses[-1]["body"]["choices"][0]["message"]
         self.assertEqual(msg["content"],"Hallo Welt")

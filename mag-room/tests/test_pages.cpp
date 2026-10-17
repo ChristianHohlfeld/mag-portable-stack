@@ -86,6 +86,9 @@ int main() {
   REQUIRE(mode(v,"alice/hello")=="tailnet");
   v["alice/hello"]="public";
   REQUIRE(mode(v,"alice/hello")=="public");
+  REQUIRE(!publicly_served("",mode(v,"alice/hello")));
+  REQUIRE(publicly_served("192.0.2.10",mode(v,"alice/hello")));
+  REQUIRE(!publicly_served("192.0.2.10","tailnet"));
   std::filesystem::remove_all(base);
   std::cout<<"MAG Pages C++ archive, policy, hostname and atomic webroot tests passed\n";
   return 0;

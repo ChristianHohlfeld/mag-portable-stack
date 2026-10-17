@@ -17,6 +17,8 @@ struct Actor {
   std::string role;   // "owner" or "guest"
   std::string login;  // Tailscale LoginName, empty for the header-less local owner
   std::string name;   // display name stored on messages
+  std::string node;   // attested Tailscale node ID (tagged devices)
+  std::string ip;     // attested source Tailscale address
 };
 
 struct AccessCfg {
@@ -201,6 +203,22 @@ static bool identify_actor(const std::string &peer,
   if (!local)
     return false;
   AccessCfg cfg = access_snapshot();
+  const std::string node = pick("x-tailscale-node");
+  const bool tagged = pick("x-tailscale-guest") == "1";
+  if (tagged && !node.empty()) {
+    if (node.size() > 20 || node.find_first_not_of("0123456789") != std::string::npos)
+      return false;
+    std::string ip = pick("x-tailscale-ip");
+    in_addr addr{};
+    if (inet_pton(AF_INET, ip.c_str(), &addr) != 1) return false;
+    out.ok = true;
+    out.role = "guest";
+    out.node = node;
+    out.ip = ip;
+    out.login = "tag:mag-guest:" + node;
+    out.name = "Gast";
+    return true;
+  }
   if (login.empty()) {
     out.ok = true;
     out.role = "owner";

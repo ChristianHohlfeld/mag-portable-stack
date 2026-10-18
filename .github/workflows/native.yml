@@ -19,7 +19,7 @@ jobs:
       - name: Prevent CI room-clear from invoking production backup
         run: |
           grep -Fq "MAG_TEST_NO_CLEAR_BACKUP='1'" mag-room/tests/test_native.py
-          grep -Fq 'mag-backup-clear.timer' mag-room/native/routes.hpp
+          ! grep -Fq 'mag-backup-clear.timer' mag-room/native/routes.hpp
           ! grep -Fq 'start mag-backup-clear.service' mag-room/native/routes.hpp
       - name: Tailscale API nft IPv4/v6 egress regression without modifying host firewall
         run: sudo bash ops/audit/tests/test-tail-egress.sh

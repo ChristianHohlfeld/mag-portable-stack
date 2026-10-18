@@ -62,6 +62,8 @@ static std::mutex BACKEND_FD_MTX;
 // (HTTP helpers, transcript correction) keeps using the global flags.
 struct Lane {
   std::string model;
+  std::string active_bot; // protected by JOB_MTX
+  std::set<std::string> cancelled_bots; // protected by JOB_MTX
   std::atomic<bool> stop{false}, busy{false}, user_cancel{false};
   std::atomic<int> backend_fd{-1};
 };
@@ -568,6 +570,7 @@ static std::vector<Val> AGENTS;
 // in agents.json (memory included) so nothing is lost and the mode is
 // reversible by unsetting the variable.
 static std::vector<Val> PARKED;
+static std::set<std::string> SPAWNING_VMS; // STATE_MTX; includes removed pending bots
 static std::string SINGLE_BOT, SINGLE_BOT_NAME = "DeepSeek Chat";
 
 static void save_agents(); // fwd
@@ -630,7 +633,7 @@ static int browser_agent_index(const std::string &id_or_vm) {
 }
 static std::string next_vm(const std::vector<std::string> &skip = {}) {
   std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
-  std::vector<std::string> used;
+  std::vector<std::string> used(SPAWNING_VMS.begin(), SPAWNING_VMS.end());
   for (auto *list : {&AGENTS, &PARKED})
     for (auto &a : *list)
       for (const char *key : {"vm", "pending_vm"})
@@ -4135,6 +4138,7 @@ static std::condition_variable JOB_CV;
 struct Job {
   std::vector<std::string> ids;
   int think = -1;
+  uint64_t generation = 0;
 };
 static std::deque<Job> JOBS;
 // Queue persistence: pending jobs + the jobs being answered survive a room
@@ -4253,6 +4257,7 @@ static void queue_event_locked() {
   publish(mj::dump(e));
 }
 static std::atomic<uint64_t> EPOCH{0};
+static uint64_t AUTO_GENERATION = 0;
 static std::string AUTO_OWNER, AUTO_LAST_PROGRESS;
 static bool AUTO_READY = false;
 static int AUTO_TURNS_LEFT = 0;
@@ -4276,9 +4281,23 @@ static void cancel_active(bool user = false) {
     shutdown(BACKEND_FD.load(), SHUT_RDWR);
 }
 // Stop only the lanes these bots answer on; other bots keep working.
-static void cancel_bots(const std::vector<std::string> &ids, bool user = false) {
-  for (auto &id : ids)
-    if (Lane *l = lane_of(id)) cancel_lane(*l, user);
+static bool cancel_bots(const std::vector<std::string> &ids, bool user = false) {
+  std::lock_guard<std::mutex> lk(JOB_MTX);
+  bool found = false;
+  for (auto &id : ids) {
+    for (auto &entry : ACTIVE_JOBS) {
+      auto &members = entry.second.ids;
+      if (std::find(members.begin(), members.end(), id) == members.end()) continue;
+      for (Lane *lane : all_lanes()) {
+        if (!lane->busy.load()) continue;
+        // A bot's model can be changed during a turn. Use dispatched ownership.
+        if (lane->active_bot == id) cancel_lane(*lane, user);
+        lane->cancelled_bots.insert(id);
+      }
+      found = true;
+    }
+  }
+  return found;
 }
 // A new user message no longer aborts the running turn (on CPU that threw
 // away minutes of prompt evaluation while llama kept computing): it is queued
@@ -4293,15 +4312,17 @@ static void schedule(const std::vector<std::string> &ids, int think = -1,
   bool merged = false;
   {
     std::lock_guard<std::mutex> lk(JOB_MTX);
+    ++AUTO_GENERATION;
     AUTO_OWNER = ids.empty() ? "" : ids.front();
     AUTO_LAST_PROGRESS.clear();
     AUTO_TURNS_LEFT = AUTO_MAX_TURNS;
     AUTO_READY = false;
     if (!JOBS.empty() && JOBS.back().ids == ids) {
+      JOBS.back().generation = AUTO_GENERATION;
       JOBS.back().think = think; // latest choice wins
       merged = true;
     } else {
-      JOBS.push_back(Job{ids, think});
+      JOBS.push_back(Job{ids, think, AUTO_GENERATION});
     }
     position = JOBS.size();
     save_queue_locked();
@@ -4599,11 +4620,12 @@ static TurnReport generate_and_post(int idx, bool automatic) {
 // order. Only the task owner (first bot of the user request) can request an
 // autonomous continuation.
 static void lane_finish(Lane *lane, uint64_t run, bool owner_ran, bool more,
-                        const std::string &progress, uint64_t epoch) {
+                        const std::string &progress, uint64_t epoch, uint64_t generation = 0) {
   Val bb = Val::array();
   {
     std::lock_guard<std::mutex> lk(JOB_MTX);
     lane->busy = false;
+    lane->active_bot.clear();
     ACTIVE_JOBS.erase(run);
     bool any = false;
     for (Lane *l : all_lanes()) any = any || l->busy.load();
@@ -4611,7 +4633,7 @@ static void lane_finish(Lane *lane, uint64_t run, bool owner_ran, bool more,
     for (auto &kv : ACTIVE_JOBS)
       for (auto &id : kv.second.ids) bb.push(Val(id));
     save_queue_locked();
-    if (owner_ran) {
+    if (owner_ran && generation == AUTO_GENERATION) {
       if (epoch == EPOCH.load() && AUTOTALK.load() && more &&
           AUTO_TURNS_LEFT > 0 && progress != AUTO_LAST_PROGRESS) {
         AUTO_LAST_PROGRESS = progress;
@@ -4630,8 +4652,7 @@ static void lane_finish(Lane *lane, uint64_t run, bool owner_ran, bool more,
   JOB_CV.notify_all();
 }
 static void lane_turn(Lane *lane, uint64_t run, std::vector<std::string> ids,
-                      bool automatic, int think, std::string owner) {
-  const uint64_t epoch = EPOCH.load();
+                      bool automatic, int think, std::string owner, uint64_t generation, uint64_t epoch) {
   bool more = false, owner_ran = false;
   std::string progress;
   {
@@ -4641,8 +4662,14 @@ static void lane_turn(Lane *lane, uint64_t run, std::vector<std::string> ids,
     LAST_THINK = think;
     if (!(automatic && !AUTOTALK.load()))
       for (const auto &id : ids) {
-        if (lane->stop.load())
-          break;
+        {
+          std::lock_guard<std::mutex> lk(JOB_MTX);
+          if (epoch != EPOCH.load()) break;
+          if (lane->cancelled_bots.count(id)) continue;
+          lane->stop = false;
+          lane->user_cancel = false;
+          lane->active_bot = id;
+        }
         int idx = agent_index(id);
         if (idx < 0)
           continue;
@@ -4663,7 +4690,7 @@ static void lane_turn(Lane *lane, uint64_t run, std::vector<std::string> ids,
       }
     TL_LANE = nullptr;
   }
-  lane_finish(lane, run, owner_ran, more, progress, epoch);
+  lane_finish(lane, run, owner_ran, more, progress, epoch, generation);
 }
 static void lane_job(Lane *lane, uint64_t run, JobRun job) {
   {
@@ -4702,17 +4729,19 @@ static bool dispatchable(const std::vector<std::pair<Lane *, std::vector<std::st
 static int AUTO_THINK = -1;
 static void start_lanes_locked(const Job &job, bool automatic) {
   const std::string owner = job.ids.empty() ? "" : job.ids.front();
-  if (!automatic) AUTO_THINK = job.think;
+  if (!automatic && job.generation == AUTO_GENERATION) AUTO_THINK = job.think;
   STOP = false;
   USER_CANCEL = false;
   for (auto &[lane, ids] : split_lanes(job.ids)) {
     const uint64_t run = ++DISPATCH_SEQ;
     lane->busy = true;
+    lane->active_bot.clear();
+    lane->cancelled_bots.clear();
     lane->stop = false;
     lane->user_cancel = false;
     ACTIVE_JOBS[run] = Job{ids, job.think};
     BUSY = true;
-    std::thread(lane_turn, lane, run, ids, automatic, job.think, owner).detach();
+    std::thread(lane_turn, lane, run, ids, automatic, job.think, owner, job.generation, EPOCH.load()).detach();
   }
   save_queue_locked();
 }
@@ -4742,7 +4771,7 @@ static bool dispatch_locked() {
                           p.text, "", nullptr, p.login);
     msg["type"] = "message";
     publish(mj::dump(msg));
-    JOBS.push_back(Job{p.ids, p.think});
+    JOBS.push_back(Job{p.ids, p.think, ++AUTO_GENERATION});
     AUTO_OWNER = p.ids.empty() ? "" : p.ids.front();
     AUTO_LAST_PROGRESS.clear();
     AUTO_TURNS_LEFT = AUTO_MAX_TURNS;
@@ -4787,7 +4816,7 @@ static bool dispatch_locked() {
       return false;
     AUTO_READY = false;
     --AUTO_TURNS_LEFT;
-    start_lanes_locked(Job{{AUTO_OWNER}, AUTO_THINK}, true);
+    start_lanes_locked(Job{{AUTO_OWNER}, AUTO_THINK, AUTO_GENERATION}, true);
     return true;
   }
   return false;
@@ -4856,6 +4885,7 @@ static void stop_autotalk(bool pause = false) {
     save_queue_locked();
     AUTO_READY = false;
     AUTO_OWNER.clear();
+    ++AUTO_GENERATION;
     AUTO_LAST_PROGRESS.clear();
     AUTO_TURNS_LEFT = 0;
   }
@@ -5217,6 +5247,10 @@ static ScopedResult clear_room_data() {
   UndoItem u;
   {
   std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
+  if (ROOM.empty() && FILES.empty()) {
+    Val out = Val::object(); out["ok"] = true; out["unchanged"] = true;
+    return scoped_ok(out);
+  }
   if (!snapshot_capture_locked(snapshot,error))
     return scoped_err(507,"Raum nicht geleert: "+error);
   u.kind = "room";

@@ -89,17 +89,24 @@ for id in "${ids[@]+"${ids[@]}"}"; do
   fi
   echo "remove unreferenced $id"
   if [[ "${MAG_DRIFT_DRY_RUN:-0}" == 1 ]]; then continue; fi
+  unit="$UNIT_DIR/magbot-$id.service"
+  # Stop before native teardown removes the unit file and its resources.
+  if [[ -f "$unit" && ! -L "$unit" ]]; then
+    if ! systemctl disable --now "magbot-$id.service"; then
+      echo "refusing despawn: could not stop $id" >&2
+      fail=1
+      continue
+    fi
+    removed_unit=1
+  fi
   if ! "$MAGBOT" despawn "$id"; then
     echo "despawn $id failed" >&2
     fail=1
     continue
   fi
-  unit="$UNIT_DIR/magbot-$id.service"
   if [[ -f "$unit" && ! -L "$unit" ]]; then
-    systemctl disable --now "magbot-$id.service" >/dev/null 2>&1 || true
     rm -f -- "$unit"
     echo "removed unit $unit"
-    removed_unit=1
   fi
 done
 if (( removed_unit )) && [[ "${MAG_DRIFT_DAEMON_RELOAD:-1}" == 1 ]] && command -v systemctl >/dev/null; then

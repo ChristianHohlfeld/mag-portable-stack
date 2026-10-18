@@ -36,18 +36,20 @@ for name in common.sh backup.sh restore.sh maintenance.sh; do
 done
 printf '%s\n' "$RELEASE_ID" > /run/mag-backup-release
 chmod 0644 /run/mag-backup-release
-systemctl start mag-backup-deploy.service || {
-  echo 'Pre-deploy snapshot failed; deploy refused. No release was switched and no old backup was deleted.' >&2; exit 1;
-}
+# Retry a failed/stale unit with the current script, but never accept an old
+# VERIFIED marker as proof that this deployment's snapshot succeeded.
+if ! systemctl start mag-backup-deploy.service; then
+  echo 'Backup unit failed; trying the installed backup script.' >&2
+  /usr/local/lib/mag-backup/backup.sh deploy || {
+    echo 'Pre-deploy snapshot failed; no release switched.' >&2; exit 1;
+  }
+fi
 verified_full=$(find /var/backups/mag-full -mindepth 2 -maxdepth 2 -name VERIFIED -print -quit 2>/dev/null || true)
 if [[ -z "$verified_full" ]]; then
-  echo 'Deploy snapshot left no verified full backup; running backup.sh directly.' >&2
   /usr/local/lib/mag-backup/backup.sh deploy
   verified_full=$(find /var/backups/mag-full -mindepth 2 -maxdepth 2 -name VERIFIED -print -quit 2>/dev/null || true)
 fi
-[[ -n "$verified_full" ]] || {
-  echo 'No verified full backup; deploy refused. No release was switched and no old backup was deleted.' >&2; exit 1;
-}
+[[ -n "$verified_full" ]] || { echo 'No verified full backup; deploy refused.' >&2; exit 1; }
 # Das Modell ist unabhängig vom Raum-Release (lädt evtl. noch herunter / wird geprüft).
 # Nur informieren; der Raum zeigt den Modellstatus selbst an.
 curl -fsS --max-time 5 http://127.0.0.1:8080/v1/models >/dev/null \

@@ -1289,8 +1289,12 @@ class Native(unittest.TestCase):
   finally:
    target.unlink()
    target.with_suffix('.saved').rename(target)
+  useful=self.request('/api/room/clear',{},headers=owner)['snapshot']
+  snapshots_before=self.request('/api/room/snapshots',headers=owner)['snapshots']
   for _ in range(6):
-   self.request('/api/room/clear',{},headers=owner)
+   self.assertTrue(self.request('/api/room/clear',{},headers=owner)['unchanged'])
+  self.assertEqual(self.request('/api/room/snapshots',headers=owner)['snapshots'],snapshots_before)
+  self.assertTrue((self.state/'snapshots'/useful/'room.json').is_file())
   remaining=self.request('/api/room/snapshots',headers=owner)['snapshots']
   self.assertLessEqual(len(remaining),5)
   self.assertTrue(all((self.state/'snapshots'/x['id']/'meta.json').is_file() for x in remaining))
@@ -1717,6 +1721,16 @@ class MultiBot(unittest.TestCase):
     time.sleep(.05)
    else:self.fail('VM of a removed bot was left behind')
   finally:self._flag('slow')
+ def test_04cc_deleted_pending_vm_name_stays_reserved(self):
+  self._sudo();self._flag('slow','2')
+  try:
+   old=self.request('/api/agents',{'name':'Delete while creating'})
+   self.request('/api/agents/'+old['id'],method='DELETE')
+   new=self.request('/api/agents',{'name':'Replacement during spawn'})
+   self.assertNotEqual(old['pending_vm'],new['pending_vm'])
+   self._ready(new['id'])
+  finally:self._flag('slow')
+  self.request('/api/agents/'+new['id'],method='DELETE')
  def test_04d_orphan_vm_name_is_skipped(self):
   self._sudo()
   used={a.get('vm') for a in self._agents().values()}
@@ -1818,6 +1832,31 @@ class MultiBot(unittest.TestCase):
    self._idle();self.assertEqual(len(Model.calls)-n,2)
   finally:
    Model.delay=0;self._idle();self.request('/api/agents/iq3bot/model',{'model':self.IQ3})
+ def test_10b_cancel_waiting_sibling_does_not_stop_active_bot(self):
+  self._idle();self.request('/api/agents/iq3bot/model',{'model':self.Q4})
+  try:
+   n=len(Model.calls);Model.delay=1.5
+   self.request('/api/message',{'text':'Stop only waiting bot','bots':['q4bot','iq3bot']})
+   self._calls_after(n,1,1)
+   self.assertTrue(self.request('/api/cancel',{'bot':'iq3bot'})['cancelled'])
+   self._idle()
+   self.assertEqual(len(Model.calls)-n,1)
+   self.assertEqual(self._last_bot_text('q4bot'),'Hallo aus dem Modell.')
+  finally:
+   Model.delay=0;self._idle();self.request('/api/agents/iq3bot/model',{'model':self.IQ3})
+ def test_10c_cancel_active_sibling_allows_next_bot(self):
+  self._idle();self.request('/api/agents/iq3bot/model',{'model':self.Q4})
+  try:
+   n=len(Model.calls);Model.delay=1.5
+   self.request('/api/message',{'text':'Stop only active bot','bots':['q4bot','iq3bot']})
+   self._calls_after(n,1,1)
+   self.assertTrue(self.request('/api/cancel',{'bot':'q4bot'})['cancelled'])
+   self._idle()
+   self.assertEqual(len(Model.calls)-n,2)
+   self.assertIn('(abgebrochen)',self._last_bot_text('q4bot'))
+   self.assertEqual(self._last_bot_text('iq3bot'),'Hallo aus dem Modell.')
+  finally:
+   Model.delay=0;self._idle();self.request('/api/agents/iq3bot/model',{'model':self.IQ3})
  def test_11_cancel_one_bot_keeps_the_other(self):
   self._idle();n=len(Model.calls);Model.delay=2.5
   try:
@@ -1854,6 +1893,21 @@ class MultiBot(unittest.TestCase):
    self.assertFalse(self.request('/api/state')['busy'])
   finally:
    Model.reply=None;self.request('/api/autotalk',{'on':False})
+ def test_12b_old_progress_cannot_continue_new_owner(self):
+  self._idle();self.request('/api/autotalk',{'on':True})
+  call={'tool_calls':[{'index':0,'id':'remember-old','function':{'name':'remember','arguments':'{"fact":"old request progress"}'}}]}
+  Model.script=[[call],[{'_sleep':2},'Old completed [[MAG:WEITER]]'],['New completed']]
+  try:
+   n=len(Model.calls)
+   self.request('/api/message',{'text':'Old task','bots':['q4bot']})
+   self._calls_after(n,2,2)
+   time.sleep(.1)
+   self.request('/api/message',{'text':'New task','bots':['iq3bot']})
+   self._calls_after(n,3,2)
+   self._idle();time.sleep(.5)
+   self.assertEqual(len(Model.calls)-n,3,'old progress scheduled a turn for the newer owner')
+  finally:
+   Model.script=[];self.request('/api/autotalk',{'on':False});self._idle()
  def test_13_frontend_lane_contract(self):
   html=self.request('/',raw=True).decode()
   for needle in ("api('/api/cancel',id?{bot:id}:{})",'id="bot-lanes"','Alle stoppen','setBusyBots(next.busy_bots)',"event.type==='idle'&&Array.isArray(event.busy_bots)","event.type==='cancelled'&&event.bot",'state.activities'):self.assertIn(needle,html)

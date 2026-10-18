@@ -1057,6 +1057,7 @@ if(a.vm)actions.append(remote);
 card.append(label,info,actions);list.append(card);if(!a.vm)continue;const option=document.createElement('option');option.value=a.id;option.textContent=a.name;$('browser-agent').append(option)}if(remoteBotId&&!old&&state.agents.some(a=>a.id===remoteBotId)){$('browser-agent').value=remoteBotId;history.replaceState(null,'','/')}else if(state.agents.some(a=>a.id===old))$('browser-agent').value=old;
 if(!old&&state.agents.some(a=>a.id===focusedBotId&&a.vm))$('browser-agent').value=focusedBotId;
 const current=$('browser-agent').value;
+if(!current&&livePeer)disconnectLive();
 for(const card of list.querySelectorAll('.agent')){const active=card.dataset.bot===current;card.classList.toggle('active',active);card.setAttribute('aria-pressed',String(active))}
 updateConsoleLabel();try{const nv=$('browser-agent').value;if(nv&&(!livePeer||nv!==old)&&rightOpen&&(!isCompact()||layout.classList.contains('mobile-right'))&&!document.hidden)connectLive()}catch(e){}}
 function renderFiles(){const list=$('files');list.replaceChildren();for(const f of state.files){const row=document.createElement('div');row.className='file';const a=document.createElement('a');a.href='/api/file/'+encodeURIComponent(f.stored);a.textContent=f.name;row.append(a);const size=document.createElement('small');size.textContent=' · '+Math.ceil(f.size/1024)+' KB';row.append(size);if(f.mime==='text/html'){const b=document.createElement('button');b.textContent='Vorschau';b.onclick=async()=>{try{$('canvas').srcdoc=await(await fetch(a.href)).text();$('canvas').hidden=false}catch(e){notice(e.message)}};row.append(b)}const del=document.createElement('button');del.type='button';del.className='file-trash';del.title='Datei löschen';del.setAttribute('aria-label','Datei löschen');del.innerHTML='<svg class="i sm" aria-hidden="true"><use href="#ic-trash"></use></svg>';del.onclick=()=>askDeleteFile(f);del.hidden=state.you?.role!=='owner';row.append(del);list.append(row)}}
@@ -1106,13 +1107,16 @@ function renderLanes(){const box=$('bot-lanes');if(!box)return;const ids=[...bus
  for(const id of ids){const a=state.agents.find(x=>x.id===id);const chip=document.createElement('span');chip.className='bot-lane';chip.dataset.bot=id;const dot=document.createElement('span');dot.className='pulse';dot.style.background=a.color||'var(--accent)';const name=document.createElement('span');name.className='lane-name';name.textContent=(a.name||'Bot')+' antwortet …';chip.append(dot,name);
   if(allowed){const b=document.createElement('button');b.type='button';b.textContent='Stopp';b.title=(a.name||'Bot')+' stoppen';b.setAttribute('aria-label',(a.name||'Bot')+' stoppen');b.onclick=()=>stopBot(id);chip.append(b)}box.append(chip)}
  syncComposerButton()}
+let composerSending=false;
 $('send-form').onsubmit=async e=>{
- e.preventDefault();if(window.magSpeechBusy?.())await window.magSpeechStop();const text=$('message').value.trim();if(!text&&!stagedPhotos.length)return;
+ e.preventDefault();if(composerSending)return;if(window.magSpeechBusy?.())await window.magSpeechStop();const text=$('message').value.trim();if(!text&&!stagedPhotos.length)return;
+ composerSending=true;
  jumpForSend();
  const botId=[...selected][0],bot=state.agents.find(a=>a.id===botId);
  const willQueue=!!((state.busy_bots||[]).some(id=>selected.has(id))||state.queue_paused||(state.pending||[]).length);if(bot&&!willQueue){streams[botId]={name:bot.name,text:'',status:'Denkt nach …'};render()}
- try{if(stagedPhotos.length)await flushStagedPhotos();if(!text){if(bot&&!willQueue){delete streams[botId];render()}notice('Bilder geteilt');return}const r=await api('/api/message',{text,bots:[...selected],think:$('think').checked});$('message').value='';fitMessageHeight();$('message').focus();if(r&&r.queued){if(!willQueue){delete streams[botId];render()}if(r.item)renderQueue({pending:[...(queueState.pending||[]).filter(p=>p.id!==r.item.id),r.item],paused:false})}notice('')}
+ try{if(stagedPhotos.length)await flushStagedPhotos();if(!text){if(bot&&!willQueue){delete streams[botId];render()}notice('Bilder geteilt');return}const r=await api('/api/message',{text,bots:[...selected],think:$('think').checked});if($('message').value.trim()===text)$('message').value='';fitMessageHeight();$('message').focus();if(r&&r.queued){if(!willQueue){delete streams[botId];render()}if(r.item)renderQueue({pending:[...(queueState.pending||[]).filter(p=>p.id!==r.item.id),r.item],paused:false})}notice('')}
  catch(err){delete streams[botId];render();notice(err.message)}
+ finally{composerSending=false}
 };window.addEventListener('load',()=>$('message').focus());$('message').onkeydown=e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();$('send-form').requestSubmit()}};
 $('autotalk').onchange=async()=>{try{await api('/api/autotalk',{on:$('autotalk').checked});notice()}catch(e){notice(e.message);await refresh()}};$('stop').onclick=async()=>{try{await api('/api/stop',{});$('autotalk').checked=false;notice('')}catch(e){notice(e.message)}};
 function deN(n,one,many){return n+' '+(n===1?one:many)}
@@ -1144,7 +1148,7 @@ function renderData(){
  }
 }
 $('memory-clear').onclick=()=>{if(!memAgent)return;askClearMemory(memAgent,$('memory').querySelectorAll('.mem-row').length)};
-$('reset').onclick=async()=>{const msgs=(state.room||[]).length,files=(state.files||[]).length;if(!await purgeAsk({title:'Raum leeren',lead:'Aus dem gemeinsamen Raum wird entfernt:',items:[deN(msgs,'Nachricht','Nachrichten'),deN(files,'Datei','Dateien')],note:'Vorher wird eine dauerhafte Sicherung erstellt (maximal 512 MiB). Zusätzlich 10 Sekunden rückgängig.',ok:'Raum leeren'}))return;try{const r=await api('/api/room/clear',{});streams={};showUndo('Raum geleert',r.undo);await refresh()}catch(e){notice(e.message)}};
+$('reset').onclick=async()=>{const msgs=(state.room||[]).length,files=(state.files||[]).length;if(!await purgeAsk({title:'Raum leeren',lead:'Aus dem gemeinsamen Raum wird entfernt:',items:[deN(msgs,'Nachricht','Nachrichten'),deN(files,'Datei','Dateien')],note:'Vorher wird eine dauerhafte Sicherung erstellt (maximal 512 MiB). Zusätzlich 10 Sekunden rückgängig.',ok:'Raum leeren'}))return;try{const r=await api('/api/room/clear',{});streams={};r.unchanged?notice('Raum ist bereits leer'):showUndo('Raum geleert',r.undo);await refresh()}catch(e){notice(e.message)}};
 // Images are staged locally until sending. Canvas conversion strips EXIF/GPS
 // and standardizes HEIC/HEIF when supported by the current browser.
 let stagedPhotos=[];
@@ -1435,6 +1439,7 @@ function liveSend(data){
 }
 function disconnectLive(){
  ++liveGeneration;
+ clearTimeout(reconnectTimer);reconnectTimer=0;consoleHbAt=0;
  if(livePeer){livePeer.close();livePeer=null}
  liveControl=null;liveConsole=null;liveVM='';videoChunks=null;pointerHeld=false;
  paintBusy=false;lastFrameSeq=-1;frameLastAt=0;
@@ -1524,8 +1529,9 @@ async function connectLive(){
   if(gen!==liveGeneration){pc.close();return}
   await pc.setRemoteDescription(await r.json());
  }catch(e){
-  if(gen===liveGeneration){liveStatus('WebRTC/UDP: '+e.message);notice('Browser UDP: '+e.message)}
-  pc.close();
+  if(gen!==liveGeneration){pc.close();return}
+  liveStatus('Browser-Verbindung: '+e.message);notice('Browser: '+e.message);
+  pc.close();scheduleReconnect();
  }
 }
 setInterval(()=>{

@@ -14,6 +14,7 @@ printf '[Service]\nExecStart=/bin/true\n' > "$t/units/mag-llm.service"
 cat > "$t/bin/magbot" <<'EOF'
 #!/bin/sh
 printf '%s\n' "$*" >> "$LOG"
+rm -f "$MAG_DRIFT_UNIT_DIR/magbot-$2.service"
 exit 0
 EOF
 cat > "$t/bin/systemctl" <<'EOF'
@@ -36,6 +37,8 @@ grep -Fxq 'despawn agent2' "$log"
 grep -Fxq 'despawn agent5' "$log"
 grep -Fxq 'despawn agent9' "$log"
 ! grep -Eq 'despawn agent1|despawn agent3|despawn agent4' "$log"
+grep -Fxq 'disable --now magbot-agent9.service' "$log"
+grep -Fxq 'daemon-reload' "$log"
 test ! -e "$t/units/magbot-agent9.service"
 test -e "$t/units/magbot-agent1.service"
 test -e "$t/units/mag-llm.service"

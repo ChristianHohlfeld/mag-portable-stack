@@ -1726,7 +1726,7 @@ class MultiBot(unittest.TestCase):
   try:
    old=self.request('/api/agents',{'name':'Delete while creating'})
    self.request('/api/agents/'+old['id'],method='DELETE')
-   new=self.request('/api/agents',{'name':'Replacement during spawn'})
+   new=self.request('/api/agents',{'name':'Delete while creating'})
    self.assertNotEqual(old['pending_vm'],new['pending_vm'])
    self._ready(new['id'])
   finally:self._flag('slow')

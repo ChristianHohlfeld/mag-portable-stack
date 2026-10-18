@@ -76,6 +76,7 @@ jobs:
         run: |
           python3 -c 'from pathlib import Path; s=Path("mag-room/web/index.html").read_text(); Path("/tmp/mag-room-web.js").write_text(s.split("<script>")[-1].split("</script>")[0])'
           node --check /tmp/mag-room-web.js
+          node mag-room/tests/test_composer.cjs
       - name: Shell syntax
         run: bash -n ops/*.sh ops/magbot-guest-run ops/magbot-agent-ctl
       - name: Blank-host bootstrap dry run

@@ -76,18 +76,18 @@ static void finish_spawn(const std::string &id, std::string vm, bool resume) {
     tried.push_back(vm);
     std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
     int idx = agent_index(id);
-    if (idx < 0) return;
+    if (idx < 0 || bot_field(idx, "pending_vm") != vm) return;
     vm = next_vm(tried);
     SPAWNING_VMS.insert(vm); reservation.names.insert(vm);
     AGENTS[idx]["pending_vm"] = vm;
     try { save_agents(); } catch (...) {}
   }
-  bool orphan = false;
+  bool orphan = false, detached = false;
   {
     std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
     int idx = agent_index(id);
-    if (idx < 0) {
-      orphan = ok;
+    if (idx < 0 || bot_field(idx, "pending_vm") != vm) {
+      orphan = ok; detached = true;
     } else if (ok) {
       AGENTS[idx]["vm"] = vm;
       drop_key(AGENTS[idx], "pending_vm");
@@ -102,6 +102,7 @@ static void finish_spawn(const std::string &id, std::string vm, bool resume) {
     run_argv({"sudo", "-n", AGENT_CTL, "despawn", vm}, 180);
     return;
   }
+  if (detached) return;
   if (ok) {
     agents_event();
     warm_browser_async(vm);

@@ -1896,7 +1896,7 @@ class MultiBot(unittest.TestCase):
  def test_12b_old_progress_cannot_continue_new_owner(self):
   self._idle();self.request('/api/autotalk',{'on':True})
   call={'tool_calls':[{'index':0,'id':'remember-old','function':{'name':'remember','arguments':'{"fact":"old request progress"}'}}]}
-  Model.script=[[call],[{'_sleep':2},'Old completed [[MAG:WEITER]]'],['New completed']]
+  Model.script=[[call],[{'_sleep':2},'Old completed [[MAG:WEITER]]'],['New completed'],['Old final [[MAG:ENDE]]']]
   try:
    n=len(Model.calls)
    self.request('/api/message',{'text':'Old task','bots':['q4bot']})
@@ -1905,7 +1905,7 @@ class MultiBot(unittest.TestCase):
    self.request('/api/message',{'text':'New task','bots':['iq3bot']})
    self._calls_after(n,3,2)
    self._idle();time.sleep(.5)
-   self.assertEqual(len(Model.calls)-n,3,'old progress scheduled a turn for the newer owner')
+   self.assertEqual([c['model'] for c in Model.calls[n:]],[self.Q4,self.Q4,self.IQ3,self.Q4],'continuation must stay inside its original bot turn')
   finally:
    Model.script=[];self.request('/api/autotalk',{'on':False});self._idle()
  def test_13_frontend_lane_contract(self):

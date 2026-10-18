@@ -419,11 +419,17 @@ static void undefine_domain(const std::string &n) {
 }
 static void teardown(const std::string &n) {
   auto d = dir(n);
+  // All callers (room delete and drift) stop the loaded service before
+  // removing its domain/disk. Refuse teardown if stop fails.
+  if (fs::exists(d / "metadata.json")) marker(n);
+  const fs::path unit = fs::path("/etc/systemd/system") / (domain(n) + ".service");
+  if (fs::is_regular_file(unit) && !fs::is_symlink(unit))
+    checked({"systemctl", "disable", "--now", domain(n) + ".service"});
   // A domain without a directory is the half-created case: remove the
   // domain and leave nothing behind.
   if (!fs::exists(d)) {
     undefine_domain(n);
-    return;
+    // Continue to remove/reload any stopped orphan unit as well.
   }
   if (exists(n)) {
     // Ownership is checked only when a marker exists. A directory with a
@@ -448,9 +454,11 @@ static void teardown(const std::string &n) {
   }
   fs::remove_all(d);
   std::error_code ec;
-  fs::path unit = fs::path("/etc/systemd/system") / (domain(n) + ".service");
-  if (fs::is_regular_file(unit) && !fs::is_symlink(unit))
+  if (fs::is_regular_file(unit) && !fs::is_symlink(unit)) {
     fs::remove(unit, ec);
+    if (ec) throw std::runtime_error("Could not remove stopped bot unit");
+    checked({"systemctl", "daemon-reload"});
+  }
 }
 static void prepare_browser(const std::string &n) {
   const std::string script = R"SH(set -e

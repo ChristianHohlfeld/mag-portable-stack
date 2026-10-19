@@ -10,6 +10,7 @@
 // chat unless the bot's binding says "auto" or the tool was "always" allowed.
 #pragma once
 #include <curl/curl.h>
+#include <unistd.h>
 #include <atomic>
 #include <condition_variable>
 #include <map>
@@ -182,7 +183,13 @@ static McpHttp mcp_post(const Val &srv, const std::string &secret,
     }
   }
   const bool plain = url.rfind("http://", 0) == 0;
+  // Ubuntu's libcurl reads this bundle. deploy refreshes it with the ISRG
+  // Generation Y roots; without them Let's Encrypt YE2 fails as
+  // "SSL peer certificate or SSH remote key was not OK".
+  const char *cafile = "/etc/ssl/certs/ca-certificates.crt";
   curl_easy_setopt(c, CURLOPT_URL, url.c_str());
+  if (!plain && access(cafile, R_OK) == 0)
+    curl_easy_setopt(c, CURLOPT_CAINFO, cafile);
   curl_easy_setopt(c, CURLOPT_HTTPHEADER, h);
   curl_easy_setopt(c, CURLOPT_PROTOCOLS_STR, plain ? "http" : "https");
   curl_easy_setopt(c, CURLOPT_FOLLOWLOCATION, 0L);
@@ -199,12 +206,16 @@ static McpHttp mcp_post(const Val &srv, const std::string &secret,
   curl_easy_setopt(c, CURLOPT_HEADERDATA, &res);
   curl_easy_setopt(c, CURLOPT_NOPROGRESS, 0L);
   curl_easy_setopt(c, CURLOPT_XFERINFOFUNCTION, mcp_progress_cb);
+  char errbuf[CURL_ERROR_SIZE];
+  errbuf[0] = 0;
+  curl_easy_setopt(c, CURLOPT_ERRORBUFFER, errbuf);
   CURLcode rc = curl_easy_perform(c);
   curl_easy_getinfo(c, CURLINFO_RESPONSE_CODE, &res.status);
   curl_slist_free_all(h);
   curl_easy_cleanup(c);
   if (rc == CURLE_ABORTED_BY_CALLBACK) res.error = "abgebrochen";
-  else if (rc != CURLE_OK) res.error = curl_easy_strerror(rc);
+  else if (rc != CURLE_OK)
+    res.error = errbuf[0] ? std::string(errbuf) : curl_easy_strerror(rc);
   return res;
 }
 // The JSON-RPC response with this id, from a JSON body or an SSE stream.

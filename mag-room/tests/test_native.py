@@ -1843,6 +1843,25 @@ class MultiBot(unittest.TestCase):
   self.assertNotIn(b['id'],[a['id'] for a in json.loads(self.state.joinpath('agents.json').read_text())])
   self.assertIn('despawn '+b['pending_vm'],(self.ctl.parent/'ctl.log').read_text())
   self.log.flush();self.assertIn('golden',(pathlib.Path(self.tmp.name)/'server.log').read_text(errors='replace'))
+ def test_04g_chat_only_bot_gets_a_vm_and_survives_failure(self):
+  self._sudo()
+  b=self.request('/api/agents',{'name':'Nur Chat','vm':False});self.assertEqual(b['vm'],'')
+  self._flag('fail','1')
+  try:
+   self.assertTrue(self.request('/api/agents/'+b['id']+'/vm',{})['spawning'])
+   for _ in range(100):
+    a=self._agents().get(b['id'])
+    if not a or not a.get('spawning'):break
+    time.sleep(.05)
+   self.assertIsNotNone(a,'a failed VM must not remove the bot');self.assertEqual(a['vm'],'')
+  finally:self._flag('fail')
+  saved={x['id']:x for x in json.loads(self.state.joinpath('agents.json').read_text())}[b['id']]
+  self.assertNotIn('pending_vm',saved);self.assertNotIn('vm_attach',saved)
+  self.request('/api/agents/'+b['id']+'/vm',{})
+  self.assertTrue(self._ready(b['id'])['vm'].startswith('agent'))
+  self.error(409,'/api/agents/'+b['id']+'/vm',{})
+  self.error(404,'/api/agents/gibtsnicht/vm',{})
+  self.request('/api/agents/'+b['id'],method='DELETE')
  def test_04f_preflight_failure_leaves_nothing(self):
   self._sudo()
   before=set(self._agents())

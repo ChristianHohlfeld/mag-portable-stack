@@ -255,6 +255,7 @@ dialog{border-radius:10px;border-color:var(--line);background:var(--surface)}
 </style><style id="work-status">
 .work-status{display:flex;align-items:center;flex-wrap:wrap;gap:8px;font-size:13px;color:var(--secondary);margin:0 0 8px;min-height:22px}
 .work-status .pulse{width:8px;height:8px;border-radius:50%;background:var(--secondary);flex:none;animation:workpulse 1.5s ease-out infinite}
+.vm-gap{display:flex;flex-direction:column;align-items:flex-start;gap:10px;padding:14px;font-size:13px;line-height:1.5;color:var(--secondary);font-family:inherit;white-space:normal}.vm-gap p{margin:0}
 .work-status .work-label{min-width:0;flex:0 1 auto;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
 .work-status .work-stop{margin-left:auto;border:1px solid var(--line);border-radius:8px;padding:2px 8px;font-size:12px;color:var(--secondary);background:transparent}
 .work-status .work-stop:hover{color:var(--text);background:var(--hover)}
@@ -1581,11 +1582,22 @@ function makeTerminal(botId){
  }
  return entry;
 }
+// Console and browser live in a bot's own VM; chat-only bots have none.
+function vmGap(){
+ const box=document.createElement('div');box.className='vm-gap';
+ const agents=state.agents||[],starting=agents.filter(a=>a.spawning),bare=agents.filter(a=>!a.vm&&!a.spawning);
+ const p=document.createElement('p');box.append(p);
+ if(!agents.length){p.textContent='Noch kein Bot im Raum.';return box}
+ if(starting.length){p.textContent='VM für '+starting.map(a=>a.name).join(', ')+' startet … Konsole und Browser erscheinen, sobald sie läuft.';return box}
+ p.textContent=(bare.length===1?bare[0].name+' läuft':'Die Bots laufen')+' ohne eigene VM. Konsole und Browser gibt es nur für Bots mit VM.';
+ if(state.you?.role==='owner')for(const a of bare){const b=document.createElement('button');b.type='button';b.className='pill-btn';b.textContent='VM für '+a.name+' starten';
+  b.onclick=async()=>{b.disabled=true;try{await api('/api/agents/'+encodeURIComponent(a.id)+'/vm',{},'POST');notice('VM für '+a.name+' wird erstellt …');await refresh()}catch(e){b.disabled=false;notice(e.message)}};box.append(b)}
+ return box}
 function updateConsoleLabel(){
  const bot=state.agents.find(a=>a.id===$('browser-agent').value);
  $('console-agent').textContent=bot?.name||'Bot';
  const id=bot?.id;
- if(!id){activeTerminal=null;$('terminal').textContent='Bot auswählen';return}
+ if(!id){activeTerminal=null;$('terminal').replaceChildren(vmGap());return}
  activeTerminal=makeTerminal(id);
  if(!activeTerminal){$('terminal').textContent='Terminal-Emulator nicht verfügbar';return}
  if(activeTerminal.host.parentElement!==$('terminal'))

@@ -5,12 +5,14 @@ on:
       - 'mag-room/web/index.html'
       - 'mag-room/tests/test_image_paste.py'
       - 'mag-room/tests/test_memory_ui.py'
+      - 'mag-room/tests/test_type_to_focus.py'
       - '.github/workflows/image-paste.yml'
   pull_request:
     paths:
       - 'mag-room/web/index.html'
       - 'mag-room/tests/test_image_paste.py'
       - 'mag-room/tests/test_memory_ui.py'
+      - 'mag-room/tests/test_type_to_focus.py'
       - '.github/workflows/image-paste.yml'
 jobs:
   chromium:
@@ -28,3 +30,5 @@ jobs:
         run: python mag-room/tests/test_image_paste.py
       - name: Memories dialog UI (mobile and desktop)
         run: python mag-room/tests/test_memory_ui.py
+      - name: Type anywhere goes to the composer (desktop and phones)
+        run: python mag-room/tests/test_type_to_focus.py

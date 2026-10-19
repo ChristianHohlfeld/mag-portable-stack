@@ -1174,6 +1174,7 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
       }
     }
     agents_event();
+    mcp_bind_new_bot(id);
     if (with_vm)
       std::thread([id, vm] { finish_spawn(id, vm, false); }).detach();
     Val out = agent;

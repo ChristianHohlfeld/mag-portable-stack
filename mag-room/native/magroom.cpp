@@ -1735,8 +1735,17 @@ static std::string render_room_line(const Val &m) {
   if (content.size() > 4000)
     content.resize(4000);
   auto f = m.find("file");
-  if (f && f->isObj())
-    content += " [" + (f->find("name") ? f->find("name")->asStr() : "?") + "]";
+  if (f && f->isObj()) {
+    std::string fname = f->find("name") ? f->find("name")->asStr() : "?";
+    auto mime = f->find("mime");
+    // The room model is text-only: say so, and how to read the image.
+    if (mime && mime->asStr().rfind("image/", 0) == 0)
+      content += " [Bild: " + fname +
+                 " – du siehst es nicht direkt; Text darin mit see_image(\"" +
+                 fname + "\") lesen]";
+    else
+      content += " [" + fname + "]";
+  }
   return "[" + name + "]: " + content + "\n";
 }
 static std::string build_transcript() {

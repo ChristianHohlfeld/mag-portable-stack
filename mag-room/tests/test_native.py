@@ -722,6 +722,24 @@ class Native(unittest.TestCase):
   self.error(404,'/api/agents/nope/memory',{'text':'egal'})
   html=self.request('/',raw=True).decode()
   for needle in ('id="memory-new"','id="memory-add"',"'/memory',{text},'POST'",'id="memory-err"'):self.assertIn(needle,html)
+ def test_09q_pasted_screenshot_reaches_bot_as_image_file(self):
+  # The browser re-encodes a pasted/dropped screenshot to JPEG and posts it
+  # through the normal upload; the text-only model gets a clear image note.
+  jpeg=b'\xff\xd8\xff\xe0\x00\x10JFIF\x00'+b'\x00'*64+b'\xff\xd9'
+  f=self.request('/api/upload?name=screenshot.jpg',jpeg)
+  self.assertEqual(f['mime'],'image/jpeg')
+  self.assertEqual(self.request('/api/file/'+f['stored'],raw=True),jpeg)
+  t=self.request('/api/upload?name=notiz.txt',b'text')
+  s=self.request('/api/state')
+  self.assertTrue(any((m.get('file') or {}).get('name')==f['name'] and m.get('role')=='user' for m in s['room']))
+  self.request('/api/message',{'text':'Was steht auf dem Screenshot?','bots':['test']})
+  self.wait_room('Hallo aus dem Modell.');self.wait_idle()
+  user=Model.calls[-1]['messages'][1]['content']
+  self.assertIn('[Bild: '+f['name']+' – du siehst es nicht direkt; Text darin mit see_image("'+f['name']+'") lesen]',user)
+  self.assertIn('['+t['name']+']',user);self.assertNotIn('[Bild: '+t['name'],user)
+  self.assertIn('see_image',[x['function']['name'] for x in Model.calls[-1]['tools']])
+  html=self.request('/',raw=True).decode()
+  for needle in ('<span>Foto/Screenshot</span>','accept="image/*" multiple','id="upload-paste"','navigator.clipboard.read()','PHOTO_MAX_PX=2048','id="photo-note"',"addEventListener('paste'","addEventListener('drop'"):self.assertIn(needle,html)
  def test_09i_chat_only_bot_has_no_vm_tools(self):
   names=[t['function']['name'] for t in Model.calls[-1]['tools']]
   for vm_tool in ('run_command','fetch_room_file','share_room_file','browser_open'):self.assertNotIn(vm_tool,names)

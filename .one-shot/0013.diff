@@ -1,0 +1,174 @@
+diff --git a/mag-room/native/magroom.cpp b/mag-room/native/magroom.cpp
+index d14d7c0..f8762a5 100644
+--- a/mag-room/native/magroom.cpp
++++ b/mag-room/native/magroom.cpp
+@@ -2763,0 +2764 @@ struct TurnReport {
++  Val tools = Val::array();
+@@ -3278,2 +3279,4 @@ static void run_begin(const std::string &bot, const std::string &name) {
+-  run_cur().phase = "think";
+-  run_cur().label = "Denkt nach";
++  // Until the first token the model evaluates the prompt; "read" is never
++  // committed as a step, prompt progress or thinking replaces it.
++  run_cur().phase = "read";
++  run_cur().label = "Liest Verlauf";
+@@ -4010,0 +4014 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
++      const std::string call_id = cid.empty() ? "t" + std::to_string(round) : cid;
+@@ -4015,0 +4020 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
++        e["id"] = call_id;
+@@ -4021,0 +4027 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
++      const auto tool_from = steady_clock::now();
+@@ -4055,0 +4062 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
++        const long ms = (long)duration_cast<milliseconds>(steady_clock::now() - tool_from).count();
+@@ -4058,0 +4066 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
++        e["id"] = call_id;
+@@ -4059,0 +4068,2 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
++        e["ok"] = !failed;
++        e["ms"] = ms;
+@@ -4061,0 +4072,14 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
++        // Kept on the message so the trace survives a reload; bounded because
++        // the room history is sent with every state.
++        if (report.tools.size() < 24) {
++          std::string a = mj::dump(args);
++          Val rec = Val::object();
++          rec["tool"] = fname;
++          rec["label"] = tool_step_label(fname);
++          if (a.size() <= 1200) rec["args"] = args;
++          else rec["args_text"] = mj::utf8_cut(a, 1200);
++          rec["result"] = mj::utf8_cut(result, 900);
++          rec["ok"] = !failed;
++          rec["ms"] = ms;
++          report.tools.push(rec);
++        }
+@@ -4072,0 +4097 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
++    run_show("read", "Liest Ergebnis", true, false);
+@@ -4640,0 +4666,4 @@ static void attach_work(Val &msg, const TurnReport &report) {
++    if (report.tools.size()) {
++      (*it)["tools"] = report.tools;
++      msg["tools"] = report.tools;
++    }
+diff --git a/mag-room/tests/test_native.py b/mag-room/tests/test_native.py
+index 326c17c..4f21a46 100644
+--- a/mag-room/tests/test_native.py
++++ b/mag-room/tests/test_native.py
+@@ -1241,0 +1242,32 @@ class Native(unittest.TestCase):
++ def test_16i_tool_calls_pair_input_output_and_survive_reload(self):
++  self.wait_idle();events=[]
++  def listen():
++   r=urllib.request.urlopen(f'http://127.0.0.1:{self.ui}/api/events',timeout=10);r.fp.raw._sock.settimeout(6)
++   try:
++    while True:
++     line=r.readline().decode()
++     if line.startswith('data: '):
++      e=json.loads(line[6:]);events.append(e)
++      if e.get('type')=='bot_done':break
++   except Exception:pass
++   finally:r.close()
++  t=threading.Thread(target=listen,daemon=True);t.start();time.sleep(.3)
++  Model.script=[[{'tool_calls':[{'index':0,'id':'call_io','function':{'name':'remember','arguments':'{"fact":"Lieblingsfarbe Blau"}'}}]}],['Gemerkt.']]
++  try:
++   self.request('/api/message',{'text':'Merk dir Blau','bots':['test']})
++   self.wait_room('Gemerkt.');self.wait_idle()
++  finally:Model.script=[]
++  t.join(8)
++  steps=[e for e in events if e.get('type')=='step']
++  self.assertEqual((steps[0]['phase'],steps[0]['label']),('read','Liest Verlauf'),'no bare "Denkt nach" before the first token')
++  call=[e for e in events if e.get('type')=='tool'][0];res=[e for e in events if e.get('type')=='tool_result'][0]
++  self.assertEqual((call['id'],res['id']),('call_io','call_io'))
++  self.assertEqual(call['args'],{'fact':'Lieblingsfarbe Blau'})
++  self.assertTrue(res['ok']);self.assertGreaterEqual(res['ms'],0);self.assertTrue(res['result'])
++  self.assertTrue(any(e['phase']=='read' and e['label']=='Liest Ergebnis' for e in steps))
++  ans=[m for m in self.request('/api/state')['room'] if m.get('role')=='assistant' and 'Gemerkt.' in (m.get('content') or '')][-1]
++  self.assertEqual([(x['tool'],x['args'],x['ok']) for x in ans['tools']],[('remember',{'fact':'Lieblingsfarbe Blau'},True)])
++  self.assertTrue(ans['tools'][0]['result'])
++  self.assertFalse(any('Liest' in s for s in ans.get('steps') or []),ans.get('steps'))
++  html=self.request('/',raw=True).decode()
++  for needle in ('function paintTools(','function storedTools(','msg.tools?.length','Eingabe','Ergebnis',"phase:'read'"):self.assertIn(needle,html)
+diff --git a/mag-room/web/index.html b/mag-room/web/index.html
+index e391068..7a0e7f4 100644
+--- a/mag-room/web/index.html
++++ b/mag-room/web/index.html
+@@ -259,0 +260,13 @@ dialog{border-radius:10px;border-color:var(--line);background:var(--surface)}
++.trace-body.tool-list{padding:4px 0;white-space:normal;max-height:none;font:inherit}
++.tool-call{border-bottom:1px solid var(--soft-line)}.tool-call:last-child{border-bottom:0}
++.trace .tool-call>summary{padding:7px 14px;gap:8px;font-weight:450;min-width:0}
++.trace .tool-call>summary::before{content:none}
++.tool-call .tool-dot{width:7px;height:7px;border-radius:50%;flex:none;background:var(--muted)}
++.tool-call.run .tool-dot{animation:workpulse 1.5s ease-out infinite}.tool-call.ok .tool-dot{background:var(--green,#7dcea0)}.tool-call.fail .tool-dot{background:var(--red)}
++.tool-call .tool-name{color:var(--text);flex:none}
++.tool-call .tool-arg{min-width:0;flex:0 1 auto;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;color:var(--muted);font:11.5px ui-monospace,monospace}
++.tool-call .tool-ms{margin-left:auto;flex:none;color:var(--muted);font-variant-numeric:tabular-nums}
++.tool-call[open]>summary{background:var(--hover)}
++.tool-io{padding:4px 14px 10px 29px}
++.tool-io .tool-k{margin:8px 0 3px;font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
++.tool-io pre{margin:0;padding:8px 10px;border-radius:8px;background:var(--panel-2);color:var(--secondary);white-space:pre-wrap;overflow-wrap:anywhere;max-height:220px;overflow:auto;scrollbar-width:thin;font:11.5px/1.55 ui-monospace,monospace}
+@@ -580,0 +594,37 @@ function traceSection(kind,label,body,count){
++// One row per call (input + output paired), like the tool cards in ChatGPT/Claude.
++const TOOL_KEYS=['query','q','url','command','cmd','path','file','name','repo','title','text','fact','prompt','message'];
++function toolArgPreview(t){
++ const a=t.args;if(!a||typeof a!=='object')return t.args_text||'';
++ for(const k of TOOL_KEYS)if(typeof a[k]==='string'&&a[k].trim())return a[k].trim().replace(/\s+/g,' ');
++ for(const v of Object.values(a))if(typeof v==='string'&&v.trim())return v.trim().replace(/\s+/g,' ');
++ return '';
++}
++function toolInput(t){
++ const a=t.args;if(!a||typeof a!=='object')return t.args_text||'–';
++ const keys=Object.keys(a);if(!keys.length)return '–';
++ if(keys.length===1&&typeof a[keys[0]]==='string')return a[keys[0]];
++ return JSON.stringify(a,null,2);
++}
++function fmtMs(ms){return ms==null?'':ms<1000?Math.max(1,Math.round(ms))+' ms':(ms/1000).toLocaleString('de-DE',{maximumFractionDigits:1})+' s'}
++function toolRow(row,t){
++ const state=t.result==null?'run':t.ok===false?'fail':'ok';
++ if(!row){row=document.createElement('details');row.className='tool-call';row.innerHTML='<summary><span class="tool-dot"></span><span class="tool-name"></span><span class="tool-arg"></span><span class="tool-ms"></span></summary><div class="tool-io"><div class="tool-k">Eingabe</div><pre class="tool-in"></pre><div class="tool-k">Ergebnis</div><pre class="tool-out"></pre></div>'}
++ row.classList.remove('run','ok','fail');row.classList.add(state);
++ row.querySelector('.tool-name').textContent=t.label||t.name||'Werkzeug';
++ const arg=toolArgPreview(t);row.querySelector('.tool-arg').textContent=arg;row.querySelector('.tool-arg').title=arg;
++ row.querySelector('.tool-ms').textContent=state==='run'?'läuft …':(state==='fail'?'Fehler · ':'')+fmtMs(t.ms);
++ row.querySelector('.tool-in').textContent=toolInput(t);
++ row.querySelector('.tool-out').textContent=t.result==null?'Läuft noch …':(t.result.trim()||'(leer)');
++ return row;
++}
++function paintTools(node,content,tools){
++ let box=node.querySelector(':scope > .tools-trace');
++ if(!tools?.length){box?.remove();return}
++ if(!box){box=traceSection('tools-trace','Werkzeuge','','');const body=box.querySelector('.trace-body');body.classList.add('tool-list');body.replaceChildren();content.before(box)}
++ const failed=tools.filter(t=>t.ok===false).length;
++ box.querySelector('.trace-count').textContent=tools.length+(tools.length===1?' Aufruf':' Aufrufe')+(failed?' · '+failed+' fehlgeschlagen':'');
++ const body=box.querySelector('.trace-body');
++ tools.forEach((t,i)=>{const row=body.children[i];const next=toolRow(row,t);if(!row)body.append(next)});
++ while(body.children.length>tools.length)body.lastChild.remove();
++}
++function storedTools(msg){return Array.isArray(msg.tools)?msg.tools.map(t=>({name:t.tool,label:t.label,args:t.args,args_text:t.args_text,result:typeof t.result==='string'?t.result:'',ok:t.ok!==false,ms:t.ms})):[]}
+@@ -586,4 +636 @@ function addTrace(node,trace){
+-  const sec=traceSection('tools-trace','Werkzeugaufrufe','',trace.tools.length+' Ereignisse');
+-  const body=sec.querySelector('.trace-body');body.replaceChildren();
+-  for(const tool of trace.tools){const line=document.createElement('span');line.className='tool-line';line.textContent=(tool.result?'✓ Ergebnis · ':'→ Aufruf · ')+(tool.name||'Werkzeug')+(tool.text?'\n'+tool.text:'');body.append(line)}
+-  content.before(sec);
++  if(!node.querySelector('.tools-trace'))paintTools(node,content,trace.tools);
+@@ -875,0 +923 @@ function append(msg,scroll=true,trace=null,position=-1){
++ if(!human&&msg.tools?.length)paintTools(div,content,storedTools(msg));
+@@ -1022 +1069,0 @@ function updateStream(botId,immediate=false){
+-  s.node.querySelectorAll('.trace').forEach(el=>{if(!s.tools?.length)el.remove()});
+@@ -1025,6 +1072 @@ function updateStream(botId,immediate=false){
+-  if(s.tools?.length){
+-   let box=s.node.querySelector('.tools-trace');if(!box){box=traceSection('tools-trace','Werkzeugaufrufe','', '');content.before(box)}
+-   box.querySelector('.trace-count').textContent=s.tools.length+' Ereignisse';
+-   const body=box.querySelector('.trace-body');body.replaceChildren();
+-   for(const tool of s.tools){const line=document.createElement('span');line.className='tool-line';line.textContent=(tool.result?'✓ Ergebnis · ':'→ Aufruf · ')+(tool.name||'Werkzeug')+(tool.text?'\n'+tool.text:'');body.append(line)}
+-  }
++  paintTools(s.node,content,s.tools);
+@@ -1043 +1085 @@ function mergeActivity(a){
+- streams[a.bot]={name:a.name||prev.name||'Bot',text:prev.text||'',phase:a.phase||'think',label:a.label||'Denkt nach',steps:Array.isArray(a.steps)?a.steps:(prev.steps||[]),progress:(+a.total>0)?{processed:+a.processed||0,total:+a.total,cache:+a.cache||0}:null,error:a.error||'',started:(a.started?a.started*1000:prev.started)||Date.now(),lastEvent:(a.last?a.last*1000:prev.lastEvent)||Date.now(),node:null,frame:0,reasoning:prev.reasoning||'',tools:prev.tools||[],hung:false};
++ streams[a.bot]={name:a.name||prev.name||'Bot',text:prev.text||'',phase:a.phase||'read',label:a.label||'Liest Verlauf',steps:Array.isArray(a.steps)?a.steps:(prev.steps||[]),progress:(+a.total>0)?{processed:+a.processed||0,total:+a.total,cache:+a.cache||0}:null,error:a.error||'',started:(a.started?a.started*1000:prev.started)||Date.now(),lastEvent:(a.last?a.last*1000:prev.lastEvent)||Date.now(),node:null,frame:0,reasoning:prev.reasoning||'',tools:prev.tools||[],hung:false};
+@@ -1300 +1342 @@ $('send-form').onsubmit=async e=>{
+- const willQueue=!!((state.busy_bots||[]).some(id=>selected.has(id))||state.queue_paused||(state.pending||[]).length);if(bot&&!willQueue){streams[botId]={name:bot.name,text:'',status:'Denkt nach …'};render()}
++ const willQueue=!!((state.busy_bots||[]).some(id=>selected.has(id))||state.queue_paused||(state.pending||[]).length);if(bot&&!willQueue){streams[botId]={name:bot.name,text:'',status:'Liest Verlauf …',label:'Liest Verlauf',phase:'read'};render()}
+@@ -2062 +2104 @@ events.onmessage=e=>{
+-   streams[id]={name:event.name,text:'',status:'Denkt nach',label:'Denkt nach',phase:'think',steps:[],node:prev?.node||null,frame:0,started:Date.now(),lastEvent:Date.now(),reasoning:'',tools:[],error:'',hung:false,progress:null};
++   streams[id]={name:event.name,text:'',status:'Liest Verlauf',label:'Liest Verlauf',phase:'read',steps:[],node:prev?.node||null,frame:0,started:Date.now(),lastEvent:Date.now(),reasoning:'',tools:[],error:'',hung:false,progress:null};
+@@ -2090 +2132 @@ events.onmessage=e=>{
+-   const s=streams[id];if(s){(s.tools||(s.tools=[])).push({name:event.tool||'Aktion',text:typeof event.text==='string'?event.text:'',result:false});s.thinking=false;s.lastEvent=Date.now();s.hung=false;if(event.label){s.phase='tool';s.label=event.label}updateStream(id)}
++   const s=streams[id];if(s){(s.tools||(s.tools=[])).push({id:event.id||'',name:event.tool||'Aktion',label:event.label||'',args:event.args,result:null});s.thinking=false;s.lastEvent=Date.now();s.hung=false;if(event.label){s.phase='tool';s.label=event.label}updateStream(id)}
+@@ -2092 +2134 @@ events.onmessage=e=>{
+-   const s=streams[id];if(s){(s.tools||(s.tools=[])).push({name:event.tool||'Aktion',text:typeof event.text==='string'?event.text:'',result:true});s.lastEvent=Date.now();s.hung=false;updateStream(id)}
++   const s=streams[id];if(s){const list=s.tools||(s.tools=[]);const t=[...list].reverse().find(x=>x.result==null&&(event.id?x.id===event.id:x.name===event.tool));const r={result:typeof event.result==='string'?event.result:'',ok:event.ok!==false,ms:event.ms};if(t)Object.assign(t,r);else list.push({id:event.id||'',name:event.tool||'Aktion',...r});s.lastEvent=Date.now();s.hung=false;updateStream(id)}

@@ -283,6 +283,12 @@ dialog{border-radius:10px;border-color:var(--line);background:var(--surface)}
 @media (prefers-reduced-motion:reduce){.thinking[data-state="live"] .think-title{background:none;color:var(--secondary)}}
 .think-peek{display:flex;flex-direction:column;justify-content:flex-end;max-height:4.9em;overflow:hidden;margin:5px 0 0 1px;padding-left:14px;border-left:2px solid var(--soft-line);color:var(--muted);font-size:13px;line-height:1.62;white-space:pre-wrap;overflow-wrap:anywhere;-webkit-mask-image:linear-gradient(to bottom,transparent 0,#000 55%);mask-image:linear-gradient(to bottom,transparent 0,#000 55%)}
 .think-peek[hidden],.think-body[hidden]{display:none}
+.think-line{white-space:normal}.think-line.in{animation:thinkIn .42s cubic-bezier(.2,.7,.2,1) both}
+@keyframes thinkIn{from{opacity:0;transform:translateY(5px);filter:blur(2px)}to{opacity:1;transform:none;filter:none}}
+.think-dots{display:inline-flex;align-items:center;gap:4px;height:1.62em;flex:none}.think-dots i{width:4px;height:4px;border-radius:50%;background:currentColor;opacity:.25;animation:thinkDot 1.3s ease-in-out infinite}.think-dots i:nth-child(2){animation-delay:.18s}.think-dots i:nth-child(3){animation-delay:.36s}
+@keyframes thinkDot{0%,80%,100%{opacity:.25;transform:none}40%{opacity:.85;transform:translateY(-2px)}}
+.think-body .think-dots{display:flex}
+@media (prefers-reduced-motion:reduce){.think-line.in,.think-dots i{animation:none}.think-dots i{opacity:.55}}
 .think-body{margin:6px 0 0 1px;padding:1px 4px 1px 14px;border-left:2px solid var(--soft-line);color:var(--secondary);font-size:13.5px;line-height:1.65;overflow-wrap:anywhere;max-height:min(60vh,520px);overflow:auto;overscroll-behavior:contain;scrollbar-width:thin}
 .think-body>:first-child{margin-top:0}.think-body>:last-child{margin-bottom:0}
 .think-body p{margin:0 0 .7em}.think-body ul,.think-body ol{margin:0 0 .7em;padding-left:20px}
@@ -507,12 +513,38 @@ function thinkBox(node,key){
  const content=node.querySelector(':scope > .content');if(content)content.before(box);else node.append(box);
  return box;
 }
+// While a bot thinks, only finished sentences and list items are shown; the
+// one being written is a loading indicator, so the text never jitters in.
+function thinkSettled(text){
+ let cut=0;const re=/\n+|[.!?…:](?=\s)\s*/g;let m;
+ while((m=re.exec(text)))cut=m.index+m[0].length;
+ if(text.length-cut>260){const sp=text.lastIndexOf(' ',text.length-40);if(sp>cut)cut=sp+1}
+ return text.slice(0,cut);
+}
+function thinkUnits(settled){
+ return settled.split(/\n+|(?<=[.!?…:])\s+/).map(u=>u.trim()).filter(Boolean)
+  .map(u=>u.replace(/^#{1,6}\s+/,'').replace(/^[-*+]\s+/,'• ').replace(/^(\d+)[.)]\s+/,'$1. ').replace(/\*\*|__|`/g,''));
+}
+function thinkDots(){const d=document.createElement('span');d.className='think-dots';d.setAttribute('aria-hidden','true');d.append(document.createElement('i'),document.createElement('i'),document.createElement('i'));return d}
+function paintThinkPeek(box,live,text){
+ const peek=box.querySelector('.think-peek');
+ const units=thinkUnits(thinkSettled(text));
+ const fresh=box._units===undefined;let shown=box._units||0;
+ if(units.length<shown||fresh){peek.replaceChildren();shown=Math.max(0,units.length-4)}
+ peek.querySelector('.think-dots')?.remove();
+ const lastLine=peek.querySelector('.think-line:last-of-type');if(lastLine&&shown>0&&units[shown-1]!==undefined&&lastLine.textContent!==units[shown-1])lastLine.textContent=units[shown-1];
+ for(let i=shown;i<units.length;i++){const l=document.createElement('div');l.className='think-line'+(fresh?'':' in');l.textContent=units[i];peek.append(l)}
+ box._units=units.length;
+ const lines=peek.querySelectorAll('.think-line');for(let i=0;i<lines.length-4;i++)lines[i].remove();
+ if(live)peek.append(thinkDots());
+}
 function paintThinkBody(box){
  const body=box.querySelector('.think-body');if(body.hidden)return;
- const text=box._text||'';if(body._painted===text)return;
+ const live=box.dataset.state==='live',text=live?thinkSettled(box._text||''):(box._text||'');
+ const key=(live?'L':'D')+text;if(body._painted===key)return;
  const follow=!body._painted||body.scrollHeight-body.scrollTop-body.clientHeight<24;
- body.innerHTML=safeMarkdown(text);body._painted=text;
- if(box.dataset.state==='live'&&follow)body.scrollTop=body.scrollHeight;
+ body.innerHTML=safeMarkdown(text);body._painted=key;
+ if(live){body.append(thinkDots());if(follow)body.scrollTop=body.scrollHeight}
 }
 function setThinkOpen(box,open){
  box.dataset.open=open?'1':'0';box.querySelector('.think-head').setAttribute('aria-expanded',String(open));
@@ -524,7 +556,7 @@ function paintThinking(box){
  box.querySelector('.think-time').textContent=box._ms>=1000?thinkSecs(box._ms):'';
  head.title=open?'Gedanken ausblenden':'Gedanken anzeigen';
  const peek=box.querySelector('.think-peek');peek.hidden=!live||open||!text.trim();
- if(!peek.hidden)peek.textContent=text.slice(-600).replace(/^\s+/,'');
+ if(!peek.hidden)paintThinkPeek(box,live,text);else box._units=undefined;
  paintThinkBody(box);
 }
 function showThinking(node,key,text,live,ms){

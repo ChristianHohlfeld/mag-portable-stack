@@ -1965,7 +1965,8 @@ class StaggeredLanes(unittest.TestCase):
   self.assertEqual(self._last_bot_text('iq3bot'),'Nur A')
  def test_03_frontend_thinking_and_waiting(self):
   html=self.request('/',raw=True).decode()
-  for needle in ('function showThinking(',"head.className='think-head'","'Nachgedacht'","'Denkt nach'",'msg.reasoning','msg.thought_ms',"event.type==='bot_wait'",'wartet','next.waiting_bots'):self.assertIn(needle,html)
+  for needle in ('function showThinking(',"head.className='think-head'","'Nachgedacht'","'Denkt nach'",'msg.reasoning','msg.thought_ms',"event.type==='bot_wait'",'wartet','next.waiting_bots','function thinkSettled(','function paintThinkPeek(',"className='think-dots'",'prefers-reduced-motion:reduce){.think-line.in'):self.assertIn(needle,html)
+  self.assertNotIn("peek.textContent=text.slice(",html)
   self.assertNotIn("'Überlegungen'",html)
 class FakeMcp(http.server.BaseHTTPRequestHandler):
  """Streamable-HTTP MCP server: bearer auth, session header, paginated tools/list as SSE."""

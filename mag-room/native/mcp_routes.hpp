@@ -214,10 +214,50 @@ static void mcp_bind_preset_bots_locked(const std::string &sid, const McpPreset 
   for (size_t i = 0; i < AGENTS.size(); i++)
     mcp_bind_locked(bot_field((int)i, "id"), sid, true, ap, op);
 }
+static Val mcp_probe_store(const std::string &sid);
+static std::string mcp_sid_for_preset_locked(const std::string &preset) {
+  mcp_load_locked();
+  for (auto &s : MCP_SERVERS)
+    if (mcp_str(s, "preset") == preset) return mcp_str(s, "id");
+  return "";
+}
+static bool mcp_server_ready_locked(const std::string &sid) {
+  Val *s = mcp_find_locked(sid);
+  if (!s || mcp_str(*s, "status") != "ok") return false;
+  auto t = s->find("tools");
+  return t && t->isArr() && !t->arr->empty();
+}
+static bool mcp_any_bot_bound_locked(const std::string &sid) {
+  for (auto &a : AGENTS) {
+    auto p = a.find("plugins");
+    if (p && p->isObj() && p->find(sid)) return true;
+  }
+  return false;
+}
+// Bind every bot if nobody has this server yet. Owner unbind of one bot is
+// kept: some-bound means we do not reattach the others.
+static void mcp_auto_bind_if_unbound(const std::string &sid, const McpPreset &p) {
+  bool wrote = false;
+  {
+    std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
+    if (!mcp_any_bot_bound_locked(sid)) {
+      mcp_bind_preset_bots_locked(sid, &p);
+      save_agents();
+      wrote = true;
+    }
+  }
+  if (wrote) {
+    plugins_event();
+    agents_event();
+    std::cerr << "MAG plugins: auto " << p.name << " bound to all bots\n";
+  }
+}
 // Connect auth-none presets that should be on every bot (Digitalisierungsplanung).
-// MAG_ROOM_MCP_AUTO=0 skips this (tests). Owner unbind of one bot is kept: we
-// only connect the server once; later bots pick it up via mcp_bind_new_bot.
-// A failed probe (boot before the network is up) is retried after 30s.
+// MAG_ROOM_MCP_AUTO=0 skips this (tests). A leftover servers.json with no
+// bindings (catalog-only connect, or crash after probe) still attaches every
+// bot. Owner unbind of one bot is kept. Later bots pick it up via
+// mcp_bind_new_bot. A failed probe (boot before the network is up) is retried
+// after 30s.
 static void mcp_ensure_auto_plugins() {
   if (env("MAG_ROOM_MCP_AUTO", "1") == "0") return;
   static std::mutex mu;
@@ -227,21 +267,31 @@ static void mcp_ensure_auto_plugins() {
   const long now = (long)now_s();
   for (auto &p : MCP_PRESETS) {
     if (!p.auto_bind || done.count(p.preset)) continue;
-    bool have = false;
+    std::string sid;
+    bool ready = false;
     {
       std::lock_guard<std::mutex> lk(MCP_MTX);
-      mcp_load_locked();
-      for (auto &s : MCP_SERVERS)
-        if (mcp_str(s, "preset") == p.preset) {
-          have = true;
-          break;
-        }
+      sid = mcp_sid_for_preset_locked(p.preset);
+      ready = !sid.empty() && mcp_server_ready_locked(sid);
     }
-    if (have) {
+    if (!sid.empty() && ready) {
+      mcp_auto_bind_if_unbound(sid, p);
       done.insert(p.preset);
       continue;
     }
     if (fail_s[p.preset] && now - fail_s[p.preset] < 30) continue;
+    if (!sid.empty()) {
+      Val probed = mcp_probe_store(sid);
+      if (mcp_str(probed, "status") != "ok") {
+        fail_s[p.preset] = now;
+        std::cerr << "MAG plugins: auto " << p.name << ": " << mcp_str(probed, "error")
+                  << "\n";
+        continue;
+      }
+      mcp_auto_bind_if_unbound(sid, p);
+      done.insert(p.preset);
+      continue;
+    }
     Val srv = Val::object();
     {
       std::lock_guard<std::mutex> lk(MCP_MTX);
@@ -259,25 +309,16 @@ static void mcp_ensure_auto_plugins() {
                 << "\n";
       continue;
     }
-    const std::string sid = mcp_str(probed, "id");
+    sid = mcp_str(probed, "id");
     {
       std::lock_guard<std::mutex> lk(MCP_MTX);
-      if (mcp_find_locked(sid)) {
-        done.insert(p.preset);
-        continue;
+      if (!mcp_find_locked(sid)) {
+        MCP_SERVERS.push_back(probed);
+        mcp_save_locked();
       }
-      MCP_SERVERS.push_back(probed);
-      mcp_save_locked();
     }
-    {
-      std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
-      mcp_bind_preset_bots_locked(sid, &p);
-      save_agents();
-    }
+    mcp_auto_bind_if_unbound(sid, p);
     done.insert(p.preset);
-    plugins_event();
-    agents_event();
-    std::cerr << "MAG plugins: auto " << p.name << " bound to all bots\n";
   }
 }
 static void mcp_auto_once() { mcp_ensure_auto_plugins(); }

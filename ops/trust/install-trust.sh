@@ -6,8 +6,11 @@
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 [[ $EUID -eq 0 ]] || { echo 'install-trust: run as root' >&2; exit 1; }
-bundle=$here/isrg-roots.pem
-[[ -s $bundle ]] || { echo 'install-trust: isrg-roots.pem missing' >&2; exit 1; }
+bundle=$(mktemp)
+trap 'rm -f "$bundle"' EXIT
+cat "$here/isrg-root-x1.pem" "$here/isrg-root-x2.pem" \
+    "$here/isrg-root-ye.pem" "$here/isrg-root-yr.pem" > "$bundle"
+[[ -s $bundle ]] || { echo 'install-trust: ISRG roots missing' >&2; exit 1; }
 dest=/usr/local/share/ca-certificates
 install -d -m 0755 "$dest"
 changed=0

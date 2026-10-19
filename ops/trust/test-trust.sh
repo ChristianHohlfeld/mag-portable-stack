@@ -5,7 +5,10 @@ set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../.." && pwd)
 openssl verify -CAfile "$here/isrg-root-ye.pem" -no-CApath -no-CAstore "$here/testdata/ye2.pem" >/dev/null
-openssl verify -CAfile "$here/isrg-roots.pem" -no-CApath -no-CAstore "$here/testdata/ye2.pem" >/dev/null
+bundle=$(mktemp)
+cat "$here"/isrg-root-x1.pem "$here"/isrg-root-x2.pem "$here"/isrg-root-ye.pem "$here"/isrg-root-yr.pem > "$bundle"
+openssl verify -CAfile "$bundle" -no-CApath -no-CAstore "$here/testdata/ye2.pem" >/dev/null
+rm -f "$bundle"
 for name in isrg-root-x1 isrg-root-x2 isrg-root-ye isrg-root-yr; do
   openssl x509 -in "$here/$name.pem" -noout -subject | grep -q .
 done

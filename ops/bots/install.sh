@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Host nginx for *.bot.stardenburg.de. Never restarts mag-llm.
+# Tailnet-only nginx for *.bot.stardenburg.de. Never restarts mag-llm.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 if [[ $EUID != 0 ]]; then

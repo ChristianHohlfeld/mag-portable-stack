@@ -61,8 +61,8 @@ jobs:
             nft list chain inet mag_agents input 2>&1 | head -20 || true
           } > "$out"
           python3 - "$out" <<'PY'
-          import json, os, urllib.request
-          text = open(os.sys.argv[1], encoding="utf-8", errors="replace").read()
+          import json, os, sys, urllib.request
+          text = open(sys.argv[1], encoding="utf-8", errors="replace").read()
           if len(text) > 50000:
               text = text[:50000] + "\n...truncated\n"
           body = "Live bot-site probe from the MAG host. Read only; mag-llm was not restarted by this job.\n\n```\n" + text + "\n```\n"

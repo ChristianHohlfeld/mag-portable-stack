@@ -33,6 +33,7 @@ static void agents_event() {
   e["type"] = "agents";
   publish(mj::dump(e));
 }
+#include "mcp_routes.hpp"
 // A VM spawn takes minutes. The bot is stored at once with "pending_vm" and
 // works chat-only until its VM is ready; neither the HTTP request nor the
 // turn lock waits for it. A restart during the spawn resumes it (resume=true
@@ -535,6 +536,7 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
                     {{"Cache-Control", asset_cache_control(r.query)}});
     return;
   }
+  if (mcp_route(fd, r, m, path)) return;
   // Connectors: secrets stay server-side (STATE_DIR/connectors, 0600) and
   // are never returned to the browser or written to the repo.
   if (path == "/api/connectors" && m == "GET") {
@@ -946,6 +948,36 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
         auto mem = AGENTS[idx].find("memory");
         send_json(fd, 200, mem ? mj::dump(*mem) : "[]");
       }
+      return;
+    }
+    if (slash != std::string::npos && id.substr(slash + 1) == "memory" &&
+        m == "POST") {
+      id.resize(slash);
+      Val body;
+      std::string text;
+      if (mj::parse(r.body, body) && body.isObj() && body.find("text"))
+        text = trim(body.find("text")->asStr());
+      if (text.empty() || text.size() > 500) {
+        error_json(fd, 400, "Text required (max 500)");
+        return;
+      }
+      std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
+      int idx = agent_index(id);
+      if (idx < 0) {
+        error_json(fd, 404, "Unknown agent");
+        return;
+      }
+      if (auto mem = AGENTS[idx].find("memory"); mem && mem->isArr())
+        for (auto &e : *mem->arr)
+          if (memory_text(e) == text) {
+            error_json(fd, 409, "Diese Erinnerung gibt es schon.");
+            return;
+          }
+      remember_fact(id, text, "Nutzer");
+      Val out = Val::object();
+      out["ok"] = true;
+      out["memory"] = AGENTS[idx]["memory"];
+      send_json(fd, 200, mj::dump(out));
       return;
     }
     if (slash != std::string::npos && id.substr(slash + 1) == "memory" &&

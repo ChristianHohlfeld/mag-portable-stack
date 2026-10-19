@@ -44,13 +44,19 @@ class Model(http.server.BaseHTTPRequestHandler):
    for m in obj.get('messages') or []:
     c=m.get('content');parts.append(c if isinstance(c,str) else json.dumps(c,ensure_ascii=False,sort_keys=True))
    text='\x1e'.join(parts);evaluated=max(1,len(text));cached=0;slot=obj.get('id_slot',None)
+   def lcp(prev):
+    n=0;lim=min(len(prev),len(text))
+    while n<lim and prev[n]==text[n]:n+=1
+    return n
+   # Like ik_llama: a pinned id_slot reuses only that slot's last prompt; an
+   # unpinned request goes through the --cache-ram store (several prompts).
    if obj.get('cache_prompt') is True and slot is not None:
     prev=type(self).last_prompt.get(slot)
-    if isinstance(prev,str):
-     n=0;lim=min(len(prev),len(text))
-     while n<lim and prev[n]==text[n]:n+=1
-     cached=n
+    if isinstance(prev,str):cached=lcp(prev)
     type(self).last_prompt[slot]=text
+   elif obj.get('cache_prompt') is True:
+    ram=type(self).last_prompt.setdefault('ram',[])
+    cached=max([lcp(p) for p in ram]+[0]);ram.append(text)
    stat=json.dumps({'choices':[],'tokens_cached':cached,'tokens_evaluated':evaluated,'timings':{'prompt_n':max(0,evaluated-cached),'prompt_per_second':40.0,'predicted_n':3,'predicted_per_second':8.0,'cache_n':cached}}).encode()
    payload=b'data: '+stat+b'\n\n';self.wfile.write(('%x\r\n'%len(payload)).encode()+payload+b'\r\n');self.wfile.flush()
    end=b'data: [DONE]\n\n';self.wfile.write(('%x\r\n'%len(end)).encode()+end+b'\r\n0\r\n\r\n');self.wfile.flush()
@@ -250,15 +256,16 @@ class Native(unittest.TestCase):
   self.request('/api/message',{'text':'N-Eins','bots':['test']});self._busy();time.sleep(.5)
   r=self.request('/api/message',{'text':'N-Zwei','bots':['test']});self.request('/api/queue/'+r['item']['id']+'/now',{})
   s=self._settle(lambda s:not s['busy'] and not s['pending'] and s['room'][-1].get('content')=='Sofort.')
-  tail=s['room'][-4:];self.assertEqual(tail[0]['content'],'N-Eins');self.assertEqual(tail[1]['content'],'(unterbrochen)');self.assertTrue(tail[1].get('interrupted'))
+  tail=s['room'][-4:];self.assertEqual(tail[0]['content'],'N-Eins');self.assertEqual(tail[1]['content'],'');self.assertTrue(tail[1].get('interrupted'));self.assertEqual(tail[1].get('stopped'),'system')
   self.assertEqual(tail[2]['content'],'N-Zwei')
   last=Model.calls[-1]['messages'];self._roles_ok(last);self.assertNotIn('denke',json.dumps(last),'partial reasoning must not leak into history')
+  self.assertIn('(unterbrochen)',json.dumps(last,ensure_ascii=False),'the model still learns the turn was interrupted')
  def test_15c_send_now_during_output_keeps_partial_and_prefix(self):
   self.wait_idle();Model.calls.clear();Model.script=[self._slow('out'),['Danach.']]
   self.request('/api/message',{'text':'O-Eins','bots':['test']});self._busy();time.sleep(1.0)
   r=self.request('/api/message',{'text':'O-Zwei','bots':['test']});self.request('/api/queue/'+r['item']['id']+'/now',{})
   s=self._settle(lambda s:not s['busy'] and s['room'][-1].get('content')=='Danach.')
-  part=s['room'][-3];self.assertTrue(part['content'].startswith('Wort0 '));self.assertTrue(part['content'].endswith('(unterbrochen)'))
+  part=s['room'][-3];self.assertTrue(part['content'].startswith('Wort0 '));self.assertTrue(part.get('interrupted'));self.assertNotIn('(unterbrochen)',part['content'])
   a,b=Model.calls[-2]['messages'],Model.calls[-1]['messages']
   ja,jb=json.dumps(a[:1]),json.dumps(b[:1]);self.assertEqual(ja,jb,'system prompt must stay identical (cache prefix)')
   ua=a[-1]['content'];ub=b[-1]['content'];k=ua.find('[Kontext]') if '[Kontext]' in ua else len(ua)
@@ -273,7 +280,7 @@ class Native(unittest.TestCase):
    time.sleep(.02)
   r=self.request('/api/message',{'text':'T-Zwei','bots':['test']});self.request('/api/queue/'+r['item']['id']+'/now',{})
   s=self._settle(lambda s:not s['busy'] and s['room'][-1].get('content')=='Nach Tool.')
-  self.assertIn('unterbrochen',s['room'][-3]['content']);self._roles_ok(Model.calls[-1]['messages'])
+  self.assertTrue(s['room'][-3].get('interrupted'));self._roles_ok(Model.calls[-1]['messages'])
   self.assertNotIn('call_q1',json.dumps(Model.calls[-1]['messages']),'tool calls of the interrupted turn must not be carried over')
  def test_15e_queue_edit_delete_merge_stop_and_persist(self):
   self.wait_idle();Model.script=[self._slow('out',60)]
@@ -452,9 +459,11 @@ class Native(unittest.TestCase):
   self.request('/api/message',{'text':'Stop-Test','bots':['test']});self._busy();time.sleep(1.0)
   self.assertEqual(self.request('/api/cancel',{})['cancelled'],True)
   s=self.wait_idle();self.assertFalse(s.get('queue_paused'),'composer stop must not pause the queue')
-  part=s['room'][-1];self.assertTrue(part['content'].startswith('Wort0 '));self.assertTrue(part['content'].endswith('(abgebrochen)'));self.assertTrue(part.get('interrupted'))
+  part=s['room'][-1];self.assertTrue(part['content'].startswith('Wort0 '));self.assertNotIn('(abgebrochen)',part['content']);self.assertTrue(part.get('interrupted'))
+  self.assertEqual(part.get('stopped'),'user');self.assertNotIn('work_error',part)
   self.assertEqual(self.request('/api/cancel',{})['cancelled'],False,'idle cancel is a no-op')
   self.request('/api/message',{'text':'Danach','bots':['test']});self.wait_room('Weiter normal.');s=self.wait_idle()
+  self.assertIn('(abgebrochen)',json.dumps(Model.calls[-1]['messages'],ensure_ascii=False),'the model still learns the answer was stopped')
   self.assertEqual(s['room'][-1]['content'],'Weiter normal.')
  def test_15j_reload_mid_stream_replays_and_continues(self):
   self.wait_idle();Model.script=[self._slow('out',25)]
@@ -623,7 +632,7 @@ class Native(unittest.TestCase):
  def test_09g_frontend_model_status_contract(self):
   html=self.request('/',raw=True).decode()
   for needle in ('id="model-state"','id="model-banner"',"event.type==='model'","event.type==='bot_status'",'id="agent-chat-only"','vm:false',
-                 "if(!a.vm)continue","if(!bot.vm){","Zeichen Überlegung","#model-state .txt{display:none}"):
+                 "if(!a.vm)continue","if(!bot.vm){","showThinking(s.node","#model-state .txt{display:none}"):
    self.assertIn(needle,html)
  def test_09h_prompt_is_cache_friendly(self):
   # Stable rules, memories directly after them, volatile clock/files only in the [Kontext] tail.
@@ -647,9 +656,9 @@ class Native(unittest.TestCase):
   if start(n1)==start(n2):
    self.assertTrue(m2[1]['content'].startswith(m1[1]['content'].split('\n[Kontext]')[0]),'Transcript must only grow at its end')
   self.assertTrue(Model.calls[-1]['return_progress']);self.assertTrue(Model.calls[-1]['cache_prompt'])
-  self.assertEqual(Model.calls[-1]['id_slot'],Model.calls[-2]['id_slot'])
+  self.assertNotIn('id_slot',Model.calls[-1],'one llama slot: the server must pick it so --cache-ram applies')
  def test_09n_prompt_cache_reuses_identical_prefix(self):
-  # Fake llama: tokens_cached is the shared prefix. A stable slot + identical
+  # Fake llama: tokens_cached is the shared prefix. Identical
   # memory bytes must make the second turn a cache hit. Appending a memory
   # keeps the old block as a prefix; an edit rewrites only from that line.
   Model.last_prompt.clear()
@@ -662,7 +671,7 @@ class Native(unittest.TestCase):
    return Model.calls[-1]
   a=turn('Prefix eins');b=turn('Prefix zwei')
   self.assertTrue(a['cache_prompt'] and b['cache_prompt'])
-  self.assertEqual(a['id_slot'],b['id_slot'])
+  self.assertNotIn('id_slot',a);self.assertNotIn('id_slot',b)
   ma,mb=_mem(a['messages'][0]['content']),_mem(b['messages'][0]['content'])
   self.assertEqual(ma,mb,'unchanged memory must be byte-identical')
   self.assertEqual(hashlib.sha256(ma.encode()).hexdigest(),hashlib.sha256(mb.encode()).hexdigest())
@@ -689,6 +698,51 @@ class Native(unittest.TestCase):
   self.assertTrue(edited.rstrip().endswith('Gamma neu'))
   log=(pathlib.Path(self.tmp.name)/'server.log').read_text(errors='replace')
   self.assertIn('tokens_cached=',log);self.assertIn('tokens_evaluated=',log)
+ def test_09o_bot_switch_keeps_each_prompt_cached(self):
+  # Two bots alternate on one llama slot. Unpinned, the server's RAM prompt
+  # cache restores each bot's own prefix; pinned, every switch was a miss.
+  Model.last_prompt.clear()
+  b=self.request('/api/agents',{'name':'Wechsel','vm':False})
+  try:
+   def turn(text,bot):
+    calls=len(Model.calls)
+    self.request('/api/message',{'text':text,'bots':[bot]})
+    self._settle(lambda s: not s['busy'] and len(Model.calls)>calls and any(m.get('content')==text for m in s['room']))
+    return self.request('/api/state')['model_info']['last']
+   turn('Wechsel eins','test');turn('Wechsel zwei',b['id']);st=turn('Wechsel drei','test')
+   self.assertGreaterEqual(st['tokens_cached']*2,st['tokens_evaluated'],'returning bot must hit its cached prefix')
+   self.assertNotIn('id_slot',Model.calls[-1])
+  finally:
+   self.assertTrue(self.request('/api/agents/'+b['id'],method='DELETE')['ok'])
+ def test_09p_owner_adds_memory_in_modal(self):
+  r=self.request('/api/agents/test/memory',{'text':'  Manuell ergaenzt  '})
+  self.assertTrue(r['ok']);self.assertEqual(r['memory'][-1]['text'],'Manuell ergaenzt')
+  self.assertEqual(r['memory'][-1]['src'],'Nutzer')
+  self.assertEqual(self.request('/api/agents/test/memory',method='GET')[-1]['text'],'Manuell ergaenzt')
+  self.error(409,'/api/agents/test/memory',{'text':'Manuell ergaenzt'})
+  self.error(400,'/api/agents/test/memory',{'text':'   '})
+  self.error(400,'/api/agents/test/memory',{'text':'x'*501})
+  self.error(404,'/api/agents/nope/memory',{'text':'egal'})
+  html=self.request('/',raw=True).decode()
+  for needle in ('id="memory-new"','id="memory-add"',"'/memory',{text},'POST'",'id="memory-err"'):self.assertIn(needle,html)
+ def test_09q_pasted_screenshot_reaches_bot_as_image_file(self):
+  # The browser re-encodes a pasted/dropped screenshot to JPEG and posts it
+  # through the normal upload; the text-only model gets a clear image note.
+  jpeg=b'\xff\xd8\xff\xe0\x00\x10JFIF\x00'+b'\x00'*64+b'\xff\xd9'
+  f=self.request('/api/upload?name=screenshot.jpg',jpeg)
+  self.assertEqual(f['mime'],'image/jpeg')
+  self.assertEqual(self.request('/api/file/'+f['stored'],raw=True),jpeg)
+  t=self.request('/api/upload?name=notiz.txt',b'text')
+  s=self.request('/api/state')
+  self.assertTrue(any((m.get('file') or {}).get('name')==f['name'] and m.get('role')=='user' for m in s['room']))
+  self.request('/api/message',{'text':'Was steht auf dem Screenshot?','bots':['test']})
+  self.wait_room('Hallo aus dem Modell.');self.wait_idle()
+  user=Model.calls[-1]['messages'][1]['content']
+  self.assertIn('[Bild: '+f['name']+' – du siehst es nicht direkt; Text darin mit see_image("'+f['name']+'") lesen]',user)
+  self.assertIn('['+t['name']+']',user);self.assertNotIn('[Bild: '+t['name'],user)
+  self.assertIn('see_image',[x['function']['name'] for x in Model.calls[-1]['tools']])
+  html=self.request('/',raw=True).decode()
+  for needle in ('<span>Foto/Screenshot</span>','accept="image/*" multiple','id="upload-paste"','navigator.clipboard.read()','PHOTO_MAX_PX=2048','id="photo-note"',"addEventListener('paste'","addEventListener('drop'"):self.assertIn(needle,html)
  def test_09i_chat_only_bot_has_no_vm_tools(self):
   names=[t['function']['name'] for t in Model.calls[-1]['tools']]
   for vm_tool in ('run_command','fetch_room_file','share_room_file','browser_open'):self.assertNotIn(vm_tool,names)
@@ -702,7 +756,7 @@ class Native(unittest.TestCase):
    self.wait_room('Fertig gelesen.');self.wait_idle()
   finally:Model.script=[]
   html=self.request('/',raw=True).decode()
-  for needle in ("event.type==='progress'",'Liest Verlauf','streamClock'):self.assertIn(needle,html)
+  for needle in ("event.type==='progress'",'Liest Verlauf','streamClock','function promptEta',"' aus Cache'",'noch ca. '):self.assertIn(needle,html)
  def test_09k_thinking_toggle_per_message(self):
   self.request('/api/message',{'text':'Denk nach','bots':['test'],'think':True});self.wait_room('Hallo aus dem Modell.');self.wait_idle()
   self.assertEqual(Model.calls[-1]['chat_template_kwargs'],{'enable_thinking':True})
@@ -1150,7 +1204,7 @@ class Native(unittest.TestCase):
   self.assertGreaterEqual(ans[-1].get('elapsed_s', -1), 0)
   self.assertNotIn('[[MAG:', ans[-1]['content'])
   html=self.request('/',raw=True).decode()
-  for needle in ('work-status','hängt?','Fertig ·',"event.type==='step'",'phase-hung','phase-error','Liest Verlauf'):
+  for needle in ('work-status','Keine Rückmeldung seit ','Fertig ·',"event.type==='step'",'phase-hung','phase-error','Liest Verlauf'):
    self.assertIn(needle, html)
  def test_17_scoped_room_memory_and_workspace(self):
   self.wait_idle()
@@ -1628,6 +1682,8 @@ exit 0
 class MultiBot(unittest.TestCase):
  """One global room, several bots; each bot may use its own model (Q4/IQ3) without touching resident models."""
  Q4='deepseek-v4-flash-0731';IQ3='deepseek-v4-flash-0731-iq3'
+ # Lane mechanics are checked with simultaneous starts; StaggeredLanes covers the default.
+ EXTRA_ENV={'MAG_ROOM_STAGGER':'off'}
  @classmethod
  def setUpClass(cls):
   cls.tmp=tempfile.TemporaryDirectory();cls.state=pathlib.Path(cls.tmp.name)/'state';cls.state.mkdir()
@@ -1635,7 +1691,7 @@ class MultiBot(unittest.TestCase):
   cls.state.joinpath('agents.json').write_text(json.dumps([{'id':'q4bot','name':'Q4 Bot','vm':'','memory':[]},{'id':'iq3bot','name':'IQ3 Bot','vm':'','model':cls.IQ3,'memory':[]}]))
   cls.model=http.server.ThreadingHTTPServer(('127.0.0.1',0),Model);threading.Thread(target=cls.model.serve_forever,daemon=True).start();cls.ui=port();cls.bridge=port()
   env=dict(os.environ,MAG_OWNER_CANONICAL_LOGIN='chris@github',MAG_TEST_ALLOW_LOCAL_OWNER='1',MAG_ROOM_STATE=str(cls.state),MAG_ROOM_PORT=str(cls.ui),MAG_ROOM_BRIDGE_PORT=str(cls.bridge),MAG_ROOM_BRIDGE_IP='127.0.0.1',MAG_ROOM_BACKEND=f'http://127.0.0.1:{cls.model.server_port}/v1/chat/completions',MAG_ROOM_UI=str(ROOT/'mag-room/web/index.html'),MAG_ROOM_STATIC=str(ROOT/'mag-room/static'),MAG_ROOM_MODEL_STATUS=str(pathlib.Path(cls.tmp.name)/'model-status.json'),MAG_NETMODE=str(NETMODE),MAG_TEST_NO_MEMGIT='1',MAG_GITHUB_API=f'http://127.0.0.1:{GHPORT}',MAG_ROOM_AGENT_CTL=str(cls.ctl))
-  env.pop('MAG_ROOM_SINGLE_BOT',None)
+  env.pop('MAG_ROOM_SINGLE_BOT',None);env.update(cls.EXTRA_ENV)
   cls.log=open(pathlib.Path(cls.tmp.name)/'server.log','a');cls.proc=subprocess.Popen([str(ROOT/'build/magroom')],env=env,stdout=cls.log,stderr=cls.log)
   for _ in range(100):
    try:Native.request.__func__(cls,'/healthz',raw=True);return
@@ -1853,10 +1909,34 @@ class MultiBot(unittest.TestCase):
    self.assertTrue(self.request('/api/cancel',{'bot':'q4bot'})['cancelled'])
    self._idle()
    self.assertEqual(len(Model.calls)-n,2)
-   self.assertIn('(abgebrochen)',self._last_bot_text('q4bot'))
+   self.assertNotEqual(self._last_bot_text('q4bot'),'')
    self.assertEqual(self._last_bot_text('iq3bot'),'Hallo aus dem Modell.')
   finally:
    Model.delay=0;self._idle();self.request('/api/agents/iq3bot/model',{'model':self.IQ3})
+ def test_10d_stop_while_reading_prompt_is_not_an_error(self):
+  self._idle();Model.delay=1.5;events=[];room0=len(self.request('/api/state')['room'])
+  def listen():
+   r=urllib.request.urlopen(f'http://127.0.0.1:{self.ui}/api/events',timeout=10);r.fp.raw._sock.settimeout(4)
+   try:
+    while True:
+     line=r.readline().decode()
+     if line.startswith('data: '):events.append(json.loads(line[6:]))
+   except Exception:pass
+   finally:r.close()
+  t=threading.Thread(target=listen,daemon=True);t.start();time.sleep(.3)
+  try:
+   n=len(Model.calls);self.request('/api/message',{'text':'Lies lange','bots':['q4bot']})
+   self._calls_after(n,1,1);time.sleep(.3)
+   self.assertTrue(self.request('/api/cancel',{'bot':'q4bot'})['cancelled'])
+   self._idle()
+  finally:Model.delay=0
+  t.join(6)
+  self.assertEqual([e for e in events if e.get('type')=='error'],[],'a stop is not an error')
+  self.assertIn('cancelled',[e.get('type') for e in events])
+  room=self.request('/api/state')['room'][room0:]
+  self.assertEqual([m.get('role') for m in room],['user'],'no empty stub for a stop before any output')
+  html=self.request('/',raw=True).decode()
+  for needle in ("'Gestoppt · '",'phase-stopped','function shownText('):self.assertIn(needle,html)
  def test_11_cancel_one_bot_keeps_the_other(self):
   self._idle();n=len(Model.calls);Model.delay=2.5
   try:
@@ -1874,7 +1954,8 @@ class MultiBot(unittest.TestCase):
   finally:Model.delay=0
   room=self.request('/api/state')['room']
   q4=[m.get('content','') for m in room if m.get('bot')=='q4bot']
-  self.assertIn('(abgebrochen)',q4[-2]);self.assertEqual(q4[-1],'Hallo aus dem Modell.')
+  self.assertEqual(q4[-1],'Hallo aus dem Modell.')
+  self.assertFalse([m for m in room if m.get('work_error') or 'Backend' in m.get('content','')])
   self.assertEqual(self._last_bot_text('iq3bot'),'Hallo aus dem Modell.')
   self.assertEqual(self.request('/api/cancel',{'bot':'q4bot'}),{'cancelled':False})
  def test_12_parallel_lanes_keep_autonomy_single_owner_and_idle(self):
@@ -1910,7 +1991,7 @@ class MultiBot(unittest.TestCase):
    Model.script=[];self.request('/api/autotalk',{'on':False});self._idle()
  def test_13_frontend_lane_contract(self):
   html=self.request('/',raw=True).decode()
-  for needle in ("api('/api/cancel',id?{bot:id}:{})",'id="bot-lanes"','Alle stoppen','setBusyBots(next.busy_bots)',"event.type==='idle'&&Array.isArray(event.busy_bots)","event.type==='cancelled'&&event.bot",'state.activities'):self.assertIn(needle,html)
+  for needle in ("api('/api/cancel',id?{bot:id}:{})",'id="bot-lanes"','Alle stoppen','setBusyBots(next.busy_bots,next.waiting_bots)',"event.type==='idle'&&Array.isArray(event.busy_bots)","event.type==='cancelled'&&event.bot",'state.activities'):self.assertIn(needle,html)
   # Composer bar: round +, pill with mic, one round send button that stops
   # only while the field is empty, and turns back into "Senden" on input.
   for needle in ('<form id="send-form" class="gbar">','id="plus"','class="composer-card gbar-pill"','id="mic"','id="send-button"','id="plus-think"','id="upload-camera"','id="upload-screen"',
@@ -1921,6 +2002,255 @@ class MultiBot(unittest.TestCase):
   self.assertNotIn("message').disabled",html)
   self.assertNotIn('id="stop-generation"',html)
   for gone in ('is-stop','syncSendButton'):self.assertNotIn(gone,html)
+class StaggeredLanes(unittest.TestCase):
+ """Default group chat: the second model starts after the first bot has read its context, never both at once."""
+ Q4=MultiBot.Q4;IQ3=MultiBot.IQ3
+ EXTRA_ENV={'MAG_ROOM_STAGGER_PAUSE_MS':'300'}
+ setUpClass=classmethod(MultiBot.setUpClass.__func__)
+ tearDownClass=classmethod(MultiBot.tearDownClass.__func__)
+ request=classmethod(Native.request.__func__)
+ _idle=MultiBot._idle;_calls_after=MultiBot._calls_after;_last_bot_text=MultiBot._last_bot_text
+ def tearDown(self):Model.script=[];Model.delay=0
+ def _bot_msg(self,bot):
+  for m in reversed(self.request('/api/state')['room']):
+   if m.get('bot')==bot:return m
+ def test_01_second_model_waits_for_first_thought(self):
+  self._idle();n=len(Model.calls)
+  Model.script=[[{'_sleep':1.0},{'reasoning_content':'Kurz '},{'reasoning_content':'**nachdenken**.'},{'_sleep':1.5},'Antwort A'],['Antwort B']]
+  t=time.time();self.request('/api/message',{'text':'Hallo ihr','bots':['iq3bot','q4bot']})
+  time.sleep(.6)
+  self.assertEqual([c['model'] for c in Model.calls[n:]],[self.IQ3],'both models started at once')
+  st=self.request('/api/state');self.assertEqual(st['waiting_bots'],['q4bot']);self.assertEqual(set(st['busy_bots']),{'iq3bot','q4bot'})
+  calls=self._calls_after(n,2,3)
+  self.assertEqual([c['model'] for c in calls[:2]],[self.IQ3,self.Q4])
+  self.assertLess(time.time()-t,2.4,'second bot should start while the first still answers')
+  self._idle();self.assertEqual(self.request('/api/state')['waiting_bots'],[])
+  a=self._bot_msg('iq3bot');self.assertEqual(a['content'],'Antwort A')
+  self.assertEqual(a['reasoning'],'Kurz **nachdenken**.');self.assertIsInstance(a['thought_ms'],(int,float))
+  b=self._bot_msg('q4bot');self.assertEqual(b['content'],'Antwort B');self.assertNotIn('reasoning',b)
+  # The reasoning is display-only: never part of a later prompt.
+  m=len(Model.calls);self.request('/api/message',{'text':'Noch was','bots':['iq3bot']});self._idle()
+  self.assertNotIn('nachdenken',json.dumps(Model.calls[m]['messages'],ensure_ascii=False))
+ def test_02_stopping_a_waiting_bot_never_starts_it(self):
+  self._idle();n=len(Model.calls)
+  Model.script=[[{'_sleep':1.5},'Nur A']]
+  self.request('/api/message',{'text':'Nur einer','bots':['iq3bot','q4bot']})
+  time.sleep(.4);self.assertEqual(self.request('/api/state')['waiting_bots'],['q4bot'])
+  self.assertEqual(self.request('/api/cancel',{'bot':'q4bot'}),{'cancelled':True})
+  time.sleep(.4);st=self.request('/api/state')
+  self.assertEqual(st['waiting_bots'],[]);self.assertEqual(st['busy_bots'],['iq3bot'])
+  self._idle();time.sleep(.5)
+  self.assertEqual([c['model'] for c in Model.calls[n:]],[self.IQ3])
+  self.assertEqual(self._last_bot_text('iq3bot'),'Nur A')
+ def test_03_frontend_thinking_and_waiting(self):
+  html=self.request('/',raw=True).decode()
+  for needle in ('function showThinking(',"head.className='think-head'","'Nachgedacht'","'Denkt nach'",'msg.reasoning','msg.thought_ms',"event.type==='bot_wait'",'wartet','next.waiting_bots','function thinkSettled(','function paintThinkPeek(',"className='think-dots'",'prefers-reduced-motion:reduce){.think-line.in'):self.assertIn(needle,html)
+  self.assertNotIn("peek.textContent=text.slice(",html)
+  self.assertNotIn("'Überlegungen'",html)
+class SilentPhases(unittest.TestCase):
+ """Minutes without model output (queued request, long tool call) must not look stuck in the UI."""
+ Q4=MultiBot.Q4;IQ3=MultiBot.IQ3
+ EXTRA_ENV={'MAG_ROOM_STAGGER':'off','MAG_ROOM_ALIVE_S':'1'}
+ setUpClass=classmethod(MultiBot.setUpClass.__func__)
+ tearDownClass=classmethod(MultiBot.tearDownClass.__func__)
+ request=classmethod(Native.request.__func__)
+ _idle=MultiBot._idle
+ def tearDown(self):Model.script=[]
+ def _events(self,seconds):
+  r=urllib.request.urlopen(f'http://127.0.0.1:{self.ui}/api/events',timeout=10);out=[];t0=time.time()
+  r.fp.raw._sock.settimeout(seconds)
+  try:
+   while time.time()-t0<seconds:
+    try:line=r.readline().decode()
+    except TimeoutError:break
+    if line.startswith('data: '):
+     e=json.loads(line[6:]);out.append(e)
+     if e.get('type')=='bot_done':break
+  finally:r.close()
+  return out
+ def test_01_alive_while_the_model_is_silent(self):
+  self._idle();Model.script=[[{'_sleep':3.5},'Fertig']]
+  self.request('/api/message',{'text':'Warte','bots':['q4bot']});time.sleep(.3)
+  ev=self._events(5)
+  alive=[e for e in ev if e.get('type')=='alive' and 'q4bot' in e.get('bots',[])]
+  self.assertGreaterEqual(len(alive),2,[e.get('type') for e in ev])
+  self._idle();time.sleep(1.3)
+  self.assertFalse([e for e in self._events(1.5) if e.get('type')=='alive'],'no heartbeat when idle')
+ def test_02_long_tool_call_is_reported_while_generated(self):
+  self._idle()
+  head={'tool_calls':[{'index':0,'id':'c1','function':{'name':'remember','arguments':''}}]}
+  part=lambda t:{'tool_calls':[{'index':0,'function':{'arguments':t}}]}
+  Model.script=[[head,part('{"text":"'),{'_sleep':1.1},part('x'*1500),{'_sleep':1.1},part('y'*100+'"}'),{'_sleep':.2}],['Gemerkt.']]
+  self.request('/api/message',{'text':'Merk dir was Langes','bots':['q4bot']})
+  ev=self._events(8)
+  drafts=[e for e in ev if e.get('type')=='step' and e.get('phase')=='draft']
+  self.assertTrue(drafts,[(e.get('type'),e.get('phase'),e.get('label')) for e in ev])
+  self.assertTrue(drafts[-1]['label'].startswith('Bereitet vor: '),drafts[-1]['label'])
+  self.assertIn('1.',drafts[-1]['label']);self.assertTrue(drafts[-1]['label'].endswith(' Zeichen'))
+  self.assertFalse([s for s in drafts[-1].get('steps',[]) if s.startswith('Bereitet vor')],'draft is never a committed step')
+  self._idle()
+ def test_03_frontend(self):
+  html=self.request('/',raw=True).decode()
+  for needle in ("event.type==='alive'","'Keine Rückmeldung seit '","if(s.phase!=='think')s.thinking=false"):self.assertIn(needle,html)
+  self.assertNotIn('hängt?',html)
+class FakeMcp(http.server.BaseHTTPRequestHandler):
+ """Streamable-HTTP MCP server: bearer auth, session header, paginated tools/list as SSE."""
+ protocol_version='HTTP/1.1';TOKEN='secret-token-0123456789';sessions=set();calls=[];inits=0;expire=False
+ def log_message(self,*a):pass
+ def _send(self,code,obj=None,sse=False,headers=None):
+  if obj is None:data=b''
+  elif sse:data=b'event: message\ndata: '+json.dumps(obj).encode()+b'\n\n'
+  else:data=json.dumps(obj).encode()
+  self.send_response(code);self.send_header('Content-Type','text/event-stream' if sse else 'application/json')
+  for k,v in (headers or {}).items():self.send_header(k,v)
+  self.send_header('Content-Length',str(len(data)));self.end_headers();self.wfile.write(data)
+ def do_POST(self):
+  msg=json.loads(self.rfile.read(int(self.headers['Content-Length'])) or b'{}')
+  cls=type(self)
+  if self.headers.get('Authorization')!='Bearer '+cls.TOKEN:return self._send(401,{'error':'unauthorized'})
+  method=msg.get('method');sid=self.headers.get('Mcp-Session-Id')
+  if method=='initialize':
+   cls.inits+=1;new='s%d'%cls.inits;cls.sessions.add(new)
+   return self._send(200,{'jsonrpc':'2.0','id':msg['id'],'result':{'protocolVersion':'2025-06-18','capabilities':{'tools':{}},'serverInfo':{'name':'fake-mcp','version':'1.2'}}},headers={'Mcp-Session-Id':new})
+  if sid not in cls.sessions:return self._send(404 if sid else 400,{'error':'no session'})
+  if self.headers.get('MCP-Protocol-Version')!='2025-06-18':return self._send(400,{'error':'version'})
+  if method=='notifications/initialized':return self._send(202)
+  if cls.expire:cls.expire=False;cls.sessions.discard(sid);return self._send(404,{'error':'gone'})
+  if method=='tools/list':
+   if not (msg.get('params') or {}).get('cursor'):
+    res={'tools':[{'name':'lookup','title':'Nachschlagen','description':'Sucht eine Notiz.','inputSchema':{'type':'object','properties':{'q':{'type':'string'}}},'annotations':{'readOnlyHint':True}}],'nextCursor':'p2'}
+   else:res={'tools':[{'name':'create_note','description':'Legt eine Notiz an.','inputSchema':{'type':'object','properties':{'text':{'type':'string'}},'required':['text']}}]}
+   return self._send(200,{'jsonrpc':'2.0','id':msg['id'],'result':res},sse=True)
+  if method=='tools/call':
+   p=msg.get('params') or {};cls.calls.append(p)
+   return self._send(200,{'jsonrpc':'2.0','id':msg['id'],'result':{'content':[{'type':'text','text':p['name']+' ok: '+json.dumps(p.get('arguments'),sort_keys=True)}]}},sse=True)
+  self._send(200,{'jsonrpc':'2.0','id':msg.get('id'),'error':{'code':-32601,'message':'unknown'}})
+class Plugins(unittest.TestCase):
+ """Remote MCP servers via "+" > Plugins & MCP: secrets stay on the server, tools only for the bots that enable them."""
+ Q4=MultiBot.Q4;IQ3=MultiBot.IQ3
+ EXTRA_ENV={'MAG_ROOM_STAGGER':'off'}
+ @classmethod
+ def setUpClass(cls):
+  cls.mcp=http.server.ThreadingHTTPServer(('127.0.0.1',0),FakeMcp);threading.Thread(target=cls.mcp.serve_forever,daemon=True).start()
+  cls.url=f'http://127.0.0.1:{cls.mcp.server_port}/mcp'
+  MultiBot.setUpClass.__func__(cls)
+ @classmethod
+ def tearDownClass(cls):
+  MultiBot.tearDownClass.__func__(cls);cls.mcp.shutdown()
+ request=classmethod(Native.request.__func__)
+ error=Native.error
+ _idle=MultiBot._idle
+ def tearDown(self):Model.script=[]
+ def _connect(self,bot='q4bot'):
+  for s in self.request('/api/plugins')['servers']:
+   if s['id']=='fake':return s
+  return self.request('/api/plugins',{'name':'Fake','url':self.url,'auth':'bearer','token':FakeMcp.TOKEN,'bot':bot})['server']
+ def _tool_names(self,call):return [t['function']['name'] for t in call.get('tools') or []]
+ def _turn(self,bot,script,text='Bitte'):
+  self._idle();n=len(Model.calls);Model.script=script
+  self.request('/api/message',{'text':text,'bots':[bot]})
+  return n
+ def _wait(self,pred,timeout=8):
+  end=time.time()+timeout
+  while time.time()<end:
+   v=pred()
+   if v:return v
+   time.sleep(.05)
+  self.fail('timeout')
+ def _tool_result(self,call):
+  return '\n'.join(m.get('content') or '' for m in call['messages'] if m.get('role')=='tool')
+ def test_01_connect_checks_token_and_never_leaks_it(self):
+  self.error(502,'/api/plugins',{'name':'Fake','url':self.url,'auth':'bearer','token':'wrong-token-xyz'})
+  self.assertEqual(self.request('/api/plugins')['servers'],[])
+  self.assertFalse(list(self.state.joinpath('mcp').glob('*.secret')) if self.state.joinpath('mcp').exists() else [])
+  s=self._connect()
+  self.assertEqual(s['id'],'fake');self.assertEqual(s['status'],'ok');self.assertTrue(s['has_secret'])
+  self.assertEqual([t['name'] for t in s['tools']],['lookup','create_note'])
+  self.assertEqual([t['read_only'] for t in s['tools']],[True,False])
+  self.assertEqual(s['server']['name'],'fake-mcp')
+  for blob in (json.dumps(self.request('/api/plugins')),json.dumps(self.request('/api/state')),self.state.joinpath('mcp/servers.json').read_text(),self.state.joinpath('agents.json').read_text()):
+   self.assertNotIn(FakeMcp.TOKEN,blob)
+  sec=self.state.joinpath('mcp/fake.secret');self.assertEqual(sec.read_text(),FakeMcp.TOKEN);self.assertEqual(sec.stat().st_mode&0o777,0o600)
+  ag={a['id']:a for a in self.request('/api/state')['agents']}
+  self.assertEqual(ag['q4bot']['plugins'],['fake']);self.assertEqual(ag['iq3bot']['plugins'],[])
+ def test_02_validation(self):
+  self.error(400,'/api/plugins',{'name':'X','url':'http://example.com/mcp'})
+  self.error(400,'/api/plugins',{'name':'X','url':'https://user:pw@example.com/mcp'})
+  self.error(400,'/api/plugins',{'name':'X','url':self.url,'auth':'header','header':'Host','token':'abcdefgh123'})
+  self.error(400,'/api/plugins',{'name':'X','url':self.url,'auth':'bearer','token':'with space 123'})
+  self.error(400,'/api/plugins',{'preset':'linear'})
+  self.error(404,'/api/plugins/bots/q4bot',{'server':'nope'})
+  self.error(404,'/api/plugins/approvals/nope',{'decision':'allow'})
+ def test_03_tools_only_for_the_bound_bot(self):
+  self._connect()
+  n=self._turn('q4bot',[['Ok']]);self._idle()
+  names=self._tool_names(Model.calls[n]);self.assertIn('mcp__fake__lookup',names);self.assertIn('mcp__fake__create_note',names)
+  d=[t for t in Model.calls[n]['tools'] if t['function']['name']=='mcp__fake__lookup'][0]['function']
+  self.assertTrue(d['description'].startswith('[Plugin Fake]'));self.assertEqual(d['parameters']['properties'],{'q':{'type':'string'}})
+  n=self._turn('iq3bot',[['Ok']]);self._idle()
+  self.assertFalse([x for x in self._tool_names(Model.calls[n]) if x.startswith('mcp__')])
+ def test_04_read_only_tool_runs_without_approval(self):
+  self._connect();k=len(FakeMcp.calls)
+  n=self._turn('q4bot',[[{'tool_calls':[{'index':0,'id':'c1','function':{'name':'mcp__fake__lookup','arguments':'{"q":"Einkauf"}'}}]}],['Gefunden.']])
+  self._idle()
+  self.assertEqual(FakeMcp.calls[k:],[{'name':'lookup','arguments':{'q':'Einkauf'}}])
+  self.assertIn('lookup ok: {"q": "Einkauf"}',self._tool_result(Model.calls[-1]))
+ def _approval(self):
+  return self._wait(lambda:self.request('/api/state').get('approvals'))[0]
+ def test_05_write_tool_waits_for_the_owner(self):
+  self._connect();k=len(FakeMcp.calls)
+  call=[{'tool_calls':[{'index':0,'id':'c2','function':{'name':'mcp__fake__create_note','arguments':'{"text":"Milch"}'}}]}]
+  self._turn('q4bot',[call,['Nicht angelegt.']])
+  a=self._approval();self.assertEqual((a['bot'],a['server'],a['tool']),('q4bot','fake','create_note'));self.assertEqual(json.loads(a['args']),{'text':'Milch'})
+  time.sleep(.3);self.assertEqual(FakeMcp.calls[k:],[],'ran before approval')
+  self.request('/api/plugins/approvals/'+a['id'],{'decision':'deny'});self._idle()
+  self.assertEqual(FakeMcp.calls[k:],[]);self.assertIn('abgelehnt',self._tool_result(Model.calls[-1]))
+  self.assertEqual(self.request('/api/state')['approvals'],[])
+  self._turn('q4bot',[call,['Angelegt.']])
+  a=self._approval();self.request('/api/plugins/approvals/'+a['id'],{'decision':'always'});self._idle()
+  self.assertEqual(FakeMcp.calls[k:],[{'name':'create_note','arguments':{'text':'Milch'}}])
+  self.assertEqual(self.request('/api/plugins')['bindings']['q4bot']['fake']['always'],['create_note'])
+  self._turn('q4bot',[call,['Wieder angelegt.']]);self._idle()
+  self.assertEqual(len(FakeMcp.calls[k:]),2,'"always" should skip the question')
+  self.request('/api/plugins/bots/q4bot',{'server':'fake','approval':'ask'})
+  self.assertEqual(self.request('/api/plugins')['bindings']['q4bot']['fake']['always'],[])
+ def test_06_stopping_while_waiting_never_runs_the_tool(self):
+  self._connect();k=len(FakeMcp.calls)
+  self._turn('q4bot',[[{'tool_calls':[{'index':0,'id':'c3','function':{'name':'mcp__fake__create_note','arguments':'{"text":"x"}'}}]}]])
+  self._approval();self.request('/api/cancel',{'bot':'q4bot'});self._idle()
+  self.assertEqual(self.request('/api/state')['approvals'],[]);self.assertEqual(FakeMcp.calls[k:],[])
+ def test_07_tool_switches_and_expired_session(self):
+  self._connect()
+  self.request('/api/plugins/bots/q4bot',{'server':'fake','off':['create_note'],'approval':'auto'})
+  n=self._turn('q4bot',[['Ok']]);self._idle()
+  names=self._tool_names(Model.calls[n]);self.assertIn('mcp__fake__lookup',names);self.assertNotIn('mcp__fake__create_note',names)
+  inits=FakeMcp.inits;FakeMcp.expire=True;k=len(FakeMcp.calls)
+  self._turn('q4bot',[[{'tool_calls':[{'index':0,'id':'c4','function':{'name':'mcp__fake__lookup','arguments':'{}'}}]}],['Ok']]);self._idle()
+  self.assertEqual(FakeMcp.inits,inits+1);self.assertEqual([c['name'] for c in FakeMcp.calls[k:]],['lookup'])
+  self.request('/api/plugins/bots/q4bot',{'server':'fake','off':[],'approval':'ask'})
+  self.request('/api/plugins/bots/iq3bot',{'server':'fake','on':True})
+  self.assertEqual({a['id']:a['plugins'] for a in self.request('/api/state')['agents']}['iq3bot'],['fake'])
+  self.request('/api/plugins/bots/iq3bot',{'server':'fake','on':False})
+  self.assertEqual({a['id']:a['plugins'] for a in self.request('/api/state')['agents']}['iq3bot'],[])
+ def test_08_refresh_and_token_update(self):
+  self._connect()
+  r=self.request('/api/plugins/fake/refresh',{});self.assertTrue(r['ok']);self.assertEqual(len(r['server']['tools']),2)
+  self.error(400,'/api/plugins/fake',{'token':'a b'},method='PUT')
+  r=self.request('/api/plugins/fake',{'token':'other-token-123456'},method='PUT');self.assertEqual(r['server']['status'],'error')
+  r=self.request('/api/plugins/fake',{'token':FakeMcp.TOKEN,'name':'Notizen'},method='PUT');self.assertEqual(r['server']['status'],'ok');self.assertEqual(r['server']['name'],'Notizen')
+ def test_09_delete_removes_secret_and_bindings(self):
+  self._connect();self.request('/api/plugins/bots/iq3bot',{'server':'fake','on':True})
+  self.request('/api/plugins/fake',method='DELETE')
+  self.assertFalse(self.state.joinpath('mcp/fake.secret').exists())
+  self.assertEqual(self.request('/api/plugins')['servers'],[])
+  self.assertNotIn('plugins',self.state.joinpath('agents.json').read_text())
+  n=self._turn('q4bot',[['Ok']]);self._idle()
+  self.assertFalse([x for x in self._tool_names(Model.calls[n]) if x.startswith('mcp__')])
+ def test_10_owner_only_and_frontend(self):
+  self.error(403,'/api/plugins',{'name':'X','url':self.url},headers={'Content-Type':'application/json','X-No-Token':'1'})
+  html=self.request('/',raw=True).decode()
+  for needle in ('id="plus-mcp"','id="mcp-dialog"',"hide('plus-mcp',!can('connectors'))",'function paintApprovals(',"event.type==='mcp_approval'","event.type==='mcp_approval_done'",'syncApprovals(next.approvals)','/api/plugins/approvals/','/^\\/(mcp|plugins?)$/i','Immer erlauben'):self.assertIn(needle,html)
+  self.assertNotIn('confirm(',html.replace('magConfirm(',''))
 class FakeTailscale(http.server.BaseHTTPRequestHandler):
  protocol_version='HTTP/1.1';calls=[]
  def log_message(self,*a):pass

@@ -38,6 +38,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <shared_mutex>
 #include <regex>
 #include <random>
@@ -68,6 +69,24 @@ struct Lane {
   std::atomic<int> backend_fd{-1};
 };
 static thread_local Lane *TL_LANE = nullptr;
+// Lanes of one request do not all start at once: the next lane waits until
+// the previous bot has read its context and starts thinking (or has
+// finished), then a short human pause. Two cold prompt evaluations never
+// begin at the same moment, and the bots do not answer in lockstep.
+struct StartGate {
+  std::mutex m;
+  std::condition_variable cv;
+  bool open = false;
+  void release() {
+    {
+      std::lock_guard<std::mutex> lk(m);
+      if (open) return;
+      open = true;
+    }
+    cv.notify_all();
+  }
+};
+static thread_local StartGate *TL_GATE = nullptr;
 static std::atomic<bool> &stop_flag() { return TL_LANE ? TL_LANE->stop : STOP; }
 static std::atomic<bool> &user_cancel_flag() {
   return TL_LANE ? TL_LANE->user_cancel : USER_CANCEL;
@@ -1715,9 +1734,27 @@ static std::string render_room_line(const Val &m) {
   std::string content = m.find("content") ? m.find("content")->asStr() : "";
   if (content.size() > 4000)
     content.resize(4000);
+  if (auto in = m.find("interrupted"); in && in->asBool()) {
+    auto by = m.find("stopped");
+    const std::string note =
+        by && by->asStr() == "system" ? "(unterbrochen)" : "(abgebrochen)";
+    // Older rooms stored the note inside the content.
+    if (content.size() < note.size() ||
+        content.compare(content.size() - note.size(), note.size(), note) != 0)
+      content += content.empty() ? note : "\n\n" + note;
+  }
   auto f = m.find("file");
-  if (f && f->isObj())
-    content += " [" + (f->find("name") ? f->find("name")->asStr() : "?") + "]";
+  if (f && f->isObj()) {
+    std::string fname = f->find("name") ? f->find("name")->asStr() : "?";
+    auto mime = f->find("mime");
+    // The room model is text-only: say so, and how to read the image.
+    if (mime && mime->asStr().rfind("image/", 0) == 0)
+      content += " [Bild: " + fname +
+                 " – du siehst es nicht direkt; Text darin mit see_image(\"" +
+                 fname + "\") lesen]";
+    else
+      content += " [" + fname + "]";
+  }
   return "[" + name + "]: " + content + "\n";
 }
 static std::string build_transcript() {
@@ -2619,8 +2656,8 @@ static void publish_prompt_cache(int slot, const Val *timings, double cached,
             << (long long)(evaluated < 0 ? -1 : evaluated) << std::endl;
 }
 // One llama slot per conversation. With --parallel 1 (bug #25259) every key
-// maps to slot 0, which is still stable across turns. MAG_ROOM_SLOTS must
-// match the server's --parallel before it is raised above 1.
+// maps to slot 0 and no id_slot is sent (see backend_turn). MAG_ROOM_SLOTS
+// must match the server's --parallel before it is raised above 1.
 static int slot_for_key(const std::string &key) {
   if (PROMPT_SLOTS <= 1 || key.empty())
     return 0;
@@ -2713,15 +2750,17 @@ struct Turn {
   std::string error;
 };
 struct TurnReport {
-  std::string text, progress_key, error;
+  std::string text, progress_key, error, reasoning;
   std::vector<std::string> steps;
   long elapsed_s = 0;
+  long thought_ms = 0;
   int successful_tools = 0, failed_tools = 0;
   bool continue_requested = false;
   bool reacted = false;
   bool react_only = false;
 };
 
+#include "mcp.hpp"
 static std::string tools_json(int bot_idx, bool web) {
   std::string vm = bot_field(bot_idx, "vm", "keine");
   const bool has_vm = !vm.empty() && vm != "keine";
@@ -2755,6 +2794,7 @@ static std::string tools_json(int bot_idx, bool web) {
       arr += ",";
     arr += defs[i];
   }
+  for (auto &t : mcp_bot_tools(bot_idx)) arr += "," + mj::dump(t.def);
   arr += "]";
   return arr;
 }
@@ -2873,9 +2913,12 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   // the prompt is evaluated (minutes on CPU) instead of staying silent.
   body["return_progress"] = true;
   body["cache_prompt"] = true;
-  // Pin this conversation to one slot so another caller cannot evict it by
-  // being handed a "free" slot. Same id on every turn of the same bot.
-  body["id_slot"] = id_slot;
+  // llama/ik consult the --cache-ram prompt cache only when the server picks
+  // the slot itself; an explicit id_slot skips both save and restore. With a
+  // single slot, pinning therefore made every bot switch (and every Grok/Ali
+  // call in between) re-read the whole history. Pin only with several slots.
+  if (PROMPT_SLOTS > 1)
+    body["id_slot"] = id_slot;
   // DeepSeek-V4-Flash-0731 template: enable_thinking only changes the
   // generation prompt at the END -> toggling it keeps the prompt cache.
   // reasoning_effort is different: the template puts a "Reasoning Effort"
@@ -2920,6 +2963,7 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
     backend_fd_slot() = c.fd;
   }
   SseAcc acc;
+  long long draft_ms = 0;
   double saw_cached = -1, saw_evaluated = -1;
   bool have_cached_field = false, have_eval_field = false;
   Val timings_seen;
@@ -3003,9 +3047,24 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
       on_delta("delta", ct->asStr());
     }
     auto tc = d->find("tool_calls");
-    if (tc && tc->isArr())
+    if (tc && tc->isArr()) {
       for (auto &x : *tc->arr)
         merge_tool_delta(acc, x);
+      // A long tool call (write_file with a whole file) takes minutes on CPU
+      // and would otherwise be silent: report its name and size once a second.
+      const long long now_ms =
+          duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
+      if (!acc.calls.empty() && now_ms - draft_ms >= 1000) {
+        draft_ms = now_ms;
+        const Val &last = acc.calls.rbegin()->second;
+        size_t chars = 0;
+        for (auto &kv : acc.calls)
+          if (auto a = kv.second.find("args")) chars += a->asStr().size();
+        auto nm = last.find("name");
+        on_delta("tool_draft", (nm ? nm->asStr() : std::string()) + "\t" +
+                                   std::to_string(chars));
+      }
+    }
   }
   {
     std::lock_guard<std::mutex> lk(BACKEND_FD_MTX);
@@ -3150,6 +3209,7 @@ static std::string tool_step_label(const std::string &tool) {
   if (tool == "speak") return "Spricht";
   if (tool == "download_frontend") return "Lädt die Oberfläche";
   if (tool == "publish_frontend") return "Veröffentlicht die Oberfläche";
+  if (is_mcp_tool(tool)) return "Plugin · " + mcp_step_label(tool);
   if (tool.empty()) return "Arbeitet";
   return "Arbeitet · " + tool;
 }
@@ -3404,6 +3464,7 @@ static std::string dispatch_tool(int bot_idx, const std::string &name,
   std::string vm = bot_field(bot_idx, "vm", "keine");
   std::string bot_id = bot_field(bot_idx, "id");
   std::string bot_name = bot_field(bot_idx, "name", "Bot");
+  if (is_mcp_tool(name)) return mcp_dispatch_tool(bot_idx, name, a);
   if (is_jobs_tool(name)) return jobs_dispatch_tool(bot_idx, name, a);
   if (is_pages_tool(name)) return pages_dispatch_tool(bot_idx, name, a);
   if (is_s23_tool(name)) return s23_dispatch_tool(bot_idx, name, a);
@@ -3780,8 +3841,10 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
       }
     }
     std::string live;
+    std::optional<steady_clock::time_point> think_from, think_to;
     auto on_delta = [&](const std::string &kind, const std::string &piece) {
       Val e = Val::object();
+      if (kind != "progress" && TL_GATE) TL_GATE->release();
       if (kind == "progress") {
         Val pr;
         if (!mj::parse(piece, pr) || !pr.isObj())
@@ -3802,11 +3865,31 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
       }
       if (kind == "reasoning") {
         run_think();
+        if (!think_from) {
+          think_from = steady_clock::now();
+          if (!report.reasoning.empty()) report.reasoning += "\n\n";
+        }
+        think_to = steady_clock::now();
+        report.reasoning += piece;
         e["type"] = "reasoning";
         e["bot"] = bot_id;
         e["name"] = bot_name;
         e["text"] = piece;
         publish(mj::dump(e));
+        return;
+      }
+      if (kind == "tool_draft") {
+        const auto tab = piece.find('\t');
+        const std::string nm = piece.substr(0, tab);
+        const long chars = tab == std::string::npos ? 0 : atol(piece.c_str() + tab + 1);
+        std::string label = nm.empty() ? "Bereitet eine Aktion vor"
+                                       : "Bereitet vor: " + tool_step_label(nm);
+        if (chars >= 200) {
+          std::string n = std::to_string(chars);
+          for (int i = (int)n.size() - 3; i > 0; i -= 3) n.insert((size_t)i, ".");
+          label += " · " + n + " Zeichen";
+        }
+        run_show("draft", label, true, true);
         return;
       }
       // Content stays a provisional step until the round ends. Tool-round
@@ -3818,6 +3901,14 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
     Turn t = backend_turn(messages, tools,
                           autotalk ? 0.75 : 0.55, on_delta, turn_thinking(),
                           slot_for_key(bot_id), bot_model_id(bot_idx));
+    if (think_from && think_to)
+      report.thought_ms += (long)duration_cast<milliseconds>(*think_to - *think_from).count();
+    // Stop closes the backend socket, so the turn fails with a read error
+    // (often before any header while the prompt is evaluated): not an error.
+    if (stop_flag().load()) {
+      if (t.calls.empty()) final_text += t.text;
+      break;
+    }
     if (!t.error.empty()) {
       report.error = t.error.substr(0, 280);
       emit_event("error", bot_id, bot_name, report.error);
@@ -4516,6 +4607,16 @@ static void attach_work(Val &msg, const TurnReport &report) {
     }
     (*it)["elapsed_s"] = report.elapsed_s;
     msg["elapsed_s"] = report.elapsed_s;
+    // Shown as the collapsible thinking block. Never fed back into the
+    // transcript (render_room_line reads only the content).
+    const std::string thought = trim(report.reasoning);
+    if (!thought.empty()) {
+      const std::string r = mj::utf8_cut(thought, 24000);
+      (*it)["reasoning"] = r;
+      msg["reasoning"] = r;
+      (*it)["thought_ms"] = report.thought_ms;
+      msg["thought_ms"] = report.thought_ms;
+    }
     if (!report.error.empty()) {
       std::string err = one_line(report.error).substr(0, 140);
       (*it)["work_error"] = err;
@@ -4590,19 +4691,22 @@ static TurnReport generate_and_post(int idx, bool automatic) {
     // Clean interruption: keep what was streamed (content only, never the
     // reasoning or half tool calls) as a closed assistant message, so the
     // transcript stays valid and only grows at its end (prompt cache).
+    // The note is not part of the visible text; render_room_line adds it
+    // for the model. A user stop before any output leaves no message.
     std::string partial = trim(report.text);
     if (partial.rfind("Antwort fehlgeschlagen", 0) == 0) partial.clear();
-    const std::string note = user_cancel_flag().load() ? "(abgebrochen)" : "(unterbrochen)";
-    Val msg = append_room("assistant", name,
-                          partial.empty() ? note : partial + "\n\n" + note,
-                          id);
-    attach_work(msg, report);
-    {
+    const bool by_user = user_cancel_flag().load();
+    report.error.clear();
+    if (!(by_user && partial.empty() && trim(report.reasoning).empty() &&
+          report.steps.empty())) {
+      Val msg = append_room("assistant", name, partial, id);
+      attach_work(msg, report);
       std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
       for (auto it = ROOM.rbegin(); it != ROOM.rend(); ++it)
         if (it->find("id") && msg.find("id") &&
             it->find("id")->asStr() == msg.find("id")->asStr()) {
           (*it)["interrupted"] = true;
+          (*it)["stopped"] = by_user ? "user" : "system";
           break;
         }
       save_room();
@@ -4651,13 +4755,71 @@ static void lane_finish(Lane *lane, uint64_t run, bool owner_ran, bool more,
   publish(mj::dump(state));
   JOB_CV.notify_all();
 }
+// MAG_ROOM_STAGGER: "think" (default) starts the next lane once the previous
+// bot has read its context, "reply" once it has answered (the next bot then
+// sees that answer), "off" starts all lanes together.
+// MAG_ROOM_STAGGER_PAUSE_MS: mean human pause before the next bot starts.
+static std::string stagger_mode() {
+  const std::string m = env("MAG_ROOM_STAGGER", "think");
+  return m == "reply" || m == "off" ? m : "think";
+}
+static int stagger_pause_ms() {
+  const int mean = envi("MAG_ROOM_STAGGER_PAUSE_MS", 2500);
+  if (mean <= 0) return 0;
+  static thread_local std::mt19937 rng{std::random_device{}()};
+  return std::uniform_int_distribution<int>(mean / 2, mean + mean / 2)(rng);
+}
+static std::set<std::string> WAITING_BOTS; // JOB_MTX
+static void set_waiting(const std::vector<std::string> &ids, bool on,
+                        const std::string &after) {
+  {
+    std::lock_guard<std::mutex> lk(JOB_MTX);
+    for (auto &id : ids) on ? (void)WAITING_BOTS.insert(id) : (void)WAITING_BOTS.erase(id);
+  }
+  for (auto &id : ids) {
+    Val e = Val::object();
+    e["type"] = "bot_wait";
+    e["bot"] = id;
+    e["name"] = bot_field(agent_index(id), "name", "Bot");
+    e["on"] = on;
+    e["after"] = after;
+    publish(mj::dump(e));
+  }
+}
+static void await_gate(Lane *lane, const std::vector<std::string> &ids,
+                       StartGate &gate, const std::string &after,
+                       uint64_t epoch) {
+  auto alive = [&] {
+    if (lane->stop.load() || SHUTDOWN.load() || epoch != EPOCH.load())
+      return false;
+    std::lock_guard<std::mutex> lk(JOB_MTX);
+    for (auto &id : ids)
+      if (!lane->cancelled_bots.count(id)) return true;
+    return false;
+  };
+  set_waiting(ids, true, after);
+  {
+    std::unique_lock<std::mutex> lk(gate.m);
+    while (!gate.open && alive())
+      gate.cv.wait_for(lk, milliseconds(200));
+  }
+  for (auto until = steady_clock::now() + milliseconds(stagger_pause_ms());
+       alive() && steady_clock::now() < until;)
+    std::this_thread::sleep_for(milliseconds(100));
+  set_waiting(ids, false, after);
+}
 static void lane_turn(Lane *lane, uint64_t run, std::vector<std::string> ids,
-                      bool automatic, int think, std::string owner, uint64_t generation, uint64_t epoch) {
+                      bool automatic, int think, std::string owner, uint64_t generation, uint64_t epoch,
+                      std::shared_ptr<StartGate> wait_for,
+                      std::shared_ptr<StartGate> own, std::string after) {
   bool more = false, owner_ran = false;
   std::string progress;
+  // Outside TURN_MTX: room-wide operations must not wait for a parked lane.
+  if (wait_for) await_gate(lane, ids, *wait_for, after, epoch);
   {
     std::shared_lock<std::shared_mutex> turn(TURN_MTX);
     TL_LANE = lane;
+    TL_GATE = own && stagger_mode() == "think" ? own.get() : nullptr;
     TURN_THINK = think;
     LAST_THINK = think;
     if (!(automatic && !AUTOTALK.load()))
@@ -4689,7 +4851,9 @@ static void lane_turn(Lane *lane, uint64_t run, std::vector<std::string> ids,
         }
       }
     TL_LANE = nullptr;
+    TL_GATE = nullptr;
   }
+  if (own) own->release();
   lane_finish(lane, run, owner_ran, more, progress, epoch, generation);
 }
 static void lane_job(Lane *lane, uint64_t run, JobRun job) {
@@ -4732,7 +4896,11 @@ static void start_lanes_locked(const Job &job, bool automatic) {
   if (!automatic && job.generation == AUTO_GENERATION) AUTO_THINK = job.think;
   STOP = false;
   USER_CANCEL = false;
-  for (auto &[lane, ids] : split_lanes(job.ids)) {
+  const auto parts = split_lanes(job.ids);
+  const bool stagger = parts.size() > 1 && stagger_mode() != "off";
+  std::shared_ptr<StartGate> prev;
+  std::string prev_name;
+  for (auto &[lane, ids] : parts) {
     const uint64_t run = ++DISPATCH_SEQ;
     lane->busy = true;
     lane->active_bot.clear();
@@ -4741,7 +4909,11 @@ static void start_lanes_locked(const Job &job, bool automatic) {
     lane->user_cancel = false;
     ACTIVE_JOBS[run] = Job{ids, job.think};
     BUSY = true;
-    std::thread(lane_turn, lane, run, ids, automatic, job.think, owner, job.generation, EPOCH.load()).detach();
+    auto gate = stagger ? std::make_shared<StartGate>() : nullptr;
+    std::thread(lane_turn, lane, run, ids, automatic, job.think, owner,
+                job.generation, EPOCH.load(), prev, gate, prev_name).detach();
+    prev = gate;
+    prev_name = bot_field(agent_index(ids.front()), "name", "Bot");
   }
   save_queue_locked();
 }
@@ -4962,7 +5134,42 @@ static Val public_agent(int idx) {
   if (idx < 0 || (size_t)idx >= AGENTS.size()) return o;
   auto mem = AGENTS[idx].find("memory");
   o["memory_count"] = mem && mem->isArr() ? (long)mem->arr->size() : 0;
+  Val plugins = Val::array();
+  if (auto p = AGENTS[idx].find("plugins"); p && p->isObj())
+    for (auto &kv : *p->obj) plugins.push(Val(kv.first));
+  o["plugins"] = plugins;
   return o;
+}
+// Some phases send nothing for minutes: a request queued at llama-server, a
+// slow prompt batch, a tool call being generated. Every 15 s each answering or
+// waiting bot gets an "alive" event, so the UI only reports silence when the
+// room itself stops responding.
+static void alive_loop() {
+  while (!SHUTDOWN.load()) {
+    const int every = std::clamp(envi("MAG_ROOM_ALIVE_S", 15), 1, 60);
+    for (int i = 0; i < every && !SHUTDOWN.load(); i++) std::this_thread::sleep_for(seconds(1));
+    std::vector<std::string> ids;
+    {
+      std::lock_guard<std::mutex> lk(RUN_MTX);
+      const long now = (long)now_s();
+      for (auto &kv : RUNS)
+        if (kv.second.on) {
+          kv.second.last = now;
+          ids.push_back(kv.first);
+        }
+    }
+    {
+      std::lock_guard<std::mutex> lk(JOB_MTX);
+      for (auto &id : WAITING_BOTS) ids.push_back(id);
+    }
+    if (ids.empty()) continue;
+    Val e = Val::object();
+    e["type"] = "alive";
+    Val bots = Val::array();
+    for (auto &id : ids) bots.push(Val(id));
+    e["bots"] = bots;
+    publish(mj::dump(e));
+  }
 }
 static std::string state_json(const Actor *actor = nullptr) {
   Val root = Val::object();
@@ -5030,6 +5237,9 @@ static std::string state_json(const Actor *actor = nullptr) {
     for (auto &kv : ACTIVE_JOBS)
       for (auto &id : kv.second.ids) bb.push(Val(id));
     root["busy_bots"] = bb;
+    Val wb = Val::array();
+    for (auto &id : WAITING_BOTS) wb.push(Val(id));
+    root["waiting_bots"] = wb;
   }
   root["backend"] = BACKEND_HOST + ":" + std::to_string(BACKEND_PORT);
   root["model"] = active_room_model();
@@ -5041,6 +5251,8 @@ static std::string state_json(const Actor *actor = nullptr) {
   root["runtime"] = "C++17";
   if (actor && actor->ok)
     root["you"] = actor_json(*actor);
+  if (actor && actor->ok && actor->role == "owner")
+    root["approvals"] = mcp_pending_approvals();
   return mj::dump(root);
 }
 
@@ -5797,6 +6009,7 @@ int main() {
   std::thread(scheduler_loop).detach();
   std::thread(model_watcher_loop).detach();
   std::thread(file_sync_loop).detach();
+  std::thread(alive_loop).detach();
   if (env("MAG_PAGES_ENABLE", "0") == "1")
     std::thread([] { magpages::ticker(SHUTDOWN); }).detach();
   int srv = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);

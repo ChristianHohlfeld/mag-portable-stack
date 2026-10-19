@@ -4772,7 +4772,12 @@ static void await_gate(Lane *lane, const std::vector<std::string> &ids,
                        StartGate &gate, const std::string &after,
                        uint64_t epoch) {
   auto alive = [&] {
-    return !lane->stop.load() && !SHUTDOWN.load() && epoch == EPOCH.load();
+    if (lane->stop.load() || SHUTDOWN.load() || epoch != EPOCH.load())
+      return false;
+    std::lock_guard<std::mutex> lk(JOB_MTX);
+    for (auto &id : ids)
+      if (!lane->cancelled_bots.count(id)) return true;
+    return false;
   };
   set_waiting(ids, true, after);
   {

@@ -1,0 +1,41 @@
+diff --git a/mag-room/web/index.html b/mag-room/web/index.html
+index 803fce6..445e009 100644
+--- a/mag-room/web/index.html
++++ b/mag-room/web/index.html
+@@ -388,0 +389,33 @@ dialog{border-radius:10px;border-color:var(--line);background:var(--surface)}
++</style><style id="compact-chrome">
++/* Slim chrome: 48px header, 42px composer; more room for the conversation. */
++#app-header{height:48px!important;gap:10px;padding:0 14px}
++.layout{height:calc(100dvh - 48px)}
++.brand-mark{width:28px!important;height:28px!important;border-radius:9px!important;font-size:13px}
++.brand-mark svg{width:16px;height:16px}
++.brand-word{font-size:15px!important}
++.header-divider{height:18px}
++#app-header .icon-btn{width:32px;height:32px}
++#model-choice{padding:2px;border-radius:9px}
++#model-choice .model-button{min-height:26px;padding:3px 8px;border-radius:7px}
++#app-header .top-stat,#app-header .pill-btn{min-height:28px}
++.composer-wrap{padding-top:8px;padding-bottom:12px!important}
++#send-form.gbar{align-items:flex-end;gap:7px}
++.gbar-btn{width:40px;height:40px;min-width:40px;min-height:40px}
++.gbar-btn .i{width:19px;height:19px}
++.composer-card.gbar-pill{min-height:42px;border-radius:21px!important}
++.gbar-pill #message{height:40px;min-height:40px;padding:9px 6px 9px 17px;line-height:22px}
++#send-form .gbar-mic{width:34px;height:34px;min-width:34px;min-height:34px;margin:3px 0}
++.composer-inner>.speech-status{padding-left:50px}
++@media(max-width:850px){
++ .layout{height:calc(var(--vvh,100dvh) - 48px)!important}
++ #app-header{height:48px!important;padding:0 8px 0 max(10px,env(safe-area-inset-left))!important;gap:6px}
++ #app-header button,#app-header .icon-btn,#app-header .top-stat{min-height:36px;min-width:36px}
++ #model-choice .model-button{min-height:30px!important}
++ .layout.mobile-left:not(.hide-left) .left,.layout.mobile-right:not(.hide-right) .right{padding-top:calc(48px + env(safe-area-inset-top))!important}
++ .left>.rail-toggle,.right>.rail-toggle{top:calc(4px + env(safe-area-inset-top));width:40px;height:40px}
++ .composer-wrap{padding:6px max(10px,env(safe-area-inset-right)) max(8px,env(safe-area-inset-bottom)) max(10px,env(safe-area-inset-left))!important}
++ .gbar-btn,#send-form .gbar-btn{width:42px!important;height:42px!important;min-width:42px;min-height:42px}
++ .composer-card.gbar-pill{min-height:42px}
++ .gbar-pill #message{height:40px;min-height:40px;padding:9px 4px 9px 16px}
++ #send-form .gbar-mic{width:36px!important;height:36px!important;min-width:36px;min-height:36px;margin:2px 0}
++}
+@@ -2079 +2112 @@ window.addEventListener('pagehide',()=>{disconnectLive();events.close()});
+-function fitMessageHeight(){const input=$('message');input.style.height='auto';input.style.height=Math.min(160,Math.max(44,input.scrollHeight))+'px';syncComposerButton()}
++function fitMessageHeight(){const input=$('message');input.style.height='auto';input.style.height=Math.min(160,Math.max(40,input.scrollHeight))+'px';syncComposerButton()}

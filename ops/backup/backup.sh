@@ -50,17 +50,39 @@ require_free_mib "$MAG_BACKUP_WORK"
 rm -rf -- "$work"
 install -d -m 0700 "$payload"
 assert_payload() {
-  local tree=$1 repo_root="" candidate
+  local tree=$1 repo_root="" candidate live_nonempty
   [[ -d "$tree/var/lib/magbot/room" ]] || { echo 'Backup missing room state' >&2; return 1; }
   [[ -s "$tree/var/lib/gitea/data/gitea.db" ]] || { echo 'Backup missing Gitea database' >&2; return 1; }
   [[ -s "$tree/etc/gitea/app.ini" ]] || { echo 'Backup missing Gitea config' >&2; return 1; }
-  for candidate in var/lib/gitea/data/repositories var/lib/gitea/data/gitea-repositories; do
-    if [[ -d "$tree/$candidate" ]]; then repo_root=$candidate; break; fi
+  # Gitea stores repositories in data/gitea-repositories. An empty legacy
+  # data/repositories directory must not hide that. A host that really has
+  # no git repositories is still a valid backup, otherwise deploy never runs.
+  repo_root=""
+  for candidate in var/lib/gitea/data/gitea-repositories var/lib/gitea/gitea-repositories var/lib/gitea/repositories var/lib/gitea/data/repositories; do
+    if [[ -d "$tree/$candidate" ]] && find "$tree/$candidate" -mindepth 1 -print -quit | grep -q .; then
+      repo_root=$candidate
+      break
+    fi
   done
+  if [[ -z "$repo_root" ]]; then
+    for candidate in var/lib/gitea/data/gitea-repositories var/lib/gitea/gitea-repositories var/lib/gitea/repositories var/lib/gitea/data/repositories; do
+      if [[ -d "$tree/$candidate" ]]; then repo_root=$candidate; break; fi
+    done
+  fi
   [[ -n "$repo_root" ]] || { echo 'Backup missing Gitea repository root' >&2; return 1; }
-  find "$tree/$repo_root" -mindepth 1 -print -quit | grep -q . || {
-    echo 'Backup Gitea repositories empty' >&2; return 1;
-  }
+  if ! find "$tree/$repo_root" -mindepth 1 -print -quit | grep -q .; then
+    live_nonempty=0
+    for candidate in var/lib/gitea/data/gitea-repositories var/lib/gitea/gitea-repositories var/lib/gitea/repositories var/lib/gitea/data/repositories; do
+      if [[ -d "$src/$candidate" ]] && find "$src/$candidate" -mindepth 1 -print -quit | grep -q .; then
+        live_nonempty=1
+        break
+      fi
+    done
+    if (( live_nonempty )); then
+      echo 'Backup Gitea repositories empty' >&2
+      return 1
+    fi
+  fi
   if [[ -e "$src/etc/mag-nginx/tls/cert.pem" || -e "$src/etc/nginx/mag-tls/cert.pem" ]]; then
     [[ -s "$tree/etc/mag-nginx/tls/cert.pem" || -s "$tree/etc/nginx/mag-tls/cert.pem" ]] || {
       echo 'Backup missing TLS certificate that exists on the host' >&2; return 1;

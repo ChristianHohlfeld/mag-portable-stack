@@ -1239,6 +1239,38 @@ class Native(unittest.TestCase):
   ans=[m for m in self.request('/api/state')['room'] if m.get('role')=='assistant' and 'Zweite Zeile' in (m.get('content') or '')][-1]
   self.assertFalse(any('Zeile' in s for s in ans.get('steps') or []),ans.get('steps'))
   self.assertTrue(any('schaue kurz nach' in s for s in ans.get('steps') or []),ans.get('steps'))
+ def test_16i_tool_calls_pair_input_output_and_survive_reload(self):
+  self.wait_idle();events=[]
+  def listen():
+   r=urllib.request.urlopen(f'http://127.0.0.1:{self.ui}/api/events',timeout=10);r.fp.raw._sock.settimeout(6)
+   try:
+    while True:
+     line=r.readline().decode()
+     if line.startswith('data: '):
+      e=json.loads(line[6:]);events.append(e)
+      if e.get('type')=='bot_done':break
+   except Exception:pass
+   finally:r.close()
+  t=threading.Thread(target=listen,daemon=True);t.start();time.sleep(.3)
+  Model.script=[[{'tool_calls':[{'index':0,'id':'call_io','function':{'name':'remember','arguments':'{"fact":"Lieblingsfarbe Blau"}'}}]}],['Gemerkt.']]
+  try:
+   self.request('/api/message',{'text':'Merk dir Blau','bots':['test']})
+   self.wait_room('Gemerkt.');self.wait_idle()
+  finally:Model.script=[]
+  t.join(8)
+  steps=[e for e in events if e.get('type')=='step']
+  self.assertEqual((steps[0]['phase'],steps[0]['label']),('read','Liest Verlauf'),'no bare "Denkt nach" before the first token')
+  call=[e for e in events if e.get('type')=='tool'][0];res=[e for e in events if e.get('type')=='tool_result'][0]
+  self.assertEqual((call['id'],res['id']),('call_io','call_io'))
+  self.assertEqual(call['args'],{'fact':'Lieblingsfarbe Blau'})
+  self.assertTrue(res['ok']);self.assertGreaterEqual(res['ms'],0);self.assertTrue(res['result'])
+  self.assertTrue(any(e['phase']=='read' and e['label']=='Liest Ergebnis' for e in steps))
+  ans=[m for m in self.request('/api/state')['room'] if m.get('role')=='assistant' and 'Gemerkt.' in (m.get('content') or '')][-1]
+  self.assertEqual([(x['tool'],x['args'],x['ok']) for x in ans['tools']],[('remember',{'fact':'Lieblingsfarbe Blau'},True)])
+  self.assertTrue(ans['tools'][0]['result'])
+  self.assertFalse(any('Liest' in s for s in ans.get('steps') or []),ans.get('steps'))
+  html=self.request('/',raw=True).decode()
+  for needle in ('function paintTools(','function storedTools(','msg.tools?.length','Eingabe','Ergebnis',"phase:'read'"):self.assertIn(needle,html)
  def test_17_scoped_room_memory_and_workspace(self):
   self.wait_idle()
   self._access(["chris@github"])

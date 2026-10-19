@@ -2761,6 +2761,7 @@ struct Turn {
 struct TurnReport {
   std::string text, progress_key, error, reasoning;
   std::vector<std::string> steps;
+  Val tools = Val::array();
   long elapsed_s = 0;
   long thought_ms = 0;
   int successful_tools = 0, failed_tools = 0;
@@ -3275,8 +3276,10 @@ static void run_begin(const std::string &bot, const std::string &name) {
   run_cur().on = true;
   run_cur().bot = bot;
   run_cur().name = name;
-  run_cur().phase = "think";
-  run_cur().label = "Denkt nach";
+  // Until the first token the model evaluates the prompt; "read" is never
+  // committed as a step, prompt progress or thinking replaces it.
+  run_cur().phase = "read";
+  run_cur().label = "Liest Verlauf";
   run_cur().started = (long)now_s();
   publish_run_locked();
 }
@@ -4008,17 +4011,20 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
           fn && fn->find("arguments") ? fn->find("arguments")->asStr() : "{}";
       Val args;
       if (!mj::parse(argStr, args) || !args.isObj()) break;
+      const std::string call_id = cid.empty() ? "t" + std::to_string(round) : cid;
       {
         Val e = Val::object();
         e["type"] = "tool";
         e["bot"] = bot_id;
         e["name"] = bot_name;
+        e["id"] = call_id;
         e["tool"] = fname;
         e["label"] = tool_step_label(fname);
         e["args"] = args;
         publish(mj::dump(e));
       }
       run_tool_step(fname);
+      const auto tool_from = steady_clock::now();
       std::string result;
       try {
         result = dispatch_tool(bot_idx, fname, args);
@@ -4053,12 +4059,30 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
         report.progress_key += fname + ":" + result.substr(0, 350) + "\n";
       }
       {
+        const long ms = (long)duration_cast<milliseconds>(steady_clock::now() - tool_from).count();
         Val e = Val::object();
         e["type"] = "tool_result";
         e["bot"] = bot_id;
+        e["id"] = call_id;
         e["tool"] = fname;
+        e["ok"] = !failed;
+        e["ms"] = ms;
         e["result"] = mj::utf8_cut(result, 1500);
         publish(mj::dump(e));
+        // Kept on the message so the trace survives a reload; bounded because
+        // the room history is sent with every state.
+        if (report.tools.size() < 24) {
+          std::string a = mj::dump(args);
+          Val rec = Val::object();
+          rec["tool"] = fname;
+          rec["label"] = tool_step_label(fname);
+          if (a.size() <= 1200) rec["args"] = args;
+          else rec["args_text"] = mj::utf8_cut(a, 1200);
+          rec["result"] = mj::utf8_cut(result, 900);
+          rec["ok"] = !failed;
+          rec["ms"] = ms;
+          report.tools.push(rec);
+        }
       }
       Val tr = Val::object();
       tr["role"] = "tool";
@@ -4070,6 +4094,7 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
     }
     if (repeated_failure)
       break;
+    run_show("read", "Liest Ergebnis", true, false);
   }
   // Long tasks continue within the same turn, including with Autonomy OFF.
   // The outer scheduler must not silently create a second task.
@@ -4637,6 +4662,10 @@ static void attach_work(Val &msg, const TurnReport &report) {
       msg["reasoning"] = r;
       (*it)["thought_ms"] = report.thought_ms;
       msg["thought_ms"] = report.thought_ms;
+    }
+    if (report.tools.size()) {
+      (*it)["tools"] = report.tools;
+      msg["tools"] = report.tools;
     }
     if (!report.error.empty()) {
       std::string err = one_line(report.error).substr(0, 140);

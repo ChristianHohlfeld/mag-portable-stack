@@ -257,6 +257,19 @@ dialog{border-radius:10px;border-color:var(--line);background:var(--surface)}
 .work-status .pulse{width:8px;height:8px;border-radius:50%;background:var(--secondary);flex:none;animation:workpulse 1.5s ease-out infinite}
 .vm-gap{display:flex;flex-direction:column;align-items:flex-start;gap:10px;padding:14px;font-size:13px;line-height:1.5;color:var(--secondary);font-family:inherit;white-space:normal}.vm-gap p{margin:0}
 .work-status .work-label{min-width:0;flex:0 1 auto;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.trace-body.tool-list{padding:4px 0;white-space:normal;max-height:none;font:inherit}
+.tool-call{border-bottom:1px solid var(--soft-line)}.tool-call:last-child{border-bottom:0}
+.trace .tool-call>summary{padding:7px 14px;gap:8px;font-weight:450;min-width:0}
+.trace .tool-call>summary::before{content:none}
+.tool-call .tool-dot{width:7px;height:7px;border-radius:50%;flex:none;background:var(--muted)}
+.tool-call.run .tool-dot{animation:workpulse 1.5s ease-out infinite}.tool-call.ok .tool-dot{background:var(--green,#7dcea0)}.tool-call.fail .tool-dot{background:var(--red)}
+.tool-call .tool-name{color:var(--text);flex:none}
+.tool-call .tool-arg{min-width:0;flex:0 1 auto;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;color:var(--muted);font:11.5px ui-monospace,monospace}
+.tool-call .tool-ms{margin-left:auto;flex:none;color:var(--muted);font-variant-numeric:tabular-nums}
+.tool-call[open]>summary{background:var(--hover)}
+.tool-io{padding:4px 14px 10px 29px}
+.tool-io .tool-k{margin:8px 0 3px;font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+.tool-io pre{margin:0;padding:8px 10px;border-radius:8px;background:var(--panel-2);color:var(--secondary);white-space:pre-wrap;overflow-wrap:anywhere;max-height:220px;overflow:auto;scrollbar-width:thin;font:11.5px/1.55 ui-monospace,monospace}
 .work-status .work-stop{margin-left:auto;border:1px solid var(--line);border-radius:8px;padding:2px 8px;font-size:12px;color:var(--secondary);background:transparent}
 .work-status .work-stop:hover{color:var(--text);background:var(--hover)}
 .work-status .work-bar{flex:1 0 100%;height:3px;border-radius:99px;background:var(--panel-3);overflow:hidden}
@@ -578,15 +591,49 @@ function traceSection(kind,label,body,count){
  text.textContent=body||'Noch keine Inhalte';
  trace.append(head,text);return trace;
 }
+// One row per call (input + output paired), like the tool cards in ChatGPT/Claude.
+const TOOL_KEYS=['query','q','url','command','cmd','path','file','name','repo','title','text','fact','prompt','message'];
+function toolArgPreview(t){
+ const a=t.args;if(!a||typeof a!=='object')return t.args_text||'';
+ for(const k of TOOL_KEYS)if(typeof a[k]==='string'&&a[k].trim())return a[k].trim().replace(/\s+/g,' ');
+ for(const v of Object.values(a))if(typeof v==='string'&&v.trim())return v.trim().replace(/\s+/g,' ');
+ return '';
+}
+function toolInput(t){
+ const a=t.args;if(!a||typeof a!=='object')return t.args_text||'–';
+ const keys=Object.keys(a);if(!keys.length)return '–';
+ if(keys.length===1&&typeof a[keys[0]]==='string')return a[keys[0]];
+ return JSON.stringify(a,null,2);
+}
+function fmtMs(ms){return ms==null?'':ms<1000?Math.max(1,Math.round(ms))+' ms':(ms/1000).toLocaleString('de-DE',{maximumFractionDigits:1})+' s'}
+function toolRow(row,t){
+ const state=t.result==null?'run':t.ok===false?'fail':'ok';
+ if(!row){row=document.createElement('details');row.className='tool-call';row.innerHTML='<summary><span class="tool-dot"></span><span class="tool-name"></span><span class="tool-arg"></span><span class="tool-ms"></span></summary><div class="tool-io"><div class="tool-k">Eingabe</div><pre class="tool-in"></pre><div class="tool-k">Ergebnis</div><pre class="tool-out"></pre></div>'}
+ row.classList.remove('run','ok','fail');row.classList.add(state);
+ row.querySelector('.tool-name').textContent=t.label||t.name||'Werkzeug';
+ const arg=toolArgPreview(t);row.querySelector('.tool-arg').textContent=arg;row.querySelector('.tool-arg').title=arg;
+ row.querySelector('.tool-ms').textContent=state==='run'?'läuft …':(state==='fail'?'Fehler · ':'')+fmtMs(t.ms);
+ row.querySelector('.tool-in').textContent=toolInput(t);
+ row.querySelector('.tool-out').textContent=t.result==null?'Läuft noch …':(t.result.trim()||'(leer)');
+ return row;
+}
+function paintTools(node,content,tools){
+ let box=node.querySelector(':scope > .tools-trace');
+ if(!tools?.length){box?.remove();return}
+ if(!box){box=traceSection('tools-trace','Werkzeuge','','');const body=box.querySelector('.trace-body');body.classList.add('tool-list');body.replaceChildren();content.before(box)}
+ const failed=tools.filter(t=>t.ok===false).length;
+ box.querySelector('.trace-count').textContent=tools.length+(tools.length===1?' Aufruf':' Aufrufe')+(failed?' · '+failed+' fehlgeschlagen':'');
+ const body=box.querySelector('.trace-body');
+ tools.forEach((t,i)=>{const row=body.children[i];const next=toolRow(row,t);if(!row)body.append(next)});
+ while(body.children.length>tools.length)body.lastChild.remove();
+}
+function storedTools(msg){return Array.isArray(msg.tools)?msg.tools.map(t=>({name:t.tool,label:t.label,args:t.args,args_text:t.args_text,result:typeof t.result==='string'?t.result:'',ok:t.ok!==false,ms:t.ms})):[]}
 function addTrace(node,trace){
  if(!trace)return;
  const content=node.querySelector('.content');if(!content)return;
  if(trace.reasoning&&!node.querySelector(':scope > .thinking'))showThinking(node,trace.key||'',trace.reasoning,false,trace.ms||0);
  if(trace.tools?.length){
-  const sec=traceSection('tools-trace','Werkzeugaufrufe','',trace.tools.length+' Ereignisse');
-  const body=sec.querySelector('.trace-body');body.replaceChildren();
-  for(const tool of trace.tools){const line=document.createElement('span');line.className='tool-line';line.textContent=(tool.result?'✓ Ergebnis · ':'→ Aufruf · ')+(tool.name||'Werkzeug')+(tool.text?'\n'+tool.text:'');body.append(line)}
-  content.before(sec);
+  if(!node.querySelector('.tools-trace'))paintTools(node,content,trace.tools);
  }
 }
 let completedTraces=[];
@@ -873,6 +920,7 @@ function append(msg,scroll=true,trace=null,position=-1){
  attachReactions(div,msg);
  attachWork(div,msg,content);
  if(!human&&msg.reasoning)showThinking(div,msg.id||'',msg.reasoning,false,msg.thought_ms);
+ if(!human&&msg.tools?.length)paintTools(div,content,storedTools(msg));
  if(trace)addTrace(div,{...trace,key:msg.id||''});
  if(msg.file&&msg.file.removed){const s=document.createElement('span');s.className='attachment removed';s.textContent='📎 '+msg.file.name+' — entfernt';s.title='Datei wurde in der VM gelöscht oder umbenannt';div.append(s)}else if(msg.file){const f=msg.file;const a=document.createElement('a');a.href='/api/file/'+encodeURIComponent(f.stored);a.className='attachment';a.textContent='📎 '+f.name;div.append(a);if(f.mime?.startsWith('audio/')){const audio=document.createElement('audio');audio.controls=true;audio.src=a.href;div.append(audio)}if(f.mime==='text/html'||/\.html?$/i.test(f.name||'')){const card=document.createElement('div');card.className='html-preview';const frame=document.createElement('iframe');fetch(a.href).then(r=>r.ok?r.text():Promise.reject(r.status)).then(t=>{frame.srcdoc=t}).catch(()=>{frame.replaceWith(Object.assign(document.createElement("div"),{textContent:"Vorschau nicht verfügbar"}))});frame.title='Vorschau '+f.name;frame.setAttribute('sandbox','allow-scripts');frame.loading='lazy';const open=document.createElement('a');open.href=a.href;open.target='_blank';open.rel='noopener';open.textContent='In neuem Tab öffnen';card.append(frame,open);div.append(card)}if(f.mime?.startsWith('image/')){const image=document.createElement('img');image.className='attachment-image';image.src=a.href;image.alt=f.name;content.append(image)}}
  if(text){const actions=document.createElement('div');actions.className='message-tools';const b=document.createElement('button');b.type='button';b.innerHTML=ICON_COPY+' Kopieren';b.setAttribute('aria-label','Nachricht kopieren');b.onclick=()=>copyText(text,b);actions.append(b);div.append(actions)}
@@ -1019,15 +1067,9 @@ function updateStream(botId,immediate=false){
   const text=liveText(s);content.hidden=!text;
   if(!text){s.node.classList.add('processing');if(content._shown!==''){content.replaceChildren();content._shown=''}}
   else{s.node.classList.remove('processing');if(content._shown!==text){content.innerHTML=safeMarkdown(text);decorate(content);content._shown=text}}
-  s.node.querySelectorAll('.trace').forEach(el=>{if(!s.tools?.length)el.remove()});
   showThinking(s.node,'live:'+botId,s.reasoning||'',!!s.thinking,liveThinkMs(s));
   paintApprovals(s.node,botId);
-  if(s.tools?.length){
-   let box=s.node.querySelector('.tools-trace');if(!box){box=traceSection('tools-trace','Werkzeugaufrufe','', '');content.before(box)}
-   box.querySelector('.trace-count').textContent=s.tools.length+' Ereignisse';
-   const body=box.querySelector('.trace-body');body.replaceChildren();
-   for(const tool of s.tools){const line=document.createElement('span');line.className='tool-line';line.textContent=(tool.result?'✓ Ergebnis · ':'→ Aufruf · ')+(tool.name||'Werkzeug')+(tool.text?'\n'+tool.text:'');body.append(line)}
-  }
+  paintTools(s.node,content,s.tools);
   renderPromptProgress(s,s.node);
   // A live reply never shrinks: the thinking peek folding away, a revoked
   // draft or a shorter status line would otherwise pull the chat down.
@@ -1040,7 +1082,7 @@ function updateStream(botId,immediate=false){
 function mergeActivity(a){
  if(!a||!a.on||!a.bot)return;
  const prev=streams[a.bot]||{};
- streams[a.bot]={name:a.name||prev.name||'Bot',text:prev.text||'',phase:a.phase||'think',label:a.label||'Denkt nach',steps:Array.isArray(a.steps)?a.steps:(prev.steps||[]),progress:(+a.total>0)?{processed:+a.processed||0,total:+a.total,cache:+a.cache||0}:null,error:a.error||'',started:(a.started?a.started*1000:prev.started)||Date.now(),lastEvent:(a.last?a.last*1000:prev.lastEvent)||Date.now(),node:null,frame:0,reasoning:prev.reasoning||'',tools:prev.tools||[],hung:false};
+ streams[a.bot]={name:a.name||prev.name||'Bot',text:prev.text||'',phase:a.phase||'read',label:a.label||'Liest Verlauf',steps:Array.isArray(a.steps)?a.steps:(prev.steps||[]),progress:(+a.total>0)?{processed:+a.processed||0,total:+a.total,cache:+a.cache||0}:null,error:a.error||'',started:(a.started?a.started*1000:prev.started)||Date.now(),lastEvent:(a.last?a.last*1000:prev.lastEvent)||Date.now(),node:null,frame:0,reasoning:prev.reasoning||'',tools:prev.tools||[],hung:false};
 }
 function render(){
  const area=$('conversation'),follow=stickToBottom||!rendered,oldScroll=area.scrollTop,prevH=area.scrollHeight;rendered=true;
@@ -1297,7 +1339,7 @@ $('send-form').onsubmit=async e=>{
  composerSending=true;
  jumpForSend();
  const botId=[...selected][0],bot=state.agents.find(a=>a.id===botId);
- const willQueue=!!((state.busy_bots||[]).some(id=>selected.has(id))||state.queue_paused||(state.pending||[]).length);if(bot&&!willQueue){streams[botId]={name:bot.name,text:'',status:'Denkt nach …'};render()}
+ const willQueue=!!((state.busy_bots||[]).some(id=>selected.has(id))||state.queue_paused||(state.pending||[]).length);if(bot&&!willQueue){streams[botId]={name:bot.name,text:'',status:'Liest Verlauf …',label:'Liest Verlauf',phase:'read'};render()}
  try{if(stagedPhotos.length)await flushStagedPhotos();if(!text){if(bot&&!willQueue){delete streams[botId];render()}notice('Bilder geteilt');return}const r=await api('/api/message',{text,bots:[...selected],think:$('think').checked});if($('message').value.trim()===text)$('message').value='';fitMessageHeight();$('message').focus();if(r&&r.queued){if(!willQueue){delete streams[botId];render()}if(r.item)renderQueue({pending:[...(queueState.pending||[]).filter(p=>p.id!==r.item.id),r.item],paused:false})}notice('')}
  catch(err){delete streams[botId];render();notice(err.message)}
  finally{composerSending=false}
@@ -2059,7 +2101,7 @@ events.onmessage=e=>{
   if(event.type==='browser_action'){browserOverlay(event);return}
   if(event.type==='bot_start'){
    const prev=streams[id];
-   streams[id]={name:event.name,text:'',status:'Denkt nach',label:'Denkt nach',phase:'think',steps:[],node:prev?.node||null,frame:0,started:Date.now(),lastEvent:Date.now(),reasoning:'',tools:[],error:'',hung:false,progress:null};
+   streams[id]={name:event.name,text:'',status:'Liest Verlauf',label:'Liest Verlauf',phase:'read',steps:[],node:prev?.node||null,frame:0,started:Date.now(),lastEvent:Date.now(),reasoning:'',tools:[],error:'',hung:false,progress:null};
    updateStream(id,true);busyBots.add(id);renderLanes();
   }else if(event.type==='step'){
    let s=streams[id];
@@ -2087,9 +2129,9 @@ events.onmessage=e=>{
   }else if(event.type==='reasoning'){
    const s=streams[id];if(s){const now=Date.now();const first=!s.thinking;s.reasoning=(s.reasoning||'')+(event.text||'');s.thought=s.reasoning.length;s.thinkStart=s.thinkStart||now;s.thinkLast=now;s.thinking=true;s.lastEvent=now;s.hung=false;if(first||!s.thoughtAt||now-s.thoughtAt>250){s.thoughtAt=now;updateStream(id)}}
   }else if(event.type==='tool'){
-   const s=streams[id];if(s){(s.tools||(s.tools=[])).push({name:event.tool||'Aktion',text:typeof event.text==='string'?event.text:'',result:false});s.thinking=false;s.lastEvent=Date.now();s.hung=false;if(event.label){s.phase='tool';s.label=event.label}updateStream(id)}
+   const s=streams[id];if(s){(s.tools||(s.tools=[])).push({id:event.id||'',name:event.tool||'Aktion',label:event.label||'',args:event.args,result:null});s.thinking=false;s.lastEvent=Date.now();s.hung=false;if(event.label){s.phase='tool';s.label=event.label}updateStream(id)}
   }else if(event.type==='tool_result'){
-   const s=streams[id];if(s){(s.tools||(s.tools=[])).push({name:event.tool||'Aktion',text:typeof event.text==='string'?event.text:'',result:true});s.lastEvent=Date.now();s.hung=false;updateStream(id)}
+   const s=streams[id];if(s){const list=s.tools||(s.tools=[]);const t=[...list].reverse().find(x=>x.result==null&&(event.id?x.id===event.id:x.name===event.tool));const r={result:typeof event.result==='string'?event.result:'',ok:event.ok!==false,ms:event.ms};if(t)Object.assign(t,r);else list.push({id:event.id||'',name:event.tool||'Aktion',...r});s.lastEvent=Date.now();s.hung=false;updateStream(id)}
   }else if(event.type==='bot_done'){
    const s=streams[id];if(s?.frame)cancelAnimationFrame(s.frame);
    if(thinkOpen.delete('live:'+id)&&event.id)thinkOpen.add(event.id);

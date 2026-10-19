@@ -2388,6 +2388,45 @@ class AutoPlugins(unittest.TestCase):
   self.assertIn('zustand_share',sys)
   self.assertGreater(len(FakeMcpOpen.calls),k)
   self.assertEqual(FakeMcpOpen.calls[-1]['name'],'lookup')
+class AutoPluginsOrphan(unittest.TestCase):
+ """servers.json already has Digitalisierungsplanung, no bot bindings: still attach."""
+ Q4=MultiBot.Q4;IQ3=MultiBot.IQ3
+ @classmethod
+ def setUpClass(cls):
+  FakeMcpOpen.sessions=set();FakeMcpOpen.calls=[];FakeMcpOpen.call_sessions=[];FakeMcpOpen.inits=0
+  cls.mcp=http.server.ThreadingHTTPServer(('127.0.0.1',0),FakeMcpOpen);threading.Thread(target=cls.mcp.serve_forever,daemon=True).start()
+  cls.url=f'http://127.0.0.1:{cls.mcp.server_port}/mcp'
+  cls.tmp=tempfile.TemporaryDirectory();cls.state=pathlib.Path(cls.tmp.name)/'state';cls.state.mkdir()
+  cls.ctl=pathlib.Path(cls.tmp.name)/'ctl';cls.ctl.write_text(MULTIBOT_CTL);cls.ctl.chmod(0o755)
+  cls.state.joinpath('agents.json').write_text(json.dumps([{'id':'q4bot','name':'Q4 Bot','vm':'','memory':[]},{'id':'iq3bot','name':'IQ3 Bot','vm':'','model':cls.IQ3,'memory':[]}]))
+  mcp=cls.state/'mcp';mcp.mkdir()
+  mcp.joinpath('servers.json').write_text(json.dumps([{'id':'digitalisierungsplanung','name':'Digitalisierungsplanung','url':cls.url,'auth':'none','preset':'digitalisierungsplanung','status':'ok','guide':'zustand_share','tools':[{'name':'lookup','description':'Sucht','input_schema':{'type':'object','properties':{}},'read_only':True}]}]))
+  cls.model=http.server.ThreadingHTTPServer(('127.0.0.1',0),Model);threading.Thread(target=cls.model.serve_forever,daemon=True).start();cls.ui=port();cls.bridge=port()
+  env=dict(os.environ,MAG_OWNER_CANONICAL_LOGIN='chris@github',MAG_TEST_ALLOW_LOCAL_OWNER='1',MAG_ROOM_STATE=str(cls.state),MAG_ROOM_PORT=str(cls.ui),MAG_ROOM_BRIDGE_PORT=str(cls.bridge),MAG_ROOM_BRIDGE_IP='127.0.0.1',MAG_ROOM_BACKEND=f'http://127.0.0.1:{cls.model.server_port}/v1/chat/completions',MAG_ROOM_UI=str(ROOT/'mag-room/web/index.html'),MAG_ROOM_STATIC=str(ROOT/'mag-room/static'),MAG_ROOM_MODEL_STATUS=str(pathlib.Path(cls.tmp.name)/'model-status.json'),MAG_NETMODE=str(NETMODE),MAG_TEST_NO_MEMGIT='1',MAG_GITHUB_API=f'http://127.0.0.1:{GHPORT}',MAG_ROOM_AGENT_CTL=str(cls.ctl),MAG_ROOM_MCP_AUTO='1',MAG_ROOM_MCP_DP_URL=cls.url,MAG_ROOM_STAGGER='off')
+  env.pop('MAG_ROOM_SINGLE_BOT',None)
+  cls.log=open(pathlib.Path(cls.tmp.name)/'server.log','a');cls.proc=subprocess.Popen([str(ROOT/'build/magroom')],env=env,stdout=cls.log,stderr=cls.log)
+  for _ in range(100):
+   try:Native.request.__func__(cls,'/healthz',raw=True);return
+   except Exception:time.sleep(.03)
+  raise RuntimeError('Native startup failed')
+ @classmethod
+ def tearDownClass(cls):
+  cls.proc.terminate();cls.proc.wait(timeout=5);cls.log.close();cls.model.shutdown();cls.mcp.shutdown();cls.tmp.cleanup()
+ request=classmethod(Native.request.__func__)
+ _idle=MultiBot._idle
+ def tearDown(self):Model.script=[]
+ def _tool_names(self,call):return [t['function']['name'] for t in call.get('tools') or []]
+ def _turn(self,bot,script,text='Bitte'):
+  self._idle();n=len(Model.calls);Model.script=script
+  self.request('/api/message',{'text':text,'bots':[bot]})
+  return n
+ def test_13_existing_server_with_zero_bindings_attaches_every_bot(self):
+  p=self.request('/api/plugins');srv=[s for s in p['servers'] if s.get('preset')=='digitalisierungsplanung']
+  self.assertTrue(srv,p['servers']);sid=srv[0]['id']
+  for bot in ('q4bot','iq3bot'):
+   self.assertEqual(p['bindings'][bot][sid]['approval'],'auto')
+  n=self._turn('q4bot',[[{'tool_calls':[{'index':0,'id':'s1','function':{'name':'mcp__digitalisierungsplanung__lookup','arguments':'{"q":"x"}'}}]}],['Ok']]);self._idle()
+  self.assertIn('mcp__digitalisierungsplanung__lookup',self._tool_names(Model.calls[n]))
 class FakeTailscale(http.server.BaseHTTPRequestHandler):
  protocol_version='HTTP/1.1';calls=[]
  def log_message(self,*a):pass

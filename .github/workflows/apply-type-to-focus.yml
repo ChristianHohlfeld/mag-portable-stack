@@ -1,0 +1,36 @@
+name: One-shot apply type-to-focus test contract
+on:
+  push:
+    branches: [room/type-to-focus]
+    paths: ['.github/workflows/apply-type-to-focus.yml']
+permissions:
+  contents: write
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: room/type-to-focus
+      - name: Edit test_native.py and verify
+        run: |
+          python3 - <<'PY'
+          import hashlib, pathlib, sys
+          p = pathlib.Path('mag-room/tests/test_native.py')
+          s = p.read_text(encoding='utf-8')
+          if hashlib.sha256(s.encode()).hexdigest() != '0a9e04ce282befcb742af5c693330de21af1c25b95fe1845dc0b6276febfb947':
+              sys.exit('unexpected base test_native.py')
+          old = '''"$('message').focus()","autofocus","e.key==='Enter'&&!e.shiftKey"'''
+          assert s.count(old) == 1
+          s = s.replace(old, '''"$('message').focus()","function focusComposer(","e.key==='Enter'&&!e.shiftKey"''')
+          if hashlib.sha256(s.encode()).hexdigest() != '1fac7e80c8ab36f1d2a02466643dd070eabe23ddf50cea41a756850d5019ff2e':
+              sys.exit('result does not match the tested test_native.py')
+          p.write_text(s, encoding='utf-8')
+          PY
+      - name: Commit
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898299+github-actions[bot]@users.noreply.github.com'
+          git add mag-room/tests/test_native.py
+          git commit -m 'Room: frontend contract checks focusComposer instead of the autofocus attribute'
+          git push origin HEAD:room/type-to-focus

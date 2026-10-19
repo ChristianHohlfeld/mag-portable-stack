@@ -452,6 +452,8 @@ static void teardown(const std::string &n) {
       throw std::runtime_error(
           "Could not revoke bot Git account; registry retained");
   }
+  // Guest trust anchors live only on this overlay. remove_all drops them
+  // with the disk; the read-only golden image is never modified.
   fs::remove_all(d);
   std::error_code ec;
   if (fs::is_regular_file(unit) && !fs::is_symlink(unit)) {
@@ -577,22 +579,29 @@ static std::string audit_proxy(const std::string &n) {
   if (!std::regex_match(proxy, std::regex("http://[0-9.]+:[0-9]{2,5}")))
     throw std::runtime_error("Invalid audit proxy in proxy.env");
   const std::string wrapper = R"SH(set -e
-sum=$(printf '%s\n%s\n%s' "$1" "$2" "$3" | sha256sum | cut -d' ' -f1)
+sum=$(printf '%s\n%s\n%s\n%s' "$1" "$2" "$3" "$4" | sha256sum | cut -d' ' -f1)
 if [ "$(cat /var/lib/magbot/audit-proxy.sum 2>/dev/null)" = "$sum" ]; then
   echo "audit proxy unchanged"; exit 0
 fi
 t=$(mktemp -d)
 printf %s "$1" | base64 -d > "$t/ca.crt"
 printf %s "$2" | base64 -d > "$t/setup.sh"
-bash "$t/setup.sh" "$3" "$t/ca.crt"
+printf %s "$4" | base64 -d > "$t/roots.pem"
+bash "$t/setup.sh" "$3" "$t/ca.crt" "$t/roots.pem"
 rm -rf "$t"
 install -d -m 0755 /var/lib/magbot
 printf %s "$sum" > /var/lib/magbot/audit-proxy.sum
 )SH";
+  // Public ISRG roots (Let's Encrypt Generation Y). Absent on a host that has
+  // not deployed ops/trust yet: the guest keeps its image trust store.
+  std::string roots;
+  if (fs::is_regular_file(vmdir / "isrg-roots.pem"))
+    roots = read(vmdir / "isrg-roots.pem");
   auto r = guest(n,
                  {"/bin/bash", "-c", wrapper, "mag-audit-proxy",
                   base64(read(vmdir / "mag-audit-ca.crt")),
-                  base64(read(vmdir / "vm-proxy-setup.sh")), proxy},
+                  base64(read(vmdir / "vm-proxy-setup.sh")), proxy,
+                  base64(roots)},
                  600);
   if (r.code)
     throw std::runtime_error("Audit proxy setup failed: " +

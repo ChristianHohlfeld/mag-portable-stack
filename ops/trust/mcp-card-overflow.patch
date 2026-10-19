@@ -1,0 +1,31 @@
+--- mag-room/web/index.html	2026-10-19 15:59:52.248261303 +0000
++++ mag-room/web/index.html	2026-10-19 15:22:25.825097510 +0000
+@@ -65,8 +65,8 @@
+ .mcp-row{border-top:1px solid var(--soft-line,var(--line))}.mcp-row:first-child{border-top:0}
+ .mcp-line{display:flex;align-items:center;gap:12px;padding:12px 14px}
+ .mcp-logo{flex:0 0 32px;height:32px;border-radius:9px;display:grid;place-items:center;font-weight:650;font-size:14px;color:#fff}
+-.mcp-main{flex:1;min-width:0}.mcp-name{font-size:14px;font-weight:600}
+-.mcp-meta{font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.mcp-meta.err{color:var(--danger,#c81f1f);white-space:normal}
++.mcp-main{flex:1;min-width:0}.mcp-name{font-size:14px;font-weight:600;overflow-wrap:anywhere}
++.mcp-meta{font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.mcp-meta.err{color:var(--danger,#c81f1f);white-space:normal;overflow:visible;overflow-wrap:anywhere}
+ .mcp-chev{width:30px;height:30px;border-radius:8px;display:grid;place-items:center;color:var(--muted)}.mcp-chev:hover{background:var(--hover)}.mcp-chev svg{transition:transform .18s}.mcp-row.open .mcp-chev svg{transform:rotate(90deg)}
+ .switch{position:relative;display:inline-block;width:38px;height:22px;flex:0 0 38px}.switch input{position:absolute;inset:0;opacity:0;margin:0;cursor:pointer;width:100%;height:100%}.switch span{position:absolute;inset:0;border-radius:999px;background:var(--line);transition:background .15s;pointer-events:none}.switch span::after{content:'';position:absolute;top:3px;left:3px;width:16px;height:16px;border-radius:50%;background:#fff;box-shadow:0 1px 2px #0004;transition:transform .15s}.switch input:checked+span{background:var(--green,#1f9d55)}.switch input:checked+span::after{transform:translateX(16px)}.switch input:focus-visible+span{outline:2px solid var(--focus,#4c8bf5);outline-offset:2px}.switch input:disabled+span{opacity:.5}
+ .mcp-detail{padding:0 14px 14px 58px}
+@@ -78,7 +78,7 @@
+ .mcp-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center}.mcp-actions .pill-btn{font-size:12px;padding:5px 10px}.mcp-actions input{margin:0!important;padding:6px 10px!important;font-size:12.5px;flex:1;min-width:160px}
+ .mcp-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(185px,1fr));gap:8px}
+ .mcp-card{border:1px solid var(--line);border-radius:12px;padding:12px;display:flex;flex-direction:column;gap:8px;background:var(--panel)}
+-.mcp-card .top{display:flex;gap:10px;align-items:center;font-size:13.5px;font-weight:600}.mcp-card .mcp-logo{flex-basis:28px;height:28px;font-size:12px}
++.mcp-card .top{display:flex;gap:10px;align-items:flex-start;font-size:13.5px;font-weight:600;min-width:0}.mcp-card .top span{min-width:0;overflow-wrap:anywhere;line-height:1.25}.mcp-card .mcp-logo{flex-basis:28px;height:28px;font-size:12px}.mcp-card p{overflow-wrap:anywhere}
+ .mcp-card p{margin:0;font-size:12px;color:var(--muted);line-height:1.45;flex:1}
+ .mcp-card input:not([type=checkbox]){margin:0!important;padding:7px 10px!important;font-size:12.5px}.mcp-card label{font-size:12px;color:var(--secondary);display:flex;gap:6px;align-items:center}
+ .mcp-card .pill-btn{align-self:flex-start;font-size:12px;padding:5px 11px}
+@@ -1990,7 +1990,7 @@
+   box.append(row)}}
+ async function connect(body,btn,label){if(btn){btn.disabled=true;btn.textContent='Verbinde …'}st('Verbinde mit '+label+' …');try{const r=await api('/api/plugins',{...body,bot});expanded.add(r.server.id);adding=null;const who=state.agents.find(a=>a.id===bot)?.name;st(r.server.name+' verbunden · '+r.server.tools.length+' Werkzeuge'+(who?' für '+who+' aktiv':''));await load();$('mcp-list').querySelector('[data-sid="'+CSS.escape(r.server.id)+'"]')?.scrollIntoView({block:'nearest',behavior:'smooth'});return true}catch(e){if(btn){btn.disabled=false;btn.textContent='Verbinden'}st(e.message,true);return false}}
+ function paintCatalog(){const box=$('mcp-catalog');box.replaceChildren();const have=new Set(data.servers.map(s=>s.preset).filter(Boolean));
+- for(const c of data.catalog){if(have.has(c.preset))continue;const card=el('div','mcp-card');card.dataset.preset=c.preset;const top=el('div','top');top.append(logo(c.name),c.name);card.append(top,el('p','',c.hint));
++ for(const c of data.catalog){if(have.has(c.preset))continue;const card=el('div','mcp-card');card.dataset.preset=c.preset;const top=el('div','top');top.append(logo(c.name),el('span','',c.name));card.append(top,el('p','',c.hint));
+   if(adding===c.preset){const gh=c.preset==='github'&&data.github_connector;let useConn=null;if(gh){const l=el('label');useConn=document.createElement('input');useConn.type='checkbox';useConn.checked=true;l.append(useConn,'GitHub-Connector nutzen');card.append(l)}
+    const tok=document.createElement('input');tok.type='password';tok.autocomplete='off';tok.spellcheck=false;tok.placeholder=c.token_hint||'Token';tok.hidden=!!gh;if(useConn)useConn.onchange=()=>{tok.hidden=useConn.checked;if(!tok.hidden)tok.focus()};
+    const go=el('button','pill-btn primary','Verbinden');go.type='button';const run=()=>connect({preset:c.preset,token:tok.hidden?'':tok.value.trim(),auth:useConn&&useConn.checked?'connector':''},go,c.name);go.onclick=run;tok.onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();run()}};card.append(tok,go);if(c.auth==='bearer'&&!c.token_required&&!gh)card.append(el('p','','Token optional.'));setTimeout(()=>{if(!tok.hidden)tok.focus()})}

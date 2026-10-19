@@ -78,7 +78,10 @@ jobs:
           node --check /tmp/mag-room-web.js
           node mag-room/tests/test_composer.cjs
       - name: Shell syntax
-        run: bash -n ops/*.sh ops/magbot-guest-run ops/magbot-agent-ctl
+        run: |
+          bash -n ops/*.sh ops/magbot-guest-run ops/magbot-agent-ctl
+          bash -n ops/bots/*.sh ops/bots/tests/*.sh
+          bash ops/bots/tests/test-bots.sh
       - name: ISRG trust chain verifies without the system store
         run: bash ops/trust/test-trust.sh
       - name: Blank-host bootstrap dry run

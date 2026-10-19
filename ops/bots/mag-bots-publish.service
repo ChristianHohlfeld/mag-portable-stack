@@ -1,0 +1,17 @@
+[Unit]
+Description=MAG bot site publisher (libvirt bridge only)
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/lib/mag-bots/mag-bots-publish
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/mag-bots/www
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

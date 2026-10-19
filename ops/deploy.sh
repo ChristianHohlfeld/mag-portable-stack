@@ -11,7 +11,7 @@ WHISPER_MODEL="${MAG_WHISPER_SOURCE_MODEL:-/home/chris/models/whisper/ggml-large
 exec 8>/run/lock/mag-private-deploy.lock
 flock -n 8 || { echo 'Another MAG deploy/ingress install is running' >&2; exit 1; }
 [[ "$RELEASE_ID" =~ ^[a-zA-Z0-9._-]+$ ]] || exit 1
-for binary in magroom mag-browser magbot-native; do test -x "$SOURCE/build/$binary"; done
+for binary in magroom mag-browser magbot-native mag-bots-publish; do test -x "$SOURCE/build/$binary"; done
 # Go is used only for WebRTC/UDP; the room, browsers and VM lifecycle remain C++.
 if [[ ! -x "$SOURCE/build/mag-browser-webrtc" ]]; then
   command -v go >/dev/null || { echo 'Go >=1.23 required to build browser WebRTC gateway' >&2; exit 1; }
@@ -64,7 +64,7 @@ fi
 cp -a /usr/local/bin/magbot "$BACKUP/magbot"
 cp -a /var/lib/magbot/room "$BACKUP/room"
 if [[ -L /opt/mag-stack/current ]]; then readlink /opt/mag-stack/current > "$BACKUP/previous-release"; fi
-install -m 0755 "$SOURCE/build/magroom" "$SOURCE/build/mag-browser" "$SOURCE/build/magbot-native" "$SOURCE/build/mag-browser-webrtc" "$WHISPER_CLI" "$RELEASE/bin/"
+install -m 0755 "$SOURCE/build/magroom" "$SOURCE/build/mag-browser" "$SOURCE/build/magbot-native" "$SOURCE/build/mag-bots-publish" "$SOURCE/build/mag-browser-webrtc" "$WHISPER_CLI" "$RELEASE/bin/"
 cp -a "$SOURCE/mag-room/web/." "$RELEASE/web/"
 # Long MCP names wrap. The page is applied here so the source file stays the
 # one CI already syntax-checks, plus this one reviewed diff.
@@ -251,4 +251,7 @@ systemctl daemon-reload
 systemctl enable --now mag-agent-drift.timer || echo 'WARN: agent drift timer not enabled' >&2
 # Unreferenced half-created bot VMs only. Does not restart mag-llm or mag-llm-iq3.
 bash /usr/local/sbin/mag-agent-drift || echo 'WARN: agent drift check incomplete (deploy itself succeeded)' >&2
+# Tailnet name for each bot VM. No-op until the one-time wildcard cert exists.
+# Does not restart mag-llm. DNS for *.bot.stardenburg.de stays at the registrar.
+bash "$SOURCE/ops/bots/install.sh" || echo 'WARN: bot site install incomplete (deploy itself succeeded)' >&2
 printf '\nInstalled release %s; rollback snapshot %s\n' "$RELEASE_ID" "$BACKUP"

@@ -1680,6 +1680,7 @@ static std::string bot_field(int idx, const char *key,
 
 static std::string bot_model_id(int idx);
 static std::string mcp_prompt_notes(int bot_idx);
+static void mcp_auto_once();
 static std::string build_system(int bot_idx, bool autotalk,
                                 const std::string &other, bool web) {
   std::string name = bot_field(bot_idx, "name", "Bot");
@@ -3765,6 +3766,7 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
   std::string bot_id = bot_field(bot_idx, "id");
   std::string bot_name = bot_field(bot_idx, "name", "Bot");
   bool web = WEB_ENABLED.load();
+  mcp_auto_once();
   std::string system = build_system(bot_idx, autotalk, other, web);
   // Memories sit directly after the stable rules. Unchanged block is
   // byte-identical; a new fact is a suffix, so the prefix stays cached.
@@ -6055,6 +6057,7 @@ int main() {
   }
   jobs_load();
   resume_pending_spawns();
+  std::thread([] { mcp_auto_once(); }).detach();
   std::thread(jobs_ticker).detach();
   std::thread(guest_cleanup_loop).detach();
   std::thread(snapshot_retention_loop).detach();

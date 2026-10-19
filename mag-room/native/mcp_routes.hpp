@@ -9,6 +9,7 @@ struct McpPreset {
   const char *guide = "";
   bool auto_approve = false;
   std::vector<const char *> off = {}; // tools switched off on first binding
+  bool auto_bind = false;             // connect and attach to every bot, no click
 };
 static const McpPreset MCP_PRESETS[] = {
     {"digitalisierungsplanung", "Digitalisierungsplanung",
@@ -28,7 +29,8 @@ static const McpPreset MCP_PRESETS[] = {
      "erfinden; schlägt ein Schritt fehl, den Fehler nennen.",
      true,
      {"zustand_export", "zustand_export_svg", "zustand_export_pdf", "zustand_appearance",
-      "zustand_set_appearance"}},
+      "zustand_set_appearance"},
+     true},
     {"github", "GitHub", "https://api.githubcopilot.com/mcp/", "bearer",
      "Issues, Pull Requests, Code-Suche und Repos.", "ghp_… oder github_pat_…", true},
     {"context7", "Context7", "https://mcp.context7.com/mcp", "none",
@@ -49,6 +51,14 @@ static const McpPreset *mcp_preset(const std::string &key) {
   for (auto &p : MCP_PRESETS)
     if (key == p.preset) return &p;
   return nullptr;
+}
+// Tests point MAG_ROOM_MCP_DP_URL at a loopback fake; production leaves it unset.
+static std::string mcp_preset_url(const McpPreset &p) {
+  if (std::string(p.preset) == "digitalisierungsplanung") {
+    const std::string over = env("MAG_ROOM_MCP_DP_URL", "");
+    if (!over.empty()) return over;
+  }
+  return p.url;
 }
 static bool mcp_token_ok(const std::string &t) {
   if (t.size() < 8 || t.size() > 4096) return false;
@@ -141,6 +151,7 @@ static std::string mcp_plugins_json() {
     c["token_hint"] = p.token_hint;
     c["token_required"] = p.token_required;
     c["auto_approve"] = p.auto_approve;
+    c["auto_bind"] = p.auto_bind;
     cat.push(c);
   }
   out["catalog"] = cat;
@@ -188,6 +199,105 @@ static bool mcp_bind_locked(const std::string &bot, const std::string &sid,
   }
   return true;
 }
+static void mcp_bind_preset_bots_locked(const std::string &sid, const McpPreset *pre,
+                                        const std::string &only_bot = "") {
+  const Val autov("auto");
+  Val off = Val::array();
+  if (pre)
+    for (const char *t : pre->off) off.push(Val(t));
+  const Val *ap = pre && pre->auto_approve ? &autov : nullptr;
+  const Val *op = off.size() ? &off : nullptr;
+  if (!only_bot.empty()) {
+    mcp_bind_locked(only_bot, sid, true, ap, op);
+    return;
+  }
+  for (size_t i = 0; i < AGENTS.size(); i++)
+    mcp_bind_locked(bot_field((int)i, "id"), sid, true, ap, op);
+}
+// Connect auth-none presets that should be on every bot (Digitalisierungsplanung).
+// MAG_ROOM_MCP_AUTO=0 skips this (tests). Owner unbind of one bot is kept: we
+// only connect the server once; later bots pick it up via mcp_bind_new_bot.
+// A failed probe (boot before the network is up) is retried after 30s.
+static void mcp_ensure_auto_plugins() {
+  if (env("MAG_ROOM_MCP_AUTO", "1") == "0") return;
+  static std::mutex mu;
+  static std::set<std::string> done;
+  static std::map<std::string, long> fail_s;
+  std::lock_guard<std::mutex> g(mu);
+  const long now = (long)now_s();
+  for (auto &p : MCP_PRESETS) {
+    if (!p.auto_bind || done.count(p.preset)) continue;
+    bool have = false;
+    {
+      std::lock_guard<std::mutex> lk(MCP_MTX);
+      mcp_load_locked();
+      for (auto &s : MCP_SERVERS)
+        if (mcp_str(s, "preset") == p.preset) {
+          have = true;
+          break;
+        }
+    }
+    if (have) {
+      done.insert(p.preset);
+      continue;
+    }
+    if (fail_s[p.preset] && now - fail_s[p.preset] < 30) continue;
+    Val srv = Val::object();
+    {
+      std::lock_guard<std::mutex> lk(MCP_MTX);
+      srv["id"] = mcp_slug(p.name);
+    }
+    srv["name"] = p.name;
+    srv["url"] = mcp_preset_url(p);
+    srv["auth"] = p.auth;
+    srv["preset"] = p.preset;
+    if (*p.guide) srv["guide"] = p.guide;
+    Val probed = mcp_probe(srv);
+    if (mcp_str(probed, "status") != "ok") {
+      fail_s[p.preset] = now;
+      std::cerr << "MAG plugins: auto " << p.name << ": " << mcp_str(probed, "error")
+                << "\n";
+      continue;
+    }
+    const std::string sid = mcp_str(probed, "id");
+    {
+      std::lock_guard<std::mutex> lk(MCP_MTX);
+      if (mcp_find_locked(sid)) {
+        done.insert(p.preset);
+        continue;
+      }
+      MCP_SERVERS.push_back(probed);
+      mcp_save_locked();
+    }
+    {
+      std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
+      mcp_bind_preset_bots_locked(sid, &p);
+      save_agents();
+    }
+    done.insert(p.preset);
+    plugins_event();
+    agents_event();
+    std::cerr << "MAG plugins: auto " << p.name << " bound to all bots\n";
+  }
+}
+static void mcp_auto_once() { mcp_ensure_auto_plugins(); }
+static void mcp_bind_new_bot(const std::string &bot) {
+  if (bot.empty() || env("MAG_ROOM_MCP_AUTO", "1") == "0") return;
+  mcp_auto_once();
+  std::vector<std::pair<std::string, const McpPreset *>> want;
+  {
+    std::lock_guard<std::mutex> lk(MCP_MTX);
+    mcp_load_locked();
+    for (auto &s : MCP_SERVERS) {
+      const McpPreset *pre = mcp_preset(mcp_str(s, "preset"));
+      if (pre && pre->auto_bind) want.push_back({mcp_str(s, "id"), pre});
+    }
+  }
+  if (want.empty()) return;
+  std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
+  for (auto &w : want) mcp_bind_preset_bots_locked(w.first, w.second, bot);
+  save_agents();
+}
 // Probes outside the lock and stores the result if the server still exists.
 static Val mcp_probe_store(const std::string &sid) {
   Val srv;
@@ -217,6 +327,7 @@ static bool mcp_route(int fd, Req &r, const std::string &m, const std::string &p
   const std::string rest = path.size() > 13 ? path.substr(13) : "";
 
   if (path == "/api/plugins" && m == "GET") {
+    mcp_auto_once();
     send_json(fd, 200, mcp_plugins_json());
     return true;
   }
@@ -226,7 +337,7 @@ static bool mcp_route(int fd, Req &r, const std::string &m, const std::string &p
     const std::string token = s("token"), bot = s("bot");
     if (pre) {
       if (name.empty()) name = pre->name;
-      url = pre->url;
+      url = mcp_preset_url(*pre);
       auth = pre->auth;
       if (s("auth") == "connector" && std::string(pre->preset) == "github") auth = "connector";
       if (pre->token_required && auth != "connector" && token.empty()) {
@@ -300,14 +411,9 @@ static bool mcp_route(int fd, Req &r, const std::string &m, const std::string &p
       MCP_SERVERS.push_back(probed);
       mcp_save_locked();
     }
-    if (!bot.empty()) {
+    if (!bot.empty() || (pre && pre->auto_bind)) {
       std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
-      const Val autov("auto");
-      Val off = Val::array();
-      if (pre)
-        for (const char *t : pre->off) off.push(Val(t));
-      mcp_bind_locked(bot, mcp_str(probed, "id"), true, pre && pre->auto_approve ? &autov : nullptr,
-                      off.size() ? &off : nullptr);
+      mcp_bind_preset_bots_locked(mcp_str(probed, "id"), pre, bot);
       save_agents();
     }
     plugins_event();

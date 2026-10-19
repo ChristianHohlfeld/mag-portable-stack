@@ -66,6 +66,10 @@ cp -a /var/lib/magbot/room "$BACKUP/room"
 if [[ -L /opt/mag-stack/current ]]; then readlink /opt/mag-stack/current > "$BACKUP/previous-release"; fi
 install -m 0755 "$SOURCE/build/magroom" "$SOURCE/build/mag-browser" "$SOURCE/build/magbot-native" "$SOURCE/build/mag-browser-webrtc" "$WHISPER_CLI" "$RELEASE/bin/"
 cp -a "$SOURCE/mag-room/web/." "$RELEASE/web/"
+# Long MCP names wrap. The page is applied here so the source file stays the
+# one CI already syntax-checks, plus this one reviewed diff.
+patch --forward --batch "$RELEASE/web/index.html" \
+  "$SOURCE/ops/trust/mcp-card-overflow.patch"
 install -d "$RELEASE/web/static"
 cp -a "$SOURCE/mag-room/static/." "$RELEASE/web/static/"
 # Vendor once into a persistent local cache. Existing assets work offline;
@@ -207,6 +211,10 @@ systemctl enable mag-120.service
 # A failed ingress check rolls back BEFORE replacing the running room process.
 bash "$NGINX_SYNC" activate
 bash "$NGINX_SYNC" smoke
+# Public ISRG roots before the room restarts, so MCP HTTPS (and the audit
+# proxy's upstream check) trust Let's Encrypt Generation Y. Does not touch
+# golden.qcow2 or mag-llm.
+bash "$SOURCE/ops/trust/install-trust.sh"
 systemctl restart mag-120.service
 systemctl enable --now mag-browser-webrtc.service
 systemctl restart mag-browser-webrtc.service
@@ -217,6 +225,15 @@ curl -fsS --max-time 5 http://127.0.0.1:18784/health
 # Revalidate the new room through the already-verified nginx ingress.
 bash "$NGINX_SYNC" smoke
 /usr/local/bin/magbot status
+# Running bots keep their overlay. Push the refreshed guest trust store now;
+# a later despawn deletes that disk and the anchors with it.
+if [[ -d /etc/mag-audit/vm ]]; then
+  while read -r id state _; do
+    [[ "$state" == ready ]] || continue
+    /usr/local/bin/magbot audit-proxy "$id" \
+      || echo "WARN: guest trust not applied in $id" >&2
+  done < <(/usr/local/bin/magbot status || true)
+fi
 for unit in mag-chat.service pm2-chris.service; do if systemctl cat "$unit" >/dev/null 2>&1; then systemctl disable --now "$unit"; fi; done
 systemctl enable --now mag-stack-check.timer mag-git-gateway.socket
 bash "$NGINX_SYNC" commit

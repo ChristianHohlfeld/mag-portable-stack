@@ -83,18 +83,19 @@ static void finish_spawn(const std::string &id, std::string vm, bool resume) {
     AGENTS[idx]["pending_vm"] = vm;
     try { save_agents(); } catch (...) {}
   }
-  bool orphan = false, detached = false;
+  bool orphan = false, detached = false, attach = false;
   {
     std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
     int idx = agent_index(id);
     if (idx < 0 || bot_field(idx, "pending_vm") != vm) {
       orphan = ok; detached = true;
-    } else if (ok) {
-      AGENTS[idx]["vm"] = vm;
-      drop_key(AGENTS[idx], "pending_vm");
-      try { save_agents(); } catch (...) {}
     } else {
-      AGENTS.erase(AGENTS.begin() + idx);
+      // An existing chat-only bot that gets a VM stays a bot when it fails.
+      attach = AGENTS[idx].find("vm_attach") != nullptr;
+      drop_key(AGENTS[idx], "pending_vm");
+      drop_key(AGENTS[idx], "vm_attach");
+      if (ok) AGENTS[idx]["vm"] = vm;
+      else if (!attach) AGENTS.erase(AGENTS.begin() + idx);
       try { save_agents(); } catch (...) {}
     }
   }
@@ -110,6 +111,11 @@ static void finish_spawn(const std::string &id, std::string vm, bool resume) {
     return;
   }
   std::cerr << "spawn " << vm << " for " << id << " failed: " << error << std::endl;
+  if (attach) {
+    agents_event();
+    emit_event("error", id, "", "VM für den Bot konnte nicht erstellt werden: " + error);
+    return;
+  }
   drop_bot_refs(id);
   agents_event();
   emit_event("error", id, "", "VM für den neuen Bot konnte nicht erstellt werden: " + error);
@@ -874,6 +880,46 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
     }
     auto out = browser_json(bot_field(idx, "vm"), "/" + action, "POST", r.body);
     send_json(fd, 200, mj::dump(out));
+    return;
+  }
+  // Gives an existing chat-only bot its own VM (shell, browser, git) through
+  // the same spawn path as a new bot; a failure keeps the bot chat-only.
+  if (m == "POST" && path.rfind("/api/agents/", 0) == 0 && path.size() > 15 &&
+      path.compare(path.size() - 3, 3, "/vm") == 0) {
+    if (bridge || !actor.ok || actor.role != "owner") {
+      error_json(fd, 403, "Nur der Besitzer");
+      return;
+    }
+    const std::string id = url_decode(path.substr(12, path.size() - 15));
+    auto busy = [&](int idx) {
+      return !bot_field(idx, "vm").empty() || !bot_field(idx, "pending_vm").empty();
+    };
+    {
+      std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
+      int idx = agent_index(id);
+      if (idx < 0) { error_json(fd, 404, "Unknown agent"); return; }
+      if (busy(idx)) { error_json(fd, 409, "Bot hat bereits eine VM"); return; }
+    }
+    auto pre = run_argv({"sudo", "-n", AGENT_CTL, "preflight"}, 60);
+    if (pre.code != 0) {
+      error_json(fd, 503, "Bot-VM Vorprüfung fehlgeschlagen: " + trim(pre.out).substr(0, 400));
+      return;
+    }
+    std::string vm;
+    {
+      std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
+      int idx = agent_index(id);
+      if (idx < 0) { error_json(fd, 404, "Unknown agent"); return; }
+      if (busy(idx)) { error_json(fd, 409, "Bot hat bereits eine VM"); return; }
+      vm = next_vm();
+      AGENTS[idx]["pending_vm"] = vm;
+      AGENTS[idx]["vm_attach"] = true;
+      SPAWNING_VMS.insert(vm);
+      save_agents();
+    }
+    agents_event();
+    std::thread([id, vm] { finish_spawn(id, vm, false); }).detach();
+    send_json(fd, 202, "{\"ok\":true,\"spawning\":true}");
     return;
   }
   if (path.rfind("/api/agents/", 0) == 0) {

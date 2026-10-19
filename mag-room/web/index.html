@@ -255,7 +255,7 @@ dialog{border-radius:10px;border-color:var(--line);background:var(--surface)}
 </style><style id="work-status">
 .work-status{display:flex;align-items:center;flex-wrap:wrap;gap:8px;font-size:13px;color:var(--secondary);margin:0 0 8px;min-height:22px}
 .work-status .pulse{width:8px;height:8px;border-radius:50%;background:var(--secondary);flex:none;animation:workpulse 1.5s ease-out infinite}
-.work-status .work-label{min-width:0}
+.work-status .work-label{min-width:0;flex:0 1 auto;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
 .work-status .work-stop{margin-left:auto;border:1px solid var(--line);border-radius:8px;padding:2px 8px;font-size:12px;color:var(--secondary);background:transparent}
 .work-status .work-stop:hover{color:var(--text);background:var(--hover)}
 .work-status .work-bar{flex:1 0 100%;height:3px;border-radius:99px;background:var(--panel-3);overflow:hidden}
@@ -284,7 +284,7 @@ dialog{border-radius:10px;border-color:var(--line);background:var(--surface)}
 .thinking[data-state="live"] .think-title{background:linear-gradient(90deg,var(--muted) 0%,var(--muted) 38%,var(--text) 50%,var(--muted) 62%,var(--muted) 100%);background-size:240% 100%;-webkit-background-clip:text;background-clip:text;color:transparent;animation:think-shine 2.2s linear infinite}
 @keyframes think-shine{from{background-position:100% 0}to{background-position:-140% 0}}
 @media (prefers-reduced-motion:reduce){.thinking[data-state="live"] .think-title{background:none;color:var(--secondary)}}
-.think-peek{display:flex;flex-direction:column;justify-content:flex-end;max-height:4.9em;overflow:hidden;margin:5px 0 0 1px;padding-left:14px;border-left:2px solid var(--soft-line);color:var(--muted);font-size:13px;line-height:1.62;white-space:pre-wrap;overflow-wrap:anywhere;-webkit-mask-image:linear-gradient(to bottom,transparent 0,#000 55%);mask-image:linear-gradient(to bottom,transparent 0,#000 55%)}
+.think-peek{display:flex;flex-direction:column;justify-content:flex-end;height:4.9em;overflow:hidden;margin:5px 0 0 1px;padding-left:14px;border-left:2px solid var(--soft-line);color:var(--muted);font-size:13px;line-height:1.62;white-space:pre-wrap;overflow-wrap:anywhere;-webkit-mask-image:linear-gradient(to bottom,transparent 0,#000 55%);mask-image:linear-gradient(to bottom,transparent 0,#000 55%)}
 .think-peek[hidden],.think-body[hidden]{display:none}
 .think-line{white-space:normal}.think-line.in{animation:thinkIn .42s cubic-bezier(.2,.7,.2,1) both}
 @keyframes thinkIn{from{opacity:0;transform:translateY(5px);filter:blur(2px)}to{opacity:1;transform:none;filter:none}}
@@ -886,7 +886,15 @@ function workLabelText(s){
  if(s.hung)return 'Keine Rückmeldung seit '+fmtClock((Date.now()-(s.lastEvent||s.started||Date.now()))/1000)+' · '+(s.label||'Denkt nach');
  if(s.thinking&&s.reasoning)return clock;
  if(s.phase==='prompt'&&s.progress&&s.progress.total){const p=s.progress,eta=promptEta(p);return 'Liest Verlauf … '+fmtN(p.processed)+' / '+fmtN(p.total)+' Tokens'+(p.cache>0?' · '+fmtN(p.cache)+' aus Cache':'')+(eta?' · '+eta:'')+' · '+clock}
+ if(s.draft&&s.phase==='narration')return 'Schreibt die Antwort … '+clock;
  return (s.label||'Denkt nach')+' … '+clock;
+}
+function stripMarkers(t){return t.replace(/\[\[MAG:(WEITER|ENDE)\]\]/g,'')}
+function liveText(s){
+ const text=s.text||'';
+ if(s.draft==null)return stripMarkers(text);
+ const confirmed=text.slice(s.draftBase);
+ return stripMarkers(text.slice(0,s.draftBase)+(confirmed.length>=s.draft.length?confirmed:s.draft));
 }
 // llama reports only after each micro-batch (1.024 tokens, minutes on CPU):
 // estimate the rest from the rate measured so far instead of a frozen count.
@@ -1000,15 +1008,16 @@ function paintApprovals(node,botId){
  for(const a of mine)if(!node.querySelector('.mcp-approve[data-id="'+CSS.escape(a.id)+'"]'))content.before(approvalCard(a))}
 function updateStream(botId,immediate=false){
  const s=streams[botId];if(!s)return;
- if(!s.node||!s.node.isConnected)s.node=append({role:'assistant',name:s.name,content:s.text||''},false);
+ if(!s.node||!s.node.isConnected){s.node=append({role:'assistant',name:s.name,content:s.text||''},false);s.floor=0}
  s.node.classList.add('work-live');
  streamControls();
  const update=()=>{
   s.frame=0;if(!s.node?.isConnected)return;
   const content=s.node.querySelector('.content');
   ensureWork(s.node,s,botId);
-  if(!s.text){s.node.classList.add('processing');content.replaceChildren()}
-  else{s.node.classList.remove('processing');content.innerHTML=safeMarkdown(s.text);decorate(content)}
+  const text=liveText(s);content.hidden=!text;
+  if(!text){s.node.classList.add('processing');if(content._shown!==''){content.replaceChildren();content._shown=''}}
+  else{s.node.classList.remove('processing');if(content._shown!==text){content.innerHTML=safeMarkdown(text);decorate(content);content._shown=text}}
   s.node.querySelectorAll('.trace').forEach(el=>{if(!s.tools?.length)el.remove()});
   showThinking(s.node,'live:'+botId,s.reasoning||'',!!s.thinking,liveThinkMs(s));
   paintApprovals(s.node,botId);
@@ -1019,6 +1028,10 @@ function updateStream(botId,immediate=false){
    for(const tool of s.tools){const line=document.createElement('span');line.className='tool-line';line.textContent=(tool.result?'✓ Ergebnis · ':'→ Aufruf · ')+(tool.name||'Werkzeug')+(tool.text?'\n'+tool.text:'');body.append(line)}
   }
   renderPromptProgress(s,s.node);
+  // A live reply never shrinks: the thinking peek folding away, a revoked
+  // draft or a shorter status line would otherwise pull the chat down.
+  s.node.style.minHeight='';const h=s.node.getBoundingClientRect().height;
+  s.floor=Math.max(s.floor||0,h);if(s.floor>h+0.5)s.node.style.minHeight=s.floor+'px';
  };
  if(immediate){if(s.frame)cancelAnimationFrame(s.frame);update()}
  else if(!s.frame)s.frame=requestAnimationFrame(update);
@@ -2051,7 +2064,11 @@ events.onmessage=e=>{
    else if(s.phase!=='prompt')s.progress=null;
    updateStream(id);
   }else if(event.type==='delta'){
-   const s=streams[id];if(s){s.text+=event.text||'';s.thinking=false;s.lastEvent=Date.now();s.hung=false;updateStream(id)}
+   const s=streams[id];if(s){s.text+=event.text||'';if(s.draft!=null&&s.text.length-s.draftBase>=s.draft.length){s.draft=null;s.draftBase=null}s.thinking=false;s.lastEvent=Date.now();s.hung=false;updateStream(id)}
+  }else if(event.type==='draft'){
+   const s=streams[id];if(s){if(s.draft==null){s.draft='';s.draftBase=s.text.length}s.draft+=event.text||'';s.thinking=false;s.lastEvent=Date.now();s.hung=false;updateStream(id)}
+  }else if(event.type==='draft_drop'){
+   const s=streams[id];if(s&&s.draft!=null){s.draft=null;s.draftBase=null;updateStream(id)}
   }else if(event.type==='progress'){
    // llama.cpp prompt_progress: Verlauf lesen (auf CPU minutenlang, vorher stumm)
    const s=streams[id];if(s){const total=+event.total||0,cache=Math.max(0,+event.cache||0),done=Math.max(0,+event.processed||0);s.lastEvent=Date.now();s.hung=false;if(total>0){s.progress={processed:done,total,cache,ms:Math.max(0,+event.time_ms||0),at:Date.now()};if(s.phase!=='tool'&&s.phase!=='narration'&&s.phase!=='answer'){s.phase='prompt';s.label='Liest Verlauf'}updateStream(id)}}

@@ -469,16 +469,18 @@ class Native(unittest.TestCase):
   self.wait_idle();Model.script=[self._slow('out',25)]
   self.request('/api/message',{'text':'Stream-Reload','bots':['test']});self._busy();time.sleep(1.0)
   r=urllib.request.urlopen(f'http://127.0.0.1:{self.ui}/api/events',timeout=10)
-  ev=[];text='';t0=time.time()
+  ev=[];text='';draft='';t0=time.time()
   while time.time()-t0<8:
    line=r.readline().decode()
    if not line.startswith('data: '):continue
    e=json.loads(line[6:]);ev.append(e.get('type'))
    if e.get('type')=='delta':text+=e.get('text','')
+   if e.get('type')=='draft':draft+=e.get('text','')
    if e.get('type') in('bot_done','idle'):break
   r.close()
-  self.assertEqual(ev[0],'bot_start','replay starts the running turn');self.assertEqual([e for e in ev[1:] if e!='step'][0],'delta','status steps may precede the replayed text')
+  self.assertEqual(ev[0],'bot_start','replay starts the running turn');self.assertIn([e for e in ev[1:] if e!='step'][0],('delta','draft'),'status steps may precede the replayed text')
   self.assertEqual(text,''.join('Wort%d '%i for i in range(25)),'replay + live = exact answer, no gap/duplicate')
+  self.assertEqual(draft,text,'replayed draft + live drafts = exact answer, no gap/duplicate')
   s=self.wait_idle();self.assertEqual(s['room'][-1]['content'].strip(),text.strip())
   r=urllib.request.urlopen(f'http://127.0.0.1:{self.ui}/api/events',timeout=3)
   try:
@@ -903,7 +905,7 @@ class Native(unittest.TestCase):
   for obsolete in ('browser-selector','browser-click','browser-text',
                    'browser-type','browser-scroll','browser-read'):
    self.assertNotIn(obsolete,html)
-  self.assertIn("content.innerHTML=safeMarkdown(s.text)",html)
+  self.assertIn("content.innerHTML=safeMarkdown(text)",html);self.assertIn("event.type==='draft'",html);self.assertIn("event.type==='draft_drop'",html)
   self.assertIn("createImageBitmap",html)
   self.assertNotIn('notice();screen();',html)
   self.error(404,'/api/console/test',{'command':'whoami'}) # no HTTP terminal fallback
@@ -1206,6 +1208,37 @@ class Native(unittest.TestCase):
   html=self.request('/',raw=True).decode()
   for needle in ('work-status','Keine Rückmeldung seit ','Fertig ·',"event.type==='step'",'phase-hung','phase-error','Liest Verlauf'):
    self.assertIn(needle, html)
+ def test_16a_answer_streams_as_draft_narration_is_revoked(self):
+  self.wait_idle();events=[]
+  def listen():
+   r=urllib.request.urlopen(f'http://127.0.0.1:{self.ui}/api/events',timeout=10);r.fp.raw._sock.settimeout(6)
+   try:
+    while True:
+     line=r.readline().decode()
+     if line.startswith('data: '):
+      e=json.loads(line[6:]);events.append(e)
+      if e.get('type')=='bot_done':break
+   except Exception:pass
+   finally:r.close()
+  t=threading.Thread(target=listen,daemon=True);t.start();time.sleep(.3)
+  first=[{'content':'Ich schaue kurz nach.\n'},{'tool_calls':[{'index':0,'id':'call_d','function':{'name':'remember','arguments':'{"fact":"entwurf"}'}}]}]
+  Model.script=[first,['Erste Zeile.\n','Zweite Zeile.']]
+  try:
+   self.request('/api/message',{'text':'Entwurf bitte','bots':['test']})
+   self.wait_room('Zweite Zeile.');self.wait_idle()
+  finally:Model.script=[]
+  t.join(8)
+  kinds=[e.get('type') for e in events]
+  drafts=[e.get('text') for e in events if e.get('type')=='draft']
+  self.assertIn('Ich schaue kurz nach.\n',drafts,kinds)
+  self.assertIn('draft_drop',kinds)
+  self.assertLess(kinds.index('draft_drop'),kinds.index('tool') if 'tool' in kinds else len(kinds))
+  last_drop=len(kinds)-1-kinds[::-1].index('draft_drop')
+  self.assertEqual(''.join(e.get('text','') for e in events[last_drop:] if e.get('type')=='draft'),'Erste Zeile.\nZweite Zeile.')
+  self.assertLess(kinds.index('draft',last_drop),kinds.index('delta',last_drop),'the answer is visible before the round ends')
+  ans=[m for m in self.request('/api/state')['room'] if m.get('role')=='assistant' and 'Zweite Zeile' in (m.get('content') or '')][-1]
+  self.assertFalse(any('Zeile' in s for s in ans.get('steps') or []),ans.get('steps'))
+  self.assertTrue(any('schaue kurz nach' in s for s in ans.get('steps') or []),ans.get('steps'))
  def test_17_scoped_room_memory_and_workspace(self):
   self.wait_idle()
   self._access(["chris@github"])

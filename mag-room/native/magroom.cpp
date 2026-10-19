@@ -1117,7 +1117,8 @@ static std::vector<std::shared_ptr<Sub>> SUBS;
 // Replay buffer of the running answer (guarded by SUBS_MTX): a page that
 // (re)connects mid-stream gets bot_start + tools + reasoning + text so far,
 // then continues with live deltas - no gap, no duplicate, no new generation.
-struct LiveTurn { std::string start, bot, name, text, reasoning; std::vector<std::string> tools; bool on = false; };
+// The unconfirmed draft of the current round follows the confirmed text.
+struct LiveTurn { std::string start, bot, name, text, reasoning, draft; size_t draft_confirmed = 0; std::vector<std::string> tools; bool on = false; };
 static LiveTurn LIVE;
 static std::string event_type_of(const std::string &j) {
   static const std::string k = "\"type\":\"";
@@ -1134,11 +1135,17 @@ static void live_track_locked(const std::string &j) {
     Val v; if (mj::parse(j, v)) { if (auto b = v.find("bot")) LIVE.bot = b->asStr(); if (auto n = v.find("name")) LIVE.name = n->asStr(); }
     return; }
   if (!LIVE.on) return;
-  if (t == "delta" || t == "reasoning") {
+  if (t == "delta" || t == "reasoning" || t == "draft") {
     Val v; if (!mj::parse(j, v)) return;
     std::string piece = v.find("text") ? v.find("text")->asStr() : "";
+    if (t == "draft") { LIVE.draft += piece; return; }
     (t == "delta" ? LIVE.text : LIVE.reasoning) += piece;
+    if (t == "delta" && !LIVE.draft.empty() &&
+        (LIVE.draft_confirmed += piece.size()) >= LIVE.draft.size()) {
+      LIVE.draft.clear(); LIVE.draft_confirmed = 0;
+    }
     return; }
+  if (t == "draft_drop") { LIVE.draft.clear(); LIVE.draft_confirmed = 0; return; }
   if (t == "tool" || t == "tool_result") { if (LIVE.tools.size() < 200) LIVE.tools.push_back(j); return; }
   if (t == "bot_done" || t == "cancelled" || t == "idle" || t == "reset") LIVE = LiveTurn();
 }
@@ -1154,6 +1161,8 @@ static std::vector<std::string> live_replay_locked() {
   piece("reasoning", LIVE.reasoning);
   for (auto &t : LIVE.tools) out.push_back(t);
   piece("delta", LIVE.text);
+  if (LIVE.draft.size() > LIVE.draft_confirmed)
+    piece("draft", LIVE.draft.substr(LIVE.draft_confirmed));
   return out;
 }
 static void publish(const std::string &jsonLine) {
@@ -3343,7 +3352,7 @@ static void run_think() {
   run_cur().error.clear();
   publish_run_locked();
 }
-static void run_narration(const std::string &live) {
+static void run_narration(const std::string &live, bool commit = true) {
   std::lock_guard<std::mutex> lk(RUN_MTX);
   if (!run_cur().on)
     return;
@@ -3366,12 +3375,13 @@ static void run_narration(const std::string &live) {
     cur.clear();
     if (l.empty())
       continue;
-    if (idx >= run_cur().narr_lines)
+    if (commit && idx >= run_cur().narr_lines)
       commit_label_locked(l);
     ++idx;
     run_cur().label = l;
   }
-  run_cur().narr_lines = idx;
+  if (commit)
+    run_cur().narr_lines = idx;
   std::string tail = one_line(cur);
   if (tail.size() > 140)
     tail = tail.substr(0, 137) + "…";
@@ -3380,7 +3390,7 @@ static void run_narration(const std::string &live) {
   auto now =
       duration_cast<milliseconds>(steady_clock::now().time_since_epoch())
           .count();
-  if (!entered && idx == before && now - run_cur().published_ms < 280)
+  if (!entered && (!commit || idx == before) && now - run_cur().published_ms < 280)
     return;
   publish_run_locked();
 }
@@ -3841,6 +3851,7 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
       }
     }
     std::string live;
+    bool draft_dropped = false;
     std::optional<steady_clock::time_point> think_from, think_to;
     auto on_delta = [&](const std::string &kind, const std::string &piece) {
       Val e = Val::object();
@@ -3889,13 +3900,21 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
           for (int i = (int)n.size() - 3; i > 0; i -= 3) n.insert((size_t)i, ".");
           label += " · " + n + " Zeichen";
         }
+        if (!live.empty() && !draft_dropped) {
+          draft_dropped = true;
+          emit_event("draft_drop", bot_id, bot_name, "");
+        }
         run_show("draft", label, true, true);
         return;
       }
       // Content stays a provisional step until the round ends. Tool-round
-      // narration must not be appended to the visible answer.
+      // narration must not be appended to the answer: clients show it as a
+      // revocable draft until "delta" confirms or "draft_drop" revokes it.
       live += piece;
-      run_narration(live);
+      if (!draft_dropped)
+        emit_event("draft", bot_id, bot_name, piece);
+      // Lines become steps only once the round turns out to be narration.
+      run_narration(live, draft_dropped);
     };
     // Tools remain available on every step, without a forced early final.
     Turn t = backend_turn(messages, tools,
@@ -3949,6 +3968,8 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
         t.text.find("[[MAG:ENDE]]") == std::string::npos;
     if (!t.text.empty()) {
       if (tool_round || pending) {
+        if (!draft_dropped)
+          emit_event("draft_drop", bot_id, bot_name, "");
         fallback_narration = trim(t.text);
         run_narration(t.text);
       } else {

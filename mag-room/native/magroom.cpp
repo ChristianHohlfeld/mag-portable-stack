@@ -2638,8 +2638,8 @@ static void publish_prompt_cache(int slot, const Val *timings, double cached,
             << (long long)(evaluated < 0 ? -1 : evaluated) << std::endl;
 }
 // One llama slot per conversation. With --parallel 1 (bug #25259) every key
-// maps to slot 0, which is still stable across turns. MAG_ROOM_SLOTS must
-// match the server's --parallel before it is raised above 1.
+// maps to slot 0 and no id_slot is sent (see backend_turn). MAG_ROOM_SLOTS
+// must match the server's --parallel before it is raised above 1.
 static int slot_for_key(const std::string &key) {
   if (PROMPT_SLOTS <= 1 || key.empty())
     return 0;
@@ -2895,9 +2895,12 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   // the prompt is evaluated (minutes on CPU) instead of staying silent.
   body["return_progress"] = true;
   body["cache_prompt"] = true;
-  // Pin this conversation to one slot so another caller cannot evict it by
-  // being handed a "free" slot. Same id on every turn of the same bot.
-  body["id_slot"] = id_slot;
+  // llama/ik consult the --cache-ram prompt cache only when the server picks
+  // the slot itself; an explicit id_slot skips both save and restore. With a
+  // single slot, pinning therefore made every bot switch (and every Grok/Ali
+  // call in between) re-read the whole history. Pin only with several slots.
+  if (PROMPT_SLOTS > 1)
+    body["id_slot"] = id_slot;
   // DeepSeek-V4-Flash-0731 template: enable_thinking only changes the
   // generation prompt at the END -> toggling it keeps the prompt cache.
   // reasoning_effort is different: the template puts a "Reasoning Effort"

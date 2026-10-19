@@ -44,13 +44,19 @@ class Model(http.server.BaseHTTPRequestHandler):
    for m in obj.get('messages') or []:
     c=m.get('content');parts.append(c if isinstance(c,str) else json.dumps(c,ensure_ascii=False,sort_keys=True))
    text='\x1e'.join(parts);evaluated=max(1,len(text));cached=0;slot=obj.get('id_slot',None)
+   def lcp(prev):
+    n=0;lim=min(len(prev),len(text))
+    while n<lim and prev[n]==text[n]:n+=1
+    return n
+   # Like ik_llama: a pinned id_slot reuses only that slot's last prompt; an
+   # unpinned request goes through the --cache-ram store (several prompts).
    if obj.get('cache_prompt') is True and slot is not None:
     prev=type(self).last_prompt.get(slot)
-    if isinstance(prev,str):
-     n=0;lim=min(len(prev),len(text))
-     while n<lim and prev[n]==text[n]:n+=1
-     cached=n
+    if isinstance(prev,str):cached=lcp(prev)
     type(self).last_prompt[slot]=text
+   elif obj.get('cache_prompt') is True:
+    ram=type(self).last_prompt.setdefault('ram',[])
+    cached=max([lcp(p) for p in ram]+[0]);ram.append(text)
    stat=json.dumps({'choices':[],'tokens_cached':cached,'tokens_evaluated':evaluated,'timings':{'prompt_n':max(0,evaluated-cached),'prompt_per_second':40.0,'predicted_n':3,'predicted_per_second':8.0,'cache_n':cached}}).encode()
    payload=b'data: '+stat+b'\n\n';self.wfile.write(('%x\r\n'%len(payload)).encode()+payload+b'\r\n');self.wfile.flush()
    end=b'data: [DONE]\n\n';self.wfile.write(('%x\r\n'%len(end)).encode()+end+b'\r\n0\r\n\r\n');self.wfile.flush()
@@ -647,9 +653,9 @@ class Native(unittest.TestCase):
   if start(n1)==start(n2):
    self.assertTrue(m2[1]['content'].startswith(m1[1]['content'].split('\n[Kontext]')[0]),'Transcript must only grow at its end')
   self.assertTrue(Model.calls[-1]['return_progress']);self.assertTrue(Model.calls[-1]['cache_prompt'])
-  self.assertEqual(Model.calls[-1]['id_slot'],Model.calls[-2]['id_slot'])
+  self.assertNotIn('id_slot',Model.calls[-1],'one llama slot: the server must pick it so --cache-ram applies')
  def test_09n_prompt_cache_reuses_identical_prefix(self):
-  # Fake llama: tokens_cached is the shared prefix. A stable slot + identical
+  # Fake llama: tokens_cached is the shared prefix. Identical
   # memory bytes must make the second turn a cache hit. Appending a memory
   # keeps the old block as a prefix; an edit rewrites only from that line.
   Model.last_prompt.clear()
@@ -662,7 +668,7 @@ class Native(unittest.TestCase):
    return Model.calls[-1]
   a=turn('Prefix eins');b=turn('Prefix zwei')
   self.assertTrue(a['cache_prompt'] and b['cache_prompt'])
-  self.assertEqual(a['id_slot'],b['id_slot'])
+  self.assertNotIn('id_slot',a);self.assertNotIn('id_slot',b)
   ma,mb=_mem(a['messages'][0]['content']),_mem(b['messages'][0]['content'])
   self.assertEqual(ma,mb,'unchanged memory must be byte-identical')
   self.assertEqual(hashlib.sha256(ma.encode()).hexdigest(),hashlib.sha256(mb.encode()).hexdigest())
@@ -689,6 +695,22 @@ class Native(unittest.TestCase):
   self.assertTrue(edited.rstrip().endswith('Gamma neu'))
   log=(pathlib.Path(self.tmp.name)/'server.log').read_text(errors='replace')
   self.assertIn('tokens_cached=',log);self.assertIn('tokens_evaluated=',log)
+ def test_09o_bot_switch_keeps_each_prompt_cached(self):
+  # Two bots alternate on one llama slot. Unpinned, the server's RAM prompt
+  # cache restores each bot's own prefix; pinned, every switch was a miss.
+  Model.last_prompt.clear()
+  b=self.request('/api/agents',{'name':'Wechsel','vm':False})
+  try:
+   def turn(text,bot):
+    calls=len(Model.calls)
+    self.request('/api/message',{'text':text,'bots':[bot]})
+    self._settle(lambda s: not s['busy'] and len(Model.calls)>calls and any(m.get('content')==text for m in s['room']))
+    return self.request('/api/state')['model_info']['last']
+   turn('Wechsel eins','test');turn('Wechsel zwei',b['id']);st=turn('Wechsel drei','test')
+   self.assertGreaterEqual(st['tokens_cached']*2,st['tokens_evaluated'],'returning bot must hit its cached prefix')
+   self.assertNotIn('id_slot',Model.calls[-1])
+  finally:
+   self.assertTrue(self.request('/api/agents/'+b['id'],method='DELETE')['ok'])
  def test_09i_chat_only_bot_has_no_vm_tools(self):
   names=[t['function']['name'] for t in Model.calls[-1]['tools']]
   for vm_tool in ('run_command','fetch_room_file','share_room_file','browser_open'):self.assertNotIn(vm_tool,names)
@@ -702,7 +724,7 @@ class Native(unittest.TestCase):
    self.wait_room('Fertig gelesen.');self.wait_idle()
   finally:Model.script=[]
   html=self.request('/',raw=True).decode()
-  for needle in ("event.type==='progress'",'Liest Verlauf','streamClock'):self.assertIn(needle,html)
+  for needle in ("event.type==='progress'",'Liest Verlauf','streamClock','function promptEta',"' aus Cache'",'noch ca. '):self.assertIn(needle,html)
  def test_09k_thinking_toggle_per_message(self):
   self.request('/api/message',{'text':'Denk nach','bots':['test'],'think':True});self.wait_room('Hallo aus dem Modell.');self.wait_idle()
   self.assertEqual(Model.calls[-1]['chat_template_kwargs'],{'enable_thinking':True})

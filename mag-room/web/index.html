@@ -881,8 +881,17 @@ function workLabelText(s){
  if(s.error)return 'Fehler · '+s.error;
  if(s.hung)return 'Keine Rückmeldung seit '+fmtClock((Date.now()-(s.lastEvent||s.started||Date.now()))/1000)+' · '+(s.label||'Denkt nach');
  if(s.thinking&&s.reasoning)return clock;
- if(s.phase==='prompt'&&s.progress&&s.progress.total){const p=s.progress;return 'Liest Verlauf … '+fmtN(p.processed)+' / '+fmtN(p.total)+' Tokens · '+clock}
+ if(s.phase==='prompt'&&s.progress&&s.progress.total){const p=s.progress,eta=promptEta(p);return 'Liest Verlauf … '+fmtN(p.processed)+' / '+fmtN(p.total)+' Tokens'+(p.cache>0?' · '+fmtN(p.cache)+' aus Cache':'')+(eta?' · '+eta:'')+' · '+clock}
  return (s.label||'Denkt nach')+' … '+clock;
+}
+// llama reports only after each micro-batch (1.024 tokens, minutes on CPU):
+// estimate the rest from the rate measured so far instead of a frozen count.
+function promptEta(p){
+ const read=p.processed-p.cache,left=p.total-p.processed;
+ if(!(p.ms>=1000)||read<=0||left<=0)return '';
+ const sec=left/(read*1000/p.ms)-(Date.now()-(p.at||Date.now()))/1000;
+ if(sec<=30)return 'gleich fertig';
+ return 'noch ca. '+(sec<90?'1 min':Math.round(sec/60)+' min');
 }
 function doneLabel(msg){
  if(msg.work_error)return 'Fehler · '+msg.work_error;
@@ -2009,14 +2018,14 @@ events.onmessage=e=>{
    s.error=event.error||'';
    s.lastEvent=Date.now();s.hung=false;
    if(event.started)s.started=s.started||event.started*1000;
-   if(+event.total>0)s.progress={processed:+event.processed||0,total:+event.total,cache:+event.cache||0};
+   if(+event.total>0){const old=s.progress,done=+event.processed||0;s.progress={processed:done,total:+event.total,cache:+event.cache||0};if(old&&old.processed===done&&old.ms){s.progress.ms=old.ms;s.progress.at=old.at}}
    else if(s.phase!=='prompt')s.progress=null;
    updateStream(id);
   }else if(event.type==='delta'){
    const s=streams[id];if(s){s.text+=event.text||'';s.thinking=false;s.lastEvent=Date.now();s.hung=false;updateStream(id)}
   }else if(event.type==='progress'){
    // llama.cpp prompt_progress: Verlauf lesen (auf CPU minutenlang, vorher stumm)
-   const s=streams[id];if(s){const total=+event.total||0,cache=Math.max(0,+event.cache||0),done=Math.max(0,+event.processed||0);s.lastEvent=Date.now();s.hung=false;if(total>0){s.progress={processed:done,total,cache};if(s.phase!=='tool'&&s.phase!=='narration'&&s.phase!=='answer'){s.phase='prompt';s.label='Liest Verlauf'}updateStream(id)}}
+   const s=streams[id];if(s){const total=+event.total||0,cache=Math.max(0,+event.cache||0),done=Math.max(0,+event.processed||0);s.lastEvent=Date.now();s.hung=false;if(total>0){s.progress={processed:done,total,cache,ms:Math.max(0,+event.time_ms||0),at:Date.now()};if(s.phase!=='tool'&&s.phase!=='narration'&&s.phase!=='answer'){s.phase='prompt';s.label='Liest Verlauf'}updateStream(id)}}
   }else if(event.type==='reasoning'){
    const s=streams[id];if(s){const now=Date.now();const first=!s.thinking;s.reasoning=(s.reasoning||'')+(event.text||'');s.thought=s.reasoning.length;s.thinkStart=s.thinkStart||now;s.thinkLast=now;s.thinking=true;s.lastEvent=now;s.hung=false;if(first||!s.thoughtAt||now-s.thoughtAt>250){s.thoughtAt=now;updateStream(id)}}
   }else if(event.type==='tool'){

@@ -1620,10 +1620,7 @@ static const char *VM_RULES =
     "`date > /var/lib/mag-deploy/request` startet den normalen MAG-Deploy "
     "von main (Backup, Smoke-Test, automatischer Rollback). Du "
     "hast ausserdem einen eigenen persistenten Browser in deiner VM und kannst "
-    "damit surfen. Deine eigene Tailnet-Website ist "
-    "https://{vm}.bot.stardenburg.de (nur im Tailnet, nicht oeffentlich). "
-    "Dateien in /home/bot/www veroeffentlichst du mit bash /home/bot/publish-site. "
-    "Lies /home/bot/SITE.md. Stuetze Aussagen ueber deine VM auf echte Werkzeugausgaben "
+    "damit surfen. Stuetze Aussagen ueber deine VM auf echte Werkzeugausgaben "
     "und erfinde nichts. ";
 static const char *CHAT_ONLY_RULES =
     "Du bist ein reiner Gespraechs-Bot: Du hast KEINE eigene VM, keine "
@@ -1720,6 +1717,25 @@ static std::string server_clock_minute() {
     return "";
   return buf;
 }
+static bool bot_site_ready(int bot_idx) {
+  std::string vm = bot_field(bot_idx, "vm", "keine");
+  if (vm == "keine" || vm.empty())
+    return false;
+  if (const char *over = std::getenv("MAG_BOTS_READY"))
+    return ::strcmp(over, "1") == 0;
+  return ::access("/var/lib/mag-bots/ready", R_OK) == 0;
+}
+static std::string bot_site_rules(int bot_idx) {
+  // Volatile on purpose: the cached VM_RULES prefix must not claim a site
+  // that install.sh has not marked ready.
+  std::string text =
+      "\nDeine eigene Tailnet-Website ist https://{vm}.bot.stardenburg.de "
+      "(nur im Tailnet, nicht oeffentlich). "
+      "Dateien in /home/bot/www veroeffentlichst du mit bash /home/bot/publish-site. "
+      "Lies /home/bot/SITE.md.";
+  replaceAll(text, "{vm}", bot_field(bot_idx, "vm", ""));
+  return text;
+}
 static std::string build_context_tail(int bot_idx, bool autotalk,
                                       const std::string &other) {
   // Volatile only, and only after the transcript: network, files, clock,
@@ -1729,6 +1745,8 @@ static std::string build_context_tail(int bot_idx, bool autotalk,
   out += OFFLINE.load() ? "OFFLINE" : "online";
   out += "\nAktuell geteilte Raumdateien:\n" + file_manifest();
   out += "\nZeit: " + server_clock_minute();
+  if (bot_site_ready(bot_idx))
+    out += bot_site_rules(bot_idx);
   if (autotalk) {
     std::string at = AUTOTALK_RULES;
     replaceAll(at, "{other}", other.empty() ? "der Nutzer" : other);

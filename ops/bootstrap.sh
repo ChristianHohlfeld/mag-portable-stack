@@ -149,7 +149,7 @@ run bash "$ROOT/ops/gitea/install.sh"
 
 phase build
 run cmake -S "$ROOT" -B "$ROOT/build" -G Ninja -DCMAKE_BUILD_TYPE=Release
-run cmake --build "$ROOT/build" -j "$(nproc)" --target magroom mag-audit-gateway mag-browser magbot-native
+run cmake --build "$ROOT/build" -j "$(nproc)" --target magroom mag-audit-gateway mag-browser magbot-native mag-bots-publish
 if (( DRY )); then
   echo '+ go build -mod=mod -o build/mag-browser-webrtc ./mag-room/webrtc'
 else

@@ -59,6 +59,8 @@ jobs:
         run: bash ops/backup/tests/test-passwordless-migrate.sh
       - name: Disposable repository with Gitea SQLite, room and Pages restore
         run: bash ops/backup/tests/test-backup.sh
+      - name: Empty legacy Gitea directory does not hide real repositories
+        run: bash ops/backup/tests/test-gitea-root.sh
       - name: No committed secrets
         uses: gitleaks/gitleaks-action@v2
         env:

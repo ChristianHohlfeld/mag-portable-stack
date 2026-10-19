@@ -2942,6 +2942,7 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
     backend_fd_slot() = c.fd;
   }
   SseAcc acc;
+  long long draft_ms = 0;
   double saw_cached = -1, saw_evaluated = -1;
   bool have_cached_field = false, have_eval_field = false;
   Val timings_seen;
@@ -3025,9 +3026,24 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
       on_delta("delta", ct->asStr());
     }
     auto tc = d->find("tool_calls");
-    if (tc && tc->isArr())
+    if (tc && tc->isArr()) {
       for (auto &x : *tc->arr)
         merge_tool_delta(acc, x);
+      // A long tool call (write_file with a whole file) takes minutes on CPU
+      // and would otherwise be silent: report its name and size once a second.
+      const long long now_ms =
+          duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
+      if (!acc.calls.empty() && now_ms - draft_ms >= 1000) {
+        draft_ms = now_ms;
+        const Val &last = acc.calls.rbegin()->second;
+        size_t chars = 0;
+        for (auto &kv : acc.calls)
+          if (auto a = kv.second.find("args")) chars += a->asStr().size();
+        auto nm = last.find("name");
+        on_delta("tool_draft", (nm ? nm->asStr() : std::string()) + "\t" +
+                                   std::to_string(chars));
+      }
+    }
   }
   {
     std::lock_guard<std::mutex> lk(BACKEND_FD_MTX);
@@ -3839,6 +3855,20 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
         e["name"] = bot_name;
         e["text"] = piece;
         publish(mj::dump(e));
+        return;
+      }
+      if (kind == "tool_draft") {
+        const auto tab = piece.find('\t');
+        const std::string nm = piece.substr(0, tab);
+        const long chars = tab == std::string::npos ? 0 : atol(piece.c_str() + tab + 1);
+        std::string label = nm.empty() ? "Bereitet eine Aktion vor"
+                                       : "Bereitet vor: " + tool_step_label(nm);
+        if (chars >= 200) {
+          std::string n = std::to_string(chars);
+          for (int i = (int)n.size() - 3; i > 0; i -= 3) n.insert((size_t)i, ".");
+          label += " · " + n + " Zeichen";
+        }
+        run_show("draft", label, true, true);
         return;
       }
       // Content stays a provisional step until the round ends. Tool-round
@@ -5075,6 +5105,37 @@ static Val public_agent(int idx) {
   o["plugins"] = plugins;
   return o;
 }
+// Some phases send nothing for minutes: a request queued at llama-server, a
+// slow prompt batch, a tool call being generated. Every 15 s each answering or
+// waiting bot gets an "alive" event, so the UI only reports silence when the
+// room itself stops responding.
+static void alive_loop() {
+  while (!SHUTDOWN.load()) {
+    const int every = std::clamp(envi("MAG_ROOM_ALIVE_S", 15), 1, 60);
+    for (int i = 0; i < every && !SHUTDOWN.load(); i++) std::this_thread::sleep_for(seconds(1));
+    std::vector<std::string> ids;
+    {
+      std::lock_guard<std::mutex> lk(RUN_MTX);
+      const long now = (long)now_s();
+      for (auto &kv : RUNS)
+        if (kv.second.on) {
+          kv.second.last = now;
+          ids.push_back(kv.first);
+        }
+    }
+    {
+      std::lock_guard<std::mutex> lk(JOB_MTX);
+      for (auto &id : WAITING_BOTS) ids.push_back(id);
+    }
+    if (ids.empty()) continue;
+    Val e = Val::object();
+    e["type"] = "alive";
+    Val bots = Val::array();
+    for (auto &id : ids) bots.push(Val(id));
+    e["bots"] = bots;
+    publish(mj::dump(e));
+  }
+}
 static std::string state_json(const Actor *actor = nullptr) {
   Val root = Val::object();
   Val ag = Val::array();
@@ -5913,6 +5974,7 @@ int main() {
   std::thread(scheduler_loop).detach();
   std::thread(model_watcher_loop).detach();
   std::thread(file_sync_loop).detach();
+  std::thread(alive_loop).detach();
   if (env("MAG_PAGES_ENABLE", "0") == "1")
     std::thread([] { magpages::ticker(SHUTDOWN); }).detach();
   int srv = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);

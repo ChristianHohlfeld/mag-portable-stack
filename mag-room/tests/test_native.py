@@ -1150,7 +1150,7 @@ class Native(unittest.TestCase):
   self.assertGreaterEqual(ans[-1].get('elapsed_s', -1), 0)
   self.assertNotIn('[[MAG:', ans[-1]['content'])
   html=self.request('/',raw=True).decode()
-  for needle in ('work-status','hängt?','Fertig ·',"event.type==='step'",'phase-hung','phase-error','Liest Verlauf'):
+  for needle in ('work-status','Keine Rückmeldung seit ','Fertig ·',"event.type==='step'",'phase-hung','phase-error','Liest Verlauf'):
    self.assertIn(needle, html)
  def test_17_scoped_room_memory_and_workspace(self):
   self.wait_idle()
@@ -1968,6 +1968,52 @@ class StaggeredLanes(unittest.TestCase):
   for needle in ('function showThinking(',"head.className='think-head'","'Nachgedacht'","'Denkt nach'",'msg.reasoning','msg.thought_ms',"event.type==='bot_wait'",'wartet','next.waiting_bots','function thinkSettled(','function paintThinkPeek(',"className='think-dots'",'prefers-reduced-motion:reduce){.think-line.in'):self.assertIn(needle,html)
   self.assertNotIn("peek.textContent=text.slice(",html)
   self.assertNotIn("'Überlegungen'",html)
+class SilentPhases(unittest.TestCase):
+ """Minutes without model output (queued request, long tool call) must not look stuck in the UI."""
+ Q4=MultiBot.Q4;IQ3=MultiBot.IQ3
+ EXTRA_ENV={'MAG_ROOM_STAGGER':'off','MAG_ROOM_ALIVE_S':'1'}
+ setUpClass=classmethod(MultiBot.setUpClass.__func__)
+ tearDownClass=classmethod(MultiBot.tearDownClass.__func__)
+ request=classmethod(Native.request.__func__)
+ _idle=MultiBot._idle
+ def tearDown(self):Model.script=[]
+ def _events(self,seconds):
+  r=urllib.request.urlopen(f'http://127.0.0.1:{self.ui}/api/events',timeout=10);out=[];t0=time.time()
+  r.fp.raw._sock.settimeout(seconds)
+  try:
+   while time.time()-t0<seconds:
+    try:line=r.readline().decode()
+    except TimeoutError:break
+    if line.startswith('data: '):
+     e=json.loads(line[6:]);out.append(e)
+     if e.get('type')=='bot_done':break
+  finally:r.close()
+  return out
+ def test_01_alive_while_the_model_is_silent(self):
+  self._idle();Model.script=[[{'_sleep':3.5},'Fertig']]
+  self.request('/api/message',{'text':'Warte','bots':['q4bot']});time.sleep(.3)
+  ev=self._events(5)
+  alive=[e for e in ev if e.get('type')=='alive' and 'q4bot' in e.get('bots',[])]
+  self.assertGreaterEqual(len(alive),2,[e.get('type') for e in ev])
+  self._idle();time.sleep(1.3)
+  self.assertFalse([e for e in self._events(1.5) if e.get('type')=='alive'],'no heartbeat when idle')
+ def test_02_long_tool_call_is_reported_while_generated(self):
+  self._idle()
+  head={'tool_calls':[{'index':0,'id':'c1','function':{'name':'remember','arguments':''}}]}
+  part=lambda t:{'tool_calls':[{'index':0,'function':{'arguments':t}}]}
+  Model.script=[[head,part('{"text":"'),{'_sleep':1.1},part('x'*1500),{'_sleep':1.1},part('y'*100+'"}'),{'_sleep':.2}],['Gemerkt.']]
+  self.request('/api/message',{'text':'Merk dir was Langes','bots':['q4bot']})
+  ev=self._events(8)
+  drafts=[e for e in ev if e.get('type')=='step' and e.get('phase')=='draft']
+  self.assertTrue(drafts,[(e.get('type'),e.get('phase'),e.get('label')) for e in ev])
+  self.assertTrue(drafts[-1]['label'].startswith('Bereitet vor: '),drafts[-1]['label'])
+  self.assertIn('1.',drafts[-1]['label']);self.assertTrue(drafts[-1]['label'].endswith(' Zeichen'))
+  self.assertFalse([s for s in drafts[-1].get('steps',[]) if s.startswith('Bereitet vor')],'draft is never a committed step')
+  self._idle()
+ def test_03_frontend(self):
+  html=self.request('/',raw=True).decode()
+  for needle in ("event.type==='alive'","'Keine Rückmeldung seit '","if(s.phase!=='think')s.thinking=false"):self.assertIn(needle,html)
+  self.assertNotIn('hängt?',html)
 class FakeMcp(http.server.BaseHTTPRequestHandler):
  """Streamable-HTTP MCP server: bearer auth, session header, paginated tools/list as SSE."""
  protocol_version='HTTP/1.1';TOKEN='secret-token-0123456789';sessions=set();calls=[];inits=0;expire=False

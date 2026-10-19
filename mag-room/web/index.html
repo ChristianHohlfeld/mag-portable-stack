@@ -879,7 +879,7 @@ function fmtN(n){return Number(n||0).toLocaleString('de-DE')}
 function workLabelText(s){
  const clock=streamClock(s);
  if(s.error)return 'Fehler · '+s.error;
- if(s.hung)return 'hängt? · '+(s.label||'keine Rückmeldung')+' … '+clock;
+ if(s.hung)return 'Keine Rückmeldung seit '+fmtClock((Date.now()-(s.lastEvent||s.started||Date.now()))/1000)+' · '+(s.label||'Denkt nach');
  if(s.thinking&&s.reasoning)return clock;
  if(s.phase==='prompt'&&s.progress&&s.progress.total){const p=s.progress;return 'Liest Verlauf … '+fmtN(p.processed)+' / '+fmtN(p.total)+' Tokens · '+clock}
  return (s.label||'Denkt nach')+' … '+clock;
@@ -2004,6 +2004,7 @@ events.onmessage=e=>{
    if(event.name)s.name=event.name;
    s.phase=event.phase||s.phase||'think';
    s.label=event.label||s.label||'Denkt nach';
+   if(s.phase!=='think')s.thinking=false;
    s.steps=Array.isArray(event.steps)?event.steps:(s.steps||[]);
    s.error=event.error||'';
    s.lastEvent=Date.now();s.hung=false;
@@ -2039,6 +2040,7 @@ events.onmessage=e=>{
   }else if(event.type==='autotalk')$('autotalk').checked=event.on;
   else if(event.type==='queue')renderQueue(event);
   else if(event.type==='bot_wait'){if(event.on){waitingBots.set(id,event.after||'');busyBots.add(id)}else waitingBots.delete(id);renderLanes()}
+  else if(event.type==='alive'){for(const b of (Array.isArray(event.bots)?event.bots:[])){const s=streams[b];if(!s)continue;s.lastEvent=Date.now();if(s.hung){s.hung=false;updateStream(b,true)}}}
   else if(event.type==='plugins'){window.mcpReload&&window.mcpReload()}
   else if(event.type==='mcp_approval'){if(event.approval?.id){mcpApprovals.set(event.approval.id,event.approval);if(streams[id])updateStream(id,true)}}
   else if(event.type==='mcp_approval_done'){mcpApprovals.delete(event.id);if(streams[id])updateStream(id,true);else document.querySelector('.mcp-approve[data-id="'+CSS.escape(String(event.id||''))+'"]')?.remove()}

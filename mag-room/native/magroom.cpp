@@ -1620,7 +1620,10 @@ static const char *VM_RULES =
     "`date > /var/lib/mag-deploy/request` startet den normalen MAG-Deploy "
     "von main (Backup, Smoke-Test, automatischer Rollback). Du "
     "hast ausserdem einen eigenen persistenten Browser in deiner VM und kannst "
-    "damit surfen. Stuetze Aussagen ueber deine VM auf echte Werkzeugausgaben "
+    "damit surfen. Deine eigene Tailnet-Website ist "
+    "https://{vm}.bot.stardenburg.de (nur im Tailnet, nicht oeffentlich). "
+    "Dateien in /home/bot/www veroeffentlichst du mit bash /home/bot/publish-site. "
+    "Lies /home/bot/SITE.md. Stuetze Aussagen ueber deine VM auf echte Werkzeugausgaben "
     "und erfinde nichts. ";
 static const char *CHAT_ONLY_RULES =
     "Du bist ein reiner Gespraechs-Bot: Du hast KEINE eigene VM, keine "

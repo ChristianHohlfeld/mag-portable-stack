@@ -69,7 +69,7 @@ id=\$(tr -d '\\n' < /home/bot/.site-id)
 [[ \$id =~ ^agent[0-9]+\$ ]] || { echo 'bad site id' >&2; exit 1; }
 mkdir -p /home/bot/www
 [[ -f /home/bot/www/index.html ]] || { echo 'index.html missing in /home/bot/www' >&2; exit 1; }
-tar -C /home/bot/www -cf - . | curl -fsS --max-time 60 \\
+tar --format=ustar -C /home/bot/www -cf - . | curl -fsS --max-time 60 \\
   -H "Authorization: Bearer \$token" \\
   -H "X-Mag-Bot: \$id" \\
   -H "Content-Type: application/x-tar" \\

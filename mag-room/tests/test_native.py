@@ -1431,7 +1431,7 @@ class Native(unittest.TestCase):
   self.assertIn('no-store', html_h['Cache-Control']); self.assertNotIn('immutable', html_h['Cache-Control'])
   self.assertIn('name="mag-version" content="%s"'%version, text)
   self.assertIn('/static/marked.min.js?v=%s'%version, text)
-  for needle in ('rel="manifest"','beforeinstallprompt','Neue Version – aktualisieren',"serviceWorker.register('/sw.js')",'id="pwa-install"','id="pwa-push"','Zum Home-Bildschirm','Mitteilungen einschalten','id="update-toast"'):
+  for needle in ('rel="manifest"','beforeinstallprompt','Neue Version – aktualisieren',"serviceWorker.register('/sw.js')",'id="pwa-install"','id="pwa-push"','Zum Home-Bildschirm','Mitteilungen einschalten','Mitteilungen sind blockiert.','id="update-toast"'):
    self.assertIn(needle, text)
   for bad in ('confirm(', 'alert(', 'prompt('):
    self.assertNotIn(bad, text)

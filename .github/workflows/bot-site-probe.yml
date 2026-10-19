@@ -1,0 +1,82 @@
+name: probe bot site
+# Read-only check on the MAG host. Does not restart services or touch mag-llm.
+on:
+  pull_request:
+    types: [opened]
+permissions:
+  contents: read
+  pull-requests: write
+jobs:
+  probe:
+    runs-on: [self-hosted, mag]
+    timeout-minutes: 25
+    steps:
+      - name: probe
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -u
+          out=$(mktemp)
+          {
+            echo "host $(hostname) user $(id -un)"
+            echo "PROBE_STARTED $(date -u +%FT%TZ)"
+            deadline=$((SECONDS + 1080))
+            while (( SECONDS < deadline )); do
+              if [[ -f /etc/nginx/conf.d/mag-bots.conf || -f /var/lib/mag-bots/ready ]]; then
+                break
+              fi
+              sleep 15
+            done
+            echo "PROBE_DONE $(date -u +%FT%TZ)"
+            echo '--- units ---'
+            systemctl is-active mag-bots-publish.service mag-llm.service mag-120.service nginx.service || true
+            systemctl show mag-llm.service mag-120.service mag-bots-publish.service \
+              -p Id -p ActiveState -p ActiveEnterTimestamp -p NRestarts || true
+            echo '--- ready ---'
+            if [[ -f /var/lib/mag-bots/ready ]]; then echo ready; wc -c /var/lib/mag-bots/ready; else echo no-ready; fi
+            echo '--- nginx ---'
+            if [[ -r /etc/nginx/conf.d/mag-bots.conf ]]; then
+              grep -E 'listen|server_name|ssl_certificate ' /etc/nginx/conf.d/mag-bots.conf || true
+            else
+              echo 'mag-bots.conf missing or unreadable'
+            fi
+            echo '--- ports ---'
+            if command -v ss >/dev/null; then ss -ltn | grep -E ':8091|:443' || true; fi
+            echo '--- publish ---'
+            curl -sS -m 5 -D - -o /dev/null -X POST http://192.168.122.1:8091/publish || echo publish_curl_fail
+            echo '--- tls ---'
+            echo | openssl s_client -connect 100.123.114.16:443 -servername agent1.bot.stardenburg.de 2>/dev/null \
+              | openssl x509 -noout -subject -ext subjectAltName 2>/dev/null || echo cert_fail
+            echo '--- https agent1 ---'
+            curl -sS -m 20 -D - -o /tmp/bot-body.txt --resolve agent1.bot.stardenburg.de:443:100.123.114.16 \
+              https://agent1.bot.stardenburg.de/ || echo https_fail
+            echo '--- body ---'
+            head -c 400 /tmp/bot-body.txt 2>/dev/null || true
+            echo
+            echo '--- www ---'
+            ls -la /var/lib/mag-bots/www 2>&1 || true
+            echo '--- nft ---'
+            nft list chain inet mag_agents input 2>&1 | head -20 || true
+          } > "$out"
+          python3 - "$out" <<'PY'
+          import json, os, urllib.request
+          text = open(os.sys.argv[1], encoding="utf-8", errors="replace").read()
+          if len(text) > 50000:
+              text = text[:50000] + "\n...truncated\n"
+          body = "Live bot-site probe from the MAG host. Read only; mag-llm was not restarted by this job.\n\n```\n" + text + "\n```\n"
+          url = "https://api.github.com/repos/%s/issues/%s/comments" % (os.environ["REPO"], os.environ["PR_NUMBER"])
+          req = urllib.request.Request(
+              url,
+              data=json.dumps({"body": body}).encode(),
+              method="POST",
+              headers={
+                  "Authorization": "Bearer " + os.environ["GH_TOKEN"],
+                  "Accept": "application/vnd.github+json",
+                  "User-Agent": "mag-bot-probe",
+              },
+          )
+          with urllib.request.urlopen(req) as resp:
+              print("comment", resp.status)
+          PY

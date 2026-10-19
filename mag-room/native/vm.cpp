@@ -363,7 +363,7 @@ gitea_args(const std::vector<std::string> &args) {
   command.insert(command.end(), args.begin(), args.end());
   return command;
 }
-static void prepare_browser(const std::string &n);
+static std::string prepare_browser(const std::string &n);
 static void provision_git(const std::string &n) {
   auto record = marker(n);
   if (!str(record, "git_user").empty())
@@ -460,34 +460,79 @@ static void teardown(const std::string &n) {
     checked({"systemctl", "daemon-reload"});
   }
 }
-static void prepare_browser(const std::string &n) {
-  const std::string script = R"SH(set -e
-cat > /etc/apparmor.d/mag-chromium <<'PROFILE'
+static std::string prepare_browser(const std::string &n) {
+  // Best-effort. spawn used to tear the new VM down when this guest script
+  // returned non-zero ("Browser namespace profile failed"). Profiles are
+  // separate files so one attachment cannot sink the other. Each profile is
+  // loaded with abi first, then as a minimal profile. Chrome apt is skipped
+  // when the binary exists or dl.google.com is unreachable (offline mode
+  // drops guest forwarding).
+  const std::string script = R"SH(warn() { printf 'WARN: %s\n' "$*"; }
+aa_load() {
+  file=$1
+  name=$2
+  bin=$3
+  if ! command -v apparmor_parser >/dev/null 2>&1; then
+    warn "apparmor_parser missing; skipped $name"
+    return 0
+  fi
+  cat > "$file" <<ENDPROFILE
 abi <abi/4.0>,
 include <tunables/global>
-profile mag-chromium /opt/magbot/browsers/chromium-*/chrome-linux/chrome flags=(unconfined) {
+profile $name "$bin" flags=(unconfined) {
  userns,
 }
-profile mag-google-chrome /opt/google/chrome/chrome flags=(unconfined) {
+ENDPROFILE
+  if err=$(apparmor_parser -r "$file" 2>&1); then
+    echo "loaded $name"
+    return 0
+  fi
+  warn "apparmor $name with abi failed; retrying minimal profile"
+  [ -n "$err" ] && printf '%s\n' "$err"
+  cat > "$file" <<ENDPROFILE
+profile $name $bin flags=(unconfined) {
  userns,
 }
-PROFILE
-# Real Google Chrome (stable) from Google's signed apt repo instead of the
-# Playwright "Chrome for Testing" build (userAgentData brand, auto updates).
+ENDPROFILE
+  if err=$(apparmor_parser -r "$file" 2>&1); then
+    echo "loaded $name (minimal)"
+    return 0
+  fi
+  warn "apparmor $name not loaded"
+  [ -n "$err" ] && printf '%s\n' "$err"
+  return 0
+}
+aa_load /etc/apparmor.d/mag-google-chrome mag-google-chrome /opt/google/chrome/chrome
+aa_load /etc/apparmor.d/mag-chromium mag-chromium '/opt/magbot/browsers/chromium-*/chrome-linux/chrome'
 if [ ! -x /opt/google/chrome/chrome ]; then
-  [ -r /etc/profile.d/mag-audit-proxy.sh ] && . /etc/profile.d/mag-audit-proxy.sh
-  install -d -m 0755 /etc/apt/keyrings
-  curl -fsSL https://dl.google.com/linux/linux_signing_key.pub | gpg --dearmor --yes -o /etc/apt/keyrings/google-chrome.gpg
-  echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/google-chrome.gpg] https://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list
-  apt-get -o Acquire::Retries=2 update -qq -o Dir::Etc::sourcelist=sources.list.d/google-chrome.list -o Dir::Etc::sourceparts=- -o APT::Get::List-Cleanup=0
-  DEBIAN_FRONTEND=noninteractive apt-get install -y -qq google-chrome-stable fonts-liberation
+  if [ -r /etc/profile.d/mag-audit-proxy.sh ]; then
+    . /etc/profile.d/mag-audit-proxy.sh || warn "audit proxy profile failed"
+  fi
+  if curl -fsS --connect-timeout 8 --max-time 15 -o /dev/null https://dl.google.com/linux/linux_signing_key.pub; then
+    install -d -m 0755 /etc/apt/keyrings
+    if curl -fsSL --connect-timeout 8 --max-time 20 https://dl.google.com/linux/linux_signing_key.pub | gpg --dearmor --yes -o /etc/apt/keyrings/google-chrome.gpg \
+      && printf '%s\n' 'deb [arch=amd64 signed-by=/etc/apt/keyrings/google-chrome.gpg] https://dl.google.com/linux/chrome/deb/ stable main' > /etc/apt/sources.list.d/google-chrome.list \
+      && timeout 40 apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15 update -qq -o Dir::Etc::sourcelist=sources.list.d/google-chrome.list -o Dir::Etc::sourceparts=- -o APT::Get::List-Cleanup=0 \
+      && DEBIAN_FRONTEND=noninteractive timeout 70 apt-get install -y -qq google-chrome-stable fonts-liberation; then
+      echo "installed google-chrome-stable"
+    else
+      warn "google-chrome apt failed; keeping the image browser"
+    fi
+  else
+    warn "dl.google.com unreachable; skipped Chrome apt"
+  fi
 fi
 locale -a | grep -qi de_DE.utf8 || { locale-gen de_DE.UTF-8 >/dev/null 2>&1 || true; }
-apparmor_parser -r /etc/apparmor.d/mag-chromium
+exit 0
 )SH";
-  auto result = guest(n, {"/bin/bash", "-lc", script}, 900);
-  if (result.code)
-    throw std::runtime_error("Browser namespace profile failed");
+  auto result = guest(n, {"/bin/bash", "-lc", script}, 160);
+  if (result.code) {
+    std::string tail = result.out;
+    if (tail.size() > 800)
+      tail = tail.substr(tail.size() - 800);
+    throw std::runtime_error("Browser namespace profile failed: " + tail);
+  }
+  return result.out;
 }
 // Central web audit (ops/audit): every guest reaches the web only through the
 // logging proxy on the VM gateway and trusts its CA. Inputs are installed by
@@ -686,7 +731,14 @@ static void spawn(const std::string &n, int cpu, int ram, int disk,
     r["state"] = "booting";
     write(d / "metadata.json", mj::dump(r));
     provision_git(n);
-    prepare_browser(n);
+    try {
+      auto browser = prepare_browser(n);
+      if (browser.find("WARN:") != std::string::npos)
+        std::cerr << browser;
+    } catch (const std::exception &e) {
+      // The bot stays usable. Retry with: sudo magbot browser-sandbox <id>
+      std::cerr << "WARNING: " << e.what() << '\n';
+    }
     try {
       std::cerr << "audit-proxy: " << audit_proxy(n) << '\n';
     } catch (const std::exception &e) {
@@ -787,7 +839,7 @@ int main(int argc, char **argv) {
     }
     if (action == "browser-sandbox") {
       marker(n);
-      prepare_browser(n);
+      std::cout << prepare_browser(n);
       return 0;
     }
     if (action == "audit-proxy") {
@@ -800,7 +852,13 @@ int main(int argc, char **argv) {
     if (action == "git-sync") {
       marker(n);
       provision_git(n);
-      prepare_browser(n);
+      try {
+        auto browser = prepare_browser(n);
+        if (browser.find("WARN:") != std::string::npos)
+          std::cerr << browser;
+      } catch (const std::exception &e) {
+        std::cerr << "WARNING: " << e.what() << '\n';
+      }
       return 0;
     }
     if (action == "inspect") {

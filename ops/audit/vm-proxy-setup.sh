@@ -1,16 +1,20 @@
 #!/usr/bin/env bash
 # Läuft IN einer Agent-VM als root. Wird automatisch von `magbot audit-proxy <id>`
 # (vm.cpp, per qemu-guest-agent) ausgeführt: bei jedem neuen Bot im Spawn und für bestehende
-# Bots beim nächsten Browser-Start durch magroom. Manuell nur zur Diagnose:
+# Bots beim nächsten Browser-Start durch magroom, und nach einem Deploy für jede laufende VM.
+# Manuell nur zur Diagnose:
 #
-#   vm-proxy-setup.sh http://192.168.122.1:8888 /pfad/mag-audit-ca.crt
+#   vm-proxy-setup.sh http://192.168.122.1:8888 /pfad/mag-audit-ca.crt [/pfad/isrg-roots.pem]
 #
 # Richtet ein, dass jeder Web-Zugriff der VM (Shell-Werkzeuge, apt/pip/git, Chromium) über den
 # protokollierenden Proxy auf dem Host läuft und dessen CA vertraut wird. Direkter Web-Zugriff
-# der VMs ist auf dem Host per nftables gesperrt (mag-audit.nft). Idempotent.
+# der VMs ist auf dem Host per nftables gesperrt (mag-audit.nft). Die öffentlichen ISRG-Wurzeln
+# liegen nur auf dieser Overlay-Platte. Despawn löscht die Platte; das Golden-Image bleibt
+# unangetastet. Idempotent.
 set -euo pipefail
 PROXY="${1:?Proxy-URL, z.B. http://192.168.122.1:8888}"
 CA="${2:?Pfad zur CA}"
+ROOTS="${3:-}"
 [[ $EUID -eq 0 ]] || { echo "bitte als root"; exit 1; }
 [[ -s "$CA" ]] || { echo "CA-Datei fehlt: $CA"; exit 1; }
 hostport=${PROXY#*://}; hostport=${hostport%/}
@@ -20,6 +24,24 @@ NOPROXY="localhost,127.0.0.1,::1,$host,192.168.122.1"
 
 echo "== System-Trust-Store"
 install -D -m 0644 "$CA" /usr/local/share/ca-certificates/mag-audit-ca.crt
+# Replace the whole ISRG set. A smaller or empty bundle must not leave a
+# previous mag-isrg-NN.crt on this overlay.
+rm -f /usr/local/share/ca-certificates/mag-isrg-*.crt
+if [[ -s "$ROOTS" ]]; then
+  echo "== ISRG-Wurzeln (Let's Encrypt, auch Generation Y)"
+  install -d -m 0755 /usr/local/share/ca-certificates
+  n=0
+  while IFS= read -r line; do
+    if [[ $line == '-----BEGIN CERTIFICATE-----' ]]; then
+      n=$((n + 1))
+      out=$(printf '/usr/local/share/ca-certificates/mag-isrg-%02d.crt' "$n")
+      : > "$out"
+    fi
+    [[ $n -gt 0 ]] || continue
+    printf '%s\n' "$line" >> "$out"
+    if [[ $line == '-----END CERTIFICATE-----' ]]; then chmod 0644 "$out"; fi
+  done < "$ROOTS"
+fi
 update-ca-certificates >/dev/null
 # certutil laeuft als jeweiliger Nutzer: die CA aus dem (root-only) Temp-Verzeichnis ist fuer ihn
 # nicht lesbar -> ab hier die weltlesbare installierte Kopie verwenden.
@@ -77,6 +99,16 @@ if command -v certutil >/dev/null; then
     [[ -f "$db/cert9.db" ]] || runuser -u "$user" -- certutil -d "sql:$db" -N --empty-password
     runuser -u "$user" -- certutil -d "sql:$db" -D -n mag-audit-ca >/dev/null 2>&1 || true
     runuser -u "$user" -- certutil -d "sql:$db" -A -t "C,," -n mag-audit-ca -i "$CA"
+    # Drop nicknames from a previous larger bundle, then trust the current set.
+    for i in $(seq -w 1 16); do
+      runuser -u "$user" -- certutil -d "sql:$db" -D -n "mag-isrg-$i" >/dev/null 2>&1 || true
+    done
+    shopt -s nullglob
+    for crt in /usr/local/share/ca-certificates/mag-isrg-*.crt; do
+      nick=$(basename "$crt" .crt)
+      runuser -u "$user" -- certutil -d "sql:$db" -A -t "C,," -n "$nick" -i "$crt"
+    done
+    shopt -u nullglob
     echo "   NSS: $user"
   done < /etc/passwd
 else

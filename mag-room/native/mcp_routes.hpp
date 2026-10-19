@@ -14,22 +14,18 @@ struct McpPreset {
 static const McpPreset MCP_PRESETS[] = {
     {"digitalisierungsplanung", "Digitalisierungsplanung",
      "https://accounts.digitalisierungsplanung.de/mcp/free", "none",
-     "Prozessbilder: Die KI modelliert den Prozess und antwortet mit einem öffentlichen Link zum Diagramm.",
+     "Prozessbilder: Die KI baut den Ablauf und speichert JSON/SVG. Einen öffentlichen Link gibt es nur auf Wunsch.",
      "", false,
-     "Wünscht jemand ein Prozessbild, Prozessdiagramm, einen Ablauf oder Workflow, "
-     "erstelle es vollständig mit diesem Plugin: zustand_contract und zustand_snapshot lesen, "
-     "dann EIN zustand_apply mit expectedRevision = snapshot.revision und allen Ops: setName, "
-     "jeder Schritt als addState mit eindeutiger id und kurzem Titel, setInitial, jede Verbindung "
-     "als addTransition mit sprechendem label (Entscheidungen als mehrere Übergänge, Freigaben "
-     "durch Menschen mit decision \"human\", Ende als eigener Schritt), zuletzt {\"op\":\"layout\"}. "
-     "Steht im Snapshot schon ein anderer Prozess und es geht um ein neues Bild, entferne zuerst "
-     "dessen Schritte mit removeState; Änderungswünsche am selben Bild nur patchen. Danach "
-     "zustand_share mit passendem title aufrufen und genau den gelieferten url als Markdown-Link "
-     "antworten, z. B. [Prozess ansehen](url), mit 1-2 Sätzen zum Inhalt. Nie einen Link "
-     "erfinden; schlägt ein Schritt fehl, den Fehler nennen.",
+     "Free MCP, kein Schlüssel. Ablauf: zustand_contract, zustand_snapshot, dann zustand_apply "
+     "mit expectedRevision = snapshot.revision. Neue addTransition: decision \"routine\", "
+     "triggerType \"button\" (nie \"click\"). Bei REVISION_CONFLICT neu lesen, nicht blind wiederholen. "
+     "Datei: zustand_export (JSON) oder zustand_export_svg (SVG, optional {\"graphOnly\":true,\"theme\":\"dark\"}); "
+     "result.content[0].text unverändert als UTF-8 speichern. PDF: zustand_export_pdf, die eingebettete "
+     "application/pdf-Ressource als .pdf. Öffentlichen Link nur auf Wunsch über zustand_share und genau "
+     "result.url zeigen. editorUrl nur, wenn der Nutzer den Prozess ins Konto übernehmen will. "
+     "Nie einen Link erfinden.",
      true,
-     {"zustand_export", "zustand_export_svg", "zustand_export_pdf", "zustand_appearance",
-      "zustand_set_appearance"},
+     {},
      true},
     {"github", "GitHub", "https://api.githubcopilot.com/mcp/", "bearer",
      "Issues, Pull Requests, Code-Suche und Repos.", "ghp_… oder github_pat_…", true},

@@ -38,6 +38,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <shared_mutex>
 #include <regex>
 #include <random>
@@ -68,6 +69,24 @@ struct Lane {
   std::atomic<int> backend_fd{-1};
 };
 static thread_local Lane *TL_LANE = nullptr;
+// Lanes of one request do not all start at once: the next lane waits until
+// the previous bot has read its context and starts thinking (or has
+// finished), then a short human pause. Two cold prompt evaluations never
+// begin at the same moment, and the bots do not answer in lockstep.
+struct StartGate {
+  std::mutex m;
+  std::condition_variable cv;
+  bool open = false;
+  void release() {
+    {
+      std::lock_guard<std::mutex> lk(m);
+      if (open) return;
+      open = true;
+    }
+    cv.notify_all();
+  }
+};
+static thread_local StartGate *TL_GATE = nullptr;
 static std::atomic<bool> &stop_flag() { return TL_LANE ? TL_LANE->stop : STOP; }
 static std::atomic<bool> &user_cancel_flag() {
   return TL_LANE ? TL_LANE->user_cancel : USER_CANCEL;
@@ -2713,9 +2732,10 @@ struct Turn {
   std::string error;
 };
 struct TurnReport {
-  std::string text, progress_key, error;
+  std::string text, progress_key, error, reasoning;
   std::vector<std::string> steps;
   long elapsed_s = 0;
+  long thought_ms = 0;
   int successful_tools = 0, failed_tools = 0;
   bool continue_requested = false;
   bool reacted = false;
@@ -3780,8 +3800,10 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
       }
     }
     std::string live;
+    std::optional<steady_clock::time_point> think_from, think_to;
     auto on_delta = [&](const std::string &kind, const std::string &piece) {
       Val e = Val::object();
+      if (kind != "progress" && TL_GATE) TL_GATE->release();
       if (kind == "progress") {
         Val pr;
         if (!mj::parse(piece, pr) || !pr.isObj())
@@ -3802,6 +3824,12 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
       }
       if (kind == "reasoning") {
         run_think();
+        if (!think_from) {
+          think_from = steady_clock::now();
+          if (!report.reasoning.empty()) report.reasoning += "\n\n";
+        }
+        think_to = steady_clock::now();
+        report.reasoning += piece;
         e["type"] = "reasoning";
         e["bot"] = bot_id;
         e["name"] = bot_name;
@@ -3818,6 +3846,8 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
     Turn t = backend_turn(messages, tools,
                           autotalk ? 0.75 : 0.55, on_delta, turn_thinking(),
                           slot_for_key(bot_id), bot_model_id(bot_idx));
+    if (think_from && think_to)
+      report.thought_ms += (long)duration_cast<milliseconds>(*think_to - *think_from).count();
     if (!t.error.empty()) {
       report.error = t.error.substr(0, 280);
       emit_event("error", bot_id, bot_name, report.error);
@@ -4516,6 +4546,16 @@ static void attach_work(Val &msg, const TurnReport &report) {
     }
     (*it)["elapsed_s"] = report.elapsed_s;
     msg["elapsed_s"] = report.elapsed_s;
+    // Shown as the collapsible thinking block. Never fed back into the
+    // transcript (render_room_line reads only the content).
+    const std::string thought = trim(report.reasoning);
+    if (!thought.empty()) {
+      const std::string r = mj::utf8_cut(thought, 24000);
+      (*it)["reasoning"] = r;
+      msg["reasoning"] = r;
+      (*it)["thought_ms"] = report.thought_ms;
+      msg["thought_ms"] = report.thought_ms;
+    }
     if (!report.error.empty()) {
       std::string err = one_line(report.error).substr(0, 140);
       (*it)["work_error"] = err;
@@ -4651,13 +4691,66 @@ static void lane_finish(Lane *lane, uint64_t run, bool owner_ran, bool more,
   publish(mj::dump(state));
   JOB_CV.notify_all();
 }
+// MAG_ROOM_STAGGER: "think" (default) starts the next lane once the previous
+// bot has read its context, "reply" once it has answered (the next bot then
+// sees that answer), "off" starts all lanes together.
+// MAG_ROOM_STAGGER_PAUSE_MS: mean human pause before the next bot starts.
+static std::string stagger_mode() {
+  const std::string m = env("MAG_ROOM_STAGGER", "think");
+  return m == "reply" || m == "off" ? m : "think";
+}
+static int stagger_pause_ms() {
+  const int mean = envi("MAG_ROOM_STAGGER_PAUSE_MS", 2500);
+  if (mean <= 0) return 0;
+  static thread_local std::mt19937 rng{std::random_device{}()};
+  return std::uniform_int_distribution<int>(mean / 2, mean + mean / 2)(rng);
+}
+static std::set<std::string> WAITING_BOTS; // JOB_MTX
+static void set_waiting(const std::vector<std::string> &ids, bool on,
+                        const std::string &after) {
+  {
+    std::lock_guard<std::mutex> lk(JOB_MTX);
+    for (auto &id : ids) on ? (void)WAITING_BOTS.insert(id) : (void)WAITING_BOTS.erase(id);
+  }
+  for (auto &id : ids) {
+    Val e = Val::object();
+    e["type"] = "bot_wait";
+    e["bot"] = id;
+    e["name"] = bot_field(agent_index(id), "name", "Bot");
+    e["on"] = on;
+    e["after"] = after;
+    publish(mj::dump(e));
+  }
+}
+static void await_gate(Lane *lane, const std::vector<std::string> &ids,
+                       StartGate &gate, const std::string &after,
+                       uint64_t epoch) {
+  auto alive = [&] {
+    return !lane->stop.load() && !SHUTDOWN.load() && epoch == EPOCH.load();
+  };
+  set_waiting(ids, true, after);
+  {
+    std::unique_lock<std::mutex> lk(gate.m);
+    while (!gate.open && alive())
+      gate.cv.wait_for(lk, milliseconds(200));
+  }
+  for (auto until = steady_clock::now() + milliseconds(stagger_pause_ms());
+       alive() && steady_clock::now() < until;)
+    std::this_thread::sleep_for(milliseconds(100));
+  set_waiting(ids, false, after);
+}
 static void lane_turn(Lane *lane, uint64_t run, std::vector<std::string> ids,
-                      bool automatic, int think, std::string owner, uint64_t generation, uint64_t epoch) {
+                      bool automatic, int think, std::string owner, uint64_t generation, uint64_t epoch,
+                      std::shared_ptr<StartGate> wait_for,
+                      std::shared_ptr<StartGate> own, std::string after) {
   bool more = false, owner_ran = false;
   std::string progress;
+  // Outside TURN_MTX: room-wide operations must not wait for a parked lane.
+  if (wait_for) await_gate(lane, ids, *wait_for, after, epoch);
   {
     std::shared_lock<std::shared_mutex> turn(TURN_MTX);
     TL_LANE = lane;
+    TL_GATE = own && stagger_mode() == "think" ? own.get() : nullptr;
     TURN_THINK = think;
     LAST_THINK = think;
     if (!(automatic && !AUTOTALK.load()))
@@ -4689,7 +4782,9 @@ static void lane_turn(Lane *lane, uint64_t run, std::vector<std::string> ids,
         }
       }
     TL_LANE = nullptr;
+    TL_GATE = nullptr;
   }
+  if (own) own->release();
   lane_finish(lane, run, owner_ran, more, progress, epoch, generation);
 }
 static void lane_job(Lane *lane, uint64_t run, JobRun job) {
@@ -4732,7 +4827,11 @@ static void start_lanes_locked(const Job &job, bool automatic) {
   if (!automatic && job.generation == AUTO_GENERATION) AUTO_THINK = job.think;
   STOP = false;
   USER_CANCEL = false;
-  for (auto &[lane, ids] : split_lanes(job.ids)) {
+  const auto parts = split_lanes(job.ids);
+  const bool stagger = parts.size() > 1 && stagger_mode() != "off";
+  std::shared_ptr<StartGate> prev;
+  std::string prev_name;
+  for (auto &[lane, ids] : parts) {
     const uint64_t run = ++DISPATCH_SEQ;
     lane->busy = true;
     lane->active_bot.clear();
@@ -4741,7 +4840,11 @@ static void start_lanes_locked(const Job &job, bool automatic) {
     lane->user_cancel = false;
     ACTIVE_JOBS[run] = Job{ids, job.think};
     BUSY = true;
-    std::thread(lane_turn, lane, run, ids, automatic, job.think, owner, job.generation, EPOCH.load()).detach();
+    auto gate = stagger ? std::make_shared<StartGate>() : nullptr;
+    std::thread(lane_turn, lane, run, ids, automatic, job.think, owner,
+                job.generation, EPOCH.load(), prev, gate, prev_name).detach();
+    prev = gate;
+    prev_name = bot_field(agent_index(ids.front()), "name", "Bot");
   }
   save_queue_locked();
 }
@@ -5030,6 +5133,9 @@ static std::string state_json(const Actor *actor = nullptr) {
     for (auto &kv : ACTIVE_JOBS)
       for (auto &id : kv.second.ids) bb.push(Val(id));
     root["busy_bots"] = bb;
+    Val wb = Val::array();
+    for (auto &id : WAITING_BOTS) wb.push(Val(id));
+    root["waiting_bots"] = wb;
   }
   root["backend"] = BACKEND_HOST + ":" + std::to_string(BACKEND_PORT);
   root["model"] = active_room_model();

@@ -623,7 +623,7 @@ class Native(unittest.TestCase):
  def test_09g_frontend_model_status_contract(self):
   html=self.request('/',raw=True).decode()
   for needle in ('id="model-state"','id="model-banner"',"event.type==='model'","event.type==='bot_status'",'id="agent-chat-only"','vm:false',
-                 "if(!a.vm)continue","if(!bot.vm){","Zeichen Überlegung","#model-state .txt{display:none}"):
+                 "if(!a.vm)continue","if(!bot.vm){","showThinking(s.node","#model-state .txt{display:none}"):
    self.assertIn(needle,html)
  def test_09h_prompt_is_cache_friendly(self):
   # Stable rules, memories directly after them, volatile clock/files only in the [Kontext] tail.
@@ -1628,6 +1628,8 @@ exit 0
 class MultiBot(unittest.TestCase):
  """One global room, several bots; each bot may use its own model (Q4/IQ3) without touching resident models."""
  Q4='deepseek-v4-flash-0731';IQ3='deepseek-v4-flash-0731-iq3'
+ # Lane mechanics are checked with simultaneous starts; StaggeredLanes covers the default.
+ EXTRA_ENV={'MAG_ROOM_STAGGER':'off'}
  @classmethod
  def setUpClass(cls):
   cls.tmp=tempfile.TemporaryDirectory();cls.state=pathlib.Path(cls.tmp.name)/'state';cls.state.mkdir()
@@ -1635,7 +1637,7 @@ class MultiBot(unittest.TestCase):
   cls.state.joinpath('agents.json').write_text(json.dumps([{'id':'q4bot','name':'Q4 Bot','vm':'','memory':[]},{'id':'iq3bot','name':'IQ3 Bot','vm':'','model':cls.IQ3,'memory':[]}]))
   cls.model=http.server.ThreadingHTTPServer(('127.0.0.1',0),Model);threading.Thread(target=cls.model.serve_forever,daemon=True).start();cls.ui=port();cls.bridge=port()
   env=dict(os.environ,MAG_OWNER_CANONICAL_LOGIN='chris@github',MAG_TEST_ALLOW_LOCAL_OWNER='1',MAG_ROOM_STATE=str(cls.state),MAG_ROOM_PORT=str(cls.ui),MAG_ROOM_BRIDGE_PORT=str(cls.bridge),MAG_ROOM_BRIDGE_IP='127.0.0.1',MAG_ROOM_BACKEND=f'http://127.0.0.1:{cls.model.server_port}/v1/chat/completions',MAG_ROOM_UI=str(ROOT/'mag-room/web/index.html'),MAG_ROOM_STATIC=str(ROOT/'mag-room/static'),MAG_ROOM_MODEL_STATUS=str(pathlib.Path(cls.tmp.name)/'model-status.json'),MAG_NETMODE=str(NETMODE),MAG_TEST_NO_MEMGIT='1',MAG_GITHUB_API=f'http://127.0.0.1:{GHPORT}',MAG_ROOM_AGENT_CTL=str(cls.ctl))
-  env.pop('MAG_ROOM_SINGLE_BOT',None)
+  env.pop('MAG_ROOM_SINGLE_BOT',None);env.update(cls.EXTRA_ENV)
   cls.log=open(pathlib.Path(cls.tmp.name)/'server.log','a');cls.proc=subprocess.Popen([str(ROOT/'build/magroom')],env=env,stdout=cls.log,stderr=cls.log)
   for _ in range(100):
    try:Native.request.__func__(cls,'/healthz',raw=True);return
@@ -1910,7 +1912,7 @@ class MultiBot(unittest.TestCase):
    Model.script=[];self.request('/api/autotalk',{'on':False});self._idle()
  def test_13_frontend_lane_contract(self):
   html=self.request('/',raw=True).decode()
-  for needle in ("api('/api/cancel',id?{bot:id}:{})",'id="bot-lanes"','Alle stoppen','setBusyBots(next.busy_bots)',"event.type==='idle'&&Array.isArray(event.busy_bots)","event.type==='cancelled'&&event.bot",'state.activities'):self.assertIn(needle,html)
+  for needle in ("api('/api/cancel',id?{bot:id}:{})",'id="bot-lanes"','Alle stoppen','setBusyBots(next.busy_bots,next.waiting_bots)',"event.type==='idle'&&Array.isArray(event.busy_bots)","event.type==='cancelled'&&event.bot",'state.activities'):self.assertIn(needle,html)
   # Composer bar: round +, pill with mic, one round send button that stops
   # only while the field is empty, and turns back into "Senden" on input.
   for needle in ('<form id="send-form" class="gbar">','id="plus"','class="composer-card gbar-pill"','id="mic"','id="send-button"','id="plus-think"','id="upload-camera"','id="upload-screen"',
@@ -1921,6 +1923,50 @@ class MultiBot(unittest.TestCase):
   self.assertNotIn("message').disabled",html)
   self.assertNotIn('id="stop-generation"',html)
   for gone in ('is-stop','syncSendButton'):self.assertNotIn(gone,html)
+class StaggeredLanes(unittest.TestCase):
+ """Default group chat: the second model starts after the first bot has read its context, never both at once."""
+ Q4=MultiBot.Q4;IQ3=MultiBot.IQ3
+ EXTRA_ENV={'MAG_ROOM_STAGGER_PAUSE_MS':'300'}
+ setUpClass=classmethod(MultiBot.setUpClass.__func__)
+ tearDownClass=classmethod(MultiBot.tearDownClass.__func__)
+ request=classmethod(Native.request.__func__)
+ _idle=MultiBot._idle;_calls_after=MultiBot._calls_after;_last_bot_text=MultiBot._last_bot_text
+ def tearDown(self):Model.script=[];Model.delay=0
+ def _bot_msg(self,bot):
+  for m in reversed(self.request('/api/state')['room']):
+   if m.get('bot')==bot:return m
+ def test_01_second_model_waits_for_first_thought(self):
+  self._idle();n=len(Model.calls)
+  Model.script=[[{'_sleep':1.0},{'reasoning_content':'Kurz '},{'reasoning_content':'**nachdenken**.'},{'_sleep':1.5},'Antwort A'],['Antwort B']]
+  t=time.time();self.request('/api/message',{'text':'Hallo ihr','bots':['iq3bot','q4bot']})
+  time.sleep(.6)
+  self.assertEqual([c['model'] for c in Model.calls[n:]],[self.IQ3],'both models started at once')
+  st=self.request('/api/state');self.assertEqual(st['waiting_bots'],['q4bot']);self.assertEqual(set(st['busy_bots']),{'iq3bot','q4bot'})
+  calls=self._calls_after(n,2,3)
+  self.assertEqual([c['model'] for c in calls[:2]],[self.IQ3,self.Q4])
+  self.assertLess(time.time()-t,2.4,'second bot should start while the first still answers')
+  self._idle();self.assertEqual(self.request('/api/state')['waiting_bots'],[])
+  a=self._bot_msg('iq3bot');self.assertEqual(a['content'],'Antwort A')
+  self.assertEqual(a['reasoning'],'Kurz **nachdenken**.');self.assertIsInstance(a['thought_ms'],(int,float))
+  b=self._bot_msg('q4bot');self.assertEqual(b['content'],'Antwort B');self.assertNotIn('reasoning',b)
+  # The reasoning is display-only: never part of a later prompt.
+  m=len(Model.calls);self.request('/api/message',{'text':'Noch was','bots':['iq3bot']});self._idle()
+  self.assertNotIn('nachdenken',json.dumps(Model.calls[m]['messages'],ensure_ascii=False))
+ def test_02_stopping_a_waiting_bot_never_starts_it(self):
+  self._idle();n=len(Model.calls)
+  Model.script=[[{'_sleep':1.5},'Nur A']]
+  self.request('/api/message',{'text':'Nur einer','bots':['iq3bot','q4bot']})
+  time.sleep(.4);self.assertEqual(self.request('/api/state')['waiting_bots'],['q4bot'])
+  self.assertEqual(self.request('/api/cancel',{'bot':'q4bot'}),{'cancelled':True})
+  time.sleep(.4);st=self.request('/api/state')
+  self.assertEqual(st['waiting_bots'],[]);self.assertEqual(st['busy_bots'],['iq3bot'])
+  self._idle();time.sleep(.5)
+  self.assertEqual([c['model'] for c in Model.calls[n:]],[self.IQ3])
+  self.assertEqual(self._last_bot_text('iq3bot'),'Nur A')
+ def test_03_frontend_thinking_and_waiting(self):
+  html=self.request('/',raw=True).decode()
+  for needle in ('function showThinking(',"head.className='think-head'","'Nachgedacht'","'Denkt nach'",'msg.reasoning','msg.thought_ms',"event.type==='bot_wait'",'wartet','next.waiting_bots'):self.assertIn(needle,html)
+  self.assertNotIn("'Überlegungen'",html)
 class FakeTailscale(http.server.BaseHTTPRequestHandler):
  protocol_version='HTTP/1.1';calls=[]
  def log_message(self,*a):pass

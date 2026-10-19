@@ -1,0 +1,14 @@
+# Tailnet-only. This file must NEVER bind 0.0.0.0 or a public IP.
+# agentN.bot.stardenburg.de serves that VM's site and nothing else.
+server {
+    listen @TAILNET_BIND@:443 ssl;
+    server_name ~^(?<botslug>agent[0-9]+)\.@ZONE_REGEX@$;
+    ssl_certificate /etc/mag-bots/tls/current/cert.pem;
+    ssl_certificate_key /etc/mag-bots/tls/current/key.pem;
+    root /var/lib/mag-bots/www/$botslug;
+    index index.html;
+    autoindex off;
+    add_header X-Content-Type-Options nosniff always;
+    location ~ (^|/)\. { return 404; }
+    location / { try_files $uri $uri/ =404; }
+}

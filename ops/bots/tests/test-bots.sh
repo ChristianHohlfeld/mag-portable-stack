@@ -5,9 +5,9 @@ here=$(cd "$(dirname "$0")/.." && pwd)
 repo=$(cd "$here/../.." && pwd)
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
-for tool in openssl python3 nginx; do command -v "$tool" >/dev/null; done
+for tool in openssl python3 nginx g++; do command -v "$tool" >/dev/null; done
 
-chmod +x "$here/site.sh" "$here/issue-wildcard.sh" "$here/install.sh" "$here/publishd.py" \
+chmod +x "$here/site.sh" "$here/issue-wildcard.sh" "$here/install.sh" \
   "$repo/ops/magbot-agent-ctl"
 bash -n "$here/site.sh" "$here/issue-wildcard.sh" "$here/install.sh" "$repo/ops/magbot-agent-ctl"
 
@@ -33,6 +33,7 @@ export MAG_BOTS_ROOT="$tmp/root" MAG_BOTS_MAGBOT="$tmp/magbot" MAG_BOTS_SITE="$h
 grep -Fq 'agent1.bot.stardenburg.de' "$tmp/root/www/agent1/index.html"
 grep -Fq 'https://agent1.bot.stardenburg.de' "$tmp/guest/SITE.md"
 bash -n "$tmp/guest/publish-site"
+grep -Fq 'tar --format=ustar -C /home/bot/www' "$tmp/guest/publish-site"
 grep -Fq 'http://192.168.122.1:8091/publish' "$tmp/guest/publish-site"
 ! grep -Fq "$(cat "$tmp/root/tokens/agent1")" "$tmp/guest/SITE.md"
 ! grep -Fq "$(cat "$tmp/root/tokens/agent1")" "$tmp/guest/publish-site"
@@ -160,21 +161,37 @@ sed -e 's|@TAILNET_BIND@|127.0.0.1|g' \
     -e 's|@ZONE_REGEX@|bot\\.stardenburg\\.de|g' \
     -e "s|/etc/mag-bots/tls/current/cert.pem|$tmp/cert.pem|g" \
     -e "s|/etc/mag-bots/tls/current/key.pem|$tmp/key.pem|g" \
-    -e 's|:443 ssl;|:18443 ssl;|' \
+    -e 's|:443 ssl http2;|:18443 ssl http2;|' \
     "$here/mag-bots.nginx.in" >"$tmp/bots.conf"
-grep -Fq 'listen 127.0.0.1:18443 ssl;' "$tmp/bots.conf"
+grep -Fq 'listen @TAILNET_BIND@:443 ssl http2;' "$here/mag-bots.nginx.in"
+grep -Fq 'listen 127.0.0.1:18443 ssl http2;' "$tmp/bots.conf"
 grep -Fq 'server_name ~^(?<botslug>agent[0-9]+)\.bot\.stardenburg\.de$;' "$tmp/bots.conf"
 ! grep -q '0.0.0.0' "$here/mag-bots.nginx.in"
 ! grep -q ':80' "$here/mag-bots.nginx.in"
+# Same address:port as the room vhost. Mismatched listen options are an emerg.
+cat >"$tmp/room.conf" <<EOF
+server {
+    listen 127.0.0.1:18443 ssl http2;
+    server_name mag.stardenburg.de;
+    ssl_certificate $tmp/cert.pem;
+    ssl_certificate_key $tmp/key.pem;
+    location / { return 200; }
+}
+EOF
 mkdir -p "$tmp/body" "$tmp/proxy" "$tmp/fastcgi" "$tmp/uwsgi" "$tmp/scgi"
-printf 'pid %s/nginx.pid;\nerror_log %s/nginx.err;\nevents { worker_connections 64; }\nhttp { access_log off; client_body_temp_path %s/body; proxy_temp_path %s/proxy; fastcgi_temp_path %s/fastcgi; uwsgi_temp_path %s/uwsgi; scgi_temp_path %s/scgi; include %s/bots.conf; }\n' \
-  "$tmp" "$tmp" "$tmp" "$tmp" "$tmp" "$tmp" "$tmp" "$tmp" >"$tmp/nginx.conf"
+printf 'pid %s/nginx.pid;\nerror_log %s/nginx.err;\nevents { worker_connections 64; }\nhttp { access_log off; client_body_temp_path %s/body; proxy_temp_path %s/proxy; fastcgi_temp_path %s/fastcgi; uwsgi_temp_path %s/uwsgi; scgi_temp_path %s/scgi; include %s/bots.conf; include %s/room.conf; }\n' \
+  "$tmp" "$tmp" "$tmp" "$tmp" "$tmp" "$tmp" "$tmp" "$tmp" "$tmp" >"$tmp/nginx.conf"
 nginx -t -p "$tmp/" -c "$tmp/nginx.conf" >/dev/null
 
 # Publisher: bridge token, tar replace, traversal rejected, previous site kept.
 token=$(cat "$tmp/root/tokens/agent1")
 export MAG_BOTS_PUBLISH_BIND=127.0.0.1 MAG_BOTS_PUBLISH_PORT=18091
-python3 "$here/publishd.py" >"$tmp/publish.log" 2>&1 &
+g++ -std=c++17 -O2 -Wall -Wextra -Wpedantic -o "$tmp/publishd" "$here/publishd.cpp"
+mkdir -p "$tmp/pages/nested"
+printf '<p>tar</p>\n' >"$tmp/pages/index.html"
+printf 'ok\n' >"$tmp/pages/nested/note.txt"
+tar --format=ustar -C "$tmp/pages" -cf "$tmp/pages.tar" .
+"$tmp/publishd" >"$tmp/publish.log" 2>&1 &
 pub=$!
 cleanup_pub() { kill "$pub" 2>/dev/null || true; wait "$pub" 2>/dev/null || true; }
 trap 'cleanup_pub; rm -rf "$tmp"' EXIT
@@ -224,18 +241,35 @@ evil = tar_of([("index.html", b"nope"), ("../../outside.txt", b"pwn")])
 assert post("agent1", token, evil) == 400
 assert not os.path.exists("$tmp/outside.txt")
 assert open(os.path.join(root, "www", "agent1", "index.html"), "rb").read() == b"<p>neu</p>"
+blob = open("$tmp/pages.tar", "rb").read()
+assert post("agent1", token, blob) == 204, "ustar"
+assert open(os.path.join(root, "www", "agent1", "index.html"), "rb").read() == b"<p>tar</p>\n"
+assert open(os.path.join(root, "www", "agent1", "nested", "note.txt"), "rb").read() == b"ok\n"
 print("publish ok")
 PY
 cleanup_pub
 trap 'rm -rf "$tmp"' EXIT
 
-# Shipped wiring. Chat-only bots never gain this sentence: it lives in VM_RULES.
+# Shipped wiring. The site sentence stays out of the cached VM_RULES prefix.
 grep -Fq 'https://{vm}.bot.stardenburg.de' "$repo/mag-room/native/magroom.cpp"
 grep -Fq 'bash /home/bot/publish-site' "$repo/mag-room/native/magroom.cpp"
+grep -Fq 'bot_site_ready' "$repo/mag-room/native/magroom.cpp"
+! awk '/static const char \*VM_RULES/,/static const char \*CHAT_ONLY_RULES/' "$repo/mag-room/native/magroom.cpp" | grep -q bot.stardenburg
 grep -Fq 'ops/bots/install.sh' "$repo/ops/deploy.sh"
+grep -Fq 'mag-bots-publish' "$repo/ops/deploy.sh"
+grep -Fq -- '--target magroom mag-audit-gateway mag-browser magbot-native mag-bots-publish' "$repo/ops/update.sh"
+grep -Fq -- '--target magroom mag-audit-gateway mag-browser magbot-native mag-bots-publish' "$repo/ops/bootstrap.sh"
+grep -Fq 'add_executable(mag-bots-publish ops/bots/publishd.cpp)' "$repo/CMakeLists.txt"
+[[ ! -e $here/publishd.py ]]
+grep -Fq 'tcp dport { 53, 3001, 8767, 8091, 8888, 8889 }' "$repo/ops/mag-agents.nft"
+grep -Fq 'tcp dport { 8767, 8091 }' "$repo/ops/magbot-netmode"
+grep -Fq 'ExecStart=/usr/local/lib/mag-bots/mag-bots-publish' "$here/mag-bots-publish.service"
+! grep -q python "$here/mag-bots-publish.service"
+grep -Fq '/var/lib/mag-bots/ready' "$here/install.sh"
+grep -Fq 'firewall.sh' "$here/install.sh"
 grep -Fq 'ExecStartPost=-/usr/local/lib/mag-bots/issue-wildcard.sh renew' "$here/install.sh"
 grep -Fq 's|@ZONE_REGEX@|bot\\.stardenburg\\.de|g' "$here/install.sh"
-! grep -R -E 'systemctl (restart|stop).*mag-llm' "$here" "$repo/ops/magbot-agent-ctl"
+! grep -R -E 'systemctl (restart|stop).*mag-llm' "$here" "$repo/ops/magbot-agent-ctl" "$repo/ops/deploy.sh"
 "$here/install.sh" >"$tmp/install.out" 2>&1
 grep -Fq 'not root' "$tmp/install.out"
 echo "bot site regression OK"

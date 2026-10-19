@@ -27,6 +27,13 @@ static bool MCP_LOADED = false;      // MCP_MTX
 static std::map<std::string, std::string> MCP_SESSIONS; // MCP_MTX
 
 static std::string mcp_dir() { return STATE_DIR + "/mcp"; }
+// Sessions are kept per server and bot: servers like Digitalisierungsplanung
+// hold one working project per session, so bots must not share it.
+static void mcp_forget_sessions_locked(const std::string &sid) {
+  for (auto it = MCP_SESSIONS.begin(); it != MCP_SESSIONS.end();)
+    if (it->first == sid || it->first.rfind(sid + "|", 0) == 0) it = MCP_SESSIONS.erase(it);
+    else ++it;
+}
 static std::string mcp_str(const Val &v, const char *k) {
   auto x = v.find(k);
   return x ? x->asStr() : std::string();
@@ -312,6 +319,8 @@ static std::string mcp_initialize(const Val &srv, const std::string &secret,
       info["version"] = mcp_str(*si, "version").substr(0, 40);
     }
     info["protocol"] = mcp_str(r, "protocolVersion").substr(0, 20);
+    const std::string how = mcp_str(r, "instructions");
+    if (!how.empty()) info["instructions"] = mj::utf8_cut(mj::utf8_fix(how), 2000);
     *server_info = info;
   }
   mcp_notify(srv, secret, raw.session, "notifications/initialized");
@@ -367,13 +376,13 @@ static Val mcp_probe(Val srv) {
     srv["server"] = info;
     srv["status"] = "ok";
     srv["error"] = "";
-    std::lock_guard<std::mutex> lk(MCP_MTX);
-    MCP_SESSIONS[id] = session;
   } catch (const std::exception &e) {
     srv["status"] = "error";
     srv["error"] = std::string(e.what()).substr(0, 300);
+  }
+  {
     std::lock_guard<std::mutex> lk(MCP_MTX);
-    MCP_SESSIONS.erase(id);
+    mcp_forget_sessions_locked(id);
   }
   srv["checked"] = (long)now_s();
   return srv;
@@ -405,8 +414,9 @@ static std::string mcp_format_result(const Val &r) {
   if (auto err = r.find("isError"); err && err->truthy()) out = "Fehler: " + out;
   return mj::utf8_cut(mj::utf8_fix(out), (size_t)TOOL_OUTPUT_LIMIT);
 }
-static std::string mcp_call(const Val &srv, const std::string &tool, const Val &args) {
-  const std::string id = mcp_str(srv, "id");
+static std::string mcp_call(const Val &srv, const std::string &tool, const Val &args,
+                            const std::string &bot_id) {
+  const std::string id = mcp_str(srv, "id") + "|" + bot_id;
   const std::string secret = mcp_secret(srv);
   const long timeout = std::clamp(envi("MAG_MCP_TIMEOUT_S", 120), 5, 900);
   Val p = Val::object();
@@ -651,7 +661,31 @@ static std::string mcp_dispatch_tool(int bot_idx, const std::string &name, const
              " abgelehnt. Nicht erneut versuchen, außer er bittet ausdrücklich darum.";
     if (d == "always") mcp_bind_always(bot_id, hit.server_id, hit.tool);
   }
-  return mcp_call(srv, hit.tool, args);
+  return mcp_call(srv, hit.tool, args, bot_id);
+}
+// Stable per binding (part of the cached system prompt): the room's guide for
+// preset servers plus the server's own initialize instructions.
+static std::string mcp_prompt_notes(int bot_idx) {
+  Val binds = mcp_bindings(bot_idx);
+  if (!binds.isObj() || binds.obj->empty()) return "";
+  std::vector<Val> servers;
+  {
+    std::lock_guard<std::mutex> lk(MCP_MTX);
+    mcp_load_locked();
+    servers = MCP_SERVERS;
+  }
+  std::string out;
+  for (auto &srv : servers) {
+    if (!binds.find(mcp_str(srv, "id"))) continue;
+    std::string how;
+    if (auto si = srv.find("server")) how = mcp_str(*si, "instructions");
+    const std::string guide = mcp_str(srv, "guide");
+    if (guide.empty() && how.empty()) continue;
+    out += "\n[Plugin " + mcp_str(srv, "name") + "]";
+    if (!guide.empty()) out += "\n" + guide;
+    if (!how.empty()) out += "\nHinweise des Servers: " + mj::utf8_cut(how, 1500);
+  }
+  return out.empty() ? "" : "\n\nPLUGINS" + out + "\n";
 }
 static std::string mcp_step_label(const std::string &fn) {
   // mcp__<server>__<tool>

@@ -1679,6 +1679,7 @@ static std::string bot_field(int idx, const char *key,
 }
 
 static std::string bot_model_id(int idx);
+static std::string mcp_prompt_notes(int bot_idx);
 static std::string build_system(int bot_idx, bool autotalk,
                                 const std::string &other, bool web) {
   std::string name = bot_field(bot_idx, "name", "Bot");
@@ -1703,6 +1704,7 @@ static std::string build_system(int bot_idx, bool autotalk,
   system += has_vm ? FILES_RULES : FILES_RULES_CHAT;
   if (has_vm)
     system += FRONTEND_RULES;
+  system += mcp_prompt_notes(bot_idx);
   return system;
 }
 static std::string server_clock_minute() {

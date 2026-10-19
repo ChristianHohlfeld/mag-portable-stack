@@ -2179,7 +2179,7 @@ class SilentPhases(unittest.TestCase):
   self.assertNotIn('hängt?',html)
 class FakeMcp(http.server.BaseHTTPRequestHandler):
  """Streamable-HTTP MCP server: bearer auth, session header, paginated tools/list as SSE."""
- protocol_version='HTTP/1.1';TOKEN='secret-token-0123456789';sessions=set();calls=[];inits=0;expire=False
+ protocol_version='HTTP/1.1';TOKEN='secret-token-0123456789';sessions=set();calls=[];call_sessions=[];inits=0;expire=False
  def log_message(self,*a):pass
  def _send(self,code,obj=None,sse=False,headers=None):
   if obj is None:data=b''
@@ -2195,7 +2195,7 @@ class FakeMcp(http.server.BaseHTTPRequestHandler):
   method=msg.get('method');sid=self.headers.get('Mcp-Session-Id')
   if method=='initialize':
    cls.inits+=1;new='s%d'%cls.inits;cls.sessions.add(new)
-   return self._send(200,{'jsonrpc':'2.0','id':msg['id'],'result':{'protocolVersion':'2025-06-18','capabilities':{'tools':{}},'serverInfo':{'name':'fake-mcp','version':'1.2'}}},headers={'Mcp-Session-Id':new})
+   return self._send(200,{'jsonrpc':'2.0','id':msg['id'],'result':{'protocolVersion':'2025-06-18','capabilities':{'tools':{}},'serverInfo':{'name':'fake-mcp','version':'1.2'},'instructions':'Erst lookup, dann create_note.'}},headers={'Mcp-Session-Id':new})
   if sid not in cls.sessions:return self._send(404 if sid else 400,{'error':'no session'})
   if self.headers.get('MCP-Protocol-Version')!='2025-06-18':return self._send(400,{'error':'version'})
   if method=='notifications/initialized':return self._send(202)
@@ -2206,7 +2206,7 @@ class FakeMcp(http.server.BaseHTTPRequestHandler):
    else:res={'tools':[{'name':'create_note','description':'Legt eine Notiz an.','inputSchema':{'type':'object','properties':{'text':{'type':'string'}},'required':['text']}}]}
    return self._send(200,{'jsonrpc':'2.0','id':msg['id'],'result':res},sse=True)
   if method=='tools/call':
-   p=msg.get('params') or {};cls.calls.append(p)
+   p=msg.get('params') or {};cls.calls.append(p);cls.call_sessions.append(sid)
    return self._send(200,{'jsonrpc':'2.0','id':msg['id'],'result':{'content':[{'type':'text','text':p['name']+' ok: '+json.dumps(p.get('arguments'),sort_keys=True)}]}},sse=True)
   self._send(200,{'jsonrpc':'2.0','id':msg.get('id'),'error':{'code':-32601,'message':'unknown'}})
 class Plugins(unittest.TestCase):
@@ -2335,6 +2335,22 @@ class Plugins(unittest.TestCase):
   html=self.request('/',raw=True).decode()
   for needle in ('id="plus-mcp"','id="mcp-dialog"',"hide('plus-mcp',!can('connectors'))",'function paintApprovals(',"event.type==='mcp_approval'","event.type==='mcp_approval_done'",'syncApprovals(next.approvals)','/api/plugins/approvals/','/^\\/(mcp|plugins?)$/i','Immer erlauben'):self.assertIn(needle,html)
   self.assertNotIn('confirm(',html.replace('magConfirm(',''))
+ def test_11_session_per_bot_and_server_instructions_in_prompt(self):
+  self._connect();self.request('/api/plugins/bots/iq3bot',{'server':'fake','on':True})
+  look=lambda i:[[{'tool_calls':[{'index':0,'id':'s%d'%i,'function':{'name':'mcp__fake__lookup','arguments':'{}'}}]}],['Ok']]
+  k=len(FakeMcp.call_sessions)
+  n=self._turn('q4bot',look(1));self._idle()
+  self.assertIn('[Plugin Fake]',Model.calls[n]['messages'][0]['content'])
+  self.assertIn('Hinweise des Servers: Erst lookup, dann create_note.',Model.calls[n]['messages'][0]['content'])
+  self._turn('iq3bot',look(2));self._idle();self._turn('q4bot',look(3));self._idle()
+  q4,iq3,q4again=FakeMcp.call_sessions[k:k+3]
+  self.assertNotEqual(q4,iq3,'each bot works in its own MCP session (own project)');self.assertEqual(q4,q4again)
+  self.request('/api/plugins/bots/iq3bot',{'server':'fake','on':False})
+  n=self._turn('iq3bot',[['Ok']]);self._idle()
+  self.assertNotIn('[Plugin Fake]',Model.calls[n]['messages'][0]['content'])
+  cat={c['preset']:c for c in self.request('/api/plugins')['catalog']}
+  dp=cat['digitalisierungsplanung'];self.assertEqual(dp['url'],'https://accounts.digitalisierungsplanung.de/mcp/free')
+  self.assertEqual(dp['auth'],'none');self.assertTrue(dp['auto_approve']);self.assertIn('Prozessbild',dp['hint'])
 class FakeTailscale(http.server.BaseHTTPRequestHandler):
  protocol_version='HTTP/1.1';calls=[]
  def log_message(self,*a):pass

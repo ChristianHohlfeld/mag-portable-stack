@@ -6,8 +6,29 @@
 struct McpPreset {
   const char *preset, *name, *url, *auth, *hint, *token_hint;
   bool token_required;
+  const char *guide = "";
+  bool auto_approve = false;
+  std::vector<const char *> off = {}; // tools switched off on first binding
 };
 static const McpPreset MCP_PRESETS[] = {
+    {"digitalisierungsplanung", "Digitalisierungsplanung",
+     "https://accounts.digitalisierungsplanung.de/mcp/free", "none",
+     "Prozessbilder: Die KI modelliert den Prozess und antwortet mit einem öffentlichen Link zum Diagramm.",
+     "", false,
+     "Wünscht jemand ein Prozessbild, Prozessdiagramm, einen Ablauf oder Workflow, "
+     "erstelle es vollständig mit diesem Plugin: zustand_contract und zustand_snapshot lesen, "
+     "dann EIN zustand_apply mit expectedRevision = snapshot.revision und allen Ops: setName, "
+     "jeder Schritt als addState mit eindeutiger id und kurzem Titel, setInitial, jede Verbindung "
+     "als addTransition mit sprechendem label (Entscheidungen als mehrere Übergänge, Freigaben "
+     "durch Menschen mit decision \"human\", Ende als eigener Schritt), zuletzt {\"op\":\"layout\"}. "
+     "Steht im Snapshot schon ein anderer Prozess und es geht um ein neues Bild, entferne zuerst "
+     "dessen Schritte mit removeState; Änderungswünsche am selben Bild nur patchen. Danach "
+     "zustand_share mit passendem title aufrufen und genau den gelieferten url als Markdown-Link "
+     "antworten, z. B. [Prozess ansehen](url), mit 1-2 Sätzen zum Inhalt. Nie einen Link "
+     "erfinden; schlägt ein Schritt fehl, den Fehler nennen.",
+     true,
+     {"zustand_export", "zustand_export_svg", "zustand_export_pdf", "zustand_appearance",
+      "zustand_set_appearance"}},
     {"github", "GitHub", "https://api.githubcopilot.com/mcp/", "bearer",
      "Issues, Pull Requests, Code-Suche und Repos.", "ghp_… oder github_pat_…", true},
     {"context7", "Context7", "https://mcp.context7.com/mcp", "none",
@@ -119,6 +140,7 @@ static std::string mcp_plugins_json() {
     c["hint"] = p.hint;
     c["token_hint"] = p.token_hint;
     c["token_required"] = p.token_required;
+    c["auto_approve"] = p.auto_approve;
     cat.push(c);
   }
   out["catalog"] = cat;
@@ -257,6 +279,7 @@ static bool mcp_route(int fd, Req &r, const std::string &m, const std::string &p
     srv["auth"] = auth;
     if (auth == "header") srv["header"] = header;
     if (pre) srv["preset"] = pre->preset;
+    if (pre && *pre->guide) srv["guide"] = pre->guide;
     if ((auth == "bearer" || auth == "header") && !mcp_write_secret(sid, token)) {
       error_json(fd, 500, "Token konnte nicht gespeichert werden");
       return true;
@@ -266,7 +289,7 @@ static bool mcp_route(int fd, Req &r, const std::string &m, const std::string &p
       std::remove(mcp_secret_path(sid).c_str());
       {
         std::lock_guard<std::mutex> lk(MCP_MTX);
-        MCP_SESSIONS.erase(sid);
+        mcp_forget_sessions_locked(sid);
       }
       error_json(fd, 502, mcp_str(probed, "error"));
       return true;
@@ -279,7 +302,12 @@ static bool mcp_route(int fd, Req &r, const std::string &m, const std::string &p
     }
     if (!bot.empty()) {
       std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
-      mcp_bind_locked(bot, mcp_str(probed, "id"), true, nullptr, nullptr);
+      const Val autov("auto");
+      Val off = Val::array();
+      if (pre)
+        for (const char *t : pre->off) off.push(Val(t));
+      mcp_bind_locked(bot, mcp_str(probed, "id"), true, pre && pre->auto_approve ? &autov : nullptr,
+                      off.size() ? &off : nullptr);
       save_agents();
     }
     plugins_event();
@@ -364,7 +392,7 @@ static bool mcp_route(int fd, Req &r, const std::string &m, const std::string &p
       }
       {
         std::lock_guard<std::mutex> lk(MCP_MTX);
-        MCP_SESSIONS.erase(sid);
+        mcp_forget_sessions_locked(sid);
       }
       mcp_probe_store(sid);
     }
@@ -387,7 +415,7 @@ static bool mcp_route(int fd, Req &r, const std::string &m, const std::string &p
       MCP_SERVERS.erase(std::remove_if(MCP_SERVERS.begin(), MCP_SERVERS.end(),
                                        [&](const Val &v) { return mcp_str(v, "id") == sid; }),
                         MCP_SERVERS.end());
-      MCP_SESSIONS.erase(sid);
+      mcp_forget_sessions_locked(sid);
       mcp_save_locked();
     }
     std::remove(mcp_secret_path(sid).c_str());

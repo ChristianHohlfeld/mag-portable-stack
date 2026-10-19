@@ -77,7 +77,6 @@ for unit in "$UNIT_DIR"/magbot-agent*.service; do
 done
 
 fail=0
-removed_unit=0
 ids=()
 if ((${#seen[@]})); then
   for id in "${!seen[@]}"; do ids+=("$id"); done
@@ -89,20 +88,15 @@ for id in "${ids[@]+"${ids[@]}"}"; do
   fi
   echo "remove unreferenced $id"
   if [[ "${MAG_DRIFT_DRY_RUN:-0}" == 1 ]]; then continue; fi
-  if ! "$MAGBOT" despawn "$id"; then
+  # Native teardown re-reads room ownership under its spawn/despawn lock,
+  # then stops units before deleting resources. Exit 3 means newly owned.
+  rc=0
+  "$MAGBOT" despawn-orphan "$id" || rc=$?
+  if (( rc == 3 )); then
+    echo "keep newly referenced $id"
+  elif (( rc != 0 )); then
     echo "despawn $id failed" >&2
     fail=1
-    continue
-  fi
-  unit="$UNIT_DIR/magbot-$id.service"
-  if [[ -f "$unit" && ! -L "$unit" ]]; then
-    systemctl disable --now "magbot-$id.service" >/dev/null 2>&1 || true
-    rm -f -- "$unit"
-    echo "removed unit $unit"
-    removed_unit=1
   fi
 done
-if (( removed_unit )) && [[ "${MAG_DRIFT_DAEMON_RELOAD:-1}" == 1 ]] && command -v systemctl >/dev/null; then
-  systemctl daemon-reload || true
-fi
 exit "$fail"

@@ -14,6 +14,12 @@ printf '[Service]\nExecStart=/bin/true\n' > "$t/units/mag-llm.service"
 cat > "$t/bin/magbot" <<'EOF'
 #!/bin/sh
 printf '%s\n' "$*" >> "$LOG"
+unit="$MAG_DRIFT_UNIT_DIR/magbot-$2.service"
+if [ -f "$unit" ]; then
+ systemctl disable --now "magbot-$2.service"
+ rm -f "$unit"
+ systemctl daemon-reload
+fi
 exit 0
 EOF
 cat > "$t/bin/systemctl" <<'EOF'
@@ -32,10 +38,12 @@ grep -Fxq 'keep agent3' "$t/out"
 grep -Fxq 'remove unreferenced agent2' "$t/out"
 grep -Fxq 'remove unreferenced agent5' "$t/out"
 grep -Fxq 'remove unreferenced agent9' "$t/out"
-grep -Fxq 'despawn agent2' "$log"
-grep -Fxq 'despawn agent5' "$log"
-grep -Fxq 'despawn agent9' "$log"
-! grep -Eq 'despawn agent1|despawn agent3|despawn agent4' "$log"
+grep -Fxq 'despawn-orphan agent2' "$log"
+grep -Fxq 'despawn-orphan agent5' "$log"
+grep -Fxq 'despawn-orphan agent9' "$log"
+! grep -Eq 'despawn-orphan agent1|despawn-orphan agent3|despawn-orphan agent4' "$log"
+grep -Fxq 'disable --now magbot-agent9.service' "$log"
+grep -Fxq 'daemon-reload' "$log"
 test ! -e "$t/units/magbot-agent9.service"
 test -e "$t/units/magbot-agent1.service"
 test -e "$t/units/mag-llm.service"
@@ -48,4 +56,22 @@ if env MAG_ROOM_STATE="$t/room" MAG_DRIFT_DOMAINS_FILE="$t/domains" MAG_DRIFT_MA
   echo 'unreadable agents.json was accepted' >&2; exit 1
 fi
 if [[ -f "$t/log2" ]] && grep -Fq despawn "$t/log2"; then echo 'despawn ran without a readable room' >&2; exit 1; fi
-echo 'agent-drift PASS'
+# Exercise the real guard without libvirt or a real VM: referenced and
+# malformed room state must return BEFORE teardown touches any resource.
+if [[ -x "$root/build/magbot-native" ]] && sudo -n true 2>/dev/null; then
+  printf '%s\n' '[{"id":"new","pending_vm":"agent77"}]' > "$t/room/agents.json"
+  mkdir -p "$t/native/bots/agent77"
+  printf keep > "$t/native/bots/agent77/sentinel"
+  rc=0
+  sudo -n env MAGBOT_ROOT="$t/native" MAG_ROOM_STATE="$t/room" \
+    "$root/build/magbot-native" despawn-orphan agent77 >"$t/native.out" 2>&1 || rc=$?
+  [[ $rc == 3 ]]
+  [[ $(cat "$t/native/bots/agent77/sentinel") == keep ]]
+  printf '{' > "$t/room/agents.json"
+  if sudo -n env MAGBOT_ROOT="$t/native" MAG_ROOM_STATE="$t/room" \
+    "$root/build/magbot-native" despawn-orphan agent77 >"$t/native.err" 2>&1; then
+    echo 'native cleanup accepted corrupt room state' >&2; exit 1
+  fi
+  [[ $(cat "$t/native/bots/agent77/sentinel") == keep ]]
+fi
+echo 'agent-drift PASS' 

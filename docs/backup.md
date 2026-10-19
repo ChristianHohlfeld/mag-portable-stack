@@ -29,12 +29,18 @@ then performs `restic check` and a temporary restore before declaring
 success. On any error it fails closed without deleting repository data.
 A missing repository is initialized passwordlessly on the next backup.
 
-Room clear is no longer held hostage by the full restic archive.
-The native undo snapshot is written BEFORE the room clears, and
-`mag-backup-clear.timer` coalesces repeated clears and archives that
-snapshot asynchronously. During the interval before restic finishes,
-the native undo directory is the ONLY recovery copy. Daily and
-pre-deploy restic snapshots remain synchronous as before.
+Room clear writes a durable local undo snapshot BEFORE changing messages/files.
+It does not trigger a full-machine restic archive. Daily and pre-deploy archives
+remain in place and include local room snapshots on their next run.
+Clearing an empty room is a no-op: it cannot evict the last useful snapshot.
+Clear and snapshot restore exclude concurrent scheduler dispatch and discard
+pending work after success so old queued messages do not refill the room.
+A room snapshot restores messages and shared files, not deleted bot VMs.
+
+Bot cleanup rechecks current room ownership under the native lifecycle lock.
+A pending/newly referenced VM is kept even if the timer's earlier inventory
+called it an orphan. Native teardown stops a loaded bot service before removing
+its resources. Resident model services are never touched.
 
 ---
 

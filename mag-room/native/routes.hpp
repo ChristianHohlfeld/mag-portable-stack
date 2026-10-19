@@ -53,6 +53,13 @@ static bool vm_owned_by_other(const std::string &id, const std::string &vm) {
   return false;
 }
 static void finish_spawn(const std::string &id, std::string vm, bool resume) {
+  struct Reservation {
+    std::set<std::string> names;
+    ~Reservation() {
+      std::lock_guard<std::recursive_mutex> lock(STATE_MTX);
+      for (const auto &name : names) SPAWNING_VMS.erase(name);
+    }
+  } reservation{{vm}};
   std::vector<std::string> tried;
   std::string error;
   bool ok = false;
@@ -69,17 +76,18 @@ static void finish_spawn(const std::string &id, std::string vm, bool resume) {
     tried.push_back(vm);
     std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
     int idx = agent_index(id);
-    if (idx < 0) return;
+    if (idx < 0 || bot_field(idx, "pending_vm") != vm) return;
     vm = next_vm(tried);
+    SPAWNING_VMS.insert(vm); reservation.names.insert(vm);
     AGENTS[idx]["pending_vm"] = vm;
     try { save_agents(); } catch (...) {}
   }
-  bool orphan = false;
+  bool orphan = false, detached = false;
   {
     std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
     int idx = agent_index(id);
-    if (idx < 0) {
-      orphan = ok;
+    if (idx < 0 || bot_field(idx, "pending_vm") != vm) {
+      orphan = ok; detached = true;
     } else if (ok) {
       AGENTS[idx]["vm"] = vm;
       drop_key(AGENTS[idx], "pending_vm");
@@ -94,6 +102,7 @@ static void finish_spawn(const std::string &id, std::string vm, bool resume) {
     run_argv({"sudo", "-n", AGENT_CTL, "despawn", vm}, 180);
     return;
   }
+  if (detached) return;
   if (ok) {
     agents_event();
     warm_browser_async(vm);
@@ -110,7 +119,10 @@ static void resume_pending_spawns() {
     std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
     for (size_t i = 0; i < AGENTS.size(); ++i) {
       std::string vm = bot_field((int)i, "pending_vm");
-      if (!vm.empty()) pending.push_back({bot_field((int)i, "id"), vm});
+      if (!vm.empty()) {
+        SPAWNING_VMS.insert(vm);
+        pending.push_back({bot_field((int)i, "id"), vm});
+      }
     }
   }
   for (auto &p : pending)
@@ -805,7 +817,11 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
       return;
     }
     std::string vm = bot_field(idx, "vm");
-    ensure_browser(vm); // triggers one VM-owned hot browser only if necessary
+    try { ensure_browser(vm); }
+    catch (const std::exception &e) {
+      error_json(fd, 503, "Browser-Start: " + one_line(e.what()).substr(0, 300));
+      return;
+    }
     std::string answer;
     long status = 0;
     if (!http_simple("127.0.0.1", 18784, "POST",
@@ -1002,8 +1018,12 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
       }
       {
         std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
+        idx = agent_index(id);
+        if (idx < 0) { send_json(fd, 200, "{\"ok\":true}"); return; }
+        Val removed = AGENTS[idx];
         AGENTS.erase(AGENTS.begin() + idx);
-        save_agents();
+        try { save_agents(); }
+        catch (...) { AGENTS.insert(AGENTS.begin() + idx, removed); throw; }
       }
       {
         std::lock_guard<std::mutex> lk(VM_IP_MTX);
@@ -1069,6 +1089,7 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
       AGENTS.push_back(agent);
       try {
         save_agents();
+        if (with_vm) SPAWNING_VMS.insert(vm);
       } catch (...) {
         AGENTS.pop_back();
         throw;
@@ -1212,11 +1233,14 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
     // stream, kills a running run_command); the queue is NOT paused.
     // Optional "bot": stop only that bot's lane; the others keep answering.
     const std::string bot = str("bot");
-    if (!bot.empty() ? !lanes_busy({bot}) : !BUSY.load()) {
+    if (!bot.empty()) {
+      send_json(fd, 200, cancel_bots({bot}, true) ? "{\"cancelled\":true}" : "{\"cancelled\":false}");
+      return;
+    }
+    if (!BUSY.load()) {
       send_json(fd, 200, "{\"cancelled\":false}"); return;
     }
-    if (!bot.empty()) cancel_bots({bot}, true);
-    else cancel_active(true);
+    cancel_active(true);
     send_json(fd, 200, "{\"cancelled\":true}");
     return;
   }
@@ -1280,10 +1304,16 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
         error_json(fd,403,"CSRF-Prüfung fehlgeschlagen"); return;
       }
       if (BUSY.load()) { error_json(fd,409,"Bot arbeitet noch"); return; }
-      std::lock_guard<std::shared_mutex> turn(TURN_MTX);
-      if (BUSY.load()) { error_json(fd,409,"Bot arbeitet noch"); return; }
+      std::lock_guard<std::mutex> scheduling(JOB_MTX);
+      std::unique_lock<std::shared_mutex> turn(TURN_MTX, std::try_to_lock);
+      if (!turn.owns_lock() || BUSY.load()) { error_json(fd,409,"Bot arbeitet noch"); return; }
       auto result=snapshot_restore(id);
-      if (result.code == 200) guest_audit("room_restore",actor.login,id);
+      if (result.code == 200) {
+        JOBS.clear(); PENDING.clear(); QUEUE_PAUSED = false;
+        AUTO_READY = false; AUTO_OWNER.clear(); ++AUTO_GENERATION;
+        save_queue_locked(); queue_event_locked();
+        guest_audit("room_restore",actor.login,id);
+      }
       send_json(fd,result.code,result.body);
       return;
     }
@@ -1295,37 +1325,16 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
       error_json(fd, 403, "Nur der Besitzer"); return;
     }
     if (BUSY.load()) { error_json(fd,409,"Bot arbeitet noch"); return; }
-    std::lock_guard<std::shared_mutex> turn(TURN_MTX);
-    if (BUSY.load()) { error_json(fd,409,"Bot arbeitet noch"); return; }
-    // clear_room_data() first atomically creates the native durable undo
-    // snapshot (incl. room/files/memory), before mutating the room. The
-    // encrypted restic archive runs AFTER that under a debounced timer;
-    // never block an interactive request on a NUMA-throttled restic job.
+    std::lock_guard<std::mutex> scheduling(JOB_MTX);
+    std::unique_lock<std::shared_mutex> turn(TURN_MTX, std::try_to_lock);
+    if (!turn.owns_lock() || BUSY.load()) { error_json(fd,409,"Bot arbeitet noch"); return; }
+    // Local durable room snapshot is the undo boundary. Full-machine backups
+    // belong to the daily/deploy policy, not each interactive clear.
     auto result = clear_room_data();
-    if (result.code == 200 && env("MAG_TEST_NO_CLEAR_BACKUP","0") != "1") {
-      // Fixed sudoers command; --no-block returns before the 30s timer and
-      // its I/O-bound service. Repeated clears RESTART the timer -> coalesce.
-      int rc = std::system(
-        "/usr/bin/sudo -n /usr/bin/systemctl --no-block restart "
-        "mag-backup-clear.timer >/dev/null 2>&1");
-      if (rc != 0) {
-        std::cerr << "MAG backup: asynchronous room clear scheduling failed; "
-                     "native undo snapshot retained\n";
-        Val body;
-        if (mj::parse(result.body,body) && body.isObj()) {
-          body["backup_queued"] = false;
-          body["backup_error"] = "Lokale Undo-Sicherung vorhanden; Restic-Archiv nicht eingeplant";
-          result.body = mj::dump(body);
-        }
-      } else {
-        Val body;
-        if (mj::parse(result.body,body) && body.isObj()) {
-          body["backup_queued"] = true;
-          result.body = mj::dump(body);
-        }
-      }
-    }
     if (result.code == 200) {
+      JOBS.clear(); PENDING.clear(); QUEUE_PAUSED = false;
+      AUTO_READY = false; AUTO_OWNER.clear(); ++AUTO_GENERATION;
+      save_queue_locked(); queue_event_locked();
       Val response;
       if (mj::parse(result.body,response))
         guest_audit("room_clear",actor.login,guest_field(response,"snapshot"));

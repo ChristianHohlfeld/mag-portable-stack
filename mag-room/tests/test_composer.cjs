@@ -1,0 +1,24 @@
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const vm = require('node:vm');
+const path = require('node:path');
+const html = fs.readFileSync(path.join(__dirname, '../web/index.html'), 'utf8');
+const start = html.indexOf('let composerSending=false;');
+assert.ok(start >= 0);
+const handler = html.slice(start, html.indexOf(';window.addEventListener(\'load\'', start));
+const elements = {'send-form':{}, message:{value:'First',focus(){}},think:{checked:false}};
+let resolve, calls=0;
+const context = {window:{}, $:id=>elements[id],selected:new Set(['a']),state:{agents:[],busy_bots:[],pending:[]},streams:{},stagedPhotos:[],jumpForSend(){},render(){},notice(){},fitMessageHeight(){},api(){calls++;return new Promise(r=>resolve=r)}};
+vm.runInNewContext(handler, context);
+(async()=>{
+ const first=elements['send-form'].onsubmit({preventDefault(){}});
+ await elements['send-form'].onsubmit({preventDefault(){}});
+ assert.equal(calls,1,'double submit must not duplicate the request');
+ elements.message.value='New unsent draft';
+ resolve({});await first;
+ assert.equal(elements.message.value,'New unsent draft','pending response must preserve later typing');
+ const next=elements['send-form'].onsubmit({preventDefault(){}});
+ resolve({});await next;
+ assert.equal(elements.message.value,'','unchanged submitted text clears normally');
+ console.log('composer regressions PASS');
+})().catch(e=>{console.error(e);process.exitCode=1});

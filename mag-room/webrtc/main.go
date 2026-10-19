@@ -63,6 +63,7 @@ type peer struct {
  frames *webrtc.DataChannel
  console *webrtc.DataChannel
  closed atomic.Bool
+ frameSeq atomic.Uint32
 }
 type bot struct {
  vm string
@@ -201,11 +202,12 @@ func (r *relay) receive() {
       viewer.frames.BufferedAmount()>1000000 {continue}
    parts:=(len(jpeg)+frameChunk-1)/frameChunk
    if parts>32{continue}
+   sequence:=viewer.frameSeq.Add(1)
    for i:=0;i<parts;i++ {
     end:=(i+1)*frameChunk
     if end>len(jpeg){end=len(jpeg)}
     out:=make([]byte,8,8+end-i*frameChunk)
-    binary.BigEndian.PutUint32(out[0:4],p.seq)
+    binary.BigEndian.PutUint32(out[0:4],sequence)
     binary.BigEndian.PutUint16(out[4:6],uint16(i))
     binary.BigEndian.PutUint16(out[6:8],uint16(parts))
     out=append(out,jpeg[i*frameChunk:end]...)

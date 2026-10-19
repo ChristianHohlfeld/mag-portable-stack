@@ -251,4 +251,7 @@ systemctl daemon-reload
 systemctl enable --now mag-agent-drift.timer || echo 'WARN: agent drift timer not enabled' >&2
 # Unreferenced half-created bot VMs only. Does not restart mag-llm or mag-llm-iq3.
 bash /usr/local/sbin/mag-agent-drift || echo 'WARN: agent drift check incomplete (deploy itself succeeded)' >&2
+# Tailnet name for each bot VM. No-op until the one-time wildcard cert exists.
+# Does not restart mag-llm. DNS for *.bot.stardenburg.de stays at the registrar.
+bash "$SOURCE/ops/bots/install.sh" || echo 'WARN: bot site install incomplete (deploy itself succeeded)' >&2
 printf '\nInstalled release %s; rollback snapshot %s\n' "$RELEASE_ID" "$BACKUP"

@@ -1,0 +1,51 @@
+name: One-shot apply type-to-focus
+on:
+  push:
+    branches: [room/type-to-focus]
+    paths: ['.github/workflows/apply-type-to-focus.yml']
+permissions:
+  contents: write
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: room/type-to-focus
+      - name: Edit index.html and verify
+        run: |
+          python3 - <<'PY'
+          import hashlib, pathlib, sys
+          p = pathlib.Path('mag-room/web/index.html')
+          s = p.read_text(encoding='utf-8')
+          if hashlib.sha256(s.encode()).hexdigest() != 'ae00b7434dc28e8dc5634e723700fc30eacfb19266e306a83139ed4439e18f00':
+              sys.exit('unexpected base index.html')
+          a = 'aria-label="Nachricht" autofocus></textarea>'
+          b = "};window.addEventListener('load',()=>$('message').focus());$('message').onkeydown="
+          assert s.count(a) == 1 and s.count(b) == 1
+          s = s.replace(a, 'aria-label="Nachricht"></textarea>')
+          s = s.replace(b, """};window.addEventListener('load',focusComposer);
+          const finePointer=matchMedia('(pointer:fine)');
+          function composerReady(){const m=$('message');return !!m&&!m.disabled&&m.getClientRects().length>0&&!document.querySelector('dialog[open]')}
+          function focusComposer(){if(finePointer.matches&&composerReady()&&document.activeElement!==$('message'))$('message').focus({preventScroll:true})}
+          function ownsKeys(t){return !!t&&(t.tagName==='INPUT'||t.tagName==='TEXTAREA'||t.tagName==='SELECT'||t.isContentEditable||!!t.closest?.('#terminal,#screen,#browser-view,dialog,[role=menu]'))}
+          window.addEventListener('focus',()=>{if(document.activeElement===document.body)focusComposer()});
+          document.addEventListener('keydown',e=>{
+           if(e.defaultPrevented||e.isComposing||ownsKeys(e.target)||!composerReady())return;
+           const paste=(e.ctrlKey||e.metaKey)&&!e.altKey&&!e.shiftKey&&e.key.toLowerCase()==='v';
+           if(!paste&&((e.ctrlKey&&!e.altKey)||e.metaKey||e.key.length!==1))return;
+           if(e.key===' '&&e.target.closest?.('button,a,summary,[role=button]'))return;
+           $('message').focus({preventScroll:true});
+          });
+          $('message').onkeydown=""")
+          if hashlib.sha256(s.encode()).hexdigest() != 'a855cdbecc81f58bb1a17f72029f3013a7b406b3142e9275a95f65ef0d3f94a8':
+              sys.exit('result does not match the tested index.html')
+          p.write_text(s, encoding='utf-8')
+          PY
+      - name: Commit
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898299+github-actions[bot]@users.noreply.github.com'
+          git add mag-room/web/index.html
+          git commit -m 'Room: type anywhere to write in the composer, Ctrl/Cmd+V outside pastes, no keyboard pop-up on phones'
+          git push origin HEAD:room/type-to-focus

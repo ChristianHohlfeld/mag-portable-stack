@@ -1,0 +1,36 @@
+name: One-shot apply dp-bind-orphans
+on:
+  push:
+    branches: [room/dp-bind-orphans]
+    paths: ['.github/workflows/apply-dp-bind-orphans.yml']
+permissions:
+  contents: write
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: room/dp-bind-orphans
+      - name: Apply diff and verify
+        run: |
+          set -e
+          cat > /tmp/before <<'HASHES'
+          e4afbd8fe76c2c1972bb79f7bc3c5c86b74c8a575c6f4018092cf755c670c866  mag-room/native/mcp_routes.hpp
+          d62a424df4b297dcf911ae47dab4e7764d3e970a419cafc762b9b8438a61b277  mag-room/tests/test_native.py
+          HASHES
+          cat > /tmp/after <<'HASHES'
+          a521f5f657d91c4f1abb1b804d7ae21ab7eb3d13a320e183509f81fda71d0fcf  mag-room/native/mcp_routes.hpp
+          fc458c97ab0f33dd21072fe49c565e0c24dde3184d2596a41567a8b12e096599  mag-room/tests/test_native.py
+          HASHES
+          sed -i 's/^ *//' /tmp/before /tmp/after
+          sha256sum -c /tmp/before
+          git apply --unidiff-zero .one-shot/0017.diff
+          sha256sum -c /tmp/after
+      - name: Commit
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898299+github-actions[bot]@users.noreply.github.com'
+          git add mag-room/native/mcp_routes.hpp mag-room/tests/test_native.py
+          git commit -m 'Room: auto-bind Digitalisierungsplanung even if the server is already connected with no bots'
+          git push origin HEAD:room/dp-bind-orphans

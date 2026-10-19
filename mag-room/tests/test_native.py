@@ -711,6 +711,17 @@ class Native(unittest.TestCase):
    self.assertNotIn('id_slot',Model.calls[-1])
   finally:
    self.assertTrue(self.request('/api/agents/'+b['id'],method='DELETE')['ok'])
+ def test_09p_owner_adds_memory_in_modal(self):
+  r=self.request('/api/agents/test/memory',{'text':'  Manuell ergaenzt  '})
+  self.assertTrue(r['ok']);self.assertEqual(r['memory'][-1]['text'],'Manuell ergaenzt')
+  self.assertEqual(r['memory'][-1]['src'],'Nutzer')
+  self.assertEqual(self.request('/api/agents/test/memory',method='GET')[-1]['text'],'Manuell ergaenzt')
+  self.error(409,'/api/agents/test/memory',{'text':'Manuell ergaenzt'})
+  self.error(400,'/api/agents/test/memory',{'text':'   '})
+  self.error(400,'/api/agents/test/memory',{'text':'x'*501})
+  self.error(404,'/api/agents/nope/memory',{'text':'egal'})
+  html=self.request('/',raw=True).decode()
+  for needle in ('id="memory-new"','id="memory-add"',"'/memory',{text},'POST'",'id="memory-err"'):self.assertIn(needle,html)
  def test_09i_chat_only_bot_has_no_vm_tools(self):
   names=[t['function']['name'] for t in Model.calls[-1]['tools']]
   for vm_tool in ('run_command','fetch_room_file','share_room_file','browser_open'):self.assertNotIn(vm_tool,names)

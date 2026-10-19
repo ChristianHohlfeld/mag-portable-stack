@@ -263,6 +263,8 @@ dialog{border-radius:10px;border-color:var(--line);background:var(--surface)}
 .work-status.phase-done .pulse{animation:none;background:var(--green,#7dcea0)}
 .work-status.phase-hung{color:var(--orange,#e4b77a)}
 .work-status.phase-hung .pulse{animation:none;background:var(--orange,#e4b77a)}
+.work-status.phase-stopped{color:var(--muted)}
+.work-status.phase-stopped .pulse{animation:none;background:var(--muted)}
 .work-status.phase-error{color:var(--red)}
 .work-status.phase-error .pulse{animation:none;background:var(--red)}
 .work-steps{margin:0 0 10px;font-size:12px;color:var(--muted)}
@@ -863,15 +865,16 @@ function append(msg,scroll=true,trace=null,position=-1){
  const name=document.createElement('strong');name.textContent=msg.name||(human?'Nutzer':'Bot');
  const time=document.createElement('time');const date=new Date((msg.ts||Date.now()/1000)*1000);time.textContent=date.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
  meta.append(avatar,name,time);if(msg.id){const trash=document.createElement('button');trash.type='button';trash.className='msg-trash';trash.title='Nachricht löschen';trash.setAttribute('aria-label','Nachricht löschen');trash.innerHTML='<svg class="i sm" aria-hidden="true"><use href="#ic-trash"></use></svg>';trash.onclick=()=>askDeleteMessage(msg);meta.append(trash)}div.append(meta);
- const content=document.createElement('div');content.className='content';content.innerHTML=safeMarkdown(msg.content);decorate(content);
- if(!msg.content)content.hidden=true;
+ const text=shownText(msg);
+ const content=document.createElement('div');content.className='content';content.innerHTML=safeMarkdown(text);decorate(content);
+ if(!text)content.hidden=true;
  div.append(content);
  attachReactions(div,msg);
  attachWork(div,msg,content);
  if(!human&&msg.reasoning)showThinking(div,msg.id||'',msg.reasoning,false,msg.thought_ms);
  if(trace)addTrace(div,{...trace,key:msg.id||''});
  if(msg.file&&msg.file.removed){const s=document.createElement('span');s.className='attachment removed';s.textContent='📎 '+msg.file.name+' — entfernt';s.title='Datei wurde in der VM gelöscht oder umbenannt';div.append(s)}else if(msg.file){const f=msg.file;const a=document.createElement('a');a.href='/api/file/'+encodeURIComponent(f.stored);a.className='attachment';a.textContent='📎 '+f.name;div.append(a);if(f.mime?.startsWith('audio/')){const audio=document.createElement('audio');audio.controls=true;audio.src=a.href;div.append(audio)}if(f.mime==='text/html'||/\.html?$/i.test(f.name||'')){const card=document.createElement('div');card.className='html-preview';const frame=document.createElement('iframe');fetch(a.href).then(r=>r.ok?r.text():Promise.reject(r.status)).then(t=>{frame.srcdoc=t}).catch(()=>{frame.replaceWith(Object.assign(document.createElement("div"),{textContent:"Vorschau nicht verfügbar"}))});frame.title='Vorschau '+f.name;frame.setAttribute('sandbox','allow-scripts');frame.loading='lazy';const open=document.createElement('a');open.href=a.href;open.target='_blank';open.rel='noopener';open.textContent='In neuem Tab öffnen';card.append(frame,open);div.append(card)}if(f.mime?.startsWith('image/')){const image=document.createElement('img');image.className='attachment-image';image.src=a.href;image.alt=f.name;content.append(image)}}
- if(msg.content){const actions=document.createElement('div');actions.className='message-tools';const b=document.createElement('button');b.type='button';b.innerHTML=ICON_COPY+' Kopieren';b.setAttribute('aria-label','Nachricht kopieren');b.onclick=()=>copyText(msg.content,b);actions.append(b);div.append(actions)}
+ if(text){const actions=document.createElement('div');actions.className='message-tools';const b=document.createElement('button');b.type='button';b.innerHTML=ICON_COPY+' Kopieren';b.setAttribute('aria-label','Nachricht kopieren');b.onclick=()=>copyText(text,b);actions.append(b);div.append(actions)}
  inner.append(div);return div;
 }
 function streamClock(s){const t=Math.max(0,Math.floor((Date.now()-((s&&s.started)||Date.now()))/1000));return Math.floor(t/60)+':'+String(t%60).padStart(2,'0')}
@@ -894,10 +897,13 @@ function promptEta(p){
  if(sec<=30)return 'gleich fertig';
  return 'noch ca. '+(sec<90?'1 min':Math.round(sec/60)+' min');
 }
+// Rooms before the stop cleanup stored the note in the text itself.
+function shownText(msg){const t=msg.content||'';return msg.interrupted?t.replace(/\s*\((abgebrochen|unterbrochen)\)\s*$/,''):t}
+function stoppedByUser(msg){return msg.interrupted&&msg.stopped!=='system'}
 function doneLabel(msg){
- if(msg.work_error)return 'Fehler · '+msg.work_error;
+ if(msg.work_error&&!stoppedByUser(msg))return 'Fehler · '+msg.work_error;
  const n=(msg.steps||[]).length;
- let t=(msg.interrupted?'Angehalten · ':'Fertig · ')+fmtClock(msg.elapsed_s);
+ let t=(msg.interrupted?(stoppedByUser(msg)?'Gestoppt · ':'Unterbrochen · '):'Fertig · ')+fmtClock(msg.elapsed_s);
  if(n)t+=' · '+n+(n===1?' Schritt':' Schritte');
  return t;
 }
@@ -913,7 +919,7 @@ function attachWork(div,msg,content){
  if(!msg||msg.role==='user')return;
  if(msg.elapsed_s==null&&!(msg.steps&&msg.steps.length)&&!msg.work_error)return;
  const box=document.createElement('div');
- box.className='work-status '+(msg.work_error?'phase-error':(msg.interrupted?'phase-hung':'phase-done'));
+ box.className='work-status '+(stoppedByUser(msg)?'phase-stopped':msg.work_error?'phase-error':(msg.interrupted?'phase-hung':'phase-done'));
  const dot=document.createElement('span');dot.className='pulse';
  const label=document.createElement('span');label.className='work-label';label.textContent=doneLabel(msg);
  box.append(dot,label);

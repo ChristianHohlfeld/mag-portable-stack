@@ -1734,6 +1734,15 @@ static std::string render_room_line(const Val &m) {
   std::string content = m.find("content") ? m.find("content")->asStr() : "";
   if (content.size() > 4000)
     content.resize(4000);
+  if (auto in = m.find("interrupted"); in && in->asBool()) {
+    auto by = m.find("stopped");
+    const std::string note =
+        by && by->asStr() == "system" ? "(unterbrochen)" : "(abgebrochen)";
+    // Older rooms stored the note inside the content.
+    if (content.size() < note.size() ||
+        content.compare(content.size() - note.size(), note.size(), note) != 0)
+      content += content.empty() ? note : "\n\n" + note;
+  }
   auto f = m.find("file");
   if (f && f->isObj()) {
     std::string fname = f->find("name") ? f->find("name")->asStr() : "?";
@@ -3894,6 +3903,12 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
                           slot_for_key(bot_id), bot_model_id(bot_idx));
     if (think_from && think_to)
       report.thought_ms += (long)duration_cast<milliseconds>(*think_to - *think_from).count();
+    // Stop closes the backend socket, so the turn fails with a read error
+    // (often before any header while the prompt is evaluated): not an error.
+    if (stop_flag().load()) {
+      if (t.calls.empty()) final_text += t.text;
+      break;
+    }
     if (!t.error.empty()) {
       report.error = t.error.substr(0, 280);
       emit_event("error", bot_id, bot_name, report.error);
@@ -4676,19 +4691,22 @@ static TurnReport generate_and_post(int idx, bool automatic) {
     // Clean interruption: keep what was streamed (content only, never the
     // reasoning or half tool calls) as a closed assistant message, so the
     // transcript stays valid and only grows at its end (prompt cache).
+    // The note is not part of the visible text; render_room_line adds it
+    // for the model. A user stop before any output leaves no message.
     std::string partial = trim(report.text);
     if (partial.rfind("Antwort fehlgeschlagen", 0) == 0) partial.clear();
-    const std::string note = user_cancel_flag().load() ? "(abgebrochen)" : "(unterbrochen)";
-    Val msg = append_room("assistant", name,
-                          partial.empty() ? note : partial + "\n\n" + note,
-                          id);
-    attach_work(msg, report);
-    {
+    const bool by_user = user_cancel_flag().load();
+    report.error.clear();
+    if (!(by_user && partial.empty() && trim(report.reasoning).empty() &&
+          report.steps.empty())) {
+      Val msg = append_room("assistant", name, partial, id);
+      attach_work(msg, report);
       std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
       for (auto it = ROOM.rbegin(); it != ROOM.rend(); ++it)
         if (it->find("id") && msg.find("id") &&
             it->find("id")->asStr() == msg.find("id")->asStr()) {
           (*it)["interrupted"] = true;
+          (*it)["stopped"] = by_user ? "user" : "system";
           break;
         }
       save_room();

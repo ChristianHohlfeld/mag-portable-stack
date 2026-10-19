@@ -256,15 +256,16 @@ class Native(unittest.TestCase):
   self.request('/api/message',{'text':'N-Eins','bots':['test']});self._busy();time.sleep(.5)
   r=self.request('/api/message',{'text':'N-Zwei','bots':['test']});self.request('/api/queue/'+r['item']['id']+'/now',{})
   s=self._settle(lambda s:not s['busy'] and not s['pending'] and s['room'][-1].get('content')=='Sofort.')
-  tail=s['room'][-4:];self.assertEqual(tail[0]['content'],'N-Eins');self.assertEqual(tail[1]['content'],'(unterbrochen)');self.assertTrue(tail[1].get('interrupted'))
+  tail=s['room'][-4:];self.assertEqual(tail[0]['content'],'N-Eins');self.assertEqual(tail[1]['content'],'');self.assertTrue(tail[1].get('interrupted'));self.assertEqual(tail[1].get('stopped'),'system')
   self.assertEqual(tail[2]['content'],'N-Zwei')
   last=Model.calls[-1]['messages'];self._roles_ok(last);self.assertNotIn('denke',json.dumps(last),'partial reasoning must not leak into history')
+  self.assertIn('(unterbrochen)',json.dumps(last,ensure_ascii=False),'the model still learns the turn was interrupted')
  def test_15c_send_now_during_output_keeps_partial_and_prefix(self):
   self.wait_idle();Model.calls.clear();Model.script=[self._slow('out'),['Danach.']]
   self.request('/api/message',{'text':'O-Eins','bots':['test']});self._busy();time.sleep(1.0)
   r=self.request('/api/message',{'text':'O-Zwei','bots':['test']});self.request('/api/queue/'+r['item']['id']+'/now',{})
   s=self._settle(lambda s:not s['busy'] and s['room'][-1].get('content')=='Danach.')
-  part=s['room'][-3];self.assertTrue(part['content'].startswith('Wort0 '));self.assertTrue(part['content'].endswith('(unterbrochen)'))
+  part=s['room'][-3];self.assertTrue(part['content'].startswith('Wort0 '));self.assertTrue(part.get('interrupted'));self.assertNotIn('(unterbrochen)',part['content'])
   a,b=Model.calls[-2]['messages'],Model.calls[-1]['messages']
   ja,jb=json.dumps(a[:1]),json.dumps(b[:1]);self.assertEqual(ja,jb,'system prompt must stay identical (cache prefix)')
   ua=a[-1]['content'];ub=b[-1]['content'];k=ua.find('[Kontext]') if '[Kontext]' in ua else len(ua)
@@ -279,7 +280,7 @@ class Native(unittest.TestCase):
    time.sleep(.02)
   r=self.request('/api/message',{'text':'T-Zwei','bots':['test']});self.request('/api/queue/'+r['item']['id']+'/now',{})
   s=self._settle(lambda s:not s['busy'] and s['room'][-1].get('content')=='Nach Tool.')
-  self.assertIn('unterbrochen',s['room'][-3]['content']);self._roles_ok(Model.calls[-1]['messages'])
+  self.assertTrue(s['room'][-3].get('interrupted'));self._roles_ok(Model.calls[-1]['messages'])
   self.assertNotIn('call_q1',json.dumps(Model.calls[-1]['messages']),'tool calls of the interrupted turn must not be carried over')
  def test_15e_queue_edit_delete_merge_stop_and_persist(self):
   self.wait_idle();Model.script=[self._slow('out',60)]
@@ -458,9 +459,11 @@ class Native(unittest.TestCase):
   self.request('/api/message',{'text':'Stop-Test','bots':['test']});self._busy();time.sleep(1.0)
   self.assertEqual(self.request('/api/cancel',{})['cancelled'],True)
   s=self.wait_idle();self.assertFalse(s.get('queue_paused'),'composer stop must not pause the queue')
-  part=s['room'][-1];self.assertTrue(part['content'].startswith('Wort0 '));self.assertTrue(part['content'].endswith('(abgebrochen)'));self.assertTrue(part.get('interrupted'))
+  part=s['room'][-1];self.assertTrue(part['content'].startswith('Wort0 '));self.assertNotIn('(abgebrochen)',part['content']);self.assertTrue(part.get('interrupted'))
+  self.assertEqual(part.get('stopped'),'user');self.assertNotIn('work_error',part)
   self.assertEqual(self.request('/api/cancel',{})['cancelled'],False,'idle cancel is a no-op')
   self.request('/api/message',{'text':'Danach','bots':['test']});self.wait_room('Weiter normal.');s=self.wait_idle()
+  self.assertIn('(abgebrochen)',json.dumps(Model.calls[-1]['messages'],ensure_ascii=False),'the model still learns the answer was stopped')
   self.assertEqual(s['room'][-1]['content'],'Weiter normal.')
  def test_15j_reload_mid_stream_replays_and_continues(self):
   self.wait_idle();Model.script=[self._slow('out',25)]
@@ -1906,10 +1909,34 @@ class MultiBot(unittest.TestCase):
    self.assertTrue(self.request('/api/cancel',{'bot':'q4bot'})['cancelled'])
    self._idle()
    self.assertEqual(len(Model.calls)-n,2)
-   self.assertIn('(abgebrochen)',self._last_bot_text('q4bot'))
+   self.assertNotEqual(self._last_bot_text('q4bot'),'')
    self.assertEqual(self._last_bot_text('iq3bot'),'Hallo aus dem Modell.')
   finally:
    Model.delay=0;self._idle();self.request('/api/agents/iq3bot/model',{'model':self.IQ3})
+ def test_10d_stop_while_reading_prompt_is_not_an_error(self):
+  self._idle();Model.delay=1.5;events=[];room0=len(self.request('/api/state')['room'])
+  def listen():
+   r=urllib.request.urlopen(f'http://127.0.0.1:{self.ui}/api/events',timeout=10);r.fp.raw._sock.settimeout(4)
+   try:
+    while True:
+     line=r.readline().decode()
+     if line.startswith('data: '):events.append(json.loads(line[6:]))
+   except Exception:pass
+   finally:r.close()
+  t=threading.Thread(target=listen,daemon=True);t.start();time.sleep(.3)
+  try:
+   n=len(Model.calls);self.request('/api/message',{'text':'Lies lange','bots':['q4bot']})
+   self._calls_after(n,1,1);time.sleep(.3)
+   self.assertTrue(self.request('/api/cancel',{'bot':'q4bot'})['cancelled'])
+   self._idle()
+  finally:Model.delay=0
+  t.join(6)
+  self.assertEqual([e for e in events if e.get('type')=='error'],[],'a stop is not an error')
+  self.assertIn('cancelled',[e.get('type') for e in events])
+  room=self.request('/api/state')['room'][room0:]
+  self.assertEqual([m.get('role') for m in room],['user'],'no empty stub for a stop before any output')
+  html=self.request('/',raw=True).decode()
+  for needle in ("'Gestoppt · '",'phase-stopped','function shownText('):self.assertIn(needle,html)
  def test_11_cancel_one_bot_keeps_the_other(self):
   self._idle();n=len(Model.calls);Model.delay=2.5
   try:
@@ -1927,7 +1954,8 @@ class MultiBot(unittest.TestCase):
   finally:Model.delay=0
   room=self.request('/api/state')['room']
   q4=[m.get('content','') for m in room if m.get('bot')=='q4bot']
-  self.assertIn('(abgebrochen)',q4[-2]);self.assertEqual(q4[-1],'Hallo aus dem Modell.')
+  self.assertEqual(q4[-1],'Hallo aus dem Modell.')
+  self.assertFalse([m for m in room if m.get('work_error') or 'Backend' in m.get('content','')])
   self.assertEqual(self._last_bot_text('iq3bot'),'Hallo aus dem Modell.')
   self.assertEqual(self.request('/api/cancel',{'bot':'q4bot'}),{'cancelled':False})
  def test_12_parallel_lanes_keep_autonomy_single_owner_and_idle(self):

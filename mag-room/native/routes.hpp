@@ -33,6 +33,7 @@ static void agents_event() {
   e["type"] = "agents";
   publish(mj::dump(e));
 }
+#include "mcp_routes.hpp"
 // A VM spawn takes minutes. The bot is stored at once with "pending_vm" and
 // works chat-only until its VM is ready; neither the HTTP request nor the
 // turn lock waits for it. A restart during the spawn resumes it (resume=true
@@ -535,6 +536,7 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
                     {{"Cache-Control", asset_cache_control(r.query)}});
     return;
   }
+  if (mcp_route(fd, r, m, path)) return;
   // Connectors: secrets stay server-side (STATE_DIR/connectors, 0600) and
   // are never returned to the browser or written to the repo.
   if (path == "/api/connectors" && m == "GET") {

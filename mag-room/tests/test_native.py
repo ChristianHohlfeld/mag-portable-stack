@@ -1967,6 +1967,164 @@ class StaggeredLanes(unittest.TestCase):
   html=self.request('/',raw=True).decode()
   for needle in ('function showThinking(',"head.className='think-head'","'Nachgedacht'","'Denkt nach'",'msg.reasoning','msg.thought_ms',"event.type==='bot_wait'",'wartet','next.waiting_bots'):self.assertIn(needle,html)
   self.assertNotIn("'Überlegungen'",html)
+class FakeMcp(http.server.BaseHTTPRequestHandler):
+ """Streamable-HTTP MCP server: bearer auth, session header, paginated tools/list as SSE."""
+ protocol_version='HTTP/1.1';TOKEN='secret-token-0123456789';sessions=set();calls=[];inits=0;expire=False
+ def log_message(self,*a):pass
+ def _send(self,code,obj=None,sse=False,headers=None):
+  if obj is None:data=b''
+  elif sse:data=b'event: message\ndata: '+json.dumps(obj).encode()+b'\n\n'
+  else:data=json.dumps(obj).encode()
+  self.send_response(code);self.send_header('Content-Type','text/event-stream' if sse else 'application/json')
+  for k,v in (headers or {}).items():self.send_header(k,v)
+  self.send_header('Content-Length',str(len(data)));self.end_headers();self.wfile.write(data)
+ def do_POST(self):
+  msg=json.loads(self.rfile.read(int(self.headers['Content-Length'])) or b'{}')
+  cls=type(self)
+  if self.headers.get('Authorization')!='Bearer '+cls.TOKEN:return self._send(401,{'error':'unauthorized'})
+  method=msg.get('method');sid=self.headers.get('Mcp-Session-Id')
+  if method=='initialize':
+   cls.inits+=1;new='s%d'%cls.inits;cls.sessions.add(new)
+   return self._send(200,{'jsonrpc':'2.0','id':msg['id'],'result':{'protocolVersion':'2025-06-18','capabilities':{'tools':{}},'serverInfo':{'name':'fake-mcp','version':'1.2'}}},headers={'Mcp-Session-Id':new})
+  if sid not in cls.sessions:return self._send(404 if sid else 400,{'error':'no session'})
+  if self.headers.get('MCP-Protocol-Version')!='2025-06-18':return self._send(400,{'error':'version'})
+  if method=='notifications/initialized':return self._send(202)
+  if cls.expire:cls.expire=False;cls.sessions.discard(sid);return self._send(404,{'error':'gone'})
+  if method=='tools/list':
+   if not (msg.get('params') or {}).get('cursor'):
+    res={'tools':[{'name':'lookup','title':'Nachschlagen','description':'Sucht eine Notiz.','inputSchema':{'type':'object','properties':{'q':{'type':'string'}}},'annotations':{'readOnlyHint':True}}],'nextCursor':'p2'}
+   else:res={'tools':[{'name':'create_note','description':'Legt eine Notiz an.','inputSchema':{'type':'object','properties':{'text':{'type':'string'}},'required':['text']}}]}
+   return self._send(200,{'jsonrpc':'2.0','id':msg['id'],'result':res},sse=True)
+  if method=='tools/call':
+   p=msg.get('params') or {};cls.calls.append(p)
+   return self._send(200,{'jsonrpc':'2.0','id':msg['id'],'result':{'content':[{'type':'text','text':p['name']+' ok: '+json.dumps(p.get('arguments'),sort_keys=True)}]}},sse=True)
+  self._send(200,{'jsonrpc':'2.0','id':msg.get('id'),'error':{'code':-32601,'message':'unknown'}})
+class Plugins(unittest.TestCase):
+ """Remote MCP servers via "+" > Plugins & MCP: secrets stay on the server, tools only for the bots that enable them."""
+ Q4=MultiBot.Q4;IQ3=MultiBot.IQ3
+ EXTRA_ENV={'MAG_ROOM_STAGGER':'off'}
+ @classmethod
+ def setUpClass(cls):
+  cls.mcp=http.server.ThreadingHTTPServer(('127.0.0.1',0),FakeMcp);threading.Thread(target=cls.mcp.serve_forever,daemon=True).start()
+  cls.url=f'http://127.0.0.1:{cls.mcp.server_port}/mcp'
+  MultiBot.setUpClass.__func__(cls)
+ @classmethod
+ def tearDownClass(cls):
+  MultiBot.tearDownClass.__func__(cls);cls.mcp.shutdown()
+ request=classmethod(Native.request.__func__)
+ error=Native.error
+ _idle=MultiBot._idle
+ def tearDown(self):Model.script=[]
+ def _connect(self,bot='q4bot'):
+  for s in self.request('/api/plugins')['servers']:
+   if s['id']=='fake':return s
+  return self.request('/api/plugins',{'name':'Fake','url':self.url,'auth':'bearer','token':FakeMcp.TOKEN,'bot':bot})['server']
+ def _tool_names(self,call):return [t['function']['name'] for t in call.get('tools') or []]
+ def _turn(self,bot,script,text='Bitte'):
+  self._idle();n=len(Model.calls);Model.script=script
+  self.request('/api/message',{'text':text,'bots':[bot]})
+  return n
+ def _wait(self,pred,timeout=8):
+  end=time.time()+timeout
+  while time.time()<end:
+   v=pred()
+   if v:return v
+   time.sleep(.05)
+  self.fail('timeout')
+ def _tool_result(self,call):
+  return '\n'.join(m.get('content') or '' for m in call['messages'] if m.get('role')=='tool')
+ def test_01_connect_checks_token_and_never_leaks_it(self):
+  self.error(502,'/api/plugins',{'name':'Fake','url':self.url,'auth':'bearer','token':'wrong-token-xyz'})
+  self.assertEqual(self.request('/api/plugins')['servers'],[])
+  self.assertFalse(list(self.state.joinpath('mcp').glob('*.secret')) if self.state.joinpath('mcp').exists() else [])
+  s=self._connect()
+  self.assertEqual(s['id'],'fake');self.assertEqual(s['status'],'ok');self.assertTrue(s['has_secret'])
+  self.assertEqual([t['name'] for t in s['tools']],['lookup','create_note'])
+  self.assertEqual([t['read_only'] for t in s['tools']],[True,False])
+  self.assertEqual(s['server']['name'],'fake-mcp')
+  for blob in (json.dumps(self.request('/api/plugins')),json.dumps(self.request('/api/state')),self.state.joinpath('mcp/servers.json').read_text(),self.state.joinpath('agents.json').read_text()):
+   self.assertNotIn(FakeMcp.TOKEN,blob)
+  sec=self.state.joinpath('mcp/fake.secret');self.assertEqual(sec.read_text(),FakeMcp.TOKEN);self.assertEqual(sec.stat().st_mode&0o777,0o600)
+  ag={a['id']:a for a in self.request('/api/state')['agents']}
+  self.assertEqual(ag['q4bot']['plugins'],['fake']);self.assertEqual(ag['iq3bot']['plugins'],[])
+ def test_02_validation(self):
+  self.error(400,'/api/plugins',{'name':'X','url':'http://example.com/mcp'})
+  self.error(400,'/api/plugins',{'name':'X','url':'https://user:pw@example.com/mcp'})
+  self.error(400,'/api/plugins',{'name':'X','url':self.url,'auth':'header','header':'Host','token':'abcdefgh123'})
+  self.error(400,'/api/plugins',{'name':'X','url':self.url,'auth':'bearer','token':'with space 123'})
+  self.error(400,'/api/plugins',{'preset':'linear'})
+  self.error(404,'/api/plugins/bots/q4bot',{'server':'nope'})
+  self.error(404,'/api/plugins/approvals/nope',{'decision':'allow'})
+ def test_03_tools_only_for_the_bound_bot(self):
+  self._connect()
+  n=self._turn('q4bot',[['Ok']]);self._idle()
+  names=self._tool_names(Model.calls[n]);self.assertIn('mcp__fake__lookup',names);self.assertIn('mcp__fake__create_note',names)
+  d=[t for t in Model.calls[n]['tools'] if t['function']['name']=='mcp__fake__lookup'][0]['function']
+  self.assertTrue(d['description'].startswith('[Plugin Fake]'));self.assertEqual(d['parameters']['properties'],{'q':{'type':'string'}})
+  n=self._turn('iq3bot',[['Ok']]);self._idle()
+  self.assertFalse([x for x in self._tool_names(Model.calls[n]) if x.startswith('mcp__')])
+ def test_04_read_only_tool_runs_without_approval(self):
+  self._connect();k=len(FakeMcp.calls)
+  n=self._turn('q4bot',[[{'tool_calls':[{'index':0,'id':'c1','function':{'name':'mcp__fake__lookup','arguments':'{"q":"Einkauf"}'}}]}],['Gefunden.']])
+  self._idle()
+  self.assertEqual(FakeMcp.calls[k:],[{'name':'lookup','arguments':{'q':'Einkauf'}}])
+  self.assertIn('lookup ok: {"q": "Einkauf"}',self._tool_result(Model.calls[-1]))
+ def _approval(self):
+  return self._wait(lambda:self.request('/api/state').get('approvals'))[0]
+ def test_05_write_tool_waits_for_the_owner(self):
+  self._connect();k=len(FakeMcp.calls)
+  call=[{'tool_calls':[{'index':0,'id':'c2','function':{'name':'mcp__fake__create_note','arguments':'{"text":"Milch"}'}}]}]
+  self._turn('q4bot',[call,['Nicht angelegt.']])
+  a=self._approval();self.assertEqual((a['bot'],a['server'],a['tool']),('q4bot','fake','create_note'));self.assertEqual(json.loads(a['args']),{'text':'Milch'})
+  time.sleep(.3);self.assertEqual(FakeMcp.calls[k:],[],'ran before approval')
+  self.request('/api/plugins/approvals/'+a['id'],{'decision':'deny'});self._idle()
+  self.assertEqual(FakeMcp.calls[k:],[]);self.assertIn('abgelehnt',self._tool_result(Model.calls[-1]))
+  self.assertEqual(self.request('/api/state')['approvals'],[])
+  self._turn('q4bot',[call,['Angelegt.']])
+  a=self._approval();self.request('/api/plugins/approvals/'+a['id'],{'decision':'always'});self._idle()
+  self.assertEqual(FakeMcp.calls[k:],[{'name':'create_note','arguments':{'text':'Milch'}}])
+  self.assertEqual(self.request('/api/plugins')['bindings']['q4bot']['fake']['always'],['create_note'])
+  self._turn('q4bot',[call,['Wieder angelegt.']]);self._idle()
+  self.assertEqual(len(FakeMcp.calls[k:]),2,'"always" should skip the question')
+  self.request('/api/plugins/bots/q4bot',{'server':'fake','approval':'ask'})
+  self.assertEqual(self.request('/api/plugins')['bindings']['q4bot']['fake']['always'],[])
+ def test_06_stopping_while_waiting_never_runs_the_tool(self):
+  self._connect();k=len(FakeMcp.calls)
+  self._turn('q4bot',[[{'tool_calls':[{'index':0,'id':'c3','function':{'name':'mcp__fake__create_note','arguments':'{"text":"x"}'}}]}]])
+  self._approval();self.request('/api/cancel',{'bot':'q4bot'});self._idle()
+  self.assertEqual(self.request('/api/state')['approvals'],[]);self.assertEqual(FakeMcp.calls[k:],[])
+ def test_07_tool_switches_and_expired_session(self):
+  self._connect()
+  self.request('/api/plugins/bots/q4bot',{'server':'fake','off':['create_note'],'approval':'auto'})
+  n=self._turn('q4bot',[['Ok']]);self._idle()
+  names=self._tool_names(Model.calls[n]);self.assertIn('mcp__fake__lookup',names);self.assertNotIn('mcp__fake__create_note',names)
+  inits=FakeMcp.inits;FakeMcp.expire=True;k=len(FakeMcp.calls)
+  self._turn('q4bot',[[{'tool_calls':[{'index':0,'id':'c4','function':{'name':'mcp__fake__lookup','arguments':'{}'}}]}],['Ok']]);self._idle()
+  self.assertEqual(FakeMcp.inits,inits+1);self.assertEqual([c['name'] for c in FakeMcp.calls[k:]],['lookup'])
+  self.request('/api/plugins/bots/q4bot',{'server':'fake','off':[],'approval':'ask'})
+  self.request('/api/plugins/bots/iq3bot',{'server':'fake','on':True})
+  self.assertEqual({a['id']:a['plugins'] for a in self.request('/api/state')['agents']}['iq3bot'],['fake'])
+  self.request('/api/plugins/bots/iq3bot',{'server':'fake','on':False})
+  self.assertEqual({a['id']:a['plugins'] for a in self.request('/api/state')['agents']}['iq3bot'],[])
+ def test_08_refresh_and_token_update(self):
+  self._connect()
+  r=self.request('/api/plugins/fake/refresh',{});self.assertTrue(r['ok']);self.assertEqual(len(r['server']['tools']),2)
+  self.error(400,'/api/plugins/fake',{'token':'a b'},method='PUT')
+  r=self.request('/api/plugins/fake',{'token':'other-token-123456'},method='PUT');self.assertEqual(r['server']['status'],'error')
+  r=self.request('/api/plugins/fake',{'token':FakeMcp.TOKEN,'name':'Notizen'},method='PUT');self.assertEqual(r['server']['status'],'ok');self.assertEqual(r['server']['name'],'Notizen')
+ def test_09_delete_removes_secret_and_bindings(self):
+  self._connect();self.request('/api/plugins/bots/iq3bot',{'server':'fake','on':True})
+  self.request('/api/plugins/fake',method='DELETE')
+  self.assertFalse(self.state.joinpath('mcp/fake.secret').exists())
+  self.assertEqual(self.request('/api/plugins')['servers'],[])
+  self.assertNotIn('plugins',self.state.joinpath('agents.json').read_text())
+  n=self._turn('q4bot',[['Ok']]);self._idle()
+  self.assertFalse([x for x in self._tool_names(Model.calls[n]) if x.startswith('mcp__')])
+ def test_10_owner_only_and_frontend(self):
+  self.error(403,'/api/plugins',{'name':'X','url':self.url},headers={'Content-Type':'application/json','X-No-Token':'1'})
+  html=self.request('/',raw=True).decode()
+  for needle in ('id="plus-mcp"','id="mcp-dialog"',"hide('plus-mcp',!can('connectors'))",'function paintApprovals(',"event.type==='mcp_approval'","event.type==='mcp_approval_done'",'syncApprovals(next.approvals)','/api/plugins/approvals/','/^\\/(mcp|plugins?)$/i','Immer erlauben'):self.assertIn(needle,html)
+  self.assertNotIn('confirm(',html.replace('magConfirm(',''))
 class FakeTailscale(http.server.BaseHTTPRequestHandler):
  protocol_version='HTTP/1.1';calls=[]
  def log_message(self,*a):pass

@@ -2742,6 +2742,7 @@ struct TurnReport {
   bool react_only = false;
 };
 
+#include "mcp.hpp"
 static std::string tools_json(int bot_idx, bool web) {
   std::string vm = bot_field(bot_idx, "vm", "keine");
   const bool has_vm = !vm.empty() && vm != "keine";
@@ -2775,6 +2776,7 @@ static std::string tools_json(int bot_idx, bool web) {
       arr += ",";
     arr += defs[i];
   }
+  for (auto &t : mcp_bot_tools(bot_idx)) arr += "," + mj::dump(t.def);
   arr += "]";
   return arr;
 }
@@ -3170,6 +3172,7 @@ static std::string tool_step_label(const std::string &tool) {
   if (tool == "speak") return "Spricht";
   if (tool == "download_frontend") return "Lädt die Oberfläche";
   if (tool == "publish_frontend") return "Veröffentlicht die Oberfläche";
+  if (is_mcp_tool(tool)) return "Plugin · " + mcp_step_label(tool);
   if (tool.empty()) return "Arbeitet";
   return "Arbeitet · " + tool;
 }
@@ -3424,6 +3427,7 @@ static std::string dispatch_tool(int bot_idx, const std::string &name,
   std::string vm = bot_field(bot_idx, "vm", "keine");
   std::string bot_id = bot_field(bot_idx, "id");
   std::string bot_name = bot_field(bot_idx, "name", "Bot");
+  if (is_mcp_tool(name)) return mcp_dispatch_tool(bot_idx, name, a);
   if (is_jobs_tool(name)) return jobs_dispatch_tool(bot_idx, name, a);
   if (is_pages_tool(name)) return pages_dispatch_tool(bot_idx, name, a);
   if (is_s23_tool(name)) return s23_dispatch_tool(bot_idx, name, a);
@@ -5065,6 +5069,10 @@ static Val public_agent(int idx) {
   if (idx < 0 || (size_t)idx >= AGENTS.size()) return o;
   auto mem = AGENTS[idx].find("memory");
   o["memory_count"] = mem && mem->isArr() ? (long)mem->arr->size() : 0;
+  Val plugins = Val::array();
+  if (auto p = AGENTS[idx].find("plugins"); p && p->isObj())
+    for (auto &kv : *p->obj) plugins.push(Val(kv.first));
+  o["plugins"] = plugins;
   return o;
 }
 static std::string state_json(const Actor *actor = nullptr) {
@@ -5147,6 +5155,8 @@ static std::string state_json(const Actor *actor = nullptr) {
   root["runtime"] = "C++17";
   if (actor && actor->ok)
     root["you"] = actor_json(*actor);
+  if (actor && actor->ok && actor->role == "owner")
+    root["approvals"] = mcp_pending_approvals();
   return mj::dump(root);
 }
 

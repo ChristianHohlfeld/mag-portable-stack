@@ -601,6 +601,17 @@ static void load_agents() {
   bool dirty = !exists;
   if (!exists)
     AGENTS.clear();
+  if (SINGLE_BOT == "auto") {
+    // One existing bot, never a second throwaway identity. Prefer the bot
+    // that already has a VM (coding workspace and data stay attached).
+    std::string chosen;
+    for (const auto &a : AGENTS) {
+      if (mag::str(a, "id").empty()) continue;
+      if (chosen.empty()) chosen = mag::str(a, "id");
+      if (!mag::str(a, "vm").empty()) { chosen = mag::str(a, "id"); break; }
+    }
+    SINGLE_BOT = chosen.empty() ? "mag" : chosen;
+  }
   if (!SINGLE_BOT.empty()) {
     std::vector<Val> active;
     for (auto &a : AGENTS) {
@@ -2922,6 +2933,10 @@ static Val room_model_catalog() {
 // their always-resident servers. Choosing a model only changes this request
 // field: no unit, process, slot or weight is touched.
 static std::string bot_model_id(int idx) {
+  // Exactly one live coding bot: the owner's room selection is authoritative,
+  // regardless of an old per-bot IQ3/Q4 preference in agents.json.
+  // Switching changes only the next gateway request model ID, not the LLM PID.
+  if (!SINGLE_BOT.empty()) return active_room_model();
   if (q4_only_room()) return "deepseek-v4-flash-0731";
   const std::string own = bot_field(idx, "model");
   return known_room_model(own) ? own : active_room_model();

@@ -1,5 +1,5 @@
 // Native MAG audit gateway. One public loopback listener :8080.
-// Requests name a model; Q4 stays on :8090 and IQ3 on :8091. Neither process
+// Requests name a model; Q4 stays on :8090 and selected NUMA1 on :8091. Neither process
 // is started, stopped, or restarted here.
 #include "json.hpp"
 #include <arpa/inet.h>
@@ -52,6 +52,7 @@ static int connect_loopback(int port,int timeout_s=3){
 }
 struct Config {
   int q4=8090,iq3=8091,listen=8080;
+  std::string secondary="iq3"; // qwen only after verified operator cutover
   std::string logs="/var/log/mag-audit";
   std::string secrets="/etc/mag-audit/secrets.list";
 } cfg;
@@ -185,8 +186,9 @@ static bool choose_model(const Http &r,std::string &selected,int &port){
   if(asked.empty()&&!r.body.empty()){
     Val body; if(mj::parse(r.body,body)&&body.isObj()) if(auto model=body.find("model")) asked=model->asStr();
   }
-  if(asked=="iq3"||asked=="deepseek-v4-flash-0731-iq3"){selected="iq3"; port=cfg.iq3;return true;}
-  // No fallback on an explicitly unknown model.
+  if((asked=="iq3"||asked=="deepseek-v4-flash-0731-iq3")&&cfg.secondary=="iq3"){selected="iq3"; port=cfg.iq3;return true;}
+  if((asked=="qwen"||asked=="qwen3.8-flash-next-uncensored")&&cfg.secondary=="qwen"){selected="qwen"; port=cfg.iq3;return true;}
+  // No fallback on an explicitly unknown or inactive secondary model.
   return asked.empty()||asked=="q4"||asked=="deepseek-v4-flash-0731";
 }
 static bool request_read(int fd,Http &r){
@@ -248,7 +250,8 @@ static void proxy(int fd){
       Val row=Val::object(); row["id"]=name; row["object"]="model"; row["owned_by"]="mag"; row["label"]=label; row["ready"]=upstream_up(port); data.push(row);
     };
     add("deepseek-v4-flash-0731","Q4 NUMA0",cfg.q4);
-    add("deepseek-v4-flash-0731-iq3","IQ3 NUMA1",cfg.iq3);
+    if(cfg.secondary=="qwen")add("qwen3.8-flash-next-uncensored","Qwen3.8 NUMA1",cfg.iq3);
+    else add("deepseek-v4-flash-0731-iq3","IQ3 NUMA1",cfg.iq3);
     Val listed=Val::object(); listed["object"]="list"; listed["data"]=data;
     json_response(fd,200,listed); return;
   }
@@ -287,7 +290,7 @@ static void proxy(int fd){
   if(is_llm) {
     Val j;
     if(mj::parse(forwarded,j)&&j.isObj()&&j.find("model")){
-      j["model"]=selected=="iq3"?"deepseek-v4-flash-0731-iq3":"deepseek-v4-flash-0731";
+      j["model"]=selected=="qwen"?"qwen3.8-flash-next-uncensored":selected=="iq3"?"deepseek-v4-flash-0731-iq3":"deepseek-v4-flash-0731";
       forwarded=mj::dump(j);
     }
   }
@@ -338,7 +341,8 @@ static int server(int port){
 }
 int main(){
   try{
-    cfg.listen=number("MAG_AUDIT_LISTEN_PORT",8080);cfg.q4=number("MAG_MODEL_Q4_PORT",8090);cfg.iq3=number("MAG_MODEL_IQ3_PORT",8091);
+    cfg.listen=number("MAG_AUDIT_LISTEN_PORT",8080);cfg.q4=number("MAG_MODEL_Q4_PORT",8090);cfg.iq3=number("MAG_MODEL_IQ3_PORT",8091);cfg.secondary=env("MAG_SECONDARY_MODEL","iq3");
+    if(cfg.secondary!="iq3"&&cfg.secondary!="qwen")throw std::runtime_error("invalid MAG_SECONDARY_MODEL (fail closed)");
     cfg.logs=env("MAG_AUDIT_LOG_DIR",cfg.logs);cfg.secrets=env("MAG_AUDIT_SECRETS_FILE",cfg.secrets);
     int public_fd=server(cfg.listen);
     Val start=Val::object();start["type"]="gateway";start["event"]="start";start["upstream"]="8090";audit(start);

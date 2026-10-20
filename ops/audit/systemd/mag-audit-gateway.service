@@ -1,6 +1,6 @@
 # Zentrale LLM-Schnittstelle mit vollständigem Audit-Log (installiert von ops/audit/install-audit.sh;
 # Programm liegt rollback-stabil unter /opt/mag-audit, nicht im Raum-Release).
-# Clients -> C++ gateway :8080 -> Q4 :8090 or IQ3 :8091 by model id.
+# Clients -> C++ gateway :8080 -> Q4 :8090 or the selected NUMA1 model :8091.
 # Neither llama-server is restarted by this unit.
 [Unit]
 Description=MAG audit gateway (central LLM interface, full audit log)
@@ -18,6 +18,8 @@ Environment=MAG_AUDIT_LISTEN_PORT=8080
 Environment=MAG_AUDIT_UPSTREAM_HOST=127.0.0.1
 Environment=MAG_MODEL_Q4_PORT=8090
 Environment=MAG_MODEL_IQ3_PORT=8091
+# Installed only during an explicit operator cutover. Absent => existing IQ3.
+EnvironmentFile=-/etc/mag-stack/secondary-model.env
 Environment=MAG_AUDIT_LOG_DIR=/var/log/mag-audit
 Environment=MAG_AUDIT_SECRETS_FILE=/etc/mag-audit/secrets.list
 ExecStart=/opt/mag-audit/bin/mag-audit-gateway

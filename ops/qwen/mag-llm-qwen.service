@@ -1,0 +1,39 @@
+# Prepared but NOT installed, enabled or started by normal MAG deploy.
+# Manual replacement for IQ3 on NUMA1, independent of Q4 on NUMA0.
+[Unit]
+Description=MAG Qwen3.8 Flash Next CPU model, NUMA1
+After=network-online.target mag-llm.service
+Wants=network-online.target
+ConditionPathExists=/etc/mag-qwen/model.sha256
+StartLimitIntervalSec=1800
+StartLimitBurst=2
+[Service]
+Type=simple
+User=chris
+Group=chris
+WorkingDirectory=/home/chris
+ExecStart=/usr/local/lib/mag-qwen/start.sh
+Restart=on-failure
+RestartSec=60
+TimeoutStartSec=10800
+TimeoutStopSec=120
+CPUAffinity=14-25 42-53
+AllowedCPUs=14-25 42-53
+NUMAPolicy=bind
+NUMAMask=1
+MemoryAccounting=yes
+MemoryHigh=160G
+MemoryMax=184G
+MemorySwapMax=0
+LimitMEMLOCK=infinity
+OOMScoreAdjust=-600
+Nice=10
+IOSchedulingClass=idle
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=no
+ReadWritePaths=/var/lib/mag-llm/slots/qwen
+PrivateTmp=yes
+RestrictAddressFamilies=AF_INET AF_UNIX
+[Install]
+WantedBy=multi-user.target

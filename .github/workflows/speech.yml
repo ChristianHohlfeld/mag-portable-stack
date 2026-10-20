@@ -57,6 +57,10 @@ jobs:
                 test -s mag-room/native/tailscale_auth.hpp
                 grep -Fq 'proxy_pass http://127.0.0.1:8766/_internal/tailscale/whois;' ops/private-access/mag-room.nginx.conf
                 ;;
+              ops/deepseek/both-sockets.sh|ops/mag-120.d/30-multibot.conf)
+                # Retired: no executable compatibility paths remain.
+                test ! -e "$removed"
+                ;;
               *)
                 echo "Unexpected deletion in speech integration: $removed" >&2
                 exit 1

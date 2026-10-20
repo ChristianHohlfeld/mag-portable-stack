@@ -1769,6 +1769,9 @@ static std::string build_context_tail(int bot_idx, bool autotalk,
 // Once a room line has been sent, later turns reuse that exact text. The
 // window start moves only in HISTORY_STEP-sized jumps.
 static std::map<std::string, std::string> TRANSCRIPT_RENDERED;
+// Stable window boundary across turns. A sliding byte-cap starting from the
+// whole room would move the model prompt prefix on *every* CPU turn.
+static size_t TRANSCRIPT_WINDOW_START = 0;
 static std::string render_room_line(const Val &m) {
   std::string role = m.find("role") ? m.find("role")->asStr() : "";
   std::string name = m.find("name") ? m.find("name")->asStr()
@@ -1811,6 +1814,9 @@ static std::string build_transcript() {
     size_t step = (size_t)std::max(1, HISTORY_STEP);
     start = ((ROOM.size() - MAX_HISTORY) / step) * step;
   }
+  // Room clear/restore can rewind indices; never retain an invalid offset.
+  if (TRANSCRIPT_WINDOW_START >= ROOM.size()) TRANSCRIPT_WINDOW_START = 0;
+  start = std::max(start, TRANSCRIPT_WINDOW_START);
   const size_t limit = (size_t)std::clamp(
       envi("MAG_ROOM_TRANSCRIPT_BYTES", 16000), 4000, 64000);
   std::vector<std::pair<std::string, std::string>> lines;
@@ -1830,28 +1836,18 @@ static std::string build_transcript() {
     bytes += line.size();
     lines.emplace_back(id, std::move(line));
   }
-  // A byte-bounded sliding transcript used to shift its FIRST token after
-  // almost every new room message. With ~45 CPU prompt tokens/s that turns
-  // every reply into a multi-minute cold prefill despite cache_prompt=true.
-  // Advance the oldest retained message in fixed HISTORY_STEP-sized blocks
-  // instead. Keep the newest entry even if it alone exceeds the byte budget.
-  // This makes the prefix stable for subsequent messages until a block
-  // boundary, while keeping the same total byte ceiling.
-  const size_t first_retained = ROOM.size() - lines.size();
-  if (first_retained > start && !lines.empty()) {
-    // An oversized 4-KiB message means a 10-line block cannot fit in a
-    // 16-KiB window. Adapt the block to actual message sizes; otherwise the
-    // naive 10-line alignment would discard ALL but the newest line.
-    size_t largest = 1;
-    for (const auto &line : lines) largest = std::max(largest, line.second.size());
-    const size_t fits = std::max((size_t)1, limit / largest);
-    const size_t step = std::min((size_t)std::max(1, HISTORY_STEP), fits);
-    const size_t aligned = (first_retained / step +
-                            (first_retained % step != 0)) * step;
-    while (lines.size() > 1 &&
-           ROOM.size() - lines.size() < aligned)
+  // Byte cap overflow: evict older complete lines ONCE, leaving ~40%
+  // headroom, then persist that boundary. Next turns append without shifting
+  // the cached prefix until the budget fills again. Never truncate the latest
+  // message, and never recompute a fresh sliding cutoff on each request.
+  if (ROOM.size() - lines.size() > start) {
+    const size_t target = std::max((size_t)4000, limit * 3 / 5);
+    while (lines.size() > 1 && bytes > target) {
+      bytes -= lines.back().second.size();
       lines.pop_back();
+    }
   }
+  TRANSCRIPT_WINDOW_START = ROOM.size() - lines.size();
   std::set<std::string> keep;
   for (auto it = lines.rbegin(); it != lines.rend(); ++it) {
     if (!it->first.empty()) keep.insert(it->first);

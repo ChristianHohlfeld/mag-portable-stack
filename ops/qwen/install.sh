@@ -3,6 +3,7 @@
 set -euo pipefail
 [[ $EUID == 0 ]] || { echo 'root required' >&2; exit 4; }
 [[ ${1:-} == stage ]] || { echo 'usage: sudo bash ops/qwen/install.sh stage' >&2; exit 4; }
+systemctl is-active --quiet mag-llm-qwen.service && { echo 'Qwen is already running; refuse restage' >&2; exit 4; }
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 REV=$(cat "$ROOT/ops/qwen/runtime.sha")
 BIN="/home/chris/.local/qwen4exp/$REV/bin/llama-server"

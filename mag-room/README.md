@@ -67,13 +67,16 @@ files remain persisted unchanged. Controls:
 conservative byte heuristic, not exact model tokenization; watch prompt usage
 when adding MCP servers with many schemas.
 
-### Single-model operation (default)
-To reduce model switching and route all room bots to the stable Q4 server,
-`MAG_ROOM_SINGLE_MODEL=on` is the default. This applies even when a bot or the
-room previously selected IQ3: the persisted preferences are not overwritten.
-The UI offers only Q4 while enabled. To restore the previous dual-model routing
-without restoring files or migrating bot state, set `MAG_ROOM_SINGLE_MODEL=off`
-and restart **only** `mag-120` via the protected room deployment path.
-**This setting does not unload, restart or stop the IQ3 llama service:** freeing
-its CPU/RAM is a separate host operation requiring an idle-task and live-health
-check. This also does not change Q4 context or generation speed.
+### Independent Q4 and IQ3 models (default)
+By default `MAG_ROOM_SINGLE_MODEL=off`: MAG shows Q4 and IQ3, and each bot
+keeps its saved model choice. The two models run as independent NUMA lanes
+when their separate host services are healthy. `MAG_ROOM_SINGLE_MODEL=on`
+temporarily forces Q4-only routing **without deleting IQ3 files, memory, or
+bot selections**. Changing this setting needs only a protected mag-120 room
+restart; it must never stop or restart an already warm LLM.
+
+The Q4-only switch is **not** a way to reclaim RAM: stopping or starting the
+independent IQ3 process requires live host RAM/NUMA/health checks. Follow
+`docs/AI_PERFORMANCE_RECOVERY.md`. Prompt reuse is handled by the server
+(`--cache-ram 16384` and `cache_prompt=true`); the first request after a
+model restart is cold even for a tiny user message. Avoid unnecessary reloads.

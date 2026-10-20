@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(dirname "$0")/../../.."
+bash -n ops/deploy.sh ops/deepseek/restore-dual.sh ops/perf/diagnose-ai.sh
+test -f ops/deepseek/both-sockets.sh
+bash -n ops/deepseek/both-sockets.sh
+! grep -Eq '(systemctl (stop|restart|kill|disable).*mag-llm|warm[.]sh.*restart-llm)' ops/deepseek/both-sockets.sh
+! bash ops/deepseek/both-sockets.sh >/dev/null 2>&1
+! grep -Fq 'both-sockets.sh' ops/deploy.sh
+! grep -Eq '(warm[.]sh.*restart-llm|systemctl (stop|restart|kill).*mag-llm|systemctl disable --now mag-llm-iq3)' ops/deploy.sh
+grep -Fq 'return env("MAG_ROOM_SINGLE_MODEL", "off") != "off";' mag-room/native/magroom.cpp
+grep -Fq 'MAG_ROOM_SINGLE_MODEL=off' mag-room/.env.example
+grep -Fq -- '--cpunodebind=0 --membind=0' ops/deepseek/llm.env.mag
+grep -Fq 'THREADS=16' ops/deepseek/llm.env.mag
+grep -Fq 'IK_SLOT_SAVE=1' ops/deepseek/llm.env.mag
+grep -Fq -- '--cache-ram 16384' ops/mag-llm.service
+grep -Fq 'cache_prompt' mag-room/native/magroom.cpp
+grep -Fq 'MAG_RECOVERY_ALLOW_RELOAD' ops/deepseek/restore-dual.sh
+grep -Fq 'numa-isolation.sh" verify' ops/deepseek/restore-dual.sh
+grep -Fq 'health 8091' ops/deepseek/restore-dual.sh
+echo 'PASS model preservation, dual routing, NUMA and explicit recovery guards'

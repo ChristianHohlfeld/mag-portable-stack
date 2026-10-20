@@ -607,63 +607,6 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
       send_json(fd, 200, mj::dump(out));
     return;
   }
-  // Switch the single ACTIVE bot profile without creating a second worker.
-  // Parked profiles (including VM, memory and settings) remain unchanged.
-  if (m == "POST" && path == "/api/active-bot") {
-    if (bridge || !actor.ok || actor.role != "owner") {
-      error_json(fd, 403, "Nur der Besitzer"); return;
-    }
-    if (SINGLE_BOT.empty()) {
-      error_json(fd, 409, "Botwechsel nur im Ein-Bot-Modus"); return;
-    }
-    Val body;
-    if (!mj::parse(r.body, body) || !body.isObj() ||
-        !body.find("id") || body.find("id")->type != Val::STR) {
-      error_json(fd, 400, "Bot-ID fehlt"); return;
-    }
-    const std::string next = body.find("id")->asStr();
-    if (BUSY.load()) {
-      error_json(fd, 409, "Bot antwortet; Wechsel nach Abschluss möglich");
-      return;
-    }
-    {
-      std::lock_guard<std::mutex> lk(JOB_MTX);
-      if (!PENDING.empty() || !ACTIVE_JOBS.empty()) {
-        error_json(fd, 409, "Offene Aufgaben zuerst abschließen");
-        return;
-      }
-    }
-    {
-      std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
-      if (next != SINGLE_BOT) {
-        auto it = std::find_if(PARKED.begin(), PARKED.end(), [&](const Val &a) {
-          return mag::str(a, "id") == next;
-        });
-        if (it == PARKED.end() || AGENTS.empty() || !SPAWNING_VMS.empty()) {
-          error_json(fd, 409, "Bot nicht vorhanden oder VM wird gestartet");
-          return;
-        }
-        // Save the selection BEFORE changing in-memory state: a crash or
-        // failed disk write must never make the active profile disappear.
-        if (!write_file_atomic(STATE_DIR + "/single-bot-active.txt", next + "\n")) {
-          error_json(fd, 500, "Bot-Auswahl konnte nicht gesichert werden");
-          return;
-        }
-        Val incoming = *it;
-        PARKED.erase(it);
-        PARKED.push_back(AGENTS.front());
-        AGENTS.clear();
-        AGENTS.push_back(std::move(incoming));
-        SINGLE_BOT = next;
-        save_agents();
-      }
-    }
-    agents_event();
-    Val result = Val::object();
-    result["ok"] = true; result["active_bot"] = SINGLE_BOT;
-    send_json(fd, 200, mj::dump(result));
-    return;
-  }
   // Selects the model id on the next completion. Does not restart Q4, IQ3,
   // the gateway, or this process, and does not drop other clients.
   if (m == "GET" && path == "/api/model") {

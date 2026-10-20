@@ -41,7 +41,44 @@ verified runtime launcher, and local upstream SHA. Q4/IQ3 PIDs and backend
 routing are unchanged. Check `systemctl is-enabled mag-llm-qwen.service`
 before enabling; this is **not** an automatic deploy.
 
-## Deliberate cutover later — operator only, when chat/jobs/backup are idle
+## Full MAG integration: one controlled cutover
+
+MAG already owns the coding agent, browser/VM, MCP tools, audit log and
+model switch UI. There is **no separate Qwen agent stack** and no hard-coded
+DeepSeek Jinja template for Qwen. The upstream llama.cpp qwen4exp runtime
+uses the GGUF Jinja template, structured OpenAI tool_calls, streaming and
+model-specific thinking control. The MAG room sends enable_thinking to that
+template and does not forward DeepSeek's optional reasoning_effort prefix.
+
+After the download, runtime build, upstream SHA pin and stage steps above,
+run one operator-only cutover with no active chats, jobs or backup:
+
+```bash
+sudo bash ops/qwen/cutover.sh check
+sudo bash ops/qwen/cutover.sh apply
+```
+
+The script holds the MAG deployment lock and keeps Q4 on NUMA0 untouched.
+Never start this transaction while the Hugging Face download is still running.
+It stops only IQ3 (which shares NUMA1 and :8091), starts Qwen, waits for
+a healthy model and **tests real chat, thinking on/off, SSE and structured
+tool calling** directly. Only after success does it update the audit
+gateway, model-selection environment and idle MAG room. A second chat/tool
+test verifies routing through the audit gateway. Failed cutovers restore
+the previous IQ3/backend configuration; the snapshot remains for rollback.
+There is unavoidable IQ3-to-Qwen load downtime on NUMA1, not for Q4.
+
+```bash
+sudo bash ops/qwen/cutover.sh status
+sudo bash ops/qwen/cutover.sh rollback  # while room/jobs idle
+```
+
+GitHub green is not proof the model is serving. Host-side functional
+checks and CPU benchmark are mandatory before claiming the rollout live.
+MCP dispatch and access policy remain MAG-owned; only model tool-call
+compatibility is checked by the Qwen direct/gateway smoke test.
+
+## Deliberate cutover reference — operator only, when chat/jobs/backup are idle
 
 1. Confirm `git`/MAG room + gateway code containing this change is deployed;
    `build/mag-audit-gateway` rebuilt. Snapshot the existing audit gateway

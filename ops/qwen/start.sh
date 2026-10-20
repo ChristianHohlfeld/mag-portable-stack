@@ -21,4 +21,5 @@ exec /usr/bin/numactl --cpunodebind=1 --membind=1 "$BIN" \
   --model "$MODEL" --alias qwen3.8-flash-next-uncensored \
   --host 127.0.0.1 --port 8091 --ctx-size 16384 --parallel 1 \
   --threads 12 --threads-batch 12 --numa numactl \
-  --mlock --jinja --no-ui
+  --mlock --jinja --reasoning-format auto --cache-ram 8192 \
+  --slot-save-path /var/lib/mag-llm/slots/qwen --no-ui

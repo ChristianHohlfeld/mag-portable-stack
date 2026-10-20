@@ -24,4 +24,16 @@ grep -Fq 'unknown or inactive secondary model' mag-room/native/mag_audit_gateway
 ! grep -Fq 'ops/qwen/install.sh' ops/deploy.sh
 ! grep -Fq 'mag-llm-qwen.service' ops/deploy.sh
 grep -Fq 'STAGED ONLY' ops/qwen/install.sh
-echo 'Qwen NUMA1 opt-in staging contract PASS'
+grep -Fq -- '--reasoning-format auto' ops/qwen/start.sh
+grep -Fq -- '--cache-ram 8192' ops/qwen/start.sh
+grep -Fq 'body["tool_choice"] = "required"' ops/qwen/smoke.py
+grep -Fq 'enable_thinking' ops/qwen/smoke.py
+grep -Fq 'MAG_SECONDARY_MODEL=qwen' ops/qwen/cutover.sh
+grep -Fq 'Q4 NUMA0 unchanged' ops/qwen/cutover.sh
+! grep -Eq 'systemctl (stop|restart|kill).*mag-llm[.]service' ops/qwen/cutover.sh
+bash -n ops/qwen/cutover.sh
+python3 - <<'PY'
+import ast,pathlib
+ast.parse(pathlib.Path("ops/qwen/smoke.py").read_text())
+PY
+echo 'Qwen NUMA1 operator cutover + Jinja/Thinking/tools contract PASS'

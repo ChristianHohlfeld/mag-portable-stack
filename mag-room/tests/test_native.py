@@ -966,6 +966,13 @@ class Native(unittest.TestCase):
  def test_11_browser_live_requires_known_bot(self):
   self.error(404,'/api/browser-live/offer?bot=not-a-bot',{'type':'offer','sdp':'sdp'})
   self.error(404,'/api/browser/not-a-bot/pointer',{'x':1,'y':1})
+  html=self.request('/',raw=True).decode()
+  # A stale bot identity after single-bot migration is permanent, NOT an
+  # invitation to retry WebRTC against a vanished VM forever.
+  self.assertIn('err.permanent=r.status===404||r.status===400',html)
+  self.assertIn('if(!e.permanent)scheduleReconnect()',html)
+  self.assertIn('a.id===old&&a.vm',html)
+  self.assertIn('a.id===remoteBotId&&a.vm',html)
  def test_12_malformed_http_rejected(self):
   for headers in ['Content-Length: -1\r\n','Content-Length: 2\r\nContent-Length: 3\r\n','Transfer-Encoding: chunked\r\n']:
    with socket.create_connection(('127.0.0.1',self.ui),timeout=3) as s:
@@ -1784,6 +1791,8 @@ class SingleBotVM(unittest.TestCase):
    if vm:break
    time.sleep(.05)
   self.assertEqual(vm,'agent2','must not reuse the parked bot VM agent1')
+  self.assertNotIn('pending_vm',self.request('/api/state')['agents'][0],
+                   'single-bot VM must publish completed lifecycle')
   self.assertIn('spawn agent2',(self.ctl.parent/'ctl.log').read_text())
   stored={a['id']:a for a in json.loads(self.state.joinpath('agents.json').read_text())}
   self.assertEqual(stored['deepseek-chat']['vm'],'agent2');self.assertEqual(stored['alt']['vm'],'agent1')

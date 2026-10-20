@@ -587,9 +587,9 @@ class Native(unittest.TestCase):
     self.request('/api/message',{'text':marker+'Z'*4800,'bots':['test']})
     self._settle(lambda s:not s['busy'] and len(Model.calls)>before and
                  s['room'][-1].get('content')=='OK-Kontext')
+    retained.append(Model.calls[-1]['messages'][1]['content'].split('[Kontext]')[0])
    call=Model.calls[-1]
    transcript=call['messages'][1]['content'].split('[Kontext]')[0]
-   retained.append(transcript)
    self.assertLessEqual(len(transcript.encode()),16020,'Room transcript must have a byte cap')
    self.assertIn('kontext-lang-6-',transcript)
    self.assertEqual(call['model'],'deepseek-v4-flash-0731')

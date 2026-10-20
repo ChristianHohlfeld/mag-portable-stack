@@ -613,14 +613,6 @@ static void load_agents() {
     SINGLE_BOT = chosen.empty() ? "mag" : chosen;
   }
   if (!SINGLE_BOT.empty()) {
-    // Owner-selected active bot survives a restart. Only existing saved
-    // identities are eligible: never create or silently discard a profile.
-    std::string saved = trim(read_file(STATE_DIR + "/single-bot-active.txt"));
-    for (const auto &a : AGENTS)
-      if (!saved.empty() && mag::str(a, "id") == saved) {
-        SINGLE_BOT = saved;
-        break;
-      }
     std::vector<Val> active;
     for (auto &a : AGENTS) {
       auto id = a.find("id");
@@ -5412,18 +5404,6 @@ static std::string state_json(const Actor *actor = nullptr) {
   }
   root["agents"] = ag;
   root["single_bot"] = SINGLE_BOT;
-  if (actor && actor->ok && actor->role == "owner" && !SINGLE_BOT.empty()) {
-    Val parked = Val::array();
-    std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
-    for (const auto &a : PARKED) {
-      Val p = Val::object();
-      p["id"] = mag::str(a, "id");
-      p["name"] = mag::str(a, "name");
-      p["has_vm"] = !mag::str(a, "vm").empty();
-      parked.push(std::move(p));
-    }
-    root["parked_bots"] = parked;
-  }
   root["thinking_default"] = THINKING != "off";
   root["thinking"] = thinking_of(LAST_THINK.load());
   {

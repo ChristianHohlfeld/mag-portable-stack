@@ -795,16 +795,18 @@ class Native(unittest.TestCase):
   self.assertIn('see_image',[x['function']['name'] for x in Model.calls[-1]['tools']])
   html=self.request('/',raw=True).decode()
   for needle in ('<span>Foto/Screenshot</span>','accept="image/*" multiple','id="upload-paste"','navigator.clipboard.read()','PHOTO_MAX_PX=2048','id="photo-note"',"addEventListener('paste'","addEventListener('drop'"):self.assertIn(needle,html)
-  # Standard OS drops must handle generic files, including from textarea,
-  # never silently ignore PDF/TXT, and send a file without typed text.
-  for needle in ('id="file-preview"','function stageFiles(files)','function paintStagedFiles()',
-                 'function stageAttachments(files)','async function flushStagedFiles()',
+  # Native file drop: PDF/text/archives, staged until send, not just images.
+  for needle in ('id="file-preview"','function stageFiles(files)',
+                 'function paintStagedFiles()','function stageAttachments(files)',
+                 'async function flushStagedFiles()',
                  'if(stagedFiles.length)await flushStagedFiles()',
-                 'for(const target of [\'send-form\'',  # adapted below
-                 'fileDrag(e)',"e.preventDefault();e.stopPropagation();dropActive(false);",
-                 'e.dataTransfer?.files','file-input', 'single-model-select'):
-   if needle=='for(const target of [\'send-form\'':
-    needle="for(const target of [\$('send-form')".replace('\\
+                 "for(const target of [$('send-form')",
+                 'e.preventDefault();e.stopPropagation();dropActive(false);',
+                 'e.dataTransfer?.files',
+                 'stageAttachments([...(e.target.files||[])])',
+                 'if(!text&&!stagedPhotos.length&&!stagedFiles.length)return'):
+   self.assertIn(needle,html)
+  self.assertIn('single-model-select',html)
  def test_09i_chat_only_bot_has_no_vm_tools(self):
   names=[t['function']['name'] for t in Model.calls[-1]['tools']]
   for vm_tool in ('run_command','fetch_room_file','share_room_file','browser_open'):self.assertNotIn(vm_tool,names)

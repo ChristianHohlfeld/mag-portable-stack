@@ -579,6 +579,7 @@ class Native(unittest.TestCase):
    Model.overflow_once=0
  def test_09p_long_room_is_bounded_and_preserves_latest_instruction(self):
   self.wait_idle();Model.script=[];Model.reply='OK-Kontext'
+  retained=[]
   try:
    for i in range(7):
     marker=f'kontext-lang-{i}-'
@@ -588,9 +589,12 @@ class Native(unittest.TestCase):
                  s['room'][-1].get('content')=='OK-Kontext')
    call=Model.calls[-1]
    transcript=call['messages'][1]['content'].split('[Kontext]')[0]
+   retained.append(transcript)
    self.assertLessEqual(len(transcript.encode()),16020,'Room transcript must have a byte cap')
    self.assertIn('kontext-lang-6-',transcript)
    self.assertEqual(call['model'],'deepseek-v4-flash-0731')
+   self.assertTrue(any(b.startswith(a) and len(a)>2000 for a,b in zip(retained,retained[1:])),
+                   'large room must preserve a cacheable prefix across at least two turns')
   finally:
    Model.reply=None
  def test_09q_two_warm_models_no_single_model_fallback(self):

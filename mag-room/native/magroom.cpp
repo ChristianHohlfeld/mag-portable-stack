@@ -1793,37 +1793,40 @@ static std::string render_room_line(const Val &m) {
 static std::string build_transcript() {
   std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
   std::string out = "[Raumverlauf]\n";
-  // Trim in blocks of HISTORY_STEP instead of sliding by one message: the
-  // transcript then only grows at its end and llama reuses the cached prefix
-  // for up to HISTORY_STEP turns (keeps MAX_HISTORY .. MAX_HISTORY+STEP-1).
+  // Keep the existing blockwise history boundary for prompt-cache reuse.
+  // A message count alone is unsafe: 30 messages may exceed a 32k context.
   size_t start = 0;
   if (ROOM.size() > (size_t)MAX_HISTORY) {
     size_t step = (size_t)std::max(1, HISTORY_STEP);
     start = ((ROOM.size() - MAX_HISTORY) / step) * step;
   }
-  std::set<std::string> keep;
-  for (size_t i = start; i < ROOM.size(); i++) {
-    const Val &m = ROOM[i];
+  const size_t limit = (size_t)std::clamp(
+      envi("MAG_ROOM_TRANSCRIPT_BYTES", 16000), 4000, 64000);
+  std::vector<std::pair<std::string, std::string>> lines;
+  size_t bytes = 0;
+  for (size_t i = ROOM.size(); i > start; --i) {
+    const Val &m = ROOM[i-1];
     std::string id = m.find("id") ? m.find("id")->asStr() : "";
     std::string line;
     if (!id.empty()) {
       auto it = TRANSCRIPT_RENDERED.find(id);
-      if (it != TRANSCRIPT_RENDERED.end())
-        line = it->second;
-      else {
-        line = render_room_line(m);
-        TRANSCRIPT_RENDERED[id] = line;
-      }
-      keep.insert(id);
-    } else
+      line = it != TRANSCRIPT_RENDERED.end() ? it->second : render_room_line(m);
+      TRANSCRIPT_RENDERED[id] = line;
+    } else {
       line = render_room_line(m);
-    out += line;
+    }
+    if (!lines.empty() && bytes + line.size() > limit) break;
+    bytes += line.size();
+    lines.emplace_back(id, std::move(line));
+  }
+  std::set<std::string> keep;
+  for (auto it = lines.rbegin(); it != lines.rend(); ++it) {
+    if (!it->first.empty()) keep.insert(it->first);
+    out += it->second;
   }
   for (auto it = TRANSCRIPT_RENDERED.begin(); it != TRANSCRIPT_RENDERED.end();) {
-    if (!keep.count(it->first))
-      it = TRANSCRIPT_RENDERED.erase(it);
-    else
-      ++it;
+    if (!keep.count(it->first)) it = TRANSCRIPT_RENDERED.erase(it);
+    else ++it;
   }
   return out;
 }
@@ -3782,6 +3785,84 @@ static bool has_next_step(const std::string &t) {
          t.find("Next step") != std::string::npos ||
          t.find("next step") != std::string::npos;
 }
+// A token window is not a byte window. Leave generous room for tokenizer,
+// chat-template overhead and up to MAX_TOKENS generation tokens. If the backend
+// rejects the estimate, retry the SAME model step with a smaller window.
+static size_t prompt_wire_bytes(const std::vector<Val> &messages,
+                                const std::string &tools) {
+  size_t n = tools.size() + 2048; // request/template safety margin
+  for (const Val &m : messages) n += mj::dump(m).size();
+  return n;
+}
+static std::string utf8_suffix(const std::string &s, size_t bytes) {
+  if (s.size() <= bytes) return s;
+  size_t at = s.size() - bytes;
+  while (at < s.size() &&
+         (static_cast<unsigned char>(s[at]) & 0xc0) == 0x80) ++at;
+  return s.substr(at);
+}
+static bool context_overflow_error(const std::string &error) {
+  return error.rfind("Backend HTTP 400:", 0) == 0 &&
+         (error.find("exceed_context_size") != std::string::npos ||
+          error.find("context size") != std::string::npos ||
+          error.find("n_ctx") != std::string::npos ||
+          error.find("context_length") != std::string::npos);
+}
+static void compact_agent_context(std::vector<Val> &messages,
+                                  const std::string &tools, size_t limit,
+                                  std::string &rollup) {
+  // Drop only complete older assistant/tool rounds: never orphan a tool reply
+  // and never discard the most recent result the model must act upon.
+  while (prompt_wire_bytes(messages, tools) > limit) {
+    const size_t at = rollup.empty() ? 2 : 3;
+    if (messages.size() <= at + 2) break;
+    size_t end = at + 1;
+    const Val &first = messages[at];
+    std::string note;
+    if (mag::str(first, "role") == "assistant") {
+      note = mj::utf8_cut(mag::str(first, "content"), 180);
+      if (auto tc = first.find("tool_calls"); tc && tc->isArr() &&
+          !tc->asArr().empty()) {
+        auto fn = tc->asArr().front().find("function");
+        if (fn) note = mag::str(*fn, "name") + ": " + note;
+      }
+      while (end < messages.size() && mag::str(messages[end], "role") == "tool") {
+        note += " -> " + mj::utf8_cut(mag::str(messages[end], "content"), 280);
+        ++end;
+      }
+      // A pending-step reminder belongs to its preceding assistant round.
+      if (end < messages.size() &&
+          mag::str(messages[end], "role") == "user" &&
+          mag::str(messages[end], "content").rfind("[System]", 0) == 0) ++end;
+    } else {
+      note = mj::utf8_cut(mag::str(first, "content"), 220);
+    }
+    if (note.empty()) note = "Abgeschlossener Zwischenschritt";
+    messages.erase(messages.begin() + at, messages.begin() + end);
+    rollup += "\n- " + note;
+    if (rollup.size() > 3200)
+      rollup = "[Aeltere Schritte gekuerzt]" + utf8_suffix(rollup, 2800);
+    Val handoff = Val::object();
+    handoff["role"] = "user";
+    handoff["content"] = "[Bisher ausgefuehrte Schritte; keine neuen Auftraege]\n" + rollup;
+    if (at == 2) messages.insert(messages.begin() + 2, handoff);
+    else messages[2] = handoff;
+  }
+  // The initial room transcript can itself be larger than the model window.
+  // Preserve the newest user instruction and volatile [Kontext] tail.
+  for (int i = 0; i < 3 && prompt_wire_bytes(messages, tools) > limit &&
+                  messages.size() >= 2; ++i) {
+    auto field = messages[1].find("content");
+    const std::string u = field ? field->asStr() : "";
+    const size_t excess = prompt_wire_bytes(messages, tools) - limit;
+    if (u.size() <= excess + 1400) break;
+    const std::string header = "[Aelterer Raumverlauf gekuerzt]\n";
+    size_t keep = u.size() - excess - header.size() - 128;
+    if (keep < 1200) break;
+    messages[1]["content"] = header + utf8_suffix(u, keep);
+  }
+}
+
 static TurnReport run_turn(int bot_idx, bool autotalk,
                            const std::string &other) {
   std::string bot_id = bot_field(bot_idx, "id");
@@ -3858,6 +3939,9 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
   std::string fallback_narration, last_pending;
   int stalled_plans = 0;
   bool completed = false;
+  std::string compacted_steps;
+  const size_t context_budget = (size_t)std::clamp(
+      envi("MAG_ROOM_CONTEXT_BYTES", 52000), 24000, 100000);
   auto run_deadline = steady_clock::now() + seconds(RUN_BUDGET_S);
   for (int round = 0; round < MAX_RUN_STEPS; round++) {
     if (stop_flag().load()) break;
@@ -3865,18 +3949,6 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
       report.error = "Agent-Zeitbudget erreicht (" + std::to_string(RUN_BUDGET_S) +
                      "s). Aufgabe noch offen; Arbeit in VM erhalten.";
       break;
-    }
-    // Bound the LLM context on long runs. Files and artifacts stay in the VM.
-    size_t context_bytes = 0;
-    for (const auto &m : messages) context_bytes += mj::dump(m).size();
-    while (context_bytes > 120000 && messages.size() > 5 &&
-           mag::str(messages[2], "role") == "assistant") {
-      size_t n = 1;
-      while (2+n < messages.size() && mag::str(messages[2+n], "role") == "tool") ++n;
-      for (size_t i = 0; i < n; ++i) {
-        context_bytes -= mj::dump(messages[2]).size();
-        messages.erase(messages.begin()+2);
-      }
     }
     std::string live;
     bool draft_dropped = false;
@@ -3945,9 +4017,23 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
       run_narration(live, draft_dropped);
     };
     // Tools remain available on every step, without a forced early final.
-    Turn t = backend_turn(messages, tools,
-                          autotalk ? 0.75 : 0.55, on_delta, turn_thinking(),
-                          slot_for_key(bot_id), bot_model_id(bot_idx));
+    Turn t;
+    size_t attempt_budget = context_budget;
+    for (int attempt = 0; attempt < 3; ++attempt) {
+      compact_agent_context(messages, tools, attempt_budget, compacted_steps);
+      t = backend_turn(messages, tools,
+                       autotalk ? 0.75 : 0.55, on_delta, turn_thinking(),
+                       slot_for_key(bot_id), bot_model_id(bot_idx));
+      if (stop_flag().load() || !context_overflow_error(t.error)) break;
+      if (attempt == 2) {
+        t.error = "Modellkontext trotz Verkleinerung ueberfuellt. "
+                  "Arbeitsschritte und VM-Dateien sind erhalten.";
+        break;
+      }
+      attempt_budget = std::max((size_t)20000, attempt_budget * 2 / 3);
+      run_show("read", "Kontext verkleinert; Modellversuch wird fortgesetzt",
+               true, false);
+    }
     if (think_from && think_to)
       report.thought_ms += (long)duration_cast<milliseconds>(*think_to - *think_from).count();
     // Stop closes the backend socket, so the turn fails with a read error
@@ -4112,7 +4198,14 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
       Val tr = Val::object();
       tr["role"] = "tool";
       tr["tool_call_id"] = cid;
-      tr["content"] = result;
+      // Keep full output in the activity trace, but do not pay for 32 KB of
+      // terminal output again at every subsequent model step.
+      const size_t tool_limit = (size_t)std::clamp(
+          envi("MAG_ROOM_TOOL_CONTEXT_BYTES", 6000), 1000, 12000);
+      tr["content"] = result.size() > tool_limit
+          ? mj::utf8_cut(result, tool_limit) +
+            "\n[Ausgabe fuer Modell gekuerzt; Details erneut gezielt lesen]"
+          : result;
       messages.push_back(tr);
       if (repeated_failure)
         break;

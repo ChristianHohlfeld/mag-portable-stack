@@ -1976,11 +1976,14 @@ class MultiBot(unittest.TestCase):
  def test_06_frontend_contract(self):
   html=self.request('/',raw=True).decode()
   for needle in ('id="agent-model"','chosenBots','/model'):self.assertIn(needle,html)
- def test_07_multibot_dropin_installed_by_deploy(self):
-  drop=(ROOT/'ops/mag-120.d/30-multibot.conf').read_text()
-  self.assertRegex(drop,r'(?m)^Environment=MAG_ROOM_SINGLE_BOT=\s*$')
-  for forbidden in ('mag-llm','ExecStop','systemctl'):self.assertNotRegex(drop,r'(?m)^[^#]*'+forbidden)
-  dep=(ROOT/'ops/deploy.sh').read_text();self.assertIn('30-multibot.conf',dep)
+ def test_07_single_bot_deploy_has_no_multibot_override(self):
+  self.assertFalse((ROOT/'ops/mag-120.d/30-multibot.conf').exists())
+  self.assertFalse((ROOT/'ops/deepseek/both-sockets.sh').exists())
+  drop=(ROOT/'ops/mag-120.d/20-deepseek-audit.conf').read_text()
+  self.assertIn('Environment=MAG_ROOM_SINGLE_BOT=auto',drop)
+  dep=(ROOT/'ops/deploy.sh').read_text()
+  self.assertIn('rm -f /etc/systemd/system/mag-120.service.d/30-multibot.conf',dep)
+  self.assertNotIn('install -m 0644 "$SOURCE/ops/mag-120.d/30-multibot.conf"',dep)
  # Group chat: one lane per model server. Bots on different models answer at
  # the same time; bots sharing a model take turns; nothing blocks the others.
  def _idle(self,timeout=15):

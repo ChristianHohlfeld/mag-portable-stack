@@ -666,7 +666,7 @@ static std::string next_vm(const std::vector<std::string> &skip = {}) {
   std::vector<std::string> used(SPAWNING_VMS.begin(), SPAWNING_VMS.end());
   for (auto *list : {&AGENTS, &PARKED})
     for (auto &a : *list)
-      for (const char *key : {"vm", "pending_vm"})
+      for (const char *key : {"vm", "pending_vm", "unavailable_vm"})
         if (auto v = a.find(key))
           used.push_back(v->asStr());
   used.insert(used.end(), skip.begin(), skip.end());
@@ -6204,6 +6204,43 @@ int main() {
   jobs_load();
   // Restore any persisted VM provisioning after a room restart.
   resume_pending_spawns();
+  // A restored room/snapshot can reference a VM whose native registry was
+  // already deleted (e.g. agent2 without metadata.json). The old code treated
+  // "vm":"agent2" as sufficient and never even attempted repair. Verify the
+  // ACTIVE sole bot once on startup; preserve the old VM/disk and all bot
+  // memory under unavailable_vm, then let the canonical reservation/spawn
+  // path allocate a DIFFERENT VM name. Never interpret an inaccessible
+  // registry, malformed metadata or transient error as missing; fail closed.
+  if (!SINGLE_BOT.empty() && env("MAG_ROOM_SINGLE_BOT_VM", "off") == "on") {
+    const int idx = agent_index(SINGLE_BOT);
+    const std::string old_vm = bot_field(idx, "vm");
+    if (!old_vm.empty() && old_vm.rfind("agent", 0) == 0) {
+      CmdResult verify = run_argv(
+          {"sudo", "-n", AGENT_CTL, "verify", old_vm}, 20);
+      if (verify.code == 3 &&
+          verify.out.find("MAG_VM_METADATA_MISSING " + old_vm) !=
+              std::string::npos) {
+        {
+          std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
+          int current = agent_index(SINGLE_BOT);
+          if (current >= 0 && bot_field(current, "vm") == old_vm &&
+              bot_field(current, "pending_vm").empty()) {
+            AGENTS[current]["unavailable_vm"] = old_vm;
+            AGENTS[current]["vm"] = "";
+            save_agents(); // persist before attempting a replacement
+            std::cerr << "MAG_VM_RECOVERY: quarantined missing-metadata VM "
+                      << old_vm << "; will provision a fresh VM without "
+                      << "deleting the previous disk/domain\\n";
+          }
+        }
+      } else if (verify.code != 0) {
+        std::cerr << "MAG_VM_VERIFY_FAILED: " << old_vm
+                  << " rc=" << verify.code
+                  << " (kept previous binding): "
+                  << one_line(verify.out).substr(0, 240) << '\\n';
+      }
+    }
+  }
   // The sole coding bot must use the SAME reserve -> pending_vm ->
   // finish_spawn -> agents_event path as normal bots. The old detached
   // one-off spawn skipped pending state, emitted no agents_event and could

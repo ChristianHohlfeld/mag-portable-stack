@@ -12,14 +12,14 @@
 - Commit 6eaec8e.. introduced both-socket cutover, later hooked into the
   ordinary deploy: stopping IQ3, restarting Q4 and flushing warm prompt cache.
   Changing NUMA layout without a before/after benchmark was an error.
-- The accidental `MAG_ROOM_SINGLE_MODEL=on` default rejected the IQ3 alias
-  even while the binary was installed. Reverted to `off` by default.
+- The single-model environment toggle has been removed. One active bot now
+  selects Q4 or IQ3 explicitly; both model servers remain resident.
 
 ## Fix delivered
 
 1. Every regular MAG deploy **only** replaces the room services. It must
    never stop or restart either resident inference process.
-2. The dual-model UI and per-bot routing are restored by default.
+2. The same single bot can select either warm model without a restart.
 3. The bootstrap baseline is Q4 on node0, IQ3 independently on node1.
    No running host unit is changed by editing that baseline.
 4. Read-only host audit: `sudo bash ops/perf/diagnose-ai.sh`.

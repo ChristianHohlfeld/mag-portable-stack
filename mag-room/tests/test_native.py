@@ -15,7 +15,7 @@ def _rules(content):
 def _mem(content):
  i=content.index('\n[Erinnerungen]');return content[i+1:]
 class Model(http.server.BaseHTTPRequestHandler):
- protocol_version='HTTP/1.1';calls=[];delay=0;reply=None;script=[];health=200;last_prompt={}
+ protocol_version='HTTP/1.1';calls=[];delay=0;reply=None;script=[];health=200;last_prompt={};overflow_once=0
  def log_message(self,*a):pass
  def do_GET(self):
   code=200
@@ -26,6 +26,10 @@ class Model(http.server.BaseHTTPRequestHandler):
   self.send_response(code);self.send_header('Content-Length',str(len(data)));self.end_headers();self.wfile.write(data)
  def do_POST(self):
   obj=json.loads(self.rfile.read(int(self.headers['Content-Length'])));self.calls.append(obj)
+  if type(self).overflow_once:
+   type(self).overflow_once-=1
+   error=b'{"error":{"code":400,"message":"request (35178 tokens) exceeds the available context size (32768 tokens)","type":"exceed_context_size_error"}}'
+   self.send_response(400);self.send_header('Content-Length',str(len(error)));self.end_headers();self.wfile.write(error);return
   self.send_response(200);self.send_header('Transfer-Encoding','chunked');self.end_headers()
   if self.delay:time.sleep(self.delay)
   try:
@@ -561,6 +565,34 @@ class Native(unittest.TestCase):
   self.assertEqual(call['max_tokens'],8192)
   self.assertIn('deepseek-v4-flash-0731',call['messages'][0]['content'])
   self.assertNotIn('gpt-oss',json.dumps(call))
+ def test_09o_context_overflow_retries_same_step_without_losing_task(self):
+  self.wait_idle();Model.script=[];Model.reply=None
+  start=len(Model.calls);Model.overflow_once=1
+  try:
+   self.request('/api/message',{'text':'Kontext-Retry-Auftrag','bots':['test']})
+   self._settle(lambda s:not s['busy'] and len(Model.calls)>=start+2 and
+                s['room'][-1].get('content')=='Hallo aus dem Modell.')
+   self.assertEqual(len(Model.calls),start+2,'Only the same model step must be retried')
+   self.assertIn('Kontext-Retry-Auftrag',json.dumps(Model.calls[-1]['messages'],ensure_ascii=False))
+   self.assertFalse(any(m.get('work_error','').startswith('Backend HTTP 400') for m in self.request('/api/state')['room'][-2:]))
+  finally:
+   Model.overflow_once=0
+ def test_09p_long_room_is_bounded_and_preserves_latest_instruction(self):
+  self.wait_idle();Model.script=[];Model.reply='OK-Kontext'
+  try:
+   for i in range(7):
+    marker=f'kontext-lang-{i}-'
+    before=len(Model.calls)
+    self.request('/api/message',{'text':marker+'Z'*4800,'bots':['test']})
+    self._settle(lambda s:not s['busy'] and len(Model.calls)>before and
+                 s['room'][-1].get('content')=='OK-Kontext')
+   call=Model.calls[-1]
+   transcript=call['messages'][1]['content'].split('[Kontext]')[0]
+   self.assertLessEqual(len(transcript.encode()),16020,'Room transcript must have a byte cap')
+   self.assertIn('kontext-lang-6-',transcript)
+   self.assertEqual(call['model'],'deepseek-v4-flash-0731')
+  finally:
+   Model.reply=None
  def test_09b_reasoning_is_returned_with_tool_history(self):
   # A previous test may leave a background request; drain before injecting
   # the two scripted responses to avoid racy Model.script consumption.

@@ -59,6 +59,7 @@ sudo bash ops/qwen/cutover.sh apply
 ```
 
 The script holds the MAG deployment lock and keeps Q4 on NUMA0 untouched.
+Never start this transaction while the Hugging Face download is still running.
 It stops only IQ3 (which shares NUMA1 and :8091), starts Qwen, waits for
 a healthy model and **tests real chat, thinking on/off, SSE and structured
 tool calling** directly. Only after success does it update the audit

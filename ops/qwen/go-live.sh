@@ -25,7 +25,7 @@ fi
 PIN=/home/chris/models/qwen3.8-flash-next-uncensored/upstream.sha256
 if [[ ! -s "$PIN" ]]; then
   echo "Fetching independent upstream SHA256 ..."
-  runuser -u chris -- env HOME=/home/chris python3 -I "$ROOT/ops/qwen/pin-model.py"
+  runuser -u chris -- env HOME=/home/chris python3 "$ROOT/ops/qwen/pin-model.py"
 fi
 echo "Verifying complete GGUF and staging Qwen on NUMA1 ..."
 nice -n 19 ionice -c3 bash "$ROOT/ops/qwen/install.sh" stage

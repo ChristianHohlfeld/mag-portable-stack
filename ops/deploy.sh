@@ -200,9 +200,9 @@ if [[ -L "$audit_drop" ]]; then
       ;;
   esac
 fi
-install -d -m 0755 /etc/systemd/system/mag-120.service.d
-install -m 0644 "$SOURCE/ops/mag-120.d/30-multibot.conf" \
-  /etc/systemd/system/mag-120.service.d/30-multibot.conf
+# Exactly one bot. Remove the conflicting multi-bot override on existing hosts.
+# The 20-deepseek-audit unit selects the existing agent automatically.
+rm -f /etc/systemd/system/mag-120.service.d/30-multibot.conf
 systemctl daemon-reload
 systemctl enable --now mag-agents-network.service
 systemctl restart mag-agents-network.service

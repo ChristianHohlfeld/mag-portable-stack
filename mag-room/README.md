@@ -66,3 +66,14 @@ files remain persisted unchanged. Controls:
 `MAG_ROOM_TOOL_CONTEXT_BYTES` (see `.env.example`). Context compaction is a
 conservative byte heuristic, not exact model tokenization; watch prompt usage
 when adding MCP servers with many schemas.
+
+### Single-model operation (default)
+To reduce model switching and route all room bots to the stable Q4 server,
+`MAG_ROOM_SINGLE_MODEL=on` is the default. This applies even when a bot or the
+room previously selected IQ3: the persisted preferences are not overwritten.
+The UI offers only Q4 while enabled. To restore the previous dual-model routing
+without restoring files or migrating bot state, set `MAG_ROOM_SINGLE_MODEL=off`
+and restart **only** `mag-120` via the protected room deployment path.
+**This setting does not unload, restart or stop the IQ3 llama service:** freeing
+its CPU/RAM is a separate host operation requiring an idle-task and live-health
+check. This also does not change Q4 context or generation speed.

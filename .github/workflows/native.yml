@@ -35,7 +35,8 @@ jobs:
           ./build/test-guest-curl
           ./build/test-large-stdin
           python3 mag-room/tests/test_large_tools.py
-          python3 mag-room/tests/test_native.py
+          MAG_ROOM_SINGLE_MODEL=off python3 mag-room/tests/test_native.py
+          MAG_ROOM_SINGLE_MODEL=on python3 mag-room/tests/test_native.py Native.test_09q_single_q4_mode_preserves_saved_iq3_choice
           python3 mag-room/tests/test_tailscale_auth.py
           python3 ops/audit/tests/test_native_gateway.py
           python3 mag-room/tests/test_whois_deploy.py

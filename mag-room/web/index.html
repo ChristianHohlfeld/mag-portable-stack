@@ -1310,7 +1310,7 @@ remote.href='/?bot='+encodeURIComponent(a.id);
 remote.textContent='Browser';
 remote.title='Browser von '+a.name+' im Raum öffnen';
 if(a.vm)actions.append(remote);
-card.append(label,info,actions);list.append(card);if(!a.vm)continue;const option=document.createElement('option');option.value=a.id;option.textContent=a.name;$('browser-agent').append(option)}if(remoteBotId&&!old&&state.agents.some(a=>a.id===remoteBotId)){$('browser-agent').value=remoteBotId;history.replaceState(null,'','/')}else if(state.agents.some(a=>a.id===old))$('browser-agent').value=old;
+card.append(label,info,actions);list.append(card);if(!a.vm)continue;const option=document.createElement('option');option.value=a.id;option.textContent=a.name;$('browser-agent').append(option)}if(remoteBotId&&!old&&state.agents.some(a=>a.id===remoteBotId&&a.vm)){$('browser-agent').value=remoteBotId;history.replaceState(null,'','/')}else if(state.agents.some(a=>a.id===old&&a.vm))$('browser-agent').value=old;
 if(!old&&state.agents.some(a=>a.id===focusedBotId&&a.vm))$('browser-agent').value=focusedBotId;
 const current=$('browser-agent').value;
 if(!current&&livePeer)disconnectLive();
@@ -1841,13 +1841,22 @@ async function connectLive(){
   const r=await fetch('/api/browser-live/offer?bot='+encodeURIComponent(id),{
    method:'POST',headers:{'Content-Type':'application/json'},
    body:JSON.stringify(pc.localDescription)});
-  if(!r.ok)throw Error((await r.json().catch(()=>({}))).error||'WebRTC signaling '+r.status);
+  if(!r.ok){
+   const message=(await r.json().catch(()=>({}))).error||'WebRTC signaling '+r.status;
+   const err=Error(message);
+   // A removed/parked single-bot ID or a chat-only bot is NOT a transient
+   // WebRTC failure. Retrying forever floods MAG with stale bot identities.
+   err.permanent=r.status===404||r.status===400;
+   throw err;
+  }
   if(gen!==liveGeneration){pc.close();return}
   await pc.setRemoteDescription(await r.json());
  }catch(e){
   if(gen!==liveGeneration){pc.close();return}
   liveStatus('Browser-Verbindung: '+e.message);notice('Browser: '+e.message);
-  pc.close();scheduleReconnect();
+  pc.close();
+  if(!e.permanent)scheduleReconnect();
+  else terminalStatus('Browser erst nach Auswahl einer aktiven VM verfügbar');
  }
 }
 setInterval(()=>{

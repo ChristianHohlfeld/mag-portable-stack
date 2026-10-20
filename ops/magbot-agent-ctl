@@ -5,7 +5,20 @@ site=${MAG_BOTS_SITE:-/usr/local/lib/mag-bots/site.sh}
 if [[ $# == 1 && $1 == preflight ]]; then
   exec "$magbot" preflight
 fi
-[[ $# == 2 && ($1 == spawn || $1 == despawn || $1 == audit-proxy) && $2 =~ ^agent[0-9]+$ ]] || { echo 'Invalid lifecycle invocation' >&2; exit 64; }
+[[ $# == 2 && ($1 == spawn || $1 == despawn || $1 == audit-proxy || $1 == ip) && $2 =~ ^agent[0-9]+$ ]] || { echo 'Invalid lifecycle invocation' >&2; exit 64; }
+if [[ $1 == ip ]]; then
+  # Host-side lease/agent lookup: faster and more reliable than running
+  # 'hostname -I' inside the guest for every browser connection.
+  # Verify the target is an owned MAG VM before asking libvirt.
+  "$magbot" inspect "$2" >/dev/null
+  for source in lease agent; do
+    addresses=$(/usr/bin/timeout 6 /usr/bin/virsh -c qemu:///system domifaddr "magbot-$2" --source "$source" 2>/dev/null || true)
+    ip=$(awk '$3=="ipv4" {split($4,a,"/"); if(a[1] ~ /^192[.]168[.]122[.]/) {split(a[1],b,"."); if(b[4]>=2 && b[4]<=254) {print a[1];exit}}}' <<<"$addresses")
+    if [[ -n $ip ]]; then printf '%s\n' "$ip"; exit 0; fi
+  done
+  echo "MAG VM DHCP lease and guest-agent address unavailable for $2" >&2
+  exit 3
+fi
 if [[ $1 == spawn ]]; then
   "$magbot" spawn "$2"
   if [[ -x $site ]]; then "$site" assign "$2" || echo "WARN: bot site assign failed for $2" >&2; fi

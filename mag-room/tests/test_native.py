@@ -579,6 +579,7 @@ class Native(unittest.TestCase):
    Model.overflow_once=0
  def test_09p_long_room_is_bounded_and_preserves_latest_instruction(self):
   self.wait_idle();Model.script=[];Model.reply='OK-Kontext'
+  retained=[]
   try:
    for i in range(7):
     marker=f'kontext-lang-{i}-'
@@ -586,11 +587,22 @@ class Native(unittest.TestCase):
     self.request('/api/message',{'text':marker+'Z'*4800,'bots':['test']})
     self._settle(lambda s:not s['busy'] and len(Model.calls)>before and
                  s['room'][-1].get('content')=='OK-Kontext')
+    retained.append(Model.calls[-1]['messages'][1]['content'].split('[Kontext]')[0])
    call=Model.calls[-1]
    transcript=call['messages'][1]['content'].split('[Kontext]')[0]
    self.assertLessEqual(len(transcript.encode()),16020,'Room transcript must have a byte cap')
    self.assertIn('kontext-lang-6-',transcript)
    self.assertEqual(call['model'],'deepseek-v4-flash-0731')
+   comparison=[(len(a),len(b),len(os.path.commonprefix([a,b])),a[:80]==b[:80])
+               for a,b in zip(retained,retained[1:])]
+   # Before append, the last line ends with a trailing newline. When the
+   # next turn arrives, the boundary newline may be reflowed; that one byte
+   # does not mean the thousands of preceding bytes became uncached.
+   # Require multiple large common prefixes, not a false exact startswith.
+   self.assertGreaterEqual(
+       sum(len(a)>2000 and len(os.path.commonprefix([a,b]))>=len(a)-2
+           for a,b in zip(retained,retained[1:])),2,
+       'large room must retain multiple cacheable prefixes: '+repr(comparison))
   finally:
    Model.reply=None
  def test_09q_two_warm_models_no_single_model_fallback(self):
@@ -966,6 +978,13 @@ class Native(unittest.TestCase):
  def test_11_browser_live_requires_known_bot(self):
   self.error(404,'/api/browser-live/offer?bot=not-a-bot',{'type':'offer','sdp':'sdp'})
   self.error(404,'/api/browser/not-a-bot/pointer',{'x':1,'y':1})
+  html=self.request('/',raw=True).decode()
+  # A stale bot identity after single-bot migration is permanent, NOT an
+  # invitation to retry WebRTC against a vanished VM forever.
+  self.assertIn('err.permanent=r.status===404||r.status===400',html)
+  self.assertIn('if(!e.permanent)scheduleReconnect()',html)
+  self.assertIn('a.id===old&&a.vm',html)
+  self.assertIn('a.id===remoteBotId&&a.vm',html)
  def test_12_malformed_http_rejected(self):
   for headers in ['Content-Length: -1\r\n','Content-Length: 2\r\nContent-Length: 3\r\n','Transfer-Encoding: chunked\r\n']:
    with socket.create_connection(('127.0.0.1',self.ui),timeout=3) as s:
@@ -1784,6 +1803,8 @@ class SingleBotVM(unittest.TestCase):
    if vm:break
    time.sleep(.05)
   self.assertEqual(vm,'agent2','must not reuse the parked bot VM agent1')
+  self.assertNotIn('pending_vm',self.request('/api/state')['agents'][0],
+                   'single-bot VM must publish completed lifecycle')
   self.assertIn('spawn agent2',(self.ctl.parent/'ctl.log').read_text())
   stored={a['id']:a for a in json.loads(self.state.joinpath('agents.json').read_text())}
   self.assertEqual(stored['deepseek-chat']['vm'],'agent2');self.assertEqual(stored['alt']['vm'],'agent1')

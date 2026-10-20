@@ -183,13 +183,29 @@ static McpHttp mcp_post(const Val &srv, const std::string &secret,
     }
   }
   const bool plain = url.rfind("http://", 0) == 0;
-  // Ubuntu's libcurl reads this bundle. deploy refreshes it with the ISRG
-  // Generation Y roots; without them Let's Encrypt YE2 fails as
-  // "SSL peer certificate or SSH remote key was not OK".
-  const char *cafile = "/etc/ssl/certs/ca-certificates.crt";
+  // MAG's room traffic is intercepted by the local audit proxy (systemd
+  // drop-in 20-deepseek-audit.conf). The proxy presents certificates signed
+  // by /etc/mag-audit/mitmproxy-ca-cert.pem. The previous hard-coded system
+  // bundle DISCARDED SSL_CERT_FILE=/etc/mag-audit/ca-bundle.pem and caused
+  // CURLE_PEER_FAILED_VERIFICATION for every remote MCP server. Trust the
+  // combined host + audit CA ONLY while using that particular local proxy.
+  // Keep strict libcurl TLS peer/host verification; never use -k.
+  const std::string proxy = env("https_proxy", env("HTTPS_PROXY", ""));
+  const bool audited = proxy == "http://127.0.0.1:8888" ||
+                       proxy == "http://localhost:8888";
+  const char *cafile = audited ? "/etc/mag-audit/ca-bundle.pem"
+                               : "/etc/ssl/certs/ca-certificates.crt";
+  if (!plain && access(cafile, R_OK) != 0) {
+    curl_slist_free_all(h);
+    curl_easy_cleanup(c);
+    res.error = std::string("MCP TLS CA bundle fehlt: ") + cafile;
+    return res;
+  }
   curl_easy_setopt(c, CURLOPT_URL, url.c_str());
-  if (!plain && access(cafile, R_OK) == 0)
+  if (!plain)
     curl_easy_setopt(c, CURLOPT_CAINFO, cafile);
+  curl_easy_setopt(c, CURLOPT_SSL_VERIFYPEER, 1L);
+  curl_easy_setopt(c, CURLOPT_SSL_VERIFYHOST, 2L);
   curl_easy_setopt(c, CURLOPT_HTTPHEADER, h);
   curl_easy_setopt(c, CURLOPT_PROTOCOLS_STR, plain ? "http" : "https");
   curl_easy_setopt(c, CURLOPT_FOLLOWLOCATION, 0L);

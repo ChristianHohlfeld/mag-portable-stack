@@ -1769,6 +1769,9 @@ static std::string build_context_tail(int bot_idx, bool autotalk,
 // Once a room line has been sent, later turns reuse that exact text. The
 // window start moves only in HISTORY_STEP-sized jumps.
 static std::map<std::string, std::string> TRANSCRIPT_RENDERED;
+// Stable window boundary across turns. A sliding byte-cap starting from the
+// whole room would move the model prompt prefix on *every* CPU turn.
+static size_t TRANSCRIPT_WINDOW_START = 0;
 static std::string render_room_line(const Val &m) {
   std::string role = m.find("role") ? m.find("role")->asStr() : "";
   std::string name = m.find("name") ? m.find("name")->asStr()
@@ -1811,6 +1814,9 @@ static std::string build_transcript() {
     size_t step = (size_t)std::max(1, HISTORY_STEP);
     start = ((ROOM.size() - MAX_HISTORY) / step) * step;
   }
+  // Room clear/restore can rewind indices; never retain an invalid offset.
+  if (TRANSCRIPT_WINDOW_START >= ROOM.size()) TRANSCRIPT_WINDOW_START = 0;
+  start = std::max(start, TRANSCRIPT_WINDOW_START);
   const size_t limit = (size_t)std::clamp(
       envi("MAG_ROOM_TRANSCRIPT_BYTES", 16000), 4000, 64000);
   std::vector<std::pair<std::string, std::string>> lines;
@@ -1830,6 +1836,18 @@ static std::string build_transcript() {
     bytes += line.size();
     lines.emplace_back(id, std::move(line));
   }
+  // Byte cap overflow: evict older complete lines ONCE, leaving ~40%
+  // headroom, then persist that boundary. Next turns append without shifting
+  // the cached prefix until the budget fills again. Never truncate the latest
+  // message, and never recompute a fresh sliding cutoff on each request.
+  if (ROOM.size() - lines.size() > start) {
+    const size_t target = std::max((size_t)4000, limit * 3 / 5);
+    while (lines.size() > 1 && bytes > target) {
+      bytes -= lines.back().second.size();
+      lines.pop_back();
+    }
+  }
+  TRANSCRIPT_WINDOW_START = ROOM.size() - lines.size();
   std::set<std::string> keep;
   for (auto it = lines.rbegin(); it != lines.rend(); ++it) {
     if (!it->first.empty()) keep.insert(it->first);
@@ -2192,14 +2210,26 @@ static void memory_git_sync(const std::string &bot_id, const std::string &why) {
 static std::mutex VM_IP_MTX;
 static std::map<std::string, std::pair<std::string, int64_t>> VM_IP_CACHE;
 static std::string guest_ip(const std::string &vm) {
-  CmdResult r = run_argv({"sudo", "-n", GUEST_RUN, vm, "hostname -I"}, 20);
+  // Read the libvirt-managed DHCP lease first, then ask QEMU's guest network
+  // agent. Both operate on a verified, owned MAG domain via agent-ctl.
+  // A guest shell has no stable uptime/identity guarantee during boot.
+  CmdResult r = run_argv({"sudo", "-n", AGENT_CTL, "ip", vm}, 16);
+  if (r.code != 0)
+    r = run_argv({"sudo", "-n", GUEST_RUN, vm, "hostname -I"}, 12);
   if (r.code != 0)
     return "";
   std::istringstream ss(r.out);
   std::string tok;
-  while (ss >> tok)
-    if (tok.rfind("192.168.", 0) == 0)
-      return tok;
+  while (ss >> tok) {
+    if (tok.rfind("192.168.122.", 0) != 0) continue;
+    // No caller may use an unvalidated guest-provided address as a host
+    // HTTP destination. Stay inside the MAG-owned default libvirt subnet.
+    std::string last = tok.substr(std::string("192.168.122.").size());
+    if (last.empty() || last.size() > 3 ||
+        last.find_first_not_of("0123456789") != std::string::npos) continue;
+    int octet = std::atoi(last.c_str());
+    if (octet >= 2 && octet <= 254) return tok;
+  }
   return "";
 }
 static std::string vm_ip(const std::string &vm, bool force = false) {
@@ -2287,6 +2317,14 @@ static std::string ensure_browser(const std::string &vm) {
       vm.find_first_not_of("abcdefghijklmnopqrstuvwxyz0123456789-") !=
           std::string::npos)
     throw std::runtime_error("Invalid browser VM identity");
+  // Resolve DHCP before touching the guest audit/browser controller. A
+  // stale or unstarted VM must not hold the global browser lock for 900 s
+  // while audit-proxy provisioning tries to reach an absent guest.
+  std::string ip = vm_ip(vm);
+  if (ip.empty()) ip = vm_ip(vm, true);
+  if (ip.empty())
+    throw std::runtime_error("Guest IP unavailable (VM " + vm +
+                             ", libvirt lease/agent; check DHCP and guest readiness)");
   ensure_audit_proxy(vm);
   const std::string keydir = STATE_DIR + "/browser-udp-keys";
   std::filesystem::create_directories(keydir);
@@ -2300,11 +2338,6 @@ static std::string ensure_browser(const std::string &vm) {
       throw std::runtime_error("Could not persist VM UDP secret");
     chmod(keypath.c_str(), 0600);
   }
-  auto ip = vm_ip(vm);
-  if (ip.empty())
-    ip = vm_ip(vm, true);
-  if (ip.empty())
-    throw std::runtime_error("Guest IP unavailable");
   // A busy VM can miss a short health probe. Retry before replacing a
   // controller to avoid interrupting a healthy browser's live session.
   auto current_controller = [](const HttpResp &reply) {
@@ -2338,7 +2371,7 @@ static std::string ensure_browser(const std::string &vm) {
         std::to_string(stale.code) + "]");
   ip = vm_ip(vm, true);
   if (ip.empty())
-    throw std::runtime_error("Guest IP unavailable");
+    throw std::runtime_error("Guest IP unavailable after controller recovery (VM " + vm + ")");
   // Keep an old working binary intact on failed download. curl (23)
   // indicates a guest-side write failure, not a missing Chromium executable.
   std::string token = bridge_token();
@@ -6099,29 +6132,6 @@ int main() {
   ensure_state();
   undo_drop_all();
   load_agents();
-  // MAG_ROOM_SINGLE_BOT_VM=on: the single bot keeps its full sandbox (own KVM VM
-  // with shell, git/Gitea, MCP, browser) via the existing spawn path instead of
-  // running chat-only. Spawned in the background; tools appear once it is up.
-  if (!SINGLE_BOT.empty() && env("MAG_ROOM_SINGLE_BOT_VM", "off") == "on")
-    std::thread([] {
-      int idx = agent_index(SINGLE_BOT);
-      if (idx < 0 || !bot_field(idx, "vm").empty())
-        return;
-      std::string vm = next_vm();
-      auto result = run_argv({"sudo", "-n", AGENT_CTL, "spawn", vm}, 600);
-      if (result.code != 0) {
-        std::cerr << "single-bot VM spawn failed: " << result.out << "\n";
-        run_argv({"sudo", "-n", AGENT_CTL, "despawn", vm}, 180);
-        return;
-      }
-      std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
-      idx = agent_index(SINGLE_BOT);
-      if (idx >= 0) {
-        AGENTS[idx]["vm"] = vm;
-        save_agents();
-      }
-      std::cerr << "single-bot VM " << vm << " ready\n";
-    }).detach();
   FILES = load_json_array(FILES_JSON);
   ROOM = load_json_array(ROOM_JSON);
   load_reaction_notes();
@@ -6192,7 +6202,32 @@ int main() {
     }
   }
   jobs_load();
+  // Restore any persisted VM provisioning after a room restart.
   resume_pending_spawns();
+  // The sole coding bot must use the SAME reserve -> pending_vm ->
+  // finish_spawn -> agents_event path as normal bots. The old detached
+  // one-off spawn skipped pending state, emitted no agents_event and could
+  // race a restart, leaving the browser with a stale/unknown VM.
+  if (!SINGLE_BOT.empty() && env("MAG_ROOM_SINGLE_BOT_VM", "off") == "on") {
+    std::string new_vm;
+    {
+      std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
+      int idx = agent_index(SINGLE_BOT);
+      if (idx >= 0 && bot_field(idx, "vm").empty() &&
+          bot_field(idx, "pending_vm").empty()) {
+        new_vm = next_vm();
+        AGENTS[idx]["pending_vm"] = new_vm;
+        AGENTS[idx]["vm_attach"] = true; // keep the bot if provisioning fails
+        SPAWNING_VMS.insert(new_vm);
+        save_agents(); // restart can resume the exact same reservation
+      }
+    }
+    if (!new_vm.empty()) {
+      std::thread([id = SINGLE_BOT, vm = new_vm] {
+        finish_spawn(id, vm, false);
+      }).detach();
+    }
+  }
   std::thread([] { mcp_auto_once(); }).detach();
   std::thread(jobs_ticker).detach();
   std::thread(guest_cleanup_loop).detach();

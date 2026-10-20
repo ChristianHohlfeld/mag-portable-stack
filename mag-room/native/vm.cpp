@@ -870,6 +870,22 @@ int main(int argc, char **argv) {
       }
       return 0;
     }
+    if (action == "verify") {
+      // Read-only ownership check for stale persisted room references.
+      // Exit 3 ONLY when the VM's own registry metadata is definitely
+      // absent. Inaccessible disks, malformed metadata and libvirt errors
+      // must NOT trigger automatic recovery/deletion.
+      const auto p = dir(n) / "metadata.json";
+      if (!fs::exists(p)) {
+        std::cerr << "MAG_VM_METADATA_MISSING " << n << '\\n';
+        return 3;
+      }
+      if (!fs::is_regular_file(p))
+        throw std::runtime_error("VM metadata is not a regular file");
+      (void)marker(n);
+      std::cout << "MAG_VM_METADATA_OK " << n << '\\n';
+      return 0;
+    }
     if (action == "inspect") {
       auto r = marker(n);
       r["vm_defined"] = exists(n);
@@ -889,7 +905,8 @@ int main(int argc, char **argv) {
         if (!agents.isArr()) throw std::runtime_error("Invalid room registry; cleanup refused");
         for (const auto &agent : agents.asArr()) {
           if (!agent.isObj()) throw std::runtime_error("Invalid bot record; cleanup refused");
-          if (str(agent, "vm") == n || str(agent, "pending_vm") == n) {
+          if (str(agent, "vm") == n || str(agent, "pending_vm") == n ||
+              str(agent, "unavailable_vm") == n) {
             std::cout << "Kept referenced bot " << n << '\n';
             return 3;
           }

@@ -6230,14 +6230,14 @@ int main() {
             save_agents(); // persist before attempting a replacement
             std::cerr << "MAG_VM_RECOVERY: quarantined missing-metadata VM "
                       << old_vm << "; will provision a fresh VM without "
-                      << "deleting the previous disk/domain\\n";
+                      << "deleting the previous disk/domain\n";
           }
         }
       } else if (verify.code != 0) {
         std::cerr << "MAG_VM_VERIFY_FAILED: " << old_vm
                   << " rc=" << verify.code
                   << " (kept previous binding): "
-                  << one_line(verify.out).substr(0, 240) << '\\n';
+                  << one_line(verify.out).substr(0, 240) << '\n';
       }
     }
   }

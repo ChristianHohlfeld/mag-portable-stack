@@ -2910,10 +2910,10 @@ static Val room_model_catalog() {
   Val models = Val::array();
   Val q4 = Val::object();
   q4["id"] = "deepseek-v4-flash-0731";
-  q4["label"] = "Q4";
+  q4["label"] = "0 · Q4";
   Val iq3 = Val::object();
   iq3["id"] = "deepseek-v4-flash-0731-iq3";
-  iq3["label"] = "IQ3";
+  iq3["label"] = "1 · IQ3";
   models.push(q4);
   if (!q4_only_room()) models.push(iq3);
   return models;

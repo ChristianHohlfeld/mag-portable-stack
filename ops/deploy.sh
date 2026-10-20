@@ -254,8 +254,6 @@ bash /usr/local/sbin/mag-agent-drift || echo 'WARN: agent drift check incomplete
 # Tailnet name for each bot VM. No-op until the one-time wildcard cert exists.
 # Does not restart mag-llm. DNS for *.bot.stardenburg.de stays at the registrar.
 bash "$SOURCE/ops/bots/install.sh" || echo 'WARN: bot site install incomplete (deploy itself succeeded)' >&2
-# One-shot move of Q4 onto both sockets. No-op once the running process
-# already interleaves. Not part of rollback; a failure leaves the room up.
 # Deploy must never restart loaded Q4 or stop the IQ3 process. Model placement
 # is a separate, measured, operator-controlled change, never a deploy hook.
 printf '\nInstalled release %s; rollback snapshot %s\n' "$RELEASE_ID" "$BACKUP"

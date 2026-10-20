@@ -44,7 +44,9 @@ q4_untouched() {
 restore() {
   [[ -f "$SNAP/READY" ]] || fail "rollback snapshot unavailable"
   echo "Qwen: restore previous gateway + IQ3; Q4 remains untouched" >&2
-  systemctl stop "$NEW" || true
+  systemctl stop "$NEW" || fail "Qwen stop failed; IQ3 must remain stopped"
+  [[ $(pid "$NEW") == 0 ]] || fail "Qwen still has a live PID; IQ3 start forbidden"
+  ! health 8091 || fail "NUMA1 port 8091 still serving; IQ3 start forbidden"
   systemctl disable "$NEW" || true
   if [[ $(cat "$SNAP/iq3-active") == yes ]]; then
     systemctl start "$OLD" || fail "IQ3 restore failed"
@@ -120,6 +122,7 @@ trap 'exit 143' TERM
 # Never put two memory-heavy models on NUMA1 or port 8091.
 if systemctl is-active --quiet "$OLD"; then systemctl stop "$OLD"; fi
 ! systemctl is-active --quiet "$OLD" || fail "IQ3 still active"
+[[ $(pid "$OLD") == 0 ]] || fail "IQ3 still has a live PID; Qwen start forbidden"
 ! health 8091 || fail "port 8091 occupied after IQ3 stop"
 q4_untouched
 backups_idle

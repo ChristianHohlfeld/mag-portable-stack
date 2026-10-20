@@ -8,7 +8,7 @@ assert.ok(start >= 0);
 const handler = html.slice(start, html.indexOf(';window.addEventListener(\'load\'', start));
 const elements = {'send-form':{}, message:{value:'First',focus(){}},think:{checked:false}};
 let resolve, calls=0;
-const context = {window:{}, $:id=>elements[id],selected:new Set(['a']),state:{agents:[],busy_bots:[],pending:[]},streams:{},stagedPhotos:[],jumpForSend(){},render(){},notice(){},fitMessageHeight(){},api(){calls++;return new Promise(r=>resolve=r)}};
+const context = {window:{}, $:id=>elements[id],selected:new Set(['a']),state:{agents:[],busy_bots:[],pending:[]},streams:{},stagedPhotos:[],stagedFiles:[],jumpForSend(){},render(){},notice(){},fitMessageHeight(){},api(){calls++;return new Promise(r=>resolve=r)}};
 vm.runInNewContext(handler, context);
 (async()=>{
  const first=elements['send-form'].onsubmit({preventDefault(){}});

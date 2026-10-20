@@ -15,7 +15,7 @@ fi
 git -C "$SRC" fetch --no-tags origin "$REV"
 git -C "$SRC" checkout --detach "$REV"
 [[ $(git -C "$SRC" rev-parse HEAD) == "$REV" ]] || exit 4
-cmake -S "$SRC" -B "$BUILD" -G Ninja -DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=ON
+cmake -S "$SRC" -B "$BUILD" -G Ninja -DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=ON -DBUILD_SHARED_LIBS=OFF
 cmake --build "$BUILD" -j 4 --target llama-server
 BIN="/home/chris/.local/qwen4exp/$REV/bin/llama-server"
 mkdir -p "$(dirname "$BIN")"

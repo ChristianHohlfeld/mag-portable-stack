@@ -4,7 +4,10 @@
 # must fail this probe BEFORE the MAG room is restarted/deployed.
 set -euo pipefail
 url="${MAG_ROOM_MCP_DP_URL:-https://accounts.digitalisierungsplanung.de/mcp/free}"
-ca=/etc/ssl/certs/ca-certificates.crt
+# The real mag-120 process uses the audited HTTPS proxy and its combined CA.
+# Probe the SAME path: direct-host testing missed the original regression.
+ca=/etc/mag-audit/ca-bundle.pem
+proxy=http://127.0.0.1:8888
 case "$url" in
   https://*) ;;
   *) echo "free MCP TLS probe: production URL must be HTTPS" >&2; exit 1 ;;
@@ -12,9 +15,9 @@ esac
 [[ -s "$ca" ]] || { echo "free MCP TLS probe: CA bundle missing: $ca" >&2; exit 1; }
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
-# Use the same system bundle as libcurl in mag-room/native/mcp.hpp.
+# Same HTTPS audit proxy and CA as mag-room/native/mcp.hpp; TLS verification stays enabled.
 curl_args=(--silent --show-error --fail-with-body --connect-timeout 8 --max-time 20
-  --retry 2 --retry-delay 1 --retry-all-errors --proto '=https' --cacert "$ca"
+  --retry 2 --retry-delay 1 --retry-all-errors --proto '=https' --cacert "$ca" --proxy "$proxy" --noproxy ''
   -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream')
 if ! curl "${curl_args[@]}" -D "$tmp/h" -o "$tmp/init.json" \
     -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"mag-deploy-free-mcp-probe","version":"1"}}}' \
@@ -38,4 +41,4 @@ with open(sys.argv[1],encoding='utf-8') as f: data=json.load(f)
 names={t.get("name") for t in data.get("result",{}).get("tools",[])}
 assert {"zustand_contract","zustand_snapshot","zustand_apply","zustand_share"}.issubset(names), "free MCP tools missing"
 PY
-echo "FREE_MCP_TLS_OK: certificate chain, initialize and public-share tools verified"
+echo "FREE_MCP_TLS_OK: audited HTTPS proxy certificate chain, initialize and public-share tools verified"

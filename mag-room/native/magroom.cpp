@@ -2209,14 +2209,26 @@ static void memory_git_sync(const std::string &bot_id, const std::string &why) {
 static std::mutex VM_IP_MTX;
 static std::map<std::string, std::pair<std::string, int64_t>> VM_IP_CACHE;
 static std::string guest_ip(const std::string &vm) {
-  CmdResult r = run_argv({"sudo", "-n", GUEST_RUN, vm, "hostname -I"}, 20);
+  // Read the libvirt-managed DHCP lease first, then ask QEMU's guest network
+  // agent. Both operate on a verified, owned MAG domain via agent-ctl.
+  // A guest shell has no stable uptime/identity guarantee during boot.
+  CmdResult r = run_argv({"sudo", "-n", AGENT_CTL, "ip", vm}, 16);
+  if (r.code != 0)
+    r = run_argv({"sudo", "-n", GUEST_RUN, vm, "hostname -I"}, 12);
   if (r.code != 0)
     return "";
   std::istringstream ss(r.out);
   std::string tok;
-  while (ss >> tok)
-    if (tok.rfind("192.168.", 0) == 0)
-      return tok;
+  while (ss >> tok) {
+    if (tok.rfind("192.168.122.", 0) != 0) continue;
+    // No caller may use an unvalidated guest-provided address as a host
+    // HTTP destination. Stay inside the MAG-owned default libvirt subnet.
+    std::string last = tok.substr(std::string("192.168.122.").size());
+    if (last.empty() || last.size() > 3 ||
+        last.find_first_not_of("0123456789") != std::string::npos) continue;
+    int octet = std::atoi(last.c_str());
+    if (octet >= 2 && octet <= 254) return tok;
+  }
   return "";
 }
 static std::string vm_ip(const std::string &vm, bool force = false) {
@@ -2304,6 +2316,14 @@ static std::string ensure_browser(const std::string &vm) {
       vm.find_first_not_of("abcdefghijklmnopqrstuvwxyz0123456789-") !=
           std::string::npos)
     throw std::runtime_error("Invalid browser VM identity");
+  // Resolve DHCP before touching the guest audit/browser controller. A
+  // stale or unstarted VM must not hold the global browser lock for 900 s
+  // while audit-proxy provisioning tries to reach an absent guest.
+  std::string ip = vm_ip(vm);
+  if (ip.empty()) ip = vm_ip(vm, true);
+  if (ip.empty())
+    throw std::runtime_error("Guest IP unavailable (VM " + vm +
+                             ", libvirt lease/agent; check DHCP and guest readiness)");
   ensure_audit_proxy(vm);
   const std::string keydir = STATE_DIR + "/browser-udp-keys";
   std::filesystem::create_directories(keydir);
@@ -2317,11 +2337,6 @@ static std::string ensure_browser(const std::string &vm) {
       throw std::runtime_error("Could not persist VM UDP secret");
     chmod(keypath.c_str(), 0600);
   }
-  auto ip = vm_ip(vm);
-  if (ip.empty())
-    ip = vm_ip(vm, true);
-  if (ip.empty())
-    throw std::runtime_error("Guest IP unavailable");
   // A busy VM can miss a short health probe. Retry before replacing a
   // controller to avoid interrupting a healthy browser's live session.
   auto current_controller = [](const HttpResp &reply) {
@@ -2355,7 +2370,7 @@ static std::string ensure_browser(const std::string &vm) {
         std::to_string(stale.code) + "]");
   ip = vm_ip(vm, true);
   if (ip.empty())
-    throw std::runtime_error("Guest IP unavailable");
+    throw std::runtime_error("Guest IP unavailable after controller recovery (VM " + vm + ")");
   // Keep an old working binary intact on failed download. curl (23)
   // indicates a guest-side write failure, not a missing Chromium executable.
   std::string token = bridge_token();

@@ -17,4 +17,6 @@ grep -Fq 'cache_prompt' mag-room/native/magroom.cpp
 grep -Fq 'MAG_RECOVERY_ALLOW_RELOAD' ops/deepseek/restore-dual.sh
 grep -Fq 'numa-isolation.sh" verify' ops/deepseek/restore-dual.sh
 grep -Fq 'health 8091' ops/deepseek/restore-dual.sh
-echo 'PASS model preservation, dual routing, NUMA and explicit recovery guards'
+grep -Fq 'rm -f /etc/systemd/system/mag-120.service.d/30-multibot.conf' ops/deploy.sh
+grep -Fq 'if (!SINGLE_BOT.empty()) return active_room_model();' mag-room/native/magroom.cpp
+echo 'PASS single active bot, warm NUMA Q4/IQ3 switching and no compatibility entrypoint'

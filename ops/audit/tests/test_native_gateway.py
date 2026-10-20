@@ -143,4 +143,48 @@ class NativeGateway(unittest.TestCase):
           env=dict(os.environ,MAG_AUDIT_LOG_DIR=str(self.dir/"logs")),capture_output=True,text=True)
         self.assertEqual(verify.returncode,0,verify.stdout+verify.stderr)
 
+
+    def test_04_qwen_routes_on_numa1_and_old_iq3_is_rejected(self):
+        # Real compiled C++ gateway in qwen mode; same fake :8091 listener
+        # represents the newly installed Qwen server. No Q4/IQ3 mutation.
+        gwp=port()
+        env=dict(self.env,MAG_AUDIT_LISTEN_PORT=str(gwp),MAG_SECONDARY_MODEL="qwen")
+        proc=subprocess.Popen([str(ROOT/"build/mag-audit-gateway")],env=env,
+            stdout=subprocess.DEVNULL,stderr=subprocess.PIPE)
+        try:
+            for _ in range(100):
+                if proc.poll() is not None:raise RuntimeError(proc.stderr.read().decode())
+                try:
+                    if request(gwp)[0]==200:break
+                except (ConnectionError,OSError):pass
+                time.sleep(.05)
+            else:raise RuntimeError("Qwen gateway not ready")
+            Q4.calls.clear();IQ3.calls.clear()
+            code,listed=request(gwp,"GET","/v1/models")
+            self.assertEqual(code,200)
+            self.assertEqual(sorted(x["id"] for x in listed["data"]),
+                             ["deepseek-v4-flash-0731","qwen3.8-flash-next-uncensored"])
+            code,reply=request(gwp,"POST","/v1/chat/completions",
+                               {"model":"qwen3.8-flash-next-uncensored","messages":[]})
+            self.assertEqual(code,200)
+            self.assertEqual(reply["model"],"qwen3.8-flash-next-uncensored")
+            self.assertEqual(len(IQ3.calls),1,"the NUMA1 listener receives Qwen traffic")
+            self.assertEqual(Q4.calls,[])
+            code,_=request(gwp,"POST","/v1/chat/completions",
+                           {"model":"deepseek-v4-flash-0731-iq3","messages":[]})
+            self.assertEqual(code,400,"IQ3 must not silently fall back after cutover")
+            self.assertEqual(len(IQ3.calls),1)
+            code,reply=request(gwp,"POST","/v1/chat/completions",
+                               {"model":"deepseek-v4-flash-0731","messages":[]})
+            self.assertEqual(code,200)
+            self.assertEqual(len(Q4.calls),1)
+        finally:
+            proc.terminate();proc.wait(timeout=3);proc.stderr.close()
+
+    def test_05_unknown_secondary_configuration_fails_closed(self):
+        env=dict(self.env,MAG_AUDIT_LISTEN_PORT=str(port()),MAG_SECONDARY_MODEL="typo")
+        process=subprocess.run([str(ROOT/"build/mag-audit-gateway")],env=env,
+                               capture_output=True,timeout=5)
+        self.assertNotEqual(process.returncode,0)
+
 if __name__=="__main__":unittest.main()

@@ -26,7 +26,12 @@ grep -Fq 'unknown or inactive secondary model' mag-room/native/mag_audit_gateway
 grep -Fq 'STAGED ONLY' ops/qwen/install.sh
 grep -Fq -- '--reasoning-format auto' ops/qwen/start.sh
 grep -Fq -- '--cache-ram 8192' ops/qwen/start.sh
-grep -Fq 'body["tool_choice"] = "required"' ops/qwen/smoke.py
+grep -Fq 'body["tool_choice"] = choice' ops/qwen/smoke.py
+grep -Fq 'choice="auto"' ops/qwen/smoke.py
+grep -Fq 'choice="required"' ops/qwen/smoke.py
+grep -Fq 'tool result roundtrip' ops/qwen/smoke.py
+grep -Fq 'cutover.sh" apply' ops/qwen/go-live.sh
+bash -n ops/qwen/go-live.sh
 grep -Fq 'enable_thinking' ops/qwen/smoke.py
 grep -Fq 'MAG_SECONDARY_MODEL=qwen' ops/qwen/cutover.sh
 grep -Fq 'Q4 NUMA0 unchanged' ops/qwen/cutover.sh

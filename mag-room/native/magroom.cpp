@@ -6136,29 +6136,6 @@ int main() {
   ensure_state();
   undo_drop_all();
   load_agents();
-  // MAG_ROOM_SINGLE_BOT_VM=on: the single bot keeps its full sandbox (own KVM VM
-  // with shell, git/Gitea, MCP, browser) via the existing spawn path instead of
-  // running chat-only. Spawned in the background; tools appear once it is up.
-  if (!SINGLE_BOT.empty() && env("MAG_ROOM_SINGLE_BOT_VM", "off") == "on")
-    std::thread([] {
-      int idx = agent_index(SINGLE_BOT);
-      if (idx < 0 || !bot_field(idx, "vm").empty())
-        return;
-      std::string vm = next_vm();
-      auto result = run_argv({"sudo", "-n", AGENT_CTL, "spawn", vm}, 600);
-      if (result.code != 0) {
-        std::cerr << "single-bot VM spawn failed: " << result.out << "\n";
-        run_argv({"sudo", "-n", AGENT_CTL, "despawn", vm}, 180);
-        return;
-      }
-      std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
-      idx = agent_index(SINGLE_BOT);
-      if (idx >= 0) {
-        AGENTS[idx]["vm"] = vm;
-        save_agents();
-      }
-      std::cerr << "single-bot VM " << vm << " ready\n";
-    }).detach();
   FILES = load_json_array(FILES_JSON);
   ROOM = load_json_array(ROOM_JSON);
   load_reaction_notes();
@@ -6229,7 +6206,32 @@ int main() {
     }
   }
   jobs_load();
+  // Restore any persisted VM provisioning after a room restart.
   resume_pending_spawns();
+  // The sole coding bot must use the SAME reserve -> pending_vm ->
+  // finish_spawn -> agents_event path as normal bots. The old detached
+  // one-off spawn skipped pending state, emitted no agents_event and could
+  // race a restart, leaving the browser with a stale/unknown VM.
+  if (!SINGLE_BOT.empty() && env("MAG_ROOM_SINGLE_BOT_VM", "off") == "on") {
+    std::string new_vm;
+    {
+      std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
+      int idx = agent_index(SINGLE_BOT);
+      if (idx >= 0 && bot_field(idx, "vm").empty() &&
+          bot_field(idx, "pending_vm").empty()) {
+        new_vm = next_vm();
+        AGENTS[idx]["pending_vm"] = new_vm;
+        AGENTS[idx]["vm_attach"] = true; // keep the bot if provisioning fails
+        SPAWNING_VMS.insert(new_vm);
+        save_agents(); // restart can resume the exact same reservation
+      }
+    }
+    if (!new_vm.empty()) {
+      std::thread([id = SINGLE_BOT, vm = new_vm] {
+        finish_spawn(id, vm, false);
+      }).detach();
+    }
+  }
   std::thread([] { mcp_auto_once(); }).detach();
   std::thread(jobs_ticker).detach();
   std::thread(guest_cleanup_loop).detach();

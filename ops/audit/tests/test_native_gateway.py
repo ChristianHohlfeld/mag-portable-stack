@@ -115,12 +115,13 @@ class NativeGateway(unittest.TestCase):
         code,_=request(self.gwp,"PUT","/models",{"id":"iq3"})
         self.assertNotEqual(code,202)
         code,_=request(self.gwp,"POST","/v1/chat/completions",{"model":"x"})
-        self.assertEqual(code,200)
+        self.assertEqual(code,400,"unknown model must never fall back to Q4")
+        self.assertEqual(Q4.calls,[])
         self.assertEqual(IQ3.calls,[])
     def test_03_sse_audit_hash_and_tool_calls(self):
         import sys
         code,_=request(self.gwp,"POST","/v1/chat/completions",
-            {"model":"x","stream":True,"messages":[{"role":"user","content":"stream"}]})
+            {"model":"deepseek-v4-flash-0731","stream":True,"messages":[{"role":"user","content":"stream"}]})
         self.assertEqual(code,200)
         # The gateway appends the streamed response record after the client
         # already has the last chunk; wait for it instead of racing it.

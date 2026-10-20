@@ -795,6 +795,17 @@ class Native(unittest.TestCase):
   self.assertIn('see_image',[x['function']['name'] for x in Model.calls[-1]['tools']])
   html=self.request('/',raw=True).decode()
   for needle in ('<span>Foto/Screenshot</span>','accept="image/*" multiple','id="upload-paste"','navigator.clipboard.read()','PHOTO_MAX_PX=2048','id="photo-note"',"addEventListener('paste'","addEventListener('drop'"):self.assertIn(needle,html)
+  # Native file drag: PDFs/text/archives and photos stage until send.
+  for needle in ('id="file-preview"','function stageFiles(files)',
+                 'function paintStagedFiles()','function stageAttachments(files)',
+                 'async function flushStagedFiles()',
+                 'if(stagedFiles.length)await flushStagedFiles()',
+                 "for(const target of [$('send-form')",
+                 'e.preventDefault();e.stopPropagation();dropActive(false);',
+                 'e.dataTransfer?.files',
+                 'stageAttachments([...(e.target.files||[])])',
+                 'if(!text&&!stagedPhotos.length&&!stagedFiles.length)return'):
+   self.assertIn(needle,html)
  def test_09i_chat_only_bot_has_no_vm_tools(self):
   names=[t['function']['name'] for t in Model.calls[-1]['tools']]
   for vm_tool in ('run_command','fetch_room_file','share_room_file','browser_open'):self.assertNotIn(vm_tool,names)
@@ -1057,6 +1068,9 @@ class Native(unittest.TestCase):
    self.assertEqual((self.state/'room-model.txt').read_text().strip(),iq3)
    html=self.request('/',raw=True).decode()
    self.assertIn('id="model-choice"',html)
+   self.assertIn('id="single-model-switch"',html)
+   self.assertIn('id="single-model-select"',html)
+   self.assertIn('Bot wechseln · Q4 / IQ3',html)
    self.assertIn('>0 · Q4</button>',html)
    self.assertIn('>1 · IQ3</button>',html)
    self.assertIn('aria-pressed=',html)

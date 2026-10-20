@@ -91,5 +91,39 @@ class ClipboardImages(unittest.TestCase):
                 finally:
                     context.close()
 
+    def test_native_file_drop_on_chat_and_composer(self):
+        for width in (375, 1280):
+            with self.subTest(width=width):
+                context=self.browser.new_context(viewport={"width":width,"height":800},
+                    is_mobile=width<500,has_touch=width<500)
+                try:
+                    page=context.new_page()
+                    page.goto(f"http://127.0.0.1:{self.server.server_port}/",wait_until="domcontentloaded")
+                    page.wait_for_selector("#message")
+                    # Simulate the OS DataTransfer drop path for two NON-image files
+                    # instead of reusing ClipboardEvent or input[type=file].
+                    for target in ("#message", ".chat-scroll"):
+                        page.evaluate("""(target) => {
+                            const dt=new DataTransfer();
+                            dt.items.add(new File(['hello'],target.endsWith('message')?'notiz.txt':'zweite.txt',
+                                                  {type:'text/plain'}));
+                            dt.items.add(new File(['%PDF-1.7'],target.endsWith('message')?'vertrag.pdf':'plan.pdf',
+                                                  {type:'application/pdf'}));
+                            const node=document.querySelector(target);
+                            for(const type of ['dragenter','dragover','drop']){
+                                const event=new DragEvent(type,{dataTransfer:dt,bubbles:true,cancelable:true});
+                                node.dispatchEvent(event);
+                                if(type==='drop'&&!event.defaultPrevented)throw Error('Drop not handled: '+target);
+                            }
+                        }""",target)
+                    page.wait_for_selector("#file-preview .file-chip",timeout=8000)
+                    self.assertEqual(page.locator("#file-preview .file-chip").count(),4)
+                    self.assertTrue(page.locator("#send-button").is_enabled())
+                    self.assertIn("vertrag.pdf",page.locator("#file-preview").inner_text())
+                    page.locator("#file-preview .file-chip button").first.click()
+                    self.assertEqual(page.locator("#file-preview .file-chip").count(),3)
+                finally:
+                    context.close()
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

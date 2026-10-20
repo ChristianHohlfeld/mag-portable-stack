@@ -177,7 +177,7 @@ static Val sse_assemble(const std::string &wire){
 struct Http {
   std::string method,path,head,body;std::map<std::string,std::string> headers;
 };
-static void choose_model(const Http &r,std::string &selected,int &port){
+static bool choose_model(const Http &r,std::string &selected,int &port){
   selected="q4"; port=cfg.q4;
   std::string asked;
   auto header=r.headers.find("x-mag-model");
@@ -185,7 +185,9 @@ static void choose_model(const Http &r,std::string &selected,int &port){
   if(asked.empty()&&!r.body.empty()){
     Val body; if(mj::parse(r.body,body)&&body.isObj()) if(auto model=body.find("model")) asked=model->asStr();
   }
-  if(asked=="iq3"||asked=="deepseek-v4-flash-0731-iq3"){selected="iq3"; port=cfg.iq3;}
+  if(asked=="iq3"||asked=="deepseek-v4-flash-0731-iq3"){selected="iq3"; port=cfg.iq3;return true;}
+  // No fallback on an explicitly unknown model.
+  return asked.empty()||asked=="q4"||asked=="deepseek-v4-flash-0731";
 }
 static bool request_read(int fd,Http &r){
   std::string s;char b[8192];size_t pos=std::string::npos;
@@ -250,7 +252,9 @@ static void proxy(int fd){
     Val listed=Val::object(); listed["object"]="list"; listed["data"]=data;
     json_response(fd,200,listed); return;
   }
-  choose_model(r,selected,upstream);
+  if(!choose_model(r,selected,upstream)){
+    json_response(fd,400,message("unknown model (no fallback)"));return;
+  }
   if(r.path=="/audit/v1/health"){Val v=Val::object();v["ok"]=true;json_response(fd,200,v);return;}
   if(r.path=="/audit/v1/event"&&r.method=="POST"){
     Val ev=parse_or_text(r.body);Val v=Val::object();v["type"]="bot_event";v["id"]=id;v["event"]=ev;audit(v);

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Remove half-created bot VMs: a libvirt domain, disk directory or unit with
-# no matching vm/pending_vm in the room. Healthy bots and in-progress spawns
+# no matching vm/pending_vm/unavailable_vm in the room. Healthy bots and in-progress spawns
 # stay. agents.json is never modified. mag-llm and mag-llm-iq3 are not touched.
 set -uo pipefail
 ROOM=${MAG_ROOM_STATE:-/var/lib/magbot/room}
@@ -26,7 +26,7 @@ if not isinstance(data, list):
 for bot in data:
     if not isinstance(bot, dict):
         continue
-    for key in ('vm', 'pending_vm'):
+    for key in ('vm', 'pending_vm', 'unavailable_vm'):
         value = bot.get(key) or ''
         if isinstance(value, str) and re.fullmatch(r'agent[0-9]+', value):
             ids.add(value)

@@ -2868,13 +2868,20 @@ static void merge_tool_delta(SseAcc &acc, const Val &tc) {
 
 static std::mutex ROOM_MODEL_MTX;
 static std::string ROOM_MODEL_ID;
+// Prefer one stable inference model in the room. The optional dual-model
+// mode is reversible; persisted bot preferences and model files are untouched.
+static bool q4_only_room() {
+  return env("MAG_ROOM_SINGLE_MODEL", "on") != "off";
+}
 static bool known_room_model(const std::string &id) {
-  return id == "deepseek-v4-flash-0731" || id == "deepseek-v4-flash-0731-iq3";
+  return id == "deepseek-v4-flash-0731" ||
+         (!q4_only_room() && id == "deepseek-v4-flash-0731-iq3");
 }
 static std::string room_model_file() { return STATE_DIR + "/room-model.txt"; }
 static std::string active_room_model() {
   std::lock_guard<std::mutex> lk(ROOM_MODEL_MTX);
-  return known_room_model(ROOM_MODEL_ID) ? ROOM_MODEL_ID : MODEL;
+  return q4_only_room() ? "deepseek-v4-flash-0731"
+                        : (known_room_model(ROOM_MODEL_ID) ? ROOM_MODEL_ID : MODEL);
 }
 static void load_room_model() {
   bool ok = false;
@@ -2883,7 +2890,8 @@ static void load_room_model() {
          (saved.back() == '\n' || saved.back() == '\r' || saved.back() == ' '))
     saved.pop_back();
   std::lock_guard<std::mutex> lk(ROOM_MODEL_MTX);
-  ROOM_MODEL_ID = (ok && known_room_model(saved)) ? saved : MODEL;
+  ROOM_MODEL_ID = (ok && known_room_model(saved))
+                     ? saved : "deepseek-v4-flash-0731";
 }
 static bool set_room_model(const std::string &id) {
   if (!known_room_model(id)) return false;
@@ -2907,13 +2915,14 @@ static Val room_model_catalog() {
   iq3["id"] = "deepseek-v4-flash-0731-iq3";
   iq3["label"] = "IQ3 · NUMA 1";
   models.push(q4);
-  models.push(iq3);
+  if (!q4_only_room()) models.push(iq3);
   return models;
 }
 // Each bot answers with its own model id; the gateway routes Q4 and IQ3 to
 // their always-resident servers. Choosing a model only changes this request
 // field: no unit, process, slot or weight is touched.
 static std::string bot_model_id(int idx) {
+  if (q4_only_room()) return "deepseek-v4-flash-0731";
   const std::string own = bot_field(idx, "model");
   return known_room_model(own) ? own : active_room_model();
 }

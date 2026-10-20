@@ -52,3 +52,17 @@ Eine Runtime und das **Small Streaming German** Modell auf Desktop, iPhone Safar
 **nginx:** Der bestehende private `mag-room.nginx.conf` bindet optional `/opt/mag-stack/current/ops/nginx/mag-speech*.inc` ein. Nach Release `nginx -t`, dann nginx reload. `auth_request` wird von der Server-Ebene geerbt; keine Freigabe für nicht authentifizierte Clients. MIME `application/wasm`, COOP/COEP/CORP und `speech-config.json` ohne Cache sind erforderlich. Gehashte Runtime/WASM-Dateien werden cache-first gespeichert, große Modellgewichte nur über den Moonshine-Cache (nicht doppelt im Service Worker).
 
 **Tests:** nach CMake-Build `python3 -m unittest discover -s mag-room/tests -p 'test_speech.py' -v`; nach Asset-Vendoring auch `test_speech_real.py`. Physisches iPhone/Android für deutsche Diktierqualität und Speicherverbrauch zusätzlich testen.
+
+### Context safety (Q4 / IQ3)
+Both resident models currently have a 32768-token context. MAG builds a bounded
+room transcript (default 16 KB, newest messages first), and limits tool results
+carried to later model steps to 6 KB each. It includes the tool-schema size in
+an overall 52 KB wire-byte estimate and keeps a compact action handoff when
+dropping older complete assistant/tool rounds. An upstream
+`exceed_context_size_error` causes up to two smaller-context retries **of the
+same model step**, without re-executing completed tools. All room messages and
+files remain persisted unchanged. Controls:
+`MAG_ROOM_CONTEXT_BYTES`, `MAG_ROOM_TRANSCRIPT_BYTES`,
+`MAG_ROOM_TOOL_CONTEXT_BYTES` (see `.env.example`). Context compaction is a
+conservative byte heuristic, not exact model tokenization; watch prompt usage
+when adding MCP servers with many schemas.

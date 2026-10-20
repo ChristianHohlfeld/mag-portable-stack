@@ -1,0 +1,58 @@
+name: Publish MAG-Stack 4.0.4
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/publish-mag-stack-4.0.4.yml"
+      - "docs/releases/mag-stack-4.0.4.md"
+permissions:
+  contents: write
+concurrency:
+  group: mag-stack-4.0.4-release
+  cancel-in-progress: false
+jobs:
+  publish:
+    if: github.repository == 'ChristianHohlfeld/mag-portable-stack'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify tested release target and publish once
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag=mag-stack-4.0.4
+          expected=51a1c95bb0c2b3ccd5fd096c0042c22ac9a5032a
+          green=$(gh api "repos/$GH_REPO/git/ref/heads/green" --jq '.object.sha')
+          if [[ "$green" != "$expected" ]]; then
+            echo "Refusing to tag: green=$green, expected=$expected" >&2
+            exit 1
+          fi
+          target=$(gh api "repos/$GH_REPO/git/commits/$expected" --jq '.sha')
+          [[ "$target" == "$expected" ]] || { echo "Release commit not found" >&2; exit 1; }
+          if existing=$(gh api "repos/$GH_REPO/git/ref/tags/$tag" --jq '.object.sha' 2>/dev/null); then
+            [[ "$existing" == "$expected" ]] || {
+              echo "Refusing to modify tag $tag: existing=$existing, expected=$expected" >&2
+              exit 1
+            }
+            if gh release view "$tag" >/dev/null 2>&1; then
+              echo "Release $tag already published at verified $expected."
+              exit 0
+            fi
+          fi
+          gh release create "$tag" \
+            --target "$expected" \
+            --title "MAG-Stack 4.0.4" \
+            --notes-file docs/releases/mag-stack-4.0.4.md \
+            --latest
+          actual=$(gh api "repos/$GH_REPO/git/ref/tags/$tag" --jq '.object.sha')
+          [[ "$actual" == "$expected" ]] || {
+            echo "Release tag does not point to tested commit" >&2
+            exit 1
+          }
+          gh release view "$tag" --json url,tagName,name,isDraft

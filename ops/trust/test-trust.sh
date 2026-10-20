@@ -26,5 +26,8 @@ grep -q "el('span','',c.name)" "$html"
 python3 -c 'from pathlib import Path; s=Path("'"$html"'").read_text(); Path("/tmp/mag-trust-index.js").write_text(s.split("<script>")[-1].split("</script>")[0])'
 node --check /tmp/mag-trust-index.js
 rm -f "$html"
-bash -n "$here/install-trust.sh" "$root/ops/audit/vm-proxy-setup.sh" "$root/ops/deploy.sh"
+bash -n "$here/install-trust.sh" "$here/probe-free-mcp.sh" "$root/ops/audit/vm-proxy-setup.sh" "$root/ops/deploy.sh"
+grep -q 'ops/trust/probe-free-mcp.sh' "$root/ops/deploy.sh"
+grep -q -- '--cacert' "$here/probe-free-mcp.sh"
+grep -q 'FREE_MCP_TLS_OK' "$here/probe-free-mcp.sh"
 echo 'trust chain OK'

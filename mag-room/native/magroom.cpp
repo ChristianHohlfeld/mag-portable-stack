@@ -1830,6 +1830,23 @@ static std::string build_transcript() {
     bytes += line.size();
     lines.emplace_back(id, std::move(line));
   }
+  // A byte-bounded sliding transcript used to shift its FIRST token after
+  // almost every new room message. With ~45 CPU prompt tokens/s that turns
+  // every reply into a multi-minute cold prefill despite cache_prompt=true.
+  // Advance the oldest retained message in fixed HISTORY_STEP-sized blocks
+  // instead. Keep the newest entry even if it alone exceeds the byte budget.
+  // This makes the prefix stable for subsequent messages until a block
+  // boundary, while keeping the same total byte ceiling.
+  const size_t first_retained = ROOM.size() - lines.size();
+  if (first_retained > start && !lines.empty()) {
+    const size_t step = (size_t)std::max(1, HISTORY_STEP);
+    const size_t delta = first_retained - start;
+    const size_t blocks = delta / step + (delta % step != 0);
+    const size_t aligned = start + blocks * step;
+    while (lines.size() > 1 &&
+           ROOM.size() - lines.size() < aligned)
+      lines.pop_back();
+  }
   std::set<std::string> keep;
   for (auto it = lines.rbegin(); it != lines.rend(); ++it) {
     if (!it->first.empty()) keep.insert(it->first);

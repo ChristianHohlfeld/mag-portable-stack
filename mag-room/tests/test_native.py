@@ -2394,7 +2394,8 @@ class Plugins(unittest.TestCase):
   self.assertNotIn('[Plugin Fake]',Model.calls[n]['messages'][0]['content'])
   cat={c['preset']:c for c in self.request('/api/plugins')['catalog']}
   dp=cat['digitalisierungsplanung'];self.assertEqual(dp['url'],'https://accounts.digitalisierungsplanung.de/mcp/free')
-  self.assertEqual(dp['auth'],'none');self.assertTrue(dp['auto_approve']);self.assertTrue(dp['auto_bind']);self.assertIn('Prozessbild',dp['hint'])
+  self.assertEqual(dp['auth'],'none');self.assertTrue(dp['auto_approve']);self.assertTrue(dp['auto_bind']);self.assertIn('öffentlicher Link',dp['hint'])
+  self.assertNotIn('nur auf Wunsch',dp['hint'])
 class FakeMcpOpen(FakeMcp):
  TOKEN='';sessions=set();calls=[];call_sessions=[];inits=0
 class AutoPlugins(unittest.TestCase):
@@ -2471,6 +2472,8 @@ class AutoPluginsOrphan(unittest.TestCase):
    self.assertEqual(p['bindings'][bot][sid]['approval'],'auto')
   n=self._turn('q4bot',[[{'tool_calls':[{'index':0,'id':'s1','function':{'name':'mcp__digitalisierungsplanung__lookup','arguments':'{"q":"x"}'}}]}],['Ok']]);self._idle()
   self.assertIn('mcp__digitalisierungsplanung__lookup',self._tool_names(Model.calls[n]))
+  self.assertIn('HAUPTANWENDUNGSFALL / STANDARD',Model.calls[n]['messages'][0]['content'],
+                'previously persisted plugin guidance must be upgraded without losing bot bindings')
 class FakeTailscale(http.server.BaseHTTPRequestHandler):
  protocol_version='HTTP/1.1';calls=[]
  def log_message(self,*a):pass

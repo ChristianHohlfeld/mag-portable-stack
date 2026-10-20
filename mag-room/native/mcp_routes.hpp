@@ -14,16 +14,20 @@ struct McpPreset {
 static const McpPreset MCP_PRESETS[] = {
     {"digitalisierungsplanung", "Digitalisierungsplanung",
      "https://accounts.digitalisierungsplanung.de/mcp/free", "none",
-     "Prozessbilder: Die KI baut den Ablauf und speichert JSON/SVG. Einen öffentlichen Link gibt es nur auf Wunsch.",
+     "Standard: Prozess in Worten beschreiben → KI zeichnet vollständiges Prozessbild → öffentlicher Link. Kostenlos, ohne Login.",
      "", false,
-     "Free MCP, kein Schlüssel. Ablauf: zustand_contract, zustand_snapshot, dann zustand_apply "
-     "mit expectedRevision = snapshot.revision. Neue addTransition: decision \"routine\", "
-     "triggerType \"button\" (nie \"click\"). Bei REVISION_CONFLICT neu lesen, nicht blind wiederholen. "
-     "Datei: zustand_export (JSON) oder zustand_export_svg (SVG, optional {\"graphOnly\":true,\"theme\":\"dark\"}); "
-     "result.content[0].text unverändert als UTF-8 speichern. PDF: zustand_export_pdf, die eingebettete "
-     "application/pdf-Ressource als .pdf. Öffentlichen Link nur auf Wunsch über zustand_share und genau "
-     "result.url zeigen. editorUrl nur, wenn der Nutzer den Prozess ins Konto übernehmen will. "
-     "Nie einen Link erfinden.",
+     "HAUPTANWENDUNGSFALL / STANDARD: Nutzer erklärt einen Prozess in eigenen Worten oder bittet um ein Prozessbild. "
+     "Nutze diesen anonymen Free MCP automatisch, um einen vollständigen Zustandsgraphen auf digitalisierungsplanung.de "
+     "zu modellieren. Nicht bei JSON/SVG oder Text stehenbleiben! Standardkette: zustand_contract, zustand_snapshot, "
+     "zustand_apply (alle benannten Schritte, Abzweigungen, Schleifen, Ausnahmen und Reihenfolge; expectedRevision "
+     "aus Snapshot), zustand_snapshot zum Prüfen, zustand_share; dem Nutzer exakt result.url als fertigen "
+     "öffentlichen Diagrammlink geben. Bei unvollständigem/unerreichbarem Graph reparieren und erneut prüfen. "
+     "Neue addTransition standardmäßig decision \"routine\" und triggerType \"button\"; keine technischen "
+     "human-Gates/Freigabesysteme hinzuerfinden. Fachliche Freigabeschritte als normale Zustände modellieren. "
+     "Bei REVISION_CONFLICT neu lesen, niemals blind schreiben. Öffentlicher Link ist 7 Tage für jeden mit URL "
+     "lesbar: vertrauliche/private Inhalte nicht ungefragt teilen; ausdrückliche Privat-/Dateiwünsche respektieren. "
+     "Nur auf ausdrücklichen Exportwunsch zustand_export (JSON), zustand_export_svg (SVG), zustand_export_pdf (PDF); "
+     "editorUrl nur für spätere Anmeldung/Projektübernahme, niemals statt result.url ausgeben. Keine erfundenen Links.",
      true,
      {},
      true},
@@ -268,6 +272,17 @@ static void mcp_ensure_auto_plugins() {
     {
       std::lock_guard<std::mutex> lk(MCP_MTX);
       sid = mcp_sid_for_preset_locked(p.preset);
+      // Preset guidance is product policy, not user data. Refresh it even for
+      // older cached servers.json entries so existing bots get the new
+      // prompt -> process diagram -> public link default after a room restart.
+      if (!sid.empty()) {
+        if (Val *existing = mcp_find_locked(sid)) {
+          if (mcp_str(*existing, "guide") != p.guide) {
+            (*existing)["guide"] = p.guide;
+            mcp_save_locked();
+          }
+        }
+      }
       ready = !sid.empty() && mcp_server_ready_locked(sid);
     }
     if (!sid.empty() && ready) {

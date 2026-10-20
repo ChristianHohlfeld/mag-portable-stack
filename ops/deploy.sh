@@ -215,6 +215,10 @@ bash "$NGINX_SYNC" smoke
 # proxy's upstream check) trust Let's Encrypt Generation Y. Does not touch
 # golden.qcow2 or mag-llm.
 bash "$SOURCE/ops/trust/install-trust.sh"
+# Prove that the actual host-side libcurl CA bundle validates the public
+# Free MCP and that the 4 essential tools are available. Do not roll out a
+# room whose automatic MCP cannot even initialize. TLS verification stays ON.
+bash "$SOURCE/ops/trust/probe-free-mcp.sh"
 systemctl restart mag-120.service
 systemctl enable --now mag-browser-webrtc.service
 systemctl restart mag-browser-webrtc.service

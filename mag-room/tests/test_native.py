@@ -595,8 +595,14 @@ class Native(unittest.TestCase):
    self.assertEqual(call['model'],'deepseek-v4-flash-0731')
    comparison=[(len(a),len(b),len(os.path.commonprefix([a,b])),a[:80]==b[:80])
                for a,b in zip(retained,retained[1:])]
-   self.assertTrue(any(b.startswith(a) and len(a)>2000 for a,b in zip(retained,retained[1:])),
-                   'large room must preserve a cacheable prefix across at least two turns: '+repr(comparison))
+   # Before append, the last line ends with a trailing newline. When the
+   # next turn arrives, the boundary newline may be reflowed; that one byte
+   # does not mean the thousands of preceding bytes became uncached.
+   # Require multiple large common prefixes, not a false exact startswith.
+   self.assertGreaterEqual(
+       sum(len(a)>2000 and len(os.path.commonprefix([a,b]))>=len(a)-2
+           for a,b in zip(retained,retained[1:])),2,
+       'large room must retain multiple cacheable prefixes: '+repr(comparison))
   finally:
    Model.reply=None
  def test_09q_two_warm_models_no_single_model_fallback(self):

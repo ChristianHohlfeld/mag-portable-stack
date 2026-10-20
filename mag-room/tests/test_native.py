@@ -1727,6 +1727,27 @@ class SingleBot(unittest.TestCase):
   self.error(409,'/api/agents',{'name':'Zweiter'})
   self.error(409,'/api/agents/deepseek-chat',method='DELETE')
   self.error(404,'/api/agents/alt',method='DELETE')
+ def test_selected_model_is_used_by_same_bot_without_restart(self):
+  q4='deepseek-v4-flash-0731';iq3='deepseek-v4-flash-0731-iq3'
+  pid=self.proc.pid
+  try:
+   for choice in (iq3,q4,iq3):
+    self.assertEqual(self.request('/api/model',{'id':choice})['model'],choice)
+    st=self.request('/api/state')
+    self.assertEqual(len(st['agents']),1)
+    self.assertEqual(st['agents'][0]['model'],choice)
+    before=len(Model.calls)
+    self.request('/api/message',{'text':'Ein Bot, ein warmes Modell','bots':['alt']})
+    for _ in range(200):
+     if len(Model.calls)>before and not self.request('/api/state')['busy']:break
+     time.sleep(.05)
+    self.assertGreater(len(Model.calls),before)
+    self.assertEqual(Model.calls[-1]['model'],choice,'must send selected model ID; never fallback')
+    self.assertEqual(self.proc.pid,pid,'model selection must not restart room')
+   self.error(400,'/api/model',{'id':'unknown'})
+   self.assertEqual(self.request('/api/model')['model'],iq3)
+  finally:
+   self.request('/api/model',{'id':q4})
  def test_message_always_goes_to_the_single_bot(self):
   before=len(Model.calls)
   self.request('/api/message',{'text':'Hallo','bots':['alt']})

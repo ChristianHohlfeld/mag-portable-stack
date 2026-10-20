@@ -30,4 +30,14 @@ bash -n "$here/install-trust.sh" "$here/probe-free-mcp.sh" "$root/ops/audit/vm-p
 grep -q 'ops/trust/probe-free-mcp.sh' "$root/ops/deploy.sh"
 grep -q -- '--cacert' "$here/probe-free-mcp.sh"
 grep -q 'FREE_MCP_TLS_OK' "$here/probe-free-mcp.sh"
+# Regression #81: probing the direct upstream cannot establish that the room
+# (which uses a TLS-auditing local MITM proxy) can actually connect.
+grep -q 'ca=/etc/mag-audit/ca-bundle.pem' "$here/probe-free-mcp.sh"
+grep -q -- '--proxy "$proxy"' "$here/probe-free-mcp.sh"
+grep -q 'CURLOPT_SSL_VERIFYPEER, 1L' "$root/mag-room/native/mcp.hpp"
+grep -q 'CURLOPT_SSL_VERIFYHOST, 2L' "$root/mag-room/native/mcp.hpp"
+grep -q 'audited = proxy ==' "$root/mag-room/native/mcp.hpp"
+grep -q 'AGENT_CTL, "ip", vm' "$root/mag-room/native/magroom.cpp"
+grep -q 'domifaddr "magbot-$2" --source "$source"' "$root/ops/magbot-agent-ctl"
+bash -n "$root/ops/magbot-agent-ctl"
 echo 'trust chain OK'

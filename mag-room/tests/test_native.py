@@ -1820,7 +1820,7 @@ class SingleBotVM(unittest.TestCase):
                      'if [ "$1" = verify ] && [ "$2" = agent2 ]; then '
                      'echo MAG_VM_METADATA_MISSING agent2;exit 3;fi\n')
   cls.ctl.chmod(0o755)
-  (cls.ctl.parent/'ctl.log').write_text('')
+  previous_log_size=len((cls.ctl.parent/'ctl.log').read_text())
   before=[{'id':'alt','name':'Alter Bot','vm':'agent1','memory':[]},
           {'id':'deepseek-chat','name':'DeepSeek Chat','vm':'agent2',
            'memory':[{'text':'Benutzerdaten erhalten','src':'Nutzer'}]}]
@@ -1841,7 +1841,7 @@ class SingleBotVM(unittest.TestCase):
   self.assertEqual(bot['unavailable_vm'],'agent2')
   self.assertEqual(bot['memory'],before[1]['memory'])
   self.assertEqual(records['alt'],before[0])
-  log=(cls.ctl.parent/'ctl.log').read_text()
+  log=(cls.ctl.parent/'ctl.log').read_text()[previous_log_size:]
   self.assertIn('verify agent2',log)
   self.assertIn('spawn agent3',log)
   self.assertNotIn('despawn agent2',log)

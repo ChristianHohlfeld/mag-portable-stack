@@ -1,9 +1,6 @@
 #!/usr/bin/env bash
-# One Q4 model on both sockets. Idempotent cutover, run on mag as root:
-#   sudo bash ops/deepseek/both-sockets.sh
-# Renders first and leaves the host untouched if the unit would be wrong.
-# Then installs llm.env.mag, removes the node0 cgroup pin, stops IQ3 so
-# node1 is not already full, and restarts mag-llm (loads ~144 GiB).
+# One Q4 model on both sockets. Called from ops/deploy.sh. No-op when the
+# running process already uses both sockets, so later deploys do not reload it.
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 ENV_SRC=$ROOT/ops/deepseek/llm.env.mag
@@ -14,6 +11,26 @@ IQ3_WANTS=/etc/systemd/system/multi-user.target.wants/mag-llm-iq3.service
 fail() { echo "both-sockets: $*" >&2; exit 1; }
 [[ $EUID -eq 0 ]] || fail "root required"
 [[ -f $ENV_SRC ]] || fail "missing $ENV_SRC"
+
+live_ok() {
+  [[ ! -e $GUARD ]] || return 1
+  local pid cmdline allowed pinned=0 task
+  pid=$(systemctl show -p MainPID --value mag-llm.service 2>/dev/null || true)
+  [[ "$pid" =~ ^[1-9][0-9]*$ && -r /proc/$pid/cmdline ]] || return 1
+  cmdline=$(tr '\0' ' ' < "/proc/$pid/cmdline")
+  [[ "$cmdline" == *'--interleave=all'* && "$cmdline" == *'--threads 28'* \
+    && "$cmdline" == *'--ubatch-size 2048'* && "$cmdline" == *'--numa distribute'* ]] || return 1
+  for task in /proc/"$pid"/task/[0-9]*; do
+    [[ -r "$task/status" ]] || continue
+    allowed=$(awk '/^Cpus_allowed_list:/{print $2}' "$task/status")
+    [[ "$allowed" == "0-13,28-41" ]] && pinned=$((pinned + 1))
+  done
+  (( pinned < 15 ))
+}
+if live_ok; then
+  echo "both-sockets: already applied"
+  exit 0
+fi
 
 export MAG_LLM_ENV=$ENV_SRC
 unset ENGINE IK_BIN NUMA_ARGS LLAMA_NUMA THREADS THREADS_BATCH BATCH UBATCH \
@@ -33,7 +50,6 @@ for token in \
 do
   grep -Fq -- "$token" "$tmp" || fail "rendered unit missing: $token"
 done
-grep -q 'CPUAffinity=\|NUMAPolicy=\|AllowedCPUs=' "$tmp" && fail "rendered unit still pins a node" || true
 
 if systemctl cat mag-llm-iq3.service >/dev/null 2>&1; then
   systemctl disable --now mag-llm-iq3.service >/dev/null 2>&1 || systemctl stop mag-llm-iq3.service >/dev/null 2>&1 || true
@@ -47,7 +63,5 @@ systemctl daemon-reload
 effective=$(systemctl show -p ExecStart --value mag-llm.service)
 [[ "$effective" == *'--interleave=all'* && "$effective" == *'--threads 28'* && "$effective" == *'--ubatch-size 2048'* ]] \
   || fail "systemd ExecStart is not the both-socket unit"
-systemctl show -p CPUAffinity -p NUMAPolicy -p AllowedCPUs --value mag-llm.service | grep -q '[0-9]' \
-  && fail "systemd still binds mag-llm to a CPU set" || true
-echo "both-sockets: unit installed, restarting mag-llm"
+echo "both-sockets: unit installed, restarting"
 exec bash "$ROOT/ops/deepseek/warm.sh" restart-llm

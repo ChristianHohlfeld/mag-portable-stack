@@ -15,7 +15,6 @@ LoadCredential=mag-guest-oauth
 Environment=MAG_ROOM_STATE=/var/lib/magbot/room
 # One existing agent (prefer active coding VM), one worker lane, selectable Q4/IQ3.
 Environment=MAG_ROOM_SINGLE_BOT=auto
-Environment=MAG_ROOM_SINGLE_MODEL=off
 Environment=MAG_ROOM_BIND=127.0.0.1
 Environment=MAG_ROOM_STATIC=/opt/mag-stack/current/web/static
 Environment=MAG_ROOM_UI=/opt/mag-stack/current/web/index.html

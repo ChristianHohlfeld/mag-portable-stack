@@ -2472,6 +2472,8 @@ class AutoPluginsOrphan(unittest.TestCase):
    self.assertEqual(p['bindings'][bot][sid]['approval'],'auto')
   n=self._turn('q4bot',[[{'tool_calls':[{'index':0,'id':'s1','function':{'name':'mcp__digitalisierungsplanung__lookup','arguments':'{"q":"x"}'}}]}],['Ok']]);self._idle()
   self.assertIn('mcp__digitalisierungsplanung__lookup',self._tool_names(Model.calls[n]))
+  self.assertIn('HAUPTANWENDUNGSFALL / STANDARD',Model.calls[n]['messages'][0]['content'],
+                'previously persisted plugin guidance must be upgraded without losing bot bindings')
 class FakeTailscale(http.server.BaseHTTPRequestHandler):
  protocol_version='HTTP/1.1';calls=[]
  def log_message(self,*a):pass

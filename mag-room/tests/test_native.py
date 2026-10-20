@@ -1789,6 +1789,7 @@ class SingleBotVM(unittest.TestCase):
   cls.state.joinpath('agents.json').write_text(json.dumps([{'id':'alt','name':'Alter Bot','vm':'agent1','memory':[]}]))
   cls.model=http.server.ThreadingHTTPServer(('127.0.0.1',0),Model);threading.Thread(target=cls.model.serve_forever,daemon=True).start();cls.ui=port();cls.bridge=port()
   env=dict(os.environ,MAG_OWNER_CANONICAL_LOGIN='chris@github',MAG_TEST_ALLOW_LOCAL_OWNER='1',MAG_ROOM_STATE=str(cls.state),MAG_ROOM_PORT=str(cls.ui),MAG_ROOM_BRIDGE_PORT=str(cls.bridge),MAG_ROOM_BRIDGE_IP='127.0.0.1',MAG_ROOM_BACKEND=f'http://127.0.0.1:{cls.model.server_port}/v1/chat/completions',MAG_ROOM_UI=str(ROOT/'mag-room/web/index.html'),MAG_ROOM_STATIC=str(ROOT/'mag-room/static'),MAG_ROOM_MODEL_STATUS=str(pathlib.Path(cls.tmp.name)/'model-status.json'),MAG_NETMODE=str(NETMODE),MAG_TEST_NO_MEMGIT='1',MAG_JOBS_ALLOW_SECONDS='1',MAG_JOBS_TICK_MS='200',MAG_JOBS_BACKOFF_S='1',MAG_GITHUB_API=f'http://127.0.0.1:{GHPORT}',MAG_ROOM_SINGLE_BOT='deepseek-chat',MAG_ROOM_SINGLE_BOT_VM='on',MAG_ROOM_AGENT_CTL=str(cls.ctl),MAG_ROOM_MCP_AUTO='0')
+  cls.env=env
   cls.log=open(pathlib.Path(cls.tmp.name)/'server.log','a');cls.proc=subprocess.Popen([str(ROOT/'build/magroom')],env=env,stdout=cls.log,stderr=cls.log)
   for _ in range(100):
    try:Native.request.__func__(cls,'/healthz',raw=True);return
@@ -1809,7 +1810,7 @@ class SingleBotVM(unittest.TestCase):
   self.assertIn('spawn agent2',(self.ctl.parent/'ctl.log').read_text())
   stored={a['id']:a for a in json.loads(self.state.joinpath('agents.json').read_text())}
   self.assertEqual(stored['deepseek-chat']['vm'],'agent2');self.assertEqual(stored['alt']['vm'],'agent1')
- def test_02_missing_vm_metadata_is_quarantined_and_replaced_without_deletion(self):
+ def test_zz_missing_vm_metadata_is_quarantined_and_replaced_without_deletion(self):
   # Restore from a room snapshot that still says VM=agent2, but whose
   # registry metadata was removed externally. The old disk/VM must not
   # be destroyed, and the single bot must use a fresh identity.
@@ -1819,6 +1820,7 @@ class SingleBotVM(unittest.TestCase):
                      'if [ "$1" = verify ] && [ "$2" = agent2 ]; then '
                      'echo MAG_VM_METADATA_MISSING agent2;exit 3;fi\n')
   cls.ctl.chmod(0o755)
+  (cls.ctl.parent/'ctl.log').write_text('')
   before=[{'id':'alt','name':'Alter Bot','vm':'agent1','memory':[]},
           {'id':'deepseek-chat','name':'DeepSeek Chat','vm':'agent2',
            'memory':[{'text':'Benutzerdaten erhalten','src':'Nutzer'}]}]

@@ -593,18 +593,12 @@ class Native(unittest.TestCase):
    self.assertEqual(call['model'],'deepseek-v4-flash-0731')
   finally:
    Model.reply=None
- def test_09q_single_q4_mode_preserves_saved_iq3_choice(self):
+ def test_09q_two_warm_models_no_single_model_fallback(self):
   self.wait_idle()
   q4='deepseek-v4-flash-0731';iq3='deepseek-v4-flash-0731-iq3'
-  catalog=self.request('/api/model')['models']
-  if os.environ.get('MAG_ROOM_SINGLE_MODEL')=='on':
-   self.assertEqual([m['id'] for m in catalog],[q4])
-   self.assertEqual(self.request('/api/state')['model'],q4)
-   self.error(400,'/api/model',{'id':iq3})
-   self.error(400,'/api/agents/test/model',{'model':iq3})
-   self.assertEqual(self.request('/api/state')['agents'][0]['model'],q4)
-  else:
-   self.assertEqual([m['id'] for m in catalog],[q4,iq3])
+  self.assertEqual([m['id'] for m in self.request('/api/model')['models']],[q4,iq3])
+  self.error(400,'/api/model',{'id':'unknown'})
+
  def test_09b_reasoning_is_returned_with_tool_history(self):
   # A previous test may leave a background request; drain before injecting
   # the two scripted responses to avoid racy Model.script consumption.

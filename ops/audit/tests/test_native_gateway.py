@@ -148,7 +148,8 @@ class NativeGateway(unittest.TestCase):
         # Real compiled C++ gateway in qwen mode; same fake :8091 listener
         # represents the newly installed Qwen server. No Q4/IQ3 mutation.
         gwp=port()
-        env=dict(self.env,MAG_AUDIT_LISTEN_PORT=str(gwp),MAG_SECONDARY_MODEL="qwen")
+        env=dict(self.env,MAG_AUDIT_LISTEN_PORT=str(gwp),MAG_SECONDARY_MODEL="qwen",
+                 MAG_AUDIT_LOG_DIR=str(self.dir/"qwen-logs"))
         proc=subprocess.Popen([str(ROOT/"build/mag-audit-gateway")],env=env,
             stdout=subprocess.DEVNULL,stderr=subprocess.PIPE)
         try:

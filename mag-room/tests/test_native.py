@@ -593,8 +593,10 @@ class Native(unittest.TestCase):
    self.assertLessEqual(len(transcript.encode()),16020,'Room transcript must have a byte cap')
    self.assertIn('kontext-lang-6-',transcript)
    self.assertEqual(call['model'],'deepseek-v4-flash-0731')
+   comparison=[(len(a),len(b),len(os.path.commonprefix([a,b])),a[:80]==b[:80])
+               for a,b in zip(retained,retained[1:])]
    self.assertTrue(any(b.startswith(a) and len(a)>2000 for a,b in zip(retained,retained[1:])),
-                   'large room must preserve a cacheable prefix across at least two turns')
+                   'large room must preserve a cacheable prefix across at least two turns: '+repr(comparison))
   finally:
    Model.reply=None
  def test_09q_two_warm_models_no_single_model_fallback(self):

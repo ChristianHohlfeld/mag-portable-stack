@@ -6073,6 +6073,11 @@ int main() {
   tzset();
   signal(SIGPIPE, SIG_IGN);
 
+  const std::string secondary_kind = env("MAG_SECONDARY_MODEL", "iq3");
+  if (secondary_kind != "iq3" && secondary_kind != "qwen") {
+    std::cerr << "Invalid MAG_SECONDARY_MODEL (fail closed)\n";
+    return 4;
+  }
   MODEL = env("MAG_ROOM_MODEL", "deepseek-v4-flash-0731");
   BACKEND =
       env("MAG_ROOM_BACKEND", "http://127.0.0.1:8080/v1/chat/completions");

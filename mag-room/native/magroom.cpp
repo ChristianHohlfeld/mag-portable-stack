@@ -1839,10 +1839,15 @@ static std::string build_transcript() {
   // boundary, while keeping the same total byte ceiling.
   const size_t first_retained = ROOM.size() - lines.size();
   if (first_retained > start && !lines.empty()) {
-    const size_t step = (size_t)std::max(1, HISTORY_STEP);
-    const size_t delta = first_retained - start;
-    const size_t blocks = delta / step + (delta % step != 0);
-    const size_t aligned = start + blocks * step;
+    // An oversized 4-KiB message means a 10-line block cannot fit in a
+    // 16-KiB window. Adapt the block to actual message sizes; otherwise the
+    // naive 10-line alignment would discard ALL but the newest line.
+    size_t largest = 1;
+    for (const auto &line : lines) largest = std::max(largest, line.second.size());
+    const size_t fits = std::max((size_t)1, limit / largest);
+    const size_t step = std::min((size_t)std::max(1, HISTORY_STEP), fits);
+    const size_t aligned = (first_retained / step +
+                            (first_retained % step != 0)) * step;
     while (lines.size() > 1 &&
            ROOM.size() - lines.size() < aligned)
       lines.pop_back();

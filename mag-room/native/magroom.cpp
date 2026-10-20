@@ -3028,7 +3028,9 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   // stays identical across the toggle.
   Val kwargs = Val::object();
   kwargs["enable_thinking"] = thinking;
-  if (!REASONING_EFFORT.empty())
+  // The Qwen4Exp GGUF Jinja template uses enable_thinking, not the
+  // DeepSeek-specific reasoning_effort preamble (preserve prompt cache).
+  if (model != "qwen3.8-flash-next-uncensored" && !REASONING_EFFORT.empty())
     kwargs["reasoning_effort"] = REASONING_EFFORT;
   body["chat_template_kwargs"] = kwargs;
   std::string payload = mj::dump(body);

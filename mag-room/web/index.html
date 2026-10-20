@@ -1413,11 +1413,13 @@ let composerSending=false;
 $('send-form').onsubmit=async e=>{
  e.preventDefault();if(composerSending)return;if(window.magSpeechBusy?.())await window.magSpeechStop();const text=$('message').value.trim();if(!text&&!stagedPhotos.length&&!stagedFiles.length)return;
  if(/^\/(mcp|plugins?)$/i.test(text)&&can('connectors')&&window.openMcp){$('message').value='';$('message').dispatchEvent(new Event('input'));window.openMcp();return}
+ const mobileSend=matchMedia('(pointer:coarse)').matches;
+ if(mobileSend)$('message').blur();
  composerSending=true;
  jumpForSend();
  const botId=[...selected][0],bot=state.agents.find(a=>a.id===botId);
  const willQueue=!!((state.busy_bots||[]).some(id=>selected.has(id))||state.queue_paused||(state.pending||[]).length);if(bot&&!willQueue){streams[botId]={name:bot.name,text:'',status:'Liest Verlauf …',label:'Liest Verlauf',phase:'read'};render()}
- try{if(stagedPhotos.length)await flushStagedPhotos();if(stagedFiles.length)await flushStagedFiles();if(!text){if(bot&&!willQueue){delete streams[botId];render()}notice('Dateien geteilt');return}const r=await api('/api/message',{text,bots:[...selected],think:$('think').checked});if($('message').value.trim()===text)$('message').value='';fitMessageHeight();$('message').focus();if(r&&r.queued){if(!willQueue){delete streams[botId];render()}if(r.item)renderQueue({pending:[...(queueState.pending||[]).filter(p=>p.id!==r.item.id),r.item],paused:false})}notice('')}
+ try{if(stagedPhotos.length)await flushStagedPhotos();if(stagedFiles.length)await flushStagedFiles();if(!text){if(bot&&!willQueue){delete streams[botId];render()}notice('Dateien geteilt');return}const r=await api('/api/message',{text,bots:[...selected],think:$('think').checked});if($('message').value.trim()===text)$('message').value='';fitMessageHeight();if(!mobileSend)$('message').focus();if(r&&r.queued){if(!willQueue){delete streams[botId];render()}if(r.item)renderQueue({pending:[...(queueState.pending||[]).filter(p=>p.id!==r.item.id),r.item],paused:false})}notice('')}
  catch(err){delete streams[botId];render();notice(err.message)}
  finally{composerSending=false}
 };window.addEventListener('load',focusComposer);

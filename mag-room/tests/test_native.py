@@ -2394,7 +2394,8 @@ class Plugins(unittest.TestCase):
   self.assertNotIn('[Plugin Fake]',Model.calls[n]['messages'][0]['content'])
   cat={c['preset']:c for c in self.request('/api/plugins')['catalog']}
   dp=cat['digitalisierungsplanung'];self.assertEqual(dp['url'],'https://accounts.digitalisierungsplanung.de/mcp/free')
-  self.assertEqual(dp['auth'],'none');self.assertTrue(dp['auto_approve']);self.assertTrue(dp['auto_bind']);self.assertIn('Prozessbild',dp['hint'])
+  self.assertEqual(dp['auth'],'none');self.assertTrue(dp['auto_approve']);self.assertTrue(dp['auto_bind']);self.assertIn('öffentlicher Link',dp['hint'])
+  self.assertNotIn('nur auf Wunsch',dp['hint'])
 class FakeMcpOpen(FakeMcp):
  TOKEN='';sessions=set();calls=[];call_sessions=[];inits=0
 class AutoPlugins(unittest.TestCase):

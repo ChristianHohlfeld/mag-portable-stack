@@ -10,6 +10,7 @@ User=magbot
 Group=magbot
 WorkingDirectory=/opt/mag-stack/current
 EnvironmentFile=-/etc/default/mag-room
+EnvironmentFile=-/etc/mag-stack/secondary-model.env
 # Optional until provisioned at /etc/credstore/mag-guest-oauth (root-only). In-memory runtime copy.
 LoadCredential=mag-guest-oauth
 Environment=MAG_ROOM_STATE=/var/lib/magbot/room

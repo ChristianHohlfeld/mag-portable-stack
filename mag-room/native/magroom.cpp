@@ -57,7 +57,7 @@ static std::atomic<bool> STOP{false};
 static std::atomic<bool> USER_CANCEL{false};
 static std::atomic<int> BACKEND_FD{-1};
 static std::mutex BACKEND_FD_MTX;
-// One lane per model server (Q4, IQ3): bots on different models answer at the
+// One lane per model server (Q4, active NUMA1): bots on different models answer at the
 // same time, bots sharing a model take turns on it. A lane runs at most one
 // turn; its worker thread sees the lane through TL_LANE. Code outside a lane
 // (HTTP helpers, transcript correction) keeps using the global flags.
@@ -2912,10 +2912,16 @@ static void merge_tool_delta(SseAcc &acc, const Val &tc) {
 
 static std::mutex ROOM_MODEL_MTX;
 static std::string ROOM_MODEL_ID;
-// Two explicit warm NUMA backends, no third path or automatic fallback.
+// Exactly two configured warm NUMA backends; deployment defaults to existing IQ3.
+// The operator switches MAG_SECONDARY_MODEL only after Qwen is verified on :8091.
+static std::string secondary_room_model() {
+  const char *kind = std::getenv("MAG_SECONDARY_MODEL");
+  return kind && std::string(kind) == "qwen"
+             ? "qwen3.8-flash-next-uncensored"
+             : "deepseek-v4-flash-0731-iq3";
+}
 static bool known_room_model(const std::string &id) {
-  return id == "deepseek-v4-flash-0731" ||
-         id == "deepseek-v4-flash-0731-iq3";
+  return id == "deepseek-v4-flash-0731" || id == secondary_room_model();
 }
 static std::string room_model_file() { return STATE_DIR + "/room-model.txt"; }
 static std::string active_room_model() {
@@ -2950,11 +2956,12 @@ static Val room_model_catalog() {
   Val q4 = Val::object();
   q4["id"] = "deepseek-v4-flash-0731";
   q4["label"] = "0 · Q4";
-  Val iq3 = Val::object();
-  iq3["id"] = "deepseek-v4-flash-0731-iq3";
-  iq3["label"] = "1 · IQ3";
+  Val secondary = Val::object();
+  secondary["id"] = secondary_room_model();
+  secondary["label"] = secondary_room_model() == "qwen3.8-flash-next-uncensored"
+                           ? "1 · Qwen" : "1 · IQ3";
   models.push(q4);
-  models.push(iq3);
+  models.push(secondary);
   return models;
 }
 // Each bot answers with its own model id; the gateway routes Q4 and IQ3 to
@@ -6066,6 +6073,11 @@ int main() {
   tzset();
   signal(SIGPIPE, SIG_IGN);
 
+  const std::string secondary_kind = env("MAG_SECONDARY_MODEL", "iq3");
+  if (secondary_kind != "iq3" && secondary_kind != "qwen") {
+    std::cerr << "Invalid MAG_SECONDARY_MODEL (fail closed)\n";
+    return 4;
+  }
   MODEL = env("MAG_ROOM_MODEL", "deepseek-v4-flash-0731");
   BACKEND =
       env("MAG_ROOM_BACKEND", "http://127.0.0.1:8080/v1/chat/completions");

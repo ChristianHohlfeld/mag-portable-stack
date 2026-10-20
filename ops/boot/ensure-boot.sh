@@ -5,8 +5,15 @@
 set -euo pipefail
 [[ $EUID == 0 ]] || { echo 'root required' >&2; exit 1; }
 log() { echo "boot: $*"; }
+# The active NUMA1 service is persisted after explicit operator cutover;
+# never re-enable the retired IQ3 on a Qwen host during deployment.
+secondary_unit=mag-llm-iq3.service
+if [[ -r /etc/mag-stack/secondary-model.env ]] &&
+   grep -Fxq 'MAG_SECONDARY_MODEL=qwen' /etc/mag-stack/secondary-model.env; then
+  secondary_unit=mag-llm-qwen.service
+fi
 units=(
-  mag-llm.service mag-llm-iq3.service
+  mag-llm.service "$secondary_unit"
   mag-audit-nft.service mag-audit-gateway.service mag-audit-webproxy.service
   mag-120.service mag-agents-network.service mag-browser-webrtc.service mag-git-gateway.socket
   gitea.service nginx.service tailscaled.service libvirtd.service ssh.service

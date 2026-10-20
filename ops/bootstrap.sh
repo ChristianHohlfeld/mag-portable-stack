@@ -196,17 +196,22 @@ phase start-llm
 if (( START_LLM == 0 )); then
   echo 'PHASE start-llm-skipped (mag-llm is not started or restarted)'
 elif (( DRY )); then
-  echo '+ systemctl start mag-llm.service mag-llm-iq3.service   # only if inactive'
+  echo '+ systemctl start mag-llm.service and the configured NUMA1 model   # only if inactive'
 else
   if systemctl is-active --quiet mag-llm.service; then
     echo 'mag-llm already active; not restarting'
   else
     systemctl start mag-llm.service
   fi
-  if systemctl is-active --quiet mag-llm-iq3.service; then
-    echo 'mag-llm-iq3 already active; not restarting'
+  secondary_unit=mag-llm-iq3.service
+  if [[ -r /etc/mag-stack/secondary-model.env ]] &&
+     grep -Fxq 'MAG_SECONDARY_MODEL=qwen' /etc/mag-stack/secondary-model.env; then
+    secondary_unit=mag-llm-qwen.service
+  fi
+  if systemctl is-active --quiet "$secondary_unit"; then
+    echo "$secondary_unit already active; not restarting"
   else
-    systemctl start mag-llm-iq3.service || echo 'mag-llm-iq3 did not start; room deploy is otherwise complete' >&2
+    systemctl start "$secondary_unit" || echo "$secondary_unit did not start; room deploy is otherwise complete" >&2
   fi
 fi
 

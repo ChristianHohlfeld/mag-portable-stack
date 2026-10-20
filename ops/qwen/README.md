@@ -1,0 +1,91 @@
+# Qwen3.8 Flash Next (uncensored) — staged NUMA1 replacement
+
+Status: **code only**. PR/green/deploy does **not** stop IQ3, install/start Qwen,
+restart Q4, or select a new model in MAG. Default remains IQ3 at :8091,
+DeepSeek Q4 stays warm on NUMA0 :8090.
+
+Architecture: `qwen4exp` (Gated DeltaNet + Qwen Sparse Attention + MoE +
+51B PLE n-gram table), not DeepSeek4. The old
+`/home/chris/.local/ik/8d21687cc7-mag-c96826ab/bin/llama-server` is
+not reused; upstream llama.cpp has supported qwen4exp since PR #27742
+(merged August 27, 2026). Separate isolated build pinned by
+`ops/qwen/runtime.sha` (2026-10-20). It is a CPU-only *candidate*:
+do not promise throughput/tool support until real generation tests pass.
+
+Source GGUF: `mradermacher/Qwen3.8-Flash-Next-Uncensored-GGUF`,
+`Qwen3.8-Flash-Next-Uncensored.IQ4_XS.gguf`, ~98.4 GB. No model weight downloaded by deploy.
+Keep optional mmproj separate; no image input/vision is promised in MAG.
+
+## Prepare on MAG as chris (no service changes)
+
+The user already started `hf download`; wait for completion. Keep that SSH
+session alive, or resume with the same `hf download` command. Then:
+
+```bash
+cd ~/mag-stack
+bash ops/qwen/build-runtime.sh
+python3 ops/qwen/pin-model.py
+sudo bash ops/qwen/install.sh stage
+```
+
+If `python3` lacks `huggingface_hub`, install it in a venv (do not run
+system Python pip as root); the pin script only uses the library if Hugging
+Face file listing has no LFS digest. The independent upstream SHA-256 is
+stored as one line in the model directory and checked against *all* model
+bytes before the service unit is staged. Keep the pinned file out of Git;
+never store HF credentials in the repository. Build uses official
+`ggml-org/llama.cpp` commit `4a45de4f2c68f3d144f6c2431ad7c1da7e53c99e`, not a mutable branch at runtime.
+
+Staging installs only `mag-llm-qwen.service` (disabled/stopped), its
+verified runtime launcher, and local upstream SHA. Q4/IQ3 PIDs and backend
+routing are unchanged. Check `systemctl is-enabled mag-llm-qwen.service`
+before enabling; this is **not** an automatic deploy.
+
+## Deliberate cutover later — operator only, when chat/jobs/backup are idle
+
+1. Confirm `git`/MAG room + gateway code containing this change is deployed;
+   `build/mag-audit-gateway` rebuilt. Snapshot the existing audit gateway
+   binary and its systemd unit; check `curl -fsS 127.0.0.1:8090/health`.
+2. Stop **only** `mag-llm-iq3.service` after idle check; ensure its PID is
+   gone. Never touch `mag-llm.service`.
+3. `sudo systemctl start mag-llm-qwen.service`; wait for
+   `curl --noproxy '*' -fsS http://127.0.0.1:8091/health`.
+   Verify `numastat -p $(systemctl show -p MainPID --value mag-llm-qwen)`
+   plus `/proc/<pid>/numa_maps`: weights stay node-local. Test actual
+   `/v1/chat/completions` streaming, `--jinja` tool calls, JSON/tool parsing,
+   reasoning and cancellation at 8K/16K contexts, with timeouts and speed
+   benchmarks. A healthy /health **alone is not enough**.
+4. When passed, install the reviewed, freshly built
+   `build/mag-audit-gateway` to `/opt/mag-audit/bin/mag-audit-gateway`
+   atomically, and the reviewed `ops/audit/systemd/mag-audit-gateway.service`
+   to `/etc/systemd/system/`. Write exactly
+   `MAG_SECONDARY_MODEL=qwen` to
+   `/etc/mag-stack/secondary-model.env` (0644, root-owned).
+   `sudo systemctl daemon-reload`; restart gateway then
+   `mag-120.service` **only when room is idle**. Verify `/v1/models`
+   returns Q4+Qwen, `/api/state` returns Q4+Qwen and a real MAG chat tool
+   request lands on :8091.
+5. Only after all checks: `sudo systemctl disable mag-llm-iq3.service`
+   and `sudo systemctl enable mag-llm-qwen.service`. Boot guard in
+   `ops/boot/ensure-boot.sh` respects the operator's Qwen choice and
+   never silently re-enables IQ3.
+
+### Rollback if any step fails
+
+Before routing cutover: stop only `mag-llm-qwen`, then start IQ3. After
+routing cutover: write `MAG_SECONDARY_MODEL=iq3` (or remove the file),
+restore saved gateway binary/unit, restart gateway and room only once
+idle, stop Qwen, restart and enable IQ3. Do not run IQ3 and Qwen together;
+both use :8091 and the same NUMA1 physical cores.
+Q4 :8090 is never stopped/restarted by this process.
+
+Guardrails: startup rejects unknown NUMA CPU layout, RAM below 150 GiB
+reclaimable, bad/partial model, missing upstream digest, active backup,
+active IQ3, or failed Q4 health. Qwen service is localhost-only; cgroups
+enforce CPU+memory node1, no swap. NUMA1 also hosts restic backups.
+Staging/hash/build can produce significant IO; run outside backup hours.
+
+Sources:
+- https://github.com/ggml-org/llama.cpp/pull/27742
+- https://github.com/QwenLM/Qwen3.8-Flash-Next
+- https://huggingface.co/mradermacher/Qwen3.8-Flash-Next-Uncensored-GGUF

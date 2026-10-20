@@ -2871,7 +2871,7 @@ static std::string ROOM_MODEL_ID;
 // Prefer one stable inference model in the room. The optional dual-model
 // mode is reversible; persisted bot preferences and model files are untouched.
 static bool q4_only_room() {
-  return env("MAG_ROOM_SINGLE_MODEL", "on") != "off";
+  return env("MAG_ROOM_SINGLE_MODEL", "off") != "off";
 }
 static bool known_room_model(const std::string &id) {
   return id == "deepseek-v4-flash-0731" ||

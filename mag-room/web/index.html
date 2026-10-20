@@ -1475,7 +1475,8 @@ let stagedPhotos=[],stagedFiles=[];const PHOTO_MAX_PX=2048;
 function stageFiles(files){
  for(const file of files){
   if(stagedFiles.length>=20){notice('Maximal 20 Dateien pro Nachricht');break}
-  if(!file.size){notice(file.name+': Leere Datei kann nicht hochgeladen werden');continue}\n  if(file.size>64*1024*1024){notice(file.name+': Datei über 64 MB');continue}
+  if(!file.size){notice(file.name+': Leere Datei kann nicht hochgeladen werden');continue}
+  if(file.size>64*1024*1024){notice(file.name+': Datei über 64 MB');continue}
   if(stagedFiles.some(x=>x.name===file.name&&x.size===file.size&&x.lastModified===file.lastModified))continue;
   stagedFiles.push(file);
  }

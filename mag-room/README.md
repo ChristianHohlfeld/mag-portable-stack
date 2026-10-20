@@ -67,11 +67,11 @@ files remain persisted unchanged. Controls:
 conservative byte heuristic, not exact model tokenization; watch prompt usage
 when adding MCP servers with many schemas.
 
-### Single-model operation (default)
+### Single-model operation (opt-in)
 To reduce model switching and route all room bots to the stable Q4 server,
-`MAG_ROOM_SINGLE_MODEL=on` is the default. This applies even when a bot or the
+`MAG_ROOM_SINGLE_MODEL=off` is the default. This applies even when a bot or the
 room previously selected IQ3: the persisted preferences are not overwritten.
-The UI offers only Q4 while enabled. To restore the previous dual-model routing
+The UI offers both models by default; only Q4 while the opt-in switch is enabled. To restore the previous dual-model routing
 without restoring files or migrating bot state, set `MAG_ROOM_SINGLE_MODEL=off`
 and restart **only** `mag-120` via the protected room deployment path.
 **This setting does not unload, restart or stop the IQ3 llama service:** freeing

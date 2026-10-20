@@ -877,13 +877,13 @@ int main(int argc, char **argv) {
       // must NOT trigger automatic recovery/deletion.
       const auto p = dir(n) / "metadata.json";
       if (!fs::exists(p)) {
-        std::cerr << "MAG_VM_METADATA_MISSING " << n << '\\n';
+        std::cerr << "MAG_VM_METADATA_MISSING " << n << '\n';
         return 3;
       }
       if (!fs::is_regular_file(p))
         throw std::runtime_error("VM metadata is not a regular file");
       (void)marker(n);
-      std::cout << "MAG_VM_METADATA_OK " << n << '\\n';
+      std::cout << "MAG_VM_METADATA_OK " << n << '\n';
       return 0;
     }
     if (action == "inspect") {

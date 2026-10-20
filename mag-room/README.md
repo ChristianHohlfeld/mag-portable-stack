@@ -67,16 +67,23 @@ files remain persisted unchanged. Controls:
 conservative byte heuristic, not exact model tokenization; watch prompt usage
 when adding MCP servers with many schemas.
 
-### Independent Q4 and IQ3 models (default)
-By default `MAG_ROOM_SINGLE_MODEL=off`: MAG shows Q4 and IQ3, and each bot
-keeps its saved model choice. The two models run as independent NUMA lanes
-when their separate host services are healthy. `MAG_ROOM_SINGLE_MODEL=on`
-temporarily forces Q4-only routing **without deleting IQ3 files, memory, or
-bot selections**. Changing this setting needs only a protected mag-120 room
-restart; it must never stop or restart an already warm LLM.
+### MAG fast path: one coding bot, two hot model choices
 
-The Q4-only switch is **not** a way to reclaim RAM: stopping or starting the
-independent IQ3 process requires live host RAM/NUMA/health checks. Follow
-`docs/AI_PERFORMANCE_RECOVERY.md`. Prompt reuse is handled by the server
-(`--cache-ram 16384` and `cache_prompt=true`); the first request after a
-model restart is cold even for a tiny user message. Avoid unnecessary reloads.
+MAG runs **one active existing bot**, with its VM, git, browser, files and
+memories. `MAG_ROOM_SINGLE_BOT=auto` chooses a stored bot (prefers an existing
+VM); other stored bots stay on disk but never run. Adding a second bot is
+disabled. The regular deploy removes the old multi-bot systemd override.
+
+Q4 runs on NUMA0 at port 8090, IQ3 on NUMA1 at port 8091. Both are resident
+independently and have their own RAM prompt caches. The Q4/IQ3 selector writes
+`room-model.txt`; the *same bot* routes its **next** request through the
+central audit gateway to exactly the selected backend. Neither process is
+restarted, unloaded or swapped on selection. There is **no fallback**: an
+unknown model fails with HTTP 400, a stopped selected backend with HTTP 502.
+This is deliberate, to avoid silently running on another model.
+
+Normal room deployments never restart an LLM. No CPU-speed benefit from
+routing alone is claimed; CPU performance remains limited by available
+Xeon/AVX2 compute, model size and token-cache misses. If IQ3 is not running,
+use the protected MAG host process to verify NUMA1 memory and start only IQ3,
+without touching Q4. See `docs/AI_PERFORMANCE_RECOVERY.md`.

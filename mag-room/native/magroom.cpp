@@ -601,6 +601,17 @@ static void load_agents() {
   bool dirty = !exists;
   if (!exists)
     AGENTS.clear();
+  if (SINGLE_BOT == "auto") {
+    // One existing bot, never a second throwaway identity. Prefer the bot
+    // that already has a VM (coding workspace and data stay attached).
+    std::string chosen;
+    for (const auto &a : AGENTS) {
+      if (mag::str(a, "id").empty()) continue;
+      if (chosen.empty()) chosen = mag::str(a, "id");
+      if (!mag::str(a, "vm").empty()) { chosen = mag::str(a, "id"); break; }
+    }
+    SINGLE_BOT = chosen.empty() ? "mag" : chosen;
+  }
   if (!SINGLE_BOT.empty()) {
     std::vector<Val> active;
     for (auto &a : AGENTS) {
@@ -2868,20 +2879,15 @@ static void merge_tool_delta(SseAcc &acc, const Val &tc) {
 
 static std::mutex ROOM_MODEL_MTX;
 static std::string ROOM_MODEL_ID;
-// Prefer one stable inference model in the room. The optional dual-model
-// mode is reversible; persisted bot preferences and model files are untouched.
-static bool q4_only_room() {
-  return env("MAG_ROOM_SINGLE_MODEL", "off") != "off";
-}
+// Two explicit warm NUMA backends, no third path or automatic fallback.
 static bool known_room_model(const std::string &id) {
   return id == "deepseek-v4-flash-0731" ||
-         (!q4_only_room() && id == "deepseek-v4-flash-0731-iq3");
+         id == "deepseek-v4-flash-0731-iq3";
 }
 static std::string room_model_file() { return STATE_DIR + "/room-model.txt"; }
 static std::string active_room_model() {
   std::lock_guard<std::mutex> lk(ROOM_MODEL_MTX);
-  return q4_only_room() ? "deepseek-v4-flash-0731"
-                        : (known_room_model(ROOM_MODEL_ID) ? ROOM_MODEL_ID : MODEL);
+  return known_room_model(ROOM_MODEL_ID) ? ROOM_MODEL_ID : "deepseek-v4-flash-0731";
 }
 static void load_room_model() {
   bool ok = false;
@@ -2915,14 +2921,17 @@ static Val room_model_catalog() {
   iq3["id"] = "deepseek-v4-flash-0731-iq3";
   iq3["label"] = "1 · IQ3";
   models.push(q4);
-  if (!q4_only_room()) models.push(iq3);
+  models.push(iq3);
   return models;
 }
 // Each bot answers with its own model id; the gateway routes Q4 and IQ3 to
 // their always-resident servers. Choosing a model only changes this request
 // field: no unit, process, slot or weight is touched.
 static std::string bot_model_id(int idx) {
-  if (q4_only_room()) return "deepseek-v4-flash-0731";
+  // Exactly one live coding bot: the owner's room selection is authoritative,
+  // regardless of an old per-bot IQ3/Q4 preference in agents.json.
+  // Switching changes only the next gateway request model ID, not the LLM PID.
+  if (!SINGLE_BOT.empty()) return active_room_model();
   const std::string own = bot_field(idx, "model");
   return known_room_model(own) ? own : active_room_model();
 }
@@ -2944,7 +2953,11 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
     return t;
   }
   Val body = Val::object();
-  body["model"] = known_room_model(model) ? model : active_room_model();
+  if (!known_room_model(model)) {
+    t.error = "Unbekanntes Modell: Anfrage verweigert (kein Fallback)";
+    return t;
+  }
+  body["model"] = model;
   Val msgs = Val::array();
   for (auto &m : messages)
     msgs.push(const_cast<Val &>(m));

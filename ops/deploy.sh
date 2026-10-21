@@ -209,6 +209,7 @@ if [[ -r /etc/mag-stack/secondary-model.env ]] &&
   install -m 0644 "$SOURCE/ops/mag-120.d/30-dual-numa.conf" /etc/systemd/system/mag-120.service.d/30-dual-numa.conf
   # Update only the on-disk systemd definition; NEVER restart either loaded LLM.
   [[ -x /usr/local/lib/mag-qwen/start.sh ]] || { echo 'Qwen staged runtime missing' >&2; exit 1; }
+  install -m 0755 "$SOURCE/ops/qwen/start.sh" /usr/local/lib/mag-qwen/start.sh
   install -m 0755 "$SOURCE/ops/qwen/wait-q4.sh" /usr/local/lib/mag-qwen/wait-q4.sh
   install -m 0644 "$SOURCE/ops/qwen/mag-llm-qwen.service" /etc/systemd/system/mag-llm-qwen.service
   # Remove the temporary preflight added during Qwen bring-up; it fails

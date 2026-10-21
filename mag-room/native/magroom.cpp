@@ -3072,7 +3072,7 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   // Bound generated tokens on Qwen only, keeping Q4's established budget.
   // Both models retain all native/MCP tools and immutable audit routing.
   const int max_output = model == "qwen3.8-flash-next-uncensored"
-      ? std::clamp(envi("MAG_ROOM_QWEN_MAX_TOKENS", 4096), 1024, MAX_TOKENS)
+      ? std::min(MAX_TOKENS, std::clamp(envi("MAG_ROOM_QWEN_MAX_TOKENS", 4096), 512, 8192))
       : MAX_TOKENS;
   body["max_tokens"] = max_output;
   body["stream"] = true;

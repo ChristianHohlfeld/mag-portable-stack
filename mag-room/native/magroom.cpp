@@ -591,6 +591,8 @@ static std::vector<Val> AGENTS;
 static std::vector<Val> PARKED;
 static std::set<std::string> SPAWNING_VMS; // STATE_MTX; includes removed pending bots
 static std::string SINGLE_BOT, SINGLE_BOT_NAME = "DeepSeek Chat";
+// Two persistent VM bots, pinned one-to-one to the two resident NUMA model servers.
+static bool DUAL_NUMA = false;
 
 static void save_agents(); // fwd
 static void load_agents() {
@@ -633,6 +635,65 @@ static void load_agents() {
       dirty = true;
     }
     AGENTS = active;
+  }
+  if (DUAL_NUMA) {
+    // Recover one existing coding bot on NUMA0 (prefer its live VM), and one
+    // existing secondary bot on NUMA1 when present. Other stored bots remain
+    // parked, preserving their identity and VM ownership.
+    const std::string q4 = "deepseek-v4-flash-0731";
+    const std::string qwen = "qwen3.8-flash-next-uncensored";
+    std::vector<Val> all = AGENTS;
+    std::vector<Val> active;
+    std::vector<bool> used(all.size(), false);
+    auto make = [&](const std::string &id, const std::string &name,
+                    const std::string &model) {
+      Val bot = Val::object();
+      bot["id"] = id; bot["name"] = name; bot["model"] = model;
+      bot["vm"] = ""; bot["color"] = "#8fd0ff";
+      bot["persona"] = "Neugierig, freundlich und eigenstaendig.";
+      bot["memory"] = Val::array();
+      return bot;
+    };
+    int primary = -1;
+    for (size_t i = 0; i < all.size(); ++i)
+      if (!mag::str(all[i], "vm").empty() &&
+          (primary < 0 || mag::str(all[i], "model") == q4)) {
+        primary = (int)i;
+        if (mag::str(all[i], "model") == q4) break;
+      }
+    if (primary < 0 && !all.empty()) primary = 0;
+    if (primary >= 0) {
+      active.push_back(all[primary]); used[primary] = true;
+    } else {
+      active.push_back(make("deepseek-q4", "DeepSeek Q4", q4));
+    }
+    active[0]["model"] = q4;
+    int secondary = -1;
+    for (size_t i = 0; i < all.size(); ++i) {
+      if (used[i]) continue;
+      if (mag::str(all[i], "model") == qwen ||
+          mag::str(all[i], "id") == "qwen-numa1") {
+        secondary = (int)i;
+        break;
+      }
+      if (secondary < 0 && !mag::str(all[i], "vm").empty())
+        secondary = (int)i;
+    }
+    if (secondary >= 0) {
+      active.push_back(all[secondary]); used[secondary] = true;
+    } else {
+      // Unique stable ID even if a parked bot already occupies the default.
+      std::string id = "qwen-numa1";
+      for (const auto &a : all)
+        if (mag::str(a, "id") == id) id = "qwen-numa1-new";
+      active.push_back(make(id, "Qwen", qwen));
+    }
+    active[1]["model"] = qwen;
+    AGENTS = std::move(active);
+    PARKED.clear();
+    for (size_t i = 0; i < all.size(); ++i)
+      if (!used[i]) PARKED.push_back(all[i]);
+    dirty = true;
   }
   if (dirty)
     save_agents();
@@ -2972,6 +3033,7 @@ static std::string bot_model_id(int idx) {
   // regardless of an old per-bot IQ3/Q4 preference in agents.json.
   // Switching changes only the next gateway request model ID, not the LLM PID.
   if (!SINGLE_BOT.empty()) return active_room_model();
+  if (DUAL_NUMA) return idx == 0 ? "deepseek-v4-flash-0731" : "qwen3.8-flash-next-uncensored";
   const std::string own = bot_field(idx, "model");
   return known_room_model(own) ? own : active_room_model();
 }
@@ -5413,6 +5475,7 @@ static std::string state_json(const Actor *actor = nullptr) {
   }
   root["agents"] = ag;
   root["single_bot"] = SINGLE_BOT;
+  root["dual_numa"] = DUAL_NUMA;
   root["thinking_default"] = THINKING != "off";
   root["thinking"] = thinking_of(LAST_THINK.load());
   {
@@ -6111,9 +6174,15 @@ int main() {
   PROMPT_SLOTS = std::max(1, envi("MAG_ROOM_SLOTS", 1));
   SLOT_SAVE = env("MAG_ROOM_SLOT_SAVE", "0") == "1";
   SINGLE_BOT = env("MAG_ROOM_SINGLE_BOT", "");
+  DUAL_NUMA = env("MAG_ROOM_DUAL_NUMA", "0") == "1";
+  if (DUAL_NUMA) SINGLE_BOT.clear();
   SINGLE_BOT_NAME = env("MAG_ROOM_SINGLE_BOT_NAME", "DeepSeek Chat");
 
   STATE_DIR = env("MAG_ROOM_STATE", "/var/lib/magbot/room");
+  if (DUAL_NUMA && secondary_room_model() != "qwen3.8-flash-next-uncensored") {
+    std::cerr << "Dual NUMA requires the already activated Qwen secondary model\n";
+    return 1;
+  }
   load_room_model();
   FILES_DIR = STATE_DIR + "/files";
   AGENTS_JSON = STATE_DIR + "/agents.json";
@@ -6277,6 +6346,31 @@ int main() {
       std::thread([id = SINGLE_BOT, vm = new_vm] {
         finish_spawn(id, vm, false);
       }).detach();
+    }
+  }
+  if (DUAL_NUMA) {
+    // Bind existing automatic MCP presets to both identities, including a
+    // newly created Qwen bot that did not pass through POST /api/agents.
+    for (const std::string id : {bot_field(0, "id"), bot_field(1, "id")})
+      std::thread([id] { mcp_bind_new_bot(id); }).detach();
+    // Provision one distinct KVM workspace per bot via the existing durable
+    // pending_vm -> finish_spawn path. Models are NEVER loaded by this path.
+    for (const std::string id : {bot_field(0, "id"), bot_field(1, "id")}) {
+      std::string vm;
+      {
+        std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
+        int idx = agent_index(id);
+        if (idx >= 0 && bot_field(idx, "vm").empty() &&
+            bot_field(idx, "pending_vm").empty()) {
+          vm = next_vm();
+          AGENTS[idx]["pending_vm"] = vm;
+          AGENTS[idx]["vm_attach"] = true;
+          SPAWNING_VMS.insert(vm);
+          save_agents();
+        }
+      }
+      if (!vm.empty())
+        std::thread([id, vm] { finish_spawn(id, vm, false); }).detach();
     }
   }
   std::thread([] { mcp_auto_once(); }).detach();

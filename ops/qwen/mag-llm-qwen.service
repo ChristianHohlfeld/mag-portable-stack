@@ -13,7 +13,8 @@ User=chris
 Group=chris
 WorkingDirectory=/home/chris
 # Backend ports are root/audit-only; preflight must not run under User=chris.
-ExecStartPre=+/usr/bin/curl --noproxy * -fsS --max-time 5 http://127.0.0.1:8090/health
+# Wait for Q4 to finish loading after a cold reboot (root-only audit bypass).
+ExecStartPre=+/usr/local/lib/mag-qwen/wait-q4.sh
 ExecStart=/usr/local/lib/mag-qwen/start.sh
 Restart=on-failure
 RestartSec=60

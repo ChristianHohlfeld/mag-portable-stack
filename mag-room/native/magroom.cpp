@@ -97,9 +97,13 @@ static std::atomic<int> &backend_fd_slot() {
 static std::atomic<bool> SHUTDOWN{false};
 static std::atomic<bool> WEB_ENABLED{true}; // == !OFFLINE (kept for tool gate)
 static std::atomic<bool> OFFLINE{false};
-// Room-wide choice, applied per completion (no model reload).
-static std::atomic<bool> DETERMINISTIC_SAMPLING{false};
-static std::mutex SAMPLING_MTX;
+// Per-model sampling and display names are protected by MODEL_SETTINGS_MTX.
+static std::mutex MODEL_SETTINGS_MTX;
+struct ModelSettings {
+  std::string name;
+  bool deterministic = false;
+};
+static std::map<std::string, ModelSettings> MODEL_SETTINGS;
 // ------------------------------------------------------------------ config
 static std::string MODEL, BACKEND, BIND_HOST, STATE_DIR, FILES_DIR, AGENTS_JSON,
     FILES_JSON, ROOM_JSON, FRONTEND_FILE, TOKEN_FILE, STATIC_DIR, GUEST_RUN,
@@ -2990,6 +2994,61 @@ static std::string secondary_room_model() {
 static bool known_room_model(const std::string &id) {
   return id == "deepseek-v4-flash-0731" || id == secondary_room_model();
 }
+static std::string default_model_label(const std::string &id) {
+  if (id == "deepseek-v4-flash-0731") return "0 · Q4";
+  if (id == "qwen3.8-flash-next-uncensored") return "1 · Qwen";
+  return "1 · IQ3";
+}
+static ModelSettings model_settings_for(const std::string &id) {
+  std::lock_guard<std::mutex> lk(MODEL_SETTINGS_MTX);
+  auto it = MODEL_SETTINGS.find(id);
+  return it == MODEL_SETTINGS.end() ? ModelSettings{} : it->second;
+}
+static void load_model_settings() {
+  bool exists = false;
+  const std::string raw = read_file(STATE_DIR + "/model-settings.json", &exists);
+  Val saved = Val::object();
+  const bool valid = exists && mj::parse(raw, saved) && saved.isObj();
+  // Migration: the previous room-wide toggle applies to both models until
+  // individually configured; no global toggle remains in the UI.
+  const bool old_value = trim(read_file(STATE_DIR + "/sampling")) == "on";
+  std::lock_guard<std::mutex> lk(MODEL_SETTINGS_MTX);
+  MODEL_SETTINGS.clear();
+  for (const std::string &id : {"deepseek-v4-flash-0731", secondary_room_model()}) {
+    ModelSettings item;
+    item.deterministic = old_value;
+    if (valid) {
+      if (auto record = saved.find(id); record && record->isObj()) {
+        if (auto deterministic = record->find("deterministic");
+            deterministic && deterministic->type == Val::BOOL)
+          item.deterministic = deterministic->asBool();
+        if (auto name = record->find("name"); name && name->type == Val::STR) {
+          std::string candidate = trim(name->asStr());
+          if (!candidate.empty() && candidate.size() <= 40 &&
+              candidate.find_first_of("\\r\\n\\t") == std::string::npos)
+            item.name = candidate;
+        }
+      }
+    }
+    MODEL_SETTINGS[id] = item;
+  }
+}
+static bool save_model_settings(const std::string &id, const ModelSettings &item) {
+  std::lock_guard<std::mutex> lk(MODEL_SETTINGS_MTX);
+  if (!known_room_model(id)) return false;
+  Val settings = Val::object();
+  for (const auto &kv : MODEL_SETTINGS) {
+    const ModelSettings &value = kv.first == id ? item : kv.second;
+    Val record = Val::object();
+    record["name"] = value.name;
+    record["deterministic"] = value.deterministic;
+    settings[kv.first] = record;
+  }
+  if (!write_file_atomic(STATE_DIR + "/model-settings.json", mj::dump(settings)))
+    return false;
+  MODEL_SETTINGS[id] = item;
+  return true;
+}
 static std::string room_model_file() { return STATE_DIR + "/room-model.txt"; }
 static std::string active_room_model() {
   std::lock_guard<std::mutex> lk(ROOM_MODEL_MTX);
@@ -3022,11 +3081,15 @@ static Val room_model_catalog() {
   Val models = Val::array();
   Val q4 = Val::object();
   q4["id"] = "deepseek-v4-flash-0731";
-  q4["label"] = "0 · Q4";
+  const ModelSettings main_settings = model_settings_for("deepseek-v4-flash-0731");
+  q4["label"] = main_settings.name.empty() ? default_model_label("deepseek-v4-flash-0731") : main_settings.name;
+  q4["deterministic"] = main_settings.deterministic;
   Val secondary = Val::object();
-  secondary["id"] = secondary_room_model();
-  secondary["label"] = secondary_room_model() == "qwen3.8-flash-next-uncensored"
-                           ? "1 · Qwen" : "1 · IQ3";
+  const std::string secondary_id = secondary_room_model();
+  const ModelSettings secondary_settings = model_settings_for(secondary_id);
+  secondary["id"] = secondary_id;
+  secondary["label"] = secondary_settings.name.empty() ? default_model_label(secondary_id) : secondary_settings.name;
+  secondary["deterministic"] = secondary_settings.deterministic;
   models.push(q4);
   models.push(secondary);
   return models;
@@ -3076,7 +3139,7 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   // Greedy decoding gives a repeatable token path under deterministic
   // inference. The fixed seed also pins any sampler randomness in the backend.
   // Read at request creation so an in-flight completion is never changed.
-  if (DETERMINISTIC_SAMPLING.load()) {
+  if (model_settings_for(model).deterministic) {
     body["temperature"] = 0.0;
     body["seed"] = 42;
   } else {
@@ -5519,7 +5582,6 @@ static std::string state_json(const Actor *actor = nullptr) {
   root["single_bot"] = SINGLE_BOT;
   root["dual_numa"] = DUAL_NUMA;
   root["thinking_default"] = THINKING != "off";
-  root["deterministic_sampling"] = DETERMINISTIC_SAMPLING.load();
   root["thinking"] = thinking_of(LAST_THINK.load());
   {
     std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
@@ -6264,7 +6326,7 @@ int main() {
   UI_DEFAULT = read_file(UI_FILE);
 
   AUTOTALK = trim(read_file(STATE_DIR + "/autotalk")) == "on";
-  DETERMINISTIC_SAMPLING = trim(read_file(STATE_DIR + "/sampling")) == "on";
+  load_model_settings();
   {
     // Reconcile nft with the persisted choice in both directions (idempotent).
     const bool off = trim(read_file(STATE_DIR + "/offline")) == "on";

@@ -662,7 +662,11 @@ function toolRow(row,t){
  row.querySelector('.tool-out').textContent=t.result==null?'Läuft noch …':(t.result.trim()||'(leer)');
  return row;
 }
+// Reactions show as emoji on the target message; their trace (a message id) is noise.
+const QUIET_TOOLS=new Set(['react','unreact']);
+function shownTools(tools){return (tools||[]).filter(t=>t.ok===false||!QUIET_TOOLS.has(t.name))}
 function paintTools(node,content,tools){
+ tools=shownTools(tools);
  let box=node.querySelector(':scope > .tools-trace');
  if(!tools?.length){box?.remove();return}
  if(!box){box=traceSection('tools-trace','Werkzeuge','','');const body=box.querySelector('.trace-body');body.classList.add('tool-list');body.replaceChildren();content.before(box)}
@@ -1002,15 +1006,18 @@ function promptEta(p){
 // Rooms before the stop cleanup stored the note in the text itself.
 function shownText(msg){const t=msg.content||'';return msg.interrupted?t.replace(/\s*\((abgebrochen|unterbrochen)\)\s*$/,''):t}
 function stoppedByUser(msg){return msg.interrupted&&msg.stopped!=='system'}
+const QUIET_STEP=/^(Liest Verlauf|Reagiert$|Nimmt die Reaktion zurück$)/;
+function shownSteps(steps){return (steps||[]).filter(x=>!QUIET_STEP.test(x))}
 function doneLabel(msg){
  if(msg.work_error&&!stoppedByUser(msg))return 'Fehler · '+msg.work_error;
- const n=(msg.steps||[]).length;
+ const n=shownSteps(msg.steps).length;
  let t=(msg.interrupted?(stoppedByUser(msg)?'Gestoppt · ':'Unterbrochen · '):'Fertig · ')+fmtClock(msg.elapsed_s);
  if(n)t+=' · '+n+(n===1?' Schritt':' Schritte');
  return t;
 }
 function stepsList(steps){
- if(!steps||!steps.length)return null;
+ steps=shownSteps(steps);
+ if(!steps.length)return null;
  const d=document.createElement('details');d.className='work-steps';
  const sum=document.createElement('summary');sum.textContent=steps.length+(steps.length===1?' Schritt':' Schritte');
  const ol=document.createElement('ol');
@@ -1019,7 +1026,7 @@ function stepsList(steps){
 }
 function attachWork(div,msg,content){
  if(!msg||msg.role==='user')return;
- if(msg.elapsed_s==null&&!(msg.steps&&msg.steps.length)&&!msg.work_error)return;
+ if(!msg.work_error&&!msg.interrupted&&!shownSteps(msg.steps).length)return;
  const box=document.createElement('div');
  box.className='work-status '+(stoppedByUser(msg)?'phase-stopped':msg.work_error?'phase-error':(msg.interrupted?'phase-hung':'phase-done'));
  const dot=document.createElement('span');dot.className='pulse';
@@ -1050,7 +1057,7 @@ function ensureWork(node,s,botId){
  bar.hidden=!show;
  if(show){const pct=Math.min(100,Math.round(s.progress.processed/s.progress.total*100));bar.querySelector('i').style.width=pct+'%';bar.setAttribute('role','progressbar');bar.setAttribute('aria-valuemin','0');bar.setAttribute('aria-valuemax','100');bar.setAttribute('aria-valuenow',String(pct));bar.setAttribute('aria-label','Liest Verlauf')}
  const old=[...node.children].find(el=>el.classList.contains('work-steps'));
- const list=s.steps||[];
+ const list=shownSteps(s.steps);
  if(!list.length){old?.remove();return}
  const open=!!old?.open;
  const fresh=stepsList(list);fresh.open=open;

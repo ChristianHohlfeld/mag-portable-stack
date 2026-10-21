@@ -2861,6 +2861,7 @@ static void slot_save_after(int slot, double cached, double evaluated) {
   }
   slot_rpc(slot, "save");
 }
+static void schedule_prewarm();
 static std::string model_status_text(const ModelStatus &st) {
   return st.label + (st.detail.empty() ? "" : " – " + st.detail);
 }
@@ -2876,6 +2877,7 @@ static std::string model_wait_text() {
 static void model_watcher_loop() {
   MODEL_WATCHER = true;
   std::string last;
+  bool was_ready = false;
   while (!SHUTDOWN.load()) {
     ModelStatus st = probe_model_status();
     {
@@ -2883,6 +2885,10 @@ static void model_watcher_loop() {
       MODEL_ST = st;
     }
     const std::string key = st.state + "|" + st.label + "|" + st.detail;
+    // A (re)started model server has an empty prompt cache: load the saved
+    // prefix and prewarm before the next user turn instead of during it.
+    if (st.ready && !was_ready) schedule_prewarm();
+    was_ready = st.ready;
     if (key != last) {
       last = key;
       Val e = Val::object();
@@ -5180,6 +5186,8 @@ static TurnReport generate_and_post(int idx, bool automatic) {
 // disables it.
 static std::mutex PREWARM_MTX;
 static std::set<std::string> PREWARM_RUNNING; // models, PREWARM_MTX
+// MAG_ROOM_PREFIX_DISK=0: keep prefix KV only in server RAM (lost on restart).
+static bool PREFIX_DISK = true;
 static void prewarm_model(int idx, const std::string &model, uint64_t epoch) {
   std::string payload, bot_id;
   {
@@ -5212,6 +5220,23 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch) {
     body["chat_template_kwargs"] = kwargs;
     payload = mj::dump(body);
   }
+  // The prefix KV state (system, tools, transcript) is ~100 MB but costs
+  // minutes of CPU prefill (~50 t/s). Keep the latest one on disk per model:
+  // restore it first (a restarted server is cold), save it after the prewarm.
+  auto prefix_slot = [&](const char *action) {
+    std::string reply;
+    long status = 0;
+    const bool sent = http_simple(
+        BACKEND_HOST, BACKEND_PORT, "POST", std::string("/slots/0?action=") + action,
+        "{\"filename\":\"mag-prefix-" + model + ".bin\"}",
+        {{"Content-Type", "application/json"},
+         {"Authorization", "Bearer " + API_KEY},
+         {"X-Mag-Model", model},
+         {"X-Mag-Session", "prewarm"}},
+        reply, &status, nullptr, 120000);
+    return sent && status == 200;
+  };
+  const bool restored = PREFIX_DISK && prefix_slot("restore");
   const auto from = steady_clock::now();
   std::string out;
   long code = 0;
@@ -5223,9 +5248,11 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch) {
                          {"X-Mag-Session", "prewarm"}},
                         out, &code, nullptr,
                         std::max(LLM_TIMEOUT_S, LLM_TIMEOUT_MIN_S) * 1000);
+  const long ms = (long)duration_cast<milliseconds>(steady_clock::now() - from).count();
+  const bool saved = PREFIX_DISK && ok && code == 200 && prefix_slot("save");
   std::cerr << "prompt-prewarm model=" << model << " ok=" << (ok ? 1 : 0)
-            << " status=" << code << " ms="
-            << duration_cast<milliseconds>(steady_clock::now() - from).count()
+            << " status=" << code << " ms=" << ms
+            << " restored=" << (restored ? 1 : 0) << " saved=" << (saved ? 1 : 0)
             << std::endl;
   std::lock_guard<std::mutex> lk(PREWARM_MTX);
   PREWARM_RUNNING.erase(model);
@@ -6422,6 +6449,7 @@ int main() {
   MEMORY_CHUNK = std::max(1, envi("MAG_ROOM_MEMORY_CHUNK", 20));
   PROMPT_SLOTS = std::max(1, envi("MAG_ROOM_SLOTS", 1));
   SLOT_SAVE = env("MAG_ROOM_SLOT_SAVE", "0") == "1";
+  PREFIX_DISK = env("MAG_ROOM_PREFIX_DISK", "1") == "1";
   SINGLE_BOT = env("MAG_ROOM_SINGLE_BOT", "");
   DUAL_NUMA = env("MAG_ROOM_DUAL_NUMA", "0") == "1";
   if (DUAL_NUMA) SINGLE_BOT.clear();

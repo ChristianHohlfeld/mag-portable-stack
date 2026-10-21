@@ -13,10 +13,10 @@ mcp = Path('mag-room/native/mcp.hpp').read_text()
 deploy = Path('ops/deploy.sh').read_text()
 diag = Path('ops/perf/diagnose-ai.sh').read_text()
 
-assert '--cpunodebind=1 --membind=1' in qwen
+assert '--physcpubind=42-55 --membind=1' in qwen  # HT siblings of Q4's 14-27
 assert '--threads 14 --threads-batch 14 --numa numactl' in qwen
-assert 'CPUAffinity=14-27 42-55' in unit
-assert 'AllowedCPUs=14-27 42-55' in unit
+assert 'CPUAffinity=42-55' in unit
+assert 'AllowedCPUs=42-55' in unit
 assert 'NUMAPolicy=bind' in unit and 'NUMAMask=1' in unit
 assert '--ctx-size 32768 --parallel 1' in qwen
 assert '--cache-ram 16384' in qwen and '--jinja --reasoning-format auto' in qwen
@@ -36,6 +36,8 @@ assert 'std::min(MAX_TOKENS, std::clamp(' in room  # valid for small-token tests
 assert 'MAG_ROOM_REASONING_HISTORY_BYTES' in room
 assert 'static void schedule_prewarm()' in room and 'schedule_prewarm();' in room
 assert 'MAG_ROOM_PREWARM' in room and 'body["max_tokens"] = 1;' in room
+assert 'MAG_ROOM_PREFIX_DISK' in room and 'prefix_slot("restore")' in room and 'prefix_slot("save")' in room
+assert 'if (st.ready && !was_ready) schedule_prewarm();' in room
 assert 'if (!JOBS.empty() || AUTO_READY) return;' in room  # never delays a queued turn
 assert 'const size_t target = limit * 65 / 100;' in room
 assert 'if (prompt_wire_bytes(messages, tools) <= limit) return;' in room

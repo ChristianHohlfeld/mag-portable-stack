@@ -6349,6 +6349,10 @@ int main() {
     }
   }
   if (DUAL_NUMA) {
+    // Bind existing automatic MCP presets to both identities, including a
+    // newly created Qwen bot that did not pass through POST /api/agents.
+    for (const std::string id : {bot_field(0, "id"), bot_field(1, "id")})
+      std::thread([id] { mcp_bind_new_bot(id); }).detach();
     // Provision one distinct KVM workspace per bot via the existing durable
     // pending_vm -> finish_spawn path. Models are NEVER loaded by this path.
     for (const std::string id : {bot_field(0, "id"), bot_field(1, "id")}) {

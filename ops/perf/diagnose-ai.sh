@@ -17,7 +17,7 @@ for f in /proc/pressure/{cpu,memory,io}; do
   echo "$f"; [[ -f "$f" ]] && head -n 2 "$f"
 done
 echo "== Model services (no PID equals not resident)"
-for svc in mag-llm mag-llm-iq3 mag-120 mag-audit-gateway; do
+for svc in mag-llm mag-llm-qwen mag-llm-iq3 mag-120 mag-audit-gateway; do
   printf '%s active=%s enabled=%s ' "$svc" \
     "$(systemctl is-active "$svc" 2>/dev/null || true)" \
     "$(systemctl is-enabled "$svc" 2>/dev/null || true)"
@@ -27,7 +27,7 @@ for svc in mag-llm mag-llm-iq3 mag-120 mag-audit-gateway; do
     grep -E '^(VmRSS|VmLck|RssAnon|RssFile|Threads|Cpus_allowed_list|Mems_allowed_list):' "/proc/$pid/status" || true
     command -v numastat >/dev/null && numastat -p "$pid" 2>/dev/null | tail -n 6 || true
     # Never echo full command line (can contain credentials).
-    if [[ $svc == mag-llm || $svc == mag-llm-iq3 ]]; then
+    if [[ $svc == mag-llm || $svc == mag-llm-qwen || $svc == mag-llm-iq3 ]]; then
       python3 -I - "$pid" <<'PY'
 import pathlib,sys
 p=pathlib.Path('/proc',sys.argv[1],'cmdline')
@@ -55,5 +55,7 @@ echo "== Kernel page faults / swap activity"
 grep -E '^(pgmajfault|pswpin|pswpout) ' /proc/vmstat || true
 echo "== Interpretation"
 echo 'Cache misses after restart: expected once. Repeated cached=0 for identical bot prefix: real bug.'
-echo 'Q4+IQ3 both active: fast independent lanes. Single CPU-only Q4 cannot deliver GPU-class throughput.'
+echo 'Q4 (NUMA0) and Qwen (NUMA1) should each show local memory and 14 physical worker threads.'
+echo 'Cold CPU prefill is proportional to uncached tokens; check model=... prompt_tps=... and tokens_cached.'
+echo 'Inspect MAG_ROOM_CONTEXT_BYTES/TRANSCRIPT_BYTES and active model environment with systemctl show mag-120 -p Environment.'
 echo 'Pinned model pages (VmLck) are NOT identical to cached chat tokens (tokens_cached).'

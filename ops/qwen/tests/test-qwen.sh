@@ -22,7 +22,9 @@ grep -Fq 'unknown or inactive secondary model' mag-room/native/mag_audit_gateway
 ! grep -Eq 'systemctl (stop|restart|kill).*mag-llm[.]service' ops/qwen/*.sh
 ! grep -Eq 'systemctl (stop|start|restart|kill).*mag-llm-iq3[.]service' ops/qwen/*.sh
 ! grep -Fq 'ops/qwen/install.sh' ops/deploy.sh
-! grep -Fq 'mag-llm-qwen.service' ops/deploy.sh
+# Qwen is installed only on an already-cut-over Qwen host; loaded model not restarted.
+grep -Fq 'ops/qwen/mag-llm-qwen.service' ops/deploy.sh
+grep -Fq 'if [[ -r /etc/mag-stack/secondary-model.env ]]' ops/deploy.sh
 grep -Fq 'STAGED ONLY' ops/qwen/install.sh
 grep -Fq -- '--reasoning-format auto' ops/qwen/start.sh
 grep -Fq -- '--cache-ram 8192' ops/qwen/start.sh
@@ -41,4 +43,5 @@ python3 - <<'PY'
 import ast,pathlib
 ast.parse(pathlib.Path("ops/qwen/smoke.py").read_text())
 PY
+bash ops/perf/tests/test-numa-context.sh
 echo 'Qwen NUMA1 operator cutover + Jinja/Thinking/tools contract PASS'

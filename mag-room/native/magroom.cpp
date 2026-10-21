@@ -2770,7 +2770,8 @@ static Val model_info_val() {
   return out;
 }
 // Debug only: journal line + model_info.last. The header does not show it.
-static void publish_prompt_cache(int slot, const Val *timings, double cached,
+static void publish_prompt_cache(int slot, const std::string &model,
+                                 const Val *timings, double cached,
                                  double evaluated) {
   auto num = [&](const char *k) {
     if (!timings || !timings->isObj())
@@ -2794,7 +2795,9 @@ static void publish_prompt_cache(int slot, const Val *timings, double cached,
   }
   std::cerr << "prompt-cache slot=" << slot << " tokens_cached="
             << (long long)(cached < 0 ? -1 : cached) << " tokens_evaluated="
-            << (long long)(evaluated < 0 ? -1 : evaluated) << std::endl;
+            << (long long)(evaluated < 0 ? -1 : evaluated)
+            << " model=" << model
+            << " prompt_tps=" << num("prompt_per_second") << std::endl;
 }
 // One llama slot per conversation. With --parallel 1 (bug #25259) every key
 // maps to slot 0 and no id_slot is sent (see backend_turn). MAG_ROOM_SLOTS
@@ -3068,7 +3071,13 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   if (mj::parse(tools, tt))
     body["tools"] = tt;
   body["temperature"] = temperature;
-  body["max_tokens"] = MAX_TOKENS;
+  // The Qwen backend has 16k context, unlike the 32k Q4 backend.
+  // Bound generated tokens on Qwen only, keeping Q4's established budget.
+  // Both models retain all native/MCP tools and immutable audit routing.
+  const int max_output = model == "qwen3.8-flash-next-uncensored"
+      ? std::min(MAX_TOKENS, std::clamp(envi("MAG_ROOM_QWEN_MAX_TOKENS", 4096), 512, 8192))
+      : MAX_TOKENS;
+  body["max_tokens"] = max_output;
   body["stream"] = true;
   // llama.cpp: stream prompt_progress {total,cache,processed,time_ms} while
   // the prompt is evaluated (minutes on CPU) instead of staying silent.
@@ -3270,7 +3279,7 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
     else if (processed >= 0)
       saw_evaluated = processed;
   }
-  publish_prompt_cache(id_slot, saw_timings ? &timings_seen : nullptr,
+  publish_prompt_cache(id_slot, model, saw_timings ? &timings_seen : nullptr,
                        saw_cached, saw_evaluated);
   if (t.error.empty())
     slot_save_after(id_slot, saw_cached, saw_evaluated);
@@ -4015,6 +4024,13 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
     messages.push_back(u);
   }
   std::string tools = tools_json(bot_idx, web);
+  // Size-only diagnostics: no prompt, memory, tool arguments, or secrets.
+  // Useful to distinguish huge MCP schemas from a lost KV/prompt-cache hit.
+  std::cerr << "prompt-footprint model=" << bot_model_id(bot_idx)
+            << " system_bytes=" << system.size()
+            << " tools_bytes=" << tools.size()
+            << " transcript_bytes=" << messages[1]["content"].asStr().size()
+            << std::endl;
   std::string final_text;
   TurnReport report;
   auto finish_steps = [&]() {
@@ -4194,8 +4210,17 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
     asst["content"] = t.text;
     // DeepSeek-V4 expects the reasoning of a tool-calling turn to be passed
     // back on the next request (its template keeps it in tool histories).
-    if (!t.reasoning.empty())
-      asst["reasoning_content"] = t.reasoning;
+    if (!t.reasoning.empty()) {
+      // Persist the full reasoning in the turn report/audit, but avoid replaying
+      // many thousands of previous thinking tokens on every CPU tool round.
+      // Keep the newest reasoning and the actual structured tool call intact.
+      const size_t keep = (size_t)std::clamp(
+          envi("MAG_ROOM_REASONING_HISTORY_BYTES", 4096), 1024, 16384);
+      asst["reasoning_content"] = t.reasoning.size() > keep
+          ? std::string("[Aeltere Gedanken im Protokoll; letzte Schritte:]\n") +
+                utf8_suffix(t.reasoning, keep)
+          : t.reasoning;
+    }
     if (!t.calls.empty()) {
       Val arr = Val::array();
       for (auto &c : t.calls)

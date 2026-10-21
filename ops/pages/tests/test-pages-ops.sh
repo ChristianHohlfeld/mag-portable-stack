@@ -78,7 +78,7 @@ grep -Fq 'cert_public_key_hash=' "$here/verify.sh"
 grep -Fq 'private_key_public_hash=' "$here/verify.sh"
 # PRIVATE ONLY: no port 80, no public listener, exactly Tailnet 443.
 "$here/render-nginx.sh" >"$tmp/private.conf"
-grep -Fq 'listen 100.123.114.16:443 ssl;' "$tmp/private.conf"
+grep -Fq 'listen 100.123.114.16:443 ssl http2;' "$tmp/private.conf"
 # Exact apex vhost is separate from the repo-wildcard regex:
 # users can open https://pages.stardenburg.de/ without creating a repo.
 grep -Fq 'server_name pages.stardenburg.de;' "$tmp/private.conf"
@@ -94,7 +94,7 @@ grep -Fq 'bash "$here/verify.sh"' "$here/activate.sh"
 ! grep -Eq '^[[:space:]]*(systemctl[[:space:]]+(start|enable|restart)[[:space:]].*mag-backup|restic[[:space:]]|aws[[:space:]])' "$here/activate.sh"
 grep -Fq 'systemctl restart mag-120.service' "$here/activate.sh"
 grep -Fq 'expected=1e915301-9bda-4d2d-b261-6c20c635aca4.auth.acme-dns.io' "$here/verify.sh"
-[[ "$(grep -Fc 'listen 100.123.114.16:443 ssl;' "$tmp/private.conf")" -eq 2 ]]
+[[ "$(grep -Fc 'listen 100.123.114.16:443 ssl http2;' "$tmp/private.conf")" -eq 2 ]]
 grep -Fq 'server_name ~^(?<pageslug>[a-z0-9-]+)\.pages\.stardenburg\.de$;' "$tmp/private.conf"
 ! grep -q ':80;' "$tmp/private.conf"
 ! grep -q '@PUBLIC_BIND@' "$tmp/private.conf"
@@ -107,7 +107,7 @@ EOF
 "$here/render-nginx.sh" >"$tmp/public.conf"
 grep -Fq 'listen 127.0.0.2:80;' "$tmp/public.conf"
 grep -Fq 'listen 127.0.0.2:443 ssl;' "$tmp/public.conf"
-grep -Fq 'listen 100.123.114.16:443 ssl;' "$tmp/public.conf"
+grep -Fq 'listen 100.123.114.16:443 ssl http2;' "$tmp/public.conf"
 # A set DNS IP alone must not enable public listener.
 cat >>"$tmp/pages.env" <<'EOF'
 PAGES_PUBLIC_BIND=
@@ -121,7 +121,7 @@ openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
   -subj '/CN=pages.stardenburg.de' >/dev/null 2>&1
 for mode in private public; do
  sed -e 's/100.123.114.16/127.0.0.3/g' \
-     -e 's/:80;/:18080;/g' -e 's/:443 ssl;/:18443 ssl;/g' \
+     -e 's/:80;/:18080;/g' -e 's/:443 ssl/:18443 ssl/g' \
      -e "s|/etc/mag-pages/tls/current/cert.pem|$tmp/cert.pem|g" \
      -e "s|/etc/mag-pages/tls/current/key.pem|$tmp/key.pem|g" \
      "$tmp/$mode.conf" >"$tmp/$mode-test.conf"

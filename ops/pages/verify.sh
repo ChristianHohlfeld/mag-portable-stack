@@ -29,7 +29,7 @@ private_key_public_hash="$(openssl pkey -in "$key" -pubout | openssl sha256)"
   { echo 'TLS key/certificate mismatch' >&2; exit 1; }
 conf=/etc/nginx/conf.d/mag-pages.conf
 grep -Fq 'server_name pages.stardenburg.de;' "$conf"
-[[ "$(grep -Fc 'listen 100.123.114.16:443 ssl;' "$conf")" -eq 2 ]] ||
+[[ "$(grep -Fc 'listen 100.123.114.16:443 ssl http2;' "$conf")" -eq 2 ]] ||
   { echo 'Expected exactly two Tailnet-only Pages TLS listeners' >&2; exit 1; }
 ! grep -Eq 'listen [^;]*:80;' "$conf" ||
   { echo 'Pages HTTP public listener unexpectedly configured' >&2; exit 1; }

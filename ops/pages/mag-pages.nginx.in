@@ -1,7 +1,7 @@
 # Tailnet-only default. This file must NEVER bind 0.0.0.0 or a public IP.
 # Apex host is a private portal; wildcard hostnames serve published repos.
 server {
-    listen @TAILNET_BIND@:443 ssl;
+    listen @TAILNET_BIND@:443 ssl http2;
     server_name @ZONE@;
     ssl_certificate /etc/mag-pages/tls/current/cert.pem;
     ssl_certificate_key /etc/mag-pages/tls/current/key.pem;
@@ -17,7 +17,7 @@ server {
 
 # MAG's native C++ process changes symlinks; nginx never reloads per commit.
 server {
-    listen @TAILNET_BIND@:443 ssl;
+    listen @TAILNET_BIND@:443 ssl http2;
     server_name ~^(?<pageslug>[a-z0-9-]+)\.@ZONE_REGEX@$;
     ssl_certificate /etc/mag-pages/tls/current/cert.pem;
     ssl_certificate_key /etc/mag-pages/tls/current/key.pem;

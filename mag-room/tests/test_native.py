@@ -935,7 +935,7 @@ class Native(unittest.TestCase):
    self.wait_room('Fertig gelesen.');self.wait_idle()
   finally:Model.script=[]
   html=self.request('/',raw=True).decode()
-  for needle in ("event.type==='progress'",'Liest Verlauf','streamClock','function promptEta',"' aus Cache'",'noch ca. '):self.assertIn(needle,html)
+  for needle in ("event.type==='progress'",'Liest Verlauf','streamClock','function promptEta',"READ_LABEL='Liest das Gespräch'",'noch ca. '):self.assertIn(needle,html)
  def test_09k_thinking_toggle_per_message(self):
   self.request('/api/message',{'text':'Denk nach','bots':['test'],'think':True});self.wait_room('Hallo aus dem Modell.');self.wait_idle()
   self.assertEqual(Model.calls[-1]['chat_template_kwargs'],{'enable_thinking':True})

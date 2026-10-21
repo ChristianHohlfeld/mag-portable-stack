@@ -978,14 +978,16 @@ function append(msg,scroll=true,trace=null,position=-1){
 function streamClock(s){const t=Math.max(0,Math.floor((Date.now()-((s&&s.started)||Date.now()))/1000));return Math.floor(t/60)+':'+String(t%60).padStart(2,'0')}
 function fmtClock(sec){sec=Math.max(0,Math.floor(Number(sec)||0));return Math.floor(sec/60)+':'+String(sec%60).padStart(2,'0')}
 function fmtN(n){return Number(n||0).toLocaleString('de-DE')}
+const READ_LABEL='Liest das Gespräch';
 function workLabelText(s){
  const clock=streamClock(s);
  if(s.error)return 'Fehler · '+s.error;
  if(s.hung)return 'Keine Rückmeldung seit '+fmtClock((Date.now()-(s.lastEvent||s.started||Date.now()))/1000)+' · '+(s.label||'Denkt nach');
  if(s.thinking&&s.reasoning)return clock;
- if(s.phase==='prompt'&&s.progress&&s.progress.total){const p=s.progress,eta=promptEta(p);return 'Liest Verlauf … '+fmtN(p.processed)+' / '+fmtN(p.total)+' Tokens'+(p.cache>0?' · '+fmtN(p.cache)+' aus Cache':'')+(eta?' · '+eta:'')+' · '+clock}
+ // Plain words for the reader: the bar shows progress, token and cache counts stay out.
+ if(s.phase==='prompt'&&s.progress&&s.progress.total){const eta=promptEta(s.progress);return READ_LABEL+(eta?' · '+eta:' …')+' '+clock}
  if(s.draft&&s.phase==='narration')return 'Schreibt die Antwort … '+clock;
- return (s.label||'Denkt nach')+' … '+clock;
+ return (s.label==='Liest Verlauf'?READ_LABEL:(s.label||'Denkt nach'))+' … '+clock;
 }
 function stripMarkers(t){return t.replace(/\[\[MAG:(WEITER|ENDE)\]\]/g,'')}
 function liveText(s){

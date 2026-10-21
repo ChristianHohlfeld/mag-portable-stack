@@ -52,9 +52,23 @@ done
 
 # Bot VMs and their network come back on boot.
 if command -v virsh >/dev/null; then
-  for d in $(virsh -q list --name 2>/dev/null | grep '^magbot-' || true); do
-    virsh -q autostart "$d" >/dev/null && log "autostart $d"
-  done
+  if [[ $secondary_unit == mag-llm-qwen.service &&
+        -r /var/lib/magbot/room/agents.json ]] && command -v jq >/dev/null; then
+    # The first two persisted agents are the active NUMA bots; PARKED agents
+    # retain data but must NOT bring surplus KVM guests back on cold boot.
+    wanted=$(jq -r '.[0:2][] | .vm // empty | select(test("^agent[0-9]+$")) | "magbot-"+.' /var/lib/magbot/room/agents.json)
+    for d in $(virsh -q list --all --name 2>/dev/null | grep '^magbot-' || true); do
+      if grep -Fxq "$d" <<<"$wanted"; then
+        virsh -q autostart "$d" >/dev/null && log "autostart $d"
+      else
+        virsh -q autostart --disable "$d" >/dev/null && log "parked VM will not autostart: $d"
+      fi
+    done
+  else
+    for d in $(virsh -q list --name 2>/dev/null | grep '^magbot-' || true); do
+      virsh -q autostart "$d" >/dev/null && log "autostart $d"
+    done
+  fi
   for n in $(virsh -q net-list --name 2>/dev/null || true); do virsh -q net-autostart "$n" >/dev/null || true; done
 fi
 

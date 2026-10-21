@@ -11,6 +11,17 @@ secondary_unit=mag-llm-iq3.service
 if [[ -r /etc/mag-stack/secondary-model.env ]] &&
    grep -Fxq 'MAG_SECONDARY_MODEL=qwen' /etc/mag-stack/secondary-model.env; then
   secondary_unit=mag-llm-qwen.service
+  # An old static IQ3 unit may still have a manually created boot wants link.
+  # Never boot IQ3 and Qwen together on NUMA1; do not stop a running model.
+  systemctl disable mag-llm-iq3.service >/dev/null 2>&1 || true
+  legacy_link=/etc/systemd/system/multi-user.target.wants/mag-llm-iq3.service
+  if [[ -L $legacy_link && $(basename "$(readlink "$legacy_link")") == mag-llm-iq3.service ]]; then
+    rm -f -- "$legacy_link"
+    log 'retired legacy IQ3 boot link'
+  fi
+  # Idempotent even if an older staged Qwen unit lacked [Install].
+  systemctl add-wants multi-user.target mag-llm-qwen.service
+  log 'Qwen NUMA1 enabled for every boot; Q4 readiness gate installed by deploy'
 fi
 units=(
   mag-llm.service "$secondary_unit"

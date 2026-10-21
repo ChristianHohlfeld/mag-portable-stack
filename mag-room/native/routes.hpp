@@ -1328,27 +1328,58 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
     send_json(fd, 200, "{\"ok\":true}");
     return;
   }
-  if (m == "POST" && path == "/api/sampling") {
-    if (!has_json || !body.find("deterministic") ||
-        body.find("deterministic")->type != Val::BOOL) {
-      error_json(fd, 400, "Boolean deterministic required");
-      return;
+  // Owner-controlled metadata only: stable model IDs and NUMA routing are untouched.
+  if (m == "POST" && path == "/api/model-settings") {
+    if (bridge || !actor.ok || actor.role != "owner") {
+      error_json(fd, 403, "Nur der Besitzer"); return;
     }
-    const bool enabled = body.find("deterministic")->asBool();
-    {
-      std::lock_guard<std::mutex> lk(SAMPLING_MTX);
-      if (!write_file_atomic(STATE_DIR + "/sampling", enabled ? "on" : "off")) {
-        error_json(fd, 500, "Sampling-Einstellung konnte nicht gespeichert werden");
-        return;
+    if (!has_json || !body.find("id") ||
+        body.find("id")->type != Val::STR) {
+      error_json(fd, 400, "Modell-ID fehlt"); return;
+    }
+    const std::string id = body.find("id")->asStr();
+    if (!known_room_model(id)) {
+      error_json(fd, 400, "Unbekanntes Modell"); return;
+    }
+    const Val *name_input = body.find("name");
+    const Val *det_input = body.find("deterministic");
+    if (!name_input && !det_input) {
+      error_json(fd, 400, "Name oder deterministic erforderlich"); return;
+    }
+    std::string name;
+    if (name_input) {
+      if (name_input->type != Val::STR) {
+        error_json(fd, 400, "Name muss Text sein"); return;
       }
-      DETERMINISTIC_SAMPLING.store(enabled);
+      name = trim(name_input->asStr());
+      bool invalid = name.empty() || name.size() > 40;
+      for (unsigned char c : name)
+        if (c < 32 || c == 127) invalid = true;
+      if (invalid) {
+        error_json(fd, 400, "Name muss 1–40 Zeichen lang sein (keine Steuerzeichen)"); return;
+      }
     }
-    Val e = Val::object();
-    e["type"] = "sampling";
-    e["deterministic"] = enabled;
-    publish(mj::dump(e));
-    send_json(fd, 200, mj::dump(e));
+    bool deterministic = false;
+    if (det_input) {
+      if (det_input->type != Val::BOOL) {
+        error_json(fd, 400, "Boolean deterministic erforderlich"); return;
+      }
+      deterministic = det_input->asBool();
+    }
+    if (!save_model_settings(id, name_input ? &name : nullptr,
+                             det_input ? &deterministic : nullptr)) {
+      error_json(fd, 500, "Modell-Einstellungen konnten nicht gespeichert werden"); return;
+    }
+    Val out = Val::object();
+    out["ok"] = true;
+    out["type"] = "model_settings";
+    out["models"] = room_model_catalog();
+    publish(mj::dump(out));
+    send_json(fd, 200, mj::dump(out));
     return;
+  }
+  if (path == "/api/sampling") {
+    error_json(fd, 410, "Bitte Sampling pro Modell konfigurieren"); return;
   }
   if (m == "POST" && path == "/api/autotalk") {
     if (!has_json || !body.find("on") || body.find("on")->type != Val::BOOL) {

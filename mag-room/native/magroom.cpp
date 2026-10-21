@@ -2770,7 +2770,8 @@ static Val model_info_val() {
   return out;
 }
 // Debug only: journal line + model_info.last. The header does not show it.
-static void publish_prompt_cache(int slot, const Val *timings, double cached,
+static void publish_prompt_cache(int slot, const std::string &model,
+                                 const Val *timings, double cached,
                                  double evaluated) {
   auto num = [&](const char *k) {
     if (!timings || !timings->isObj())
@@ -2794,7 +2795,9 @@ static void publish_prompt_cache(int slot, const Val *timings, double cached,
   }
   std::cerr << "prompt-cache slot=" << slot << " tokens_cached="
             << (long long)(cached < 0 ? -1 : cached) << " tokens_evaluated="
-            << (long long)(evaluated < 0 ? -1 : evaluated) << std::endl;
+            << (long long)(evaluated < 0 ? -1 : evaluated)
+            << " model=" << model
+            << " prompt_tps=" << num("prompt_per_second") << std::endl;
 }
 // One llama slot per conversation. With --parallel 1 (bug #25259) every key
 // maps to slot 0 and no id_slot is sent (see backend_turn). MAG_ROOM_SLOTS
@@ -3276,7 +3279,7 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
     else if (processed >= 0)
       saw_evaluated = processed;
   }
-  publish_prompt_cache(id_slot, saw_timings ? &timings_seen : nullptr,
+  publish_prompt_cache(id_slot, model, saw_timings ? &timings_seen : nullptr,
                        saw_cached, saw_evaluated);
   if (t.error.empty())
     slot_save_after(id_slot, saw_cached, saw_evaluated);

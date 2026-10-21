@@ -3033,9 +3033,15 @@ static void load_model_settings() {
     MODEL_SETTINGS[id] = item;
   }
 }
-static bool save_model_settings(const std::string &id, const ModelSettings &item) {
+static bool save_model_settings(const std::string &id,
+                                const std::string *name, const bool *deterministic) {
   std::lock_guard<std::mutex> lk(MODEL_SETTINGS_MTX);
   if (!known_room_model(id)) return false;
+  auto found = MODEL_SETTINGS.find(id);
+  if (found == MODEL_SETTINGS.end()) return false;
+  ModelSettings item = found->second;
+  if (name) item.name = *name;
+  if (deterministic) item.deterministic = *deterministic;
   Val settings = Val::object();
   for (const auto &kv : MODEL_SETTINGS) {
     const ModelSettings &value = kv.first == id ? item : kv.second;
@@ -3046,7 +3052,7 @@ static bool save_model_settings(const std::string &id, const ModelSettings &item
   }
   if (!write_file_atomic(STATE_DIR + "/model-settings.json", mj::dump(settings)))
     return false;
-  MODEL_SETTINGS[id] = item;
+  found->second = item;
   return true;
 }
 static std::string room_model_file() { return STATE_DIR + "/room-model.txt"; }

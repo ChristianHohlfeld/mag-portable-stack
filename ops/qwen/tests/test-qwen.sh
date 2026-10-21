@@ -27,7 +27,8 @@ grep -Fq 'ops/qwen/mag-llm-qwen.service' ops/deploy.sh
 grep -Fq 'if [[ -r /etc/mag-stack/secondary-model.env ]]' ops/deploy.sh
 grep -Fq 'STAGED ONLY' ops/qwen/install.sh
 grep -Fq -- '--reasoning-format auto' ops/qwen/start.sh
-grep -Fq -- '--cache-ram 8192' ops/qwen/start.sh
+grep -Fq -- '--cache-ram 16384' ops/qwen/start.sh
+grep -Fq -- '--lazy-mode off -ot per_layer_token_embd=CPU' ops/qwen/start.sh
 grep -Fq 'body["tool_choice"] = choice' ops/qwen/smoke.py
 grep -Fq 'choice="auto"' ops/qwen/smoke.py
 grep -Fq 'choice="required"' ops/qwen/smoke.py

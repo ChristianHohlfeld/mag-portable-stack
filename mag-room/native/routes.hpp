@@ -925,6 +925,42 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
   if (path.rfind("/api/agents/", 0) == 0) {
     std::string id = url_decode(path.substr(12));
     auto slash = id.find('/');
+    // Names are mutable metadata; the VM and stable bot ID never change.
+    if (slash != std::string::npos && id.substr(slash + 1) == "name" &&
+        m == "PUT") {
+      id.resize(slash);
+      Val input;
+      if (!mj::parse(r.body, input) || !input.isObj() ||
+          !input.find("name")) {
+        error_json(fd, 400, "Bot-Name fehlt");
+        return;
+      }
+      const std::string new_name = trim(input.find("name")->asStr());
+      if (new_name.empty() || new_name.size() > 40 ||
+          new_name.find('\n') != std::string::npos ||
+          new_name.find('\r') != std::string::npos) {
+        error_json(fd, 400, "Bot-Name muss 1–40 Zeichen lang sein");
+        return;
+      }
+      {
+        std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
+        int idx = agent_index(id);
+        if (idx < 0) { error_json(fd, 404, "Unbekannter Bot"); return; }
+        for (size_t i = 0; i < AGENTS.size(); ++i)
+          if ((int)i != idx && bot_field((int)i, "name") == new_name) {
+            error_json(fd, 409, "Bot-Name bereits vergeben");
+            return;
+          }
+        AGENTS[idx]["name"] = new_name;
+        save_agents();
+      }
+      agents_event();
+      Val out = Val::object(); out["ok"] = true;
+      out["id"] = id; out["name"] = new_name;
+      send_json(fd, 200, mj::dump(out));
+      return;
+    }
+
     if (slash != std::string::npos &&
         id.compare(slash + 1, 7, "memory/") == 0 &&
         (m == "PUT" || m == "DELETE")) {
@@ -1043,6 +1079,10 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
     if (slash != std::string::npos && id.substr(slash + 1) == "model" &&
         m == "POST") {
       id.resize(slash);
+      if (DUAL_NUMA) {
+        error_json(fd, 409, "NUMA-Modelle sind je Bot fest zugeordnet und bleiben geladen.");
+        return;
+      }
       Val choice;
       if (!mj::parse(r.body, choice) || !choice.isObj()) {
         error_json(fd, 400, "Modell fehlt");
@@ -1075,6 +1115,10 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
       return;
     }
     if (m == "DELETE") {
+      if (DUAL_NUMA) {
+        error_json(fd, 409, "Beide NUMA-Bots sind fest eingerichtet; Umbenennen ist möglich.");
+        return;
+      }
       if (!SINGLE_BOT.empty() && id == SINGLE_BOT) {
         error_json(fd, 409, "Der einzige Bot des Raums kann nicht entfernt werden (MAG_ROOM_SINGLE_BOT).");
         return;
@@ -1120,6 +1164,10 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
     return v ? v->asStr(fallback) : fallback;
   };
   if (m == "POST" && path == "/api/agents") {
+    if (DUAL_NUMA) {
+      error_json(fd, 409, "Maximal zwei Bots: Q4 auf NUMA0 und Qwen auf NUMA1.");
+      return;
+    }
     if (!SINGLE_BOT.empty()) {
       error_json(fd, 409, "Nur ein Bot erlaubt: Der Raum laeuft fest mit '" +
                               SINGLE_BOT_NAME + "' (MAG_ROOM_SINGLE_BOT).");

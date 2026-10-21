@@ -4203,8 +4203,17 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
     asst["content"] = t.text;
     // DeepSeek-V4 expects the reasoning of a tool-calling turn to be passed
     // back on the next request (its template keeps it in tool histories).
-    if (!t.reasoning.empty())
-      asst["reasoning_content"] = t.reasoning;
+    if (!t.reasoning.empty()) {
+      // Persist the full reasoning in the turn report/audit, but avoid replaying
+      // many thousands of previous thinking tokens on every CPU tool round.
+      // Keep the newest reasoning and the actual structured tool call intact.
+      const size_t keep = (size_t)std::clamp(
+          envi("MAG_ROOM_REASONING_HISTORY_BYTES", 4096), 1024, 16384);
+      asst["reasoning_content"] = t.reasoning.size() > keep
+          ? std::string("[Aeltere Gedanken im Protokoll; letzte Schritte:]\n") +
+                utf8_suffix(t.reasoning, keep)
+          : t.reasoning;
+    }
     if (!t.calls.empty()) {
       Val arr = Val::array();
       for (auto &c : t.calls)

@@ -1829,10 +1829,10 @@ static std::string build_context_tail(int bot_idx, bool autotalk,
 }
 // Once a room line has been sent, later turns reuse that exact text. The
 // window start moves only in HISTORY_STEP-sized jumps.
-static std::map<std::string, std::string> TRANSCRIPT_RENDERED;
-// Stable window boundary across turns. A sliding byte-cap starting from the
-// whole room would move the model prompt prefix on *every* CPU turn.
-static size_t TRANSCRIPT_WINDOW_START = 0;
+// Keep independent prefix boundaries for Q4 and Qwen: shrinking Qwen history
+// must not evict Q4's cached transcript or any persisted room message.
+static std::map<std::string, std::map<std::string, std::string>> TRANSCRIPT_RENDERED;
+static std::map<std::string, size_t> TRANSCRIPT_WINDOW_START;
 static std::string render_room_line(const Val &m) {
   std::string role = m.find("role") ? m.find("role")->asStr() : "";
   std::string name = m.find("name") ? m.find("name")->asStr()
@@ -1865,21 +1865,26 @@ static std::string render_room_line(const Val &m) {
   }
   return "[" + name + "]: " + content + "\n";
 }
-static std::string build_transcript() {
+static std::string build_transcript(const std::string &bot_id, bool qwen) {
   std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
+  auto &rendered = TRANSCRIPT_RENDERED[bot_id];
+  size_t &window_start = TRANSCRIPT_WINDOW_START[bot_id];
   std::string out = "[Raumverlauf]\n";
   // Keep the existing blockwise history boundary for prompt-cache reuse.
   // A message count alone is unsafe: 30 messages may exceed a 32k context.
   size_t start = 0;
-  if (ROOM.size() > (size_t)MAX_HISTORY) {
+  const size_t history = (size_t)std::clamp(
+      qwen ? envi("MAG_ROOM_QWEN_MAX_HISTORY", 14) : MAX_HISTORY, 4, 80);
+  if (ROOM.size() > history) {
     size_t step = (size_t)std::max(1, HISTORY_STEP);
-    start = ((ROOM.size() - MAX_HISTORY) / step) * step;
+    start = ((ROOM.size() - history) / step) * step;
   }
-  // Room clear/restore can rewind indices; never retain an invalid offset.
-  if (TRANSCRIPT_WINDOW_START >= ROOM.size()) TRANSCRIPT_WINDOW_START = 0;
-  start = std::max(start, TRANSCRIPT_WINDOW_START);
+  if (window_start >= ROOM.size()) window_start = 0;
+  start = std::max(start, window_start);
   const size_t limit = (size_t)std::clamp(
-      envi("MAG_ROOM_TRANSCRIPT_BYTES", 16000), 4000, 64000);
+      qwen ? envi("MAG_ROOM_QWEN_TRANSCRIPT_BYTES", 6000)
+           : envi("MAG_ROOM_TRANSCRIPT_BYTES", 16000),
+      qwen ? 3000 : 4000, qwen ? 16000 : 64000);
   std::vector<std::pair<std::string, std::string>> lines;
   size_t bytes = 0;
   for (size_t i = ROOM.size(); i > start; --i) {
@@ -1887,9 +1892,9 @@ static std::string build_transcript() {
     std::string id = m.find("id") ? m.find("id")->asStr() : "";
     std::string line;
     if (!id.empty()) {
-      auto it = TRANSCRIPT_RENDERED.find(id);
-      line = it != TRANSCRIPT_RENDERED.end() ? it->second : render_room_line(m);
-      TRANSCRIPT_RENDERED[id] = line;
+      auto it = rendered.find(id);
+      line = it != rendered.end() ? it->second : render_room_line(m);
+      rendered[id] = line;
     } else {
       line = render_room_line(m);
     }
@@ -1908,14 +1913,14 @@ static std::string build_transcript() {
       lines.pop_back();
     }
   }
-  TRANSCRIPT_WINDOW_START = ROOM.size() - lines.size();
+  window_start = ROOM.size() - lines.size();
   std::set<std::string> keep;
   for (auto it = lines.rbegin(); it != lines.rend(); ++it) {
     if (!it->first.empty()) keep.insert(it->first);
     out += it->second;
   }
-  for (auto it = TRANSCRIPT_RENDERED.begin(); it != TRANSCRIPT_RENDERED.end();) {
-    if (!keep.count(it->first)) it = TRANSCRIPT_RENDERED.erase(it);
+  for (auto it = rendered.begin(); it != rendered.end();) {
+    if (!keep.count(it->first)) it = rendered.erase(it);
     else ++it;
   }
   return out;
@@ -2770,7 +2775,8 @@ static Val model_info_val() {
   return out;
 }
 // Debug only: journal line + model_info.last. The header does not show it.
-static void publish_prompt_cache(int slot, const Val *timings, double cached,
+static void publish_prompt_cache(int slot, const std::string &model,
+                                 const Val *timings, double cached,
                                  double evaluated) {
   auto num = [&](const char *k) {
     if (!timings || !timings->isObj())
@@ -2787,14 +2793,16 @@ static void publish_prompt_cache(int slot, const Val *timings, double cached,
   r["tokens_cached"] = cached;
   r["tokens_evaluated"] = evaluated;
   r["id_slot"] = slot;
+  r["model"] = model;
   r["at"] = (long)now_s();
   {
     std::lock_guard<std::mutex> lk(MODEL_INFO_MTX);
     LAST_TIMINGS = r;
   }
-  std::cerr << "prompt-cache slot=" << slot << " tokens_cached="
-            << (long long)(cached < 0 ? -1 : cached) << " tokens_evaluated="
-            << (long long)(evaluated < 0 ? -1 : evaluated) << std::endl;
+  std::cerr << "prompt-cache model=" << model << " slot=" << slot
+            << " tokens_cached=" << (long long)(cached < 0 ? -1 : cached)
+            << " tokens_evaluated=" << (long long)(evaluated < 0 ? -1 : evaluated)
+            << " prompt_tps=" << num("prompt_per_second") << std::endl;
 }
 // One llama slot per conversation. With --parallel 1 (bug #25259) every key
 // maps to slot 0 and no id_slot is sent (see backend_turn). MAG_ROOM_SLOTS
@@ -2903,6 +2911,23 @@ struct TurnReport {
 };
 
 #include "mcp.hpp"
+// CPU-only Qwen: compact prose inside JSON tool schemas while retaining every
+// tool name, argument type, required key and permission check unchanged.
+static void compact_tool_schema(Val &v, int depth = 0) {
+  if (v.isObj()) {
+    for (auto &kv : *v.obj) {
+      if (kv.first == "description" && kv.second.type == Val::STR) {
+        const std::string desc = kv.second.asStr();
+        const size_t limit = depth <= 2 ? 320 : 160;
+        if (desc.size() > limit) kv.second = mj::utf8_cut(desc, limit);
+      } else {
+        compact_tool_schema(kv.second, depth + 1);
+      }
+    }
+  } else if (v.isArr()) {
+    for (auto &entry : *v.arr) compact_tool_schema(entry, depth + 1);
+  }
+}
 static std::string tools_json(int bot_idx, bool web) {
   std::string vm = bot_field(bot_idx, "vm", "keine");
   const bool has_vm = !vm.empty() && vm != "keine";
@@ -2930,13 +2955,22 @@ static std::string tools_json(int bot_idx, bool web) {
           T_DL_FRONTEND, T_PUB_FRONTEND})
       defs.push_back(d);
   }
+  const bool compact = DUAL_NUMA &&
+      bot_model_id(bot_idx) == "qwen3.8-flash-next-uncensored" &&
+      envi("MAG_ROOM_QWEN_COMPACT_TOOLS", 1) != 0;
   std::string arr = "[";
-  for (size_t i = 0; i < defs.size(); i++) {
-    if (i)
-      arr += ",";
-    arr += defs[i];
-  }
-  for (auto &t : mcp_bot_tools(bot_idx)) arr += "," + mj::dump(t.def);
+  auto add = [&](const std::string &definition) {
+    if (arr.size() > 1) arr += ",";
+    if (!compact) { arr += definition; return; }
+    Val parsed;
+    if (!mj::parse(definition, parsed) || !parsed.isObj()) {
+      arr += definition; return; // never drop a tool after a parser error
+    }
+    compact_tool_schema(parsed);
+    arr += mj::dump(parsed);
+  };
+  for (auto &d : defs) add(d);
+  for (auto &t : mcp_bot_tools(bot_idx)) add(mj::dump(t.def));
   arr += "]";
   return arr;
 }
@@ -3068,7 +3102,10 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   if (mj::parse(tools, tt))
     body["tools"] = tt;
   body["temperature"] = temperature;
-  body["max_tokens"] = MAX_TOKENS;
+  const int completion_tokens = model == "qwen3.8-flash-next-uncensored"
+      ? std::clamp(envi("MAG_ROOM_QWEN_MAX_TOKENS", 4096), 512, 8192)
+      : MAX_TOKENS;
+  body["max_tokens"] = completion_tokens;
   body["stream"] = true;
   // llama.cpp: stream prompt_progress {total,cache,processed,time_ms} while
   // the prompt is evaluated (minutes on CPU) instead of staying silent.
@@ -3270,7 +3307,8 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
     else if (processed >= 0)
       saw_evaluated = processed;
   }
-  publish_prompt_cache(id_slot, saw_timings ? &timings_seen : nullptr,
+  publish_prompt_cache(id_slot, model,
+                       saw_timings ? &timings_seen : nullptr,
                        saw_cached, saw_evaluated);
   if (t.error.empty())
     slot_save_after(id_slot, saw_cached, saw_evaluated);
@@ -3993,6 +4031,8 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
                            const std::string &other) {
   std::string bot_id = bot_field(bot_idx, "id");
   std::string bot_name = bot_field(bot_idx, "name", "Bot");
+  const bool qwen = DUAL_NUMA &&
+      bot_model_id(bot_idx) == "qwen3.8-flash-next-uncensored";
   bool web = WEB_ENABLED.load();
   mcp_auto_once();
   std::string system = build_system(bot_idx, autotalk, other, web);
@@ -4010,7 +4050,8 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
     Val u = Val::object();
     u["role"] = "user";
     // A job run is its own conversation: job prompt + volatile tail only.
-    u["content"] = (CURRENT_JOB ? job_user_content(CURRENT_JOB) : build_transcript()) +
+    u["content"] = (CURRENT_JOB ? job_user_content(CURRENT_JOB)
+                                : build_transcript(bot_id, qwen)) +
                    build_context_tail(bot_idx, autotalk, other);
     messages.push_back(u);
   }
@@ -4067,7 +4108,8 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
   bool completed = false;
   std::string compacted_steps;
   const size_t context_budget = (size_t)std::clamp(
-      envi("MAG_ROOM_CONTEXT_BYTES", 52000), 24000, 100000);
+      qwen ? envi("MAG_ROOM_QWEN_CONTEXT_BYTES", 42000)
+           : envi("MAG_ROOM_CONTEXT_BYTES", 52000), 24000, 100000);
   auto run_deadline = steady_clock::now() + seconds(RUN_BUDGET_S);
   for (int round = 0; round < MAX_RUN_STEPS; round++) {
     if (stop_flag().load()) break;
@@ -4327,7 +4369,8 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
       // Keep full output in the activity trace, but do not pay for 32 KB of
       // terminal output again at every subsequent model step.
       const size_t tool_limit = (size_t)std::clamp(
-          envi("MAG_ROOM_TOOL_CONTEXT_BYTES", 6000), 1000, 12000);
+          qwen ? envi("MAG_ROOM_QWEN_TOOL_CONTEXT_BYTES", 3000)
+               : envi("MAG_ROOM_TOOL_CONTEXT_BYTES", 6000), 1000, 12000);
       tr["content"] = result.size() > tool_limit
           ? mj::utf8_cut(result, tool_limit) +
             "\n[Ausgabe fuer Modell gekuerzt; Details erneut gezielt lesen]"

@@ -3014,7 +3014,7 @@ static void load_model_settings() {
   const bool old_value = trim(read_file(STATE_DIR + "/sampling")) == "on";
   std::lock_guard<std::mutex> lk(MODEL_SETTINGS_MTX);
   MODEL_SETTINGS.clear();
-  for (const std::string &id : {"deepseek-v4-flash-0731", secondary_room_model()}) {
+  for (const std::string &id : std::vector<std::string>{"deepseek-v4-flash-0731", secondary_room_model()}) {
     ModelSettings item;
     item.deterministic = old_value;
     if (valid) {

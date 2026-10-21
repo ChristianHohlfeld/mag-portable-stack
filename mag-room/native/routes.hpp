@@ -617,6 +617,7 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
     return;
   }
   if (m == "POST" && path == "/api/model") {
+    if (DUAL_NUMA) { error_json(fd, 409, "Q4 und Qwen sind fest ihren Bots zugeordnet."); return; }
     if (bridge || !actor.ok || actor.role != "owner") {
       error_json(fd, 403, "Nur der Besitzer"); return;
     }

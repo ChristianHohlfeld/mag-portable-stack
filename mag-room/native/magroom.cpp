@@ -4303,6 +4303,13 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
       run_fail(report.error);
       break;
     }
+    // Stateless means one new model inference per input. Never execute tools
+    // or feed the model's output back as a new turn, even if it emits an
+    // unexpected tool call or a continuation marker.
+    if (stateless && !t.calls.empty()) {
+      report.error = "Stateless-Modus: Modell hat einen Werkzeugaufruf angefordert; nicht ausgeführt.";
+      break;
+    }
     // Ignore malformed DSML arguments; execute only one valid tool call per round.
     if (!t.calls.empty()) {
       std::vector<Val> valid;
@@ -4356,6 +4363,7 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
         emit_answer_deltas(bot_id, bot_name, t.text);
       }
     }
+    if (stateless) { completed = true; break; }
     if (!tool_round) {
       if (!pending) { completed = true; break; }
       const std::string p = trim(t.text);

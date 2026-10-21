@@ -291,6 +291,58 @@ class Native(unittest.TestCase):
   finally:
    Model.delay=0
    self.request('/api/model',{'id':models[0]['id']})
+ def test_05d_verify_20_independent_inferences_with_no_room_mutation(self):
+  self.wait_idle()
+  models=self.request('/api/state')['models'];second=models[1]['id']
+  self.assertTrue(models[1]['deterministic'])
+  self.error(400,'/api/model-verify',{'id':'unknown'})
+  self.error(403,'/api/model-verify',{'id':second},
+             headers={'Content-Type':'application/json','X-No-Token':'1'})
+  before=list(self.request('/api/state')['room'])
+  count=len(Model.calls)
+  Model.reply='OK'
+  try:
+   self.assertTrue(self.request('/api/model-verify',{'id':second})['accepted'])
+   for _ in range(250):
+    verify=self.request('/api/state')['models'][1]['verification']
+    if verify['status']!='running':break
+    time.sleep(.03)
+   self.assertEqual(verify['status'],'passed',verify)
+   self.assertEqual(verify['completed'],20)
+   calls=Model.calls[count:]
+   self.assertEqual(len(calls),20)
+   self.assertEqual(self.request('/api/state')['room'],before)
+   for call in calls:
+    self.assertEqual(call['model'],second)
+    self.assertEqual(call['messages'],[{'role':'user','content':'Antworte exakt mit OK.'}])
+    self.assertFalse(call['cache_prompt'])
+    self.assertEqual(call['temperature'],0)
+    self.assertEqual(call['top_k'],1)
+    self.assertEqual(call['seed'],42)
+    self.assertEqual(call['max_tokens'],128)
+    self.assertNotIn('tools',call)
+    self.assertNotIn('id_slot',call)
+   # One unequal backend response fails closed without 20 fake "passes".
+   Model.script=[['OK'],['abweichend']]
+   count=len(Model.calls)
+   self.assertTrue(self.request('/api/model-verify',{'id':second})['accepted'])
+   for _ in range(250):
+    verify=self.request('/api/state')['models'][1]['verification']
+    if verify['status']!='running':break
+    time.sleep(.03)
+   self.assertEqual(verify['status'],'failed',verify)
+   self.assertEqual(verify['completed'],1)
+   self.assertEqual(len(Model.calls)-count,2)
+   self.assertIn('Abweichende',verify.get('error',''))
+   self.assertEqual(self.request('/api/state')['room'],before)
+   # Changing sampling invalidates the verdict.
+   self.request('/api/model-settings',{'id':second,'deterministic':False})
+   self.assertEqual(self.request('/api/state')['models'][1]['verification']['status'],'unchecked')
+   self.error(409,'/api/model-verify',{'id':second})
+   self.request('/api/model-settings',{'id':second,'deterministic':True})
+  finally:
+   Model.script=[]
+   Model.reply=None
  def test_06_stop_interrupts_and_human_input_stays_responsive(self):
   Model.delay=3;self.request('/api/autotalk',{'on':True})
   time.sleep(.15)
@@ -305,7 +357,10 @@ class Native(unittest.TestCase):
  def test_07_persistence(self):
   before=self.request('/api/state');self.proc.terminate();self.proc.wait(timeout=5);self.log.close();self.start();after=self.request('/api/state')
   self.assertEqual(before['room'],after['room']);self.assertEqual(before['agents'],after['agents']);self.assertFalse(after['autotalk'])
-  self.assertEqual(before['models'],after['models'])
+  self.assertEqual(
+   [{k:m[k] for k in ('id','label','deterministic')} for m in before['models']],
+   [{k:m[k] for k in ('id','label','deterministic')} for m in after['models']])
+  self.assertTrue(all(m['verification']['status']=='unchecked' for m in after['models']))
   self.assertFalse(after['models'][0]['deterministic'])
   self.assertTrue(after['models'][1]['deterministic'])
   self.assertEqual(after['models'][1]['label'],'Mein Modell')

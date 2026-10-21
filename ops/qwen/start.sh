@@ -26,7 +26,6 @@ exec /usr/bin/numactl --cpunodebind=1 --membind=1 "$BIN" \
   --model "$MODEL" --alias qwen3.8-flash-next-uncensored \
   --host 127.0.0.1 --port 8091 --ctx-size 32768 --parallel 1 \
   --threads 14 --threads-batch 14 --numa numactl \
-  --ctx-checkpoints 32 \
   --lazy-mode off -ot per_layer_token_embd=CPU \
   --jinja --reasoning-format auto --cache-ram 16384 \
   --slot-save-path /var/lib/mag-llm/slots/qwen --no-ui

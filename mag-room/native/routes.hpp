@@ -1328,6 +1328,28 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
     send_json(fd, 200, "{\"ok\":true}");
     return;
   }
+  if (m == "POST" && path == "/api/sampling") {
+    if (!has_json || !body.find("deterministic") ||
+        body.find("deterministic")->type != Val::BOOL) {
+      error_json(fd, 400, "Boolean deterministic required");
+      return;
+    }
+    const bool enabled = body.find("deterministic")->asBool();
+    {
+      std::lock_guard<std::mutex> lk(SAMPLING_MTX);
+      if (!write_file_atomic(STATE_DIR + "/sampling", enabled ? "on" : "off")) {
+        error_json(fd, 500, "Sampling-Einstellung konnte nicht gespeichert werden");
+        return;
+      }
+      DETERMINISTIC_SAMPLING.store(enabled);
+    }
+    Val e = Val::object();
+    e["type"] = "sampling";
+    e["deterministic"] = enabled;
+    publish(mj::dump(e));
+    send_json(fd, 200, mj::dump(e));
+    return;
+  }
   if (m == "POST" && path == "/api/autotalk") {
     if (!has_json || !body.find("on") || body.find("on")->type != Val::BOOL) {
       error_json(fd, 400, "Boolean on required");

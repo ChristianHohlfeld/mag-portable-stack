@@ -102,6 +102,7 @@ static std::mutex MODEL_SETTINGS_MTX;
 struct ModelSettings {
   std::string name;
   bool deterministic = false;
+  bool exact_repeat = false;
 };
 static std::map<std::string, ModelSettings> MODEL_SETTINGS;
 // ------------------------------------------------------------------ config
@@ -1021,7 +1022,9 @@ static void save_room() {
 static Val append_room(const std::string &role, const std::string &name,
                        const std::string &content, const std::string &bot = "",
                        const Val *file = nullptr,
-                       const std::string &login = "") {
+                       const std::string &login = "",
+                       const std::string &reply_to = "",
+                       const std::string &model = "") {
   Val m = Val::object();
   m["id"] = token_hex(6);
   m["role"] = role;
@@ -1032,6 +1035,8 @@ static Val append_room(const std::string &role, const std::string &name,
     m["login"] = login.substr(0, 160);
   if (!bot.empty())
     m["bot"] = bot;
+  if (!reply_to.empty()) m["reply_to"] = reply_to;
+  if (!model.empty()) m["model"] = model;
   if (file)
     m["file"] = *file;
   {
@@ -2910,6 +2915,7 @@ struct TurnReport {
   bool continue_requested = false;
   bool reacted = false;
   bool react_only = false;
+  bool replayed = false;
 };
 
 #include "mcp.hpp"
@@ -3022,6 +3028,9 @@ static void load_model_settings() {
         if (auto deterministic = record->find("deterministic");
             deterministic && deterministic->type == Val::BOOL)
           item.deterministic = deterministic->asBool();
+        if (auto exact = record->find("exact_repeat");
+            exact && exact->type == Val::BOOL)
+          item.exact_repeat = exact->asBool();
         if (auto name = record->find("name"); name && name->type == Val::STR) {
           std::string candidate = trim(name->asStr());
           if (!candidate.empty() && candidate.size() <= 40 &&
@@ -3034,7 +3043,8 @@ static void load_model_settings() {
   }
 }
 static bool save_model_settings(const std::string &id,
-                                const std::string *name, const bool *deterministic) {
+                                const std::string *name, const bool *deterministic,
+                                const bool *exact_repeat) {
   std::lock_guard<std::mutex> lk(MODEL_SETTINGS_MTX);
   if (!known_room_model(id)) return false;
   auto found = MODEL_SETTINGS.find(id);
@@ -3042,12 +3052,14 @@ static bool save_model_settings(const std::string &id,
   ModelSettings item = found->second;
   if (name) item.name = *name;
   if (deterministic) item.deterministic = *deterministic;
+  if (exact_repeat) item.exact_repeat = *exact_repeat;
   Val settings = Val::object();
   for (const auto &kv : MODEL_SETTINGS) {
     const ModelSettings &value = kv.first == id ? item : kv.second;
     Val record = Val::object();
     record["name"] = value.name;
     record["deterministic"] = value.deterministic;
+    record["exact_repeat"] = value.exact_repeat;
     settings[kv.first] = record;
   }
   if (!write_file_atomic(STATE_DIR + "/model-settings.json", mj::dump(settings)))
@@ -3090,12 +3102,14 @@ static Val room_model_catalog() {
   const ModelSettings main_settings = model_settings_for("deepseek-v4-flash-0731");
   q4["label"] = main_settings.name.empty() ? default_model_label("deepseek-v4-flash-0731") : main_settings.name;
   q4["deterministic"] = main_settings.deterministic;
+  q4["exact_repeat"] = main_settings.exact_repeat;
   Val secondary = Val::object();
   const std::string secondary_id = secondary_room_model();
   const ModelSettings secondary_settings = model_settings_for(secondary_id);
   secondary["id"] = secondary_id;
   secondary["label"] = secondary_settings.name.empty() ? default_model_label(secondary_id) : secondary_settings.name;
   secondary["deterministic"] = secondary_settings.deterministic;
+  secondary["exact_repeat"] = secondary_settings.exact_repeat;
   models.push(q4);
   models.push(secondary);
   return models;
@@ -3983,6 +3997,7 @@ static std::string dispatch_tool(int bot_idx, const std::string &name,
 // 0/1 = chosen with the user message (UI toggle). Autotalk continuations of
 // that task keep the choice.
 static thread_local int TURN_THINK = -1;
+static thread_local std::string TURN_SOURCE_ID; // user message targeted by this job
 // The latest user-chosen value, for the room state (HTTP threads).
 static std::atomic<int> LAST_THINK{-1};
 static bool thinking_of(int v) { return v < 0 ? THINKING != "off" : v == 1; }
@@ -4084,10 +4099,64 @@ static void compact_agent_context(std::vector<Val> &messages,
   }
 }
 
+// Only repeat a completed tool-free reply to the same literal user text
+// from the same sender, bot and model. Old replies live in ROOM and are
+// automatically forgotten when the room is cleared.
+static std::string exact_previous_answer(const std::string &source_id,
+                                         const std::string &bot_id,
+                                         const std::string &model_id) {
+  if (source_id.empty()) return "";
+  std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
+  size_t source_at = ROOM.size();
+  for (size_t i = 0; i < ROOM.size(); ++i)
+    if (mag::str(ROOM[i], "id") == source_id) { source_at = i; break; }
+  if (source_at >= ROOM.size()) return "";
+  const Val &current = ROOM[source_at];
+  if (mag::str(current, "role") != "user" || current.find("file")) return "";
+  const std::string prompt = mag::str(current, "content");
+  if (prompt.empty()) return "";
+  const std::string sender = mag::str(current, "login");
+  const std::string name = mag::str(current, "name");
+  for (size_t i = source_at; i > 0; --i) {
+    const Val &old = ROOM[i - 1];
+    if (mag::str(old, "role") != "user" || old.find("file") ||
+        mag::str(old, "content") != prompt ||
+        mag::str(old, "login") != sender ||
+        mag::str(old, "name") != name) continue;
+    const std::string previous_id = mag::str(old, "id");
+    for (size_t j = i; j < source_at; ++j) {
+      const Val &answer = ROOM[j];
+      if (mag::str(answer, "role") != "assistant" ||
+          mag::str(answer, "bot") != bot_id ||
+          mag::str(answer, "model") != model_id ||
+          mag::str(answer, "reply_to") != previous_id ||
+          answer.find("work_error") || answer.find("interrupted") ||
+          answer.find("tools")) continue;
+      const std::string body = mag::str(answer, "content");
+      if (!body.empty()) return body;
+    }
+  }
+  return "";
+}
 static TurnReport run_turn(int bot_idx, bool autotalk,
                            const std::string &other) {
   std::string bot_id = bot_field(bot_idx, "id");
   std::string bot_name = bot_field(bot_idx, "name", "Bot");
+  if (!autotalk && !CURRENT_JOB &&
+      model_settings_for(bot_model_id(bot_idx)).exact_repeat) {
+    const std::string prior = exact_previous_answer(
+        TURN_SOURCE_ID, bot_id, bot_model_id(bot_idx));
+    if (!prior.empty()) {
+      TurnReport replay;
+      replay.text = prior;
+      replay.replayed = true;
+      run_answer_phase();
+      emit_answer_deltas(bot_id, bot_name, prior);
+      run_seal();
+      replay.steps = run_copy_steps();
+      return replay;
+    }
+  }
   bool web = WEB_ENABLED.load();
   mcp_auto_once();
   std::string system = build_system(bot_idx, autotalk, other, web);
@@ -5017,6 +5086,10 @@ static void attach_work(Val &msg, const TurnReport &report) {
       msg["reasoning"] = r;
       (*it)["thought_ms"] = report.thought_ms;
       msg["thought_ms"] = report.thought_ms;
+    }
+    if (report.replayed) {
+      (*it)["replayed"] = true;
+      msg["replayed"] = true;
     }
     if (report.tools.size()) {
       (*it)["tools"] = report.tools;

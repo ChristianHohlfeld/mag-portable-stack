@@ -420,12 +420,8 @@ public:
     }
 
     /**
-     * Extracts assistant content and raw token IDs from llama-server / vLLM responses.
-     * Supports:
-     *  1. Explicit integer arrays under `"tokens": [104, 291, ...]` or `"token_ids": [...]`
-     *  2. OpenAI/vLLM logprob token IDs (`"token_id": 1042` or `"id": 1042` inside `logprobs`)
-     *  3. Deterministic fallback: converts each logprob token piece or UTF-8 byte sequence
-     *     into deterministic 32-bit hashes if the backend strips integer token IDs.
+     * Reads only real generated integer IDs under "tokens" or "token_ids".
+     * Never guesses token IDs from bytes or logprobs.
      */
     static void parseInferenceResponse(const std::string& raw_json, RawInferenceResult& out) {
         out.content = extractStringField(raw_json, "content");
@@ -712,6 +708,10 @@ public:
             result.error_message = "Keine echten Token-IDs geliefert (tokens/token_ids). Token-Verifikation nicht moeglich; Backend-API pruefen.";
             return result;
         }
+        if (result.content.empty()) {
+            result.error_message = "Kein Assistant-Text in Backend-Antwort. Token-only Ergebnis wird nicht zertifiziert.";
+            return result;
+        }
 
         result.success = true;
         return result;
@@ -727,7 +727,7 @@ public:
  * MAG Deterministic Engine Controller.
  * Manages:
  *  - Local mutex (does not control remote inference-server continuous batching)
- *  - NUMA core pinning during execution
+ *  - Client-thread CPU affinity only; server process not controlled
  *  - 20x fresh HTTP inference (same running backend) Fail-Fast Verification ("Prüfen")
  *  - Fingerprint validation before allowing verified deterministic claims
  */

@@ -255,6 +255,10 @@ if [[ -d /etc/mag-audit/vm ]]; then
 fi
 for unit in mag-chat.service pm2-chris.service; do if systemctl cat "$unit" >/dev/null 2>&1; then systemctl disable --now "$unit"; fi; done
 systemctl enable --now mag-stack-check.timer mag-git-gateway.socket
+install -m 0644 "$SOURCE/ops/boot/mag-cpu-tune.service" /etc/systemd/system/mag-cpu-tune.service
+systemctl daemon-reload
+systemctl enable mag-cpu-tune.service
+systemctl restart mag-cpu-tune.service || echo 'WARN: CPU tuning not applied' >&2
 bash "$NGINX_SYNC" commit
 deployment_started=0
 trap - EXIT INT TERM

@@ -1,0 +1,21 @@
+# CPU hints for the CPU-only models (installed and enabled by ops/deploy.sh).
+# - performance governor, frequency range 1.2-3.3 GHz: turbo stays dynamic.
+#   A fixed 2.4 GHz clock was measured 6-14 % slower (2026-10-21).
+# - EPB 0: the kernel boots with energy_perf_bias 6 ("normal"); 0 lets
+#   turbo ramp fully for the compute-bound prefill.
+# - C1E off: the kernel still offers C1E although it is off in the BIOS;
+#   llama's worker threads sleep and wake at every barrier.
+# C3/C6 are already disabled (BIOS C-State=Disabled). Not a fixed clock.
+[Unit]
+Description=MAG CPU tuning for local LLM inference
+After=multi-user.target cpu-perf.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/cpupower frequency-set -g performance -d 1200MHz -u 3300MHz
+ExecStart=/bin/sh -c 'for f in /sys/devices/system/cpu/cpu*/power/energy_perf_bias; do echo 0 > "$f"; done'
+ExecStart=/bin/sh -c 'for s in /sys/devices/system/cpu/cpu*/cpuidle/state*; do [ "$(cat "$s/name")" = C1E ] && echo 1 > "$s/disable"; done; true'
+
+[Install]
+WantedBy=multi-user.target

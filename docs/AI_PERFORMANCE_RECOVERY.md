@@ -56,3 +56,23 @@ GitHub CI and source inspection are NOT evidence of live Q4/IQ3 status. Only
 host data, the enabled units and two successful direct health checks establish
 that recovery actually happened. The owner-only Tailnet console/preflight is
 the only supported host path; the GitHub merge cannot restart a private machine.
+
+## Live-Stand mag, 21.10.2026 (Token-Tempo und Kontext-Lesen)
+
+Gemessen bei gestoppter KI (`bench` über das Audit-Gateway, 1.3k Tokens Prompt):
+
+| | Prompt lesen | Ausgabe |
+|---|---|---|
+| DeepSeek Q4, beide Sockel, `MAG_NUMA_LOCAL=16` | 46–52 t/s | 8,0 t/s |
+| Qwen IQ4_XS, Sockel 1 (CPUs 42–55, `--load-mode mlock`) | 32,6 t/s | 6,9 t/s |
+| beide gleichzeitig | DeepSeek 32 / 7,8 · Qwen 20 / 5,9 | |
+| fester Takt 2,4 GHz (Experiment, verworfen) | −6 … −14 % | |
+
+Host-Konfiguration (nicht im Repo-Baseline `ops/deepseek/llm.env.mag`, die bewusst die Node0-Bootstrap-Variante bleibt), `/etc/mag-llm/llm.env`:
+`THREADS=16 THREADS_BATCH=28 BATCH=2048 UBATCH=2048 NUMA_ARGS="--interleave=all" LLAMA_NUMA=distribute IK_RTR=1`
+`IK_ENV="MAG_NUMA_LOCAL=16 GGML_Q8_PF=4096 GGML_MXFP4_PF=4096" IK_ARGS="--ctx-checkpoints-interval 128"`.
+Anwenden: `source ops/deepseek/llm-config.sh && render_unit /etc/systemd/system/mag-llm.service`, dann `ops/deepseek/warm.sh restart-llm`.
+
+Kontext-Lesen ohne Neuberechnung: der Raum wärmt im Leerlauf `System + Verlauf` vor (`MAG_ROOM_PREWARM`), speichert den Slot pro Modell auf der SSD (`/var/lib/mag-llm/slots[/qwen]/mag-prefix-<modell>.bin`, `MAG_ROOM_PREFIX_DISK`) und lädt ihn nach jedem Modellstart in 0,2–0,4 s zurück.
+
+CPU: `ops/boot/mag-cpu-tune.service` (performance, 1,2–3,3 GHz dynamisch, EPB 0, C1E aus). BIOS (syscfg): Energy Efficient Turbo aus, Uncore Frequency Scaling aus, Patrol Scrub aus, QPI 9,6 GT/s fest.

@@ -9,7 +9,7 @@ MODEL="/home/chris/models/qwen3.8-flash-next-uncensored/Qwen3.8-Flash-Next-Uncen
 [[ $(cat "/home/chris/.local/qwen4exp/$REV/bin/source-commit") == "$REV" ]] || fail 'runtime version not pinned'
 [[ $(cat /sys/devices/system/node/node1/cpulist) == "14-27,42-55" ]] || fail 'unexpected NUMA1 topology'
 systemctl is-active --quiet mag-llm-iq3.service && fail 'IQ3 still running; explicit operator stop required'
-curl --noproxy '*' -fsS --max-time 5 http://127.0.0.1:8090/health >/dev/null || fail 'Q4 unhealthy'
+# Q4 is checked as root in systemd ExecStartPre (audit firewall blocks chris on port 8090).
 for u in mag-backup-daily mag-backup-weekly mag-backup-monthly mag-backup-restore-test mag-backup-deploy mag-backup-clear; do
   systemctl is-active --quiet "$u.service" && fail "backup active: $u"
 done
@@ -21,5 +21,5 @@ exec /usr/bin/numactl --cpunodebind=1 --membind=1 "$BIN" \
   --model "$MODEL" --alias qwen3.8-flash-next-uncensored \
   --host 127.0.0.1 --port 8091 --ctx-size 16384 --parallel 1 \
   --threads 12 --threads-batch 12 --numa numactl \
-  --mlock --jinja --reasoning-format auto --cache-ram 8192 \
+  --jinja --reasoning-format auto --cache-ram 8192 \
   --slot-save-path /var/lib/mag-llm/slots/qwen --no-ui

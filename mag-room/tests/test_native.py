@@ -2652,4 +2652,66 @@ class PendingSpawnResume(unittest.TestCase):
     self.assertNotIn('despawn',(tmp/'ctl.log').read_text())
    finally:
     proc.terminate();proc.wait(timeout=5);log.close();model.shutdown()
+
+class DualNuma(unittest.TestCase):
+ """Q4/NUMA0 and Qwen/NUMA1 retain two stable bot identities across restarts."""
+ @classmethod
+ def setUpClass(cls):
+  cls.tmp=tempfile.TemporaryDirectory()
+  cls.state=pathlib.Path(cls.tmp.name)/'state';cls.state.mkdir()
+  cls.ctl=pathlib.Path(cls.tmp.name)/'ctl';cls.ctl.write_text(MULTIBOT_CTL);cls.ctl.chmod(0o755)
+  cls.state.joinpath('agents.json').write_text(json.dumps([
+   {'id':'primary','name':'Mein Bot','vm':'agent1','memory':[{'text':'bleibt'}]},
+   {'id':'legacy','name':'Alter Bot','vm':'','memory':[{'text':'geparkt'}]}
+  ]))
+  cls.model=http.server.ThreadingHTTPServer(('127.0.0.1',0),Model)
+  threading.Thread(target=cls.model.serve_forever,daemon=True).start()
+  cls.ui=port();cls.bridge=port()
+  env=dict(os.environ,MAG_OWNER_CANONICAL_LOGIN='chris@github',MAG_TEST_ALLOW_LOCAL_OWNER='1',
+    MAG_ROOM_STATE=str(cls.state),MAG_ROOM_PORT=str(cls.ui),MAG_ROOM_BRIDGE_PORT=str(cls.bridge),
+    MAG_ROOM_BRIDGE_IP='127.0.0.1',MAG_ROOM_BACKEND=f'http://127.0.0.1:{cls.model.server_port}/v1/chat/completions',
+    MAG_ROOM_UI=str(ROOT/'mag-room/web/index.html'),MAG_ROOM_STATIC=str(ROOT/'mag-room/static'),
+    MAG_ROOM_MODEL_STATUS=str(pathlib.Path(cls.tmp.name)/'ms.json'),MAG_NETMODE=str(NETMODE),
+    MAG_TEST_NO_MEMGIT='1',MAG_ROOM_AGENT_CTL=str(cls.ctl),MAG_ROOM_MCP_AUTO='0',
+    MAG_ROOM_SINGLE_BOT='auto',MAG_ROOM_DUAL_NUMA='1',MAG_SECONDARY_MODEL='qwen')
+  cls.log=open(pathlib.Path(cls.tmp.name)/'server.log','a')
+  cls.proc=subprocess.Popen([str(ROOT/'build/magroom')],env=env,stdout=cls.log,stderr=cls.log)
+  for _ in range(150):
+   try:
+    Native.request.__func__(cls,'/healthz',raw=True)
+    return
+   except Exception:time.sleep(.03)
+  raise RuntimeError('Dual-NUMA startup failed: '+cls.state.joinpath('agents.json').read_text())
+ @classmethod
+ def tearDownClass(cls):
+  cls.proc.terminate();cls.proc.wait(timeout=5)
+  cls.log.close();cls.model.shutdown();cls.tmp.cleanup()
+ request=classmethod(Native.request.__func__)
+ error=Native.error
+ def test_01_exactly_two_fixed_models_and_park_legacy(self):
+  s=self.request('/api/state')
+  self.assertTrue(s['dual_numa']);self.assertFalse(s['single_bot'])
+  self.assertEqual(len(s['agents']),2)
+  self.assertEqual(s['agents'][0]['id'],'primary')
+  self.assertEqual(s['agents'][0]['model'],'deepseek-v4-flash-0731')
+  self.assertEqual(s['agents'][1]['model'],'qwen3.8-flash-next-uncensored')
+  self.assertNotEqual(s['agents'][0]['id'],s['agents'][1]['id'])
+  self.assertEqual(s['agents'][0]['vm'],'agent1')
+  persisted={a['id']:a for a in json.loads(self.state.joinpath('agents.json').read_text())}
+  self.assertEqual(persisted['legacy']['memory'][0]['text'],'geparkt')
+ def test_02_cap_and_pinned_models(self):
+  self.error(409,'/api/agents',{'name':'Dritter Bot'})
+  self.error(409,'/api/agents/primary/model',{'model':'qwen3.8-flash-next-uncensored'})
+  self.error(409,'/api/model',{'id':'qwen3.8-flash-next-uncensored'})
+  self.error(409,'/api/agents/primary',method='DELETE')
+ def test_03_rename_keeps_identity_vm_and_model(self):
+  before=self.request('/api/state')['agents'][0]
+  self.assertTrue(self.request('/api/agents/primary/name',{'name':'Mein eigener Bot'},method='PUT')['ok'])
+  after=self.request('/api/state')['agents'][0]
+  self.assertEqual(after['name'],'Mein eigener Bot')
+  self.assertEqual(after['id'],before['id'])
+  self.assertEqual(after['vm'],before['vm'])
+  self.assertEqual(after['model'],before['model'])
+  self.error(400,'/api/agents/primary/name',{'name':' '},method='PUT')
+
 if __name__=='__main__':unittest.main(verbosity=2)

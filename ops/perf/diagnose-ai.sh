@@ -17,7 +17,7 @@ for f in /proc/pressure/{cpu,memory,io}; do
   echo "$f"; [[ -f "$f" ]] && head -n 2 "$f"
 done
 echo "== Model services (no PID equals not resident)"
-for svc in mag-llm mag-llm-iq3 mag-120 mag-audit-gateway; do
+for svc in mag-llm mag-llm-qwen mag-llm-iq3 mag-120 mag-audit-gateway; do
   printf '%s active=%s enabled=%s ' "$svc" \
     "$(systemctl is-active "$svc" 2>/dev/null || true)" \
     "$(systemctl is-enabled "$svc" 2>/dev/null || true)"
@@ -27,14 +27,15 @@ for svc in mag-llm mag-llm-iq3 mag-120 mag-audit-gateway; do
     grep -E '^(VmRSS|VmLck|RssAnon|RssFile|Threads|Cpus_allowed_list|Mems_allowed_list):' "/proc/$pid/status" || true
     command -v numastat >/dev/null && numastat -p "$pid" 2>/dev/null | tail -n 6 || true
     # Never echo full command line (can contain credentials).
-    if [[ $svc == mag-llm || $svc == mag-llm-iq3 ]]; then
+    if [[ $svc == mag-llm || $svc == mag-llm-qwen || $svc == mag-llm-iq3 ]]; then
       python3 -I - "$pid" <<'PY'
 import pathlib,sys
 p=pathlib.Path('/proc',sys.argv[1],'cmdline')
 a=p.read_bytes().split(b'\0')
 args=[x.decode('utf-8','replace') for x in a if x]
 keep={'--ctx-size','--parallel','--threads','--threads-batch','--batch-size',
-      '--ubatch-size','--numa','--cache-ram','-crs','--cache-ram-similarity'}
+      '--ubatch-size','--numa','--cache-ram','-crs','--cache-ram-similarity',
+      '--flash-attn','--ctx-size','--reasoning-format'}
 shown={}
 for i,s in enumerate(args[:-1]):
     if s in keep: shown[s]=args[i+1]
@@ -50,10 +51,12 @@ for port in 8090 8091; do
 done
 echo "== Last prompt cache measurements (no prompt or tool contents)"
 journalctl -u mag-120.service -n 200 --no-pager -o cat 2>/dev/null | \
-  grep -E '^prompt-cache slot=' | tail -n 8 || true
+  grep -E '^prompt-cache (model=|slot=)' | tail -n 20 || true
 echo "== Kernel page faults / swap activity"
 grep -E '^(pgmajfault|pswpin|pswpout) ' /proc/vmstat || true
 echo "== Interpretation"
 echo 'Cache misses after restart: expected once. Repeated cached=0 for identical bot prefix: real bug.'
-echo 'Q4+IQ3 both active: fast independent lanes. Single CPU-only Q4 cannot deliver GPU-class throughput.'
+echo 'Q4+Qwen both active: independent NUMA lanes. Prompt evaluation is bound by DDR4 bandwidth; compare cache hit counts and prompt_tps per model.'
 echo 'Pinned model pages (VmLck) are NOT identical to cached chat tokens (tokens_cached).'
+echo 'On the first Qwen turn after boot, cache miss is expected. Repeated same stable prefix with cached=0 means look for tool schema/history changes.'
+echo 'MAG_ROOM_QWEN_TRANSCRIPT_BYTES default 6000 (persisted room untouched); Qwen output headroom default 4096 tokens.'

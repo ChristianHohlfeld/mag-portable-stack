@@ -218,6 +218,10 @@ static std::string job_user_content(const JobRun *r) {
   return "[Geplanter Job \u201e" + r->name + "\u201c \u00b7 " + fmt_local(now_s()) +
          " \u00b7 eigener Lauf, Ergebnis wird in den Raum gepostet]\n" + r->prompt + "\n";
 }
+static std::string job_plain_prompt(const JobRun *r) {
+  // Use only the raw job instruction: no runtime timestamp or appended room.
+  return r->prompt;
+}
 static TurnReport run_turn(int bot_idx, bool autotalk, const std::string &other);
 static void run_job(const JobRun &run) {
   int idx = run.bot.empty() ? -1 : agent_index(run.bot);

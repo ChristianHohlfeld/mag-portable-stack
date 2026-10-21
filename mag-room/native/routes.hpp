@@ -1279,7 +1279,7 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
     msg["type"] = "message";
     publish(mj::dump(msg));
     const bool queued = lanes_busy(ids) && !interrupt;
-    schedule(ids, think, interrupt, mag::str(msg, "id"));
+    schedule(ids, think, interrupt, str("text"));
     send_json(fd, 202, queued ? "{\"accepted\":true,\"queued\":true}"
                               : "{\"accepted\":true}");
     return;
@@ -1343,9 +1343,8 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
     }
     const Val *name_input = body.find("name");
     const Val *det_input = body.find("deterministic");
-    const Val *repeat_input = body.find("exact_repeat");
-    if (!name_input && !det_input && !repeat_input) {
-      error_json(fd, 400, "Name, deterministic oder exact_repeat erforderlich"); return;
+    if (!name_input && !det_input) {
+      error_json(fd, 400, "Name oder deterministic erforderlich"); return;
     }
     std::string name;
     if (name_input) {
@@ -1367,16 +1366,8 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
       }
       deterministic = det_input->asBool();
     }
-    bool exact_repeat = false;
-    if (repeat_input) {
-      if (repeat_input->type != Val::BOOL) {
-        error_json(fd, 400, "Boolean exact_repeat erforderlich"); return;
-      }
-      exact_repeat = repeat_input->asBool();
-    }
     if (!save_model_settings(id, name_input ? &name : nullptr,
-                             det_input ? &deterministic : nullptr,
-                             repeat_input ? &exact_repeat : nullptr)) {
+                             det_input ? &deterministic : nullptr)) {
       error_json(fd, 500, "Modell-Einstellungen konnten nicht gespeichert werden"); return;
     }
     Val out = Val::object();

@@ -1382,16 +1382,8 @@ function syncModelSettings(next){
    const caption=document.createElement('span');caption.textContent='Deterministische Antworten';
    row.append(check,caption);
    check.onchange=()=>saveModelSetting(model.id,{deterministic:check.checked},check);
-   const info=document.createElement('p');info.className='control-desc';info.textContent='AN: Temperature 0, Seed 42 · AUS: Standard';
-   const repeatRow=document.createElement('label');repeatRow.className='control-row';
-   const repeat=document.createElement('input');repeat.type='checkbox';repeat.className='model-exact-repeat';
-   repeat.setAttribute('aria-label','Exakte Wiederholung für '+model.id);
-   const repeatTitle=document.createElement('span');repeatTitle.textContent='Gleichen Text exakt wiederholen';
-   repeatRow.append(repeat,repeatTitle);
-   repeat.onchange=()=>saveModelSetting(model.id,{exact_repeat:repeat.checked},repeat);
-   const repeatInfo=document.createElement('p');repeatInfo.className='control-desc';
-   repeatInfo.textContent='Nur frühere reine Textantworten desselben Bots. Keine Wiederholung von Werkzeugaktionen. Ignoriert neue Chatkontexte für identische Texte.';
-   card.append(heading,technical,form,row,info,repeatRow,repeatInfo);host.append(card);
+   const info=document.createElement('p');info.className='control-desc';info.textContent='AN: Neuberechnung mit Temperature 0, Top-K 1, Seed 42 – ohne Prompt-Cache (langsamer). Gleicher vollständiger Kontext nötig; Chatverlauf verändert sich. AUS: Standard.';
+   card.append(heading,technical,form,row,info);host.append(card);
   }
  }
  for(const model of models){
@@ -1401,8 +1393,6 @@ function syncModelSettings(next){
   if(document.activeElement!==input)input.value=model.label||model.id;
   const check=card.querySelector('input[type=checkbox]');
   if(!check.disabled)check.checked=!!model.deterministic;
-  const repeat=card.querySelector('.model-exact-repeat');
-  if(!repeat.disabled)repeat.checked=!!model.exact_repeat;
  }
 }
 function syncModelChoice(next){

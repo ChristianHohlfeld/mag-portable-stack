@@ -102,7 +102,6 @@ static std::mutex MODEL_SETTINGS_MTX;
 struct ModelSettings {
   std::string name;
   bool deterministic = false;
-  bool exact_repeat = false;
 };
 static std::map<std::string, ModelSettings> MODEL_SETTINGS;
 // ------------------------------------------------------------------ config
@@ -1022,9 +1021,7 @@ static void save_room() {
 static Val append_room(const std::string &role, const std::string &name,
                        const std::string &content, const std::string &bot = "",
                        const Val *file = nullptr,
-                       const std::string &login = "",
-                       const std::string &reply_to = "",
-                       const std::string &model = "") {
+                       const std::string &login = "") {
   Val m = Val::object();
   m["id"] = token_hex(6);
   m["role"] = role;
@@ -1035,8 +1032,6 @@ static Val append_room(const std::string &role, const std::string &name,
     m["login"] = login.substr(0, 160);
   if (!bot.empty())
     m["bot"] = bot;
-  if (!reply_to.empty()) m["reply_to"] = reply_to;
-  if (!model.empty()) m["model"] = model;
   if (file)
     m["file"] = *file;
   {
@@ -2915,7 +2910,6 @@ struct TurnReport {
   bool continue_requested = false;
   bool reacted = false;
   bool react_only = false;
-  bool replayed = false;
 };
 
 #include "mcp.hpp"
@@ -3028,9 +3022,6 @@ static void load_model_settings() {
         if (auto deterministic = record->find("deterministic");
             deterministic && deterministic->type == Val::BOOL)
           item.deterministic = deterministic->asBool();
-        if (auto exact = record->find("exact_repeat");
-            exact && exact->type == Val::BOOL)
-          item.exact_repeat = exact->asBool();
         if (auto name = record->find("name"); name && name->type == Val::STR) {
           std::string candidate = trim(name->asStr());
           if (!candidate.empty() && candidate.size() <= 40 &&
@@ -3043,8 +3034,7 @@ static void load_model_settings() {
   }
 }
 static bool save_model_settings(const std::string &id,
-                                const std::string *name, const bool *deterministic,
-                                const bool *exact_repeat) {
+                                const std::string *name, const bool *deterministic) {
   std::lock_guard<std::mutex> lk(MODEL_SETTINGS_MTX);
   if (!known_room_model(id)) return false;
   auto found = MODEL_SETTINGS.find(id);
@@ -3052,14 +3042,12 @@ static bool save_model_settings(const std::string &id,
   ModelSettings item = found->second;
   if (name) item.name = *name;
   if (deterministic) item.deterministic = *deterministic;
-  if (exact_repeat) item.exact_repeat = *exact_repeat;
   Val settings = Val::object();
   for (const auto &kv : MODEL_SETTINGS) {
     const ModelSettings &value = kv.first == id ? item : kv.second;
     Val record = Val::object();
     record["name"] = value.name;
     record["deterministic"] = value.deterministic;
-    record["exact_repeat"] = value.exact_repeat;
     settings[kv.first] = record;
   }
   if (!write_file_atomic(STATE_DIR + "/model-settings.json", mj::dump(settings)))
@@ -3102,14 +3090,12 @@ static Val room_model_catalog() {
   const ModelSettings main_settings = model_settings_for("deepseek-v4-flash-0731");
   q4["label"] = main_settings.name.empty() ? default_model_label("deepseek-v4-flash-0731") : main_settings.name;
   q4["deterministic"] = main_settings.deterministic;
-  q4["exact_repeat"] = main_settings.exact_repeat;
   Val secondary = Val::object();
   const std::string secondary_id = secondary_room_model();
   const ModelSettings secondary_settings = model_settings_for(secondary_id);
   secondary["id"] = secondary_id;
   secondary["label"] = secondary_settings.name.empty() ? default_model_label(secondary_id) : secondary_settings.name;
   secondary["deterministic"] = secondary_settings.deterministic;
-  secondary["exact_repeat"] = secondary_settings.exact_repeat;
   models.push(q4);
   models.push(secondary);
   return models;
@@ -3156,11 +3142,15 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   Val tt;
   if (mj::parse(tools, tt))
     body["tools"] = tt;
-  // Greedy decoding gives a repeatable token path under deterministic
-  // inference. The fixed seed also pins any sampler randomness in the backend.
-  // Read at request creation so an in-flight completion is never changed.
-  if (model_settings_for(model).deterministic) {
+  // Deterministic mode always re-evaluates and greedily decodes the full
+  // request. llama.cpp's KV prompt cache can change the numerical logits when
+  // the split between batched prefill and token decoding differs. Do not reuse
+  // that cache in deterministic mode. Never replay an earlier answer either.
+  // Identical prompts are still required; evolving room history is NOT identical.
+  const bool deterministic = model_settings_for(model).deterministic;
+  if (deterministic) {
     body["temperature"] = 0.0;
+    body["top_k"] = 1;
     body["seed"] = 42;
   } else {
     body["temperature"] = temperature;
@@ -3176,7 +3166,7 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   // llama.cpp: stream prompt_progress {total,cache,processed,time_ms} while
   // the prompt is evaluated (minutes on CPU) instead of staying silent.
   body["return_progress"] = true;
-  body["cache_prompt"] = true;
+  body["cache_prompt"] = !deterministic;
   // llama/ik consult the --cache-ram prompt cache only when the server picks
   // the slot itself; an explicit id_slot skips both save and restore. With a
   // single slot, pinning therefore made every bot switch (and every Grok/Ali
@@ -3997,7 +3987,9 @@ static std::string dispatch_tool(int bot_idx, const std::string &name,
 // 0/1 = chosen with the user message (UI toggle). Autotalk continuations of
 // that task keep the choice.
 static thread_local int TURN_THINK = -1;
-static thread_local std::string TURN_SOURCE_ID; // user message targeted by this job
+// Current request's raw text, not the room transcript. Each queued chat turn
+// carries its own value, including after a service restart.
+static thread_local std::string TURN_INPUT;
 // The latest user-chosen value, for the room state (HTTP threads).
 static std::atomic<int> LAST_THINK{-1};
 static bool thinking_of(int v) { return v < 0 ? THINKING != "off" : v == 1; }
@@ -4005,6 +3997,7 @@ static bool turn_thinking() { return thinking_of(TURN_THINK); }
 struct JobRun;
 static thread_local const JobRun *CURRENT_JOB = nullptr;
 static std::string job_user_content(const JobRun *r);
+static std::string job_plain_prompt(const JobRun *r);
 static bool has_next_step(const std::string &t) {
   return t.find("[[MAG:WEITER]]") != std::string::npos ||
          t.find("Nächster Schritt") != std::string::npos ||
@@ -4099,92 +4092,52 @@ static void compact_agent_context(std::vector<Val> &messages,
   }
 }
 
-// Only repeat a completed tool-free reply to the same literal user text
-// from the same sender, bot and model. Old replies live in ROOM and are
-// automatically forgotten when the room is cleared.
-static std::string exact_previous_answer(const std::string &source_id,
-                                         const std::string &bot_id,
-                                         const std::string &model_id) {
-  if (source_id.empty()) return "";
-  std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
-  size_t source_at = ROOM.size();
-  for (size_t i = 0; i < ROOM.size(); ++i)
-    if (mag::str(ROOM[i], "id") == source_id) { source_at = i; break; }
-  if (source_at >= ROOM.size()) return "";
-  const Val &current = ROOM[source_at];
-  if (mag::str(current, "role") != "user" || current.find("file")) return "";
-  const std::string prompt = mag::str(current, "content");
-  if (prompt.empty()) return "";
-  const std::string sender = mag::str(current, "login");
-  const std::string name = mag::str(current, "name");
-  for (size_t i = source_at; i > 0; --i) {
-    const Val &old = ROOM[i - 1];
-    if (mag::str(old, "role") != "user" || old.find("file") ||
-        mag::str(old, "content") != prompt ||
-        mag::str(old, "login") != sender ||
-        mag::str(old, "name") != name) continue;
-    const std::string previous_id = mag::str(old, "id");
-    for (size_t j = i; j < source_at; ++j) {
-      const Val &answer = ROOM[j];
-      if (mag::str(answer, "role") != "assistant" ||
-          mag::str(answer, "bot") != bot_id ||
-          mag::str(answer, "model") != model_id ||
-          mag::str(answer, "reply_to") != previous_id ||
-          answer.find("work_error") || answer.find("interrupted") ||
-          answer.find("tools")) continue;
-      const std::string body = mag::str(answer, "content");
-      if (!body.empty()) return body;
-    }
-  }
-  return "";
-}
 static TurnReport run_turn(int bot_idx, bool autotalk,
                            const std::string &other) {
   std::string bot_id = bot_field(bot_idx, "id");
   std::string bot_name = bot_field(bot_idx, "name", "Bot");
-  if (!autotalk && !CURRENT_JOB &&
-      model_settings_for(bot_model_id(bot_idx)).exact_repeat) {
-    const std::string prior = exact_previous_answer(
-        TURN_SOURCE_ID, bot_id, bot_model_id(bot_idx));
-    if (!prior.empty()) {
-      TurnReport replay;
-      replay.text = prior;
-      replay.replayed = true;
-      run_answer_phase();
-      emit_answer_deltas(bot_id, bot_name, prior);
-      run_seal();
-      replay.steps = run_copy_steps();
-      return replay;
-    }
-  }
-  bool web = WEB_ENABLED.load();
-  mcp_auto_once();
-  std::string system = build_system(bot_idx, autotalk, other, web);
-  // Memories sit directly after the stable rules. Unchanged block is
-  // byte-identical; a new fact is a suffix, so the prefix stays cached.
-  std::string memory = memory_manifest(bot_id);
+  const bool stateless = model_settings_for(bot_model_id(bot_idx)).deterministic;
+  const bool web = WEB_ENABLED.load();
   std::vector<Val> messages;
-  {
-    Val s = Val::object();
-    s["role"] = "system";
-    s["content"] = system + "\n" + memory;
-    messages.push_back(s);
-  }
-  {
+  std::string tools, system;
+  if (stateless) {
+    // Exactly ONE user message. No system/persona, room transcript, memory,
+    // clock, context tail, MCP notes or tool schemas. Nothing from any
+    // previous turn is sent. The user still sees the full room in the UI.
+    // Jobs use their original prompt without their timestamped wrapper.
+    const std::string input = CURRENT_JOB ? job_plain_prompt(CURRENT_JOB) : TURN_INPUT;
+    if (input.empty()) {
+      TurnReport report;
+      report.error = "Stateless: Originaleingabe fehlt (alter Warteschlangen-Eintrag). Bitte erneut senden.";
+      report.text = report.error;
+      return report; // fail closed; NEVER substitute the room transcript
+    }
     Val u = Val::object();
     u["role"] = "user";
-    // A job run is its own conversation: job prompt + volatile tail only.
+    u["content"] = input;
+    messages.push_back(u);
+  } else {
+    mcp_auto_once();
+    system = build_system(bot_idx, autotalk, other, web);
+    const std::string memory = memory_manifest(bot_id);
+    Val sys = Val::object();
+    sys["role"] = "system";
+    sys["content"] = system + "\n" + memory;
+    messages.push_back(sys);
+    Val u = Val::object();
+    u["role"] = "user";
     u["content"] = (CURRENT_JOB ? job_user_content(CURRENT_JOB) : build_transcript()) +
                    build_context_tail(bot_idx, autotalk, other);
     messages.push_back(u);
+    tools = tools_json(bot_idx, web);
   }
-  std::string tools = tools_json(bot_idx, web);
-  // Size-only diagnostics: no prompt, memory, tool arguments, or secrets.
-  // Useful to distinguish huge MCP schemas from a lost KV/prompt-cache hit.
+  // No payloads or secrets in diagnostics. One-message stateless decoding has
+  // no tools and doesn't depend on the mutable room/system/memory.
   std::cerr << "prompt-footprint model=" << bot_model_id(bot_idx)
+            << " stateless=" << (stateless ? 1 : 0)
             << " system_bytes=" << system.size()
             << " tools_bytes=" << tools.size()
-            << " transcript_bytes=" << messages[1]["content"].asStr().size()
+            << " input_bytes=" << messages.back()["content"].asStr().size()
             << std::endl;
   std::string final_text;
   TurnReport report;
@@ -4317,11 +4270,16 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
     Turn t;
     size_t attempt_budget = context_budget;
     for (int attempt = 0; attempt < 3; ++attempt) {
-      compact_agent_context(messages, tools, attempt_budget, compacted_steps);
+      if (!stateless)
+        compact_agent_context(messages, tools, attempt_budget, compacted_steps);
       t = backend_turn(messages, tools,
                        autotalk ? 0.75 : 0.55, on_delta, turn_thinking(),
                        slot_for_key(bot_id), bot_model_id(bot_idx));
       if (stop_flag().load() || !context_overflow_error(t.error)) break;
+      if (stateless) {
+        t.error = "Stateless-Eingabe überschreitet das Modellkontextfenster; Text nicht verändert.";
+        break;
+      }
       if (attempt == 2) {
         t.error = "Modellkontext trotz Verkleinerung ueberfuellt. "
                   "Arbeitsschritte und VM-Dateien sind erhalten.";
@@ -4343,6 +4301,13 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
       report.error = t.error.substr(0, 280);
       emit_event("error", bot_id, bot_name, report.error);
       run_fail(report.error);
+      break;
+    }
+    // Stateless means one new model inference per input. Never execute tools
+    // or feed the model's output back as a new turn, even if it emits an
+    // unexpected tool call or a continuation marker.
+    if (stateless && !t.calls.empty()) {
+      report.error = "Stateless-Modus: Modell hat einen Werkzeugaufruf angefordert; nicht ausgeführt.";
       break;
     }
     // Ignore malformed DSML arguments; execute only one valid tool call per round.
@@ -4398,6 +4363,7 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
         emit_answer_deltas(bot_id, bot_name, t.text);
       }
     }
+    if (stateless) { completed = true; break; }
     if (!tool_round) {
       if (!pending) { completed = true; break; }
       const std::string p = trim(t.text);
@@ -4700,7 +4666,7 @@ struct Job {
   std::vector<std::string> ids;
   int think = -1;
   uint64_t generation = 0;
-  std::string source_id;
+  std::string input; // one raw chat message, never accumulated context
 };
 static std::deque<Job> JOBS;
 // Queue persistence: pending jobs + the jobs being answered survive a room
@@ -4739,7 +4705,7 @@ static Val job_val(const Job &j) {
   for (auto &i : j.ids) ids.push(Val(i));
   o["ids"] = ids;
   o["think"] = (double)j.think;
-  if (!j.source_id.empty()) o["source_id"] = j.source_id;
+  if (!j.input.empty()) o["input"] = j.input;
   return o;
 }
 static Job val_job(const Val &v) {
@@ -4747,7 +4713,7 @@ static Job val_job(const Val &v) {
   if (auto ids = v.find("ids"); ids && ids->isArr())
     for (auto &i : ids->asArr()) j.ids.push_back(i.asStr());
   if (auto t = v.find("think")) j.think = (int)t->asNum(-1);
-  if (auto src = v.find("source_id")) j.source_id = src->asStr();
+  if (auto input = v.find("input")) j.input = input->asStr();
   return j;
 }
 // Messages sent while a reply runs: NOT in the transcript yet (history stays
@@ -4869,12 +4835,16 @@ static bool cancel_bots(const std::vector<std::string> &ids, bool user = false) 
 // Consecutive messages for the same bots are merged into one queued turn.
 // interrupt=true keeps the old behaviour (abort, then answer).
 static void schedule(const std::vector<std::string> &ids, int think = -1,
-                     bool interrupt = false,
-                     const std::string &source_id = "") {
+                     bool interrupt = false, const std::string &input = "") {
   if (interrupt)
     cancel_bots(ids);
   size_t position = 0;
   bool merged = false;
+  // Every input to a stateless model is its own job; never coalesce prompts.
+  const bool isolated = std::any_of(ids.begin(), ids.end(), [](const std::string &id) {
+    const int idx = agent_index(id);
+    return idx >= 0 && model_settings_for(bot_model_id(idx)).deterministic;
+  });
   {
     std::lock_guard<std::mutex> lk(JOB_MTX);
     ++AUTO_GENERATION;
@@ -4882,13 +4852,13 @@ static void schedule(const std::vector<std::string> &ids, int think = -1,
     AUTO_LAST_PROGRESS.clear();
     AUTO_TURNS_LEFT = AUTO_MAX_TURNS;
     AUTO_READY = false;
-    if (!JOBS.empty() && JOBS.back().ids == ids) {
+    if (!isolated && !JOBS.empty() && JOBS.back().ids == ids) {
       JOBS.back().generation = AUTO_GENERATION;
       JOBS.back().think = think; // latest choice wins
-      JOBS.back().source_id = source_id;
+      JOBS.back().input = input;
       merged = true;
     } else {
-      JOBS.push_back(Job{ids, think, AUTO_GENERATION, source_id});
+      JOBS.push_back(Job{ids, think, AUTO_GENERATION, input});
     }
     position = JOBS.size();
     save_queue_locked();
@@ -5092,10 +5062,6 @@ static void attach_work(Val &msg, const TurnReport &report) {
       (*it)["thought_ms"] = report.thought_ms;
       msg["thought_ms"] = report.thought_ms;
     }
-    if (report.replayed) {
-      (*it)["replayed"] = true;
-      msg["replayed"] = true;
-    }
     if (report.tools.size()) {
       (*it)["tools"] = report.tools;
       msg["tools"] = report.tools;
@@ -5150,8 +5116,7 @@ static TurnReport generate_and_post(int idx, bool automatic) {
       }
     }
     if (!duplicate) {
-      Val msg = append_room("assistant", name, report.text, id,
-                            nullptr, "", TURN_SOURCE_ID, bot_model_id(idx));
+      Val msg = append_room("assistant", name, report.text, id);
       attach_work(msg, report);
       msg["type"] = "bot_done";
       publish(mj::dump(msg));
@@ -5294,7 +5259,7 @@ static void await_gate(Lane *lane, const std::vector<std::string> &ids,
 }
 static void lane_turn(Lane *lane, uint64_t run, std::vector<std::string> ids,
                       bool automatic, int think, std::string owner, uint64_t generation, uint64_t epoch,
-                      std::string source_id,
+                      std::string input,
                       std::shared_ptr<StartGate> wait_for,
                       std::shared_ptr<StartGate> own, std::string after) {
   bool more = false, owner_ran = false;
@@ -5306,7 +5271,7 @@ static void lane_turn(Lane *lane, uint64_t run, std::vector<std::string> ids,
     TL_LANE = lane;
     TL_GATE = own && stagger_mode() == "think" ? own.get() : nullptr;
     TURN_THINK = think;
-    TURN_SOURCE_ID = automatic ? "" : source_id;
+    TURN_INPUT = automatic ? "" : input;
     LAST_THINK = think;
     if (!(automatic && !AUTOTALK.load()))
       for (const auto &id : ids) {
@@ -5336,7 +5301,7 @@ static void lane_turn(Lane *lane, uint64_t run, std::vector<std::string> ids,
           emit_event("error", id, "", e.what());
         }
       }
-    TURN_SOURCE_ID.clear();
+    TURN_INPUT.clear();
     TL_LANE = nullptr;
     TL_GATE = nullptr;
   }
@@ -5394,11 +5359,11 @@ static void start_lanes_locked(const Job &job, bool automatic) {
     lane->cancelled_bots.clear();
     lane->stop = false;
     lane->user_cancel = false;
-    ACTIVE_JOBS[run] = Job{ids, job.think, job.generation, job.source_id};
+    ACTIVE_JOBS[run] = Job{ids, job.think, job.generation, job.input};
     BUSY = true;
     auto gate = stagger ? std::make_shared<StartGate>() : nullptr;
     std::thread(lane_turn, lane, run, ids, automatic, job.think, owner,
-                job.generation, EPOCH.load(), job.source_id,
+                job.generation, EPOCH.load(), job.input,
                 prev, gate, prev_name).detach();
     prev = gate;
     prev_name = bot_field(agent_index(ids.front()), "name", "Bot");
@@ -5431,8 +5396,7 @@ static bool dispatch_locked() {
                           p.text, "", nullptr, p.login);
     msg["type"] = "message";
     publish(mj::dump(msg));
-    JOBS.push_back(Job{p.ids, p.think, ++AUTO_GENERATION,
-                       mag::str(msg, "id")});
+    JOBS.push_back(Job{p.ids, p.think, ++AUTO_GENERATION, p.text});
     AUTO_OWNER = p.ids.empty() ? "" : p.ids.front();
     AUTO_LAST_PROGRESS.clear();
     AUTO_TURNS_LEFT = AUTO_MAX_TURNS;

@@ -225,6 +225,47 @@ class Native(unittest.TestCase):
   self.request('/api/model-settings',{'id':second,'deterministic':True})
   self.assertFalse(self.request('/api/state')['models'][0]['deterministic'])
   self.assertTrue(self.request('/api/state')['models'][1]['deterministic'])
+ def test_05b_exact_repeat_reuses_only_plain_text_on_same_bot(self):
+  self.wait_idle()
+  Model.reply='Erste feste Antwort.'
+  try:
+   model=self.request('/api/state')['models'][0]['id']
+   self.request('/api/model',{'id':model})
+   self.error(400,'/api/model-settings',{'id':model,'exact_repeat':'yes'})
+   response=self.request('/api/model-settings',{'id':model,'exact_repeat':True})
+   self.assertTrue(response['models'][0]['exact_repeat'])
+   before=len(Model.calls)
+   self.request('/api/message',{'text':'exakte Wiederholung prüfen','bots':['test']})
+   for _ in range(150):
+    state=self.request('/api/state')
+    replies=[m for m in state['room'] if m.get('role')=='assistant' and m.get('content')=='Erste feste Antwort.']
+    if len(replies)>=1 and not state['busy']:break
+    time.sleep(.05)
+   self.assertGreater(len(Model.calls),before,'first message must reach model')
+   self.assertTrue(replies)
+   self.assertEqual(replies[-1]['model'],model)
+   self.assertIn('reply_to',replies[-1])
+   count=len(Model.calls)
+   Model.reply='Eine andere Antwort.'
+   self.request('/api/message',{'text':'exakte Wiederholung prüfen','bots':['test']})
+   for _ in range(150):
+    state=self.request('/api/state')
+    replayed=[m for m in state['room'] if m.get('role')=='assistant' and m.get('replayed')]
+    if replayed and not state['busy']:break
+    time.sleep(.05)
+   self.assertTrue(replayed,'second identical message should replay text')
+   self.assertEqual(replayed[-1]['content'],'Erste feste Antwort.')
+   self.assertEqual(len(Model.calls),count,'exact repeat must skip LLM and all tools')
+   self.request('/api/model-settings',{'id':model,'exact_repeat':False})
+   self.request('/api/message',{'text':'exakte Wiederholung prüfen','bots':['test']})
+   for _ in range(150):
+    if len(Model.calls)>count:break
+    time.sleep(.05)
+   self.assertGreater(len(Model.calls),count,'disabled replay must use model')
+   self.wait_idle()
+  finally:
+   Model.reply=None
+   self.request('/api/model-settings',{'id':'deepseek-v4-flash-0731','exact_repeat':False})
  def test_06_stop_interrupts_and_human_input_stays_responsive(self):
   Model.delay=3;self.request('/api/autotalk',{'on':True})
   time.sleep(.15)

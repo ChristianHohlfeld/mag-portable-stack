@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# NUMA1 only. Refuse to start if IQ3 is running or backups are active.
+# NUMA1 only: the E5-2680 v4 has 14 physical cores per socket. Run 14
+# inference/batch workers on node1, never migrate weights to remote RAM.
+# Refuse to start if IQ3 is running or backups are active.
 set -euo pipefail
 fail(){ echo "Qwen NUMA1: $*" >&2; exit 4; }
 REV=$(cat /usr/local/lib/mag-qwen/runtime.sha)
@@ -20,6 +22,6 @@ bash /usr/local/lib/mag-qwen/verify-model.sh || fail 'model SHA verification fai
 exec /usr/bin/numactl --cpunodebind=1 --membind=1 "$BIN" \
   --model "$MODEL" --alias qwen3.8-flash-next-uncensored \
   --host 127.0.0.1 --port 8091 --ctx-size 16384 --parallel 1 \
-  --threads 12 --threads-batch 12 --numa numactl \
+  --threads 14 --threads-batch 14 --numa numactl \
   --jinja --reasoning-format auto --cache-ram 8192 \
   --slot-save-path /var/lib/mag-llm/slots/qwen --no-ui

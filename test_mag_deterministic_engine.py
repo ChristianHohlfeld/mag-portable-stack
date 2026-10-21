@@ -16,11 +16,18 @@ class ModelFixture(http.server.BaseHTTPRequestHandler):
         payload = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         self.server.calls.append(payload)
         ids = [100, 103, 77, 119]
-        if self.server.mode == "diverge" and len(self.server.calls) == 4:
+        if self.server.mode in ("diverge", "logprobsdiverge") and len(self.server.calls) == 4:
             ids[2] += 1
         text = "different" if self.server.mode == "textdiff" and len(self.server.calls) == 4 else "same"
         obj = {"choices": [{"message": {"role": "assistant", "content": text}}]}
-        if self.server.mode != "missingtokens": obj["token_ids"] = ids
+        if self.server.mode.startswith("logprobs"):
+            # llama.cpp/ik_llama shape with n_probs=1: the sampled id per token;
+            # top_logprobs alternatives carry other ids that must be ignored.
+            obj["choices"][0]["logprobs"] = {"content": [
+                {"id": i, "token": "t", "logprob": -0.1,
+                 "top_logprobs": [{"id": 9000 + n, "token": "x", "logprob": -2.0}]}
+                for n, i in enumerate(ids)]}
+        elif self.server.mode != "missingtokens": obj["token_ids"] = ids
         data = json.dumps(obj).encode()
         self.send_response(200)
         if self.server.mode == "chunked":
@@ -98,6 +105,18 @@ class EngineHTTPTests(unittest.TestCase):
         self.assertNotEqual(r.returncode, 0)
         self.assertEqual(len(self.server.calls), 1)
         self.assertIn("Keine echten Token-IDs", r.stderr)
+    def test_sampled_ids_from_chat_logprobs(self):
+        self.server.mode = "logprobs"
+        r = self.cli("--verify")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(len(self.server.calls), 20)
+        self.assertEqual(self.server.calls[0]["n_probs"], 1)
+    def test_logprob_id_divergence_fails_on_run_four(self):
+        self.server.mode = "logprobsdiverge"
+        r = self.cli("--verify")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertEqual(len(self.server.calls), 4)
+        self.assertIn("Token-Abweichung", r.stderr)
     def test_chunked_http(self):
         self.server.mode = "chunked"
         r = self.cli("--verify")

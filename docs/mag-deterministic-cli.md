@@ -15,8 +15,9 @@ Der Selftest benutzt eine **synthetische lokale Matrix-Transportklasse**. Er üb
 ## Reales Modell prüfen
 
 ```bash
-./mag_det --verify --host 127.0.0.1 --port 8080 --model qwen2.5-72b --numa 0,1,2,3,4,5,6,7
-./mag_det --infer "hi" --host 127.0.0.1 --port 8080 --model qwen2.5-72b --numa 0,1,2,3,4,5,6,7
+./mag_det --verify --host 127.0.0.1 --port 8080 --model deepseek-v4-flash-0731 --numa none
+./mag_det --verify --host 127.0.0.1 --port 8080 --model qwen3.8-flash-next-uncensored --numa none
+./mag_det --infer "hi" --host 127.0.0.1 --port 8080 --model qwen3.8-flash-next-uncensored --numa none
 ```
 
 `--verify`: 20 **neue sequenzielle HTTP-Inferenzanfragen** mit identischer Stateless-Nachricht und Parametern; echte generierte Token-IDs **und** Antworttext werden verglichen. Erste Abweichung führt sofort zum Abbruch (Exit-Code != 0). Ein erfolgreiches Ergebnis gilt nur für diese getestete Eingabe und Laufzeitkonfiguration, nicht universell für sämtliche möglichen Prompts.
@@ -25,11 +26,13 @@ Der Selftest benutzt eine **synthetische lokale Matrix-Transportklasse**. Er üb
 
 Stateless JSON: eine einzige `user`-Nachricht mit der Roh-Eingabe. `temperature=0`, `top_k=1`, `seed=42`, `cache_prompt=false`, kein Tool-Kontext und kein Verlauf.
 
+**Token-IDs bei MAG:** Weder ik_llama (DeepSeek) noch llama.cpp (Qwen) liefern `tokens`/`token_ids` auf `/v1/chat/completions`. Mit `n_probs: 1` (setzt die CLI) liefern beide aber je Token `choices[0].logprobs.content[i].id` – die vom Sampler tatsächlich gewählte ID. Die CLI liest nur diese Ebene, nie `top_logprobs`. Gemessen 2026-10-21, Raum gestoppt: DeepSeek und Qwen je 20/20 identisch (Token-IDs und Text).
+
 **Backend-Voraussetzungen:** Der lokale Endpunkt muss `/v1/chat/completions` verstehen und **echte generierte Token-IDs** als `tokens` oder `token_ids` im JSON zurückgeben (die Requests setzen `return_tokens` und `return_token_ids`). Fehlen sie, verweigert der Verifikator die Freigabe; weder Textbytes noch Logprob-Strings werden als Token-IDs ausgegeben. Diese Zusatzoptionen werden nicht von jedem llama.cpp-/vLLM-Build auf dem OpenAI-kompatiblen Endpunkt unterstützt.
 
 **Wichtige Genauigkeitsgrenzen:** 20 HTTP-Anfragen gegen einen bereits laufenden Server sind **keine 20 Gewichts-/Prozess-Kaltstarts**. `--numa` setzt nur die **CPU-Affinity dieses CLI-Prozesses**, nicht die des bereits laufenden Inferenzservers. NUMA-Zuordnung, Threadzahl, Batching, Gewichte und Version des Modellservers müssen separat dort festgelegt und überprüft werden. Der Fingerprint enthält deklarierte Konfigurationsdaten; ohne `--weights-sha256` sind Gewichte nicht kryptografisch attestiert. Der übergebene Hash wird nicht gegen die Serverdatei gegengeprüft.
 
-Die Beispiele aus der Anforderung nennen `qwen2.5-72b`; **MAG verwendet derzeit andere Modell-IDs** (`deepseek-v4-flash-0731` bzw. `qwen3.8-flash-next-uncensored`). `--model` und `--port` müssen zum tatsächlich laufenden Inferenzendpunkt passen.
+`--model` und `--port` müssen zum tatsächlich laufenden Inferenzendpunkt passen (MAG: Audit-Gateway `:8080`). Für saubere Messungen den Raum vorher stoppen (`systemctl stop mag-120`); parallele Anfragen ändern die Rechenreihenfolge.
 
 Optionen: `--endpoint /v1/chat/completions`, `--timeout 600`, `--numa none` (ohne Client-Pinning), `--weights-sha256 <hex>`, `--backend-build <version>`, `--template-id <id>`.
 

@@ -360,6 +360,7 @@ public:
              << "  \"cache_prompt\": false,\n"
              << "  \"stream\": false,\n"
              << "  \"logprobs\": true,\n"
+             << "  \"n_probs\": 1,\n"
              << "  \"return_tokens\": true,\n"
              << "  \"return_token_ids\": true,\n"
              << "  \"chat_template_kwargs\": {\"enable_thinking\": "
@@ -420,8 +421,11 @@ public:
     }
 
     /**
-     * Reads only real generated integer IDs under "tokens" or "token_ids".
-     * Never guesses token IDs from bytes or logprobs.
+     * Reads only real generated integer IDs: "tokens"/"token_ids", or else the
+     * sampled "id" of each choices[0].logprobs.content entry. llama.cpp and
+     * ik_llama return the latter on /v1/chat/completions with n_probs >= 1;
+     * it is the token the sampler chose, not a guess from bytes or text.
+     * Alternatives under top_logprobs are never read.
      */
     static void parseInferenceResponse(const std::string& raw_json, RawInferenceResult& out) {
         out.content = extractStringField(raw_json, "content");
@@ -430,6 +434,9 @@ public:
         out.token_ids = extractIntArrayField(raw_json, "\"tokens\"");
         if (out.token_ids.empty()) {
             out.token_ids = extractIntArrayField(raw_json, "\"token_ids\"");
+        }
+        if (out.token_ids.empty()) {
+            out.token_ids = extractLogprobTokenIds(raw_json);
         }
 
         // Only actual backend-supplied integer token IDs are admissible.
@@ -496,6 +503,43 @@ private:
             }
         }
         return result;
+    }
+
+    // choices[0].logprobs.content[i].id, string-aware; only keys at depth 1 of
+    // each entry object, so nested top_logprobs ids are skipped.
+    static std::vector<int32_t> extractLogprobTokenIds(const std::string& json) {
+        std::vector<int32_t> res;
+        size_t pos = json.find("\"logprobs\"");
+        if (pos == std::string::npos) return res;
+        pos = json.find("\"content\"", pos);
+        if (pos == std::string::npos) return res;
+        pos = json.find('[', pos);
+        if (pos == std::string::npos) return res;
+        int depth = 0;          // 0 = inside the content array
+        bool in_str = false, want_id = false;
+        std::string key;
+        for (size_t i = pos + 1; i < json.size(); ++i) {
+            char c = json[i];
+            if (in_str) {
+                if (c == '\\') { if (i + 1 < json.size()) key.push_back(json[++i]); }
+                else if (c == '"') in_str = false;
+                else key.push_back(c);
+                continue;
+            }
+            if (c == '"') { in_str = true; key.clear(); continue; }
+            if (c == '{' || c == '[') { ++depth; continue; }
+            if (c == '}' || c == ']') { if (depth == 0) break; --depth; continue; }
+            if (c == ':' && depth == 1) { want_id = key == "id"; continue; }
+            if (want_id && (std::isdigit(static_cast<unsigned char>(c)) || c == '-')) {
+                size_t idx = 0;
+                try { res.push_back(std::stoi(json.substr(i, 16), &idx)); } catch (...) { return {}; }
+                i += idx - 1;
+                want_id = false;
+            } else if (c != ' ' && c != '\n' && c != '\t' && c != '\r') {
+                want_id = false;
+            }
+        }
+        return res;
     }
 
     static std::vector<int32_t> extractIntArrayField(const std::string& json, const std::string& key_quoted) {

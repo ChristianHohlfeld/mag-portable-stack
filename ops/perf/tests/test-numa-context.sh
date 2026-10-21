@@ -37,7 +37,11 @@ assert 'MAG_ROOM_REASONING_HISTORY_BYTES' in room
 assert 'static void schedule_prewarm()' in room and 'schedule_prewarm();' in room
 assert 'MAG_ROOM_PREWARM' in room and 'body["max_tokens"] = 1;' in room
 assert 'MAG_ROOM_PREFIX_DISK' in room and 'prefix_slot("restore")' in room and 'prefix_slot("save")' in room
-assert 'if (st.ready && !was_ready) schedule_prewarm();' in room
+assert 'secondary_ready && !was_secondary_ready' in room  # Qwen ready later after reboot
+pty = Path('mag-room/native/guest_pty.hpp').read_text()
+udp = Path('mag-room/native/browser_udp.hpp').read_text()
+assert 'kill(-group, SIGWINCH)' in pty and 'if (running) terminal_.redraw();' in udp  # live repaint, no cache
+assert '"MGB5"' in Path('mag-room/native/browser.cpp').read_text() and '== "MGB5"' in room
 routes = Path('mag-room/native/routes.hpp').read_text()
 ui = Path('mag-room/web/index.html').read_text()
 assert 'path == "/api/model-radius"' in routes and 'actor.role != "owner"' in routes

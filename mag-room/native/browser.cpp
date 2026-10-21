@@ -397,7 +397,7 @@ int main(int argc, char **argv) {
                          "t.includes('are you a robot')||"
                          "t.includes('security check')||"
                          "t.includes('captcha'))})()})");
-      state["udp_transport"] = "MGB4";
+      state["udp_transport"] = "MGB5"; // MGB5: terminal_open repaints a running shell
       state["udp_port"] = 9227;
       try {
         const Val nav = c.call("Page.getNavigationHistory");

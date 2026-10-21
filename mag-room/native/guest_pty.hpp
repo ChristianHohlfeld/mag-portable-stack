@@ -10,6 +10,7 @@
 #include <string>
 #include <sys/ioctl.h>
 #include <sys/wait.h>
+#include <termios.h>
 #include <unistd.h>
 
 class GuestPTY {
@@ -61,6 +62,15 @@ public:
     ws.ws_row = static_cast<unsigned short>(rows);
     ioctl(master_, TIOCSWINSZ, &ws);
     if (child_ > 0) kill(child_, SIGWINCH);
+  }
+
+  // A viewer attached to a running session: make the foreground program
+  // (bash at its prompt, vim, top, ...) repaint its current screen live.
+  void redraw() {
+    if (master_ < 0) return;
+    const pid_t group = tcgetpgrp(master_);
+    if (group > 0) kill(-group, SIGWINCH);
+    else if (child_ > 0) kill(child_, SIGWINCH);
   }
 
   std::string output() {

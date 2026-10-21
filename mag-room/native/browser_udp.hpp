@@ -125,7 +125,10 @@ public:
       return;
     }
     if (kind == "terminal_open") {
+      // A new shell prints its own prompt; an existing one repaints.
+      const bool running = terminal_.fd() >= 0;
       terminal_.start();
+      if (running) terminal_.redraw();
       return;
     }
     if (kind == "terminal_resize") {

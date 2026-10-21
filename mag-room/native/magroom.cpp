@@ -2413,7 +2413,7 @@ static std::string ensure_browser(const std::string &vm) {
     Val state;
     if (!mj::parse(reply.body, state)) return false;
     auto ver = state.find("udp_transport");
-    return ver && ver->asStr() == "MGB4";
+    return ver && ver->asStr() == "MGB5"; // older controllers are replaced
   };
   for (int probe = 0; probe < 3; ++probe) {
     auto status = browser_call(ip, BROWSERD_PORT, "GET", "/state", "",
@@ -2874,10 +2874,11 @@ static std::string model_wait_text() {
   return "Modell lädt noch – bitte gleich erneut senden.";
 }
 // Publishes {"type":"model"} whenever the combined state changes.
+static std::string secondary_room_model();
 static void model_watcher_loop() {
   MODEL_WATCHER = true;
   std::string last;
-  bool was_ready = false;
+  bool was_ready = false, was_secondary_ready = false;
   while (!SHUTDOWN.load()) {
     ModelStatus st = probe_model_status();
     {
@@ -2887,8 +2888,22 @@ static void model_watcher_loop() {
     const std::string key = st.state + "|" + st.label + "|" + st.detail;
     // A (re)started model server has an empty prompt cache: load the saved
     // prefix and prewarm before the next user turn instead of during it.
-    if (st.ready && !was_ready) schedule_prewarm();
+    // The status above covers the primary model only; after a reboot the
+    // secondary server becomes ready minutes later, so probe it as well.
+    bool secondary_ready = false;
+    if (DUAL_NUMA) {
+      std::string reply;
+      long health = 0;
+      secondary_ready =
+          http_simple(BACKEND_HOST, BACKEND_PORT, "GET", "/health", "",
+                      {{"Authorization", "Bearer " + API_KEY},
+                       {"X-Mag-Model", secondary_room_model()}},
+                      reply, &health, nullptr, 2000) && health == 200;
+    }
+    if ((st.ready && !was_ready) || (secondary_ready && !was_secondary_ready))
+      schedule_prewarm();
     was_ready = st.ready;
+    was_secondary_ready = secondary_ready;
     if (key != last) {
       last = key;
       Val e = Val::object();

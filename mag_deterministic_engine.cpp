@@ -14,6 +14,9 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cctype>
+#include <cerrno>
+#include <memory>
 #include <cstdint>
 #include <cstring>
 #include <ctime>
@@ -164,9 +167,9 @@ private:
 };
 
 /**
- * RAII Guard that pins the calling thread to a fixed set of physical CPU cores
+ * RAII Guard that pins only the CLI HTTP client thread to specified logical CPUs
  * (e.g. a single NUMA island) during deterministic verification and inference,
- * preventing OS thread migration across NUMA nodes.
+ * It does NOT move or pin the inference server (configure that service separately).
  */
 class ScopedNumaAffinity {
 public:
@@ -184,7 +187,9 @@ public:
             }
         }
         if (sched_setaffinity(0, sizeof(cpu_set_t), &mask) != 0) {
-            std::cerr << "[MAG-WARN] sched_setaffinity failed (insufficient permissions or invalid core ID).\n";
+            const std::string why = std::strerror(errno);
+            restorable_ = false;
+            throw std::runtime_error("NUMA client affinity failed: " + why);
         }
 #else
         (void)allowed_cores;
@@ -216,11 +221,13 @@ private:
  */
 struct ModelDeterministicConfig {
     std::string model_id = "qwen2.5-72b-instruct";
-    std::string weights_sha256_or_path = "/models/qwen2.5-72b-instruct.gguf";
+    std::string weights_sha256_or_path = "UNATTESTED"; // optional --weights-sha256
     std::string chat_template_id = "chatml-default-v1";
     std::string backend_host = "127.0.0.1";
     uint16_t backend_port = 8080;
     std::string endpoint_path = "/v1/chat/completions";
+    std::string backend_build = "unspecified";
+    int timeout_sec = 600;
 
     // Fixed deterministic decoding parameters
     float temperature = 0.0f;
@@ -237,6 +244,11 @@ struct ModelDeterministicConfig {
         oss << "model_id=" << model_id
             << "|weights=" << weights_sha256_or_path
             << "|template=" << chat_template_id
+            << "|backend-build=" << backend_build
+            << "|host=" << backend_host
+            << "|port=" << backend_port
+            << "|endpoint=" << endpoint_path
+            << "|timeout=" << timeout_sec
             << "|temp=" << std::fixed << std::setprecision(6) << temperature
             << "|top_k=" << top_k
             << "|top_p=" << std::fixed << std::setprecision(6) << top_p
@@ -349,6 +361,7 @@ public:
              << "  \"stream\": false,\n"
              << "  \"logprobs\": true,\n"
              << "  \"return_tokens\": true,\n"
+             << "  \"return_token_ids\": true,\n"
              << "  \"chat_template_kwargs\": {\"enable_thinking\": "
              << (cfg.thinking_enabled ? "true" : "false") << "}\n"
              << "}";
@@ -423,31 +436,9 @@ public:
             out.token_ids = extractIntArrayField(raw_json, "\"token_ids\"");
         }
 
-        // 2. Try extracting "token_id": <int> entries from logprobs array
-        if (out.token_ids.empty()) {
-            extractRepeatedIntKey(raw_json, "\"token_id\"", out.token_ids);
-        }
-
-        // 3. Try extracting individual logprob token strings and hashing each token piece
-        if (out.token_ids.empty()) {
-            size_t lp_pos = raw_json.find("\"logprobs\"");
-            if (lp_pos != std::string::npos) {
-                std::vector<std::string> token_pieces;
-                extractRepeatedStringKey(raw_json.substr(lp_pos), "\"token\"", token_pieces);
-                for (const auto& piece : token_pieces) {
-                    out.token_ids.push_back(fnv1a32(piece));
-                }
-            }
-        }
-
-        // 4. If backend returned neither `"tokens"` nor `"logprobs"`, segment UTF-8 codepoints/bytes
-        // so token-by-token comparison still pinpoints the exact divergence offset.
-        if (out.token_ids.empty() && !out.content.empty()) {
-            for (unsigned char c : out.content) {
-                out.token_ids.push_back(static_cast<int32_t>(c));
-            }
-        }
-
+        // Only actual backend-supplied integer token IDs are admissible.
+        // Byte hashes or top-logprobs entries must never masquerade as tokens.
+        // Request return_tokens (llama.cpp) / return_token_ids (vLLM).
         // Compute cryptographic hash over the exact token ID sequence + content
         std::ostringstream tok_stream;
         for (int32_t tid : out.token_ids) {
@@ -654,7 +645,17 @@ public:
         char buffer[4096];
         ssize_t n_read = 0;
         while ((n_read = ::recv(sock, buffer, sizeof(buffer), 0)) > 0) {
+            if (raw_response.size() + static_cast<size_t>(n_read) > 8 * 1024 * 1024) {
+                ::close(sock);
+                result.error_message = "HTTP response exceeds 8 MiB";
+                return result;
+            }
             raw_response.append(buffer, static_cast<size_t>(n_read));
+        }
+        if (n_read < 0) {
+            ::close(sock);
+            result.error_message = "HTTP receive failed/timeout: " + std::string(std::strerror(errno));
+            return result;
         }
         ::close(sock);
 
@@ -669,6 +670,32 @@ public:
 
         std::string headers = raw_response.substr(0, header_end);
         std::string body = raw_response.substr(header_end + 4);
+        if (headers.find("Transfer-Encoding: chunked") != std::string::npos ||
+            headers.find("transfer-encoding: chunked") != std::string::npos) {
+            std::string unchunked;
+            size_t pos = 0;
+            bool ended = false;
+            while (pos < body.size()) {
+                const size_t nl = body.find("\r\n", pos);
+                if (nl == std::string::npos) break;
+                const std::string len = body.substr(pos, nl - pos);
+                size_t used = 0, size = 0;
+                try { size = std::stoull(len, &used, 16); } catch (...) { break; }
+                if (used == 0 || (used < len.size() && len[used] != ';')) break;
+                pos = nl + 2;
+                if (size == 0) { ended = true; break; }
+                if (size > body.size() - pos || size > 8 * 1024 * 1024 - unchunked.size()) break;
+                unchunked.append(body, pos, size);
+                pos += size;
+                if (body.compare(pos, 2, "\r\n") != 0) break;
+                pos += 2;
+            }
+            if (!ended) {
+                result.error_message = "Invalid chunked HTTP response";
+                return result;
+            }
+            body = std::move(unchunked);
+        }
 
         // Parse HTTP status code
         std::istringstream hss(headers);
@@ -682,7 +709,7 @@ public:
 
         JsonUtils::parseInferenceResponse(body, result);
         if (result.token_ids.empty()) {
-            result.error_message = "Inference returned empty token sequence";
+            result.error_message = "Keine echten Token-IDs geliefert (tokens/token_ids). Token-Verifikation nicht moeglich; Backend-API pruefen.";
             return result;
         }
 
@@ -699,9 +726,9 @@ public:
 /**
  * MAG Deterministic Engine Controller.
  * Manages:
- *  - Exclusive execution locks per model (prevents Continuous Batching interference)
+ *  - Local mutex (does not control remote inference-server continuous batching)
  *  - NUMA core pinning during execution
- *  - 20x Cold-Start Fail-Fast Verification ("Prüfen")
+ *  - 20x fresh HTTP inference (same running backend) Fail-Fast Verification ("Prüfen")
  *  - Fingerprint validation before allowing verified deterministic claims
  */
 class MagDeterministicEngine {
@@ -712,7 +739,7 @@ public:
         : transport_(std::move(transport)), state_filepath_(std::move(state_filepath)) {}
 
     /**
-     * Runs the 20x Cold-Start Hardware Verification ("Prüfen" button handler).
+     * Runs the 20x fresh HTTP inference (same running backend) Hardware Verification ("Prüfen" button handler).
      * Completely isolated from any MAG room, chat history, or memory.
      * Uses Fail-Fast early exit on the very first diverging token ID.
      */
@@ -734,7 +761,7 @@ public:
 
         for (int run = 0; run < report.total_target_runs; ++run) {
             RawInferenceResult res = transport_->postJson(
-                cfg.backend_host, cfg.backend_port, cfg.endpoint_path, payload);
+                cfg.backend_host, cfg.backend_port, cfg.endpoint_path, payload, cfg.timeout_sec);
 
             if (!res.success || res.token_ids.empty()) {
                 report.verified = false;
@@ -831,7 +858,7 @@ public:
 
         ScopedNumaAffinity numa_guard(room.deterministic_mode_enabled ? cfg.numa_cores : std::vector<int>{});
         const std::string payload = JsonUtils::buildRequestForRoom(cfg, room, user_input, max_tokens);
-        return transport_->postJson(cfg.backend_host, cfg.backend_port, cfg.endpoint_path, payload);
+        return transport_->postJson(cfg.backend_host, cfg.backend_port, cfg.endpoint_path, payload, cfg.timeout_sec);
     }
 
     /**
@@ -1039,7 +1066,7 @@ int main(int argc, char* argv[]) {
 
     if (mode == "--verify" || mode == "--infer") {
         MagDeterministicEngine engine(std::make_shared<HttpInferenceTransport>());
-        std::cout << "[MAG] Starte 20x Kaltstart-Verifikation gegen "
+        std::cout << "[MAG] Starte 20x frische HTTP-Inferenz-Verifikation (kein Server-Kaltstart) gegen "
                   << cfg.backend_host << ":" << cfg.backend_port
                   << " (Modell: " << cfg.model_id << ")...\n"
                   << "[MAG] Konfigurations-Fingerprint: " << cfg.computeFingerprint() << "\n";
@@ -1099,7 +1126,7 @@ int main(int argc, char* argv[]) {
     MagDeterministicEngine clean_engine(std::make_shared<LocalHardwareMatrixTransport>(/*inject_noise=*/false));
     VerificationReport pass_rep = clean_engine.verifyModel20x(cfg, 32);
 
-    std::cout << "[Test 2] 20x Kaltstart-Prüfung (Feste Reduktion & NUMA-Pinning):\n"
+    std::cout << "[Test 2] 20x Anfrage-Prüfung (Feste Reduktion & Client-CPU-Affinity):\n"
               << "         Status:      " << (pass_rep.verified ? "VERIFIZIERT (20/20 identisch)" : "FEHLGESCHLAGEN") << "\n"
               << "         Fingerprint: " << pass_rep.config_fingerprint << "\n"
               << "         Token-Hash:  " << pass_rep.baseline_token_hash << "\n"

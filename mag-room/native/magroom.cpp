@@ -1777,7 +1777,16 @@ static std::string build_system(int bot_idx, bool autotalk,
   system += has_vm ? FILES_RULES : FILES_RULES_CHAT;
   if (has_vm)
     system += FRONTEND_RULES;
-  system += mcp_prompt_notes(bot_idx);
+  if (DUAL_NUMA && bot_model_id(bot_idx) == "qwen3.8-flash-next-uncensored") {
+    // Full plugin docs/schemas remain available on demand. Do not force the
+    // CPU to prefill every plugin definition before the first chat token.
+    system += "\\nPlugins: find_plugin_tools(query) liefert die genauen Names, Argument-Schemas "
+              "und Serverhinweise. Dann call_plugin_tool(name, arguments) ausfuehren. "
+              "Nicht raten: erst finden. Alle gebundenen Plugins bleiben verfuegbar; "
+              "Schreibaktionen benoetigen unveraendert Nutzerfreigabe.\\n";
+  } else {
+    system += mcp_prompt_notes(bot_idx);
+  }
   return system;
 }
 static std::string server_clock_minute() {
@@ -2906,6 +2915,85 @@ struct TurnReport {
 };
 
 #include "mcp.hpp"
+// Fixed Qwen tool gateway. The complete MCP catalog is resolved lazily via
+// find_plugin_tools; nothing is disabled and mcp_dispatch_tool still enforces
+// binding, offline policy and human approval on every actual call.
+static const char *T_FIND_PLUGIN_TOOLS = R"tool({"type":"function","function":{"name":"find_plugin_tools","description":"Find available MCP plugin tools by keyword. Returns exact tool names, JSON input schemas and plugin-specific usage instructions. Search before calling a plugin; all plugins remain accessible.","parameters":{"type":"object","properties":{"query":{"type":"string","description":"Tool name, capability or plugin, e.g. search issues, GitHub pull request, calendar"},"limit":{"type":"integer","minimum":1,"maximum":8}},"required":["query"],"additionalProperties":false}}})tool";
+static const char *T_CALL_PLUGIN_TOOL = R"tool({"type":"function","function":{"name":"call_plugin_tool","description":"Invoke one available MCP plugin tool found with find_plugin_tools using its exact original tool name and arguments. Existing user-approval, tool binding and security rules are unchanged.","parameters":{"type":"object","properties":{"name":{"type":"string","description":"Exact mcp__... tool function name from find_plugin_tools"},"arguments":{"type":"object","description":"Exact tool input object according to the discovered schema","additionalProperties":true}},"required":["name","arguments"],"additionalProperties":false}}})tool";
+static std::string find_plugin_tools(int bot_idx, const Val &arguments) {
+  const std::string query = trim(mag::str(arguments, "query"));
+  if (query.empty() || query.size() > 160)
+    throw std::runtime_error("Plugin-Suche benoetigt 1-160 Zeichen.");
+  const std::string key = lc(query);
+  std::vector<std::string> terms;
+  std::string word;
+  for (unsigned char c : key) {
+    if (std::isalnum(c) || c == '_') word += (char)c;
+    else if (!word.empty()) { terms.push_back(word); word.clear(); }
+  }
+  if (!word.empty()) terms.push_back(word);
+  const int limit = std::clamp((int)(arguments.find("limit") ?
+      arguments.find("limit")->asNum(5) : 5), 1, 8);
+  struct Hit { int score; McpBotTool tool; };
+  std::vector<Hit> hits;
+  const auto available = mcp_bot_tools(bot_idx); // already binding/off-filtered
+  for (const auto &t : available) {
+    const Val *f = t.def.find("function");
+    const std::string desc = f ? mag::str(*f, "description") : "";
+    const std::string name = lc(t.fn + " " + t.tool);
+    const std::string header = lc(t.title + " " + t.server_name);
+    const std::string detail = lc(desc);
+    int score = (key == "all" || key == "*") ? 1 : 0;
+    if (name.find(key) != std::string::npos) score += 90;
+    if (header.find(key) != std::string::npos) score += 50;
+    for (const auto &w : terms) {
+      if (w.size() < 2) continue;
+      if (name.find(w) != std::string::npos) score += 30;
+      else if (header.find(w) != std::string::npos) score += 18;
+      else if (detail.find(w) != std::string::npos) score += 6;
+    }
+    if (score > 0) hits.push_back({score, t});
+  }
+  std::stable_sort(hits.begin(), hits.end(), [](const Hit &a, const Hit &b) {
+    return a.score > b.score;
+  });
+  Val out = Val::object(), matches = Val::array(), instructions = Val::array();
+  std::set<std::string> included;
+  for (int i = 0; i < (int)hits.size() && i < limit; ++i) {
+    const auto &t = hits[i].tool;
+    Val one = Val::object();
+    one["name"] = t.fn;
+    one["plugin"] = t.server_name;
+    one["tool"] = t.tool;
+    one["definition"] = t.def; // exact original JSON schema, no truncation
+    matches.push(std::move(one));
+    if (included.insert(t.server_id).second) {
+      Val srv;
+      { std::lock_guard<std::mutex> lk(MCP_MTX);
+        if (auto p = mcp_find_locked(t.server_id)) srv = *p; }
+      if (srv.isObj()) {
+        std::string guide = mcp_str(srv, "guide");
+        if (auto si = srv.find("server"); si && si->isObj())
+          guide += "\n" + mcp_str(*si, "instructions");
+        if (!guide.empty()) {
+          Val note = Val::object();
+          note["plugin"] = t.server_name;
+          note["instructions"] = mj::utf8_cut(guide, 3500);
+          instructions.push(std::move(note));
+        }
+      }
+    }
+  }
+  out["query"] = query;
+  out["available"] = (long)available.size();
+  out["matched"] = (long)hits.size();
+  out["tools"] = matches;
+  out["plugin_instructions"] = instructions;
+  if (hits.empty())
+    out["hint"] = "Kein Treffer. Allgemeineren Begriff oder Plugin-Namen suchen.";
+  return mj::dump(out);
+}
+
 static std::string tools_json(int bot_idx, bool web) {
   std::string vm = bot_field(bot_idx, "vm", "keine");
   const bool has_vm = !vm.empty() && vm != "keine";
@@ -2939,7 +3027,14 @@ static std::string tools_json(int bot_idx, bool web) {
       arr += ",";
     arr += defs[i];
   }
-  for (auto &t : mcp_bot_tools(bot_idx)) arr += "," + mj::dump(t.def);
+  const bool qwen_lazy_plugins = DUAL_NUMA &&
+      bot_model_id(bot_idx) == "qwen3.8-flash-next-uncensored";
+  if (qwen_lazy_plugins) {
+    arr += ","; arr += T_FIND_PLUGIN_TOOLS;
+    arr += ","; arr += T_CALL_PLUGIN_TOOL;
+  } else {
+    for (auto &t : mcp_bot_tools(bot_idx)) arr += "," + mj::dump(t.def);
+  }
   arr += "]";
   return arr;
 }
@@ -3639,6 +3734,15 @@ static std::string dispatch_tool(int bot_idx, const std::string &name,
   std::string vm = bot_field(bot_idx, "vm", "keine");
   std::string bot_id = bot_field(bot_idx, "id");
   std::string bot_name = bot_field(bot_idx, "name", "Bot");
+  if (name == "find_plugin_tools") return find_plugin_tools(bot_idx, a);
+  if (name == "call_plugin_tool") {
+    const std::string fn = mag::str(a, "name");
+    if (!is_mcp_tool(fn)) throw std::runtime_error("Nur aktivierte mcp__-Tools.");
+    const Val *parameters = a.find("arguments");
+    if (!parameters || !parameters->isObj())
+      throw std::runtime_error("Plugin-Argumente muessen ein JSON-Objekt sein.");
+    return mcp_dispatch_tool(bot_idx, fn, *parameters);
+  }
   if (is_mcp_tool(name)) return mcp_dispatch_tool(bot_idx, name, a);
   if (is_jobs_tool(name)) return jobs_dispatch_tool(bot_idx, name, a);
   if (is_pages_tool(name)) return pages_dispatch_tool(bot_idx, name, a);

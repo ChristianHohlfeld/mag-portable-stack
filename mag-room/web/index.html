@@ -32,6 +32,7 @@ dialog{border:1px solid var(--line);border-radius:17px;color:var(--text);backgro
 :root[data-theme=light] .content .hljs-title,:root[data-theme=light] .content .hljs-function,:root[data-theme=light] .content .hljs-section,:root[data-theme=light] .content .hljs-attribute{color:#245d9f}
 :root[data-theme=light] .content .hljs-variable,:root[data-theme=light] .content .hljs-params{color:#986019}
 :root[data-theme=light] .content .hljs-tag,:root[data-theme=light] .content .hljs-name,:root[data-theme=light] .content .hljs-type{color:#08748b}
+.model-verify{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:4px 0 10px;font-size:12px;color:var(--muted)}.model-verify[data-state=ok] .model-verify-text{color:var(--green)}.model-verify[data-state=failed] .model-verify-text{color:var(--red)}
 .att{margin-top:10px;max-width:min(560px,100%)}.att-media{display:block;padding:0;border:1px solid var(--line);border-radius:14px;overflow:hidden;background:var(--panel);cursor:zoom-in;max-width:100%}
 .att-image img{display:block;max-width:100%;max-height:420px;width:auto;height:auto;object-fit:contain}.att-broken .att-media{cursor:default;padding:18px;color:var(--muted)}
 video.att-media{width:100%;max-height:440px;cursor:auto;background:#000}
@@ -1488,7 +1489,13 @@ function syncModelSettings(next){
    row.append(check,caption);
    check.onchange=()=>saveModelSetting(model.id,{deterministic:check.checked},check);
    const info=document.createElement('p');info.className='control-desc';info.textContent='AN: Nur die aktuelle Eingabe – ohne Verlauf, Erinnerungen, Uhrzeit und Werkzeuge. Neuberechnung mit Temperature 0, Top-K 1, Seed 42, ohne Prompt-Cache (langsamer). AUS: Standard.';
-   card.append(heading,technical,form,row,info,radiusPanel(model.id));host.append(card);
+   // Proof for the switch: the C++20 checker runs 20 fresh requests and compares token IDs and text.
+   const verify=document.createElement('div');verify.className='model-verify';
+   const vText=document.createElement('span');vText.className='model-verify-text';
+   const vBtn=document.createElement('button');vBtn.type='button';vBtn.className='pill-btn ghost';vBtn.textContent='Jetzt prüfen';
+   vBtn.onclick=async()=>{vBtn.disabled=true;try{await api('/api/model-verify',{model:model.id})}catch(e){notice(e.message);vBtn.disabled=false}};
+   verify.append(vText,vBtn);
+   card.append(heading,technical,form,row,info,verify,radiusPanel(model.id));host.append(card);
   }
  }
  for(const model of models){
@@ -1498,7 +1505,19 @@ function syncModelSettings(next){
   if(document.activeElement!==input)input.value=model.label||model.id;
   const check=card.querySelector('input[type=checkbox]');
   if(!check.disabled)check.checked=!!model.deterministic;
+  paintModelVerify(card.querySelector('.model-verify'),model.verify);
  }
+}
+function paintModelVerify(box,v){
+ if(!box)return;const text=box.querySelector('.model-verify-text'),btn=box.querySelector('button');
+ const when=v?.at?new Date(v.at*1000).toLocaleString('de-DE',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):'';
+ box.dataset.state=v?.state||'none';
+ text.textContent=!v?'Determinismus noch nicht geprüft.'
+  :v.state==='running'?'Prüfung läuft … 20 Durchläufe, ca. 2–3 min'
+  :v.state==='ok'?'✓ Geprüft: 20 von 20 Antworten identisch · '+when
+  :'✗ Nicht bestätigt: '+(v.detail||'Fehler')+' · '+when;
+ text.title=v?.hash?'Token-Hash '+v.hash:'';
+ btn.disabled=v?.state==='running';btn.textContent=v?'Erneut prüfen':'Jetzt prüfen';
 }
 function syncModelChoice(next){
  if(!next)return;

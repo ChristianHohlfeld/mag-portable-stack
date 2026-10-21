@@ -91,11 +91,13 @@ class Native(unittest.TestCase):
   cls.whois_socket=str(pathlib.Path(cls.tmp.name)/'tailscaled.sock')
   cls.whois=WhoisUnix(cls.whois_socket,WhoisFixture)
   threading.Thread(target=cls.whois.serve_forever,daemon=True).start()
+  # Stand-in for the C++20 determinism checker: records its args, reports like the real CLI.
+  cls.det=pathlib.Path(cls.tmp.name)/'mag-det';cls.det.write_text('#!/bin/sh\necho "$PWD $@" >> "$(dirname "$0")/det.log"\nsleep 1\ncase "$*" in *fail-model*) echo "[MAG-FAIL] Token-Abweichung in Lauf 4"; exit 1;; esac\necho "[MAG] Konfigurations-Fingerprint: abc123"\necho "[MAG-OK] 20/20 Token-IDs und Text identisch"\necho "         Token-Stream-Hash: deadbeef"\n');cls.det.chmod(0o755)
   cls.model=http.server.ThreadingHTTPServer(('127.0.0.1',0),Model);threading.Thread(target=cls.model.serve_forever,daemon=True).start();cls.ui=port();cls.bridge=port()
   cls.start()
  @classmethod
  def start(cls):
-  env=dict(os.environ,MAG_OWNER_CANONICAL_LOGIN='chris@github',MAG_TEST_ALLOW_LOCAL_OWNER='1',MAG_ROOM_STATE=str(cls.state),MAG_ROOM_PORT=str(cls.ui),MAG_ROOM_BRIDGE_PORT=str(cls.bridge),MAG_ROOM_BRIDGE_IP='127.0.0.1',MAG_ROOM_BACKEND=f'http://127.0.0.1:{cls.model.server_port}/v1/chat/completions',MAG_ROOM_UI=str(ROOT/'mag-room/web/index.html'),MAG_ROOM_STATIC=str(ROOT/'mag-room/static'),MAG_ROOM_AUTOTALK_SLEEP='1',MAG_JOBS_MCP_TOKEN='local-unit-test-mcp-token-0123456789',MAG_ROOM_MODEL_STATUS=str(pathlib.Path(cls.tmp.name)/'model-status.json'),MAG_NETMODE=str(NETMODE),MAG_TEST_NO_MEMGIT='1',MAG_TEST_NO_CLEAR_BACKUP='1',MAG_JOBS_ALLOW_SECONDS='1',MAG_JOBS_TICK_MS='200',MAG_JOBS_BACKOFF_S='1',MAG_GITHUB_API=f'http://127.0.0.1:{GHPORT}',MAG_TAILSCALED_SOCKET=cls.whois_socket,MAG_ROOM_MCP_AUTO='0')
+  env=dict(os.environ,MAG_DET_CLI=str(cls.det),MAG_OWNER_CANONICAL_LOGIN='chris@github',MAG_TEST_ALLOW_LOCAL_OWNER='1',MAG_ROOM_STATE=str(cls.state),MAG_ROOM_PORT=str(cls.ui),MAG_ROOM_BRIDGE_PORT=str(cls.bridge),MAG_ROOM_BRIDGE_IP='127.0.0.1',MAG_ROOM_BACKEND=f'http://127.0.0.1:{cls.model.server_port}/v1/chat/completions',MAG_ROOM_UI=str(ROOT/'mag-room/web/index.html'),MAG_ROOM_STATIC=str(ROOT/'mag-room/static'),MAG_ROOM_AUTOTALK_SLEEP='1',MAG_JOBS_MCP_TOKEN='local-unit-test-mcp-token-0123456789',MAG_ROOM_MODEL_STATUS=str(pathlib.Path(cls.tmp.name)/'model-status.json'),MAG_NETMODE=str(NETMODE),MAG_TEST_NO_MEMGIT='1',MAG_TEST_NO_CLEAR_BACKUP='1',MAG_JOBS_ALLOW_SECONDS='1',MAG_JOBS_TICK_MS='200',MAG_JOBS_BACKOFF_S='1',MAG_GITHUB_API=f'http://127.0.0.1:{GHPORT}',MAG_TAILSCALED_SOCKET=cls.whois_socket,MAG_ROOM_MCP_AUTO='0')
   cls.log=open(pathlib.Path(cls.tmp.name)/'server.log','a');cls.proc=subprocess.Popen([str(ROOT/'build/magroom')],env=env,stdout=cls.log,stderr=cls.log)
   for _ in range(100):
    try:cls.request('/healthz',raw=True);return
@@ -893,6 +895,22 @@ class Native(unittest.TestCase):
   self.error(404,'/api/agents/nope/memory',{'text':'egal'})
   html=self.request('/',raw=True).decode()
   for needle in ('id="memory-new"','id="memory-add"',"'/memory',{text},'POST'",'id="memory-err"'):self.assertIn(needle,html)
+ def test_09o_model_determinism_check_runs_cli_and_shows_result(self):
+  self.error(400,'/api/model-verify',{'model':'nope'})
+  self.assertEqual(self.request('/api/model-verify',{'model':'deepseek-v4-flash-0731'},raw=True),b'{"ok":true}')
+  self.error(409,'/api/model-verify',{'model':'deepseek-v4-flash-0731'})   # one at a time
+  def verify():
+   return next(m for m in self.request('/api/state')['models'] if m['id']=='deepseek-v4-flash-0731').get('verify') or {}
+  for _ in range(100):
+   if verify().get('state')!='running':break
+   time.sleep(.1)
+  v=verify();self.assertEqual((v['state'],v['runs'],v['hash'],v['fingerprint']),('ok',20,'deadbeef','abc123'))
+  log=(self.det.parent/'det.log').read_text()
+  self.assertIn(str(self.state),log)   # report goes to the writable state dir
+  self.assertIn('--verify --host 127.0.0.1 --port '+str(self.model.server_port)+' --model deepseek-v4-flash-0731 --numa none',log)
+  self.assertTrue((self.state/'model-verify.json').exists())
+  html=self.request('/',raw=True).decode()
+  for needle in ("'/api/model-verify'",'function paintModelVerify(',"'✓ Geprüft: 20 von 20 Antworten identisch · '"):self.assertIn(needle,html)
  def test_09p_file_ranges_and_inline_chat_attachments(self):
   # Video only seeks/plays on Safari with byte ranges; stored names are immutable.
   body=bytes(range(200))

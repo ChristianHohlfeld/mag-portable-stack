@@ -3120,6 +3120,35 @@ static bool set_room_model(const std::string &id) {
   }
   return true;
 }
+// Last 20x determinism check per model (mag-det CLI, see
+// docs/mag-deterministic-cli.md). Shown next to the deterministic switch.
+static std::mutex MODEL_VERIFY_MTX;
+static Val MODEL_VERIFY = Val::object();
+static std::string model_verify_file() { return STATE_DIR + "/model-verify.json"; }
+static void load_model_verify() {
+  bool exists = false;
+  Val saved = Val::object();
+  if (!mj::parse(read_file(model_verify_file(), &exists), saved) || !saved.isObj())
+    saved = Val::object();
+  // A check cut off by a room restart never finished.
+  for (auto &kv : *saved.obj)
+    if (auto st = kv.second.find("state"); st && st->asStr() == "running") {
+      kv.second["state"] = "failed";
+      kv.second["detail"] = "Abgebrochen (Raum neu gestartet)";
+    }
+  std::lock_guard<std::mutex> lk(MODEL_VERIFY_MTX);
+  MODEL_VERIFY = saved;
+}
+static Val model_verify_for(const std::string &id) {
+  std::lock_guard<std::mutex> lk(MODEL_VERIFY_MTX);
+  const Val *v = MODEL_VERIFY.find(id);
+  return v && v->isObj() ? *v : Val();
+}
+static void store_model_verify(const std::string &id, const Val &rec) {
+  std::lock_guard<std::mutex> lk(MODEL_VERIFY_MTX);
+  MODEL_VERIFY[id] = rec;
+  write_file_atomic(model_verify_file(), mj::dump(MODEL_VERIFY));
+}
 static Val room_model_catalog() {
   Val models = Val::array();
   Val q4 = Val::object();
@@ -3127,12 +3156,14 @@ static Val room_model_catalog() {
   const ModelSettings main_settings = model_settings_for("deepseek-v4-flash-0731");
   q4["label"] = main_settings.name.empty() ? default_model_label("deepseek-v4-flash-0731") : main_settings.name;
   q4["deterministic"] = main_settings.deterministic;
+  if (Val v = model_verify_for("deepseek-v4-flash-0731"); v.isObj()) q4["verify"] = v;
   Val secondary = Val::object();
   const std::string secondary_id = secondary_room_model();
   const ModelSettings secondary_settings = model_settings_for(secondary_id);
   secondary["id"] = secondary_id;
   secondary["label"] = secondary_settings.name.empty() ? default_model_label(secondary_id) : secondary_settings.name;
   secondary["deterministic"] = secondary_settings.deterministic;
+  if (Val v = model_verify_for(secondary_id); v.isObj()) secondary["verify"] = v;
   models.push(q4);
   models.push(secondary);
   return models;
@@ -5373,6 +5404,68 @@ static Val radius_greedy(const std::string &model, const std::vector<long> &ids,
   body["cache_prompt"] = false;
   return radius_call(model, "/completion", body);
 }
+static std::atomic<bool> MODEL_VERIFY_RUNNING{false};
+static void publish_model_catalog() {
+  Val out = Val::object();
+  out["type"] = "model_settings";
+  out["models"] = room_model_catalog();
+  publish(mj::dump(out));
+}
+static std::string after_label(const std::string &out, const std::string &label) {
+  auto p = out.find(label);
+  if (p == std::string::npos) return "";
+  auto e = out.find('\n', p);
+  return trim(out.substr(p + label.size(), e == std::string::npos ? std::string::npos : e - p - label.size()));
+}
+// 20 fresh stateless requests through the audit gateway (temperature 0,
+// top-k 1, seed 42, no prompt cache), compared by sampled token IDs and text.
+// Runs in the background; the model stays usable (one slot: requests queue).
+static bool start_model_verify(const std::string &model, std::string &err) {
+  if (MODEL_VERIFY_RUNNING.exchange(true)) { err = "Eine Prüfung läuft bereits"; return false; }
+  if (lane_named(model).busy.load()) {
+    MODEL_VERIFY_RUNNING = false;
+    err = "Modell beantwortet gerade den Raum; bitte danach erneut";
+    return false;
+  }
+  Val rec = Val::object();
+  rec["state"] = "running";
+  rec["at"] = (long)now_s();
+  store_model_verify(model, rec);
+  publish_model_catalog();
+  std::thread([model] {
+    std::string host = "127.0.0.1", port = "8080";
+    auto hp = BACKEND.find("://");
+    if (hp != std::string::npos) {
+      std::string rest = BACKEND.substr(hp + 3);
+      rest = rest.substr(0, rest.find('/'));
+      auto colon = rest.rfind(':');
+      if (colon != std::string::npos) { host = rest.substr(0, colon); port = rest.substr(colon + 1); }
+    }
+    const std::string cli = env("MAG_DET_CLI", "/opt/mag-stack/current/bin/mag-det");
+    // The CLI writes its report into the working directory: use the state dir.
+    CmdResult r = run_argv({"/bin/sh", "-c",
+                            "cd \"$1\" && exec \"$2\" --verify --host \"$3\" --port \"$4\" "
+                            "--model \"$5\" --numa none 2>&1",
+                            "sh", STATE_DIR, cli, host, port, model},
+                           900, 1 << 20);
+    Val out = Val::object();
+    out["at"] = (long)now_s();
+    out["state"] = r.code == 0 ? "ok" : "failed";
+    if (r.code == 0) {
+      out["runs"] = 20L;
+      out["hash"] = after_label(r.out, "Token-Stream-Hash:").substr(0, 64);
+      out["fingerprint"] = after_label(r.out, "Konfigurations-Fingerprint:").substr(0, 64);
+    } else {
+      std::string why = after_label(r.out, "[MAG-FAIL]");
+      if (why.empty()) why = r.out.empty() ? "Prüfwerkzeug nicht gestartet (" + cli + ")" : one_line(r.out);
+      out["detail"] = why.substr(0, 400);
+    }
+    store_model_verify(model, out);
+    MODEL_VERIFY_RUNNING = false;
+    publish_model_catalog();
+  }).detach();
+  return true;
+}
 static Val model_radius(const std::string &model, const std::string &input,
                         double radius, int k, int max_tokens, int repeat) {
   std::unique_lock<std::mutex> one(RADIUS_MTX, std::try_to_lock);
@@ -6725,6 +6818,7 @@ int main() {
 
   AUTOTALK = trim(read_file(STATE_DIR + "/autotalk")) == "on";
   load_model_settings();
+  load_model_verify();
   {
     // Reconcile nft with the persisted choice in both directions (idempotent).
     const bool off = trim(read_file(STATE_DIR + "/offline")) == "on";

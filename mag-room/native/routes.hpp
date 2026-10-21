@@ -1418,6 +1418,19 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
     return;
   }
   // Deterministic siblings: first-token alternatives within `radius` nats.
+  if (m == "POST" && path == "/api/model-verify") {
+    if (bridge || !actor.ok || actor.role != "owner") {
+      error_json(fd, 403, "Nur der Besitzer"); return;
+    }
+    const Val *id = has_json ? body.find("model") : nullptr;
+    if (!id || id->type != Val::STR || !known_room_model(id->asStr())) {
+      error_json(fd, 400, "Unbekanntes Modell"); return;
+    }
+    std::string err;
+    if (!start_model_verify(id->asStr(), err)) { error_json(fd, 409, err); return; }
+    send_json(fd, 202, "{\"ok\":true}");
+    return;
+  }
   if (m == "POST" && path == "/api/model-radius") {
     if (bridge || !actor.ok || actor.role != "owner") {
       error_json(fd, 403, "Nur der Besitzer"); return;

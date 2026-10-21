@@ -815,6 +815,14 @@ public:
                     return report;
                 }
 
+                if (res.token_stream_sha256 != report.baseline_token_hash) {
+                    report.verified = false;
+                    report.completed_runs = run + 1;
+                    report.diverging_run_index = run + 1;
+                    report.failure_reason = "Gleiche Token-IDs, aber abweichender Antworttext in Lauf " + std::to_string(run + 1);
+                    invalidateModelVerification(cfg.model_id);
+                    return report;
+                }
                 report.completed_runs = run + 1;
             }
         }
@@ -1017,9 +1025,9 @@ private:
 void printUsage(const char* prog) {
     std::cout << "Verwendung:\n"
               << "  " << prog << " --selftest\n"
-              << "      Führt den vollständigen Architektur-Selbsttest (Stateless-Isolation, 20/20 Pass, Fail-Fast Abbruch, Fingerprint-Lock) aus.\n\n"
+              << "      Prüft den synthetischen Architektur-Selbsttest (Stateless-Isolation, 20/20 Pass, Fail-Fast Abbruch, Fingerprint-Lock) aus.\n\n"
               << "  " << prog << " --verify --host <IP> --port <PORT> --model <NAME> [--numa 0,1,2,3]\n"
-              << "      Führt den echten 20x-Kaltstart-Verifikationstest gegen einen laufenden llama-server / vLLM Endpunkt aus.\n\n"
+              << "      Führt 20 echte neue HTTP-Anfragen (keine Prozess-Kaltstarts) gegen einen laufenden llama-server / vLLM Endpunkt aus.\n\n"
               << "  " << prog << " --infer \"<TEXT>\" --host <IP> --port <PORT> --model <NAME>\n"
               << "      Verifiziert das Modell und führt anschließend einen isolierten Stateless-Aufruf aus.\n";
 }
@@ -1057,28 +1065,58 @@ int main(int argc, char* argv[]) {
         } else if (arg == "--model" && i + 1 < argc) {
             cfg.model_id = argv[++i];
         } else if (arg == "--numa" && i + 1 < argc) {
-            cfg.numa_cores = parseCores(argv[++i]);
+            const std::string value = argv[++i];
+            cfg.numa_cores = value == "none" ? std::vector<int>{} : parseCores(value);
+        } else if (arg == "--endpoint" && i + 1 < argc) {
+            cfg.endpoint_path = argv[++i];
+        } else if (arg == "--timeout" && i + 1 < argc) {
+            cfg.timeout_sec = std::stoi(argv[++i]);
+        } else if (arg == "--weights-sha256" && i + 1 < argc) {
+            cfg.weights_sha256_or_path = argv[++i];
+        } else if (arg == "--backend-build" && i + 1 < argc) {
+            cfg.backend_build = argv[++i];
+        } else if (arg == "--template-id" && i + 1 < argc) {
+            cfg.chat_template_id = argv[++i];
         } else if (arg == "--help" || arg == "-h") {
             printUsage(argv[0]);
             return 0;
+        } else {
+            std::cerr << "Unbekannte/unvollstaendige Option: " << arg << "\n";
+            return 2;
         }
     }
 
+    if (cfg.timeout_sec < 1 || cfg.backend_port == 0 || cfg.model_id.empty() ||
+        cfg.endpoint_path.empty() || cfg.endpoint_path[0] != '/') {
+        std::cerr << "[MAG-FAIL] Ungueltige Endpunkt-/Timeout-Konfiguration\n";
+        return 2;
+    }
+    try {
     if (mode == "--verify" || mode == "--infer") {
+        if (cfg.weights_sha256_or_path == "UNATTESTED") {
+            std::cerr << "[MAG-WARN] Gewichte nicht kryptografisch attestiert; optional --weights-sha256 angeben.\n";
+        }
+        if (!cfg.numa_cores.empty()) {
+            std::cerr << "[MAG-HINWEIS] --numa setzt nur CLI-Affinity, nicht die CPU-Affinity des llama-server.\n";
+        }
         MagDeterministicEngine engine(std::make_shared<HttpInferenceTransport>());
         std::cout << "[MAG] Starte 20x frische HTTP-Inferenz-Verifikation (kein Server-Kaltstart) gegen "
                   << cfg.backend_host << ":" << cfg.backend_port
                   << " (Modell: " << cfg.model_id << ")...\n"
                   << "[MAG] Konfigurations-Fingerprint: " << cfg.computeFingerprint() << "\n";
 
-        VerificationReport rep = engine.verifyModel20x(cfg, 32);
+        // Verify the actual --infer input, not an unrelated default prompt.
+        const std::string verify_prompt = mode == "--infer"
+            ? user_prompt
+            : "Erkläre in exakt zwei präzisen Sätzen, warum deterministische Zustandsautomaten reproduzierbar sind.";
+        VerificationReport rep = engine.verifyModel20x(cfg, 32, verify_prompt);
         if (!rep.verified) {
             std::cerr << "[MAG-FAIL] Verifikation fehlgeschlagen (" << rep.completed_runs << "/20): "
                       << rep.failure_reason << "\n";
             return 1;
         }
 
-        std::cout << "[MAG-OK] 20/20 Läufe bit- und token-identisch verifiziert!\n"
+        std::cout << "[MAG-OK] 20/20 Token-IDs und Text identisch (beobachtete HTTP-Inferenz, kein Kaltstart)!\n"
                   << "         Token-Stream-Hash: " << rep.baseline_token_hash << "\n"
                   << "         Gesamtdauer:       " << std::fixed << std::setprecision(2) << rep.total_duration_ms << " ms\n";
 
@@ -1089,12 +1127,18 @@ int main(int argc, char* argv[]) {
             room.memories = {"IGNORED_MEMORY_1", "IGNORED_MEMORY_2"};
             room.chat_history = {{"user", "vorherige nachricht"}, {"assistant", "vorherige antwort"}};
 
-            RawInferenceResult res = engine.executeRoomInference(cfg, room, user_prompt, 128);
+            RawInferenceResult res = engine.executeRoomInference(cfg, room, user_prompt, 32);
             if (!res.success) {
                 std::cerr << "[MAG-FAIL] Inferenzfehler: " << res.error_message << "\n";
                 return 1;
             }
-            std::cout << "\n--- STATELESS MODELL-ANTWORT ---\n"
+            if (res.token_stream_sha256 != rep.baseline_token_hash ||
+                res.token_ids != rep.baseline_tokens) {
+                std::cerr << "[MAG-FAIL] Isolierter 21. Inferenzlauf weicht von den 20 Verifikationslaeufen ab\n";
+                return 1;
+            }
+            std::cout << "[MAG-OK] 21. Inferenzlauf ebenfalls token- und textidentisch.\n"
+                      << "\n--- STATELESS MODELL-ANTWORT ---\n"
                       << res.content << "\n"
                       << "--------------------------------\n"
                       << "Generierte Tokens (" << res.token_ids.size() << ") | Hash: " << res.token_stream_sha256 << "\n";
@@ -1102,6 +1146,16 @@ int main(int argc, char* argv[]) {
         return 0;
     }
 
+    // Container CPUsets may exclude CPUs 0..7; the selftest uses a valid
+    // logical CPU without pretending to pin the inference-server process.
+#if defined(__linux__)
+    cpu_set_t allowed{};
+    if (sched_getaffinity(0, sizeof(cpu_set_t), &allowed) == 0) {
+        cfg.numa_cores.clear();
+        for (int c = 0; c < CPU_SETSIZE; ++c)
+            if (CPU_ISSET(c, &allowed)) { cfg.numa_cores.push_back(c); break; }
+    }
+#endif
     // Default: Run complete local verification and architecture self-test
     std::cout << "====================================================================\n"
               << " MAG DETERMINISTIC INFERENCE ENGINE - C++20 VERIFICATION SUITE\n"
@@ -1154,5 +1208,23 @@ int main(int argc, char* argv[]) {
               << "         Ergebnis:    " << blocked_res.error_message << "\n"
               << "====================================================================\n";
 
-    return 0;
+    const bool isolated = stateless_json.find("IGNORED") == std::string::npos &&
+        stateless_json.find("Erinnerungen") == std::string::npos &&
+        stateless_json.find("gestern") == std::string::npos &&
+        stateless_json.find("System") == std::string::npos &&
+        stateless_json.find("\"role\": \"user\"") != std::string::npos &&
+        stateless_json.find("\"role\": \"system\"") == std::string::npos;
+    const bool sha_ok = Sha256::hash("abc") ==
+        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+    const bool passed = sha_ok && pass_rep.verified && pass_rep.completed_runs == 20 &&
+        !fail_rep.verified && fail_rep.completed_runs == 4 &&
+        fail_rep.diverging_run_index == 4 &&
+        !blocked_res.success && !blocked_res.error_message.empty() && isolated;
+    std::cout << (passed ? "[MAG-SELFTEST] PASS (synthetisch, kein echter LLM-Nachweis)\n" :
+                             "[MAG-SELFTEST] FAIL\n");
+    return passed ? 0 : 1;
+    } catch (const std::exception& e) {
+        std::cerr << "[MAG-FAIL] " << e.what() << "\n";
+        return 2;
+    }
 }

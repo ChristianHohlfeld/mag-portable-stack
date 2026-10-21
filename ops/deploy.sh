@@ -211,6 +211,7 @@ if [[ -r /etc/mag-stack/secondary-model.env ]] &&
   [[ -x /usr/local/lib/mag-qwen/start.sh ]] || { echo 'Qwen staged runtime missing' >&2; exit 1; }
   install -m 0755 "$SOURCE/ops/qwen/start.sh" /usr/local/lib/mag-qwen/start.sh
   install -m 0755 "$SOURCE/ops/qwen/wait-q4.sh" /usr/local/lib/mag-qwen/wait-q4.sh
+  install -m 0755 "$SOURCE/ops/qwen/verify-model.sh" /usr/local/lib/mag-qwen/verify-model.sh
   install -m 0644 "$SOURCE/ops/qwen/mag-llm-qwen.service" /etc/systemd/system/mag-llm-qwen.service
   # Remove the temporary preflight added during Qwen bring-up; it fails
   # immediately on cold boot before Q4 has loaded. wait-q4.sh replaces it.

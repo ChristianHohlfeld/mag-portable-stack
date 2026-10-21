@@ -3142,11 +3142,15 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   Val tt;
   if (mj::parse(tools, tt))
     body["tools"] = tt;
-  // Greedy decoding gives a repeatable token path under deterministic
-  // inference. The fixed seed also pins any sampler randomness in the backend.
-  // Read at request creation so an in-flight completion is never changed.
-  if (model_settings_for(model).deterministic) {
+  // Deterministic mode always re-evaluates and greedily decodes the full
+  // request. llama.cpp's KV prompt cache can change the numerical logits when
+  // the split between batched prefill and token decoding differs. Do not reuse
+  // that cache in deterministic mode. Never replay an earlier answer either.
+  // Identical prompts are still required; evolving room history is NOT identical.
+  const bool deterministic = model_settings_for(model).deterministic;
+  if (deterministic) {
     body["temperature"] = 0.0;
+    body["top_k"] = 1;
     body["seed"] = 42;
   } else {
     body["temperature"] = temperature;
@@ -3162,7 +3166,7 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   // llama.cpp: stream prompt_progress {total,cache,processed,time_ms} while
   // the prompt is evaluated (minutes on CPU) instead of staying silent.
   body["return_progress"] = true;
-  body["cache_prompt"] = true;
+  body["cache_prompt"] = !deterministic;
   // llama/ik consult the --cache-ram prompt cache only when the server picks
   // the slot itself; an explicit id_slot skips both save and restore. With a
   // single slot, pinning therefore made every bot switch (and every Grok/Ali

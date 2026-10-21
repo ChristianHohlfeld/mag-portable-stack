@@ -6180,7 +6180,7 @@ int main() {
 
   STATE_DIR = env("MAG_ROOM_STATE", "/var/lib/magbot/room");
   if (DUAL_NUMA && secondary_room_model() != "qwen3.8-flash-next-uncensored") {
-    std::cerr << "Dual NUMA requires the already activated Qwen secondary model\\n";
+    std::cerr << "Dual NUMA requires the already activated Qwen secondary model\n";
     return 1;
   }
   load_room_model();

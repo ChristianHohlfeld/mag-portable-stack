@@ -1310,7 +1310,7 @@ card.onkeydown=e=>{if(e.target===card&&(e.key==='Enter'||e.key===' ')){e.prevent
 const label=document.createElement('label');const check=document.createElement('input');check.type='checkbox';check.checked=selected.has(a.id);check.onchange=()=>{check.checked?selected.add(a.id):selected.delete(a.id);sessionStorage.setItem('mag-selected',JSON.stringify([...selected]));syncModelChoice(state)};const name=document.createElement('span');name.textContent=a.name;name.style.color=a.color;label.append(check,name);const info=document.createElement('small');info.textContent=(a.model?(a.model.includes('qwen')?'NUMA1 · Qwen':a.model.includes('deepseek')?'NUMA0 · Q4':'IQ3')+' · ':'')+(a.spawning?'VM wird erstellt …':(a.vm||'nur Chat'))+' · '+(a.memory_count||0)+' Erinnerungen'+(a.plugins?.length?' · '+a.plugins.length+' Plugin'+(a.plugins.length>1?'s':''):'');const actions=document.createElement('div');actions.className='actions';const actList=[];
 if(can('memory'))actList.push(['Erinnerung',()=>memory(a)]);
 if(state.you?.role==='owner')actList.push(['Umbenennen',()=>renameAgent(a)]);
-if(a.id===single){}else if(can('delete'))actList.push(['Entfernen',()=>removeAgent(a)]);
+if(a.id===single||state.dual_numa){}else if(can('delete'))actList.push(['Entfernen',()=>removeAgent(a)]);
 for(const [title,fn] of actList){const b=document.createElement('button');b.textContent=title;b.onclick=fn;actions.append(b)}
 const remote=document.createElement('a');
 remote.href='/?bot='+encodeURIComponent(a.id);

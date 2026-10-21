@@ -128,6 +128,14 @@ body:has(.layout.hide-left) .rail-edge-left,body:has(.layout.hide-right) .rail-e
 #model-state.is-loading::after{content:'';position:absolute;left:8px;right:8px;bottom:-3px;height:2px;border-radius:2px;background:linear-gradient(90deg,transparent,var(--sb-red,#e62b2b),transparent);background-size:50% 100%;background-repeat:no-repeat;animation:magbar 1.4s linear infinite}
 @keyframes magpulse{0%,100%{transform:scale(.8);opacity:.6}50%{transform:scale(1.15);opacity:1}}@keyframes magbar{0%{background-position:-50% 0}100%{background-position:150% 0}}
 
+.model-setting-card{margin:7px 8px 10px;padding:11px;border:1px solid var(--line);border-radius:10px;background:var(--surface)}
+.model-setting-title{display:block;font-size:13px;font-weight:650;margin:0 0 3px;color:var(--text)}
+.model-setting-id{display:block;margin:0 0 8px;font-size:10px;color:var(--muted);overflow-wrap:anywhere}
+.model-setting-name{display:flex;gap:5px;min-width:0;margin:0 0 6px}
+.model-setting-name input{min-width:0;width:100%;flex:1;padding:7px 8px;border:1px solid var(--line);border-radius:7px;background:var(--panel);font-size:12px}
+.model-setting-name button{flex:none;min-height:34px;padding:6px 8px;border:1px solid var(--line);border-radius:7px;font-size:11px;background:var(--hover)}
+.model-setting-card .control-row{padding:4px 0;min-height:38px;font-size:12px}
+.model-setting-card .control-desc{padding:0;margin:0;font-size:11px;color:var(--muted)}
 /* ==== 2026-10-16 design tokens: one neutral system for dark + light; red only as accent ==== */
 :root{--bg:#0f0f10;--surface:#141415;--sidebar:#121213;--panel:#1a1a1c;--panel-2:#212123;--panel-3:#2a2a2d;--text:#ececec;--secondary:#b4b4b8;--muted:#8b8b90;--line:#2c2c30;--soft-line:#222225;--hover:#1f1f22;--bubble:#1f1f22;--code:#0b0b0c;
  --accent:#e62b2b;--accent-hover:#cf2222;--accent-ink:#fff;--danger:#e5484d;--focus:rgba(255,255,255,.14);--r-sm:8px;--r-md:12px;--r-lg:16px;--shadow-sm:0 1px 2px rgba(0,0,0,.35);--shadow:0 16px 48px rgba(0,0,0,.45);--sb-grid:transparent}
@@ -427,7 +435,7 @@ dialog{border-radius:10px;border-color:var(--line);background:var(--surface)}
 
 <div class="section" id="guests-section" hidden><div class="side-section-head"><h2>Gäste</h2><button type="button" class="pill-btn ghost" id="guest-new">+ Einladen</button></div><div class="hint" id="guest-status"></div><div id="guest-list" class="jobs-list"></div></div>
 <dialog id="guest-dialog" class="mag-modal" aria-label="Gast einladen"><form id="guest-form"><h3>Gast einladen</h3><label>Name (optional)<input id="guest-name" maxlength="40" autocomplete="off" placeholder="Name"></label><label>Notiz (optional)<input id="guest-note" maxlength="160" autocomplete="off" placeholder="Zweck"></label><label>Zugang bis<input id="guest-expiry" type="datetime-local" required></label><p class="hint">Der Tailscale-Schlüssel ist einmalig und 24 Stunden gültig. Der Raumzugang endet zum ausgewählten Zeitpunkt.</p><div class="row"><button type="button" id="guest-cancel">Abbrechen</button><button type="submit" class="primary" id="guest-create">Einladung erstellen</button></div></form><div id="guest-created" hidden><h3>Einladung – nur jetzt sichtbar</h3><p>Schlüssel sicher übermitteln. Der Gast installiert Tailscale, wählt „Use an auth key“ und öffnet anschließend den Einladungslink.</p><label>Einmaliger Tailscale-Schlüssel<code id="guest-key" style="overflow-wrap:anywhere;display:block"></code></label><button id="guest-copy-key" type="button">Schlüssel kopieren</button><label>Einladungslink<input id="guest-url" readonly></label><button id="guest-copy-link" type="button">Link kopieren</button><div id="guest-qr" style="width:200px;min-height:200px;margin:16px auto;background:#fff;padding:8px"></div><p class="hint">Der QR-Code enthält den Einladungslink mit Schlüssel. Wer ihn besitzt, kann den einmaligen Schlüssel benutzen.</p><div class="row"><button type="button" id="guest-done" class="primary">Fertig – Schlüssel verwerfen</button></div></div></dialog>
-<div class="section" id="settings-section"><div class="side-section-head"><h2>Einstellungen</h2></div><div style="padding:8px 10px"><select class="side-select" id="language" aria-label="Sprache"><option value="auto">Sprache automatisch</option><option value="de">Deutsch</option><option value="en">English</option></select></div><label class="control-row" id="sampling-row" hidden><input type="checkbox" id="deterministic-sampling"><span>Deterministische Antworten</span></label><p class="control-desc" id="sampling-desc" hidden>Gleicher Kontext, möglichst gleiche Antwort. Gilt für beide Modelle ab dem nächsten Schritt.</p><div class="pwa-block" id="pwa-install-block"><p class="hint">App auf diesem Gerät</p><button type="button" class="pill-btn" id="pwa-install" hidden>Installieren</button><p class="hint" id="pwa-ios" hidden>Auf dem iPhone: Teilen, dann „Zum Home-Bildschirm“.</p><p class="hint" id="pwa-install-note"></p></div><div id="pwa-notify"><div class="pwa-block" id="pwa-push-block"><button type="button" class="pill-btn" id="pwa-push">Mitteilungen einschalten</button><p class="hint" id="pwa-push-note"></p><button type="button" class="pill-btn ghost" id="pwa-unsub" hidden>Mitteilungen aus</button></div><label class="control-row"><input type="checkbox" id="pwa-job" checked><span>Fertige Jobs</span></label><label class="control-row"><input type="checkbox" id="pwa-run" checked><span>Lange Antworten</span></label><label class="control-row"><input type="checkbox" id="pwa-error" checked><span>Fehler</span></label></div></div>
+<div class="section" id="settings-section"><div class="side-section-head"><h2>Einstellungen</h2></div><div style="padding:8px 10px"><select class="side-select" id="language" aria-label="Sprache"><option value="auto">Sprache automatisch</option><option value="de">Deutsch</option><option value="en">English</option></select></div><div id="model-settings" aria-label="Einstellungen pro Modell" hidden></div><div class="pwa-block" id="pwa-install-block"><p class="hint">App auf diesem Gerät</p><button type="button" class="pill-btn" id="pwa-install" hidden>Installieren</button><p class="hint" id="pwa-ios" hidden>Auf dem iPhone: Teilen, dann „Zum Home-Bildschirm“.</p><p class="hint" id="pwa-install-note"></p></div><div id="pwa-notify"><div class="pwa-block" id="pwa-push-block"><button type="button" class="pill-btn" id="pwa-push">Mitteilungen einschalten</button><p class="hint" id="pwa-push-note"></p><button type="button" class="pill-btn ghost" id="pwa-unsub" hidden>Mitteilungen aus</button></div><label class="control-row"><input type="checkbox" id="pwa-job" checked><span>Fertige Jobs</span></label><label class="control-row"><input type="checkbox" id="pwa-run" checked><span>Lange Antworten</span></label><label class="control-row"><input type="checkbox" id="pwa-error" checked><span>Fehler</span></label></div></div>
 <div class="section" id="data-areas"><div class="side-section-head"><h2>Daten</h2></div>
 <div class="data-area" id="area-room"><h3>Raum</h3><p class="data-count" id="room-count">0 Nachrichten, 0 Dateien</p><p id="backup-warning" role="status" hidden></p><p class="hint">Chatverlauf und hochgeladene Dateien.</p><button class="pill-btn ghost-danger" id="reset" type="button" hidden>Raum leeren</button><div id="snapshot-tools" style="margin-top:10px" hidden><button class="pill-btn ghost" type="button" id="snapshots-open">Sicherungen ansehen</button><div id="snapshots-list" class="jobs-list" hidden></div></div></div>
 <div class="data-area" id="area-work"><h3>Arbeitsdaten</h3><div id="work-areas"></div></div>
@@ -1166,7 +1174,7 @@ function applyAccess(){const y=state.you;document.body.classList.toggle('is-gues
  if(y&&y.role==='owner')loadGuests();
  hide('add-agent',!can('delete')||!!(state.single_bot));
  hide('offline-row',!can('offline'));hide('autotalk-row',!can('autotalk'));hide('autotalk-desc',!can('autotalk'));
- hide('sampling-row',!(y&&y.role==='owner'));hide('sampling-desc',!(y&&y.role==='owner'));
+ hide('model-settings',!(y&&y.role==='owner'));
  hide('stop',!can('stop'));hide('reset-wrap',!can('reset'));hide('plus-web',!can('offline'));hide('plus-github',!can('connectors'));hide('plus-mcp',!can('connectors'));
  const badge=$('you-badge');if(!badge)return;if(!y){badge.hidden=true;return}badge.hidden=false;badge.textContent=(y.role==='owner'?'Besitzer':'Gast')+' · '+(y.name||'');badge.title=(y.login||y.role);}
 
@@ -1308,7 +1316,7 @@ function renderAgents(){const list=$('agents');list.replaceChildren();const sing
 card.setAttribute('role','button');card.setAttribute('aria-label',a.name+' Browser und Terminal anzeigen');
 card.onclick=e=>{if(e.target.closest('button,a,input,label,textarea,select'))return;focusBot(a.id)};
 card.onkeydown=e=>{if(e.target===card&&(e.key==='Enter'||e.key===' ')){e.preventDefault();focusBot(a.id)}};
-const label=document.createElement('label');const check=document.createElement('input');check.type='checkbox';check.checked=selected.has(a.id);check.onchange=()=>{check.checked?selected.add(a.id):selected.delete(a.id);sessionStorage.setItem('mag-selected',JSON.stringify([...selected]));syncModelChoice(state)};const name=document.createElement('span');name.textContent=a.name;name.style.color=a.color;label.append(check,name);const info=document.createElement('small');info.textContent=(a.model?(a.model.includes('qwen')?'NUMA1 · Qwen':a.model.includes('deepseek')?'NUMA0 · Q4':'IQ3')+' · ':'')+(a.spawning?'VM wird erstellt …':(a.vm||'nur Chat'))+' · '+(a.memory_count||0)+' Erinnerungen'+(a.plugins?.length?' · '+a.plugins.length+' Plugin'+(a.plugins.length>1?'s':''):'');const actions=document.createElement('div');actions.className='actions';const actList=[];
+const label=document.createElement('label');const check=document.createElement('input');check.type='checkbox';check.checked=selected.has(a.id);check.onchange=()=>{check.checked?selected.add(a.id):selected.delete(a.id);sessionStorage.setItem('mag-selected',JSON.stringify([...selected]));syncModelChoice(state)};const name=document.createElement('span');name.textContent=a.name;name.style.color=a.color;label.append(check,name);const info=document.createElement('small');const modelDisplay=(state.models||[]).find(m=>m.id===a.model)?.label||(a.model?.includes('qwen')?'Qwen':a.model?.includes('deepseek')?'DeepSeek':'');info.textContent=(a.model?modelDisplay+' · ':'')+(a.spawning?'VM wird erstellt …':(a.vm||'nur Chat'))+' · '+(a.memory_count||0)+' Erinnerungen'+(a.plugins?.length?' · '+a.plugins.length+' Plugin'+(a.plugins.length>1?'s':''):'');const actions=document.createElement('div');actions.className='actions';const actList=[];
 if(can('memory'))actList.push(['Erinnerung',()=>memory(a)]);
 if(state.you?.role==='owner')actList.push(['Umbenennen',()=>renameAgent(a)]);
 if(a.id===single||state.dual_numa){}else if(can('delete'))actList.push(['Entfernen',()=>removeAgent(a)]);
@@ -1340,7 +1348,53 @@ async function refreshBackup(){
   if(problem)el.textContent=b.stale?'Backup-Warnung: letzter Erfolg älter als 26 Stunden.':!b.healthy?'Backup-Fehler: Sicherung prüfen.':'Backup nur lokal – Offsite-S3 noch nicht aktiv.';
  }catch(e){el.hidden=false;el.textContent='Backup-Status nicht verfügbar.'}
 }
-async function refresh(){const seq=++refreshSeq;const r=await fetch('/api/state');if(!r.ok)throw Error('Raum nicht erreichbar');const next=await r.json();if(seq!==refreshSeq)return;state=next;if(state.you?.role==='owner'&&Date.now()-backupPollAt>60000){backupPollAt=Date.now();refreshBackup()}if(state.you?.role!=='owner'&&$('backup-warning'))$('backup-warning').hidden=true;for(const a of (state.activities||(state.activity?[state.activity]:[])))if(a&&a.on)mergeActivity(a);setBusyBots(next.busy_bots,next.waiting_bots);syncApprovals(next.approvals);if(seq!==refreshSeq)return;render();window.mcpMenuState&&window.mcpMenuState();renderQueue({pending:next.pending||[],paused:!!next.queue_paused});if($('offline')){$('offline').checked=!!next.offline;window.syncWeb&&window.syncWeb()}initThink();if(!$('deterministic-sampling').disabled)$('deterministic-sampling').checked=!!next.deterministic_sampling;if(next.model_status)modelStatus(next.model_status);modelInfo(next.model_info);syncModelChoice(next)}
+async function refresh(){const seq=++refreshSeq;const r=await fetch('/api/state');if(!r.ok)throw Error('Raum nicht erreichbar');const next=await r.json();if(seq!==refreshSeq)return;state=next;if(state.you?.role==='owner'&&Date.now()-backupPollAt>60000){backupPollAt=Date.now();refreshBackup()}if(state.you?.role!=='owner'&&$('backup-warning'))$('backup-warning').hidden=true;for(const a of (state.activities||(state.activity?[state.activity]:[])))if(a&&a.on)mergeActivity(a);setBusyBots(next.busy_bots,next.waiting_bots);syncApprovals(next.approvals);if(seq!==refreshSeq)return;render();window.mcpMenuState&&window.mcpMenuState();renderQueue({pending:next.pending||[],paused:!!next.queue_paused});if($('offline')){$('offline').checked=!!next.offline;window.syncWeb&&window.syncWeb()}initThink();syncModelSettings(next);if(next.model_status)modelStatus(next.model_status);modelInfo(next.model_info);syncModelChoice(next)}
+async function saveModelSetting(id,patch,control){
+ control.disabled=true;
+ try{
+  const result=await api('/api/model-settings',{id,...patch});
+  if(!Array.isArray(result.models))throw Error('Ungültige Serverantwort');
+  state.models=result.models;
+  syncModelSettings(state);syncModelChoice(state);renderAgents();
+  notice('Modell-Einstellung gespeichert – ab der nächsten Generierung.');
+ }catch(e){notice(e.message);await refresh().catch(()=>{})}
+ finally{control.disabled=false}
+}
+function syncModelSettings(next){
+ const host=$('model-settings');if(!host)return;
+ host.hidden=next.you?.role!=='owner';
+ if(host.hidden)return;
+ const models=Array.isArray(next.models)?next.models:[];
+ const signature=models.map(x=>x.id).join('|');
+ if(host.dataset.models!==signature){
+  host.replaceChildren();host.dataset.models=signature;
+  for(const model of models){
+   const card=document.createElement('div');card.className='model-setting-card';card.dataset.modelId=model.id;
+   const heading=document.createElement('strong');heading.className='model-setting-title';
+   const technical=document.createElement('small');technical.className='model-setting-id';technical.textContent=model.id;
+   const form=document.createElement('form');form.className='model-setting-name';
+   const name=document.createElement('input');name.type='text';name.required=true;name.maxLength=40;name.setAttribute('aria-label','Modell umbenennen: '+model.id);
+   const save=document.createElement('button');save.type='submit';save.textContent='Speichern';
+   form.append(name,save);
+   form.onsubmit=async event=>{event.preventDefault();const value=name.value.trim();if(!value||new TextEncoder().encode(value).length>40){notice('Name muss 1–40 Bytes lang sein.');return}await saveModelSetting(model.id,{name:value},save)};
+   const row=document.createElement('label');row.className='control-row';
+   const check=document.createElement('input');check.type='checkbox';check.setAttribute('aria-label','Deterministische Antworten für '+model.id);
+   const caption=document.createElement('span');caption.textContent='Deterministische Antworten';
+   row.append(check,caption);
+   check.onchange=()=>saveModelSetting(model.id,{deterministic:check.checked},check);
+   const info=document.createElement('p');info.className='control-desc';info.textContent='AN: Temperature 0, Seed 42 · AUS: Standard';
+   card.append(heading,technical,form,row,info);host.append(card);
+  }
+ }
+ for(const model of models){
+  const card=[...host.children].find(x=>x.dataset.modelId===model.id);if(!card)continue;
+  card.querySelector('.model-setting-title').textContent=model.label||model.id;
+  const input=card.querySelector('.model-setting-name input');
+  if(document.activeElement!==input)input.value=model.label||model.id;
+  const check=card.querySelector('input[type=checkbox]');
+  if(!check.disabled)check.checked=!!model.deterministic;
+ }
+}
 function syncModelChoice(next){
  if(!next)return;
  const models=Array.isArray(next.models)?next.models:[];
@@ -1367,7 +1421,7 @@ function syncModelChoice(next){
    if([...sideSel.options].map(o=>o.value).join()!==models.map(m=>m.id).join()){
     sideSel.replaceChildren();
     for(const m of models){const opt=document.createElement('option');opt.value=m.id;opt.textContent=m.label||m.id;sideSel.append(opt)}
-   }
+   }else for(const m of models){const opt=[...sideSel.options].find(o=>o.value===m.id);if(opt)opt.textContent=m.label||m.id}
    sideSel.disabled=modelChoicePending||!!next.busy;
    if(models.some(m=>m.id===next.model))sideSel.value=next.model;
    else if(models.some(m=>m.id===before))sideSel.value=before;
@@ -1439,17 +1493,6 @@ document.addEventListener('keydown',e=>{
  $('message').focus({preventScroll:true});
 });
 $('message').onkeydown=e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();$('send-form').requestSubmit()}};
-$('deterministic-sampling').onchange=async()=>{
- const box=$('deterministic-sampling'),enabled=box.checked;
- box.disabled=true;
- try{
-  const result=await api('/api/sampling',{deterministic:enabled});
-  state.deterministic_sampling=!!result.deterministic;
-  box.checked=!!result.deterministic;
-  notice(result.deterministic?'Deterministisch aktiv – ab der nächsten Generierung.':'Standard-Sampling aktiv.');
- }catch(e){box.checked=!!state.deterministic_sampling;notice(e.message)}
- finally{box.disabled=false}
-};
 $('autotalk').onchange=async()=>{try{await api('/api/autotalk',{on:$('autotalk').checked});notice()}catch(e){notice(e.message);await refresh()}};$('stop').onclick=async()=>{const button=$('stop');button.disabled=true;try{if(queueState.paused){await api('/api/queue/resume',{});}else{await api('/api/stop',{});$('autotalk').checked=false;}await refresh();notice('')}catch(e){notice(e.message)}finally{button.disabled=false}};
 function deN(n,one,many){return n+' '+(n===1?one:many)}
 function purgeAsk({title,lead,items,note,ok}={}){return new Promise(resolve=>{const d=$('purge-dialog');$('purge-title').textContent=title||'Löschen';$('purge-lead').textContent=lead||'';const ul=$('purge-list');ul.replaceChildren();for(const item of items||[]){const li=document.createElement('li');li.textContent=item;ul.append(li)}$('purge-note').textContent=note||'';const okb=$('purge-ok'),cb=$('purge-cancel');okb.textContent=ok||'Löschen';const prev=document.activeElement;let done=false;const finish=v=>{if(done)return;done=true;okb.onclick=cb.onclick=d.onclick=d.onkeydown=null;d.removeEventListener('cancel',onCancel);if(d.open)d.close();try{prev&&prev.focus()}catch(e){}resolve(v)};const onCancel=e=>{e.preventDefault();finish(false)};d.addEventListener('cancel',onCancel);okb.onclick=()=>finish(true);cb.onclick=()=>finish(false);d.onclick=e=>{if(e.target===d)finish(false)};d.onkeydown=e=>{if(e.key==='Escape'){e.preventDefault();finish(false)}};d.showModal();cb.focus()})}
@@ -2296,7 +2339,7 @@ events.onmessage=e=>{
   }else if(['message','file','agents','reset','idle','room'].includes(event.type)){
    if(event.type==='idle'&&Array.isArray(event.busy_bots))setBusyBots(event.busy_bots);
    refresh().catch(err=>notice(err.message));
-  }else if(event.type==='sampling'){state.deterministic_sampling=!!event.deterministic;if(!$('deterministic-sampling').disabled)$('deterministic-sampling').checked=!!event.deterministic;}
+  }else if(event.type==='model_settings'){if(Array.isArray(event.models)){state.models=event.models;syncModelSettings(state);syncModelChoice(state);renderAgents()}}
   else if(event.type==='autotalk')$('autotalk').checked=event.on;
   else if(event.type==='queue')renderQueue(event);
   else if(event.type==='bot_wait'){if(event.on){waitingBots.set(id,event.after||'');busyBots.add(id)}else waitingBots.delete(id);renderLanes()}

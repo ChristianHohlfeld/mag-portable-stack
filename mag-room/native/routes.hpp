@@ -1378,6 +1378,37 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
     send_json(fd, 200, mj::dump(out));
     return;
   }
+  // Deterministic siblings: first-token alternatives within `radius` nats.
+  if (m == "POST" && path == "/api/model-radius") {
+    if (bridge || !actor.ok || actor.role != "owner") {
+      error_json(fd, 403, "Nur der Besitzer"); return;
+    }
+    const Val *id = has_json ? body.find("model") : nullptr;
+    const Val *in = has_json ? body.find("input") : nullptr;
+    if (!id || id->type != Val::STR || !known_room_model(id->asStr())) {
+      error_json(fd, 400, "Unbekanntes Modell"); return;
+    }
+    if (!in || in->type != Val::STR || trim(in->asStr()).empty() ||
+        in->asStr().size() > 8000) {
+      error_json(fd, 400, "Eingabe muss 1–8000 Bytes Text sein"); return;
+    }
+    auto number = [&](const char *key, double def, double lo, double hi) {
+      const Val *v = body.find(key);
+      double x = v && v->type == Val::NUM ? v->asNum() : def;
+      return std::isfinite(x) ? std::clamp(x, lo, hi) : def;
+    };
+    try {
+      Val out = model_radius(id->asStr(), in->asStr(), number("radius", 2.0, 0.0, 10.0),
+                             (int)number("k", 5, 2, 8), (int)number("max_tokens", 48, 8, 256),
+                             (int)number("repeat", 2, 1, 3));
+      send_json(fd, 200, mj::dump(out));
+    } catch (const RadiusError &e) {
+      error_json(fd, e.code, e.what());
+    } catch (const std::exception &e) {
+      error_json(fd, 502, e.what());
+    }
+    return;
+  }
   if (path == "/api/sampling") {
     error_json(fd, 410, "Bitte Sampling pro Modell konfigurieren"); return;
   }

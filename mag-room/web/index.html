@@ -136,6 +136,10 @@ body:has(.layout.hide-left) .rail-edge-left,body:has(.layout.hide-right) .rail-e
 .model-setting-name button{flex:none;min-height:34px;padding:6px 8px;border:1px solid var(--line);border-radius:7px;font-size:11px;background:var(--hover)}
 .model-setting-card .control-row{padding:4px 0;min-height:38px;font-size:12px}
 .model-setting-card .control-desc{padding:0;margin:0;font-size:11px;color:var(--muted)}
+.radius-panel{margin-top:8px;font-size:12px}.radius-panel summary{cursor:pointer;padding:4px 0}
+.radius-form{display:grid;gap:6px;margin:6px 0}.radius-form textarea{width:100%;box-sizing:border-box;font:inherit;resize:vertical}
+.radius-params{display:flex;flex-wrap:wrap;gap:6px}.radius-params label{display:grid;gap:2px;font-size:11px;color:var(--muted)}.radius-params input{width:5.5em}
+.radius-out{display:grid;gap:6px}.radius-item{border-top:1px solid var(--line);padding-top:5px}.radius-item p{margin:3px 0 0;white-space:pre-wrap;word-break:break-word}.radius-skip{color:var(--muted)}
 /* ==== 2026-10-16 design tokens: one neutral system for dark + light; red only as accent ==== */
 :root{--bg:#0f0f10;--surface:#141415;--sidebar:#121213;--panel:#1a1a1c;--panel-2:#212123;--panel-3:#2a2a2d;--text:#ececec;--secondary:#b4b4b8;--muted:#8b8b90;--line:#2c2c30;--soft-line:#222225;--hover:#1f1f22;--bubble:#1f1f22;--code:#0b0b0c;
  --accent:#e62b2b;--accent-hover:#cf2222;--accent-ink:#fff;--danger:#e5484d;--focus:rgba(255,255,255,.14);--r-sm:8px;--r-md:12px;--r-lg:16px;--shadow-sm:0 1px 2px rgba(0,0,0,.35);--shadow:0 16px 48px rgba(0,0,0,.45);--sb-grid:transparent}
@@ -1360,6 +1364,41 @@ async function saveModelSetting(id,patch,control){
  }catch(e){notice(e.message);await refresh().catch(()=>{})}
  finally{control.disabled=false}
 }
+// Radius query: deterministic sibling answers whose FIRST token lies within
+// `radius` nats of the greedy top-1 token; each continues greedily.
+function radiusPanel(modelId){
+ const box=document.createElement('details');box.className='radius-panel';
+ const sum=document.createElement('summary');sum.textContent='Radius-Abfrage';
+ const form=document.createElement('form');form.className='radius-form';
+ const input=document.createElement('textarea');input.rows=2;input.maxLength=8000;input.required=true;input.placeholder='Eingabe (zustandslos, wie im deterministischen Modus)';input.setAttribute('aria-label','Eingabe für Radius-Abfrage '+modelId);
+ const num=(label,value,min,max,step)=>{const l=document.createElement('label');const t=document.createElement('span');t.textContent=label;const i=document.createElement('input');i.type='number';i.value=value;i.min=min;i.max=max;i.step=step;l.append(t,i);return [l,i]};
+ const [lr,r]=num('Radius (nats)',2,0,10,0.1),[lk,k]=num('Kandidaten',5,2,8,1),[lt,t]=num('Tokens',48,8,256,8);
+ const go=document.createElement('button');go.type='submit';go.textContent='Abfragen';
+ const hint=document.createElement('p');hint.className='control-desc';hint.textContent='Erzwingt jedes erste Token mit log p ≥ log p(Top-1) − Radius und rechnet danach greedy weiter. Rang 1 ist die deterministische Antwort. Jede Antwort wird zweimal neu berechnet.';
+ const out=document.createElement('div');out.className='radius-out';out.setAttribute('aria-live','polite');
+ const row=document.createElement('div');row.className='radius-params';row.append(lr,lk,lt);
+ form.append(input,row,go);
+ form.onsubmit=async event=>{
+  event.preventDefault();const text=input.value.trim();if(!text)return;
+  go.disabled=true;out.replaceChildren();out.textContent='Rechnet …';
+  try{
+   const res=await api('/api/model-radius',{model:modelId,input:text,radius:+r.value,k:+k.value,max_tokens:+t.value,repeat:2});
+   out.replaceChildren();
+   const meta=document.createElement('p');meta.className='control-desc';meta.textContent=`${res.siblings.length} von ${res.candidates.length} Kandidaten im Radius ${res.radius} · ${(res.ms/1000).toFixed(1)} s`;out.append(meta);
+   for(const sib of res.siblings){
+    const item=document.createElement('div');item.className='radius-item';
+    const head=document.createElement('small');head.textContent=`#${sib.rank}${sib.rank===1?' Fixpunkt':''} · p ${(sib.prob*100).toFixed(1)} % · Abstand ${sib.gap.toFixed(2)} · ${sib.reproducible?'reproduzierbar '+sib.runs+'/'+sib.runs:'NICHT reproduzierbar'}`;
+    const body=document.createElement('p');body.textContent=sib.text;
+    item.append(head,body);out.append(item);
+   }
+   for(const c of res.candidates.filter(x=>!x.included)){
+    const skip=document.createElement('small');skip.className='radius-skip';skip.textContent=`#${c.rank} „${c.token}“ · p ${(c.prob*100).toFixed(1)} % · ${c.reason||'ausgelassen'}`;out.append(skip);
+   }
+  }catch(e){out.textContent=e.message}
+  finally{go.disabled=false}
+ };
+ box.append(sum,form,hint,out);return box;
+}
 function syncModelSettings(next){
  const host=$('model-settings');if(!host)return;
  host.hidden=next.you?.role!=='owner';
@@ -1382,8 +1421,8 @@ function syncModelSettings(next){
    const caption=document.createElement('span');caption.textContent='Deterministische Antworten';
    row.append(check,caption);
    check.onchange=()=>saveModelSetting(model.id,{deterministic:check.checked},check);
-   const info=document.createElement('p');info.className='control-desc';info.textContent='AN: Neuberechnung mit Temperature 0, Top-K 1, Seed 42 – ohne Prompt-Cache (langsamer). Gleicher vollständiger Kontext nötig; Chatverlauf verändert sich. AUS: Standard.';
-   card.append(heading,technical,form,row,info);host.append(card);
+   const info=document.createElement('p');info.className='control-desc';info.textContent='AN: Nur die aktuelle Eingabe – ohne Verlauf, Erinnerungen, Uhrzeit und Werkzeuge. Neuberechnung mit Temperature 0, Top-K 1, Seed 42, ohne Prompt-Cache (langsamer). AUS: Standard.';
+   card.append(heading,technical,form,row,info,radiusPanel(model.id));host.append(card);
   }
  }
  for(const model of models){

@@ -38,6 +38,13 @@ assert 'static void schedule_prewarm()' in room and 'schedule_prewarm();' in roo
 assert 'MAG_ROOM_PREWARM' in room and 'body["max_tokens"] = 1;' in room
 assert 'MAG_ROOM_PREFIX_DISK' in room and 'prefix_slot("restore")' in room and 'prefix_slot("save")' in room
 assert 'if (st.ready && !was_ready) schedule_prewarm();' in room
+routes = Path('mag-room/native/routes.hpp').read_text()
+ui = Path('mag-room/web/index.html').read_text()
+assert 'path == "/api/model-radius"' in routes and 'actor.role != "owner"' in routes
+assert 'static Val model_radius(' in room and 'first["n_probs"] = k;' in room
+assert 'body["cache_prompt"] = false;' in room and 'body["top_k"] = 1;' in room  # siblings stay greedy, uncached
+assert 'Token-ID nicht eindeutig' in room  # ik ids verified via tokenize+detokenize
+assert "api('/api/model-radius'" in ui
 assert 'if (!JOBS.empty() || AUTO_READY) return;' in room  # never delays a queued turn
 assert 'const size_t target = limit * 65 / 100;' in room
 assert 'if (prompt_wire_bytes(messages, tools) <= limit) return;' in room

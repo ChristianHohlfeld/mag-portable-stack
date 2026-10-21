@@ -5285,6 +5285,199 @@ static void schedule_prewarm() {
     std::thread(prewarm_model, idx, model, epoch).detach();
   }
 }
+// Radius query around the deterministic answer. Greedy decoding picks the
+// top-1 token at every step; this explores the alternatives of the FIRST
+// answer token only: every candidate whose log-probability is within `radius`
+// nats of the top-1 token is forced as first token, then the answer continues
+// greedily (temperature 0, top-k 1, no prompt cache), exactly like the
+// stateless deterministic mode. Rank 1 is the deterministic answer itself.
+// Each sibling is computed `repeat` times and reported as reproducible only
+// when all runs return identical text. Owner-only, one query at a time, never
+// while that model's lane answers the room.
+static std::mutex RADIUS_MTX;
+struct RadiusError : std::runtime_error {
+  int code;
+  RadiusError(int c, const std::string &m) : std::runtime_error(m), code(c) {}
+};
+static Val radius_call(const std::string &model, const std::string &path,
+                       const Val &body) {
+  std::string out;
+  long code = 0;
+  if (!http_simple(BACKEND_HOST, BACKEND_PORT, "POST", path, mj::dump(body),
+                   {{"Content-Type", "application/json"},
+                    {"Authorization", "Bearer " + API_KEY},
+                    {"X-Mag-Model", model},
+                    {"X-Mag-Session", "radius"}},
+                   out, &code, nullptr,
+                   std::max(LLM_TIMEOUT_S, LLM_TIMEOUT_MIN_S) * 1000))
+    throw RadiusError(502, "Modell-Backend nicht erreichbar");
+  Val v;
+  if (code != 200 || !mj::parse(out, v) || !v.isObj())
+    throw RadiusError(502, path + ": HTTP " + std::to_string(code));
+  return v;
+}
+static std::vector<long> radius_ids(const Val &tokenized) {
+  std::vector<long> ids;
+  const Val *arr = tokenized.find("tokens");
+  if (!arr || !arr->isArr()) throw RadiusError(502, "/tokenize: keine Tokens");
+  for (const Val &t : arr->asArr()) {
+    const Val *id = t.isObj() ? t.find("id") : &t;
+    if (!id || id->type != Val::NUM) throw RadiusError(502, "/tokenize: ungueltige Token-ID");
+    ids.push_back((long)id->asNum());
+  }
+  return ids;
+}
+static Val radius_greedy(const std::string &model, const std::vector<long> &ids,
+                         int max_tokens) {
+  Val prompt = Val::array();
+  for (long id : ids) prompt.push(Val((double)id));
+  Val body = Val::object();
+  body["prompt"] = prompt;
+  body["n_predict"] = max_tokens;
+  body["temperature"] = 0.0;
+  body["top_k"] = 1;
+  body["seed"] = 42;
+  body["cache_prompt"] = false;
+  return radius_call(model, "/completion", body);
+}
+static Val model_radius(const std::string &model, const std::string &input,
+                        double radius, int k, int max_tokens, int repeat) {
+  std::unique_lock<std::mutex> one(RADIUS_MTX, std::try_to_lock);
+  if (!one.owns_lock()) throw RadiusError(409, "Eine Radius-Abfrage laeuft bereits");
+  if (lane_named(model).busy.load())
+    throw RadiusError(409, "Modell beantwortet gerade den Raum; bitte danach erneut");
+  const auto from = steady_clock::now();
+  // Same single-message input as the stateless deterministic mode.
+  Val msgs = Val::array();
+  Val u = Val::object();
+  u["role"] = "user";
+  u["content"] = input;
+  msgs.push(u);
+  Val tpl = Val::object();
+  tpl["messages"] = msgs;
+  Val kwargs = Val::object();
+  kwargs["enable_thinking"] = false;
+  tpl["chat_template_kwargs"] = kwargs;
+  const Val rendered = radius_call(model, "/apply-template", tpl);
+  const Val *prompt = rendered.find("prompt");
+  if (!prompt || prompt->type != Val::STR) throw RadiusError(502, "/apply-template: kein Prompt");
+  Val tok = Val::object();
+  tok["content"] = prompt->asStr();
+  tok["add_special"] = false;
+  tok["parse_special"] = true;
+  const std::vector<long> ids = radius_ids(radius_call(model, "/tokenize", tok));
+  // Top-k distribution of the first answer token.
+  Val first = Val::object();
+  Val prompt_ids = Val::array();
+  for (long id : ids) prompt_ids.push(Val((double)id));
+  first["prompt"] = prompt_ids;
+  first["n_predict"] = 1;
+  first["n_probs"] = k;
+  first["temperature"] = 0.0;
+  first["top_k"] = 1;
+  first["seed"] = 42;
+  first["cache_prompt"] = false;
+  const Val step = radius_call(model, "/completion", first);
+  const Val *probs = step.find("completion_probabilities");
+  if (!probs || !probs->isArr() || probs->asArr().empty())
+    throw RadiusError(502, "Backend liefert keine Token-Wahrscheinlichkeiten");
+  const Val &p0 = probs->asArr().front();
+  const Val *alts = p0.find("top_logprobs");   // llama.cpp: id, token, logprob
+  const bool with_ids = alts && alts->isArr();
+  if (!with_ids) alts = p0.find("probs");       // ik_llama: tok_str, prob
+  if (!alts || !alts->isArr() || alts->asArr().empty())
+    throw RadiusError(502, "Backend liefert keine Kandidaten");
+  struct Cand { std::string text; long id = -1; double lp = 0; std::string reason; };
+  std::vector<Cand> cands;
+  for (const Val &a : alts->asArr()) {
+    Cand c;
+    if (with_ids) {
+      c.text = mag::str(a, "token");
+      if (auto id = a.find("id"); id && id->type == Val::NUM) c.id = (long)id->asNum();
+      if (auto lp = a.find("logprob"); lp && lp->type == Val::NUM) c.lp = lp->asNum();
+      else continue;
+    } else {
+      c.text = mag::str(a, "tok_str");
+      const Val *pr = a.find("prob");
+      if (!pr || pr->type != Val::NUM || pr->asNum() <= 0) continue;
+      c.lp = std::log(pr->asNum());
+    }
+    cands.push_back(c);
+  }
+  if (cands.empty()) throw RadiusError(502, "Backend liefert keine Kandidaten");
+  std::stable_sort(cands.begin(), cands.end(),
+                   [](const Cand &a, const Cand &b) { return a.lp > b.lp; });
+  const double top = cands.front().lp;
+  // ik_llama reports token text only: resolve the id and accept it only when
+  // it is a single token that detokenizes back to exactly that text.
+  for (auto &c : cands) {
+    if (c.id >= 0 || top - c.lp > radius) continue;
+    Val q = Val::object();
+    q["content"] = c.text;
+    q["add_special"] = false;
+    q["parse_special"] = false;
+    const std::vector<long> one_id = radius_ids(radius_call(model, "/tokenize", q));
+    if (one_id.size() != 1) { c.reason = "Token-ID nicht eindeutig"; continue; }
+    Val d = Val::object();
+    Val arr = Val::array();
+    arr.push(Val((double)one_id[0]));
+    d["tokens"] = arr;
+    if (mag::str(radius_call(model, "/detokenize", d), "content") != c.text) {
+      c.reason = "Token-ID nicht eindeutig"; continue;
+    }
+    c.id = one_id[0];
+  }
+  Val candidates = Val::array(), siblings = Val::array();
+  for (size_t i = 0; i < cands.size(); ++i) {
+    const Cand &c = cands[i];
+    const double gap = top - c.lp;
+    const bool inside = gap <= radius;
+    Val row = Val::object();
+    row["rank"] = (double)(i + 1);
+    row["token"] = c.text;
+    row["token_id"] = (double)c.id;
+    row["logprob"] = c.lp;
+    row["prob"] = std::exp(c.lp);
+    row["gap"] = gap;
+    row["included"] = inside && c.id >= 0;
+    if (!inside) row["reason"] = "ausserhalb des Radius";
+    else if (!c.reason.empty()) row["reason"] = c.reason;
+    candidates.push(row);
+    if (!inside || c.id < 0) continue;
+    std::vector<long> forced = ids;
+    forced.push_back(c.id);
+    std::string text;
+    bool same = true;
+    for (int r = 0; r < repeat; ++r) {
+      const std::string run = mag::str(radius_greedy(model, forced, max_tokens), "content");
+      if (r == 0) text = run;
+      else if (run != text) same = false;
+    }
+    Val s = Val::object();
+    s["rank"] = (double)(i + 1);
+    s["token"] = c.text;
+    s["token_id"] = (double)c.id;
+    s["logprob"] = c.lp;
+    s["prob"] = std::exp(c.lp);
+    s["gap"] = gap;
+    s["text"] = c.text + text;
+    s["runs"] = (double)repeat;
+    s["reproducible"] = same;
+    siblings.push(s);
+  }
+  Val out = Val::object();
+  out["ok"] = true;
+  out["model"] = model;
+  out["input"] = input;
+  out["radius"] = radius;
+  out["k"] = (double)k;
+  out["max_tokens"] = (double)max_tokens;
+  out["prompt_tokens"] = (double)ids.size();
+  out["candidates"] = candidates;
+  out["siblings"] = siblings;
+  out["ms"] = (double)duration_cast<milliseconds>(steady_clock::now() - from).count();
+  return out;
+}
 // Lane worker: answers one dispatched turn for the bots of one lane, in
 // order. Only the task owner (first bot of the user request) can request an
 // autonomous continuation.

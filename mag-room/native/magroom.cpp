@@ -2657,6 +2657,7 @@ static std::mutex MODEL_INFO_MTX;
 static Val MODEL_INFO_CACHE;
 static int64_t MODEL_INFO_AT = 0;
 static Val LAST_TIMINGS;
+static std::map<std::string, Val> MODEL_TIMINGS; // last timing report per NUMA backend
 static std::string gguf_display_name(std::string path) {
   auto slash = path.find_last_of('/');
   if (slash != std::string::npos)
@@ -2798,6 +2799,7 @@ static void publish_prompt_cache(int slot, const std::string &model,
   {
     std::lock_guard<std::mutex> lk(MODEL_INFO_MTX);
     LAST_TIMINGS = r;
+    MODEL_TIMINGS[model] = r;
   }
   std::cerr << "prompt-cache model=" << model << " slot=" << slot
             << " tokens_cached=" << (long long)(cached < 0 ? -1 : cached)
@@ -3276,7 +3278,7 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   if (t.error.empty() && t.text.empty() && acc.calls.empty() &&
       t.finish == "length")
     t.error = "Antwortlimit erreicht, bevor das Modell fertig gedacht hat "
-              "(MAG_ROOM_MAX_TOKENS=" + std::to_string(MAX_TOKENS) + ").";
+              "(max_tokens=" + std::to_string(completion_tokens) + ").";
   for (auto &kv : acc.calls) {
     Val call = Val::object();
     call["id"] = kv.second.find("id") ? kv.second.find("id")->asStr()
@@ -5584,6 +5586,12 @@ static std::string state_json(const Actor *actor = nullptr) {
   root["models"] = room_model_catalog();
   root["model_status"] = model_status_val(model_status(false));
   root["model_info"] = model_info_val();
+  if (DUAL_NUMA && actor && actor->ok && actor->role == "owner") {
+    Val perf = Val::object();
+    std::lock_guard<std::mutex> lk(MODEL_INFO_MTX);
+    for (auto &kv : MODEL_TIMINGS) perf[kv.first] = kv.second;
+    root["model_perf"] = perf; // timings only: no prompt or tool arguments
+  }
   root["autotalk"] = AUTOTALK.load();
   root["stt_lang"] = STT_LANG;
   root["runtime"] = "C++17";

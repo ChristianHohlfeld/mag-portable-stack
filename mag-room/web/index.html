@@ -1382,7 +1382,7 @@ function syncModelSettings(next){
    const caption=document.createElement('span');caption.textContent='Deterministische Antworten';
    row.append(check,caption);
    check.onchange=()=>saveModelSetting(model.id,{deterministic:check.checked},check);
-   const info=document.createElement('p');info.className='control-desc';info.textContent='AN: Temperature 0, Seed 42 · AUS: Standard';
+   const info=document.createElement('p');info.className='control-desc';info.textContent='AN: Neuberechnung mit Temperature 0, Top-K 1, Seed 42 – ohne Prompt-Cache (langsamer). Gleicher vollständiger Kontext nötig; Chatverlauf verändert sich. AUS: Standard.';
    card.append(heading,technical,form,row,info);host.append(card);
   }
  }

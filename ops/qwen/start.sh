@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # NUMA1 only: the E5-2680 v4 has 14 physical cores per socket. Run 14
 # inference/batch workers on node1, never migrate weights to remote RAM.
+# The model has a ~27 GiB per_layer_token_embd N-gram table. With the
+# llama.cpp lazy-mode auto default, random lookups can fault from disk during
+# prefill. Force it resident on NUMA1 (no GPU) even after page-cache eviction.
 # Refuse to start if IQ3 is running or backups are active.
 set -euo pipefail
 fail(){ echo "Qwen NUMA1: $*" >&2; exit 4; }
@@ -21,7 +24,9 @@ usable=$((free + (file > shmem ? file-shmem : 0)))
 bash /usr/local/lib/mag-qwen/verify-model.sh || fail 'model SHA verification failed'
 exec /usr/bin/numactl --cpunodebind=1 --membind=1 "$BIN" \
   --model "$MODEL" --alias qwen3.8-flash-next-uncensored \
-  --host 127.0.0.1 --port 8091 --ctx-size 16384 --parallel 1 \
+  --host 127.0.0.1 --port 8091 --ctx-size 32768 --parallel 1 \
   --threads 14 --threads-batch 14 --numa numactl \
-  --jinja --reasoning-format auto --cache-ram 8192 \
+  --ctx-checkpoints 32 \
+  --lazy-mode off -ot per_layer_token_embd=CPU \
+  --jinja --reasoning-format auto --cache-ram 16384 \
   --slot-save-path /var/lib/mag-llm/slots/qwen --no-ui

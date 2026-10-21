@@ -104,6 +104,36 @@ struct ModelSettings {
   bool deterministic = false;
 };
 static std::map<std::string, ModelSettings> MODEL_SETTINGS;
+// In-process verification results are deliberately transient: server / model
+// restarts and backend changes must never inherit an old "verified" badge.
+struct ModelVerification {
+  std::string status = "unchecked";
+  int completed = 0;
+  int total = 20;
+  std::string error;
+  uint64_t generation = 0;
+};
+static std::mutex VERIFY_MTX;
+static std::map<std::string, ModelVerification> MODEL_VERIFICATIONS;
+static Val model_verification_val(const std::string &id) {
+  std::lock_guard<std::mutex> lk(VERIFY_MTX);
+  const auto it = MODEL_VERIFICATIONS.find(id);
+  const ModelVerification v = it == MODEL_VERIFICATIONS.end()
+                                  ? ModelVerification{} : it->second;
+  Val out = Val::object();
+  out["status"] = v.status;
+  out["completed"] = v.completed;
+  out["total"] = v.total;
+  if (!v.error.empty()) out["error"] = v.error;
+  return out;
+}
+static void invalidate_model_verification(const std::string &id) {
+  std::lock_guard<std::mutex> lk(VERIFY_MTX);
+  ModelVerification &v = MODEL_VERIFICATIONS[id];
+  const uint64_t next = v.generation + 1;
+  v = ModelVerification{};
+  v.generation = next;
+}
 // ------------------------------------------------------------------ config
 static std::string MODEL, BACKEND, BIND_HOST, STATE_DIR, FILES_DIR, AGENTS_JSON,
     FILES_JSON, ROOM_JSON, FRONTEND_FILE, TOKEN_FILE, STATIC_DIR, GUEST_RUN,
@@ -3052,7 +3082,9 @@ static bool save_model_settings(const std::string &id,
   }
   if (!write_file_atomic(STATE_DIR + "/model-settings.json", mj::dump(settings)))
     return false;
+  const bool sampling_changed = item.deterministic != found->second.deterministic;
   found->second = item;
+  if (sampling_changed) invalidate_model_verification(id);
   return true;
 }
 static std::string room_model_file() { return STATE_DIR + "/room-model.txt"; }
@@ -3090,12 +3122,14 @@ static Val room_model_catalog() {
   const ModelSettings main_settings = model_settings_for("deepseek-v4-flash-0731");
   q4["label"] = main_settings.name.empty() ? default_model_label("deepseek-v4-flash-0731") : main_settings.name;
   q4["deterministic"] = main_settings.deterministic;
+  q4["verification"] = model_verification_val("deepseek-v4-flash-0731");
   Val secondary = Val::object();
   const std::string secondary_id = secondary_room_model();
   const ModelSettings secondary_settings = model_settings_for(secondary_id);
   secondary["id"] = secondary_id;
   secondary["label"] = secondary_settings.name.empty() ? default_model_label(secondary_id) : secondary_settings.name;
   secondary["deterministic"] = secondary_settings.deterministic;
+  secondary["verification"] = model_verification_val(secondary_id);
   models.push(q4);
   models.push(secondary);
   return models;
@@ -3118,9 +3152,10 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
              double temperature,
              const std::function<void(const std::string &, const std::string &)>
                  &on_delta,
-             bool thinking, int id_slot, const std::string &model = "") {
+             bool thinking, int id_slot, const std::string &model = "",
+             bool verification = false) {
   Turn t;
-  slot_restore_if_cold(id_slot);
+  if (!verification) slot_restore_if_cold(id_slot);
   HttpClient c;
   c.timeout_ms = std::max(LLM_TIMEOUT_S, LLM_TIMEOUT_MIN_S) * 1000;
   c.cancelable = true;
@@ -3161,7 +3196,7 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   const int max_output = model == "qwen3.8-flash-next-uncensored"
       ? std::min(MAX_TOKENS, std::clamp(envi("MAG_ROOM_QWEN_MAX_TOKENS", 4096), 512, 8192))
       : MAX_TOKENS;
-  body["max_tokens"] = max_output;
+  body["max_tokens"] = verification ? std::min(max_output, 128) : max_output;
   body["stream"] = true;
   // llama.cpp: stream prompt_progress {total,cache,processed,time_ms} while
   // the prompt is evaluated (minutes on CPU) instead of staying silent.
@@ -3171,7 +3206,7 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   // the slot itself; an explicit id_slot skips both save and restore. With a
   // single slot, pinning therefore made every bot switch (and every Grok/Ali
   // call in between) re-read the whole history. Pin only with several slots.
-  if (PROMPT_SLOTS > 1)
+  if (!verification && PROMPT_SLOTS > 1)
     body["id_slot"] = id_slot;
   // DeepSeek-V4-Flash-0731 template: enable_thinking only changes the
   // generation prompt at the END -> toggling it keeps the prompt cache.
@@ -3363,10 +3398,12 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
     else if (processed >= 0)
       saw_evaluated = processed;
   }
-  publish_prompt_cache(id_slot, model, saw_timings ? &timings_seen : nullptr,
-                       saw_cached, saw_evaluated);
-  if (t.error.empty())
-    slot_save_after(id_slot, saw_cached, saw_evaluated);
+  if (!verification) {
+    publish_prompt_cache(id_slot, model, saw_timings ? &timings_seen : nullptr,
+                         saw_cached, saw_evaluated);
+    if (t.error.empty())
+      slot_save_after(id_slot, saw_cached, saw_evaluated);
+  }
   return t;
 }
 

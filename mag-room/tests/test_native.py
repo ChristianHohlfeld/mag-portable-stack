@@ -183,6 +183,38 @@ class Native(unittest.TestCase):
   self.error(400,'/api/message',{'text':''});self.error(400,'/api/autotalk',{'on':'yes'})
   self.error(403,'/api/stop',{},headers={'Origin':'https://evil.example'})
   self.error(404,'/static/%2e%2e%2fagents.json');self.error(404,'/api/file/../../etc/passwd')
+ def test_05a_deterministic_sampling_is_live_authorized_and_persisted(self):
+  self.assertFalse(self.request('/api/state')['deterministic_sampling'])
+  self.error(400,'/api/sampling',{'deterministic':'yes'})
+  self.error(400,'/api/sampling',{})
+  self.error(403,'/api/sampling',{'deterministic':True},headers={'Content-Type':'application/json','X-No-Token':'1'})
+  token=self.state.joinpath('token').read_text().strip()
+  self.error(403,'/api/sampling',{'deterministic':True},bridge=True,headers={'Authorization':'Bearer '+token})
+  self.assertTrue(self.request('/api/sampling',{'deterministic':True})['deterministic'])
+  self.assertTrue(self.request('/api/state')['deterministic_sampling'])
+  self.assertEqual((self.state/'sampling').read_text(),'on')
+  count=len(Model.calls)
+  self.request('/api/message',{'text':'Deterministic on','bots':['test']})
+  for _ in range(100):
+   if len(Model.calls)>count:break
+   time.sleep(.05)
+  self.assertGreater(len(Model.calls),count)
+  self.assertEqual(Model.calls[-1]['temperature'],0)
+  self.assertEqual(Model.calls[-1]['seed'],42)
+  self.wait_idle()
+  self.assertFalse(self.request('/api/sampling',{'deterministic':False})['deterministic'])
+  self.assertEqual((self.state/'sampling').read_text(),'off')
+  count=len(Model.calls)
+  self.request('/api/message',{'text':'Deterministic off','bots':['test']})
+  for _ in range(100):
+   if len(Model.calls)>count:break
+   time.sleep(.05)
+  self.assertGreater(len(Model.calls),count)
+  self.assertNotIn('seed',Model.calls[-1])
+  self.assertAlmostEqual(Model.calls[-1]['temperature'],.55)
+  self.wait_idle()
+  # Leave enabled for test_07_persistence to exercise the restart path.
+  self.request('/api/sampling',{'deterministic':True})
  def test_06_stop_interrupts_and_human_input_stays_responsive(self):
   Model.delay=3;self.request('/api/autotalk',{'on':True})
   time.sleep(.15)
@@ -197,6 +229,8 @@ class Native(unittest.TestCase):
  def test_07_persistence(self):
   before=self.request('/api/state');self.proc.terminate();self.proc.wait(timeout=5);self.log.close();self.start();after=self.request('/api/state')
   self.assertEqual(before['room'],after['room']);self.assertEqual(before['agents'],after['agents']);self.assertFalse(after['autotalk'])
+  self.assertTrue(before['deterministic_sampling']);self.assertTrue(after['deterministic_sampling'])
+  self.request('/api/sampling',{'deterministic':False});self.assertFalse(self.request('/api/state')['deterministic_sampling'])
  def test_07a_queue_survives_room_restart(self):
   Model.delay=3
   self.request('/api/message',{'text':'Erste Frage','bots':['test']})

@@ -97,6 +97,9 @@ static std::atomic<int> &backend_fd_slot() {
 static std::atomic<bool> SHUTDOWN{false};
 static std::atomic<bool> WEB_ENABLED{true}; // == !OFFLINE (kept for tool gate)
 static std::atomic<bool> OFFLINE{false};
+// Room-wide choice, applied per completion (no model reload).
+static std::atomic<bool> DETERMINISTIC_SAMPLING{false};
+static std::mutex SAMPLING_MTX;
 // ------------------------------------------------------------------ config
 static std::string MODEL, BACKEND, BIND_HOST, STATE_DIR, FILES_DIR, AGENTS_JSON,
     FILES_JSON, ROOM_JSON, FRONTEND_FILE, TOKEN_FILE, STATIC_DIR, GUEST_RUN,
@@ -3070,7 +3073,15 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   Val tt;
   if (mj::parse(tools, tt))
     body["tools"] = tt;
-  body["temperature"] = temperature;
+  // Greedy decoding gives a repeatable token path under deterministic
+  // inference. The fixed seed also pins any sampler randomness in the backend.
+  // Read at request creation so an in-flight completion is never changed.
+  if (DETERMINISTIC_SAMPLING.load()) {
+    body["temperature"] = 0.0;
+    body["seed"] = 42;
+  } else {
+    body["temperature"] = temperature;
+  }
   // The Qwen backend has 16k context, unlike the 32k Q4 backend.
   // Bound generated tokens on Qwen only, keeping Q4's established budget.
   // Both models retain all native/MCP tools and immutable audit routing.
@@ -5508,6 +5519,7 @@ static std::string state_json(const Actor *actor = nullptr) {
   root["single_bot"] = SINGLE_BOT;
   root["dual_numa"] = DUAL_NUMA;
   root["thinking_default"] = THINKING != "off";
+  root["deterministic_sampling"] = DETERMINISTIC_SAMPLING.load();
   root["thinking"] = thinking_of(LAST_THINK.load());
   {
     std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
@@ -6252,6 +6264,7 @@ int main() {
   UI_DEFAULT = read_file(UI_FILE);
 
   AUTOTALK = trim(read_file(STATE_DIR + "/autotalk")) == "on";
+  DETERMINISTIC_SAMPLING = trim(read_file(STATE_DIR + "/sampling")) == "on";
   {
     // Reconcile nft with the persisted choice in both directions (idempotent).
     const bool off = trim(read_file(STATE_DIR + "/offline")) == "on";

@@ -136,6 +136,12 @@ body:has(.layout.hide-left) .rail-edge-left,body:has(.layout.hide-right) .rail-e
 .model-setting-name button{flex:none;min-height:34px;padding:6px 8px;border:1px solid var(--line);border-radius:7px;font-size:11px;background:var(--hover)}
 .model-setting-card .control-row{padding:4px 0;min-height:38px;font-size:12px}
 .model-setting-card .control-desc{padding:0;margin:0;font-size:11px;color:var(--muted)}
+.model-verify-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px;font-size:11px}
+.model-verify-row button{padding:6px 9px;border-radius:7px;border:1px solid var(--line);background:var(--hover);font-size:11px;cursor:pointer}
+.model-verify-row button:disabled{cursor:default;opacity:.55}
+.model-verify-status{font-size:11px;color:var(--secondary)}
+.model-verify-status.ok{color:var(--green,#2fb36d)}
+.model-verify-status.failed{color:var(--danger,#df4b4b)}
 /* ==== 2026-10-16 design tokens: one neutral system for dark + light; red only as accent ==== */
 :root{--bg:#0f0f10;--surface:#141415;--sidebar:#121213;--panel:#1a1a1c;--panel-2:#212123;--panel-3:#2a2a2d;--text:#ececec;--secondary:#b4b4b8;--muted:#8b8b90;--line:#2c2c30;--soft-line:#222225;--hover:#1f1f22;--bubble:#1f1f22;--code:#0b0b0c;
  --accent:#e62b2b;--accent-hover:#cf2222;--accent-ink:#fff;--danger:#e5484d;--focus:rgba(255,255,255,.14);--r-sm:8px;--r-md:12px;--r-lg:16px;--shadow-sm:0 1px 2px rgba(0,0,0,.35);--shadow:0 16px 48px rgba(0,0,0,.45);--sb-grid:transparent}
@@ -1382,8 +1388,22 @@ function syncModelSettings(next){
    const caption=document.createElement('span');caption.textContent='Deterministische Antworten';
    row.append(check,caption);
    check.onchange=()=>saveModelSetting(model.id,{deterministic:check.checked},check);
-   const info=document.createElement('p');info.className='control-desc';info.textContent='AN: Neuberechnung mit Temperature 0, Top-K 1, Seed 42 – ohne Prompt-Cache (langsamer). Gleicher vollständiger Kontext nötig; Chatverlauf verändert sich. AUS: Standard.';
-   card.append(heading,technical,form,row,info);host.append(card);
+   const info=document.createElement('p');info.className='control-desc';info.textContent='AN: Nur aktuelle Nachricht, keine Tools/Erinnerungen. Jedes Mal neu, Temperature 0, Top-K 1, Seed 42; kein Prompt-Cache.';
+   const verifyRow=document.createElement('div');verifyRow.className='model-verify-row';
+   const verify=document.createElement('button');verify.type='button';verify.textContent='20× prüfen';verify.className='model-verify-btn';
+   const result=document.createElement('span');result.className='model-verify-status';result.textContent='Nicht geprüft';
+   verify.onclick=async()=>{
+    verify.disabled=true;
+    try{
+     const response=await api('/api/model-verify',{id:model.id});
+     if(Array.isArray(response.models)){state.models=response.models;syncModelSettings(state)}
+    }catch(e){notice(e.message);await refresh().catch(()=>{})}
+    finally{syncModelSettings(state)}
+   };
+   verifyRow.append(verify,result);
+   const detail=document.createElement('p');detail.className='control-desc';
+   detail.textContent='20 frische Inferenzläufe · 1 Testeingabe · Bytevergleich der gesamten Antwort (kein Token-ID-Nachweis).';
+   card.append(heading,technical,form,row,info,verifyRow,detail);host.append(card);
   }
  }
  for(const model of models){
@@ -1393,6 +1413,12 @@ function syncModelSettings(next){
   if(document.activeElement!==input)input.value=model.label||model.id;
   const check=card.querySelector('input[type=checkbox]');
   if(!check.disabled)check.checked=!!model.deterministic;
+  const verification=model.verification||{},status=verification.status||'unchecked',done=verification.completed||0;
+  const verify=card.querySelector('.model-verify-btn'),label=card.querySelector('.model-verify-status');
+  verify.disabled=!model.deterministic||status==='running';
+  label.className='model-verify-status'+(status==='passed'?' ok':status==='failed'?' failed':'');
+  label.textContent=!model.deterministic?'Modus aus':status==='running'?'Läuft '+done+'/20':status==='passed'?'20/20 identisch':status==='failed'?'Nicht reproduzierbar ('+done+'/20)':'Nicht geprüft';
+  label.title=verification.error||'Prüfung gilt nur für feste Probe und aktuelle Laufzeit';
  }
 }
 function syncModelChoice(next){
@@ -2339,7 +2365,7 @@ events.onmessage=e=>{
   }else if(['message','file','agents','reset','idle','room'].includes(event.type)){
    if(event.type==='idle'&&Array.isArray(event.busy_bots))setBusyBots(event.busy_bots);
    refresh().catch(err=>notice(err.message));
-  }else if(event.type==='model_settings'){if(Array.isArray(event.models)){state.models=event.models;syncModelSettings(state);syncModelChoice(state);renderAgents()}}
+  }else if(event.type==='model_settings'||event.type==='model_verification'){if(Array.isArray(event.models)){state.models=event.models;syncModelSettings(state);syncModelChoice(state);if(event.type==='model_settings')renderAgents()}}
   else if(event.type==='autotalk')$('autotalk').checked=event.on;
   else if(event.type==='queue')renderQueue(event);
   else if(event.type==='bot_wait'){if(event.on){waitingBots.set(id,event.after||'');busyBots.add(id)}else waitingBots.delete(id);renderLanes()}

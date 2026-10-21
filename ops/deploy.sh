@@ -118,7 +118,7 @@ rollback() {
    rm -rf /etc/systemd/system/mag-120.service.d
    cp -a "$BACKUP/mag-120.service.d" /etc/systemd/system/mag-120.service.d
  else
-   rm -f /etc/systemd/system/mag-120.service.d/30-multibot.conf
+   rm -f /etc/systemd/system/mag-120.service.d/30-multibot.conf /etc/systemd/system/mag-120.service.d/30-dual-numa.conf
  fi
  systemctl daemon-reload
  systemctl restart mag-120.service
@@ -200,9 +200,20 @@ if [[ -L "$audit_drop" ]]; then
       ;;
   esac
 fi
-# Exactly one bot. Remove the conflicting multi-bot override on existing hosts.
-# The 20-deepseek-audit unit selects the existing agent automatically.
+# Keep the existing single-bot room for legacy IQ3 installs. On a verified
+# Qwen host, use exactly two model-pinned bots with separate KVM workspaces.
 rm -f /etc/systemd/system/mag-120.service.d/30-multibot.conf
+if [[ -r /etc/mag-stack/secondary-model.env ]] &&
+   grep -Fxq 'MAG_SECONDARY_MODEL=qwen' /etc/mag-stack/secondary-model.env; then
+  install -d -m 0755 /etc/systemd/system/mag-120.service.d /usr/local/lib/mag-qwen
+  install -m 0644 "$SOURCE/ops/mag-120.d/30-dual-numa.conf" /etc/systemd/system/mag-120.service.d/30-dual-numa.conf
+  # Update only the on-disk systemd definition; NEVER restart either loaded LLM.
+  [[ -x /usr/local/lib/mag-qwen/start.sh ]] || { echo 'Qwen staged runtime missing' >&2; exit 1; }
+  install -m 0755 "$SOURCE/ops/qwen/wait-q4.sh" /usr/local/lib/mag-qwen/wait-q4.sh
+  install -m 0644 "$SOURCE/ops/qwen/mag-llm-qwen.service" /etc/systemd/system/mag-llm-qwen.service
+else
+  rm -f /etc/systemd/system/mag-120.service.d/30-dual-numa.conf
+fi
 systemctl daemon-reload
 systemctl enable --now mag-agents-network.service
 systemctl restart mag-agents-network.service

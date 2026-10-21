@@ -3946,9 +3946,15 @@ static bool context_overflow_error(const std::string &error) {
 static void compact_agent_context(std::vector<Val> &messages,
                                   const std::string &tools, size_t limit,
                                   std::string &rollup) {
-  // Drop only complete older assistant/tool rounds: never orphan a tool reply
-  // and never discard the most recent result the model must act upon.
-  while (prompt_wire_bytes(messages, tools) > limit) {
+  // Critical for CPU-only models: compacting ONE old tool round whenever the
+  // next response crosses the limit rewrites the early rollup message on EVERY
+  // turn. That invalidates the entire later llama KV prefix, causing minutes
+  // of repeated prefill. Compact in infrequent batches, retaining ~35% spare
+  // window for future tool rounds. Full outputs and files remain in the VM/
+  // activity log. Never orphan a tool result or drop the latest tool rounds.
+  if (prompt_wire_bytes(messages, tools) <= limit) return;
+  const size_t target = limit * 65 / 100;
+  while (prompt_wire_bytes(messages, tools) > target) {
     const size_t at = rollup.empty() ? 2 : 3;
     if (messages.size() <= at + 2) break;
     size_t end = at + 1;

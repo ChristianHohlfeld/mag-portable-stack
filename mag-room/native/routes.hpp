@@ -1328,6 +1328,30 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
     send_json(fd, 200, "{\"ok\":true}");
     return;
   }
+  // Verification runs exclusively through the owner's local MAG room
+  // session. It never posts a test prompt to the shared chat.
+  if (m == "POST" && path == "/api/model-verify") {
+    if (bridge || !actor.ok || actor.role != "owner") {
+      error_json(fd, 403, "Nur der Besitzer"); return;
+    }
+    if (!has_json || !body.find("id") ||
+        body.find("id")->type != Val::STR) {
+      error_json(fd, 400, "Modell-ID fehlt"); return;
+    }
+    const std::string model = body.find("id")->asStr();
+    const int code = start_model_verification(model);
+    if (code != 202) {
+      error_json(fd, code, code == 400 ? "Unbekanntes Modell" :
+                 code == 409 ? "Determinismus ausschalten/einschalten oder laufende Inferenz abwarten" :
+                               "Prüfung konnte nicht gestartet werden");
+      return;
+    }
+    Val out = Val::object();
+    out["accepted"] = true;
+    out["models"] = room_model_catalog();
+    send_json(fd, 202, mj::dump(out));
+    return;
+  }
   // Owner-controlled metadata only: stable model IDs and NUMA routing are untouched.
   if (m == "POST" && path == "/api/model-settings") {
     if (bridge || !actor.ok || actor.role != "owner") {

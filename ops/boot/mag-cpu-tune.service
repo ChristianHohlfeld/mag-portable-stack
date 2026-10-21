@@ -6,15 +6,25 @@
 # - C1E off: the kernel still offers C1E although it is off in the BIOS;
 #   llama's worker threads sleep and wake at every barrier.
 # C3/C6 are already disabled (BIOS C-State=Disabled). Not a fixed clock.
+# - Uncore at its maximum (2.7 GHz): with BIOS Uncore scaling off it only
+#   reached 2.0 GHz under load; token generation is memory-bound and fell
+#   ~25 % (DeepSeek tg 6.3 vs 8.35 t/s, Qwen 5.3 vs 7.0; 2026-10-21).
+#   Cores still scale dynamically.
+# Runs before the models so their load and first prefill are tuned too.
+# cpu-perf.service only sets the governor later and keeps these limits.
 [Unit]
 Description=MAG CPU tuning for local LLM inference
-After=multi-user.target cpu-perf.service
+After=systemd-modules-load.service
+Before=mag-llm.service mag-llm-qwen.service
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
+# Fail visibly if the uncore knob is missing: silently losing it costs ~25 %.
+ExecStartPre=/sbin/modprobe intel_uncore_frequency
 ExecStart=/usr/bin/cpupower frequency-set -g performance -d 1200MHz -u 3300MHz
 ExecStart=/bin/sh -c 'for f in /sys/devices/system/cpu/cpu*/power/energy_perf_bias; do echo 0 > "$f"; done'
+ExecStart=/bin/sh -c 'for p in /sys/devices/system/cpu/intel_uncore_frequency/package_*; do cat "$p/initial_max_freq_khz" > "$p/max_freq_khz"; cat "$p/initial_max_freq_khz" > "$p/min_freq_khz"; done'
 ExecStart=/bin/sh -c 'for s in /sys/devices/system/cpu/cpu*/cpuidle/state*; do [ "$(cat "$s/name")" = C1E ] && echo 1 > "$s/disable"; done; true'
 
 [Install]

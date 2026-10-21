@@ -19,8 +19,9 @@ OUT=/var/tmp/mag-httpbench-$(date +%Y%m%d-%H%M)-${LABEL}.md
 busy=$(curl -fsS --max-time 3 http://127.0.0.1:8766/api/state 2>/dev/null \
   | python3 -I -c 'import json,sys;print(json.load(sys.stdin).get("busy"))' 2>/dev/null || echo "?")
 [[ "$busy" == "True" ]] && { echo "Raum ist beschäftigt – später erneut."; exit 1; }
-slots=$(curl -fsS --max-time 3 http://127.0.0.1:8080/slots 2>/dev/null || echo "[]")
-python3 -I -c 'import json,sys; s=json.loads(sys.argv[1]); sys.exit(1 if any(x.get("is_processing") for x in s) else 0)' "$slots" \
+# /slots carries the cached prompts (MBs): pipe it, argv overflows (E2BIG).
+{ curl -fsS --max-time 3 http://127.0.0.1:8080/slots 2>/dev/null || echo "[]"; } \
+  | python3 -I -c 'import json,sys; s=json.load(sys.stdin); sys.exit(1 if any(x.get("is_processing") for x in s) else 0)' \
   || { echo "llama rechnet gerade – später erneut."; exit 1; }
 
 python3 -I - "$URL" "$MODEL" "$RUNS" "$SIZES" "$OUT" "$LABEL" <<'PY'

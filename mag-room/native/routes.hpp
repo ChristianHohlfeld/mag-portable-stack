@@ -1279,7 +1279,7 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
     msg["type"] = "message";
     publish(mj::dump(msg));
     const bool queued = lanes_busy(ids) && !interrupt;
-    schedule(ids, think, interrupt);
+    schedule(ids, think, interrupt, str("text"));
     send_json(fd, 202, queued ? "{\"accepted\":true,\"queued\":true}"
                               : "{\"accepted\":true}");
     return;

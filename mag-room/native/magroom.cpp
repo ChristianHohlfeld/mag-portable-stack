@@ -3987,6 +3987,9 @@ static std::string dispatch_tool(int bot_idx, const std::string &name,
 // 0/1 = chosen with the user message (UI toggle). Autotalk continuations of
 // that task keep the choice.
 static thread_local int TURN_THINK = -1;
+// Current request's raw text, not the room transcript. Each queued chat turn
+// carries its own value, including after a service restart.
+static thread_local std::string TURN_INPUT;
 // The latest user-chosen value, for the room state (HTTP threads).
 static std::atomic<int> LAST_THINK{-1};
 static bool thinking_of(int v) { return v < 0 ? THINKING != "off" : v == 1; }
@@ -3994,6 +3997,7 @@ static bool turn_thinking() { return thinking_of(TURN_THINK); }
 struct JobRun;
 static thread_local const JobRun *CURRENT_JOB = nullptr;
 static std::string job_user_content(const JobRun *r);
+static std::string job_plain_prompt(const JobRun *r);
 static bool has_next_step(const std::string &t) {
   return t.find("[[MAG:WEITER]]") != std::string::npos ||
          t.find("Nächster Schritt") != std::string::npos ||
@@ -4092,34 +4096,48 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
                            const std::string &other) {
   std::string bot_id = bot_field(bot_idx, "id");
   std::string bot_name = bot_field(bot_idx, "name", "Bot");
-  bool web = WEB_ENABLED.load();
-  mcp_auto_once();
-  std::string system = build_system(bot_idx, autotalk, other, web);
-  // Memories sit directly after the stable rules. Unchanged block is
-  // byte-identical; a new fact is a suffix, so the prefix stays cached.
-  std::string memory = memory_manifest(bot_id);
+  const bool stateless = model_settings_for(bot_model_id(bot_idx)).deterministic;
+  const bool web = WEB_ENABLED.load();
   std::vector<Val> messages;
-  {
-    Val s = Val::object();
-    s["role"] = "system";
-    s["content"] = system + "\n" + memory;
-    messages.push_back(s);
-  }
-  {
+  std::string tools, system;
+  if (stateless) {
+    // Exactly ONE user message. No system/persona, room transcript, memory,
+    // clock, context tail, MCP notes or tool schemas. Nothing from any
+    // previous turn is sent. The user still sees the full room in the UI.
+    // Jobs use their original prompt without their timestamped wrapper.
+    const std::string input = CURRENT_JOB ? job_plain_prompt(CURRENT_JOB) : TURN_INPUT;
+    if (input.empty()) {
+      TurnReport report;
+      report.error = "Stateless: Originaleingabe fehlt (alter Warteschlangen-Eintrag). Bitte erneut senden.";
+      report.text = report.error;
+      return report; // fail closed; NEVER substitute the room transcript
+    }
     Val u = Val::object();
     u["role"] = "user";
-    // A job run is its own conversation: job prompt + volatile tail only.
+    u["content"] = input;
+    messages.push_back(u);
+  } else {
+    mcp_auto_once();
+    system = build_system(bot_idx, autotalk, other, web);
+    const std::string memory = memory_manifest(bot_id);
+    Val sys = Val::object();
+    sys["role"] = "system";
+    sys["content"] = system + "\n" + memory;
+    messages.push_back(sys);
+    Val u = Val::object();
+    u["role"] = "user";
     u["content"] = (CURRENT_JOB ? job_user_content(CURRENT_JOB) : build_transcript()) +
                    build_context_tail(bot_idx, autotalk, other);
     messages.push_back(u);
+    tools = tools_json(bot_idx, web);
   }
-  std::string tools = tools_json(bot_idx, web);
-  // Size-only diagnostics: no prompt, memory, tool arguments, or secrets.
-  // Useful to distinguish huge MCP schemas from a lost KV/prompt-cache hit.
+  // No payloads or secrets in diagnostics. One-message stateless decoding has
+  // no tools and doesn't depend on the mutable room/system/memory.
   std::cerr << "prompt-footprint model=" << bot_model_id(bot_idx)
+            << " stateless=" << (stateless ? 1 : 0)
             << " system_bytes=" << system.size()
             << " tools_bytes=" << tools.size()
-            << " transcript_bytes=" << messages[1]["content"].asStr().size()
+            << " input_bytes=" << messages.back()["content"].asStr().size()
             << std::endl;
   std::string final_text;
   TurnReport report;
@@ -4252,11 +4270,16 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
     Turn t;
     size_t attempt_budget = context_budget;
     for (int attempt = 0; attempt < 3; ++attempt) {
-      compact_agent_context(messages, tools, attempt_budget, compacted_steps);
+      if (!stateless)
+        compact_agent_context(messages, tools, attempt_budget, compacted_steps);
       t = backend_turn(messages, tools,
                        autotalk ? 0.75 : 0.55, on_delta, turn_thinking(),
                        slot_for_key(bot_id), bot_model_id(bot_idx));
       if (stop_flag().load() || !context_overflow_error(t.error)) break;
+      if (stateless) {
+        t.error = "Stateless-Eingabe überschreitet das Modellkontextfenster; Text nicht verändert.";
+        break;
+      }
       if (attempt == 2) {
         t.error = "Modellkontext trotz Verkleinerung ueberfuellt. "
                   "Arbeitsschritte und VM-Dateien sind erhalten.";

@@ -5169,6 +5169,95 @@ static TurnReport generate_and_post(int idx, bool automatic) {
 }
 #include "jobs.hpp"
 #include "jobs_mcp.hpp"
+// Prompt prewarm. A turn sends system | transcript | [Kontext] tail | tool
+// rounds; the next turn keeps only the transcript, so the cached KV diverges at
+// its old end. DeepSeek V4 / Qwen Next cannot truncate KV there and restore the
+// nearest checkpoint instead (ubatch-aligned, up to 2048 tokens earlier):
+// measured 1-4.5k tokens = 25-100 s re-prefill per CPU turn. While the room is
+// idle, evaluate system + transcript once (max_tokens 1): the server then holds
+// a checkpoint exactly at the transcript end, and the next turn only evaluates
+// the new user line and the tail. Same bytes as run_turn; MAG_ROOM_PREWARM=0
+// disables it.
+static std::mutex PREWARM_MTX;
+static std::set<std::string> PREWARM_RUNNING; // models, PREWARM_MTX
+static void prewarm_model(int idx, const std::string &model, uint64_t epoch) {
+  std::string payload, bot_id;
+  {
+    std::shared_lock<std::shared_mutex> turn(TURN_MTX);
+    if (epoch != EPOCH.load() || bot_model_id(idx) != model) return;
+    bot_id = bot_field(idx, "id");
+    const bool web = WEB_ENABLED.load();
+    Val body = Val::object();
+    body["model"] = model;
+    Val msgs = Val::array();
+    Val sys = Val::object();
+    sys["role"] = "system";
+    sys["content"] = build_system(idx, false, "", web) + "\n" + memory_manifest(bot_id);
+    msgs.push(sys);
+    Val u = Val::object();
+    u["role"] = "user";
+    u["content"] = build_transcript();
+    msgs.push(u);
+    body["messages"] = msgs;
+    Val tt;
+    if (mj::parse(tools_json(idx, web), tt))
+      body["tools"] = tt;
+    body["max_tokens"] = 1;
+    body["stream"] = false;
+    body["cache_prompt"] = true;
+    Val kwargs = Val::object();
+    kwargs["enable_thinking"] = thinking_of(-1);
+    if (model != "qwen3.8-flash-next-uncensored" && !REASONING_EFFORT.empty())
+      kwargs["reasoning_effort"] = REASONING_EFFORT;
+    body["chat_template_kwargs"] = kwargs;
+    payload = mj::dump(body);
+  }
+  const auto from = steady_clock::now();
+  std::string out;
+  long code = 0;
+  bool ok = http_simple(BACKEND_HOST, BACKEND_PORT, "POST", "/v1/chat/completions",
+                        payload,
+                        {{"Content-Type", "application/json"},
+                         {"Authorization", "Bearer " + API_KEY},
+                         {"X-Mag-Bot", bot_id},
+                         {"X-Mag-Session", "prewarm"}},
+                        out, &code, nullptr,
+                        std::max(LLM_TIMEOUT_S, LLM_TIMEOUT_MIN_S) * 1000);
+  std::cerr << "prompt-prewarm model=" << model << " ok=" << (ok ? 1 : 0)
+            << " status=" << code << " ms="
+            << duration_cast<milliseconds>(steady_clock::now() - from).count()
+            << std::endl;
+  std::lock_guard<std::mutex> lk(PREWARM_MTX);
+  PREWARM_RUNNING.erase(model);
+}
+static void schedule_prewarm() {
+  if (env("MAG_ROOM_PREWARM", "1") != "1" || SHUTDOWN.load()) return;
+  {
+    std::lock_guard<std::mutex> lk(JOB_MTX);
+    if (!JOBS.empty() || AUTO_READY) return; // the next turn starts anyway
+  }
+  // One slot per model server: prewarm only models answered by exactly one bot.
+  std::map<std::string, int> by_model;
+  std::set<std::string> shared;
+  {
+    std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
+    for (size_t i = 0; i < AGENTS.size(); ++i) {
+      const std::string m = bot_model_id((int)i);
+      if (!by_model.emplace(m, (int)i).second) shared.insert(m);
+    }
+  }
+  const uint64_t epoch = EPOCH.load();
+  for (auto &[model, idx] : by_model) {
+    if (shared.count(model) || lane_named(model).busy.load() ||
+        model_settings_for(model).deterministic)
+      continue;
+    {
+      std::lock_guard<std::mutex> lk(PREWARM_MTX);
+      if (!PREWARM_RUNNING.insert(model).second) continue;
+    }
+    std::thread(prewarm_model, idx, model, epoch).detach();
+  }
+}
 // Lane worker: answers one dispatched turn for the bots of one lane, in
 // order. Only the task owner (first bot of the user request) can request an
 // autonomous continuation.
@@ -5203,6 +5292,7 @@ static void lane_finish(Lane *lane, uint64_t run, bool owner_ran, bool more,
   state["busy_bots"] = bb;
   publish(mj::dump(state));
   JOB_CV.notify_all();
+  schedule_prewarm();
 }
 // MAG_ROOM_STAGGER: "think" (default) starts the next lane once the previous
 // bot has read its context, "reply" once it has answered (the next bot then

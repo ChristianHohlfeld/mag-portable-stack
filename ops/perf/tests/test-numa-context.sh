@@ -34,11 +34,14 @@ assert 'Environment=MAG_ROOM_QWEN_MAX_TOKENS=8192' in conf
 assert 'MAG_ROOM_QWEN_MAX_TOKENS' in room and 'model == "qwen3.8-flash-next-uncensored"' in room
 assert 'std::min(MAX_TOKENS, std::clamp(' in room  # valid for small-token tests
 assert 'MAG_ROOM_REASONING_HISTORY_BYTES' in room
+assert 'static void schedule_prewarm()' in room and 'schedule_prewarm();' in room
+assert 'MAG_ROOM_PREWARM' in room and 'body["max_tokens"] = 1;' in room
+assert 'if (!JOBS.empty() || AUTO_READY) return;' in room  # never delays a queued turn
 assert 'const size_t target = limit * 65 / 100;' in room
 assert 'if (prompt_wire_bytes(messages, tools) <= limit) return;' in room
 assert 'utf8_suffix(t.reasoning, keep)' in room
 assert 'report.reasoning += piece' in room  # full reasoning stays in report
-assert 'cache_prompt"] = true' in room
+assert 'cache_prompt"] = !deterministic' in room  # cached unless deterministic
 assert 'id_slot"] = id_slot' in room and 'if (PROMPT_SLOTS > 1)' in room
 assert 'MCP_MAX_BOT_TOOLS = 64' in mcp
 assert 'MAG_MCP_TOOL_DESC_BYTES' in mcp and 'fn["parameters"]' in mcp

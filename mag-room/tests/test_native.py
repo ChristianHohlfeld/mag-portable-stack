@@ -1,6 +1,8 @@
 """Isolated native integration checks. Uses temporary state and a fake model."""
 import hashlib,http.server,json,os,pathlib,socket,socketserver,subprocess,tempfile,threading,time,unittest,urllib.request,urllib.error,urllib.parse
 ROOT=pathlib.Path(__file__).resolve().parents[2]
+# Idle prompt prewarm adds background model calls; tests count Model.calls exactly.
+os.environ.setdefault('MAG_ROOM_PREWARM','0')
 NETMODE=pathlib.Path(tempfile.mkdtemp(prefix='magnet-'))/'netmode.sh';NETLOG=NETMODE.with_suffix('.log')
 NETMODE.write_text('#!/bin/sh\necho "$1" >> %s\n'%NETLOG);NETMODE.chmod(0o755)
 def port():

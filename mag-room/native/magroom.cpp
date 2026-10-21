@@ -4731,6 +4731,122 @@ static std::vector<Lane *> all_lanes() {
   for (auto &kv : LANES) out.push_back(kv.second.get());
   return out;
 }
+// One live verification per model, dispatched on the same NUMA/model lane as
+// production turns. A probe never writes messages, files or long-term memory.
+static void publish_model_verification() {
+  Val event = Val::object();
+  event["type"] = "model_verification";
+  event["models"] = room_model_catalog();
+  publish(mj::dump(event));
+}
+static void run_model_verification(const std::string id, Lane *lane,
+                                   const uint64_t generation) {
+  TL_LANE = lane;
+  auto update = [&](const std::string &status, int completed,
+                    const std::string &error = "") -> bool {
+    {
+      std::lock_guard<std::mutex> lk(VERIFY_MTX);
+      ModelVerification &state = MODEL_VERIFICATIONS[id];
+      if (state.generation != generation) return false;
+      state.status = status;
+      state.completed = completed;
+      state.error = error;
+    }
+    publish_model_verification();
+    return true;
+  };
+  const auto finish = [&] {
+    TL_LANE = nullptr;
+    {
+      std::lock_guard<std::mutex> lk(JOB_MTX);
+      lane->active_bot.clear();
+      lane->busy = false;
+    }
+    JOB_CV.notify_all();
+  };
+  try {
+    Val input = Val::object();
+    input["role"] = "user";
+    input["content"] = "Antworte exakt mit OK.";
+    const std::vector<Val> messages{input};
+    std::string first_text, first_reasoning, first_finish;
+    for (int n = 1; n <= 20; ++n) {
+      if (SHUTDOWN.load() || stop_flag().load() ||
+          !model_settings_for(id).deterministic) {
+        update("failed", n - 1, "Prüfung unterbrochen");
+        break;
+      }
+      // Same real streaming backend + same stateless sampling config as chat.
+      // No replay or shared prompt cache, no tool schemas and no saved slots.
+      const Turn t = backend_turn(messages, "", 0.0,
+                                  [](const std::string &, const std::string &) {},
+                                  false, 0, id, true);
+      if (!t.error.empty() || !t.calls.empty() ||
+          (t.text.empty() && t.reasoning.empty()) || t.finish == "length") {
+        update("failed", n - 1, t.error.empty()
+          ? "Keine abgeschlossene reine Textausgabe" : t.error.substr(0, 160));
+        break;
+      }
+      if (n == 1) {
+        first_text = t.text;
+        first_reasoning = t.reasoning;
+        first_finish = t.finish;
+      } else if (t.text != first_text || t.reasoning != first_reasoning ||
+                 t.finish != first_finish) {
+        update("failed", n - 1, "Abweichende Modellantwort bei Lauf " +
+                                  std::to_string(n));
+        break;
+      }
+      if (!update(n == 20 ? "passed" : "running", n)) break;
+    }
+  } catch (const std::exception &e) {
+    update("failed", 0, std::string("Prüffehler: ") + e.what());
+  } catch (...) {
+    update("failed", 0, "Unbekannter Prüffehler");
+  }
+  finish();
+}
+static int start_model_verification(const std::string &id) {
+  if (!known_room_model(id)) return 400;
+  if (!model_settings_for(id).deterministic) return 409;
+  if (SHUTDOWN.load()) return 503;
+  Lane &lane = lane_named(id);
+  uint64_t generation = 0;
+  {
+    std::lock_guard<std::mutex> jobs_lock(JOB_MTX);
+    if (lane.busy.load()) return 409;
+    {
+      std::lock_guard<std::mutex> verify_lock(VERIFY_MTX);
+      ModelVerification &state = MODEL_VERIFICATIONS[id];
+      if (state.status == "running") return 409;
+      generation = state.generation + 1;
+      state = ModelVerification{};
+      state.generation = generation;
+      state.status = "running";
+    }
+    lane.busy = true;
+    lane.stop = false;
+    lane.user_cancel = false;
+  }
+  publish_model_verification();
+  try {
+    std::thread(run_model_verification, id, &lane, generation).detach();
+  } catch (...) {
+    {
+      std::lock_guard<std::mutex> lk(JOB_MTX);
+      lane.busy = false;
+    }
+    {
+      std::lock_guard<std::mutex> lk(VERIFY_MTX);
+      MODEL_VERIFICATIONS[id].status = "failed";
+      MODEL_VERIFICATIONS[id].error = "Prüfthread konnte nicht gestartet werden";
+    }
+    JOB_CV.notify_all();
+    publish_model_verification();
+    return 500;
+  }
+  return 202;
+}
 static bool lanes_busy(const std::vector<std::string> &ids) {
   for (auto &id : ids)
     if (Lane *l = lane_of(id); l && l->busy.load()) return true;

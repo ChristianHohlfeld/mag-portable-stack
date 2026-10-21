@@ -218,13 +218,79 @@ class Native(unittest.TestCase):
    self.assertEqual(Model.calls[-1]['model'],model_id)
    self.assertAlmostEqual(Model.calls[-1]['temperature'],expected_temp)
    self.assertEqual('seed' in Model.calls[-1],has_seed)
-   if has_seed:self.assertEqual(Model.calls[-1]['seed'],42)
+   if has_seed:
+    self.assertEqual(Model.calls[-1]['seed'],42)
+    self.assertEqual(Model.calls[-1]['top_k'],1)
+    self.assertFalse(Model.calls[-1]['cache_prompt'])
+    self.assertNotIn('tools',Model.calls[-1])
+    self.assertEqual(Model.calls[-1]['messages'],
+                     [{'role':'user','content':'Sampling model '+model_id}])
+   else:
+    self.assertTrue(Model.calls[-1]['cache_prompt'])
+    self.assertIn('tools',Model.calls[-1])
+    self.assertGreaterEqual(len(Model.calls[-1]['messages']),2)
+    self.assertIn('[Raumverlauf]',Model.calls[-1]['messages'][1]['content'])
    self.wait_idle()
   self.request('/api/model',{'id':first})
   self.request('/api/model-settings',{'id':first,'deterministic':False})
   self.request('/api/model-settings',{'id':second,'deterministic':True})
   self.assertFalse(self.request('/api/state')['models'][0]['deterministic'])
   self.assertTrue(self.request('/api/state')['models'][1]['deterministic'])
+ def test_05b_stateless_identical_input_always_recomputed_without_history(self):
+  self.wait_idle()
+  models=self.request('/api/state')['models']
+  second=models[1]['id']
+  self.assertTrue(models[1]['deterministic'])
+  self.request('/api/model',{'id':second})
+  count=len(Model.calls)
+  for _ in range(2):
+   self.request('/api/message',{'text':'hi','bots':['test']})
+   for _ in range(150):
+    if len(Model.calls)>count:break
+    time.sleep(.05)
+   self.assertGreater(len(Model.calls),count)
+   self.wait_idle()
+   count=len(Model.calls)
+  first,again=Model.calls[-2:]
+  self.assertEqual(first['messages'],[{'role':'user','content':'hi'}])
+  self.assertEqual(again['messages'],first['messages'])
+  for call in (first,again):
+   self.assertEqual(call['model'],second)
+   self.assertEqual(call['temperature'],0)
+   self.assertEqual(call['top_k'],1)
+   self.assertEqual(call['seed'],42)
+   self.assertFalse(call['cache_prompt'])
+   self.assertNotIn('tools',call)
+  # Full room keeps growing, but none of it enters the decoding request.
+  room=self.request('/api/state')['room']
+  self.assertGreaterEqual(sum(x.get('content')=='hi' for x in room),2)
+  self.assertFalse(any('Raumverlauf' in str(m) for m in again['messages']))
+  # Return to regular model for tests that rely on the old chat context.
+  self.request('/api/model',{'id':models[0]['id']})
+ def test_05c_stateless_queued_messages_do_not_merge_or_inherit_context(self):
+  self.wait_idle()
+  models=self.request('/api/state')['models'];second=models[1]['id']
+  self.request('/api/model',{'id':second})
+  Model.delay=.4
+  try:
+   start=len(Model.calls)
+   self.request('/api/message',{'text':'eins','bots':['test']})
+   for _ in range(150):
+    if self.request('/api/state')['busy']:break
+    time.sleep(.02)
+   self.assertTrue(self.request('/api/state')['busy'])
+   self.request('/api/message',{'text':'zwei','bots':['test']})
+   self.request('/api/message',{'text':'drei','bots':['test']})
+   for _ in range(250):
+    if len(Model.calls)>=start+3 and not self.request('/api/state')['busy']:break
+    time.sleep(.05)
+   self.assertEqual(len(Model.calls),start+3)
+   self.assertEqual([x['messages'][0]['content'] for x in Model.calls[start:start+3]],
+                    ['eins','zwei','drei'])
+   self.assertTrue(all(len(x['messages'])==1 and not x.get('tools') for x in Model.calls[start:start+3]))
+  finally:
+   Model.delay=0
+   self.request('/api/model',{'id':models[0]['id']})
  def test_06_stop_interrupts_and_human_input_stays_responsive(self):
   Model.delay=3;self.request('/api/autotalk',{'on':True})
   time.sleep(.15)

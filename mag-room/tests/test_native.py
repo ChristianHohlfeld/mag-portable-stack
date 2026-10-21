@@ -203,7 +203,6 @@ class Native(unittest.TestCase):
   named=self.request('/api/model-settings',{'id':second,'name':'Mein Modell'})
   self.assertEqual(named['models'][1]['label'],'Mein Modell')
   self.assertEqual([m['id'] for m in named['models']],[first,second])
-  self.assertIn('model-settings.json',str(self.state/'model-settings.json'))
   prefs=json.loads((self.state/'model-settings.json').read_text())
   self.assertTrue(prefs[first]['deterministic'])
   self.assertFalse(prefs[second]['deterministic'])

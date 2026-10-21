@@ -2713,5 +2713,33 @@ class DualNuma(unittest.TestCase):
   self.assertEqual(after['vm'],before['vm'])
   self.assertEqual(after['model'],before['model'])
   self.error(400,'/api/agents/primary/name',{'name':' '},method='PUT')
+ def test_04_qwen_prefill_bounds_preserve_model_tools_and_q4(self):
+  # Real MAG request serialization against the fixture, no downloaded weights.
+  # The NUMA0/Q4 request must be unchanged; Qwen keeps its registered tools.
+  models={'deepseek-v4-flash-0731':8192,'qwen3.8-flash-next-uncensored':4096}
+  for model,cap in models.items():
+   state=self.request('/api/state')
+   bot=next(a['id'] for a in state['agents'] if a['model']==model)
+   before=len(Model.calls)
+   self.request('/api/message',{'text':'Prüfe Werkzeug- und Kontextvertrag.','bots':[bot]})
+   call=None
+   for _ in range(150):
+    call=next((c for c in Model.calls[before:] if c.get('model')==model),None)
+    if call is not None:break
+    time.sleep(.04)
+   self.assertIsNotNone(call,'No request for '+model)
+   self.assertEqual(call['max_tokens'],cap)
+   self.assertTrue(call['cache_prompt'])
+   names=[t['function']['name'] for t in call['tools']]
+   self.assertIn('remember',names)
+   self.assertIn('web_search',names)
+   self.assertIn('github',names)
+   self.assertEqual(len(names),len(set(names)))
+   if model.startswith('qwen'):
+    for t in call['tools']:
+     self.assertLessEqual(len(t['function'].get('description','')),320)
+  perf=self.request('/api/state').get('model_perf',{})
+  self.assertIn('deepseek-v4-flash-0731',perf)
+  self.assertIn('qwen3.8-flash-next-uncensored',perf)
 
 if __name__=='__main__':unittest.main(verbosity=2)

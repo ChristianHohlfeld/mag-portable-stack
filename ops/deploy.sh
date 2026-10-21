@@ -211,6 +211,9 @@ if [[ -r /etc/mag-stack/secondary-model.env ]] &&
   [[ -x /usr/local/lib/mag-qwen/start.sh ]] || { echo 'Qwen staged runtime missing' >&2; exit 1; }
   install -m 0755 "$SOURCE/ops/qwen/wait-q4.sh" /usr/local/lib/mag-qwen/wait-q4.sh
   install -m 0644 "$SOURCE/ops/qwen/mag-llm-qwen.service" /etc/systemd/system/mag-llm-qwen.service
+  # Remove the temporary preflight added during Qwen bring-up; it fails
+  # immediately on cold boot before Q4 has loaded. wait-q4.sh replaces it.
+  rm -f /etc/systemd/system/mag-llm-qwen.service.d/20-q4-health.conf
 else
   rm -f /etc/systemd/system/mag-120.service.d/30-dual-numa.conf
 fi
@@ -269,6 +272,11 @@ bash /usr/local/sbin/mag-agent-drift || echo 'WARN: agent drift check incomplete
 # Tailnet name for each bot VM. No-op until the one-time wildcard cert exists.
 # Does not restart mag-llm. DNS for *.bot.stardenburg.de stays at the registrar.
 bash "$SOURCE/ops/bots/install.sh" || echo 'WARN: bot site install incomplete (deploy itself succeeded)' >&2
+# Persist both resident models and bot VM autostart for cold reboot.
+bash "$SOURCE/ops/boot/ensure-boot.sh" || echo 'WARN: boot persistence needs operator attention' >&2
+# Explicit request: the obsolete DeepSeek V4.1 Q2_K weights are no longer used.
+# Safe guarded deletion after successful deployment; Q4 and Qwen untouched.
+bash "$SOURCE/ops/models/retire-v41.sh" || echo 'WARN: old V4.1 weights were retained because they may be in use' >&2
 # Deploy must never restart loaded Q4 or stop the IQ3 process. Model placement
 # is a separate, measured, operator-controlled change, never a deploy hook.
 printf '\nInstalled release %s; rollback snapshot %s\n' "$RELEASE_ID" "$BACKUP"

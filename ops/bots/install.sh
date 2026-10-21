@@ -13,7 +13,7 @@ if [[ ! -d $lego_dir/certificates ]] || ! compgen -G "$lego_dir/certificates/*.c
   exit 0
 fi
 set +e
-"$here/issue-wildcard.sh" renew
+bash "$here/issue-wildcard.sh" renew
 tls_rc=$?
 set -e
 if [[ $tls_rc -ne 0 && $tls_rc -ne 78 ]]; then

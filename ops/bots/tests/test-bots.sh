@@ -268,6 +268,8 @@ grep -Fq 'ExecStart=/usr/local/lib/mag-bots/mag-bots-publish' "$here/mag-bots-pu
 grep -Fq '/var/lib/mag-bots/ready' "$here/install.sh"
 grep -Fq 'firewall.sh' "$here/install.sh"
 grep -Fq 'ExecStartPost=-/usr/local/lib/mag-bots/issue-wildcard.sh renew' "$here/install.sh"
+# The repo copy is 0644 (git); install.sh must not depend on an exec bit.
+grep -Fxq 'bash "$here/issue-wildcard.sh" renew' "$here/install.sh"
 grep -Fq 's|@ZONE_REGEX@|bot\\.stardenburg\\.de|g' "$here/install.sh"
 ! grep -R -E 'systemctl (restart|stop).*mag-llm' "$here" "$repo/ops/magbot-agent-ctl" "$repo/ops/deploy.sh"
 "$here/install.sh" >"$tmp/install.out" 2>&1

@@ -52,6 +52,12 @@ done
 echo "== Last prompt cache measurements (no prompt or tool contents)"
 journalctl -u mag-120.service -n 200 --no-pager -o cat 2>/dev/null | \
   grep -E '^prompt-cache (model=|slot=)' | tail -n 20 || true
+echo '== Median cache reuse and prefill throughput (real requests, last 3 hours)'
+HERE=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+if [[ -f $HERE/context-report.py ]]; then
+  journalctl -u mag-120.service --since '-3 hours' -o cat --no-pager 2>/dev/null | \
+    python3 -I "$HERE/context-report.py" || true
+fi
 echo "== Kernel page faults / swap activity"
 grep -E '^(pgmajfault|pswpin|pswpout) ' /proc/vmstat || true
 echo "== Interpretation"

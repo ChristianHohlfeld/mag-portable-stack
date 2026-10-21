@@ -2738,7 +2738,11 @@ class DualNuma(unittest.TestCase):
    if model.startswith('qwen'):
     for t in call['tools']:
      self.assertLessEqual(len(t['function'].get('description','')),320)
-  perf=self.request('/api/state').get('model_perf',{})
+  perf={}
+  for _ in range(150):
+   perf=self.request('/api/state').get('model_perf',{})
+   if all(k in perf for k in models):break
+   time.sleep(.04)
   self.assertIn('deepseek-v4-flash-0731',perf)
   self.assertIn('qwen3.8-flash-next-uncensored',perf)
 

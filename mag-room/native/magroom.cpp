@@ -254,8 +254,24 @@ static std::string mime_for(const std::string &name) {
     return "audio/ogg";
   if (e == ".webm")
     return "audio/webm";
-  if (e == ".mp4")
+  if (e == ".mp4" || e == ".m4v")
     return "video/mp4";
+  if (e == ".mov")
+    return "video/quicktime";
+  if (e == ".ogv")
+    return "video/ogg";
+  if (e == ".m4a")
+    return "audio/mp4";
+  if (e == ".flac")
+    return "audio/flac";
+  if (e == ".avif")
+    return "image/avif";
+  if (e == ".md")
+    return "text/markdown";
+  if (e == ".csv")
+    return "text/csv";
+  if (e == ".zip")
+    return "application/zip";
   if (e == ".json")
     return "application/json";
   if (e == ".html" || e == ".htm")
@@ -4561,11 +4577,13 @@ static void send_response(
   std::string reason = code == 200   ? "OK"
                        : code == 201 ? "Created"
                        : code == 204 ? "No Content"
+                       : code == 206 ? "Partial Content"
                        : code == 400 ? "Bad Request"
                        : code == 401 ? "Unauthorized"
                        : code == 404 ? "Not Found"
                        : code == 413 ? "Payload Too Large"
                        : code == 405 ? "Method Not Allowed"
+                       : code == 416 ? "Range Not Satisfiable"
                                      : "Internal Server Error";
   bool cache_set = false;
   for (auto &e : extra)

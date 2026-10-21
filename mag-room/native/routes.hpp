@@ -750,11 +750,50 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
       disposition = "inline";
       csp = "sandbox allow-scripts";
     }
-    send_response(
-        fd, 200, mime, data,
-        {{"Content-Disposition",
-          disposition + "; filename=\"" + record.find("name")->asStr() + "\""},
-         {"Content-Security-Policy", csp}});
+    // Stored names carry a random token and never change content: cache them,
+    // so inline chat images are not refetched on every re-render. Single
+    // byte ranges let video seek and play at all on Safari/iOS.
+    std::vector<std::pair<std::string, std::string>> hdr = {
+        {"Content-Disposition",
+         disposition + "; filename=\"" + record.find("name")->asStr() + "\""},
+        {"Content-Security-Policy", csp},
+        {"Cache-Control", "private, max-age=31536000, immutable"},
+        {"Accept-Ranges", "bytes"}};
+    std::string range = r.hdrs["range"];
+    size_t a = 0, b = 0;
+    if (range.rfind("bytes=", 0) == 0 && range.find(',') == std::string::npos &&
+        !data.empty()) {
+      std::string spec = range.substr(6);
+      auto dash = spec.find('-');
+      bool okr = dash != std::string::npos;
+      try {
+        if (okr && dash == 0) { // suffix: last N bytes
+          size_t n = std::stoull(spec.substr(1));
+          okr = n > 0;
+          a = n >= data.size() ? 0 : data.size() - n;
+          b = data.size() - 1;
+        } else if (okr) {
+          a = std::stoull(spec.substr(0, dash));
+          b = dash + 1 < spec.size() ? std::stoull(spec.substr(dash + 1))
+                                     : data.size() - 1;
+          b = std::min(b, data.size() - 1);
+          okr = a <= b;
+        }
+      } catch (...) {
+        okr = false;
+      }
+      if (!okr || a >= data.size()) {
+        hdr.push_back({"Content-Range", "bytes */" + std::to_string(data.size())});
+        send_response(fd, 416, mime, "", hdr);
+        return;
+      }
+      hdr.push_back({"Content-Range", "bytes " + std::to_string(a) + "-" +
+                                          std::to_string(b) + "/" +
+                                          std::to_string(data.size())});
+      send_response(fd, 206, mime, data.substr(a, b - a + 1), hdr);
+      return;
+    }
+    send_response(fd, 200, mime, data, hdr);
     return;
   }
   if (path == "/api/frontend") {

@@ -893,6 +893,27 @@ class Native(unittest.TestCase):
   self.error(404,'/api/agents/nope/memory',{'text':'egal'})
   html=self.request('/',raw=True).decode()
   for needle in ('id="memory-new"','id="memory-add"',"'/memory',{text},'POST'",'id="memory-err"'):self.assertIn(needle,html)
+ def test_09p_file_ranges_and_inline_chat_attachments(self):
+  # Video only seeks/plays on Safari with byte ranges; stored names are immutable.
+  body=bytes(range(200))
+  f=self.request('/api/upload?name=clip.mp4',body)
+  self.assertEqual(f['mime'],'video/mp4')
+  url=f'http://127.0.0.1:{self.ui}/api/file/'+f['stored']
+  def get(rng):
+   with urllib.request.urlopen(urllib.request.Request(url,headers={'Range':rng}),timeout=10) as r:return r.status,dict(r.headers),r.read()
+  st,h,data=get('bytes=10-19');self.assertEqual((st,data,h['Content-Range']),(206,body[10:20],'bytes 10-19/200'))
+  st,h,data=get('bytes=-5');self.assertEqual((st,data),(206,body[-5:]))
+  st,h,data=get('bytes=190-');self.assertEqual((st,data),(206,body[190:]))
+  self.assertIn('immutable',h['Cache-Control']);self.assertEqual(h['Accept-Ranges'],'bytes')
+  with self.assertRaises(urllib.error.HTTPError) as ctx:get('bytes=500-600')
+  self.assertEqual(ctx.exception.code,416)
+  self.assertEqual(self.request('/api/file/'+f['stored'],raw=True),body)
+  html=self.request('/',raw=True).decode()
+  # Files live in the conversation (image/video inline, cards), not a side list.
+  for needle in ('function attachmentView(f)','function openLightbox(','class="drop-overlay"',"v.playsInline=true","'browser.png':'Browser-Screenshot'"):self.assertIn(needle,html)
+  self.assertNotIn('Gemeinsame Dateien',html)
+  # The hidden live checkbox must not be restored from an old stored 'false'.
+  self.assertIn("localStorage.removeItem('mag-live')",html);self.assertNotIn("['language','live']",html)
  def test_09q_pasted_screenshot_reaches_bot_as_image_file(self):
   # The browser re-encodes a pasted/dropped screenshot to JPEG and posts it
   # through the normal upload; the text-only model gets a clear image note.

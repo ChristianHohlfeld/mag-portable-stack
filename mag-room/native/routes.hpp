@@ -929,6 +929,9 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
     // Names are mutable metadata; the VM and stable bot ID never change.
     if (slash != std::string::npos && id.substr(slash + 1) == "name" &&
         m == "PUT") {
+      if (bridge || !actor.ok || actor.role != "owner") {
+        error_json(fd, 403, "Nur der Besitzer"); return;
+      }
       id.resize(slash);
       Val input;
       if (!mj::parse(r.body, input) || !input.isObj() ||

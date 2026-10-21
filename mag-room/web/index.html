@@ -2080,7 +2080,8 @@ async function connectLive(){
    method:'POST',headers:{'Content-Type':'application/json'},
    body:JSON.stringify(pc.localDescription)});
   if(!r.ok){
-   const message=(await r.json().catch(()=>({}))).error||'WebRTC signaling '+r.status;
+   // No JSON error = nginx answered for a room that is down or restarting.
+   const message=(await r.json().catch(()=>({}))).error||(r.status>=500?'Raum nicht erreichbar':'Verbindung abgelehnt ('+r.status+')');
    const err=Error(message);
    // A removed/parked single-bot ID or a chat-only bot is NOT a transient
    // WebRTC failure. Retrying forever floods MAG with stale bot identities.
@@ -2091,7 +2092,8 @@ async function connectLive(){
   await pc.setRemoteDescription(await r.json());
  }catch(e){
   if(gen!==liveGeneration){pc.close();return}
-  liveStatus('Browser-Verbindung: '+e.message);notice('Browser: '+e.message);
+  // Transient failures retry quietly in the status line; only lasting ones pop up.
+  liveStatus('Browser: '+e.message+(e.permanent?'':' · verbinde neu …'));if(e.permanent)notice('Browser: '+e.message);
   pc.close();
   if(!e.permanent)scheduleReconnect();
   else terminalStatus('Browser erst nach Auswahl einer aktiven VM verfügbar');

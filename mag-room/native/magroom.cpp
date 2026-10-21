@@ -3025,7 +3025,7 @@ static void load_model_settings() {
         if (auto name = record->find("name"); name && name->type == Val::STR) {
           std::string candidate = trim(name->asStr());
           if (!candidate.empty() && candidate.size() <= 40 &&
-              candidate.find_first_of("\\r\\n\\t") == std::string::npos)
+              candidate.find_first_of("\r\n\t") == std::string::npos)
             item.name = candidate;
         }
       }

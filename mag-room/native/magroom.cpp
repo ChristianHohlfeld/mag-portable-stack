@@ -4700,6 +4700,7 @@ struct Job {
   std::vector<std::string> ids;
   int think = -1;
   uint64_t generation = 0;
+  std::string source_id;
 };
 static std::deque<Job> JOBS;
 // Queue persistence: pending jobs + the jobs being answered survive a room
@@ -4738,6 +4739,7 @@ static Val job_val(const Job &j) {
   for (auto &i : j.ids) ids.push(Val(i));
   o["ids"] = ids;
   o["think"] = (double)j.think;
+  if (!j.source_id.empty()) o["source_id"] = j.source_id;
   return o;
 }
 static Job val_job(const Val &v) {
@@ -4745,6 +4747,7 @@ static Job val_job(const Val &v) {
   if (auto ids = v.find("ids"); ids && ids->isArr())
     for (auto &i : ids->asArr()) j.ids.push_back(i.asStr());
   if (auto t = v.find("think")) j.think = (int)t->asNum(-1);
+  if (auto src = v.find("source_id")) j.source_id = src->asStr();
   return j;
 }
 // Messages sent while a reply runs: NOT in the transcript yet (history stays
@@ -4866,7 +4869,8 @@ static bool cancel_bots(const std::vector<std::string> &ids, bool user = false) 
 // Consecutive messages for the same bots are merged into one queued turn.
 // interrupt=true keeps the old behaviour (abort, then answer).
 static void schedule(const std::vector<std::string> &ids, int think = -1,
-                     bool interrupt = false) {
+                     bool interrupt = false,
+                     const std::string &source_id = "") {
   if (interrupt)
     cancel_bots(ids);
   size_t position = 0;
@@ -4881,9 +4885,10 @@ static void schedule(const std::vector<std::string> &ids, int think = -1,
     if (!JOBS.empty() && JOBS.back().ids == ids) {
       JOBS.back().generation = AUTO_GENERATION;
       JOBS.back().think = think; // latest choice wins
+      JOBS.back().source_id = source_id;
       merged = true;
     } else {
-      JOBS.push_back(Job{ids, think, AUTO_GENERATION});
+      JOBS.push_back(Job{ids, think, AUTO_GENERATION, source_id});
     }
     position = JOBS.size();
     save_queue_locked();
@@ -5145,7 +5150,8 @@ static TurnReport generate_and_post(int idx, bool automatic) {
       }
     }
     if (!duplicate) {
-      Val msg = append_room("assistant", name, report.text, id);
+      Val msg = append_room("assistant", name, report.text, id,
+                            nullptr, "", TURN_SOURCE_ID, bot_model_id(idx));
       attach_work(msg, report);
       msg["type"] = "bot_done";
       publish(mj::dump(msg));
@@ -5288,6 +5294,7 @@ static void await_gate(Lane *lane, const std::vector<std::string> &ids,
 }
 static void lane_turn(Lane *lane, uint64_t run, std::vector<std::string> ids,
                       bool automatic, int think, std::string owner, uint64_t generation, uint64_t epoch,
+                      std::string source_id,
                       std::shared_ptr<StartGate> wait_for,
                       std::shared_ptr<StartGate> own, std::string after) {
   bool more = false, owner_ran = false;
@@ -5299,6 +5306,7 @@ static void lane_turn(Lane *lane, uint64_t run, std::vector<std::string> ids,
     TL_LANE = lane;
     TL_GATE = own && stagger_mode() == "think" ? own.get() : nullptr;
     TURN_THINK = think;
+    TURN_SOURCE_ID = automatic ? "" : source_id;
     LAST_THINK = think;
     if (!(automatic && !AUTOTALK.load()))
       for (const auto &id : ids) {
@@ -5328,6 +5336,7 @@ static void lane_turn(Lane *lane, uint64_t run, std::vector<std::string> ids,
           emit_event("error", id, "", e.what());
         }
       }
+    TURN_SOURCE_ID.clear();
     TL_LANE = nullptr;
     TL_GATE = nullptr;
   }
@@ -5385,11 +5394,12 @@ static void start_lanes_locked(const Job &job, bool automatic) {
     lane->cancelled_bots.clear();
     lane->stop = false;
     lane->user_cancel = false;
-    ACTIVE_JOBS[run] = Job{ids, job.think};
+    ACTIVE_JOBS[run] = Job{ids, job.think, job.generation, job.source_id};
     BUSY = true;
     auto gate = stagger ? std::make_shared<StartGate>() : nullptr;
     std::thread(lane_turn, lane, run, ids, automatic, job.think, owner,
-                job.generation, EPOCH.load(), prev, gate, prev_name).detach();
+                job.generation, EPOCH.load(), job.source_id,
+                prev, gate, prev_name).detach();
     prev = gate;
     prev_name = bot_field(agent_index(ids.front()), "name", "Bot");
   }
@@ -5421,7 +5431,8 @@ static bool dispatch_locked() {
                           p.text, "", nullptr, p.login);
     msg["type"] = "message";
     publish(mj::dump(msg));
-    JOBS.push_back(Job{p.ids, p.think, ++AUTO_GENERATION});
+    JOBS.push_back(Job{p.ids, p.think, ++AUTO_GENERATION,
+                       mag::str(msg, "id")});
     AUTO_OWNER = p.ids.empty() ? "" : p.ids.front();
     AUTO_LAST_PROGRESS.clear();
     AUTO_TURNS_LEFT = AUTO_MAX_TURNS;

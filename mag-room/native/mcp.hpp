@@ -535,7 +535,8 @@ static std::vector<McpBotTool> mcp_bot_tools(int bot_idx) {
       Val fn = Val::object();
       fn["name"] = bt.fn;
       fn["description"] = "[Plugin " + sname + "] " +
-                          mj::utf8_cut(mcp_str(t, "description"), 700);
+                          mj::utf8_cut(mcp_str(t, "description"),
+                                       (size_t)std::clamp(envi("MAG_MCP_TOOL_DESC_BYTES", 700), 120, 700));
       auto schema = t.find("input_schema");
       fn["parameters"] = schema && schema->isObj() ? *schema : Val::object();
       Val def = Val::object();

@@ -4024,6 +4024,13 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
     messages.push_back(u);
   }
   std::string tools = tools_json(bot_idx, web);
+  // Size-only diagnostics: no prompt, memory, tool arguments, or secrets.
+  // Useful to distinguish huge MCP schemas from a lost KV/prompt-cache hit.
+  std::cerr << "prompt-footprint model=" << bot_model_id(bot_idx)
+            << " system_bytes=" << system.size()
+            << " tools_bytes=" << tools.size()
+            << " transcript_bytes=" << messages[1]["content"].asStr().size()
+            << std::endl;
   std::string final_text;
   TurnReport report;
   auto finish_steps = [&]() {

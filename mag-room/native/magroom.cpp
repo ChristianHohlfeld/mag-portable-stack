@@ -3068,7 +3068,13 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   if (mj::parse(tools, tt))
     body["tools"] = tt;
   body["temperature"] = temperature;
-  body["max_tokens"] = MAX_TOKENS;
+  // The Qwen backend has 16k context, unlike the 32k Q4 backend.
+  // Bound generated tokens on Qwen only, keeping Q4's established budget.
+  // Both models retain all native/MCP tools and immutable audit routing.
+  const int max_output = model == "qwen3.8-flash-next-uncensored"
+      ? std::clamp(envi("MAG_ROOM_QWEN_MAX_TOKENS", 4096), 1024, MAX_TOKENS)
+      : MAX_TOKENS;
+  body["max_tokens"] = max_output;
   body["stream"] = true;
   // llama.cpp: stream prompt_progress {total,cache,processed,time_ms} while
   // the prompt is evaluated (minutes on CPU) instead of staying silent.

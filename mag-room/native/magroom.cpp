@@ -3561,6 +3561,7 @@ struct RunActivity {
   int narr_lines = 0;
   std::string bot, name, phase, label, error;
   std::vector<std::string> steps;
+  Val reading; // what the bot reads right now (room range / tool results)
   long started = 0, last = 0;
   long processed = 0, total = 0, cache = 0;
   long long published_ms = 0;
@@ -3659,6 +3660,7 @@ static Val run_val_locked() {
   for (auto &s : run_cur().steps)
     st.push(s);
   e["steps"] = st;
+  if (run_cur().reading.isObj()) e["reading"] = run_cur().reading;
   return e;
 }
 static void publish_run_locked() {
@@ -3670,7 +3672,42 @@ static void publish_run_locked() {
   e["type"] = "step";
   publish(mj::dump(e));
 }
+// "Liest das Gespräch": the room range the bot is reading, from ROOM itself
+// (no model tokens). Last 8 messages with id, author, time and first words.
+static Val room_reading() {
+  Val r = Val::object(), items = Val::array();
+  std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
+  r["kind"] = "room";
+  r["messages"] = (double)ROOM.size();
+  r["files"] = (double)FILES.size();
+  if (!ROOM.empty()) {
+    auto field = [](const Val &m, const char *k) { auto f = m.find(k); return f ? *f : Val(); };
+    r["first_id"] = field(ROOM.front(), "id"); r["first_ts"] = field(ROOM.front(), "ts");
+    r["last_id"] = field(ROOM.back(), "id"); r["last_ts"] = field(ROOM.back(), "ts");
+    for (size_t i = ROOM.size() > 8 ? ROOM.size() - 8 : 0; i < ROOM.size(); ++i) {
+      const Val &m = ROOM[i];
+      Val o = Val::object();
+      o["id"] = field(m, "id"); o["name"] = field(m, "name"); o["ts"] = field(m, "ts");
+      std::string c = m.find("content") ? one_line(m.find("content")->asStr()) : "";
+      if (c.empty() && m.find("file")) c = "[Datei]";
+      o["text"] = mj::utf8_cut(c, 80);
+      items.push(o);
+    }
+  }
+  r["items"] = items;
+  return r;
+}
+static void run_reading_tool(const std::string &tool, size_t chars, bool ok) {
+  std::lock_guard<std::mutex> lk(RUN_MTX);
+  Val &r = run_cur().reading;
+  if (!r.isObj() || !r.find("kind") || r.find("kind")->asStr() != "tools") {
+    r = Val::object(); r["kind"] = "tools"; r["items"] = Val::array();
+  }
+  Val o = Val::object(); o["tool"] = tool; o["chars"] = (double)chars; o["ok"] = ok;
+  if (r["items"].asArr().size() < 12) r["items"].push(o);
+}
 static void run_begin(const std::string &bot, const std::string &name) {
+  Val reading = room_reading();
   std::lock_guard<std::mutex> lk(RUN_MTX);
   TL_RUN_BOT = bot;
   run_cur() = RunActivity{};
@@ -3681,6 +3718,7 @@ static void run_begin(const std::string &bot, const std::string &name) {
   // committed as a step, prompt progress or thinking replaces it.
   run_cur().phase = "read";
   run_cur().label = "Liest Verlauf";
+  run_cur().reading = reading;
   run_cur().started = (long)now_s();
   publish_run_locked();
 }
@@ -4568,6 +4606,7 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
       messages.push_back(reminder);
       continue;
     }
+    { std::lock_guard<std::mutex> lk(RUN_MTX); run_cur().reading = Val(); }
     for (auto &call : t.calls) {
       if (stop_flag().load())
         break;
@@ -4649,6 +4688,7 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
         e["ms"] = ms;
         e["result"] = mj::utf8_cut(result, 1500);
         publish(mj::dump(e));
+        run_reading_tool(fname, result.size(), !failed);
         // Kept on the message so the trace survives a reload; bounded because
         // the room history is sent with every state.
         if (report.tools.size() < 24) {

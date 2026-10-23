@@ -33,6 +33,7 @@ dialog{border:1px solid var(--line);border-radius:17px;color:var(--text);backgro
 :root[data-theme=light] .content .hljs-variable,:root[data-theme=light] .content .hljs-params{color:#986019}
 :root[data-theme=light] .content .hljs-tag,:root[data-theme=light] .content .hljs-name,:root[data-theme=light] .content .hljs-type{color:#08748b}
 .model-verify{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:4px 0 10px;font-size:12px;color:var(--muted)}.model-verify[data-state=ok] .model-verify-text{color:var(--green)}.model-verify[data-state=failed] .model-verify-text{color:var(--red)}
+.work-reading{font-size:12px;color:var(--muted);margin:4px 0 6px 18px}.work-reading ul{margin:2px 0 0;padding-left:16px}.work-reading li{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.work-reading a{color:inherit;font-weight:600}
 .att{margin-top:10px;max-width:min(560px,100%)}.att-media{display:block;padding:0;border:1px solid var(--line);border-radius:14px;overflow:hidden;background:var(--panel);cursor:zoom-in;max-width:100%}
 .att-image img{display:block;max-width:100%;max-height:420px;width:auto;height:auto;object-fit:contain}.att-broken .att-media{cursor:default;padding:18px;color:var(--muted)}
 video.att-media{width:100%;max-height:440px;cursor:auto;background:#000}
@@ -646,7 +647,7 @@ function decorate(el){
 const thinkOpen=new Set();let thinkSeq=0;
 // One run card per bot message: status line, thoughts, steps and tool calls
 // in a fixed order above the answer, instead of loose blocks.
-const RUN_ORDER=['work-status','thinking','work-steps','tools-trace'];
+const RUN_ORDER=['work-status','work-reading','thinking','work-steps','tools-trace'];
 function runBox(node){let r=node.querySelector(':scope > .run');if(!r){r=document.createElement('div');r.className='run';const c=node.querySelector(':scope > .content');if(c)c.before(r);else node.append(r)}return r}
 function runRank(el){return RUN_ORDER.findIndex(c=>el.classList.contains(c))}
 function runPut(node,el){const r=runBox(node),k=runRank(el);const after=[...r.children].find(x=>runRank(x)>k);if(after)r.insertBefore(el,after);else r.append(el);return el}
@@ -1230,6 +1231,22 @@ function attachWork(div,msg,content){
  runPut(div,box);if(list)runPut(div,list);
  wireRunToggle(div,box,'done:'+(msg.id||''),false);
 }
+// What the bot reads right now (room range or tool results), from the step
+// event; shown in the collapsible activity line while it reads.
+function readingPanel(node,s){
+ let box=runPart(node,'work-reading');const r=s.reading,reading=r&&(s.phase==='read'||s.phase==='prompt');
+ if(!reading){box?.remove();return}
+ if(!box){box=document.createElement('div');box.className='work-reading';runPut(node,box)}
+ const hm=t=>t?new Date(t*1000).toLocaleTimeString('de-DE',{hour:'2-digit',minute:'2-digit'}):'';
+ const head=document.createElement('div');head.className='wr-head';const ul=document.createElement('ul');
+ if(r.kind==='tools'){const n=(r.items||[]).length;head.textContent='Werkzeug-Ergebnisse: '+n;
+  for(const t of r.items||[]){const li=document.createElement('li');li.textContent=(t.ok?'':'⚠ ')+t.tool+' · '+(+t.chars||0).toLocaleString('de-DE')+' Zeichen';ul.append(li)}}
+ else{head.textContent='Raum: '+(+r.messages||0)+' Nachrichten'+(r.files?' · '+r.files+' Dateien':'')+(r.first_ts?' · '+hm(r.first_ts)+'–'+hm(r.last_ts):'');
+  for(const m of r.items||[]){const li=document.createElement('li');const a=document.createElement('a');a.href='#';a.dataset.msg=m.id||'';a.textContent=(m.name||'?')+' '+hm(m.ts);
+   a.onclick=e=>{e.preventDefault();e.stopPropagation();document.querySelector('#conversation [data-id="'+CSS.escape(String(m.id||''))+'"]')?.scrollIntoView({block:'center',behavior:'smooth'})};
+   li.append(a,document.createTextNode(' '+(m.text||'')));ul.append(li)}}
+ box.replaceChildren(head,ul);
+}
 function ensureWork(node,s,botId){
  let box=runPart(node,'work-status');
  if(!box){
@@ -1248,6 +1265,7 @@ function ensureWork(node,s,botId){
  const show=phase==='prompt'&&s.progress&&s.progress.total;
  bar.hidden=!show;
  if(show){const pct=Math.min(100,Math.round(s.progress.processed/s.progress.total*100));bar.querySelector('i').style.width=pct+'%';bar.setAttribute('role','progressbar');bar.setAttribute('aria-valuemin','0');bar.setAttribute('aria-valuemax','100');bar.setAttribute('aria-valuenow',String(pct));bar.setAttribute('aria-label','Liest Verlauf')}
+ readingPanel(node,s);
  const old=runPart(node,'work-steps');
  const list=shownSteps(s.steps);
  if(!list.length){old?.remove();return}
@@ -1327,7 +1345,7 @@ function updateStream(botId,immediate=false){
 function mergeActivity(a){
  if(!a||!a.on||!a.bot)return;
  const prev=streams[a.bot]||{};
- streams[a.bot]={name:a.name||prev.name||'Bot',text:prev.text||'',phase:a.phase||'read',label:a.label||'Liest Verlauf',steps:Array.isArray(a.steps)?a.steps:(prev.steps||[]),progress:(+a.total>0)?{processed:+a.processed||0,total:+a.total,cache:+a.cache||0}:null,error:a.error||'',started:(a.started?a.started*1000:prev.started)||Date.now(),lastEvent:(a.last?a.last*1000:prev.lastEvent)||Date.now(),node:null,frame:0,reasoning:prev.reasoning||'',tools:prev.tools||[],hung:false};
+ streams[a.bot]={name:a.name||prev.name||'Bot',text:prev.text||'',phase:a.phase||'read',label:a.label||'Liest Verlauf',steps:Array.isArray(a.steps)?a.steps:(prev.steps||[]),progress:(+a.total>0)?{processed:+a.processed||0,total:+a.total,cache:+a.cache||0}:null,error:a.error||'',started:(a.started?a.started*1000:prev.started)||Date.now(),lastEvent:(a.last?a.last*1000:prev.lastEvent)||Date.now(),node:null,frame:0,reasoning:prev.reasoning||'',tools:prev.tools||[],hung:false,reading:a.reading||null};
 }
 function render(){
  const area=$('conversation'),follow=stickToBottom||!rendered,oldScroll=area.scrollTop,prevH=area.scrollHeight;rendered=true;
@@ -2634,6 +2652,7 @@ events.onmessage=e=>{
    s.label=event.label||s.label||'Denkt nach';
    if(s.phase!=='think')s.thinking=false;
    s.steps=Array.isArray(event.steps)?event.steps:(s.steps||[]);
+   s.reading=event.reading||null;
    s.error=event.error||'';
    s.lastEvent=Date.now();s.hung=false;
    if(event.started)s.started=s.started||event.started*1000;

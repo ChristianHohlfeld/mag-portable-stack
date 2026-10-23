@@ -95,6 +95,14 @@ class RoomE2E(unittest.TestCase):
         button = p.locator('#send-button')
         expect(button).to_have_attribute('data-mode', 'stop', timeout=5000)
         expect(p.locator('.message.work-live .run .work-status')).to_be_visible()
+        # "Liest das Gespräch" expands to what is read: room range with authors/ids
+        run = p.locator('.message.work-live .run')
+        if 'collapsed' in (run.get_attribute('class') or ''):
+            run.locator('.work-status').click()
+        reading = run.locator('.work-reading')
+        expect(reading).to_be_visible(timeout=5000)
+        expect(reading).to_contain_text('Nachrichten')
+        self.assertGreater(reading.locator('li a[data-msg]').count(), 0)
         self.shot('02-running')
         t0 = time.monotonic()
         button.click()

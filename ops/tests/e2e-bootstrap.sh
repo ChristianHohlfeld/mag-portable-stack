@@ -114,6 +114,8 @@ done
 # Never let a test touch the host's KVM (bot VMs are out of scope here).
 cx rm -f /dev/kvm
 
+# The script runs inside the container; its $vars expand there.
+# shellcheck disable=SC2016
 cx bash -euo pipefail -c '
   install -d -m 0755 /etc/mag-stack
   touch /etc/mag-stack/TEST-HOST

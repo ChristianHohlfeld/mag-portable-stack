@@ -10,8 +10,11 @@
   if (!view || !screen) return;
   const z = {s: 1, x: 0, y: 0};
   const MIN = 1, MAX = 4;
-  let mode = 'watch';
-  try { mode = localStorage.getItem('mag-view-mode') || 'watch'; } catch (_) {}
+  // Default is "steuern": the live view is a usable browser. Watch mode
+  // swallows input by design, so the old persisted 'watch' default (key
+  // mag-view-mode) is not reused - it made the view look broken.
+  let mode = 'control';
+  try { mode = localStorage.getItem('mag-view-mode-v2') || 'control'; } catch (_) {}
 
   const css = document.createElement('style');
   css.textContent = `
@@ -70,7 +73,7 @@
 
   function setMode(m) {
     mode = m;
-    try { localStorage.setItem('mag-view-mode', m); } catch (_) {}
+    try { localStorage.setItem('mag-view-mode-v2', m); } catch (_) {}
     view.classList.toggle('watching', m === 'watch');
     modeBtn.textContent = m === 'watch' ? 'Steuern' : 'Zurückgeben';
     modeBtn.title = m === 'watch' ? 'Browser selbst bedienen (übernehmen)' : 'Steuerung an den Bot zurückgeben (zuschauen)';
@@ -112,6 +115,11 @@
     else if (mode === 'watch') ev.stopPropagation();
   }, true);
   const up = ev => {
+    if (mode === 'watch' && pan && Math.hypot(ev.clientX - pan.x, ev.clientY - pan.y) < 5) {
+      caption.textContent = 'Zuschauen: zum Bedienen „Steuern“ tippen';
+      caption.classList.add('on'); clearTimeout(capTimer);
+      capTimer = setTimeout(() => caption.classList.remove('on'), 3000);
+    }
     pts.delete(ev.pointerId);
     if (pts.size < 2) pinch = null;
     if (pan || mode === 'watch') { pan = null; ev.stopPropagation(); }

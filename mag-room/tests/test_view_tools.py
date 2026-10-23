@@ -53,6 +53,15 @@ class ViewTools(unittest.TestCase):
     bar.locator('.vt-mode').click();self.assertEqual(st()['mode'],'control')
     page.locator('#screen').click(position={'x':50,'y':50})
     self.assertTrue([m for m in page.evaluate('__sent') if m.get('kind')=='pointer'])
+    # zoom != 1: a click maps to the same stream pixel as at 100%
+    box=page.locator('#screen').bounding_box();dx,dy=-box['width']*.2,-box['height']*.1
+    page.evaluate('__sent.length=0');page.mouse.click(box['x']+box['width']/2+dx,box['y']+box['height']/2+dy)
+    ref=[m for m in page.evaluate('__sent') if m.get('kind')=='pointer'][0]
+    bar.locator('button[aria-label=Vergrößern]').click();bar.locator('button[aria-label=Vergrößern]').click();s=st()['s'];self.assertGreater(s,1.5)
+    page.evaluate('__sent.length=0');ox=box['x']+st()['x']+s*(box['width']/2+dx);oy=box['y']+st()['y']+s*(box['height']/2+dy)
+    page.mouse.click(ox,oy);got=[m for m in page.evaluate('__sent') if m.get('kind')=='pointer'][0]
+    self.assertAlmostEqual(got['x'],ref['x'],delta=2);self.assertAlmostEqual(got['y'],ref['y'],delta=2)
+    bar.locator('.vt-fit').click()
     bar.locator('.vt-mode').click();n=len(page.evaluate('__sent'));page.locator('#screen').click(position={'x':60,'y':60})
     self.assertEqual(len(page.evaluate('__sent')),n)
     # caption follows the bot's browser action

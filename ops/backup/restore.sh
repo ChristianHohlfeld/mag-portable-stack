@@ -4,21 +4,20 @@ set -euo pipefail
 HERE=$(cd -- "$(dirname -- "$0")" && pwd)
 source "$HERE/common.sh"
 check_root
-part=all; target=''; apply=0; snapshot=latest; repo=local; archive=''; use_lock=1
+part=all; target=''; apply=0; snapshot=latest; repo=local; use_lock=1
 while (( $# )); do
  case "$1" in
  --part) part="$2"; shift 2;;
  --target) target="$2"; shift 2;;
  --snapshot) snapshot="$2"; shift 2;;
  --repo) repo="$2"; shift 2;;
- --archive) archive="$2"; shift 2;;
  --apply) apply=1; shift;;
  --no-lock) use_lock=0; shift;;
  *) echo "Unknown argument $1" >&2; exit 2;;
  esac
 done
 case "$part" in room|gitea|pages|cron|tailscale|config|all) ;; *) exit 2;; esac
-case "$repo" in local|offsite) ;; *) exit 2;; esac
+case "$repo" in local) ;; offsite) echo 'S3 offsite was removed; only --repo local exists' >&2; exit 2;; *) exit 2;; esac
 [[ "$snapshot" == latest || "$snapshot" =~ ^[a-f0-9]{8,64}$ || "$snapshot" =~ ^[0-9]{8}T[0-9]+Z-(daily|deploy|clear)$ ]] || exit 2
 [[ $use_lock == 0 ]] || backup_lock
 # Never restore to / without an explicit apply; staging is mandatory.
@@ -29,16 +28,6 @@ else
 fi
 scratch=$(mktemp -d "$MAG_BACKUP_WORK/restore.XXXXXXXX")
 trap 'rm -rf -- "$scratch"' EXIT
-if [[ "$repo" == offsite ]]; then
- load_aws
- if [[ -z "$archive" ]]; then
-  archive=$(aws s3 cp "s3://$MAG_BACKUP_BUCKET/latest.json" - --only-show-errors --region eu-central-1 | jq -r '.archive')
- fi
- [[ "$archive" =~ ^[0-9]{8}T[0-9]{6}Z-[a-f0-9]{12}$ ]] || exit 2
- mkdir -p "$scratch/repo"
- aws s3 sync "s3://$MAG_BACKUP_BUCKET/archives/$archive/" "$scratch/repo/" --no-progress --only-show-errors --region eu-central-1
- export RESTIC_REPOSITORY="$scratch/repo"
-fi
 if [[ "$repo" == local ]]; then
   root="${MAG_BACKUP_ROOT:-/var/backups/mag-full}"
   if [[ ! -f "${RESTIC_REPOSITORY:-}/config" ]]; then

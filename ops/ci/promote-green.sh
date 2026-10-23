@@ -10,9 +10,22 @@ sha="$(git rev-parse origin/main)"
 deadline=$((SECONDS + 5400))
 step="${PROMOTE_SLEEP:-30}"
 if (( wait )); then sleep $((step * 2)); fi
+filter='[.check_runs[] | select(.name != "promote-green" and .name != "deploy-live")]'
+# gh on GitHub-hosted runners; plain curl + GH_TOKEN on a self-hosted runner
+# (the MAG host) where gh may not be installed.
+check_runs() {
+  if [[ ${MAG_PROMOTE_NO_GH:-0} != 1 ]] && command -v gh >/dev/null 2>&1; then
+    gh api "repos/${GITHUB_REPOSITORY}/commits/${sha}/check-runs?per_page=100" --jq "$filter"
+  else
+    [[ -n ${GH_TOKEN:-} ]] || { echo 'GH_TOKEN required without gh' >&2; return 1; }
+    curl -fsSL --proto '=https' --max-time 30 -H "Authorization: Bearer ${GH_TOKEN}" \
+      -H 'Accept: application/vnd.github+json' \
+      "${GITHUB_API_URL:-https://api.github.com}/repos/${GITHUB_REPOSITORY}/commits/${sha}/check-runs?per_page=100" |
+      jq "$filter"
+  fi
+}
 while :; do
-  runs="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${sha}/check-runs?per_page=100" \
-    --jq '[.check_runs[] | select(.name != "promote-green" and .name != "deploy-live")]')"
+  runs="$(check_runs)"
   total="$(jq length <<<"$runs")"
   pending="$(jq '[.[] | select(.status != "completed")] | length' <<<"$runs")"
   red="$(jq '[.[] | select(.status == "completed" and ((.conclusion == "success" or .conclusion == "skipped" or .conclusion == "neutral") | not))] | length' <<<"$runs")"

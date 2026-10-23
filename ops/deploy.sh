@@ -20,8 +20,16 @@ if [[ ! -x "$SOURCE/build/mag-browser-webrtc" ]]; then
   (cd "$SOURCE/mag-room/webrtc" && go build -mod=mod -o "$SOURCE/build/mag-browser-webrtc" .)
 fi
 test -x "$SOURCE/build/mag-browser-webrtc"
-test -x "$WHISPER_CLI"; test -r "$WHISPER_MODEL"
+test -x "$WHISPER_CLI" && test -r "$WHISPER_MODEL" || {
+  echo "Whisper missing ($WHISPER_CLI, $WHISPER_MODEL): run ops/bootstrap-voice.sh as the checkout owner" >&2; exit 1;
+}
 test ! -e "$RELEASE"
+# First install on a blank host (ops/bootstrap.sh): there is no previous
+# release, room unit, magbot binary or room state to snapshot, and no running
+# room whose native whois could be probed. Later deploys are unchanged.
+FIRST_INSTALL=0
+[[ -L /opt/mag-stack/current ]] || FIRST_INSTALL=1
+MAG_DEPLOY_FIRST_INSTALL=$FIRST_INSTALL; export MAG_DEPLOY_FIRST_INSTALL
 # No release state mutation before complete nginx/Tailnet/Owner-probe validation.
 NGINX_SYNC="$SOURCE/ops/private-access/deploy-nginx.sh"
 bash "$NGINX_SYNC" preflight
@@ -59,12 +67,16 @@ curl -fsS --max-time 5 http://127.0.0.1:8080/v1/models >/dev/null \
 install -d -m 0755 /opt/mag-stack/releases "$RELEASE/bin" "$RELEASE/web" "$RELEASE/ops"
 install -d -m 0700 "$BACKUP"
 install -m 0700 "$NGINX_SYNC" "$BACKUP/deploy-nginx.sh"
-cp -a /etc/systemd/system/mag-120.service "$BACKUP/mag-120.service"
+if [[ -f /etc/systemd/system/mag-120.service ]]; then
+  cp -a /etc/systemd/system/mag-120.service "$BACKUP/mag-120.service"
+fi
 if [[ -f /etc/systemd/system/mag-browser-webrtc.service ]]; then
   cp -a /etc/systemd/system/mag-browser-webrtc.service "$BACKUP/mag-browser-webrtc.service"
 fi
-cp -a /usr/local/bin/magbot "$BACKUP/magbot"
-cp -a /var/lib/magbot/room "$BACKUP/room"
+if [[ -e /usr/local/bin/magbot ]]; then cp -a /usr/local/bin/magbot "$BACKUP/magbot"
+elif (( ! FIRST_INSTALL )); then echo '/usr/local/bin/magbot missing on an installed host' >&2; exit 1; fi
+if [[ -d /var/lib/magbot/room ]]; then cp -a /var/lib/magbot/room "$BACKUP/room"
+elif (( ! FIRST_INSTALL )); then echo '/var/lib/magbot/room missing on an installed host' >&2; exit 1; fi
 if [[ -L /opt/mag-stack/current ]]; then readlink /opt/mag-stack/current > "$BACKUP/previous-release"; fi
 install -m 0755 "$SOURCE/build/magroom" "$SOURCE/build/mag-browser" "$SOURCE/build/magbot-native" "$SOURCE/build/mag-bots-publish" "$SOURCE/build/mag-browser-webrtc" "$SOURCE/build/mag-det" "$WHISPER_CLI" "$RELEASE/bin/"
 cp -a "$SOURCE/mag-room/web/." "$RELEASE/web/"
@@ -101,17 +113,24 @@ chmod -R a+rX "$RELEASE"
 rollback() {
  echo 'Deployment failed; restoring previous room and nginx state' >&2
  if (( room_switched )); then
- cp -a "$BACKUP/mag-120.service" /etc/systemd/system/mag-120.service
+ if [[ -f "$BACKUP/mag-120.service" ]]; then
+   cp -a "$BACKUP/mag-120.service" /etc/systemd/system/mag-120.service
+ else
+   systemctl disable --now mag-120.service >/dev/null 2>&1 || true
+   rm -f /etc/systemd/system/mag-120.service
+ fi
  if [[ -f "$BACKUP/mag-browser-webrtc.service" ]]; then
    cp -a "$BACKUP/mag-browser-webrtc.service" /etc/systemd/system/mag-browser-webrtc.service
  else
    systemctl disable --now mag-browser-webrtc.service >/dev/null 2>&1 || true
    rm -f /etc/systemd/system/mag-browser-webrtc.service
  fi
- cp -a "$BACKUP/magbot" /usr/local/bin/magbot
+ if [[ -e "$BACKUP/magbot" ]]; then cp -a "$BACKUP/magbot" /usr/local/bin/magbot; else rm -f /usr/local/bin/magbot; fi
  if [[ -f "$BACKUP/previous-release" ]]; then
    ln -sfn "$(cat "$BACKUP/previous-release")" /opt/mag-stack/.previous-rollback
    mv -Tf /opt/mag-stack/.previous-rollback /opt/mag-stack/current
+ else
+   rm -f /opt/mag-stack/current
  fi
  if [[ -f "$BACKUP/frontend.html" ]]; then
    cp -a "$BACKUP/frontend.html" /var/lib/magbot/room/frontend.html
@@ -123,7 +142,7 @@ rollback() {
    rm -f /etc/systemd/system/mag-120.service.d/30-multibot.conf /etc/systemd/system/mag-120.service.d/30-dual-numa.conf
  fi
  systemctl daemon-reload
- systemctl restart mag-120.service
+ if [[ -f "$BACKUP/mag-120.service" ]]; then systemctl restart mag-120.service; fi
  if [[ -f "$BACKUP/mag-browser-webrtc.service" ]]; then
    systemctl restart mag-browser-webrtc.service
  fi
@@ -183,8 +202,14 @@ install -m 0440 "$SOURCE/ops/magbot-guest.sudoers" /etc/sudoers.d/magbot-guest
 visudo -cf /etc/sudoers.d/magbot-guest >/dev/null
 install -m 0644 "$SOURCE/ops/mag-120.service" "$SOURCE/ops/mag-browser-webrtc.service" /etc/systemd/system/
 install -m 0644 "$SOURCE/ops/mag-stack-check.service" "$SOURCE/ops/mag-stack-check.timer" "$SOURCE/ops/mag-git-gateway.socket" "$SOURCE/ops/mag-git-gateway.service" "$SOURCE/ops/mag-agents-network.service" /etc/systemd/system/
-# Read-only backing image; existing VM overlays remain untouched.
-chmod 0440 /var/lib/libvirt/images/magbot/base/golden.qcow2
+# Read-only backing image; existing VM overlays remain untouched. A host
+# without the image (ops/vm/build-golden.sh not run yet) still gets the room;
+# only bot creation is refused by the native preflight until it exists.
+if [[ -f /var/lib/libvirt/images/magbot/base/golden.qcow2 ]]; then
+  chmod 0440 /var/lib/libvirt/images/magbot/base/golden.qcow2
+else
+  echo 'WARN: golden.qcow2 missing; build it with: sudo bash ops/vm/build-golden.sh' >&2
+fi
 # Replace a drop-in that still points at an old release before pruning.
 # Snapshot first so a failed smoke restores the previous unit drop-ins.
 if [[ -d /etc/systemd/system/mag-120.service.d ]]; then

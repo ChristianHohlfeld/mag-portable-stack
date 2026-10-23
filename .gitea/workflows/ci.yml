@@ -1,0 +1,17 @@
+# Gitea Actions on the MAG host (ops/runners: gitea-runner, label `mag`, host
+# mode, no root). Runs on the Gitea pull mirror of the GitHub repo
+# (ops/gitea/mirror-github.sh) and on direct pushes to Gitea. It does not
+# move GitHub's `green` branch; see docs/RUNNERS.md.
+name: MAG checks (self-hosted)
+on:
+  push:
+  workflow_dispatch:
+jobs:
+  checks:
+    runs-on: mag
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - run: bash ops/ci/self-hosted-checks.sh --jobs 2

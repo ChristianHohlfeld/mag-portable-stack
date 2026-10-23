@@ -9,12 +9,13 @@ permissions:
   pull-requests: read
 jobs:
   recovery:
-    runs-on: ubuntu-24.04
+    runs-on: ${{ fromJSON(vars.MAG_RUNS_ON || '"ubuntu-24.04"') }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
       - name: Install restic and test tools
+        if: runner.environment == 'github-hosted'
         run: |
           sudo apt-get update && sudo apt-get install -y sqlite3 jq util-linux systemd curl bzip2
           curl -fsSLo /tmp/restic.bz2 https://github.com/restic/restic/releases/download/v0.18.1/restic_0.18.1_linux_amd64.bz2
@@ -56,6 +57,7 @@ jobs:
           done
           grep -Fq 'CPUAffinity=14-27 42-55' ops/backup/units/mag-backup-clear.service
       - name: Migrate actual password-protected repo to no-password without data loss
+        if: runner.environment == 'github-hosted'
         run: bash ops/backup/tests/test-passwordless-migrate.sh
       - name: Disposable repository with Gitea SQLite, room and Pages restore
         run: bash ops/backup/tests/test-backup.sh

@@ -11,10 +11,16 @@
 set -euo pipefail
 SRC=$(cd "$(dirname "$(readlink -f "$0")")/../.." && pwd)
 APPLY=0; [[ "${1:-}" == "--apply" ]] && APPLY=1
-# Legacy bootstrap uses the previous Python gateway. Once the native sequential
-# supervisor is installed, this old installer must never downgrade its unit.
-if [[ $APPLY -eq 1 ]]; then
-  echo "Native C++ Q4-only gateway is managed by ops/deepseek/iq3-parallel.sh; legacy audit installer may not overwrite it." >&2
+# The gateway is the native C++ binary (build/mag-audit-gateway) behind the
+# repo unit ops/audit/systemd/mag-audit-gateway.service. A running gateway is
+# managed by ops/deepseek/iq3-parallel.sh: this installer then leaves its unit
+# and binary alone and only (re)installs proxy, nftables, CA and VM package.
+# On a blank host (ops/bootstrap.sh) it installs the built binary first.
+NATIVE_BIN=/opt/mag-audit/bin/mag-audit-gateway
+GATEWAY_ACTIVE=0
+systemctl is-active --quiet mag-audit-gateway.service 2>/dev/null && GATEWAY_ACTIVE=1
+if [[ $APPLY -eq 1 && $GATEWAY_ACTIVE -eq 0 && ! -x $NATIVE_BIN && ! -x "$SRC/build/mag-audit-gateway" ]]; then
+  echo "Native gateway not built: cmake --build build --target mag-audit-gateway first." >&2
   exit 4
 fi
 run() { echo "+ $*"; if [[ $APPLY -eq 1 ]]; then "$@"; fi; }
@@ -30,7 +36,7 @@ id magbot >/dev/null 2>&1 || { echo "User magbot fehlt"; exit 1; }
 
 # Port 8080: frei, oder schon vom Gateway belegt (mag-llm/deepseek.service lauschen ab jetzt auf 8090)
 owner=$(ss -Hltnp 'sport = :8080' 2>/dev/null | grep -oE 'users:\(\("[^"]+"' | head -1 | cut -d'"' -f2 || true)
-if [[ -n "$owner" && "$owner" != python3* ]]; then
+if [[ -n "$owner" && "$owner" != python3* && "$owner" != mag-audit-gate* ]]; then
   echo "Port 8080 ist von '$owner' belegt (alter mag-llm oder deepseek.service?). Erst stoppen:"
   echo "  sudo systemctl disable --now deepseek.service   (mag-llm NIE stoppen: Modell würde entladen)"; exit 1
 fi
@@ -56,6 +62,13 @@ if [[ ! -f /etc/mag-audit/secrets.list ]]; then run install -o root -g mag-audit
 echo "== 3. Programme nach /opt/mag-audit"
 run install -m 0644 "$SRC/ops/audit/mag_audit_gateway.py" "$SRC/ops/audit/mitm_audit_addon.py" /opt/mag-audit/
 run install -m 0755 "$SRC/ops/audit/mag-audit-tail" /usr/local/bin/mag-audit-tail
+if [[ $GATEWAY_ACTIVE -eq 0 && -x "$SRC/build/mag-audit-gateway" ]]; then
+  run install -d -m 0755 /opt/mag-audit/bin
+  run install -m 0755 "$SRC/build/mag-audit-gateway" "$NATIVE_BIN.next"
+  run mv -f "$NATIVE_BIN.next" "$NATIVE_BIN"
+else
+  echo "   native gateway binary left unchanged (active or not built here)"
+fi
 
 echo "== 4. mitmproxy (eigene venv, auf mag nicht installiert)"
 if [[ ! -x /opt/mag-audit/venv/bin/mitmdump ]]; then
@@ -102,8 +115,10 @@ else
 fi
 
 echo "== 7. systemd-Units (Kopien)"
-run install -m 0644 "$SRC/ops/audit/systemd/mag-audit-gateway.service" \
-  "$SRC/ops/audit/systemd/mag-audit-webproxy.service" "$SRC/ops/audit/systemd/mag-audit-nft.service" /etc/systemd/system/
+if [[ $GATEWAY_ACTIVE -eq 0 ]]; then
+  run install -m 0644 "$SRC/ops/audit/systemd/mag-audit-gateway.service" /etc/systemd/system/
+fi
+run install -m 0644 "$SRC/ops/audit/systemd/mag-audit-webproxy.service" "$SRC/ops/audit/systemd/mag-audit-nft.service" /etc/systemd/system/
 run install -d /etc/systemd/system/mag-120.service.d
 run install -m 0644 "$SRC/ops/mag-120.d/20-deepseek-audit.conf" /etc/systemd/system/mag-120.service.d/20-deepseek-audit.conf
 NOPROXY="127.0.0.1,localhost,::1,$VM_SUBNET,$VM_HOST_IP"

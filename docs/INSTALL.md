@@ -1,77 +1,132 @@
-# Host installation — private nginx access, fail-safe
+# Blank host -> running MAG (`ops/bootstrap.sh`)
 
-> **Wichtig – Hotfix für Release 20261017T061119Z (main 8e2d045):**
-> Der vorherige Room-Deploy führte zum globalen 403, weil er die
-> native nginx-Whois-Authentisierung nicht synchron installierte.
-> Der neue `ops/deploy.sh` ruft jetzt zwingend
-> `ops/private-access/deploy-nginx.sh preflight/stage/activate/smoke/commit`
-> auf. Vor und nach Neustart von **nur** `mag-120` wird ein echtes externes
-> Owner-Gerät via SSH auf `/` (200) und `/api/state` (Owner-Login) geprüft;
-> jeder Fehler führt zur Wiederherstellung von Binary/Unit **und** nginx.
-> Ohne Root-only Owner-Testgerät **kein Deploy**. Fehlendes OAuth-Secret
-> ist kein Blocker für den Raum. Ausführliche [Schritte und OAuth-Provisionierung](guest-access.md#hotfix-nach-dem-403-ausfall-vom-17-oktober-2026).
->
+One script turns a blank Ubuntu 24.04 server (same hardware as MAG: 2 sockets,
+2 NUMA nodes, ~512 GiB RAM) into a running MAG. The only inputs are a verified
+backup archive and/or a few credential files. Nothing secret is in Git, on a
+command line or in the log.
 
-**Owner:** Ali. **Target:** `mag`. **Base release:** `9067692` (contains merged #21 and the later releases including #26). This PR repairs a failed host cutover; no `mag-llm` restart. Nothing here modifies model weights or restarts `mag-llm`.
+The older nginx cutover/hotfix guide from 2026-10-17 (Caddy -> nginx) is kept
+for reference in [PRIVATE-ACCESS-CUTOVER.md](PRIVATE-ACCESS-CUTOVER.md).
 
-## 0. Keep a rescue channel
-Maintain an open existing SSH/Tailscale session to MAG and a *separate* Tailnet client logged into Chris's real Tailscale identity. Ensure the old `https://mag.tail3e02ae.ts.net:8446/` endpoint remains independent and reachable. Do not do this from S23; use a desktop or second authenticated client. Do **not** remove legacy Caddy yet.
+## 1. What you provide
 
-## 1. Read-only host inventory
-From the checked-out, reviewed PR (after merge):
+| Input | Where | Needed for |
+|---|---|---|
+| Verified full archive (recommended) | `/var/backups/mag-full/<id>/` copied from the old host (contains `VERIFIED` and `repo/`) | room history, Gitea, Pages, ACME account + certificates, Tailscale node identity (keeps Tailnet IP `100.123.114.16`), `/etc/credstore`, audit CA, `/etc/mag-stack/secondary-model.env` |
+| Tailscale auth key (only without archive) | `/etc/credstore/tailscale.authkey` (root, 0600) | `tailscale up --auth-key file:...` |
+| acme-dns credentials (only without archive) | `/etc/credstore/mag-acme-dns.json` (root, 0600) | lego DNS-01 certificate for `mag.stardenburg.de` |
+| Guest OAuth secret (optional) | `/etc/credstore/mag-guest-oauth` | guest invitations ([guest-access.md](guest-access.md)) |
+| Gitea mirror tokens (optional) | `/etc/credstore/gitea-mirror.token`, `/etc/credstore/github-mirror.token` | Gitea pull mirror of the GitHub repo |
+| GitHub runner token (optional) | `/etc/credstore/mag-github-runner.token` | self-hosted CI runner ([RUNNERS.md](RUNNERS.md)) |
+| Pages config (optional) | `/etc/mag-pages/pages.env` + `gitea-token` (from the archive) | Gitea Pages |
+| Room owner (only without archive) | `--owner <tailscale-login>` | `/var/lib/magbot/room/access.json` |
+
+## 2. Run it
+
 ```bash
-sudo bash ops/private-access/preflight.sh
-sudo nginx -t
-sudo systemctl status nginx tailscaled mag-120 mag-llm --no-pager
-sudo grep -E 'ssl_certificate(_key)? ' /etc/nginx/sites-available/mag-room.conf
-sudo ls -l /etc/mag-acme/lego/certificates/mag.stardenburg.de.*
-```
-The target is **100.123.114.16:443 → 127.0.0.1:8766**, native magroom Whois at **127.0.0.1:8766/_internal/tailscale/whois**, domain `mag.stardenburg.de`. Check for any other nginx virtual hosts bound to 100.123.114.16:443; an overlapping `server_name` is a blocker. The existing `/etc/mag-acme/lego.env` and acme-dns storage are root-owned host state and **not overwritten** by the installer.
-
-**Owner allowlist required before cutover:** Check `/var/lib/magbot/room/access.json` on MAG. It must contain `owners: ["<actual LoginName from tailscale whois>"]` (no guessed addresses or CI placeholder); verify file owner/permissions and that Chris's real login is present. The installer refuses a missing or invalid allowlist. The template `ops/private-access/access.json.example` is **not** an authoritative identity list and must never be copied unedited into production.
-
-## 2. Prepare production TLS separately
-If lego already has `/etc/mag-acme/lego/certificates/mag.stardenburg.de.crt` and `.key`, stage validated copies **without reloading nginx**:
-```bash
-sudo bash ops/private-access/deploy-hook.sh --no-reload
-sudo openssl x509 -in /etc/mag-nginx/tls/cert.pem -noout -dates -checkhost mag.stardenburg.de
-sudo openssl x509 -in /etc/nginx/mag-tls/cert.pem -noout -dates -checkhost mag.stardenburg.de
-```
-If lego certificates are missing, repair the DNS-01 `acme-dns` delegation/credentials and issue through `issue-cert.sh staging` then `issue-cert.sh production` under operator control. The installed lego **5.5.2** uses `lego run --accept-tos --server ... --path ... --dns acmedns --dns.resolvers ... -d ...` for issuance AND renewal; flags **after** the command. The deploy-hook updates both known TLS destinations transactionally: old live `/etc/nginx/mag-tls` and new `/etc/mag-nginx/tls`. **Do not proceed unless the domain, certificate and key match.**
-
-## 3. Stage nginx + 180-second automatic rollback
-```bash
-sudo bash ops/private-access/install.sh
-```
-**First deploy the revised `ops/nginx/mag-speech.inc` (with its regex quoted) using the normal room-only release (`mag-120`, never `mag-llm`).** The host's `/opt/mag-stack/current/ops/nginx/mag-speech.inc` must match before `install.sh`; nginx reads that *actual* include. Confirm the existing C++ endpoint and tailscaled Unix socket remain available. `install.sh` checks that the C++ endpoint is already active and fails before modifying nginx otherwise. This snapshots the previous vhost (including **its original file mode**), enabled symlink, ACME scripts and renewal units before modification. It verifies **nginx including the deployed speech file before installing any host ACME scripts/units**, then arms the **180-second rollback timer before nginx reload**. All six installed host files are restored on failure; only nginx reloads. No secrets or Caddy binaries are changed. An unconfirmed cutover restores the earlier vhost after 180 seconds.
-
-## 4. External Owner verification — required before disarming
-Immediately, **from a different authenticated Tailscale client**:
-```bash
-curl --fail-with-body --silent --show-error https://mag.stardenburg.de/api/state
-```
-Inspect `you.role == "owner"` and the exact expected Tailscale `you.login`. Confirm UI and authenticated SSE, not just TLS health. A 401/403/5xx, missing identity, guest role or wrong login means **do not confirm**. Run `sudo bash ops/private-access/rollback.sh` immediately or let the timer restore it. An on-host localhost request cannot prove this check.
-
-Only after a successful Owner check:
-```bash
-sudo bash ops/private-access/confirm.sh --owner-verified
-sudo systemctl is-active mag-acme-renew.timer
+sudo apt-get update && sudo apt-get install -y git
+sudo useradd --create-home --shell /bin/bash chris      # the checkout owner
+sudo -u chris git clone https://github.com/ChristianHohlfeld/mag-portable-stack /home/chris/mag-stack
+cd /home/chris/mag-stack
+bash ops/bootstrap.sh --dry-run                          # every phase, no changes
+sudo bash ops/bootstrap.sh --archive /var/backups/mag-full/<id> --download-models
+#   or, without an archive:
+sudo bash ops/bootstrap.sh --owner you@example.com --download-models
 ```
 
-## 5. Verify guest access, then retire Caddy
-From a separate **guest** Tailnet identity, verify shared chat and sender name; admin/job/memory/stop remain forbidden. Confirm nginx whois failure returns denial (arrange a guarded outage drill without changing `mag-llm`), and that `/api/events` streams without buffering. Then:
-```bash
-sudo bash ops/private-access/remove-caddy.sh
-sudo nginx -t
-sudo systemctl status nginx mag-120 mag-acme-renew.timer --no-pager
-```
-The legacy `mag-whois.service` and `tailscale-whois.py` host copies are disabled and removed by `confirm.sh` only after Owner verification. Caddy unit, `/etc/mag-caddy`, and its binary are removed only after confirmed success; if another active Caddy service shares the binary, it is deliberately retained and reported for manual review. The independent Tailscale Serve :8446 route and `mag-llm` remain untouched.
+Options: `--start-llm` (start mag-llm and the NUMA1 model at the end, only if
+inactive), `--no-golden`, `--no-llm-build`, `--no-deploy`,
+`--restore-host-config` (legacy: also copy `etc/nginx`, `etc/systemd/system`,
+`etc/cron.d` from the archive). `MAG_BUILD_JOBS=N` limits compile jobs.
 
-## 6. Recovery
-If the Owner check fails or SSH disconnects **before confirmation**, the 180-second rollback timer restores the previous vhost. An operator may recover immediately:
+Bootstrap refuses to run when `mag-120` or `mag-llm` is already active (use
+`ops/deploy.sh` / `ops/update.sh` on a running host). It never restarts or
+stops mag-llm and never installs or enables console lockdown.
+
+## 3. Phases
+
+| Phase | What happens |
+|---|---|
+| release-check | Ubuntu 24.04 (noble) required (`MAG_ALLOW_OTHER_RELEASE=1` overrides) |
+| packages | build tools, nginx, nftables, libvirt/QEMU (`qemu-system-x86`, `virtinst`, `cloud-image-utils`, `dnsmasq-base`), Go, Node, python3-venv |
+| restic | pinned restic 0.18.1 |
+| users | `magbot` (uid 993), `chris` |
+| restore / place-state | archive -> staging; only **state and secrets** are placed (room, Gitea, Pages, ACME, nginx TLS, credstore, audit, `/etc/mag-stack`, cron spools). Existing files win; directories are merged one level deep |
+| config | repo defaults: `/etc/mag-llm/llm.env`, `/etc/mag-acme/lego.env` (from `ops/private-access/env.conf`), acme-dns credentials from credstore, `access.json` from `--owner` |
+| tailscale | `ops/tailscale/install.sh`: install, restore node state, or join with the credstore auth key |
+| lego | `ops/private-access/install-lego.sh`: lego v5.5.2, SHA256-pinned |
+| gitea / gitea-mirror | Gitea 28.1.0 (pinned); pull mirror when both mirror tokens exist |
+| build | `MAG_BUILD_TARGETS` (`ops/build-targets.sh`) + WebRTC gateway, as the checkout owner |
+| voice | `ops/bootstrap-voice.sh` as chris: whisper.cpp `ops/whisper.lock` (v1.9.5 @ d1be6fd), ggml-large-v3-turbo SHA256-pinned |
+| llm-runtime | `ops/deepseek/bootstrap-runtimes.sh`: llama.cpp b11683 + patches, ik_llama 8d21687 + patches, Qwen llama.cpp only if selected; renders `mag-llm.service` via `install-deepseek.sh` when absent; installs the NUMA1 unit |
+| golden | `ops/vm/build-golden.sh`: bot VM base image from a pinned Ubuntu cloud image, only when absent |
+| backup-install | local restic timers + first snapshot |
+| audit / gateway / tailscale-egress | native audit gateway, mitmproxy web proxy + CA, VM package, nftables |
+| acme | repo ACME scripts/units; issues the certificate when it is missing and acme-dns credentials exist |
+| models | `--download-models`: pinned GGUF shards, SHA256-verified |
+| deploy | `ops/deploy.sh` (first-install aware: nothing to snapshot, no old room to probe) |
+| pages, auto-update, runners | `ops/pages/install.sh` (if configured), `ops/auto-update/install.sh`, `ops/runners/install.sh` |
+
+Configuration that is not secret comes from the repo, not from the archive:
+systemd units (deploy, installers), the nginx vhost (`deploy-nginx.sh`), ACME
+units, env defaults. Re-running an installer re-applies the repo state.
+
+## 4. Models (repo vs. live)
+
+* NUMA node 0: **DeepSeek-V4-Flash-0731 UD-Q4_K_XL** as `mag-llm.service`
+  (ik_llama, `:8090`, behind the audit gateway on `:8080`). Pinned shards and
+  SHA256: `ops/backup/models.sha256`.
+* NUMA node 1: chosen by `/etc/mag-stack/secondary-model.env`.
+  * absent or `MAG_SECONDARY_MODEL=iq3` (**repo default**): DeepSeek IQ3_XXS,
+    `mag-llm-iq3.service`, `:8091` (`ops/backup/models-iq3.sha256`).
+  * `MAG_SECONDARY_MODEL=qwen` (**live on MAG** as of the October 2026 status): Qwen3.8
+    Flash Next IQ4_XS, `mag-llm-qwen.service` ([ops/qwen/README.md](../ops/qwen/README.md)).
+  Bootstrap never writes this file; it comes from the archive. With `qwen`
+  it builds the pinned Qwen runtime, but the Qwen GGUF has no pinned download
+  in the repo yet: download it, run `ops/qwen/pin-model.py`, then
+  `sudo bash ops/qwen/install.sh stage`. `--download-models` fetches only the
+  DeepSeek Q4 + IQ3 shards.
+* The DeepSeek chat template is fetched by `install-deepseek.sh` from the
+  llama.cpp commit of the built binary (or restored from the archive under
+  `/home/chris/llama-templates`).
+* First start: `mag-model-gate` starts `mag-llm` only after the full SHA-256
+  check of the shards. `--start-llm` starts it directly if inactive.
+
+### NUMA placement: unit template vs. llm.env
+
+`ops/mag-llm.service` still documents `numactl --interleave=all` (the pre-3.8
+layout). The unit that is actually installed is **rendered** by
+`render-llm-unit.sh` from that template plus `/etc/mag-llm/llm.env`;
+`ops/deepseek/llm.env.mag` sets `ENGINE=ik` and
+`NUMA_ARGS="--cpunodebind=0 --membind=0"`, so the rendered unit binds Q4 to
+node 0 and leaves node 1 to the secondary model. Live MAG uses this node-0
+binding. Nothing in bootstrap changes a rendered unit that already exists.
+
+## 5. After bootstrap
+
 ```bash
-sudo bash ops/private-access/rollback.sh
-sudo nginx -t
+curl -s http://127.0.0.1:8766/readyz            # room
+curl -s http://127.0.0.1:8766/readyz/model      # model through the gateway
+systemctl status mag-120 mag-audit-gateway nginx tailscaled --no-pager
+tailscale ip -4                                 # must be 100.123.114.16
 ```
-On a successful rollback, `.pre-whois`, `enabled.before`, all temporary host snapshots and `pending` are deleted so a retry is not blocked; original permissions (for example 0644) are restored. If rollback **cannot** complete nginx validation/reload, backups intentionally remain for manual repair. Never restart `mag-llm`.
-\n> **Userspace-Tailscale Owner-Probe (grokbot-box-2):** Der SSH-erreichbare Testclient darf seinen HTTPS-Traffic über einen *lokalen* Tailscale-SOCKS5-Proxy senden; die reale Whois-Owner-Identität bleibt zwingend. Für den Host-Check, die Root-only-Konfiguration und Fail-Closed-Tests siehe [docs/owner-probe-userspace.md](owner-probe-userspace.md). Box mit Tags/falschem Login oder ohne gesicherten SSH-Zugriff bleibt ein Deploy-Blocker; keine Bypass-Flags.\n
+
+* **Tailnet IP:** nginx (`ops/private-access/mag-room.nginx.conf`) and Pages
+  listen on `100.123.114.16`. A restored Tailscale state keeps that IP; a
+  fresh auth key gives a new IP, and the vhost/pages.env must then be changed
+  deliberately (the Tailscale installer warns).
+* **Owner probe:** an optional second Tailnet device for the nginx smoke
+  (`/etc/mag-stack/deploy-owner-probe.conf`, see
+  [owner-probe-userspace.md](owner-probe-userspace.md)).
+* **Bot VMs:** need `golden.qcow2` (built in phase golden; Chrome stable is
+  whatever Google ships on build day, recorded in `golden.qcow2.manifest`).
+* **CI:** see [RUNNERS.md](RUNNERS.md) (billing, runner token, `MAG_RUNS_ON`).
+
+## 6. Tested how
+
+`ops/tests/test-bootstrap.sh` checks every phase and order in a dry run (CI).
+`ops/tests/e2e-bootstrap.sh` runs the real bootstrap in a fresh Ubuntu 24.04
+system container with `--test-stubs` (stub LLM, stub whisper model, no golden
+image, no models) and checks `/readyz`, `/readyz/model`, the nginx ingress and
+that mag-llm stayed untouched (`.github/workflows/e2e-bootstrap.yml`). Not
+covered there: KVM bot VMs, real models, ACME issuance, Tailscale login.

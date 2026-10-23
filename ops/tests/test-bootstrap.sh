@@ -85,4 +85,8 @@ grep -Fq 'MODEL_DIR="${MAG_VOICE_MODELS:-$HOME/models/whisper}"' "$root/ops/boot
 bash "$root/ops/private-access/install-lego.sh" --dry-run | grep -Fq 'lego 5.5.2'
 bash "$root/ops/gitea/mirror-github.sh" --dry-run | grep -Fq 'pull mirror'
 bash "$root/ops/vm/build-golden.sh" --print-pin | grep -Fq 'cloud-images.ubuntu.com/releases/noble/release-'
+# magbot keeps uid 993 only if it exists before packages add system users.
+users_at=$(grep -n '^PHASE users$' <<<"$out" | cut -d: -f1)
+packages_at=$(grep -n '^PHASE packages$' <<<"$out" | cut -d: -f1)
+(( users_at < packages_at ))
 echo 'Bootstrap dry-run PASS'

@@ -1414,9 +1414,9 @@ async function refreshBackup(){
   const r=await fetch('/api/backup/status',{cache:'no-store'});
   if(!r.ok)throw Error('Status nicht erreichbar');
   const b=await r.json();
-  const problem=!!b.stale||!b.healthy||!b.offsite_ok;
+  const problem=!!b.stale||!b.healthy;
   el.hidden=!problem;
-  if(problem)el.textContent=b.stale?'Backup-Warnung: letzter Erfolg älter als 26 Stunden.':!b.healthy?'Backup-Fehler: Sicherung prüfen.':'Backup nur lokal – Offsite-S3 noch nicht aktiv.';
+  if(problem)el.textContent=b.stale?'Backup-Warnung: letzter Erfolg älter als 26 Stunden.':'Backup-Fehler: Sicherung prüfen.';
  }catch(e){el.hidden=false;el.textContent='Backup-Status nicht verfügbar.'}
 }
 async function refresh(){const seq=++refreshSeq;const r=await fetch('/api/state');if(!r.ok)throw Error('Raum nicht erreichbar');const next=await r.json();if(seq!==refreshSeq)return;state=next;if(state.you?.role==='owner'&&Date.now()-backupPollAt>60000){backupPollAt=Date.now();refreshBackup()}if(state.you?.role!=='owner'&&$('backup-warning'))$('backup-warning').hidden=true;for(const a of (state.activities||(state.activity?[state.activity]:[])))if(a&&a.on)mergeActivity(a);setBusyBots(next.busy_bots,next.waiting_bots);syncApprovals(next.approvals);if(seq!==refreshSeq)return;render();window.mcpMenuState&&window.mcpMenuState();renderQueue({pending:next.pending||[],paused:!!next.queue_paused});if($('offline')){$('offline').checked=!!next.offline;window.syncWeb&&window.syncWeb()}initThink();syncModelSettings(next);if(next.model_status)modelStatus(next.model_status);modelInfo(next.model_info);syncModelChoice(next)}

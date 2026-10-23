@@ -368,6 +368,31 @@ class TwoModels(unittest.TestCase):
         self.assertLess(max(t for t, _ in Model.disconnects) - t0, 1.5)
 
 
+    def test_message_for_one_bot_reaches_it_while_the_other_keeps_working(self):
+        reset_model()
+        q4, second = 'deepseek-v4-flash-0731', 'deepseek-v4-flash-0731-iq3'
+        # Alpha (Q4) works in tool steps; Beta (second model) is busy in a long prompt.
+        Model.by_model[q4] = [[{'_sleep': 1.0}, tool_call('remember', {'fact': 'A1'})],
+                              ['Alpha: erledigt, inklusive Nachtrag.']]
+        Model.by_model[second] = [[{'_hold': 30}]]
+        self.room.api('/api/message', {'text': 'Startet', 'bots': ['a', 'b']})
+        wait_calls(2, timeout=5)
+        r = self.room.api('/api/message', {'text': 'Nachtrag nur fuer Alpha', 'bots': ['a']})
+        self.assertTrue(r['queued'], 'Alpha is busy, so the message is queued visibly')
+        s = self.room.until(lambda s: 'Alpha: erledigt, inklusive Nachtrag.' in contents(s), timeout=8,
+                            what='Alpha answer with the late message')
+        self.assertIn('b', s.get('busy_bots') or [], 'Beta keeps working, untouched')
+        self.assertFalse(Model.disconnects, 'nobody was cancelled')
+        alpha = [c[1] for c in Model.calls if c[1]['model'] == q4]
+        self.assertEqual(len(alpha), 2, 'handed over inside the run, no extra turn')
+        self.assertIn('Nachtrag nur fuer Alpha', alpha[-1]['messages'][-1]['content'])
+        self.assertEqual(s['pending'], [])
+        self.assertLess(contents(s).index('Nachtrag nur fuer Alpha'),
+                        contents(s).index('Alpha: erledigt, inklusive Nachtrag.'))
+        self.room.api('/api/cancel', {})
+        self.room.until(lambda s: not s['busy'], timeout=3)
+
+
 @unittest.skipUnless(subprocess.run(['sudo', '-n', 'true'], capture_output=True).returncode == 0,
                      'needs sudo -n (tool commands run via sudo -n GUEST_RUN)')
 class StopKillsTools(unittest.TestCase):

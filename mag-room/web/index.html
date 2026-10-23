@@ -367,21 +367,31 @@ dialog{border-radius:10px;border-color:var(--line);background:var(--surface)}
 .jump-bottom.has-new .jump-dot{opacity:1}
 .pwa-block{padding:2px 10px 8px}.pwa-block .hint{margin:4px 0}.pwa-block .pill-btn{margin:4px 0}
 #update-toast{bottom:72px}#update-toast button{color:var(--accent)}
-.react-bar{display:none;position:absolute;top:50%;right:-44px;left:auto;transform:translateY(-50%);z-index:5;gap:4px;align-items:center;padding:4px;background:var(--surface);border:1px solid var(--line);border-radius:999px;box-shadow:var(--shadow)}
-.conversation-inner{padding-right:44px}
-.message.user .react-bar{left:auto;right:-44px}
-.react-bar>.react-quick{display:none}
-.react-bar .react-more{width:34px;min-width:34px;height:34px;min-height:34px;padding:0;display:grid;place-items:center}
-.react-picker{position:absolute;bottom:42px;right:0;display:flex;flex-wrap:wrap;gap:4px;padding:8px;border:1px solid var(--line);border-radius:10px;background:var(--surface);box-shadow:var(--shadow);z-index:6}
-.message:hover .react-bar,.message:focus-within .react-bar,.message.react-open .react-bar{display:flex}
-.react-quick,.react-more,.react-pill{min-height:28px!important;height:28px;padding:0 8px;border-radius:999px;border:1px solid var(--line);background:var(--panel);font-size:14px;line-height:1;color:var(--text)}
+/* One message popover (reactions + actions); one open at a time. */
+.react-quick,.react-more,.react-pill{min-height:30px!important;height:30px;padding:0 8px;border-radius:999px;border:1px solid var(--line);background:var(--panel);font-size:15px;line-height:1;color:var(--text);cursor:pointer}
 .react-pill.mine{border-color:var(--accent);background:color-mix(in srgb,var(--accent),transparent 82%)}
 .react-pills{display:flex;flex-wrap:wrap;gap:4px;margin-top:6px}
 .react-pills:empty{display:none}
 .message.user .react-pills{justify-content:flex-end}
-.react-picker{display:flex;flex-wrap:wrap;gap:4px;width:196px;padding:2px}
-@media(hover:none){
-.react-bar{position:absolute;top:50%;right:-44px;transform:translateY(-50%);display:flex;margin:0;box-shadow:none;width:fit-content}
+.msg-pop{position:fixed;z-index:60;display:none;flex-direction:column;gap:6px;padding:6px;border:1px solid var(--line);border-radius:16px;background:var(--surface,var(--panel));box-shadow:0 10px 30px rgba(0,0,0,.22);max-width:calc(100vw - 16px);animation:pop-in .12s ease-out}
+.msg-pop.open{display:flex}
+@keyframes pop-in{from{opacity:0;transform:scale(.96)}to{opacity:1;transform:none}}
+.msg-pop .pop-emoji{display:flex;gap:2px;flex-wrap:wrap;justify-content:center}
+.msg-pop .pop-emoji button{width:38px;height:38px;border:0;border-radius:50%;background:transparent;font-size:22px;line-height:1;cursor:pointer;padding:0}
+.msg-pop .pop-emoji button:hover,.msg-pop .pop-emoji button:focus-visible{background:var(--panel-3,var(--panel))}
+.msg-pop .pop-emoji button.mine{background:color-mix(in srgb,var(--accent),transparent 80%)}
+.msg-pop .pop-emoji .pop-more{font-size:18px;color:var(--muted)}
+.msg-pop .pop-grid{display:none;grid-template-columns:repeat(6,38px);gap:2px;justify-content:center;border-top:1px solid var(--line);padding-top:6px}
+.msg-pop.expanded .pop-grid{display:grid}
+.msg-pop .pop-grid button{width:38px;height:38px;border:0;border-radius:50%;background:transparent;font-size:22px;cursor:pointer;padding:0}
+.msg-pop .pop-actions{display:flex;gap:2px;border-top:1px solid var(--line);padding-top:6px}
+.msg-pop .pop-actions button{flex:1;display:flex;align-items:center;justify-content:center;gap:6px;min-height:36px;border:0;border-radius:10px;background:transparent;color:var(--text);font:inherit;font-size:13px;cursor:pointer;padding:0 10px;white-space:nowrap}
+.msg-pop .pop-actions button:hover{background:var(--panel-3,var(--panel))}
+.msg-pop .pop-actions .danger{color:#d33}
+.message.pop-target>.content{background:color-mix(in srgb,var(--accent),transparent 92%);border-radius:12px}
+/* Permanent copy/read-aloud only under the newest message (like Grok). */
+.message .message-tools{display:none}
+.conversation-inner>article.message:last-of-type .message-tools{display:flex}
 .message.user .react-bar{right:-44px}
 .react-quick,.react-more,.react-pill{min-height:36px!important;height:36px}
 }
@@ -1013,8 +1023,8 @@ function bindScroll(){
  }
 }
 bindScroll();
-const REACT_QUICK=['👍','❤️','😂','🎉','👀'];
-const REACT_MORE=['🔥','👏','🙏','😢','😮','💯','✅','🤔','🚀','💡','👎','🤝'];
+const REACT_QUICK=['👍','❤️','😂','😮','😢','🙏'];
+const REACT_MORE=['🎉','👀','🔥','👏','💯','✅','🤔','🚀','💡','👎','🤝','😎'];
 function mineReaction(msg,emoji){return (msg.reactions||[]).some(r=>r.emoji===emoji&&r.actor==='user')}
 function groupReactions(msg){
  const groups=new Map();
@@ -1051,35 +1061,81 @@ function paintPills(node,msg){
   pills.append(b);
  }
 }
+// One popover for every message: compact reaction row (+ more) and the
+// message actions. Opens on long-press (touch), hover (mouse) or right-click;
+// closes on outside tap, scroll, Escape, back gesture and after a choice.
+const msgPop={el:null,node:null,msg:null,hover:0,leave:0,pushed:false};
+function popEl(){
+ if(msgPop.el)return msgPop.el;
+ const el=document.createElement('div');el.className='msg-pop';el.id='msg-pop';el.setAttribute('role','menu');el.setAttribute('aria-label','Nachricht');
+ el.addEventListener('pointerenter',()=>clearTimeout(msgPop.leave));
+ el.addEventListener('pointerleave',ev=>{if(ev.pointerType==='mouse')scheduleHoverClose()});
+ document.body.append(el);msgPop.el=el;return el;
+}
+function closeMsgPop(fromBack){
+ const el=msgPop.el;if(!el||!el.classList.contains('open'))return;
+ el.classList.remove('open','expanded');el.innerHTML='';
+ msgPop.node?.classList.remove('pop-target');msgPop.node=null;msgPop.msg=null;
+ if(msgPop.pushed&&!fromBack){msgPop.pushed=false;msgPop.skipPop=(msgPop.skipPop||0)+1;history.back()}else msgPop.pushed=false;
+}
+function scheduleHoverClose(){clearTimeout(msgPop.leave);msgPop.leave=setTimeout(()=>{if(msgPop.mode==='hover')closeMsgPop()},280)}
+function openMsgPop(node,msg,mode){
+ if(msgPop.node===node&&msgPop.el?.classList.contains('open'))return;
+ const hadPush=msgPop.pushed;msgPop.pushed=false;
+ closeMsgPop(true); // a replaced popover keeps its history entry
+ const el=popEl();msgPop.node=node;msgPop.msg=msg;msgPop.mode=mode;
+ const choose=emoji=>{closeMsgPop();toggleReaction(msg,emoji)};
+ const btn=(emoji,parent)=>{const b=document.createElement('button');b.type='button';b.textContent=emoji;b.setAttribute('role','menuitem');b.setAttribute('aria-label','Reagiere mit '+emoji);if(mineReaction(msg,emoji))b.classList.add('mine');b.onclick=ev=>{ev.stopPropagation();choose(emoji)};parent.append(b)};
+ const row=document.createElement('div');row.className='pop-emoji';
+ for(const e of REACT_QUICK)btn(e,row);
+ const more=document.createElement('button');more.type='button';more.className='pop-more';more.textContent='⋯';more.setAttribute('aria-label','Weitere Emojis');
+ more.onclick=ev=>{ev.stopPropagation();el.classList.toggle('expanded');placeMsgPop()};row.append(more);
+ const grid=document.createElement('div');grid.className='pop-grid';for(const e of REACT_MORE)btn(e,grid);
+ const acts=document.createElement('div');acts.className='pop-actions';
+ const act=(label,icon,fn,cls)=>{const b=document.createElement('button');b.type='button';b.setAttribute('role','menuitem');if(cls)b.className=cls;b.innerHTML=icon+'<span>'+label+'</span>';b.onclick=ev=>{ev.stopPropagation();closeMsgPop();fn()};acts.append(b)};
+ const text=shownText(msg);
+ if(text){
+  act('Kopieren',ICON_COPY,()=>{copyText(text,null);notice('Kopiert');setTimeout(()=>notice(''),1500)});
+  if(window.magMessageAudio?.toggle)act('Vorlesen','<svg class="i sm" aria-hidden="true" viewBox="0 0 24 24"><path d="M11 5 6 9H3v6h3l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/></svg>',()=>window.magMessageAudio.toggle(msg.id||text.slice(0,40),text));
+ }
+ if(msg.id)act('Löschen','<svg class="i sm" aria-hidden="true" viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>',()=>askDeleteMessage(msg),'danger');
+ el.append(row,grid);if(acts.children.length)el.append(acts);
+ el.classList.add('open');node.classList.add('pop-target');placeMsgPop();
+ if(hadPush)msgPop.pushed=true;
+ else if(mode!=='hover'){try{history.pushState({magPop:1},'');msgPop.pushed=true}catch(e){}}
+ (mode==='key'?row.querySelector('button'):null)?.focus();
+}
+function placeMsgPop(){
+ const el=msgPop.el,node=msgPop.node;if(!el||!node)return;
+ const r=(node.querySelector('.content:not([hidden])')||node).getBoundingClientRect();
+ const w=el.offsetWidth,h=el.offsetHeight,vw=innerWidth,vh=innerHeight,m=8;
+ let top=r.top-h-6;if(top<m)top=Math.min(r.bottom+6,vh-h-m);
+ let left=node.classList.contains('user')?r.right-w:r.left;left=Math.max(m,Math.min(left,vw-w-m));
+ el.style.top=Math.max(m,top)+'px';el.style.left=left+'px';
+}
 function attachReactions(node,msg){
  if(!msg||!msg.id)return;
- const bar=document.createElement('div');bar.className='react-bar';bar.setAttribute('role','toolbar');bar.setAttribute('aria-label','Reaktion');
- const add=(emoji,cls)=>{const b=document.createElement('button');b.type='button';b.className=cls;b.textContent=emoji;b.setAttribute('aria-label','Reagiere mit '+emoji);b.onclick=ev=>{ev.stopPropagation();toggleReaction(msg,emoji)};return b};
- for(const emoji of REACT_QUICK)bar.append(add(emoji,'react-quick'));
- const more=document.createElement('button');more.type='button';more.className='react-more';more.textContent='＋';more.setAttribute('aria-label','Weitere Emojis');
- more.onclick=ev=>{
-  ev.stopPropagation();
-  let picker=bar.querySelector('.react-picker');
-  if(picker){picker.remove();return}
-  picker=document.createElement('div');picker.className='react-picker';
-  for(const emoji of REACT_MORE)picker.append(add(emoji,'react-quick'));
-  bar.append(picker);node.classList.add('react-open');
- };
- bar.append(more);node.append(bar);paintPills(node,msg);
- let hold=0;
+ paintPills(node,msg);
+ let hold=0,sx=0,sy=0;
  node.addEventListener('pointerdown',ev=>{
-  if(ev.target.closest&&ev.target.closest('button,a,textarea,input,summary'))return;
-  hold=setTimeout(()=>node.classList.add('react-open'),480);
+  if(ev.pointerType==='mouse')return;
+  if(ev.target.closest&&ev.target.closest('button,a,textarea,input,summary,pre'))return;
+  sx=ev.clientX;sy=ev.clientY;clearTimeout(hold);
+  hold=setTimeout(()=>{hold=0;openMsgPop(node,msg,'touch');navigator.vibrate?.(8)},450);
  });
- const cancelHold=()=>clearTimeout(hold);
- node.addEventListener('pointerup',cancelHold);
- node.addEventListener('pointercancel',cancelHold);
- node.addEventListener('pointerleave',ev=>{if(ev.pointerType==='mouse')cancelHold()});
+ node.addEventListener('pointermove',ev=>{if(hold&&Math.hypot(ev.clientX-sx,ev.clientY-sy)>10){clearTimeout(hold);hold=0}});
+ const cancel=()=>{clearTimeout(hold);hold=0};
+ node.addEventListener('pointerup',cancel);node.addEventListener('pointercancel',cancel);
+ node.addEventListener('contextmenu',ev=>{if(ev.target.closest&&ev.target.closest('a,pre,textarea,input'))return;ev.preventDefault();openMsgPop(node,msg,'click')});
+ node.addEventListener('pointerenter',ev=>{if(ev.pointerType!=='mouse')return;clearTimeout(msgPop.leave);clearTimeout(msgPop.hover);msgPop.hover=setTimeout(()=>{if(!msgPop.el?.classList.contains('open')||msgPop.mode==='hover')openMsgPop(node,msg,'hover')},350)});
+ node.addEventListener('pointerleave',ev=>{if(ev.pointerType!=='mouse')return;clearTimeout(msgPop.hover);if(msgPop.node===node&&msgPop.mode==='hover')scheduleHoverClose()});
+ node.addEventListener('keydown',ev=>{if((ev.key==='ContextMenu'||(ev.shiftKey&&ev.key==='F10'))&&ev.target===node){ev.preventDefault();openMsgPop(node,msg,'key')}});
 }
-document.addEventListener('pointerdown',ev=>{
- if(ev.target.closest&&ev.target.closest('.message'))return;
- document.querySelectorAll('.message.react-open').forEach(n=>n.classList.remove('react-open'));
-});
+document.addEventListener('pointerdown',ev=>{if(msgPop.el?.classList.contains('open')&&!msgPop.el.contains(ev.target)&&!(msgPop.mode==='hover'&&msgPop.node?.contains(ev.target)))closeMsgPop()},true);
+document.addEventListener('keydown',ev=>{if(ev.key==='Escape'&&msgPop.el?.classList.contains('open')){ev.stopPropagation();closeMsgPop()}},true);
+addEventListener('scroll',()=>closeMsgPop(),true);
+addEventListener('resize',()=>closeMsgPop());
+addEventListener('popstate',()=>{if(msgPop.skipPop){msgPop.skipPop--;return}if(msgPop.pushed){msgPop.pushed=false;closeMsgPop(true)}});
 function append(msg,scroll=true,trace=null,position=-1){
  const area=$('conversation');let inner=area.querySelector('.conversation-inner');
  if(!inner){inner=document.createElement('div');inner.className='conversation-inner';area.append(inner)}
@@ -1091,7 +1147,7 @@ function append(msg,scroll=true,trace=null,position=-1){
  if(human&&!mine){avatar.style.background=avatarColor(msg.login||msg.name||'Gast');avatar.style.color='#fff'}
  const name=document.createElement('strong');name.textContent=msg.name||(human?'Nutzer':'Bot');
  const time=document.createElement('time');const date=new Date((msg.ts||Date.now()/1000)*1000);time.textContent=date.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
- meta.append(avatar,name,time);if(msg.id){const trash=document.createElement('button');trash.type='button';trash.className='msg-trash';trash.title='Nachricht löschen';trash.setAttribute('aria-label','Nachricht löschen');trash.innerHTML='<svg class="i sm" aria-hidden="true"><use href="#ic-trash"></use></svg>';trash.onclick=()=>askDeleteMessage(msg);meta.append(trash)}div.append(meta);
+ meta.append(avatar,name,time);div.append(meta);
  const text=shownText(msg);
  const content=document.createElement('div');content.className='content';content.innerHTML=safeMarkdown(text);decorate(content);
  if(!text)content.hidden=true;

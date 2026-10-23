@@ -146,4 +146,96 @@ class AgentCore(unittest.TestCase):
   self.assertIn('Sofort da.',self.room()[-1]['content'])
   self.request('/api/cancel',{})
 
+FAKE_SWAP=r"""#!/usr/bin/env python3
+import json,sys,time,os
+_,cmd,node,model=sys.argv;p=os.environ['MAG_NUMA_STATE']
+def load():
+ try:return json.load(open(p))
+ except Exception:return {'nodes':{}}
+def save(s):json.dump(s,open(p+'.tmp','w'));os.replace(p+'.tmp',p)
+s=load();prev=s['nodes'].get(node,{}).get('model',{'0':'deepseek-v4-flash-0731','1':'deepseek-v4-flash-0731-iq3'}[node])
+for pct in (10,50,90):
+ s['nodes'][node]={'model':prev,'state':'loading','progress':pct,'target':model};save(s);time.sleep(.4)
+if model=='broken':
+ s['nodes'][node]={'model':prev,'state':'serving','progress':100,'error':'swap to broken failed (rolled back)'};save(s)
+ print('failed: health check timed out; rolled back');sys.exit(6)
+s['nodes'][node]={'model':model,'state':'serving','progress':100};save(s)
+"""
+
+class NumaRoom(unittest.TestCase):
+ """Bots assigned to NUMA nodes; confirmed hot-swap queues that node's bots only."""
+ @classmethod
+ def setUpClass(cls):
+  cls.tmp=tempfile.TemporaryDirectory();t=pathlib.Path(cls.tmp.name);cls.state=t/'state';cls.state.mkdir()
+  cls.state.joinpath('agents.json').write_text(json.dumps([{'id':'a0','name':'Ali','vm':'','memory':[]},{'id':'b1','name':'Bea','vm':'','memory':[]}]))
+  cat=json.loads((ROOT/'ops/numa/catalog.json').read_text())
+  cat['models'].append({'id':'broken','label':'Broken','short':'X','ram_gib':50,'bin':'/bin/false','model':'/x'})
+  cat['models'].append({'id':'huge','label':'Huge','short':'H','ram_gib':300,'bin':'/bin/false','model':'/h'})
+  (t/'catalog.json').write_text(json.dumps(cat))
+  sw=t/'swap';sw.write_text(FAKE_SWAP);sw.chmod(0o755);cls.nstate=t/'numa.json'
+  cls.model=http.server.ThreadingHTTPServer(('127.0.0.1',0),Router);threading.Thread(target=cls.model.serve_forever,daemon=True).start()
+  cls.ui=port();cls.bridge=port()
+  env=dict(os.environ,MAG_OWNER_CANONICAL_LOGIN='chris@github',MAG_TEST_ALLOW_LOCAL_OWNER='1',MAG_ROOM_STATE=str(cls.state),
+   MAG_ROOM_PORT=str(cls.ui),MAG_ROOM_BRIDGE_PORT=str(cls.bridge),MAG_ROOM_BRIDGE_IP='127.0.0.1',
+   MAG_ROOM_BACKEND=f'http://127.0.0.1:{cls.model.server_port}/v1/chat/completions',MAG_ROOM_UI=str(ROOT/'mag-room/web/index.html'),
+   MAG_ROOM_STATIC=str(ROOT/'mag-room/static'),MAG_ROOM_MODEL_STATUS=str(t/'ms.json'),MAG_NETMODE=str(NETMODE),
+   MAG_TEST_NO_MEMGIT='1',MAG_ROOM_MCP_AUTO='0',MAG_ROOM_PREWARM='0',MAG_ROOM_STAGGER='off',
+   MAG_NUMA_CATALOG=str(t/'catalog.json'),MAG_NUMA_STATE=str(cls.nstate),MAG_NUMA_SWAP_CMD=str(sw))
+  env.pop('MAG_ROOM_SINGLE_BOT',None)
+  cls.log=open(t/'server.log','a');cls.proc=subprocess.Popen([str(ROOT/'build/magroom')],env=env,stdout=cls.log,stderr=cls.log)
+  for _ in range(150):
+   try:tn.Native.request.__func__(cls,'/healthz',raw=True);return
+   except Exception:time.sleep(.03)
+  raise RuntimeError('startup failed')
+ @classmethod
+ def tearDownClass(cls):
+  cls.proc.terminate();cls.proc.wait(timeout=5);cls.log.close();cls.model.shutdown();cls.tmp.cleanup()
+ request=classmethod(tn.Native.request.__func__)
+ error=tn.Native.error
+ wait_idle=tn.Native.wait_idle
+ until=AgentCore.until
+ def numa(self):return self.request('/api/numa')
+ def swap_done(self):self.until(lambda:self.numa()['swapping']==-1,10)
+ def test_01_defaults_two_nodes_and_admission_flags(self):
+  n=self.numa();self.assertTrue(n['enabled']);self.assertEqual([x['model'] for x in n['nodes']],['deepseek-v4-flash-0731','deepseek-v4-flash-0731-iq3'])
+  fits={c['id']:c['fits'] for c in n['catalog']};self.assertEqual(fits['huge'],[False,False]);self.assertEqual(fits['qwen3.8-flash-next-uncensored'],[True,True])
+  ag={a['id']:a for a in self.request('/api/state')['agents']}
+  self.assertEqual((ag['a0']['numa'],ag['b1']['numa']),(0,1))
+  self.assertEqual(ag['b1']['model'],'deepseek-v4-flash-0731-iq3')
+  self.assertEqual(len(self.request('/api/state')['models']),2)
+ def test_02_swap_needs_confirm_known_model_and_budget(self):
+  self.error(400,'/api/numa/swap',{'node':1,'model':'qwen3.8-flash-next-uncensored'})
+  self.error(400,'/api/numa/swap',{'node':1,'model':'nope','confirm':True})
+  self.error(400,'/api/numa/swap',{'node':2,'model':'qwen3.8-flash-next-uncensored','confirm':True})
+  self.error(409,'/api/numa/swap',{'node':1,'model':'huge','confirm':True})
+  self.assertFalse(self.nstate.exists())  # nothing ran
+ def test_03_swap_queues_that_node_only_and_switches_traffic(self):
+  self.wait_idle();Router.main=[];Router.calls=[]
+  r=self.request('/api/numa/swap',{'node':1,'model':'qwen3.8-flash-next-uncensored','confirm':True})
+  self.assertTrue(r['accepted']);self.assertEqual(r['swapping'],1)
+  self.error(409,'/api/numa/swap',{'node':0,'model':'deepseek-v4-flash-0731-iq3','confirm':True})
+  self.request('/api/message',{'text':'Hallo Bea','bots':['b1']})
+  self.request('/api/message',{'text':'Hallo Ali','bots':['a0']})
+  # NUMA0 answers while NUMA1 loads; Bea's message waits.
+  self.until(lambda:any(c['model']=='deepseek-v4-flash-0731' for c in Router.calls),3)
+  self.assertFalse(any(c['model']!='deepseek-v4-flash-0731' for c in Router.calls))
+  st=self.request('/api/state');b=[a for a in st['agents'] if a['id']=='b1'][0];self.assertTrue(b['swapping'])
+  self.assertIn(self.numa()['nodes'][1]['state'],('loading','swapping'))
+  self.swap_done()
+  self.until(lambda:any(c['model']=='qwen3.8-flash-next-uncensored' for c in Router.calls),5)
+  self.assertEqual(self.numa()['nodes'][1]['model'],'qwen3.8-flash-next-uncensored')
+  self.assertEqual(self.numa()['nodes'][0]['model'],'deepseek-v4-flash-0731')
+ def test_04_failed_swap_keeps_previous_model(self):
+  self.swap_done()
+  self.request('/api/numa/swap',{'node':1,'model':'broken','confirm':True});self.swap_done()
+  n=self.numa();self.assertEqual(n['nodes'][1]['model'],'qwen3.8-flash-next-uncensored')
+  self.assertIn('rolled back',n['last_error'])
+ def test_05_assignment_is_persisted(self):
+  self.request('/api/agents/b1/numa',{'node':0},method='PUT')
+  ag={a['id']:a for a in self.request('/api/state')['agents']}
+  self.assertEqual((ag['b1']['numa'],ag['b1']['model']),(0,'deepseek-v4-flash-0731'))
+  self.assertEqual(json.loads(self.state.joinpath('numa-assign.json').read_text())['b1'],0)
+  self.error(400,'/api/agents/b1/numa',{'node':3},method='PUT')
+  self.request('/api/agents/b1/numa',{'node':1},method='PUT')
+
 if __name__=='__main__':unittest.main(verbosity=2)

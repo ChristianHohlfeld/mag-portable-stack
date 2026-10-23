@@ -1523,6 +1523,31 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
     send_json(fd, 200, mj::dump(user_stop(false)));
     return;
   }
+  if (m == "GET" && path == "/api/numa") {
+    send_json(fd, 200, mj::dump(numa_public()));
+    return;
+  }
+  if (m == "POST" && path == "/api/numa/swap") {
+    // Explicit owner action after the confirm dialog; never automatic.
+    if (actor.role != "owner") { error_json(fd, 403, "Nur der Besitzer"); return; }
+    auto node = has_json ? body.find("node") : nullptr;
+    auto r = numa_swap(node ? (int)node->asNum(-1) : -1, has_json ? str("model") : "",
+                       has_json && body.find("confirm") && body.find("confirm")->asBool(false));
+    if (r.code >= 400) { error_json(fd, r.code, r.error); return; }
+    Val out = numa_public();
+    out["accepted"] = r.code == 202;
+    send_json(fd, r.code, mj::dump(out));
+    return;
+  }
+  if (m == "PUT" && path.rfind("/api/agents/", 0) == 0 && path.size() > 17 &&
+      path.compare(path.size() - 5, 5, "/numa") == 0) {
+    if (actor.role != "owner") { error_json(fd, 403, "Nur der Besitzer"); return; }
+    const std::string id = url_decode(path.substr(12, path.size() - 17));
+    auto node = has_json ? body.find("node") : nullptr;
+    if (!numa_assign(id, node ? (int)node->asNum(-1) : -1)) { error_json(fd, 400, "Ungültige Zuordnung"); return; }
+    send_json(fd, 200, mj::dump(numa_public()));
+    return;
+  }
   if (m == "GET" && path == "/api/tasks") {
     Val out = Val::object();
     out["tasks"] = tasks_public(qparam(r.query, "bot"));

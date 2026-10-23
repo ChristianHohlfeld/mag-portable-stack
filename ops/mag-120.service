@@ -11,6 +11,8 @@ Group=magbot
 WorkingDirectory=/opt/mag-stack/current
 EnvironmentFile=-/etc/default/mag-room
 EnvironmentFile=-/etc/mag-stack/secondary-model.env
+# Per-NUMA model hot-swap (ops/numa/install.sh); absent = feature off.
+EnvironmentFile=-/etc/mag-stack/numa.env
 # Optional until provisioned at /etc/credstore/mag-guest-oauth (root-only). In-memory runtime copy.
 LoadCredential=mag-guest-oauth
 Environment=MAG_ROOM_STATE=/var/lib/magbot/room

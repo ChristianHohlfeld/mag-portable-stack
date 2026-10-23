@@ -1820,6 +1820,12 @@ static std::string bot_field(int idx, const char *key,
   return v ? v->asStr(def) : def;
 }
 
+static bool NUMA_ON = false;
+static std::string numa_bot_model(int idx);
+static int numa_bot_node(int idx);
+static bool numa_known_model(const std::string &id);
+static std::string numa_label(const std::string &id);
+static std::string numa_node_model(int n);
 static std::string bot_model_id(int idx);
 static std::string mcp_prompt_notes(int bot_idx);
 static void mcp_auto_once();
@@ -3082,9 +3088,11 @@ static std::string secondary_room_model() {
              : "deepseek-v4-flash-0731-iq3";
 }
 static bool known_room_model(const std::string &id) {
+  if (NUMA_ON) return numa_known_model(id);
   return id == "deepseek-v4-flash-0731" || id == secondary_room_model();
 }
 static std::string default_model_label(const std::string &id) {
+  if (NUMA_ON) return numa_label(id);
   if (id == "deepseek-v4-flash-0731") return "0 · Q4";
   if (id == "qwen3.8-flash-next-uncensored") return "1 · Qwen";
   return "1 · IQ3";
@@ -3204,6 +3212,20 @@ static void store_model_verify(const std::string &id, const Val &rec) {
 }
 static Val room_model_catalog() {
   Val models = Val::array();
+  if (NUMA_ON) {
+    // The two loaded models (one per node); the full catalog is /api/numa.
+    for (int n = 0; n < 2; n++) {
+      const std::string id = numa_node_model(n);
+      Val m = Val::object();
+      const ModelSettings st = model_settings_for(id);
+      m["id"] = id;
+      m["node"] = n;
+      m["label"] = st.name.empty() ? default_model_label(id) : st.name;
+      m["deterministic"] = st.deterministic;
+      models.push(m);
+    }
+    return models;
+  }
   Val q4 = Val::object();
   q4["id"] = "deepseek-v4-flash-0731";
   const ModelSettings main_settings = model_settings_for("deepseek-v4-flash-0731");
@@ -3225,6 +3247,8 @@ static Val room_model_catalog() {
 // their always-resident servers. Choosing a model only changes this request
 // field: no unit, process, slot or weight is touched.
 static std::string bot_model_id(int idx) {
+  // Per-NUMA hot-swap: a bot talks to the model its node serves right now.
+  if (NUMA_ON) return numa_bot_model(idx);
   // Exactly one live coding bot: the owner's room selection is authoritative,
   // regardless of an old per-bot IQ3/Q4 preference in agents.json.
   // Switching changes only the next gateway request model ID, not the LLM PID.
@@ -5374,6 +5398,7 @@ static TurnReport generate_and_post(int idx, bool automatic) {
 #include "jobs.hpp"
 #include "jobs_mcp.hpp"
 #include "agent_tasks.hpp"
+#include "numa_models.hpp"
 // Prompt prewarm. A turn sends system | transcript | [Kontext] tail | tool
 // rounds; the next turn keeps only the transcript, so the cached KV diverges at
 // its old end. DeepSeek V4 / Qwen Next cannot truncate KV there and restore the
@@ -5936,8 +5961,12 @@ split_lanes(const std::vector<std::string> &ids) {
 static bool dispatchable(const std::vector<std::pair<Lane *, std::vector<std::string>>> &parts,
                          std::set<Lane *> &claimed) {
   bool ok = true;
-  for (auto &p : parts)
+  for (auto &p : parts) {
     if (p.first->busy.load() || claimed.count(p.first)) ok = false;
+    // Bots on a node that is swapping its model wait (queued, not failed).
+    for (auto &id : p.second)
+      if (numa_bot_swapping(id)) ok = false;
+  }
   for (auto &p : parts) claimed.insert(p.first);
   return ok;
 }
@@ -6300,6 +6329,10 @@ static Val public_agent(int idx) {
   o["color"] = bot_field(idx, "color");
   o["vm"] = bot_field(idx, "vm");
   o["model"] = bot_model_id(idx);
+  if (NUMA_ON) {
+    o["numa"] = numa_bot_node(idx);
+    o["swapping"] = numa_bot_swapping(o["id"].asStr());
+  }
   if (!bot_field(idx, "pending_vm").empty()) o["spawning"] = true;
   std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
   if (idx < 0 || (size_t)idx >= AGENTS.size()) return o;
@@ -6354,6 +6387,7 @@ static std::string state_json(const Actor *actor = nullptr) {
   root["single_bot"] = SINGLE_BOT;
   root["dual_numa"] = DUAL_NUMA;
   root["tasks"] = tasks_public();
+  root["numa"] = numa_public();
   root["thinking_default"] = THINKING != "off";
   root["thinking"] = thinking_of(LAST_THINK.load());
   {
@@ -7101,6 +7135,7 @@ int main() {
 
   AUTOTALK = trim(read_file(STATE_DIR + "/autotalk")) == "on";
   load_model_settings();
+  numa_load();
   load_model_verify();
   {
     // Reconcile nft with the persisted choice in both directions (idempotent).

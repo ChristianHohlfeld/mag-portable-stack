@@ -178,6 +178,24 @@ static Val sse_assemble(const std::string &wire){
 struct Http {
   std::string method,path,head,body;std::map<std::string,std::string> headers;
 };
+// Hot-swap (mag-numa-swap): the model a NUMA node serves is in its state file.
+// A request naming that model (or "numa0"/"numa1") goes to the node's port.
+static bool numa_route(const std::string &asked,std::string &selected,int &port){
+  const char *path=std::getenv("MAG_NUMA_STATE");
+  std::ifstream f(path&&*path?path:"/var/lib/mag-numa/state.json");
+  if(!f||asked.empty())return false;
+  std::stringstream ss;ss<<f.rdbuf();
+  Val st;if(!mj::parse(ss.str(),st)||!st.isObj())return false;
+  auto nodes=st.find("nodes");if(!nodes||!nodes->isObj())return false;
+  for(int n=0;n<2;n++){
+    auto node=nodes->find(std::to_string(n));if(!node||!node->isObj())continue;
+    auto model=node->find("model");if(!model)continue;
+    if(asked==model->asStr()||asked=="numa"+std::to_string(n)){
+      selected="numa:"+model->asStr();port=n==0?cfg.q4:cfg.iq3;return true;
+    }
+  }
+  return false;
+}
 static bool choose_model(const Http &r,std::string &selected,int &port){
   selected="q4"; port=cfg.q4;
   std::string asked;
@@ -186,6 +204,7 @@ static bool choose_model(const Http &r,std::string &selected,int &port){
   if(asked.empty()&&!r.body.empty()){
     Val body; if(mj::parse(r.body,body)&&body.isObj()) if(auto model=body.find("model")) asked=model->asStr();
   }
+  if(numa_route(asked,selected,port))return true;
   if((asked=="iq3"||asked=="deepseek-v4-flash-0731-iq3")&&cfg.secondary=="iq3"){selected="iq3"; port=cfg.iq3;return true;}
   if((asked=="qwen"||asked=="qwen3.8-flash-next-uncensored")&&cfg.secondary=="qwen"){selected="qwen"; port=cfg.iq3;return true;}
   // No fallback on an explicitly unknown or inactive secondary model.
@@ -290,7 +309,7 @@ static void proxy(int fd){
   if(is_llm) {
     Val j;
     if(mj::parse(forwarded,j)&&j.isObj()&&j.find("model")){
-      j["model"]=selected=="qwen"?"qwen3.8-flash-next-uncensored":selected=="iq3"?"deepseek-v4-flash-0731-iq3":"deepseek-v4-flash-0731";
+      j["model"]=selected.rfind("numa:",0)==0?selected.substr(5):selected=="qwen"?"qwen3.8-flash-next-uncensored":selected=="iq3"?"deepseek-v4-flash-0731-iq3":"deepseek-v4-flash-0731";
       forwarded=mj::dump(j);
     }
   }

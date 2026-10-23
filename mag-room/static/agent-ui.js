@@ -4,6 +4,7 @@
 (function () {
   'use strict';
   let numa = null, tasks = [], sheet = null;
+  const picks = {};
   const el = (tag, cls, text) => { const n = document.createElement(tag); if (cls) n.className = cls; if (text != null) n.textContent = text; return n; };
   const STATE_TEXT = {serving: 'bereit', loading: 'lädt', swapping: 'wechselt', rollback: 'Rückfall', error: 'Fehler', idle: 'leer'};
 
@@ -132,14 +133,15 @@
         const o = el('option', '', m.label + (m.fits?.[n.node] ? '' : ' – passt nicht'));
         o.value = m.id; o.disabled = !m.fits?.[n.node] && m.id !== n.model; sel.append(o);
       }
-      sel.value = n.model;
+      // Keep the user's pending choice across live re-renders.
+      sel.value = picks[n.node] && [...sel.options].some(o => o.value === picks[n.node] && !o.disabled) ? picks[n.node] : n.model;
       const go = el('button', 'primary', 'Wechseln'); go.type = 'button';
       const busy = numa.swapping >= 0;
       go.disabled = sel.disabled = busy || !owner;
       if (!owner) go.title = 'Nur der Besitzer';
-      sel.onchange = () => { go.disabled = busy || !owner || sel.value === n.model; };
+      sel.onchange = () => { picks[n.node] = sel.value; go.disabled = busy || !owner || sel.value === n.model; };
       go.disabled = go.disabled || sel.value === n.model;
-      go.onclick = async () => { if (await swap(n.node, sel.value)) fillSheet(); };
+      go.onclick = async () => { const ok = await swap(n.node, sel.value); delete picks[n.node]; fillSheet(); return ok; };
       row.append(sel, go);
       card.append(row);
       body.append(card);
@@ -166,6 +168,7 @@
       head.append(close);
       sheet.append(head, el('div', 'sheet-body'));
       sheet.addEventListener('click', ev => { if (ev.target === sheet) sheet.close(); });
+      sheet.addEventListener('close', () => { for (const k in picks) delete picks[k]; });
       document.body.append(sheet);
     }
     fillSheet();

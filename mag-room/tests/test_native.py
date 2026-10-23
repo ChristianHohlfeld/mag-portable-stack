@@ -1096,7 +1096,7 @@ class Native(unittest.TestCase):
     time.sleep(.05)
    else:self.fail('Blank model response left the bot without feedback')
   finally:Model.reply=None
- def test_10v_speak_posts_text_voice_message_without_server_tts(self):
+ def test_99a_speak_posts_text_voice_message_without_server_tts(self):
   Model.script=[[{'tool_calls':[{'index':0,'id':'call_speak_1','function':{'name':'speak','arguments':'{"text":"Hallo Chris, hier spricht Thorsten."}'}}]}],['Gesagt.']]
   files_before=len(self.request('/api/state').get('files',[]))
   self.request('/api/message',{'text':'Sag Hallo','bots':['test']})
@@ -1121,7 +1121,7 @@ class Native(unittest.TestCase):
   self.assertNotIn('espeak',src);self.assertNotIn('sprache.wav',src)
   html=self.request('/',raw=True).decode()
   self.assertIn("msg.kind==='voice'",html);self.assertIn('voice-bubble',html)
- def test_10w_room_serves_repo_ui_never_bot_override(self):
+ def test_99b_room_serves_repo_ui_never_bot_override(self):
   html=self.request('/',raw=True).decode()
   self.assertNotIn('BOT-OVERRIDE',html);self.assertNotIn('message-audio-local.js',html)
   self.assertIn('/static/message-audio.js',html)

@@ -1,5 +1,13 @@
 # MAG consolidation — 2026-10-14
 
+> **Historical document (state of 2026-10-14).** The model named below
+> (GPT-OSS-120B on loopback 8080) was replaced: today `mag-llm` runs
+> DeepSeek-V4-Flash-0731 Q4 on NUMA node 0 behind the audit gateway on :8080
+> (backend :8090), and NUMA node 1 runs the secondary model selected by
+> `/etc/mag-stack/secondary-model.env` (see `docs/INSTALL.md`, section
+> "Models"). The Python room mentioned here is gone; the room is the C++
+> `magroom`. Current install guide: `docs/INSTALL.md`.
+
 ## Source of requirements
 
 All four OpenCode sessions in the live SQLite database were inventoried and

@@ -233,6 +233,13 @@ if [[ -L "$audit_drop" ]]; then
   esac
 fi
 # Keep the existing single-bot room for legacy IQ3 installs. On a verified
+install -d -m 0755 /etc/systemd/system/mag-120.service.d
+install -m 0644 "$SOURCE/ops/mag-120.d/40-hardening.conf" /etc/systemd/system/mag-120.service.d/40-hardening.conf
+# Gitea bot accounts: never admin, restricted, own org bots-<agent> (idempotent).
+install -m 0755 "$SOURCE/ops/gitea/bot-rights.sh" /usr/local/sbin/mag-gitea-bot-rights
+if systemctl is-active --quiet gitea.service; then
+  /usr/local/sbin/mag-gitea-bot-rights || echo 'WARN: Gitea bot rights not applied' >&2
+fi
 # Qwen host, use exactly two model-pinned bots with separate KVM workspaces.
 rm -f /etc/systemd/system/mag-120.service.d/30-multibot.conf
 if [[ -r /etc/mag-stack/secondary-model.env ]] &&

@@ -601,6 +601,26 @@ class Native(unittest.TestCase):
   self.assertEqual(s['room'],[],'no ghost/partial answer after forced clear');self.assertFalse(s['busy']);self.assertFalse(s['pending'])
   self.assertEqual(self.request('/api/room/clear',{},headers=owner).get('unchanged'),True,'idle clear needs no force')
   self.request('/api/undo/'+wiped['undo'],{});self.request('/api/queue/resume',{});Model.script=[]
+ def test_15m_bot_rights_github_read_only_no_gitea_admin(self):
+  self.wait_idle();self.request('/api/connectors/github',{'token':'ghp_'+'c'*36})
+  args=[{"action":"create_issue","repo":"ChristianHohlfeld/mag-portable-stack","title":"x"},
+        {"action":"comment_issue","repo":"ChristianHohlfeld/mag-portable-stack","number":1,"body":"x"},
+        {"action":"create_repo","name":"evil"}]
+  Model.calls.clear()
+  Model.script=[[{'tool_calls':[{'index':0,'id':'call_gh%d'%i,'function':{'name':'github','arguments':json.dumps(a)}}]}] for i,a in enumerate(args)]+[['Fertig.']]
+  self.request('/api/message',{'text':'GH-Write','bots':['test']});self.wait_room('Fertig.');self.wait_idle()
+  res=[m for m in Model.calls[-1]['messages'] if m.get('role')=='tool' and str(m.get('tool_call_id','')).startswith('call_gh')]
+  self.assertEqual(len(res),3)
+  for m in res:self.assertIn('nur lesbar',json.dumps(m,ensure_ascii=False))
+  self.request('/api/connectors/github',method='DELETE')
+  src=(ROOT/'mag-room/native/vm.cpp').read_text()
+  create=src[src.index('gitea_args({"create"'):src.index('if (created.code)')]
+  self.assertNotIn('--admin',create,'bot Gitea accounts must never be admins')
+  self.assertIn('mag-gitea-bot-rights',src)
+  prompts=(ROOT/'mag-room/native/magroom.cpp').read_text()
+  for bad in ('Administrationsaccount','is an administrator','mag-deploy/request','Runner des MAG-Hosts'):
+   self.assertNotIn(bad,prompts+src)
+  self.assertIn('X-MCP-Readonly',(ROOT/'mag-room/native/mcp.hpp').read_text())
  def test_15k_composer_stop_cancels_turn_keeps_queue(self):
   self.wait_idle();Model.script=[self._slow('out',60),['Weiter normal.']]
   self.request('/api/message',{'text':'Stop-Test','bots':['test']});self._busy();time.sleep(1.0)

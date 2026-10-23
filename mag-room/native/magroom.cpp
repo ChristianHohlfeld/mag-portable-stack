@@ -1669,7 +1669,7 @@ static const char *T_BROWSER_BACK =
 static const char *T_BROWSER_SCROLL =
     R"({"type":"function","function":{"name":"browser_scroll","description":"Scroll your VM browser vertically (dy pixels, positive down).","parameters":{"type":"object","properties":{"dy":{"type":"integer"}},"additionalProperties":false}}})";
 static const char *T_GITHUB =
-    R"({"type":"function","function":{"name":"github","description":"GitHub API with the user's connected account (token stays on the server). Actions: list_repos, get_repo, list_issues, get_issue, create_issue, comment_issue, list_prs, get_pr, pr_files, get_file, list_dir, search_code, search_issues. Only create_issue/comment_issue write; use them only when the user asked.","parameters":{"type":"object","properties":{"action":{"type":"string"},"repo":{"type":"string","description":"owner/name"},"number":{"type":"integer"},"path":{"type":"string"},"ref":{"type":"string"},"query":{"type":"string"},"title":{"type":"string"},"body":{"type":"string"},"state":{"type":"string"}},"required":["action"],"additionalProperties":false}}})";
+    R"({"type":"function","function":{"name":"github","description":"GitHub API with the user's connected account (token stays on the server). Actions: list_repos, get_repo, list_issues, get_issue, create_issue, comment_issue, list_prs, get_pr, pr_files, get_file, list_dir, search_code, search_issues (read-only on the owner's repos). create_repo/create_issue/comment_issue only work inside a configured bot-owned org and only when the user asked.","parameters":{"type":"object","properties":{"action":{"type":"string"},"repo":{"type":"string","description":"owner/name"},"name":{"type":"string"},"number":{"type":"integer"},"path":{"type":"string"},"ref":{"type":"string"},"query":{"type":"string"},"title":{"type":"string"},"body":{"type":"string"},"state":{"type":"string"}},"required":["action"],"additionalProperties":false}}})";
 static const char *T_REMEMBER =
     R"({"type":"function","function":{"name":"remember","description":"Store a durable fact in your own persistent memory (survives room reset). Use for what you learned, decided or care about.","parameters":{"type":"object","properties":{"fact":{"type":"string"},"source":{"type":"string"}},"required":["fact"],"additionalProperties":false}}})";
 static const char *T_REACT =
@@ -1732,16 +1732,18 @@ static const char *ROOM_RULES =
 static const char *VM_RULES =
     "Du besitzt eine EIGENE, isolierte Linux-VM namens {vm}. Du erreichst sie "
     "ueber run_command; Befehle laufen als unprivilegierter Nutzer bot. Du "
-    "hast einen eigenen Gitea-Administrationsaccount. Lies "
+    "hast ein eigenes, eingeschraenktes Gitea-Konto (kein Administrator): "
+    "lesen und schreiben nur in deiner eigenen Gitea-Organisation; fremde "
+    "Repos siehst du nicht. GitHub-Repos des Besitzers sind fuer dich nur "
+    "lesbar. Lies "
     "/home/bot/GIT_ACCESS.md fuer Git clone/push und API-Zugriff; verrate "
     "niemals Zugangsdaten. Versionierter Langzeitspeicher (git-memory, auch "
     "als MCP-Server in ~/.config/mcp/servers.d): gitmem remember KEY WERT | "
     "retrieve KEY | history KEY | search TEXT - committet und pusht "
-    "automatisch auf dein Gitea-Repo memory. Gitea Actions: Workflows in "
-    ".gitea/workflows mit runs-on: mag laufen auf dem Runner des MAG-Hosts "
-    "(bauen, testen, deployen; Status in der Gitea-Oberflaeche). Ein Schritt "
-    "`date > /var/lib/mag-deploy/request` startet den normalen MAG-Deploy "
-    "von main (Backup, Smoke-Test, automatischer Rollback). Du "
+    "automatisch auf dein Gitea-Repo memory. Gitea Actions/Workflows "
+    "gibt es nur fuer Repos in deiner eigenen Organisation und nur, wenn "
+    "dort ein unprivilegierter Runner registriert ist; einen Host-Runner "
+    "oder Deploy-Trigger fuer den MAG-Host gibt es nicht. Du "
     "hast ausserdem einen eigenen persistenten Browser in deiner VM und kannst "
     "damit surfen. Stuetze Aussagen ueber deine VM auf echte Werkzeugausgaben "
     "und erfinde nichts. ";
@@ -2050,10 +2052,24 @@ static Val host_stt(const std::string &audio, const std::string &language) {
 // ---------------------------------------------------------------- brave
 static std::string base64_decode(const std::string &in);
 // GitHub REST via curl; the token goes through a 0600 header file, never argv.
-static std::string github_api(const std::string &method, const std::string &path,
-                              const std::string &body = "") {
+static bool gh_repo_ok(const std::string &r);
+// Bots are read-only on the owner's GitHub: the personal connector token
+// (github.token, must be a fine-grained read-only token) is only ever used
+// for GET. Writes need the optional bot-org split: connectors/
+// github-mag-bots.org names the org, github-mag-bots.token is an org-scoped
+// token; both absent = no GitHub writes at all.
+static std::string github_bot_org() {
   bool ok = false;
-  std::string tok = trim(read_file(STATE_DIR + "/connectors/github.token", &ok));
+  std::string org = trim(read_file(STATE_DIR + "/connectors/github-mag-bots.org", &ok));
+  std::string tok = trim(read_file(STATE_DIR + "/connectors/github-mag-bots.token", &ok));
+  return ok && !org.empty() && !tok.empty() && gh_repo_ok(org + "/x") ? org : std::string();
+}
+static std::string github_api(const std::string &method, const std::string &path,
+                              const std::string &body = "", bool bot_org = false) {
+  if (method != "GET" && !bot_org)
+    throw std::runtime_error("GitHub ist für Bots nur lesbar.");
+  bool ok = false;
+  std::string tok = trim(read_file(STATE_DIR + (bot_org ? "/connectors/github-mag-bots.token" : "/connectors/github.token"), &ok));
   if (!ok || tok.empty()) throw std::runtime_error("GitHub ist nicht verbunden (Plus-Menü → Connectors → GitHub).");
   if (OFFLINE.load()) throw std::runtime_error("Offline-Modus: keine GitHub-Verbindung.");
   std::string hf = STATE_DIR + "/connectors/.gh-hdr-" + token_hex(6);
@@ -2125,15 +2141,26 @@ static std::string github_tool(const Val &a) {
   }
   if (act == "search_code") { std::string q = gs("query"); if (!repo.empty()) { need_repo(); q += " repo:" + repo; } return gh_pick(github_api("GET", "/search/code?per_page=20&q=" + url_encode(q)), {"path", "repository.full_name", "html_url"}, 20); }
   if (act == "search_issues") { std::string q = gs("query"); if (!repo.empty()) { need_repo(); q += " repo:" + repo; } return gh_pick(github_api("GET", "/search/issues?per_page=20&q=" + url_encode(q)), {"number", "title", "state", "html_url"}, 20); }
-  if (act == "create_issue") {
-    need_repo(); Val b = Val::object(); b["title"] = gs("title"); b["body"] = gs("body");
-    if (gs("title").empty()) throw std::runtime_error("title fehlt");
-    return gh_pick(github_api("POST", "/repos/" + repo + "/issues", mj::dump(b)), {"number", "html_url"});
-  }
-  if (act == "comment_issue") {
-    need_repo(); if (num <= 0 || gs("body").empty()) throw std::runtime_error("number und body nötig");
+  if (act == "create_issue" || act == "comment_issue" || act == "create_repo") {
+    // Writes only inside the configured bot org with its own token.
+    const std::string org = github_bot_org();
+    if (org.empty()) throw std::runtime_error("GitHub ist für Bots nur lesbar (keine Bot-Organisation konfiguriert).");
+    if (act == "create_repo") {
+      std::string name = gs("name");
+      if (!gh_repo_ok(org + "/" + name) || name.find('/') != std::string::npos) throw std::runtime_error("name ungültig");
+      Val b = Val::object(); b["name"] = name; b["private"] = true; b["description"] = gs("body");
+      return gh_pick(github_api("POST", "/orgs/" + org + "/repos", mj::dump(b), true), {"full_name", "html_url"});
+    }
+    need_repo();
+    if (repo.substr(0, repo.find('/')) != org) throw std::runtime_error("Schreiben nur in Repos der Bot-Organisation " + org);
+    if (act == "create_issue") {
+      Val b = Val::object(); b["title"] = gs("title"); b["body"] = gs("body");
+      if (gs("title").empty()) throw std::runtime_error("title fehlt");
+      return gh_pick(github_api("POST", "/repos/" + repo + "/issues", mj::dump(b), true), {"number", "html_url"});
+    }
+    if (num <= 0 || gs("body").empty()) throw std::runtime_error("number und body nötig");
     Val b = Val::object(); b["body"] = gs("body");
-    return gh_pick(github_api("POST", "/repos/" + repo + "/issues/" + std::to_string(num) + "/comments", mj::dump(b)), {"id", "html_url"});
+    return gh_pick(github_api("POST", "/repos/" + repo + "/issues/" + std::to_string(num) + "/comments", mj::dump(b), true), {"id", "html_url"});
   }
   throw std::runtime_error("Unbekannte GitHub-Aktion: " + act);
 }

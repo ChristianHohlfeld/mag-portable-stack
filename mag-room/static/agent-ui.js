@@ -47,6 +47,8 @@
 .secret-form{display:flex;gap:8px;margin-top:8px}
 .secret-form input{flex:1;min-height:36px;border-radius:10px;border:1px solid var(--line);background:var(--panel);color:var(--text);padding:0 10px}
 .mcp-approve.decided{opacity:.6}
+.secret-input{min-height:38px;border-radius:10px;border:1px solid var(--line);background:var(--panel);color:var(--text);padding:0 10px}
+.secret-bots{display:flex;flex-wrap:wrap;gap:4px;margin:6px 0}
 .task-chip button:hover{background:var(--panel-3,var(--hover))}
 `;
     document.head.append(s);
@@ -204,7 +206,90 @@
     }
   }
 
-  function render() { css(); paintChips(); paintHub(); paintTasks(); if (sheet?.open) fillSheet(); }
+  // Secrets in the bot hub: names, purpose, last use, which bot may use it.
+  let secrets = [], secretsAt = 0;
+  async function loadSecrets(force) {
+    if (typeof state === 'undefined' || state?.you?.role !== 'owner') return;
+    if (!force && Date.now() - secretsAt < 15000) return;
+    secretsAt = Date.now();
+    try { secrets = (await api('/api/secrets', undefined, 'GET')).secrets || []; paintSecrets(); } catch {}
+  }
+  function askSecret(name) {
+    return new Promise(resolve => {
+      const d = el('dialog', 'numa-sheet');
+      const f = el('form', 'sheet-body'); f.method = 'dialog'; f.autocomplete = 'off';
+      f.append(el('strong', '', name ? 'Secret ' + name + ' ersetzen' : 'Neues Secret'));
+      const n = el('input'); n.placeholder = 'NAME (A-Z, 0-9, _)'; n.value = name || ''; n.disabled = !!name; n.setAttribute('aria-label', 'Name');
+      const v = el('input'); v.type = 'password'; v.autocomplete = 'new-password'; v.placeholder = 'Wert'; v.setAttribute('aria-label', 'Wert');
+      const p = el('input'); p.placeholder = 'Zweck (optional)'; p.setAttribute('aria-label', 'Zweck');
+      for (const i of [n, v, p]) { i.className = 'secret-input'; f.append(i); }
+      const row = el('div', 'mcp-approve-row');
+      const c = el('button', 'pill-btn ghost', 'Abbrechen'); c.type = 'button'; c.onclick = () => { d.close(); };
+      const ok = el('button', 'pill-btn primary', 'Speichern'); ok.type = 'submit';
+      row.append(c, ok); f.append(row); d.append(f); document.body.append(d);
+      let result = null;
+      f.onsubmit = ev => { ev.preventDefault(); if (n.value && v.value) { result = {name: n.value.trim(), value: v.value, purpose: p.value}; d.close(); } };
+      d.addEventListener('close', () => { v.value = ''; d.remove(); resolve(result); });
+      d.showModal(); (name ? v : n).focus();
+    });
+  }
+  async function editSecret(name) {
+    const r = await askSecret(name);
+    if (!r) return;
+    try { await api('/api/secrets/' + encodeURIComponent(r.name), {value: r.value, purpose: r.purpose}, 'PUT'); }
+    catch (e) { (window.notice || console.warn)(e.message); }
+    loadSecrets(true);
+  }
+  function paintSecrets() {
+    const owner = typeof state !== 'undefined' && state?.you?.role === 'owner';
+    let sec = document.getElementById('secrets-section');
+    if (!owner) { sec?.remove(); return; }
+    if (!sec) {
+      const anchor = document.getElementById('jobs-section');
+      if (!anchor) return;
+      sec = el('div', 'section'); sec.id = 'secrets-section';
+      const head = el('div', 'side-section-head');
+      head.append(el('h2', '', 'Secrets'));
+      const add = el('button', 'pill-btn ghost', '+ Neu'); add.type = 'button'; add.onclick = () => editSecret('');
+      head.append(add);
+      sec.append(head, el('div', 'secrets-list'));
+      anchor.after(sec);
+    }
+    const list = sec.querySelector('.secrets-list');
+    list.replaceChildren();
+    if (!secrets.length) { list.append(el('p', 'control-desc', 'Keine Secrets. Bots fragen bei Bedarf über eine maskierte Karte.')); return; }
+    for (const x of secrets) {
+      const row = el('div', 'job secret-row');
+      row.append(el('div', 'job-name', x.name));
+      const used = x.last_used ? new Date(x.last_used * 1000).toLocaleString() : 'nie';
+      row.append(el('div', 'job-meta', (x.purpose ? x.purpose + ' · ' : '') + 'zuletzt benutzt: ' + used));
+      const access = el('div', 'secret-bots');
+      for (const a of state.agents || []) {
+        const on = (x.bots || []).includes(a.id);
+        const b = el('button', 'pill-btn ' + (on ? 'primary' : 'ghost'), a.name); b.type = 'button';
+        b.setAttribute('aria-pressed', String(on)); b.title = on ? 'Zugriff entziehen' : 'Zugriff erlauben';
+        b.onclick = async () => {
+          const bots = on ? x.bots.filter(id => id !== a.id) : [...(x.bots || []), a.id];
+          try { await api('/api/secrets/' + encodeURIComponent(x.name) + '/bots', {bots}, 'PUT'); } catch (e) { (window.notice || console.warn)(e.message); }
+          loadSecrets(true);
+        };
+        access.append(b);
+      }
+      row.append(access);
+      const act = el('div', 'job-actions');
+      const rep = el('button', '', 'Ersetzen'); rep.type = 'button'; rep.onclick = () => editSecret(x.name);
+      const del = el('button', 'danger', 'Löschen'); del.type = 'button';
+      del.onclick = async () => {
+        if (!await magConfirm({title: 'Secret löschen', text: x.name + ' endgültig löschen? Bots können es danach nicht mehr verwenden.', ok: 'Löschen', danger: true})) return;
+        try { await api('/api/secrets/' + encodeURIComponent(x.name), undefined, 'DELETE'); } catch (e) { (window.notice || console.warn)(e.message); }
+        loadSecrets(true);
+      };
+      act.append(rep, del); row.append(act);
+      list.append(row);
+    }
+  }
+
+  function render() { css(); paintChips(); paintHub(); paintTasks(); loadSecrets(false); if (sheet?.open) fillSheet(); }
 
   function schedText(sc) {
     if (!sc || typeof sc !== 'object') return 'ohne Zeitplan';

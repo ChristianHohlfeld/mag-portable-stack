@@ -142,10 +142,61 @@ class RoomE2E(unittest.TestCase):
         expect(run.locator('.tools-trace')).to_be_attached()
         order = run.evaluate("r=>[...r.children].map(c=>['work-status','thinking','work-steps','tools-trace'].find(k=>c.classList.contains(k))||c.className)")
         self.assertEqual(order, ['work-status', 'thinking', 'work-steps', 'tools-trace'])
+        # Done: collapsed to its status line; the line expands everything.
+        expect(run).to_have_class('run collapsed')
+        expect(run.locator('.thinking')).to_be_hidden()
+        status = run.locator('.work-status')
+        expect(status).to_have_attribute('aria-expanded', 'false')
+        status.click()
+        expect(status).to_have_attribute('aria-expanded', 'true')
+        expect(run.locator('.thinking')).to_be_visible()
+        expect(run.locator('.tools-trace')).to_be_visible()
         run.locator('.think-head').click()
         expect(run.locator('.think-body')).to_contain_text('Gedächtnis')
+        status.press('Enter')
+        expect(run.locator('.thinking')).to_be_hidden()
         self.assertEqual(msg.locator('.work-stop').count(), 0, 'no stop button inside messages')
         self.shot('05-run-card')
+
+    def test_05b_live_run_is_open_and_thoughts_only_answer_gets_a_header(self):
+        p = self.page
+        Model.scripts += [[{'reasoning_content': 'Ich überlege laut. '}, {'_sleep': .25}] * 10 + ['Antwort nach Denken.']]
+        self.send('Denk kurz nach')
+        live = p.locator('.message.work-live > .run')
+        expect(live).to_be_visible(timeout=5000)
+        expect(live.locator('.work-status')).to_have_attribute('aria-expanded', 'true')
+        expect(live.locator('.thinking .think-title')).to_have_text('Denkt nach', timeout=5000)
+        self.shot('05b-live-thinking')
+        expect(p.locator('.message.assistant .content').last).to_have_text('Antwort nach Denken.', timeout=8000)
+        done = p.locator('.message.assistant').last.locator(':scope > .run')
+        expect(done.locator('.work-status')).to_contain_text('Fertig')
+        expect(done).to_have_class('run collapsed')
+
+    def test_05c_bot_actions_in_one_menu_and_connectors_in_settings(self):
+        p = self.page
+        card = p.locator('#agents .agent').first
+        self.assertEqual(card.locator('.actions > button:not(.agent-more)').count(), 0, 'no loose action buttons')
+        card.locator('.agent-more').click()
+        menu = p.locator('.pop-menu')
+        expect(menu).to_be_visible()
+        expect(menu.get_by_role('menuitem')).to_have_text(['Erinnerung', 'Umbenennen', 'Entfernen'])
+        p.keyboard.press('Escape')
+        expect(menu).to_have_count(0)
+        card.locator('.agent-more').click()
+        p.get_by_role('menuitem', name='Erinnerung').click()
+        expect(p.locator('#memory-dialog')).to_be_visible()
+        p.keyboard.press('Escape')
+        # "+" holds attachments and Thinking only; connectors are settings.
+        p.click('#plus')
+        self.assertEqual(p.locator('#plus-menu #plus-github, #plus-menu #plus-mcp').count(), 0)
+        p.keyboard.press('Escape')
+        p.click('#settings-open')
+        expect(p.locator('#settings-dialog #plus-github')).to_be_visible()
+        expect(p.locator('#settings-dialog #plus-mcp')).to_be_visible()
+        self.shot('05c-settings-connectors')
+        p.click('#settings-dialog #plus-mcp')
+        expect(p.locator('#settings-dialog')).to_be_hidden()
+        expect(p.locator('#mcp-dialog')).to_be_visible()
 
     def test_06_message_after_stop_runs_and_held_queue_waits(self):
         p = self.page

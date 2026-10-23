@@ -1137,7 +1137,7 @@ class Native(unittest.TestCase):
    self.assertEqual(r.status,302);self.assertEqual(r.getheader('Location'),'/?bot=test')
   html=self.request('/',raw=True).decode()
   self.assertIn('const remoteBotId=',html);self.assertIn("get('bot')",html)
-  self.assertIn("remote.href='/?bot='+encodeURIComponent(a.id)",html)
+  self.assertIn("'/?bot='+encodeURIComponent(a.id)",html)  # bot menu: "Browser öffnen"
   self.assertIn('id="browser-fullscreen"',html);self.assertIn('id="terminal-fullscreen"',html)
   for gone in ('id="remote-bar"','body.remote-mode',"'/bot/'"):self.assertNotIn(gone,html)
   self.assertNotIn('window.open(',html)

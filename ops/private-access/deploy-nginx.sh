@@ -117,6 +117,13 @@ preflight(){
     echo 'nginx config unchanged: external Owner probe not required'
   fi
   # Native whois must be present in the old running room BEFORE switching.
+  # First install (deploy.sh on a blank host): no old room exists yet; the
+  # new room is checked by activate/smoke after the switch instead.
+  if [[ ${MAG_DEPLOY_FIRST_INSTALL:-0} == 1 ]] && ! systemctl is-active --quiet mag-120.service; then
+    echo 'First install: no previous room to probe for native whois' >&2
+    echo 'Preflight OK (no service changes)'
+    return 0
+  fi
   local status
   status=$(curl -sS --max-time 5 -o /dev/null -w '%{http_code}' \
      -H 'X-Mag-Remote: 192.0.2.1:34567' \

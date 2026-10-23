@@ -75,7 +75,8 @@ case $code in
       }' > "$tmp/body"
     code=$(api POST /repos/migrate "$tmp/body")
     rm -f "$tmp/body"
-    [[ $code == 201 ]] || { echo "mirror: migrate failed (HTTP $code): $(jq -r '.message // empty' "$tmp/out" 2>/dev/null | head -c 300)" >&2; exit 1; }
+    # The API message is not printed: it may quote the clone address.
+    [[ $code == 201 ]] || { echo "mirror: migrate failed (HTTP $code); see journalctl -u gitea" >&2; exit 1; }
     echo "mirror: created pull mirror $OWNER/$NAME <- $SOURCE (every $INTERVAL)"
     ;;
   401|403) echo "mirror: Gitea token rejected (HTTP $code)" >&2; exit 1 ;;

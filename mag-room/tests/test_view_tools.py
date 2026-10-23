@@ -79,6 +79,10 @@ class ViewTools(unittest.TestCase):
      const ys=[...th.children].filter(e=>e.offsetParent).map(e=>Math.round(e.getBoundingClientRect().top+e.getBoundingClientRect().height/2));
      return {nav:ov(q('#browser-view .browser-nav')),th:ov(th),rows:Math.max(...ys)-Math.min(...ys),hidden:hits.filter(x=>!x).length,doc:ov(document.documentElement)}}''')
     self.assertEqual((r['nav'],r['th'],r['doc'],r['hidden']),(0,0,0,0),(vp,r));self.assertLessEqual(r['rows'],2,(vp,r))
+    # room menu: icons/checkboxes and labels in one aligned column, same icon size
+    page.evaluate("()=>{document.getElementById('room-menu').hidden=false}")
+    m=page.evaluate('''()=>[...document.querySelectorAll('#room-menu > button, #room-menu > label')].filter(e=>e.offsetParent).map(e=>{const i=e.querySelector('svg,input').getBoundingClientRect(),t=e.querySelector('span').getBoundingClientRect();return [Math.round(i.left),Math.round(i.width),Math.round(t.left)]})''')
+    self.assertGreaterEqual(len(m),3);self.assertEqual(len({tuple(x) for x in m}),1,m)
     ctx.close()
    self.assertEqual(errors,[])
   finally:

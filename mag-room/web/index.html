@@ -1771,7 +1771,12 @@ async function askDeleteMessage(msg){const who=msg.name||(msg.role==='user'?'Du'
 async function askDeleteFile(f){const kb=Math.max(1,Math.ceil((f.size||0)/1024));if(!await purgeAsk({title:'Datei löschen',lead:'Diese Datei wird aus dem Raum entfernt:',items:[f.name+' · '+kb+' KB'],note:'Nachrichten zeigen danach „entfernt“. 10 Sekunden rückgängig.',ok:'Datei löschen'}))return;try{const r=await api('/api/room/files/'+encodeURIComponent(f.stored),undefined,'DELETE');showUndo('Datei entfernt',r.undo);await refresh()}catch(e){notice(e.message)}}
 async function askDeleteMemory(a,i,text){if(!a)return;if(!await purgeAsk({title:'Eintrag löschen',lead:'Dieser Gedächtnis-Eintrag von '+a.name+' wird entfernt:',items:[previewText(text)],note:'10 Sekunden rückgängig.',ok:'Eintrag löschen'}))return;try{const r=await api('/api/agents/'+encodeURIComponent(a.id)+'/memory/'+i+'?old='+encodeURIComponent(String(text).slice(0,200)),undefined,'DELETE');showUndo('Eintrag gelöscht',r.undo);await refresh();if($('memory-dialog').open)renderMemory(r.memory||[])}catch(e){notice(e.message)}}
 async function askClearMemory(a,n){if(!a)return;if(!await purgeAsk({title:'Gedächtnis leeren',lead:'Das Gedächtnis dieses Bots wird geleert:',items:[deN(n,'Eintrag','Einträge')+' im Gedächtnis von '+a.name],note:'Chat und Arbeitsdaten bleiben. 10 Sekunden rückgängig.',ok:'Gedächtnis leeren'}))return;try{const r=await api('/api/agents/'+encodeURIComponent(a.id)+'/memory',undefined,'DELETE');showUndo('Gedächtnis geleert',r.undo);await refresh();if(memAgent&&memAgent.id===a.id&&$('memory-dialog').open)renderMemory(r.memory||[])}catch(e){notice(e.message)}}
-async function askResetBot(a){if(!await purgeAsk({title:'Bot zurücksetzen',lead:a.name+' verliert die Arbeitsdaten in der eigenen VM:',items:['Browser-Profil','Cookies und gespeicherte Logins','Arbeitsdateien (room und Downloads)'],note:'Logins gehen verloren und können nicht wiederhergestellt werden. Gedächtnis und Chatverlauf bleiben.',ok:'Bot zurücksetzen'}))return;try{await api('/api/agents/'+encodeURIComponent(a.id)+'/workspace/reset',{});notice('Arbeitsdaten von '+a.name+' wurden zurückgesetzt.')}catch(e){notice(e.message)}}
+// Clear/reset: idle -> run at once; a computing or queued bot -> ask, then force (server cancels all work first).
+function workBusy(){return !!state.busy||(state.pending||[]).length>0||busyBots.size>0}
+async function busyRun(path,verb,ok,keep){const ask=()=>magConfirm({title:'Ein Bot rechnet noch',text:'Laufende und wartende Arbeit wird abgebrochen, danach wird '+verb+'.',ok,cancel:keep,danger:true});
+ if(workBusy()){if(!await ask())return null;return api(path,{force:true})}
+ try{return await api(path,{})}catch(e){if(e.message!=='Ein Bot rechnet noch')throw e;if(!await ask())return null;return api(path,{force:true})}}
+async function askResetBot(a){try{const r=await busyRun('/api/agents/'+encodeURIComponent(a.id)+'/workspace/reset','der Bot zurückgesetzt','Abbrechen und zurücksetzen','Nicht zurücksetzen');if(r)notice('Arbeitsdaten von '+a.name+' wurden zurückgesetzt.')}catch(e){notice(e.message)}}
 function renderData(){
  const rc=$('room-count');if(!rc)return;
  const msgs=(state.room||[]).length,files=(state.files||[]).length;
@@ -1795,7 +1800,7 @@ function memErr(t=''){const el=$('memory-err');el.textContent=t;el.hidden=!t}
 $('memory-new').oninput=()=>memErr();
 $('memory-new').onkeydown=e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing){e.preventDefault();$('memory-form').requestSubmit()}};
 $('memory-clear').onclick=()=>{if(!memAgent)return;askClearMemory(memAgent,$('memory').querySelectorAll('.mem-row').length)};
-$('reset').onclick=async()=>{const msgs=(state.room||[]).length,files=(state.files||[]).length;if(!await purgeAsk({title:'Raum leeren',lead:'Aus dem gemeinsamen Raum wird entfernt:',items:[deN(msgs,'Nachricht','Nachrichten'),deN(files,'Datei','Dateien')],note:'Vorher wird eine dauerhafte Sicherung erstellt (maximal 512 MiB). Zusätzlich 10 Sekunden rückgängig.',ok:'Raum leeren'}))return;try{const r=await api('/api/room/clear',{});streams={};r.unchanged?notice('Raum ist bereits leer'):showUndo('Raum geleert',r.undo);await refresh()}catch(e){notice(e.message)}};
+$('reset').onclick=async()=>{try{const r=await busyRun('/api/room/clear','der Raum geleert','Abbrechen und leeren','Nicht leeren');if(!r)return;streams={};r.unchanged?notice('Raum ist bereits leer'):showUndo('Raum geleert',r.undo);await refresh()}catch(e){notice(e.message)}};
 // Images are staged locally until sending. Canvas conversion strips EXIF/GPS
 // and standardizes HEIC/HEIF when supported by the current browser.
 let stagedPhotos=[],stagedFiles=[];const PHOTO_MAX_PX=2048;
@@ -2662,7 +2667,7 @@ events.onmessage=e=>{
   else if(event.type==='cancelled'&&event.bot){
    const s=streams[event.bot];if(s?.frame)cancelAnimationFrame(s.frame);
    delete streams[event.bot];busyBots.delete(event.bot);renderLanes();streamControls();notice('');refresh().catch(err=>notice(err.message));
-  }else if(event.type==='stopped'||event.type==='cancelled'){
+  }else if(event.type==='stopped'||event.type==='cancelled'||event.type==='room_cleared'){
    for(const s of Object.values(streams))if(s.frame)cancelAnimationFrame(s.frame);
    streams={};setBusyBots([]);streamControls();notice('');refresh().catch(err=>notice(err.message));
   }

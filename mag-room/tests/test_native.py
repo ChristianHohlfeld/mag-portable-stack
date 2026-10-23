@@ -586,6 +586,21 @@ class Native(unittest.TestCase):
   finally:
    self.request('/api/queue',method='DELETE');self.request('/api/cancel',{});self.request('/api/queue/resume',{});Model.script=[]
 
+ def test_15l_room_clear_busy_needs_force_and_leaves_no_ghost(self):
+  acc=self.state/'access.json';had=acc.read_bytes() if acc.exists() else None
+  self._access(['chris@github']);owner=self._ts('chris@github','Chris')
+  self.addCleanup(lambda:acc.write_bytes(had) if had is not None else acc.unlink(missing_ok=True))
+  self.wait_idle();Model.script=[self._slow('out',80),['Nie.']]
+  self.request('/api/message',{'text':'Clear-Busy','bots':['test']});self._busy();time.sleep(.5)
+  self.request('/api/message',{'text':'Wartet','bots':['test']})
+  with self.assertRaises(urllib.error.HTTPError) as ctx:self.request('/api/room/clear',{},headers=owner)
+  self.assertEqual(ctx.exception.code,409);self.assertTrue(json.loads(ctx.exception.read())['busy'])
+  self.assertTrue(self.request('/api/state')['room'],'refused clear keeps the room')
+  wiped=self.request('/api/room/clear',{'force':True},headers=owner);self.assertTrue(wiped['ok'])
+  time.sleep(1.0);s=self.request('/api/state')
+  self.assertEqual(s['room'],[],'no ghost/partial answer after forced clear');self.assertFalse(s['busy']);self.assertFalse(s['pending'])
+  self.assertEqual(self.request('/api/room/clear',{},headers=owner).get('unchanged'),True,'idle clear needs no force')
+  self.request('/api/undo/'+wiped['undo'],{});self.request('/api/queue/resume',{});Model.script=[]
  def test_15k_composer_stop_cancels_turn_keeps_queue(self):
   self.wait_idle();Model.script=[self._slow('out',60),['Weiter normal.']]
   self.request('/api/message',{'text':'Stop-Test','bots':['test']});self._busy();time.sleep(1.0)

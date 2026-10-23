@@ -6891,18 +6891,20 @@ static ScopedResult undo_action(const std::string &id) {
   out["ok"] = true;
   return scoped_ok(out);
 }
-static ScopedResult reset_bot_workspace(const std::string &id) {
+static bool quiesce_all(std::unique_lock<std::mutex> &, std::unique_lock<std::shared_mutex> &, bool);
+static ScopedResult reset_bot_workspace(const std::string &id, bool force = false) {
   int idx = agent_index(id);
   if (idx < 0)
     return scoped_err(404, "Unbekannter Bot");
   std::string vm = bot_field(idx, "vm");
   if (vm.empty())
     return scoped_err(400, "Nur-Chat-Bot hat keine Arbeitsdaten.");
-  if (BUSY.load())
-    return scoped_err(409, "Bot arbeitet gerade. Erst stoppen, dann zurücksetzen.");
-  std::lock_guard<std::shared_mutex> turn(TURN_MTX);
-  if (BUSY.load())
-    return scoped_err(409, "Bot arbeitet gerade. Erst stoppen, dann zurücksetzen.");
+  // Hold no turn open while the guest is wiped (see quiesce_all in routes).
+  std::unique_lock<std::mutex> sched;
+  std::unique_lock<std::shared_mutex> turn;
+  if (!quiesce_all(sched, turn, force))
+    return scoped_err(409, "Ein Bot rechnet noch");
+  sched.unlock(); // TURN_MTX stays exclusive: no turn starts during the wipe
   // Runs as the guest user. Leaves the browser binary, bridge token, UDP key
   // and git identity in place; only the profile, cookies and work files go.
   const std::string script =

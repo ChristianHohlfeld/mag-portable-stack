@@ -97,6 +97,8 @@ jobs:
         run: bash ops/tests/test-bootstrap.sh
       - name: Gitea pull mirror against a fake API
         run: bash ops/tests/test-gitea-mirror.sh
+      - name: Gitea bot rights against a fake API
+        run: bash ops/tests/test-gitea-bot-rights.sh
       - name: New ops scripts pass shellcheck
         run: |
           if ! command -v shellcheck >/dev/null; then echo 'shellcheck not installed on this runner; skipped'; exit 0; fi

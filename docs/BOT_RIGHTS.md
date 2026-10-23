@@ -10,7 +10,11 @@ Bots are never administrators. Enforced in code and by `ops/deploy.sh`.
   own private org `bots-<agent>` with the bot as owner. Restricted users see
   only their own repos/orgs, so a bot reads/writes only there.
 - The script uses a throw-away admin account that is purged with its token on
-  exit; no existing admin credential is read.
+  exit; no existing admin credential is read. That admin creates the org (Gitea
+  refuses `POST /admin/users/{u}/orgs` for a user without org creation) and adds
+  the bot to its `Owners` team, then leaves the org. Reruns are no-ops; a
+  failing user is reported, the others are still applied, and the script exits
+  non-zero (deploy prints `WARN: Gitea bot rights not applied`).
 - Actions stay `ENABLED=false` by default. If enabled, register runners only at
   the bot org level (`bots-<agent>`), unprivileged, never on the host and never
   with deploy rights. There is no host deploy runner.

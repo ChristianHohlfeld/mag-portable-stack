@@ -1,0 +1,33 @@
+{
+  "comment": "NUMA model catalog. One model per NUMA node, never more than two loaded. ram_gib = resident weights + KV (mlocked); admission uses ram_gib + node reserve_gib <= node budget_gib and the host limit. Edit sizes after measuring RssAnon.",
+  "host": { "limit_gib": 400, "user": "chris", "slots_dir": "/var/lib/mag-llm/slots" },
+  "nodes": [
+    { "node": 0, "port": 8090, "cpus": "0-13,28-41", "threads": 14, "budget_gib": 200, "reserve_gib": 12,
+      "default": "deepseek-v4-flash-0731", "legacy_units": ["mag-llm.service"] },
+    { "node": 1, "port": 8091, "cpus": "14-27,42-55", "threads": 14, "budget_gib": 200, "reserve_gib": 12,
+      "default": "deepseek-v4-flash-0731-iq3", "legacy_units": ["mag-llm-iq3.service", "mag-llm-qwen.service"] }
+  ],
+  "models": [
+    { "id": "deepseek-v4-flash-0731", "label": "DeepSeek V4 Flash Q4", "short": "Q4", "ram_gib": 155,
+      "bin": "/home/chris/.local/ik/8d21687cc7-mag-abe5bad6/bin/llama-server",
+      "model": "/home/chris/models/deepseek-v4/DeepSeek-V4-Flash-0731-UD-Q4_K_XL-00001-of-00005.gguf",
+      "args": ["--ctx-size", "32768", "--parallel", "1", "-b", "1024", "-ub", "1024", "--flash-attn", "on",
+               "--cache-type-k", "f16", "--cache-type-v", "f16", "--cache-ram", "16384", "--jinja",
+               "--chat-template-file", "/home/chris/llama-templates/deepseek-ai-DeepSeek-V4-Flash-0731.jinja",
+               "--reasoning-format", "deepseek", "--temp", "1.0", "--top-p", "0.95", "--min-p", "0.01",
+               "--metrics", "--webui", "none", "-rtr"] },
+    { "id": "deepseek-v4-flash-0731-iq3", "label": "DeepSeek 4.1 Flash IQ3 (~106 GB)", "short": "IQ3", "ram_gib": 112,
+      "bin": "/home/chris/.local/ik/8d21687cc7-mag-c96826ab/bin/llama-server",
+      "model": "/home/chris/models/deepseek-v4-UD-IQ3_XXS/DeepSeek-V4-Flash-0731-UD-IQ3_XXS-00001-of-00004.gguf",
+      "args": ["--ctx-size", "32768", "--parallel", "1", "-b", "1024", "-ub", "1024", "--flash-attn", "on",
+               "--cache-type-k", "f16", "--cache-type-v", "f16", "--cache-ram", "16384", "--jinja",
+               "--chat-template-file", "/home/chris/llama-templates/deepseek-ai-DeepSeek-V4-Flash-0731.jinja",
+               "--reasoning-format", "deepseek", "--temp", "1.0", "--top-p", "0.95", "--min-p", "0.01",
+               "--metrics", "--webui", "none", "-rtr", "-crs", "0.20"] },
+    { "id": "qwen3.8-flash-next-uncensored", "label": "Qwen3.8 Flash Next IQ4_XS", "short": "Qwen", "ram_gib": 116, "mlock_args": ["--load-mode", "mlock"],
+      "bin": "/home/chris/.local/qwen4exp/current/bin/llama-server",
+      "model": "/home/chris/models/qwen3.8-flash-next-uncensored/Qwen3.8-Flash-Next-Uncensored.IQ4_XS.gguf",
+      "args": ["--ctx-size", "32768", "--parallel", "1", "--lazy-mode", "off", "-ot", "per_layer_token_embd=CPU",
+               "--jinja", "--reasoning-format", "auto", "--cache-ram", "16384", "--no-ui"] }
+  ]
+}

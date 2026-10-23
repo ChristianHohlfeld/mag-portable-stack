@@ -1523,6 +1523,35 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
     send_json(fd, 200, mj::dump(user_stop(false)));
     return;
   }
+  if (m == "GET" && path == "/api/tasks") {
+    Val out = Val::object();
+    out["tasks"] = tasks_public(qparam(r.query, "bot"));
+    send_json(fd, 200, mj::dump(out));
+    return;
+  }
+  if (m == "POST" && path.rfind("/api/tasks/", 0) == 0 &&
+      path.size() > 18 && path.compare(path.size() - 7, 7, "/cancel") == 0) {
+    const std::string id = path.substr(11, path.size() - 18);
+    send_json(fd, 200, task_cancel(id) ? "{\"cancelled\":true}" : "{\"cancelled\":false}");
+    return;
+  }
+  if (m == "GET" && path.rfind("/api/todo/", 0) == 0) {
+    send_json(fd, 200, mj::dump(todo_public(url_decode(path.substr(10)))));
+    return;
+  }
+  if (m == "GET" && path.rfind("/api/journal/", 0) == 0) {
+    const std::string id = url_decode(path.substr(13));
+    if (agent_index(id) < 0) { error_json(fd, 404, "Unknown agent"); return; }
+    Val arr = Val::array();
+    {
+      std::lock_guard<std::mutex> lk(JOURNAL_MTX);
+      for (auto &row : journal_read(id)) arr.push(row);
+    }
+    Val out = Val::object();
+    out["journal"] = arr;
+    send_json(fd, 200, mj::dump(out));
+    return;
+  }
   if (m == "POST" && path == "/api/stop") {
     // "Alles anhalten": like Stop, and scheduled jobs and the autonomy
     // switch stay off until the user resumes.

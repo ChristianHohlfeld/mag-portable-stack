@@ -215,6 +215,10 @@ static std::string fmt_local(int64_t t) {
   char b[32]; strftime(b, sizeof b, "%d.%m.%Y %H:%M", &lt); return b;
 }
 static std::string job_user_content(const JobRun *r) {
+  if (r->job_id.rfind("task:", 0) == 0)
+    return "[Hintergrundaufgabe \u201e" + r->name + "\u201c \u00b7 " + fmt_local(now_s()) +
+           " \u00b7 du bist ein Sub-Agent; arbeite das Ziel selbststaendig ab, "
+           "dein Endergebnis wird in den Raum gepostet]\n" + r->prompt + "\n";
   return "[Geplanter Job \u201e" + r->name + "\u201c \u00b7 " + fmt_local(now_s()) +
          " \u00b7 eigener Lauf, Ergebnis wird in den Raum gepostet]\n" + r->prompt + "\n";
 }

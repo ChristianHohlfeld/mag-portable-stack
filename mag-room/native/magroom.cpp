@@ -1688,6 +1688,7 @@ static const char *T_UNREACT =
 #include "jobs_tools.hpp"
 #include "pages_tools.hpp"
 #include "s23_tools.hpp"
+#include "agent_core.hpp"
 
 static const char *ROOM_RULES =
     "Du bist {name}, ein freier, eigenstaendiger KI-Agent in einem gemeinsamen "
@@ -1769,6 +1770,17 @@ static const char *AUTOTALK_RULES =
     "beende sie mit [[MAG:ENDE]]. Diese Marker sind Steuerzeichen und "
     "werden aus der sichtbaren Antwort entfernt. Stelle keine "
     "Rueckfragen, wenn du sinnvoll selbst weitermachen kannst."; 
+// Turn model (docs/agent-architecture.md): plan, milestones, verified result.
+static const char *AGENT_RULES =
+    "\nArbeitsweise: Bei mehrschrittigen Aufgaben lege zuerst mit todo(set) "
+    "das Ziel und wenige konkrete Schritte an und hake sie mit todo(done) ab, "
+    "sobald ein Werkzeugergebnis sie belegt (das sind die Zwischenstaende fuer "
+    "den Nutzer). Hoere nicht auf, solange Schritte offen sind; ist einer "
+    "unmoeglich, markiere ihn mit todo(block) und nenne die Ursache. "
+    "Lange unabhaengige Teilziele kannst du mit task(start) im Hintergrund "
+    "laufen lassen. Das Endergebnis nennt kurz, was erledigt ist und wie es "
+    "geprueft wurde. Langfristiges merkst du dir mit remember oder "
+    "memory(journal); frueheres findest du mit memory(recall).\n";
 static const char *WEB_RULES =
     "\nWebsuche: web_search (Brave) liefert aktuelle Fakten; nenne Quell-URLs. "
     "Steht im [Kontext] 'Netz: OFFLINE', hat deine VM keinerlei Netzwerk "
@@ -1832,6 +1844,7 @@ static std::string build_system(int bot_idx, bool autotalk,
   replaceAll(system, "{model}", bot_model_id(bot_idx));
   (void)web; // byte-stable prefix: web state lives in the [Kontext] tail
   system += WEB_RULES;
+  system += AGENT_RULES;
   system += has_vm ? FILES_RULES : FILES_RULES_CHAT;
   if (has_vm)
     system += FRONTEND_RULES;
@@ -1883,6 +1896,8 @@ static std::string build_context_tail(int bot_idx, bool autotalk,
     out += "\n" + at;
   }
   out += take_reaction_context(bot_field(bot_idx, "id"));
+  if (todo_open_for(bot_field(bot_idx, "id")) > 0)
+    out += "\nOffene Ziele (todo):\n" + todo_text_for(bot_field(bot_idx, "id"));
   return out;
 }
 // Once a room line has been sent, later turns reuse that exact text. The
@@ -3002,6 +3017,9 @@ static std::string tools_json(int bot_idx, bool web) {
   (void)web; // always registered: a changing tool list breaks the prompt cache
   defs.push_back(T_WEB_SEARCH);
   defs.push_back(T_GITHUB); // always registered (cache); token checked at call
+  defs.push_back(T_TODO);
+  defs.push_back(T_MEMORY);
+  defs.push_back(T_TASK); // a sub-agent gets it too (cache); task_start refuses depth 2
   for (const char *d : JOBS_TOOL_DEFS) defs.push_back(d);
   for (const char *d : S23_TOOL_DEFS) defs.push_back(d);
   if (has_vm) for (const char *d : PAGES_TOOL_DEFS) defs.push_back(d);
@@ -3704,7 +3722,7 @@ static void run_think() {
   run_cur().error.clear();
   publish_run_locked();
 }
-static void run_narration(const std::string &live, bool commit = true) {
+static void run_narration(const std::string &live, bool commit) {
   std::lock_guard<std::mutex> lk(RUN_MTX);
   if (!run_cur().on)
     return;
@@ -4064,6 +4082,9 @@ static std::string dispatch_tool(int bot_idx, const std::string &name,
   }
   if (name == "github")
     return github_tool(a);
+  if (name == "todo") return todo_tool(bot_id, a);
+  if (name == "memory") return memory_tool(bot_id, a);
+  if (name == "task") return task_tool(bot_idx, a);
   if (name == "remember") {
     remember_fact(bot_id, getstr("fact"), getstr("source"));
     return "Gemerkt.";
@@ -4309,7 +4330,11 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
   const size_t context_budget = (size_t)std::clamp(
       envi("MAG_ROOM_CONTEXT_BYTES", 52000), 24000, 100000);
   auto run_deadline = steady_clock::now() + seconds(RUN_BUDGET_S);
+  int todo_nudges = 0;
+  TL_TODO_TOUCHED = false;
   for (int round = 0; round < MAX_RUN_STEPS; round++) {
+    if (stop_flag().load()) break;
+    task_yield_point();
     if (stop_flag().load()) break;
     if (steady_clock::now() >= run_deadline) {
       report.error = "Agent-Zeitbudget erreicht (" + std::to_string(RUN_BUDGET_S) +
@@ -4465,8 +4490,11 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
     }
     messages.push_back(asst);
     const bool tool_round = !t.calls.empty();
-    const bool pending = has_next_step(t.text) &&
-        t.text.find("[[MAG:ENDE]]") == std::string::npos;
+    // Open todo items are an unfinished goal: the turn goes on (bounded).
+    const bool todo_open = !tool_round && !stateless && TL_TODO_TOUCHED &&
+        todo_nudges < 2 && !has_next_step(t.text) && todo_open_for(bot_id) > 0;
+    const bool pending = todo_open || (has_next_step(t.text) &&
+        t.text.find("[[MAG:ENDE]]") == std::string::npos);
     if (!t.text.empty()) {
       if (tool_round || pending) {
         if (!draft_dropped)
@@ -4491,6 +4519,15 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
       }
       Val reminder = Val::object();
       reminder["role"] = "user";
+      if (todo_open) {
+        ++todo_nudges;
+        reminder["content"] =
+            "[System] Deine Ziele sind noch offen:\n" + todo_text_for(bot_id) +
+            "Arbeite sie mit Werkzeugen ab und hake sie mit todo(done) ab, oder "
+            "markiere Unmoegliches mit todo(block) und nenne die Ursache.";
+        messages.push_back(reminder);
+        continue;
+      }
       reminder["content"] =
           "[System] Aufgabe ist noch offen. Du hast einen naechsten Schritt "
           "angekuendigt. Fuehre ihn jetzt mit den Werkzeugen tatsaechlich aus "
@@ -4613,7 +4650,7 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
     if (repeated_failure || stop_flag().load())
       break;
     run_show("read", "Liest Ergebnis", true, false);
-    if (!stateless) {
+    if (!stateless && !TL_TASK) {
       UserInput in = take_user_input(bot_id);
       if (!in.text.empty()) {
         Val u = Val::object();
@@ -5336,6 +5373,7 @@ static TurnReport generate_and_post(int idx, bool automatic) {
 }
 #include "jobs.hpp"
 #include "jobs_mcp.hpp"
+#include "agent_tasks.hpp"
 // Prompt prewarm. A turn sends system | transcript | [Kontext] tail | tool
 // rounds; the next turn keeps only the transcript, so the cached KV diverges at
 // its old end. DeepSeek V4 / Qwen Next cannot truncate KV there and restore the
@@ -6091,8 +6129,9 @@ static void stop_autotalk(bool pause = false) {
 // pause_jobs (the old /api/stop) also holds scheduled jobs and switches the
 // autonomy setting off.
 static Val user_stop(bool pause_jobs) {
-  const bool was_busy = BUSY.load();
+  const bool was_busy = BUSY.load() || tasks_running();
   cancel_active(true);
+  task_cancel("", "");
   const bool prewarm = cancel_prewarm();
   PREWARM_HOLD = true;
   Val out = Val::object();
@@ -6314,6 +6353,7 @@ static std::string state_json(const Actor *actor = nullptr) {
   root["agents"] = ag;
   root["single_bot"] = SINGLE_BOT;
   root["dual_numa"] = DUAL_NUMA;
+  root["tasks"] = tasks_public();
   root["thinking_default"] = THINKING != "off";
   root["thinking"] = thinking_of(LAST_THINK.load());
   {

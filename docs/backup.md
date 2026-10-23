@@ -5,8 +5,8 @@ Local restic now runs with `--insecure-no-password` (restic >=0.17).
 However, the encrypted master key is effectively unprotected: **anyone
 who can read the repository can recover its contents**, including
 Tailscale state and application secrets. Restrict repository access to
-root and trusted physical host administrators; do not send this copy to
-AWS (AWS remains disabled). This is an explicit reduction in security.
+root and trusted physical host administrators. Backups are local only;
+there is no offsite/AWS copy. This is an explicit reduction in security.
 
 Existing password-protected repositories are NEVER destroyed/reinitialized
 by `install.sh`. Before applying this release:
@@ -61,7 +61,7 @@ Pre-Deploy-Archiv des aktuellen Releases bleiben. Ein Fehlschlag löscht
 nur das unvollständige neue Verzeichnis.
 
 Die Abschnitte weiter unten zur gemeinsamen restic-Kette (`forget`/`prune`,
-7/4/6) beschreiben das alte Modell und gelten nicht mehr. AWS bleibt aus.
+7/4/6) beschreiben das alte Modell und gelten nicht mehr. Es gibt kein Offsite/AWS.
 Das alte `/var/backups/mag-restic` und `/var/backups/restic` werden von
 diesem Lauf nicht angefasst.
 
@@ -116,36 +116,14 @@ Chat, Uploads und VM-Status. Kein `fsfreeze` der einzigen Root-Platte.
 ## Standorte, Zeitplan, Aufbewahrung
 
 MAG hat **nur eine SSD/HDD** (`/dev/sda`, ext4 `/`), keine zweite Platte.
-`/var/backups/mag-restic` ist daher schneller **lokaler Wiederherstellungs-
-Cache, kein zweites Ausfallmedium**. Für 3-2-1 muss S3 bzw. eine physisch
-getrennte Platte aktiv sein.
+`/var/backups/mag-full` ist daher schneller **lokaler Wiederherstellungs-
+Cache, kein zweites Ausfallmedium**. Es gibt **keine Offsite-Kopie**: die
+S3-Anbindung wurde vollständig entfernt (Entscheidung des Besitzers: kein
+AWS). Für 3-2-1 braucht es eine physisch getrennte Platte; bei Verlust
+der einzigen SSD sind alle Archive verloren.
 
-Nur nach `MAG_BACKUP_OFFSITE_ENABLED=1` UND sicherer `/etc/mag-backup/aws.env` aktiviert sich
-eine **immutable Offsite-Kopie** jedes vollständigen verschlüsselten restic-
-Repositories nach
-`s3://mag-backup-595505951010-euc1/archives/<UTC>-<snapshot>/`.
-S3: `eu-central-1`, Bucket-Object-Lock **COMPLIANCE 30 Tage** als Default,
-Versionierung, Block Public Access, SSE-S3, IAM nur für diesen Bucket.
-Stabschef richtet Bucket und IAM-User im Konto 595505951010 erst
-nach Chris' ausdrücklichem Ja ein; keine AWS-Ressourcen werden im PR erzeugt.
-`latest.json` bezeichnet das letzte **fertig hochgeladene** Archiv.
-**Wichtig:** Nicht `restic -r s3:... backup/forget/prune` in einen
-30-Tage-Object-Lock-Bucket schreiben: restic benötigt kurzlebige Locks und
-Löschrechte; mit COMPLIANCE würde es hängen oder korrumpiert wirkende
-Sperren hinterlassen. Stattdessen immutable Kopie des *fertigen* lokalen
-Restic-Repos; Offsite-Restore holt dieses Archiv herunter und benutzt dann
-lokal `restic restore`. Das dupliziert deduplizierte Daten täglich; mit
-großen Datenbeständen müssen Volumen und Kosten neu bemessen werden.
-
-Tag `daily`: 7 Tages-/4 Wochen-/6 Monatsstände (`forget` + `prune`
-wöchentlich). `hook-deploy` und `hook-clear`: je 14 Tage. S3 ist
-WORM-geschützt für **mindestens 30 Tage**; Bucket-Lifecycle für
-`archives/` aktuell etwa **35 Tage** plus nichtaktuelle Versionen später
-ablaufen lassen. Lokale Langzeit-Monatsstände bleiben nach 35 Tagen nur
-lokal; **S3 schützt sie nicht dauerhaft**. Die aktuelle monatliche 6-Monats-
-Retention ist Offsite daher nur in den jeweils jüngsten Vollarchiven
-mit enthalten. Das ist ein Risiko bei vollständigem lokalen Datenverlust
-und einer unbemerkten mehrwöchigen Offsite-Störung.
+Aufbewahrung: die letzten 3 verifizierten Vollarchive plus das
+Pre-Deploy-Archiv des aktuellen Releases (siehe oben).
 
 `mag-backup-daily.timer` um **03:30 Europe/Berlin** (Persistent, 0–10 Min
 Zufallsverzögerung); wöchentlich Montag 04:30 Retention/Metadaten-Check,
@@ -167,16 +145,10 @@ ein Backup-Fehler blockiert den destruktiven Hook, nicht IQ3.
 Keine Modell-Unit wird durch diese Sicherung geändert. Doppelläufe blockiert `flock`; bei fehlgeschlagenem
 Backup scheitert Deploy bzw. Clear, bevor Daten verändert werden.
 
-**Kostenbeispiel, Schätzung:** 30 immutable Archive à 50 MB ergeben ~1,5 GB
-S3 Standard, bei illustrativen 0,025–0,03 EUR/GB-Monat
-ca. 0,04–0,05 EUR/Monat Storage **zuzüglich** PUT/GET, Versionen,
-Transfer und MwSt. Kein verlässlicher Tarif-/Nutzungswert: echte
-monatliche Kosten mit S3-Metriken und AWS-Preisliste nach 30 Tagen prüfen.
-
 ## Installation/Cutover (Ali, nicht automatisch deployt)
 
 ```bash
-sudo apt-get install restic sqlite3 jq util-linux numactl awscli
+sudo apt-get install restic sqlite3 jq util-linux numactl
 sudo bash ops/backup/install.sh
 sudo systemctl list-timers 'mag-backup*'
 sudo /usr/local/lib/mag-backup/maintenance.sh status
@@ -195,20 +167,8 @@ Erfolgen ausdrücklich archivieren/löschen; Alt-Hilfsskripte, die noch von
 `mag-collect-live-state` referenziert werden, dürfen erst nach Prüfung
 umgestellt werden.
 
-**AWS:** Stabschef erstellt erst nach Chris' Ja den S3-Bucket mit Object Lock bei Erstellung, Default
-COMPLIANCE 30 Tage, Versioning, SSE-S3, Public-Access-Block und Lifecycle.
-IAM-Zugriff auf Bucket und `archives/*`, `latest.json`: minimale
-`ListBucket`, `GetObject`, `PutObject`,
-`GetBucketObjectLockConfiguration`; **keine Delete-Rechte**.
-Datei `/etc/mag-backup/aws.env` mit
-`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`,
-`AWS_DEFAULT_REGION=eu-central-1`, Rechte root:root 0600.
-Ein erster Lauf muss `offsite_ok=true` melden. Fehlende/ungültige
-Credentials dürfen **nie** als erfolgreicher Offsite-Lauf gelten.
-
-**Offline für Chris:** Repo-/Datenträgerzugang (kein Restic-Passwort), Bucketname, AWS-Konto/Region,
-Wiedererlangung der minimalen IAM-Zugangsdaten (getrennt und nicht im Repo),
-GitHub-Repo-Zugang und Tailscale-Admin-Zugang. Offline-Schlüsselprobe durchführen.
+**Offline für Chris:** Repo-/Datenträgerzugang (kein Restic-Passwort),
+GitHub-Repo-Zugang und Tailscale-Admin-Zugang.
 Keine Passwörter/Kopien in GitHub oder Gitea committen.
 
 ## Teil-Restore und echter Wiederanlauf
@@ -223,7 +183,6 @@ sudo bash ops/backup/restore.sh --part config --target /var/tmp/mag-config-test
 sudo bash ops/backup/restore.sh --part cron --target /var/tmp/mag-cron-test
 sudo bash ops/backup/restore.sh --part tailscale --target /var/tmp/mag-tailscale-test
 sudo bash ops/backup/restore.sh --part all --target /var/tmp/mag-all-test
-sudo bash ops/backup/restore.sh --repo offsite --part all --target /var/tmp/mag-offsite-test
 ```
 
 Der Staging-Restore liegt im Ziel unter dem relativen Originalpfad
@@ -237,17 +196,17 @@ Niemals einen Zielordner aus dem Internet übernehmen.
 **Bare Metal auf neuer Hardware:**
 
 1. Ubuntu, Pakete, libvirt/KVM, nginx, Gitea, restic, sqlite3, jq, numactl
-   installieren. Datenträger und separate Offsite-Verbindung prüfen.
+   installieren. Datenträger mit dem lokalen Archiv prüfen.
 2. GitHub-Repo `ChristianHohlfeld/mag-portable-stack` klonen und
    versionsgleich `install.sh`/Stack-Voraussetzungen herstellen.
    Nicht mit einem leeren Raum erfolgreich starten und danach überschreiben.
 3. Kein Restic-Passwort nötig: `restic --insecure-no-password` (Version >=0.17).
-   `aws.env` nur nach gesonderter Offsite-Freigabe; `ops/backup/install.sh`
+   `ops/backup/install.sh`
    **noch nicht** ausführen (er würde auf frischer Hardware einen leeren Raum sichern).
    Stattdessen `/usr/local/lib/mag-backup`-Skripte aus dem Repo
    installieren oder direkt mit den lokalen Skripten und korrekt gesetzten
    `MAG_BACKUP_CONFIG`-Variablen arbeiten.
-4. Offsite-Archiv laden oder lokales Repository einhängen; zuerst
+4. Lokales Archiv (`/var/backups/mag-full/<id>`) einhängen; zuerst
    `--part all --target /var/tmp/recovered` und
    `sha256sum -c` aus dem Snapshot ausführen.
 5. `--apply` erst nach bewusster Auswahl, dann `systemctl daemon-reload`.
@@ -276,8 +235,7 @@ Niemals einen Zielordner aus dem Internet übernehmen.
 8. Neuer Gitea-/Raum-/Pages-Smoketest und Test-Restore, dann Backup-Timer
    installieren/aktivieren und ersten Snapshot protokollieren.
 
-Prüfprotokoll für Ali: Snapshot-ID, Bytes, Laufzeit, Status
-`offsite_ok`, Monatstest `last_restore_test_ok`, Journal-Checks. Kein
+Prüfprotokoll für Ali: Snapshot-ID, Bytes, Laufzeit, Monatstest `last_restore_test_ok`, Journal-Checks. Kein
 CI-Test ist Ersatz für den echten Host-Probelauf.
 
 
@@ -288,24 +246,32 @@ sowie, falls vorhanden, `/etc/credstore/mag-guest-oauth` für die Gästeverwaltu
 Es existiert **kein Restic-Passwort**; nach Bare-Metal-Restore den
 Dateisystemzugriff auf das Repository strikt auf root begrenzen (0700).
 
-## October 17 2026 – LOCAL-ONLY release gate
+## LOCAL-ONLY (S3 offsite removed)
 
-Chris has approved local encrypted backups; AWS remains stopped. The
-default is `MAG_BACKUP_OFFSITE_ENABLED=0`, even if a stale `aws.env`
-exists. Local `restic` needs no AWS CLI, bucket access, credentials,
-`aws.env` or network. `ops/backup/install.sh` creates no password,
-runs a local restic backup, then enables backup timers. The
+Backups are local restic only. The owner decided: no AWS, ever. All S3
+code (`aws s3` calls, `MAG_BACKUP_BUCKET`, `MAG_BACKUP_S3_BANDWIDTH`,
+`restore.sh --repo offsite`, `aws.env.example`) was removed. No AWS CLI,
+bucket, credentials or network is needed. `ops/backup/install.sh` creates
+no password, runs a local restic backup, then enables backup timers. The
 generic `ops/deploy.sh` requires this local timer and synchronously
 runs `mag-backup-deploy.service` before changing a release. Pages
 directories are optional until Pages has been activated.
 
-On MAG, configure `/etc/mag-backup/config.env` (0600) explicitly with
-`MAG_BACKUP_OFFSITE_ENABLED=0`, then:
+Leftovers on a host:
+- `/etc/mag-backup/aws.env` is never read. Scripts print a one-line note
+  that it is unused; delete it (`sudo rm /etc/mag-backup/aws.env`).
+- `MAG_BACKUP_OFFSITE_ENABLED=1` in `/etc/mag-backup/config.env` makes every
+  backup script fail closed with "S3 offsite was removed; set
+  MAG_BACKUP_OFFSITE_ENABLED=0 or delete the line". `=0` is accepted.
+- `MAG_BACKUP_BUCKET` / `MAG_BACKUP_S3_BANDWIDTH` lines are ignored.
+
+`status.json` still carries `"offsite_ok": false` because the room UI
+reads that field.
+
 ```sh
 sudo bash ops/backup/install.sh
 sudo systemctl is-enabled mag-backup-daily.timer
 sudo systemctl start mag-backup-deploy.service
 sudo /usr/local/lib/mag-backup/maintenance.sh status
 ```
-Expect `healthy=true` and `offsite_ok=false`. Do NOT set
-`MAG_BACKUP_OFFSITE_ENABLED=1` until Chris separately authorizes AWS.
+Expect `healthy=true` and `offsite_ok=false`.

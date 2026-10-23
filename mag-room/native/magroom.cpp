@@ -3006,6 +3006,7 @@ struct TurnReport {
 };
 
 #include "mcp.hpp"
+#include "secrets.hpp"
 static std::string tools_json(int bot_idx, bool web) {
   std::string vm = bot_field(bot_idx, "vm", "keine");
   const bool has_vm = !vm.empty() && vm != "keine";
@@ -3025,7 +3026,8 @@ static std::string tools_json(int bot_idx, bool web) {
   defs.push_back(T_GITHUB); // always registered (cache); token checked at call
   defs.push_back(T_TODO);
   defs.push_back(T_MEMORY);
-  defs.push_back(T_TASK); // a sub-agent gets it too (cache); task_start refuses depth 2
+  defs.push_back(T_TASK);
+  defs.push_back(T_SECRET); // a sub-agent gets it too (cache); task_start refuses depth 2
   for (const char *d : JOBS_TOOL_DEFS) defs.push_back(d);
   for (const char *d : S23_TOOL_DEFS) defs.push_back(d);
   if (has_vm) for (const char *d : PAGES_TOOL_DEFS) defs.push_back(d);
@@ -3863,7 +3865,20 @@ static std::string room_url() {
          "/?token=" + bridge_token();
 }
 
-static std::string dispatch_tool(int bot_idx, const std::string &name,
+static std::string dispatch_tool_raw(int bot_idx, const std::string &name, const Val &a);
+// Secret handles are expanded only here; results and errors are scrubbed so
+// a value never reaches the model, the room or the logs.
+static std::string dispatch_tool(int bot_idx, const std::string &name, const Val &a) {
+  const std::string bot = bot_field(bot_idx, "id");
+  Val args = a;
+  if (args.isObj()) secret_expand(bot, name, args);
+  try {
+    return secret_scrub(bot, dispatch_tool_raw(bot_idx, name, args));
+  } catch (const std::exception &e) {
+    throw std::runtime_error(secret_scrub(bot, e.what()));
+  }
+}
+static std::string dispatch_tool_raw(int bot_idx, const std::string &name,
                                  const Val &a) {
   std::string vm = bot_field(bot_idx, "vm", "keine");
   std::string bot_id = bot_field(bot_idx, "id");
@@ -4109,6 +4124,7 @@ static std::string dispatch_tool(int bot_idx, const std::string &name,
   if (name == "todo") return todo_tool(bot_id, a);
   if (name == "memory") return memory_tool(bot_id, a);
   if (name == "task") return task_tool(bot_idx, a);
+  if (name == "secret") return secret_tool(bot_idx, a);
   if (name == "remember") {
     remember_fact(bot_id, getstr("fact"), getstr("source"));
     return "Gemerkt.";

@@ -1523,6 +1523,40 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
     send_json(fd, 200, mj::dump(user_stop(false)));
     return;
   }
+  if (path == "/api/secrets" || path.rfind("/api/secrets/", 0) == 0) {
+    // Owner only. Values go in, never out.
+    if (actor.role != "owner") { error_json(fd, 403, "Nur der Besitzer"); return; }
+    if (m == "GET" && path == "/api/secrets") {
+      Val out = Val::object(); out["secrets"] = secrets_public();
+      send_json(fd, 200, mj::dump(out)); return;
+    }
+    if (m == "POST" && path.rfind("/api/secrets/requests/", 0) == 0) {
+      try {
+        if (!secret_fulfil(path.substr(22), has_json ? str("value") : "")) { error_json(fd, 404, "Anfrage nicht mehr offen"); return; }
+      } catch (const std::exception &e) { error_json(fd, 400, e.what()); return; }
+      send_json(fd, 200, "{\"ok\":true}"); return;
+    }
+    std::string rest = path.size() > 13 ? path.substr(13) : "";
+    const bool bots = rest.size() > 5 && rest.compare(rest.size() - 5, 5, "/bots") == 0;
+    if (bots) rest.resize(rest.size() - 5);
+    const std::string name = secret_name_ok(url_decode(rest));
+    if (name.empty()) { error_json(fd, 400, "Ungültiger Name"); return; }
+    if (m == "PUT" && bots) {
+      auto b = has_json ? body.find("bots") : nullptr;
+      if (!b || !b->isArr() || !secret_set_bots(name, *b)) { error_json(fd, 404, "Unbekanntes Secret"); return; }
+      send_json(fd, 200, "{\"ok\":true}"); return;
+    }
+    if (m == "PUT") {
+      try { secret_store(name, has_json ? str("value") : "", has_json ? str("purpose") : "", ""); }
+      catch (const std::exception &e) { error_json(fd, 400, e.what()); return; }
+      send_json(fd, 200, "{\"ok\":true}"); return;
+    }
+    if (m == "DELETE") {
+      if (!secret_delete(name)) { error_json(fd, 404, "Unbekanntes Secret"); return; }
+      send_json(fd, 200, "{\"ok\":true}"); return;
+    }
+    error_json(fd, 405, "Methode nicht erlaubt"); return;
+  }
   if (m == "GET" && path == "/api/numa") {
     send_json(fd, 200, mj::dump(numa_public()));
     return;

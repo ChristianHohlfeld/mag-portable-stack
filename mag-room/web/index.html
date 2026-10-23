@@ -1280,6 +1280,7 @@ const mcpApprovals=new Map();
 function syncApprovals(list){if(!Array.isArray(list))return;const keep=new Set(list.map(a=>a.id));for(const id of [...mcpApprovals.keys()])if(!keep.has(id))mcpApprovals.delete(id);for(const a of list)mcpApprovals.set(a.id,a)}
 function prettyArgs(t){try{return JSON.stringify(JSON.parse(t),null,2)}catch{return String(t||'')}}
 function approvalCard(a){
+ if(a.kind&&window.magAgentUI?.approvalCard){const c=window.magAgentUI.approvalCard(a);if(c)return c}
  const card=document.createElement('div');card.className='mcp-approve';card.dataset.id=a.id;card.setAttribute('role','group');card.setAttribute('aria-label','Freigabe für '+a.tool);
  const head=document.createElement('div');head.className='mcp-approve-head';head.innerHTML='<svg class="i sm" aria-hidden="true"><use href="#ic-plug"></use></svg>';
  const t=document.createElement('span');const b=document.createElement('b');b.textContent=a.tool;t.append((a.bot_name||'Bot')+' möchte ',b,' über '+(a.server_name||'ein Plugin')+' ausführen.');head.append(t);card.append(head);

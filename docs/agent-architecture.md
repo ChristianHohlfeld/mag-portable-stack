@@ -35,7 +35,8 @@ the model only proposes text and tool calls.
 | Final result | Only the concluding text is a room message; rules require stating verification. Budget exhaustion reports **incomplete**. |
 | Sub-agents | `task` tool (`start/status/cancel`), max `MAG_ROOM_MAX_TASKS` (2) per bot, depth 1. Each runs `run_turn` on its own lane/thread with its own stop flag and run card, yields to queued user turns between steps, and posts its result back as the bot. `GET /api/tasks`, `POST /api/tasks/<id>/cancel`. |
 | Memory | Profile = `remember` facts (agents.json). Journal = `STATE/journal/<bot>.jsonl`. `memory` tool: `recall` (search profile+journal), `journal`, `update`, `forget`. UI: `GET/PUT/DELETE /api/agents/<id>/memory...`. |
-| Routines | Jobs (`jobs.hpp`): interval/daily/monthly/once, pause/resume, webhooks, retries; available to bots as `jobs_*` tools and to the UI as `/api/jobs`. |
+| Routines | Jobs (`jobs.hpp`): schedules (minutes … monthly, once) and webhook events, pause/resume, retries, cancel via Stop. Bots use the routines MCP tool server (`jobs_*` tools in the room, `POST /mcp/jobs` for external MCP clients). **A bot only proposes**: `jobs_create`/`jobs_update`/`jobs_resume` show a confirmation card (name, schedule/trigger, prompt); only "Speichern" stores it. "Ablehnen" is final: the same proposal (idempotency key or name) is refused without a new card (`STATE/routine-rejections.json`). Runs post progress and result into the room as the bot; nothing is sent outside. The bot hub lists routines per bot with pause and delete (delete asks first). |
+| Secrets | `secret` tool: `request` shows a masked input card; the value goes to `POST /api/secrets/requests/<id>` → AES-256-GCM in `STATE/secrets.json` with the key from the systemd credential `mag-secrets-key` (`ops/secrets/install.sh`, in the encrypted backup, restored by bootstrap). The bot only gets the handle `{{secret:NAME}}`, expanded inside `browser_type`/`run_command` arguments; every tool result and error is scrubbed (`[secret:NAME]`) before model, room or log. Owner API: list (name, purpose, bots, last used — never values), replace, set bot access, delete. |
 | Preemption | Between steps `take_user_input` hands a new user message to the running owner ("has priority"); input for another bot makes the run yield. |
 | Stop | `POST /api/stop` cancels every lane, every sub-agent task and closes backend sockets (llama stops decoding). |
 | Two bots | Lanes per model/NUMA node: two bots on two nodes work in parallel; the user can always type. Room rules from PR #105 apply. |
@@ -48,3 +49,6 @@ the model only proposes text and tool calls.
 - Stop cancels main turns *and* tasks; cancelled tasks report `cancelled`.
 - Open todos keep the turn going (bounded), done/blocked todos let it end.
 - Never more than two models are loaded; swaps are never automatic.
+- Routine proposals need confirmation; a rejection is final.
+- A secret value never appears in model requests, room state, logs or
+  plain-text state files.

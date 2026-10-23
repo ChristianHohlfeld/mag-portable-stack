@@ -552,6 +552,7 @@ static std::vector<McpBotTool> mcp_bot_tools(int bot_idx) {
 // ------------------------------------------------------------- approvals
 struct McpApproval {
   std::string id, bot, bot_name, server, server_name, tool, args, decision;
+  std::string kind; // "" = plugin tool, "routine", "secret"
   long ts = 0;
 };
 static std::mutex APPROVAL_MTX;
@@ -567,6 +568,7 @@ static Val mcp_approval_val(const McpApproval &a) {
   o["tool"] = a.tool;
   o["args"] = a.args;
   o["ts"] = a.ts;
+  if (!a.kind.empty()) o["kind"] = a.kind;
   return o;
 }
 static Val mcp_pending_approvals() {

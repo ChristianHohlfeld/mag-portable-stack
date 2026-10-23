@@ -42,6 +42,11 @@
 .task-chip .spin{width:10px;height:10px;border-radius:50%;border:2px solid var(--accent);border-right-color:transparent;animation:task-spin .9s linear infinite}
 @keyframes task-spin{to{transform:rotate(1turn)}}
 .task-chip button{border:0;background:transparent;color:var(--muted);cursor:pointer;width:24px;height:24px;border-radius:50%}
+.routine-dl{display:grid;grid-template-columns:auto 1fr;gap:4px 10px;margin:8px 0;font-size:13px}
+.routine-dl dt{color:var(--muted)}.routine-dl dd{margin:0;white-space:pre-wrap;word-break:break-word}
+.secret-form{display:flex;gap:8px;margin-top:8px}
+.secret-form input{flex:1;min-height:36px;border-radius:10px;border:1px solid var(--line);background:var(--panel);color:var(--text);padding:0 10px}
+.mcp-approve.decided{opacity:.6}
 .task-chip button:hover{background:var(--panel-3,var(--hover))}
 `;
     document.head.append(s);
@@ -201,7 +206,93 @@
 
   function render() { css(); paintChips(); paintHub(); paintTasks(); if (sheet?.open) fillSheet(); }
 
+  function schedText(sc) {
+    if (!sc || typeof sc !== 'object') return 'ohne Zeitplan';
+    const k = sc.kind || sc.type;
+    if (k === 'every_minutes' || k === 'every_hours' || k === 'every_days' || k === 'every_weeks') return 'alle ' + (sc.every || sc.n || 1) + ' ' + {every_minutes: 'Min.', every_hours: 'Std.', every_days: 'Tage', every_weeks: 'Wochen'}[k];
+    if (k === 'weekdays') return 'werktags ' + (sc.time || '');
+    if (k === 'weekly') return 'wöchentlich ' + (sc.time || '');
+    if (k === 'interval') return 'alle ' + (sc.every || sc.minutes || '?') + ' ' + (sc.unit || 'min');
+    if (k === 'daily') return 'täglich ' + (sc.time || '');
+    if (k === 'monthly') return 'monatlich am ' + (sc.mday || sc.day || '?') + '. ' + (sc.time || '');
+    if (k === 'once') return 'einmal ' + (sc.at ? new Date(sc.at * 1000).toLocaleString() : '');
+    if (k === 'webhook') return 'bei Webhook-Ereignis';
+    return JSON.stringify(sc);
+  }
+  async function decide(id, decision, card) {
+    card.querySelectorAll('button,input').forEach(x => x.disabled = true);
+    try { await api('/api/plugins/approvals/' + encodeURIComponent(id), {decision}); card.classList.add('decided'); }
+    catch (e) { (window.notice || console.warn)(e.message); card.querySelectorAll('button,input').forEach(x => x.disabled = false); }
+  }
+  // Confirmation card for a routine a bot proposes; masked card for a secret.
+  function approvalCard(a) {
+    let info = {};
+    try { info = JSON.parse(a.args || '{}'); } catch {}
+    const owner = typeof state !== 'undefined' && state?.you?.role === 'owner';
+    const card = el('div', 'mcp-approve ' + (a.kind === 'secret' ? 'secret-card' : 'routine-card'));
+    card.dataset.id = a.id;
+    card.setAttribute('role', 'group');
+    const head = el('div', 'mcp-approve-head');
+    const row = el('div', 'mcp-approve-row');
+    if (a.kind === 'routine') {
+      const verb = {create: 'schlägt eine Routine vor', update: 'möchte eine Routine ändern', resume: 'möchte eine Routine fortsetzen'}[info.action] || 'schlägt eine Routine vor';
+      head.append(el('span', '', (a.bot_name || 'Bot') + ' ' + verb));
+      card.setAttribute('aria-label', 'Routine bestätigen');
+      card.append(head);
+      const dl = el('dl', 'routine-dl');
+      for (const [k, v] of [['Name', info.name || '–'], ['Zeitplan', schedText(info.schedule)], ['Prompt', info.prompt || '–']]) {
+        dl.append(el('dt', '', k), el('dd', '', v));
+      }
+      card.append(dl);
+      if (!owner) row.append(el('span', 'hint', 'Wartet auf Bestätigung durch den Besitzer …'));
+      else {
+        const no = el('button', 'pill-btn ghost', 'Ablehnen'); no.type = 'button'; no.dataset.decision = 'deny';
+        const yes = el('button', 'pill-btn primary', 'Speichern'); yes.type = 'button'; yes.dataset.decision = 'allow';
+        no.onclick = () => decide(a.id, 'deny', card);
+        yes.onclick = () => decide(a.id, 'allow', card);
+        row.append(no, yes);
+      }
+      card.append(row);
+      return card;
+    }
+    if (a.kind === 'secret') {
+      head.append(el('span', '', (a.bot_name || 'Bot') + ' braucht ' + (info.label || info.name || 'ein Secret')));
+      card.setAttribute('aria-label', 'Secret eingeben');
+      card.append(head);
+      if (info.purpose) card.append(el('div', 'hint', info.purpose));
+      const form = el('form', 'secret-form');
+      form.autocomplete = 'off';
+      const input = el('input');
+      input.type = 'password'; input.name = 'secret-value'; input.autocomplete = 'new-password';
+      input.placeholder = info.name || 'Wert'; input.setAttribute('aria-label', 'Secret ' + (info.name || ''));
+      input.spellcheck = false;
+      form.append(input);
+      card.append(form);
+      if (!owner) row.append(el('span', 'hint', 'Nur der Besitzer kann Secrets eingeben.'));
+      else {
+        const no = el('button', 'pill-btn ghost', 'Ablehnen'); no.type = 'button';
+        const yes = el('button', 'pill-btn primary', 'Sicher speichern'); yes.type = 'submit';
+        no.onclick = () => decide(a.id, 'deny', card);
+        form.onsubmit = async ev => {
+          ev.preventDefault();
+          if (!input.value) return;
+          const value = input.value; input.value = '';
+          card.querySelectorAll('button,input').forEach(x => x.disabled = true);
+          try { await api('/api/secrets/requests/' + encodeURIComponent(a.id), {value}); card.classList.add('decided'); }
+          catch (e) { (window.notice || console.warn)(e.message); card.querySelectorAll('button,input').forEach(x => x.disabled = false); }
+        };
+        form.append(yes);
+        row.append(no);
+      }
+      card.append(row);
+      card.append(el('div', 'hint', 'Der Wert geht verschlüsselt in den Secret-Speicher – nie in den Chat oder zum Modell.'));
+      return card;
+    }
+    return null;
+  }
+
   window.magAgentUI = {
+    approvalCard,
     sync(next) { if (!next) return; if (next.numa) numa = next.numa; if (next.tasks) tasks = next.tasks; render(); },
     event(ev) {
       if (ev.type === 'numa') { numa = ev.numa; if (typeof state !== 'undefined' && state) state.numa = numa; render(); return true; }

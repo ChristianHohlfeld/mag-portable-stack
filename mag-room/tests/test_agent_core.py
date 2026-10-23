@@ -146,6 +146,68 @@ class AgentCore(unittest.TestCase):
   self.assertIn('Sofort da.',self.room()[-1]['content'])
   self.request('/api/cancel',{})
 
+ def approval(self,kind):
+  return self.until(lambda:[a for a in self.request('/api/state').get('approvals') or [] if a.get('kind')==kind])[0]
+ def tool_results(self):
+  return [m['content'] for c in Router.calls for m in c['messages'] if m.get('role')=='tool']
+ def test_10_routine_needs_confirmation_and_rejection_is_final(self):
+  args={'name':'Morgenbericht','prompt':'Fasse die Nachrichten zusammen','schedule':{'kind':'daily','time':'07:00'},'idempotency_key':'morgen-bericht-1'}
+  Router.main=[call('jobs_create',args),['Vorgeschlagen.']]
+  self.request('/api/message',{'text':'Jeden Morgen Bericht','bots':['ali']})
+  a=self.approval('routine');info=json.loads(a['args'])
+  self.assertEqual((info['name'],info['prompt'],info['schedule']['time']),('Morgenbericht','Fasse die Nachrichten zusammen','07:00'))
+  self.assertFalse([j for j in self.request('/api/jobs')['jobs'] if j['name']=='Morgenbericht'])
+  self.request('/api/plugins/approvals/'+a['id'],{'decision':'deny'});time.sleep(.2);self.wait_idle()
+  self.assertTrue(any('Abgelehnt' in r for r in self.tool_results()))
+  self.assertFalse([j for j in self.request('/api/jobs')['jobs'] if j['name']=='Morgenbericht'])
+  # Same proposal again: refused at once, no new card.
+  Router.main=[call('jobs_create',args,'c9'),['Ok.']];Router.calls=[]
+  self.ask('Nochmal?')
+  self.assertFalse(self.request('/api/state').get('approvals'))
+  self.assertTrue(any('bereits abgelehnt' in r for r in self.tool_results()))
+ def test_11_routine_saved_after_confirmation(self):
+  args={'name':'Abendcheck','prompt':'Pruefe Server','schedule':{'kind':'daily','time':'20:00'},'idempotency_key':'abend-check-1'}
+  Router.main=[call('jobs_create',args),['Gespeichert.']]
+  self.request('/api/message',{'text':'Abends pruefen','bots':['ali']})
+  a=self.approval('routine');self.request('/api/plugins/approvals/'+a['id'],{'decision':'allow'})
+  time.sleep(.2);self.wait_idle()
+  j=[j for j in self.request('/api/jobs')['jobs'] if j['name']=='Abendcheck'];self.assertEqual(len(j),1,self.tool_results())
+  self.assertEqual((j[0]['created_by'],j[0]['bot']),('bot','ali'))
+  self.request('/api/jobs/'+j[0]['id'],method='DELETE')
+ def test_12_secret_card_value_never_reaches_model_room_or_logs(self):
+  VALUE='Hunter2-geheim-7f3a9c'
+  Router.main=[call('secret',{'action':'request','name':'shop_password','purpose':'Login im Shop'}),
+   call('remember',{'fact':'pw {{secret:SHOP_PASSWORD}}'},'c2'),
+   call('secret',{'action':'list'},'c3'),['Fertig.']]
+  self.request('/api/message',{'text':'Logge dich im Shop ein','bots':['ali']})
+  a=self.approval('secret');self.assertEqual(json.loads(a['args'])['name'],'SHOP_PASSWORD')
+  self.assertNotIn('value',a['args'])
+  self.request('/api/secrets/requests/'+a['id'],{'value':VALUE});time.sleep(.2);self.wait_idle()
+  res=self.tool_results()
+  self.assertTrue(any('{{secret:SHOP_PASSWORD}}' in r for r in res),res)
+  self.assertTrue(any('nur in browser_type' in r for r in res),res)  # handle refused outside allowed tools
+  lst=self.request('/api/secrets')['secrets'];self.assertEqual(lst[0]['name'],'SHOP_PASSWORD');self.assertEqual(lst[0]['bots'],['ali'])
+  # Nowhere in clear text: model requests, state, room, server log, state files.
+  self.assertNotIn(VALUE,json.dumps(Router.calls));self.assertNotIn(VALUE,json.dumps(self.request('/api/state')))
+  self.assertNotIn(VALUE,json.dumps(self.request('/api/secrets')))
+  self.log.flush();self.assertNotIn(VALUE,(pathlib.Path(self.tmp.name)/'server.log').read_text())
+  for f in self.state.rglob('*'):
+   if f.is_file():self.assertNotIn(VALUE.encode(),f.read_bytes(),f)
+  # Revoke access, then delete.
+  self.request('/api/secrets/SHOP_PASSWORD/bots',{'bots':[]},method='PUT')
+  self.assertEqual(self.request('/api/secrets')['secrets'][0]['bots'],[])
+  self.request('/api/secrets/SHOP_PASSWORD',method='DELETE');self.assertEqual(self.request('/api/secrets')['secrets'],[])
+ def test_13_secret_scrubbed_from_tool_results(self):
+  VALUE='TokenXYZ-123456789'
+  self.request('/api/secrets/API_TOKEN',{'value':VALUE,'purpose':'API'},method='PUT')
+  self.request('/api/secrets/API_TOKEN/bots',{'bots':['ali']},method='PUT')
+  # memory recall would echo the fact; a stored clear value is scrubbed on the way back.
+  Router.main=[call('memory',{'action':'journal','text':'note '+VALUE}),call('memory',{'action':'recall','query':'note'},'c2'),['Ok.']]
+  self.ask('Notiz')
+  res=self.tool_results();self.assertTrue(any('[secret:API_TOKEN]' in r for r in res),res)
+  self.assertFalse(any(VALUE in r for r in res))
+  self.request('/api/secrets/API_TOKEN',method='DELETE')
+
 FAKE_SWAP=r"""#!/usr/bin/env python3
 import json,sys,time,os
 _,cmd,node,model=sys.argv;p=os.environ['MAG_NUMA_STATE']

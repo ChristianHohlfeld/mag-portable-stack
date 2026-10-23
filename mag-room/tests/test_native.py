@@ -1815,7 +1815,11 @@ class Native(unittest.TestCase):
   self.wait_idle();Model.script=[[{'tool_calls':[{'index':0,'id':'call_jobs_'+str(time.monotonic_ns()),'function':{'name':tool,'arguments':json.dumps(args)}}]}],[text]]
   self.request('/api/message',{'text':'Führe das Jobs-Tool aus','bots':['test']})
   for _ in range(150):
-   if not Model.script and not self.request('/api/state')['busy']:break
+   st=self.request('/api/state')
+   # Bot routine proposals need the user's confirmation card: approve here.
+   for a in st.get('approvals') or []:
+    if a.get('kind')=='routine':self.request('/api/plugins/approvals/'+a['id'],{'decision':'allow'})
+   if not Model.script and not st['busy']:break
    time.sleep(.05)
   self.wait_idle()
  def test_17a_mcp_schema_order_and_ui_shared_service(self):

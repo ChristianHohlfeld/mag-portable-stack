@@ -31,6 +31,9 @@ jobs:
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Full history: the harness bundles HEAD and go build stamps VCS info.
+          fetch-depth: 0
       - name: podman
         run: command -v podman || { sudo apt-get update && sudo apt-get install -y podman; }
       # Locally (sandboxes without container egress) add --host-network on a

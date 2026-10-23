@@ -89,6 +89,10 @@ say "building $IMAGE"
 podman build -q --network host -t "$IMAGE" -f "$work/Containerfile" "$work" >/dev/null
 
 # The repo as committed, plus the working-tree diff.
+# A shallow bundle clones without parents; go build's VCS stamping then fails.
+if [[ $(git -c safe.directory="$ROOT" -C "$ROOT" rev-parse --is-shallow-repository) == true ]]; then
+  echo "e2e: $ROOT is a shallow clone; fetch full history (git fetch --unshallow)" >&2; exit 2
+fi
 git -c safe.directory="$ROOT" -C "$ROOT" bundle create "$work/repo.bundle" HEAD >/dev/null 2>&1
 git -c safe.directory="$ROOT" -C "$ROOT" diff HEAD --binary > "$work/dirty.patch"
 git -c safe.directory="$ROOT" -C "$ROOT" ls-files --others --exclude-standard -z > "$work/untracked.list"

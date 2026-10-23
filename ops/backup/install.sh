@@ -6,9 +6,16 @@ here=$(cd -- "$(dirname -- "$0")" && pwd)
 for cmd in restic jq flock sqlite3 numactl nice ionice systemctl; do
  command -v "$cmd" >/dev/null || { echo "Missing dependency: $cmd" >&2; exit 1; }
 done
-numactl -H | grep -Eq '^available: 2 nodes \(0-1\)' || {
- echo 'NUMA node 1 must exist; refuse to bind to node 0' >&2; exit 1;
-}
+# Test hosts only (ops/bootstrap.sh --test-stubs): a single-node box may
+# install the units; the node-1-bound services then fail and deploy.sh falls
+# back to running backup.sh directly.
+if [[ ${MAG_BACKUP_ALLOW_SINGLE_NODE:-0} == 1 && -e /etc/mag-stack/TEST-HOST ]]; then
+  echo 'TEST HOST: NUMA node check skipped' >&2
+else
+  numactl -H | grep -Eq '^available: 2 nodes \(0-1\)' || {
+   echo 'NUMA node 1 must exist; refuse to bind to node 0' >&2; exit 1;
+  }
+fi
 [[ ! -e /etc/mag-backup || ( -d /etc/mag-backup && ! -L /etc/mag-backup ) ]] || exit 1
 install -d -m 0700 -o root -g root /etc/mag-backup /var/lib/mag-backup/work /var/backups/mag-restic /var/backups/mag-full
 install -d -m 0711 -o root -g root /var/lib/mag-backup

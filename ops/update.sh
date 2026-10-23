@@ -5,6 +5,8 @@
 # live system is touched. deploy.sh keeps its own backup and automatic rollback.
 set -euo pipefail
 ROOT="$(cd -- "$(dirname "$0")/.." && pwd)"
+# shellcheck source=build-targets.sh
+source "$ROOT/ops/build-targets.sh"
 DRY=0 PULL=1 DEPLOY=1 AUTO=1
 for a in "$@"; do
   case "$a" in
@@ -40,7 +42,7 @@ fi
 
 phase build
 run cmake -S "$ROOT" -B "$ROOT/build" -G Ninja -DCMAKE_BUILD_TYPE=Release
-run cmake --build "$ROOT/build" -j "$(nproc)" --target magroom mag-audit-gateway mag-browser magbot-native mag-bots-publish
+run cmake --build "$ROOT/build" -j "$(nproc)" --target "${MAG_BUILD_TARGETS[@]}"
 if (( DRY )); then
   echo '+ go build -mod=mod -o build/mag-browser-webrtc ./mag-room/webrtc'
 elif [[ ! -x "$ROOT/build/mag-browser-webrtc" ]]; then

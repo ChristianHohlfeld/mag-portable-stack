@@ -11,7 +11,9 @@ WHISPER_MODEL="${MAG_WHISPER_SOURCE_MODEL:-/home/chris/models/whisper/ggml-large
 exec 8>/run/lock/mag-private-deploy.lock
 flock -n 8 || { echo 'Another MAG deploy/ingress install is running' >&2; exit 1; }
 [[ "$RELEASE_ID" =~ ^[a-zA-Z0-9._-]+$ ]] || exit 1
-for binary in magroom mag-browser magbot-native mag-bots-publish mag-det; do test -x "$SOURCE/build/$binary"; done
+# shellcheck source=build-targets.sh
+source "$SOURCE/ops/build-targets.sh"
+for binary in "${MAG_RELEASE_BINARIES[@]}"; do test -x "$SOURCE/build/$binary"; done
 # Go is used only for WebRTC/UDP; the room, browsers and VM lifecycle remain C++.
 if [[ ! -x "$SOURCE/build/mag-browser-webrtc" ]]; then
   command -v go >/dev/null || { echo 'Go >=1.23 required to build browser WebRTC gateway' >&2; exit 1; }

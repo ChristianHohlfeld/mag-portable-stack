@@ -5,6 +5,8 @@
 #   sudo bash ops/bootstrap.sh --archive /var/backups/mag-full/<id> [--download-models] [--start-llm]
 set -euo pipefail
 ROOT=$(cd -- "$(dirname -- "$(readlink -f "$0")")/.." && pwd)
+# shellcheck source=build-targets.sh
+source "$ROOT/ops/build-targets.sh"
 DRY=0
 ARCHIVE=
 DOWNLOAD=0
@@ -149,7 +151,7 @@ run bash "$ROOT/ops/gitea/install.sh"
 
 phase build
 run cmake -S "$ROOT" -B "$ROOT/build" -G Ninja -DCMAKE_BUILD_TYPE=Release
-run cmake --build "$ROOT/build" -j "$(nproc)" --target magroom mag-audit-gateway mag-browser magbot-native mag-bots-publish
+run cmake --build "$ROOT/build" -j "$(nproc)" --target "${MAG_BUILD_TARGETS[@]}"
 if (( DRY )); then
   echo '+ go build -mod=mod -o build/mag-browser-webrtc ./mag-room/webrtc'
 else

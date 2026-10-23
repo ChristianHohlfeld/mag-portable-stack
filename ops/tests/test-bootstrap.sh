@@ -19,4 +19,12 @@ grep -Fq 'bootstrap-models.sh' "$root/ops/bootstrap.sh"
 grep -Fq 'does not restart mag-llm' "$root/ops/bootstrap.sh" || grep -Fq 'not started or restarted' "$root/ops/bootstrap.sh"
 # Dry-run must not require root and must not create the staging directory.
 [[ ! -d /var/tmp/mag-bootstrap-restore ]]
+# Every binary deploy.sh requires must be in the bootstrap/update build list.
+source "$root/ops/build-targets.sh"
+for binary in "${MAG_RELEASE_BINARIES[@]}"; do
+  printf '%s\n' "${MAG_BUILD_TARGETS[@]}" | grep -Fxq "$binary"
+done
+grep -Fq 'mag-det' <<<"$out"
+grep -Fq 'MAG_RELEASE_BINARIES' "$root/ops/deploy.sh"
+grep -Fq 'MAG_BUILD_TARGETS' "$root/ops/update.sh"
 echo 'Bootstrap dry-run PASS'

@@ -1797,6 +1797,10 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
       error_json(fd, 400, "JSON required");
       return;
     }
+    if (trim(str("text")).empty()) {
+      error_json(fd, 400, "Text required");
+      return;
+    }
     Val msg = voice_message("Sprachnachricht", "", str("text"));
     emit_voice(msg);
     send_json(fd, 201, mj::dump(msg));

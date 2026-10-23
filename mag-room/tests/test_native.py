@@ -88,6 +88,12 @@ class Native(unittest.TestCase):
   if os.environ.get('MAG_BACKUP_CI_INTEGRATION') == '1':
    pathlib.Path('/tmp/mag-backup-ci/state-path').write_text(str(cls.state))
   cls.state.joinpath('agents.json').write_text(json.dumps([{'id':'test','name':'Test','vm':'','memory':[]}]))
+  # A stale bot-published UI must be moved aside, never served.
+  cls.state.joinpath('frontend.html').write_text('<!doctype html><html><head><script src="/static/message-audio-local.js"></script></head><body>BOT-OVERRIDE'+' '*300+'</body></html>')
+  # Any server-side TTS would call espeak-ng; this stand-in records it.
+  fakebin=pathlib.Path(cls.tmp.name)/'bin';fakebin.mkdir();cls.espeak_log=fakebin/'espeak.log'
+  (fakebin/'espeak-ng').write_text('#!/bin/sh\necho "$@" >> "%s"\n'%cls.espeak_log);(fakebin/'espeak-ng').chmod(0o755)
+  os.environ['PATH']=str(fakebin)+os.pathsep+os.environ.get('PATH','')
   cls.whois_socket=str(pathlib.Path(cls.tmp.name)/'tailscaled.sock')
   cls.whois=WhoisUnix(cls.whois_socket,WhoisFixture)
   threading.Thread(target=cls.whois.serve_forever,daemon=True).start()
@@ -1090,6 +1096,48 @@ class Native(unittest.TestCase):
     time.sleep(.05)
    else:self.fail('Blank model response left the bot without feedback')
   finally:Model.reply=None
+ def test_10v_speak_posts_text_voice_message_without_server_tts(self):
+  Model.script=[[{'tool_calls':[{'index':0,'id':'call_speak_1','function':{'name':'speak','arguments':'{"text":"Hallo Chris, hier spricht Thorsten."}'}}]}],['Gesagt.']]
+  files_before=len(self.request('/api/state').get('files',[]))
+  self.request('/api/message',{'text':'Sag Hallo','bots':['test']})
+  voice=None
+  for _ in range(200):
+   voice=next((m for m in self.request('/api/state')['room'] if m.get('kind')=='voice'),None)
+   if voice:break
+   time.sleep(.05)
+  self.wait_idle()
+  self.assertIsNotNone(voice,'speak must post a voice message')
+  self.assertEqual(voice['content'],'Hallo Chris, hier spricht Thorsten.')
+  self.assertEqual(voice['role'],'assistant');self.assertEqual(voice.get('bot'),'test')
+  self.assertNotIn('file',voice,'no server-generated audio attachment')
+  state=self.request('/api/state')
+  self.assertEqual(len(state.get('files',[])),files_before)
+  self.assertFalse(any((f.get('name') or '').endswith('.wav') for f in state.get('files',[])))
+  api=self.request('/api/speak',{'text':'Direkt gesprochen'})
+  self.assertEqual(api['kind'],'voice');self.assertEqual(api['content'],'Direkt gesprochen');self.assertNotIn('file',api)
+  self.error(400,'/api/speak',{'text':'   '})
+  self.assertFalse(self.espeak_log.exists(),'espeak-ng must never run on the server')
+  src=(ROOT/'mag-room/native/magroom.cpp').read_text()
+  self.assertNotIn('espeak',src);self.assertNotIn('sprache.wav',src)
+  html=self.request('/',raw=True).decode()
+  self.assertIn("msg.kind==='voice'",html);self.assertIn('voice-bubble',html)
+ def test_10w_room_serves_repo_ui_never_bot_override(self):
+  html=self.request('/',raw=True).decode()
+  self.assertNotIn('BOT-OVERRIDE',html);self.assertNotIn('message-audio-local.js',html)
+  self.assertIn('/static/message-audio.js',html)
+  self.assertIn('BOT-OVERRIDE',next(self.state.glob('frontend.html.bak-*')).read_text(),'override kept as timestamped backup')
+  self.assertFalse(self.state.joinpath('frontend.html').exists())
+  self.error(410,'/api/frontend',{'html':'x'})
+  self.error(410,'/api/frontend',method='DELETE')
+  # Even a file dropped in at runtime is never served.
+  self.state.joinpath('frontend.html').write_text('<html><body>BOT-OVERRIDE'+' '*300+'</body></html>')
+  try:self.assertNotIn('BOT-OVERRIDE',self.request('/',raw=True).decode())
+  finally:self.state.joinpath('frontend.html').unlink(missing_ok=True)
+  src=(ROOT/'mag-room/native/magroom.cpp').read_text()
+  self.assertNotIn('"name":"publish_frontend"',src);self.assertNotIn('publish_frontend (alle',src)
+  for call in Model.calls:
+   names=[t['function']['name'] for t in call.get('tools') or []]
+   self.assertNotIn('publish_frontend',names)
  def test_11_frontend_live_contract(self):
   html=self.request('/',raw=True).decode()
   self.assertIn('id="terminal"',html)

@@ -94,6 +94,13 @@ cp -a "$SOURCE/build/terminal-assets/." "$RELEASE/web/static/"
 # If staging fails, set -e aborts before the current-release symlink changes.
 bash "$SOURCE/ops/vendor-speech-assets.sh" "$SOURCE/build/speech-assets"
 cp -a "$SOURCE/build/speech-assets/." "$RELEASE/web/static/"
+# Piper read-aloud voices (CC0). Optional: without them the room falls back
+# to the best system voice, so a failed download never blocks a deploy.
+if bash "$SOURCE/ops/vendor-tts-assets.sh" "$SOURCE/build/tts-assets"; then
+  cp -a "$SOURCE/build/tts-assets/." "$RELEASE/web/static/"
+else
+  echo "WARN: Piper TTS assets unavailable; read-aloud uses system voices" >&2
+fi
 cp -a "$SOURCE/ops/." "$RELEASE/ops/"
 find "$RELEASE/ops" -type d -name '__pycache__' -prune -exec rm -rf {} +
 find "$RELEASE/ops" -name '*.pyc' -delete

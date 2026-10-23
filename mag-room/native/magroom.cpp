@@ -4836,14 +4836,16 @@ static std::string qparam(const std::string &query, const std::string &key) {
 }
 // Versioned assets are immutable. Anything else, including the app shell,
 // must not be stored.
+// speech-<12 hex>/<leaf> (Moonshine STT) or tts-<12 hex>/<leaf> (Piper TTS).
 static bool hashed_speech_asset(const std::string &name) {
-  if (name.rfind("speech-", 0) != 0 || name.size() < 21 || name[19] != '/')
+  const size_t p = name.rfind("speech-", 0) == 0 ? 7 : name.rfind("tts-", 0) == 0 ? 4 : 0;
+  if (!p || name.size() < p + 14 || name[p + 12] != '/')
     return false;
-  for (size_t i = 7; i < 19; ++i)
+  for (size_t i = p; i < p + 12; ++i)
     if (!((name[i] >= '0' && name[i] <= '9') ||
           (name[i] >= 'a' && name[i] <= 'f')))
       return false;
-  const auto leaf = name.substr(20);
+  const auto leaf = name.substr(p + 13);
   if (leaf.empty() || leaf.find('/') != std::string::npos ||
       leaf.find(char(92)) != std::string::npos || leaf.find("..") != std::string::npos)
     return false;

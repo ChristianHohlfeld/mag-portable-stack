@@ -292,7 +292,20 @@
     }
   }
 
-  function render() { css(); paintChips(); paintHub(); paintTasks(); loadSecrets(false); if (sheet?.open) fillSheet(); }
+  // Read-aloud voice choice next to the language setting.
+  async function voiceSelect() {
+    const lang = document.getElementById('language');
+    if (!lang || document.getElementById('tts-voice') || !window.magMessageAudio?.voiceOptions) return;
+    const sel = el('select', 'side-select'); sel.id = 'tts-voice'; sel.setAttribute('aria-label', 'Vorlesestimme');
+    sel.style.marginTop = '8px';
+    lang.after(sel);
+    for (const v of await window.magMessageAudio.voiceOptions()) { const o = el('option', '', 'Vorlesen: ' + v.label); o.value = v.id; sel.append(o); }
+    sel.value = window.magMessageAudio.voicePref();
+    if (sel.selectedIndex < 0) sel.value = 'system';
+    sel.onchange = () => window.magMessageAudio.setVoice(sel.value);
+  }
+
+  function render() { css(); voiceSelect(); paintChips(); paintHub(); paintTasks(); loadSecrets(false); if (sheet?.open) fillSheet(); }
 
   function schedText(sc) {
     if (!sc || typeof sc !== 'object') return 'ohne Zeitplan';

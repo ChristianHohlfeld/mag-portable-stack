@@ -170,7 +170,7 @@ if (( rc != 0 )) || ! grep -q 'MAG-GOLDEN-BUILD-OK' "$work/console.log"; then
   tail -n 40 "$work/console.log" >&2 || true
   exit 1
 fi
-chrome=$(grep -ao 'MAG-GOLDEN-CHROME .*' "$work/console.log" | tail -1 | tr -d '\r' | sed 's/^MAG-GOLDEN-CHROME //')
+chrome=$(grep -ao 'MAG-GOLDEN-CHROME .*' "$work/console.log" | tail -1 | tr -d '\r' | sed 's/^MAG-GOLDEN-CHROME //; s/[[:space:]]*$//')
 
 # Plain re-write drops unused clusters; the result has no backing file.
 qemu-img convert -f qcow2 -O qcow2 "$work/disk.qcow2" "$work/golden.qcow2"

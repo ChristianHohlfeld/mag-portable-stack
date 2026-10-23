@@ -34,6 +34,7 @@ class H(BaseHTTPRequestHandler):
         b = b"" if obj is None else json.dumps(obj).encode()
         self.send_response(code); self.send_header("Content-Length", str(len(b))); self.end_headers(); self.wfile.write(b)
     def handle_any(self):
+        if self.path == "/_state": return self.reply(200, {"users": users, "orgs": {k: sorted(v["owners"]) for k, v in orgs.items()}})
         if self.headers.get("Authorization") != "token tok-SECRET-value": return self.reply(401, {})
         n = int(self.headers.get("Content-Length") or 0)
         body = json.loads(self.rfile.read(n) or b"{}")
@@ -56,7 +57,6 @@ class H(BaseHTTPRequestHandler):
             list(orgs.values())[int(r[1]) // 10]["owners"].add(r[2]); return self.reply(204)
         if (r := re.fullmatch(r"/orgs/([^/]+)/members/([^/]+)", p)) and m == "DELETE":
             orgs[r[1]]["owners"].discard("admin"); return self.reply(204)
-        if p == "/_state": return self.reply(200, {"users": users, "orgs": {k: sorted(v["owners"]) for k, v in orgs.items()}})
         self.reply(404, {})
     do_GET = do_POST = do_PATCH = do_PUT = do_DELETE = handle_any
 HTTPServer(("127.0.0.1", int(sys.argv[1])), H).serve_forever()
@@ -72,7 +72,7 @@ grep -Fq 'ERROR: Gitea rights for magbot-agentbroken not applied' "$tmp/out1"
 grep -Fq 'magbot-agent1: admin=false restricted=true org=bots-agent1 owner' "$tmp/out1"
 grep -Fq 'magbot-agent3: admin=false restricted=true org=bots-agent3 owner' "$tmp/out1"
 ! grep -q '/admin/users/[^/]*/orgs' "$tmp/api.log"
-state=$(curl -sS -H 'Authorization: token tok-SECRET-value' "http://127.0.0.1:$port/api/v1/_state")
+state=$(curl -sS "http://127.0.0.1:$port/_state")
 jq -e '[.users[] | .admin == false and .restricted == true and .allow_create_organization == false] | all' <<<"$state" >/dev/null
 jq -e '.orgs == {"bots-agent1": ["magbot-agent1"], "bots-agent3": ["magbot-agent3"]}' <<<"$state" >/dev/null
 # Rerun for the existing bots: success, no org created, no error output.

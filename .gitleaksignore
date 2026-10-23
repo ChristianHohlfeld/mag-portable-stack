@@ -1,2 +1,4 @@
 # Dummy fixture value in a test (renamed in a later commit), not a credential.
 4b7af49543a4690a4b46bb450ffe0e8cd04740c5:mag-room/tests/test_live_highlight.py:generic-api-key:18
+# Fake-API test header with a dummy token (removed in the next commit), not a credential.
+339703549f388ebb1ede533875d5a38d85ca602c:ops/tests/test-gitea-bot-rights.sh:curl-auth-header:75

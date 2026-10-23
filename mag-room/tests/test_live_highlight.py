@@ -15,7 +15,7 @@ PAGE="""<html><body style="margin:0;font:20px sans-serif">
 <button id="go" style="position:absolute;left:300px;top:360px;width:160px;height:48px">Anmelden</button></body></html>"""
 LOCATE="""(sel)=>{let e=document.querySelector(sel);let r=e.getBoundingClientRect();
  return {x:r.x,y:r.y,w:r.width,h:r.height,password:e.type==='password'}}"""
-SECRET='Hunter2-geheim-55'
+FIELD_VALUE='Hunter2-geheim-55'  # dummy test value, not a credential
 class LiveHighlight(unittest.TestCase):
  def test_overlay_click_type_secret_zoom_toggle(self):
   try:from playwright.sync_api import sync_playwright
@@ -59,11 +59,11 @@ class LiveHighlight(unittest.TestCase):
    u=boxes['user'];ev({'action':'type','box':u,'text':'chris@example.org'});assert_box(u)
    room.wait_for_function("()=>document.querySelector('#browser-overlay .bo-type')?.textContent.includes('chris@example.org')",timeout=4000)
    # secret field: dots only (server sends masked; client also refuses a leaked value)
-   p=boxes['pw'];ev({'action':'type','box':p,'masked':True,'text':SECRET});assert_box(p)
+   p=boxes['pw'];ev({'action':'type','box':p,'masked':True,'text':FIELD_VALUE});assert_box(p)
    self.assertIn('secret',room.locator('#browser-overlay .lh-box').get_attribute('class'))
    room.wait_for_timeout(600)
    self.assertIn('••••',room.locator('#browser-overlay .bo-type').text_content())
-   self.assertNotIn(SECRET,room.content())
+   self.assertNotIn(FIELD_VALUE,room.content())
    room.screenshot(path=str(ART/'live_highlight_secret.png'))
    # zoom/pan: the outline follows the transformed stream
    room.evaluate('magViewTools.zoomAt(2)');ev({'action':'target','box':g});assert_box(g)

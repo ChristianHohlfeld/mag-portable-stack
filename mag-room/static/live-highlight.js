@@ -17,6 +17,7 @@
   const css = document.createElement('style');
   css.textContent = `
 #browser-overlay.lh-off{display:none}
+#browser-overlay .bo-type{width:max-content;max-width:min(320px,60vw)}
 .lh-box{position:absolute;border:2px solid #4da3ff;border-radius:6px;box-shadow:0 0 0 3px #4da3ff40,0 0 18px #4da3ff80;background:#4da3ff14;pointer-events:none;z-index:1;animation:lh-pulse 1s ease-in-out infinite;transition:opacity .4s}
 .lh-box.secret{border-color:#f5a623;box-shadow:0 0 0 3px #f5a62340;background:#f5a62314}
 .lh-box.fade{opacity:0}
@@ -27,12 +28,20 @@
 `;
   document.head.append(css);
 
+  // The stream is letterboxed with CSS object-position (top centre today).
+  function objectPos(c) {
+    const v = (getComputedStyle(c).objectPosition || '50% 50%').split(' ');
+    const f = t => t === 'left' || t === 'top' ? 0 : t === 'right' || t === 'bottom' ? 1 : t.endsWith('%') ? parseFloat(t) / 100 : 0.5;
+    return [f(v[0] || '50%'), f(v[1] || '50%')];
+  }
+  window.magStreamOrigin = objectPos;
   function rect() {
     const c = document.getElementById('screen');
     if (!c || c.hidden) return null;
     const cr = c.getBoundingClientRect(), vr = view.getBoundingClientRect();
     const s = Math.min(cr.width / 1440, cr.height / 900);
-    return {x: cr.left - vr.left + (cr.width - 1440 * s) / 2, y: cr.top - vr.top + (cr.height - 900 * s) / 2, s};
+    const [px, py] = objectPos(c);
+    return {x: cr.left - vr.left + (cr.width - 1440 * s) * px, y: cr.top - vr.top + (cr.height - 900 * s) * py, s};
   }
   let box = null, boxTimer = 0;
   function drawBox(b, secret) {

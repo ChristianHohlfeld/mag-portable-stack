@@ -3,6 +3,7 @@
 #include "common.hpp"
 #include "json.hpp"
 #include "browser_recovery.hpp"
+#include "browser_events.hpp"
 #include "pages.hpp"
 
 #include <arpa/inet.h>
@@ -2584,27 +2585,9 @@ static std::string secret_scrub(const std::string &bot, std::string text);
 static void emit_browser_action(const std::string &bot, const std::string &action,
                                 const Val *pos, const std::string &text = "",
                                 const Val *box = nullptr, bool masked = false) {
-  Val e = Val::object();
-  // Live highlight: target element box (viewport CSS px) for the overlay.
-  if (box && box->isObj() && box->find("w")) {
-    Val b = Val::object();
-    for (const char *k : {"x", "y", "w", "h"}) b[k] = box->find(k) ? box->find(k)->asNum() : 0;
-    e["box"] = b;
-    if (!pos) { e["x"] = b["x"].asNum() + b["w"].asNum() / 2; e["y"] = b["y"].asNum() + b["h"].asNum() / 2; }
-  }
-  if (masked) e["masked"] = true;
-  e["type"] = "browser_action";
-  e["bot"] = bot;
-  e["action"] = action;
-  if (pos && pos->isObj() && pos->find("x") && pos->find("y")) {
-    e["x"] = pos->find("x")->asNum();
-    e["y"] = pos->find("y")->asNum();
-  }
-  // Secret or password fields: dots only, never the value (not even scrubbed).
-  if (masked) e["text"] = std::string("\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022");
-  else if (!text.empty())
-    e["text"] = secret_scrub(bot, text).substr(0, 400); // typed passwords stay hidden
-  publish(mj::dump(e));
+  // Unmasked text is still scrubbed of any secret value this bot may use.
+  publish(mj::dump(browser_action_val(bot, action, pos,
+                                      masked ? "" : secret_scrub(bot, text), box, masked)));
 }
 static Val browser_json(const std::string &vm, const std::string &path,
                         const std::string &method = "GET",

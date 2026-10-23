@@ -1,10 +1,8 @@
 name: Publish MAG-Stack 4.0.4
+# One-shot release workflow (4.0.4 is published). Manual only, so it no longer
+# starts on pushes; candidate for deletion once 4.0.4 is confirmed.
 on:
-  push:
-    branches: [main]
-    paths:
-      - ".github/workflows/publish-mag-stack-4.0.4.yml"
-      - "docs/releases/mag-stack-4.0.4.md"
+  workflow_dispatch:
 permissions:
   contents: write
 concurrency:

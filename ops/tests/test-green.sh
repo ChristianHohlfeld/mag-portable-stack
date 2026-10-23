@@ -40,6 +40,19 @@ jq "$jqexpr" <<<"{\"check_runs\":[{\"name\":\"native\",\"status\":\"$st\",\"conc
 GH
 COUNTER="$tmp/n" PROMOTE_SLEEP=0 bash "$root/ops/ci/promote-green.sh" >/dev/null
 git fetch -q origin; [[ $(git rev-parse origin/green) == "$(git rev-parse origin/main)" && $(cat "$tmp/n") == 3 ]]
+# Self-hosted runner without gh: same decision through curl + GH_TOKEN.
+git -c user.name=t -c user.email=t@t commit -q --allow-empty -m four && git push -q origin HEAD:main && git fetch -q origin
+cat > "$tmp/bin/curl" <<'CURL'
+#!/usr/bin/env bash
+for a in "$@"; do [[ $a == "Authorization: Bearer fake-token" ]] && ok=1; done
+[[ ${ok:-0} == 1 ]] || exit 22
+echo '{"check_runs":[{"name":"native","status":"completed","conclusion":"success"}]}'
+CURL
+chmod +x "$tmp/bin/curl"
+MAG_PROMOTE_NO_GH=1 GH_TOKEN=fake-token PROMOTE_WAIT=0 bash "$root/ops/ci/promote-green.sh" >/dev/null
+git fetch -q origin; [[ $(git rev-parse origin/green) == "$(git rev-parse origin/main)" ]]
+rm -f "$tmp/bin/curl"
+grep -Fq "fromJSON(vars.MAG_RUNS_ON" "$root/.github/workflows/green.yml"
 grep -Fq 'fetch -q origin green' "$root/ops/auto-update/auto-update.sh"
 grep -Fq 'merge -q --ff-only origin/green' "$root/ops/auto-update/auto-update.sh"
 ! grep -Eq 'origin/main' "$root/ops/auto-update/auto-update.sh"

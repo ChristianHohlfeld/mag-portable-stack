@@ -26,6 +26,59 @@ to log in to the server. Downloads are pinned by SHA256.
   in `.github/workflows/green.yml` deploys right after `green` moves instead of
   waiting for the 2-minute timer.
 
+## CI when GitHub-hosted runners do not start (`startup_failure`)
+
+Since 2026-10-20 every Actions run in this private repository ended in
+`startup_failure` with zero jobs. That pattern almost always means the
+account's Actions minutes or spending limit is exhausted, or a billing
+problem (failed payment) exists. Consequence: `green` stops moving and the
+auto-update stops deploying.
+
+What Chris has to do (in this order):
+
+1. **Billing check:** GitHub → Settings (personal account) → Billing and
+   licensing → Usage / Budgets: Actions minutes used, spending limit, failed
+   payment. If a payment failed, GitHub may block *all* Actions jobs,
+   including self-hosted ones, until it is fixed. If only the included
+   minutes are used up, self-hosted runners keep working (they cost no
+   minutes).
+2. **Register the GitHub runner on MAG:** repo → Settings → Actions → Runners
+   → New self-hosted runner → copy the registration token (valid 1 hour)
+   into `/etc/credstore/mag-github-runner.token` (root, 0600). The next
+   deploy, auto-update or `sudo bash ops/runners/install.sh` registers it
+   with the label `mag` and deletes the token file.
+3. **Point the workflows at it:** repo → Settings → Secrets and variables →
+   Actions → Variables → New repository variable
+   `MAG_RUNS_ON` = `["self-hosted","mag"]` (JSON). The jobs in `native.yml`,
+   `backup.yml`, `pages-native.yml`, `private-nginx.yml` and the
+   `promote-green` job in `green.yml` use
+   `runs-on: ${{ fromJSON(vars.MAG_RUNS_ON || '"ubuntu-24.04"') }}`; without
+   the variable they stay on `ubuntu-24.04`. Optionally also set
+   `MAG_SELF_HOSTED=on` for the instant `deploy-live` job.
+4. Check: push to `main`, the runs appear under Actions with runner
+   `mag-host`, `promote-green` moves `green`, MAG deploys within 2 minutes.
+
+Differences on the self-hosted runner (unprivileged, no sudo, no apt):
+
+- Steps that need root are skipped there (`if: runner.environment ==
+  'github-hosted'`): package installation, the nft egress test, the Pages
+  root sandbox, the passwordless restic migration and the nginx `-t` check.
+  Build dependencies come from `ops/bootstrap.sh` on the host.
+- `image-paste.yml`, `speech.yml` (Playwright browsers) and
+  `e2e-bootstrap.yml` (root + podman) stay on GitHub-hosted runners. A run
+  that cannot start creates no check run, so it does not block `green`.
+- `ops/ci/promote-green.sh` uses `gh` when present, otherwise curl with
+  `GH_TOKEN` against the GitHub API, so it works on the host without `gh`.
+
+Gitea Actions alternative (no GitHub billing involved): mirror the repo into
+the local Gitea with `sudo bash ops/gitea/mirror-github.sh` (tokens in
+`/etc/credstore/gitea-mirror.token` and `/etc/credstore/github-mirror.token`,
+see the script header). `.gitea/workflows/ci.yml` then runs
+`ops/ci/self-hosted-checks.sh` on the Gitea runner (`runs-on: mag`). Whether
+Gitea triggers workflows for pull-mirror syncs depends on the Gitea version;
+check the Actions tab after the first sync. Gitea results do not move
+GitHub's `green`; the auto-update keeps following `green` on GitHub.
+
 ## Deploying from a workflow
 
 Write to `/var/lib/mag-deploy/request`. `mag-deploy-request.path` then starts

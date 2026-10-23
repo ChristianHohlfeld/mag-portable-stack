@@ -7,12 +7,13 @@ on:
   pull_request:
 jobs:
   native:
-    runs-on: ubuntu-24.04
+    runs-on: ${{ fromJSON(vars.MAG_RUNS_ON || '"ubuntu-24.04"') }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0  # Gitleaks PR-commit range needs complete git history
       - name: Install build dependencies
+        if: runner.environment == 'github-hosted'
         run: sudo apt-get update && sudo apt-get install -y ninja-build libssl-dev libcurl4-openssl-dev libarchive-dev
       - name: Build
         run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release && cmake --build build -j 4
@@ -22,6 +23,7 @@ jobs:
           ! grep -Fq 'mag-backup-clear.timer' mag-room/native/routes.hpp
           ! grep -Fq 'start mag-backup-clear.service' mag-room/native/routes.hpp
       - name: Tailscale API nft IPv4/v6 egress regression without modifying host firewall
+        if: runner.environment == 'github-hosted'
         run: sudo bash ops/audit/tests/test-tail-egress.sh
       - name: Owner-only backup and console access contract
         run: bash ops/private-access/tests/test-owner-boundaries.sh
@@ -52,6 +54,7 @@ jobs:
           bash -n ops/deepseek/numa-isolation.sh ops/deepseek/numa-bench.sh
           bash -n ops/deepseek/prompt-cache-switch.sh
       - name: nginx syntax without a real Tailnet listener
+        if: runner.environment == 'github-hosted'
         run: |
           sudo apt-get install -y nginx
           openssl req -x509 -newkey rsa:2048 -nodes -days 1 -keyout /tmp/mag-ci.key -out /tmp/mag-ci.crt -subj '/CN=mag.stardenburg.de' 2>/dev/null
@@ -88,6 +91,12 @@ jobs:
         run: bash ops/trust/test-trust.sh
       - name: Blank-host bootstrap dry run
         run: bash ops/tests/test-bootstrap.sh
+      - name: Gitea pull mirror against a fake API
+        run: bash ops/tests/test-gitea-mirror.sh
+      - name: New ops scripts pass shellcheck
+        run: |
+          if ! command -v shellcheck >/dev/null; then echo 'shellcheck not installed on this runner; skipped'; exit 0; fi
+          shellcheck ops/vm/build-golden.sh ops/bootstrap-voice.sh ops/deepseek/bootstrap-runtimes.sh ops/tailscale/install.sh ops/private-access/install-lego.sh ops/gitea/mirror-github.sh ops/tests/e2e-bootstrap.sh ops/ci/promote-green.sh ops/ci/self-hosted-checks.sh
       - name: Update script dry run
         run: bash ops/tests/test-update.sh
       - name: One-shot legacy cleanup in a sandbox

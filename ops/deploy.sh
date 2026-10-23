@@ -157,6 +157,13 @@ rollback() {
 }
 deployment_started=0
 room_switched=0
+# Units are Type=simple: `systemctl restart` returns before the process
+# listens. Retry a local health URL for up to 30 s, then one strict check.
+wait_http() {
+  local i
+  for i in {1..30}; do curl -fsS --max-time 2 -o /dev/null "$1" 2>/dev/null && break; sleep 1; done
+  curl -fsS --max-time 5 "$1"
+}
 deploy_exit() {
  local rc=$?
  trap - EXIT ERR INT TERM
@@ -284,9 +291,8 @@ systemctl restart mag-120.service
 systemctl enable --now mag-browser-webrtc.service
 systemctl restart mag-browser-webrtc.service
 # /readyz = Raum bereit (Modellstatus steht im JSON, ist aber kein Rollback-Grund)
-for i in {1..30}; do if curl -fsS --max-time 2 http://127.0.0.1:8766/readyz >/dev/null; then break; fi; sleep 1; done
-curl -fsS --max-time 5 http://127.0.0.1:8766/readyz
-curl -fsS --max-time 5 http://127.0.0.1:18784/health
+wait_http http://127.0.0.1:8766/readyz
+wait_http http://127.0.0.1:18784/health
 # Revalidate the new room through the already-verified nginx ingress.
 bash "$NGINX_SYNC" smoke
 /usr/local/bin/magbot status

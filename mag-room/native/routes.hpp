@@ -1289,13 +1289,24 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
     bool interrupt = false;
     if (auto in = body.find("interrupt"); in && in->type == Val::BOOL)
       interrupt = in->asBool();
-    bool has_pending;
+    // Earlier queued messages for the same model lanes keep their order.
+    // Items held by a Stop never block a new message.
+    bool queue_first = false;
     {
+      std::set<Lane *> mine;
+      for (auto &b : ids)
+        if (Lane *l = lane_of(b)) mine.insert(l);
       std::lock_guard<std::mutex> lk(JOB_MTX);
-      has_pending = !PENDING.empty() || QUEUE_PAUSED;
+      for (auto &p : PENDING) {
+        if (p.held) continue;
+        for (auto &b : p.ids)
+          if (Lane *l = lane_of(b); l && mine.count(l)) queue_first = true;
+      }
     }
-    if ((lanes_busy(ids) || has_pending) && !interrupt) {
-      // Not in the transcript yet: shown as a queue chip, dispatched later.
+    if ((lanes_busy(ids) || queue_first) && !interrupt) {
+      // Not in the transcript yet: shown as a queue chip. A running turn of
+      // the addressed bot reads it at its next tool step; otherwise it is
+      // the next turn of that bot, before autonomy and scheduled jobs.
       Val item = enqueue_pending(str("text"), ids, think, actor.name, actor.login);
       JOB_CV.notify_all();
       Val out = Val::object();
@@ -1305,7 +1316,7 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
       send_json(fd, 202, mj::dump(out));
       return;
     }
-    if (interrupt && (lanes_busy(ids) || QUEUE_PAUSED)) {
+    if (interrupt && lanes_busy(ids)) {
       // Same path as "Jetzt senden": the cancelled turn first stores its
       // partial answer, then this message follows as the next user turn.
       Val item = enqueue_pending(str("text"), ids, think, actor.name, actor.login);
@@ -1496,27 +1507,28 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
     return;
   }
   if (m == "POST" && path == "/api/cancel") {
-    // ChatGPT-style stop: cancel only the running turn (closes the llama
-    // stream, kills a running run_command); the queue is NOT paused.
+    // The composer Stop (Esc): every running turn, tool command, job and
+    // prewarm ends now; queued messages are held, the next message runs.
     // Optional "bot": stop only that bot's lane; the others keep answering.
-    const std::string bot = str("bot");
+    const std::string bot = has_json ? str("bot") : "";
     if (!bot.empty()) {
-      send_json(fd, 200, cancel_bots({bot}, true) ? "{\"cancelled\":true}" : "{\"cancelled\":false}");
+      const bool found = cancel_bots({bot}, true);
+      {
+        std::lock_guard<std::mutex> lk(JOB_MTX);
+        if (AUTO_OWNER == bot) { AUTO_READY = false; AUTO_TURNS_LEFT = 0; }
+      }
+      send_json(fd, 200, found ? "{\"cancelled\":true}" : "{\"cancelled\":false}");
       return;
     }
-    if (!BUSY.load()) {
-      send_json(fd, 200, "{\"cancelled\":false}"); return;
-    }
-    cancel_active(true);
-    send_json(fd, 200, "{\"cancelled\":true}");
+    send_json(fd, 200, mj::dump(user_stop(false)));
     return;
   }
   if (m == "POST" && path == "/api/stop") {
-    stop_autotalk(true);
-    Val e = Val::object();
-    e["type"] = "stopped";
-    publish(mj::dump(e));
-    send_json(fd, 200, "{\"stopped\":true}");
+    // "Alles anhalten": like Stop, and scheduled jobs and the autonomy
+    // switch stay off until the user resumes.
+    Val out = user_stop(true);
+    out["stopped"] = true;
+    send_json(fd, 200, mj::dump(out));
     return;
   }
   if (m == "POST" && path == "/api/reset") {

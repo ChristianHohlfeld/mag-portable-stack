@@ -126,8 +126,10 @@ class MemoryDialogBrowser(unittest.TestCase):
                     # Opens the existing bot action, including when the mobile
                     # sidebar is overlaid (native click handler, not a fake DOM).
                     page.evaluate("""() => {
-                      const buttons=[...document.querySelectorAll('#agents .agent button')];
-                      const btn=buttons.find(b=>b.textContent.trim()==='Erinnerung');
+                      const more=document.querySelector('#agents .agent .agent-more');
+                      if(!more)throw Error('bot action menu not available');
+                      more.click();
+                      const btn=[...document.querySelectorAll('.pop-menu [role=menuitem]')].find(b=>b.textContent.trim()==='Erinnerung');
                       if(!btn)throw Error('memory action not available');
                       btn.click();
                     }""")

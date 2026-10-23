@@ -21,10 +21,11 @@ permissions:
   pull-requests: read
 jobs:
   pages:
-    runs-on: ubuntu-24.04
+    runs-on: ${{ fromJSON(vars.MAG_RUNS_ON || '"ubuntu-24.04"') }}
     steps:
       - uses: actions/checkout@v4
       - name: Install nginx and C++ link dependencies
+        if: runner.environment == 'github-hosted'
         run: sudo apt-get update && sudo apt-get install -y nginx libcurl4-openssl-dev libarchive-dev libssl-dev jq dnsutils
       - name: Native C++ unit tests + MAG compilation
         run: |
@@ -34,10 +35,12 @@ jobs:
       - name: Tailnet-only, public opt-in, lego v5 and DNS-01 onboarding tests
         run: bash ops/pages/tests/test-pages-ops.sh
       - name: Full Pages lifecycle and root cleanup regressions
+        env:
+          RUNNER_ENVIRONMENT: ${{ runner.environment }}
         run: |
           bash ops/pages/tests/test-pages-lifecycle.sh
           bash ops/pages/tests/test-pages-tools.sh
-          sudo bash ops/pages/tests/test-pages-sandbox.sh
+          if [ "$RUNNER_ENVIRONMENT" = github-hosted ]; then sudo bash ops/pages/tests/test-pages-sandbox.sh; fi
           for script in ops/pages/*.sh ops/pages/tests/*.sh; do
             bash -n "$script"
           done
@@ -52,7 +55,7 @@ jobs:
           ! grep -R -E 'pages-policy.sh \*|sudo -n /usr/local/lib/mag-pages/pages-gc.sh' ops/pages
           ! grep -R -E 'systemctl (restart|stop) (mag-llm|deepseek)' ops/pages
   secrets:
-    runs-on: ubuntu-24.04
+    runs-on: ${{ fromJSON(vars.MAG_RUNS_ON || '"ubuntu-24.04"') }}
     steps:
       - uses: actions/checkout@v4
         with:

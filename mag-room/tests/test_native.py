@@ -442,18 +442,21 @@ class Native(unittest.TestCase):
   self.assertIn('Netz: OFFLINE',c[-1]['messages'][1]['content']);self.request('/api/offline',{'on':False})
   self.assertTrue(any(t['function']['name']=='web_search' for t in c[-1]['tools']))
 
- def test_15g_stop_pauses_permanently(self):
+ def test_15g_stop_holds_queue_but_never_blocks_new_messages(self):
   self.wait_idle();Model.script=[self._slow('out',60)];self.request('/api/autotalk',{'on':True})
   self.request('/api/message',{'text':'S-Eins','bots':['test']});self._busy()
   self.request('/api/message',{'text':'S-Zwei','bots':['test']})
   self.request('/api/stop',{});s=self.wait_idle();self.assertTrue(s['queue_paused']);self.assertFalse(s['autotalk'])
+  self.assertTrue(s['pending'][0].get('held'),'items queued before Stop are held')
   self.proc.kill();self.proc.wait(timeout=5);self.log.close();self.start()
   n=len(Model.calls);time.sleep(2.5);s=self.request('/api/state')
-  self.assertTrue(s['queue_paused'],'pause survives restart');self.assertEqual(len(Model.calls),n,'nothing may run while paused')
-  self.request('/api/autotalk',{'on':True});r=self.request('/api/message',{'text':'S-Drei','bots':['test']});self.assertTrue(r['queued'])
-  time.sleep(1.5);self.assertEqual(len(Model.calls),n,'neither autonomy nor a new message resumes a pause')
+  self.assertTrue(s['queue_paused'],'pause survives restart');self.assertEqual(len(Model.calls),n,'held items never run by themselves')
+  Model.script=[['Drei.']];r=self.request('/api/message',{'text':'S-Drei','bots':['test']})
+  self.assertFalse(r.get('queued'),'a new message is never blocked by a Stop')
+  s=self._settle(lambda s:not s['busy'] and s['room'][-1].get('content')=='Drei.')
+  self.assertEqual([p['text'] for p in s['pending']],['S-Zwei'],'held item still waits');self.assertTrue(s['queue_paused'])
   Model.script=[];self.request('/api/queue/resume',{})
-  s=self._settle(lambda s:not s['busy'] and not s['pending'] and s['room'][-2].get('content')=='S-Drei')
+  s=self._settle(lambda s:not s['busy'] and not s['pending'] and s['room'][-2].get('content')=='S-Zwei')
   self.assertFalse(s['queue_paused']);self.request('/api/autotalk',{'on':False})
  def test_15h_offline_is_enforced_and_persistent(self):
   self.wait_idle();NETLOG.unlink(missing_ok=True)
@@ -555,7 +558,8 @@ class Native(unittest.TestCase):
   self.request('/api/jobs/'+j['id'],method='DELETE');Model.reply=None
 
  def test_15k_queue_move_persists_and_broadcasts(self):
-  self.wait_idle();self.request('/api/stop',{})
+  self.wait_idle();Model.script=[self._slow('out',80)]
+  self.request('/api/message',{'text':'Sort-Lauf','bots':['test']});self._busy()
   try:
    created=[self.request('/api/message',{'text':t,'bots':['test']})['item']
             for t in ['Sort-A','Sort-B','Sort-C']]
@@ -574,7 +578,7 @@ class Native(unittest.TestCase):
    self.assertIn("btn.addEventListener('wheel'",html)
    self.assertNotIn("btn.addEventListener('wheel',e=>{e.preventDefault()",html)
   finally:
-   self.request('/api/queue',method='DELETE');self.request('/api/queue/resume',{})
+   self.request('/api/queue',method='DELETE');self.request('/api/cancel',{});self.request('/api/queue/resume',{});Model.script=[]
 
  def test_15k_composer_stop_cancels_turn_keeps_queue(self):
   self.wait_idle();Model.script=[self._slow('out',60),['Weiter normal.']]
@@ -1133,7 +1137,7 @@ class Native(unittest.TestCase):
    self.assertEqual(r.status,302);self.assertEqual(r.getheader('Location'),'/?bot=test')
   html=self.request('/',raw=True).decode()
   self.assertIn('const remoteBotId=',html);self.assertIn("get('bot')",html)
-  self.assertIn("remote.href='/?bot='+encodeURIComponent(a.id)",html)
+  self.assertIn("'/?bot='+encodeURIComponent(a.id)",html)  # bot menu: "Browser öffnen"
   self.assertIn('id="browser-fullscreen"',html);self.assertIn('id="terminal-fullscreen"',html)
   for gone in ('id="remote-bar"','body.remote-mode',"'/bot/'"):self.assertNotIn(gone,html)
   self.assertNotIn('window.open(',html)
@@ -1225,7 +1229,7 @@ class Native(unittest.TestCase):
    self.assertIn('id="model-choice"',html)
    self.assertIn('id="single-model-switch"',html)
    self.assertIn('id="single-model-select"',html)
-   self.assertIn('Bot wechseln · Q4 / IQ3',html)
+   self.assertIn('Modell wählen · Q4 /',html)
    self.assertIn('>0 · Q4</button>',html)
    self.assertIn('>1 · IQ3</button>',html)
    self.assertIn('aria-pressed=',html)
@@ -1754,7 +1758,7 @@ class Native(unittest.TestCase):
     m.get('id')==uid and any(r['actor']=='test' and r['emoji']=='🎉'
                                for r in m.get('reactions') or [])
     for m in s['room']))
-   self.wait_idle()
+   st=self.wait_idle()  # the closing bot message lands at the end of the turn
    target=next(m for m in st['room'] if m['id']==uid)
    self.assertTrue(any(r['actor']=='test' and r['emoji']=='🎉' for r in target.get('reactions') or []))
    ack=next(m for m in reversed(st['room']) if m.get('role')=='assistant' and m.get('bot')=='test' and m.get('content')=='')
@@ -2418,7 +2422,7 @@ class StaggeredLanes(unittest.TestCase):
   self.assertEqual(self._last_bot_text('iq3bot'),'Nur A')
  def test_03_frontend_thinking_and_waiting(self):
   html=self.request('/',raw=True).decode()
-  for needle in ('function showThinking(',"head.className='think-head'","'Nachgedacht'","'Denkt nach'",'msg.reasoning','msg.thought_ms',"event.type==='bot_wait'",'wartet','next.waiting_bots','function thinkSettled(','function paintThinkPeek(',"className='think-dots'",'prefers-reduced-motion:reduce){.think-line.in'):self.assertIn(needle,html)
+  for needle in ('function showThinking(',"head.className='think-head'","'Gedanken'","'Denkt nach'",'msg.reasoning','msg.thought_ms',"event.type==='bot_wait'",'wartet','next.waiting_bots','function thinkSettled(','function paintThinkPeek(',"className='think-dots'",'prefers-reduced-motion:reduce){.think-line.in'):self.assertIn(needle,html)
   self.assertNotIn("peek.textContent=text.slice(",html)
   self.assertNotIn("'Überlegungen'",html)
 class SilentPhases(unittest.TestCase):

@@ -1,6 +1,6 @@
 # MAG private ingress (nginx / Tailnet)
 
-Canonical step-by-step host installation: [docs/INSTALL.md](../../docs/INSTALL.md). Operational verification: [docs/OPS.md](../../docs/OPS.md).
+Blank-host installation: [docs/INSTALL.md](../../docs/INSTALL.md). Historical nginx cutover/hotfix guide: [docs/PRIVATE-ACCESS-CUTOVER.md](../../docs/PRIVATE-ACCESS-CUTOVER.md). Operational verification: [docs/OPS.md](../../docs/OPS.md).
 
 - DNS: `mag.stardenburg.de → 100.123.114.16`, only reachable on Tailnet; TLS from lego DNS-01/acme-dns. No keys in Git.
 - nginx binds `100.123.114.16:443`, proxies to `127.0.0.1:8766`, with `auth_request` to **magroom C++** `127.0.0.1:8766/_internal/tailscale/whois`. The internal `/_mag_whois` location sets **`auth_request off`** to prevent recursive authentication. Headers `X-Tailscale-*` are overwritten, and all Whois failures deny external access. SSE buffering is disabled; app shell, SW, manifest and API responses are `no-store`.

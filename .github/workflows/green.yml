@@ -14,7 +14,7 @@ concurrency:
   cancel-in-progress: true
 jobs:
   promote-green:
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.MAG_RUNS_ON || '"ubuntu-24.04"') }}
     timeout-minutes: 120
     outputs:
       promoted: ${{ steps.promote.outputs.promoted }}

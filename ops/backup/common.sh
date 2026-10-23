@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Shared root-only configuration. Never echo passwords or AWS credentials.
+# Shared root-only configuration. Local restic only; there is no offsite/S3 path.
 set -euo pipefail
 umask 077
 MAG_BACKUP_CONFIG="${MAG_BACKUP_CONFIG:-/etc/mag-backup}"
@@ -11,19 +11,20 @@ MAG_BACKUP_WORK="${MAG_BACKUP_WORK:-/var/lib/mag-backup/work}"
 MAG_BACKUP_SOURCE="${MAG_BACKUP_SOURCE:-/}"
 MAG_BACKUP_STATUS="${MAG_BACKUP_STATUS:-/var/lib/mag-backup/status.json}"
 MAG_BACKUP_LOCK="${MAG_BACKUP_LOCK:-/run/lock/mag-backup.lock}"
-MAG_BACKUP_BUCKET="${MAG_BACKUP_BUCKET:-mag-backup-595505951010-euc1}"
-MAG_BACKUP_OFFSITE_ENABLED="${MAG_BACKUP_OFFSITE_ENABLED:-0}"
 if [[ -f "$MAG_BACKUP_CONFIG/config.env" ]]; then
   [[ ! -L "$MAG_BACKUP_CONFIG/config.env" ]] || { echo "Symlink config refused" >&2; exit 1; }
   # shellcheck disable=SC1091
   source "$MAG_BACKUP_CONFIG/config.env"
 fi
-# Offsite must be opted in explicitly; a residual aws.env must NEVER
-# trigger an S3 request while AWS is administratively stopped.
-MAG_BACKUP_OFFSITE_ENABLED="${MAG_BACKUP_OFFSITE_ENABLED:-0}"
-case "$MAG_BACKUP_OFFSITE_ENABLED" in 0|1) ;; *)
- echo 'MAG_BACKUP_OFFSITE_ENABLED must be exactly 0 or 1' >&2; exit 2;;
-esac
+# S3 offsite was removed for good. A stale opt-in fails closed so nobody
+# believes an offsite copy exists. A residual aws.env is never read.
+if [[ "${MAG_BACKUP_OFFSITE_ENABLED:-0}" != 0 ]]; then
+  echo 'S3 offsite was removed; set MAG_BACKUP_OFFSITE_ENABLED=0 or delete the line' >&2
+  exit 2
+fi
+if [[ -e "$MAG_BACKUP_CONFIG/aws.env" || -L "$MAG_BACKUP_CONFIG/aws.env" ]]; then
+  echo "Note: $MAG_BACKUP_CONFIG/aws.env is unused (S3 offsite removed) and may be deleted" >&2
+fi
 # Empty-password repo explicitly approved for on-host local-only use.
 # This disables *effective confidentiality*: filesystem ACLs are mandatory.
 # Every restic call must pass the flag; no secret, stdin, env or prompt.
@@ -65,19 +66,6 @@ fi
 # Owner-visible file, staging inaccessible.
 chmod 0700 "$MAG_BACKUP_WORK"
 chmod 0711 "$(dirname "$MAG_BACKUP_STATUS")"
-# Only a deliberate opt-in enables S3. Creds alone are NEVER consent.
-s3_enabled() { [[ "$MAG_BACKUP_OFFSITE_ENABLED" == 1 ]]; }
-load_aws() {
-  s3_enabled || { echo 'AWS offsite disabled by config' >&2; return 1; }
-  [[ -s "$MAG_BACKUP_CONFIG/aws.env" && ! -L "$MAG_BACKUP_CONFIG/aws.env" ]] ||
-    { echo 'Offsite enabled but AWS credentials missing/unsafe' >&2; return 1; }
-  # shellcheck disable=SC1091
-  source "$MAG_BACKUP_CONFIG/aws.env"
-  export AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_DEFAULT_REGION
-  : "${AWS_DEFAULT_REGION:=eu-central-1}"
-  [[ "$AWS_DEFAULT_REGION" == eu-central-1 ]] || { echo 'Wrong S3 region' >&2; return 1; }
-  command -v aws >/dev/null
-}
 status_update() {
   local tmp
   tmp=$(mktemp "$(dirname "$MAG_BACKUP_STATUS")/.status.XXXXXXXX")

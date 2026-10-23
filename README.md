@@ -16,7 +16,7 @@ verified. Older archives are deleted only at that point: keep the last 3
 verified archives (`MAG_BACKUP_KEEP`, default 3) and the pre-deploy archive
 of the current release. A failed run deletes only its own incomplete
 directory and does not delete any verified archive. The directory is
-root-owned and mode 0700. AWS/S3 stays off. `mag-llm` is not restarted.
+root-owned and mode 0700. Local only; there is no AWS/S3 offsite copy. `mag-llm` is not restarted.
 
 Restore one archive on its own (stop `mag-120` and `gitea` first; do not
 stop `mag-llm`):

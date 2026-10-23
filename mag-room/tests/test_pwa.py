@@ -184,6 +184,8 @@ class Pwa(unittest.TestCase):
             }""")
             self.assertIn('asset-a', got['text'])
             self.assertTrue(got['cached'], got)
+            # Install and notification controls live in the one settings dialog.
+            page.click('#settings-open')
             page.locator('#pwa-install').scroll_into_view_if_needed()
             page.locator('#pwa-install').wait_for(state='visible')
             page.locator('#pwa-install-block').screenshot(path=str(ART / 'pwa_install.png'))
@@ -198,6 +200,7 @@ class Pwa(unittest.TestCase):
                 icon: '/static/icon-192.png?v=pwa-a'
               });
             }""")
+            page.click('#settings-close')
             page.locator('#message').fill('noch nicht senden')
             stop_room(proc, log, model)
             proc = log = model = None

@@ -24,10 +24,9 @@ if [[ -e /etc/mag-backup/config.env ]]; then
   [[ -f /etc/mag-backup/config.env && ! -L /etc/mag-backup/config.env ]] || exit 1
   chmod 0600 /etc/mag-backup/config.env
 fi
-# Never rotate the key automatically; operator keeps an offline copy.
-if [[ -e /etc/mag-backup/aws.env ]]; then
-  [[ -f /etc/mag-backup/aws.env && ! -L /etc/mag-backup/aws.env ]] || exit 1
-  chmod 0600 /etc/mag-backup/aws.env
+# S3 offsite was removed; a leftover aws.env is never read.
+if [[ -e /etc/mag-backup/aws.env || -L /etc/mag-backup/aws.env ]]; then
+  echo 'Note: /etc/mag-backup/aws.env is unused (S3 offsite removed) and may be deleted' >&2
 fi
 install -d -m 0755 /usr/local/lib/mag-backup
 for name in common.sh backup.sh restore.sh maintenance.sh; do
@@ -51,4 +50,4 @@ if systemctl cat gitea-backup.timer >/dev/null 2>&1; then
   systemctl disable --now gitea-backup.timer
 fi
 echo 'Local MAG backup active. Old /etc/mag-dr and /var/backups/restic preserved read-only for manual retirement.'
-echo 'Local passwordless restic enabled; repository readers can decrypt all contents. NO AWS unless explicitly enabled.'
+echo 'Local passwordless restic enabled; repository readers can decrypt all contents. Local only; no offsite copy.'

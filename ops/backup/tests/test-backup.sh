@@ -47,27 +47,27 @@ printf 'encrypted-tailnet-state\n' > "$MAG_BACKUP_SOURCE/var/lib/tailscale/tails
 printf '* * * * * /usr/bin/true\n' > "$MAG_BACKUP_SOURCE/var/spool/cron/crontabs/chris"
 printf '15 4 * * * root /usr/bin/true\n' > "$MAG_BACKUP_SOURCE/etc/cron.d/mag-health"
 sqlite3 "$MAG_BACKUP_SOURCE/var/lib/gitea/data/gitea.db" 'create table keep(v text); insert into keep values ("persisted");'
-# A residual aws.env must not turn on S3. Local-only is the default.
-cat > "$MAG_BACKUP_CONFIG/aws.env" <<'AWS'
-AWS_ACCESS_KEY_ID=DO_NOT_USE_TEST_KEY
-AWS_SECRET_ACCESS_KEY=DO_NOT_USE_TEST_SECRET
-AWS_DEFAULT_REGION=eu-central-1
-AWS
+# S3 offsite was removed. Any `aws` invocation fails the run.
 mkdir -p "$tmp/fakebin"
 cat > "$tmp/fakebin/aws" <<'AWS'
 #!/usr/bin/env bash
-echo 'FAIL: AWS invoked during local-only backup' >&2
+echo 'FAIL: AWS invoked; backups are local-only' >&2
 exit 99
 AWS
 chmod +x "$tmp/fakebin/aws"
 export PATH="$tmp/fakebin:$PATH"
-# First, a local encrypted backup WITHOUT any aws.env at all.
-mv "$MAG_BACKUP_CONFIG/aws.env" "$MAG_BACKUP_CONFIG/aws.env.test-pending"
-"$here/backup.sh" daily
+# First, a local backup with no aws.env at all.
+"$here/backup.sh" daily 2>"$tmp/daily.err"
+if grep -Fq 'aws.env' "$tmp/daily.err"; then echo 'aws.env note without aws.env' >&2; exit 1; fi
 "$here/maintenance.sh" status | jq -e '.offsite_ok == false and .healthy == true' >/dev/null
-# Next, a stale aws.env present: still NO AWS requests.
-mv "$MAG_BACKUP_CONFIG/aws.env.test-pending" "$MAG_BACKUP_CONFIG/aws.env"
-"$here/backup.sh" deploy
+# A leftover aws.env is ignored (one-line note, never sourced or printed).
+cat > "$MAG_BACKUP_CONFIG/aws.env" <<'AWS'
+AWS_ACCESS_KEY_ID=DO_NOT_USE_TEST_KEY
+AWS_SECRET_ACCESS_KEY=DO_NOT_USE_TEST_SECRET
+AWS
+"$here/backup.sh" deploy >"$tmp/deploy.out" 2>&1
+grep -Fq 'aws.env is unused' "$tmp/deploy.out"
+if grep -Fq 'DO_NOT_USE_TEST' "$tmp/deploy.out"; then echo 'aws.env contents printed' >&2; exit 1; fi
 "$here/backup.sh" clear
 mapfile -t archives < <(find "$MAG_BACKUP_ROOT" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | LC_ALL=C sort)
 [[ ${#archives[@]} -eq 3 ]]
@@ -109,7 +109,6 @@ if find "$tmp/partial" -name '*.gguf' | grep -q .; then echo 'GGUF leaked' >&2; 
 "$here/maintenance.sh" retain
 "$here/maintenance.sh" status | jq -e '.stale == false and .last_restore_test_ok == true' >/dev/null
 ! grep -R -E '(systemctl|service) (stop|restart) mag-llm' "$here"/*.sh
-test -s "$MAG_BACKUP_CONFIG/aws.env"
 test ! -e "$MAG_BACKUP_CONFIG/restic-password"
 verified_n() { find "$MAG_BACKUP_ROOT" -mindepth 2 -maxdepth 2 -name VERIFIED | wc -l; }
 # One archive restores alone. Hide the other repositories first.
@@ -153,13 +152,21 @@ if MAG_BACKUP_TEST_MODE=0 MAG_BACKUP_ROOT="$open" bash -c "source '$here/common.
   echo 'Non-root backup root was accepted' >&2; exit 1
 fi
 grep -Eq 'root-owned|inaccessible to group/other' "$tmp/rootcheck.out"
-# Explicit S3 opt-in without credentials must error rather than silently
-# reporting a local-only backup as fully successful.
-mv "$MAG_BACKUP_CONFIG/aws.env" "$MAG_BACKUP_CONFIG/aws.env.disabled"
+# A stale MAG_BACKUP_OFFSITE_ENABLED=1 fails closed before any work.
+before=$(verified_n)
 if MAG_BACKUP_OFFSITE_ENABLED=1 "$here/backup.sh" daily >"$tmp/offsite-error.out" 2>&1; then
- echo 'Missing AWS credentials wrongly accepted with offsite explicitly on' >&2; exit 1
+ echo 'Stale offsite opt-in was silently accepted' >&2; exit 1
 fi
-grep -Fq 'Offsite enabled but AWS credentials missing/unsafe' "$tmp/offsite-error.out"
+grep -Fq 'S3 offsite was removed; set MAG_BACKUP_OFFSITE_ENABLED=0 or delete the line' "$tmp/offsite-error.out"
+[[ "$(verified_n)" -eq "$before" ]]
+if "$here/restore.sh" --repo offsite --part room --target "$tmp/offsite-restore" >"$tmp/offsite-restore.out" 2>&1; then
+ echo 'Offsite restore mode still accepted' >&2; exit 1
+fi
+grep -Fq 'S3 offsite was removed' "$tmp/offsite-restore.out"
+if grep -R -E '\baws (s3|s3api)\b|s3://|MAG_BACKUP_BUCKET|load_aws|s3_enabled' "$here"/*.sh; then
+ echo 'S3 offsite code remains' >&2; exit 1
+fi
+rm -f "$MAG_BACKUP_CONFIG/aws.env"
 # Default: the last 3 verified full backups remain (the protected deploy
 # archive is no longer held once MAG_BACKUP_PROTECT_RELEASE is unset).
 unset MAG_BACKUP_PROTECT_RELEASE MAG_BACKUP_KEEP

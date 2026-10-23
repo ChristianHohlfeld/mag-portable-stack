@@ -228,28 +228,9 @@ restored=$(find "$verify_tmp/out" -type d -name root -path '*/payload/root' -pri
 assert_payload "$restored"
 manifest_sha=$(sha256sum "$restored/opt/mag-stack/checksums.sha256" | awk '{print $1}')
 rm -rf -- "$verify_tmp"
-# Offsite stays opt-in and is not the retention mechanism. A failure here
-# still has verified_ok=0, so the new directory is discarded and no older
-# archive is removed.
+# Local-only: offsite_ok stays in status.json (always false) because the
+# room UI reads it.
 offsite=false
-if s3_enabled; then
-  load_aws
-  aws s3api get-object-lock-configuration --bucket "$MAG_BACKUP_BUCKET" --output json |
-    jq -e '.ObjectLockConfiguration.ObjectLockEnabled == "Enabled" and
-      .ObjectLockConfiguration.Rule.DefaultRetention.Mode == "COMPLIANCE" and
-      (.ObjectLockConfiguration.Rule.DefaultRetention.Days // 0) >= 30' >/dev/null || {
-      echo 'S3 Object Lock COMPLIANCE >=30 days required' >&2; exit 1;
-    }
-  export AWS_CONFIG_FILE="$MAG_BACKUP_WORK/aws-cli-config"
-  printf '[default]\ns3 =\n    max_bandwidth = %s\n' "${MAG_BACKUP_S3_BANDWIDTH:-4MB/s}" > "$AWS_CONFIG_FILE"
-  chmod 0600 "$AWS_CONFIG_FILE"
-  archive="$(date -u +%Y%m%dT%H%M%SZ)-${snapshot_id:0:12}"
-  aws s3 sync "$run_dir/repo/" "s3://$MAG_BACKUP_BUCKET/archives/$archive/" \
-    --exclude 'locks/*' --no-progress --only-show-errors --region eu-central-1
-  printf '{"archive":"%s","snapshot":"%s"}\n' "$archive" "$snapshot_id" |
-    aws s3 cp - "s3://$MAG_BACKUP_BUCKET/latest.json" --region eu-central-1 --only-show-errors
-  offsite=true
-fi
 printf 'snapshot=%s\nmanifest=%s\n' "$snapshot_id" "$manifest_sha" >> "$run_dir/VERIFIED"
 chmod 0600 "$run_dir/VERIFIED"
 verified_ok=1

@@ -25,6 +25,7 @@ class Model(http.server.BaseHTTPRequestHandler):
     protocol_version = 'HTTP/1.1'
     calls = []          # (time, body)
     scripts = []        # per chat request, in order
+    by_model = {}       # model id -> scripts, used first (parallel lanes)
     prewarm_script = None
     disconnects = []    # (time, kind)
     active = 0
@@ -74,6 +75,8 @@ class Model(http.server.BaseHTTPRequestHandler):
             Model.calls.append((time.monotonic(), obj, kind))
             if prewarm:
                 script = Model.prewarm_script or []
+            elif Model.by_model.get(obj.get('model')):
+                script = Model.by_model[obj.get('model')].pop(0)
             else:
                 script = Model.scripts.pop(0) if Model.scripts else ['Okay.']
             Model.active += 1
@@ -175,6 +178,7 @@ class Room:
 def reset_model():
     Model.calls.clear()
     Model.scripts.clear()
+    Model.by_model.clear()
     Model.disconnects.clear()
     Model.prewarm_script = None
 
@@ -329,6 +333,39 @@ class StopAndPriority(unittest.TestCase):
         self.assertTrue(self.room.api('/api/cancel', {'bot': 'a'})['cancelled'])
         self.room.until(lambda s: not s['busy'], timeout=3)
         self.assertFalse(self.room.api('/api/cancel', {'bot': 'a'})['cancelled'], 'idle bot stop is a no-op')
+
+
+class TwoModels(unittest.TestCase):
+    """Production shape: one bot per model server (NUMA 0 / NUMA 1)."""
+    @classmethod
+    def setUpClass(cls):
+        if not BIN.exists():
+            raise unittest.SkipTest('build/magroom missing')
+        cls.room = Room([{'id': 'a', 'name': 'Alpha', 'vm': '', 'memory': [], 'model': 'deepseek-v4-flash-0731'},
+                         {'id': 'b', 'name': 'Beta', 'vm': '', 'memory': [], 'model': 'deepseek-v4-flash-0731-iq3'}])
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.room.close()
+
+    def test_both_bots_work_in_parallel_and_one_stop_ends_both(self):
+        reset_model()
+        Model.scripts += [[{'_hold': 30}], [{'_hold': 30}]]
+        self.room.api('/api/message', {'text': 'Beide bitte', 'bots': ['a', 'b']})
+        wait_calls(2, timeout=5)
+        self.assertEqual({c[1]['model'] for c in Model.calls},
+                         {'deepseek-v4-flash-0731', 'deepseek-v4-flash-0731-iq3'}, 'one request per model server')
+        s = self.room.state_()
+        self.assertEqual(set(s.get('busy_bots') or []), {'a', 'b'})
+        t0 = time.monotonic()
+        self.assertTrue(self.room.api('/api/cancel', {})['cancelled'])
+        self.room.until(lambda s: not s['busy'], timeout=3, what='both idle')
+        for _ in range(40):
+            if len(Model.disconnects) >= 2:
+                break
+            time.sleep(.05)
+        self.assertEqual(len(Model.disconnects), 2, 'both model requests closed')
+        self.assertLess(max(t for t, _ in Model.disconnects) - t0, 1.5)
 
 
 @unittest.skipUnless(subprocess.run(['sudo', '-n', 'true'], capture_output=True).returncode == 0,

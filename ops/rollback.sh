@@ -7,7 +7,6 @@ systemctl stop mag-120.service
 cp -a "$BACKUP/mag-120.service" /etc/systemd/system/mag-120.service
 cp -a "$BACKUP/magbot" /usr/local/bin/magbot
 if [[ -f "$BACKUP/previous-release" ]]; then ln -sfn "$(cat "$BACKUP/previous-release")" /opt/mag-stack/current; fi
-if [[ -f "$BACKUP/frontend.html" ]]; then cp -a "$BACKUP/frontend.html" /var/lib/magbot/room/frontend.html; fi
 systemctl daemon-reload
 systemctl restart mag-120.service
 if [[ -x /opt/mag-stack/current/bin/mag-browser-webrtc ]]; then

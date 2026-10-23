@@ -117,7 +117,7 @@ python3 mag-room/tests/test_native.py
 ```
 
 Local voice: pinned whisper.cpp (see `ops/whisper.lock`), FFmpeg and a multilingual
-Whisper model. TTS uses local espeak-ng; OCR uses local Tesseract (`deu+eng`).
+Whisper model. TTS runs only in the browser (Piper Thorsten, see `docs/tts.md`); OCR uses local Tesseract (`deu+eng`).
 `ops/bootstrap-voice.sh` builds the pinned transcriber without containers.
 
 ## Deploy
@@ -217,18 +217,19 @@ current data casually during an executable rollback.
   provisioned only inside that guest; deletion revokes that dedicated account.
 - Agent deletion checks its registry ownership, destroys only its own VM and
   private files, and never removes the shared backing disk or another VM.
-- Room reset purges shared files/transcript/published UI while preserving bot
+- Room reset purges shared files/transcript while preserving bot
   memories. It does not destroy bots.
-- Shared HTML previews run in sandboxed iframes. Bots can download/publish the
-  room frontend and verify it in their own browser.
+- Shared HTML previews run in sandboxed iframes. The room UI always comes
+  from the repository release; bots can only screenshot it (`publish_frontend`
+  was removed and a leftover `frontend.html` is moved to `frontend.html.bak-*`).
 - Microphone transcription is local; the existing model may correct context when
   its inference slot is free. The result is editable and never sent automatically.
 
 ## Practical limits
 
 GPT-OSS here is a text model. Image text can be read with OCR and browser content
-with CDP; this does not provide a general multimodal vision model. Local espeak-ng
-is functional speech, not a natural neural voice. Browser display uses bounded
+with CDP; this does not provide a general multimodal vision model. The bots' `speak`
+tool posts a text voice message; each browser voices it with Piper. Browser display uses bounded
 snapshot polling; it is not a video stream. Real speech quality requires personal
 DE/EN samples. The model's CPU inference remains the dominant response latency.
 

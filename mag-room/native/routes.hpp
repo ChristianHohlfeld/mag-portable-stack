@@ -22,12 +22,6 @@ static std::vector<std::string> selected_ids(const Val &body) {
       ids.push_back(a.find("id")->asStr());
   return ids;
 }
-static void frontend_event() {
-  Val e = Val::object();
-  e["type"] = "frontend";
-  e["version"] = frontend_version();
-  publish(mj::dump(e));
-}
 static void agents_event() {
   Val e = Val::object();
   e["type"] = "agents";
@@ -799,15 +793,9 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
   if (path == "/api/frontend") {
     if (m == "GET")
       send_text(fd, 200, current_frontend(), "text/html; charset=utf-8");
-    else if (m == "POST") {
-      save_frontend(r.body);
-      frontend_event();
-      send_json(fd, 200, "{\"ok\":true}");
-    } else if (m == "DELETE") {
-      clear_frontend();
-      frontend_event();
-      send_json(fd, 200, "{\"ok\":true}");
-    } else
+    else if (m == "POST" || m == "DELETE")
+      error_json(fd, 410, "Die Raum-Oberflaeche kommt nur aus dem Repository");
+    else
       error_json(fd, 405, "Method not allowed");
     return;
   }
@@ -1639,7 +1627,7 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
         throw std::runtime_error("Guest room cleanup failed: " + vm);
     }
     reset_room(true);
-    clear_frontend();
+    retire_frontend_override();
     undo_drop_all();
     Val e = Val::object();
     e["type"] = "reset";
@@ -1809,9 +1797,13 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
       error_json(fd, 400, "JSON required");
       return;
     }
-    Val f = host_tts(str("text"));
-    emit_file("", f);
-    send_json(fd, 201, mj::dump(f));
+    if (trim(str("text")).empty()) {
+      error_json(fd, 400, "Text required");
+      return;
+    }
+    Val msg = voice_message("Sprachnachricht", "", str("text"));
+    emit_voice(msg);
+    send_json(fd, 201, mj::dump(msg));
     return;
   }
   if (m == "POST" && path.rfind("/api/agent/", 0) == 0) {

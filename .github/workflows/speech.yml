@@ -39,6 +39,7 @@ jobs:
           node --check mag-room/static/speech-ui.js
           node --check mag-room/static/message-audio.js
           node mag-room/tests/test_message_audio.cjs
+          node mag-room/tests/test_piper_warmup.cjs
           node --check mag-room/static/speech-capture.js
           node --check mag-room/web/sw.js
           bash -n ops/vendor-speech-assets.sh ops/deploy.sh

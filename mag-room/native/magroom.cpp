@@ -1066,7 +1066,8 @@ static void save_room() {
 static Val append_room(const std::string &role, const std::string &name,
                        const std::string &content, const std::string &bot = "",
                        const Val *file = nullptr,
-                       const std::string &login = "") {
+                       const std::string &login = "",
+                       const std::string &kind = "") {
   Val m = Val::object();
   m["id"] = token_hex(6);
   m["role"] = role;
@@ -1079,6 +1080,8 @@ static Val append_room(const std::string &role, const std::string &name,
     m["bot"] = bot;
   if (file)
     m["file"] = *file;
+  if (!kind.empty())
+    m["kind"] = kind;
   {
     std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
     ROOM.push_back(m);
@@ -1107,7 +1110,7 @@ static void reset_room(bool purge) {
 static std::string UI_DEFAULT;
 static int64_t frontend_version() {
   struct stat st;
-  return stat(FRONTEND_FILE.c_str(), &st) == 0 ? (int64_t)st.st_mtime : 0;
+  return stat(UI_FILE.c_str(), &st) == 0 ? (int64_t)st.st_mtime : 0;
 }
 // Per-process token for mutating UI requests (CSRF/drive-by protection).
 // Delivered only inside the same-origin HTML; never persisted or logged.
@@ -1204,28 +1207,20 @@ static std::string current_frontend() {
   return t;
 }
 static std::string raw_frontend() {
-  bool ok = false;
-  std::string t = read_file(FRONTEND_FILE, &ok);
-  if (ok && !trim(t).empty())
-    return t;
   if (!UI_DEFAULT.empty())
     return UI_DEFAULT;
   return read_file(UI_FILE);
 }
-static void save_frontend(const std::string &text) {
-  if (text.size() < 200 || text.size() > 524288)
-    throw std::runtime_error("Frontend-Groesse ungueltig (" +
-                             std::to_string(text.size()) + " Bytes)");
-  if (lc(text).find("</html>") == std::string::npos)
-    throw std::runtime_error(
-        "Frontend muss ein vollstaendiges HTML-Dokument sein");
-  {
-    std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
-    write_file(FRONTEND_FILE, text);
-    chmod(FRONTEND_FILE.c_str(), 0640);
-  }
+// The room UI always comes from the release (UI_FILE). A frontend.html left
+// behind by the removed publish_frontend tool is moved aside, never served.
+static void retire_frontend_override() {
+  struct stat st;
+  if (stat(FRONTEND_FILE.c_str(), &st) != 0)
+    return;
+  std::string bak = FRONTEND_FILE + ".bak-" + std::to_string((long)now_s());
+  if (rename(FRONTEND_FILE.c_str(), bak.c_str()) != 0)
+    unlink(FRONTEND_FILE.c_str());
 }
-static void clear_frontend() { unlink(FRONTEND_FILE.c_str()); }
 
 // ---------------------------------------------------------------- SSE bus
 struct Sub {
@@ -1652,13 +1647,9 @@ static const char *T_FETCH_FILE =
 static const char *T_SHARE_FILE =
     R"({"type":"function","function":{"name":"share_room_file","description":"Publish a file from your VM into the shared room so user and all bots can access it.","parameters":{"type":"object","properties":{"path":{"type":"string"},"name":{"type":"string"}},"required":["path"],"additionalProperties":false}}})";
 static const char *T_SPEAK =
-    R"({"type":"function","function":{"name":"speak","description":"Generate a spoken audio file (TTS, German) from text and share it in the room.","parameters":{"type":"object","properties":{"text":{"type":"string"}},"required":["text"],"additionalProperties":false}}})";
+    R"({"type":"function","function":{"name":"speak","description":"Post a German voice message to the room. Only the text is sent; listeners' browsers read it aloud locally (Piper Thorsten). No audio file is generated on the server.","parameters":{"type":"object","properties":{"text":{"type":"string"}},"required":["text"],"additionalProperties":false}}})";
 static const char *T_SEE_IMAGE =
     R"({"type":"function","function":{"name":"see_image","description":"Read the text content of an image shared in the room via OCR.","parameters":{"type":"object","properties":{"name":{"type":"string"}},"required":["name"],"additionalProperties":false}}})";
-static const char *T_DL_FRONTEND =
-    R"({"type":"function","function":{"name":"download_frontend","description":"Download the CURRENT room UI (index.html) into your VM at /home/bot/room/index.html.","parameters":{"type":"object","properties":{},"additionalProperties":false}}})";
-static const char *T_PUB_FRONTEND =
-    R"({"type":"function","function":{"name":"publish_frontend","description":"Publish an edited complete HTML file from your VM as the new room UI; everyone reloads.","parameters":{"type":"object","properties":{"path":{"type":"string"}},"additionalProperties":false}}})";
 static const char *T_SCREENSHOT_ROOM =
     R"({"type":"function","function":{"name":"screenshot_room","description":"Open the live room UI in headless Chromium inside your VM, screenshot it, report console errors and visible text, and share the screenshot.","parameters":{"type":"object","properties":{},"additionalProperties":false}}})";
 static const char *T_BROWSER_OPEN =
@@ -1807,10 +1798,8 @@ static const char *FRONTEND_RULES =
     "NICHT loesen oder umgehen, sondern abbrechen und dem Nutzer Bescheid geben (oder "
     "eine andere Quelle/die Websuche nehmen). Bei Bedarf zuerst das autorisierte "
     "web_search nutzen und konkrete Quellen im vorhandenen Browser aufrufen. "
-    "[Frontend-Wartung] Du kannst die "
-    "Raum-Oberflaeche verbessern: screenshot_room (UI pruefen), "
-    "download_frontend, mit run_command editieren, publish_frontend (alle "
-    "laden neu), screenshot_room zur Kontrolle.";
+    "screenshot_room zeigt dir die Raum-Oberflaeche; aendern kannst du sie "
+    "nicht (sie kommt ausschliesslich aus dem Repository).";
 
 static std::string bot_field(int idx, const char *key,
                              const std::string &def = "") {
@@ -2002,17 +1991,13 @@ static std::string build_transcript() {
 }
 
 // ---------------------------------------------------------------- host tools
-static Val host_tts(const std::string &textIn) {
+// Voice messages carry only text; browsers synthesise them locally (Piper).
+static Val voice_message(const std::string &name, const std::string &bot,
+                         const std::string &textIn) {
   std::string text = trim(textIn).substr(0, 4000);
   if (text.empty())
     throw std::runtime_error("Text required");
-  std::string path = FILES_DIR + "/" + token_hex(16) + ".wav";
-  auto result = run_argv({"espeak-ng", "-v", "de", "-w", path, "--", text}, 30);
-  if (result.code)
-    throw std::runtime_error("Local TTS failed: " + result.out.substr(0, 200));
-  auto data = read_file(path);
-  unlink(path.c_str());
-  return add_file("sprache.wav", data, "TTS");
+  return append_room("assistant", name, text, bot, nullptr, "", "voice");
 }
 static std::string host_ocr(const std::string &name) {
   auto rec = find_file(name);
@@ -3029,8 +3014,7 @@ static std::string tools_json(int bot_idx, bool web) {
   if (has_vm) {
     for (const char *d :
          {T_BROWSER_OPEN, T_BROWSER_CLICK, T_BROWSER_TYPE, T_BROWSER_READ,
-          T_BROWSER_SHOT, T_BROWSER_POINTER, T_BROWSER_BACK, T_BROWSER_SCROLL, T_SCREENSHOT_ROOM,
-          T_DL_FRONTEND, T_PUB_FRONTEND})
+          T_BROWSER_SHOT, T_BROWSER_POINTER, T_BROWSER_BACK, T_BROWSER_SCROLL, T_SCREENSHOT_ROOM})
       defs.push_back(d);
   }
   std::string arr = "[";
@@ -3528,6 +3512,10 @@ static void emit_event(const std::string &type, const std::string &bot,
     notify(PushNote("error", name.empty() ? "Fehler" : name, text, "/",
                     bot.empty() ? "error" : "error-" + bot));
 }
+static void emit_voice(Val msg) {
+  msg["type"] = "message";
+  publish(mj::dump(msg));
+}
 static void emit_file(const std::string &bot, const Val &rec) {
   Val e = Val::object();
   e["type"] = "file";
@@ -3605,8 +3593,6 @@ static std::string tool_step_label(const std::string &tool) {
   if (tool == "share_room_file") return "Teilt eine Datei";
   if (tool == "see_image") return "Liest ein Bild";
   if (tool == "speak") return "Spricht";
-  if (tool == "download_frontend") return "Lädt die Oberfläche";
-  if (tool == "publish_frontend") return "Veröffentlicht die Oberfläche";
   if (is_mcp_tool(tool)) return "Plugin · " + mcp_step_label(tool);
   if (tool.empty()) return "Arbeitet";
   return "Arbeitet · " + tool;
@@ -4000,48 +3986,12 @@ static std::string dispatch_tool_raw(int bot_idx, const std::string &name,
     return result.out;
   }
   if (name == "speak") {
-    Val rec = host_tts(getstr("text"));
-    append_room("assistant", bot_name, "", bot_id, &rec);
-    emit_file(bot_id, rec);
-    return "Sprachnachricht veroeffentlicht: " +
-           public_url(rec.find("stored")->asStr());
+    Val msg = voice_message(bot_name, bot_id, getstr("text"));
+    emit_voice(msg);
+    return "Sprachnachricht veroeffentlicht (wird im Browser vorgelesen).";
   }
   if (name == "see_image")
     return host_ocr(getstr("name"));
-  if (name == "download_frontend") {
-    need_vm();
-    auto url = "http://" + BRIDGE_IP + ":" + std::to_string(BRIDGE_PORT) +
-               "/api/frontend?token=" + bridge_token();
-    auto result =
-        guest_command(vm,
-                      "mkdir -p /home/bot/room && curl -fSs --max-time 20 " +
-                          shell_quote(url) +
-                          " -o /home/bot/room/index.html && wc -c < "
-                          "/home/bot/room/index.html",
-                      30);
-    if (result.code)
-      throw std::runtime_error("Frontend download failed");
-    return "Frontend: /home/bot/room/index.html (" + trim(result.out) +
-           " bytes)";
-  }
-  if (name == "publish_frontend") {
-    need_vm();
-    auto path = getstr("path");
-    if (path.empty())
-      path = "/home/bot/room/index.html";
-    auto url = "http://" + BRIDGE_IP + ":" + std::to_string(BRIDGE_PORT) +
-               "/api/frontend?token=" + bridge_token();
-    auto result =
-        guest_command(vm,
-                      "curl -fSs --max-time 20 -X POST --data-binary @" +
-                          shell_quote(path) + " " + shell_quote(url),
-                      30);
-    if (result.code)
-      throw std::runtime_error("Frontend publish failed");
-    append_room("system", "Frontend",
-                bot_name + " hat die Raum-Oberflaeche aktualisiert.");
-    return "Frontend published";
-  }
   if (name == "screenshot_room") {
     need_vm();
     Val args = Val::object();
@@ -7165,6 +7115,7 @@ int main() {
   ROOM = load_json_array(ROOM_JSON);
   load_reaction_notes();
   UI_DEFAULT = read_file(UI_FILE);
+  retire_frontend_override();
 
   AUTOTALK = trim(read_file(STATE_DIR + "/autotalk")) == "on";
   load_model_settings();

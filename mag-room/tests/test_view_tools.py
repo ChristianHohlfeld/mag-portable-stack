@@ -68,6 +68,18 @@ class ViewTools(unittest.TestCase):
     page.evaluate("()=>{browserOverlay({bot:document.getElementById('browser-agent').value,action:'type',text:'hallo',x:10,y:10})}")
     self.assertIn('tippt',page.locator('.vt-caption').inner_text())
     ctx.close()
+   # phone layouts: no horizontal overflow, console header one row, controls not covered
+   for vp in ({'width':390,'height':844},{'width':470,'height':1000}):
+    ctx=browser.new_context(viewport=vp,has_touch=True,is_mobile=True);page=ctx.new_page()
+    page.goto('http://127.0.0.1:%s/'%ui,wait_until='domcontentloaded');page.wait_for_function('()=>window.magViewTools')
+    if not page.locator('#browser-view').is_visible():page.locator('#toggle-tools').click()
+    page.locator('#browser-view').wait_for(state='visible')
+    r=page.evaluate('''()=>{const q=s=>document.querySelector(s),ov=e=>e.scrollWidth-e.clientWidth;const th=q('.terminal-heading');
+     const hits=[...document.querySelectorAll('#browser-view .browser-nav button,#browser-view .browser-nav input,.terminal-heading button')].filter(b=>b.offsetParent).map(b=>{const c=b.getBoundingClientRect();const e=document.elementFromPoint(c.x+c.width/2,c.y+c.height/2);return e===b||b.contains(e)});
+     const ys=[...th.children].filter(e=>e.offsetParent).map(e=>Math.round(e.getBoundingClientRect().top+e.getBoundingClientRect().height/2));
+     return {nav:ov(q('#browser-view .browser-nav')),th:ov(th),rows:Math.max(...ys)-Math.min(...ys),hidden:hits.filter(x=>!x).length,doc:ov(document.documentElement)}}''')
+    self.assertEqual((r['nav'],r['th'],r['doc'],r['hidden']),(0,0,0,0),(vp,r));self.assertLessEqual(r['rows'],2,(vp,r))
+    ctx.close()
    self.assertEqual(errors,[])
   finally:
    pwa.stop_room(proc,log,model);browser.close();pw.stop()

@@ -2154,13 +2154,33 @@ new ResizeObserver(()=>{
 }).observe($('terminal'));
 
 function liveStatus(v){$('browser-status').textContent=v}
+// Fallback when WebRTC/UDP gets no frame (phones on mobile data/VPN often
+// expose only mDNS host candidates): poll the existing JPEG endpoint and send
+// taps over HTTPS. Stops as soon as UDP frames arrive or the view closes.
+let httpLive=null,httpLiveFor='';
+function startHttpLive(gen,id){
+ if(httpLive||gen!==liveGeneration)return;httpLive={gen,id};httpLiveFor=id;
+ const tick=async()=>{
+  if(!httpLive||httpLive.gen!==liveGeneration||frameLastAt){httpLive=null;return}
+  try{const r=await fetch('/api/screen/'+encodeURIComponent(id)+'?format=jpeg',{cache:'no-store'});
+   if(r.ok){const b=await createImageBitmap(await r.blob());if(httpLive?.gen===liveGeneration){const c=$('screen');if(c.width!==b.width||c.height!==b.height){c.width=b.width;c.height=b.height}c.getContext('2d',{alpha:false}).drawImage(b,0,0);c.hidden=false;liveStatus('HTTP-Fallback · '+liveVM+' · UDP nicht erreichbar')}b.close()}
+  }catch{}
+  if(httpLive)httpLive.t=setTimeout(tick,900);
+ };tick();
+}
+function stopHttpLive(){if(httpLive){clearTimeout(httpLive.t);httpLive=null}}
 function liveSend(data){
+ if((!liveControl||liveControl.readyState!=='open')&&httpLive&&data.kind==='pointer'){
+  if(data.action!=='down'&&data.action!=='up')return true;
+  api('/api/browser/'+encodeURIComponent(httpLive.id)+'/pointer',{x:data.x,y:data.y,action:data.action,button:data.button||'left'}).catch(e=>liveStatus('HTTP-Fallback: '+e.message));
+  return true;
+ }
  if(!liveControl||liveControl.readyState!=='open')return false;
  liveControl.send(JSON.stringify(data));
  return true;
 }
 function disconnectLive(){
- ++liveGeneration;
+ ++liveGeneration;stopHttpLive();
  clearTimeout(reconnectTimer);reconnectTimer=0;consoleHbAt=0;
  if(livePeer){livePeer.close();livePeer=null}
  liveControl=null;liveConsole=null;liveVM='';videoChunks=null;pointerHeld=false;
@@ -2207,6 +2227,7 @@ async function connectLive(){
  const pc=new RTCPeerConnection({iceServers:[]});
  livePeer=pc;liveVM=bot.vm;
  liveStatus('WebRTC/UDP · verbinde '+bot.name+' …');
+ setTimeout(()=>{if(gen===liveGeneration&&!frameLastAt)startHttpLive(gen,id)},httpLiveFor===id?0:7000);
  const ctrl=pc.createDataChannel('control',{ordered:true});
  liveControl=ctrl;
  ctrl.onopen=()=>{liveOpenAt=performance.now();if($('live').checked)liveSend({kind:'subscribe'});liveStatus('WebRTC/UDP · verbunden')};
@@ -2233,7 +2254,7 @@ async function connectLive(){
  pc.onconnectionstatechange=()=>{
   if(gen!==liveGeneration)return;
   if(['failed','disconnected','closed'].includes(pc.connectionState)){
-   liveStatus('WebRTC/UDP · Verbindung '+pc.connectionState+' · verbinde neu …');
+   liveStatus('WebRTC/UDP · Verbindung '+pc.connectionState+' · verbinde neu …');if(!frameLastAt)startHttpLive(gen,$('browser-agent').value);
    terminalStatus('Shell getrennt · verbinde neu …');scheduleReconnect();
   }
  };

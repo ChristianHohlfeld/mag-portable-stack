@@ -57,6 +57,19 @@ static std::atomic<bool> STOP{false};
 static std::atomic<bool> USER_CANCEL{false};
 static std::atomic<int> BACKEND_FD{-1};
 static std::mutex BACKEND_FD_MTX;
+// Idle prompt prewarm requests (prewarm_model). Stop closes them too: on a
+// CPU server a prewarm is minutes of prefill that would otherwise keep the
+// model busy after the user pressed Stop. PREWARM_HOLD keeps prewarm off
+// after a Stop until the next user message.
+static std::set<int> PREWARM_FDS; // BACKEND_FD_MTX
+static std::atomic<uint64_t> PREWARM_EPOCH{0};
+static std::atomic<bool> PREWARM_HOLD{false};
+static bool cancel_prewarm() {
+  std::lock_guard<std::mutex> lk(BACKEND_FD_MTX);
+  ++PREWARM_EPOCH;
+  for (int fd : PREWARM_FDS) shutdown(fd, SHUT_RDWR);
+  return !PREWARM_FDS.empty();
+}
 // One lane per model server (Q4, active NUMA1): bots on different models answer at the
 // same time, bots sharing a model take turns on it. A lane runs at most one
 // turn; its worker thread sees the lane through TL_LANE. Code outside a lane
@@ -65,6 +78,9 @@ struct Lane {
   std::string model;
   std::string active_bot; // protected by JOB_MTX
   std::set<std::string> cancelled_bots; // protected by JOB_MTX
+  // Bots of the dispatched turn that have not built their prompt yet
+  // (JOB_MTX). They will read a message posted now from the transcript.
+  std::vector<std::string> upcoming;
   std::atomic<bool> stop{false}, busy{false}, user_cancel{false};
   std::atomic<int> backend_fd{-1};
 };
@@ -88,6 +104,9 @@ struct StartGate {
 };
 static thread_local StartGate *TL_GATE = nullptr;
 static std::atomic<bool> &stop_flag() { return TL_LANE ? TL_LANE->stop : STOP; }
+// True while a lane thread executes a tool call: its HTTP requests then end
+// as soon as the turn is stopped.
+static thread_local bool TL_IN_TOOL = false;
 static std::atomic<bool> &user_cancel_flag() {
   return TL_LANE ? TL_LANE->user_cancel : USER_CANCEL;
 }
@@ -531,11 +550,20 @@ http_simple(const std::string &ip, int port, const std::string &method,
             const std::string &path, const std::string &body,
             const std::vector<std::pair<std::string, std::string>> &headers,
             std::string &out, long *status = nullptr,
-            std::string *ctype = nullptr, int timeout_ms = 60000) {
+            std::string *ctype = nullptr, int timeout_ms = 60000,
+            const std::function<void(int)> &on_fd = nullptr) {
   HttpClient c;
   c.timeout_ms = timeout_ms;
+  // Tool calls stop with their turn: Stop must not wait for a slow browser
+  // or MCP request (see TL_IN_TOOL).
+  c.cancelable = TL_IN_TOOL;
   if (!c.connectTo(ip, port))
     return false;
+  struct FdScope {
+    const std::function<void(int)> &cb;
+    ~FdScope() { if (cb) cb(-1); }
+  } fd_scope{on_fd};
+  if (on_fd) on_fd(c.fd);
   std::string req = method + " " + path + " HTTP/1.1\r\nHost: " + ip +
                     "\r\nConnection: close\r\n";
   for (auto &h : headers)
@@ -4058,6 +4086,19 @@ static thread_local int TURN_THINK = -1;
 // Current request's raw text, not the room transcript. Each queued chat turn
 // carries its own value, including after a service restart.
 static thread_local std::string TURN_INPUT;
+// Set when a running turn took over a newer user message at a step boundary:
+// the lane then finishes as that task (continuation, owner).
+static thread_local uint64_t TL_ADOPT_GEN = 0;
+static thread_local std::string TL_ADOPT_OWNER;
+// Step-boundary hand-over of waiting user messages (take_user_input).
+struct UserInput {
+  std::string text; // for the model; empty when nothing arrived
+  bool yield = false;
+  uint64_t generation = 0;
+  std::string owner;
+};
+static UserInput take_user_input(const std::string &bot_id);
+static thread_local bool TL_YIELD = false;
 // The latest user-chosen value, for the room state (HTTP threads).
 static std::atomic<int> LAST_THINK{-1};
 static bool thinking_of(int v) { return v < 0 ? THINKING != "off" : v == 1; }
@@ -4477,10 +4518,22 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
       run_tool_step(fname);
       const auto tool_from = steady_clock::now();
       std::string result;
+      TL_IN_TOOL = true;
       try {
         result = dispatch_tool(bot_idx, fname, args);
       } catch (std::exception &ex) {
         result = "Fehler: " + std::string(ex.what());
+      }
+      TL_IN_TOOL = false;
+      if (stop_flag().load()) {
+        // Stopped while the tool ran: no half result reaches the model.
+        Val rec = Val::object();
+        rec["tool"] = fname;
+        rec["label"] = tool_step_label(fname);
+        rec["ok"] = false;
+        rec["result"] = "abgebrochen";
+        if (report.tools.size() < 24) report.tools.push(rec);
+        break;
       }
       result = mj::utf8_fix(result); // tool output may hold any bytes
       const bool failed =
@@ -4550,9 +4603,32 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
       if (repeated_failure)
         break;
     }
-    if (repeated_failure)
+    if (repeated_failure || stop_flag().load())
       break;
     run_show("read", "Liest Ergebnis", true, false);
+    if (!stateless) {
+      UserInput in = take_user_input(bot_id);
+      if (!in.text.empty()) {
+        Val u = Val::object();
+        u["role"] = "user";
+        u["content"] =
+            "[Neue Nachricht im Raum, waehrend du arbeitest]\n" + in.text +
+            "[System] Diese Nachricht hat Vorrang. Bestaetige sie kurz und "
+            "richte die weitere Arbeit danach aus. Verlangt sie, aufzuhoeren, "
+            "beende sofort mit einer kurzen Zusammenfassung und [[MAG:ENDE]].";
+        messages.push_back(u);
+        TL_ADOPT_GEN = in.generation;
+        TL_ADOPT_OWNER = in.owner;
+        run_show("read", "Neue Nachricht gelesen", true, false);
+      } else if (in.yield) {
+        // Gives way to waiting user input; the lane is free for it right
+        // after this clean, interrupted end (later bots of this turn too).
+        TL_LANE->stop = true;
+        TL_YIELD = true;
+        run_show("read", "Pausiert für neue Nachricht", true, false);
+        break;
+      }
+    }
   }
   // Long tasks continue within the same turn, including with Autonomy OFF.
   // The outer scheduler must not silently create a second task.
@@ -4787,15 +4863,21 @@ static Job val_job(const Val &v) {
   return j;
 }
 // Messages sent while a reply runs: NOT in the transcript yet (history stays
-// append-only and cache-stable). Dispatched in order after the current turn,
-// or immediately via "Jetzt senden" (clean stop at a token boundary).
+// append-only and cache-stable). A running turn reads them at its next tool
+// step (take_user_input); otherwise they are dispatched before any other
+// work once the bot is free, or immediately via "Jetzt senden".
+// held = queued before a Stop: waits for "Fortsetzen"/"Jetzt senden". New
+// messages are never held, so a Stop never blocks the next user message.
 struct Pending {
   std::string id, text, sender, login;
   std::vector<std::string> ids;
   int think = -1;
   long ts = 0;
+  bool held = false;
 };
 static std::deque<Pending> PENDING;
+// Set by Stop: held items and scheduled jobs wait for "Fortsetzen". User
+// messages and their tasks are never gated by it.
 static bool QUEUE_PAUSED = false;
 static Val pending_val(const Pending &p) {
   Val o = Val::object();
@@ -4808,6 +4890,7 @@ static Val pending_val(const Pending &p) {
   o["bots"] = ids;
   o["think"] = (double)p.think;
   o["ts"] = (double)p.ts;
+  if (p.held) o["held"] = true;
   return o;
 }
 static Pending val_pending(const Val &v) {
@@ -4820,6 +4903,7 @@ static Pending val_pending(const Val &v) {
     for (auto &i : x->asArr()) p.ids.push_back(i.asStr());
   if (auto x = v.find("think")) p.think = (int)x->asNum(-1);
   if (auto x = v.find("ts")) p.ts = (long)x->asNum(0);
+  if (auto x = v.find("held")) p.held = x->asBool(false);
   return p;
 }
 static Val queue_view_locked() {
@@ -4915,6 +4999,7 @@ static void schedule(const std::vector<std::string> &ids, int think = -1,
     const int idx = agent_index(id);
     return idx >= 0 && model_settings_for(bot_model_id(idx)).deterministic;
   });
+  PREWARM_HOLD = false;
   {
     std::lock_guard<std::mutex> lk(JOB_MTX);
     ++AUTO_GENERATION;
@@ -5004,7 +5089,12 @@ static void queue_clear() {
   save_queue_locked(); queue_event_locked();
 }
 static void queue_resume() {
-  { std::lock_guard<std::mutex> lk(JOB_MTX); QUEUE_PAUSED = false; save_queue_locked(); queue_event_locked(); }
+  {
+    std::lock_guard<std::mutex> lk(JOB_MTX);
+    QUEUE_PAUSED = false;
+    for (auto &p : PENDING) p.held = false;
+    save_queue_locked(); queue_event_locked();
+  }
   JOB_CV.notify_all();
 }
 static bool pending_sender(const std::string &id, std::string &login) {
@@ -5044,8 +5134,8 @@ static bool queue_send_now(const std::string &id) {
     if (it == PENDING.end()) return false;
     Pending p = *it;
     PENDING.erase(it);
+    p.held = false;
     PENDING.push_front(p);
-    QUEUE_PAUSED = false;
     // No other turn may sneak in before it on its lanes; other bots' work stays.
     std::set<Lane *> mine;
     for (auto &b : p.ids)
@@ -5300,29 +5390,45 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch) {
         reply, &status, nullptr, 120000);
     return sent && status == 200;
   };
+  const uint64_t pw_epoch = PREWARM_EPOCH.load();
   const bool restored = PREFIX_DISK && prefix_slot("restore");
   const auto from = steady_clock::now();
   std::string out;
   long code = 0;
-  bool ok = http_simple(BACKEND_HOST, BACKEND_PORT, "POST", "/v1/chat/completions",
-                        payload,
-                        {{"Content-Type", "application/json"},
-                         {"Authorization", "Bearer " + API_KEY},
-                         {"X-Mag-Bot", bot_id},
-                         {"X-Mag-Session", "prewarm"}},
-                        out, &code, nullptr,
-                        std::max(LLM_TIMEOUT_S, LLM_TIMEOUT_MIN_S) * 1000);
+  int tracked = -1;
+  bool ok = false;
+  if (pw_epoch == PREWARM_EPOCH.load() && !PREWARM_HOLD.load())
+    ok = http_simple(BACKEND_HOST, BACKEND_PORT, "POST", "/v1/chat/completions",
+                     payload,
+                     {{"Content-Type", "application/json"},
+                      {"Authorization", "Bearer " + API_KEY},
+                      {"X-Mag-Bot", bot_id},
+                      {"X-Mag-Session", "prewarm"}},
+                     out, &code, nullptr,
+                     std::max(LLM_TIMEOUT_S, LLM_TIMEOUT_MIN_S) * 1000,
+                     [&](int fd) {
+                       std::lock_guard<std::mutex> lk(BACKEND_FD_MTX);
+                       if (fd >= 0) {
+                         tracked = fd;
+                         PREWARM_FDS.insert(fd);
+                         // Stop raced the connect: close right away.
+                         if (pw_epoch != PREWARM_EPOCH.load()) shutdown(fd, SHUT_RDWR);
+                       } else if (tracked >= 0) {
+                         PREWARM_FDS.erase(tracked);
+                       }
+                     });
+  const bool cancelled = pw_epoch != PREWARM_EPOCH.load();
   const long ms = (long)duration_cast<milliseconds>(steady_clock::now() - from).count();
-  const bool saved = PREFIX_DISK && ok && code == 200 && prefix_slot("save");
+  const bool saved = PREFIX_DISK && ok && code == 200 && !cancelled && prefix_slot("save");
   std::cerr << "prompt-prewarm model=" << model << " ok=" << (ok ? 1 : 0)
             << " status=" << code << " ms=" << ms
             << " restored=" << (restored ? 1 : 0) << " saved=" << (saved ? 1 : 0)
-            << std::endl;
+            << " cancelled=" << (cancelled ? 1 : 0) << std::endl;
   std::lock_guard<std::mutex> lk(PREWARM_MTX);
   PREWARM_RUNNING.erase(model);
 }
 static void schedule_prewarm() {
-  if (env("MAG_ROOM_PREWARM", "1") != "1" || SHUTDOWN.load()) return;
+  if (env("MAG_ROOM_PREWARM", "1") != "1" || SHUTDOWN.load() || PREWARM_HOLD.load()) return;
   {
     std::lock_guard<std::mutex> lk(JOB_MTX);
     if (!JOBS.empty() || AUTO_READY) return; // the next turn starts anyway
@@ -5614,6 +5720,7 @@ static void lane_finish(Lane *lane, uint64_t run, bool owner_ran, bool more,
     std::lock_guard<std::mutex> lk(JOB_MTX);
     lane->busy = false;
     lane->active_bot.clear();
+    lane->upcoming.clear();
     ACTIVE_JOBS.erase(run);
     bool any = false;
     for (Lane *l : all_lanes()) any = any || l->busy.load();
@@ -5708,12 +5815,17 @@ static void lane_turn(Lane *lane, uint64_t run, std::vector<std::string> ids,
     TL_GATE = own && stagger_mode() == "think" ? own.get() : nullptr;
     TURN_THINK = think;
     TURN_INPUT = automatic ? "" : input;
+    TL_ADOPT_GEN = 0;
+    TL_ADOPT_OWNER.clear();
+    TL_YIELD = false;
     LAST_THINK = think;
     if (!(automatic && !AUTOTALK.load()))
       for (const auto &id : ids) {
         {
           std::lock_guard<std::mutex> lk(JOB_MTX);
           if (epoch != EPOCH.load()) break;
+          lane->upcoming.erase(std::remove(lane->upcoming.begin(), lane->upcoming.end(), id),
+                               lane->upcoming.end());
           if (lane->cancelled_bots.count(id)) continue;
           lane->stop = false;
           lane->user_cancel = false;
@@ -5724,6 +5836,12 @@ static void lane_turn(Lane *lane, uint64_t run, std::vector<std::string> ids,
           continue;
         try {
           TurnReport report = generate_and_post(idx, automatic);
+          if (TL_ADOPT_GEN) {
+            generation = TL_ADOPT_GEN;
+            owner = TL_ADOPT_OWNER;
+            TL_ADOPT_GEN = 0;
+          }
+          if (TL_YIELD) break;
           if (automatic || id == owner) {
             owner_ran = true;
             more = report.continue_requested &&
@@ -5793,6 +5911,7 @@ static void start_lanes_locked(const Job &job, bool automatic) {
     lane->busy = true;
     lane->active_bot.clear();
     lane->cancelled_bots.clear();
+    lane->upcoming = ids;
     lane->stop = false;
     lane->user_cancel = false;
     ACTIVE_JOBS[run] = Job{ids, job.think, job.generation, job.input};
@@ -5824,10 +5943,12 @@ static bool dispatch_locked() {
     }
   }
   for (auto it = PENDING.begin(); it != PENDING.end(); ++it) {
+    if (it->held) continue; // waits for "Fortsetzen"; never blocks newer input
     if (!dispatchable(split_lanes(it->ids), claimed)) continue;
     // A queued message enters the transcript only now, as a new user turn.
     Pending p = *it;
     PENDING.erase(it);
+    PREWARM_HOLD = false;
     Val msg = append_room("user", p.sender.empty() ? "Nutzer" : p.sender,
                           p.text, "", nullptr, p.login);
     msg["type"] = "message";
@@ -5841,9 +5962,10 @@ static bool dispatch_locked() {
     queue_event_locked();
     return true;
   }
-  if (!JOBS.empty() || !PENDING.empty())
+  if (!JOBS.empty() ||
+      std::any_of(PENDING.begin(), PENDING.end(), [](const Pending &p) { return !p.held; }))
     return false;
-  if (!JOBRUNS.empty()) {
+  if (!JOBRUNS.empty() && !QUEUE_PAUSED) {
     // Scheduled job: runs on its bot's lane once no user work is waiting.
     const std::string bot = JOBRUNS.front().bot;
     Lane *lane = bot.empty() ? nullptr : lane_of(bot);
@@ -5882,15 +6004,15 @@ static bool dispatch_locked() {
   }
   return false;
 }
-// Paused by Stop: nothing runs (jobs, queue, autonomy) until the user
-// explicitly resumes ("Fortsetzen" / "Jetzt senden"). No periodic chat
-// generation: work is re-armed only by a real user turn or a verified
-// continuation of the same task owner. The timed wait only re-checks flags
-// that change without JOB_MTX (autonomy switch).
+// After Stop, held queue items and scheduled jobs wait until the user
+// resumes ("Fortsetzen" / "Jetzt senden"); a new user message always runs.
+// No periodic chat generation: work is re-armed only by a real user turn or a
+// verified continuation of the same task owner. The timed wait only re-checks
+// flags that change without JOB_MTX (autonomy switch).
 static void scheduler_loop() {
   std::unique_lock<std::mutex> lk(JOB_MTX);
   while (!SHUTDOWN.load()) {
-    if (!QUEUE_PAUSED && dispatch_locked())
+    if (dispatch_locked())
       continue;
     JOB_CV.wait_for(lk, seconds(1));
   }
@@ -5951,6 +6073,120 @@ static void stop_autotalk(bool pause = false) {
     AUTO_TURNS_LEFT = 0;
   }
   JOB_CV.notify_all();
+}
+
+// The one Stop of the composer (Esc). Ends every running turn and job right
+// now: closes the model streams (llama/ik abort the decode, also during
+// prompt evaluation), kills running tool commands, cancels an idle prewarm and
+// disarms the autonomous continuation. Turns that were waiting to start are
+// dropped. Queued messages stay visible but are held until "Fortsetzen" or
+// "Jetzt senden"; the next message the user types runs immediately.
+// pause_jobs (the old /api/stop) also holds scheduled jobs and switches the
+// autonomy setting off.
+static Val user_stop(bool pause_jobs) {
+  const bool was_busy = BUSY.load();
+  cancel_active(true);
+  const bool prewarm = cancel_prewarm();
+  PREWARM_HOLD = true;
+  Val out = Val::object();
+  {
+    std::lock_guard<std::mutex> lk(JOB_MTX);
+    const size_t dropped = JOBS.size();
+    JOBS.clear();
+    ACTIVE_JOBS.clear();
+    size_t held = 0;
+    for (auto &p : PENDING) { p.held = true; ++held; }
+    if (pause_jobs || held) QUEUE_PAUSED = true;
+    AUTO_READY = false;
+    AUTO_OWNER.clear();
+    ++AUTO_GENERATION;
+    AUTO_LAST_PROGRESS.clear();
+    AUTO_TURNS_LEFT = 0;
+    save_queue_locked();
+    queue_event_locked();
+    out["cancelled"] = was_busy || prewarm || dropped > 0;
+    out["held"] = (double)held;
+    out["paused"] = QUEUE_PAUSED;
+  }
+  if (pause_jobs) {
+    write_file(STATE_DIR + "/autotalk", "off");
+    AUTOTALK = false;
+  }
+  Val e = Val::object();
+  e["type"] = "stopped";
+  publish(mj::dump(e));
+  JOB_CV.notify_all();
+  return out;
+}
+// Step boundary of a running turn (after its tool results): user messages
+// waiting for this bot are handed to it now instead of after the whole run.
+// A queued message enters the transcript at this moment (before the bot's
+// answer, which will follow it). Bots that are not running get it as their
+// next turn. A turn that cannot take the waiting input (addressed to another
+// bot on the same model) yields: it ends cleanly as "unterbrochen" so the
+// user's message is next. User messages always come before bot work.
+static UserInput take_user_input(const std::string &bot_id) {
+  UserInput in;
+  Lane *lane = TL_LANE;
+  if (!lane || CURRENT_JOB) return in;
+  const int idx = agent_index(bot_id);
+  if (idx < 0 || model_settings_for(bot_model_id(idx)).deterministic) return in;
+  std::lock_guard<std::mutex> lk(JOB_MTX);
+  std::set<std::string> later; // will read the transcript themselves
+  for (Lane *l : all_lanes())
+    if (l->busy.load()) later.insert(l->upcoming.begin(), l->upcoming.end());
+  bool changed = false;
+  auto mine = [&](const std::vector<std::string> &ids) {
+    return std::find(ids.begin(), ids.end(), bot_id) != ids.end();
+  };
+  for (auto it = PENDING.begin(); it != PENDING.end();) {
+    if (it->held || !mine(it->ids)) { ++it; continue; }
+    Pending p = *it;
+    it = PENDING.erase(it);
+    const std::string sender = p.sender.empty() ? "Nutzer" : p.sender;
+    Val msg = append_room("user", sender, p.text, "", nullptr, p.login);
+    msg["type"] = "message";
+    msg["delivered_to"] = bot_id;
+    publish(mj::dump(msg));
+    in.text += "[" + sender + "]: " + p.text + "\n";
+    std::vector<std::string> rest;
+    for (auto &b : p.ids)
+      if (b != bot_id && !later.count(b)) rest.push_back(b);
+    ++AUTO_GENERATION;
+    AUTO_OWNER = p.ids.front();
+    AUTO_LAST_PROGRESS.clear();
+    AUTO_TURNS_LEFT = AUTO_MAX_TURNS;
+    AUTO_READY = false;
+    in.generation = AUTO_GENERATION;
+    in.owner = AUTO_OWNER;
+    if (!rest.empty()) JOBS.push_back(Job{rest, p.think, AUTO_GENERATION, p.text});
+    changed = true;
+  }
+  for (auto it = JOBS.begin(); it != JOBS.end();) {
+    if (!mine(it->ids) || it->input.empty()) { ++it; continue; }
+    in.text += "[Nutzer]: " + it->input + "\n";
+    in.generation = it->generation;
+    in.owner = it->ids.front();
+    it->ids.erase(std::remove(it->ids.begin(), it->ids.end(), bot_id), it->ids.end());
+    it = it->ids.empty() ? JOBS.erase(it) : std::next(it);
+    changed = true;
+  }
+  if (in.text.empty()) {
+    auto needs_lane = [&](const std::vector<std::string> &ids) {
+      return std::any_of(ids.begin(), ids.end(),
+                         [&](const std::string &b) { return lane_of(b) == lane; });
+    };
+    for (auto &p : PENDING)
+      if (!p.held && needs_lane(p.ids)) in.yield = true;
+    for (auto &j : JOBS)
+      if (needs_lane(j.ids)) in.yield = true;
+  }
+  if (changed) {
+    PREWARM_HOLD = false;
+    save_queue_locked();
+    queue_event_locked();
+  }
+  return in;
 }
 
 // ---------------------------------------------------------------- SSE handler

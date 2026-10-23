@@ -100,7 +100,7 @@ preflight(){
   nginx -t || die 'Current nginx config already invalid'
   systemctl is-active --quiet nginx.service || die 'nginx not active'
   systemctl is-active --quiet tailscaled.service || die 'tailscaled not active'
-  ip -4 addr show | grep -Fq '100.123.114.16/' ||
+  grep -Fq '100.123.114.16/' <<<"$(ip -4 addr show)" ||  # no SIGPIPE under pipefail
     die 'Expected Tailnet IP 100.123.114.16 missing'
   [[ -s /etc/mag-nginx/tls/cert.pem && -s /etc/mag-nginx/tls/key.pem ]] ||
     die 'Staged mag-nginx certificate/key missing'

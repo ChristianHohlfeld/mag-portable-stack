@@ -1787,7 +1787,7 @@ class Native(unittest.TestCase):
   notes=json.loads(note_path.read_text()) if note_path.exists() else []
   self.assertFalse(any(n.get('message_id')==uid for n in notes))
   html=self.request('/',raw=True).decode()
-  for needle in ('react-bar','react-pill',"event.type==='reaction'",'/api/messages/'):
+  for needle in ('msg-pop','react-pill',"event.type==='reaction'",'/api/messages/'):
    self.assertIn(needle,html)
   for bad in ('confirm(','alert(','prompt('):
    self.assertNotIn(bad,html)

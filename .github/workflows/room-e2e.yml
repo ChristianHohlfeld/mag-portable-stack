@@ -31,6 +31,10 @@ jobs:
         env:
           MAG_E2E_SHOTS: ${{ runner.temp }}/room-e2e-shots
         run: python3 mag-room/tests/test_room_e2e.py
+      - name: Message popover and NUMA selector (phone portrait/landscape, desktop)
+        run: |
+          python3 mag-room/tests/test_reactions.py
+          python3 mag-room/tests/test_numa_ui.py
       - uses: actions/upload-artifact@v4
         if: always()
         with:

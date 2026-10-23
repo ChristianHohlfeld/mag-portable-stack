@@ -547,7 +547,7 @@ dialog{border-radius:10px;border-color:var(--line);background:var(--surface)}
 <script src="/static/marked.min.js"></script><script src="/static/purify.min.js"></script>
 <script src="/static/highlight.min.js"></script>
 <script src="/static/qrcode.min.js"></script>
-<script src="/static/xterm.js"></script><script src="/static/xterm-addon-fit.js"></script>
+<script src="/static/agent-ui.js" defer></script><script src="/static/xterm.js"></script><script src="/static/xterm-addon-fit.js"></script>
 <script>
 'use strict';
 const $=id=>document.getElementById(id);
@@ -1660,7 +1660,7 @@ function syncModelChoice(next){
  const models=Array.isArray(next.models)?next.models:[];
  const allowed=new Set(models.map(m=>m.id));
  const box=document.getElementById('model-choice');
- if(box&&models.length){
+ if(box&&models.length&&!next.numa?.enabled){
   const want=models.map(m=>m.id).join();
   const have=[...box.querySelectorAll('.model-button')].map(b=>b.dataset.modelId).join();
   if(have!==want){
@@ -1698,7 +1698,7 @@ function syncModelChoice(next){
  }
  const own=next.single_bot?[]:chosenBots().map(a=>a.model).filter(Boolean);
  const current=own.length?(own.every(m=>m===own[0])?own[0]:''):next.model;
- for(const button of document.querySelectorAll('#model-choice .model-button')){
+ for(const button of document.querySelectorAll('#model-choice .model-button:not(.numa-chip)')){
   const isOn=button.dataset.modelId===current;
   button.setAttribute('aria-pressed',String(isOn));
   button.disabled=!!next.dual_numa||modelChoicePending||next.you?.role!=='owner'||!!next.busy||!allowed.has(button.dataset.modelId);
@@ -1707,6 +1707,7 @@ function syncModelChoice(next){
    (own.length?' · gilt für die ausgewählten Bots':'')+
    (models.length<2?'':next.busy?' · Wechsel nach laufender Antwort möglich':next.you?.role!=='owner'?' · nur Besitzer':'');
  }
+ window.magAgentUI?.sync(next);
 }
 function modelInfo(mi){const el=$('model-info');if(!el)return;el.replaceChildren();if(!mi||!mi.gguf){el.title='Modellinfo nicht verfügbar';return}const n=document.createElement('b');n.textContent=mi.gguf;el.append(n);const eng=(mi.engine||'Engine?')+(mi.build?' '+mi.build:'');let txt=' · '+eng;const l=mi.last;const f=v=>(typeof v==='number'&&v>=0)?v.toFixed(v<10?2:1):'–';if(l&&(l.prompt_per_second>=0||l.predicted_per_second>=0))txt+=' · Prompt '+f(l.prompt_per_second)+' t/s · Gen '+f(l.predicted_per_second)+' t/s';el.append(document.createTextNode(txt));let cacheTip='';if(l&&typeof l.tokens_evaluated==='number'&&l.tokens_evaluated>=0)cacheTip='\nCache (Debug): '+(typeof l.tokens_cached==='number'&&l.tokens_cached>=0?Math.round(l.tokens_cached):'?')+' gecacht / '+Math.round(l.tokens_evaluated)+' Prompt-Tokens';el.title='Modell: '+mi.gguf+'\nEngine: '+eng+(l?'\nLetzte Antwort: Prompt '+f(l.prompt_per_second)+' t/s ('+(l.prompt_n>=0?l.prompt_n:'?')+' Tokens), Gen '+f(l.predicted_per_second)+' t/s ('+(l.predicted_n>=0?l.predicted_n:'?')+' Tokens)':'\nNoch keine Antwort seit Raumstart')+cacheTip}
 function modelStatus(m){const el=$('model-state'),b=$('model-banner');if(!m||!el)return;el.className='top-stat '+(m.state||'');el.replaceChildren();const d=document.createElement('span');d.className='dot';const shortLabel=m.ready?'bereit':({failed:'Fehler',offline:'offline',error:'Fehler'}[m.state]||'lädt …');el.classList.toggle('is-ready',!!m.ready);el.classList.toggle('is-loading',!m.ready&&!['failed','offline','error'].includes(m.state));const t=document.createElement('span');t.className='txt';t.textContent=shortLabel;el.append(d,t);el.title=(m.label||'')+(m.detail?' – '+m.detail:'');if(m.ready||!['failed','offline','error'].includes(m.state)){b.hidden=true;b.textContent='';return}b.hidden=false;b.className=(m.state==='failed'||m.state==='offline'||m.state==='error')?'failed':'';b.textContent='Modell nicht verfügbar – Details im Tooltip oben.'}
@@ -2626,6 +2627,7 @@ events.onmessage=e=>{
    if(s&&(s.reasoning||s.tools?.length)){completedTraces.push({name:s.name,content:event.content||s.text||'',reasoning:event.reasoning?'':(s.reasoning||''),ms:liveThinkMs(s),tools:s.tools||[],assignedPosition:null});if(completedTraces.length>40)completedTraces.shift()}
    delete streams[id];streamControls();
    refresh().catch(err=>notice(err.message));
+  }else if(window.magAgentUI?.event(event)){
   }else if(event.type==='reaction'){
    applyReaction(event);
   }else if(['message','file','agents','reset','idle','room'].includes(event.type)){

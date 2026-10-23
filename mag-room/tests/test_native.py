@@ -1758,7 +1758,7 @@ class Native(unittest.TestCase):
     m.get('id')==uid and any(r['actor']=='test' and r['emoji']=='🎉'
                                for r in m.get('reactions') or [])
     for m in s['room']))
-   self.wait_idle()
+   st=self.wait_idle()  # the closing bot message lands at the end of the turn
    target=next(m for m in st['room'] if m['id']==uid)
    self.assertTrue(any(r['actor']=='test' and r['emoji']=='🎉' for r in target.get('reactions') or []))
    ack=next(m for m in reversed(st['room']) if m.get('role')=='assistant' and m.get('bot')=='test' and m.get('content')=='')
@@ -2422,7 +2422,7 @@ class StaggeredLanes(unittest.TestCase):
   self.assertEqual(self._last_bot_text('iq3bot'),'Nur A')
  def test_03_frontend_thinking_and_waiting(self):
   html=self.request('/',raw=True).decode()
-  for needle in ('function showThinking(',"head.className='think-head'","'Nachgedacht'","'Denkt nach'",'msg.reasoning','msg.thought_ms',"event.type==='bot_wait'",'wartet','next.waiting_bots','function thinkSettled(','function paintThinkPeek(',"className='think-dots'",'prefers-reduced-motion:reduce){.think-line.in'):self.assertIn(needle,html)
+  for needle in ('function showThinking(',"head.className='think-head'","'Gedanken'","'Denkt nach'",'msg.reasoning','msg.thought_ms',"event.type==='bot_wait'",'wartet','next.waiting_bots','function thinkSettled(','function paintThinkPeek(',"className='think-dots'",'prefers-reduced-motion:reduce){.think-line.in'):self.assertIn(needle,html)
   self.assertNotIn("peek.textContent=text.slice(",html)
   self.assertNotIn("'Überlegungen'",html)
 class SilentPhases(unittest.TestCase):

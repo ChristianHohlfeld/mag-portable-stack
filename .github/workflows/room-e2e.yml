@@ -1,0 +1,39 @@
+name: Room agent-chat contract (Stop, priority, queue, browser)
+permissions:
+  contents: read
+on:
+  push:
+    paths:
+      - 'mag-room/**'
+      - 'CMakeLists.txt'
+      - '.github/workflows/room-e2e.yml'
+  pull_request:
+    paths:
+      - 'mag-room/**'
+      - 'CMakeLists.txt'
+      - '.github/workflows/room-e2e.yml'
+jobs:
+  room:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build dependencies and Playwright Chromium
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build libssl-dev libcurl4-openssl-dev libarchive-dev
+          python3 -m pip install --user playwright
+          python3 -m playwright install --with-deps chromium
+      - name: Build the native room
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release && cmake --build build --target magroom -j 4
+      - name: Stop, user priority and queue against a fake model
+        run: python3 mag-room/tests/test_room_control.py
+      - name: Browser e2e (composer Stop/Esc, queue, run card, menus, mobile drawers)
+        env:
+          MAG_E2E_SHOTS: ${{ runner.temp }}/room-e2e-shots
+        run: python3 mag-room/tests/test_room_e2e.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: room-e2e-screenshots
+          path: ${{ runner.temp }}/room-e2e-shots
+          if-no-files-found: ignore

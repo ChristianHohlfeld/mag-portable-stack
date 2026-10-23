@@ -34,9 +34,9 @@ SSH, Tailscale, Codex and Cursor remain separate working services.
   AppArmor profile; no host namespace restriction was disabled.
 - A real GPT-OSS turn returned "Die native Konsolidierung ist bereit." Another
   browser-tool task completed with "Example Domain".
-- Local espeak-ng produces WAV audio. Local whisper.cpp produces editable German
-  transcription; multilingual large-v3-turbo is installed. A synthetic espeak
-  fixture is not a voice-quality benchmark; proper DE/EN user samples remain needed.
+- Speech output is client-side only (Piper Thorsten in the browser); the server
+  does not synthesise audio. Local whisper.cpp produces editable German
+  transcription; multilingual large-v3-turbo is installed.
 - Room API create/delete was also tested, including a second independent native
   browser and per-bot memory. An overly narrow DHCP firewall rule was found and
   repaired to permit the initial DHCP broadcast; admission failures roll back the

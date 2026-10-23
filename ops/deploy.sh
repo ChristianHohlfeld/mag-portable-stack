@@ -106,9 +106,10 @@ find "$RELEASE/ops" -type d -name '__pycache__' -prune -exec rm -rf {} +
 find "$RELEASE/ops" -name '*.pyc' -delete
 install -d -o magbot -g magbot -m 0750 /var/lib/mag-stack/models
 install -o magbot -g magbot -m 0640 "$WHISPER_MODEL" /var/lib/mag-stack/models/ggml-large-v3-turbo.bin
-# Preserve the previous bot-published Python-era UI, which has incompatible APIs.
-if [[ ! -L /opt/mag-stack/current && -f /var/lib/magbot/room/frontend.html ]]; then
- mv /var/lib/magbot/room/frontend.html "$BACKUP/frontend.html"
+# The room UI comes only from the release. A bot-published override (the
+# removed publish_frontend tool) is moved aside next to itself, never deleted.
+if [[ -f /var/lib/magbot/room/frontend.html ]]; then
+ mv /var/lib/magbot/room/frontend.html "/var/lib/magbot/room/frontend.html.bak-$(date +%Y%m%d%H%M%S)"
 fi
 (cd "$RELEASE"; find bin web ops -type f -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS)
 # Root reads the user's checkout; without sudo's SUDO_UID (timer) git refuses it.
@@ -138,9 +139,6 @@ rollback() {
    mv -Tf /opt/mag-stack/.previous-rollback /opt/mag-stack/current
  else
    rm -f /opt/mag-stack/current
- fi
- if [[ -f "$BACKUP/frontend.html" ]]; then
-   cp -a "$BACKUP/frontend.html" /var/lib/magbot/room/frontend.html
  fi
  if [[ -d "$BACKUP/mag-120.service.d" ]]; then
    rm -rf /etc/systemd/system/mag-120.service.d

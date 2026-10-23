@@ -38,6 +38,7 @@ jobs:
           python3 mag-room/tests/test_cards_ui.py
           python3 mag-room/tests/test_tts.py
           python3 mag-room/tests/test_view_tools.py
+          python3 mag-room/tests/test_live_highlight.py
       - uses: actions/upload-artifact@v4
         if: always()
         with:

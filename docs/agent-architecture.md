@@ -52,3 +52,15 @@ the model only proposes text and tool calls.
 - Routine proposals need confirmation; a rejection is final.
 - A secret value never appears in model requests, room state, logs or
   plain-text state files.
+
+## Live action highlight (browser view)
+
+Before `browser_click`/`browser_type` the room asks mag-browser `/locate`
+for the target's viewport box (one CDP eval, scroll into view, no DOM
+injection) and publishes it with the existing `browser_action` events
+(`browser_events.hpp`). The client (`static/live-highlight.js`) draws a
+fading outline, the agent cursor, click ripple, typed text at the field and
+scroll hints over the stream, mapped with the stream's object-position so it
+stays aligned under zoom/pan. Password/secret fields are sent as dots only
+(`masked`), never the value. No model tokens; toggle ◎ in the view bar
+(default on). Actions of a bot whose browser is not shown appear as a caption.

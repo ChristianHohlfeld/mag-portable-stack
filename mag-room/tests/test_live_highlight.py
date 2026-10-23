@@ -1,0 +1,79 @@
+"""Playwright: live action highlight over the browser stream. A real test page
+is rendered at 1440x900, its element boxes are taken with the same JS as
+mag-browser /locate, its pixels drawn into the room's stream canvas, and the
+room client receives browser_action events shaped like browser_events.hpp
+(unit-tested in test_browser_events.cpp). Asserts outline, cursor, ripple,
+typed text, masked secret field, zoom alignment and the toggle."""
+import importlib.util,pathlib,shutil,unittest
+ROOT=pathlib.Path(__file__).resolve().parents[2]
+ART=pathlib.Path('/opt/cursor/artifacts')
+spec=importlib.util.spec_from_file_location('test_pwa',ROOT/'mag-room/tests/test_pwa.py');pwa=importlib.util.module_from_spec(spec);spec.loader.exec_module(pwa)
+PAGE="""<html><body style="margin:0;font:20px sans-serif">
+<h1 style="margin:40px">Shop Login</h1>
+<input id="user" style="position:absolute;left:300px;top:200px;width:320px;height:40px">
+<input id="pw" type="password" style="position:absolute;left:300px;top:280px;width:320px;height:40px">
+<button id="go" style="position:absolute;left:300px;top:360px;width:160px;height:48px">Anmelden</button></body></html>"""
+LOCATE="""(sel)=>{let e=document.querySelector(sel);let r=e.getBoundingClientRect();
+ return {x:r.x,y:r.y,w:r.width,h:r.height,password:e.type==='password'}}"""
+FIELD_VALUE='Hunter2-geheim-55'  # dummy test value, not a credential
+class LiveHighlight(unittest.TestCase):
+ def test_overlay_click_type_secret_zoom_toggle(self):
+  try:from playwright.sync_api import sync_playwright
+  except ImportError:self.skipTest('playwright is not installed')
+  ART.mkdir(parents=True,exist_ok=True)
+  tmp=pathlib.Path('/tmp/mag-live-highlight')
+  if tmp.exists():shutil.rmtree(tmp)
+  static=tmp/'static';shutil.copytree(ROOT/'mag-room/static',static)
+  proc,log,model,ui,bridge=pwa.start_room(tmp,static,'lh')
+  pw=sync_playwright().start();browser=pw.chromium.launch(channel='chrome',headless=True,args=['--no-sandbox','--disable-dev-shm-usage'])
+  errors=[]
+  try:
+   site=browser.new_page(viewport={'width':1440,'height':900});site.set_content(PAGE)
+   boxes={k:site.evaluate(LOCATE,'#'+k) for k in ('user','pw','go')}
+   self.assertTrue(boxes['pw']['password'])
+   shot=site.screenshot(type='png')
+   import base64;png='data:image/png;base64,'+base64.b64encode(shot).decode()
+   room=browser.new_page(viewport={'width':1400,'height':900});room.on('pageerror',lambda e:errors.append(str(e)))
+   room.goto('http://127.0.0.1:%s/'%ui,wait_until='domcontentloaded');room.wait_for_function('()=>window.magLiveHighlight&&window.magViewTools')
+   if not room.locator('#browser-view').is_visible():room.locator('#toggle-tools').click()
+   room.locator('#browser-view').wait_for(state='visible')
+   room.evaluate("""async(png)=>{const c=document.getElementById('screen');c.hidden=false;c.style.display='block';c.style.width='100%';c.style.height='420px';
+     const i=new Image();i.src=png;await i.decode();c.getContext('2d').drawImage(i,0,0,1440,900);magViewTools.fit()}""",png)
+   bot=room.evaluate("document.getElementById('browser-agent').value")
+   ev=lambda e:room.evaluate("(e)=>browserOverlay(e)",{**e,'type':'browser_action','bot':bot})
+   def canvas_pos(b):
+    return room.evaluate("""(b)=>{const c=document.getElementById('screen').getBoundingClientRect();const s=Math.min(c.width/1440,c.height/900);
+      const [px,py]=magStreamOrigin(document.getElementById('screen'));
+      return {x:c.left+(c.width-1440*s)*px+b.x*s,y:c.top+(c.height-900*s)*py+b.y*s,w:b.w*s,h:b.h*s}}""",b)
+   def assert_box(b):
+    box=room.locator('#browser-overlay .lh-box');box.wait_for(state='visible')
+    got=box.bounding_box();want=canvas_pos(b)
+    self.assertLess(abs(got['x']+3-want['x']),3);self.assertLess(abs(got['y']+3-want['y']),3)
+    self.assertLess(abs(got['width']-6-want['w']),3)
+   # click: target outlined before, then ripple at the point
+   g=boxes['go'];ev({'action':'target','box':g,'x':g['x']+g['w']/2,'y':g['y']+g['h']/2});assert_box(g)
+   ev({'action':'click','x':g['x']+g['w']/2,'y':g['y']+g['h']/2})
+   room.locator('#browser-overlay .bo-ripple').wait_for(state='attached',timeout=2000)
+   room.screenshot(path=str(ART/'live_highlight_click.png'))
+   # type: outline on the field, text appears at the field
+   u=boxes['user'];ev({'action':'type','box':u,'text':'chris@example.org'});assert_box(u)
+   room.wait_for_function("()=>document.querySelector('#browser-overlay .bo-type')?.textContent.includes('chris@example.org')",timeout=4000)
+   # secret field: dots only (server sends masked; client also refuses a leaked value)
+   p=boxes['pw'];ev({'action':'type','box':p,'masked':True,'text':FIELD_VALUE});assert_box(p)
+   self.assertIn('secret',room.locator('#browser-overlay .lh-box').get_attribute('class'))
+   room.wait_for_timeout(600)
+   self.assertIn('••••',room.locator('#browser-overlay .bo-type').text_content())
+   self.assertNotIn(FIELD_VALUE,room.content())
+   room.screenshot(path=str(ART/'live_highlight_secret.png'))
+   # zoom/pan: the outline follows the transformed stream
+   room.evaluate('magViewTools.zoomAt(2)');ev({'action':'target','box':g});assert_box(g)
+   room.evaluate('magViewTools.fit()')
+   # scroll hint, then toggle off hides the overlay
+   ev({'action':'scroll_down','x':720,'y':450});room.locator('#browser-overlay .lh-scroll.down').wait_for(state='attached',timeout=2000)
+   room.locator('.lh-toggle').click();self.assertFalse(room.evaluate('magLiveHighlight.enabled()'))
+   self.assertFalse(room.locator('#browser-overlay').is_visible())
+   room.locator('.lh-toggle').click();self.assertTrue(room.evaluate('magLiveHighlight.enabled()'))
+   self.assertEqual(errors,[])
+  finally:
+   pwa.stop_room(proc,log,model);browser.close();pw.stop()
+if __name__=='__main__':unittest.main(verbosity=2)

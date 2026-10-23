@@ -3,6 +3,7 @@
 #include "common.hpp"
 #include "json.hpp"
 #include "browser_recovery.hpp"
+#include "browser_events.hpp"
 #include "pages.hpp"
 
 #include <arpa/inet.h>
@@ -2582,18 +2583,11 @@ static void warm_browser_async(const std::string &vm) {
 // Live overlay for the room's browser view: where the bot points/clicks/types.
 static std::string secret_scrub(const std::string &bot, std::string text);
 static void emit_browser_action(const std::string &bot, const std::string &action,
-                                const Val *pos, const std::string &text = "") {
-  Val e = Val::object();
-  e["type"] = "browser_action";
-  e["bot"] = bot;
-  e["action"] = action;
-  if (pos && pos->isObj() && pos->find("x") && pos->find("y")) {
-    e["x"] = pos->find("x")->asNum();
-    e["y"] = pos->find("y")->asNum();
-  }
-  if (!text.empty())
-    e["text"] = secret_scrub(bot, text).substr(0, 400); // typed passwords stay hidden
-  publish(mj::dump(e));
+                                const Val *pos, const std::string &text = "",
+                                const Val *box = nullptr, bool masked = false) {
+  // Unmasked text is still scrubbed of any secret value this bot may use.
+  publish(mj::dump(browser_action_val(bot, action, pos,
+                                      masked ? "" : secret_scrub(bot, text), box, masked)));
 }
 static Val browser_json(const std::string &vm, const std::string &path,
                         const std::string &method = "GET",
@@ -4090,6 +4084,11 @@ static std::string dispatch_tool_raw(int bot_idx, const std::string &name,
         b["selector"] = getstr("selector");
       if (a.find("text"))
         b["text"] = getstr("text");
+      // Highlight the target before acting (one cheap CDP eval, no tokens).
+      try {
+        Val box = browser_json(vm, "/locate", "POST", mj::dump(b));
+        emit_browser_action(bot_id, "target", nullptr, "", &box);
+      } catch (...) {}
       Val out = browser_json(vm, "/click", "POST", mj::dump(b));
       emit_browser_action(bot_id, "click", out.find("click"));
       return mj::dump(out);
@@ -4102,7 +4101,17 @@ static std::string dispatch_tool_raw(int bot_idx, const std::string &name,
       auto e = a.find("enter");
       if (e)
         b["enter"] = e->truthy();
-      emit_browser_action(bot_id, "type", nullptr, getstr("text"));
+      {
+        Val box;
+        try {
+          Val q = Val::object();
+          if (a.find("selector")) q["selector"] = getstr("selector");
+          box = browser_json(vm, "/locate", "POST", mj::dump(q));
+        } catch (...) {}
+        const bool secret = secret_scrub(bot_id, getstr("text")) != getstr("text") ||
+            (box.isObj() && box.find("password") && box.find("password")->asBool(false));
+        emit_browser_action(bot_id, "type", nullptr, getstr("text"), box.isObj() ? &box : nullptr, secret);
+      }
       return mj::dump(browser_json(vm, "/type", "POST", mj::dump(b)));
     }
     if (name == "browser_read")
@@ -4112,6 +4121,11 @@ static std::string dispatch_tool_raw(int bot_idx, const std::string &name,
     if (name == "browser_scroll") {
       Val b = Val::object();
       b["dy"] = a.find("dy") ? a.find("dy")->asNum() : 600;
+      {
+        Val pos = Val::object();
+        pos["x"] = 720; pos["y"] = 450;
+        emit_browser_action(bot_id, b["dy"].asNum() < 0 ? "scroll_up" : "scroll_down", &pos);
+      }
       return mj::dump(browser_json(vm, "/scroll", "POST", mj::dump(b)));
     }
     if (name == "browser_screenshot") {

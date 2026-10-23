@@ -33,6 +33,7 @@ jobs:
           ./build/test-browser-recovery
           ./build/test-jobs-mcp
           ./build/test-pages-native
+          ./build/test-browser-events
           ./build/test-guest-description
           ./build/test-guest-curl
           ./build/test-large-stdin

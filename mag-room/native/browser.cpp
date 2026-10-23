@@ -531,6 +531,23 @@ int main(int argc, char **argv) {
             out["errors"] = Val::array();
             out["console"] = Val::array();
           }
+        } else if (r.path == "/locate") {
+          // Live highlight: viewport box of the element the next action
+          // targets (selector, button/link text, or the focused field).
+          // Read-only apart from scrolling it into view; no DOM injection.
+          std::string selector = value("selector"), text = value("text");
+          std::string find =
+              !selector.empty() ? "document.querySelector(" + js(selector) + ")"
+              : !text.empty()
+                  ? "[...document.querySelectorAll('button,a,input,label,[role="
+                    "button]')].find(e=>e.innerText?.trim()===" + js(text) + ")"
+                  : "document.activeElement";
+          out = c.eval("(()=>{let e=" + find +
+                       ";if(!e||e===document.body)return null;e.scrollIntoView({block:'center'});"
+                       "let r=e.getBoundingClientRect();"
+                       "return {x:r.x,y:r.y,w:r.width,h:r.height,"
+                       "password:e.type==='password'||/password|secret|token|pin/i.test(e.autocomplete+' '+e.name+' '+e.id),"
+                       "vw:innerWidth,vh:innerHeight}})()");
         } else if (r.path == "/click") {
           std::string selector = value("selector"), text = value("text");
           if (selector.empty() && text.empty())

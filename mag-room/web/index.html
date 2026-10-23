@@ -552,7 +552,7 @@ dialog{border-radius:10px;border-color:var(--line);background:var(--surface)}
 <script src="/static/marked.min.js"></script><script src="/static/purify.min.js"></script>
 <script src="/static/highlight.min.js"></script>
 <script src="/static/qrcode.min.js"></script>
-<script src="/static/agent-ui.js" defer></script><script src="/static/view-tools.js" defer></script><script src="/static/xterm.js"></script><script src="/static/xterm-addon-fit.js"></script>
+<script src="/static/agent-ui.js" defer></script><script src="/static/view-tools.js" defer></script><script src="/static/live-highlight.js" defer></script><script src="/static/xterm.js"></script><script src="/static/xterm-addon-fit.js"></script>
 <script>
 'use strict';
 const $=id=>document.getElementById(id);
@@ -1926,7 +1926,7 @@ async function browserAction(action,body){try{const result=await browser(action,
 // Live overlay over the bot browser stream: cursor glides to the target, click
 // ripple, typed text appears. Only CSS transforms/opacity: no extra frames.
 let boTypeTimer=0,boHideTimer=0;
-function boRect(){const c=$('screen'),v=$('browser-view');if(!c||c.hidden)return null;const cr=c.getBoundingClientRect(),vr=v.getBoundingClientRect();const sc=Math.min(cr.width/1440,cr.height/900);return{x:cr.left-vr.left+(cr.width-1440*sc)/2,y:cr.top-vr.top+(cr.height-900*sc)/2,s:sc}}
+function boRect(){const c=$('screen'),v=$('browser-view');if(!c||c.hidden)return null;const cr=c.getBoundingClientRect(),vr=v.getBoundingClientRect();const sc=Math.min(cr.width/1440,cr.height/900);const [px,py]=window.magStreamOrigin?magStreamOrigin(c):[.5,.5];return{x:cr.left-vr.left+(cr.width-1440*sc)*px,y:cr.top-vr.top+(cr.height-900*sc)*py,s:sc}}
 function browserOverlay(ev){
  if(ev.bot!==$('browser-agent').value)return;const o=$('browser-overlay'),cur=o.querySelector('.bo-cursor'),R=boRect();if(!R)return;
  o.classList.add('on');clearTimeout(boHideTimer);boHideTimer=setTimeout(()=>o.classList.remove('on'),6000);
@@ -2278,7 +2278,7 @@ $('live').addEventListener('change',()=>{
 $('browser-agent').addEventListener('change',()=>{updateConsoleLabel();if(rightOpen&&(!isCompact()||layout.classList.contains('mobile-right')))connectLive();else disconnectLive()});
 function browserCoords(e){
  const img=$('screen'),r=img.getBoundingClientRect(),w=img.width||1440,h=img.height||900;
- const scale=Math.min(r.width/w,r.height/h),left=r.left+(r.width-w*scale)/2,top=r.top+(r.height-h*scale)/2;
+ const [ox,oy]=window.magStreamOrigin?magStreamOrigin(img):[.5,.5];const scale=Math.min(r.width/w,r.height/h),left=r.left+(r.width-w*scale)*ox,top=r.top+(r.height-h*scale)*oy;
  const x=(e.clientX-left)/scale,y=(e.clientY-top)/scale;
  if(!Number.isFinite(x)||!Number.isFinite(y)||x<0||y<0||x>=w||y>=h)return null;
  return {x:Math.min(1439,Math.max(0,x*1440/w)),y:Math.min(899,Math.max(0,y*900/h))};

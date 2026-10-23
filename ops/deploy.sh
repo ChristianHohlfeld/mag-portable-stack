@@ -252,6 +252,12 @@ systemctl restart mag-agents-network.service
 systemctl enable mag-120.service
 # Switch nginx while the previous native whois backend is still available.
 # A failed ingress check rolls back BEFORE replacing the running room process.
+# First install (blank host): there is no previous room to answer nginx's
+# whois subrequest, so the new room starts first (rollback disables it).
+if ! systemctl is-active --quiet mag-120.service; then
+  systemctl start mag-120.service
+  for i in {1..30}; do curl -fsS --max-time 2 -o /dev/null http://127.0.0.1:8766/readyz && break; sleep 1; done
+fi
 bash "$NGINX_SYNC" activate
 bash "$NGINX_SYNC" smoke
 # Public ISRG roots before the room restarts, so MCP HTTPS (and the audit

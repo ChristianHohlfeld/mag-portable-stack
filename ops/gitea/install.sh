@@ -32,20 +32,28 @@ if ! id git >/dev/null 2>&1; then
   useradd --system --create-home --home-dir /var/lib/gitea --shell /bin/bash --comment 'Gitea' git
 fi
 install -d -o git -g git -m 0750 /var/lib/gitea /var/lib/gitea/data /var/lib/gitea/data/lfs /etc/gitea
+# Default repository root (APP_DATA_PATH/gitea-repositories): Gitea creates it
+# only with the first repo, but the backup needs it on a blank host too.
+install -d -o git -g git -m 0750 /var/lib/gitea/data/gitea-repositories
 install -d -o git -g git -m 0750 /var/log/gitea
 if [[ ! -e /etc/gitea/app.ini ]]; then
   install -m 0640 -o root -g git "$here/app.ini.example" /etc/gitea/app.ini
-  sk=$(openssl rand -hex 32)
-  it=$(openssl rand -hex 32)
-  jwt=$(openssl rand -hex 32)
-  python3 - "$sk" "$it" "$jwt" <<'PY'
+  # Gitea's own generator: JWT_SECRET must be unpadded URL-safe base64 of
+  # 32 bytes (a hex string makes Gitea rewrite the read-only app.ini and
+  # crash-loop), INTERNAL_TOKEN a signed token.
+  sk=$(/usr/local/bin/gitea generate secret SECRET_KEY)
+  it=$(/usr/local/bin/gitea generate secret INTERNAL_TOKEN)
+  jwt=$(/usr/local/bin/gitea generate secret JWT_SECRET)
+  lfs=$(/usr/local/bin/gitea generate secret LFS_JWT_SECRET)
+  python3 - "$sk" "$it" "$jwt" "$lfs" <<'PY'
 import pathlib, sys
 path = pathlib.Path("/etc/gitea/app.ini")
 text = path.read_text()
 repls = {
     "SECRET_KEY = CHANGE_ME": "SECRET_KEY = " + sys.argv[1],
     "INTERNAL_TOKEN = CHANGE_ME": "INTERNAL_TOKEN = " + sys.argv[2],
-    "JWT_SECRET = CHANGE_ME": "JWT_SECRET = " + sys.argv[3],
+    "\nJWT_SECRET = CHANGE_ME": "\nJWT_SECRET = " + sys.argv[3],
+    "LFS_JWT_SECRET = CHANGE_ME": "LFS_JWT_SECRET = " + sys.argv[4],
 }
 for old, new in repls.items():
     if old not in text:
@@ -55,7 +63,7 @@ if "CHANGE_ME" in text:
     raise SystemExit("placeholder left in app.ini")
 path.write_text(text)
 PY
-  unset sk it jwt
+  unset sk it jwt lfs
   chown root:git /etc/gitea/app.ini
   chmod 0640 /etc/gitea/app.ini
   echo 'Wrote /etc/gitea/app.ini with generated secrets (not printed)'

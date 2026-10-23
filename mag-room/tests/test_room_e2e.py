@@ -79,6 +79,13 @@ class RoomE2E(unittest.TestCase):
         p.click('#settings-close')
         expect(d).to_be_hidden()
         self.assertEqual(p.locator('#plus-web').count(), 0, 'offline only in the room menu')
+        # One header: one status group, one room menu, one settings button.
+        self.assertEqual(p.locator('#app-header .status-group .top-stat').count(), 2)
+        self.assertEqual(p.locator('#app-header #room-menu-btn').count(), 1)
+        self.assertEqual(p.locator('#app-header #settings-open').count(), 1)
+        # One Stop: the composer button (the room menu's "Alles anhalten"
+        # also pauses jobs); no stop buttons in messages or the sidebar.
+        self.assertEqual(p.locator('.work-stop, #left-panel button:has-text("Stopp"), #left-panel #stop').count(), 0)
 
     def test_02_composer_button_stops_the_running_turn(self):
         p = self.page

@@ -2580,6 +2580,7 @@ static void warm_browser_async(const std::string &vm) {
   }).detach();
 }
 // Live overlay for the room's browser view: where the bot points/clicks/types.
+static std::string secret_scrub(const std::string &bot, std::string text);
 static void emit_browser_action(const std::string &bot, const std::string &action,
                                 const Val *pos, const std::string &text = "") {
   Val e = Val::object();
@@ -2591,7 +2592,7 @@ static void emit_browser_action(const std::string &bot, const std::string &actio
     e["y"] = pos->find("y")->asNum();
   }
   if (!text.empty())
-    e["text"] = text.substr(0, 400);
+    e["text"] = secret_scrub(bot, text).substr(0, 400); // typed passwords stay hidden
   publish(mj::dump(e));
 }
 static Val browser_json(const std::string &vm, const std::string &path,

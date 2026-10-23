@@ -1523,6 +1523,94 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
     send_json(fd, 200, mj::dump(user_stop(false)));
     return;
   }
+  if (path == "/api/secrets" || path.rfind("/api/secrets/", 0) == 0) {
+    // Owner only. Values go in, never out.
+    if (actor.role != "owner") { error_json(fd, 403, "Nur der Besitzer"); return; }
+    if (m == "GET" && path == "/api/secrets") {
+      Val out = Val::object(); out["secrets"] = secrets_public();
+      send_json(fd, 200, mj::dump(out)); return;
+    }
+    if (m == "POST" && path.rfind("/api/secrets/requests/", 0) == 0) {
+      try {
+        if (!secret_fulfil(path.substr(22), has_json ? str("value") : "")) { error_json(fd, 404, "Anfrage nicht mehr offen"); return; }
+      } catch (const std::exception &e) { error_json(fd, 400, e.what()); return; }
+      send_json(fd, 200, "{\"ok\":true}"); return;
+    }
+    std::string rest = path.size() > 13 ? path.substr(13) : "";
+    const bool bots = rest.size() > 5 && rest.compare(rest.size() - 5, 5, "/bots") == 0;
+    if (bots) rest.resize(rest.size() - 5);
+    const std::string name = secret_name_ok(url_decode(rest));
+    if (name.empty()) { error_json(fd, 400, "Ungültiger Name"); return; }
+    if (m == "PUT" && bots) {
+      auto b = has_json ? body.find("bots") : nullptr;
+      if (!b || !b->isArr() || !secret_set_bots(name, *b)) { error_json(fd, 404, "Unbekanntes Secret"); return; }
+      send_json(fd, 200, "{\"ok\":true}"); return;
+    }
+    if (m == "PUT") {
+      try { secret_store(name, has_json ? str("value") : "", has_json ? str("purpose") : "", ""); }
+      catch (const std::exception &e) { error_json(fd, 400, e.what()); return; }
+      send_json(fd, 200, "{\"ok\":true}"); return;
+    }
+    if (m == "DELETE") {
+      if (!secret_delete(name)) { error_json(fd, 404, "Unbekanntes Secret"); return; }
+      send_json(fd, 200, "{\"ok\":true}"); return;
+    }
+    error_json(fd, 405, "Methode nicht erlaubt"); return;
+  }
+  if (m == "GET" && path == "/api/numa") {
+    send_json(fd, 200, mj::dump(numa_public()));
+    return;
+  }
+  if (m == "POST" && path == "/api/numa/swap") {
+    // Explicit owner action after the confirm dialog; never automatic.
+    if (actor.role != "owner") { error_json(fd, 403, "Nur der Besitzer"); return; }
+    auto node = has_json ? body.find("node") : nullptr;
+    auto r = numa_swap(node ? (int)node->asNum(-1) : -1, has_json ? str("model") : "",
+                       has_json && body.find("confirm") && body.find("confirm")->asBool(false));
+    if (r.code >= 400) { error_json(fd, r.code, r.error); return; }
+    Val out = numa_public();
+    out["accepted"] = r.code == 202;
+    send_json(fd, r.code, mj::dump(out));
+    return;
+  }
+  if (m == "PUT" && path.rfind("/api/agents/", 0) == 0 && path.size() > 17 &&
+      path.compare(path.size() - 5, 5, "/numa") == 0) {
+    if (actor.role != "owner") { error_json(fd, 403, "Nur der Besitzer"); return; }
+    const std::string id = url_decode(path.substr(12, path.size() - 17));
+    auto node = has_json ? body.find("node") : nullptr;
+    if (!numa_assign(id, node ? (int)node->asNum(-1) : -1)) { error_json(fd, 400, "Ungültige Zuordnung"); return; }
+    send_json(fd, 200, mj::dump(numa_public()));
+    return;
+  }
+  if (m == "GET" && path == "/api/tasks") {
+    Val out = Val::object();
+    out["tasks"] = tasks_public(qparam(r.query, "bot"));
+    send_json(fd, 200, mj::dump(out));
+    return;
+  }
+  if (m == "POST" && path.rfind("/api/tasks/", 0) == 0 &&
+      path.size() > 18 && path.compare(path.size() - 7, 7, "/cancel") == 0) {
+    const std::string id = path.substr(11, path.size() - 18);
+    send_json(fd, 200, task_cancel(id) ? "{\"cancelled\":true}" : "{\"cancelled\":false}");
+    return;
+  }
+  if (m == "GET" && path.rfind("/api/todo/", 0) == 0) {
+    send_json(fd, 200, mj::dump(todo_public(url_decode(path.substr(10)))));
+    return;
+  }
+  if (m == "GET" && path.rfind("/api/journal/", 0) == 0) {
+    const std::string id = url_decode(path.substr(13));
+    if (agent_index(id) < 0) { error_json(fd, 404, "Unknown agent"); return; }
+    Val arr = Val::array();
+    {
+      std::lock_guard<std::mutex> lk(JOURNAL_MTX);
+      for (auto &row : journal_read(id)) arr.push(row);
+    }
+    Val out = Val::object();
+    out["journal"] = arr;
+    send_json(fd, 200, mj::dump(out));
+    return;
+  }
   if (m == "POST" && path == "/api/stop") {
     // "Alles anhalten": like Stop, and scheduled jobs and the autonomy
     // switch stay off until the user resumes.

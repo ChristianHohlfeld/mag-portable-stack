@@ -30,6 +30,7 @@ def vapid_env():
 
 class Health(BaseHTTPRequestHandler):
     protocol_version = 'HTTP/1.1'
+    script = []  # optional list of delta lists (e.g. tool calls) for UI tests
     def log_message(self, *a):
         pass
     def do_GET(self):
@@ -46,8 +47,9 @@ class Health(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header('Transfer-Encoding', 'chunked')
         self.end_headers()
-        for piece in chunks:
-            event = json.dumps({'choices': [{'delta': {'content': piece.decode()}}]}).encode()
+        deltas = type(self).script.pop(0) if type(self).script else [{'content': p.decode()} for p in chunks]
+        for delta in deltas:
+            event = json.dumps({'choices': [{'delta': delta}]}).encode()
             payload = b'data: ' + event + b'\n\n'
             self.wfile.write(('%x\r\n' % len(payload)).encode() + payload + b'\r\n')
         end = b'data: [DONE]\n\n'

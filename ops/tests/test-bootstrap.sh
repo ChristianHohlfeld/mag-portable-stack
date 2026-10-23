@@ -82,9 +82,10 @@ grep -Fq '/home/chris/models/whisper/ggml-large-v3-turbo.bin' "$root/ops/deploy.
 grep -Fq 'CACHE="${MAG_VOICE_CACHE:-$HOME/.cache/mag-stack}"' "$root/ops/bootstrap-voice.sh"
 grep -Fq 'MODEL_DIR="${MAG_VOICE_MODELS:-$HOME/models/whisper}"' "$root/ops/bootstrap-voice.sh"
 # Sub-installers have their own dry runs.
-bash "$root/ops/private-access/install-lego.sh" --dry-run | grep -Fq 'lego 5.5.2'
-bash "$root/ops/gitea/mirror-github.sh" --dry-run | grep -Fq 'pull mirror'
-bash "$root/ops/vm/build-golden.sh" --print-pin | grep -Fq 'cloud-images.ubuntu.com/releases/noble/release-'
+grep -Fq 'lego 5.5.2' <<<"$(bash "$root/ops/private-access/install-lego.sh" --dry-run)"
+mirror_out=$(bash "$root/ops/gitea/mirror-github.sh" --dry-run)
+grep -Fq 'pull mirror' <<<"$mirror_out"
+grep -Fq 'cloud-images.ubuntu.com/releases/noble/release-' <<<"$(bash "$root/ops/vm/build-golden.sh" --print-pin)"
 # magbot keeps uid 993 only if it exists before packages add system users.
 users_at=$(grep -n '^PHASE users$' <<<"$out" | cut -d: -f1)
 packages_at=$(grep -n '^PHASE packages$' <<<"$out" | cut -d: -f1)

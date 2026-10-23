@@ -453,6 +453,14 @@ else
   echo 'PHASE runners-skipped (--no-deploy)'
 fi
 
+phase secrets
+# Key for the encrypted bot secret store; kept if restored from the archive.
+if (( DRY )); then bash "$ROOT/ops/secrets/install.sh" --dry-run; else bash "$ROOT/ops/secrets/install.sh"; fi
+
+phase numa
+# Hot-swap tool + sudoers + seeded state. Never starts, stops or swaps a model.
+if (( DRY )); then bash "$ROOT/ops/numa/install.sh" --dry-run; else bash "$ROOT/ops/numa/install.sh"; fi
+
 phase start-llm
 if (( START_LLM == 0 )); then
   echo 'PHASE start-llm-skipped (mag-llm is not started or restarted)'

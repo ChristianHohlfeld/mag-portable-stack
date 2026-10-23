@@ -182,6 +182,26 @@ class NativeGateway(unittest.TestCase):
         finally:
             proc.terminate();proc.wait(timeout=3);proc.stderr.close()
 
+    def test_06_numa_state_routes_swapped_models_to_their_node(self):
+        # mag-numa-swap put IQ3 on NUMA0 and Qwen on NUMA1: traffic follows the state file.
+        gwp=port();state=self.dir/"numa.json"
+        state.write_text(json.dumps({"nodes":{"0":{"model":"deepseek-v4-flash-0731-iq3"},"1":{"model":"qwen3.8-flash-next-uncensored"}}}))
+        env=dict(self.env,MAG_AUDIT_LISTEN_PORT=str(gwp),MAG_NUMA_STATE=str(state),MAG_AUDIT_LOG_DIR=str(self.dir/"numa-logs"))
+        proc=subprocess.Popen([str(ROOT/"build/mag-audit-gateway")],env=env,stdout=subprocess.DEVNULL,stderr=subprocess.PIPE)
+        try:
+            for _ in range(100):
+                try:
+                    if request(gwp)[0]==200:break
+                except (ConnectionError,OSError):pass
+                time.sleep(.05)
+            Q4.calls.clear();IQ3.calls.clear()
+            code,_=request(gwp,"POST","/v1/chat/completions",{"model":"qwen3.8-flash-next-uncensored","messages":[]})
+            self.assertEqual(code,200);self.assertEqual(len(IQ3.calls),1);self.assertEqual(Q4.calls,[])
+            code,_=request(gwp,"POST","/v1/chat/completions",{"model":"deepseek-v4-flash-0731-iq3","messages":[]})
+            self.assertEqual(code,200);self.assertEqual(len(Q4.calls),1)
+            self.assertEqual(Q4.calls[0][1]["model"],"deepseek-v4-flash-0731-iq3")
+        finally:
+            proc.terminate();proc.wait(timeout=3);proc.stderr.close()
     def test_05_unknown_secondary_configuration_fails_closed(self):
         env=dict(self.env,MAG_AUDIT_LISTEN_PORT=str(port()),MAG_SECONDARY_MODEL="typo")
         process=subprocess.run([str(ROOT/"build/mag-audit-gateway")],env=env,

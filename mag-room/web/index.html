@@ -367,21 +367,32 @@ dialog{border-radius:10px;border-color:var(--line);background:var(--surface)}
 .jump-bottom.has-new .jump-dot{opacity:1}
 .pwa-block{padding:2px 10px 8px}.pwa-block .hint{margin:4px 0}.pwa-block .pill-btn{margin:4px 0}
 #update-toast{bottom:72px}#update-toast button{color:var(--accent)}
-.react-bar{display:none;position:absolute;top:50%;right:-44px;left:auto;transform:translateY(-50%);z-index:5;gap:4px;align-items:center;padding:4px;background:var(--surface);border:1px solid var(--line);border-radius:999px;box-shadow:var(--shadow)}
-.conversation-inner{padding-right:44px}
-.message.user .react-bar{left:auto;right:-44px}
-.react-bar>.react-quick{display:none}
-.react-bar .react-more{width:34px;min-width:34px;height:34px;min-height:34px;padding:0;display:grid;place-items:center}
-.react-picker{position:absolute;bottom:42px;right:0;display:flex;flex-wrap:wrap;gap:4px;padding:8px;border:1px solid var(--line);border-radius:10px;background:var(--surface);box-shadow:var(--shadow);z-index:6}
-.message:hover .react-bar,.message:focus-within .react-bar,.message.react-open .react-bar{display:flex}
-.react-quick,.react-more,.react-pill{min-height:28px!important;height:28px;padding:0 8px;border-radius:999px;border:1px solid var(--line);background:var(--panel);font-size:14px;line-height:1;color:var(--text)}
+/* One message popover (reactions + actions); one open at a time. */
+.react-quick,.react-more,.react-pill{min-height:30px!important;height:30px;padding:0 8px;border-radius:999px;border:1px solid var(--line);background:var(--panel);font-size:15px;line-height:1;color:var(--text);cursor:pointer}
 .react-pill.mine{border-color:var(--accent);background:color-mix(in srgb,var(--accent),transparent 82%)}
+.jobs-bot{font-size:11px;font-weight:650;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin:10px 2px 4px}
 .react-pills{display:flex;flex-wrap:wrap;gap:4px;margin-top:6px}
 .react-pills:empty{display:none}
 .message.user .react-pills{justify-content:flex-end}
-.react-picker{display:flex;flex-wrap:wrap;gap:4px;width:196px;padding:2px}
-@media(hover:none){
-.react-bar{position:absolute;top:50%;right:-44px;transform:translateY(-50%);display:flex;margin:0;box-shadow:none;width:fit-content}
+.msg-pop{position:fixed;z-index:60;display:none;flex-direction:column;gap:6px;padding:6px;border:1px solid var(--line);border-radius:16px;background:var(--surface,var(--panel));box-shadow:0 10px 30px rgba(0,0,0,.22);max-width:calc(100vw - 16px);animation:pop-in .12s ease-out}
+.msg-pop.open{display:flex}
+@keyframes pop-in{from{opacity:0;transform:scale(.96)}to{opacity:1;transform:none}}
+.msg-pop .pop-emoji{display:flex;gap:2px;flex-wrap:wrap;justify-content:center}
+.msg-pop .pop-emoji button{width:38px;height:38px;border:0;border-radius:50%;background:transparent;font-size:22px;line-height:1;cursor:pointer;padding:0}
+.msg-pop .pop-emoji button:hover,.msg-pop .pop-emoji button:focus-visible{background:var(--panel-3,var(--panel))}
+.msg-pop .pop-emoji button.mine{background:color-mix(in srgb,var(--accent),transparent 80%)}
+.msg-pop .pop-emoji .pop-more{font-size:18px;color:var(--muted)}
+.msg-pop .pop-grid{display:none;grid-template-columns:repeat(6,38px);gap:2px;justify-content:center;border-top:1px solid var(--line);padding-top:6px}
+.msg-pop.expanded .pop-grid{display:grid}
+.msg-pop .pop-grid button{width:38px;height:38px;border:0;border-radius:50%;background:transparent;font-size:22px;cursor:pointer;padding:0}
+.msg-pop .pop-actions{display:flex;gap:2px;border-top:1px solid var(--line);padding-top:6px}
+.msg-pop .pop-actions button{flex:1;display:flex;align-items:center;justify-content:center;gap:6px;min-height:36px;border:0;border-radius:10px;background:transparent;color:var(--text);font:inherit;font-size:13px;cursor:pointer;padding:0 10px;white-space:nowrap}
+.msg-pop .pop-actions button:hover{background:var(--panel-3,var(--panel))}
+.msg-pop .pop-actions .danger{color:#d33}
+.message.pop-target>.content{background:color-mix(in srgb,var(--accent),transparent 92%);border-radius:12px}
+/* Permanent copy/read-aloud only under the newest message (like Grok). */
+.message .message-tools{display:none}
+.conversation-inner>article.message:last-of-type .message-tools{display:flex}
 .message.user .react-bar{right:-44px}
 .react-quick,.react-more,.react-pill{min-height:36px!important;height:36px}
 }
@@ -505,7 +516,7 @@ dialog{border-radius:10px;border-color:var(--line);background:var(--surface)}
 <header id="app-header"><button class="side-toggle" id="toggle-agents" aria-controls="left-panel" aria-expanded="true" title="Bot-Leiste umschalten"><svg class="i " aria-hidden="true"><use href="#ic-menu"></use></svg> <span>Bots</span></button><div class="brand"><div class="brand-mark"><svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="square" stroke-linejoin="miter" aria-hidden="true"><path d="M3 22V8h18v14"/><path d="M3 8V3h4v4h3V3h4v4h3V3h4v5"/><rect x="8" y="12" width="8" height="10"/></svg></div><span class="brand-word">MAG</span><span class="brand-caption">Stardenburg · privat</span></div><span class="header-divider"></span><span class="header-title">Unterhaltung</span><div class="header-actions"><div id="model-choice" role="group" aria-label="Modell auswählen"><button type="button" class="model-button" data-model-id="deepseek-v4-flash-0731" aria-pressed="true" title="Q4">0 · Q4</button><button type="button" class="model-button" data-model-id="deepseek-v4-flash-0731-iq3" aria-pressed="false" title="IQ3">1 · IQ3</button></div><span id="model-info" title="Aktives Modell, Engine und Geschwindigkeit"></span><span class="status-group" aria-label="Status"><span id="model-state" class="top-stat" role="status" title="Modellstatus"><span class="dot"></span><span class="txt">Modell lädt …</span></span><span class="top-stat" id="connection" title="Verbindung zum Raum"><span class="dot"></span><span class="txt">Verbinde …</span></span></span><span class="top-stat" id="you-badge" hidden></span><div class="menu-wrap"><button type="button" class="side-toggle" id="room-menu-btn" aria-haspopup="menu" aria-expanded="false" aria-controls="room-menu" title="Raum: Autonomie, Netz, alles anhalten"><svg class="i " aria-hidden="true"><use href="#ic-spark"></use></svg> <span>Raum</span></button><div class="plus-menu room-menu" id="room-menu" role="menu" aria-label="Raum" hidden><label class="control-row" id="autotalk-row" role="menuitemcheckbox"><input type="checkbox" id="autotalk"><span>Autonom arbeiten</span></label><p class="control-desc" id="autotalk-desc">Läuft auch bei geschlossenem Browser.</p><label class="control-row" id="offline-row" role="menuitemcheckbox"><input type="checkbox" id="offline"><span>Offline (Bots ohne Netz)</span></label><div class="menu-sep"></div><button type="button" role="menuitem" id="stop" title="Alle Antworten, Werkzeuge und Jobs anhalten"><svg class="i sm" aria-hidden="true"><use href="#ic-pause"></use></svg><span id="stop-label">Alles anhalten (inkl. Jobs)</span></button><button type="button" role="menuitem" id="room-add-agent"><svg class="i sm" aria-hidden="true"><use href="#ic-plus"></use></svg><span>Bot hinzufügen</span></button><div class="menu-sep"></div><button type="button" role="menuitem" id="room-settings"><svg class="i sm" aria-hidden="true"><use href="#ic-gear"></use></svg><span>Einstellungen …</span></button></div></div><button type="button" class="icon-btn" id="settings-open" title="Einstellungen" aria-label="Einstellungen" aria-haspopup="dialog"><svg class="i " aria-hidden="true"><use href="#ic-gear"></use></svg></button><button class="side-toggle" id="toggle-tools" aria-controls="right-panel" aria-expanded="true" title="Werkzeuge umschalten"><svg class="i " aria-hidden="true"><use href="#ic-tools"></use></svg> <span>Werkzeuge</span></button></div></header>
 <div class="layout" id="layout">
 <aside class="left" id="left-panel"><div class="section"><div class="side-section-head"><h2>Im Raum</h2></div><div id="agents"></div><div id="single-model-switch" class="side-model-switch" hidden><label for="single-model-select">Modell wählen · Q4 / Qwen</label><select id="single-model-select" class="side-select" aria-label="Aktives Modell auswählen"></select><p class="hint">Wechsel ohne Modell-Neustart</p></div><button class="side-add" id="add-agent"><svg class="i sm" aria-hidden="true"><use href="#ic-plus"></use></svg> Bot hinzufügen</button></div>
-<div class="section" id="jobs-section"><div class="side-section-head"><h2>Jobs</h2><button type="button" class="pill-btn ghost" id="job-new" title="Neuen Job anlegen">+ Neu</button></div><div id="jobs" class="jobs-list"></div></div>
+<div class="section" id="jobs-section"><div class="side-section-head"><h2>Routinen</h2><button type="button" class="pill-btn ghost" id="job-new" title="Neue Routine anlegen">+ Neu</button></div><div id="jobs" class="jobs-list"></div></div>
 
 <div class="section" id="guests-section" hidden><div class="side-section-head"><h2>Gäste</h2><button type="button" class="pill-btn ghost" id="guest-new">+ Einladen</button></div><div class="hint" id="guest-status"></div><div id="guest-list" class="jobs-list"></div></div>
 <dialog id="guest-dialog" class="mag-modal" aria-label="Gast einladen"><form id="guest-form"><h3>Gast einladen</h3><label>Name (optional)<input id="guest-name" maxlength="40" autocomplete="off" placeholder="Name"></label><label>Notiz (optional)<input id="guest-note" maxlength="160" autocomplete="off" placeholder="Zweck"></label><label>Zugang bis<input id="guest-expiry" type="datetime-local" required></label><p class="hint">Der Tailscale-Schlüssel ist einmalig und 24 Stunden gültig. Der Raumzugang endet zum ausgewählten Zeitpunkt.</p><div class="row"><button type="button" id="guest-cancel">Abbrechen</button><button type="submit" class="primary" id="guest-create">Einladung erstellen</button></div></form><div id="guest-created" hidden><h3>Einladung – nur jetzt sichtbar</h3><p>Schlüssel sicher übermitteln. Der Gast installiert Tailscale, wählt „Use an auth key“ und öffnet anschließend den Einladungslink.</p><label>Einmaliger Tailscale-Schlüssel<code id="guest-key" style="overflow-wrap:anywhere;display:block"></code></label><button id="guest-copy-key" type="button">Schlüssel kopieren</button><label>Einladungslink<input id="guest-url" readonly></label><button id="guest-copy-link" type="button">Link kopieren</button><div id="guest-qr" style="width:200px;min-height:200px;margin:16px auto;background:#fff;padding:8px"></div><p class="hint">Der QR-Code enthält den Einladungslink mit Schlüssel. Wer ihn besitzt, kann den einmaligen Schlüssel benutzen.</p><div class="row"><button type="button" id="guest-done" class="primary">Fertig – Schlüssel verwerfen</button></div></div></dialog>
@@ -541,7 +552,7 @@ dialog{border-radius:10px;border-color:var(--line);background:var(--surface)}
 <script src="/static/marked.min.js"></script><script src="/static/purify.min.js"></script>
 <script src="/static/highlight.min.js"></script>
 <script src="/static/qrcode.min.js"></script>
-<script src="/static/xterm.js"></script><script src="/static/xterm-addon-fit.js"></script>
+<script src="/static/agent-ui.js" defer></script><script src="/static/view-tools.js" defer></script><script src="/static/xterm.js"></script><script src="/static/xterm-addon-fit.js"></script>
 <script>
 'use strict';
 const $=id=>document.getElementById(id);
@@ -1017,8 +1028,8 @@ function bindScroll(){
  }
 }
 bindScroll();
-const REACT_QUICK=['👍','❤️','😂','🎉','👀'];
-const REACT_MORE=['🔥','👏','🙏','😢','😮','💯','✅','🤔','🚀','💡','👎','🤝'];
+const REACT_QUICK=['👍','❤️','😂','😮','😢','🙏'];
+const REACT_MORE=['🎉','👀','🔥','👏','💯','✅','🤔','🚀','💡','👎','🤝','😎'];
 function mineReaction(msg,emoji){return (msg.reactions||[]).some(r=>r.emoji===emoji&&r.actor==='user')}
 function groupReactions(msg){
  const groups=new Map();
@@ -1055,35 +1066,81 @@ function paintPills(node,msg){
   pills.append(b);
  }
 }
+// One popover for every message: compact reaction row (+ more) and the
+// message actions. Opens on long-press (touch), hover (mouse) or right-click;
+// closes on outside tap, scroll, Escape, back gesture and after a choice.
+const msgPop={el:null,node:null,msg:null,hover:0,leave:0,pushed:false};
+function popEl(){
+ if(msgPop.el)return msgPop.el;
+ const el=document.createElement('div');el.className='msg-pop';el.id='msg-pop';el.setAttribute('role','menu');el.setAttribute('aria-label','Nachricht');
+ el.addEventListener('pointerenter',()=>clearTimeout(msgPop.leave));
+ el.addEventListener('pointerleave',ev=>{if(ev.pointerType==='mouse')scheduleHoverClose()});
+ document.body.append(el);msgPop.el=el;return el;
+}
+function closeMsgPop(fromBack){
+ const el=msgPop.el;if(!el||!el.classList.contains('open'))return;
+ el.classList.remove('open','expanded');el.innerHTML='';
+ msgPop.node?.classList.remove('pop-target');msgPop.node=null;msgPop.msg=null;
+ if(msgPop.pushed&&!fromBack){msgPop.pushed=false;msgPop.skipPop=(msgPop.skipPop||0)+1;history.back()}else msgPop.pushed=false;
+}
+function scheduleHoverClose(){clearTimeout(msgPop.leave);msgPop.leave=setTimeout(()=>{if(msgPop.mode==='hover')closeMsgPop()},280)}
+function openMsgPop(node,msg,mode){
+ if(msgPop.node===node&&msgPop.el?.classList.contains('open'))return;
+ const hadPush=msgPop.pushed;msgPop.pushed=false;
+ closeMsgPop(true); // a replaced popover keeps its history entry
+ const el=popEl();msgPop.node=node;msgPop.msg=msg;msgPop.mode=mode;
+ const choose=emoji=>{closeMsgPop();toggleReaction(msg,emoji)};
+ const btn=(emoji,parent)=>{const b=document.createElement('button');b.type='button';b.textContent=emoji;b.setAttribute('role','menuitem');b.setAttribute('aria-label','Reagiere mit '+emoji);if(mineReaction(msg,emoji))b.classList.add('mine');b.onclick=ev=>{ev.stopPropagation();choose(emoji)};parent.append(b)};
+ const row=document.createElement('div');row.className='pop-emoji';
+ for(const e of REACT_QUICK)btn(e,row);
+ const more=document.createElement('button');more.type='button';more.className='pop-more';more.textContent='⋯';more.setAttribute('aria-label','Weitere Emojis');
+ more.onclick=ev=>{ev.stopPropagation();el.classList.toggle('expanded');placeMsgPop()};row.append(more);
+ const grid=document.createElement('div');grid.className='pop-grid';for(const e of REACT_MORE)btn(e,grid);
+ const acts=document.createElement('div');acts.className='pop-actions';
+ const act=(label,icon,fn,cls)=>{const b=document.createElement('button');b.type='button';b.setAttribute('role','menuitem');if(cls)b.className=cls;b.innerHTML=icon+'<span>'+label+'</span>';b.onclick=ev=>{ev.stopPropagation();closeMsgPop();fn()};acts.append(b)};
+ const text=shownText(msg);
+ if(text){
+  act('Kopieren',ICON_COPY,()=>{copyText(text,null);notice('Kopiert');setTimeout(()=>notice(''),1500)});
+  if(window.magMessageAudio?.toggle)act('Vorlesen','<svg class="i sm" aria-hidden="true" viewBox="0 0 24 24"><path d="M11 5 6 9H3v6h3l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/></svg>',()=>window.magMessageAudio.toggle(msg.id||text.slice(0,40),text));
+ }
+ if(msg.id)act('Löschen','<svg class="i sm" aria-hidden="true" viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>',()=>askDeleteMessage(msg),'danger');
+ el.append(row,grid);if(acts.children.length)el.append(acts);
+ el.classList.add('open');node.classList.add('pop-target');placeMsgPop();
+ if(hadPush)msgPop.pushed=true;
+ else if(mode!=='hover'){try{history.pushState({magPop:1},'');msgPop.pushed=true}catch(e){}}
+ (mode==='key'?row.querySelector('button'):null)?.focus();
+}
+function placeMsgPop(){
+ const el=msgPop.el,node=msgPop.node;if(!el||!node)return;
+ const r=(node.querySelector('.content:not([hidden])')||node).getBoundingClientRect();
+ const w=el.offsetWidth,h=el.offsetHeight,vw=innerWidth,vh=innerHeight,m=8;
+ let top=r.top-h-6;if(top<m)top=Math.min(r.bottom+6,vh-h-m);
+ let left=node.classList.contains('user')?r.right-w:r.left;left=Math.max(m,Math.min(left,vw-w-m));
+ el.style.top=Math.max(m,top)+'px';el.style.left=left+'px';
+}
 function attachReactions(node,msg){
  if(!msg||!msg.id)return;
- const bar=document.createElement('div');bar.className='react-bar';bar.setAttribute('role','toolbar');bar.setAttribute('aria-label','Reaktion');
- const add=(emoji,cls)=>{const b=document.createElement('button');b.type='button';b.className=cls;b.textContent=emoji;b.setAttribute('aria-label','Reagiere mit '+emoji);b.onclick=ev=>{ev.stopPropagation();toggleReaction(msg,emoji)};return b};
- for(const emoji of REACT_QUICK)bar.append(add(emoji,'react-quick'));
- const more=document.createElement('button');more.type='button';more.className='react-more';more.textContent='＋';more.setAttribute('aria-label','Weitere Emojis');
- more.onclick=ev=>{
-  ev.stopPropagation();
-  let picker=bar.querySelector('.react-picker');
-  if(picker){picker.remove();return}
-  picker=document.createElement('div');picker.className='react-picker';
-  for(const emoji of REACT_MORE)picker.append(add(emoji,'react-quick'));
-  bar.append(picker);node.classList.add('react-open');
- };
- bar.append(more);node.append(bar);paintPills(node,msg);
- let hold=0;
+ paintPills(node,msg);
+ let hold=0,sx=0,sy=0;
  node.addEventListener('pointerdown',ev=>{
-  if(ev.target.closest&&ev.target.closest('button,a,textarea,input,summary'))return;
-  hold=setTimeout(()=>node.classList.add('react-open'),480);
+  if(ev.pointerType==='mouse')return;
+  if(ev.target.closest&&ev.target.closest('button,a,textarea,input,summary,pre'))return;
+  sx=ev.clientX;sy=ev.clientY;clearTimeout(hold);
+  hold=setTimeout(()=>{hold=0;openMsgPop(node,msg,'touch');navigator.vibrate?.(8)},450);
  });
- const cancelHold=()=>clearTimeout(hold);
- node.addEventListener('pointerup',cancelHold);
- node.addEventListener('pointercancel',cancelHold);
- node.addEventListener('pointerleave',ev=>{if(ev.pointerType==='mouse')cancelHold()});
+ node.addEventListener('pointermove',ev=>{if(hold&&Math.hypot(ev.clientX-sx,ev.clientY-sy)>10){clearTimeout(hold);hold=0}});
+ const cancel=()=>{clearTimeout(hold);hold=0};
+ node.addEventListener('pointerup',cancel);node.addEventListener('pointercancel',cancel);
+ node.addEventListener('contextmenu',ev=>{if(ev.target.closest&&ev.target.closest('a,pre,textarea,input'))return;ev.preventDefault();openMsgPop(node,msg,'click')});
+ node.addEventListener('pointerenter',ev=>{if(ev.pointerType!=='mouse')return;clearTimeout(msgPop.leave);clearTimeout(msgPop.hover);msgPop.hover=setTimeout(()=>{if(!msgPop.el?.classList.contains('open')||msgPop.mode==='hover')openMsgPop(node,msg,'hover')},350)});
+ node.addEventListener('pointerleave',ev=>{if(ev.pointerType!=='mouse')return;clearTimeout(msgPop.hover);if(msgPop.node===node&&msgPop.mode==='hover')scheduleHoverClose()});
+ node.addEventListener('keydown',ev=>{if((ev.key==='ContextMenu'||(ev.shiftKey&&ev.key==='F10'))&&ev.target===node){ev.preventDefault();openMsgPop(node,msg,'key')}});
 }
-document.addEventListener('pointerdown',ev=>{
- if(ev.target.closest&&ev.target.closest('.message'))return;
- document.querySelectorAll('.message.react-open').forEach(n=>n.classList.remove('react-open'));
-});
+document.addEventListener('pointerdown',ev=>{if(msgPop.el?.classList.contains('open')&&!msgPop.el.contains(ev.target)&&!(msgPop.mode==='hover'&&msgPop.node?.contains(ev.target)))closeMsgPop()},true);
+document.addEventListener('keydown',ev=>{if(ev.key==='Escape'&&msgPop.el?.classList.contains('open')){ev.stopPropagation();closeMsgPop()}},true);
+addEventListener('scroll',()=>closeMsgPop(),true);
+addEventListener('resize',()=>closeMsgPop());
+addEventListener('popstate',()=>{if(msgPop.skipPop){msgPop.skipPop--;return}if(msgPop.pushed){msgPop.pushed=false;closeMsgPop(true)}});
 function append(msg,scroll=true,trace=null,position=-1){
  const area=$('conversation');let inner=area.querySelector('.conversation-inner');
  if(!inner){inner=document.createElement('div');inner.className='conversation-inner';area.append(inner)}
@@ -1095,7 +1152,7 @@ function append(msg,scroll=true,trace=null,position=-1){
  if(human&&!mine){avatar.style.background=avatarColor(msg.login||msg.name||'Gast');avatar.style.color='#fff'}
  const name=document.createElement('strong');name.textContent=msg.name||(human?'Nutzer':'Bot');
  const time=document.createElement('time');const date=new Date((msg.ts||Date.now()/1000)*1000);time.textContent=date.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
- meta.append(avatar,name,time);if(msg.id){const trash=document.createElement('button');trash.type='button';trash.className='msg-trash';trash.title='Nachricht löschen';trash.setAttribute('aria-label','Nachricht löschen');trash.innerHTML='<svg class="i sm" aria-hidden="true"><use href="#ic-trash"></use></svg>';trash.onclick=()=>askDeleteMessage(msg);meta.append(trash)}div.append(meta);
+ meta.append(avatar,name,time);div.append(meta);
  const text=shownText(msg);
  const content=document.createElement('div');content.className='content';content.innerHTML=safeMarkdown(text);decorate(content);
  if(!text)content.hidden=true;
@@ -1225,9 +1282,10 @@ function renderPromptProgress(s,node){
 // ---- Plugin approvals: a bot's call of a tool that changes something waits
 // for the owner in its live reply (Ablehnen / Immer erlauben / Erlauben).
 const mcpApprovals=new Map();
-function syncApprovals(list){if(!Array.isArray(list))return;const keep=new Set(list.map(a=>a.id));for(const id of [...mcpApprovals.keys()])if(!keep.has(id))mcpApprovals.delete(id);for(const a of list)mcpApprovals.set(a.id,a)}
+function syncApprovals(list){if(!Array.isArray(list))return;const keep=new Set(list.map(a=>a.id));for(const [id,v] of [...mcpApprovals])if(!keep.has(id)&&Date.now()-(v._seen||0)>5000)mcpApprovals.delete(id);for(const a of list)mcpApprovals.set(a.id,{...a,_seen:mcpApprovals.get(a.id)?._seen||Date.now()})}
 function prettyArgs(t){try{return JSON.stringify(JSON.parse(t),null,2)}catch{return String(t||'')}}
 function approvalCard(a){
+ if(a.kind&&window.magAgentUI?.approvalCard){const c=window.magAgentUI.approvalCard(a);if(c)return c}
  const card=document.createElement('div');card.className='mcp-approve';card.dataset.id=a.id;card.setAttribute('role','group');card.setAttribute('aria-label','Freigabe für '+a.tool);
  const head=document.createElement('div');head.className='mcp-approve-head';head.innerHTML='<svg class="i sm" aria-hidden="true"><use href="#ic-plug"></use></svg>';
  const t=document.createElement('span');const b=document.createElement('b');b.textContent=a.tool;t.append((a.bot_name||'Bot')+' möchte ',b,' über '+(a.server_name||'ein Plugin')+' ausführen.');head.append(t);card.append(head);
@@ -1608,7 +1666,7 @@ function syncModelChoice(next){
  const models=Array.isArray(next.models)?next.models:[];
  const allowed=new Set(models.map(m=>m.id));
  const box=document.getElementById('model-choice');
- if(box&&models.length){
+ if(box&&models.length&&!next.numa?.enabled){
   const want=models.map(m=>m.id).join();
   const have=[...box.querySelectorAll('.model-button')].map(b=>b.dataset.modelId).join();
   if(have!==want){
@@ -1646,7 +1704,7 @@ function syncModelChoice(next){
  }
  const own=next.single_bot?[]:chosenBots().map(a=>a.model).filter(Boolean);
  const current=own.length?(own.every(m=>m===own[0])?own[0]:''):next.model;
- for(const button of document.querySelectorAll('#model-choice .model-button')){
+ for(const button of document.querySelectorAll('#model-choice .model-button:not(.numa-chip)')){
   const isOn=button.dataset.modelId===current;
   button.setAttribute('aria-pressed',String(isOn));
   button.disabled=!!next.dual_numa||modelChoicePending||next.you?.role!=='owner'||!!next.busy||!allowed.has(button.dataset.modelId);
@@ -1655,6 +1713,7 @@ function syncModelChoice(next){
    (own.length?' · gilt für die ausgewählten Bots':'')+
    (models.length<2?'':next.busy?' · Wechsel nach laufender Antwort möglich':next.you?.role!=='owner'?' · nur Besitzer':'');
  }
+ window.magAgentUI?.sync(next);
 }
 function modelInfo(mi){const el=$('model-info');if(!el)return;el.replaceChildren();if(!mi||!mi.gguf){el.title='Modellinfo nicht verfügbar';return}const n=document.createElement('b');n.textContent=mi.gguf;el.append(n);const eng=(mi.engine||'Engine?')+(mi.build?' '+mi.build:'');let txt=' · '+eng;const l=mi.last;const f=v=>(typeof v==='number'&&v>=0)?v.toFixed(v<10?2:1):'–';if(l&&(l.prompt_per_second>=0||l.predicted_per_second>=0))txt+=' · Prompt '+f(l.prompt_per_second)+' t/s · Gen '+f(l.predicted_per_second)+' t/s';el.append(document.createTextNode(txt));let cacheTip='';if(l&&typeof l.tokens_evaluated==='number'&&l.tokens_evaluated>=0)cacheTip='\nCache (Debug): '+(typeof l.tokens_cached==='number'&&l.tokens_cached>=0?Math.round(l.tokens_cached):'?')+' gecacht / '+Math.round(l.tokens_evaluated)+' Prompt-Tokens';el.title='Modell: '+mi.gguf+'\nEngine: '+eng+(l?'\nLetzte Antwort: Prompt '+f(l.prompt_per_second)+' t/s ('+(l.prompt_n>=0?l.prompt_n:'?')+' Tokens), Gen '+f(l.predicted_per_second)+' t/s ('+(l.predicted_n>=0?l.predicted_n:'?')+' Tokens)':'\nNoch keine Antwort seit Raumstart')+cacheTip}
 function modelStatus(m){const el=$('model-state'),b=$('model-banner');if(!m||!el)return;el.className='top-stat '+(m.state||'');el.replaceChildren();const d=document.createElement('span');d.className='dot';const shortLabel=m.ready?'bereit':({failed:'Fehler',offline:'offline',error:'Fehler'}[m.state]||'lädt …');el.classList.toggle('is-ready',!!m.ready);el.classList.toggle('is-loading',!m.ready&&!['failed','offline','error'].includes(m.state));const t=document.createElement('span');t.className='txt';t.textContent=shortLabel;el.append(d,t);el.title=(m.label||'')+(m.detail?' – '+m.detail:'');if(m.ready||!['failed','offline','error'].includes(m.state)){b.hidden=true;b.textContent='';return}b.hidden=false;b.className=(m.state==='failed'||m.state==='offline'||m.state==='error')?'failed':'';b.textContent='Modell nicht verfügbar – Details im Tooltip oben.'}
@@ -2470,8 +2529,9 @@ function schedText(s){s=s||{};const U={m:'Min.',h:'Std.',d:'Tage',w:'Wochen',s:'
  return 'nur Webhook/manuell'}
 async function loadJobs(){if(state.you&&!can('jobs')){$('jobs-section').hidden=true;return}try{jobsState=await api('/api/jobs',undefined,'GET');renderJobs()}catch(e){}}
 function renderJobs(){const box=$('jobs');if(!box)return;box.replaceChildren();
- if(!jobsState.jobs.length){const p=document.createElement('p');p.className='control-desc';p.textContent='Noch keine Jobs.';box.append(p);return}
- for(const j of jobsState.jobs){const el=document.createElement('div');el.className='job';
+ if(!jobsState.jobs.length){const p=document.createElement('p');p.className='control-desc';p.textContent='Noch keine Routinen.';box.append(p);return}
+ const botName=id=>(state.agents||[]).find(a=>a.id===id)?.name||'Raum';let lastBot=null;
+ for(const j of [...jobsState.jobs].sort((x,y)=>botName(x.bot).localeCompare(botName(y.bot)))){if(j.bot!==lastBot){lastBot=j.bot;const h=document.createElement('div');h.className='jobs-bot';h.textContent=botName(j.bot);box.append(h)}const el=document.createElement('div');el.className='job';
   const top=document.createElement('div');top.className='job-top';const dot=document.createElement('span');const st=j.running?'running':(j.last_status||'');dot.className='job-dot '+st;dot.title=st==='running'?'läuft / wartet':st||'noch nicht gelaufen';
   const nm=document.createElement('span');nm.className='job-name';nm.textContent=j.name;nm.title=j.prompt;top.append(dot,nm);
   const meta=document.createElement('div');meta.className='job-meta';
@@ -2574,6 +2634,7 @@ events.onmessage=e=>{
    if(s&&(s.reasoning||s.tools?.length)){completedTraces.push({name:s.name,content:event.content||s.text||'',reasoning:event.reasoning?'':(s.reasoning||''),ms:liveThinkMs(s),tools:s.tools||[],assignedPosition:null});if(completedTraces.length>40)completedTraces.shift()}
    delete streams[id];streamControls();
    refresh().catch(err=>notice(err.message));
+  }else if(window.magAgentUI?.event(event)){
   }else if(event.type==='reaction'){
    applyReaction(event);
   }else if(['message','file','agents','reset','idle','room'].includes(event.type)){
@@ -2585,7 +2646,7 @@ events.onmessage=e=>{
   else if(event.type==='bot_wait'){if(event.on){waitingBots.set(id,event.after||'');busyBots.add(id)}else waitingBots.delete(id);renderLanes()}
   else if(event.type==='alive'){for(const b of (Array.isArray(event.bots)?event.bots:[])){const s=streams[b];if(!s)continue;s.lastEvent=Date.now();if(s.hung){s.hung=false;updateStream(b,true)}}}
   else if(event.type==='plugins'){window.mcpReload&&window.mcpReload()}
-  else if(event.type==='mcp_approval'){if(event.approval?.id){mcpApprovals.set(event.approval.id,event.approval);if(streams[id])updateStream(id,true)}}
+  else if(event.type==='mcp_approval'){if(event.approval?.id){mcpApprovals.set(event.approval.id,{...event.approval,_seen:Date.now()});if(streams[id])updateStream(id,true)}}
   else if(event.type==='mcp_approval_done'){mcpApprovals.delete(event.id);if(streams[id])updateStream(id,true);else document.querySelector('.mcp-approve[data-id="'+CSS.escape(String(event.id||''))+'"]')?.remove()}
   else if(event.type==='jobs')loadJobs();
   else if(event.type==='offline'){$('offline').checked=!!event.offline;window.syncWeb&&window.syncWeb()}

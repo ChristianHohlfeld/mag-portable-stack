@@ -129,7 +129,7 @@ cx bash -euo pipefail -c '
   # sandbox kernels lack "dummy"). Fails loudly either way.
   if ip link add magts0 type dummy 2>/dev/null; then dev=magts0; ip link set magts0 up; else dev=lo; fi
   ip addr add 100.123.114.16/32 dev "$dev"
-  ip -4 addr show | grep -Fq 100.123.114.16/
+  grep -Fq 100.123.114.16/ <<<"$(ip -4 addr show)"
   # TLS state normally restored from the archive.
   install -d -m 0750 /etc/mag-nginx/tls
   openssl req -x509 -newkey rsa:2048 -nodes -days 7 -subj /CN=mag.stardenburg.de \

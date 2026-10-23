@@ -151,10 +151,67 @@ static std::string jobs_mcp_call(const std::string &name, const Val &args,
   }
   return mj::dump(reply.value);
 }
+// Final rejections of bot routine proposals (STATE_DIR/routine-rejections.json).
+static std::mutex ROUTINE_REJ_MTX;
+static std::string routine_rej_file() { return STATE_DIR + "/routine-rejections.json"; }
+static bool routine_rejected(const std::string &bot, const std::string &key) {
+  std::lock_guard<std::mutex> lk(ROUTINE_REJ_MTX);
+  Val v;
+  if (!mj::parse(read_file(routine_rej_file()), v) || !v.isObj()) return false;
+  return v.find(bot + "|" + key) != nullptr;
+}
+static void routine_reject(const std::string &bot, const std::string &key) {
+  std::lock_guard<std::mutex> lk(ROUTINE_REJ_MTX);
+  Val v;
+  if (!mj::parse(read_file(routine_rej_file()), v) || !v.isObj()) v = Val::object();
+  v[bot + "|" + key] = (double)now_s();
+  write_file_atomic(routine_rej_file(), mj::dump(v));
+}
 static std::string jobs_dispatch_tool(int bot_idx, const std::string &name,
                                      const Val &args) {
   const std::string bot = bot_field(bot_idx, "id");
   if (bot.empty()) return "Fehler: Bot unbekannt";
+  // Like Grok: a bot only proposes routines. Creating, changing or resuming
+  // one shows a confirmation card (name, schedule, prompt); only the user's
+  // "Speichern" stores it. A rejection is final for that proposal.
+  if (name == "jobs_create" || name == "jobs_update" || name == "jobs_resume") {
+    auto s = [&](const char *k) { auto v = args.find(k); return v ? v->asStr() : std::string(); };
+    const std::string key = name == "jobs_create"
+        ? "create:" + (s("idempotency_key").empty() ? s("name") : s("idempotency_key"))
+        : name + ":" + s("id") + ":" + mj::dump(args);
+    if (routine_rejected(bot, key) || (name == "jobs_create" && routine_rejected(bot, "name:" + s("name"))))
+      return "Abgelehnt: Der Nutzer hat diese Routine bereits abgelehnt. Nicht erneut vorschlagen.";
+    McpApproval req;
+    req.id = token_hex(8);
+    req.bot = bot;
+    req.bot_name = bot_field(bot_idx, "name", "Bot");
+    req.server = "routines";
+    req.server_name = "Routinen";
+    req.tool = name;
+    req.kind = "routine";
+    Val summary = Val::object();
+    summary["action"] = name == "jobs_create" ? "create" : name == "jobs_update" ? "update" : "resume";
+    for (const char *k : {"id", "name", "prompt", "schedule"})
+      if (auto v = args.find(k)) summary[k] = *v;
+    if (!s("id").empty()) {
+      std::lock_guard<std::mutex> lk(JOBDEF_MTX);
+      if (JobDef *j = job_find_locked(s("id"))) {
+        if (!summary.find("name")) summary["name"] = j->name;
+        if (!summary.find("prompt")) summary["prompt"] = j->prompt;
+        if (!summary.find("schedule")) summary["schedule"] = j->schedule;
+      }
+    }
+    req.args = mj::dump(summary);
+    req.ts = (long)now_s();
+    const std::string d = mcp_await_approval(req);
+    if (d == "deny") {
+      routine_reject(bot, key);
+      if (name == "jobs_create") routine_reject(bot, "name:" + s("name"));
+      return "Abgelehnt vom Nutzer. Diese Routine nicht erneut vorschlagen.";
+    }
+    if (d != "allow" && d != "always")
+      return d == "timeout" ? "Keine Bestätigung erhalten; Routine nicht gespeichert." : "Abgebrochen; Routine nicht gespeichert.";
+  }
   return jobs_mcp_call(name, args, JobsActor{true, bot});
 }
 static Val jobs_mcp_list() {

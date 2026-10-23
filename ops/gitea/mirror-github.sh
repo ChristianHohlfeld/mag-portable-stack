@@ -29,8 +29,9 @@ API="${MAG_GITEA_URL%/}/api/v1"
 [[ $OWNER =~ ^[A-Za-z0-9._-]+$ && $NAME =~ ^[A-Za-z0-9._-]+$ ]] || { echo 'mirror: invalid owner/name' >&2; exit 2; }
 [[ $INTERVAL =~ ^[0-9]+[hm]$ ]] || { echo 'mirror: interval must look like 10m or 1h' >&2; exit 2; }
 if [[ ${1:-} == --dry-run ]]; then
-  echo "+ ensure Gitea pull mirror $OWNER/$NAME <- $SOURCE (interval $INTERVAL) via $API"
-  echo "+ tokens from $GITEA_TOKEN_FILE and $GITHUB_TOKEN_FILE (not printed)"
+  # One write, and a reader that stops early (grep -q) is not an error.
+  printf '%s\n' "+ ensure Gitea pull mirror $OWNER/$NAME <- $SOURCE (interval $INTERVAL) via $API" \
+    "+ tokens from $GITEA_TOKEN_FILE and $GITHUB_TOKEN_FILE (not printed)" 2>/dev/null || true
   exit 0
 fi
 for f in "$GITEA_TOKEN_FILE" "$GITHUB_TOKEN_FILE"; do

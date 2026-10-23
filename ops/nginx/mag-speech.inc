@@ -26,3 +26,23 @@ location = /static/speech-config.json {
 # Cross-Origin-Opener-Policy: same-origin
 # Cross-Origin-Embedder-Policy: require-corp
 # These are also emitted by magroom's main HTML route.
+# Piper read-aloud voices (ops/vendor-tts-assets.sh), same rules.
+location ~ "^/static/tts-[0-9a-f]{12}/[A-Za-z0-9_.-]+$" {
+    root /opt/mag-stack/current/web;
+    types {
+        text/javascript js mjs;
+        application/wasm wasm;
+        application/json json;
+        application/octet-stream onnx data;
+    }
+    default_type application/octet-stream;
+    add_header Cache-Control "public, max-age=31536000, immutable" always;
+    add_header Cross-Origin-Resource-Policy "same-origin" always;
+    add_header Cross-Origin-Embedder-Policy "require-corp" always;
+    access_log off;
+}
+location = /static/tts-config.json {
+    root /opt/mag-stack/current/web;
+    default_type application/json;
+    add_header Cache-Control "no-store" always;
+}

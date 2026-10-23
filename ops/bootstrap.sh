@@ -102,19 +102,9 @@ else
   fi
 fi
 
-phase packages
-run apt-get update
-run env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-  build-essential cmake ninja-build g++ pkg-config file patch xz-utils \
-  libssl-dev libcurl4-openssl-dev libarchive-dev \
-  nginx jq sqlite3 numactl git curl ca-certificates openssl python3 python3-venv \
-  bzip2 dnsutils acl golang-go nodejs nftables iproute2 openssh-client sudo dnsmasq-base \
-  libvirt-daemon-system libvirt-clients qemu-system-x86 qemu-utils virtinst cloud-image-utils
-
-phase restic
-run bash "$ROOT/ops/backup/install-restic-0181.sh"
-
 phase users
+# Before packages: libvirt, dnsmasq & co. take free system uids counting down
+# from 999, so on a blank host uid 993 would be gone before magbot exists.
 if (( DRY )); then
   echo '+ id magbot || useradd --system --uid 993 --user-group --home-dir /var/lib/magbot --create-home magbot'
   echo '+ id chris || useradd --create-home --shell /bin/bash chris'
@@ -131,6 +121,21 @@ if (( DRY == 0 )) && ! runuser -u chris -- test -r "$ROOT/ops/bootstrap.sh"; the
   echo "chris cannot read $ROOT. Clone the repo as chris (e.g. /home/chris/mag-stack) and rerun." >&2
   exit 1
 fi
+
+phase packages
+run apt-get update
+run env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+  build-essential cmake ninja-build g++ pkg-config file patch xz-utils \
+  libssl-dev libcurl4-openssl-dev libarchive-dev \
+  nginx jq sqlite3 numactl git curl ca-certificates openssl python3 python3-venv \
+  bzip2 dnsutils acl golang-go nodejs nftables iproute2 openssh-client sudo dnsmasq-base \
+  libvirt-daemon-system libvirt-clients qemu-system-x86 qemu-utils virtinst cloud-image-utils
+# Do not rely on package postinst autostart (policy-rc.d, image defaults):
+# deploy needs nginx up, bot VMs need libvirtd.
+run systemctl enable --now nginx.service libvirtd.service
+
+phase restic
+run bash "$ROOT/ops/backup/install-restic-0181.sh"
 
 phase restore
 if [[ -z "$ARCHIVE" ]] && (( DRY == 0 )); then
@@ -198,6 +203,7 @@ if (( DRY )); then
   echo '+ install ops/private-access/env.conf -> /etc/mag-acme/lego.env   # only when absent'
   echo '+ /etc/credstore/mag-acme-dns.json -> /etc/mag-acme/acme-dns.json   # only when absent'
   echo '+ write /var/lib/magbot/room/access.json from --owner   # only when absent'
+  echo '+ install -d /etc/magbot   # VM limits default without config.json; secrets come from the archive'
   echo '+ /etc/mag-stack/secondary-model.env is never created here (absent = IQ3 on NUMA1)'
 else
   install -d -m 0755 /etc/mag-stack
@@ -208,6 +214,9 @@ else
     echo 'Left existing /etc/mag-llm/llm.env unchanged'
   fi
   install -d -m 0700 /etc/mag-acme /etc/credstore
+  # magbot-native uses built-in VM limits without /etc/magbot/config.json;
+  # the backup treats the directory as essential host state.
+  install -d -m 0750 /etc/magbot
   if [[ ! -e /etc/mag-acme/lego.env ]]; then
     install -m 0600 -o root -g root "$ROOT/ops/private-access/env.conf" /etc/mag-acme/lego.env
   fi

@@ -257,9 +257,12 @@ grep -Fq 'bot_site_ready' "$repo/mag-room/native/magroom.cpp"
 ! awk '/static const char \*VM_RULES/,/static const char \*CHAT_ONLY_RULES/' "$repo/mag-room/native/magroom.cpp" | grep -q bot.stardenburg
 grep -Fq 'ops/bots/install.sh' "$repo/ops/deploy.sh"
 grep -Fq 'mag-bots-publish' "$repo/ops/deploy.sh"
-grep -Fq 'build-targets.sh' "$repo/ops/update.sh"
-grep -Eq '^MAG_BUILD_TARGETS=\(magroom mag-audit-gateway mag-browser magbot-native mag-bots-publish' "$repo/ops/build-targets.sh"
-grep -Fq 'build-targets.sh' "$repo/ops/bootstrap.sh"
+# update.sh and bootstrap.sh build the shared target list, which includes the publisher.
+(source "$repo/ops/build-targets.sh"; [[ " ${MAG_BUILD_TARGETS[*]} " == *" mag-bots-publish "* && " ${MAG_RELEASE_BINARIES[*]} " == *" mag-bots-publish "* ]])
+for f in update.sh bootstrap.sh; do
+  grep -Fq 'source "$ROOT/ops/build-targets.sh"' "$repo/ops/$f"
+  grep -Fq -- '--target "${MAG_BUILD_TARGETS[@]}"' "$repo/ops/$f"
+done
 grep -Fq 'add_executable(mag-bots-publish ops/bots/publishd.cpp)' "$repo/CMakeLists.txt"
 [[ ! -e $here/publishd.py ]]
 grep -Fq 'tcp dport { 53, 3001, 8767, 8091, 8888, 8889 }' "$repo/ops/mag-agents.nft"

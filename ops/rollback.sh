@@ -19,4 +19,5 @@ if [[ -f "$BACKUP/nginx.staged" || -f "$BACKUP/nginx.verified" ]]; then
   [[ -x "$BACKUP/deploy-nginx.sh" ]] || { echo "Missing ingress rollback helper" >&2; exit 1; }
   MAG_NGINX_TXN="$BACKUP" bash "$BACKUP/deploy-nginx.sh" rollback
 fi
+for i in {1..30}; do curl -fsS --max-time 2 -o /dev/null http://127.0.0.1:8766/healthz 2>/dev/null && break; sleep 1; done
 curl -fsS --max-time 10 http://127.0.0.1:8766/healthz

@@ -24,7 +24,9 @@ class Cards(unittest.TestCase):
    page.goto('http://127.0.0.1:%s/'%ui,wait_until='domcontentloaded')
    pwa.Health.script=[call('jobs_create',{'name':'Morgenbericht','prompt':'Fasse zusammen','schedule':{'kind':'daily','time':'07:00'},'idempotency_key':'ui-morgen-1'}),[{'content':'Routine gespeichert.'}]]
    page.locator('#message').fill('Jeden Morgen einen Bericht');page.locator('#send-button').click()
-   card=page.locator('.routine-card');card.wait_for(timeout=15000)
+   card=page.locator('.routine-card')
+   try:card.wait_for(timeout=15000)
+   except Exception:page.screenshot(path=str(ART/'routine_card_fail.png'));print('ERRS',errors,page.evaluate("()=>[typeof window.magAgentUI,mcpApprovals.size,document.querySelectorAll('.mcp-approve').length,typeof updateStream]"),pwa.api(ui,'/api/state').get('approvals'));raise
    self.assertIn('Morgenbericht',card.inner_text());self.assertIn('täglich 07:00',card.inner_text());self.assertIn('Fasse zusammen',card.inner_text())
    page.screenshot(path=str(ART/'routine_card.png'))
    card.locator('button',has_text='Speichern').click()

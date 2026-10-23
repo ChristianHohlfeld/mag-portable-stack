@@ -548,7 +548,7 @@ dialog{border-radius:10px;border-color:var(--line);background:var(--surface)}
 <script src="/static/marked.min.js"></script><script src="/static/purify.min.js"></script>
 <script src="/static/highlight.min.js"></script>
 <script src="/static/qrcode.min.js"></script>
-<script src="/static/agent-ui.js" defer></script><script src="/static/xterm.js"></script><script src="/static/xterm-addon-fit.js"></script>
+<script src="/static/agent-ui.js" defer></script><script src="/static/view-tools.js" defer></script><script src="/static/xterm.js"></script><script src="/static/xterm-addon-fit.js"></script>
 <script>
 'use strict';
 const $=id=>document.getElementById(id);
@@ -1278,7 +1278,7 @@ function renderPromptProgress(s,node){
 // ---- Plugin approvals: a bot's call of a tool that changes something waits
 // for the owner in its live reply (Ablehnen / Immer erlauben / Erlauben).
 const mcpApprovals=new Map();
-function syncApprovals(list){if(!Array.isArray(list))return;const keep=new Set(list.map(a=>a.id));for(const id of [...mcpApprovals.keys()])if(!keep.has(id))mcpApprovals.delete(id);for(const a of list)mcpApprovals.set(a.id,a)}
+function syncApprovals(list){if(!Array.isArray(list))return;const keep=new Set(list.map(a=>a.id));for(const [id,v] of [...mcpApprovals])if(!keep.has(id)&&Date.now()-(v._seen||0)>5000)mcpApprovals.delete(id);for(const a of list)mcpApprovals.set(a.id,{...a,_seen:mcpApprovals.get(a.id)?._seen||Date.now()})}
 function prettyArgs(t){try{return JSON.stringify(JSON.parse(t),null,2)}catch{return String(t||'')}}
 function approvalCard(a){
  if(a.kind&&window.magAgentUI?.approvalCard){const c=window.magAgentUI.approvalCard(a);if(c)return c}
@@ -2642,7 +2642,7 @@ events.onmessage=e=>{
   else if(event.type==='bot_wait'){if(event.on){waitingBots.set(id,event.after||'');busyBots.add(id)}else waitingBots.delete(id);renderLanes()}
   else if(event.type==='alive'){for(const b of (Array.isArray(event.bots)?event.bots:[])){const s=streams[b];if(!s)continue;s.lastEvent=Date.now();if(s.hung){s.hung=false;updateStream(b,true)}}}
   else if(event.type==='plugins'){window.mcpReload&&window.mcpReload()}
-  else if(event.type==='mcp_approval'){if(event.approval?.id){mcpApprovals.set(event.approval.id,event.approval);if(streams[id])updateStream(id,true)}}
+  else if(event.type==='mcp_approval'){if(event.approval?.id){mcpApprovals.set(event.approval.id,{...event.approval,_seen:Date.now()});if(streams[id])updateStream(id,true)}}
   else if(event.type==='mcp_approval_done'){mcpApprovals.delete(event.id);if(streams[id])updateStream(id,true);else document.querySelector('.mcp-approve[data-id="'+CSS.escape(String(event.id||''))+'"]')?.remove()}
   else if(event.type==='jobs')loadJobs();
   else if(event.type==='offline'){$('offline').checked=!!event.offline;window.syncWeb&&window.syncWeb()}

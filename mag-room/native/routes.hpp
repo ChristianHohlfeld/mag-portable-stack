@@ -129,6 +129,47 @@ static void resume_pending_spawns() {
   for (auto &p : pending)
     std::thread([p] { finish_spawn(p.first, p.second, true); }).detach();
 }
+// Clear/reset must never race a running turn: a cancelled turn still appends
+// its partial answer and a queued job would answer into the emptied room.
+// work_pending() is what the UI shows as "Ein Bot rechnet noch".
+static bool work_pending() {
+  if (BUSY.load() || tasks_running()) return true;
+  std::lock_guard<std::mutex> lk(JOB_MTX);
+  return !JOBS.empty() || !ACTIVE_JOBS.empty() || !PENDING.empty();
+}
+// Cancels every lane, task, prewarm and queued/scheduled turn, then waits
+// until all turns have left. Returns with JOB_MTX and TURN_MTX (exclusive)
+// held so the caller clears atomically; false if a turn did not stop in time.
+static bool quiesce_all(std::unique_lock<std::mutex> &sched,
+                        std::unique_lock<std::shared_mutex> &turn, bool force) {
+  if (force) {
+    cancel_active(true);
+    task_cancel("", "");
+    cancel_prewarm();
+    std::lock_guard<std::mutex> lk(JOB_MTX);
+    JOBS.clear(); ACTIVE_JOBS.clear(); PENDING.clear(); QUEUE_PAUSED = false;
+    AUTO_READY = false; AUTO_OWNER.clear(); ++AUTO_GENERATION;
+    AUTO_LAST_PROGRESS.clear(); AUTO_TURNS_LEFT = 0;
+    save_queue_locked(); queue_event_locked();
+  }
+  for (int i = 0; i < (force ? 400 : 1); ++i) {
+    if (i) std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    if (BUSY.load() || tasks_running()) continue;
+    sched = std::unique_lock<std::mutex>(JOB_MTX);
+    turn = std::unique_lock<std::shared_mutex>(TURN_MTX, std::try_to_lock);
+    if (turn.owns_lock() && !BUSY.load() && !tasks_running() &&
+        (force || (JOBS.empty() && ACTIVE_JOBS.empty() && PENDING.empty())))
+      return true;
+    if (turn.owns_lock()) turn.unlock();
+    sched.unlock();
+  }
+  return false;
+}
+static void busy_json(int fd) {
+  Val e = Val::object();
+  e["error"] = "Ein Bot rechnet noch"; e["busy"] = true;
+  send_json(fd, 409, mj::dump(e));
+}
 static void route(int fd, Req &r, bool bridge = false) {
   const std::string &p = r.path;
   const std::string &m = r.method;
@@ -1103,7 +1144,10 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
     if (slash != std::string::npos &&
         id.substr(slash + 1) == "workspace/reset" && m == "POST") {
       id.resize(slash);
-      auto result = reset_bot_workspace(id);
+      Val body; (void)mj::parse(r.body, body);
+      const bool force = body.isObj() && body.find("force") && body.find("force")->truthy();
+      if (!force && work_pending()) { busy_json(fd); return; }
+      auto result = reset_bot_workspace(id, force);
       send_json(fd, result.code, result.body);
       return;
     }
@@ -1679,10 +1723,12 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
     if (actor.role != "owner" || actor.login.empty() || !ts_proof_valid(r.hdrs)) {
       error_json(fd, 403, "Nur der Besitzer"); return;
     }
-    if (BUSY.load()) { error_json(fd,409,"Bot arbeitet noch"); return; }
-    std::lock_guard<std::mutex> scheduling(JOB_MTX);
-    std::unique_lock<std::shared_mutex> turn(TURN_MTX, std::try_to_lock);
-    if (!turn.owns_lock() || BUSY.load()) { error_json(fd,409,"Bot arbeitet noch"); return; }
+    Val body; (void)mj::parse(r.body, body);
+    const bool force = body.isObj() && body.find("force") && body.find("force")->truthy();
+    if (!force && work_pending()) { busy_json(fd); return; }
+    std::unique_lock<std::mutex> scheduling;
+    std::unique_lock<std::shared_mutex> turn;
+    if (!quiesce_all(scheduling, turn, force)) { busy_json(fd); return; }
     // Local durable room snapshot is the undo boundary. Full-machine backups
     // belong to the daily/deploy policy, not each interactive clear.
     auto result = clear_room_data();
@@ -1693,6 +1739,8 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
       Val response;
       if (mj::parse(result.body,response))
         guest_audit("room_clear",actor.login,guest_field(response,"snapshot"));
+      // Every client drops live streams/thinking indicators, then refetches.
+      publish("{\"type\":\"room_cleared\"}");
     }
     send_json(fd, result.code, result.body);
     return;

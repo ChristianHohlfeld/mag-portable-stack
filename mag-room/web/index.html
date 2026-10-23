@@ -33,6 +33,8 @@ dialog{border:1px solid var(--line);border-radius:17px;color:var(--text);backgro
 :root[data-theme=light] .content .hljs-variable,:root[data-theme=light] .content .hljs-params{color:#986019}
 :root[data-theme=light] .content .hljs-tag,:root[data-theme=light] .content .hljs-name,:root[data-theme=light] .content .hljs-type{color:#08748b}
 .model-verify{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:4px 0 10px;font-size:12px;color:var(--muted)}.model-verify[data-state=ok] .model-verify-text{color:var(--green)}.model-verify[data-state=failed] .model-verify-text{color:var(--red)}
+#room-menu>.control-row,#room-menu>button{display:flex!important;align-items:center;gap:10px!important;padding:8px 14px!important;margin:0!important;font-size:14px;font-weight:500!important;line-height:20px;min-height:40px;box-sizing:border-box;width:100%;text-align:left}#room-menu>.control-row input,#room-menu>button>svg{flex:0 0 18px;width:18px!important;height:18px!important;margin:0!important}#room-menu>.control-row span,#room-menu>button span{font-weight:inherit!important}#room-menu>.control-desc{padding-left:42px!important;margin-left:0!important}
+.work-reading{font-size:12px;color:var(--muted);margin:4px 0 6px 18px}.work-reading ul{margin:2px 0 0;padding-left:16px}.work-reading li{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.work-reading a{color:inherit;font-weight:600}
 .att{margin-top:10px;max-width:min(560px,100%)}.att-media{display:block;padding:0;border:1px solid var(--line);border-radius:14px;overflow:hidden;background:var(--panel);cursor:zoom-in;max-width:100%}
 .att-image img{display:block;max-width:100%;max-height:420px;width:auto;height:auto;object-fit:contain}.att-broken .att-media{cursor:default;padding:18px;color:var(--muted)}
 video.att-media{width:100%;max-height:440px;cursor:auto;background:#000}
@@ -646,7 +648,7 @@ function decorate(el){
 const thinkOpen=new Set();let thinkSeq=0;
 // One run card per bot message: status line, thoughts, steps and tool calls
 // in a fixed order above the answer, instead of loose blocks.
-const RUN_ORDER=['work-status','thinking','work-steps','tools-trace'];
+const RUN_ORDER=['work-status','work-reading','thinking','work-steps','tools-trace'];
 function runBox(node){let r=node.querySelector(':scope > .run');if(!r){r=document.createElement('div');r.className='run';const c=node.querySelector(':scope > .content');if(c)c.before(r);else node.append(r)}return r}
 function runRank(el){return RUN_ORDER.findIndex(c=>el.classList.contains(c))}
 function runPut(node,el){const r=runBox(node),k=runRank(el);const after=[...r.children].find(x=>runRank(x)>k);if(after)r.insertBefore(el,after);else r.append(el);return el}
@@ -1230,6 +1232,22 @@ function attachWork(div,msg,content){
  runPut(div,box);if(list)runPut(div,list);
  wireRunToggle(div,box,'done:'+(msg.id||''),false);
 }
+// What the bot reads right now (room range or tool results), from the step
+// event; shown in the collapsible activity line while it reads.
+function readingPanel(node,s){
+ let box=runPart(node,'work-reading');const r=s.reading,reading=r&&(s.phase==='read'||s.phase==='prompt');
+ if(!reading){box?.remove();return}
+ if(!box){box=document.createElement('div');box.className='work-reading';runPut(node,box)}
+ const hm=t=>t?new Date(t*1000).toLocaleTimeString('de-DE',{hour:'2-digit',minute:'2-digit'}):'';
+ const head=document.createElement('div');head.className='wr-head';const ul=document.createElement('ul');
+ if(r.kind==='tools'){const n=(r.items||[]).length;head.textContent='Werkzeug-Ergebnisse: '+n;
+  for(const t of r.items||[]){const li=document.createElement('li');li.textContent=(t.ok?'':'⚠ ')+t.tool+' · '+(+t.chars||0).toLocaleString('de-DE')+' Zeichen';ul.append(li)}}
+ else{head.textContent='Raum: '+(+r.messages||0)+' Nachrichten'+(r.files?' · '+r.files+' Dateien':'')+(r.first_ts?' · '+hm(r.first_ts)+'–'+hm(r.last_ts):'');
+  for(const m of r.items||[]){const li=document.createElement('li');const a=document.createElement('a');a.href='#';a.dataset.msg=m.id||'';a.textContent=(m.name||'?')+' '+hm(m.ts);
+   a.onclick=e=>{e.preventDefault();e.stopPropagation();document.querySelector('#conversation [data-id="'+CSS.escape(String(m.id||''))+'"]')?.scrollIntoView({block:'center',behavior:'smooth'})};
+   li.append(a,document.createTextNode(' '+(m.text||'')));ul.append(li)}}
+ box.replaceChildren(head,ul);
+}
 function ensureWork(node,s,botId){
  let box=runPart(node,'work-status');
  if(!box){
@@ -1248,6 +1266,7 @@ function ensureWork(node,s,botId){
  const show=phase==='prompt'&&s.progress&&s.progress.total;
  bar.hidden=!show;
  if(show){const pct=Math.min(100,Math.round(s.progress.processed/s.progress.total*100));bar.querySelector('i').style.width=pct+'%';bar.setAttribute('role','progressbar');bar.setAttribute('aria-valuemin','0');bar.setAttribute('aria-valuemax','100');bar.setAttribute('aria-valuenow',String(pct));bar.setAttribute('aria-label','Liest Verlauf')}
+ readingPanel(node,s);
  const old=runPart(node,'work-steps');
  const list=shownSteps(s.steps);
  if(!list.length){old?.remove();return}
@@ -1327,7 +1346,7 @@ function updateStream(botId,immediate=false){
 function mergeActivity(a){
  if(!a||!a.on||!a.bot)return;
  const prev=streams[a.bot]||{};
- streams[a.bot]={name:a.name||prev.name||'Bot',text:prev.text||'',phase:a.phase||'read',label:a.label||'Liest Verlauf',steps:Array.isArray(a.steps)?a.steps:(prev.steps||[]),progress:(+a.total>0)?{processed:+a.processed||0,total:+a.total,cache:+a.cache||0}:null,error:a.error||'',started:(a.started?a.started*1000:prev.started)||Date.now(),lastEvent:(a.last?a.last*1000:prev.lastEvent)||Date.now(),node:null,frame:0,reasoning:prev.reasoning||'',tools:prev.tools||[],hung:false};
+ streams[a.bot]={name:a.name||prev.name||'Bot',text:prev.text||'',phase:a.phase||'read',label:a.label||'Liest Verlauf',steps:Array.isArray(a.steps)?a.steps:(prev.steps||[]),progress:(+a.total>0)?{processed:+a.processed||0,total:+a.total,cache:+a.cache||0}:null,error:a.error||'',started:(a.started?a.started*1000:prev.started)||Date.now(),lastEvent:(a.last?a.last*1000:prev.lastEvent)||Date.now(),node:null,frame:0,reasoning:prev.reasoning||'',tools:prev.tools||[],hung:false,reading:a.reading||null};
 }
 function render(){
  const area=$('conversation'),follow=stickToBottom||!rendered,oldScroll=area.scrollTop,prevH=area.scrollHeight;rendered=true;
@@ -1771,7 +1790,12 @@ async function askDeleteMessage(msg){const who=msg.name||(msg.role==='user'?'Du'
 async function askDeleteFile(f){const kb=Math.max(1,Math.ceil((f.size||0)/1024));if(!await purgeAsk({title:'Datei löschen',lead:'Diese Datei wird aus dem Raum entfernt:',items:[f.name+' · '+kb+' KB'],note:'Nachrichten zeigen danach „entfernt“. 10 Sekunden rückgängig.',ok:'Datei löschen'}))return;try{const r=await api('/api/room/files/'+encodeURIComponent(f.stored),undefined,'DELETE');showUndo('Datei entfernt',r.undo);await refresh()}catch(e){notice(e.message)}}
 async function askDeleteMemory(a,i,text){if(!a)return;if(!await purgeAsk({title:'Eintrag löschen',lead:'Dieser Gedächtnis-Eintrag von '+a.name+' wird entfernt:',items:[previewText(text)],note:'10 Sekunden rückgängig.',ok:'Eintrag löschen'}))return;try{const r=await api('/api/agents/'+encodeURIComponent(a.id)+'/memory/'+i+'?old='+encodeURIComponent(String(text).slice(0,200)),undefined,'DELETE');showUndo('Eintrag gelöscht',r.undo);await refresh();if($('memory-dialog').open)renderMemory(r.memory||[])}catch(e){notice(e.message)}}
 async function askClearMemory(a,n){if(!a)return;if(!await purgeAsk({title:'Gedächtnis leeren',lead:'Das Gedächtnis dieses Bots wird geleert:',items:[deN(n,'Eintrag','Einträge')+' im Gedächtnis von '+a.name],note:'Chat und Arbeitsdaten bleiben. 10 Sekunden rückgängig.',ok:'Gedächtnis leeren'}))return;try{const r=await api('/api/agents/'+encodeURIComponent(a.id)+'/memory',undefined,'DELETE');showUndo('Gedächtnis geleert',r.undo);await refresh();if(memAgent&&memAgent.id===a.id&&$('memory-dialog').open)renderMemory(r.memory||[])}catch(e){notice(e.message)}}
-async function askResetBot(a){if(!await purgeAsk({title:'Bot zurücksetzen',lead:a.name+' verliert die Arbeitsdaten in der eigenen VM:',items:['Browser-Profil','Cookies und gespeicherte Logins','Arbeitsdateien (room und Downloads)'],note:'Logins gehen verloren und können nicht wiederhergestellt werden. Gedächtnis und Chatverlauf bleiben.',ok:'Bot zurücksetzen'}))return;try{await api('/api/agents/'+encodeURIComponent(a.id)+'/workspace/reset',{});notice('Arbeitsdaten von '+a.name+' wurden zurückgesetzt.')}catch(e){notice(e.message)}}
+// Clear/reset: idle -> run at once; a computing or queued bot -> ask, then force (server cancels all work first).
+function workBusy(){return !!state.busy||(state.pending||[]).length>0||busyBots.size>0}
+async function busyRun(path,verb,ok,keep){const ask=()=>magConfirm({title:'Ein Bot rechnet noch',text:'Laufende und wartende Arbeit wird abgebrochen, danach wird '+verb+'.',ok,cancel:keep,danger:true});
+ if(workBusy()){if(!await ask())return null;return api(path,{force:true})}
+ try{return await api(path,{})}catch(e){if(e.message!=='Ein Bot rechnet noch')throw e;if(!await ask())return null;return api(path,{force:true})}}
+async function askResetBot(a){try{const r=await busyRun('/api/agents/'+encodeURIComponent(a.id)+'/workspace/reset','der Bot zurückgesetzt','Abbrechen und zurücksetzen','Nicht zurücksetzen');if(r)notice('Arbeitsdaten von '+a.name+' wurden zurückgesetzt.')}catch(e){notice(e.message)}}
 function renderData(){
  const rc=$('room-count');if(!rc)return;
  const msgs=(state.room||[]).length,files=(state.files||[]).length;
@@ -1795,7 +1819,7 @@ function memErr(t=''){const el=$('memory-err');el.textContent=t;el.hidden=!t}
 $('memory-new').oninput=()=>memErr();
 $('memory-new').onkeydown=e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing){e.preventDefault();$('memory-form').requestSubmit()}};
 $('memory-clear').onclick=()=>{if(!memAgent)return;askClearMemory(memAgent,$('memory').querySelectorAll('.mem-row').length)};
-$('reset').onclick=async()=>{const msgs=(state.room||[]).length,files=(state.files||[]).length;if(!await purgeAsk({title:'Raum leeren',lead:'Aus dem gemeinsamen Raum wird entfernt:',items:[deN(msgs,'Nachricht','Nachrichten'),deN(files,'Datei','Dateien')],note:'Vorher wird eine dauerhafte Sicherung erstellt (maximal 512 MiB). Zusätzlich 10 Sekunden rückgängig.',ok:'Raum leeren'}))return;try{const r=await api('/api/room/clear',{});streams={};r.unchanged?notice('Raum ist bereits leer'):showUndo('Raum geleert',r.undo);await refresh()}catch(e){notice(e.message)}};
+$('reset').onclick=async()=>{try{const r=await busyRun('/api/room/clear','der Raum geleert','Abbrechen und leeren','Nicht leeren');if(!r)return;streams={};r.unchanged?notice('Raum ist bereits leer'):showUndo('Raum geleert',r.undo);await refresh()}catch(e){notice(e.message)}};
 // Images are staged locally until sending. Canvas conversion strips EXIF/GPS
 // and standardizes HEIC/HEIF when supported by the current browser.
 let stagedPhotos=[],stagedFiles=[];const PHOTO_MAX_PX=2048;
@@ -2149,13 +2173,33 @@ new ResizeObserver(()=>{
 }).observe($('terminal'));
 
 function liveStatus(v){$('browser-status').textContent=v}
+// Fallback when WebRTC/UDP gets no frame (phones on mobile data/VPN often
+// expose only mDNS host candidates): poll the existing JPEG endpoint and send
+// taps over HTTPS. Stops as soon as UDP frames arrive or the view closes.
+let httpLive=null,httpLiveFor='';
+function startHttpLive(gen,id){
+ if(httpLive||gen!==liveGeneration)return;httpLive={gen,id};httpLiveFor=id;
+ const tick=async()=>{
+  if(!httpLive||httpLive.gen!==liveGeneration||frameLastAt){httpLive=null;return}
+  try{const r=await fetch('/api/screen/'+encodeURIComponent(id)+'?format=jpeg',{cache:'no-store'});
+   if(r.ok){const b=await createImageBitmap(await r.blob());if(httpLive?.gen===liveGeneration){const c=$('screen');if(c.width!==b.width||c.height!==b.height){c.width=b.width;c.height=b.height}c.getContext('2d',{alpha:false}).drawImage(b,0,0);c.hidden=false;liveStatus('HTTP-Fallback · '+liveVM+' · UDP nicht erreichbar')}b.close()}
+  }catch{}
+  if(httpLive)httpLive.t=setTimeout(tick,900);
+ };tick();
+}
+function stopHttpLive(){if(httpLive){clearTimeout(httpLive.t);httpLive=null}}
 function liveSend(data){
+ if((!liveControl||liveControl.readyState!=='open')&&httpLive&&data.kind==='pointer'){
+  if(data.action!=='down'&&data.action!=='up')return true;
+  api('/api/browser/'+encodeURIComponent(httpLive.id)+'/pointer',{x:data.x,y:data.y,action:data.action,button:data.button||'left'}).catch(e=>liveStatus('HTTP-Fallback: '+e.message));
+  return true;
+ }
  if(!liveControl||liveControl.readyState!=='open')return false;
  liveControl.send(JSON.stringify(data));
  return true;
 }
 function disconnectLive(){
- ++liveGeneration;
+ ++liveGeneration;stopHttpLive();
  clearTimeout(reconnectTimer);reconnectTimer=0;consoleHbAt=0;
  if(livePeer){livePeer.close();livePeer=null}
  liveControl=null;liveConsole=null;liveVM='';videoChunks=null;pointerHeld=false;
@@ -2202,6 +2246,7 @@ async function connectLive(){
  const pc=new RTCPeerConnection({iceServers:[]});
  livePeer=pc;liveVM=bot.vm;
  liveStatus('WebRTC/UDP · verbinde '+bot.name+' …');
+ setTimeout(()=>{if(gen===liveGeneration&&!frameLastAt)startHttpLive(gen,id)},httpLiveFor===id?0:7000);
  const ctrl=pc.createDataChannel('control',{ordered:true});
  liveControl=ctrl;
  ctrl.onopen=()=>{liveOpenAt=performance.now();if($('live').checked)liveSend({kind:'subscribe'});liveStatus('WebRTC/UDP · verbunden')};
@@ -2228,7 +2273,7 @@ async function connectLive(){
  pc.onconnectionstatechange=()=>{
   if(gen!==liveGeneration)return;
   if(['failed','disconnected','closed'].includes(pc.connectionState)){
-   liveStatus('WebRTC/UDP · Verbindung '+pc.connectionState+' · verbinde neu …');
+   liveStatus('WebRTC/UDP · Verbindung '+pc.connectionState+' · verbinde neu …');if(!frameLastAt)startHttpLive(gen,$('browser-agent').value);
    terminalStatus('Shell getrennt · verbinde neu …');scheduleReconnect();
   }
  };
@@ -2608,6 +2653,7 @@ events.onmessage=e=>{
    s.label=event.label||s.label||'Denkt nach';
    if(s.phase!=='think')s.thinking=false;
    s.steps=Array.isArray(event.steps)?event.steps:(s.steps||[]);
+   s.reading=event.reading||null;
    s.error=event.error||'';
    s.lastEvent=Date.now();s.hung=false;
    if(event.started)s.started=s.started||event.started*1000;
@@ -2662,7 +2708,7 @@ events.onmessage=e=>{
   else if(event.type==='cancelled'&&event.bot){
    const s=streams[event.bot];if(s?.frame)cancelAnimationFrame(s.frame);
    delete streams[event.bot];busyBots.delete(event.bot);renderLanes();streamControls();notice('');refresh().catch(err=>notice(err.message));
-  }else if(event.type==='stopped'||event.type==='cancelled'){
+  }else if(event.type==='stopped'||event.type==='cancelled'||event.type==='room_cleared'){
    for(const s of Object.values(streams))if(s.frame)cancelAnimationFrame(s.frame);
    streams={};setBusyBots([]);streamControls();notice('');refresh().catch(err=>notice(err.message));
   }

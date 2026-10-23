@@ -586,6 +586,41 @@ class Native(unittest.TestCase):
   finally:
    self.request('/api/queue',method='DELETE');self.request('/api/cancel',{});self.request('/api/queue/resume',{});Model.script=[]
 
+ def test_15l_room_clear_busy_needs_force_and_leaves_no_ghost(self):
+  acc=self.state/'access.json';had=acc.read_bytes() if acc.exists() else None
+  self._access(['chris@github']);owner=self._ts('chris@github','Chris')
+  self.addCleanup(lambda:acc.write_bytes(had) if had is not None else acc.unlink(missing_ok=True))
+  self.wait_idle();Model.script=[self._slow('out',80),['Nie.']]
+  self.request('/api/message',{'text':'Clear-Busy','bots':['test']});self._busy();time.sleep(.5)
+  self.request('/api/message',{'text':'Wartet','bots':['test']})
+  with self.assertRaises(urllib.error.HTTPError) as ctx:self.request('/api/room/clear',{},headers=owner)
+  self.assertEqual(ctx.exception.code,409);self.assertTrue(json.loads(ctx.exception.read())['busy'])
+  self.assertTrue(self.request('/api/state')['room'],'refused clear keeps the room')
+  wiped=self.request('/api/room/clear',{'force':True},headers=owner);self.assertTrue(wiped['ok'])
+  time.sleep(1.0);s=self.request('/api/state')
+  self.assertEqual(s['room'],[],'no ghost/partial answer after forced clear');self.assertFalse(s['busy']);self.assertFalse(s['pending'])
+  self.assertEqual(self.request('/api/room/clear',{},headers=owner).get('unchanged'),True,'idle clear needs no force')
+  self.request('/api/undo/'+wiped['undo'],{});self.request('/api/queue/resume',{});Model.script=[]
+ def test_15m_bot_rights_github_read_only_no_gitea_admin(self):
+  self.wait_idle();self.request('/api/connectors/github',{'token':'ghp_'+'c'*36})
+  args=[{"action":"create_issue","repo":"ChristianHohlfeld/mag-portable-stack","title":"x"},
+        {"action":"comment_issue","repo":"ChristianHohlfeld/mag-portable-stack","number":1,"body":"x"},
+        {"action":"create_repo","name":"evil"}]
+  Model.calls.clear()
+  Model.script=[[{'tool_calls':[{'index':0,'id':'call_gh%d'%i,'function':{'name':'github','arguments':json.dumps(a)}}]}] for i,a in enumerate(args)]+[['Fertig.']]
+  self.request('/api/message',{'text':'GH-Write','bots':['test']});self.wait_room('Fertig.');self.wait_idle()
+  res=[m for m in Model.calls[-1]['messages'] if m.get('role')=='tool' and str(m.get('tool_call_id','')).startswith('call_gh')]
+  self.assertEqual(len(res),3)
+  for m in res:self.assertIn('nur lesbar',json.dumps(m,ensure_ascii=False))
+  self.request('/api/connectors/github',method='DELETE')
+  src=(ROOT/'mag-room/native/vm.cpp').read_text()
+  create=src[src.index('gitea_args({"create"'):src.index('if (created.code)')]
+  self.assertNotIn('--admin',create,'bot Gitea accounts must never be admins')
+  self.assertIn('mag-gitea-bot-rights',src)
+  prompts=(ROOT/'mag-room/native/magroom.cpp').read_text()
+  for bad in ('Administrationsaccount','is an administrator','mag-deploy/request','Runner des MAG-Hosts'):
+   self.assertNotIn(bad,prompts+src)
+  self.assertIn('X-MCP-Readonly',(ROOT/'mag-room/native/mcp.hpp').read_text())
  def test_15k_composer_stop_cancels_turn_keeps_queue(self):
   self.wait_idle();Model.script=[self._slow('out',60),['Weiter normal.']]
   self.request('/api/message',{'text':'Stop-Test','bots':['test']});self._busy();time.sleep(1.0)

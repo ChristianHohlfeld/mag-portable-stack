@@ -10,8 +10,11 @@
   if (!view || !screen) return;
   const z = {s: 1, x: 0, y: 0};
   const MIN = 1, MAX = 4;
-  let mode = 'watch';
-  try { mode = localStorage.getItem('mag-view-mode') || 'watch'; } catch (_) {}
+  // Default is "steuern": the live view is a usable browser. Watch mode
+  // swallows input by design, so the old persisted 'watch' default (key
+  // mag-view-mode) is not reused - it made the view look broken.
+  let mode = 'control';
+  try { mode = localStorage.getItem('mag-view-mode-v2') || 'control'; } catch (_) {}
 
   const css = document.createElement('style');
   css.textContent = `
@@ -25,6 +28,16 @@
 .vt-caption.on{opacity:1}
 #browser-view.watching #screen{cursor:grab}
 .terminal-heading .vt-bar{margin-left:6px}
+/* Narrow panel / phone: nav wraps (URL keeps a usable width), console header stays one row. */
+#browser-view .browser-nav{flex-wrap:wrap;row-gap:4px}
+#browser-view .browser-nav .nav-url{flex:1 1 150px}
+#browser-view .browser-nav .vt-bar{flex:0 0 auto}
+.terminal-heading{flex-wrap:nowrap;gap:3px!important;min-width:0}
+.terminal-heading h2{flex:1 1 auto;min-width:64px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.terminal-heading>button,.terminal-heading .vt-bar button{flex:0 0 auto;padding:3px 5px!important;min-width:26px;height:26px;font-size:11px}
+.terminal-heading .vt-bar{flex:0 0 auto;margin-left:2px;gap:2px}
+.terminal-heading .vt-bar button[aria-pressed=true]{color:#fff!important}
+@media (max-width:520px){.terminal-heading{padding:0 6px!important;gap:2px!important}.terminal-heading h2{min-width:44px}.terminal-heading>button,.terminal-heading .vt-bar button{padding:3px 3px!important;min-width:24px}}
 `;
   document.head.append(css);
 
@@ -70,14 +83,14 @@
 
   function setMode(m) {
     mode = m;
-    try { localStorage.setItem('mag-view-mode', m); } catch (_) {}
+    try { localStorage.setItem('mag-view-mode-v2', m); } catch (_) {}
     view.classList.toggle('watching', m === 'watch');
     modeBtn.textContent = m === 'watch' ? 'Steuern' : 'Zurückgeben';
     modeBtn.title = m === 'watch' ? 'Browser selbst bedienen (übernehmen)' : 'Steuerung an den Bot zurückgeben (zuschauen)';
     modeBtn.setAttribute('aria-label', modeBtn.title);
     modeBtn.setAttribute('aria-pressed', String(m === 'control'));
     for (const t of (typeof terminals !== 'undefined' ? terminals.values() : [])) t.term.options.disableStdin = m === 'watch';
-    termMode.textContent = modeBtn.textContent;
+    termMode.textContent = m === 'watch' ? 'Steuern' : 'Zurück';
     termMode.setAttribute('aria-pressed', String(m === 'control'));
   }
 
@@ -112,6 +125,11 @@
     else if (mode === 'watch') ev.stopPropagation();
   }, true);
   const up = ev => {
+    if (mode === 'watch' && pan && Math.hypot(ev.clientX - pan.x, ev.clientY - pan.y) < 5) {
+      caption.textContent = 'Zuschauen: zum Bedienen „Steuern“ tippen';
+      caption.classList.add('on'); clearTimeout(capTimer);
+      capTimer = setTimeout(() => caption.classList.remove('on'), 3000);
+    }
     pts.delete(ev.pointerId);
     if (pts.size < 2) pinch = null;
     if (pan || mode === 'watch') { pan = null; ev.stopPropagation(); }
@@ -169,7 +187,7 @@
   }
   tb('A−', 'Schrift kleiner', () => setFont(font - 1));
   tb('A+', 'Schrift größer', () => setFont(font + 1));
-  tb('Kopieren', 'Auswahl oder sichtbaren Inhalt kopieren', () => {
+  tb('Kopie', 'Kopieren: Auswahl oder sichtbaren Inhalt kopieren', () => {
     const t = curTerm(); if (!t) return;
     let text = t.term.getSelection();
     if (!text) { const b = t.term.buffer.active, lines = []; for (let i = Math.max(0, b.length - 400); i < b.length; i++) lines.push(b.getLine(i)?.translateToString(true) || ''); text = lines.join('\n').trimEnd(); }

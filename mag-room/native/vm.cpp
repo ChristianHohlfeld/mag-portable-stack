@@ -372,10 +372,13 @@ static void provision_git(const std::string &n) {
   auto created = run(
       gitea_args({"create", "--username", username, "--email",
                   username + "@mag.local", "--user-type", "User", "--password",
-                  password, "--admin", "--must-change-password=false"}),
+                  password, "--must-change-password=false"}),
       30);
   if (created.code)
     throw std::runtime_error("Gitea bot account creation failed");
+  // Never an admin: restricted, no org creation, own org bots-<agent>.
+  if (run({"/usr/local/sbin/mag-gitea-bot-rights", username}, 60).code)
+    throw std::runtime_error("Gitea bot rights could not be restricted");
   // Register ownership before provisioning: retry/teardown can revoke the
   // account.
   record["git_user"] = username;
@@ -394,9 +397,13 @@ static void provision_git(const std::string &n) {
       "store; git config --global user.name " +
       quote(username) + "; git config --global user.email " +
       quote(username + "@mag.local") + "; printf %s " +
-      quote("Gitea: http://192.168.122.1:3001 . Your dedicated account is an "
-            "administrator. Use git clone/push and Gitea API with your "
-            "credential. Never share credentials in chat.\n") +
+      quote("Gitea: http://192.168.122.1:3001 . Your account " + username +
+            " is a restricted, non-admin user. You have read/write only in "
+            "your own org bots-" + username.substr(7) +
+            " (create repos there). Other repos are not visible to you. "
+            "There is no host deploy runner. Use git clone/push and the "
+            "Gitea API with your credential. Never share credentials in "
+            "chat.\n") +
       " > /home/bot/GIT_ACCESS.md";
   auto result = guest(
       n, {"/usr/sbin/runuser", "-u", "bot", "--", "/bin/bash", "-lc", script},

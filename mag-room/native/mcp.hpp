@@ -180,6 +180,8 @@ static McpHttp mcp_post(const Val &srv, const std::string &secret,
       if (!name.empty()) h = curl_slist_append(h, (name + ": " + secret).c_str());
     } else if (auth == "bearer" || auth == "connector") {
       h = curl_slist_append(h, ("Authorization: Bearer " + secret).c_str());
+      // The owner's GitHub token is read-only for bots (GitHub MCP honours it).
+      if (auth == "connector") h = curl_slist_append(h, "X-MCP-Readonly: true");
     }
   }
   const bool plain = url.rfind("http://", 0) == 0;
@@ -669,8 +671,12 @@ static std::string mcp_dispatch_tool(int bot_idx, const std::string &name, const
     throw std::runtime_error("Offline-Modus: Plugin " + hit.server_name + " ist nicht erreichbar.");
   Val binds = mcp_bindings(bot_idx);
   const Val *b = binds.find(hit.server_id);
-  const bool auto_ok = (b && mcp_str(*b, "approval") == "auto") || hit.read_only ||
-                       (b && mcp_list_has(b->find("always"), hit.tool));
+  // Servers using the owner's GitHub connector token are never auto-approved
+  // for non-read-only tools, whatever the binding says.
+  const bool owner_token = mcp_str(srv, "auth") == "connector";
+  const bool auto_ok = hit.read_only || (!owner_token &&
+                       ((b && mcp_str(*b, "approval") == "auto") ||
+                        (b && mcp_list_has(b->find("always"), hit.tool))));
   if (!auto_ok) {
     McpApproval req;
     req.id = token_hex(8);

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Ornith per-node servers (B) -> qwen (default) or -> instances (previous 4x Ornith layout, 8191-8194).
-# Only Qwen/Ornith units, gateway and room change; mag-llm and tunnels stay untouched. No files are deleted
+# Only Qwen/Ornith units, gateway and room change; retired DeepSeek units stay disabled. No files are deleted
 # except this tool's own snapshot directories after a successful rollback.
 # Usage: rollback.sh [qwen|instances]   (MAG_ORNITH_ROOTFS only for tests)
 set -uo pipefail
@@ -15,6 +15,14 @@ SNAP2=$R/var/lib/mag-ornith/cutover-numa    # -> per-node servers
 [[ $EUID == 0 || -n $R ]] || { echo 'root required' >&2; exit 4; }
 [[ $TARGET == qwen || $TARGET == instances ]] || { echo 'usage: rollback.sh [qwen|instances]' >&2; exit 4; }
 rc=0
+# Never switch off Ornith before checking the Qwen fallback is actually staged.
+# Test rootfs fixtures perform their own fake unit health checks.
+if [[ $TARGET == qwen && -z $R ]]; then
+  [[ -x /usr/local/lib/mag-qwen/start.sh &&
+     -r /etc/mag-qwen/model.sha256 &&
+     -s /home/chris/models/qwen3.8-flash-next-uncensored/Qwen3.8-Flash-Next-Uncensored.IQ4_XS.gguf ]] ||
+    { echo 'Qwen rollback refused: verified model/runtime not staged; Ornith stays online' >&2; exit 4; }
+fi
 # Stop both node servers first (synchronous): legacy instances 1/2 reuse ports 8191/8192.
 systemctl disable --now mag-llm-ornith-node@0.service mag-llm-ornith-node@1.service || rc=1
 if [[ $TARGET == instances ]]; then
@@ -42,12 +50,8 @@ for n in 1 2 3 4; do
 done
 install -d -m 0755 "$(dirname "$CONF")"
 printf 'MAG_SECONDARY_MODEL=qwen\n' > "$CONF.next" && chmod 0644 "$CONF.next" && mv -f "$CONF.next" "$CONF" || rc=1
-# The Qwen-era gateway also understands qwen; keep the new one unless a snapshot exists.
-if [[ -x $SNAP/gateway.bin ]]; then
-  install -m 0755 "$SNAP/gateway.bin" "$GATE.next" && mv -f "$GATE.next" "$GATE" || rc=1
-elif [[ -x $SNAP2/gateway.bin && $(cat "$SNAP2/from" 2>/dev/null) == qwen ]]; then
-  install -m 0755 "$SNAP2/gateway.bin" "$GATE.next" && mv -f "$GATE.next" "$GATE" || rc=1
-fi
+# Keep the new fail-closed Ornith/Qwen gateway. Never restore an old snapshot
+# binary that could still route retired DeepSeek at :8090.
 systemctl daemon-reload || rc=1
 systemctl enable --now mag-llm-qwen.service || rc=1
 systemctl restart mag-audit-gateway.service || rc=1

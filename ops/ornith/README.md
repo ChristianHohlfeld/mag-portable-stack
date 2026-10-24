@@ -1,36 +1,62 @@
-# Ornith-1.5-35B-A3B — one shared server for all four room bots
+# Ornith-1.5-35B-A3B — one server per NUMA node, two bots each (variant B)
 
-Owner decision (approved): every room bot uses Ornith-1.5-35B-A3B Q4_K_M, the model is
-loaded ONCE and shared by the four bots. `mag-llm` (DeepSeek Q4, :8090) is unchanged and independent.
+Owner decision (Chris, 2026-10-24 22:09): priorities are NON-BLOCKING and FAST answers →
+**variant B**. Every room bot uses Ornith-1.5-35B-A3B Q4_K_M; two llama-servers, one per
+NUMA node, two bots per server; all bots answer concurrently. `mag-llm` (DeepSeek Q4, :8090)
+is unchanged and independent.
 
-## Layout (variant A, chosen by measurement)
+## Layout (variant B)
 
-`mag-llm-ornith.service` → `start-shared.sh`: one llama-server on 127.0.0.1:8191,
-`numactl --interleave=all --physcpubind=0-27`, `--threads 28 --numa distribute`,
-`--parallel 4 --ctx-size 131072` (4 × 32k, one llama slot per bot), `--load-mode mlock`,
-`--slot-save-path /var/lib/mag-llm/slots/ornith`, pinned runtime (`ops/qwen/runtime.sha`),
-SHA-256 check (`/etc/mag-ornith/model.sha256`), RAM preflight (≥14 GiB per node), refuses
-while Qwen/IQ3 or a legacy instance runs.
+`mag-llm-ornith-node@N.service` (N = 0|1) → `start-node.sh N`: llama-server on
+127.0.0.1:819(1+N), `numactl --cpunodebind=N --membind=N --physcpubind=0-13 | 14-27`,
+`--threads 14 --numa numactl`, `--parallel 2 --ctx-size 65536` (2 × 32k, one llama slot per
+bot), `--load-mode mlock`, `--cache-ram 2048`, `--slot-save-path /var/lib/mag-llm/slots/ornith-nodeN`,
+pinned runtime (`ops/qwen/runtime.sha`), SHA-256 check (`/etc/mag-ornith/model.sha256`),
+per-node RAM preflight (≥24 GiB reclaimable on node N), refuses while Qwen/IQ3 or a legacy
+instance runs. Drop-in `nodes/N.conf`: `CPUAffinity`/`AllowedCPUs`/`NUMAPolicy=bind`/`NUMAMask=N`.
+Memory: ~21.8 GiB RSS per server (43.6 GiB measured for both) + 2 GiB cache-ram ≈ 23.8 GiB →
+`MemoryHigh=25G` (above RSS + cache-ram), `MemoryMax=28G`, `MemorySwapMax=0`.
 
-Gateway: `MAG_MODEL_ORNITH_PORTS=8191:0,8191:1,8191:2,8191:3` — bot slot N (X-Mag-Slot N-1)
-→ port 8191, llama `id_slot` N-1, forced in every chat body; `/slots/<any>?action=save|restore|erase`
-is rewritten to the bot's own id_slot. Slot RPC without X-Mag-Slot, unknown action or
-invalid slot → 400 (fail closed). The legacy form `8191,8192,8193,8194` (one instance per
-bot, no id_slot) still works for rollback.
+Gateway: `MAG_MODEL_ORNITH_PORTS=8191:0,8192:0,8191:1,8192:1` — bot slot 1 → 8191/id_slot 0,
+2 → 8192/0, 3 → 8191/1, 4 → 8192/1. The first two bots sit on DIFFERENT servers, so two
+bots run at full single-bot speed (43.1 s, tg ~14.2). `id_slot` is forced in every chat body;
+`/slots/<any>?action=save|restore|erase` is rewritten to the bot's own id_slot on its own
+server. Slot RPC without X-Mag-Slot, unknown action or invalid slot → 400 (fail closed).
+The legacy form `8191,8192,8193,8194` (one instance per bot) still works for rollback.
 
-Prefix cache: the system prompt is byte-identical for all bots up to the `[Identitaet]`
-block at its end (name, persona, VM, "never claim to be Claude/Anthropic/…"). The room
-prewarms every bot slot at room start, when the server becomes ready and whenever a
-system prompt/tools/persona/bot set changes (watcher, ~10 s), one bot at a time. Each bot
-saves `mag-prefix-ornith-slot<N>.bin`; `state/prompt-prefix.json` records which shared
-prefix a file holds, so a bot whose own file is stale restores another bot's matching
-file and evaluates only identity + memory + transcript instead of ~12k tokens cold.
-While a prewarm runs the bot list shows "Prompt wird vorbereitet (~X min)"; during a turn
-the progress bar shows the same estimate from llama's `prompt_progress`.
+## Concurrency design (room)
 
-Deterministic mode (`model-settings.json`, default off) still sends a short identity
-system prompt (name, persona, German, bootstrap context) plus the single user message,
-with X-Mag-Bot/X-Mag-Slot, so each bot keeps its own name and llama slot.
+- A user message to several bots starts all of them at once (`MAG_ROOM_STAGGER` defaults
+  to `off` in Ornith mode; one lane per bot slot). No bot waits for another bot; each
+  bot reads the transcript as it was at the user message. Stop/cancel per bot (`/api/cancel
+  {bot}`) ends only that bot's lane. Max 4 bots; a 5th is refused in German.
+- Stable order: the bots of one request form a turn group (`group`, `order` = the bot's
+  fixed position in the bot list) carried on `bot_start`, the live run state and the posted
+  message. The UI keeps all answers and live placeholders of a group at the group's first
+  position, sorted by `order`. A slow bot's placeholder therefore never drops below a
+  faster bot's finished answer; its answer takes the placeholder's place. The transcript
+  sent to the model stays append-only (completion order, prompt cache).
+- Optional reflection round (owner room setting "Zweite Runde", `POST /api/reflect`,
+  `state/reflect`, default **OFF** = least blocking): when all bots of a group have
+  answered and none was stopped, each bot answers once more, concurrently, with a
+  `Reflexionsrunde` note in its context tail; it then sees the others' first-round answers.
+  Never chained, never autonomous (no `[[MAG:WEITER]]` owner), not for deterministic bots.
+- Autonomy contract unchanged: the first selected bot is the only autonomous owner.
+
+## Prefix cache
+
+The system prompt is byte-identical for all bots up to the `[Identitaet]` block at its end
+(name, persona, VM, "never claim to be Claude/Anthropic/…"). The room prewarms every bot
+slot at room start, when the servers become ready and whenever a system prompt/tools/
+persona/bot set changes (watcher, ~10 s): one bot at a time PER SERVER, both servers in
+parallel. Each bot saves `mag-prefix-ornith-slot<N>.bin` into its server's slot directory;
+`state/prompt-prefix.json` maps `port/file` → shared prefix key, so a bot whose own file is
+stale restores the other bot's matching file on the SAME server only and evaluates just
+identity + memory + transcript. While a prewarm runs the bot list shows "Prompt wird
+vorbereitet (~X min)" (`MAG_ROOM_PREFILL_TPS`, default 60 t/s as measured on B).
+
+Deterministic mode (`model-settings.json`, default off) still sends a short identity system
+prompt plus the single user message, with X-Mag-Bot/X-Mag-Slot.
 
 ## Measurement (mag, 2026-10-24; pinned runtime, mlock, synthetic German prompt, cache_prompt off)
 
@@ -46,28 +72,25 @@ Raw data: `ops/perf-results/ornith-shared-20261024/` (bench.py, result-A.json, r
 | 4 bots concurrent, 2.6k + 128 | 107.8 s, tg 3.3–7.3 | **79.6 s**, tg ~9.6 | – |
 | 4 cold prewarms concurrent | 686.7 s | **521.8 s** | – |
 
-Decision: **A**. Room turns are strictly sequential (bot 2 reads bot 1's answer), so
-the room only ever runs ONE request at a time; there A is 28–45 % faster (prefill
-109 vs 76 t/s, gen 14.6 vs 13.5 t/s, turn 56.6 vs 78.1 s) and needs half the RAM. B only
-wins with ≥3 simultaneous requests. Cold prewarm on A is serialized: bot 1 ~168 s, bots
-2–4 restore its shared prefix and evaluate only their tail, ≈ 3–4 min for all four instead
-of 522 s (B, parallel) or ~5.5 min each today.
-
-Concurrent bot answers: **not enabled**. On A, 4 concurrent short turns take 107.8 s vs
-~130 s sequential (−17 %), but each bot would no longer see the previous bot's answer,
-which is the room's conversation contract, and generation per bot drops to 3–7 t/s.
-Not a clear win, so the sequential order stays.
+Decision: **B** (owner, 2026-10-24 22:09). With concurrent answering every bot gets
+~9.6 t/s on B vs 3.3–7.3 t/s on A; 4 bots finish in 79.6 s vs 107.8 s; two bots on
+different servers run at 43.1 s (A: 58.2 s); 4 cold prewarms 521.8 s vs 686.7 s; two
+processes = no single point of failure. A remains faster only for a single sequential
+request (56.6 vs 78.1 s) and needs half the RAM (23.5 vs 43.6 GiB) — irrelevant once bots
+answer concurrently.
 
 ## Operations
 
 ```bash
 sudo bash ops/ornith/cutover.sh check
-sudo bash ops/ornith/cutover.sh apply      # Qwen or 4x instances -> shared; auto-rollback to the previous layout
-sudo bash ops/ornith/rollback.sh instances # shared -> previous 4x Ornith instances (8191-8194)
+sudo bash ops/ornith/cutover.sh apply      # Qwen or 4x instances -> 2 node servers; auto-rollback to the previous layout
+sudo bash ops/ornith/rollback.sh instances # node servers -> previous 4x Ornith instances (8191-8194)
 sudo bash ops/ornith/rollback.sh           # -> Qwen
 ```
-Old units (`mag-llm-ornith@1..4`, `instances/N.conf`, `start.sh`) stay installed and
-disabled for rollback; nothing is deleted.
+Ports 8191/8192 are shared with legacy instances 1/2: cutover stops (PID 0) and checks the
+ports free before starting the node servers; rollback stops both node servers before the
+legacy instances start. Old units (`mag-llm-ornith@1..4`, `instances/N.conf`, `start.sh`)
+stay installed and disabled for rollback; nothing is deleted.
 
 ## Legacy 4-instance layout (rollback target)
 

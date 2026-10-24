@@ -1532,6 +1532,25 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
   if (path == "/api/sampling") {
     error_json(fd, 410, "Bitte Sampling pro Modell konfigurieren"); return;
   }
+  if (m == "POST" && path == "/api/reflect") {
+    // Owner room setting: optional reflection round after concurrent answers.
+    if (bridge || !actor.ok || actor.role != "owner") {
+      error_json(fd, 403, "Nur der Besitzer");
+      return;
+    }
+    if (!has_json || !body.find("on") || body.find("on")->type != Val::BOOL) {
+      error_json(fd, 400, "Boolean on required");
+      return;
+    }
+    REFLECT = body.find("on")->asBool();
+    write_file(STATE_DIR + "/reflect", REFLECT.load() ? "on" : "off");
+    Val e = Val::object();
+    e["type"] = "reflect";
+    e["on"] = REFLECT.load();
+    publish(mj::dump(e));
+    send_json(fd, 200, mj::dump(e));
+    return;
+  }
   if (m == "POST" && path == "/api/autotalk") {
     if (!has_json || !body.find("on") || body.find("on")->type != Val::BOOL) {
       error_json(fd, 400, "Boolean on required");

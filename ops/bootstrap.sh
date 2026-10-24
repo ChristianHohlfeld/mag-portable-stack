@@ -478,9 +478,9 @@ else
     secondary_unit=mag-llm-qwen.service
   elif [[ -r /etc/mag-stack/secondary-model.env ]] &&
      grep -Fxq 'MAG_SECONDARY_MODEL=ornith' /etc/mag-stack/secondary-model.env; then
-    # Shared server (mag-llm-ornith.service); legacy 4 instances only while still enabled
-    # (starting the shared unit would stop them via Conflicts=).
-    secondary_unit=mag-llm-ornith.service
+    # Per-node servers (mag-llm-ornith-node@0/1); legacy 4 instances only while still enabled
+    # (starting a node unit would stop them via Conflicts=).
+    secondary_unit="mag-llm-ornith-node@0.service mag-llm-ornith-node@1.service"
     if systemctl is-enabled --quiet mag-llm-ornith@1.service 2>/dev/null; then
       secondary_unit="mag-llm-ornith@1.service mag-llm-ornith@2.service mag-llm-ornith@3.service mag-llm-ornith@4.service"
     fi

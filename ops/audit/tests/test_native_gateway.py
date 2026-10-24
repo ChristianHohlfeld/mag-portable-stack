@@ -291,4 +291,52 @@ class NativeGateway(unittest.TestCase):
             env=dict(self.env,MAG_AUDIT_LISTEN_PORT=str(port()),MAG_SECONDARY_MODEL="ornith",MAG_MODEL_ORNITH_PORTS=spec)
             self.assertNotEqual(subprocess.run([str(ROOT/"build/mag-audit-gateway")],env=env,capture_output=True,timeout=5).returncode,0,spec)
 
+    def test_10_ornith_two_node_servers_cross_server_order(self):
+        # Variant B: one server per NUMA node, 2 llama slots each; bots 1,2 on DIFFERENT servers.
+        kinds=[type("OrnithNode%d"%n,(FakeModel,),{"ready":True,"calls":[]}) for n in (0,1)]
+        servers=[];ports=[]
+        for k in kinds:
+            pn=port();srv=http.server.ThreadingHTTPServer(("127.0.0.1",pn),k)
+            threading.Thread(target=srv.serve_forever,daemon=True).start();servers.append(srv);ports.append(pn)
+        a,b=ports;gwp=port()
+        env=dict(self.env,MAG_AUDIT_LISTEN_PORT=str(gwp),MAG_SECONDARY_MODEL="ornith",
+                 MAG_MODEL_ORNITH_PORTS="%d:0,%d:0,%d:1,%d:1"%(a,b,a,b),MAG_AUDIT_LOG_DIR=str(self.dir/"numa-logs"))
+        proc=subprocess.Popen([str(ROOT/"build/mag-audit-gateway")],env=env,stdout=subprocess.DEVNULL,stderr=subprocess.PIPE)
+        def post(slot,path="/v1/chat/completions",body=None):
+            c=http.client.HTTPConnection("127.0.0.1",gwp,timeout=5)
+            h={"Content-Type":"application/json","X-Mag-Model":"ornith-1.5-35b-a3b"}
+            if slot is not None:h["X-Mag-Slot"]=str(slot)
+            c.request("POST",path,body=json.dumps(body if body is not None else {"model":"ornith-1.5-35b-a3b","messages":[]}),headers=h)
+            r=c.getresponse();r.read();c.close();return r.status
+        try:
+            for _ in range(100):
+                if proc.poll() is not None:raise RuntimeError(proc.stderr.read().decode())
+                try:
+                    if request(gwp)[0]==200:break
+                except (ConnectionError,OSError):pass
+                time.sleep(.05)
+            Q4.calls.clear();IQ3.calls.clear()
+            for slot in range(4):self.assertEqual(post(slot),200)
+            self.assertEqual([c[1]["id_slot"] for c in kinds[0].calls],[0,1],"bots 1,3 -> node0 slots 0,1")
+            self.assertEqual([c[1]["id_slot"] for c in kinds[1].calls],[0,1],"bots 2,4 -> node1 slots 0,1")
+            for k in kinds:k.calls.clear()
+            # Slot files stay on the bot's own server (its own --slot-save-path).
+            self.assertEqual(post(1,"/slots/0?action=restore",{"filename":"mag-prefix-ornith-slot4.bin"}),200)
+            self.assertEqual(post(2,"/slots/0?action=save",{"filename":"mag-prefix-ornith-slot3.bin"}),200)
+            self.assertEqual([c[0] for c in kinds[1].calls],["/slots/0?action=restore"])
+            self.assertEqual([c[0] for c in kinds[0].calls],["/slots/1?action=save"])
+            for k in kinds:k.calls.clear()
+            self.assertEqual(post(None,"/slots/0?action=save",{"filename":"a.bin"}),400,"slot RPC without bot slot fails closed")
+            self.assertEqual(post("4"),400)
+            self.assertEqual(kinds[0].calls+kinds[1].calls,[]);self.assertEqual(Q4.calls,[]);self.assertEqual(IQ3.calls,[])
+        finally:
+            proc.terminate();proc.wait(timeout=3);proc.stderr.close()
+            for srv in servers:srv.shutdown();srv.server_close()
+
+    def test_11_default_ornith_ports_are_two_node_servers(self):
+        unit=(ROOT/"ops/audit/systemd/mag-audit-gateway.service").read_text()
+        src=(ROOT/"mag-room/native/mag_audit_gateway.cpp").read_text()
+        room=(ROOT/"mag-room/native/magroom.cpp").read_text()
+        for text in (unit,src,room):self.assertIn("8191:0,8192:0,8191:1,8192:1",text)
+
 if __name__=="__main__":unittest.main()

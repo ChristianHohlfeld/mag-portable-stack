@@ -64,9 +64,10 @@ grep -Fq 'Ornith host' <<<"$out"
 grep -Fq 'BMC power policy' <<<"$out"
 grep -Fxq 'ipmitool chassis policy always-on' "$log"
 
-# 3) Shared Ornith server active: only it is enabled, never the disabled legacy instances.
-out=$(ORNITH="mag-llm-ornith.service" run "$tmp/ornith.env" "$tmp/ipmi0")
-grep -Fxq 'systemctl enable mag-llm-ornith.service' "$log"
+# 3) Per-node Ornith servers (variant B) active: both enabled, never the disabled legacy instances.
+out=$(ORNITH="mag-llm-ornith-node@0.service mag-llm-ornith-node@1.service" run "$tmp/ornith.env" "$tmp/ipmi0")
+grep -Fxq 'systemctl enable mag-llm-ornith-node@0.service' "$log"
+grep -Fxq 'systemctl enable mag-llm-ornith-node@1.service' "$log"
 if grep -Eq 'systemctl enable mag-llm-ornith@' "$log"; then exit 1; fi
 common
 grep -Eq '^WantedBy=multi-user.target' "$root/ops/deepseek/mag-llm-iq3.service"

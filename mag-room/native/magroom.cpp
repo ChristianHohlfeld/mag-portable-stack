@@ -87,6 +87,14 @@ struct Lane {
   std::atomic<int> backend_fd{-1};
 };
 static thread_local Lane *TL_LANE = nullptr;
+// Concurrent room turn (Ornith B: all addressed bots answer at once). A bot
+// message carries its turn group and the bot's fixed list position, so the UI
+// keeps every bot of one group at the group's place, in bot order, whatever
+// finishes first (no placeholder ever drops below another bot's answer).
+// TL_REFLECT: optional second round, each bot reads the others' answers.
+static thread_local std::string TL_GROUP;
+static thread_local int TL_ORDER = 0;
+static thread_local bool TL_REFLECT = false;
 // Lanes of one request do not all start at once: the next lane waits until
 // the previous bot has read its context and starts thinking (or has
 // finished), then a short human pause. Two cold prompt evaluations never
@@ -1990,6 +1998,12 @@ static std::string build_context_tail(int bot_idx, bool autotalk,
     replaceAll(at, "{other}", other.empty() ? "der Nutzer" : other);
     out += "\n" + at;
   }
+  if (TL_REFLECT)
+    out += "\nReflexionsrunde: Die anderen Bots haben auf die letzte Nachricht "
+           "des Nutzers gleichzeitig mit dir geantwortet (oben im Verlauf). Lies "
+           "ihre Antworten. Ergaenze, korrigiere oder widersprich knapp; wiederhole "
+           "deine eigene Antwort nicht. Hast du nichts Neues beizutragen, setze nur "
+           "eine Reaktion. Starte keine neue Arbeit.";
   out += take_reaction_context(bot_field(bot_idx, "id"));
   if (todo_open_for(bot_field(bot_idx, "id")) > 0)
     out += "\nOffene Ziele (todo):\n" + todo_text_for(bot_field(bot_idx, "id"));
@@ -3050,10 +3064,21 @@ static std::string model_wait_text() {
   (void)st;
   return "Modell lädt noch – bitte gleich erneut senden.";
 }
+// Same default as the gateway: 2 servers (one per NUMA node) x 2 llama slots;
+// bot slots 1,2 sit on different servers, so two bots run at full speed.
+static const char *ORNITH_PORTS_DEFAULT = "8191:0,8192:0,8191:1,8192:1";
+// Backend port of an Ornith bot slot (1..4); "" if not configured.
+static std::string ornith_port(int slot) {
+  std::stringstream ports(env("MAG_MODEL_ORNITH_PORTS", ORNITH_PORTS_DEFAULT));
+  std::string part;
+  for (int s = 1; std::getline(ports, part, ','); ++s)
+    if (s == slot) return part.substr(0, part.find(':'));
+  return "";
+}
 static Val ornith_instances() {
   Val inst = Val::array();
   // Same list as the gateway: "port:id_slot" (shared server) or "port".
-  std::stringstream ports(env("MAG_MODEL_ORNITH_PORTS", "8191:0,8191:1,8191:2,8191:3"));
+  std::stringstream ports(env("MAG_MODEL_ORNITH_PORTS", ORNITH_PORTS_DEFAULT));
   std::string port;
   for (int s = 1; s <= ORNITH_MAX; ++s) {
     Val i = Val::object();
@@ -3709,6 +3734,8 @@ struct RunActivity {
   Val reading; // what the bot reads right now (room range / tool results)
   long started = 0, last = 0;
   long processed = 0, total = 0, cache = 0;
+  std::string group;
+  int order = 0;
   long long published_ms = 0;
 };
 // One live status per answering bot; a turn's thread addresses its own entry
@@ -3798,6 +3825,10 @@ static Val run_val_locked() {
   e["error"] = run_cur().error;
   e["started"] = run_cur().started;
   e["last"] = run_cur().last;
+  if (!run_cur().group.empty()) {
+    e["group"] = run_cur().group;
+    e["order"] = run_cur().order;
+  }
   e["processed"] = run_cur().processed;
   e["total"] = run_cur().total;
   e["cache"] = run_cur().cache;
@@ -3865,6 +3896,8 @@ static void run_begin(const std::string &bot, const std::string &name) {
   run_cur().label = "Liest Verlauf";
   run_cur().reading = reading;
   run_cur().started = (long)now_s();
+  run_cur().group = TL_GROUP;
+  run_cur().order = TL_ORDER;
   publish_run_locked();
 }
 static void run_end() {
@@ -5072,6 +5105,10 @@ static std::string manifest_body() {
 // room-wide operations (reset, clear, bot removal) take it exclusively and so
 // wait for every running turn.
 static std::atomic<bool> AUTOTALK{false}, BUSY{false};
+// Owner room setting (state/reflect, default off = least blocking): after all
+// bots of a concurrent user turn have answered, each answers once more and
+// then sees the others' first-round answers. Never chained, never autonomous.
+static std::atomic<bool> REFLECT{false};
 static std::shared_mutex TURN_MTX;
 static std::mutex JOB_MTX;
 static std::condition_variable JOB_CV;
@@ -5081,6 +5118,7 @@ struct Job {
   int think = -1;
   uint64_t generation = 0;
   std::string input; // one raw chat message, never accumulated context
+  bool reflect = false; // second round: read the other bots' answers
 };
 static std::deque<Job> JOBS;
 // Queue persistence: pending jobs + the jobs being answered survive a room
@@ -5098,7 +5136,7 @@ static Lane &lane_named(const std::string &model) {
   }
   return *slot;
 }
-// Ornith: one backend per bot, so one lane per bot (no cross-bot serialization).
+// Ornith: one llama slot per bot, so one lane per bot (no cross-bot serialization).
 static std::string lane_key(int idx) {
   const std::string m = bot_model_id(idx);
   return m == ORNITH ? m + "#" + std::to_string(ornith_slot(idx)) : m;
@@ -5125,6 +5163,7 @@ static Val job_val(const Job &j) {
   o["ids"] = ids;
   o["think"] = (double)j.think;
   if (!j.input.empty()) o["input"] = j.input;
+  if (j.reflect) o["reflect"] = true;
   return o;
 }
 static Job val_job(const Val &v) {
@@ -5133,6 +5172,7 @@ static Job val_job(const Val &v) {
     for (auto &i : ids->asArr()) j.ids.push_back(i.asStr());
   if (auto t = v.find("think")) j.think = (int)t->asNum(-1);
   if (auto input = v.find("input")) j.input = input->asStr();
+  if (auto r = v.find("reflect"); r && r->type == Val::BOOL) j.reflect = r->asBool();
   return j;
 }
 // Messages sent while a reply runs: NOT in the transcript yet (history stays
@@ -5472,10 +5512,18 @@ static void attach_work(Val &msg, const TurnReport &report) {
   if (!mid)
     return;
   std::string id = mid->asStr();
+  if (!TL_GROUP.empty()) {
+    msg["group"] = TL_GROUP;
+    msg["order"] = TL_ORDER;
+  }
   std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
   for (auto it = ROOM.rbegin(); it != ROOM.rend(); ++it) {
     if (!it->find("id") || it->find("id")->asStr() != id)
       continue;
+    if (!TL_GROUP.empty()) {
+      (*it)["group"] = TL_GROUP;
+      (*it)["order"] = TL_ORDER;
+    }
     if (!report.steps.empty()) {
       Val st = Val::array();
       for (auto &s : report.steps)
@@ -5516,6 +5564,10 @@ static TurnReport generate_and_post(int idx, bool automatic) {
   start["bot"] = id;
   start["name"] = name;
   start["color"] = bot_field(idx, "color");
+  if (!TL_GROUP.empty()) {
+    start["group"] = TL_GROUP;
+    start["order"] = TL_ORDER;
+  }
   publish(mj::dump(start));
   auto started = steady_clock::now();
   run_begin(id, name);
@@ -5617,14 +5669,24 @@ static std::mutex PREWARM_MTX;
 static std::set<std::string> PREWARM_RUNNING; // models, PREWARM_MTX
 // MAG_ROOM_PREFIX_DISK=0: keep prefix KV only in server RAM (lost on restart).
 static bool PREFIX_DISK = true;
-// Ornith (one shared server, one llama slot per bot): prewarms run one at a
-// time. The system prompt is byte-identical for all bots up to [Identitaet],
-// so the 2nd..4th bot restore an already warmed prefix file into their own
-// slot and evaluate only identity, memory and transcript (instead of ~12k
-// tokens cold each). PREFIX_META (state/prompt-prefix.json) records which
-// shared prefix each saved file holds. Both guarded by PREFIX_MTX.
+// Ornith (2 servers, 2 llama slots each): prewarms run one at a time PER
+// SERVER, both servers in parallel. The system prompt is byte-identical for
+// all bots up to [Identitaet], so the 2nd bot on a server restores the 1st
+// bot's prefix file (same --slot-save-path) into its own slot and evaluates
+// only identity, memory and transcript. Files of the other server are never
+// used (they live in its own directory). PREFIX_META (state/prompt-prefix.json)
+// maps "port/file" -> shared prefix key; guarded by PREFIX_MTX. SERVER_MTX
+// serializes the prewarms of one server.
 static std::mutex PREFIX_MTX;
 static Val PREFIX_META;
+static std::mutex SERVER_MTX_GUARD;
+static std::map<std::string, std::unique_ptr<std::mutex>> SERVER_MTX; // port -> lock
+static std::mutex &server_mutex(const std::string &port) {
+  std::lock_guard<std::mutex> lk(SERVER_MTX_GUARD);
+  auto &m = SERVER_MTX[port];
+  if (!m) m = std::make_unique<std::mutex>();
+  return *m;
+}
 static std::map<std::string, double> PREWARM_ETA; // bot id -> eta seconds, PREWARM_MTX
 static uint64_t fnv64(const std::string &s) {
   uint64_t h = 1469598103934665603ull;
@@ -5692,33 +5754,39 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
         reply, &status, nullptr, 120000);
     return sent && status == 200;
   };
-  std::unique_lock<std::mutex> seq(PREFIX_MTX, std::defer_lock);
-  seq.lock(); // Ornith keeps it for the whole prewarm (one at a time)
+  // Ornith: this bot's server keeps the lock for the whole prewarm.
+  const std::string port = model == ORNITH ? ornith_port(ornith_slot(idx)) : model;
+  std::unique_lock<std::mutex> seq(server_mutex(port), std::defer_lock);
+  if (model == ORNITH) seq.lock();
   const std::string own = prefix_file(idx, model);
-  if (!PREFIX_META.isObj()) {
-    if (!mj::parse(read_file(STATE_DIR + "/prompt-prefix.json"), PREFIX_META) || !PREFIX_META.isObj())
-      PREFIX_META = Val::object();
-  }
-  auto meta = [&](const std::string &f) {
-    auto v = PREFIX_META.find(f);
-    return v && v->type == Val::STR ? v->asStr() : std::string();
-  };
-  // Own file if it holds the current shared prefix (or is of unknown age);
-  // otherwise any other bot's file with the current shared prefix.
+  const std::string own_key = port + "/" + own;
   std::string source = own;
-  if (!meta(own).empty() && meta(own) != shared_key)
-    for (auto &kv : *PREFIX_META.obj)
-      if (kv.second.type == Val::STR && kv.second.asStr() == shared_key) {
-        source = kv.first;
-        break;
-      }
-  if (seq.owns_lock() && model != ORNITH) seq.unlock(); // other models: no cross-bot sharing
+  {
+    std::lock_guard<std::mutex> lk(PREFIX_MTX);
+    if (!PREFIX_META.isObj()) {
+      if (!mj::parse(read_file(STATE_DIR + "/prompt-prefix.json"), PREFIX_META) || !PREFIX_META.isObj())
+        PREFIX_META = Val::object();
+    }
+    auto meta = [&](const std::string &f) {
+      auto v = PREFIX_META.find(f);
+      return v && v->type == Val::STR ? v->asStr() : std::string();
+    };
+    // Own file if it holds the current shared prefix (or is of unknown age);
+    // otherwise another bot's file on the SAME server with that prefix.
+    if (model == ORNITH && !meta(own_key).empty() && meta(own_key) != shared_key)
+      for (auto &kv : *PREFIX_META.obj)
+        if (kv.first.rfind(port + "/", 0) == 0 && kv.second.type == Val::STR &&
+            kv.second.asStr() == shared_key) {
+          source = kv.first.substr(port.size() + 1);
+          break;
+        }
+  }
   const uint64_t pw_epoch = PREWARM_EPOCH.load();
   const bool restored = PREFIX_DISK && prefix_slot("restore", source);
   {
     // UI: "Prompt wird vorbereitet (~X min)". Upper bound: ~3.2 bytes per
-    // token, measured prefill MAG_ROOM_PREFILL_TPS (Ornith shared: ~90 t/s).
-    const double tps = std::max(5, envi("MAG_ROOM_PREFILL_TPS", 90));
+    // token, measured prefill MAG_ROOM_PREFILL_TPS (Ornith B, 1 server/node: ~62 t/s).
+    const double tps = std::max(5, envi("MAG_ROOM_PREFILL_TPS", 60));
     std::lock_guard<std::mutex> lk(PREWARM_MTX);
     const size_t todo = payload.size() - (restored ? std::min(shared_len, payload.size()) : 0);
     PREWARM_ETA[bot_id] = (double)todo / 3.2 / tps;
@@ -5754,8 +5822,8 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
   const long ms = (long)duration_cast<milliseconds>(steady_clock::now() - from).count();
   const bool saved = PREFIX_DISK && ok && code == 200 && !cancelled && prefix_slot("save", own);
   if (saved) {
-    if (!seq.owns_lock()) seq.lock();
-    PREFIX_META[own] = shared_key;
+    std::lock_guard<std::mutex> lk(PREFIX_MTX);
+    PREFIX_META[own_key] = shared_key;
     write_file_atomic(STATE_DIR + "/prompt-prefix.json", mj::dump(PREFIX_META));
   }
   if (seq.owns_lock()) seq.unlock();
@@ -5778,7 +5846,7 @@ static void schedule_prewarm() {
   }
   // One slot per model server: prewarm only models answered by exactly one bot.
   // Ornith lanes are per bot slot (lane_key), so every Ornith bot prewarms;
-  // prewarm_model serializes them on the shared server. Deterministic models
+  // prewarm_model serializes them per server (2 servers in parallel). Deterministic models
   // send a short identity prompt without prompt cache, nothing to prewarm.
   std::map<std::string, int> by_model;
   std::set<std::string> shared;
@@ -6120,7 +6188,8 @@ static void lane_finish(Lane *lane, uint64_t run, bool owner_ran, bool more,
 // sees that answer), "off" starts all lanes together.
 // MAG_ROOM_STAGGER_PAUSE_MS: mean human pause before the next bot starts.
 static std::string stagger_mode() {
-  const std::string m = env("MAG_ROOM_STAGGER", "think");
+  // Ornith B (2 servers x 2 slots): all bots answer concurrently by default.
+  const std::string m = env("MAG_ROOM_STAGGER", ORNITH_MODE ? "off" : "think");
   return m == "reply" || m == "off" ? m : "think";
 }
 static int stagger_pause_ms() {
@@ -6168,11 +6237,46 @@ static void await_gate(Lane *lane, const std::vector<std::string> &ids,
     std::this_thread::sleep_for(milliseconds(100));
   set_waiting(ids, false, after);
 }
+// Lanes of one concurrent user turn. The last lane to finish queues the
+// optional reflection round (REFLECT) unless a bot was stopped or the room reset.
+struct TurnGroup {
+  std::string id;
+  std::vector<std::string> ids;
+  int think = -1;
+  bool reflect = false; // this group IS the reflection round
+  uint64_t epoch = 0;
+  std::atomic<int> left{0};
+  std::atomic<bool> cancelled{false};
+};
+static void group_done(const std::shared_ptr<TurnGroup> &g) {
+  if (!g || --g->left > 0) return;
+  if (g->reflect || g->cancelled.load() || !REFLECT.load() || g->ids.size() < 2 ||
+      g->epoch != EPOCH.load() || SHUTDOWN.load())
+    return;
+  // Deterministic bots answer one stateless message only: no second round.
+  std::vector<std::string> ids;
+  for (auto &id : g->ids)
+    if (int idx = agent_index(id); idx >= 0 && !model_settings_for(bot_model_id(idx)).deterministic)
+      ids.push_back(id);
+  if (ids.size() < 2) return;
+  std::lock_guard<std::mutex> lk(JOB_MTX);
+  // A newer user message waiting for these bots wins; the second round is skipped.
+  for (auto &p : PENDING)
+    if (!p.held) return;
+  Job j;
+  j.ids = ids;
+  j.think = g->think;
+  j.reflect = true;
+  JOBS.push_front(j);
+  save_queue_locked();
+  JOB_CV.notify_all();
+}
 static void lane_turn(Lane *lane, uint64_t run, std::vector<std::string> ids,
                       bool automatic, int think, std::string owner, uint64_t generation, uint64_t epoch,
                       std::string input,
                       std::shared_ptr<StartGate> wait_for,
-                      std::shared_ptr<StartGate> own, std::string after) {
+                      std::shared_ptr<StartGate> own, std::string after,
+                      std::shared_ptr<TurnGroup> group) {
   bool more = false, owner_ran = false;
   std::string progress;
   // Outside TURN_MTX: room-wide operations must not wait for a parked lane.
@@ -6186,6 +6290,8 @@ static void lane_turn(Lane *lane, uint64_t run, std::vector<std::string> ids,
     TL_ADOPT_GEN = 0;
     TL_ADOPT_OWNER.clear();
     TL_YIELD = false;
+    TL_GROUP = group ? group->id : "";
+    TL_REFLECT = group && group->reflect;
     LAST_THINK = think;
     if (!(automatic && !AUTOTALK.load()))
       for (const auto &id : ids) {
@@ -6202,8 +6308,10 @@ static void lane_turn(Lane *lane, uint64_t run, std::vector<std::string> ids,
         int idx = agent_index(id);
         if (idx < 0)
           continue;
+        TL_ORDER = idx; // fixed position in the bot list
         try {
           TurnReport report = generate_and_post(idx, automatic);
+          if (group && (lane->user_cancel.load() || lane->stop.load())) group->cancelled = true;
           if (TL_ADOPT_GEN) {
             generation = TL_ADOPT_GEN;
             owner = TL_ADOPT_OWNER;
@@ -6226,9 +6334,17 @@ static void lane_turn(Lane *lane, uint64_t run, std::vector<std::string> ids,
     TURN_INPUT.clear();
     TL_LANE = nullptr;
     TL_GATE = nullptr;
+    TL_GROUP.clear();
+    TL_REFLECT = false;
   }
   if (own) own->release();
+  if (group) {
+    std::lock_guard<std::mutex> lk(JOB_MTX);
+    for (auto &id : ids)
+      if (lane->cancelled_bots.count(id)) group->cancelled = true;
+  }
   lane_finish(lane, run, owner_ran, more, progress, epoch, generation);
+  group_done(group);
 }
 static void lane_job(Lane *lane, uint64_t run, JobRun job) {
   {
@@ -6276,6 +6392,16 @@ static void start_lanes_locked(const Job &job, bool automatic) {
   USER_CANCEL = false;
   const auto parts = split_lanes(job.ids);
   const bool stagger = parts.size() > 1 && stagger_mode() != "off";
+  std::shared_ptr<TurnGroup> group;
+  if (!automatic && (parts.size() > 1 || job.reflect)) {
+    group = std::make_shared<TurnGroup>();
+    group->id = "g" + std::to_string((long long)(now_s() * 1000)) + "-" + std::to_string(DISPATCH_SEQ + 1);
+    group->ids = job.ids;
+    group->think = job.think;
+    group->reflect = job.reflect;
+    group->epoch = EPOCH.load();
+    group->left = (int)parts.size();
+  }
   std::shared_ptr<StartGate> prev;
   std::string prev_name;
   for (auto &[lane, ids] : parts) {
@@ -6286,12 +6412,12 @@ static void start_lanes_locked(const Job &job, bool automatic) {
     lane->upcoming = ids;
     lane->stop = false;
     lane->user_cancel = false;
-    ACTIVE_JOBS[run] = Job{ids, job.think, job.generation, job.input};
+    ACTIVE_JOBS[run] = Job{ids, job.think, job.generation, job.input, job.reflect};
     BUSY = true;
     auto gate = stagger ? std::make_shared<StartGate>() : nullptr;
     std::thread(lane_turn, lane, run, ids, automatic, job.think, owner,
                 job.generation, EPOCH.load(), job.input,
-                prev, gate, prev_name).detach();
+                prev, gate, prev_name, group).detach();
     prev = gate;
     prev_name = bot_field(agent_index(ids.front()), "name", "Bot");
   }
@@ -6760,6 +6886,7 @@ static std::string state_json(const Actor *actor = nullptr) {
   root["model_status"] = model_status_val(model_status(false));
   root["model_info"] = model_info_val();
   root["autotalk"] = AUTOTALK.load();
+  root["reflect"] = REFLECT.load();
   root["stt_lang"] = STT_LANG;
   root["runtime"] = "C++17";
   if (actor && actor->ok)
@@ -7460,6 +7587,7 @@ int main() {
   retire_frontend_override();
 
   AUTOTALK = trim(read_file(STATE_DIR + "/autotalk")) == "on";
+  REFLECT = trim(read_file(STATE_DIR + "/reflect")) == "on";
   load_model_settings();
   numa_load();
   load_model_verify();

@@ -54,7 +54,8 @@ struct Config {
   int q4=8090,iq3=8091,listen=8080;
   std::string secondary="iq3"; // qwen/ornith only after verified operator cutover
   // MAG_MODEL_ORNITH_PORTS: bot slot i -> ornith[i] = port[:id_slot], fixed (prompt cache).
-  // "8191:0,8191:1,8191:2,8191:3" = one shared server, one llama slot per bot (id_slot forced);
+  // "8191:0,8192:0,8191:1,8192:1" = 2 servers (one per NUMA node), 2 llama slots each,
+  // id_slot forced; bot slots 1,2 on different servers (full single-bot speed for two bots);
   // "8191,8192,8193,8194" = legacy one instance per bot (id_slot not forced).
   struct Backend{int port; int id_slot;};
   std::vector<Backend> ornith;
@@ -399,7 +400,7 @@ int main(){
   try{
     cfg.listen=number("MAG_AUDIT_LISTEN_PORT",8080);cfg.q4=number("MAG_MODEL_Q4_PORT",8090);cfg.iq3=number("MAG_MODEL_IQ3_PORT",8091);cfg.secondary=env("MAG_SECONDARY_MODEL","iq3");
     if(cfg.secondary!="iq3"&&cfg.secondary!="qwen"&&cfg.secondary!="ornith")throw std::runtime_error("invalid MAG_SECONDARY_MODEL (fail closed)");
-    {std::stringstream ports(env("MAG_MODEL_ORNITH_PORTS","8191:0,8191:1,8191:2,8191:3"));std::string part;
+    {std::stringstream ports(env("MAG_MODEL_ORNITH_PORTS","8191:0,8192:0,8191:1,8192:1"));std::string part;
      while(std::getline(ports,part,',')){
        auto c=part.find(':');
        Config::Backend b{std::stoi(part.substr(0,c)),c==std::string::npos?-1:std::stoi(part.substr(c+1))};

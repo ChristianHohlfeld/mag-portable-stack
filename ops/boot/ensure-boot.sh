@@ -15,10 +15,10 @@ secondary_unit=mag-llm-iq3.service
 secondary_units=()
 if [[ -r "$secondary_env" ]] &&
    grep -Fxq 'MAG_SECONDARY_MODEL=ornith' "$secondary_env"; then
-  # Ornith host: the shared server (or, after rollback.sh instances, the 4 legacy
-  # instances) owns NUMA0+1 cores; only what is active gets enabled. Never Qwen/IQ3.
-  secondary_unit=mag-llm-ornith.service
-  secondary_units=(mag-llm-ornith@1.service mag-llm-ornith@2.service mag-llm-ornith@3.service mag-llm-ornith@4.service)
+  # Ornith host: the 2 per-node servers (or, after rollback.sh instances, the 4 legacy
+  # instances) own NUMA0+1 cores; only what is active gets enabled. Never Qwen/IQ3.
+  secondary_unit=mag-llm-ornith-node@0.service
+  secondary_units=(mag-llm-ornith-node@1.service mag-llm-ornith@1.service mag-llm-ornith@2.service mag-llm-ornith@3.service mag-llm-ornith@4.service)
   systemctl disable mag-llm-iq3.service mag-llm-qwen.service >/dev/null 2>&1 || true
   log 'Ornith host: Qwen/IQ3 stay disabled for boot'
 elif [[ -r "$secondary_env" ]] &&
@@ -65,7 +65,7 @@ done
 
 # Bot VMs and their network come back on boot.
 if command -v virsh >/dev/null; then
-  if [[ ( $secondary_unit == mag-llm-qwen.service || $secondary_unit == mag-llm-ornith.service ) &&
+  if [[ ( $secondary_unit == mag-llm-qwen.service || $secondary_unit == mag-llm-ornith-node@0.service ) &&
         -r $agents_json ]] && command -v jq >/dev/null; then
     # The first two persisted agents are the active NUMA bots; PARKED agents
     # retain data but must NOT bring surplus KVM guests back on cold boot.

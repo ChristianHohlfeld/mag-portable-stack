@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Shared Ornith -> qwen (default) or -> instances (previous 4x Ornith layout, 8191-8194).
+# Ornith per-node servers (B) -> qwen (default) or -> instances (previous 4x Ornith layout, 8191-8194).
 # Only Qwen/Ornith units, gateway and room change; mag-llm and tunnels stay untouched. No files are deleted
 # except this tool's own snapshot directories after a successful rollback.
 # Usage: rollback.sh [qwen|instances]   (MAG_ORNITH_ROOTFS only for tests)
@@ -11,11 +11,12 @@ CONF=$R/etc/mag-stack/secondary-model.env
 GATE=$R/opt/mag-audit/bin/mag-audit-gateway
 GUNIT=$R/etc/systemd/system/mag-audit-gateway.service
 SNAP=$R/var/lib/mag-ornith/cutover          # Qwen -> 4x instances (older cutover)
-SNAP2=$R/var/lib/mag-ornith/cutover-shared  # -> shared server
+SNAP2=$R/var/lib/mag-ornith/cutover-numa    # -> per-node servers
 [[ $EUID == 0 || -n $R ]] || { echo 'root required' >&2; exit 4; }
 [[ $TARGET == qwen || $TARGET == instances ]] || { echo 'usage: rollback.sh [qwen|instances]' >&2; exit 4; }
 rc=0
-systemctl disable --now mag-llm-ornith.service || rc=1
+# Stop both node servers first (synchronous): legacy instances 1/2 reuse ports 8191/8192.
+systemctl disable --now mag-llm-ornith-node@0.service mag-llm-ornith-node@1.service || rc=1
 if [[ $TARGET == instances ]]; then
   # Gateway unit with one port per bot (snapshot, else the legacy port list).
   if [[ -f $SNAP2/gateway.service ]]; then

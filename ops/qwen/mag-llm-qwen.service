@@ -1,5 +1,5 @@
-# Prepared but NOT installed, enabled or started by normal MAG deploy.
-# Manual replacement for IQ3 on NUMA1, standalone after Ornith; no Q4 dependency.
+# Installed as a disabled fallback by the Ornith deploy; never auto-started with Ornith.
+# Standalone Qwen after Ornith rollback, no DeepSeek/Q4 dependency.
 [Unit]
 Description=MAG Qwen3.8 Flash Next CPU model, NUMA1
 After=network-online.target

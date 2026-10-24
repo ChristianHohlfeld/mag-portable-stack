@@ -1173,6 +1173,22 @@ class Native(unittest.TestCase):
   for call in Model.calls:
    names=[t['function']['name'] for t in call.get('tools') or []]
    self.assertNotIn('publish_frontend',names)
+ def test_10z_deleted_vm_file_not_republished(self):
+  tok=self.state.joinpath('token').read_text().strip();src='/home/bot/room/index.html'
+  ingest=lambda body:self.request('/ingest?'+urllib.parse.urlencode({'token':tok,'name':'index.html','bot':'test','src':src}),body,bridge=True,headers={'Content-Type':'application/octet-stream'})
+  with self.assertRaises(urllib.error.HTTPError) as ctx:ingest(b'<meta name="mag-token" content="'+_ui_token(self.ui).encode()+b'">')
+  self.assertEqual(ctx.exception.code,422,'saved room UI with live token must not be published')
+  f=ingest(b'<html>copy</html>');stored=f['stored']
+  rec=lambda:next(x for x in json.loads(self.state.joinpath('files.json').read_text()) if x['stored']==stored)
+  self.assertEqual((rec()['vm'],rec()['src']),('',src))
+  acc=self.state/'access.json';had=acc.read_bytes() if acc.exists() else None
+  try:self._access(['chris@github']);gone=self.request('/api/room/files/'+stored,method='DELETE',headers=self._ts('chris@github','Chris'))
+  finally:acc.write_bytes(had) if had is not None else acc.unlink(missing_ok=True)
+  self.assertTrue(rec()['owner_deleted'] and rec()['removed'],'tombstone keeps vm/src/size')
+  self.request('/api/undo/'+gone['undo'],{})
+  self.assertNotIn('owner_deleted',rec());self.assertNotIn('removed',rec())
+  cpp=(ROOT/'mag-room/native/magroom.cpp').read_text()
+  self.assertIn('if (deleted.count(path + "|" + std::to_string(size)))',cpp,'file sync skips chat-deleted unchanged sources')
  def test_11_frontend_live_contract(self):
   html=self.request('/',raw=True).decode()
   self.assertIn('id="terminal"',html)
@@ -2887,6 +2903,7 @@ class BootstrapContext(unittest.TestCase):
  """Fresh and reset bots get the versioned bootstrap context (bot_context.md)."""
  CONTEXT=(ROOT/'mag-room/native/bot_context.md').read_text()
  GERMAN='Antworte standardmaessig auf Deutsch. Schreibt der Nutzer in einer anderen\nSprache, antworte in dieser Sprache.'
+ RULES=('Ergebnis zuerst','Erst pruefen, dann melden','nachfragen nur vor unumkehrbaren','Geheimnisse (Passwoerter','Ursache diagnostizieren')
  @classmethod
  def setUpClass(cls):
   cls.tmp=tempfile.TemporaryDirectory();tmp=pathlib.Path(cls.tmp.name);cls.state=tmp/'state';cls.state.mkdir()
@@ -2915,13 +2932,15 @@ class BootstrapContext(unittest.TestCase):
   self.assertIn('Chris ist der Besitzer',self.CONTEXT)
   self.assertIn('GitHub: nur LESEN',self.CONTEXT)
   self.assertLess(len(self.CONTEXT),4096,'bootstrap context must stay token-cheap')
-  for bad in ('token','password','100.123.','192.168.','stardenburg'):
+  for bad in ('token','password','100.123.','192.168.','stardenburg','publish_frontend','ui_get','frontend_'):
    self.assertNotIn(bad,self.CONTEXT.lower())
+  for rule in self.RULES:self.assertIn(rule,self.CONTEXT)
  def test_01_fresh_bot_gets_context(self):
   b=self.request('/api/agents',{'name':'Frisch','vm':False})
   try:
    system=self._system(b['id'])
    self.assertIn(self.CONTEXT,system);self.assertIn(self.GERMAN,system)
+   for rule in self.RULES:self.assertIn(rule,system)
    self.assertLess(system.index(self.CONTEXT),system.index('\n[Erinnerungen]'))
   finally:self.request('/api/agents/'+b['id'],method='DELETE')
  def test_02_reset_bot_reprovisioned(self):
@@ -2933,8 +2952,10 @@ class BootstrapContext(unittest.TestCase):
   script=log[log.rindex('== agent9'):]
   self.assertIn('/home/bot/MAG_CONTEXT.md',script);self.assertIn('reset-ok',script)
   self.assertIn(self.GERMAN,script)
+  for rule in self.RULES:self.assertIn(rule,script)
   system=self._system('vmbot')
   self.assertIn(self.CONTEXT,system);self.assertIn(self.GERMAN,system)
+  for rule in self.RULES:self.assertIn(rule,system)
 
 class PendingSpawnResume(unittest.TestCase):
  """A room restart during a VM spawn adopts that VM instead of crashing or orphaning it."""

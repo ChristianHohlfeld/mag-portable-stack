@@ -6703,6 +6703,8 @@ static ScopedResult delete_room_file(const std::string &stored) {
     (*rec)["removed"] = (long)now_s();
     u.data = *rec;
     drop_key(u.data, "removed");
+    // Tombstone: file sync must not re-publish this unchanged VM source.
+    if (rec->find("src")) (*rec)["owner_deleted"] = true;
     save_json_array(FILES_JSON, FILES);
   }
   std::string uid = undo_commit(std::move(u));
@@ -7026,10 +7028,17 @@ static ScopedResult reset_bot_workspace(const std::string &id, bool force = fals
 static void sync_vm_files(const std::string &bot, const std::string &vm) {
   std::map<std::string, std::pair<std::string, long>> srcs;  // src -> stored,size
   std::set<std::string> known;                                // name|size
+  std::set<std::string> deleted;  // src|size deleted by the owner in the chat
   {
     std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
     for (auto &f : FILES) {
-      if (f.find("removed")) continue;
+      if (f.find("removed")) {
+        if (f.find("owner_deleted") && f.find("vm") && f.find("src") &&
+            f.find("vm")->asStr() == vm)
+          deleted.insert(f.find("src")->asStr() + "|" +
+                         std::to_string((long)f.find("size")->asNum()));
+        continue;
+      }
       known.insert(f.find("name")->asStr() + "|" +
                    std::to_string((long)f.find("size")->asNum()));
       if (f.find("vm") && f.find("src") && f.find("vm")->asStr() == vm &&
@@ -7075,6 +7084,8 @@ static void sync_vm_files(const std::string &bot, const std::string &vm) {
       }
     } else if (kind == "DIR") {
       if (srcs.count(path) || size > MAX_UPLOAD || added >= 10) continue;
+      if (deleted.count(path + "|" + std::to_string(size)))
+        continue;  // deleted in the chat, source unchanged
       if (known.count(safe_file_name(path) + "|" + std::to_string(size)))
         continue;  // e.g. fetched copy of an existing room file
       if (ingest(path)) ++added;

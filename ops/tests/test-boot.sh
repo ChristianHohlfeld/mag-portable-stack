@@ -14,6 +14,7 @@ case "$1 $2" in
   "is-enabled mag-llm-iq3.service") echo static; exit 0 ;;
   "is-enabled mag-auto-update.timer") echo disabled; exit 1 ;;
   "is-enabled mag-console-only.service") echo disabled; exit 1 ;;
+  "is-enabled mag-llm-ornith@"*) echo disabled; exit 1 ;;
 esac
 [[ $1 == is-enabled ]] && { echo enabled; exit 0; }
 exit 0
@@ -29,19 +30,39 @@ cat > "$tmp/bin/ipmitool" <<'I'
 echo "ipmitool $*" >> "$CALLS"
 I
 chmod +x "$tmp/bin/"*
-out=$(CALLS="$log" ACTIVE="mag-llm.service mag-llm-iq3.service mag-auto-update.timer mag-120.service" \
-  PATH="$tmp/bin:$PATH" bash <(sed 's/^\[\[ \$EUID == 0 \]\].*$//' "$root/ops/boot/ensure-boot.sh"))
+# Host-independent: never read the host's secondary-model.env, agents.json or /dev/ipmi*.
+run() { # $1 = secondary-model.env path, $2 = space-separated ipmi devices
+  : > "$log"
+  CALLS="$log" ACTIVE="mag-llm.service mag-llm-iq3.service mag-auto-update.timer mag-120.service $ORNITH" \
+    MAG_SECONDARY_MODEL_ENV="$1" MAG_AGENTS_JSON="$tmp/none.json" MAG_IPMI_DEVICES="$2" \
+    PATH="$tmp/bin:$PATH" bash <(sed 's/^\[\[ \$EUID == 0 \]\].*$//' "$root/ops/boot/ensure-boot.sh")
+}
+common() {
+  grep -Fxq 'systemctl enable mag-auto-update.timer' "$log"
+  if grep -Eq 'systemctl enable mag-llm.service|mag-console-only' "$log"; then exit 1; fi
+  if grep -Eq 'systemctl (start|stop|restart|reload|try-restart|kill|daemon-reload)|--now' "$log"; then exit 1; fi
+  grep -Fxq 'virsh -q autostart magbot-agent1' "$log"
+  if grep -Fq 'autostart other-vm' "$log"; then exit 1; fi
+}
+ornith_units="mag-llm-ornith@1.service mag-llm-ornith@2.service mag-llm-ornith@3.service mag-llm-ornith@4.service"
+
+# 1) No secondary-model.env, no BMC: IQ3 host.
+out=$(ORNITH="" run "$tmp/missing.env" "$tmp/no-ipmi0")
 grep -Fxq 'systemctl add-wants multi-user.target mag-llm-iq3.service' "$log"
-grep -Fxq 'systemctl enable mag-auto-update.timer' "$log"
-! grep -Eq 'systemctl enable mag-llm.service|mag-console-only' "$log"
-! grep -Eq 'systemctl (start|stop|restart|reload|try-restart|kill|daemon-reload)|--now' "$log"
-grep -Fxq 'virsh -q autostart magbot-agent1' "$log"
-! grep -Fq 'autostart other-vm' "$log"
-if grep -Fq 'BMC power policy' <<<"$out"; then
-  grep -Fq 'ipmitool chassis policy always-on' "$log"
-else
-  grep -Fq 'BIOS' <<<"$out"
-fi
+common
+grep -Fq 'BIOS' <<<"$out"
+if grep -q '^ipmitool' "$log"; then exit 1; fi
+
+# 2) Ornith x4 host with a BMC: 4 ornith units for boot, never Qwen/IQ3.
+echo 'MAG_SECONDARY_MODEL=ornith' > "$tmp/ornith.env"; touch "$tmp/ipmi0"
+out=$(ORNITH="$ornith_units" run "$tmp/ornith.env" "$tmp/ipmi0")
+for u in $ornith_units; do grep -Fxq "systemctl enable $u" "$log" || exit 1; done
+if grep -Eq 'systemctl (enable|add-wants multi-user.target) mag-llm-(iq3|qwen)' "$log"; then exit 1; fi
+grep -Fxq 'systemctl disable mag-llm-iq3.service mag-llm-qwen.service' "$log"
+common
+grep -Fq 'Ornith x4 host' <<<"$out"
+grep -Fq 'BMC power policy' <<<"$out"
+grep -Fxq 'ipmitool chassis policy always-on' "$log"
 grep -Eq '^WantedBy=multi-user.target' "$root/ops/deepseek/mag-llm-iq3.service"
 grep -Fq 'ops/boot/ensure-boot.sh' "$root/ops/auto-update/apply.sh"
 grep -Fq 'PHASE boot' <<<"$(bash "$root/ops/update.sh" --dry-run)"

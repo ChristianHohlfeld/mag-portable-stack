@@ -14,7 +14,7 @@ grep -Fxq 'Environment=MAG_ROOM_MODEL=ornith-1.5-35b-a3b' ops/mag-120.d/20-room-
 grep -Fxq 'MAG_ROOM_SINGLE_BOT=' mag-room/.env.example
 grep -Fxq 'MAG_ROOM_MODEL=ornith-1.5-35b-a3b' mag-room/.env.example
 grep -Fxq 'Environment=MAG_ROOM_DUAL_NUMA=1' ops/mag-120.d/30-dual-numa.conf
-grep -Fq 'MAG_ROOM_SINGLE_BOT.clear();' mag-room/native/magroom.cpp
+grep -Fq 'SINGLE_BOT.clear();' mag-room/native/magroom.cpp
 grep -Fq 'MAG_SECONDARY_MODEL=ornith' ops/ornith/cutover.sh
 grep -Fq 'mag-llm-ornith-node@0.service mag-llm-ornith-node@1.service' ops/ornith/cutover.sh
 grep -Fq 'MAG_SECONDARY_MODEL=qwen' ops/ornith/rollback.sh

@@ -6386,8 +6386,11 @@ static void lane_turn(Lane *lane, uint64_t run, std::vector<std::string> ids,
     for (auto &id : ids)
       if (lane->cancelled_bots.count(id)) group->cancelled = true;
   }
-  lane_finish(lane, run, owner_ran, more, progress, epoch, generation);
+  // Queue an optional reflection BEFORE marking the last lane idle. Otherwise
+  // clients/tests can see a transient idle state between rounds and race the
+  // scheduler (this also occurred on the previous Ornith baseline).
   group_done(group);
+  lane_finish(lane, run, owner_ran, more, progress, epoch, generation);
 }
 static void lane_job(Lane *lane, uint64_t run, JobRun job) {
   {

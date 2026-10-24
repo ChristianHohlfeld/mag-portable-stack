@@ -51,6 +51,8 @@ grep -Fq 'mag-bot:host' "$r/botrunner.yaml"
 grep -Fq 'generate-runner-token --scope "$org"' "$r/bot-runners.sh"
 ! grep -Eq 'register .*--token[ =]|--token "\$' "$r/install.sh" "$r/bot-runners.sh"
 grep -Fq -- '--token-file /dev/stdin' "$r/bot-runners.sh"
+# The validity check's Declare must keep the label names the daemon declared.
+grep -Fq '"labels":["'"'"'"${LABELS%%:*}"'"'"'"]' "$r/bot-runners.sh"
 # The host runner (deploy rights) only on explicit owner opt-in.
 grep -Fq '/etc/mag-stack/host-runner.owner' "$r/install.sh"
 grep -Fq 'bots-|magbot-|magrun-' "$r/install.sh"

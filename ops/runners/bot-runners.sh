@@ -51,12 +51,15 @@ tmp=$(mktemp -d /run/mag-botrunner.XXXXXXXX)
 trap 'rm -rf -- "$tmp"' EXIT
 
 # valid DIR -> 0 accepted, 1 rejected by Gitea, 2 unknown (Gitea unreachable).
+# Declare overwrites the runner's labels in Gitea, so it must send what the
+# daemon declares: label names without the `:host` schema. A raw "mag-bot:host"
+# left the running daemon unmatched for `runs-on: mag-bot` (jobs stay queued).
 valid() {
   jq -er --arg i "$instance" 'select(.address == $i) | "x-runner-uuid: \(.uuid)\nx-runner-token: \(.token)"' \
     "$1/.runner" > "$tmp/hdr" 2>/dev/null || return 1
   local code
   code=$(curl -sS -o "$tmp/out" -w '%{http_code}' --max-time 10 -H @"$tmp/hdr" -H 'Content-Type: application/json' \
-    --data '{"version":"'"$ver"'","labels":["'"$LABELS"'"]}' "$instance/api/actions/runner.v1.RunnerService/Declare" 2>/dev/null) || code=000
+    --data '{"version":"'"$ver"'","labels":["'"${LABELS%%:*}"'"]}' "$instance/api/actions/runner.v1.RunnerService/Declare" 2>/dev/null) || code=000
   rm -f "$tmp/hdr"
   [[ $code == 200 ]] && return 0
   grep -Eq 'Unauthenticated|unregistered runner' "$tmp/out" 2>/dev/null && return 1

@@ -1319,9 +1319,21 @@ function paintApprovals(node,botId){
  node.querySelectorAll('.mcp-approve').forEach(el=>{if(!mine.some(a=>a.id===el.dataset.id))el.remove()});
  const content=node.querySelector('.content');if(!content)return;
  for(const a of mine)if(!node.querySelector('.mcp-approve[data-id="'+CSS.escape(a.id)+'"]'))content.before(approvalCard(a))}
+// A live reply keeps the slot it got when it first appeared: later events of
+// any bot only update in place, they never move one reply below another.
+let streamSeq=0;
+function liveNode(botId,s){
+ if(!s.seq)s.seq=++streamSeq;
+ const node=append({role:'assistant',name:s.name,content:s.text||''},false);
+ node.dataset.liveBot=botId;node.dataset.liveSeq=String(s.seq);
+ const inner=node.parentNode;
+ for(const old of inner.querySelectorAll('.message[data-live-bot]'))if(old!==node&&old.dataset.liveBot===botId)old.remove();
+ const after=[...inner.querySelectorAll('.message[data-live-bot]')].find(x=>x!==node&&+x.dataset.liveSeq>s.seq);
+ if(after)inner.insertBefore(node,after);
+ return node}
 function updateStream(botId,immediate=false){
  const s=streams[botId];if(!s)return;
- if(!s.node||!s.node.isConnected){s.node=append({role:'assistant',name:s.name,content:s.text||''},false);s.floor=0}
+ if(!s.node||!s.node.isConnected){s.node=liveNode(botId,s);s.floor=0}
  s.node.classList.add('work-live');
  streamControls();
  const update=()=>{
@@ -1345,8 +1357,8 @@ function updateStream(botId,immediate=false){
 }
 function mergeActivity(a){
  if(!a||!a.on||!a.bot)return;
- const prev=streams[a.bot]||{};
- streams[a.bot]={name:a.name||prev.name||'Bot',text:prev.text||'',phase:a.phase||'read',label:a.label||'Liest Verlauf',steps:Array.isArray(a.steps)?a.steps:(prev.steps||[]),progress:(+a.total>0)?{processed:+a.processed||0,total:+a.total,cache:+a.cache||0}:null,error:a.error||'',started:(a.started?a.started*1000:prev.started)||Date.now(),lastEvent:(a.last?a.last*1000:prev.lastEvent)||Date.now(),node:null,frame:0,reasoning:prev.reasoning||'',tools:prev.tools||[],hung:false,reading:a.reading||null};
+ const prev=streams[a.bot]||{};if(prev.frame)cancelAnimationFrame(prev.frame);
+ streams[a.bot]={name:a.name||prev.name||'Bot',text:prev.text||'',phase:a.phase||'read',label:a.label||'Liest Verlauf',steps:Array.isArray(a.steps)?a.steps:(prev.steps||[]),progress:(+a.total>0)?{processed:+a.processed||0,total:+a.total,cache:+a.cache||0}:null,error:a.error||'',started:(a.started?a.started*1000:prev.started)||Date.now(),lastEvent:(a.last?a.last*1000:prev.lastEvent)||Date.now(),node:prev.node||null,seq:prev.seq,floor:prev.floor,frame:0,reasoning:prev.reasoning||'',tools:prev.tools||[],hung:false,reading:a.reading||null};
 }
 function render(){
  const area=$('conversation'),follow=stickToBottom||!rendered,oldScroll=area.scrollTop,prevH=area.scrollHeight;rendered=true;
@@ -1354,7 +1366,8 @@ function render(){
  area.replaceChildren();const inner=document.createElement('div');inner.className='conversation-inner';area.append(inner);
  if(!state.room.length){inner.innerHTML='<div class="empty"><div class="empty-symbol">✳</div><h1>Worum geht es?</h1><p>Eine Frage, eine Notiz oder eine Aufgabe für die Bots. Alles bleibt auf deinem Server.</p></div>'}
  state.room.forEach((m,i)=>append(m,false,traceForMessage(m,i),i));
- for(const [botId,s] of Object.entries(streams)){s.node=append({role:'assistant',name:s.name,content:s.text||''},false);updateStream(botId,true)}
+ for(const s of Object.values(streams).filter(x=>!x.seq).sort((x,y)=>(x.started||0)-(y.started||0)))s.seq=++streamSeq;
+ for(const [botId,s] of Object.entries(streams).sort((x,y)=>x[1].seq-y[1].seq)){s.node=liveNode(botId,s);updateStream(botId,true)}
  if(follow){area.scrollTop=area.scrollHeight;stickToBottom=true;newBelow=false}
  else{area.scrollTop=Math.min(oldScroll,Math.max(0,area.scrollHeight-area.clientHeight));if(area.scrollHeight>prevH+2)newBelow=true}
  lastScrollTop=area.scrollTop;watchInner(inner);
@@ -2643,7 +2656,7 @@ events.onmessage=e=>{
   if(event.type==='browser_action'){browserOverlay(event);return}
   if(event.type==='bot_start'){
    const prev=streams[id];
-   streams[id]={name:event.name,text:'',status:'Liest Verlauf',label:'Liest Verlauf',phase:'read',steps:[],node:prev?.node||null,frame:0,started:Date.now(),lastEvent:Date.now(),reasoning:'',tools:[],error:'',hung:false,progress:null};
+   streams[id]={name:event.name,text:'',status:'Liest Verlauf',label:'Liest Verlauf',phase:'read',steps:[],node:prev?.node||null,seq:prev?.seq,frame:0,started:Date.now(),lastEvent:Date.now(),reasoning:'',tools:[],error:'',hung:false,progress:null};
    updateStream(id,true);busyBots.add(id);renderLanes();
   }else if(event.type==='step'){
    let s=streams[id];

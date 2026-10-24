@@ -1,5 +1,14 @@
 # Qwen3.8 Flash Next (uncensored) — staged NUMA1 replacement
 
+> **Stand Oktober 2026:** Dieses Dokument enthält historische Q4/IQ3-Cutover-Schritte,
+> die nicht mehr ausgeführt werden dürfen. Qwen ist nun der unabhängige
+> Operator-Rollback für die vier Ornith-Bots:
+> `sudo bash ops/ornith/rollback.sh qwen`.
+> Dafür müssen der gepinnte Qwen-GGUF, der passende Runtime-Build und
+> ausreichende freie NUMA1-Ressourcen vorhanden sein (Qwen-Preflight: 150 GiB).
+> Kein Q4, IQ3 oder DeepSeek-Dienst wird dabei reaktiviert.
+
+
 Status: **code only**. PR/green/deploy does **not** stop IQ3, install/start Qwen,
 restart Q4, or select a new model in MAG. Default remains IQ3 at :8091,
 DeepSeek Q4 stays warm on NUMA0 :8090.

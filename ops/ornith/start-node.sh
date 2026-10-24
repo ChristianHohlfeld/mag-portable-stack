@@ -23,11 +23,11 @@ systemctl is-active --quiet mag-llm-iq3.service && fail 'IQ3 still running on NU
 for n in 1 2 3 4; do
   systemctl is-active --quiet "mag-llm-ornith@$n.service" && fail "legacy instance $n still running"
 done
-# ~21.8 GiB RSS per server measured (mlock, 43.6 GiB for both) + 2 GiB --cache-ram,
-# all on this node (--membind): require 24 GiB reclaimable on node N.
+# ~23.7 GiB observed RSS per server + cache/KV headroom. MemoryHigh=30G,
+# MemoryMax=34G: require 34GiB reclaimable per NUMA node before starting.
 read -r free file shmem < <(awk '$3=="MemFree:"{f=$4} $3=="FilePages:"{p=$4} $3=="Shmem:"{s=$4} END{print f+0,p+0,s+0}' "/sys/devices/system/node/node$NODE/meminfo")
 usable=$((free + (file > shmem ? file-shmem : 0)))
-(( usable >= 24*1024*1024 )) || fail "NUMA$NODE reclaimable RAM below 24GiB"
+(( usable >= 34*1024*1024 )) || fail "NUMA$NODE reclaimable RAM below 34GiB"
 bash /usr/local/lib/mag-ornith/verify-model.sh || fail 'model SHA verification failed'
 # 65536 = 2 slots x 32k context (same per-bot window as the old instances).
 exec /usr/bin/numactl --cpunodebind="$NODE" --membind="$NODE" --physcpubind="$CPUS" "$BIN" \

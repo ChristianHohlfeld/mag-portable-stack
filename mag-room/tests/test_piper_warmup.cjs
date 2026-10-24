@@ -8,7 +8,7 @@ const vm = require('vm');
 const root = path.resolve(__dirname, '../..');
 const source = fs.readFileSync(path.join(root, 'mag-room/static/message-audio.js'), 'utf8');
 
-function setup(warmOk) {
+function setup(warmOk, opts = {}) {
   const spoken = [], played = [], posted = [], events = new Map(), buttons = [], timers = [];
   let workerRef = null;
   class FakeWorker {
@@ -31,6 +31,7 @@ function setup(warmOk) {
   const voices = [
     {lang: 'de-DE', localService: true, name: 'eSpeak German', voiceURI: 'espeak-ng de'},
     {lang: 'de-DE', localService: false, name: 'Microsoft Katja Online (Natural) - German'},
+    {lang: 'en-US', localService: false, name: 'Microsoft Aria Online (Natural) - English'},
   ];
   const window = {
     speechSynthesis: {cancel() {}, speak(u) { spoken.push(u); }, getVoices() { return voices; }},
@@ -41,11 +42,11 @@ function setup(warmOk) {
   const document = {
     readyState: 'loading',
     querySelectorAll() { return buttons; },
-    getElementById(id) { return id === 'language' ? {value: 'de'} : null; },
+    getElementById(id) { return id === 'language' ? {value: opts.language || 'de'} : null; },
     dispatchEvent() {},
   };
   const fetch = async () => ({ok: true, json: async () => ({dir: 'tts-x', voices: [{id: 'thorsten', label: 'Thorsten', model: 'de_DE-thorsten-high.onnx'}]})});
-  vm.runInNewContext(source, {window, document, navigator: {language: 'de-DE'}, Worker: FakeWorker, fetch,
+  vm.runInNewContext(source, {window, document, navigator: {language: opts.navLang || 'de-DE'}, Worker: FakeWorker, fetch,
     CustomEvent: class {}, localStorage: {getItem() { return null; }, setItem() {}}, setTimeout: (f) => timers.push(f),
     SpeechSynthesisUtterance: window.SpeechSynthesisUtterance});
   function makeButton() {
@@ -95,5 +96,35 @@ const tick = () => new Promise(r => setTimeout(r, 0));
   for (let i = 0; i < 6; i++) await tick();
   assert.equal(t.spoken.length, 1, 'system fallback only after Piper failed');
   assert(/Natural/.test(t.spoken[0].voice.name), 'neural system voice preferred');
+  // 4) English device, auto setting: German text still uses Piper Thorsten
+  t = setup(true, {language: 'auto', navLang: 'en-US'});
+  t.events.get('load')(); t.timers.shift()();
+  await tick(); await tick();
+  assert.deepEqual(t.posted.map(m => m.model), ['de_DE-thorsten-high.onnx'], 'Thorsten warmed on an English device');
+  const read3 = t.window.magMessageAudio;
+  const d = t.makeButton();
+  read3.attach(d, 'Ich habe die Seite geöffnet und das Ergebnis ist da', 'voice-3');
+  d.onclick();
+  t.worker().finishWarm();
+  for (let i = 0; i < 6; i++) await tick();
+  assert.equal(t.spoken.length, 0, 'no English system voice for German text');
+  assert(t.posted.some(m => m.type === 'speak' && m.model === 'de_DE-thorsten-high.onnx'), 'Piper speaks German text');
+  // German without umlauts, still German by default
+  read3.stop?.();
+  const e = t.makeButton();
+  read3.attach(e, 'Hallo Chris', 'voice-4');
+  e.onclick();
+  for (let i = 0; i < 6; i++) await tick();
+  assert.equal(t.spoken.length, 0, 'ambiguous text defaults to German/Piper');
+
+  // 5) clearly English text in auto -> en-US system voice
+  t = setup(true, {language: 'auto', navLang: 'de-DE'});
+  const read4 = t.window.magMessageAudio;
+  const f = t.makeButton();
+  read4.attach(f, 'The page is open and you can see the result in the browser', 'voice-5');
+  f.onclick();
+  assert.equal(t.spoken.length, 1, 'English text read by the system voice');
+  assert.equal(t.spoken[0].lang, 'en-US');
+  assert(!t.posted.some(m => m.type === 'speak'), 'Piper not used for English text');
   console.log('MAG Piper warm-up: background load, loading state, Piper playback, neural-only fallback PASS');
 })().catch(e => { console.error(e); process.exit(1); });

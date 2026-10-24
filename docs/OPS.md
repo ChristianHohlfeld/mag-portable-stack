@@ -21,3 +21,42 @@ Old Caddy removal is gated on `/var/lib/mag-private-cutover/confirmed`. Do not r
 
 ## Quality gates
 Run native tests, `test_private_nginx.py` (mock upstream + real TLS nginx), PWA/paste emulation at 375/390/412 px, gitleaks, Go gateway tests, nginx syntax and deployed Owner/Guest/fail-closed acceptance tests. CI cannot inspect MAG's actual TLS/network/device setup. Never restart the warmed `mag-llm` process during this release.
+
+## Bot VMs: add, delete, reset (`ops/magbot`)
+
+One CLI owns the whole lifecycle of a bot VM. Everything a bot owns is named
+`magbot-<name>`: libvirt domain, `$MAGBOT_ROOT/magbot-<name>/` (overlay
+`magbot-<name>.qcow2` backed by the read-only `base/golden.qcow2`, NoCloud
+seed `magbot-<name>-seed.iso`, `metadata.json`), systemd units
+`magbot-<name>[-*]`, and the restricted Gitea user `magbot-<name>`.
+
+    sudo ops/magbot create <name>   # clean VM from golden; atomic
+    sudo ops/magbot verify <name>   # hard check, non-zero on any failure
+    sudo ops/magbot reset  <name>   # delete + create: memory/workspace wiped
+    sudo ops/magbot delete <name>   # sweep by prefix; idempotent, no leftovers
+    sudo ops/magbot list
+
+- `create` builds the golden image with `ops/vm/build-golden.sh` if it is
+  missing, creates the overlay (the golden is never written), generates the
+  Gitea credential and writes it, `/home/bot/MAG_CONTEXT.md`
+  (`mag-room/native/bot_context.md`) and `/etc/magbot/llm.env` into the seed
+  ISO (root:kvm 0640; credentials are never printed), boots, waits for
+  cloud-init and runs `verify`. Any failure rolls back with a full `delete`
+  sweep, so a half-created bot cannot remain. Leftovers found before a create
+  are swept first.
+- `verify` on a present bot: metadata `ready`, domain running, overlay backed
+  by the read-only golden, cloud-init done, `MAG_CONTEXT.md` present, LLM
+  endpoint reachable from the guest (`MAGBOT_SKIP_LLM=1` skips the last). On
+  an absent bot: nothing with the prefix remains.
+- create/delete/reset run as transient unit `magbot-<name>-job` (follow with
+  `journalctl -u magbot-<name>-job`); `MAGBOT_FOREGROUND=1` runs inline. A
+  per-bot flock serialises operations on one name, a global flock covers the
+  golden build/admission. While a job runs, a second one for the same name
+  fails fast because the transient unit already exists.
+- Site settings go in `/etc/magbot/magbot.env` (`MAGBOT_LLM_URL`,
+  `MAGBOT_VCPUS`, `MAGBOT_RAM_GIB`, `MAGBOT_DISK_GIB`, `MAGBOT_NETWORK`,
+  `MAGBOT_GITEA=none` on hosts without Gitea).
+- Legacy room bots `agent<N>` are still managed by `magbot-native` and the
+  room buttons; `ops/magbot` refuses those names until they are migrated.
+- Tests: `bash ops/tests/test-magbot.sh` (fake virsh/qemu-img/cloud-localds,
+  no KVM). `FAIL_AT=<step>` injects a failure after a create step.

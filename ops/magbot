@@ -1,0 +1,399 @@
+#!/usr/bin/env bash
+# magbot: atomic lifecycle for MAG bot VMs.
+#
+#   magbot create <name>   golden image + magbot-<name> overlay + NoCloud seed,
+#                          boot, wait for cloud-init, verify; any failure rolls
+#                          back with a full delete sweep (never a half bot)
+#   magbot delete <name>   sweep everything prefixed magbot-<name>; idempotent
+#   magbot reset  <name>   delete + create (memory and workspace are wiped)
+#   magbot verify <name>   hard check; for an absent bot: no leftovers by prefix
+#   magbot list            bots by prefix (domains and directories)
+#
+# Everything a bot owns is named magbot-<name>: libvirt domain, directory
+# $MAGBOT_ROOT/magbot-<name>/ (overlay magbot-<name>.qcow2, seed
+# magbot-<name>-seed.iso, metadata.json), systemd units magbot-<name>[-*],
+# the Gitea user magbot-<name> and libvirt network entries mentioning it.
+# The golden image is the read-only backing file and is never written.
+# Legacy room bots (agent<N>) stay on the old magbot-native path until they
+# are migrated; this tool refuses those names unless MAGBOT_ALLOW_LEGACY=1.
+#
+# create/delete/reset run as transient unit magbot-<name>-job (systemd-run)
+# unless MAGBOT_FOREGROUND=1. A per-bot flock serialises operations on one
+# name; a global flock covers golden-image build and admission.
+# Credentials are generated here, written only into the 0640 seed ISO and
+# never printed. FAIL_AT=<step> injects a failure after <step> (tests).
+set -euo pipefail
+umask 077
+export LC_ALL=C
+
+SELF=$(readlink -f "$0")
+HERE=$(dirname -- "$SELF")
+ENV_FILE=${MAGBOT_ENV_FILE:-/etc/magbot/magbot.env}
+# Root-owned site configuration (MAGBOT_LLM_URL, sizes, ...).
+if [[ -r $ENV_FILE ]]; then
+  # shellcheck disable=SC1090
+  source "$ENV_FILE"
+fi
+MAGBOT_ROOT=${MAGBOT_ROOT:-/var/lib/libvirt/images/magbot}
+GOLDEN=${MAGBOT_GOLDEN:-$MAGBOT_ROOT/base/golden.qcow2}
+BUILD_GOLDEN=${MAGBOT_BUILD_GOLDEN:-$HERE/vm/build-golden.sh}
+LOCK_DIR=${MAGBOT_LOCK_DIR:-/run/lock/magbot}
+LOCK_TIMEOUT=${MAGBOT_LOCK_TIMEOUT:-900}
+UNIT_DIR=${MAGBOT_UNIT_DIR:-/etc/systemd/system}
+NETWORK=${MAGBOT_NETWORK:-default}
+LLM_URL=${MAGBOT_LLM_URL:-http://192.168.122.1:8090/v1}
+GIT_URL=${MAGBOT_GIT_URL:-http://192.168.122.1:3001}
+CONTEXT_MD=${MAGBOT_CONTEXT:-}
+if [[ -z $CONTEXT_MD ]]; then
+  for c in "$HERE/../mag-room/native/bot_context.md" /usr/local/share/magbot/bot_context.md; do
+    [[ -r $c ]] && { CONTEXT_MD=$c; break; }
+  done
+fi
+VCPUS=${MAGBOT_VCPUS:-2}
+RAM_GIB=${MAGBOT_RAM_GIB:-4}
+DISK_GIB=${MAGBOT_DISK_GIB:-20}
+DISK_GROUP=${MAGBOT_DISK_GROUP-kvm}
+DISK_BYTES_SEC=${MAGBOT_DISK_BYTES_SEC:-40000000}
+DISK_IOPS_SEC=${MAGBOT_DISK_IOPS_SEC:-400}
+BOOT_TIMEOUT=${MAGBOT_BOOT_TIMEOUT:-600}
+POLL=${MAGBOT_POLL:-5}
+# "none" disables the Gitea account (hosts without Gitea).
+GITEA=${MAGBOT_GITEA:-/usr/sbin/runuser -u git -- /usr/local/bin/gitea --config /etc/gitea/app.ini}
+GITEA_RIGHTS=${MAGBOT_GITEA_RIGHTS:-/usr/local/sbin/mag-gitea-bot-rights}
+SKIP_LLM=${MAGBOT_SKIP_LLM:-0}
+# FAIL_AT steps, in order: lock golden dir overlay gitea seed define tune boot verify
+
+die() { echo "magbot: $*" >&2; exit 1; }
+log() { echo "magbot: $*" >&2; }
+usage() { echo "Usage: magbot create|delete|reset|verify <name> | magbot list" >&2; exit 2; }
+virsh_() { virsh -c qemu:///system "$@"; }
+dom_exists() { virsh_ dominfo "$DOM" >/dev/null 2>&1; }
+
+valid_name() {
+  [[ $1 =~ ^[a-z][a-z0-9-]{0,22}$ && $1 != *- ]] || die "invalid name '$1' (a-z0-9-, max 23, starts with a letter)"
+  if [[ $1 =~ ^agent[0-9]+$ && ${MAGBOT_ALLOW_LEGACY:-0} != 1 ]]; then
+    die "'$1' is a legacy room bot managed by magbot-native; not handled here yet"
+  fi
+}
+setup_name() {
+  NAME=$1; valid_name "$NAME"
+  DOM=magbot-$NAME
+  DIR=$MAGBOT_ROOT/$DOM
+  OVERLAY=$DIR/$DOM.qcow2
+  SEED=$DIR/$DOM-seed.iso
+  META=$DIR/metadata.json
+}
+maybe_fail() { if [[ ${FAIL_AT:-} == "$1" ]]; then die "injected failure after step '$1'"; fi; }
+
+lock_fd() { # <fd-var> <file>: open and flock with timeout
+  mkdir -p "$LOCK_DIR"
+  local fd
+  exec {fd}>"$2"
+  flock -w "$LOCK_TIMEOUT" "$fd" || die "timed out waiting for lock $2"
+  printf -v "$1" %s "$fd"
+}
+
+json_str() { local s=${1//\\/\\\\}; s=${s//\"/\\\"}; printf '"%s"' "$s"; }
+# Run a command in the guest via qemu-guest-agent; returns its exit code
+# (124 timeout, 125 agent unavailable). Never pass secrets here.
+guest_run() {
+  local path=$1 args="" a out pid st code i
+  shift
+  for a in "$@"; do args+="${args:+,}$(json_str "$a")"; done
+  out=$(virsh_ qemu-agent-command "$DOM" "{\"execute\":\"guest-exec\",\"arguments\":{\"path\":$(json_str "$path"),\"arg\":[$args],\"capture-output\":true}}" --timeout 10 2>/dev/null) || return 125
+  pid=$(grep -o '"pid":[0-9]*' <<<"$out" | cut -d: -f2) || true
+  [[ -n $pid ]] || return 125
+  for ((i = 0; i < 120; i++)); do
+    st=$(virsh_ qemu-agent-command "$DOM" "{\"execute\":\"guest-exec-status\",\"arguments\":{\"pid\":$pid}}" --timeout 10 2>/dev/null) || return 125
+    if grep -q '"exited":true' <<<"$st"; then
+      code=$(grep -o '"exitcode":[0-9]*' <<<"$st" | cut -d: -f2) || true
+      return "${code:-125}"
+    fi
+    sleep 0.5
+  done
+  return 124
+}
+
+gitea_enabled() { [[ $GITEA != none ]]; }
+gitea() { local -a g; read -r -a g <<<"$GITEA"; "${g[@]}" admin user "$@"; }
+gitea_has_user() { # 0 yes, 1 no, 2 cannot tell
+  local out
+  out=$(gitea list 2>/dev/null) || return 2
+  awk -v u="$DOM" 'NR>1 && $2==u {f=1} END {exit !f}' <<<"$out"
+}
+
+# Prints one line per leftover owned by magbot-<name>; empty = clean.
+leftovers() {
+  dom_exists && echo "libvirt domain $DOM"
+  [[ -e $DIR || -L $DIR ]] && echo "directory $DIR"
+  local u
+  for u in "$UNIT_DIR/$DOM".service "$UNIT_DIR/$DOM"-*.service "$UNIT_DIR/$DOM"-*.timer; do
+    [[ -e $u || -L $u ]] && echo "systemd unit $u"
+  done
+  if virsh_ net-dumpxml "$NETWORK" 2>/dev/null | grep -q "['\"]${DOM}['\"]"; then
+    echo "network $NETWORK entry $DOM"
+  fi
+  if gitea_enabled; then
+    local rc=0
+    gitea_has_user || rc=$?
+    case $rc in 0) echo "gitea user $DOM" ;; 2) echo "gitea user $DOM (state unknown: gitea list failed)" ;; esac
+  fi
+  return 0
+}
+
+# Remove everything prefixed magbot-<name>. Idempotent; keeps going past
+# individual failures and fails only if something remains.
+sweep() {
+  local u base own=${MAGBOT_JOB_UNIT:-}
+  for u in "$UNIT_DIR/$DOM".service "$UNIT_DIR/$DOM"-*.service "$UNIT_DIR/$DOM"-*.timer; do
+    [[ -e $u || -L $u ]] || continue
+    base=$(basename "$u")
+    [[ $base == "$own" ]] && continue
+    systemctl disable --now "$base" >/dev/null 2>&1 || log "WARN: could not stop $base"
+    rm -f -- "$u"
+  done
+  systemctl daemon-reload >/dev/null 2>&1 || true
+  if dom_exists; then
+    case $(virsh_ domstate "$DOM" 2>/dev/null) in
+      running*|paused*|idle*|"in shutdown"*) virsh_ destroy "$DOM" >/dev/null 2>&1 || true ;;
+    esac
+    virsh_ undefine "$DOM" --nvram >/dev/null 2>&1 || virsh_ undefine "$DOM" >/dev/null 2>&1 || true
+  fi
+  local xml line
+  if xml=$(virsh_ net-dumpxml "$NETWORK" 2>/dev/null); then
+    while IFS= read -r line; do
+      virsh_ net-update "$NETWORK" delete ip-dhcp-host "$line" --live --config >/dev/null 2>&1 || true
+    done < <(grep -o "<host [^>]*name=['\"]${DOM}['\"][^>]*/>" <<<"$xml" || true)
+  fi
+  if gitea_enabled; then
+    local rc=0
+    gitea_has_user || rc=$?
+    if ((rc == 0)); then gitea delete --username "$DOM" --purge >/dev/null 2>&1 || log "WARN: gitea delete $DOM failed"; fi
+  fi
+  if [[ -e $DIR || -L $DIR ]]; then
+    # Never follow a symlink out of the bot root; never touch the golden image.
+    [[ $(readlink -f "$GOLDEN") != "$(readlink -f "$DIR")"/* ]] || die "refusing: golden image inside $DIR"
+    rm -rf --one-file-system -- "$DIR"
+  fi
+  local left
+  left=$(leftovers)
+  if [[ -n $left ]]; then
+    log "leftovers after delete of $DOM:"; printf '  %s\n' "$left" >&2
+    return 1
+  fi
+}
+
+meta_state() { [[ -r $META ]] && sed -n 's/.*"state": *"\([a-z]*\)".*/\1/p' "$META" | head -n1; }
+write_meta() { # <state>
+  local tmp=$META.tmp
+  printf '{"id": "%s", "domain": "%s", "vcpus": %s, "ram_gib": %s, "disk_gib": %s, "golden": "%s", "llm_url": "%s", "created_at": %s, "state": "%s"}\n' \
+    "$NAME" "$DOM" "$VCPUS" "$RAM_GIB" "$DISK_GIB" "$GOLDEN" "$LLM_URL" "${CREATED_AT:-$(date +%s)}" "$1" >"$tmp"
+  mv -f -- "$tmp" "$META"
+}
+
+golden_ok() {
+  [[ -f $GOLDEN && ! -L $GOLDEN && -s $GOLDEN ]] || return 1
+  # Read-only for everyone: overlays must never write through.
+  [[ $(( 8#$(stat -c %a "$GOLDEN") & 8#222 )) == 0 ]]
+}
+
+check_present() { # hard checks for an existing bot; prints failures
+  local fail=0 st backing
+  [[ $(meta_state) == ready ]] || { echo "FAIL metadata state is '$(meta_state)' (want ready)"; fail=1; }
+  st=$(virsh_ domstate "$DOM" 2>/dev/null || true)
+  [[ $st == running* ]] || { echo "FAIL domain $DOM state '${st:-missing}' (want running)"; fail=1; }
+  golden_ok || { echo "FAIL golden image missing or writable: $GOLDEN"; fail=1; }
+  backing=$(qemu-img info --output=json "$OVERLAY" 2>/dev/null | sed -n 's/.*"backing-filename": *"\([^"]*\)".*/\1/p' | head -n1)
+  [[ $backing == "$GOLDEN" ]] || { echo "FAIL overlay backing '${backing:-none}' is not $GOLDEN"; fail=1; }
+  [[ -f $SEED ]] || { echo "FAIL seed ISO missing"; fail=1; }
+  if ((fail == 0)); then
+    guest_run /usr/bin/cloud-init status || { echo "FAIL cloud-init not done in guest"; fail=1; }
+    guest_run /usr/bin/test -s /home/bot/MAG_CONTEXT.md || { echo "FAIL /home/bot/MAG_CONTEXT.md missing in guest"; fail=1; }
+    if [[ $SKIP_LLM != 1 ]]; then
+      guest_run /usr/bin/curl -fsS -m 10 -o /dev/null "${LLM_URL%/}/models" || { echo "FAIL LLM endpoint $LLM_URL unreachable from guest"; fail=1; }
+    fi
+  fi
+  return "$fail"
+}
+
+write_seed() {
+  local pass=$1 user_data=$DIR/user-data meta_data=$DIR/meta-data net=$DIR/network-config
+  local ctx creds access llm
+  ctx=$(base64 -w0 <"$CONTEXT_MD")
+  llm=$(printf 'MAG_LLM_URL=%s\n' "$LLM_URL" | base64 -w0)
+  {
+    printf '#cloud-config\nhostname: %s\nssh_deletekeys: true\nssh_genkeytypes: [rsa, ecdsa, ed25519]\n' "$DOM"
+    printf 'users:\n  - name: bot\n    shell: /bin/bash\n    lock_passwd: true\n    sudo: false\n'
+    printf 'write_files:\n'
+    printf '  - path: /home/bot/MAG_CONTEXT.md\n    owner: bot:bot\n    permissions: "0644"\n    encoding: b64\n    defer: true\n    content: %s\n' "$ctx"
+    printf '  - path: /etc/magbot/llm.env\n    permissions: "0644"\n    encoding: b64\n    content: %s\n' "$llm"
+    if [[ -n $pass ]]; then
+      creds=$(printf 'http://%s:%s@%s\n' "$DOM" "$pass" "${GIT_URL#http://}" | base64 -w0)
+      access=$(printf 'Gitea: %s . Your account %s is a restricted, non-admin user with read/write only in your own org bots-%s. Use git clone/push and the Gitea API with your credential. Never share credentials in chat.\n' "$GIT_URL" "$DOM" "$NAME" | base64 -w0)
+      printf '  - path: /home/bot/.git-credentials\n    owner: bot:bot\n    permissions: "0600"\n    encoding: b64\n    defer: true\n    content: %s\n' "$creds"
+      printf '  - path: /home/bot/GIT_ACCESS.md\n    owner: bot:bot\n    permissions: "0644"\n    encoding: b64\n    defer: true\n    content: %s\n' "$access"
+    fi
+    printf 'runcmd:\n  - [systemctl, enable, --now, qemu-guest-agent]\n'
+    if [[ -n $pass ]]; then
+      printf "  - [runuser, -u, bot, --, sh, -c, 'git config --global credential.helper store; git config --global user.name %s; git config --global user.email %s@mag.local']\n" "$DOM" "$DOM"
+    fi
+    printf "  - [sh, -c, 'mkdir -p /var/lib/magbot && touch /var/lib/magbot/ready']\n"
+  } >"$user_data"
+  printf 'instance-id: %s-%s\nlocal-hostname: %s\n' "$DOM" "$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')" "$DOM" >"$meta_data"
+  printf 'version: 2\nethernets:\n  default:\n    match:\n      name: ens*\n    dhcp4: true\n    dhcp6: false\n    dhcp-identifier: mac\n' >"$net"
+  cloud-localds --network-config "$net" "$SEED" "$user_data" "$meta_data" >/dev/null
+  # The plaintext sources hold the credential; only the seed is kept.
+  rm -f -- "$user_data" "$meta_data" "$net"
+  [[ -z $DISK_GROUP ]] || chgrp "$DISK_GROUP" "$SEED"
+  chmod 0640 "$SEED"
+}
+
+create_steps() {
+  local g pass=""
+  # lock (per-bot lock is held by the caller); global lock for admission
+  lock_fd g "$LOCK_DIR/global.lock"
+  maybe_fail lock
+  if ! golden_ok; then
+    [[ ! -e $GOLDEN ]] || die "golden image $GOLDEN exists but is not a read-only regular file"
+    log "golden image missing; building via $BUILD_GOLDEN"
+    MAGBOT_ROOT=$MAGBOT_ROOT bash "$BUILD_GOLDEN"
+    golden_ok || die "golden image build did not produce $GOLDEN"
+  fi
+  [[ -r $CONTEXT_MD ]] || die "bot context markdown not found (MAGBOT_CONTEXT)"
+  maybe_fail golden
+  mkdir -p "$MAGBOT_ROOT"
+  mkdir -m 0711 "$DIR"
+  CREATED_AT=$(date +%s)
+  write_meta provisioning
+  maybe_fail dir
+  qemu-img create -q -f qcow2 -F qcow2 -b "$GOLDEN" "$OVERLAY" "${DISK_GIB}G" >/dev/null
+  if [[ -n $DISK_GROUP ]]; then chgrp "$DISK_GROUP" "$OVERLAY"; fi
+  chmod 0660 "$OVERLAY"
+  maybe_fail overlay
+  if gitea_enabled; then
+    pass=$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')
+    gitea create --username "$DOM" --email "$DOM@mag.local" --user-type User \
+      --password "$pass" --must-change-password=false >/dev/null 2>&1 || die "gitea user creation failed"
+    "$GITEA_RIGHTS" "$DOM" >/dev/null 2>&1 || die "gitea bot rights could not be restricted"
+  fi
+  maybe_fail gitea
+  write_seed "$pass"
+  pass=""
+  maybe_fail seed
+  if ! virsh_ net-info "$NETWORK" 2>/dev/null | grep -Eq 'Active:[[:space:]]+yes'; then
+    virsh_ net-start "$NETWORK" >/dev/null
+  fi
+  virt-install --connect qemu:///system --virt-type kvm --name "$DOM" \
+    --memory $((RAM_GIB * 1024)) --vcpus "$VCPUS" --cpu host-passthrough \
+    --import --noautoconsole --osinfo detect=off,require=off --graphics none \
+    --network "network=$NETWORK,model=virtio" \
+    --disk "path=$OVERLAY,format=qcow2,bus=virtio" \
+    --disk "path=$SEED,device=cdrom,readonly=on" \
+    --channel unix,target.type=virtio,target.name=org.qemu.guest_agent.0 \
+    --boot hd --check all=on >/dev/null
+  maybe_fail define
+  exec {g}>&-
+  virsh_ schedinfo "$DOM" --set vcpu_period=100000 --set "vcpu_quota=$((VCPUS * 100000))" --live --config >/dev/null
+  virsh_ blkdeviotune "$DOM" vda --total-bytes-sec "$DISK_BYTES_SEC" --total-iops-sec "$DISK_IOPS_SEC" --live --config >/dev/null
+  virsh_ autostart "$DOM" >/dev/null
+  write_meta booting
+  maybe_fail tune
+  local end=$((SECONDS + BOOT_TIMEOUT))
+  until guest_run /usr/bin/cloud-init status --wait; do
+    ((SECONDS < end)) || die "cloud-init did not finish within ${BOOT_TIMEOUT}s"
+    sleep "$POLL"
+  done
+  maybe_fail boot
+  write_meta ready
+  local out
+  if ! out=$(check_present); then
+    printf '%s\n' "$out" >&2
+    die "post-create verification failed"
+  fi
+  maybe_fail verify
+}
+
+cmd_create() {
+  local rc out
+  if [[ $(meta_state) == ready ]]; then
+    if out=$(check_present); then log "$DOM already exists and verifies; nothing to do"; return 0; fi
+    printf '%s\n' "$out" >&2
+    die "$DOM exists but is unhealthy; use 'magbot reset $NAME'"
+  fi
+  if [[ -n $(leftovers) ]]; then
+    log "removing half-created remains of $DOM before create"
+    sweep || die "could not clean remains of $DOM"
+  fi
+  log "creating $DOM"
+  set +e
+  (set -e; create_steps)
+  rc=$?
+  set -e
+  if ((rc != 0)); then
+    log "create of $DOM failed; rolling back"
+    sweep || die "ROLLBACK INCOMPLETE for $DOM; run 'magbot delete $NAME'"
+    exit "$rc"
+  fi
+  log "created $DOM"
+}
+
+cmd_delete() {
+  sweep || die "delete of $DOM incomplete"
+  log "deleted $DOM (no leftovers)"
+}
+
+cmd_verify() {
+  local out left
+  if [[ -e $META ]] || dom_exists; then
+    if out=$(check_present); then echo "OK $DOM present and healthy"; return 0; fi
+    printf '%s\n' "$out"
+    return 1
+  fi
+  left=$(leftovers)
+  if [[ -n $left ]]; then
+    echo "FAIL $DOM absent but leftovers remain:"; printf '  %s\n' "$left"
+    return 1
+  fi
+  echo "OK $DOM absent, no leftovers"
+}
+
+cmd_list() {
+  local -A seen=()
+  local d n
+  while IFS= read -r d; do [[ $d == magbot-* ]] && seen[${d#magbot-}]=1; done < <(virsh_ list --all --name 2>/dev/null || true)
+  for d in "$MAGBOT_ROOT"/magbot-*; do [[ -d $d ]] && seen[$(basename "$d" | sed 's/^magbot-//')]=1; done
+  printf '%-24s %-14s %s\n' NAME STATE DOMAIN
+  for n in $(printf '%s\n' "${!seen[@]}" | sort); do
+    if [[ $n =~ ^agent[0-9]+$ ]]; then
+      printf '%-24s %-14s %s\n' "$n" legacy "$(virsh_ domstate "magbot-$n" 2>/dev/null || echo -)"
+      continue
+    fi
+    DOM=magbot-$n; META=$MAGBOT_ROOT/$DOM/metadata.json
+    printf '%-24s %-14s %s\n' "$n" "$(meta_state || true)" "$(virsh_ domstate "$DOM" 2>/dev/null || echo -)"
+  done
+}
+
+[[ $# -ge 1 ]] || usage
+cmd=$1
+case $cmd in
+  list) [[ $# == 1 ]] || usage; cmd_list; exit 0 ;;
+  create|delete|reset|verify) [[ $# == 2 ]] || usage; setup_name "$2" ;;
+  *) usage ;;
+esac
+[[ $EUID == 0 || ${MAGBOT_ALLOW_NONROOT:-0} == 1 ]] || die "run as root"
+
+if [[ $cmd != verify && ${MAGBOT_FOREGROUND:-0} != 1 && -z ${MAGBOT_JOB_UNIT:-} ]]; then
+  unit=$DOM-job
+  envs=(--setenv=MAGBOT_JOB_UNIT="$unit.service")
+  while IFS='=' read -r k _; do envs+=(--setenv="$k"); done < <(env | grep -E '^(MAGBOT_[A-Z_]+|FAIL_AT)=' || true)
+  exec systemd-run --unit="$unit" --collect --wait --pipe --quiet "${envs[@]}" "$SELF" "$cmd" "$NAME"
+fi
+
+# One per-bot lock for the whole operation (reset = delete + create).
+if [[ $cmd != verify ]]; then lock_fd bot_lock "$LOCK_DIR/$DOM.lock"; fi
+case $cmd in
+  create) cmd_create ;;
+  delete) cmd_delete ;;
+  reset) cmd_delete; cmd_create ;;
+  verify) cmd_verify ;;
+esac

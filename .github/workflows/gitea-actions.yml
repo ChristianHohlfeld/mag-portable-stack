@@ -1,0 +1,41 @@
+name: Gitea Actions for bot orgs (e2e)
+# Pinned Gitea 28.1.0 + gitea-runner 5.1.1 in the production layout: Actions
+# enabled by ops/runners/install.sh, org-scoped sandboxed runners for the bot
+# orgs only, a bot workflow succeeds, another owner's workflow gets no runner.
+# Needs root and systemd, so GitHub-hosted only.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'ops/gitea/**'
+      - 'ops/runners/**'
+      - 'ops/tests/e2e-gitea-actions.sh'
+      - 'mag-room/native/vm.cpp'
+      - '.github/workflows/gitea-actions.yml'
+  pull_request:
+    paths:
+      - 'ops/gitea/**'
+      - 'ops/runners/**'
+      - 'ops/tests/e2e-gitea-actions.sh'
+      - 'mag-room/native/vm.cpp'
+      - '.github/workflows/gitea-actions.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: gitea-actions-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  gitea-actions:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Static runner guards
+        run: bash ops/tests/test-runners.sh
+      - name: shellcheck
+        run: |
+          if ! command -v shellcheck >/dev/null; then echo 'shellcheck not installed on this runner; skipped'; exit 0; fi
+          shellcheck -S warning ops/runners/bot-runners.sh ops/runners/status.sh ops/gitea/enable-actions.sh ops/tests/e2e-gitea-actions.sh
+      - name: Bot-org runners end to end
+        run: sudo -E bash ops/tests/e2e-gitea-actions.sh

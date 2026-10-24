@@ -379,6 +379,11 @@ static void provision_git(const std::string &n) {
   // Never an admin: restricted, no org creation, own org bots-<agent>.
   if (run({"/usr/local/sbin/mag-gitea-bot-rights", username}, 60).code)
     throw std::runtime_error("Gitea bot rights could not be restricted");
+  // Org-scoped, sandboxed Actions runner for bots-<agent>; not fatal, the
+  // next deploy retries (ops/runners/bot-runners.sh reports the cause).
+  if (auto runner = run({"/usr/local/sbin/mag-gitea-bot-runners", username}, 120);
+      runner.code)
+    std::cerr << runner.out << "WARN: Gitea runner for the bot org not set up yet\n";
   // Register ownership before provisioning: retry/teardown can revoke the
   // account.
   record["git_user"] = username;

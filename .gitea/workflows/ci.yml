@@ -1,4 +1,4 @@
-# Gitea Actions on the MAG host (ops/runners: gitea-runner, label `mag`, host
+# Gitea Actions on the MAG host runner (opt-in, see docs/RUNNERS.md; label `mag`, host
 # mode, no root). Runs on the Gitea pull mirror of the GitHub repo
 # (ops/gitea/mirror-github.sh) and on direct pushes to Gitea. It does not
 # move GitHub's `green` branch; see docs/RUNNERS.md.

@@ -15,9 +15,13 @@ Bots are never administrators. Enforced in code and by `ops/deploy.sh`.
   the bot to its `Owners` team, then leaves the org. Reruns are no-ops; a
   failing user is reported, the others are still applied, and the script exits
   non-zero (deploy prints `WARN: Gitea bot rights not applied`).
-- Actions stay `ENABLED=false` by default. If enabled, register runners only at
-  the bot org level (`bots-<agent>`), unprivileged, never on the host and never
-  with deploy rights. There is no host deploy runner.
+- Gitea Actions are enabled, but only the bot orgs have runners: one
+  org-scoped runner per `bots-<agent>` (`ops/runners/bot-runners.sh`, label
+  `mag-bot`), registered at deploy and when a bot account is created. Jobs of
+  every other owner find no runner. The runner is an unprivileged user outside
+  `mag-deploy` in a strict systemd sandbox (no host state, no other orgs, no
+  local services except Gitea). An owner-scoped host runner with deploy rights
+  exists only on explicit opt-in and never for a bot. Details: docs/RUNNERS.md.
 
 ## GitHub
 - Personal connector (`connectors/github.token`) must be a **fine-grained

@@ -1,0 +1,13 @@
+# Shared config of the bot-org runners (mag-gitea-botrunner@<org>). Relative
+# runner.file resolves in the instance's WorkingDirectory
+# /var/lib/mag-botrunner/<org>; host-mode work dirs go to $HOME/.cache/act.
+log:
+  level: info
+runner:
+  file: .runner
+  capacity: 1
+  timeout: 1h
+  labels:
+    - "mag-bot:host"
+cache:
+  enabled: false

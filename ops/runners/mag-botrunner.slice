@@ -1,0 +1,11 @@
+[Unit]
+Description=MAG Gitea runners of the bot orgs (shared caps, below the models)
+
+[Slice]
+# All bot-org runners together; the resident LLMs always win.
+CPUWeight=10
+IOWeight=10
+CPUQuota=200%
+MemoryMax=6G
+MemorySwapMax=0
+TasksMax=1024

@@ -1,0 +1,19 @@
+# Installed as /etc/mag-botrunner/egress.nft by ops/runners/install.sh
+# (@GID@ = gid of mag-botrunner, @PORT@ = Gitea HTTP_PORT). Loaded before each
+# bot-org runner starts. Sockets of the runner group may reach on loopback only
+# Gitea and the DNS stubs; the room, the models and every other local service
+# are rejected. The unit's IPAddressDeny blocks LAN/tailnet ranges.
+table inet mag_botrunner
+delete table inet mag_botrunner
+table inet mag_botrunner {
+  chain output {
+    type filter hook output priority filter; policy accept;
+    meta skgid @GID@ jump botrunner
+  }
+  chain botrunner {
+    ip daddr 127.0.0.1 tcp dport @PORT@ accept
+    ip daddr { 127.0.0.53, 127.0.0.54, 100.100.100.100 } meta l4proto { tcp, udp } th dport 53 accept
+    ip daddr { 127.0.0.0/8, 100.100.100.100 } reject
+    ip6 daddr ::1 reject
+  }
+}

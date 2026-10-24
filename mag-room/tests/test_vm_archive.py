@@ -16,14 +16,18 @@ class VmArchive(unittest.TestCase):
         self.tmp = tempfile.mkdtemp()
         bot = pathlib.Path(self.tmp) / 'bots' / NAME
         bot.mkdir(parents=True)
-        bot.joinpath('metadata.json').write_text(json.dumps({'id': NAME, 'domain': 'magbot-' + NAME}))
+        bot.joinpath('metadata.json').write_text(json.dumps({'id': NAME, 'domain': 'magbot-' + NAME, 'git_user': 'magbot-' + NAME}))
         bot.joinpath('disk.qcow2').write_text('workspace')
+        # fake gitea: records calls; the account must be locked, never deleted
+        self.gitea = pathlib.Path(self.tmp) / 'gitea'
+        self.gitea.write_text('#!/bin/sh\necho "$@" >> "$(dirname "$0")/gitea.log"\n')
+        self.gitea.chmod(0o755)
 
     def tearDown(self):
         subprocess.run(['sudo', '-n', 'rm', '-rf', self.tmp])
 
     def test_despawn_archives_workspace(self):
-        r = subprocess.run(['sudo', '-n', 'env', 'MAGBOT_ROOT=' + self.tmp, 'MAGBOT_LOCK=' + self.tmp + '/lock',
+        r = subprocess.run(['sudo', '-n', 'env', 'MAGBOT_ROOT=' + self.tmp, 'MAGBOT_LOCK=' + self.tmp + '/lock', 'MAGBOT_GITEA_TEST=' + str(self.gitea),
                             str(BIN), 'despawn', NAME], capture_output=True, text=True, timeout=60)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn('Archived ' + NAME, r.stdout)
@@ -32,6 +36,10 @@ class VmArchive(unittest.TestCase):
         self.assertIn('/archive/' + NAME + '-', ls[0])
         self.assertEqual(subprocess.run(['sudo', '-n', 'cat', ls[0]], capture_output=True, text=True).stdout, 'workspace')
         self.assertFalse(pathlib.Path(self.tmp, 'bots', NAME).exists())
+        calls = subprocess.run(['sudo', '-n', 'cat', self.tmp + '/gitea.log'], capture_output=True, text=True).stdout
+        self.assertIn('change-password --username magbot-' + NAME, calls)
+        self.assertNotIn('delete', calls)
+        self.assertNotIn('--purge', calls)
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)

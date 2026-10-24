@@ -615,8 +615,8 @@ class Native(unittest.TestCase):
   self.assertEqual(len(res),3)
   for m in res:self.assertIn('nur lesbar',json.dumps(m,ensure_ascii=False))
   self.request('/api/connectors/github',method='DELETE')
-  src=(ROOT/'mag-room/native/vm.cpp').read_text()
-  create=src[src.index('gitea_args({"create"'):src.index('if (created.code)')]
+  src=(ROOT/'mag-room/native/vm.cpp').read_text()+(ROOT/'mag-room/native/gitea_account.hpp').read_text()
+  create=src[src.index('gitea_args({"create"'):src.index('if (!created.code)')]
   self.assertNotIn('--admin',create,'bot Gitea accounts must never be admins')
   self.assertIn('mag-gitea-bot-rights',src)
   prompts=(ROOT/'mag-room/native/magroom.cpp').read_text()

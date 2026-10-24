@@ -46,7 +46,7 @@ check 'room-clear never invokes production backup' bash -c "grep -Fq \"MAG_TEST_
 skip 'tailscale egress nft regression' 'needs root and modifies nft (github-hosted only)'
 check 'owner-only access contract' bash ops/private-access/tests/test-owner-boundaries.sh
 for t in test-guest-pty test-browser-recovery test-jobs-mcp test-pages-native test-browser-events \
-         test-guest-description test-guest-curl test-large-stdin; do
+         test-guest-description test-guest-curl test-large-stdin test-gitea-account; do
   check "native $t" "./build/$t"
 done
 for t in mag-room/tests/test_large_tools.py mag-room/tests/test_native.py mag-room/tests/test_agent_core.py \

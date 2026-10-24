@@ -46,6 +46,7 @@ target_link_libraries(test-jobs-mcp PRIVATE Threads::Threads OpenSSL::Crypto CUR
 add_executable(test-large-stdin mag-room/tests/test_large_stdin.cpp)
 target_link_libraries(test-large-stdin PRIVATE Threads::Threads)
 add_executable(test-guest-description mag-room/tests/test_guest_description.cpp)
+add_executable(test-gitea-account mag-room/tests/test_gitea_account.cpp)
 add_executable(test-guest-curl mag-room/tests/test_guest_curl.cpp)
 target_link_libraries(test-guest-curl PRIVATE CURL::libcurl)
 add_executable(test-pages-native mag-room/tests/test_pages.cpp)

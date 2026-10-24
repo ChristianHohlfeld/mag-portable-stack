@@ -26,8 +26,8 @@ On first start the room migrates once: `DeepSeek 4.0` â†’ `Ornith 1`, `Qwen 2` â
 `Ornith 2`, slots 1/2 (ids, VMs, memory unchanged). Deleting a bot never touches
 `mag-llm` or any `mag-llm-ornith@N`; it archives the bot record to
 `<room state>/archive/<id>-<ts>.json` and `magbot despawn` moves the VM directory to
-`/var/lib/libvirt/images/magbot/archive/<vm>-<ts>` (no auto purge; the bot's Gitea
-account is still revoked). Rollback to Qwen restores the fixed dual-NUMA layout.
+`/var/lib/libvirt/images/magbot/archive/<vm>-<ts>` (no auto purge). The bot's Gitea
+account and repos are kept, only locked (new unknown password); re-adding reuses it. Rollback to Qwen restores the fixed dual-NUMA layout.
 
 ```bash
 sudo bash ops/ornith/cutover.sh check

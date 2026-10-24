@@ -2,6 +2,7 @@
 // image.
 #include "common.hpp"
 #include "bot_context.hpp" // generated from bot_context.md
+#include "gitea_account.hpp"
 #include <grp.h>
 #include <iomanip>
 #include <regex>
@@ -350,32 +351,13 @@ static void admission(const Val &c, const std::vector<Val> &rows, int cpu,
       c.find("max_host_load_per_cpu")->asNum() * sysconf(_SC_NPROCESSORS_ONLN))
     throw std::runtime_error("Host load too high");
 }
-static std::vector<std::string>
-gitea_args(const std::vector<std::string> &args) {
-  std::vector<std::string> command{"/usr/sbin/runuser",
-                                   "-u",
-                                   "git",
-                                   "--",
-                                   "/usr/local/bin/gitea",
-                                   "--config",
-                                   "/etc/gitea/app.ini",
-                                   "admin",
-                                   "user"};
-  command.insert(command.end(), args.begin(), args.end());
-  return command;
-}
 static std::string prepare_browser(const std::string &n);
 static void provision_git(const std::string &n) {
   auto record = marker(n);
   if (!str(record, "git_user").empty())
     return;
   auto username = domain(n), password = randomhex() + randomhex();
-  auto created = run(
-      gitea_args({"create", "--username", username, "--email",
-                  username + "@mag.local", "--user-type", "User", "--password",
-                  password, "--must-change-password=false"}),
-      30);
-  if (created.code)
+  if (!gitea_create_or_reuse(username, password))
     throw std::runtime_error("Gitea bot account creation failed");
   // Never an admin: restricted, no org creation, own org bots-<agent>.
   if (run({"/usr/local/sbin/mag-gitea-bot-rights", username}, 60).code)
@@ -460,11 +442,11 @@ static void teardown(const std::string &n, bool archive = false) {
       throw std::runtime_error("Gitea ownership mismatch");
   }
   if (!git_user.empty()) {
-    auto result =
-        run(gitea_args({"delete", "--username", git_user, "--purge"}), 30);
-    if (result.code)
+    // Never delete the account or its repos (owner decides). Lock it: the
+    // only credential (in the archived disk) stops working.
+    if (!gitea_lock(git_user, randomhex() + randomhex()))
       throw std::runtime_error(
-          "Could not revoke bot Git account; registry retained");
+          "Could not revoke bot Git credential; registry retained");
   }
   // Guest trust anchors live only on this overlay. remove_all drops them
   // with the disk; the read-only golden image is never modified.

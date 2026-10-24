@@ -21,6 +21,7 @@ step 'native integration checks'
 ./build/test-guest-description
 ./build/test-guest-curl
 ./build/test-large-stdin
+./build/test-gitea-account
 python3 mag-room/tests/test_large_tools.py
 python3 mag-room/tests/test_native.py
 python3 mag-room/tests/test_agent_core.py

@@ -211,9 +211,10 @@ static bool choose_model(const Http &r,std::string &selected,int &port,int *id_s
   if(asked.empty()&&!r.body.empty()){
     Val body; if(mj::parse(r.body,body)&&body.isObj()) if(auto model=body.find("model")) asked=model->asStr();
   }
-  if(numa_route(asked,selected,port))return true;
+  // Ignore stale DeepSeek NUMA state on Ornith/Qwen hosts.
+  if(cfg.secondary=="iq3"&&numa_route(asked,selected,port))return true;
   if((asked=="iq3"||asked=="deepseek-v4-flash-0731-iq3")&&cfg.secondary=="iq3"){selected="iq3"; port=cfg.iq3;return true;}
-  if((asked=="qwen"||asked=="qwen3.8-flash-next-uncensored")&&cfg.secondary=="qwen"){selected="qwen"; port=cfg.iq3;return true;}
+  if((asked.empty()||asked=="qwen"||asked=="qwen3.8-flash-next-uncensored")&&cfg.secondary=="qwen"){selected="qwen"; port=cfg.iq3;return true;}
   // Ornith host (DeepSeek retired): requests without a model (/health, radius) go to Ornith.
   if((asked.empty()||asked=="ornith"||asked=="ornith-1.5-35b-a3b")&&cfg.secondary=="ornith"){
     // Sticky per bot, never round-robin: X-Mag-Slot (persistent room bot slot - 1) picks the instance.
@@ -234,7 +235,7 @@ static bool choose_model(const Http &r,std::string &selected,int &port,int *id_s
   }
   // No fallback on an explicitly unknown or inactive secondary model.
   // Ornith host: :8090 (DeepSeek) is retired, the old ids fail closed.
-  if(cfg.secondary=="ornith")return false;
+  if(cfg.secondary=="ornith"||cfg.secondary=="qwen")return false;
   return asked.empty()||asked=="q4"||asked=="deepseek-v4-flash-0731";
 }
 static bool request_read(int fd,Http &r){
@@ -295,7 +296,7 @@ static void proxy(int fd){
     auto add=[&](const char *name,const char *label,int port){
       Val row=Val::object(); row["id"]=name; row["object"]="model"; row["owned_by"]="mag"; row["label"]=label; row["ready"]=upstream_up(port); data.push(row);
     };
-    if(cfg.secondary!="ornith")add("deepseek-v4-flash-0731","Q4 NUMA0",cfg.q4);
+    if(cfg.secondary=="iq3")add("deepseek-v4-flash-0731","Q4 NUMA0",cfg.q4);
     if(cfg.secondary=="ornith")add("ornith-1.5-35b-a3b","Ornith 1.5 35B-A3B",cfg.ornith[0].port);
     else if(cfg.secondary=="qwen")add("qwen3.8-flash-next-uncensored","Qwen3.8 NUMA1",cfg.iq3);
     else add("deepseek-v4-flash-0731-iq3","IQ3 NUMA1",cfg.iq3);
@@ -306,7 +307,8 @@ static void proxy(int fd){
   if(!choose_model(r,selected,upstream,&id_slot)){
     json_response(fd,400,message(cfg.secondary=="ornith"
       ?"Modell nicht verfügbar: DeepSeek ist stillgelegt, nur Ornith (kein Fallback)"
-      :"unknown model (no fallback)"));return;
+      :cfg.secondary=="qwen" ? "Modell nicht verfügbar: DeepSeek ist stillgelegt, nur Qwen (kein Fallback)"
+      :"Unbekanntes Modell (kein Fallback)"));return;
   }
   if(id_slot>=0&&r.path.rfind("/slots/",0)==0){
     // The room may post /slots/0: always the bot's own llama slot, actions only.
@@ -416,7 +418,7 @@ int main(){
     if(cfg.secondary=="ornith"&&(cfg.ornith.empty()||cfg.ornith.size()>4))throw std::runtime_error("invalid MAG_MODEL_ORNITH_PORTS (fail closed)");
     cfg.logs=env("MAG_AUDIT_LOG_DIR",cfg.logs);cfg.secrets=env("MAG_AUDIT_SECRETS_FILE",cfg.secrets);
     int public_fd=server(cfg.listen);
-    Val start=Val::object();start["type"]="gateway";start["event"]="start";start["upstream"]=cfg.secondary=="ornith"?"ornith":std::to_string(cfg.q4);audit(start);
+    Val start=Val::object();start["type"]="gateway";start["event"]="start";start["upstream"]=cfg.secondary=="ornith"?"ornith":cfg.secondary=="qwen"?"qwen":std::to_string(cfg.q4);audit(start);
     for(;;){
       pollfd pfd{public_fd,POLLIN,0};
       if(poll(&pfd,1,-1)<0){if(errno==EINTR)continue;break;}

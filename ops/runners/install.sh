@@ -77,7 +77,7 @@ if [[ -x /usr/local/bin/gitea && -r /etc/gitea/app.ini ]] && systemctl is-active
   # Host runner with deploy rights: only when the owner opts in with
   # /etc/mag-stack/host-runner.owner = <Gitea user>, registered at THAT
   # owner's scope (never instance-wide, never a bot owner).
-  owner="$(tr -d ' \n' < /etc/mag-stack/host-runner.owner 2>/dev/null || true)"
+  owner="$( { tr -d ' \n' < /etc/mag-stack/host-runner.owner; } 2>/dev/null || true)"
   if [[ -n $owner && $owner =~ ^[A-Za-z0-9._-]+$ && ! $owner =~ ^(bots-|magbot-|magrun-) ]]; then
     ensure_user mag-runner /var/lib/mag-runner
     usermod -aG mag-deploy mag-runner

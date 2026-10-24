@@ -18,7 +18,9 @@ tmp=$(mktemp -d)
 listener=
 trap '[[ -n $listener ]] && kill "$listener" 2>/dev/null; rm -rf -- "$tmp"' EXIT
 fail() { echo "FAIL: $*" >&2
-  journalctl -u gitea -u 'mag-gitea-botrunner@*' --no-pager -n 80 >&2 || true; exit 1; }
+  systemctl status --no-pager 'mag-gitea-botrunner@*' >&2 || true
+  journalctl -u 'mag-gitea-botrunner@*' --no-pager -n 120 >&2 || true
+  journalctl -u gitea --no-pager -n 40 >&2 || true; exit 1; }
 G=(runuser -u git -- /usr/local/bin/gitea --config /etc/gitea/app.ini)
 A=http://127.0.0.1:3000/api/v1
 

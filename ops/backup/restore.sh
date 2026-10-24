@@ -57,8 +57,8 @@ case "$part" in
  pages) paths=(var/lib/mag-pages etc/mag-pages);;
  cron) paths=(etc/crontab etc/cron.d etc/cron.hourly etc/cron.daily etc/cron.weekly etc/cron.monthly var/spool/cron/crontabs);;
  tailscale) paths=(var/lib/tailscale);;
- config) paths=(etc/mag-acme etc/mag-nginx etc/nginx etc/magbot etc/default/mag-room etc/mag-stack etc/credstore/mag-guest-oauth etc/credstore/mag-secrets-key etc/mag-audit var/lib/mag-audit etc/mag-llm etc/systemd/system var/lib/mag-deploy var/lib/mag-private-cutover var/lib/mag-llm home/chris/llama-templates usr/local/lib/mag-deepseek opt/mag-stack etc/crontab etc/cron.d etc/cron.hourly etc/cron.daily etc/cron.weekly etc/cron.monthly var/spool/cron/crontabs);;
- all) paths=(var/lib/magbot/room var/lib/gitea etc/gitea var/lib/mag-pages etc/mag-pages etc/mag-acme etc/mag-nginx etc/nginx etc/magbot etc/default/mag-room etc/mag-stack etc/credstore/mag-guest-oauth etc/credstore/mag-secrets-key etc/mag-audit var/lib/mag-audit etc/mag-llm etc/systemd/system var/lib/mag-deploy var/lib/mag-private-cutover var/lib/mag-llm home/chris/llama-templates usr/local/lib/mag-deepseek opt/mag-stack etc/crontab etc/cron.d etc/cron.hourly etc/cron.daily etc/cron.weekly etc/cron.monthly var/spool/cron/crontabs var/lib/tailscale);;
+ config) paths=(etc/mag-acme etc/mag-nginx etc/nginx etc/magbot etc/default/mag-room etc/mag-stack etc/credstore/mag-guest-oauth etc/credstore/mag-secrets-key etc/mag-audit var/lib/mag-audit etc/systemd/system var/lib/mag-deploy var/lib/mag-private-cutover var/lib/mag-llm opt/mag-stack etc/crontab etc/cron.d etc/cron.hourly etc/cron.daily etc/cron.weekly etc/cron.monthly var/spool/cron/crontabs);;
+ all) paths=(var/lib/magbot/room var/lib/gitea etc/gitea var/lib/mag-pages etc/mag-pages etc/mag-acme etc/mag-nginx etc/nginx etc/magbot etc/default/mag-room etc/mag-stack etc/credstore/mag-guest-oauth etc/credstore/mag-secrets-key etc/mag-audit var/lib/mag-audit etc/systemd/system var/lib/mag-deploy var/lib/mag-private-cutover var/lib/mag-llm opt/mag-stack etc/crontab etc/cron.d etc/cron.hourly etc/cron.daily etc/cron.weekly etc/cron.monthly var/spool/cron/crontabs var/lib/tailscale);;
 esac
 destination="${target:-/}"
 # Preflight EVERY service prerequisite before copying ANY live path, so a
@@ -94,7 +94,7 @@ for path in "${paths[@]}"; do
      echo 'Stop Gitea before --apply gitea/all' >&2; exit 1
    fi
    if [[ "$path" == var/lib/magbot/room && $(systemctl is-active mag-120.service 2>/dev/null || :) == active ]]; then
-     echo 'Stop mag-120 before --apply room/all (never mag-llm)' >&2; exit 1
+     echo 'Stop mag-120 before --apply room/all' >&2; exit 1
    fi
  fi
  mkdir -p "$destination/$(dirname "$path")"

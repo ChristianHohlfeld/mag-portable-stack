@@ -49,7 +49,7 @@ if grep -Eqi 'deepseek-v4|models(-iq3)?\.sha256|UD-Q4|UD-IQ3' "$root/ops/backup/
   echo 'bootstrap-models still fetches DeepSeek' >&2; exit 1
 fi
 grep -Fq 'ops/ornith/model.sha256' "$root/ops/backup/bootstrap-models.sh"
-# (NUMA hot-swap catalog seed is a separate, still DeepSeek-based feature; worktree path may contain the word.)
+# The retired hot-swap catalog is not bootstrapped; paths may still contain legacy names.
 if grep -v 'seed /var/lib/mag-numa' <<<"${out//$root/ROOT}" | grep -Eqi 'deepseek|mag-llm\.service|install-deepseek|8090'; then echo 'dry run mentions DeepSeek' >&2; exit 1; fi
 grep -Fq 'install-tailscale-egress.sh' "$root/ops/bootstrap.sh"
 if grep -Eq 'bash .*console-lockdown' "$root/ops/bootstrap.sh"; then echo 'bootstrap runs console lockdown' >&2; exit 1; fi

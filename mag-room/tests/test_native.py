@@ -2876,6 +2876,66 @@ class GuestsLive(unittest.TestCase):
   self.assertEqual(sorted(x['name'] for x in g['guests']),['Maxim','Neuer Gast'])
   self.assertNotIn('tskey-auth-fake',json.dumps(g))
   self.assertIn(('GET','/api/v2/tailnet/-/devices'),FakeTailscale.calls)
+FAKE_GUEST_RUN="""#!/bin/sh
+# Fake magbot-guest-run: logs every --stdin script; no guest IP, so the
+# browser restart after a workspace reset fails cleanly.
+d="$(dirname "$0")"
+if [ "$2" = --stdin ]; then { echo "== $1"; cat; echo; } >> "$d/guest.log"; echo reset-ok; fi
+exit 0
+"""
+class BootstrapContext(unittest.TestCase):
+ """Fresh and reset bots get the versioned bootstrap context (bot_context.md)."""
+ CONTEXT=(ROOT/'mag-room/native/bot_context.md').read_text()
+ GERMAN='Antworte standardmaessig auf Deutsch. Schreibt der Nutzer in einer anderen\nSprache, antworte in dieser Sprache.'
+ @classmethod
+ def setUpClass(cls):
+  cls.tmp=tempfile.TemporaryDirectory();tmp=pathlib.Path(cls.tmp.name);cls.state=tmp/'state';cls.state.mkdir()
+  cls.ctl=tmp/'ctl';cls.ctl.write_text(MULTIBOT_CTL);cls.ctl.chmod(0o755)
+  cls.guest=tmp/'guest-run';cls.guest.write_text(FAKE_GUEST_RUN);cls.guest.chmod(0o755)
+  cls.state.joinpath('agents.json').write_text(json.dumps([{'id':'vmbot','name':'VM Bot','vm':'agent9','memory':[]}]))
+  cls.model=http.server.ThreadingHTTPServer(('127.0.0.1',0),Model);threading.Thread(target=cls.model.serve_forever,daemon=True).start();cls.ui=port();cls.bridge=port()
+  env=dict(os.environ,MAG_OWNER_CANONICAL_LOGIN='chris@github',MAG_TEST_ALLOW_LOCAL_OWNER='1',MAG_ROOM_STATE=str(cls.state),MAG_ROOM_PORT=str(cls.ui),MAG_ROOM_BRIDGE_PORT=str(cls.bridge),MAG_ROOM_BRIDGE_IP='127.0.0.1',MAG_ROOM_BACKEND=f'http://127.0.0.1:{cls.model.server_port}/v1/chat/completions',MAG_ROOM_UI=str(ROOT/'mag-room/web/index.html'),MAG_ROOM_STATIC=str(ROOT/'mag-room/static'),MAG_ROOM_MODEL_STATUS=str(tmp/'ms.json'),MAG_NETMODE=str(NETMODE),MAG_TEST_NO_MEMGIT='1',MAG_ROOM_AGENT_CTL=str(cls.ctl),MAG_ROOM_GUEST_RUN=str(cls.guest),MAG_ROOM_MCP_AUTO='0',MAG_ROOM_STAGGER='off')
+  env.pop('MAG_ROOM_SINGLE_BOT',None)
+  cls.log=open(tmp/'server.log','a');cls.proc=subprocess.Popen([str(ROOT/'build/magroom')],env=env,stdout=cls.log,stderr=cls.log)
+  for _ in range(100):
+   try:Native.request.__func__(cls,'/healthz',raw=True);return
+   except Exception:time.sleep(.03)
+  raise RuntimeError('Native startup failed')
+ @classmethod
+ def tearDownClass(cls):
+  cls.proc.terminate();cls.proc.wait(timeout=5);cls.log.close();cls.model.shutdown();cls.tmp.cleanup()
+ request=classmethod(Native.request.__func__)
+ wait_idle=Native.wait_idle
+ _ask=MultiBot._ask
+ def _system(self,bot):
+  call=self._ask(bot);sys=call['messages'][0]
+  self.assertEqual(sys['role'],'system');return sys['content']
+ def test_00_context_source(self):
+  self.assertIn(self.GERMAN,self.CONTEXT)
+  self.assertIn('Chris ist der Besitzer',self.CONTEXT)
+  self.assertIn('GitHub: nur LESEN',self.CONTEXT)
+  self.assertLess(len(self.CONTEXT),4096,'bootstrap context must stay token-cheap')
+  for bad in ('token','password','100.123.','192.168.','stardenburg'):
+   self.assertNotIn(bad,self.CONTEXT.lower())
+ def test_01_fresh_bot_gets_context(self):
+  b=self.request('/api/agents',{'name':'Frisch','vm':False})
+  try:
+   system=self._system(b['id'])
+   self.assertIn(self.CONTEXT,system);self.assertIn(self.GERMAN,system)
+   self.assertLess(system.index(self.CONTEXT),system.index('\n[Erinnerungen]'))
+  finally:self.request('/api/agents/'+b['id'],method='DELETE')
+ def test_02_reset_bot_reprovisioned(self):
+  if subprocess.run(['sudo','-n','true'],capture_output=True).returncode!=0:self.skipTest('needs sudo -n for the fake guest runner')
+  self.wait_idle()
+  try:self.request('/api/agents/vmbot/workspace/reset',{})
+  except urllib.error.HTTPError as e:self.assertEqual(e.code,502)  # fake guest has no browser
+  log=(self.guest.parent/'guest.log').read_text()
+  script=log[log.rindex('== agent9'):]
+  self.assertIn('/home/bot/MAG_CONTEXT.md',script);self.assertIn('reset-ok',script)
+  self.assertIn(self.GERMAN,script)
+  system=self._system('vmbot')
+  self.assertIn(self.CONTEXT,system);self.assertIn(self.GERMAN,system)
+
 class PendingSpawnResume(unittest.TestCase):
  """A room restart during a VM spawn adopts that VM instead of crashing or orphaning it."""
  def test_restart_adopts_recorded_vm(self):

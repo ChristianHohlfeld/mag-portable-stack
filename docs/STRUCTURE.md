@@ -3,6 +3,7 @@
 ```text
 mag-room/native/
   magroom.cpp            model loop, scheduler coordination, streaming
+  bot_context.md         bootstrap context for every bot (embedded at build)
   routes.hpp             authenticated HTTP handlers including /api/cancel
   jobs.hpp               single shared jobs store / scheduler
   jobs_tools.hpp         fixed registered bot tool definitions

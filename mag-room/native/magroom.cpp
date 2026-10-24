@@ -5,6 +5,7 @@
 #include "browser_recovery.hpp"
 #include "browser_events.hpp"
 #include "pages.hpp"
+#include "bot_context.hpp" // generated from bot_context.md
 
 #include <arpa/inet.h>
 #include <fcntl.h>
@@ -1847,6 +1848,9 @@ static std::string build_system(int bot_idx, bool autotalk,
   if (has_vm)
     system += FRONTEND_RULES;
   system += mcp_prompt_notes(bot_idx);
+  // Bootstrap context (where, stack, rights, owner, language); static text.
+  system += "\n\n";
+  system += BOT_CONTEXT_MD;
   return system;
 }
 static std::string server_clock_minute() {
@@ -6992,6 +6996,8 @@ static ScopedResult reset_bot_workspace(const std::string &id, bool force = fals
       "chmod 700 /home/bot/browserd/profile; "
       "rm -rf -- /home/bot/room /home/bot/Downloads; "
       "mkdir -p /home/bot/room; "
+      // Re-provision the bootstrap context (also in every system prompt).
+      "printf %s " + shell_quote(BOT_CONTEXT_MD) + " > /home/bot/MAG_CONTEXT.md; "
       "echo reset-ok";
   auto ran = guest_command(vm, script, 40);
   if (ran.code)

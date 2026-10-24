@@ -70,12 +70,14 @@ setup() { # org
   id "$user" >/dev/null 2>&1 ||
     useradd --system --gid mag-botrunner --no-create-home --home-dir "$dir" --shell /usr/sbin/nologin "$user"
   # Deploy rights never: drop a stale membership in mag-deploy.
-  if id -nG "$user" | tr ' ' '\n' | grep -Fxq mag-deploy; then gpasswd -d "$user" mag-deploy >/dev/null; fi
+  if [[ " $(id -nG "$user") " == *" mag-deploy "* ]]; then gpasswd -d "$user" mag-deploy >/dev/null; fi
   install -d -m 0755 -o root -g root "$STATE"
   install -d -m 0700 -o "$user" -g mag-botrunner "$dir"
   if [[ -s $dir/.runner ]]; then valid "$dir" || v=$?; else v=1; fi
   if ((v == 2)); then warn "$org: Gitea did not answer the runner check ($instance); kept"; fi
   if ((v == 1)); then
+    # The daemon locks .runner; a rejected one is useless anyway.
+    systemctl stop "mag-gitea-botrunner@$org.service" 2>/dev/null || true
     rm -f "$dir/.runner"
     if ! "${GITEA[@]}" actions generate-runner-token --scope "$org" > "$tmp/token" 2>"$tmp/err" || [[ ! -s $tmp/token ]]; then
       warn "$org: no org runner token ($(tail -1 "$tmp/err" | cut -c1-160))"; rm -f "$tmp/token"; return 0

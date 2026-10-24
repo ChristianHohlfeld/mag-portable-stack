@@ -44,7 +44,7 @@ grep -q 'WARN' "$tmp/install.err" && fail 'install printed WARN'
 for o in bots-agent1 bots-agent3; do
   grep -Fxq "OK: Gitea runner $o (org scope, label mag-bot:host)" "$tmp/install.out" || fail "no OK line for $o"
   systemctl is-active --quiet "mag-gitea-botrunner@$o.service" || fail "$o runner not active"
-  id -nG "magrun-$o" | tr ' ' '\n' | grep -Fxq mag-deploy && fail "magrun-$o in mag-deploy"
+  [[ " $(id -nG "magrun-$o") " == *" mag-deploy "* ]] && fail "magrun-$o in mag-deploy"
 done
 [[ ! -e /etc/systemd/system/mag-gitea-runner.service && ! -s /var/lib/mag-runner/.runner ]] || fail 'host runner without opt-in'
 uuid1=$(jq -r .uuid /var/lib/mag-botrunner/bots-agent1/.runner)
@@ -60,7 +60,7 @@ uuid3=$(jq -r .uuid "$f")
 jq '.token = "0000000000000000000000000000000000000000"' "$f" > "$tmp/r" && cat "$tmp/r" > "$f"
 /usr/local/sbin/mag-gitea-bot-runners magbot-agent3 > "$tmp/re" 2>&1 || fail "re-register: $(cat "$tmp/re")"
 [[ $(jq -r .uuid "$f") != "$uuid3" ]] || fail 'rejected runner not re-registered'
-systemctl restart mag-gitea-botrunner@bots-agent3.service
+systemctl is-active --quiet mag-gitea-botrunner@bots-agent3.service || fail "bots-agent3 runner not restarted"
 
 # Repos: one per bot org and one of chris, same trivial workflow shape.
 adm=e2e-admin

@@ -108,7 +108,7 @@ if [[ -x /usr/local/bin/gitea && -r /etc/gitea/app.ini ]] && systemctl is-active
       rm -f /etc/systemd/system/mag-gitea-runner.service
     fi
     rm -f /var/lib/mag-runner/.runner /var/lib/mag-runner/.mag-scope
-    if id mag-runner >/dev/null 2>&1 && id -nG mag-runner | tr ' ' '\n' | grep -Fxq mag-deploy; then gpasswd -d mag-runner mag-deploy >/dev/null; fi
+    if id mag-runner >/dev/null 2>&1 && [[ " $(id -nG mag-runner) " == *" mag-deploy "* ]]; then gpasswd -d mag-runner mag-deploy >/dev/null; fi
   fi
 else
   echo 'WARN: Gitea not installed/active; Gitea runners skipped' >&2

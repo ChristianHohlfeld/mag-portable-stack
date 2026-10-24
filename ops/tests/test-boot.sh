@@ -37,7 +37,11 @@ grep -Fxq 'systemctl enable mag-auto-update.timer' "$log"
 ! grep -Eq 'systemctl (start|stop|restart|reload|try-restart|kill|daemon-reload)|--now' "$log"
 grep -Fxq 'virsh -q autostart magbot-agent1' "$log"
 ! grep -Fq 'autostart other-vm' "$log"
-grep -Fq 'BIOS' <<<"$out"
+if grep -Fq 'BMC power policy' <<<"$out"; then
+  grep -Fq 'ipmitool chassis policy always-on' "$log"
+else
+  grep -Fq 'BIOS' <<<"$out"
+fi
 grep -Eq '^WantedBy=multi-user.target' "$root/ops/deepseek/mag-llm-iq3.service"
 grep -Fq 'ops/boot/ensure-boot.sh' "$root/ops/auto-update/apply.sh"
 grep -Fq 'PHASE boot' <<<"$(bash "$root/ops/update.sh" --dry-run)"

@@ -256,11 +256,8 @@ if [[ -r /etc/mag-stack/secondary-model.env ]] &&
   install -m 0644 "$SOURCE/ops/mag-120.d/30-dual-numa.conf" /etc/systemd/system/mag-120.service.d/30-dual-numa.conf
   # DeepSeek is retired: the obsolete room drop-in (DeepSeek model id + mag-model-gate
   # status) is replaced by the Ornith one; rollback() restores the snapshot.
-  if [[ -f /etc/systemd/system/mag-120.service.d/20-deepseek-audit.conf ||
-        -f /etc/systemd/system/mag-120.service.d/20-room-audit.conf ]]; then
-    install -m 0644 "$SOURCE/ops/mag-120.d/20-room-audit.conf" /etc/systemd/system/mag-120.service.d/20-room-audit.conf
-    rm -f /etc/systemd/system/mag-120.service.d/20-deepseek-audit.conf
-  fi
+  install -m 0644 "$SOURCE/ops/mag-120.d/20-room-audit.conf" /etc/systemd/system/mag-120.service.d/20-room-audit.conf
+  rm -f /etc/systemd/system/mag-120.service.d/20-deepseek-audit.conf
   [[ -x /usr/local/lib/mag-ornith/start.sh ]] || { echo 'Ornith staged runtime missing' >&2; exit 1; }
   install -m 0755 "$SOURCE/ops/ornith/start.sh" "$SOURCE/ops/ornith/start-node.sh" "$SOURCE/ops/ornith/verify-model.sh" /usr/local/lib/mag-ornith/
   install -m 0644 "$SOURCE/ops/qwen/runtime.sha" /usr/local/lib/mag-ornith/runtime.sha
@@ -282,11 +279,9 @@ elif [[ -r /etc/mag-stack/secondary-model.env ]] &&
   # Update only the on-disk systemd definition; NEVER restart either loaded LLM.
   [[ -x /usr/local/lib/mag-qwen/start.sh ]] || { echo 'Qwen staged runtime missing' >&2; exit 1; }
   install -m 0755 "$SOURCE/ops/qwen/start.sh" /usr/local/lib/mag-qwen/start.sh
-  install -m 0755 "$SOURCE/ops/qwen/wait-q4.sh" /usr/local/lib/mag-qwen/wait-q4.sh
   install -m 0755 "$SOURCE/ops/qwen/verify-model.sh" /usr/local/lib/mag-qwen/verify-model.sh
   install -m 0644 "$SOURCE/ops/qwen/mag-llm-qwen.service" /etc/systemd/system/mag-llm-qwen.service
-  # Remove the temporary preflight added during Qwen bring-up; it fails
-  # immediately on cold boot before Q4 has loaded. wait-q4.sh replaces it.
+  # Remove obsolete Q4 preflight; Qwen starts independently.
   rm -f /etc/systemd/system/mag-llm-qwen.service.d/20-q4-health.conf
 else
   rm -f /etc/systemd/system/mag-120.service.d/30-dual-numa.conf
@@ -361,9 +356,7 @@ bash "$SOURCE/ops/bots/install.sh" || echo 'WARN: bot site install incomplete (d
 bash "$SOURCE/ops/models/retire-deepseek.sh" || echo 'WARN: DeepSeek retirement incomplete (deploy itself succeeded)' >&2
 # Persist the active model units and bot VM autostart for cold reboot.
 bash "$SOURCE/ops/boot/ensure-boot.sh" || echo 'WARN: boot persistence needs operator attention' >&2
-# Explicit request: the obsolete DeepSeek V4.1 Q2_K weights are no longer used.
-# Safe guarded deletion after successful deployment; other model files untouched.
-bash "$SOURCE/ops/models/retire-v41.sh" || echo 'WARN: old V4.1 weights were retained because they may be in use' >&2
+# Model files, including DeepSeek V4.1, are preserved. Only Chris deletes weights.
 # Deploy never restarts a loaded model (DeepSeek retirement above is the only stop). Model placement
 # is a separate, measured, operator-controlled change, never a deploy hook.
 printf '\nInstalled release %s; rollback snapshot %s\n' "$RELEASE_ID" "$BACKUP"

@@ -279,6 +279,12 @@ if [[ -r /etc/mag-stack/secondary-model.env ]] &&
   [[ -x /usr/local/lib/mag-ornith/start.sh ]] || { echo 'Ornith staged runtime missing' >&2; exit 1; }
   install -m 0755 "$SOURCE/ops/ornith/start.sh" "$SOURCE/ops/ornith/start-node.sh" "$SOURCE/ops/ornith/verify-model.sh" /usr/local/lib/mag-ornith/
   install -m 0644 "$SOURCE/ops/qwen/runtime.sha" /usr/local/lib/mag-ornith/runtime.sha
+  # Stage Qwen for operator rollback. Do not enable or start it with Ornith.
+  install -d -m 0755 /usr/local/lib/mag-qwen
+  install -m 0755 "$SOURCE/ops/qwen/start.sh" "$SOURCE/ops/qwen/verify-model.sh" /usr/local/lib/mag-qwen/
+  install -m 0644 "$SOURCE/ops/qwen/runtime.sha" /usr/local/lib/mag-qwen/runtime.sha
+  install -m 0644 "$SOURCE/ops/qwen/mag-llm-qwen.service" /etc/systemd/system/mag-llm-qwen.service
+  rm -f /etc/systemd/system/mag-llm-qwen.service.d/20-q4-health.conf
   # Per-node servers (variant B) and the 4 legacy instances (rollback.sh instances) side by side.
   install -m 0644 "$SOURCE/ops/ornith/mag-llm-ornith-node@.service" /etc/systemd/system/mag-llm-ornith-node@.service
   for n in 0 1; do

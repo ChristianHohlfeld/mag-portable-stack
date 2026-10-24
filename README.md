@@ -1,8 +1,15 @@
-# MAG — C++ room, local DeepSeek, Tailnet nginx
+# MAG — Vier Ornith-Bots, native C++-Room, Tailnet-nginx
 
-**Release baseline:** `ad0ad69` (includes #22 Moonshine, #23 Prompt-Cache, #24 agent/large IO and #25 Pages). This PR hardens private ingress before installing the nginx guest entry on MAG. Model process `mag-llm` must remain in RAM and **must never be restarted as part of this release**.
-
-MAG runs a single local DeepSeek-V4-Flash inference service via ik_llama.cpp, a native C++ room with jobs/MCP and shared SSE, KVM-isolated bot browsers/terminals, and a client-rendered PWA. The private host name is `mag.stardenburg.de` on **100.123.114.16:443** through nginx; the existing `mag.tail3e02ae.ts.net:8446` fallback must stay available.
+**Aktueller Betriebsstand (Oktober 2026):** Vier Ornith-1.5-35B-A3B-Bots, zwei NUMA-Server
+(`mag-llm-ornith-node@0/1.service`, 127.0.0.1:8191/8192, je zwei llama-Slots).
+Audit-Gateway :8080, C++-Raum `mag-120.service` :8766, nginx.
+DeepSeek Q4/IQ3, mag-model-gate und mag-model-pin sind aus dem aktiven Stack
+ausgemustert. Gewichte bleiben auf der Platte. Bei Ornith-Ausfall:
+`sudo bash ops/ornith/rollback.sh qwen` (Qwen allein, kein DeepSeek).
+Deploy ausschließlich nach grüner lokaler CI: `bash ops/update.sh --no-pull`
+im passenden Checkout; darin enthalten ist `sudo bash ops/deploy.sh`.
+Das Retirement läuft nur bei gesundem Ornith-Raum und beiden Backends.
+Alte 3.8-/Q4-/IQ3-Abschnitte im folgenden Text sind **historisch**.
 
 **Backup.** Each run writes a new passwordless restic repository under
 `/var/backups/mag-full/<timestamp>-<kind>/`. The archive contains the room,

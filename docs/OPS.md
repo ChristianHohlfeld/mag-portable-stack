@@ -22,7 +22,7 @@ Old Caddy removal is gated on `/var/lib/mag-private-cutover/confirmed`. Do not r
 ## Quality gates
 Run native tests, `test_private_nginx.py` (mock upstream + real TLS nginx), PWA/paste emulation at 375/390/412 px, gitleaks, Go gateway tests, nginx syntax and deployed Owner/Guest/fail-closed acceptance tests. CI cannot inspect MAG's actual TLS/network/device setup. Never restart the warmed `mag-llm` process during this release.
 
-## Bot VMs: add, delete, reset (`ops/magbot`)
+## Bot VMs: add, delete, reset (`magbotctl` = `ops/magbot`)
 
 One CLI owns the whole lifecycle of a bot VM. Everything a bot owns is named
 `magbot-<name>`: libvirt domain, `$MAGBOT_ROOT/magbot-<name>/` (overlay
@@ -30,11 +30,16 @@ One CLI owns the whole lifecycle of a bot VM. Everything a bot owns is named
 seed `magbot-<name>-seed.iso`, `metadata.json`), systemd units
 `magbot-<name>[-*]`, and the restricted Gitea user `magbot-<name>`.
 
-    sudo ops/magbot create <name>   # clean VM from golden; atomic
-    sudo ops/magbot verify <name>   # hard check, non-zero on any failure
-    sudo ops/magbot reset  <name>   # delete + create: memory/workspace wiped
-    sudo ops/magbot delete <name>   # sweep by prefix; idempotent, no leftovers
-    sudo ops/magbot list
+    sudo magbotctl create <name>   # clean VM from golden; atomic
+    sudo magbotctl verify <name>   # hard check, non-zero on any failure
+    sudo magbotctl reset  <name>   # delete + create: memory/workspace wiped
+    sudo magbotctl delete <name>   # sweep by prefix; idempotent, no leftovers
+    sudo magbotctl list
+
+`ops/deploy.sh` installs it as `/usr/local/bin/magbotctl`, a symlink into
+`/opt/mag-stack/current/ops/` (follows `ops/rollback.sh`).
+`/usr/local/bin/magbot` remains the native `magbot-native` binary used for
+guest actions (exec, browser, audit proxy), which reads both registries.
 
 - `create` builds the golden image with `ops/vm/build-golden.sh` if it is
   missing, creates the overlay (the golden is never written), generates the
@@ -46,7 +51,7 @@ seed `magbot-<name>-seed.iso`, `metadata.json`), systemd units
   are swept first.
 - `verify` on a present bot: metadata `ready`, domain running, overlay backed
   by the read-only golden, cloud-init done, `MAG_CONTEXT.md` present, LLM
-  endpoint reachable from the guest (`MAGBOT_SKIP_LLM=1` skips the last). On
+  endpoint reachable from the guest when `MAGBOT_LLM_URL` is set. On
   an absent bot: nothing with the prefix remains.
 - create/delete/reset run as transient unit `magbot-<name>-job` (follow with
   `journalctl -u magbot-<name>-job`); `MAGBOT_FOREGROUND=1` runs inline. A
@@ -56,7 +61,22 @@ seed `magbot-<name>-seed.iso`, `metadata.json`), systemd units
 - Site settings go in `/etc/magbot/magbot.env` (`MAGBOT_LLM_URL`,
   `MAGBOT_VCPUS`, `MAGBOT_RAM_GIB`, `MAGBOT_DISK_GIB`, `MAGBOT_NETWORK`,
   `MAGBOT_GITEA=none` on hosts without Gitea).
-- Legacy room bots `agent<N>` are still managed by `magbot-native` and the
-  room buttons; `ops/magbot` refuses those names until they are migrated.
+- LLM endpoint: bots reach the model through the room (host audit gateway
+  `127.0.0.1:8080`); no LLM port is open to `virbr0` (`mag-llm` is
+  `127.0.0.1:8090`, Qwen `127.0.0.1:8091`; `192.168.122.1:8091` is the bot
+  site publisher). `MAGBOT_LLM_URL` is therefore empty by default; set it in
+  `/etc/magbot/magbot.env` only together with a matching firewall rule. See
+  `ops/magbot.env.example` (installed once, never overwritten).
+- Room buttons: "Bot hinzufügen" / "Bot zurücksetzen" / "Bot löschen" call
+  `sudo magbot-agent-ctl spawn|reset|despawn bot<N>`, which runs
+  `magbotctl create|reset|delete` as the transient job. The room never
+  waits: the bot shows "VM wird erstellt …" until the job finishes, and a
+  failure appears as an error in the room (create/reset roll back, so
+  nothing is left). Reset also wipes the bot's memory. New VMs are named
+  `bot<N>`.
+- Legacy room bots `agent<N>` are still deleted by `magbot-native` and keep
+  working; `magbotctl` refuses those names until they are migrated.
+  "Bot zurücksetzen" on a legacy bot deletes its VM and creates a fresh
+  `bot<N>` instead.
 - Tests: `bash ops/tests/test-magbot.sh` (fake virsh/qemu-img/cloud-localds,
   no KVM). `FAIL_AT=<step>` injects a failure after a create step.

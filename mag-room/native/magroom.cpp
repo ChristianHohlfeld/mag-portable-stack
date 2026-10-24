@@ -784,8 +784,10 @@ static std::string next_vm(const std::vector<std::string> &skip = {}) {
         if (auto v = a.find(key))
           used.push_back(v->asStr());
   used.insert(used.end(), skip.begin(), skip.end());
+  // New VMs are magbot CLI bots (bot<N>); legacy agent<N> names are never
+  // handed out again (they are migrated separately).
   for (int n = 1;; n++) {
-    std::string c = "agent" + std::to_string(n);
+    std::string c = "bot" + std::to_string(n);
     if (std::find(used.begin(), used.end(), c) == used.end())
       return c;
   }
@@ -6964,59 +6966,6 @@ static ScopedResult undo_action(const std::string &id) {
   out["ok"] = true;
   return scoped_ok(out);
 }
-static bool quiesce_all(std::unique_lock<std::mutex> &, std::unique_lock<std::shared_mutex> &, bool);
-static ScopedResult reset_bot_workspace(const std::string &id, bool force = false) {
-  int idx = agent_index(id);
-  if (idx < 0)
-    return scoped_err(404, "Unbekannter Bot");
-  std::string vm = bot_field(idx, "vm");
-  if (vm.empty())
-    return scoped_err(400, "Nur-Chat-Bot hat keine Arbeitsdaten.");
-  // Hold no turn open while the guest is wiped (see quiesce_all in routes).
-  std::unique_lock<std::mutex> sched;
-  std::unique_lock<std::shared_mutex> turn;
-  if (!quiesce_all(sched, turn, force))
-    return scoped_err(409, "Ein Bot rechnet noch");
-  sched.unlock(); // TURN_MTX stays exclusive: no turn starts during the wipe
-  // Runs as the guest user. Leaves the browser binary, bridge token, UDP key
-  // and git identity in place; only the profile, cookies and work files go.
-  const std::string script =
-      "pkill -TERM -x mag-browser 2>/dev/null || true; "
-      "pkill -TERM -x chrome 2>/dev/null || true; "
-      "pkill -TERM -x chromium 2>/dev/null || true; "
-      "pkill -TERM -x google-chrome 2>/dev/null || true; "
-      "pkill -TERM -x chrome_crashpad_handler 2>/dev/null || true; "
-      "sleep 0.3; "
-      "pkill -KILL -x mag-browser 2>/dev/null || true; "
-      "pkill -KILL -x chrome 2>/dev/null || true; "
-      "pkill -KILL -x chromium 2>/dev/null || true; "
-      "pkill -KILL -x google-chrome 2>/dev/null || true; "
-      "pkill -KILL -x chrome_crashpad_handler 2>/dev/null || true; "
-      "rm -rf -- /home/bot/browserd/profile /home/bot/browserd/nav.log "
-      "/home/bot/browserd/chromium.log; "
-      "mkdir -p /home/bot/browserd/profile; "
-      "chmod 700 /home/bot/browserd/profile; "
-      "rm -rf -- /home/bot/room /home/bot/Downloads; "
-      "mkdir -p /home/bot/room; "
-      // Re-provision the bootstrap context (also in every system prompt).
-      "printf %s " + shell_quote(BOT_CONTEXT_MD) + " > /home/bot/MAG_CONTEXT.md; "
-      "echo reset-ok";
-  auto ran = guest_command(vm, script, 40);
-  if (ran.code)
-    return scoped_err(502, "Arbeitsdaten konnten nicht geleert werden.");
-  try {
-    ensure_browser(vm);
-  } catch (const std::exception &e) {
-    std::string why = one_line(e.what());
-    if (why.size() > 140)
-      why.resize(140);
-    return scoped_err(502, "Browser-Neustart fehlgeschlagen: " + why);
-  }
-  Val out = Val::object();
-  out["ok"] = true;
-  return scoped_ok(out);
-}
-
 #include "routes.hpp"
 
 // ---------------------------------------------------------------- main
@@ -7283,7 +7232,7 @@ int main() {
   if (!SINGLE_BOT.empty() && env("MAG_ROOM_SINGLE_BOT_VM", "off") == "on") {
     const int idx = agent_index(SINGLE_BOT);
     const std::string old_vm = bot_field(idx, "vm");
-    if (!old_vm.empty() && old_vm.rfind("agent", 0) == 0) {
+    if (!old_vm.empty()) {
       CmdResult verify = run_argv(
           {"sudo", "-n", AGENT_CTL, "verify", old_vm}, 20);
       if (verify.code == 3 &&

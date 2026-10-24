@@ -41,7 +41,9 @@ LOCK_DIR=${MAGBOT_LOCK_DIR:-/run/lock/magbot}
 LOCK_TIMEOUT=${MAGBOT_LOCK_TIMEOUT:-900}
 UNIT_DIR=${MAGBOT_UNIT_DIR:-/etc/systemd/system}
 NETWORK=${MAGBOT_NETWORK:-default}
-LLM_URL=${MAGBOT_LLM_URL:-http://192.168.122.1:8090/v1}
+# Empty = bots reach the model only via the room (default; see
+# ops/magbot.env.example). mag-llm itself is loopback-only.
+LLM_URL=${MAGBOT_LLM_URL:-}
 GIT_URL=${MAGBOT_GIT_URL:-http://192.168.122.1:3001}
 CONTEXT_MD=${MAGBOT_CONTEXT:-}
 if [[ -z $CONTEXT_MD ]]; then
@@ -61,6 +63,9 @@ POLL=${MAGBOT_POLL:-5}
 GITEA=${MAGBOT_GITEA:-/usr/sbin/runuser -u git -- /usr/local/bin/gitea --config /etc/gitea/app.ini}
 GITEA_RIGHTS=${MAGBOT_GITEA_RIGHTS:-/usr/local/sbin/mag-gitea-bot-rights}
 SKIP_LLM=${MAGBOT_SKIP_LLM:-0}
+[[ -n $LLM_URL ]] || SKIP_LLM=1
+# Root-only tool; installed as /usr/local/bin/magbotctl (magbot is the native
+# binary). The room calls it through /usr/local/sbin/magbot-agent-ctl.
 # FAIL_AT steps, in order: lock golden dir overlay gitea seed define tune boot verify
 
 die() { echo "magbot: $*" >&2; exit 1; }

@@ -173,6 +173,45 @@ grep -q '^unit magbot-jobbot-job$' "$FAKE_STATE/log" || fail "no transient unit"
 MAGBOT_FOREGROUND=0 "$MAGBOT" delete jobbot >/dev/null 2>&1; leak_check jobbot
 echo "ok job"
 
+# 6. room entry point (magbot-agent-ctl) -> this CLI: spawn/reset/despawn
+cat >"$BIN/magbot-native" <<'EOF'
+#!/usr/bin/env bash
+echo "native $*" >>"$FAKE_STATE/log"
+EOF
+chmod +x "$BIN/magbot-native"
+room_ctl() {
+  MAG_BOTS_MAGBOTCTL=$MAGBOT MAG_BOTS_MAGBOT=$BIN/magbot-native MAG_BOTS_SITE=/nonexistent \
+    MAGBOT_ENV_FILE=/nonexistent "$REPO/ops/magbot-agent-ctl" "$@"
+}
+room_ctl spawn bot1 >/dev/null 2>&1 || fail "room spawn bot1"
+"$MAGBOT" verify bot1 >/dev/null || fail "room-created bot1 does not verify"
+room_ctl verify bot1 | grep -q 'MAG_VM_METADATA_OK bot1' || fail "room verify bot1"
+room_ctl spawn bot1 >"$T/out" 2>&1 && fail "fresh spawn adopted an existing bot"
+grep -q 'already exists' "$T/out" || fail "spawn over existing must say already exists"
+# reset = delete + create: the workspace (overlay) is replaced, not reused
+ov=$MAGBOT_ROOT/magbot-bot1/magbot-bot1.qcow2
+echo "workspace-file-from-old-life" >>"$ov"
+created=$(sed -n 's/.*"created_at": \([0-9]*\).*/\1/p' "$MAGBOT_ROOT/magbot-bot1/metadata.json")
+room_ctl reset bot1 >/dev/null 2>&1 || fail "room reset bot1"
+! grep -q workspace-file-from-old-life "$ov" || fail "reset kept the old workspace"
+[[ $(grep -c '^virt-install magbot-bot1$' "$FAKE_STATE/log") == 2 ]] || fail "reset did not re-create"
+"$MAGBOT" verify bot1 >/dev/null || fail "verify after room reset"
+[[ -n $created ]] || fail "no created_at"
+# failed create (any step) leaves nothing, and the error reaches the caller
+FAIL_AT=boot room_ctl spawn bot2 >"$T/out" 2>&1 && fail "failed room spawn reported success"
+grep -q "injected failure after step 'boot'" "$T/out" || fail "room spawn error not surfaced"
+leak_check bot2
+room_ctl despawn bot1 >/dev/null 2>&1 || fail "room despawn bot1"
+leak_check bot1
+rc=0; room_ctl verify bot1 >/dev/null 2>&1 || rc=$?; [[ $rc == 3 ]] || fail "verify of deleted bot must exit 3"
+# legacy agent<N>: never created/reset by the CLI path; delete goes native
+room_ctl spawn agent5 >/dev/null 2>&1 && fail "legacy spawn accepted"
+room_ctl reset agent5 >/dev/null 2>&1 && fail "legacy reset accepted"
+room_ctl despawn agent5 >/dev/null 2>&1 || fail "legacy despawn"
+grep -q '^native despawn agent5$' "$FAKE_STATE/log" || fail "legacy despawn not via magbot-native"
+! grep -q 'magbot-agent5' "$FAKE_STATE/log" || fail "CLI touched a legacy bot"
+echo "ok room entry point"
+
 [[ $(sha256sum "$GOLDEN") == "$GOLDEN_SUM" && $(stat -c %a "$GOLDEN") == 444 ]] || fail "golden modified"
 [[ -z $(ls "$FAKE_STATE/domains") && -z $(ls "$FAKE_STATE/gitea") ]] || fail "global leak"
 echo "magbot tests passed"

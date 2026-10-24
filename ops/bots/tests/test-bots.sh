@@ -26,30 +26,68 @@ if [[ \$1 == despawn && -f $tmp/fail-despawn ]]; then exit 1; fi
 exit 0
 EOF
 chmod +x "$tmp/magbot"
-export MAG_BOTS_ROOT="$tmp/root" MAG_BOTS_MAGBOT="$tmp/magbot" MAG_BOTS_SITE="$here/site.sh"
-"$repo/ops/magbot-agent-ctl" spawn agent1
-[[ -s $tmp/root/www/agent1/index.html ]]
-[[ $(stat -c %a "$tmp/root/tokens/agent1") == 600 ]]
-grep -Fq 'agent1.bot.stardenburg.de' "$tmp/root/www/agent1/index.html"
-grep -Fq 'https://agent1.bot.stardenburg.de' "$tmp/guest/SITE.md"
+# Room buttons -> magbot CLI (magbotctl) mapping; mock CLI logs its argv.
+cat >"$tmp/magbotctl" <<EOF
+#!/bin/bash
+printf 'ctl %s\n' "\$*" >>"$tmp/log"
+if [[ \$1 == delete && -f $tmp/fail-despawn ]]; then exit 1; fi
+if [[ \$1 == create && -f $tmp/fail-create ]]; then echo 'magbot: injected' >&2; exit 1; fi
+exit 0
+EOF
+chmod +x "$tmp/magbotctl"
+export MAG_BOTS_ROOT="$tmp/root" MAG_BOTS_MAGBOT="$tmp/magbot" MAG_BOTS_SITE="$here/site.sh" \
+  MAG_BOTS_MAGBOTCTL="$tmp/magbotctl" MAGBOT_ENV_FILE=/nonexistent MAGBOT_ROOT="$tmp/vmroot"
+ctl() { "$repo/ops/magbot-agent-ctl" "$@"; }
+: >"$tmp/log"
+ctl reset bot7; grep -qx 'ctl reset bot7' "$tmp/log"
+ctl create bot7; grep -qx 'ctl create bot7' "$tmp/log"
+ctl despawn bot7; grep -qx 'ctl delete bot7' "$tmp/log"
+# Fresh spawn never adopts an existing magbot-<id> directory.
+mkdir -p "$tmp/vmroot/magbot-bot8"
+set +e; ctl spawn bot8 >"$tmp/bad.out" 2>&1; rc=$?; set -e
+[[ $rc -ne 0 ]] && grep -q 'already exists' "$tmp/bad.out" && ! grep -q 'ctl create bot8' "$tmp/log"
+echo '{"id": "bot8"}' >"$tmp/vmroot/magbot-bot8/metadata.json"
+ctl verify bot8 | grep -qx 'MAG_VM_METADATA_OK bot8'
+set +e; ctl verify bot9 2>"$tmp/bad.out"; rc=$?; set -e
+[[ $rc -eq 3 ]] && grep -q 'MAG_VM_METADATA_MISSING bot9' "$tmp/bad.out"
+# Failed create: error surfaces, no site is assigned.
+touch "$tmp/fail-create"
+set +e; ctl spawn bot9 >"$tmp/bad.out" 2>&1; rc=$?; set -e
+rm -f "$tmp/fail-create"
+[[ $rc -ne 0 && ! -e $tmp/root/www/bot9 ]] && grep -q injected "$tmp/bad.out"
+# Legacy agent<N>: delete via magbot-native only; never created or reset.
+for act in spawn create reset; do
+  set +e; ctl "$act" agent2 >"$tmp/bad.out" 2>&1; rc=$?; set -e
+  [[ $rc -eq 65 ]]
+done
+! grep -q 'agent2' "$tmp/log"
+: >"$tmp/log"
+ctl spawn bot1
+[[ -s $tmp/root/www/bot1/index.html ]]
+[[ $(stat -c %a "$tmp/root/tokens/bot1") == 600 ]]
+grep -Fq 'bot1.bot.stardenburg.de' "$tmp/root/www/bot1/index.html"
+grep -Fq 'https://bot1.bot.stardenburg.de' "$tmp/guest/SITE.md"
 bash -n "$tmp/guest/publish-site"
 grep -Fq 'tar --format=ustar -C /home/bot/www' "$tmp/guest/publish-site"
 grep -Fq 'http://192.168.122.1:8091/publish' "$tmp/guest/publish-site"
-! grep -Fq "$(cat "$tmp/root/tokens/agent1")" "$tmp/guest/SITE.md"
-! grep -Fq "$(cat "$tmp/root/tokens/agent1")" "$tmp/guest/publish-site"
-printf 'CUSTOM\n' >"$tmp/root/www/agent1/index.html"
-MAG_BOTS_SITE="$here/site.sh" "$repo/ops/magbot-agent-ctl" spawn agent1
-grep -Fxq CUSTOM "$tmp/root/www/agent1/index.html"
-head -1 "$tmp/log" | grep -qx 'spawn agent1'
+! grep -Fq "$(cat "$tmp/root/tokens/bot1")" "$tmp/guest/SITE.md"
+! grep -Fq "$(cat "$tmp/root/tokens/bot1")" "$tmp/guest/publish-site"
+printf 'CUSTOM\n' >"$tmp/root/www/bot1/index.html"
+: >"$tmp/log"
+MAG_BOTS_SITE="$here/site.sh" ctl spawn bot1
+grep -Fxq CUSTOM "$tmp/root/www/bot1/index.html"
+head -1 "$tmp/log" | grep -qx 'ctl create bot1'
+grep -qx 'audit-proxy bot1' "$tmp/log"
 touch "$tmp/fail-despawn"
 set +e
-"$repo/ops/magbot-agent-ctl" despawn agent1
+"$repo/ops/magbot-agent-ctl" despawn bot1
 rc=$?
 set -e
-[[ $rc -ne 0 && -f $tmp/root/www/agent1/index.html ]]
+[[ $rc -ne 0 && -f $tmp/root/www/bot1/index.html ]]
 rm -f "$tmp/fail-despawn"
-"$repo/ops/magbot-agent-ctl" despawn agent1
-[[ ! -e $tmp/root/www/agent1 && ! -e $tmp/root/tokens/agent1 ]]
+"$repo/ops/magbot-agent-ctl" despawn bot1
+grep -qx 'ctl delete bot1' "$tmp/log"
+[[ ! -e $tmp/root/www/bot1 && ! -e $tmp/root/tokens/bot1 ]]
 for bad in agent agentX ../etc 'agent1/../agent2' 'agent 1'; do
   set +e
   "$here/site.sh" assign "$bad" >"$tmp/bad.out" 2>&1

@@ -34,8 +34,27 @@ static bool exists(const std::string &n) {
       run({"/usr/bin/virsh", "-c", "qemu:///system", "dominfo", domain(n)}, 10);
   return r.code == 0;
 }
+// Bots created by the magbot CLI (ops/magbot) keep their metadata in
+// $MAGBOT_ROOT/magbot-<id>/metadata.json; legacy bots in bots/<id>/. Guest
+// actions accept both; lifecycle (create/delete/reset) of CLI bots belongs to
+// the CLI only.
+static fs::path cli_dir(const std::string &n) {
+  auto d = root / domain(n);
+  if (fs::is_symlink(root) || fs::is_symlink(d) ||
+      fs::is_symlink(d / "metadata.json"))
+    throw std::runtime_error("Unsafe registry symlink");
+  return d;
+}
+static bool legacy_bot(const std::string &n) {
+  return fs::exists(dir(n) / "metadata.json");
+}
+static fs::path meta_path(const std::string &n) {
+  if (legacy_bot(n)) return dir(n) / "metadata.json";
+  auto cli = cli_dir(n) / "metadata.json";
+  return fs::exists(cli) ? cli : dir(n) / "metadata.json";
+}
 static Val marker(const std::string &n) {
-  auto v = json(read(dir(n) / "metadata.json"));
+  auto v = json(read(meta_path(n)));
   if (str(v, "id") != n || str(v, "domain") != domain(n))
     throw std::runtime_error("Registry ownership mismatch");
   return v;
@@ -312,43 +331,6 @@ static std::string state(const std::string &n) {
   } catch (...) {
     return "booting";
   }
-}
-static void admission(const Val &c, const std::vector<Val> &rows, int cpu,
-                      int ram, int disk) {
-  if (cpu < 1 || ram < 2 || disk < 12)
-    throw std::runtime_error("Minimum VM size: 1 CPU, 2 GiB RAM, 12 GiB disk");
-  if (cpu > num(c, "max_bot_vcpus") || ram > num(c, "max_bot_ram_gib") ||
-      disk > num(c, "max_bot_disk_gib"))
-    throw std::runtime_error("Per-VM resource limit");
-  long cpus = cpu, rams = ram, disks = disk;
-  for (auto &r : rows) {
-    cpus += num(r, "vcpus");
-    rams += num(r, "ram_gib");
-    disks += num(r, "disk_gib");
-  }
-  if ((long)rows.size() >= num(c, "max_bots") ||
-      cpus > num(c, "max_total_vcpus") || rams > num(c, "max_total_ram_gib"))
-    throw std::runtime_error("VM admission budget exceeded");
-  unsigned long long available = 0;
-  std::istringstream mem(read("/proc/meminfo"));
-  std::string line;
-  while (std::getline(mem, line))
-    if (line.rfind("MemAvailable:", 0) == 0)
-      available = std::stoull(line.substr(13)) * 1024ULL;
-  constexpr uint64_t G = 1024ULL * 1024 * 1024;
-  if (available < (ram + num(c, "min_host_available_ram_gib")) * G)
-    throw std::runtime_error("Host memory reserve");
-  struct statvfs st {};
-  if (statvfs(root.c_str(), &st))
-    throw std::runtime_error("Disk check failed");
-  if ((uint64_t)st.f_bavail * st.f_frsize <
-      (disks + num(c, "min_host_free_disk_gib")) * G)
-    throw std::runtime_error("Host disk reserve");
-  double load;
-  getloadavg(&load, 1);
-  if (load >
-      c.find("max_host_load_per_cpu")->asNum() * sysconf(_SC_NPROCESSORS_ONLN))
-    throw std::runtime_error("Host load too high");
 }
 static std::vector<std::string>
 gitea_args(const std::vector<std::string> &args) {
@@ -650,126 +632,6 @@ static void preflight(const Val &c) {
     throw std::runtime_error("preflight failed: unit");
   }
 }
-static void spawn(const std::string &n, int cpu, int ram, int disk,
-                  const Val &c) {
-  auto d = dir(n);
-  if (fs::exists(d) || exists(n))
-    throw std::runtime_error("Bot already exists");
-  auto rows = registry();
-  // Unreferenced domains are removed by ops/agent-drift.sh. Refusing the
-  // spawn here left the new bot uncreated and the old orphan in place.
-  admission(c, rows, cpu, ram, disk);
-  auto golden = root / "base/golden.qcow2";
-  if (!fs::is_regular_file(golden) || fs::is_symlink(golden) ||
-      fs::file_size(golden) < 100 * 1024 * 1024)
-    throw std::runtime_error("Warm golden image required");
-  if ((fs::status(golden).permissions() & fs::perms::owner_write) !=
-      fs::perms::none)
-    throw std::runtime_error("Golden image must be read-only");
-  auto network = str(c, "network");
-  auto info = virsh({"net-info", network});
-  if (!std::regex_search(info, std::regex("Active:\\s+yes")))
-    virsh({"net-start", network});
-  virsh({"net-autostart", network});
-  fs::create_directories(d);
-  chmod(d.c_str(), 0711);
-  Val r = Val::object();
-  r["id"] = n;
-  r["domain"] = domain(n);
-  r["vcpus"] = cpu;
-  r["ram_gib"] = ram;
-  r["disk_gib"] = disk;
-  r["created_at"] = (long)time(nullptr);
-  r["state"] = "provisioning";
-  write(d / "metadata.json", mj::dump(r));
-  try {
-    checked({"qemu-img", "create", "-f", "qcow2", "-F", "qcow2", "-b",
-             golden.string(), (d / "root.qcow2").string(),
-             std::to_string(disk) + "G"});
-    auto g = getgrnam("kvm");
-    if (!g || chown((d / "root.qcow2").c_str(), 0, g->gr_gid) ||
-        chmod((d / "root.qcow2").c_str(), 0660))
-      throw std::runtime_error("Disk permissions failed");
-    // Golden contains the browser and guest agent; cloud-init only refreshes
-    // identity.
-    write(d / "user-data",
-          "#cloud-config\nhostname: " + domain(n) +
-              "\nssh_deletekeys: true\nssh_genkeytypes: [rsa, ecdsa, "
-              "ed25519]\nusers:\n  - name: bot\n    shell: /bin/bash\n    "
-              "lock_passwd: true\n    sudo: false\nruncmd:\n  - [systemctl, "
-              "enable, --now, qemu-guest-agent]\n  - [sh, -c, 'mkdir -p "
-              "/var/lib/magbot && touch /var/lib/magbot/ready']\n");
-    write(d / "meta-data", "instance-id: " + domain(n) + "-" + randomhex() +
-                               "\nlocal-hostname: " + domain(n) + "\n");
-    write(d / "network-config",
-          "version: 2\nethernets:\n  default:\n    match:\n      name: ens*\n  "
-          "  dhcp4: true\n    dhcp6: false\n    dhcp-identifier: mac\n");
-    checked({"cloud-localds", "--network-config",
-             (d / "network-config").string(), (d / "seed.iso").string(),
-             (d / "user-data").string(), (d / "meta-data").string()});
-    chmod((d / "seed.iso").c_str(), 0644);
-    checked({"virt-install",
-             "--connect",
-             "qemu:///system",
-             "--virt-type",
-             "kvm",
-             "--name",
-             domain(n),
-             "--memory",
-             std::to_string(ram * 1024),
-             "--vcpus",
-             std::to_string(cpu),
-             "--cpu",
-             "host-passthrough",
-             "--import",
-             "--noautoconsole",
-             "--osinfo",
-             "detect=off,require=off",
-             "--graphics",
-             "none",
-             "--network",
-             "network=" + network + ",model=virtio",
-             "--disk",
-             "path=" + (d / "root.qcow2").string() + ",format=qcow2,bus=virtio",
-             "--disk",
-             "path=" + (d / "seed.iso").string() + ",device=cdrom,readonly=on",
-             "--channel",
-             "unix,target.type=virtio,target.name=org.qemu.guest_agent.0",
-             "--boot",
-             "hd",
-             "--check",
-             "all=on"},
-            180);
-    virsh({"schedinfo", domain(n), "--set", "vcpu_period=100000", "--set",
-           "vcpu_quota=" + std::to_string(cpu * 100000), "--live", "--config"});
-    virsh({"blkdeviotune", domain(n), "vda", "--total-bytes-sec",
-           std::to_string(num(c, "disk_bytes_sec")), "--total-iops-sec",
-           std::to_string(num(c, "disk_iops_sec")), "--live", "--config"});
-    virsh({"autostart", domain(n)});
-    r["state"] = "booting";
-    write(d / "metadata.json", mj::dump(r));
-    provision_git(n);
-    try {
-      auto browser = prepare_browser(n);
-      if (browser.find("WARN:") != std::string::npos)
-        std::cerr << browser;
-    } catch (const std::exception &e) {
-      // The bot stays usable. Retry with: sudo magbot browser-sandbox <id>
-      std::cerr << "WARNING: " << e.what() << '\n';
-    }
-    try {
-      std::cerr << "audit-proxy: " << audit_proxy(n) << '\n';
-    } catch (const std::exception &e) {
-      // The bot stays usable; its web access is blocked until the proxy
-      // setup succeeds (sudo magbot audit-proxy <id>).
-      std::cerr << "WARNING: " << e.what() << '\n';
-    }
-  } catch (...) {
-    teardown(n);
-    throw;
-  }
-  std::cout << "Created " << domain(n) << " from golden image\n";
-}
 int main(int argc, char **argv) {
   try {
     setenv("LC_ALL", "C", 1);
@@ -777,7 +639,7 @@ int main(int argc, char **argv) {
       throw std::runtime_error("Run with sudo");
     if (argc < 2)
       throw std::runtime_error(
-          "Usage: magbot status|inspect|exec|spawn|despawn|doctor|preflight|audit-proxy "
+          "Usage: magbot status|inspect|exec|despawn|doctor|preflight|audit-proxy "
           "[ID]");
     auto c = cfg();
     std::string action = argv[1], n = argc > 2 ? argv[2] : "";
@@ -884,7 +746,7 @@ int main(int argc, char **argv) {
       // Exit 3 ONLY when the VM's own registry metadata is definitely
       // absent. Inaccessible disks, malformed metadata and libvirt errors
       // must NOT trigger automatic recovery/deletion.
-      const auto p = dir(n) / "metadata.json";
+      const auto p = meta_path(n);
       if (!fs::exists(p)) {
         std::cerr << "MAG_VM_METADATA_MISSING " << n << '\n';
         return 3;
@@ -921,24 +783,14 @@ int main(int argc, char **argv) {
           }
         }
       }
+      // Legacy agent<N> registry only (until those bots are migrated).
+      // CLI bots are deleted by magbotctl, never by this teardown.
+      if (!legacy_bot(n) && fs::exists(cli_dir(n) / "metadata.json"))
+        throw std::runtime_error("CLI bot; use magbotctl delete " + n);
       teardown(n);
       std::cout << "Removed only target bot VM and private data\n";
     } else if (action == "spawn") {
-      int cpu = num(c, "default_vcpus"), ram = num(c, "default_ram_gib"),
-          disk = num(c, "default_disk_gib");
-      for (int i = 3; i + 1 < argc; i += 2) {
-        std::string arg = argv[i];
-        int v = std::stoi(argv[i + 1]);
-        if (arg == "--vcpus")
-          cpu = v;
-        else if (arg == "--ram")
-          ram = v;
-        else if (arg == "--disk")
-          disk = v;
-        else
-          throw std::runtime_error("Unknown option");
-      }
-      spawn(n, cpu, ram, disk, c);
+      throw std::runtime_error("spawn was removed; use magbotctl create");
     } else
       throw std::runtime_error("Unknown lifecycle action");
     close(lock);

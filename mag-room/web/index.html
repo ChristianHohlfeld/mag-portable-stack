@@ -1808,7 +1808,7 @@ function workBusy(){return !!state.busy||(state.pending||[]).length>0||busyBots.
 async function busyRun(path,verb,ok,keep){const ask=()=>magConfirm({title:'Ein Bot rechnet noch',text:'Laufende und wartende Arbeit wird abgebrochen, danach wird '+verb+'.',ok,cancel:keep,danger:true});
  if(workBusy()){if(!await ask())return null;return api(path,{force:true})}
  try{return await api(path,{})}catch(e){if(e.message!=='Ein Bot rechnet noch')throw e;if(!await ask())return null;return api(path,{force:true})}}
-async function askResetBot(a){try{const r=await busyRun('/api/agents/'+encodeURIComponent(a.id)+'/workspace/reset','der Bot zurückgesetzt','Abbrechen und zurücksetzen','Nicht zurücksetzen');if(r)notice('Arbeitsdaten von '+a.name+' wurden zurückgesetzt.')}catch(e){notice(e.message)}}
+async function askResetBot(a){try{const r=await busyRun('/api/agents/'+encodeURIComponent(a.id)+'/workspace/reset','der Bot zurückgesetzt','Abbrechen und zurücksetzen','Nicht zurücksetzen');if(r){notice(a.name+' wird zurückgesetzt: Erinnerungen gelöscht, VM wird neu erstellt – das dauert ein paar Minuten.');refresh()}}catch(e){notice(e.message)}}
 function renderData(){
  const rc=$('room-count');if(!rc)return;
  const msgs=(state.room||[]).length,files=(state.files||[]).length;

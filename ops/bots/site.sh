@@ -8,7 +8,7 @@ magbot="${MAG_BOTS_MAGBOT:-/usr/local/bin/magbot}"
 
 die() { echo "$*" >&2; exit 1; }
 
-valid_id() { [[ ${1:-} =~ ^agent[0-9]+$ ]]; }
+valid_id() { [[ ${1:-} =~ ^(agent|bot)[0-9]+$ ]]; }
 
 ensure_dirs() {
   [[ $root != *$'\n'* && $root == /* && $root != / ]] || die "Unsafe bot site root"
@@ -66,7 +66,7 @@ publish_script() {
 set -euo pipefail
 token=\$(tr -d '\\n' < /home/bot/.site-token)
 id=\$(tr -d '\\n' < /home/bot/.site-id)
-[[ \$id =~ ^agent[0-9]+\$ ]] || { echo 'bad site id' >&2; exit 1; }
+[[ \$id =~ ^(agent|bot)[0-9]+\$ ]] || { echo 'bad site id' >&2; exit 1; }
 mkdir -p /home/bot/www
 [[ -f /home/bot/www/index.html ]] || { echo 'index.html missing in /home/bot/www' >&2; exit 1; }
 tar --format=ustar -C /home/bot/www -cf - . | curl -fsS --max-time 60 \\
@@ -148,7 +148,7 @@ backfill() {
     return 0
   fi
   while read -r id _; do
-    [[ $id =~ ^agent[0-9]+$ ]] || continue
+    [[ $id =~ ^(agent|bot)[0-9]+$ ]] || continue
     assign_site "$id" || echo "WARN: site assign failed for $id" >&2
   done <<<"$ids"
 }

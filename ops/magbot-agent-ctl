@@ -1,37 +1,70 @@
 #!/usr/bin/env bash
+# Room lifecycle entry point (sudoers: magbot may run only this). New bots
+# (bot<N>) are managed by the magbot CLI (magbotctl): spawn = create of a
+# fresh name, create = finish/redo after a room restart, reset = delete +
+# create (memory and workspace wiped), despawn = delete. Each runs as the
+# CLI's transient systemd job magbot-<id>-job and rolls back on failure.
+# Legacy agent<N> bots stay on magbot-native until they are migrated: they
+# can be inspected and deleted here, never created or reset.
 set -euo pipefail
 magbot=${MAG_BOTS_MAGBOT:-/usr/local/bin/magbot}
+magbotctl=${MAG_BOTS_MAGBOTCTL:-/usr/local/bin/magbotctl}
 site=${MAG_BOTS_SITE:-/usr/local/lib/mag-bots/site.sh}
+env_file=${MAGBOT_ENV_FILE:-/etc/magbot/magbot.env}
 if [[ $# == 1 && $1 == preflight ]]; then
   exec "$magbot" preflight
 fi
-[[ $# == 2 && ($1 == spawn || $1 == despawn || $1 == audit-proxy || $1 == ip || $1 == verify) && $2 =~ ^agent[0-9]+$ ]] || { echo 'Invalid lifecycle invocation' >&2; exit 64; }
-if [[ $1 == verify ]]; then
-  # Native read-only registry check. Exit 3 means missing metadata; any other
+[[ $# == 2 && $1 =~ ^(spawn|create|reset|despawn|audit-proxy|ip|verify)$ && $2 =~ ^(agent|bot)[0-9]+$ ]] || { echo 'Invalid lifecycle invocation' >&2; exit 64; }
+action=$1 id=$2
+legacy=0; [[ $id == agent* ]] && legacy=1
+cli_root() { ( [[ -r $env_file ]] && source "$env_file"; printf '%s\n' "${MAGBOT_ROOT:-/var/lib/libvirt/images/magbot}" ); }
+cli_meta() { printf '%s/magbot-%s/metadata.json\n' "$(cli_root)" "$id"; }
+if [[ $action == verify ]]; then
+  # Read-only registry check. Exit 3 means missing metadata; any other
   # error must fail closed without detaching or deleting a workspace.
-  exec "$magbot" verify "$2"
+  if ((legacy)); then exec "$magbot" verify "$id"; fi
+  meta=$(cli_meta)
+  if [[ ! -e $meta && ! -L $meta ]]; then echo "MAG_VM_METADATA_MISSING $id" >&2; exit 3; fi
+  [[ -f $meta && ! -L $meta ]] || { echo 'VM metadata is not a regular file' >&2; exit 1; }
+  echo "MAG_VM_METADATA_OK $id"; exit 0
 fi
-if [[ $1 == ip ]]; then
+if [[ $action == ip ]]; then
   # Host-side lease/agent lookup: faster and more reliable than running
   # 'hostname -I' inside the guest for every browser connection.
   # Verify the target is an owned MAG VM before asking libvirt.
-  "$magbot" inspect "$2" >/dev/null
+  "$magbot" inspect "$id" >/dev/null
   for source in lease agent; do
     addresses=$(/usr/bin/timeout 6 /usr/bin/virsh -c qemu:///system domifaddr "magbot-$2" --source "$source" 2>/dev/null || true)
     ip=$(awk '$3=="ipv4" {split($4,a,"/"); if(a[1] ~ /^192[.]168[.]122[.]/) {split(a[1],b,"."); if(b[4]>=2 && b[4]<=254) {print a[1];exit}}}' <<<"$addresses")
     if [[ -n $ip ]]; then printf '%s\n' "$ip"; exit 0; fi
   done
-  echo "MAG VM DHCP lease and guest-agent address unavailable for $2" >&2
+  echo "MAG VM DHCP lease and guest-agent address unavailable for $id" >&2
   exit 3
 fi
-if [[ $1 == spawn ]]; then
-  "$magbot" spawn "$2"
-  if [[ -x $site ]]; then "$site" assign "$2" || echo "WARN: bot site assign failed for $2" >&2; fi
+if [[ $action == audit-proxy ]]; then exec "$magbot" audit-proxy "$id"; fi
+if ((legacy)); then
+  [[ $action == despawn ]] || { echo "$id is a legacy bot: $action is not supported (spawn/reset run via magbotctl for bot<N>)" >&2; exit 65; }
+  "$magbot" despawn "$id"
+  if [[ -x $site ]]; then "$site" remove "$id" || echo "WARN: bot site cleanup failed for $id" >&2; fi
   exit 0
 fi
-if [[ $1 == despawn ]]; then
-  "$magbot" despawn "$2"
-  if [[ -x $site ]]; then "$site" remove "$2" || echo "WARN: bot site cleanup failed for $2" >&2; fi
-  exit 0
-fi
-exec "$magbot" "$1" "$2"
+case $action in
+  spawn)
+    # A fresh name must not exist: the room skips it (orphans are removed by
+    # its rollback) instead of adopting someone else's workspace.
+    meta=$(cli_meta)
+    if [[ -e ${meta%/*} ]] || /usr/bin/virsh -c qemu:///system dominfo "magbot-$id" >/dev/null 2>&1; then
+      echo "magbot-$id already exists" >&2; exit 1
+    fi
+    "$magbotctl" create "$id" ;;
+  create|reset) "$magbotctl" "$action" "$id" ;;
+  despawn)
+    "$magbotctl" delete "$id"
+    if [[ -x $site ]]; then "$site" remove "$id" || echo "WARN: bot site cleanup failed for $id" >&2; fi
+    exit 0 ;;
+esac
+# Same best-effort post-create steps the native spawn did; the bot is usable
+# without them (web access stays blocked until the proxy is set).
+"$magbot" audit-proxy "$id" >&2 || echo "WARN: audit proxy setup failed for $id (sudo magbot audit-proxy $id)" >&2
+if [[ -x $site ]]; then "$site" assign "$id" || echo "WARN: bot site assign failed for $id" >&2; fi
+exit 0

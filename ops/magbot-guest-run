@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-[[ $# -ge 2 && $1 =~ ^agent[0-9]+$ ]] || { echo 'Invalid guest identity' >&2; exit 64; }
+[[ $# -ge 2 && $1 =~ ^(agent|bot)[0-9]+$ ]] || { echo 'Invalid guest identity' >&2; exit 64; }
 vm=$1; shift
 case "${1:-}" in
   --stdin)

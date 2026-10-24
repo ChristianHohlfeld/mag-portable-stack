@@ -208,7 +208,15 @@ ln -sfn "$RELEASE" /opt/mag-stack/.current-next
 mv -Tf /opt/mag-stack/.current-next /opt/mag-stack/current
 # Compatibility name is deliberately retained for existing guest wrappers/sudoers.
 install -m 0755 "$RELEASE/bin/magbot-native" /usr/local/bin/magbot
-install -m 0755 "$SOURCE/ops/spawnbot" "$SOURCE/ops/despawnbot" /usr/local/bin/
+# Bot lifecycle CLI (ops/magbot). /usr/local/bin/magbot stays the native
+# binary above, so the CLI is magbotctl. A symlink into the current release:
+# it resolves its ops tree (golden builder, bot context) from there and
+# follows ops/rollback.sh automatically.
+ln -sfn /opt/mag-stack/current/ops/magbot /usr/local/bin/magbotctl
+rm -f /usr/local/bin/spawnbot /usr/local/bin/despawnbot
+# Site configuration for magbotctl; an existing file is never overwritten.
+install -d -m 0755 /etc/magbot
+[[ -e /etc/magbot/magbot.env ]] || install -m 0644 "$SOURCE/ops/magbot.env.example" /etc/magbot/magbot.env
 install -m 0755 "$SOURCE/ops/magbot-guest-run" "$SOURCE/ops/magbot-agent-ctl" "$SOURCE/ops/magbot-netmode" /usr/local/sbin/
 install -m 0440 "$SOURCE/ops/magbot-guest.sudoers" /etc/sudoers.d/magbot-guest
 visudo -cf /etc/sudoers.d/magbot-guest >/dev/null

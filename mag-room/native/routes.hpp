@@ -28,6 +28,11 @@ static void agents_event() {
   publish(mj::dump(e));
 }
 #include "mcp_routes.hpp"
+// VM lifecycle runs through the magbot CLI (ops/magbot, installed as
+// magbotctl) behind the sudo entry point AGENT_CTL: spawn = create of a fresh
+// name, reset = delete + create, despawn = delete. The CLI runs each as a
+// transient systemd job and rolls back on failure, so a failed create leaves
+// nothing behind.
 // A VM spawn takes minutes. The bot is stored at once with "pending_vm" and
 // works chat-only until its VM is ready; neither the HTTP request nor the
 // turn lock waits for it. A restart during the spawn resumes it (resume=true
@@ -47,7 +52,10 @@ static bool vm_owned_by_other(const std::string &id, const std::string &vm) {
     }
   return false;
 }
-static void finish_spawn(const std::string &id, std::string vm, bool resume) {
+// op: "spawn" (fresh name) or "reset" (same name, wiped). A resume after a
+// restart always uses "create", which finishes or cleanly redoes a half job.
+static void finish_spawn(const std::string &id, std::string vm, bool resume,
+                         const std::string &op = "spawn") {
   struct Reservation {
     std::set<std::string> names;
     ~Reservation() {
@@ -59,7 +67,7 @@ static void finish_spawn(const std::string &id, std::string vm, bool resume) {
   std::string error;
   bool ok = false;
   for (int attempt = 0; attempt < 8 && !ok; ++attempt) {
-    auto result = run_argv({"sudo", "-n", AGENT_CTL, "spawn", vm}, 600);
+    auto result = run_argv({"sudo", "-n", AGENT_CTL, resume ? "create" : op, vm}, 1800);
     if (result.code == 0) { ok = true; break; }
     error = trim(result.out).substr(0, 400);
     // A restart adopts the VM this same spawn already created.
@@ -67,7 +75,7 @@ static void finish_spawn(const std::string &id, std::string vm, bool resume) {
     // Roll back this attempt. A name that belongs to another bot is left alone.
     if (!vm_owned_by_other(id, vm))
       run_argv({"sudo", "-n", AGENT_CTL, "despawn", vm}, 180);
-    if (error.find("already exists") == std::string::npos) break;
+    if (op != "spawn" || error.find("already exists") == std::string::npos) break;
     tried.push_back(vm);
     std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
     int idx = agent_index(id);
@@ -128,6 +136,81 @@ static void resume_pending_spawns() {
   }
   for (auto &p : pending)
     std::thread([p] { finish_spawn(p.first, p.second, true); }).detach();
+}
+// "Bot zurücksetzen": memory and VM workspace are wiped by deleting and
+// re-creating the VM (magbot reset). The request returns at once; the bot
+// shows "VM wird erstellt" like a new one and keeps working chat-only until
+// the job finishes. On failure the bot stays, without a VM, and the room
+// shows the error. A legacy agent<N> VM is deleted via the old registry and
+// replaced by a fresh CLI bot name.
+static bool quiesce_all(std::unique_lock<std::mutex> &, std::unique_lock<std::shared_mutex> &, bool);
+static ScopedResult reset_bot(const std::string &id, bool force) {
+  std::string vm;
+  {
+    std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
+    int idx = agent_index(id);
+    if (idx < 0) return scoped_err(404, "Unbekannter Bot");
+    vm = bot_field(idx, "vm");
+    if (vm.empty())
+      return scoped_err(400, bot_field(idx, "pending_vm").empty()
+                                 ? "Nur-Chat-Bot hat keine Arbeitsdaten."
+                                 : "VM wird gerade erstellt.");
+  }
+  std::unique_lock<std::mutex> sched;
+  std::unique_lock<std::shared_mutex> turn;
+  if (!quiesce_all(sched, turn, force))
+    return scoped_err(409, "Ein Bot rechnet noch");
+  sched.unlock();
+  const bool legacy = vm.rfind("agent", 0) == 0;
+  std::string target = vm;
+  {
+    std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
+    int idx = agent_index(id);
+    if (idx < 0 || bot_field(idx, "vm") != vm)
+      return scoped_err(409, "Bot wurde inzwischen geändert");
+    if (legacy) target = next_vm({vm});
+    AGENTS[idx]["memory"] = Val::array();
+    AGENTS[idx]["vm"] = "";
+    AGENTS[idx]["pending_vm"] = target;
+    AGENTS[idx]["vm_attach"] = true; // keep the bot if re-creation fails
+    SPAWNING_VMS.insert(target);
+    save_agents();
+  }
+  {
+    std::lock_guard<std::mutex> lk(VM_IP_MTX);
+    VM_IP_CACHE.erase(vm);
+  }
+  agents_event();
+  std::thread([id, vm, target, legacy] {
+    if (legacy) {
+      auto gone = run_argv({"sudo", "-n", AGENT_CTL, "despawn", vm}, 600);
+      if (gone.code != 0) {
+        std::string why = trim(gone.out).substr(0, 400);
+        {
+          std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
+          SPAWNING_VMS.erase(target);
+          int idx = agent_index(id);
+          if (idx >= 0 && bot_field(idx, "pending_vm") == target) {
+            drop_key(AGENTS[idx], "pending_vm");
+            drop_key(AGENTS[idx], "vm_attach");
+            AGENTS[idx]["vm"] = vm; // old VM is still there; keep using it
+            try { save_agents(); } catch (...) {}
+          }
+        }
+        agents_event();
+        emit_event("error", id, "", "Bot konnte nicht zurückgesetzt werden: " + why);
+        return;
+      }
+      finish_spawn(id, target, false, "spawn");
+    } else {
+      finish_spawn(id, target, false, "reset");
+    }
+  }).detach();
+  Val out = Val::object();
+  out["ok"] = true;
+  out["spawning"] = true;
+  out["pending_vm"] = target;
+  return scoped_ok(out);
 }
 // Clear/reset must never race a running turn: a cancelled turn still appends
 // its partial answer and a queued job would answer into the emptied room.
@@ -1152,7 +1235,7 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
       Val body; (void)mj::parse(r.body, body);
       const bool force = body.isObj() && body.find("force") && body.find("force")->truthy();
       if (!force && work_pending()) { busy_json(fd); return; }
-      auto result = reset_bot_workspace(id, force);
+      auto result = reset_bot(id, force);
       send_json(fd, result.code, result.body);
       return;
     }
@@ -1211,13 +1294,6 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
         return;
       }
       std::string vm = bot_field(idx, "vm");
-      if (!vm.empty()) {
-        auto result = run_argv({"sudo", "-n", AGENT_CTL, "despawn", vm}, 180);
-        if (result.code != 0) {
-          error_json(fd, 502, result.out);
-          return;
-        }
-      }
       {
         std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
         idx = agent_index(id);
@@ -1233,6 +1309,26 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
       }
       drop_bot_refs(id);
       agents_event();
+      if (!vm.empty()) {
+        // The VM is deleted by a background magbot job; the room does not
+        // wait. The name stays reserved until the job is done, and a failure
+        // is reported in the room (the CLI delete is idempotent: retry with
+        // sudo magbotctl delete <vm>).
+        {
+          std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
+          SPAWNING_VMS.insert(vm);
+        }
+        std::thread([id, vm] {
+          auto result = run_argv({"sudo", "-n", AGENT_CTL, "despawn", vm}, 600);
+          {
+            std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
+            if (result.code == 0) SPAWNING_VMS.erase(vm);
+          }
+          if (result.code != 0)
+            emit_event("error", id, "", "VM " + vm + " konnte nicht gelöscht werden: " +
+                                            trim(result.out).substr(0, 400));
+        }).detach();
+      }
       send_json(fd, 200, "{\"ok\":true}");
       return;
     }

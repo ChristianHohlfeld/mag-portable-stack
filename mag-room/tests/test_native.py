@@ -2080,12 +2080,12 @@ class SingleBotVM(unittest.TestCase):
    vm=self.request('/api/state')['agents'][0]['vm']
    if vm:break
    time.sleep(.05)
-  self.assertEqual(vm,'agent2','must not reuse the parked bot VM agent1')
+  self.assertEqual(vm,'bot1','new VMs are magbot CLI bots; never the parked legacy agent1')
   self.assertNotIn('pending_vm',self.request('/api/state')['agents'][0],
                    'single-bot VM must publish completed lifecycle')
-  self.assertIn('spawn agent2',(self.ctl.parent/'ctl.log').read_text())
+  self.assertIn('spawn bot1',(self.ctl.parent/'ctl.log').read_text())
   stored={a['id']:a for a in json.loads(self.state.joinpath('agents.json').read_text())}
-  self.assertEqual(stored['deepseek-chat']['vm'],'agent2');self.assertEqual(stored['alt']['vm'],'agent1')
+  self.assertEqual(stored['deepseek-chat']['vm'],'bot1');self.assertEqual(stored['alt']['vm'],'agent1')
  def test_zz_missing_vm_metadata_is_quarantined_and_replaced_without_deletion(self):
   # Restore from a room snapshot that still says VM=agent2, but whose
   # registry metadata was removed externally. The old disk/VM must not
@@ -2107,19 +2107,19 @@ class SingleBotVM(unittest.TestCase):
   for _ in range(200):
    try:
     actual=self.request('/api/state')['agents'][0]
-    if actual.get('vm')=='agent3':break
+    if actual.get('vm')=='bot1':break
    except Exception:pass
    time.sleep(.05)
   else:self.fail('missing registry was not recovered to a new VM')
   records={x['id']:x for x in json.loads(cls.state.joinpath('agents.json').read_text())}
   bot=records['deepseek-chat']
-  self.assertEqual(bot['vm'],'agent3')
+  self.assertEqual(bot['vm'],'bot1')
   self.assertEqual(bot['unavailable_vm'],'agent2')
   self.assertEqual(bot['memory'],before[1]['memory'])
   self.assertEqual(records['alt'],before[0])
   log=(cls.ctl.parent/'ctl.log').read_text()[previous_log_size:]
   self.assertIn('verify agent2',log)
-  self.assertIn('spawn agent3',log)
+  self.assertIn('spawn bot1',log)
   self.assertNotIn('despawn agent2',log)
   self.assertNotIn('spawn agent2',log)
 # Fake VM lifecycle: "slow" holds the spawn for N seconds, "exists" lists VM
@@ -2131,11 +2131,12 @@ if [ "$1" = preflight ]; then
  if [ -f "$d/fail-preflight" ]; then echo "preflight failed: $(cat "$d/fail-preflight")" >&2; exit 1; fi
  exit 0
 fi
-if [ "$1" = spawn ]; then
+case "$1" in spawn|create|reset)
  [ -f "$d/slow" ] && sleep "$(cat "$d/slow")"
- if grep -qx "$2" "$d/exists" 2>/dev/null; then echo "Bot already exists" >&2; exit 1; fi
+ if [ "$1" = spawn ] && grep -qx "$2" "$d/exists" 2>/dev/null; then echo "Bot already exists" >&2; exit 1; fi
  [ -f "$d/fail" ] && { echo "Warm golden image required" >&2; exit 1; }
-fi
+esac
+if [ "$1" = despawn ] && [ -f "$d/slow-despawn" ]; then sleep "$(cat "$d/slow-despawn")"; fi
 exit 0
 """
 class MultiBot(unittest.TestCase):
@@ -2199,7 +2200,7 @@ class MultiBot(unittest.TestCase):
   log=(self.ctl.parent/'ctl.log').read_text();self.assertIn('spawn '+vm,log)
   self.request('/api/agents/'+b['id'],method='DELETE')
   self.assertNotIn(b['id'],self._agents())
-  self.assertIn('despawn '+vm,(self.ctl.parent/'ctl.log').read_text())
+  self._logged('despawn '+vm)
   self.assertEqual(self.request('/api/state')['agents'][0]['id'] in ('q4bot','iq3bot'),True)
  def _ready(self,bot,timeout=10):
   for _ in range(int(timeout/.05)):
@@ -2207,6 +2208,11 @@ class MultiBot(unittest.TestCase):
    if a and a.get('vm') and not a.get('spawning'):return a
    time.sleep(.05)
   self.fail('VM never became ready: %r'%self._agents().get(bot))
+ def _logged(self,line,timeout=5):
+  for _ in range(int(timeout/.05)):
+   if line in (self.ctl.parent/'ctl.log').read_text().splitlines():return
+   time.sleep(.05)
+  self.fail('ctl never ran %r'%line)
  def _sudo(self):
   if subprocess.run(['sudo','-n','true'],capture_output=True).returncode!=0:self.skipTest('needs sudo -n for the fake lifecycle')
  def _flag(self,name,value=None):
@@ -2249,11 +2255,11 @@ class MultiBot(unittest.TestCase):
  def test_04d_orphan_vm_name_is_skipped(self):
   self._sudo()
   used={a.get('vm') for a in self._agents().values()}
-  orphan=next('agent%d'%n for n in range(1,50) if 'agent%d'%n not in used)
+  orphan=next('bot%d'%n for n in range(1,50) if 'bot%d'%n not in used)
   self._flag('exists',orphan+'\n')
   try:
    b=self.request('/api/agents',{'name':'Nach Waise'});self.assertEqual(b['pending_vm'],orphan)
-   a=self._ready(b['id']);self.assertNotEqual(a['vm'],orphan);self.assertTrue(a['vm'].startswith('agent'))
+   a=self._ready(b['id']);self.assertNotEqual(a['vm'],orphan);self.assertTrue(a['vm'].startswith('bot'))
    self.assertIn('despawn '+orphan,(self.ctl.parent/'ctl.log').read_text())
   finally:self._flag('exists')
   self.request('/api/agents/'+b['id'],method='DELETE')
@@ -2284,9 +2290,54 @@ class MultiBot(unittest.TestCase):
   saved={x['id']:x for x in json.loads(self.state.joinpath('agents.json').read_text())}[b['id']]
   self.assertNotIn('pending_vm',saved);self.assertNotIn('vm_attach',saved)
   self.request('/api/agents/'+b['id']+'/vm',{})
-  self.assertTrue(self._ready(b['id'])['vm'].startswith('agent'))
+  self.assertTrue(self._ready(b['id'])['vm'].startswith('bot'))
   self.error(409,'/api/agents/'+b['id']+'/vm',{})
   self.error(404,'/api/agents/gibtsnicht/vm',{})
+  self.request('/api/agents/'+b['id'],method='DELETE')
+ def test_04h_room_buttons_map_to_magbot_cli(self):
+  # "Bot hinzufügen" -> spawn (create), "Bot zurücksetzen" -> reset, "Bot löschen" -> despawn (delete)
+  self._sudo()
+  b=self.request('/api/agents',{'name':'Knopf'});vm=self._ready(b['id'])['vm']
+  self.assertTrue(vm.startswith('bot'));self._logged('spawn '+vm)
+  self.request('/api/agent/'+b['id']+'/remember',{'fact':'altes Wissen'})
+  self.assertTrue(self._agents()[b['id']].get('memory_count'))
+  self._flag('slow','2')
+  try:
+   t=time.time();r=self.request('/api/agents/'+b['id']+'/workspace/reset',{'force':True})
+   self.assertLess(time.time()-t,1.5,'reset must not block the room')
+   self.assertTrue(r['spawning']);self.assertEqual(r['pending_vm'],vm)
+   a=self._agents()[b['id']];self.assertTrue(a['spawning']);self.assertEqual(a['vm'],'')
+   self.assertFalse(a.get('memory_count'),'reset must wipe memory')
+   self.error(400,'/api/agents/'+b['id']+'/workspace/reset',{'force':True})
+  finally:self._flag('slow')
+  self.assertEqual(self._ready(b['id'])['vm'],vm);self._logged('reset '+vm)
+  saved={x['id']:x for x in json.loads(self.state.joinpath('agents.json').read_text())}[b['id']]
+  self.assertEqual(saved['memory'],[]);self.assertNotIn('pending_vm',saved);self.assertNotIn('vm_attach',saved)
+  self._flag('slow-despawn','2')
+  try:
+   t=time.time();self.request('/api/agents/'+b['id'],method='DELETE')
+   self.assertLess(time.time()-t,1.5,'delete must not block the room')
+   self.assertNotIn(b['id'],self._agents())
+   self.assertNotEqual(self.request('/api/agents',{'name':'Gleich danach','vm':False})['vm'],vm)
+  finally:self._flag('slow-despawn')
+  self._logged('despawn '+vm)
+  self.request('/api/agents/'+self._by_name('Gleich danach'),method='DELETE')
+ def _by_name(self,name):
+  return next(i for i,a in self._agents().items() if a['name']==name)
+ def test_04i_failed_reset_keeps_bot_and_reports(self):
+  self._sudo()
+  b=self.request('/api/agents',{'name':'Reset kaputt'});vm=self._ready(b['id'])['vm']
+  self._flag('fail','1')
+  try:
+   self.request('/api/agents/'+b['id']+'/workspace/reset',{'force':True})
+   for _ in range(100):
+    a=self._agents().get(b['id'])
+    if a and not a.get('spawning'):break
+    time.sleep(.05)
+  finally:self._flag('fail')
+  self.assertIsNotNone(a,'a failed reset must not remove the bot');self.assertEqual(a['vm'],'')
+  self._logged('reset '+vm);self._logged('despawn '+vm)
+  self.log.flush();self.assertIn('golden',(pathlib.Path(self.tmp.name)/'server.log').read_text(errors='replace'))
   self.request('/api/agents/'+b['id'],method='DELETE')
  def test_04f_preflight_failure_leaves_nothing(self):
   self._sudo()
@@ -2943,16 +2994,22 @@ class BootstrapContext(unittest.TestCase):
    for rule in self.RULES:self.assertIn(rule,system)
    self.assertLess(system.index(self.CONTEXT),system.index('\n[Erinnerungen]'))
   finally:self.request('/api/agents/'+b['id'],method='DELETE')
- def test_02_reset_bot_reprovisioned(self):
-  if subprocess.run(['sudo','-n','true'],capture_output=True).returncode!=0:self.skipTest('needs sudo -n for the fake guest runner')
+ def test_02_reset_legacy_bot_recreated_via_cli(self):
+  # "Bot zurücksetzen" on a legacy agent<N>: its VM is deleted on the old
+  # registry and a fresh magbot CLI bot (bot<N>) is created; memory is wiped.
+  # The bootstrap context then comes from the CLI's NoCloud seed.
+  if subprocess.run(['sudo','-n','true'],capture_output=True).returncode!=0:self.skipTest('needs sudo -n for the fake lifecycle')
   self.wait_idle()
-  try:self.request('/api/agents/vmbot/workspace/reset',{})
-  except urllib.error.HTTPError as e:self.assertEqual(e.code,502)  # fake guest has no browser
-  log=(self.guest.parent/'guest.log').read_text()
-  script=log[log.rindex('== agent9'):]
-  self.assertIn('/home/bot/MAG_CONTEXT.md',script);self.assertIn('reset-ok',script)
-  self.assertIn(self.GERMAN,script)
-  for rule in self.RULES:self.assertIn(rule,script)
+  r=self.request('/api/agents/vmbot/workspace/reset',{'force':True})
+  self.assertTrue(r['spawning']);self.assertTrue(r['pending_vm'].startswith('bot'))
+  for _ in range(200):
+   a={x['id']:x for x in self.request('/api/state')['agents']}['vmbot']
+   if a.get('vm') and not a.get('spawning'):break
+   time.sleep(.05)
+  self.assertEqual(a['vm'],r['pending_vm']);self.assertFalse(a.get('memory_count'))
+  log=(self.ctl.parent/'ctl.log').read_text().splitlines()
+  self.assertLess(log.index('despawn agent9'),log.index('spawn '+r['pending_vm']))
+  self.assertNotIn('reset agent9',log)
   system=self._system('vmbot')
   self.assertIn(self.CONTEXT,system);self.assertIn(self.GERMAN,system)
   for rule in self.RULES:self.assertIn(rule,system)
@@ -2963,8 +3020,7 @@ class PendingSpawnResume(unittest.TestCase):
   if subprocess.run(['sudo','-n','true'],capture_output=True).returncode!=0:self.skipTest('needs sudo -n for the fake lifecycle')
   with tempfile.TemporaryDirectory() as td:
    tmp=pathlib.Path(td);state=tmp/'state';state.mkdir();ctl=tmp/'ctl';ctl.write_text(MULTIBOT_CTL);ctl.chmod(0o755)
-   (tmp/'exists').write_text('agent7\n')
-   state.joinpath('agents.json').write_text(json.dumps([{'id':'neu','name':'Neu','vm':'','pending_vm':'agent7','memory':[]}]))
+   state.joinpath('agents.json').write_text(json.dumps([{'id':'neu','name':'Neu','vm':'','pending_vm':'bot7','memory':[]}]))
    model=http.server.ThreadingHTTPServer(('127.0.0.1',0),Model);threading.Thread(target=model.serve_forever,daemon=True).start();ui=port();bridge=port()
    env=dict(os.environ,MAG_OWNER_CANONICAL_LOGIN='chris@github',MAG_TEST_ALLOW_LOCAL_OWNER='1',MAG_ROOM_STATE=str(state),MAG_ROOM_PORT=str(ui),MAG_ROOM_BRIDGE_PORT=str(bridge),MAG_ROOM_BRIDGE_IP='127.0.0.1',MAG_ROOM_BACKEND=f'http://127.0.0.1:{model.server_port}/v1/chat/completions',MAG_ROOM_UI=str(ROOT/'mag-room/web/index.html'),MAG_ROOM_STATIC=str(ROOT/'mag-room/static'),MAG_ROOM_MODEL_STATUS=str(tmp/'ms.json'),MAG_NETMODE=str(NETMODE),MAG_TEST_NO_MEMGIT='1',MAG_ROOM_AGENT_CTL=str(ctl),MAG_ROOM_GUEST_RUN='/bin/false',MAG_ROOM_MCP_AUTO='0')
    env.pop('MAG_ROOM_SINGLE_BOT',None)
@@ -2974,9 +3030,10 @@ class PendingSpawnResume(unittest.TestCase):
      saved=json.loads(state.joinpath('agents.json').read_text())[0]
      if saved.get('vm'):break
      time.sleep(.05)
-    self.assertEqual(saved.get('vm'),'agent7');self.assertNotIn('pending_vm',saved)
+    self.assertEqual(saved.get('vm'),'bot7');self.assertNotIn('pending_vm',saved)
     self.assertIsNone(proc.poll())
     self.assertNotIn('despawn',(tmp/'ctl.log').read_text())
+    self.assertIn('create bot7',(tmp/'ctl.log').read_text().splitlines(),'resume finishes via magbot create')
    finally:
     proc.terminate();proc.wait(timeout=5);log.close();model.shutdown()
 

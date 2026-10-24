@@ -137,6 +137,7 @@ body:has(.layout.hide-left) .rail-edge-left,body:has(.layout.hide-right) .rail-e
 #model-choice .model-button[aria-pressed="true"]{background:var(--surface);color:var(--text);box-shadow:0 1px 3px #0002}
 #model-choice .model-button:hover:not(:disabled){background:var(--hover);color:var(--text)}
 #model-choice .model-button:disabled{opacity:.62}
+#model-choice .ornith-chip{display:inline-flex;align-items:center;cursor:default}#model-choice .ornith-chip[data-state="ok"]{color:var(--text)}#model-choice .ornith-chip[data-state="down"]{color:#d9534f}
 @media(max-width:850px){#connection,#you-badge{display:none!important}#model-choice{gap:2px;padding:2px}#model-choice .model-button{min-width:49px;padding:5px 7px}}
 @media(max-width:440px){#model-state{display:none!important}}#model-state{position:relative;gap:6px}#model-state .dot{width:8px;height:8px;border-radius:50%;background:var(--muted);flex:none}
 #model-state.is-ready .dot{background:#2fb36d;box-shadow:0 0 0 3px rgba(47,179,109,.18)}
@@ -1408,7 +1409,7 @@ function applyAccess(){const y=state.you;document.body.classList.toggle('is-gues
  if(y&&y.role!=='owner')$('snapshots-list').hidden=true;
  hide('guests-section',!(y&&y.role==='owner'));
  if(y&&y.role==='owner')loadGuests();
- hide('add-agent',!can('delete')||!!(state.single_bot));hide('room-add-agent',!can('delete')||!!state.single_bot||!!state.dual_numa||(state.agents||[]).length>=2);
+ hide('add-agent',!can('delete')||!!(state.single_bot));hide('room-add-agent',!can('delete')||!!state.single_bot||!!state.dual_numa||(state.agents||[]).length>=botCap());
  hide('offline-row',!can('offline'));hide('autotalk-row',!can('autotalk'));hide('autotalk-desc',!can('autotalk'));
  hide('model-settings',!(y&&y.role==='owner'));
  hide('stop',!can('stop'));hide('reset-wrap',!can('reset'));hide('plus-github',!can('connectors'));hide('plus-mcp',!can('connectors'));
@@ -1562,11 +1563,14 @@ function popMenu(btn,items){
  menu.onkeydown=e=>{const its=[...menu.querySelectorAll('button')],i=its.indexOf(document.activeElement);if(e.key==='Escape'){e.preventDefault();e.stopPropagation();closePop();btn.focus()}else if(e.key==='ArrowDown'){e.preventDefault();its[(i+1)%its.length].focus()}else if(e.key==='ArrowUp'){e.preventDefault();its[(i-1+its.length)%its.length].focus()}};
 }
 document.addEventListener('click',e=>{if(openPop&&!openPop.menu.contains(e.target)&&!openPop.btn.contains(e.target))closePop()});
-function renderAgents(){const list=$('agents');list.replaceChildren();const single=state.single_bot||'';$('add-agent').hidden=!!single||!!state.dual_numa||(state.agents||[]).length>=2;if(single){selected.clear();selected.add(single)}const old=$('browser-agent').value;$('browser-agent').replaceChildren();for(const a of state.agents){if(!selected.has(a.id)&&!sessionStorage.getItem('mag-selected'))selected.add(a.id);const card=document.createElement('div');card.className='agent';card.dataset.bot=a.id;card.tabIndex=0;
+// Ornith: up to four bots, each pinned to its own instance (persistent slot).
+function botCap(){return state.ornith_mode?4:2}
+function botModelLabel(a){if(state.ornith_mode&&a.slot)return 'Ornith 1.5 35B-A3B · Instanz '+a.slot;return (state.models||[]).find(m=>m.id===a.model)?.label||(a.model?.includes('qwen')?'Qwen':a.model?.includes('deepseek')?'DeepSeek':'')}
+function renderAgents(){const list=$('agents');list.replaceChildren();const single=state.single_bot||'';$('add-agent').hidden=!!single||!!state.dual_numa||(state.agents||[]).length>=botCap();if(single){selected.clear();selected.add(single)}const old=$('browser-agent').value;$('browser-agent').replaceChildren();for(const a of state.agents){if(!selected.has(a.id)&&!sessionStorage.getItem('mag-selected'))selected.add(a.id);const card=document.createElement('div');card.className='agent';card.dataset.bot=a.id;card.tabIndex=0;
 card.setAttribute('role','button');card.setAttribute('aria-label',a.name+' Browser und Terminal anzeigen');
 card.onclick=e=>{if(e.target.closest('button,a,input,label,textarea,select'))return;focusBot(a.id)};
 card.onkeydown=e=>{if(e.target===card&&(e.key==='Enter'||e.key===' ')){e.preventDefault();focusBot(a.id)}};
-const label=document.createElement('label');const check=document.createElement('input');check.type='checkbox';check.checked=selected.has(a.id);check.onchange=()=>{check.checked?selected.add(a.id):selected.delete(a.id);sessionStorage.setItem('mag-selected',JSON.stringify([...selected]));syncModelChoice(state)};const name=document.createElement('span');name.textContent=a.name;name.style.color=a.color;label.append(check,name);const info=document.createElement('small');const modelDisplay=(state.models||[]).find(m=>m.id===a.model)?.label||(a.model?.includes('qwen')?'Qwen':a.model?.includes('deepseek')?'DeepSeek':'');info.textContent=(a.model?modelDisplay+' · ':'')+(a.spawning?'VM wird erstellt …':(a.vm||'nur Chat'))+' · '+(a.memory_count||0)+' Erinnerungen'+(a.plugins?.length?' · '+a.plugins.length+' Plugin'+(a.plugins.length>1?'s':''):'');const actions=document.createElement('div');actions.className='actions';const actList=[];
+const label=document.createElement('label');const check=document.createElement('input');check.type='checkbox';check.checked=selected.has(a.id);check.onchange=()=>{check.checked?selected.add(a.id):selected.delete(a.id);sessionStorage.setItem('mag-selected',JSON.stringify([...selected]));syncModelChoice(state)};const name=document.createElement('span');name.textContent=a.name;name.style.color=a.color;label.append(check,name);const info=document.createElement('small');const modelDisplay=botModelLabel(a);info.textContent=(a.model?modelDisplay+' · ':'')+(a.spawning?'VM wird erstellt …':(a.vm||'nur Chat'))+' · '+(a.memory_count||0)+' Erinnerungen'+(a.plugins?.length?' · '+a.plugins.length+' Plugin'+(a.plugins.length>1?'s':''):'');const actions=document.createElement('div');actions.className='actions';const actList=[];
 if(can('memory'))actList.push(['Erinnerung',()=>memory(a)]);
 if(state.you?.role==='owner')actList.push(['Umbenennen',()=>renameAgent(a)]);
 if(a.id===single||state.dual_numa){}else if(can('delete'))actList.push(['Entfernen',()=>removeAgent(a)]);
@@ -1699,6 +1703,27 @@ function syncModelChoice(next){
  const models=Array.isArray(next.models)?next.models:[];
  const allowed=new Set(models.map(m=>m.id));
  const box=document.getElementById('model-choice');
+ if(box&&next.ornith_mode){
+  // Ornith: four fixed instances with health instead of the Q4/IQ3 switch.
+  const inst=Array.isArray(next.ornith_instances)?next.ornith_instances:[];
+  const owner=s=>(next.agents||[]).find(a=>a.slot===s);
+  const want=inst.map(i=>i.slot+':'+i.state+':'+(owner(i.slot)?.name||'')).join();
+  if(box.dataset.ornith!==want){
+   box.dataset.ornith=want;box.replaceChildren();
+   for(const i of inst){
+    const c=document.createElement('span');c.className='model-button ornith-chip';
+    c.dataset.slot=i.slot;c.dataset.state=i.state;
+    c.textContent='Instanz '+i.slot+(i.state==='ok'?' ✓':i.state==='down'?' ✗':' …');
+    c.title='Ornith 1.5 35B-A3B · Instanz '+i.slot+(i.port?' · Port '+i.port:'')+
+     (i.state==='ok'?' · bereit':i.state==='down'?' · nicht erreichbar':' · wird geprüft')+
+     (owner(i.slot)?' · '+owner(i.slot).name:' · frei');
+    box.append(c);
+   }
+  }
+  const row=$('agent-model-row');if(row)row.hidden=true;
+  window.magAgentUI?.sync(next);
+  return;
+ }
  if(box&&models.length&&!next.numa?.enabled){
   const want=models.map(m=>m.id).join();
   const have=[...box.querySelectorAll('.model-button')].map(b=>b.dataset.modelId).join();
@@ -1753,7 +1778,7 @@ function modelStatus(m){const el=$('model-state'),b=$('model-banner');if(!m||!el
 async function memory(a){memAgent=a;memErr();$('memory-new').value='';try{const m=await api('/api/agents/'+encodeURIComponent(a.id)+'/memory',undefined,'GET');$('memory-title').textContent=a.name+' · Erinnerungen';renderMemory(Array.isArray(m)?m:[]);if(!$('memory-dialog').open)$('memory-dialog').showModal()}catch(e){notice(e.message)}}
 let memAgent=null;function renderMemory(m){const box=$('memory');box.replaceChildren();if(!m.length){box.textContent='Noch keine gespeicherten Erinnerungen.';return}m.forEach((x,i)=>{const text=typeof x==='string'?x:(x.text||'');const row=document.createElement('div');row.className='mem-row';const t=document.createElement('div');t.className='mem-text';t.textContent=text;const act=document.createElement('div');act.className='mem-actions';const ed=document.createElement('button');ed.type='button';ed.className='pill-btn';ed.textContent='Bearbeiten';const del=document.createElement('button');del.type='button';del.className='pill-btn danger';del.textContent='Löschen';ed.onclick=()=>{const ta=document.createElement('textarea');ta.value=text;ta.maxLength=500;ta.className='mem-edit';const save=document.createElement('button');save.type='button';save.className='pill-btn primary';save.textContent='Speichern';const cancel=document.createElement('button');cancel.type='button';cancel.className='pill-btn';cancel.textContent='Abbrechen';cancel.onclick=()=>renderMemory(m);save.onclick=async()=>{try{const r=await api('/api/agents/'+encodeURIComponent(memAgent.id)+'/memory/'+i,{text:ta.value,old:text},'PUT');showUndo('Eintrag geändert',r.undo);renderMemory(r.memory||[])}catch(e){memErr(e.message)}};t.replaceChildren(ta);act.replaceChildren(save,cancel);ta.focus()};del.onclick=()=>askDeleteMemory(memAgent,i,text);act.append(ed,del);row.append(t,act);box.append(row)})}
 async function renameAgent(a){const value=await magAsk('Bot umbenennen (1–40 Zeichen)',a.name);if(value===null||value.trim()===a.name)return;try{await api('/api/agents/'+encodeURIComponent(a.id)+'/name',{name:value.trim()},'PUT');await refresh();notice('Bot umbenannt')}catch(e){notice(e.message)}}
-async function removeAgent(a){if(!await magConfirm({title:'Bot entfernen',text:a.name+' und die eigene VM mit ihren Dateien entfernen?',ok:'Entfernen',danger:true}))return;try{notice('Bot wird entfernt…');await api('/api/agents/'+a.id,undefined,'DELETE');await refresh();notice()}catch(e){notice(e.message)}}
+async function removeAgent(a){if(!await magConfirm({title:'Bot entfernen',text:a.vm?a.name+' und die eigene VM entfernen? Der Arbeitsbereich der VM wird archiviert, nicht gelöscht.':a.name+' entfernen?',ok:'Entfernen',danger:true}))return;try{notice('Bot wird entfernt…');await api('/api/agents/'+a.id,undefined,'DELETE');await refresh();notice()}catch(e){notice(e.message)}}
 $('add-agent').onclick=()=>$('new-agent').showModal();$('agent-form').onsubmit=async e=>{e.preventDefault();const submit=e.target.querySelector('.primary');submit.disabled=true;try{const chatOnly=$('agent-chat-only').checked;notice(chatOnly?'Chat-Bot wird angelegt…':'Bot wird angelegt…');const made=await api('/api/agents',{name:$('agent-name').value,persona:$('agent-persona').value,model:$('agent-model').value,...(chatOnly?{vm:false}:{})});$('new-agent').close();await refresh();notice(made&&made.spawning?'Eigene VM wird erstellt – das dauert ein paar Minuten. Bis dahin antwortet der Bot nur im Chat.':'')}catch(e){notice(e.message)}finally{submit.disabled=false}};
 // Group chat: the composer is never blocked. Every answering bot gets its own
 // stop in the lane bar (and on its live reply); busy_bots and idle events are
@@ -2710,7 +2735,7 @@ events.onmessage=e=>{
   else if(event.type==='mcp_approval_done'){mcpApprovals.delete(event.id);if(streams[id])updateStream(id,true);else document.querySelector('.mcp-approve[data-id="'+CSS.escape(String(event.id||''))+'"]')?.remove()}
   else if(event.type==='jobs')loadJobs();
   else if(event.type==='offline'){$('offline').checked=!!event.offline;window.syncWeb&&window.syncWeb()}
-  else if(event.type==='model')modelStatus(event.status);
+  else if(event.type==='model'){modelStatus(event.status);if(event.ornith_instances&&state){state.ornith_instances=event.ornith_instances;syncModelChoice(state)}}
   else if(event.type==='bot_status'){
    const s=streams[id];if(s){s.lastEvent=Date.now();s.hung=false;if(event.text){s.label=String(event.text).split('\n')[0].slice(0,140);s.phase=s.phase||'think'}updateStream(id)}
   }

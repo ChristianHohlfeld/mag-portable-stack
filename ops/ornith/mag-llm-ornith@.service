@@ -1,0 +1,41 @@
+# Ornith-1.5-35B-A3B instance %i (1..4), port 8190+%i. CPU/NUMA pinning per
+# instance in mag-llm-ornith@%i.service.d/10-numa.conf (ops/ornith/instances).
+# Installed and started only by ops/ornith/cutover.sh; mag-llm is independent.
+[Unit]
+Description=MAG Ornith-1.5-35B-A3B CPU model, instance %i
+After=network-online.target mag-llm.service
+Wants=network-online.target
+ConditionPathExists=/etc/mag-ornith/model.sha256
+Conflicts=mag-llm-qwen.service
+StartLimitIntervalSec=1800
+StartLimitBurst=2
+[Service]
+Type=simple
+User=chris
+Group=chris
+WorkingDirectory=/home/chris
+ExecStartPre=+/usr/bin/install -d -o chris -g chris -m 0750 /var/lib/mag-llm/slots/ornith%i
+# Full SHA-256 once as root (shared lock + stamp); start.sh rechecks the stamp.
+ExecStartPre=+/usr/local/lib/mag-ornith/verify-model.sh
+ExecStart=/usr/local/lib/mag-ornith/start.sh %i
+Restart=on-failure
+RestartSec=60
+TimeoutStartSec=3600
+TimeoutStopSec=120
+NUMAPolicy=bind
+MemoryAccounting=yes
+MemoryHigh=28G
+MemoryMax=32G
+MemorySwapMax=0
+LimitMEMLOCK=infinity
+OOMScoreAdjust=-600
+Nice=10
+IOSchedulingClass=idle
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=no
+ReadWritePaths=-/var/lib/mag-llm/slots/ornith%i
+PrivateTmp=yes
+RestrictAddressFamilies=AF_INET AF_UNIX
+[Install]
+WantedBy=multi-user.target

@@ -250,6 +250,19 @@ fi
 # Qwen host, use exactly two model-pinned bots with separate KVM workspaces.
 rm -f /etc/systemd/system/mag-120.service.d/30-multibot.conf
 if [[ -r /etc/mag-stack/secondary-model.env ]] &&
+   grep -Fxq 'MAG_SECONDARY_MODEL=ornith' /etc/mag-stack/secondary-model.env; then
+  # Ornith host (ops/ornith/cutover.sh): refresh on-disk definitions only, never restart a model.
+  install -d -m 0755 /etc/systemd/system/mag-120.service.d /usr/local/lib/mag-ornith
+  install -m 0644 "$SOURCE/ops/mag-120.d/30-dual-numa.conf" /etc/systemd/system/mag-120.service.d/30-dual-numa.conf
+  [[ -x /usr/local/lib/mag-ornith/start.sh ]] || { echo 'Ornith staged runtime missing' >&2; exit 1; }
+  install -m 0755 "$SOURCE/ops/ornith/start.sh" "$SOURCE/ops/ornith/verify-model.sh" /usr/local/lib/mag-ornith/
+  install -m 0644 "$SOURCE/ops/qwen/runtime.sha" /usr/local/lib/mag-ornith/runtime.sha
+  install -m 0644 "$SOURCE/ops/ornith/mag-llm-ornith@.service" /etc/systemd/system/mag-llm-ornith@.service
+  for n in 1 2 3 4; do
+    install -d -m 0755 "/etc/systemd/system/mag-llm-ornith@$n.service.d"
+    install -m 0644 "$SOURCE/ops/ornith/instances/$n.conf" "/etc/systemd/system/mag-llm-ornith@$n.service.d/10-numa.conf"
+  done
+elif [[ -r /etc/mag-stack/secondary-model.env ]] &&
    grep -Fxq 'MAG_SECONDARY_MODEL=qwen' /etc/mag-stack/secondary-model.env; then
   install -d -m 0755 /etc/systemd/system/mag-120.service.d /usr/local/lib/mag-qwen
   install -m 0644 "$SOURCE/ops/mag-120.d/30-dual-numa.conf" /etc/systemd/system/mag-120.service.d/30-dual-numa.conf

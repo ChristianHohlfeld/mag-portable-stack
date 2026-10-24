@@ -2,6 +2,7 @@
 // image.
 #include "common.hpp"
 #include "bot_context.hpp" // generated from bot_context.md
+#include "gitea_account.hpp"
 #include <grp.h>
 #include <iomanip>
 #include <regex>
@@ -350,32 +351,13 @@ static void admission(const Val &c, const std::vector<Val> &rows, int cpu,
       c.find("max_host_load_per_cpu")->asNum() * sysconf(_SC_NPROCESSORS_ONLN))
     throw std::runtime_error("Host load too high");
 }
-static std::vector<std::string>
-gitea_args(const std::vector<std::string> &args) {
-  std::vector<std::string> command{"/usr/sbin/runuser",
-                                   "-u",
-                                   "git",
-                                   "--",
-                                   "/usr/local/bin/gitea",
-                                   "--config",
-                                   "/etc/gitea/app.ini",
-                                   "admin",
-                                   "user"};
-  command.insert(command.end(), args.begin(), args.end());
-  return command;
-}
 static std::string prepare_browser(const std::string &n);
 static void provision_git(const std::string &n) {
   auto record = marker(n);
   if (!str(record, "git_user").empty())
     return;
   auto username = domain(n), password = randomhex() + randomhex();
-  auto created = run(
-      gitea_args({"create", "--username", username, "--email",
-                  username + "@mag.local", "--user-type", "User", "--password",
-                  password, "--must-change-password=false"}),
-      30);
-  if (created.code)
+  if (!gitea_create_or_reuse(username, password))
     throw std::runtime_error("Gitea bot account creation failed");
   // Never an admin: restricted, no org creation, own org bots-<agent>.
   if (run({"/usr/local/sbin/mag-gitea-bot-rights", username}, 60).code)
@@ -426,7 +408,12 @@ static void undefine_domain(const std::string &n) {
   if (exists(n))
     throw std::runtime_error("VM remains defined; refusing disk deletion");
 }
-static void teardown(const std::string &n) {
+// Room delete/orphan cleanup moves the VM directory (overlay disk = the bot's
+// workspace, metadata) here instead of deleting it. Same filesystem as root by
+// default, so this is a rename. Never purged automatically.
+static fs::path archive_root =
+    env("MAGBOT_ARCHIVE", (root / "archive").string());
+static void teardown(const std::string &n, bool archive = false) {
   auto d = dir(n);
   // All callers (room delete and drift) stop the loaded service before
   // removing its domain/disk. Refuse teardown if stop fails.
@@ -455,15 +442,28 @@ static void teardown(const std::string &n) {
       throw std::runtime_error("Gitea ownership mismatch");
   }
   if (!git_user.empty()) {
-    auto result =
-        run(gitea_args({"delete", "--username", git_user, "--purge"}), 30);
-    if (result.code)
+    // Never delete the account or its repos (owner decides). Lock it: the
+    // only credential (in the archived disk) stops working.
+    if (!gitea_lock(git_user, randomhex() + randomhex()))
       throw std::runtime_error(
-          "Could not revoke bot Git account; registry retained");
+          "Could not revoke bot Git credential; registry retained");
   }
   // Guest trust anchors live only on this overlay. remove_all drops them
   // with the disk; the read-only golden image is never modified.
-  fs::remove_all(d);
+  if (archive && fs::exists(d)) {
+    char stamp[32];
+    const std::time_t now = std::time(nullptr);
+    std::strftime(stamp, sizeof stamp, "%Y%m%dT%H%M%SZ", std::gmtime(&now));
+    fs::create_directories(archive_root);
+    fs::permissions(archive_root, fs::perms::owner_all, fs::perm_options::replace);
+    fs::path keep = archive_root / (n + "-" + stamp);
+    for (int i = 1; fs::exists(keep); ++i)
+      keep = archive_root / (n + "-" + stamp + "-" + std::to_string(i));
+    fs::rename(d, keep); // throws (registry retained) instead of deleting
+    std::cout << "Archived " << n << " workspace to " << keep.string() << '\n';
+  } else {
+    fs::remove_all(d);
+  }
   std::error_code ec;
   if (fs::is_regular_file(unit) && !fs::is_symlink(unit)) {
     fs::remove(unit, ec);
@@ -903,7 +903,7 @@ int main(int argc, char **argv) {
       return 0;
     }
     int lock =
-        open("/run/lock/magbot.lock", O_CREAT | O_WRONLY | O_CLOEXEC, 0600);
+        open(env("MAGBOT_LOCK", "/run/lock/magbot.lock").c_str(), O_CREAT | O_WRONLY | O_CLOEXEC, 0600);
     if (lock < 0 || flock(lock, LOCK_EX))
       throw std::runtime_error("Lifecycle lock failed");
     if (action == "despawn" || action == "despawn-orphan") {
@@ -921,8 +921,8 @@ int main(int argc, char **argv) {
           }
         }
       }
-      teardown(n);
-      std::cout << "Removed only target bot VM and private data\n";
+      teardown(n, true);
+      std::cout << "Removed only target bot VM; workspace archived\n";
     } else if (action == "spawn") {
       int cpu = num(c, "default_vcpus"), ram = num(c, "default_ram_gib"),
           disk = num(c, "default_disk_gib");

@@ -16,9 +16,9 @@ table inet mag_audit {
 	chain output {
 		type filter hook output priority filter; policy accept;
 
-		# 1) LLM backends (Q4 :8090 and IQ3 :8091) nur für root (Health) und mag-audit (Gateway).
+		# 1) LLM backends (Q4 :8090, IQ3/Qwen :8091, Ornith :8191-8194) nur für root (Health) und mag-audit (Gateway).
 		#    Alle anderen müssen über das Gateway :8080 -> lückenloses Log.
-		ip daddr 127.0.0.1 tcp dport { 8090, 8091 } meta skuid != @backend_ok_uids counter reject with tcp reset
+		ip daddr 127.0.0.1 tcp dport { 8090, 8091, 8191-8194 } meta skuid != @backend_ok_uids counter reject with tcp reset
 
 		# 2) Bot-User magbot: kein direkter Web-Zugriff, nur über mag-audit-webproxy (127.0.0.1:8888).
 		#    VM-Netz bleibt erreichbar (Steuerung der Agent-VMs).

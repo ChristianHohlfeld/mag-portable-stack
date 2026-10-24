@@ -130,7 +130,15 @@ remove_site() {
   if [[ -e $dest ]]; then
     real=$(realpath "$dest")
     [[ $real == "$dest" ]] || die "Refusing to remove $dest"
-    rm -rf -- "$dest"
+    # Delete nothing: unpublish by moving the site out of www into a
+    # root-only archive (never purged automatically). Re-assign starts fresh.
+    install -d -m 0700 "$root/archive"
+    [[ ! -L $root/archive ]] || die "Unsafe bot site symlink"
+    local keep
+    keep="$root/archive/$id-$(date -u +%Y%m%dT%H%M%SZ)"
+    while [[ -e $keep ]]; do keep="$keep-1"; done
+    mv -T -- "$dest" "$keep"
+    echo "archived ${id} site to $keep"
   fi
   if [[ -e $token ]]; then
     real=$(realpath "$token")

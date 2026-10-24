@@ -21,6 +21,7 @@ step 'native integration checks'
 ./build/test-guest-description
 ./build/test-guest-curl
 ./build/test-large-stdin
+./build/test-gitea-account
 python3 mag-room/tests/test_large_tools.py
 python3 mag-room/tests/test_native.py
 python3 mag-room/tests/test_agent_core.py
@@ -28,6 +29,7 @@ python3 ops/numa/tests/test_numa_swap.py
 python3 mag-room/tests/test_tailscale_auth.py
 python3 ops/audit/tests/test_native_gateway.py
 bash ops/qwen/tests/test-qwen.sh
+bash ops/ornith/tests/test-ornith.sh
 python3 mag-room/tests/test_whois_deploy.py
 step 'model ops regressions'
 bash ops/deepseek/tests/test-ops-38.sh

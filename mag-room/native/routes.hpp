@@ -215,6 +215,11 @@ static void route(int fd, Req &r, bool bridge = false) {
       auto bot = qparam(r.query, "bot");
       auto idx = agent_index(bot);
       auto sender = idx < 0 ? "VM" : bot_field(idx, "name");
+      // A saved copy of the room UI carries the live session token.
+      if (!ui_token().empty() && r.body.find(ui_token()) != std::string::npos) {
+        error_json(fd, 422, "Datei enthaelt das Raum-Token");
+        return;
+      }
       Val f = add_file(qparam(r.query, "name"), r.body, sender);
       auto src = qparam(r.query, "src");
       if (!src.empty() && src[0] == '/' && idx >= 0)

@@ -354,7 +354,11 @@ static void proxy(int fd){
       j["id_slot"]=id_slot; // shared server: each bot keeps its own KV slot
       forwarded=mj::dump(j);
     }
-    if(mj::parse(forwarded,j)&&j.isObj()&&j.find("model")){
+    // Qwen-only rollback is the default model when the caller omits "model".
+    // Forward the canonical alias as well: llama-server and its test fixtures
+    // must receive the same model id for explicit and model-less chat requests.
+    if(mj::parse(forwarded,j)&&j.isObj()&&
+       (j.find("model")||(selected=="qwen"&&r.path=="/v1/chat/completions"))){
       j["model"]=selected.rfind("numa:",0)==0?selected.substr(5):selected=="qwen"?"qwen3.8-flash-next-uncensored":selected=="ornith"?"ornith-1.5-35b-a3b":selected=="iq3"?"deepseek-v4-flash-0731-iq3":"deepseek-v4-flash-0731";
       forwarded=mj::dump(j);
     }

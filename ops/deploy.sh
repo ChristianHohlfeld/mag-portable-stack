@@ -319,7 +319,9 @@ install -m 0755 "$SOURCE/build/mag-audit-gateway" /opt/mag-audit/bin/.mag-audit-
 mv -f /opt/mag-audit/bin/.mag-audit-gateway.next /opt/mag-audit/bin/mag-audit-gateway
 systemctl daemon-reload
 systemctl restart mag-audit-gateway.service
-gateway_models=$(curl --noproxy '*' -fsS --max-time 5 http://127.0.0.1:8080/v1/models)
+# Type=simple returns before the new gateway has bound :8080. Use the same
+# bounded readiness retry as the room/RTC smoke checks (also on a blank host).
+gateway_models=$(wait_http http://127.0.0.1:8080/v1/models)
 if [[ -r /etc/mag-stack/secondary-model.env ]]; then
   case $(cat /etc/mag-stack/secondary-model.env) in
     MAG_SECONDARY_MODEL=ornith) required=ornith-1.5-35b-a3b ;;

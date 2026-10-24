@@ -27,6 +27,11 @@ line=$(grep -E '\bgit .*rev-parse HEAD' "$root/ops/deploy.sh")
 # and wait_http survives a listener that comes up late.
 ! grep -nE '^curl .*127\.0\.0\.1:(8766|18784)' "$root/ops/deploy.sh"
 grep -Fxq 'wait_http http://127.0.0.1:18784/health' "$root/ops/deploy.sh"
+# First-install gateway gets the same bounded readiness wait: immediately
+# curling :8080 after restarting a Type=simple unit races the port bind.
+grep -Fq 'gateway_models=$(wait_http http://127.0.0.1:8080/v1/models)' "$root/ops/deploy.sh"
+[[ $(grep -n 'gateway_models=$(wait_http http://127.0.0.1:8080/v1/models)' "$root/ops/deploy.sh" | cut -d: -f1) -gt \
+   $(grep -n '^systemctl restart mag-audit-gateway.service' "$root/ops/deploy.sh" | tail -1 | cut -d: -f1) ]]
 [[ $(grep -n 'wait_http http://127.0.0.1:18784/health' "$root/ops/deploy.sh" | cut -d: -f1) -gt \
    $(grep -n 'systemctl restart mag-browser-webrtc.service' "$root/ops/deploy.sh" | tail -1 | cut -d: -f1) ]]
 [[ $(tail -2 "$root/ops/rollback.sh" | head -1) == 'for i in {1..30}; do curl '*'/healthz 2>/dev/null && break; sleep 1; done' ]]

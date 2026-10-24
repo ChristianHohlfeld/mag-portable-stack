@@ -455,8 +455,9 @@ phase secrets
 if (( DRY )); then bash "$ROOT/ops/secrets/install.sh" --dry-run; else bash "$ROOT/ops/secrets/install.sh"; fi
 
 phase numa
-# Hot-swap tool + sudoers + seeded state. Never starts, stops or swaps a model.
-if (( DRY )); then bash "$ROOT/ops/numa/install.sh" --dry-run; else bash "$ROOT/ops/numa/install.sh"; fi
+# DeepSeek NUMA hot-swap is retired. No old catalog, state, sudoers or Q4
+# service is seeded during bootstrap; Ornith/Qwen provide fixed model routing.
+echo 'PHASE numa-skipped (retired legacy model-swap)'
 
 phase start-llm
 if (( START_LLM == 0 )); then

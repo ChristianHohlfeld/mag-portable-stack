@@ -1,4 +1,16 @@
-# Blank host -> running MAG (`ops/bootstrap.sh`)
+# MAG Installation / Bootstrap — Ornith
+
+**Aktueller Betriebsstand (Oktober 2026):** Vier Ornith-1.5-35B-A3B-Bots, zwei NUMA-Server
+(`mag-llm-ornith-node@0/1.service`, 127.0.0.1:8191/8192, je zwei llama-Slots).
+Audit-Gateway :8080, C++-Raum `mag-120.service` :8766, nginx.
+DeepSeek Q4/IQ3, mag-model-gate und mag-model-pin sind aus dem aktiven Stack
+ausgemustert. Gewichte bleiben auf der Platte. Bei Ornith-Ausfall:
+`sudo bash ops/ornith/rollback.sh qwen` (Qwen allein, kein DeepSeek).
+Deploy ausschließlich nach grüner lokaler CI: `bash ops/update.sh --no-pull`
+im passenden Checkout; darin enthalten ist `sudo bash ops/deploy.sh`.
+Das Retirement läuft nur bei gesundem Ornith-Raum und beiden Backends.
+Alte 3.8-/Q4-/IQ3-Abschnitte im folgenden Text sind **historisch**.
+
 
 One script turns a blank Ubuntu 24.04 server (same hardware as MAG: 2 sockets,
 2 NUMA nodes, ~512 GiB RAM) into a running MAG. The only inputs are a verified
@@ -39,7 +51,7 @@ inactive), `--no-golden`, `--no-llm-build`, `--no-deploy`,
 `--restore-host-config` (legacy: also copy `etc/nginx`, `etc/systemd/system`,
 `etc/cron.d` from the archive). `MAG_BUILD_JOBS=N` limits compile jobs.
 
-Bootstrap refuses to run when `mag-120` or `mag-llm` is already active (use
+Bootstrap refuses to run when `mag-120` is already active (use
 `ops/deploy.sh` / `ops/update.sh` on a running host). It never restarts or
 stops mag-llm and never installs or enables console lockdown.
 

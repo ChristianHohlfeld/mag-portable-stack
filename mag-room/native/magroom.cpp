@@ -764,8 +764,18 @@ static void load_agents() {
     std::stable_sort(AGENTS.begin(), AGENTS.end(), [](const Val &a, const Val &b) {
       return ornith_slot_of(a) < ornith_slot_of(b);
     });
-    for (auto &a : AGENTS)
+    for (auto &a : AGENTS) {
       if (mag::str(a, "model") != ORNITH) { a["model"] = ORNITH; dirty = true; }
+      // Rename stock labels EVEN for bots that already had a persistent slot.
+      // Never change an ID: especially deepseek-chat retains its memory and VM.
+      const std::string old = mag::str(a, "name");
+      const int slot = ornith_slot_of(a);
+      if (slot && (old == "DeepSeek 4.0" || old == "DeepSeek Chat" ||
+                   old == "DeepSeek Q4" || old == "Qwen" || old == "Qwen 2")) {
+        const std::string updated = "Ornith " + std::to_string(slot);
+        if (old != updated) { a["name"] = updated; dirty = true; }
+      }
+    }
   }
   if (DUAL_NUMA) {
     // Recover one existing coding bot on NUMA0 (prefer its live VM), and one
@@ -796,10 +806,10 @@ static void load_agents() {
     if (primary >= 0) {
       active.push_back(all[primary]); used[primary] = true;
     } else {
-      active.push_back(ORNITH_MODE ? make("deepseek-q4", "Ornith 1", ORNITH)
+      active.push_back(ORNITH_MODE ? make("deepseek-chat", "Ornith 1", ORNITH)
                                    : make("deepseek-q4", "DeepSeek Q4", q4));
     }
-    active[0]["model"] = ORNITH_MODE ? ORNITH : q4;
+    active[0]["model"] = ORNITH_MODE ? ORNITH : qwen; // Qwen-only fallback: no Q4
     int secondary = -1;
     for (size_t i = 0; i < all.size(); ++i) {
       if (used[i]) continue;
@@ -3261,11 +3271,14 @@ static std::string secondary_room_model() {
 }
 // DeepSeek is retired on Ornith hosts: Ornith is the only selectable model there.
 static std::string default_room_model() {
-  return ORNITH_MODE ? ORNITH : "deepseek-v4-flash-0731";
+  return ORNITH_MODE ? ORNITH : secondary_room_model() == "qwen3.8-flash-next-uncensored"
+      ? "qwen3.8-flash-next-uncensored" : "deepseek-v4-flash-0731";
 }
 static bool known_room_model(const std::string &id) {
   if (NUMA_ON) return numa_known_model(id);
   if (ORNITH_MODE) return id == ORNITH;
+  if (secondary_room_model() == "qwen3.8-flash-next-uncensored")
+    return id == "qwen3.8-flash-next-uncensored";
   return id == "deepseek-v4-flash-0731" || id == secondary_room_model();
 }
 static std::string default_model_label(const std::string &id) {
@@ -3292,7 +3305,9 @@ static void load_model_settings() {
   MODEL_SETTINGS.clear();
   const std::vector<std::string> ids =
       ORNITH_MODE ? std::vector<std::string>{ORNITH}
-                  : std::vector<std::string>{"deepseek-v4-flash-0731", secondary_room_model()};
+      : secondary_room_model() == "qwen3.8-flash-next-uncensored"
+          ? std::vector<std::string>{"qwen3.8-flash-next-uncensored"}
+          : std::vector<std::string>{"deepseek-v4-flash-0731", secondary_room_model()};
   for (const std::string &id : ids) {
     ModelSettings item;
     item.deterministic = old_value;
@@ -3417,6 +3432,15 @@ static Val room_model_catalog() {
     models.push(m);
     return models;
   }
+  if (secondary_room_model() == "qwen3.8-flash-next-uncensored") {
+    Val m = Val::object();
+    const ModelSettings st = model_settings_for("qwen3.8-flash-next-uncensored");
+    m["id"] = "qwen3.8-flash-next-uncensored";
+    m["label"] = st.name.empty() ? default_model_label("qwen3.8-flash-next-uncensored") : st.name;
+    m["deterministic"] = st.deterministic;
+    models.push(m);
+    return models;
+  }
   Val q4 = Val::object();
   q4["id"] = "deepseek-v4-flash-0731";
   const ModelSettings main_settings = model_settings_for("deepseek-v4-flash-0731");
@@ -3445,7 +3469,7 @@ static std::string bot_model_id(int idx) {
   // Switching changes only the next gateway request model ID, not the LLM PID.
   if (ORNITH_MODE) return ORNITH; // all bots, incl. the former NUMA0/DeepSeek slot
   if (!SINGLE_BOT.empty()) return active_room_model();
-  if (DUAL_NUMA) return idx == 0 ? "deepseek-v4-flash-0731" : "qwen3.8-flash-next-uncensored";
+  if (DUAL_NUMA) return "qwen3.8-flash-next-uncensored";
   const std::string own = bot_field(idx, "model");
   return known_room_model(own) ? own : active_room_model();
 }
@@ -7523,9 +7547,11 @@ int main() {
     std::cerr << "Invalid MAG_SECONDARY_MODEL (fail closed)\n";
     return 4;
   }
-  MODEL = env("MAG_ROOM_MODEL", ORNITH_MODE ? ORNITH : "deepseek-v4-flash-0731");
-  // An old 20-deepseek-audit.conf drop-in must not label an Ornith room as DeepSeek.
-  if (ORNITH_MODE && MODEL.rfind("deepseek", 0) == 0) MODEL = ORNITH;
+  MODEL = env("MAG_ROOM_MODEL", ORNITH_MODE ? ORNITH : secondary_kind == "qwen"
+      ? "qwen3.8-flash-next-uncensored" : "deepseek-v4-flash-0731");
+  // A stale systemd drop-in must not override the actually selected model.
+  if (ORNITH_MODE) MODEL = ORNITH;
+  else if (secondary_kind == "qwen") MODEL = "qwen3.8-flash-next-uncensored";
   BACKEND =
       env("MAG_ROOM_BACKEND", "http://127.0.0.1:8080/v1/chat/completions");
   BIND_HOST = env("MAG_ROOM_BIND", "127.0.0.1");
@@ -7552,7 +7578,7 @@ int main() {
   MODEL_STATUS_FILE = env("MAG_ROOM_MODEL_STATUS", "/var/lib/mag-llm/status.json");
   // The DeepSeek model gate (status.json) is retired on Ornith hosts: Ornith /health
   // through the gateway is the only model status there.
-  if (ORNITH_MODE && MODEL_STATUS_FILE == "/var/lib/mag-llm/status.json") MODEL_STATUS_FILE = "/dev/null";
+  if ((ORNITH_MODE || secondary_kind == "qwen") && MODEL_STATUS_FILE == "/var/lib/mag-llm/status.json") MODEL_STATUS_FILE = "/dev/null";
   MAX_HISTORY = envi("MAG_ROOM_MAX_HISTORY", 30);
   HISTORY_STEP = std::max(1, envi("MAG_ROOM_HISTORY_STEP", 10));
   MEMORY_CHUNK = std::max(1, envi("MAG_ROOM_MEMORY_CHUNK", 20));
@@ -7565,7 +7591,7 @@ int main() {
   // layout (still used after rollback to qwen/iq3) does not apply.
   if (DUAL_NUMA || ORNITH_MODE) SINGLE_BOT.clear();
   if (ORNITH_MODE) DUAL_NUMA = false;
-  SINGLE_BOT_NAME = env("MAG_ROOM_SINGLE_BOT_NAME", "DeepSeek Chat");
+  SINGLE_BOT_NAME = env("MAG_ROOM_SINGLE_BOT_NAME", ORNITH_MODE ? "Ornith 1" : "Qwen");
 
   STATE_DIR = env("MAG_ROOM_STATE", "/var/lib/magbot/room");
   if (DUAL_NUMA && secondary_room_model() != "qwen3.8-flash-next-uncensored" && !ORNITH_MODE) {
@@ -7613,7 +7639,8 @@ int main() {
   AUTOTALK = trim(read_file(STATE_DIR + "/autotalk")) == "on";
   REFLECT = trim(read_file(STATE_DIR + "/reflect")) == "on";
   load_model_settings();
-  numa_load();
+  // The retired DeepSeek swap catalog must not hijack Ornith/Qwen routing.
+  if (!ORNITH_MODE && secondary_kind == "iq3") numa_load();
   load_model_verify();
   {
     // Reconcile nft with the persisted choice in both directions (idempotent).

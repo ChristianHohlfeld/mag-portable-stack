@@ -9,6 +9,7 @@ const root = path.resolve(__dirname, '../..');
 const source = fs.readFileSync(path.join(root, 'mag-room/static/message-audio.js'), 'utf8');
 
 function setup(warmOk, opts = {}) {
+  const store = opts.store || {}, rates = [];
   const spoken = [], played = [], posted = [], events = new Map(), buttons = [], timers = [];
   let workerRef = null;
   class FakeWorker {
@@ -26,7 +27,7 @@ function setup(warmOk, opts = {}) {
   class FakeCtx {
     resume() {}
     createBuffer() { return {copyToChannel() {}}; }
-    createBufferSource() { return {connect() {}, start() { played.push(1); Promise.resolve().then(() => this.onended()); }, stop() {}}; }
+    createBufferSource() { const src = {playbackRate: {value: 1}, connect() {}, start() { played.push(1); rates.push(this.playbackRate.value); Promise.resolve().then(() => this.onended()); }, stop() {}}; return src; }
   }
   const voices = [
     {lang: 'de-DE', localService: true, name: 'eSpeak German', voiceURI: 'espeak-ng de'},
@@ -47,14 +48,14 @@ function setup(warmOk, opts = {}) {
   };
   const fetch = async () => ({ok: true, json: async () => ({dir: 'tts-x', voices: [{id: 'thorsten', label: 'Thorsten', model: 'de_DE-thorsten-high.onnx'}]})});
   vm.runInNewContext(source, {window, document, navigator: {language: opts.navLang || 'de-DE'}, Worker: FakeWorker, fetch,
-    CustomEvent: class {}, localStorage: {getItem() { return null; }, setItem() {}}, setTimeout: (f) => timers.push(f),
+    CustomEvent: class {}, localStorage: {getItem(k) { return k in store ? store[k] : null; }, setItem(k, v) { store[k] = String(v); }}, setTimeout: (f) => timers.push(f),
     SpeechSynthesisUtterance: window.SpeechSynthesisUtterance});
   function makeButton() {
     const attrs = {};
     const b = {dataset: {}, classList: {add() {}}, setAttribute(k, v) { attrs[k] = v; }, getAttribute(k) { return attrs[k]; }};
     buttons.push(b); return b;
   }
-  return {window, events, timers, spoken, played, posted, makeButton, worker: () => workerRef};
+  return {window, store, rates, events, timers, spoken, played, posted, makeButton, worker: () => workerRef};
 }
 const tick = () => new Promise(r => setTimeout(r, 0));
 
@@ -126,5 +127,31 @@ const tick = () => new Promise(r => setTimeout(r, 0));
   assert.equal(t.spoken.length, 1, 'English text read by the system voice');
   assert.equal(t.spoken[0].lang, 'en-US');
   assert(!t.posted.some(m => m.type === 'speak'), 'Piper not used for English text');
+
+  // 6) read-aloud speed: default 1x, invalid -> 1x, persisted, applied to Piper and system voice
+  t = setup(true, {store: {'mag-tts-rate': 'banana'}});
+  const r6 = t.window.magMessageAudio;
+  assert.deepEqual([...r6.rates], [1, 1.25, 1.5, 1.75, 2]);
+  assert.equal(r6.ratePref(), 1, 'invalid stored rate -> 1x');
+  assert.equal(setup(true, {store: {'mag-tts-rate': '3'}}).window.magMessageAudio.ratePref(), 1, 'out-of-range rate -> 1x');
+  assert.equal(r6.setRate('1.75'), 1.75);
+  assert.equal(t.store['mag-tts-rate'], '1.75', 'rate persisted');
+  assert.equal(setup(true, {store: t.store}).window.magMessageAudio.ratePref(), 1.75, 'rate restored after reload');
+  t.events.get('load')(); t.timers.shift()();
+  await tick(); await tick();
+  t.worker().finishWarm();
+  const g = t.makeButton();
+  r6.attach(g, 'Hallo Chris. Wie geht es dir heute so?', 'voice-6');
+  g.onclick();
+  for (let i = 0; i < 8; i++) await tick();
+  assert(t.rates.length >= 1 && t.rates.every(v => v === 1.75), 'Piper playbackRate = chosen rate');
+  t = setup(true, {language: 'en', store: {'mag-tts-rate': '1.5'}});
+  const h = t.makeButton();
+  t.window.magMessageAudio.attach(h, 'Hello there. '.repeat(30), 'voice-7');
+  h.onclick();
+  assert.equal(t.spoken[0].rate, 1.5, 'utterance.rate = chosen rate');
+  t.window.magMessageAudio.setRate(2);
+  t.spoken[0].onend();
+  assert.equal(t.spoken[1].rate, 2, 'speed change applies to the next part');
   console.log('MAG Piper warm-up: background load, loading state, Piper playback, neural-only fallback PASS');
 })().catch(e => { console.error(e); process.exit(1); });

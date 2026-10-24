@@ -209,7 +209,7 @@ static bool choose_model(const Http &r,std::string &selected,int &port){
   if((asked=="iq3"||asked=="deepseek-v4-flash-0731-iq3")&&cfg.secondary=="iq3"){selected="iq3"; port=cfg.iq3;return true;}
   if((asked=="qwen"||asked=="qwen3.8-flash-next-uncensored")&&cfg.secondary=="qwen"){selected="qwen"; port=cfg.iq3;return true;}
   if((asked=="ornith"||asked=="ornith-1.5-35b-a3b")&&cfg.secondary=="ornith"){
-    // Sticky per bot, never round-robin: X-Mag-Slot (room bot index) picks the instance.
+    // Sticky per bot, never round-robin: X-Mag-Slot (persistent room bot slot - 1) picks the instance.
     // No slot (health/radius) -> instance 0; an invalid slot fails closed.
     size_t slot=0; auto h=r.headers.find("x-mag-slot");
     if(h!=r.headers.end()){

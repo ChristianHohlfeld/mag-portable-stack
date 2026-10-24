@@ -17,7 +17,7 @@ def _rules(content):
 def _mem(content):
  i=content.index('\n[Erinnerungen]');return content[i+1:]
 class Model(http.server.BaseHTTPRequestHandler):
- protocol_version='HTTP/1.1';calls=[];slots=[];delay=0;reply=None;script=[];health=200;last_prompt={};overflow_once=0
+ protocol_version='HTTP/1.1';calls=[];slots=[];pairs=[];delay=0;reply=None;script=[];health=200;last_prompt={};overflow_once=0
  def log_message(self,*a):pass
  def do_GET(self):
   code=200
@@ -29,6 +29,7 @@ class Model(http.server.BaseHTTPRequestHandler):
  def do_POST(self):
   obj=json.loads(self.rfile.read(int(self.headers['Content-Length'])));self.calls.append(obj)
   type(self).slots.append(self.headers.get('X-Mag-Slot'))
+  type(self).pairs.append((obj,self.headers.get('X-Mag-Slot')))  # one atomic append
   if type(self).overflow_once:
    type(self).overflow_once-=1
    error=b'{"error":{"code":400,"message":"request (35178 tokens) exceeds the available context size (32768 tokens)","type":"exceed_context_size_error"}}'
@@ -3043,31 +3044,124 @@ class DualNuma(unittest.TestCase):
   self.assertEqual(after['model'],before['model'])
   self.error(400,'/api/agents/primary/name',{'name':' '},method='PUT')
 
-class DualNumaOrnith(DualNuma):
- # MAG_SECONDARY_MODEL=ornith: every bot (incl. the former DeepSeek slot) uses Ornith,
- # thinking off, and bot i is pinned to gateway backend i via X-Mag-Slot.
- SECONDARY='ornith'
- def test_01_exactly_two_fixed_models_and_park_legacy(self):
+ORNITH_CTL="""#!/bin/sh
+d="$(dirname "$0")"
+echo "$@" >> "$d/ctl.log"
+# archive-before-despawn: the room must have written the bot record already
+if [ "$1" = despawn ]; then ls "$d/state/archive" > "$d/archive-at-despawn" 2>&1; fi
+exit 0
+"""
+class Ornith(unittest.TestCase):
+ """Ornith mode with the live env (SINGLE_BOT=auto, DUAL_NUMA=1): up to four freely
+ added/removed bots, each pinned to its persistent slot (instance), never the array index."""
+ @classmethod
+ def start(cls):
+  cls.log=open(cls.tmp_path/'server.log','a')
+  cls.proc=subprocess.Popen([str(ROOT/'build/magroom')],env=cls.env,stdout=cls.log,stderr=cls.log)
+  for _ in range(150):
+   try:Native.request.__func__(cls,'/healthz',raw=True);return
+   except Exception:time.sleep(.03)
+  raise RuntimeError('Ornith startup failed')
+ @classmethod
+ def stop(cls):
+  cls.proc.terminate();cls.proc.wait(timeout=5);cls.log.close()
+ @classmethod
+ def setUpClass(cls):
+  cls.tmp=tempfile.TemporaryDirectory();cls.tmp_path=pathlib.Path(cls.tmp.name)
+  cls.state=cls.tmp_path/'state';cls.state.mkdir()
+  cls.ctl=cls.tmp_path/'ctl';cls.ctl.write_text(ORNITH_CTL);cls.ctl.chmod(0o755)
+  # Any systemctl call (mag-llm, mag-llm-ornith@N) would land in this log.
+  fakebin=cls.tmp_path/'bin';fakebin.mkdir()
+  for tool in ('systemctl','virsh'):
+   fakebin.joinpath(tool).write_text(f'#!/bin/sh\necho {tool} "$@" >> "{cls.tmp_path}/forbidden.log"\n');fakebin.joinpath(tool).chmod(0o755)
+  cls.state.joinpath('agents.json').write_text(json.dumps([
+   {'id':'deepseek-chat','name':'DeepSeek 4.0','vm':'agent3','model':'ornith-1.5-35b-a3b','memory':[{'text':'bleibt'}]},
+   {'id':'lehotbot','name':'Qwen 2','vm':'agent1','model':'ornith-1.5-35b-a3b','memory':[]}]))
+  cls.model=http.server.ThreadingHTTPServer(('127.0.0.1',0),Model)
+  threading.Thread(target=cls.model.serve_forever,daemon=True).start()
+  cls.ui=port();cls.bridge=port()
+  cls.env=dict(os.environ,PATH=f'{fakebin}:'+os.environ.get('PATH',''),MAG_OWNER_CANONICAL_LOGIN='chris@github',MAG_TEST_ALLOW_LOCAL_OWNER='1',
+    MAG_ROOM_STATE=str(cls.state),MAG_ROOM_PORT=str(cls.ui),MAG_ROOM_BRIDGE_PORT=str(cls.bridge),
+    MAG_ROOM_BRIDGE_IP='127.0.0.1',MAG_ROOM_BACKEND=f'http://127.0.0.1:{cls.model.server_port}/v1/chat/completions',
+    MAG_ROOM_UI=str(ROOT/'mag-room/web/index.html'),MAG_ROOM_STATIC=str(ROOT/'mag-room/static'),
+    MAG_ROOM_MODEL_STATUS=str(cls.tmp_path/'ms.json'),MAG_NETMODE=str(NETMODE),
+    MAG_TEST_NO_MEMGIT='1',MAG_ROOM_AGENT_CTL=str(cls.ctl),MAG_ROOM_GUEST_RUN='/bin/false',MAG_ROOM_MCP_AUTO='0',
+    MAG_ROOM_SINGLE_BOT='auto',MAG_ROOM_SINGLE_BOT_VM='on',MAG_ROOM_DUAL_NUMA='1',MAG_SECONDARY_MODEL='ornith',
+    MAG_ROOM_PREWARM='0',MAG_ROOM_STAGGER='off')
+  cls.start()
+ @classmethod
+ def tearDownClass(cls):
+  cls.stop();cls.model.shutdown();cls.tmp.cleanup()
+ request=classmethod(Native.request.__func__)
+ error=Native.error
+ wait_idle=Native.wait_idle
+ def bots(self):return {a['id']:a for a in self.request('/api/state')['agents']}
+ def persisted(self):return {a['id']:a for a in json.loads(self.state.joinpath('agents.json').read_text())}
+ def ask(self,bot):
+  # Model.calls is shared with other classes' rooms; match our own unique text.
+  self.wait_idle();token=f'Hallo {bot} {time.monotonic_ns()}'
+  self.request('/api/message',{'text':token,'bots':[bot]})
+  for _ in range(300):
+   hit=[(c,sl) for c,sl in list(Model.pairs) if token in json.dumps(c,ensure_ascii=False)]
+   if hit:break
+   time.sleep(.02)
+  else:self.fail('no model call')
+  self.wait_idle();return hit[0]
+ def test_01_migration_slots_and_free_mode(self):
   s=self.request('/api/state')
-  self.assertEqual(len(s['agents']),2)
-  self.assertEqual(s['agents'][0]['id'],'primary')
-  self.assertEqual([a['model'] for a in s['agents']],['ornith-1.5-35b-a3b']*2)
-  self.assertIn({'id':'ornith-1.5-35b-a3b','label':'Ornith 1.5 35B-A3B'},
-                [{'id':m['id'],'label':m['label']} for m in s['models']])
- def test_04_all_bots_ornith_thinking_off_sticky_slot(self):
-  bots=[a['id'] for a in self.request('/api/state')['agents']]
-  for idx,bot in enumerate(bots):
-   n=len(Model.calls)
-   self.request('/api/message',{'text':'Hallo '+bot,'bots':[bot],'think':True})
-   for _ in range(300):
-    if len(Model.calls)>n:break
-    time.sleep(.02)
-   call=Model.calls[-1]
-   self.assertEqual(call['model'],'ornith-1.5-35b-a3b')
-   self.assertEqual(call['chat_template_kwargs'],{'enable_thinking':False})
-   self.assertEqual(Model.slots[-1],str(idx),'bot index selects its fixed Ornith backend')
-   for _ in range(300):
-    if not self.request('/api/state').get('busy'):break
-    time.sleep(.02)
+  self.assertTrue(s['ornith_mode']);self.assertFalse(s['dual_numa']);self.assertEqual(s['single_bot'],'')
+  self.assertEqual([(a['id'],a['name'],a['vm'],a['slot'],a['model']) for a in s['agents']],
+   [('deepseek-chat','Ornith 1','agent3',1,'ornith-1.5-35b-a3b'),('lehotbot','Ornith 2','agent1',2,'ornith-1.5-35b-a3b')])
+  self.assertEqual([i['slot'] for i in s['ornith_instances']],[1,2,3,4])
+  self.assertEqual([i['port'] for i in s['ornith_instances']],['8191','8192','8193','8194'])
+  self.assertEqual(self.persisted()['deepseek-chat']['memory'][0]['text'],'bleibt')
+ def test_02_german_default_and_sticky_slot(self):
+  call,slot=self.ask('lehotbot')
+  self.assertEqual(slot,'1','slot 2 -> gateway instance index 1 (port 8192)')
+  self.assertIn('Antworte standardmaessig auf Deutsch',call['messages'][0]['content'])
+  self.error(409,'/api/agents/lehotbot/model',{'model':'deepseek-v4-flash-0731'})
+  self.error(409,'/api/model',{'id':'deepseek-v4-flash-0731'})
+ def test_03_add_up_to_four_then_reject_fifth(self):
+  # The UI always sends its (hidden) model select value; Ornith overrides it.
+  chat=self.request('/api/agents',{'name':'Chat Drei','vm':False,'model':'deepseek-v4-flash-0731'})
+  vm=self.request('/api/agents',{'name':'Vier mit VM'})
+  b=self.bots()
+  self.assertEqual(b[chat['id']]['slot'],3);self.assertEqual(b[vm['id']]['slot'],4)
+  self.assertEqual(b[chat['id']]['vm'],'');self.assertEqual(b[chat['id']]['model'],'ornith-1.5-35b-a3b')
+  with self.assertRaises(urllib.error.HTTPError) as ctx:self.request('/api/agents',{'name':'Fuenf','vm':False})
+  self.assertEqual(ctx.exception.code,409)
+  self.assertIn('Maximal vier Ornith-Bots',json.loads(ctx.exception.read())['error'])
+  self.assertEqual(len(self.bots()),4)
+ def test_04_delete_deepseek_chat_archives_and_keeps_other_slots(self):
+  before={k:v['slot'] for k,v in self.bots().items()}
+  self.assertTrue(self.request('/api/agents/deepseek-chat',method='DELETE')['ok'])
+  b=self.bots()
+  self.assertNotIn('deepseek-chat',b);self.assertNotIn('deepseek-chat',self.persisted())
+  self.assertEqual({k:v['slot'] for k,v in b.items()},{k:v for k,v in before.items() if k!='deepseek-chat'})
+  log=self.tmp_path.joinpath('ctl.log').read_text().splitlines()
+  self.assertIn('despawn agent3',log)
+  self.assertFalse([l for l in log if 'mag-llm' in l or 'systemctl' in l])
+  self.assertFalse(self.tmp_path.joinpath('forbidden.log').exists(),'room must never call systemctl/virsh')
+  self.assertIn('deepseek-chat-',self.tmp_path.joinpath('archive-at-despawn').read_text())
+  arch=list(self.state.joinpath('archive').glob('deepseek-chat-*.json'))
+  self.assertEqual(json.loads(arch[0].read_text())['memory'][0]['text'],'bleibt')
+ def test_05_readd_takes_lowest_free_slot_and_routes_there(self):
+  made=self.request('/api/agents',{'name':'Ornith 1','vm':False})
+  self.assertEqual(self.bots()[made['id']]['slot'],1)
+  _,slot=self.ask(made['id'])
+  self.assertEqual(slot,'0')
+  _,slot=self.ask('lehotbot')
+  self.assertEqual(slot,'1','existing bot keeps its instance after delete/re-add')
+ def test_06_restart_is_idempotent(self):
+  before=self.state.joinpath('agents.json').read_text()
+  self.stop();self.start()
+  self.assertEqual(json.loads(self.state.joinpath('agents.json').read_text()),json.loads(before))
+  self.assertEqual(sorted(a['slot'] for a in self.request('/api/state')['agents']),[1,2,3,4])
+ def test_07_ui_shows_instances(self):
+  html=(ROOT/'mag-room/web/index.html').read_text()
+  self.assertIn("'Ornith 1.5 35B-A3B · Instanz '+a.slot",html)
+  self.assertIn('ornith_instances',html)
+  self.assertIn('return state.ornith_mode?4:2',html)
+  self.assertIn('archiviert, nicht gelöscht',html)
 
 if __name__=='__main__':unittest.main(verbosity=2)

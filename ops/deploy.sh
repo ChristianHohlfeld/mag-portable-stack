@@ -70,6 +70,13 @@ install -m 0700 "$NGINX_SYNC" "$BACKUP/deploy-nginx.sh"
 if [[ -f /etc/systemd/system/mag-120.service ]]; then
   cp -a /etc/systemd/system/mag-120.service "$BACKUP/mag-120.service"
 fi
+# Gateway binary and unit roll back together with the room.
+if [[ -f /etc/systemd/system/mag-audit-gateway.service ]]; then
+  cp -a /etc/systemd/system/mag-audit-gateway.service "$BACKUP/mag-audit-gateway.service"
+fi
+if [[ -x /opt/mag-audit/bin/mag-audit-gateway ]]; then
+  cp -a /opt/mag-audit/bin/mag-audit-gateway "$BACKUP/mag-audit-gateway.bin"
+fi
 if [[ -f /etc/systemd/system/mag-browser-webrtc.service ]]; then
   cp -a /etc/systemd/system/mag-browser-webrtc.service "$BACKUP/mag-browser-webrtc.service"
 fi
@@ -146,7 +153,17 @@ rollback() {
  else
    rm -f /etc/systemd/system/mag-120.service.d/30-multibot.conf /etc/systemd/system/mag-120.service.d/30-dual-numa.conf
  fi
+ if (( gateway_switched )); then
+   if [[ -f "$BACKUP/mag-audit-gateway.service" ]]; then
+     cp -a "$BACKUP/mag-audit-gateway.service" /etc/systemd/system/mag-audit-gateway.service
+   fi
+   if [[ -f "$BACKUP/mag-audit-gateway.bin" ]]; then
+     install -m 0755 "$BACKUP/mag-audit-gateway.bin" /opt/mag-audit/bin/.mag-audit-gateway.restore
+     mv -f /opt/mag-audit/bin/.mag-audit-gateway.restore /opt/mag-audit/bin/mag-audit-gateway
+   fi
+ fi
  systemctl daemon-reload
+ if (( gateway_switched )); then systemctl restart mag-audit-gateway.service || true; fi
  if [[ -f "$BACKUP/mag-120.service" ]]; then systemctl restart mag-120.service; fi
  if [[ -f "$BACKUP/mag-browser-webrtc.service" ]]; then
    systemctl restart mag-browser-webrtc.service
@@ -157,6 +174,7 @@ rollback() {
 }
 deployment_started=0
 room_switched=0
+gateway_switched=0
 # Units are Type=simple: `systemctl restart` returns before the process
 # listens. Retry a local health URL for up to 30 s, then one strict check.
 wait_http() {
@@ -286,7 +304,29 @@ elif [[ -r /etc/mag-stack/secondary-model.env ]] &&
 else
   rm -f /etc/systemd/system/mag-120.service.d/30-dual-numa.conf
 fi
+# Replace the live gateway in this deployment, never leave an old :8090 router behind.
+test -x "$SOURCE/build/mag-audit-gateway" || { echo 'Native gateway binary missing' >&2; exit 1; }
+gateway_switched=1
+install -m 0644 "$SOURCE/ops/audit/systemd/mag-audit-gateway.service" /etc/systemd/system/mag-audit-gateway.service
+install -d -m 0755 /opt/mag-audit/bin
+install -m 0755 "$SOURCE/build/mag-audit-gateway" /opt/mag-audit/bin/.mag-audit-gateway.next
+mv -f /opt/mag-audit/bin/.mag-audit-gateway.next /opt/mag-audit/bin/mag-audit-gateway
 systemctl daemon-reload
+systemctl restart mag-audit-gateway.service
+gateway_models=$(curl --noproxy '*' -fsS --max-time 5 http://127.0.0.1:8080/v1/models)
+if [[ -r /etc/mag-stack/secondary-model.env ]]; then
+  case $(cat /etc/mag-stack/secondary-model.env) in
+    MAG_SECONDARY_MODEL=ornith) required=ornith-1.5-35b-a3b ;;
+    MAG_SECONDARY_MODEL=qwen) required=qwen3.8-flash-next-uncensored ;;
+    *) required='' ;;
+  esac
+  if [[ -n $required ]]; then
+    python3 -I -c 'import json,sys
+ids=[m["id"] for m in json.loads(sys.argv[1])["data"]]
+assert ids == [sys.argv[2]], "gateway exposes retired model"
+' "$gateway_models" "$required" || { echo 'Gateway model route mismatch; rollback' >&2; exit 1; }
+  fi
+fi
 systemctl enable --now mag-agents-network.service
 systemctl restart mag-agents-network.service
 systemctl enable mag-120.service

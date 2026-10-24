@@ -23,6 +23,11 @@ cat > "$tmp/bin/virsh" <<'V'
 echo "virsh $*" >> "$CALLS"
 case "$*" in "-q list --name") printf 'magbot-agent1\nother-vm\n' ;; "-q net-list --name") echo mag-agents ;; esac
 V
+# Host-independent: on MAG /dev/ipmi0 exists and the real ipmitool needs root.
+cat > "$tmp/bin/ipmitool" <<'I'
+#!/usr/bin/env bash
+echo "ipmitool $*" >> "$CALLS"
+I
 chmod +x "$tmp/bin/"*
 out=$(CALLS="$log" ACTIVE="mag-llm.service mag-llm-iq3.service mag-auto-update.timer mag-120.service" \
   PATH="$tmp/bin:$PATH" bash <(sed 's/^\[\[ \$EUID == 0 \]\].*$//' "$root/ops/boot/ensure-boot.sh"))

@@ -184,6 +184,9 @@ class NativeGateway(unittest.TestCase):
                                {"messages":[]})
             self.assertEqual(code,200,"model-less request routes Qwen on rollback")
             self.assertEqual(reply["model"],"qwen3.8-flash-next-uncensored")
+            self.assertEqual(IQ3.calls[-1][1]["model"],"qwen3.8-flash-next-uncensored",
+                             "gateway must inject the Qwen alias into model-less chat requests")
+            self.assertEqual(Q4.calls,[],"rollback must never reach the retired Q4 upstream")
         finally:
             proc.terminate();proc.wait(timeout=3);proc.stderr.close()
 

@@ -476,12 +476,17 @@ else
   if [[ -r /etc/mag-stack/secondary-model.env ]] &&
      grep -Fxq 'MAG_SECONDARY_MODEL=qwen' /etc/mag-stack/secondary-model.env; then
     secondary_unit=mag-llm-qwen.service
+  elif [[ -r /etc/mag-stack/secondary-model.env ]] &&
+     grep -Fxq 'MAG_SECONDARY_MODEL=ornith' /etc/mag-stack/secondary-model.env; then
+    secondary_unit="mag-llm-ornith@1.service mag-llm-ornith@2.service mag-llm-ornith@3.service mag-llm-ornith@4.service"
   fi
-  if systemctl is-active --quiet "$secondary_unit"; then
-    echo "$secondary_unit already active; not restarting"
-  else
-    systemctl start "$secondary_unit" || echo "$secondary_unit did not start; room deploy is otherwise complete" >&2
-  fi
+  for unit in $secondary_unit; do
+    if systemctl is-active --quiet "$unit"; then
+      echo "$unit already active; not restarting"
+    else
+      systemctl start "$unit" || echo "$unit did not start; room deploy is otherwise complete" >&2
+    fi
+  done
 fi
 
 phase console-lockdown-skipped

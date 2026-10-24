@@ -8,7 +8,15 @@ log() { echo "boot: $*"; }
 # The active NUMA1 service is persisted after explicit operator cutover;
 # never re-enable the retired IQ3 on a Qwen host during deployment.
 secondary_unit=mag-llm-iq3.service
+secondary_units=()
 if [[ -r /etc/mag-stack/secondary-model.env ]] &&
+   grep -Fxq 'MAG_SECONDARY_MODEL=ornith' /etc/mag-stack/secondary-model.env; then
+  # Ornith host: 4 instances own NUMA0+1 cores; never boot Qwen or IQ3 next to them.
+  secondary_unit=mag-llm-ornith@1.service
+  secondary_units=(mag-llm-ornith@2.service mag-llm-ornith@3.service mag-llm-ornith@4.service)
+  systemctl disable mag-llm-iq3.service mag-llm-qwen.service >/dev/null 2>&1 || true
+  log 'Ornith x4 host: Qwen/IQ3 stay disabled for boot'
+elif [[ -r /etc/mag-stack/secondary-model.env ]] &&
    grep -Fxq 'MAG_SECONDARY_MODEL=qwen' /etc/mag-stack/secondary-model.env; then
   secondary_unit=mag-llm-qwen.service
   # An old static IQ3 unit may still have a manually created boot wants link.
@@ -24,7 +32,7 @@ if [[ -r /etc/mag-stack/secondary-model.env ]] &&
   log 'Qwen NUMA1 enabled for every boot; Q4 readiness gate installed by deploy'
 fi
 units=(
-  mag-llm.service "$secondary_unit"
+  mag-llm.service "$secondary_unit" "${secondary_units[@]}"
   mag-audit-nft.service mag-audit-gateway.service mag-audit-webproxy.service
   mag-120.service mag-agents-network.service mag-browser-webrtc.service mag-git-gateway.socket
   gitea.service nginx.service tailscaled.service libvirtd.service ssh.service
@@ -52,7 +60,7 @@ done
 
 # Bot VMs and their network come back on boot.
 if command -v virsh >/dev/null; then
-  if [[ $secondary_unit == mag-llm-qwen.service &&
+  if [[ ( $secondary_unit == mag-llm-qwen.service || $secondary_unit == mag-llm-ornith@1.service ) &&
         -r /var/lib/magbot/room/agents.json ]] && command -v jq >/dev/null; then
     # The first two persisted agents are the active NUMA bots; PARKED agents
     # retain data but must NOT bring surplus KVM guests back on cold boot.

@@ -17,7 +17,7 @@ def _rules(content):
 def _mem(content):
  i=content.index('\n[Erinnerungen]');return content[i+1:]
 class Model(http.server.BaseHTTPRequestHandler):
- protocol_version='HTTP/1.1';calls=[];delay=0;reply=None;script=[];health=200;last_prompt={};overflow_once=0
+ protocol_version='HTTP/1.1';calls=[];slots=[];delay=0;reply=None;script=[];health=200;last_prompt={};overflow_once=0
  def log_message(self,*a):pass
  def do_GET(self):
   code=200
@@ -28,6 +28,7 @@ class Model(http.server.BaseHTTPRequestHandler):
   self.send_response(code);self.send_header('Content-Length',str(len(data)));self.end_headers();self.wfile.write(data)
  def do_POST(self):
   obj=json.loads(self.rfile.read(int(self.headers['Content-Length'])));self.calls.append(obj)
+  type(self).slots.append(self.headers.get('X-Mag-Slot'))
   if type(self).overflow_once:
    type(self).overflow_once-=1
    error=b'{"error":{"code":400,"message":"request (35178 tokens) exceeds the available context size (32768 tokens)","type":"exceed_context_size_error"}}'
@@ -2981,6 +2982,7 @@ class PendingSpawnResume(unittest.TestCase):
     proc.terminate();proc.wait(timeout=5);log.close();model.shutdown()
 
 class DualNuma(unittest.TestCase):
+ SECONDARY='qwen'
  """Q4/NUMA0 and Qwen/NUMA1 retain two stable bot identities across restarts."""
  @classmethod
  def setUpClass(cls):
@@ -3000,7 +3002,7 @@ class DualNuma(unittest.TestCase):
     MAG_ROOM_UI=str(ROOT/'mag-room/web/index.html'),MAG_ROOM_STATIC=str(ROOT/'mag-room/static'),
     MAG_ROOM_MODEL_STATUS=str(pathlib.Path(cls.tmp.name)/'ms.json'),MAG_NETMODE=str(NETMODE),
     MAG_TEST_NO_MEMGIT='1',MAG_ROOM_AGENT_CTL=str(cls.ctl),MAG_ROOM_MCP_AUTO='0',
-    MAG_ROOM_SINGLE_BOT='auto',MAG_ROOM_DUAL_NUMA='1',MAG_SECONDARY_MODEL='qwen')
+    MAG_ROOM_SINGLE_BOT='auto',MAG_ROOM_DUAL_NUMA='1',MAG_SECONDARY_MODEL=cls.SECONDARY,MAG_ROOM_PREWARM='0')
   cls.log=open(pathlib.Path(cls.tmp.name)/'server.log','a')
   cls.proc=subprocess.Popen([str(ROOT/'build/magroom')],env=env,stdout=cls.log,stderr=cls.log)
   for _ in range(150):
@@ -3040,5 +3042,32 @@ class DualNuma(unittest.TestCase):
   self.assertEqual(after['vm'],before['vm'])
   self.assertEqual(after['model'],before['model'])
   self.error(400,'/api/agents/primary/name',{'name':' '},method='PUT')
+
+class DualNumaOrnith(DualNuma):
+ # MAG_SECONDARY_MODEL=ornith: every bot (incl. the former DeepSeek slot) uses Ornith,
+ # thinking off, and bot i is pinned to gateway backend i via X-Mag-Slot.
+ SECONDARY='ornith'
+ def test_01_exactly_two_fixed_models_and_park_legacy(self):
+  s=self.request('/api/state')
+  self.assertEqual(len(s['agents']),2)
+  self.assertEqual(s['agents'][0]['id'],'primary')
+  self.assertEqual([a['model'] for a in s['agents']],['ornith-1.5-35b-a3b']*2)
+  self.assertIn({'id':'ornith-1.5-35b-a3b','label':'Ornith 1.5 35B-A3B'},
+                [{'id':m['id'],'label':m['label']} for m in s['models']])
+ def test_04_all_bots_ornith_thinking_off_sticky_slot(self):
+  bots=[a['id'] for a in self.request('/api/state')['agents']]
+  for idx,bot in enumerate(bots):
+   n=len(Model.calls)
+   self.request('/api/message',{'text':'Hallo '+bot,'bots':[bot],'think':True})
+   for _ in range(300):
+    if len(Model.calls)>n:break
+    time.sleep(.02)
+   call=Model.calls[-1]
+   self.assertEqual(call['model'],'ornith-1.5-35b-a3b')
+   self.assertEqual(call['chat_template_kwargs'],{'enable_thinking':False})
+   self.assertEqual(Model.slots[-1],str(idx),'bot index selects its fixed Ornith backend')
+   for _ in range(300):
+    if not self.request('/api/state').get('busy'):break
+    time.sleep(.02)
 
 if __name__=='__main__':unittest.main(verbosity=2)

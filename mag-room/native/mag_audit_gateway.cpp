@@ -52,7 +52,8 @@ static int connect_loopback(int port,int timeout_s=3){
 }
 struct Config {
   int q4=8090,iq3=8091,listen=8080;
-  std::string secondary="iq3"; // qwen only after verified operator cutover
+  std::string secondary="iq3"; // qwen/ornith only after verified operator cutover
+  std::vector<int> ornith; // MAG_MODEL_ORNITH_PORTS: bot slot i -> ornith[i], fixed (prompt cache)
   std::string logs="/var/log/mag-audit";
   std::string secrets="/etc/mag-audit/secrets.list";
 } cfg;
@@ -207,6 +208,18 @@ static bool choose_model(const Http &r,std::string &selected,int &port){
   if(numa_route(asked,selected,port))return true;
   if((asked=="iq3"||asked=="deepseek-v4-flash-0731-iq3")&&cfg.secondary=="iq3"){selected="iq3"; port=cfg.iq3;return true;}
   if((asked=="qwen"||asked=="qwen3.8-flash-next-uncensored")&&cfg.secondary=="qwen"){selected="qwen"; port=cfg.iq3;return true;}
+  if((asked=="ornith"||asked=="ornith-1.5-35b-a3b")&&cfg.secondary=="ornith"){
+    // Sticky per bot, never round-robin: X-Mag-Slot (room bot index) picks the instance.
+    // No slot (health/radius) -> instance 0; an invalid slot fails closed.
+    size_t slot=0; auto h=r.headers.find("x-mag-slot");
+    if(h!=r.headers.end()){
+      const std::string &v=h->second;
+      if(v.empty()||v.size()>2||v.find_first_not_of("0123456789")!=std::string::npos)return false;
+      slot=(size_t)std::stoi(v);
+    }
+    if(slot>=cfg.ornith.size())return false;
+    selected="ornith"; port=cfg.ornith[slot]; return true;
+  }
   // No fallback on an explicitly unknown or inactive secondary model.
   return asked.empty()||asked=="q4"||asked=="deepseek-v4-flash-0731";
 }
@@ -269,7 +282,8 @@ static void proxy(int fd){
       Val row=Val::object(); row["id"]=name; row["object"]="model"; row["owned_by"]="mag"; row["label"]=label; row["ready"]=upstream_up(port); data.push(row);
     };
     add("deepseek-v4-flash-0731","Q4 NUMA0",cfg.q4);
-    if(cfg.secondary=="qwen")add("qwen3.8-flash-next-uncensored","Qwen3.8 NUMA1",cfg.iq3);
+    if(cfg.secondary=="ornith")add("ornith-1.5-35b-a3b","Ornith 1.5 35B-A3B",cfg.ornith[0]);
+    else if(cfg.secondary=="qwen")add("qwen3.8-flash-next-uncensored","Qwen3.8 NUMA1",cfg.iq3);
     else add("deepseek-v4-flash-0731-iq3","IQ3 NUMA1",cfg.iq3);
     Val listed=Val::object(); listed["object"]="list"; listed["data"]=data;
     json_response(fd,200,listed); return;
@@ -309,7 +323,7 @@ static void proxy(int fd){
   if(is_llm) {
     Val j;
     if(mj::parse(forwarded,j)&&j.isObj()&&j.find("model")){
-      j["model"]=selected.rfind("numa:",0)==0?selected.substr(5):selected=="qwen"?"qwen3.8-flash-next-uncensored":selected=="iq3"?"deepseek-v4-flash-0731-iq3":"deepseek-v4-flash-0731";
+      j["model"]=selected.rfind("numa:",0)==0?selected.substr(5):selected=="qwen"?"qwen3.8-flash-next-uncensored":selected=="ornith"?"ornith-1.5-35b-a3b":selected=="iq3"?"deepseek-v4-flash-0731-iq3":"deepseek-v4-flash-0731";
       forwarded=mj::dump(j);
     }
   }
@@ -361,7 +375,10 @@ static int server(int port){
 int main(){
   try{
     cfg.listen=number("MAG_AUDIT_LISTEN_PORT",8080);cfg.q4=number("MAG_MODEL_Q4_PORT",8090);cfg.iq3=number("MAG_MODEL_IQ3_PORT",8091);cfg.secondary=env("MAG_SECONDARY_MODEL","iq3");
-    if(cfg.secondary!="iq3"&&cfg.secondary!="qwen")throw std::runtime_error("invalid MAG_SECONDARY_MODEL (fail closed)");
+    if(cfg.secondary!="iq3"&&cfg.secondary!="qwen"&&cfg.secondary!="ornith")throw std::runtime_error("invalid MAG_SECONDARY_MODEL (fail closed)");
+    {std::stringstream ports(env("MAG_MODEL_ORNITH_PORTS","8191,8192,8193,8194"));std::string part;
+     while(std::getline(ports,part,','))cfg.ornith.push_back(std::stoi(part));}
+    if(cfg.secondary=="ornith"&&(cfg.ornith.empty()||cfg.ornith.size()>4))throw std::runtime_error("invalid MAG_MODEL_ORNITH_PORTS (fail closed)");
     cfg.logs=env("MAG_AUDIT_LOG_DIR",cfg.logs);cfg.secrets=env("MAG_AUDIT_SECRETS_FILE",cfg.secrets);
     int public_fd=server(cfg.listen);
     Val start=Val::object();start["type"]="gateway";start["event"]="start";start["upstream"]="8090";audit(start);

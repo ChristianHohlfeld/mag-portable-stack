@@ -45,6 +45,7 @@ jobs:
           python3 mag-room/tests/test_tailscale_auth.py
           python3 ops/audit/tests/test_native_gateway.py
           bash ops/qwen/tests/test-qwen.sh
+          bash ops/ornith/tests/test-ornith.sh
           python3 mag-room/tests/test_whois_deploy.py
           bash -n ops/deploy.sh ops/rollback.sh ops/private-access/*.sh
       - name: IK prompt cache regression and rollback shell syntax

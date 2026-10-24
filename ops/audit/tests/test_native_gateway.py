@@ -208,4 +208,43 @@ class NativeGateway(unittest.TestCase):
                                capture_output=True,timeout=5)
         self.assertNotEqual(process.returncode,0)
 
+    def test_07_ornith_sticky_backend_per_bot_slot(self):
+        # Four fake Ornith instances; X-Mag-Slot (room bot index) pins one backend, never round-robin.
+        kinds=[type("Ornith%d"%i,(FakeModel,),{"ready":True,"calls":[]}) for i in range(4)]
+        ports=[port() for _ in kinds];servers=[]
+        for k,pn in zip(kinds,ports):
+            srv=http.server.ThreadingHTTPServer(("127.0.0.1",pn),k);servers.append(srv)
+            threading.Thread(target=srv.serve_forever,daemon=True).start()
+        gwp=port()
+        env=dict(self.env,MAG_AUDIT_LISTEN_PORT=str(gwp),MAG_SECONDARY_MODEL="ornith",
+                 MAG_MODEL_ORNITH_PORTS=",".join(map(str,ports)),MAG_AUDIT_LOG_DIR=str(self.dir/"ornith-logs"))
+        proc=subprocess.Popen([str(ROOT/"build/mag-audit-gateway")],env=env,stdout=subprocess.DEVNULL,stderr=subprocess.PIPE)
+        def chat(slot,model="ornith-1.5-35b-a3b"):
+            c=http.client.HTTPConnection("127.0.0.1",gwp,timeout=5)
+            h={"Content-Type":"application/json"}
+            if slot is not None:h["X-Mag-Slot"]=str(slot)
+            c.request("POST","/v1/chat/completions",body=json.dumps({"model":model,"messages":[]}),headers=h)
+            r=c.getresponse();r.read();c.close();return r.status
+        try:
+            for _ in range(100):
+                if proc.poll() is not None:raise RuntimeError(proc.stderr.read().decode())
+                try:
+                    if request(gwp)[0]==200:break
+                except (ConnectionError,OSError):pass
+                time.sleep(.05)
+            Q4.calls.clear();IQ3.calls.clear()
+            code,listed=request(gwp,"GET","/v1/models")
+            self.assertEqual(sorted(x["id"] for x in listed["data"]),["deepseek-v4-flash-0731","ornith-1.5-35b-a3b"])
+            for _ in range(3):
+                for slot in (2,0,3,1):self.assertEqual(chat(slot),200)
+            self.assertEqual([len(k.calls) for k in kinds],[3,3,3,3],"each bot slot sticks to its own instance")
+            self.assertTrue(all(c[1]["model"]=="ornith-1.5-35b-a3b" for k in kinds for c in k.calls))
+            self.assertEqual(chat(None),200);self.assertEqual(len(kinds[0].calls),4,"no slot -> instance 1, deterministic")
+            for bad in ("4","x","-1",""):self.assertEqual(chat(bad),400,"invalid slot fails closed")
+            self.assertEqual(chat(0,"qwen3.8-flash-next-uncensored"),400,"Qwen no longer routable")
+            self.assertEqual(IQ3.calls,[]);self.assertEqual(Q4.calls,[])
+        finally:
+            proc.terminate();proc.wait(timeout=3);proc.stderr.close()
+            for srv in servers:srv.shutdown();srv.server_close()
+
 if __name__=="__main__":unittest.main()

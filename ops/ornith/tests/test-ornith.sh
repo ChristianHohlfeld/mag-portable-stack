@@ -31,7 +31,7 @@ for flag in '--cpunodebind="$NODE" --membind="$NODE" --physcpubind="$CPUS"' 'POR
   '--port "$PORT" --ctx-size 65536 --parallel 2' '--threads 14 --threads-batch 14 --numa numactl' \
   '--load-mode mlock --jinja --reasoning-format auto --reasoning off' '--cache-ram 2048 --ctx-checkpoints 8' \
   '--slot-save-path "/var/lib/mag-llm/slots/ornith-node$NODE" --no-ui' 'qwen4exp/$REV/bin/llama-server' 'source-commit' \
-  'Ornith-1.5-35B-A3B-Q4_K_M.gguf' 'reclaimable RAM below 24GiB' 'verify-model.sh' 'legacy instance $n still running' \
+  'Ornith-1.5-35B-A3B-Q4_K_M.gguf' 'reclaimable RAM below 34GiB' 'verify-model.sh' 'legacy instance $n still running' \
   'Qwen still running' 'IQ3 still running'; do
   grep -Fq -- "$flag" ops/ornith/start-node.sh
 done

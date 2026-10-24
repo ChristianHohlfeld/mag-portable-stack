@@ -1,0 +1,7 @@
+# ARCHIVIERT: Historische DeepSeek-Pruefsummen, NICHT im aktiven Ornith-Bootstrap.
+# SHA256 Sollwerte aus ops/deepseek/model-manifest.sh; auf neuer Hardware durch sha256sum -c pruefen.
+d13ce8f90855547bdaebe7312f531a1f2c4f822178d3103951f27fe884395cfa  DeepSeek-V4-Flash-0731-UD-Q4_K_XL-00001-of-00005.gguf
+d5b61668950f4743aacd677675d7fcf7507dbe1db6d304e8ff97ed1f00827bee  DeepSeek-V4-Flash-0731-UD-Q4_K_XL-00002-of-00005.gguf
+9705db7e589f360685ca7bd48100b270d78d228d4f5aa980508f3b2778af5494  DeepSeek-V4-Flash-0731-UD-Q4_K_XL-00003-of-00005.gguf
+7f13a68e3ca64208454c4ba32cc2757c0cbe78e3e5576c3142bf7007ca97da42  DeepSeek-V4-Flash-0731-UD-Q4_K_XL-00004-of-00005.gguf
+ed0d93164d3784968d6ce40d6d201ba98337f16e7db1b31fe495b2b0f334cc09  DeepSeek-V4-Flash-0731-UD-Q4_K_XL-00005-of-00005.gguf

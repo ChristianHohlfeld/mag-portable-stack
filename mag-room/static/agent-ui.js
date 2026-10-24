@@ -303,6 +303,18 @@
     sel.value = window.magMessageAudio.voicePref();
     if (sel.selectedIndex < 0) sel.value = 'system';
     sel.onchange = () => window.magMessageAudio.setVoice(sel.value);
+    rateSelect(sel);
+  }
+  // Read-aloud speed 1x-2x, one global choice for every message.
+  function rateSelect(after) {
+    const audio = window.magMessageAudio;
+    if (document.getElementById('tts-rate') || !audio?.rates) return;
+    const sel = el('select', 'side-select'); sel.id = 'tts-rate'; sel.setAttribute('aria-label', 'Vorlesegeschwindigkeit');
+    sel.style.marginTop = '8px'; sel.style.minHeight = '40px';
+    for (const r of audio.rates) { const o = el('option', '', 'Vorlesegeschwindigkeit: ' + String(r).replace('.', ',') + 'x'); o.value = String(r); sel.append(o); }
+    sel.value = String(audio.ratePref());
+    sel.onchange = () => { sel.value = String(audio.setRate(sel.value)); };
+    after.after(sel);
   }
 
   function render() { css(); voiceSelect(); paintChips(); paintHub(); paintTasks(); loadSecrets(false); if (sheet?.open) fillSheet(); }

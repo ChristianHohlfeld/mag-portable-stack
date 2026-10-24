@@ -392,9 +392,9 @@ dialog{border-radius:10px;border-color:var(--line);background:var(--surface)}
 .msg-pop .pop-actions button:hover{background:var(--panel-3,var(--panel))}
 .msg-pop .pop-actions .danger{color:#d33}
 .message.pop-target>.content{background:color-mix(in srgb,var(--accent),transparent 92%);border-radius:12px}
-/* Permanent copy/read-aloud only under the newest message (like Grok). */
-.message .message-tools{display:none}
-.conversation-inner>article.message:last-of-type .message-tools{display:flex}
+/* Read-aloud under every message; permanent copy only under the newest (like Grok). */
+.message .message-tools .message-copy{display:none}
+.conversation-inner>article.message:last-of-type .message-tools .message-copy{display:inline-flex}
 .message.user .react-bar{right:-44px}
 .react-quick,.react-more,.react-pill{min-height:36px!important;height:36px}
 }
@@ -1166,7 +1166,7 @@ function append(msg,scroll=true,trace=null,position=-1){
  if(!human&&msg.tools?.length)paintTools(div,content,storedTools(msg));
  if(trace)addTrace(div,{...trace,key:msg.id||''});
  if(msg.file)div.append(attachmentView(msg.file));
- if(text){const actions=document.createElement('div');actions.className='message-tools';const b=document.createElement('button');b.type='button';b.innerHTML=ICON_COPY+' Kopieren';b.setAttribute('aria-label','Nachricht kopieren');b.onclick=()=>copyText(text,b);actions.append(b);const audio=document.createElement('button');if(window.magMessageAudio?.attach){window.magMessageAudio.attach(audio,text,msg.id);actions.append(audio)}div.append(actions)}
+ if(text){const actions=document.createElement('div');actions.className='message-tools';const b=document.createElement('button');b.type='button';b.className='message-copy';b.innerHTML=ICON_COPY+' Kopieren';b.setAttribute('aria-label','Nachricht kopieren');b.onclick=()=>copyText(text,b);actions.append(b);const audio=document.createElement('button');if(window.magMessageAudio?.attach){window.magMessageAudio.attach(audio,text,msg.id);actions.append(audio)}div.append(actions)}
  inner.append(div);return div;
 }
 function streamClock(s){const t=Math.max(0,Math.floor((Date.now()-((s&&s.started)||Date.now()))/1000));return Math.floor(t/60)+':'+String(t%60).padStart(2,'0')}

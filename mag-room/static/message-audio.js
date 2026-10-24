@@ -96,6 +96,16 @@
 
   // ---- Piper (worker) ----
   const piper = {config: null, configP: null, failed: new Set(), worker: null, ready: new Set(), loading: null, ctx: null, seq: 0, pending: new Map(), source: null};
+  // Read-aloud speed, shared by Piper and the system voice; read per part so a
+  // change during playback applies to the next part (and the current Piper one).
+  const RATES = [1, 1.25, 1.5, 1.75, 2];
+  function ratePref() { let v = NaN; try { v = parseFloat(localStorage.getItem('mag-tts-rate')); } catch (_) {} return RATES.includes(v) ? v : 1; }
+  function setRate(v) {
+    v = RATES.includes(+v) ? +v : 1;
+    try { localStorage.setItem('mag-tts-rate', String(v)); } catch (_) {}
+    try { if (piper.source) piper.source.playbackRate.value = v; } catch (_) {}
+    return v;
+  }
   function voicePref() { try { return localStorage.getItem('mag-tts-voice') || 'thorsten'; } catch (_) { return 'thorsten'; } }
   function piperVoice() {
     const pref = voicePref();
@@ -154,7 +164,7 @@
         const buf = piper.ctx.createBuffer(1, res.audio.length, res.rate);
         buf.copyToChannel(res.audio, 0);
         const src = piper.ctx.createBufferSource();
-        src.buffer = buf; src.connect(piper.ctx.destination);
+        src.buffer = buf; if (src.playbackRate) src.playbackRate.value = ratePref(); src.connect(piper.ctx.destination);
         src.onended = done; piper.source = src; src.start();
       });
       if (current !== playback) return;
@@ -176,7 +186,7 @@
     if (!text) { current = null; setButtons(); return; }
     const utterance = new SpeechSynthesisUtterance(text);
     utterance.lang = playback.lang;
-    utterance.rate = 1;
+    utterance.rate = ratePref();
     const match = bestVoice(playback.lang);
     if (match) utterance.voice = match;
     utterance.onend = () => nextPart(playback);
@@ -264,7 +274,7 @@
     else window.addEventListener('load', () => setTimeout(warmUp, 1500), {once: true});
   }
 
-  window.magMessageAudio = {attach, toggle, stop, supported, setVoice, voiceOptions, voicePref, bestVoice,
+  window.magMessageAudio = {attach, toggle, stop, supported, setVoice, voiceOptions, voicePref, bestVoice, rates: RATES, ratePref, setRate,
     isPlaying: id => !!current && current.key === id, piperReady: () => { const v = piperVoice(); return !!v && piper.ready.has(v.model); }};
   window.addEventListener('pagehide', stop);
 })();

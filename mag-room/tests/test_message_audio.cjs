@@ -11,6 +11,13 @@ assert(html.includes('window.magMessageAudio.attach(audio,text,msg.id)'), 'no pe
 assert(!html.includes('id="tts"'), 'old autoplay setting still visible');
 assert(!html.includes("$('tts').checked"), 'automatic playback remains');
 assert(html.includes('const human=msg.role'), 'render path for human and bot messages absent');
+// Every message (user, bot, history) keeps its read-aloud button visible; only copy is newest-only.
+assert(!/\.message \.message-tools\{display:none\}/.test(html), 'read-aloud hidden on older messages');
+assert(html.includes('.message .message-tools .message-copy{display:none}'), 'copy should stay newest-only');
+const renderLine = html.split('\n').find(l => l.includes('window.magMessageAudio.attach(audio,text,msg.id)'));
+assert(/^ if\(text\)\{/.test(renderLine), 'speak button must not depend on role/kind, only on text');
+const agentUi = fs.readFileSync(path.join(root, 'mag-room/static/agent-ui.js'), 'utf8');
+assert(agentUi.includes("'Vorlesegeschwindigkeit'"), 'German speed control missing');
 
 const buttons = [];
 const events = new Map();

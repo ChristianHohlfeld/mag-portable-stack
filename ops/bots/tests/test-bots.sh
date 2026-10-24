@@ -50,6 +50,10 @@ set -e
 rm -f "$tmp/fail-despawn"
 "$repo/ops/magbot-agent-ctl" despawn agent1
 [[ ! -e $tmp/root/www/agent1 && ! -e $tmp/root/tokens/agent1 ]]
+# Despawn deletes nothing: the published site moves to the root-only archive.
+archived=("$tmp"/root/archive/agent1-*)
+[[ ${#archived[@]} -eq 1 && $(cat "${archived[0]}/index.html") == CUSTOM ]]
+[[ $(stat -c %a "$tmp/root/archive") == 700 ]]
 for bad in agent agentX ../etc 'agent1/../agent2' 'agent 1'; do
   set +e
   "$here/site.sh" assign "$bad" >"$tmp/bad.out" 2>&1

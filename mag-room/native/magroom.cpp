@@ -745,7 +745,7 @@ static void load_agents() {
                                       [](const auto &kv) { return kv.first == "slot"; }),
                        a.obj->end());
         const std::string name = mag::str(a, "name");
-        if (name == "DeepSeek 4.0") { a["name"] = "Ornith 1"; dirty = true; }
+        if (name == "DeepSeek 4.0" || name == "DeepSeek Chat" || name == "DeepSeek Q4") { a["name"] = "Ornith 1"; dirty = true; }
         if (name == "Qwen 2") { a["name"] = "Ornith 2"; dirty = true; }
       }
     }
@@ -796,7 +796,8 @@ static void load_agents() {
     if (primary >= 0) {
       active.push_back(all[primary]); used[primary] = true;
     } else {
-      active.push_back(make("deepseek-q4", "DeepSeek Q4", q4));
+      active.push_back(ORNITH_MODE ? make("deepseek-q4", "Ornith 1", ORNITH)
+                                   : make("deepseek-q4", "DeepSeek Q4", q4));
     }
     active[0]["model"] = ORNITH_MODE ? ORNITH : q4;
     int secondary = -1;
@@ -3258,8 +3259,13 @@ static std::string secondary_room_model() {
              ? "qwen3.8-flash-next-uncensored"
              : "deepseek-v4-flash-0731-iq3";
 }
+// DeepSeek is retired on Ornith hosts: Ornith is the only selectable model there.
+static std::string default_room_model() {
+  return ORNITH_MODE ? ORNITH : "deepseek-v4-flash-0731";
+}
 static bool known_room_model(const std::string &id) {
   if (NUMA_ON) return numa_known_model(id);
+  if (ORNITH_MODE) return id == ORNITH;
   return id == "deepseek-v4-flash-0731" || id == secondary_room_model();
 }
 static std::string default_model_label(const std::string &id) {
@@ -3284,7 +3290,10 @@ static void load_model_settings() {
   const bool old_value = trim(read_file(STATE_DIR + "/sampling")) == "on";
   std::lock_guard<std::mutex> lk(MODEL_SETTINGS_MTX);
   MODEL_SETTINGS.clear();
-  for (const std::string &id : std::vector<std::string>{"deepseek-v4-flash-0731", secondary_room_model()}) {
+  const std::vector<std::string> ids =
+      ORNITH_MODE ? std::vector<std::string>{ORNITH}
+                  : std::vector<std::string>{"deepseek-v4-flash-0731", secondary_room_model()};
+  for (const std::string &id : ids) {
     ModelSettings item;
     item.deterministic = old_value;
     if (valid) {
@@ -3328,7 +3337,7 @@ static bool save_model_settings(const std::string &id,
 static std::string room_model_file() { return STATE_DIR + "/room-model.txt"; }
 static std::string active_room_model() {
   std::lock_guard<std::mutex> lk(ROOM_MODEL_MTX);
-  return known_room_model(ROOM_MODEL_ID) ? ROOM_MODEL_ID : "deepseek-v4-flash-0731";
+  return known_room_model(ROOM_MODEL_ID) ? ROOM_MODEL_ID : default_room_model();
 }
 static void load_room_model() {
   bool ok = false;
@@ -3338,7 +3347,7 @@ static void load_room_model() {
     saved.pop_back();
   std::lock_guard<std::mutex> lk(ROOM_MODEL_MTX);
   ROOM_MODEL_ID = (ok && known_room_model(saved))
-                     ? saved : "deepseek-v4-flash-0731";
+                     ? saved : default_room_model();
 }
 static bool set_room_model(const std::string &id) {
   if (!known_room_model(id)) return false;
@@ -3396,6 +3405,16 @@ static Val room_model_catalog() {
       m["deterministic"] = st.deterministic;
       models.push(m);
     }
+    return models;
+  }
+  if (ORNITH_MODE) {
+    Val m = Val::object();
+    const ModelSettings st = model_settings_for(ORNITH);
+    m["id"] = ORNITH;
+    m["label"] = st.name.empty() ? default_model_label(ORNITH) : st.name;
+    m["deterministic"] = st.deterministic;
+    if (Val v = model_verify_for(ORNITH); v.isObj()) m["verify"] = v;
+    models.push(m);
     return models;
   }
   Val q4 = Val::object();
@@ -7504,7 +7523,9 @@ int main() {
     std::cerr << "Invalid MAG_SECONDARY_MODEL (fail closed)\n";
     return 4;
   }
-  MODEL = env("MAG_ROOM_MODEL", "deepseek-v4-flash-0731");
+  MODEL = env("MAG_ROOM_MODEL", ORNITH_MODE ? ORNITH : "deepseek-v4-flash-0731");
+  // An old 20-deepseek-audit.conf drop-in must not label an Ornith room as DeepSeek.
+  if (ORNITH_MODE && MODEL.rfind("deepseek", 0) == 0) MODEL = ORNITH;
   BACKEND =
       env("MAG_ROOM_BACKEND", "http://127.0.0.1:8080/v1/chat/completions");
   BIND_HOST = env("MAG_ROOM_BIND", "127.0.0.1");
@@ -7529,6 +7550,9 @@ int main() {
       REASONING_EFFORT != "max")
     REASONING_EFFORT = "";
   MODEL_STATUS_FILE = env("MAG_ROOM_MODEL_STATUS", "/var/lib/mag-llm/status.json");
+  // The DeepSeek model gate (status.json) is retired on Ornith hosts: Ornith /health
+  // through the gateway is the only model status there.
+  if (ORNITH_MODE && MODEL_STATUS_FILE == "/var/lib/mag-llm/status.json") MODEL_STATUS_FILE = "/dev/null";
   MAX_HISTORY = envi("MAG_ROOM_MAX_HISTORY", 30);
   HISTORY_STEP = std::max(1, envi("MAG_ROOM_HISTORY_STEP", 10));
   MEMORY_CHUNK = std::max(1, envi("MAG_ROOM_MEMORY_CHUNK", 20));

@@ -7,7 +7,7 @@ test ! -e ops/mag-120.d/30-multibot.conf
 ! grep -Fq 'both-sockets.sh' ops/deploy.sh
 ! grep -Eq '(warm[.]sh.*restart-llm|systemctl (stop|restart|kill).*mag-llm|systemctl disable --now mag-llm-iq3)' ops/deploy.sh
 grep -Fq 'MAG_ROOM_SINGLE_BOT=auto' ops/mag-120.service
-grep -Fq 'MAG_ROOM_SINGLE_BOT=auto' ops/mag-120.d/20-deepseek-audit.conf
+grep -Fq 'MAG_ROOM_SINGLE_BOT=auto' ops/mag-120.d/20-room-audit.conf
 grep -Fq 'MAG_ROOM_SINGLE_BOT=auto' mag-room/.env.example
 grep -Fq -- '--cpunodebind=0 --membind=0' ops/deepseek/llm.env.mag
 grep -Fq 'THREADS=16' ops/deepseek/llm.env.mag

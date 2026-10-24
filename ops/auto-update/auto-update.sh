@@ -3,7 +3,7 @@
 # commit on which all CI checks passed (.github/workflows/green.yml). If it
 # moved: fast-forward the checkout, build as the checkout owner, then deploy.
 # deploy.sh keeps its backup and automatic rollback. A failed commit is retried
-# once an hour. No network or no `green` yet: nothing happens. mag-llm is never touched.
+# once an hour. No network or no `green` yet: nothing happens. no model unit is ever touched.
 set -euo pipefail
 ROOT="$(cd -- "$(dirname "$0")/../.." && pwd)"
 STATE=/var/lib/mag-stack/auto-update

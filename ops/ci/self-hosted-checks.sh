@@ -48,6 +48,7 @@ bash ops/tests/test-cleanup-legacy.sh
 bash ops/tests/test-runners.sh
 bash ops/tests/test-green.sh
 bash ops/tests/test-boot.sh
+bash ops/tests/test-retire-deepseek.sh
 bash ops/tests/test-gitea-mirror.sh
 bash ops/backup/tests/test-backup.sh
 bash ops/backup/tests/test-gitea-root.sh

@@ -2,10 +2,10 @@
 # port 8191+%i, --parallel 2 (two room bots each), start-node.sh. Per-node CPU and
 # memory pinning in mag-llm-ornith-node@%i.service.d/10-numa.conf (ops/ornith/nodes/).
 # Replaces mag-llm-ornith@1..4, which stay installed (disabled) for rollback.sh instances.
-# Installed and started only by ops/ornith/cutover.sh; mag-llm is independent.
+# Installed and started only by ops/ornith/cutover.sh; DeepSeek mag-llm is retired.
 [Unit]
 Description=MAG Ornith-1.5-35B-A3B CPU model, NUMA node %i (2 bots)
-After=network-online.target mag-llm.service
+After=network-online.target
 Wants=network-online.target
 ConditionPathExists=/etc/mag-ornith/model.sha256
 Conflicts=mag-llm-qwen.service mag-llm-ornith@1.service mag-llm-ornith@2.service mag-llm-ornith@3.service mag-llm-ornith@4.service
@@ -24,11 +24,12 @@ Restart=on-failure
 RestartSec=60
 TimeoutStartSec=3600
 TimeoutStopSec=120
-# ~21.8 GiB RSS (weights mlocked + KV for 2x32k) + 2 GiB --cache-ram ≈ 23.8 GiB:
-# MemoryHigh stays above RSS+cache-ram, MemoryMax leaves 3 GiB for spikes.
+# ~21.8 GiB RSS (weights mlocked + KV for 2x32k) + 2 GiB --cache-ram ≈ 23.8 GiB (live 23.7):
+# with DeepSeek retired (~160 GiB freed) MemoryHigh leaves ~6 GiB headroom before reclaim,
+# MemoryMax another 4 GiB for spikes. start-node.sh still requires 24 GiB free on the node.
 MemoryAccounting=yes
-MemoryHigh=25G
-MemoryMax=28G
+MemoryHigh=30G
+MemoryMax=34G
 MemorySwapMax=0
 LimitMEMLOCK=infinity
 OOMScoreAdjust=-600

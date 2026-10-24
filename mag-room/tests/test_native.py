@@ -2323,7 +2323,7 @@ class MultiBot(unittest.TestCase):
  def test_07_single_bot_deploy_has_no_multibot_override(self):
   self.assertFalse((ROOT/'ops/mag-120.d/30-multibot.conf').exists())
   self.assertFalse((ROOT/'ops/deepseek/both-sockets.sh').exists())
-  drop=(ROOT/'ops/mag-120.d/20-deepseek-audit.conf').read_text()
+  drop=(ROOT/'ops/mag-120.d/20-room-audit.conf').read_text()
   self.assertIn('Environment=MAG_ROOM_SINGLE_BOT=auto',drop)
   dep=(ROOT/'ops/deploy.sh').read_text()
   self.assertIn('rm -f /etc/systemd/system/mag-120.service.d/30-multibot.conf',dep)

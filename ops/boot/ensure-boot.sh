@@ -5,13 +5,14 @@
 set -euo pipefail
 [[ $EUID == 0 ]] || { echo 'root required' >&2; exit 1; }
 log() { echo "boot: $*"; }
-# The active NUMA1 service is persisted after explicit operator cutover;
-# never re-enable the retired IQ3 on a Qwen host during deployment.
+# The active model units are persisted after explicit operator cutover.
+# DeepSeek (mag-llm Q4, IQ3, model-gate) is retired: never enabled here
+# (ops/models/retire-deepseek.sh disables it on a healthy Ornith host).
 # Paths are overridable for tests only; production uses the defaults.
 secondary_env=${MAG_SECONDARY_MODEL_ENV:-/etc/mag-stack/secondary-model.env}
 agents_json=${MAG_AGENTS_JSON:-/var/lib/magbot/room/agents.json}
 ipmi_devs=${MAG_IPMI_DEVICES:-/dev/ipmi0 /dev/ipmi/0}
-secondary_unit=mag-llm-iq3.service
+secondary_unit=
 secondary_units=()
 if [[ -r "$secondary_env" ]] &&
    grep -Fxq 'MAG_SECONDARY_MODEL=ornith' "$secondary_env"; then
@@ -34,10 +35,10 @@ elif [[ -r "$secondary_env" ]] &&
   fi
   # Idempotent even if an older staged Qwen unit lacked [Install].
   systemctl add-wants multi-user.target mag-llm-qwen.service
-  log 'Qwen NUMA1 enabled for every boot; Q4 readiness gate installed by deploy'
+  log 'Qwen NUMA1 enabled for every boot (no DeepSeek dependency)'
 fi
 units=(
-  mag-llm.service "$secondary_unit" "${secondary_units[@]}"
+  ${secondary_unit:+"$secondary_unit"} "${secondary_units[@]}"
   mag-audit-nft.service mag-audit-gateway.service mag-audit-webproxy.service
   mag-120.service mag-agents-network.service mag-browser-webrtc.service mag-git-gateway.socket
   gitea.service nginx.service tailscaled.service libvirtd.service ssh.service

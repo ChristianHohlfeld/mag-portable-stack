@@ -13,7 +13,7 @@ printf '%s\n' "$ready"
 state=$(python3 -I -c 'import json,sys; print(json.loads(sys.argv[1]).get("model",{}).get("state",""))' "$ready")
 case "$state" in
   ready)
-    systemctl is-active --quiet mag-llm.service ;;
+    : ;; # model ready via /readyz (DeepSeek mag-llm retired; Ornith health is the status)
   downloading|verifying|verified|starting|loading)
     echo "WARN: Modell noch nicht bereit ($state)" >&2 ;;
   *)

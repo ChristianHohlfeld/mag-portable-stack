@@ -42,7 +42,7 @@ for spec in '0 0-13' '1 14-27'; do
     grep -Fxq "$line" ops/ornith/nodes/$node.conf
   done
 done
-for line in 'User=chris' 'LimitMEMLOCK=infinity' 'MemoryHigh=25G' 'MemoryMax=28G' 'MemorySwapMax=0' \
+for line in 'User=chris' 'LimitMEMLOCK=infinity' 'MemoryHigh=30G' 'MemoryMax=34G' 'MemorySwapMax=0' \
   'ExecStart=/usr/local/lib/mag-ornith/start-node.sh %i' 'ExecStartPre=+/usr/local/lib/mag-ornith/verify-model.sh' \
   'ReadWritePaths=-/var/lib/mag-llm/slots/ornith-node%i' \
   'Conflicts=mag-llm-qwen.service mag-llm-ornith@1.service mag-llm-ornith@2.service mag-llm-ornith@3.service mag-llm-ornith@4.service'; do
@@ -79,7 +79,7 @@ run_case(){ # $1=from (qwen|instances) $2=fail node server 1 (0|1)
 #!/bin/sh
 echo "\$*" >> "$T/log"
 case "\$*" in
-  "show -p MainPID --value mag-llm.service") echo 123 ;;
+  "show -p MainPID --value mag-llm.service") echo ${Q4PID:-123} ;;
   show*) echo 0 ;;
   "is-failed --quiet mag-llm-ornith-node@1.service") $failed 1 ;;
   is-failed*) exit 1 ;;
@@ -151,4 +151,7 @@ run_case qwen 0
 run_case instances 0
 run_case qwen 1
 run_case instances 1
+# DeepSeek retired: cutover must also work with mag-llm inactive (MainPID 0).
+Q4PID=0 run_case qwen 0
+Q4PID=0 run_case qwen 1
 echo 'ornith ops tests: OK'

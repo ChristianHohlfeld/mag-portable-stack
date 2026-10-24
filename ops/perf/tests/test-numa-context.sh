@@ -60,9 +60,9 @@ assert 'id_slot"] = id_slot' in room and 'if (PROMPT_SLOTS > 1)' in room
 assert 'MCP_MAX_BOT_TOOLS = 64' in mcp
 assert 'MAG_MCP_TOOL_DESC_BYTES' in mcp and 'fn["parameters"]' in mcp
 assert 'for (auto &t : mcp_bot_tools(bot_idx))' in room  # no tool removal
-assert 'MAG_ROOM_BACKEND=http://127.0.0.1:8080' in Path('ops/mag-120.d/20-deepseek-audit.conf').read_text()
+assert 'MAG_ROOM_BACKEND=http://127.0.0.1:8080' in Path('ops/mag-120.d/20-room-audit.conf').read_text()
 assert 'ops/qwen/start.sh" /usr/local/lib/mag-qwen/start.sh' in deploy
-assert 'MAG_ROOM_CONTEXT_BYTES=52000' not in Path('ops/mag-120.d/20-deepseek-audit.conf').read_text() # legacy unchanged
+assert 'MAG_ROOM_CONTEXT_BYTES=52000' not in Path('ops/mag-120.d/20-room-audit.conf').read_text() # legacy unchanged
 assert 'mag-llm-qwen' in diag and 'prompt-cache slot=' in diag
 for s in (qwen, deploy):
     assert 'systemctl restart mag-llm.service' not in s

@@ -29,7 +29,7 @@ TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 for f in ops/audit/mag_audit_gateway.py ops/audit/mitm_audit_addon.py ops/audit/mag-audit.nft \
          ops/audit/vm-proxy-setup.sh ops/audit/detect-vm-net.sh ops/audit/mag-audit-tail \
          ops/audit/systemd/mag-audit-gateway.service ops/audit/systemd/mag-audit-webproxy.service \
-         ops/audit/systemd/mag-audit-nft.service ops/mag-120.d/20-deepseek-audit.conf; do
+         ops/audit/systemd/mag-audit-nft.service ops/mag-120.d/20-room-audit.conf; do
   [[ -f "$SRC/$f" ]] || { echo "fehlt: $SRC/$f"; exit 1; }
 done
 id magbot >/dev/null 2>&1 || { echo "User magbot fehlt"; exit 1; }
@@ -120,7 +120,8 @@ if [[ $GATEWAY_ACTIVE -eq 0 ]]; then
 fi
 run install -m 0644 "$SRC/ops/audit/systemd/mag-audit-webproxy.service" "$SRC/ops/audit/systemd/mag-audit-nft.service" /etc/systemd/system/
 run install -d /etc/systemd/system/mag-120.service.d
-run install -m 0644 "$SRC/ops/mag-120.d/20-deepseek-audit.conf" /etc/systemd/system/mag-120.service.d/20-deepseek-audit.conf
+run install -m 0644 "$SRC/ops/mag-120.d/20-room-audit.conf" /etc/systemd/system/mag-120.service.d/20-room-audit.conf
+run rm -f /etc/systemd/system/mag-120.service.d/20-deepseek-audit.conf
 NOPROXY="127.0.0.1,localhost,::1,$VM_SUBNET,$VM_HOST_IP"
 if [[ $APPLY -eq 1 ]]; then
   cat > /etc/systemd/system/mag-120.service.d/21-audit-net.conf <<EOF

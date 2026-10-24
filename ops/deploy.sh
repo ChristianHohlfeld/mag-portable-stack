@@ -117,7 +117,7 @@ git -c safe.directory="$SOURCE" -C "$SOURCE" rev-parse HEAD > "$RELEASE/SOURCE_C
 chown -R root:root "$RELEASE"
 chmod -R a+rX "$RELEASE"
 # All changes after this point must unwind both the native room and nginx.
-# Never restart or stop mag-llm (including on failed deploy).
+# Never restart or stop a model unit (including on failed deploy).
 rollback() {
  echo 'Deployment failed; restoring previous room and nginx state' >&2
  if (( room_switched )); then
@@ -233,8 +233,8 @@ if [[ -L "$audit_drop" ]]; then
   case "$audit_target" in
     /opt/mag-stack/releases/*)
       install -d -m 0755 /etc/systemd/system/mag-120.service.d
-      install -m 0644 "$SOURCE/ops/mag-120.d/20-deepseek-audit.conf" \
-        /etc/systemd/system/mag-120.service.d/20-deepseek-audit.conf
+      install -m 0644 "$SOURCE/ops/mag-120.d/20-room-audit.conf" \
+        /etc/systemd/system/mag-120.service.d/20-room-audit.conf
       rm -f "$audit_drop"
       ;;
   esac
@@ -254,6 +254,13 @@ if [[ -r /etc/mag-stack/secondary-model.env ]] &&
   # Ornith host (ops/ornith/cutover.sh): refresh on-disk definitions only, never restart a model.
   install -d -m 0755 /etc/systemd/system/mag-120.service.d /usr/local/lib/mag-ornith
   install -m 0644 "$SOURCE/ops/mag-120.d/30-dual-numa.conf" /etc/systemd/system/mag-120.service.d/30-dual-numa.conf
+  # DeepSeek is retired: the obsolete room drop-in (DeepSeek model id + mag-model-gate
+  # status) is replaced by the Ornith one; rollback() restores the snapshot.
+  if [[ -f /etc/systemd/system/mag-120.service.d/20-deepseek-audit.conf ||
+        -f /etc/systemd/system/mag-120.service.d/20-room-audit.conf ]]; then
+    install -m 0644 "$SOURCE/ops/mag-120.d/20-room-audit.conf" /etc/systemd/system/mag-120.service.d/20-room-audit.conf
+    rm -f /etc/systemd/system/mag-120.service.d/20-deepseek-audit.conf
+  fi
   [[ -x /usr/local/lib/mag-ornith/start.sh ]] || { echo 'Ornith staged runtime missing' >&2; exit 1; }
   install -m 0755 "$SOURCE/ops/ornith/start.sh" "$SOURCE/ops/ornith/start-node.sh" "$SOURCE/ops/ornith/verify-model.sh" /usr/local/lib/mag-ornith/
   install -m 0644 "$SOURCE/ops/qwen/runtime.sha" /usr/local/lib/mag-ornith/runtime.sha
@@ -300,7 +307,7 @@ bash "$NGINX_SYNC" activate
 bash "$NGINX_SYNC" smoke
 # Public ISRG roots before the room restarts, so MCP HTTPS (and the audit
 # proxy's upstream check) trust Let's Encrypt Generation Y. Does not touch
-# golden.qcow2 or mag-llm.
+# golden.qcow2 or any model unit.
 bash "$SOURCE/ops/trust/install-trust.sh"
 # Prove that the actual host-side libcurl CA bundle validates the public
 # Free MCP and that the 4 essential tools are available. Do not roll out a
@@ -343,16 +350,20 @@ install -m 0644 "$SOURCE/ops/mag-agent-drift.service" /etc/systemd/system/mag-ag
 install -m 0644 "$SOURCE/ops/mag-agent-drift.timer" /etc/systemd/system/mag-agent-drift.timer
 systemctl daemon-reload
 systemctl enable --now mag-agent-drift.timer || echo 'WARN: agent drift timer not enabled' >&2
-# Unreferenced half-created bot VMs only. Does not restart mag-llm or mag-llm-iq3.
+# Unreferenced half-created bot VMs only. Does not restart a model unit.
 bash /usr/local/sbin/mag-agent-drift || echo 'WARN: agent drift check incomplete (deploy itself succeeded)' >&2
 # Tailnet name for each bot VM. No-op until the one-time wildcard cert exists.
-# Does not restart mag-llm. DNS for *.bot.stardenburg.de stays at the registrar.
+# Does not restart a model unit. DNS for *.bot.stardenburg.de stays at the registrar.
 bash "$SOURCE/ops/bots/install.sh" || echo 'WARN: bot site install incomplete (deploy itself succeeded)' >&2
-# Persist both resident models and bot VM autostart for cold reboot.
+# DeepSeek is retired (owner decision): only on an Ornith host with 8191+8192
+# healthy, disable --now mag-llm/IQ3/model-gate/model-pin. Before ensure-boot so it
+# never re-enables mag-llm. Never touches mag-120 or model files.
+bash "$SOURCE/ops/models/retire-deepseek.sh" || echo 'WARN: DeepSeek retirement incomplete (deploy itself succeeded)' >&2
+# Persist the active model units and bot VM autostart for cold reboot.
 bash "$SOURCE/ops/boot/ensure-boot.sh" || echo 'WARN: boot persistence needs operator attention' >&2
 # Explicit request: the obsolete DeepSeek V4.1 Q2_K weights are no longer used.
-# Safe guarded deletion after successful deployment; Q4 and Qwen untouched.
+# Safe guarded deletion after successful deployment; other model files untouched.
 bash "$SOURCE/ops/models/retire-v41.sh" || echo 'WARN: old V4.1 weights were retained because they may be in use' >&2
-# Deploy must never restart loaded Q4 or stop the IQ3 process. Model placement
+# Deploy never restarts a loaded model (DeepSeek retirement above is the only stop). Model placement
 # is a separate, measured, operator-controlled change, never a deploy hook.
 printf '\nInstalled release %s; rollback snapshot %s\n' "$RELEASE_ID" "$BACKUP"

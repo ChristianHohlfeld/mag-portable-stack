@@ -1,9 +1,11 @@
 """Playwright: a bot's routine proposal shows a confirmation card (Speichern /
 Ablehnen); a secret request shows a masked card whose value never appears in
 the page or the room. Phone portrait."""
-import importlib.util,json,pathlib,shutil,unittest
+import importlib.util,json,os,pathlib,shutil,tempfile,unittest
 ROOT=pathlib.Path(__file__).resolve().parents[2]
-ART=pathlib.Path('/opt/cursor/artifacts')
+# CI uses a writable, reproducible screenshots directory. The former
+# /opt/cursor/artifacts only exists in an optional developer environment.
+ART=pathlib.Path(os.environ.get('MAG_E2E_SHOTS',str(pathlib.Path(tempfile.gettempdir())/'mag-e2e-shots')))
 spec=importlib.util.spec_from_file_location('test_pwa',ROOT/'mag-room/tests/test_pwa.py');pwa=importlib.util.module_from_spec(spec);spec.loader.exec_module(pwa)
 def call(name,args):return [{'tool_calls':[{'index':0,'id':'c_'+name,'function':{'name':name,'arguments':json.dumps(args)}}]}]
 class Cards(unittest.TestCase):

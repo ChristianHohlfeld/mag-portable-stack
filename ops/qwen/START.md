@@ -1,5 +1,14 @@
 # Qwen3.8 — start after download
 
+> **Stand Oktober 2026:** Dieses Dokument enthält historische Q4/IQ3-Cutover-Schritte,
+> die nicht mehr ausgeführt werden dürfen. Qwen ist nun der unabhängige
+> Operator-Rollback für die vier Ornith-Bots:
+> `sudo bash ops/ornith/rollback.sh qwen`.
+> Dafür müssen der gepinnte Qwen-GGUF, der passende Runtime-Build und
+> ausreichende freie NUMA1-Ressourcen vorhanden sein (Qwen-Preflight: 150 GiB).
+> Kein Q4, IQ3 oder DeepSeek-Dienst wird dabei reaktiviert.
+
+
 After the single `hf download` command has **finished successfully**, run
 this on the MAG host in its checked-out repository:
 

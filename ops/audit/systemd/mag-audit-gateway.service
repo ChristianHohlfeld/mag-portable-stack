@@ -18,7 +18,7 @@ Environment=MAG_AUDIT_LISTEN_PORT=8080
 Environment=MAG_AUDIT_UPSTREAM_HOST=127.0.0.1
 Environment=MAG_MODEL_Q4_PORT=8090
 Environment=MAG_MODEL_IQ3_PORT=8091
-Environment=MAG_MODEL_ORNITH_PORTS=8191,8192,8193,8194
+Environment=MAG_MODEL_ORNITH_PORTS=8191:0,8192:0,8191:1,8192:1
 # Installed only during an explicit operator cutover. Absent => existing IQ3.
 EnvironmentFile=-/etc/mag-stack/secondary-model.env
 Environment=MAG_AUDIT_LOG_DIR=/var/log/mag-audit

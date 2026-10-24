@@ -53,7 +53,12 @@ static int connect_loopback(int port,int timeout_s=3){
 struct Config {
   int q4=8090,iq3=8091,listen=8080;
   std::string secondary="iq3"; // qwen/ornith only after verified operator cutover
-  std::vector<int> ornith; // MAG_MODEL_ORNITH_PORTS: bot slot i -> ornith[i], fixed (prompt cache)
+  // MAG_MODEL_ORNITH_PORTS: bot slot i -> ornith[i] = port[:id_slot], fixed (prompt cache).
+  // "8191:0,8192:0,8191:1,8192:1" = 2 servers (one per NUMA node), 2 llama slots each,
+  // id_slot forced; bot slots 1,2 on different servers (full single-bot speed for two bots);
+  // "8191,8192,8193,8194" = legacy one instance per bot (id_slot not forced).
+  struct Backend{int port; int id_slot;};
+  std::vector<Backend> ornith;
   std::string logs="/var/log/mag-audit";
   std::string secrets="/etc/mag-audit/secrets.list";
 } cfg;
@@ -197,8 +202,8 @@ static bool numa_route(const std::string &asked,std::string &selected,int &port)
   }
   return false;
 }
-static bool choose_model(const Http &r,std::string &selected,int &port){
-  selected="q4"; port=cfg.q4;
+static bool choose_model(const Http &r,std::string &selected,int &port,int *id_slot=nullptr){
+  selected="q4"; port=cfg.q4; if(id_slot)*id_slot=-1;
   std::string asked;
   auto header=r.headers.find("x-mag-model");
   if(header!=r.headers.end()) asked=header->second;
@@ -210,15 +215,20 @@ static bool choose_model(const Http &r,std::string &selected,int &port){
   if((asked=="qwen"||asked=="qwen3.8-flash-next-uncensored")&&cfg.secondary=="qwen"){selected="qwen"; port=cfg.iq3;return true;}
   if((asked=="ornith"||asked=="ornith-1.5-35b-a3b")&&cfg.secondary=="ornith"){
     // Sticky per bot, never round-robin: X-Mag-Slot (persistent room bot slot - 1) picks the instance.
-    // No slot (health/radius) -> instance 0; an invalid slot fails closed.
-    size_t slot=0; auto h=r.headers.find("x-mag-slot");
-    if(h!=r.headers.end()){
+    // No slot (health/radius) -> backend 0 without a forced llama slot; an invalid slot fails closed.
+    size_t slot=0; auto h=r.headers.find("x-mag-slot"); const bool has=h!=r.headers.end();
+    if(has){
       const std::string &v=h->second;
       if(v.empty()||v.size()>2||v.find_first_not_of("0123456789")!=std::string::npos)return false;
       slot=(size_t)std::stoi(v);
     }
     if(slot>=cfg.ornith.size())return false;
-    selected="ornith"; port=cfg.ornith[slot]; return true;
+    // Slot save/restore/erase must name a bot: never touch another bot's KV cache.
+    // Legacy per-bot instances keep /slots/0; a shared server gets the bot's id_slot.
+    if(r.path.rfind("/slots/",0)==0&&!has)return false;
+    selected="ornith"; port=cfg.ornith[slot].port;
+    if(id_slot&&has)*id_slot=cfg.ornith[slot].id_slot;
+    return true;
   }
   // No fallback on an explicitly unknown or inactive secondary model.
   return asked.empty()||asked=="q4"||asked=="deepseek-v4-flash-0731";
@@ -282,14 +292,24 @@ static void proxy(int fd){
       Val row=Val::object(); row["id"]=name; row["object"]="model"; row["owned_by"]="mag"; row["label"]=label; row["ready"]=upstream_up(port); data.push(row);
     };
     add("deepseek-v4-flash-0731","Q4 NUMA0",cfg.q4);
-    if(cfg.secondary=="ornith")add("ornith-1.5-35b-a3b","Ornith 1.5 35B-A3B",cfg.ornith[0]);
+    if(cfg.secondary=="ornith")add("ornith-1.5-35b-a3b","Ornith 1.5 35B-A3B",cfg.ornith[0].port);
     else if(cfg.secondary=="qwen")add("qwen3.8-flash-next-uncensored","Qwen3.8 NUMA1",cfg.iq3);
     else add("deepseek-v4-flash-0731-iq3","IQ3 NUMA1",cfg.iq3);
     Val listed=Val::object(); listed["object"]="list"; listed["data"]=data;
     json_response(fd,200,listed); return;
   }
-  if(!choose_model(r,selected,upstream)){
+  int id_slot=-1;
+  if(!choose_model(r,selected,upstream,&id_slot)){
     json_response(fd,400,message("unknown model (no fallback)"));return;
+  }
+  if(id_slot>=0&&r.path.rfind("/slots/",0)==0){
+    // The room may post /slots/0: always the bot's own llama slot, actions only.
+    auto q=r.path.find('?');
+    std::string action=q==std::string::npos?"":r.path.substr(q);
+    if(action!="?action=save"&&action!="?action=restore"&&action!="?action=erase"){
+      json_response(fd,400,message("invalid slot action"));return;
+    }
+    r.path="/slots/"+std::to_string(id_slot)+action;
   }
   if(r.path=="/audit/v1/health"){Val v=Val::object();v["ok"]=true;json_response(fd,200,v);return;}
   if(r.path=="/audit/v1/event"&&r.method=="POST"){
@@ -322,6 +342,10 @@ static void proxy(int fd){
   std::string forwarded=r.body;
   if(is_llm) {
     Val j;
+    if(id_slot>=0&&mj::parse(forwarded,j)&&j.isObj()){
+      j["id_slot"]=id_slot; // shared server: each bot keeps its own KV slot
+      forwarded=mj::dump(j);
+    }
     if(mj::parse(forwarded,j)&&j.isObj()&&j.find("model")){
       j["model"]=selected.rfind("numa:",0)==0?selected.substr(5):selected=="qwen"?"qwen3.8-flash-next-uncensored":selected=="ornith"?"ornith-1.5-35b-a3b":selected=="iq3"?"deepseek-v4-flash-0731-iq3":"deepseek-v4-flash-0731";
       forwarded=mj::dump(j);
@@ -376,8 +400,13 @@ int main(){
   try{
     cfg.listen=number("MAG_AUDIT_LISTEN_PORT",8080);cfg.q4=number("MAG_MODEL_Q4_PORT",8090);cfg.iq3=number("MAG_MODEL_IQ3_PORT",8091);cfg.secondary=env("MAG_SECONDARY_MODEL","iq3");
     if(cfg.secondary!="iq3"&&cfg.secondary!="qwen"&&cfg.secondary!="ornith")throw std::runtime_error("invalid MAG_SECONDARY_MODEL (fail closed)");
-    {std::stringstream ports(env("MAG_MODEL_ORNITH_PORTS","8191,8192,8193,8194"));std::string part;
-     while(std::getline(ports,part,','))cfg.ornith.push_back(std::stoi(part));}
+    {std::stringstream ports(env("MAG_MODEL_ORNITH_PORTS","8191:0,8192:0,8191:1,8192:1"));std::string part;
+     while(std::getline(ports,part,',')){
+       auto c=part.find(':');
+       Config::Backend b{std::stoi(part.substr(0,c)),c==std::string::npos?-1:std::stoi(part.substr(c+1))};
+       if(b.port<=0||b.port>65535||(c!=std::string::npos&&(b.id_slot<0||b.id_slot>3)))throw std::runtime_error("invalid MAG_MODEL_ORNITH_PORTS entry");
+       cfg.ornith.push_back(b);
+     }}
     if(cfg.secondary=="ornith"&&(cfg.ornith.empty()||cfg.ornith.size()>4))throw std::runtime_error("invalid MAG_MODEL_ORNITH_PORTS (fail closed)");
     cfg.logs=env("MAG_AUDIT_LOG_DIR",cfg.logs);cfg.secrets=env("MAG_AUDIT_SECRETS_FILE",cfg.secrets);
     int public_fd=server(cfg.listen);

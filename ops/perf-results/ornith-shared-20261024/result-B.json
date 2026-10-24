@@ -1,0 +1,160 @@
+{
+ "load_s": 47.6,
+ "variant": "B",
+ "warmup": {
+  "slot": 0,
+  "port": 8198,
+  "prompt_n": 352,
+  "pp_tps": 82.9,
+  "gen_n": 16,
+  "tg_tps": 14.88,
+  "wall_s": 5.3
+ },
+ "cold_prewarm_12k": {
+  "slot": 0,
+  "port": 8198,
+  "prompt_n": 15598,
+  "pp_tps": 62.1,
+  "gen_n": 1,
+  "tg_tps": 0.0,
+  "wall_s": 251.1
+ },
+ "single_4k_gen128": {
+  "slot": 0,
+  "port": 8198,
+  "prompt_n": 5244,
+  "pp_tps": 76.4,
+  "gen_n": 128,
+  "tg_tps": 13.48,
+  "wall_s": 78.1
+ },
+ "two_same_server": {
+  "wall_s": 77.9,
+  "runs": [
+   {
+    "slot": 0,
+    "port": 8198,
+    "prompt_n": 2626,
+    "pp_tps": 40.7,
+    "gen_n": 128,
+    "tg_tps": 9.56,
+    "wall_s": 77.8
+   },
+   {
+    "slot": 1,
+    "port": 8198,
+    "prompt_n": 2596,
+    "pp_tps": 64.7,
+    "gen_n": 128,
+    "tg_tps": 9.71,
+    "wall_s": 77.9
+   }
+  ]
+ },
+ "two_cross_server": {
+  "wall_s": 43.1,
+  "runs": [
+   {
+    "slot": 0,
+    "port": 8198,
+    "prompt_n": 2574,
+    "pp_tps": 79.4,
+    "gen_n": 128,
+    "tg_tps": 14.16,
+    "wall_s": 41.4
+   },
+   {
+    "slot": 0,
+    "port": 8199,
+    "prompt_n": 2698,
+    "pp_tps": 79.0,
+    "gen_n": 128,
+    "tg_tps": 14.23,
+    "wall_s": 43.1
+   }
+  ]
+ },
+ "four_conc": {
+  "wall_s": 79.6,
+  "runs": [
+   {
+    "slot": 0,
+    "port": 8198,
+    "prompt_n": 2652,
+    "pp_tps": 40.2,
+    "gen_n": 128,
+    "tg_tps": 9.46,
+    "wall_s": 79.5
+   },
+   {
+    "slot": 1,
+    "port": 8198,
+    "prompt_n": 2569,
+    "pp_tps": 62.8,
+    "gen_n": 128,
+    "tg_tps": 9.6,
+    "wall_s": 79.5
+   },
+   {
+    "slot": 0,
+    "port": 8199,
+    "prompt_n": 2582,
+    "pp_tps": 39.0,
+    "gen_n": 128,
+    "tg_tps": 9.55,
+    "wall_s": 79.5
+   },
+   {
+    "slot": 1,
+    "port": 8199,
+    "prompt_n": 2704,
+    "pp_tps": 65.5,
+    "gen_n": 128,
+    "tg_tps": 9.7,
+    "wall_s": 79.6
+   }
+  ]
+ },
+ "four_prewarm_12k_conc": {
+  "wall_s": 521.8,
+  "runs": [
+   {
+    "slot": 0,
+    "port": 8198,
+    "prompt_n": 15790,
+    "pp_tps": 48.0,
+    "gen_n": 1,
+    "tg_tps": 0.0,
+    "wall_s": 328.8
+   },
+   {
+    "slot": 1,
+    "port": 8198,
+    "prompt_n": 15535,
+    "pp_tps": 53.0,
+    "gen_n": 1,
+    "tg_tps": 0.0,
+    "wall_s": 521.8
+   },
+   {
+    "slot": 0,
+    "port": 8199,
+    "prompt_n": 15575,
+    "pp_tps": 48.0,
+    "gen_n": 1,
+    "tg_tps": 0.0,
+    "wall_s": 324.5
+   },
+   {
+    "slot": 1,
+    "port": 8199,
+    "prompt_n": 15844,
+    "pp_tps": 54.2,
+    "gen_n": 1,
+    "tg_tps": 0.0,
+    "wall_s": 519.8
+   }
+  ]
+ },
+ "mem_bytes": 46828957696
+}

@@ -14,7 +14,7 @@ case "$1 $2" in
   "is-enabled mag-llm-iq3.service") echo static; exit 0 ;;
   "is-enabled mag-auto-update.timer") echo disabled; exit 1 ;;
   "is-enabled mag-console-only.service") echo disabled; exit 1 ;;
-  "is-enabled mag-llm-ornith@"*) echo disabled; exit 1 ;;
+  "is-enabled mag-llm-ornith"*) echo disabled; exit 1 ;;
 esac
 [[ $1 == is-enabled ]] && { echo enabled; exit 0; }
 exit 0
@@ -60,9 +60,16 @@ for u in $ornith_units; do grep -Fxq "systemctl enable $u" "$log" || exit 1; don
 if grep -Eq 'systemctl (enable|add-wants multi-user.target) mag-llm-(iq3|qwen)' "$log"; then exit 1; fi
 grep -Fxq 'systemctl disable mag-llm-iq3.service mag-llm-qwen.service' "$log"
 common
-grep -Fq 'Ornith x4 host' <<<"$out"
+grep -Fq 'Ornith host' <<<"$out"
 grep -Fq 'BMC power policy' <<<"$out"
 grep -Fxq 'ipmitool chassis policy always-on' "$log"
+
+# 3) Per-node Ornith servers (variant B) active: both enabled, never the disabled legacy instances.
+out=$(ORNITH="mag-llm-ornith-node@0.service mag-llm-ornith-node@1.service" run "$tmp/ornith.env" "$tmp/ipmi0")
+grep -Fxq 'systemctl enable mag-llm-ornith-node@0.service' "$log"
+grep -Fxq 'systemctl enable mag-llm-ornith-node@1.service' "$log"
+if grep -Eq 'systemctl enable mag-llm-ornith@' "$log"; then exit 1; fi
+common
 grep -Eq '^WantedBy=multi-user.target' "$root/ops/deepseek/mag-llm-iq3.service"
 grep -Fq 'ops/boot/ensure-boot.sh' "$root/ops/auto-update/apply.sh"
 grep -Fq 'PHASE boot' <<<"$(bash "$root/ops/update.sh" --dry-run)"

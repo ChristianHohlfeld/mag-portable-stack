@@ -327,6 +327,9 @@ MAG_RELEASE_ID="$RELEASE_ID" MAG_RELEASE_PREVIOUS_FILE="$BACKUP/previous-release
 # One-shot removal of pre-4.0 leftovers; report in /var/lib/mag-stack/cleanup-report.txt.
 # Backup removal and loose home files run again on later deploys.
 bash "$SOURCE/ops/cleanup-legacy.sh" || echo 'WARN: legacy cleanup incomplete (deploy itself succeeded)' >&2
+# One-shot: legacy agent1/agent3 -> fresh magbot CLI bots (same names,
+# workspace wiped). Stamped; a no-op once done or on hosts without them.
+bash "$SOURCE/ops/migrate-legacy-bots.sh" || echo 'WARN: legacy bot migration incomplete; rerun ops/migrate-legacy-bots.sh' >&2
 install -m 0755 "$SOURCE/ops/agent-drift.sh" /usr/local/sbin/mag-agent-drift
 install -m 0644 "$SOURCE/ops/mag-agent-drift.service" /etc/systemd/system/mag-agent-drift.service
 install -m 0644 "$SOURCE/ops/mag-agent-drift.timer" /etc/systemd/system/mag-agent-drift.timer

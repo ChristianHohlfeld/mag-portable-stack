@@ -768,22 +768,8 @@ int main(int argc, char **argv) {
         open("/run/lock/magbot.lock", O_CREAT | O_WRONLY | O_CLOEXEC, 0600);
     if (lock < 0 || flock(lock, LOCK_EX))
       throw std::runtime_error("Lifecycle lock failed");
-    if (action == "despawn" || action == "despawn-orphan") {
-      if (action == "despawn-orphan") {
-        // Recheck after acquiring the same lock as spawn. The timer's
-        // earlier agents.json snapshot can be stale by now.
-        const auto agents = json(read(fs::path(env("MAG_ROOM_STATE", "/var/lib/magbot/room")) / "agents.json"));
-        if (!agents.isArr()) throw std::runtime_error("Invalid room registry; cleanup refused");
-        for (const auto &agent : agents.asArr()) {
-          if (!agent.isObj()) throw std::runtime_error("Invalid bot record; cleanup refused");
-          if (str(agent, "vm") == n || str(agent, "pending_vm") == n ||
-              str(agent, "unavailable_vm") == n) {
-            std::cout << "Kept referenced bot " << n << '\n';
-            return 3;
-          }
-        }
-      }
-      // Legacy agent<N> registry only (until those bots are migrated).
+    if (action == "despawn") {
+      // Legacy agent<N> registry only: used once by ops/migrate-legacy-bots.sh.
       // CLI bots are deleted by magbotctl, never by this teardown.
       if (!legacy_bot(n) && fs::exists(cli_dir(n) / "metadata.json"))
         throw std::runtime_error("CLI bot; use magbotctl delete " + n);

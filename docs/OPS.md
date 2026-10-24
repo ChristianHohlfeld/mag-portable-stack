@@ -74,9 +74,12 @@ guest actions (exec, browser, audit proxy), which reads both registries.
   failure appears as an error in the room (create/reset roll back, so
   nothing is left). Reset also wipes the bot's memory. New VMs are named
   `bot<N>`.
-- Legacy room bots `agent<N>` are still deleted by `magbot-native` and keep
-  working; `magbotctl` refuses those names until they are migrated.
-  "Bot zurücksetzen" on a legacy bot deletes its VM and creates a fresh
-  `bot<N>` instead.
+- The legacy room bots `agent1`/`agent3` are migrated once by
+  `ops/migrate-legacy-bots.sh` (run by deploy): legacy teardown via
+  `magbot-native despawn`, then a fresh CLI bot with the same name
+  (workspace wiped) and `magbotctl verify`. A failure stops before the next
+  bot; a rerun resumes. Stamp: `/var/lib/mag-stack/migrate-legacy/done`.
+  Afterwards all room bots (`agent<N>`, `bot<N>`) are CLI bots; drift removes
+  unreferenced ones via `magbotctl delete`.
 - Tests: `bash ops/tests/test-magbot.sh` (fake virsh/qemu-img/cloud-localds,
   no KVM). `FAIL_AT=<step>` injects a failure after a create step.

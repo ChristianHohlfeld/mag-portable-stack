@@ -150,7 +150,6 @@ for step in lock golden dir overlay gitea seed define tune boot verify; do
 done
 FAKE_GUEST_RC=1 "$MAGBOT" create delta >/dev/null 2>&1 && fail "boot timeout must fail"
 leak_check delta
-"$MAGBOT" create agent2 >/dev/null 2>&1 && fail "legacy name accepted"
 "$MAGBOT" create 'Bad_Name' >/dev/null 2>&1 && fail "invalid name accepted"
 echo "ok rollback"
 
@@ -204,13 +203,53 @@ leak_check bot2
 room_ctl despawn bot1 >/dev/null 2>&1 || fail "room despawn bot1"
 leak_check bot1
 rc=0; room_ctl verify bot1 >/dev/null 2>&1 || rc=$?; [[ $rc == 3 ]] || fail "verify of deleted bot must exit 3"
-# legacy agent<N>: never created/reset by the CLI path; delete goes native
-room_ctl spawn agent5 >/dev/null 2>&1 && fail "legacy spawn accepted"
-room_ctl reset agent5 >/dev/null 2>&1 && fail "legacy reset accepted"
-room_ctl despawn agent5 >/dev/null 2>&1 || fail "legacy despawn"
-grep -q '^native despawn agent5$' "$FAKE_STATE/log" || fail "legacy despawn not via magbot-native"
-! grep -q 'magbot-agent5' "$FAKE_STATE/log" || fail "CLI touched a legacy bot"
 echo "ok room entry point"
+
+# 7. one-shot migration of legacy agent1/agent3 (fake native registry)
+cat >"$BIN/magbot-native" <<'EOF'
+#!/usr/bin/env bash
+echo "native $*" >>"$FAKE_STATE/log"
+[[ $1 == despawn ]] || exit 0
+[[ ${FAKE_NATIVE_FAIL:-} == "$2" ]] && { echo "fake teardown failure" >&2; exit 1; }
+rm -rf "$MAGBOT_ROOT/bots/$2" "$FAKE_STATE/domains/magbot-$2" "$FAKE_STATE/gitea/magbot-$2" "$MAGBOT_UNIT_DIR/magbot-$2.service"
+EOF
+for id in agent1 agent3; do
+  mkdir -p "$MAGBOT_ROOT/bots/$id"; echo "{\"id\":\"$id\"}" >"$MAGBOT_ROOT/bots/$id/metadata.json"
+  echo running >"$FAKE_STATE/domains/magbot-$id"; echo pw >"$FAKE_STATE/gitea/magbot-$id"
+  touch "$T/units/magbot-$id.service"
+done
+migrate() {
+  MAG_MIGRATE_STATE=$T/migrate MAG_MIGRATE_MAGBOT=$BIN/magbot-native MAG_MIGRATE_MAGBOTCTL=$MAGBOT \
+    MAG_MIGRATE_UNIT_DIR=$T/units MAG_BOTS_SITE=/nonexistent \
+    MAG_MIGRATE_AGENT_CTL="$T/room-ctl" "$REPO/ops/migrate-legacy-bots.sh"
+}
+printf '#!/usr/bin/env bash\nMAG_BOTS_MAGBOTCTL=%q MAG_BOTS_MAGBOT=%q MAG_BOTS_SITE=/nonexistent MAGBOT_ENV_FILE=/nonexistent exec %q "$@"\n' \
+  "$MAGBOT" "$BIN/magbot-native" "$REPO/ops/magbot-agent-ctl" >"$T/room-ctl"; chmod +x "$T/room-ctl"
+legacy_gone() { [[ ! -e $MAGBOT_ROOT/bots/$1 && ! -e $T/units/magbot-$1.service ]]; }
+# failure on bot 2: bot 1 migrated, bot 2 untouched, reported, no stamp
+FAKE_NATIVE_FAIL=agent3 migrate >"$T/out" 2>&1 && fail "migration with failing bot 2 succeeded"
+grep -q 'MIGRATION FAILED at agent3' "$T/out" || { cat "$T/out"; fail "failure not reported"; }
+legacy_gone agent1 || fail "agent1 legacy left"
+"$MAGBOT" verify agent1 | grep -q '^OK magbot-agent1 present' || fail "agent1 not migrated"
+[[ -e $MAGBOT_ROOT/bots/agent3/metadata.json && -e $FAKE_STATE/gitea/magbot-agent3 ]] || fail "agent3 touched"
+! grep -q 'virt-install magbot-agent3' "$FAKE_STATE/log" || fail "agent3 created despite failure"
+[[ ! -e $T/migrate/done ]] || fail "stamp after failure"
+# rerun resumes: agent1 kept as is, agent3 migrated
+n1=$(grep -c '^virt-install magbot-agent1$' "$FAKE_STATE/log")
+migrate >"$T/out" 2>&1 || { cat "$T/out"; fail "migration rerun"; }
+[[ $(grep -c '^virt-install magbot-agent1$' "$FAKE_STATE/log") == "$n1" ]] || fail "agent1 re-created"
+for id in agent1 agent3; do
+  legacy_gone "$id" || fail "$id legacy left"
+  "$MAGBOT" verify "$id" | grep -q "^OK magbot-$id present" || fail "$id not verified"
+  grep -q '"state": "ready"' "$MAGBOT_ROOT/magbot-$id/metadata.json" || fail "$id not ready"
+done
+[[ -z $(ls -A "$MAGBOT_ROOT/bots") && -e $T/migrate/done && ! -e $T/migrate/agent3.pending ]] || fail "legacy registry or pending left"
+# second run after the stamp is a no-op
+cp "$FAKE_STATE/log" "$T/log.before"
+migrate | grep -q 'already done' || fail "stamped rerun not a no-op"
+cmp -s "$FAKE_STATE/log" "$T/log.before" || fail "stamped rerun touched something"
+for id in agent1 agent3; do room_ctl despawn "$id" >/dev/null 2>&1 || fail "despawn migrated $id"; leak_check "$id"; done
+echo "ok legacy migration"
 
 [[ $(sha256sum "$GOLDEN") == "$GOLDEN_SUM" && $(stat -c %a "$GOLDEN") == 444 ]] || fail "golden modified"
 [[ -z $(ls "$FAKE_STATE/domains") && -z $(ls "$FAKE_STATE/gitea") ]] || fail "global leak"

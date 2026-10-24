@@ -2994,22 +2994,21 @@ class BootstrapContext(unittest.TestCase):
    for rule in self.RULES:self.assertIn(rule,system)
    self.assertLess(system.index(self.CONTEXT),system.index('\n[Erinnerungen]'))
   finally:self.request('/api/agents/'+b['id'],method='DELETE')
- def test_02_reset_legacy_bot_recreated_via_cli(self):
-  # "Bot zurücksetzen" on a legacy agent<N>: its VM is deleted on the old
-  # registry and a fresh magbot CLI bot (bot<N>) is created; memory is wiped.
-  # The bootstrap context then comes from the CLI's NoCloud seed.
+ def test_02_reset_agent_bot_in_place_via_cli(self):
+  # "Bot zurücksetzen" on an agent<N> (migrated to the magbot CLI): same VM
+  # name, reset via magbotctl (delete + create), memory wiped, no legacy
+  # despawn. The bootstrap context then comes from the CLI's NoCloud seed.
   if subprocess.run(['sudo','-n','true'],capture_output=True).returncode!=0:self.skipTest('needs sudo -n for the fake lifecycle')
   self.wait_idle()
   r=self.request('/api/agents/vmbot/workspace/reset',{'force':True})
-  self.assertTrue(r['spawning']);self.assertTrue(r['pending_vm'].startswith('bot'))
+  self.assertTrue(r['spawning']);self.assertEqual(r['pending_vm'],'agent9')
   for _ in range(200):
    a={x['id']:x for x in self.request('/api/state')['agents']}['vmbot']
    if a.get('vm') and not a.get('spawning'):break
    time.sleep(.05)
-  self.assertEqual(a['vm'],r['pending_vm']);self.assertFalse(a.get('memory_count'))
+  self.assertEqual(a['vm'],'agent9');self.assertFalse(a.get('memory_count'))
   log=(self.ctl.parent/'ctl.log').read_text().splitlines()
-  self.assertLess(log.index('despawn agent9'),log.index('spawn '+r['pending_vm']))
-  self.assertNotIn('reset agent9',log)
+  self.assertIn('reset agent9',log);self.assertNotIn('despawn agent9',log)
   system=self._system('vmbot')
   self.assertIn(self.CONTEXT,system);self.assertIn(self.GERMAN,system)
   for rule in self.RULES:self.assertIn(rule,system)

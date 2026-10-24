@@ -6,7 +6,7 @@ set -uo pipefail
 ROOM=${MAG_ROOM_STATE:-/var/lib/magbot/room}
 AGENTS=$ROOM/agents.json
 ROOT=${MAGBOT_ROOT:-/var/lib/libvirt/images/magbot}
-MAGBOT=${MAG_DRIFT_MAGBOT:-/usr/local/bin/magbot}
+MAGBOTCTL=${MAG_DRIFT_MAGBOTCTL:-/usr/local/bin/magbotctl}
 VIRSH=${MAG_DRIFT_VIRSH:-virsh}
 UNIT_DIR=${MAG_DRIFT_UNIT_DIR:-/etc/systemd/system}
 [[ -f "$AGENTS" ]] || { echo 'agent drift refused: agents.json missing; nothing removed' >&2; exit 1; }
@@ -28,7 +28,7 @@ for bot in data:
         continue
     for key in ('vm', 'pending_vm', 'unavailable_vm'):
         value = bot.get(key) or ''
-        if isinstance(value, str) and re.fullmatch(r'agent[0-9]+', value):
+        if isinstance(value, str) and re.fullmatch(r'(agent|bot)[0-9]+', value):
             ids.add(value)
 for value in sorted(ids):
     print(value)
@@ -55,25 +55,25 @@ fi
 for name in "${domains[@]+"${domains[@]}"}"; do
   [[ "$name" == magbot-* ]] || continue
   id=${name#magbot-}
-  [[ "$id" =~ ^agent[0-9]+$ ]] || continue
+  [[ "$id" =~ ^(agent|bot)[0-9]+$ ]] || continue
   seen[$id]=1
 done
 if [[ -n "${MAG_DRIFT_DIRS:-}" ]]; then
   for id in $MAG_DRIFT_DIRS; do
-    [[ "$id" =~ ^agent[0-9]+$ ]] && seen[$id]=1
+    [[ "$id" =~ ^(agent|bot)[0-9]+$ ]] && seen[$id]=1
   done
-elif [[ -d "$ROOT/bots" ]]; then
-  for dir in "$ROOT/bots"/*; do
+else
+  for dir in "$ROOT"/magbot-*; do
     [[ -d "$dir" && ! -L "$dir" ]] || continue
-    id=$(basename "$dir")
-    [[ "$id" =~ ^agent[0-9]+$ ]] && seen[$id]=1
+    id=${dir##*/magbot-}
+    [[ "$id" =~ ^(agent|bot)[0-9]+$ ]] && seen[$id]=1
   done
 fi
-for unit in "$UNIT_DIR"/magbot-agent*.service; do
+for unit in "$UNIT_DIR"/magbot-*.service; do
   [[ -f "$unit" && ! -L "$unit" ]] || continue
   id=$(basename "$unit" .service)
   id=${id#magbot-}
-  [[ "$id" =~ ^agent[0-9]+$ ]] && seen[$id]=1
+  [[ "$id" =~ ^(agent|bot)[0-9]+$ ]] && seen[$id]=1
 done
 
 fail=0
@@ -88,14 +88,13 @@ for id in "${ids[@]+"${ids[@]}"}"; do
   fi
   echo "remove unreferenced $id"
   if [[ "${MAG_DRIFT_DRY_RUN:-0}" == 1 ]]; then continue; fi
-  # Native teardown re-reads room ownership under its spawn/despawn lock,
-  # then stops units before deleting resources. Exit 3 means newly owned.
-  rc=0
-  "$MAGBOT" despawn-orphan "$id" || rc=$?
-  if (( rc == 3 )); then
+  # Re-read the room right before deleting: a spawn may have claimed the
+  # name since the snapshot. magbotctl delete takes the per-bot lock, so a
+  # running create job is never deleted underneath.
+  if grep -Eq "\"(vm|pending_vm|unavailable_vm)\": *\"$id\"" "$AGENTS"; then
     echo "keep newly referenced $id"
-  elif (( rc != 0 )); then
-    echo "despawn $id failed" >&2
+  elif ! "$MAGBOTCTL" delete "$id"; then
+    echo "delete $id failed" >&2
     fail=1
   fi
 done

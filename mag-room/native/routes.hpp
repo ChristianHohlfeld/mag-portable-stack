@@ -141,8 +141,7 @@ static void resume_pending_spawns() {
 // re-creating the VM (magbot reset). The request returns at once; the bot
 // shows "VM wird erstellt" like a new one and keeps working chat-only until
 // the job finishes. On failure the bot stays, without a VM, and the room
-// shows the error. A legacy agent<N> VM is deleted via the old registry and
-// replaced by a fresh CLI bot name.
+// shows the error.
 static bool quiesce_all(std::unique_lock<std::mutex> &, std::unique_lock<std::shared_mutex> &, bool);
 static ScopedResult reset_bot(const std::string &id, bool force) {
   std::string vm;
@@ -161,14 +160,12 @@ static ScopedResult reset_bot(const std::string &id, bool force) {
   if (!quiesce_all(sched, turn, force))
     return scoped_err(409, "Ein Bot rechnet noch");
   sched.unlock();
-  const bool legacy = vm.rfind("agent", 0) == 0;
-  std::string target = vm;
+  const std::string target = vm;
   {
     std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
     int idx = agent_index(id);
     if (idx < 0 || bot_field(idx, "vm") != vm)
       return scoped_err(409, "Bot wurde inzwischen geändert");
-    if (legacy) target = next_vm({vm});
     AGENTS[idx]["memory"] = Val::array();
     AGENTS[idx]["vm"] = "";
     AGENTS[idx]["pending_vm"] = target;
@@ -181,31 +178,7 @@ static ScopedResult reset_bot(const std::string &id, bool force) {
     VM_IP_CACHE.erase(vm);
   }
   agents_event();
-  std::thread([id, vm, target, legacy] {
-    if (legacy) {
-      auto gone = run_argv({"sudo", "-n", AGENT_CTL, "despawn", vm}, 600);
-      if (gone.code != 0) {
-        std::string why = trim(gone.out).substr(0, 400);
-        {
-          std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
-          SPAWNING_VMS.erase(target);
-          int idx = agent_index(id);
-          if (idx >= 0 && bot_field(idx, "pending_vm") == target) {
-            drop_key(AGENTS[idx], "pending_vm");
-            drop_key(AGENTS[idx], "vm_attach");
-            AGENTS[idx]["vm"] = vm; // old VM is still there; keep using it
-            try { save_agents(); } catch (...) {}
-          }
-        }
-        agents_event();
-        emit_event("error", id, "", "Bot konnte nicht zurückgesetzt werden: " + why);
-        return;
-      }
-      finish_spawn(id, target, false, "spawn");
-    } else {
-      finish_spawn(id, target, false, "reset");
-    }
-  }).detach();
+  std::thread([id, target] { finish_spawn(id, target, false, "reset"); }).detach();
   Val out = Val::object();
   out["ok"] = true;
   out["spawning"] = true;

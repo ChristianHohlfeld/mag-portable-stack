@@ -4,8 +4,8 @@
 # fresh name, create = finish/redo after a room restart, reset = delete +
 # create (memory and workspace wiped), despawn = delete. Each runs as the
 # CLI's transient systemd job magbot-<id>-job and rolls back on failure.
-# Legacy agent<N> bots stay on magbot-native until they are migrated: they
-# can be inspected and deleted here, never created or reset.
+# Room bots agent<N> (moved over by ops/migrate-legacy-bots.sh) and bot<N>
+# are all CLI bots.
 set -euo pipefail
 magbot=${MAG_BOTS_MAGBOT:-/usr/local/bin/magbot}
 magbotctl=${MAG_BOTS_MAGBOTCTL:-/usr/local/bin/magbotctl}
@@ -16,13 +16,11 @@ if [[ $# == 1 && $1 == preflight ]]; then
 fi
 [[ $# == 2 && $1 =~ ^(spawn|create|reset|despawn|audit-proxy|ip|verify)$ && $2 =~ ^(agent|bot)[0-9]+$ ]] || { echo 'Invalid lifecycle invocation' >&2; exit 64; }
 action=$1 id=$2
-legacy=0; [[ $id == agent* ]] && legacy=1
 cli_root() { ( [[ -r $env_file ]] && source "$env_file"; printf '%s\n' "${MAGBOT_ROOT:-/var/lib/libvirt/images/magbot}" ); }
 cli_meta() { printf '%s/magbot-%s/metadata.json\n' "$(cli_root)" "$id"; }
 if [[ $action == verify ]]; then
   # Read-only registry check. Exit 3 means missing metadata; any other
   # error must fail closed without detaching or deleting a workspace.
-  if ((legacy)); then exec "$magbot" verify "$id"; fi
   meta=$(cli_meta)
   if [[ ! -e $meta && ! -L $meta ]]; then echo "MAG_VM_METADATA_MISSING $id" >&2; exit 3; fi
   [[ -f $meta && ! -L $meta ]] || { echo 'VM metadata is not a regular file' >&2; exit 1; }
@@ -42,12 +40,6 @@ if [[ $action == ip ]]; then
   exit 3
 fi
 if [[ $action == audit-proxy ]]; then exec "$magbot" audit-proxy "$id"; fi
-if ((legacy)); then
-  [[ $action == despawn ]] || { echo "$id is a legacy bot: $action is not supported (spawn/reset run via magbotctl for bot<N>)" >&2; exit 65; }
-  "$magbot" despawn "$id"
-  if [[ -x $site ]]; then "$site" remove "$id" || echo "WARN: bot site cleanup failed for $id" >&2; fi
-  exit 0
-fi
 case $action in
   spawn)
     # A fresh name must not exist: the room skips it (orphans are removed by

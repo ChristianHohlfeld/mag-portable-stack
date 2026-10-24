@@ -14,8 +14,8 @@
 # magbot-<name>-seed.iso, metadata.json), systemd units magbot-<name>[-*],
 # the Gitea user magbot-<name> and libvirt network entries mentioning it.
 # The golden image is the read-only backing file and is never written.
-# Legacy room bots (agent<N>) stay on the old magbot-native path until they
-# are migrated; this tool refuses those names unless MAGBOT_ALLOW_LEGACY=1.
+# Room bots (agent<N>, bot<N>) are CLI bots; ops/migrate-legacy-bots.sh moved
+# the old magbot-native agent1/agent3 over.
 #
 # create/delete/reset run as transient unit magbot-<name>-job (systemd-run)
 # unless MAGBOT_FOREGROUND=1. A per-bot flock serialises operations on one
@@ -76,9 +76,6 @@ dom_exists() { virsh_ dominfo "$DOM" >/dev/null 2>&1; }
 
 valid_name() {
   [[ $1 =~ ^[a-z][a-z0-9-]{0,22}$ && $1 != *- ]] || die "invalid name '$1' (a-z0-9-, max 23, starts with a letter)"
-  if [[ $1 =~ ^agent[0-9]+$ && ${MAGBOT_ALLOW_LEGACY:-0} != 1 ]]; then
-    die "'$1' is a legacy room bot managed by magbot-native; not handled here yet"
-  fi
 }
 setup_name() {
   NAME=$1; valid_name "$NAME"
@@ -369,10 +366,6 @@ cmd_list() {
   for d in "$MAGBOT_ROOT"/magbot-*; do [[ -d $d ]] && seen[$(basename "$d" | sed 's/^magbot-//')]=1; done
   printf '%-24s %-14s %s\n' NAME STATE DOMAIN
   for n in $(printf '%s\n' "${!seen[@]}" | sort); do
-    if [[ $n =~ ^agent[0-9]+$ ]]; then
-      printf '%-24s %-14s %s\n' "$n" legacy "$(virsh_ domstate "magbot-$n" 2>/dev/null || echo -)"
-      continue
-    fi
     DOM=magbot-$n; META=$MAGBOT_ROOT/$DOM/metadata.json
     printf '%-24s %-14s %s\n' "$n" "$(meta_state || true)" "$(virsh_ domstate "$DOM" 2>/dev/null || echo -)"
   done

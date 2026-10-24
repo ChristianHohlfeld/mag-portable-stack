@@ -1,6 +1,7 @@
 // Native, ownership-checked libvirt lifecycle using the existing warm golden
 // image.
 #include "common.hpp"
+#include "bot_context.hpp" // generated from bot_context.md
 #include <grp.h>
 #include <iomanip>
 #include <regex>
@@ -404,7 +405,8 @@ static void provision_git(const std::string &n) {
             "There is no host deploy runner. Use git clone/push and the "
             "Gitea API with your credential. Never share credentials in "
             "chat.\n") +
-      " > /home/bot/GIT_ACCESS.md";
+      " > /home/bot/GIT_ACCESS.md; printf %s " + quote(BOT_CONTEXT_MD) +
+      " > /home/bot/MAG_CONTEXT.md";
   auto result = guest(
       n, {"/usr/sbin/runuser", "-u", "bot", "--", "/bin/bash", "-lc", script},
       30);

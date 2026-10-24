@@ -64,3 +64,15 @@ scroll hints over the stream, mapped with the stream's object-position so it
 stays aligned under zoom/pan. Password/secret fields are sent as dots only
 (`masked`), never the value. No model tokens; toggle ◎ in the view bar
 (default on). Actions of a bot whose browser is not shown appear as a caption.
+
+## Bootstrap context
+
+`mag-room/native/bot_context.md` is the single, versioned bootstrap context
+(host, stack services, tools/rights, owner, German-default language rule).
+CMake embeds it at build time (`build/generated/bot_context.hpp`). The room
+appends it to every bot's stable system prompt (`build_system`, cacheable
+prefix), so new and reset bots always get it. `magbot-native` writes a copy to
+`/home/bot/MAG_CONTEXT.md` at VM creation, and "Bot zurücksetzen"
+(`/api/agents/<id>/workspace/reset`) writes it again. Edit the markdown only,
+keep it short, and never put secrets, IPs or private details in it.
+Covered by `BootstrapContext` in `mag-room/tests/test_native.py`.

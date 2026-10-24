@@ -6,6 +6,14 @@ find_package(Threads REQUIRED)
 find_package(OpenSSL REQUIRED)
 find_package(CURL REQUIRED)
 find_package(LibArchive REQUIRED)
+# Bot bootstrap context: one versioned markdown, embedded at build time into
+# the room's system prompt and the guest copy (magbot-native, reset).
+set(MAG_BOT_CONTEXT_MD ${CMAKE_CURRENT_SOURCE_DIR}/mag-room/native/bot_context.md)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${MAG_BOT_CONTEXT_MD})
+file(READ ${MAG_BOT_CONTEXT_MD} MAG_BOT_CONTEXT)
+file(CONFIGURE OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/generated/bot_context.hpp
+     CONTENT "#pragma once\n// Generated from mag-room/native/bot_context.md; do not edit.\nstatic const char *const BOT_CONTEXT_MD = R\"MAGCTX(@MAG_BOT_CONTEXT@)MAGCTX\";\n" @ONLY)
+include_directories(${CMAKE_CURRENT_BINARY_DIR}/generated)
 add_executable(magroom mag-room/native/magroom.cpp)
 add_executable(mag-audit-gateway mag-room/native/mag_audit_gateway.cpp)
 add_executable(mag-numa-swap mag-room/native/mag_numa_swap.cpp)

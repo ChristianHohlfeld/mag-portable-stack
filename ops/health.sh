@@ -19,6 +19,15 @@ case "$state" in
   *)
     echo "FEHLER: Modellstatus '$state'" >&2; exit 1 ;;
 esac
+# The room may be healthy while one of the two Ornith nodes has failed.
+# Check both real inference instances, not just the room's HTTP listener.
+if [[ -r /etc/mag-stack/secondary-model.env ]] &&
+   grep -Fxq 'MAG_SECONDARY_MODEL=ornith' /etc/mag-stack/secondary-model.env; then
+  for p in 8191 8192; do
+    curl --noproxy '*' --fail --silent --show-error --max-time 5       "http://127.0.0.1:$p/health" >/dev/null ||
+      { echo "FEHLER: Ornith :$p nicht bereit" >&2; exit 1; }
+  done
+fi
 curl --fail --silent --show-error --max-time 5 http://127.0.0.1:18784/health
 printf '\n'
 /usr/local/bin/magbot status

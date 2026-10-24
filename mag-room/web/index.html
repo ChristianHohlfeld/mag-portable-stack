@@ -653,8 +653,9 @@ const RUN_ORDER=['work-status','work-reading','thinking','work-steps','tools-tra
 function runBox(node){let r=node.querySelector(':scope > .run');if(!r){r=document.createElement('div');r.className='run';const c=node.querySelector(':scope > .content');if(c)c.before(r);else node.append(r)}return r}
 function runRank(el){return RUN_ORDER.findIndex(c=>el.classList.contains(c))}
 function runPut(node,el){const r=runBox(node),k=runRank(el);const after=[...r.children].find(x=>runRank(x)>k);if(after)r.insertBefore(el,after);else r.append(el);return el}
+// Run cards start collapsed (live and done); only a manual toggle opens them.
 const runOpen=new Map();
-function wireRunToggle(node,box,key,live){
+function wireRunToggle(node,box,key){
  const run=box.parentElement;if(!run)return;
  if(!box.querySelector('.run-chev')){const c=document.createElement('span');c.className='run-chev';c.setAttribute('aria-hidden','true');c.textContent='›';box.append(c);
   box.tabIndex=0;box.setAttribute('role','button');
@@ -662,7 +663,7 @@ function wireRunToggle(node,box,key,live){
   box.addEventListener('click',e=>{if(e.target.closest('a,button:not(.work-status)'))return;flip()});
   box.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();flip()}})}
  run.dataset.key=key;
- const open=runOpen.has(key)?runOpen.get(key):live;paintRunOpen(run,box,open);
+ const open=runOpen.has(key)?runOpen.get(key):false;paintRunOpen(run,box,open);
 }
 function paintRunOpen(run,box,open){run.classList.toggle('collapsed',!open);box.setAttribute('aria-expanded',String(open));box.title=open?'Details ausblenden':'Gedanken, Schritte und Werkzeuge anzeigen'}
 function runPart(node,cls){return node.querySelector(':scope > .run > .'+cls)}
@@ -1231,7 +1232,7 @@ function attachWork(div,msg,content){
  box.append(dot,label);
  const list=stepsList(msg.steps);
  runPut(div,box);if(list)runPut(div,list);
- wireRunToggle(div,box,'done:'+(msg.id||''),false);
+ wireRunToggle(div,box,'done:'+(msg.id||''));
 }
 // What the bot reads right now (room range or tool results), from the step
 // event; shown in the collapsible activity line while it reads.
@@ -1258,7 +1259,7 @@ function ensureWork(node,s,botId){
   const bar=document.createElement('div');bar.className='work-bar';bar.hidden=true;const fill=document.createElement('i');bar.append(fill);
   box.append(dot,label,bar);
   runPut(node,box);
-  wireRunToggle(node,box,'live:'+botId,true);
+  wireRunToggle(node,box,'live:'+botId);
  }
  const phase=s.error?'error':(s.hung?'hung':(s.phase||'think'));
  box.className='work-status phase-'+phase;
@@ -2731,6 +2732,7 @@ events.onmessage=e=>{
   }else if(event.type==='bot_done'){
    const s=streams[id];if(s?.frame)cancelAnimationFrame(s.frame);
    if(thinkOpen.delete('live:'+id)&&event.id)thinkOpen.add(event.id);
+   if(runOpen.has('live:'+id)){const o=runOpen.get('live:'+id);runOpen.delete('live:'+id);if(event.id)runOpen.set('done:'+event.id,o)}
    if(s&&(s.reasoning||s.tools?.length)){completedTraces.push({name:s.name,content:event.content||s.text||'',reasoning:event.reasoning?'':(s.reasoning||''),ms:liveThinkMs(s),tools:s.tools||[],assignedPosition:null});if(completedTraces.length>40)completedTraces.shift()}
    delete streams[id];streamControls();
    refresh().catch(err=>notice(err.message));

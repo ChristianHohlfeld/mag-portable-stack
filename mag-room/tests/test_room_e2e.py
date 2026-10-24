@@ -173,19 +173,47 @@ class RoomE2E(unittest.TestCase):
         self.assertEqual(msg.locator('.work-stop').count(), 0, 'no stop button inside messages')
         self.shot('05-run-card')
 
-    def test_05b_live_run_is_open_and_thoughts_only_answer_gets_a_header(self):
+    def test_05b_live_run_is_collapsed_and_manual_open_persists(self):
         p = self.page
         Model.scripts += [[{'reasoning_content': 'Ich überlege laut. '}, {'_sleep': .25}] * 10 + ['Antwort nach Denken.']]
         self.send('Denk kurz nach')
         live = p.locator('.message.work-live > .run')
         expect(live).to_be_visible(timeout=5000)
-        expect(live.locator('.work-status')).to_have_attribute('aria-expanded', 'true')
+        # Streaming: collapsed by default, the status line still updates.
+        status = live.locator('.work-status')
+        expect(live).to_have_class('run collapsed')
+        expect(status).to_have_attribute('aria-expanded', 'false')
+        expect(status.locator('.work-label')).not_to_be_empty()
+        expect(live.locator('.thinking')).to_be_attached(timeout=5000)
+        expect(live.locator('.thinking')).to_be_hidden()
+        p.wait_for_timeout(600)
+        expect(live).to_have_class('run collapsed')
+        # A manual open survives the following stream re-renders and the
+        # switch to the finished message.
+        status.click()
+        expect(status).to_have_attribute('aria-expanded', 'true')
         expect(live.locator('.thinking .think-title')).to_have_text('Denkt nach', timeout=5000)
+        p.wait_for_timeout(600)
+        expect(status).to_have_attribute('aria-expanded', 'true')
+        self.assertEqual(live.locator('.think-body:visible').count(), 0, 'thoughts stay folded')
         self.shot('05b-live-thinking')
         expect(p.locator('.message.assistant .content').last).to_have_text('Antwort nach Denken.', timeout=8000)
         done = p.locator('.message.assistant').last.locator(':scope > .run')
         expect(done.locator('.work-status')).to_contain_text('Fertig')
+        expect(done).to_have_class('run')
+        expect(done.locator('.work-status')).to_have_attribute('aria-expanded', 'true')
+
+    def test_05b2_unopened_live_run_stays_collapsed_when_done(self):
+        p = self.page
+        Model.scripts += [[{'reasoning_content': 'Kurz gedacht. '}, {'_sleep': .25}] * 4 + ['Fertig ohne Aufklappen.']]
+        self.send('Antworte kurz')
+        live = p.locator('.message.work-live > .run')
+        expect(live).to_be_visible(timeout=5000)
+        expect(live).to_have_class('run collapsed')
+        expect(p.locator('.message.assistant .content').last).to_have_text('Fertig ohne Aufklappen.', timeout=8000)
+        done = p.locator('.message.assistant').last.locator(':scope > .run')
         expect(done).to_have_class('run collapsed')
+        expect(done.locator('.work-status')).to_have_attribute('aria-expanded', 'false')
 
     def test_05c_bot_actions_in_one_menu_and_connectors_in_settings(self):
         p = self.page

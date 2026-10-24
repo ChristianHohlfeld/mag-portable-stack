@@ -255,8 +255,10 @@ if [[ -r /etc/mag-stack/secondary-model.env ]] &&
   install -d -m 0755 /etc/systemd/system/mag-120.service.d /usr/local/lib/mag-ornith
   install -m 0644 "$SOURCE/ops/mag-120.d/30-dual-numa.conf" /etc/systemd/system/mag-120.service.d/30-dual-numa.conf
   [[ -x /usr/local/lib/mag-ornith/start.sh ]] || { echo 'Ornith staged runtime missing' >&2; exit 1; }
-  install -m 0755 "$SOURCE/ops/ornith/start.sh" "$SOURCE/ops/ornith/verify-model.sh" /usr/local/lib/mag-ornith/
+  install -m 0755 "$SOURCE/ops/ornith/start.sh" "$SOURCE/ops/ornith/start-shared.sh" "$SOURCE/ops/ornith/verify-model.sh" /usr/local/lib/mag-ornith/
   install -m 0644 "$SOURCE/ops/qwen/runtime.sha" /usr/local/lib/mag-ornith/runtime.sha
+  # Shared server (current) and the 4 legacy instances (rollback.sh instances) side by side.
+  install -m 0644 "$SOURCE/ops/ornith/mag-llm-ornith.service" /etc/systemd/system/mag-llm-ornith.service
   install -m 0644 "$SOURCE/ops/ornith/mag-llm-ornith@.service" /etc/systemd/system/mag-llm-ornith@.service
   for n in 1 2 3 4; do
     install -d -m 0755 "/etc/systemd/system/mag-llm-ornith@$n.service.d"

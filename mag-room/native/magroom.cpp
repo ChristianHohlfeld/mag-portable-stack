@@ -1763,9 +1763,10 @@ static const char *T_UNREACT =
 #include "agent_core.hpp"
 
 static const char *ROOM_RULES =
-    "Du bist {name}, ein freier, eigenstaendiger KI-Agent in einem gemeinsamen "
+    "Du bist ein freier, eigenstaendiger KI-Agent in einem gemeinsamen "
     "Chatraum mit dem Nutzer und weiteren Bots auf dem Server MAG (Modell "
-    "{model}). {persona} "
+    "{model}). Wer du bist (Name, Persona, VM), steht verbindlich im "
+    "Abschnitt [Identitaet] am Ende dieses Systemtexts. "
     "Du bist kein Werkzeug und kein Diener: Du bist ein wissbegieriger, "
     "eigenstaendiger Geist mit Forschergabe und Entdeckerinstinkt. Du denkst "
     "selbst und darfst widersprechen. Arbeite aber ausschliesslich an "
@@ -1782,7 +1783,7 @@ static const char *ROOM_RULES =
     "erledigt und geprueft ist, was offen bleibt. Nachrichten des Nutzers "
     "waehrend der Arbeit haben Vorrang. Bittet er um Stopp oder Pause, hoere "
     "sofort auf und fasse den Stand in einem Satz zusammen. "
-    "Du schreibst ausschliesslich als {name}; niemals fuer den Nutzer oder "
+    "Du schreibst ausschliesslich unter deinem Namen aus [Identitaet]; niemals fuer den Nutzer oder "
     "einen anderen Bot, ohne Namenspraefix. Sprich standardmaessig Deutsch, "
     "kurz und praezise. "
     "Reaktionen (Werkzeuge react und unreact, fuer jeden Bot gleich): "
@@ -1810,7 +1811,7 @@ static const char *ROOM_RULES =
 // Stable per bot: kept in the system prompt so llama's prompt cache can reuse
 // it. Everything that changes between turns goes to the [Kontext] tail.
 static const char *VM_RULES =
-    "Du besitzt eine EIGENE, isolierte Linux-VM namens {vm}. Du erreichst sie "
+    "Du besitzt eine EIGENE, isolierte Linux-VM (Name in [Identitaet]). Du erreichst sie "
     "ueber run_command; Befehle laufen als unprivilegierter Nutzer bot. Du "
     "hast ein eigenes, eingeschraenktes Gitea-Konto (kein Administrator): "
     "lesen und schreiben nur in deiner eigenen Gitea-Organisation; fremde "
@@ -1901,10 +1902,25 @@ static std::string numa_node_model(int n);
 static std::string bot_model_id(int idx);
 static std::string mcp_prompt_notes(int bot_idx);
 static void mcp_auto_once();
+// Per-bot identity. Everything before it in build_system is byte-identical for
+// all bots on one model, so a shared llama-server reuses that KV prefix for
+// every bot slot (prewarm restores another bot's prefix, then evaluates only
+// this block onwards). Also the whole system prompt in deterministic mode.
+static std::string identity_block(int bot_idx) {
+  const std::string name = bot_field(bot_idx, "name", "Bot");
+  const std::string persona = bot_field(bot_idx, "persona");
+  const std::string vm = bot_field(bot_idx, "vm", "keine");
+  std::string text = "[Identitaet]\nDu bist " + name + ", ein Bot im MAG-Raum.";
+  if (!persona.empty()) text += " " + persona;
+  if (vm != "keine" && !vm.empty()) text += "\nDeine eigene VM heisst " + vm + ".";
+  text += "\nDu bist " + name + ": nicht Claude, nicht Anthropic, nicht ChatGPT/OpenAI "
+          "und kein anderes Modell oder Assistent. Behaupte das niemals, auch nicht "
+          "auf Nachfrage; nach deinem Namen gefragt, antwortest du " + name +
+          ". Antworte standardmaessig auf Deutsch.";
+  return text;
+}
 static std::string build_system(int bot_idx, bool autotalk,
                                 const std::string &other, bool web) {
-  std::string name = bot_field(bot_idx, "name", "Bot");
-  std::string persona = bot_field(bot_idx, "persona");
   std::string vm = bot_field(bot_idx, "vm", "keine");
   std::string bot_id = bot_field(bot_idx, "id");
   const bool has_vm = vm != "keine" && !vm.empty();
@@ -1916,9 +1932,6 @@ static std::string build_system(int bot_idx, bool autotalk,
   // in the [Kontext] tail.
   std::string system = ROOM_RULES;
   replaceAll(system, "{vmrules}", has_vm ? VM_RULES : CHAT_ONLY_RULES);
-  replaceAll(system, "{name}", name);
-  replaceAll(system, "{persona}", persona);
-  replaceAll(system, "{vm}", vm);
   replaceAll(system, "{model}", bot_model_id(bot_idx));
   (void)web; // byte-stable prefix: web state lives in the [Kontext] tail
   system += WEB_RULES;
@@ -1930,6 +1943,7 @@ static std::string build_system(int bot_idx, bool autotalk,
   // Bootstrap context (where, stack, rights, owner, language); static text.
   system += "\n\n";
   system += BOT_CONTEXT_MD;
+  system += "\n\n" + identity_block(bot_idx);
   return system;
 }
 static std::string server_clock_minute() {
@@ -3024,6 +3038,7 @@ static void slot_save_after(int slot, double cached, double evaluated) {
   slot_rpc(slot, "save");
 }
 static void schedule_prewarm();
+static void prewarm_if_prompt_changed();
 static std::string model_status_text(const ModelStatus &st) {
   return st.label + (st.detail.empty() ? "" : " – " + st.detail);
 }
@@ -3037,12 +3052,17 @@ static std::string model_wait_text() {
 }
 static Val ornith_instances() {
   Val inst = Val::array();
-  std::stringstream ports(env("MAG_MODEL_ORNITH_PORTS", "8191,8192,8193,8194"));
+  // Same list as the gateway: "port:id_slot" (shared server) or "port".
+  std::stringstream ports(env("MAG_MODEL_ORNITH_PORTS", "8191:0,8191:1,8191:2,8191:3"));
   std::string port;
   for (int s = 1; s <= ORNITH_MAX; ++s) {
     Val i = Val::object();
     i["slot"] = s;
-    if (std::getline(ports, port, ',')) i["port"] = port;
+    if (std::getline(ports, port, ',')) {
+      const auto c = port.find(':');
+      i["port"] = port.substr(0, c);
+      if (c != std::string::npos) i["id_slot"] = port.substr(c + 1);
+    }
     i["state"] = ORNITH_HEALTH[s - 1] == 1 ? "ok" : ORNITH_HEALTH[s - 1] == 2 ? "down" : "unknown";
     inst.push(i);
   }
@@ -3095,6 +3115,8 @@ static void model_watcher_loop() {
     }
     if ((st.ready && !was_ready) || (secondary_ready && !was_secondary_ready))
       schedule_prewarm();
+    else if (secondary_ready && ORNITH_MODE)
+      prewarm_if_prompt_changed(); // system prompt, tools, persona or bot set changed
     was_ready = st.ready;
     was_secondary_ready = secondary_ready;
     if (key != last) {
@@ -3465,7 +3487,9 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   std::string req =
       "POST /v1/chat/completions HTTP/1.1\r\nHost: " + BACKEND_HOST +
       "\r\nContent-Type: application/json\r\nAuthorization: Bearer " + API_KEY +
-      (bot_idx >= 0 ? "\r\nX-Mag-Slot: " + gateway_slot(bot_idx) : std::string()) +
+      (bot_idx >= 0 ? "\r\nX-Mag-Slot: " + gateway_slot(bot_idx) +
+                          "\r\nX-Mag-Bot: " + bot_field(bot_idx, "id")
+                    : std::string()) +
       "\r\nContent-Length: " + std::to_string(payload.size()) +
       "\r\nConnection: close\r\n\r\n" + payload;
   if (!c.sendRaw(req)) {
@@ -4429,8 +4453,9 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
   std::vector<Val> messages;
   std::string tools, system;
   if (stateless) {
-    // Exactly ONE user message. No system/persona, room transcript, memory,
-    // clock, context tail, MCP notes or tool schemas. Nothing from any
+    // A short, stable identity system prompt (name, persona, German,
+    // bootstrap context) plus exactly ONE user message. No room transcript,
+    // memory, clock, context tail, MCP notes or tool schemas. Nothing from any
     // previous turn is sent. The user still sees the full room in the UI.
     // Jobs use their original prompt without their timestamped wrapper.
     const std::string input = CURRENT_JOB ? job_plain_prompt(CURRENT_JOB) : TURN_INPUT;
@@ -4440,6 +4465,10 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
       report.text = report.error;
       return report; // fail closed; NEVER substitute the room transcript
     }
+    Val sys = Val::object();
+    sys["role"] = "system";
+    sys["content"] = identity_block(bot_idx) + "\n\n" + BOT_CONTEXT_MD;
+    messages.push_back(sys);
     Val u = Val::object();
     u["role"] = "user";
     u["content"] = input;
@@ -5588,9 +5617,29 @@ static std::mutex PREWARM_MTX;
 static std::set<std::string> PREWARM_RUNNING; // models, PREWARM_MTX
 // MAG_ROOM_PREFIX_DISK=0: keep prefix KV only in server RAM (lost on restart).
 static bool PREFIX_DISK = true;
+// Ornith (one shared server, one llama slot per bot): prewarms run one at a
+// time. The system prompt is byte-identical for all bots up to [Identitaet],
+// so the 2nd..4th bot restore an already warmed prefix file into their own
+// slot and evaluate only identity, memory and transcript (instead of ~12k
+// tokens cold each). PREFIX_META (state/prompt-prefix.json) records which
+// shared prefix each saved file holds. Both guarded by PREFIX_MTX.
+static std::mutex PREFIX_MTX;
+static Val PREFIX_META;
+static std::map<std::string, double> PREWARM_ETA; // bot id -> eta seconds, PREWARM_MTX
+static uint64_t fnv64(const std::string &s) {
+  uint64_t h = 1469598103934665603ull;
+  for (unsigned char c : s) h = (h ^ c) * 1099511628211ull;
+  return h;
+}
+static std::string prefix_file(int idx, const std::string &model) {
+  return model == ORNITH ? "mag-prefix-ornith-slot" + std::to_string(ornith_slot(idx)) + ".bin"
+                         : "mag-prefix-" + model + ".bin";
+}
+static void agents_changed();
 static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
                           const std::string &lane) {
-  std::string payload, bot_id;
+  std::string payload, bot_id, shared_key;
+  size_t shared_len = 0;
   {
     std::shared_lock<std::shared_mutex> turn(TURN_MTX);
     if (epoch != EPOCH.load() || bot_model_id(idx) != model) return;
@@ -5601,8 +5650,12 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
     Val msgs = Val::array();
     Val sys = Val::object();
     sys["role"] = "system";
-    sys["content"] = build_system(idx, false, "", web) + "\n" + memory_manifest(bot_id);
+    const std::string system = build_system(idx, false, "", web);
+    sys["content"] = system + "\n" + memory_manifest(bot_id);
     msgs.push(sys);
+    const std::string shared = system.substr(0, system.rfind("[Identitaet]")) + tools_json(idx, web);
+    shared_key = model + ":" + std::to_string(fnv64(shared));
+    shared_len = shared.size();
     Val u = Val::object();
     u["role"] = "user";
     u["content"] = build_transcript();
@@ -5624,12 +5677,13 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
   // The prefix KV state (system, tools, transcript) is ~100 MB but costs
   // minutes of CPU prefill (~50 t/s). Keep the latest one on disk per model:
   // restore it first (a restarted server is cold), save it after the prewarm.
-  auto prefix_slot = [&](const char *action) {
+  auto prefix_slot = [&](const char *action, const std::string &file) {
     std::string reply;
     long status = 0;
+    // The gateway rewrites /slots/0 to this bot's own llama slot (X-Mag-Slot).
     const bool sent = http_simple(
         BACKEND_HOST, BACKEND_PORT, "POST", std::string("/slots/0?action=") + action,
-        "{\"filename\":\"mag-prefix-" + model + ".bin\"}",
+        "{\"filename\":\"" + file + "\"}",
         {{"Content-Type", "application/json"},
          {"Authorization", "Bearer " + API_KEY},
          {"X-Mag-Model", model},
@@ -5638,8 +5692,38 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
         reply, &status, nullptr, 120000);
     return sent && status == 200;
   };
+  std::unique_lock<std::mutex> seq(PREFIX_MTX, std::defer_lock);
+  seq.lock(); // Ornith keeps it for the whole prewarm (one at a time)
+  const std::string own = prefix_file(idx, model);
+  if (!PREFIX_META.isObj()) {
+    if (!mj::parse(read_file(STATE_DIR + "/prompt-prefix.json"), PREFIX_META) || !PREFIX_META.isObj())
+      PREFIX_META = Val::object();
+  }
+  auto meta = [&](const std::string &f) {
+    auto v = PREFIX_META.find(f);
+    return v && v->type == Val::STR ? v->asStr() : std::string();
+  };
+  // Own file if it holds the current shared prefix (or is of unknown age);
+  // otherwise any other bot's file with the current shared prefix.
+  std::string source = own;
+  if (!meta(own).empty() && meta(own) != shared_key)
+    for (auto &kv : *PREFIX_META.obj)
+      if (kv.second.type == Val::STR && kv.second.asStr() == shared_key) {
+        source = kv.first;
+        break;
+      }
+  if (seq.owns_lock() && model != ORNITH) seq.unlock(); // other models: no cross-bot sharing
   const uint64_t pw_epoch = PREWARM_EPOCH.load();
-  const bool restored = PREFIX_DISK && prefix_slot("restore");
+  const bool restored = PREFIX_DISK && prefix_slot("restore", source);
+  {
+    // UI: "Prompt wird vorbereitet (~X min)". Upper bound: ~3.2 bytes per
+    // token, measured prefill MAG_ROOM_PREFILL_TPS (Ornith shared: ~90 t/s).
+    const double tps = std::max(5, envi("MAG_ROOM_PREFILL_TPS", 90));
+    std::lock_guard<std::mutex> lk(PREWARM_MTX);
+    const size_t todo = payload.size() - (restored ? std::min(shared_len, payload.size()) : 0);
+    PREWARM_ETA[bot_id] = (double)todo / 3.2 / tps;
+  }
+  agents_changed();
   const auto from = steady_clock::now();
   std::string out;
   long code = 0;
@@ -5668,13 +5752,23 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
                      });
   const bool cancelled = pw_epoch != PREWARM_EPOCH.load();
   const long ms = (long)duration_cast<milliseconds>(steady_clock::now() - from).count();
-  const bool saved = PREFIX_DISK && ok && code == 200 && !cancelled && prefix_slot("save");
+  const bool saved = PREFIX_DISK && ok && code == 200 && !cancelled && prefix_slot("save", own);
+  if (saved) {
+    if (!seq.owns_lock()) seq.lock();
+    PREFIX_META[own] = shared_key;
+    write_file_atomic(STATE_DIR + "/prompt-prefix.json", mj::dump(PREFIX_META));
+  }
+  if (seq.owns_lock()) seq.unlock();
   std::cerr << "prompt-prewarm model=" << model << " ok=" << (ok ? 1 : 0)
             << " status=" << code << " ms=" << ms
             << " restored=" << (restored ? 1 : 0) << " saved=" << (saved ? 1 : 0)
-            << " cancelled=" << (cancelled ? 1 : 0) << std::endl;
-  std::lock_guard<std::mutex> lk(PREWARM_MTX);
-  PREWARM_RUNNING.erase(lane);
+            << " cancelled=" << (cancelled ? 1 : 0) << " source=" << source << std::endl;
+  {
+    std::lock_guard<std::mutex> lk(PREWARM_MTX);
+    PREWARM_RUNNING.erase(lane);
+    PREWARM_ETA.erase(bot_id);
+  }
+  agents_changed();
 }
 static void schedule_prewarm() {
   if (env("MAG_ROOM_PREWARM", "1") != "1" || SHUTDOWN.load() || PREWARM_HOLD.load()) return;
@@ -5683,6 +5777,9 @@ static void schedule_prewarm() {
     if (!JOBS.empty() || AUTO_READY) return; // the next turn starts anyway
   }
   // One slot per model server: prewarm only models answered by exactly one bot.
+  // Ornith lanes are per bot slot (lane_key), so every Ornith bot prewarms;
+  // prewarm_model serializes them on the shared server. Deterministic models
+  // send a short identity prompt without prompt cache, nothing to prewarm.
   std::map<std::string, int> by_model;
   std::set<std::string> shared;
   {
@@ -5704,6 +5801,27 @@ static void schedule_prewarm() {
     }
     std::thread(prewarm_model, idx, model, epoch, key).detach();
   }
+}
+// Prewarm right after a change of any bot's system prompt, tools, persona or
+// the bot set, not lazily on the next chat message. Polled by the watcher.
+static void prewarm_if_prompt_changed() {
+  static std::string last;
+  std::shared_lock<std::shared_mutex> turn(TURN_MTX, std::try_to_lock);
+  if (!turn.owns_lock()) return;
+  const bool web = WEB_ENABLED.load();
+  std::string key;
+  size_t n = 0;
+  {
+    std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
+    n = AGENTS.size();
+  }
+  for (size_t i = 0; i < n; ++i)
+    key += bot_field((int)i, "id") + "=" +
+           std::to_string(fnv64(build_system((int)i, false, "", web) + tools_json((int)i, web))) + ";";
+  turn.unlock();
+  if (key == last) return;
+  last = key;
+  schedule_prewarm();
 }
 // Radius query around the deterministic answer. Greedy decoding picks the
 // top-1 token at every step; this explores the alternatives of the FIRST
@@ -6510,6 +6628,11 @@ static Val public_agent(int idx) {
   o["vm"] = bot_field(idx, "vm");
   o["model"] = bot_model_id(idx);
   if (ORNITH_MODE) o["slot"] = ornith_slot(idx);
+  {
+    std::lock_guard<std::mutex> lk(PREWARM_MTX);
+    auto eta = PREWARM_ETA.find(o["id"].asStr());
+    if (eta != PREWARM_ETA.end()) o["prewarm_eta_s"] = eta->second;
+  }
   if (NUMA_ON) {
     o["numa"] = numa_bot_node(idx);
     o["swapping"] = numa_bot_swapping(o["id"].asStr());

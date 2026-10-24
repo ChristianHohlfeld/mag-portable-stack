@@ -17,7 +17,7 @@ def _rules(content):
 def _mem(content):
  i=content.index('\n[Erinnerungen]');return content[i+1:]
 class Model(http.server.BaseHTTPRequestHandler):
- protocol_version='HTTP/1.1';calls=[];slots=[];pairs=[];delay=0;reply=None;script=[];health=200;last_prompt={};overflow_once=0
+ protocol_version='HTTP/1.1';calls=[];slots=[];pairs=[];paths=[];delay=0;reply=None;script=[];health=200;last_prompt={};overflow_once=0
  def log_message(self,*a):pass
  def do_GET(self):
   code=200
@@ -30,6 +30,7 @@ class Model(http.server.BaseHTTPRequestHandler):
   obj=json.loads(self.rfile.read(int(self.headers['Content-Length'])));self.calls.append(obj)
   type(self).slots.append(self.headers.get('X-Mag-Slot'))
   type(self).pairs.append((obj,self.headers.get('X-Mag-Slot')))  # one atomic append
+  type(self).paths.append((self.path,self.headers.get('X-Mag-Slot'),self.headers.get('X-Mag-Bot'),obj))
   if type(self).overflow_once:
    type(self).overflow_once-=1
    error=b'{"error":{"code":400,"message":"request (35178 tokens) exceeds the available context size (32768 tokens)","type":"exceed_context_size_error"}}'
@@ -235,8 +236,9 @@ class Native(unittest.TestCase):
     self.assertEqual(Model.calls[-1]['top_k'],1)
     self.assertFalse(Model.calls[-1]['cache_prompt'])
     self.assertNotIn('tools',Model.calls[-1])
-    self.assertEqual(Model.calls[-1]['messages'],
+    self.assertEqual(Model.calls[-1]['messages'][1:],
                      [{'role':'user','content':'Sampling model '+model_id}])
+    self.assertIn('[Identitaet]\nDu bist ',Model.calls[-1]['messages'][0]['content'])
    else:
     self.assertTrue(Model.calls[-1]['cache_prompt'])
     self.assertIn('tools',Model.calls[-1])
@@ -264,7 +266,11 @@ class Native(unittest.TestCase):
    self.wait_idle()
    count=len(Model.calls)
   first,again=Model.calls[-2:]
-  self.assertEqual(first['messages'],[{'role':'user','content':'hi'}])
+  # Deterministic still sends the bot's short identity prompt, then ONE user message.
+  self.assertEqual(first['messages'][1:],[{'role':'user','content':'hi'}])
+  self.assertEqual(first['messages'][0]['role'],'system')
+  self.assertIn('[Identitaet]\nDu bist ',first['messages'][0]['content'])
+  self.assertIn('nicht Claude, nicht Anthropic',first['messages'][0]['content'])
   self.assertEqual(again['messages'],first['messages'])
   for call in (first,again):
    self.assertEqual(call['model'],second)
@@ -297,9 +303,9 @@ class Native(unittest.TestCase):
     if len(Model.calls)>=start+3 and not self.request('/api/state')['busy']:break
     time.sleep(.05)
    self.assertEqual(len(Model.calls),start+3)
-   self.assertEqual([x['messages'][0]['content'] for x in Model.calls[start:start+3]],
+   self.assertEqual([x['messages'][-1]['content'] for x in Model.calls[start:start+3]],
                     ['eins','zwei','drei'])
-   self.assertTrue(all(len(x['messages'])==1 and not x.get('tools') for x in Model.calls[start:start+3]))
+   self.assertTrue(all(len(x['messages'])==2 and x['messages'][0]['role']=='system' and not x.get('tools') for x in Model.calls[start:start+3]))
   finally:
    Model.delay=0
    self.request('/api/model',{'id':models[0]['id']})
@@ -3113,7 +3119,8 @@ class Ornith(unittest.TestCase):
   self.assertEqual([(a['id'],a['name'],a['vm'],a['slot'],a['model']) for a in s['agents']],
    [('deepseek-chat','Ornith 1','agent3',1,'ornith-1.5-35b-a3b'),('lehotbot','Ornith 2','agent1',2,'ornith-1.5-35b-a3b')])
   self.assertEqual([i['slot'] for i in s['ornith_instances']],[1,2,3,4])
-  self.assertEqual([i['port'] for i in s['ornith_instances']],['8191','8192','8193','8194'])
+  # One shared server: every bot slot -> port 8191, its own llama slot.
+  self.assertEqual([(i['port'],i['id_slot']) for i in s['ornith_instances']],[('8191',str(n)) for n in range(4)])
   self.assertEqual(self.persisted()['deepseek-chat']['memory'][0]['text'],'bleibt')
  def test_02_german_default_and_sticky_slot(self):
   call,slot=self.ask('lehotbot')
@@ -3163,5 +3170,66 @@ class Ornith(unittest.TestCase):
   self.assertIn('ornith_instances',html)
   self.assertIn('return state.ornith_mode?4:2',html)
   self.assertIn('archiviert, nicht gelöscht',html)
+  self.assertIn("'Prompt wird vorbereitet (~'+etaMin(",html)
+ def test_08_identity_per_bot_normal_and_deterministic(self):
+  bots=self.bots()
+  for det in (False,True):
+   self.request('/api/model-settings',{'id':'ornith-1.5-35b-a3b','deterministic':det})
+   try:
+    for bid,b in bots.items():
+     call,slot=self.ask(bid)
+     self.assertEqual(slot,str(b['slot']-1))
+     sysmsg=call['messages'][0]
+     self.assertEqual(sysmsg['role'],'system')
+     self.assertIn('Du bist '+b['name']+':',sysmsg['content'])
+     self.assertIn('nicht Claude, nicht Anthropic',sysmsg['content'])
+     self.assertIn('Antworte standardmaessig auf Deutsch',sysmsg['content'])
+     for other in bots.values():
+      if other['id']!=bid:self.assertNotIn('Du bist '+other['name']+',',sysmsg['content'])
+     if det:self.assertEqual(call['temperature'],0)
+     hit=[p for p in list(Model.paths) if p[3] is call]
+     self.assertEqual(hit[0][2],bid,'X-Mag-Bot names the bot')
+   finally:
+    self.request('/api/model-settings',{'id':'ornith-1.5-35b-a3b','deterministic':False})
+  # Shared prefix: identical system text up to [Identitaet] for every bot.
+  prefixes={c['messages'][0]['content'].split('[Identitaet]')[0] for c in Model.calls[-len(bots)*2:-len(bots)]}
+  self.assertEqual(len(prefixes),1)
+ def test_09_prewarm_every_bot_slot_and_share_prefix(self):
+  self.wait_idle()
+  def warmed(after):
+   for _ in range(400):
+    got=[p for p in list(Model.paths)[after:] if p[0].startswith('/slots/') and p[3].get('filename','').startswith('mag-prefix-ornith') and p[0].endswith('save')]
+    if len(got)>=4:return list(Model.paths)[after:]
+    time.sleep(.03)
+   self.fail('not all four bot slots prewarmed')
+  self.stop();type(self).env['MAG_ROOM_PREWARM']='1'
+  try:
+   mark=len(Model.paths);self.start();seen=warmed(mark)
+   saves={(p[1],p[3]['filename']) for p in seen if p[0].endswith('save')}
+   self.assertEqual(saves,{(str(n-1),'mag-prefix-ornith-slot%d.bin'%n) for n in range(1,5)})
+   warm=[p for p in seen if p[0]=='/v1/chat/completions' and p[3].get('max_tokens')==1]
+   self.assertEqual(sorted(p[1] for p in warm),['0','1','2','3'])
+   meta=json.loads(self.state.joinpath('prompt-prefix.json').read_text())
+   # Bots with the same rules (VM vs chat-only) share one prefix key.
+   kinds={b['slot']:bool(b['vm']) for b in self.bots().values()}
+   self.assertEqual(len(set(meta.values())),len(set(kinds.values())))
+   fresh=dict(meta)
+   # Stale own files: bots 2..4 restore the prefix bot 1 already warmed.
+   self.stop()
+   meta={k:(v if k.endswith('slot1.bin') else 'stale') for k,v in meta.items()}
+   self.state.joinpath('prompt-prefix.json').write_text(json.dumps(meta))
+   mark=len(Model.paths);self.start();seen=warmed(mark)
+   restores={}
+   for p in seen:
+    if p[0].endswith('restore'):restores.setdefault(p[1],p[3]['filename'])
+   own=lambda n:'mag-prefix-ornith-slot%d.bin'%n
+   # Each source holds the same shared prefix; a stale own file is never used
+   # when another bot already warmed a matching prefix (slot 1 always does).
+   self.assertEqual(sorted(restores),['0','1','2','3'])
+   for n in range(1,5):self.assertEqual(fresh[restores[str(n-1)]],fresh[own(n)])
+   self.assertTrue(all(restores[str(n-1)]==own(1) for n in range(1,5) if fresh[own(n)]==fresh[own(1)]))
+   self.assertGreaterEqual(sum(restores[str(n-1)]!=own(n) for n in range(2,5)),1)
+  finally:
+   self.stop();type(self).env['MAG_ROOM_PREWARM']='0';self.start()
 
 if __name__=='__main__':unittest.main(verbosity=2)

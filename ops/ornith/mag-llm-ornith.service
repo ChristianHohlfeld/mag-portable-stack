@@ -1,0 +1,45 @@
+# Ornith-1.5-35B-A3B shared server: one model, four llama slots (one per room bot),
+# port 8191, both NUMA nodes (start-shared.sh). Replaces mag-llm-ornith@1..4, which
+# stay installed (disabled) for ops/ornith/rollback.sh instances.
+# Installed and started only by ops/ornith/cutover.sh; mag-llm is independent.
+[Unit]
+Description=MAG Ornith-1.5-35B-A3B CPU model, shared by 4 bots
+After=network-online.target mag-llm.service
+Wants=network-online.target
+ConditionPathExists=/etc/mag-ornith/model.sha256
+Conflicts=mag-llm-qwen.service mag-llm-ornith@1.service mag-llm-ornith@2.service mag-llm-ornith@3.service mag-llm-ornith@4.service
+StartLimitIntervalSec=1800
+StartLimitBurst=2
+[Service]
+Type=simple
+User=chris
+Group=chris
+WorkingDirectory=/home/chris
+ExecStartPre=+/usr/bin/install -d -o chris -g chris -m 0750 /var/lib/mag-llm/slots/ornith
+# Full SHA-256 once as root (shared lock + stamp); start-shared.sh rechecks the stamp.
+ExecStartPre=+/usr/local/lib/mag-ornith/verify-model.sh
+ExecStart=/usr/local/lib/mag-ornith/start-shared.sh
+Restart=on-failure
+RestartSec=60
+TimeoutStartSec=3600
+TimeoutStopSec=120
+CPUAffinity=0-27
+AllowedCPUs=0-27
+NUMAPolicy=interleave
+NUMAMask=0-1
+MemoryAccounting=yes
+MemoryHigh=30G
+MemoryMax=34G
+MemorySwapMax=0
+LimitMEMLOCK=infinity
+OOMScoreAdjust=-600
+Nice=10
+IOSchedulingClass=idle
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=no
+ReadWritePaths=-/var/lib/mag-llm/slots/ornith
+PrivateTmp=yes
+RestrictAddressFamilies=AF_INET AF_UNIX
+[Install]
+WantedBy=multi-user.target

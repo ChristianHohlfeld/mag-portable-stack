@@ -1295,7 +1295,9 @@ function renderPromptProgress(s,node){
  const percent=Math.min(100,Math.round(processed/total*100));
  const wrap=document.createElement('div');wrap.className='prompt-progress';wrap.setAttribute('role','progressbar');wrap.setAttribute('aria-valuemin','0');wrap.setAttribute('aria-valuemax','100');wrap.setAttribute('aria-valuenow',String(percent));wrap.setAttribute('aria-label','Prompt wird verarbeitet');
  const top=document.createElement('div');top.className='progress-top';
- const name=document.createElement('span');name.textContent='Liest Kontext · '+fmtN(processed)+' / '+fmtN(total)+' Tokens'+(cache>0?' · '+fmtN(cache)+' Cache':'');
+ // ETA from the measured rate of this request (fallback ~90 t/s, shared Ornith).
+ const fresh=Math.max(0,processed-(cache||0)),rate=s.progress.ms>2000&&fresh>0?fresh/(s.progress.ms/1000):90,left=Math.max(0,total-processed)/rate;
+ const name=document.createElement('span');name.textContent=(left>=45?'Prompt wird vorbereitet (~'+etaMin(left)+' min) · ':'Liest Kontext · ')+fmtN(processed)+' / '+fmtN(total)+' Tokens'+(cache>0?' · '+fmtN(cache)+' Cache':'');
  const per=document.createElement('strong');per.textContent=percent+' %';top.append(name,per);
  const track=document.createElement('div');track.className='progress-track';const bar=document.createElement('i');bar.style.width=percent+'%';track.append(bar);wrap.append(top,track);
  const content=node.querySelector('.content');content.before(wrap);
@@ -1565,12 +1567,13 @@ function popMenu(btn,items){
 document.addEventListener('click',e=>{if(openPop&&!openPop.menu.contains(e.target)&&!openPop.btn.contains(e.target))closePop()});
 // Ornith: up to four bots, each pinned to its own instance (persistent slot).
 function botCap(){return state.ornith_mode?4:2}
+function etaMin(sec){return Math.max(1,Math.round(sec/60))}
 function botModelLabel(a){if(state.ornith_mode&&a.slot)return 'Ornith 1.5 35B-A3B · Instanz '+a.slot;return (state.models||[]).find(m=>m.id===a.model)?.label||(a.model?.includes('qwen')?'Qwen':a.model?.includes('deepseek')?'DeepSeek':'')}
 function renderAgents(){const list=$('agents');list.replaceChildren();const single=state.single_bot||'';$('add-agent').hidden=!!single||!!state.dual_numa||(state.agents||[]).length>=botCap();if(single){selected.clear();selected.add(single)}const old=$('browser-agent').value;$('browser-agent').replaceChildren();for(const a of state.agents){if(!selected.has(a.id)&&!sessionStorage.getItem('mag-selected'))selected.add(a.id);const card=document.createElement('div');card.className='agent';card.dataset.bot=a.id;card.tabIndex=0;
 card.setAttribute('role','button');card.setAttribute('aria-label',a.name+' Browser und Terminal anzeigen');
 card.onclick=e=>{if(e.target.closest('button,a,input,label,textarea,select'))return;focusBot(a.id)};
 card.onkeydown=e=>{if(e.target===card&&(e.key==='Enter'||e.key===' ')){e.preventDefault();focusBot(a.id)}};
-const label=document.createElement('label');const check=document.createElement('input');check.type='checkbox';check.checked=selected.has(a.id);check.onchange=()=>{check.checked?selected.add(a.id):selected.delete(a.id);sessionStorage.setItem('mag-selected',JSON.stringify([...selected]));syncModelChoice(state)};const name=document.createElement('span');name.textContent=a.name;name.style.color=a.color;label.append(check,name);const info=document.createElement('small');const modelDisplay=botModelLabel(a);info.textContent=(a.model?modelDisplay+' · ':'')+(a.spawning?'VM wird erstellt …':(a.vm||'nur Chat'))+' · '+(a.memory_count||0)+' Erinnerungen'+(a.plugins?.length?' · '+a.plugins.length+' Plugin'+(a.plugins.length>1?'s':''):'');const actions=document.createElement('div');actions.className='actions';const actList=[];
+const label=document.createElement('label');const check=document.createElement('input');check.type='checkbox';check.checked=selected.has(a.id);check.onchange=()=>{check.checked?selected.add(a.id):selected.delete(a.id);sessionStorage.setItem('mag-selected',JSON.stringify([...selected]));syncModelChoice(state)};const name=document.createElement('span');name.textContent=a.name;name.style.color=a.color;label.append(check,name);const info=document.createElement('small');const modelDisplay=botModelLabel(a);info.textContent=(a.prewarm_eta_s!=null?'Prompt wird vorbereitet (~'+etaMin(a.prewarm_eta_s)+' min) · ':'')+(a.model?modelDisplay+' · ':'')+(a.spawning?'VM wird erstellt …':(a.vm||'nur Chat'))+' · '+(a.memory_count||0)+' Erinnerungen'+(a.plugins?.length?' · '+a.plugins.length+' Plugin'+(a.plugins.length>1?'s':''):'');const actions=document.createElement('div');actions.className='actions';const actList=[];
 if(can('memory'))actList.push(['Erinnerung',()=>memory(a)]);
 if(state.you?.role==='owner')actList.push(['Umbenennen',()=>renameAgent(a)]);
 if(a.id===single||state.dual_numa){}else if(can('delete'))actList.push(['Entfernen',()=>removeAgent(a)]);

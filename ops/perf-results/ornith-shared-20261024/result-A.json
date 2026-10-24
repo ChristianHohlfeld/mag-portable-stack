@@ -1,0 +1,137 @@
+{
+ "load_s": 54.0,
+ "variant": "A",
+ "warmup": {
+  "slot": 0,
+  "port": 8197,
+  "prompt_n": 352,
+  "pp_tps": 102.6,
+  "gen_n": 16,
+  "tg_tps": 15.38,
+  "wall_s": 4.4
+ },
+ "cold_prewarm_12k": {
+  "slot": 0,
+  "port": 8197,
+  "prompt_n": 15598,
+  "pp_tps": 92.7,
+  "gen_n": 1,
+  "tg_tps": 0.0,
+  "wall_s": 168.3
+ },
+ "single_4k_gen128": {
+  "slot": 0,
+  "port": 8197,
+  "prompt_n": 5244,
+  "pp_tps": 109.4,
+  "gen_n": 128,
+  "tg_tps": 14.64,
+  "wall_s": 56.6
+ },
+ "two_same_server": {
+  "wall_s": 58.2,
+  "runs": [
+   {
+    "slot": 0,
+    "port": 8197,
+    "prompt_n": 2626,
+    "pp_tps": 57.9,
+    "gen_n": 128,
+    "tg_tps": 9.97,
+    "wall_s": 58.1
+   },
+   {
+    "slot": 1,
+    "port": 8197,
+    "prompt_n": 2596,
+    "pp_tps": 92.4,
+    "gen_n": 128,
+    "tg_tps": 10.12,
+    "wall_s": 58.2
+   }
+  ]
+ },
+ "four_conc": {
+  "wall_s": 107.8,
+  "runs": [
+   {
+    "slot": 0,
+    "port": 8197,
+    "prompt_n": 2652,
+    "pp_tps": 38.4,
+    "gen_n": 128,
+    "tg_tps": 3.31,
+    "wall_s": 107.5
+   },
+   {
+    "slot": 1,
+    "port": 8197,
+    "prompt_n": 2569,
+    "pp_tps": 38.1,
+    "gen_n": 128,
+    "tg_tps": 5.62,
+    "wall_s": 107.6
+   },
+   {
+    "slot": 2,
+    "port": 8197,
+    "prompt_n": 2582,
+    "pp_tps": 47.0,
+    "gen_n": 128,
+    "tg_tps": 7.16,
+    "wall_s": 107.7
+   },
+   {
+    "slot": 3,
+    "port": 8197,
+    "prompt_n": 2704,
+    "pp_tps": 71.8,
+    "gen_n": 128,
+    "tg_tps": 7.26,
+    "wall_s": 107.7
+   }
+  ]
+ },
+ "four_prewarm_12k_conc": {
+  "wall_s": 686.7,
+  "runs": [
+   {
+    "slot": 0,
+    "port": 8197,
+    "prompt_n": 15790,
+    "pp_tps": 73.1,
+    "gen_n": 1,
+    "tg_tps": 0.0,
+    "wall_s": 216.2
+   },
+   {
+    "slot": 1,
+    "port": 8197,
+    "prompt_n": 15535,
+    "pp_tps": 63.8,
+    "gen_n": 1,
+    "tg_tps": 0.0,
+    "wall_s": 394.0
+   },
+   {
+    "slot": 2,
+    "port": 8197,
+    "prompt_n": 15575,
+    "pp_tps": 70.5,
+    "gen_n": 1,
+    "tg_tps": 0.0,
+    "wall_s": 554.1
+   },
+   {
+    "slot": 3,
+    "port": 8197,
+    "prompt_n": 15844,
+    "pp_tps": 79.3,
+    "gen_n": 1,
+    "tg_tps": 0.0,
+    "wall_s": 686.7
+   }
+  ]
+ },
+ "mem_bytes": 25180987392
+}

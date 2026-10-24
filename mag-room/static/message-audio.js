@@ -49,12 +49,22 @@
     return out.filter(Boolean);
   }
 
-  function chosenLocale() {
+  // MAG is German-first: 'auto' reads with Thorsten (de-DE) regardless of the
+  // device language and only switches to en-US for clearly English text.
+  const deWords = new Set('der die das und ist nicht ich du wir sie ein eine mit auf für von zu den dem des sich auch es bitte danke ja nein oder aber wie was kann noch nur schon hier jetzt'.split(' '));
+  const enWords = new Set('the and is are was were you your i it this that with for of to in on not have has be can will what please thanks yes no but how do does'.split(' '));
+  function textLocale(text) {
+    if (/[äöüß]/i.test(text)) return 'de-DE';
+    const words = String(text || '').toLowerCase().match(/[a-z']+/g) || [];
+    let de = 0, en = 0;
+    for (const w of words) { if (deWords.has(w)) de++; if (enWords.has(w)) en++; }
+    return !de && en >= 2 && en * 4 >= words.length ? 'en-US' : 'de-DE';
+  }
+  function chosenLocale(text) {
     const setting = document.getElementById('language')?.value || 'auto';
     if (setting === 'de') return 'de-DE';
     if (setting === 'en') return 'en-US';
-    const locale = navigator.language || 'de-DE';
-    return locale.startsWith('de') ? 'de-DE' : locale.startsWith('en') ? 'en-US' : locale;
+    return textLocale(text);
   }
 
   // Best system voice: same language, prefer natural-sounding names, then local.
@@ -184,7 +194,7 @@
     if (wasPlaying) return false;
     const parts = split(normalize(text));
     if (!parts.length) return false;
-    const playback = {key, parts, at: 0, lang: chosenLocale()};
+    const playback = {key, parts, at: 0, lang: chosenLocale(parts.join(' '))};
     current = playback;
     setButtons();
     const de = playback.lang.startsWith('de') && piperPossible && voicePref() !== 'system';

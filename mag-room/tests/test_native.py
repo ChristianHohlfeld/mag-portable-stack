@@ -17,7 +17,7 @@ def _rules(content):
 def _mem(content):
  i=content.index('\n[Erinnerungen]');return content[i+1:]
 class Model(http.server.BaseHTTPRequestHandler):
- protocol_version='HTTP/1.1';calls=[];slots=[];pairs=[];paths=[];slot_delay={};delay=0;reply=None;script=[];health=200;last_prompt={};overflow_once=0
+ protocol_version='HTTP/1.1';calls=[];slots=[];pairs=[];paths=[];slot_delay={};delay=0;reply=None;script=[];health=200;last_prompt={};overflow_once=0;barrier_token='';barrier_release=None
  def log_message(self,*a):pass
  def do_GET(self):
   code=200
@@ -36,6 +36,9 @@ class Model(http.server.BaseHTTPRequestHandler):
    error=b'{"error":{"code":400,"message":"request (35178 tokens) exceeds the available context size (32768 tokens)","type":"exceed_context_size_error"}}'
    self.send_response(400);self.send_header('Content-Length',str(len(error)));self.end_headers();self.wfile.write(error);return
   self.send_response(200);self.send_header('Transfer-Encoding','chunked');self.end_headers()
+  # Deterministic concurrency test: hold fake responses until all slots arrived.
+  if type(self).barrier_release is not None and type(self).barrier_token and type(self).barrier_token in json.dumps(obj,ensure_ascii=False):
+   type(self).barrier_release.wait(timeout=10)
   if self.delay:time.sleep(self.delay)
   if obj.get('max_tokens')!=1 and self.headers.get('X-Mag-Slot') in type(self).slot_delay:time.sleep(type(self).slot_delay[self.headers.get('X-Mag-Slot')])
   try:
@@ -2320,11 +2323,12 @@ class MultiBot(unittest.TestCase):
  def test_06_frontend_contract(self):
   html=self.request('/',raw=True).decode()
   for needle in ('id="agent-model"','chosenBots','/model'):self.assertIn(needle,html)
- def test_07_single_bot_deploy_has_no_multibot_override(self):
+ def test_07_ornith_deploy_has_no_legacy_multibot_override(self):
   self.assertFalse((ROOT/'ops/mag-120.d/30-multibot.conf').exists())
   self.assertFalse((ROOT/'ops/deepseek/both-sockets.sh').exists())
-  drop=(ROOT/'ops/mag-120.d/20-deepseek-audit.conf').read_text()
-  self.assertIn('Environment=MAG_ROOM_SINGLE_BOT=auto',drop)
+  drop=(ROOT/'ops/mag-120.d/20-room-audit.conf').read_text()
+  self.assertIn('Environment=MAG_ROOM_SINGLE_BOT=\n',drop)
+  self.assertIn('Environment=MAG_ROOM_MODEL=ornith-1.5-35b-a3b',drop)
   dep=(ROOT/'ops/deploy.sh').read_text()
   self.assertIn('rm -f /etc/systemd/system/mag-120.service.d/30-multibot.conf',dep)
   self.assertNotIn('install -m 0644 "$SOURCE/ops/mag-120.d/30-multibot.conf"',dep)
@@ -2991,7 +2995,7 @@ class PendingSpawnResume(unittest.TestCase):
 
 class DualNuma(unittest.TestCase):
  SECONDARY='qwen'
- """Q4/NUMA0 and Qwen/NUMA1 retain two stable bot identities across restarts."""
+ """Qwen-only fallback preserves two stable bot identities without DeepSeek."""
  @classmethod
  def setUpClass(cls):
   cls.tmp=tempfile.TemporaryDirectory()
@@ -3030,8 +3034,9 @@ class DualNuma(unittest.TestCase):
   self.assertTrue(s['dual_numa']);self.assertFalse(s['single_bot'])
   self.assertEqual(len(s['agents']),2)
   self.assertEqual(s['agents'][0]['id'],'primary')
-  self.assertEqual(s['agents'][0]['model'],'deepseek-v4-flash-0731')
+  self.assertEqual(s['agents'][0]['model'],'qwen3.8-flash-next-uncensored')
   self.assertEqual(s['agents'][1]['model'],'qwen3.8-flash-next-uncensored')
+  self.assertEqual([m['id'] for m in s['models']],['qwen3.8-flash-next-uncensored'])
   self.assertNotEqual(s['agents'][0]['id'],s['agents'][1]['id'])
   self.assertEqual(s['agents'][0]['vm'],'agent1')
   persisted={a['id']:a for a in json.loads(self.state.joinpath('agents.json').read_text())}
@@ -3202,20 +3207,24 @@ class Ornith(unittest.TestCase):
  def test_10_four_bots_answer_concurrently_order_stable(self):
   bots=self.bots();self.assertEqual(len(bots),4)
   ids=[a['id'] for a in self.request('/api/state')['agents']]
-  self.wait_idle();Model.slot_delay={'0':1.5,'1':.1,'2':.1,'3':.1}
+  self.wait_idle();Model.slot_delay={'0':.5,'1':.02,'2':.02,'3':.02}
+  gate=threading.Event()
   try:
    token=f'Alle {time.monotonic_ns()}'
+   Model.barrier_token=token;Model.barrier_release=gate
    self.request('/api/message',{'text':token,'bots':ids})
    for _ in range(400):
     calls=[sl for c,sl in list(Model.pairs) if token in json.dumps(c,ensure_ascii=False)]
     if len(calls)>=4:break
     time.sleep(.01)
-   else:self.fail('not all four bots started')
-   # All four are running at once: no bot waited for another bot's answer.
+   else:self.fail('not all four bots started concurrently')
    self.assertEqual(sorted(calls[:4]),['0','1','2','3'])
-   self.assertEqual(self.round_msgs(token),[],'nobody had finished when the 4th bot started')
+   self.assertEqual(self.round_msgs(token),[],
+    'all four started before the fake model releases any response')
+   gate.set()
    self.wait_idle()
-  finally:Model.slot_delay={}
+  finally:
+   gate.set();Model.slot_delay={};Model.barrier_token='';Model.barrier_release=None
   got=self.round_msgs(token)
   self.assertEqual(len(got),4)
   self.assertEqual(got[-1]['bot'],ids[0],'slowest bot (slot 1) finished last in the transcript')

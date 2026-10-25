@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
-# Restore Q4+IQ3 model shards on NEW hardware; never start/stop any model.
+# Restore the Ornith model on NEW hardware; never start/stop any model.
+# DeepSeek (Q4/IQ3) is retired: it is neither downloaded nor verified any more
+# (ops/deepseek/ is archived). Rollback model Qwen: ops/qwen/README.md.
 # No model bytes are stored in backup or git.
 set -euo pipefail
 ROOT=$(cd -- "$(dirname -- "$0")/../.." && pwd)
 ACTION=${1:-}
 SELECT=${2:-all}
-case "$ACTION" in download|verify) ;; *) echo "Usage: $0 download|verify [q4|iq3|all]" >&2;exit 2;; esac
-case "$SELECT" in q4|iq3|all) ;; *) exit 2;; esac
+case "$ACTION" in download|verify) ;; *) echo "Usage: $0 download|verify [ornith|all]" >&2;exit 2;; esac
+case "$SELECT" in ornith|all) ;; q4|iq3) echo 'DeepSeek is retired; nothing to restore' >&2;exit 2;; *) exit 2;; esac
 if [[ "$ACTION" == download ]];then
-  for u in mag-llm.service mag-llm-iq3.service;do
+  for u in mag-llm-ornith-node@0.service mag-llm-ornith-node@1.service;do
     if systemctl is-active --quiet "$u" 2>/dev/null;then
       echo "Model $u is live; never download over a serving model" >&2;exit 4
     fi
@@ -16,7 +18,7 @@ if [[ "$ACTION" == download ]];then
   command -v curl >/dev/null || exit 4
 fi
 download_and_verify() {
-  local flavor=$1 manifest=$2 path=$3 prefix=$4
+  local flavor=$1 manifest=$2 path=$3 url_base=$4
   [[ -r "$manifest" && ! -L "$manifest" ]] || { echo "Invalid manifest: $manifest" >&2;return 4; }
   mkdir -p -- "$path"
   while read -r sha file;do
@@ -27,10 +29,11 @@ download_and_verify() {
       continue
     fi
     [[ "$ACTION" == download ]] || { echo "Missing or wrong SHA256: $file" >&2;return 4; }
+    [[ -n "$url_base" ]] || { echo "Set MAG_ORNITH_MODEL_URL (directory URL of $file) to download" >&2;return 4; }
     # The resolved HTTP object is checked against the pinned SHA, not trusted by filename.
-    local url="https://huggingface.co/unsloth/DeepSeek-V4-Flash-0731-GGUF/resolve/main/$prefix/$file?download=true"
+    local url="$url_base/$file"
     local part="$path/$file.part"
-    echo "Downloading pinned shard: $file"
+    echo "Downloading pinned file: $file"
     curl --fail --location --retry 6 --retry-all-errors --connect-timeout 20 \
       --continue-at - --output "$part" "$url" || { echo "Download failed, partial kept" >&2;return 4; }
     (cd "$path"; echo "$sha  $file.part" | sha256sum --check --status) || {
@@ -39,17 +42,7 @@ download_and_verify() {
     mv -f -- "$part" "$path/$file"
   done < "$manifest"
   (cd "$path"; sha256sum --check --strict --status "$manifest") || { echo "SHA verification failed" >&2;return 4; }
-  if [[ "$flavor" == iq3 ]];then
-    # IQ3 runtime's verify-iq3.sh expects this exact file, not GGUF backups.
-    sed '/^#/d' "$manifest" > "$path/SHA256SUMS"
-  fi
-  echo "Verified all $flavor model splits"
+  echo "Verified all $flavor model files"
 }
-if [[ "$SELECT" == q4 || "$SELECT" == all ]];then
- download_and_verify q4 "$ROOT/ops/backup/models.sha256" \
-  "${MAG_Q4_MODEL_DIR:-/home/chris/models/deepseek-v4}" UD-Q4_K_XL
-fi
-if [[ "$SELECT" == iq3 || "$SELECT" == all ]];then
- download_and_verify iq3 "$ROOT/ops/backup/models-iq3.sha256" \
-  "${MAG_IQ3_MODEL_DIR:-/home/chris/models/deepseek-v4-UD-IQ3_XXS}" UD-IQ3_XXS
-fi
+download_and_verify ornith "$ROOT/ops/ornith/model.sha256" \
+  "${MAG_ORNITH_MODEL_DIR:-/home/chris/models/ornith-1.5-35b-a3b}" "${MAG_ORNITH_MODEL_URL:-}"

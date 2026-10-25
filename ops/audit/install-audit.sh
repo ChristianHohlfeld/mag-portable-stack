@@ -29,16 +29,15 @@ TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 for f in ops/audit/mag_audit_gateway.py ops/audit/mitm_audit_addon.py ops/audit/mag-audit.nft \
          ops/audit/vm-proxy-setup.sh ops/audit/detect-vm-net.sh ops/audit/mag-audit-tail \
          ops/audit/systemd/mag-audit-gateway.service ops/audit/systemd/mag-audit-webproxy.service \
-         ops/audit/systemd/mag-audit-nft.service ops/mag-120.d/20-deepseek-audit.conf; do
+         ops/audit/systemd/mag-audit-nft.service ops/mag-120.d/20-room-audit.conf; do
   [[ -f "$SRC/$f" ]] || { echo "fehlt: $SRC/$f"; exit 1; }
 done
 id magbot >/dev/null 2>&1 || { echo "User magbot fehlt"; exit 1; }
 
-# Port 8080: frei, oder schon vom Gateway belegt (mag-llm/deepseek.service lauschen ab jetzt auf 8090)
+# Port 8080: frei oder bereits vom nativen Audit-Gateway belegt.
 owner=$(ss -Hltnp 'sport = :8080' 2>/dev/null | grep -oE 'users:\(\("[^"]+"' | head -1 | cut -d'"' -f2 || true)
 if [[ -n "$owner" && "$owner" != python3* && "$owner" != mag-audit-gate* ]]; then
-  echo "Port 8080 ist von '$owner' belegt (alter mag-llm oder deepseek.service?). Erst stoppen:"
-  echo "  sudo systemctl disable --now deepseek.service   (mag-llm NIE stoppen: Modell würde entladen)"; exit 1
+  echo "Port 8080 ist von '$owner' belegt. Audit-Installation wird ohne Eingriff abgebrochen."; exit 1
 fi
 
 READERS=(chris)
@@ -120,7 +119,8 @@ if [[ $GATEWAY_ACTIVE -eq 0 ]]; then
 fi
 run install -m 0644 "$SRC/ops/audit/systemd/mag-audit-webproxy.service" "$SRC/ops/audit/systemd/mag-audit-nft.service" /etc/systemd/system/
 run install -d /etc/systemd/system/mag-120.service.d
-run install -m 0644 "$SRC/ops/mag-120.d/20-deepseek-audit.conf" /etc/systemd/system/mag-120.service.d/20-deepseek-audit.conf
+run install -m 0644 "$SRC/ops/mag-120.d/20-room-audit.conf" /etc/systemd/system/mag-120.service.d/20-room-audit.conf
+run rm -f /etc/systemd/system/mag-120.service.d/20-deepseek-audit.conf
 NOPROXY="127.0.0.1,localhost,::1,$VM_SUBNET,$VM_HOST_IP"
 if [[ $APPLY -eq 1 ]]; then
   cat > /etc/systemd/system/mag-120.service.d/21-audit-net.conf <<EOF
@@ -160,7 +160,7 @@ if [[ -d $ROOM ]]; then
   [[ -d $ROOM/files ]] && run setfacl -R -m g:mag-audit-readers:rX "$ROOM/files" && run setfacl -d -m g:mag-audit-readers:rX "$ROOM/files"
 fi
 
-echo "== 10. Dienste starten (Gateway übernimmt :8080; LLM-Backend ist ab jetzt :8090)"
+echo "== 10. Dienste starten (Gateway :8080; Ornith :8191/:8192 oder Qwen :8091)"
 run systemctl daemon-reload
 run systemctl enable --now mag-audit-nft.service mag-audit-gateway.service mag-audit-webproxy.service
 if [[ $APPLY -eq 1 ]]; then

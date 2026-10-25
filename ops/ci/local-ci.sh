@@ -56,6 +56,7 @@ for t in mag-room/tests/test_large_tools.py mag-room/tests/test_native.py mag-ro
 done
 check 'ops/qwen tests' bash ops/qwen/tests/test-qwen.sh
 check 'ops/ornith tests' bash ops/ornith/tests/test-ornith.sh
+check 'retire DeepSeek' bash ops/tests/test-retire-deepseek.sh
 check 'deploy/rollback/private-access syntax' bash -c 'bash -n ops/deploy.sh ops/rollback.sh ops/private-access/*.sh'
 for t in test-ops-38 test-numa-isolation test-node0-available test-iq3-parallel test-model-preservation; do
   check "deepseek $t" bash "ops/deepseek/tests/$t.sh"

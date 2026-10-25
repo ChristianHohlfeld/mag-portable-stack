@@ -48,7 +48,7 @@ Tests nie auf 8080/8090.
 3. `mag-llm` nicht leichtfertig neu starten (RefuseManualStop; Restart nur über temporäres /run-Drop-in wie in `upgrade-3.8.sh`).
 
 ## Sandbox / Bot-Browser
-- Ein Bot mit eigener KVM-VM (`MAG_ROOM_SINGLE_BOT_VM=on`, Drop-in `ops/mag-120.d/20-deepseek-audit.conf`): Shell, git/Gitea, MCP, Browser.
+- Ein Bot mit eigener KVM-VM (`MAG_ROOM_SINGLE_BOT_VM=on`, Drop-in `ops/mag-120.d/20-room-audit.conf`): Shell, git/Gitea, MCP, Browser.
 - **Google Chrome stable** aus Googles signiertem apt-Repo (Rezept + AppArmor-Profil `mag-google-chrome` in `mag-room/native/vm.cpp::prepare_browser`).
 - Headful auf **Xvfb :99 1920×1080** (vom `mag-browser`-Daemon gestartet, kein eigener Unit), `--lang/--accept-lang de-DE`, `TZ=Europe/Berlin`, kein `--kiosk`, kein `--enable-automation`; CSS-Viewport 1440×900 (Live-Stream/Koordinaten).
 - CDP ohne `Runtime.enable` (Auswertung in `Page.createIsolatedWorld`), Navigationslog `/home/bot/browserd/nav.log` (Status, Titel, cf-ray, x-datadome, `frame=main|sub`).

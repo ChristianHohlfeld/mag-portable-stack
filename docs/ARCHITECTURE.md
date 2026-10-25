@@ -1,9 +1,21 @@
-# MAG Architecture — release dcdd78a + private ingress hardening
+# MAG Architecture — Ornith, NUMA 0/1
+
+**Aktueller Betriebsstand (Oktober 2026):** Vier Ornith-1.5-35B-A3B-Bots, zwei NUMA-Server
+(`mag-llm-ornith-node@0/1.service`, 127.0.0.1:8191/8192, je zwei llama-Slots).
+Audit-Gateway :8080, C++-Raum `mag-120.service` :8766, nginx.
+DeepSeek Q4/IQ3, mag-model-gate und mag-model-pin sind aus dem aktiven Stack
+ausgemustert. Gewichte bleiben auf der Platte. Bei Ornith-Ausfall:
+`sudo bash ops/ornith/rollback.sh qwen` (Qwen allein, kein DeepSeek).
+Deploy ausschließlich nach grüner lokaler CI: `bash ops/update.sh --no-pull`
+im passenden Checkout; darin enthalten ist `sudo bash ops/deploy.sh`.
+Das Retirement läuft nur bei gesundem Ornith-Raum und beiden Backends.
+Alte 3.8-/Q4-/IQ3-Abschnitte im folgenden Text sind **historisch**.
+
 
 ## Runtime boundaries
 - **nginx** is the versioned private reverse proxy for `mag.stardenburg.de` on **100.123.114.16:443** (Tailnet only). It authenticates every client via `auth_request` to native magroom (127.0.0.1:8766/_internal/tailscale/whois), which queries tailscaled LocalAPI over its Unix socket. `/_mag_whois` has `auth_request off` to prevent recursive subrequests. Whois failure must fail closed.
 - **mag-room** is a C++17 HTTP/SSE service on **127.0.0.1:8766**. It verifies owner/guest permissions, owns the queue, scheduler, jobs, transcript, per-bot state, and the OpenAI-compatible tool loop. Client `X-Tailscale-*` headers are untrusted; nginx replaces them with the native endpoint's response. Non-loopback direct requests are denied.
-- **mag-llm / ik_llama.cpp** is a separate warmed DeepSeek-V4-Flash inference process. Room, nginx and certificate work must *never restart it*. `--jinja` tool outputs are interpreted by the same room tool loop.
+- **Ornith** runs as two NUMA-bound llama.cpp servers (:8191/:8192) with four stable bot slots. DeepSeek :8090 and its units are retired. Only the audit gateway (:8080) reaches the model ports. The Qwen unit is the independent rollback.
 - **Bot execution** uses an isolated KVM guest, browser/controller and terminal per bot. WebRTC and UDP relay use separate gateway processes and per-VM keys.
 - **Jobs MCP** and the UI share `jobs.hpp` validation, store, scheduler and histories; no second application job queue.
 

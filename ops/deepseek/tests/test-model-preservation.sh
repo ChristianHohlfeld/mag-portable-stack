@@ -6,17 +6,22 @@ test ! -e ops/deepseek/both-sockets.sh
 test ! -e ops/mag-120.d/30-multibot.conf
 ! grep -Fq 'both-sockets.sh' ops/deploy.sh
 ! grep -Eq '(warm[.]sh.*restart-llm|systemctl (stop|restart|kill).*mag-llm|systemctl disable --now mag-llm-iq3)' ops/deploy.sh
-grep -Fq 'MAG_ROOM_SINGLE_BOT=auto' ops/mag-120.service
-grep -Fq 'MAG_ROOM_SINGLE_BOT=auto' ops/mag-120.d/20-deepseek-audit.conf
-grep -Fq 'MAG_ROOM_SINGLE_BOT=auto' mag-room/.env.example
-grep -Fq -- '--cpunodebind=0 --membind=0' ops/deepseek/llm.env.mag
-grep -Fq 'THREADS=16' ops/deepseek/llm.env.mag
-grep -Fq 'IK_SLOT_SAVE=1' ops/deepseek/llm.env.mag
-grep -Fq -- '--cache-ram 16384' ops/mag-llm.service
+# Historical mag-120.service keeps its fallback default, but the active Ornith
+# drop-in MUST override it: four bots, not one DeepSeek bot.
+grep -Fq 'Environment=MAG_ROOM_SINGLE_BOT=auto' ops/mag-120.service
+grep -Fxq 'Environment=MAG_ROOM_SINGLE_BOT=' ops/mag-120.d/20-room-audit.conf
+grep -Fxq 'Environment=MAG_ROOM_MODEL=ornith-1.5-35b-a3b' ops/mag-120.d/20-room-audit.conf
+grep -Fxq 'MAG_ROOM_SINGLE_BOT=' mag-room/.env.example
+grep -Fxq 'MAG_ROOM_MODEL=ornith-1.5-35b-a3b' mag-room/.env.example
+grep -Fxq 'Environment=MAG_ROOM_DUAL_NUMA=1' ops/mag-120.d/30-dual-numa.conf
+grep -Fq 'SINGLE_BOT.clear();' mag-room/native/magroom.cpp
+grep -Fq 'MAG_SECONDARY_MODEL=ornith' ops/ornith/cutover.sh
+grep -Fq 'mag-llm-ornith-node@0.service mag-llm-ornith-node@1.service' ops/ornith/cutover.sh
+grep -Fq 'MAG_SECONDARY_MODEL=qwen' ops/ornith/rollback.sh
 grep -Fq 'cache_prompt' mag-room/native/magroom.cpp
-grep -Fq 'MAG_RECOVERY_ALLOW_RELOAD' ops/deepseek/restore-dual.sh
-grep -Fq 'numa-isolation.sh" verify' ops/deepseek/restore-dual.sh
-grep -Fq 'health 8091' ops/deepseek/restore-dual.sh
+# Legacy DeepSeek tuning remains archived as data; deploy must not apply it.
+grep -Fq -- '--cpunodebind=0 --membind=0' ops/deepseek/llm.env.mag
+grep -Fq 'IK_SLOT_SAVE=1' ops/deepseek/llm.env.mag
+! grep -Fq 'ops/deepseek/llm.env.mag' ops/deploy.sh
 grep -Fq 'rm -f /etc/systemd/system/mag-120.service.d/30-multibot.conf' ops/deploy.sh
-grep -Fq 'if (!SINGLE_BOT.empty()) return active_room_model();' mag-room/native/magroom.cpp
-echo 'PASS single active bot, warm NUMA Q4/IQ3 switching and no compatibility entrypoint'
+echo 'PASS four Ornith bots, Qwen-only rollback, archived legacy tuning not activated'

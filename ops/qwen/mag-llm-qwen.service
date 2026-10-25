@@ -1,8 +1,8 @@
-# Prepared but NOT installed, enabled or started by normal MAG deploy.
-# Manual replacement for IQ3 on NUMA1, independent of Q4 on NUMA0.
+# Installed as a disabled fallback by the Ornith deploy; never auto-started with Ornith.
+# Standalone Qwen after Ornith rollback, no DeepSeek/Q4 dependency.
 [Unit]
 Description=MAG Qwen3.8 Flash Next CPU model, NUMA1
-After=network-online.target mag-llm.service
+After=network-online.target
 Wants=network-online.target
 ConditionPathExists=/etc/mag-qwen/model.sha256
 StartLimitIntervalSec=1800
@@ -13,8 +13,7 @@ User=chris
 Group=chris
 WorkingDirectory=/home/chris
 # Backend ports are root/audit-only; preflight must not run under User=chris.
-# Wait for Q4 to finish loading after a cold reboot (root-only audit bypass).
-ExecStartPre=+/usr/local/lib/mag-qwen/wait-q4.sh
+# Standalone Qwen fallback: no DeepSeek / Q4 health gate.
 ExecStart=/usr/local/lib/mag-qwen/start.sh
 Restart=on-failure
 RestartSec=60

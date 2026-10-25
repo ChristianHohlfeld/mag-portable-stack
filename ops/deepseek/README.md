@@ -1,3 +1,12 @@
+# ARCHIV: DeepSeek / mag-llm
+
+**Stillgelegt seit Oktober 2026.** Die Dateien unter `ops/deepseek/`
+bleiben nur als historische Betriebsanleitung erhalten und werden vom
+aktiven Ornith-Deploy nicht ausgeführt. Nicht `mag-llm-maint stop` verwenden:
+das würde auch `mag-120` stoppen. Die Modellgewichte löscht nur der Eigentümer.
+
+---
+
 # DeepSeek-V4-Flash-0731 auf mag + zentrales Audit-Logging
 
 Ersetzt GPT-OSS-120B durch DeepSeek-V4-Flash-0731 (unsloth UD-Q4_K_XL, ~155 GB, CPU) im

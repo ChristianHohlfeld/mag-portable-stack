@@ -1,8 +1,8 @@
 [Unit]
 Description=MAG native C++ room with isolated KVM agents
-After=network-online.target mag-llm.service libvirtd.service mag-agents-network.service
+After=network-online.target libvirtd.service mag-agents-network.service
 Wants=network-online.target libvirtd.service
-# mag-llm is intentionally NOT in Wants=/Requires=/PartOf=/BindsTo= — never stop/restart LLM with the room
+# No model unit in Wants=/Requires=/After= (DeepSeek mag-llm retired): never stop/restart a model with the room
 
 [Service]
 Type=simple

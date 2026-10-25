@@ -3,7 +3,7 @@
 # (variant B: mag-llm-ornith-node@0 :8191, @1 :8192, --parallel 2, two room bots each).
 # Ports 8191/8192 are also legacy instances 1/2: the old layout is stopped (PID 0)
 # before any node server starts.
-# Only Qwen/Ornith units, gateway and room change; mag-llm (DeepSeek Q4 :8090) and tunnels stay untouched.
+# Only Qwen/Ornith units, gateway and room change; mag-llm (DeepSeek, retired, optional) and tunnels stay untouched.
 # Any failure after the old layout stops rolls back automatically to that layout
 # (rollback.sh instances, or rollback.sh qwen when coming from Qwen).
 # Usage: cutover.sh check|apply   (MAG_ORNITH_ROOTFS only for tests)
@@ -31,7 +31,9 @@ node_usable_kib(){
   awk '$3=="MemFree:"{f=$4} $3=="FilePages:"{p=$4} $3=="Shmem:"{s=$4} END{print f+(p>s?p-s:0)}' "$R/sys/devices/system/node/node$1/meminfo"
 }
 Q4_PID=$(pid mag-llm.service)
-[[ $Q4_PID =~ ^[1-9][0-9]*$ ]] || fail 'mag-llm not running'
+# DeepSeek (mag-llm) is retired and may be inactive (PID 0); if it still runs it stays untouched.
+[[ $Q4_PID =~ ^[0-9]+$ ]] || Q4_PID=0
+(( Q4_PID )) || echo 'INFO: mag-llm (DeepSeek, retired) not running; continuing'
 q4_untouched(){ [[ $(pid mag-llm.service) == "$Q4_PID" ]] || fail 'mag-llm PID changed'; }
 [[ -x $ROOT/build/mag-audit-gateway ]] || fail 'build the Ornith-aware native gateway first'
 [[ -x $GATE ]] || fail 'installed gateway missing'

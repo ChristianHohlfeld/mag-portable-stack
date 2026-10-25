@@ -15,7 +15,7 @@
 [Unit]
 Description=MAG CPU tuning for local LLM inference
 After=systemd-modules-load.service
-Before=mag-llm.service mag-llm-qwen.service
+Before=mag-llm-ornith-node@0.service mag-llm-ornith-node@1.service mag-llm-qwen.service
 
 [Service]
 Type=oneshot

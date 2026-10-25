@@ -7,7 +7,7 @@ set -euo pipefail
 root=$(cd -- "$(dirname "$0")/../.." && pwd)
 bash -n "$root/ops/bootstrap.sh" "$root/mag" "$root/ops/gitea/install.sh" \
   "$root/ops/bootstrap-voice.sh" "$root/ops/vm/build-golden.sh" \
-  "$root/ops/deepseek/bootstrap-runtimes.sh" "$root/ops/tailscale/install.sh" \
+  "$root/ops/tailscale/install.sh" \
   "$root/ops/private-access/install-lego.sh" "$root/ops/gitea/mirror-github.sh" \
   "$root/ops/tests/e2e-bootstrap.sh"
 out=$(bash "$root/ops/bootstrap.sh" --dry-run)
@@ -32,16 +32,25 @@ before acme deploy
 before deploy auto-update
 before deploy runners
 for needle in install-restic-0181.sh ops/gitea/install.sh ops/deploy.sh \
-  ops/bootstrap-voice.sh ops/vm/build-golden.sh ops/deepseek/build-llama.sh \
-  ops/deepseek/build-ik.sh ops/deepseek/install-deepseek.sh ops/tailscale/install.sh \
+  ops/bootstrap-voice.sh ops/vm/build-golden.sh ops/qwen/build-runtime.sh \
+  ops/tailscale/install.sh \
   ops/private-access/install-lego.sh 'ops/audit/install-audit.sh --apply' \
   ops/pages/install.sh ops/auto-update/install.sh ops/runners/install.sh \
   ops/gitea/mirror-github.sh issue-cert.sh mag-acme-renew.timer; do
   grep -Fq -- "$needle" <<<"$out" || { echo "dry run does not mention $needle" >&2; exit 1; }
 done
 grep -Fq 'bootstrap-models.sh' "$root/ops/bootstrap.sh"
-grep -Fq 'ops/qwen/build-runtime.sh' "$root/ops/deepseek/bootstrap-runtimes.sh"
-grep -Fq 'ops/qwen/install.sh' "$root/ops/deepseek/bootstrap-runtimes.sh"
+grep -Fq 'ops/qwen/build-runtime.sh' "$root/ops/bootstrap.sh"
+# DeepSeek is retired: a blank host never builds, installs, downloads or verifies it.
+if grep -Eq 'deepseek/(bootstrap-runtimes|install-deepseek|build-ik|llm\.env)|mag-llm\.service' "$root/ops/bootstrap.sh"; then
+  echo 'bootstrap still installs DeepSeek' >&2; exit 1
+fi
+if grep -Eqi 'deepseek-v4|models(-iq3)?\.sha256|UD-Q4|UD-IQ3' "$root/ops/backup/bootstrap-models.sh"; then
+  echo 'bootstrap-models still fetches DeepSeek' >&2; exit 1
+fi
+grep -Fq 'ops/ornith/model.sha256' "$root/ops/backup/bootstrap-models.sh"
+# The retired hot-swap catalog is not bootstrapped; paths may still contain legacy names.
+if grep -v 'seed /var/lib/mag-numa' <<<"${out//$root/ROOT}" | grep -Eqi 'deepseek|mag-llm\.service|install-deepseek|8090'; then echo 'dry run mentions DeepSeek' >&2; exit 1; fi
 grep -Fq 'install-tailscale-egress.sh' "$root/ops/bootstrap.sh"
 if grep -Eq 'bash .*console-lockdown' "$root/ops/bootstrap.sh"; then echo 'bootstrap runs console lockdown' >&2; exit 1; fi
 for f in "$root/ops/bootstrap.sh" "$root/ops/deepseek/bootstrap-runtimes.sh" "$root/ops/vm/build-golden.sh"; do
@@ -49,7 +58,7 @@ for f in "$root/ops/bootstrap.sh" "$root/ops/deepseek/bootstrap-runtimes.sh" "$r
     echo "$f restarts or stops an LLM" >&2; exit 1
   fi
 done
-grep -Fq 'does not restart mag-llm' "$root/ops/bootstrap.sh" || grep -Fq 'not started or restarted' "$root/ops/bootstrap.sh"
+grep -Fq 'Does not restart a model' "$root/ops/bootstrap.sh" || grep -Fq 'not started or restarted' "$root/ops/bootstrap.sh"
 # Test stubs are refused unless the TEST-HOST marker exists.
 grep -Fq '/etc/mag-stack/TEST-HOST' "$root/ops/bootstrap.sh"
 if [[ ! -e /etc/mag-stack/TEST-HOST && $EUID == 0 ]]; then

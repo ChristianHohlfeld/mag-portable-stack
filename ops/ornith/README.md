@@ -2,8 +2,8 @@
 
 Owner decision (Chris, 2026-10-24 22:09): priorities are NON-BLOCKING and FAST answers →
 **variant B**. Every room bot uses Ornith-1.5-35B-A3B Q4_K_M; two llama-servers, one per
-NUMA node, two bots per server; all bots answer concurrently. `mag-llm` (DeepSeek Q4, :8090)
-is unchanged and independent.
+NUMA node, two bots per server; all bots answer concurrently. DeepSeek Q4/IQ3
+is retired by deploy only after the four-slot Ornith room is healthy.
 
 ## Layout (variant B)
 
@@ -119,3 +119,12 @@ On first start the room migrates once: `DeepSeek 4.0` → `Ornith 1`, `Qwen 2` �
 `<room state>/archive/<id>-<ts>.json` and `magbot despawn` moves the VM directory to
 `/var/lib/libvirt/images/magbot/archive/<vm>-<ts>` (no auto purge). The bot's Gitea
 account and repos are kept, only locked (new unknown password); re-adding reuses it. Rollback to Qwen restores the fixed dual-NUMA layout.
+
+## Retirement nach erfolgreichem Deploy
+
+`ops/models/retire-deepseek.sh` prüft `secondary-model.env`, beide direkten
+Ornith-Health-Endpunkte und `/readyz` des Raums. Erst dann werden alte Units
+gestoppt und deaktiviert. `RefuseManualStop=yes` wird temporär ausschließlich
+in `/run/systemd/system` übersteuert. `mag-120` bleibt aktiv, GGUF-Dateien bleiben
+erhalten. Bei fehlender Bereitschaft: WARN + kein Stop. Rollback: `sudo bash
+ops/ornith/rollback.sh qwen`, ohne DeepSeek-Abhängigkeit.

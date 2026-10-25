@@ -152,9 +152,8 @@ fi
 for p in /etc/gitea /var/lib/mag-pages /etc/mag-pages /etc/mag-acme \
   /etc/mag-nginx /etc/nginx /etc/magbot /etc/default/mag-room \
   /etc/mag-stack /etc/credstore/mag-guest-oauth /etc/credstore/mag-secrets-key \
-  /etc/mag-audit /var/lib/mag-audit /etc/mag-llm /var/lib/mag-deploy \
-  /var/lib/mag-private-cutover /home/chris/llama-templates \
-  /usr/local/lib/mag-deepseek /etc/systemd/system \
+  /etc/mag-audit /var/lib/mag-audit /var/lib/mag-deploy \
+  /var/lib/mag-private-cutover /etc/systemd/system \
   /etc/crontab /etc/cron.d /etc/cron.hourly /etc/cron.daily \
   /etc/cron.weekly /etc/cron.monthly /var/spool/cron/crontabs \
   /var/lib/tailscale; do
@@ -162,13 +161,10 @@ for p in /etc/gitea /var/lib/mag-pages /etc/mag-pages /etc/mag-acme \
 done
 # Cron and Tailscale private node identity are backed up only inside encrypted
 # restic. Keep backup credentials, model weights and slot cache excluded.
-mkdir -p "$payload/var/lib/mag-llm" "$payload/opt/mag-stack"
-for name in verified.stamp status.json; do copy_path "/var/lib/mag-llm/$name"; done
+mkdir -p "$payload/opt/mag-stack"
+# DeepSeek verification stamps/status are no longer part of active backups.
 if [[ -L "$src/opt/mag-stack/current" ]]; then
   readlink "$src/opt/mag-stack/current" > "$payload/opt/mag-stack/current-release.txt"
-fi
-if [[ -f "$src/var/lib/mag-llm/verified.stamp" ]]; then
-  cp -a "$src/var/lib/mag-llm/verified.stamp" "$payload/opt/mag-stack/model-verification.stamp"
 fi
 if [[ -d "$src/etc/systemd/system" ]]; then
   # Restrict the inventory to MAG/Gitea plus their drop-ins.

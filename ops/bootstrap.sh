@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Blank Ubuntu 24.04 host -> running MAG stack. Guide: docs/INSTALL.md.
-# Does not enable console lockdown. Does not restart mag-llm.
+# Does not enable console lockdown. Does not restart a model. DeepSeek (mag-llm) is retired.
 #   bash ops/bootstrap.sh --dry-run
 #   sudo bash ops/bootstrap.sh --archive /var/backups/mag-full/<id> [--download-models] [--start-llm]
 #   sudo bash ops/bootstrap.sh --owner LOGIN [--download-models]     # no archive: fresh state
@@ -31,8 +31,8 @@ Usage: $0 --dry-run
           [--test-stubs]
   --archive DIR          verified /var/backups/mag-full/<id> (state + secrets)
   --owner LOGIN          Tailscale login of the room owner (fresh host without archive)
-  --download-models      fetch and verify the pinned GGUF shards (~250 GB)
-  --start-llm            start mag-llm and the NUMA1 model if inactive
+  --download-models      fetch and verify the pinned Ornith GGUF (MAG_ORNITH_MODEL_URL)
+  --start-llm            start the configured model units (Ornith/Qwen) if inactive
   --no-golden            skip the bot VM base image build
   --no-llm-build         skip llama.cpp / ik_llama / Qwen runtime builds
   --restore-host-config  also copy etc/nginx, etc/systemd/system, etc/cron.d
@@ -82,8 +82,8 @@ if (( DRY == 0 )); then
       echo 'Pass --archive DIR for one verified /var/backups/mag-full directory' >&2; exit 1;
     }
   fi
-  if systemctl is-active --quiet mag-120.service || systemctl is-active --quiet mag-llm.service; then
-    echo 'mag-120 or mag-llm is already active. Use ops/deploy.sh. Bootstrap is for a blank host.' >&2
+  if systemctl is-active --quiet mag-120.service; then
+    echo 'mag-120 is already active. Use ops/deploy.sh. Bootstrap is for a blank host.' >&2
     exit 1
   fi
 fi
@@ -199,20 +199,13 @@ fi
 
 phase config
 if (( DRY )); then
-  echo '+ install ops/deepseek/llm.env.mag -> /etc/mag-llm/llm.env   # only when absent'
   echo '+ install ops/private-access/env.conf -> /etc/mag-acme/lego.env   # only when absent'
   echo '+ /etc/credstore/mag-acme-dns.json -> /etc/mag-acme/acme-dns.json   # only when absent'
   echo '+ write /var/lib/magbot/room/access.json from --owner   # only when absent'
   echo '+ install -d /etc/magbot   # VM limits default without config.json; secrets come from the archive'
-  echo '+ /etc/mag-stack/secondary-model.env is never created here (absent = IQ3 on NUMA1)'
+  echo '+ /etc/mag-stack/secondary-model.env is never created here (Ornith: ops/ornith/cutover.sh)'
 else
   install -d -m 0755 /etc/mag-stack
-  if [[ ! -e /etc/mag-llm/llm.env ]]; then
-    install -d -m 0750 /etc/mag-llm
-    install -m 0640 -o root -g root "$ROOT/ops/deepseek/llm.env.mag" /etc/mag-llm/llm.env
-  else
-    echo 'Left existing /etc/mag-llm/llm.env unchanged'
-  fi
   install -d -m 0700 /etc/mag-acme /etc/credstore
   # magbot-native uses built-in VM limits without /etc/magbot/config.json;
   # the backup treats the directory as essential host state.
@@ -309,10 +302,14 @@ EOF
     systemctl enable --now mag-llm-stub.service
   fi
 elif (( LLM_BUILD )); then
+  # DeepSeek retired: no ik_llama / mag-llm / IQ3 any more. Ornith (and the Qwen
+  # rollback) run on the pinned upstream llama.cpp (ops/qwen/runtime.sha); the
+  # Ornith units are installed by ops/ornith/cutover.sh once the model is verified.
   if (( DRY )); then
-    bash "$ROOT/ops/deepseek/bootstrap-runtimes.sh" --dry-run
+    echo "+ runuser -u chris -- bash $ROOT/ops/qwen/build-runtime.sh   # Ornith/Qwen llama.cpp"
   else
-    bash "$ROOT/ops/deepseek/bootstrap-runtimes.sh"
+    runuser -u chris -- env HOME=/home/chris PATH=/usr/local/bin:/usr/bin:/bin \
+      bash "$ROOT/ops/qwen/build-runtime.sh"
   fi
 else
   echo 'PHASE llm-runtime-skipped (--no-llm-build)'
@@ -407,8 +404,8 @@ phase models
 if (( STUBS )); then
   echo 'PHASE models-skipped (test stubs)'
 elif (( DOWNLOAD )); then
-  run bash "$ROOT/ops/backup/bootstrap-models.sh" download all
-  run bash "$ROOT/ops/backup/bootstrap-models.sh" verify all
+  run bash "$ROOT/ops/backup/bootstrap-models.sh" download ornith
+  run bash "$ROOT/ops/backup/bootstrap-models.sh" verify ornith
 else
   echo 'PHASE models-skipped (pass --download-models to fetch pinned GGUF shards)'
 fi
@@ -458,21 +455,17 @@ phase secrets
 if (( DRY )); then bash "$ROOT/ops/secrets/install.sh" --dry-run; else bash "$ROOT/ops/secrets/install.sh"; fi
 
 phase numa
-# Hot-swap tool + sudoers + seeded state. Never starts, stops or swaps a model.
-if (( DRY )); then bash "$ROOT/ops/numa/install.sh" --dry-run; else bash "$ROOT/ops/numa/install.sh"; fi
+# DeepSeek NUMA hot-swap is retired. No old catalog, state, sudoers or Q4
+# service is seeded during bootstrap; Ornith/Qwen provide fixed model routing.
+echo 'PHASE numa-skipped (retired legacy model-swap)'
 
 phase start-llm
 if (( START_LLM == 0 )); then
-  echo 'PHASE start-llm-skipped (mag-llm is not started or restarted)'
+  echo 'PHASE start-llm-skipped (no model is started or restarted)'
 elif (( DRY )); then
-  echo '+ systemctl start mag-llm.service and the configured NUMA1 model   # only if inactive'
+  echo '+ systemctl start the configured model units (Ornith/Qwen)   # only if inactive'
 else
-  if systemctl is-active --quiet mag-llm.service; then
-    echo 'mag-llm already active; not restarting'
-  else
-    systemctl start mag-llm.service
-  fi
-  secondary_unit=mag-llm-iq3.service
+  secondary_unit=
   if [[ -r /etc/mag-stack/secondary-model.env ]] &&
      grep -Fxq 'MAG_SECONDARY_MODEL=qwen' /etc/mag-stack/secondary-model.env; then
     secondary_unit=mag-llm-qwen.service

@@ -3,7 +3,7 @@
 # Installed and started only by ops/ornith/cutover.sh; mag-llm is independent.
 [Unit]
 Description=MAG Ornith-1.5-35B-A3B CPU model, instance %i
-After=network-online.target mag-llm.service
+After=network-online.target
 Wants=network-online.target
 ConditionPathExists=/etc/mag-ornith/model.sha256
 Conflicts=mag-llm-qwen.service

@@ -186,7 +186,7 @@ static McpHttp mcp_post(const Val &srv, const std::string &secret,
   }
   const bool plain = url.rfind("http://", 0) == 0;
   // MAG's room traffic is intercepted by the local audit proxy (systemd
-  // drop-in 20-deepseek-audit.conf). The proxy presents certificates signed
+  // drop-in 20-room-audit.conf). The proxy presents certificates signed
   // by /etc/mag-audit/mitmproxy-ca-cert.pem. The previous hard-coded system
   // bundle DISCARDED SSL_CERT_FILE=/etc/mag-audit/ca-bundle.pem and caused
   // CURLE_PEER_FAILED_VERIFICATION for every remote MCP server. Trust the

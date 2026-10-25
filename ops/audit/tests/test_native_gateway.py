@@ -164,7 +164,7 @@ class NativeGateway(unittest.TestCase):
             code,listed=request(gwp,"GET","/v1/models")
             self.assertEqual(code,200)
             self.assertEqual(sorted(x["id"] for x in listed["data"]),
-                             ["deepseek-v4-flash-0731","qwen3.8-flash-next-uncensored"])
+                             ["qwen3.8-flash-next-uncensored"])
             code,reply=request(gwp,"POST","/v1/chat/completions",
                                {"model":"qwen3.8-flash-next-uncensored","messages":[]})
             self.assertEqual(code,200)
@@ -177,8 +177,16 @@ class NativeGateway(unittest.TestCase):
             self.assertEqual(len(IQ3.calls),1)
             code,reply=request(gwp,"POST","/v1/chat/completions",
                                {"model":"deepseek-v4-flash-0731","messages":[]})
-            self.assertEqual(code,200)
-            self.assertEqual(len(Q4.calls),1)
+            self.assertEqual(code,400)
+            self.assertIn("DeepSeek ist stillgelegt",str(reply))
+            self.assertEqual(Q4.calls,[])
+            code,reply=request(gwp,"POST","/v1/chat/completions",
+                               {"messages":[]})
+            self.assertEqual(code,200,"model-less request routes Qwen on rollback")
+            self.assertEqual(reply["model"],"qwen3.8-flash-next-uncensored")
+            self.assertEqual(IQ3.calls[-1][1]["model"],"qwen3.8-flash-next-uncensored",
+                             "gateway must inject the Qwen alias into model-less chat requests")
+            self.assertEqual(Q4.calls,[],"rollback must never reach the retired Q4 upstream")
         finally:
             proc.terminate();proc.wait(timeout=3);proc.stderr.close()
 
@@ -234,7 +242,8 @@ class NativeGateway(unittest.TestCase):
                 time.sleep(.05)
             Q4.calls.clear();IQ3.calls.clear()
             code,listed=request(gwp,"GET","/v1/models")
-            self.assertEqual(sorted(x["id"] for x in listed["data"]),["deepseek-v4-flash-0731","ornith-1.5-35b-a3b"])
+            # DeepSeek is retired on an Ornith host: not listed, no :8090 upstream.
+            self.assertEqual(sorted(x["id"] for x in listed["data"]),["ornith-1.5-35b-a3b"])
             for _ in range(3):
                 for slot in (2,0,3,1):self.assertEqual(chat(slot),200)
             self.assertEqual([len(k.calls) for k in kinds],[3,3,3,3],"each bot slot sticks to its own instance")
@@ -242,6 +251,13 @@ class NativeGateway(unittest.TestCase):
             self.assertEqual(chat(None),200);self.assertEqual(len(kinds[0].calls),4,"no slot -> instance 1, deterministic")
             for bad in ("4","x","-1",""):self.assertEqual(chat(bad),400,"invalid slot fails closed")
             self.assertEqual(chat(0,"qwen3.8-flash-next-uncensored"),400,"Qwen no longer routable")
+            for old in ("deepseek-v4-flash-0731","q4","deepseek-v4-flash-0731-iq3"):
+                self.assertEqual(chat(0,old),400,"DeepSeek fails closed, no fallback to a dead port")
+            c=http.client.HTTPConnection("127.0.0.1",gwp,timeout=5)
+            c.request("POST","/v1/chat/completions",body=json.dumps({"model":"deepseek-v4-flash-0731","messages":[]}),headers={"Content-Type":"application/json"})
+            r=c.getresponse();self.assertIn("DeepSeek ist stillgelegt",r.read().decode());c.close()
+            n0=len(kinds[0].calls);self.assertEqual(chat(None,""),200,"no model -> Ornith (room health/radius)")
+            self.assertEqual(len(kinds[0].calls),n0+1)
             self.assertEqual(IQ3.calls,[]);self.assertEqual(Q4.calls,[])
         finally:
             proc.terminate();proc.wait(timeout=3);proc.stderr.close()

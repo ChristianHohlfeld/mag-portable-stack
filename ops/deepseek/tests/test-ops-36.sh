@@ -55,6 +55,6 @@ printf 'THREADS=24\nrm -rf /\n$(touch %s/pwned)\nX=1\n' "$T" > "$T/evil.env"
 # 4) Gateway: Client-Abbruch stoppt die Anfrage an llama
 python3 -I -W ignore ops/audit/tests/test_gateway_abort.py >"$T/gw.log" 2>&1 || { cat "$T/gw.log"; fail "Gateway-Abbruch"; }
 ok "Gateway: Abbruch beim Streamen und beim Prompt-Lesen, normaler Durchlauf"
-grep -q 'MAG_ROOM_REASONING_EFFORT=' <<<"$(grep -v '^#' ops/mag-120.d/20-deepseek-audit.conf)" && fail "reasoning_effort im Raum-Drop-in gesetzt"
+grep -q 'MAG_ROOM_REASONING_EFFORT=' <<<"$(grep -v '^#' ops/mag-120.d/20-room-audit.conf)" && fail "reasoning_effort im Raum-Drop-in gesetzt"
 ok "Raum-Drop-in ohne reasoning_effort"
 echo "== 3.6-Tests grün"

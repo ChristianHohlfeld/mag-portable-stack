@@ -39,16 +39,16 @@ run() { # $1 = secondary-model.env path, $2 = space-separated ipmi devices
 }
 common() {
   grep -Fxq 'systemctl enable mag-auto-update.timer' "$log"
-  if grep -Eq 'systemctl enable mag-llm.service|mag-console-only' "$log"; then exit 1; fi
+  # DeepSeek is retired: an active mag-llm/IQ3 is never persisted for boot.
+  if grep -Eq 'systemctl (enable|add-wants multi-user.target) mag-llm(-iq3)?\.service|mag-console-only' "$log"; then exit 1; fi
   if grep -Eq 'systemctl (start|stop|restart|reload|try-restart|kill|daemon-reload)|--now' "$log"; then exit 1; fi
   grep -Fxq 'virsh -q autostart magbot-agent1' "$log"
   if grep -Fq 'autostart other-vm' "$log"; then exit 1; fi
 }
 ornith_units="mag-llm-ornith@1.service mag-llm-ornith@2.service mag-llm-ornith@3.service mag-llm-ornith@4.service"
 
-# 1) No secondary-model.env, no BMC: IQ3 host.
+# 1) No secondary-model.env, no BMC: legacy host; mag-llm/IQ3 run but are not persisted.
 out=$(ORNITH="" run "$tmp/missing.env" "$tmp/no-ipmi0")
-grep -Fxq 'systemctl add-wants multi-user.target mag-llm-iq3.service' "$log"
 common
 grep -Fq 'BIOS' <<<"$out"
 if grep -q '^ipmitool' "$log"; then exit 1; fi
@@ -70,7 +70,7 @@ grep -Fxq 'systemctl enable mag-llm-ornith-node@0.service' "$log"
 grep -Fxq 'systemctl enable mag-llm-ornith-node@1.service' "$log"
 if grep -Eq 'systemctl enable mag-llm-ornith@' "$log"; then exit 1; fi
 common
-grep -Eq '^WantedBy=multi-user.target' "$root/ops/deepseek/mag-llm-iq3.service"
+grep -Fq 'retire-deepseek.sh' "$root/ops/deploy.sh"
 grep -Fq 'ops/boot/ensure-boot.sh' "$root/ops/auto-update/apply.sh"
 grep -Fq 'PHASE boot' <<<"$(bash "$root/ops/update.sh" --dry-run)"
 echo 'Boot persistence PASS'

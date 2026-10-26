@@ -129,7 +129,7 @@ class RoomE2E(unittest.TestCase):
         self.send('Zwischenfrage')
         chip = p.locator('#queue-chips .q-chip')
         expect(chip).to_have_count(1, timeout=5000)
-        expect(p.locator('#queue-chips .queue-head')).to_contain_text('nächsten Arbeitsschritt')
+        expect(p.locator('#queue-chips .queue-head')).to_contain_text('Warteschlange')
         chip.locator('button[title="Bearbeiten"]').click()
         edit = p.locator('#queue-chips .q-edit')
         edit.fill('Zwischenfrage (geändert)')
@@ -159,7 +159,8 @@ class RoomE2E(unittest.TestCase):
         self.assertEqual(order, ['work-status', 'thinking', 'work-steps', 'tools-trace'])
         # Done: collapsed to its status line; the line expands everything.
         expect(run).to_have_class('run collapsed')
-        expect(run.locator('.thinking')).to_be_hidden()
+        expect(run.locator('.thinking')).to_be_visible()
+        expect(run.locator('.think-body')).to_be_hidden()
         status = run.locator('.work-status')
         expect(status).to_have_attribute('aria-expanded', 'false')
         status.click()
@@ -169,7 +170,8 @@ class RoomE2E(unittest.TestCase):
         run.locator('.think-head').click()
         expect(run.locator('.think-body')).to_contain_text('Gedächtnis')
         status.press('Enter')
-        expect(run.locator('.thinking')).to_be_hidden()
+        expect(run.locator('.thinking')).to_be_visible()
+        expect(run.locator('.think-body')).to_be_hidden()
         self.assertEqual(msg.locator('.work-stop').count(), 0, 'no stop button inside messages')
         self.shot('05-run-card')
 
@@ -185,7 +187,8 @@ class RoomE2E(unittest.TestCase):
         expect(status).to_have_attribute('aria-expanded', 'false')
         expect(status.locator('.work-label')).not_to_be_empty()
         expect(live.locator('.thinking')).to_be_attached(timeout=5000)
-        expect(live.locator('.thinking')).to_be_hidden()
+        expect(live.locator('.thinking')).to_be_visible()
+        expect(live.locator('.think-body')).to_be_hidden()
         p.wait_for_timeout(600)
         expect(live).to_have_class('run collapsed')
         # A manual open survives the following stream re-renders and the

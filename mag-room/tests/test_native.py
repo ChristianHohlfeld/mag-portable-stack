@@ -396,10 +396,10 @@ class Native(unittest.TestCase):
   self.request('/api/message',{'text':'N-Eins','bots':['test']});self._busy();time.sleep(.5)
   r=self.request('/api/message',{'text':'N-Zwei','bots':['test']});self.request('/api/queue/'+r['item']['id']+'/now',{})
   s=self._settle(lambda s:not s['busy'] and not s['pending'] and s['room'][-1].get('content')=='Sofort.')
-  tail=s['room'][-4:];self.assertEqual(tail[0]['content'],'N-Eins');self.assertEqual(tail[1]['content'],'');self.assertTrue(tail[1].get('interrupted'));self.assertEqual(tail[1].get('stopped'),'system')
+  tail=s['room'][-4:];self.assertEqual(tail[0]['content'],'N-Eins');self.assertEqual(tail[1]['content'],'');self.assertTrue(tail[1].get('interrupted'));self.assertEqual(tail[1].get('stopped'),'user')
   self.assertEqual(tail[2]['content'],'N-Zwei')
   last=Model.calls[-1]['messages'];self._roles_ok(last);self.assertNotIn('denke',json.dumps(last),'partial reasoning must not leak into history')
-  self.assertIn('(unterbrochen)',json.dumps(last,ensure_ascii=False),'the model still learns the turn was interrupted')
+  self.assertIn('(abgebrochen)',json.dumps(last,ensure_ascii=False),'the model still learns the turn was interrupted by the user')
  def test_15c_send_now_during_output_keeps_partial_and_prefix(self):
   self.wait_idle();Model.calls.clear();Model.script=[self._slow('out'),['Danach.']]
   self.request('/api/message',{'text':'O-Eins','bots':['test']});self._busy();time.sleep(1.0)
@@ -1018,8 +1018,8 @@ class Native(unittest.TestCase):
   # Native file drag: PDFs/text/archives and photos stage until send.
   for needle in ('id="file-preview"','function stageFiles(files)',
                  'function paintStagedFiles()','function stageAttachments(files)',
-                 'async function flushStagedFiles()',
-                 'if(stagedFiles.length)await flushStagedFiles()',
+                 'async function flushStagedFiles(files=[...stagedFiles])',
+                 'if(files.length)await flushStagedFiles(files)',
                  "for(const target of [$('send-form')",
                  'e.preventDefault();e.stopPropagation();dropActive(false);',
                  'e.dataTransfer?.files',
@@ -1051,8 +1051,18 @@ class Native(unittest.TestCase):
   self.assertEqual(Model.calls[-1]['messages'][0]['content'],Model.calls[-2]['messages'][0]['content'])
   self.request('/api/message',{'text':'Standard','bots':['test']});self.wait_room('Hallo aus dem Modell.');self.wait_idle()
   self.assertTrue(Model.calls[-1]['chat_template_kwargs']['enable_thinking'],'Without a choice the room default applies')
+  self.request('/api/bot-settings',{'bots':['test'],'thinking':False},method='PUT')
+  self.request('/api/message',{'text':'Gespeichert ohne Denken','bots':['test']});self.wait_room('Hallo aus dem Modell.');self.wait_idle()
+  self.assertFalse(Model.calls[-1]['chat_template_kwargs']['enable_thinking'])
+  self.assertFalse(next(a for a in self.request('/api/state')['agents'] if a['id']=='test')['thinking'])
+  # Split tags must never leak reasoning into the answer, even if a backend
+  # returns tagged content rather than a separate reasoning channel.
+  Model.script=[['<thi','nk>intern','</thi','nk>Nur Antwort.']]
+  self.request('/api/message',{'text':'Getrennte Kanäle','bots':['test']});self.wait_room('Nur Antwort.');self.wait_idle()
+  self.assertEqual(self.request('/api/state')['room'][-1]['reasoning'],'intern')
+  self.request('/api/bot-settings',{'bots':['test'],'thinking':True},method='PUT')
   html=self.request('/',raw=True).decode()
-  for needle in ('id="think"',"think:$('think').checked","mag-think",'state.thinking_default'):self.assertIn(needle,html)
+  for needle in ('id="think"',"const bots=[...selected],think=$('think').checked","api('/api/bot-settings'",'a.thinking'):self.assertIn(needle,html)
  def test_09l_new_message_is_queued_not_aborting(self):
   Model.delay=1.5
   try:
@@ -3072,8 +3082,7 @@ if [ "$1" = despawn ]; then ls "$d/state/archive" > "$d/archive-at-despawn" 2>&1
 exit 0
 """
 class ConfiguredNuma(unittest.TestCase):
- """Ornith mode with the live env (SINGLE_BOT=auto, DUAL_NUMA=1): up to four freely
- added/removed bots, each pinned to its persistent slot (instance), never the array index."""
+ """Configured DeepSeek mode: two bots with persistent NUMA backend assignments."""
  @classmethod
  def start(cls):
   cls.log=open(cls.tmp_path/'server.log','a')
@@ -3133,7 +3142,7 @@ class ConfiguredNuma(unittest.TestCase):
   self.assertEqual([(a['id'],a['name'],a['vm'],a['slot'],a['model']) for a in s['agents']],
    [('deepseek-chat','DeepSeek V4 Flash 1','agent3',1,'deepseek-v4-flash-0731'),('lehotbot','DeepSeek V4 Flash 2','agent1',2,'deepseek-v4-flash-0731')])
   self.assertEqual([i['slot'] for i in s['model_instances']],[1,2])
-  # Variant B: 2 servers (one per NUMA node) x 2 llama slots; bots 1,2 on different servers.
+  # Two servers, one per NUMA node, with one fixed llama slot each.
   self.assertEqual([(i['port'],i['numa']) for i in s['model_instances']],[(8191,0),(8192,1)])
   self.assertEqual(self.persisted()['deepseek-chat']['memory'][0]['text'],'bleibt')
  def test_02_german_default_and_sticky_slot(self):

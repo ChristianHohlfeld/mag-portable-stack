@@ -237,13 +237,15 @@ class StopAndPriority(unittest.TestCase):
         self.assertEqual(len(Model.calls), 1, 'nothing restarts after Stop')
 
     def test_02_stop_during_streaming_keeps_partial_marked_stopped(self):
-        Model.scripts.append(['Teil eins. '] + [{'_sleep': .1}, 'mehr '] * 100)
+        Model.scripts += [['Teil eins. '] + [{'_sleep': .1}, 'mehr '] * 100, ['Queue geht weiter.']]
         self.room.api('/api/message', {'text': 'Erzähl', 'bots': ['a']})
         wait_calls(1)
         time.sleep(.6)
+        self.room.api('/api/message', {'text': 'Weiter', 'bots': ['a']})
         self.room.api('/api/cancel', {})
-        s = self.room.until(lambda s: not s['busy'], timeout=3, what='idle after stop')
-        last = s['room'][-1]
+        s = self.room.until(lambda s: not s['busy'] and contents(s)[-1] == 'Queue geht weiter.', timeout=3, what='queue resumes after stop')
+        self.assertEqual(s['pending'], [])
+        last = s['room'][-3]
         self.assertTrue(last['content'].startswith('Teil eins.'))
         self.assertTrue(last.get('interrupted'))
         self.assertEqual(last.get('stopped'), 'user')
@@ -315,8 +317,12 @@ class StopAndPriority(unittest.TestCase):
         Model.scripts += [[{'_hold': 30}], ['Sofort beantwortet.']]
         self.room.api('/api/message', {'text': 'Läuft', 'bots': ['a']})
         wait_calls(1)
-        one = self.room.api('/api/message', {'text': 'eins', 'bots': ['a']})['item']['id']
+        payload = {'text': 'eins', 'bots': ['a'], 'request_id': 'queue-six-once'}
+        one = self.room.api('/api/message', payload)['item']['id']
+        self.assertTrue(self.room.api('/api/message', payload)['duplicate'])
         two = self.room.api('/api/message', {'text': 'zwei', 'bots': ['a']})['item']['id']
+        self.room.api('/api/queue/' + two + '/move', {'before': one})
+        self.assertEqual([p['id'] for p in self.room.state_()['pending']], [two, one])
         self.room.api('/api/queue/' + one, {'text': 'eins (bearbeitet)'}, method='PUT')
         self.room.api('/api/queue/' + two, method='DELETE')
         self.assertEqual([p['text'] for p in self.room.state_()['pending']], ['eins (bearbeitet)'])

@@ -165,6 +165,16 @@ static int envi(const char *k, int d) {
 static int64_t now_s() {
   return duration_cast<seconds>(system_clock::now().time_since_epoch()).count();
 }
+// Globally ordered display instants, even for events in the same millisecond.
+// Never use second-resolution timestamps to position live bubbles.
+static double display_now_ms() {
+  static std::atomic<int64_t> last{0};
+  const int64_t wall = duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
+  int64_t prev = last.load(), next;
+  do { next = std::max(wall, prev + 1); }
+  while (!last.compare_exchange_weak(prev, next));
+  return (double)next;
+}
 static std::string token_urlsafe(int n) {
   static const char *a =
       "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
@@ -1175,7 +1185,7 @@ static Val append_room(const std::string &role, const std::string &name,
   m["name"] = name.substr(0, 40);
   m["content"] = content;
   m["ts"] = (long)now_s();
-  m["display_ms"] = display_ms > 0 ? display_ms : now_s() * 1000;
+  m["display_ms"] = display_ms > 0 ? display_ms : display_now_ms();
   if (!client_id.empty()) m["client_id"] = client_id;
   if (!login.empty())
     m["login"] = login.substr(0, 160);
@@ -5487,7 +5497,7 @@ static Val enqueue_pending(const std::string &text,
   const bool waiting = lanes_busy(ids) || std::any_of(PENDING.begin(), PENDING.end(), [](const Pending &p) { return !p.held; }) || !JOBS.empty();
   Pending p;
   p.id = token_hex(8); p.client_id = request_id; p.text = text; p.sender = sender.substr(0, 40);
-  p.login = login.substr(0, 160); p.ids = ids; p.think = think; p.ts = (long)now_s(); p.display_ms = now_s() * 1000;
+  p.login = login.substr(0, 160); p.ids = ids; p.think = think; p.ts = (long)now_s(); p.display_ms = display_now_ms();
   p.urgent = interrupt;
   // An explicit pause holds existing items. Typing and sending remain available.
   // New user input can still run, just as after the legacy "Alles anhalten".
@@ -5707,7 +5717,7 @@ static TurnReport generate_and_post(int idx, bool automatic) {
   start["bot"] = id;
   start["name"] = name;
   start["color"] = bot_field(idx, "color");
-  TL_DISPLAY_MS = now_s() * 1000;
+  TL_DISPLAY_MS = display_now_ms();
   TL_THINKING_ENABLED = turn_thinking();
   start["display_ms"] = TL_DISPLAY_MS;
   start["thinking_enabled"] = TL_THINKING_ENABLED;

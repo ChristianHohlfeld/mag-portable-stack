@@ -98,9 +98,24 @@ exit 0
 SH
   printf '#!/bin/sh\nexit 0\n' > "$T/bin/verify"
   chmod +x "$T/bin/"*
+  # The current configured-model repository must refuse the archived cutover
+  # before changing any installed file or starting/stopping a service.
   local rc=0
+  PATH="$T/bin:$PATH" MAG_ORNITH_ROOTFS=$R bash ops/ornith/cutover.sh apply > "$T/out" 2>&1 || rc=$?
+  [[ $rc == 4 && ! -e $T/log ]]
+  grep -Fq 'legacy gateway required' "$T/out"
+  grep -Fxq old <("$R/opt/mag-audit/bin/mag-audit-gateway")
+  [[ ! -e $R/usr/local/lib/mag-ornith && ! -e $R/var/lib/mag-ornith/cutover-numa ]]
+  # Keep the historical success/rollback matrix against its matching fixture.
+  local SRC=$T/repo
+  mkdir -p "$SRC/ops/qwen" "$SRC/ops/audit/systemd" "$SRC/build"
+  cp -a ops/ornith "$SRC/ops/"
+  cp ops/qwen/runtime.sha "$SRC/ops/qwen/"
+  cp build/mag-audit-gateway "$SRC/build/"
+  printf '[Service]\nEnvironment=MAG_MODEL_ORNITH_PORTS=8191:0,8192:0,8191:1,8192:1\n' > "$SRC/ops/audit/systemd/mag-audit-gateway.service"
+  rc=0
   PATH="$T/bin:$PATH" MAG_ORNITH_ROOTFS=$R MAG_ORNITH_VERIFY=$T/bin/verify MAG_ORNITH_SLEEP=0 MAG_ORNITH_WAIT_TRIES=3 \
-    bash ops/ornith/cutover.sh apply > "$T/out" 2>&1 || rc=$?
+    bash "$SRC/ops/ornith/cutover.sh" apply > "$T/out" 2>&1 || rc=$?
   refute grep -Eq '(stop|restart|disable|kill).* mag-llm[.]service|cloudflared|s23pub' "$T/log"
   grep -Fxq 'disable --now mag-llm-qwen.service' "$T/log"
   grep -Fxq 'disable --now mag-llm-ornith@1.service mag-llm-ornith@2.service mag-llm-ornith@3.service mag-llm-ornith@4.service' "$T/log"
@@ -118,7 +133,7 @@ SH
     grep -Fxq 'enable mag-llm-ornith-node@0.service mag-llm-ornith-node@1.service' "$T/log"
     refute grep -Eq '^enable mag-llm-ornith@' "$T/log"
     grep -Fxq 'restart mag-audit-gateway.service' "$T/log"
-    grep -Fxq 'EnvironmentFile=-/etc/mag-stack/room-model.env' "$R/etc/systemd/system/mag-audit-gateway.service"
+    grep -Fxq 'Environment=MAG_MODEL_ORNITH_PORTS=8191:0,8192:0,8191:1,8192:1' "$R/etc/systemd/system/mag-audit-gateway.service"
     refute grep -Fq 'enable --now mag-llm-qwen.service' "$T/log"
     cmp -s build/mag-audit-gateway "$R/opt/mag-audit/bin/mag-audit-gateway"
     [[ ! -e $R/var/lib/mag-ornith/cutover-numa ]]

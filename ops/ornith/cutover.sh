@@ -23,6 +23,9 @@ INSTANCES=(mag-llm-ornith@1.service mag-llm-ornith@2.service mag-llm-ornith@3.se
 fail(){ echo "Ornith cutover: $*" >&2; exit 4; }
 [[ $EUID == 0 || -n $R ]] || fail 'root required'
 [[ $ACTION == check || $ACTION == apply ]] || fail 'usage: cutover.sh check|apply'
+# Archived cutover requires its matching four-slot gateway. Refuse before
+# installing files or touching services on the current DeepSeek deployment.
+grep -Fxq "Environment=MAG_MODEL_ORNITH_PORTS=$PORTS" "$ROOT/ops/audit/systemd/mag-audit-gateway.service" || fail 'legacy gateway required; use ops/room/install.sh for the configured model'
 exec 8>"$R/run/lock/mag-private-deploy.lock"
 flock -n 8 || fail 'MAG deploy/cutover already in progress'
 health(){ curl --noproxy '*' -fsS -o /dev/null --max-time 5 "http://127.0.0.1:$1/health"; }
@@ -131,3 +134,4 @@ done_ok=1
 trap - EXIT INT TERM
 rm -rf -- "$SNAP"
 echo 'SUCCESS: Ornith per NUMA node live (8191+8192, 2 slots each), old layout disabled (files kept), mag-llm untouched.'
+

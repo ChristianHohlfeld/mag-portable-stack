@@ -757,7 +757,7 @@ function paintThinking(box){
  const live=box.dataset.state==='live',open=box.dataset.open==='1',text=box._text||'';
  const head=box.querySelector('.think-head');
  box.querySelector('.think-title').textContent=live?'Denkt nach…':'Gedacht für';
- box.querySelector('.think-time').textContent=box._ms>=1000?thinkSecs(box._ms):'';
+ box.querySelector('.think-time').textContent=thinkSecs(box._ms);
  head.title=open?'Gedanken ausblenden':'Gedanken anzeigen';
  const peek=box.querySelector('.think-peek');peek.hidden=true;
  if(!peek.hidden)paintThinkPeek(box,live,text);else box._units=undefined;
@@ -2664,7 +2664,7 @@ function editQueuedMessage(p,t,button,focus=false){
  t.replaceWith(ta);if(focus)requestAnimationFrame(()=>ta.focus({preventScroll:true}));
 }
 
-function renderQueue(q){if(typeof q.revision==='number'&&q.revision<queueState.revision)return;queueState={pending:q.pending||[],paused:!!q.paused,revision:q.revision??queueState.revision};state.pending=queueState.pending;state.queue_paused=queueState.paused;render();const box=$('queue-chips');if(!box)return;box.replaceChildren();const list=queueState.pending;box.hidden=!list.length&&!queueState.paused;if(box.hidden)return;box.classList.toggle('paused',queueState.paused);
+function renderQueue(q){if(typeof q.revision==='number'&&q.revision<queueState.revision)return;const focused=document.activeElement;const editFocus=focused?.matches('.q-edit')?{id:focused.closest('.q-chip')?.dataset.id,start:focused.selectionStart,end:focused.selectionEnd}:null;queueState={pending:q.pending||[],paused:!!q.paused,revision:q.revision??queueState.revision};state.pending=queueState.pending;state.queue_paused=queueState.paused;render();const box=$('queue-chips');if(!box)return;box.replaceChildren();const list=queueState.pending;box.hidden=!list.length&&!queueState.paused;if(box.hidden)return;box.classList.toggle('paused',queueState.paused);
  const head=document.createElement('div');head.className='queue-head';const held=list.filter(p=>p.held).length;const lbl=document.createElement('span');lbl.textContent=held?'Angehalten · '+held+' wartet auf „Fortsetzen“':queueState.paused?'Jobs angehalten':'Warteschlange';head.append(lbl);
  if(!queueState.paused&&can('stop')){const b=document.createElement('button');b.type='button';b.className='q-btn';b.textContent='Queue pausieren';b.onclick=()=>api('/api/queue/pause',{}).catch(e=>notice(e.message));head.append(b)}
  if(queueState.paused&&can('stop')){const b=document.createElement('button');b.type='button';b.className='q-btn';b.textContent='Fortsetzen';b.onclick=async()=>{b.disabled=true;try{await api('/api/queue/resume',{});await refresh()}catch(e){notice(e.message)}finally{b.disabled=false}};head.append(b)}
@@ -2686,7 +2686,10 @@ function renderQueue(q){if(typeof q.revision==='number'&&q.revision<queueState.r
   now.onclick=async()=>{now.disabled=true;try{await api('/api/queue/'+encodeURIComponent(p.id)+'/now',{})}catch(e){notice(e.message)}finally{now.disabled=false}};
   if(own){chip.append(grip,t,up,down,ed,del,now);wireQueueDrag(chip,p);if(queueDrafts.has(p.id))editQueuedMessage(p,t,ed)}
  else chip.append(t);
- box.append(chip)}}
+ box.append(chip)}
+ for(const id of queueDrafts.keys())if(!list.some(p=>p.id===id))queueDrafts.delete(id);
+ if(editFocus){const ta=[...box.querySelectorAll('.q-chip')].find(c=>c.dataset.id===editFocus.id)?.querySelector('.q-edit');if(ta){ta.focus({preventScroll:true});ta.setSelectionRange(editFocus.start,editFocus.end)}}
+}
 
 // ---- Jobs (scheduled prompts, like ChatGPT Tasks)
 let jobsState={jobs:[]},jobEdit=null;

@@ -12,7 +12,7 @@ fail(){ echo "Qwen: $*" >&2; exit 4; }
 [[ -f "$GGUF" && ! -L "$GGUF" ]] || fail "download GGUF missing"
 [[ $(stat -c %s "$GGUF") -ge 90000000000 ]] || fail "download incomplete"
 REV=$(cat "$ROOT/ops/qwen/runtime.sha")
-BIN=/home/chris/.local/qwen4exp/$REV/bin/llama-server
+BIN=/home/chris/.local/qwen4exp/$REV-mag-cp1/bin/llama-server
 if [[ $(cat /etc/mag-stack/secondary-model.env 2>/dev/null || true) == MAG_SECONDARY_MODEL=qwen ]] && systemctl is-active --quiet mag-llm-qwen.service; then
   python3 -I "$ROOT/ops/qwen/smoke.py" --port 8080 --quick
   echo "Qwen already live. Open MAG and choose 1 · Qwen."
@@ -29,8 +29,10 @@ if [[ ! -s "$PIN" ]]; then
 fi
 echo "Verifying complete GGUF and staging Qwen on NUMA1 ..."
 nice -n 19 ionice -c3 bash "$ROOT/ops/qwen/install.sh" stage
+rm -f /etc/mag-qwen/runtime.env
 bash "$ROOT/ops/qwen/cutover.sh" check
 echo "Activating Qwen; live chat, reasoning and structured tool calls must pass ..."
 bash "$ROOT/ops/qwen/cutover.sh" apply
 echo "Ready: MAG frontend model selector offers 0 · Q4 and 1 · Qwen."
 echo "Select 1 · Qwen, send a message, and use Thinking / MCP tools normally."
+

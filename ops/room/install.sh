@@ -30,4 +30,7 @@ if [[ -f /etc/mag-stack/secondary-model.env ]]; then
 fi
 systemctl disable "${OLD[@]}" >/dev/null 2>&1 || true
 systemctl daemon-reload
-systemctl enable mag-llm-ds-node@0.service mag-llm-ds-node@1.service
+systemctl enable mag-llm-ds-node@0.service
+if [[ $(cat /etc/mag-stack/room-layout 2>/dev/null || true) != mixed ]]; then
+  systemctl enable mag-llm-ds-node@1.service
+fi

@@ -686,7 +686,7 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
   }
   if (m == "POST" && path == "/api/model") {
     if (DUAL_NUMA) { error_json(fd, 409, "Q4 und Qwen sind fest ihren Bots zugeordnet."); return; }
-    if (CONFIGURED_MODEL) { error_json(fd, 409, "Alle Bots nutzen das konfigurierte Modell, je Bot ein NUMA-Knoten."); return; }
+    if (CONFIGURED_MODEL) { error_json(fd, 409, "Die Modelle sind je Bot und NUMA-Knoten fest zugeordnet."); return; }
     if (bridge || !actor.ok || actor.role != "owner") {
       error_json(fd, 403, "Nur der Besitzer"); return;
     }
@@ -1189,7 +1189,7 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
         m == "POST") {
       id.resize(slash);
       if (DUAL_NUMA || CONFIGURED_MODEL) {
-        error_json(fd, 409, CONFIGURED_MODEL ? "Alle Bots nutzen das konfigurierte Modell, je Bot ein NUMA-Knoten."
+        error_json(fd, 409, CONFIGURED_MODEL ? "Die Modelle sind je Bot und NUMA-Knoten fest zugeordnet."
                                         : "NUMA-Modelle sind je Bot fest zugeordnet und bleiben geladen.");
         return;
       }
@@ -1342,7 +1342,7 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
           str("persona", "Neugierig, freundlich und eigenstaendig.");
       agent["memory"] = Val::array();
       if (known_room_model(str("model"))) agent["model"] = str("model");
-      if (CONFIGURED_MODEL) { agent["model"] = ROOM_MODEL.id; agent["slot"] = slot; agent["numa"] = ROOM_MODEL.backends[slot - 1].numa; }
+      if (CONFIGURED_MODEL) { agent["model"] = ROOM_MODEL.backend(slot).id; agent["slot"] = slot; agent["numa"] = ROOM_MODEL.backends[slot - 1].numa; }
       AGENTS.push_back(agent);
       try {
         save_agents();
@@ -1946,4 +1946,5 @@ static void serve_connection(int fd, bool bridge) {
   close(fd);
   --CONNECTIONS;
 }
+
 

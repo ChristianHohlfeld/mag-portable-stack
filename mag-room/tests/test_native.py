@@ -17,7 +17,7 @@ def _rules(content):
 def _mem(content):
  i=content.index('\n[Erinnerungen]');return content[i+1:]
 class Model(http.server.BaseHTTPRequestHandler):
- slot_snapshot=[]
+ slot_snapshot=[];cache_records=[]
  protocol_version='HTTP/1.1';calls=[];slots=[];pairs=[];paths=[];slot_delay={};delay=0;reply=None;script=[];health=200;last_prompt={};overflow_once=0;barrier_token='';barrier_release=None
  def log_message(self,*a):pass
  def do_GET(self):
@@ -59,6 +59,7 @@ class Model(http.server.BaseHTTPRequestHandler):
    for m in obj.get('messages') or []:
     c=m.get('content');parts.append(c if isinstance(c,str) else json.dumps(c,ensure_ascii=False,sort_keys=True))
    text='\x1e'.join(parts);evaluated=max(1,len(text));cached=0;slot=obj.get('id_slot',None)
+   cache_key=(obj.get('model'),self.headers.get('X-Mag-Slot'),slot)
    def lcp(prev):
     n=0;lim=min(len(prev),len(text))
     while n<lim and prev[n]==text[n]:n+=1
@@ -66,12 +67,13 @@ class Model(http.server.BaseHTTPRequestHandler):
    # Like ik_llama: a pinned id_slot reuses only that slot's last prompt; an
    # unpinned request goes through the --cache-ram store (several prompts).
    if obj.get('cache_prompt') is True and slot is not None:
-    prev=type(self).last_prompt.get(slot)
+    prev=type(self).last_prompt.get(cache_key)
     if isinstance(prev,str):cached=lcp(prev)
-    type(self).last_prompt[slot]=text
+    type(self).last_prompt[cache_key]=text
    elif obj.get('cache_prompt') is True:
     ram=type(self).last_prompt.setdefault('ram',[])
     cached=max([lcp(p) for p in ram]+[0]);ram.append(text)
+   type(self).cache_records.append({'model':obj.get('model'),'slot':slot,'n_past':cached,'prompt_size':evaluated,'cache_prompt':obj.get('cache_prompt')})
    stat=json.dumps({'choices':[],'tokens_cached':cached,'tokens_evaluated':evaluated,'timings':{'prompt_n':max(0,evaluated-cached),'prompt_per_second':40.0,'predicted_n':3,'predicted_per_second':8.0,'cache_n':cached}}).encode()
    payload=b'data: '+stat+b'\n\n';self.wfile.write(('%x\r\n'%len(payload)).encode()+payload+b'\r\n');self.wfile.flush()
    end=b'data: [DONE]\n\n';self.wfile.write(('%x\r\n'%len(end)).encode()+end+b'\r\n0\r\n\r\n');self.wfile.flush()
@@ -3119,6 +3121,8 @@ class ConfiguredNuma(unittest.TestCase):
     MAG_TEST_NO_MEMGIT='1',MAG_ROOM_AGENT_CTL=str(cls.ctl),MAG_ROOM_GUEST_RUN='/bin/false',MAG_ROOM_MCP_AUTO='0',
     MAG_ROOM_SINGLE_BOT='auto',MAG_ROOM_SINGLE_BOT_VM='on',MAG_ROOM_DUAL_NUMA='1',MAG_ROOM_MODEL_ID='deepseek-v4-flash-0731',MAG_ROOM_MODEL_LABEL='DeepSeek V4 Flash',MAG_ROOM_MODEL_PORTS='8191:0,8192:1',MAG_ROOM_MAX_BOTS='2',MAG_ROOM_PRESETS=str(ROOT/'ops/room/presets.json'),
     MAG_ROOM_PREWARM='0')  # no MAG_ROOM_STAGGER: Ornith answers concurrently by default
+  if getattr(cls,'mixed',False):
+   cls.env.update(MAG_ROOM_MODEL_ID_1='qwen3.8-flash-next-uncensored',MAG_ROOM_MODEL_LABEL_1='Qwen3.8 Uncensored')
   cls.start()
  @classmethod
  def tearDownClass(cls):
@@ -3289,7 +3293,7 @@ class ConfiguredNuma(unittest.TestCase):
    time.sleep(.3);self.wait_idle()
    got=self.round_msgs(token)
    self.assertEqual(sorted(m['bot'] for m in got if not m.get('interrupted')),sorted(b for b in ids if b!=ids[1]))
-   self.assertFalse([c for c,_ in list(Model.pairs) if token in json.dumps(c,ensure_ascii=False) and 'Reflexionsrunde' in json.dumps(c,ensure_ascii=False)])
+   self.assertFalse([c for c,_ in list(Model.pairs) if token in json.dumps(c,ensure_ascii=False) and 'Reflexionsrunde' in c['messages'][-1].get('content','')])
   finally:
    self.assertFalse(self.request('/api/reflect',{'on':False})['on'])
  def test_09_prewarm_every_bot_slot_and_share_prefix(self):
@@ -3335,6 +3339,12 @@ class ConfiguredNuma(unittest.TestCase):
    # Never another server's file; bot 3 shares bot 1's server (and its chat-only prefix).
    for n in range(1,3):self.assertEqual(srv(int(restores[str(n-1)][-5])),srv(n),'cross-server restore')
    self.assertEqual(restores,{'0':own(1),'1':own(2)})
+   # Save HTTP arrival precedes the room's atomic metadata write.
+   for _ in range(200):
+    current=json.loads(self.state.joinpath('prompt-prefix.json').read_text() or '{}')
+    if all(current.get(srv(n)+'/'+own(n))==fresh[own(n)] for n in range(1,3)):break
+    time.sleep(.01)
+   else:self.fail('prewarm metadata not committed')
    # Match the pinned ik runtime's actual /slots schema: it has no n_past.
    # Restarting only the room must leave the running model's RAM cache alone.
    self.stop();Model.slot_snapshot=[{'id':0,'state':0,'prompt':'cached-prefix','next_token':{'n_decoded':1}}]
@@ -3346,5 +3356,97 @@ class ConfiguredNuma(unittest.TestCase):
    self.assertEqual([p for p in list(Model.paths)[mark:] if p[0].startswith('/slots/') or p[0]=='/v1/chat/completions'],[])
   finally:
    self.stop();Model.slot_snapshot=[];type(self).env['MAG_ROOM_PREWARM']='0';self.start()
+
+class MixedNuma(unittest.TestCase):
+ mixed=True
+ start=classmethod(ConfiguredNuma.start.__func__)
+ stop=classmethod(ConfiguredNuma.stop.__func__)
+ setUpClass=classmethod(ConfiguredNuma.setUpClass.__func__)
+ tearDownClass=classmethod(ConfiguredNuma.tearDownClass.__func__)
+ request=classmethod(Native.request.__func__)
+ error=Native.error
+ wait_idle=Native.wait_idle
+ ask=ConfiguredNuma.ask
+ bots=ConfiguredNuma.bots
+ def test_01_per_node_identity_and_preset(self):
+  s=self.request('/api/state');bots=s['agents']
+  self.assertEqual([(b['slot'],b['model'],b['name']) for b in bots],[(1,'deepseek-v4-flash-0731','DeepSeek V4 Flash'),(2,'qwen3.8-flash-next-uncensored','Qwen3.8 Uncensored')])
+  self.assertEqual([m['id'] for m in s['models']],[b['model'] for b in bots])
+  self.assertEqual([p['id'] for p in s['presets']],['deepseek-qwen-dual-numa'])
+  self.error(409,'/api/agents',{'name':'Dritter','vm':False,'preset':'deepseek-qwen-dual-numa'})
+  for b in bots:
+   self.assertFalse(b['github_enabled'])
+   for thinking in (False,True):
+    self.request('/api/bot-settings',{'thinking':thinking,'bots':[b['id']]},method='PUT')
+    call,slot=self.ask(b['id'])
+    self.assertEqual(slot,str(b['slot']-1));self.assertEqual(call['model'],b['model'])
+    self.assertEqual(call['id_slot'],0);self.assertTrue(call['cache_prompt'])
+    self.assertEqual(call['chat_template_kwargs']['enable_thinking'],thinking)
+    self.assertTrue(any(t['function']['name']=='github' for t in call['tools'])) # schema stable; execution is still gated
+  before=self.bots();self.stop();self.start();self.assertEqual(self.bots(),before)
+ def test_04_restart_keeps_both_warm_ram_slots(self):
+  self.wait_idle();self.stop();Model.slot_snapshot=[{'id':0,'n_prompt_tokens':4321}]
+  self.env['MAG_ROOM_PREWARM']='1'
+  try:
+   mark=len(Model.paths);self.start()
+   for _ in range(150):
+    log=self.tmp_path.joinpath('server.log').read_text()
+    if all('prompt-prewarm model='+m in log and 'ram_warm=1' in log for m in ('deepseek-v4-flash-0731','qwen3.8-flash-next-uncensored')):break
+    time.sleep(.02)
+   time.sleep(.1)
+   self.assertEqual([p for p in list(Model.paths)[mark:] if p[0].startswith('/slots/') or p[0]=='/v1/chat/completions'],[])
+  finally:
+   self.stop();Model.slot_snapshot=[];self.env['MAG_ROOM_PREWARM']='0';self.start()
+ def test_05_changed_prefix_prewarms_ram_without_restoring_old_disk(self):
+  self.wait_idle();self.stop();Model.slot_snapshot=[{'id':0,'n_prompt_tokens':4321}]
+  meta=self.state/'prompt-prefix.json'
+  old=json.loads(meta.read_text());meta.write_text(json.dumps({k:'previous-software-prefix' for k in old}))
+  self.env['MAG_ROOM_PREWARM']='1'
+  try:
+   mark=len(Model.paths);self.start()
+   for _ in range(150):
+    calls=[p for p in list(Model.paths)[mark:] if p[0]=='/v1/chat/completions' and p[3].get('max_tokens')==1]
+    if len(calls)>=2:break
+    time.sleep(.02)
+   self.assertEqual({p[1] for p in calls},{'0','1'})
+   self.assertFalse([p for p in list(Model.paths)[mark:] if p[0].endswith('restore')])
+  finally:
+   self.stop();Model.slot_snapshot=[];self.env['MAG_ROOM_PREWARM']='0';self.start()
+ def test_03_second_request_uses_positive_n_past_for_both_models(self):
+  for b in self.bots().values():
+   self.wait_idle();Model.last_prompt.clear();mark=len(Model.cache_records)
+   first,_=self.ask(b['id']);second,_=self.ask(b['id'])
+   self.assertEqual(second['messages'][:len(first['messages'])],first['messages'],'previous wire messages stay byte-identical')
+   calls=[c for c in Model.cache_records[mark:] if c['model']==b['model']]
+   self.assertEqual(len(calls),2)
+   self.assertEqual(calls[0]['n_past'],0)
+   self.assertGreaterEqual(calls[1]['n_past']/calls[0]['prompt_size'],.95,'second request must reuse >=95% of the prior prefix')
+   self.assertTrue(all(c['slot']==0 and c['cache_prompt'] for c in calls))
+ def test_06_switches_keep_prefix_and_tool_schema(self):
+  for b in self.bots().values():
+   self.wait_idle();first,_=self.ask(b['id']);previous=Model.cache_records[-1]['prompt_size'];mark=len(Model.cache_records)
+   self.request('/api/bot-settings',{'bots':[b['id']],'github_enabled':True,'thinking':True},method='PUT')
+   try:
+    second,_=self.ask(b['id'])
+    self.assertEqual(first['tools'],second['tools'])
+    self.assertEqual(second['messages'][:len(first['messages'])],first['messages'])
+    record=Model.cache_records[mark]
+    self.assertGreaterEqual(record['n_past']/previous,.95)
+    self.assertIn('GitHub: aktiv',second['messages'][-1]['content'])
+   finally:self.request('/api/bot-settings',{'bots':[b['id']],'github_enabled':False,'thinking':False},method='PUT')
+ def test_02_prewarm_isolated_per_model(self):
+  self.wait_idle();self.stop();self.env['MAG_ROOM_PREWARM']='1'
+  try:
+   mark=len(Model.paths);self.start()
+   for _ in range(400):
+    saves=[p for p in list(Model.paths)[mark:] if p[0].endswith('save')]
+    if len(saves)>=2:break
+    time.sleep(.03)
+   self.assertEqual({(p[1],p[3]['filename']) for p in saves},{('0','mag-prefix-deepseek-v4-flash-0731-slot1.bin'),('1','mag-prefix-qwen3.8-flash-next-uncensored-slot2.bin')})
+   warm=[p for p in list(Model.paths)[mark:] if p[0]=='/v1/chat/completions' and p[3].get('max_tokens')==1]
+   self.assertEqual({(p[1],p[3]['model']) for p in warm},{('0','deepseek-v4-flash-0731'),('1','qwen3.8-flash-next-uncensored')})
+   for p in warm:self.assertEqual(p[3]['id_slot'],0);self.assertTrue(p[3]['cache_prompt'])
+  finally:
+   self.stop();self.env['MAG_ROOM_PREWARM']='0';self.start()
 
 if __name__=='__main__':unittest.main(verbosity=2)

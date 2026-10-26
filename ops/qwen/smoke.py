@@ -14,7 +14,7 @@ def request(port, messages, thinking=False, choice=None, stream=False):
     body = {"model": MODEL, "messages": messages, "stream": stream,
             "max_tokens": 512 if thinking else 192, "temperature": 0,
             "chat_template_kwargs": {"enable_thinking": thinking},
-            "cache_prompt": True}
+            "cache_prompt": True, "id_slot": 0}
     if choice:
         body["tools"] = [TOOL]
         body["tool_choice"] = choice
@@ -24,6 +24,7 @@ def request(port, messages, thinking=False, choice=None, stream=False):
     with urllib.request.urlopen(req, timeout=1200) as res:
         if not stream:
             answer = json.load(res)
+            request.last_response = answer
             assert answer.get("choices"), "Missing OpenAI choices"
             return answer["choices"][0]["message"]
         seen = 0
@@ -57,12 +58,24 @@ def tool(msg):
 
 def main():
     a = argparse.ArgumentParser()
-    a.add_argument("--port", choices=[8080, 8091], type=int, default=8091)
+    a.add_argument("--port", choices=[8080, 8091, 8192], type=int, default=8091)
     a.add_argument("--quick", action="store_true")
     opt = a.parse_args()
     msg = request(opt.port, [{"role": "user", "content": "Reply READY."}])
     assert msg.get("content"), "Normal chat failed"
     print("PASS chat", flush=True)
+    if opt.port == 8192:
+        # Inspect actual server state, then repeat the identical cached request.
+        with urllib.request.urlopen("http://127.0.0.1:8192/slots", timeout=10) as res:
+            slots = json.load(res)
+        n_past = max([int(s.get("n_past", s.get("n_prompt_tokens", 0))) for s in slots] or [0])
+        assert n_past > 0, "Qwen has no warm prompt before request 2"
+        request(opt.port, [{"role": "user", "content": "Reply READY."}])
+        timings = request.last_response.get("timings") or {}
+        cached = timings.get("cache_n", request.last_response.get("tokens_cached"))
+        if cached is not None:
+            assert cached > 0, "Qwen request 2 did not reuse the prompt cache"
+        print("PASS warm request 2 n_past=%d" % n_past, flush=True)
     prompt = [{"role": "user", "content":
         "Call the echo tool with the value READY. You MUST call the tool and must not reply in prose."}]
     msg = request(opt.port, prompt, choice="auto")
@@ -88,3 +101,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

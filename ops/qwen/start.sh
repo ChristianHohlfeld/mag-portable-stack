@@ -8,18 +8,15 @@
 # by an earlier read (e.g. the SHA check run as root via install.sh), which
 # --membind cannot move: measured 73 of 98 GiB on node0, prefill 13 t/s.
 # Read into anonymous memory instead, so every page is allocated on NUMA1.
-# CPUs 42-55 are the hyperthread siblings of 14-27, where Q4 pins its
-# workers. On 14-27 both models' spin barriers fought over the same OS CPUs:
-# Qwen prefill fell from 32 to 4 t/s while Q4 read a prompt. On the siblings
-# the cores are shared in hardware instead (Qwen 20 t/s, alone still 32 t/s).
-# Refuse to start if IQ3 is running or backups are active.
+# NUMA0 now has its own socket. Use NUMA1's 14 physical cores, with its
+# entire weight allocation bound to node1. IQ3/backup gates remain in place.
 set -euo pipefail
 fail(){ echo "Qwen NUMA1: $*" >&2; exit 4; }
 REV=$(cat /usr/local/lib/mag-qwen/runtime.sha)
-BIN="/home/chris/.local/qwen4exp/$REV/bin/llama-server"
+BIN="/home/chris/.local/qwen4exp/$REV-mag-cp1/bin/llama-server"
 MODEL="/home/chris/models/qwen3.8-flash-next-uncensored/Qwen3.8-Flash-Next-Uncensored.IQ4_XS.gguf"
 [[ -x "$BIN" && -f "$MODEL" ]] || fail 'runtime / GGUF missing'
-[[ $(cat "/home/chris/.local/qwen4exp/$REV/bin/source-commit") == "$REV" ]] || fail 'runtime version not pinned'
+[[ $(cat "/home/chris/.local/qwen4exp/$REV-mag-cp1/bin/source-commit") == "$REV" ]] || fail 'runtime version not pinned'
 [[ $(cat /sys/devices/system/node/node1/cpulist) == "14-27,42-55" ]] || fail 'unexpected NUMA1 topology'
 systemctl is-active --quiet mag-llm-iq3.service && fail 'IQ3 still running; explicit operator stop required'
 # Q4 is checked as root in systemd ExecStartPre (audit firewall blocks chris on port 8090).
@@ -30,10 +27,11 @@ read -r free file shmem < <(awk '$3=="MemFree:"{f=$4} $3=="FilePages:"{p=$4} $3=
 usable=$((free + (file > shmem ? file-shmem : 0)))
 (( usable >= 150*1024*1024 )) || fail 'NUMA1 reclaimable RAM below 150GiB (reserve for system/backup)'
 bash /usr/local/lib/mag-qwen/verify-model.sh || fail 'model SHA verification failed'
-exec /usr/bin/numactl --physcpubind=42-55 --membind=1 "$BIN" \
+exec /usr/bin/numactl --physcpubind=14-27 --membind=1 "$BIN" \
   --model "$MODEL" --alias qwen3.8-flash-next-uncensored \
-  --host 127.0.0.1 --port 8091 --ctx-size 32768 --parallel 1 \
+  --host 127.0.0.1 --port "${QWEN_PORT:-8091}" --ctx-size 32768 --parallel 1 \
   --threads 14 --threads-batch 14 --numa numactl \
   --load-mode mlock --lazy-mode off -ot per_layer_token_embd=CPU \
-  --jinja --reasoning-format auto --cache-ram 16384 \
-  --slot-save-path /var/lib/mag-llm/slots/qwen --no-ui
+  --jinja --reasoning-format auto --cache-ram 16384 --ctx-checkpoints 8 --checkpoint-min-step 128 \
+  --slots --slot-save-path /var/lib/mag-llm/slots/qwen --no-ui
+

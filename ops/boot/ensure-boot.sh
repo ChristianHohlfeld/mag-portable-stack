@@ -16,7 +16,13 @@ secondary_unit=
 secondary_units=()
 if [[ -r /etc/mag-stack/room-model.env ]]; then
   secondary_unit=mag-llm-ds-node@0.service
-  secondary_units=(mag-llm-ds-node@1.service)
+  if grep -Fxq 'MAG_ROOM_MODEL_ID_1=qwen3.8-flash-next-uncensored' /etc/mag-stack/room-model.env; then
+    secondary_units=(mag-llm-qwen.service)
+    systemctl disable mag-llm-ds-node@1.service >/dev/null 2>&1 || true
+  else
+    secondary_units=(mag-llm-ds-node@1.service)
+    systemctl disable mag-llm-qwen.service >/dev/null 2>&1 || true
+  fi
   systemctl disable mag-llm-ornith@{1..4}.service mag-llm-ornith-node@{0..1}.service >/dev/null 2>&1 || true
 elif [[ -r "$secondary_env" ]] &&
    grep -Fxq 'MAG_SECONDARY_MODEL=ornith' "$secondary_env"; then

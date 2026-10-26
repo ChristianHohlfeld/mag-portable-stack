@@ -51,7 +51,11 @@ fi
 
 phase deploy
 if (( DEPLOY )); then
-  run sudo bash "$ROOT/ops/deploy.sh"
+  if [[ -n ${MAG_ROOM_LAYOUT:-} ]]; then
+    run sudo env MAG_ROOM_LAYOUT="$MAG_ROOM_LAYOUT" bash "$ROOT/ops/deploy.sh"
+  else
+    run sudo bash "$ROOT/ops/deploy.sh"
+  fi
 else
   echo 'skipped (--no-deploy)'
 fi
@@ -74,3 +78,4 @@ else
   echo 'skipped'
 fi
 echo 'update done'
+

@@ -127,7 +127,7 @@ git -c safe.directory="$SOURCE" -C "$SOURCE" rev-parse HEAD > "$RELEASE/SOURCE_C
 chown -R root:root "$RELEASE"
 chmod -R a+rX "$RELEASE"
 # All changes after this point must unwind both the native room and nginx.
-# Never restart or stop a model unit (including on failed deploy).
+# Only the explicit NUMA1 layout transaction may switch a model.
 rollback() {
  echo 'Deployment failed; restoring previous room and nginx state' >&2
  if (( room_switched )); then
@@ -160,6 +160,9 @@ rollback() {
    if [[ -f $BACKUP/$config ]]; then cp -a "$BACKUP/$config" "/etc/mag-stack/$config"
    else rm -f "/etc/mag-stack/$config"; fi
  done
+ if [[ -f $BACKUP/qwen-layout/helper.sh ]]; then
+   bash "$BACKUP/qwen-layout/helper.sh" rollback "$BACKUP"
+ fi
  if (( gateway_switched )); then
    if [[ -f "$BACKUP/mag-audit-gateway.service" ]]; then
      cp -a "$BACKUP/mag-audit-gateway.service" /etc/systemd/system/mag-audit-gateway.service
@@ -275,6 +278,12 @@ fi
 # Qwen host, use exactly two model-pinned bots with separate KVM workspaces.
 rm -f /etc/systemd/system/mag-120.service.d/30-multibot.conf
 if [[ -e /etc/mag-stack/room-model.env || -e /etc/systemd/system/mag-llm-ds-node@.service ]]; then
+  # The layout helper owns its own NUMA1 snapshot, including config and boot state.
+  # Stop the drained room while switching so no new turn reaches the old router.
+  if (( ! FIRST_INSTALL )); then
+    systemctl stop mag-120.service
+    bash "$SOURCE/ops/qwen/layout.sh" apply "$BACKUP"
+  fi
   bash "$SOURCE/ops/room/install.sh"
 elif [[ -r /etc/mag-stack/secondary-model.env ]] &&
    grep -Fxq 'MAG_SECONDARY_MODEL=ornith' /etc/mag-stack/secondary-model.env; then
@@ -307,8 +316,15 @@ systemctl restart mag-audit-gateway.service
 # bounded readiness retry as the room/RTC smoke checks (also on a blank host).
 gateway_models=$(wait_http http://127.0.0.1:8080/v1/models)
 if [[ -r /etc/mag-stack/room-model.env ]]; then
-  required=$(sed -n 's/^MAG_ROOM_MODEL_ID=//p' /etc/mag-stack/room-model.env)
-  python3 -I -c 'import json,sys; assert [m["id"] for m in json.loads(sys.argv[1])["data"]] == [sys.argv[2]], "gateway model mismatch"' "$gateway_models" "$required"
+  python3 -I -c 'import json,sys,shlex
+v={}
+for line in open(sys.argv[2]):
+ parts=shlex.split(line,comments=True)
+ if parts and "=" in parts[0]:
+  k,value=parts[0].split("=",1);v[k]=value
+expected={v.get("MAG_ROOM_MODEL_ID_"+str(n),v["MAG_ROOM_MODEL_ID"]) for n in (0,1)}
+assert {m["id"] for m in json.loads(sys.argv[1])["data"]} == expected, "gateway model mismatch"
+' "$gateway_models" /etc/mag-stack/room-model.env
 elif [[ -r /etc/mag-stack/secondary-model.env ]]; then
   case $(cat /etc/mag-stack/secondary-model.env) in
     MAG_SECONDARY_MODEL=ornith) required=ornith-1.5-35b-a3b ;;
@@ -395,4 +411,5 @@ bash "$SOURCE/ops/boot/ensure-boot.sh" || echo 'WARN: boot persistence needs ope
 # Deploy never restarts a loaded model (DeepSeek retirement above is the only stop). Model placement
 # is a separate, measured, operator-controlled change, never a deploy hook.
 printf '\nInstalled release %s; rollback snapshot %s\n' "$RELEASE_ID" "$BACKUP"
+
 

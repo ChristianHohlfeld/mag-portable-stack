@@ -4,10 +4,28 @@ set -euo pipefail
 BACKUP="/var/backups/mag-stack/$1"
 test -f "$BACKUP/mag-120.service"
 systemctl stop mag-120.service
+if [[ -f $BACKUP/qwen-layout/helper.sh ]]; then
+  bash "$BACKUP/qwen-layout/helper.sh" rollback "$BACKUP"
+fi
+for config in room-model.env secondary-model.env; do
+  [[ ! -f $BACKUP/$config ]] || cp -a "$BACKUP/$config" "/etc/mag-stack/$config"
+done
+if [[ -d $BACKUP/mag-120.service.d ]]; then
+  rm -rf /etc/systemd/system/mag-120.service.d
+  cp -a "$BACKUP/mag-120.service.d" /etc/systemd/system/mag-120.service.d
+fi
+if [[ -f $BACKUP/mag-audit-gateway.service ]]; then
+  cp -a "$BACKUP/mag-audit-gateway.service" /etc/systemd/system/mag-audit-gateway.service
+fi
+if [[ -f $BACKUP/mag-audit-gateway.bin ]]; then
+  install -m 0755 "$BACKUP/mag-audit-gateway.bin" /opt/mag-audit/bin/.mag-audit-gateway.restore
+  mv -f /opt/mag-audit/bin/.mag-audit-gateway.restore /opt/mag-audit/bin/mag-audit-gateway
+fi
 cp -a "$BACKUP/mag-120.service" /etc/systemd/system/mag-120.service
 cp -a "$BACKUP/magbot" /usr/local/bin/magbot
 if [[ -f "$BACKUP/previous-release" ]]; then ln -sfn "$(cat "$BACKUP/previous-release")" /opt/mag-stack/current; fi
 systemctl daemon-reload
+systemctl restart mag-audit-gateway.service
 systemctl restart mag-120.service
 if [[ -x /opt/mag-stack/current/bin/mag-browser-webrtc ]]; then
   systemctl restart mag-browser-webrtc.service

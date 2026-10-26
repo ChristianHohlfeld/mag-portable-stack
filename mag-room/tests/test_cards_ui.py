@@ -16,7 +16,7 @@ class Cards(unittest.TestCase):
   tmp=pathlib.Path('/tmp/mag-cards-ui')
   if tmp.exists():shutil.rmtree(tmp)
   static=tmp/'static';shutil.copytree(ROOT/'mag-room/static',static)
-  proc,log,model,ui,bridge=pwa.start_room(tmp,static,'cards')
+  proc,log,model,ui,bridge=pwa.start_room(tmp,static,'cards',extra={'MAG_ROOM_PREWARM':'0','MAG_ROOM_MCP_AUTO':'0'})
   errors=[];pw=sync_playwright().start()
   browser=pw.chromium.launch(channel='chrome',headless=True,args=['--no-sandbox','--disable-dev-shm-usage'])
   VALUE='Pa55-wort-geheim-91'
@@ -33,6 +33,7 @@ class Cards(unittest.TestCase):
    page.screenshot(path=str(ART/'routine_card.png'))
    card.locator('button',has_text='Speichern').click()
    page.wait_for_function("()=>[...document.querySelectorAll('.job-name')].some(n=>n.textContent==='Morgenbericht')",timeout=15000)
+   page.wait_for_function("()=>[...document.querySelectorAll('.message.assistant .content')].some(n=>n.textContent.trim()==='Routine gespeichert.')",timeout=15000)
    pwa.Health.script=[call('secret',{'action':'request','name':'SHOP_PW','purpose':'Login im Shop'}),[{'content':'Danke.'}]]
    page.locator('#message').fill('Logg dich im Shop ein');page.locator('#send-button').click()
    sc=page.locator('.secret-card');sc.wait_for(timeout=15000)

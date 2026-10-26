@@ -97,6 +97,13 @@ if (( change )); then
     sleep 5
   done
   (( ready )) || fail 'NUMA1 health timeout'
-  if [[ $layout == mixed ]]; then python3 -I "$ROOT/ops/qwen/smoke.py" --port 8192; fi
+  if [[ $layout == mixed ]]; then
+    python3 -I "$ROOT/ops/qwen/smoke.py" --port 8192
+    # Acceptance used a tiny synthetic prompt. Clear only this newly started
+    # Qwen slot so the room can asynchronously prewarm its real system prefix.
+    # This is never done to an already-warm Qwen on ordinary redeploys.
+    curl --noproxy '*' -fsS --max-time 30 -H 'Content-Type: application/json' \
+      -d '{}' 'http://127.0.0.1:8192/slots/0?action=erase' >/dev/null
+  fi
 fi
 echo "NUMA1 layout ready: $layout; NUMA0 resident process untouched"

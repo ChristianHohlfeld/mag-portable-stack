@@ -3378,6 +3378,19 @@ class MixedNuma(unittest.TestCase):
     self.assertEqual(call['chat_template_kwargs']['enable_thinking'],thinking)
     self.assertFalse(any('github' in t['function']['name'].lower() for t in call['tools']))
   before=self.bots();self.stop();self.start();self.assertEqual(self.bots(),before)
+ def test_04_restart_keeps_both_warm_ram_slots(self):
+  self.wait_idle();self.stop();Model.slot_snapshot=[{'id':0,'n_prompt_tokens':4321}]
+  self.env['MAG_ROOM_PREWARM']='1'
+  try:
+   mark=len(Model.paths);self.start()
+   for _ in range(150):
+    log=self.tmp_path.joinpath('server.log').read_text()
+    if all('prompt-prewarm model='+m in log and 'ram_warm=1' in log for m in ('deepseek-v4-flash-0731','qwen3.8-flash-next-uncensored')):break
+    time.sleep(.02)
+   time.sleep(.1)
+   self.assertEqual([p for p in list(Model.paths)[mark:] if p[0].startswith('/slots/') or p[0]=='/v1/chat/completions'],[])
+  finally:
+   self.stop();Model.slot_snapshot=[];self.env['MAG_ROOM_PREWARM']='0';self.start()
  def test_03_second_request_uses_positive_n_past_for_both_models(self):
   for b in self.bots().values():
    self.wait_idle();Model.last_prompt.clear();mark=len(Model.cache_records)

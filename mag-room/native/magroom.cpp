@@ -3158,7 +3158,7 @@ static void model_watcher_loop() {
     // prefix and prewarm before the next user turn instead of during it.
     // The status above covers the primary model only; after a reboot the
     // secondary server becomes ready minutes later, so probe it as well.
-    bool secondary_ready = false;
+    bool secondary_ready = false, backend_became_ready = false;
     if (DUAL_NUMA) {
       std::string reply;
       long health = 0;
@@ -3180,13 +3180,14 @@ static void model_watcher_loop() {
                          {"X-Mag-Model", ROOM_MODEL.backend(s).id},
                          {"X-Mag-Slot", std::to_string(s - 1)}},
                         reply, &health, nullptr, 1500) && health == 200;
+        backend_became_ready = backend_became_ready || (ok && ROOM_MODEL_HEALTH[s - 1] != 1);
         ROOM_MODEL_HEALTH[s - 1] = ok ? 1 : 2;
         health_key += ok ? '1' : '0';
         secondary_ready = secondary_ready || ok;
       }
       key += "|" + health_key;
     }
-    if ((st.ready && !was_ready) || (secondary_ready && !was_secondary_ready))
+    if (backend_became_ready || (st.ready && !was_ready) || (secondary_ready && !was_secondary_ready))
       schedule_prewarm();
     else if (secondary_ready && CONFIGURED_MODEL)
       prewarm_if_prompt_changed(); // system prompt, tools, persona or bot set changed
@@ -5991,13 +5992,15 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
           break;
         }
   }
-  bool ram_warm = false;
+  bool ram_warm = false, ram_known = !CONFIGURED_MODEL;
   if (CONFIGURED_MODEL) {
     std::string raw; long status = 0;
     if (http_simple(BACKEND_HOST, BACKEND_PORT, "GET", "/slots", "",
         {{"Authorization", "Bearer " + API_KEY}, {"X-Mag-Model", model}, {"X-Mag-Slot", gateway_slot(idx)}}, raw, &status, nullptr, 1500) && status == 200) {
       Val slots;
-      if (mj::parse(raw, slots) && slots.isArr()) for (const auto &slot : *slots.arr) {
+      if (mj::parse(raw, slots) && slots.isArr()) {
+        ram_known = true;
+        for (const auto &slot : *slots.arr) {
         for (const char *key : {"n_past", "n_prompt_tokens", "n_cached_tokens"})
           if (auto n = slot.find(key); n && n->asNum() > 0) ram_warm = true;
         if (auto busy = slot.find("is_processing"); busy && busy->asBool()) ram_warm = true;
@@ -6007,11 +6010,12 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
             ((prompt->type == Val::STR && !prompt->asStr().empty()) ||
              (prompt->isArr() && !prompt->asArr().empty()))) ram_warm = true;
         if (auto state = slot.find("state"); state && state->asNum() > 0) ram_warm = true;
+        }
       }
     }
   }
   const uint64_t pw_epoch = PREWARM_EPOCH.load();
-  const bool restored = !ram_warm && PREFIX_DISK && prefix_slot("restore", source);
+  const bool restored = ram_known && !ram_warm && PREFIX_DISK && prefix_slot("restore", source);
   {
     // UI: "Prompt wird vorbereitet (~X min)". Upper bound: ~3.2 bytes per
     // token, measured prefill MAG_ROOM_PREFILL_TPS (Ornith B, 1 server/node: ~62 t/s).

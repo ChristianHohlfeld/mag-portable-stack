@@ -33,5 +33,5 @@ exec /usr/bin/numactl --physcpubind=14-27 --membind=1 "$BIN" \
   --threads 14 --threads-batch 14 --numa numactl \
   --load-mode mlock --lazy-mode off -ot per_layer_token_embd=CPU \
   --jinja --reasoning-format auto --cache-ram 16384 --ctx-checkpoints 8 --checkpoint-min-step 128 \
-  --slot-save-path /var/lib/mag-llm/slots/qwen --no-ui
+  --slots --slot-save-path /var/lib/mag-llm/slots/qwen --no-ui
 

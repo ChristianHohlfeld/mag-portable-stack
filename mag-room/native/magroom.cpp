@@ -5746,7 +5746,7 @@ static void handoff_visible_turn(int idx, TurnReport &report, const std::string 
   if (!TL_GROUP.empty()) { start["group"] = TL_GROUP; start["order"] = TL_ORDER; }
   publish(mj::dump(start)); run_begin(id, name);
 }
-static TurnReport generate_and_post(int idx, bool automatic) {
+static TurnReport generate_and_post(int idx, bool automatic, double dispatched_ms = 0) {
   const uint64_t epoch = EPOCH.load();
   std::string id = bot_field(idx, "id"), name = bot_field(idx, "name");
   Val start = Val::object();
@@ -5754,7 +5754,7 @@ static TurnReport generate_and_post(int idx, bool automatic) {
   start["bot"] = id;
   start["name"] = name;
   start["color"] = bot_field(idx, "color");
-  TL_DISPLAY_MS = display_now_ms();
+  TL_DISPLAY_MS = dispatched_ms > 0 ? dispatched_ms : display_now_ms();
   TL_THINKING_ENABLED = turn_thinking();
   start["display_ms"] = TL_DISPLAY_MS;
   start["thinking_enabled"] = TL_THINKING_ENABLED;
@@ -6490,7 +6490,7 @@ static void lane_turn(Lane *lane, uint64_t run, std::vector<std::string> ids,
                       std::string input,
                       std::shared_ptr<StartGate> wait_for,
                       std::shared_ptr<StartGate> own, std::string after,
-                      std::shared_ptr<TurnGroup> group) {
+                      std::shared_ptr<TurnGroup> group, double dispatched_ms) {
   bool more = false, owner_ran = false;
   std::string progress;
   // Outside TURN_MTX: room-wide operations must not wait for a parked lane.
@@ -6525,7 +6525,8 @@ static void lane_turn(Lane *lane, uint64_t run, std::vector<std::string> ids,
         TURN_THINK = think < 0 ? (bot_thinking(idx) ? 1 : 0) : think;
         TL_ORDER = idx; // fixed position in the bot list
         try {
-          TurnReport report = generate_and_post(idx, automatic);
+          const double visible_start = dispatched_ms; dispatched_ms = 0;
+          TurnReport report = generate_and_post(idx, automatic, visible_start);
           if (group && (lane->user_cancel.load() || lane->stop.load())) group->cancelled = true;
           if (TL_ADOPT_GEN) {
             generation = TL_ADOPT_GEN;
@@ -6635,7 +6636,7 @@ static void start_lanes_locked(const Job &job, bool automatic) {
     auto gate = stagger ? std::make_shared<StartGate>() : nullptr;
     std::thread(lane_turn, lane, run, ids, automatic, job.think, owner,
                 job.generation, EPOCH.load(), job.input,
-                prev, gate, prev_name, group).detach();
+                prev, gate, prev_name, group, display_now_ms()).detach();
     prev = gate;
     prev_name = bot_field(agent_index(ids.front()), "name", "Bot");
   }

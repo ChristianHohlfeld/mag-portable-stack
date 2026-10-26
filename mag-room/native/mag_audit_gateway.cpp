@@ -32,6 +32,7 @@
 #include <iomanip>
 #include <iostream>
 #include <map>
+#include <set>
 #include "room_model.hpp"
 #include <mutex>
 #include <sstream>
@@ -208,10 +209,10 @@ static bool choose_model(const Http &r,std::string &selected,int &port,int *id_s
     Val body; if(mj::parse(r.body,body)&&body.isObj()) if(auto model=body.find("model")) asked=model->asStr();
   }
   // Ignore stale DeepSeek NUMA state on Ornith/Qwen hosts.
-  if(cfg.secondary=="iq3"&&numa_route(asked,selected,port))return true;
-  if((asked=="iq3"||asked=="deepseek-v4-flash-0731-iq3")&&cfg.secondary=="iq3"){selected="iq3"; port=cfg.iq3;return true;}
-  if((asked.empty()||asked=="qwen"||asked=="qwen3.8-flash-next-uncensored")&&cfg.secondary=="qwen"){selected="qwen"; port=cfg.iq3;return true;}
-  if((asked.empty()||asked==cfg.room.id)&&cfg.room.enabled()){
+  if(!cfg.room.enabled()&&cfg.secondary=="iq3"&&numa_route(asked,selected,port))return true;
+  if((asked=="iq3"||asked=="deepseek-v4-flash-0731-iq3")&&cfg.secondary=="iq3"&&!cfg.room.enabled()){selected="iq3"; port=cfg.iq3;return true;}
+  if((asked.empty()||asked=="qwen"||asked=="qwen3.8-flash-next-uncensored")&&cfg.secondary=="qwen"&&!cfg.room.enabled()){selected="qwen"; port=cfg.iq3;return true;}
+  if(cfg.room.enabled()){
     // Persistent bot slot selects a server; NUMA is never a llama id_slot.
     size_t slot=0; auto h=r.headers.find("x-mag-slot"); const bool has=h!=r.headers.end();
     if(has){
@@ -219,6 +220,11 @@ static bool choose_model(const Http &r,std::string &selected,int &port,int *id_s
       if(v!="0"&&v!="1")return false;
       slot=(size_t)std::stoi(v);
     }
+    if (!has && !asked.empty()) {
+      for (size_t i=0;i<cfg.room.backends.size();++i)
+        if (cfg.room.backends[i].id==asked) { slot=i; break; }
+    }
+    if (!asked.empty() && asked!=cfg.room.backends[slot].id) return false;
     if(r.path.rfind("/slots/",0)==0&&!has)return false;
     selected="configured"; port=cfg.room.backends[slot].port;
     if(id_slot&&r.path.rfind("/slots/",0)==0)*id_slot=0; // both nodes use /slots/0
@@ -287,8 +293,12 @@ static void proxy(int fd){
     auto add=[&](const char *name,const char *label,int port){
       Val row=Val::object(); row["id"]=name; row["object"]="model"; row["owned_by"]="mag"; row["label"]=label; row["ready"]=upstream_up(port); data.push(row);
     };
-    if(cfg.secondary=="iq3")add("deepseek-v4-flash-0731","Q4 NUMA0",cfg.q4);
-    if(cfg.room.enabled())add(cfg.room.id.c_str(),cfg.room.label.c_str(),cfg.room.backends[0].port);
+    if(!cfg.room.enabled()&&cfg.secondary=="iq3")add("deepseek-v4-flash-0731","Q4 NUMA0",cfg.q4);
+    if(cfg.room.enabled()) {
+      std::set<std::string> seen;
+      for (const auto &b : cfg.room.backends)
+        if (seen.insert(b.id).second) add(b.id.c_str(),b.label.c_str(),b.port);
+    }
     else if(cfg.secondary=="qwen")add("qwen3.8-flash-next-uncensored","Qwen3.8 NUMA1",cfg.iq3);
     else add("deepseek-v4-flash-0731-iq3","IQ3 NUMA1",cfg.iq3);
     Val listed=Val::object(); listed["object"]="list"; listed["data"]=data;
@@ -355,7 +365,7 @@ static void proxy(int fd){
     // must receive the same model id for explicit and model-less chat requests.
     if(mj::parse(forwarded,j)&&j.isObj()&&
        (j.find("model")||((selected=="qwen"||selected=="configured")&&r.path=="/v1/chat/completions"))){
-      j["model"]=selected.rfind("numa:",0)==0?selected.substr(5):selected=="qwen"?"qwen3.8-flash-next-uncensored":selected=="configured"?cfg.room.id:selected=="iq3"?"deepseek-v4-flash-0731-iq3":"deepseek-v4-flash-0731";
+      j["model"]=selected.rfind("numa:",0)==0?selected.substr(5):selected=="qwen"?"qwen3.8-flash-next-uncensored":selected=="configured"?[&](){for(const auto &b:cfg.room.backends)if(b.port==upstream)return b.id;return std::string();}():selected=="iq3"?"deepseek-v4-flash-0731-iq3":"deepseek-v4-flash-0731";
       forwarded=mj::dump(j);
     }
   }
@@ -425,4 +435,5 @@ int main(){
   }catch(const std::exception &e){std::cerr<<"mag-audit-gateway: "<<e.what()<<"\n";return 1;}
   return 0;
 }
+
 

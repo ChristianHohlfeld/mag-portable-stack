@@ -2,7 +2,7 @@
 Description=MAG DeepSeek V4 Flash, NUMA node %i (1 bot)
 After=network-online.target
 Wants=network-online.target
-Conflicts=mag-llm.service mag-llm-iq3.service mag-llm-qwen.service mag-llm-ornith@1.service mag-llm-ornith@2.service mag-llm-ornith@3.service mag-llm-ornith@4.service mag-llm-ornith-node@0.service mag-llm-ornith-node@1.service
+Conflicts=mag-llm.service mag-llm-iq3.service mag-llm-ornith@1.service mag-llm-ornith@2.service mag-llm-ornith@3.service mag-llm-ornith@4.service mag-llm-ornith-node@0.service mag-llm-ornith-node@1.service
 StartLimitIntervalSec=1800
 StartLimitBurst=2
 

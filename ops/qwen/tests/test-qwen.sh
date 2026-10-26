@@ -9,7 +9,7 @@ PY
 # The new model requires a separate pinned upstream runtime, not the existing
 # DeepSeek ik_llama.cpp binary or a live deploy swap.
 grep -Fq '4a45de4f2c68f3d144f6c2431ad7c1da7e53c99e' ops/qwen/runtime.sha
-grep -Fq -- '--physcpubind=42-55 --membind=1' ops/qwen/start.sh
+grep -Fq -- '--physcpubind=14-27 --membind=1' ops/qwen/start.sh
 grep -Fq -- '--numa numactl' ops/qwen/start.sh
 grep -Fq 'mag-llm-iq3.service && fail' ops/qwen/start.sh
 grep -Fq 'verify-model.sh' ops/qwen/start.sh
@@ -51,4 +51,6 @@ import ast,pathlib
 ast.parse(pathlib.Path("ops/qwen/smoke.py").read_text())
 PY
 bash ops/perf/tests/test-numa-context.sh
-echo 'Qwen NUMA1 operator cutover + Jinja/Thinking/tools contract PASS'
+python3 ops/qwen/tests/test_layout.py
+echo 'Qwen NUMA1 layout + Jinja/Thinking/tools contract PASS'
+

@@ -1619,7 +1619,7 @@ document.addEventListener('click',e=>{if(openPop&&!openPop.menu.contains(e.targe
 // Two bots, each pinned automatically to one configured NUMA server.
 function botCap(){return state.max_bots||2}
 function etaMin(sec){return Math.max(1,Math.round(sec/60))}
-function botModelLabel(a){if(state.configured_model)return state.model_label||'';return (state.models||[]).find(m=>m.id===a.model)?.label||(a.model?.includes('qwen')?'Qwen':a.model?.includes('deepseek')?'DeepSeek':'')}
+function botModelLabel(a){return (state.models||[]).find(m=>m.id===a.model)?.label||(a.model?.includes('qwen')?'Qwen':a.model?.includes('deepseek')?'DeepSeek':'')}
 function renderAgents(){const list=$('agents');list.replaceChildren();const single=state.single_bot||'';$('add-agent').hidden=!!single||!!state.dual_numa;if(single){selected.clear();selected.add(single)}const old=$('browser-agent').value;$('browser-agent').replaceChildren();for(const a of state.agents){if(!selected.has(a.id)&&!sessionStorage.getItem('mag-selected'))selected.add(a.id);const card=document.createElement('div');card.className='agent';card.dataset.bot=a.id;card.tabIndex=0;
 card.setAttribute('role','button');card.setAttribute('aria-label',a.name+' Browser und Terminal anzeigen');
 card.onclick=e=>{if(e.target.closest('button,a,input,label,textarea,select'))return;focusBot(a.id)};

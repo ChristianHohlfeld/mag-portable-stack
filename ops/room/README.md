@@ -80,3 +80,36 @@ opacity pulse; with Thinking on the thought header is collapsible with a
 duration and closes after thinking completes. GitHub tools (including GitHub
 MCP bindings) require explicit per-bot enablement. Switching access off
 changes booleans only and preserves server-side credentials.
+
+## DeepSeek + Qwen (default update on an existing two-node host)
+
+`ops/update.sh` selects `mixed.env`: NUMA0 DeepSeek on 8191, NUMA1 Qwen
+Uncensored on 8192, two persistent bot slots. It reuses the pinned Qwen runtime,
+GGUF and upstream digest. A missing runtime is built; GGUF integrity is verified
+before the NUMA1 DeepSeek instance is stopped and disabled. DeepSeek weights
+remain on disk. NUMA0 is never stopped or restarted.
+
+The transaction checks Qwen health, normal chat, structured auto/required tools,
+tool results, Thinking and SSE before committing the room deployment. Any
+failure restores the previous NUMA1 model/config/boot state. The old application
+and gateway also roll back together. Ordinary updates retain an already warm
+Qwen process. Blank-host bootstrap keeps its existing DeepSeek provisioning.
+
+Both model servers have one fixed llama slot (`id_slot=0`, `cache_prompt=true`
+unless explicitly stateless). Qwen uses its upstream `--ctx-checkpoints 8
+--checkpoint-min-step 128`, RAM prompt cache and a separate disk slot directory.
+Prewarm is asynchronous/cancellable and probes RAM before considering a disk
+restore. Prefix files and lanes are isolated by model and persistent bot slot.
+CI exercises cold then warm requests for both models (`n_past > 0` on request 2)
+with isolated fake backends; live throughput still needs the MAG host.
+
+To return to two DeepSeek bots through the same automated update path:
+
+```sh
+MAG_ROOM_LAYOUT=deepseek bash ops/update.sh
+```
+
+The choice persists across automatic updates. To select mixed again, use
+`MAG_ROOM_LAYOUT=mixed bash ops/update.sh`. `ops/rollback.sh RELEASE_ID` also
+restores the paired NUMA1 transaction when rolling back this release. No manual
+model service commands are needed.

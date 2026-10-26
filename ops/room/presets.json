@@ -3,6 +3,31 @@
     "id": "deepseek-v4-dual-numa",
     "label": "DeepSeek V4 Flash · 1 Bot pro NUMA (2 Bots)",
     "model": "deepseek-v4-flash-0731",
-    "ports": [{"port": 8191, "numa": 0}, {"port": 8192, "numa": 1}]
+    "ports": [
+      {
+        "port": 8191,
+        "numa": 0
+      },
+      {
+        "port": 8192,
+        "numa": 1
+      }
+    ]
+  },
+  {
+    "id": "deepseek-qwen-dual-numa",
+    "label": "DeepSeek V4 Flash (NUMA 0) + Qwen3.8 Uncensored (NUMA 1)",
+    "ports": [
+      {
+        "port": 8191,
+        "numa": 0,
+        "model": "deepseek-v4-flash-0731"
+      },
+      {
+        "port": 8192,
+        "numa": 1,
+        "model": "qwen3.8-flash-next-uncensored"
+      }
+    ]
   }
 ]

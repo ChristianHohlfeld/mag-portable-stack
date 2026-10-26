@@ -8,11 +8,8 @@
 # by an earlier read (e.g. the SHA check run as root via install.sh), which
 # --membind cannot move: measured 73 of 98 GiB on node0, prefill 13 t/s.
 # Read into anonymous memory instead, so every page is allocated on NUMA1.
-# CPUs 42-55 are the hyperthread siblings of 14-27, where Q4 pins its
-# workers. On 14-27 both models' spin barriers fought over the same OS CPUs:
-# Qwen prefill fell from 32 to 4 t/s while Q4 read a prompt. On the siblings
-# the cores are shared in hardware instead (Qwen 20 t/s, alone still 32 t/s).
-# Refuse to start if IQ3 is running or backups are active.
+# NUMA0 now has its own socket. Use NUMA1's 14 physical cores, with its
+# entire weight allocation bound to node1. IQ3/backup gates remain in place.
 set -euo pipefail
 fail(){ echo "Qwen NUMA1: $*" >&2; exit 4; }
 REV=$(cat /usr/local/lib/mag-qwen/runtime.sha)
@@ -30,10 +27,11 @@ read -r free file shmem < <(awk '$3=="MemFree:"{f=$4} $3=="FilePages:"{p=$4} $3=
 usable=$((free + (file > shmem ? file-shmem : 0)))
 (( usable >= 150*1024*1024 )) || fail 'NUMA1 reclaimable RAM below 150GiB (reserve for system/backup)'
 bash /usr/local/lib/mag-qwen/verify-model.sh || fail 'model SHA verification failed'
-exec /usr/bin/numactl --physcpubind=42-55 --membind=1 "$BIN" \
+exec /usr/bin/numactl --physcpubind=14-27 --membind=1 "$BIN" \
   --model "$MODEL" --alias qwen3.8-flash-next-uncensored \
-  --host 127.0.0.1 --port 8091 --ctx-size 32768 --parallel 1 \
+  --host 127.0.0.1 --port "${QWEN_PORT:-8091}" --ctx-size 32768 --parallel 1 \
   --threads 14 --threads-batch 14 --numa numactl \
   --load-mode mlock --lazy-mode off -ot per_layer_token_embd=CPU \
-  --jinja --reasoning-format auto --cache-ram 16384 \
+  --jinja --reasoning-format auto --cache-ram 16384 --ctx-checkpoints 8 --checkpoint-min-step 128 \
   --slot-save-path /var/lib/mag-llm/slots/qwen --no-ui
+

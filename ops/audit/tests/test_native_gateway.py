@@ -218,7 +218,7 @@ class NativeGateway(unittest.TestCase):
         self.assertNotEqual(process.returncode,0)
 
     @contextlib.contextmanager
-    def configured_gateway(self):
+    def configured_gateway(self,mixed=False):
         kinds=[type("DeepSeekNode%d"%n,(FakeModel,),{"ready":True,"calls":[]}) for n in (0,1)]
         servers=[];ports=[]
         for k in kinds:
@@ -228,6 +228,7 @@ class NativeGateway(unittest.TestCase):
         env=dict(self.env,MAG_AUDIT_LISTEN_PORT=str(gwp),MAG_ROOM_MODEL_ID="deepseek-v4-flash-0731",
                  MAG_ROOM_MODEL_LABEL="DeepSeek V4 Flash",MAG_ROOM_MODEL_PORTS="%d:0,%d:1"%tuple(ports),MAG_ROOM_MAX_BOTS="2",
                  MAG_AUDIT_LOG_DIR=str(self.dir/"numa-logs"))
+        if mixed:env.update(MAG_ROOM_MODEL_ID_1="qwen3.8-flash-next-uncensored",MAG_ROOM_MODEL_LABEL_1="Qwen3.8 Uncensored")
         proc=subprocess.Popen([str(ROOT/"build/mag-audit-gateway")],env=env,stdout=subprocess.DEVNULL,stderr=subprocess.PIPE)
         def post(slot,path="/v1/chat/completions",body=None,model="deepseek-v4-flash-0731"):
             c=http.client.HTTPConnection("127.0.0.1",gwp,timeout=5)
@@ -285,6 +286,20 @@ class NativeGateway(unittest.TestCase):
             self.assertEqual(post(0,"/slots/0?action=save",{"filename":"node0.bin"}),200)
             self.assertEqual(kinds[1].calls[0][1]["filename"],"node1.bin")
             self.assertEqual(kinds[0].calls[0][1]["filename"],"node0.bin")
+
+    def test_12_mixed_models_and_mismatched_slots(self):
+        with self.configured_gateway(mixed=True) as (kinds,gwp,post):
+            ids=["deepseek-v4-flash-0731","qwen3.8-flash-next-uncensored"]
+            self.assertEqual([x["id"] for x in request(gwp,path="/v1/models")[1]["data"]],ids)
+            for n,model in enumerate(ids):
+                self.assertEqual(post(n,model=model),200)
+                self.assertEqual(kinds[n].calls[-1][1]["model"],model)
+                self.assertEqual(kinds[n].calls[-1][1]["id_slot"],0)
+                self.assertTrue(kinds[n].calls[-1][1]["cache_prompt"])
+                self.assertEqual(post(1-n,model=model),400)
+                self.assertEqual(post(n,"/slots/0?action=save",{"filename":"own.bin"},model=model),200)
+            self.assertEqual(post(None,model=ids[1]),200)
+            self.assertEqual(post(0,model="unknown"),400)
 
     def test_11_configured_defaults_agree(self):
         unit=(ROOT/"ops/audit/systemd/mag-audit-gateway.service").read_text()

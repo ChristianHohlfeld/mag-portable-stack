@@ -29,8 +29,10 @@ if [[ ! -s "$PIN" ]]; then
 fi
 echo "Verifying complete GGUF and staging Qwen on NUMA1 ..."
 nice -n 19 ionice -c3 bash "$ROOT/ops/qwen/install.sh" stage
+rm -f /etc/mag-qwen/runtime.env
 bash "$ROOT/ops/qwen/cutover.sh" check
 echo "Activating Qwen; live chat, reasoning and structured tool calls must pass ..."
 bash "$ROOT/ops/qwen/cutover.sh" apply
 echo "Ready: MAG frontend model selector offers 0 · Q4 and 1 · Qwen."
 echo "Select 1 · Qwen, send a message, and use Thinking / MCP tools normally."
+

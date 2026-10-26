@@ -14,7 +14,7 @@ def request(port, messages, thinking=False, choice=None, stream=False):
     body = {"model": MODEL, "messages": messages, "stream": stream,
             "max_tokens": 512 if thinking else 192, "temperature": 0,
             "chat_template_kwargs": {"enable_thinking": thinking},
-            "cache_prompt": True}
+            "cache_prompt": True, "id_slot": 0}
     if choice:
         body["tools"] = [TOOL]
         body["tool_choice"] = choice
@@ -57,7 +57,7 @@ def tool(msg):
 
 def main():
     a = argparse.ArgumentParser()
-    a.add_argument("--port", choices=[8080, 8091], type=int, default=8091)
+    a.add_argument("--port", choices=[8080, 8091, 8192], type=int, default=8091)
     a.add_argument("--quick", action="store_true")
     opt = a.parse_args()
     msg = request(opt.port, [{"role": "user", "content": "Reply READY."}])
@@ -88,3 +88,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

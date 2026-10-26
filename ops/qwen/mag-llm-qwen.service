@@ -3,6 +3,7 @@
 [Unit]
 Description=MAG Qwen3.8 Flash Next CPU model, NUMA1
 After=network-online.target
+Conflicts=mag-llm-ds-node@1.service mag-llm-iq3.service
 Wants=network-online.target
 ConditionPathExists=/etc/mag-qwen/model.sha256
 StartLimitIntervalSec=1800
@@ -14,16 +15,18 @@ Group=chris
 WorkingDirectory=/home/chris
 # Backend ports are root/audit-only; preflight must not run under User=chris.
 # Standalone Qwen fallback: no DeepSeek / Q4 health gate.
+EnvironmentFile=-/etc/mag-qwen/runtime.env
 ExecStart=/usr/local/lib/mag-qwen/start.sh
 Restart=on-failure
 RestartSec=60
 TimeoutStartSec=10800
 TimeoutStopSec=120
-CPUAffinity=42-55
-AllowedCPUs=42-55
+CPUAffinity=14-27
+AllowedCPUs=14-27
 NUMAPolicy=bind
 NUMAMask=1
 MemoryAccounting=yes
+MemoryLow=116G
 MemoryHigh=160G
 MemoryMax=184G
 MemorySwapMax=0
@@ -39,3 +42,4 @@ PrivateTmp=yes
 RestrictAddressFamilies=AF_INET AF_UNIX
 [Install]
 WantedBy=multi-user.target
+

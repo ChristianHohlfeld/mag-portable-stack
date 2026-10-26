@@ -8,7 +8,7 @@ class Layout(unittest.TestCase):
   for name in ('qwen','room'):
    shutil.copytree(ROOT/'ops'/name,self.repo/'ops'/name,symlinks=True)
   self.host=self.base/'host';self.bin=self.base/'bin';self.bin.mkdir()
-  helper=self.repo/'ops/qwen/layout.sh';s=helper.read_text()
+  helper=self.repo/'ops/qwen/layout.sh';s=helper.read_text().replace("[[ $EUID == 0 ]] || fail 'root required'",'')
   for path in ('/etc/','/usr/local/','/home/chris/'):
    s=s.replace(path,str(self.host)+path)
   helper.write_text(s)

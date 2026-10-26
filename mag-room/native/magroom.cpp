@@ -2218,7 +2218,13 @@ static void wire_finish(int idx,const std::vector<Val> &messages,bool valid) {
   it->second.messages=messages;
   // User input accepted during tool execution is already in the wire history.
   {std::lock_guard<std::recursive_mutex> state(STATE_MTX);
-   for(const auto &m:ROOM)it->second.seen.insert(mag::str(m,"id"));}
+   for(const auto &m:ROOM) {
+     if(mag::str(m,"role")!="user")continue;
+     const auto text=mag::str(m,"content");
+     for(const auto &sent:messages)
+       if(!text.empty()&&mag::str(sent,"role")=="user"&&mag::str(sent,"content").find(text)!=std::string::npos)
+         it->second.seen.insert(mag::str(m,"id"));
+   }}
   wire_store(bot,it->second);
 }
 

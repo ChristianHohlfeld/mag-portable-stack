@@ -16,7 +16,7 @@ class Cards(unittest.TestCase):
   tmp=pathlib.Path('/tmp/mag-cards-ui')
   if tmp.exists():shutil.rmtree(tmp)
   static=tmp/'static';shutil.copytree(ROOT/'mag-room/static',static)
-  proc,log,model,ui,bridge=pwa.start_room(tmp,static,'cards')
+  proc,log,model,ui,bridge=pwa.start_room(tmp,static,'cards',extra={'MAG_ROOM_PREWARM':'0','MAG_ROOM_MCP_AUTO':'0'})
   errors=[];pw=sync_playwright().start()
   browser=pw.chromium.launch(channel='chrome',headless=True,args=['--no-sandbox','--disable-dev-shm-usage'])
   VALUE='Pa55-wort-geheim-91'

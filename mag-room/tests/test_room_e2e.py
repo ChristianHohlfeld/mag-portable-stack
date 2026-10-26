@@ -274,7 +274,7 @@ class RoomE2E(unittest.TestCase):
         expect(p.locator('.message.work-live > .run')).to_have_count(0)
         # Start after message insertion; monitor only status/stream/finalization.
         p.evaluate("""()=>{window.quietShifts=[];window.quietObserver=new PerformanceObserver(list=>{
-          for(const e of list.getEntries())quietShifts.push(e.value)});
+          for(const e of list.getEntries())quietShifts.push({value:e.value,sources:e.sources.map(s=>({tag:s.node?.tagName,cls:s.node?.className,prev:s.previousRect.toJSON(),now:s.currentRect.toJSON(),chat:!!s.node?.closest?.('#conversation')}))})});
           quietObserver.observe({type:'layout-shift',buffered:false});
           window.quietNode=document.querySelector('.work-live');
           window.quietTop=quietNode.querySelector('.content').getBoundingClientRect().top;
@@ -286,7 +286,9 @@ class RoomE2E(unittest.TestCase):
         expect(p.locator('.message.assistant > .content').last).to_have_text('Hallo Welt.',timeout=8000)
         p.wait_for_timeout(250)
         self.assertEqual(p.locator('.message.assistant').last.locator('.work-status,.thinking,.quiet-loading').count(),0)
-        self.assertLessEqual(p.evaluate('quietShifts.reduce((a,b)=>a+b,0)'),1e-8,'status, first token and completion must have CLS=0')
+        print('QUIET_SHIFTS',p.evaluate('quietShifts'),flush=True)
+        self.shot('06b-inline-cls-debug')
+        self.assertLessEqual(p.evaluate('quietShifts.reduce((a,b)=>a+b.value,0)'),1e-8,'status, first token and completion must have CLS=0')
         self.assertLessEqual(p.evaluate("(()=>{const c=document.querySelector('#conversation');return c.scrollHeight-c.clientHeight-c.scrollTop})()"),2)
         # An explicit upward scroll detaches; later streamed text must not pull
         # the reader back to the bottom. Natural answer growth is allowed.

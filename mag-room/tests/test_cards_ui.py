@@ -33,6 +33,7 @@ class Cards(unittest.TestCase):
    page.screenshot(path=str(ART/'routine_card.png'))
    card.locator('button',has_text='Speichern').click()
    page.wait_for_function("()=>[...document.querySelectorAll('.job-name')].some(n=>n.textContent==='Morgenbericht')",timeout=15000)
+   page.wait_for_function("()=>[...document.querySelectorAll('.message.assistant .content')].some(n=>n.textContent==='Routine gespeichert.')",timeout=15000)
    pwa.Health.script=[call('secret',{'action':'request','name':'SHOP_PW','purpose':'Login im Shop'}),[{'content':'Danke.'}]]
    page.locator('#message').fill('Logg dich im Shop ein');page.locator('#send-button').click()
    sc=page.locator('.secret-card');sc.wait_for(timeout=15000)

@@ -1,0 +1,13 @@
+--- a/tools/server/server-context.cpp
++++ b/tools/server/server-context.cpp
+@@ -2231,2 +2231,10 @@
+     void send_final_response(server_slot & slot) {
++        // MAG: retain the exact completed-answer state, independent of batch size.
++        if (params_base.n_ctx_checkpoints > 0 && slot.prompt.n_tokens() >= 64 &&
++            (ctx_tgt_seq_rm_type == COMMON_CONTEXT_SEQ_RM_TYPE_FULL ||
++             ctx_tgt_seq_rm_type == COMMON_CONTEXT_SEQ_RM_TYPE_RS || n_swa > 0)) {
++            create_checkpoint(slot, 0,
++                llama_memory_seq_pos_min(llama_get_memory(ctx_tgt), slot.id),
++                llama_memory_seq_pos_max(llama_get_memory(ctx_tgt), slot.id));
++        }
+         auto res = std::make_unique<server_task_result_cmpl_final>();

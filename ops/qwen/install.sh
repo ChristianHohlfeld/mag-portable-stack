@@ -6,7 +6,7 @@ set -euo pipefail
 [[ ${1:-} == refresh ]] || ! systemctl is-active --quiet mag-llm-qwen.service || { echo 'Qwen is already running; refuse restage' >&2; exit 4; }
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 REV=$(cat "$ROOT/ops/qwen/runtime.sha")
-BIN="/home/chris/.local/qwen4exp/$REV/bin/llama-server"
+BIN="/home/chris/.local/qwen4exp/$REV-mag-cp1/bin/llama-server"
 [[ "$REV" =~ ^[a-f0-9]{40}$ && -x "$BIN" ]] || { echo 'build pinned Qwen llama.cpp first' >&2; exit 4; }
 [[ $(cat "$(dirname "$BIN")/source-commit") == "$REV" ]] || exit 4
 PIN=/home/chris/models/qwen3.8-flash-next-uncensored/upstream.sha256

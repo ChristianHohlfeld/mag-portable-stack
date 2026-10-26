@@ -11,10 +11,15 @@ files=(/etc/mag-stack/room-model.env /etc/mag-stack/room-layout /etc/mag-qwen/ru
        /etc/systemd/system/mag-llm-qwen.service /etc/systemd/system/mag-llm-ds-node@.service
        /usr/local/lib/mag-qwen/start.sh /usr/local/lib/mag-qwen/verify-model.sh
        /usr/local/lib/mag-qwen/runtime.sha /etc/mag-qwen/model.sha256)
+disable_if_installed(){
+  # A pure-DeepSeek host may never have had a Qwen unit file.
+  if systemctl cat "$1" >/dev/null 2>&1; then systemctl disable "$1"; fi
+}
 rollback(){
   [[ -f $TXN/started && ! -f $TXN/restored ]] || return 0
   # Stop only an instance this transaction changed. Never touch ds-node@0.
   if [[ -f $TXN/changed ]]; then systemctl stop "${units[@]}"; fi
+  for unit in "${units[@]}"; do disable_if_installed "$unit"; done
   for file in "${files[@]}"; do
     if [[ -f $TXN/files$file ]]; then
       install -D -m "$(stat -c %a "$TXN/files$file")" "$TXN/files$file" "$file"
@@ -22,7 +27,7 @@ rollback(){
   done
   systemctl daemon-reload
   for unit in "${units[@]}"; do
-    if grep -Fxq "$unit" "$TXN/enabled"; then systemctl enable "$unit"; else systemctl disable "$unit"; fi
+    if grep -Fxq "$unit" "$TXN/enabled"; then systemctl enable "$unit"; fi
     if [[ -f $TXN/changed ]] && grep -Fxq "$unit" "$TXN/active"; then systemctl start "$unit"; fi
   done
   touch "$TXN/restored"
@@ -36,7 +41,7 @@ layout=${MAG_ROOM_LAYOUT:-$(cat /etc/mag-stack/room-layout 2>/dev/null || echo m
 [[ -f /etc/mag-stack/room-model.env ]] || exit 0
 if [[ $layout == mixed ]]; then
   REV=$(cat "$ROOT/ops/qwen/runtime.sha")
-  BIN="/home/chris/.local/qwen4exp/$REV/bin/llama-server"
+  BIN="/home/chris/.local/qwen4exp/$REV-mag-cp1/bin/llama-server"
   if [[ ! -x $BIN || $(cat "$(dirname "$BIN")/source-commit" 2>/dev/null || true) != "$REV" ]]; then
     runuser -u chris -- env HOME=/home/chris nice -n 19 ionice -c3 bash "$ROOT/ops/qwen/build-runtime.sh"
   fi
@@ -81,11 +86,11 @@ systemctl daemon-reload
 if systemctl is-active --quiet "$other"; then change=1; fi
 if (( change )); then
   touch "$TXN/changed"
-  systemctl stop "$other"
+  if systemctl is-active --quiet "$other"; then systemctl stop "$other"; fi
   # A previous :8091 Qwen or changed runtime may need one NUMA1 restart.
   if systemctl is-active --quiet "$selected"; then systemctl stop "$selected"; fi
 fi
-systemctl disable "$other"
+disable_if_installed "$other"
 systemctl enable "$selected"
 if (( change )); then
   systemctl start "$selected"

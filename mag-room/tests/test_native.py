@@ -73,7 +73,7 @@ class Model(http.server.BaseHTTPRequestHandler):
    elif obj.get('cache_prompt') is True:
     ram=type(self).last_prompt.setdefault('ram',[])
     cached=max([lcp(p) for p in ram]+[0]);ram.append(text)
-   type(self).cache_records.append({'model':obj.get('model'),'slot':slot,'n_past':cached,'cache_prompt':obj.get('cache_prompt')})
+   type(self).cache_records.append({'model':obj.get('model'),'slot':slot,'n_past':cached,'prompt_size':evaluated,'cache_prompt':obj.get('cache_prompt')})
    stat=json.dumps({'choices':[],'tokens_cached':cached,'tokens_evaluated':evaluated,'timings':{'prompt_n':max(0,evaluated-cached),'prompt_per_second':40.0,'predicted_n':3,'predicted_per_second':8.0,'cache_n':cached}}).encode()
    payload=b'data: '+stat+b'\n\n';self.wfile.write(('%x\r\n'%len(payload)).encode()+payload+b'\r\n');self.wfile.flush()
    end=b'data: [DONE]\n\n';self.wfile.write(('%x\r\n'%len(end)).encode()+end+b'\r\n0\r\n\r\n');self.wfile.flush()
@@ -3293,7 +3293,7 @@ class ConfiguredNuma(unittest.TestCase):
    time.sleep(.3);self.wait_idle()
    got=self.round_msgs(token)
    self.assertEqual(sorted(m['bot'] for m in got if not m.get('interrupted')),sorted(b for b in ids if b!=ids[1]))
-   self.assertFalse([c for c,_ in list(Model.pairs) if token in json.dumps(c,ensure_ascii=False) and 'Reflexionsrunde' in json.dumps(c,ensure_ascii=False)])
+   self.assertFalse([c for c,_ in list(Model.pairs) if token in json.dumps(c,ensure_ascii=False) and 'Reflexionsrunde' in c['messages'][-1].get('content','')])
   finally:
    self.assertFalse(self.request('/api/reflect',{'on':False})['on'])
  def test_09_prewarm_every_bot_slot_and_share_prefix(self):
@@ -3394,11 +3394,12 @@ class MixedNuma(unittest.TestCase):
  def test_03_second_request_uses_positive_n_past_for_both_models(self):
   for b in self.bots().values():
    self.wait_idle();Model.last_prompt.clear();mark=len(Model.cache_records)
-   self.ask(b['id']);self.ask(b['id'])
+   first,_=self.ask(b['id']);second,_=self.ask(b['id'])
+   self.assertEqual(second['messages'][:len(first['messages'])],first['messages'],'previous wire messages stay byte-identical')
    calls=[c for c in Model.cache_records[mark:] if c['model']==b['model']]
    self.assertEqual(len(calls),2)
    self.assertEqual(calls[0]['n_past'],0)
-   self.assertGreater(calls[1]['n_past'],0,'second request must reuse the warm prefix')
+   self.assertGreaterEqual(calls[1]['n_past']/calls[0]['prompt_size'],.95,'second request must reuse >=95% of the prior prefix')
    self.assertTrue(all(c['slot']==0 and c['cache_prompt'] for c in calls))
  def test_02_prewarm_isolated_per_model(self):
   self.wait_idle();self.stop();self.env['MAG_ROOM_PREWARM']='1'

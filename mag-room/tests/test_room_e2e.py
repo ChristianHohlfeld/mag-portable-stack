@@ -263,6 +263,44 @@ class RoomE2E(unittest.TestCase):
         expect(p.locator('.message.assistant .content').last).to_have_text('Alt beantwortet.', timeout=8000)
         expect(p.locator('#queue-chips .q-chip')).to_have_count(0)
 
+    def test_06b_quiet_stream_has_zero_layout_shift_and_keeps_scroll_anchor(self):
+        p=self.page
+        self.room.api('/api/bot-settings',{'bots':['a'],'thinking':False},method='PUT')
+        p.reload();expect(p.locator('#connection')).to_contain_text('Verbunden')
+        Model.scripts += [[{'_sleep':1.5},'Hallo ',{'_sleep':.25},'Welt.']]
+        self.send('Inline ohne Sprung')
+        content=p.locator('.message.work-live > .content')
+        expect(content).to_have_attribute('data-loading','1')
+        expect(p.locator('.message.work-live > .run')).to_have_count(0)
+        # Start after message insertion; monitor only status/stream/finalization.
+        p.evaluate("""()=>{window.quietShifts=[];window.quietObserver=new PerformanceObserver(list=>{
+          for(const e of list.getEntries())quietShifts.push(e.value)});
+          quietObserver.observe({type:'layout-shift',buffered:false});
+          window.quietNode=document.querySelector('.work-live');
+          window.quietTop=quietNode.querySelector('.content').getBoundingClientRect().top;
+        }""")
+        for phase in ('read','prompt','answer'):
+            p.evaluate("""phase=>events.onmessage({data:JSON.stringify({type:'step',bot:'a',phase,label:'Liest Verlauf',thinking_enabled:false})})""",phase)
+            p.wait_for_timeout(60)
+            self.assertLessEqual(abs(p.evaluate("quietNode.querySelector('.content').getBoundingClientRect().top-quietTop")),.5)
+        expect(p.locator('.message.assistant > .content').last).to_have_text('Hallo Welt.',timeout=8000)
+        p.wait_for_timeout(250)
+        self.assertEqual(p.locator('.message.assistant').last.locator('.work-status,.thinking,.quiet-loading').count(),0)
+        self.assertLessEqual(p.evaluate('quietShifts.reduce((a,b)=>a+b,0)'),1e-8,'status, first token and completion must have CLS=0')
+        self.assertLessEqual(p.evaluate("(()=>{const c=document.querySelector('#conversation');return c.scrollHeight-c.clientHeight-c.scrollTop})()"),2)
+        # An explicit upward scroll detaches; later streamed text must not pull
+        # the reader back to the bottom. Natural answer growth is allowed.
+        p.evaluate("""()=>{state.room=Array.from({length:24},(_,i)=>({id:'anchor'+i,role:'assistant',name:'Alpha',content:'Absatz '.repeat(60),ts:1700000000+i}));render()}""")
+        p.wait_for_timeout(100)
+        p.locator('#conversation').hover();p.mouse.wheel(0,-550);p.wait_for_timeout(150)
+        top=p.evaluate("document.querySelector('#conversation').scrollTop")
+        p.evaluate("""()=>{events.onmessage({data:JSON.stringify({type:'bot_start',bot:'a',name:'Alpha',thinking_enabled:false})});
+          events.onmessage({data:JSON.stringify({type:'delta',bot:'a',text:'Neue Antwort '.repeat(100)})})}""")
+        p.wait_for_timeout(150)
+        self.assertLessEqual(abs(p.evaluate("document.querySelector('#conversation').scrollTop")-top),.5)
+        self.shot('06b-inline-cls-zero')
+        self.room.api('/api/bot-settings',{'bots':['a'],'thinking':True},method='PUT')
+
     def test_07_mobile_layout_has_no_overflowing_header(self):
         p = self.browser.new_page(viewport={'width': 390, 'height': 844}, is_mobile=True, has_touch=True)
         try:

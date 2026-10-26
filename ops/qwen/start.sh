@@ -13,10 +13,10 @@
 set -euo pipefail
 fail(){ echo "Qwen NUMA1: $*" >&2; exit 4; }
 REV=$(cat /usr/local/lib/mag-qwen/runtime.sha)
-BIN="/home/chris/.local/qwen4exp/$REV/bin/llama-server"
+BIN="/home/chris/.local/qwen4exp/$REV-mag-cp1/bin/llama-server"
 MODEL="/home/chris/models/qwen3.8-flash-next-uncensored/Qwen3.8-Flash-Next-Uncensored.IQ4_XS.gguf"
 [[ -x "$BIN" && -f "$MODEL" ]] || fail 'runtime / GGUF missing'
-[[ $(cat "/home/chris/.local/qwen4exp/$REV/bin/source-commit") == "$REV" ]] || fail 'runtime version not pinned'
+[[ $(cat "/home/chris/.local/qwen4exp/$REV-mag-cp1/bin/source-commit") == "$REV" ]] || fail 'runtime version not pinned'
 [[ $(cat /sys/devices/system/node/node1/cpulist) == "14-27,42-55" ]] || fail 'unexpected NUMA1 topology'
 systemctl is-active --quiet mag-llm-iq3.service && fail 'IQ3 still running; explicit operator stop required'
 # Q4 is checked as root in systemd ExecStartPre (audit firewall blocks chris on port 8090).

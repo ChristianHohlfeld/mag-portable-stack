@@ -542,15 +542,16 @@ dialog{border-radius:10px;border-color:var(--line);background:var(--surface)}
  #app-header .brand{gap:6px}
 }
 
-.quiet-loading{height:28px;min-height:28px;width:28px;display:flex;align-items:center;justify-content:center;flex:none}
-.quiet-loading>span{width:7px;height:7px;border-radius:50%;background:var(--muted);animation:quiet-pulse 1.3s ease-in-out infinite;flex:none}
+.message.assistant>.content{min-height:28px}
+.content[data-loading="1"]::before{content:"";display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--muted);vertical-align:middle;animation:quiet-pulse 1.3s ease-in-out infinite}
+.message.assistant .message-tools{height:40px;min-height:40px}
 @keyframes quiet-pulse{50%{opacity:.3}}
 .run>.thinking .think-head{height:28px;min-height:28px;white-space:nowrap}
 .run.collapsed>.thinking{display:block!important}
 .think-time{font-variant-numeric:tabular-nums;min-width:42px}
 .think-peek{display:none!important}
 .q-chip{min-width:0;max-width:100%;flex-wrap:wrap}.q-text{min-width:0;overflow-wrap:anywhere}.queue-head{flex-wrap:wrap}
-@media(prefers-reduced-motion:reduce){.quiet-loading>span{animation:none;opacity:.6}}
+@media(prefers-reduced-motion:reduce){.content[data-loading="1"]::before{animation:none;opacity:.6}}
 </style><script src="/static/message-audio.js"></script><script>try{document.documentElement.dataset.theme=localStorage.getItem('mag-theme')||((matchMedia('(prefers-color-scheme: light)').matches)?'light':'dark')}catch(e){document.documentElement.dataset.theme='dark'}</script></head><body><svg xmlns="http://www.w3.org/2000/svg" aria-hidden="true" style="position:absolute;width:0;height:0;overflow:hidden"><defs><symbol id="ic-menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></symbol><symbol id="ic-tools" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></symbol><symbol id="ic-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol><symbol id="ic-send" viewBox="0 0 24 24"><path d="m5 12 14-8-4 16-3-7-7-1Z"/><path d="m12 13 7-9"/></symbol><symbol id="ic-paperclip" viewBox="0 0 24 24"><path d="m20.5 11.6-8 8a5 5 0 0 1-7-7l9-9a3.5 3.5 0 0 1 5 5L10 18a2 2 0 1 1-3-3l8-8"/></symbol><symbol id="ic-mic" viewBox="0 0 24 24"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0M12 17v5m-4 0h8"/></symbol><symbol id="ic-moon" viewBox="0 0 24 24"><path d="M20.6 15.5A9 9 0 0 1 8.5 3.4 9 9 0 1 0 20.6 15.5Z"/></symbol><symbol id="ic-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M4.9 4.9l1.4 1.4m11.4 11.4 1.4 1.4M2 12h2m16 0h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></symbol><symbol id="ic-lock" viewBox="0 0 24 24"><rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></symbol><symbol id="ic-file" viewBox="0 0 24 24"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9Z"/><path d="M13 2v7h7"/></symbol><symbol id="ic-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></symbol><symbol id="ic-pause" viewBox="0 0 24 24"><rect x="5" y="5" width="5" height="14" rx="1"/><rect x="14" y="5" width="5" height="14" rx="1"/></symbol><symbol id="ic-stop" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/></symbol><symbol id="ic-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c5 5 5 13 0 18M12 3c-5 5-5 13 0 18"/></symbol><symbol id="ic-terminal" viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="18" rx="2"/><path d="m6 8 4 4-4 4m7 0h5"/></symbol><symbol id="ic-brain" viewBox="0 0 24 24"><path d="M12 18V5a3 3 0 0 0-6 0 4 4 0 0 0-2 7 4 4 0 0 0 2 7 3 3 0 0 0 6-1Zm0 0V5a3 3 0 0 1 6 0 4 4 0 0 1 2 7 4 4 0 0 1-2 7 3 3 0 0 1-6-1Z"/></symbol><symbol id="ic-arrow" viewBox="0 0 24 24"><path d="M5 12h14m-6-6 6 6-6 6"/></symbol><symbol id="ic-chev" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></symbol><symbol id="ic-plug" viewBox="0 0 24 24"><path d="M9 2v5m6-5v5M6 7h12v4a6 6 0 0 1-12 0V7zm6 10v5"/></symbol><symbol id="ic-trash" viewBox="0 0 24 24"><path d="M3 6h18m-2 0-1 15H6L5 6m3 0V3h8v3M10 10v7m4-7v7"/></symbol><symbol id="ic-spark" viewBox="0 0 24 24"><path d="m12 2 2.2 7.8L22 12l-7.8 2.2L12 22l-2.2-7.8L2 12l7.8-2.2L12 2Z"/></symbol><symbol id="ic-expand" viewBox="0 0 24 24"><path d="M9 3H3v6m12-6h6v6M3 15v6h6m12-6v6h-6"/></symbol><symbol id="ic-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z"/></symbol><symbol id="ic-cpu" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 2v4m6-4v4M9 18v4m6-4v4M2 9h4m-4 6h4m12-6h4m-4 6h4"/></symbol><symbol id="ic-check" viewBox="0 0 24 24"><path d="m4 12 5 5L20 6"/></symbol><symbol id="ic-up" viewBox="0 0 24 24"><path d="M12 19V5m-6 6 6-6 6 6"/></symbol><symbol id="ic-stopfill" viewBox="0 0 24 24"><rect x="6.5" y="6.5" width="11" height="11" rx="2.5" fill="currentColor" stroke="none"/></symbol><symbol id="ic-image" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="2"/><path d="m21 16-5-5-9 9"/></symbol><symbol id="ic-camera" viewBox="0 0 24 24"><path d="M4 8h3l2-3h6l2 3h3a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1Z"/><circle cx="12" cy="13.5" r="3.5"/></symbol><symbol id="ic-screen" viewBox="0 0 24 24"><rect x="2" y="4" width="20" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></symbol></defs></svg>
 <header id="app-header"><button class="side-toggle" id="toggle-agents" aria-controls="left-panel" aria-expanded="true" title="Bot-Leiste umschalten"><svg class="i " aria-hidden="true"><use href="#ic-menu"></use></svg> <span>Bots</span></button><div class="brand"><div class="brand-mark"><svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="square" stroke-linejoin="miter" aria-hidden="true"><path d="M3 22V8h18v14"/><path d="M3 8V3h4v4h3V3h4v4h3V3h4v5"/><rect x="8" y="12" width="8" height="10"/></svg></div><span class="brand-word">MAG</span><span class="brand-caption">Stardenburg · privat</span></div><span class="header-divider"></span><span class="header-title">Unterhaltung</span><div class="header-actions"><div id="model-choice" role="group" aria-label="Modell auswählen"><button type="button" class="model-button" data-model-id="deepseek-v4-flash-0731" aria-pressed="true" title="Q4">0 · Q4</button><button type="button" class="model-button" data-model-id="deepseek-v4-flash-0731-iq3" aria-pressed="false" title="IQ3">1 · IQ3</button></div><span id="model-info" title="Aktives Modell, Engine und Geschwindigkeit"></span><span class="status-group" aria-label="Status"><span id="model-state" class="top-stat" role="status" title="Modellstatus"><span class="dot"></span><span class="txt">Modell lädt …</span></span><span class="top-stat" id="connection" title="Verbindung zum Raum"><span class="dot"></span><span class="txt">Verbinde …</span></span></span><span class="top-stat" id="you-badge" hidden></span><div class="menu-wrap"><button type="button" class="side-toggle" id="room-menu-btn" aria-haspopup="menu" aria-expanded="false" aria-controls="room-menu" title="Raum: Autonomie, Netz, alles anhalten"><svg class="i " aria-hidden="true"><use href="#ic-spark"></use></svg> <span>Raum</span></button><div class="plus-menu room-menu" id="room-menu" role="menu" aria-label="Raum" hidden><label class="control-row" id="autotalk-row" role="menuitemcheckbox"><input type="checkbox" id="autotalk"><span>Autonom arbeiten</span></label><p class="control-desc" id="autotalk-desc">Läuft auch bei geschlossenem Browser.</p><label class="control-row" id="reflect-row" role="menuitemcheckbox"><input type="checkbox" id="reflect"><span>Zweite Runde (Bots lesen einander)</span></label><label class="control-row" id="offline-row" role="menuitemcheckbox"><input type="checkbox" id="offline"><span>Offline (Bots ohne Netz)</span></label><div class="menu-sep"></div><button type="button" role="menuitem" id="stop" title="Alle Antworten, Werkzeuge und Jobs anhalten"><svg class="i sm" aria-hidden="true"><use href="#ic-pause"></use></svg><span id="stop-label">Alles anhalten (inkl. Jobs)</span></button><button type="button" role="menuitem" id="room-add-agent"><svg class="i sm" aria-hidden="true"><use href="#ic-plus"></use></svg><span>Bot hinzufügen</span></button><div class="menu-sep"></div><button type="button" role="menuitem" id="room-settings"><svg class="i sm" aria-hidden="true"><use href="#ic-gear"></use></svg><span>Einstellungen …</span></button></div></div><button type="button" class="icon-btn" id="settings-open" title="Einstellungen" aria-label="Einstellungen" aria-haspopup="dialog"><svg class="i " aria-hidden="true"><use href="#ic-gear"></use></svg></button><button class="side-toggle" id="toggle-tools" aria-controls="right-panel" aria-expanded="true" title="Werkzeuge umschalten"><svg class="i " aria-hidden="true"><use href="#ic-tools"></use></svg> <span>Werkzeuge</span></button></div></header>
 <div class="layout" id="layout">
@@ -1195,7 +1196,7 @@ function append(msg,scroll=true,trace=null,position=-1){
  meta.append(avatar,name,time);div.append(meta);
  const text=shownText(msg);
  const content=document.createElement('div');content.className='content';content.innerHTML=safeMarkdown(text);decorate(content);
- if(!text)content.hidden=true;
+ if(!text)content.hidden=human||msg.thinking_enabled!==false;
  if(msg.kind==='voice'&&text){div.classList.add('voice');const vb=document.createElement('div');vb.className='voice-bubble';const pb=document.createElement('button');pb.className='voice-play';const vl=document.createElement('span');vl.textContent='Sprachnachricht';vb.append(pb,vl);if(window.magMessageAudio?.attach)window.magMessageAudio.attach(pb,text,msg.id);div.append(vb)}
  div.append(content);
  attachReactions(div,msg);
@@ -1204,7 +1205,8 @@ function append(msg,scroll=true,trace=null,position=-1){
  if(!human&&msg.tools?.length)paintTools(div,content,storedTools(msg));
  if(trace)addTrace(div,{...trace,key:msg.id||''});
  if(msg.file)div.append(attachmentView(msg.file));
- if(text){const actions=document.createElement('div');actions.className='message-tools';const b=document.createElement('button');b.type='button';b.className='message-copy';b.innerHTML=ICON_COPY+' Kopieren';b.setAttribute('aria-label','Nachricht kopieren');b.onclick=()=>copyText(text,b);actions.append(b);const audio=document.createElement('button');if(window.magMessageAudio?.attach){window.magMessageAudio.attach(audio,text,msg.id);actions.append(audio)}div.append(actions)}
+ if(text||msg.live){const actions=document.createElement('div');actions.className='message-tools';if(msg.live)actions.style.visibility='hidden';const b=document.createElement('button');b.type='button';b.className='message-copy';b.innerHTML=ICON_COPY+' Kopieren';b.setAttribute('aria-label','Nachricht kopieren');b.onclick=()=>copyText(text,b);actions.append(b);const audio=document.createElement('button');if(window.magMessageAudio?.attach){window.magMessageAudio.attach(audio,text,msg.id);actions.append(audio)}div.append(actions)}
+ if(msg.id&&completedHeights.has(msg.id))div.style.minHeight=completedHeights.get(msg.id)+'px';
  inner.append(div);return div;
 }
 function streamClock(s){const t=Math.max(0,Math.floor((Date.now()-((s&&s.started)||Date.now()))/1000));return Math.floor(t/60)+':'+String(t%60).padStart(2,'0')}
@@ -1260,6 +1262,7 @@ function stepsList(steps){
 }
 function attachWork(div,msg,content){
  if(!msg||msg.role==='user')return;
+ if(msg.thinking_enabled===false&&!msg.work_error&&!msg.interrupted)return;
  if(!msg.work_error&&!msg.interrupted&&!shownSteps(msg.steps).length&&!msg.reasoning&&!shownTools(storedTools(msg)).length)return;
  const box=document.createElement('div');
  box.className='work-status '+(stoppedByUser(msg)?'phase-stopped':msg.work_error?'phase-error':(msg.interrupted?'phase-hung':'phase-done'));
@@ -1287,15 +1290,12 @@ function readingPanel(node,s){
  box.replaceChildren(head,ul);
 }
 function ensureWork(node,s,botId){
- const quiet=s.thinkingEnabled===false&&!liveText(s);
- let dot=node.querySelector('.quiet-loading');
- if(quiet){
-  for(const cls of ['work-status','work-reading','work-steps'])runPart(node,cls)?.remove();
-  if(!dot){dot=document.createElement('div');dot.className='quiet-loading';dot.setAttribute('role','status');dot.setAttribute('aria-label','Antwort wird vorbereitet');dot.innerHTML='<span></span>';runBox(node).append(dot)}
+ if(s.thinkingEnabled===false){
+  for(const cls of ['work-status','work-reading','work-steps','thinking'])runPart(node,cls)?.remove();
+  node.querySelector('.quiet-loading')?.remove();
+  const run=node.querySelector(':scope > .run');if(run&&!run.children.length)run.remove();
   return;
  }
- dot?.remove();
- if(s.thinkingEnabled===false&&s.phase!=='tool'&&!s.error){runPart(node,'work-status')?.remove();runPart(node,'work-reading')?.remove();return}
  let box=runPart(node,'work-status');
  if(!box){
   box=document.createElement('div');box.className='work-status';box.setAttribute('role','status');
@@ -1370,10 +1370,11 @@ function paintApprovals(node,botId){
  for(const a of mine)if(!node.querySelector('.mcp-approve[data-id="'+CSS.escape(a.id)+'"]'))content.before(approvalCard(a))}
 // A live reply keeps the slot it got when it first appeared: later events of
 // any bot only update in place, they never move one reply below another.
+const completedHeights=new Map();
 let streamSeq=0;
 function liveNode(botId,s){
  if(!s.seq)s.seq=++streamSeq;
- const node=append({role:'assistant',name:s.name,content:s.text||'',display_ms:s.displayMs||s.started||Date.now()},false);
+ const node=append({role:'assistant',name:s.name,content:s.text||'',thinking_enabled:s.thinkingEnabled,live:true,display_ms:s.displayMs||s.started||Date.now()},false);
  node.dataset.liveBot=botId;node.dataset.liveSeq=String(s.seq);
  const inner=node.parentNode;
  for(const old of inner.querySelectorAll('.message[data-live-bot]'))if(old!==node&&old.dataset.liveBot===botId)old.remove();
@@ -1390,7 +1391,8 @@ function updateStream(botId,immediate=false){
   s.frame=0;if(!s.node?.isConnected)return;
   const content=s.node.querySelector('.content');
   ensureWork(s.node,s,botId);
-  const text=liveText(s);content.hidden=!text;
+  const text=liveText(s);content.hidden=s.thinkingEnabled===false?false:!text;
+  content.dataset.loading=s.thinkingEnabled===false&&!text?'1':'0';
   if(!text){s.node.classList.add('processing');if(content._shown!==''){content.replaceChildren();content._shown=''}}
   else{s.node.classList.remove('processing');if(content._shown!==text){content.innerHTML=safeMarkdown(text);decorate(content);content._shown=text}}
   showThinking(s.node,'live:'+botId,s.thinkingEnabled===false?'':(s.reasoning||''),!!s.thinking,liveThinkMs(s));
@@ -2809,7 +2811,8 @@ events.onmessage=e=>{
    const s=streams[id];if(s?.frame)cancelAnimationFrame(s.frame);
    if(thinkOpen.delete('live:'+id)&&event.id)thinkOpen.add(event.id);
    if(runOpen.has('live:'+id)){const o=runOpen.get('live:'+id);runOpen.delete('live:'+id);if(event.id)runOpen.set('done:'+event.id,o)}
-   if(s&&(s.reasoning||s.tools?.length)){completedTraces.push({name:s.name,content:event.content||s.text||'',reasoning:event.reasoning?'':(s.reasoning||''),ms:liveThinkMs(s),tools:s.tools||[],assignedPosition:null});if(completedTraces.length>40)completedTraces.shift()}
+   if(s&&s.thinkingEnabled!==false&&(s.reasoning||s.tools?.length)){completedTraces.push({name:s.name,content:event.content||s.text||'',reasoning:event.reasoning?'':(s.reasoning||''),ms:liveThinkMs(s),tools:s.tools||[],assignedPosition:null});if(completedTraces.length>40)completedTraces.shift()}
+   if(s?.node)completedHeights.set(event.id,s.node.getBoundingClientRect().height);
    delete streams[id];streamControls();
    refresh().catch(err=>notice(err.message));
   }else if(window.magAgentUI?.event(event)){

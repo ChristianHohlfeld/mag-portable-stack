@@ -12,8 +12,9 @@ done
 [[ $PORT =~ ^[0-9]+$ ]] || { echo 'No port configured for NUMA node' >&2; exit 4; }
 exec "$IK_BIN" --model "$DS_MODEL" --alias "$MAG_ROOM_MODEL_ID" \
   --host 127.0.0.1 --port "$PORT" --ctx-size "$DS_CONTEXT" --parallel 1 \
-  --threads 14 --threads-batch 14 --numa numactl --batch-size 1024 --ubatch-size 1024 \
-  --mlock --flash-attn on --cache-type-k f16 --cache-type-v f16 \
+  --threads 14 --threads-batch 14 --numa numactl -b 2048 -ub 2048 \
+  -rtr -crs 0.20 --ctx-checkpoints-interval 128 \
++  --mlock --flash-attn on --cache-type-k f16 --cache-type-v f16 \
   --cache-ram "$DS_CACHE_RAM" --jinja --chat-template-file "$DS_TEMPLATE" \
   --reasoning-format deepseek --slot-save-path "/var/lib/mag-llm/slots/ds-node$NODE" \
   --temp 1.0 --top-p 0.95 --min-p 0.01 --metrics --webui none

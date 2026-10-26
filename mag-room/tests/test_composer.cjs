@@ -9,7 +9,7 @@ const handler = html.slice(start, html.indexOf(';window.addEventListener(\'load\
 let focusCalls=0, blurCalls=0, coarse=false;
 const elements = {'send-form':{}, message:{value:'First',focus(){focusCalls++},blur(){blurCalls++}},think:{checked:false}};
 let resolve, calls=0;
-const context = {window:{}, matchMedia:()=>({matches:coarse}), $:id=>elements[id],selected:new Set(['a']),state:{agents:[],busy_bots:[],pending:[]},streams:{},stagedPhotos:[],stagedFiles:[],jumpForSend(){},render(){},notice(){},fitMessageHeight(){},api(){calls++;return new Promise(r=>resolve=r)}};
+const context = {window:{}, matchMedia:()=>({matches:coarse}), $:id=>elements[id],selected:new Set(['a']),state:{agents:[],busy_bots:[],pending:[]},streams:{},async refresh(){},stagedPhotos:[],stagedFiles:[],jumpForSend(){},render(){},notice(){},fitMessageHeight(){},api(){calls++;return new Promise(r=>resolve=r)}};
 vm.runInNewContext(handler, context);
 (async()=>{
  const first=elements['send-form'].onsubmit({preventDefault(){}});

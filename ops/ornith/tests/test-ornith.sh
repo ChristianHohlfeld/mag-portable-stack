@@ -48,14 +48,14 @@ for line in 'User=chris' 'LimitMEMLOCK=infinity' 'MemoryHigh=30G' 'MemoryMax=34G
   'Conflicts=mag-llm-qwen.service mag-llm-ornith@1.service mag-llm-ornith@2.service mag-llm-ornith@3.service mag-llm-ornith@4.service'; do
   grep -Fxq "$line" 'ops/ornith/mag-llm-ornith-node@.service'
 done
-grep -Fxq 'Environment=MAG_MODEL_ORNITH_PORTS=8191:0,8192:0,8191:1,8192:1' ops/audit/systemd/mag-audit-gateway.service
+grep -Fxq 'EnvironmentFile=-/etc/mag-stack/room-model.env' ops/audit/systemd/mag-audit-gateway.service
 grep -Fq '8191-8194' ops/audit/mag-audit.nft
 grep -Fq 'MAG_SECONDARY_MODEL=ornith' ops/deploy.sh
-grep -Fq 'mag-llm-ornith-node@' ops/deploy.sh
+grep -Fq 'ops/room/install.sh' ops/deploy.sh
 grep -Fq 'MAG_SECONDARY_MODEL=ornith' ops/boot/ensure-boot.sh
 grep -Fq 'mag-llm-ornith-node@' ops/boot/ensure-boot.sh
-grep -Fq 'MAG_SECONDARY_MODEL=ornith' ops/bootstrap.sh
-grep -Fq 'mag-llm-ornith-node@' ops/bootstrap.sh
+grep -Fq 'ops/room/install.sh' ops/bootstrap.sh
+grep -Fq 'mag-llm-ds-node@' ops/bootstrap.sh
 # Never touch mag-llm, cloudflared, s23pub; never delete Qwen files.
 refute grep -Eq 'mag-llm[.]service' ops/ornith/rollback.sh
 refute grep -Eq 'systemctl [a-z -]*(stop|restart|kill|disable)[a-z -]* mag-llm[.]service' ops/ornith/*.sh
@@ -118,7 +118,7 @@ SH
     grep -Fxq 'enable mag-llm-ornith-node@0.service mag-llm-ornith-node@1.service' "$T/log"
     refute grep -Eq '^enable mag-llm-ornith@' "$T/log"
     grep -Fxq 'restart mag-audit-gateway.service' "$T/log"
-    grep -Fxq 'Environment=MAG_MODEL_ORNITH_PORTS=8191:0,8192:0,8191:1,8192:1' "$R/etc/systemd/system/mag-audit-gateway.service"
+    grep -Fxq 'EnvironmentFile=-/etc/mag-stack/room-model.env' "$R/etc/systemd/system/mag-audit-gateway.service"
     refute grep -Fq 'enable --now mag-llm-qwen.service' "$T/log"
     cmp -s build/mag-audit-gateway "$R/opt/mag-audit/bin/mag-audit-gateway"
     [[ ! -e $R/var/lib/mag-ornith/cutover-numa ]]

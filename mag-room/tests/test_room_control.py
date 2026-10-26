@@ -260,6 +260,7 @@ class StopAndPriority(unittest.TestCase):
         wait_calls(1)
         q = self.room.api('/api/message', {'text': 'Gewartet', 'bots': ['a']})
         self.assertTrue(q['queued'])
+        self.room.api('/api/queue/pause', {})
         r = self.room.api('/api/cancel', {})
         self.assertEqual(r['held'], 1)
         s = self.room.until(lambda s: not s['busy'], timeout=3)

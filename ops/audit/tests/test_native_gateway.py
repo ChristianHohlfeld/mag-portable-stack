@@ -1,5 +1,6 @@
 """Contract tests for the native (C++) MAG model-routing gateway.
 All HTTP servers are process-local fixtures. No model binaries or privileges needed."""
+import contextlib
 import grp, http.client, http.server, json, os, pathlib, socket, subprocess
 import tempfile, threading, time, unittest
 
@@ -216,22 +217,23 @@ class NativeGateway(unittest.TestCase):
                                capture_output=True,timeout=5)
         self.assertNotEqual(process.returncode,0)
 
-    def test_07_ornith_sticky_backend_per_bot_slot(self):
-        # Four fake Ornith instances; X-Mag-Slot (room bot index) pins one backend, never round-robin.
-        kinds=[type("Ornith%d"%i,(FakeModel,),{"ready":True,"calls":[]}) for i in range(4)]
-        ports=[port() for _ in kinds];servers=[]
-        for k,pn in zip(kinds,ports):
-            srv=http.server.ThreadingHTTPServer(("127.0.0.1",pn),k);servers.append(srv)
-            threading.Thread(target=srv.serve_forever,daemon=True).start()
+    @contextlib.contextmanager
+    def configured_gateway(self):
+        kinds=[type("DeepSeekNode%d"%n,(FakeModel,),{"ready":True,"calls":[]}) for n in (0,1)]
+        servers=[];ports=[]
+        for k in kinds:
+            srv=http.server.ThreadingHTTPServer(("127.0.0.1",0),k)
+            threading.Thread(target=srv.serve_forever,daemon=True).start();servers.append(srv);ports.append(srv.server_port)
         gwp=port()
-        env=dict(self.env,MAG_AUDIT_LISTEN_PORT=str(gwp),MAG_SECONDARY_MODEL="ornith",
-                 MAG_MODEL_ORNITH_PORTS=",".join(map(str,ports)),MAG_AUDIT_LOG_DIR=str(self.dir/"ornith-logs"))
+        env=dict(self.env,MAG_AUDIT_LISTEN_PORT=str(gwp),MAG_ROOM_MODEL_ID="deepseek-v4-flash-0731",
+                 MAG_ROOM_MODEL_LABEL="DeepSeek V4 Flash",MAG_ROOM_MODEL_PORTS="%d:0,%d:1"%tuple(ports),MAG_ROOM_MAX_BOTS="2",
+                 MAG_AUDIT_LOG_DIR=str(self.dir/"numa-logs"))
         proc=subprocess.Popen([str(ROOT/"build/mag-audit-gateway")],env=env,stdout=subprocess.DEVNULL,stderr=subprocess.PIPE)
-        def chat(slot,model="ornith-1.5-35b-a3b"):
+        def post(slot,path="/v1/chat/completions",body=None,model="deepseek-v4-flash-0731"):
             c=http.client.HTTPConnection("127.0.0.1",gwp,timeout=5)
             h={"Content-Type":"application/json"}
             if slot is not None:h["X-Mag-Slot"]=str(slot)
-            c.request("POST","/v1/chat/completions",body=json.dumps({"model":model,"messages":[]}),headers=h)
+            c.request("POST",path,body=json.dumps(body if body is not None else {"model":model,"messages":[],"cache_prompt":True,"id_slot":99}),headers=h)
             r=c.getresponse();r.read();c.close();return r.status
         try:
             for _ in range(100):
@@ -241,118 +243,55 @@ class NativeGateway(unittest.TestCase):
                 except (ConnectionError,OSError):pass
                 time.sleep(.05)
             Q4.calls.clear();IQ3.calls.clear()
-            code,listed=request(gwp,"GET","/v1/models")
-            # DeepSeek is retired on an Ornith host: not listed, no :8090 upstream.
-            self.assertEqual(sorted(x["id"] for x in listed["data"]),["ornith-1.5-35b-a3b"])
-            for _ in range(3):
-                for slot in (2,0,3,1):self.assertEqual(chat(slot),200)
-            self.assertEqual([len(k.calls) for k in kinds],[3,3,3,3],"each bot slot sticks to its own instance")
-            self.assertTrue(all(c[1]["model"]=="ornith-1.5-35b-a3b" for k in kinds for c in k.calls))
-            self.assertEqual(chat(None),200);self.assertEqual(len(kinds[0].calls),4,"no slot -> instance 1, deterministic")
-            for bad in ("4","x","-1",""):self.assertEqual(chat(bad),400,"invalid slot fails closed")
-            self.assertEqual(chat(0,"qwen3.8-flash-next-uncensored"),400,"Qwen no longer routable")
-            for old in ("deepseek-v4-flash-0731","q4","deepseek-v4-flash-0731-iq3"):
-                self.assertEqual(chat(0,old),400,"DeepSeek fails closed, no fallback to a dead port")
-            c=http.client.HTTPConnection("127.0.0.1",gwp,timeout=5)
-            c.request("POST","/v1/chat/completions",body=json.dumps({"model":"deepseek-v4-flash-0731","messages":[]}),headers={"Content-Type":"application/json"})
-            r=c.getresponse();self.assertIn("DeepSeek ist stillgelegt",r.read().decode());c.close()
-            n0=len(kinds[0].calls);self.assertEqual(chat(None,""),200,"no model -> Ornith (room health/radius)")
-            self.assertEqual(len(kinds[0].calls),n0+1)
-            self.assertEqual(IQ3.calls,[]);self.assertEqual(Q4.calls,[])
+            yield kinds,gwp,post
+            self.assertEqual(Q4.calls+IQ3.calls,[],"configured mode never touches legacy backends")
         finally:
             proc.terminate();proc.wait(timeout=3);proc.stderr.close()
             for srv in servers:srv.shutdown();srv.server_close()
 
-    def test_08_ornith_shared_server_forces_id_slot_per_bot(self):
-        # One shared llama-server, one llama slot per bot: id_slot forced, slot RPCs rewritten.
-        kind=type("OrnithShared",(FakeModel,),{"ready":True,"calls":[]})
-        pn=port();srv=http.server.ThreadingHTTPServer(("127.0.0.1",pn),kind)
-        threading.Thread(target=srv.serve_forever,daemon=True).start()
-        gwp=port()
-        env=dict(self.env,MAG_AUDIT_LISTEN_PORT=str(gwp),MAG_SECONDARY_MODEL="ornith",
-                 MAG_MODEL_ORNITH_PORTS=",".join("%d:%d"%(pn,i) for i in range(4)),MAG_AUDIT_LOG_DIR=str(self.dir/"shared-logs"))
-        proc=subprocess.Popen([str(ROOT/"build/mag-audit-gateway")],env=env,stdout=subprocess.DEVNULL,stderr=subprocess.PIPE)
-        def post(slot,path="/v1/chat/completions",body=None):
-            c=http.client.HTTPConnection("127.0.0.1",gwp,timeout=5)
-            h={"Content-Type":"application/json","X-Mag-Model":"ornith-1.5-35b-a3b"}
-            if slot is not None:h["X-Mag-Slot"]=str(slot)
-            c.request("POST",path,body=json.dumps(body if body is not None else {"model":"ornith-1.5-35b-a3b","messages":[],"id_slot":3}),headers=h)
-            r=c.getresponse();r.read();c.close();return r.status
-        try:
-            for _ in range(100):
-                if proc.poll() is not None:raise RuntimeError(proc.stderr.read().decode())
-                try:
-                    if request(gwp)[0]==200:break
-                except (ConnectionError,OSError):pass
-                time.sleep(.05)
-            Q4.calls.clear();IQ3.calls.clear()
-            for slot in (2,0,3,1):self.assertEqual(post(slot),200)
-            self.assertEqual([c[1]["id_slot"] for c in kind.calls],[2,0,3,1],"room-sent id_slot is overridden")
-            kind.calls.clear()
-            for slot in (1,3):self.assertEqual(post(slot,"/slots/0?action=save",{"filename":"mag-prefix-ornith-slot%d.bin"%(slot+1)}),200)
-            self.assertEqual(post(2,"/slots/0?action=restore",{"filename":"x.bin"}),200)
-            self.assertEqual([c[0] for c in kind.calls],["/slots/1?action=save","/slots/3?action=save","/slots/2?action=restore"])
-            self.assertEqual(kind.calls[0][1]["filename"],"mag-prefix-ornith-slot2.bin")
-            kind.calls.clear()
-            self.assertEqual(post(None,"/slots/0?action=save",{"filename":"a.bin"}),400,"slot RPC without bot slot fails closed")
-            self.assertEqual(post(1,"/slots/0?action=bogus",{}),400)
-            for bad in ("4","x","-1",""):self.assertEqual(post(bad),400,"invalid slot fails closed")
-            self.assertEqual(kind.calls,[]);self.assertEqual(Q4.calls,[]);self.assertEqual(IQ3.calls,[])
-        finally:
-            proc.terminate();proc.wait(timeout=3);proc.stderr.close()
-            srv.shutdown();srv.server_close()
+    def test_07_configured_sticky_backend_per_bot_slot(self):
+        with self.configured_gateway() as (kinds,gwp,post):
+            self.assertEqual([x["id"] for x in request(gwp,path="/v1/models")[1]["data"]],["deepseek-v4-flash-0731"])
+            for _ in range(3):
+                for slot in (1,0):self.assertEqual(post(slot),200)
+            self.assertEqual([len(k.calls) for k in kinds],[3,3])
+            for k in kinds:
+                for _,body in k.calls:
+                    self.assertEqual(body["model"],"deepseek-v4-flash-0731")
+                    self.assertEqual(body["id_slot"],0)
+                    self.assertTrue(body["cache_prompt"])
+            for bad in ("2","4","x","-1",""):self.assertEqual(post(bad),400)
+            for old in ("ornith-1.5-35b-a3b","qwen3.8-flash-next-uncensored","deepseek-v4-flash-0731-iq3"):
+                self.assertEqual(post(0,model=old),400)
+            self.assertEqual(post(None,model=""),200)
 
-    def test_09_ornith_bad_backend_spec_fails_closed(self):
-        for spec in ("8191:4","8191:x","0:1"):
-            env=dict(self.env,MAG_AUDIT_LISTEN_PORT=str(port()),MAG_SECONDARY_MODEL="ornith",MAG_MODEL_ORNITH_PORTS=spec)
+    def test_08_configured_single_slot_rpc_per_bot(self):
+        with self.configured_gateway() as (kinds,gwp,post):
+            for slot in (0,1):
+                self.assertEqual(post(slot,"/slots/7?action=save",{"filename":"mag-prefix-deepseek-slot%d.bin"%(slot+1)}),200)
+                self.assertEqual(post(slot,"/slots/3?action=restore",{"filename":"own.bin"}),200)
+                self.assertEqual([p for p,_ in kinds[slot].calls],["/slots/0?action=save","/slots/0?action=restore"])
+            self.assertEqual(post(None,"/slots/0?action=save",{"filename":"a.bin"}),400)
+            self.assertEqual(post(1,"/slots/0?action=bogus",{}),400)
+
+    def test_09_configured_bad_backend_spec_fails_closed(self):
+        for spec in ("8191:4","8191:x","0:0,8192:1","8191:0,8192:0","8191:0,8191:1","8191:0,8192:1,8193:0"):
+            env=dict(self.env,MAG_AUDIT_LISTEN_PORT=str(port()),MAG_ROOM_MODEL_ID="deepseek-v4-flash-0731",MAG_ROOM_MODEL_PORTS=spec)
             self.assertNotEqual(subprocess.run([str(ROOT/"build/mag-audit-gateway")],env=env,capture_output=True,timeout=5).returncode,0,spec)
 
-    def test_10_ornith_two_node_servers_cross_server_order(self):
-        # Variant B: one server per NUMA node, 2 llama slots each; bots 1,2 on DIFFERENT servers.
-        kinds=[type("OrnithNode%d"%n,(FakeModel,),{"ready":True,"calls":[]}) for n in (0,1)]
-        servers=[];ports=[]
-        for k in kinds:
-            pn=port();srv=http.server.ThreadingHTTPServer(("127.0.0.1",pn),k)
-            threading.Thread(target=srv.serve_forever,daemon=True).start();servers.append(srv);ports.append(pn)
-        a,b=ports;gwp=port()
-        env=dict(self.env,MAG_AUDIT_LISTEN_PORT=str(gwp),MAG_SECONDARY_MODEL="ornith",
-                 MAG_MODEL_ORNITH_PORTS="%d:0,%d:0,%d:1,%d:1"%(a,b,a,b),MAG_AUDIT_LOG_DIR=str(self.dir/"numa-logs"))
-        proc=subprocess.Popen([str(ROOT/"build/mag-audit-gateway")],env=env,stdout=subprocess.DEVNULL,stderr=subprocess.PIPE)
-        def post(slot,path="/v1/chat/completions",body=None):
-            c=http.client.HTTPConnection("127.0.0.1",gwp,timeout=5)
-            h={"Content-Type":"application/json","X-Mag-Model":"ornith-1.5-35b-a3b"}
-            if slot is not None:h["X-Mag-Slot"]=str(slot)
-            c.request("POST",path,body=json.dumps(body if body is not None else {"model":"ornith-1.5-35b-a3b","messages":[]}),headers=h)
-            r=c.getresponse();r.read();c.close();return r.status
-        try:
-            for _ in range(100):
-                if proc.poll() is not None:raise RuntimeError(proc.stderr.read().decode())
-                try:
-                    if request(gwp)[0]==200:break
-                except (ConnectionError,OSError):pass
-                time.sleep(.05)
-            Q4.calls.clear();IQ3.calls.clear()
-            for slot in range(4):self.assertEqual(post(slot),200)
-            self.assertEqual([c[1]["id_slot"] for c in kinds[0].calls],[0,1],"bots 1,3 -> node0 slots 0,1")
-            self.assertEqual([c[1]["id_slot"] for c in kinds[1].calls],[0,1],"bots 2,4 -> node1 slots 0,1")
-            for k in kinds:k.calls.clear()
-            # Slot files stay on the bot's own server (its own --slot-save-path).
-            self.assertEqual(post(1,"/slots/0?action=restore",{"filename":"mag-prefix-ornith-slot4.bin"}),200)
-            self.assertEqual(post(2,"/slots/0?action=save",{"filename":"mag-prefix-ornith-slot3.bin"}),200)
-            self.assertEqual([c[0] for c in kinds[1].calls],["/slots/0?action=restore"])
-            self.assertEqual([c[0] for c in kinds[0].calls],["/slots/1?action=save"])
-            for k in kinds:k.calls.clear()
-            self.assertEqual(post(None,"/slots/0?action=save",{"filename":"a.bin"}),400,"slot RPC without bot slot fails closed")
-            self.assertEqual(post("4"),400)
-            self.assertEqual(kinds[0].calls+kinds[1].calls,[]);self.assertEqual(Q4.calls,[]);self.assertEqual(IQ3.calls,[])
-        finally:
-            proc.terminate();proc.wait(timeout=3);proc.stderr.close()
-            for srv in servers:srv.shutdown();srv.server_close()
+    def test_10_configured_two_nodes_keep_files_separate(self):
+        with self.configured_gateway() as (kinds,gwp,post):
+            self.assertEqual(post(1,"/slots/0?action=restore",{"filename":"node1.bin"}),200)
+            self.assertEqual(post(0,"/slots/0?action=save",{"filename":"node0.bin"}),200)
+            self.assertEqual(kinds[1].calls[0][1]["filename"],"node1.bin")
+            self.assertEqual(kinds[0].calls[0][1]["filename"],"node0.bin")
 
-    def test_11_default_ornith_ports_are_two_node_servers(self):
+    def test_11_configured_defaults_agree(self):
         unit=(ROOT/"ops/audit/systemd/mag-audit-gateway.service").read_text()
-        src=(ROOT/"mag-room/native/mag_audit_gateway.cpp").read_text()
-        room=(ROOT/"mag-room/native/magroom.cpp").read_text()
-        for text in (unit,src,room):self.assertIn("8191:0,8192:0,8191:1,8192:1",text)
+        env=(ROOT/"ops/room/model.env").read_text()
+        header=(ROOT/"mag-room/native/room_model.hpp").read_text()
+        self.assertIn('EnvironmentFile=-/etc/mag-stack/room-model.env',unit)
+        for text in (env,header):self.assertIn("8191:0,8192:1",text)
+        self.assertIn('MAG_ROOM_MAX_BOTS=2',env)
 
 if __name__=="__main__":unittest.main()

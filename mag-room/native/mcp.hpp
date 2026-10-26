@@ -518,6 +518,9 @@ static std::vector<McpBotTool> mcp_bot_tools(int bot_idx) {
   std::set<std::string> seen;
   for (auto &srv : servers) {
     const std::string sid = mcp_str(srv, "id"), sname = mcp_str(srv, "name");
+    std::string gh = mcp_str(srv, "url") + " " + sname;
+    std::transform(gh.begin(), gh.end(), gh.begin(), [](unsigned char c) { return (char)std::tolower(c); });
+    if ((mcp_str(srv, "auth") == "connector" || gh.find("github") != std::string::npos) && !github_enabled(bot_idx)) continue;
     const Val *b = binds.find(sid);
     if (!b) continue;
     auto tools = srv.find("tools");
@@ -736,3 +739,4 @@ static std::string mcp_step_label(const std::string &fn) {
   }
   return name + " · " + tool;
 }
+

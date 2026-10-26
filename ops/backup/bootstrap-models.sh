@@ -1,16 +1,15 @@
 #!/usr/bin/env bash
-# Restore the Ornith model on NEW hardware; never start/stop any model.
-# DeepSeek (Q4/IQ3) is retired: it is neither downloaded nor verified any more
-# (ops/deepseek/ is archived). Rollback model Qwen: ops/qwen/README.md.
+# Restore pinned model weights on NEW hardware; never start/stop a model.
+# Default: DeepSeek Q4. Ornith weights remain available for explicit rollback.
 # No model bytes are stored in backup or git.
 set -euo pipefail
 ROOT=$(cd -- "$(dirname -- "$0")/../.." && pwd)
 ACTION=${1:-}
 SELECT=${2:-all}
-case "$ACTION" in download|verify) ;; *) echo "Usage: $0 download|verify [ornith|all]" >&2;exit 2;; esac
-case "$SELECT" in ornith|all) ;; q4|iq3) echo 'DeepSeek is retired; nothing to restore' >&2;exit 2;; *) exit 2;; esac
+case "$ACTION" in download|verify) ;; *) echo "Usage: $0 download|verify [q4|ornith|all]" >&2;exit 2;; esac
+case "$SELECT" in q4|ornith|all) ;; *) exit 2;; esac
 if [[ "$ACTION" == download ]];then
-  for u in mag-llm-ornith-node@0.service mag-llm-ornith-node@1.service;do
+  for u in mag-llm.service mag-llm-ds-node@0.service mag-llm-ds-node@1.service mag-llm-ornith-node@0.service mag-llm-ornith-node@1.service;do
     if systemctl is-active --quiet "$u" 2>/dev/null;then
       echo "Model $u is live; never download over a serving model" >&2;exit 4
     fi
@@ -44,5 +43,16 @@ download_and_verify() {
   (cd "$path"; sha256sum --check --strict --status "$manifest") || { echo "SHA verification failed" >&2;return 4; }
   echo "Verified all $flavor model files"
 }
-download_and_verify ornith "$ROOT/ops/ornith/model.sha256" \
-  "${MAG_ORNITH_MODEL_DIR:-/home/chris/models/ornith-1.5-35b-a3b}" "${MAG_ORNITH_MODEL_URL:-}"
+if [[ $SELECT == ornith ]]; then
+  download_and_verify ornith "$ROOT/ops/ornith/model.sha256" \
+    "${MAG_ORNITH_MODEL_DIR:-/home/chris/models/ornith-1.5-35b-a3b}" "${MAG_ORNITH_MODEL_URL:-}"
+else
+  source "$ROOT/ops/deepseek/model-manifest.sh"
+  manifest=$(mktemp)
+  trap 'rm -f "$manifest"' EXIT
+  for part in "${MODEL_PARTS[@]}"; do
+    printf '%s  %s-%s-of-00005.gguf\n' "${MODEL_SHA[$part]}" "$MODEL_PREFIX" "$part" >> "$manifest"
+  done
+  download_and_verify q4 "$manifest" "$MODEL_DIR" \
+    "${MAG_DS_MODEL_URL:-https://huggingface.co/unsloth/DeepSeek-V4-Flash-0731-GGUF/resolve/main/UD-Q4_K_XL}"
+fi

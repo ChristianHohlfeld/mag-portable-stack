@@ -70,6 +70,9 @@ install -m 0700 "$NGINX_SYNC" "$BACKUP/deploy-nginx.sh"
 if [[ -f /etc/systemd/system/mag-120.service ]]; then
   cp -a /etc/systemd/system/mag-120.service "$BACKUP/mag-120.service"
 fi
+for config in room-model.env secondary-model.env; do
+  [[ ! -f /etc/mag-stack/$config ]] || cp -a "/etc/mag-stack/$config" "$BACKUP/$config"
+done
 # Gateway binary and unit roll back together with the room.
 if [[ -f /etc/systemd/system/mag-audit-gateway.service ]]; then
   cp -a /etc/systemd/system/mag-audit-gateway.service "$BACKUP/mag-audit-gateway.service"
@@ -153,6 +156,10 @@ rollback() {
  else
    rm -f /etc/systemd/system/mag-120.service.d/30-multibot.conf /etc/systemd/system/mag-120.service.d/30-dual-numa.conf
  fi
+ for config in room-model.env secondary-model.env; do
+   if [[ -f $BACKUP/$config ]]; then cp -a "$BACKUP/$config" "/etc/mag-stack/$config"
+   else rm -f "/etc/mag-stack/$config"; fi
+ done
  if (( gateway_switched )); then
    if [[ -f "$BACKUP/mag-audit-gateway.service" ]]; then
      cp -a "$BACKUP/mag-audit-gateway.service" /etc/systemd/system/mag-audit-gateway.service
@@ -267,35 +274,12 @@ if systemctl is-active --quiet gitea.service; then
 fi
 # Qwen host, use exactly two model-pinned bots with separate KVM workspaces.
 rm -f /etc/systemd/system/mag-120.service.d/30-multibot.conf
-if [[ -r /etc/mag-stack/secondary-model.env ]] &&
+if [[ -e /etc/mag-stack/room-model.env || -e /etc/systemd/system/mag-llm-ds-node@.service ]]; then
+  bash "$SOURCE/ops/room/install.sh"
+elif [[ -r /etc/mag-stack/secondary-model.env ]] &&
    grep -Fxq 'MAG_SECONDARY_MODEL=ornith' /etc/mag-stack/secondary-model.env; then
-  # Ornith host (ops/ornith/cutover.sh): refresh on-disk definitions only, never restart a model.
-  install -d -m 0755 /etc/systemd/system/mag-120.service.d /usr/local/lib/mag-ornith
-  install -m 0644 "$SOURCE/ops/mag-120.d/30-dual-numa.conf" /etc/systemd/system/mag-120.service.d/30-dual-numa.conf
-  # DeepSeek is retired: the obsolete room drop-in (DeepSeek model id + mag-model-gate
-  # status) is replaced by the Ornith one; rollback() restores the snapshot.
-  install -m 0644 "$SOURCE/ops/mag-120.d/20-room-audit.conf" /etc/systemd/system/mag-120.service.d/20-room-audit.conf
-  rm -f /etc/systemd/system/mag-120.service.d/20-deepseek-audit.conf
-  [[ -x /usr/local/lib/mag-ornith/start.sh ]] || { echo 'Ornith staged runtime missing' >&2; exit 1; }
-  install -m 0755 "$SOURCE/ops/ornith/start.sh" "$SOURCE/ops/ornith/start-node.sh" "$SOURCE/ops/ornith/verify-model.sh" /usr/local/lib/mag-ornith/
-  install -m 0644 "$SOURCE/ops/qwen/runtime.sha" /usr/local/lib/mag-ornith/runtime.sha
-  # Stage Qwen for operator rollback. Do not enable or start it with Ornith.
-  install -d -m 0755 /usr/local/lib/mag-qwen
-  install -m 0755 "$SOURCE/ops/qwen/start.sh" "$SOURCE/ops/qwen/verify-model.sh" /usr/local/lib/mag-qwen/
-  install -m 0644 "$SOURCE/ops/qwen/runtime.sha" /usr/local/lib/mag-qwen/runtime.sha
-  install -m 0644 "$SOURCE/ops/qwen/mag-llm-qwen.service" /etc/systemd/system/mag-llm-qwen.service
-  rm -f /etc/systemd/system/mag-llm-qwen.service.d/20-q4-health.conf
-  # Per-node servers (variant B) and the 4 legacy instances (rollback.sh instances) side by side.
-  install -m 0644 "$SOURCE/ops/ornith/mag-llm-ornith-node@.service" /etc/systemd/system/mag-llm-ornith-node@.service
-  for n in 0 1; do
-    install -d -m 0755 "/etc/systemd/system/mag-llm-ornith-node@$n.service.d"
-    install -m 0644 "$SOURCE/ops/ornith/nodes/$n.conf" "/etc/systemd/system/mag-llm-ornith-node@$n.service.d/10-numa.conf"
-  done
-  install -m 0644 "$SOURCE/ops/ornith/mag-llm-ornith@.service" /etc/systemd/system/mag-llm-ornith@.service
-  for n in 1 2 3 4; do
-    install -d -m 0755 "/etc/systemd/system/mag-llm-ornith@$n.service.d"
-    install -m 0644 "$SOURCE/ops/ornith/instances/$n.conf" "/etc/systemd/system/mag-llm-ornith@$n.service.d/10-numa.conf"
-  done
+  echo 'Ornith cutover required: stop Ornith, then run ops/room/install.sh before deploy' >&2
+  exit 1
 elif [[ -r /etc/mag-stack/secondary-model.env ]] &&
    grep -Fxq 'MAG_SECONDARY_MODEL=qwen' /etc/mag-stack/secondary-model.env; then
   install -d -m 0755 /etc/systemd/system/mag-120.service.d /usr/local/lib/mag-qwen
@@ -322,7 +306,10 @@ systemctl restart mag-audit-gateway.service
 # Type=simple returns before the new gateway has bound :8080. Use the same
 # bounded readiness retry as the room/RTC smoke checks (also on a blank host).
 gateway_models=$(wait_http http://127.0.0.1:8080/v1/models)
-if [[ -r /etc/mag-stack/secondary-model.env ]]; then
+if [[ -r /etc/mag-stack/room-model.env ]]; then
+  required=$(sed -n 's/^MAG_ROOM_MODEL_ID=//p' /etc/mag-stack/room-model.env)
+  python3 -I -c 'import json,sys; assert [m["id"] for m in json.loads(sys.argv[1])["data"]] == [sys.argv[2]], "gateway model mismatch"' "$gateway_models" "$required"
+elif [[ -r /etc/mag-stack/secondary-model.env ]]; then
   case $(cat /etc/mag-stack/secondary-model.env) in
     MAG_SECONDARY_MODEL=ornith) required=ornith-1.5-35b-a3b ;;
     MAG_SECONDARY_MODEL=qwen) required=qwen3.8-flash-next-uncensored ;;
@@ -401,10 +388,11 @@ bash "$SOURCE/ops/bots/install.sh" || echo 'WARN: bot site install incomplete (d
 # DeepSeek is retired (owner decision): only on an Ornith host with 8191+8192
 # healthy, disable --now mag-llm/IQ3/model-gate/model-pin. Before ensure-boot so it
 # never re-enables mag-llm. Never touches mag-120 or model files.
-bash "$SOURCE/ops/models/retire-deepseek.sh" || echo 'WARN: DeepSeek retirement incomplete (deploy itself succeeded)' >&2
+[[ -r /etc/mag-stack/room-model.env ]] || bash "$SOURCE/ops/models/retire-deepseek.sh" || echo 'WARN: DeepSeek retirement incomplete (deploy itself succeeded)' >&2
 # Persist the active model units and bot VM autostart for cold reboot.
 bash "$SOURCE/ops/boot/ensure-boot.sh" || echo 'WARN: boot persistence needs operator attention' >&2
 # Model files, including DeepSeek V4.1, are preserved. Only Chris deletes weights.
 # Deploy never restarts a loaded model (DeepSeek retirement above is the only stop). Model placement
 # is a separate, measured, operator-controlled change, never a deploy hook.
 printf '\nInstalled release %s; rollback snapshot %s\n' "$RELEASE_ID" "$BACKUP"
+

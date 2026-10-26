@@ -14,7 +14,11 @@ agents_json=${MAG_AGENTS_JSON:-/var/lib/magbot/room/agents.json}
 ipmi_devs=${MAG_IPMI_DEVICES:-/dev/ipmi0 /dev/ipmi/0}
 secondary_unit=
 secondary_units=()
-if [[ -r "$secondary_env" ]] &&
+if [[ -r /etc/mag-stack/room-model.env ]]; then
+  secondary_unit=mag-llm-ds-node@0.service
+  secondary_units=(mag-llm-ds-node@1.service)
+  systemctl disable mag-llm-ornith@{1..4}.service mag-llm-ornith-node@{0..1}.service >/dev/null 2>&1 || true
+elif [[ -r "$secondary_env" ]] &&
    grep -Fxq 'MAG_SECONDARY_MODEL=ornith' "$secondary_env"; then
   # Ornith host: the 2 per-node servers (or, after rollback.sh instances, the 4 legacy
   # instances) own NUMA0+1 cores; only what is active gets enabled. Never Qwen/IQ3.
@@ -66,7 +70,7 @@ done
 
 # Bot VMs and their network come back on boot.
 if command -v virsh >/dev/null; then
-  if [[ ( $secondary_unit == mag-llm-qwen.service || $secondary_unit == mag-llm-ornith-node@0.service ) &&
+  if [[ ( $secondary_unit == mag-llm-ds-node@0.service || $secondary_unit == mag-llm-qwen.service || $secondary_unit == mag-llm-ornith-node@0.service ) &&
         -r $agents_json ]] && command -v jq >/dev/null; then
     # The first two persisted agents are the active NUMA bots; PARKED agents
     # retain data but must NOT bring surplus KVM guests back on cold boot.
@@ -96,3 +100,4 @@ else
   log 'no BMC found; set "Restore on AC power loss: Power On" in the BIOS once'
 fi
 log done
+

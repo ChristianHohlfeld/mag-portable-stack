@@ -658,7 +658,7 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
   }
   if (m == "POST" && path == "/api/model") {
     if (DUAL_NUMA) { error_json(fd, 409, "Q4 und Qwen sind fest ihren Bots zugeordnet."); return; }
-    if (ORNITH_MODE) { error_json(fd, 409, "Alle Bots nutzen Ornith, je Bot eine feste Instanz."); return; }
+    if (CONFIGURED_MODEL) { error_json(fd, 409, "Alle Bots nutzen das konfigurierte Modell, je Bot ein NUMA-Knoten."); return; }
     if (bridge || !actor.ok || actor.role != "owner") {
       error_json(fd, 403, "Nur der Besitzer"); return;
     }
@@ -1160,8 +1160,8 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
     if (slash != std::string::npos && id.substr(slash + 1) == "model" &&
         m == "POST") {
       id.resize(slash);
-      if (DUAL_NUMA || ORNITH_MODE) {
-        error_json(fd, 409, ORNITH_MODE ? "Alle Bots nutzen Ornith, je Bot eine feste Instanz."
+      if (DUAL_NUMA || CONFIGURED_MODEL) {
+        error_json(fd, 409, CONFIGURED_MODEL ? "Alle Bots nutzen das konfigurierte Modell, je Bot ein NUMA-Knoten."
                                         : "NUMA-Modelle sind je Bot fest zugeordnet und bleiben geladen.");
         return;
       }
@@ -1268,13 +1268,16 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
       error_json(fd, 400, "Agent name required (1-40 bytes)");
       return;
     }
-    const std::string ornith_full =
-        "Maximal vier Ornith-Bots (je Bot eine eigene Instanz). Bitte zuerst einen Bot entfernen.";
-    if (ORNITH_MODE) {
+    const std::string bots_full =
+        "Maximum 2 Bots erreicht";
+    if (CONFIGURED_MODEL) {
+      bool preset_ok = false;
+      for (const auto &p : *ROOM_PRESETS.arr) preset_ok = preset_ok || mag::str(p, "id") == str("preset");
+      if (!preset_ok) { error_json(fd, 400, "Bitte eine gültige Bot-Konstellation wählen."); return; }
       std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
-      if (!free_ornith_slot()) { error_json(fd, 409, ornith_full); return; }
+      if (!free_model_slot()) { error_json(fd, 409, bots_full); return; }
     }
-    if (!ORNITH_MODE && !str("model").empty() && !known_room_model(str("model"))) {
+    if (!CONFIGURED_MODEL && !str("model").empty() && !known_room_model(str("model"))) {
       error_json(fd, 400, "Unbekanntes Modell");
       return;
     }
@@ -1298,8 +1301,8 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
     std::string id, vm;
     {
       std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
-      const int slot = ORNITH_MODE ? free_ornith_slot() : 0;
-      if (ORNITH_MODE && !slot) { error_json(fd, 409, ornith_full); return; }
+      const int slot = CONFIGURED_MODEL ? free_model_slot() : 0;
+      if (CONFIGURED_MODEL && !slot) { error_json(fd, 409, bots_full); return; }
       id = slug_id(str("name"));
       vm = with_vm ? next_vm() : "";
       agent["id"] = id;
@@ -1311,7 +1314,7 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
           str("persona", "Neugierig, freundlich und eigenstaendig.");
       agent["memory"] = Val::array();
       if (known_room_model(str("model"))) agent["model"] = str("model");
-      if (ORNITH_MODE) { agent["model"] = ORNITH; agent["slot"] = slot; }
+      if (CONFIGURED_MODEL) { agent["model"] = ROOM_MODEL.id; agent["slot"] = slot; agent["numa"] = ROOM_MODEL.backends[slot - 1].numa; }
       AGENTS.push_back(agent);
       try {
         save_agents();
@@ -1951,3 +1954,4 @@ static void serve_connection(int fd, bool bridge) {
   close(fd);
   --CONNECTIONS;
 }
+

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Blank Ubuntu 24.04 host -> running MAG stack. Guide: docs/INSTALL.md.
-# Does not enable console lockdown. Does not restart a model. DeepSeek (mag-llm) is retired.
+# Does not enable console lockdown. Does not restart a resident model. DeepSeek runs once per NUMA node.
 #   bash ops/bootstrap.sh --dry-run
 #   sudo bash ops/bootstrap.sh --archive /var/backups/mag-full/<id> [--download-models] [--start-llm]
 #   sudo bash ops/bootstrap.sh --owner LOGIN [--download-models]     # no archive: fresh state
@@ -31,8 +31,8 @@ Usage: $0 --dry-run
           [--test-stubs]
   --archive DIR          verified /var/backups/mag-full/<id> (state + secrets)
   --owner LOGIN          Tailscale login of the room owner (fresh host without archive)
-  --download-models      fetch and verify the pinned Ornith GGUF (MAG_ORNITH_MODEL_URL)
-  --start-llm            start the configured model units (Ornith/Qwen) if inactive
+  --download-models      fetch and verify the pinned DeepSeek Q4 GGUF shards
+  --start-llm            start DeepSeek per-NUMA units if inactive
   --no-golden            skip the bot VM base image build
   --no-llm-build         skip llama.cpp / ik_llama / Qwen runtime builds
   --restore-host-config  also copy etc/nginx, etc/systemd/system, etc/cron.d
@@ -203,7 +203,7 @@ if (( DRY )); then
   echo '+ /etc/credstore/mag-acme-dns.json -> /etc/mag-acme/acme-dns.json   # only when absent'
   echo '+ write /var/lib/magbot/room/access.json from --owner   # only when absent'
   echo '+ install -d /etc/magbot   # VM limits default without config.json; secrets come from the archive'
-  echo '+ /etc/mag-stack/secondary-model.env is never created here (Ornith: ops/ornith/cutover.sh)'
+  echo '+ room-model.env replaces legacy secondary-model.env (no resident model restart)'
 else
   install -d -m 0755 /etc/mag-stack
   install -d -m 0700 /etc/mag-acme /etc/credstore
@@ -302,17 +302,34 @@ EOF
     systemctl enable --now mag-llm-stub.service
   fi
 elif (( LLM_BUILD )); then
-  # DeepSeek retired: no ik_llama / mag-llm / IQ3 any more. Ornith (and the Qwen
-  # rollback) run on the pinned upstream llama.cpp (ops/qwen/runtime.sha); the
-  # Ornith units are installed by ops/ornith/cutover.sh once the model is verified.
   if (( DRY )); then
-    echo "+ runuser -u chris -- bash $ROOT/ops/qwen/build-runtime.sh   # Ornith/Qwen llama.cpp"
+    echo "+ runuser -u chris -- bash $ROOT/ops/deepseek/build-ik.sh"
   else
-    runuser -u chris -- env HOME=/home/chris PATH=/usr/local/bin:/usr/bin:/bin \
-      bash "$ROOT/ops/qwen/build-runtime.sh"
+    ik_bin=$(runuser -u chris -- env HOME=/home/chris PATH=/usr/local/bin:/usr/bin:/bin \
+      bash "$ROOT/ops/deepseek/build-ik.sh" | tail -n 1)
+    [[ -x $ik_bin ]] || { echo 'ik_llama build did not produce a binary' >&2; exit 1; }
   fi
 else
   echo 'PHASE llm-runtime-skipped (--no-llm-build)'
+fi
+
+phase room-model
+if (( ! STUBS )); then
+  if (( DRY )); then bash "$ROOT/ops/room/install.sh" --dry-run
+  else
+    new_ds_env=0
+    [[ -e /etc/mag-llm/ds-node.env ]] || new_ds_env=1
+    bash "$ROOT/ops/room/install.sh"
+    # The pinned ik source contains the matching DeepSeek Jinja template.
+    ds_template=/home/chris/llama-templates/deepseek-ai-DeepSeek-V4-Flash-0731.jinja
+    if [[ ! -s $ds_template && -s /home/chris/src/ik_llama.cpp/models/templates/deepseek-ai-DeepSeek-V4-Flash-0731.jinja ]]; then
+      install -d -o chris -g chris /home/chris/llama-templates
+      install -m 0644 -o chris -g chris /home/chris/src/ik_llama.cpp/models/templates/deepseek-ai-DeepSeek-V4-Flash-0731.jinja "$ds_template"
+    fi
+    if (( new_ds_env && LLM_BUILD )); then
+      sed -i "s|^IK_BIN=.*|IK_BIN=$ik_bin|" /etc/mag-llm/ds-node.env
+    fi
+  fi
 fi
 
 phase golden
@@ -404,8 +421,8 @@ phase models
 if (( STUBS )); then
   echo 'PHASE models-skipped (test stubs)'
 elif (( DOWNLOAD )); then
-  run bash "$ROOT/ops/backup/bootstrap-models.sh" download ornith
-  run bash "$ROOT/ops/backup/bootstrap-models.sh" verify ornith
+  run bash "$ROOT/ops/backup/bootstrap-models.sh" download q4
+  run bash "$ROOT/ops/backup/bootstrap-models.sh" verify q4
 else
   echo 'PHASE models-skipped (pass --download-models to fetch pinned GGUF shards)'
 fi
@@ -456,28 +473,16 @@ if (( DRY )); then bash "$ROOT/ops/secrets/install.sh" --dry-run; else bash "$RO
 
 phase numa
 # DeepSeek NUMA hot-swap is retired. No old catalog, state, sudoers or Q4
-# service is seeded during bootstrap; Ornith/Qwen provide fixed model routing.
+# service is seeded during bootstrap; room-model.env provides fixed routing.
 echo 'PHASE numa-skipped (retired legacy model-swap)'
 
 phase start-llm
 if (( START_LLM == 0 )); then
   echo 'PHASE start-llm-skipped (no model is started or restarted)'
 elif (( DRY )); then
-  echo '+ systemctl start the configured model units (Ornith/Qwen)   # only if inactive'
+  echo '+ systemctl start mag-llm-ds-node@0.service mag-llm-ds-node@1.service   # only if inactive'
 else
-  secondary_unit=
-  if [[ -r /etc/mag-stack/secondary-model.env ]] &&
-     grep -Fxq 'MAG_SECONDARY_MODEL=qwen' /etc/mag-stack/secondary-model.env; then
-    secondary_unit=mag-llm-qwen.service
-  elif [[ -r /etc/mag-stack/secondary-model.env ]] &&
-     grep -Fxq 'MAG_SECONDARY_MODEL=ornith' /etc/mag-stack/secondary-model.env; then
-    # Per-node servers (mag-llm-ornith-node@0/1); legacy 4 instances only while still enabled
-    # (starting a node unit would stop them via Conflicts=).
-    secondary_unit="mag-llm-ornith-node@0.service mag-llm-ornith-node@1.service"
-    if systemctl is-enabled --quiet mag-llm-ornith@1.service 2>/dev/null; then
-      secondary_unit="mag-llm-ornith@1.service mag-llm-ornith@2.service mag-llm-ornith@3.service mag-llm-ornith@4.service"
-    fi
-  fi
+  secondary_unit="mag-llm-ds-node@0.service mag-llm-ds-node@1.service"
   for unit in $secondary_unit; do
     if systemctl is-active --quiet "$unit"; then
       echo "$unit already active; not restarting"
@@ -490,3 +495,4 @@ fi
 phase console-lockdown-skipped
 echo 'Console lockdown stays inactive. It is not installed or enabled by bootstrap.'
 echo 'Bootstrap finished.'
+

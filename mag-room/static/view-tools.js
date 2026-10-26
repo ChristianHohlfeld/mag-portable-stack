@@ -21,23 +21,25 @@
 #browser-view{position:relative;touch-action:none}
 #screen{transform-origin:0 0;will-change:transform}
 #browser-view .browser-view-bar{position:relative;z-index:5}
-.vt-bar{display:flex;align-items:center;gap:2px;margin-left:auto}
-.vt-bar button{min-width:30px;height:30px;border:1px solid var(--line);border-radius:8px;background:var(--panel);color:var(--text);font:inherit;font-size:12px;cursor:pointer;padding:0 6px}
+.vt-bar{display:flex;flex-wrap:wrap;align-items:center;gap:4px;margin-left:auto;min-width:0;max-width:100%}
+.vt-bar button{flex:0 0 auto;min-width:30px;height:30px;border:1px solid var(--line);border-radius:8px;background:var(--panel);color:var(--text);font:inherit;font-size:12px;cursor:pointer;padding:0 6px;white-space:nowrap}
 .vt-bar button[aria-pressed=true]{background:var(--accent);border-color:var(--accent);color:#fff}
 .vt-caption{position:absolute;left:8px;bottom:8px;max-width:calc(100% - 16px);z-index:4;padding:4px 10px;border-radius:999px;background:rgba(0,0,0,.62);color:#fff;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;pointer-events:none;opacity:0;transition:opacity .2s}
 .vt-caption.on{opacity:1}
 #browser-view.watching #screen{cursor:grab}
 .terminal-heading .vt-bar{margin-left:6px}
-/* Narrow panel / phone: nav wraps (URL keeps a usable width), console header stays one row. */
-#browser-view .browser-nav{flex-wrap:wrap;row-gap:4px}
-#browser-view .browser-nav .nav-url{flex:1 1 150px}
-#browser-view .browser-nav .vt-bar{flex:0 0 auto}
-.terminal-heading{flex-wrap:nowrap;gap:3px!important;min-width:0}
-.terminal-heading h2{flex:1 1 auto;min-width:64px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.terminal-heading>button,.terminal-heading .vt-bar button{flex:0 0 auto;padding:3px 5px!important;min-width:26px;height:26px;font-size:11px}
-.terminal-heading .vt-bar{flex:0 0 auto;margin-left:2px;gap:2px}
+/* Wrap by drawer width, including a narrow drawer on a wide desktop. */
+#browser-view .browser-nav{height:auto;min-height:38px;flex-wrap:wrap;justify-content:flex-start;gap:4px}
+#browser-view .browser-nav .nav-url{order:2;flex:1 1 100%;min-width:0}
+#browser-view .browser-nav .nav-url input{width:0;min-width:0}
+#browser-view .browser-nav .mini-fullscreen{position:static;margin:0;flex:0 0 30px;width:30px;height:30px;padding:0}
+#browser-view .browser-nav .vt-bar{flex:1 1 160px;justify-content:flex-end}
+.terminal-heading{height:auto;flex-wrap:wrap;gap:4px!important;min-width:0}
+.terminal-heading h2{flex:1 1 100%;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.terminal-heading>button,.terminal-heading .vt-bar button{position:static;flex:0 0 auto;padding:3px 5px!important;min-width:30px;height:30px;font-size:11px}
+.terminal-heading .vt-bar{flex:1 1 130px;justify-content:flex-end;margin-left:auto;gap:4px}
 .terminal-heading .vt-bar button[aria-pressed=true]{color:#fff!important}
-@media (max-width:520px){.terminal-heading{padding:0 6px!important;gap:2px!important}.terminal-heading h2{min-width:44px}.terminal-heading>button,.terminal-heading .vt-bar button{padding:3px 3px!important;min-width:24px}}
+
 `;
   document.head.append(css);
 
@@ -85,12 +87,13 @@
     mode = m;
     try { localStorage.setItem('mag-view-mode-v2', m); } catch (_) {}
     view.classList.toggle('watching', m === 'watch');
-    modeBtn.textContent = m === 'watch' ? 'Steuern' : 'Zurückgeben';
+    modeBtn.textContent = m === 'watch' ? '↗' : '◉';
     modeBtn.title = m === 'watch' ? 'Browser selbst bedienen (übernehmen)' : 'Steuerung an den Bot zurückgeben (zuschauen)';
     modeBtn.setAttribute('aria-label', modeBtn.title);
     modeBtn.setAttribute('aria-pressed', String(m === 'control'));
     for (const t of (typeof terminals !== 'undefined' ? terminals.values() : [])) t.term.options.disableStdin = m === 'watch';
-    termMode.textContent = m === 'watch' ? 'Steuern' : 'Zurück';
+    termMode.textContent = m === 'watch' ? '↗' : '◉';
+    termMode.title = termMode.getAttribute('aria-label');
     termMode.setAttribute('aria-pressed', String(m === 'control'));
   }
 
@@ -187,7 +190,7 @@
   }
   tb('A−', 'Schrift kleiner', () => setFont(font - 1));
   tb('A+', 'Schrift größer', () => setFont(font + 1));
-  tb('Kopie', 'Kopieren: Auswahl oder sichtbaren Inhalt kopieren', () => {
+  tb('⧉', 'Kopieren: Auswahl oder sichtbaren Inhalt kopieren', () => {
     const t = curTerm(); if (!t) return;
     let text = t.term.getSelection();
     if (!text) { const b = t.term.buffer.active, lines = []; for (let i = Math.max(0, b.length - 400); i < b.length; i++) lines.push(b.getLine(i)?.translateToString(true) || ''); text = lines.join('\n').trimEnd(); }
@@ -208,3 +211,4 @@
   apply();
   window.magViewTools = {zoomAt, fit, setMode, state: () => ({...z, mode})};
 })();
+

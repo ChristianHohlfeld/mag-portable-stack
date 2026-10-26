@@ -3215,6 +3215,7 @@ struct TurnReport {
   bool react_only = false;
 };
 
+static void handoff_visible_turn(int idx, TurnReport &report, const std::string &partial, int think);
 #include "mcp.hpp"
 #include "secrets.hpp"
 static std::string tools_json(int bot_idx, bool web) {
@@ -4492,6 +4493,7 @@ struct UserInput {
   bool yield = false;
   uint64_t generation = 0;
   std::string owner;
+  int think = -1;
 };
 static UserInput take_user_input(const std::string &bot_id);
 static thread_local bool TL_YIELD = false;
@@ -4780,6 +4782,9 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
       // Lines become steps only once the round turns out to be narration.
       run_narration(live, draft_dropped);
     };
+    // Re-read permissions between tool rounds. In particular, turning GitHub
+    // off removes its schemas from the next request of an already running turn.
+    if (!stateless) tools = tools_json(bot_idx, web);
     // Tools remain available on every step, without a forced early final.
     Turn t;
     size_t attempt_budget = context_budget;
@@ -5028,6 +5033,10 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
     if (!stateless && !TL_TASK) {
       UserInput in = take_user_input(bot_id);
       if (!in.text.empty()) {
+        // Keep earlier status/thought/tool output at its original position;
+        // the answer to this newer input starts a separate visible segment.
+        handoff_visible_turn(bot_idx, report, final_text.empty() ? fallback_narration : final_text, in.think);
+        final_text.clear(); fallback_narration.clear();
         Val u = Val::object();
         u["role"] = "user";
         u["content"] =
@@ -5709,6 +5718,34 @@ static void attach_work(Val &msg, const TurnReport &report) {
   }
   save_room();
 }
+static void handoff_visible_turn(int idx, TurnReport &report, const std::string &partial, int think) {
+  const std::string id = bot_field(idx, "id"), name = bot_field(idx, "name");
+  report.steps = run_copy_steps();
+  report.elapsed_s = std::max(0L, (long)((duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count() - TL_DISPLAY_MS) / 1000));
+  std::string text = partial;
+  replaceAll(text, "[[MAG:WEITER]]", ""); replaceAll(text, "[[MAG:ENDE]]", "");
+  Val msg = append_room("assistant", name, trim(text), id);
+  attach_work(msg, report);
+  {
+    std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
+    for (auto &stored : ROOM) if (mag::str(stored, "id") == mag::str(msg, "id")) {
+      stored["interrupted"] = true; stored["stopped"] = "system"; break;
+    }
+    save_room();
+  }
+  msg["interrupted"] = true; msg["stopped"] = "system"; msg["type"] = "bot_done";
+  publish(mj::dump(msg));
+  // The model keeps its valid assistant/tool/user history in this run. Only
+  // the visible segment changes, so no tool is repeated or result discarded.
+  report.reasoning.clear(); report.thought_ms = 0; report.steps.clear(); report.tools = Val::array();
+  TURN_THINK = think < 0 ? (bot_thinking(idx) ? 1 : 0) : think;
+  TL_DISPLAY_MS = display_now_ms(); TL_THINKING_ENABLED = turn_thinking();
+  Val start = Val::object(); start["type"] = "bot_start"; start["bot"] = id; start["name"] = name;
+  start["color"] = bot_field(idx, "color"); start["display_ms"] = TL_DISPLAY_MS;
+  start["thinking_enabled"] = TL_THINKING_ENABLED;
+  if (!TL_GROUP.empty()) { start["group"] = TL_GROUP; start["order"] = TL_ORDER; }
+  publish(mj::dump(start)); run_begin(id, name);
+}
 static TurnReport generate_and_post(int idx, bool automatic) {
   const uint64_t epoch = EPOCH.load();
   std::string id = bot_field(idx, "id"), name = bot_field(idx, "name");
@@ -5726,7 +5763,6 @@ static TurnReport generate_and_post(int idx, bool automatic) {
     start["order"] = TL_ORDER;
   }
   publish(mj::dump(start));
-  auto started = steady_clock::now();
   run_begin(id, name);
   TurnReport report;
   try {
@@ -5735,7 +5771,7 @@ static TurnReport generate_and_post(int idx, bool automatic) {
     run_end();
     throw;
   }
-  report.elapsed_s = (long)duration_cast<seconds>(steady_clock::now() - started).count();
+  report.elapsed_s = (long)((duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count() - TL_DISPLAY_MS) / 1000);
   if (report.elapsed_s < 0)
     report.elapsed_s = 0;
   run_end();
@@ -5943,12 +5979,18 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
   if (CONFIGURED_MODEL) {
     std::string raw; long status = 0;
     if (http_simple(BACKEND_HOST, BACKEND_PORT, "GET", "/slots", "",
-        {{"X-Mag-Model", model}, {"X-Mag-Slot", gateway_slot(idx)}}, raw, &status, nullptr, 1500) && status == 200) {
+        {{"Authorization", "Bearer " + API_KEY}, {"X-Mag-Model", model}, {"X-Mag-Slot", gateway_slot(idx)}}, raw, &status, nullptr, 1500) && status == 200) {
       Val slots;
       if (mj::parse(raw, slots) && slots.isArr()) for (const auto &slot : *slots.arr) {
         for (const char *key : {"n_past", "n_prompt_tokens", "n_cached_tokens"})
           if (auto n = slot.find(key); n && n->asNum() > 0) ram_warm = true;
         if (auto busy = slot.find("is_processing"); busy && busy->asBool()) ram_warm = true;
+        // The pinned ik runtime exposes prompt/next_token, not n_past,
+        // on /slots. A completed slot retains its prompt until server restart.
+        if (auto prompt = slot.find("prompt"); prompt &&
+            ((prompt->type == Val::STR && !prompt->asStr().empty()) ||
+             (prompt->isArr() && !prompt->asArr().empty()))) ram_warm = true;
+        if (auto state = slot.find("state"); state && state->asNum() > 0) ram_warm = true;
       }
     }
   }
@@ -6836,6 +6878,7 @@ static UserInput take_user_input(const std::string &bot_id) {
     AUTO_READY = false;
     in.generation = AUTO_GENERATION;
     in.owner = AUTO_OWNER;
+    in.think = p.think;
     if (!rest.empty()) JOBS.push_back(Job{rest, p.think, AUTO_GENERATION, p.text});
     changed = true;
   }
@@ -6844,6 +6887,7 @@ static UserInput take_user_input(const std::string &bot_id) {
     in.text += "[Nutzer]: " + it->input + "\n";
     in.generation = it->generation;
     in.owner = it->ids.front();
+    in.think = it->think;
     it->ids.erase(std::remove(it->ids.begin(), it->ids.end(), bot_id), it->ids.end());
     it = it->ids.empty() ? JOBS.erase(it) : std::next(it);
     changed = true;

@@ -1200,7 +1200,7 @@ function append(msg,scroll=true,trace=null,position=-1){
  div.append(content);
  attachReactions(div,msg);
  attachWork(div,msg,content);
- if(!human&&msg.reasoning)showThinking(div,msg.id||'',msg.reasoning,false,msg.thought_ms);
+ if(!human&&msg.thinking_enabled!==false&&msg.reasoning)showThinking(div,msg.id||'',msg.reasoning,false,msg.thought_ms);
  if(!human&&msg.tools?.length)paintTools(div,content,storedTools(msg));
  if(trace)addTrace(div,{...trace,key:msg.id||''});
  if(msg.file)div.append(attachmentView(msg.file));

@@ -1,5 +1,5 @@
 """Playwright: NUMA chips in the top bar, swap sheet, confirm/cancel dialog,
-bot->node assignment and task chips; phone portrait/landscape + desktop."""
+bot->node assignment and compact phone portrait/landscape headers."""
 import importlib.util,json,pathlib,shutil,unittest
 ROOT=pathlib.Path(__file__).resolve().parents[2]
 ART=pathlib.Path('/opt/cursor/artifacts')
@@ -32,10 +32,22 @@ class NumaUI(unittest.TestCase):
     ctx=browser.new_context(viewport=vp,has_touch=mobile,is_mobile=mobile);page=ctx.new_page()
     page.on('pageerror',lambda e:errors.append(str(e)))
     page.goto('http://127.0.0.1:%s/'%ui,wait_until='domcontentloaded')
-    chips=page.locator('#model-choice .numa-chip');chips.first.wait_for()
+    chips=page.locator('#model-choice .numa-chip');chips.first.wait_for(state='attached')
     self.assertEqual(chips.count(),2)
     self.assertIn('0 · Q4',chips.nth(0).inner_text());self.assertIn('1 · IQ3',chips.nth(1).inner_text())
     hb=page.locator('#app-header').bounding_box();self.assertLessEqual(hb['width'],vp['width']+1)
+    if vp['width'] <= 850:
+     # Since #125, legacy model/instance chips are deliberately absent from
+     # the compact header. Verify its reachable controls instead of waiting
+     # for a hidden manual NUMA picker.
+     self.assertFalse(chips.first.is_visible())
+     for selector in ('#toggle-agents','#room-menu-btn','#settings-open','#toggle-tools'):
+      button=page.locator(selector);self.assertTrue(button.is_visible())
+      box=button.bounding_box();self.assertGreaterEqual(box['x'],0);self.assertLessEqual(box['x']+box['width'],vp['width']+1)
+     self.assertTrue(page.evaluate('document.documentElement.scrollWidth <= innerWidth'))
+     page.locator('#settings-open').click();page.locator('#settings-dialog').wait_for()
+     page.screenshot(path=str(ART/f'numa_compact_{name}.png'))
+     page.locator('#settings-close').click();ctx.close();continue
     chips.nth(1).click();sheet=page.locator('#numa-sheet');sheet.wait_for()
     page.screenshot(path=str(ART/f'numa_sheet_{name}.png'))
     sel=sheet.locator('select').nth(1)

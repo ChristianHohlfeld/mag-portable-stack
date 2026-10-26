@@ -295,7 +295,12 @@ class StopAndPriority(unittest.TestCase):
         self.assertIn('Bitte auch Y', second[-1]['content'])
         self.assertIn('Vorrang', second[-1]['content'])
         self.assertEqual([m['role'] for m in second[-3:]], ['assistant', 'tool', 'user'])
-        self.assertEqual(contents(s)[-3:], ['Aufgabe X', 'Bitte auch Y', 'Beides erledigt.'])
+        self.assertEqual(contents(s)[-4:], ['Aufgabe X', 'Bitte auch Y', '', 'Beides erledigt.'])
+        earlier, newer = [m for m in s['room'] if m.get('bot') == 'a'][-2:]
+        user = next(m for m in s['room'] if m.get('content') == 'Bitte auch Y')
+        self.assertLess(earlier['display_ms'], user['display_ms'])
+        self.assertLess(user['display_ms'], newer['display_ms'])
+        self.assertTrue(earlier['interrupted'])
         self.assertEqual(s['pending'], [])
 
     def test_05_running_bot_gives_way_to_a_message_for_another_bot_on_its_model(self):

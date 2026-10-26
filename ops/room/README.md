@@ -69,7 +69,9 @@ Queue updates have persistent revisions and sender-scoped retry IDs. Stop
 closes active backend requests, preserves partial output and continues the
 queue. Explicit queue pause holds existing items; new input stays available.
 Queued user messages are visible immediately. UI order uses submit/start
-timestamps instead of completion time or reserved group positions.
+timestamps instead of completion time or reserved group positions. A user
+handoff inside a tool run closes the previous visible segment and starts a new
+reply below that user message, retaining the model's valid tool history.
 
 Thinking defaults and per-bot overrides are stored server-side. SSE replay
 is isolated per bot. Reasoning channels and split `<think>` blocks stay out

@@ -17,6 +17,7 @@ def _rules(content):
 def _mem(content):
  i=content.index('\n[Erinnerungen]');return content[i+1:]
 class Model(http.server.BaseHTTPRequestHandler):
+ slot_snapshot=[]
  protocol_version='HTTP/1.1';calls=[];slots=[];pairs=[];paths=[];slot_delay={};delay=0;reply=None;script=[];health=200;last_prompt={};overflow_once=0;barrier_token='';barrier_release=None
  def log_message(self,*a):pass
  def do_GET(self):
@@ -24,6 +25,7 @@ class Model(http.server.BaseHTTPRequestHandler):
   if self.path=='/health':
    code=type(self).health
    data={200:b'{"status":"ok"}',503:b'{"error":{"code":503,"message":"Loading model","type":"unavailable_error"}}'}.get(code,b'{"error":"upstream unavailable"}')
+  elif self.path=='/slots':data=json.dumps(type(self).slot_snapshot).encode()
   else:data=b'{"data":[{"id":"deepseek-v4-flash-0731"}]}'
   self.send_response(code);self.send_header('Content-Length',str(len(data)));self.end_headers();self.wfile.write(data)
  def do_POST(self):
@@ -3333,7 +3335,16 @@ class ConfiguredNuma(unittest.TestCase):
    # Never another server's file; bot 3 shares bot 1's server (and its chat-only prefix).
    for n in range(1,3):self.assertEqual(srv(int(restores[str(n-1)][-5])),srv(n),'cross-server restore')
    self.assertEqual(restores,{'0':own(1),'1':own(2)})
+   # Match the pinned ik runtime's actual /slots schema: it has no n_past.
+   # Restarting only the room must leave the running model's RAM cache alone.
+   self.stop();Model.slot_snapshot=[{'id':0,'state':0,'prompt':'cached-prefix','next_token':{'n_decoded':1}}]
+   mark=len(Model.paths);self.start()
+   for _ in range(100):
+    if 'ram_warm=1' in self.tmp_path.joinpath('server.log').read_text():break
+    time.sleep(.03)
+   else:self.fail('warm ik slot was not detected')
+   self.assertEqual([p for p in list(Model.paths)[mark:] if p[0].startswith('/slots/') or p[0]=='/v1/chat/completions'],[])
   finally:
-   self.stop();type(self).env['MAG_ROOM_PREWARM']='0';self.start()
+   self.stop();Model.slot_snapshot=[];type(self).env['MAG_ROOM_PREWARM']='0';self.start()
 
 if __name__=='__main__':unittest.main(verbosity=2)

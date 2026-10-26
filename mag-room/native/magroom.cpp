@@ -2195,7 +2195,7 @@ static std::string pho_once(int idx,WireSession &w,const std::string &key,
     const auto encoded=pho::encode(original).text;
     if(encoded!=original) {
       const auto candidate=std::string("[PhO-Compress] ")+encoded;
-      before=pho_tokens(idx,original);after=pho_tokens(idx,candidate);
+      before=pho_tokens(idx,original);if(before>0)after=pho_tokens(idx,candidate);
       if(before>0&&after>0&&after<before)selected=candidate;
       std::cerr<<"pho-compress model="<<bot_model_id(idx)<<" tokens_before="<<before
                <<" tokens_after="<<after<<" accepted="<<(selected!=original?1:0)<<std::endl;
@@ -2228,17 +2228,25 @@ static std::string pho_initial_transcript(int idx,WireSession &w,
   // Imported history and an explicit fresh context have no warm wire prefix.
   // Only whole turns older than the last N user requests are eligible.
   const size_t recent=(size_t)std::clamp(envi("MAG_ROOM_PHO_KEEP_TURNS",2),1,20);
-  size_t cutoff=0,count=0;
-  for(size_t i=room.size();i>0;--i)if(mag::str(room[i-1],"role")=="user"&&++count==recent){cutoff=i-1;break;}
+  size_t cutoff=0,count=0;bool answered=false;
+  for(size_t i=room.size();i>0;--i) {
+    const auto role=mag::str(room[i-1],"role");
+    if(role=="assistant")answered=true;
+    if(role=="user") {
+      if(answered&&++count==recent){cutoff=i-1;break;}
+      answered=false; // the pending current request is not a completed turn
+    }
+  }
   for(size_t i=0;i<cutoff;++i) {
     const auto &m=room[i];const auto role=mag::str(m,"role");
     if((role!="user"&&role!="assistant")||m.find("tool_calls")||m.find("file")||m.find("files")||m.find("run")||m.find("steps"))continue;
+    const auto line=render_room_line(m);
+    const auto pos=text.find(line);if(pos==std::string::npos)continue;
     const auto original=mag::str(m,"content");
     auto compressed=pho_once(idx,w,"room-"+fnv_hex(mj::dump(m)),original);
     if(compressed==original)continue;
     auto copy=m;copy["content"]=compressed;
-    const auto line=render_room_line(m),replacement=render_room_line(copy);
-    const auto pos=text.find(line);if(pos!=std::string::npos)text.replace(pos,line.size(),replacement);
+    text.replace(pos,line.size(),render_room_line(copy));
   }
   return text;
 }
@@ -2259,6 +2267,11 @@ static void pho_rollover(int idx,std::vector<Val> &messages) {
     m["content"]=compressed+(at==std::string::npos?"":text.substr(at));++changed;
   }
   if(changed)std::cerr<<"pho-context-rollover model="<<bot_model_id(idx)<<" turns="<<changed<<std::endl;
+}
+static void pho_forget_boundaries(int idx) {
+  if(!CONFIGURED_MODEL)return;
+  const auto bot=bot_field(idx,"id");std::lock_guard<std::mutex> wire(WIRE_MTX);
+  auto it=WIRE_SESSIONS.find(bot);if(it!=WIRE_SESSIONS.end())it->second.turn_ends.clear();
 }
 static std::vector<Val> wire_messages(int idx, const std::string &system,
                                       const std::string &tools, const std::string &tail) {
@@ -4793,6 +4806,9 @@ static void compact_agent_context(int bot_idx, std::vector<Val> &messages,
       note = mj::utf8_cut(mag::str(first, "content"), 220);
     }
     if (note.empty()) note = "Abgeschlossener Zwischenschritt";
+    // Tool rounds may grow back beyond the old size later in this turn.
+    // Invalidate stale offsets at the actual erasure, never infer from size.
+    if(!CURRENT_JOB&&!TL_TASK)pho_forget_boundaries(bot_idx);
     messages.erase(messages.begin() + at, messages.begin() + end);
     rollup += "\n- " + note;
     if (rollup.size() > 3200)

@@ -6,7 +6,6 @@
 #include "pho_lexicon.hpp"
 #include <algorithm>
 #include <cctype>
-#include <regex>
 #include <vector>
 #include <unicode/normalizer2.h>
 #include <unicode/unistr.h>
@@ -48,17 +47,33 @@ inline Encoded encode(const std::string &input) {
   // Protect complete structural spans before looking at words. Protecting any
   // digit-bearing/structured atom also covers versions, dates, hashes, paths,
   // IDs and scientific notation, beyond the original PhoLine expression.
-  static const std::regex structural(
-    R"PHO(```[\s\S]*?(?:```|$)|~~~[\s\S]*?(?:~~~|$)|`[^`\r\n]*`|https?://[^\s]+|www\.[^\s]+|[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}|[^\s]*[0-9_/@\\][^\s]*|\b[A-Z]{2,}\b)PHO");
   std::string prefix="PHOU";
   while(input.find(prefix)!=std::string::npos)prefix+="X";
-  std::string protected_text;size_t pos=0;
-  for(std::sregex_iterator it(input.begin(),input.end(),structural),end;it!=end;++it) {
-    const auto &m=*it;protected_text+=input.substr(pos,(size_t)m.position()-pos);
-    out.u.push_back(m.str());protected_text+=" "+prefix+std::to_string(out.u.size()-1)+" ";
-    pos=(size_t)m.position()+m.length();
+  std::string protected_text;
+  auto protect=[&](size_t begin,size_t end) {
+    out.u.push_back(input.substr(begin,end-begin));
+    protected_text+=" "+prefix+std::to_string(out.u.size()-1)+" ";
+  };
+  // Scan instead of applying an unbounded/backtracking regex to room text.
+  // Very long IDs and code spans must not exhaust the native server's stack.
+  for(size_t i=0;i<input.size();) {
+    const size_t begin=i;
+    const bool fence=input.compare(i,3,"```")==0||input.compare(i,3,"~~~")==0;
+    if(fence||input[i]=='`') {
+      const size_t width=fence?3:1;const auto delimiter=input.substr(i,width);
+      auto end=input.find(delimiter,i+width);
+      i=end==std::string::npos?input.size():end+width;protect(begin,i);continue;
+    }
+    if(std::isspace((unsigned char)input[i])){protected_text+=input[i++];continue;}
+    while(i<input.size()&&!std::isspace((unsigned char)input[i])&&input[i]!='`'&&input.compare(i,3,"~~~")!=0)++i;
+    const auto atom=input.substr(begin,i-begin);
+    bool structure=atom.find_first_of("0123456789_/@\\:-")!=std::string::npos||atom.rfind("www.",0)==0;
+    bool upper=atom.size()>=2;
+    for(unsigned char c:atom)if(!std::isupper(c)){upper=false;break;}
+    for(size_t at=1;at+1<atom.size();++at)
+      if((atom[at]=='.'||atom[at]=='\'')&&wordchar((unsigned char)atom[at-1])&&wordchar((unsigned char)atom[at+1]))structure=true;
+    if(structure||upper)protect(begin,i);else protected_text+=atom;
   }
-  protected_text+=input.substr(pos);
   bool german=false;size_t hits=0,words=0;
   std::vector<std::string> tokens;
   for(size_t i=0;i<protected_text.size();) {
@@ -109,6 +124,9 @@ inline bool eligible(const std::string &text) {
     lower.find("diff --git")==std::string::npos&&lower.find("<code")==std::string::npos&&
     text.find_first_of("{};\t")==std::string::npos&&text.find("\n    ")==std::string::npos&&
     lower.find("#include")==std::string::npos&&lower.find("def ")==std::string::npos&&
-    lower.find("function ")==std::string::npos&&lower.find("=>")==std::string::npos;
+    lower.find("function ")==std::string::npos&&lower.find("=>")==std::string::npos&&
+    lower.find("select ")==std::string::npos&&lower.find("insert into ")==std::string::npos&&
+    lower.find("git ")==std::string::npos&&lower.find("curl ")==std::string::npos&&
+    lower.find("#!/")==std::string::npos;
 }
 } // namespace pho

@@ -2,7 +2,7 @@
 
 `model.env` is the shared room/gateway contract, installed as
 `/etc/mag-stack/room-model.env`. `MAG_ROOM_MODEL_PORTS=8191:0,8192:1`
-means **port:NUMA**, not llama slot. Both servers have one llama slot (`0`).
+means **port:NUMA**, not llama slot. Both servers have one llama slot (`0`), explicitly pinned by room and gateway for chat and prewarm.
 `MAG_ROOM_MAX_BOTS` must be `2`. Thinking follows `MAG_ROOM_THINKING` and the
 per-message switch; it is no longer forced off by a model name.
 
@@ -49,3 +49,34 @@ change needs `nginx -t`, a fresh Chrome connection and a TLS 1.2 comparison.
 Keep TLS 1.3 and certificate validation enabled.
 
 Reference: [nginx ssl_ecdh_curve documentation](https://nginx.org/en/docs/http/ngx_http_ssl_module.html#ssl_ecdh_curve).
+
+## Cache and interactive turns
+
+The previous repo unit omitted the live `-rtr`, `-crs 0.20`, checkpoint interval
+128, batch 2048 and prefetch/memory tuning. The gateway also stripped
+`id_slot`, invoking the runtime's generic slot/cache selector. Restore the live
+settings and pin each dedicated server to slot 0 with `cache_prompt=true`
+(except explicitly stateless deterministic requests). Do not restart a model
+during deployment just to apply unit changes.
+
+Prewarm and chat use identical system/tools/persona ordering and the same
+slot. Clock/files/status remain after the transcript. A warm RAM slot is not
+restored from disk; user input cancels any background prewarm immediately.
+Actual `n_past`/time-to-first-token still needs measurement on the real
+DeepSeek instance; CPU throughput cannot be proved by the fake-model CI.
+
+Queue updates have persistent revisions and sender-scoped retry IDs. Stop
+closes active backend requests, preserves partial output and continues the
+queue. Explicit queue pause holds existing items; new input stays available.
+Queued user messages are visible immediately. UI order uses submit/start
+timestamps instead of completion time or reserved group positions. A user
+handoff inside a tool run closes the previous visible segment and starts a new
+reply below that user message, retaining the model's valid tool history.
+
+Thinking defaults and per-bot overrides are stored server-side. SSE replay
+is isolated per bot. Reasoning channels and split `<think>` blocks stay out
+of answer deltas. With Thinking off the prompt phase is only a fixed-size
+opacity pulse; with Thinking on the thought header is collapsible with a
+duration and closes after thinking completes. GitHub tools (including GitHub
+MCP bindings) require explicit per-bot enablement. Switching access off
+changes booleans only and preserves server-side credentials.

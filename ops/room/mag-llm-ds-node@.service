@@ -13,6 +13,7 @@ Group=chris
 WorkingDirectory=/home/chris
 EnvironmentFile=/etc/mag-stack/room-model.env
 EnvironmentFile=/etc/mag-llm/ds-node.env
+Environment=GGML_Q8_PF=4096 GGML_MXFP4_PF=4096
 ExecStartPre=+/usr/bin/install -d -o chris -g chris -m 0750 /var/lib/mag-llm/slots/ds-node%i
 ExecStart=/usr/bin/numactl --cpunodebind=%i --membind=%i /usr/local/lib/mag-room/start-ds-node.sh %i
 Restart=on-failure
@@ -20,8 +21,9 @@ RestartSec=60
 TimeoutStartSec=3600
 TimeoutStopSec=120
 LimitMEMLOCK=infinity
+MemoryLow=150G
 MemorySwapMax=0
-OOMScoreAdjust=-600
+OOMScoreAdjust=-900
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=no

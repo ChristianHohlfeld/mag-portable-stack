@@ -342,9 +342,8 @@ static void proxy(int fd){
   if(is_llm) {
     Val j;
     if(selected=="configured"&&mj::parse(forwarded,j)&&j.isObj()){
-      // Single-slot ik_llama must choose its slot to reuse --cache-ram.
-      j.obj->erase(std::remove_if(j.obj->begin(),j.obj->end(),
-        [](const auto &kv){return kv.first=="id_slot";}),j.obj->end());
+      // A dedicated server per bot: always reuse its only KV slot.
+      j["id_slot"]=0;
       forwarded=mj::dump(j);
     }
     if(id_slot>=0&&mj::parse(forwarded,j)&&j.isObj()){

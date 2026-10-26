@@ -17,6 +17,7 @@ def _rules(content):
 def _mem(content):
  i=content.index('\n[Erinnerungen]');return content[i+1:]
 class Model(http.server.BaseHTTPRequestHandler):
+ slot_snapshot=[]
  protocol_version='HTTP/1.1';calls=[];slots=[];pairs=[];paths=[];slot_delay={};delay=0;reply=None;script=[];health=200;last_prompt={};overflow_once=0;barrier_token='';barrier_release=None
  def log_message(self,*a):pass
  def do_GET(self):
@@ -24,6 +25,7 @@ class Model(http.server.BaseHTTPRequestHandler):
   if self.path=='/health':
    code=type(self).health
    data={200:b'{"status":"ok"}',503:b'{"error":{"code":503,"message":"Loading model","type":"unavailable_error"}}'}.get(code,b'{"error":"upstream unavailable"}')
+  elif self.path=='/slots':data=json.dumps(type(self).slot_snapshot).encode()
   else:data=b'{"data":[{"id":"deepseek-v4-flash-0731"}]}'
   self.send_response(code);self.send_header('Content-Length',str(len(data)));self.end_headers();self.wfile.write(data)
  def do_POST(self):
@@ -396,10 +398,10 @@ class Native(unittest.TestCase):
   self.request('/api/message',{'text':'N-Eins','bots':['test']});self._busy();time.sleep(.5)
   r=self.request('/api/message',{'text':'N-Zwei','bots':['test']});self.request('/api/queue/'+r['item']['id']+'/now',{})
   s=self._settle(lambda s:not s['busy'] and not s['pending'] and s['room'][-1].get('content')=='Sofort.')
-  tail=s['room'][-4:];self.assertEqual(tail[0]['content'],'N-Eins');self.assertEqual(tail[1]['content'],'');self.assertTrue(tail[1].get('interrupted'));self.assertEqual(tail[1].get('stopped'),'system')
+  tail=s['room'][-4:];self.assertEqual(tail[0]['content'],'N-Eins');self.assertEqual(tail[1]['content'],'');self.assertTrue(tail[1].get('interrupted'));self.assertEqual(tail[1].get('stopped'),'user')
   self.assertEqual(tail[2]['content'],'N-Zwei')
   last=Model.calls[-1]['messages'];self._roles_ok(last);self.assertNotIn('denke',json.dumps(last),'partial reasoning must not leak into history')
-  self.assertIn('(unterbrochen)',json.dumps(last,ensure_ascii=False),'the model still learns the turn was interrupted')
+  self.assertIn('(abgebrochen)',json.dumps(last,ensure_ascii=False),'the model still learns the turn was interrupted by the user')
  def test_15c_send_now_during_output_keeps_partial_and_prefix(self):
   self.wait_idle();Model.calls.clear();Model.script=[self._slow('out'),['Danach.']]
   self.request('/api/message',{'text':'O-Eins','bots':['test']});self._busy();time.sleep(1.0)
@@ -614,6 +616,7 @@ class Native(unittest.TestCase):
   self.assertEqual(self.request('/api/room/clear',{},headers=owner).get('unchanged'),True,'idle clear needs no force')
   self.request('/api/undo/'+wiped['undo'],{});self.request('/api/queue/resume',{});Model.script=[]
  def test_15m_bot_rights_github_read_only_no_gitea_admin(self):
+  self.request('/api/bot-settings',{'bots':['test'],'github_enabled':True},method='PUT')
   self.wait_idle();self.request('/api/connectors/github',{'token':'ghp_'+'c'*36})
   args=[{"action":"create_issue","repo":"ChristianHohlfeld/mag-portable-stack","title":"x"},
         {"action":"comment_issue","repo":"ChristianHohlfeld/mag-portable-stack","number":1,"body":"x"},
@@ -668,6 +671,7 @@ class Native(unittest.TestCase):
   r.close();self.assertNotIn('bot_start',line,'no replay after the turn finished')
 
  def test_16g_github_tool_server_side_token(self):
+  self.request('/api/bot-settings',{'bots':['test'],'github_enabled':True},method='PUT')
   seen=[]
   class GH(http.server.BaseHTTPRequestHandler):
    def log_message(self,*a):pass
@@ -679,7 +683,7 @@ class Native(unittest.TestCase):
    self.wait_idle();call={'tool_calls':[{'index':0,'id':'call_gh1','function':{'name':'github','arguments':'{"action":"list_repos"}'}}]}
    Model.calls.clear();Model.script=[[call],['Keine Verbindung.']]
    self.request('/api/message',{'text':'GH-1','bots':['test']});self.wait_idle();time.sleep(.3)
-   self.assertTrue(any(t['function']['name']=='github' for t in Model.calls[0]['tools']),'github always registered')
+   self.assertTrue(any(t['function']['name']=='github' for t in Model.calls[0]['tools']),'github registered only after opt-in')
    self.assertIn('nicht verbunden',json.dumps(Model.calls[-1]['messages']))
    self.request('/api/connectors/github',{'token':'ghp_testtoken1234567890'})
    Model.calls.clear();Model.script=[[call],['Repos gelistet.']]
@@ -688,6 +692,12 @@ class Native(unittest.TestCase):
    self.assertIn('chris/mag',msgs);self.assertNotIn('extra',msgs);self.assertNotIn('ghp_testtoken1234567890',msgs)
    self.assertEqual(seen[-1],('/user/repos?per_page=50&sort=updated','Bearer ghp_testtoken1234567890'))
    self.assertFalse([p for p in (self.state/'connectors').iterdir() if p.name.startswith('.gh-hdr')],'header file removed')
+   self.request('/api/bot-settings',{'bots':['test'],'github_enabled':False},method='PUT')
+   self.assertTrue(self.request('/api/connectors')['github']['connected'])
+   Model.calls.clear();Model.script=[['Ohne GitHub.']]
+   self.request('/api/message',{'text':'GH-OFF','bots':['test']});self.wait_room('Ohne GitHub.');self.wait_idle()
+   self.assertFalse(any(t['function']['name']=='github' for t in Model.calls[0]['tools']))
+   self.request('/api/bot-settings',{'bots':['test'],'github_enabled':True},method='PUT')
    self.request('/api/connectors/github',method='DELETE')
   finally:srv.shutdown()
  def test_16h_s23_tool_does_not_touch_s23pub_when_unconfigured(self):
@@ -1010,8 +1020,8 @@ class Native(unittest.TestCase):
   # Native file drag: PDFs/text/archives and photos stage until send.
   for needle in ('id="file-preview"','function stageFiles(files)',
                  'function paintStagedFiles()','function stageAttachments(files)',
-                 'async function flushStagedFiles()',
-                 'if(stagedFiles.length)await flushStagedFiles()',
+                 'async function flushStagedFiles(files=[...stagedFiles])',
+                 'if(files.length)await flushStagedFiles(files)',
                  "for(const target of [$('send-form')",
                  'e.preventDefault();e.stopPropagation();dropActive(false);',
                  'e.dataTransfer?.files',
@@ -1043,8 +1053,18 @@ class Native(unittest.TestCase):
   self.assertEqual(Model.calls[-1]['messages'][0]['content'],Model.calls[-2]['messages'][0]['content'])
   self.request('/api/message',{'text':'Standard','bots':['test']});self.wait_room('Hallo aus dem Modell.');self.wait_idle()
   self.assertTrue(Model.calls[-1]['chat_template_kwargs']['enable_thinking'],'Without a choice the room default applies')
+  self.request('/api/bot-settings',{'bots':['test'],'thinking':False},method='PUT')
+  self.request('/api/message',{'text':'Gespeichert ohne Denken','bots':['test']});self.wait_room('Hallo aus dem Modell.');self.wait_idle()
+  self.assertFalse(Model.calls[-1]['chat_template_kwargs']['enable_thinking'])
+  self.assertFalse(next(a for a in self.request('/api/state')['agents'] if a['id']=='test')['thinking'])
+  # Split tags must never leak reasoning into the answer, even if a backend
+  # returns tagged content rather than a separate reasoning channel.
+  Model.script=[['<thi','nk>intern','</thi','nk>Nur Antwort.']]
+  self.request('/api/message',{'text':'Getrennte Kanäle','bots':['test']});self.wait_room('Nur Antwort.');self.wait_idle()
+  self.assertEqual(self.request('/api/state')['room'][-1]['reasoning'],'intern')
+  self.request('/api/bot-settings',{'bots':['test'],'thinking':True},method='PUT')
   html=self.request('/',raw=True).decode()
-  for needle in ('id="think"',"think:$('think').checked","mag-think",'state.thinking_default'):self.assertIn(needle,html)
+  for needle in ('id="think"',"const bots=[...selected],think=$('think').checked","api('/api/bot-settings'",'a.thinking'):self.assertIn(needle,html)
  def test_09l_new_message_is_queued_not_aborting(self):
   Model.delay=1.5
   try:
@@ -2323,12 +2343,12 @@ class MultiBot(unittest.TestCase):
  def test_06_frontend_contract(self):
   html=self.request('/',raw=True).decode()
   for needle in ('id="agent-model"','chosenBots','/model'):self.assertIn(needle,html)
- def test_07_ornith_deploy_has_no_legacy_multibot_override(self):
+ def test_07_configured_deploy_has_no_legacy_multibot_override(self):
   self.assertFalse((ROOT/'ops/mag-120.d/30-multibot.conf').exists())
   self.assertFalse((ROOT/'ops/deepseek/both-sockets.sh').exists())
   drop=(ROOT/'ops/mag-120.d/20-room-audit.conf').read_text()
   self.assertIn('Environment=MAG_ROOM_SINGLE_BOT=\n',drop)
-  self.assertIn('Environment=MAG_ROOM_MODEL=ornith-1.5-35b-a3b',drop)
+  self.assertIn('EnvironmentFile=-/etc/mag-stack/room-model.env',drop)
   dep=(ROOT/'ops/deploy.sh').read_text()
   self.assertIn('rm -f /etc/systemd/system/mag-120.service.d/30-multibot.conf',dep)
   self.assertNotIn('install -m 0644 "$SOURCE/ops/mag-120.d/30-multibot.conf"',dep)
@@ -2538,7 +2558,7 @@ class StaggeredLanes(unittest.TestCase):
   self.assertEqual(self._last_bot_text('iq3bot'),'Nur A')
  def test_03_frontend_thinking_and_waiting(self):
   html=self.request('/',raw=True).decode()
-  for needle in ('function showThinking(',"head.className='think-head'","'Gedanken'","'Denkt nach'",'msg.reasoning','msg.thought_ms',"event.type==='bot_wait'",'wartet','next.waiting_bots','function thinkSettled(','function paintThinkPeek(',"className='think-dots'",'prefers-reduced-motion:reduce){.think-line.in'):self.assertIn(needle,html)
+  for needle in ('function showThinking(',"head.className='think-head'","'Gedacht für'","'Denkt nach…'",'msg.reasoning','msg.thought_ms',"event.type==='bot_wait'",'wartet','next.waiting_bots','function thinkSettled(','function paintThinkPeek(',"className='think-dots'",'prefers-reduced-motion:reduce){.think-line.in'):self.assertIn(needle,html)
   self.assertNotIn("peek.textContent=text.slice(",html)
   self.assertNotIn("'Überlegungen'",html)
 class SilentPhases(unittest.TestCase):
@@ -3063,9 +3083,8 @@ echo "$@" >> "$d/ctl.log"
 if [ "$1" = despawn ]; then ls "$d/state/archive" > "$d/archive-at-despawn" 2>&1; fi
 exit 0
 """
-class Ornith(unittest.TestCase):
- """Ornith mode with the live env (SINGLE_BOT=auto, DUAL_NUMA=1): up to four freely
- added/removed bots, each pinned to its persistent slot (instance), never the array index."""
+class ConfiguredNuma(unittest.TestCase):
+ """Configured DeepSeek mode: two bots with persistent NUMA backend assignments."""
  @classmethod
  def start(cls):
   cls.log=open(cls.tmp_path/'server.log','a')
@@ -3073,7 +3092,7 @@ class Ornith(unittest.TestCase):
   for _ in range(150):
    try:Native.request.__func__(cls,'/healthz',raw=True);return
    except Exception:time.sleep(.03)
-  raise RuntimeError('Ornith startup failed')
+  raise RuntimeError('Configured NUMA startup failed')
  @classmethod
  def stop(cls):
   cls.proc.terminate();cls.proc.wait(timeout=5);cls.log.close()
@@ -3087,8 +3106,8 @@ class Ornith(unittest.TestCase):
   for tool in ('systemctl','virsh'):
    fakebin.joinpath(tool).write_text(f'#!/bin/sh\necho {tool} "$@" >> "{cls.tmp_path}/forbidden.log"\n');fakebin.joinpath(tool).chmod(0o755)
   cls.state.joinpath('agents.json').write_text(json.dumps([
-   {'id':'deepseek-chat','name':'DeepSeek 4.0','vm':'agent3','model':'ornith-1.5-35b-a3b','memory':[{'text':'bleibt'}]},
-   {'id':'lehotbot','name':'Qwen 2','vm':'agent1','model':'ornith-1.5-35b-a3b','memory':[]}]))
+   {'id':'deepseek-chat','name':'DeepSeek 4.0','vm':'agent3','model':'deepseek-v4-flash-0731','memory':[{'text':'bleibt'}]},
+   {'id':'lehotbot','name':'Qwen 2','vm':'agent1','model':'deepseek-v4-flash-0731','memory':[]}]))
   cls.model=http.server.ThreadingHTTPServer(('127.0.0.1',0),Model)
   threading.Thread(target=cls.model.serve_forever,daemon=True).start()
   cls.ui=port();cls.bridge=port()
@@ -3098,7 +3117,7 @@ class Ornith(unittest.TestCase):
     MAG_ROOM_UI=str(ROOT/'mag-room/web/index.html'),MAG_ROOM_STATIC=str(ROOT/'mag-room/static'),
     MAG_ROOM_MODEL_STATUS=str(cls.tmp_path/'ms.json'),MAG_NETMODE=str(NETMODE),
     MAG_TEST_NO_MEMGIT='1',MAG_ROOM_AGENT_CTL=str(cls.ctl),MAG_ROOM_GUEST_RUN='/bin/false',MAG_ROOM_MCP_AUTO='0',
-    MAG_ROOM_SINGLE_BOT='auto',MAG_ROOM_SINGLE_BOT_VM='on',MAG_ROOM_DUAL_NUMA='1',MAG_SECONDARY_MODEL='ornith',
+    MAG_ROOM_SINGLE_BOT='auto',MAG_ROOM_SINGLE_BOT_VM='on',MAG_ROOM_DUAL_NUMA='1',MAG_ROOM_MODEL_ID='deepseek-v4-flash-0731',MAG_ROOM_MODEL_LABEL='DeepSeek V4 Flash',MAG_ROOM_MODEL_PORTS='8191:0,8192:1',MAG_ROOM_MAX_BOTS='2',MAG_ROOM_PRESETS=str(ROOT/'ops/room/presets.json'),
     MAG_ROOM_PREWARM='0')  # no MAG_ROOM_STAGGER: Ornith answers concurrently by default
   cls.start()
  @classmethod
@@ -3121,12 +3140,12 @@ class Ornith(unittest.TestCase):
   self.wait_idle();return hit[0]
  def test_01_migration_slots_and_free_mode(self):
   s=self.request('/api/state')
-  self.assertTrue(s['ornith_mode']);self.assertFalse(s['dual_numa']);self.assertEqual(s['single_bot'],'')
+  self.assertTrue(s['configured_model']);self.assertFalse(s['dual_numa']);self.assertEqual(s['single_bot'],'')
   self.assertEqual([(a['id'],a['name'],a['vm'],a['slot'],a['model']) for a in s['agents']],
-   [('deepseek-chat','Ornith 1','agent3',1,'ornith-1.5-35b-a3b'),('lehotbot','Ornith 2','agent1',2,'ornith-1.5-35b-a3b')])
-  self.assertEqual([i['slot'] for i in s['ornith_instances']],[1,2,3,4])
-  # Variant B: 2 servers (one per NUMA node) x 2 llama slots; bots 1,2 on different servers.
-  self.assertEqual([(i['port'],i['id_slot']) for i in s['ornith_instances']],[('8191','0'),('8192','0'),('8191','1'),('8192','1')])
+   [('deepseek-chat','DeepSeek V4 Flash 1','agent3',1,'deepseek-v4-flash-0731'),('lehotbot','DeepSeek V4 Flash 2','agent1',2,'deepseek-v4-flash-0731')])
+  self.assertEqual([i['slot'] for i in s['model_instances']],[1,2])
+  # Two servers, one per NUMA node, with one fixed llama slot each.
+  self.assertEqual([(i['port'],i['numa']) for i in s['model_instances']],[(8191,0),(8192,1)])
   self.assertEqual(self.persisted()['deepseek-chat']['memory'][0]['text'],'bleibt')
  def test_02_german_default_and_sticky_slot(self):
   call,slot=self.ask('lehotbot')
@@ -3134,17 +3153,12 @@ class Ornith(unittest.TestCase):
   self.assertIn('Antworte standardmaessig auf Deutsch',call['messages'][0]['content'])
   self.error(409,'/api/agents/lehotbot/model',{'model':'deepseek-v4-flash-0731'})
   self.error(409,'/api/model',{'id':'deepseek-v4-flash-0731'})
- def test_03_add_up_to_four_then_reject_fifth(self):
-  # The UI always sends its (hidden) model select value; Ornith overrides it.
-  chat=self.request('/api/agents',{'name':'Chat Drei','vm':False,'model':'deepseek-v4-flash-0731'})
-  vm=self.request('/api/agents',{'name':'Vier mit VM'})
-  b=self.bots()
-  self.assertEqual(b[chat['id']]['slot'],3);self.assertEqual(b[vm['id']]['slot'],4)
-  self.assertEqual(b[chat['id']]['vm'],'');self.assertEqual(b[chat['id']]['model'],'ornith-1.5-35b-a3b')
-  with self.assertRaises(urllib.error.HTTPError) as ctx:self.request('/api/agents',{'name':'Fuenf','vm':False})
+ def test_03_two_bot_cap_rejects_third(self):
+  with self.assertRaises(urllib.error.HTTPError) as ctx:
+   self.request('/api/agents',{'name':'Dritter','vm':False,'preset':'deepseek-v4-dual-numa'})
   self.assertEqual(ctx.exception.code,409)
-  self.assertIn('Maximal vier Ornith-Bots',json.loads(ctx.exception.read())['error'])
-  self.assertEqual(len(self.bots()),4)
+  self.assertIn('Maximum 2 Bots erreicht',json.loads(ctx.exception.read())['error'])
+  self.assertEqual(len(self.bots()),2)
  def test_04_delete_deepseek_chat_archives_and_keeps_other_slots(self):
   before={k:v['slot'] for k,v in self.bots().items()}
   self.assertTrue(self.request('/api/agents/deepseek-chat',method='DELETE')['ok'])
@@ -3159,7 +3173,7 @@ class Ornith(unittest.TestCase):
   arch=list(self.state.joinpath('archive').glob('deepseek-chat-*.json'))
   self.assertEqual(json.loads(arch[0].read_text())['memory'][0]['text'],'bleibt')
  def test_05_readd_takes_lowest_free_slot_and_routes_there(self):
-  made=self.request('/api/agents',{'name':'Ornith 1','vm':False})
+  made=self.request('/api/agents',{'name':'DeepSeek V4 Flash 1','vm':False,'preset':'deepseek-v4-dual-numa'})
   self.assertEqual(self.bots()[made['id']]['slot'],1)
   _,slot=self.ask(made['id'])
   self.assertEqual(slot,'0')
@@ -3169,18 +3183,19 @@ class Ornith(unittest.TestCase):
   before=self.state.joinpath('agents.json').read_text()
   self.stop();self.start()
   self.assertEqual(json.loads(self.state.joinpath('agents.json').read_text()),json.loads(before))
-  self.assertEqual(sorted(a['slot'] for a in self.request('/api/state')['agents']),[1,2,3,4])
- def test_07_ui_shows_instances(self):
+  self.assertEqual(sorted(a['slot'] for a in self.request('/api/state')['agents']),[1,2])
+ def test_07_ui_uses_config_label_and_preset(self):
   html=(ROOT/'mag-room/web/index.html').read_text()
-  self.assertIn("'Ornith 1.5 35B-A3B · Instanz '+a.slot",html)
-  self.assertIn('ornith_instances',html)
-  self.assertIn('return state.ornith_mode?4:2',html)
+  self.assertIn('state.model_label',html)
+  self.assertIn('agent-preset',html)
+  self.assertIn('return state.max_bots||2',html)
+  self.assertNotIn("c.textContent='Instanz '",html)
   self.assertIn('archiviert, nicht gelöscht',html)
   self.assertIn("'Prompt wird vorbereitet (~'+etaMin(",html)
  def test_08_identity_per_bot_normal_and_deterministic(self):
   bots=self.bots()
   for det in (False,True):
-   self.request('/api/model-settings',{'id':'ornith-1.5-35b-a3b','deterministic':det})
+   self.request('/api/model-settings',{'id':'deepseek-v4-flash-0731','deterministic':det})
    try:
     for bid,b in bots.items():
      call,slot=self.ask(bid)
@@ -3192,11 +3207,13 @@ class Ornith(unittest.TestCase):
      self.assertIn('Antworte standardmaessig auf Deutsch',sysmsg['content'])
      for other in bots.values():
       if other['id']!=bid:self.assertNotIn('Du bist '+other['name']+',',sysmsg['content'])
+     self.assertEqual(call['id_slot'],0)
+     self.assertEqual(call['cache_prompt'],not det)
      if det:self.assertEqual(call['temperature'],0)
      hit=[p for p in list(Model.paths) if p[3] is call]
      self.assertEqual(hit[0][2],bid,'X-Mag-Bot names the bot')
    finally:
-    self.request('/api/model-settings',{'id':'ornith-1.5-35b-a3b','deterministic':False})
+    self.request('/api/model-settings',{'id':'deepseek-v4-flash-0731','deterministic':False})
   # Shared prefix: identical system text up to [Identitaet] for every bot.
   prefixes={c['messages'][0]['content'].split('[Identitaet]')[0] for c in Model.calls[-len(bots)*2:-len(bots)]}
   self.assertEqual(len(prefixes),1)
@@ -3204,8 +3221,8 @@ class Ornith(unittest.TestCase):
   room=self.request('/api/state')['room']
   i=max(k for k,m in enumerate(room) if token in (m.get('content') or ''))
   return [m for m in room[i+1:] if m.get('role')=='assistant']
- def test_10_four_bots_answer_concurrently_order_stable(self):
-  bots=self.bots();self.assertEqual(len(bots),4)
+ def test_10_two_bots_answer_concurrently_order_stable(self):
+  bots=self.bots();self.assertEqual(len(bots),2)
   ids=[a['id'] for a in self.request('/api/state')['agents']]
   self.wait_idle();Model.slot_delay={'0':.5,'1':.02,'2':.02,'3':.02}
   gate=threading.Event()
@@ -3215,25 +3232,25 @@ class Ornith(unittest.TestCase):
    self.request('/api/message',{'text':token,'bots':ids})
    for _ in range(400):
     calls=[sl for c,sl in list(Model.pairs) if token in json.dumps(c,ensure_ascii=False)]
-    if len(calls)>=4:break
+    if len(calls)>=2:break
     time.sleep(.01)
-   else:self.fail('not all four bots started concurrently')
-   self.assertEqual(sorted(calls[:4]),['0','1','2','3'])
+   else:self.fail('not both bots started concurrently')
+   self.assertEqual(sorted(calls[:2]),['0','1'])
    self.assertEqual(self.round_msgs(token),[],
-    'all four started before the fake model releases any response')
+    'both started before the fake model releases any response')
    gate.set()
    self.wait_idle()
   finally:
    gate.set();Model.slot_delay={};Model.barrier_token='';Model.barrier_release=None
   got=self.round_msgs(token)
-  self.assertEqual(len(got),4)
+  self.assertEqual(len(got),2)
   self.assertEqual(got[-1]['bot'],ids[0],'slowest bot (slot 1) finished last in the transcript')
   # Stable UI order: one turn group, each answer carries the bot's fixed list position.
   self.assertEqual(len({m['group'] for m in got}),1)
   self.assertEqual(sorted((m['order'],m['bot']) for m in got),[(i,b) for i,b in enumerate(ids)])
   html=(ROOT/'mag-room/web/index.html').read_text()
-  self.assertIn("byGroup.get(m.group).sort((x,y)=>(+x[0].order||0)-(+y[0].order||0))",html)
-  self.assertIn("const next=mates.find(x=>+x.dataset.order>(+s.order||0));",html)
+  self.assertIn('timeline.sort',html)
+  self.assertIn('node.dataset.displayMs',html)
   self.assertIn("group:event.group||'',order:+event.order||0",html)
  def test_11_reflection_round_optional_and_cancel(self):
   ids=[a['id'] for a in self.request('/api/state')['agents']]
@@ -3245,15 +3262,15 @@ class Ornith(unittest.TestCase):
    self.request('/api/message',{'text':token,'bots':ids})
    for _ in range(600):
     got=self.round_msgs(token)
-    if len(got)>=8:break
+    if len(got)>=2:break
     time.sleep(.02)
    self.wait_idle();got=self.round_msgs(token)
-   self.assertEqual(len(got),8,'one reflection answer per bot, never chained')
-   first,second=got[:4],got[4:]
+   self.assertEqual(len(got),4,'one reflection answer per bot, never chained')
+   first,second=got[:2],got[2:]
    self.assertEqual(len({m['group'] for m in first}),1);self.assertEqual(len({m['group'] for m in second}),1)
    self.assertNotEqual(first[0]['group'],second[0]['group'])
    refl=[(c,sl) for c,sl in list(Model.pairs)[mark:] if 'Reflexionsrunde' in json.dumps(c,ensure_ascii=False)]
-   self.assertEqual(sorted(sl for _,sl in refl),['0','1','2','3'])
+   self.assertEqual(sorted(sl for _,sl in refl),['0','1'])
    names={a['id']:a['name'] for a in self.request('/api/state')['agents']}
    for c,sl in refl:
     text=json.dumps(c,ensure_ascii=False)
@@ -3279,24 +3296,24 @@ class Ornith(unittest.TestCase):
   self.wait_idle()
   def warmed(after):
    for _ in range(400):
-    got=[p for p in list(Model.paths)[after:] if p[0].startswith('/slots/') and p[3].get('filename','').startswith('mag-prefix-ornith') and p[0].endswith('save')]
-    if len(got)>=4:return list(Model.paths)[after:]
+    got=[p for p in list(Model.paths)[after:] if p[0].startswith('/slots/') and p[3].get('filename','').startswith('mag-prefix-deepseek-v4-flash-0731') and p[0].endswith('save')]
+    if len(got)>=2:return list(Model.paths)[after:]
     time.sleep(.03)
-   self.fail('not all four bot slots prewarmed')
+   self.fail('not both bot slots prewarmed')
   self.stop();type(self).env['MAG_ROOM_PREWARM']='1'
   try:
    mark=len(Model.paths);self.start();seen=warmed(mark)
    saves={(p[1],p[3]['filename']) for p in seen if p[0].endswith('save')}
-   self.assertEqual(saves,{(str(n-1),'mag-prefix-ornith-slot%d.bin'%n) for n in range(1,5)})
+   self.assertEqual(saves,{(str(n-1),'mag-prefix-deepseek-v4-flash-0731-slot%d.bin'%n) for n in range(1,3)})
    warm=[p for p in seen if p[0]=='/v1/chat/completions' and p[3].get('max_tokens')==1]
-   self.assertEqual(sorted(p[1] for p in warm),['0','1','2','3'])
+   self.assertEqual(sorted(p[1] for p in warm),['0','1'])
    for _ in range(200):  # the room writes the meta file right after each save returns
     meta=json.loads(self.state.joinpath('prompt-prefix.json').read_text() or '{}')
-    if len(meta)>=4:break
+    if len(meta)>=2:break
     time.sleep(.03)
    # Slot files are tracked per server (its own --slot-save-path): slots 1,3 -> 8191, 2,4 -> 8192.
    srv=lambda n:'8191' if n%2 else '8192'
-   self.assertEqual(set(meta),{srv(n)+'/mag-prefix-ornith-slot%d.bin'%n for n in range(1,5)})
+   self.assertEqual(set(meta),{srv(n)+'/mag-prefix-deepseek-v4-flash-0731-slot%d.bin'%n for n in range(1,3)})
    meta={k.split('/',1)[1]:v for k,v in meta.items()}
    # Bots with the same rules (VM vs chat-only) share one prefix key.
    kinds={b['slot']:bool(b['vm']) for b in self.bots().values()}
@@ -3310,16 +3327,24 @@ class Ornith(unittest.TestCase):
    restores={}
    for p in seen:
     if p[0].endswith('restore'):restores.setdefault(p[1],p[3]['filename'])
-   own=lambda n:'mag-prefix-ornith-slot%d.bin'%n
+   own=lambda n:'mag-prefix-deepseek-v4-flash-0731-slot%d.bin'%n
    # Each source holds the same shared prefix; a stale own file is never used
    # when another bot already warmed a matching prefix (slot 1 always does).
-   self.assertEqual(sorted(restores),['0','1','2','3'])
-   for n in range(1,5):self.assertEqual(fresh[restores[str(n-1)]],fresh[own(n)])
+   self.assertEqual(sorted(restores),['0','1'])
+   for n in range(1,3):self.assertEqual(fresh[restores[str(n-1)]],fresh[own(n)])
    # Never another server's file; bot 3 shares bot 1's server (and its chat-only prefix).
-   for n in range(1,5):self.assertEqual(srv(int(restores[str(n-1)][-5])),srv(n),'cross-server restore')
-   self.assertTrue(all(restores[str(n-1)]==own(1) for n in (1,3) if fresh[own(n)]==fresh[own(1)]))
-   self.assertGreaterEqual(sum(restores[str(n-1)]!=own(n) for n in range(2,5)),1)
+   for n in range(1,3):self.assertEqual(srv(int(restores[str(n-1)][-5])),srv(n),'cross-server restore')
+   self.assertEqual(restores,{'0':own(1),'1':own(2)})
+   # Match the pinned ik runtime's actual /slots schema: it has no n_past.
+   # Restarting only the room must leave the running model's RAM cache alone.
+   self.stop();Model.slot_snapshot=[{'id':0,'state':0,'prompt':'cached-prefix','next_token':{'n_decoded':1}}]
+   mark=len(Model.paths);self.start()
+   for _ in range(100):
+    if 'ram_warm=1' in self.tmp_path.joinpath('server.log').read_text():break
+    time.sleep(.03)
+   else:self.fail('warm ik slot was not detected')
+   self.assertEqual([p for p in list(Model.paths)[mark:] if p[0].startswith('/slots/') or p[0]=='/v1/chat/completions'],[])
   finally:
-   self.stop();type(self).env['MAG_ROOM_PREWARM']='0';self.start()
+   self.stop();Model.slot_snapshot=[];type(self).env['MAG_ROOM_PREWARM']='0';self.start()
 
 if __name__=='__main__':unittest.main(verbosity=2)

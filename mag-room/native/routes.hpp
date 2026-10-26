@@ -583,6 +583,34 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
     return;
   }
   if (mcp_route(fd, r, m, path)) return;
+  if (path == "/api/bot-settings" && m == "PUT") {
+    if (bridge || actor.role != "owner") { error_json(fd, 403, "Nur der Besitzer"); return; }
+    Val body;
+    if (!mj::parse(r.body, body) || !body.isObj()) { error_json(fd, 400, "Settings required"); return; }
+    const auto think = body.find("thinking"), github = body.find("github_enabled");
+    if ((!think && !github) || (think && think->type != Val::BOOL) || (github && github->type != Val::BOOL)) {
+      error_json(fd, 400, "Boolean settings required"); return;
+    }
+    const bool room = mag::str(body, "scope") == "room";
+    auto ids = selected_ids(body);
+    if (ids.empty() && !room) { error_json(fd, 400, "Select a bot"); return; }
+    {
+      std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
+      if (room) {
+        if (think) THINKING_DEFAULT = think->asBool();
+        if (github) GITHUB_DEFAULT = github->asBool();
+        Val prefs = Val::object(); prefs["thinking"] = THINKING_DEFAULT.load(); prefs["github_enabled"] = GITHUB_DEFAULT.load();
+        if (!write_file_atomic(STATE_DIR + "/bot-defaults.json", mj::dump(prefs))) { error_json(fd, 500, "Speichern fehlgeschlagen"); return; }
+      }
+      for (auto &a : AGENTS) if (room || std::find(ids.begin(), ids.end(), mag::str(a, "id")) != ids.end()) {
+        if (think) a["thinking"] = think->asBool();
+        if (github) a["github_enabled"] = github->asBool();
+      }
+      save_agents();
+    }
+    agents_event();
+    send_json(fd, 200, "{\"ok\":true}"); return;
+  }
   // Connectors: secrets stay server-side (STATE_DIR/connectors, 0600) and
   // are never returned to the browser or written to the repo.
   if (path == "/api/connectors" && m == "GET") {
@@ -1349,51 +1377,14 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
     bool interrupt = false;
     if (auto in = body.find("interrupt"); in && in->type == Val::BOOL)
       interrupt = in->asBool();
-    // Earlier queued messages for the same model lanes keep their order.
-    // Items held by a Stop never block a new message.
-    bool queue_first = false;
-    {
-      std::set<Lane *> mine;
-      for (auto &b : ids)
-        if (Lane *l = lane_of(b)) mine.insert(l);
-      std::lock_guard<std::mutex> lk(JOB_MTX);
-      for (auto &p : PENDING) {
-        if (p.held) continue;
-        for (auto &b : p.ids)
-          if (Lane *l = lane_of(b); l && mine.count(l)) queue_first = true;
-      }
+    const std::string request_id = str("request_id");
+    if (!request_id.empty() && (request_id.size() > 80 || request_id.find_first_not_of("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-") != std::string::npos)) {
+      error_json(fd, 400, "Invalid request_id"); return;
     }
-    if ((lanes_busy(ids) || queue_first) && !interrupt) {
-      // Not in the transcript yet: shown as a queue chip. A running turn of
-      // the addressed bot reads it at its next tool step; otherwise it is
-      // the next turn of that bot, before autonomy and scheduled jobs.
-      Val item = enqueue_pending(str("text"), ids, think, actor.name, actor.login);
-      JOB_CV.notify_all();
-      Val out = Val::object();
-      out["accepted"] = true;
-      out["queued"] = true;
-      out["item"] = item;
-      send_json(fd, 202, mj::dump(out));
-      return;
-    }
-    if (interrupt && lanes_busy(ids)) {
-      // Same path as "Jetzt senden": the cancelled turn first stores its
-      // partial answer, then this message follows as the next user turn.
-      Val item = enqueue_pending(str("text"), ids, think, actor.name, actor.login);
-      queue_send_now(item.find("id")->asStr());
-      send_json(fd, 202, "{\"accepted\":true,\"interrupted\":true}");
-      return;
-    }
-    Val msg = append_room("user", actor.name.empty() ? "Nutzer" : actor.name,
-                          str("text"), "", nullptr, actor.login);
-    msg["type"] = "message";
-    publish(mj::dump(msg));
-    const bool queued = lanes_busy(ids) && !interrupt;
-    schedule(ids, think, interrupt, str("text"));
-    send_json(fd, 202, queued ? "{\"accepted\":true,\"queued\":true}"
-                              : "{\"accepted\":true}");
+    send_json(fd, 202, mj::dump(enqueue_pending(str("text"), ids, think, actor.name, actor.login, interrupt, request_id)));
     return;
   }
+
   if (path == "/api/queue" || path.rfind("/api/queue/", 0) == 0) {
     std::string rest = path.size() > 11 ? path.substr(11) : "";
     if (path == "/api/queue" && m == "GET") {
@@ -1406,6 +1397,7 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
       if (!queue_merge()) { error_json(fd, 409, "Nichts zum Zusammenführen"); return; }
       send_json(fd, 200, "{\"ok\":true}"); return;
     }
+    if (rest == "pause" && m == "POST") { queue_pause(); send_json(fd, 200, "{\"ok\":true}"); return; }
     if (rest == "resume" && m == "POST") { queue_resume(); send_json(fd, 200, "{\"ok\":true}"); return; }
     std::string qid = rest, action;
     if (auto sl = rest.find('/'); sl != std::string::npos) { qid = rest.substr(0, sl); action = rest.substr(sl + 1); }
@@ -1587,7 +1579,7 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
   }
   if (m == "POST" && path == "/api/cancel") {
     // The composer Stop (Esc): every running turn, tool command, job and
-    // prewarm ends now; queued messages are held, the next message runs.
+    // prewarm ends now; queued messages continue unless explicitly paused.
     // Optional "bot": stop only that bot's lane; the others keep answering.
     const std::string bot = has_json ? str("bot") : "";
     if (!bot.empty()) {

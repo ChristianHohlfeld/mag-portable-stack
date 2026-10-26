@@ -165,6 +165,16 @@ static int envi(const char *k, int d) {
 static int64_t now_s() {
   return duration_cast<seconds>(system_clock::now().time_since_epoch()).count();
 }
+// Globally ordered display instants, even for events in the same millisecond.
+// Never use second-resolution timestamps to position live bubbles.
+static double display_now_ms() {
+  static std::atomic<int64_t> last{0};
+  const int64_t wall = duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
+  int64_t prev = last.load(), next;
+  do { next = std::max(wall, prev + 1); }
+  while (!last.compare_exchange_weak(prev, next));
+  return (double)next;
+}
 static std::string token_urlsafe(int n) {
   static const char *a =
       "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
@@ -646,6 +656,9 @@ static void save_json_array(const std::string &path,
 
 // ---------------------------------------------------------------- agents
 static std::vector<Val> AGENTS;
+static std::atomic<bool> THINKING_DEFAULT{true}, GITHUB_DEFAULT{false};
+static thread_local double TL_DISPLAY_MS = 0;
+static thread_local bool TL_THINKING_ENABLED = true;
 // Single-bot mode (MAG_ROOM_SINGLE_BOT=<id>): only this bot is active. All
 // other stored bots are parked: invisible, never scheduled, but kept verbatim
 // in agents.json (memory included) so nothing is lost and the mode is
@@ -1165,13 +1178,15 @@ static Val append_room(const std::string &role, const std::string &name,
                        const std::string &content, const std::string &bot = "",
                        const Val *file = nullptr,
                        const std::string &login = "",
-                       const std::string &kind = "") {
+                       const std::string &kind = "", double display_ms = 0, const std::string &client_id = "") {
   Val m = Val::object();
   m["id"] = token_hex(6);
   m["role"] = role;
   m["name"] = name.substr(0, 40);
   m["content"] = content;
   m["ts"] = (long)now_s();
+  m["display_ms"] = display_ms > 0 ? display_ms : display_now_ms();
+  if (!client_id.empty()) m["client_id"] = client_id;
   if (!login.empty())
     m["login"] = login.substr(0, 160);
   if (!bot.empty())
@@ -1336,50 +1351,48 @@ static std::vector<std::shared_ptr<Sub>> SUBS;
 // then continues with live deltas - no gap, no duplicate, no new generation.
 // The unconfirmed draft of the current round follows the confirmed text.
 struct LiveTurn { std::string start, bot, name, text, reasoning, draft; size_t draft_confirmed = 0; std::vector<std::string> tools; bool on = false; };
-static LiveTurn LIVE;
+static std::map<std::string, LiveTurn> LIVE_TURNS;
 static std::string event_type_of(const std::string &j) {
-  static const std::string k = "\"type\":\"";
-  auto p = j.find(k); // top-level key; string values have escaped quotes
-  if (p == std::string::npos) return "";
-  p += k.size();
-  auto e = j.find('"', p);
-  return e == std::string::npos ? "" : j.substr(p, e - p);
+  Val v; return mj::parse(j, v) ? mag::str(v, "type") : "";
 }
 static void live_track_locked(const std::string &j) {
-  std::string t = event_type_of(j);
-  if (t.empty()) return;
-  if (t == "bot_start") { LIVE = LiveTurn(); LIVE.on = true; LIVE.start = j;
-    Val v; if (mj::parse(j, v)) { if (auto b = v.find("bot")) LIVE.bot = b->asStr(); if (auto n = v.find("name")) LIVE.name = n->asStr(); }
-    return; }
-  if (!LIVE.on) return;
-  if (t == "delta" || t == "reasoning" || t == "draft") {
-    Val v; if (!mj::parse(j, v)) return;
-    std::string piece = v.find("text") ? v.find("text")->asStr() : "";
-    if (t == "draft") { LIVE.draft += piece; return; }
-    (t == "delta" ? LIVE.text : LIVE.reasoning) += piece;
-    if (t == "delta" && !LIVE.draft.empty() &&
-        (LIVE.draft_confirmed += piece.size()) >= LIVE.draft.size()) {
-      LIVE.draft.clear(); LIVE.draft_confirmed = 0;
+  Val v; if (!mj::parse(j, v)) return;
+  const std::string t = mag::str(v, "type"), bot = mag::str(v, "bot");
+  if (t == "reset") { LIVE_TURNS.clear(); return; }
+  if (t == "bot_done" || t == "cancelled") { LIVE_TURNS.erase(bot); return; }
+  if (bot.empty()) return;
+  if (t == "bot_start") {
+    auto &live = LIVE_TURNS[bot]; live = LiveTurn();
+    live.on = true; live.start = j; live.bot = bot; live.name = mag::str(v, "name"); return;
+  }
+  auto it = LIVE_TURNS.find(bot); if (it == LIVE_TURNS.end()) return;
+  auto &live = it->second;
+  const std::string piece = mag::str(v, "text");
+  if (t == "reasoning") live.reasoning += piece;
+  else if (t == "draft") live.draft += piece;
+  else if (t == "delta") {
+    live.text += piece;
+    if (!live.draft.empty() && (live.draft_confirmed += piece.size()) >= live.draft.size()) {
+      live.draft.clear(); live.draft_confirmed = 0;
     }
-    return; }
-  if (t == "draft_drop") { LIVE.draft.clear(); LIVE.draft_confirmed = 0; return; }
-  if (t == "tool" || t == "tool_result") { if (LIVE.tools.size() < 200) LIVE.tools.push_back(j); return; }
-  if (t == "bot_done" || t == "cancelled" || t == "idle" || t == "reset") LIVE = LiveTurn();
+  } else if (t == "draft_drop") { live.draft.clear(); live.draft_confirmed = 0; }
+  else if ((t == "tool" || t == "tool_result") && live.tools.size() < 200) live.tools.push_back(j);
 }
 static std::vector<std::string> live_replay_locked() {
   std::vector<std::string> out;
-  if (!LIVE.on) return out;
-  out.push_back(LIVE.start);
-  auto piece = [&](const char *type, const std::string &text) {
-    if (text.empty()) return;
-    Val e = Val::object(); e["type"] = type; e["bot"] = LIVE.bot; e["name"] = LIVE.name;
-    e["text"] = text; e["replay"] = true; out.push_back(mj::dump(e));
-  };
-  piece("reasoning", LIVE.reasoning);
-  for (auto &t : LIVE.tools) out.push_back(t);
-  piece("delta", LIVE.text);
-  if (LIVE.draft.size() > LIVE.draft_confirmed)
-    piece("draft", LIVE.draft.substr(LIVE.draft_confirmed));
+  for (const auto &entry : LIVE_TURNS) {
+    const auto &live = entry.second;
+    out.push_back(live.start);
+    auto piece = [&](const char *type, const std::string &text) {
+      if (text.empty()) return;
+      Val e = Val::object(); e["type"] = type; e["bot"] = live.bot; e["name"] = live.name;
+      e["text"] = text; e["replay"] = true; out.push_back(mj::dump(e));
+    };
+    piece("reasoning", live.reasoning);
+    for (const auto &t : live.tools) out.push_back(t);
+    piece("delta", live.text);
+    if (live.draft.size() > live.draft_confirmed) piece("draft", live.draft.substr(live.draft_confirmed));
+  }
   return out;
 }
 static void publish(const std::string &jsonLine) {
@@ -1924,6 +1937,14 @@ static void mcp_auto_once();
 // all bots on one model, so a shared llama-server reuses that KV prefix for
 // every bot slot (prewarm restores another bot's prefix, then evaluates only
 // this block onwards). Also the whole system prompt in deterministic mode.
+static bool bot_setting(int idx, const char *key, bool fallback) {
+  std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
+  if (idx < 0 || (size_t)idx >= AGENTS.size()) return fallback;
+  const Val *v = AGENTS[idx].find(key);
+  return v && v->type == Val::BOOL ? v->asBool() : fallback;
+}
+static bool github_enabled(int idx) { return bot_setting(idx, "github_enabled", GITHUB_DEFAULT.load()); }
+static bool bot_thinking(int idx) { return bot_setting(idx, "thinking", THINKING_DEFAULT.load()); }
 static std::string identity_block(int bot_idx) {
   const std::string name = bot_field(bot_idx, "name", "Bot");
   const std::string persona = bot_field(bot_idx, "persona");
@@ -3194,6 +3215,7 @@ struct TurnReport {
   bool react_only = false;
 };
 
+static void handoff_visible_turn(int idx, TurnReport &report, const std::string &partial, int think);
 #include "mcp.hpp"
 #include "secrets.hpp"
 static std::string tools_json(int bot_idx, bool web) {
@@ -3212,7 +3234,7 @@ static std::string tools_json(int bot_idx, bool web) {
   defs.push_back(T_UNREACT);
   (void)web; // always registered: a changing tool list breaks the prompt cache
   defs.push_back(T_WEB_SEARCH);
-  defs.push_back(T_GITHUB); // always registered (cache); token checked at call
+  if (github_enabled(bot_idx)) defs.push_back(T_GITHUB); // opt-in; credentials stay server-side
   defs.push_back(T_TODO);
   defs.push_back(T_MEMORY);
   defs.push_back(T_TASK);
@@ -3483,6 +3505,27 @@ static std::string bot_model_id(int idx) {
   return known_room_model(own) ? own : active_room_model();
 }
 static std::string model_wait_text();
+class ThinkingContent {
+  bool inside = false;
+  std::string pending;
+public:
+  void feed(const std::string &text, const std::function<void(bool, const std::string &)> &emit, bool finish = false) {
+    pending += text;
+    for (;;) {
+      const std::string tag = inside ? "</think>" : "<think>";
+      auto at = pending.find(tag);
+      if (at != std::string::npos) {
+        if (at) emit(inside, pending.substr(0, at));
+        pending.erase(0, at + tag.size()); inside = !inside; continue;
+      }
+      size_t hold = 0;
+      if (!finish) for (size_t n = 1; n < tag.size() && n <= pending.size(); ++n)
+        if (pending.compare(pending.size() - n, n, tag, 0, n) == 0) hold = n;
+      if (pending.size() > hold) emit(inside, pending.substr(0, pending.size() - hold));
+      pending.erase(0, pending.size() - hold); return;
+    }
+  }
+};
 static Turn
 backend_turn(const std::vector<Val> &messages, const std::string &tools,
              double temperature,
@@ -3491,6 +3534,7 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
              bool thinking, int id_slot, const std::string &model = "",
              int bot_idx = -1) {
   Turn t;
+  ThinkingContent thinking_content;
   slot_restore_if_cold(id_slot);
   HttpClient c;
   c.timeout_ms = std::max(LLM_TIMEOUT_S, LLM_TIMEOUT_MIN_S) * 1000;
@@ -3499,6 +3543,18 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
     t.error = "Backend nicht erreichbar (" + BACKEND_HOST + ":" +
               std::to_string(BACKEND_PORT) + ")";
     return t;
+  }
+  struct BackendOwner {
+    int fd;
+    ~BackendOwner() {
+      std::lock_guard<std::mutex> lk(BACKEND_FD_MTX);
+      if (backend_fd_slot().load() == fd) backend_fd_slot() = -1;
+    }
+  } owner{c.fd};
+  {
+    std::lock_guard<std::mutex> lk(BACKEND_FD_MTX);
+    backend_fd_slot() = c.fd;
+    if (stop_flag().load()) shutdown(c.fd, SHUT_RDWR);
   }
   Val body = Val::object();
   if (!known_room_model(model)) {
@@ -3538,12 +3594,10 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   // the prompt is evaluated (minutes on CPU) instead of staying silent.
   body["return_progress"] = true;
   body["cache_prompt"] = !deterministic;
-  // llama/ik consult the --cache-ram prompt cache only when the server picks
-  // the slot itself; an explicit id_slot skips both save and restore. With a
-  // single slot, pinning therefore made every bot switch (and every Grok/Ali
-  // call in between) re-read the whole history. Pin only with several slots.
-  if (PROMPT_SLOTS > 1)
-    body["id_slot"] = id_slot;
+  // Dedicated NUMA servers keep the same live KV slot across prewarm/chat.
+  // Do not run the generic RAM-cache slot selector on this fixed deployment.
+  if (CONFIGURED_MODEL) body["id_slot"] = 0;
+  else if (PROMPT_SLOTS > 1) body["id_slot"] = id_slot;
   // DeepSeek-V4-Flash-0731 template: enable_thinking only changes the
   // generation prompt at the END -> toggling it keeps the prompt cache.
   // reasoning_effort is different: the template puts a "Reasoning Effort"
@@ -3668,14 +3722,17 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
     if (!d || !d->isObj())
       continue;
     auto rc = d->find("reasoning_content");
+    if (!rc) rc = d->find("reasoning");
     if (rc && !rc->asStr().empty()) {
       acc.reasoning += rc->asStr();
       on_delta("reasoning", rc->asStr());
     }
     auto ct = d->find("content");
     if (ct && !ct->asStr().empty()) {
-      acc.content += ct->asStr();
-      on_delta("delta", ct->asStr());
+      thinking_content.feed(ct->asStr(), [&](bool reasoning, const std::string &piece) {
+        (reasoning ? acc.reasoning : acc.content) += piece;
+        on_delta(reasoning ? "reasoning" : "delta", piece);
+      });
     }
     auto tc = d->find("tool_calls");
     if (tc && tc->isArr()) {
@@ -3702,6 +3759,10 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
     backend_fd_slot() = -1;
     c.close();
   }
+  thinking_content.feed("", [&](bool reasoning, const std::string &piece) {
+    (reasoning ? acc.reasoning : acc.content) += piece;
+    on_delta(reasoning ? "reasoning" : "delta", piece);
+  }, true);
   t.text = acc.content;
   t.reasoning = acc.reasoning;
   if (t.error.empty() && t.text.empty() && acc.calls.empty() &&
@@ -3785,6 +3846,8 @@ struct RunActivity {
   std::vector<std::string> steps;
   Val reading; // what the bot reads right now (room range / tool results)
   long started = 0, last = 0;
+  double display_ms = 0;
+  bool thinking_enabled = true;
   long processed = 0, total = 0, cache = 0;
   std::string group;
   int order = 0;
@@ -3876,6 +3939,8 @@ static Val run_val_locked() {
   e["label"] = run_cur().label;
   e["error"] = run_cur().error;
   e["started"] = run_cur().started;
+  e["display_ms"] = run_cur().display_ms;
+  e["thinking_enabled"] = run_cur().thinking_enabled;
   e["last"] = run_cur().last;
   if (!run_cur().group.empty()) {
     e["group"] = run_cur().group;
@@ -3948,6 +4013,8 @@ static void run_begin(const std::string &bot, const std::string &name) {
   run_cur().label = "Liest Verlauf";
   run_cur().reading = reading;
   run_cur().started = (long)now_s();
+  run_cur().display_ms = TL_DISPLAY_MS;
+  run_cur().thinking_enabled = TL_THINKING_ENABLED;
   run_cur().group = TL_GROUP;
   run_cur().order = TL_ORDER;
   publish_run_locked();
@@ -4379,8 +4446,10 @@ static std::string dispatch_tool_raw(int bot_idx, const std::string &name,
       return "Screenshot geteilt: " + public_url(rec.find("stored")->asStr());
     }
   }
-  if (name == "github")
+  if (name == "github") {
+    if (!github_enabled(bot_idx)) throw std::runtime_error("GitHub-Zugriff ist für diesen Bot ausgeschaltet");
     return github_tool(a);
+  }
   if (name == "todo") return todo_tool(bot_id, a);
   if (name == "memory") return memory_tool(bot_id, a);
   if (name == "task") return task_tool(bot_idx, a);
@@ -4424,12 +4493,13 @@ struct UserInput {
   bool yield = false;
   uint64_t generation = 0;
   std::string owner;
+  int think = -1;
 };
 static UserInput take_user_input(const std::string &bot_id);
 static thread_local bool TL_YIELD = false;
 // The latest user-chosen value, for the room state (HTTP threads).
 static std::atomic<int> LAST_THINK{-1};
-static bool thinking_of(int v) { return v < 0 ? THINKING != "off" : v == 1; }
+static bool thinking_of(int v) { return v < 0 ? THINKING_DEFAULT.load() : v == 1; }
 static bool turn_thinking() { return thinking_of(TURN_THINK); }
 struct JobRun;
 static thread_local const JobRun *CURRENT_JOB = nullptr;
@@ -4712,6 +4782,9 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
       // Lines become steps only once the round turns out to be narration.
       run_narration(live, draft_dropped);
     };
+    // Re-read permissions between tool rounds. In particular, turning GitHub
+    // off removes its schemas from the next request of an already running turn.
+    if (!stateless) tools = tools_json(bot_idx, web);
     // Tools remain available on every step, without a forced early final.
     Turn t;
     size_t attempt_budget = context_budget;
@@ -4960,6 +5033,10 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
     if (!stateless && !TL_TASK) {
       UserInput in = take_user_input(bot_id);
       if (!in.text.empty()) {
+        // Keep earlier status/thought/tool output at its original position;
+        // the answer to this newer input starts a separate visible segment.
+        handoff_visible_turn(bot_idx, report, final_text.empty() ? fallback_narration : final_text, in.think);
+        final_text.clear(); fallback_narration.clear();
         Val u = Val::object();
         u["role"] = "user";
         u["content"] =
@@ -5234,16 +5311,19 @@ static Job val_job(const Val &v) {
 // held = queued before a Stop: waits for "Fortsetzen"/"Jetzt senden". New
 // messages are never held, so a Stop never blocks the next user message.
 struct Pending {
-  std::string id, text, sender, login;
+  std::string id, text, sender, login, client_id;
   std::vector<std::string> ids;
   int think = -1;
   long ts = 0;
-  bool held = false;
+  double display_ms = 0;
+  bool held = false, urgent = false;
 };
 static std::deque<Pending> PENDING;
 // Set by Stop: held items and scheduled jobs wait for "Fortsetzen". User
 // messages and their tasks are never gated by it.
 static bool QUEUE_PAUSED = false;
+static uint64_t QUEUE_REVISION = 0;
+static std::deque<std::string> MESSAGE_RECEIPTS; // bounded, persisted retry IDs (per sender)
 static Val pending_val(const Pending &p) {
   Val o = Val::object();
   o["id"] = p.id;
@@ -5255,12 +5335,16 @@ static Val pending_val(const Pending &p) {
   o["bots"] = ids;
   o["think"] = (double)p.think;
   o["ts"] = (double)p.ts;
+  o["display_ms"] = p.display_ms;
+  o["client_id"] = p.client_id;
   if (p.held) o["held"] = true;
+  if (p.urgent) o["urgent"] = true;
   return o;
 }
 static Pending val_pending(const Val &v) {
   Pending p;
   if (auto x = v.find("id")) p.id = x->asStr();
+  if (auto x = v.find("client_id")) p.client_id = x->asStr();
   if (auto x = v.find("text")) p.text = x->asStr();
   if (auto x = v.find("sender")) p.sender = x->asStr();
   if (auto x = v.find("login")) p.login = x->asStr();
@@ -5268,7 +5352,9 @@ static Pending val_pending(const Val &v) {
     for (auto &i : x->asArr()) p.ids.push_back(i.asStr());
   if (auto x = v.find("think")) p.think = (int)x->asNum(-1);
   if (auto x = v.find("ts")) p.ts = (long)x->asNum(0);
+  p.display_ms = v.find("display_ms") ? v.find("display_ms")->asNum() : p.ts * 1000.0;
   if (auto x = v.find("held")) p.held = x->asBool(false);
+  if (auto x = v.find("urgent")) p.urgent = x->asBool(false);
   return p;
 }
 static Val queue_view_locked() {
@@ -5277,10 +5363,15 @@ static Val queue_view_locked() {
   for (auto &p : PENDING) arr.push(pending_val(p));
   o["pending"] = arr;
   o["paused"] = QUEUE_PAUSED;
+  o["revision"] = (double)QUEUE_REVISION;
   return o;
 }
 static void save_queue_locked() {
   Val q = Val::object();
+  q["revision"] = (double)++QUEUE_REVISION;
+  Val receipts = Val::array();
+  for (const auto &id : MESSAGE_RECEIPTS) receipts.push(Val(id));
+  q["receipts"] = receipts;
   {
     Val pend = Val::array();
     for (auto &p : PENDING) pend.push(pending_val(p));
@@ -5330,8 +5421,7 @@ static void cancel_active(bool user = false) {
     shutdown(BACKEND_FD.load(), SHUT_RDWR);
 }
 // Stop only the lanes these bots answer on; other bots keep working.
-static bool cancel_bots(const std::vector<std::string> &ids, bool user = false) {
-  std::lock_guard<std::mutex> lk(JOB_MTX);
+static bool cancel_bots_locked(const std::vector<std::string> &ids, bool user) {
   bool found = false;
   for (auto &id : ids) {
     for (auto &entry : ACTIVE_JOBS) {
@@ -5347,6 +5437,10 @@ static bool cancel_bots(const std::vector<std::string> &ids, bool user = false) 
     }
   }
   return found;
+}
+static bool cancel_bots(const std::vector<std::string> &ids, bool user = false) {
+  std::lock_guard<std::mutex> lk(JOB_MTX);
+  return cancel_bots_locked(ids, user);
 }
 // A new user message no longer aborts the running turn (on CPU that threw
 // away minutes of prompt evaluation while llama kept computing): it is queued
@@ -5393,23 +5487,46 @@ static void schedule(const std::vector<std::string> &ids, int think = -1,
   JOB_CV.notify_all();
 }
 // Queue API (routes.hpp). All return false if the id is unknown.
+static bool dispatch_locked();
+// One transaction for every user send: admission, retry deduplication and
+// dispatch use JOB_MTX, so another participant cannot slip between them.
 static Val enqueue_pending(const std::string &text,
                            const std::vector<std::string> &ids, int think,
-                           const std::string &sender = "Nutzer",
-                           const std::string &login = "") {
+                           const std::string &sender, const std::string &login,
+                           bool interrupt, const std::string &request_id) {
   std::lock_guard<std::mutex> lk(JOB_MTX);
+  Val out = Val::object();
+  out["accepted"] = true;
+  const std::string receipt = (login.empty() ? sender : login) + "\n" + request_id;
+  if (!request_id.empty() && std::find(MESSAGE_RECEIPTS.begin(), MESSAGE_RECEIPTS.end(), receipt) != MESSAGE_RECEIPTS.end()) {
+    out["duplicate"] = true;
+    out["queue"] = queue_view_locked();
+    return out;
+  }
+  const bool waiting = lanes_busy(ids) || std::any_of(PENDING.begin(), PENDING.end(), [](const Pending &p) { return !p.held; }) || !JOBS.empty();
   Pending p;
-  p.id = token_hex(8);
-  p.text = text;
-  p.sender = sender.substr(0, 40);
-  p.login = login.substr(0, 160);
-  p.ids = ids;
-  p.think = think;
-  p.ts = (long)now_s();
-  PENDING.push_back(p);
-  save_queue_locked();
-  queue_event_locked();
-  return pending_val(p);
+  p.id = token_hex(8); p.client_id = request_id; p.text = text; p.sender = sender.substr(0, 40);
+  p.login = login.substr(0, 160); p.ids = ids; p.think = think; p.ts = (long)now_s(); p.display_ms = display_now_ms();
+  p.urgent = interrupt;
+  // An explicit pause holds existing items. Typing and sending remain available.
+  // New user input can still run, just as after the legacy "Alles anhalten".
+  if (interrupt) PENDING.push_front(p); else PENDING.push_back(p);
+  if (!request_id.empty()) {
+    MESSAGE_RECEIPTS.push_back(receipt);
+    if (MESSAGE_RECEIPTS.size() > 256) MESSAGE_RECEIPTS.pop_front();
+  }
+  if (interrupt) cancel_bots_locked(ids, true);
+  cancel_prewarm(); // user work must never wait behind an idle prefix warm-up
+  PREWARM_HOLD = false;
+  save_queue_locked(); queue_event_locked();
+  // Mark idle lanes busy before the HTTP acknowledgement (no false idle gap).
+  while (dispatch_locked()) {}
+  out["queued"] = waiting && !interrupt;
+  out["interrupted"] = interrupt;
+  out["item"] = pending_val(p);
+  out["queue"] = queue_view_locked();
+  JOB_CV.notify_all();
+  return out;
 }
 static bool queue_edit(const std::string &id, const std::string &text) {
   std::lock_guard<std::mutex> lk(JOB_MTX);
@@ -5453,6 +5570,12 @@ static void queue_clear() {
   PENDING.clear();
   save_queue_locked(); queue_event_locked();
 }
+static void queue_pause() {
+  std::lock_guard<std::mutex> lk(JOB_MTX);
+  QUEUE_PAUSED = true;
+  for (auto &p : PENDING) p.held = true;
+  save_queue_locked(); queue_event_locked();
+}
 static void queue_resume() {
   {
     std::lock_guard<std::mutex> lk(JOB_MTX);
@@ -5490,34 +5613,17 @@ static bool queue_merge() {
 // boundary; a running tool step finishes first), then the item is dispatched
 // as the next regular turn.
 static bool queue_send_now(const std::string &id) {
-  std::vector<std::string> ids;
-  {
-    std::lock_guard<std::mutex> lk(JOB_MTX);
-    auto it = PENDING.begin();
-    for (; it != PENDING.end(); ++it)
-      if (it->id == id) break;
-    if (it == PENDING.end()) return false;
-    Pending p = *it;
-    PENDING.erase(it);
-    p.held = false;
-    PENDING.push_front(p);
-    // No other turn may sneak in before it on its lanes; other bots' work stays.
-    std::set<Lane *> mine;
-    for (auto &b : p.ids)
-      if (Lane *l = lane_of(b)) mine.insert(l);
-    JOBS.erase(std::remove_if(JOBS.begin(), JOBS.end(),
-                              [&](const Job &j) {
-                                for (auto &b : j.ids)
-                                  if (Lane *l = lane_of(b); l && mine.count(l)) return true;
-                                return false;
-                              }),
-               JOBS.end());
-    AUTO_READY = false;
-    save_queue_locked(); queue_event_locked();
-    ids = p.ids;
-  }
-  cancel_bots(ids);
-  JOB_CV.notify_all();
+  std::lock_guard<std::mutex> lk(JOB_MTX);
+  auto it = std::find_if(PENDING.begin(), PENDING.end(), [&](const Pending &p) { return p.id == id; });
+  if (it == PENDING.end()) return false;
+  Pending p = *it; PENDING.erase(it);
+  p.held = false; p.urgent = true;
+  PENDING.push_front(p);
+  AUTO_READY = false;
+  // Promotion and cancellation are atomic relative to dispatch. No queued
+  // user work is discarded; only the selected bots' running streams close.
+  cancel_bots_locked(p.ids, true);
+  save_queue_locked(); queue_event_locked(); JOB_CV.notify_all();
   return true;
 }
 // Despawn cleanup: nothing queued, owned or remembered for a removed bot may
@@ -5564,6 +5670,8 @@ static void attach_work(Val &msg, const TurnReport &report) {
   if (!mid)
     return;
   std::string id = mid->asStr();
+  msg["display_ms"] = TL_DISPLAY_MS;
+  msg["thinking_enabled"] = TL_THINKING_ENABLED;
   if (!TL_GROUP.empty()) {
     msg["group"] = TL_GROUP;
     msg["order"] = TL_ORDER;
@@ -5583,6 +5691,8 @@ static void attach_work(Val &msg, const TurnReport &report) {
       (*it)["steps"] = st;
       msg["steps"] = st;
     }
+    (*it)["display_ms"] = TL_DISPLAY_MS;
+    (*it)["thinking_enabled"] = TL_THINKING_ENABLED;
     (*it)["elapsed_s"] = report.elapsed_s;
     msg["elapsed_s"] = report.elapsed_s;
     // Shown as the collapsible thinking block. Never fed back into the
@@ -5608,7 +5718,35 @@ static void attach_work(Val &msg, const TurnReport &report) {
   }
   save_room();
 }
-static TurnReport generate_and_post(int idx, bool automatic) {
+static void handoff_visible_turn(int idx, TurnReport &report, const std::string &partial, int think) {
+  const std::string id = bot_field(idx, "id"), name = bot_field(idx, "name");
+  report.steps = run_copy_steps();
+  report.elapsed_s = std::max(0L, (long)((duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count() - TL_DISPLAY_MS) / 1000));
+  std::string text = partial;
+  replaceAll(text, "[[MAG:WEITER]]", ""); replaceAll(text, "[[MAG:ENDE]]", "");
+  Val msg = append_room("assistant", name, trim(text), id);
+  attach_work(msg, report);
+  {
+    std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
+    for (auto &stored : ROOM) if (mag::str(stored, "id") == mag::str(msg, "id")) {
+      stored["interrupted"] = true; stored["stopped"] = "system"; break;
+    }
+    save_room();
+  }
+  msg["interrupted"] = true; msg["stopped"] = "system"; msg["type"] = "bot_done";
+  publish(mj::dump(msg));
+  // The model keeps its valid assistant/tool/user history in this run. Only
+  // the visible segment changes, so no tool is repeated or result discarded.
+  report.reasoning.clear(); report.thought_ms = 0; report.steps.clear(); report.tools = Val::array();
+  TURN_THINK = think < 0 ? (bot_thinking(idx) ? 1 : 0) : think;
+  TL_DISPLAY_MS = display_now_ms(); TL_THINKING_ENABLED = turn_thinking();
+  Val start = Val::object(); start["type"] = "bot_start"; start["bot"] = id; start["name"] = name;
+  start["color"] = bot_field(idx, "color"); start["display_ms"] = TL_DISPLAY_MS;
+  start["thinking_enabled"] = TL_THINKING_ENABLED;
+  if (!TL_GROUP.empty()) { start["group"] = TL_GROUP; start["order"] = TL_ORDER; }
+  publish(mj::dump(start)); run_begin(id, name);
+}
+static TurnReport generate_and_post(int idx, bool automatic, double dispatched_ms = 0) {
   const uint64_t epoch = EPOCH.load();
   std::string id = bot_field(idx, "id"), name = bot_field(idx, "name");
   Val start = Val::object();
@@ -5616,12 +5754,15 @@ static TurnReport generate_and_post(int idx, bool automatic) {
   start["bot"] = id;
   start["name"] = name;
   start["color"] = bot_field(idx, "color");
+  TL_DISPLAY_MS = dispatched_ms > 0 ? dispatched_ms : display_now_ms();
+  TL_THINKING_ENABLED = turn_thinking();
+  start["display_ms"] = TL_DISPLAY_MS;
+  start["thinking_enabled"] = TL_THINKING_ENABLED;
   if (!TL_GROUP.empty()) {
     start["group"] = TL_GROUP;
     start["order"] = TL_ORDER;
   }
   publish(mj::dump(start));
-  auto started = steady_clock::now();
   run_begin(id, name);
   TurnReport report;
   try {
@@ -5630,7 +5771,7 @@ static TurnReport generate_and_post(int idx, bool automatic) {
     run_end();
     throw;
   }
-  report.elapsed_s = (long)duration_cast<seconds>(steady_clock::now() - started).count();
+  report.elapsed_s = (long)((duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count() - TL_DISPLAY_MS) / 1000);
   if (report.elapsed_s < 0)
     report.elapsed_s = 0;
   run_end();
@@ -5772,7 +5913,7 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
     shared_len = shared.size();
     Val u = Val::object();
     u["role"] = "user";
-    u["content"] = build_transcript();
+    u["content"] = build_transcript() + build_context_tail(idx, false, "");
     msgs.push(u);
     body["messages"] = msgs;
     Val tt;
@@ -5781,8 +5922,9 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
     body["max_tokens"] = 1;
     body["stream"] = false;
     body["cache_prompt"] = true;
+    if (CONFIGURED_MODEL) body["id_slot"] = 0;
     Val kwargs = Val::object();
-    kwargs["enable_thinking"] = thinking_of(-1);
+    kwargs["enable_thinking"] = bot_thinking(idx);
     if (model != "qwen3.8-flash-next-uncensored" && !REASONING_EFFORT.empty())
       kwargs["reasoning_effort"] = REASONING_EFFORT;
     body["chat_template_kwargs"] = kwargs;
@@ -5833,8 +5975,27 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
           break;
         }
   }
+  bool ram_warm = false;
+  if (CONFIGURED_MODEL) {
+    std::string raw; long status = 0;
+    if (http_simple(BACKEND_HOST, BACKEND_PORT, "GET", "/slots", "",
+        {{"Authorization", "Bearer " + API_KEY}, {"X-Mag-Model", model}, {"X-Mag-Slot", gateway_slot(idx)}}, raw, &status, nullptr, 1500) && status == 200) {
+      Val slots;
+      if (mj::parse(raw, slots) && slots.isArr()) for (const auto &slot : *slots.arr) {
+        for (const char *key : {"n_past", "n_prompt_tokens", "n_cached_tokens"})
+          if (auto n = slot.find(key); n && n->asNum() > 0) ram_warm = true;
+        if (auto busy = slot.find("is_processing"); busy && busy->asBool()) ram_warm = true;
+        // The pinned ik runtime exposes prompt/next_token, not n_past,
+        // on /slots. A completed slot retains its prompt until server restart.
+        if (auto prompt = slot.find("prompt"); prompt &&
+            ((prompt->type == Val::STR && !prompt->asStr().empty()) ||
+             (prompt->isArr() && !prompt->asArr().empty()))) ram_warm = true;
+        if (auto state = slot.find("state"); state && state->asNum() > 0) ram_warm = true;
+      }
+    }
+  }
   const uint64_t pw_epoch = PREWARM_EPOCH.load();
-  const bool restored = PREFIX_DISK && prefix_slot("restore", source);
+  const bool restored = !ram_warm && PREFIX_DISK && prefix_slot("restore", source);
   {
     // UI: "Prompt wird vorbereitet (~X min)". Upper bound: ~3.2 bytes per
     // token, measured prefill MAG_ROOM_PREFILL_TPS (Ornith B, 1 server/node: ~62 t/s).
@@ -5849,7 +6010,7 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
   long code = 0;
   int tracked = -1;
   bool ok = false;
-  if (pw_epoch == PREWARM_EPOCH.load() && !PREWARM_HOLD.load())
+  if (!ram_warm && pw_epoch == PREWARM_EPOCH.load() && !PREWARM_HOLD.load())
     ok = http_simple(BACKEND_HOST, BACKEND_PORT, "POST", "/v1/chat/completions",
                      payload,
                      {{"Content-Type", "application/json"},
@@ -5881,6 +6042,7 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
   if (seq.owns_lock()) seq.unlock();
   std::cerr << "prompt-prewarm model=" << model << " ok=" << (ok ? 1 : 0)
             << " status=" << code << " ms=" << ms
+            << " ram_warm=" << (ram_warm ? 1 : 0)
             << " restored=" << (restored ? 1 : 0) << " saved=" << (saved ? 1 : 0)
             << " cancelled=" << (cancelled ? 1 : 0) << " source=" << source << std::endl;
   {
@@ -6328,7 +6490,7 @@ static void lane_turn(Lane *lane, uint64_t run, std::vector<std::string> ids,
                       std::string input,
                       std::shared_ptr<StartGate> wait_for,
                       std::shared_ptr<StartGate> own, std::string after,
-                      std::shared_ptr<TurnGroup> group) {
+                      std::shared_ptr<TurnGroup> group, double dispatched_ms) {
   bool more = false, owner_ran = false;
   std::string progress;
   // Outside TURN_MTX: room-wide operations must not wait for a parked lane.
@@ -6360,9 +6522,11 @@ static void lane_turn(Lane *lane, uint64_t run, std::vector<std::string> ids,
         int idx = agent_index(id);
         if (idx < 0)
           continue;
+        TURN_THINK = think < 0 ? (bot_thinking(idx) ? 1 : 0) : think;
         TL_ORDER = idx; // fixed position in the bot list
         try {
-          TurnReport report = generate_and_post(idx, automatic);
+          const double visible_start = dispatched_ms; dispatched_ms = 0;
+          TurnReport report = generate_and_post(idx, automatic, visible_start);
           if (group && (lane->user_cancel.load() || lane->stop.load())) group->cancelled = true;
           if (TL_ADOPT_GEN) {
             generation = TL_ADOPT_GEN;
@@ -6472,7 +6636,7 @@ static void start_lanes_locked(const Job &job, bool automatic) {
     auto gate = stagger ? std::make_shared<StartGate>() : nullptr;
     std::thread(lane_turn, lane, run, ids, automatic, job.think, owner,
                 job.generation, EPOCH.load(), job.input,
-                prev, gate, prev_name, group).detach();
+                prev, gate, prev_name, group, display_now_ms()).detach();
     prev = gate;
     prev_name = bot_field(agent_index(ids.front()), "name", "Bot");
   }
@@ -6480,7 +6644,24 @@ static void start_lanes_locked(const Job &job, bool automatic) {
 }
 // Starts at most one piece of work; true if the queue state changed.
 static bool dispatch_locked() {
+  auto send_pending = [&](std::deque<Pending>::iterator it) {
+    Pending p = *it;
+    PENDING.erase(it);
+    PREWARM_HOLD = false;
+    Val msg = append_room("user", p.sender.empty() ? "Nutzer" : p.sender, p.text, "", nullptr, p.login, "", p.display_ms, p.client_id);
+    msg["type"] = "message"; publish(mj::dump(msg));
+    AUTO_OWNER = p.ids.empty() ? "" : p.ids.front();
+    AUTO_LAST_PROGRESS.clear(); AUTO_TURNS_LEFT = AUTO_MAX_TURNS; AUTO_READY = false;
+    start_lanes_locked(Job{p.ids, p.think, ++AUTO_GENERATION, p.text}, false);
+    queue_event_locked();
+    return true;
+  };
   std::set<Lane *> claimed;
+  // Urgent input takes precedence over waiting turns on its lanes, but is
+  // dispatched only after the old lane saved its partial answer and ended.
+  for (auto it = PENDING.begin(); it != PENDING.end(); ++it)
+    if (it->urgent && !it->held && dispatchable(split_lanes(it->ids), claimed))
+      return send_pending(it);
   for (auto it = JOBS.begin(); it != JOBS.end(); ++it) {
     auto parts = split_lanes(it->ids);
     if (parts.empty()) {
@@ -6498,22 +6679,7 @@ static bool dispatch_locked() {
   for (auto it = PENDING.begin(); it != PENDING.end(); ++it) {
     if (it->held) continue; // waits for "Fortsetzen"; never blocks newer input
     if (!dispatchable(split_lanes(it->ids), claimed)) continue;
-    // A queued message enters the transcript only now, as a new user turn.
-    Pending p = *it;
-    PENDING.erase(it);
-    PREWARM_HOLD = false;
-    Val msg = append_room("user", p.sender.empty() ? "Nutzer" : p.sender,
-                          p.text, "", nullptr, p.login);
-    msg["type"] = "message";
-    publish(mj::dump(msg));
-    JOBS.push_back(Job{p.ids, p.think, ++AUTO_GENERATION, p.text});
-    AUTO_OWNER = p.ids.empty() ? "" : p.ids.front();
-    AUTO_LAST_PROGRESS.clear();
-    AUTO_TURNS_LEFT = AUTO_MAX_TURNS;
-    AUTO_READY = false;
-    save_queue_locked();
-    queue_event_locked();
-    return true;
+    return send_pending(it);
   }
   if (!JOBS.empty() ||
       std::any_of(PENDING.begin(), PENDING.end(), [](const Pending &p) { return !p.held; }))
@@ -6617,8 +6783,8 @@ static void stop_autotalk(bool pause = false) {
     // Stop button: persistent pause; only "Fortsetzen" resumes. Other stops
     // (autonomy off, agent removal) only hold back pending messages.
     if (pause || !PENDING.empty()) QUEUE_PAUSED = true;
-    queue_event_locked();
     save_queue_locked();
+    queue_event_locked();
     AUTO_READY = false;
     AUTO_OWNER.clear();
     ++AUTO_GENERATION;
@@ -6638,19 +6804,18 @@ static void stop_autotalk(bool pause = false) {
 // autonomy setting off.
 static Val user_stop(bool pause_jobs) {
   const bool was_busy = BUSY.load() || tasks_running();
+  std::unique_lock<std::mutex> control(JOB_MTX);
   cancel_active(true);
   task_cancel("", "");
   const bool prewarm = cancel_prewarm();
   PREWARM_HOLD = true;
   Val out = Val::object();
   {
-    std::lock_guard<std::mutex> lk(JOB_MTX);
-    const size_t dropped = JOBS.size();
-    JOBS.clear();
-    ACTIVE_JOBS.clear();
+    const size_t dropped = std::count_if(JOBS.begin(), JOBS.end(), [](const Job &j) { return j.reflect; });
+    JOBS.erase(std::remove_if(JOBS.begin(), JOBS.end(), [](const Job &j) { return j.reflect; }), JOBS.end());
     size_t held = 0;
-    for (auto &p : PENDING) { p.held = true; ++held; }
-    if (pause_jobs || held) QUEUE_PAUSED = true;
+    for (auto &p : PENDING) { if (pause_jobs) p.held = true; if (p.held) ++held; }
+    if (pause_jobs) QUEUE_PAUSED = true;
     AUTO_READY = false;
     AUTO_OWNER.clear();
     ++AUTO_GENERATION;
@@ -6669,6 +6834,7 @@ static Val user_stop(bool pause_jobs) {
   Val e = Val::object();
   e["type"] = "stopped";
   publish(mj::dump(e));
+  control.unlock();
   JOB_CV.notify_all();
   return out;
 }
@@ -6682,7 +6848,7 @@ static Val user_stop(bool pause_jobs) {
 static UserInput take_user_input(const std::string &bot_id) {
   UserInput in;
   Lane *lane = TL_LANE;
-  if (!lane || CURRENT_JOB) return in;
+  if (!lane || CURRENT_JOB || lane->stop.load()) return in;
   const int idx = agent_index(bot_id);
   if (idx < 0 || model_settings_for(bot_model_id(idx)).deterministic) return in;
   std::lock_guard<std::mutex> lk(JOB_MTX);
@@ -6694,11 +6860,11 @@ static UserInput take_user_input(const std::string &bot_id) {
     return std::find(ids.begin(), ids.end(), bot_id) != ids.end();
   };
   for (auto it = PENDING.begin(); it != PENDING.end();) {
-    if (it->held || !mine(it->ids)) { ++it; continue; }
+    if (it->held || it->urgent || !mine(it->ids)) { ++it; continue; }
     Pending p = *it;
     it = PENDING.erase(it);
     const std::string sender = p.sender.empty() ? "Nutzer" : p.sender;
-    Val msg = append_room("user", sender, p.text, "", nullptr, p.login);
+    Val msg = append_room("user", sender, p.text, "", nullptr, p.login, "", p.display_ms, p.client_id);
     msg["type"] = "message";
     msg["delivered_to"] = bot_id;
     publish(mj::dump(msg));
@@ -6713,6 +6879,7 @@ static UserInput take_user_input(const std::string &bot_id) {
     AUTO_READY = false;
     in.generation = AUTO_GENERATION;
     in.owner = AUTO_OWNER;
+    in.think = p.think;
     if (!rest.empty()) JOBS.push_back(Job{rest, p.think, AUTO_GENERATION, p.text});
     changed = true;
   }
@@ -6721,6 +6888,7 @@ static UserInput take_user_input(const std::string &bot_id) {
     in.text += "[Nutzer]: " + it->input + "\n";
     in.generation = it->generation;
     in.owner = it->ids.front();
+    in.think = it->think;
     it->ids.erase(std::remove(it->ids.begin(), it->ids.end(), bot_id), it->ids.end());
     it = it->ids.empty() ? JOBS.erase(it) : std::next(it);
     changed = true;
@@ -6808,6 +6976,8 @@ static Val public_agent(int idx) {
   o["color"] = bot_field(idx, "color");
   o["vm"] = bot_field(idx, "vm");
   o["model"] = bot_model_id(idx);
+  o["thinking"] = bot_thinking(idx);
+  o["github_enabled"] = github_enabled(idx);
   if (CONFIGURED_MODEL) {
     o["slot"] = model_slot(idx);
     o["numa"] = ROOM_MODEL.backends[model_slot(idx) - 1].numa;
@@ -6881,7 +7051,8 @@ static std::string state_json(const Actor *actor = nullptr) {
   if (CONFIGURED_MODEL) root["model_instances"] = model_instances();
   root["tasks"] = tasks_public();
   root["numa"] = numa_public();
-  root["thinking_default"] = THINKING != "off";
+  root["thinking_default"] = THINKING_DEFAULT.load();
+  root["github_default"] = GITHUB_DEFAULT.load();
   root["thinking"] = thinking_of(LAST_THINK.load());
   {
     std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
@@ -6933,6 +7104,7 @@ static std::string state_json(const Actor *actor = nullptr) {
     Val qv = queue_view_locked();
     root["pending"] = *qv.find("pending");
     root["queue_paused"] = QUEUE_PAUSED;
+    root["queue_revision"] = (double)QUEUE_REVISION;
     Val bb = Val::array();
     for (auto &kv : ACTIVE_JOBS)
       for (auto &id : kv.second.ids) bb.push(Val(id));
@@ -7593,6 +7765,7 @@ int main() {
   MAX_TOKENS = envi("MAG_ROOM_MAX_TOKENS", 8192);
   LLM_TIMEOUT_S = std::max(envi("MAG_ROOM_LLM_TIMEOUT", 3600), LLM_TIMEOUT_MIN_S);
   THINKING = env("MAG_ROOM_THINKING", "on");
+  THINKING_DEFAULT = THINKING != "off";
   REASONING_EFFORT = env("MAG_ROOM_REASONING_EFFORT", "");
   if (!REASONING_EFFORT.empty() && REASONING_EFFORT != "high" &&
       REASONING_EFFORT != "max")
@@ -7616,6 +7789,11 @@ int main() {
   SINGLE_BOT_NAME = env("MAG_ROOM_SINGLE_BOT_NAME", CONFIGURED_MODEL ? ROOM_MODEL.label + " 1" : "Qwen");
 
   STATE_DIR = env("MAG_ROOM_STATE", "/var/lib/magbot/room");
+  { Val prefs; if (mj::parse(read_file(STATE_DIR + "/bot-defaults.json"), prefs) && prefs.isObj()) {
+      if (auto v = prefs.find("thinking"); v && v->type == Val::BOOL) THINKING_DEFAULT = v->asBool();
+      if (auto v = prefs.find("github_enabled"); v && v->type == Val::BOOL) GITHUB_DEFAULT = v->asBool();
+    }
+  }
   if (DUAL_NUMA && secondary_room_model() != "qwen3.8-flash-next-uncensored" && !CONFIGURED_MODEL) {
     std::cerr << "Dual NUMA requires the already activated Qwen secondary model\n";
     return 1;
@@ -7685,6 +7863,12 @@ int main() {
           if (!pp.id.empty() && !pp.text.empty()) PENDING.push_back(pp);
         }
       if (auto pz = q.find("paused")) QUEUE_PAUSED = pz->asBool(false);
+      if (auto rev = q.find("revision")) QUEUE_REVISION = (uint64_t)rev->asNum();
+      if (auto receipts = q.find("receipts"); receipts && receipts->isArr())
+        for (const auto &r : *receipts->arr) {
+          if (MESSAGE_RECEIPTS.size() == 256) MESSAGE_RECEIPTS.pop_front();
+          MESSAGE_RECEIPTS.push_back(r.asStr());
+        }
       if (auto jobs = q.find("jobs"); jobs && jobs->isArr())
         for (auto &j : jobs->asArr()) {
           Job job = val_job(j);

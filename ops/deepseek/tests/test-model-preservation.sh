@@ -10,9 +10,9 @@ test ! -e ops/mag-120.d/30-multibot.conf
 # drop-in MUST override it: four bots, not one DeepSeek bot.
 grep -Fq 'Environment=MAG_ROOM_SINGLE_BOT=auto' ops/mag-120.service
 grep -Fxq 'Environment=MAG_ROOM_SINGLE_BOT=' ops/mag-120.d/20-room-audit.conf
-grep -Fxq 'Environment=MAG_ROOM_MODEL=ornith-1.5-35b-a3b' ops/mag-120.d/20-room-audit.conf
+grep -Fxq 'EnvironmentFile=-/etc/mag-stack/room-model.env' ops/mag-120.d/20-room-audit.conf
 grep -Fxq 'MAG_ROOM_SINGLE_BOT=' mag-room/.env.example
-grep -Fxq 'MAG_ROOM_MODEL=ornith-1.5-35b-a3b' mag-room/.env.example
+grep -Fxq 'MAG_ROOM_MODEL_ID=deepseek-v4-flash-0731' mag-room/.env.example
 grep -Fxq 'Environment=MAG_ROOM_DUAL_NUMA=1' ops/mag-120.d/30-dual-numa.conf
 grep -Fq 'SINGLE_BOT.clear();' mag-room/native/magroom.cpp
 grep -Fq 'MAG_SECONDARY_MODEL=ornith' ops/ornith/cutover.sh
@@ -24,4 +24,4 @@ grep -Fq -- '--cpunodebind=0 --membind=0' ops/deepseek/llm.env.mag
 grep -Fq 'IK_SLOT_SAVE=1' ops/deepseek/llm.env.mag
 ! grep -Fq 'ops/deepseek/llm.env.mag' ops/deploy.sh
 grep -Fq 'rm -f /etc/systemd/system/mag-120.service.d/30-multibot.conf' ops/deploy.sh
-echo 'PASS four Ornith bots, Qwen-only rollback, archived legacy tuning not activated'
+echo 'PASS two DeepSeek NUMA bots, Qwen-only rollback, archived legacy tuning not activated'

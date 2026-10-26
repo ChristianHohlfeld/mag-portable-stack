@@ -58,3 +58,6 @@ target_compile_options(mag-bots-publish PRIVATE -Wall -Wextra -Wpedantic)
 install(TARGETS magroom mag-browser magbot-native mag-audit-gateway mag-bots-publish mag-numa-swap RUNTIME DESTINATION bin)
 install(DIRECTORY mag-room/web/ DESTINATION web)
 install(DIRECTORY mag-room/static/ DESTINATION web/static)
+
+add_executable(test-pho-codec mag-room/tests/test_pho_codec.cpp)
+target_link_libraries(test-pho-codec PRIVATE icuuc)

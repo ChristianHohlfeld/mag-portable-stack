@@ -3,6 +3,7 @@
 #include "common.hpp"
 #include "json.hpp"
 #include "room_model.hpp"
+#include "pho_codec.hpp"
 #include "browser_recovery.hpp"
 #include "browser_events.hpp"
 #include "pages.hpp"
@@ -656,7 +657,7 @@ static void save_json_array(const std::string &path,
 
 // ---------------------------------------------------------------- agents
 static std::vector<Val> AGENTS;
-static std::atomic<bool> THINKING_DEFAULT{true}, GITHUB_DEFAULT{false};
+static std::atomic<bool> THINKING_DEFAULT{true}, GITHUB_DEFAULT{false}, PHO_DEFAULT{true};
 static thread_local double TL_DISPLAY_MS = 0;
 static thread_local bool TL_THINKING_ENABLED = true;
 // Single-bot mode (MAG_ROOM_SINGLE_BOT=<id>): only this bot is active. All
@@ -1948,6 +1949,7 @@ static bool bot_setting(int idx, const char *key, bool fallback) {
   return v && v->type == Val::BOOL ? v->asBool() : fallback;
 }
 static bool github_enabled(int idx) { return bot_setting(idx, "github_enabled", GITHUB_DEFAULT.load()); }
+static bool pho_enabled(int idx) { return bot_setting(idx, "pho_compress", PHO_DEFAULT.load()); }
 static bool bot_thinking(int idx) { return bot_setting(idx, "thinking", THINKING_DEFAULT.load()); }
 static std::string identity_block(int bot_idx) {
   const std::string name = bot_field(bot_idx, "name", "Bot");
@@ -1979,6 +1981,7 @@ static std::string build_system(int bot_idx, bool autotalk,
   (void)web; // byte-stable prefix: web state lives in the [Kontext] tail
   system += WEB_RULES;
   system += AGENT_RULES;
+  system += pho::instruction;
   system += has_vm ? FILES_RULES : FILES_RULES_CHAT;
   if (has_vm)
     system += FRONTEND_RULES;
@@ -2151,6 +2154,9 @@ struct WireSession {
   std::string fingerprint, memory, plugins, files;
   std::vector<Val> messages;
   std::set<std::string> seen;
+  Val pho_archive=Val::object();
+  std::vector<size_t> turn_ends;
+  bool compression=true;
 };
 static std::mutex WIRE_MTX;
 static std::map<std::string, WireSession> WIRE_SESSIONS;
@@ -2163,7 +2169,96 @@ static void wire_store(const std::string &bot, const WireSession &w) {
   for (const auto &id:w.seen) ids.push(Val(id));
   out["fingerprint"]=w.fingerprint; out["memory"]=w.memory;out["plugins"]=w.plugins;out["files"]=w.files;
   out["messages"]=msgs; out["seen"]=ids;
+  out["pho_archive"]=w.pho_archive;out["pho_enabled"]=w.compression;
+  Val ends=Val::array();for(auto end:w.turn_ends)ends.push(Val((double)end));out["turn_ends"]=ends;
   write_file_atomic(wire_path(bot),mj::dump(out));
+}
+// Tokenizer calls do not touch inference slots or KV. Use the selected model's
+// real vocabulary; never infer token savings from bytes or o200k estimates.
+static long pho_tokens(int idx,const std::string &text) {
+  Val req=Val::object();req["content"]=text;req["add_special"]=false;
+  std::string reply;long status=0;Val parsed;
+  if(!http_simple(BACKEND_HOST,BACKEND_PORT,"POST","/tokenize",mj::dump(req),
+      {{"Content-Type","application/json"},{"Authorization","Bearer "+API_KEY},
+       {"X-Mag-Model",bot_model_id(idx)},{"X-Mag-Slot",gateway_slot(idx)},
+       {"X-Mag-Session","pho-tokenize"}},reply,&status,nullptr,1500)||status!=200||
+      !mj::parse(reply,parsed))return -1;
+  auto tokens=parsed.find("tokens");return tokens&&tokens->isArr()?(long)tokens->asArr().size():-1;
+}
+static std::string pho_once(int idx,WireSession &w,const std::string &key,
+                            const std::string &original) {
+  if(auto saved=w.pho_archive.find(key);saved&&saved->isObj()&&mag::str(*saved,"original")==original)
+    return mag::str(*saved,"content",original);
+  Val record=Val::object();record["original"]=original;
+  std::string selected=original;long before=-1,after=-1;
+  if(w.compression&&pho::eligible(original)) {
+    const auto encoded=pho::encode(original).text;
+    if(encoded!=original) {
+      const auto candidate=std::string("[PhO-Compress] ")+encoded;
+      before=pho_tokens(idx,original);after=pho_tokens(idx,candidate);
+      if(before>0&&after>0&&after<before)selected=candidate;
+      std::cerr<<"pho-compress model="<<bot_model_id(idx)<<" tokens_before="<<before
+               <<" tokens_after="<<after<<" accepted="<<(selected!=original?1:0)<<std::endl;
+    }
+  }
+  record["content"]=selected;record["tokens_before"]=(double)before;record["tokens_after"]=(double)after;
+  record["enabled"]=w.compression;w.pho_archive[key]=record;return selected;
+}
+static size_t pho_old_end(const WireSession &w) {
+  const size_t recent=(size_t)std::clamp(envi("MAG_ROOM_PHO_KEEP_TURNS",2),1,20);
+  return w.turn_ends.size()>recent?w.turn_ends[w.turn_ends.size()-recent-1]:0;
+}
+static std::string pho_message_key(const Val &m) {
+  return "wire-"+fnv_hex(mj::dump(m));
+}
+static void pho_archive_turns(int idx,WireSession &w) {
+  const size_t end=std::min(pho_old_end(w),w.messages.size());
+  for(size_t i=2;i<end;++i) {
+    const auto &m=w.messages[i];const auto role=mag::str(m,"role");
+    if((role!="user"&&role!="assistant")||m.find("tool_calls"))continue;
+    const auto text=mag::str(m,"content");
+    // Keep the historical status tail exactly; compress only room prose.
+    const auto at=text.rfind("\n[Kontext]");
+    const auto prose=at==std::string::npos?text:text.substr(0,at);
+    if(!prose.empty())pho_once(idx,w,pho_message_key(m),prose);
+  }
+}
+static std::string pho_initial_transcript(int idx,WireSession &w,
+                                          const std::vector<Val> &room,std::string text) {
+  // Imported history and an explicit fresh context have no warm wire prefix.
+  // Only whole turns older than the last N user requests are eligible.
+  const size_t recent=(size_t)std::clamp(envi("MAG_ROOM_PHO_KEEP_TURNS",2),1,20);
+  size_t cutoff=0,count=0;
+  for(size_t i=room.size();i>0;--i)if(mag::str(room[i-1],"role")=="user"&&++count==recent){cutoff=i-1;break;}
+  for(size_t i=0;i<cutoff;++i) {
+    const auto &m=room[i];const auto role=mag::str(m,"role");
+    if((role!="user"&&role!="assistant")||m.find("tool_calls")||m.find("file")||m.find("files")||m.find("run")||m.find("steps"))continue;
+    const auto original=mag::str(m,"content");
+    auto compressed=pho_once(idx,w,"room-"+fnv_hex(mj::dump(m)),original);
+    if(compressed==original)continue;
+    auto copy=m;copy["content"]=compressed;
+    const auto line=render_room_line(m),replacement=render_room_line(copy);
+    const auto pos=text.find(line);if(pos!=std::string::npos)text.replace(pos,line.size(),replacement);
+  }
+  return text;
+}
+static void pho_rollover(int idx,std::vector<Val> &messages) {
+  if(!CONFIGURED_MODEL)return;
+  const auto bot=bot_field(idx,"id");std::lock_guard<std::mutex> wire(WIRE_MTX);
+  auto it=WIRE_SESSIONS.find(bot);if(it==WIRE_SESSIONS.end())return;
+  const auto &w=it->second;const size_t end=std::min(pho_old_end(w),messages.size());
+  size_t changed=0;
+  for(size_t i=2;i<end;++i) {
+    auto &m=messages[i];auto saved=w.pho_archive.find(pho_message_key(m));
+    if(!saved)continue;
+    const auto text=mag::str(m,"content"),original=mag::str(*saved,"original");
+    const auto at=text.rfind("\n[Kontext]");
+    if((at==std::string::npos?text:text.substr(0,at))!=original)continue;
+    const auto compressed=mag::str(*saved,"content",original);
+    if(compressed==original)continue;
+    m["content"]=compressed+(at==std::string::npos?"":text.substr(at));++changed;
+  }
+  if(changed)std::cerr<<"pho-context-rollover model="<<bot_model_id(idx)<<" turns="<<changed<<std::endl;
 }
 static std::vector<Val> wire_messages(int idx, const std::string &system,
                                       const std::string &tools, const std::string &tail) {
@@ -2174,6 +2269,8 @@ static std::vector<Val> wire_messages(int idx, const std::string &system,
   if(w.fingerprint.empty()) {
     Val saved;
     if(mj::parse(read_file(wire_path(bot)),saved)&&saved.isObj()) {
+      if(auto a=saved.find("pho_archive");a&&a->isObj())w.pho_archive=*a;
+      if(auto a=saved.find("turn_ends");a&&a->isArr())for(auto &n:a->asArr())w.turn_ends.push_back((size_t)n.asNum());
       w.fingerprint=mag::str(saved,"fingerprint"); w.memory=mag::str(saved,"memory");w.plugins=mag::str(saved,"plugins");w.files=mag::str(saved,"files");
       if(auto a=saved.find("messages");a&&a->isArr())w.messages=a->asArr();
       if(auto a=saved.find("seen");a&&a->isArr())for(const auto &id:a->asArr())w.seen.insert(id.asStr());
@@ -2186,13 +2283,16 @@ static std::vector<Val> wire_messages(int idx, const std::string &system,
   bool intersects=w.seen.empty();
   for(const auto &m:room)if(w.seen.count(mag::str(m,"id")))intersects=true;
   if(w.fingerprint!=key || !intersects || w.messages.empty()) {
-    w=WireSession{}; w.fingerprint=key;
+    auto archive=intersects?w.pho_archive:Val::object();w=WireSession{};w.pho_archive=archive; w.fingerprint=key;
     Val sys=Val::object();sys["role"]="system";sys["content"]=system;
     w.messages.push_back(sys);
   }
+  // Sample preference exactly at a turn boundary, never during streaming.
+  w.compression=pho_enabled(idx);
+  pho_archive_turns(idx,w);
   const bool initial=w.messages.size()==1;
   std::string input;
-  if(initial)input=build_transcript();
+  if(initial)input=pho_initial_transcript(idx,w,room,build_transcript());
   for(const auto &m:room) {
     const auto id=mag::str(m,"id");
     if(!w.seen.insert(id).second || initial)continue;
@@ -2213,9 +2313,12 @@ static std::vector<Val> wire_messages(int idx, const std::string &system,
 static void wire_finish(int idx,const std::vector<Val> &messages,bool valid) {
   const auto bot=bot_field(idx,"id");
   std::lock_guard<std::mutex> wire(WIRE_MTX);
-  if(!valid) {WIRE_SESSIONS.erase(bot);unlink(wire_path(bot).c_str());return;}
+  if(!valid) {auto &w=WIRE_SESSIONS[bot];auto archive=w.pho_archive;w=WireSession{};w.pho_archive=archive;wire_store(bot,w);return;}
   auto it=WIRE_SESSIONS.find(bot);if(it==WIRE_SESSIONS.end())return;
   it->second.messages=messages;
+  if(!it->second.turn_ends.empty()&&it->second.turn_ends.back()>messages.size())it->second.turn_ends.clear();
+  if(it->second.turn_ends.empty()||it->second.turn_ends.back()!=messages.size())
+    it->second.turn_ends.push_back(messages.size());
   // User input accepted during tool execution is already in the wire history.
   {std::lock_guard<std::recursive_mutex> state(STATE_MTX);
    for(const auto &m:ROOM) {
@@ -4650,7 +4753,7 @@ static bool context_overflow_error(const std::string &error) {
           error.find("n_ctx") != std::string::npos ||
           error.find("context_length") != std::string::npos);
 }
-static void compact_agent_context(std::vector<Val> &messages,
+static void compact_agent_context(int bot_idx, std::vector<Val> &messages,
                                   const std::string &tools, size_t limit,
                                   std::string &rollup) {
   // Critical for CPU-only models: compacting ONE old tool round whenever the
@@ -4659,6 +4762,10 @@ static void compact_agent_context(std::vector<Val> &messages,
   // of repeated prefill. Compact in infrequent batches, retaining ~35% spare
   // window for future tool rounds. Full outputs and files remain in the VM/
   // activity log. Never orphan a tool result or drop the latest tool rounds.
+  if (prompt_wire_bytes(messages, tools) <= limit) return;
+  // This is the existing infrequent context rollover: active KV is never
+  // rewritten merely because another turn became old or a switch changed.
+  if(!CURRENT_JOB&&!TL_TASK)pho_rollover(bot_idx,messages);
   if (prompt_wire_bytes(messages, tools) <= limit) return;
   const size_t target = limit * 65 / 100;
   while (prompt_wire_bytes(messages, tools) > target) {
@@ -4901,7 +5008,7 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
     size_t attempt_budget = context_budget;
     for (int attempt = 0; attempt < 3; ++attempt) {
       if (!stateless)
-        compact_agent_context(messages, tools, attempt_budget, compacted_steps);
+        compact_agent_context(bot_idx, messages, tools, attempt_budget, compacted_steps);
       t = backend_turn(messages, tools,
                        autotalk ? 0.75 : 0.55, on_delta, turn_thinking(),
                        slot_for_key(bot_id), bot_model_id(bot_idx), bot_idx);
@@ -7108,6 +7215,7 @@ static Val public_agent(int idx) {
   o["model"] = bot_model_id(idx);
   o["thinking"] = bot_thinking(idx);
   o["github_enabled"] = github_enabled(idx);
+  o["pho_compress"] = pho_enabled(idx);
   if (CONFIGURED_MODEL) {
     o["slot"] = model_slot(idx);
     o["numa"] = ROOM_MODEL.backends[model_slot(idx) - 1].numa;
@@ -7183,6 +7291,7 @@ static std::string state_json(const Actor *actor = nullptr) {
   root["numa"] = numa_public();
   root["thinking_default"] = THINKING_DEFAULT.load();
   root["github_default"] = GITHUB_DEFAULT.load();
+  root["pho_compress_default"] = PHO_DEFAULT.load();
   root["thinking"] = thinking_of(LAST_THINK.load());
   {
     std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
@@ -7922,6 +8031,7 @@ int main() {
   { Val prefs; if (mj::parse(read_file(STATE_DIR + "/bot-defaults.json"), prefs) && prefs.isObj()) {
       if (auto v = prefs.find("thinking"); v && v->type == Val::BOOL) THINKING_DEFAULT = v->asBool();
       if (auto v = prefs.find("github_enabled"); v && v->type == Val::BOOL) GITHUB_DEFAULT = v->asBool();
+      if (auto v = prefs.find("pho_compress"); v && v->type == Val::BOOL) PHO_DEFAULT = v->asBool();
     }
   }
   if (DUAL_NUMA && secondary_room_model() != "qwen3.8-flash-next-uncensored" && !CONFIGURED_MODEL) {

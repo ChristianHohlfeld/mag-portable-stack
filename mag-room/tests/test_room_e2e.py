@@ -244,6 +244,27 @@ class RoomE2E(unittest.TestCase):
         expect(p.locator('#settings-dialog')).to_be_hidden()
         expect(p.locator('#mcp-dialog')).to_be_visible()
 
+    def test_05d_pho_compress_is_next_to_thinking_and_persists(self):
+        p = self.page
+        p.click('#plus')
+        toggle = p.locator('#plus-pho')
+        expect(toggle).to_be_visible()
+        expect(toggle).to_contain_text('PhO-Compress')
+        expect(toggle).to_have_attribute('aria-checked', 'true')
+        self.assertTrue(p.evaluate("document.querySelector('#plus-think').nextElementSibling.id==='plus-pho'"))
+        try:
+            toggle.click()
+            expect(toggle).to_have_attribute('aria-checked', 'false')
+            self.room.until(lambda s: all(a['pho_compress'] is False for a in s['agents']), what='PhO off saved')
+            p.reload()
+            expect(p.locator('#connection')).to_contain_text('Verbunden')
+            p.click('#plus')
+            expect(p.locator('#plus-pho')).to_have_attribute('aria-checked', 'false')
+            p.locator('#plus-pho').click()
+            expect(p.locator('#plus-pho')).to_have_attribute('aria-checked', 'true')
+        finally:
+            self.room.api('/api/bot-settings', {'scope': 'room', 'pho_compress': True}, method='PUT')
+
     def test_06_message_after_stop_runs_and_held_queue_waits(self):
         p = self.page
         Model.scripts += [[{'_hold': 30}], ['Neu beantwortet.'], ['Alt beantwortet.']]

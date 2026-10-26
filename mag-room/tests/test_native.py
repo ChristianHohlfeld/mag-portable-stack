@@ -29,7 +29,11 @@ class Model(http.server.BaseHTTPRequestHandler):
   else:data=b'{"data":[{"id":"deepseek-v4-flash-0731"}]}'
   self.send_response(code);self.send_header('Content-Length',str(len(data)));self.end_headers();self.wfile.write(data)
  def do_POST(self):
-  obj=json.loads(self.rfile.read(int(self.headers['Content-Length'])));self.calls.append(obj)
+  obj=json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+  if self.path=='/tokenize':
+   data=json.dumps({'tokens':list(obj.get('content','').encode('utf8'))}).encode()
+   self.send_response(200);self.send_header('Content-Length',str(len(data)));self.end_headers();self.wfile.write(data);return
+  self.calls.append(obj)
   type(self).slots.append(self.headers.get('X-Mag-Slot'))
   type(self).pairs.append((obj,self.headers.get('X-Mag-Slot')))  # one atomic append
   type(self).paths.append((self.path,self.headers.get('X-Mag-Slot'),self.headers.get('X-Mag-Bot'),obj))
@@ -3448,5 +3452,94 @@ class MixedNuma(unittest.TestCase):
    for p in warm:self.assertEqual(p[3]['id_slot'],0);self.assertTrue(p[3]['cache_prompt'])
   finally:
    self.stop();self.env['MAG_ROOM_PREWARM']='0';self.start()
+
+class PhoCompress(unittest.TestCase):
+ mixed=True
+ start=classmethod(ConfiguredNuma.start.__func__)
+ stop=classmethod(ConfiguredNuma.stop.__func__)
+ setUpClass=classmethod(ConfiguredNuma.setUpClass.__func__)
+ tearDownClass=classmethod(ConfiguredNuma.tearDownClass.__func__)
+ request=classmethod(Native.request.__func__)
+ error=Native.error
+ wait_idle=Native.wait_idle
+ bots=ConfiguredNuma.bots
+ PROSE='Heute hat der Bundestag den Entwurf zur Datenspeicherung beschlossen. Kritiker warnen vor einem Eingriff in die Privatsphäre. Bitte die wichtige Frage zur Architektur und zur Kompression der Sprache beantworten. '
+ def send(self,bot,text):
+  self.wait_idle();mark=len(Model.calls)
+  self.request('/api/message',{'text':text,'bots':[bot]});self.wait_idle()
+  calls=[c for c in Model.calls[mark:] if c.get('model')==self.bots()[bot]['model'] and c.get('max_tokens')!=1]
+  self.assertTrue(calls);return calls[0]
+ def wire(self,model):
+  files=[json.loads(p.read_text()) for p in self.state.glob('prompt-wire-*.json')]
+  return next(w for w in files if model in w['messages'][0]['content'])
+ def test_01_default_switch_and_room_persistence(self):
+  self.assertTrue(self.request('/api/state')['pho_compress_default'])
+  self.assertTrue(all(b['pho_compress'] for b in self.bots().values()))
+  bot=next(iter(self.bots()))
+  self.request('/api/bot-settings',{'bots':[bot],'pho_compress':False},method='PUT')
+  self.stop();self.start();self.assertFalse(self.bots()[bot]['pho_compress'])
+  self.assertTrue(any(b['pho_compress'] for b in self.bots().values()))
+  self.request('/api/bot-settings',{'scope':'room','pho_compress':False},method='PUT')
+  self.stop();self.start();self.assertFalse(self.request('/api/state')['pho_compress_default'])
+  self.assertTrue(all(not b['pho_compress'] for b in self.bots().values()))
+  self.error(400,'/api/bot-settings',{'scope':'room','pho_compress':'yes'},method='PUT')
+  self.request('/api/bot-settings',{'scope':'room','pho_compress':True},method='PUT')
+ def test_02_each_model_archives_once_without_rewriting_warm_prefix(self):
+  for b in self.bots().values():
+   previous=None;archive={}
+   for turn in range(7):
+    mark=len(Model.cache_records)
+    call=self.send(b['id'],self.PROSE+' Zahlen 001234 -1.23e-4 URL https://example.test/a?x=12 ID user_id-ABC_123. Turn '+str(turn))
+    if previous:
+     self.assertEqual(call['messages'][:len(previous['messages'])],previous['messages'])
+     self.assertGreater(Model.cache_records[mark]['n_past'],0)
+    self.assertEqual(call['id_slot'],0);self.assertTrue(call['cache_prompt'])
+    previous=call
+    w=self.wire(b['model'])
+    for key,value in archive.items():self.assertEqual(w['pho_archive'][key],value,'a sealed turn must never be recompressed')
+    archive=w['pho_archive']
+   accepted=[r for r in archive.values() if r['content']!=r['original']]
+   self.assertTrue(accepted,'older ordinary prose must be archived compactly for '+b['model'])
+   for r in accepted:
+    self.assertLess(r['tokens_after'],r['tokens_before'])
+    if '001234' in r['original']:
+     for literal in ('001234','-1.23e-4','https://example.test/a?x=12','user_id-ABC_123'):
+      self.assertIn(literal,r['content'])
+   # Archiving is not a rewrite of resident KV; current prompt stays raw.
+   self.assertFalse(any('[PhO-Compress]' in m.get('content','') for m in previous['messages'][2:]))
+   self.stop();self.start()
+   resumed=self.send(b['id'],self.PROSE+' Wiederaufnahme')
+   self.assertEqual(resumed['messages'][:len(previous['messages'])],previous['messages'])
+   after=self.wire(b['model'])['pho_archive']
+   for key,value in archive.items():self.assertEqual(after[key],value)
+  log=self.tmp_path.joinpath('server.log').read_text()
+  for model in ('deepseek-v4-flash-0731','qwen3.8-flash-next-uncensored'):
+   self.assertIn('pho-compress model='+model+' tokens_before=',log)
+ def test_04_rollover_uses_archive_and_keeps_recent_turns(self):
+  for b in self.bots().values():
+   code='```cpp\nconst char *URL = "https://github.com/o/r"; int id = 001234;\n```'
+   self.send(b['id'],'Bitte Code exakt aufbewahren: '+code)
+   previous=None;rolled=None
+   for n in range(32):
+    call=self.send(b['id'],self.PROSE*13+' Lange Historie '+str(n))
+    if any('[PhO-Compress]' in m.get('content','') for m in call['messages'][2:]):
+     rolled=call
+     if previous:
+      recent=[m for m in previous['messages'] if m.get('role')=='user'][-2:]
+      for m in recent:self.assertIn(m,call['messages'],'last two complete turns stay exact')
+     break
+    previous=call
+   self.assertIsNotNone(rolled,'regular context rollover must consume stored compression for '+b['model'])
+   # The following request reuses the freshly established compact prefix.
+   mark=len(Model.cache_records)
+   warm=self.send(b['id'],'Kurze Anschlussfrage nach dem Kontextwechsel.')
+   self.assertGreater(Model.cache_records[mark]['n_past'],0)
+   self.assertEqual(warm['messages'][:len(rolled['messages'])],rolled['messages'])
+   self.assertFalse(any(r['content']!=r['original'] for r in self.wire(b['model'])['pho_archive'].values() if code in r['original']))
+ def test_03_plus_menu_label_and_order(self):
+  html=(ROOT/'mag-room/web/index.html').read_text()
+  self.assertLess(html.index('id="plus-github-access"'),html.index('id="plus-think"'))
+  self.assertLess(html.index('id="plus-think"'),html.index('id="plus-pho"'))
+  self.assertIn('<span>PhO-Compress</span>',html)
 
 if __name__=='__main__':unittest.main(verbosity=2)

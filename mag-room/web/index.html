@@ -1209,7 +1209,9 @@ function append(msg,scroll=true,trace=null,position=-1){
  if(!human&&msg.tools?.length)paintTools(div,content,storedTools(msg));
  if(trace)addTrace(div,{...trace,key:msg.id||''});
  if(msg.file)div.append(attachmentView(msg.file));
- if(text||msg.live){const actions=document.createElement('div');actions.className='message-tools';if(msg.live)actions.style.visibility='hidden';const b=document.createElement('button');b.type='button';b.className='message-copy';b.innerHTML=ICON_COPY+' Kopieren';b.setAttribute('aria-label','Nachricht kopieren');b.onclick=()=>copyText(text,b);actions.append(b);const audio=document.createElement('button');if(window.magMessageAudio?.attach){window.magMessageAudio.attach(audio,text,msg.id);actions.append(audio)}div.append(actions)}
+ if(text||msg.live){const actions=document.createElement('div');actions.className='message-tools';if(msg.live)actions.style.visibility='hidden';
+ if(text){const b=document.createElement('button');b.type='button';b.className='message-copy';b.innerHTML=ICON_COPY+' Kopieren';b.setAttribute('aria-label','Nachricht kopieren');b.onclick=()=>copyText(text,b);actions.append(b);const audio=document.createElement('button');if(window.magMessageAudio?.attach){window.magMessageAudio.attach(audio,text,msg.id);actions.append(audio)}}
+ div.append(actions)}
  if(msg.id&&completedHeights.has(msg.id))div.style.minHeight=completedHeights.get(msg.id)+'px';
  inner.append(div);return div;
 }

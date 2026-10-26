@@ -542,6 +542,10 @@ dialog{border-radius:10px;border-color:var(--line);background:var(--surface)}
  #app-header .brand{gap:6px}
 }
 
+.composer-inner{position:relative}
+/* Stop controls overlay the reserved answer-action space. Their appearance
+   never changes the composer height or resizes the scrolling viewport. */
+#bot-lanes{position:absolute;left:0;right:0;bottom:100%;z-index:5;margin:0 0 8px;flex-wrap:nowrap;overflow-x:auto;scrollbar-width:none}
 .message.assistant>.content{min-height:28px}
 .content[data-loading="1"]::before{content:"";display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--muted);vertical-align:middle;animation:quiet-pulse 1.3s ease-in-out infinite}
 .message.assistant .message-tools{height:40px;min-height:40px}

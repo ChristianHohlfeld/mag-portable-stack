@@ -6080,6 +6080,7 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
   const std::string own = prefix_file(idx, model);
   const std::string own_key = port + "/" + own;
   std::string source = own;
+  bool prefix_changed = false;
   {
     std::lock_guard<std::mutex> lk(PREFIX_MTX);
     if (!PREFIX_META.isObj()) {
@@ -6090,6 +6091,7 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
       auto v = PREFIX_META.find(f);
       return v && v->type == Val::STR ? v->asStr() : std::string();
     };
+    prefix_changed = !meta(own_key).empty() && meta(own_key) != shared_key;
     // Own file if it holds the current shared prefix (or is of unknown age);
     // otherwise another bot's file on the SAME server with that prefix.
     if (CONFIGURED_MODEL && !meta(own_key).empty() && meta(own_key) != shared_key)
@@ -6138,7 +6140,7 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
   long code = 0;
   int tracked = -1;
   bool ok = false;
-  if (!ram_warm && pw_epoch == PREWARM_EPOCH.load() && !PREWARM_HOLD.load())
+  if ((!ram_warm || prefix_changed) && pw_epoch == PREWARM_EPOCH.load() && !PREWARM_HOLD.load())
     ok = http_simple(BACKEND_HOST, BACKEND_PORT, "POST", "/v1/chat/completions",
                      payload,
                      {{"Content-Type", "application/json"},

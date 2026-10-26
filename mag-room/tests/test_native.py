@@ -3339,6 +3339,12 @@ class ConfiguredNuma(unittest.TestCase):
    # Never another server's file; bot 3 shares bot 1's server (and its chat-only prefix).
    for n in range(1,3):self.assertEqual(srv(int(restores[str(n-1)][-5])),srv(n),'cross-server restore')
    self.assertEqual(restores,{'0':own(1),'1':own(2)})
+   # Save HTTP arrival precedes the room's atomic metadata write.
+   for _ in range(200):
+    current=json.loads(self.state.joinpath('prompt-prefix.json').read_text() or '{}')
+    if all(current.get(srv(n)+'/'+own(n))==fresh[own(n)] for n in range(1,3)):break
+    time.sleep(.01)
+   else:self.fail('prewarm metadata not committed')
    # Match the pinned ik runtime's actual /slots schema: it has no n_past.
    # Restarting only the room must leave the running model's RAM cache alone.
    self.stop();Model.slot_snapshot=[{'id':0,'state':0,'prompt':'cached-prefix','next_token':{'n_decoded':1}}]
@@ -3389,6 +3395,21 @@ class MixedNuma(unittest.TestCase):
     time.sleep(.02)
    time.sleep(.1)
    self.assertEqual([p for p in list(Model.paths)[mark:] if p[0].startswith('/slots/') or p[0]=='/v1/chat/completions'],[])
+  finally:
+   self.stop();Model.slot_snapshot=[];self.env['MAG_ROOM_PREWARM']='0';self.start()
+ def test_05_changed_prefix_prewarms_ram_without_restoring_old_disk(self):
+  self.wait_idle();self.stop();Model.slot_snapshot=[{'id':0,'n_prompt_tokens':4321}]
+  meta=self.state/'prompt-prefix.json'
+  old=json.loads(meta.read_text());meta.write_text(json.dumps({k:'previous-software-prefix' for k in old}))
+  self.env['MAG_ROOM_PREWARM']='1'
+  try:
+   mark=len(Model.paths);self.start()
+   for _ in range(150):
+    calls=[p for p in list(Model.paths)[mark:] if p[0]=='/v1/chat/completions' and p[3].get('max_tokens')==1]
+    if len(calls)>=2:break
+    time.sleep(.02)
+   self.assertEqual({p[1] for p in calls},{'0','1'})
+   self.assertFalse([p for p in list(Model.paths)[mark:] if p[0].endswith('restore')])
   finally:
    self.stop();Model.slot_snapshot=[];self.env['MAG_ROOM_PREWARM']='0';self.start()
  def test_03_second_request_uses_positive_n_past_for_both_models(self):

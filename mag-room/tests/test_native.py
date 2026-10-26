@@ -3382,7 +3382,7 @@ class MixedNuma(unittest.TestCase):
     self.assertEqual(slot,str(b['slot']-1));self.assertEqual(call['model'],b['model'])
     self.assertEqual(call['id_slot'],0);self.assertTrue(call['cache_prompt'])
     self.assertEqual(call['chat_template_kwargs']['enable_thinking'],thinking)
-    self.assertFalse(any('github' in t['function']['name'].lower() for t in call['tools']))
+    self.assertTrue(any(t['function']['name']=='github' for t in call['tools'])) # schema stable; execution is still gated
   before=self.bots();self.stop();self.start();self.assertEqual(self.bots(),before)
  def test_04_restart_keeps_both_warm_ram_slots(self):
   self.wait_idle();self.stop();Model.slot_snapshot=[{'id':0,'n_prompt_tokens':4321}]
@@ -3422,6 +3422,18 @@ class MixedNuma(unittest.TestCase):
    self.assertEqual(calls[0]['n_past'],0)
    self.assertGreaterEqual(calls[1]['n_past']/calls[0]['prompt_size'],.95,'second request must reuse >=95% of the prior prefix')
    self.assertTrue(all(c['slot']==0 and c['cache_prompt'] for c in calls))
+ def test_06_switches_keep_prefix_and_tool_schema(self):
+  for b in self.bots().values():
+   self.wait_idle();first,_=self.ask(b['id']);previous=Model.cache_records[-1]['prompt_size'];mark=len(Model.cache_records)
+   self.request('/api/bot-settings',{'bots':[b['id']],'github_enabled':True,'thinking':True},method='PUT')
+   try:
+    second,_=self.ask(b['id'])
+    self.assertEqual(first['tools'],second['tools'])
+    self.assertEqual(second['messages'][:len(first['messages'])],first['messages'])
+    record=Model.cache_records[mark]
+    self.assertGreaterEqual(record['n_past']/previous,.95)
+    self.assertIn('GitHub: aktiv',second['messages'][-1]['content'])
+   finally:self.request('/api/bot-settings',{'bots':[b['id']],'github_enabled':False,'thinking':False},method='PUT')
  def test_02_prewarm_isolated_per_model(self):
   self.wait_idle();self.stop();self.env['MAG_ROOM_PREWARM']='1'
   try:

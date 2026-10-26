@@ -3332,7 +3332,7 @@ static std::string tools_json(int bot_idx, bool web) {
   defs.push_back(T_UNREACT);
   (void)web; // always registered: a changing tool list breaks the prompt cache
   defs.push_back(T_WEB_SEARCH);
-  if (github_enabled(bot_idx)) defs.push_back(T_GITHUB); // opt-in; credentials stay server-side
+  if (CONFIGURED_MODEL || github_enabled(bot_idx)) defs.push_back(T_GITHUB); // stable schema; execution remains opt-in
   defs.push_back(T_TODO);
   defs.push_back(T_MEMORY);
   defs.push_back(T_TASK);

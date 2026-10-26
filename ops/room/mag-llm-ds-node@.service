@@ -1,0 +1,33 @@
+[Unit]
+Description=MAG DeepSeek V4 Flash, NUMA node %i (1 bot)
+After=network-online.target
+Wants=network-online.target
+Conflicts=mag-llm.service mag-llm-iq3.service mag-llm-qwen.service mag-llm-ornith@1.service mag-llm-ornith@2.service mag-llm-ornith@3.service mag-llm-ornith@4.service mag-llm-ornith-node@0.service mag-llm-ornith-node@1.service
+StartLimitIntervalSec=1800
+StartLimitBurst=2
+
+[Service]
+Type=simple
+User=chris
+Group=chris
+WorkingDirectory=/home/chris
+EnvironmentFile=/etc/mag-stack/room-model.env
+EnvironmentFile=/etc/mag-llm/ds-node.env
+ExecStartPre=+/usr/bin/install -d -o chris -g chris -m 0750 /var/lib/mag-llm/slots/ds-node%i
+ExecStart=/usr/bin/numactl --cpunodebind=%i --membind=%i /usr/local/lib/mag-room/start-ds-node.sh %i
+Restart=on-failure
+RestartSec=60
+TimeoutStartSec=3600
+TimeoutStopSec=120
+LimitMEMLOCK=infinity
+MemorySwapMax=0
+OOMScoreAdjust=-600
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=no
+ReadWritePaths=/var/lib/mag-llm/slots/ds-node%i
+PrivateTmp=yes
+RestrictAddressFamilies=AF_INET AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

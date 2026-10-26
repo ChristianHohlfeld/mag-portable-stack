@@ -2,6 +2,7 @@
 // VM/browser tool loop and bridge. No frameworks, no JSON library.
 #include "common.hpp"
 #include "json.hpp"
+#include "room_model.hpp"
 #include "browser_recovery.hpp"
 #include "browser_events.hpp"
 #include "pages.hpp"
@@ -654,35 +655,36 @@ static std::set<std::string> SPAWNING_VMS; // STATE_MTX; includes removed pendin
 static std::string SINGLE_BOT, SINGLE_BOT_NAME = "DeepSeek Chat";
 // Two persistent VM bots, pinned one-to-one to the two resident NUMA model servers.
 static bool DUAL_NUMA = false;
-// MAG_SECONDARY_MODEL=ornith: every bot uses Ornith; bot i owns backend i (gateway X-Mag-Slot).
-static const std::string ORNITH = "ornith-1.5-35b-a3b";
-static bool ORNITH_MODE = false;
-// Ornith mode: up to four bots, each with a persistent "slot" (1..4) stored in
+// Env-configured model: each persistent bot slot owns one NUMA backend.
+static RoomModel ROOM_MODEL;
+static Val ROOM_PRESETS = Val::array();
+static bool CONFIGURED_MODEL = false;
+// Configured mode: two bots, each with a persistent "slot" (1..2) stored in
 // agents.json. The slot, never the array index, picks the backend instance, so
 // removing a bot never moves another bot to a different prompt cache.
-static constexpr int ORNITH_MAX = 4;
-static std::array<std::atomic<int>, ORNITH_MAX> ORNITH_HEALTH{}; // 0 ?, 1 ok, 2 down
-static int ornith_slot_of(const Val &a) {
+static constexpr int ROOM_MAX_BOTS = RoomModel::max_bots;
+static std::array<std::atomic<int>, ROOM_MAX_BOTS> ROOM_MODEL_HEALTH{}; // 0 ?, 1 ok, 2 down
+static int model_slot_of(const Val &a) {
   auto s = a.find("slot");
   const int v = s && s->type == Val::NUM ? (int)s->asNum() : 0;
-  return v >= 1 && v <= ORNITH_MAX ? v : 0;
+  return v >= 1 && v <= ROOM_MAX_BOTS ? v : 0;
 }
-static int free_ornith_slot() { // STATE_MTX held; 0 = all four in use
-  for (int s = 1; s <= ORNITH_MAX; ++s) {
+static int free_model_slot() { // STATE_MTX held; 0 = both in use
+  for (int s = 1; s <= ROOM_MAX_BOTS; ++s) {
     bool used = false;
-    for (const auto &a : AGENTS) used = used || ornith_slot_of(a) == s;
+    for (const auto &a : AGENTS) used = used || model_slot_of(a) == s;
     if (!used) return s;
   }
   return 0;
 }
-static int ornith_slot(int idx) { // 1..4; falls back to idx+1 outside Ornith mode
+static int model_slot(int idx) { // 1..2; falls back to idx+1 outside configured mode
   std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
   if (idx < 0 || (size_t)idx >= AGENTS.size()) return idx + 1;
-  const int s = ornith_slot_of(AGENTS[idx]);
+  const int s = model_slot_of(AGENTS[idx]);
   return s ? s : idx + 1;
 }
 // Gateway X-Mag-Slot is the 0-based instance (slot 1 -> 8191).
-static std::string gateway_slot(int idx) { return std::to_string(ornith_slot(idx) - 1); }
+static std::string gateway_slot(int idx) { return std::to_string(model_slot(idx) - 1); }
 
 static void save_agents(); // fwd
 static void load_agents() {
@@ -726,17 +728,17 @@ static void load_agents() {
     }
     AGENTS = active;
   }
-  if (ORNITH_MODE) {
+  if (CONFIGURED_MODEL) {
     // One-time, idempotent migration (bots without a slot): legacy names become
-    // "Ornith N"; ids, VMs and memory stay. Existing slots are kept; free slots
-    // go to the remaining bots in order. More than four stay parked in agents.json.
+    // config-label + N; ids, VMs and memory stay. Existing slots are kept; free slots
+    // go to the remaining bots in order. Surplus bots stay parked in agents.json.
     std::vector<Val> all = AGENTS;
     AGENTS.clear();
     PARKED.clear();
     std::set<int> taken;
     std::vector<bool> keep(all.size(), false);
     for (size_t i = 0; i < all.size(); ++i)
-      if (int s = ornith_slot_of(all[i]); s && taken.insert(s).second) keep[i] = true;
+      if (int s = model_slot_of(all[i]); s && taken.insert(s).second) keep[i] = true;
     for (size_t i = 0; i < all.size(); ++i) {
       Val &a = all[i];
       if (!keep[i]) {
@@ -744,16 +746,13 @@ static void load_agents() {
           a.obj->erase(std::remove_if(a.obj->begin(), a.obj->end(),
                                       [](const auto &kv) { return kv.first == "slot"; }),
                        a.obj->end());
-        const std::string name = mag::str(a, "name");
-        if (name == "DeepSeek 4.0" || name == "DeepSeek Chat" || name == "DeepSeek Q4") { a["name"] = "Ornith 1"; dirty = true; }
-        if (name == "Qwen 2") { a["name"] = "Ornith 2"; dirty = true; }
       }
     }
     for (size_t i = 0; i < all.size(); ++i)
       if (keep[i]) AGENTS.push_back(all[i]);
     for (size_t i = 0; i < all.size(); ++i) {
       if (keep[i]) continue;
-      if (const int s = free_ornith_slot()) {
+      if (const int s = free_model_slot()) {
         all[i]["slot"] = s;
         AGENTS.push_back(all[i]);
         dirty = true;
@@ -762,17 +761,18 @@ static void load_agents() {
       }
     }
     std::stable_sort(AGENTS.begin(), AGENTS.end(), [](const Val &a, const Val &b) {
-      return ornith_slot_of(a) < ornith_slot_of(b);
+      return model_slot_of(a) < model_slot_of(b);
     });
     for (auto &a : AGENTS) {
-      if (mag::str(a, "model") != ORNITH) { a["model"] = ORNITH; dirty = true; }
+      if (mag::str(a, "model") != ROOM_MODEL.id) { a["model"] = ROOM_MODEL.id; dirty = true; }
       // Rename stock labels EVEN for bots that already had a persistent slot.
       // Never change an ID: especially deepseek-chat retains its memory and VM.
       const std::string old = mag::str(a, "name");
-      const int slot = ornith_slot_of(a);
+      const int slot = model_slot_of(a);
       if (slot && (old == "DeepSeek 4.0" || old == "DeepSeek Chat" ||
-                   old == "DeepSeek Q4" || old == "Qwen" || old == "Qwen 2")) {
-        const std::string updated = "Ornith " + std::to_string(slot);
+                   old == "DeepSeek Q4" || old == "Qwen" || old == "Qwen 2" ||
+                   old == "Ornith 1" || old == "Ornith 2" || old == "Ornith 3" || old == "Ornith 4")) {
+        const std::string updated = ROOM_MODEL.label + " " + std::to_string(slot);
         if (old != updated) { a["name"] = updated; dirty = true; }
       }
     }
@@ -806,14 +806,13 @@ static void load_agents() {
     if (primary >= 0) {
       active.push_back(all[primary]); used[primary] = true;
     } else {
-      active.push_back(ORNITH_MODE ? make("deepseek-chat", "Ornith 1", ORNITH)
-                                   : make("deepseek-q4", "DeepSeek Q4", q4));
+      active.push_back(make("deepseek-q4", "DeepSeek Q4", q4));
     }
-    active[0]["model"] = ORNITH_MODE ? ORNITH : qwen; // Qwen-only fallback: no Q4
+    active[0]["model"] = qwen; // Qwen-only fallback: no Q4
     int secondary = -1;
     for (size_t i = 0; i < all.size(); ++i) {
       if (used[i]) continue;
-      if (mag::str(all[i], "model") == qwen || mag::str(all[i], "model") == ORNITH ||
+      if (mag::str(all[i], "model") == qwen ||
           mag::str(all[i], "id") == "qwen-numa1") {
         secondary = (int)i;
         break;
@@ -830,7 +829,7 @@ static void load_agents() {
         if (mag::str(a, "id") == id) id = "qwen-numa1-new";
       active.push_back(make(id, "Qwen", qwen));
     }
-    active[1]["model"] = ORNITH_MODE ? ORNITH : qwen;
+    active[1]["model"] = qwen;
     AGENTS = std::move(active);
     PARKED.clear();
     for (size_t i = 0; i < all.size(); ++i)
@@ -3075,34 +3074,44 @@ static std::string model_wait_text() {
   (void)st;
   return "Modell lädt noch – bitte gleich erneut senden.";
 }
-// Same default as the gateway: 2 servers (one per NUMA node) x 2 llama slots;
-// bot slots 1,2 sit on different servers, so two bots run at full speed.
-static const char *ORNITH_PORTS_DEFAULT = "8191:0,8192:0,8191:1,8192:1";
-// Backend port of an Ornith bot slot (1..4); "" if not configured.
-static std::string ornith_port(int slot) {
-  std::stringstream ports(env("MAG_MODEL_ORNITH_PORTS", ORNITH_PORTS_DEFAULT));
-  std::string part;
-  for (int s = 1; std::getline(ports, part, ','); ++s)
-    if (s == slot) return part.substr(0, part.find(':'));
-  return "";
+// Persistent room slot -> configured backend, one llama slot per NUMA node.
+static std::string model_port(int slot) {
+  return slot >= 1 && slot <= ROOM_MAX_BOTS
+      ? std::to_string(ROOM_MODEL.backends[slot - 1].port) : "";
 }
-static Val ornith_instances() {
+static Val model_instances() {
   Val inst = Val::array();
-  // Same list as the gateway: "port:id_slot" (shared server) or "port".
-  std::stringstream ports(env("MAG_MODEL_ORNITH_PORTS", ORNITH_PORTS_DEFAULT));
-  std::string port;
-  for (int s = 1; s <= ORNITH_MAX; ++s) {
+  for (int s = 1; s <= ROOM_MAX_BOTS; ++s) {
     Val i = Val::object();
     i["slot"] = s;
-    if (std::getline(ports, port, ',')) {
-      const auto c = port.find(':');
-      i["port"] = port.substr(0, c);
-      if (c != std::string::npos) i["id_slot"] = port.substr(c + 1);
-    }
-    i["state"] = ORNITH_HEALTH[s - 1] == 1 ? "ok" : ORNITH_HEALTH[s - 1] == 2 ? "down" : "unknown";
+    i["port"] = ROOM_MODEL.backends[s - 1].port;
+    i["numa"] = ROOM_MODEL.backends[s - 1].numa;
+    i["state"] = ROOM_MODEL_HEALTH[s - 1] == 1 ? "ok" : ROOM_MODEL_HEALTH[s - 1] == 2 ? "down" : "unknown";
     inst.push(i);
   }
   return inst;
+}
+// Presets describe allowed deployments, never caller-supplied ports or instances.
+static void load_room_presets() {
+  if (!CONFIGURED_MODEL) return;
+  Val presets;
+  const auto raw = read_file(env("MAG_ROOM_PRESETS", "/opt/mag-stack/current/ops/room/presets.json"));
+  if (!mj::parse(raw, presets) || !presets.isArr())
+    throw std::runtime_error("Invalid MAG_ROOM_PRESETS config");
+  for (const auto &p : *presets.arr) {
+    auto ports = p.find("ports");
+    if (mag::str(p, "id").empty() || mag::str(p, "label").empty() ||
+        mag::str(p, "model") != ROOM_MODEL.id || !ports || !ports->isArr() || ports->arr->size() != ROOM_MAX_BOTS)
+      continue;
+    bool matches = true;
+    for (int i = 0; i < ROOM_MAX_BOTS; ++i) {
+      const auto &b = (*ports->arr)[i];
+      auto port = b.find("port"), numa = b.find("numa");
+      matches = matches && port && numa && port->asNum() == ROOM_MODEL.backends[i].port && numa->asNum() == ROOM_MODEL.backends[i].numa;
+    }
+    if (matches) ROOM_PRESETS.push(p);
+  }
+  if (ROOM_PRESETS.arr->empty()) throw std::runtime_error("No room preset matches MAG_ROOM_MODEL_ID/PORTS");
 }
 // Publishes {"type":"model"} whenever the combined state changes.
 static std::string secondary_room_model();
@@ -3131,19 +3140,19 @@ static void model_watcher_loop() {
                        {"X-Mag-Model", secondary_room_model()}},
                       reply, &health, nullptr, 2000) && health == 200;
     }
-    if (ORNITH_MODE) {
-      // Header shows the four instances; each answers /health via the gateway.
+    if (CONFIGURED_MODEL) {
+      // Probe both NUMA servers through the gateway.
       std::string health_key;
-      for (int s = 1; s <= ORNITH_MAX; ++s) {
+      for (int s = 1; s <= ROOM_MAX_BOTS; ++s) {
         std::string reply;
         long health = 0;
         const bool ok =
             http_simple(BACKEND_HOST, BACKEND_PORT, "GET", "/health", "",
                         {{"Authorization", "Bearer " + API_KEY},
-                         {"X-Mag-Model", ORNITH},
+                         {"X-Mag-Model", ROOM_MODEL.id},
                          {"X-Mag-Slot", std::to_string(s - 1)}},
                         reply, &health, nullptr, 1500) && health == 200;
-        ORNITH_HEALTH[s - 1] = ok ? 1 : 2;
+        ROOM_MODEL_HEALTH[s - 1] = ok ? 1 : 2;
         health_key += ok ? '1' : '0';
         secondary_ready = secondary_ready || ok;
       }
@@ -3151,7 +3160,7 @@ static void model_watcher_loop() {
     }
     if ((st.ready && !was_ready) || (secondary_ready && !was_secondary_ready))
       schedule_prewarm();
-    else if (secondary_ready && ORNITH_MODE)
+    else if (secondary_ready && CONFIGURED_MODEL)
       prewarm_if_prompt_changed(); // system prompt, tools, persona or bot set changed
     was_ready = st.ready;
     was_secondary_ready = secondary_ready;
@@ -3160,7 +3169,7 @@ static void model_watcher_loop() {
       Val e = Val::object();
       e["type"] = "model";
       e["status"] = model_status_val(st);
-      if (ORNITH_MODE) e["ornith_instances"] = ornith_instances();
+      if (CONFIGURED_MODEL) e["model_instances"] = model_instances();
       publish(mj::dump(e));
     }
     std::this_thread::sleep_for(seconds(st.ready ? 10 : 4));
@@ -3264,28 +3273,28 @@ static std::string ROOM_MODEL_ID;
 // The operator switches MAG_SECONDARY_MODEL only after Qwen is verified on :8091.
 static std::string secondary_room_model() {
   const char *kind = std::getenv("MAG_SECONDARY_MODEL");
-  if (kind && std::string(kind) == "ornith") return ORNITH;
+  if (CONFIGURED_MODEL) return ROOM_MODEL.id;
   return kind && std::string(kind) == "qwen"
              ? "qwen3.8-flash-next-uncensored"
              : "deepseek-v4-flash-0731-iq3";
 }
-// DeepSeek is retired on Ornith hosts: Ornith is the only selectable model there.
+// Configured hosts expose exactly their configured model.
 static std::string default_room_model() {
-  return ORNITH_MODE ? ORNITH : secondary_room_model() == "qwen3.8-flash-next-uncensored"
+  return CONFIGURED_MODEL ? ROOM_MODEL.id : secondary_room_model() == "qwen3.8-flash-next-uncensored"
       ? "qwen3.8-flash-next-uncensored" : "deepseek-v4-flash-0731";
 }
 static bool known_room_model(const std::string &id) {
   if (NUMA_ON) return numa_known_model(id);
-  if (ORNITH_MODE) return id == ORNITH;
+  if (CONFIGURED_MODEL) return id == ROOM_MODEL.id;
   if (secondary_room_model() == "qwen3.8-flash-next-uncensored")
     return id == "qwen3.8-flash-next-uncensored";
   return id == "deepseek-v4-flash-0731" || id == secondary_room_model();
 }
 static std::string default_model_label(const std::string &id) {
   if (NUMA_ON) return numa_label(id);
+  if (CONFIGURED_MODEL && id == ROOM_MODEL.id) return ROOM_MODEL.label;
   if (id == "deepseek-v4-flash-0731") return "0 · Q4";
   if (id == "qwen3.8-flash-next-uncensored") return "1 · Qwen";
-  if (id == ORNITH) return "Ornith 1.5 35B-A3B";
   return "1 · IQ3";
 }
 static ModelSettings model_settings_for(const std::string &id) {
@@ -3304,7 +3313,7 @@ static void load_model_settings() {
   std::lock_guard<std::mutex> lk(MODEL_SETTINGS_MTX);
   MODEL_SETTINGS.clear();
   const std::vector<std::string> ids =
-      ORNITH_MODE ? std::vector<std::string>{ORNITH}
+      CONFIGURED_MODEL ? std::vector<std::string>{ROOM_MODEL.id}
       : secondary_room_model() == "qwen3.8-flash-next-uncensored"
           ? std::vector<std::string>{"qwen3.8-flash-next-uncensored"}
           : std::vector<std::string>{"deepseek-v4-flash-0731", secondary_room_model()};
@@ -3422,13 +3431,13 @@ static Val room_model_catalog() {
     }
     return models;
   }
-  if (ORNITH_MODE) {
+  if (CONFIGURED_MODEL) {
     Val m = Val::object();
-    const ModelSettings st = model_settings_for(ORNITH);
-    m["id"] = ORNITH;
-    m["label"] = st.name.empty() ? default_model_label(ORNITH) : st.name;
+    const ModelSettings st = model_settings_for(ROOM_MODEL.id);
+    m["id"] = ROOM_MODEL.id;
+    m["label"] = ROOM_MODEL.label;
     m["deterministic"] = st.deterministic;
-    if (Val v = model_verify_for(ORNITH); v.isObj()) m["verify"] = v;
+    if (Val v = model_verify_for(ROOM_MODEL.id); v.isObj()) m["verify"] = v;
     models.push(m);
     return models;
   }
@@ -3467,7 +3476,7 @@ static std::string bot_model_id(int idx) {
   // Exactly one live coding bot: the owner's room selection is authoritative,
   // regardless of an old per-bot IQ3/Q4 preference in agents.json.
   // Switching changes only the next gateway request model ID, not the LLM PID.
-  if (ORNITH_MODE) return ORNITH; // all bots, incl. the former NUMA0/DeepSeek slot
+  if (CONFIGURED_MODEL) return ROOM_MODEL.id; // all bots, incl. the former NUMA0/DeepSeek slot
   if (!SINGLE_BOT.empty()) return active_room_model();
   if (DUAL_NUMA) return "qwen3.8-flash-next-uncensored";
   const std::string own = bot_field(idx, "model");
@@ -3520,7 +3529,7 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   // The Qwen backend has 16k context, unlike the 32k Q4 backend.
   // Bound generated tokens on Qwen only, keeping Q4's established budget.
   // Both models retain all native/MCP tools and immutable audit routing.
-  const int max_output = model == "qwen3.8-flash-next-uncensored" || model == ORNITH
+  const int max_output = model == "qwen3.8-flash-next-uncensored"
       ? std::min(MAX_TOKENS, std::clamp(envi("MAG_ROOM_QWEN_MAX_TOKENS", 4096), 512, 8192))
       : MAX_TOKENS;
   body["max_tokens"] = max_output;
@@ -3544,11 +3553,11 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   // MAG_ROOM_REASONING_EFFORT is set it is sent on EVERY request so the prefix
   // stays identical across the toggle.
   Val kwargs = Val::object();
-  // Ornith always runs with thinking off (measured: prompt cache stays valid).
-  kwargs["enable_thinking"] = model == ORNITH ? false : thinking;
+  // Thinking follows the model default or the per-message switch.
+  kwargs["enable_thinking"] = thinking;
   // The Qwen4Exp GGUF Jinja template uses enable_thinking, not the
   // DeepSeek-specific reasoning_effort preamble (preserve prompt cache).
-  if (model != "qwen3.8-flash-next-uncensored" && model != ORNITH && !REASONING_EFFORT.empty())
+  if (model != "qwen3.8-flash-next-uncensored" && !REASONING_EFFORT.empty())
     kwargs["reasoning_effort"] = REASONING_EFFORT;
   body["chat_template_kwargs"] = kwargs;
   std::string payload = mj::dump(body);
@@ -5179,10 +5188,10 @@ static Lane &lane_named(const std::string &model) {
   }
   return *slot;
 }
-// Ornith: one llama slot per bot, so one lane per bot (no cross-bot serialization).
+// One server per bot, so one lane per bot (no cross-bot serialization).
 static std::string lane_key(int idx) {
   const std::string m = bot_model_id(idx);
-  return m == ORNITH ? m + "#" + std::to_string(ornith_slot(idx)) : m;
+  return m == ROOM_MODEL.id ? m + "#" + std::to_string(model_slot(idx)) : m;
 }
 static Lane *lane_of(const std::string &bot_id) {
   int idx = agent_index(bot_id);
@@ -5712,7 +5721,7 @@ static std::mutex PREWARM_MTX;
 static std::set<std::string> PREWARM_RUNNING; // models, PREWARM_MTX
 // MAG_ROOM_PREFIX_DISK=0: keep prefix KV only in server RAM (lost on restart).
 static bool PREFIX_DISK = true;
-// Ornith (2 servers, 2 llama slots each): prewarms run one at a time PER
+// Configured NUMA servers: prewarms run one at a time PER
 // SERVER, both servers in parallel. The system prompt is byte-identical for
 // all bots up to [Identitaet], so the 2nd bot on a server restores the 1st
 // bot's prefix file (same --slot-save-path) into its own slot and evaluates
@@ -5737,7 +5746,7 @@ static uint64_t fnv64(const std::string &s) {
   return h;
 }
 static std::string prefix_file(int idx, const std::string &model) {
-  return model == ORNITH ? "mag-prefix-ornith-slot" + std::to_string(ornith_slot(idx)) + ".bin"
+  return model == ROOM_MODEL.id ? "mag-prefix-" + model + "-slot" + std::to_string(model_slot(idx)) + ".bin"
                          : "mag-prefix-" + model + ".bin";
 }
 static void agents_changed();
@@ -5773,8 +5782,8 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
     body["stream"] = false;
     body["cache_prompt"] = true;
     Val kwargs = Val::object();
-    kwargs["enable_thinking"] = model == ORNITH ? false : thinking_of(-1);
-    if (model != "qwen3.8-flash-next-uncensored" && model != ORNITH && !REASONING_EFFORT.empty())
+    kwargs["enable_thinking"] = thinking_of(-1);
+    if (model != "qwen3.8-flash-next-uncensored" && !REASONING_EFFORT.empty())
       kwargs["reasoning_effort"] = REASONING_EFFORT;
     body["chat_template_kwargs"] = kwargs;
     payload = mj::dump(body);
@@ -5797,10 +5806,10 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
         reply, &status, nullptr, 120000);
     return sent && status == 200;
   };
-  // Ornith: this bot's server keeps the lock for the whole prewarm.
-  const std::string port = model == ORNITH ? ornith_port(ornith_slot(idx)) : model;
+  // This bot's server keeps the lock for the whole prewarm.
+  const std::string port = model == ROOM_MODEL.id ? model_port(model_slot(idx)) : model;
   std::unique_lock<std::mutex> seq(server_mutex(port), std::defer_lock);
-  if (model == ORNITH) seq.lock();
+  if (model == ROOM_MODEL.id) seq.lock();
   const std::string own = prefix_file(idx, model);
   const std::string own_key = port + "/" + own;
   std::string source = own;
@@ -5816,7 +5825,7 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
     };
     // Own file if it holds the current shared prefix (or is of unknown age);
     // otherwise another bot's file on the SAME server with that prefix.
-    if (model == ORNITH && !meta(own_key).empty() && meta(own_key) != shared_key)
+    if (model == ROOM_MODEL.id && !meta(own_key).empty() && meta(own_key) != shared_key)
       for (auto &kv : *PREFIX_META.obj)
         if (kv.first.rfind(port + "/", 0) == 0 && kv.second.type == Val::STR &&
             kv.second.asStr() == shared_key) {
@@ -5888,7 +5897,7 @@ static void schedule_prewarm() {
     if (!JOBS.empty() || AUTO_READY) return; // the next turn starts anyway
   }
   // One slot per model server: prewarm only models answered by exactly one bot.
-  // Ornith lanes are per bot slot (lane_key), so every Ornith bot prewarms;
+  // Configured lanes are per bot slot (lane_key), so every bot prewarms;
   // prewarm_model serializes them per server (2 servers in parallel). Deterministic models
   // send a short identity prompt without prompt cache, nothing to prewarm.
   std::map<std::string, int> by_model;
@@ -5896,7 +5905,7 @@ static void schedule_prewarm() {
   {
     std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
     for (size_t i = 0; i < AGENTS.size(); ++i) {
-      const std::string m = lane_key((int)i); // Ornith: per-bot backend
+      const std::string m = lane_key((int)i); // configured per-bot backend
       if (!by_model.emplace(m, (int)i).second) shared.insert(m);
     }
   }
@@ -6007,7 +6016,7 @@ static std::string after_label(const std::string &out, const std::string &label)
 // Runs in the background; the model stays usable (one slot: requests queue).
 static bool start_model_verify(const std::string &model, std::string &err) {
   if (MODEL_VERIFY_RUNNING.exchange(true)) { err = "Eine Prüfung läuft bereits"; return false; }
-  if (lane_named(model == ORNITH ? model + "#1" : model).busy.load()) {
+  if (lane_named(model == ROOM_MODEL.id ? model + "#1" : model).busy.load()) {
     MODEL_VERIFY_RUNNING = false;
     err = "Modell beantwortet gerade den Raum; bitte danach erneut";
     return false;
@@ -6055,7 +6064,7 @@ static Val model_radius(const std::string &model, const std::string &input,
                         double radius, int k, int max_tokens, int repeat) {
   std::unique_lock<std::mutex> one(RADIUS_MTX, std::try_to_lock);
   if (!one.owns_lock()) throw RadiusError(409, "Eine Radius-Abfrage laeuft bereits");
-  if (lane_named(model == ORNITH ? model + "#1" : model).busy.load())
+  if (lane_named(model == ROOM_MODEL.id ? model + "#1" : model).busy.load())
     throw RadiusError(409, "Modell beantwortet gerade den Raum; bitte danach erneut");
   const auto from = steady_clock::now();
   // Same single-message input as the stateless deterministic mode.
@@ -6231,8 +6240,8 @@ static void lane_finish(Lane *lane, uint64_t run, bool owner_ran, bool more,
 // sees that answer), "off" starts all lanes together.
 // MAG_ROOM_STAGGER_PAUSE_MS: mean human pause before the next bot starts.
 static std::string stagger_mode() {
-  // Ornith B (2 servers x 2 slots): all bots answer concurrently by default.
-  const std::string m = env("MAG_ROOM_STAGGER", ORNITH_MODE ? "off" : "think");
+  // Configured NUMA servers: both bots answer concurrently by default.
+  const std::string m = env("MAG_ROOM_STAGGER", CONFIGURED_MODEL ? "off" : "think");
   return m == "reply" || m == "off" ? m : "think";
 }
 static int stagger_pause_ms() {
@@ -6799,7 +6808,10 @@ static Val public_agent(int idx) {
   o["color"] = bot_field(idx, "color");
   o["vm"] = bot_field(idx, "vm");
   o["model"] = bot_model_id(idx);
-  if (ORNITH_MODE) o["slot"] = ornith_slot(idx);
+  if (CONFIGURED_MODEL) {
+    o["slot"] = model_slot(idx);
+    o["numa"] = ROOM_MODEL.backends[model_slot(idx) - 1].numa;
+  }
   {
     std::lock_guard<std::mutex> lk(PREWARM_MTX);
     auto eta = PREWARM_ETA.find(o["id"].asStr());
@@ -6862,8 +6874,11 @@ static std::string state_json(const Actor *actor = nullptr) {
   root["agents"] = ag;
   root["single_bot"] = SINGLE_BOT;
   root["dual_numa"] = DUAL_NUMA;
-  root["ornith_mode"] = ORNITH_MODE;
-  if (ORNITH_MODE) root["ornith_instances"] = ornith_instances();
+  root["configured_model"] = CONFIGURED_MODEL;
+  root["max_bots"] = ROOM_MAX_BOTS;
+  root["model_label"] = CONFIGURED_MODEL ? ROOM_MODEL.label : default_model_label(active_room_model());
+  root["presets"] = ROOM_PRESETS;
+  if (CONFIGURED_MODEL) root["model_instances"] = model_instances();
   root["tasks"] = tasks_public();
   root["numa"] = numa_public();
   root["thinking_default"] = THINKING != "off";
@@ -7545,15 +7560,19 @@ int main() {
   signal(SIGPIPE, SIG_IGN);
 
   const std::string secondary_kind = env("MAG_SECONDARY_MODEL", "iq3");
-  ORNITH_MODE = secondary_kind == "ornith";
-  if (secondary_kind != "iq3" && secondary_kind != "qwen" && !ORNITH_MODE) {
+  try { ROOM_MODEL = RoomModel::from_env(); }
+  catch (const std::exception &e) { std::cerr << e.what() << "\n"; return 4; }
+  CONFIGURED_MODEL = ROOM_MODEL.enabled();
+  try { load_room_presets(); }
+  catch (const std::exception &e) { std::cerr << e.what() << "\n"; return 4; }
+  if (secondary_kind != "iq3" && secondary_kind != "qwen" && !CONFIGURED_MODEL) {
     std::cerr << "Invalid MAG_SECONDARY_MODEL (fail closed)\n";
     return 4;
   }
-  MODEL = env("MAG_ROOM_MODEL", ORNITH_MODE ? ORNITH : secondary_kind == "qwen"
+  MODEL = env("MAG_ROOM_MODEL", CONFIGURED_MODEL ? ROOM_MODEL.id : secondary_kind == "qwen"
       ? "qwen3.8-flash-next-uncensored" : "deepseek-v4-flash-0731");
   // A stale systemd drop-in must not override the actually selected model.
-  if (ORNITH_MODE) MODEL = ORNITH;
+  if (CONFIGURED_MODEL) MODEL = ROOM_MODEL.id;
   else if (secondary_kind == "qwen") MODEL = "qwen3.8-flash-next-uncensored";
   BACKEND =
       env("MAG_ROOM_BACKEND", "http://127.0.0.1:8080/v1/chat/completions");
@@ -7579,25 +7598,25 @@ int main() {
       REASONING_EFFORT != "max")
     REASONING_EFFORT = "";
   MODEL_STATUS_FILE = env("MAG_ROOM_MODEL_STATUS", "/var/lib/mag-llm/status.json");
-  // The DeepSeek model gate (status.json) is retired on Ornith hosts: Ornith /health
+  // Configured hosts use each server's /health
   // through the gateway is the only model status there.
-  if ((ORNITH_MODE || secondary_kind == "qwen") && MODEL_STATUS_FILE == "/var/lib/mag-llm/status.json") MODEL_STATUS_FILE = "/dev/null";
+  if ((CONFIGURED_MODEL || secondary_kind == "qwen") && MODEL_STATUS_FILE == "/var/lib/mag-llm/status.json") MODEL_STATUS_FILE = "/dev/null";
   MAX_HISTORY = envi("MAG_ROOM_MAX_HISTORY", 30);
   HISTORY_STEP = std::max(1, envi("MAG_ROOM_HISTORY_STEP", 10));
   MEMORY_CHUNK = std::max(1, envi("MAG_ROOM_MEMORY_CHUNK", 20));
-  PROMPT_SLOTS = std::max(1, envi("MAG_ROOM_SLOTS", 1));
-  SLOT_SAVE = env("MAG_ROOM_SLOT_SAVE", "0") == "1";
+  PROMPT_SLOTS = CONFIGURED_MODEL ? 1 : std::max(1, envi("MAG_ROOM_SLOTS", 1));
+  SLOT_SAVE = !CONFIGURED_MODEL && env("MAG_ROOM_SLOT_SAVE", "0") == "1";
   PREFIX_DISK = env("MAG_ROOM_PREFIX_DISK", "1") == "1";
   SINGLE_BOT = env("MAG_ROOM_SINGLE_BOT", "");
   DUAL_NUMA = env("MAG_ROOM_DUAL_NUMA", "0") == "1";
-  // Ornith: up to four freely added/removed bots; the old fixed dual/single
+  // Configured mode: two freely added/removed bots; the old fixed dual/single
   // layout (still used after rollback to qwen/iq3) does not apply.
-  if (DUAL_NUMA || ORNITH_MODE) SINGLE_BOT.clear();
-  if (ORNITH_MODE) DUAL_NUMA = false;
-  SINGLE_BOT_NAME = env("MAG_ROOM_SINGLE_BOT_NAME", ORNITH_MODE ? "Ornith 1" : "Qwen");
+  if (DUAL_NUMA || CONFIGURED_MODEL) SINGLE_BOT.clear();
+  if (CONFIGURED_MODEL) DUAL_NUMA = false;
+  SINGLE_BOT_NAME = env("MAG_ROOM_SINGLE_BOT_NAME", CONFIGURED_MODEL ? ROOM_MODEL.label + " 1" : "Qwen");
 
   STATE_DIR = env("MAG_ROOM_STATE", "/var/lib/magbot/room");
-  if (DUAL_NUMA && secondary_room_model() != "qwen3.8-flash-next-uncensored" && !ORNITH_MODE) {
+  if (DUAL_NUMA && secondary_room_model() != "qwen3.8-flash-next-uncensored" && !CONFIGURED_MODEL) {
     std::cerr << "Dual NUMA requires the already activated Qwen secondary model\n";
     return 1;
   }
@@ -7642,8 +7661,8 @@ int main() {
   AUTOTALK = trim(read_file(STATE_DIR + "/autotalk")) == "on";
   REFLECT = trim(read_file(STATE_DIR + "/reflect")) == "on";
   load_model_settings();
-  // The retired DeepSeek swap catalog must not hijack Ornith/Qwen routing.
-  if (!ORNITH_MODE && secondary_kind == "iq3") numa_load();
+  // The legacy swap catalog must not hijack configured/Qwen routing.
+  if (!CONFIGURED_MODEL && secondary_kind == "iq3") numa_load();
   load_model_verify();
   {
     // Reconcile nft with the persisted choice in both directions (idempotent).
@@ -7889,3 +7908,4 @@ int main() {
   close(srv);
   return 0;
 }
+

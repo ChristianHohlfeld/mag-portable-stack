@@ -1,6 +1,6 @@
 # Zentrale LLM-Schnittstelle mit vollständigem Audit-Log (installiert von ops/audit/install-audit.sh;
 # Programm liegt rollback-stabil unter /opt/mag-audit, nicht im Raum-Release).
-# Clients -> C++ gateway :8080 -> Ornith :8191/:8192; Qwen :8091 on rollback.
+# Clients -> C++ gateway :8080 -> configured NUMA models :8191/:8192.
 # Model units are never restarted by this unit.
 [Unit]
 Description=MAG audit gateway (central LLM interface, full audit log)
@@ -17,8 +17,8 @@ Environment=MAG_AUDIT_LISTEN_HOST=127.0.0.1
 Environment=MAG_AUDIT_LISTEN_PORT=8080
 Environment=MAG_AUDIT_UPSTREAM_HOST=127.0.0.1
 Environment=MAG_MODEL_IQ3_PORT=8091
-Environment=MAG_MODEL_ORNITH_PORTS=8191:0,8192:0,8191:1,8192:1
-# Installed only during an explicit operator cutover. Absent => existing IQ3.
+EnvironmentFile=-/etc/mag-stack/room-model.env
+# Legacy rollback config is ignored when MAG_ROOM_MODEL_ID is set.
 EnvironmentFile=-/etc/mag-stack/secondary-model.env
 Environment=MAG_AUDIT_LOG_DIR=/var/log/mag-audit
 Environment=MAG_AUDIT_SECRETS_FILE=/etc/mag-audit/secrets.list
@@ -44,3 +44,4 @@ OOMScoreAdjust=-800
 
 [Install]
 WantedBy=multi-user.target
+

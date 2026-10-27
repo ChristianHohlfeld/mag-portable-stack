@@ -472,6 +472,9 @@ bash "$SOURCE/ops/bots/install.sh" || echo 'WARN: bot site install incomplete (d
 [[ -r /etc/mag-stack/room-model.env ]] || bash "$SOURCE/ops/models/retire-deepseek.sh" || echo 'WARN: DeepSeek retirement incomplete (deploy itself succeeded)' >&2
 # Persist the active model units and bot VM autostart for cold reboot.
 bash "$SOURCE/ops/boot/ensure-boot.sh" || echo 'WARN: boot persistence needs operator attention' >&2
+# Drop leftovers that stay failed when their device or DeepSeek NUMA1 instance is gone.
+# Does not start, stop, restart, or reload the live DeepSeek node.
+bash "$SOURCE/ops/boot/clear-failed-units.sh" || echo 'WARN: a stack unit is still failed' >&2
 # Funnel/serve was applied before the ingress smoke, while rollback could
 # still release :443. Model files, including DeepSeek V4.1, are preserved. Only Chris deletes weights.
 # Deploy never restarts a loaded model (DeepSeek retirement above is the only stop). Model placement

@@ -60,7 +60,8 @@ units=(
   mag-backup-monitor.timer mag-backup-restore-test.timer mag-backup-clear.timer
 )
 for u in "${units[@]}"; do
-  if [[ -e /etc/mag-stack/gitea-ci.enabled ]];then
+  gitea_ci_enabled=${MAG_GITEA_CI_ENABLED:-/etc/mag-stack/gitea-ci.enabled}
+  if [[ -e $gitea_ci_enabled ]]; then
     case "$u" in mag-github-runner.service) continue;;esac
   fi
   systemctl is-active --quiet "$u" || continue

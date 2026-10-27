@@ -79,6 +79,7 @@ fi
 phase boot
 if (( DEPLOY )); then
   run sudo bash "$ROOT/ops/boot/ensure-boot.sh" || echo 'boot persistence check failed (deploy itself succeeded)' >&2
+  run sudo bash "$ROOT/ops/boot/clear-failed-units.sh" || echo 'WARN: a stack unit is still failed' >&2
 else
   echo 'skipped'
 fi

@@ -16,4 +16,5 @@ rm -f "$STATE/failed-sha"
 bash "$ROOT/ops/auto-update/install.sh" --units-only || log 'timer refresh failed'
 bash "$ROOT/ops/runners/install.sh" || log 'runner install failed (deploy itself succeeded)'
 bash "$ROOT/ops/boot/ensure-boot.sh" || log 'boot persistence check failed (deploy itself succeeded)'
+bash "$ROOT/ops/boot/clear-failed-units.sh" || log 'WARN: a stack unit is still failed'
 log "deployed $new"

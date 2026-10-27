@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+# Deploy clears leftover failed units and does not touch the live DeepSeek node.
+# mag-test-timeout: 180
+if [ -z "${MAG_TEST_DEADLINE_ARMED:-}" ]; then
+  export MAG_TEST_DEADLINE_ARMED=1
+  exec timeout --kill-after=5s 180s bash "$0" "$@"
+fi
+set -euo pipefail
+root=$(cd -- "$(dirname "$0")/../.." && pwd)
+bash -n "$root/ops/boot/clear-failed-units.sh" "$root/ops/boot/check-failed-units.sh"
+# The live NUMA 0 server is not an argument of disable, stop, restart, or reset-failed.
+if grep -E 'systemctl (disable|stop|restart|reload|reset-failed)[^#]*ds-node@0' "$root/ops/boot/clear-failed-units.sh"; then exit 1; fi
+if grep -E 'systemctl (disable|stop|restart|reload)[^#]*ds-node@0' "$root/ops/boot/check-failed-units.sh"; then exit 1; fi
+grep -Fq 'mag-llm-ds-node@1.service' "$root/ops/boot/clear-failed-units.sh"
+grep -Fq '/sys/class/net/wlx2023516593f0' "$root/ops/boot/clear-failed-units.sh"
+grep -Fq '/dev/nvidiactl' "$root/ops/boot/clear-failed-units.sh"
+grep -Fq 'ops/boot/clear-failed-units.sh' "$root/ops/update.sh"
+grep -Fq 'ops/boot/clear-failed-units.sh' "$root/ops/deploy.sh"
+grep -Fq 'ops/boot/clear-failed-units.sh' "$root/ops/auto-update/apply.sh"
+# update.sh stays free of model-unit names; the helper owns that.
+if grep -Eq 'mag-llm' "$root/ops/update.sh"; then exit 1; fi
+if grep -Eq 'systemctl (restart|stop|reload).*mag-llm' "$root/ops/deploy.sh"; then exit 1; fi
+
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+if bash "$root/ops/boot/clear-failed-units.sh" >"$tmp/root.out" 2>"$tmp/root.err"; then
+  echo 'non-root cleanup was accepted' >&2
+  exit 1
+fi
+grep -Fq 'root required' "$tmp/root.err"
+cat > "$tmp/systemctl" <<'S'
+#!/usr/bin/env bash
+printf 'systemctl %s\n' "$*" >> "$CALLS"
+if [[ $1 == --failed ]]; then
+  printf '%s\n' "${MAG_FAKE_FAILED:-}"
+  exit 0
+fi
+if [[ $1 == cat ]]; then
+  case $2 in
+    mag-llm-ds-node@1.service|hotspot-net-setup.service|nvidia-persistenced.service|set-gpu-compute-mode.service) exit 0 ;;
+  esac
+  exit 1
+fi
+exit 0
+S
+chmod +x "$tmp/systemctl"
+calls=$tmp/calls
+: > "$calls"
+CALLS="$calls" MAG_FAILED_UNITS_TEST=1 MAG_SYSTEMD_DROPIN_ROOT="$tmp/drop" \
+  MAG_SYSTEMD_QUERY_S=5 MAG_SYSTEMD_BUDGET_S=5 \
+  PATH="$tmp:$PATH" bash "$root/ops/boot/clear-failed-units.sh" >"$tmp/out"
+grep -Fxq 'systemctl disable mag-llm-ds-node@1.service' "$calls"
+grep -Fxq 'systemctl reset-failed mag-llm-ds-node@1.service' "$calls"
+grep -Fxq 'systemctl daemon-reload' "$calls"
+if grep -E 'systemctl (disable|stop|restart|reload|reset-failed) mag-llm-ds-node@0' "$calls"; then
+  echo 'cleanup touched ds-node@0' >&2
+  exit 1
+fi
+grep -Fxq 'ConditionPathExists=/sys/class/net/wlx2023516593f0' "$tmp/drop/hotspot-net-setup.service.d/mag-condition.conf"
+grep -Fxq 'ConditionPathExists=/dev/nvidiactl' "$tmp/drop/nvidia-persistenced.service.d/mag-condition.conf"
+grep -Fxq 'ConditionPathExists=/dev/nvidiactl' "$tmp/drop/set-gpu-compute-mode.service.d/mag-condition.conf"
+grep -Fq 'stack units: none failed' "$tmp/out"
+
+: > "$calls"
+if CALLS="$calls" MAG_FAKE_FAILED='hotspot-net-setup.service loaded failed failed' \
+  PATH="$tmp:$PATH" bash "$root/ops/boot/check-failed-units.sh" >"$tmp/ok" 2>"$tmp/err"; then
+  echo 'failed hotspot was accepted' >&2
+  exit 1
+fi
+grep -Fq 'stack unit failed: hotspot-net-setup.service' "$tmp/err"
+echo 'failed units PASS'

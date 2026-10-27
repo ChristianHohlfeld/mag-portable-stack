@@ -7,7 +7,7 @@ trust chain :: bash ops/trust/test-trust.sh
 bootstrap dry run :: bash ops/tests/test-bootstrap.sh
 gitea mirror :: bash ops/tests/test-gitea-mirror.sh
 gitea bot rights :: bash ops/tests/test-gitea-bot-rights.sh
-shellcheck :: if ! command -v shellcheck >/dev/null; then echo 'shellcheck not installed on this runner; skipped'; exit 0; fi; shellcheck ops/vm/build-golden.sh ops/bootstrap-voice.sh ops/deepseek/bootstrap-runtimes.sh ops/tailscale/install.sh ops/private-access/install-lego.sh ops/gitea/mirror-github.sh ops/tests/e2e-bootstrap.sh ops/ci/promote-green.sh ops/ci/self-hosted-checks.sh ops/ci/fetch-gitea-green.sh ops/ci/promote-gitea.sh ops/ci/gitea-gate.sh ops/ci/run-parallel.sh ops/ci/affected.sh ops/ci/local-ci.sh ops/ci/reap.sh ops/deploy-watchdog.sh
+shellcheck :: if ! command -v shellcheck >/dev/null; then echo 'shellcheck not installed on this runner; skipped'; exit 0; fi; shellcheck ops/vm/build-golden.sh ops/bootstrap-voice.sh ops/deepseek/bootstrap-runtimes.sh ops/tailscale/install.sh ops/private-access/install-lego.sh ops/gitea/mirror-github.sh ops/tests/e2e-bootstrap.sh ops/ci/promote-green.sh ops/ci/self-hosted-checks.sh ops/ci/fetch-gitea-green.sh ops/ci/promote-gitea.sh ops/ci/gitea-gate.sh ops/ci/run-parallel.sh ops/ci/affected.sh ops/ci/local-ci.sh ops/ci/reap.sh ops/deploy-watchdog.sh ops/boot/clear-failed-units.sh ops/boot/check-failed-units.sh ops/tests/test-failed-units.sh
 gitea promote :: bash ops/tests/test-gitea-promote.sh
 ci reap :: bash ops/ci/tests/test-ci-reap.sh
 update dry run :: bash ops/tests/test-update.sh
@@ -17,3 +17,4 @@ agent drift :: bash ops/tests/test-agent-drift.sh
 runners :: bash ops/tests/test-runners.sh
 green promotion :: bash ops/tests/test-green.sh
 boot :: bash ops/tests/test-boot.sh
+failed units :: bash ops/tests/test-failed-units.sh

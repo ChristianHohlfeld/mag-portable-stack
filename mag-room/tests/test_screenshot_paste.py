@@ -64,10 +64,7 @@ class ScreenshotPaste(unittest.TestCase):
         cls.proc, cls.log, cls.model, cls.ui, _ = tp.start_room(
             cls.tmp, tp.ROOT / 'mag-room/static', 'paste', extra={'MAG_TEST_NO_MEMGIT': '1'})
         cls.pw = sync_playwright().start()
-        try:
-            cls.browser = cls.pw.chromium.launch(args=['--no-sandbox'])
-        except Exception:
-            cls.browser = cls.pw.chromium.launch(channel='chrome', args=['--no-sandbox'])
+        cls.browser = tp.launch_chromium(cls.pw, args=['--no-sandbox'])
 
     @classmethod
     def tearDownClass(cls):

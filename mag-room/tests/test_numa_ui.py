@@ -35,7 +35,7 @@ class NumaUI(unittest.TestCase):
   proc,log,model,ui,bridge=pwa.start_room(tmp,static,'numa',extra={'MAG_NUMA_CATALOG':str(ROOT/'ops/numa/catalog.json'),
     'MAG_NUMA_STATE':str(tmp/'numa.json'),'MAG_NUMA_SWAP_CMD':str(sw),'MAG_ROOM_SINGLE_BOT':''})
   errors=[];pw=sync_playwright().start()
-  browser=pw.chromium.launch(channel='chrome',headless=True,args=['--no-sandbox','--disable-dev-shm-usage'])
+  browser=pwa.launch_chromium(pw,headless=True,args=['--no-sandbox','--disable-dev-shm-usage'])
   try:
    for name,vp,mobile in [('phone',{'width':390,'height':844},True),('landscape',{'width':844,'height':390},True),('desktop',{'width':1280,'height':860},False)]:
     ctx=browser.new_context(viewport=vp,has_touch=mobile,is_mobile=mobile);page=ctx.new_page()

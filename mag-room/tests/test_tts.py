@@ -23,7 +23,7 @@ class TTS(unittest.TestCase):
   assets=os.environ.get('MAG_TTS_ASSETS')
   if assets:shutil.copytree(assets,static,dirs_exist_ok=True)
   proc,log,model,ui,bridge=pwa.start_room(tmp,static,'tts')
-  pw=sync_playwright().start();browser=pw.chromium.launch(channel='chrome',headless=True,args=['--no-sandbox','--disable-dev-shm-usage','--autoplay-policy=no-user-gesture-required'])
+  pw=sync_playwright().start();browser=pwa.launch_chromium(pw,headless=True,args=['--no-sandbox','--disable-dev-shm-usage','--autoplay-policy=no-user-gesture-required'])
   try:
    page=browser.new_page();errors=[];page.on('pageerror',lambda e:errors.append(str(e)))
    page.goto('http://127.0.0.1:%s/'%ui,wait_until='domcontentloaded')

@@ -27,7 +27,7 @@ class Cards(unittest.TestCase):
   static=tmp/'static';shutil.copytree(ROOT/'mag-room/static',static)
   proc,log,model,ui,bridge=pwa.start_room(tmp,static,'cards',extra={'MAG_ROOM_PREWARM':'0','MAG_ROOM_MCP_AUTO':'0'})
   errors=[];pw=sync_playwright().start()
-  browser=pw.chromium.launch(channel='chrome',headless=True,args=['--no-sandbox','--disable-dev-shm-usage'])
+  browser=pwa.launch_chromium(pw,headless=True,args=['--no-sandbox','--disable-dev-shm-usage'])
   VALUE='Pa55-wort-geheim-91'
   try:
    ctx=browser.new_context(viewport={'width':390,'height':844},has_touch=True,is_mobile=True);page=ctx.new_page()

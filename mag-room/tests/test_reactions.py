@@ -37,7 +37,7 @@ class Reactions(unittest.TestCase):
         proc, log, model, ui, bridge = pwa.start_room(tmp, static, 'reactions')
         errors = []
         pw = sync_playwright().start()
-        browser = pw.chromium.launch(channel='chrome', headless=True, args=['--no-sandbox', '--disable-dev-shm-usage'])
+        browser = pwa.launch_chromium(pw, headless=True, args=['--no-sandbox', '--disable-dev-shm-usage'])
         context = browser.new_context(viewport={'width': 1280, 'height': 860}, color_scheme='dark')
         context.add_init_script("try{localStorage.setItem('mag-theme','dark')}catch(e){}")
         page = context.new_page()

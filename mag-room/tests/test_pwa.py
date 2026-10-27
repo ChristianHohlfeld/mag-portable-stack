@@ -17,6 +17,14 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 ART = pathlib.Path('/opt/cursor/artifacts')
 
+def launch_chromium(pw, **kw):
+    """Bundled Playwright Chromium. MAG_CHROME overrides the executable.
+    Google Chrome is not installed on mag, so channel='chrome' is unused."""
+    chrome = os.environ.get('MAG_CHROME')
+    if chrome:
+        kw['executable_path'] = chrome
+    return pw.chromium.launch(**kw)
+
 def port():
     with socket.socket() as s:
         s.bind(('127.0.0.1', 0))
@@ -172,7 +180,7 @@ class Pwa(unittest.TestCase):
         proc, log, model, ui, bridge = start_room(tmp, static, 'pwa-a', keys)
         errors = []
         pw = sync_playwright().start()
-        browser = pw.chromium.launch(channel='chrome', headless=True, args=['--no-sandbox', '--disable-dev-shm-usage'])
+        browser = launch_chromium(pw, headless=True, args=['--no-sandbox', '--disable-dev-shm-usage'])
         context = browser.new_context(viewport={'width': 1480, 'height': 1000}, permissions=['notifications'])
         page = context.new_page()
         page.on('pageerror', lambda err: errors.append(str(err)))

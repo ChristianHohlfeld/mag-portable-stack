@@ -113,7 +113,7 @@ class Autoscroll(unittest.TestCase):
         errors = []
         passed = False
         pw_cm = sync_playwright().start()
-        browser = pw_cm.chromium.launch(channel='chrome', headless=True, args=['--no-sandbox', '--disable-dev-shm-usage'])
+        browser = pw_cm.chromium.launch(headless=True, args=['--no-sandbox', '--disable-dev-shm-usage'], **({'executable_path': os.environ['MAG_CHROME']} if os.environ.get('MAG_CHROME') else {}))
         context = browser.new_context(
             viewport={'width': 1480, 'height': 1000},
             record_video_dir=str(video_dir),

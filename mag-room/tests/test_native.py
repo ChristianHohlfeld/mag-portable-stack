@@ -3743,10 +3743,13 @@ class MixedNuma(unittest.TestCase):
   finally:
    self.stop();Model.slot_snapshot=[];self.env['MAG_ROOM_PREWARM']='0';self.start()
  def test_10_held_prefix_skips_prewarm_and_silent_stream_is_not_resent(self):
-  # Idle ik /slots: state 0, empty prompt, n_decoded>0. The KV is still there.
-  # A silent in-progress completion must stay one request (no cancel+resend).
+  # A held prefix is a live count of the system+tools KV
+  # (n_prompt_tokens >= 2048). n_decoded with an empty prompt is not that
+  # KV, so this snapshot carries the count. Prewarm must not post.
+  # A silent in-progress user completion stays one request.
   self.wait_idle();self.stop()
   Model.slot_snapshot=[{'id':0,'state':0,'prompt':'','is_processing':False,
+    'n_prompt_tokens':4321,
     'next_token':{'has_next_token':False,'n_decoded':4,'n_remain':0}}]
   self.env['MAG_ROOM_PREWARM']='1'
   self.env['MAG_ROOM_STREAM_IDLE_S']='1'
@@ -3754,11 +3757,10 @@ class MixedNuma(unittest.TestCase):
   started=time.monotonic()
   try:
    seen=self._prewarm_count();mark=len(Model.paths);self.start()
-   # n_decoded>0 does not prove the KV survived a cancel. Matching hash
-   # restores the file; a live n_prompt_tokens skip=ram. Neither posts.
-   self._wait_prewarm_models(seen,lambda ln:'skipped=ram' in ln or 'skipped=restored' in ln,
-    what='prewarm did not skip a slot that already holds the prefix')
-   self.assertFalse([p for p in list(Model.paths)[mark:] if p[0]=='/v1/chat/completions'])
+   self._wait_prewarm_models(seen,lambda ln:'skipped=ram' in ln,
+    what='prewarm did not skip a slot whose token count already holds the prefix')
+   self.assertFalse([p for p in list(Model.paths)[mark:] if p[0]=='/v1/chat/completions'],
+    'resident prefix must not cold-prefill')
    before=len([p for p in Model.paths if p[0]=='/v1/chat/completions'])
    bot=next(iter(self.bots()))
    self.ask(bot)

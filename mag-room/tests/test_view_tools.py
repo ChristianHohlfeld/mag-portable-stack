@@ -24,7 +24,7 @@ class ViewTools(unittest.TestCase):
   if tmp.exists():shutil.rmtree(tmp)
   static=tmp/'static';shutil.copytree(ROOT/'mag-room/static',static)
   proc,log,model,ui,bridge=pwa.start_room(tmp,static,'view')
-  pw=sync_playwright().start();browser=pw.chromium.launch(channel='chrome',headless=True,args=['--no-sandbox','--disable-dev-shm-usage'])
+  pw=sync_playwright().start();browser=pwa.launch_chromium(pw,headless=True,args=['--no-sandbox','--disable-dev-shm-usage'])
   errors=[]
   try:
    for name,vp,mobile in [('desktop',{'width':1280,'height':860},False),('phone',{'width':390,'height':844},True)]:

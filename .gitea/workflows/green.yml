@@ -1,8 +1,9 @@
-# Host merge gate. Push and pull request to main run here on the Gitea
-# act_runner. runs-on must name both labels from ops/runners/gitea-runner.yaml
+# Host merge gate. runs-on must name both labels from ops/runners/gitea-runner.yaml
 # (mag:host and self-hosted:host). mag-ci.yml stays on mag-ci-vm and will not
 # match this runner. A green push to main moves the Gitea green ref and wakes
 # mag-auto-update through /var/lib/mag-deploy/request. GitHub is not used.
+# pull_request stays in `on` so the check is registered. The gate itself runs
+# on push: a pull request has no promote credentials and must not sit red.
 name: Gitea green
 on:
   push:
@@ -24,7 +25,12 @@ jobs:
       MAG_GITEA_API: http://127.0.0.1:3000/api/v1
       MAG_GITEA_REPOSITORY: mag-ci/mag-portable-stack
     steps:
+      - name: pull request defers to the push gate
+        if: github.event_name != 'push'
+        timeout-minutes: 1
+        run: echo 'green.yml promotes on push to main. Pull requests skip this gate.'
       - name: checkout
+        if: github.event_name == 'push'
         timeout-minutes: 5
         env:
           GIT_TERMINAL_PROMPT: "0"
@@ -50,6 +56,7 @@ jobs:
           git checkout -q --detach "$GITHUB_SHA"
           git remote remove origin
       - name: merge gate
+        if: github.event_name == 'push'
         timeout-minutes: 20
         run: nice -n 19 ionice -c 3 bash ops/ci/gitea-gate.sh
       - name: promote and request deploy

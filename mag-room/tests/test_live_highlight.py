@@ -34,7 +34,7 @@ class LiveHighlight(unittest.TestCase):
   if tmp.exists():shutil.rmtree(tmp)
   static=tmp/'static';shutil.copytree(ROOT/'mag-room/static',static)
   proc,log,model,ui,bridge=pwa.start_room(tmp,static,'lh')
-  pw=sync_playwright().start();browser=pw.chromium.launch(channel='chrome',headless=True,args=['--no-sandbox','--disable-dev-shm-usage'])
+  pw=sync_playwright().start();browser=pwa.launch_chromium(pw,headless=True,args=['--no-sandbox','--disable-dev-shm-usage'])
   errors=[]
   try:
    site=browser.new_page(viewport={'width':1440,'height':900});site.set_content(PAGE)

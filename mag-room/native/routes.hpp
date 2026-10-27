@@ -116,19 +116,40 @@ static void finish_spawn(const std::string &id, std::string vm, bool resume) {
   emit_event("error", id, "", "VM für den neuen Bot konnte nicht erstellt werden: " + error);
 }
 static void resume_pending_spawns() {
-  std::vector<std::pair<std::string, std::string>> pending;
+  struct Claim { std::string id, vm; bool resume; };
+  std::vector<Claim> pending;
   {
     std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
+    // The configured DeepSeek+Qwen room must have a real computer per Bot.
+    // A bot minted by load_agents() used to persist vm="" forever; the UI
+    // then showed a chat-only placeholder. Reconcile it on each cold start.
+    // Never allocate one in legacy chat-only mode or steal a parked bot VM.
+    const bool provision = CONFIGURED_MODEL &&
+        env("MAG_ROOM_SINGLE_BOT_VM", "off") == "on";
+    bool changed = false;
     for (size_t i = 0; i < AGENTS.size(); ++i) {
+      const std::string id = bot_field((int)i, "id");
+      if (id.empty()) continue;
       std::string vm = bot_field((int)i, "pending_vm");
       if (!vm.empty()) {
         SPAWNING_VMS.insert(vm);
-        pending.push_back({bot_field((int)i, "id"), vm});
+        pending.push_back({id, vm, true});
+      } else if (provision && bot_field((int)i, "vm").empty()) {
+        // Existing identity, role and memories survive a failed spawn.
+        // finish_spawn() knows vm_attach means "do not delete this bot".
+        vm = next_vm();
+        AGENTS[i]["pending_vm"] = vm;
+        AGENTS[i]["vm_attach"] = true;
+        SPAWNING_VMS.insert(vm);
+        pending.push_back({id, vm, false});
+        changed = true;
       }
     }
+    if (changed) save_agents(); // atomic reservation survives a restart
   }
-  for (auto &p : pending)
-    std::thread([p] { finish_spawn(p.first, p.second, true); }).detach();
+  for (const auto &p : pending) {
+    std::thread([p] { finish_spawn(p.id, p.vm, p.resume); }).detach();
+  }
 }
 // Clear/reset must never race a running turn: a cancelled turn still appends
 // its partial answer and a queued job would answer into the emptied room.

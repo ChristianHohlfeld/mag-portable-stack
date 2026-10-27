@@ -32,9 +32,12 @@ fi
 grep -Fq 'wait-native-build.sh' "$tmp/full.list"
 grep -Fq 'room-clear ::' "$tmp/full.list"
 
-# No backup/ change vs origin/main (this PR) skips the 79s restore e2e.
+# No backup/ path in MAG_AFFECTED_FILES skips the restore e2e. Do not use
+# this branch's git diff: a 300s deadline edit in ops/backup/tests/ is a
+# backup/ change and would otherwise force the 145s restore.
 MAG_CI_NO_PIN=1 MAG_CI_LIST_ONLY=1 MAG_CI_FORCE_BACKUP=0 \
-  MAG_CI_BASE=origin/main bash "$root/ops/ci/local-ci.sh" --no-browser \
+  MAG_AFFECTED_FILES=$'ops/deploy.sh\nmag-room/native/magroom.cpp' \
+  bash "$root/ops/ci/local-ci.sh" --no-browser \
   >"$tmp/skip.list" 2>"$tmp/skip.err"
 if grep -Fq 'backup restore e2e' "$tmp/skip.list"; then
   echo 'backup e2e should be skipped without backup/ changes' >&2

@@ -2,14 +2,31 @@
 # Hash the native C++ inputs and skip cmake/ninja when ./build already matches.
 # Extra arguments are cmake --build --target names (default: the full tree).
 #   MAG_CI_FORCE_BUILD=1   rebuild even when the stamp matches
-#   MAG_CI_BUILD_DIR       build directory (default: $ROOT/build)
+#   MAG_CI_BUILD_DIR       build directory (default: $ROOT/build, prepared
+#                          as the per-worktree tree under ~/.cache/mag-ci)
 #   MAG_CI_JOBS            ninja parallelism
 set -euo pipefail
 ROOT=$(cd -- "$(dirname -- "$(readlink -f "$0")")/../.." && pwd)
 cd "$ROOT"
 # shellcheck source=../build-targets.sh disable=SC1091
 source "$ROOT/ops/build-targets.sh"
+# Default ./build is this source path's persistent tree. Tests that set
+# MAG_CI_BUILD_DIR keep an isolated directory.
+if [[ -z ${MAG_CI_BUILD_DIR:-} ]]; then
+  bash "$ROOT/ops/ci/incremental-build.sh" --prepare
+fi
 dir=${MAG_CI_BUILD_DIR:-$ROOT/build}
+# A leftover CMakeCache from another ~/ci-local/wt/prN-<sha4> aborts cmake
+# immediately. Drop generator state only; objects stay for ccache/ninja.
+if [[ -f $dir/CMakeCache.txt ]]; then
+  src=$(sed -n 's/^CMAKE_HOME_DIRECTORY:INTERNAL=//p' "$dir/CMakeCache.txt" | head -n 1)
+  if [[ -n $src && $src != "$ROOT" ]]; then
+    rm -f -- "$dir/CMakeCache.txt" "$dir/CMakeCache.txt.tmp"
+    if [[ -d $dir/CMakeFiles ]]; then
+      find "$dir/CMakeFiles" -mindepth 1 -delete
+    fi
+  fi
+fi
 jobs=${MAG_CI_JOBS:-$(nproc 2>/dev/null || echo 2)}
 stamp="$dir/.mag-native-hash"
 ready=${MAG_CI_BUILD_OK:-}
@@ -89,7 +106,11 @@ fi
 
 launch=()
 if command -v ccache >/dev/null; then
-  export CCACHE_DIR="${CCACHE_DIR:-$HOME/.cache/ccache}"
+  if [[ -z ${MAG_CI_BUILD_DIR:-} ]]; then
+    eval "$(bash "$ROOT/ops/ci/incremental-build.sh" --print-cache | sed -n 's/^CCACHE_DIR=/export CCACHE_DIR=/p')"
+  else
+    export CCACHE_DIR="${CCACHE_DIR:-$HOME/.cache/ccache}"
+  fi
   mkdir -p "$CCACHE_DIR"
   launch+=(-DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache)
 fi

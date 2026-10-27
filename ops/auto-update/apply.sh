@@ -8,11 +8,21 @@ new="${1:?commit}"
 log() { echo "auto-update: $*"; }
 OWNER="$(stat -c %U "$ROOT")"
 as() { runuser -u "$OWNER" -- "$@"; }
-fail() { echo "$new" > "$STATE/failed-sha"; log "FAILED at $1 for $new"; exit 1; }
+source "$ROOT/ops/auto-update/failure-state.sh"
+fail() { mag_record_failure "$new" "$1"; log "FAILED at $1 for $new"; exit 1; }
 as nice -n 19 ionice -c 3 bash "$ROOT/ops/update.sh" --no-pull --no-deploy --no-auto || fail build
-bash "$ROOT/ops/deploy.sh" || fail deploy
+deploy_rc=0
+bash "$ROOT/ops/deploy.sh" || deploy_rc=$?
+if (( deploy_rc == 75 )); then
+  # Drain postponed a live conversation: not a broken release. Retry on the
+  # next regular timer tick, without penalizing this SHA for one hour.
+  log "deployment postponed by active user work (rc=75); retry on next timer tick"
+  exit 0
+elif (( deploy_rc != 0 )); then
+  fail "deploy-rc-$deploy_rc"
+fi
 echo "$new" > "$STATE/deployed-sha"
-rm -f "$STATE/failed-sha"
+rm -f "$STATE/failed-sha" "$STATE/failed-count" "$STATE/failed-stage"
 bash "$ROOT/ops/auto-update/install.sh" --units-only || log 'timer refresh failed'
 bash "$ROOT/ops/runners/install.sh" || log 'runner install failed (deploy itself succeeded)'
 bash "$ROOT/ops/boot/ensure-boot.sh" || log 'boot persistence check failed (deploy itself succeeded)'

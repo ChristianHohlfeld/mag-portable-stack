@@ -733,10 +733,23 @@ class Native(unittest.TestCase):
  def test_15k_composer_stop_cancels_turn_keeps_queue(self):
   self.wait_idle();Model.script=[self._slow('out',60),['Weiter normal.']]
   self.request('/api/message',{'text':'Stop-Test','bots':['test']});self._busy();time.sleep(1.0)
+  self.request('/api/message',{'text':'Soll-weg','bots':['test']})
   self.assertEqual(self.request('/api/cancel',{})['cancelled'],True)
-  s=self.wait_idle();self.assertFalse(s.get('queue_paused'),'composer stop must not pause the queue')
+  s=None
+  for _ in range(80):
+   s=self.request('/api/state')
+   room=s.get('room') or []
+   if room and room[-1].get('interrupted') and not s.get('busy'): break
+   time.sleep(.05)
+  else:
+   self.fail('partial was not marked stopped: %s'%(s['room'][-1] if s and s.get('room') else s))
+  self.assertFalse(s.get('queue_paused'),'composer stop must not pause the queue')
+  self.assertEqual(s.get('pending'),[],'composer stop clears the queue')
+  self.assertEqual(s.get('busy_bots') or [],[])
+  self.assertFalse(any(a.get('on') for a in (s.get('activities') or [])))
   part=s['room'][-1];self.assertTrue(part['content'].startswith('Wort0 '));self.assertNotIn('(abgebrochen)',part['content']);self.assertTrue(part.get('interrupted'))
   self.assertEqual(part.get('stopped'),'user');self.assertNotIn('work_error',part)
+  self.assertNotIn('Soll-weg',[m.get('content') for m in s['room']])
   self.assertEqual(self.request('/api/cancel',{})['cancelled'],False,'idle cancel is a no-op')
   self.request('/api/message',{'text':'Danach','bots':['test']});self.wait_room('Weiter normal.');s=self.wait_idle()
   self.assertIn('(abgebrochen)',json.dumps(Model.calls[-1]['messages'],ensure_ascii=False),'the model still learns the answer was stopped')
@@ -2610,17 +2623,13 @@ class MultiBot(unittest.TestCase):
    Model.script=[];self.request('/api/autotalk',{'on':False});self._idle()
  def test_13_frontend_lane_contract(self):
   html=self.request('/',raw=True).decode()
-  for needle in ("api('/api/cancel',id?{bot:id}:{})",'id="bot-lanes"','Alle stoppen','setBusyBots(next.busy_bots,next.waiting_bots)',"event.type==='idle'&&Array.isArray(event.busy_bots)","event.type==='cancelled'&&event.bot",'state.activities'):self.assertIn(needle,html)
-  # Composer bar: round +, pill with mic, one round send button that stops
-  # only while the field is empty, and turns back into "Senden" on input.
-  for needle in ('<form id="send-form" class="gbar">','id="plus"','class="composer-card gbar-pill"','id="mic"','id="send-button"','id="plus-think"','id="upload-camera"','id="upload-screen"',
-                 "const stop=!typed&&ids.length>0&&can('stop')","ids.length>1?'Alle stoppen':'Stoppen'","function onStopTap(e){const b=$('send-button');if(b.dataset.mode!=='stop'&&b.dataset.state!=='stopping')return;e.preventDefault();e.stopPropagation();if(b.dataset.state==='stopping')return;stopBot('')}",
-                 "$('message').addEventListener('input',fitMessageHeight)","syncComposerButton()}"):self.assertIn(needle,html)
-  form=html[html.index('<form id="send-form"'):html.index('</form>',html.index('<form id="send-form"'))]
-  self.assertNotRegex(form,r'<textarea[^>]*\bdisabled','the message field is never blocked')
-  self.assertNotIn("message').disabled",html)
-  self.assertNotIn('id="stop-generation"',html)
-  for gone in ('is-stop','syncSendButton'):self.assertNotIn(gone,html)
+  for needle in ("api('/api/cancel',id?{bot:id}:{})",'id="bot-lanes"','id="stop-run"','aria-label="Stoppen"','id="proaktiv"','>Proaktiv<','setBusyBots(next.busy_bots,next.waiting_bots)',"event.type==='idle'&&Array.isArray(event.busy_bots)","event.type==='cancelled'&&event.bot",'state.activities','state.proaktiv_note'):self.assertIn(needle,html)
+  for gone in ('Alle stoppen','send-halting','Stoppt','>Stoppen<','siehe Tooltip','Self-Talk','id="selftalk"','id="selftalk-row"'):self.assertNotIn(gone,html)
+  # Composer bar: round +, pill with mic, a send button that only sends, and a
+  # separate stop icon with no visible text.
+  for needle in ('<form id="send-form" class="gbar">','id="plus"','class="composer-card gbar-pill"','id="mic"','id="send-button"','id="stop-run"','id="plus-think"','id="upload-camera"','id="upload-screen"',
+                 "function syncStopButton()","$('stop-run').addEventListener('click'",
+                 "$('message').addEventListener('input',fitMessageHeight)","syncComposerButton()"):self.assertIn(needle,html)
 class StaggeredLanes(unittest.TestCase):
  """Default group chat: the second model starts after the first bot has read its context, never both at once."""
  Q4=MultiBot.Q4;IQ3=MultiBot.IQ3
@@ -4509,6 +4518,7 @@ class SelfTalk(unittest.TestCase):
   self.httpd = None
   self.hold = threading.Event()
   TalkModel.calls = []
+  TalkModel.actions = []
   TalkModel.hold = self.hold
   TalkModel.hold_below = 0
   TalkModel.lock = threading.Lock()
@@ -4618,11 +4628,13 @@ class SelfTalk(unittest.TestCase):
  def test_off_on_persist_and_names(self):
   _, html = self.token()
   self._tok = re_token(html)
-  self.assertIn('id="selftalk"', html)
-  self.assertIn('Self-Talk', html)
-  self.assertIn('id="selftalk-row"', html)
-  self.assertNotIn('top-stat selftalk-toggle', html)
-  self.assertIn("$('selftalk-row')", html)
+  self.assertIn('id="proaktiv"', html)
+  self.assertIn('>Proaktiv<', html)
+  self.assertIn('id="proaktiv-row"', html)
+  self.assertNotIn('Self-Talk', html)
+  self.assertNotIn('siehe Tooltip', html)
+  self.assertIn('state.proaktiv_note', html)
+  self.assertIn("$('proaktiv-row')", html)
   self.assertNotIn("$('message').disabled", html)
   self.assertIn('The field itself is never disabled', html)
   self.assertFalse(self.api('/api/state')['selftalk'])
@@ -4858,6 +4870,113 @@ class SelfTalk(unittest.TestCase):
   self.assertEqual(len(self.chat_calls()), frozen, 'Self-Talk continued after the user reply drained')
   self.assertTrue(self.api('/api/state')['selftalk'])
 
+ def test_proaktiv_migrates_selftalk_file(self):
+  self._tok = re_token(urllib.request.urlopen('http://127.0.0.1:%d/' % self.ui, timeout=2).read().decode())
+  self.stop_room()
+  (self.state / 'selftalk').write_text('on')
+  pro = self.state / 'proaktiv'
+  if pro.exists():
+   pro.unlink()
+  self.start_room()
+  self._tok = re_token(urllib.request.urlopen('http://127.0.0.1:%d/' % self.ui, timeout=2).read().decode())
+  st = self.api('/api/state')
+  self.assertTrue(st['proaktiv'])
+  self.assertTrue(st['selftalk'])
+  self.assertEqual((self.state / 'proaktiv').read_text().strip(), 'on')
+  self.assertEqual((self.state / 'selftalk').read_text().strip(), 'on')
+
+ def test_disabled_bot_stays_off_across_proaktiv_and_restart(self):
+  self._tok = re_token(urllib.request.urlopen('http://127.0.0.1:%d/' % self.ui, timeout=2).read().decode())
+  self.hold.set()
+  self.api('/api/bot-settings', {'bots': ['beta'], 'enabled': False}, method='PUT')
+  self.api('/api/proaktiv', {'on': True})
+  st = self.api('/api/state')
+  beta = next(a for a in st['agents'] if a['id'] == 'beta')
+  self.assertIs(beta['enabled'], False)
+  self.assertIn('nur 1 Bot aktiv', st.get('proaktiv_note') or '')
+  before = len(self.chat_calls())
+  self.api('/api/message', {'text': 'nur-user', 'bots': ['alpha', 'beta']})
+  self.wait_calls(before + 1)
+  time.sleep(0.5)
+  slots = [c[0] for c in self.chat_calls()[before:]]
+  self.assertIn('0', slots)
+  self.assertNotIn('1', slots, 'disabled beta must not answer')
+  self.api('/api/proaktiv', {'on': False})
+  self.api('/api/proaktiv', {'on': True})
+  beta = next(a for a in self.api('/api/state')['agents'] if a['id'] == 'beta')
+  self.assertIs(beta['enabled'], False)
+  self.stop_room()
+  self.start_room()
+  self._tok = re_token(urllib.request.urlopen('http://127.0.0.1:%d/' % self.ui, timeout=2).read().decode())
+  st = self.api('/api/state')
+  beta = next(a for a in st['agents'] if a['id'] == 'beta')
+  self.assertIs(beta['enabled'], False)
+  self.assertTrue(st['proaktiv'])
+  frozen = len(self.chat_calls())
+  self.api('/api/message', {'text': 'nach-restart', 'bots': ['alpha', 'beta']})
+  self.wait_calls(frozen + 1)
+  time.sleep(0.4)
+  self.assertNotIn('1', [c[0] for c in self.chat_calls()[frozen:]])
+
+ def test_user_and_bot_messages_wake_the_other_active_bot(self):
+  self._tok = re_token(urllib.request.urlopen('http://127.0.0.1:%d/' % self.ui, timeout=2).read().decode())
+  self.hold.set()
+  self.api('/api/proaktiv', {'on': True})
+  self.api('/api/message', {'text': 'von-chris', 'bots': ['alpha']})
+  deadline = time.monotonic() + 6
+  user_woke = bot_woke = False
+  while time.monotonic() < deadline and not (user_woke and bot_woke):
+   for slot, obj in self.chat_calls():
+    blob = json.dumps(obj, ensure_ascii=False)
+    if slot == '1' and 'von-chris' in blob:
+     user_woke = True
+    if slot == '0' and '[Beta (' in blob and 'FACT-77' in blob:
+     bot_woke = True
+   time.sleep(0.05)
+  self.assertTrue(user_woke, 'user message did not wake the other active bot')
+  self.assertTrue(bot_woke, 'bot message did not wake the other active bot')
+  self.api('/api/cancel', {})
+
+ def test_stop_cancels_both_slots_reloads_prefix_and_next_hi_runs(self):
+  self._tok = re_token(urllib.request.urlopen('http://127.0.0.1:%d/' % self.ui, timeout=2).read().decode())
+  self.hold.set()
+  self.api('/api/message', {'text': 'warm', 'bots': ['alpha', 'beta']})
+  self.wait_calls(2)
+  deadline = time.monotonic() + 4
+  while time.monotonic() < deadline:
+   st = self.api('/api/state')
+   if not st.get('busy') and (self.state / 'prompt-prefix.json').exists():
+    break
+   time.sleep(0.05)
+  else:
+   self.fail('prefix was not saved\n%s' % self.log_path.read_text()[-1500:])
+  self.hold.clear()
+  TalkModel.hold_below = 100
+  self.api('/api/message', {'text': 'beide-laufen', 'bots': ['alpha', 'beta']})
+  self.wait_calls(4)
+  self.api('/api/message', {'text': 'Soll-weg', 'bots': ['alpha']})
+  t0 = time.monotonic()
+  cancelled = self.api('/api/cancel', {})
+  self.assertTrue(cancelled['cancelled'])
+  st = self.api('/api/state')
+  self.assertFalse(st['busy'])
+  self.assertEqual(st.get('pending') or [], [])
+  self.assertEqual(st.get('busy_bots') or [], [])
+  with TalkModel.lock:
+   actions = list(TalkModel.actions)
+  slots = {slot for path, slot in actions}
+  kinds = {path for path, _slot in actions}
+  self.assertTrue(any('action=cancel' in path for path in kinds), actions)
+  self.assertTrue(any('action=restore' in path for path in kinds), actions)
+  self.assertIn('0', slots)
+  self.assertIn('1', slots)
+  self.hold.set()
+  TalkModel.hold_below = 0
+  before = len(self.chat_calls())
+  self.api('/api/message', {'text': 'hi', 'bots': ['alpha']})
+  self.wait_calls(before + 1)
+  self.assertLess(time.monotonic() - t0, 3, 'next hi did not start promptly')
+
  def wait_calls(self, n):
   deadline = time.monotonic() + 6
   while time.monotonic() < deadline:
@@ -4874,6 +4993,7 @@ def re_token(html):
 
 class TalkModel(http.server.BaseHTTPRequestHandler):
  calls = []
+ actions = []
  hold = None
  hold_below = 0
  lock = threading.Lock()
@@ -4888,6 +5008,9 @@ class TalkModel(http.server.BaseHTTPRequestHandler):
   self.wfile.write(data)
  def do_POST(self):
   raw = self.rfile.read(int(self.headers.get('Content-Length', '0')))
+  if self.path.startswith('/slots/'):
+   with type(self).lock:
+    type(self).actions.append((self.path, self.headers.get('X-Mag-Slot')))
   if self.path != '/v1/chat/completions':
    data = b'{"tokens":[1]}'
    self.send_response(200)

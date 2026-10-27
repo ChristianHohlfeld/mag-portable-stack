@@ -588,8 +588,8 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
     if (bridge || actor.role != "owner") { error_json(fd, 403, "Nur der Besitzer"); return; }
     Val body;
     if (!mj::parse(r.body, body) || !body.isObj()) { error_json(fd, 400, "Settings required"); return; }
-    const auto think = body.find("thinking"), github = body.find("github_enabled"), pho = body.find("pho_compress");
-    if ((!think && !github && !pho) || (think && think->type != Val::BOOL) || (github && github->type != Val::BOOL) || (pho && pho->type != Val::BOOL)) {
+    const auto think = body.find("thinking"), github = body.find("github_enabled"), pho = body.find("pho_compress"), enabled = body.find("enabled");
+    if ((!think && !github && !pho && !enabled) || (think && think->type != Val::BOOL) || (github && github->type != Val::BOOL) || (pho && pho->type != Val::BOOL) || (enabled && enabled->type != Val::BOOL)) {
       error_json(fd, 400, "Boolean settings required"); return;
     }
     const bool room = mag::str(body, "scope") == "room";
@@ -608,6 +608,7 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
         if (think) a["thinking"] = think->asBool();
         if (github) a["github_enabled"] = github->asBool();
         if (pho) a["pho_compress"] = pho->asBool();
+        if (enabled && !room) a["enabled"] = enabled->asBool();
       }
       save_agents();
     }
@@ -1549,7 +1550,7 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
     send_json(fd, 200, mj::dump(e));
     return;
   }
-  if (m == "POST" && path == "/api/selftalk") {
+  if (m == "POST" && (path == "/api/selftalk" || path == "/api/proaktiv")) {
     if (!has_json || !body.find("on") || body.find("on")->type != Val::BOOL) {
       error_json(fd, 400, "Boolean on required");
       return;
@@ -1559,8 +1560,10 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
     else
       stop_selftalk();
     Val e = Val::object();
-    e["type"] = "selftalk";
+    e["type"] = "proaktiv";
     e["on"] = SELFTALK.load();
+    e["proaktiv"] = SELFTALK.load();
+    e["selftalk"] = SELFTALK.load();
     publish(mj::dump(e));
     send_json(fd, 200, mj::dump(e));
     return;
@@ -1579,6 +1582,7 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
     e["type"] = "deploy-hold";
     e["on"] = DEPLOY_HOLD.load();
     e["selftalk"] = SELFTALK.load();
+    e["proaktiv"] = SELFTALK.load();
     e["held"] = SELF_HOLD.load();
     send_json(fd, 200, mj::dump(e));
     return;
@@ -1615,13 +1619,15 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
     return;
   }
   if (m == "POST" && path == "/api/cancel") {
-    // The composer Stop (Esc): every running turn, tool command, job and
-    // prewarm ends now; queued messages continue unless explicitly paused.
+    // Composer Stop (Esc): every running turn ends, the llama slots are
+    // cancelled and their saved prefix is restored, and the queue is cleared.
     // Optional "bot": stop only that bot's lane; the others keep answering.
     const std::string bot = has_json ? str("bot") : "";
     if (!bot.empty()) {
       const bool found = cancel_bots({bot}, true);
-      cancel_llama_slot(agent_index(bot));
+      const int idx = agent_index(bot);
+      cancel_llama_slot(idx);
+      reload_slot_after_cancel(idx);
       {
         std::lock_guard<std::mutex> lk(JOB_MTX);
         if (AUTO_OWNER == bot) { AUTO_READY = false; AUTO_TURNS_LEFT = 0; }

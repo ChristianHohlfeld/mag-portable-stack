@@ -3617,7 +3617,7 @@ class ConfiguredNuma(unittest.TestCase):
     'memory':[{'text':'second memory'}]}]
   self.state.joinpath('agents.json').write_text(json.dumps(agents))
   sudo=self.tmp_path/'bin'/'sudo'
-  sudo.write_text('#!/bin/sh\\n[ "$1" = "-n" ] && shift\\nexec "$@"\\n'.replace('\\n','\n'))
+  sudo.write_text('#!/bin/sh\n[ "$1" = "-n" ] && shift\nexec "$@"\n')
   sudo.chmod(0o755)
   cls.env['MAG_ROOM_SINGLE_BOT_VM']='on'
   cls.start()

@@ -189,7 +189,7 @@ static std::string task_tool(int bot_idx, const Val &a) {
     // own model, VM and tool permissions; existing approvals still apply.
     const std::string delegated = "[Explizite Bot-Delegation von " + sender +
       ", keine neue Benutzernachricht. Pruefe den Stand vor Aktionen. " +
-      "Fuer irreversible/externe Aktionen gelten dieselben Freigaben.]\\n" + s("prompt");
+      "Fuer irreversible/externe Aktionen gelten dieselben Freigaben.]\n" + s("prompt");
     const std::string title = sender + " → " + s("title");
     return task_start(target, title, delegated, bot);
   }

@@ -12,12 +12,13 @@ static const char *T_TODO =
 static const char *T_MEMORY =
     R"({"type":"function","function":{"name":"memory","description":"Your durable memory. recall searches profile facts and journal (query); journal appends a dated journal entry (text); update replaces profile fact number item with text; forget deletes profile fact number item. Use remember for new profile facts.","parameters":{"type":"object","properties":{"action":{"type":"string","enum":["recall","journal","update","forget"]},"query":{"type":"string"},"text":{"type":"string"},"item":{"type":"integer"}},"required":["action"],"additionalProperties":false}}})";
 static const char *T_TASK =
-    R"({"type":"function","function":{"name":"task","description":"Background sub-agent. start runs prompt as an independent sub-agent with your tools while you stay responsive; its result is posted to the room. status lists your tasks; cancel stops task id. Use for long independent sub-goals, not for single commands.","parameters":{"type":"object","properties":{"action":{"type":"string","enum":["start","status","cancel"]},"title":{"type":"string"},"prompt":{"type":"string"},"id":{"type":"string"}},"required":["action"],"additionalProperties":false}}})";
+    R"({"type":"function","function":{"name":"task","description":"Asynchronous, persistent-computer subtask. start executes prompt for this bot, or delegate ONCE per user turn by specifying the other existing bot's id in bot. Delegation is a handoff, NOT completion; the recipient posts its result to the room. Subtasks cannot delegate. status lists own tasks; cancel stops own task. Use for meaningful independent work, not idle chatter.","parameters":{"type":"object","properties":{"action":{"type":"string","enum":["start","status","cancel"]},"title":{"type":"string"},"prompt":{"type":"string"},"id":{"type":"string"},"bot":{"type":"string","description":"Optional existing recipient bot id for one direct handoff"}},"required":["action"],"additionalProperties":false}}})";
 
 struct BgTask;
 // Set inside a sub-agent thread; sub-agents get no task tool (depth 1) and
 // never consume user input meant for the main turn.
 static thread_local BgTask *TL_TASK = nullptr;
+static thread_local bool TL_HANDOFF_USED = false; // at most one direct handoff per human turn
 static std::string task_id_of(const BgTask *t);
 static void task_yield_point();
 static std::string task_tool(int bot_idx, const Val &a);

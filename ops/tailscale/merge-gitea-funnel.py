@@ -30,7 +30,7 @@ OLD_NGINX_LISTEN_RE = re.compile(
     r"^([ \t]*)listen[ \t]+(?:100\.123\.114\.16|@TAILNET_BIND@):443\b[^;]*;",
     re.M,
 )
-NGINX_T_FILE_RE = re.compile(r"^# configuration file (.+):$")
+NGINX_T_FILE_RE = re.compile(r"^# configuration file (.+):$", re.M)
 TAILNET_443_NEEDLE = re.compile(
     r"listen[ \t]+(?:100\.123\.114\.16|@TAILNET_BIND@):443\b"
 )
@@ -139,16 +139,26 @@ def rewrite_path(path):
     return str(p)
 
 
-def candidate_files(nginx_t="", roots=()):
-    """Union of nginx -T hits and on-disk leftover listens."""
+def leftover_paths(nginx_t="", roots=()):
+    """Every include nginx -T named plus on-disk leftovers.
+
+    sites-enabled/mag-room.conf stays in the list even when rewrite_path
+    follows it to sites-available. Live mag after #156 moved only conf.d
+    because the enabled path was dropped.
+    """
     found = []
     seen = set()
     for path in files_from_nginx_t(nginx_t) + files_from_trees(roots):
-        dest = rewrite_path(path)
-        if dest not in seen:
-            seen.add(dest)
-            found.append(dest)
+        for dest in (path, rewrite_path(path)):
+            if dest and dest not in seen:
+                seen.add(dest)
+                found.append(dest)
     return found
+
+
+def candidate_files(nginx_t="", roots=()):
+    """Union of nginx -T include paths and on-disk leftover listens."""
+    return leftover_paths(nginx_t, roots)
 
 
 def _https_proxy(tcp, web, port, proxy, only=False):
@@ -237,7 +247,15 @@ def main(argv):
             sys.stdout.write(path + "\n")
         return 0
     if mode == "scan":
-        leftover = files_from_nginx_t(raw)
+        roots = argv[2:]
+        has_dump = bool(NGINX_T_FILE_RE.search(raw))
+        if not has_dump and not roots:
+            sys.stderr.write(
+                "usage: merge-gitea-funnel.py scan [tree ...] < nginx-T-dump\n"
+                "gitea funnel: scan needs an nginx -T dump or file arguments\n"
+            )
+            return 2
+        leftover = leftover_paths(raw, roots)
         if leftover:
             sys.stderr.write(
                 "gitea funnel: nginx still listens on 100.123.114.16:443 in:\n"

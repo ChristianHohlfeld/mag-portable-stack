@@ -3,8 +3,12 @@
 # Run as the normal user that owns the checkout (not as root); only the final
 # deploy step uses sudo. A failed pull or build stops before anything on the
 # live system is touched. deploy.sh keeps its own backup and automatic rollback.
-set -euo pipefail
+set -eEuo pipefail
 ROOT="$(cd -- "$(dirname "$0")/.." && pwd)"
+on_err() {
+  echo "update: failed at line ${1:-?} command: ${3:-?} rc=${2:-1}" >&2
+}
+trap 'on_err "$LINENO" "$?" "$BASH_COMMAND"' ERR
 # shellcheck source=build-targets.sh
 source "$ROOT/ops/build-targets.sh"
 DRY=0 PULL=1 DEPLOY=1 AUTO=1

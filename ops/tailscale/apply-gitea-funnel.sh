@@ -21,9 +21,18 @@ lib_dir=${MAG_GITEA_FUNNEL_LIB:-/usr/local/lib/mag-ci}
 sock=${MAG_GITEA_FUNNEL_SOCK:-/var/run/tailscale/tailscaled.sock}
 
 on_err() {
-  echo "gitea funnel: failed at line ${1:-?} (exit ${2:-1})" >&2
+  echo "gitea funnel: failed at line ${1:-?} command: ${3:-?} rc=${2:-1}" >&2
 }
-trap 'on_err "$LINENO" "$?"' ERR
+trap 'on_err "$LINENO" "$?" "$BASH_COMMAND"' ERR
+
+run_cmd() {
+  local rc=0
+  "$@" || rc=$?
+  if (( rc != 0 )); then
+    echo "gitea funnel: command failed: $* (exit ${rc})" >&2
+    exit "$rc"
+  fi
+}
 
 if [[ ${1:-} == --dry-run ]]; then
   python3 "$here/merge-gitea-funnel.py" merge </dev/null
@@ -252,7 +261,14 @@ cp -a "$tmp/current" "$snapdir/serve.json" || {
 # and live bots/pages still sit in conf.d with listen 100.123.114.16:443.
 site=$nginx_root/conf.d/mag-git.conf
 proxy=$mag_ci_root/gitea-proxy.inc
-nginx -T >"$tmp/nginx-t" 2>"$tmp/nginx-t.err" || true
+# nginx -T writes the dump to stdout or stderr depending on the build.
+# Capture both so sites-enabled includes are not dropped.
+nginx -T >"$tmp/nginx-t" 2>"$tmp/nginx-t.err" || {
+  echo "gitea funnel: command failed: nginx -T (exit $?)" >&2
+}
+if [[ -s $tmp/nginx-t.err ]]; then
+  cat "$tmp/nginx-t.err" >> "$tmp/nginx-t"
+fi
 to_retarget=()
 if ! python3 "$here/merge-gitea-funnel.py" candidates \
     "$nginx_root/sites-available" \
@@ -284,49 +300,68 @@ publish_snapshot
 if [[ $test_mode == 1 && ${MAG_GITEA_FUNNEL_FAIL:-} == after-snapshot ]]; then
   false
 fi
+retarget_one() {
+  local file=$1 dest mode
+  # Keep sites-enabled -> sites-available as a symlink so deploy-nginx.sh
+  # stage still accepts it. Rewrite the target bytes. A symlink out of the
+  # managed tree is replaced with a regular file.
+  if [[ -L $file ]]; then
+    dest=$(readlink -f -- "$file" || true)
+    if [[ -n $dest && -f $dest ]] && allowed_path "$dest"; then
+      echo "gitea funnel: following $file -> $dest"
+      retarget_one "$dest"
+      return 0
+    fi
+  fi
+  if [[ -e $file || -L $file ]]; then
+    mode=$(stat -c %a "$file") || { echo "gitea funnel: cannot stat $file" >&2; exit 1; }
+  else
+    mode=644
+  fi
+  python3 "$here/merge-gitea-funnel.py" retarget <"$file" >"$tmp/retargeted" || {
+    echo "gitea funnel: cannot retarget $file" >&2
+    exit 1
+  }
+  rm -f -- "$file" || { echo "gitea funnel: cannot replace $file" >&2; exit 1; }
+  install -m "$mode" "$tmp/retargeted" "$file" || {
+    echo "gitea funnel: cannot install $file" >&2
+    exit 1
+  }
+  echo "gitea funnel: moved $file off 100.123.114.16:443"
+}
 if (( ${#to_retarget[@]} )); then
   for file in "${to_retarget[@]}"; do
-    # Follow a symlink to the live bytes, then replace the path with a
-    # regular file so a stale release tree cannot put nginx back on :443.
-    if [[ -e $file || -L $file ]]; then
-      mode=$(stat -c %a "$file") || { echo "gitea funnel: cannot stat $file" >&2; exit 1; }
-    else
-      mode=644
-    fi
-    python3 "$here/merge-gitea-funnel.py" retarget <"$file" >"$tmp/retargeted" || {
-      echo "gitea funnel: cannot retarget $file" >&2
-      exit 1
-    }
-    rm -f -- "$file" || { echo "gitea funnel: cannot replace $file" >&2; exit 1; }
-    install -m "$mode" "$tmp/retargeted" "$file" || {
-      echo "gitea funnel: cannot install $file" >&2
-      exit 1
-    }
-    echo "gitea funnel: moved $file off 100.123.114.16:443"
+    retarget_one "$file"
   done
 fi
-install -d -m 0755 "$mag_ci_root" || { echo 'gitea funnel: cannot create mag-ci dir' >&2; exit 1; }
-install -m 0644 "$root/ops/gitea-ci/gitea-proxy.inc" "$proxy" || {
-  echo 'gitea funnel: cannot install gitea-proxy.inc' >&2
-  exit 1
-}
-install -m 0644 "$root/ops/gitea-ci/public.nginx.in" "$site" || {
-  echo 'gitea funnel: cannot install mag-git.conf' >&2
-  exit 1
-}
-if ! nginx -t || ! systemctl reload nginx.service; then
-  echo 'gitea funnel: nginx config rejected' >&2
-  exit 1
-fi
+run_cmd install -d -m 0755 "$mag_ci_root"
+run_cmd install -m 0644 "$root/ops/gitea-ci/gitea-proxy.inc" "$proxy"
+run_cmd install -m 0644 "$root/ops/gitea-ci/public.nginx.in" "$site"
+run_cmd nginx -t
+run_cmd systemctl reload nginx.service
 # Funnel cannot bind :443 while any managed vhost still listens there.
-# nginx -T is required: ss alone misses a listen that failed to leave conf.d.
-if ! nginx -T 2>/dev/null | python3 "$here/merge-gitea-funnel.py" scan; then
+# nginx -T stdout+stderr plus the on-disk trees: ss alone misses a listen
+# that failed to leave sites-enabled or conf.d.
+nginx -T >"$tmp/nginx-t.after" 2>"$tmp/nginx-t.after.err" || {
+  echo "gitea funnel: command failed: nginx -T (exit $?)" >&2
+}
+if [[ -s $tmp/nginx-t.after.err ]]; then
+  cat "$tmp/nginx-t.after.err" >> "$tmp/nginx-t.after"
+fi
+if ! python3 "$here/merge-gitea-funnel.py" scan \
+    "$nginx_root/sites-available" \
+    "$nginx_root/sites-enabled" \
+    "$nginx_root/conf.d" \
+    "$nginx_root/snippets" \
+    "$nginx_root/streams-enabled" \
+    "$mag_ci_root" <"$tmp/nginx-t.after"
+then
   echo 'gitea funnel: refusing to enable Funnel while nginx still binds the Tailscale :443' >&2
   exit 1
 fi
 if command -v ss >/dev/null && ss -ltnH 'sport = :443' | grep -q '100.123.114.16:443'; then
   echo 'gitea funnel: 100.123.114.16:443 is still taken; refusing to enable Funnel' >&2
-  nginx -T 2>/dev/null | grep -n 'listen[[:space:]]\+100\.123\.114\.16:443' >&2 || true
+  grep -n 'listen[[:space:]]\+100\.123\.114\.16:443' "$tmp/nginx-t.after" >&2 || true
   exit 1
 fi
 keep_nginx=1
@@ -343,9 +378,9 @@ install -d -m 0755 "$systemd_dir" || { echo 'gitea funnel: cannot create systemd
 install -m 0755 "$here/issue-tailscale-cert.sh" "$lib_dir/issue-tailscale-cert.sh"
 install -m 0644 "$here/mag-tailscale-cert.service" "$systemd_dir/mag-tailscale-cert.service"
 install -m 0644 "$here/mag-tailscale-cert.timer" "$systemd_dir/mag-tailscale-cert.timer"
-systemctl daemon-reload
-systemctl enable mag-tailscale-cert.timer
-systemctl start mag-tailscale-cert.timer
+run_cmd systemctl daemon-reload
+run_cmd systemctl enable mag-tailscale-cert.timer
+run_cmd systemctl start mag-tailscale-cert.timer
 
 python3 "$here/merge-gitea-funnel.py" merge <"$tmp/current" >"$tmp/merged" || {
   echo 'gitea funnel: serve-config merge failed' >&2
@@ -390,9 +425,9 @@ python3 "$here/merge-gitea-funnel.py" check <"$tmp/applied" || {
 status=$(tailscale funnel status 2>&1 || true)
 sed "s#@ROOT@#$root#g" "$here/mag-gitea-funnel.service" > "$systemd_dir/mag-gitea-funnel.service"
 install -m 0644 "$here/mag-gitea-funnel.timer" "$systemd_dir/mag-gitea-funnel.timer"
-systemctl daemon-reload
-systemctl enable mag-gitea-funnel.service mag-gitea-funnel.timer
-systemctl start mag-gitea-funnel.timer
+run_cmd systemctl daemon-reload
+run_cmd systemctl enable mag-gitea-funnel.service mag-gitea-funnel.timer
+run_cmd systemctl start mag-gitea-funnel.timer
 if ! grep -Fq 'http://127.0.0.1:3000' <<<"$status" || ! grep -Eq 'Funnel on|Available on the internet' <<<"$status"; then
   echo 'gitea funnel: public Funnel is not active, so mag.tail3e02ae.ts.net has no public DNS' >&2
   cat >&2 <<'EOF'

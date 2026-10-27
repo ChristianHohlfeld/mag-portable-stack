@@ -14,6 +14,14 @@ grep -Fq 'cmake --build' <<<"$out"
 grep -Fq 'ops/deploy.sh' <<<"$out"
 [[ $(grep -n 'PHASE build' <<<"$out" | cut -d: -f1) -lt $(grep -n 'PHASE deploy' <<<"$out" | cut -d: -f1) ]]
 ! grep -Eq 'mag-llm' "$root/ops/update.sh"
+grep -Fq 'BASH_COMMAND' "$root/ops/update.sh"
+grep -Fq 'failed at line' "$root/ops/update.sh"
+grep -Fq 'mag_systemctl daemon-reload' "$root/ops/deploy.sh"
+install_line=$(grep -n 'install -m 0644 "$SOURCE/ops/mag-120.service"' "$root/ops/deploy.sh" | head -1 | cut -d: -f1)
+enable_line=$(grep -n 'mag_systemctl enable mag-120.service' "$root/ops/deploy.sh" | head -1 | cut -d: -f1)
+restart_line=$(grep -n 'mag_systemctl restart mag-120.service' "$root/ops/deploy.sh" | tail -1 | cut -d: -f1)
+awk -v s="$install_line" -v e="$enable_line" 'NR>s && NR<e && /daemon-reload/ { found=1 } END { exit(found?0:1) }' "$root/ops/deploy.sh"
+awk -v s="$enable_line" -v e="$restart_line" 'NR>=s && NR<=e && /daemon-reload/ { found=1 } END { exit(found?0:1) }' "$root/ops/deploy.sh"
 ! grep -Eq 'systemctl (restart|stop|reload).*mag-llm' "$root/ops/deploy.sh"
 forced=$(MAG_DEPLOY_FORCE=1 MAG_DEPLOY_DRAIN_S=5 MAG_DEPLOY_DEADLINE_S=30 MAG_ROOM_LAYOUT=mixed bash "$root/ops/update.sh" --dry-run)
 grep -Fq 'sudo env' <<<"$forced"

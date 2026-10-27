@@ -287,6 +287,9 @@ install -m 0755 "$SOURCE/ops/magbot-guest-run" "$SOURCE/ops/magbot-agent-ctl" "$
 install -m 0440 "$SOURCE/ops/magbot-guest.sudoers" /etc/sudoers.d/magbot-guest
 visudo -cf /etc/sudoers.d/magbot-guest >/dev/null
 install -m 0644 "$SOURCE/ops/mag-120.service" "$SOURCE/ops/mag-browser-webrtc.service" /etc/systemd/system/
+# systemd warns "mag-120.service changed on disk" if enable/start/restart
+# runs against a unit file that was not daemon-reloaded.
+mag_systemctl daemon-reload
 install -m 0644 "$SOURCE/ops/mag-stack-check.service" "$SOURCE/ops/mag-stack-check.timer" "$SOURCE/ops/mag-git-gateway.socket" "$SOURCE/ops/mag-git-gateway.service" "$SOURCE/ops/mag-agents-network.service" /etc/systemd/system/
 # Read-only backing image; existing VM overlays remain untouched. A host
 # without the image (ops/vm/build-golden.sh not run yet) still gets the room;
@@ -389,6 +392,7 @@ assert ids == [sys.argv[2]], "gateway exposes retired model"
 fi
 mag_systemctl enable --now mag-agents-network.service
 mag_systemctl restart mag-agents-network.service
+mag_systemctl daemon-reload
 mag_systemctl enable mag-120.service
 # Switch nginx while the previous native whois backend is still available.
 # A failed ingress check rolls back BEFORE replacing the running room process.
@@ -417,6 +421,7 @@ bash "$SOURCE/ops/trust/install-trust.sh"
 if ! deploy_run "${MAG_FREE_MCP_PROBE_TIMEOUT:-40}" -- bash "$SOURCE/ops/trust/probe-free-mcp.sh"; then
   echo 'WARN: free MCP probe failed; not rolling back a healthy room' >&2
 fi
+mag_systemctl daemon-reload
 mag_systemctl restart mag-120.service
 mag_systemctl enable --now mag-browser-webrtc.service
 mag_systemctl restart mag-browser-webrtc.service

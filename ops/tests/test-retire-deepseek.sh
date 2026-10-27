@@ -18,8 +18,8 @@ case "$cmd" in
   show) echo loaded ;;
   is-active)
     if [[ $unit == mag-120.service ]]; then [[ -e $ROOM_FILE ]]; exit; fi
-    grep -Fxq "$unit" "$ACTIVE_FILE" ;;
-  is-enabled) if grep -Fxq "$unit" "$ENABLED_FILE"; then echo enabled; else echo disabled; fi ;;
+    grep -Fxq "$unit" "$ACTIVE_FILE"; exit ;;
+  is-enabled) if grep -Fxq "$unit" "$ENABLED_FILE"; then echo enabled; exit 0; else echo disabled; exit 1; fi ;;
   disable) sed -i "/^$unit$/d" "$ENABLED_FILE" ;;
   daemon-reload) : ;;
   start) [[ $unit == mag-120.service ]] && touch "$ROOM_FILE" ;;
@@ -103,9 +103,9 @@ grep -Fxq 'systemctl start mag-120.service' "$log"
 [[ -e "$room" ]]
 # Production wiring and no unintended model-file deletion.
 d="$root/ops/deploy.sh"
-r=$(grep -n '^bash .*retire-deepseek.sh' "$d" | head -1 | cut -d: -f1)
-t=$(grep -n '^trap - EXIT INT TERM' "$d" | cut -d: -f1)
-b=$(grep -n 'ops/boot/ensure-boot.sh"' "$d" | cut -d: -f1)
+r=$(grep -n 'retire-deepseek.sh' "$d" | head -1 | cut -d: -f1)
+t=$(grep -n '^deployment_started=0' "$d" | head -1 | cut -d: -f1)
+b=$(grep -n 'ops/boot/ensure-boot.sh' "$d" | head -1 | cut -d: -f1)
 (( t < r && r < b ))
 ! grep -q 'retire-v41.sh' "$d"
 grep -Fq '20-room-audit.conf' "$d"

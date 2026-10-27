@@ -129,20 +129,24 @@ else
   log 'Gitea not installed/active; Gitea runner skipped'
 fi
 
-# Optional GitHub runner. A GitHub outage must not skip the Gitea runner enable below.
-# Gitea is the deploy source of truth; this block is best-effort.
-install_github_runner() {
+# Optional GitHub runner. A GitHub outage must not skip the Gitea runner enable
+# below. The body is a subshell with its own errexit: `if ! fn` / `fn ||` would
+# otherwise keep going after a checksum mismatch, extract the archive, write
+# .version, and consume the registration token.
+install_github_runner() (
+  set -euo pipefail
   local GH=/var/lib/mag-ghrunner
   [[ -s /etc/credstore/mag-github-runner.token || -s $GH/runner/.runner ]] || return 0
   ensure_user mag-ghrunner "$GH"
   if [[ ! -x $GH/runner/config.sh ]] || ! grep -Fq "$GH_RUNNER_VER" "$GH/runner/.version" 2>/dev/null; then
     tmp="$(mktemp -d /var/tmp/mag-ghrunner.XXXXXXXX)"
-    fetch "https://github.com/actions/runner/releases/download/v${GH_RUNNER_VER}/actions-runner-linux-x64-${GH_RUNNER_VER}.tar.gz" "$GH_RUNNER_SHA" "$tmp/r.tgz"
+    trap 'rm -rf -- "$tmp"' EXIT
+    fetch "https://github.com/actions/runner/releases/download/v${GH_RUNNER_VER}/actions-runner-linux-x64-${GH_RUNNER_VER}.tar.gz" "$GH_RUNNER_SHA" "$tmp/r.tgz" \
+      || return 1
     install -d -m 0750 -o mag-ghrunner -g mag-ghrunner "$GH/runner"
-    tar -xzf "$tmp/r.tgz" -C "$GH/runner"
+    tar -xzf "$tmp/r.tgz" -C "$GH/runner" || return 1
     echo "$GH_RUNNER_VER" > "$GH/runner/.version"
     chown -R mag-ghrunner:mag-ghrunner "$GH/runner"
-    rm -rf -- "$tmp"
     "$GH/runner/bin/installdependencies.sh" >/dev/null || log 'GitHub runner dependency install reported errors'
   fi
   if [[ ! -s $GH/runner/.runner ]]; then
@@ -154,8 +158,10 @@ install_github_runner() {
   if [[ -s $GH/runner/.runner ]]; then
     install -m 0644 "$here/mag-github-runner.service" /etc/systemd/system/mag-github-runner.service
   fi
-}
-install_github_runner || log 'GitHub runner skipped; Gitea runner install continues'
+)
+if ! install_github_runner; then
+  log 'GitHub runner skipped; Gitea runner install continues'
+fi
 
 systemctl daemon-reload
 systemctl enable --now mag-deploy-request.path

@@ -35,7 +35,9 @@ grep -Fq 'timeout --kill-after=5s 25s' "$r/install.sh"
 grep -Fq 'taskset -c 42-55' "$r/install.sh"
 grep -Fq 'systemctl restart gitea.service' "$r/install.sh"
 grep -Fq 'gitea_wait_actions' "$r/install.sh"
-grep -Fq 'install_github_runner ||' "$r/install.sh"
+grep -Fq 'install_github_runner() (' "$r/install.sh"
+grep -Fq 'if ! install_github_runner; then' "$r/install.sh"
+! grep -Fq 'install_github_runner ||' "$r/install.sh"
 ! grep -F 'instance="http://${addr' "$r/install.sh"
 grep -Fq "curl --noproxy '*'" "$r/gitea-local.sh"
 grep -Fq '[[ $base == http://127.0.0.1:3000 ]]' "$r/gitea-local.sh"
@@ -129,4 +131,23 @@ if [ "\$n" -lt 2 ]; then printf 404; exit 0; fi
 printf 200
 EOF
 [[ $(PATH="$tmp/bin:$PATH" MAG_GITEA_PING_TRIES=3 MAG_GITEA_PING_SLEEP=0 gitea_wait_actions) == 200 ]]
+# A function on the left of || loses errexit. Checksum failure must not extract
+# or stamp .version. The installer uses a set -e subshell plus explicit returns.
+printf 'not-a-tarball\n' > "$tmp/r.tgz"
+goodsha=$(sha256sum "$tmp/r.tgz" | awk '{print $1}')
+fetch() { printf '%s  %s\n' "$2" "$3" | sha256sum -c --quiet -; }
+install_github_archive() (
+  set -euo pipefail
+  fetch unused "$1" "$tmp/r.tgz" || return 1
+  tar -xzf "$tmp/r.tgz" -C "$tmp" || return 1
+  echo stamped > "$tmp/.version"
+)
+if ! install_github_archive deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef 2>/dev/null; then
+  :
+fi
+[[ ! -e $tmp/.version ]]
+if ! install_github_archive "$goodsha" 2>/dev/null; then
+  :
+fi
+[[ ! -e $tmp/.version ]]
 echo 'Runner guards PASS'

@@ -82,7 +82,7 @@ class NginxAuth(unittest.TestCase):
         # Test the actual included source, not a wildcard silently ignored on CI.
         text=text.replace(speech_include, f"include {SPEECH};")
         text=text.replace(
-            "include /opt/mag-stack/current/ops/nginx/mag-tailnet-ok.inc;",
+            "include /etc/nginx/snippets/mag-tailnet-ok.inc;",
             f"include {ROOT / 'ops/nginx/mag-tailnet-ok.inc'};")
         assert 'location ~ "^/static/speech-[0-9a-f]{12}/' in SPEECH.read_text()
         assert "auth_request off;" in text.split("location = /_mag_whois {",1)[1].split("}",1)[0], "Recursive auth_request risk"

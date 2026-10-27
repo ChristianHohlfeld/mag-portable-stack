@@ -27,7 +27,7 @@ chmod +x build/test-* build/magroom build/mag-audit-gateway build/mag-numa-swap 
 MAG_CI_JOBS=$jobs bash ops/ci/native-gate.sh --parallel
 printf "\n== %s\n" "nginx syntax without a real Tailnet listener"
 openssl req -x509 -newkey rsa:2048 -nodes -days 1 -keyout /tmp/mag-ci.key -out /tmp/mag-ci.crt -subj '/CN=mag.stardenburg.de' 2>/dev/null
-sed -e 's|/etc/mag-nginx/tls/cert.pem|/tmp/mag-ci.crt|' -e 's|/etc/mag-nginx/tls/key.pem|/tmp/mag-ci.key|' -e 's|127.0.0.1:4443 ssl http2 proxy_protocol|127.0.0.1:18443 ssl http2|' -e "s|/opt/mag-stack/current/ops/nginx/mag-tailnet-ok.inc|$PWD/ops/nginx/mag-tailnet-ok.inc|" ops/private-access/mag-room.nginx.conf > /tmp/mag-ci-site.conf
+sed -e 's|/etc/mag-nginx/tls/cert.pem|/tmp/mag-ci.crt|' -e 's|/etc/mag-nginx/tls/key.pem|/tmp/mag-ci.key|' -e 's|127.0.0.1:4443 ssl http2 proxy_protocol|127.0.0.1:18443 ssl http2|' -e "s|/etc/nginx/snippets/mag-tailnet-ok.inc|$PWD/ops/nginx/mag-tailnet-ok.inc|" ops/private-access/mag-room.nginx.conf > /tmp/mag-ci-site.conf
 grep -Fq 'listen 127.0.0.1:18443 ssl http2;' /tmp/mag-ci-site.conf
 printf 'pid /tmp/mag-ci-nginx.pid;\nerror_log /tmp/mag-ci-nginx.err;\nevents {}\nhttp { access_log off; include /tmp/mag-ci-site.conf; }\n' > /tmp/mag-ci-nginx.conf
 sudo nginx -t -c /tmp/mag-ci-nginx.conf -p /tmp

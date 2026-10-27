@@ -16,6 +16,8 @@ printf "\n== %s\n" "Real TLS nginx auth, fail-closed, header spoofing"
 python3 mag-room/tests/test_private_nginx.py
 printf "\n== %s\n" "Disposable deploy/Owner-smoke/rollback regression"
 python3 mag-room/tests/test_whois_deploy.py
+printf "\n== %s\n" "nginx -t before current-switch uses the staged snippet"
+bash ops/private-access/tests/test-stage-include.sh
 printf "\n== %s\n" "Cutover guard and rollback contract"
 grep -F 'systemd-run --quiet --unit=mag-private-rollback --on-active=180s' ops/private-access/install.sh
 grep -F 'systemctl reload nginx.service' ops/private-access/rollback.sh

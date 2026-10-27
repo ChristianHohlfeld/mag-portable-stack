@@ -105,7 +105,8 @@ class SniMap(unittest.TestCase):
         room_src = (ROOT / "ops/private-access/mag-room.nginx.conf").read_text()
         self.assertIn("location = /readyz", room_src)
         self.assertIn("auth_request off;", room_src)
-        self.assertIn("include /opt/mag-stack/current/ops/nginx/mag-tailnet-ok.inc;", room_src)
+        self.assertIn("include /etc/nginx/snippets/mag-tailnet-ok.inc;", room_src)
+        self.assertNotIn("include /opt/mag-stack/current/ops/nginx/mag-tailnet-ok.inc;", room_src)
         self.assertIn("geo $remote_addr $mag_tailnet_ok",
                       (ROOT / "ops/nginx/mag-tailnet-ok.inc").read_text())
         for path in (ROOT / "ops/private-access/mag-room.nginx.conf",
@@ -149,7 +150,7 @@ class SniMap(unittest.TestCase):
             speech = "include /opt/mag-stack/current/ops/nginx/mag-speech*.inc;"
             room = room.replace(speech, f"include {ROOT / 'ops/nginx/mag-speech.inc'};")
             room = room.replace(
-                "include /opt/mag-stack/current/ops/nginx/mag-tailnet-ok.inc;",
+                "include /etc/nginx/snippets/mag-tailnet-ok.inc;",
                 f"include {ROOT / 'ops/nginx/mag-tailnet-ok.inc'};")
             room = room.replace("/etc/mag-nginx/tls/cert.pem", str(certs["room"][0]))
             room = room.replace("/etc/mag-nginx/tls/key.pem", str(certs["room"][1]))

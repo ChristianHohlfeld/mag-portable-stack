@@ -9,6 +9,8 @@ here=$(cd "$(dirname "$0")" && pwd)
 site=/etc/nginx/sites-available/mag-room.conf
 enabled=/etc/nginx/sites-enabled/mag-room.conf
 template="$here/mag-room.nginx.conf"
+snippet=/etc/nginx/snippets/mag-tailnet-ok.inc
+snippet_src="$here/../nginx/mag-tailnet-ok.inc"
 probe_file=/etc/mag-stack/deploy-owner-probe.conf
 die(){ echo "MAG whois deploy: $*" >&2; exit 1; }
 [[ $EUID == 0 ]] || die 'Root required'
@@ -149,13 +151,21 @@ stage(){
   [[ ! -e $MAG_NGINX_TXN/nginx.staged ]] || die 'nginx already staged'
   [[ ! -e $site || ( -f $site && ! -L $site ) ]] || die 'Invalid existing nginx site'
   [[ ! -e $enabled || -L $enabled ]] || die 'Invalid enabled nginx site'
+  [[ -f $snippet_src ]] || die "mag-tailnet-ok.inc missing from this release: $snippet_src"
   if [[ -f $site ]]; then cp -a "$site" "$MAG_NGINX_TXN/nginx.site.old"
   else touch "$MAG_NGINX_TXN/nginx.site.absent"; fi
   if [[ -L $enabled ]]; then readlink "$enabled" > "$MAG_NGINX_TXN/nginx.link.old"
   else touch "$MAG_NGINX_TXN/nginx.link.absent"; fi
+  if [[ -f $snippet ]]; then cp -a "$snippet" "$MAG_NGINX_TXN/nginx.snippet.old"
+  else touch "$MAG_NGINX_TXN/nginx.snippet.absent"; fi
   if needs_owner_probe; then touch "$MAG_NGINX_TXN/nginx.changed"; fi
   # Armed before first mutation, including syntax or disk failures.
   touch "$MAG_NGINX_TXN/nginx.staged"
+  # Snippet must exist before nginx -t. /opt/mag-stack/current still points
+  # at the previous release, which does not have mag-tailnet-ok.inc.
+  install -d -m 0755 "$(dirname "$snippet")"
+  install -m 0644 "$snippet_src" "$snippet.next"
+  mv -f "$snippet.next" "$snippet"
   install -m 0644 "$template" "$site.next"
   mv -f "$site.next" "$site"
   ln -sfn ../sites-available/mag-room.conf "$enabled"
@@ -227,6 +237,12 @@ rollback(){
   elif [[ -f $MAG_NGINX_TXN/nginx.link.absent ]]; then
     rm -f "$enabled"
   else die 'Missing enabled-link snapshot'; fi
+  if [[ -f $MAG_NGINX_TXN/nginx.snippet.old ]]; then
+    cp -a "$MAG_NGINX_TXN/nginx.snippet.old" "$snippet.old-next"
+    mv -f "$snippet.old-next" "$snippet"
+  elif [[ -f $MAG_NGINX_TXN/nginx.snippet.absent ]]; then
+    rm -f "$snippet"
+  fi
   nginx -t || die 'Restored nginx syntax invalid: manual recovery needed'
   systemctl reload nginx.service || die 'Restored nginx reload failed'
   rm -f "$MAG_NGINX_TXN/nginx.staged" "$MAG_NGINX_TXN/nginx.verified"

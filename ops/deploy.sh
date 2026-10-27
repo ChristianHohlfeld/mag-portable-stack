@@ -428,8 +428,9 @@ if ! mag_systemctl is-active --quiet mag-120.service; then
   for i in {1..30}; do deploy_run 4 -- curl -fsS --retry 0 --max-time 2 -o /dev/null http://127.0.0.1:8766/readyz && break; sleep 1; done
 fi
 # One owner of Tailscale :443. nginx leaves 100.123.114.16:443 for
-# tailscaled, which Funnel-proxies https://mag.tail3e02ae.ts.net/ to
-# http://127.0.0.1:3000. A failed apply before that move restores nginx.
+# tailscaled, which TCP-forwards (PROXY v2) to nginx 127.0.0.1:4443.
+# Funnel on https://mag.tail3e02ae.ts.net/ is the same TCP path (no HTTPS-on-443).
+# A failed apply before that move restores nginx.
 bash "$SOURCE/ops/tailscale/apply-gitea-funnel.sh"
 bash "$NGINX_SYNC" activate
 bash "$NGINX_SYNC" smoke

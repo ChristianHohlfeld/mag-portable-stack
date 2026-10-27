@@ -2645,7 +2645,20 @@ static void pho_rollover(int idx,std::vector<Val> &messages) {
   // Context budget is already rebuilding this copy. Substitute sealed line
   // bodies here only; the stored warm wire is left untouched until this
   // compacted copy is what the next request loads.
-  const auto &w=it->second;const size_t end=std::min(pho_old_end(w),messages.size());
+  const auto &w=it->second;
+  // A stored turn boundary can lag when a new user message is appended. Never
+  // rewrite either of the two most recent complete user turns in the actual
+  // request, even when the archive says those lines are eligible.
+  size_t recent_begin=messages.size();
+  int recent_users=0;
+  for(size_t k=messages.size();k-->2;) {
+    if(mag::str(messages[k],"role")!="user")continue;
+    const std::string content=mag::str(messages[k],"content");
+    if(content.rfind("[System]",0)==0 ||
+       content.rfind("[Bisher ausgefuehrte Schritte",0)==0)continue;
+    if(++recent_users==2){recent_begin=k;break;}
+  }
+  const size_t end=std::min({pho_old_end(w),messages.size(),recent_begin});
   size_t changed=0;
   for(size_t i=2;i<end;++i) {
     auto &m=messages[i];const auto role=mag::str(m,"role");
@@ -5522,6 +5535,19 @@ static void compact_agent_context(int bot_idx, std::vector<Val> &messages,
   while (prompt_wire_bytes(messages, tools) > target) {
     const size_t at = rollup.empty() ? 2 : 3;
     if (messages.size() <= at + 2) break;
+    // Preserve both of the latest complete user turns when collapsing older
+    // rounds. If those alone exceed the budget, handle the initial transcript
+    // below instead of silently discarding a live instruction.
+    size_t protect_from=messages.size();
+    int user_count=0;
+    for(size_t k=messages.size();k-->2;) {
+      if(mag::str(messages[k],"role")!="user")continue;
+      const std::string content=mag::str(messages[k],"content");
+      if(content.rfind("[System]",0)==0 ||
+         content.rfind("[Bisher ausgefuehrte Schritte",0)==0)continue;
+      if(++user_count==2){protect_from=k;break;}
+    }
+    if(at>=protect_from)break;
     size_t end = at + 1;
     const Val &first = messages[at];
     std::string note;
@@ -5543,6 +5569,7 @@ static void compact_agent_context(int bot_idx, std::vector<Val> &messages,
     } else {
       note = mj::utf8_cut(mag::str(first, "content"), 220);
     }
+    if (end > protect_from) break;
     if (note.empty()) note = "Abgeschlossener Zwischenschritt";
     // Tool rounds may grow back beyond the old size later in this turn.
     // Invalidate stale offsets at the actual erasure, never infer from size.

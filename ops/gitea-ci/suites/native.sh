@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Original native.yml / native: same tests, one shared native build inside a disposable VM.
-# Independent commands run together under a hard timeout. test_native stays in
-# that set; its own mag-test-timeout is the per-test cap.
+# Fast contracts, binaries, the sharded room suite and companion checks share
+# one pool so a single machine still finishes the merge gate. nginx, WebRTC
+# and the gitea shell contracts stay after that pool.
 set -euo pipefail
 export RUNNER_ENVIRONMENT=github-hosted MAG_E2E_SHOTS=/work/screenshots
 export GITHUB_REPOSITORY=ChristianHohlfeld/mag-portable-stack
@@ -21,17 +22,9 @@ printf "\n== %s\n" "Test and workflow deadlines"
 python3 ops/ci/check-timeouts.py
 printf "\n== %s\n" "Tailscale API nft IPv4/v6 egress regression without modifying host firewall"
 sudo bash ops/audit/tests/test-tail-egress.sh
-printf "\n== %s\n" "Independent fast contracts"
-bash ops/ci/run-parallel.sh --jobs "$jobs" --timeout 180 < ops/ci/native-fast.list
-printf "\n== %s\n" "Native C++ binaries"
-chmod +x build/test-*
-bash ops/ci/run-parallel.sh --jobs "$jobs" --timeout 90 < ops/ci/native-bins.list
-printf "\n== %s\n" "Native room integration and companion checks"
-chmod +x build/magroom build/mag-audit-gateway build/mag-numa-swap build/s23ctl
-{
-  echo 'native room :: python3 mag-room/tests/test_native.py'
-  cat ops/ci/native-rest.list
-} | bash ops/ci/run-parallel.sh --jobs "$jobs" --timeout 300
+printf "\n== %s\n" "Native merge gate"
+chmod +x build/test-* build/magroom build/mag-audit-gateway build/mag-numa-swap build/s23ctl
+MAG_CI_JOBS=$jobs bash ops/ci/native-gate.sh --parallel
 printf "\n== %s\n" "nginx syntax without a real Tailnet listener"
 openssl req -x509 -newkey rsa:2048 -nodes -days 1 -keyout /tmp/mag-ci.key -out /tmp/mag-ci.crt -subj '/CN=mag.stardenburg.de' 2>/dev/null
 sed -e 's|/etc/mag-nginx/tls/cert.pem|/tmp/mag-ci.crt|' -e 's|/etc/mag-nginx/tls/key.pem|/tmp/mag-ci.key|' -e 's|127.0.0.1:4443 ssl http2 proxy_protocol|127.0.0.1:18443 ssl http2|' ops/private-access/mag-room.nginx.conf > /tmp/mag-ci-site.conf

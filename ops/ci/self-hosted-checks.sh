@@ -23,7 +23,8 @@ step 'native integration checks'
 ./build/test-large-stdin
 ./build/test-gitea-account
 python3 mag-room/tests/test_large_tools.py
-python3 mag-room/tests/test_native.py
+python3 ops/ci/run-native-suite.py --emit-shards --jobs "$JOBS" --file mag-room/tests/test_native.py \
+  | bash ops/ci/run-parallel.sh --jobs "$JOBS" --timeout 30
 python3 mag-room/tests/test_agent_core.py
 python3 ops/numa/tests/test_numa_swap.py
 python3 mag-room/tests/test_tailscale_auth.py

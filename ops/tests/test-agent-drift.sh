@@ -69,12 +69,13 @@ if [[ -x "$root/build/magbot-native" ]] && sudo -n true 2>/dev/null; then
   mkdir -p "$t/native/bots/agent77"
   printf keep > "$t/native/bots/agent77/sentinel"
   rc=0
-  sudo -n env MAGBOT_ROOT="$t/native" MAG_ROOM_STATE="$t/room" \
+  # Private lock file: the fixture must not depend on host /run/lock.
+  sudo -n env MAGBOT_ROOT="$t/native" MAG_ROOM_STATE="$t/room" MAGBOT_LOCK="$t/lock" \
     "$root/build/magbot-native" despawn-orphan agent77 >"$t/native.out" 2>&1 || rc=$?
   [[ $rc == 3 ]]
   [[ $(cat "$t/native/bots/agent77/sentinel") == keep ]]
   printf '{' > "$t/room/agents.json"
-  if sudo -n env MAGBOT_ROOT="$t/native" MAG_ROOM_STATE="$t/room" \
+  if sudo -n env MAGBOT_ROOT="$t/native" MAG_ROOM_STATE="$t/room" MAGBOT_LOCK="$t/lock" \
     "$root/build/magbot-native" despawn-orphan agent77 >"$t/native.err" 2>&1; then
     echo 'native cleanup accepted corrupt room state' >&2; exit 1
   fi

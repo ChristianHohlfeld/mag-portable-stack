@@ -61,8 +61,8 @@ fi
 check 'build (cmake/ninja Release)' bash -c "cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release ${launch[*]} && cmake --build build -j $JOBS"
 check 'test and workflow deadlines' python3 ops/ci/check-timeouts.py
 
-# native.yml — independent commands share a hard timeout. The room suite is
-# the long pole and runs beside the shorter companion checks.
+# native.yml — one pool on this machine. GitHub runs the same lists as
+# separate jobs; the room suite is sharded inside that pool.
 skip 'tailscale egress nft regression' 'needs root and modifies nft (github-hosted only)'
 skip 'nginx -t of the private site' 'needs sudo nginx (github-hosted only)'
 parallel() {
@@ -77,18 +77,23 @@ parallel() {
   fi
   printf '%s\n' "${RESULTS[-1]}"
 }
-parallel 180 ops/ci/native-fast.list
 chmod +x build/test-* build/magroom build/mag-audit-gateway build/mag-numa-swap build/s23ctl
-parallel 90 ops/ci/native-bins.list
-rest=$(mktemp)
+gate_out="$LOG/merge-gate.log"
+if MAG_CI_JOBS=$JOBS bash ops/ci/native-gate.sh --parallel >"$gate_out" 2>&1; then
+  RESULTS+=("PASS  native merge gate")
+else
+  RESULTS+=("FAIL  native merge gate (log: $gate_out)"); FAIL=1
+  tail -n 40 "$gate_out" | sed 's/^/    /'
+fi
+printf '%s\n' "${RESULTS[-1]}"
+grep -E '^(STEP|FAIL|SLOW|PARALLEL|MERGE GATE) ' "$gate_out" || true
+extra=$(mktemp)
 {
-  echo 'native room :: python3 mag-room/tests/test_native.py'
-  cat ops/ci/native-rest.list
   echo 'vm archive :: python3 mag-room/tests/test_vm_archive.py'
   echo 'retire DeepSeek :: bash ops/tests/test-retire-deepseek.sh'
-} > "$rest"
-parallel 300 "$rest"
-rm -f "$rest"
+} > "$extra"
+parallel 120 "$extra"
+rm -f "$extra"
 if have gitleaks; then
   check 'gitleaks (no secrets)' gitleaks detect --no-banner --redact --source .
 else

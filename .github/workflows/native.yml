@@ -131,7 +131,11 @@ jobs:
         timeout-minutes: 15
         run: |
           chmod +x build/magroom build/mag-audit-gateway build/mag-numa-swap
-          python3 mag-room/tests/test_native.py
+          # Contiguous shards share one magroom per slice and run together.
+          # Each test is alarm-capped at 30s.
+          jobs=$(nproc)
+          python3 ops/ci/run-native-suite.py --emit-shards --jobs "$jobs" --file mag-room/tests/test_native.py \
+            | bash ops/ci/run-parallel.sh --jobs "$jobs" --timeout 30
   rest:
     timeout-minutes: 20
     needs: build

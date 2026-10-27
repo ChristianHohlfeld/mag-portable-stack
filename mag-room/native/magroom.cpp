@@ -2299,7 +2299,7 @@ static std::string build_transcript() {
 // new room input and context. UI labels, clocks, plugin notes and memories
 // never rewrite an old message.
 struct WireSession {
-  std::string fingerprint, memory, plugins, files;
+  std::string fingerprint, memory, plugins, files, roster;
   std::vector<Val> messages;
   std::set<std::string> seen;
   Val pho_archive=Val::object();
@@ -2358,6 +2358,7 @@ static void wire_store(const std::string &bot, const WireSession &w) {
   for (const auto &m:w.messages) msgs.push(m);
   for (const auto &id:w.seen) ids.push(Val(id));
   out["fingerprint"]=w.fingerprint; out["memory"]=w.memory;out["plugins"]=w.plugins;out["files"]=w.files;
+  out["roster"]=w.roster;
   out["messages"]=msgs; out["seen"]=ids;
   out["pho_archive"]=w.pho_archive;out["pho_enabled"]=w.compression;
   out["pho_last_key"]=w.pho_last_key;
@@ -2557,6 +2558,7 @@ static std::vector<Val> wire_messages(int idx, const std::string &system,
       w.pho_last_key=mag::str(saved,"pho_last_key");
       if(auto a=saved.find("turn_ends");a&&a->isArr())for(auto &n:a->asArr())w.turn_ends.push_back((size_t)n.asNum());
       w.fingerprint=mag::str(saved,"fingerprint"); w.memory=mag::str(saved,"memory");w.plugins=mag::str(saved,"plugins");w.files=mag::str(saved,"files");
+      w.roster=mag::str(saved,"roster");
       if(auto a=saved.find("messages");a&&a->isArr())w.messages=a->asArr();
       if(auto a=saved.find("seen");a&&a->isArr())for(const auto &id:a->asArr())w.seen.insert(id.asStr());
     }
@@ -2603,18 +2605,28 @@ static std::vector<Val> wire_messages(int idx, const std::string &system,
   // [Kontext] (clock, github, thinking) is ~140 tokens. Re-sending it on every
   // hi re-prefills those tokens (~6s at 22 tok/s; live 10.3s first hi). It
   // belongs on the first user message only. Later turns append new room
-  // input. Reflection and Self-Talk still need their instruction (and the
-  // live roster line); that is not the clock block. An empty append (prewarm
-  // of an existing wire) is a no-op, except Self-Talk which must always cue.
+  // input. A rename/membership change still needs the live roster line; that
+  // is not the clock block. Reflection and Self-Talk still need their cue.
+  // An empty append (prewarm of an existing wire) is a no-op, except a
+  // roster change or a Self-Talk hop which must always cue.
+  const auto roster=room_company_line(idx);
   std::string extra=input;
-  if(initial) extra+=tail;
-  else if(TL_REFLECT) {
-    auto at=tail.find("Reflexionsrunde");
-    if(at!=std::string::npos) extra+=(at>0&&tail[at-1]=='\n'?"\n":"")+tail.substr(at);
-  } else if(TL_SELFTALK) {
-    auto at=tail.find("\nRaum: ");
-    if(at==std::string::npos) at=tail.find("Self-Talk:");
-    if(at!=std::string::npos) extra+=(at>0&&tail[at-1]=='\n'?"\n":"")+tail.substr(at);
+  if(initial) {
+    extra+=tail;
+    w.roster=roster;
+  } else {
+    if(TL_REFLECT) {
+      auto at=tail.find("Reflexionsrunde");
+      if(at!=std::string::npos) extra+=(at>0&&tail[at-1]=='\n'?"\n":"")+tail.substr(at);
+    }
+    if(TL_SELFTALK) {
+      auto at=tail.find("Self-Talk:");
+      if(at!=std::string::npos) extra+=(extra.empty()||extra.back()=='\n'?"":"\n")+tail.substr(at);
+    }
+    if(!roster.empty() && w.roster!=roster) {
+      extra+=roster;
+      w.roster=roster;
+    }
   }
   if(initial || !extra.empty()) {
     Val user=Val::object();user["role"]="user";user["content"]=extra;

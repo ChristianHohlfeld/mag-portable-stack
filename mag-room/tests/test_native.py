@@ -4619,11 +4619,12 @@ class SelfTalk(unittest.TestCase):
   self.assertIn('Chris', blob)
   self.assertIn('Alpha (model-a)', blob)
   # Rename is live: Beta's next turn uses the new name and Alpha's last text.
+  after = len(self.chat_calls())
   self.api('/api/agents/alpha/name', {'name': 'Gamma'}, method='PUT')
   deadline = time.monotonic() + 5
   seen = None
   while time.monotonic() < deadline:
-   for slot, obj in self.chat_calls():
+   for slot, obj in self.chat_calls()[after:]:
     text = json.dumps(obj, ensure_ascii=False)
     if slot == '1' and 'Gamma (model-a)' in text and 'FACT-77' in text:
      seen = text

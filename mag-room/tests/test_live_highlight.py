@@ -72,7 +72,7 @@ class LiveHighlight(unittest.TestCase):
       const r=e.getBoundingClientRect();
       return Math.abs(r.x+3-want.x)<3 && Math.abs(r.y+3-want.y)<3 &&
              Math.abs(r.width-6-want.w)<3 && Math.abs(r.height-6-want.h)<3;
-    }""",want,timeout=2500)
+    }""",arg=want,timeout=2500)
     got=box.bounding_box()
     if abs(got['x']+3-want['x'])>=3 or abs(got['y']+3-want['y'])>=3:
      diag=room.evaluate("""()=>{const c=document.querySelector('#screen'),v=document.querySelector('#browser-view'),o=document.querySelector('#browser-overlay'),b=document.querySelector('.lh-box');return {

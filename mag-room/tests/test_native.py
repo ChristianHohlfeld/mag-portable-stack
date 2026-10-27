@@ -3538,8 +3538,11 @@ class PhoCompress(unittest.TestCase):
      for literal in ('001234','-1.23e-4','https://example.test/a?x=12','user_id-ABC_123'):
       self.assertIn(literal,r['content'])
    self.assertFalse(any('[PhO-Compress]' in m.get('content','') for m in previous['messages']))
-   self.assertFalse(any('today bund' in m.get('content','') for m in previous['messages']),
-                    'a warm request must keep sent history verbatim')
+   # messages[1] is the first transcript. It may seal room history that this
+   # bot had not sent yet. Every later message was sent raw and must stay raw.
+   for m in previous['messages'][2:]:
+    self.assertNotIn('today bund', m.get('content') or '')
+    self.assertNotIn('aus model .', m.get('content') or '')
    self.assertTrue(any('today bund' in r['content'] and 'Bundestag' in r['original'] for r in accepted),
                    'aged prose is sealed for rollover without rewriting the warm wire')
    self.assertFalse(any('aus model .' in (m.get('content') or '') for m in previous['messages']))
@@ -3557,7 +3560,7 @@ class PhoCompress(unittest.TestCase):
    for key,value in archive.items():self.assertEqual(after[key],value)
   log=self.tmp_path.joinpath('server.log').read_text()
   for model in ('deepseek-v4-flash-0731','qwen3.8-flash-next-uncensored'):
-   self.assertIn('pho-compress model='+model+' tokens_before=',log)
+   self.assertIn('pho-compress scope=history model='+model+' tokens_before=',log)
  def test_03b_missing_tokenizer_keeps_original_and_warm_slot(self):
   b=next(iter(self.bots().values()));previous=None;Model.tokenizer_fail=True
   marker='TokenizerFallback'+str(time.monotonic_ns())

@@ -41,6 +41,10 @@ grep -Fq 'CPUAffinity=14-27 42-55' ops/backup/units/mag-backup-clear.service
 printf "\n== %s\n" "Migrate actual password-protected repo to no-password without data loss"
 bash ops/backup/tests/test-passwordless-migrate.sh
 printf "\n== %s\n" "Disposable repository with Gitea SQLite, room and Pages restore"
-bash ops/backup/tests/test-backup.sh
+if bash ops/ci/backup-affected.sh; then
+  bash ops/backup/tests/test-backup.sh
+else
+  echo 'backup restore e2e skipped (no backup/ path change)'
+fi
 printf "\n== %s\n" "Empty legacy Gitea directory does not hide real repositories"
 bash ops/backup/tests/test-gitea-root.sh

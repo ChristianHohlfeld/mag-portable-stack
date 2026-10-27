@@ -2,6 +2,8 @@
 # Tailnet-only nginx for *.bot.stardenburg.de. Never restarts mag-llm.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
+# shellcheck source=../mag-units.sh
+source "$here/../mag-units.sh"
 test_mode=${MAG_BOTS_TESTING:-0}
 if [[ $test_mode != 1 && $EUID != 0 ]]; then
   echo "bot site install skipped (not root)" >&2
@@ -103,7 +105,8 @@ install -d -m 0755 "$systemd_dir/mag-acme-renew.service.d"
 printf '%s\n' '[Service]' "ExecStartPost=-$lib_dir/issue-wildcard.sh renew" \
   > "$systemd_dir/mag-acme-renew.service.d/40-bots.conf"
 if [[ $test_mode != 1 ]]; then
-  systemctl daemon-reload
+  mag_daemon_reload
+  mag_flush_daemon_reload
   # The release ops tree is already current. Open 8091 before the listener starts.
   bash "$here/../firewall.sh" || echo "WARN: bot firewall refresh failed" >&2
   if command -v nft >/dev/null && nft list table inet mag_offline >/dev/null 2>&1; then

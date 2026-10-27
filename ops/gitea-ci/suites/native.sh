@@ -10,14 +10,7 @@ test -f CMakeLists.txt
 test -d .git
 jobs=$(nproc 2>/dev/null || echo 2)
 printf "\n== %s\n" "Build"
-launch=()
-if command -v ccache >/dev/null; then
-  export CCACHE_DIR="${CCACHE_DIR:-/var/tmp/mag-ci-ccache}"
-  mkdir -p "$CCACHE_DIR"
-  launch+=(-DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache)
-fi
-cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release "${launch[@]}"
-cmake --build build -j "$jobs"
+MAG_CI_JOBS=$jobs bash ops/ci/native-build.sh
 printf "\n== %s\n" "Test and workflow deadlines"
 python3 ops/ci/check-timeouts.py
 printf "\n== %s\n" "Tailscale API nft IPv4/v6 egress regression without modifying host firewall"

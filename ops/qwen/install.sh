@@ -5,6 +5,8 @@ set -euo pipefail
 [[ ${1:-} == stage || ${1:-} == refresh ]] || { echo 'usage: sudo bash ops/qwen/install.sh stage' >&2; exit 4; }
 [[ ${1:-} == refresh ]] || ! systemctl is-active --quiet mag-llm-qwen.service || { echo 'Qwen is already running; refuse restage' >&2; exit 4; }
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
+# shellcheck source=../mag-units.sh
+source "$ROOT/ops/mag-units.sh"
 REV=$(cat "$ROOT/ops/qwen/runtime.sha")
 BIN="/home/chris/.local/qwen4exp/$REV-mag-cp1/bin/llama-server"
 [[ "$REV" =~ ^[a-f0-9]{40}$ && -x "$BIN" ]] || { echo 'build pinned Qwen llama.cpp first' >&2; exit 4; }
@@ -20,6 +22,6 @@ install -m 0755 "$ROOT/ops/qwen/start.sh" /usr/local/lib/mag-qwen/start.sh
 bash /usr/local/lib/mag-qwen/verify-model.sh
 install -d -o chris -g chris -m 0700 /var/lib/mag-llm/slots/qwen
 install -m 0644 "$ROOT/ops/qwen/mag-llm-qwen.service" /etc/systemd/system/mag-llm-qwen.service
-systemctl daemon-reload
+mag_daemon_reload
 echo 'STAGED ONLY: IQ3/Q4 untouched; Qwen disabled, no gateway or room changes.'
 

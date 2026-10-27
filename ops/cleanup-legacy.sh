@@ -199,7 +199,11 @@ for unit in "$UNIT_DIR"/mag-*.service "$UNIT_DIR"/mag-*.timer; do
   systemctl reset-failed "$name" >/dev/null 2>&1 || :
   log "removed unit $name: $dangling"
 done
-if (( reload )); then systemctl daemon-reload || :; fi
+if (( reload )); then
+  # shellcheck source=mag-units.sh
+  source "$(cd -- "$(dirname -- "$(readlink -f "$0")")" && pwd)/mag-units.sh"
+  mag_daemon_reload || :
+fi
 if [[ $DRY != 1 ]]; then date -u +%FT%TZ > "$STAMP"; fi
 else
 log "one-shot sections already done ($STAMP); backup and loose-file passes still ran"

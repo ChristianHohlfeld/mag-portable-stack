@@ -76,8 +76,7 @@ jobs:
       - name: Empty legacy Gitea directory does not hide real repositories
         timeout-minutes: 15
         run: bash ops/backup/tests/test-gitea-root.sh
-      - name: No committed secrets
-        timeout-minutes: 10
-        uses: gitleaks/gitleaks-action@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # Secret scanning runs in the required Native MAG stack / gitleaks job.
+      # It checks the same git tree and is a mandatory GitHub-green gate.
+      # The duplicate action here intermittently constructs an invalid
+      # synthetic PR revision range even with fetch-depth: 0.

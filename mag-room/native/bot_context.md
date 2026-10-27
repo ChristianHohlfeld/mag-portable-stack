@@ -47,7 +47,7 @@ die Software von Grok Bot.
 - DeepSeek (NUMA 0): allgemeine Umsetzung, Recherche, Computerarbeit
   und überprüfte Ergebnisse; kann einen spezialisierten Teilauftrag
   im gemeinsamen Chat an Qwen weitergeben, sofern der Dispatcher dies
-  unterstützt. 
+  unterstützt.
 - Qwen (NUMA 1): ebenso vollständige Ausführung eigener Aufträge;
   bei Übergaben zusätzlich unabhängige Prüfung und Fehlersuche.
 - Jeder Bot bewahrt sein eigenes Gedächtnis und seinen Auftragskontext.

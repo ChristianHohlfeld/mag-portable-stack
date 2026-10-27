@@ -3470,6 +3470,33 @@ class MixedNuma(unittest.TestCase):
    self.assertGreaterEqual(rec['n_past']/max(rec['prompt_size'],1),.9)
   finally:
    self.stop();Model.slot_snapshot=[];self.env['MAG_ROOM_PREWARM']='0';self.start()
+ def test_10_held_prefix_skips_prewarm_and_silent_stream_is_not_resent(self):
+  # Idle ik /slots: state 0, empty prompt, n_decoded>0. The KV is still there.
+  # A silent in-progress completion must stay one request (no cancel+resend).
+  self.wait_idle();self.stop()
+  Model.slot_snapshot=[{'id':0,'state':0,'prompt':'','is_processing':False,
+    'next_token':{'has_next_token':False,'n_decoded':4,'n_remain':0}}]
+  self.env['MAG_ROOM_PREWARM']='1'
+  self.env['MAG_ROOM_STREAM_IDLE_S']='1'
+  Model.delay=3
+  started=time.monotonic()
+  try:
+   mark=len(Model.paths);self.start()
+   for _ in range(80):
+    if 'skipped=ram' in self.tmp_path.joinpath('server.log').read_text():break
+    time.sleep(.05)
+   else:self.fail('prewarm did not skip a slot that already holds the prefix')
+   self.assertFalse([p for p in list(Model.paths)[mark:] if p[0]=='/v1/chat/completions'])
+   before=len([p for p in Model.paths if p[0]=='/v1/chat/completions'])
+   bot=next(iter(self.bots()))
+   self.ask(bot)
+   calls=[p for p in Model.paths if p[0]=='/v1/chat/completions']
+   self.assertEqual(len(calls)-before,1,'silent prefill must not be cancelled and resent')
+   self.assertLess(time.monotonic()-started,25,'hard timeout')
+  finally:
+   Model.delay=0;Model.slot_snapshot=[]
+   self.env['MAG_ROOM_PREWARM']='0';self.env.pop('MAG_ROOM_STREAM_IDLE_S',None)
+   self.stop();self.start()
  def test_08_health_timeout_is_busy_not_offline(self):
   self.wait_idle();self.stop();Model.hold_get=6;self.env['MAG_ROOM_PREWARM']='1'
   try:

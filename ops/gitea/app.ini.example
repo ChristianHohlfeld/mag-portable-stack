@@ -8,6 +8,8 @@ HTTP_ADDR = 127.0.0.1
 HTTP_PORT = 3000
 DOMAIN = mag.tail3e02ae.ts.net
 ROOT_URL = https://mag.tail3e02ae.ts.net:8445/
+# Runner registration uses this loopback URL, never ROOT_URL.
+LOCAL_ROOT_URL = http://127.0.0.1:3000/
 DISABLE_SSH = false
 SSH_DOMAIN = mag.tail3e02ae.ts.net
 START_SSH_SERVER = true
@@ -44,3 +46,6 @@ PATH = /var/lib/gitea/data/lfs
 MODE = console
 LEVEL = Info
 ROOT_PATH = /var/log/gitea
+
+[actions]
+ENABLED = true

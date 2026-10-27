@@ -13,6 +13,8 @@
 set -euo pipefail
 [[ $EUID == 0 ]] || { echo 'root required' >&2; exit 1; }
 here="$(cd -- "$(dirname "$0")" && pwd)"
+# shellcheck source=gitea-local.sh
+source "$here/gitea-local.sh"
 log() { echo "runners: $*"; }
 # New single-repository CI replaces host-execution runners.
 if [[ -e /etc/mag-ci/public.env ]]; then
@@ -59,16 +61,63 @@ if [[ -x /usr/local/bin/gitea && -r /etc/gitea/app.ini ]] && systemctl is-active
   ensure_user mag-runner /var/lib/mag-runner
   install -d -m 0755 /etc/mag-runner
   cmp -s "$here/gitea-runner.yaml" /etc/mag-runner/config.yaml || { install -m 0644 "$here/gitea-runner.yaml" /etc/mag-runner/config.yaml; restart_gitea=1; }
-  if [[ ! -s /var/lib/mag-runner/.runner ]]; then
-    addr="$(sed -n 's/^HTTP_ADDR *= *//p' /etc/gitea/app.ini | head -1)"; port="$(sed -n 's/^HTTP_PORT *= *//p' /etc/gitea/app.ini | head -1)"
-    instance="http://${addr:-127.0.0.1}:${port:-3000}"
+  # Loopback only. Do not derive this from HTTP_ADDR or ROOT_URL.
+  [[ $MAG_GITEA_RUNNER_INSTANCE == http://127.0.0.1:3000 ]] || { log 'refusing non-local Gitea runner instance'; exit 1; }
+  actions_state=$(gitea_ensure_actions_ini /etc/gitea/app.ini)
+  if [[ $actions_state == changed ]]; then
+    log 'Actions enabled for loopback; restarting gitea.service'
+    systemctl restart gitea.service
+    gitea_wait_health || log 'gitea healthz timed out on 127.0.0.1:3000'
+  fi
+  ping=$(gitea_actions_ping_code "$MAG_GITEA_RUNNER_INSTANCE")
+  if ! gitea_actions_ping_ok "$ping"; then
+    ver=$(gitea_binary_version || true)
+    if ! gitea_actions_rpc_supported "${ver:-0}"; then
+      log "Gitea ${ver:-unknown} is too old for runner ${GITEA_RUNNER_VER}; installing the pinned binary and restarting gitea.service"
+      bash "$here/../gitea/install.sh" --restart
+      gitea_wait_health || log 'gitea healthz timed out after the pinned install'
+      ping=$(gitea_actions_ping_code "$MAG_GITEA_RUNNER_INSTANCE")
+    elif [[ $actions_state != changed ]]; then
+      # The file already asks for Actions, but this process may have started before that.
+      # One reload per Gitea binary; a still-404 after that is not retried every deploy.
+      stamp=/etc/mag-runner/actions-reload.stamp
+      if [[ ! -f $stamp || $(cat "$stamp") != "${ver:-}" ]]; then
+        log 'actions connect path 404 on loopback; restarting gitea.service once'
+        systemctl restart gitea.service
+        printf '%s\n' "${ver:-}" > "$stamp"
+        gitea_wait_health || log 'gitea healthz timed out on 127.0.0.1:3000'
+        ping=$(gitea_actions_ping_code "$MAG_GITEA_RUNNER_INSTANCE")
+      fi
+    fi
+  fi
+  if ! gitea_actions_ping_ok "$ping"; then
+    log "Gitea runner skipped: ${MAG_GITEA_RUNNER_INSTANCE}/api/actions returned ${ping}"
+  elif gitea_runner_needs_register /var/lib/mag-runner/.runner; then
+    if [[ -s /var/lib/mag-runner/.runner ]]; then
+      systemctl stop mag-gitea-runner.service || true
+      rm -f /var/lib/mag-runner/.runner
+      restart_gitea=1
+    fi
     tok="$(install -m 0600 -o mag-runner -g mag-runner /dev/null /var/lib/mag-runner/.token && echo /var/lib/mag-runner/.token)"
     if runuser -u git -- /usr/local/bin/gitea --config /etc/gitea/app.ini actions generate-runner-token > "$tok" 2>/dev/null && [[ -s "$tok" ]]; then
-      (cd /var/lib/mag-runner && runuser -u mag-runner -- /usr/local/bin/gitea-runner --config /etc/mag-runner/config.yaml \
-        register --no-interactive --instance "$instance" --token-file "$tok" --name mag-host --labels 'mag:host,self-hosted:host') \
-        || log 'Gitea runner registration failed'
+      log "register gitea runner at ${MAG_GITEA_RUNNER_INSTANCE}"
+      register_cmd=(
+        env -u http_proxy -u https_proxy -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY -u all_proxy
+        no_proxy=127.0.0.1,localhost,::1 NO_PROXY=127.0.0.1,localhost,::1
+        nice -n 19 ionice -c 3
+      )
+      if taskset -c 42-55 true >/dev/null 2>&1; then
+        register_cmd+=(taskset -c 42-55)
+      fi
+      register_cmd+=(
+        timeout --kill-after=5s 25s
+        runuser -u mag-runner -- /usr/local/bin/gitea-runner --config /etc/mag-runner/config.yaml
+        register --no-interactive --instance "$MAG_GITEA_RUNNER_INSTANCE"
+        --token-file "$tok" --name mag-host --labels 'mag:host,self-hosted:host'
+      )
+      (cd /var/lib/mag-runner && "${register_cmd[@]}") || log 'Gitea runner registration failed'
     else
-      log 'Gitea Actions token not available (actions disabled in app.ini?); Gitea runner skipped'
+      log 'Gitea Actions token not available; Gitea runner skipped'
     fi
     rm -f "$tok"
   fi
@@ -80,9 +129,11 @@ else
   log 'Gitea not installed/active; Gitea runner skipped'
 fi
 
-# GitHub runner (optional, needs a registration token from the owner)
-GH=/var/lib/mag-ghrunner
-if [[ -s /etc/credstore/mag-github-runner.token || -s $GH/runner/.runner ]]; then
+# Optional GitHub runner. A GitHub outage must not skip the Gitea runner enable below.
+# Gitea is the deploy source of truth; this block is best-effort.
+install_github_runner() {
+  local GH=/var/lib/mag-ghrunner
+  [[ -s /etc/credstore/mag-github-runner.token || -s $GH/runner/.runner ]] || return 0
   ensure_user mag-ghrunner "$GH"
   if [[ ! -x $GH/runner/config.sh ]] || ! grep -Fq "$GH_RUNNER_VER" "$GH/runner/.version" 2>/dev/null; then
     tmp="$(mktemp -d /var/tmp/mag-ghrunner.XXXXXXXX)"
@@ -103,7 +154,8 @@ if [[ -s /etc/credstore/mag-github-runner.token || -s $GH/runner/.runner ]]; the
   if [[ -s $GH/runner/.runner ]]; then
     install -m 0644 "$here/mag-github-runner.service" /etc/systemd/system/mag-github-runner.service
   fi
-fi
+}
+install_github_runner || log 'GitHub runner skipped; Gitea runner install continues'
 
 systemctl daemon-reload
 systemctl enable --now mag-deploy-request.path

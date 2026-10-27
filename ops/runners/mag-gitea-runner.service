@@ -9,12 +9,26 @@ Group=mag-runner
 SupplementaryGroups=mag-deploy
 WorkingDirectory=/var/lib/mag-runner
 Environment=HOME=/var/lib/mag-runner
+Environment=NO_PROXY=127.0.0.1,localhost,::1
+Environment=no_proxy=127.0.0.1,localhost,::1
+Environment=http_proxy=
+Environment=https_proxy=
+Environment=HTTP_PROXY=
+Environment=HTTPS_PROXY=
+Environment=ALL_PROXY=
+Environment=all_proxy=
 ExecStart=/usr/local/bin/gitea-runner --config /etc/mag-runner/config.yaml daemon
 Restart=always
 RestartSec=10
-# Never compete with the resident models.
+TimeoutStartSec=30
+TimeoutStopSec=40
+# Never compete with the resident models. NUMA0 is 0-13 and 28-41;
+# this runner stays on 42-55. IOSchedulingClass=idle is ionice class 3.
 Nice=15
 IOSchedulingClass=idle
+IOSchedulingPriority=7
+CPUAffinity=42-55
+AllowedCPUs=42-55
 CPUQuota=200%
 MemoryMax=6G
 MemorySwapMax=0

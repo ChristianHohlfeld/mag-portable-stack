@@ -15,9 +15,11 @@ to log in to the server. Downloads are pinned by SHA256.
 ## Installation
 
 - **Gitea runner:** fully automatic. A runner token is generated with
-  `gitea actions generate-runner-token` on the host and registered against the
-  local Gitea (`HTTP_ADDR`/`HTTP_PORT` from `/etc/gitea/app.ini`). Gitea Actions
-  must not be disabled in `app.ini` (enabled by default).
+  `gitea actions generate-runner-token` on the host and registered against
+  `http://127.0.0.1:3000` only. `ROOT_URL` and `HTTP_ADDR` are not used: the
+  Funnel and tailnet serve addresses 404 the connect path `/api/actions`.
+  `[actions] ENABLED` is set true (the token CLI can succeed while that path
+  is still unmounted). The unit is enabled for the next boot.
 - **GitHub runner:** needs a registration token once. GitHub → repository →
   Settings → Actions → Runners → New self-hosted runner, copy the token
   (valid 1 hour) into `/etc/credstore/mag-github-runner.token` (root, 0600).
@@ -108,7 +110,7 @@ steps; `uses:` actions need the matching tools (e.g. Node) installed on the host
   request.
 - Not visible: `/etc/credstore`, backups, room state (`/var/lib/magbot`), model
   data (`/var/lib/mag-llm`), Gitea data and config, the other runner.
-- `Nice=15`, idle I/O, `CPUQuota=200%`, `MemoryMax=6G`, no swap,
+- `CPUAffinity=42-55` (never 0-13 or 28-41), `Nice=15`, idle I/O (`ionice` class 3), `CPUQuota=200%`, `MemoryMax=6G`, no swap,
   `OOMScoreAdjust=1000`: under memory pressure the runner dies first, the
   models stay in RAM. `mag-llm` and `mag-llm-iq3` are never stopped or restarted.
 - One job at a time per runner, 1-hour job timeout.

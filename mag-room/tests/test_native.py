@@ -238,6 +238,34 @@ class Native(unittest.TestCase):
  def test_01_state_ui_and_readiness(self):
   self.assertEqual(self.request('/api/state')['runtime'],'C++17');self.assertTrue(self.request('/readyz')['ready'])
   self.assertIn(b'Privater Raum',self.request('/',raw=True));self.assertIn(b'function',self.request('/static/marked.min.js',raw=True))
+ def test_01a_skill_library_is_a_real_model_tool(self):
+  # Grok-like workflows must be executable tools, not just prose in
+  # bot_context.md. Persist drafts and keep them reusable across sessions.
+  self.wait_idle()
+  name='CI skill persistence'
+  call={'tool_calls':[{'index':0,'id':'call_skill_save','function':{
+    'name':'skill','arguments':json.dumps({'action':'save','name':name,
+      'when':'When asked for a quick reproducible check',
+      'steps':'Read current source, perform one safe operation, report output.',
+      'verify':'Check actual output and explain failures.',
+      'approval':'Ask before sending, deleting or publishing.'})}}]}
+  prior=len(Model.calls)
+  Model.script=[[call],['Skill gespeichert.']]
+  try:
+   self.request('/api/message',{'text':'Speichere den getesteten Ablauf als Entwurf','bots':['test']})
+   for _ in range(200):
+    saved=self.state/'skills.json'
+    if saved.exists() and not self.request('/api/state')['busy']:break
+    time.sleep(.05)
+   else:self.fail('Skill tool call did not persist within 10 seconds')
+   tools=[t['function']['name'] for t in Model.calls[prior]['tools']]
+   self.assertIn('skill',tools)
+   skill=next(x for x in json.loads(saved.read_text()) if x['name']==name)
+   self.assertEqual(skill['status'],'draft','saving must NOT auto-enable a routine')
+   self.assertEqual(skill['verify'],'Check actual output and explain failures.')
+   self.assertEqual(skill['approval'],'Ask before sending, deleting or publishing.')
+  finally:
+   Model.script=[]
  def test_01a_mutating_api_requires_ui_token(self):
   self.error(403,'/api/stop',{},headers={'Content-Type':'application/json','X-No-Token':'1'})
   self.error(403,'/api/stop',{},headers={'Content-Type':'application/json','X-MAG-Token':'x'*43})

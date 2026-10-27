@@ -2163,9 +2163,15 @@ static std::string build_transcript() {
   return out;
 }
 
-// Persist the exact wire messages per bot. Completed assistant/tool messages
-// are replayed verbatim; a new turn only appends new room input and context.
-// UI labels, clocks, plugin notes and memories never rewrite an old message.
+// Persist the exact wire messages per bot. A request never rewrites a message
+// the previous request already sent: the system prompt, the first transcript
+// and every later turn stay byte-identical so the prompt cache can reuse them.
+// Eligible prose is only sealed into the archive. Those sealed bytes are
+// substituted into not-yet-sent imported history and, when the context budget
+// already forces a prefix rebuild, into the rollover copy. Tool payloads,
+// code and the latest user message stay verbatim. A new turn only appends
+// new room input and context. UI labels, clocks, plugin notes and memories
+// never rewrite an old message.
 struct WireSession {
   std::string fingerprint, memory, plugins, files;
   std::vector<Val> messages;
@@ -2245,6 +2251,23 @@ static long pho_tokens(int idx,const std::string &text) {
       !mj::parse(reply,parsed))return -1;
   auto tokens=parsed.find("tokens");return tokens&&tokens->isArr()?(long)tokens->asArr().size():-1;
 }
+static int pho_words(const std::string &s) {
+  int n=0;bool in=false;
+  for(unsigned char c:s) {
+    const bool word=(c>='0'&&c<='9')||(c>='A'&&c<='Z')||(c>='a'&&c<='z')||c>=0x80;
+    if(word&&!in)++n;
+    in=word;
+  }
+  return n;
+}
+// Greetings and other short lines become stubs ("Hallo aus dem Modell." ->
+// "aus model ."). Reject those, and reject any encode that keeps fewer than
+// half the original words. Longer prose may still use the lexical stems.
+static bool pho_keeps_meaning(const std::string &original, const std::string &encoded) {
+  const int ow=pho_words(original),ew=pho_words(encoded);
+  if(ow<8||ew<1)return false;
+  return ew*2>=ow;
+}
 static std::string pho_once(int idx,WireSession &w,const std::string &key,
                             const std::string &original) {
   if(auto saved=w.pho_archive.find(key);saved&&saved->isObj()&&mag::str(*saved,"original")==original)
@@ -2253,7 +2276,7 @@ static std::string pho_once(int idx,WireSession &w,const std::string &key,
   std::string selected=original;long before=-1,after=-1;
   if(w.compression&&pho::eligible(original)) {
     const auto encoded=pho::encode(original).text;
-    if(encoded!=original) {
+    if(encoded!=original&&pho_keeps_meaning(original,encoded)) {
       // No per-turn "[PhO-Compress] " label. On the DeepSeek V4 Flash and
       // Qwen3.8 tokenizers that literal is 7 tokens once its trailing space
       // merges into the next word (8 alone). Live 10–18 token turns only
@@ -2261,10 +2284,11 @@ static std::string pho_once(int idx,WireSession &w,const std::string &key,
       // made tokens_after = tokens_before + 6 and every attempt was rejected.
       // pho::instruction already tells the model how to read compact history.
       before=pho_tokens(idx,original);if(before>0)after=pho_tokens(idx,encoded);
-      if(before>0&&after>0&&after<before)selected=encoded;
-      if(before>0&&after>0)w.pho_last_key=key;
-      std::cerr<<"pho-compress model="<<bot_model_id(idx)<<" tokens_before="<<before
-               <<" tokens_after="<<after<<" accepted="<<(selected!=original?1:0)<<std::endl;
+      if(before>0&&after>0&&after<before){selected=encoded;w.pho_last_key=key;}
+      const long saved=selected!=original?before-after:0;
+      std::cerr<<"pho-compress scope=history model="<<bot_model_id(idx)
+               <<" tokens_before="<<before<<" tokens_after="<<after
+               <<" saved="<<saved<<" accepted="<<(selected!=original?1:0)<<std::endl;
     }
   }
   record["content"]=selected;record["tokens_before"]=(double)before;record["tokens_after"]=(double)after;
@@ -2274,8 +2298,28 @@ static size_t pho_old_end(const WireSession &w) {
   const size_t recent=(size_t)std::clamp(envi("MAG_ROOM_PHO_KEEP_TURNS",2),1,20);
   return w.turn_ends.size()>recent?w.turn_ends[w.turn_ends.size()-recent-1]:0;
 }
-static std::string pho_message_key(const Val &m) {
-  return "wire-"+fnv_hex(mj::dump(m));
+// Archive lookup by the raw line or by the sealed text. Content-derived keys
+// change once a line is substituted, so a second pass must not encode again.
+static const Val *pho_find(const Val &archive, const std::string &prose) {
+  if(!archive.isObj()||prose.empty())return nullptr;
+  const Val *by_content=nullptr;
+  for(const auto &kv:*archive.obj) {
+    if(!kv.second.isObj())continue;
+    if(mag::str(kv.second,"original")==prose)return &kv.second;
+    if(!by_content&&mag::str(kv.second,"content")==prose)by_content=&kv.second;
+  }
+  return by_content;
+}
+static void pho_split_speaker(const std::string &line, std::string &prefix, std::string &body) {
+  prefix.clear();body=line;
+  if(!line.empty()&&line[0]=='[') {
+    const auto mark=line.find("]: ");
+    if(mark!=std::string::npos&&mark<200){prefix=line.substr(0,mark+3);body=line.substr(mark+3);}
+  }
+}
+static void pho_archive_body(int idx,WireSession &w,const std::string &body) {
+  if(body.empty()||pho_find(w.pho_archive,body))return;
+  pho_once(idx,w,"line-"+fnv_hex(body),body);
 }
 static void pho_archive_turns(int idx,WireSession &w) {
   const size_t end=std::min(pho_old_end(w),w.messages.size());
@@ -2286,8 +2330,39 @@ static void pho_archive_turns(int idx,WireSession &w) {
     // Keep the historical status tail exactly; compress only room prose.
     const auto at=text.rfind("\n[Kontext]");
     const auto prose=at==std::string::npos?text:text.substr(0,at);
-    if(!prose.empty())pho_once(idx,w,pho_message_key(m),prose);
+    if(!pho::eligible(prose))continue;
+    size_t pos=0;
+    while(pos<prose.size()) {
+      auto nl=prose.find('\n',pos);
+      if(nl==std::string::npos)nl=prose.size();
+      std::string prefix,body;pho_split_speaker(prose.substr(pos,nl-pos),prefix,body);
+      (void)prefix;pho_archive_body(idx,w,body);
+      if(nl>=prose.size())break;
+      pos=nl+1;
+    }
   }
+}
+// Rebuild one prose block from sealed line bodies. Speaker labels stay
+// verbatim. Ineligible prose (code, tools, JSON) is returned unchanged.
+// Callers must not write the result back into a message that was already sent.
+static std::string pho_sealed_prose(const Val &archive, const std::string &prose) {
+  if(!pho::eligible(prose))return prose;
+  std::string rebuilt;size_t pos=0;
+  while(pos<prose.size()) {
+    auto nl=prose.find('\n',pos);
+    const bool more=nl!=std::string::npos;
+    if(!more)nl=prose.size();
+    std::string prefix,body;pho_split_speaker(prose.substr(pos,nl-pos),prefix,body);
+    std::string sealed=body;
+    if(const auto *rec=pho_find(archive,body)) {
+      long before=0,after=0;
+      if(pho_accepted(*rec,before,after))sealed=mag::str(*rec,"content",body);
+    }
+    rebuilt+=prefix+sealed;
+    if(more)rebuilt.push_back('\n');
+    pos=nl+1;
+  }
+  return rebuilt;
 }
 static std::string pho_initial_transcript(int idx,WireSession &w,
                                           const std::vector<Val> &room,std::string text) {
@@ -2319,18 +2394,22 @@ static std::string pho_initial_transcript(int idx,WireSession &w,
 static void pho_rollover(int idx,std::vector<Val> &messages) {
   if(!CONFIGURED_MODEL)return;
   const auto bot=bot_field(idx,"id");std::lock_guard<std::mutex> wire(WIRE_MTX);
-  auto it=WIRE_SESSIONS.find(bot);if(it==WIRE_SESSIONS.end())return;
+  auto it=WIRE_SESSIONS.find(bot);if(it==WIRE_SESSIONS.end()||!it->second.compression)return;
+  // Context budget is already rebuilding this copy. Substitute sealed line
+  // bodies here only; the stored warm wire is left untouched until this
+  // compacted copy is what the next request loads.
   const auto &w=it->second;const size_t end=std::min(pho_old_end(w),messages.size());
   size_t changed=0;
   for(size_t i=2;i<end;++i) {
-    auto &m=messages[i];auto saved=w.pho_archive.find(pho_message_key(m));
-    if(!saved)continue;
-    const auto text=mag::str(m,"content"),original=mag::str(*saved,"original");
+    auto &m=messages[i];const auto role=mag::str(m,"role");
+    if(role=="tool"||m.find("tool_calls"))continue;
+    if(role!="user"&&role!="assistant")continue;
+    const auto text=mag::str(m,"content");
     const auto at=text.rfind("\n[Kontext]");
-    if((at==std::string::npos?text:text.substr(0,at))!=original)continue;
-    const auto compressed=mag::str(*saved,"content",original);
-    if(compressed==original)continue;
-    m["content"]=compressed+(at==std::string::npos?"":text.substr(at));++changed;
+    const auto prose=at==std::string::npos?text:text.substr(0,at);
+    const auto sealed=pho_sealed_prose(w.pho_archive,prose);
+    if(sealed==prose)continue;
+    m["content"]=sealed+(at==std::string::npos?std::string():text.substr(at));++changed;
   }
   if(changed)std::cerr<<"pho-context-rollover model="<<bot_model_id(idx)<<" turns="<<changed<<std::endl;
 }
@@ -2371,6 +2450,8 @@ static std::vector<Val> wire_messages(int idx, const std::string &system,
   }
   // Sample preference exactly at a turn boundary, never during streaming.
   w.compression=pho_enabled(idx);
+  // Seal aged prose for a later rollover. Do not rewrite w.messages: the next
+  // request must resend every previous message byte-for-byte.
   pho_archive_turns(idx,w);
   const bool initial=w.messages.size()==1;
   std::string input;

@@ -34,8 +34,11 @@ grep -Fq -- '--instance "$MAG_GITEA_RUNNER_INSTANCE"' "$r/install.sh"
 grep -Fq 'timeout --kill-after=5s 25s' "$r/install.sh"
 grep -Fq 'taskset -c 42-55' "$r/install.sh"
 grep -Fq 'systemctl restart gitea.service' "$r/install.sh"
+grep -Fq 'gitea_wait_actions' "$r/install.sh"
 grep -Fq 'install_github_runner ||' "$r/install.sh"
 ! grep -F 'instance="http://${addr' "$r/install.sh"
+grep -Fq "curl --noproxy '*'" "$r/gitea-local.sh"
+grep -Fq '[[ $base == http://127.0.0.1:3000 ]]' "$r/gitea-local.sh"
 ! grep -E 'systemctl (restart|stop|reload)[[:space:]]+(nginx|mag-llm|mag-120)' "$r/install.sh" "$r"/*.service
 grep -Fq 'LOCAL_ROOT_URL = http://127.0.0.1:3000/' "$root/ops/gitea/app.ini.example"
 grep -Fq 'ENABLED = true' "$root/ops/gitea/app.ini.example"
@@ -102,4 +105,28 @@ printf '#!/bin/sh\nprintf 404\n' > "$tmp/bin/curl"
 [[ $(PATH="$tmp/bin:$PATH" gitea_actions_ping_code http://127.0.0.1:3000) == 404 ]]
 printf '#!/bin/sh\nprintf 200\n' > "$tmp/bin/curl"
 [[ $(PATH="$tmp/bin:$PATH" gitea_actions_ping_code http://127.0.0.1:3000) == 200 ]]
+# Public/Funnel URLs must not be contacted; the connect path 404s there.
+[[ $(PATH="$tmp/bin:$PATH" gitea_actions_ping_code https://mag.tail3e02ae.ts.net) == 404 ]]
+[[ $(PATH="$tmp/bin:$PATH" gitea_actions_ping_code http://127.0.0.1:8445) == 404 ]]
+cat > "$tmp/bin/curl" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$*" > "${CURL_ARGS:?}"
+printf 200
+EOF
+chmod +x "$tmp/bin/curl"
+CURL_ARGS="$tmp/curl.args" HTTP_PROXY=http://127.0.0.1:9 HTTPS_PROXY=http://127.0.0.1:9 \
+  PATH="$tmp/bin:$PATH" gitea_actions_ping_code http://127.0.0.1:3000 >/dev/null
+grep -Fq -- '--noproxy *' "$tmp/curl.args"
+grep -Fq 'http://127.0.0.1:3000/api/actions/ping.v1.PingService/Ping' "$tmp/curl.args"
+! grep -Fq '127.0.0.1:9' "$tmp/curl.args"
+echo 0 > "$tmp/n"
+cat > "$tmp/bin/curl" <<EOF
+#!/bin/sh
+n=\$(cat "$tmp/n")
+n=\$((n+1))
+printf '%s\n' "\$n" > "$tmp/n"
+if [ "\$n" -lt 2 ]; then printf 404; exit 0; fi
+printf 200
+EOF
+[[ $(PATH="$tmp/bin:$PATH" MAG_GITEA_PING_TRIES=3 MAG_GITEA_PING_SLEEP=0 gitea_wait_actions) == 200 ]]
 echo 'Runner guards PASS'

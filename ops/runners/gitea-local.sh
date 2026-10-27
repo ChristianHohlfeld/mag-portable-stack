@@ -107,11 +107,20 @@ gitea_runner_needs_register() {
   return 0
 }
 
+# Loopback only. A host HTTP_PROXY must not send 127.0.0.1 to the Funnel.
+gitea_local_curl() {
+  env -u http_proxy -u https_proxy -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY -u all_proxy \
+    no_proxy='*' NO_PROXY='*' \
+    curl --noproxy '*' --max-redirs 0 "$@"
+}
+
 # HTTP status of the connect ping, without following a redirect to ROOT_URL.
 # 000 means the listener did not answer. Any 404 is the registration failure.
+# A non-loopback URL is treated as 404 without contacting the public proxy.
 gitea_actions_ping_code() {
   local base=${1%/} code
-  code=$(curl -sS -o /dev/null -w '%{http_code}' --max-redirs 0 --max-time 5 --connect-timeout 2 \
+  [[ $base == http://127.0.0.1:3000 ]] || { printf '404'; return 0; }
+  code=$(gitea_local_curl -sS -o /dev/null -w '%{http_code}' --max-time 5 --connect-timeout 2 \
     -X POST -H 'Content-Type: application/json' -H 'Connect-Protocol-Version: 1' \
     --data '{}' "${base}/api/actions/ping.v1.PingService/Ping") || true
   [[ $code =~ ^[0-9]{3}$ ]] || code=000
@@ -128,10 +137,26 @@ gitea_actions_ping_ok() {
 gitea_wait_health() {
   local tries=${MAG_GITEA_HEALTH_TRIES:-30} pause=${MAG_GITEA_HEALTH_SLEEP:-1} i
   for i in $(seq 1 "$tries"); do
-    if curl -fsS --max-time 2 --connect-timeout 1 http://127.0.0.1:3000/api/healthz >/dev/null; then
+    if gitea_local_curl -fsS --max-time 2 --connect-timeout 1 http://127.0.0.1:3000/api/healthz >/dev/null; then
       return 0
     fi
     sleep "$pause"
   done
+  return 1
+}
+
+# After a gitea restart, healthz can be up before /api/actions is mounted.
+# Prints the last ping status. Returns 0 only when that status is usable.
+gitea_wait_actions() {
+  local tries=${MAG_GITEA_PING_TRIES:-15} pause=${MAG_GITEA_PING_SLEEP:-1} i code=000
+  for i in $(seq 1 "$tries"); do
+    code=$(gitea_actions_ping_code "$MAG_GITEA_RUNNER_INSTANCE")
+    if gitea_actions_ping_ok "$code"; then
+      printf '%s' "$code"
+      return 0
+    fi
+    sleep "$pause"
+  done
+  printf '%s' "$code"
   return 1
 }

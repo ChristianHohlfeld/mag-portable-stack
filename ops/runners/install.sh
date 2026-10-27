@@ -69,14 +69,14 @@ if [[ -x /usr/local/bin/gitea && -r /etc/gitea/app.ini ]] && systemctl is-active
     systemctl restart gitea.service
     gitea_wait_health || log 'gitea healthz timed out on 127.0.0.1:3000'
   fi
-  ping=$(gitea_actions_ping_code "$MAG_GITEA_RUNNER_INSTANCE")
+  ping=$(gitea_wait_actions || true)
   if ! gitea_actions_ping_ok "$ping"; then
     ver=$(gitea_binary_version || true)
     if ! gitea_actions_rpc_supported "${ver:-0}"; then
       log "Gitea ${ver:-unknown} is too old for runner ${GITEA_RUNNER_VER}; installing the pinned binary and restarting gitea.service"
       bash "$here/../gitea/install.sh" --restart
       gitea_wait_health || log 'gitea healthz timed out after the pinned install'
-      ping=$(gitea_actions_ping_code "$MAG_GITEA_RUNNER_INSTANCE")
+      ping=$(gitea_wait_actions || true)
     elif [[ $actions_state != changed ]]; then
       # The file already asks for Actions, but this process may have started before that.
       # One reload per Gitea binary; a still-404 after that is not retried every deploy.
@@ -86,7 +86,7 @@ if [[ -x /usr/local/bin/gitea && -r /etc/gitea/app.ini ]] && systemctl is-active
         systemctl restart gitea.service
         printf '%s\n' "${ver:-}" > "$stamp"
         gitea_wait_health || log 'gitea healthz timed out on 127.0.0.1:3000'
-        ping=$(gitea_actions_ping_code "$MAG_GITEA_RUNNER_INSTANCE")
+        ping=$(gitea_wait_actions || true)
       fi
     fi
   fi

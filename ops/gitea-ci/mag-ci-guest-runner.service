@@ -1,0 +1,12 @@
+[Unit]
+Description=Ephemeral repository-scoped runner in disposable CI guest
+After=network-online.target
+Wants=network-online.target
+[Service]
+WorkingDirectory=/var/lib/mag-ci-runner
+Environment=HOME=/root
+Environment=PATH=/opt/ci-venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/usr/local/bin/gitea-runner --config /etc/mag-ci-runner.yaml daemon
+# The whole VM is disposable; root-required regressions execute only here.
+ExecStopPost=/sbin/poweroff
+Restart=no

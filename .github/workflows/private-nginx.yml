@@ -1,9 +1,6 @@
 name: Private nginx cutover security
 on:
-  push:
-    paths: ['ops/private-access/**', 'ops/nginx/mag-speech.inc', 'mag-room/tests/test_private_nginx.py', 'mag-room/tests/test_whois_deploy.py', 'mag-room/tests/test_native.py', 'mag-room/native/**', 'docs/**', '.github/workflows/private-nginx.yml']
-  pull_request:
-    paths: ['ops/private-access/**', 'ops/nginx/mag-speech.inc', 'mag-room/tests/test_private_nginx.py', 'mag-room/tests/test_native.py', 'docs/**', '.github/workflows/private-nginx.yml']
+  workflow_dispatch:
 permissions:
   contents: read
   pull-requests: read

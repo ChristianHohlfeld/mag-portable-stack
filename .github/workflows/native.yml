@@ -3,8 +3,7 @@ permissions:
   contents: read
   pull-requests: read
 on:
-  push:
-  pull_request:
+  workflow_dispatch:
 jobs:
   native:
     runs-on: ${{ fromJSON(vars.MAG_RUNS_ON || '"ubuntu-24.04"') }}
@@ -119,3 +118,4 @@ jobs:
         run: bash ops/tests/test-green.sh
       - name: Boot persistence
         run: bash ops/tests/test-boot.sh
+

@@ -1,0 +1,35 @@
+# Public Git only. The MAG room keeps its separate Tailnet listener/auth.
+map $http_upgrade $mag_git_upgrade { default upgrade; '' close; }
+limit_req_zone $binary_remote_addr zone=mag_git_login:10m rate=5r/m;
+server {
+    listen 80;
+    server_name git.mag.stardenburg.de;
+    location ^~ /.well-known/acme-challenge/ { root /var/lib/mag-ci/acme; }
+    location / { return 308 https://git.mag.stardenburg.de$request_uri; }
+}
+server {
+    listen 443 ssl;
+    server_name git.mag.stardenburg.de;
+    if ($host != git.mag.stardenburg.de) { return 421; }
+    ssl_certificate /etc/mag-ci/tls/current/cert.pem;
+    ssl_certificate_key /etc/mag-ci/tls/current/key.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    client_max_body_size 128m;
+    add_header X-Content-Type-Options nosniff always;
+    add_header Strict-Transport-Security 'max-age=31536000' always;
+    # GitHub hook delivery is authenticated by the native bridge (HMAC-SHA256).
+    location = /mag-ci/github {
+        client_max_body_size 2m;
+        proxy_pass http://127.0.0.1:3011/github;
+        proxy_set_header Host git.mag.stardenburg.de;
+        proxy_set_header X-Forwarded-For "";
+        proxy_connect_timeout 2s;
+        proxy_read_timeout 10s;
+        access_log off;
+    }
+    location = /user/login {
+        limit_req zone=mag_git_login burst=5 nodelay;
+        include /etc/mag-ci/gitea-proxy.inc;
+    }
+    location / { include /etc/mag-ci/gitea-proxy.inc; }
+}

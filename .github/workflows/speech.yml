@@ -3,15 +3,6 @@ permissions:
   contents: read
   pull-requests: read
 on:
-  pull_request:
-    branches: [main]
-    paths:
-      - 'mag-room/**'
-      - 'ops/vendor-speech-assets.sh'
-      - 'ops/nginx/mag-speech.inc'
-      - 'ops/private-access/mag-room.nginx.conf'
-      - 'ops/deploy.sh'
-      - '.github/workflows/speech.yml'
   workflow_dispatch:
 jobs:
   speech:

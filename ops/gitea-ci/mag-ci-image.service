@@ -1,0 +1,21 @@
+[Unit]
+Description=Build the disposable CI base once, only while inference is idle
+After=mag-ci-network.service mag-ci-guard.service
+Requires=mag-ci-network.service mag-ci-guard.service
+ConditionPathExists=!/var/lib/mag-ci/base.qcow2
+[Service]
+Type=oneshot
+Slice=mag-ci-workload.slice
+CPUAffinity=54 55
+NUMAPolicy=preferred
+NUMAMask=1
+CPUSchedulingPolicy=idle
+CPUQuota=100%
+MemoryMax=14G
+MemorySwapMax=0
+Nice=19
+IOSchedulingClass=idle
+ExecStart=/usr/local/lib/mag-ci/build-image.sh
+TimeoutStartSec=24h
+[Install]
+WantedBy=multi-user.target

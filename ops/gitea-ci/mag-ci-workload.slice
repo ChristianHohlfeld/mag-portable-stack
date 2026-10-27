@@ -1,0 +1,13 @@
+[Unit]
+Description=MAG CI VM budget (never the resident inference services)
+[Slice]
+CPUAccounting=yes
+CPUQuota=100%
+CPUWeight=1
+MemoryAccounting=yes
+MemoryHigh=12G
+MemoryMax=14G
+MemorySwapMax=0
+IOAccounting=yes
+IOWeight=1
+TasksMax=2048

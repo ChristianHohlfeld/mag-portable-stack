@@ -14,6 +14,10 @@ set -euo pipefail
 [[ $EUID == 0 ]] || { echo 'root required' >&2; exit 1; }
 here="$(cd -- "$(dirname "$0")" && pwd)"
 log() { echo "runners: $*"; }
+# New single-repository CI replaces host-execution runners.
+if [[ -e /etc/mag-ci/public.env ]]; then
+  exec bash "$here/../gitea-ci/install.sh"
+fi
 [[ ! -e /etc/mag-stack/runners.disabled ]] || { log 'disabled'; exit 0; }
 
 GITEA_RUNNER_VER=5.1.1

@@ -1,0 +1,12 @@
+[Unit]
+Description=Prepare an ephemeral scoped runner, never expose host tokens to CI
+After=gitea.service mag-ci-git.socket
+ConditionPathExists=/var/lib/mag-ci/base.qcow2
+[Service]
+Type=oneshot
+UMask=0077
+LoadCredential=gitea:/etc/credstore/mag-ci-gitea.token
+ExecStart=/usr/local/lib/mag-ci/start-worker.sh
+PrivateTmp=yes
+ProtectHome=yes
+NoNewPrivileges=yes

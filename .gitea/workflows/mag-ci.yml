@@ -1,0 +1,75 @@
+# Trusted dispatch workflow. Never execute a candidate workflow on the host.
+name: MAG checks on MAG
+run-name: MAG CI ${{ inputs.sha }}
+on:
+  workflow_dispatch:
+    inputs:
+      sha:
+        required: true
+        type: string
+      base_sha:
+        required: true
+        type: string
+permissions:
+  contents: read
+jobs:
+  checks:
+    runs-on: mag-ci-vm
+    timeout-minutes: 1440
+    env:
+      MAG_CI_SHA: ${{ inputs.sha }}
+      MAG_CI_BASE: ${{ inputs.base_sha }}
+    steps:
+      - name: checkout
+        env:
+          CI_JOB_TOKEN: ${{ secrets.GITEA_TOKEN }}
+          CI_CONTROL_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          umask 077
+          [[ $MAG_CI_SHA =~ ^[0-9a-f]{40}$ && $MAG_CI_BASE =~ ^[0-9a-f]{40}$ && $CI_CONTROL_SHA =~ ^[0-9a-f]{40}$ ]]
+          mkdir -p /work/control /work/source
+          printf 'http://mag-ci-token:%s@172.31.255.1:3000\n' "$CI_JOB_TOKEN" > /run/mag-ci-checkout
+          trap 'rm -f /run/mag-ci-checkout' EXIT
+          for target in control source; do
+            git -C /work/$target init -q
+            git -C /work/$target remote add origin http://172.31.255.1:3000/mag-ci/mag-portable-stack.git
+          done
+          git -C /work/control -c credential.helper='store --file=/run/mag-ci-checkout' fetch --no-tags origin refs/heads/mag-ci/control
+          [[ $(git -C /work/control rev-parse FETCH_HEAD) == "$CI_CONTROL_SHA" ]]
+          git -C /work/control checkout -q --detach "$CI_CONTROL_SHA"
+          git -C /work/source -c credential.helper='store --file=/run/mag-ci-checkout' fetch --no-tags origin refs/heads/main refs/ci/source/$MAG_CI_SHA
+          git -C /work/source checkout -q --detach "$MAG_CI_SHA"
+          git -C /work/source update-ref refs/remotes/origin/main "$MAG_CI_BASE"
+          rm -f /run/mag-ci-checkout
+          unset CI_JOB_TOKEN
+      - name: native
+        if: always()
+        run: bash /work/control/ops/gitea-ci/suite.sh native
+      - name: pages
+        if: always()
+        run: bash /work/control/ops/gitea-ci/suite.sh pages
+      - name: nginx
+        if: always()
+        run: bash /work/control/ops/gitea-ci/suite.sh nginx
+      - name: recovery
+        if: always()
+        run: bash /work/control/ops/gitea-ci/suite.sh recovery
+      - name: room
+        if: always()
+        run: bash /work/control/ops/gitea-ci/suite.sh room
+      - name: chromium
+        if: always()
+        run: bash /work/control/ops/gitea-ci/suite.sh chromium
+      - name: speech
+        if: always()
+        run: bash /work/control/ops/gitea-ci/suite.sh speech
+      - name: e2e-bootstrap
+        if: always()
+        run: bash /work/control/ops/gitea-ci/suite.sh e2e-bootstrap
+      - name: gitleaks
+        if: always()
+        run: bash /work/control/ops/gitea-ci/suite.sh gitleaks
+      - name: secrets
+        if: always()
+        run: bash /work/control/ops/gitea-ci/suite.sh secrets

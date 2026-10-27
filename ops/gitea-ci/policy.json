@@ -1,0 +1,12 @@
+{
+  "github_repository": "ChristianHohlfeld/mag-portable-stack",
+  "gitea_repository": "mag-ci/mag-portable-stack",
+  "control_ref": "mag-ci/control",
+  "workflow": "mag-ci.yml",
+  "contexts": ["native", "pages", "nginx", "recovery", "room", "chromium", "speech", "e2e-bootstrap", "gitleaks", "secrets"],
+  "public_hostname": "git.mag.stardenburg.de",
+  "github_api": "https://api.github.com",
+  "gitea_api": "http://127.0.0.1:3000/api/v1",
+  "guest_gitea": "http://172.31.255.1:3000",
+  "max_pending": 8
+}

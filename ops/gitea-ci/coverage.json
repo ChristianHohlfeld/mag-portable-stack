@@ -1,0 +1,313 @@
+{
+  "native": [
+    {
+      "name": "Install build dependencies",
+      "kind": "image-dependency",
+      "command": "sudo apt-get update && sudo apt-get install -y ninja-build libssl-dev libcurl4-openssl-dev libarchive-dev"
+    },
+    {
+      "name": "Build",
+      "kind": "test",
+      "command": "cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release && cmake --build build -j 4"
+    },
+    {
+      "name": "Prevent CI room-clear from invoking production backup",
+      "kind": "test",
+      "command": "grep -Fq \"MAG_TEST_NO_CLEAR_BACKUP='1'\" mag-room/tests/test_native.py\n! grep -Fq 'mag-backup-clear.timer' mag-room/native/routes.hpp\n! grep -Fq 'start mag-backup-clear.service' mag-room/native/routes.hpp\n"
+    },
+    {
+      "name": "Tailscale API nft IPv4/v6 egress regression without modifying host firewall",
+      "kind": "test",
+      "command": "sudo bash ops/audit/tests/test-tail-egress.sh"
+    },
+    {
+      "name": "Owner-only backup and console access contract",
+      "kind": "test",
+      "command": "bash ops/private-access/tests/test-owner-boundaries.sh"
+    },
+    {
+      "name": "Native integration checks",
+      "kind": "test",
+      "command": "./build/test-guest-pty\n./build/test-browser-recovery\n./build/test-jobs-mcp\n./build/test-pages-native\n./build/test-browser-events\n./build/test-guest-description\n./build/test-guest-curl\n./build/test-large-stdin\n./build/test-gitea-account\npython3 mag-room/tests/test_large_tools.py\npython3 mag-room/tests/test_native.py\npython3 mag-room/tests/test_agent_core.py\npython3 ops/numa/tests/test_numa_swap.py\npython3 mag-room/tests/test_room_control.py\npython3 mag-room/tests/test_tailscale_auth.py\npython3 ops/audit/tests/test_native_gateway.py\nbash ops/qwen/tests/test-qwen.sh\nbash ops/ornith/tests/test-ornith.sh\npython3 mag-room/tests/test_whois_deploy.py\nbash -n ops/deploy.sh ops/rollback.sh ops/private-access/*.sh\n"
+    },
+    {
+      "name": "IK prompt cache regression and rollback shell syntax",
+      "kind": "test",
+      "command": "bash ops/deepseek/tests/test-ops-38.sh\nbash ops/deepseek/tests/test-numa-isolation.sh\nbash ops/deepseek/tests/test-node0-available.sh\nbash ops/deepseek/tests/test-iq3-parallel.sh\nbash ops/deepseek/tests/test-model-preservation.sh\nbash -n ops/deepseek/verify-iq3.sh ops/deepseek/start-iq3.sh ops/deepseek/iq3-parallel.sh ops/deepseek/hotswap.sh\nbash -n ops/deepseek/numa-isolation.sh ops/deepseek/numa-bench.sh\nbash -n ops/deepseek/prompt-cache-switch.sh\n"
+    },
+    {
+      "name": "nginx syntax without a real Tailnet listener",
+      "kind": "test",
+      "command": "sudo apt-get install -y nginx\nopenssl req -x509 -newkey rsa:2048 -nodes -days 1 -keyout /tmp/mag-ci.key -out /tmp/mag-ci.crt -subj '/CN=mag.stardenburg.de' 2>/dev/null\nsed -e 's|/etc/mag-nginx/tls/cert.pem|/tmp/mag-ci.crt|' -e 's|/etc/mag-nginx/tls/key.pem|/tmp/mag-ci.key|' -e 's|100[.]123[.]114[.]16:443|127.0.0.1:18443|' ops/private-access/mag-room.nginx.conf > /tmp/mag-ci-site.conf\ngrep -Fq 'listen 127.0.0.1:18443 ssl http2;' /tmp/mag-ci-site.conf\nprintf 'pid /tmp/mag-ci-nginx.pid;\\nerror_log /tmp/mag-ci-nginx.err;\\nevents {}\\nhttp { access_log off; include /tmp/mag-ci-site.conf; }\\n' > /tmp/mag-ci-nginx.conf\nsudo nginx -t -c /tmp/mag-ci-nginx.conf -p /tmp\n"
+    },
+    {
+      "name": "Browser WebRTC UDP gateway",
+      "kind": "test",
+      "command": "cd mag-room/webrtc && go test -mod=mod ./... && go build -mod=mod -o /tmp/mag-browser-webrtc ."
+    },
+    {
+      "name": "Vendor terminal and verify UI assets",
+      "kind": "test",
+      "command": "bash ops/vendor-terminal-assets.sh /tmp/mag-terminal-assets\ntest -s /tmp/mag-terminal-assets/xterm.js\ntest -s /tmp/mag-terminal-assets/xterm-addon-fit.js\ntest -s /tmp/mag-terminal-assets/xterm.css\n"
+    },
+    {
+      "name": "Frontend script syntax",
+      "kind": "test",
+      "command": "python3 -c 'from pathlib import Path; s=Path(\"mag-room/web/index.html\").read_text(); Path(\"/tmp/mag-room-web.js\").write_text(s.split(\"<script>\")[-1].split(\"</script>\")[0])'\nnode --check /tmp/mag-room-web.js\nnode mag-room/tests/test_composer.cjs\n"
+    },
+    {
+      "name": "Shell syntax",
+      "kind": "test",
+      "command": "bash -n ops/*.sh ops/magbot-guest-run ops/magbot-agent-ctl\nbash -n ops/bots/*.sh ops/bots/tests/*.sh\nbash ops/bots/tests/test-bots.sh\n"
+    },
+    {
+      "name": "ISRG trust chain verifies without the system store",
+      "kind": "test",
+      "command": "bash ops/trust/test-trust.sh"
+    },
+    {
+      "name": "Blank-host bootstrap dry run",
+      "kind": "test",
+      "command": "bash ops/tests/test-bootstrap.sh"
+    },
+    {
+      "name": "Gitea pull mirror against a fake API",
+      "kind": "test",
+      "command": "bash ops/tests/test-gitea-mirror.sh"
+    },
+    {
+      "name": "Gitea bot rights against a fake API",
+      "kind": "test",
+      "command": "bash ops/tests/test-gitea-bot-rights.sh"
+    },
+    {
+      "name": "New ops scripts pass shellcheck",
+      "kind": "test",
+      "command": "if ! command -v shellcheck >/dev/null; then echo 'shellcheck not installed on this runner; skipped'; exit 0; fi\nshellcheck ops/vm/build-golden.sh ops/bootstrap-voice.sh ops/deepseek/bootstrap-runtimes.sh ops/tailscale/install.sh ops/private-access/install-lego.sh ops/gitea/mirror-github.sh ops/tests/e2e-bootstrap.sh ops/ci/promote-green.sh ops/ci/self-hosted-checks.sh\n"
+    },
+    {
+      "name": "Update script dry run",
+      "kind": "test",
+      "command": "bash ops/tests/test-update.sh"
+    },
+    {
+      "name": "One-shot legacy cleanup in a sandbox",
+      "kind": "test",
+      "command": "bash ops/tests/test-cleanup-legacy.sh"
+    },
+    {
+      "name": "Unreferenced bot VM drift check",
+      "kind": "test",
+      "command": "bash ops/tests/test-agent-drift.sh"
+    },
+    {
+      "name": "S23 control API",
+      "kind": "test",
+      "command": "python3 devices/s23/tests/test_s23ctl.py"
+    },
+    {
+      "name": "Action runner guards",
+      "kind": "test",
+      "command": "bash ops/tests/test-runners.sh"
+    },
+    {
+      "name": "Green promotion",
+      "kind": "test",
+      "command": "bash ops/tests/test-green.sh"
+    },
+    {
+      "name": "Boot persistence",
+      "kind": "test",
+      "command": "bash ops/tests/test-boot.sh"
+    }
+  ],
+  "pages": [
+    {
+      "name": "Install nginx and C++ link dependencies",
+      "kind": "image-dependency",
+      "command": "sudo apt-get update && sudo apt-get install -y nginx libcurl4-openssl-dev libarchive-dev libssl-dev jq dnsutils"
+    },
+    {
+      "name": "Native C++ unit tests + MAG compilation",
+      "kind": "test",
+      "command": "cmake -S . -B build -DCMAKE_BUILD_TYPE=Release\ncmake --build build --target test-pages-native magroom -j 4\n./build/test-pages-native\n"
+    },
+    {
+      "name": "Tailnet-only, public opt-in, lego v5 and DNS-01 onboarding tests",
+      "kind": "test",
+      "command": "bash ops/pages/tests/test-pages-ops.sh"
+    },
+    {
+      "name": "Full Pages lifecycle and root cleanup regressions",
+      "kind": "test",
+      "command": "bash ops/pages/tests/test-pages-lifecycle.sh\nbash ops/pages/tests/test-pages-tools.sh\nif [ \"$RUNNER_ENVIRONMENT\" = github-hosted ]; then sudo bash ops/pages/tests/test-pages-sandbox.sh; fi\nfor script in ops/pages/*.sh ops/pages/tests/*.sh; do\n  bash -n \"$script\"\ndone\n"
+    },
+    {
+      "name": "Shell syntax; no new runtime units",
+      "kind": "test",
+      "command": "for script in ops/pages/*.sh; do\n  bash -n \"$script\"\ndone\ntest -z \"$(find ops/pages \\( -name '*.py' -o -name '*.timer' \\) -print)\"\ntest \"$(find ops/pages -name '*.service' -printf '%f\\n')\" = mag-pages-reconcile.service\ngrep -F 'ProtectHome=yes' ops/pages/mag-pages-reconcile.service\n! grep -R -E 'pages-policy.sh \\*|sudo -n /usr/local/lib/mag-pages/pages-gc.sh' ops/pages\n! grep -R -E 'systemctl (restart|stop) (mag-llm|deepseek)' ops/pages\n"
+    }
+  ],
+  "nginx": [
+    {
+      "name": "nginx and shell security dependencies",
+      "kind": "image-dependency",
+      "command": "sudo apt-get update && sudo apt-get install -y nginx openssl jq"
+    },
+    {
+      "name": "Shell syntax and transactional TLS tests",
+      "kind": "test",
+      "command": "bash -n ops/private-access/*.sh ops/private-access/tests/*.sh\nbash ops/private-access/tests/test-deploy-hook.sh\nbash ops/private-access/tests/test-rollback.sh\n"
+    },
+    {
+      "name": "Actual lego 5.5.2 CLI parsing (no ACME traffic)",
+      "kind": "test",
+      "command": "bash ops/private-access/tests/test-lego-v5.sh"
+    },
+    {
+      "name": "Real TLS nginx auth, fail-closed, header spoofing",
+      "kind": "test",
+      "command": "python3 mag-room/tests/test_private_nginx.py"
+    },
+    {
+      "name": "Disposable deploy/Owner-smoke/rollback regression",
+      "kind": "test",
+      "command": "python3 mag-room/tests/test_whois_deploy.py"
+    },
+    {
+      "name": "Cutover guard and rollback contract",
+      "kind": "test",
+      "command": "grep -F 'systemd-run --quiet --unit=mag-private-rollback --on-active=180s' ops/private-access/install.sh\ngrep -F 'systemctl reload nginx.service' ops/private-access/rollback.sh\ngrep -F 'owner-verified' ops/private-access/confirm.sh\ngrep -F 'mag-private-cutover/confirmed' ops/private-access/remove-caddy.sh\n! grep -E '(systemctl|service) (restart|stop|try-restart) mag-llm' ops/private-access/*.sh\n! test -e ops/private-access/tailscale-whois.py\n! test -e ops/private-access/mag-whois.service\ngrep -F 'include /opt/mag-stack/current/ops/nginx/mag-speech*.inc;' ops/private-access/mag-room.nginx.conf\ngrep -F 'cp -a -- \"$site\" \"$backup\"' ops/private-access/install.sh\ngrep -F 'mode=$(stat -c %a \"$backup\")' ops/private-access/install.sh\ngrep -F 'rm -f -- \"$backup\"' ops/private-access/rollback.sh\n! grep -F 'python3 -' ops/private-access/install.sh\ngrep -F 'proxy_pass http://127.0.0.1:8766/_internal/tailscale/whois;' ops/private-access/mag-room.nginx.conf\n"
+    }
+  ],
+  "recovery": [
+    {
+      "name": "Install restic and test tools",
+      "kind": "image-dependency",
+      "command": "sudo apt-get update && sudo apt-get install -y sqlite3 jq util-linux systemd curl bzip2\ncurl -fsSLo /tmp/restic.bz2 https://github.com/restic/restic/releases/download/v0.18.1/restic_0.18.1_linux_amd64.bz2\necho '680838f19d67151adba227e1570cdd8af12c19cf1735783ed1ba928bc41f363d  /tmp/restic.bz2' | sha256sum -c -\nbunzip2 -c /tmp/restic.bz2 | sudo tee /usr/local/bin/restic >/dev/null\nsudo chmod 0755 /usr/local/bin/restic\n/usr/local/bin/restic version\n"
+    },
+    {
+      "name": "shell syntax, executable hook and no destructive model action",
+      "kind": "test",
+      "command": "bash -n ops/backup/*.sh ops/backup/tests/*.sh ops/deploy.sh\ntest \"$(grep -Ec '^[a-f0-9]{64}[[:space:]]+' ops/backup/models.sha256)\" -eq 5\ntest \"$(grep -Ec '^[a-f0-9]{64}[[:space:]]+' ops/backup/models-iq3.sha256)\" -eq 4\ngrep -Fq 'sha256sum --check' ops/backup/bootstrap-models.sh\ngrep -Fq '/var/lib/tailscale' ops/backup/backup.sh\ngrep -Fq '/var/spool/cron/crontabs' ops/backup/backup.sh\ngrep -Fq 'systemctl start mag-backup-deploy.service' ops/deploy.sh\n! grep -Fq 'mag-backup-clear.timer' mag-room/native/routes.hpp\ngrep -Fq 'actor.role != \"owner\"' mag-room/native/routes.hpp\n! grep -R -E '(stop|restart) mag-llm.service' ops/backup\n! grep -R -q 'openssl rand -hex 32' ops/backup/install.sh\ngrep -Fq -- '--insecure-no-password' ops/backup/common.sh\ntest -f ops/backup/migrate-passwordless.sh\n"
+    },
+    {
+      "name": "Validate calendar and systemd units",
+      "kind": "test",
+      "command": "for f in ops/backup/units/*.timer; do\n  expr=$(sed -n 's/^OnCalendar=//p' \"$f\")\n  [[ -z \"$expr\" ]] || systemd-analyze calendar \"$expr\" >/dev/null\ndone\nfor f in ops/backup/units/*.service ops/backup/units/*.timer; do\n  systemd-analyze verify \"$PWD/$f\" 2>&1 | tee /tmp/mag-unit-verify.out\n  ! grep -E 'Failed to parse calendar|Unknown key|Invalid argument' /tmp/mag-unit-verify.out\ndone\ngrep -Fq 'NUMAMask=1' ops/backup/units/mag-backup-daily.service\nfor f in ops/backup/units/mag-backup-{daily,deploy,clear,weekly,monthly,restore-test}.service; do\n  grep -Fq 'CPUQuota=15%' \"$f\"\n  grep -Fq 'MemoryMax=2G' \"$f\"\n  grep -Fq 'MemorySwapMax=0' \"$f\"\n  grep -Fq 'Nice=19' \"$f\"\ndone\ngrep -Fq 'CPUAffinity=14-27 42-55' ops/backup/units/mag-backup-clear.service\n"
+    },
+    {
+      "name": "Migrate actual password-protected repo to no-password without data loss",
+      "kind": "test",
+      "command": "bash ops/backup/tests/test-passwordless-migrate.sh"
+    },
+    {
+      "name": "Disposable repository with Gitea SQLite, room and Pages restore",
+      "kind": "test",
+      "command": "bash ops/backup/tests/test-backup.sh"
+    },
+    {
+      "name": "Empty legacy Gitea directory does not hide real repositories",
+      "kind": "test",
+      "command": "bash ops/backup/tests/test-gitea-root.sh"
+    }
+  ],
+  "room": [
+    {
+      "name": "Build dependencies and Playwright Chromium",
+      "kind": "image-dependency",
+      "command": "sudo apt-get update\nsudo apt-get install -y ninja-build libssl-dev libcurl4-openssl-dev libarchive-dev\npython3 -m pip install --user playwright\npython3 -m playwright install --with-deps chromium\n"
+    },
+    {
+      "name": "Build the native room",
+      "kind": "test",
+      "command": "cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release && cmake --build build --target magroom -j 4"
+    },
+    {
+      "name": "Stop, user priority and queue against a fake model",
+      "kind": "test",
+      "command": "python3 mag-room/tests/test_room_control.py"
+    },
+    {
+      "name": "Browser e2e (composer Stop/Esc, queue, run card, menus, mobile drawers)",
+      "kind": "test",
+      "command": "python3 mag-room/tests/test_room_e2e.py"
+    },
+    {
+      "name": "Message popover and NUMA selector (phone portrait/landscape, desktop)",
+      "kind": "test",
+      "command": "python3 mag-room/tests/test_reactions.py\npython3 mag-room/tests/test_numa_ui.py\npython3 mag-room/tests/test_cards_ui.py\npython3 mag-room/tests/test_tts.py\npython3 mag-room/tests/test_view_tools.py\npython3 mag-room/tests/test_live_highlight.py\npython3 mag-room/tests/test_stream_order.py\n"
+    }
+  ],
+  "chromium": [
+    {
+      "name": "Install Chromium emulation",
+      "kind": "image-dependency",
+      "command": "python -m pip install playwright\npython -m playwright install --with-deps chromium\n"
+    },
+    {
+      "name": "Test screenshot paste at 375 390 412 and desktop",
+      "kind": "test",
+      "command": "python mag-room/tests/test_image_paste.py"
+    },
+    {
+      "name": "Memories dialog UI (mobile and desktop)",
+      "kind": "test",
+      "command": "python mag-room/tests/test_memory_ui.py"
+    },
+    {
+      "name": "Type anywhere goes to the composer (desktop and phones)",
+      "kind": "test",
+      "command": "python mag-room/tests/test_type_to_focus.py"
+    }
+  ],
+  "speech": [
+    {
+      "name": "Dependencies",
+      "kind": "image-dependency",
+      "command": "sudo apt-get update\nsudo apt-get install -y ninja-build libssl-dev libcurl4-openssl-dev libarchive-dev\npython3 -m pip install --user playwright\npython3 -m playwright install --with-deps chromium\n"
+    },
+    {
+      "name": "Compile native MAG for browser tests",
+      "kind": "test",
+      "command": "cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release && cmake --build build --target magroom -j 4"
+    },
+    {
+      "name": "Vendor pinned terminal browser assets",
+      "kind": "test",
+      "command": "bash ops/vendor-terminal-assets.sh build/terminal-assets\ntest -s build/terminal-assets/xterm.js\ntest -s build/terminal-assets/xterm-addon-fit.js\ntest -s build/terminal-assets/xterm.css\n"
+    },
+    {
+      "name": "Syntax and fake-model Playwright regressions",
+      "kind": "test",
+      "command": "node --check mag-room/static/speech-ui.js\nnode --check mag-room/static/message-audio.js\nnode mag-room/tests/test_message_audio.cjs\nnode mag-room/tests/test_piper_warmup.cjs\nnode --check mag-room/static/speech-capture.js\nnode --check mag-room/web/sw.js\nbash -n ops/vendor-speech-assets.sh ops/deploy.sh\npython3 -m unittest discover -s mag-room/tests -p test_speech.py -v\n"
+    },
+    {
+      "name": "Vendor pinned Moonshine German WASM and model",
+      "kind": "test",
+      "command": "bash ops/vendor-speech-assets.sh build/speech-assets"
+    },
+    {
+      "name": "Playwright with actual WASM and German model",
+      "kind": "test",
+      "command": "python3 -m unittest discover -s mag-room/tests -p test_speech_real.py -v"
+    },
+    {
+      "name": "Reject unapproved removal of live files",
+      "kind": "test",
+      "command": "git fetch --no-tags origin main\n# #21 deliberately retires precisely two Python whois artifacts,\n# and only with the native C++ LocalAPI replacement in place.\nwhile IFS= read -r removed; do\n  [ -n \"$removed\" ] || continue\n  case \"$removed\" in\n    ops/private-access/tailscale-whois.py|ops/private-access/mag-whois.service)\n      test -s mag-room/native/tailscale_auth.hpp\n      grep -Fq 'proxy_pass http://127.0.0.1:8766/_internal/tailscale/whois;' ops/private-access/mag-room.nginx.conf\n      ;;\n    ops/deepseek/both-sockets.sh|ops/mag-120.d/30-multibot.conf)\n      # Retired: no executable compatibility paths remain.\n      test ! -e \"$removed\"\n      ;;\n    *)\n      echo \"Unexpected deletion in speech integration: $removed\" >&2\n      exit 1\n      ;;\n  esac\ndone < <(git diff --name-only --diff-filter=D origin/main...HEAD)\n"
+    }
+  ],
+  "e2e-bootstrap": [
+    {
+      "name": "podman",
+      "kind": "image-dependency",
+      "command": "command -v podman || { sudo apt-get update && sudo apt-get install -y podman; }"
+    },
+    {
+      "name": "Bootstrap a blank Ubuntu 24.04 container and check /readyz",
+      "kind": "test",
+      "command": "sudo env MAG_E2E_LOG=/tmp/mag-e2e-bootstrap.log MAG_E2E_MEMORY=12g bash ops/tests/e2e-bootstrap.sh --jobs 4"
+    }
+  ]
+}

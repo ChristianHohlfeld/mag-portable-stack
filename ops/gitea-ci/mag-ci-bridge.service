@@ -1,0 +1,26 @@
+[Unit]
+Description=Single-repository GitHub/Gitea CI mirror and status bridge
+After=gitea.service network-online.target
+Wants=network-online.target
+[Service]
+User=mag-ci-control
+Group=mag-ci-control
+UMask=0077
+LoadCredential=github:/etc/credstore/mag-ci-github.token
+LoadCredential=gitea:/etc/credstore/mag-ci-gitea.token
+LoadCredential=webhook:/etc/credstore/mag-ci-webhook.secret
+ExecStart=/usr/local/lib/mag-ci/mag-ci-bridge /etc/mag-ci/policy.json /var/lib/mag-ci/control
+Restart=on-failure
+RestartSec=15
+Nice=19
+CPUQuota=15%
+MemoryMax=384M
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/mag-ci/control /var/lib/mag-ci/request
+InaccessiblePaths=-/var/lib/magbot -/var/lib/mag-llm -/var/backups -/var/lib/mag-deploy
+RestrictAddressFamilies=AF_INET AF_UNIX
+[Install]
+WantedBy=multi-user.target

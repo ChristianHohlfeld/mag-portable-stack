@@ -2969,8 +2969,10 @@ window.addEventListener('resize',()=>{
  $('settings-open').onclick=openSettings;$('room-settings').onclick=openSettings;
  $('settings-close').onclick=()=>$('settings-dialog').close();
  $('settings-dialog').addEventListener('click',e=>{if(e.target===$('settings-dialog'))$('settings-dialog').close()});
- $('room-add-agent').onclick=()=>{};$('room-add-agent').style.display='none';$('room-add-agent').setAttribute('hidden','');
- for(const id of ['plus-github','plus-mcp'])$(id).addEventListener('click',()=>{const d=$('settings-dialog');if(d.open)d.close()},true);
+ // Legacy add-bot entry is optional: fixed-Bot layouts and test fixtures omit it.
+ const legacyAdd=$('room-add-agent');
+ if(legacyAdd){legacyAdd.onclick=()=>{};legacyAdd.style.display='none';legacyAdd.setAttribute('hidden','');}
+ for(const id of ['plus-github','plus-mcp'])$(id)?.addEventListener('click',()=>{const d=$('settings-dialog');if(d.open)d.close()},true);
  window.closeRoomMenu=close;
 })();
 // Esc stops all running work (like Claude Code), unless a dialog, menu,

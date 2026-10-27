@@ -11,6 +11,14 @@ root=$(cd "$(dirname "$0")/../.." && pwd)
 script=$root/ops/deploy-warm-hi.sh
 bash -n "$script"
 grep -q 'deploy-warm-hi.sh' "$root/ops/deploy.sh"
+! grep -q 'keeping this release' "$root/ops/deploy.sh"
+grep -q 'FAIL: warm hi gate failed' "$root/ops/deploy.sh"
+awk '
+  /deploy-warm-hi\.sh/ {gate=1}
+  gate && /exit 1/ {found=1; exit}
+  gate && /deployment_started=0/ {exit 1}
+  END {exit found?0:1}
+' "$root/ops/deploy.sh"
 ! grep -Eq 'systemctl (restart|stop|reload).*mag-llm' "$script" "$root/ops/deploy.sh"
 grep -q 'sys.stdin.read' "$script"
 ! grep -Eq 'python3 -c .*"\$slots"' "$script"

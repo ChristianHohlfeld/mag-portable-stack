@@ -53,10 +53,11 @@ static int connect_loopback(int port,int timeout_s=3){
   sockaddr_in a{};a.sin_family=AF_INET;a.sin_port=htons((uint16_t)port);inet_pton(AF_INET,"127.0.0.1",&a.sin_addr);
   if(connect(fd,(sockaddr*)&a,sizeof(a))){close(fd);return -1;}return fd;
 }
-// ik_llama cancels the slot ("srv stop: cancel task") when this upstream
-// socket closes. A mag-120 restart must not do that: the gateway keeps the
-// llama connection and drains it. User Stop posts ?action=cancel, which
-// closes the tracked fd.
+// Closing the upstream socket does not stop an ik_llama prefill: the client
+// sits in CLOSE-WAIT and /health stalls for minutes. A room or gateway
+// restart, and any client disconnect, posts /slots/<id>?action=cancel on a
+// side connection. live_up_abort only unblocks the proxy thread that still
+// holds the completion socket. The signal path of magroom never calls this.
 static std::mutex LIVE_UP_MTX;
 static std::map<int,int> LIVE_UP;
 static void live_up_set(int port,int fd){
@@ -74,6 +75,62 @@ static bool live_up_abort(int port){
   shutdown(it->second,SHUT_RDWR);
   return true;
 }
+// Direct llama call. FIN on the completion socket is not a cancel.
+static void post_slot_cancel(int port,int slot){
+  if(port<1||slot<0) return;
+  int fd=connect_loopback(port,1);
+  if(fd<0){std::cerr<<"gateway cancel port="<<port<<" slot="<<slot<<" connect=0\n";return;}
+  std::string body="{}";
+  std::ostringstream req;
+  req<<"POST /slots/"<<slot<<"?action=cancel HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: "<<body.size()<<"\r\n\r\n"<<body;
+  bool wrote=write_all(fd,req.str());
+  char b[1024];
+  if(wrote) recv(fd,b,sizeof(b),0);
+  close(fd);
+  std::cerr<<"gateway cancel port="<<port<<" slot="<<slot<<" wrote="<<(wrote?1:0)<<"\n";
+}
+// Gateway start: a previous process is gone, so a slot that is still
+// prefilling is an orphan. An empty document is unknown and is left alone.
+// A /slots read that does not answer is the wedged prefill (/health 5–30s):
+// cancel the only slot. A quick non-array body is not llama and is skipped.
+static void release_orphans(int port){
+  int fd=connect_loopback(port,2);
+  if(fd<0) return;
+  std::string req="GET /slots HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n";
+  if(!write_all(fd,req)){close(fd);return;}
+  std::string raw;char b[8192];bool timed_out=false;
+  for(;;){
+    ssize_t n=recv(fd,b,sizeof(b),0);
+    if(n==0) break;
+    if(n<0){
+      if(errno==EINTR) continue;
+      timed_out=raw.empty();
+      break;
+    }
+    raw.append(b,(size_t)n);
+    if(raw.size()>1024*1024) break;
+  }
+  close(fd);
+  if(timed_out){
+    std::cerr<<"gateway orphan port="<<port<<" slots=timeout\n";
+    post_slot_cancel(port,0);
+    return;
+  }
+  auto sep=raw.find("\r\n\r\n");
+  if(raw.find(" 200 ")==std::string::npos||sep==std::string::npos) return;
+  Val slots;
+  if(!mj::parse(raw.substr(sep+4),slots)||!slots.isArr()||slots.asArr().empty()) return;
+  for(const auto &slot:slots.asArr()){
+    auto busy=slot.find("is_processing");
+    if(!busy||!busy->asBool()) continue;
+    int id=0;
+    if(auto n=slot.find("id");n&&n->type==Val::NUM) id=(int)n->asNum();
+    else if(auto n=slot.find("id_slot");n&&n->type==Val::NUM) id=(int)n->asNum();
+    if(id<0) id=0;
+    std::cerr<<"gateway orphan port="<<port<<" slot="<<id<<" processing=1\n";
+    post_slot_cancel(port,id);
+  }
+}
 struct Config {
   int q4=8090,iq3=8091,listen=8080;
   std::string secondary="iq3"; // legacy IQ3/Qwen hosts
@@ -81,6 +138,16 @@ struct Config {
   std::string logs="/var/log/mag-audit";
   std::string secrets="/etc/mag-audit/secrets.list";
 } cfg;
+static void release_orphan_upstreams(){
+  std::set<int> ports;
+  if(cfg.room.enabled()){
+    for(const auto &b:cfg.room.backends) if(b.port>0) ports.insert(b.port);
+  }else{
+    if(cfg.q4>0) ports.insert(cfg.q4);
+    if(cfg.iq3>0) ports.insert(cfg.iq3);
+  }
+  for(int port:ports) release_orphans(port);
+}
 static std::mutex audit_mtx;
 static std::string iso_time(){
   auto now=std::chrono::system_clock::now();auto t=std::chrono::system_clock::to_time_t(now);
@@ -337,6 +404,9 @@ static void proxy(int fd){
     auto q=r.path.find('?');
     std::string action=q==std::string::npos?"":r.path.substr(q);
     if(action=="?action=cancel"){
+      // LIVE_UP is empty after a gateway restart. The POST is what stops
+      // the prefill; shutting the tracked fd only unblocks this process.
+      post_slot_cancel(upstream,id_slot>=0?id_slot:0);
       live_up_abort(upstream);
       Val ok=Val::object();ok["ok"]=true;json_response(fd,200,ok);return;
     }
@@ -364,10 +434,16 @@ static void proxy(int fd){
   }
   int up=connect_loopback(upstream,3);
   if(up<0){json_response(fd,502,message("upstream unavailable"));return;}
-  // Room restart closes the client. Keep the llama task so ik does not log
-  // "srv stop: cancel task" and wipe the KV (live: 538s re-prefill).
+  // A connected client may sit through a silent prefill. Once that client
+  // is gone the completion is an orphan: POST slot cancel and stop reading.
+  // Socket close alone left task 45814 prefilling in CLOSE-WAIT.
   const bool keep_task=is_llm;
-  bool client_gone=false;
+  bool orphan_cancelled=false;
+  auto cancel_orphan=[&](){
+    if(orphan_cancelled||!is_llm) return;
+    orphan_cancelled=true;
+    post_slot_cancel(upstream,id_slot>=0?id_slot:0);
+  };
   // Preserve transparent SSE/chunked framing, request bodies, and cancellation.
   std::ostringstream request;request<<r.method<<" "<<r.path<<" HTTP/1.1\r\nHost: 127.0.0.1:"<<upstream<<"\r\n";
   for(auto &kv:r.headers){
@@ -408,25 +484,25 @@ static void proxy(int fd){
   if(wrote){
     char b[32768];for(;;){
       pollfd pfd[2]={{up,POLLIN,0},{fd,POLLIN,0}};
-      int result=poll(pfd,client_gone?1:2,1000);
+      int result=poll(pfd,2,1000);
       if(result<0){if(errno==EINTR)continue;aborted=true;break;}
       if(!result){
         // A stalled upstream with a client that stays connected used to spin
         // here forever. Idle is silence on non-LLM probes. LLM/prefill is
-        // silent for minutes (live DeepSeek ~7 min); keep_task must not apply
-        // the 75s idle or the gateway closes llama ("srv stop: cancel task").
-        // The overall deadline still caps a stream that never ends.
+        // silent for minutes while the client is still there; keep_task must
+        // not apply the 75s idle. A client that already left is cancelled
+        // above. The overall deadline still caps a stream that never ends.
         auto now=std::chrono::steady_clock::now();
         if(now-started>=gateway_budget||(!keep_task&&now-last_byte>=gateway_idle)){
           aborted=true;break;
         }
         continue;
       }
-      if(!client_gone&&(pfd[1].revents&(POLLIN|POLLHUP|POLLERR))){
+      if(pfd[1].revents&(POLLIN|POLLHUP|POLLERR)){
         char probe;ssize_t n=recv(fd,&probe,1,MSG_PEEK|MSG_DONTWAIT);
         if(n==0||(n<0&&errno!=EAGAIN&&errno!=EWOULDBLOCK)){
-          if(keep_task) client_gone=true;
-          else { aborted=true;break; }
+          cancel_orphan();
+          aborted=true;break;
         }
       }
       if(pfd[0].revents&(POLLIN|POLLHUP|POLLERR)){
@@ -436,9 +512,9 @@ static void proxy(int fd){
         last_byte=std::chrono::steady_clock::now();
         received+=(size_t)n;
         if(full.size()<64*1024*1024)full.append(b,(size_t)std::min((size_t)n,(size_t)(64*1024*1024-full.size())));
-        if(!client_gone&&!write_all(fd,std::string(b,(size_t)n))){
-          if(keep_task) client_gone=true;
-          else { aborted=true;break; }
+        if(!write_all(fd,std::string(b,(size_t)n))){
+          cancel_orphan();
+          aborted=true;break;
         }
       }
     }
@@ -447,7 +523,7 @@ static void proxy(int fd){
   shutdown(up,SHUT_RDWR);close(up);
   if(!quiet){
     Val v=Val::object();v["type"]=is_llm?"llm_response":"http_response";v["id"]=id;v["caller"]=caller;v["path"]=r.path;v["model_variant"]=selected;
-    v["aborted"]=aborted;v["client_disconnected"]=aborted||client_gone;v["duration_s"]=std::chrono::duration<double>(std::chrono::steady_clock::now()-started).count();
+    v["aborted"]=aborted;v["client_disconnected"]=aborted||orphan_cancelled;v["duration_s"]=std::chrono::duration<double>(std::chrono::steady_clock::now()-started).count();
     v["bytes"]=(double)received;
     auto sep=full.find("\r\n\r\n");if(sep!=std::string::npos){
       std::string headers=full.substr(0,sep);std::istringstream h(headers);std::string prot;int status=0;h>>prot>>status;v["status"]=status;
@@ -473,6 +549,7 @@ int main(){
     if(cfg.room.enabled())cfg.secondary="configured";
     if(cfg.secondary!="iq3"&&cfg.secondary!="qwen"&&cfg.secondary!="configured")throw std::runtime_error("invalid model configuration (fail closed)");
     cfg.logs=env("MAG_AUDIT_LOG_DIR",cfg.logs);cfg.secrets=env("MAG_AUDIT_SECRETS_FILE",cfg.secrets);
+    release_orphan_upstreams();
     int public_fd=server(cfg.listen);
     Val start=Val::object();start["type"]="gateway";start["event"]="start";start["upstream"]=cfg.room.enabled()?cfg.room.id:cfg.secondary=="qwen"?"qwen":std::to_string(cfg.q4);audit(start);
     for(;;){

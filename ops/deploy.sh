@@ -472,7 +472,8 @@ wait_http http://127.0.0.1:18784/health
 # each bot's first token in under 5s. Failure rolls the release back.
 # rollback restarts mag-120 only; it does not restart mag-llm.
 if ! MAG_WARM_HI_REQUIRE_ROOM=1 bash "$SOURCE/ops/deploy-warm-hi.sh"; then
-  echo 'warm hi gate failed; rolling back this release. Not restarting mag-llm.' >&2
+  echo 'FAIL: warm hi gate failed; rolling back this release. Not restarting mag-llm.' >&2
+  release_selftalk_hold
   exit 1
 fi
 # Proaktiv stayed held across the restart so the gate saw idle slots.

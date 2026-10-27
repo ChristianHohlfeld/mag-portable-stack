@@ -3731,6 +3731,8 @@ class MixedNuma(unittest.TestCase):
    self._wait_paths(mark,
     lambda ps:{p[1] for p in ps if p[0]=='/v1/chat/completions' or str(p[0]).endswith(('restore','save'))}>={'0','1'},
     what='stale hash must restore or prewarm both backends')
+   gens=[p for p in list(Model.paths)[mark:] if p[0]=='/v1/chat/completions' and (p[3] or {}).get('max_tokens')==1]
+   self.assertFalse(gens,'a changed prefix must not start a full prewarm')
    self._assert_first_hi_both(prev)
   finally:
    Model.prefix_miss_s=0;Model.slot_snapshot=[]
@@ -3848,11 +3850,11 @@ class MixedNuma(unittest.TestCase):
    Model.prefix_miss_s=0;Model.slot_snapshot=[]
    self.env['MAG_ROOM_PREWARM']='0'
    self.stop();self.start()
- def test_16_restart_does_not_cancel_qwen_or_reprefill(self):
-  # Deploy restarts the room while Qwen is still decoding. Resuming that job
-  # used to close the slot ("srv stop: cancel task") and prefill from scratch.
-  # The new process must leave a live task alone, drop the bot-to-bot job,
-  # restore the prefix once the slot is idle, and answer hi from the cache.
+ def test_16_restart_cancels_orphan_and_does_not_reprefill(self):
+  # The previous room is gone and the slot is still prefilling (CLOSE-WAIT).
+  # The new process cancels that orphan, does not resume it as a 13k
+  # completion, restores the prefix once the slot is idle, and answers hi
+  # from the cache. SIGTERM itself does not send the cancel.
   self.wait_idle()
   bots=list(self.bots().values())
   qwen=next(b for b in bots if 'qwen' in b['model'])
@@ -3873,10 +3875,11 @@ class MixedNuma(unittest.TestCase):
    time.sleep(0.7)
    early=list(Model.paths)[mark:]
    self.assertFalse([p for p in early if p[0]=='/v1/chat/completions'], early)
-   self.assertFalse([p for p in early if 'action=cancel' in str(p[0])], early)
+   self.assertTrue(any('action=cancel' in str(p[0]) for p in early), early)
    log=self.tmp_path.joinpath('server.log').read_text()
    self.assertIn('queue resumed: 1 job(s)', log)
-   self.assertIn('still generating; not cancelling', log)
+   self.assertIn('orphan completion; cancelling', log)
+   self.assertNotIn('not cancelling', log)
    self.assertFalse(self.request('/api/state')['busy'])
    Model.slot_snapshot=[{'id':0,'is_processing':False,'n_prompt_tokens':0,'n_past':0,'state':0,'prompt':''}]
    deadline=time.monotonic()+4
@@ -3887,7 +3890,6 @@ class MixedNuma(unittest.TestCase):
    time.sleep(0.35)
    self.assertFalse([p for p in list(Model.paths)[mark:] if p[0]=='/v1/chat/completions'],
                     'resumed job prefilled before the slot was idle and warm')
-   self.assertFalse([p for p in list(Model.paths)[mark:] if 'action=cancel' in str(p[0])])
    for bot in bots:
     token=f'hi {bot["id"]} {time.monotonic_ns()}'
     t0=time.monotonic()

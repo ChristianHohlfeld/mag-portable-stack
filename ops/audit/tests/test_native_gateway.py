@@ -318,35 +318,58 @@ class NativeGateway(unittest.TestCase):
         for text in (env,header):self.assertIn("8191:0,8192:1",text)
         self.assertIn('MAG_ROOM_MAX_BOTS=2',env)
 
-    def test_13_room_disconnect_does_not_cancel_llama(self):
-        # A mag-120 restart closes the room socket. ik must keep the task
-        # until an explicit ?action=cancel (user Stop), or the next start
-        # re-prefills ~14k tokens.
-        closed={'at':None}
-        ready=threading.Event();accepted=threading.Event()
+    def test_13_room_disconnect_cancels_orphan_slot(self):
+        # FIN does not stop an ik prefill (CLOSE-WAIT, /health stalls).
+        # A room disconnect must POST /slots/0?action=cancel.
+        closed={'at':None};cancels=[]
+        ready=threading.Event();accepted=threading.Event();stop=threading.Event()
         def serve():
             s=socket.socket();s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
-            s.bind(('127.0.0.1',0));s.listen(2)
-            serve.port=s.getsockname()[1];ready.set()
-            c,_=s.accept();accepted.set()
-            data=b''
-            while b'\r\n\r\n' not in data:
-                chunk=c.recv(65536)
-                if not chunk:return
-                data+=chunk
-            head,body=data.split(b'\r\n\r\n',1)
-            n=0
-            for line in head.split(b'\r\n'):
-                if line.lower().startswith(b'content-length:'):
-                    n=int(line.split(b':',1)[1])
-            while len(body)<n:
-                body+=c.recv(65536)
-            c.settimeout(8)
-            try:
-                if c.recv(1)==b'':
+            s.bind(('127.0.0.1',0));s.listen(8)
+            serve.port=s.getsockname()[1];serve.sock=s;ready.set()
+            def one(c):
+                data=b'';c.settimeout(3)
+                try:
+                    while b'\r\n\r\n' not in data:
+                        chunk=c.recv(65536)
+                        if not chunk:return
+                        data+=chunk
+                except OSError:
+                    return
+                head,body=data.split(b'\r\n\r\n',1)
+                first=head.split(b'\r\n',1)[0]
+                if first.startswith(b'GET /slots'):
+                    try:
+                        c.sendall(b'HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n[]')
+                    except OSError:
+                        pass
+                    c.close();return
+                if b'action=cancel' in first:
+                    cancels.append(first)
+                    try:
+                        c.sendall(b'HTTP/1.1 200 OK\r\nContent-Length: 11\r\nConnection: close\r\n\r\n{"ok":true}')
+                    except OSError:
+                        pass
+                    c.close();return
+                n=0
+                for line in head.split(b'\r\n'):
+                    if line.lower().startswith(b'content-length:'):
+                        n=int(line.split(b':',1)[1])
+                while len(body)<n:
+                    body+=c.recv(65536)
+                accepted.set()
+                c.settimeout(8)
+                try:
+                    if c.recv(1)==b'':
+                        closed['at']=time.time()
+                except OSError:
                     closed['at']=time.time()
-            except OSError:
-                closed['at']=time.time()
+            while not stop.is_set():
+                try:
+                    s.settimeout(0.2);c,_=s.accept()
+                except OSError:
+                    continue
+                threading.Thread(target=one,args=(c,),daemon=True).start()
         threading.Thread(target=serve,daemon=True).start()
         self.assertTrue(ready.wait(2))
         dummy=http.server.ThreadingHTTPServer(('127.0.0.1',0),FakeModel)
@@ -373,20 +396,112 @@ class NativeGateway(unittest.TestCase):
             self.assertTrue(accepted.wait(3),'llama never saw the completion')
             time.sleep(.1)
             t_close=time.time();c.shutdown(socket.SHUT_RDWR);c.close()
-            time.sleep(.8)
-            self.assertIsNone(closed['at'],'room disconnect cancelled the llama task')
-            cancel=json.dumps({}).encode()
-            k=http.client.HTTPConnection('127.0.0.1',gwp,timeout=3)
-            k.request('POST','/slots/0?action=cancel',body=cancel,
-                      headers={'Content-Type':'application/json','X-Mag-Slot':'1'})
-            self.assertEqual(k.getresponse().status,200);k.close()
             deadline=time.monotonic()+3
-            while time.monotonic()<deadline and closed['at'] is None:
+            while time.monotonic()<deadline and not cancels:
                 time.sleep(.05)
-            self.assertIsNotNone(closed['at'],'action=cancel must abort the kept task')
+            self.assertTrue(cancels,'room disconnect must POST slot cancel')
+            self.assertIn(b'/slots/0?action=cancel',cancels[0])
+            self.assertIsNotNone(closed['at'],'room disconnect must drop the completion socket')
             self.assertLess(closed['at']-t_close,4)
         finally:
+            stop.set()
             gw.terminate();gw.wait(timeout=5)
             dummy.shutdown();dummy.server_close()
+            try:serve.sock.close()
+            except (AttributeError,OSError):pass
+
+    def test_14_gateway_start_cancels_processing_and_wedged_slot(self):
+        # A fresh gateway has an empty LIVE_UP map, so ?action=cancel used
+        # to be a no-op while llama kept prefilling. Startup must cancel a
+        # processing slot and a /slots read that does not answer.
+        processing=[];wedged=[]
+        ready=threading.Event()
+        def processing_srv():
+            s=socket.socket();s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
+            s.bind(('127.0.0.1',0));s.listen(8)
+            processing_srv.port=s.getsockname()[1];processing_srv.sock=s
+            ready.set()
+            while True:
+                try:c,_=s.accept()
+                except OSError:return
+                data=b'';c.settimeout(2)
+                try:
+                    while b'\r\n\r\n' not in data:
+                        chunk=c.recv(65536)
+                        if not chunk:break
+                        data+=chunk
+                except OSError:
+                    c.close();continue
+                first=data.split(b'\r\n',1)[0]
+                if b'action=cancel' in first:
+                    processing.append(first);body=b'{"ok":true}'
+                elif first.startswith(b'GET /slots'):
+                    body=b'[{"id":0,"is_processing":true,"n_prompt_tokens":13845}]'
+                else:
+                    body=b'{"status":"ok"}'
+                try:
+                    c.sendall(b'HTTP/1.1 200 OK\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s'%(len(body),body))
+                except OSError:
+                    pass
+                c.close()
+        def wedged_srv():
+            s=socket.socket();s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
+            s.bind(('127.0.0.1',0));s.listen(8)
+            wedged_srv.port=s.getsockname()[1];wedged_srv.sock=s
+            def one(c):
+                data=b'';c.settimeout(2)
+                try:
+                    while b'\r\n\r\n' not in data:
+                        chunk=c.recv(65536)
+                        if not chunk:break
+                        data+=chunk
+                except OSError:
+                    c.close();return
+                first=data.split(b'\r\n',1)[0]
+                if first.startswith(b'GET /slots'):
+                    time.sleep(5);c.close();return
+                if b'action=cancel' in first:wedged.append(first)
+                body=b'{"ok":true}'
+                try:
+                    c.sendall(b'HTTP/1.1 200 OK\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s'%(len(body),body))
+                except OSError:
+                    pass
+                c.close()
+            while True:
+                try:c,_=s.accept()
+                except OSError:return
+                threading.Thread(target=one,args=(c,),daemon=True).start()
+        threading.Thread(target=processing_srv,daemon=True).start()
+        threading.Thread(target=wedged_srv,daemon=True).start()
+        self.assertTrue(ready.wait(2))
+        for _ in range(50):
+            if getattr(wedged_srv,'port',0):break
+            time.sleep(.02)
+        gwp=port()
+        env=dict(self.env,MAG_AUDIT_LISTEN_PORT=str(gwp),MAG_ROOM_MODEL_ID='deepseek-v4-flash-0731',
+                 MAG_ROOM_MODEL_PORTS='%d:0,%d:1'%(processing_srv.port,wedged_srv.port),
+                 MAG_AUDIT_LOG_DIR=str(self.dir/'orphan-logs'))
+        gw=subprocess.Popen([str(ROOT/'build/mag-audit-gateway')],env=env,
+                            stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+        try:
+            deadline=time.monotonic()+4
+            while time.monotonic()<deadline and not (processing and wedged):
+                time.sleep(.05)
+            self.assertTrue(processing,'startup must cancel a processing slot')
+            self.assertIn(b'/slots/0?action=cancel',processing[0])
+            self.assertTrue(wedged,'startup must cancel a slot whose /slots read times out')
+            self.assertIn(b'/slots/0?action=cancel',wedged[0])
+            for _ in range(40):
+                try:
+                    if request(gwp)[0]==200:break
+                except (ConnectionError,OSError):
+                    time.sleep(.05)
+            else:
+                self.fail('gateway did not listen after cancelling orphans')
+        finally:
+            gw.terminate();gw.wait(timeout=5)
+            for srv in (processing_srv,wedged_srv):
+                try:srv.sock.close()
+                except (AttributeError,OSError):pass
 
 if __name__=="__main__":unittest.main()

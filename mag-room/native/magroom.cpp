@@ -2683,12 +2683,10 @@ static std::vector<Val> wire_messages(int idx, const std::string &system,
   if(!first_hi && (w.memory!=memory || initial)) {input+="\n"+memory;w.memory=memory;}
   if(!first_hi && (w.plugins!=plugins || initial)) {input+=plugins;w.plugins=plugins;}
   if(!first_hi && (w.files!=files || initial)) {input+="\nAktuell geteilte Raumdateien:\n"+files;w.files=files;}
-  const auto skills=jobs_skill_catalog(bot);
-  if(!first_hi && (w.skills!=skills || (initial && !skills.empty()))) {
-    if(!(skills.empty() && w.skills.empty()))
-      input+="\n"+(skills.empty()?std::string("[Fähigkeiten]\nKeine eigenen Jobs."):skills);
-    w.skills=skills;
-  }
+  // Job name, schedule and prompt summary change whenever Chris edits a job.
+  // They used to land in this stored transcript, so the next restart treated
+  // the prefix as new and re-prefilled ~13k tokens. The catalog stays on the
+  // non-configured user message, and the first hi does not resend it.
   // [Kontext] (clock, github, thinking) is ~140 tokens. Re-sending it on every
   // hi re-prefills those tokens (~6s at 22 tok/s; live 10.3s first hi). It
   // belongs on the first user message only. Later turns append new room
@@ -7495,25 +7493,35 @@ static SlotProbe probe_backend_slot(int idx) {
   }
   return p;
 }
-// Restore a cold idle slot. A slot that is still generating is left alone:
-// cancelling it is "srv stop: cancel task" and the next prompt prefills.
+// The previous room or gateway is already gone. A slot that is still
+// generating has no client (CLOSE-WAIT); ik keeps prefilling and /health
+// stalls. Cancel that orphan once. This is not the SIGTERM handler.
+// An empty /slots document is unknown: do not cancel and do not restore.
+// A warm idle slot (n_prompt_tokens > 0) is left as it is.
 static void observe_slot(int idx, bool wait) {
   const int slot = model_slot(idx);
   if (slot < 1 || slot > ROOM_MAX_BOTS) return;
   if (!prefix_is_saved(idx)) {
     SLOT_RESUME_HELD[slot - 1] = false;
+    SlotProbe orphan = probe_backend_slot(idx);
+    if (orphan.known && orphan.processing) {
+      std::cerr << "slot " << slot << " orphan completion; cancelling\n";
+      cancel_llama_slot(idx);
+    }
     return;
   }
   SlotProbe p = probe_backend_slot(idx);
-  if (wait)
-    for (int i = 0; p.known && p.processing && i < 5; ++i) {
-      std::this_thread::sleep_for(milliseconds(100));
-      p = probe_backend_slot(idx);
-    }
   if (p.known && p.processing) {
-    if (!SLOT_RESUME_HELD[slot - 1].exchange(true))
-      std::cerr << "slot " << slot << " still generating; not cancelling, holding resumed jobs\n";
-    return;
+    if (!SLOT_RESUME_HELD[slot - 1].exchange(true)) {
+      std::cerr << "slot " << slot << " orphan completion; cancelling\n";
+      cancel_llama_slot(idx);
+    }
+    if (wait)
+      for (int i = 0; p.known && p.processing && i < 5; ++i) {
+        std::this_thread::sleep_for(milliseconds(100));
+        p = probe_backend_slot(idx);
+      }
+    if (p.known && p.processing) return;
   }
   SLOT_RESUME_HELD[slot - 1] = false;
   if (p.known && !p.warm) reload_slot_after_cancel(idx);
@@ -7793,8 +7801,8 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
   } else if (CONFIGURED_MODEL && PREFIX_DISK && have_file && !slot_busy) {
     // Own file is a different hash and the slot is cold. Reload it and let
     // the first hi extend it. Do not prefill the new wire at startup
-    // (load 23–25 beside the other bot). The key matches again only after
-    // the file actually loaded.
+    // (load 23–25, live 682s/611s). The key matches again only after the
+    // file actually loaded.
     restored = prefix_slot("restore", own);
     skip = true;
     why = "hash";
@@ -9949,8 +9957,8 @@ int main() {
   setenv("TZ", env("MAG_TZ", "Europe/Berlin").c_str(), 1);
   tzset();
   signal(SIGPIPE, SIG_IGN);
-  // A room restart must not send "srv stop: cancel task". Exit without
-  // touching llama sockets; the gateway keeps the in-flight DeepSeek task.
+  // Do not cancel llama from this handler. The new process and the gateway
+  // cancel an orphan whose client is already gone, then restore the prefix.
   signal(SIGTERM, [](int) { SHUTDOWN.store(true); _exit(0); });
   signal(SIGINT, [](int) { SHUTDOWN.store(true); _exit(0); });
 

@@ -17,7 +17,8 @@ def _rules(content):
 def _mem(content):
  i=content.index('\n[Erinnerungen]');return content[i+1:]
 class Model(http.server.BaseHTTPRequestHandler):
- slot_snapshot=[];cache_records=[]
+ script_scope=None
+ slot_snapshot=[];cache_records=[];tokenizer_fail=False;tokenizer_requests=[]
  protocol_version='HTTP/1.1';calls=[];slots=[];pairs=[];paths=[];slot_delay={};delay=0;reply=None;script=[];health=200;last_prompt={};overflow_once=0;barrier_token='';barrier_release=None
  def log_message(self,*a):pass
  def do_GET(self):
@@ -29,7 +30,12 @@ class Model(http.server.BaseHTTPRequestHandler):
   else:data=b'{"data":[{"id":"deepseek-v4-flash-0731"}]}'
   self.send_response(code);self.send_header('Content-Length',str(len(data)));self.end_headers();self.wfile.write(data)
  def do_POST(self):
-  obj=json.loads(self.rfile.read(int(self.headers['Content-Length'])));self.calls.append(obj)
+  obj=json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+  if self.path=='/tokenize':
+   type(self).tokenizer_requests.append(obj.get('content',''))
+   data=json.dumps({'tokens':list(obj.get('content','').encode('utf8'))}).encode()
+   self.send_response(503 if type(self).tokenizer_fail else 200);self.send_header('Content-Length',str(len(data)));self.end_headers();self.wfile.write(data);return
+  self.calls.append(obj)
   type(self).slots.append(self.headers.get('X-Mag-Slot'))
   type(self).pairs.append((obj,self.headers.get('X-Mag-Slot')))  # one atomic append
   type(self).paths.append((self.path,self.headers.get('X-Mag-Slot'),self.headers.get('X-Mag-Bot'),obj))
@@ -44,7 +50,9 @@ class Model(http.server.BaseHTTPRequestHandler):
   if self.delay:time.sleep(self.delay)
   if obj.get('max_tokens')!=1 and self.headers.get('X-Mag-Slot') in type(self).slot_delay:time.sleep(type(self).slot_delay[self.headers.get('X-Mag-Slot')])
   try:
-   scripted=type(self).script.pop(0) if type(self).script else None
+   scope=type(self).script_scope
+   matches=scope is None or any(scope in m.get('content','') for m in obj.get('messages',[]) if isinstance(m.get('content'),str))
+   scripted=type(self).script.pop(0) if matches and type(self).script else None
    chunks=scripted if scripted is not None else ([type(self).reply] if type(self).reply is not None else ['Hallo ','aus dem ','Modell.'])
    for piece in chunks:
     if isinstance(piece,dict) and '_sleep' in piece:
@@ -803,15 +811,18 @@ class Native(unittest.TestCase):
   # the two scripted responses to avoid racy Model.script consumption.
   self.request('/api/autotalk',{'on':False})
   self.wait_idle()
+  self.request('/api/queue/resume',{})
+  marker='Merke DeepSeek-Test '+str(time.monotonic_ns())
   first=[{'reasoning_content':'Ich merke mir das.'},{'tool_calls':[{'index':0,'id':'call_ds_1','function':{'name':'remember','arguments':'{"fact":"DeepSeek-Test"}'}}]}]
+  Model.script_scope=marker
   Model.script=[first,['Notiert.']]
   try:
    initial=len(Model.calls)
-   self.request('/api/message',{'text':'Merke DeepSeek-Test','bots':['test']})
+   self.request('/api/message',{'text':marker,'bots':['test']})
    self.wait_room('Notiert.');self.wait_idle()
    # Assert this test's tool roundtrip, not unrelated global Model.calls.
    fresh=Model.calls[initial:]
-   own=[x for x in fresh if any('Merke DeepSeek-Test' in (msg.get('content') or '')
+   own=[x for x in fresh if any(marker in (msg.get('content') or '')
                              for msg in x.get('messages',[]) if isinstance(msg.get('content'),str))]
    self.assertEqual(len(own),2,repr([x.get('messages',[])[-1:] for x in fresh])[:1200])
    msgs=own[-1]['messages']
@@ -820,7 +831,9 @@ class Native(unittest.TestCase):
    self.assertEqual(asst[-1]['tool_calls'][0]['function']['name'],'remember')
    tool=[m for m in msgs if m['role']=='tool']
    self.assertEqual(tool[-1]['tool_call_id'],'call_ds_1')
-  finally:Model.script=[]
+  finally:
+   try:self.wait_idle()
+   finally:Model.script=[];Model.script_scope=None
  def test_09c_model_status_ready(self):
   st=self.request('/api/model-status')
   self.assertTrue(st['ready']);self.assertEqual(st['state'],'ready');self.assertEqual(st['model'],'deepseek-v4-flash-0731')
@@ -3449,4 +3462,147 @@ class MixedNuma(unittest.TestCase):
   finally:
    self.stop();self.env['MAG_ROOM_PREWARM']='0';self.start()
 
+class PhoCompress(unittest.TestCase):
+ mixed=True
+ start=classmethod(ConfiguredNuma.start.__func__)
+ stop=classmethod(ConfiguredNuma.stop.__func__)
+ def setUp(self):
+  # Each case gets its own room, wire archive and backend. Restart tests may
+  # retain state inside a case, never from a preceding case.
+  Model.script=[];Model.script_scope=None;Model.reply=None;Model.delay=0
+  Model.tokenizer_fail=False
+  ConfiguredNuma.setUpClass.__func__(type(self))
+  self.addCleanup(ConfiguredNuma.tearDownClass.__func__,type(self))
+  self.addCleanup(self.model.server_close)
+ request=classmethod(Native.request.__func__)
+ error=Native.error
+ wait_idle=Native.wait_idle
+ bots=ConfiguredNuma.bots
+ PROSE='Heute hat der Bundestag den Entwurf zur Datenspeicherung beschlossen. Kritiker warnen vor einem Eingriff in die Privatsphäre. Bitte die wichtige Frage zur Architektur und zur Kompression der Sprache beantworten. '
+ def send(self,bot,text):
+  self.wait_idle();mark=len(Model.calls)
+  self.request('/api/message',{'text':text,'bots':[bot]});self.wait_idle()
+  calls=[c for c in Model.calls[mark:] if c.get('model')==self.bots()[bot]['model'] and c.get('max_tokens')!=1]
+  self.assertTrue(calls);return calls[0]
+ def wire(self,model):
+  files=[json.loads(p.read_text()) for p in self.state.glob('prompt-wire-*.json')]
+  return next(w for w in files if model in w['messages'][0]['content'])
+ def test_01_default_switch_and_room_persistence(self):
+  self.assertTrue(self.request('/api/state')['pho_compress_default'])
+  self.assertTrue(all(b['pho_compress'] for b in self.bots().values()))
+  bot=next(iter(self.bots()))
+  self.request('/api/bot-settings',{'bots':[bot],'pho_compress':False},method='PUT')
+  self.stop();self.start();self.assertFalse(self.bots()[bot]['pho_compress'])
+  self.assertTrue(any(b['pho_compress'] for b in self.bots().values()))
+  self.request('/api/bot-settings',{'scope':'room','pho_compress':False},method='PUT')
+  self.stop();self.start();self.assertFalse(self.request('/api/state')['pho_compress_default'])
+  self.assertTrue(all(not b['pho_compress'] for b in self.bots().values()))
+  self.error(400,'/api/bot-settings',{'scope':'room','pho_compress':'yes'},method='PUT')
+  self.request('/api/bot-settings',{'scope':'room','pho_compress':True},method='PUT')
+ def test_02_each_model_archives_once_without_rewriting_warm_prefix(self):
+  for b in self.bots().values():
+   previous=None;archive={}
+   for turn in range(7):
+    mark=len(Model.cache_records)
+    call=self.send(b['id'],self.PROSE+' Zahlen 001234 -1.23e-4 URL https://example.test/a?x=12 ID user_id-ABC_123. Turn '+str(turn))
+    if previous:
+     self.assertEqual(call['messages'][:len(previous['messages'])],previous['messages'])
+     self.assertGreater(Model.cache_records[mark]['n_past'],0)
+    self.assertEqual(call['id_slot'],0);self.assertTrue(call['cache_prompt'])
+    previous=call
+    w=self.wire(b['model'])
+    for key,value in archive.items():self.assertEqual(w['pho_archive'][key],value,'a sealed turn must never be recompressed')
+    archive=w['pho_archive']
+   accepted=[r for r in archive.values() if r['content']!=r['original']]
+   self.assertTrue(accepted,'older ordinary prose must be archived compactly for '+b['model'])
+   for r in accepted:
+    self.assertLess(r['tokens_after'],r['tokens_before'])
+    if '001234' in r['original']:
+     for literal in ('001234','-1.23e-4','https://example.test/a?x=12','user_id-ABC_123'):
+      self.assertIn(literal,r['content'])
+   # Archiving is not a rewrite of resident KV; current prompt stays raw.
+   self.assertFalse(any('[PhO-Compress]' in m.get('content','') for m in previous['messages'][2:]))
+   self.stop();self.start()
+   resumed=self.send(b['id'],self.PROSE+' Wiederaufnahme')
+   self.assertEqual(resumed['messages'][:len(previous['messages'])],previous['messages'])
+   after=self.wire(b['model'])['pho_archive']
+   for key,value in archive.items():self.assertEqual(after[key],value)
+  log=self.tmp_path.joinpath('server.log').read_text()
+  for model in ('deepseek-v4-flash-0731','qwen3.8-flash-next-uncensored'):
+   self.assertIn('pho-compress model='+model+' tokens_before=',log)
+ def test_03b_missing_tokenizer_keeps_original_and_warm_slot(self):
+  b=next(iter(self.bots().values()));previous=None;Model.tokenizer_fail=True
+  marker='TokenizerFallback'+str(time.monotonic_ns())
+  try:
+   for n in range(6):
+    call=self.send(b['id'],self.PROSE+marker+' '+str(n))
+    if previous:self.assertEqual(call['messages'][:len(previous['messages'])],previous['messages'])
+    previous=call
+   records=[r for r in self.wire(b['model'])['pho_archive'].values() if marker in r['original']]
+   self.assertTrue(records)
+   for r in records:
+    self.assertEqual(r['content'],r['original']);self.assertEqual(r['tokens_before'],-1)
+  finally:Model.tokenizer_fail=False
+ def test_04_rollover_uses_archive_and_keeps_recent_turns(self):
+  for b in self.bots().values():
+   code='```cpp\nconst char *URL = "https://github.com/o/r"; int id = 001234;\n```'
+   self.send(b['id'],'Bitte Code exakt aufbewahren: '+code)
+   previous=None;rolled=None
+   for n in range(32):
+    call=self.send(b['id'],self.PROSE*13+' Lange Historie '+str(n))
+    if any('[PhO-Compress]' in m.get('content','') for m in call['messages'][2:]):
+     rolled=call
+     if previous:
+      recent=[m for m in previous['messages'] if m.get('role')=='user'][-2:]
+      for m in recent:self.assertIn(m,call['messages'],'last two complete turns stay exact')
+     break
+    previous=call
+   self.assertIsNotNone(rolled,'regular context rollover must consume stored compression for '+b['model'])
+   # The following request reuses the freshly established compact prefix.
+   mark=len(Model.cache_records)
+   warm=self.send(b['id'],'Kurze Anschlussfrage nach dem Kontextwechsel.')
+   self.assertGreater(Model.cache_records[mark]['n_past'],0)
+   self.assertEqual(warm['messages'][:len(rolled['messages'])],rolled['messages'])
+   self.assertFalse(any(r['content']!=r['original'] for r in self.wire(b['model'])['pho_archive'].values() if code in r['original']))
+ def test_03_plus_menu_label_and_order(self):
+  html=(ROOT/'mag-room/web/index.html').read_text()
+  self.assertLess(html.index('id="plus-github-access"'),html.index('id="plus-think"'))
+  self.assertLess(html.index('id="plus-think"'),html.index('id="plus-pho"'))
+  self.assertIn('<span>PhO-Compress</span>',html)
+
+ def test_05_initial_window_keeps_two_completed_turns_and_skips_evicted_text(self):
+  self.wait_idle();self.stop()
+  room=[{'id':'pho-evicted','role':'user','name':'Du','content':self.PROSE*200+' NOT_IN_WINDOW'},
+        {'id':'pho-evicted-answer','role':'assistant','name':'Bot','content':'Alte Antwort.'}]
+  for i in range(80):
+   room += [{'id':'pho-old-'+str(i),'role':'user','name':'Du','content':self.PROSE+' Alt '+str(i)},
+            {'id':'pho-answer-'+str(i),'role':'assistant','name':'Bot','content':'Abgeschlossen.'}]
+  recent=[self.PROSE+' RECENT_A',self.PROSE+' RECENT_B']
+  for i,text in enumerate(recent):
+   room += [{'id':'pho-recent-'+str(i),'role':'user','name':'Du','content':text},
+            {'id':'pho-done-'+str(i),'role':'assistant','name':'Bot','content':'Antwort bleibt lesbar.'}]
+  self.state.joinpath('room.json').write_text(json.dumps(room))
+  for p in self.state.glob('prompt-wire-*.json'):p.unlink()
+  self.start();mark=len(Model.tokenizer_requests)
+  b=next(iter(self.bots().values()));call=self.send(b['id'],'Neue noch nicht beantwortete Anfrage.')
+  text=call['messages'][1]['content']
+  for original in recent:self.assertIn(original,text,'two completed exchanges plus pending request stay raw')
+  self.assertFalse(any('NOT_IN_WINDOW' in t for t in Model.tokenizer_requests[mark:]),'evicted history must not invoke the tokenizer')
+ def test_06_tool_round_compaction_invalidates_old_offsets_even_when_history_grows(self):
+  b=next(iter(self.bots().values()));self.send(b['id'],'Neue Ausgangslage.');self.stop()
+  path=next(p for p in self.state.glob('prompt-wire-*.json') if b['model'] in json.loads(p.read_text())['messages'][0]['content'])
+  w=json.loads(path.read_text());w['messages']=w['messages'][:2]
+  w['messages'][1]['content']='Initial context stays exact.'
+  w['messages'] += [{'role':'assistant','content':'```'+('x'*30000)+'```'},
+                    {'role':'user','content':'```'+('y'*8000)+'```'},
+                    {'role':'assistant','content':'```'+('z'*8000)+'```'}]
+  w['turn_ends']=[3,5];path.write_text(json.dumps(w));self.start()
+  Model.script=[[{'tool_calls':[{'index':0,'id':'pho-files','function':{'name':'list_room_files','arguments':'{}'}}]}],['Die Dateien sind geprüft.']]
+  try:self.send(b['id'],'Dateien nach Kontextwechsel prüfen.')
+  finally:Model.script=[]
+  result=self.wire(b['model'])
+  self.assertGreaterEqual(len(result['messages']),5,'tool rounds grew the vector back beyond its old size')
+  self.assertEqual(result['turn_ends'],[len(result['messages'])],'erased-message offsets must be forgotten immediately')
+
 if __name__=='__main__':unittest.main(verbosity=2)
+

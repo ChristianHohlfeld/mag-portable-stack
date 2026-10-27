@@ -29,6 +29,7 @@ jobs:
         run: bash ops/private-access/tests/test-owner-boundaries.sh
       - name: Native integration checks
         run: |
+          ./build/test-pho-codec
           ./build/test-guest-pty
           ./build/test-browser-recovery
           ./build/test-jobs-mcp
@@ -119,3 +120,4 @@ jobs:
         run: bash ops/tests/test-green.sh
       - name: Boot persistence
         run: bash ops/tests/test-boot.sh
+

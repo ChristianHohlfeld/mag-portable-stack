@@ -587,8 +587,8 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
     if (bridge || actor.role != "owner") { error_json(fd, 403, "Nur der Besitzer"); return; }
     Val body;
     if (!mj::parse(r.body, body) || !body.isObj()) { error_json(fd, 400, "Settings required"); return; }
-    const auto think = body.find("thinking"), github = body.find("github_enabled");
-    if ((!think && !github) || (think && think->type != Val::BOOL) || (github && github->type != Val::BOOL)) {
+    const auto think = body.find("thinking"), github = body.find("github_enabled"), pho = body.find("pho_compress");
+    if ((!think && !github && !pho) || (think && think->type != Val::BOOL) || (github && github->type != Val::BOOL) || (pho && pho->type != Val::BOOL)) {
       error_json(fd, 400, "Boolean settings required"); return;
     }
     const bool room = mag::str(body, "scope") == "room";
@@ -599,12 +599,14 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
       if (room) {
         if (think) THINKING_DEFAULT = think->asBool();
         if (github) GITHUB_DEFAULT = github->asBool();
-        Val prefs = Val::object(); prefs["thinking"] = THINKING_DEFAULT.load(); prefs["github_enabled"] = GITHUB_DEFAULT.load();
+        if (pho) PHO_DEFAULT = pho->asBool();
+        Val prefs = Val::object(); prefs["thinking"] = THINKING_DEFAULT.load(); prefs["github_enabled"] = GITHUB_DEFAULT.load(); prefs["pho_compress"] = PHO_DEFAULT.load();
         if (!write_file_atomic(STATE_DIR + "/bot-defaults.json", mj::dump(prefs))) { error_json(fd, 500, "Speichern fehlgeschlagen"); return; }
       }
       for (auto &a : AGENTS) if (room || std::find(ids.begin(), ids.end(), mag::str(a, "id")) != ids.end()) {
         if (think) a["thinking"] = think->asBool();
         if (github) a["github_enabled"] = github->asBool();
+        if (pho) a["pho_compress"] = pho->asBool();
       }
       save_agents();
     }

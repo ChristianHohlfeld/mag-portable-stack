@@ -56,7 +56,13 @@ done
 [[ -n $pub ]] || { echo "bot site publisher binary missing" >&2; exit 1; }
 install -d -m 0755 "$lib_dir" "$www_root/www" "$nginx_confd"
 install -d -m 0700 "$www_root/tokens"
-install -m 0755 "$here/site.sh" "$here/issue-wildcard.sh" "$pub" "$lib_dir/"
+install -m 0755 "$here/site.sh" "$here/issue-wildcard.sh" "$lib_dir/"
+installed_pub="$lib_dir/mag-bots-publish"
+# GNU install errors "are the same file" when the fallback is already
+# $lib_dir/mag-bots-publish. That aborted install after the other fixes.
+if [[ ! -e $installed_pub || ! $pub -ef $installed_pub ]]; then
+  install -m 0755 "$pub" "$installed_pub"
+fi
 install -m 0644 "$here/mag-bots-publish.service" "$systemd_dir/mag-bots-publish.service"
 conf=$nginx_confd/mag-bots.conf
 snapshot=$(mktemp)

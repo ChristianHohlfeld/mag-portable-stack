@@ -322,4 +322,11 @@ grep -Fq 'MAG bot sites ready' "$tmp/install-due.out"
 ! grep -Fq 'bot vhost must not bind the Tailscale address' "$tmp/install-due.out"
 grep -Fq 'listen 127.0.0.1:4443 ssl http2 proxy_protocol;' "$tmp/nginx-confd/mag-bots.conf"
 ! grep -Fq 'bot site install incomplete' "$tmp/install-due.out"
+# Fallback to the already-installed publisher must not copy onto itself.
+grep -Fq 'pub -ef $installed_pub' "$here/install.sh"
+unset MAG_BOTS_PUBLISH
+install -m 0755 "$tmp/publish-stub" "$tmp/bots-lib/mag-bots-publish"
+"$here/install.sh" >"$tmp/install-libpub.out" 2>&1
+grep -Fq 'MAG bot sites ready' "$tmp/install-libpub.out"
+! grep -Fq 'are the same file' "$tmp/install-libpub.out"
 echo "bot site regression OK"

@@ -1,6 +1,8 @@
 # Host merge gate. Push and pull request to main run here on the Gitea
-# act_runner (label mag). A green push to main moves the Gitea green ref and
-# wakes mag-auto-update through /var/lib/mag-deploy/request. GitHub is not used.
+# act_runner. runs-on must name both labels from ops/runners/gitea-runner.yaml
+# (mag:host and self-hosted:host). mag-ci.yml stays on mag-ci-vm and will not
+# match this runner. A green push to main moves the Gitea green ref and wakes
+# mag-auto-update through /var/lib/mag-deploy/request. GitHub is not used.
 name: Gitea green
 on:
   push:
@@ -15,7 +17,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   gate:
-    runs-on: mag
+    runs-on: [self-hosted, mag]
     timeout-minutes: 30
     env:
       GITEA_TOKEN: ${{ github.token }}

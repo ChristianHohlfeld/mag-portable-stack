@@ -275,7 +275,28 @@ grep -Fq 'fetch-gitea-green.sh' "$root/ops/update.sh"
 ! grep -Eq 'ListenStream|^listen ' \
   "$root/ops/ci/promote-gitea.sh" "$root/ops/ci/gitea-gate.sh" "$root/ops/ci/fetch-gitea-green.sh" \
   "$root/.gitea/workflows/green.yml" "$root/ops/runners/mag-gitea-runner.service"
-grep -Fq 'runs-on: mag' "$root/.gitea/workflows/green.yml"
+grep -Fq 'runs-on: [self-hosted, mag]' "$root/.gitea/workflows/green.yml"
+grep -Fq 'mag:host' "$root/ops/runners/gitea-runner.yaml"
+grep -Fq 'self-hosted:host' "$root/ops/runners/gitea-runner.yaml"
+python3 - "$root" <<'PY'
+import pathlib, sys
+try:
+    import yaml
+except ImportError:
+    sys.exit(0)
+root = pathlib.Path(sys.argv[1])
+green = yaml.safe_load((root / ".gitea/workflows/green.yml").read_text())
+on = green.get("on", green.get(True))
+assert "push" in on and "pull_request" in on, on
+assert set(green["jobs"]["gate"]["runs-on"]) == {"self-hosted", "mag"}
+labels = yaml.safe_load((root / "ops/runners/gitea-runner.yaml").read_text())["runner"]["labels"]
+have = {item.split(":", 1)[0] for item in labels}
+assert {"self-hosted", "mag"} <= have, labels
+ci = yaml.safe_load((root / ".gitea/workflows/mag-ci.yml").read_text())
+ci_on = ci.get("on", ci.get(True))
+assert ci["jobs"]["checks"]["runs-on"] == "mag-ci-vm"
+assert "push" not in ci_on and "pull_request" not in ci_on, ci_on
+PY
 grep -Fq 'timeout-minutes: 5' "$root/.gitea/workflows/green.yml"
 grep -Fq 'timeout-minutes: 20' "$root/.gitea/workflows/green.yml"
 grep -Fq 'pull_request:' "$root/.gitea/workflows/green.yml"

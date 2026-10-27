@@ -44,7 +44,7 @@ What Chris has to do (in this order):
    minutes are used up, self-hosted runners keep working (they cost no
    minutes).
 2. Leave GitHub Actions off the deploy path. Promotion and deploy run in
-   Gitea: `.gitea/workflows/green.yml` on the host runner (`runs-on: mag`).
+   Gitea: `.gitea/workflows/green.yml` on the host runner (`runs-on: [self-hosted, mag]`).
 3. Check: a push to Gitea `main` runs the gate, moves Gitea `green`, and
    writes `/var/lib/mag-deploy/request`. `mag-auto-update` deploys that ref.
 
@@ -61,7 +61,7 @@ Differences on the self-hosted runner (unprivileged, no sudo, no apt):
   `GH_TOKEN` against the GitHub API, so it works on the host without `gh`.
 
 Gitea is the deploy source. `.gitea/workflows/green.yml` runs on the host
-act_runner (`runs-on: mag`, CPUs 42-55, nice 15, idle I/O). On a green push to
+act_runner (`runs-on: [self-hosted, mag]`, CPUs 42-55, nice 15, idle I/O). On a green push to
 main it moves the Gitea `green` ref and writes `/var/lib/mag-deploy/request`.
 `mag-auto-update` fetches that ref. A passive GitHub mirror
 (`ops/gitea/mirror-github.sh`) can still bring commits in; it does not promote

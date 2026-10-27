@@ -29,7 +29,7 @@ grep -Fq 'PathModified=/var/lib/mag-deploy/request' "$r/mag-deploy-request.path"
 ! grep -Eq 'mag-llm(\.service|-iq3)|systemctl (stop|restart) mag-llm' "$r"/* "$root/ops/auto-update"/*
 grep -Fq 'ops/runners/install.sh' "$root/ops/auto-update/apply.sh"
 grep -Fq 'exec bash "$ROOT/ops/auto-update/apply.sh"' "$root/ops/auto-update/auto-update.sh"
-grep -Fq 'runs-on: mag' "$root/.gitea/workflows/green.yml"
+grep -Fq 'runs-on: [self-hosted, mag]' "$root/.gitea/workflows/green.yml"
 grep -Fq 'promote-gitea.sh' "$root/.gitea/workflows/green.yml"
 grep -Fq 'success() && github.event_name == '"'"'push'"'"'' "$root/.gitea/workflows/green.yml"
 grep -Fq 'mag:host' "$r/gitea-runner.yaml"

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Action runners on the MAG host (idempotent, run as root; ops/update.sh and the
 # auto-update call it after each successful deploy).
-#  - Gitea runner (GitHub-style workflows in .gitea/workflows, runs-on: mag),
+#  - Gitea runner (GitHub-style workflows in .gitea/workflows, runs-on: [self-hosted, mag]),
 #    registered automatically against the local Gitea.
 #  - GitHub runner (runs-on: [self-hosted, mag]) only when the owner has put a
 #    registration token into /etc/credstore/mag-github-runner.token.

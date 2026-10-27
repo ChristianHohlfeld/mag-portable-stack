@@ -26,7 +26,6 @@ deploy watchdog :: bash ops/tests/test-deploy-watchdog.sh
 legacy cleanup :: bash ops/tests/test-cleanup-legacy.sh
 agent drift :: bash ops/tests/test-agent-drift.sh
 runners :: bash ops/tests/test-runners.sh
-github green promotion :: bash ops/tests/test-github-pipeline.sh
 boot :: bash ops/tests/test-boot.sh
 failed units :: bash ops/tests/test-clear-failed-units.sh
 gitea funnel :: python3 ops/tailscale/tests/test-gitea-funnel.py

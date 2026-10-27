@@ -11,8 +11,7 @@ JOBS=2
 [[ ${1:-} == --jobs ]] && JOBS=${2:?}
 step() { printf '\n== %s\n' "$*"; }
 step build
-cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
-cmake --build build -j "$JOBS"
+MAG_CI_JOBS=$JOBS bash ops/ci/native-build.sh
 step 'native integration checks'
 ./build/test-guest-pty
 ./build/test-browser-recovery
@@ -55,7 +54,11 @@ python3 ops/tailscale/tests/test-gitea-funnel.py
 python3 ops/tailscale/tests/test-sni-map.py
 bash ops/tests/test-retire-deepseek.sh
 bash ops/tests/test-gitea-mirror.sh
-bash ops/backup/tests/test-backup.sh
+if bash ops/ci/backup-affected.sh; then
+  bash ops/backup/tests/test-backup.sh
+else
+  echo 'backup restore e2e skipped (no backup/ path change)'
+fi
 bash ops/backup/tests/test-gitea-root.sh
 step 'browser WebRTC gateway'
 (cd mag-room/webrtc && go test -mod=mod ./... && go build -mod=mod -o /tmp/mag-browser-webrtc-ci .)

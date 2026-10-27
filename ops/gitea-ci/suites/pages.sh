@@ -6,8 +6,7 @@ export GITHUB_REPOSITORY=ChristianHohlfeld/mag-portable-stack
 test -f CMakeLists.txt
 test -d .git
 printf "\n== %s\n" "Native C++ unit tests + MAG compilation"
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build --target test-pages-native magroom -j 2
+bash ops/ci/native-build.sh test-pages-native magroom
 ./build/test-pages-native
 
 printf "\n== %s\n" "Tailnet-only, public opt-in, lego v5 and DNS-01 onboarding tests"

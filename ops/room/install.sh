@@ -2,6 +2,8 @@
 # Stage definitions only. Never restart/stop a resident model or delete weights.
 set -euo pipefail
 ROOT=$(cd -- "$(dirname -- "$(readlink -f "$0")")/../.." && pwd)
+# shellcheck source=../mag-units.sh
+source "$ROOT/ops/mag-units.sh"
 if [[ ${1:-} == --dry-run ]]; then
   echo '+ install DeepSeek per-NUMA units, room-model.env and presets; disable inactive Ornith units; no model restart'
   exit 0
@@ -29,7 +31,11 @@ if [[ -f /etc/mag-stack/secondary-model.env ]]; then
   printf '# Replaced by room-model.env (DeepSeek per NUMA)\n' > /etc/mag-stack/secondary-model.env
 fi
 systemctl disable "${OLD[@]}" >/dev/null 2>&1 || true
-systemctl daemon-reload
+mag_daemon_reload
+if [[ ${MAG_DEFER_DAEMON_RELOAD:-0} == 1 ]]; then
+  echo 'room/install: unit files staged; parent reloads and enables'
+  exit 0
+fi
 systemctl enable mag-llm-ds-node@0.service
 if [[ $(cat /etc/mag-stack/room-layout 2>/dev/null || true) != mixed ]]; then
   systemctl enable mag-llm-ds-node@1.service

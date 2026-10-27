@@ -30,6 +30,9 @@ SH_SECONDS = {
     'ops/tests/test-hang-deadlines.sh': 60,
     'ops/ci/tests/test-affected.sh': 60,
     'ops/ci/tests/test-ci-reap.sh': 60,
+    'ops/ci/tests/test-native-build.sh': 60,
+    'ops/ci/tests/test-local-ci.sh': 60,
+    'ops/tests/test-daemon-reload-batch.sh': 60,
 }
 JOB_MINUTES = {
     'native': 90,

@@ -8,10 +8,13 @@ trust chain :: bash ops/trust/test-trust.sh
 bootstrap dry run :: bash ops/tests/test-bootstrap.sh
 gitea mirror :: bash ops/tests/test-gitea-mirror.sh
 gitea bot rights :: bash ops/tests/test-gitea-bot-rights.sh
-shellcheck :: if ! command -v shellcheck >/dev/null; then echo 'shellcheck not installed on this runner; skipped'; exit 0; fi; shellcheck ops/vm/build-golden.sh ops/bootstrap-voice.sh ops/deepseek/bootstrap-runtimes.sh ops/tailscale/install.sh ops/private-access/install-lego.sh ops/gitea/mirror-github.sh ops/tests/e2e-bootstrap.sh ops/ci/promote-green.sh ops/ci/self-hosted-checks.sh ops/ci/fetch-gitea-green.sh ops/ci/promote-gitea.sh ops/ci/gitea-gate.sh ops/ci/run-parallel.sh ops/ci/native-gate.sh ops/ci/affected.sh ops/ci/local-ci.sh ops/ci/reap.sh ops/ci/tests/test-gate-parallel.sh ops/deploy-watchdog.sh
+shellcheck :: if ! command -v shellcheck >/dev/null; then echo 'shellcheck not installed on this runner; skipped'; exit 0; fi; shellcheck ops/vm/build-golden.sh ops/bootstrap-voice.sh ops/deepseek/bootstrap-runtimes.sh ops/tailscale/install.sh ops/private-access/install-lego.sh ops/gitea/mirror-github.sh ops/tests/e2e-bootstrap.sh ops/ci/promote-green.sh ops/ci/self-hosted-checks.sh ops/ci/fetch-gitea-green.sh ops/ci/promote-gitea.sh ops/ci/gitea-gate.sh ops/ci/run-parallel.sh ops/ci/native-gate.sh ops/ci/affected.sh ops/ci/local-ci.sh ops/ci/reap.sh ops/ci/native-build.sh ops/ci/wait-native-build.sh ops/ci/backup-affected.sh ops/mag-units.sh ops/ci/tests/test-gate-parallel.sh ops/ci/tests/test-native-build.sh ops/ci/tests/test-local-ci.sh ops/tests/test-daemon-reload-batch.sh ops/deploy-watchdog.sh
 gitea promote :: bash ops/tests/test-gitea-promote.sh
 gate parallel :: bash ops/ci/tests/test-gate-parallel.sh
 ci reap :: bash ops/ci/tests/test-ci-reap.sh
+native build cache :: bash ops/ci/tests/test-native-build.sh
+local ci parallel :: bash ops/ci/tests/test-local-ci.sh
+daemon-reload batch :: bash ops/tests/test-daemon-reload-batch.sh
 update dry run :: bash ops/tests/test-update.sh
 deploy drain state :: python3 ops/tests/test-deploy-drain-state.py
 deploy watchdog :: bash ops/tests/test-deploy-watchdog.sh

@@ -2,6 +2,8 @@
 # Transactional NUMA1 switch used by deploy.sh. NUMA0 is never stopped/restarted.
 set -euo pipefail
 ROOT=$(cd -- "$(dirname -- "$(readlink -f "$0")")/../.." && pwd)
+# shellcheck source=../mag-units.sh
+source "$ROOT/ops/mag-units.sh"
 ACTION=${1:?apply|rollback}; BACKUP=${2:?deployment backup directory}
 TXN="$BACKUP/qwen-layout"
 fail(){ echo "NUMA1 layout: $*" >&2; exit 4; }
@@ -25,7 +27,7 @@ rollback(){
       install -D -m "$(stat -c %a "$TXN/files$file")" "$TXN/files$file" "$file"
     else rm -f "$file"; fi
   done
-  systemctl daemon-reload
+  MAG_DEFER_DAEMON_RELOAD=0 mag_flush_daemon_reload --force
   for unit in "${units[@]}"; do
     if grep -Fxq "$unit" "$TXN/enabled"; then systemctl enable "$unit"; fi
     if [[ -f $TXN/changed ]] && grep -Fxq "$unit" "$TXN/active"; then systemctl start "$unit"; fi
@@ -82,7 +84,8 @@ if [[ $layout == mixed ]]; then
 fi
 install -m 0644 "$ROOT/ops/room/$config" /etc/mag-stack/room-model.env
 printf '%s\n' "$layout" > /etc/mag-stack/room-layout
-systemctl daemon-reload
+mag_daemon_reload
+mag_flush_daemon_reload
 if systemctl is-active --quiet "$other"; then change=1; fi
 if (( change )); then
   touch "$TXN/changed"

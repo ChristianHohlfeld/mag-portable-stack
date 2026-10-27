@@ -16,6 +16,7 @@ class Layout(unittest.TestCase):
   self.repo=self.base/'repo'
   for name in ('qwen','room'):
    shutil.copytree(ROOT/'ops'/name,self.repo/'ops'/name,symlinks=True)
+  shutil.copy2(ROOT/'ops'/'mag-units.sh',self.repo/'ops'/'mag-units.sh')
   self.host=self.base/'host';self.bin=self.base/'bin';self.bin.mkdir()
   helper=self.repo/'ops/qwen/layout.sh';s=helper.read_text().replace("[[ $EUID == 0 ]] || fail 'root required'",'')
   for path in ('/etc/','/usr/local/','/home/chris/'):

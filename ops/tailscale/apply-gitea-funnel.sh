@@ -381,6 +381,8 @@ run_cmd install -m 0644 "$here/mag-tailscale-cert.service" "$systemd_dir/mag-tai
   die 1 'install mag-tailscale-cert.service'
 run_cmd install -m 0644 "$here/mag-tailscale-cert.timer" "$systemd_dir/mag-tailscale-cert.timer" ||
   die 1 'install mag-tailscale-cert.timer'
+sed "s#@ROOT@#$root#g" "$here/mag-gitea-funnel.service" > "$systemd_dir/mag-gitea-funnel.service"
+install -m 0644 "$here/mag-gitea-funnel.timer" "$systemd_dir/mag-gitea-funnel.timer"
 run_cmd systemctl daemon-reload || die 1 'systemctl daemon-reload'
 run_cmd systemctl enable mag-tailscale-cert.timer || die 1 'enable mag-tailscale-cert.timer'
 run_cmd systemctl start mag-tailscale-cert.timer || die 1 'start mag-tailscale-cert.timer'
@@ -414,9 +416,6 @@ get_code=$(api GET "$tmp/applied") || die 1 'serve-config reread failed'
 python3 "$here/merge-gitea-funnel.py" check <"$tmp/applied" ||
   die 1 'applied serve-config rejected'
 status=$(tailscale funnel status 2>&1 || true)
-sed "s#@ROOT@#$root#g" "$here/mag-gitea-funnel.service" > "$systemd_dir/mag-gitea-funnel.service"
-install -m 0644 "$here/mag-gitea-funnel.timer" "$systemd_dir/mag-gitea-funnel.timer"
-systemctl daemon-reload
 systemctl enable mag-gitea-funnel.service mag-gitea-funnel.timer
 systemctl start mag-gitea-funnel.timer
 funnel_admin_note() {

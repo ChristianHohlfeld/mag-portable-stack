@@ -65,9 +65,16 @@ mag_deploy_arm_deadline() {
   exec timeout --kill-after=5s "${deadline}s" bash "$0" "$@"
 }
 
+# shellcheck source=mag-units.sh
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/mag-units.sh"
+
 # Every systemctl wait in a deploy has a deadline. A backup snapshot is
 # allowed a longer budget than a status query; neither waits forever.
 mag_systemctl() {
+  if [[ ${1:-} == daemon-reload && ${MAG_UNITS_USE_SYSTEMCTL_WRAPPER:-1} == 1 ]]; then
+    mag_daemon_reload
+    return
+  fi
   local budget=${MAG_SYSTEMD_BUDGET_S:-180}
   case "${1:-}" in
     is-active|is-enabled|is-failed|cat|show|status|daemon-reload)

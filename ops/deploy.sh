@@ -186,7 +186,7 @@ rollback() {
      mv -f /opt/mag-audit/bin/.mag-audit-gateway.restore /opt/mag-audit/bin/mag-audit-gateway
    fi
  fi
- mag_systemctl daemon-reload
+ MAG_DEFER_DAEMON_RELOAD=0 mag_flush_daemon_reload --force
  if (( gateway_switched )); then mag_systemctl restart mag-audit-gateway.service || true; fi
  if [[ -f "$BACKUP/mag-120.service" ]]; then mag_systemctl restart mag-120.service; fi
  if [[ -f "$BACKUP/mag-browser-webrtc.service" ]]; then
@@ -355,14 +355,30 @@ if mag_systemctl is-active --quiet gitea.service; then
 fi
 # Qwen host, use exactly two model-pinned bots with separate KVM workspaces.
 rm -f /etc/systemd/system/mag-120.service.d/30-multibot.conf
+# One daemon-reload for the unit-file phase (layout + room + gateway).
+export MAG_DEFER_DAEMON_RELOAD=1
+export MAG_UNITS_DIRTY_FILE="$BACKUP/units.dirty"
+# Replace the live gateway in this deployment, never leave an old :8090 router behind.
+test -x "$SOURCE/build/mag-audit-gateway" || { echo 'Native gateway binary missing' >&2; exit 1; }
+gateway_switched=1
+install -m 0644 "$SOURCE/ops/audit/systemd/mag-audit-gateway.service" /etc/systemd/system/mag-audit-gateway.service
+mag_daemon_reload
 if [[ -e /etc/mag-stack/room-model.env || -e /etc/systemd/system/mag-llm-ds-node@.service ]]; then
   # The layout helper owns its own NUMA1 snapshot, including config and boot state.
   # Stop the drained room while switching so no new turn reaches the old router.
   if (( ! FIRST_INSTALL )); then
     mag_systemctl stop mag-120.service
+  fi
+  # Stage unit files first so layout's single flush sees room + gateway.
+  bash "$SOURCE/ops/room/install.sh"
+  if (( ! FIRST_INSTALL )); then
     bash "$SOURCE/ops/qwen/layout.sh" apply "$BACKUP"
   fi
-  bash "$SOURCE/ops/room/install.sh"
+  mag_flush_daemon_reload
+  mag_systemctl enable mag-llm-ds-node@0.service
+  if [[ $(cat /etc/mag-stack/room-layout 2>/dev/null || true) != mixed ]]; then
+    mag_systemctl enable mag-llm-ds-node@1.service
+  fi
 elif [[ -r /etc/mag-stack/secondary-model.env ]] &&
    grep -Fxq 'MAG_SECONDARY_MODEL=ornith' /etc/mag-stack/secondary-model.env; then
   echo 'Ornith cutover required: stop Ornith, then run ops/room/install.sh before deploy' >&2
@@ -378,17 +394,16 @@ elif [[ -r /etc/mag-stack/secondary-model.env ]] &&
   install -m 0644 "$SOURCE/ops/qwen/mag-llm-qwen.service" /etc/systemd/system/mag-llm-qwen.service
   # Remove obsolete Q4 preflight; Qwen starts independently.
   rm -f /etc/systemd/system/mag-llm-qwen.service.d/20-q4-health.conf
+  mag_daemon_reload
 else
   rm -f /etc/systemd/system/mag-120.service.d/30-dual-numa.conf
+  mag_daemon_reload
 fi
-# Replace the live gateway in this deployment, never leave an old :8090 router behind.
-test -x "$SOURCE/build/mag-audit-gateway" || { echo 'Native gateway binary missing' >&2; exit 1; }
-gateway_switched=1
-install -m 0644 "$SOURCE/ops/audit/systemd/mag-audit-gateway.service" /etc/systemd/system/mag-audit-gateway.service
+mag_flush_daemon_reload
+unset MAG_DEFER_DAEMON_RELOAD
 install -d -m 0755 /opt/mag-audit/bin
 install -m 0755 "$SOURCE/build/mag-audit-gateway" /opt/mag-audit/bin/.mag-audit-gateway.next
 mv -f /opt/mag-audit/bin/.mag-audit-gateway.next /opt/mag-audit/bin/mag-audit-gateway
-mag_systemctl daemon-reload
 mag_systemctl restart mag-audit-gateway.service
 # Type=simple returns before the new gateway has bound :8080. Use the same
 # bounded readiness retry as the room/RTC smoke checks (also on a blank host).
@@ -473,10 +488,11 @@ if [[ -d /etc/mag-audit/vm ]]; then
 fi
 for unit in mag-chat.service pm2-chris.service; do if mag_systemctl cat "$unit" >/dev/null 2>&1; then mag_systemctl disable --now "$unit"; fi; done
 mag_systemctl enable --now mag-stack-check.timer mag-git-gateway.socket
+# One daemon-reload for late unit files (cpu-tune, cleanup, drift, bots drop-in).
+export MAG_DEFER_DAEMON_RELOAD=1
+export MAG_UNITS_DIRTY_FILE="$BACKUP/late.dirty"
 install -m 0644 "$SOURCE/ops/boot/mag-cpu-tune.service" /etc/systemd/system/mag-cpu-tune.service
-mag_systemctl daemon-reload
-mag_systemctl enable mag-cpu-tune.service
-mag_systemctl restart mag-cpu-tune.service || echo 'WARN: CPU tuning not applied' >&2
+mag_daemon_reload
 bash "$NGINX_SYNC" commit
 # Late steps must not roll a switched release back. The deadline stays armed
 # so a hang here still kills child groups and runs deploy_exit.
@@ -489,13 +505,17 @@ bash "$SOURCE/ops/cleanup-legacy.sh" || echo 'WARN: legacy cleanup incomplete (d
 install -m 0755 "$SOURCE/ops/agent-drift.sh" /usr/local/sbin/mag-agent-drift
 install -m 0644 "$SOURCE/ops/mag-agent-drift.service" /etc/systemd/system/mag-agent-drift.service
 install -m 0644 "$SOURCE/ops/mag-agent-drift.timer" /etc/systemd/system/mag-agent-drift.timer
-mag_systemctl daemon-reload
-mag_systemctl enable --now mag-agent-drift.timer || echo 'WARN: agent drift timer not enabled' >&2
-# Unreferenced half-created bot VMs only. Does not restart a model unit.
-bash /usr/local/sbin/mag-agent-drift || echo 'WARN: agent drift check incomplete (deploy itself succeeded)' >&2
+mag_daemon_reload
 # Tailnet name for each bot VM. No-op until the one-time wildcard cert exists.
 # Does not restart a model unit. DNS for *.bot.stardenburg.de stays at the registrar.
 bash "$SOURCE/ops/bots/install.sh" || echo 'WARN: bot site install incomplete (deploy itself succeeded)' >&2
+mag_flush_daemon_reload
+unset MAG_DEFER_DAEMON_RELOAD
+mag_systemctl enable mag-cpu-tune.service
+mag_systemctl restart mag-cpu-tune.service || echo 'WARN: CPU tuning not applied' >&2
+mag_systemctl enable --now mag-agent-drift.timer || echo 'WARN: agent drift timer not enabled' >&2
+# Unreferenced half-created bot VMs only. Does not restart a model unit.
+bash /usr/local/sbin/mag-agent-drift || echo 'WARN: agent drift check incomplete (deploy itself succeeded)' >&2
 # DeepSeek is retired (owner decision): only on an Ornith host with 8191+8192
 # healthy, disable --now mag-llm/IQ3/model-gate/model-pin. Before ensure-boot so it
 # never re-enables mag-llm. Never touches mag-120 or model files.

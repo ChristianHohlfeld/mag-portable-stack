@@ -91,9 +91,10 @@ class RoomE2E(unittest.TestCase):
         self.assertEqual(p.locator('#plus-web').count(), 0, 'offline only in the room menu')
         # One header: one status group, one room menu, one settings button.
         self.assertEqual(p.locator('#app-header .status-group .top-stat').count(), 2)
-        self.assertEqual(p.locator('#app-header #selftalk-row, #app-header #selftalk').count(), 0)
-        expect(p.locator('#room-line #selftalk-row #selftalk')).to_be_attached()
-        expect(p.locator('#room-line #selftalk-row')).to_contain_text('Self-Talk')
+        self.assertEqual(p.locator('#app-header #proaktiv-row, #app-header #proaktiv').count(), 0)
+        expect(p.locator('#room-line #proaktiv-row #proaktiv')).to_be_attached()
+        expect(p.locator('#room-line #proaktiv-row')).to_contain_text('Proaktiv')
+        self.assertNotIn('siehe Tooltip', p.content())
         self.assertEqual(p.locator('#app-header #room-menu-btn').count(), 1)
         self.assertEqual(p.locator('#app-header #settings-open').count(), 1)
         # One Stop: the composer button (the room menu's "Alles anhalten"
@@ -105,18 +106,28 @@ class RoomE2E(unittest.TestCase):
         Model.scripts.append([{'_hold': 30}])
         self.send('Lange Aufgabe')
         wait_calls(1)
-        button = p.locator('#send-button')
-        expect(button).to_have_attribute('data-mode', 'stop', timeout=5000)
+        stop = p.locator('#stop-run')
+        expect(stop).to_be_visible(timeout=5000)
+        expect(stop).to_have_attribute('aria-label', 'Stoppen')
+        self.assertEqual(stop.inner_text().strip(), '')
+        expect(p.locator('#send-button')).to_have_attribute('aria-label', 'Senden')
         expect(p.locator('.message.work-live .meta .inline-progress')).to_be_visible()
         self.assertEqual(p.locator('.message.work-live .run').count(), 0,
                          'reading alone must not allocate a card')
         self.shot('02-running')
         t0 = time.monotonic()
-        button.click()
-        expect(button).to_have_attribute('data-mode', 'send', timeout=3000)
+        stop.click()
+        expect(stop).to_be_hidden(timeout=3000)
         self.assertLess(time.monotonic() - t0, 3)
         self.room.until(lambda s: not s['busy'], timeout=3)
         self.assertTrue(Model.disconnects, 'model request closed')
+        p.reload()
+        expect(p.locator('#connection')).to_contain_text('Verbunden', timeout=10000)
+        expect(p.locator('#stop-run')).to_be_hidden()
+        Model.scripts.append(['Fertig.'])
+        self.send('kurz')
+        expect(p.locator('.message.assistant .content').last).to_have_text('Fertig.', timeout=8000)
+        expect(p.locator('#stop-run')).to_be_hidden()
 
     def test_02b_stop_is_immediate_on_phone_and_desktop(self):
         # One tap shows Stoppt… before the model thread unwinds. A second tap
@@ -140,22 +151,33 @@ class RoomE2E(unittest.TestCase):
                 page.locator('#message').press('Enter')
                 wait_calls(1)
                 time.sleep(.3)
-                button = page.locator('#send-button')
-                expect(button).to_have_attribute('data-mode', 'stop', timeout=5000)
+                stop = page.locator('#stop-run')
+                expect(stop).to_be_visible(timeout=5000)
+                expect(stop).to_have_attribute('aria-label', 'Stoppen')
+                self.assertEqual(stop.inner_text().strip(), '')
                 live = page.locator('.message.assistant .content').last
                 expect(live).to_be_attached()
                 self.assertNotIn('Nicht zeigen', live.inner_text())
                 self.assertEqual(page.locator('.work-steps', has_text='Denkt nach').count(), 0)
+                if width == 390:
+                    box = page.evaluate("""()=>{
+                      const c=document.getElementById('conversation');
+                      const r=c.getBoundingClientRect();
+                      return {sw:document.documentElement.scrollWidth, iw:innerWidth, ch:r.height, ih:innerHeight};
+                    }""")
+                    self.assertLessEqual(box['sw'], box['iw'] + 1, 'mobile page overflows')
+                    self.assertGreaterEqual(box['ch'], box['ih'] * 0.8, 'chat is under 80% of the viewport')
                 t0 = time.monotonic()
                 seen = page.evaluate("""()=>{
-                  const b=document.getElementById('send-button');
+                  const b=document.getElementById('stop-run');
                   b.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,cancelable:true}));
-                  b.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,cancelable:true}));
-                  return b.getAttribute('aria-label');
+                  b.click();
+                  return {label:b.getAttribute('aria-label'), text:(b.textContent||'').trim()};
                 }""")
-                self.assertEqual(seen, 'Stoppt…')
+                self.assertEqual(seen['label'], 'Stoppen')
+                self.assertEqual(seen['text'], '')
                 self.assertLess(time.monotonic() - t0, 0.4, 'stop paints before the request returns')
-                expect(button).to_have_attribute('data-mode', 'send', timeout=3000)
+                expect(stop).to_be_hidden(timeout=3000)
                 self.room.until(lambda s: not s['busy'], timeout=3)
                 self.assertTrue(Model.disconnects, 'llama stream closed without a service restart')
                 text = '\n'.join(page.locator('.message.assistant .content').all_inner_texts())
@@ -169,8 +191,9 @@ class RoomE2E(unittest.TestCase):
         Model.scripts.append([{'_hold': 30}])
         self.send('Noch eine lange Aufgabe')
         wait_calls(1)
-        expect(p.locator('#send-button')).to_have_attribute('data-mode', 'stop', timeout=5000)
+        expect(p.locator('#stop-run')).to_be_visible(timeout=5000)
         p.locator('#message').press('Escape')
+        expect(p.locator('#stop-run')).to_be_hidden(timeout=3000)
         self.room.until(lambda s: not s['busy'], timeout=3, what='idle after Esc')
 
     def test_04_queue_is_visible_editable_and_send_now_interrupts(self):
@@ -178,7 +201,7 @@ class RoomE2E(unittest.TestCase):
         Model.scripts += [[{'_hold': 30}], ['Sofort beantwortet.']]
         self.send('Arbeite lange')
         wait_calls(1)
-        expect(p.locator('#send-button')).to_have_attribute('data-mode', 'stop', timeout=5000)
+        expect(p.locator('#stop-run')).to_be_visible(timeout=5000)
         self.send('Zwischenfrage')
         chip = p.locator('#queue-chips .q-chip')
         expect(chip).to_have_count(1, timeout=5000)
@@ -349,19 +372,17 @@ class RoomE2E(unittest.TestCase):
         Model.scripts += [[{'_hold': 30}], ['Neu beantwortet.'], ['Alt beantwortet.']]
         self.send('Erste')
         wait_calls(1)
-        expect(p.locator('#send-button')).to_have_attribute('data-mode', 'stop', timeout=5000)
+        expect(p.locator('#stop-run')).to_be_visible(timeout=5000)
         self.send('Gewartet')
         expect(p.locator('#queue-chips .q-chip')).to_have_count(1, timeout=5000)
         p.locator('#queue-chips .q-toggle').click()
         p.locator('#queue-chips .q-btn', has_text='Queue pausieren').click()
         p.locator('#message').press('Escape')
-        expect(p.locator('#queue-chips .q-chip.held')).to_have_count(1, timeout=5000)
-        expect(p.locator('#queue-chips .q-toggle')).to_contain_text('angehalten')
+        expect(p.locator('#queue-chips .q-chip')).to_have_count(0, timeout=5000)
+        expect(p.locator('#stop-run')).to_be_hidden(timeout=3000)
         self.send('Neu')
         expect(p.locator('.message.assistant .content').last).to_have_text('Neu beantwortet.', timeout=8000)
-        self.shot('06-held')
-        p.locator('#queue-chips .q-btn', has_text='Fortsetzen').click()
-        expect(p.locator('.message.assistant .content').last).to_have_text('Alt beantwortet.', timeout=8000)
+        self.shot('06-cleared')
         expect(p.locator('#queue-chips .q-chip')).to_have_count(0)
 
     def test_06b_quiet_stream_has_zero_layout_shift_and_keeps_scroll_anchor(self):
@@ -846,7 +867,7 @@ class RoomE2E(unittest.TestCase):
                   mark:document.querySelector('#agents .agent[data-bot="ds"] .bot-face').dataset.mark
                 },
                 stats:document.querySelectorAll('#app-header .status-group .top-stat').length,
-                selftalk:!!document.querySelector('#room-line #selftalk'),
+                proaktiv:!!document.querySelector('#room-line #proaktiv'),
                 field:!!document.getElementById('message'),
                 lottie:/lottie/i.test(document.documentElement.innerHTML),
                 gif:!!document.querySelector('.bot-face img')
@@ -890,7 +911,7 @@ class RoomE2E(unittest.TestCase):
             self.assertEqual(snap['roster']['mark'], 'orb')
             self.assertNotEqual(snap['roster']['ds'], snap['roster']['qw'])
             self.assertEqual(snap['stats'], 2)
-            self.assertTrue(snap['selftalk'])
+            self.assertTrue(snap['proaktiv'])
             self.assertTrue(snap['field'])
             self.assertFalse(snap['lottie'])
             self.assertFalse(snap['gif'])

@@ -252,9 +252,13 @@ class StopAndPriority(unittest.TestCase):
         time.sleep(.6)
         self.room.api('/api/message', {'text': 'Weiter', 'bots': ['a']})
         self.room.api('/api/cancel', {})
-        s = self.room.until(lambda s: not s['busy'] and contents(s)[-1] == 'Queue geht weiter.', timeout=3, what='queue resumes after stop')
+        s = self.room.until(lambda s: not s['busy'] and not s['pending'] and any(m.get('interrupted') for m in s['room']),
+                            timeout=4, what='partial after composer stop')
         self.assertEqual(s['pending'], [])
-        last = s['room'][-3]
+        self.assertFalse(s['queue_paused'])
+        self.assertNotIn('Queue geht weiter.', contents(s))
+        self.assertNotIn('Weiter', contents(s))
+        last = [m for m in s['room'] if m.get('interrupted')][-1]
         self.assertTrue(last['content'].startswith('Teil eins.'))
         self.assertTrue(last.get('interrupted'))
         self.assertEqual(last.get('stopped'), 'user')
@@ -284,11 +288,11 @@ class StopAndPriority(unittest.TestCase):
         second = self.room.api('/api/cancel', {})
         self.assertTrue(first['cancelled'])
         self.assertFalse(second['cancelled'], 'double tap is not a second stop')
-        s = self.room.until(lambda s: not s['busy'] and contents(s)[-1] == 'Queue bleibt.',
-                            timeout=4, what='queue after reasoning stop')
+        s = self.room.until(lambda s: not s['busy'] and not s['pending'] and any(m.get('interrupted') for m in s['room']),
+                            timeout=4, what='partial after reasoning stop')
         self.assertLess(time.monotonic() - t0, 3)
-        self.assertEqual(contents(s).count('Queue bleibt.'), 1)
-        self.assertEqual(contents(s).count('Danach'), 1)
+        self.assertNotIn('Queue bleibt.', contents(s))
+        self.assertNotIn('Danach', contents(s))
         self.assertEqual(s['pending'], [])
         for msg in s['room']:
             if msg.get('role') != 'assistant':
@@ -313,21 +317,18 @@ class StopAndPriority(unittest.TestCase):
         self.assertTrue(q['queued'])
         self.room.api('/api/queue/pause', {})
         r = self.room.api('/api/cancel', {})
-        self.assertEqual(r['held'], 1)
+        self.assertEqual(r['held'], 0)
         s = self.room.until(lambda s: not s['busy'], timeout=3)
-        self.assertTrue(s['pending'][0].get('held'))
-        self.assertTrue(s['queue_paused'])
-        time.sleep(1.2)
-        self.assertEqual(len(Model.calls), 1, 'held items do not run by themselves')
+        self.assertEqual(s['pending'], [])
+        self.assertFalse(s['queue_paused'])
+        time.sleep(0.4)
+        self.assertEqual(len(Model.calls), 1, 'cleared queue items do not run by themselves')
         t0 = time.monotonic()
         r = self.room.api('/api/message', {'text': 'Neu', 'bots': ['a']})
         self.assertFalse(r.get('queued'), 'a new message after Stop runs immediately')
         s = self.room.until(lambda s: not s['busy'] and contents(s)[-1] == 'Antwort auf neu.')
         self.assertLess(time.monotonic() - t0, 3)
-        self.assertEqual([p['text'] for p in s['pending']], ['Gewartet'], 'held item still visible')
-        self.room.api('/api/queue/resume', {})
-        s = self.room.until(lambda s: not s['busy'] and not s['pending'] and contents(s)[-1] == 'Antwort auf alt.')
-        self.assertEqual(contents(s)[-2], 'Gewartet')
+        self.assertNotIn('Gewartet', contents(s))
         self.assertFalse(s['queue_paused'])
 
     def test_04_message_during_tool_run_reaches_the_running_bot_at_the_next_step(self):

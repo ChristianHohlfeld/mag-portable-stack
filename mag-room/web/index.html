@@ -2491,8 +2491,12 @@ function browserOverlay(ev){
  o.classList.add('on');clearTimeout(boHideTimer);boHideTimer=setTimeout(()=>o.classList.remove('on'),6000);
  if(typeof ev.x==='number'){const px=R.x+ev.x*R.s,py=R.y+ev.y*R.s;cur.style.transform='translate('+px+'px,'+py+'px)';
   if(ev.action==='click')setTimeout(()=>{const rp=document.createElement('span');rp.className='bo-ripple';rp.style.left=px+'px';rp.style.top=py+'px';o.append(rp);rp.addEventListener('animationend',()=>rp.remove())},420)}
- if(ev.action==='type'){const t=cur.querySelector('.bo-type'),txt=String(ev.text||'');clearInterval(boTypeTimer);t.textContent='';t.classList.add('on');let i=0;const step=Math.max(1,Math.ceil(txt.length/100));
-  boTypeTimer=setInterval(()=>{i=Math.min(txt.length,i+step);t.textContent=txt.slice(0,i);if(i>=txt.length){clearInterval(boTypeTimer);setTimeout(()=>t.classList.remove('on'),1500)}},25)}
+ if(ev.action==='type'){const t=cur.querySelector('.bo-type'),txt=String(ev.text||'');clearInterval(boTypeTimer);
+  // Show the confirmed input immediately. Background browsers throttle
+  // setInterval heavily, making the old typewriter effect lose actions.
+  // Passwords are already masked by live-highlight.js before this handler.
+  t.textContent=txt;t.classList.add('on');
+  setTimeout(()=>t.classList.remove('on'),1500)}
 }
 const shownUrl=u=>String(u||'').replace(/([?&]token=)[^&]+/,'$1…');
 let browserRealUrl='';

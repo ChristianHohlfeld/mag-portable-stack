@@ -121,7 +121,7 @@ class MemoryDialogBrowser(unittest.TestCase):
                     service_workers="block")
                 try:
                     page = context.new_page()
-                    page.on('pageerror', lambda error: print('ROOM_JS_ERROR:', str(error), flush=True))
+                    page.on('pageerror', lambda error: print('ROOM_JS_ERROR:', str(error), getattr(error, 'stack', ''), flush=True))
                     page.goto(f"http://127.0.0.1:{self.server.server_port}/",
                               wait_until="domcontentloaded")
                     page.locator("#agents .agent").wait_for(state="attached")

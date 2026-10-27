@@ -15,8 +15,21 @@ os.environ.setdefault('MAG_ROOM_PREWARM','0')
 NETMODE=pathlib.Path(tempfile.mkdtemp(prefix='magnet-'))/'netmode.sh';NETLOG=NETMODE.with_suffix('.log')
 NETMODE.write_text('#!/bin/sh\necho "$1" >> %s\n'%NETLOG);NETMODE.chmod(0o755)
 def port():
- with socket.socket() as s:s.bind(('127.0.0.1',0));return s.getsockname()[1]
-GHPORT=port()
+ with socket.socket() as s:
+  s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
+  s.bind(('127.0.0.1',0));return s.getsockname()[1]
+def wait_http(url,timeout=8,proc=None):
+ deadline=time.monotonic()+timeout;last=None
+ while time.monotonic()<deadline:
+  if proc is not None and proc.poll() is not None:
+   raise RuntimeError('server exited %s before listen %s'%(proc.returncode,url))
+  try:urllib.request.urlopen(url,timeout=.4);return
+  except Exception as e:
+   last=e;time.sleep(.05)
+ raise RuntimeError('not listening: %s (%s)'%(url,last))
+# Hold GHPORT until the mock server binds so a parallel shard cannot steal it.
+_GHSOCK=socket.socket();_GHSOCK.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
+_GHSOCK.bind(('127.0.0.1',0));GHPORT=_GHSOCK.getsockname()[1]
 def _ui_token(ui):
  import re as _re
  html=urllib.request.urlopen(f'http://127.0.0.1:{ui}/',timeout=10).read().decode()
@@ -174,12 +187,20 @@ class Native(unittest.TestCase):
   cls.start()
  @classmethod
  def start(cls):
-  env=dict(os.environ,MAG_DET_CLI=str(cls.det),MAG_OWNER_CANONICAL_LOGIN='chris@github',MAG_TEST_ALLOW_LOCAL_OWNER='1',MAG_ROOM_STATE=str(cls.state),MAG_ROOM_PORT=str(cls.ui),MAG_ROOM_BRIDGE_PORT=str(cls.bridge),MAG_ROOM_BRIDGE_IP='127.0.0.1',MAG_ROOM_BACKEND=f'http://127.0.0.1:{cls.model.server_port}/v1/chat/completions',MAG_ROOM_UI=str(ROOT/'mag-room/web/index.html'),MAG_ROOM_STATIC=str(ROOT/'mag-room/static'),MAG_ROOM_AUTOTALK_SLEEP='1',MAG_JOBS_MCP_TOKEN='local-unit-test-mcp-token-0123456789',MAG_ROOM_MODEL_STATUS=str(pathlib.Path(cls.tmp.name)/'model-status.json'),MAG_NETMODE=str(NETMODE),MAG_TEST_NO_MEMGIT='1',MAG_TEST_NO_CLEAR_BACKUP='1',MAG_JOBS_ALLOW_SECONDS='1',MAG_JOBS_TICK_MS='200',MAG_JOBS_BACKOFF_S='1',MAG_GITHUB_API=f'http://127.0.0.1:{GHPORT}',MAG_TAILSCALED_SOCKET=cls.whois_socket,MAG_ROOM_MCP_AUTO='0')
-  cls.log=open(pathlib.Path(cls.tmp.name)/'server.log','a');cls.proc=subprocess.Popen([str(ROOT/'build/magroom')],env=env,stdout=cls.log,stderr=cls.log)
-  for _ in range(100):
-   try:cls.request('/healthz',raw=True);return
-   except Exception:time.sleep(.03)
-  raise RuntimeError('Native startup failed')
+  last=None
+  for attempt in range(6):
+   if attempt:cls.ui=port();cls.bridge=port()
+   env=dict(os.environ,MAG_DET_CLI=str(cls.det),MAG_OWNER_CANONICAL_LOGIN='chris@github',MAG_TEST_ALLOW_LOCAL_OWNER='1',MAG_ROOM_STATE=str(cls.state),MAG_ROOM_PORT=str(cls.ui),MAG_ROOM_BRIDGE_PORT=str(cls.bridge),MAG_ROOM_BRIDGE_IP='127.0.0.1',MAG_ROOM_BACKEND=f'http://127.0.0.1:{cls.model.server_port}/v1/chat/completions',MAG_ROOM_UI=str(ROOT/'mag-room/web/index.html'),MAG_ROOM_STATIC=str(ROOT/'mag-room/static'),MAG_ROOM_AUTOTALK_SLEEP='1',MAG_JOBS_MCP_TOKEN='local-unit-test-mcp-token-0123456789',MAG_ROOM_MODEL_STATUS=str(pathlib.Path(cls.tmp.name)/'model-status.json'),MAG_NETMODE=str(NETMODE),MAG_TEST_NO_MEMGIT='1',MAG_TEST_NO_CLEAR_BACKUP='1',MAG_JOBS_ALLOW_SECONDS='1',MAG_JOBS_TICK_MS='200',MAG_JOBS_BACKOFF_S='1',MAG_GITHUB_API=f'http://127.0.0.1:{GHPORT}',MAG_TAILSCALED_SOCKET=cls.whois_socket,MAG_ROOM_MCP_AUTO='0')
+   cls.log=open(pathlib.Path(cls.tmp.name)/'server.log','a');cls.proc=subprocess.Popen([str(ROOT/'build/magroom')],env=env,stdout=cls.log,stderr=cls.log)
+   try:wait_http(f'http://127.0.0.1:{cls.ui}/healthz',timeout=8,proc=cls.proc);return
+   except Exception as e:
+    last=e
+    if cls.proc.poll() is None:
+     cls.proc.terminate()
+     try:cls.proc.wait(timeout=3)
+     except Exception:cls.proc.kill();cls.proc.wait(timeout=3)
+    cls.log.close()
+  raise RuntimeError('Native startup failed: %s'%last)
  @classmethod
  def tearDownClass(cls):
   cls.proc.terminate();cls.proc.wait(timeout=5);cls.log.close();cls.model.shutdown();cls.whois.shutdown();cls.whois.server_close();cls.tmp.cleanup()
@@ -751,7 +772,10 @@ class Native(unittest.TestCase):
    def do_GET(self):
     seen.append((self.path,self.headers.get('Authorization')));b=json.dumps([{'full_name':'chris/mag','private':True,'description':'x','extra':'drop'}]).encode()
     self.send_response(200);self.send_header('Content-Type','application/json');self.send_header('Content-Length',str(len(b)));self.end_headers();self.wfile.write(b)
+  try:_GHSOCK.close()
+  except OSError:pass
   srv=http.server.ThreadingHTTPServer(('127.0.0.1',GHPORT),GH);threading.Thread(target=srv.serve_forever,daemon=True).start()
+  wait_http(f'http://127.0.0.1:{GHPORT}/',timeout=4)
   try:
    self.wait_idle();call={'tool_calls':[{'index':0,'id':'call_gh1','function':{'name':'github','arguments':'{"action":"list_repos"}'}}]}
    Model.calls.clear();Model.script=[[call],['Keine Verbindung.']]
@@ -3168,12 +3192,22 @@ class ConfiguredNuma(unittest.TestCase):
  """Configured DeepSeek mode: two bots with persistent NUMA backend assignments."""
  @classmethod
  def start(cls):
-  cls.log=open(cls.tmp_path/'server.log','a')
-  cls.proc=subprocess.Popen([str(ROOT/'build/magroom')],env=cls.env,stdout=cls.log,stderr=cls.log)
-  for _ in range(150):
-   try:Native.request.__func__(cls,'/healthz',raw=True);return
-   except Exception:time.sleep(.03)
-  raise RuntimeError('Configured NUMA startup failed')
+  last=None
+  for attempt in range(6):
+   if attempt:
+    cls.ui=port();cls.bridge=port()
+    cls.env['MAG_ROOM_PORT']=str(cls.ui);cls.env['MAG_ROOM_BRIDGE_PORT']=str(cls.bridge)
+   cls.log=open(cls.tmp_path/'server.log','a')
+   cls.proc=subprocess.Popen([str(ROOT/'build/magroom')],env=cls.env,stdout=cls.log,stderr=cls.log)
+   try:wait_http(f'http://127.0.0.1:{cls.ui}/healthz',timeout=8,proc=cls.proc);return
+   except Exception as e:
+    last=e
+    if cls.proc.poll() is None:
+     cls.proc.terminate()
+     try:cls.proc.wait(timeout=3)
+     except Exception:cls.proc.kill();cls.proc.wait(timeout=3)
+    cls.log.close()
+  raise RuntimeError('Configured NUMA startup failed: %s'%last)
  @classmethod
  def stop(cls):
   cls.proc.terminate();cls.proc.wait(timeout=5);cls.log.close()

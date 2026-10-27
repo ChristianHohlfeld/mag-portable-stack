@@ -112,19 +112,41 @@ fi
 wait "$leak" 2>/dev/null || true
 
 "$fake" 3600 &
-leak=$!
+sibling=$!
 for _ in $(seq 1 50); do
-  kill -0 "$leak" 2>/dev/null && break
+  kill -0 "$sibling" 2>/dev/null && break
   sleep 0.05
 done
-kill -0 "$leak"
-PYTHONPATH=$root/ops/ci MAG_CI_MAGROOM=$fake python3 -c 'import mag_deadline; mag_deadline.arm(30); mag_deadline._kill_tracked()'
-if kill -0 "$leak" 2>/dev/null; then
-  echo 'mag_deadline left magroom running' >&2
-  kill -KILL "$leak" 2>/dev/null || true
+kill -0 "$sibling"
+PYTHONPATH=$root/ops/ci MAG_CI_MAGROOM=$fake python3 - <<'PY'
+import mag_deadline, os, subprocess, time
+mag_deadline.arm(30)
+child = subprocess.Popen([os.environ['MAG_CI_MAGROOM'], '3600'])
+for _ in range(50):
+    if child.poll() is None:
+        break
+    time.sleep(0.05)
+assert child.poll() is None, 'tracked magroom did not start'
+mag_deadline._kill_tracked()
+for _ in range(50):
+    if child.poll() is not None:
+        break
+    time.sleep(0.05)
+assert child.poll() is not None, 'mag_deadline left its own magroom running'
+print('own-dead')
+PY
+if ! kill -0 "$sibling" 2>/dev/null; then
+  echo 'mag_deadline killed a sibling worktree magroom' >&2
   exit 1
 fi
-wait "$leak" 2>/dev/null || true
+# Worktree-wide kill is for the gate after-check, not atexit.
+PYTHONPATH=$root/ops/ci MAG_CI_MAGROOM=$fake python3 -c 'import mag_deadline; mag_deadline._kill_worktree_magroom()'
+if kill -0 "$sibling" 2>/dev/null; then
+  echo 'worktree kill left sibling magroom running' >&2
+  kill -KILL "$sibling" 2>/dev/null || true
+  exit 1
+fi
+wait "$sibling" 2>/dev/null || true
 
 echo 'ok :: true' >"$tmp/list"
 MAG_CI_GATE_LIST=$tmp/list MAG_CI_JOBS=1 bash ops/ci/native-gate.sh --parallel >"$tmp/tiny" 2>&1

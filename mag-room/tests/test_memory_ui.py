@@ -121,8 +121,21 @@ class MemoryDialogBrowser(unittest.TestCase):
                     service_workers="block")
                 try:
                     page = context.new_page()
-                    page.on('pageerror', lambda error: print('ROOM_JS_ERROR:', str(error), getattr(error, 'stack', ''), flush=True))
-                    page.on('console', lambda msg: print('ROOM_CONSOLE:', msg.text, flush=True) if msg.type=='error' else None)
+                    script_errors, failed_assets, bad_console = [], [], []
+                    # Fixture omits the vendor-built xterm bundle; production
+                    # deploy stages and validates those pinned assets separately.
+                    vendor_only = {'xterm.js', 'xterm.css', 'xterm-addon-fit.js'}
+                    page.on('pageerror', lambda error: script_errors.append(str(error)))
+                    page.on('response', lambda response: failed_assets.append(
+                        (response.status, response.url)) if (
+                        response.status >= 400 and
+                        (response.url.endswith('/api/state') or
+                         '/static/' in response.url and
+                         response.url.rsplit('/', 1)[-1].split('?')[0] not in vendor_only)
+                    ) else None)
+                    page.on('console', lambda msg: bad_console.append(msg.text)
+                            if msg.type == 'error' and
+                            'Failed to load resource:' not in msg.text else None)
                     page.goto(f"http://127.0.0.1:{self.server.server_port}/",
                               wait_until="domcontentloaded")
                     try:
@@ -136,6 +149,11 @@ class MemoryDialogBrowser(unittest.TestCase):
                           script: document.scripts.length
                         })"""), flush=True)
                         raise
+                    self.assertFalse(script_errors, 'Uncaught frontend exceptions: '+repr(script_errors))
+                    self.assertFalse(bad_console, 'Frontend console errors: '+repr(bad_console))
+                    self.assertFalse(failed_assets, 'Broken app resources/API: '+repr(failed_assets))
+                    self.assertFalse(page.locator('#notice').inner_text().strip(),
+                                     'Frontend reported an initialization error')
                     self.assertEqual(page.locator("#area-memory").count(), 0)
                     self.assertEqual(page.locator("#memory-areas").count(), 0)
                     self.assertEqual(page.locator(".data-entry").count(), 0)

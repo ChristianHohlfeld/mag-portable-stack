@@ -3982,6 +3982,7 @@ class MixedNuma(unittest.TestCase):
   try:
    self.start()
    bot=next(iter(self.bots().values()))
+   self.request('/api/bot-settings',{'thinking':True,'bots':[bot['id']]},method='PUT')
    token=f'hi {bot["id"]} {time.monotonic_ns()}'
    t0=time.monotonic()
    self.request('/api/message',{'text':token,'bots':[bot['id']]})

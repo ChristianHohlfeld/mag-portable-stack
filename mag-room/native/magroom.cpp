@@ -3391,12 +3391,17 @@ static bool backend_accepts() {
 // ik answers /health and /slots on the same task queue as prefill. A probe
 // opened while that queue is busy stays established until the generation
 // ends (live: 64 connections on :8191, then "srv stop: cancel task" on the
-// next chat). Lane state is local and does not touch llama.
+// next chat). The room BUSY flag is set before the socket exists; the
+// pre-turn health check must still run, or a loading model is never seen.
 static std::atomic<bool> BUSY{false};
+static std::vector<Lane *> all_lanes();
 static bool inference_hot() {
-  if (BUSY.load()) return true;
-  std::lock_guard<std::mutex> lk(BACKEND_FD_MTX);
-  if (!PREWARM_FDS.empty() || BACKEND_FD.load() >= 0) return true;
+  {
+    std::lock_guard<std::mutex> lk(BACKEND_FD_MTX);
+    if (!PREWARM_FDS.empty() || BACKEND_FD.load() >= 0) return true;
+  }
+  for (Lane *l : all_lanes())
+    if (l && l->backend_fd.load() >= 0) return true;
   return false;
 }
 static bool slot_is_busy(int slot);
@@ -3409,11 +3414,6 @@ static ModelStatus probe_model_status() {
     st.ready = true;
     st.label = "Modell rechnet";
     return st;
-  }
-  {
-    std::lock_guard<std::mutex> lk(MODEL_ST_MTX);
-    if (MODEL_ST.at && now_s() - MODEL_ST.at < 8 && !MODEL_ST.state.empty())
-      return MODEL_ST;
   }
   bool idle = false;
   if (!HEALTH_PROBE_BUSY.compare_exchange_strong(idle, true)) {
@@ -3513,25 +3513,26 @@ static ModelStatus probe_model_status() {
 static void note_model_busy(ModelStatus &st);
 static bool slot_is_busy(int slot);
 static ModelStatus model_status(bool refresh) {
+  // A generation already holds ik's task queue. Do not open /health, and do
+  // not store this overlay: the next idle read must still see download or
+  // ready, not a busy sample taken during the turn.
   if (inference_hot()) {
     ModelStatus st;
     std::lock_guard<std::mutex> lk(MODEL_ST_MTX);
     st = MODEL_ST.at ? MODEL_ST : ModelStatus{};
     st.at = now_s();
-    st.state = "busy";
-    st.ready = true;
-    if (st.label.empty() || st.label.find("nicht erreichbar") != std::string::npos)
-      st.label = "Modell rechnet";
-    MODEL_ST = st;
+    if (st.state != "downloading" && st.state != "verifying" &&
+        st.state != "failed" && st.state != "loading") {
+      st.state = "busy";
+      st.ready = true;
+      if (st.label.empty() || st.label.find("nicht erreichbar") != std::string::npos)
+        st.label = "Modell rechnet";
+    }
     return st;
   }
-  {
+  if (!refresh) {
     std::lock_guard<std::mutex> lk(MODEL_ST_MTX);
-    // /api/model-status passes refresh=true. A fresh HTTP probe per UI
-    // refresh is the flood. The watcher is the only probe, and not while hot.
-    if (MODEL_ST.at && (MODEL_WATCHER.load() || !refresh ||
-                        now_s() - MODEL_ST.at < 8))
-      return MODEL_ST;
+    if (MODEL_ST.at) return MODEL_ST;
   }
   ModelStatus st = probe_model_status();
   note_model_busy(st);
@@ -3826,6 +3827,12 @@ static void model_watcher_loop() {
   std::string last;
   bool was_ready = false, was_secondary_ready = false;
   while (!SHUTDOWN.load()) {
+    // While a turn or prefill holds the queue, do not GET /health and do not
+    // replace the last idle sample with "busy". The caller overlays that.
+    if (inference_hot()) {
+      std::this_thread::sleep_for(seconds(5));
+      continue;
+    }
     ModelStatus st = probe_model_status();
     note_model_busy(st);
     {
@@ -7640,7 +7647,8 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
     PREFIX_META[own_key] = shared_key;
     write_file_atomic(STATE_DIR + "/prompt-prefix.json", mj::dump(PREFIX_META));
   }
-  if (CONFIGURED_MODEL && (saved || (restored && skip)))
+  if (CONFIGURED_MODEL && (saved || (restored && skip) ||
+                           (ok && code == 200 && !cancelled && !skip)))
     mark_prefix_warm(model_slot(idx));
   if (seq.owns_lock()) seq.unlock();
   std::cerr << "prompt-prewarm model=" << model << " ok=" << (ok ? 1 : 0)
@@ -7661,7 +7669,13 @@ static void schedule_prewarm() {
   if (env("MAG_ROOM_PREWARM", "1") != "1" || SHUTDOWN.load() || PREWARM_HOLD.load()) return;
   {
     std::lock_guard<std::mutex> lk(JOB_MTX);
-    if (work_needs_slot_locked()) return; // a runnable turn uses the slot
+    // A queued turn uses the slot. The non-configured guard is the old
+    // check, so prewarm never starts in front of work that can run now.
+    // With the prefix gate, a job that is only waiting for that prefix
+    // does not count: prewarm is what makes it runnable.
+    if (!prefix_gate_on()) {
+      if (!JOBS.empty() || AUTO_READY) return; // never delays a queued turn
+    } else if (work_needs_slot_locked()) return;
   }
   // One slot per model server: prewarm only models answered by exactly one bot.
   // Configured lanes are per bot slot (lane_key), so every bot prewarms;

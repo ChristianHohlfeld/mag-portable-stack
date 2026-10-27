@@ -3602,6 +3602,52 @@ class ConfiguredNuma(unittest.TestCase):
   finally:
    self.stop();Model.slot_snapshot=[];type(self).env['MAG_ROOM_PREWARM']='0';self.start()
 
+
+ def test_zz_fixed_bots_without_vm_get_persistent_workspace_on_restart(self):
+  # In configured mode a second bot used to survive as a chat-only shell.
+  # A fake agent-control command provisions both; existing IDs/memory persist.
+  cls=type(self)
+  self.wait_idle()
+  cls.stop()
+  agents=[
+   {'id':'deepseek-chat','name':'DeepSeek','slot':1,'vm':'',
+    'model':'deepseek-v4-flash-0731','memory':[{'text':'long-term fact'}]},
+   {'id':'qwen-numa1','name':'Qwen','slot':2,'vm':'',
+    'model':('qwen3.8-flash-next-uncensored' if getattr(cls,'mixed',False) else 'deepseek-v4-flash-0731'),
+    'memory':[{'text':'second memory'}]}]
+  self.state.joinpath('agents.json').write_text(json.dumps(agents))
+  sudo=self.tmp_path/'bin'/'sudo'
+  sudo.write_text('#!/bin/sh\\n[ "$1" = "-n" ] && shift\\nexec "$@"\\n'.replace('\\n','\n'))
+  sudo.chmod(0o755)
+  cls.env['MAG_ROOM_SINGLE_BOT_VM']='on'
+  cls.start()
+  try:
+   deadline=time.monotonic()+8
+   while time.monotonic()<deadline:
+    rows=self.request('/api/state')['agents']
+    if len(rows)==2 and all(a.get('vm') for a in rows):break
+    time.sleep(.05)
+   else:self.fail('both configured bots must get VM reservations')
+   self.assertEqual({a['vm'] for a in rows},{'agent1','agent2'})
+   self.assertEqual({a['id'] for a in rows},{'deepseek-chat','qwen-numa1'})
+   self.assertEqual({a['slot'] for a in rows},{1,2})
+   saved=self.persisted()
+   self.assertEqual(saved['deepseek-chat']['memory'][0]['text'],'long-term fact')
+   self.assertEqual(saved['qwen-numa1']['memory'][0]['text'],'second memory')
+   self.assertTrue(all('pending_vm' not in a for a in rows))
+   logfile=self.tmp_path/'ctl.log'
+   spawns=[x for x in logfile.read_text().splitlines() if x.startswith('spawn ')]
+   self.assertEqual(sorted(spawns[-2:]),['spawn agent1','spawn agent2'])
+   cls.stop()
+   cls.start()
+   rows=self.request('/api/state')['agents']
+   self.assertEqual({a['vm'] for a in rows},{'agent1','agent2'})
+   new_spawns=[x for x in logfile.read_text().splitlines() if x.startswith('spawn ')]
+   self.assertEqual(len(new_spawns),len(spawns),'no VM cloned on the next restart')
+  finally:
+   cls.env.pop('MAG_ROOM_SINGLE_BOT_VM',None)
+   sudo.unlink(missing_ok=True)
+
 class MixedNuma(unittest.TestCase):
  mixed=True
  start=classmethod(ConfiguredNuma.start.__func__)

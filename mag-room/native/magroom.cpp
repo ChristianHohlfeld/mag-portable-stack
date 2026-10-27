@@ -8835,9 +8835,31 @@ int main() {
     return 1;
   }
 
-  std::cout << "[magroom] " << AGENTS.size() << " Agenten, Backend "
-            << BACKEND_HOST << ":" << BACKEND_PORT << ", Modell " << MODEL
-            << " (Denken " << THINKING << "/"
+  std::string lineup;
+  int n_agents = 0;
+  {
+    std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
+    n_agents = (int)AGENTS.size();
+    if (CONFIGURED_MODEL) {
+      for (const auto &agent : AGENTS) {
+        const int slot = model_slot_of(agent);
+        if (slot < 1 || slot > ROOM_MAX_BOTS) continue;
+        const auto &b = ROOM_MODEL.backend(slot);
+        if (!lineup.empty()) lineup += ", ";
+        lineup += mag::str(agent, "name") + "=" + b.id + "@127.0.0.1:" +
+                  std::to_string(b.port) + "/numa" + std::to_string(b.numa);
+      }
+    }
+  }
+  std::cout << "[magroom] " << n_agents << " Agenten";
+  if (CONFIGURED_MODEL)
+    std::cout << " (" << lineup << "), Gateway ";
+  else
+    std::cout << ", Backend ";
+  std::cout << BACKEND_HOST << ":" << BACKEND_PORT;
+  if (!CONFIGURED_MODEL)
+    std::cout << ", Modell " << MODEL;
+  std::cout << " (Denken " << THINKING << "/"
             << (REASONING_EFFORT.empty() ? "Standard" : REASONING_EFFORT)
             << ", max_tokens " << MAX_TOKENS << ", LLM-Timeout "
             << LLM_TIMEOUT_S << "s)"

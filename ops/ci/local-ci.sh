@@ -24,7 +24,8 @@ FAIL=0
 check() { # check <name> <command...>
   local name=$1; shift
   local out="$LOG/$(tr -c 'a-zA-Z0-9' '_' <<<"$name").log"
-  if "$@" >"$out" 2>&1; then
+  # Hard cap so a hung room, build or network check cannot run forever.
+  if timeout --foreground 1200 "$@" >"$out" 2>&1; then
     RESULTS+=("PASS  $name")
     # a python unittest that only skipped is reported as SKIP
     if grep -Eq '^OK \(skipped=([0-9]+)\)$' "$out" && ! grep -Eq '\.\.\. ok$' "$out"; then

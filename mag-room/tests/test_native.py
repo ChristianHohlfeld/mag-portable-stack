@@ -3947,11 +3947,12 @@ class TwoAgentsAtStart(unittest.TestCase):
     with urllib.request.urlopen('http://127.0.0.1:%d/api/state' % ui, timeout=2) as r:
      body = json.loads(r.read())
     return body
+   binding = ('2 Agenten (DeepSeek V4 Flash=deepseek-v4-flash-0731@127.0.0.1:8191/numa0, '
+              'Qwen3.8 Uncensored=qwen3.8-flash-next-uncensored@127.0.0.1:8192/numa1), Gateway ')
    try:
     start()
     banner = log_path.read_text()
-    self.assertIn('2 Agenten', banner)
-    self.assertIn('Modell deepseek-v4-flash-0731', banner)
+    self.assertIn(binding, banner)
     self.assertNotIn('1 Agenten', banner)
     body = agents()
     self.assertTrue(body['configured_model'])
@@ -3970,7 +3971,7 @@ class TwoAgentsAtStart(unittest.TestCase):
     self.assertEqual(len(stored), 2)
     stop()
     start()
-    self.assertIn('2 Agenten', log_path.read_text())
+    self.assertIn(binding, log_path.read_text())
     again = agents()['agents']
     self.assertEqual([(a['id'], a['slot'], a['name'], a['model']) for a in again],
      [(a[0], a[2], a[1], a[3]) for a in got])
@@ -3987,6 +3988,83 @@ class TwoAgentsAtStart(unittest.TestCase):
     proc.kill()
     proc.wait(timeout=5)
    tmp.cleanup()
+
+class TwoBackendStartup(unittest.TestCase):
+ """Chats from the filled room hit DeepSeek on slot 0 and Qwen on slot 1."""
+ def test_starts_with_two_agents_bound_to_both_backends(self):
+  deadline=time.monotonic()+25
+  def left():
+   remain=deadline-time.monotonic()
+   self.assertGreater(remain,0,'hard timeout 25s')
+   return remain
+  Model.delay=0;Model.slot_delay={};Model.script=[];Model.reply=None
+  Model.barrier_token='';Model.barrier_release=None;Model.hold_get=0;Model.health=200
+  tmp=tempfile.TemporaryDirectory();root=pathlib.Path(tmp.name)
+  state=root/'state';state.mkdir()
+  state.joinpath('agents.json').write_text(json.dumps([
+   {'id':'deepseek-chat','name':'DeepSeek Chat','vm':'agent1','model':'deepseek-v4-flash-0731','memory':[{'text':'bleibt'}]}]))
+  model=http.server.ThreadingHTTPServer(('127.0.0.1',0),Model)
+  threading.Thread(target=model.serve_forever,daemon=True).start()
+  ui,bridge=port(),port()
+  log_path=root/'server.log'
+  env=dict(os.environ,MAG_OWNER_CANONICAL_LOGIN='chris@github',MAG_TEST_ALLOW_LOCAL_OWNER='1',
+    MAG_ROOM_STATE=str(state),MAG_ROOM_PORT=str(ui),MAG_ROOM_BRIDGE_PORT=str(bridge),
+    MAG_ROOM_BRIDGE_IP='127.0.0.1',MAG_ROOM_BACKEND=f'http://127.0.0.1:{model.server_port}/v1/chat/completions',
+    MAG_ROOM_UI=str(ROOT/'mag-room/web/index.html'),MAG_ROOM_STATIC=str(ROOT/'mag-room/static'),
+    MAG_ROOM_MODEL_STATUS=str(root/'ms.json'),MAG_NETMODE=str(NETMODE),MAG_TEST_NO_MEMGIT='1',
+    MAG_ROOM_AGENT_CTL='/bin/false',MAG_ROOM_GUEST_RUN='/bin/false',MAG_ROOM_MCP_AUTO='0',MAG_ROOM_PREWARM='0',
+    MAG_ROOM_SINGLE_BOT='auto',MAG_ROOM_SINGLE_BOT_VM='on',MAG_ROOM_DUAL_NUMA='0',
+    MAG_ROOM_MODEL_ID='deepseek-v4-flash-0731',MAG_ROOM_MODEL_LABEL='DeepSeek V4 Flash + Qwen3.8 Uncensored',
+    MAG_ROOM_MODEL_PORTS='8191:0,8192:1',MAG_ROOM_MAX_BOTS='2',MAG_ROOM_PRESETS=str(ROOT/'ops/room/presets.json'),
+    MAG_ROOM_MODEL_ID_0='deepseek-v4-flash-0731',MAG_ROOM_MODEL_LABEL_0='DeepSeek V4 Flash',
+    MAG_ROOM_MODEL_ID_1='qwen3.8-flash-next-uncensored',MAG_ROOM_MODEL_LABEL_1='Qwen3.8 Uncensored',
+    MAG_ROOM_THINKING='on')
+  log=open(log_path,'a')
+  proc=subprocess.Popen(['timeout','-k','1','20',str(ROOT/'build/magroom')],env=env,stdout=log,stderr=log)
+  def request(path,body=None,method=None,raw=False):
+   data=json.dumps(body).encode() if body is not None else None
+   headers={'Content-Type':'application/json'} if data is not None else {}
+   m=(method or ('POST' if data is not None else 'GET')).upper()
+   if m not in ('GET','HEAD') and not raw:headers['X-MAG-Token']=_ui_token(ui)
+   req=urllib.request.Request(f'http://127.0.0.1:{ui}'+path,data=data,method=method,headers=headers)
+   with urllib.request.urlopen(req,timeout=max(0.2,min(3.0,left()))) as r:
+    blob=r.read()
+    return blob if raw else json.loads(blob)
+  try:
+   while True:
+    try:
+     self.assertEqual(request('/healthz',raw=True),b'ok\n');break
+    except AssertionError:raise
+    except Exception:
+     if proc.poll() is not None:self.fail('magroom exited %s\n%s'%(proc.returncode,log_path.read_text(errors='replace')[-2000:]))
+     time.sleep(.03)
+   started=log_path.read_text(errors='replace')
+   self.assertIn('2 Agenten (DeepSeek V4 Flash=deepseek-v4-flash-0731@127.0.0.1:8191/numa0, Qwen3.8 Uncensored=qwen3.8-flash-next-uncensored@127.0.0.1:8192/numa1), Gateway ',started)
+   self.assertNotIn('1 Agenten',started)
+   state_doc=request('/api/state')
+   bots=state_doc['agents']
+   self.assertEqual([(b['slot'],b['id'],b['name'],b['model'],b['numa'],b['vm']) for b in bots],[
+    (1,'deepseek-chat','DeepSeek V4 Flash','deepseek-v4-flash-0731',0,'agent1'),
+    (2,'qwen-numa1','Qwen3.8 Uncensored','qwen3.8-flash-next-uncensored',1,'')])
+   self.assertEqual(json.loads(state.joinpath('agents.json').read_text())[0]['memory'][0]['text'],'bleibt')
+   for bot,slot in (('deepseek-chat','0'),('qwen-numa1','1')):
+    token='Bind %s %s'%(bot,time.monotonic_ns())
+    request('/api/message',{'text':token,'bots':[bot]})
+    hit=None
+    while hit is None:
+     left()
+     for call,got in list(Model.pairs):
+      if token in json.dumps(call,ensure_ascii=False):hit=(call,got);break
+     if hit is None:time.sleep(.02)
+    self.assertEqual(hit[1],slot)
+    self.assertEqual(hit[0]['model'],bots[int(slot)]['model'])
+    self.assertEqual(hit[0]['id_slot'],0)
+  finally:
+   proc.terminate()
+   try:proc.wait(timeout=5)
+   except subprocess.TimeoutExpired:proc.kill();proc.wait(timeout=5)
+   log.close();model.shutdown();model.server_close();tmp.cleanup()
+
 
 if __name__=='__main__':unittest.main(verbosity=2)
 

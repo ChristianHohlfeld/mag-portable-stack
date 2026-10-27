@@ -10,6 +10,17 @@ WHISPER_MODEL="${MAG_WHISPER_SOURCE_MODEL:-/home/chris/models/whisper/ggml-large
 [[ $EUID == 0 ]] || { echo 'Run with sudo' >&2; exit 1; }
 exec 8>/run/lock/mag-private-deploy.lock
 flock -n 8 || { echo 'Another MAG deploy/ingress install is running' >&2; exit 1; }
+# shellcheck source=deploy-watchdog.sh
+source "$SOURCE/ops/deploy-watchdog.sh"
+deploy_lock_cloexec 8
+deployment_started=0
+# Drain budget plus 15 minutes. A hung probe cannot hold this flock past the
+# deadline: its process group is killed, then SIGTERM runs deploy_exit.
+_deploy_drain=${MAG_DEPLOY_DRAIN_S:-900}
+deploy_watchdog_arm "${MAG_DEPLOY_DEADLINE_S:-$((_deploy_drain + 900))}"
+trap deploy_exit EXIT
+trap 'exit 143' TERM
+trap 'exit 130' INT
 [[ "$RELEASE_ID" =~ ^[a-zA-Z0-9._-]+$ ]] || exit 1
 # shellcheck source=build-targets.sh
 source "$SOURCE/ops/build-targets.sh"
@@ -62,7 +73,7 @@ fi
 [[ -n "$verified_full" ]] || { echo 'No verified full backup; deploy refused.' >&2; exit 1; }
 # Das Modell ist unabhängig vom Raum-Release (lädt evtl. noch herunter / wird geprüft).
 # Nur informieren; der Raum zeigt den Modellstatus selbst an.
-curl -fsS --max-time 5 http://127.0.0.1:8080/v1/models >/dev/null \
+deploy_run 8 -- curl -fsS --retry 0 --max-time 5 http://127.0.0.1:8080/v1/models >/dev/null \
   || echo 'Hinweis: Modell-Backend noch nicht bereit – Deploy läuft weiter.' >&2
 install -d -m 0755 /opt/mag-stack/releases "$RELEASE/bin" "$RELEASE/web" "$RELEASE/ops"
 install -d -m 0700 "$BACKUP"
@@ -189,8 +200,11 @@ gateway_switched=0
 # listens. Retry a local health URL for up to 30 s, then one strict check.
 wait_http() {
   local i
-  for i in {1..30}; do curl -fsS --max-time 2 -o /dev/null "$1" 2>/dev/null && break; sleep 1; done
-  curl -fsS --max-time 5 "$1"
+  for i in {1..30}; do
+    deploy_run 4 -- curl -fsS --retry 0 --max-time 2 -o /dev/null "$1" && break
+    sleep 1
+  done
+  deploy_run 8 -- curl -fsS --retry 0 --max-time 5 "$1"
 }
 # Idle room, or a busy flag that is not producing tokens. A stuck busy=true
 # (no prompt/output progress) must not sit out the whole drain window.
@@ -230,14 +244,8 @@ print("%d %d p%s:t%d"%(b,q,",".join(bits),n))' || echo "0 0 -")
     sleep 5; waited=$((waited + 5))
   done
 }
-deploy_exit() {
- local rc=$?
- trap - EXIT ERR INT TERM
- if (( rc != 0 && deployment_started )); then
-   rollback || echo 'Rollback incomplete: retain SSH rescue channel and inspect /var/backups/mag-stack' >&2
- fi
- exit "$rc"
-}
+# deploy_exit lives in deploy-watchdog.sh: stop the deadline sleeper, then
+# roll back when this shell is signalled after the release switch started.
 
 # Drain: never cut a running reply or a queued message. Wait until the room is
 # idle (no turn running, queue empty). MAG_DEPLOY_DRAIN_S (default 900 s);
@@ -380,7 +388,7 @@ systemctl enable mag-120.service
 # whois subrequest, so the new room starts first (rollback disables it).
 if ! systemctl is-active --quiet mag-120.service; then
   systemctl start mag-120.service
-  for i in {1..30}; do curl -fsS --max-time 2 -o /dev/null http://127.0.0.1:8766/readyz 2>/dev/null && break; sleep 1; done
+  for i in {1..30}; do deploy_run 4 -- curl -fsS --retry 0 --max-time 2 -o /dev/null http://127.0.0.1:8766/readyz && break; sleep 1; done
 fi
 bash "$NGINX_SYNC" activate
 bash "$NGINX_SYNC" smoke
@@ -392,7 +400,9 @@ bash "$SOURCE/ops/trust/install-trust.sh"
 # switched and the room process is still the previous healthy one. A 429,
 # timeout, or other probe miss must not roll that room back. TLS stays ON.
 # Does not restart mag-llm (NUMA 0 stays loaded).
-if ! bash "$SOURCE/ops/trust/probe-free-mcp.sh"; then
+# Own process group. curl --retry sleeps on Retry-After outside --max-time;
+# the deadline kills this group so the flock cannot outlive the deploy.
+if ! deploy_run "${MAG_FREE_MCP_PROBE_TIMEOUT:-40}" -- bash "$SOURCE/ops/trust/probe-free-mcp.sh"; then
   echo 'WARN: free MCP probe failed; not rolling back a healthy room' >&2
 fi
 systemctl restart mag-120.service
@@ -420,8 +430,9 @@ systemctl daemon-reload
 systemctl enable mag-cpu-tune.service
 systemctl restart mag-cpu-tune.service || echo 'WARN: CPU tuning not applied' >&2
 bash "$NGINX_SYNC" commit
+# Late steps must not roll a switched release back. The deadline stays armed
+# so a hang here still kills child groups and runs deploy_exit.
 deployment_started=0
-trap - EXIT INT TERM
 MAG_RELEASE_ID="$RELEASE_ID" MAG_RELEASE_PREVIOUS_FILE="$BACKUP/previous-release" \
   bash "$SOURCE/ops/prune-releases.sh"
 # One-shot removal of pre-4.0 leftovers; report in /var/lib/mag-stack/cleanup-report.txt.

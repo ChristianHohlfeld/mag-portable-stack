@@ -19,6 +19,7 @@ if (( wait )); then sleep $((step * 2)); fi
 script_root=$(cd -- "$(dirname "$0")/../.." && pwd)
 required=$(jq -c '.contexts' "$script_root/ops/gitea-ci/policy.json")
 [[ $(jq 'length' <<<"$required") == 10 ]] || { echo 'check policy mismatch' >&2; exit 1; }
+# shellcheck disable=SC2016 # jq program: $names are jq variables, not shell
 merge='
   def conclusion($state):
     if $state == "success" then "success"

@@ -54,7 +54,7 @@ if (( DEPLOY )); then
   # sudo resets the environment. Drain/force/layout must be passed explicitly
   # or a forced deploy still waits the full MAG_DEPLOY_DRAIN_S default (900s).
   deploy_env=()
-  for name in MAG_ROOM_LAYOUT MAG_DEPLOY_DRAIN_S MAG_DEPLOY_FORCE MAG_DEPLOY_STALE_S; do
+  for name in MAG_ROOM_LAYOUT MAG_DEPLOY_DRAIN_S MAG_DEPLOY_FORCE MAG_DEPLOY_STALE_S MAG_DEPLOY_DEADLINE_S; do
     if [[ -n ${!name:-} ]]; then deploy_env+=("$name=${!name}"); fi
   done
   if ((${#deploy_env[@]})); then

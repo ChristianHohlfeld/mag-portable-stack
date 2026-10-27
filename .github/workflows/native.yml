@@ -15,6 +15,7 @@ on:
       - 'ops/**'
       - 'devices/**'
       - '.github/workflows/native.yml'
+      - '.github/workflows/backup.yml'
       - '.gitea/workflows/mag-ci.yml'
 jobs:
   fast:

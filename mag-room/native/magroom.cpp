@@ -5501,6 +5501,18 @@ static std::string selftalk_context(int idx) {
     if ((int)lines.size() >= cap) break;
   }
   if ((int)lines.size() > cap) lines = lines.substr(lines.size() - (size_t)cap);
+  // Six room lines drop the human once the bots have answered each other.
+  // Keep that one line so the chain still addresses them by name, without
+  // sending the saved prefix again.
+  std::string last_user;
+  for (auto it = room.rbegin(); it != room.rend(); ++it) {
+    if (mag::str(*it, "role") != "user") continue;
+    last_user = render_room_line(*it);
+    if (last_user.size() > 500) last_user.resize(500);
+    break;
+  }
+  if (!last_user.empty() && lines.find(last_user) == std::string::npos)
+    lines.insert(0, last_user);
   return lines + room_company_line(idx);
 }
 

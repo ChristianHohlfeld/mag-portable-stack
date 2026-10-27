@@ -51,6 +51,9 @@ inline bool gitea_create_or_reuse(const std::string &username,
 }
 // Lock: the only credential (inside the archived VM disk) stops working.
 inline bool gitea_lock(const std::string &username, const std::string &password) {
+  if (mag::env("MAGBOT_GITEA_TEST", "").empty())
+    return !mag::run({"/usr/local/sbin/mag-gitea-bot-auth","lock",username},60).code;
   return !mag::run(gitea_args({"change-password", "--username", username,
                                "--password", password}), 30).code;
 }
+

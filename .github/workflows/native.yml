@@ -3,8 +3,7 @@ permissions:
   contents: read
   pull-requests: read
 on:
-  push:
-  pull_request:
+  workflow_dispatch:
 jobs:
   native:
     runs-on: ${{ fromJSON(vars.MAG_RUNS_ON || '"ubuntu-24.04"') }}

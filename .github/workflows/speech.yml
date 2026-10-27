@@ -3,15 +3,6 @@ permissions:
   contents: read
   pull-requests: read
 on:
-  pull_request:
-    branches: [main]
-    paths:
-      - 'mag-room/**'
-      - 'ops/vendor-speech-assets.sh'
-      - 'ops/nginx/mag-speech.inc'
-      - 'ops/private-access/mag-room.nginx.conf'
-      - 'ops/deploy.sh'
-      - '.github/workflows/speech.yml'
   workflow_dispatch:
 jobs:
   speech:
@@ -63,6 +54,13 @@ jobs:
               ops/deepseek/both-sockets.sh|ops/mag-120.d/30-multibot.conf)
                 # Retired: no executable compatibility paths remain.
                 test ! -e "$removed"
+                ;;
+              .gitea/workflows/ci.yml)
+                # Retired host-mode Gitea workflow. The isolated runner replaces it.
+                test ! -e "$removed"
+                test -s .gitea/workflows/mag-ci.yml
+                grep -Fq 'runs-on: mag-ci-vm' .gitea/workflows/mag-ci.yml
+                ! grep -Eq '^[[:space:]]*runs-on:[[:space:]]*mag[[:space:]]*$' .gitea/workflows/mag-ci.yml
                 ;;
               *)
                 echo "Unexpected deletion in speech integration: $removed" >&2

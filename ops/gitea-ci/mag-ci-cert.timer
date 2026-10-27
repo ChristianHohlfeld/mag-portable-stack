@@ -1,0 +1,8 @@
+[Unit]
+Description=Public MAG Git certificate renewal
+[Timer]
+OnCalendar=*-*-* 04:23:00
+RandomizedDelaySec=2h
+Persistent=true
+[Install]
+WantedBy=timers.target

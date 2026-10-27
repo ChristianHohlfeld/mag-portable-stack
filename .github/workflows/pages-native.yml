@@ -1,21 +1,6 @@
 name: MAG Pages native C++ / nginx / secrets
 on:
-  push:
-    paths:
-      - 'mag-room/native/pages.hpp'
-      - 'mag-room/native/magroom.cpp'
-      - 'mag-room/tests/test_pages.cpp'
-      - 'ops/pages/**'
-      - 'docs/GITEA_PAGES.md'
-      - '.github/workflows/pages-native.yml'
-  pull_request:
-    paths:
-      - 'mag-room/native/pages.hpp'
-      - 'mag-room/native/magroom.cpp'
-      - 'mag-room/tests/test_pages.cpp'
-      - 'ops/pages/**'
-      - 'docs/GITEA_PAGES.md'
-      - '.github/workflows/pages-native.yml'
+  workflow_dispatch:
 permissions:
   contents: read
   pull-requests: read

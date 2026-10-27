@@ -1,0 +1,21 @@
+[Unit]
+Description=Freeze CI workloads while either LLM is processing (unknown = busy)
+Requires=mag-ci-workload.slice
+After=network.target mag-ci-workload.slice
+Before=mag-ci-vm.service
+[Service]
+ExecStartPre=/usr/bin/systemctl freeze mag-ci-workload.slice
+ExecStart=/usr/local/lib/mag-ci/mag-ci-guard
+Restart=always
+RestartSec=1
+Nice=-5
+CPUQuota=2%
+MemoryMax=64M
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+InaccessiblePaths=-/etc/credstore -/var/lib/magbot -/var/lib/gitea -/var/backups
+RestrictAddressFamilies=AF_INET AF_UNIX
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,7 @@
+[Unit]
+Description=Renew public MAG Git TLS with lego/Let's Encrypt
+After=network-online.target
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/mag-ci/certificate.sh
+UMask=0077

@@ -2,16 +2,7 @@ name: Room agent-chat contract (Stop, priority, queue, browser)
 permissions:
   contents: read
 on:
-  push:
-    paths:
-      - 'mag-room/**'
-      - 'CMakeLists.txt'
-      - '.github/workflows/room-e2e.yml'
-  pull_request:
-    paths:
-      - 'mag-room/**'
-      - 'CMakeLists.txt'
-      - '.github/workflows/room-e2e.yml'
+  workflow_dispatch:
 jobs:
   room:
     runs-on: ubuntu-24.04

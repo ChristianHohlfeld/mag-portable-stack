@@ -3,12 +3,11 @@ name: Green main
 # All green -> move branch `green` there. MAG deploys only `green`
 # (ops/auto-update). Red, cancelled or superseded by a newer push: nothing.
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
 permissions:
   contents: write
   checks: read
+  statuses: read
 concurrency:
   group: green-main
   cancel-in-progress: true

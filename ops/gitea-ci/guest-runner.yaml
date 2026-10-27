@@ -1,0 +1,11 @@
+log:
+  level: info
+runner:
+  file: /var/lib/mag-ci-runner/.runner
+  capacity: 1
+  timeout: 24h
+  labels: ["mag-ci-vm:host"]
+cache:
+  enabled: false
+host:
+  workdir_parent: /work/actions

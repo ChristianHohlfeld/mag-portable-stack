@@ -1,0 +1,10 @@
+[Unit]
+Requires=mag-ci-git.socket
+After=gitea.service
+[Service]
+ExecStart=/usr/lib/systemd/systemd-socket-proxyd 127.0.0.1:3000
+DynamicUser=yes
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes

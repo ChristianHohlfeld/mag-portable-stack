@@ -1,0 +1,10 @@
+[Unit]
+Description=Isolated disposable CI network
+Before=mag-ci-git.socket mag-ci-vm.service
+After=network-online.target
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/lib/mag-ci/network.sh
+[Install]
+WantedBy=multi-user.target

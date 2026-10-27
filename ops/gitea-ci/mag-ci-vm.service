@@ -1,0 +1,31 @@
+[Unit]
+Description=Disposable Gitea CI VM (one ephemeral runner/job)
+After=mag-ci-git.socket mag-ci-guard.service
+Requires=mag-ci-git.socket mag-ci-guard.service
+ConditionPathExists=/var/lib/mag-ci/base.qcow2
+[Service]
+User=mag-ci-vm
+Group=mag-ci-vm
+SupplementaryGroups=kvm
+Slice=mag-ci-workload.slice
+CPUAffinity=54 55
+NUMAPolicy=preferred
+NUMAMask=1
+CPUSchedulingPolicy=idle
+Nice=19
+IOSchedulingClass=idle
+OOMScoreAdjust=1000
+CPUQuota=100%
+MemoryMax=14G
+MemorySwapMax=0
+ExecStart=/usr/local/lib/mag-ci/run-vm.sh
+TimeoutStopSec=20
+KillMode=control-group
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/mag-ci/vm
+InaccessiblePaths=-/etc/credstore -/var/lib/magbot -/var/lib/mag-llm -/etc/gitea -/var/lib/gitea -/var/backups -/var/lib/mag-deploy
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+Restart=no

@@ -1,0 +1,7 @@
+[Unit]
+Description=Start a fresh CI worker when the bridge requests one
+[Path]
+PathModified=/var/lib/mag-ci/request
+Unit=mag-ci-launch.service
+[Install]
+WantedBy=multi-user.target

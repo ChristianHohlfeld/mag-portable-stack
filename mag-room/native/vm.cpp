@@ -354,14 +354,11 @@ static void admission(const Val &c, const std::vector<Val> &rows, int cpu,
 static std::string prepare_browser(const std::string &n);
 static void provision_git(const std::string &n) {
   auto record = marker(n);
-  if (!str(record, "git_user").empty())
+  if (!str(record, "git_user").empty() && num(record, "git_auth_version") == 2)
     return;
-  auto username = domain(n), password = randomhex() + randomhex();
-  if (!gitea_create_or_reuse(username, password))
-    throw std::runtime_error("Gitea bot account creation failed");
-  // Never an admin: restricted, no org creation, own org bots-<agent>.
-  if (run({"/usr/local/sbin/mag-gitea-bot-rights", username}, 60).code)
-    throw std::runtime_error("Gitea bot rights could not be restricted");
+  auto username = domain(n);
+  if (!str(record,"git_user").empty() && str(record,"git_user") != username)
+    throw std::runtime_error("Gitea ownership mismatch");
   // Register ownership before provisioning: retry/teardown can revoke the
   // account.
   record["git_user"] = username;
@@ -372,11 +369,18 @@ static void provision_git(const std::string &n) {
       throw std::runtime_error("Guest not ready for Git provisioning");
     std::this_thread::sleep_for(std::chrono::milliseconds(500));
   }
+  // The account still accepts its old credential until the new token is
+  // atomically installed inside the ready guest. No VM/model restart.
+  auto issued=run({"/usr/local/sbin/mag-gitea-bot-auth","issue",username},60);
+  const auto password=trim(issued.out);
+  if(issued.code || !std::regex_match(password,std::regex("[A-Za-z0-9_]{32,128}")))
+    throw std::runtime_error("Gitea bot token unavailable");
   std::string credential =
       "http://" + username + ":" + password + "@192.168.122.1:3001\n";
+  if(guest_payload(n,credential,"/home/bot/.git-credentials","--write",30).code)
+    throw std::runtime_error("Guest Git credential installation failed");
   std::string script =
-      "umask 077; printf %s " + quote(credential) +
-      " > /home/bot/.git-credentials; git config --global credential.helper "
+      "umask 077; chmod 600 /home/bot/.git-credentials; git config --global credential.helper "
       "store; git config --global user.name " +
       quote(username) + "; git config --global user.email " +
       quote(username + "@mag.local") + "; printf %s " +
@@ -394,6 +398,10 @@ static void provision_git(const std::string &n) {
       30);
   if (result.code)
     throw std::runtime_error("Guest Git configuration failed");
+  if(run({"/usr/local/sbin/mag-gitea-bot-auth","commit",username},60).code)
+    throw std::runtime_error("Gitea bot account conversion failed");
+  record["git_auth_version"]=2;
+  write(dir(n) / "metadata.json",mj::dump(record));
 }
 static void undefine_domain(const std::string &n) {
   if (!exists(n))
@@ -867,6 +875,9 @@ int main(int argc, char **argv) {
       std::cout << audit_proxy(n) << '\n';
       return 0;
     }
+    if (action == "git-auth-sync") {
+      marker(n);provision_git(n);return 0;
+    }
     if (action == "git-sync") {
       marker(n);
       provision_git(n);
@@ -948,3 +959,4 @@ int main(int argc, char **argv) {
     return 1;
   }
 }
+

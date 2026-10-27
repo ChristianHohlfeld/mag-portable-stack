@@ -32,7 +32,7 @@ call() { curl -sS -o "$body" -w '%{http_code}' -H "Authorization: token $token" 
 expect() { local got; got=$(call "$2" "$3" "${4:-}") || got=000
   [[ " $1 " == *" $got "* ]] || { echo "$u: $2 $3 -> HTTP $got" >&2; return 1; }; }
 apply() {
-  expect 200 PATCH "/admin/users/$u" '{"login_name":"'"$u"'","source_id":0,"admin":false,"restricted":true,"allow_create_organization":false,"max_repo_creation":50}' || return 1
+  expect 200 PATCH "/admin/users/$u" '{"admin":false,"restricted":true,"allow_create_organization":false,"max_repo_creation":50}' || return 1
   local org="bots-${u#magbot-}" code team created=0
   code=$(call GET "/orgs/$org") || code=000
   case $code in

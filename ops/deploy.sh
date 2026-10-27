@@ -272,6 +272,9 @@ install -d -m 0755 /etc/systemd/system/mag-120.service.d
 install -m 0644 "$SOURCE/ops/mag-120.d/40-hardening.conf" /etc/systemd/system/mag-120.service.d/40-hardening.conf
 # Gitea bot accounts: never admin, restricted, own org bots-<agent> (idempotent).
 install -m 0755 "$SOURCE/ops/gitea/bot-rights.sh" /usr/local/sbin/mag-gitea-bot-rights
+install -d -m 0755 /usr/local/lib/mag-ci
+install -m 0644 "$SOURCE/ops/gitea-ci/admin-session.sh" /usr/local/lib/mag-ci/admin-session.sh
+install -m 0755 "$SOURCE/ops/gitea-ci/bot-auth.sh" /usr/local/sbin/mag-gitea-bot-auth
 if systemctl is-active --quiet gitea.service; then
   /usr/local/sbin/mag-gitea-bot-rights || echo 'WARN: Gitea bot rights not applied' >&2
 fi

@@ -17,12 +17,16 @@ if [[ -s $snap/manifest ]]; then
   while IFS=$'\t' read -r id file kind; do
     [[ -n ${id:-} && -n ${file:-} && -n ${kind:-} ]] || continue
     case "$file" in
-      /etc/nginx/*|/etc/mag-ci/gitea-proxy.inc) ;;
+      /etc/nginx/*|/etc/mag-ci/*) ;;
       *) echo 'funnel restore: refusing path' >&2; exit 1 ;;
     esac
     if [[ $kind == file ]]; then
       [[ -f $snap/files/$id ]] || { echo 'funnel restore: snapshot missing' >&2; exit 1; }
       cp -a "$snap/files/$id" "$file"
+    elif [[ $kind == link ]]; then
+      [[ -s $snap/files/$id ]] || { echo 'funnel restore: symlink snapshot missing' >&2; exit 1; }
+      rm -f -- "$file"
+      ln -s -- "$(cat "$snap/files/$id")" "$file"
     elif [[ $kind == absent ]]; then
       rm -f -- "$file"
     else

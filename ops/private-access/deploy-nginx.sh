@@ -174,6 +174,10 @@ activate(){
     die 'Trusted client IP header missing'
   grep -Fq 'listen 127.0.0.1:4443 ssl http2 proxy_protocol;' <<<"$dump" ||
     die 'Shared tailnet TLS listener missing'
+  if grep -Eq 'listen[[:space:]]+(100\.123\.114\.16|@TAILNET_BIND@):443\b' <<<"$dump"; then
+    echo "$dump" | grep -nE 'listen[[:space:]]+(100\.123\.114\.16|@TAILNET_BIND@):443' >&2 || true
+    die 'A managed nginx vhost still listens on the Tailscale :443'
+  fi
   systemctl reload nginx.service || die 'nginx reload failed'
   systemctl is-active --quiet nginx.service || die 'nginx unhealthy'
 }

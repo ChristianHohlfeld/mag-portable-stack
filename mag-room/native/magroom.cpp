@@ -356,7 +356,13 @@ struct HttpClient {
   size_t lpos = 0;
   long statusCode = 0;
   int timeout_ms = 60000;
+  // Gap between bytes. 0 uses timeout_ms. LLM streams set this far above a
+  // silent prefill so a 60s socket default cannot cancel the request.
+  int idle_timeout_ms = 0;
   bool cancelable = false;
+  bool hit_deadline = false;
+  std::chrono::steady_clock::time_point overall_deadline{};
+  bool overall_set = false;
   std::map<std::string, std::string> hdrs;
 
   ~HttpClient() {
@@ -417,7 +423,17 @@ struct HttpClient {
     return true;
   }
   bool fill() {
-    auto deadline = steady_clock::now() + milliseconds(timeout_ms);
+    // One hard cap for the whole response, plus a separate idle gap. The gap
+    // used to be timeout_ms and was reset on every chunk, so a silent prefill
+    // died at the 60s default and the turn was sent again. ik_llama does not
+    // abort that prefill when the client goes away, so the resend never runs.
+    if (!overall_set) {
+      overall_deadline = steady_clock::now() + milliseconds(std::max(timeout_ms, 1));
+      overall_set = true;
+    }
+    const int gap = idle_timeout_ms > 0 ? idle_timeout_ms : timeout_ms;
+    auto deadline = steady_clock::now() + milliseconds(std::max(gap, 1));
+    if (deadline > overall_deadline) deadline = overall_deadline;
     for (;;) {
       if (cancelable && stop_flag().load()) {
         eof = true;
@@ -432,6 +448,7 @@ struct HttpClient {
         return false;
       }
       if (steady_clock::now() >= deadline) {
+        hit_deadline = true;
         eof = true;
         return false;
       }
@@ -4005,6 +4022,10 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   slot_restore_if_cold(id_slot);
   HttpClient c;
   c.timeout_ms = std::max(LLM_TIMEOUT_S, LLM_TIMEOUT_MIN_S) * 1000;
+  // Worst measured DeepSeek prefill is several minutes with no SSE bytes.
+  // Stay quiet at least that long. timeout_ms remains the hard overall cap.
+  c.idle_timeout_ms = std::min(
+      c.timeout_ms, std::max(1, envi("MAG_ROOM_STREAM_IDLE_S", 1200)) * 1000);
   c.cancelable = true;
   if (!c.connectTo(BACKEND_HOST, BACKEND_PORT)) {
     t.error = "Backend nicht erreichbar (" + BACKEND_HOST + ":" +
@@ -4233,6 +4254,11 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
     backend_fd_slot() = -1;
     c.close();
   }
+  // A deadline with no tokens is a failure of this one request. Do not leave
+  // text empty and finish empty: the turn loop would otherwise schedule
+  // another completion against a slot ik is still prefilling.
+  if (c.hit_deadline && t.error.empty() && acc.content.empty() && acc.calls.empty())
+    t.error = "Modell-Stream endete ohne Token; die Anfrage wird nicht erneut gesendet";
   thinking_content.feed("", [&](bool reasoning, const std::string &piece) {
     if (reasoning) { acc.reasoning += piece; on_delta("reasoning", piece); }
     else visible_delta(piece);
@@ -6456,6 +6482,7 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
         }
   }
   bool ram_warm = false, ram_known = !CONFIGURED_MODEL;
+  bool saw_slot = false, explicit_empty = false;
   if (CONFIGURED_MODEL) {
     std::string raw; long status = 0;
     if (http_simple(BACKEND_HOST, BACKEND_PORT, "GET", "/slots", "",
@@ -6464,15 +6491,28 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
       if (mj::parse(raw, slots) && slots.isArr()) {
         ram_known = true;
         for (const auto &slot : *slots.arr) {
+        saw_slot = true;
+        bool zeros = false;
         for (const char *key : {"n_past", "n_prompt_tokens", "n_cached_tokens"})
-          if (auto n = slot.find(key); n && n->asNum() > 0) ram_warm = true;
+          if (auto n = slot.find(key); n && n->type == Val::NUM) {
+            if (n->asNum() > 0) ram_warm = true;
+            else zeros = true;
+          }
         if (auto busy = slot.find("is_processing"); busy && busy->asBool()) ram_warm = true;
-        // The pinned ik runtime exposes prompt/next_token, not n_past,
-        // on /slots. A completed slot retains its prompt until server restart.
+        // The pinned ik runtime exposes prompt/next_token, not n_past.
+        // After a reply, n_decoded stays > 0 while state is idle (0). An
+        // empty prompt string is not proof the KV was dropped.
+        long decoded = -1;
+        if (auto next = slot.find("next_token"); next && next->isObj())
+          if (auto n = next->find("n_decoded"); n && n->type == Val::NUM)
+            decoded = (long)n->asNum();
+        if (decoded > 0) ram_warm = true;
         if (auto prompt = slot.find("prompt"); prompt &&
             ((prompt->type == Val::STR && !prompt->asStr().empty()) ||
              (prompt->isArr() && !prompt->asArr().empty()))) ram_warm = true;
         if (auto state = slot.find("state"); state && state->asNum() > 0) ram_warm = true;
+        if (!ram_warm && zeros) explicit_empty = true;
+        if (!ram_warm && decoded == 0 && zeros) explicit_empty = true;
         }
       }
     }
@@ -6489,7 +6529,9 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
   if (CONFIGURED_MODEL && !ram_known) {
     skip = true;
     why = "busy"; // /slots timed out: the slot is occupied, not cold
-  } else if (ram_warm) {
+  } else if (ram_warm || (saw_slot && !explicit_empty)) {
+    // A listed slot with no explicit zero still holds its prefix. Do not
+    // restore or complete: both re-prefill the only DeepSeek slot.
     skip = true;
     why = "ram";
   } else if (ram_known && !ram_warm) {

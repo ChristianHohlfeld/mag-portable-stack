@@ -256,6 +256,46 @@ class StopAndPriority(unittest.TestCase):
             time.sleep(.05)
         self.assertTrue(Model.disconnects, 'streaming request closed')
 
+    def test_02b_stop_during_reasoning_double_tap_keeps_one_queued_reply(self):
+        # DeepSeek reasoning_content (8191) and Qwen <think> (8192) must not
+        # become the answer. A second Stop while the first is settling must
+        # not drop or duplicate the queued message.
+        Model.scripts += [[
+            {'reasoning_content': 'DeepSeek-Gedanke 8191 '},
+            '<thi', 'nk>Qwen-Gedanke 8192</think>',
+            'Teil ',
+            {'_hold': 30},
+        ], ['Queue bleibt.']]
+        self.room.api('/api/message', {'text': 'Denk', 'bots': ['a']})
+        wait_calls(1)
+        time.sleep(.25)
+        self.room.api('/api/message', {'text': 'Danach', 'bots': ['a']})
+        t0 = time.monotonic()
+        first = self.room.api('/api/cancel', {})
+        second = self.room.api('/api/cancel', {})
+        self.assertTrue(first['cancelled'])
+        self.assertFalse(second['cancelled'], 'double tap is not a second stop')
+        s = self.room.until(lambda s: not s['busy'] and contents(s)[-1] == 'Queue bleibt.',
+                            timeout=4, what='queue after reasoning stop')
+        self.assertLess(time.monotonic() - t0, 3)
+        self.assertEqual(contents(s).count('Queue bleibt.'), 1)
+        self.assertEqual(contents(s).count('Danach'), 1)
+        self.assertEqual(s['pending'], [])
+        for msg in s['room']:
+            if msg.get('role') != 'assistant':
+                continue
+            text = msg.get('content') or ''
+            self.assertNotIn('DeepSeek-Gedanke', text)
+            self.assertNotIn('Qwen-Gedanke', text)
+            self.assertNotIn('<think>', text)
+            self.assertNotIn('</think>', text)
+        stopped = [m for m in s['room'] if m.get('interrupted')]
+        self.assertTrue(stopped, 'partial answer stays, marked stopped')
+        self.assertEqual(stopped[-1].get('stopped'), 'user')
+        self.assertTrue((stopped[-1].get('content') or '').startswith('Teil'))
+        again = self.room.state_()
+        self.assertEqual([m.get('content') for m in again['room']], contents(s))
+
     def test_03_new_message_after_stop_is_never_blocked_and_held_items_wait(self):
         Model.scripts += [[{'_hold': 30}], ['Antwort auf neu.'], ['Antwort auf alt.']]
         self.room.api('/api/message', {'text': 'Erste', 'bots': ['a']})
@@ -364,6 +404,51 @@ class StopAndPriority(unittest.TestCase):
                             timeout=8, what='think-tag-free content')
         self.assertNotIn('Geheime Gedanken', contents(s)[-1])
 
+    def test_06d_prefix_strip_keeps_the_answer_and_clears_busy(self):
+        Model.scripts += [['Alpha: Die Antwort bleibt.']]
+        self.room.api('/api/message', {'text': 'Sag es', 'bots': ['a']})
+        s = self.room.until(lambda s: not s['busy'] and contents(s)[-1] == 'Die Antwort bleibt.',
+                            timeout=8, what='prefix does not empty the answer')
+        self.assertNotIn('Alpha:', contents(s)[-1])
+        self.assertNotIn('Es wurde keine Antwort', contents(s)[-1])
+        self.assertNotIn('a', s.get('busy_bots') or [])
+
+    def test_06e_both_reasoning_formats_stay_out_after_reload(self):
+        # One request per production shape: reasoning_content is DeepSeek on
+        # 8191, <think> is Qwen on 8192. The room stores neither in content.
+        Model.scripts += [[
+            {'reasoning_content': 'DeepSeek-Gedanke 8191'},
+            'DeepSeek sagt Hallo.',
+        ], [
+            '<think>Qwen-Gedanke 8192</think>',
+            'Qwen sagt Hallo.',
+        ], [
+            {'reasoning_content': 'Nur Gedanke'},
+            '<think>immer noch nur Gedanke</think>',
+        ]]
+        self.room.api('/api/message', {'text': 'DeepSeek', 'bots': ['a']})
+        s = self.room.until(lambda s: not s['busy'] and contents(s)[-1] == 'DeepSeek sagt Hallo.',
+                            timeout=8, what='deepseek answer')
+        self.room.api('/api/message', {'text': 'Qwen', 'bots': ['a']})
+        s = self.room.until(lambda s: not s['busy'] and contents(s)[-1] == 'Qwen sagt Hallo.',
+                            timeout=8, what='qwen answer')
+        self.room.api('/api/message', {'text': 'Nur denken', 'bots': ['a']})
+        s = self.room.until(lambda s: not s['busy'] and len(Model.calls) >= 3,
+                            timeout=8, what='reasoning-only turn ends')
+        self.assertEqual(contents(s)[-1], 'Nur denken')
+        self.assertEqual(contents(s)[-2], 'Qwen sagt Hallo.')
+        visible = [c or '' for c in contents(s)]
+        self.assertIn('DeepSeek sagt Hallo.', visible)
+        self.assertIn('Qwen sagt Hallo.', visible)
+        blob = '\n'.join(visible)
+        for banned in ('DeepSeek-Gedanke', 'Qwen-Gedanke', 'Nur Gedanke',
+                       'immer noch nur Gedanke', '<think>', '</think>', 'Denkt nach'):
+            self.assertNotIn(banned, blob)
+        self.assertNotIn('Es wurde keine Antwort', blob)
+        reloaded = self.room.state_()
+        self.assertEqual([m.get('content') for m in reloaded['room']], contents(s))
+        self.assertFalse(reloaded['busy'])
+
     def test_07_bot_stop_only_stops_that_bot(self):
         Model.scripts += [[{'_hold': 30}]]
         self.room.api('/api/message', {'text': 'Nur Alpha', 'bots': ['a']})
@@ -417,8 +502,9 @@ class TwoModels(unittest.TestCase):
         wait_calls(2, timeout=5)
         r = self.room.api('/api/message', {'text': 'Nachtrag nur fuer Alpha', 'bots': ['a']})
         self.assertTrue(r['queued'], 'Alpha is busy, so the message is queued visibly')
-        s = self.room.until(lambda s: 'erledigt, inklusive Nachtrag.' in contents(s), timeout=8,
-                            what='Alpha answer with the late message')
+        s = self.room.until(
+            lambda s: 'erledigt, inklusive Nachtrag.' in contents(s) and 'a' not in (s.get('busy_bots') or []),
+            timeout=8, what='Alpha answer with the late message')
         self.assertIn('b', s.get('busy_bots') or [], 'Beta keeps working, untouched')
         self.assertFalse(Model.disconnects, 'nobody was cancelled')
         alpha = [c[1] for c in Model.calls if c[1]['model'] == q4]

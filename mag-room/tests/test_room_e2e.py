@@ -106,6 +106,52 @@ class RoomE2E(unittest.TestCase):
         self.room.until(lambda s: not s['busy'], timeout=3)
         self.assertTrue(Model.disconnects, 'model request closed')
 
+    def test_02b_stop_is_immediate_on_phone_and_desktop(self):
+        # One tap shows Stoppt… before the model thread unwinds. A second tap
+        # does not send. Reasoning never appears in the live answer. No
+        # contentless Denkt-nach card. 390x844 and a desktop window.
+        for width, height in ((390, 844), (1280, 800)):
+            reset_model()
+            self.room.until(lambda s: not s['busy'], timeout=3)
+            self.room.api('/api/queue', method='DELETE')
+            self.room.api('/api/queue/resume', {})
+            page = self.browser.new_page(viewport={'width': width, 'height': height})
+            try:
+                page.goto(f'http://127.0.0.1:{self.room.ui}/')
+                expect(page.locator('#connection')).to_contain_text('Verbunden', timeout=10000)
+                Model.scripts.append([
+                    {'reasoning_content': 'Nicht zeigen 8191 '},
+                    '<think>Nicht zeigen 8192</think>',
+                    {'_hold': 30},
+                ])
+                page.locator('#message').fill('Halt bitte')
+                page.locator('#message').press('Enter')
+                wait_calls(1)
+                time.sleep(.3)
+                button = page.locator('#send-button')
+                expect(button).to_have_attribute('data-mode', 'stop', timeout=5000)
+                live = page.locator('.message.assistant .content').last
+                expect(live).to_be_attached()
+                self.assertNotIn('Nicht zeigen', live.inner_text())
+                self.assertEqual(page.locator('.work-steps', has_text='Denkt nach').count(), 0)
+                t0 = time.monotonic()
+                seen = page.evaluate("""()=>{
+                  const b=document.getElementById('send-button');
+                  b.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,cancelable:true}));
+                  b.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,cancelable:true}));
+                  return b.getAttribute('aria-label');
+                }""")
+                self.assertEqual(seen, 'Stoppt…')
+                self.assertLess(time.monotonic() - t0, 0.4, 'stop paints before the request returns')
+                expect(button).to_have_attribute('data-mode', 'send', timeout=3000)
+                self.room.until(lambda s: not s['busy'], timeout=3)
+                self.assertTrue(Model.disconnects, 'llama stream closed without a service restart')
+                text = '\n'.join(page.locator('.message.assistant .content').all_inner_texts())
+                self.assertNotIn('Nicht zeigen', text)
+                self.assertNotIn('<think>', text)
+            finally:
+                page.close()
+
     def test_03_escape_stops(self):
         p = self.page
         Model.scripts.append([{'_hold': 30}])
@@ -437,6 +483,79 @@ class RoomE2E(unittest.TestCase):
             expect(p.locator('#left-panel')).to_be_hidden()
         finally:
             p.close()
+
+
+    def test_09_reset_opens_on_one_tap_and_banner_stays_one_line(self):
+        # One tap/click opens Bot zurücksetzen. The same gesture must not
+        # dismiss the dialog. The model line stays 22px and names both bots.
+        for width, height, touch in ((390, 844, True), (1280, 800, False)):
+            page = self.browser.new_page(
+                viewport={'width': width, 'height': height},
+                is_mobile=touch, has_touch=touch)
+            try:
+                page.goto(f'http://127.0.0.1:{self.room.ui}/')
+                page.wait_for_selector('#send-button')
+                page.evaluate("""()=>{
+                  state.agents=[
+                    {id:'ds',name:'DeepSeek',vm:'agent1',model:'deepseek-v4-flash-0731',slot:1},
+                    {id:'qw',name:'Qwen',vm:'agent2',model:'qwen3.8-flash-next-uncensored',slot:2}
+                  ];
+                  state.model_instances=[
+                    {slot:1,model:'deepseek-v4-flash-0731',label:'DeepSeek',state:'down'},
+                    {slot:2,model:'qwen3.8-flash-next-uncensored',label:'Qwen',state:'ok'}
+                  ];
+                  state.busy=false; busyBots=new Set();
+                  selected=new Set(['ds']);
+                  renderData();
+                  document.getElementById('settings-dialog').showModal();
+                }""")
+                btn = page.locator('#work-areas button', has_text='Bot zurücksetzen').first
+                btn.scroll_into_view_if_needed()
+                box = btn.bounding_box()
+                if touch:
+                    page.touchscreen.tap(box['x'] + box['width'] / 2, box['y'] + box['height'] / 2)
+                else:
+                    btn.click()
+                modal = page.locator('#mag-modal')
+                expect(modal).to_be_visible()
+                expect(page.locator('#mag-modal-title')).to_have_text('Bot zurücksetzen')
+                page.wait_for_timeout(300)
+                expect(modal).to_be_visible()
+                self.assertNotIn('Tooltip', page.locator('#mag-modal-text').inner_text())
+                page.locator('#mag-modal-cancel').click()
+                expect(modal).to_be_hidden()
+                page.evaluate("""()=>{
+                  document.getElementById('settings-dialog').close();
+                  modelStatus({state:'offline',ready:false,label:'Modell-Backend nicht erreichbar',detail:'Port 8191'});
+                }""")
+                banner = page.locator('#model-banner')
+                expect(banner).to_be_visible()
+                text = banner.inner_text()
+                self.assertIn('DeepSeek nicht erreichbar', text)
+                self.assertIn('Qwen bereit', text)
+                self.assertNotIn('Tooltip', text)
+                self.assertNotIn('nicht verfügbar', text)
+                h0 = banner.bounding_box()['height']
+                self.assertLessEqual(h0, 24)
+                wrap0 = page.locator('.composer-wrap').bounding_box()['height']
+                banner.locator('.model-banner-line').click()
+                self.assertIn('Modell-Backend nicht erreichbar', banner.inner_text())
+                self.assertIn('Port 8191', banner.inner_text())
+                self.assertEqual(banner.bounding_box()['height'], h0)
+                self.assertEqual(page.locator('.composer-wrap').bounding_box()['height'], wrap0)
+                page.locator('.model-banner-switch').click()
+                self.assertEqual(page.evaluate('[...selected]'), ['qw'])
+                page.evaluate("""()=>{
+                  state.model_instances[0].state='busy';
+                  busyBots=new Set(['ds']);
+                  modelStatus({state:'prefilling',ready:false,label:'prefilling',detail:'slot 0'});
+                }""")
+                shown = banner.inner_text()
+                self.assertIn('beschäftigt', shown)
+                self.assertNotIn('nicht verfügbar', shown)
+                self.assertNotIn('Tooltip', shown)
+            finally:
+                page.close()
 
 
 if __name__ == '__main__':

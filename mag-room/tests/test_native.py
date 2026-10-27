@@ -898,8 +898,11 @@ class Native(unittest.TestCase):
  def test_09g_frontend_model_status_contract(self):
   html=self.request('/',raw=True).decode()
   for needle in ('id="model-state"','id="model-banner"',"event.type==='model'","event.type==='bot_status'",'id="agent-chat-only"','vm:false',
-                 "if(!a.vm)continue","if(!bot.vm){","showThinking(s.node","#model-state .txt{display:none}"):
+                 "if(!a.vm)continue","if(!bot.vm){","showThinking(s.node","#model-state .txt{display:none}",
+                 'nicht erreichbar','beschäftigt','model-banner-switch','model-banner-line'):
    self.assertIn(needle,html)
+  self.assertNotIn('Details im Tooltip oben',html)
+  self.assertNotIn('Modell nicht verfügbar',html)
  def test_09h_prompt_is_cache_friendly(self):
   # Stable rules, memories directly after them, volatile clock/files only in the [Kontext] tail.
   def turn(text):
@@ -2538,7 +2541,7 @@ class MultiBot(unittest.TestCase):
   # Composer bar: round +, pill with mic, one round send button that stops
   # only while the field is empty, and turns back into "Senden" on input.
   for needle in ('<form id="send-form" class="gbar">','id="plus"','class="composer-card gbar-pill"','id="mic"','id="send-button"','id="plus-think"','id="upload-camera"','id="upload-screen"',
-                 "const stop=!typed&&ids.length>0&&can('stop')","ids.length>1?'Alle stoppen':'Stoppen'","dataset.mode==='stop'){e.preventDefault();stopBot('')}",
+                 "const stop=!typed&&ids.length>0&&can('stop')","ids.length>1?'Alle stoppen':'Stoppen'","function onStopTap(e){const b=$('send-button');if(b.dataset.mode!=='stop'&&b.dataset.state!=='stopping')return;e.preventDefault();e.stopPropagation();if(b.dataset.state==='stopping')return;stopBot('')}",
                  "$('message').addEventListener('input',fitMessageHeight)","syncComposerButton()}"):self.assertIn(needle,html)
   form=html[html.index('<form id="send-form"'):html.index('</form>',html.index('<form id="send-form"'))]
   self.assertNotRegex(form,r'<textarea[^>]*\bdisabled','the message field is never blocked')

@@ -68,6 +68,9 @@ static std::mutex BACKEND_FD_MTX;
 static std::set<int> PREWARM_FDS; // BACKEND_FD_MTX
 static std::atomic<uint64_t> PREWARM_EPOCH{0};
 static std::atomic<bool> PREWARM_HOLD{false};
+// Composer Stop is one action. A second tap in this window must not bump
+// EPOCH again: that aborted the queued message the first tap had just released.
+static std::atomic<long long> LAST_STOP_MS{0};
 static bool cancel_prewarm() {
   std::lock_guard<std::mutex> lk(BACKEND_FD_MTX);
   ++PREWARM_EPOCH;
@@ -3240,6 +3243,10 @@ static ModelStatus probe_model_status() {
   }
   return st;
 }
+// A health miss while a turn or prefill is running is busy, not offline.
+// Defined with the lane table; probe results pass through it before publish.
+static void note_model_busy(ModelStatus &st);
+static bool slot_is_busy(int slot);
 static ModelStatus model_status(bool refresh) {
   {
     std::lock_guard<std::mutex> lk(MODEL_ST_MTX);
@@ -3248,6 +3255,7 @@ static ModelStatus model_status(bool refresh) {
       return MODEL_ST;
   }
   ModelStatus st = probe_model_status();
+  note_model_busy(st);
   std::lock_guard<std::mutex> lk(MODEL_ST_MTX);
   MODEL_ST = st;
   return st;
@@ -3499,7 +3507,9 @@ static Val model_instances() {
     i["numa"] = ROOM_MODEL.backends[s - 1].numa;
     i["model"] = ROOM_MODEL.backend(s).id;
     i["label"] = ROOM_MODEL.backend(s).label;
-    i["state"] = ROOM_MODEL_HEALTH[s - 1] == 1 ? "ok" : ROOM_MODEL_HEALTH[s - 1] == 2 ? "down" : "unknown";
+    i["state"] = ROOM_MODEL_HEALTH[s - 1] == 1 ? "ok"
+               : slot_is_busy(s) ? "busy"
+               : ROOM_MODEL_HEALTH[s - 1] == 2 ? "down" : "unknown";
     inst.push(i);
   }
   return inst;
@@ -3535,6 +3545,7 @@ static void model_watcher_loop() {
   bool was_ready = false, was_secondary_ready = false;
   while (!SHUTDOWN.load()) {
     ModelStatus st = probe_model_status();
+    note_model_busy(st);
     {
       std::lock_guard<std::mutex> lk(MODEL_ST_MTX);
       MODEL_ST = st;
@@ -3569,14 +3580,15 @@ static void model_watcher_loop() {
         const bool ok = sent && health == 200;
         // A timeout is the slot's task queue, not a crashed server. Marking
         // it down made the next success look like a fresh start and queued
-        // another prefill on the only slot.
+        // another prefill on the only slot. Busy is published as 'b' only.
         if (ok) {
           backend_became_ready = backend_became_ready || ROOM_MODEL_HEALTH[s - 1] != 1;
           ROOM_MODEL_HEALTH[s - 1] = 1;
         } else if (sent) {
           ROOM_MODEL_HEALTH[s - 1] = 2;
         }
-        health_key += ok ? '1' : ROOM_MODEL_HEALTH[s - 1] == 1 ? '1' : '0';
+        health_key += ok ? '1' : slot_is_busy(s) ? 'b'
+                     : ROOM_MODEL_HEALTH[s - 1] == 1 ? '1' : '0';
         secondary_ready = secondary_ready || ok || ROOM_MODEL_HEALTH[s - 1] == 1;
       }
       key += "|" + health_key;
@@ -3968,11 +3980,14 @@ class VisibleReplyFilter {
                      pending, 0, std::min(leak.size(), pending.size())) == 0) {
       const size_t end = pending.find("\n\n");
       if (end == std::string::npos) {
-        if (finish) { pending.clear(); at_head = false; }
-        return;
+        // Hold a split preamble, but never discard the answer when the
+        // stream ends without a blank line. Prefix stripping must not
+        // turn a real reply into an empty message.
+        if (!finish) return;
+      } else {
+        pending.erase(0, end + 2);
+        left_trim();
       }
-      pending.erase(0, end + 2);
-      left_trim();
     }
     const std::vector<std::string> prefixes = {
         speaker + ":", "Bot1:", "BotBot:", "DeepSeek:", "Qwen:"};
@@ -5570,8 +5585,10 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
       report.text = "Antwort fehlgeschlagen: " + report.error;
     else if (report.failed_tools)
       report.text = "Werkzeugfehler. Details stehen im Aktivitaetsprotokoll.";
-    else
+    else if (trim(report.reasoning).empty())
       report.text = "Es wurde keine Antwort erzeugt. Bitte erneut versuchen.";
+    // Reasoning-only, or a speaker label with nothing after it: the visible
+    // answer stays empty and the caller still ends the turn.
     report.continue_requested = false;
   }
   if(CONFIGURED_MODEL && !stateless && !CURRENT_JOB && !TL_TASK)
@@ -6303,6 +6320,18 @@ static TurnReport generate_and_post(int idx, bool automatic, double dispatched_m
       report.continue_requested = false;
       emit_event("error", id, name, "Autonomie gestoppt: doppelte Antwort.");
     }
+  } else if (epoch == EPOCH.load() && !stop_flag().load() && report.text.empty() &&
+             report.error.empty()) {
+    // Reasoning-only, or a speaker label with no answer after it. The turn
+    // is over: do not invent text, do not copy reasoning into the answer,
+    // and do not leave the client showing a live run.
+    report.continue_requested = false;
+    Val e = Val::object();
+    e["type"] = "bot_done";
+    e["bot"] = id;
+    e["name"] = name;
+    e["content"] = "";
+    publish(mj::dump(e));
   } else {
     report.continue_requested = false;
     // Clean interruption: keep what was streamed (content only, never the
@@ -6371,6 +6400,46 @@ static std::mutex &server_mutex(const std::string &port) {
   return *m;
 }
 static std::map<std::string, double> PREWARM_ETA; // bot id -> eta seconds, PREWARM_MTX
+static bool slot_is_busy(int slot) {
+  std::vector<std::string> ids;
+  {
+    std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
+    for (size_t i = 0; i < AGENTS.size(); ++i) {
+      int s = model_slot_of(AGENTS[i]);
+      if (!s) s = (int)i + 1;
+      if (s != slot) continue;
+      auto id = AGENTS[i].find("id");
+      if (id && id->type == Val::STR) ids.push_back(id->asStr());
+    }
+  }
+  {
+    std::lock_guard<std::mutex> lk(PREWARM_MTX);
+    for (const auto &id : ids)
+      if (PREWARM_ETA.count(id)) return true;
+  }
+  for (const auto &id : ids)
+    if (Lane *l = lane_of(id); l && l->busy.load()) return true;
+  return false;
+}
+static void note_model_busy(ModelStatus &st) {
+  if (st.ready) return;
+  if (st.state != "offline" && st.state != "error" && st.state != "failed") return;
+  bool hot = BUSY.load();
+  if (!hot) {
+    std::lock_guard<std::mutex> lk(BACKEND_FD_MTX);
+    hot = !PREWARM_FDS.empty();
+  }
+  if (!hot) {
+    std::lock_guard<std::mutex> lk(PREWARM_MTX);
+    hot = !PREWARM_ETA.empty();
+  }
+  if (!hot) return;
+  // Keep the probe text for the tappable detail. The banner says beschäftigt.
+  if (st.detail.empty()) st.detail = st.label;
+  st.state = "busy";
+  st.ready = true;
+  st.label = "Modell beschäftigt";
+}
 static uint64_t fnv64(const std::string &s) {
   uint64_t h = 1469598103934665603ull;
   for (unsigned char c : s) h = (h ^ c) * 1099511628211ull;
@@ -7164,6 +7233,7 @@ static void start_lanes_locked(const Job &job, bool automatic) {
   const std::string owner = job.ids.empty() ? "" : job.ids.front();
   if (!automatic && job.generation == AUTO_GENERATION) AUTO_THINK = job.think;
   STOP = false;
+  LAST_STOP_MS = 0;
   USER_CANCEL = false;
   const auto parts = split_lanes(job.ids);
   const bool stagger = parts.size() > 1 && stagger_mode() != "off";
@@ -7359,11 +7429,44 @@ static void stop_autotalk(bool pause = false) {
 // pause_jobs (the old /api/stop) also holds scheduled jobs and switches the
 // autonomy setting off.
 static Val user_stop(bool pause_jobs) {
-  const bool was_busy = BUSY.load() || tasks_running();
-  std::unique_lock<std::mutex> control(JOB_MTX);
+  const long long now = duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
+  bool fresh = false;
+  for (Lane *l : all_lanes())
+    if (l->busy.load() && !l->stop.load()) fresh = true;
+  bool prewarm_open = false;
+  {
+    std::lock_guard<std::mutex> lk(BACKEND_FD_MTX);
+    prewarm_open = !PREWARM_FDS.empty();
+  }
+  auto idle_stop = [&](bool cancelled) {
+    Val out = Val::object();
+    out["cancelled"] = cancelled;
+    out["held"] = 0.0;
+    out["paused"] = QUEUE_PAUSED;
+    return out;
+  };
+  // Second tap while this stop is still settling: do not touch EPOCH.
+  const long long prev = LAST_STOP_MS.load();
+  if (!pause_jobs && prev && now - prev < 800)
+    return idle_stop(false);
+  if (!fresh && !prewarm_open && !tasks_running() && !pause_jobs)
+    return idle_stop(false);
+  long long claimed = prev;
+  if (!pause_jobs && !LAST_STOP_MS.compare_exchange_strong(claimed, now))
+    return idle_stop(false);
+  if (pause_jobs) LAST_STOP_MS.store(now);
+  // Tell the UI before the model thread unwinds, and close the llama
+  // stream (gateway port, slot 8191 or 8192) before taking the queue lock.
+  {
+    Val stopping = Val::object();
+    stopping["type"] = "stopping";
+    publish(mj::dump(stopping));
+  }
+  const bool was_busy = BUSY.load() || tasks_running() || fresh || prewarm_open;
   cancel_active(true);
   task_cancel("", "");
   const bool prewarm = cancel_prewarm();
+  std::unique_lock<std::mutex> control(JOB_MTX);
   PREWARM_HOLD = true;
   Val out = Val::object();
   {

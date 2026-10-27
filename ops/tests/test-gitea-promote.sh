@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+# mag-test-timeout: 180
+if [ -z "${MAG_TEST_DEADLINE_ARMED:-}" ]; then
+  export MAG_TEST_DEADLINE_ARMED=1
+  exec timeout --kill-after=5s 180s bash "$0" "$@"
+fi
 # Promote Gitea green and request a deploy. The API is a local fake. GitHub is
 # refused. Auto-update follows the Gitea green ref, including the old
 # "checkout is ahead of green" skip when Gitea green has not caught up.

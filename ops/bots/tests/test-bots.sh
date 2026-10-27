@@ -190,8 +190,8 @@ server {
 }
 EOF
 mkdir -p "$tmp/body" "$tmp/proxy" "$tmp/fastcgi" "$tmp/uwsgi" "$tmp/scgi"
-printf 'pid %s/nginx.pid;\nerror_log %s/nginx.err;\nevents { worker_connections 64; }\nhttp { access_log off; client_body_temp_path %s/body; proxy_temp_path %s/proxy; fastcgi_temp_path %s/fastcgi; uwsgi_temp_path %s/uwsgi; scgi_temp_path %s/scgi; include %s/bots.conf; include %s/room.conf; }\n' \
-  "$tmp" "$tmp" "$tmp" "$tmp" "$tmp" "$tmp" "$tmp" "$tmp" "$tmp" >"$tmp/nginx.conf"
+printf 'pid %s/nginx.pid;\nerror_log %s/nginx.err;\nevents { worker_connections 64; }\nhttp { access_log off; client_body_temp_path %s/body; proxy_temp_path %s/proxy; fastcgi_temp_path %s/fastcgi; uwsgi_temp_path %s/uwsgi; scgi_temp_path %s/scgi; include %s; include %s/bots.conf; include %s/room.conf; }\n' \
+  "$tmp" "$tmp" "$tmp" "$tmp" "$tmp" "$tmp" "$tmp" "$here/../nginx/mag-tailnet-ok.inc" "$tmp" "$tmp" >"$tmp/nginx.conf"
 nginx -t -p "$tmp/" -c "$tmp/nginx.conf" >/dev/null
 
 # Publisher: bridge token, tar replace, traversal rejected, previous site kept.

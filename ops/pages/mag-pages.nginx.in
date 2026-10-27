@@ -1,6 +1,8 @@
 # Tailnet-only default. This file must NEVER bind 0.0.0.0, a public IP, or
 # the Tailscale address. Clients reach 100.123.114.16:443; tailscaled forwards
 # to this socket. The listen line matches the room vhost exactly.
+# $mag_tailnet_ok comes from ops/nginx/mag-tailnet-ok.inc (room http{} live;
+# isolated tests include that file themselves — do not include it here).
 # Apex host is a private portal; wildcard hostnames serve published repos.
 server {
     listen 127.0.0.1:4443 ssl http2 proxy_protocol;

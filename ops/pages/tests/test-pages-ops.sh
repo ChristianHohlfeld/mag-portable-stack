@@ -131,8 +131,8 @@ for mode in private public; do
      -e "s|/etc/mag-pages/tls/current/cert.pem|$tmp/cert.pem|g" \
      -e "s|/etc/mag-pages/tls/current/key.pem|$tmp/key.pem|g" \
      "$tmp/$mode.conf" >"$tmp/$mode-test.conf"
- printf 'worker_processes 1;\npid %s/nginx.pid;\nerror_log %s/nginx.err;\nevents { worker_connections 64; }\nhttp { access_log off; client_body_temp_path %s/body; proxy_temp_path %s/proxy; fastcgi_temp_path %s/fastcgi; uwsgi_temp_path %s/uwsgi; scgi_temp_path %s/scgi; include %s/%s-test.conf; }\n' \
-   "$tmp" "$tmp" "$tmp" "$tmp" "$tmp" "$tmp" "$tmp" "$tmp" "$mode" >"$tmp/nginx.conf"
+ printf 'worker_processes 1;\npid %s/nginx.pid;\nerror_log %s/nginx.err;\nevents { worker_connections 64; }\nhttp { access_log off; client_body_temp_path %s/body; proxy_temp_path %s/proxy; fastcgi_temp_path %s/fastcgi; uwsgi_temp_path %s/uwsgi; scgi_temp_path %s/scgi; include %s; include %s/%s-test.conf; }\n' \
+   "$tmp" "$tmp" "$tmp" "$tmp" "$tmp" "$tmp" "$tmp" "$here/../nginx/mag-tailnet-ok.inc" "$tmp" "$mode" >"$tmp/nginx.conf"
  nginx -t -p "$tmp/" -c "$tmp/nginx.conf" >/dev/null
 done
 # Existing token path is used: never create/replace a PAT in Pages scripts.

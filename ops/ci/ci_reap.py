@@ -148,19 +148,28 @@ def supervise(cmd):
     return rc
 
 
+def _command(argv):
+    cmd = list(argv)
+    if cmd and cmd[0] == '--':
+        cmd = cmd[1:]
+    return cmd
+
+
 def main(argv):
     if len(argv) < 2:
         return 64
     mode = argv[1]
     if mode == '--self':
-        if len(argv) < 3:
+        cmd = _command(argv[2:])
+        if not cmd:
             return 64
         prctl_subreaper()
-        os.execvp(argv[2], argv[2:])
+        os.execvp(cmd[0], cmd)
     if mode == '--supervise':
-        if len(argv) < 3:
+        cmd = _command(argv[2:])
+        if not cmd:
             return 64
-        return supervise(argv[2:])
+        return supervise(cmd)
     if mode == '--kill':
         if len(argv) < 3:
             return 64

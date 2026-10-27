@@ -735,9 +735,10 @@ class RoomE2E(unittest.TestCase):
 
 
     def test_13_bot_faces_keep_color_motion_and_phone_share(self):
-        # Two roster slots, renamed in the client: accent and mark follow the
-        # slot, not the label. Streaming, settle and reduced motion are class
-        # states. The phone chat stays at least 80% tall. Dies at 12s.
+        # Two roster slots, renamed in the client: creature shape and color
+        # follow the slot, not the label. Idle blink, streaming bounce and
+        # reduced motion are class states. Message bodies stay unframed.
+        # The phone chat stays at least 80% tall. Dies at 12s.
         p = self.browser.new_page(viewport={'width': 390, 'height': 844},
                                   is_mobile=True, has_touch=True)
         t0 = time.monotonic()
@@ -786,14 +787,17 @@ class RoomE2E(unittest.TestCase):
               state.agents[1].name='Lumen';
               render();
               const renamed=nameOf('ds')===dark.ds&&nameOf('qw')===dark.qw;
-              const marks={ds:faceOf('ds').dataset.mark,qw:faceOf('qw').dataset.mark};
+              const shapes={ds:faceOf('ds').dataset.shape,qw:faceOf('qw').dataset.shape};
+              const eyes=faceOf('ds').querySelectorAll('.bf-eye').length;
+              const fills={ds:getComputedStyle(faceOf('ds').querySelector('.bf-shape')).fill,qw:getComputedStyle(faceOf('qw').querySelector('.bf-shape')).fill};
               const idle={ds:faceOf('ds').className,qw:faceOf('qw').className};
-              const idleAnim=getComputedStyle(faceOf('ds').querySelector('.bf-glow')).animationName;
-              const wash=getComputedStyle(faceOf('ds'),'::before').animationName;
+              const idleAnim=getComputedStyle(faceOf('ds').querySelector('.bf-body')).animationName;
+              const blink=getComputedStyle(faceOf('ds').querySelector('.bf-eye')).animationName;
+              const wash=getComputedStyle(faceOf('ds'),'::before').content;
               state.agents[0].slot=2;state.agents[1].slot=1;
               render();
               const swapped=nameOf('ds')===dark.qw&&nameOf('qw')===dark.ds;
-              const swappedMarks={ds:faceOf('ds').dataset.mark,qw:faceOf('qw').dataset.mark};
+              const swappedShapes={ds:faceOf('ds').dataset.shape,qw:faceOf('qw').dataset.shape};
               state.agents[0].slot=1;state.agents[1].slot=2;
               const saved=state.agents.map(a=>({...a}));
               state.agents.forEach(a=>{delete a.slot});
@@ -820,6 +824,7 @@ class RoomE2E(unittest.TestCase):
               paintActivityStatus();
               const streamFace=document.querySelector('.message.work-live[data-bot="ds"] .bot-face');
               const dots=[...document.querySelectorAll('#room-line .bot-dot')].map(d=>getComputedStyle(d).backgroundColor);
+              const dotAnim=document.querySelector('#room-line .bot-dot.is-stream');
               const line=document.getElementById('room-line').getBoundingClientRect();
               const chat=document.getElementById('conversation').getBoundingClientRect();
               const accent=getComputedStyle(msg('ds').querySelector('.content')).boxShadow;
@@ -829,27 +834,32 @@ class RoomE2E(unittest.TestCase):
               busyBots=new Set();
               render();
               const settled=document.querySelector('.message.assistant[data-bot="ds"] .bot-face');
+              const css=document.getElementById('bot-faces').textContent;
               return {
-                dark,light,darkContrast,lightContrast,renamed,swapped,marks,swappedMarks,hashed,idle,idleAnim,wash,
+                dark,light,darkContrast,lightContrast,renamed,swapped,shapes,swappedShapes,eyes,fills,hashed,idle,idleAnim,blink,wash,
                 mineClass:mine.className,
                 mineFace:!!mine.querySelector('.bot-face'),
                 mineNeutral:mineColor===bodyColor,
                 box:{w:box.width,h:box.height},
                 streamClass:streamFace?streamFace.className:'',
-                streamAnim:streamFace?getComputedStyle(streamFace.querySelector('.bf-orbit')).animationName:'',
+                streamAnim:streamFace?getComputedStyle(streamFace.querySelector('.bf-body')).animationName:'',
+                lookAnim:streamFace?getComputedStyle(streamFace.querySelector('.bf-eyes')).animationName:'',
+                dotAnim:dotAnim?getComputedStyle(dotAnim).animationName:'none',
                 dots,lineH:line.height,share:chat.height/innerHeight,
                 accent,otherAccent,
                 settleClass:settled?settled.className:'',
                 roster:{
                   ds:getComputedStyle(document.querySelector('#agents .agent[data-bot="ds"] .bot-name')).color,
                   qw:getComputedStyle(document.querySelector('#agents .agent[data-bot="qw"] .bot-name')).color,
-                  mark:document.querySelector('#agents .agent[data-bot="ds"] .bot-face').dataset.mark
+                  shape:document.querySelector('#agents .agent[data-bot="ds"] .bot-face').dataset.shape
                 },
                 stats:document.querySelectorAll('#app-header .status-group .top-stat').length,
                 selftalk:!!document.querySelector('#room-line #selftalk'),
                 field:!!document.getElementById('message'),
                 lottie:/lottie/i.test(document.documentElement.innerHTML),
-                gif:!!document.querySelector('.bot-face img')
+                gif:!!document.querySelector('.bot-face img'),
+                external:/https?:/i.test(css),
+                frame:/inset\s+2px|conic-gradient|bf-wash/.test(css)
               };
             }""")
             self.assertNotEqual(snap['dark']['ds'], snap['dark']['qw'])
@@ -860,50 +870,62 @@ class RoomE2E(unittest.TestCase):
             self.assertGreaterEqual(snap['lightContrast']['qw'], 4.5)
             self.assertTrue(snap['renamed'], 'rename keeps the slot color')
             self.assertTrue(snap['swapped'], 'slot, not the stored color, picks the accent')
-            self.assertEqual(snap['marks'], {'ds': 'orb', 'qw': 'ring'})
-            self.assertEqual(snap['swappedMarks'], {'ds': 'ring', 'qw': 'orb'})
+            self.assertEqual(snap['shapes'], {'ds': 'heart', 'qw': 'blob'})
+            self.assertEqual(snap['swappedShapes'], {'ds': 'blob', 'qw': 'heart'})
+            self.assertEqual(snap['eyes'], 2)
+            self.assertNotEqual(snap['fills']['ds'], snap['fills']['qw'])
+            self.assertNotIn('none', snap['fills']['ds'])
             self.assertTrue(snap['hashed'])
             self.assertIn('is-idle', snap['idle']['ds'])
             self.assertIn('is-idle', snap['idle']['qw'])
-            self.assertNotEqual(snap['idleAnim'], 'none')
-            self.assertIn('bf-wash', snap['wash'])
+            self.assertEqual(snap['idleAnim'], 'bf-idle')
+            self.assertEqual(snap['blink'], 'bf-blink')
+            self.assertEqual(snap['wash'], 'none')
             self.assertNotIn('bot-accent', snap['mineClass'])
             self.assertIn('mine', snap['mineClass'])
             self.assertFalse(snap['mineFace'])
             self.assertTrue(snap['mineNeutral'])
-            self.assertGreaterEqual(snap['box']['h'], 20)
-            self.assertLessEqual(snap['box']['h'], 28)
-            self.assertLessEqual(snap['box']['w'], 28)
+            self.assertGreaterEqual(snap['box']['h'], 26)
+            self.assertLessEqual(snap['box']['h'], 34)
+            self.assertLessEqual(snap['box']['w'], 34)
             self.assertIn('is-stream', snap['streamClass'])
             self.assertIn('is-pulse', snap['streamClass'])
-            self.assertNotEqual(snap['streamAnim'], 'none')
+            self.assertEqual(snap['streamAnim'], 'bf-live')
+            self.assertEqual(snap['lookAnim'], 'bf-look')
+            self.assertEqual(snap['dotAnim'], 'bf-dot')
             self.assertEqual(len(snap['dots']), 2)
             self.assertNotEqual(snap['dots'][0], snap['dots'][1])
             self.assertLessEqual(snap['lineH'], 24)
             self.assertGreaterEqual(snap['share'], 0.80)
-            self.assertNotEqual(snap['accent'], snap['otherAccent'])
-            self.assertNotEqual(snap['accent'], 'none')
+            self.assertEqual(snap['accent'], 'none')
+            self.assertEqual(snap['otherAccent'], 'none')
             self.assertIn('is-settle', snap['settleClass'])
             self.assertNotIn('is-stream', snap['settleClass'])
             self.assertEqual(snap['roster']['ds'], snap['dark']['ds'])
             self.assertEqual(snap['roster']['qw'], snap['dark']['qw'])
-            self.assertEqual(snap['roster']['mark'], 'orb')
+            self.assertEqual(snap['roster']['shape'], 'heart')
             self.assertNotEqual(snap['roster']['ds'], snap['roster']['qw'])
             self.assertEqual(snap['stats'], 2)
             self.assertTrue(snap['selftalk'])
             self.assertTrue(snap['field'])
             self.assertFalse(snap['lottie'])
             self.assertFalse(snap['gif'])
+            self.assertFalse(snap['external'])
+            self.assertFalse(snap['frame'])
             p.emulate_media(reduced_motion='reduce')
             reduced = p.evaluate(r"""()=>{
+              streams.ds={name:'ds',text:'',phase:'think',label:'Denkt nach',thinking:true,thinkingEnabled:false,started:Date.now(),displayMs:Date.now(),node:null,seq:1,frame:0,reasoning:'',tools:[],steps:[],error:'',hung:false};
+              busyBots=new Set(['ds']);
+              paintActivityStatus();
               const face=document.querySelector('.message.assistant .bot-face');
-              const glow=getComputedStyle(face.querySelector('.bf-glow')).animationName;
-              const wash=getComputedStyle(face,'::before').animationName;
+              const body=getComputedStyle(face.querySelector('.bf-body')).animationName;
+              const eye=getComputedStyle(face.querySelector('.bf-eye')).animationName;
               const dot=document.querySelector('.bot-dot');
-              return {glow,wash,dot:dot?getComputedStyle(dot).animationName:'none',cls:face.className};
+              return {body,eye,dot:dot?getComputedStyle(dot).animationName:'missing'};
             }""")
-            self.assertEqual(reduced['glow'], 'none')
-            self.assertEqual(reduced['wash'], 'none')
+            self.assertEqual(reduced['body'], 'none')
+            self.assertEqual(reduced['eye'], 'none')
+            self.assertEqual(reduced['dot'], 'none')
             self.assertLess(time.monotonic() - t0, 12, 'hard timeout')
         finally:
             p.close()

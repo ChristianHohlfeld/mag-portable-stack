@@ -85,6 +85,9 @@ class BrowserSpeech(unittest.TestCase):
         (static / 'speech-0123456789ab/moonshine.wasm').write_bytes(b'FAKE WASM ASSET')
         (static / 'speech-abcdef123456').mkdir()
         (static / 'speech-abcdef123456/encoder.ort').write_bytes(b'fake model file')
+        (static / 'tts-0123456789ab').mkdir()
+        (static / 'tts-0123456789ab/ort.wasm').write_bytes(b'FAKE TTS WASM')
+        (static / 'tts-0123456789ab/voice.onnx').write_bytes(b'FAKE ONNX')
         self.proc, self.log, self.model, self.port, _ = harness.start_room(
             self.work, static, 'speech-test-a')
         self.pw = self.sync_playwright().start()
@@ -170,6 +173,27 @@ class BrowserSpeech(unittest.TestCase):
           return null;
         }""", url)
         self.assertIsNone(cached)
+
+    def test_tts_runtime_is_cached_and_weights_are_not(self):
+        wasm = '/static/tts-0123456789ab/ort.wasm'
+        onnx = '/static/tts-0123456789ab/voice.onnx'
+        self.page.evaluate('async url => {const r=await fetch(url); if(!r.ok)throw Error(r.status)}', wasm)
+        self.page.evaluate('async url => {const r=await fetch(url); if(!r.ok)throw Error(r.status)}', onnx)
+        cached = self.page.evaluate("""async onnx => {
+          for (const key of await caches.keys()) {
+            const cache = await caches.open(key);
+            if (await cache.match(onnx)) return key;
+          }
+          return null;
+        }""", onnx)
+        self.assertIsNone(cached, 'Piper weights must stay out of the service worker cache')
+        self.context.set_offline(True)
+        result = self.page.evaluate("""async url => {
+          const res = await fetch(url);
+          return {status: res.status, body: await res.text()};
+        }""", wasm)
+        self.assertEqual(result, {'status': 200, 'body': 'FAKE TTS WASM'})
+        self.context.set_offline(False)
 
     def test_rejects_traversal_and_serves_mime(self):
         for url, expected in [

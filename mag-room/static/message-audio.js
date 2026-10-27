@@ -1,10 +1,11 @@
 // Manual, device-local read-aloud for every MAG chat message (bot and human).
 // Deliberately no autoplay and no server-side speech. German text uses the
 // self-hosted Piper voices (ops/vendor-tts-assets.sh) in a Web Worker; the
-// chosen model (Thorsten by default) is warmed in the background after page
-// load and cached (Cache Storage), so it downloads once. A tap before it is
-// ready shows a loading state on the button and then speaks with Piper. Only
-// if Piper fails or Workers/WebAudio are missing does a system voice speak,
+// chosen model (Thorsten medium by default) is warmed in the background after
+// page load and cached (Cache Storage), so it downloads once. Playback starts
+// at the first sentence while the next one is synthesized. A tap before the
+// voice is ready shows a loading state and then speaks with Piper. Only if
+// Piper fails or Workers/WebAudio are missing does a system voice speak,
 // preferring neural ones (Natural/Neural/Premium/Siri/Enhanced), never espeak.
 (() => {
   'use strict';
@@ -47,6 +48,34 @@
     }
     if (rest.trim()) out.push(rest.trim());
     return out.filter(Boolean);
+  }
+
+  // One sentence per Piper call, capped so a long sentence still starts soon.
+  // Abbreviations (z.B., Dr.) are not treated as sentence ends.
+  function piperParts(text, max = 120) {
+    const out = [];
+    let rest = String(text || '').trim();
+    const abbrev = /^(dr|nr|bzw|ca|ggf|usw|etc|prof|dipl|ing|str|tel|fax|abs|vgl)$/i;
+    while (rest) {
+      let cut = rest.length;
+      const re = /[.!?](?:\s+|$)/g;
+      let m;
+      while ((m = re.exec(rest))) {
+        const at = m.index + m[0].length;
+        const token = rest.slice(0, m.index).split(/\s/).pop() || '';
+        if (m[0][0] === '.' && (token.includes('.') || abbrev.test(token))) continue;
+        if (at >= 8) { cut = at; break; }
+      }
+      if (cut > max) {
+        const word = rest.lastIndexOf(' ', max);
+        cut = word >= Math.floor(max / 3) ? word + 1 : max;
+      }
+      const piece = rest.slice(0, cut).trim();
+      if (!piece) break;
+      out.push(piece);
+      rest = rest.slice(cut).trimStart();
+    }
+    return out;
   }
 
   // MAG is German-first: 'auto' reads with Thorsten (de-DE) regardless of the
@@ -157,6 +186,7 @@
     // Synthesis of the next part overlaps playback of the current one.
     let next = ask({type: 'speak', text: playback.parts[0], model: v.model});
     for (let i = 0; i < playback.parts.length; i++) {
+      playback.at = i;
       const res = await next;
       if (current !== playback) return;
       next = i + 1 < playback.parts.length ? ask({type: 'speak', text: playback.parts[i + 1], model: v.model}) : null;
@@ -202,12 +232,14 @@
     const wasPlaying = !!current && current.key === key;
     stop();
     if (wasPlaying) return false;
-    const parts = split(normalize(text));
+    const normalized = normalize(text);
+    const lang = chosenLocale(normalized);
+    const de = lang.startsWith('de') && piperPossible && voicePref() !== 'system';
+    const parts = de ? piperParts(normalized) : split(normalized);
     if (!parts.length) return false;
-    const playback = {key, parts, at: 0, lang: chosenLocale(parts.join(' '))};
+    const playback = {key, parts, at: 0, lang};
     current = playback;
     setButtons();
-    const de = playback.lang.startsWith('de') && piperPossible && voicePref() !== 'system';
     if (de) {
       // AudioContext must be created/resumed inside the tap (iOS).
       piper.ctx = piper.ctx || new AudioCtx();

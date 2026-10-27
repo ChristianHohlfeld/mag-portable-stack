@@ -10,6 +10,9 @@ location ~ "^/static/speech-[0-9a-f]{12}/[A-Za-z0-9_.-]+$" {
         application/octet-stream ort bin;
     }
     default_type application/octet-stream;
+    # Weights and WASM are already compressed; gzip would burn CPU per download.
+    gzip off;
+    sendfile on;
     add_header Cache-Control "public, max-age=31536000, immutable" always;
     add_header Cross-Origin-Resource-Policy "same-origin" always;
     # Module Workers inherit isolation only when their entry script has COEP.
@@ -36,6 +39,8 @@ location ~ "^/static/tts-[0-9a-f]{12}/[A-Za-z0-9_.-]+$" {
         application/octet-stream onnx data;
     }
     default_type application/octet-stream;
+    gzip off;
+    sendfile on;
     add_header Cache-Control "public, max-age=31536000, immutable" always;
     add_header Cross-Origin-Resource-Policy "same-origin" always;
     add_header Cross-Origin-Embedder-Policy "require-corp" always;

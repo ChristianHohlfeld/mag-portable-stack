@@ -84,7 +84,9 @@ class NginxAuth(unittest.TestCase):
         text=text.replace(
             "include /etc/nginx/snippets/mag-tailnet-ok.inc;",
             f"include {ROOT / 'ops/nginx/mag-tailnet-ok.inc'};")
-        assert 'location ~ "^/static/speech-[0-9a-f]{12}/' in SPEECH.read_text()
+        speech = SPEECH.read_text()
+        assert 'location ~ "^/static/speech-[0-9a-f]{12}/' in speech
+        assert speech.count('gzip off;') >= 2, 'Speech and TTS weights must not be gzipped'
         assert "auth_request off;" in text.split("location = /_mag_whois {",1)[1].split("}",1)[0], "Recursive auth_request risk"
         text=text.replace(
             "listen 127.0.0.1:4443 ssl http2 proxy_protocol;",

@@ -558,5 +558,41 @@ class RoomE2E(unittest.TestCase):
                 page.close()
 
 
+    def test_10_toasts_stay_above_the_composer(self):
+        # Phone portrait, phone landscape, and desktop. Bot info and the
+        # delete toast must sit above the composer, including its status line.
+        def overlaps(a, b):
+            return not (a['x'] + a['width'] <= b['x'] or b['x'] + b['width'] <= a['x']
+                        or a['y'] + a['height'] <= b['y'] or b['y'] + b['height'] <= a['y'])
+
+        for width, height, touch in ((390, 844, True), (844, 390, True), (1280, 800, False)):
+            page = self.browser.new_page(
+                viewport={'width': width, 'height': height},
+                is_mobile=touch, has_touch=touch)
+            try:
+                page.goto(f'http://127.0.0.1:{self.room.ui}/')
+                page.wait_for_selector('#send-button')
+                page.evaluate("""()=>{
+                  const banner=document.getElementById('model-banner');
+                  banner.hidden=false;
+                  banner.textContent='Modell beschäftigt';
+                  showUndo('Nachricht gelöscht','undo-1');
+                  notice('Bot info');
+                  placeToasts();
+                }""")
+                composer = page.locator('.composer-wrap').bounding_box()
+                self.assertIsNotNone(composer)
+                for sel in ('#undo-toast', '#notice'):
+                    box = page.locator(sel).bounding_box()
+                    self.assertIsNotNone(box, sel)
+                    self.assertFalse(overlaps(box, composer), f'{sel} covers the composer at {width}x{height}')
+                    self.assertLessEqual(box['y'] + box['height'], composer['y'] + 1, sel)
+                    self.assertLessEqual(box['height'], 36, sel)
+                self.assertIn('Nachricht gelöscht', page.locator('#undo-toast').inner_text())
+                self.assertEqual(page.locator('#notice').inner_text(), 'Bot info')
+            finally:
+                page.close()
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)

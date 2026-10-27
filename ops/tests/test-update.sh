@@ -9,6 +9,13 @@ grep -Fq 'cmake --build' <<<"$out"
 grep -Fq 'ops/deploy.sh' <<<"$out"
 [[ $(grep -n 'PHASE build' <<<"$out" | cut -d: -f1) -lt $(grep -n 'PHASE deploy' <<<"$out" | cut -d: -f1) ]]
 ! grep -Eq 'mag-llm' "$root/ops/update.sh"
+! grep -Eq 'systemctl (restart|stop|reload).*mag-llm' "$root/ops/deploy.sh"
+forced=$(MAG_DEPLOY_FORCE=1 MAG_DEPLOY_DRAIN_S=5 MAG_ROOM_LAYOUT=mixed bash "$root/ops/update.sh" --dry-run)
+grep -Fq 'sudo env' <<<"$forced"
+grep -Fq 'MAG_DEPLOY_FORCE=1' <<<"$forced"
+grep -Fq 'MAG_DEPLOY_DRAIN_S=5' <<<"$forced"
+grep -Fq 'MAG_ROOM_LAYOUT=mixed' <<<"$forced"
+! grep -Fq 'MAG_DEPLOY_FORCE' <<<"$out"
 bash -n "$root"/ops/auto-update/*.sh
 grep -Fq 'auto-update/install.sh' <<<"$out"
 grep -Fq -- '--ff-only' "$root/ops/auto-update/auto-update.sh"
@@ -19,7 +26,7 @@ grep -Fq 'OnUnitInactiveSec' "$root/ops/auto-update/mag-auto-update.timer"
 # user-owned checkout must allow it explicitly.
 ! grep -E '(^|[^-])\bgit -C' "$root/ops/deploy.sh" | grep -vF 'safe.directory=' | grep -q .
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
-git init -q "$tmp/repo" && git -C "$tmp/repo" -c user.email=t@t -c user.name=t commit -q --allow-empty -m t
+git init -q "$tmp/repo" && git -C "$tmp/repo" -c user.email=t@t -c user.name=t -c commit.gpgsign=false commit -q --allow-empty -m t
 line=$(grep -E '\bgit .*rev-parse HEAD' "$root/ops/deploy.sh")
 [[ $(env -u SUDO_UID GIT_TEST_ASSUME_DIFFERENT_OWNER=1 SOURCE="$tmp/repo" bash -c "${line%%>*}") =~ ^[0-9a-f]{40}$ ]]
 # Post-restart local health checks wait for the listener (Type=simple units
@@ -42,4 +49,28 @@ fn=$(sed -n '/^wait_http() {/,/^}/p' "$root/ops/deploy.sh")
 [[ $(PATH="$tmp/bin:$PATH" bash -euc "$fn"$'\nwait_http http://x/health') == ok ]]
 echo 0 > "$tmp/n"; printf '#!/bin/sh\nexit 7\n' > "$tmp/bin/curl"
 ! PATH="$tmp/bin:$PATH" bash -euc "$fn"$'\nwait_http http://x/health'
+# Stuck busy (no token/text progress) continues; a moving reply still defers.
+drain=$(sed -n '/^drain_room() {/,/^}/p' "$root/ops/deploy.sh")
+printf '#!/bin/sh\nprintf %%s '"'"'{"busy":true,"queue":0,"activities":[{"processed":0,"total":0,"phase":"think","steps":[]}],"room":[{"role":"assistant","content":""}]}'"'"'\n' > "$tmp/bin/curl"
+printf '#!/bin/sh\n' > "$tmp/bin/sleep"
+chmod +x "$tmp/bin/curl" "$tmp/bin/sleep"
+stale_rc=0
+PATH="$tmp/bin:$PATH" MAG_DEPLOY_STALE_S=5 MAG_DEPLOY_DRAIN_S=900 RELEASE_ID=t \
+  bash -euc "$drain"$'\ndrain_room' || stale_rc=$?
+[[ $stale_rc == 0 ]]
+cat > "$tmp/bin/curl" <<EOF
+#!/bin/sh
+n=\$(cat "$tmp/p" 2>/dev/null || echo 0)
+n=\$((n+1))
+printf '%s\n' "\$n" > "$tmp/p"
+N=\$n python3 -c 'import json,os; n=int(os.environ["N"]); print(json.dumps({"busy":True,"queue":0,"activities":[{"processed":n,"total":9,"phase":"prompt","steps":[]}],"room":[{"role":"assistant","content":"x"*n}]}))'
+EOF
+defer_rc=0
+PATH="$tmp/bin:$PATH" MAG_DEPLOY_STALE_S=60 MAG_DEPLOY_DRAIN_S=10 RELEASE_ID=t \
+  bash -euc "$drain"$'\ndrain_room' || defer_rc=$?
+[[ $defer_rc == 75 ]]
+force_rc=0
+PATH="$tmp/bin:$PATH" MAG_DEPLOY_STALE_S=60 MAG_DEPLOY_DRAIN_S=10 MAG_DEPLOY_FORCE=1 RELEASE_ID=t \
+  bash -euc "$drain"$'\ndrain_room' || force_rc=$?
+[[ $force_rc == 0 ]]
 echo 'Update dry-run PASS'

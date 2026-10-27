@@ -1520,8 +1520,9 @@ class Native(unittest.TestCase):
   # invitation to retry WebRTC against a vanished VM forever.
   self.assertIn('err.permanent=r.status===404||r.status===400',html)
   self.assertIn('if(!e.permanent)scheduleReconnect()',html)
-  self.assertIn('a.id===old&&a.vm',html)
-  self.assertIn('a.id===remoteBotId&&a.vm',html)
+  self.assertIn('state.agents.some(a=>a.id===old)',html)
+  self.assertIn('state.agents.some(a=>a.id===remoteBotId)',html)
+  self.assertIn('nv&&liveVmReady&&',html,'do not connect WebRTC until VM exists')
  def test_12_malformed_http_rejected(self):
   for headers in ['Content-Length: -1\r\n','Content-Length: 2\r\nContent-Length: 3\r\n','Transfer-Encoding: chunked\r\n']:
    with socket.create_connection(('127.0.0.1',self.ui),timeout=3) as s:

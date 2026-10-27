@@ -1,5 +1,5 @@
 [Unit]
-Description=Renew public MAG Git TLS with lego/Let's Encrypt
+Description=Retired public Git lego renewal; Funnel owns this certificate
 After=network-online.target
 [Service]
 Type=oneshot

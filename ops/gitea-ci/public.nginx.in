@@ -1,27 +1,32 @@
-# Public Git only. The MAG room keeps its separate Tailnet listener/auth.
+# Public Gitea only. Tailscale Funnel terminates TLS on :443 and proxies to
+# this loopback listener. The room stays on its tailnet-only :8446 serve.
+# limit_req is per Funnel client: tailscaled connects from 127.0.0.1 and
+# appends the address it observed. A host firewall ban cannot see that client.
 map $http_upgrade $mag_git_upgrade { default upgrade; '' close; }
-limit_req_zone $binary_remote_addr zone=mag_git_login:10m rate=5r/m;
-server {
-    listen 80;
-    server_name git.mag.stardenburg.de;
-    location ^~ /.well-known/acme-challenge/ { root /var/lib/mag-ci/acme; }
-    location / { return 308 https://git.mag.stardenburg.de$request_uri; }
+map $http_x_forwarded_for $mag_git_xff {
+    default "";
+    "~(?<ip>[0-9A-Fa-f:.]+)[[:space:]]*$" $ip;
 }
+map "$remote_addr|$mag_git_xff" $mag_git_client {
+    default $remote_addr;
+    "~^127\.0\.0\.1\|(?<ip>[0-9A-Fa-f:.]+)$" $ip;
+}
+limit_req_zone $mag_git_client zone=mag_git_login:10m rate=5r/m;
+limit_req_zone $mag_git_client zone=mag_git_api:10m rate=10r/s;
 server {
-    listen 443 ssl;
-    server_name git.mag.stardenburg.de;
-    if ($host != git.mag.stardenburg.de) { return 421; }
-    ssl_certificate /etc/mag-ci/tls/current/cert.pem;
-    ssl_certificate_key /etc/mag-ci/tls/current/key.pem;
-    ssl_protocols TLSv1.2 TLSv1.3;
+    listen 127.0.0.1:3010;
+    server_name mag.tail3e02ae.ts.net;
+    if ($host != mag.tail3e02ae.ts.net) { return 421; }
     client_max_body_size 128m;
     add_header X-Content-Type-Options nosniff always;
     add_header Strict-Transport-Security 'max-age=31536000' always;
     # GitHub hook delivery is authenticated by the native bridge (HMAC-SHA256).
     location = /mag-ci/github {
         client_max_body_size 2m;
+        limit_req zone=mag_git_api burst=20 nodelay;
         proxy_pass http://127.0.0.1:3011/github;
-        proxy_set_header Host git.mag.stardenburg.de;
+        proxy_set_header Host mag.tail3e02ae.ts.net;
+        proxy_set_header X-Forwarded-Proto https;
         proxy_set_header X-Forwarded-For "";
         proxy_connect_timeout 2s;
         proxy_read_timeout 10s;
@@ -31,5 +36,12 @@ server {
         limit_req zone=mag_git_login burst=5 nodelay;
         include /etc/mag-ci/gitea-proxy.inc;
     }
-    location / { include /etc/mag-ci/gitea-proxy.inc; }
+    location ^~ /user/two_factor {
+        limit_req zone=mag_git_login burst=5 nodelay;
+        include /etc/mag-ci/gitea-proxy.inc;
+    }
+    location / {
+        limit_req zone=mag_git_api burst=40 nodelay;
+        include /etc/mag-ci/gitea-proxy.inc;
+    }
 }

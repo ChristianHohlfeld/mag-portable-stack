@@ -1,0 +1,49 @@
+{
+  "AllowFunnel": {
+    "mag.tail3e02ae.ts.net:443": true
+  },
+  "TCP": {
+    "443": {
+      "HTTPS": true
+    },
+    "8443": {
+      "HTTPS": true
+    },
+    "8445": {
+      "HTTPS": true
+    },
+    "8446": {
+      "HTTPS": true
+    }
+  },
+  "Web": {
+    "mag.tail3e02ae.ts.net:443": {
+      "Handlers": {
+        "/": {
+          "Proxy": "http://127.0.0.1:3010"
+        }
+      }
+    },
+    "mag.tail3e02ae.ts.net:8443": {
+      "Handlers": {
+        "/": {
+          "Proxy": "http://127.0.0.1:18767"
+        }
+      }
+    },
+    "mag.tail3e02ae.ts.net:8445": {
+      "Handlers": {
+        "/": {
+          "Proxy": "http://127.0.0.1:3000"
+        }
+      }
+    },
+    "mag.tail3e02ae.ts.net:8446": {
+      "Handlers": {
+        "/": {
+          "Proxy": "http://127.0.0.1:8766"
+        }
+      }
+    }
+  }
+}

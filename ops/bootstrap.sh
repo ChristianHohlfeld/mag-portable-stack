@@ -243,6 +243,7 @@ run bash "$ROOT/ops/private-access/install-lego.sh"
 
 phase gitea
 run bash "$ROOT/ops/gitea/install.sh"
+run bash "$ROOT/ops/tailscale/apply-gitea-funnel.sh"
 
 phase gitea-mirror
 if (( DRY )); then

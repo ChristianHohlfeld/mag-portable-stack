@@ -4,29 +4,35 @@ Scope is **only `ChristianHohlfeld/mag-portable-stack`**. GitHub remains the
 review/source authority. Other repositories, their workflows and the $75 budget
 are unchanged. This change does not stop/restart either resident LLM.
 
-## Public endpoint, DNS and credentials
+## Public endpoint
 
-Public URL: **https://git.mag.stardenburg.de/** (HTTPS Git and Gitea login).
-The room stays at the existing Tailnet-only `mag.stardenburg.de` listener.
-The parent name currently resolves to `100.123.114.16`; a CNAME to that parent
-would **not** make Git public.
+Public URL: **https://mag.tail3e02ae.ts.net/** (HTTPS Git and Gitea login).
+Tailscale Funnel serves that name on port **443** and proxies to nginx on
+`127.0.0.1:3010`, which proxies to Gitea on `127.0.0.1:3000`. Funnel presents
+the `*.ts.net` certificate, so Gitea does not use lego, a public A record, or
+a forwarded router port. There is no Caddy dependency. nginx stays.
 
-DomainFactory record: **`git.mag.stardenburg.de. 300 IN A <MAG_PUBLIC_IPV4>`**.
-`MAG_PUBLIC_IPV4` must be the externally reachable IPv4 of the MAG host/router,
-not `100.123.114.16` or another private address. No AAAA record until the IPv6
-listener/firewall is explicitly configured. If MAG is behind NAT, TCP 80/443
-must reach its nginx. The current repository does not establish that public
-address or router forwarding, so no numerical IP is invented here. The installer
-prints the exact evaluated A record from the non-secret config and refuses a
-DNS mismatch. It never changes the room's existing DNS record.
+The existing tailnet-only serves stay as they are and are not funneled:
 
-Copy `public.env.example` to `/etc/mag-ci/public.env`, root-owned (0600 or 0640),
-with that IPv4 and the ACME email. TLS uses the already pinned lego v5 installer,
-Let's Encrypt HTTP-01, nginx's challenge directory and an automatic renewal
-timer. No DomainFactory API credential is needed. There is no Caddy dependency.
-HTTP serves only the challenge and a fixed-host HTTPS redirect; unknown HTTPS
-hosts are rejected. Registration is off, sign-in is required and **two-factor
-authentication is enforced for every human account** by Gitea itself.
+| Serve | Target | Exposure |
+| --- | --- | --- |
+| `:443` | `http://127.0.0.1:3010` | public Funnel (Gitea nginx) |
+| `:8443` | `http://127.0.0.1:18767` | tailnet only |
+| `:8445` | `http://127.0.0.1:3000` | tailnet only (Gitea direct) |
+| `:8446` | `http://127.0.0.1:8766` | tailnet only (room) |
+
+Port 443 is the Funnel listener because it is the default HTTPS port GitHub
+can call for webhooks and status links. `:8443` is already a private serve.
+The room is not on the public listener. `ROOT_URL` is
+`https://mag.tail3e02ae.ts.net/`.
+
+Registration is off, sign-in is required and **two-factor authentication is
+enforced for every human account** by Gitea itself. nginx limits login and
+two-factor attempts per Funnel client address (5/minute) and the rest of the
+site more loosely, so git clones still work. A host fail2ban jail cannot see
+Funnel clients: their TCP connection arrives through tailscaled. The webhook
+keeps its installer-generated HMAC-SHA256 secret; the bridge rejects a bad
+signature. Unknown Host values are rejected.
 
 The existing root `/etc/credstore` + systemd `LoadCredential` mechanism is used:
 
@@ -141,19 +147,22 @@ this is a live rollout prerequisite, not an excuse to mark a skipped check green
 
 ## Installation and live acceptance (Ali)
 
-After merge, provision the scoped credential/non-secret config and DNS above,
-then run the normal **`bash ops/update.sh`**. The shared runners installer selects
-this migration when `public.env` exists, and bootstrap/auto-update use the same
-path. The first isolated base image builds asynchronously and only while the
-models are idle. A failed public Gitea/nginx cutover restores the previous
-app.ini/nginx site; bot account/repository identities are retained.
+After merge, place the scoped GitHub credential in the credstore, then run the
+normal **`bash ops/update.sh`**. Bootstrap and deploy apply the Funnel config.
+The shared runners installer selects this migration when that credential or the
+`gitea-ci.enabled` marker exists. The first isolated base image builds
+asynchronously and only while the models are idle. A failed public Gitea/nginx
+cutover restores the previous app.ini/nginx site; bot account/repository
+identities are retained.
 
 Acceptance is deliberately **live** after deployment:
 
-1. Public external HTTPS `/user/login` has a valid LE chain; no registration;
-   Chris completes a real sign-in with the required second factor. Anonymous
-   repository/API access stays denied. Verify existing bot read/push/API access
-   in an explicitly disposable repo/account, not by altering a user's VM.
+1. Public `https://mag.tail3e02ae.ts.net/user/login` has a valid Funnel chain;
+   no registration; Chris completes a real sign-in with the required second
+   factor. Anonymous repository/API access stays denied. The room URL on
+   `:8446` does not answer on the public name. Verify existing bot
+   read/push/API access in an explicitly disposable repo/account, not by
+   altering a user's VM.
 2. Open/update a GitHub PR. All ten contexts for its exact **head SHA** link to
    the matching Gitea run and pass. A deliberately failing disposable PR stays
    red; skipped suites, wrong SHA and an older main never promote green.

@@ -1,5 +1,5 @@
 [Unit]
-Description=Public MAG Git certificate renewal
+Description=Retired public Git certificate renewal (Funnel owns TLS)
 [Timer]
 OnCalendar=*-*-* 04:23:00
 RandomizedDelaySec=2h

@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
 # Transactional public Gitea cutover + isolated CI bootstrap, called by update.
-# Missing external DNS/credentials fails closed and never advertises CI success.
+# Missing the scoped GitHub credential fails closed and never advertises CI success.
+# Public HTTPS is Tailscale Funnel. There is no public DNS or port forward.
 set +x
 set -euo pipefail
 [[ $EUID == 0 ]] || { echo 'root required' >&2;exit 1; }
 root=$(cd -- "$(dirname -- "$0")/../.." && pwd)
 if [[ ${1:-} == --dry-run ]]; then
- echo '+ Gitea public HTTPS/mandatory human 2FA; preserve VM Git accounts'
+ echo '+ Gitea on Tailscale Funnel :443; mandatory human 2FA; preserve VM Git accounts'
  echo '+ one-repo mirror/status bridge, ephemeral isolated runner, idle guard'
- echo '+ requires /etc/mag-ci/public.env and /etc/credstore/mag-ci-github.token'
+ echo '+ requires /etc/credstore/mag-ci-github.token'
  exit 0
 fi
 exec 9>/run/lock/mag-gitea-ci-install.lock;flock -n 9 || exit 0
@@ -16,17 +17,12 @@ install -d -m 0700 /etc/credstore /etc/mag-ci /etc/mag-ci/tls
 install -d -m 0755 /usr/local/lib/mag-ci
 install -m 0644 "$root"/ops/gitea-ci/*.{json,hpp,yaml,service,socket,slice,path,timer,inc,in} /usr/local/lib/mag-ci/
 install -m 0755 "$root"/ops/gitea-ci/*.sh /usr/local/lib/mag-ci/
+rm -f /usr/local/lib/mag-ci/http.nginx.in
 install -m 0644 "$root/ops/gitea-ci/token-permissions.sql" /usr/local/lib/mag-ci/
 install -m 0755 "$root/ops/gitea-ci/bot-auth.sh" /usr/local/sbin/mag-gitea-bot-auth
 install -m 0755 "$root/ops/gitea/bot-rights.sh" /usr/local/sbin/mag-gitea-bot-rights
 # No automatic credential collection, account scraping, or broader GitHub PAT.
-[[ -s /etc/mag-ci/public.env ]] || { echo 'Public Git setup pending: /etc/mag-ci/public.env missing' >&2;exit 42; }
-. /etc/mag-ci/public.env
-: "${MAG_GIT_ACME_EMAIL:?ACME contact required}"
-: "${MAG_GIT_PUBLIC_IPV4:?public IPv4 required for the explicit DNS record}"
-[[ $MAG_GIT_PUBLIC_IPV4 =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || exit 1
-resolved=$(dig +short A git.mag.stardenburg.de | sort -u)
-[[ $resolved == "$MAG_GIT_PUBLIC_IPV4" ]] || { printf 'DNS required: git.mag.stardenburg.de. A %s (no AAAA until IPv6 ingress is configured)\n' "$MAG_GIT_PUBLIC_IPV4" >&2;exit 42; }
+# Public reachability is Tailscale Funnel. No public DNS, port forward, or lego.
 for s in mag-ci-github.token; do
  [[ -s /etc/credstore/$s && ! -L /etc/credstore/$s && $(stat -c '%u:%a' /etc/credstore/$s) =~ ^0:(400|600)$ ]] || { echo "Credential pending: /etc/credstore/$s (root 0600)" >&2;exit 42; }
 done
@@ -34,7 +30,6 @@ apt-get update
 apt-get install -y qemu-system-x86 qemu-utils cloud-image-utils libguestfs-tools ubuntu-cloudimage-keyring \
   nginx jq curl xz-utils nftables iproute2 dnsutils openssl cmake ninja-build libssl-dev libcurl4-openssl-dev libicu-dev
 bash "$root/ops/gitea/install.sh"
-bash "$root/ops/private-access/install-lego.sh"
 bash "$root/ops/gitea-ci/fetch-runner.sh"
 # Install supporting helpers before the VM credential upgrade.
 for u in mag-ci-control mag-ci-vm; do
@@ -88,25 +83,24 @@ if [[ $permissions_changed == 1 ]] || ! cmp -s /etc/gitea/app.ini /var/lib/mag-c
 fi
 for n in $(seq 1 60);do curl -fsS --max-time 1 http://127.0.0.1:3000/api/healthz >/dev/null && break;sleep 1;done
 curl -fsS --max-time 2 http://127.0.0.1:3000/api/healthz >/dev/null
-install -m 0644 "$root/ops/gitea-ci/gitea-proxy.inc" /etc/mag-ci/gitea-proxy.inc
-if [[ ! -s /etc/mag-ci/tls/current/cert.pem ]]; then
- install -m 0644 "$root/ops/gitea-ci/http.nginx.in" "$site";nginx -t;systemctl reload nginx.service
- bash /usr/local/lib/mag-ci/certificate.sh
-fi
-install -m 0644 "$root/ops/gitea-ci/public.nginx.in" "$site"
-nginx -t;systemctl reload nginx.service
-curl -fsS --resolve git.mag.stardenburg.de:443:127.0.0.1 https://git.mag.stardenburg.de/user/login >/dev/null
+bash "$root/ops/tailscale/apply-gitea-funnel.sh"
+for n in $(seq 1 60);do curl -fsS --max-time 1 http://127.0.0.1:3000/api/healthz >/dev/null && break;sleep 1;done
+curl -fsS --max-time 2 http://127.0.0.1:3000/api/healthz >/dev/null
+curl -fsS --max-time 5 -H 'Host: mag.tail3e02ae.ts.net' http://127.0.0.1:3010/user/login >/dev/null
 bash /usr/local/lib/mag-ci/install-control.sh "$root"
 bash /usr/local/lib/mag-ci/setup-webhook.sh
 for unit in "$root"/ops/gitea-ci/*.{service,socket,slice,path,timer};do
- [[ $(basename "$unit") == mag-ci-guest-runner.service ]] || install -m 0644 "$unit" /etc/systemd/system/
+ base=$(basename "$unit")
+ [[ $base == mag-ci-guest-runner.service || $base == mag-ci-cert.service || $base == mag-ci-cert.timer ]] && continue
+ install -m 0644 "$unit" /etc/systemd/system/
 done
 # Disable the old host-execution paths. Never grant a job mag-deploy membership
 # or a way to trigger root auto-update. The normal green timer remains intact.
 systemctl disable --now mag-gitea-runner.service mag-github-runner.service mag-deploy-request.path 2>/dev/null || true
 touch /etc/mag-stack/runners.disabled
 systemctl daemon-reload
-systemctl enable --now mag-ci-network.service mag-ci-git.socket mag-ci-cert.timer
+systemctl disable --now mag-ci-cert.timer mag-ci-cert.service >/dev/null 2>&1 || true
+systemctl enable --now mag-ci-network.service mag-ci-git.socket
 systemctl start mag-ci-workload.slice
 systemctl enable --now mag-ci-guard.service mag-ci-launch.path mag-ci-bridge.service
 if (( bridge_changed ));then systemctl try-restart mag-ci-bridge.service;fi

@@ -1,4 +1,5 @@
-# Local Gitea for MAG. HTTP stays on loopback; Tailscale Serve publishes :8445.
+# Local Gitea for MAG. HTTP stays on loopback. Tailscale Serve publishes
+# tailnet-only :8445. Tailscale Funnel publishes :443 via the nginx listener.
 [Unit]
 Description=Gitea
 After=network.target

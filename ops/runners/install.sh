@@ -16,8 +16,9 @@ here="$(cd -- "$(dirname "$0")" && pwd)"
 # shellcheck source=gitea-local.sh
 source "$here/gitea-local.sh"
 log() { echo "runners: $*"; }
-# New single-repository CI replaces host-execution runners.
-if [[ -e /etc/mag-ci/public.env ]]; then
+# New single-repository CI replaces host-execution runners once the scoped
+# GitHub credential is present. Funnel itself is applied by deploy/bootstrap.
+if [[ -s /etc/credstore/mag-ci-github.token || -e /etc/mag-stack/gitea-ci.enabled ]]; then
   exec bash "$here/../gitea-ci/install.sh"
 fi
 [[ ! -e /etc/mag-stack/runners.disabled ]] || { log 'disabled'; exit 0; }

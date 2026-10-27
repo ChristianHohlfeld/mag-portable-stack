@@ -463,6 +463,9 @@ bash "$SOURCE/ops/bots/install.sh" || echo 'WARN: bot site install incomplete (d
 [[ -r /etc/mag-stack/room-model.env ]] || bash "$SOURCE/ops/models/retire-deepseek.sh" || echo 'WARN: DeepSeek retirement incomplete (deploy itself succeeded)' >&2
 # Persist the active model units and bot VM autostart for cold reboot.
 bash "$SOURCE/ops/boot/ensure-boot.sh" || echo 'WARN: boot persistence needs operator attention' >&2
+# Public Gitea on Funnel :443. The room and the other tailnet serves stay private.
+# Failure here does not roll the room back; the release is already committed.
+bash "$SOURCE/ops/tailscale/apply-gitea-funnel.sh"
 # Model files, including DeepSeek V4.1, are preserved. Only Chris deletes weights.
 # Deploy never restarts a loaded model (DeepSeek retirement above is the only stop). Model placement
 # is a separate, measured, operator-controlled change, never a deploy hook.

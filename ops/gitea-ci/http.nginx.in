@@ -1,7 +1,0 @@
-# First issuance: HTTP challenge only, no unencrypted Git/password endpoints.
-server {
-    listen 80;
-    server_name git.mag.stardenburg.de;
-    location ^~ /.well-known/acme-challenge/ { root /var/lib/mag-ci/acme; }
-    location / { return 503; }
-}

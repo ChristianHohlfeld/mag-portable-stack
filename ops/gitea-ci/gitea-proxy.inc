@@ -1,6 +1,6 @@
 proxy_pass http://127.0.0.1:3000;
 proxy_http_version 1.1;
-proxy_set_header Host git.mag.stardenburg.de;
+proxy_set_header Host mag.tail3e02ae.ts.net;
 proxy_set_header X-Forwarded-Proto https;
 proxy_set_header X-Real-IP $remote_addr;
 proxy_set_header X-Forwarded-For $remote_addr;

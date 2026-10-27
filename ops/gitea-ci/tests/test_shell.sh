@@ -14,7 +14,7 @@ for unit in ops/gitea-ci/mag-ci-{vm,image}.service;do
 done
 ! grep -Eq 'virtiofs|virtfs|9p|hostfwd|/var/lib/magbot|/dev/sd[a-z]' ops/gitea-ci/run-vm.sh
 ! grep -F 'LoadCredential=' ops/gitea-ci/mag-ci-vm.service ops/gitea-ci/mag-ci-guest-runner.service
-! grep -E '(stop|restart|reload)[[:space:]]+(mag-llm|mag-120)' ops/gitea-ci/*.sh ops/gitea-ci/*.cpp
+! grep -E '(stop|restart|reload)[[:space:]]+(mag-llm|mag-120)' ops/gitea-ci/*.sh ops/gitea-ci/*.cpp ops/tailscale/apply-gitea-funnel.sh
 ! grep -Eq 'sudoers|mag-deploy' ops/gitea-ci/guest-runner.yaml ops/gitea-ci/mag-ci-guest-runner.service
 grep -Fq -- '--ephemeral' ops/gitea-ci/start-worker.sh
 grep -Fq -- '--token-file' ops/gitea-ci/start-worker.sh
@@ -44,11 +44,13 @@ ROOT = /srv/repos-kept
 INI
 # Same editor, isolated paths. No production switch in the test.
 sed -e "s|file=/etc/gitea/app.ini|file=$tmp/app.ini|" \
- -e "s|mktemp /etc/gitea/.public.|mktemp $tmp/.public.|" ops/gitea-ci/configure-gitea.sh > "$tmp/configure.sh"
+ -e "s|mktemp /etc/gitea/.public.|mktemp $tmp/.public.|" \
+ -e '/EUID/d' ops/gitea-ci/configure-gitea.sh > "$tmp/configure.sh"
 PATH="$tmp/bin:$PATH" bash "$tmp/configure.sh"
 cp "$tmp/app.ini" "$tmp/first.ini"
 PATH="$tmp/bin:$PATH" bash "$tmp/configure.sh"
 cmp "$tmp/first.ini" "$tmp/app.ini"
-for line in 'TWO_FACTOR_AUTH = enforced' 'DISABLE_REGISTRATION = true' 'ROOT = /srv/repos-kept' 'SSH_PORT = 2222' 'SECRET_KEY = fixture-private-key-do-not-print';do grep -Fq "$line" "$tmp/app.ini";done
+for line in 'TWO_FACTOR_AUTH = enforced' 'DISABLE_REGISTRATION = true' 'ROOT_URL = https://mag.tail3e02ae.ts.net/' 'DOMAIN = mag.tail3e02ae.ts.net' 'ROOT = /srv/repos-kept' 'SSH_PORT = 2222' 'SECRET_KEY = fixture-private-key-do-not-print';do grep -Fq "$line" "$tmp/app.ini";done
 [[ $(grep -c '^\[security\]' "$tmp/app.ini") == 1 ]]
+python3 ops/tailscale/tests/test-gitea-funnel.py
 echo 'Gitea CI shell/config/isolation contracts PASS'

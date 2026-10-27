@@ -51,6 +51,7 @@ grep -Fq 'ops/room/install.sh' "$root/ops/bootstrap.sh"
 grep -Fq 'deepseek/model-manifest.sh' "$root/ops/backup/bootstrap-models.sh"
 grep -Fq 'mag-llm-ds-node@' "$root/ops/bootstrap.sh"
 grep -Fq 'install-tailscale-egress.sh' "$root/ops/bootstrap.sh"
+grep -Fq 'ops/tailscale/apply-gitea-funnel.sh' <<<"$out"
 if grep -Eq 'bash .*console-lockdown' "$root/ops/bootstrap.sh"; then echo 'bootstrap runs console lockdown' >&2; exit 1; fi
 for f in "$root/ops/bootstrap.sh" "$root/ops/deepseek/bootstrap-runtimes.sh" "$root/ops/vm/build-golden.sh"; do
   if grep -Eq 'systemctl (restart|stop|kill|try-restart|reload-or-restart) (mag-llm|"?\$secondary)' "$f"; then

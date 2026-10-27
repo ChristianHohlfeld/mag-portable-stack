@@ -17,8 +17,8 @@ setini() {
  ' "$file" > "$tmp"
  chown root:git "$tmp";chmod 640 "$tmp";mv -f "$tmp" "$file"
 }
-setini server ROOT_URL https://git.mag.stardenburg.de/
-setini server DOMAIN git.mag.stardenburg.de
+setini server ROOT_URL https://mag.tail3e02ae.ts.net/
+setini server DOMAIN mag.tail3e02ae.ts.net
 setini server HTTP_ADDR 127.0.0.1
 setini server LOCAL_ROOT_URL http://127.0.0.1:3000/
 setini security TWO_FACTOR_AUTH enforced

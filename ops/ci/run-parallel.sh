@@ -3,8 +3,15 @@
 # stdin lines: [@SECONDS] name :: command
 #   --jobs N     concurrent commands (default: nproc)
 #   --timeout S  default per-command timeout in seconds (default: 240)
-# Exit 0 only when every command exits 0. A timeout exits 124.
+# Exit 0 only when every command exits 0. A timeout exits non-zero.
+# Each command runs in its own session. This process stays in the caller's
+# process group and kills every descendant session on exit, timeout, or abort.
 set -uo pipefail
+ROOT=$(cd -- "$(dirname -- "$(readlink -f "$0")")/../.." && pwd)
+# shellcheck disable=SC1091 # reap.sh is passed to shellcheck on its own in native-fast.list
+source "$ROOT/ops/ci/reap.sh"
+mag_ci_arm "$ROOT/ops/ci/ci_reap.py" "$@"
+REAP=$ROOT/ops/ci/ci_reap.py
 jobs=$(nproc 2>/dev/null || echo 1)
 timeout_s=240
 while [[ $# -gt 0 ]]; do
@@ -22,11 +29,32 @@ start_wall=$(date +%s.%N)
 running=0
 fail=0
 n=0
+declare -a pids=()
 reap() {
-  local st=0
+  local st=0 found=0 i pid
   wait -n || st=$?
-  running=$((running - 1))
-  if [[ $st -ne 0 ]]; then fail=1; fi
+  if [[ $st -eq 127 ]]; then
+    running=0
+    pids=()
+    return 0
+  fi
+  for i in "${!pids[@]}"; do
+    pid=${pids[$i]}
+    if ! kill -0 "$pid" 2>/dev/null; then
+      unset 'pids[i]'
+      found=1
+      break
+    fi
+  done
+  if [[ $found -eq 1 ]]; then
+    running=$((running - 1))
+    [[ $st -eq 0 ]] || fail=1
+  fi
+  if ((${#pids[@]})); then
+    python3 "$REAP" --kill "$$" "${pids[@]}" || true
+  else
+    python3 "$REAP" --kill "$$" || true
+  fi
 }
 while IFS= read -r line || [[ -n $line ]]; do
   [[ -z ${line//[[:space:]]/} ]] && continue
@@ -47,7 +75,7 @@ while IFS= read -r line || [[ -n $line ]]; do
   out="$logdir/${n}-${safe}.log"
   (
     start=$(date +%s.%N)
-    timeout --kill-after=5s "${limit}s" bash -c "$cmd" >"$out" 2>&1
+    timeout --kill-after=5s "${limit}s" python3 "$REAP" --supervise -- bash -c "$cmd" >"$out" 2>&1
     st=$?
     end=$(date +%s.%N)
     dur=$(awk -v s="$start" -v e="$end" 'BEGIN{printf "%.2f", e-s}')
@@ -59,6 +87,7 @@ while IFS= read -r line || [[ -n $line ]]; do
     fi
     exit "$st"
   ) &
+  pids+=("$!")
   running=$((running + 1))
 done
 while [[ $running -gt 0 ]]; do reap; done

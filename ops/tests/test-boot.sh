@@ -36,10 +36,11 @@ echo "ipmitool $*" >> "$CALLS"
 I
 chmod +x "$tmp/bin/"*
 # Host-independent: never read the host's secondary-model.env, agents.json or /dev/ipmi*.
-run() { # $1 = secondary-model.env path, $2 = space-separated ipmi devices
+run() { # $1 = secondary-model.env path, $2 = ipmi devices, $3 = room-model.env (missing if omitted)
+  local room=${3:-$tmp/no-room-model.env}
   : > "$log"
   CALLS="$log" ACTIVE="mag-llm.service mag-llm-iq3.service mag-auto-update.timer mag-120.service $ORNITH" \
-    MAG_SECONDARY_MODEL_ENV="$1" MAG_AGENTS_JSON="$tmp/none.json" MAG_IPMI_DEVICES="$2" \
+    MAG_SECONDARY_MODEL_ENV="$1" MAG_ROOM_MODEL_ENV="$room" MAG_AGENTS_JSON="$tmp/none.json" MAG_IPMI_DEVICES="$2" \
     PATH="$tmp/bin:$PATH" bash <(sed 's/^\[\[ \$EUID == 0 \]\].*$//' "$root/ops/boot/ensure-boot.sh")
 }
 common() {
@@ -74,6 +75,16 @@ out=$(ORNITH="mag-llm-ornith-node@0.service mag-llm-ornith-node@1.service" run "
 grep -Fxq 'systemctl enable mag-llm-ornith-node@0.service' "$log"
 grep -Fxq 'systemctl enable mag-llm-ornith-node@1.service' "$log"
 if grep -Eq 'systemctl enable mag-llm-ornith@' "$log"; then exit 1; fi
+common
+
+# 4) A room-model.env is the active model, even when secondary-model.env says
+#    Ornith and even when the host file /etc/mag-stack/room-model.env exists.
+printf 'MAG_ROOM_MODEL_ID_0=deepseek\n' > "$tmp/room.env"
+echo 'MAG_SECONDARY_MODEL=ornith' > "$tmp/ornith-too.env"
+out=$(ORNITH="mag-llm-ds-node@0.service mag-llm-ds-node@1.service" run "$tmp/ornith-too.env" "$tmp/ipmi0" "$tmp/room.env")
+grep -Fq 'systemctl disable mag-llm-ornith@1.service mag-llm-ornith@2.service mag-llm-ornith@3.service mag-llm-ornith@4.service mag-llm-ornith-node@0.service mag-llm-ornith-node@1.service' "$log"
+if grep -Eq 'systemctl enable mag-llm-ornith' "$log"; then exit 1; fi
+if grep -Fq 'Ornith host' <<<"$out"; then exit 1; fi
 common
 grep -Fq 'retire-deepseek.sh' "$root/ops/deploy.sh"
 grep -Fq 'ops/boot/ensure-boot.sh' "$root/ops/auto-update/apply.sh"

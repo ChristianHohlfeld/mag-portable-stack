@@ -29,6 +29,7 @@ SH_SECONDS = {
     'ops/pages/tests/test-pages-sandbox.sh': 600,
     'ops/tests/test-hang-deadlines.sh': 60,
     'ops/ci/tests/test-affected.sh': 60,
+    'ops/ci/tests/test-ci-reap.sh': 60,
 }
 JOB_MINUTES = {
     'native': 90,

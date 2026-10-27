@@ -5,11 +5,15 @@
 # temporary state dirs and random ports, and never starts/stops/reloads any
 # system service (mag-120, mag-llm, ornith, nginx). Checks that need root,
 # podman, a real nginx or the GitHub API print SKIP. Every check runs; the
-# script exits non-zero if any check failed.
+# script exits non-zero if any check failed. Every child is killed on exit,
+# timeout, and abort, including servers that called setsid.
 #   bash ops/ci/local-ci.sh [--jobs N] [--no-browser]
 set -uo pipefail
 ROOT=$(cd -- "$(dirname -- "$(readlink -f "$0")")/../.." && pwd)
 cd "$ROOT" || exit 2
+# shellcheck disable=SC1091 # reap.sh is passed to shellcheck on its own in native-fast.list
+source "$ROOT/ops/ci/reap.sh"
+mag_ci_arm "$ROOT/ops/ci/ci_reap.py" "$@"
 JOBS=4 BROWSER=1
 while (($#)); do
   case $1 in
@@ -18,14 +22,22 @@ while (($#)); do
     *) echo "usage: $0 [--jobs N] [--no-browser]" >&2; exit 64 ;;
   esac
 done
+# Test hook used by ops/ci/tests/test-ci-reap.sh. One command, then the exit
+# trap reaps anything it left in its own session.
+if [[ -n ${MAG_CI_REAP_PROBE:-} ]]; then
+  bash -c "$MAG_CI_REAP_PROBE" || exit $?
+  exit 0
+fi
 LOG=$(mktemp -d /tmp/mag-local-ci.XXXXXX)
 declare -a RESULTS=()
 FAIL=0
 check() { # check <name> <command...>
   local name=$1; shift
-  local out="$LOG/$(tr -c 'a-zA-Z0-9' '_' <<<"$name").log"
+  local out
+  out="$LOG/$(tr -c 'a-zA-Z0-9' '_' <<<"$name").log"
   # Hard cap so a hung room, build or network check cannot run forever.
-  if timeout --foreground 1200 "$@" >"$out" 2>&1; then
+  # --foreground keeps #147's signal on this command; ci_reap kills its session.
+  if timeout --foreground 1200 python3 "$ROOT/ops/ci/ci_reap.py" --supervise -- "$@" >"$out" 2>&1; then
     RESULTS+=("PASS  $name")
     # a python unittest that only skipped is reported as SKIP
     if grep -Eq '^OK \(skipped=([0-9]+)\)$' "$out" && ! grep -Eq '\.\.\. ok$' "$out"; then
@@ -55,7 +67,8 @@ skip 'tailscale egress nft regression' 'needs root and modifies nft (github-host
 skip 'nginx -t of the private site' 'needs sudo nginx (github-hosted only)'
 parallel() {
   local timeout=$1 file=$2
-  local out="$LOG/parallel-$(basename "$file").log"
+  local out
+  out="$LOG/parallel-$(basename "$file").log"
   if bash ops/ci/run-parallel.sh --jobs "$JOBS" --timeout "$timeout" < "$file" >"$out" 2>&1; then
     RESULTS+=("PASS  parallel $(basename "$file")")
   else
@@ -81,6 +94,7 @@ if have gitleaks; then
 else
   # Fallback: tracked files must not contain private keys or token-shaped strings.
   # Prints file names only, never the matched text.
+  # shellcheck disable=SC2016 # inner bash -c: $names expand in that script, not here
   check 'no-secrets grep (gitleaks not installed)' bash -c '
     pat="-----BEGIN [A-Z ]*PRIVATE KEY-----|gh[pousr]_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{40,}|AKIA[0-9A-Z]{16}|xox[baprs]-[A-Za-z0-9-]{10,}|sk-[A-Za-z0-9]{40,}|tskey-[a-z]+-[A-Za-z0-9]{10,}"
     # Allowlist: redaction-test fixtures with dummy token shapes.
@@ -89,7 +103,7 @@ else
     [[ -z $hits ]] || { echo "possible secrets in:"; echo "$hits"; exit 1; }'
 fi
 if have go; then
-  check 'browser WebRTC gateway (go test/build)' bash -c 'cd mag-room/webrtc && go test -mod=mod -timeout 60s ./... && go build -mod=mod -o "$0/mag-browser-webrtc" .' "$LOG"
+  check 'browser WebRTC gateway (go test/build)' bash -c "cd mag-room/webrtc && go test -mod=mod -timeout 60s ./... && go build -mod=mod -o ${LOG}/mag-browser-webrtc ."
 else skip 'browser WebRTC gateway' 'go not installed'; fi
 if have node; then
   check 'message audio / Vorlesen (node)' node mag-room/tests/test_message_audio.cjs

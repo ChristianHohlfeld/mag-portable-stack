@@ -17,6 +17,7 @@ grep -Fq '/dev/nvidiactl' "$root/ops/boot/clear-failed-units.sh"
 grep -Fq 'ops/boot/clear-failed-units.sh' "$root/ops/update.sh"
 grep -Fq 'ops/boot/clear-failed-units.sh' "$root/ops/deploy.sh"
 grep -Fq 'ops/boot/clear-failed-units.sh' "$root/ops/auto-update/apply.sh"
+grep -Fq 'clear-failed-units.sh' <<<"$(bash "$root/ops/update.sh" --dry-run)"
 # update.sh stays free of model-unit names; the helper owns that.
 if grep -Eq 'mag-llm' "$root/ops/update.sh"; then exit 1; fi
 if grep -Eq 'systemctl (restart|stop|reload).*mag-llm' "$root/ops/deploy.sh"; then exit 1; fi
@@ -51,14 +52,23 @@ chmod +x "$tmp/systemctl"
 printf '%s\n' 'MAG_ROOM_MODEL_ID_1=qwen3.8-flash-next-uncensored' > "$tmp/qwen.env"
 printf '%s\n' 'MAG_ROOM_MODEL_ID_1=deepseek-v4-flash-0731' > "$tmp/deepseek.env"
 calls=$tmp/calls
+mkdir -p "$tmp/drop/multi-user.target.wants"
+ln -s /lib/systemd/system/mag-llm-ds-node@.service \
+  "$tmp/drop/multi-user.target.wants/mag-llm-ds-node@1.service"
+ln -s /lib/systemd/system/mag-llm-ds-node@.service \
+  "$tmp/drop/multi-user.target.wants/mag-llm-ds-node@0.service"
 : > "$calls"
 CALLS="$calls" MAG_FAILED_UNITS_TEST=1 MAG_SYSTEMD_DROPIN_ROOT="$tmp/drop" \
+  MAG_SYSTEMD_UNIT_ROOT="$tmp/drop" \
   MAG_ROOM_MODEL_ENV="$tmp/qwen.env" \
+  MAG_ROOM_LAYOUT_FILE="$tmp/no-layout" \
   MAG_SYSTEMD_QUERY_S=5 MAG_SYSTEMD_BUDGET_S=5 \
   PATH="$tmp:$PATH" bash "$root/ops/boot/clear-failed-units.sh" >"$tmp/out"
 grep -Fxq 'systemctl disable mag-llm-ds-node@1.service' "$calls"
 grep -Fxq 'systemctl mask mag-llm-ds-node@1.service' "$calls"
 grep -Fxq 'systemctl reset-failed mag-llm-ds-node@1.service' "$calls"
+[[ ! -e $tmp/drop/multi-user.target.wants/mag-llm-ds-node@1.service ]]
+[[ -L $tmp/drop/multi-user.target.wants/mag-llm-ds-node@0.service ]]
 grep -Fxq 'systemctl disable hotspot-net-setup.service' "$calls"
 grep -Fxq 'systemctl mask hotspot-net-setup.service' "$calls"
 grep -Fxq 'systemctl disable nvidia-persistenced.service' "$calls"
@@ -77,11 +87,45 @@ grep -Fq 'device missing hotspot-net-setup.service' "$tmp/out"
 grep -Fq 'stack units: none failed' "$tmp/out"
 
 : > "$calls"
+CALLS="$calls" MAG_FAILED_UNITS_TEST=1 MAG_SYSTEMD_DROPIN_ROOT="$tmp/drop-missing" \
+  MAG_SYSTEMD_UNIT_ROOT="$tmp/drop-missing" \
+  MAG_ROOM_MODEL_ENV="$tmp/no-room.env" \
+  MAG_ROOM_LAYOUT_FILE="$tmp/no-layout" \
+  MAG_SYSTEMD_QUERY_S=5 MAG_SYSTEMD_BUDGET_S=5 \
+  PATH="$tmp:$PATH" bash "$root/ops/boot/clear-failed-units.sh" >"$tmp/missing.out"
+grep -Fxq 'systemctl disable mag-llm-ds-node@1.service' "$calls"
+grep -Fxq 'systemctl mask mag-llm-ds-node@1.service' "$calls"
+grep -Fxq 'systemctl reset-failed mag-llm-ds-node@1.service' "$calls"
+grep -Fq 'retired mag-llm-ds-node@1.service' "$tmp/missing.out"
+if grep -E 'systemctl (disable|mask|unmask|stop|restart|reload|reset-failed) mag-llm-ds-node@0' "$calls"; then
+  echo 'missing-env cleanup touched ds-node@0' >&2
+  exit 1
+fi
+
+: > "$calls"
+echo deepseek > "$tmp/deepseek.layout"
+CALLS="$calls" MAG_FAILED_UNITS_TEST=1 MAG_SYSTEMD_DROPIN_ROOT="$tmp/drop-layout" \
+  MAG_SYSTEMD_UNIT_ROOT="$tmp/drop-layout" \
+  MAG_ROOM_MODEL_ENV="$tmp/no-room.env" \
+  MAG_ROOM_LAYOUT_FILE="$tmp/deepseek.layout" \
+  MAG_SYSTEMD_QUERY_S=5 MAG_SYSTEMD_BUDGET_S=5 \
+  PATH="$tmp:$PATH" bash "$root/ops/boot/clear-failed-units.sh" >"$tmp/layout.out"
+grep -Fxq 'systemctl unmask mag-llm-ds-node@1.service' "$calls"
+if grep -Fxq 'systemctl disable mag-llm-ds-node@1.service' "$calls" ||
+   grep -Fxq 'systemctl mask mag-llm-ds-node@1.service' "$calls" ||
+   grep -Fxq 'systemctl reset-failed mag-llm-ds-node@1.service' "$calls"; then
+  echo 'layout=deepseek retired NUMA1' >&2
+  exit 1
+fi
+
+: > "$calls"
 mkdir -p "$tmp/present/net" "$tmp/present/nvidia"
 : > "$tmp/present/net/wlx2023516593f0"
 : > "$tmp/present/nvidia/nvidiactl"
 CALLS="$calls" MAG_FAILED_UNITS_TEST=1 MAG_SYSTEMD_DROPIN_ROOT="$tmp/drop-present" \
+  MAG_SYSTEMD_UNIT_ROOT="$tmp/drop-present" \
   MAG_ROOM_MODEL_ENV="$tmp/qwen.env" \
+  MAG_ROOM_LAYOUT_FILE="$tmp/no-layout" \
   MAG_HOTSPOT_DEV="$tmp/present/net/wlx2023516593f0" \
   MAG_NVIDIA_DEV="$tmp/present/nvidia/nvidiactl" \
   MAG_SYSTEMD_QUERY_S=5 MAG_SYSTEMD_BUDGET_S=5 \
@@ -101,11 +145,15 @@ fi
 
 : > "$calls"
 CALLS="$calls" MAG_FAILED_UNITS_TEST=1 MAG_SYSTEMD_DROPIN_ROOT="$tmp/drop2" \
+  MAG_SYSTEMD_UNIT_ROOT="$tmp/drop2" \
   MAG_ROOM_MODEL_ENV="$tmp/deepseek.env" \
+  MAG_ROOM_LAYOUT_FILE="$tmp/no-layout" \
   MAG_SYSTEMD_QUERY_S=5 MAG_SYSTEMD_BUDGET_S=5 \
   PATH="$tmp:$PATH" bash "$root/ops/boot/clear-failed-units.sh" >"$tmp/ds.out"
 grep -Fxq 'systemctl unmask mag-llm-ds-node@1.service' "$calls"
-if grep -E 'systemctl (disable|mask|reset-failed) mag-llm-ds-node@1' "$calls"; then
+if grep -Fxq 'systemctl disable mag-llm-ds-node@1.service' "$calls" ||
+   grep -Fxq 'systemctl mask mag-llm-ds-node@1.service' "$calls" ||
+   grep -Fxq 'systemctl reset-failed mag-llm-ds-node@1.service' "$calls"; then
   echo 'dual-DeepSeek layout retired NUMA1' >&2
   exit 1
 fi

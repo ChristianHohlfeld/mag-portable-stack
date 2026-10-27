@@ -48,17 +48,34 @@ gate_device_unit() {
 }
 
 # Exact instance. A glob of mag-llm-ds-node@* would include the live NUMA 0 server.
-# Dual-DeepSeek (MAG_ROOM_LAYOUT=deepseek) still boots mag-llm-ds-node@1; only
-# the mixed Qwen stack retires that instance. Same gate as ensure-boot.sh.
+# Default is uninstall (disable, mask, drop the wants link, reset-failed).
+# Dual-DeepSeek keeps that instance: MAG_ROOM_LAYOUT=deepseek or ID_1=deepseek.
+# Qwen on NUMA 1 always uninstalls it.
 retired=mag-llm-ds-node@1.service
 room_env=${MAG_ROOM_MODEL_ENV:-/etc/mag-stack/room-model.env}
+layout_file=${MAG_ROOM_LAYOUT_FILE:-/etc/mag-stack/room-layout}
+unit_root=${MAG_SYSTEMD_UNIT_ROOT:-/etc/systemd/system}
+keep_ds1=0
+if [[ -r $layout_file && $(tr -d '[:space:]' <"$layout_file") == deepseek ]]; then
+  keep_ds1=1
+fi
+if [[ -r $room_env ]] && grep -Eq '^MAG_ROOM_MODEL_ID_1=deepseek' "$room_env"; then
+  keep_ds1=1
+fi
 if [[ -r $room_env ]] && grep -Fxq 'MAG_ROOM_MODEL_ID_1=qwen3.8-flash-next-uncensored' "$room_env"; then
+  keep_ds1=0
+fi
+if (( keep_ds1 )); then
+  mag_systemctl unmask "$retired" >/dev/null 2>&1 || true
+else
   mag_systemctl disable "$retired" >/dev/null 2>&1 || true
   mag_systemctl mask "$retired" >/dev/null 2>&1 || true
+  wants=$unit_root/multi-user.target.wants/$retired
+  if [[ -L $wants || -f $wants ]]; then
+    rm -f -- "$wants" || true
+  fi
   mag_systemctl reset-failed "$retired" >/dev/null 2>&1 || true
   echo "retired $retired"
-else
-  mag_systemctl unmask "$retired" >/dev/null 2>&1 || true
 fi
 
 gate_device_unit hotspot-net-setup.service "$hotspot_dev"

@@ -79,6 +79,8 @@ fi
 phase boot
 if (( DEPLOY )); then
   run sudo bash "$ROOT/ops/boot/ensure-boot.sh" || echo 'boot persistence check failed (deploy itself succeeded)' >&2
+  # Uninstall the retired NUMA 1 instance and reset-failed leftover units.
+  # Unit names live in the helper; this file must not name a model unit.
   run sudo bash "$ROOT/ops/boot/clear-failed-units.sh" || echo 'WARN: a stack unit is still failed' >&2
 else
   echo 'skipped'

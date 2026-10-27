@@ -109,7 +109,16 @@ class LiveHighlight(unittest.TestCase):
    u=boxes['user'];ev({'action':'type','box':u,'text':'chris@example.org'});assert_box(u)
    room.wait_for_function("()=>document.querySelector('#browser-overlay .bo-type')?.textContent.includes('chris@example.org')",timeout=4000)
    # secret field: dots only (server sends masked; client also refuses a leaked value)
-   p=boxes['pw'];ev({'action':'type','box':p,'masked':True,'text':FIELD_VALUE});assert_box(p)
+   p=boxes['pw'];ev({'action':'type','box':p,'masked':True,'text':FIELD_VALUE})
+   print('HIGHLIGHT_MASKED_EVENT:',room.evaluate("""()=>({
+     selected:document.querySelector('#browser-agent')?.value,
+     active:window.magLiveHighlight?.enabled(),
+     script:window.browserOverlay?.toString().slice(0,260),
+     boxClass:document.querySelector('.lh-box')?.className,
+     boxStyle:document.querySelector('.lh-box')?.getAttribute('style'),
+     boxRect:document.querySelector('.lh-box')?.getBoundingClientRect().toJSON()
+   })"""),flush=True)
+   assert_box(p)
    self.assertIn('secret',room.locator('#browser-overlay .lh-box').get_attribute('class'))
    room.wait_for_timeout(600)
    self.assertIn('••••',room.locator('#browser-overlay .bo-type').text_content())

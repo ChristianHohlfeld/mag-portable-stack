@@ -283,7 +283,8 @@ static void route(int fd, Req &r, bool bridge = false) {
       error_json(fd, 403, "Wrong origin");
       return;
     }
-    if (m != "GET" && m != "HEAD" && m != "OPTIONS") {
+    if (m != "GET" && m != "HEAD" && m != "OPTIONS" &&
+        r.path != "/api/deploy-hold") {
       // Accept the page token, or a browser-attested same-origin request
       // (Sec-Fetch-Site is set by the browser and cannot be forged by
       // another site). Scripts without either are rejected.
@@ -1561,6 +1562,24 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
     e["type"] = "selftalk";
     e["on"] = SELFTALK.load();
     publish(mj::dump(e));
+    send_json(fd, 200, mj::dump(e));
+    return;
+  }
+  if (m == "POST" && path == "/api/deploy-hold") {
+    if (actor.role != "owner") {
+      error_json(fd, 403, "owner required");
+      return;
+    }
+    const bool on = !has_json || !body.find("on") || body.find("on")->asBool();
+    if (on)
+      hold_selftalk_for_deploy();
+    else
+      release_deploy_hold();
+    Val e = Val::object();
+    e["type"] = "deploy-hold";
+    e["on"] = DEPLOY_HOLD.load();
+    e["selftalk"] = SELFTALK.load();
+    e["held"] = SELF_HOLD.load();
     send_json(fd, 200, mj::dump(e));
     return;
   }

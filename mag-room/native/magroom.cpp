@@ -5940,6 +5940,12 @@ static std::string manifest_body() {
 // room-wide operations (reset, clear, bot removal) take it exclusively and so
 // wait for every running turn.
 static std::atomic<bool> AUTOTALK{false}, BUSY{false};
+static std::atomic<bool> DEPLOY_HOLD{false};
+static void drop_selftalk_jobs_locked();
+static void hold_selftalk_for_deploy_locked();
+static void apply_deploy_hold_file_locked();
+static void arm_selftalk(const std::string &speaker, const std::string &cause,
+                         const std::string &text);
 // Self-Talk: bots answer each other's room messages. No consecutive-turn cap.
 // SELF_HOLD ends the current chain (Stop or toggle off) until a new user message.
 static std::atomic<bool> SELFTALK{false}, SELF_HOLD{false};
@@ -6569,6 +6575,73 @@ static void handoff_visible_turn(int idx, TurnReport &report, const std::string 
 // Queue the other bots to answer this message. The speaker is never queued.
 // At most one waiting self-talk job per bot, so the queue cannot fill with
 // duplicates; the transcript already holds every newer line.
+static void last_assistant_for_selftalk(std::string &speaker, std::string &cause,
+                                        std::string &text) {
+  speaker.clear();
+  cause.clear();
+  text.clear();
+  std::lock_guard<std::recursive_mutex> st(STATE_MTX);
+  for (auto it = ROOM.rbegin(); it != ROOM.rend(); ++it) {
+    if (mag::str(*it, "role") != "assistant") continue;
+    const std::string bot = mag::str(*it, "bot");
+    const std::string id = mag::str(*it, "id");
+    const std::string body = mag::str(*it, "content");
+    if (bot.empty() || id.empty() || body.empty()) continue;
+    speaker = bot;
+    cause = id;
+    text = body;
+    return;
+  }
+}
+static void hold_selftalk_for_deploy_locked() {
+  if (SELFTALK.load()) {
+    write_file(STATE_DIR + "/selftalk-resume", "on");
+    write_file(STATE_DIR + "/selftalk", "on");
+  }
+  write_file(STATE_DIR + "/deploy-hold", "on");
+  SELF_HOLD = true;
+  DEPLOY_HOLD = true;
+  drop_selftalk_jobs_locked();
+}
+static void hold_selftalk_for_deploy() {
+  std::lock_guard<std::mutex> lk(JOB_MTX);
+  hold_selftalk_for_deploy_locked();
+  JOB_CV.notify_all();
+}
+static void release_deploy_hold_locked() {
+  DEPLOY_HOLD = false;
+  std::error_code ec;
+  std::filesystem::remove(STATE_DIR + "/deploy-hold", ec);
+  std::filesystem::remove(STATE_DIR + "/selftalk-resume", ec);
+  if (SELFTALK.load()) SELF_HOLD = false;
+}
+static void release_deploy_hold() {
+  std::string speaker, cause, text;
+  {
+    std::lock_guard<std::mutex> lk(JOB_MTX);
+    release_deploy_hold_locked();
+  }
+  if (!SELFTALK.load()) return;
+  last_assistant_for_selftalk(speaker, cause, text);
+  if (!speaker.empty()) arm_selftalk(speaker, cause, text);
+}
+static void apply_deploy_hold_file_locked() {
+  if (DEPLOY_HOLD.load()) return;
+  if (trim(read_file(STATE_DIR + "/deploy-hold")) != "on") return;
+  hold_selftalk_for_deploy_locked();
+}
+static void resume_selftalk_after_deploy() {
+  if (trim(read_file(STATE_DIR + "/selftalk-resume")) != "on") return;
+  std::error_code ec;
+  std::filesystem::remove(STATE_DIR + "/selftalk-resume", ec);
+  std::filesystem::remove(STATE_DIR + "/deploy-hold", ec);
+  if (!SELFTALK.load()) return;
+  SELF_HOLD = false;
+  DEPLOY_HOLD = false;
+  std::string speaker, cause, text;
+  last_assistant_for_selftalk(speaker, cause, text);
+  if (!speaker.empty()) arm_selftalk(speaker, cause, text);
+}
 static void arm_selftalk(const std::string &speaker, const std::string &cause,
                          const std::string &text) {
   if (!SELFTALK.load() || SELF_HOLD.load() || speaker.empty() || cause.empty())
@@ -6583,6 +6656,7 @@ static void arm_selftalk(const std::string &speaker, const std::string &cause,
   }
   if (listeners.empty()) return;
   std::lock_guard<std::mutex> lk(JOB_MTX);
+  apply_deploy_hold_file_locked();
   if (!SELFTALK.load() || SELF_HOLD.load()) return;
   bool added = false;
   for (const auto &id : listeners) {
@@ -7764,6 +7838,7 @@ static void start_lanes_locked(const Job &job, bool automatic) {
 }
 // Starts at most one piece of work; true if the queue state changed.
 static bool dispatch_locked() {
+  apply_deploy_hold_file_locked();
   auto send_pending = [&](std::deque<Pending>::iterator it) {
     Pending p = *it;
     PENDING.erase(it);
@@ -8356,6 +8431,18 @@ static std::string state_json(const Actor *actor = nullptr) {
     Val wb = Val::array();
     for (auto &id : WAITING_BOTS) wb.push(Val(id));
     root["waiting_bots"] = wb;
+    bool user_busy = false, selftalk_busy = false;
+    for (auto &kv : ACTIVE_JOBS) {
+      if (kv.second.selftalk) selftalk_busy = true;
+      else user_busy = true;
+    }
+    for (auto &j : JOBS) {
+      if (j.selftalk) continue;
+      user_busy = true;
+    }
+    root["user_busy"] = user_busy;
+    root["selftalk_busy"] = selftalk_busy;
+    root["selftalk_held"] = SELF_HOLD.load();
   }
   root["backend"] = BACKEND_HOST + ":" + std::to_string(BACKEND_PORT);
   root["model"] = active_room_model();
@@ -9097,6 +9184,7 @@ int main() {
   AUTOTALK = trim(read_file(STATE_DIR + "/autotalk")) == "on";
   SELFTALK = trim(read_file(STATE_DIR + "/selftalk")) == "on";
   // A reboot does not resume a bot-to-bot chain. The switch does survive.
+  // A deploy-hold marker is the exception: restore Self-Talk (on) and continue.
   SELF_HOLD = true;
   REFLECT = trim(read_file(STATE_DIR + "/reflect")) == "on";
   load_model_settings();
@@ -9172,6 +9260,7 @@ int main() {
       save_queue_locked();
     }
   }
+  resume_selftalk_after_deploy();
   jobs_load();
   // Restore any persisted VM provisioning after a room restart.
   resume_pending_spawns();

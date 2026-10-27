@@ -12,9 +12,11 @@ gitea promote :: bash ops/tests/test-gitea-promote.sh
 gate parallel :: bash ops/ci/tests/test-gate-parallel.sh
 ci reap :: bash ops/ci/tests/test-ci-reap.sh
 update dry run :: bash ops/tests/test-update.sh
+deploy drain state :: python3 ops/tests/test-deploy-drain-state.py
 deploy watchdog :: bash ops/tests/test-deploy-watchdog.sh
 legacy cleanup :: bash ops/tests/test-cleanup-legacy.sh
 agent drift :: bash ops/tests/test-agent-drift.sh
 runners :: bash ops/tests/test-runners.sh
 green promotion :: bash ops/tests/test-green.sh
 boot :: bash ops/tests/test-boot.sh
+failed units :: bash ops/tests/test-clear-failed-units.sh

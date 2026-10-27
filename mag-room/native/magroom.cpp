@@ -3068,16 +3068,22 @@ static ModelStatus MODEL_ST;
 static std::atomic<bool> MODEL_WATCHER{false};
 static std::atomic<int64_t> LAST_HEALTH_OK{0};
 
+static bool backend_accepts() {
+  HttpClient c;
+  c.timeout_ms = 300;
+  return c.connectTo(BACKEND_HOST, BACKEND_PORT);
+}
 static ModelStatus probe_model_status() {
   ModelStatus st;
   st.at = now_s();
   std::string body;
   long code = 0;
-  // Probe: short timeout on purpose (not an inference request).
+  // Long enough for an idle /health. A prefill still occupies ik's task
+  // queue for much longer; that timeout is "busy", not "offline".
   const bool reach =
       http_simple(BACKEND_HOST, BACKEND_PORT, "GET", "/health", "",
                   {{"Authorization", "Bearer " + API_KEY}}, body, &code,
-                  nullptr, 2000);
+                  nullptr, 4000);
   if (reach && code == 200) {
     st.state = "ready";
     st.ready = true;
@@ -3086,8 +3092,32 @@ static ModelStatus probe_model_status() {
     return st;
   }
   // ik_llama.cpp answers /health through its task queue, so while a long
-  // prompt batch runs the 2 s probe times out (mainline answers from the HTTP
-  // thread). A backend that was healthy shortly before is busy, not starting.
+  // prompt batch runs the probe times out (mainline answers from the HTTP
+  // thread). The gateway still accepts the TCP connection. A refused
+  // connection is offline; a timeout is the slot computing.
+  if (!reach && backend_accepts()) {
+    bool qwen_up = false;
+    if (CONFIGURED_MODEL) {
+      for (int s = 1; s <= ROOM_MAX_BOTS; ++s) {
+        const std::string id = ROOM_MODEL.backend(s).id;
+        if (id.find("qwen") == std::string::npos) continue;
+        std::string reply;
+        long health = 0;
+        qwen_up = http_simple(BACKEND_HOST, BACKEND_PORT, "GET", "/health", "",
+                              {{"Authorization", "Bearer " + API_KEY},
+                               {"X-Mag-Model", id},
+                               {"X-Mag-Slot", std::to_string(s - 1)}},
+                              reply, &health, nullptr, 1500) &&
+                  health == 200;
+        if (qwen_up) break;
+      }
+    }
+    st.state = "busy";
+    st.ready = true; // the turn may run; busy is not a missing model
+    st.label = qwen_up ? "DeepSeek rechnet – Qwen ist bereit"
+                       : "Modell rechnet";
+    return st;
+  }
   if (!reach && LAST_HEALTH_OK.load() > 0 &&
       st.at - LAST_HEALTH_OK.load() < 900) {
     st.state = "ready";
@@ -3449,16 +3479,24 @@ static void model_watcher_loop() {
       for (int s = 1; s <= ROOM_MAX_BOTS; ++s) {
         std::string reply;
         long health = 0;
-        const bool ok =
+        const bool sent =
             http_simple(BACKEND_HOST, BACKEND_PORT, "GET", "/health", "",
                         {{"Authorization", "Bearer " + API_KEY},
                          {"X-Mag-Model", ROOM_MODEL.backend(s).id},
                          {"X-Mag-Slot", std::to_string(s - 1)}},
-                        reply, &health, nullptr, 1500) && health == 200;
-        backend_became_ready = backend_became_ready || (ok && ROOM_MODEL_HEALTH[s - 1] != 1);
-        ROOM_MODEL_HEALTH[s - 1] = ok ? 1 : 2;
-        health_key += ok ? '1' : '0';
-        secondary_ready = secondary_ready || ok;
+                        reply, &health, nullptr, 1500);
+        const bool ok = sent && health == 200;
+        // A timeout is the slot's task queue, not a crashed server. Marking
+        // it down made the next success look like a fresh start and queued
+        // another prefill on the only slot.
+        if (ok) {
+          backend_became_ready = backend_became_ready || ROOM_MODEL_HEALTH[s - 1] != 1;
+          ROOM_MODEL_HEALTH[s - 1] = 1;
+        } else if (sent) {
+          ROOM_MODEL_HEALTH[s - 1] = 2;
+        }
+        health_key += ok ? '1' : ROOM_MODEL_HEALTH[s - 1] == 1 ? '1' : '0';
+        secondary_ready = secondary_ready || ok || ROOM_MODEL_HEALTH[s - 1] == 1;
       }
       key += "|" + health_key;
     }
@@ -6262,49 +6300,31 @@ static std::string prefix_file(int idx, const std::string &model) {
                          : "mag-prefix-" + model + ".bin";
 }
 static void agents_changed();
+static void prewarm_release(const std::string &lane, const std::string &bot_id) {
+  std::lock_guard<std::mutex> lk(PREWARM_MTX);
+  PREWARM_RUNNING.erase(lane);
+  if (!bot_id.empty()) PREWARM_ETA.erase(bot_id);
+}
 static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
                           const std::string &lane) {
-  std::string payload, bot_id, shared_key;
+  std::string payload, bot_id, shared_key, system, tool_defs;
   size_t shared_len = 0;
+  bool web = false;
   {
     std::shared_lock<std::shared_mutex> turn(TURN_MTX);
-    if (epoch != EPOCH.load() || bot_model_id(idx) != model) return;
+    if (epoch != EPOCH.load() || bot_model_id(idx) != model) {
+      prewarm_release(lane, "");
+      return;
+    }
     bot_id = bot_field(idx, "id");
-    const bool web = WEB_ENABLED.load();
-    Val body = Val::object();
-    body["model"] = model;
-    Val msgs = Val::array();
-    Val sys = Val::object();
-    sys["role"] = "system";
-    const std::string system = build_system(idx, false, "", web);
-    sys["content"] = system + (CONFIGURED_MODEL ? "" : "\n" + memory_manifest(bot_id));
-    msgs.push(sys);
-    const std::string shared = system.substr(0, system.rfind("[Identitaet]")) + tools_json(idx, web);
+    web = WEB_ENABLED.load();
+    // Slot state is decided before wire_messages. That call appends a user
+    // message and would otherwise rewrite a warm transcript on every restart.
+    system = build_system(idx, false, "", web);
+    tool_defs = tools_json(idx, web);
+    const std::string shared = system.substr(0, system.rfind("[Identitaet]")) + tool_defs;
     shared_key = model + ":" + std::to_string(fnv64(shared));
     shared_len = shared.size();
-    Val u = Val::object();
-    u["role"] = "user";
-    u["content"] = build_transcript() + build_context_tail(idx, false, "");
-    msgs.push(u);
-    const std::string tool_defs=tools_json(idx,web);
-    if(CONFIGURED_MODEL) {
-      auto wire=wire_messages(idx,system,tool_defs,build_context_tail(idx,false,""));
-      msgs=Val::array();for(const auto &m:wire)msgs.push(m);
-    }
-    body["messages"] = msgs;
-    Val tt;
-    if (mj::parse(tools_json(idx, web), tt))
-      body["tools"] = tt;
-    body["max_tokens"] = 1;
-    body["stream"] = false;
-    body["cache_prompt"] = true;
-    if (CONFIGURED_MODEL) body["id_slot"] = 0;
-    Val kwargs = Val::object();
-    kwargs["enable_thinking"] = bot_thinking(idx);
-    if (model != "qwen3.8-flash-next-uncensored" && !REASONING_EFFORT.empty())
-      kwargs["reasoning_effort"] = REASONING_EFFORT;
-    body["chat_template_kwargs"] = kwargs;
-    payload = mj::dump(body);
   }
   // The prefix KV state (system, tools, transcript) is ~100 MB but costs
   // minutes of CPU prefill (~50 t/s). Keep the latest one on disk per model:
@@ -6342,7 +6362,8 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
       auto v = PREFIX_META.find(f);
       return v && v->type == Val::STR ? v->asStr() : std::string();
     };
-    prefix_changed = !meta(own_key).empty() && meta(own_key) != shared_key;
+    const std::string meta_own = meta(own_key);
+    prefix_changed = !meta_own.empty() && meta_own != shared_key;
     // Own file if it holds the current shared prefix (or is of unknown age);
     // otherwise another bot's file on the SAME server with that prefix.
     if (CONFIGURED_MODEL && !meta(own_key).empty() && meta(own_key) != shared_key)
@@ -6376,22 +6397,92 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
     }
   }
   const uint64_t pw_epoch = PREWARM_EPOCH.load();
-  const bool restored = ram_known && !ram_warm && PREFIX_DISK && prefix_slot("restore", source);
-  {
-    // UI: "Prompt wird vorbereitet (~X min)". Upper bound: ~3.2 bytes per
-    // token, measured prefill MAG_ROOM_PREFILL_TPS (Ornith B, 1 server/node: ~62 t/s).
-    const double tps = std::max(5, envi("MAG_ROOM_PREFILL_TPS", 60));
-    std::lock_guard<std::mutex> lk(PREWARM_MTX);
-    const size_t todo = payload.size() - (restored ? std::min(shared_len, payload.size()) : 0);
-    PREWARM_ETA[bot_id] = (double)todo / 3.2 / tps;
+  // One llama slot. A generative prewarm is a prefill ik_llama does not abort
+  // when the client disconnects, so a user turn queues behind it (measured
+  // 99s on restart, then 50-60s for the queued turn). Reuse RAM or the saved
+  // slot instead. A stale prefix key must not force that prefill: the next
+  // user turn's cache_prompt evaluates only the tokens that actually differ.
+  bool restored = false;
+  bool skip = false;
+  const char *why = "0";
+  if (CONFIGURED_MODEL && !ram_known) {
+    skip = true;
+    why = "busy"; // /slots timed out: the slot is occupied, not cold
+  } else if (ram_warm) {
+    skip = true;
+    why = "ram";
+  } else if (ram_known && !ram_warm) {
+    // Cold slot only: load the saved prefix, then one completion so a server
+    // that actually restarted still has a checkpoint. A warm slot never gets
+    // here, so a room restart does not re-prefill.
+    restored = PREFIX_DISK && prefix_slot("restore", source);
   }
-  agents_changed();
-  const auto from = steady_clock::now();
   std::string out;
   long code = 0;
   int tracked = -1;
-  bool ok = false;
-  if ((!ram_warm || prefix_changed) && pw_epoch == PREWARM_EPOCH.load() && !PREWARM_HOLD.load())
+  bool ok = false, built = false;
+  const auto from = steady_clock::now();
+  if (!skip && pw_epoch == PREWARM_EPOCH.load() && !PREWARM_HOLD.load()) {
+    {
+      std::lock_guard<std::mutex> lk(JOB_MTX);
+      if (!JOBS.empty()) {
+        skip = true;
+        why = "user";
+      }
+    }
+  }
+  if (!skip && pw_epoch == PREWARM_EPOCH.load() && !PREWARM_HOLD.load()) {
+    {
+      std::shared_lock<std::shared_mutex> turn(TURN_MTX);
+      if (epoch == EPOCH.load() && bot_model_id(idx) == model) {
+        Val body = Val::object();
+        body["model"] = model;
+        Val msgs = Val::array();
+        Val sys = Val::object();
+        sys["role"] = "system";
+        sys["content"] = system + (CONFIGURED_MODEL ? "" : "\n" + memory_manifest(bot_id));
+        msgs.push(sys);
+        Val u = Val::object();
+        u["role"] = "user";
+        u["content"] = build_transcript() + build_context_tail(idx, false, "");
+        msgs.push(u);
+        if (CONFIGURED_MODEL) {
+          auto wire = wire_messages(idx, system, tool_defs, build_context_tail(idx, false, ""));
+          msgs = Val::array();
+          for (const auto &m : wire) msgs.push(m);
+        }
+        body["messages"] = msgs;
+        Val tt;
+        if (mj::parse(tool_defs, tt)) body["tools"] = tt;
+        body["max_tokens"] = 1;
+        body["stream"] = false;
+        body["cache_prompt"] = true;
+        if (CONFIGURED_MODEL) body["id_slot"] = 0;
+        Val kwargs = Val::object();
+        kwargs["enable_thinking"] = bot_thinking(idx);
+        if (model != "qwen3.8-flash-next-uncensored" && !REASONING_EFFORT.empty())
+          kwargs["reasoning_effort"] = REASONING_EFFORT;
+        body["chat_template_kwargs"] = kwargs;
+        payload = mj::dump(body);
+        built = true;
+      } else {
+        skip = true;
+        why = "stale";
+      }
+    }
+  }
+  // Epoch or hold changes leave `built` false, so a cancelled prewarm never
+  // posts an empty completion onto the only slot.
+  if (built) {
+    // UI: "Prompt wird vorbereitet (~X min)". Upper bound: ~3.2 bytes per
+    // token, measured prefill MAG_ROOM_PREFILL_TPS (Ornith B, 1 server/node: ~62 t/s).
+    const double tps = std::max(5, envi("MAG_ROOM_PREFILL_TPS", 60));
+    {
+      std::lock_guard<std::mutex> lk(PREWARM_MTX);
+      const size_t todo = payload.size() - (restored ? std::min(shared_len, payload.size()) : 0);
+      PREWARM_ETA[bot_id] = (double)todo / 3.2 / tps;
+    }
+    agents_changed();
     ok = http_simple(BACKEND_HOST, BACKEND_PORT, "POST", "/v1/chat/completions",
                      payload,
                      {{"Content-Type", "application/json"},
@@ -6412,6 +6503,7 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
                          PREWARM_FDS.erase(tracked);
                        }
                      });
+  }
   const bool cancelled = pw_epoch != PREWARM_EPOCH.load();
   const long ms = (long)duration_cast<milliseconds>(steady_clock::now() - from).count();
   const bool saved = PREFIX_DISK && ok && code == 200 && !cancelled && prefix_slot("save", own);
@@ -6425,7 +6517,9 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
             << " status=" << code << " ms=" << ms
             << " ram_warm=" << (ram_warm ? 1 : 0)
             << " restored=" << (restored ? 1 : 0) << " saved=" << (saved ? 1 : 0)
-            << " cancelled=" << (cancelled ? 1 : 0) << " source=" << source << std::endl;
+            << " cancelled=" << (cancelled ? 1 : 0) << " skipped=" << why
+            << " prefix_changed=" << (prefix_changed ? 1 : 0)
+            << " source=" << source << std::endl;
   {
     std::lock_guard<std::mutex> lk(PREWARM_MTX);
     PREWARM_RUNNING.erase(lane);

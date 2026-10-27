@@ -1602,6 +1602,7 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
     const std::string bot = has_json ? str("bot") : "";
     if (!bot.empty()) {
       const bool found = cancel_bots({bot}, true);
+      cancel_llama_slot(agent_index(bot));
       {
         std::lock_guard<std::mutex> lk(JOB_MTX);
         if (AUTO_OWNER == bot) { AUTO_READY = false; AUTO_TURNS_LEFT = 0; }

@@ -2560,9 +2560,9 @@ static std::vector<Val> wire_messages(int idx, const std::string &system,
   // A cleared/restored room is an explicit history reset. Do not resurrect it.
   bool intersects=w.seen.empty();
   for(const auto &m:room)if(w.seen.count(mag::str(m,"id")))intersects=true;
-  // Fingerprint drift (a deploy, the bot list, a tool hash) must not rebuild
-  // history. ik keeps the first ~8k tokens and re-prefills everything after
-  // them; that was the multi-minute hi. A cleared room still starts over.
+  // Fingerprint drift (deploy, tool hash, prefix_changed=1) must not rebuild
+  // the stored transcript. ik then keeps ~8k tokens and re-prefills the rest
+  // (live: p0=8192 -> 13.8k). A cleared room still starts over.
   if(!intersects || w.messages.empty()) {
     auto archive=intersects?w.pho_archive:Val::object();
     auto last=intersects?w.pho_last_key:std::string();
@@ -2593,8 +2593,21 @@ static std::vector<Val> wire_messages(int idx, const std::string &system,
   const auto plugins=mcp_prompt_notes(idx),files=file_manifest();
   if(w.plugins!=plugins || initial) {input+=plugins;w.plugins=plugins;}
   if(w.files!=files || initial) {input+="\nAktuell geteilte Raumdateien:\n"+files;w.files=files;}
-  Val user=Val::object();user["role"]="user";user["content"]=input+tail;
-  w.messages.push_back(user);
+  // [Kontext] (clock, github, thinking) is ~140 tokens. Re-sending it on every
+  // hi re-prefills those tokens (~6s at 22 tok/s; live 10.3s first hi). It
+  // belongs on the first user message only. Later turns append new room
+  // input. A reflection round still needs its instruction; that is not the
+  // clock block. An empty append (prewarm of an existing wire) is a no-op.
+  std::string extra=input;
+  if(initial) extra+=tail;
+  else if(TL_REFLECT) {
+    auto at=tail.find("Reflexionsrunde");
+    if(at!=std::string::npos) extra+=(at>0&&tail[at-1]=='\n'?"\n":"")+tail.substr(at);
+  }
+  if(initial || !extra.empty()) {
+    Val user=Val::object();user["role"]="user";user["content"]=extra;
+    w.messages.push_back(user);
+  }
   wire_store(bot,w);
   return w.messages;
 }
@@ -3715,7 +3728,14 @@ static void model_watcher_loop() {
       }
       key += "|" + health_key;
     }
-    if (backend_became_ready || (st.ready && !was_ready) || (secondary_ready && !was_secondary_ready))
+    const bool slots_pending = CONFIGURED_MODEL &&
+        env("MAG_ROOM_PREWARM", "1") == "1" &&
+        (SLOT_WARM[0].load() != 1 || SLOT_WARM[1].load() != 1);
+    // A slot that returned early, timed out on /slots, or was not yet in
+    // AGENTS must be retried. Waiting only for a ready-edge left Qwen cold
+    // (live: no prompt-prewarm line, 39s first-hi eval).
+    if (backend_became_ready || (st.ready && !was_ready) ||
+        (secondary_ready && !was_secondary_ready) || slots_pending)
       schedule_prewarm();
     else if (secondary_ready && CONFIGURED_MODEL)
       prewarm_if_prompt_changed(); // system prompt, tools, persona or bot set changed
@@ -3729,7 +3749,8 @@ static void model_watcher_loop() {
       if (CONFIGURED_MODEL) e["model_instances"] = model_instances();
       publish(mj::dump(e));
     }
-    std::this_thread::sleep_for(seconds(st.ready ? 10 : 4));
+    std::this_thread::sleep_for(
+        seconds(slots_pending ? 1 : (st.ready ? 10 : 4)));
   }
 }
 
@@ -4210,6 +4231,10 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   // the prompt is evaluated (minutes on CPU) instead of staying silent.
   body["return_progress"] = true;
   body["cache_prompt"] = !deterministic;
+  // Configured NUMA bots keep the slot prefix. Deterministic still greedily
+  // decodes; it must not drop cache_prompt (live Qwen: tokens_cached=0 and a
+  // 39s identity prefill because cache_prompt was off).
+  if (CONFIGURED_MODEL) body["cache_prompt"] = true;
   // Dedicated NUMA servers keep the same live KV slot across prewarm/chat.
   // Do not run the generic RAM-cache slot selector on this fixed deployment.
   if (CONFIGURED_MODEL) body["id_slot"] = 0;
@@ -5256,7 +5281,12 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
                            const std::string &other) {
   std::string bot_id = bot_field(bot_idx, "id");
   std::string bot_name = bot_field(bot_idx, "name", "Bot");
-  const bool stateless = model_settings_for(bot_model_id(bot_idx)).deterministic;
+  // Configured DeepSeek+Qwen share the room wire and the slot cache.
+  // Deterministic sampling stays available; the 2-message identity path is
+  // the non-configured checker. Live Qwen logged stateless=1 system_bytes=0
+  // and never entered the prewarm/cache path.
+  const bool stateless = !CONFIGURED_MODEL &&
+                         model_settings_for(bot_model_id(bot_idx)).deterministic;
   const bool web = WEB_ENABLED.load();
   std::vector<Val> messages;
   std::string tools, system;
@@ -5297,9 +5327,11 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
   }
   // No payloads or secrets in diagnostics. One-message stateless decoding has
   // no tools and doesn't depend on the mutable room/system/memory.
+  const std::string sys_log = messages.empty() ? system
+      : (messages[0].find("content") ? messages[0]["content"].asStr() : system);
   std::cerr << "prompt-footprint model=" << bot_model_id(bot_idx)
             << " stateless=" << (stateless ? 1 : 0)
-            << " system_bytes=" << system.size()
+            << " system_bytes=" << sys_log.size()
             << " tools_bytes=" << tools.size()
             << " input_bytes=" << messages.back()["content"].asStr().size()
             << std::endl;
@@ -6294,7 +6326,8 @@ static Val enqueue_pending(const std::string &text,
     if (MESSAGE_RECEIPTS.size() > 256) MESSAGE_RECEIPTS.pop_front();
   }
   if (interrupt) cancel_bots_locked(ids, true);
-  cancel_prewarm(); // user work must never wait behind an idle prefix warm-up
+  // Do not cancel the llama task here. Closing that socket is
+  // "srv stop: cancel task" and wipes the KV (live 538s re-prefill).
   PREWARM_HOLD = false;
   save_queue_locked(); queue_event_locked();
   // Mark idle lanes busy before the HTTP acknowledgement (no false idle gap).
@@ -6804,11 +6837,27 @@ static void persist_configured_slot(int idx) {
   const auto cut = system.rfind("[Identitaet]");
   const std::string shared = system.substr(0, cut == std::string::npos ? system.size() : cut) + tool_defs;
   const std::string shared_key = model + ":" + std::to_string(fnv64(shared));
-  if (!prefix_slot_rpc(idx, model, "save", file)) return;
+  if (!prefix_slot_rpc(idx, model, "save", file)) {
+    std::cerr << "prompt-slot save file=" << file << " ok=0" << std::endl;
+    return;
+  }
+  std::cerr << "prompt-slot save file=" << file << " ok=1" << std::endl;
   std::lock_guard<std::mutex> lk(PREFIX_MTX);
   if (!PREFIX_META.isObj()) PREFIX_META = Val::object();
   PREFIX_META[own_key] = shared_key;
   write_file_atomic(STATE_DIR + "/prompt-prefix.json", mj::dump(PREFIX_META));
+}
+static void cancel_llama_slot(int idx) {
+  if (!CONFIGURED_MODEL || idx < 0) return;
+  prefix_slot_rpc(idx, bot_model_id(idx), "cancel", "");
+}
+static void cancel_llama_tasks() {
+  std::vector<int> idxs;
+  {
+    std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
+    for (size_t i = 0; i < AGENTS.size(); ++i) idxs.push_back((int)i);
+  }
+  for (int i : idxs) cancel_llama_slot(i);
 }
 static void agents_changed();
 static void prewarm_release(const std::string &lane, const std::string &bot_id) {
@@ -6824,6 +6873,10 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
   {
     std::shared_lock<std::shared_mutex> turn(TURN_MTX);
     if (epoch != EPOCH.load() || bot_model_id(idx) != model) {
+      std::cerr << "prompt-prewarm model=" << model
+                << " ok=0 status=0 ms=0 ram_warm=0 restored=0 saved=0"
+                << " cancelled=0 skipped=stale prefix_changed=0 source="
+                << std::endl;
       prewarm_release(lane, "");
       return;
     }
@@ -6850,7 +6903,7 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
   const std::string own = prefix_file(idx, model);
   const std::string own_key = port + "/" + own;
   std::string source = own;
-  bool prefix_changed = false, have_file = false;
+  bool prefix_changed = false, have_file = false, have_current = false;
   {
     std::lock_guard<std::mutex> lk(PREFIX_MTX);
     if (!PREFIX_META.isObj()) {
@@ -6864,15 +6917,16 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
     const std::string meta_own = meta(own_key);
     prefix_changed = !meta_own.empty() && meta_own != shared_key;
     have_file = !meta_own.empty();
-    // Own file if it holds the current shared prefix (or is of unknown age);
-    // otherwise another bot's file on the SAME server with that prefix.
-    if (CONFIGURED_MODEL && !meta(own_key).empty() && meta(own_key) != shared_key)
+    // Own file if it holds the current shared prefix; otherwise another bot's
+    // file on the SAME server with that prefix. A stale key is not current.
+    if (CONFIGURED_MODEL && prefix_changed)
       for (auto &kv : *PREFIX_META.obj)
         if (kv.first.rfind(port + "/", 0) == 0 && kv.second.type == Val::STR &&
             kv.second.asStr() == shared_key) {
           source = kv.first.substr(port.size() + 1);
           break;
         }
+    have_current = meta(port + "/" + source) == shared_key;
   }
   bool ram_warm = false, ram_known = !CONFIGURED_MODEL;
   bool saw_slot = false, explicit_empty = false, slot_busy = false;
@@ -6918,35 +6972,66 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
   // 99s on restart, then 50-60s for the queued turn). Reuse RAM or the saved
   // slot instead. A stale prefix key must not force that prefill: the next
   // user turn's cache_prompt evaluates only the tokens that actually differ.
+  //
+  // n_decoded>0 on a configured deterministic bot (live Qwen) is leftover
+  // from the old identity-only prompt, not the room wire. Do not skip that
+  // slot: prewarm the same wire the first hi will send.
+  const bool listed = ram_warm || decoded_warm || (saw_slot && !explicit_empty);
+  const bool identity_slot = CONFIGURED_MODEL && !ram_warm &&
+                             model_settings_for(model).deterministic;
   bool restored = false;
   bool skip = false;
   const char *why = "0";
   if (CONFIGURED_MODEL && ram_known) {
     const int slot = model_slot(idx);
     if (slot >= 1 && slot <= ROOM_MAX_BOTS)
-      SLOT_WARM[slot - 1] = (ram_warm || (saw_slot && !explicit_empty)) ? 1 : 2;
+      // Leftover identity KV reports ram_warm=1. That is not the room prefix
+      // unless the saved hash matches (live: skip=ram, first hi 17s / 48s).
+      SLOT_WARM[slot - 1] = (ram_warm && have_current && !prefix_changed) ? 1 : 2;
   }
+  auto commit_prefix_meta = [&]() {
+    std::lock_guard<std::mutex> lk(PREFIX_MTX);
+    PREFIX_META[own_key] = shared_key;
+    write_file_atomic(STATE_DIR + "/prompt-prefix.json", mj::dump(PREFIX_META));
+  };
   if (CONFIGURED_MODEL && (!ram_known || slot_busy)) {
     skip = true;
     why = "busy"; // /slots timed out or the slot is prefilling: do not clobber it
-  } else if (ram_warm) {
-    // Explicit cache counters, a prompt, or state>0: the KV is resident.
+  } else if (ram_warm && have_current && !prefix_changed) {
+    // RAM holds the room prefix we already saved. Leave it.
     skip = true;
     why = "ram";
-  } else if (CONFIGURED_MODEL && have_file && saw_slot && PREFIX_DISK) {
-    // Idle metrics, or a cancel that dropped the KV. Reload the slot file
-    // and do not post a completion: that completion was the full re-prefill.
+    if (CONFIGURED_MODEL) {
+      const int slot = model_slot(idx);
+      if (slot >= 1 && slot <= ROOM_MAX_BOTS) SLOT_WARM[slot - 1] = 1;
+    }
+  } else if (CONFIGURED_MODEL && PREFIX_DISK && have_current && !slot_busy) {
+    // Current-key file exists. Reload it over leftover / hash-changed RAM.
     restored = prefix_slot("restore", source);
     skip = true;
     why = "restored";
-  } else if (decoded_warm || (saw_slot && !explicit_empty)) {
-    // No slot file yet. Leave the listed slot alone.
+    commit_prefix_meta();
+  } else if (CONFIGURED_MODEL && PREFIX_DISK && have_file && !slot_busy) {
+    // Own file is a different hash. Reload the last checkpoint, then prewarm
+    // the current room prefix. Do not skip=ram (live DeepSeek 17s / Qwen 48s).
+    restored = prefix_slot("restore", own);
+    skip = false;
+    why = "hash";
+  } else if (listed && !identity_slot && have_current && !prefix_changed) {
     skip = true;
     why = "ram";
+    if (CONFIGURED_MODEL) {
+      const int slot = model_slot(idx);
+      if (slot >= 1 && slot <= ROOM_MAX_BOTS) SLOT_WARM[slot - 1] = 1;
+    }
   } else if (ram_known && !ram_warm) {
-    // Cold server (no listed slot): load a saved prefix, then one completion
-    // so the checkpoint exists. A listed slot never gets here.
-    restored = PREFIX_DISK && prefix_slot("restore", source);
+    // Cold first boot: restore if a current file exists, otherwise one
+    // completion so the checkpoint exists.
+    restored = PREFIX_DISK && have_current && prefix_slot("restore", source);
+    if (CONFIGURED_MODEL && restored) {
+      skip = true;
+      why = "restored";
+    }
   }
   std::string out;
   long code = 0;
@@ -7043,6 +7128,10 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
     PREFIX_META[own_key] = shared_key;
     write_file_atomic(STATE_DIR + "/prompt-prefix.json", mj::dump(PREFIX_META));
   }
+  if (CONFIGURED_MODEL && (saved || (restored && skip))) {
+    const int slot = model_slot(idx);
+    if (slot >= 1 && slot <= ROOM_MAX_BOTS) SLOT_WARM[slot - 1] = 1;
+  }
   if (seq.owns_lock()) seq.unlock();
   std::cerr << "prompt-prewarm model=" << model << " ok=" << (ok ? 1 : 0)
             << " status=" << code << " ms=" << ms
@@ -7066,8 +7155,10 @@ static void schedule_prewarm() {
   }
   // One slot per model server: prewarm only models answered by exactly one bot.
   // Configured lanes are per bot slot (lane_key), so every bot prewarms;
-  // prewarm_model serializes them per server (2 servers in parallel). Deterministic models
-  // send a short identity prompt without prompt cache, nothing to prewarm.
+  // prewarm_model serializes them per server (2 servers in parallel).
+  // Non-configured deterministic models send a short identity prompt without
+  // cache. Configured Qwen was skipped that way and stayed cold (live: 47s,
+  // tokens_cached=0). It now uses the room wire and must be prewarmed.
   std::map<std::string, int> by_model;
   std::set<std::string> shared;
   {
@@ -7081,8 +7172,15 @@ static void schedule_prewarm() {
   for (auto &[key, idx] : by_model) {
     const std::string model = key.substr(0, key.find('#'));
     if (shared.count(key) || lane_named(key).busy.load() ||
-        model_settings_for(model).deterministic)
+        (!CONFIGURED_MODEL && model_settings_for(model).deterministic))
       continue;
+    if (CONFIGURED_MODEL) {
+      const int slot = model_slot(idx);
+      // A warm slot stays put. The watcher retries only the cold one so a
+      // leftover DeepSeek skip=ram cannot starve Qwen (or the reverse).
+      if (slot >= 1 && slot <= ROOM_MAX_BOTS && SLOT_WARM[slot - 1].load() == 1)
+        continue;
+    }
     {
       std::lock_guard<std::mutex> lk(PREWARM_MTX);
       if (!PREWARM_RUNNING.insert(key).second) continue;
@@ -7109,6 +7207,8 @@ static void prewarm_if_prompt_changed() {
   turn.unlock();
   if (key == last) return;
   last = key;
+  if (CONFIGURED_MODEL)
+    for (auto &warm : SLOT_WARM) warm.store(0);
   schedule_prewarm();
 }
 // Radius query around the deterministic answer. Greedy decoding picks the
@@ -7889,6 +7989,7 @@ static Val user_stop(bool pause_jobs) {
   cancel_active(true);
   task_cancel("", "");
   const bool prewarm = cancel_prewarm();
+  cancel_llama_tasks(); // explicit; a socket close must not be the cancel path
   std::unique_lock<std::mutex> control(JOB_MTX);
   PREWARM_HOLD = true;
   Val out = Val::object();
@@ -8865,6 +8966,10 @@ int main() {
   setenv("TZ", env("MAG_TZ", "Europe/Berlin").c_str(), 1);
   tzset();
   signal(SIGPIPE, SIG_IGN);
+  // A room restart must not send "srv stop: cancel task". Exit without
+  // touching llama sockets; the gateway keeps the in-flight DeepSeek task.
+  signal(SIGTERM, [](int) { SHUTDOWN.store(true); _exit(0); });
+  signal(SIGINT, [](int) { SHUTDOWN.store(true); _exit(0); });
 
   const std::string secondary_kind = env("MAG_SECONDARY_MODEL", "iq3");
   try { ROOM_MODEL = RoomModel::from_env(); }
@@ -9210,6 +9315,7 @@ int main() {
             << ", max_tokens " << MAX_TOKENS << ", LLM-Timeout "
             << LLM_TIMEOUT_S << "s)"
             << ", UI " << PORT << ", Bridge " << BRIDGE_PORT << std::endl;
+  schedule_prewarm();
 
   std::thread([] {
     int bridge = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);

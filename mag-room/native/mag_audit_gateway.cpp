@@ -53,6 +53,27 @@ static int connect_loopback(int port,int timeout_s=3){
   sockaddr_in a{};a.sin_family=AF_INET;a.sin_port=htons((uint16_t)port);inet_pton(AF_INET,"127.0.0.1",&a.sin_addr);
   if(connect(fd,(sockaddr*)&a,sizeof(a))){close(fd);return -1;}return fd;
 }
+// ik_llama cancels the slot ("srv stop: cancel task") when this upstream
+// socket closes. A mag-120 restart must not do that: the gateway keeps the
+// llama connection and drains it. User Stop posts ?action=cancel, which
+// closes the tracked fd.
+static std::mutex LIVE_UP_MTX;
+static std::map<int,int> LIVE_UP;
+static void live_up_set(int port,int fd){
+  std::lock_guard<std::mutex> lk(LIVE_UP_MTX); LIVE_UP[port]=fd;
+}
+static void live_up_clear(int port,int fd){
+  std::lock_guard<std::mutex> lk(LIVE_UP_MTX);
+  auto it=LIVE_UP.find(port);
+  if(it!=LIVE_UP.end()&&it->second==fd) LIVE_UP.erase(it);
+}
+static bool live_up_abort(int port){
+  std::lock_guard<std::mutex> lk(LIVE_UP_MTX);
+  auto it=LIVE_UP.find(port);
+  if(it==LIVE_UP.end()) return false;
+  shutdown(it->second,SHUT_RDWR);
+  return true;
+}
 struct Config {
   int q4=8090,iq3=8091,listen=8080;
   std::string secondary="iq3"; // legacy IQ3/Qwen hosts
@@ -315,6 +336,10 @@ static void proxy(int fd){
     // The room may post /slots/0: always the bot's own llama slot, actions only.
     auto q=r.path.find('?');
     std::string action=q==std::string::npos?"":r.path.substr(q);
+    if(action=="?action=cancel"){
+      live_up_abort(upstream);
+      Val ok=Val::object();ok["ok"]=true;json_response(fd,200,ok);return;
+    }
     if(action!="?action=save"&&action!="?action=restore"&&action!="?action=erase"){
       json_response(fd,400,message("invalid slot action"));return;
     }
@@ -339,6 +364,10 @@ static void proxy(int fd){
   }
   int up=connect_loopback(upstream,3);
   if(up<0){json_response(fd,502,message("upstream unavailable"));return;}
+  // Room restart closes the client. Keep the llama task so ik does not log
+  // "srv stop: cancel task" and wipe the KV (live: 538s re-prefill).
+  const bool keep_task=is_llm;
+  bool client_gone=false;
   // Preserve transparent SSE/chunked framing, request bodies, and cancellation.
   std::ostringstream request;request<<r.method<<" "<<r.path<<" HTTP/1.1\r\nHost: 127.0.0.1:"<<upstream<<"\r\n";
   for(auto &kv:r.headers){
@@ -370,6 +399,7 @@ static void proxy(int fd){
     }
   }
   request<<"X-Mag-Audit-Id: "<<id<<"\r\nConnection: close\r\nContent-Length: "<<forwarded.size()<<"\r\n\r\n";
+  if(is_llm) live_up_set(upstream,up);
   bool wrote=write_all(up,request.str())&&write_all(up,forwarded);
   std::string full;full.reserve(8192);bool aborted=!wrote;size_t received=0;
   auto last_byte=std::chrono::steady_clock::now();
@@ -378,21 +408,26 @@ static void proxy(int fd){
   if(wrote){
     char b[32768];for(;;){
       pollfd pfd[2]={{up,POLLIN,0},{fd,POLLIN,0}};
-      int result=poll(pfd,2,1000);
+      int result=poll(pfd,client_gone?1:2,1000);
       if(result<0){if(errno==EINTR)continue;aborted=true;break;}
       if(!result){
         // A stalled upstream with a client that stays connected used to spin
-        // here forever. Idle is silence; the deadline caps a stream that
-        // never ends. Closing both sockets frees this gateway slot.
+        // here forever. Idle is silence on non-LLM probes. LLM/prefill is
+        // silent for minutes (live DeepSeek ~7 min); keep_task must not apply
+        // the 75s idle or the gateway closes llama ("srv stop: cancel task").
+        // The overall deadline still caps a stream that never ends.
         auto now=std::chrono::steady_clock::now();
-        if(now-started>=gateway_budget||now-last_byte>=gateway_idle){
+        if(now-started>=gateway_budget||(!keep_task&&now-last_byte>=gateway_idle)){
           aborted=true;break;
         }
         continue;
       }
-      if(pfd[1].revents&(POLLIN|POLLHUP|POLLERR)){
+      if(!client_gone&&(pfd[1].revents&(POLLIN|POLLHUP|POLLERR))){
         char probe;ssize_t n=recv(fd,&probe,1,MSG_PEEK|MSG_DONTWAIT);
-        if(n==0||n<0&&(errno!=EAGAIN&&errno!=EWOULDBLOCK)){aborted=true;break;}
+        if(n==0||(n<0&&errno!=EAGAIN&&errno!=EWOULDBLOCK)){
+          if(keep_task) client_gone=true;
+          else { aborted=true;break; }
+        }
       }
       if(pfd[0].revents&(POLLIN|POLLHUP|POLLERR)){
         ssize_t n=recv(up,b,sizeof(b),0);
@@ -401,14 +436,18 @@ static void proxy(int fd){
         last_byte=std::chrono::steady_clock::now();
         received+=(size_t)n;
         if(full.size()<64*1024*1024)full.append(b,(size_t)std::min((size_t)n,(size_t)(64*1024*1024-full.size())));
-        if(!write_all(fd,std::string(b,(size_t)n))){aborted=true;break;}
+        if(!client_gone&&!write_all(fd,std::string(b,(size_t)n))){
+          if(keep_task) client_gone=true;
+          else { aborted=true;break; }
+        }
       }
     }
   }
+  live_up_clear(upstream,up);
   shutdown(up,SHUT_RDWR);close(up);
   if(!quiet){
     Val v=Val::object();v["type"]=is_llm?"llm_response":"http_response";v["id"]=id;v["caller"]=caller;v["path"]=r.path;v["model_variant"]=selected;
-    v["aborted"]=aborted;v["client_disconnected"]=aborted;v["duration_s"]=std::chrono::duration<double>(std::chrono::steady_clock::now()-started).count();
+    v["aborted"]=aborted;v["client_disconnected"]=aborted||client_gone;v["duration_s"]=std::chrono::duration<double>(std::chrono::steady_clock::now()-started).count();
     v["bytes"]=(double)received;
     auto sep=full.find("\r\n\r\n");if(sep!=std::string::npos){
       std::string headers=full.substr(0,sep);std::istringstream h(headers);std::string prot;int status=0;h>>prot>>status;v["status"]=status;

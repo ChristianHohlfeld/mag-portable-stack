@@ -423,9 +423,9 @@ mag_systemctl restart mag-browser-webrtc.service
 # /readyz = Raum bereit (Modellstatus steht im JSON, ist aber kein Rollback-Grund)
 wait_http http://127.0.0.1:8766/readyz
 wait_http http://127.0.0.1:18784/health
-# Warm DeepSeek must answer /health in under 10s. A prefill on the only slot
-# fails this. Keep the release either way: rolling back restarts mag-120, and
-# this never restarts mag-llm-ds-node@0.
+# Both NUMA slots must already hold a prefix a first hi can extend in under
+# 5s. Keep the release either way: rolling back restarts mag-120, and this
+# never restarts mag-llm-ds-node@0.
 if ! bash "$SOURCE/ops/deploy-warm-hi.sh"; then
   echo 'WARN: warm hi gate failed; keeping this release and not restarting mag-llm' >&2
 fi

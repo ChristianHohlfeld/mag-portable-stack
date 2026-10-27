@@ -10,8 +10,9 @@
 # parallelism.
 #
 # Target: a verdict under 120s of wall clock on mag (14 cores, CPUs 42-55)
-# when ccache and the persistent ninja tree (~/.cache/mag-ci) are warm.
-# work/ is wiped every local run; the cache is never inside it. This script
+# when ccache and the per-worktree ninja tree (~/.cache/mag-ci/trees/<src>)
+# are warm. work/ is wiped every local run and each PR gets a new
+# ~/ci-local/wt/prN-<sha4>; the cache is never inside work/. This script
 # never deletes build/ or the cache. The first non-zero status aborts the
 # rest of that pool. Always prints MERGE GATE wall.
 #
@@ -37,8 +38,9 @@ fi
 if [[ ${MAG_CI_SKIP_BEFORE_REAP:-} != 1 ]]; then
   mag_ci_kill_worktree_magroom || true
 fi
-# Point ./build at ~/.cache/mag-ci (or MAG_CI_CACHE) before the pending check
-# so a wiped worktree still sees a warm ninja tree and stays one pool.
+# Point ./build at this source path's tree under ~/.cache/mag-ci (or
+# MAG_CI_CACHE) before the pending check. A foreign CMAKE_HOME_DIRECTORY
+# is dropped so cmake can configure this checkout.
 bash "$ROOT/ops/ci/incremental-build.sh" --prepare
 
 list=$(mktemp)

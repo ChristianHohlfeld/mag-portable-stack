@@ -171,7 +171,14 @@ build_before=$(readlink -f "$root/build" 2>/dev/null || true)
 printed=$(MAG_CI_CACHE="$tmp/cache" bash ops/ci/incremental-build.sh --print-cache)
 printf '%s\n' "$printed" | grep -q "MAG_CI_CACHE=$tmp/cache"
 printf '%s\n' "$printed" | grep -q "CCACHE_DIR=$tmp/cache/ccache"
-[[ -d $tmp/cache/ccache && -d $tmp/cache/build ]]
+printf '%s\n' "$printed" | grep -q "TREE=$tmp/cache/trees/"
+[[ -d $tmp/cache/ccache ]]
+[[ -d $(printf '%s\n' "$printed" | sed -n 's/^TREE=//p') ]]
+# The old shared $CACHE/build must not be the ninja tree.
+if [[ -d $tmp/cache/build ]]; then
+  echo 'print-cache still created the shared build/ leftover' >&2
+  exit 1
+fi
 build_after=$(readlink -f "$root/build" 2>/dev/null || true)
 if [[ $build_before != "$build_after" ]]; then
   echo '--print-cache retargeted ./build' >&2
@@ -188,4 +195,48 @@ wiped=$(MAG_CI_CACHE='' CCACHE_DIR=/work/.cache/ccache HOME=/work \
   bash ops/ci/incremental-build.sh --print-cache)
 printf '%s\n' "$wiped" | grep -q "MAG_CI_CACHE=/var/tmp/mag-ci-$(id -u)"
 printf '%s\n' "$wiped" | grep -q "CCACHE_DIR=/var/tmp/mag-ci-$(id -u)/ccache"
+
+# Mag creates ~/ci-local/wt/prN-<sha4> per PR. Two paths must both build
+# against one MAG_CI_CACHE; a leftover CMAKE_HOME_DIRECTORY from the first
+# must not abort the second.
+install_wt() {
+  local d=$1
+  mkdir -p "$d/ops/ci"
+  cp "$root/ops/ci/incremental-build.sh" "$d/ops/ci/incremental-build.sh"
+  cat >"$d/CMakeLists.txt" <<'EOF'
+cmake_minimum_required(VERSION 3.16)
+project(mag_ci_wt LANGUAGES CXX)
+add_executable(magroom main.cpp)
+EOF
+  printf '%s\n' 'int main(){return 0;}' >"$d/main.cpp"
+}
+wt1=$tmp/wt/pr163-72e0
+wt2=$tmp/wt/pr154-3f89
+install_wt "$wt1"
+install_wt "$wt2"
+export MAG_CI_CACHE="$tmp/shared"
+# Old shared leftover from 72e02b8: must not be reused as this worktree's tree.
+mkdir -p "$tmp/shared/build"
+printf 'CMAKE_HOME_DIRECTORY:INTERNAL=%s\n' "$wt1" >"$tmp/shared/build/CMakeCache.txt"
+bash "$wt1/ops/ci/incremental-build.sh"
+bash "$wt2/ops/ci/incremental-build.sh"
+[[ -x $wt1/build/magroom && -x $wt2/build/magroom ]]
+tree1=$(readlink -f "$wt1/build")
+tree2=$(readlink -f "$wt2/build")
+[[ $tree1 != "$tree2" ]]
+[[ $tree1 != "$tmp/shared/build" && $tree2 != "$tmp/shared/build" ]]
+grep -Fq "CMAKE_HOME_DIRECTORY:INTERNAL=$wt1" "$tree1/CMakeCache.txt"
+grep -Fq "CMAKE_HOME_DIRECTORY:INTERNAL=$wt2" "$tree2/CMakeCache.txt"
+# Foreign cache in this worktree's tree is reset; objects stay.
+printf 'CMAKE_HOME_DIRECTORY:INTERNAL=%s\n' "$wt1" >"$tree2/CMakeCache.txt"
+printf 'keep\n' >"$tree2/keep.o"
+mkdir -p "$tree2/CMakeFiles"
+printf 'stale\n' >"$tree2/CMakeFiles/stale"
+bash "$wt2/ops/ci/incremental-build.sh" --prepare
+[[ -f $tree2/keep.o ]]
+[[ ! -f $tree2/CMakeCache.txt ]]
+bash "$wt2/ops/ci/incremental-build.sh"
+[[ -x $wt2/build/magroom ]]
+grep -Fq "CMAKE_HOME_DIRECTORY:INTERNAL=$wt2" "$tree2/CMakeCache.txt"
+[[ -f $tree2/keep.o ]]
 echo 'gate parallel PASS'

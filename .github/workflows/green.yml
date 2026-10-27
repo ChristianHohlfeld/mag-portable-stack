@@ -5,20 +5,11 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
-  # A slow release test may finish after the initial promotion gate's wait
-  # limit. Re-check whenever a required workflow completes (no manual rerun).
-  workflow_run:
-    workflows:
-      - 'Native MAG stack'
-      - 'Room agent-chat contract (Stop, priority, queue, browser)'
-      - 'Screenshot paste browser emulation'
-      - 'Blank-host bootstrap (e2e)'
-      - 'MAG encrypted backup and restore'
-      - 'Private nginx cutover security'
-      - 'MAG Pages native C++ / nginx / secrets'
-      - 'MAG German browser speech'
-    types: [completed]
-    branches: [main]
+  # Slow e2e checks may outlive the first push gate. A single scheduled
+  # recheck avoids workflow_run storms / startup_failure and never promotes
+  # until EVERY main-push release workflow succeeded for this exact SHA.
+  schedule:
+    - cron: '*/5 * * * *'
 permissions:
   contents: write
   actions: read
@@ -27,7 +18,6 @@ concurrency:
   cancel-in-progress: true
 jobs:
   promote-green:
-    if: github.event_name != 'workflow_run' || github.event.workflow_run.head_branch == 'main'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -64,14 +54,9 @@ jobs:
               'MAG German browser speech',
             ];
             const { owner, repo } = context.repo;
-            const source = context.payload.workflow_run;
-            // workflow_run uses the latest default-branch SHA as GITHUB_SHA;
-            // never allow a stale or PR-origin workflow to promote green.
-            if (source && (source.head_branch !== 'main' || source.head_sha !== context.sha)) {
-              core.info('Ignoring non-main or superseded workflow_run');
-              core.setOutput('approved', 'false');
-              return;
-            }
+            // Scheduled runs use the latest default branch SHA. Verify all
+            // tests belong to this SHA, never an older passing release.
+            const scheduled = context.eventName === 'schedule';
             const deadline = Date.now() + 14 * 60_000;
             while (Date.now() < deadline) {
               // Only the same main push is relevant; a passing unrelated PR or
@@ -92,12 +77,8 @@ jobs:
                 } else if (match.conclusion !== 'success') {
                   const reason = name + ' = ' + match.conclusion +
                     '; retaining previous GitHub green';
-                  if (source) {
-                    core.info(reason);
-                    core.setOutput('approved', 'false');
-                  } else {
-                    core.setFailed(reason);
-                  }
+                  core.warning(reason);
+                  core.setOutput('approved', 'false');
                   return;
                 }
               }
@@ -107,9 +88,9 @@ jobs:
                 return;
               }
               core.info('Waiting on: ' + pending.join('; '));
-              // workflow_run will fire again for the next completed check:
-              // skip this promotion without keeping eight runners idle.
-              if (source) {
+              // The schedule retries later; do not burn 14 minutes of runner
+              // time every five minutes for an unfinished bootstrap.
+              if (scheduled) {
                 core.setOutput('approved', 'false');
                 return;
               }

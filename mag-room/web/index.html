@@ -1995,7 +1995,7 @@ let composerSending=false;
 const localSends=new Map(),failedSends=new Map();
 $('send-form').onsubmit=async e=>{
  e.preventDefault();
- if($('send-button').dataset.mode==='stop'||$('send-button').dataset.state==='stopping'){stopBot('');return}
+ const sendBtn=$('send-button');if(sendBtn&&sendBtn.dataset&&(sendBtn.dataset.mode==='stop'||sendBtn.dataset.state==='stopping')){stopBot('');return}
  const interrupt=!!$('send-form')._interrupt;$('send-form')._interrupt=false;
  const text=$('message').value.trim();if(!text&&!stagedPhotos.length&&!stagedFiles.length)return;
  if(/^\/(mcp|plugins?)$/i.test(text)&&can('connectors')&&window.openMcp){$('message').value='';$('message').dispatchEvent(new Event('input'));window.openMcp();return}

@@ -124,7 +124,14 @@ static std::string jobs_mcp_call(const std::string &name, const Val &args,
       if (!key || key->type != Val::STR || !jobs_valid_key(key->asStr()))
         return "Fehler: idempotency_key (8-128 Zeichen) fehlt";
       body["idempotency_key"] = *key;
+      // Model identity is the server's agent record. A human MCP caller names
+      // the owner; omitting it still binds the sole bot of a one-bot room.
       if (actor.is_bot) body["bot"] = actor.bot;
+      else if (auto owner = jobs_mcp_field(args, "bot")) {
+        if (owner->type != Val::STR) return "Fehler: bot muss ein String sein";
+        const std::string id = trim(owner->asStr());
+        if (!id.empty()) body["bot"] = id;
+      }
     }
     if (auto spec = jobs_mcp_field(args, "schedule")) {
       Val native; bool hook = false;
@@ -225,6 +232,17 @@ static Val jobs_mcp_list() {
     for (const char *key : {"name", "description"})
       if (auto f = fn->find(key)) v[key] = *f;
     if (auto p = fn->find("parameters")) v["inputSchema"] = *p;
+    // Human MCP may select the owner. The model tool schema stays without bot.
+    if (fn->find("name") && fn->find("name")->asStr() == "jobs_create") {
+      Val bot = Val::object();
+      bot["type"] = "string";
+      bot["minLength"] = 1;
+      bot["maxLength"] = 80;
+      bot["description"] = "Id of the active bot that owns the job. Required when more than one bot is active.";
+      v["inputSchema"]["properties"]["bot"] = bot;
+      if (auto d = v.find("description"); d && d->type == Val::STR)
+        d->str += " Pass bot when the room has more than one bot.";
+    }
     list.push(v);
   }
   return list;

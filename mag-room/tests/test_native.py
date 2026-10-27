@@ -660,6 +660,75 @@ class Native(unittest.TestCase):
   self.assertNotIn('confirm(',html.replace('magConfirm(',''))
   self.request('/api/jobs/'+j['id'],method='DELETE');Model.reply=None
 
+ def test_16j_jobs_belong_to_one_bot_and_show_on_the_right(self):
+  self.wait_idle()
+  html=self.request('/',raw=True).decode()
+  left=html.split('id="left-panel"',1)[1].split('<aside class="right"',1)[0]
+  right=html.split('id="right-panel"',1)[1].split('</aside>',1)[0]
+  self.assertNotIn('id="jobs-section"',left)
+  self.assertIn('id="add-agent"',left)
+  self.assertIn('Entfernen',html)
+  self.assertNotIn("check.checked?selected.add",html)
+  self.assertIn('id="bot-active"',right)
+  self.assertIn('id="bot-detail"',right)
+  self.assertIn('id="jobs-section"',right)
+  self.assertIn('id="browser-section"',right)
+  self.assertIn('id="terminal-panel"',right)
+  self.assertIn("sessionStorage.setItem('mag-focused-bot'",html)
+  self.assertIn("sessionStorage.setItem('mag-selected'",html)
+  self.assertIn('function focusBot(',html)
+  self.assertIn('bot:jobEdit?.bot||focusedBotId',html)
+  j=None;other=None
+  try:
+   j=self._job(name='Morgenbericht',prompt='VOLLER-AUFTRAG-NICHT-IM-SYSTEM '+('x'*400),schedule={'type':'daily','time':'07:00'})
+   self.assertEqual(j['bot'],'test')
+   disk=json.loads((self.state/'jobs.json').read_text())
+   self.assertEqual(next(d['bot'] for d in disk if d['id']==j['id']),'test')
+   self.error(400,'/api/jobs/'+j['id'],{'bot':'fremd'},method='PUT')
+   self.assertEqual(self._jget(j['id'])['bot'],'test')
+   self.wait_idle();Model.calls.clear();Model.reply='Kenntnis.'
+   self.request('/api/message',{'text':'Welche Fähigkeiten hast du?','bots':['test']})
+   self._settle(lambda s:not s['busy'] and any(m.get('content')=='Kenntnis.' for m in s['room']))
+   sysm=Model.calls[-1]['messages'][0]['content']
+   user=Model.calls[-1]['messages'][1]['content']
+   self.assertIn('[Fähigkeiten]',user)
+   self.assertIn('Morgenbericht',user)
+   self.assertIn('täglich 07:00',user)
+   self.assertNotIn('VOLLER-AUFTRAG-NICHT-IM-SYSTEM',sysm)
+   self.assertIn('VOLLER-AUFTRAG-NICHT-IM-SYSTEM',user)
+   other=self.request('/api/agents',{'name':'Neben','vm':False})
+   self.assertEqual(other['id'],'neben')
+   self.error(400,'/api/jobs',{'name':'Ohne','prompt':'x','schedule':{'type':'none'}})
+   fremd=self._job(name='Nebenjob',prompt='NUR-NEBEN',bot=other['id'])
+   self.assertEqual(fremd['bot'],other['id'])
+   self._bot_tool_turn('jobs_list',{})
+   self.assertNotIn('Nebenjob',json.dumps(Model.calls[-1]['messages'],ensure_ascii=False))
+   self._bot_tool_turn('jobs_get',{'id':fremd['id']})
+   self.assertTrue(any('anderen Bot' in str(m) for m in Model.calls[-1]['messages']))
+   self.request('/api/agents/'+other['id'],method='DELETE');other=None
+   self.error(404,'/api/jobs/'+fremd['id'],method='GET')
+   self.assertEqual(self._jget(j['id'])['name'],'Morgenbericht')
+   self.proc.kill();self.proc.wait(timeout=5);self.log.close()
+   data=json.loads((self.state/'jobs.json').read_text())
+   data.append({'id':'orphan1','name':'Verwaist','prompt':'Alt','bot':'','schedule':{'type':'none'},'created_by':'user'})
+   data.append({'id':'ghost1','name':'Geist','prompt':'Weg','bot':'nobody','schedule':{'type':'none'},'created_by':'user'})
+   (self.state/'jobs.json').write_text(json.dumps(data))
+   self.start()
+   self.assertEqual(self._jget('orphan1')['bot'],'test')
+   self.assertEqual(self._jget('ghost1')['bot'],'test')
+   saved={d['id']:d['bot'] for d in json.loads((self.state/'jobs.json').read_text())}
+   self.assertEqual(saved['orphan1'],'test')
+   self.assertEqual(saved['ghost1'],'test')
+  finally:
+   Model.reply=None;Model.script=[]
+   if other:
+    try:self.request('/api/agents/'+other['id'],method='DELETE')
+    except Exception:pass
+   ids=(['orphan1','ghost1'] if j is None else [j['id'],'orphan1','ghost1'])
+   for jid in ids:
+    try:self.request('/api/jobs/'+jid,method='DELETE')
+    except Exception:pass
+
  def test_15k_queue_move_persists_and_broadcasts(self):
   self.wait_idle();Model.script=[self._slow('out',80)]
   self.request('/api/message',{'text':'Sort-Lauf','bots':['test']});self._busy()
@@ -2137,6 +2206,35 @@ class Native(unittest.TestCase):
    self.assertEqual(self._jget(j['id'])['id'],j['id'])
   finally:
    self.request('/api/jobs/'+j['id'],method='DELETE');Model.script=[]
+ def test_17d_human_mcp_create_names_the_owning_bot(self):
+  self.wait_idle()
+  create=next(t for t in self._mcp('tools/list')['result']['tools'] if t['name']=='jobs_create')
+  self.assertIn('bot',create['inputSchema']['properties'])
+  self.assertNotIn('bot',create['inputSchema']['required'])
+  other=None;made=[]
+  try:
+   other=self.request('/api/agents',{'name':'Neben','vm':False})
+   missing={'name':'Ohne','prompt':'x','schedule':{'kind':'webhook'},'idempotency_key':'human-mcp-missing-bot'}
+   bad=self._mcp('tools/call',{'name':'jobs_create','arguments':missing})['result']
+   self.assertTrue(bad['isError']);self.assertIn('Bot fehlt',bad['content'][0]['text'])
+   named=dict(missing,name='Mit Bot',prompt='y',idempotency_key='human-mcp-with-bot',bot=other['id'])
+   ok=self._mcp('tools/call',{'name':'jobs_create','arguments':named})['result']
+   self.assertFalse(ok['isError'])
+   j=json.loads(ok['content'][0]['text']);made.append(j['id'])
+   self.assertEqual(j['bot'],other['id']);self.assertEqual(j['created_by'],'user')
+   self._bot_tool_turn('jobs_create',{'name':'Eigener','prompt':'z','schedule':{'kind':'webhook'},'idempotency_key':'bot-cannot-reassign','bot':other['id']})
+   own=[x for x in self.request('/api/jobs',method='GET')['jobs'] if x['name']=='Eigener']
+   self.assertEqual(len(own),1);self.assertEqual(own[0]['bot'],'test');made.append(own[0]['id'])
+   spec=next(t for t in Model.calls[0].get('tools') or [] if t['function']['name']=='jobs_create')
+   self.assertNotIn('bot',spec['function']['parameters']['properties'])
+  finally:
+   Model.script=[]
+   if other:
+    try:self.request('/api/agents/'+other['id'],method='DELETE')
+    except Exception:pass
+   for jid in made:
+    try:self.request('/api/jobs/'+jid,method='DELETE')
+    except Exception:pass
 
 
 class SingleBot(unittest.TestCase):

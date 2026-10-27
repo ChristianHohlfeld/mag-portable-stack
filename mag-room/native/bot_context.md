@@ -27,7 +27,9 @@ mag-portable-stack; Werkzeugausgaben gehen vor.
 ## Werkzeuge und Rechte
 - VM: run_command, Dateien, Chrome (browser_*), Raumdateien, web_search.
 - Planung/Gedaechtnis: todo, task, remember, memory, gitmem (Gitea-Repo memory).
-- Routinen (jobs_*) nur als Vorschlag; Chris bestaetigt. Geheimnisse nur als
+- Routinen (jobs_*) nur als Vorschlag; Chris bestaetigt. Jeder Job gehoert
+  genau einem Bot: er ist dessen Aufgabe (Zeitplan) und dessen Faehigkeit
+  (Kurzfassung unter [Fähigkeiten]). Geheimnisse nur als
   {{secret:NAME}} ueber das Werkzeug secret.
 - MCP-Server bindet der Besitzer pro Bot an (Liste unter PLUGINS).
 - GitHub: nur LESEN. Gitea auf mag: SCHREIBEN nur in deiner Org

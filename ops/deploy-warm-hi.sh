@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
 # After mag-120 is up: both NUMA slots must already hold a prefix that a
 # first hi can extend in under 5s. The slots document is large; pass it on
-# stdin, never as an argument (Argument list too long). This check does not
-# send a chat completion (that would replace the cached prefix) and does not
-# restart mag-llm-ds-node@0.
+# stdin, never as an argument (Argument list too long). ik-llama on :8191
+# reports only state=0 (no n_past / n_prompt_tokens / n_cached_tokens); a
+# saved prefix file, or one timed token when the room hi is not the
+# measurement, counts there. A slot still prefilling is given a short settle,
+# then cancel+restore, before that measurement. This check does not restart
+# mag-llm-ds-node@0. A direct completion is sent only when cache counts are
+# absent and MAG_WARM_HI_REQUIRE_ROOM is off, so the room hi keeps the KV.
 set -euo pipefail
 budget=${MAG_WARM_HI_BUDGET_S:-5}
 limit_ms=${MAG_WARM_HI_ANSWER_MS:-5000}
@@ -30,33 +34,193 @@ check_port() {
   if [[ -z "$slots" ]]; then
     fail "warm hi gate: :${port}/slots silent in ${budget}s"
   fi
-  printf '%s' "$slots" | python3 -c '
-import json, sys
+  # Classify on stdin (the slots body is too large for argv). Exit text is
+  # "ok <detail>" or "fail <detail>". A busy slot is polled, then cancelled
+  # and restored from the saved prefix, before the same rules run again.
+  line=$(printf '%s' "$slots" | MAG_WARM_HI_PORT_ONE="$port" python3 -c "$(cat <<'PY'
+import json, os, re, sys, time, urllib.request
 raw = sys.stdin.read()
-try:
-    slots = json.loads(raw)
-except Exception:
-    sys.exit(2)
-if isinstance(slots, dict):
-    slots = slots.get("slots") or slots.get("data") or []
-if not isinstance(slots, list) or not slots:
-    sys.exit(3)
-for slot in slots:
-    if slot.get("is_processing"):
-        sys.exit(4)
+port = os.environ.get("MAG_WARM_HI_PORT_ONE", "")
+budget = float(os.environ.get("MAG_WARM_HI_BUDGET_S", "5"))
+settle = float(os.environ.get("MAG_WARM_HI_SETTLE_S", "2"))
+limit_ms = int(os.environ.get("MAG_WARM_HI_ANSWER_MS", "5000"))
+require_room = os.environ.get("MAG_WARM_HI_REQUIRE_ROOM", "0") == "1"
+state_dir = os.environ.get("MAG_ROOM_STATE", "/var/lib/magbot/room")
+slots_root = os.environ.get("MAG_WARM_HI_SLOTS", "/var/lib/mag-llm/slots")
+CONTENT = re.compile(r'"content"\s*:\s*"((?:\\.|[^"\\])*)"')
+
+def parse(body):
+    try:
+        slots = json.loads(body)
+    except Exception:
+        return None
+    if isinstance(slots, dict):
+        slots = slots.get("slots") or slots.get("data") or []
+    if not isinstance(slots, list) or not slots:
+        return None
+    return slots
+
+def cache_count(slot):
     # n_decoded, a prompt string or state>0 is not the room prefix
     # (live: n_past=1 / 12 tokens still printed "prefix resident").
-    count = 0
+    present, count = False, 0
     for key in ("n_past", "n_prompt_tokens", "n_cached_tokens"):
         n = slot.get(key)
-        if isinstance(n, (int, float)) and n > count:
-            count = n
-    if count < 2048:
-        sys.exit(5)
-' || {
-    fail "warm hi gate: :${port} slot is busy or has no cached prefix (health ${ms}ms)"
-  }
-  echo "warm hi gate: :${port}/health ${ms}ms, prefix resident"
+        if isinstance(n, (int, float)):
+            present = True
+            if n > count:
+                count = n
+    return present, count
+
+def busy(slots):
+    return any(bool(slot.get("is_processing")) for slot in slots)
+
+def fetch():
+    with urllib.request.urlopen("http://127.0.0.1:%s/slots" % port, timeout=budget) as r:
+        return r.read().decode("utf-8", "replace")
+
+def prefix_names():
+    path = os.path.join(state_dir, "prompt-prefix.json")
+    try:
+        meta = json.load(open(path))
+    except Exception:
+        return []
+    if not isinstance(meta, dict):
+        return []
+    names, prefix = [], str(port) + "/"
+    for key, val in meta.items():
+        if not isinstance(key, str) or not key.startswith(prefix):
+            continue
+        if not isinstance(val, str) or not val:
+            continue
+        name = key.split("/", 1)[1]
+        if name and "/" not in name and name not in (".", "..") and name not in names:
+            names.append(name)
+    return names
+
+def file_ready(directory, name):
+    candidate = os.path.join(directory, name)
+    return os.path.isfile(candidate) and os.path.getsize(candidate) > 0
+
+def prefix_file():
+    names = prefix_names()
+    if not names:
+        return None
+    preferred = []
+    if port == "8191":
+        preferred.append(os.path.join(slots_root, "ds-node0"))
+    if port == "8192":
+        preferred.append(os.path.join(slots_root, "qwen"))
+    preferred.append(slots_root)
+    for name in names:
+        for directory in preferred:
+            if file_ready(directory, name):
+                return name
+        try:
+            entries = list(os.scandir(slots_root))
+        except FileNotFoundError:
+            entries = []
+        for entry in entries:
+            if entry.is_dir(follow_symlinks=False) and file_ready(entry.path, name):
+                return name
+    return None
+
+def post(path, body):
+    data = json.dumps(body).encode()
+    req = urllib.request.Request(
+        "http://127.0.0.1:%s%s" % (port, path), data=data, method="POST",
+        headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=budget) as r:
+            r.read()
+    except Exception:
+        pass
+
+def probe():
+    # One cached token. Only when the slot omits n_* and the room hi is not
+    # already the measurement (that hi must keep the restored KV).
+    payload = {
+        "messages": [{"role": "user", "content": "hi"}],
+        "max_tokens": 1, "cache_prompt": True, "stream": True, "id_slot": 0,
+    }
+    req = urllib.request.Request(
+        "http://127.0.0.1:%s/v1/chat/completions" % port,
+        data=json.dumps(payload).encode(), method="POST",
+        headers={"Content-Type": "application/json"})
+    started = time.monotonic()
+    try:
+        with urllib.request.urlopen(req, timeout=limit_ms / 1000.0 + 1) as resp:
+            buf = ""
+            while time.monotonic() - started < limit_ms / 1000.0:
+                chunk = resp.read(512)
+                if not chunk:
+                    break
+                buf += chunk.decode("utf-8", "replace")
+                if any(part != "" for part in CONTENT.findall(buf)):
+                    return int((time.monotonic() - started) * 1000)
+    except Exception:
+        return None
+    return None
+
+def classify(slots):
+    if not slots:
+        return "fail"
+    if busy(slots):
+        return "fail"
+    missing = False
+    for slot in slots:
+        present, count = cache_count(slot)
+        if present and count < 2048:
+            return "fail"
+        if not present:
+            missing = True
+    if not missing:
+        return "prefix resident"
+    # ik-llama: state only. A non-empty prefix file is the saved KV.
+    # Without the room hi, also time one token. A bare state=0 is cold.
+    saved = prefix_file()
+    if saved and require_room:
+        return "prefix file"
+    if saved:
+        ms = probe()
+        if ms is None or ms >= limit_ms:
+            return "fail"
+        return "first token %dms" % ms
+    if require_room:
+        return "prefix unchecked"
+    return "fail"
+
+slots = parse(raw)
+if slots and busy(slots):
+    deadline = time.monotonic() + settle
+    while slots and busy(slots) and time.monotonic() < deadline:
+        time.sleep(0.1)
+        try:
+            slots = parse(fetch()) or slots
+        except Exception:
+            break
+    if slots and busy(slots):
+        post("/slots/0?action=cancel", {})
+        name = prefix_file()
+        if name:
+            post("/slots/0?action=restore", {"filename": name})
+        time.sleep(0.05)
+        try:
+            slots = parse(fetch()) or slots
+        except Exception:
+            pass
+detail = classify(slots)
+if detail == "fail":
+    print("fail slot is busy or has no cached prefix")
+else:
+    print("ok " + detail)
+PY
+)" ) || line='fail slot is busy or has no cached prefix'
+  case "$line" in
+    ok\ *) echo "warm hi gate: :${port}/health ${ms}ms, ${line#ok }" ;;
+    fail\ *) fail "warm hi gate: :${port} ${line#fail } (health ${ms}ms)" ;;
+    *) fail "warm hi gate: :${port} slot is busy or has no cached prefix (health ${ms}ms)" ;;
+  esac
 }
 
 for port in "${port_list[@]}"; do

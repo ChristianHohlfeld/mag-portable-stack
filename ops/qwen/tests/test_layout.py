@@ -90,6 +90,20 @@ json.dump(s,open(p,'w'))
   p=self.run_layout(MAG_ROOM_LAYOUT='deepseek');self.assertEqual(p.returncode,0,p.stderr)
   self.assertEqual(json.loads(self.state.read_text()),self.original)
   p=self.run_layout('rollback');self.assertEqual(p.returncode,0,p.stderr)
+ def test_rollback_helper_pins_stack_root(self):
+  # The deployed copy runs as $BACKUP/qwen-layout/helper.sh. Resolving
+  # mag-units.sh from that directory looks in /var/backups/mag-stack/ops/.
+  p=self.run_layout(); self.assertEqual(p.returncode,0,p.stderr)
+  helper=self.backup/'qwen-layout'/'helper.sh'
+  text=helper.read_text().splitlines()
+  root_line=next(line for line in text if line.startswith('ROOT='))
+  self.assertEqual(root_line, "ROOT='%s'"%self.repo)
+  self.assertNotIn('readlink -f "$0"', '\n'.join(text))
+  p=subprocess.run(['bash',str(helper),'rollback',str(self.backup)],env=self.env,capture_output=True,text=True)
+  self.assertEqual(p.returncode,0,p.stderr+p.stdout)
+  self.assertNotIn('mag-units.sh', p.stderr)
+  self.assertNotIn('/var/backups/mag-stack/ops/mag-units.sh', p.stderr)
+  self.assertEqual(json.loads(self.state.read_text()),self.original)
  def test_conflicts_do_not_stop_numa0(self):
   ds=(ROOT/'ops/room/mag-llm-ds-node@.service').read_text();q=(ROOT/'ops/qwen/mag-llm-qwen.service').read_text()
   self.assertNotIn('mag-llm-qwen.service',ds)

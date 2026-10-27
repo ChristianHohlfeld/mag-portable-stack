@@ -230,11 +230,11 @@ hold_selftalk_for_deploy() {
 }
 release_selftalk_hold() {
   local room_state="${MAG_ROOM_STATE:-/var/lib/magbot/room}"
-  if [[ -d $room_state && -w $room_state ]]; then
-    rm -f "$room_state/deploy-hold" "$room_state/selftalk-resume"
-  fi
   curl -fsS -o /dev/null --max-time 5 -X POST -H 'Content-Type: application/json' \
     -d '{"on":false}' http://127.0.0.1:8766/api/deploy-hold >/dev/null 2>&1 || true
+  if [[ -d $room_state && -w $room_state ]]; then
+    rm -f "$room_state/deploy-hold" "$room_state/selftalk-resume" "$room_state/proaktiv-resume"
+  fi
 }
 # Idle room, or a busy flag that is not producing tokens. A stuck busy=true
 # (no prompt/output progress) must not sit out the whole drain window.
@@ -472,11 +472,12 @@ wait_http http://127.0.0.1:18784/health
 # each bot's first token in under 5s. Failure rolls the release back.
 # rollback restarts mag-120 only; it does not restart mag-llm.
 if ! MAG_WARM_HI_REQUIRE_ROOM=1 bash "$SOURCE/ops/deploy-warm-hi.sh"; then
-  echo 'warm hi gate failed; rolling back this release. Not restarting mag-llm.' >&2
+  echo 'FAIL: warm hi gate failed; rolling back this release. Not restarting mag-llm.' >&2
+  release_selftalk_hold
   exit 1
 fi
-# Proactive stays held through the gate so it cannot occupy a slot or sit
-# in front of this hi. Release it now that both answers were visible.
+# Proaktiv stayed held across the restart so the gate saw idle slots.
+# Release it now that both answers were visible.
 release_selftalk_hold
 # Revalidate the new room through the already-verified nginx ingress.
 bash "$NGINX_SYNC" smoke

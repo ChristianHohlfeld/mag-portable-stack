@@ -60,6 +60,26 @@ for file in "${files[@]}"; do
   if [[ -f $file ]]; then install -D -m "$(stat -c %a "$file")" "$file" "$TXN/files$file"; fi
 done
 install -m 0700 "$0" "$TXN/helper.sh"
+# The copy is later executed as $BACKUP/qwen-layout/helper.sh. Its own
+# dirname($0)/../.. is the backup parent (/var/backups/mag-stack), so
+# `source "$ROOT/ops/mag-units.sh"` would miss the stack. Pin the root
+# this process already resolved.
+python3 - "$TXN/helper.sh" "$ROOT" <<'PY'
+import pathlib, sys
+path, root = sys.argv[1], sys.argv[2]
+file = pathlib.Path(path)
+lines = file.read_text().splitlines(keepends=True)
+out, done = [], False
+for line in lines:
+    if not done and line.startswith("ROOT="):
+        out.append("ROOT='%s'\n" % root.replace("'", "'\\''"))
+        done = True
+    else:
+        out.append(line)
+if not done:
+    raise SystemExit("layout helper: ROOT= line missing")
+file.write_text("".join(out))
+PY
 touch "$TXN/started"
 trap 'rc=$?; trap - EXIT; if (( rc )); then rollback; fi; exit "$rc"' EXIT
 # Qwen stage verifies all 98 GB (or its root-owned identity stamp) BEFORE stopping ds1.

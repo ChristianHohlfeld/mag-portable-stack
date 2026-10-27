@@ -2647,7 +2647,7 @@ static void pho_rollover(int idx,std::vector<Val> &messages) {
   // compacted copy is what the next request loads.
   const auto &w=it->second;
   // A stored turn boundary can lag when a new user message is appended. Never
-  // rewrite either of the two most recent complete user turns in the actual
+  // rewrite either of the two preceding complete user turns plus the current user turn in the actual
   // request, even when the archive says those lines are eligible.
   size_t recent_begin=messages.size();
   int recent_users=0;
@@ -2656,7 +2656,9 @@ static void pho_rollover(int idx,std::vector<Val> &messages) {
     const std::string content=mag::str(messages[k],"content");
     if(content.rfind("[System]",0)==0 ||
        content.rfind("[Bisher ausgefuehrte Schritte",0)==0)continue;
-    if(++recent_users==2){recent_begin=k;break;}
+    // The newest user is the still-pending request. Keep it PLUS the two
+    // preceding complete turns byte-identical through a rollover.
+    if(++recent_users==3){recent_begin=k;break;}
   }
   const size_t end=std::min({pho_old_end(w),messages.size(),recent_begin});
   size_t changed=0;
@@ -5535,7 +5537,7 @@ static void compact_agent_context(int bot_idx, std::vector<Val> &messages,
   while (prompt_wire_bytes(messages, tools) > target) {
     const size_t at = rollup.empty() ? 2 : 3;
     if (messages.size() <= at + 2) break;
-    // Preserve both of the latest complete user turns when collapsing older
+    // Preserve two previous completed user turns AND the pending user request when collapsing older
     // rounds. If those alone exceed the budget, handle the initial transcript
     // below instead of silently discarding a live instruction.
     size_t protect_from=messages.size();
@@ -5545,7 +5547,8 @@ static void compact_agent_context(int bot_idx, std::vector<Val> &messages,
       const std::string content=mag::str(messages[k],"content");
       if(content.rfind("[System]",0)==0 ||
          content.rfind("[Bisher ausgefuehrte Schritte",0)==0)continue;
-      if(++user_count==2){protect_from=k;break;}
+      // Current input is not a completed turn: also retain its two predecessors.
+      if(++user_count==3){protect_from=k;break;}
     }
     if(at>=protect_from)break;
     size_t end = at + 1;

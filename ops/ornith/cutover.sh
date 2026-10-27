@@ -26,11 +26,12 @@ fail(){ echo "Ornith cutover: $*" >&2; exit 4; }
 # Archived cutover requires its matching four-slot gateway. Refuse before
 # installing files or touching services on the current DeepSeek deployment.
 grep -Fxq "Environment=MAG_MODEL_ORNITH_PORTS=$PORTS" "$ROOT/ops/audit/systemd/mag-audit-gateway.service" || fail 'legacy gateway required; use ops/room/install.sh for the configured model'
-exec 8>"$R/run/lock/mag-private-deploy.lock"
-flock -n 8 || fail 'MAG deploy/cutover already in progress'
 # shellcheck source=../deploy-guard.sh
 source "$ROOT/ops/deploy-guard.sh"
-mag_cloexec 8
+export MAG_DEPLOY_LOCK="$R/run/lock/mag-private-deploy.lock"
+export MAG_DEPLOY_LOCK_MESSAGE='MAG deploy/cutover already in progress'
+export MAG_DEPLOY_LOCK_EXIT=4
+mag_deploy_lock "$@"
 health(){ curl --noproxy '*' -fsS -o /dev/null --max-time 5 "http://127.0.0.1:$1/health"; }
 pid(){ systemctl show -p MainPID --value "$1" 2>/dev/null || true; }
 node_usable_kib(){

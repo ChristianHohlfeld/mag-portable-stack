@@ -1,27 +1,56 @@
 #!/usr/bin/env bash
 # Shared deploy lock and deadline. Source this; do not execute it.
-# Children must not inherit the lock fd. An orphaned curl kept
-# /run/lock/mag-private-deploy.lock (fd 8) after a deploy was killed during
-# an HTTP 429, so the next deploy reported that another install was running.
-mag_cloexec() {
-  local fd=$1
-  python3 -c 'import fcntl,sys; fcntl.fcntl(int(sys.argv[1]), fcntl.F_SETFD, fcntl.FD_CLOEXEC)' "$fd"
-}
+# The lock is held by a supervisor process, not by this shell. This shell's
+# children therefore cannot inherit it. An orphaned curl used to keep
+# /run/lock/mag-private-deploy.lock after a deploy was killed during HTTP 429,
+# so the next deploy reported that another install was running.
+# flock's FD_CLOEXEC flag is per process. A child Python cannot set it on
+# the shell's fd, so the supervisor opens the lock itself and the deploy
+# process never has that fd.
+MAG_LOCK_PY='import fcntl, os, sys, signal
+path = sys.argv[1]
+cmd = sys.argv[2:]
+if not cmd:
+    sys.stderr.write("deploy lock: missing command\n")
+    raise SystemExit(2)
+fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o644)
+message = os.environ.get("MAG_DEPLOY_LOCK_MESSAGE", "Another MAG deploy/ingress install is running")
+try:
+    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+except OSError:
+    sys.stderr.write(message + "\n")
+    raise SystemExit(int(os.environ.get("MAG_DEPLOY_LOCK_EXIT", "1")))
+pid = os.fork()
+if pid == 0:
+    os.close(fd)
+    os.execvp(cmd[0], cmd)
+    os._exit(127)
+_, status = os.waitpid(pid, 0)
+code = os.waitstatus_to_exitcode(status)
+if code < 0:
+    signal.signal(-code, signal.SIG_DFL)
+    os.kill(os.getpid(), -code)
+raise SystemExit(code)
+'
 
-# Acquire MAG_DEPLOY_LOCK (default /run/lock/mag-private-deploy.lock) on fd.
-# flock is non-blocking. The fd is close-on-exec before this function returns.
+# Re-exec under the lock supervisor. Returns only in the restarted script,
+# which does not hold the lock fd. A busy lock exits MAG_DEPLOY_LOCK_EXIT.
 mag_deploy_lock() {
-  local fd=${1:-8}
+  if [[ -n ${MAG_DEPLOY_LOCK_HELD:-} ]]; then
+    return 0
+  fi
   local path=${MAG_DEPLOY_LOCK:-/run/lock/mag-private-deploy.lock}
   mkdir -p "$(dirname "$path")"
-  eval "exec ${fd}>\"\$path\""
-  flock -n "$fd" || { echo 'Another MAG deploy/ingress install is running' >&2; return 1; }
-  mag_cloexec "$fd"
+  command -v python3 >/dev/null 2>&1 || { echo 'python3 is required to hold the deploy lock' >&2; return 1; }
+  export MAG_DEPLOY_LOCK_HELD=1
+  exec python3 -c "$MAG_LOCK_PY" "$path" bash "$0" "$@"
 }
 
-# Re-exec this process under timeout(1) once. timeout kills the process
-# group, so a hung child cannot keep the deploy alive. The lock is taken
-# after the re-exec and is not inherited (mag_cloexec).
+# Re-exec once under timeout(1). timeout kills the process group, so a hung
+# child cannot keep the deploy alive. This does not take the lock: deploy.sh
+# holds /run/lock/mag-private-deploy.lock on fd 8 via the watchdog, and other
+# callers take it with mag_deploy_lock. Taking it here as well would make
+# that flock fail closed.
 mag_deploy_arm_deadline() {
   if [[ -n ${MAG_DEPLOY_DEADLINE_ARMED:-} ]]; then
     return 0

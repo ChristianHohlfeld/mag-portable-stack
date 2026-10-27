@@ -124,7 +124,17 @@ class MemoryDialogBrowser(unittest.TestCase):
                     page.on('pageerror', lambda error: print('ROOM_JS_ERROR:', str(error), getattr(error, 'stack', ''), flush=True))
                     page.goto(f"http://127.0.0.1:{self.server.server_port}/",
                               wait_until="domcontentloaded")
-                    page.locator("#agents .agent").wait_for(state="attached")
+                    try:
+                        page.locator("#agents .agent").wait_for(state="attached", timeout=5000)
+                    except Exception:
+                        print("ROOM_STATE_DEBUG", page.evaluate("""() => ({
+                          agents: typeof state==='undefined'? 'no state' : state.agents,
+                          notice: document.querySelector('#notice')?.textContent,
+                          connection: document.querySelector('#connection')?.textContent,
+                          cards: document.querySelectorAll('#agents .agent').length,
+                          script: document.scripts.length
+                        })"""), flush=True)
+                        raise
                     self.assertEqual(page.locator("#area-memory").count(), 0)
                     self.assertEqual(page.locator("#memory-areas").count(), 0)
                     self.assertEqual(page.locator(".data-entry").count(), 0)

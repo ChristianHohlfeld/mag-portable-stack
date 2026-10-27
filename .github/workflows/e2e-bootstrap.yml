@@ -5,6 +5,14 @@ name: Blank-host bootstrap (e2e)
 # self-hosted MAG runners are unprivileged by design).
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - 'ops/bootstrap.sh'
+      - 'ops/bootstrap-voice.sh'
+      - 'ops/tests/e2e-bootstrap.sh'
+      - '.github/workflows/e2e-bootstrap.yml'
 permissions:
   contents: read
 concurrency:

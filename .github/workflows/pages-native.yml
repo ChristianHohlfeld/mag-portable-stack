@@ -1,6 +1,15 @@
 name: MAG Pages native C++ / nginx / secrets
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - 'ops/pages/**'
+      - 'mag-room/native/pages.hpp'
+      - 'mag-room/native/pages_tools.hpp'
+      - 'mag-room/tests/test_pages.cpp'
+      - '.github/workflows/pages-native.yml'
 permissions:
   contents: read
   pull-requests: read

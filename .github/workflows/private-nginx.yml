@@ -1,6 +1,16 @@
 name: Private nginx cutover security
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - 'ops/private-access/**'
+      - 'ops/nginx/**'
+      - 'mag-room/native/tailscale_auth.hpp'
+      - 'mag-room/tests/test_private_nginx.py'
+      - 'mag-room/tests/test_whois_deploy.py'
+      - '.github/workflows/private-nginx.yml'
 permissions:
   contents: read
   pull-requests: read

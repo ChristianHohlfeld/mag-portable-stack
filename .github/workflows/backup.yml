@@ -1,6 +1,14 @@
 name: MAG encrypted backup and restore
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - 'ops/backup/**'
+      - 'ops/deploy.sh'
+      - 'ops/deploy-guard.sh'
+      - '.github/workflows/backup.yml'
 permissions:
   contents: read
   pull-requests: read

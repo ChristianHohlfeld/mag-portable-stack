@@ -4,6 +4,20 @@ permissions:
   pull-requests: read
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - 'mag-room/static/speech-ui.js'
+      - 'mag-room/static/message-audio.js'
+      - 'mag-room/static/speech-capture.js'
+      - 'mag-room/web/sw.js'
+      - 'mag-room/tests/test_speech*.py'
+      - 'mag-room/tests/test_message_audio.cjs'
+      - 'mag-room/tests/test_piper_warmup.cjs'
+      - 'ops/vendor-speech-assets.sh'
+      - 'ops/nginx/mag-speech.inc'
+      - '.github/workflows/speech.yml'
 jobs:
   speech:
     timeout-minutes: 60

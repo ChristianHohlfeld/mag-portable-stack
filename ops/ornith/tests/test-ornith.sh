@@ -115,6 +115,7 @@ SH
   local SRC=$T/repo
   mkdir -p "$SRC/ops/qwen" "$SRC/ops/audit/systemd" "$SRC/build"
   cp -a ops/ornith "$SRC/ops/"
+  cp ops/deploy-guard.sh "$SRC/ops/deploy-guard.sh"
   cp ops/qwen/runtime.sha "$SRC/ops/qwen/"
   cp build/mag-audit-gateway "$SRC/build/"
   printf '[Service]\nEnvironment=MAG_MODEL_ORNITH_PORTS=8191:0,8192:0,8191:1,8192:1\n' > "$SRC/ops/audit/systemd/mag-audit-gateway.service"

@@ -1,6 +1,15 @@
 name: Screenshot paste browser emulation
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - 'mag-room/web/**'
+      - 'mag-room/tests/test_image_paste.py'
+      - 'mag-room/tests/test_memory_ui.py'
+      - 'mag-room/tests/test_type_to_focus.py'
+      - '.github/workflows/image-paste.yml'
 jobs:
   chromium:
     timeout-minutes: 30

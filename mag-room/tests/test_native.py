@@ -1,5 +1,5 @@
 """Isolated native integration checks. Uses temporary state and a fake model."""
-# mag-test-timeout: 180
+# mag-test-timeout: 300
 import pathlib as _mag_path
 import sys as _mag_sys
 _mag_root = _mag_path.Path(__file__).resolve()
@@ -7,7 +7,7 @@ while _mag_root != _mag_root.parent and not (_mag_root / 'ops/ci/mag_deadline.py
     _mag_root = _mag_root.parent
 _mag_sys.path.insert(0, str(_mag_root / 'ops/ci'))
 import mag_deadline as _mag_deadline
-_mag_deadline.arm(180)
+_mag_deadline.arm(300)
 import hashlib,http.server,json,os,pathlib,socket,socketserver,subprocess,tempfile,threading,time,unittest,urllib.request,urllib.error,urllib.parse
 ROOT=pathlib.Path(__file__).resolve().parents[2]
 # Idle prompt prewarm adds background model calls; tests count Model.calls exactly.

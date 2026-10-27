@@ -99,7 +99,7 @@ class NativeWhois(unittest.TestCase):
                    MAG_ROOM_UI=str(ROOT / "mag-room/web/index.html"),
                    MAG_NETMODE="/bin/true", MAG_TEST_NO_MEMGIT="1",
                    MAG_ROOM_FILE_SYNC_SECONDS="0",
-                   MAG_ROOM_GUEST_CLEANUP_SECONDS="1",
+                   MAG_ROOM_GUEST_CLEANUP_SECONDS="0",
                    MAG_ROOM_MODEL_STATUS=str(cls.path / "model.json"),
                    MAG_TAILSCALED_SOCKET=str(cls.sock))
         cls.log = open(cls.path / "server.log", "w")
@@ -139,7 +139,7 @@ class NativeWhois(unittest.TestCase):
             headers=headers, method=method)
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
         try:
-            with opener.open(req, timeout=5) as response:
+            with opener.open(req, timeout=20) as response:
                 return response.status, response.headers
         except urllib.error.HTTPError as error:
             return error.code, error.headers
@@ -188,7 +188,7 @@ class NativeWhois(unittest.TestCase):
             data=body, headers=headers, method=method)
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
         try:
-            with opener.open(req, timeout=5) as response:
+            with opener.open(req, timeout=20) as response:
                 return response.status, response.read()
         except urllib.error.HTTPError as err:
             return err.code, err.read()

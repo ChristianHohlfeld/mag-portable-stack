@@ -1,0 +1,17 @@
+room-clear :: grep -Fq "MAG_TEST_NO_CLEAR_BACKUP='1'" mag-room/tests/test_native.py && ! grep -Fq 'mag-backup-clear.timer' mag-room/native/routes.hpp && ! grep -Fq 'start mag-backup-clear.service' mag-room/native/routes.hpp
+owner boundaries :: bash ops/private-access/tests/test-owner-boundaries.sh
+deepseek ops :: bash ops/deepseek/tests/test-ops-38.sh && bash ops/deepseek/tests/test-numa-isolation.sh && bash ops/deepseek/tests/test-node0-available.sh && bash ops/deepseek/tests/test-iq3-parallel.sh && bash ops/deepseek/tests/test-model-preservation.sh && bash -n ops/deepseek/verify-iq3.sh ops/deepseek/start-iq3.sh ops/deepseek/iq3-parallel.sh ops/deepseek/hotswap.sh && bash -n ops/deepseek/numa-isolation.sh ops/deepseek/numa-bench.sh && bash -n ops/deepseek/prompt-cache-switch.sh
+vendor terminal :: bash ops/vendor-terminal-assets.sh /tmp/mag-terminal-assets && test -s /tmp/mag-terminal-assets/xterm.js && test -s /tmp/mag-terminal-assets/xterm-addon-fit.js && test -s /tmp/mag-terminal-assets/xterm.css
+frontend syntax :: python3 -c 'from pathlib import Path; s=Path("mag-room/web/index.html").read_text(); Path("/tmp/mag-room-web.js").write_text(s.split("<script>")[-1].split("</script>")[0])' && node --check /tmp/mag-room-web.js && node mag-room/tests/test_composer.cjs
+trust chain :: bash ops/trust/test-trust.sh
+bootstrap dry run :: bash ops/tests/test-bootstrap.sh
+gitea mirror :: bash ops/tests/test-gitea-mirror.sh
+gitea bot rights :: bash ops/tests/test-gitea-bot-rights.sh
+shellcheck :: if ! command -v shellcheck >/dev/null; then echo 'shellcheck not installed on this runner; skipped'; exit 0; fi; shellcheck ops/vm/build-golden.sh ops/bootstrap-voice.sh ops/deepseek/bootstrap-runtimes.sh ops/tailscale/install.sh ops/private-access/install-lego.sh ops/gitea/mirror-github.sh ops/tests/e2e-bootstrap.sh ops/ci/promote-green.sh ops/ci/self-hosted-checks.sh ops/ci/run-parallel.sh ops/ci/affected.sh ops/ci/local-ci.sh ops/deploy-watchdog.sh
+update dry run :: bash ops/tests/test-update.sh
+deploy watchdog :: bash ops/tests/test-deploy-watchdog.sh
+legacy cleanup :: bash ops/tests/test-cleanup-legacy.sh
+agent drift :: bash ops/tests/test-agent-drift.sh
+runners :: bash ops/tests/test-runners.sh
+green promotion :: bash ops/tests/test-green.sh
+boot :: bash ops/tests/test-boot.sh

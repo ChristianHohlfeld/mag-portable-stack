@@ -110,17 +110,32 @@ class NativeBridge(unittest.TestCase):
   for value,idle in [([],False),([{}],False),([{'is_processing':True}],False),([{'state':1}],False),([{'state':0}],True),([{'is_processing':False}],True),([{'is_processing':False},{'state':1}],False)]:
    p=self.path/'slots.json';p.write_text(json.dumps(value));r=subprocess.run([str(GUARD),'--test',str(p)],capture_output=True);self.assertEqual(r.returncode==0,idle,value)
 class WorkflowPolicy(unittest.TestCase):
- def test_github_has_no_automatic_triggers(self):
+ def test_github_triggers_are_path_filtered(self):
   import yaml
-  for p in (ROOT/'.github/workflows').glob('*.yml'):
-   doc=yaml.safe_load(p.read_text());on=doc.get('on',doc.get(True));self.assertEqual(set(on),{'workflow_dispatch'},p.name)
+  def triggers(doc):
+   return doc.get('on', doc.get(True)) or {}
+  dispatch_only={'publish-mag-stack-4.0.4.yml','green.yml'}
+  for p in sorted((ROOT/'.github/workflows').glob('*.yml')):
+   on=triggers(yaml.safe_load(p.read_text()))
+   if p.name in dispatch_only:
+    self.assertEqual(set(on),{'workflow_dispatch'},p.name)
+    continue
+   self.assertEqual(set(on),{'workflow_dispatch','push','pull_request'},p.name)
+   self.assertEqual(on['push'].get('branches'),['main'],p.name)
+   self.assertNotIn('paths', on['push'] or {}, p.name)
+   self.assertTrue(on['pull_request'].get('paths'), p.name)
+  self.assertNotIn('workflow_run', (ROOT/'.github/workflows/green.yml').read_text())
  def test_all_legacy_run_steps_are_accounted_for(self):
   import yaml
   coverage=json.loads((ROOT/'ops/gitea-ci/coverage.json').read_text())
   names={'native':'native.yml','pages':'pages-native.yml','nginx':'private-nginx.yml','recovery':'backup.yml','room':'room-e2e.yml','chromium':'image-paste.yml','speech':'speech.yml','e2e-bootstrap':'e2e-bootstrap.yml'}
   for suite,file in names.items():
-   doc=yaml.safe_load((ROOT/'.github/workflows'/file).read_text());actual=[s.get('name','run') for s in doc['jobs'][suite]['steps'] if 'run' in s]
-   self.assertEqual(actual,[r['name'] for r in coverage[suite]])
+   doc=yaml.safe_load((ROOT/'.github/workflows'/file).read_text())
+   actual=[]
+   for job in doc['jobs'].values():
+    for s in job.get('steps') or []:
+     if 'run' in s: actual.append(s.get('name') or 'run')
+   self.assertEqual(sorted(actual), sorted(r['name'] for r in coverage[suite]), file)
    for r in coverage[suite]:self.assertIn(r['kind'],('test','image-dependency'))
  def test_control_workflow_runs_every_required_suite_even_after_failure(self):
   import yaml

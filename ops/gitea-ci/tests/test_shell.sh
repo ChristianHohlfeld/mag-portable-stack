@@ -26,7 +26,7 @@ grep -Fq 'two-factor' ops/gitea-ci/README.md
 if grep -Fq '/run/mag-ci' ops/gitea-ci/mag-ci-vm.service; then
   grep -Fq 'RuntimeDirectory=mag-ci' ops/gitea-ci/mag-ci-vm.service
 fi
-grep -Fq '( cd mag-room/webrtc && go test -mod=mod ./... && go build -mod=mod -o /tmp/mag-browser-webrtc . )' ops/gitea-ci/suites/native.sh
+grep -Fq '( cd mag-room/webrtc && go test -mod=mod -timeout 60s ./... && go build -mod=mod -o /tmp/mag-browser-webrtc . )' ops/gitea-ci/suites/native.sh
 # Configuration edits preserve existing secrets, repository paths and SSH.
 tmp=$(mktemp -d);trap 'rm -rf "$tmp"' EXIT
 mkdir -p "$tmp/bin"

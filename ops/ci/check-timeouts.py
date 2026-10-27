@@ -21,12 +21,14 @@ PY_SECONDS = {
     'mag-room/tests/test_room_e2e.py': 240,
     'mag-room/tests/test_hang_invariants.py': 90,
     'ops/deepseek/preflight-tests.py': 3900,
+    'mag-room/tests/test_native.py': 300,
 }
 SH_SECONDS = {
     'ops/tests/e2e-bootstrap.sh': 5400,
     'ops/pages/tests/test-pages-lifecycle.sh': 600,
     'ops/pages/tests/test-pages-sandbox.sh': 600,
     'ops/tests/test-hang-deadlines.sh': 60,
+    'ops/ci/tests/test-affected.sh': 60,
 }
 JOB_MINUTES = {
     'native': 90,

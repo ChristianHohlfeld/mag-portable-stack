@@ -4,90 +4,157 @@ permissions:
   pull-requests: read
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - 'mag-room/**'
+      - 'CMakeLists.txt'
+      - 'mag_deterministic_engine.cpp'
+      - 'test_mag_deterministic_engine.py'
+      - 'ops/**'
+      - 'devices/**'
+      - '.github/workflows/native.yml'
+      - '.gitea/workflows/mag-ci.yml'
 jobs:
-  native:
-    timeout-minutes: 45
+  fast:
+    timeout-minutes: 20
+    runs-on: ${{ fromJSON(vars.MAG_RUNS_ON || '"ubuntu-24.04"') }}
+    steps:
+      - uses: actions/checkout@v4
+        timeout-minutes: 5
+      - name: Test and workflow deadlines
+        timeout-minutes: 15
+        run: python3 ops/ci/check-timeouts.py
+      - name: Tailscale API nft IPv4/v6 egress regression without modifying host firewall
+        timeout-minutes: 10
+        if: runner.environment == 'github-hosted'
+        run: sudo bash ops/audit/tests/test-tail-egress.sh
+      - name: Independent fast contracts
+        timeout-minutes: 15
+        run: bash ops/ci/run-parallel.sh --jobs 4 --timeout 180 < ops/ci/native-fast.list
+  gitleaks:
+    timeout-minutes: 15
     runs-on: ${{ fromJSON(vars.MAG_RUNS_ON || '"ubuntu-24.04"') }}
     steps:
       - uses: actions/checkout@v4
         timeout-minutes: 5
         with:
           fetch-depth: 0  # Gitleaks PR-commit range needs complete git history
-      - name: Test and workflow deadlines
-        timeout-minutes: 15
-        run: python3 ops/ci/check-timeouts.py
-      - name: Install build dependencies
-        timeout-minutes: 10
-        if: runner.environment == 'github-hosted'
-        run: sudo apt-get update && sudo apt-get install -y ninja-build libssl-dev libcurl4-openssl-dev libarchive-dev
-      - name: Build
-        timeout-minutes: 20
-        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release && cmake --build build -j 4
-      - name: Prevent CI room-clear from invoking production backup
-        timeout-minutes: 2
-        run: |
-          grep -Fq "MAG_TEST_NO_CLEAR_BACKUP='1'" mag-room/tests/test_native.py
-          ! grep -Fq 'mag-backup-clear.timer' mag-room/native/routes.hpp
-          ! grep -Fq 'start mag-backup-clear.service' mag-room/native/routes.hpp
-      - name: Tailscale API nft IPv4/v6 egress regression without modifying host firewall
-        timeout-minutes: 10
-        if: runner.environment == 'github-hosted'
-        run: sudo bash ops/audit/tests/test-tail-egress.sh
-      - name: Owner-only backup and console access contract
-        timeout-minutes: 5
-        run: bash ops/private-access/tests/test-owner-boundaries.sh
-      - name: Native integration checks
-        timeout-minutes: 30
-        run: |
-          ./build/test-pho-codec
-          ./build/test-guest-pty
-          ./build/test-browser-recovery
-          ./build/test-jobs-mcp
-          ./build/test-pages-native
-          ./build/test-browser-events
-          ./build/test-guest-description
-          ./build/test-guest-curl
-          ./build/test-large-stdin
-          ./build/test-gitea-account
-          python3 mag-room/tests/test_large_tools.py
-          python3 mag-room/tests/test_native.py
-          python3 mag-room/tests/test_hang_invariants.py
-          bash ops/tests/test-hang-deadlines.sh
-          python3 mag-room/tests/test_agent_core.py
-          python3 ops/numa/tests/test_numa_swap.py
-          python3 mag-room/tests/test_room_control.py
-          python3 mag-room/tests/test_tailscale_auth.py
-          python3 ops/audit/tests/test_native_gateway.py
-          bash ops/qwen/tests/test-qwen.sh
-          bash ops/ornith/tests/test-ornith.sh
-          python3 mag-room/tests/test_whois_deploy.py
-          bash -n ops/deploy.sh ops/deploy-guard.sh ops/rollback.sh ops/private-access/*.sh
-      - name: IK prompt cache regression and rollback shell syntax
-        timeout-minutes: 10
-        run: |
-          bash ops/deepseek/tests/test-ops-38.sh
-          bash ops/deepseek/tests/test-numa-isolation.sh
-          bash ops/deepseek/tests/test-node0-available.sh
-          bash ops/deepseek/tests/test-iq3-parallel.sh
-          bash ops/deepseek/tests/test-model-preservation.sh
-          bash -n ops/deepseek/verify-iq3.sh ops/deepseek/start-iq3.sh ops/deepseek/iq3-parallel.sh ops/deepseek/hotswap.sh
-          bash -n ops/deepseek/numa-isolation.sh ops/deepseek/numa-bench.sh
-          bash -n ops/deepseek/prompt-cache-switch.sh
-      - name: nginx syntax without a real Tailnet listener
-        timeout-minutes: 10
-        if: runner.environment == 'github-hosted'
-        run: |
-          sudo apt-get install -y nginx
-          openssl req -x509 -newkey rsa:2048 -nodes -days 1 -keyout /tmp/mag-ci.key -out /tmp/mag-ci.crt -subj '/CN=mag.stardenburg.de' 2>/dev/null
-          sed -e 's|/etc/mag-nginx/tls/cert.pem|/tmp/mag-ci.crt|' -e 's|/etc/mag-nginx/tls/key.pem|/tmp/mag-ci.key|' -e 's|100[.]123[.]114[.]16:443|127.0.0.1:18443|' ops/private-access/mag-room.nginx.conf > /tmp/mag-ci-site.conf
-          grep -Fq 'listen 127.0.0.1:18443 ssl http2;' /tmp/mag-ci-site.conf
-          printf 'pid /tmp/mag-ci-nginx.pid;\nerror_log /tmp/mag-ci-nginx.err;\nevents {}\nhttp { access_log off; include /tmp/mag-ci-site.conf; }\n' > /tmp/mag-ci-nginx.conf
-          sudo nginx -t -c /tmp/mag-ci-nginx.conf -p /tmp
       - name: Gitleaks (no secrets)
         timeout-minutes: 10
         uses: gitleaks/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  build:
+    timeout-minutes: 25
+    runs-on: ${{ fromJSON(vars.MAG_RUNS_ON || '"ubuntu-24.04"') }}
+    steps:
+      - uses: actions/checkout@v4
+        timeout-minutes: 5
+      - name: ccache
+        timeout-minutes: 10
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: ccache-${{ runner.os }}-native-${{ github.sha }}
+          restore-keys: |
+            ccache-${{ runner.os }}-native-
+      - name: Install build dependencies
+        timeout-minutes: 10
+        if: runner.environment == 'github-hosted'
+        run: sudo apt-get update && sudo apt-get install -y ninja-build ccache libssl-dev libcurl4-openssl-dev libarchive-dev
+      - name: Build
+        timeout-minutes: 20
+        run: |
+          launch=()
+          if command -v ccache >/dev/null; then
+            export CCACHE_DIR="${CCACHE_DIR:-$HOME/.cache/ccache}"
+            mkdir -p "$CCACHE_DIR"
+            launch+=(-DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache)
+            ccache --zero-stats || true
+          fi
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release "${launch[@]}"
+          cmake --build build -j 4
+          command -v ccache >/dev/null && ccache --show-stats || true
+      - uses: actions/upload-artifact@v4
+        timeout-minutes: 10
+        with:
+          name: native-binaries
+          retention-days: 1
+          if-no-files-found: error
+          path: |
+            build/magroom
+            build/mag-audit-gateway
+            build/mag-numa-swap
+            build/s23ctl
+            build/test-pho-codec
+            build/test-guest-pty
+            build/test-browser-recovery
+            build/test-jobs-mcp
+            build/test-pages-native
+            build/test-browser-events
+            build/test-guest-description
+            build/test-guest-curl
+            build/test-large-stdin
+            build/test-gitea-account
+  bins:
+    timeout-minutes: 15
+    needs: build
+    runs-on: ${{ fromJSON(vars.MAG_RUNS_ON || '"ubuntu-24.04"') }}
+    steps:
+      - uses: actions/checkout@v4
+        timeout-minutes: 5
+      - uses: actions/download-artifact@v4
+        timeout-minutes: 10
+        with:
+          name: native-binaries
+          path: build
+      - name: Native C++ binaries
+        timeout-minutes: 15
+        run: |
+          chmod +x build/test-*
+          bash ops/ci/run-parallel.sh --jobs 4 --timeout 90 < ops/ci/native-bins.list
+  room:
+    timeout-minutes: 20
+    needs: build
+    runs-on: ${{ fromJSON(vars.MAG_RUNS_ON || '"ubuntu-24.04"') }}
+    steps:
+      - uses: actions/checkout@v4
+        timeout-minutes: 5
+      - uses: actions/download-artifact@v4
+        timeout-minutes: 10
+        with:
+          name: native-binaries
+          path: build
+      - name: Native room integration
+        timeout-minutes: 15
+        run: |
+          chmod +x build/magroom build/mag-audit-gateway build/mag-numa-swap
+          python3 mag-room/tests/test_native.py
+  rest:
+    timeout-minutes: 20
+    needs: build
+    runs-on: ${{ fromJSON(vars.MAG_RUNS_ON || '"ubuntu-24.04"') }}
+    steps:
+      - uses: actions/checkout@v4
+        timeout-minutes: 5
+      - uses: actions/download-artifact@v4
+        timeout-minutes: 10
+        with:
+          name: native-binaries
+          path: build
+      - name: Native companion checks
+        timeout-minutes: 15
+        run: |
+          chmod +x build/magroom build/mag-audit-gateway build/mag-numa-swap build/s23ctl
+          bash ops/ci/run-parallel.sh --jobs 4 --timeout 240 < ops/ci/native-rest.list
+  webrtc:
+    timeout-minutes: 15
+    runs-on: ${{ fromJSON(vars.MAG_RUNS_ON || '"ubuntu-24.04"') }}
+    steps:
+      - uses: actions/checkout@v4
+        timeout-minutes: 5
       - uses: actions/setup-go@v5
         timeout-minutes: 5
         with:
@@ -95,64 +162,26 @@ jobs:
       - name: Browser WebRTC UDP gateway
         timeout-minutes: 10
         run: cd mag-room/webrtc && go test -mod=mod -timeout 60s ./... && go build -mod=mod -o /tmp/mag-browser-webrtc .
-      - name: Vendor terminal and verify UI assets
+  nginx-syntax:
+    timeout-minutes: 25
+    runs-on: ${{ fromJSON(vars.MAG_RUNS_ON || '"ubuntu-24.04"') }}
+    steps:
+      - uses: actions/checkout@v4
         timeout-minutes: 5
+      - name: nginx syntax without a real Tailnet listener
+        timeout-minutes: 10
+        if: runner.environment == 'github-hosted'
         run: |
-          bash ops/vendor-terminal-assets.sh /tmp/mag-terminal-assets
-          test -s /tmp/mag-terminal-assets/xterm.js
-          test -s /tmp/mag-terminal-assets/xterm-addon-fit.js
-          test -s /tmp/mag-terminal-assets/xterm.css
-      - name: Frontend script syntax
-        timeout-minutes: 5
-        run: |
-          python3 -c 'from pathlib import Path; s=Path("mag-room/web/index.html").read_text(); Path("/tmp/mag-room-web.js").write_text(s.split("<script>")[-1].split("</script>")[0])'
-          node --check /tmp/mag-room-web.js
-          node mag-room/tests/test_composer.cjs
+          sudo apt-get update && sudo apt-get install -y nginx
+          openssl req -x509 -newkey rsa:2048 -nodes -days 1 -keyout /tmp/mag-ci.key -out /tmp/mag-ci.crt -subj '/CN=mag.stardenburg.de' 2>/dev/null
+          sed -e 's|/etc/mag-nginx/tls/cert.pem|/tmp/mag-ci.crt|' -e 's|/etc/mag-nginx/tls/key.pem|/tmp/mag-ci.key|' -e 's|100[.]123[.]114[.]16:443|127.0.0.1:18443|' ops/private-access/mag-room.nginx.conf > /tmp/mag-ci-site.conf
+          grep -Fq 'listen 127.0.0.1:18443 ssl http2;' /tmp/mag-ci-site.conf
+          printf 'pid /tmp/mag-ci-nginx.pid;\nerror_log /tmp/mag-ci-nginx.err;\nevents {}\nhttp { access_log off; include /tmp/mag-ci-site.conf; }\n' > /tmp/mag-ci-nginx.conf
+          sudo nginx -t -c /tmp/mag-ci-nginx.conf -p /tmp
       - name: Shell syntax
         timeout-minutes: 10
         run: |
+          if ! command -v nginx >/dev/null; then sudo apt-get update && sudo apt-get install -y nginx; fi
           bash -n ops/*.sh ops/magbot-guest-run ops/magbot-agent-ctl
           bash -n ops/bots/*.sh ops/bots/tests/*.sh
           bash ops/bots/tests/test-bots.sh
-      - name: ISRG trust chain verifies without the system store
-        timeout-minutes: 5
-        run: bash ops/trust/test-trust.sh
-      - name: Blank-host bootstrap dry run
-        timeout-minutes: 5
-        run: bash ops/tests/test-bootstrap.sh
-      - name: Gitea pull mirror against a fake API
-        timeout-minutes: 5
-        run: bash ops/tests/test-gitea-mirror.sh
-      - name: Gitea bot rights against a fake API
-        timeout-minutes: 5
-        run: bash ops/tests/test-gitea-bot-rights.sh
-      - name: New ops scripts pass shellcheck
-        timeout-minutes: 5
-        run: |
-          if ! command -v shellcheck >/dev/null; then echo 'shellcheck not installed on this runner; skipped'; exit 0; fi
-          shellcheck ops/vm/build-golden.sh ops/bootstrap-voice.sh ops/deepseek/bootstrap-runtimes.sh ops/tailscale/install.sh ops/private-access/install-lego.sh ops/gitea/mirror-github.sh ops/tests/e2e-bootstrap.sh ops/ci/promote-green.sh ops/ci/self-hosted-checks.sh ops/deploy-watchdog.sh
-      - name: Update script dry run
-        timeout-minutes: 5
-        run: bash ops/tests/test-update.sh
-      - name: Deploy deadline releases the lock
-        timeout-minutes: 5
-        run: bash ops/tests/test-deploy-watchdog.sh
-      - name: One-shot legacy cleanup in a sandbox
-        timeout-minutes: 5
-        run: bash ops/tests/test-cleanup-legacy.sh
-      - name: Unreferenced bot VM drift check
-        timeout-minutes: 5
-        run: bash ops/tests/test-agent-drift.sh
-      - name: S23 control API
-        timeout-minutes: 5
-        run: python3 devices/s23/tests/test_s23ctl.py
-      - name: Action runner guards
-        timeout-minutes: 5
-        run: bash ops/tests/test-runners.sh
-      - name: Green promotion
-        timeout-minutes: 5
-        run: bash ops/tests/test-green.sh
-      - name: Boot persistence
-        timeout-minutes: 5
-        run: bash ops/tests/test-boot.sh
-

@@ -12,6 +12,9 @@ function arm(seconds) {
     killAll();
     process.exit(124);
   }, seconds * 1000);
+  // A finished script must be able to exit. The timer still fires while
+  // other handles (a hung request, an open server) keep the process alive.
+  if (typeof timer.unref === 'function') timer.unref();
   process.on('exit', killAll);
   process.on('SIGTERM', () => { killAll(); process.exit(124); });
   const orig = spawn;

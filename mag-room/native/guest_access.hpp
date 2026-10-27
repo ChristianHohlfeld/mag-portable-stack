@@ -354,8 +354,16 @@ static void guest_cleanup() {
   }
 }
 static void guest_cleanup_loop() {
-  const int every = std::clamp(envi("MAG_ROOM_GUEST_CLEANUP_SECONDS", 60), 1, 3600);
-  for (;;) { std::this_thread::sleep_for(std::chrono::seconds(every)); guest_cleanup(); }
+  // 0 is the test cadence (200ms). Production stays at 60s between scans.
+  // The first scan runs immediately so a restart does not wait out the interval.
+  int every = envi("MAG_ROOM_GUEST_CLEANUP_SECONDS", 60);
+  if (every < 0) every = 60;
+  if (every > 3600) every = 3600;
+  for (;;) {
+    guest_cleanup();
+    if (every == 0) std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    else std::this_thread::sleep_for(std::chrono::seconds(every));
+  }
 }
 
 // API results contain no keys beyond the new key in the immediate create

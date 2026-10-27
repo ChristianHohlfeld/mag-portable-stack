@@ -3,6 +3,21 @@ permissions:
   contents: read
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - 'mag-room/web/**'
+      - 'mag-room/tests/test_room_e2e.py'
+      - 'mag-room/tests/test_room_control.py'
+      - 'mag-room/tests/test_reactions.py'
+      - 'mag-room/tests/test_numa_ui.py'
+      - 'mag-room/tests/test_cards_ui.py'
+      - 'mag-room/tests/test_tts.py'
+      - 'mag-room/tests/test_view_tools.py'
+      - 'mag-room/tests/test_live_highlight.py'
+      - 'mag-room/tests/test_stream_order.py'
+      - '.github/workflows/room-e2e.yml'
 jobs:
   room:
     timeout-minutes: 45

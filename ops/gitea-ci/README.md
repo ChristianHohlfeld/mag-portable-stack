@@ -115,8 +115,12 @@ All ten contexts are preserved: `native`, `pages`, `nginx`, `recovery`, `room`,
 steps are recorded in `coverage.json` and migrated to `suites/`; package setup
 moves into the VM image. Native builds are reused across suites. Required suites
 run even after an earlier failure, and a skipped/missing/duplicate step never
-counts as success. GitHub workflow files become **workflow_dispatch only**, with
-their existing diagnostics retained; no push/PR/schedule invokes a paid runner.
+counts as success. GitHub workflows run on `pull_request` only when their path
+filter matches, and on every push to `main` (a full run). `green` and the
+publish workflow stay `workflow_dispatch`. On the Gitea VM a suite whose files
+did not change exits 0 without rerunning, so its required context stays
+success; that is an unaffected pass, not a Gitea `skipped` conclusion. Push to
+main uses the same sha for base and head, so every suite runs.
 
 Only a fully successful validated Gitea run can advance GitHub `green`, and only
 if its SHA is still the current GitHub main. Updates never force an older green
@@ -153,9 +157,9 @@ Acceptance is deliberately **live** after deployment:
 2. Open/update a GitHub PR. All ten contexts for its exact **head SHA** link to
    the matching Gitea run and pass. A deliberately failing disposable PR stays
    red; skipped suites, wrong SHA and an older main never promote green.
-3. Verify no GitHub Actions push/PR/schedule run exists for the acceptance SHA;
-   only Gitea ran those checks. Manual workflow_dispatch remains an explicit
-   optional cost, not part of normal CI. Other repos' workflows are unchanged.
+3. A typical PR runs the native context and skips suites whose paths did not
+   change. Push to main runs every suite. `green` is still moved by the bridge,
+   not by a GitHub-hosted promote job. Other repos' workflows are unchanged.
 4. Compare warmed bot TTFT/latency using ordinary append-only room turns before
    and during CI, for both ports. The guard must freeze CI when a request is
    active. Use `latency-check.py` on captured samples (median + p95) and retain

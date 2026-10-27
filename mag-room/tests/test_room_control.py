@@ -481,50 +481,36 @@ class TwoModels(unittest.TestCase):
     def tearDownClass(cls):
         cls.room.close()
 
-    def test_both_bots_work_in_parallel_and_one_stop_ends_both(self):
+    def test_only_one_model_runs_without_explicit_mention(self):
         reset_model()
-        Model.scripts += [[{'_hold': 30}], [{'_hold': 30}]]
+        Model.scripts += [[{'_hold': 30}]]
         self.room.api('/api/message', {'text': 'Beide bitte', 'bots': ['a', 'b']})
-        wait_calls(2, timeout=5)
+        wait_calls(1, timeout=5)
         self.assertEqual({c[1]['model'] for c in Model.calls},
-                         {'deepseek-v4-flash-0731', 'deepseek-v4-flash-0731-iq3'}, 'one request per model server')
+                         {'deepseek-v4-flash-0731'}, 'unaddressed input selects just one bot')
         s = self.room.state_()
-        self.assertEqual(set(s.get('busy_bots') or []), {'a', 'b'})
+        self.assertEqual(set(s.get('busy_bots') or []), {'a'})
         t0 = time.monotonic()
         self.assertTrue(self.room.api('/api/cancel', {})['cancelled'])
-        self.room.until(lambda s: not s['busy'], timeout=3, what='both idle')
-        for _ in range(40):
-            if len(Model.disconnects) >= 2:
-                break
-            time.sleep(.05)
-        self.assertEqual(len(Model.disconnects), 2, 'both model requests closed')
-        self.assertLess(max(t for t, _ in Model.disconnects) - t0, 1.5)
+        self.room.until(lambda s: not s['busy'], timeout=3, what='bot idle')
+        self.assertEqual(len(Model.calls), 1, 'no second proactive or parallel turn')
+        self.assertLess(time.monotonic() - t0, 1.5)
 
-
-    def test_message_for_one_bot_reaches_it_while_the_other_keeps_working(self):
+    def test_new_human_can_queue_while_first_bot_is_running(self):
         reset_model()
-        q4, second = 'deepseek-v4-flash-0731', 'deepseek-v4-flash-0731-iq3'
-        # Alpha (Q4) works in tool steps; Beta (second model) is busy in a long prompt.
-        Model.by_model[q4] = [[{'_sleep': 1.0}, tool_call('remember', {'fact': 'A1'})],
-                              ['Alpha: erledigt, inklusive Nachtrag.']]
-        Model.by_model[second] = [[{'_hold': 30}]]
-        self.room.api('/api/message', {'text': 'Startet', 'bots': ['a', 'b']})
+        Model.by_model['deepseek-v4-flash-0731'] = [[{'_hold': 30}]]
+        Model.by_model['deepseek-v4-flash-0731-iq3'] = [['Beta fertig']]
+        self.room.api('/api/message', {'text': 'Start', 'bots': ['a']})
+        wait_calls(1, timeout=5)
+        self.room.api('/api/message', {'text': '@Beta bitte antworten', 'bots': ['a']})
+        self.assertEqual(len(Model.calls), 1, 'no concurrent model call')
+        self.assertTrue(self.room.api('/api/cancel', {'bot': 'a'})['cancelled'])
         wait_calls(2, timeout=5)
-        r = self.room.api('/api/message', {'text': 'Nachtrag nur fuer Alpha', 'bots': ['a']})
-        self.assertTrue(r['queued'], 'Alpha is busy, so the message is queued visibly')
-        s = self.room.until(
-            lambda s: 'erledigt, inklusive Nachtrag.' in contents(s) and 'a' not in (s.get('busy_bots') or []),
-            timeout=8, what='Alpha answer with the late message')
-        self.assertIn('b', s.get('busy_bots') or [], 'Beta keeps working, untouched')
-        self.assertFalse(Model.disconnects, 'nobody was cancelled')
-        alpha = [c[1] for c in Model.calls if c[1]['model'] == q4]
-        self.assertEqual(len(alpha), 2, 'handed over inside the run, no extra turn')
-        self.assertIn('Nachtrag nur fuer Alpha', alpha[-1]['messages'][-1]['content'])
-        self.assertEqual(s['pending'], [])
-        self.assertLess(contents(s).index('Nachtrag nur fuer Alpha'),
-                        contents(s).index('erledigt, inklusive Nachtrag.'))
-        self.room.api('/api/cancel', {})
-        self.room.until(lambda s: not s['busy'], timeout=3)
+        self.room.until(lambda s: not s['busy'], timeout=4)
+        self.assertEqual([c[1]['model'] for c in Model.calls[:2]],
+                         ['deepseek-v4-flash-0731', 'deepseek-v4-flash-0731-iq3'])
+        s = self.room.state_()
+        self.assertTrue(any(m.get('bot') == 'b' for m in s['room']))
 
 
 @unittest.skipUnless(subprocess.run(['sudo', '-n', 'true'], capture_output=True).returncode == 0,

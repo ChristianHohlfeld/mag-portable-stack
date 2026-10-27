@@ -109,6 +109,9 @@ echo -n "§{MOCK_CURL_CODE:-403}"''',
   self.script.chmod(0o755)
   shutil.copyfile(TEMPLATE,self.script.parent/"mag-room.nginx.conf")
   shutil.copyfile(ROOT/"ops/deploy-guard.sh", self.script.parent.parent/"deploy-guard.sh")
+  nginx_inc=self.script.parent.parent/"nginx"
+  nginx_inc.mkdir(parents=True)
+  shutil.copyfile(ROOT/"ops/nginx/mag-tailnet-ok.inc", nginx_inc/"mag-tailnet-ok.inc")
   self.log=p/"reload.log"
   self.env={**os.environ,"PATH":str(mock)+":"+os.environ["PATH"],
             "MOCK_SITE":str(self.site),"MOCK_LOG":str(self.log),

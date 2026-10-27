@@ -132,6 +132,11 @@ static thread_local bool TL_IN_TOOL = false;
 // Bot-to-bot turns use a short prompt and a hard output cap. A human turn
 // never sets this, so Chris still gets the full context and token budget.
 static thread_local bool TL_SELFTALK = false;
+// Set by wire_messages when the stored prompt still ends on this bot's own
+// assistant turn. Sending that with thinking on is the DeepSeek 500
+// "Assistant response prefill is incompatible with enable_thinking".
+static thread_local bool TL_WIRE_STALE = false;
+static thread_local std::string TL_CAUSE, TL_CAUSE_LABEL;
 // Visible to Stop on another thread. The composer waits only while this is
 // non-zero, so a model hold does not keep /api/cancel open.
 static std::atomic<int> TOOLS_IN_FLIGHT{0};
@@ -1318,6 +1323,7 @@ static Val append_room(const std::string &role, const std::string &name,
   return m;
 }
 static void publish(const std::string &jsonLine);
+static void stamp_selftalk(Val &msg);
 // First content token is the visible answer. Later tokens update the same
 // message in memory; the file is written again when the turn closes.
 static void reveal_answer(const std::string &bot, const std::string &name,
@@ -1327,6 +1333,7 @@ static void reveal_answer(const std::string &bot, const std::string &name,
   if (TL_PARTIAL_ID.empty()) {
     Val msg = append_room("assistant", name, TL_PARTIAL_TEXT, bot);
     TL_PARTIAL_ID = mag::str(msg, "id");
+    stamp_selftalk(msg);
     msg["type"] = "message";
     publish(mj::dump(msg));
     return;
@@ -2100,6 +2107,14 @@ static bool bot_enabled(int idx) {
   std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
   return bot_enabled_locked(idx);
 }
+// Missing means this bot joins Proaktiv. Explicit false keeps it quiet
+// without flipping `enabled`. A disabled bot never speaks either.
+static bool bot_proaktiv_locked(int idx) {
+  if (!bot_enabled_locked(idx)) return false;
+  if (idx < 0 || (size_t)idx >= AGENTS.size()) return false;
+  const Val *v = AGENTS[idx].find("proaktiv");
+  return !(v && v->type == Val::BOOL && !v->asBool());
+}
 static bool github_enabled(int idx) { return bot_setting(idx, "github_enabled", GITHUB_DEFAULT.load()); }
 static bool pho_enabled(int idx) { return bot_setting(idx, "pho_compress", PHO_DEFAULT.load()); }
 static bool bot_thinking(int idx) { return bot_setting(idx, "thinking", THINKING_DEFAULT.load()); }
@@ -2711,6 +2726,9 @@ static std::vector<Val> wire_messages(int idx, const std::string &system,
     Val user=Val::object();user["role"]="user";user["content"]=extra;
     w.messages.push_back(user);
   }
+  // Nothing new for this bot: the stored wire still ends on its own assistant
+  // reply. Do not append an empty user turn; the caller skips the request.
+  TL_WIRE_STALE = !w.messages.empty() && mag::str(w.messages.back(), "role") == "assistant";
   wire_store(bot,w);
   return w.messages;
 }
@@ -3930,6 +3948,7 @@ struct Turn {
   std::string text, reasoning, finish;
   std::vector<Val> calls;
   std::string error;
+  bool skipped = false;
 };
 struct TurnReport {
   std::string text, progress_key, error, reasoning;
@@ -3941,7 +3960,12 @@ struct TurnReport {
   bool continue_requested = false;
   bool reacted = false;
   bool react_only = false;
+  bool skipped = false;
 };
+static bool assistant_prefill_error(const std::string &err) {
+  return err.find("incompatible with enable_thinking") != std::string::npos ||
+         err.find("Assistant response prefill") != std::string::npos;
+}
 
 static void handoff_visible_turn(int idx, TurnReport &report, const std::string &partial, int think);
 #include "mcp.hpp"
@@ -4336,6 +4360,16 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
              bool thinking, int id_slot, const std::string &model = "",
              int bot_idx = -1) {
   Turn t;
+  // DeepSeek rejects an assistant-ending prefill while thinking is on
+  // (HTTP 500). Do not open a socket and do not let the caller wipe the wire.
+  if (thinking && !TL_SELFTALK && !messages.empty() &&
+      mag::str(messages.back(), "role") == "assistant") {
+    std::cerr << "skip-trailing-assistant bot="
+              << (bot_idx >= 0 ? bot_field(bot_idx, "id") : std::string())
+              << std::endl;
+    t.skipped = true;
+    return t;
+  }
   ThinkingContent thinking_content;
   VisibleReplyFilter visible_reply(bot_idx >= 0 ? bot_field(bot_idx, "name", "Bot") : "");
   slot_restore_if_cold(id_slot);
@@ -5520,6 +5554,7 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
                            const std::string &other) {
   std::string bot_id = bot_field(bot_idx, "id");
   std::string bot_name = bot_field(bot_idx, "name", "Bot");
+  TL_WIRE_STALE = false;
   // Configured DeepSeek+Qwen share the room wire and the slot cache.
   // Deterministic sampling stays available; the 2-message identity path is
   // the non-configured checker. Live Qwen logged stateless=1 system_bytes=0
@@ -5568,6 +5603,14 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
     tools = tools_json(bot_idx, web);
     if(CONFIGURED_MODEL && !CURRENT_JOB && !TL_TASK) {
       messages=wire_messages(bot_idx,system,tools,build_context_tail(bot_idx,autotalk,other));
+      // No new room line, memory, roster or file note. Posting nothing keeps
+      // the saved prefix; a request here would end on the assistant reply.
+      if (TL_WIRE_STALE) {
+        std::cerr << "skip-trailing-assistant bot=" << bot_id << std::endl;
+        TurnReport report;
+        report.skipped = true;
+        return report;
+      }
     } else {
       Val sys = Val::object();sys["role"]="system";
       sys["content"]=system+"\n"+memory_manifest(bot_id);messages.push_back(sys);
@@ -5742,6 +5785,15 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
       t = backend_turn(messages, tools,
                        autotalk ? 0.75 : 0.55, on_delta, turn_thinking(),
                        slot_for_key(bot_id), bot_model_id(bot_idx), bot_idx);
+      if (t.skipped || assistant_prefill_error(t.error)) {
+        // The guard already logged a skip. A live 500 of this type must not
+        // be posted into the room and must not invalidate the wire below.
+        if (!t.skipped)
+          std::cerr << "skip-trailing-assistant bot=" << bot_id << std::endl;
+        report.skipped = true;
+        t.error.clear();
+        break;
+      }
       if (stop_flag().load() || !context_overflow_error(t.error)) break;
       if (stateless) {
         t.error = "Stateless-Eingabe überschreitet das Modellkontextfenster; Text nicht verändert.";
@@ -6013,7 +6065,7 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
   // Long tasks continue within the same turn, including with Autonomy OFF.
   // The outer scheduler must not silently create a second task.
   report.continue_requested = false;
-  if (!stop_flag().load() && !completed && report.error.empty()) {
+  if (!report.skipped && !stop_flag().load() && !completed && report.error.empty()) {
     report.error = "Agent-Step-Budget erreicht (" + std::to_string(MAX_RUN_STEPS) +
                    "). Aufgabe noch offen; VM-Dateien bleiben erhalten.";
   }
@@ -6031,8 +6083,14 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
       report.error.empty() && !stop_flag().load()) {
     report.react_only = true;
     report.continue_requested = false;
-    if(CONFIGURED_MODEL && !stateless && !CURRENT_JOB && !TL_TASK)
+    if(CONFIGURED_MODEL && !stateless && !CURRENT_JOB && !TL_TASK && !report.skipped)
       wire_finish(bot_idx,messages,completed&&!stop_flag().load()&&report.error.empty());
+    finish_steps();
+    return report;
+  }
+  if (report.skipped) {
+    report.text.clear();
+    report.error.clear();
     finish_steps();
     return report;
   }
@@ -6047,7 +6105,7 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
     // answer stays empty and the caller still ends the turn.
     report.continue_requested = false;
   }
-  if(CONFIGURED_MODEL && !stateless && !CURRENT_JOB && !TL_TASK)
+  if(CONFIGURED_MODEL && !stateless && !CURRENT_JOB && !TL_TASK && !report.skipped)
     wire_finish(bot_idx,messages,completed&&!stop_flag().load()&&report.error.empty());
   finish_steps();
   return report;
@@ -6249,6 +6307,8 @@ static void hold_selftalk_for_deploy_locked();
 static void apply_deploy_hold_file_locked();
 static void arm_selftalk(const std::string &speaker, const std::string &cause,
                          const std::string &text);
+static std::string cause_label(const std::string &cause);
+static void stamp_selftalk(Val &msg);
 // Self-Talk: bots answer each other's room messages. No consecutive-turn cap.
 // SELF_HOLD ends the current chain (Stop or toggle off) until a new user message.
 static std::atomic<bool> SELFTALK{false}, SELF_HOLD{false};
@@ -6288,6 +6348,7 @@ struct Job {
   bool reflect = false; // second round: read the other bots' answers
   bool selftalk = false; // answer another bot; never the speaker
   std::string cause; // room message id that armed this follow-up
+  std::string cause_label; // "reagiert auf <Name>", shown in the room and queue
 };
 static std::deque<Job> JOBS;
 // Jobs loaded from the previous process. They are not dispatched until the
@@ -6343,6 +6404,7 @@ static Val job_val(const Job &j) {
   if (j.reflect) o["reflect"] = true;
   if (j.selftalk) o["selftalk"] = true;
   if (!j.cause.empty()) o["cause"] = j.cause;
+  if (!j.cause_label.empty()) o["cause_label"] = j.cause_label;
   return o;
 }
 static Job val_job(const Val &v) {
@@ -6354,6 +6416,7 @@ static Job val_job(const Val &v) {
   if (auto r = v.find("reflect"); r && r->type == Val::BOOL) j.reflect = r->asBool();
   if (auto s = v.find("selftalk"); s && s->type == Val::BOOL) j.selftalk = s->asBool();
   if (auto c = v.find("cause")) j.cause = c->asStr();
+  if (auto c = v.find("cause_label")) j.cause_label = c->asStr();
   return j;
 }
 // Messages sent while a reply runs: NOT in the transcript yet (history stays
@@ -6416,6 +6479,12 @@ static Val queue_view_locked() {
   o["pending"] = arr;
   o["paused"] = QUEUE_PAUSED;
   o["revision"] = (double)QUEUE_REVISION;
+  Val talk = Val::array();
+  for (const auto &j : JOBS)
+    if (j.selftalk) talk.push(job_val(j));
+  for (const auto &kv : ACTIVE_JOBS)
+    if (kv.second.selftalk) talk.push(job_val(kv.second));
+  o["proaktiv_jobs"] = talk;
   return o;
 }
 static void save_queue_locked() {
@@ -6942,8 +7011,30 @@ static void handoff_visible_turn(int idx, TurnReport &report, const std::string 
   Val start = Val::object(); start["type"] = "bot_start"; start["bot"] = id; start["name"] = name;
   start["color"] = bot_field(idx, "color"); start["display_ms"] = TL_DISPLAY_MS;
   start["thinking_enabled"] = TL_THINKING_ENABLED;
+  if (TL_SELFTALK) {
+    start["selftalk"] = true;
+    if (!TL_CAUSE.empty()) start["cause"] = TL_CAUSE;
+    if (!TL_CAUSE_LABEL.empty()) start["cause_label"] = TL_CAUSE_LABEL;
+  }
   if (!TL_GROUP.empty()) { start["group"] = TL_GROUP; start["order"] = TL_ORDER; }
   publish(mj::dump(start)); run_begin(id, name);
+}
+static void stamp_selftalk(Val &msg) {
+  if (!TL_SELFTALK) return;
+  msg["selftalk"] = true;
+  if (!TL_CAUSE.empty()) msg["cause"] = TL_CAUSE;
+  if (!TL_CAUSE_LABEL.empty()) msg["cause_label"] = TL_CAUSE_LABEL;
+  const std::string id = mag::str(msg, "id");
+  if (id.empty()) return;
+  std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
+  for (auto &stored : ROOM) {
+    if (mag::str(stored, "id") != id) continue;
+    stored["selftalk"] = true;
+    if (!TL_CAUSE.empty()) stored["cause"] = TL_CAUSE;
+    if (!TL_CAUSE_LABEL.empty()) stored["cause_label"] = TL_CAUSE_LABEL;
+    break;
+  }
+  save_room();
 }
 // Queue the other bots to answer this message. The speaker is never queued.
 // At most one waiting self-talk job per bot, so the queue cannot fill with
@@ -7066,6 +7157,37 @@ static bool selftalk_idle_echo(const std::string &text) {
     lower.pop_back();
   return lower == "verstanden" || lower == "ok" || lower == "okay";
 }
+static std::string cause_label(const std::string &cause) {
+  if (cause.empty()) return "";
+  std::string who;
+  {
+    std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
+    for (const auto &m : ROOM) {
+      if (mag::str(m, "id") != cause) continue;
+      who = mag::str(m, "name");
+      break;
+    }
+  }
+  if (who.empty()) who = "Nachricht";
+  return "reagiert auf " + who;
+}
+// The listener already received this room line (it is in the saved wire).
+// Arming again would run a turn with no new input.
+static bool bot_has_seen(const std::string &bot, const std::string &msg_id) {
+  if (bot.empty() || msg_id.empty()) return false;
+  {
+    std::lock_guard<std::mutex> wire(WIRE_MTX);
+    auto it = WIRE_SESSIONS.find(bot);
+    if (it != WIRE_SESSIONS.end() && !it->second.seen.empty())
+      return it->second.seen.count(msg_id) > 0;
+  }
+  Val saved;
+  if (!mj::parse(read_file(wire_path(bot)), saved) || !saved.isObj()) return false;
+  if (auto a = saved.find("seen"); a && a->isArr())
+    for (const auto &id : a->asArr())
+      if (id.asStr() == msg_id) return true;
+  return false;
+}
 static void arm_selftalk(const std::string &speaker, const std::string &cause,
                          const std::string &text) {
   if (!SELFTALK.load() || SELF_HOLD.load() || speaker.empty() || cause.empty())
@@ -7075,12 +7197,13 @@ static void arm_selftalk(const std::string &speaker, const std::string &cause,
   {
     std::lock_guard<std::recursive_mutex> st(STATE_MTX);
     for (size_t i = 0; i < AGENTS.size(); ++i) {
-      if (!bot_enabled_locked((int)i)) continue;
+      if (!bot_proaktiv_locked((int)i)) continue;
       const std::string id = mag::str(AGENTS[i], "id");
       if (!id.empty() && id != speaker) listeners.push_back(id);
     }
   }
   if (listeners.empty()) return;
+  const std::string label = cause_label(cause);
   std::lock_guard<std::mutex> lk(JOB_MTX);
   apply_deploy_hold_file_locked();
   if (!SELFTALK.load() || SELF_HOLD.load()) return;
@@ -7102,6 +7225,7 @@ static void arm_selftalk(const std::string &speaker, const std::string &cause,
         active = true;
     }
     if (active) continue;
+    if (bot_has_seen(id, cause)) continue;
     Job j;
     j.ids = {id};
     j.think = -1;
@@ -7109,6 +7233,7 @@ static void arm_selftalk(const std::string &speaker, const std::string &cause,
     j.input = text;
     j.selftalk = true;
     j.cause = cause;
+    j.cause_label = label;
     JOBS.push_back(std::move(j));
     added = true;
   }
@@ -7129,6 +7254,11 @@ static TurnReport generate_and_post(int idx, bool automatic, double dispatched_m
   TL_THINKING_ENABLED = turn_thinking();
   start["display_ms"] = TL_DISPLAY_MS;
   start["thinking_enabled"] = TL_THINKING_ENABLED;
+  if (TL_SELFTALK) {
+    start["selftalk"] = true;
+    if (!TL_CAUSE.empty()) start["cause"] = TL_CAUSE;
+    if (!TL_CAUSE_LABEL.empty()) start["cause_label"] = TL_CAUSE_LABEL;
+  }
   if (!TL_GROUP.empty()) {
     start["group"] = TL_GROUP;
     start["order"] = TL_ORDER;
@@ -7146,6 +7276,17 @@ static TurnReport generate_and_post(int idx, bool automatic, double dispatched_m
   if (report.elapsed_s < 0)
     report.elapsed_s = 0;
   run_end();
+  if (report.skipped) {
+    drop_revealed();
+    Val e = Val::object();
+    e["type"] = "bot_done";
+    e["bot"] = id;
+    e["name"] = name;
+    e["content"] = "";
+    e["skipped"] = true;
+    publish(mj::dump(e));
+    return report;
+  }
   if (epoch == EPOCH.load() && !stop_flag().load() && report.react_only) {
     Val msg = append_room("assistant", name, "", id);
     attach_work(msg, report);
@@ -7187,6 +7328,7 @@ static TurnReport generate_and_post(int idx, bool automatic, double dispatched_m
         msg = append_room("assistant", name, report.text, id);
       }
       attach_work(msg, report);
+      stamp_selftalk(msg);
       msg["type"] = "bot_done";
       publish(mj::dump(msg));
       arm_selftalk(id, mag::str(msg, "id"), report.text);
@@ -7863,7 +8005,17 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
         body["cache_prompt"] = true;
         if (CONFIGURED_MODEL) body["id_slot"] = 0;
         Val kwargs = Val::object();
-        kwargs["enable_thinking"] = bot_thinking(idx);
+        bool thinking_on = bot_thinking(idx);
+        // DeepSeek rejects an assistant-ending prefill while thinking is on.
+        // The room turn skips that request. Prewarm still has to post
+        // (the slot file is written only after this completion); thinking
+        // stays off for that one call so the prefix is cached without a 500.
+        if (thinking_on && msgs.isArr() && !msgs.asArr().empty() &&
+            mag::str(msgs.asArr().back(), "role") == "assistant") {
+          std::cerr << "skip-trailing-assistant bot=" << bot_id << std::endl;
+          thinking_on = false;
+        }
+        kwargs["enable_thinking"] = thinking_on;
         if (model != "qwen3.8-flash-next-uncensored" && !REASONING_EFFORT.empty())
           kwargs["reasoning_effort"] = REASONING_EFFORT;
         body["chat_template_kwargs"] = kwargs;
@@ -8412,12 +8564,20 @@ static void lane_turn(Lane *lane, uint64_t run, std::vector<std::string> ids,
     TL_REFLECT = group && group->reflect;
     LAST_THINK = think;
     bool job_selftalk = false;
+    TL_CAUSE.clear();
+    TL_CAUSE_LABEL.clear();
     {
       std::lock_guard<std::mutex> lk(JOB_MTX);
       auto it = ACTIVE_JOBS.find(run);
-      if (it != ACTIVE_JOBS.end()) job_selftalk = it->second.selftalk;
+      if (it != ACTIVE_JOBS.end()) {
+        job_selftalk = it->second.selftalk;
+        TL_CAUSE = it->second.cause;
+        TL_CAUSE_LABEL = it->second.cause_label;
+      }
     }
     TL_SELFTALK = job_selftalk;
+    if (TL_SELFTALK && TL_CAUSE_LABEL.empty() && !TL_CAUSE.empty())
+      TL_CAUSE_LABEL = cause_label(TL_CAUSE);
     if (!(automatic && !AUTOTALK.load()))
       for (const auto &id : ids) {
         {
@@ -8484,6 +8644,8 @@ static void lane_turn(Lane *lane, uint64_t run, std::vector<std::string> ids,
         }
       }
     TL_SELFTALK = false;
+    TL_CAUSE.clear();
+    TL_CAUSE_LABEL.clear();
     TURN_INPUT.clear();
     TL_LANE = nullptr;
     TL_GATE = nullptr;
@@ -9147,6 +9309,10 @@ static Val public_agent(int idx) {
   std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
   if (idx < 0 || (size_t)idx >= AGENTS.size()) return o;
   o["enabled"] = bot_enabled_locked(idx);
+  {
+    const Val *p = AGENTS[idx].find("proaktiv");
+    o["proaktiv"] = !(p && p->type == Val::BOOL && !p->asBool());
+  }
   auto mem = AGENTS[idx].find("memory");
   o["memory_count"] = mem && mem->isArr() ? (long)mem->arr->size() : 0;
   Val plugins = Val::array();
@@ -9325,6 +9491,7 @@ static std::string state_json(const Actor *actor = nullptr) {
     root["queue"] = (double)(JOBS.size() + PARKED_JOBS.size() + PENDING.size());
     Val qv = queue_view_locked();
     root["pending"] = *qv.find("pending");
+    if (auto talk = qv.find("proaktiv_jobs")) root["proaktiv_jobs"] = *talk;
     root["queue_paused"] = QUEUE_PAUSED;
     root["queue_revision"] = (double)QUEUE_REVISION;
     Val bb = Val::array();

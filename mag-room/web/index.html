@@ -526,6 +526,11 @@ dialog{border-radius:10px;border-color:var(--line);background:var(--surface)}
 #proaktiv-row,.selftalk-toggle{display:inline-flex;align-items:center;gap:4px;height:22px;min-height:22px;max-height:22px;padding:0;margin:0;border:0;background:transparent;font-size:12px;line-height:22px;color:var(--muted);cursor:pointer;user-select:none;flex:0 0 auto;white-space:nowrap}
 #proaktiv-row input,.selftalk-toggle input{margin:0;width:12px;height:12px;min-width:12px;min-height:12px;accent-color:var(--text)}
 #proaktiv-row[hidden]{display:none!important}
+#bot-switch-row{display:flex;align-items:center;gap:14px;flex-wrap:nowrap;overflow:hidden;height:44px;min-height:44px;max-height:44px;padding:0}
+#bot-switch-row label{display:inline-flex;align-items:center;gap:6px;margin:0;height:22px;min-height:22px;max-height:22px;white-space:nowrap;flex:0 1 auto;font-size:13px}
+#bot-switch-row input{margin:0;width:14px;height:14px;min-width:14px;min-height:14px;flex:none}
+.message .meta .proaktiv-mark,.message .meta .proaktiv-why{flex:0 1 auto;min-width:0;height:16px;max-height:16px;line-height:16px;font-size:11px;font-weight:500;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.message .meta .proaktiv-mark{flex:none;font-weight:650}
 @media (max-width:1600px){#model-info{display:none}}
 @media (max-width:720px){#room-menu-btn span,#toggle-agents span,#toggle-tools span{display:none}}
 
@@ -656,7 +661,7 @@ dialog{border-radius:10px;border-color:var(--line);background:var(--surface)}
 <main class="main"><div class="chat-scroll"><div class="drop-overlay" aria-hidden="true">Dateien hier ablegen</div><div class="conversation" id="conversation"></div>
 <button type="button" id="jump-bottom" class="jump-bottom" hidden aria-label="Nach unten scrollen"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M6 13l6 6 6-6"/></svg><span class="jump-dot" aria-hidden="true"></span></button></div>
 <div class="composer-wrap"><div class="composer-inner"><div id="bot-lanes" class="bot-lanes" role="status" aria-live="polite" aria-label="Antwortende Bots" hidden></div><div id="queue-chips" class="queue-chips" aria-label="Status" hidden></div><div id="photo-preview" class="photo-preview" aria-label="Foto-Vorschau" hidden></div><div id="file-preview" class="file-preview" aria-label="Dateien zum Anhängen" hidden></div><p id="photo-note" class="photo-note" hidden>Bilder gehen als Datei in den Raum. Das Modell sieht keine Bilder, die Bots lesen den Text darin per Texterkennung.</p><span id="speech-status" class="speech-status" role="status" aria-live="polite" hidden></span><form id="send-form" class="gbar"><div class="plus-wrap"><button type="button" class="gbar-btn plus-btn" id="plus" aria-label="Anhang und Optionen" title="Datei, Galerie, Screenshot und Optionen" aria-haspopup="menu" aria-expanded="false"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button><div class="plus-menu" id="plus-menu" role="menu" hidden><button type="button" role="menuitem" id="upload"><svg class="i sm" aria-hidden="true"><use href="#ic-paperclip"></use></svg><span>Datei anhängen</span></button><button type="button" role="menuitem" id="upload-photo"><svg class="i sm" aria-hidden="true"><use href="#ic-image"></use></svg><span>Foto/Screenshot</span></button><button type="button" role="menuitem" id="upload-paste" hidden><svg class="i sm" aria-hidden="true"><use href="#ic-copy"></use></svg><span>Bild einfügen</span></button><button type="button" role="menuitem" id="upload-camera" hidden><svg class="i sm" aria-hidden="true"><use href="#ic-camera"></use></svg><span>Kamera</span></button><button type="button" role="menuitem" id="upload-screen" hidden><svg class="i sm" aria-hidden="true"><use href="#ic-screen"></use></svg><span>Bildschirmfoto</span></button><div class="menu-sep"></div><button type="button" role="menuitemcheckbox" id="plus-github-access" aria-checked="false" title="GitHub-Zugriff für die ausgewählten Bots ein-/ausschalten"><svg class="i" aria-hidden="true"><use href="#ic-plug"></use></svg><span>GitHub-Zugriff</span><span class="menu-state" id="plus-github-access-state">aus</span></button><button type="button" role="menuitemcheckbox" id="plus-think" aria-checked="false" title="Gründlich denken: mehr Rechenzeit für schwierige Aufgaben."><svg class="i sm" aria-hidden="true"><use href="#ic-brain"></use></svg><span>Thinking</span><span class="menu-state" id="plus-think-state"></span></button><button type="button" role="menuitemcheckbox" id="plus-pho" aria-checked="true" title="Ältere Verlaufsturns einmalig komprimieren; Änderung gilt ab der nächsten Turn-Grenze."><svg class="i sm" aria-hidden="true"><use href="#ic-spark"></use></svg><span>PhO-Compress</span><span class="menu-state" id="plus-pho-state">an</span></button></div></div><div class="composer-card gbar-pill"><textarea id="message" rows="1" placeholder="Nachricht an MAG …" aria-label="Nachricht"></textarea><button type="button" class="gbar-btn gbar-mic" id="mic" aria-label="Spracheingabe" title="Sprache aufnehmen"><svg class="i " aria-hidden="true"><use href="#ic-mic"></use></svg></button></div><input type="checkbox" id="think" hidden><button type="button" class="gbar-btn stop-run" id="stop-run" aria-label="Stoppen" aria-hidden="true" tabindex="-1" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1.5" fill="currentColor" stroke="none"/></svg></button><button type="submit" class="gbar-btn gbar-send" id="send-button" aria-label="Senden" title="Senden" disabled><svg class="i" aria-hidden="true"><use href="#ic-up"></use></svg></button></form><input id="file-input" type="file" multiple hidden><input id="photo-input" type="file" accept="image/*" multiple hidden><input id="camera-input" type="file" accept="image/*" capture="environment" hidden></div></div></main>
-<aside class="right" id="right-panel"><div class="section" id="bot-detail"><div class="side-section-head"><h2 id="bot-detail-name">Bot</h2></div><label class="control-row" id="bot-active-row"><input type="checkbox" id="bot-active" aria-label="Bot aktiv im Raum"><span>Aktiv im Raum</span></label><p class="control-desc" id="bot-detail-meta"></p><p class="hint" id="bot-no-vm" hidden>Nur Chat: kein Browser und keine Konsole.</p></div><div class="section" id="browser-section"><div class="side-section-head"><h2><svg class="i sm" aria-hidden="true"><use href="#ic-globe"></use></svg> Browser</h2><span class="hint">Live</span></div><select id="browser-agent" aria-label="Browser auswählen" hidden></select><input id="live" type="checkbox" checked hidden aria-hidden="true"><div id="browser-view"><div class="browser-view-bar browser-nav" role="toolbar" aria-label="Browser-Navigation"><button type="button" class="nav-btn" id="browser-back" title="Zurück" aria-label="Zurück">←</button><button type="button" class="nav-btn" id="browser-forward" title="Vorwärts" aria-label="Vorwärts">→</button><button type="button" class="nav-btn" id="browser-reload" title="Neu laden" aria-label="Neu laden">⟳</button><form id="browser-nav-form" class="nav-url"><input id="browser-url" type="text" placeholder="Adresse eingeben + Enter" aria-label="Webadresse" spellcheck="false" autocomplete="off"><button class="nav-btn" id="browser-open" type="submit" title="Öffnen" aria-label="Öffnen">↵</button></form><button id="browser-fullscreen" class="mini-fullscreen" type="button" aria-label="Browser im Vollbild anzeigen" title="Browser-Vollbild umschalten" aria-pressed="false"><svg class="i sm" aria-hidden="true"><use href="#ic-expand"></use></svg></button></div><div id="browser-overlay" aria-hidden="true"><div class="bo-cursor"><svg viewBox="0 0 24 24" width="22" height="22"><path d="M3 2l7.5 19 2.6-7.9L21 10.5z" fill="#fff" stroke="#111" stroke-width="1.6" stroke-linejoin="round"/></svg><span class="bo-type"></span></div></div><canvas id="screen" width="1440" height="900" role="img" aria-label="Live-Browser des ausgewählten Bots. Klicken und Tastatur zum Steuern." tabindex="0" hidden></canvas></div><p class="hint" id="browser-status">Ein Browser pro Bot. Du und der Bot steuern dieselbe Sitzung.</p><p id="browser-access" class="browser-access" role="status" hidden></p></div>
+<aside class="right" id="right-panel"><div class="section" id="bot-detail"><div class="side-section-head"><h2 id="bot-detail-name">Bot</h2></div><div class="control-row" id="bot-switch-row"><label id="bot-active-row"><input type="checkbox" id="bot-active" aria-label="Bot aktiv im Raum"><span>Aktiv im Raum</span></label><label id="bot-proaktiv-row"><input type="checkbox" id="bot-proaktiv" aria-label="Proaktiv für diesen Bot"><span>Proaktiv</span></label></div><p class="control-desc" id="bot-detail-meta"></p><p class="hint" id="bot-no-vm" hidden>Nur Chat: kein Browser und keine Konsole.</p></div><div class="section" id="browser-section"><div class="side-section-head"><h2><svg class="i sm" aria-hidden="true"><use href="#ic-globe"></use></svg> Browser</h2><span class="hint">Live</span></div><select id="browser-agent" aria-label="Browser auswählen" hidden></select><input id="live" type="checkbox" checked hidden aria-hidden="true"><div id="browser-view"><div class="browser-view-bar browser-nav" role="toolbar" aria-label="Browser-Navigation"><button type="button" class="nav-btn" id="browser-back" title="Zurück" aria-label="Zurück">←</button><button type="button" class="nav-btn" id="browser-forward" title="Vorwärts" aria-label="Vorwärts">→</button><button type="button" class="nav-btn" id="browser-reload" title="Neu laden" aria-label="Neu laden">⟳</button><form id="browser-nav-form" class="nav-url"><input id="browser-url" type="text" placeholder="Adresse eingeben + Enter" aria-label="Webadresse" spellcheck="false" autocomplete="off"><button class="nav-btn" id="browser-open" type="submit" title="Öffnen" aria-label="Öffnen">↵</button></form><button id="browser-fullscreen" class="mini-fullscreen" type="button" aria-label="Browser im Vollbild anzeigen" title="Browser-Vollbild umschalten" aria-pressed="false"><svg class="i sm" aria-hidden="true"><use href="#ic-expand"></use></svg></button></div><div id="browser-overlay" aria-hidden="true"><div class="bo-cursor"><svg viewBox="0 0 24 24" width="22" height="22"><path d="M3 2l7.5 19 2.6-7.9L21 10.5z" fill="#fff" stroke="#111" stroke-width="1.6" stroke-linejoin="round"/></svg><span class="bo-type"></span></div></div><canvas id="screen" width="1440" height="900" role="img" aria-label="Live-Browser des ausgewählten Bots. Klicken und Tastatur zum Steuern." tabindex="0" hidden></canvas></div><p class="hint" id="browser-status">Ein Browser pro Bot. Du und der Bot steuern dieselbe Sitzung.</p><p id="browser-access" class="browser-access" role="status" hidden></p></div>
 
 <div class="section" id="terminal-panel"><div class="terminal-heading"><h2>Konsole · <span id="console-agent">Bot</span></h2><button id="terminal-fullscreen" class="mini-fullscreen" type="button" aria-label="Konsole im Vollbild anzeigen" title="Konsole-Vollbild umschalten" aria-pressed="false"><svg class="i sm" aria-hidden="true"><use href="#ic-expand"></use></svg></button><button id="terminal-clear" type="button">Leeren</button><button id="terminal-focus" type="button">Fokus</button></div><div id="terminal" role="application" aria-label="Interaktive Shell des ausgewählten Bots" tabindex="0"></div><div id="terminal-status">Terminal startet beim Verbinden …</div></div><div class="section" id="jobs-section"><div class="side-section-head"><h2>Jobs</h2><button type="button" class="pill-btn ghost" id="job-new" title="Neuen Job für diesen Bot anlegen">+ Neu</button></div><div id="jobs" class="jobs-list"></div></div></aside></div>
 <dialog id="settings-dialog" class="settings-dialog" aria-labelledby="settings-title"><div class="settings-head"><h3 id="settings-title">Einstellungen</h3><button type="button" class="mcp-x" id="settings-close" aria-label="Schließen">×</button></div><div class="settings-body"><div class="section" id="settings-connectors"><div class="side-section-head"><h2>Verbindungen</h2></div><div class="settings-links"><button type="button" id="plus-github"><svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor" aria-hidden="true"><path d="M12 .5a11.5 11.5 0 0 0-3.64 22.41c.58.1.79-.25.79-.56v-2c-3.2.7-3.88-1.37-3.88-1.37-.53-1.33-1.28-1.69-1.28-1.69-1.05-.72.08-.7.08-.7 1.16.08 1.77 1.19 1.77 1.19 1.03 1.77 2.7 1.26 3.36.96.1-.75.4-1.26.73-1.55-2.55-.29-5.24-1.28-5.24-5.69 0-1.26.45-2.29 1.19-3.1-.12-.29-.52-1.46.11-3.05 0 0 .97-.31 3.17 1.18a11 11 0 0 1 5.77 0c2.2-1.49 3.17-1.18 3.17-1.18.63 1.59.23 2.76.11 3.05.74.81 1.19 1.84 1.19 3.1 0 4.42-2.7 5.4-5.26 5.68.41.36.78 1.06.78 2.14v3.17c0 .31.21.67.8.56A11.5 11.5 0 0 0 12 .5z"/></svg><span>GitHub</span><span class="menu-state" id="plus-github-state">verbinden</span></button><button type="button" id="plus-mcp" title="MCP-Server und Plugins pro Bot (/mcp)"><svg class="i sm" aria-hidden="true"><use href="#ic-plug"></use></svg><span>Plugins &amp; MCP</span><span class="menu-state" id="plus-mcp-state"></span></button></div></div><div class="section"><div class="side-section-head"><h2>Darstellung</h2></div><div class="settings-row"><span>Hell / Dunkel</span><button type="button" class="icon-btn" id="theme-toggle" title="Hell-/Dunkelmodus wechseln" aria-label="Farbschema wechseln"><svg class="i " aria-hidden="true"><use href="#ic-moon"></use></svg></button></div></div><div class="section" id="settings-section"><div class="side-section-head"><h2>Einstellungen</h2></div><div style="padding:8px 10px"><select class="side-select" id="language" aria-label="Sprache"><option value="auto">Sprache automatisch</option><option value="de">Deutsch</option><option value="en">English</option></select></div><div id="model-settings" aria-label="Einstellungen pro Modell" hidden></div><div class="pwa-block" id="pwa-install-block"><p class="hint">App auf diesem Gerät</p><button type="button" class="pill-btn" id="pwa-install" hidden>Installieren</button><p class="hint" id="pwa-ios" hidden>Auf dem iPhone: Teilen, dann „Zum Home-Bildschirm“.</p><p class="hint" id="pwa-install-note"></p></div><div id="pwa-notify"><div class="pwa-block" id="pwa-push-block"><button type="button" class="pill-btn" id="pwa-push">Mitteilungen einschalten</button><p class="hint" id="pwa-push-note"></p><button type="button" class="pill-btn ghost" id="pwa-unsub" hidden>Mitteilungen aus</button></div><label class="control-row"><input type="checkbox" id="pwa-job" checked><span>Fertige Jobs</span></label><label class="control-row"><input type="checkbox" id="pwa-run" checked><span>Lange Antworten</span></label><label class="control-row"><input type="checkbox" id="pwa-error" checked><span>Fehler</span></label></div></div>
@@ -1384,7 +1389,13 @@ function append(msg,scroll=true,trace=null,position=-1){
   if(!mine){avatar.style.background=avatarColor(msg.login||msg.name||'Gast');avatar.style.color='#fff'}
  }
  const time=document.createElement('time');const date=new Date((msg.ts||Date.now()/1000)*1000);time.textContent=date.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
- meta.append(avatar,name,time);div.append(meta);
+ meta.append(avatar,name,time);
+ if(msg.selftalk||msg.proaktiv){
+  const mark=document.createElement('span');mark.className='proaktiv-mark';mark.textContent='Proaktiv';meta.append(mark);
+  const whyText=String(msg.cause_label||'').trim()||(msg.cause?'reagiert auf Nachricht':'');
+  if(whyText){const why=document.createElement('span');why.className='proaktiv-why';why.textContent=whyText;why.title=whyText;meta.append(why)}
+ }
+ div.append(meta);
  const text=shownText(msg);
  const content=document.createElement('div');content.className='content';content.innerHTML=safeMarkdown(text);decorate(content);
  if(!text)content.hidden=human||msg.thinking_enabled!==false;
@@ -1568,7 +1579,7 @@ const completedHeights=new Map();
 let streamSeq=0;
 function liveNode(botId,s){
  if(!s.seq)s.seq=++streamSeq;
- const node=append({role:'assistant',name:s.name,bot:botId,content:s.text||'',thinking_enabled:s.thinkingEnabled,live:true,display_ms:s.displayMs||s.started||Date.now()},false);
+ const node=append({role:'assistant',name:s.name,bot:botId,content:s.text||'',thinking_enabled:s.thinkingEnabled,live:true,selftalk:!!s.selftalk,cause:s.cause||'',cause_label:s.causeLabel||'',display_ms:s.displayMs||s.started||Date.now()},false);
  node.dataset.liveBot=botId;node.dataset.liveSeq=String(s.seq);
  const inner=node.parentNode;
  for(const old of inner.querySelectorAll('.message[data-live-bot]'))if(old!==node&&old.dataset.liveBot===botId)old.remove();
@@ -1639,9 +1650,10 @@ function render(){
 let focusedBotId=remoteBotId||sessionStorage.getItem('mag-focused-bot')||'';
 function syncBotDetail(){
  const a=(state.agents||[]).find(x=>x.id===focusedBotId);
- const name=$('bot-detail-name'),meta=$('bot-detail-meta'),active=$('bot-active'),noVm=$('bot-no-vm');
+ const name=$('bot-detail-name'),meta=$('bot-detail-meta'),active=$('bot-active'),pro=$('bot-proaktiv'),noVm=$('bot-no-vm');
  if(name)name.textContent=a?roomBotName({role:'assistant',bot:a.id,name:a.name}):'Kein Bot';
  if(active){active.checked=!!(a&&a.enabled!==false);active.disabled=!a||!!state.single_bot}
+ if(pro){pro.checked=!!(a&&a.proaktiv!==false);pro.disabled=!a||!(state.you&&state.you.role==='owner')}
  if(meta){
   if(!a)meta.textContent='';
   else{
@@ -1685,6 +1697,12 @@ $('bot-active').onchange=async()=>{
   syncModelChoice(state);syncBotSwitches();
   await refresh();
  }catch(e){box.checked=!on;notice(e.message)}
+};
+$('bot-proaktiv').onchange=async()=>{
+ const id=focusedBotId,box=$('bot-proaktiv');if(!id||!box)return;
+ const on=box.checked;
+ try{await api('/api/bot-settings',{bots:[id],proaktiv:on},'PUT');await refresh()}
+ catch(e){box.checked=!on;notice(e.message)}
 };
 function initials(name){const p=String(name||'?').trim().split(/\s+/).filter(Boolean);if(p.length>=2)return (p[0][0]+p[p.length-1][0]).toUpperCase();return (p[0]||'?').slice(0,1).toUpperCase()}
 function avatarColor(name){let h=0;for(const c of String(name))h=(h*33+c.codePointAt(0))>>>0;return 'hsl('+(h%360)+' 42% 36%)'}
@@ -1925,7 +1943,7 @@ async function refreshBackup(){
  }catch(e){el.hidden=false;el.textContent='Backup-Status nicht verfügbar.'}
 }
 function dropStaleGeneration(next){const idle=next&&next.busy===false&&!(next.busy_bots||[]).length&&!((next.activities||(next.activity?[next.activity]:[])).some(a=>a&&a.on));if(!idle)return;for(const s of Object.values(streams))if(s.frame)cancelAnimationFrame(s.frame);streams={};busyBots=new Set()}
-async function refresh(){const seq=++refreshSeq;const r=await fetch('/api/state');if(!r.ok)throw Error('Raum nicht erreichbar');const next=await r.json();if(seq!==refreshSeq)return;dropStaleGeneration(next);state=next;if(state.you?.role==='owner'&&Date.now()-backupPollAt>60000){backupPollAt=Date.now();refreshBackup()}if(state.you?.role!=='owner'&&$('backup-warning'))$('backup-warning').hidden=true;for(const a of (state.activities||(state.activity?[state.activity]:[])))if(a&&a.on)mergeActivity(a);setBusyBots(next.busy_bots,next.waiting_bots);syncApprovals(next.approvals);if(seq!==refreshSeq)return;render();window.mcpMenuState&&window.mcpMenuState();renderQueue({pending:next.pending||[],paused:!!next.queue_paused,revision:next.queue_revision});if($('offline')){$('offline').checked=!!next.offline;window.syncWeb&&window.syncWeb()}initThink();syncModelSettings(next);if(next.model_status)modelStatus(next.model_status);modelInfo(next.model_info);syncModelChoice(next)}
+async function refresh(){const seq=++refreshSeq;const r=await fetch('/api/state');if(!r.ok)throw Error('Raum nicht erreichbar');const next=await r.json();if(seq!==refreshSeq)return;dropStaleGeneration(next);state=next;if(state.you?.role==='owner'&&Date.now()-backupPollAt>60000){backupPollAt=Date.now();refreshBackup()}if(state.you?.role!=='owner'&&$('backup-warning'))$('backup-warning').hidden=true;for(const a of (state.activities||(state.activity?[state.activity]:[])))if(a&&a.on)mergeActivity(a);setBusyBots(next.busy_bots,next.waiting_bots);syncApprovals(next.approvals);if(seq!==refreshSeq)return;render();window.mcpMenuState&&window.mcpMenuState();renderQueue({pending:next.pending||[],paused:!!next.queue_paused,revision:next.queue_revision,proaktiv_jobs:next.proaktiv_jobs||[]});if($('offline')){$('offline').checked=!!next.offline;window.syncWeb&&window.syncWeb()}initThink();syncModelSettings(next);if(next.model_status)modelStatus(next.model_status);modelInfo(next.model_info);syncModelChoice(next)}
 async function saveModelSetting(id,patch,control){
  control.disabled=true;
  try{
@@ -3026,16 +3044,22 @@ function editQueuedMessage(p,t,button,focus=false){
 
 function closeQueue(){if(!queueOpen)return;queueOpen=false;paintRoomLine()}
 function lineChrome(){return [$('model-banner'),$('room-link'),$('proaktiv-row'),$('toast-stack')].filter(Boolean)}
+function queuePending(){
+ const queued=queueState.pending||[];
+ if(queued.length)return queued;
+ return (state&&state.pending)||[];
+}
 function paintRoomLine(){
  const box=$('queue-chips');if(!box)return;
- const list=queueState.pending||[];
- if(!list.length)queueOpen=false;
+ const list=queuePending();
+ const talkJobs=queueState.proaktiv_jobs||[];
+ if(!list.length&&!talkJobs.length)queueOpen=false;
  const statusText=activityStatusText(),pho=phoChip();
  const banner=$('model-banner'),link=$('room-link'),talk=$('proaktiv-row');
  const bannerOn=!!(banner&&!banner.hidden&&banner.textContent);
  const linkOn=!!(link&&!link.hidden&&link.textContent);
  const talkOn=!!(talk&&!talk.hidden);
- const show=!!(list.length||statusText||pho||bannerOn||linkOn||talkOn||toastActive());
+ const show=!!(list.length||talkJobs.length||statusText||pho||bannerOn||linkOn||talkOn||toastActive());
  const keep=!matchMedia('(max-width:850px)').matches;
  const focused=document.activeElement;
  const editFocus=focused?.matches('.q-edit')?{id:focused.closest('.q-chip')?.dataset.id,start:focused.selectionStart,end:focused.selectionEnd}:null;
@@ -3043,22 +3067,25 @@ function paintRoomLine(){
  box.replaceChildren();
  box.hidden=!(show||keep);
  box.classList.toggle('paused',queueState.paused);
- box.classList.toggle('expanded',queueOpen&&!!list.length);
+ box.classList.toggle('expanded',queueOpen&&!!(list.length||talkJobs.length));
  const head=document.createElement('div');head.id='room-line';head.className='queue-head';
  if(!show){for(const el of chrome)head.append(el);box.append(head);return}
  const stat=document.createElement('span');stat.className='activity-status';fillActivity(stat);head.append(stat);
  if(pho){const mark=document.createElement('span');mark.className='pho-save';mark.textContent=pho;head.append(mark)}
  for(const el of chrome)head.append(el);
- if(list.length){
+ if(list.length||talkJobs.length){
   const toggle=document.createElement('button');toggle.type='button';toggle.className='q-toggle';
   const held=list.filter(p=>p.held).length;
-  toggle.textContent=list.length+' wartet'+(held?' · '+held+' angehalten':'')+(queueOpen?' ▾':' ▸');
+  const parts=[];
+  if(list.length)parts.push(list.length+' wartet'+(held?' · '+held+' angehalten':''));
+  if(talkJobs.length)parts.push(talkJobs.length===1?'Proaktiv':talkJobs.length+' Proaktiv');
+  toggle.textContent=parts.join(' · ')+(queueOpen?' ▾':' ▸');
   toggle.setAttribute('aria-expanded',String(queueOpen));toggle.setAttribute('aria-controls','queue-items');
   toggle.onclick=e=>{e.stopPropagation();queueOpen=!queueOpen;paintRoomLine();if(queueOpen&&stickToBottom){const area=$('conversation');if(area)area.scrollTop=area.scrollHeight}};
   head.append(toggle);
  }
  box.append(head);
- if(!list.length)return;
+ if(!list.length&&!talkJobs.length)return;
  const controls=document.createElement('span');controls.className='queue-controls';
  if(!queueState.paused&&can('stop')){const b=document.createElement('button');b.type='button';b.className='q-btn';b.textContent='Queue pausieren';b.onclick=()=>api('/api/queue/pause',{}).catch(e=>notice(e.message));controls.append(b)}
  if(queueState.paused&&can('stop')){const b=document.createElement('button');b.type='button';b.className='q-btn';b.textContent='Fortsetzen';b.onclick=async()=>{b.disabled=true;try{await api('/api/queue/resume',{});await refresh()}catch(e){notice(e.message)}finally{b.disabled=false}};controls.append(b)}
@@ -3081,13 +3108,20 @@ function paintRoomLine(){
   if(own){chip.append(grip,t,up,down,ed,del,now);wireQueueDrag(chip,p);if(queueDrafts.has(p.id))editQueuedMessage(p,t,ed)}
  else chip.append(t);
  items.append(chip)}
+ for(const j of talkJobs){
+  const chip=document.createElement('div');chip.className='q-chip proaktiv-job';
+  const t=document.createElement('span');t.className='q-text';
+  const who=(j.ids&&j.ids[0])||'';
+  t.textContent='Proaktiv'+(j.cause_label?' · '+j.cause_label:'')+(who?' · '+who:'');
+  chip.append(t);items.append(chip);
+ }
  for(const id of queueDrafts.keys())if(!list.some(p=>p.id===id))queueDrafts.delete(id);
  if(editFocus){const ta=[...items.querySelectorAll('.q-chip')].find(c=>c.dataset.id===editFocus.id)?.querySelector('.q-edit');if(ta){ta.focus({preventScroll:true});ta.setSelectionRange(editFocus.start,editFocus.end)}}
 }
 function renderQueue(q){
  if(typeof q.revision==='number'&&q.revision<queueState.revision)return;
- queueState={pending:q.pending||[],paused:!!q.paused,revision:q.revision??queueState.revision};
- state.pending=queueState.pending;state.queue_paused=queueState.paused;
+ queueState={pending:q.pending||[],paused:!!q.paused,revision:q.revision??queueState.revision,proaktiv_jobs:q.proaktiv_jobs||[]};
+ state.pending=queueState.pending;state.queue_paused=queueState.paused;state.proaktiv_jobs=queueState.proaktiv_jobs;
  const previous=localSends.size;
  for(const p of queueState.pending){
   if(p.client_id)localSends.delete(p.client_id);
@@ -3179,7 +3213,7 @@ events.onmessage=e=>{
   if(event.type==='browser_action'){browserOverlay(event);return}
   if(event.type==='bot_start'){
    const prev=streams[id];
-   streams[id]={name:event.name,text:'',status:'Liest Verlauf',label:'Liest Verlauf',phase:'read',steps:[],group:event.group||'',order:+event.order||0,node:prev?.node||null,seq:prev?.seq,frame:0,started:event.display_ms||Date.now(),displayMs:event.display_ms||Date.now(),thinkingEnabled:event.thinking_enabled, lastEvent:Date.now(),reasoning:'',tools:[],error:'',hung:false,progress:null};
+   streams[id]={name:event.name,text:'',status:'Liest Verlauf',label:'Liest Verlauf',phase:'read',steps:[],group:event.group||'',order:+event.order||0,node:prev?.node||null,seq:prev?.seq,frame:0,started:event.display_ms||Date.now(),displayMs:event.display_ms||Date.now(),thinkingEnabled:event.thinking_enabled,selftalk:!!event.selftalk,cause:event.cause||'',causeLabel:event.cause_label||'', lastEvent:Date.now(),reasoning:'',tools:[],error:'',hung:false,progress:null};
    updateStream(id,true);busyBots.add(id);renderLanes();
   }else if(event.type==='step'){
    let s=streams[id];

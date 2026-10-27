@@ -589,8 +589,8 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
     if (bridge || actor.role != "owner") { error_json(fd, 403, "Nur der Besitzer"); return; }
     Val body;
     if (!mj::parse(r.body, body) || !body.isObj()) { error_json(fd, 400, "Settings required"); return; }
-    const auto think = body.find("thinking"), github = body.find("github_enabled"), pho = body.find("pho_compress"), enabled = body.find("enabled");
-    if ((!think && !github && !pho && !enabled) || (think && think->type != Val::BOOL) || (github && github->type != Val::BOOL) || (pho && pho->type != Val::BOOL) || (enabled && enabled->type != Val::BOOL)) {
+    const auto think = body.find("thinking"), github = body.find("github_enabled"), pho = body.find("pho_compress"), enabled = body.find("enabled"), proaktiv = body.find("proaktiv");
+    if ((!think && !github && !pho && !enabled && !proaktiv) || (think && think->type != Val::BOOL) || (github && github->type != Val::BOOL) || (pho && pho->type != Val::BOOL) || (enabled && enabled->type != Val::BOOL) || (proaktiv && proaktiv->type != Val::BOOL)) {
       error_json(fd, 400, "Boolean settings required"); return;
     }
     const bool room = mag::str(body, "scope") == "room";
@@ -610,6 +610,7 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
         if (github) a["github_enabled"] = github->asBool();
         if (pho) a["pho_compress"] = pho->asBool();
         if (enabled && !room) a["enabled"] = enabled->asBool();
+        if (proaktiv && !room) a["proaktiv"] = proaktiv->asBool();
       }
       save_agents();
     }

@@ -481,6 +481,26 @@ static void proxy(int fd){
   auto last_byte=std::chrono::steady_clock::now();
   const auto gateway_budget=std::chrono::seconds(std::clamp(number("MAG_GATEWAY_DEADLINE_S",3700),1,86400));
   const auto gateway_idle=std::chrono::seconds(std::clamp(number("MAG_GATEWAY_IDLE_S",75),1,3600));
+  // A finished reply is not an orphan. Cancelling when the client closes
+  // after the body arrived wiped the slot (the test saw one extra
+  // /slots/0?action=cancel per backend). Prefill still has no complete
+  // message, so a client that leaves then is cancelled.
+  auto response_complete=[&](){
+    auto sep=full.find("\r\n\r\n");
+    if(sep==std::string::npos) return false;
+    std::string headers=lower(full.substr(0,sep));
+    const std::string body=full.substr(sep+4);
+    auto cl=headers.find("content-length:");
+    if(cl!=std::string::npos){
+      auto end=headers.find('\r',cl);
+      std::string v=headers.substr(cl+15,end==std::string::npos?std::string::npos:end-(cl+15));
+      v.erase(0,v.find_first_not_of(" \t"));
+      try{return body.size()>=(size_t)std::stoull(v);}catch(...){return false;}
+    }
+    if(headers.find("transfer-encoding:")!=std::string::npos&&headers.find("chunked")!=std::string::npos)
+      return body.find("\r\n0\r\n\r\n")!=std::string::npos;
+    return false;
+  };
   if(wrote){
     char b[32768];for(;;){
       pollfd pfd[2]={{up,POLLIN,0},{fd,POLLIN,0}};
@@ -498,13 +518,6 @@ static void proxy(int fd){
         }
         continue;
       }
-      if(pfd[1].revents&(POLLIN|POLLHUP|POLLERR)){
-        char probe;ssize_t n=recv(fd,&probe,1,MSG_PEEK|MSG_DONTWAIT);
-        if(n==0||(n<0&&errno!=EAGAIN&&errno!=EWOULDBLOCK)){
-          cancel_orphan();
-          aborted=true;break;
-        }
-      }
       if(pfd[0].revents&(POLLIN|POLLHUP|POLLERR)){
         ssize_t n=recv(up,b,sizeof(b),0);
         if(n==0)break;
@@ -512,7 +525,19 @@ static void proxy(int fd){
         last_byte=std::chrono::steady_clock::now();
         received+=(size_t)n;
         if(full.size()<64*1024*1024)full.append(b,(size_t)std::min((size_t)n,(size_t)(64*1024*1024-full.size())));
+        const bool done=response_complete();
         if(!write_all(fd,std::string(b,(size_t)n))){
+          if(!done) cancel_orphan();
+          aborted=true;break;
+        }
+        if(done) break;
+      }
+      if(pfd[1].revents&(POLLIN|POLLHUP|POLLERR)){
+        char probe;ssize_t n=recv(fd,&probe,1,MSG_PEEK|MSG_DONTWAIT);
+        if(n==0||(n<0&&errno!=EAGAIN&&errno!=EWOULDBLOCK)){
+          // The reply already reached the client. Closing afterwards is
+          // normal and must not drop the slot.
+          if(response_complete()) break;
           cancel_orphan();
           aborted=true;break;
         }

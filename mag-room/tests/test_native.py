@@ -4912,6 +4912,9 @@ class SelfTalk(unittest.TestCase):
   _, html = self.token()
   self._tok = re_token(html)
   self.assertIn('id="proaktiv"', html)
+  self.assertIn('id="bot-proaktiv"', html)
+  self.assertIn('proaktiv-mark', html)
+  self.assertIn('proaktiv_jobs', html)
   self.assertIn('>Proaktiv<', html)
   self.assertIn('id="proaktiv-row"', html)
   self.assertNotIn('Self-Talk', html)
@@ -4967,6 +4970,10 @@ class SelfTalk(unittest.TestCase):
    time.sleep(0.05)
   else:
    self.fail('Beta did not use the new name: %s' % [m.get('content') for m in self.api('/api/state')['room']])
+  marked=[m for m in self.api('/api/state')['room'] if m.get('bot')=='beta' and m.get('selftalk')]
+  self.assertTrue(marked, 'proaktiv answer is not marked')
+  self.assertTrue(marked[-1].get('cause'))
+  self.assertIn('reagiert auf', marked[-1].get('cause_label') or '')
   # The switch survives a restart. The chain does not resume by itself.
   self.stop_room()
   self.hold.set()
@@ -5399,6 +5406,119 @@ class TalkModel(http.server.BaseHTTPRequestHandler):
   except (BrokenPipeError, ConnectionResetError):
    pass
 
+
+def _fnv_hex(s):
+ h=14695981039346656037
+ for c in s.encode():
+  h^=c
+  h=(h*1099511628211)&0xFFFFFFFFFFFFFFFF
+ return '%016x'%h
+
+class TrailingAssistant(unittest.TestCase):
+ """Proaktiv on, two DeepSeek jobs and no new user line.
+
+ The stored wire already ends on the bot's own assistant reply. Neither
+ request may be sent that way, the room must not show the thinking-prefill
+ 500, and the prefix messages stay.
+ """
+ @classmethod
+ def setUpClass(cls):
+  cls.tmp=tempfile.TemporaryDirectory();cls.root=pathlib.Path(cls.tmp.name)
+  cls.state=cls.root/'state';cls.state.mkdir()
+  cls.state.joinpath('agents.json').write_text(json.dumps([
+   {'id':'deepseek-chat','name':'Alpha','vm':'','slot':1,'numa':0,
+    'model':'deepseek-v4-flash-0731','memory':[]},
+   {'id':'lehotbot','name':'Beta','vm':'','slot':2,'numa':1,
+    'model':'deepseek-v4-flash-0731','memory':[]}]))
+  cls.state.joinpath('room.json').write_text(json.dumps([
+   {'id':'a1','role':'assistant','name':'Alpha','bot':'deepseek-chat','content':'alte antwort'}]))
+  cls.state.joinpath('proaktiv').write_text('on')
+  cls.state.joinpath('selftalk').write_text('on')
+  company='\nRaum: Beta (deepseek-v4-flash-0731). Sprich die anderen mit Namen an.'
+  wire={'fingerprint':'kept','memory':'[Erinnerungen]','plugins':'','files':'(keine)',
+        'company':company,'skills':'','seen':['a1'],
+        'messages':[{'role':'system','content':'PREFIX-KEEP'},
+                    {'role':'user','content':'alte frage'},
+                    {'role':'assistant','content':'alte antwort'}]}
+  cls.wire_path=cls.state/('prompt-wire-'+_fnv_hex('deepseek-chat')+'.json')
+  cls.wire_path.write_text(json.dumps(wire))
+  cls.before_messages=wire['messages']
+  cls.state.joinpath('queue.json').write_text(json.dumps({
+   'revision':2,
+   'jobs':[{'ids':['deepseek-chat'],'think':1,'input':''},
+           {'ids':['deepseek-chat'],'think':1,'input':''}]}))
+  cls.model=http.server.ThreadingHTTPServer(('127.0.0.1',0),Model)
+  threading.Thread(target=cls.model.serve_forever,daemon=True).start()
+  cls.ui,cls.bridge=port(),port()
+  cls.env=dict(os.environ,MAG_OWNER_CANONICAL_LOGIN='chris@github',MAG_TEST_ALLOW_LOCAL_OWNER='1',
+    MAG_ROOM_STATE=str(cls.state),MAG_ROOM_PORT=str(cls.ui),MAG_ROOM_BRIDGE_PORT=str(cls.bridge),
+    MAG_ROOM_BRIDGE_IP='127.0.0.1',MAG_ROOM_BACKEND=f'http://127.0.0.1:{cls.model.server_port}/v1/chat/completions',
+    MAG_ROOM_UI=str(ROOT/'mag-room/web/index.html'),MAG_ROOM_STATIC=str(ROOT/'mag-room/static'),
+    MAG_ROOM_MODEL_STATUS=str(cls.root/'ms.json'),MAG_NETMODE=str(NETMODE),
+    MAG_TEST_NO_MEMGIT='1',MAG_ROOM_AGENT_CTL='/bin/false',MAG_ROOM_GUEST_RUN='/bin/false',
+    MAG_ROOM_MCP_AUTO='0',MAG_ROOM_PREWARM='0',MAG_ROOM_PROAKTIV_PAUSE_MS='0',
+    MAG_ROOM_SINGLE_BOT='',MAG_ROOM_DUAL_NUMA='1',MAG_ROOM_THINKING='on',
+    MAG_ROOM_MODEL_ID='deepseek-v4-flash-0731',MAG_ROOM_MODEL_LABEL='DeepSeek V4 Flash',
+    MAG_ROOM_MODEL_PORTS='8191:0,8192:1',MAG_ROOM_MAX_BOTS='2',
+    MAG_ROOM_PRESETS=str(ROOT/'ops/room/presets.json'))
+  cls.log_path=cls.root/'server.log'
+  cls.paths_at=len(Model.paths)
+  log=open(cls.log_path,'w')
+  cls.proc=subprocess.Popen([str(ROOT/'build/magroom')],env=cls.env,stdout=log,stderr=log)
+  log.close()
+  wait_http(f'http://127.0.0.1:{cls.ui}/healthz',timeout=8,proc=cls.proc)
+ @classmethod
+ def tearDownClass(cls):
+  if cls.proc.poll() is None:
+   cls.proc.terminate()
+   try:cls.proc.wait(timeout=3)
+   except Exception:cls.proc.kill()
+  cls.model.shutdown();cls.tmp.cleanup()
+ def request(self,path,body=None,method=None):
+  data=json.dumps(body).encode() if body is not None else None
+  headers={'Content-Type':'application/json'} if data is not None else {}
+  m=(method or ('POST' if data is not None else 'GET')).upper()
+  if m not in ('GET','HEAD'):headers['X-MAG-Token']=_ui_token(self.ui)
+  req=urllib.request.Request(f'http://127.0.0.1:{self.ui}{path}',data=data,method=method or ('POST' if data is not None else 'GET'),headers=headers)
+  with urllib.request.urlopen(req,timeout=3) as r:
+   raw=r.read()
+   return json.loads(raw) if raw else {}
+ def test_two_jobs_do_not_end_on_assistant(self):
+  deadline=time.monotonic()+6
+  while time.monotonic()<deadline:
+   log=self.log_path.read_text(errors='replace')
+   if log.count('skip-trailing-assistant bot=deepseek-chat')>=2:break
+   time.sleep(0.05)
+  else:
+   self.fail('expected two skips\n%s'%self.log_path.read_text(errors='replace')[-2000:])
+  chats=[]
+  for entry in Model.paths[self.paths_at:]:
+   if not (isinstance(entry,tuple) and len(entry)>=4 and isinstance(entry[3],dict)):continue
+   if not str(entry[0]).startswith('/v1/chat'):continue
+   chats.append(entry[3])
+  for call in chats:
+   msgs=call.get('messages') or []
+   self.assertTrue(msgs)
+   self.assertNotEqual(msgs[-1].get('role'),'assistant',call)
+   self.assertFalse(call.get('chat_template_kwargs',{}).get('enable_thinking') and msgs[-1].get('role')=='assistant')
+  room=self.request('/api/state')['room']
+  blob=json.dumps(room,ensure_ascii=False)
+  self.assertNotIn('incompatible with enable_thinking',blob)
+  self.assertNotIn('HTTP 500',blob)
+  self.assertNotIn('Antwort fehlgeschlagen',blob)
+  self.assertIn('alte antwort',blob)
+  saved=json.loads(self.wire_path.read_text())
+  self.assertEqual(saved.get('messages'),self.before_messages)
+  html=urllib.request.urlopen(f'http://127.0.0.1:{self.ui}/',timeout=2).read().decode()
+  self.assertIn('id="bot-proaktiv"',html)
+  self.assertIn('id="bot-active"',html)
+  agents={a['id']:a for a in self.request('/api/state')['agents']}
+  self.assertIs(agents['deepseek-chat']['proaktiv'],True)
+  self.assertIsNot(agents['deepseek-chat']['enabled'],False)
+  self.request('/api/bot-settings',{'bots':['deepseek-chat'],'proaktiv':False},method='PUT')
+  agents={a['id']:a for a in self.request('/api/state')['agents']}
+  self.assertIs(agents['deepseek-chat']['proaktiv'],False)
+  self.assertIsNot(agents['deepseek-chat']['enabled'],False)
 
 if __name__=='__main__':unittest.main(verbosity=2)
 

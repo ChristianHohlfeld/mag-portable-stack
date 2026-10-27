@@ -47,8 +47,16 @@ else
     printf '%s\n' "@900 Build :: bash \"$ROOT/ops/ci/native-build.sh\""
     cat "$ROOT/ops/ci/native-fast.list"
     printf '%s\n' 'Test and workflow deadlines :: python3 ops/ci/check-timeouts.py'
-    printf '%s\n' 'Empty legacy Gitea directory :: bash ops/backup/tests/test-gitea-root.sh'
-    printf '%s\n' 'Vendor pinned Moonshine :: bash ops/vendor-speech-assets.sh build/speech-assets'
+    if have restic && have sqlite3; then
+      printf '%s\n' 'Empty legacy Gitea directory :: bash ops/backup/tests/test-gitea-root.sh'
+    else
+      skip 'Empty legacy Gitea directory' 'restic/sqlite3 not installed' >&2
+    fi
+    if have node && have curl; then
+      printf '%s\n' 'Vendor pinned Moonshine :: bash ops/vendor-speech-assets.sh build/speech-assets'
+    else
+      skip 'Vendor pinned Moonshine' 'node/curl not installed' >&2
+    fi
     if bash "$ROOT/ops/ci/backup-affected.sh"; then
       printf '%s\n' '@240 backup restore e2e :: bash ops/backup/tests/test-backup.sh'
     else
@@ -78,11 +86,7 @@ else
     if have gitleaks; then
       printf '%s\n' 'gitleaks (no secrets) :: gitleaks detect --no-banner --redact --source .'
     else
-      printf '%s\n' 'no-secrets grep (gitleaks not installed) :: bash -c '"'"'
-    pat="-----BEGIN [A-Z ]*PRIVATE KEY-----|gh[pousr]_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{40,}|AKIA[0-9A-Z]{16}|xox[baprs]-[A-Za-z0-9-]{10,}|sk-[A-Za-z0-9]{40,}|tskey-[a-z]+-[A-Za-z0-9]{10,}"
-    allow="^(server-audit-|mag-room/tests/test_guest_description[.]cpp$)"
-    hits=$(git ls-files -z | grep -zvE "$allow" | xargs -0 grep -lIE -e "$pat" -- 2>/dev/null)
-    [[ -z $hits ]] || { echo "possible secrets in:"; echo "$hits"; exit 1; }'"'"
+      printf '%s\n' "no-secrets grep (gitleaks not installed) :: bash $ROOT/ops/ci/no-secrets.sh"
     fi
     if have go; then
       printf '%s\n' "browser WebRTC gateway (go test/build) :: cd mag-room/webrtc && go test -mod=mod -timeout 60s ./... && go build -mod=mod -o ${LOG}/mag-browser-webrtc ."

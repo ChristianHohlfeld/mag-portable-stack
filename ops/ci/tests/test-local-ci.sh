@@ -23,8 +23,12 @@ MAG_CI_NO_PIN=1 MAG_CI_LIST_ONLY=1 MAG_CI_FORCE_BACKUP=1 bash "$root/ops/ci/loca
 grep -Fq 'Build ::' "$tmp/full.list"
 grep -Fq 'Independent fast contracts' "$root/ops/ci/native-fast.list" || true
 grep -Fq 'backup restore e2e' "$tmp/full.list"
-grep -Fq 'Vendor pinned Moonshine' "$tmp/full.list"
-grep -Fq 'Empty legacy Gitea directory' "$tmp/full.list"
+if ! grep -Fq 'Vendor pinned Moonshine' "$tmp/full.list"; then
+  grep -Fq 'Vendor pinned Moonshine' "$tmp/full.err"
+fi
+if ! grep -Fq 'Empty legacy Gitea directory' "$tmp/full.list"; then
+  grep -Fq 'Empty legacy Gitea directory' "$tmp/full.err"
+fi
 grep -Fq 'wait-native-build.sh' "$tmp/full.list"
 grep -Fq 'room-clear ::' "$tmp/full.list"
 

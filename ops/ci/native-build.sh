@@ -7,16 +7,21 @@
 set -euo pipefail
 ROOT=$(cd -- "$(dirname -- "$(readlink -f "$0")")/../.." && pwd)
 cd "$ROOT"
-# shellcheck source=../build-targets.sh
-source "$ROOT/ops/build-targets.sh"
 dir=${MAG_CI_BUILD_DIR:-$ROOT/build}
 jobs=${MAG_CI_JOBS:-$(nproc 2>/dev/null || echo 2)}
 stamp="$dir/.mag-native-hash"
 ready=${MAG_CI_BUILD_OK:-}
 failf=${MAG_CI_BUILD_FAIL:-}
-mark_fail() { [[ -n $failf ]] && : >"$failf"; }
-mark_ok() { [[ -n $ready ]] && : >"$ready"; }
-trap 'rc=$?; if [[ $rc -ne 0 ]]; then mark_fail; fi; exit "$rc"' EXIT
+mark_fail() { if [[ -n $failf ]]; then : >"$failf"; fi; }
+mark_ok() { if [[ -n $ready ]]; then : >"$ready"; fi; }
+on_exit() {
+  local st=$?
+  if [[ $st -ne 0 ]]; then
+    mark_fail
+  fi
+  exit "$st"
+}
+trap on_exit EXIT
 
 hash_inputs() {
   python3 - "$ROOT" <<'PY'

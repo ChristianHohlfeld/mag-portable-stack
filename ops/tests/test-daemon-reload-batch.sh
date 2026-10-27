@@ -17,7 +17,7 @@ echo "systemctl $*" >> "$CALLS"
 exit 0
 EOF
 chmod +x "$tmp/bin/systemctl"
-# shellcheck source=../mag-units.sh
+# shellcheck disable=SC1091
 source "$root/ops/mag-units.sh"
 
 export PATH="$tmp/bin:$PATH" CALLS=$log

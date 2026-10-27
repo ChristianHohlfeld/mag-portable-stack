@@ -51,5 +51,7 @@ mag_flush_daemon_reload() {
   MAG_DEFER_DAEMON_RELOAD=0
   mag_daemon_reload_exec
   MAG_DEFER_DAEMON_RELOAD=$saved
-  [[ -n $stamp ]] && rm -f "$stamp"
+  if [[ -n $stamp ]]; then
+    rm -f "$stamp"
+  fi
 }

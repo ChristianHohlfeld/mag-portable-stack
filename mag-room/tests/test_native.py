@@ -20,6 +20,9 @@ class Model(http.server.BaseHTTPRequestHandler):
  script_scope=None
  slot_snapshot=[];cache_records=[];tokenizer_fail=False;tokenizer_requests=[]
  protocol_version='HTTP/1.1';calls=[];slots=[];pairs=[];paths=[];slot_delay={};delay=0;reply=None;script=[];health=200;last_prompt={};overflow_once=0;barrier_token='';barrier_release=None;hold_get=0
+ # A prompt that misses the pinned slot sleeps this long before any token.
+ # 0 keeps the rest of the suite fast. The lock is per gateway slot, like ik.
+ prefix_miss_s=0;_slot_locks={};_slot_guard=threading.Lock()
  def log_message(self,*a):pass
  def do_GET(self):
   if type(self).hold_get: time.sleep(type(self).hold_get)
@@ -38,6 +41,20 @@ class Model(http.server.BaseHTTPRequestHandler):
    type(self).tokenizer_requests.append(obj.get('content',''))
    data=json.dumps({'tokens':list(obj.get('content','').encode('utf8'))}).encode()
    self.send_response(503 if type(self).tokenizer_fail else 200);self.send_header('Content-Length',str(len(data)));self.end_headers();self.wfile.write(data);return
+  gate=None
+  if type(self).prefix_miss_s and self.path.startswith('/v1/chat/'):
+   with type(self)._slot_guard:
+    gate=type(self)._slot_locks.setdefault(self.headers.get('X-Mag-Slot') or '', threading.Lock())
+   if not gate.acquire(timeout=12):
+    try:
+     self.send_response(503);self.send_header('Content-Length','0');self.end_headers()
+    except (BrokenPipeError,ConnectionResetError):return
+    return
+  try:
+   self._complete(obj)
+  finally:
+   if gate:gate.release()
+ def _complete(self,obj):
   self.calls.append(obj)
   type(self).slots.append(self.headers.get('X-Mag-Slot'))
   type(self).pairs.append((obj,self.headers.get('X-Mag-Slot')))  # one atomic append
@@ -51,6 +68,17 @@ class Model(http.server.BaseHTTPRequestHandler):
   if type(self).barrier_release is not None and type(self).barrier_token and type(self).barrier_token in json.dumps(obj,ensure_ascii=False):
    type(self).barrier_release.wait(timeout=10)
   if self.delay:time.sleep(self.delay)
+  if type(self).prefix_miss_s and obj.get('cache_prompt') is True and obj.get('id_slot') is not None:
+   parts=[]
+   for m in obj.get('messages') or []:
+    c=m.get('content');parts.append(c if isinstance(c,str) else json.dumps(c,ensure_ascii=False,sort_keys=True))
+   text='\x1e'.join(parts)
+   prev=type(self).last_prompt.get((obj.get('model'),self.headers.get('X-Mag-Slot'),obj.get('id_slot')))
+   if isinstance(prev,str) and prev:
+    n=0;lim=min(len(prev),len(text))
+    while n<lim and prev[n]==text[n]:n+=1
+    # Under 98% of the resident prefix is the restart re-prefill, not a suffix.
+    if n*100<len(prev)*98:time.sleep(type(self).prefix_miss_s)
   if obj.get('max_tokens')!=1 and self.headers.get('X-Mag-Slot') in type(self).slot_delay:time.sleep(type(self).slot_delay[self.headers.get('X-Mag-Slot')])
   try:
    scope=type(self).script_scope
@@ -3496,6 +3524,54 @@ class MixedNuma(unittest.TestCase):
   finally:
    Model.delay=0;Model.slot_snapshot=[]
    self.env['MAG_ROOM_PREWARM']='0';self.env.pop('MAG_ROOM_STREAM_IDLE_S',None)
+   self.stop();self.start()
+ def test_11_room_restart_first_hi_under_5s(self):
+  # DeepSeek stays up. Only the room process restarts. The first hi is built
+  # by magroom and must come back in the room in under 5s. A prefix miss
+  # blocks the slot for 6s, so it cannot pass, and the poll stops at 8s.
+  self.wait_idle()
+  bot=next(b for b in self.bots().values() if b['model']=='deepseek-v4-flash-0731')
+  Model.last_prompt.clear()
+  first,_=self.ask(bot['id'])
+  previous=Model.cache_records[-1]['prompt_size']
+  self.assertGreater(previous,200)
+  self.stop()
+  Model.slot_snapshot=[{'id':0,'n_ctx':32768,'speculative':False,'is_processing':False,
+    'next_token':{'has_next_token':False,'has_new_line':False,'n_remain':0,'n_decoded':4}}]
+  Model.prefix_miss_s=6
+  self.env['MAG_ROOM_PREWARM']='1'
+  try:
+   logp=self.tmp_path.joinpath('server.log')
+   seen=logp.read_text().count('skipped=ram') if logp.exists() else 0
+   mark=len(Model.paths);self.start()
+   for _ in range(80):
+    if logp.read_text().count('skipped=ram')>=seen+2:break
+    time.sleep(.05)
+   else:self.fail('restart did not keep the live DeepSeek slot')
+   posted=[p for p in list(Model.paths)[mark:] if p[0]=='/v1/chat/completions' or str(p[0]).endswith('restore')]
+   self.assertFalse(posted,'room restart posted a completion onto the warm slot')
+   token=f'hi {time.monotonic_ns()}'
+   t0=time.monotonic();deadline=t0+8
+   self.request('/api/message',{'text':token,'bots':[bot['id']]})
+   answered=False
+   while time.monotonic()<deadline:
+    room=self.request('/api/state')['room']
+    for i,m in enumerate(room):
+     if m.get('role')=='user' and token in (m.get('content') or ''):
+      answered=any(x.get('role')=='assistant' and x.get('bot')==bot['id'] and (x.get('content') or '') for x in room[i+1:])
+    if answered:break
+    time.sleep(.02)
+   elapsed=time.monotonic()-t0
+   self.assertTrue(answered,'first hi exceeded the 8s hard timeout')
+   self.assertLess(elapsed,5,'first hi after a room restart')
+   rec=Model.cache_records[-1]
+   self.assertEqual(rec['model'],bot['model'])
+   self.assertGreaterEqual(rec['n_past']/previous,.98,'first hi must extend the cached prefix')
+   call=next(c for c,_ in reversed(list(Model.pairs)) if token in json.dumps(c,ensure_ascii=False))
+   self.assertEqual(call['messages'][:len(first['messages'])],first['messages'])
+  finally:
+   Model.prefix_miss_s=0;Model.slot_snapshot=[]
+   self.env['MAG_ROOM_PREWARM']='0'
    self.stop();self.start()
  def test_08_health_timeout_is_busy_not_offline(self):
   self.wait_idle();self.stop();Model.hold_get=6;self.env['MAG_ROOM_PREWARM']='1'

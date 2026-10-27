@@ -6499,9 +6499,12 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
             else zeros = true;
           }
         if (auto busy = slot.find("is_processing"); busy && busy->asBool()) ram_warm = true;
-        // The pinned ik runtime exposes prompt/next_token, not n_past.
-        // After a reply, n_decoded stays > 0 while state is idle (0). An
-        // empty prompt string is not proof the KV was dropped.
+        // Default GET /slots is metrics only (slots_debug=0): no prompt
+        // string and no n_past. The KV is still in RAM. After a reply,
+        // n_decoded stays > 0 while the slot is idle. Treating that as cold
+        // restores a disk checkpoint over the warm KV and posts a new
+        // completion; ik then re-prefills from the previous ubatch checkpoint
+        // (~1-4.5k tokens, ~80s) and the first user message waits on it.
         long decoded = -1;
         if (auto next = slot.find("next_token"); next && next->isObj())
           if (auto n = next->find("n_decoded"); n && n->type == Val::NUM)

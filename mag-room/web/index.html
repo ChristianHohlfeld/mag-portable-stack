@@ -870,7 +870,7 @@ function storedTools(msg){return Array.isArray(msg.tools)?msg.tools.map(t=>({nam
 function addTrace(node,trace){
  if(!trace)return;
  const content=node.querySelector('.content');if(!content)return;
- if(trace.reasoning&&!runPart(node,'thinking'))showThinking(node,trace.key||'',trace.reasoning,false,trace.ms||0);
+ if(trace.reasoning&&trace.tools?.some(t=>!QUIET_TOOLS.has(t.name))&&!runPart(node,'thinking'))showThinking(node,trace.key||'',trace.reasoning,false,trace.ms||0);
  if(trace.tools?.length){
   if(!node.querySelector('.tools-trace'))paintTools(node,content,trace.tools);
  }
@@ -1186,6 +1186,14 @@ document.addEventListener('keydown',ev=>{if(ev.key==='Escape'&&msgPop.el?.classL
 addEventListener('scroll',()=>closeMsgPop(),true);
 addEventListener('resize',()=>closeMsgPop());
 addEventListener('popstate',()=>{if(msgPop.skipPop){msgPop.skipPop--;return}if(msgPop.pushed){msgPop.pushed=false;closeMsgPop(true)}});
+function roomBotName(msg){
+ if(msg.role==='user')return msg.name||'Nutzer';
+ const known=(state.agents||[]).find(a=>a.id===(msg.bot||msg.bot_id)||a.name===msg.name);
+ if(known)return known.name||msg.name||'Bot';
+ if(msg.name==='BotBot')return 'Qwen';
+ if(msg.name==='Bot1')return 'DeepSeek';
+ return msg.name||'Bot';
+}
 function append(msg,scroll=true,trace=null,position=-1){
  const area=$('conversation');let inner=area.querySelector('.conversation-inner');
  if(!inner){inner=document.createElement('div');inner.className='conversation-inner';area.append(inner)}
@@ -1193,9 +1201,10 @@ function append(msg,scroll=true,trace=null,position=-1){
  const human=msg.role==='user',mine=isMine(msg);
  const div=document.createElement('article');div.className='message '+(human?'user'+(mine?' mine':' other'):'assistant');div.dataset.id=msg.id||'';div.dataset.displayMs=String(msg.display_ms||msg.ts*1000||Date.now());
  const meta=document.createElement('div');meta.className='meta';
- const avatar=document.createElement('span');avatar.className='avatar';avatar.textContent=human?initials(msg.name||'Nutzer'):(msg.name||'Bot').trim().slice(0,1).toUpperCase();
+ const visibleName=roomBotName(msg);
+ const avatar=document.createElement('span');avatar.className='avatar';avatar.textContent=human?initials(msg.name||'Nutzer'):visibleName.trim().slice(0,1).toUpperCase();
  if(human&&!mine){avatar.style.background=avatarColor(msg.login||msg.name||'Gast');avatar.style.color='#fff'}
- const name=document.createElement('strong');name.textContent=msg.name||(human?'Nutzer':'Bot');
+ const name=document.createElement('strong');name.textContent=visibleName;
  const time=document.createElement('time');const date=new Date((msg.ts||Date.now()/1000)*1000);time.textContent=date.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
  meta.append(avatar,name,time);div.append(meta);
  const text=shownText(msg);
@@ -1205,14 +1214,14 @@ function append(msg,scroll=true,trace=null,position=-1){
  div.append(content);
  attachReactions(div,msg);
  attachWork(div,msg,content);
- if(!human&&msg.thinking_enabled!==false&&msg.reasoning)showThinking(div,msg.id||'',msg.reasoning,false,msg.thought_ms);
+ if(!human&&msg.thinking_enabled!==false&&msg.reasoning&&(shownSteps(msg.steps).length||shownTools(storedTools(msg)).length))showThinking(div,msg.id||'',msg.reasoning,false,msg.thought_ms);
  if(!human&&msg.tools?.length)paintTools(div,content,storedTools(msg));
- if(trace)addTrace(div,{...trace,key:msg.id||''});
+ if(trace?.tools?.some(t=>!QUIET_TOOLS.has(t.name)))addTrace(div,{...trace,key:msg.id||''});
  if(msg.file)div.append(attachmentView(msg.file));
  if(text||msg.live){const actions=document.createElement('div');actions.className='message-tools';if(msg.live)actions.style.visibility='hidden';
  if(text){const b=document.createElement('button');b.type='button';b.className='message-copy';b.innerHTML=ICON_COPY+' Kopieren';b.setAttribute('aria-label','Nachricht kopieren');b.onclick=()=>copyText(text,b);actions.append(b);const audio=document.createElement('button');if(window.magMessageAudio?.attach){window.magMessageAudio.attach(audio,text,msg.id);actions.append(audio)}}
  div.append(actions)}
- if(msg.id&&completedHeights.has(msg.id))div.style.minHeight=completedHeights.get(msg.id)+'px';
+ // Completed replies never keep the provisional activity height.
  inner.append(div);return div;
 }
 function streamClock(s){const t=Math.max(0,Math.floor((Date.now()-((s&&s.started)||Date.now()))/1000));return Math.floor(t/60)+':'+String(t%60).padStart(2,'0')}
@@ -1269,7 +1278,7 @@ function stepsList(steps){
 function attachWork(div,msg,content){
  if(!msg||msg.role==='user')return;
  if(msg.thinking_enabled===false&&!msg.work_error&&!msg.interrupted)return;
- if(!msg.work_error&&!msg.interrupted&&!shownSteps(msg.steps).length&&!msg.reasoning&&!shownTools(storedTools(msg)).length)return;
+ if(!msg.work_error&&!msg.interrupted&&!shownSteps(msg.steps).length&&!shownTools(storedTools(msg)).length)return;
  const box=document.createElement('div');
  box.className='work-status '+(stoppedByUser(msg)?'phase-stopped':msg.work_error?'phase-error':(msg.interrupted?'phase-hung':'phase-done'));
  const dot=document.createElement('span');dot.className='pulse';
@@ -1296,36 +1305,25 @@ function readingPanel(node,s){
  box.replaceChildren(head,ul);
 }
 function ensureWork(node,s,botId){
- if(s.thinkingEnabled===false){
-  for(const cls of ['work-status','work-reading','work-steps','thinking'])runPart(node,cls)?.remove();
-  node.querySelector('.quiet-loading')?.remove();
-  const run=node.querySelector(':scope > .run');if(run&&!run.children.length)run.remove();
-  return;
- }
+ const steps=shownSteps(s.steps),tools=shownTools(s.tools);
+ const meaningful=steps.length||tools.length||s.error||s.hung;
+ let dot=node.querySelector(':scope > .meta > .inline-progress');
+ if(!dot){dot=document.createElement('span');dot.className='inline-progress';node.querySelector(':scope > .meta')?.append(dot)}
+ dot.classList.toggle('failed',!!(s.error||s.hung));dot.title=workLabelText(s);
+ dot.setAttribute('role','status');dot.setAttribute('aria-label',workLabelText(s));
+ if(!meaningful){node.querySelector(':scope > .run')?.remove();return}
  let box=runPart(node,'work-status');
  if(!box){
-  box=document.createElement('div');box.className='work-status';box.setAttribute('role','status');
-  const dot=document.createElement('span');dot.className='pulse';
-  const label=document.createElement('span');label.className='work-label';
-  const bar=document.createElement('div');bar.className='work-bar';bar.hidden=true;const fill=document.createElement('i');bar.append(fill);
-  box.append(dot,label,bar);
-  runPut(node,box);
-  wireRunToggle(node,box,'live:'+botId);
+   box=document.createElement('div');box.className='work-status';box.setAttribute('role','status');
+   const pulse=document.createElement('span');pulse.className='pulse';
+   const label=document.createElement('span');label.className='work-label';
+   box.append(pulse,label);runPut(node,box);wireRunToggle(node,box,'live:'+botId);
  }
- const phase=s.error?'error':(s.hung?'hung':(s.phase||'think'));
- box.className='work-status phase-'+phase;
+ box.className='work-status phase-'+(s.error?'error':s.hung?'hung':s.phase||'think');
  box.querySelector('.work-label').textContent=workLabelText(s);
- const bar=box.querySelector('.work-bar');
- const show=phase==='prompt'&&s.progress&&s.progress.total;
- bar.hidden=!show;
- if(show){const pct=Math.min(100,Math.round(s.progress.processed/s.progress.total*100));bar.querySelector('i').style.width=pct+'%';bar.setAttribute('role','progressbar');bar.setAttribute('aria-valuemin','0');bar.setAttribute('aria-valuemax','100');bar.setAttribute('aria-valuenow',String(pct));bar.setAttribute('aria-label','Liest Verlauf')}
- readingPanel(node,s);
  const old=runPart(node,'work-steps');
- const list=shownSteps(s.steps);
- if(!list.length){old?.remove();return}
- const open=!!old?.open;
- const fresh=stepsList(list);fresh.open=open;
- if(old)old.replaceWith(fresh);else runPut(node,fresh);
+ if(!steps.length)old?.remove();
+ else{const fresh=stepsList(steps);fresh.open=!!old?.open;if(old)old.replaceWith(fresh);else runPut(node,fresh)}
 }
 setInterval(()=>{const now=Date.now();for(const id of Object.keys(streams)){const s=streams[id];if(!s)continue;const hung=!s.error&&now-(s.lastEvent||s.started||now)>60000;if(hung!==!!s.hung){s.hung=hung;updateStream(id,true);continue}const label=s.node?.querySelector?.('.work-label');if(label&&s.node.classList.contains('work-live'))label.textContent=workLabelText(s);if(s.thinking){const t=s.node?.querySelector?.(':scope > .run > .thinking .think-time');if(t)t.textContent=thinkSecs(liveThinkMs(s))}}},1000);
 
@@ -1401,14 +1399,13 @@ function updateStream(botId,immediate=false){
   content.dataset.loading=s.thinkingEnabled===false&&!text?'1':'0';
   if(!text){s.node.classList.add('processing');if(content._shown!==''){content.replaceChildren();content._shown=''}}
   else{s.node.classList.remove('processing');if(content._shown!==text){content.innerHTML=safeMarkdown(text);decorate(content);content._shown=text}}
-  showThinking(s.node,'live:'+botId,s.thinkingEnabled===false?'':(s.reasoning||''),!!s.thinking,liveThinkMs(s));
+  showThinking(s.node,'live:'+botId,s.thinkingEnabled===false||!shownTools(s.tools).length&&!shownSteps(s.steps).length?'':(s.reasoning||''),!!s.thinking,liveThinkMs(s));
   paintApprovals(s.node,botId);
   paintTools(s.node,content,s.tools);
-  renderPromptProgress(s,s.node);
+  // No redundant full-width prompt progress: the inline activity dot reports it.
   // A live reply never shrinks: the thinking peek folding away, a revoked
   // draft or a shorter status line would otherwise pull the chat down.
-  s.node.style.minHeight='';const h=s.node.getBoundingClientRect().height;
-  s.floor=Math.max(s.floor||0,h);if(s.floor>h+0.5)s.node.style.minHeight=s.floor+'px';
+  s.node.style.minHeight='';
  };
  if(immediate){if(s.frame)cancelAnimationFrame(s.frame);update()}
  else if(!s.frame)s.frame=requestAnimationFrame(update);
@@ -1424,7 +1421,9 @@ function render(){
  area.replaceChildren();const inner=document.createElement('div');inner.className='conversation-inner';area.append(inner);
  if(!state.room.length){inner.innerHTML='<div class="empty"><div class="empty-symbol">✳</div><h1>Worum geht es?</h1><p>Eine Frage, eine Notiz oder eine Aufgabe für die Bots. Alles bleibt auf deinem Server.</p></div>'}
  const timeline=[...state.room];
- for(const p of state.pending||[])timeline.push({id:'pending:'+p.id,role:'user',name:p.sender,login:p.login,content:p.text,client_id:p.client_id,display_ms:p.display_ms||p.ts*1000});
+ // Pending items belong to the queue only; never project them into chat history.
+ const queuedClients=new Set((state.pending||[]).map(p=>p.client_id).filter(Boolean));
+ for(const id of queuedClients)localSends.delete(id);
  for(const [key,m] of localSends){if(timeline.some(x=>x.client_id===key))localSends.delete(key);else timeline.push(m)}
  timeline.sort((a,b)=>(a.display_ms||a.ts*1000||0)-(b.display_ms||b.ts*1000||0));
  timeline.forEach((m,i)=>append(m,false,traceForMessage(m,i),i));
@@ -1856,7 +1855,7 @@ let busyBots=new Set();
 let waitingBots=new Map();
 function setBusyBots(ids,waiting){busyBots=new Set(Array.isArray(ids)?ids:[]);if(Array.isArray(waiting)){const keep=new Map();for(const id of waiting)keep.set(id,waitingBots.get(id)||'');waitingBots=keep}for(const id of [...waitingBots.keys()])if(!busyBots.has(id))waitingBots.delete(id);renderLanes()}
 async function stopBot(id){try{await api('/api/cancel',id?{bot:id}:{})}catch(e){notice(e.message)}}
-function renderLanes(){const box=$('bot-lanes');if(!box)return;const ids=[...busyBots].filter(id=>state.agents.some(a=>a.id===id));box.replaceChildren();box.hidden=!ids.length;if(!ids.length){syncComposerButton();return}const allowed=can('stop');
+function renderLanes(){const box=$('bot-lanes');if(!box)return;const ids=[...busyBots].filter(id=>state.agents.some(a=>a.id===id));box.replaceChildren();box.hidden=true;if(!ids.length){syncComposerButton();return}const allowed=can('stop');
  for(const id of ids){const a=state.agents.find(x=>x.id===id);const chip=document.createElement('span');chip.className='bot-lane';chip.dataset.bot=id;const dot=document.createElement('span');dot.className='pulse';dot.style.background=a.color||'var(--accent)';const name=document.createElement('span');name.className='lane-name';const after=waitingBots.get(id);name.textContent=waitingBots.has(id)?(a.name||'Bot')+' wartet'+(after?' auf '+after:'')+' …':(a.name||'Bot')+' antwortet …';chip.classList.toggle('waiting',waitingBots.has(id));chip.append(dot,name);
   if(allowed){const b=document.createElement('button');b.type='button';b.textContent='Stopp';b.title=(a.name||'Bot')+' stoppen';b.setAttribute('aria-label',(a.name||'Bot')+' stoppen');b.onclick=()=>stopBot(id);chip.append(b)}box.append(chip)}
  syncComposerButton()}
@@ -1884,6 +1883,7 @@ $('send-form').onsubmit=async e=>{
   if(!text){notice('Dateien geteilt');return}
   const r=await api('/api/message',{text,bots,...(sameThinking?{think}:{}),interrupt,request_id});
   failedSends.delete(fingerprint);
+  if(r?.queued)localSends.delete(request_id);
   if(r?.queue)renderQueue(r.queue);
   await refresh();notice('');
  }catch(err){
@@ -2821,7 +2821,7 @@ events.onmessage=e=>{
    if(thinkOpen.delete('live:'+id)&&event.id)thinkOpen.add(event.id);
    if(runOpen.has('live:'+id)){const o=runOpen.get('live:'+id);runOpen.delete('live:'+id);if(event.id)runOpen.set('done:'+event.id,o)}
    if(s&&s.thinkingEnabled!==false&&(s.reasoning||s.tools?.length)){completedTraces.push({name:s.name,content:event.content||s.text||'',reasoning:event.reasoning?'':(s.reasoning||''),ms:liveThinkMs(s),tools:s.tools||[],assignedPosition:null});if(completedTraces.length>40)completedTraces.shift()}
-   if(s?.node)completedHeights.set(event.id,s.node.getBoundingClientRect().height);
+   // Do not persist live status-card dimensions.
    delete streams[id];streamControls();
    refresh().catch(err=>notice(err.message));
   }else if(window.magAgentUI?.event(event)){

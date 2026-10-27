@@ -306,6 +306,7 @@ static std::string required_perm(const std::string &method,
       path.rfind("/api/queue", 0) == 0 ||
       path == "/api/cancel" || path == "/api/stop" ||
       path == "/api/offline" || path == "/api/autotalk" ||
+      path == "/api/selftalk" ||
       path == "/api/model-settings" || path == "/api/sampling" ||
       path.rfind("/api/connectors", 0) == 0 ||
       path.rfind("/api/plugins", 0) == 0 ||

@@ -1548,6 +1548,22 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
     send_json(fd, 200, mj::dump(e));
     return;
   }
+  if (m == "POST" && path == "/api/selftalk") {
+    if (!has_json || !body.find("on") || body.find("on")->type != Val::BOOL) {
+      error_json(fd, 400, "Boolean on required");
+      return;
+    }
+    if (body.find("on")->asBool())
+      start_selftalk();
+    else
+      stop_selftalk();
+    Val e = Val::object();
+    e["type"] = "selftalk";
+    e["on"] = SELFTALK.load();
+    publish(mj::dump(e));
+    send_json(fd, 200, mj::dump(e));
+    return;
+  }
   if (m == "POST" && path == "/api/autotalk") {
     if (!has_json || !body.find("on") || body.find("on")->type != Val::BOOL) {
       error_json(fd, 400, "Boolean on required");

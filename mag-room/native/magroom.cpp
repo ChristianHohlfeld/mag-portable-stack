@@ -2113,6 +2113,40 @@ static std::string bot_site_rules(int bot_idx) {
   replaceAll(text, "{vm}", bot_field(bot_idx, "vm", ""));
   return text;
 }
+// One short line, rebuilt every turn from the live roster. Not part of the
+// cached system prefix, so a rename, model swap or membership change shows
+// up on the next turn without a restart and without growing first-token prefill.
+static std::string room_company_line(int self_idx) {
+  std::string human;
+  std::vector<std::pair<std::string, std::string>> others;
+  {
+    std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
+    for (auto it = ROOM.rbegin(); it != ROOM.rend(); ++it) {
+      if (mag::str(*it, "role") == "user") {
+        human = mag::str(*it, "name");
+        break;
+      }
+    }
+    for (int i = 0; i < (int)AGENTS.size(); ++i) {
+      if (i == self_idx) continue;
+      const std::string id = mag::str(AGENTS[i], "id");
+      if (id.empty()) continue;
+      others.push_back({mag::str(AGENTS[i], "name").empty() ? id : mag::str(AGENTS[i], "name"),
+                        bot_model_id(i)});
+    }
+  }
+  if (human.empty() && others.empty()) return "";
+  std::string line = "\nRaum: ";
+  bool any = false;
+  if (!human.empty()) { line += human; any = true; }
+  for (const auto &o : others) {
+    if (any) line += ", ";
+    line += o.first + " (" + o.second + ")";
+    any = true;
+  }
+  line += ". Sprich die anderen mit Namen an.";
+  return line;
+}
 static std::string build_context_tail(int bot_idx, bool autotalk,
                                       const std::string &other) {
   // Volatile only, and only after the transcript: network, files, clock,
@@ -2129,6 +2163,7 @@ static std::string build_context_tail(int bot_idx, bool autotalk,
   }
   if (bot_site_ready(bot_idx))
     out += bot_site_rules(bot_idx);
+  out += room_company_line(bot_idx);
   if (autotalk) {
     std::string at = AUTOTALK_RULES;
     replaceAll(at, "{other}", other.empty() ? "der Nutzer" : other);
@@ -2155,6 +2190,13 @@ static std::string render_room_line(const Val &m) {
   std::string role = m.find("role") ? m.find("role")->asStr() : "";
   std::string name = m.find("name") ? m.find("name")->asStr()
                                     : (role == "user" ? "Nutzer" : "Bot");
+  // Bots are attributed with the display name they have now, so a rename is
+  // visible on the next turn. User lines keep the sender name stored on them
+  // (Chris stays Chris).
+  if (auto b = m.find("bot"); b && !b->asStr().empty()) {
+    const int who = agent_index(b->asStr());
+    if (who >= 0) name = bot_field(who, "name", name);
+  }
   if (auto id = m.find("id"); id && !id->asStr().empty())
     name += " (" + id->asStr() + ")";
   std::string content = m.find("content") ? m.find("content")->asStr() : "";
@@ -2205,8 +2247,9 @@ static std::string build_transcript() {
     std::string id = m.find("id") ? m.find("id")->asStr() : "";
     std::string line;
     if (!id.empty()) {
-      auto it = TRANSCRIPT_RENDERED.find(id);
-      line = it != TRANSCRIPT_RENDERED.end() ? it->second : render_room_line(m);
+      // Re-render so a renamed bot is named correctly. Unchanged names produce
+      // the same bytes, so the cached prompt prefix stays put.
+      line = render_room_line(m);
       TRANSCRIPT_RENDERED[id] = line;
     } else {
       line = render_room_line(m);
@@ -5856,6 +5899,9 @@ static std::string manifest_body() {
 // room-wide operations (reset, clear, bot removal) take it exclusively and so
 // wait for every running turn.
 static std::atomic<bool> AUTOTALK{false}, BUSY{false};
+// Self-Talk: bots answer each other's room messages. No consecutive-turn cap.
+// SELF_HOLD ends the current chain (Stop or toggle off) until a new user message.
+static std::atomic<bool> SELFTALK{false}, SELF_HOLD{false};
 // Owner room setting (state/reflect, default off = least blocking): after all
 // bots of a concurrent user turn have answered, each answers once more and
 // then sees the others' first-round answers. Never chained, never autonomous.
@@ -5870,6 +5916,8 @@ struct Job {
   uint64_t generation = 0;
   std::string input; // one raw chat message, never accumulated context
   bool reflect = false; // second round: read the other bots' answers
+  bool selftalk = false; // answer another bot; never the speaker
+  std::string cause; // room message id that armed this follow-up
 };
 static std::deque<Job> JOBS;
 // Queue persistence: pending jobs + the jobs being answered survive a room
@@ -5920,6 +5968,8 @@ static Val job_val(const Job &j) {
   o["think"] = (double)j.think;
   if (!j.input.empty()) o["input"] = j.input;
   if (j.reflect) o["reflect"] = true;
+  if (j.selftalk) o["selftalk"] = true;
+  if (!j.cause.empty()) o["cause"] = j.cause;
   return o;
 }
 static Job val_job(const Val &v) {
@@ -5929,6 +5979,8 @@ static Job val_job(const Val &v) {
   if (auto t = v.find("think")) j.think = (int)t->asNum(-1);
   if (auto input = v.find("input")) j.input = input->asStr();
   if (auto r = v.find("reflect"); r && r->type == Val::BOOL) j.reflect = r->asBool();
+  if (auto s = v.find("selftalk"); s && s->type == Val::BOOL) j.selftalk = s->asBool();
+  if (auto c = v.find("cause")) j.cause = c->asStr();
   return j;
 }
 // Messages sent while a reply runs: NOT in the transcript yet (history stays
@@ -6179,6 +6231,56 @@ static Val enqueue_pending(const std::string &text,
   // Decide the first-hi owner before cancelling a DeepSeek prewarm, so a
   // busy or cold DeepSeek slot does not take the greeting.
   const std::vector<std::string> answerers = first_hi_answerers(ids);
+  // Self-Talk stays up while Chris writes. The line goes into the room once,
+  // never also into the queue. It does not end the chain. The next free bot
+  // answers it before any bot-to-bot follow-up.
+  if (SELFTALK.load()) {
+    SELF_HOLD = false;
+    if (!request_id.empty()) {
+      MESSAGE_RECEIPTS.push_back(receipt);
+      if (MESSAGE_RECEIPTS.size() > 256) MESSAGE_RECEIPTS.pop_front();
+    }
+    const std::string who = sender.empty() ? "Nutzer" : sender.substr(0, 40);
+    Val msg = append_room("user", who, text, "", nullptr, login.substr(0, 160), "", display_now_ms(), request_id);
+    msg["type"] = "message";
+    publish(mj::dump(msg));
+    std::vector<std::string> talkers = answerers;
+    {
+      std::lock_guard<std::recursive_mutex> st(STATE_MTX);
+      for (const auto &a : AGENTS) {
+        const std::string id = mag::str(a, "id");
+        if (id.empty()) continue;
+        if (std::find(talkers.begin(), talkers.end(), id) != talkers.end()) continue;
+        // first-hi dropped a blocked DeepSeek slot; do not put it back
+        if (std::find(ids.begin(), ids.end(), id) != ids.end() &&
+            std::find(answerers.begin(), answerers.end(), id) == answerers.end())
+          continue;
+        talkers.push_back(id);
+      }
+    }
+    for (auto it = talkers.rbegin(); it != talkers.rend(); ++it) {
+      Job j;
+      j.ids = {*it};
+      j.think = think;
+      j.generation = ++AUTO_GENERATION;
+      j.input = text;
+      JOBS.push_front(std::move(j));
+    }
+    if (!talkers.empty()) AUTO_OWNER = talkers.front();
+    AUTO_LAST_PROGRESS.clear();
+    AUTO_TURNS_LEFT = AUTO_MAX_TURNS;
+    AUTO_READY = false;
+    cancel_prewarm();
+    PREWARM_HOLD = false;
+    save_queue_locked();
+    queue_event_locked();
+    while (dispatch_locked()) {}
+    out["queued"] = false;
+    out["interrupted"] = false;
+    out["queue"] = queue_view_locked();
+    JOB_CV.notify_all();
+    return out;
+  }
   const bool waiting = lanes_busy(answerers) || std::any_of(PENDING.begin(), PENDING.end(), [](const Pending &p) { return !p.held; }) || !JOBS.empty();
   Pending p;
   p.id = token_hex(8); p.client_id = request_id; p.text = text; p.sender = sender.substr(0, 40);
@@ -6422,6 +6524,53 @@ static void handoff_visible_turn(int idx, TurnReport &report, const std::string 
   if (!TL_GROUP.empty()) { start["group"] = TL_GROUP; start["order"] = TL_ORDER; }
   publish(mj::dump(start)); run_begin(id, name);
 }
+// Queue the other bots to answer this message. The speaker is never queued.
+// At most one waiting self-talk job per bot, so the queue cannot fill with
+// duplicates; the transcript already holds every newer line.
+static void arm_selftalk(const std::string &speaker, const std::string &cause,
+                         const std::string &text) {
+  if (!SELFTALK.load() || SELF_HOLD.load() || speaker.empty() || cause.empty())
+    return;
+  std::vector<std::string> listeners;
+  {
+    std::lock_guard<std::recursive_mutex> st(STATE_MTX);
+    for (const auto &a : AGENTS) {
+      const std::string id = mag::str(a, "id");
+      if (!id.empty() && id != speaker) listeners.push_back(id);
+    }
+  }
+  if (listeners.empty()) return;
+  std::lock_guard<std::mutex> lk(JOB_MTX);
+  if (!SELFTALK.load() || SELF_HOLD.load()) return;
+  bool added = false;
+  for (const auto &id : listeners) {
+    const bool waiting = std::any_of(JOBS.begin(), JOBS.end(), [&](const Job &j) {
+      return j.selftalk && std::find(j.ids.begin(), j.ids.end(), id) != j.ids.end();
+    });
+    if (waiting) continue;
+    bool active = false;
+    for (const auto &kv : ACTIVE_JOBS) {
+      const Job &j = kv.second;
+      if (j.selftalk && j.cause == cause &&
+          std::find(j.ids.begin(), j.ids.end(), id) != j.ids.end())
+        active = true;
+    }
+    if (active) continue;
+    Job j;
+    j.ids = {id};
+    j.think = -1;
+    j.generation = AUTO_GENERATION;
+    j.input = text;
+    j.selftalk = true;
+    j.cause = cause;
+    JOBS.push_back(std::move(j));
+    added = true;
+  }
+  if (!added) return;
+  save_queue_locked();
+  queue_event_locked();
+  JOB_CV.notify_all();
+}
 static TurnReport generate_and_post(int idx, bool automatic, double dispatched_ms = 0) {
   const uint64_t epoch = EPOCH.load();
   std::string id = bot_field(idx, "id"), name = bot_field(idx, "name");
@@ -6474,6 +6623,7 @@ static TurnReport generate_and_post(int idx, bool automatic, double dispatched_m
       attach_work(msg, report);
       msg["type"] = "bot_done";
       publish(mj::dump(msg));
+      arm_selftalk(id, mag::str(msg, "id"), report.text);
       // A long run notifies devices that opted in. The service worker shows
       // it only when no room tab is visible. Jobs call notify() themselves;
       // there is no job-completion site in this tree (see push.hpp).
@@ -7490,7 +7640,9 @@ static void start_lanes_locked(const Job &job, bool automatic) {
     lane->upcoming = ids;
     lane->stop = false;
     lane->user_cancel = false;
-    ACTIVE_JOBS[run] = Job{ids, job.think, job.generation, job.input, job.reflect};
+    Job active = job;
+    active.ids = ids;
+    ACTIVE_JOBS[run] = std::move(active);
     BUSY = true;
     auto gate = stagger ? std::make_shared<StartGate>() : nullptr;
     std::thread(lane_turn, lane, run, ids, automatic, job.think, owner,
@@ -7522,6 +7674,11 @@ static bool dispatch_locked() {
     if (it->urgent && !it->held && dispatchable(split_lanes(it->ids), claimed))
       return send_pending(it);
   for (auto it = JOBS.begin(); it != JOBS.end(); ++it) {
+    if (it->selftalk && SELF_HOLD.load()) {
+      JOBS.erase(it);
+      save_queue_locked();
+      return true;
+    }
     auto parts = split_lanes(it->ids);
     if (parts.empty()) {
       JOBS.erase(it);
@@ -7631,6 +7788,31 @@ static void start_autotalk() {
   AUTOTALK = true;
   JOB_CV.notify_all();
 }
+static void drop_selftalk_jobs_locked() {
+  const auto gone = std::remove_if(JOBS.begin(), JOBS.end(),
+                                    [](const Job &j) { return j.selftalk; });
+  if (gone == JOBS.end()) return;
+  JOBS.erase(gone, JOBS.end());
+  save_queue_locked();
+  queue_event_locked();
+}
+static void start_selftalk() {
+  write_file(STATE_DIR + "/selftalk", "on");
+  SELFTALK = true;
+  // A chain that Stop already ended stays ended until a new user message.
+  JOB_CV.notify_all();
+}
+static void stop_selftalk() {
+  SELF_HOLD = true;
+  write_file(STATE_DIR + "/selftalk", "off");
+  SELFTALK = false;
+  cancel_active(true);
+  {
+    std::lock_guard<std::mutex> lk(JOB_MTX);
+    drop_selftalk_jobs_locked();
+  }
+  JOB_CV.notify_all();
+}
 static void stop_autotalk(bool pause = false) {
   write_file(STATE_DIR + "/autotalk", "off");
   AUTOTALK = false;
@@ -7662,6 +7844,10 @@ static void stop_autotalk(bool pause = false) {
 // pause_jobs (the old /api/stop) also holds scheduled jobs and switches the
 // autonomy setting off.
 static Val user_stop(bool pause_jobs) {
+  // Stop ends the bot-to-bot chain immediately. Self-Talk itself stays as it
+  // was and only starts again after a new user message. Set this before the
+  // idle return so a chain waiting between turns is ended too.
+  SELF_HOLD = true;
   const long long now = duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
   bool fresh = false;
   for (Lane *l : all_lanes())
@@ -7672,6 +7858,10 @@ static Val user_stop(bool pause_jobs) {
     prewarm_open = !PREWARM_FDS.empty();
   }
   auto idle_stop = [&](bool cancelled) {
+    {
+      std::lock_guard<std::mutex> lk(JOB_MTX);
+      drop_selftalk_jobs_locked();
+    }
     Val out = Val::object();
     out["cancelled"] = cancelled;
     out["held"] = 0.0;
@@ -7703,8 +7893,8 @@ static Val user_stop(bool pause_jobs) {
   PREWARM_HOLD = true;
   Val out = Val::object();
   {
-    const size_t dropped = std::count_if(JOBS.begin(), JOBS.end(), [](const Job &j) { return j.reflect; });
-    JOBS.erase(std::remove_if(JOBS.begin(), JOBS.end(), [](const Job &j) { return j.reflect; }), JOBS.end());
+    const size_t dropped = std::count_if(JOBS.begin(), JOBS.end(), [](const Job &j) { return j.reflect || j.selftalk; });
+    JOBS.erase(std::remove_if(JOBS.begin(), JOBS.end(), [](const Job &j) { return j.reflect || j.selftalk; }), JOBS.end());
     size_t held = 0;
     for (auto &p : PENDING) { if (pause_jobs) p.held = true; if (p.held) ++held; }
     if (pause_jobs) QUEUE_PAUSED = true;
@@ -8063,6 +8253,7 @@ static std::string state_json(const Actor *actor = nullptr) {
   root["model_status"] = model_status_val(model_status(false));
   root["model_info"] = model_info_val();
   root["autotalk"] = AUTOTALK.load();
+  root["selftalk"] = SELFTALK.load();
   root["reflect"] = REFLECT.load();
   root["stt_lang"] = STT_LANG;
   root["runtime"] = "C++17";
@@ -8790,6 +8981,9 @@ int main() {
   retire_frontend_override();
 
   AUTOTALK = trim(read_file(STATE_DIR + "/autotalk")) == "on";
+  SELFTALK = trim(read_file(STATE_DIR + "/selftalk")) == "on";
+  // A reboot does not resume a bot-to-bot chain. The switch does survive.
+  SELF_HOLD = true;
   REFLECT = trim(read_file(STATE_DIR + "/reflect")) == "on";
   load_model_settings();
   // The legacy swap catalog must not hijack configured/Qwen routing.
@@ -8825,7 +9019,7 @@ int main() {
       if (auto jobs = q.find("jobs"); jobs && jobs->isArr())
         for (auto &j : jobs->asArr()) {
           Job job = val_job(j);
-          if (!job.ids.empty()) JOBS.push_back(job);
+          if (!job.ids.empty() && !job.selftalk) JOBS.push_back(job);
         }
       std::vector<Job> running;
       if (auto a = q.find("actives"); a && a->isArr())
@@ -8835,7 +9029,7 @@ int main() {
       const std::string note =
           "(Antwort unterbrochen – Raum wurde neu gestartet, wird fortgesetzt)";
       for (auto r = running.rbegin(); r != running.rend(); ++r) {
-        if (r->ids.empty()) continue;
+        if (r->ids.empty() || r->selftalk) continue;
         for (auto &id : r->ids) {
           int idx = agent_index(id);
           if (idx < 0) continue;

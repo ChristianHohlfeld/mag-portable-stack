@@ -7171,15 +7171,11 @@ static void release_deploy_hold_locked() {
   if (SELFTALK.load()) SELF_HOLD = false;
 }
 static void release_deploy_hold() {
-  std::string speaker, cause, text;
-  {
-    std::lock_guard<std::mutex> lk(JOB_MTX);
-    release_deploy_hold_locked();
-    JOB_CV.notify_all();
-  }
-  if (!SELFTALK.load()) return;
-  last_assistant_for_selftalk(speaker, cause, text);
-  if (!speaker.empty()) arm_selftalk(speaker, cause, text);
+  std::lock_guard<std::mutex> lk(JOB_MTX);
+  release_deploy_hold_locked();
+  JOB_CV.notify_all();
+  // Never replay an old assistant @ after deploy: only fresh messages
+  // may schedule a bot-to-bot response.
 }
 static void apply_deploy_hold_file_locked() {
   if (DEPLOY_HOLD.load()) return;

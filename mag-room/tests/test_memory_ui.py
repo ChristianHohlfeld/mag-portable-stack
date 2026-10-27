@@ -122,6 +122,7 @@ class MemoryDialogBrowser(unittest.TestCase):
                 try:
                     page = context.new_page()
                     page.on('pageerror', lambda error: print('ROOM_JS_ERROR:', str(error), getattr(error, 'stack', ''), flush=True))
+                    page.on('console', lambda msg: print('ROOM_CONSOLE:', msg.text, flush=True) if msg.type=='error' else None)
                     page.goto(f"http://127.0.0.1:{self.server.server_port}/",
                               wait_until="domcontentloaded")
                     try:

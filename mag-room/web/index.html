@@ -3337,7 +3337,7 @@ events.onmessage=e=>{
   }
  }catch(err){notice(err.message)}
 };
-refresh().then(()=>{if(remoteBotId||(rightOpen&&!isCompact()))connectLive()}).catch(e=>notice(e.message));
+refresh().then(()=>{if(remoteBotId||(rightOpen&&!isCompact()))connectLive()}).catch(e=>{console.error('MAG initial state render failed',e);notice(e.message)});
 
 let deferredInstall=null,updateBusy=false,versionCheck=null;
 let sawController=!!(navigator.serviceWorker&&navigator.serviceWorker.controller);

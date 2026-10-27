@@ -1087,7 +1087,7 @@ class Native(unittest.TestCase):
  def test_09g_frontend_model_status_contract(self):
   html=self.request('/',raw=True).decode()
   for needle in ('id="model-state"','id="model-banner"',"event.type==='model'","event.type==='bot_status'",'id="agent-chat-only"',"keine VM",
-                 "if(!a.vm)continue","if(!bot.vm){","showThinking(s.node","#model-state .txt{display:none}",
+                 "option.textContent=a.name+(a.vm?'':' · VM startet')","if(!bot.vm){","showThinking(s.node","#model-state .txt{display:none}",
                  'nicht erreichbar','beschäftigt','model-banner-switch','model-banner-line'):
    self.assertIn(needle,html)
   self.assertNotIn('Details im Tooltip oben',html)

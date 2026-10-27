@@ -10,11 +10,11 @@ while _mag_root != _mag_root.parent and not (_mag_root / 'ops/ci/mag_deadline.py
 _mag_sys.path.insert(0, str(_mag_root / 'ops/ci'))
 import mag_deadline as _mag_deadline
 _mag_deadline.arm(180)
-import importlib.util,pathlib,shutil,unittest
+import importlib.util,json,pathlib,shutil,unittest
 ROOT=pathlib.Path(__file__).resolve().parents[2]
 ART=pathlib.Path('/opt/cursor/artifacts')
 spec=importlib.util.spec_from_file_location('test_pwa',ROOT/'mag-room/tests/test_pwa.py');pwa=importlib.util.module_from_spec(spec);spec.loader.exec_module(pwa)
-SETUP="""()=>{const c=document.getElementById('screen');c.hidden=false;c.style.width='100%';c.style.height='260px';c.style.display='block';
+SETUP="""()=>{const c=document.getElementById('screen');c.hidden=false;\n // Synthetic video fixture: a real stream keeps the canvas visible while\n // the room's disconnected WebRTC transport must not hide this fake frame.\n Object.defineProperty(c,'hidden',{configurable:true,get:()=>false,set(){}});\n c.style.width='100%';c.style.height='260px';c.style.display='block';
  window.__sent=[];window.liveSend=m=>{__sent.push(m);return true};try{localStorage.removeItem('mag-view-mode')}catch(e){}magViewTools.setMode('watch');magViewTools.fit()}"""
 class ViewTools(unittest.TestCase):
  def test_zoom_watch_takeover_rotation(self):
@@ -23,6 +23,12 @@ class ViewTools(unittest.TestCase):
   tmp=pathlib.Path('/tmp/mag-view-ui')
   if tmp.exists():shutil.rmtree(tmp)
   static=tmp/'static';shutil.copytree(ROOT/'mag-room/static',static)
+  # This is a browser/terminal UI test: the bot must have an assigned VM
+  # identity. The display stream itself is mocked by SETUP (no KVM host).
+  (tmp/'state').mkdir(parents=True,exist_ok=True)
+  (tmp/'state'/'agents.json').write_text(json.dumps([
+   {'id':'test','name':'Test','vm':'agent1','memory':[]}
+  ]))
   proc,log,model,ui,bridge=pwa.start_room(tmp,static,'view')
   pw=sync_playwright().start();browser=pwa.launch_chromium(pw,headless=True,args=['--no-sandbox','--disable-dev-shm-usage'])
   errors=[]
@@ -68,7 +74,17 @@ class ViewTools(unittest.TestCase):
     ref=[m for m in page.evaluate('__sent') if m.get('kind')=='pointer'][0]
     bar.locator('button[aria-label=Vergrößern]').click();bar.locator('button[aria-label=Vergrößern]').click();s=st()['s'];self.assertGreater(s,1.5)
     page.evaluate('__sent.length=0');ox=box['x']+st()['x']+s*(box['width']/2+dx);oy=box['y']+st()['y']+s*(box['height']/2+dy)
-    page.mouse.click(ox,oy);got=[m for m in page.evaluate('__sent') if m.get('kind')=='pointer'][0]
+    page.mouse.click(ox,oy)
+    sent=[m for m in page.evaluate('__sent') if m.get('kind')=='pointer']
+    if not sent:
+     debug=page.evaluate("""([x,y])=>{const el=document.elementFromPoint(x,y),
+       c=document.querySelector('#screen'),v=document.querySelector('#browser-view');
+       return {hit:el?.id||el?.className||el?.tagName,coord:[x,y],
+       screen:c?.getBoundingClientRect().toJSON(),view:v?.getBoundingClientRect().toJSON(),
+       mode:magViewTools.state(),withinViewport:x>=0&&x<innerWidth&&y>=0&&y<innerHeight}}""",[ox,oy])
+     print('VIEW_POINTER_DEBUG:', {'before':box,'ref':ref,'debug':debug},flush=True)
+    self.assertTrue(sent,'zoomed browser click must reach the bot; see VIEW_POINTER_DEBUG')
+    got=sent[0]
     self.assertAlmostEqual(got['x'],ref['x'],delta=2);self.assertAlmostEqual(got['y'],ref['y'],delta=2)
     bar.locator('.vt-fit').click()
     bar.locator('.vt-mode').click();n=len(page.evaluate('__sent'));page.locator('#screen').click(position={'x':60,'y':60})
@@ -88,10 +104,9 @@ class ViewTools(unittest.TestCase):
      const ys=[...th.querySelectorAll('button')].filter(e=>e.offsetParent).map(e=>Math.round(e.getBoundingClientRect().top+e.getBoundingClientRect().height/2));
      return {nav:ov(q('#browser-view .browser-nav')),th:ov(th),rows:Math.max(...ys)-Math.min(...ys),hidden:hits.filter(x=>!x).length,doc:ov(document.documentElement)}}''')
     self.assertEqual((r['nav'],r['th'],r['doc'],r['hidden']),(0,0,0,0),(vp,r));self.assertLessEqual(r['rows'],2,(vp,r))
-    # room menu: icons/checkboxes and labels in one aligned column, same icon size
-    page.evaluate("()=>{document.getElementById('room-menu').hidden=false}")
-    m=page.evaluate('''()=>[...document.querySelectorAll('#room-menu > button, #room-menu > label')].filter(e=>e.offsetParent).map(e=>{const i=e.querySelector('svg,input').getBoundingClientRect(),t=e.querySelector('span').getBoundingClientRect();return [Math.round(i.left),Math.round(i.width),Math.round(t.left)]})''')
-    self.assertGreaterEqual(len(m),3);self.assertEqual(len({tuple(x) for x in m}),1,m)
+    # The retired room-menu must not cover the compact browser controls.
+    self.assertFalse(page.locator('#room-menu-btn').is_visible())
+    self.assertTrue(page.locator('#settings-open').is_visible())
     ctx.close()
    self.assertEqual(errors,[])
   finally:

@@ -27,7 +27,8 @@ grep -Fq 'deploy_rc' "$root/ops/update.sh"
 bash -n "$root"/ops/auto-update/*.sh
 grep -Fq 'auto-update/install.sh' <<<"$out"
 grep -Fq -- '--ff-only' "$root/ops/auto-update/auto-update.sh"
-grep -Fq 'failed-sha' "$root/ops/auto-update/auto-update.sh"
+grep -Fq 'failure-state.sh' "$root/ops/auto-update/auto-update.sh"
+! grep -Fq 'mag_retry_remaining' "$root/ops/auto-update/auto-update.sh"
 ! grep -Eq 'mag-llm' "$root"/ops/auto-update/*
 grep -Fq 'OnUnitInactiveSec' "$root/ops/auto-update/mag-auto-update.timer"
 # deploy.sh runs as root from the timer (no SUDO_UID): every git call on the

@@ -10,6 +10,7 @@ on:
   pull_request:
     paths:
       - 'ops/bootstrap.sh'
+      - 'ops/deploy.sh'
       - 'ops/bootstrap-voice.sh'
       - 'ops/tests/e2e-bootstrap.sh'
       - '.github/workflows/e2e-bootstrap.yml'

@@ -51,4 +51,23 @@ grep -Fq 'promote-github.sh' "$root/.github/workflows/green.yml"
 ! grep -Fq 'fetch-gitea-green.sh' "$root/ops/update.sh" "$root/ops/auto-update/auto-update.sh"
 grep -Fq 'if: false' "$root/.gitea/workflows/green.yml"
 grep -Fq 'if: false' "$root/.gitea/workflows/host-runner.yml"
+# Failures retain diagnostic state but never block an update attempt.
+# A new green SHA and the previously failed SHA both retry immediately.
+source "$root/ops/auto-update/failure-state.sh"
+STATE="$tmp/state"
+mag_record_failure "$one" build
+[[ $(mag_retry_count) == 1 ]]
+[[ $(mag_retry_remaining "$one") == 0 ]]
+[[ $(mag_retry_remaining "$two") == 0 ]]
+mag_record_failure "$one" deploy
+[[ $(mag_retry_count) == 2 ]]
+[[ $(cat "$STATE/failed-stage") == deploy ]]
+mag_record_failure "$two" build
+[[ $(mag_retry_count) == 1 ]]
+[[ $(mag_retry_remaining "$two") == 0 ]]
+[[ $(MAG_AUTO_UPDATE_TEST=1 MAG_AUTO_UPDATE_ROOT="$tmp/co" MAG_AUTO_UPDATE_STATE="$STATE" \
+  bash "$root/ops/auto-update/auto-update.sh") == "$two" ]]
+grep -Fq 'deploy_rc == 75' "$root/ops/auto-update/apply.sh"
+grep -Fq 'mag_record_failure' "$root/ops/auto-update/apply.sh"
+grep -Fq 'rm -f "$STATE/failed-sha" "$STATE/failed-count" "$STATE/failed-stage"' "$root/ops/auto-update/apply.sh"
 echo 'GitHub-only pipeline PASS'

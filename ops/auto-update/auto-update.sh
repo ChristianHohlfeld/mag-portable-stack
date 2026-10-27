@@ -3,7 +3,7 @@
 # Branch `green` is promoted by GitHub Actions, never by Gitea.
 # If it moved: fast-forward the checkout, build as the checkout owner, then
 # deploy. deploy.sh keeps its backup and automatic rollback. A failed commit is
-# retried once an hour. GitHub unreachable, or no `green` yet: nothing happens.
+# retried on the next timer tick. GitHub unreachable, or no `green` yet: nothing happens.
 # No model unit is ever touched. GitHub is the only source.
 set -euo pipefail
 SCRIPT_ROOT="$(cd -- "$(dirname "$0")/../.." && pwd)"
@@ -31,11 +31,10 @@ branch="$(as git -C "$ROOT" symbolic-ref --short HEAD 2>/dev/null || true)"
 ref="$(as bash "$SCRIPT_ROOT/ops/ci/fetch-github-green.sh" --green-only "$ROOT")" || { log 'GitHub green not reachable yet; nothing to do'; exit 0; }
 new="$(as git -C "$ROOT" rev-parse "$ref")"
 [[ "$new" != "$(cat "$STATE/deployed-sha" 2>/dev/null || true)" ]] || exit 0
-if [[ "$new" == "$(cat "$STATE/failed-sha" 2>/dev/null || true)" && -z "$(find "$STATE/failed-sha" -mmin +60)" ]]; then
-  log "$new failed less than an hour ago; retrying later"
-  exit 0
-fi
-fail() { echo "$new" > "$STATE/failed-sha"; log "FAILED at $1 for $new"; exit 1; }
+# Previous failures are diagnostics, never a retry lockout. A new or
+# previously failed green is attempted on every regular timer tick.
+source "$SCRIPT_ROOT/ops/auto-update/failure-state.sh"
+fail() { mag_record_failure "$new" "$1"; log "FAILED at $1 for $new"; exit 1; }
 log "updating to $new"
 as git -C "$ROOT" merge -q --ff-only "$ref" || fail merge
 [[ "$(as git -C "$ROOT" rev-parse HEAD)" == "$new" ]] || { log 'checkout is ahead of green; skipping'; exit 0; }

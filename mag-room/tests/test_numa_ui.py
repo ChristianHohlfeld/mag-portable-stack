@@ -50,7 +50,9 @@ class NumaUI(unittest.TestCase):
      # the compact header. Verify its reachable controls instead of waiting
      # for a hidden manual NUMA picker.
      self.assertFalse(chips.first.is_visible())
-     for selector in ('#toggle-agents','#room-menu-btn','#settings-open','#toggle-tools'):
+     self.assertFalse(page.locator('#room-menu-btn').is_visible(),
+                      'retired room menu must not consume mobile header space')
+     for selector in ('#toggle-agents','#settings-open','#toggle-tools'):
       button=page.locator(selector);self.assertTrue(button.is_visible())
       box=button.bounding_box();self.assertGreaterEqual(box['x'],0);self.assertLessEqual(box['x']+box['width'],vp['width']+1)
      self.assertTrue(page.evaluate('document.documentElement.scrollWidth <= innerWidth'))

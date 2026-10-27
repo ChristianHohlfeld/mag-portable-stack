@@ -5,13 +5,29 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+  # A slow release test may finish after the initial promotion gate's wait
+  # limit. Re-check whenever a required workflow completes (no manual rerun).
+  workflow_run:
+    workflows:
+      - 'Native MAG stack'
+      - 'Room agent-chat contract (Stop, priority, queue, browser)'
+      - 'Screenshot paste browser emulation'
+      - 'Blank-host bootstrap (e2e)'
+      - 'MAG encrypted backup and restore'
+      - 'Private nginx cutover security'
+      - 'MAG Pages native C++ / nginx / secrets'
+      - 'MAG German browser speech'
+    types: [completed]
+    branches: [main]
 permissions:
   contents: write
+  actions: read
 concurrency:
   group: github-green-main
   cancel-in-progress: true
 jobs:
   promote-green:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.head_branch == 'main'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -27,8 +43,82 @@ jobs:
           git diff --check HEAD^ HEAD
           grep -Fq 'fetch-github-green.sh' ops/update.sh
           grep -Fq 'fetch-github-green.sh' ops/auto-update/auto-update.sh
+      # Keep green as the last fully tested main, not merely shell-syntax-clean.
+      # The independent workflows all run on pushes to main. Fail closed if
+      # any is missing, pending past deadline, cancelled or failed.
+      - id: gate
+        name: Require all release workflows to succeed
+        uses: actions/github-script@v7
+        timeout-minutes: 16
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const required = [
+              'Native MAG stack',
+              'Room agent-chat contract (Stop, priority, queue, browser)',
+              'Screenshot paste browser emulation',
+              'Blank-host bootstrap (e2e)',
+              'MAG encrypted backup and restore',
+              'Private nginx cutover security',
+              'MAG Pages native C++ / nginx / secrets',
+              'MAG German browser speech',
+            ];
+            const { owner, repo } = context.repo;
+            const source = context.payload.workflow_run;
+            // workflow_run uses the latest default-branch SHA as GITHUB_SHA;
+            // never allow a stale or PR-origin workflow to promote green.
+            if (source && (source.head_branch !== 'main' || source.head_sha !== context.sha)) {
+              core.info('Ignoring non-main or superseded workflow_run');
+              core.setOutput('approved', 'false');
+              return;
+            }
+            const deadline = Date.now() + 14 * 60_000;
+            while (Date.now() < deadline) {
+              // Only the same main push is relevant; a passing unrelated PR or
+              // historic main run must never authorize a release.
+              const result = await github.rest.actions.listWorkflowRunsForRepo({
+                owner, repo, head_sha: context.sha, event: 'push', per_page: 100,
+              });
+              const runs = result.data.workflow_runs.filter(r =>
+                r.head_sha === context.sha &&
+                r.head_branch === 'main' &&
+                r.event === 'push');
+              const pending = [];
+              for (const name of required) {
+                const match = runs.filter(r => r.name === name)
+                  .sort((a,b) => b.id-a.id)[0];
+                if (!match || match.status !== 'completed') {
+                  pending.push(name);
+                } else if (match.conclusion !== 'success') {
+                  const reason = name + ' = ' + match.conclusion +
+                    '; retaining previous GitHub green';
+                  if (source) {
+                    core.info(reason);
+                    core.setOutput('approved', 'false');
+                  } else {
+                    core.setFailed(reason);
+                  }
+                  return;
+                }
+              }
+              if (!pending.length) {
+                core.info('All release workflows succeeded on main ' + context.sha);
+                core.setOutput('approved', 'true');
+                return;
+              }
+              core.info('Waiting on: ' + pending.join('; '));
+              // workflow_run will fire again for the next completed check:
+              // skip this promotion without keeping eight runners idle.
+              if (source) {
+                core.setOutput('approved', 'false');
+                return;
+              }
+              await new Promise(resolve => setTimeout(resolve, 15000));
+            }
+            core.setFailed('Timed out waiting for release workflows; green unchanged');
       - id: promote
         name: Promote GitHub green
+        if: steps.gate.outputs.approved == 'true'
         timeout-minutes: 5
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

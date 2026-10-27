@@ -180,7 +180,9 @@ reload=0
 for unit in "$UNIT_DIR"/mag-*.service "$UNIT_DIR"/mag-*.timer; do
   [[ -f "$unit" && ! -L "$unit" ]] || continue
   name=$(basename "$unit"); dangling=""
-  case "$name" in mag-llm*|mag-120*) continue ;; esac
+  # Active release-owned units are not legacy, even if an optional binary
+  # (cpupower on a blank test host) has not been installed yet.
+  case "$name" in mag-llm*|mag-120*|mag-cpu-tune.service) continue ;; esac
   if [[ "$name" == *.service ]]; then
     while IFS= read -r exe; do
       exe=${exe#ExecStart=}

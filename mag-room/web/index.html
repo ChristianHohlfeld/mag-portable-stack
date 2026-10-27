@@ -1901,17 +1901,21 @@ if(state.you?.role==='owner'&&!state.configured_model)actList.push(['Umbenennen'
 if(a.id===single||state.dual_numa||state.configured_model){}else if(can('delete'))actList.push(['Entfernen',()=>removeAgent(a)]);
 if(a.vm)actList.splice(1,0,['Browser öffnen',()=>{location.href='/?bot='+encodeURIComponent(a.id)}]);
 if(actList.length){const more=document.createElement('button');more.type='button';more.className='agent-more';more.textContent='⋯';more.title='Aktionen für '+a.name;more.setAttribute('aria-label','Aktionen für '+a.name);more.setAttribute('aria-haspopup','menu');more.setAttribute('aria-expanded','false');more.onclick=e=>{e.stopPropagation();popMenu(more,actList.map(([t,f])=>[t,f,t==='Entfernen']))};actions.append(more)}
-card.append(row,info,actions);list.append(card);if(!a.vm)continue;const option=document.createElement('option');option.value=a.id;option.textContent=a.name;$('browser-agent').append(option)}const remembered=focusedBotId;if(remoteBotId&&state.agents.some(a=>a.id===remoteBotId)){focusedBotId=remoteBotId;if(!old&&location.search)history.replaceState(null,'','/')}
+card.append(row,info,actions);list.append(card);const option=document.createElement('option');option.value=a.id;option.textContent=a.name+(a.vm?'':' · VM startet');$('browser-agent').append(option)}const remembered=focusedBotId;if(remoteBotId&&state.agents.some(a=>a.id===remoteBotId)){focusedBotId=remoteBotId;if(!old&&location.search)history.replaceState(null,'','/')}
 else if(!state.agents.some(a=>a.id===focusedBotId))focusedBotId=(state.agents.find(a=>a.vm)||state.agents[0]||{}).id||'';
 if(focusedBotId){try{sessionStorage.setItem('mag-focused-bot',focusedBotId)}catch(e){}}
-if(remoteBotId&&!old&&state.agents.some(a=>a.id===remoteBotId&&a.vm))$('browser-agent').value=remoteBotId;
-else if(state.agents.some(a=>a.id===old&&a.vm))$('browser-agent').value=old;
-else if(!old&&state.agents.some(a=>a.id===remembered&&a.vm))$('browser-agent').value=remembered;
-else $('browser-agent').value='';
+// Keep bot identity selected across VM provisioning and reconnects. Clearing
+// the selector on a transient missing VM used to drop browser_action events.
+if(remoteBotId&&!old&&state.agents.some(a=>a.id===remoteBotId))$('browser-agent').value=remoteBotId;
+else if(state.agents.some(a=>a.id===old))$('browser-agent').value=old;
+else if(state.agents.some(a=>a.id===remembered))$('browser-agent').value=remembered;
+else if(state.agents.some(a=>a.id===focusedBotId))$('browser-agent').value=focusedBotId;
+else $('browser-agent').value=(state.agents[0]||{}).id||'';
 const current=$('browser-agent').value;
-if(!current&&livePeer)disconnectLive();
+const liveVmReady=state.agents.some(a=>a.id===current&&!!a.vm);
+if(!liveVmReady&&livePeer)disconnectLive();
 for(const card of list.querySelectorAll('.agent')){const active=card.dataset.bot===focusedBotId;card.classList.toggle('active',active);card.setAttribute('aria-pressed',String(active));card.setAttribute('aria-current',active?'true':'false')}
-updateConsoleLabel();syncBotDetail();try{const nv=$('browser-agent').value;if(nv&&(!livePeer||nv!==old)&&rightOpen&&(!isCompact()||layout.classList.contains('mobile-right'))&&!document.hidden)connectLive()}catch(e){}}
+updateConsoleLabel();syncBotDetail();try{const nv=$('browser-agent').value;if(nv&&liveVmReady&&(!livePeer||nv!==old)&&rightOpen&&(!isCompact()||layout.classList.contains('mobile-right'))&&!document.hidden)connectLive()}catch(e){}}
 function renderFiles(){const list=$('files');if(!list)return;list.replaceChildren();for(const f of state.files){const row=document.createElement('div');row.className='file';const a=document.createElement('a');a.href='/api/file/'+encodeURIComponent(f.stored);a.textContent=f.name;row.append(a);const size=document.createElement('small');size.textContent=' · '+Math.ceil(f.size/1024)+' KB';row.append(size);if(f.mime==='text/html'){const b=document.createElement('button');b.textContent='Vorschau';b.onclick=async()=>{try{$('canvas').srcdoc=await(await fetch(a.href)).text();$('canvas').hidden=false}catch(e){notice(e.message)}};row.append(b)}const del=document.createElement('button');del.type='button';del.className='file-trash';del.title='Datei löschen';del.setAttribute('aria-label','Datei löschen');del.innerHTML='<svg class="i sm" aria-hidden="true"><use href="#ic-trash"></use></svg>';del.onclick=()=>askDeleteFile(f);del.hidden=state.you?.role!=='owner';row.append(del);list.append(row)}}
 let thinkInit=false;
 const PHO_TIP='Ältere Verlaufsturns einmalig komprimieren; Änderung gilt ab der nächsten Turn-Grenze.';
@@ -2188,7 +2192,7 @@ let memAgent=null;function renderMemory(m){const box=$('memory');box.replaceChil
 async function renameAgent(a){const value=await magAsk('Bot umbenennen (1–40 Zeichen)',a.name);if(value===null||value.trim()===a.name)return;try{await api('/api/agents/'+encodeURIComponent(a.id)+'/name',{name:value.trim()},'PUT');await refresh();notice('Bot umbenannt')}catch(e){notice(e.message)}}
 async function removeAgent(a){if(!await magConfirm({title:'Bot entfernen',text:a.vm?a.name+' und die eigene VM entfernen? Der Arbeitsbereich der VM wird archiviert, nicht gelöscht.':a.name+' entfernen?',ok:'Entfernen',danger:true}))return;try{notice('Bot wird entfernt…');await api('/api/agents/'+a.id,undefined,'DELETE');await refresh();notice()}catch(e){notice(e.message)}}
 function openNewAgent(){if((state.agents||[]).length>=botCap()){notice('Maximum 2 Bots erreicht');return}$('new-agent').showModal()}
-$('add-agent').remove();$('room-add-agent').remove();$('agent-form').onsubmit=e=>{e.preventDefault();};
+for(const id of ['add-agent','room-add-agent']){const b=$(id);if(b){b.hidden=true;b.style.display='none'}}$('agent-form').onsubmit=e=>{e.preventDefault();};
 // Group chat: the composer is never blocked. Every answering bot gets its own
 // stop in the lane bar (and on its live reply); busy_bots and idle events are
 // the only source of who is answering.
@@ -2491,8 +2495,12 @@ function browserOverlay(ev){
  o.classList.add('on');clearTimeout(boHideTimer);boHideTimer=setTimeout(()=>o.classList.remove('on'),6000);
  if(typeof ev.x==='number'){const px=R.x+ev.x*R.s,py=R.y+ev.y*R.s;cur.style.transform='translate('+px+'px,'+py+'px)';
   if(ev.action==='click')setTimeout(()=>{const rp=document.createElement('span');rp.className='bo-ripple';rp.style.left=px+'px';rp.style.top=py+'px';o.append(rp);rp.addEventListener('animationend',()=>rp.remove())},420)}
- if(ev.action==='type'){const t=cur.querySelector('.bo-type'),txt=String(ev.text||'');clearInterval(boTypeTimer);t.textContent='';t.classList.add('on');let i=0;const step=Math.max(1,Math.ceil(txt.length/100));
-  boTypeTimer=setInterval(()=>{i=Math.min(txt.length,i+step);t.textContent=txt.slice(0,i);if(i>=txt.length){clearInterval(boTypeTimer);setTimeout(()=>t.classList.remove('on'),1500)}},25)}
+ if(ev.action==='type'){const t=cur.querySelector('.bo-type'),txt=String(ev.text||'');clearInterval(boTypeTimer);
+  // Show the confirmed input immediately. Background browsers throttle
+  // setInterval heavily, making the old typewriter effect lose actions.
+  // Passwords are already masked by live-highlight.js before this handler.
+  t.textContent=txt;t.classList.add('on');
+  setTimeout(()=>t.classList.remove('on'),1500)}
 }
 const shownUrl=u=>String(u||'').replace(/([?&]token=)[^&]+/,'$1…');
 let browserRealUrl='';
@@ -3337,7 +3345,7 @@ events.onmessage=e=>{
   }
  }catch(err){notice(err.message)}
 };
-refresh().then(()=>{if(remoteBotId||(rightOpen&&!isCompact()))connectLive()}).catch(e=>notice(e.message));
+refresh().then(()=>{if(remoteBotId||(rightOpen&&!isCompact()))connectLive()}).catch(e=>{console.error('MAG initial state render failed',e);notice(e.message)});
 
 let deferredInstall=null,updateBusy=false,versionCheck=null;
 let sawController=!!(navigator.serviceWorker&&navigator.serviceWorker.controller);

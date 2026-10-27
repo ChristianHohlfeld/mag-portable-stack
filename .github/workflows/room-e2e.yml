@@ -46,13 +46,25 @@ jobs:
       - name: Message popover and NUMA selector (phone portrait/landscape, desktop)
         timeout-minutes: 15
         run: |
-          python3 mag-room/tests/test_reactions.py
-          python3 mag-room/tests/test_numa_ui.py
-          python3 mag-room/tests/test_cards_ui.py
-          python3 mag-room/tests/test_tts.py
-          python3 mag-room/tests/test_view_tools.py
-          python3 mag-room/tests/test_live_highlight.py
-          python3 mag-room/tests/test_stream_order.py
+          # Independent browser contracts must ALL report, even if one fails.
+          # Aggregate status stays red until every test passes.
+          failures=0
+          for test in \
+            mag-room/tests/test_reactions.py \
+            mag-room/tests/test_numa_ui.py \
+            mag-room/tests/test_cards_ui.py \
+            mag-room/tests/test_tts.py \
+            mag-room/tests/test_view_tools.py \
+            mag-room/tests/test_live_highlight.py \
+            mag-room/tests/test_stream_order.py; do
+            echo "::group::${test}"
+            python3 "$test" || failures=$((failures+1))
+            echo "::endgroup::"
+          done
+          if (( failures > 0 )); then
+            echo "FAIL: ${failures} independent UI test(s) failed" >&2
+            exit 1
+          fi
       - uses: actions/upload-artifact@v4
         timeout-minutes: 10
         if: always()

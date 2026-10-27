@@ -2645,7 +2645,23 @@ static void pho_rollover(int idx,std::vector<Val> &messages) {
   // Context budget is already rebuilding this copy. Substitute sealed line
   // bodies here only; the stored warm wire is left untouched until this
   // compacted copy is what the next request loads.
-  const auto &w=it->second;const size_t end=std::min(pho_old_end(w),messages.size());
+  const auto &w=it->second;
+  // A stored turn boundary can lag when a new user message is appended. Never
+  // rewrite either of the two preceding complete user turns plus the current user turn in the actual
+  // request, even when the archive says those lines are eligible.
+  size_t recent_begin=messages.size();
+  int recent_users=0;
+  for(size_t k=messages.size();k-->2;) {
+    if(mag::str(messages[k],"role")!="user")continue;
+    const std::string content=mag::str(messages[k],"content");
+    if(content.rfind("[System]",0)==0 ||
+       content.rfind("[Bisher ausgefuehrte Schritte",0)==0)continue;
+    // The newest user is the still-pending request. Keep it PLUS the two
+    // preceding complete turns byte-identical through a rollover.
+    recent_begin=k;
+    if(++recent_users==3)break;
+  }
+  const size_t end=std::min({pho_old_end(w),messages.size(),recent_begin});
   size_t changed=0;
   for(size_t i=2;i<end;++i) {
     auto &m=messages[i];const auto role=mag::str(m,"role");
@@ -4025,6 +4041,7 @@ static bool assistant_prefill_error(const std::string &err) {
 static void handoff_visible_turn(int idx, TurnReport &report, const std::string &partial, int think);
 #include "mcp.hpp"
 #include "secrets.hpp"
+#include "agent_skills.hpp"
 static std::string tools_json(int bot_idx, bool web) {
   std::string vm = bot_field(bot_idx, "vm", "keine");
   const bool has_vm = !vm.empty() && vm != "keine";
@@ -4044,6 +4061,7 @@ static std::string tools_json(int bot_idx, bool web) {
   if (CONFIGURED_MODEL || github_enabled(bot_idx)) defs.push_back(T_GITHUB); // stable schema; execution remains opt-in
   defs.push_back(T_TODO);
   defs.push_back(T_MEMORY);
+  defs.push_back(T_SKILL);
   defs.push_back(T_TASK);
   defs.push_back(T_SECRET); // a sub-agent gets it too (cache); task_start refuses depth 2
   for (const char *d : JOBS_TOOL_DEFS) defs.push_back(d);
@@ -5415,6 +5433,7 @@ static std::string dispatch_tool_raw(int bot_idx, const std::string &name,
   }
   if (name == "todo") return todo_tool(bot_id, a);
   if (name == "memory") return memory_tool(bot_id, a);
+  if (name == "skill") return skill_tool(bot_idx, a);
   if (name == "task") return task_tool(bot_idx, a);
   if (name == "secret") return secret_tool(bot_idx, a);
   if (name == "remember") {
@@ -5519,6 +5538,21 @@ static void compact_agent_context(int bot_idx, std::vector<Val> &messages,
   while (prompt_wire_bytes(messages, tools) > target) {
     const size_t at = rollup.empty() ? 2 : 3;
     if (messages.size() <= at + 2) break;
+    // Preserve two previous completed user turns AND the pending user request when collapsing older
+    // rounds. If those alone exceed the budget, handle the initial transcript
+    // below instead of silently discarding a live instruction.
+    size_t protect_from=messages.size();
+    int user_count=0;
+    for(size_t k=messages.size();k-->2;) {
+      if(mag::str(messages[k],"role")!="user")continue;
+      const std::string content=mag::str(messages[k],"content");
+      if(content.rfind("[System]",0)==0 ||
+         content.rfind("[Bisher ausgefuehrte Schritte",0)==0)continue;
+      // Current input is not a completed turn: also retain its two predecessors.
+      protect_from=k;
+      if(++user_count==3)break;
+    }
+    if(at>=protect_from)break;
     size_t end = at + 1;
     const Val &first = messages[at];
     std::string note;
@@ -5540,6 +5574,7 @@ static void compact_agent_context(int bot_idx, std::vector<Val> &messages,
     } else {
       note = mj::utf8_cut(mag::str(first, "content"), 220);
     }
+    if (end > protect_from) break;
     if (note.empty()) note = "Abgeschlossener Zwischenschritt";
     // Tool rounds may grow back beyond the old size later in this turn.
     // Invalidate stale offsets at the actual erasure, never infer from size.

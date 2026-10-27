@@ -238,6 +238,34 @@ class Native(unittest.TestCase):
  def test_01_state_ui_and_readiness(self):
   self.assertEqual(self.request('/api/state')['runtime'],'C++17');self.assertTrue(self.request('/readyz')['ready'])
   self.assertIn(b'Privater Raum',self.request('/',raw=True));self.assertIn(b'function',self.request('/static/marked.min.js',raw=True))
+ def test_01a_skill_library_is_a_real_model_tool(self):
+  # Grok-like workflows must be executable tools, not just prose in
+  # bot_context.md. Persist drafts and keep them reusable across sessions.
+  self.wait_idle()
+  name='CI skill persistence'
+  call={'tool_calls':[{'index':0,'id':'call_skill_save','function':{
+    'name':'skill','arguments':json.dumps({'action':'save','name':name,
+      'when':'When asked for a quick reproducible check',
+      'steps':'Read current source, perform one safe operation, report output.',
+      'verify':'Check actual output and explain failures.',
+      'approval':'Ask before sending, deleting or publishing.'})}}]}
+  prior=len(Model.calls)
+  Model.script=[[call],['Skill gespeichert.']]
+  try:
+   self.request('/api/message',{'text':'Speichere den getesteten Ablauf als Entwurf','bots':['test']})
+   for _ in range(200):
+    saved=self.state/'skills.json'
+    if saved.exists() and not self.request('/api/state')['busy']:break
+    time.sleep(.05)
+   else:self.fail('Skill tool call did not persist within 10 seconds')
+   tools=[t['function']['name'] for t in Model.calls[prior]['tools']]
+   self.assertIn('skill',tools)
+   skill=next(x for x in json.loads(saved.read_text()) if x['name']==name)
+   self.assertEqual(skill['status'],'draft','saving must NOT auto-enable a routine')
+   self.assertEqual(skill['verify'],'Check actual output and explain failures.')
+   self.assertEqual(skill['approval'],'Ask before sending, deleting or publishing.')
+  finally:
+   Model.script=[]
  def test_01a_mutating_api_requires_ui_token(self):
   self.error(403,'/api/stop',{},headers={'Content-Type':'application/json','X-No-Token':'1'})
   self.error(403,'/api/stop',{},headers={'Content-Type':'application/json','X-MAG-Token':'x'*43})
@@ -1059,7 +1087,7 @@ class Native(unittest.TestCase):
  def test_09g_frontend_model_status_contract(self):
   html=self.request('/',raw=True).decode()
   for needle in ('id="model-state"','id="model-banner"',"event.type==='model'","event.type==='bot_status'",'id="agent-chat-only"',"keine VM",
-                 "if(!a.vm)continue","if(!bot.vm){","showThinking(s.node","#model-state .txt{display:none}",
+                 "option.textContent=a.name+(a.vm?'':' · VM startet')","if(!bot.vm){","showThinking(s.node","#model-state .txt{display:none}",
                  'nicht erreichbar','beschäftigt','model-banner-switch','model-banner-line'):
    self.assertIn(needle,html)
   self.assertNotIn('Details im Tooltip oben',html)
@@ -1492,8 +1520,9 @@ class Native(unittest.TestCase):
   # invitation to retry WebRTC against a vanished VM forever.
   self.assertIn('err.permanent=r.status===404||r.status===400',html)
   self.assertIn('if(!e.permanent)scheduleReconnect()',html)
-  self.assertIn('a.id===old&&a.vm',html)
-  self.assertIn('a.id===remoteBotId&&a.vm',html)
+  self.assertIn('state.agents.some(a=>a.id===old)',html)
+  self.assertIn('state.agents.some(a=>a.id===remoteBotId)',html)
+  self.assertIn('nv&&liveVmReady&&',html,'do not connect WebRTC until VM exists')
  def test_12_malformed_http_rejected(self):
   for headers in ['Content-Length: -1\r\n','Content-Length: 2\r\nContent-Length: 3\r\n','Transfer-Encoding: chunked\r\n']:
    with socket.create_connection(('127.0.0.1',self.ui),timeout=3) as s:
@@ -3168,8 +3197,10 @@ exit 0
 class BootstrapContext(unittest.TestCase):
  """Fresh and reset bots get the versioned bootstrap context (bot_context.md)."""
  CONTEXT=(ROOT/'mag-room/native/bot_context.md').read_text()
- GERMAN='Antworte standardmaessig auf Deutsch. Schreibt der Nutzer in einer anderen\nSprache, antworte in dieser Sprache.'
- RULES=('Ergebnis zuerst','Erst pruefen, dann melden','nachfragen nur vor unumkehrbaren','Geheimnisse (Passwoerter','Ursache diagnostizieren')
+ GERMAN='Deutsch als Standard; sonst Sprache der Anfrage.'
+ RULES=('Ergebnis zuerst','prüfe das Ergebnis','Ursache untersuchen',
+        'Freigabe vor Geld','Geheimnisse nur über den `secret`-Mechanismus',
+        'Keine Rechteausweitung')
  @classmethod
  def setUpClass(cls):
   cls.tmp=tempfile.TemporaryDirectory();tmp=pathlib.Path(cls.tmp.name);cls.state=tmp/'state';cls.state.mkdir()
@@ -3195,9 +3226,9 @@ class BootstrapContext(unittest.TestCase):
   self.assertEqual(sys['role'],'system');return sys['content']
  def test_00_context_source(self):
   self.assertIn(self.GERMAN,self.CONTEXT)
-  self.assertIn('Chris ist der Besitzer',self.CONTEXT)
-  self.assertIn('GitHub: nur LESEN',self.CONTEXT)
-  self.assertLess(len(self.CONTEXT),4096,'bootstrap context must stay token-cheap')
+  self.assertIn('Bot-Git: Lesen öffentlicher GitHub-Repos',self.CONTEXT)
+  self.assertIn('alleinige Quelle',self.CONTEXT)
+  self.assertLess(len(self.CONTEXT),6500,'bootstrap context must stay token-cheap')
   for bad in ('token','password','100.123.','192.168.','stardenburg','publish_frontend','ui_get','frontend_'):
    self.assertNotIn(bad,self.CONTEXT.lower())
   for rule in self.RULES:self.assertIn(rule,self.CONTEXT)

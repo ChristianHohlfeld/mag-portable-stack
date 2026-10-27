@@ -599,6 +599,57 @@ dialog{border-radius:10px;border-color:var(--line);background:var(--surface)}
 .composer-inner .queue-controls{display:flex;gap:5px;flex-wrap:wrap}
 .composer-inner .q-chip{min-width:0;margin:0;min-height:28px;padding:2px 4px;box-shadow:none}
 @media(max-width:850px){#app-header{height:48px!important}#app-header .header-title,.brand-caption{display:none!important}.layout{height:calc(var(--vvh,100dvh) - 48px)!important}#conversation,.conversation{padding:10px 12px 12px}#conversation .message{margin-bottom:12px}.composer-wrap{padding:6px 10px max(6px,env(safe-area-inset-bottom))!important}.composer-inner .q-chip .q-icon,.composer-inner .q-chip .q-now{min-height:28px;height:28px}}
+</style><style id="bot-faces">
+/* Roster tone is slot, then id. Names never pick the color. Chris stays neutral. */
+:root{
+ --bot-0:#9fd4ff;--bot-1:#f0c36a;--bot-2:#8ed4b0;--bot-3:#e7b4ee;--bot-4:#f3aa9a;--bot-5:#9ad7ea;
+ --bot-glow-0:#9fd4ff;--bot-glow-1:#f0c36a;--bot-glow-2:#8ed4b0;--bot-glow-3:#e7b4ee;--bot-glow-4:#f3aa9a;--bot-glow-5:#9ad7ea
+}
+:root[data-theme=light]{
+ --bot-0:#0a4c82;--bot-1:#7a4a00;--bot-2:#0d5a38;--bot-3:#6e2c78;--bot-4:#8a3018;--bot-5:#0b5870
+}
+.bot-face{width:24px;height:24px;min-width:24px;min-height:24px;max-width:24px;max-height:24px;flex:none;display:inline-grid;place-items:center;position:relative;overflow:hidden;border:0;border-radius:50%;background:#141418;color:var(--bot-glow);box-shadow:0 0 0 1px color-mix(in srgb,var(--bot-glow) 55%,transparent),0 0 8px color-mix(in srgb,var(--bot-glow) 32%,transparent);vertical-align:middle}
+.bot-face svg{width:24px;height:24px;display:block;position:relative;z-index:1}
+.bot-face::before{content:"";position:absolute;inset:-40%;background:conic-gradient(from 0deg,transparent,var(--bot-glow),transparent 42%);opacity:.22;animation:bf-wash 11s linear infinite;pointer-events:none}
+.agent label span.bot-face{overflow:visible;width:20px;height:20px;min-width:20px;min-height:20px;max-width:20px;max-height:20px}
+.agent .bot-face.roster-face,.agent .bot-face.roster-face svg{width:20px;height:20px}
+.message .meta .avatar.bot-face{width:24px;height:24px;border:0;border-radius:50%;background:#141418;padding:0}
+.bf-glow{fill:var(--bot-glow);opacity:.26}
+.bf-ring{fill:none;stroke:var(--bot-glow);stroke-width:1.35}
+.bf-core{fill:var(--bot-glow)}
+.bf-spark{fill:var(--bot-glow)}
+.bf-glyph{fill:none;stroke:var(--bot-glow);stroke-width:1.45;stroke-linejoin:round;stroke-linecap:round}
+.bot-face .bf-core,.bot-face .bf-spark,.bot-face .bf-glyph{opacity:0}
+.bot-face[data-mark=orb] .bf-core{opacity:1}
+.bot-face[data-mark=ring] .bf-spark{opacity:1}
+.bot-face[data-mark=ring] .bf-ring{stroke-dasharray:8 6}
+.bot-face[data-mark=glyph] .bf-glyph{opacity:1}
+.bot-face[data-mark=glyph] .bf-ring{opacity:0}
+.bf-orbit{transform-origin:16px 16px;transform-box:view-box}
+.bot-face.is-idle .bf-glow{animation:bf-breathe 4.8s ease-in-out infinite}
+.bot-face.is-stream::before{animation-duration:2.4s;opacity:.62}
+.bot-face.is-stream .bf-ring{animation:bf-dash 1.5s linear infinite}
+.bot-face.is-stream .bf-orbit{animation:bf-spin 1.8s linear infinite}
+.bot-face.is-pulse{animation:bf-pulse .7s ease-out 1}
+.bot-face.is-settle .bf-glow{animation:bf-settle 1.1s ease-out 1}
+.message.bot-accent>.meta strong.bot-name{color:var(--bot)}
+.agent label span.bot-name{color:var(--bot)!important}
+.message.bot-accent>.content{box-shadow:inset 2px 0 0 var(--bot),inset 0 0 0 1px color-mix(in srgb,var(--bot) 42%,transparent)}
+.composer-inner .activity-status{display:flex;align-items:center;height:22px;max-height:22px}
+.bot-dot{width:6px;height:6px;border-radius:50%;background:var(--bot);box-shadow:0 0 6px var(--bot-glow);display:inline-block;flex:none;margin:0 4px 0 0;vertical-align:middle}
+.bot-dot.is-stream{animation:bf-breathe 1.6s ease-in-out infinite}
+@keyframes bf-breathe{0%,100%{opacity:.22}50%{opacity:.62}}
+@keyframes bf-wash{to{transform:rotate(360deg)}}
+@keyframes bf-spin{to{transform:rotate(360deg)}}
+@keyframes bf-dash{to{stroke-dashoffset:-28}}
+@keyframes bf-pulse{0%{transform:scale(.92);box-shadow:0 0 0 0 color-mix(in srgb,var(--bot-glow) 70%,transparent)}45%{transform:scale(1.06);box-shadow:0 0 10px 1px color-mix(in srgb,var(--bot-glow) 50%,transparent)}100%{transform:scale(1)}}
+@keyframes bf-settle{from{opacity:.72}to{opacity:.26}}
+@media(prefers-reduced-motion:reduce){
+ .bot-face,.bot-face::before,.bot-face *,.bot-dot{animation:none!important}
+ .bot-face.is-stream::before{opacity:.5}
+ .bot-face.is-stream .bf-spark{opacity:1}
+}
+:root[data-theme=light] .bot-face{background:#141418}
 </style><script src="/static/message-audio.js"></script><script>try{document.documentElement.dataset.theme=localStorage.getItem('mag-theme')||((matchMedia('(prefers-color-scheme: light)').matches)?'light':'dark')}catch(e){document.documentElement.dataset.theme='dark'}</script></head><body><svg xmlns="http://www.w3.org/2000/svg" aria-hidden="true" style="position:absolute;width:0;height:0;overflow:hidden"><defs><symbol id="ic-menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></symbol><symbol id="ic-tools" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></symbol><symbol id="ic-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol><symbol id="ic-send" viewBox="0 0 24 24"><path d="m5 12 14-8-4 16-3-7-7-1Z"/><path d="m12 13 7-9"/></symbol><symbol id="ic-paperclip" viewBox="0 0 24 24"><path d="m20.5 11.6-8 8a5 5 0 0 1-7-7l9-9a3.5 3.5 0 0 1 5 5L10 18a2 2 0 1 1-3-3l8-8"/></symbol><symbol id="ic-mic" viewBox="0 0 24 24"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0M12 17v5m-4 0h8"/></symbol><symbol id="ic-moon" viewBox="0 0 24 24"><path d="M20.6 15.5A9 9 0 0 1 8.5 3.4 9 9 0 1 0 20.6 15.5Z"/></symbol><symbol id="ic-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M4.9 4.9l1.4 1.4m11.4 11.4 1.4 1.4M2 12h2m16 0h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></symbol><symbol id="ic-lock" viewBox="0 0 24 24"><rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></symbol><symbol id="ic-file" viewBox="0 0 24 24"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9Z"/><path d="M13 2v7h7"/></symbol><symbol id="ic-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></symbol><symbol id="ic-pause" viewBox="0 0 24 24"><rect x="5" y="5" width="5" height="14" rx="1"/><rect x="14" y="5" width="5" height="14" rx="1"/></symbol><symbol id="ic-stop" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/></symbol><symbol id="ic-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c5 5 5 13 0 18M12 3c-5 5-5 13 0 18"/></symbol><symbol id="ic-terminal" viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="18" rx="2"/><path d="m6 8 4 4-4 4m7 0h5"/></symbol><symbol id="ic-brain" viewBox="0 0 24 24"><path d="M12 18V5a3 3 0 0 0-6 0 4 4 0 0 0-2 7 4 4 0 0 0 2 7 3 3 0 0 0 6-1Zm0 0V5a3 3 0 0 1 6 0 4 4 0 0 1 2 7 4 4 0 0 1-2 7 3 3 0 0 1-6-1Z"/></symbol><symbol id="ic-arrow" viewBox="0 0 24 24"><path d="M5 12h14m-6-6 6 6-6 6"/></symbol><symbol id="ic-chev" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></symbol><symbol id="ic-plug" viewBox="0 0 24 24"><path d="M9 2v5m6-5v5M6 7h12v4a6 6 0 0 1-12 0V7zm6 10v5"/></symbol><symbol id="ic-trash" viewBox="0 0 24 24"><path d="M3 6h18m-2 0-1 15H6L5 6m3 0V3h8v3M10 10v7m4-7v7"/></symbol><symbol id="ic-spark" viewBox="0 0 24 24"><path d="m12 2 2.2 7.8L22 12l-7.8 2.2L12 22l-2.2-7.8L2 12l7.8-2.2L12 2Z"/></symbol><symbol id="ic-expand" viewBox="0 0 24 24"><path d="M9 3H3v6m12-6h6v6M3 15v6h6m12-6v6h-6"/></symbol><symbol id="ic-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z"/></symbol><symbol id="ic-cpu" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 2v4m6-4v4M9 18v4m6-4v4M2 9h4m-4 6h4m12-6h4m-4 6h4"/></symbol><symbol id="ic-check" viewBox="0 0 24 24"><path d="m4 12 5 5L20 6"/></symbol><symbol id="ic-up" viewBox="0 0 24 24"><path d="M12 19V5m-6 6 6-6 6 6"/></symbol><symbol id="ic-stopfill" viewBox="0 0 24 24"><rect x="6.5" y="6.5" width="11" height="11" rx="2.5" fill="currentColor" stroke="none"/></symbol><symbol id="ic-image" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="2"/><path d="m21 16-5-5-9 9"/></symbol><symbol id="ic-camera" viewBox="0 0 24 24"><path d="M4 8h3l2-3h6l2 3h3a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1Z"/><circle cx="12" cy="13.5" r="3.5"/></symbol><symbol id="ic-screen" viewBox="0 0 24 24"><rect x="2" y="4" width="20" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></symbol></defs></svg>
 <header id="app-header"><button class="side-toggle" id="toggle-agents" aria-controls="left-panel" aria-expanded="true" title="Bot-Leiste umschalten"><svg class="i " aria-hidden="true"><use href="#ic-menu"></use></svg> <span>Bots</span></button><div class="brand"><div class="brand-mark"><svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="square" stroke-linejoin="miter" aria-hidden="true"><path d="M3 22V8h18v14"/><path d="M3 8V3h4v4h3V3h4v4h3V3h4v5"/><rect x="8" y="12" width="8" height="10"/></svg></div><span class="brand-word">MAG</span><span class="brand-caption">Stardenburg · privat</span></div><span class="header-divider"></span><span class="header-title">Unterhaltung</span><div class="header-actions"><div id="model-choice" role="group" aria-label="Modell auswählen"><button type="button" class="model-button" data-model-id="deepseek-v4-flash-0731" aria-pressed="true" title="Q4">0 · Q4</button><button type="button" class="model-button" data-model-id="deepseek-v4-flash-0731-iq3" aria-pressed="false" title="IQ3">1 · IQ3</button></div><span id="model-info" title="Aktives Modell, Engine und Geschwindigkeit"></span><span class="status-group" aria-label="Status"><span id="model-state" class="top-stat" role="status" title="Modellstatus"><span class="dot"></span><span class="txt">Modell lädt …</span></span><span class="top-stat" id="connection" title="Verbindung zum Raum"><span class="dot"></span><span class="txt">Verbinde …</span></span></span><span class="top-stat" id="you-badge" hidden></span><div class="menu-wrap"><button type="button" class="side-toggle" id="room-menu-btn" aria-haspopup="menu" aria-expanded="false" aria-controls="room-menu" title="Raum: Autonomie, Netz, alles anhalten"><svg class="i " aria-hidden="true"><use href="#ic-spark"></use></svg> <span>Raum</span></button><div class="plus-menu room-menu" id="room-menu" role="menu" aria-label="Raum" hidden><label class="control-row" id="autotalk-row" role="menuitemcheckbox"><input type="checkbox" id="autotalk"><span>Autonom arbeiten</span></label><p class="control-desc" id="autotalk-desc">Läuft auch bei geschlossenem Browser.</p><label class="control-row" id="reflect-row" role="menuitemcheckbox"><input type="checkbox" id="reflect"><span>Zweite Runde (Bots lesen einander)</span></label><label class="control-row" id="offline-row" role="menuitemcheckbox"><input type="checkbox" id="offline"><span>Offline (Bots ohne Netz)</span></label><div class="menu-sep"></div><button type="button" role="menuitem" id="stop" title="Alle Antworten, Werkzeuge und Jobs anhalten"><svg class="i sm" aria-hidden="true"><use href="#ic-pause"></use></svg><span id="stop-label">Alles anhalten (inkl. Jobs)</span></button><button type="button" role="menuitem" id="room-add-agent"><svg class="i sm" aria-hidden="true"><use href="#ic-plus"></use></svg><span>Bot hinzufügen</span></button><div class="menu-sep"></div><button type="button" role="menuitem" id="room-settings"><svg class="i sm" aria-hidden="true"><use href="#ic-gear"></use></svg><span>Einstellungen …</span></button></div></div><button type="button" class="icon-btn" id="settings-open" title="Einstellungen" aria-label="Einstellungen" aria-haspopup="dialog"><svg class="i " aria-hidden="true"><use href="#ic-gear"></use></svg></button><button class="side-toggle" id="toggle-tools" aria-controls="right-panel" aria-expanded="true" title="Werkzeuge umschalten"><svg class="i " aria-hidden="true"><use href="#ic-tools"></use></svg> <span>Werkzeuge</span></button></div></header>
 <div class="layout" id="layout">
@@ -1238,6 +1289,63 @@ function roomBotName(msg){
  if(name==='BotBot'||name==='Bot 2'||name==='Bot2')return 'Qwen';
  return name;
 }
+const BOT_TONES=6,BOT_MARKS=['orb','ring','glyph'];
+const faceSettle=new Map();
+const BOT_FACE_SVG='<svg viewBox="0 0 32 32" aria-hidden="true"><circle class="bf-glow" cx="16" cy="16" r="11"></circle><circle class="bf-ring" cx="16" cy="16" r="9.2" fill="none"></circle><circle class="bf-core" cx="16" cy="16" r="3.1"></circle><g class="bf-orbit"><circle class="bf-spark" cx="16" cy="5.2" r="1.45"></circle></g><path class="bf-glyph" d="M16 6.5 25.5 16 16 25.5 6.5 16Z"></path><path class="bf-glyph bf-glyph-2" d="M11 16h10"></path></svg>';
+function botToneIndex(ref){
+ const slot=Number(ref&&ref.slot);
+ if(Number.isFinite(slot)&&slot>0)return (slot-1)%BOT_TONES;
+ const id=String((ref&&(ref.id||ref.bot||ref.bot_id))||'');
+ let h=2166136261;
+ for(const c of id)h=Math.imul(h^c.codePointAt(0),16777619);
+ return (h>>>0)%BOT_TONES;
+}
+function botVars(el,idx){
+ el.style.setProperty('--bot','var(--bot-'+idx+')');
+ el.style.setProperty('--bot-glow','var(--bot-glow-'+idx+')');
+ el.dataset.tone=String(idx);
+}
+function botFaceEl(idx,mode){
+ const el=document.createElement('span');
+ el.className='avatar bot-face is-'+(mode||'idle');
+ el.dataset.mark=BOT_MARKS[idx%BOT_MARKS.length];
+ botVars(el,idx);
+ el.setAttribute('aria-hidden','true');
+ el.innerHTML=BOT_FACE_SVG;
+ return el;
+}
+function rosterAgent(msg){
+ return (state.agents||[]).find(a=>a.id===(msg.bot||msg.bot_id))||null;
+}
+function faceMode(botId,streaming){
+ if(streaming)return 'stream';
+ if(Date.now()<(faceSettle.get(botId)||0))return 'settle';
+ return 'idle';
+}
+function armBotFace(node,botId,streaming){
+ const face=node&&node.querySelector(':scope > .meta .bot-face');
+ if(!face)return;
+ const mode=faceMode(botId,streaming);
+ face.classList.toggle('is-stream',mode==='stream');
+ face.classList.toggle('is-idle',mode==='idle');
+ face.classList.toggle('is-settle',mode==='settle');
+ const s=streams[botId];
+ if(streaming&&s&&!s.pulsed){
+  s.pulsed=true;
+  face.classList.add('is-pulse');
+  setTimeout(()=>{face.classList.remove('is-pulse')},720);
+ }
+}
+function syncRosterFaces(){
+ for(const card of document.querySelectorAll('#agents .agent')){
+  const face=card.querySelector('.bot-face');
+  if(!face)continue;
+  const on=!!streams[card.dataset.bot];
+  face.classList.toggle('is-stream',on);
+  face.classList.toggle('is-idle',!on);
+  if(on)face.classList.remove('is-settle');
+ }
+}
 function append(msg,scroll=true,trace=null,position=-1){
  const area=$('conversation');let inner=area.querySelector('.conversation-inner');
  if(!inner){inner=document.createElement('div');inner.className='conversation-inner';area.append(inner)}
@@ -1246,9 +1354,22 @@ function append(msg,scroll=true,trace=null,position=-1){
  const div=document.createElement('article');div.className='message '+(human?'user'+(mine?' mine':' other'):'assistant');div.dataset.id=msg.id||'';div.dataset.displayMs=String(msg.display_ms||msg.ts*1000||Date.now());
  const meta=document.createElement('div');meta.className='meta';
  const visibleName=roomBotName(msg);
- const avatar=document.createElement('span');avatar.className='avatar';avatar.textContent=human?initials(msg.name||'Nutzer'):visibleName.trim().slice(0,1).toUpperCase();
- if(human&&!mine){avatar.style.background=avatarColor(msg.login||msg.name||'Gast');avatar.style.color='#fff'}
  const name=document.createElement('strong');name.textContent=visibleName;
+ let avatar;
+ if(!human){
+  const agent=rosterAgent(msg);
+  const botId=msg.bot||msg.bot_id||agent?.id||'';
+  const idx=botToneIndex(agent||{id:botId});
+  avatar=botFaceEl(idx,faceMode(botId,!!msg.live));
+  div.classList.add('bot-accent');
+  div.dataset.bot=botId;
+  div.dataset.botTone=String(idx);
+  botVars(div,idx);
+  name.classList.add('bot-name');
+ }else{
+  avatar=document.createElement('span');avatar.className='avatar';avatar.textContent=initials(msg.name||'Nutzer');
+  if(!mine){avatar.style.background=avatarColor(msg.login||msg.name||'Gast');avatar.style.color='#fff'}
+ }
  const time=document.createElement('time');const date=new Date((msg.ts||Date.now()/1000)*1000);time.textContent=date.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
  meta.append(avatar,name,time);div.append(meta);
  const text=shownText(msg);
@@ -1437,7 +1558,7 @@ const completedHeights=new Map();
 let streamSeq=0;
 function liveNode(botId,s){
  if(!s.seq)s.seq=++streamSeq;
- const node=append({role:'assistant',name:s.name,content:s.text||'',thinking_enabled:s.thinkingEnabled,live:true,display_ms:s.displayMs||s.started||Date.now()},false);
+ const node=append({role:'assistant',name:s.name,bot:botId,content:s.text||'',thinking_enabled:s.thinkingEnabled,live:true,display_ms:s.displayMs||s.started||Date.now()},false);
  node.dataset.liveBot=botId;node.dataset.liveSeq=String(s.seq);
  const inner=node.parentNode;
  for(const old of inner.querySelectorAll('.message[data-live-bot]'))if(old!==node&&old.dataset.liveBot===botId)old.remove();
@@ -1449,6 +1570,8 @@ function updateStream(botId,immediate=false){
  const s=streams[botId];if(!s)return;
  if(!s.node||!s.node.isConnected){s.node=liveNode(botId,s);s.floor=0}
  s.node.classList.add('work-live');
+ armBotFace(s.node,botId,true);
+ syncRosterFaces();
  streamControls();
  const update=()=>{
   s.frame=0;if(!s.node?.isConnected)return;
@@ -1694,7 +1817,7 @@ function renderAgents(){const list=$('agents');list.replaceChildren();const sing
 card.setAttribute('role','button');card.setAttribute('aria-label',a.name+' Browser und Terminal anzeigen');
 card.onclick=e=>{if(e.target.closest('button,a,input,label,textarea,select'))return;focusBot(a.id)};
 card.onkeydown=e=>{if(e.target===card&&(e.key==='Enter'||e.key===' ')){e.preventDefault();focusBot(a.id)}};
-const label=document.createElement('label');const check=document.createElement('input');check.type='checkbox';check.checked=selected.has(a.id);check.onchange=()=>{check.checked?selected.add(a.id):selected.delete(a.id);sessionStorage.setItem('mag-selected',JSON.stringify([...selected]));syncModelChoice(state);syncBotSwitches()};const name=document.createElement('span');name.textContent=roomBotName({role:'assistant',bot:a.id,name:a.name});name.style.color=a.color;label.append(check,name);const info=document.createElement('small');const modelDisplay=botModelLabel(a);info.textContent=(a.prewarm_eta_s!=null?'Prompt wird vorbereitet (~'+etaMin(a.prewarm_eta_s)+' min) · ':'')+(a.model?modelDisplay+' · ':'')+(a.spawning?'VM wird erstellt …':(a.vm||'nur Chat'))+' · '+(a.memory_count||0)+' Erinnerungen'+(a.plugins?.length?' · '+a.plugins.length+' Plugin'+(a.plugins.length>1?'s':''):'');const actions=document.createElement('div');actions.className='actions';const actList=[];
+const label=document.createElement('label');const check=document.createElement('input');check.type='checkbox';check.checked=selected.has(a.id);check.onchange=()=>{check.checked?selected.add(a.id):selected.delete(a.id);sessionStorage.setItem('mag-selected',JSON.stringify([...selected]));syncModelChoice(state);syncBotSwitches()};const tone=botToneIndex(a);botVars(card,tone);const name=document.createElement('span');name.className='bot-name';name.textContent=roomBotName({role:'assistant',bot:a.id,name:a.name});const face=botFaceEl(tone,streams[a.id]?'stream':'idle');face.classList.add('roster-face');label.append(check,face,name);const info=document.createElement('small');const modelDisplay=botModelLabel(a);info.textContent=(a.prewarm_eta_s!=null?'Prompt wird vorbereitet (~'+etaMin(a.prewarm_eta_s)+' min) · ':'')+(a.model?modelDisplay+' · ':'')+(a.spawning?'VM wird erstellt …':(a.vm||'nur Chat'))+' · '+(a.memory_count||0)+' Erinnerungen'+(a.plugins?.length?' · '+a.plugins.length+' Plugin'+(a.plugins.length>1?'s':''):'');const actions=document.createElement('div');actions.className='actions';const actList=[];
 if(can('memory'))actList.push(['Erinnerung',()=>memory(a)]);
 if(state.you?.role==='owner')actList.push(['Umbenennen',()=>renameAgent(a)]);
 if(a.id===single||state.dual_numa){}else if(can('delete'))actList.push(['Entfernen',()=>removeAgent(a)]);
@@ -1967,24 +2090,42 @@ let stopInFlight=false;
 function paintStopping(){const b=$('send-button');if(b){b.dataset.mode='stop';b.dataset.state='stopping';b.classList.add('gbar-stopping','send-halting');b.setAttribute('aria-busy','true');b.setAttribute('aria-label','Stoppt…');b.title='Stoppt…';b.disabled=true}for(const id of Object.keys(streams)){const s=streams[id];if(!s||s.stopping)continue;s.stopping=true;s.label='Stoppt…';s.phase='stop';updateStream(id,true)}}
 function clearStopping(){const b=$('send-button');if(b&&b.dataset.state==='stopping'){b.dataset.state='';b.classList.remove('send-halting');b.removeAttribute('aria-busy')}stopInFlight=false;syncComposerButton()}
 async function stopBot(id){if(stopInFlight)return;stopInFlight=true;paintStopping();try{await api('/api/cancel',id?{bot:id}:{})}catch(e){notice(e.message);clearStopping()}}
-function activityStatusText(){
+function activityItems(){
  const ids=[...busyBots].filter(id=>state.agents.some(a=>a.id===id));
  for(const id of Object.keys(streams))if(!ids.includes(id)&&state.agents.some(a=>a.id===id))ids.push(id);
- if(!ids.length)return '';
  return ids.map(id=>{
   const a=state.agents.find(x=>x.id===id);
   const name=roomBotName({role:'assistant',bot:id,name:a?.name||streams[id]?.name});
   const s=streams[id];
-  if(waitingBots.has(id))return name+' wartet';
-  if(!s)return name+' antwortet';
-  if(s.error)return name+' · Fehler';
-  const clock=streamClock(s);
-  if(s.phase==='read'||s.phase==='prompt'||s.label==='Liest Verlauf')return name+' liest '+clock;
-  if(s.thinking||s.phase==='think')return name+' denkt '+clock;
-  return name+' antwortet '+clock;
- }).join(' · ');
+  let text;
+  if(waitingBots.has(id))text=name+' wartet';
+  else if(!s)text=name+' antwortet';
+  else if(s.error)text=name+' · Fehler';
+  else{
+   const clock=streamClock(s);
+   if(s.phase==='read'||s.phase==='prompt'||s.label==='Liest Verlauf')text=name+' liest '+clock;
+   else if(s.thinking||s.phase==='think')text=name+' denkt '+clock;
+   else text=name+' antwortet '+clock;
+  }
+  return {id,text,idx:botToneIndex(a||{id})};
+ });
 }
-function paintActivityStatus(){paintRoomLine()}
+function activityStatusText(){return activityItems().map(x=>x.text).join(' · ')}
+function fillActivity(stat){
+ const items=activityItems();
+ stat.replaceChildren();
+ stat.hidden=!items.length;
+ items.forEach((p,i)=>{
+  if(i)stat.append(document.createTextNode(' · '));
+  const dot=document.createElement('i');
+  dot.className='bot-dot'+(streams[p.id]?' is-stream':' is-idle');
+  botVars(dot,p.idx);
+  dot.setAttribute('aria-hidden','true');
+  const lab=document.createElement('span');lab.textContent=p.text;
+  stat.append(dot,lab);
+ });
+}
+function paintActivityStatus(){syncRosterFaces();paintRoomLine()}
 function renderLanes(){const box=$('bot-lanes');if(box){box.replaceChildren();box.hidden=true}paintActivityStatus();syncComposerButton()}
 let composerSending=false;
 const localSends=new Map(),failedSends=new Map();
@@ -2752,7 +2893,7 @@ function menuState(){const b=state.agents.find(a=>a.id===curBot());const n=b?.pl
 async function load(){data=await api('/api/plugins',undefined,'GET');syncApprovals(data.approvals);paint()}
 async function setBind(sid,patch,msg){try{await api('/api/plugins/bots/'+encodeURIComponent(bot),{server:sid,...patch});if(msg)st(msg);await load()}catch(e){st(e.message,true);await load().catch(()=>{})}}
 function paint(){if(!data)return;bot=curBot();paintBots();paintList();paintCatalog();menuState()}
-function paintBots(){const box=$('mcp-bots');box.replaceChildren();for(const a of state.agents){const b=el('button','mcp-bot');b.type='button';b.setAttribute('aria-pressed',String(a.id===bot));const dot=el('i');if(a.color)dot.style.background=a.color;const n=Object.keys(data.bindings[a.id]||{}).length;b.append(dot,a.name||a.id);if(n)b.append(el('small','',String(n)));b.onclick=()=>{bot=a.id;paint()};box.append(b)}
+function paintBots(){const box=$('mcp-bots');box.replaceChildren();for(const a of state.agents){const b=el('button','mcp-bot');b.type='button';b.setAttribute('aria-pressed',String(a.id===bot));const dot=el('i');botVars(dot,botToneIndex(a));dot.style.background='var(--bot)';dot.style.boxShadow='0 0 6px var(--bot-glow)';const n=Object.keys(data.bindings[a.id]||{}).length;b.append(dot,a.name||a.id);if(n)b.append(el('small','',String(n)));b.onclick=()=>{bot=a.id;paint()};box.append(b)}
  const a=state.agents.find(x=>x.id===bot),t=botTools(bot),n=Object.keys(data.bindings[bot]||{}).length;
  $('mcp-summary').textContent=!a?'Noch kein Bot im Raum.':n?a.name+' nutzt '+n+' Plugin'+(n>1?'s':'')+' · '+t.n+' Werkzeuge · ≈ '+(t.tok>=1000?(t.tok/1000).toFixed(1).replace('.',',')+' Tsd.':t.tok)+' Tokens Kontext je Anfrage'+(t.n>data.max_tools?' · nur die ersten '+data.max_tools+' Werkzeuge werden genutzt':''):a.name+' nutzt noch keine Plugins. Schalte unten eines ein oder füge eines hinzu.'}
 function paintList(){const box=$('mcp-list');box.replaceChildren();if(!data.servers.length){box.append(el('div','mcp-empty','Noch keine MCP-Server verbunden.'));return}
@@ -2847,7 +2988,7 @@ function paintRoomLine(){
  box.classList.toggle('expanded',queueOpen&&!!list.length);
  const head=document.createElement('div');head.id='room-line';head.className='queue-head';
  if(!show){for(const el of chrome)head.append(el);box.append(head);return}
- const stat=document.createElement('span');stat.className='activity-status';stat.textContent=statusText;stat.hidden=!statusText;head.append(stat);
+ const stat=document.createElement('span');stat.className='activity-status';fillActivity(stat);head.append(stat);
  if(pho){const mark=document.createElement('span');mark.className='pho-save';mark.textContent=pho;head.append(mark)}
  for(const el of chrome)head.append(el);
  if(list.length){
@@ -3018,6 +3159,7 @@ events.onmessage=e=>{
   }else if(event.type==='stopping'){paintStopping()}
   else if(event.type==='bot_done'){
    const s=streams[id];if(s?.frame)cancelAnimationFrame(s.frame);
+   faceSettle.set(id,Date.now()+1600);if(s?.node)armBotFace(s.node,id,false);
    if(thinkOpen.delete('live:'+id)&&event.id)thinkOpen.add(event.id);
    if(runOpen.has('live:'+id)){const o=runOpen.get('live:'+id);runOpen.delete('live:'+id);if(event.id)runOpen.set('done:'+event.id,o)}
    if(s&&s.thinkingEnabled!==false&&(s.reasoning||s.tools?.length)){completedTraces.push({name:s.name,content:event.content||s.text||'',reasoning:event.reasoning?'':(s.reasoning||''),ms:liveThinkMs(s),tools:s.tools||[],assignedPosition:null});if(completedTraces.length>40)completedTraces.shift()}
@@ -3052,6 +3194,7 @@ events.onmessage=e=>{
   }else if(event.type==='frontend')location.reload();
   else if(event.type==='cancelled'&&event.bot){
    const s=streams[event.bot];if(s?.frame)cancelAnimationFrame(s.frame);
+   faceSettle.set(event.bot,Date.now()+1600);if(s?.node)armBotFace(s.node,event.bot,false);
    delete streams[event.bot];busyBots.delete(event.bot);if(!composerBusyIds().length)clearStopping();else renderLanes();notice('');refresh().catch(err=>notice(err.message));
   }else if(event.type==='stopped'||event.type==='cancelled'||event.type==='room_cleared'){
    for(const s of Object.values(streams))if(s.frame)cancelAnimationFrame(s.frame);

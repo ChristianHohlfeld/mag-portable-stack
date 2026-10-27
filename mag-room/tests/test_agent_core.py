@@ -127,8 +127,10 @@ class AgentCore(unittest.TestCase):
  def test_06_background_task_runs_and_posts_result(self):
   Router.main=[call('task',{'action':'start','title':'Recherche','prompt':'Finde X'}),['Läuft im Hintergrund.']]
   Router.task=[[{'_sleep':.3},'Ergebnis X gefunden.']]
-  self.ask('Recherchiere X')
-  self.assertIn('Läuft im Hintergrund',self.room()[-1]['content'])
+  self.request('/api/message',{'text':'Recherchiere X','bots':['ali']})
+  # The task result can land before wait_idle returns, so do not require
+  # the ack to stay the last room line.
+  self.until(lambda:[m for m in self.room() if 'Läuft im Hintergrund' in m.get('content','')])
   t=self.until(lambda:[t for t in self.request('/api/tasks')['tasks'] if t['status']=='done'])
   self.assertEqual(t[0]['title'],'Recherche')
   msg=self.until(lambda:[m for m in self.room() if 'Aufgabe „Recherche“ · fertig' in m.get('content','')])

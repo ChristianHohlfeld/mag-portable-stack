@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# mag-test-timeout: 180
 """Hard-timeout checks for deploy drain classification."""
 import pathlib as _mag_path
 import sys as _mag_sys

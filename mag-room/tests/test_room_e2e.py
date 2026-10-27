@@ -734,5 +734,180 @@ class RoomE2E(unittest.TestCase):
             p.close()
 
 
+    def test_13_bot_faces_keep_color_motion_and_phone_share(self):
+        # Two roster slots, renamed in the client: accent and mark follow the
+        # slot, not the label. Streaming, settle and reduced motion are class
+        # states. The phone chat stays at least 80% tall. Dies at 12s.
+        p = self.browser.new_page(viewport={'width': 390, 'height': 844},
+                                  is_mobile=True, has_touch=True)
+        t0 = time.monotonic()
+
+        def ms():
+            left = 12 - (time.monotonic() - t0)
+            self.assertGreater(left, 0.4, 'hard timeout')
+            return max(400, int(left * 1000))
+
+        try:
+            p.goto(f'http://127.0.0.1:{self.room.ui}/')
+            p.wait_for_function(
+                "()=>document.getElementById('connection')&&document.getElementById('connection').textContent.includes('Verbunden')&&state.agents&&state.agents.length",
+                timeout=ms())
+            snap = p.evaluate(r"""()=>{
+              refreshSeq=1e9;
+              try{events.close()}catch(e){}
+              document.documentElement.dataset.theme='dark';
+              const you=state.you||{role:'owner',name:'Chris',login:''};
+              state.you=you;
+              state.agents=[
+                {id:'ds',name:'Bot',slot:1,vm:'',model:'deepseek',color:'#8fd0ff'},
+                {id:'qw',name:'Dot',slot:2,vm:'',model:'qwen',color:'#8fd0ff'}
+              ];
+              state.room=[
+                {id:'u1',role:'user',name:you.name||'Chris',login:you.login||'',content:'Hallo von Chris',ts:1,display_ms:1000},
+                {id:'m1',role:'assistant',name:'Bot',bot:'ds',content:'Erste Antwort',ts:2,display_ms:2000},
+                {id:'m2',role:'assistant',name:'Dot',bot:'qw',content:'Zweite Antwort',ts:3,display_ms:3000}
+              ];
+              state.pending=[];
+              busyBots=new Set();
+              streams={};
+              render();
+              const rgb=s=>{const m=String(s).match(/[\d.]+/g);return m?m.slice(0,3).map(Number):[0,0,0]};
+              const lin=v=>{v/=255;return v<=0.04045?v/12.92:Math.pow((v+0.055)/1.055,2.4)};
+              const L=c=>{const [r,g,b]=rgb(c);return 0.2126*lin(r)+0.7152*lin(g)+0.0722*lin(b)};
+              const contrast=(a,b)=>{const x=L(a),y=L(b),hi=Math.max(x,y),lo=Math.min(x,y);return (hi+0.05)/(lo+0.05)};
+              const opaque=el=>{let n=el;while(n){const c=getComputedStyle(n).backgroundColor;const m=String(c).match(/[\d.]+/g);if(m&&(m.length<4||Number(m[3])>0.9))return c;n=n.parentElement}return getComputedStyle(document.body).backgroundColor};
+              const msg=id=>document.querySelector('.message.assistant[data-bot="'+id+'"]');
+              const nameOf=id=>getComputedStyle(msg(id).querySelector('strong')).color;
+              const faceOf=id=>msg(id).querySelector('.bot-face');
+              const dark={ds:nameOf('ds'),qw:nameOf('qw')};
+              const bg=opaque(msg('ds').querySelector('strong'));
+              const darkContrast={ds:contrast(dark.ds,bg),qw:contrast(dark.qw,bg)};
+              state.agents[0].name='Nova';
+              state.agents[1].name='Lumen';
+              render();
+              const renamed=nameOf('ds')===dark.ds&&nameOf('qw')===dark.qw;
+              const marks={ds:faceOf('ds').dataset.mark,qw:faceOf('qw').dataset.mark};
+              const idle={ds:faceOf('ds').className,qw:faceOf('qw').className};
+              const idleAnim=getComputedStyle(faceOf('ds').querySelector('.bf-glow')).animationName;
+              const wash=getComputedStyle(faceOf('ds'),'::before').animationName;
+              state.agents[0].slot=2;state.agents[1].slot=1;
+              render();
+              const swapped=nameOf('ds')===dark.qw&&nameOf('qw')===dark.ds;
+              const swappedMarks={ds:faceOf('ds').dataset.mark,qw:faceOf('qw').dataset.mark};
+              state.agents[0].slot=1;state.agents[1].slot=2;
+              const saved=state.agents.map(a=>({...a}));
+              state.agents.forEach(a=>{delete a.slot});
+              render();
+              const hashed=nameOf('ds')!==nameOf('qw')&&botToneIndex({id:'ds',name:'Zeta'})===botToneIndex({id:'ds',name:'Andere'});
+              state.agents=saved;
+              render();
+              document.documentElement.dataset.theme='light';
+              const lightBg=opaque(msg('ds').querySelector('strong'));
+              const light={ds:nameOf('ds'),qw:nameOf('qw')};
+              const lightContrast={ds:contrast(light.ds,lightBg),qw:contrast(light.qw,lightBg)};
+              document.documentElement.dataset.theme='dark';
+              const mine=document.querySelector('.message.user');
+              const mineColor=getComputedStyle(mine.querySelector('strong')).color;
+              const bodyColor=getComputedStyle(document.body).color;
+              const box=faceOf('ds').getBoundingClientRect();
+              const live=id=>{
+                streams[id]={name:id,text:'',phase:'think',label:'Denkt nach',thinking:true,thinkingEnabled:false,started:Date.now(),displayMs:Date.now(),node:null,seq:0,frame:0,reasoning:'',tools:[],steps:[],error:'',hung:false};
+              };
+              live('ds');live('qw');
+              busyBots=new Set(['ds','qw']);
+              updateStream('ds',true);
+              updateStream('qw',true);
+              paintActivityStatus();
+              const streamFace=document.querySelector('.message.work-live[data-bot="ds"] .bot-face');
+              const dots=[...document.querySelectorAll('#room-line .bot-dot')].map(d=>getComputedStyle(d).backgroundColor);
+              const line=document.getElementById('room-line').getBoundingClientRect();
+              const chat=document.getElementById('conversation').getBoundingClientRect();
+              const accent=getComputedStyle(msg('ds').querySelector('.content')).boxShadow;
+              const otherAccent=getComputedStyle(msg('qw').querySelector('.content')).boxShadow;
+              faceSettle.set('ds',Date.now()+30000);
+              delete streams.ds;delete streams.qw;
+              busyBots=new Set();
+              render();
+              const settled=document.querySelector('.message.assistant[data-bot="ds"] .bot-face');
+              return {
+                dark,light,darkContrast,lightContrast,renamed,swapped,marks,swappedMarks,hashed,idle,idleAnim,wash,
+                mineClass:mine.className,
+                mineFace:!!mine.querySelector('.bot-face'),
+                mineNeutral:mineColor===bodyColor,
+                box:{w:box.width,h:box.height},
+                streamClass:streamFace?streamFace.className:'',
+                streamAnim:streamFace?getComputedStyle(streamFace.querySelector('.bf-orbit')).animationName:'',
+                dots,lineH:line.height,share:chat.height/innerHeight,
+                accent,otherAccent,
+                settleClass:settled?settled.className:'',
+                roster:{
+                  ds:getComputedStyle(document.querySelector('#agents .agent[data-bot="ds"] .bot-name')).color,
+                  qw:getComputedStyle(document.querySelector('#agents .agent[data-bot="qw"] .bot-name')).color,
+                  mark:document.querySelector('#agents .agent[data-bot="ds"] .bot-face').dataset.mark
+                },
+                stats:document.querySelectorAll('#app-header .status-group .top-stat').length,
+                selftalk:!!document.querySelector('#room-line #selftalk'),
+                field:!!document.getElementById('message'),
+                lottie:/lottie/i.test(document.documentElement.innerHTML),
+                gif:!!document.querySelector('.bot-face img')
+              };
+            }""")
+            self.assertNotEqual(snap['dark']['ds'], snap['dark']['qw'])
+            self.assertNotEqual(snap['light']['ds'], snap['light']['qw'])
+            self.assertGreaterEqual(snap['darkContrast']['ds'], 4.5)
+            self.assertGreaterEqual(snap['darkContrast']['qw'], 4.5)
+            self.assertGreaterEqual(snap['lightContrast']['ds'], 4.5)
+            self.assertGreaterEqual(snap['lightContrast']['qw'], 4.5)
+            self.assertTrue(snap['renamed'], 'rename keeps the slot color')
+            self.assertTrue(snap['swapped'], 'slot, not the stored color, picks the accent')
+            self.assertEqual(snap['marks'], {'ds': 'orb', 'qw': 'ring'})
+            self.assertEqual(snap['swappedMarks'], {'ds': 'ring', 'qw': 'orb'})
+            self.assertTrue(snap['hashed'])
+            self.assertIn('is-idle', snap['idle']['ds'])
+            self.assertIn('is-idle', snap['idle']['qw'])
+            self.assertNotEqual(snap['idleAnim'], 'none')
+            self.assertIn('bf-wash', snap['wash'])
+            self.assertNotIn('bot-accent', snap['mineClass'])
+            self.assertIn('mine', snap['mineClass'])
+            self.assertFalse(snap['mineFace'])
+            self.assertTrue(snap['mineNeutral'])
+            self.assertGreaterEqual(snap['box']['h'], 20)
+            self.assertLessEqual(snap['box']['h'], 28)
+            self.assertLessEqual(snap['box']['w'], 28)
+            self.assertIn('is-stream', snap['streamClass'])
+            self.assertIn('is-pulse', snap['streamClass'])
+            self.assertNotEqual(snap['streamAnim'], 'none')
+            self.assertEqual(len(snap['dots']), 2)
+            self.assertNotEqual(snap['dots'][0], snap['dots'][1])
+            self.assertLessEqual(snap['lineH'], 24)
+            self.assertGreaterEqual(snap['share'], 0.80)
+            self.assertNotEqual(snap['accent'], snap['otherAccent'])
+            self.assertNotEqual(snap['accent'], 'none')
+            self.assertIn('is-settle', snap['settleClass'])
+            self.assertNotIn('is-stream', snap['settleClass'])
+            self.assertEqual(snap['roster']['ds'], snap['dark']['ds'])
+            self.assertEqual(snap['roster']['qw'], snap['dark']['qw'])
+            self.assertEqual(snap['roster']['mark'], 'orb')
+            self.assertNotEqual(snap['roster']['ds'], snap['roster']['qw'])
+            self.assertEqual(snap['stats'], 2)
+            self.assertTrue(snap['selftalk'])
+            self.assertTrue(snap['field'])
+            self.assertFalse(snap['lottie'])
+            self.assertFalse(snap['gif'])
+            p.emulate_media(reduced_motion='reduce')
+            reduced = p.evaluate(r"""()=>{
+              const face=document.querySelector('.message.assistant .bot-face');
+              const glow=getComputedStyle(face.querySelector('.bf-glow')).animationName;
+              const wash=getComputedStyle(face,'::before').animationName;
+              const dot=document.querySelector('.bot-dot');
+              return {glow,wash,dot:dot?getComputedStyle(dot).animationName:'none',cls:face.className};
+            }""")
+            self.assertEqual(reduced['glow'], 'none')
+            self.assertEqual(reduced['wash'], 'none')
+            self.assertLess(time.monotonic() - t0, 12, 'hard timeout')
+        finally:
+            p.close()
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)

@@ -82,6 +82,8 @@ def peer_cn(der):
 
 class SniMap(unittest.TestCase):
     def test_templates_share_one_socket_and_do_not_bind_443(self):
+        fast = (ROOT / "ops/ci/native-fast.list").read_text()
+        self.assertIn("ops/tailscale/tests/test-sni-map.py", fast)
         for path in TAILNET:
             text = path.read_text()
             self.assertIn(LISTEN, text, path.name)

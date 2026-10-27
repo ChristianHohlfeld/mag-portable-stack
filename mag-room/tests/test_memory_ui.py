@@ -124,7 +124,7 @@ class MemoryDialogBrowser(unittest.TestCase):
                     script_errors, failed_assets, bad_console = [], [], []
                     # Fixture omits the vendor-built xterm bundle; production
                     # deploy stages and validates those pinned assets separately.
-                    vendor_only = {'xterm.js', 'xterm.css', 'xterm-addon-fit.js'}
+                    vendor_only = {'xterm.js', 'xterm.css', 'xterm-addon-fit.js', 'tts-config.json'}
                     page.on('pageerror', lambda error: script_errors.append(str(error)))
                     page.on('response', lambda response: failed_assets.append(
                         (response.status, response.url)) if (

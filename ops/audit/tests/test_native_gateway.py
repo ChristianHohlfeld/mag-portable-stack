@@ -318,4 +318,75 @@ class NativeGateway(unittest.TestCase):
         for text in (env,header):self.assertIn("8191:0,8192:1",text)
         self.assertIn('MAG_ROOM_MAX_BOTS=2',env)
 
+    def test_13_room_disconnect_does_not_cancel_llama(self):
+        # A mag-120 restart closes the room socket. ik must keep the task
+        # until an explicit ?action=cancel (user Stop), or the next start
+        # re-prefills ~14k tokens.
+        closed={'at':None}
+        ready=threading.Event();accepted=threading.Event()
+        def serve():
+            s=socket.socket();s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
+            s.bind(('127.0.0.1',0));s.listen(2)
+            serve.port=s.getsockname()[1];ready.set()
+            c,_=s.accept();accepted.set()
+            data=b''
+            while b'\r\n\r\n' not in data:
+                chunk=c.recv(65536)
+                if not chunk:return
+                data+=chunk
+            head,body=data.split(b'\r\n\r\n',1)
+            n=0
+            for line in head.split(b'\r\n'):
+                if line.lower().startswith(b'content-length:'):
+                    n=int(line.split(b':',1)[1])
+            while len(body)<n:
+                body+=c.recv(65536)
+            c.settimeout(8)
+            try:
+                if c.recv(1)==b'':
+                    closed['at']=time.time()
+            except OSError:
+                closed['at']=time.time()
+        threading.Thread(target=serve,daemon=True).start()
+        self.assertTrue(ready.wait(2))
+        dummy=http.server.ThreadingHTTPServer(('127.0.0.1',0),FakeModel)
+        threading.Thread(target=dummy.serve_forever,daemon=True).start()
+        gwp=port()
+        env=dict(self.env,MAG_AUDIT_LISTEN_PORT=str(gwp),MAG_ROOM_MODEL_ID='deepseek-v4-flash-0731',
+                 MAG_ROOM_MODEL_PORTS='%d:0,%d:1'%(dummy.server_port,serve.port),
+                 MAG_AUDIT_LOG_DIR=str(self.dir/'keep-logs'))
+        gw=subprocess.Popen([str(ROOT/'build/mag-audit-gateway')],env=env,
+                            stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+        try:
+            for _ in range(100):
+                try:
+                    if request(gwp)[0]==200:break
+                except (ConnectionError,OSError):
+                    pass
+                time.sleep(.05)
+            else:
+                self.fail('gateway not ready')
+            body=json.dumps({'model':'deepseek-v4-flash-0731','messages':[{'role':'user','content':'hi'}]}).encode()
+            c=socket.create_connection(('127.0.0.1',gwp),timeout=3)
+            c.sendall(b'POST /v1/chat/completions HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\n'
+                      b'X-Mag-Slot: 1\r\nX-Mag-Session: prewarm\r\nContent-Length: %d\r\n\r\n%s'%(len(body),body))
+            self.assertTrue(accepted.wait(3),'llama never saw the completion')
+            time.sleep(.1)
+            t_close=time.time();c.shutdown(socket.SHUT_RDWR);c.close()
+            time.sleep(.8)
+            self.assertIsNone(closed['at'],'room disconnect cancelled the llama task')
+            cancel=json.dumps({}).encode()
+            k=http.client.HTTPConnection('127.0.0.1',gwp,timeout=3)
+            k.request('POST','/slots/0?action=cancel',body=cancel,
+                      headers={'Content-Type':'application/json','X-Mag-Slot':'1'})
+            self.assertEqual(k.getresponse().status,200);k.close()
+            deadline=time.monotonic()+3
+            while time.monotonic()<deadline and closed['at'] is None:
+                time.sleep(.05)
+            self.assertIsNotNone(closed['at'],'action=cancel must abort the kept task')
+            self.assertLess(closed['at']-t_close,4)
+        finally:
+            gw.terminate();gw.wait(timeout=5)
+            dummy.shutdown();dummy.server_close()
+
 if __name__=="__main__":unittest.main()

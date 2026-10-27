@@ -3291,7 +3291,7 @@ class ConfiguredNuma(unittest.TestCase):
      for other in bots.values():
       if other['id']!=bid:self.assertNotIn('Du bist '+other['name']+',',sysmsg['content'])
      self.assertEqual(call['id_slot'],0)
-     self.assertEqual(call['cache_prompt'],not det)
+     self.assertTrue(call['cache_prompt'],'configured bots always keep the slot cache')
      if det:self.assertEqual(call['temperature'],0)
      hit=[p for p in list(Model.paths) if p[3] is call]
      self.assertEqual(hit[0][2],bid,'X-Mag-Bot names the bot')
@@ -3549,16 +3549,32 @@ class MixedNuma(unittest.TestCase):
    Model.delay=0;Model.slot_snapshot=[]
    self.env['MAG_ROOM_PREWARM']='0';self.env.pop('MAG_ROOM_STREAM_IDLE_S',None)
    self.stop();self.start()
+ def _first_hi(self,bot,token,deadline):
+  self.request('/api/message',{'text':token,'bots':[bot['id']]})
+  answered=False
+  while time.monotonic()<deadline:
+   room=self.request('/api/state')['room']
+   for i,m in enumerate(room):
+    if m.get('role')=='user' and token in (m.get('content') or ''):
+     answered=any(x.get('role')=='assistant' and x.get('bot')==bot['id'] and (x.get('content') or '') for x in room[i+1:])
+   if answered:break
+   time.sleep(.02)
+  return answered
  def test_11_room_restart_first_hi_under_5s(self):
-  # DeepSeek stays up. Only the room process restarts. The first hi is built
-  # by magroom and must come back in the room in under 5s. A prefix miss
-  # blocks the slot for 6s, so it cannot pass, and the poll stops at 8s.
+  # Both servers stay up. Only the room process restarts. The first hi is
+  # built by magroom and must come back in under 5s for each bot. A ~140
+  # token [Kontext] tail or a prefix miss (6s) cannot pass; the poll stops
+  # at 8s.
   self.wait_idle()
-  bot=next(b for b in self.bots().values() if b['model']=='deepseek-v4-flash-0731')
+  bots=list(self.bots().values())
+  firsts={};prev={}
   Model.last_prompt.clear()
-  first,_=self.ask(bot['id'])
-  previous=Model.cache_records[-1]['prompt_size']
-  self.assertGreater(previous,200)
+  for bot in bots:
+   firsts[bot['id']],_=self.ask(bot['id'])
+   prev[bot['id']]=Model.cache_records[-1]['prompt_size']
+   self.assertGreater(prev[bot['id']],200)
+  self.assertTrue(Model.saved_prompt.get('0') and Model.saved_prompt.get('1'),
+                  'both bots must save the slot file before a restart')
   self.stop()
   Model.slot_snapshot=[{'id':0,'n_ctx':32768,'speculative':False,'is_processing':False,
     'next_token':{'has_next_token':False,'has_new_line':False,'n_remain':0,'n_decoded':4}}]
@@ -3568,31 +3584,29 @@ class MixedNuma(unittest.TestCase):
    logp=self.tmp_path.joinpath('server.log')
    seen=logp.read_text().count('prompt-prewarm') if logp.exists() else 0
    mark=len(Model.paths);self.start()
-   for _ in range(80):
+   for _ in range(150):
     if logp.read_text().count('prompt-prewarm')>=seen+2:break
     time.sleep(.05)
-   else:self.fail('restart did not settle both slots')
+   else:self.fail('restart did not settle both slots: '+logp.read_text()[-800:])
    posted=[p for p in list(Model.paths)[mark:] if p[0]=='/v1/chat/completions']
-   self.assertFalse(posted,'room restart posted a completion onto the warm slot')
-   token=f'hi {time.monotonic_ns()}'
-   t0=time.monotonic();deadline=t0+8
-   self.request('/api/message',{'text':token,'bots':[bot['id']]})
-   answered=False
-   while time.monotonic()<deadline:
-    room=self.request('/api/state')['room']
-    for i,m in enumerate(room):
-     if m.get('role')=='user' and token in (m.get('content') or ''):
-      answered=any(x.get('role')=='assistant' and x.get('bot')==bot['id'] and (x.get('content') or '') for x in room[i+1:])
-    if answered:break
-    time.sleep(.02)
-   elapsed=time.monotonic()-t0
-   self.assertTrue(answered,'first hi exceeded the 8s hard timeout')
-   self.assertLess(elapsed,5,'first hi after a room restart')
-   rec=Model.cache_records[-1]
-   self.assertEqual(rec['model'],bot['model'])
-   self.assertGreaterEqual(rec['n_past']/previous,.98,'first hi must extend the cached prefix')
-   call=next(c for c,_ in reversed(list(Model.pairs)) if token in json.dumps(c,ensure_ascii=False))
-   self.assertEqual(call['messages'][:len(first['messages'])],first['messages'])
+   self.assertFalse(posted,'room restart posted a completion onto a warm slot')
+   restored=[p for p in list(Model.paths)[mark:] if str(p[0]).endswith('restore')]
+   self.assertGreaterEqual(len(restored),2,'both slot files must be restored after a room restart')
+   self.assertTrue(Model.saved_prompt.get('0') and Model.saved_prompt.get('1'),'slot save must write both files')
+   for bot in bots:
+    token=f'hi {bot["id"]} {time.monotonic_ns()}'
+    t0=time.monotonic();deadline=t0+8
+    self.assertTrue(self._first_hi(bot,token,deadline),'first hi exceeded the 8s hard timeout for '+bot['model'])
+    elapsed=time.monotonic()-t0
+    self.assertLess(elapsed,5,'first hi after a room restart for '+bot['model'])
+    rec=[c for c in Model.cache_records if c['model']==bot['model']][-1]
+    self.assertGreaterEqual(rec['n_past']/prev[bot['id']],.98,'first hi must extend the cached prefix')
+    self.assertLess(rec['prompt_size']-rec['n_past'],250,'new bytes must be the hi, not a [Kontext] tail')
+    call=next(c for c,_ in reversed(list(Model.pairs)) if token in json.dumps(c,ensure_ascii=False))
+    self.assertEqual(call['messages'][:len(firsts[bot['id']]['messages'])],firsts[bot['id']]['messages'])
+    self.assertNotIn('[Kontext]',call['messages'][-1]['content'])
+    self.assertIn(token,call['messages'][-1]['content'])
+    self.assertTrue(call.get('cache_prompt'))
   finally:
    Model.prefix_miss_s=0;Model.slot_snapshot=[]
    self.env['MAG_ROOM_PREWARM']='0'
@@ -3671,6 +3685,46 @@ class MixedNuma(unittest.TestCase):
    Model.prefix_miss_s=0;Model.slot_snapshot=[];Model.saved_prompt.clear()
    self.env['MAG_ROOM_PREWARM']='0'
    self.stop();self.start()
+ def test_14_qwen_deterministic_is_prewarmed_and_first_hi_under_5s(self):
+  # Production Qwen had deterministic=on, so prewarm skipped it and the
+  # first hi sent a cold identity prompt (tokens_cached=0, ~40s).
+  self.wait_idle()
+  qw=next(b for b in self.bots().values() if 'qwen' in b['model'])
+  self.request('/api/model-settings',{'id':qw['model'],'deterministic':True})
+  try:
+   Model.last_prompt.clear()
+   first,_=self.ask(qw['id'])
+   self.assertTrue(first.get('cache_prompt'))
+   self.assertGreater(len(first['messages'][0]['content']),200)
+   previous=Model.cache_records[-1]['prompt_size']
+   self.stop()
+   Model.slot_snapshot=[{'id':0,'state':0,'prompt':'','is_processing':False,
+     'next_token':{'has_next_token':False,'n_decoded':4}}]
+   Model.prefix_miss_s=6
+   self.env['MAG_ROOM_PREWARM']='1'
+   logp=self.tmp_path.joinpath('server.log')
+   mark=len(Model.paths);self.start()
+   deadline=time.monotonic()+8
+   while time.monotonic()<deadline:
+    log=logp.read_text() if logp.exists() else ''
+    if 'prompt-prewarm model=qwen3.8-flash-next-uncensored' in log:break
+    time.sleep(.05)
+   else:self.fail('Qwen was not prewarmed')
+   token=f'hi qwen {time.monotonic_ns()}'
+   t0=time.monotonic()
+   self.assertTrue(self._first_hi(qw,token,t0+8),'Qwen first hi exceeded the 8s hard timeout')
+   self.assertLess(time.monotonic()-t0,5,'Qwen first hi after a room restart')
+   rec=[c for c in Model.cache_records if c['model']==qw['model']][-1]
+   self.assertGreaterEqual(rec['n_past']/max(previous,1),.98)
+   self.assertLess(rec['prompt_size']-rec['n_past'],250)
+   call=next(c for c,_ in reversed(list(Model.pairs)) if token in json.dumps(c,ensure_ascii=False))
+   self.assertTrue(call.get('cache_prompt'))
+   self.assertNotIn('[Kontext]',call['messages'][-1]['content'])
+  finally:
+   Model.prefix_miss_s=0;Model.slot_snapshot=[]
+   self.env['MAG_ROOM_PREWARM']='0'
+   self.request('/api/model-settings',{'id':qw['model'],'deterministic':False})
+   self.stop();self.start()
  def test_08_health_timeout_is_busy_not_offline(self):
   self.wait_idle();self.stop();Model.hold_get=6;self.env['MAG_ROOM_PREWARM']='1'
   try:
@@ -3704,7 +3758,8 @@ class MixedNuma(unittest.TestCase):
     self.assertEqual(second['messages'][:len(first['messages'])],first['messages'])
     record=Model.cache_records[mark]
     self.assertGreaterEqual(record['n_past']/previous,.95)
-    self.assertIn('GitHub: aktiv',second['messages'][-1]['content'])
+    self.assertNotIn('[Kontext]',second['messages'][-1]['content'],
+                     'a later turn must not re-send the ~140-token [Kontext] tail')
    finally:self.request('/api/bot-settings',{'bots':[b['id']],'github_enabled':False,'thinking':False},method='PUT')
  def test_02_prewarm_isolated_per_model(self):
   self.wait_idle();self.stop();self.env['MAG_ROOM_PREWARM']='1'

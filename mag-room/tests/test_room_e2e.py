@@ -6,7 +6,7 @@ steps. One room menu and one settings dialog. Runs the native room
 against the scripted fake model of test_room_control.py.
 Screenshots: $MAG_E2E_SHOTS (default /tmp/mag-e2e-shots).
 """
-import os, pathlib, sys, time, unittest
+import os, pathlib, re, sys, time, unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
 from test_room_control import BIN, Model, Room, reset_model, tool_call, wait_calls  # noqa: E402
@@ -324,7 +324,6 @@ class RoomE2E(unittest.TestCase):
                 self.assertLessEqual(box['h'], 18)
                 self.assertEqual(box['border'], '0px')
                 self.assertEqual(box['copies'], 1)
-                self.assertEqual(p.locator('.pho-save').count(), 0)
                 self.assertEqual(p.locator('#queue-chips .pho-gain').count(), 0)
                 self.assertEqual(p.locator('.composer-wrap .pho-gain').count(), 0)
                 p.click('#plus')
@@ -431,10 +430,24 @@ class RoomE2E(unittest.TestCase):
             self.assertEqual(p.evaluate("""()=>document.querySelector('#conversation .conversation-inner').lastElementChild.classList.contains('message')"""),True)
             self.assertLessEqual(p.evaluate("document.documentElement.scrollWidth-innerWidth"),1)
             p.screenshot(path=str(SHOTS/'08-mobile-queue-compact.png'))
+            last = p.locator('#conversation .message').last
+            last_box = last.bounding_box()
             p.locator('#queue-chips .q-toggle').click()
-            expect(p.locator('#queue-chips .q-chip')).to_be_visible()
-            self.assertLessEqual(p.locator('#queue-chips').bounding_box()['height'],26,
-                                 'expanded overlay cannot resize the chat viewport')
+            expect(p.locator('#queue-chips .q-chip')).to_be_visible(timeout=3000)
+            expect(p.locator('#queue-chips')).to_have_class(re.compile(r'\bexpanded\b'), timeout=3000)
+            place = p.evaluate("""()=>{
+              const items=document.querySelector('#queue-items');
+              const last=[...document.querySelectorAll('#conversation .message')].at(-1);
+              const q=document.getElementById('queue-chips');
+              const ib=items.getBoundingClientRect(), lb=last.getBoundingClientRect(), qb=q.getBoundingClientRect();
+              const cover=!(lb.right<=qb.left||qb.right<=lb.left||lb.bottom<=qb.top||qb.bottom<=lb.top);
+              return {position:getComputedStyle(items).position, cover, lastBottom:lb.bottom, queueTop:qb.top};
+            }""")
+            self.assertEqual(place['position'], 'static')
+            self.assertFalse(place['cover'], 'expanded queue covers the last message')
+            self.assertLessEqual(place['lastBottom'], place['queueTop'] + 1)
+            p.locator('#conversation').click(position={'x': 20, 'y': 20})
+            expect(p.locator('#queue-chips .queue-items')).to_be_hidden(timeout=3000)
         finally:
             self.room.api('/api/cancel', {})
             self.room.api('/api/queue', method='DELETE')
@@ -544,21 +557,19 @@ class RoomE2E(unittest.TestCase):
                 page.close()
 
 
-    def test_10_toasts_stay_above_the_composer(self):
-        # Phone portrait, phone landscape, and desktop. Bot info and the
-        # delete toast must sit above the composer, including its status line.
-        def overlaps(a, b):
-            return not (a['x'] + a['width'] <= b['x'] or b['x'] + b['width'] <= a['x']
-                        or a['y'] + a['height'] <= b['y'] or b['y'] + b['height'] <= a['y'])
-
+    def test_10_toasts_share_the_slim_line(self):
+        # Status, PhO, queue and toasts share the 22px line. Nothing covers
+        # the last message on phone portrait, landscape, or desktop.
         for width, height, touch in ((390, 844, True), (844, 390, True), (1280, 800, False)):
             page = self.browser.new_page(
                 viewport={'width': width, 'height': height},
                 is_mobile=touch, has_touch=touch)
             try:
                 page.goto(f'http://127.0.0.1:{self.room.ui}/')
-                page.wait_for_selector('#send-button')
+                page.wait_for_selector('#send-button', timeout=3000)
                 page.evaluate("""()=>{
+                  state.room=[{id:'m1',role:'assistant',name:'Alpha',content:'Letzte Antwort',ts:1}];
+                  render();
                   const banner=document.getElementById('model-banner');
                   banner.hidden=false;
                   banner.textContent='Modell beschäftigt';
@@ -566,16 +577,28 @@ class RoomE2E(unittest.TestCase):
                   notice('Bot info');
                   placeToasts();
                 }""")
-                composer = page.locator('.composer-wrap').bounding_box()
-                self.assertIsNotNone(composer)
-                for sel in ('#undo-toast', '#notice'):
-                    box = page.locator(sel).bounding_box()
-                    self.assertIsNotNone(box, sel)
-                    self.assertFalse(overlaps(box, composer), f'{sel} covers the composer at {width}x{height}')
-                    self.assertLessEqual(box['y'] + box['height'], composer['y'] + 1, sel)
-                    self.assertLessEqual(box['height'], 36, sel)
-                self.assertIn('Nachricht gelöscht', page.locator('#undo-toast').inner_text())
-                self.assertEqual(page.locator('#notice').inner_text(), 'Bot info')
+                page.wait_for_function("()=>document.getElementById('room-line')&&!document.getElementById('queue-chips').hidden", timeout=3000)
+                info = page.evaluate("""()=>{
+                  const line=document.getElementById('room-line');
+                  const last=[...document.querySelectorAll('#conversation .message')].at(-1).getBoundingClientRect();
+                  const sels=['#undo-toast','#notice','#room-line','#queue-chips'];
+                  const boxes=Object.fromEntries(sels.map(s=>{
+                    const el=document.querySelector(s);
+                    const b=el.getBoundingClientRect();
+                    return [s,{h:b.height,y:b.y,bottom:b.bottom,cover:!(last.right<=b.left||b.right<=last.left||last.bottom<=b.top||b.bottom<=last.top)}];
+                  }));
+                  return {lineH:line.getBoundingClientRect().height, lastBottom:last.bottom, boxes,
+                    inLine:!!document.getElementById('undo-toast').closest('#room-line'),
+                    undo:document.getElementById('undo-toast').innerText,
+                    notice:document.getElementById('notice').innerText};
+                }""")
+                self.assertLessEqual(info['lineH'], 24)
+                for sel, box in info['boxes'].items():
+                    self.assertFalse(box['cover'], f'{sel} covers the last message at {width}x{height}')
+                    self.assertLessEqual(info['lastBottom'], box['y'] + 1, sel)
+                self.assertTrue(info['inLine'])
+                self.assertIn('Nachricht gelöscht', info['undo'])
+                self.assertEqual(info['notice'], 'Bot info')
             finally:
                 page.close()
 
@@ -635,6 +658,67 @@ class RoomE2E(unittest.TestCase):
             expect(p.locator('#notice')).not_to_have_text('Raum nicht erreichbar', timeout=3000)
             expect(link).to_be_hidden(timeout=3000)
         finally:
+            p.close()
+
+
+    def test_12_phone_chat_keeps_most_of_the_viewport(self):
+        # Idle, busy, and queued: the conversation owns about 80% of the
+        # phone screen. Status/queue/PhO/toasts stay in one 22px line and
+        # never cover the last message. The test itself dies at 8s.
+        p = self.browser.new_page(viewport={'width': 390, 'height': 844},
+                                  is_mobile=True, has_touch=True)
+        t0 = time.monotonic()
+        def ms():
+            left = 8 - (time.monotonic() - t0)
+            self.assertGreater(left, 0, 'hard timeout')
+            return max(1, int(left * 1000))
+        try:
+            p.goto(f'http://127.0.0.1:{self.room.ui}/')
+            p.wait_for_selector('#send-button', timeout=ms())
+
+            def share():
+                return p.evaluate("""()=>{
+                  const c=document.getElementById('conversation').getBoundingClientRect();
+                  return c.height/innerHeight;
+                }""")
+
+            def uncovered():
+                return p.evaluate("""()=>{
+                  const last=[...document.querySelectorAll('#conversation .message')].at(-1);
+                  if(!last)return true;
+                  const lb=last.getBoundingClientRect();
+                  const covers=[...document.querySelectorAll('#queue-chips,#room-line,#toast-stack,#undo-toast,#notice')]
+                    .filter(el=>el&&!el.hidden&&el.getClientRects().length)
+                    .map(el=>el.getBoundingClientRect())
+                    .some(b=>!(lb.right<=b.left||b.right<=lb.left||lb.bottom<=b.top||b.bottom<=lb.top));
+                  return !covers;
+                }""")
+
+            self.assertGreaterEqual(share(), 0.80, 'idle chat should own the phone')
+            Model.scripts += [[{'_hold': 30}], ['Zweite']]
+            p.locator('#message').fill('Viewport lange Aufgabe')
+            p.locator('#message').press('Enter')
+            wait_calls(1, timeout=max(0.1, 8 - (time.monotonic() - t0)))
+            expect(p.locator('.message.work-live')).to_be_visible(timeout=ms())
+            self.assertGreaterEqual(share(), 0.80, 'busy chat should still own the phone')
+            self.assertTrue(uncovered())
+            line = p.locator('#room-line')
+            expect(line).to_be_visible(timeout=ms())
+            self.assertLessEqual(line.bounding_box()['height'], 24)
+            p.locator('#message').fill('Viewport-Zwischenfrage')
+            p.locator('#message').press('Enter')
+            expect(p.locator('#queue-chips .q-toggle')).to_contain_text('1 wartet', timeout=ms())
+            expect(p.locator('#queue-chips')).not_to_have_class(re.compile(r'\bexpanded\b'))
+            expect(p.locator('#queue-chips .queue-items')).to_be_hidden()
+            p.evaluate('()=>{render();paintRoomLine()}')
+            p.wait_for_function("""()=>![...document.querySelectorAll('#conversation .message.user .content')].some(el=>el.textContent.includes('Viewport-Zwischenfrage'))""", timeout=ms())
+            self.assertGreaterEqual(share(), 0.80, 'queued chat should still own the phone')
+            self.assertTrue(uncovered())
+            self.assertLessEqual(p.locator('#queue-chips .queue-head').bounding_box()['height'], 24)
+            self.assertLess(time.monotonic() - t0, 8, 'hard timeout')
+        finally:
+            self.room.api('/api/cancel', {})
+            self.room.api('/api/queue', method='DELETE')
             p.close()
 
 

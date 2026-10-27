@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+# mag-test-timeout: 5400
+if [ -z "${MAG_TEST_DEADLINE_ARMED:-}" ]; then
+  export MAG_TEST_DEADLINE_ARMED=1
+  exec timeout --kill-after=5s 5400s bash "$0" "$@"
+fi
 # Real end-to-end bootstrap test: a fresh Ubuntu 24.04 system container
 # (podman, systemd as PID 1, own network namespace) runs
 #   ops/bootstrap.sh --owner e2e@example.com --test-stubs

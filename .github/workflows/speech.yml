@@ -6,26 +6,32 @@ on:
   workflow_dispatch:
 jobs:
   speech:
+    timeout-minutes: 60
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+        timeout-minutes: 10
         with:
           fetch-depth: 0
       - name: Dependencies
+        timeout-minutes: 20
         run: |
           sudo apt-get update
           sudo apt-get install -y ninja-build libssl-dev libcurl4-openssl-dev libarchive-dev
           python3 -m pip install --user playwright
           python3 -m playwright install --with-deps chromium
       - name: Compile native MAG for browser tests
+        timeout-minutes: 20
         run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release && cmake --build build --target magroom -j 4
       - name: Vendor pinned terminal browser assets
+        timeout-minutes: 20
         run: |
           bash ops/vendor-terminal-assets.sh build/terminal-assets
           test -s build/terminal-assets/xterm.js
           test -s build/terminal-assets/xterm-addon-fit.js
           test -s build/terminal-assets/xterm.css
       - name: Syntax and fake-model Playwright regressions
+        timeout-minutes: 20
         run: |
           node --check mag-room/static/speech-ui.js
           node --check mag-room/static/message-audio.js
@@ -36,10 +42,13 @@ jobs:
           bash -n ops/vendor-speech-assets.sh ops/deploy.sh
           python3 -m unittest discover -s mag-room/tests -p test_speech.py -v
       - name: Vendor pinned Moonshine German WASM and model
+        timeout-minutes: 20
         run: bash ops/vendor-speech-assets.sh build/speech-assets
       - name: Playwright with actual WASM and German model
+        timeout-minutes: 40
         run: python3 -m unittest discover -s mag-room/tests -p test_speech_real.py -v
       - name: Reject unapproved removal of live files
+        timeout-minutes: 15
         run: |
           git fetch --no-tags origin main
           # #21 deliberately retires precisely two Python whois artifacts,
@@ -69,11 +78,14 @@ jobs:
             esac
           done < <(git diff --name-only --diff-filter=D origin/main...HEAD)
   gitleaks:
+    timeout-minutes: 15
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+        timeout-minutes: 10
         with:
           fetch-depth: 0
       - uses: gitleaks/gitleaks-action@v2
+        timeout-minutes: 10
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

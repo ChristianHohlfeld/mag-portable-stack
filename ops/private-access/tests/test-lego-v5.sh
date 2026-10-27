@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+# mag-test-timeout: 180
+if [ -z "${MAG_TEST_DEADLINE_ARMED:-}" ]; then
+  export MAG_TEST_DEADLINE_ARMED=1
+  exec timeout --kill-after=5s 180s bash "$0" "$@"
+fi
 # Real lego 5.5.2 parser regression without contacting Let's Encrypt.
 set -euo pipefail
 [[ $(uname -m) == x86_64 ]] || { echo "CI test expects amd64"; exit 1; }

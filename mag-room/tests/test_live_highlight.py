@@ -4,6 +4,15 @@ mag-browser /locate, its pixels drawn into the room's stream canvas, and the
 room client receives browser_action events shaped like browser_events.hpp
 (unit-tested in test_browser_events.cpp). Asserts outline, cursor, ripple,
 typed text, masked secret field, zoom alignment and the toggle."""
+# mag-test-timeout: 180
+import pathlib as _mag_path
+import sys as _mag_sys
+_mag_root = _mag_path.Path(__file__).resolve()
+while _mag_root != _mag_root.parent and not (_mag_root / 'ops/ci/mag_deadline.py').is_file():
+    _mag_root = _mag_root.parent
+_mag_sys.path.insert(0, str(_mag_root / 'ops/ci'))
+import mag_deadline as _mag_deadline
+_mag_deadline.arm(180)
 import importlib.util,pathlib,shutil,unittest
 ROOT=pathlib.Path(__file__).resolve().parents[2]
 ART=pathlib.Path('/opt/cursor/artifacts')

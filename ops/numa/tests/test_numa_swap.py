@@ -1,5 +1,14 @@
 """mag-numa-swap against a fake systemctl and fake llama health endpoints.
 Never touches real units: everything lives in a temporary directory."""
+# mag-test-timeout: 180
+import pathlib as _mag_path
+import sys as _mag_sys
+_mag_root = _mag_path.Path(__file__).resolve()
+while _mag_root != _mag_root.parent and not (_mag_root / 'ops/ci/mag_deadline.py').is_file():
+    _mag_root = _mag_root.parent
+_mag_sys.path.insert(0, str(_mag_root / 'ops/ci'))
+import mag_deadline as _mag_deadline
+_mag_deadline.arm(180)
 import fcntl,http.server,json,os,pathlib,socket,subprocess,tempfile,threading,unittest
 ROOT=pathlib.Path(__file__).resolve().parents[3]
 BIN=ROOT/'build/mag-numa-swap'

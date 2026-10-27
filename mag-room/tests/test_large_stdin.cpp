@@ -1,7 +1,9 @@
+#include "mag_deadline.hpp"
 #include "../native/common.hpp"
 #include <stdexcept>
 #include <iostream>
 int main() {
+  mag_test_deadline(60); // mag-test-timeout: 60
   const std::string data(256 * 1024, 'Z'); // above MAX_ARG_STRLEN
   const auto r = mag::run({"/bin/cat"}, 10, 2 * 1024 * 1024, nullptr, &data);
   if (r.code != 0 || r.out != data) throw std::runtime_error("256KB payload corrupted");

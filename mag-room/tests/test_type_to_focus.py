@@ -4,6 +4,15 @@ Desktop: focused on load, typing anywhere outside an input lands in it,
 Ctrl+V outside pastes a screenshot into it, other inputs and dialogs keep
 their keys. Phones: no focus on load, so the keyboard does not pop up.
 """
+# mag-test-timeout: 180
+import pathlib as _mag_path
+import sys as _mag_sys
+_mag_root = _mag_path.Path(__file__).resolve()
+while _mag_root != _mag_root.parent and not (_mag_root / 'ops/ci/mag_deadline.py').is_file():
+    _mag_root = _mag_root.parent
+_mag_sys.path.insert(0, str(_mag_root / 'ops/ci'))
+import mag_deadline as _mag_deadline
+_mag_deadline.arm(180)
 import pathlib, sys, threading, unittest
 from http.server import ThreadingHTTPServer
 

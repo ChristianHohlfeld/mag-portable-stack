@@ -1,4 +1,13 @@
 """Existing-account/token migration helpers against fake CLI + real HTTP fixture."""
+# mag-test-timeout: 180
+import pathlib as _mag_path
+import sys as _mag_sys
+_mag_root = _mag_path.Path(__file__).resolve()
+while _mag_root != _mag_root.parent and not (_mag_root / 'ops/ci/mag_deadline.py').is_file():
+    _mag_root = _mag_root.parent
+_mag_sys.path.insert(0, str(_mag_root / 'ops/ci'))
+import mag_deadline as _mag_deadline
+_mag_deadline.arm(180)
 import http.server,json,os,pathlib,subprocess,tempfile,threading,unittest
 ROOT=pathlib.Path(__file__).resolve().parents[3]
 class Auth(unittest.TestCase):

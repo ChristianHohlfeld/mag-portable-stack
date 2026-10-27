@@ -239,6 +239,9 @@ case "${1:-}" in
    preflight
    exec 9>/run/lock/mag-private-deploy.lock
    flock -n 9 || die 'Another nginx deploy in progress'
+   # shellcheck source=../deploy-guard.sh
+   source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/../deploy-guard.sh"
+   mag_cloexec 9
    MAG_NGINX_TXN=$(mktemp -d /var/backups/mag-stack/nginx-XXXXXXXX)
    export MAG_NGINX_TXN
    chmod 0700 "$MAG_NGINX_TXN"

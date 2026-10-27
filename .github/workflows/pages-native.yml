@@ -6,20 +6,26 @@ permissions:
   pull-requests: read
 jobs:
   pages:
+    timeout-minutes: 40
     runs-on: ${{ fromJSON(vars.MAG_RUNS_ON || '"ubuntu-24.04"') }}
     steps:
       - uses: actions/checkout@v4
+        timeout-minutes: 10
       - name: Install nginx and C++ link dependencies
+        timeout-minutes: 20
         if: runner.environment == 'github-hosted'
         run: sudo apt-get update && sudo apt-get install -y nginx libcurl4-openssl-dev libarchive-dev libssl-dev jq dnsutils
       - name: Native C++ unit tests + MAG compilation
+        timeout-minutes: 20
         run: |
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
           cmake --build build --target test-pages-native magroom -j 4
           ./build/test-pages-native
       - name: Tailnet-only, public opt-in, lego v5 and DNS-01 onboarding tests
+        timeout-minutes: 15
         run: bash ops/pages/tests/test-pages-ops.sh
       - name: Full Pages lifecycle and root cleanup regressions
+        timeout-minutes: 15
         env:
           RUNNER_ENVIRONMENT: ${{ runner.environment }}
         run: |
@@ -30,6 +36,7 @@ jobs:
             bash -n "$script"
           done
       - name: Shell syntax; no new runtime units
+        timeout-minutes: 15
         run: |
           for script in ops/pages/*.sh; do
             bash -n "$script"
@@ -40,11 +47,14 @@ jobs:
           ! grep -R -E 'pages-policy.sh \*|sudo -n /usr/local/lib/mag-pages/pages-gc.sh' ops/pages
           ! grep -R -E 'systemctl (restart|stop) (mag-llm|deepseek)' ops/pages
   secrets:
+    timeout-minutes: 15
     runs-on: ${{ fromJSON(vars.MAG_RUNS_ON || '"ubuntu-24.04"') }}
     steps:
       - uses: actions/checkout@v4
+        timeout-minutes: 10
         with:
           fetch-depth: 0
       - uses: gitleaks/gitleaks-action@v2
+        timeout-minutes: 10
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

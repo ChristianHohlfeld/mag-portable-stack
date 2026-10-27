@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+# mag-test-timeout: 180
+if [ -z "${MAG_TEST_DEADLINE_ARMED:-}" ]; then
+  export MAG_TEST_DEADLINE_ARMED=1
+  exec timeout --kill-after=5s 180s bash "$0" "$@"
+fi
 # Static unit/start checks + cutover success/rollback paths with mocked systemctl/curl.
 set -euo pipefail
 refute(){ if "$@"; then echo "unexpected match: $*" >&2; exit 1; fi; }

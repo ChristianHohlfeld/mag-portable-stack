@@ -6,27 +6,35 @@ permissions:
   pull-requests: read
 jobs:
   nginx:
+    timeout-minutes: 30
     runs-on: ${{ fromJSON(vars.MAG_RUNS_ON || '"ubuntu-24.04"') }}
     steps:
       - uses: actions/checkout@v4
+        timeout-minutes: 10
         with:
           fetch-depth: 0 # gitleaks PR range requires ancestor commits
           ref: ${{ github.event.pull_request.head.sha || github.sha }} # checkout actual PR head, not merge-only ref
       - name: nginx and shell security dependencies
+        timeout-minutes: 20
         if: runner.environment == 'github-hosted'
         run: sudo apt-get update && sudo apt-get install -y nginx openssl jq
       - name: Shell syntax and transactional TLS tests
+        timeout-minutes: 15
         run: |
           bash -n ops/private-access/*.sh ops/private-access/tests/*.sh
           bash ops/private-access/tests/test-deploy-hook.sh
           bash ops/private-access/tests/test-rollback.sh
       - name: Actual lego 5.5.2 CLI parsing (no ACME traffic)
+        timeout-minutes: 15
         run: bash ops/private-access/tests/test-lego-v5.sh
       - name: Real TLS nginx auth, fail-closed, header spoofing
+        timeout-minutes: 15
         run: python3 mag-room/tests/test_private_nginx.py
       - name: Disposable deploy/Owner-smoke/rollback regression
+        timeout-minutes: 15
         run: python3 mag-room/tests/test_whois_deploy.py
       - name: Cutover guard and rollback contract
+        timeout-minutes: 15
         run: |
           grep -F 'systemd-run --quiet --unit=mag-private-rollback --on-active=180s' ops/private-access/install.sh
           grep -F 'systemctl reload nginx.service' ops/private-access/rollback.sh
@@ -42,6 +50,7 @@ jobs:
           ! grep -F 'python3 -' ops/private-access/install.sh
           grep -F 'proxy_pass http://127.0.0.1:8766/_internal/tailscale/whois;' ops/private-access/mag-room.nginx.conf
       - name: No committed secrets
+        timeout-minutes: 10
         uses: gitleaks/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

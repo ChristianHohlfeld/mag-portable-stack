@@ -1,3 +1,4 @@
+#include "mag_deadline.hpp"
 // Bot Gitea accounts are never deleted: removal locks them, re-adding reuses
 // an existing account. Uses a fake gitea (MAGBOT_GITEA_TEST); no server needed.
 #include "../native/gitea_account.hpp"
@@ -16,6 +17,7 @@ static std::string slurp(const std::filesystem::path &p) {
 }
 
 int main() {
+  mag_test_deadline(60); // mag-test-timeout: 60
   namespace fs = std::filesystem;
   char tmpl[] = "/tmp/mag-gitea-test.XXXXXX";
   const fs::path dir = mkdtemp(tmpl);

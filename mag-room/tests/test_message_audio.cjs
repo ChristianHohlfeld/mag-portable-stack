@@ -1,3 +1,5 @@
+// mag-test-timeout: 60
+require('./mag_deadline.cjs').arm(60);
 // Node-only regression: no browser/network required to verify playback controls.
 const assert = require('node:assert/strict');
 const fs = require('node:fs');

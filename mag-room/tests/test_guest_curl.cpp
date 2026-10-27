@@ -1,3 +1,4 @@
+#include "mag_deadline.hpp"
 // Proves magroom's libcurl honors CURL_CA_BUNDLE / SSL_CERT_FILE.
 // A private CA is not in the system trust store. Without the helper the
 // request fails before any HTTP status (the live "HTTP 0" symptom).
@@ -41,6 +42,7 @@ static void require(bool ok, const std::string &why) {
 }
 
 int main() {
+  mag_test_deadline(60); // mag-test-timeout: 60
   const char *dir = std::getenv("MAG_GUEST_CURL_TMP");
   std::string root = dir && *dir ? dir : "/tmp/mag-guest-curl";
   std::string script = root + ".sh";

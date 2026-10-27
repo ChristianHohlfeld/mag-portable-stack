@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+# mag-test-timeout: 180
+if [ -z "${MAG_TEST_DEADLINE_ARMED:-}" ]; then
+  export MAG_TEST_DEADLINE_ARMED=1
+  exec timeout --kill-after=5s 180s bash "$0" "$@"
+fi
 # Fixture-only manually invoked backup; CI room-clear no longer invokes it.
 set -euo pipefail
 [[ "${GITHUB_ACTIONS:-}" == true && "${MAG_BACKUP_TEST_MODE:-}" == 1 ]] || exit 4

@@ -21,6 +21,7 @@ jobs:
       MAG_CI_BASE: ${{ inputs.base_sha }}
     steps:
       - name: checkout
+        timeout-minutes: 15
         env:
           CI_JOB_TOKEN: ${{ secrets.GITEA_TOKEN }}
           CI_CONTROL_SHA: ${{ github.sha }}
@@ -44,32 +45,42 @@ jobs:
           rm -f /run/mag-ci-checkout
           unset CI_JOB_TOKEN
       - name: native
+        timeout-minutes: 120
         if: always()
         run: bash /work/control/ops/gitea-ci/suite.sh native
       - name: pages
+        timeout-minutes: 120
         if: always()
         run: bash /work/control/ops/gitea-ci/suite.sh pages
       - name: nginx
+        timeout-minutes: 120
         if: always()
         run: bash /work/control/ops/gitea-ci/suite.sh nginx
       - name: recovery
+        timeout-minutes: 120
         if: always()
         run: bash /work/control/ops/gitea-ci/suite.sh recovery
       - name: room
+        timeout-minutes: 120
         if: always()
         run: bash /work/control/ops/gitea-ci/suite.sh room
       - name: chromium
+        timeout-minutes: 120
         if: always()
         run: bash /work/control/ops/gitea-ci/suite.sh chromium
       - name: speech
+        timeout-minutes: 120
         if: always()
         run: bash /work/control/ops/gitea-ci/suite.sh speech
       - name: e2e-bootstrap
+        timeout-minutes: 120
         if: always()
         run: bash /work/control/ops/gitea-ci/suite.sh e2e-bootstrap
       - name: gitleaks
+        timeout-minutes: 120
         if: always()
         run: bash /work/control/ops/gitea-ci/suite.sh gitleaks
       - name: secrets
+        timeout-minutes: 120
         if: always()
         run: bash /work/control/ops/gitea-ci/suite.sh secrets

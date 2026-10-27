@@ -6,12 +6,15 @@ permissions:
   pull-requests: read
 jobs:
   recovery:
+    timeout-minutes: 45
     runs-on: ${{ fromJSON(vars.MAG_RUNS_ON || '"ubuntu-24.04"') }}
     steps:
       - uses: actions/checkout@v4
+        timeout-minutes: 10
         with:
           fetch-depth: 0
       - name: Install restic and test tools
+        timeout-minutes: 20
         if: runner.environment == 'github-hosted'
         run: |
           sudo apt-get update && sudo apt-get install -y sqlite3 jq util-linux systemd curl bzip2
@@ -21,6 +24,7 @@ jobs:
           sudo chmod 0755 /usr/local/bin/restic
           /usr/local/bin/restic version
       - name: shell syntax, executable hook and no destructive model action
+        timeout-minutes: 15
         run: |
           bash -n ops/backup/*.sh ops/backup/tests/*.sh ops/deploy.sh
           test "$(grep -Ec '^[a-f0-9]{64}[[:space:]]+' ops/backup/models.sha256)" -eq 5
@@ -28,7 +32,7 @@ jobs:
           grep -Fq 'sha256sum --check' ops/backup/bootstrap-models.sh
           grep -Fq '/var/lib/tailscale' ops/backup/backup.sh
           grep -Fq '/var/spool/cron/crontabs' ops/backup/backup.sh
-          grep -Fq 'systemctl start mag-backup-deploy.service' ops/deploy.sh
+          grep -Fq 'mag_systemctl start mag-backup-deploy.service' ops/deploy.sh
           ! grep -Fq 'mag-backup-clear.timer' mag-room/native/routes.hpp
           grep -Fq 'actor.role != "owner"' mag-room/native/routes.hpp
           ! grep -R -E '(stop|restart) mag-llm.service' ops/backup
@@ -36,6 +40,7 @@ jobs:
           grep -Fq -- '--insecure-no-password' ops/backup/common.sh
           test -f ops/backup/migrate-passwordless.sh
       - name: Validate calendar and systemd units
+        timeout-minutes: 15
         run: |
           for f in ops/backup/units/*.timer; do
             expr=$(sed -n 's/^OnCalendar=//p' "$f")
@@ -54,13 +59,17 @@ jobs:
           done
           grep -Fq 'CPUAffinity=14-27 42-55' ops/backup/units/mag-backup-clear.service
       - name: Migrate actual password-protected repo to no-password without data loss
+        timeout-minutes: 15
         if: runner.environment == 'github-hosted'
         run: bash ops/backup/tests/test-passwordless-migrate.sh
       - name: Disposable repository with Gitea SQLite, room and Pages restore
+        timeout-minutes: 15
         run: bash ops/backup/tests/test-backup.sh
       - name: Empty legacy Gitea directory does not hide real repositories
+        timeout-minutes: 15
         run: bash ops/backup/tests/test-gitea-root.sh
       - name: No committed secrets
+        timeout-minutes: 10
         uses: gitleaks/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

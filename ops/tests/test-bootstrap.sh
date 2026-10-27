@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+# mag-test-timeout: 180
+if [ -z "${MAG_TEST_DEADLINE_ARMED:-}" ]; then
+  export MAG_TEST_DEADLINE_ARMED=1
+  exec timeout --kill-after=5s 180s bash "$0" "$@"
+fi
 # Dry-run only. Proves the blank-host script lists every phase, calls every
 # installer and stays idle on lockdown and mag-llm. The real end-to-end run is
 # ops/tests/e2e-bootstrap.sh.

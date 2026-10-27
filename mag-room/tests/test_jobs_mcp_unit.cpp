@@ -1,3 +1,4 @@
+#include "mag_deadline.hpp"
 // Direct unit tests for the native schedule translation and stable tool list.
 // Compiles the production translation unit once under a renamed entry point.
 #ifdef NDEBUG
@@ -12,6 +13,7 @@ static Val parse_unit(const std::string &s) {
   Val v; assert(mj::parse(s, v)); return v;
 }
 int main() {
+  mag_test_deadline(60); // mag-test-timeout: 60
   setenv("TZ", "Europe/Berlin", 1); tzset();
   const Val tools = jobs_mcp_list();
   const char *expected[] = {

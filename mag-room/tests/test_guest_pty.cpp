@@ -1,3 +1,4 @@
+#include "mag_deadline.hpp"
 #include "../native/guest_pty.hpp"
 #include <chrono>
 #include <iostream>
@@ -24,6 +25,7 @@ static bool await_text(GuestPTY &pty, const std::string &needle,
 }
 
 int main() {
+  mag_test_deadline(60); // mag-test-timeout: 60
   GuestPTY term;
   term.start(80, 24);
   if (term.fd() < 0) return 1;

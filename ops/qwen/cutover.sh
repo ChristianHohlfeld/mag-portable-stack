@@ -14,6 +14,9 @@ fail() { echo "Qwen cutover: $*" >&2; exit 4; }
 [[ $ACTION == check || $ACTION == apply || $ACTION == resume || $ACTION == rollback || $ACTION == status ]] || fail "usage: cutover.sh check|apply|resume|rollback|status"
 exec 8>/run/lock/mag-private-deploy.lock
 flock -n 8 || fail "MAG deploy/cutover already in progress"
+# shellcheck source=../deploy-guard.sh
+source "$ROOT/ops/deploy-guard.sh"
+mag_cloexec 8
 health() { curl --noproxy '*' -fsS -o /dev/null --max-time 5 "http://127.0.0.1:$1/health"; }
 pid() { systemctl show -p MainPID --value "$1" 2>/dev/null || true; }
 wait_health() {

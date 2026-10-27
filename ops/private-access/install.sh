@@ -33,6 +33,9 @@ systemctl is-active --quiet mag-120.service
 # /run/lock is system-shared; NEVER chmod /var/lock (often a symlink).
 exec 9>/run/lock/mag-private-deploy.lock
 flock -n 9 || { echo "Cutover already running" >&2; exit 1; }
+# shellcheck source=../deploy-guard.sh
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/../deploy-guard.sh"
+mag_cloexec 9
 native_status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
   --max-time 5 -H 'X-Mag-Remote: 192.0.2.1:34567' \
   http://127.0.0.1:8766/_internal/tailscale/whois || true)

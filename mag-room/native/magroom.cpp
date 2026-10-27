@@ -155,7 +155,10 @@ static int PORT = 8766, BRIDGE_PORT = 8767, BROWSERD_PORT = 9225,
            GUEST_TIMEOUT = 600,
            // Model requests on CPU can take long (prompt processing before the
            // first token). Never below 30 minutes; probes stay short.
-           LLM_TIMEOUT_S = 3600, LLM_TIMEOUT_MIN_S = 1800;
+           // STALL_S is silence without a byte. A turn that keeps receiving
+           // tokens is bounded by TURN_DEADLINE_S instead.
+           LLM_TIMEOUT_S = 3600, LLM_TIMEOUT_MIN_S = 1800,
+           STALL_S = 60, TURN_DEADLINE_S = 3600;
 
 static std::string env(const char *k, const std::string &d) {
   const char *v = getenv(k);
@@ -361,10 +364,12 @@ struct HttpClient {
   int timeout_ms = 60000;
   // Gap between bytes. 0 uses timeout_ms. LLM streams set this far above a
   // silent prefill so a 60s socket default cannot cancel the request.
+  // MAG_ROOM_STALL_S, when set, is the same gap for tests.
   int idle_timeout_ms = 0;
   bool cancelable = false;
   bool hit_deadline = false;
-  std::chrono::steady_clock::time_point overall_deadline{};
+  bool stalled = false, budget_hit = false;
+  steady_clock::time_point overall_deadline{};
   bool overall_set = false;
   std::map<std::string, std::string> hdrs;
 
@@ -404,7 +409,9 @@ struct HttpClient {
       }
       if (result == 0) {
         fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) & ~O_NONBLOCK);
-        timeval tv{timeout_ms / 1000, (timeout_ms % 1000) * 1000};
+        int send_ms = timeout_ms;
+        if (idle_timeout_ms > 0 && idle_timeout_ms < send_ms) send_ms = idle_timeout_ms;
+        timeval tv{send_ms / 1000, (send_ms % 1000) * 1000};
         setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
         freeaddrinfo(addresses);
         return true;
@@ -426,6 +433,7 @@ struct HttpClient {
     return true;
   }
   bool fill() {
+    if (stalled || budget_hit || eof) return false;
     // One hard cap for the whole response, plus a separate idle gap. The gap
     // used to be timeout_ms and was reset on every chunk, so a silent prefill
     // died at the 60s default and the turn was sent again. ik_llama does not
@@ -453,6 +461,8 @@ struct HttpClient {
       if (steady_clock::now() >= deadline) {
         hit_deadline = true;
         eof = true;
+        if (steady_clock::now() >= overall_deadline) budget_hit = true;
+        else stalled = true;
         return false;
       }
     }
@@ -4081,10 +4091,17 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   slot_restore_if_cold(id_slot);
   HttpClient c;
   c.timeout_ms = std::max(LLM_TIMEOUT_S, LLM_TIMEOUT_MIN_S) * 1000;
+  // An explicit turn budget shortens the hard cap. The default stays the
+  // LLM timeout so a normal answer is not cut at 60s.
+  if (const char *turn = getenv("MAG_ROOM_TURN_DEADLINE_S"); turn && *turn)
+    c.timeout_ms = std::min(c.timeout_ms, std::max(1, TURN_DEADLINE_S) * 1000);
   // Worst measured DeepSeek prefill is several minutes with no SSE bytes.
-  // Stay quiet at least that long. timeout_ms remains the hard overall cap.
-  c.idle_timeout_ms = std::min(
-      c.timeout_ms, std::max(1, envi("MAG_ROOM_STREAM_IDLE_S", 1200)) * 1000);
+  // Stay quiet at least that long. MAG_ROOM_STALL_S overrides the gap when
+  // a test needs a short silence bound.
+  int idle_s = std::max(1, envi("MAG_ROOM_STREAM_IDLE_S", 1200));
+  if (const char *stall = getenv("MAG_ROOM_STALL_S"); stall && *stall)
+    idle_s = std::max(1, STALL_S);
+  c.idle_timeout_ms = std::min(c.timeout_ms, idle_s * 1000);
   c.cancelable = true;
   if (!c.connectTo(BACKEND_HOST, BACKEND_PORT)) {
     t.error = "Backend nicht erreichbar (" + BACKEND_HOST + ":" +
@@ -4175,7 +4192,14 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
     return t;
   }
   if (!c.readHeaders()) {
-    t.error = "Backend-Antwort ohne Header";
+    if (c.budget_hit)
+      t.error = "Modell-Zeitlimit erreicht (" + std::to_string(c.timeout_ms / 1000) + "s).";
+    else if (c.stalled)
+      t.error = "Keine Rückmeldung vom Modell (" + std::to_string(std::max(1, c.idle_timeout_ms / 1000)) + "s ohne Fortschritt).";
+    else if (c.hit_deadline)
+      t.error = "Modell-Stream endete ohne Token; die Anfrage wird nicht erneut gesendet";
+    else
+      t.error = "Backend-Antwort ohne Header";
     return t;
   }
   if (c.statusCode != 200 && c.statusCode != 0) {
@@ -4313,11 +4337,17 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
     backend_fd_slot() = -1;
     c.close();
   }
-  // A deadline with no tokens is a failure of this one request. Do not leave
-  // text empty and finish empty: the turn loop would otherwise schedule
-  // another completion against a slot ik is still prefilling.
-  if (c.hit_deadline && t.error.empty() && acc.content.empty() && acc.calls.empty())
-    t.error = "Modell-Stream endete ohne Token; die Anfrage wird nicht erneut gesendet";
+  // A deadline is a failure of this one request. Stop already closed the
+  // socket and must not be reported as a model timeout. An empty finish
+  // would schedule another completion against a slot ik is still prefilling.
+  if (t.error.empty() && !stop_flag().load() && c.hit_deadline) {
+    if (c.budget_hit)
+      t.error = "Modell-Zeitlimit erreicht (" + std::to_string(c.timeout_ms / 1000) + "s).";
+    else if (c.stalled)
+      t.error = "Keine Rückmeldung vom Modell (" + std::to_string(std::max(1, c.idle_timeout_ms / 1000)) + "s ohne Fortschritt).";
+    else if (acc.content.empty() && acc.calls.empty())
+      t.error = "Modell-Stream endete ohne Token; die Anfrage wird nicht erneut gesendet";
+  }
   thinking_content.feed("", [&](bool reasoning, const std::string &piece) {
     if (reasoning) { acc.reasoning += piece; on_delta("reasoning", piece); }
     else visible_delta(piece);
@@ -8564,6 +8594,14 @@ int main() {
   // small for DeepSeek-V4 thinking.
   MAX_TOKENS = envi("MAG_ROOM_MAX_TOKENS", 8192);
   LLM_TIMEOUT_S = std::max(envi("MAG_ROOM_LLM_TIMEOUT", 3600), LLM_TIMEOUT_MIN_S);
+  // Silence without a byte. Independent of the 30-minute generation floor so
+  // a stalled slot cannot leave the room busy. Tests set a few seconds.
+  STALL_S = std::clamp(envi("MAG_ROOM_STALL_S", 60), 1, 600);
+  {
+    const int asked = envi("MAG_ROOM_TURN_DEADLINE_S", 0);
+    TURN_DEADLINE_S = asked > 0 ? std::clamp(asked, 1, 86400)
+                                : std::max(LLM_TIMEOUT_S, LLM_TIMEOUT_MIN_S);
+  }
   THINKING = env("MAG_ROOM_THINKING", "on");
   THINKING_DEFAULT = THINKING != "off";
   REASONING_EFFORT = env("MAG_ROOM_REASONING_EFFORT", "");

@@ -1,8 +1,10 @@
+#include "mag_deadline.hpp"
 #include "../native/pho_codec.hpp"
 #include <iostream>
 #include <stdexcept>
 static void require(bool ok,const char *why){if(!ok)throw std::runtime_error(why);}
 int main() {
+  mag_test_deadline(60); // mag-test-timeout: 60
   const std::string prose="Heute hat der Bundestag den Entwurf zur Datenspeicherung beschlossen. Kritiker warnen vor einem Eingriff in die Privatsphäre.";
   auto a=pho::encode(prose);
   require(a.text.find("bund")!=std::string::npos,"German channel mapping");

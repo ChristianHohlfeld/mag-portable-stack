@@ -1,3 +1,4 @@
+#include "mag_deadline.hpp"
 // UTF-8 sanitizing: Unicode Table 3-8 vectors + Markus Kuhn stress test.
 #include "../native/json.hpp"
 #include <cassert>
@@ -6,6 +7,7 @@
 #include <sstream>
 static int fffd(const std::string &r) { int n = 0; for (size_t i = 0; (i = r.find("\xEF\xBF\xBD", i)) != std::string::npos; i += 3) n++; return n; }
 int main(int argc, char **argv) {
+  mag_test_deadline(60); // mag-test-timeout: 60
   using namespace mj;
   assert(utf8_fix("ok \xC3\xA4") == "ok \xC3\xA4");
   // Unicode Core Spec 3.9 Table 3-8: 61 F1 80 80 E1 80 C2 62 80 63 80 BF 64

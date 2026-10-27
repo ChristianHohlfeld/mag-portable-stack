@@ -19,10 +19,12 @@ jobs:
       promoted: ${{ steps.promote.outputs.promoted }}
     steps:
       - uses: actions/checkout@v4
+        timeout-minutes: 10
         with:
           ref: main
           fetch-depth: 0
       - id: promote
+        timeout-minutes: 15
         env:
           GH_TOKEN: ${{ github.token }}
         run: bash ops/ci/promote-green.sh
@@ -35,3 +37,4 @@ jobs:
     timeout-minutes: 5
     steps:
       - run: date -u +%FT%TZ > /var/lib/mag-deploy/request
+        timeout-minutes: 15

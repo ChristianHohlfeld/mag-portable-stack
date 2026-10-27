@@ -13,6 +13,9 @@ jobs:
         timeout-minutes: 5
         with:
           fetch-depth: 0  # Gitleaks PR-commit range needs complete git history
+      - name: Test and workflow deadlines
+        timeout-minutes: 15
+        run: python3 ops/ci/check-timeouts.py
       - name: Install build dependencies
         timeout-minutes: 10
         if: runner.environment == 'github-hosted'
@@ -48,6 +51,8 @@ jobs:
           ./build/test-gitea-account
           python3 mag-room/tests/test_large_tools.py
           python3 mag-room/tests/test_native.py
+          python3 mag-room/tests/test_hang_invariants.py
+          bash ops/tests/test-hang-deadlines.sh
           python3 mag-room/tests/test_agent_core.py
           python3 ops/numa/tests/test_numa_swap.py
           python3 mag-room/tests/test_room_control.py
@@ -56,7 +61,7 @@ jobs:
           bash ops/qwen/tests/test-qwen.sh
           bash ops/ornith/tests/test-ornith.sh
           python3 mag-room/tests/test_whois_deploy.py
-          bash -n ops/deploy.sh ops/rollback.sh ops/private-access/*.sh
+          bash -n ops/deploy.sh ops/deploy-guard.sh ops/rollback.sh ops/private-access/*.sh
       - name: IK prompt cache regression and rollback shell syntax
         timeout-minutes: 10
         run: |
@@ -89,7 +94,7 @@ jobs:
           go-version: '1.23'
       - name: Browser WebRTC UDP gateway
         timeout-minutes: 10
-        run: cd mag-room/webrtc && go test -mod=mod ./... && go build -mod=mod -o /tmp/mag-browser-webrtc .
+        run: cd mag-room/webrtc && go test -mod=mod -timeout 60s ./... && go build -mod=mod -o /tmp/mag-browser-webrtc .
       - name: Vendor terminal and verify UI assets
         timeout-minutes: 5
         run: |

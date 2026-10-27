@@ -1,3 +1,5 @@
+// mag-test-timeout: 60
+require('./mag_deadline.cjs').arm(60);
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');

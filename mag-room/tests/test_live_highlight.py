@@ -63,6 +63,13 @@ class LiveHighlight(unittest.TestCase):
    def assert_box(b):
     box=room.locator('#browser-overlay .lh-box');box.wait_for(state='visible')
     got=box.bounding_box();want=canvas_pos(b)
+    if abs(got['x']+3-want['x'])>=3 or abs(got['y']+3-want['y'])>=3:
+     diag=room.evaluate("""()=>{const c=document.querySelector('#screen'),v=document.querySelector('#browser-view'),o=document.querySelector('#browser-overlay'),b=document.querySelector('.lh-box');return {
+      bot:document.querySelector('#browser-agent')?.value,screen:c?.getBoundingClientRect().toJSON(),
+      view:v?.getBoundingClientRect().toJSON(),overlay:o?.getBoundingClientRect().toJSON(),
+      box:b?.getBoundingClientRect().toJSON(),on:window.magLiveHighlight?.enabled(),
+      classes:b?.className,hidden:v?.hidden,viewTools:window.magViewTools?.state()}}""")
+     print('HIGHLIGHT_GEOMETRY:', {'want':want,'got':got,'diag':diag,'input':b}, flush=True)
     self.assertLess(abs(got['x']+3-want['x']),3);self.assertLess(abs(got['y']+3-want['y']),3)
     self.assertLess(abs(got['width']-6-want['w']),3)
    # click: target outlined before, then ripple at the point

@@ -556,6 +556,32 @@ dialog{border-radius:10px;border-color:var(--line);background:var(--surface)}
 .think-peek{display:none!important}
 .q-chip{min-width:0;max-width:100%;flex-wrap:wrap}.q-text{min-width:0;overflow-wrap:anywhere}.queue-head{flex-wrap:wrap}
 @media(prefers-reduced-motion:reduce){.content[data-loading="1"]::before{animation:none;opacity:.6}}
+
+/* Compact mobile room: only messages belong in the scroll history. */
+#bot-lanes{display:none!important}
+#conversation{padding-bottom:12px!important}
+#conversation .message{margin-bottom:14px}
+#conversation .message .meta{margin-bottom:5px}
+#conversation .message .content{line-height:1.5}
+#conversation .message.assistant>.content{min-height:0}
+#conversation .message .message-tools{height:auto;min-height:22px;margin-top:4px}
+#conversation .message .message-tools:empty{display:none}
+#conversation .inline-progress{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--secondary);animation:quiet-pulse 1.3s ease-in-out infinite;flex:none}
+#conversation .inline-progress.failed{background:var(--orange)}
+#conversation .run{border:0;background:transparent;border-radius:0;margin:3px 0;padding:0;gap:1px}
+#conversation .run>.work-status{font-size:11px;font-weight:400;min-height:18px}
+#conversation .run .work-bar{display:none!important}
+#conversation .run .thinking{margin:0}
+#conversation .run .think-head{min-height:20px;height:20px;padding:0;font-size:11px}
+.composer-inner .queue-chips{position:relative;display:block;margin:0 0 5px;min-height:0}
+.composer-inner .queue-chips[hidden]{display:none!important}
+.composer-inner .queue-head{height:22px;min-height:22px;display:flex;align-items:center;padding:0}
+.composer-inner .q-toggle{padding:0 4px;border:0;background:transparent;font-size:12px;color:var(--muted);cursor:pointer;text-align:left}
+.composer-inner .queue-items{display:none;position:absolute;bottom:calc(100% + 5px);left:0;right:0;z-index:24;max-height:min(46dvh,340px);overflow-y:auto;padding:7px;border:1px solid var(--line);border-radius:12px;background:var(--panel);box-shadow:0 10px 28px #0008}
+.composer-inner .queue-chips.expanded .queue-items{display:flex;flex-direction:column;gap:5px}
+.composer-inner .queue-controls{display:flex;gap:5px;flex-wrap:wrap}
+.composer-inner .q-chip{min-width:0;margin:0}
+@media(max-width:850px){#conversation .message{margin-bottom:12px}.composer-inner .q-chip .q-icon,.composer-inner .q-chip .q-now{min-height:30px;height:30px}}
 </style><script src="/static/message-audio.js"></script><script>try{document.documentElement.dataset.theme=localStorage.getItem('mag-theme')||((matchMedia('(prefers-color-scheme: light)').matches)?'light':'dark')}catch(e){document.documentElement.dataset.theme='dark'}</script></head><body><svg xmlns="http://www.w3.org/2000/svg" aria-hidden="true" style="position:absolute;width:0;height:0;overflow:hidden"><defs><symbol id="ic-menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></symbol><symbol id="ic-tools" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></symbol><symbol id="ic-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol><symbol id="ic-send" viewBox="0 0 24 24"><path d="m5 12 14-8-4 16-3-7-7-1Z"/><path d="m12 13 7-9"/></symbol><symbol id="ic-paperclip" viewBox="0 0 24 24"><path d="m20.5 11.6-8 8a5 5 0 0 1-7-7l9-9a3.5 3.5 0 0 1 5 5L10 18a2 2 0 1 1-3-3l8-8"/></symbol><symbol id="ic-mic" viewBox="0 0 24 24"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0M12 17v5m-4 0h8"/></symbol><symbol id="ic-moon" viewBox="0 0 24 24"><path d="M20.6 15.5A9 9 0 0 1 8.5 3.4 9 9 0 1 0 20.6 15.5Z"/></symbol><symbol id="ic-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M4.9 4.9l1.4 1.4m11.4 11.4 1.4 1.4M2 12h2m16 0h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></symbol><symbol id="ic-lock" viewBox="0 0 24 24"><rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></symbol><symbol id="ic-file" viewBox="0 0 24 24"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9Z"/><path d="M13 2v7h7"/></symbol><symbol id="ic-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></symbol><symbol id="ic-pause" viewBox="0 0 24 24"><rect x="5" y="5" width="5" height="14" rx="1"/><rect x="14" y="5" width="5" height="14" rx="1"/></symbol><symbol id="ic-stop" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/></symbol><symbol id="ic-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c5 5 5 13 0 18M12 3c-5 5-5 13 0 18"/></symbol><symbol id="ic-terminal" viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="18" rx="2"/><path d="m6 8 4 4-4 4m7 0h5"/></symbol><symbol id="ic-brain" viewBox="0 0 24 24"><path d="M12 18V5a3 3 0 0 0-6 0 4 4 0 0 0-2 7 4 4 0 0 0 2 7 3 3 0 0 0 6-1Zm0 0V5a3 3 0 0 1 6 0 4 4 0 0 1 2 7 4 4 0 0 1-2 7 3 3 0 0 1-6-1Z"/></symbol><symbol id="ic-arrow" viewBox="0 0 24 24"><path d="M5 12h14m-6-6 6 6-6 6"/></symbol><symbol id="ic-chev" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></symbol><symbol id="ic-plug" viewBox="0 0 24 24"><path d="M9 2v5m6-5v5M6 7h12v4a6 6 0 0 1-12 0V7zm6 10v5"/></symbol><symbol id="ic-trash" viewBox="0 0 24 24"><path d="M3 6h18m-2 0-1 15H6L5 6m3 0V3h8v3M10 10v7m4-7v7"/></symbol><symbol id="ic-spark" viewBox="0 0 24 24"><path d="m12 2 2.2 7.8L22 12l-7.8 2.2L12 22l-2.2-7.8L2 12l7.8-2.2L12 2Z"/></symbol><symbol id="ic-expand" viewBox="0 0 24 24"><path d="M9 3H3v6m12-6h6v6M3 15v6h6m12-6v6h-6"/></symbol><symbol id="ic-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z"/></symbol><symbol id="ic-cpu" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 2v4m6-4v4M9 18v4m6-4v4M2 9h4m-4 6h4m12-6h4m-4 6h4"/></symbol><symbol id="ic-check" viewBox="0 0 24 24"><path d="m4 12 5 5L20 6"/></symbol><symbol id="ic-up" viewBox="0 0 24 24"><path d="M12 19V5m-6 6 6-6 6 6"/></symbol><symbol id="ic-stopfill" viewBox="0 0 24 24"><rect x="6.5" y="6.5" width="11" height="11" rx="2.5" fill="currentColor" stroke="none"/></symbol><symbol id="ic-image" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="2"/><path d="m21 16-5-5-9 9"/></symbol><symbol id="ic-camera" viewBox="0 0 24 24"><path d="M4 8h3l2-3h6l2 3h3a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1Z"/><circle cx="12" cy="13.5" r="3.5"/></symbol><symbol id="ic-screen" viewBox="0 0 24 24"><rect x="2" y="4" width="20" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></symbol></defs></svg>
 <header id="app-header"><button class="side-toggle" id="toggle-agents" aria-controls="left-panel" aria-expanded="true" title="Bot-Leiste umschalten"><svg class="i " aria-hidden="true"><use href="#ic-menu"></use></svg> <span>Bots</span></button><div class="brand"><div class="brand-mark"><svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="square" stroke-linejoin="miter" aria-hidden="true"><path d="M3 22V8h18v14"/><path d="M3 8V3h4v4h3V3h4v4h3V3h4v5"/><rect x="8" y="12" width="8" height="10"/></svg></div><span class="brand-word">MAG</span><span class="brand-caption">Stardenburg · privat</span></div><span class="header-divider"></span><span class="header-title">Unterhaltung</span><div class="header-actions"><div id="model-choice" role="group" aria-label="Modell auswählen"><button type="button" class="model-button" data-model-id="deepseek-v4-flash-0731" aria-pressed="true" title="Q4">0 · Q4</button><button type="button" class="model-button" data-model-id="deepseek-v4-flash-0731-iq3" aria-pressed="false" title="IQ3">1 · IQ3</button></div><span id="model-info" title="Aktives Modell, Engine und Geschwindigkeit"></span><span class="status-group" aria-label="Status"><span id="model-state" class="top-stat" role="status" title="Modellstatus"><span class="dot"></span><span class="txt">Modell lädt …</span></span><span class="top-stat" id="connection" title="Verbindung zum Raum"><span class="dot"></span><span class="txt">Verbinde …</span></span></span><span class="top-stat" id="you-badge" hidden></span><div class="menu-wrap"><button type="button" class="side-toggle" id="room-menu-btn" aria-haspopup="menu" aria-expanded="false" aria-controls="room-menu" title="Raum: Autonomie, Netz, alles anhalten"><svg class="i " aria-hidden="true"><use href="#ic-spark"></use></svg> <span>Raum</span></button><div class="plus-menu room-menu" id="room-menu" role="menu" aria-label="Raum" hidden><label class="control-row" id="autotalk-row" role="menuitemcheckbox"><input type="checkbox" id="autotalk"><span>Autonom arbeiten</span></label><p class="control-desc" id="autotalk-desc">Läuft auch bei geschlossenem Browser.</p><label class="control-row" id="reflect-row" role="menuitemcheckbox"><input type="checkbox" id="reflect"><span>Zweite Runde (Bots lesen einander)</span></label><label class="control-row" id="offline-row" role="menuitemcheckbox"><input type="checkbox" id="offline"><span>Offline (Bots ohne Netz)</span></label><div class="menu-sep"></div><button type="button" role="menuitem" id="stop" title="Alle Antworten, Werkzeuge und Jobs anhalten"><svg class="i sm" aria-hidden="true"><use href="#ic-pause"></use></svg><span id="stop-label">Alles anhalten (inkl. Jobs)</span></button><button type="button" role="menuitem" id="room-add-agent"><svg class="i sm" aria-hidden="true"><use href="#ic-plus"></use></svg><span>Bot hinzufügen</span></button><div class="menu-sep"></div><button type="button" role="menuitem" id="room-settings"><svg class="i sm" aria-hidden="true"><use href="#ic-gear"></use></svg><span>Einstellungen …</span></button></div></div><button type="button" class="icon-btn" id="settings-open" title="Einstellungen" aria-label="Einstellungen" aria-haspopup="dialog"><svg class="i " aria-hidden="true"><use href="#ic-gear"></use></svg></button><button class="side-toggle" id="toggle-tools" aria-controls="right-panel" aria-expanded="true" title="Werkzeuge umschalten"><svg class="i " aria-hidden="true"><use href="#ic-tools"></use></svg> <span>Werkzeuge</span></button></div></header>
 <div class="layout" id="layout">
@@ -870,7 +896,7 @@ function storedTools(msg){return Array.isArray(msg.tools)?msg.tools.map(t=>({nam
 function addTrace(node,trace){
  if(!trace)return;
  const content=node.querySelector('.content');if(!content)return;
- if(trace.reasoning&&!runPart(node,'thinking'))showThinking(node,trace.key||'',trace.reasoning,false,trace.ms||0);
+ if(trace.reasoning&&trace.tools?.some(t=>!QUIET_TOOLS.has(t.name))&&!runPart(node,'thinking'))showThinking(node,trace.key||'',trace.reasoning,false,trace.ms||0);
  if(trace.tools?.length){
   if(!node.querySelector('.tools-trace'))paintTools(node,content,trace.tools);
  }
@@ -1186,6 +1212,14 @@ document.addEventListener('keydown',ev=>{if(ev.key==='Escape'&&msgPop.el?.classL
 addEventListener('scroll',()=>closeMsgPop(),true);
 addEventListener('resize',()=>closeMsgPop());
 addEventListener('popstate',()=>{if(msgPop.skipPop){msgPop.skipPop--;return}if(msgPop.pushed){msgPop.pushed=false;closeMsgPop(true)}});
+function roomBotName(msg){
+ if(msg.role==='user')return msg.name||'Nutzer';
+ const known=(state.agents||[]).find(a=>a.id===(msg.bot||msg.bot_id)||a.name===msg.name);
+ if(known)return known.name||msg.name||'Bot';
+ if(msg.name==='BotBot')return 'Qwen';
+ if(msg.name==='Bot1')return 'DeepSeek';
+ return msg.name||'Bot';
+}
 function append(msg,scroll=true,trace=null,position=-1){
  const area=$('conversation');let inner=area.querySelector('.conversation-inner');
  if(!inner){inner=document.createElement('div');inner.className='conversation-inner';area.append(inner)}
@@ -1193,9 +1227,10 @@ function append(msg,scroll=true,trace=null,position=-1){
  const human=msg.role==='user',mine=isMine(msg);
  const div=document.createElement('article');div.className='message '+(human?'user'+(mine?' mine':' other'):'assistant');div.dataset.id=msg.id||'';div.dataset.displayMs=String(msg.display_ms||msg.ts*1000||Date.now());
  const meta=document.createElement('div');meta.className='meta';
- const avatar=document.createElement('span');avatar.className='avatar';avatar.textContent=human?initials(msg.name||'Nutzer'):(msg.name||'Bot').trim().slice(0,1).toUpperCase();
+ const visibleName=roomBotName(msg);
+ const avatar=document.createElement('span');avatar.className='avatar';avatar.textContent=human?initials(msg.name||'Nutzer'):visibleName.trim().slice(0,1).toUpperCase();
  if(human&&!mine){avatar.style.background=avatarColor(msg.login||msg.name||'Gast');avatar.style.color='#fff'}
- const name=document.createElement('strong');name.textContent=msg.name||(human?'Nutzer':'Bot');
+ const name=document.createElement('strong');name.textContent=visibleName;
  const time=document.createElement('time');const date=new Date((msg.ts||Date.now()/1000)*1000);time.textContent=date.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
  meta.append(avatar,name,time);div.append(meta);
  const text=shownText(msg);
@@ -1205,14 +1240,14 @@ function append(msg,scroll=true,trace=null,position=-1){
  div.append(content);
  attachReactions(div,msg);
  attachWork(div,msg,content);
- if(!human&&msg.thinking_enabled!==false&&msg.reasoning)showThinking(div,msg.id||'',msg.reasoning,false,msg.thought_ms);
+ if(!human&&msg.thinking_enabled!==false&&msg.reasoning&&(shownSteps(msg.steps).length||shownTools(storedTools(msg)).length))showThinking(div,msg.id||'',msg.reasoning,false,msg.thought_ms);
  if(!human&&msg.tools?.length)paintTools(div,content,storedTools(msg));
- if(trace)addTrace(div,{...trace,key:msg.id||''});
+ if(trace?.tools?.some(t=>!QUIET_TOOLS.has(t.name)))addTrace(div,{...trace,key:msg.id||''});
  if(msg.file)div.append(attachmentView(msg.file));
  if(text||msg.live){const actions=document.createElement('div');actions.className='message-tools';if(msg.live)actions.style.visibility='hidden';
  if(text){const b=document.createElement('button');b.type='button';b.className='message-copy';b.innerHTML=ICON_COPY+' Kopieren';b.setAttribute('aria-label','Nachricht kopieren');b.onclick=()=>copyText(text,b);actions.append(b);const audio=document.createElement('button');if(window.magMessageAudio?.attach){window.magMessageAudio.attach(audio,text,msg.id);actions.append(audio)}}
  div.append(actions)}
- if(msg.id&&completedHeights.has(msg.id))div.style.minHeight=completedHeights.get(msg.id)+'px';
+ // Completed replies never keep the provisional activity height.
  inner.append(div);return div;
 }
 function streamClock(s){const t=Math.max(0,Math.floor((Date.now()-((s&&s.started)||Date.now()))/1000));return Math.floor(t/60)+':'+String(t%60).padStart(2,'0')}
@@ -1248,7 +1283,7 @@ function promptEta(p){
 // Rooms before the stop cleanup stored the note in the text itself.
 function shownText(msg){const t=msg.content||'';return msg.interrupted?t.replace(/\s*\((abgebrochen|unterbrochen)\)\s*$/,''):t}
 function stoppedByUser(msg){return msg.interrupted&&msg.stopped!=='system'}
-const QUIET_STEP=/^(Liest Verlauf|Reagiert$|Nimmt die Reaktion zurück$)/;
+const QUIET_STEP=/^(?:Liest Verlauf|Liest das Gespräch|Denkt nach(?:…|\.\.\.)?$|Gedacht für(?: \d+ s)?$|Reagiert$|Nimmt die Reaktion zurück$)/;
 function shownSteps(steps){return (steps||[]).filter(x=>!QUIET_STEP.test(x))}
 function doneLabel(msg){
  if(msg.work_error&&!stoppedByUser(msg))return 'Fehler · '+msg.work_error;
@@ -1268,8 +1303,8 @@ function stepsList(steps){
 }
 function attachWork(div,msg,content){
  if(!msg||msg.role==='user')return;
- if(msg.thinking_enabled===false&&!msg.work_error&&!msg.interrupted)return;
- if(!msg.work_error&&!msg.interrupted&&!shownSteps(msg.steps).length&&!msg.reasoning&&!shownTools(storedTools(msg)).length)return;
+ // Tool steps and errors remain useful even with thinking switched off.
+ if(!msg.work_error&&!msg.interrupted&&!shownSteps(msg.steps).length&&!shownTools(storedTools(msg)).length)return;
  const box=document.createElement('div');
  box.className='work-status '+(stoppedByUser(msg)?'phase-stopped':msg.work_error?'phase-error':(msg.interrupted?'phase-hung':'phase-done'));
  const dot=document.createElement('span');dot.className='pulse';
@@ -1296,36 +1331,25 @@ function readingPanel(node,s){
  box.replaceChildren(head,ul);
 }
 function ensureWork(node,s,botId){
- if(s.thinkingEnabled===false){
-  for(const cls of ['work-status','work-reading','work-steps','thinking'])runPart(node,cls)?.remove();
-  node.querySelector('.quiet-loading')?.remove();
-  const run=node.querySelector(':scope > .run');if(run&&!run.children.length)run.remove();
-  return;
- }
+ const steps=shownSteps(s.steps),tools=shownTools(s.tools);
+ const meaningful=steps.length||tools.length||s.error||s.hung;
+ let dot=node.querySelector(':scope > .meta > .inline-progress');
+ if(!dot){dot=document.createElement('span');dot.className='inline-progress';node.querySelector(':scope > .meta')?.append(dot)}
+ dot.classList.toggle('failed',!!(s.error||s.hung));dot.title=workLabelText(s);
+ dot.setAttribute('role','status');dot.setAttribute('aria-label',workLabelText(s));
+ if(!meaningful){node.querySelector(':scope > .run')?.remove();return}
  let box=runPart(node,'work-status');
  if(!box){
-  box=document.createElement('div');box.className='work-status';box.setAttribute('role','status');
-  const dot=document.createElement('span');dot.className='pulse';
-  const label=document.createElement('span');label.className='work-label';
-  const bar=document.createElement('div');bar.className='work-bar';bar.hidden=true;const fill=document.createElement('i');bar.append(fill);
-  box.append(dot,label,bar);
-  runPut(node,box);
-  wireRunToggle(node,box,'live:'+botId);
+   box=document.createElement('div');box.className='work-status';box.setAttribute('role','status');
+   const pulse=document.createElement('span');pulse.className='pulse';
+   const label=document.createElement('span');label.className='work-label';
+   box.append(pulse,label);runPut(node,box);wireRunToggle(node,box,'live:'+botId);
  }
- const phase=s.error?'error':(s.hung?'hung':(s.phase||'think'));
- box.className='work-status phase-'+phase;
+ box.className='work-status phase-'+(s.error?'error':s.hung?'hung':s.phase||'think');
  box.querySelector('.work-label').textContent=workLabelText(s);
- const bar=box.querySelector('.work-bar');
- const show=phase==='prompt'&&s.progress&&s.progress.total;
- bar.hidden=!show;
- if(show){const pct=Math.min(100,Math.round(s.progress.processed/s.progress.total*100));bar.querySelector('i').style.width=pct+'%';bar.setAttribute('role','progressbar');bar.setAttribute('aria-valuemin','0');bar.setAttribute('aria-valuemax','100');bar.setAttribute('aria-valuenow',String(pct));bar.setAttribute('aria-label','Liest Verlauf')}
- readingPanel(node,s);
  const old=runPart(node,'work-steps');
- const list=shownSteps(s.steps);
- if(!list.length){old?.remove();return}
- const open=!!old?.open;
- const fresh=stepsList(list);fresh.open=open;
- if(old)old.replaceWith(fresh);else runPut(node,fresh);
+ if(!steps.length)old?.remove();
+ else{const fresh=stepsList(steps);fresh.open=!!old?.open;if(old)old.replaceWith(fresh);else runPut(node,fresh)}
 }
 setInterval(()=>{const now=Date.now();for(const id of Object.keys(streams)){const s=streams[id];if(!s)continue;const hung=!s.error&&now-(s.lastEvent||s.started||now)>60000;if(hung!==!!s.hung){s.hung=hung;updateStream(id,true);continue}const label=s.node?.querySelector?.('.work-label');if(label&&s.node.classList.contains('work-live'))label.textContent=workLabelText(s);if(s.thinking){const t=s.node?.querySelector?.(':scope > .run > .thinking .think-time');if(t)t.textContent=thinkSecs(liveThinkMs(s))}}},1000);
 
@@ -1401,14 +1425,13 @@ function updateStream(botId,immediate=false){
   content.dataset.loading=s.thinkingEnabled===false&&!text?'1':'0';
   if(!text){s.node.classList.add('processing');if(content._shown!==''){content.replaceChildren();content._shown=''}}
   else{s.node.classList.remove('processing');if(content._shown!==text){content.innerHTML=safeMarkdown(text);decorate(content);content._shown=text}}
-  showThinking(s.node,'live:'+botId,s.thinkingEnabled===false?'':(s.reasoning||''),!!s.thinking,liveThinkMs(s));
+  showThinking(s.node,'live:'+botId,s.thinkingEnabled===false||!shownTools(s.tools).length&&!shownSteps(s.steps).length?'':(s.reasoning||''),!!s.thinking,liveThinkMs(s));
   paintApprovals(s.node,botId);
   paintTools(s.node,content,s.tools);
-  renderPromptProgress(s,s.node);
+  // No redundant full-width prompt progress: the inline activity dot reports it.
   // A live reply never shrinks: the thinking peek folding away, a revoked
   // draft or a shorter status line would otherwise pull the chat down.
-  s.node.style.minHeight='';const h=s.node.getBoundingClientRect().height;
-  s.floor=Math.max(s.floor||0,h);if(s.floor>h+0.5)s.node.style.minHeight=s.floor+'px';
+  s.node.style.minHeight='';
  };
  if(immediate){if(s.frame)cancelAnimationFrame(s.frame);update()}
  else if(!s.frame)s.frame=requestAnimationFrame(update);
@@ -1424,7 +1447,9 @@ function render(){
  area.replaceChildren();const inner=document.createElement('div');inner.className='conversation-inner';area.append(inner);
  if(!state.room.length){inner.innerHTML='<div class="empty"><div class="empty-symbol">✳</div><h1>Worum geht es?</h1><p>Eine Frage, eine Notiz oder eine Aufgabe für die Bots. Alles bleibt auf deinem Server.</p></div>'}
  const timeline=[...state.room];
- for(const p of state.pending||[])timeline.push({id:'pending:'+p.id,role:'user',name:p.sender,login:p.login,content:p.text,client_id:p.client_id,display_ms:p.display_ms||p.ts*1000});
+ // Pending items belong to the queue only; never project them into chat history.
+ const queuedClients=new Set((state.pending||[]).map(p=>p.client_id).filter(Boolean));
+ for(const id of queuedClients)localSends.delete(id);
  for(const [key,m] of localSends){if(timeline.some(x=>x.client_id===key))localSends.delete(key);else timeline.push(m)}
  timeline.sort((a,b)=>(a.display_ms||a.ts*1000||0)-(b.display_ms||b.ts*1000||0));
  timeline.forEach((m,i)=>append(m,false,traceForMessage(m,i),i));
@@ -1856,7 +1881,7 @@ let busyBots=new Set();
 let waitingBots=new Map();
 function setBusyBots(ids,waiting){busyBots=new Set(Array.isArray(ids)?ids:[]);if(Array.isArray(waiting)){const keep=new Map();for(const id of waiting)keep.set(id,waitingBots.get(id)||'');waitingBots=keep}for(const id of [...waitingBots.keys()])if(!busyBots.has(id))waitingBots.delete(id);renderLanes()}
 async function stopBot(id){try{await api('/api/cancel',id?{bot:id}:{})}catch(e){notice(e.message)}}
-function renderLanes(){const box=$('bot-lanes');if(!box)return;const ids=[...busyBots].filter(id=>state.agents.some(a=>a.id===id));box.replaceChildren();box.hidden=!ids.length;if(!ids.length){syncComposerButton();return}const allowed=can('stop');
+function renderLanes(){const box=$('bot-lanes');if(!box)return;const ids=[...busyBots].filter(id=>state.agents.some(a=>a.id===id));box.replaceChildren();box.hidden=true;if(!ids.length){syncComposerButton();return}const allowed=can('stop');
  for(const id of ids){const a=state.agents.find(x=>x.id===id);const chip=document.createElement('span');chip.className='bot-lane';chip.dataset.bot=id;const dot=document.createElement('span');dot.className='pulse';dot.style.background=a.color||'var(--accent)';const name=document.createElement('span');name.className='lane-name';const after=waitingBots.get(id);name.textContent=waitingBots.has(id)?(a.name||'Bot')+' wartet'+(after?' auf '+after:'')+' …':(a.name||'Bot')+' antwortet …';chip.classList.toggle('waiting',waitingBots.has(id));chip.append(dot,name);
   if(allowed){const b=document.createElement('button');b.type='button';b.textContent='Stopp';b.title=(a.name||'Bot')+' stoppen';b.setAttribute('aria-label',(a.name||'Bot')+' stoppen');b.onclick=()=>stopBot(id);chip.append(b)}box.append(chip)}
  syncComposerButton()}
@@ -1884,6 +1909,7 @@ $('send-form').onsubmit=async e=>{
   if(!text){notice('Dateien geteilt');return}
   const r=await api('/api/message',{text,bots,...(sameThinking?{think}:{}),interrupt,request_id});
   failedSends.delete(fingerprint);
+  if(r?.queued)localSends.delete(request_id);
   if(r?.queue)renderQueue(r.queue);
   await refresh();notice('');
  }catch(err){
@@ -2675,12 +2701,33 @@ function editQueuedMessage(p,t,button,focus=false){
  t.replaceWith(ta);if(focus)requestAnimationFrame(()=>ta.focus({preventScroll:true}));
 }
 
-function renderQueue(q){if(typeof q.revision==='number'&&q.revision<queueState.revision)return;const focused=document.activeElement;const editFocus=focused?.matches('.q-edit')?{id:focused.closest('.q-chip')?.dataset.id,start:focused.selectionStart,end:focused.selectionEnd}:null;queueState={pending:q.pending||[],paused:!!q.paused,revision:q.revision??queueState.revision};state.pending=queueState.pending;state.queue_paused=queueState.paused;render();const box=$('queue-chips');if(!box)return;box.replaceChildren();const list=queueState.pending;box.hidden=!list.length&&!queueState.paused;if(box.hidden)return;box.classList.toggle('paused',queueState.paused);
- const head=document.createElement('div');head.className='queue-head';const held=list.filter(p=>p.held).length;const lbl=document.createElement('span');lbl.textContent=held?'Angehalten · '+held+' wartet auf „Fortsetzen“':queueState.paused?'Jobs angehalten':'Warteschlange';head.append(lbl);
- if(!queueState.paused&&can('stop')){const b=document.createElement('button');b.type='button';b.className='q-btn';b.textContent='Queue pausieren';b.onclick=()=>api('/api/queue/pause',{}).catch(e=>notice(e.message));head.append(b)}
- if(queueState.paused&&can('stop')){const b=document.createElement('button');b.type='button';b.className='q-btn';b.textContent='Fortsetzen';b.onclick=async()=>{b.disabled=true;try{await api('/api/queue/resume',{});await refresh()}catch(e){notice(e.message)}finally{b.disabled=false}};head.append(b)}
- if(list.length>1&&can('stop')){const b=document.createElement('button');b.type='button';b.className='q-btn';b.textContent='Zusammenführen';b.title='Alle wartenden Nachrichten als eine senden';b.onclick=()=>api('/api/queue/merge',{}).catch(e=>notice(e.message));head.append(b)}
- box.append(head);
+function renderQueue(q){
+ if(typeof q.revision==='number'&&q.revision<queueState.revision)return;
+ const focused=document.activeElement;
+ const editFocus=focused?.matches('.q-edit')?{id:focused.closest('.q-chip')?.dataset.id,start:focused.selectionStart,end:focused.selectionEnd}:null;
+ queueState={pending:q.pending||[],paused:!!q.paused,revision:q.revision??queueState.revision};
+ state.pending=queueState.pending;state.queue_paused=queueState.paused;
+ // An SSE queue acknowledgment can precede the POST response; dedupe immediately.
+ const previous=localSends.size;
+ for(const p of queueState.pending)if(p.client_id)localSends.delete(p.client_id);
+ if(localSends.size!==previous)render();
+ const box=$('queue-chips');if(!box)return;
+ const wasOpen=box.classList.contains('expanded'),list=queueState.pending;
+ box.replaceChildren();box.hidden=!list.length;if(box.hidden)return;
+ box.classList.toggle('paused',queueState.paused);box.classList.toggle('expanded',wasOpen);
+ const head=document.createElement('div');head.className='queue-head';
+ const toggle=document.createElement('button');toggle.type='button';toggle.className='q-toggle';
+ const held=list.filter(p=>p.held).length;
+ toggle.textContent=list.length+' wartet'+(held?' · '+held+' angehalten':'')+(wasOpen?' ▾':' ▸');
+ toggle.setAttribute('aria-expanded',String(wasOpen));toggle.setAttribute('aria-controls','queue-items');
+ toggle.onclick=()=>{box.classList.toggle('expanded');renderQueue({...queueState,revision:queueState.revision})};
+ head.append(toggle);
+ const controls=document.createElement('span');controls.className='queue-controls';
+ if(!queueState.paused&&can('stop')){const b=document.createElement('button');b.type='button';b.className='q-btn';b.textContent='Queue pausieren';b.onclick=()=>api('/api/queue/pause',{}).catch(e=>notice(e.message));controls.append(b)}
+ if(queueState.paused&&can('stop')){const b=document.createElement('button');b.type='button';b.className='q-btn';b.textContent='Fortsetzen';b.onclick=async()=>{b.disabled=true;try{await api('/api/queue/resume',{});await refresh()}catch(e){notice(e.message)}finally{b.disabled=false}};controls.append(b)}
+ if(list.length>1&&can('stop')){const b=document.createElement('button');b.type='button';b.className='q-btn';b.textContent='Zusammenführen';b.onclick=()=>api('/api/queue/merge',{}).catch(e=>notice(e.message));controls.append(b)}
+ const items=document.createElement('div');items.className='queue-items';items.id='queue-items';items.append(controls);
+ box.append(head,items);
  for(const p of list){const chip=document.createElement('div');chip.className='q-chip'+(p.held?' held':'');chip.dataset.id=p.id;
  const own=!state.you||state.you.role==='owner'||(!!p.login&&p.login===state.you.login);
  if(p.sender){const who=document.createElement('span');who.className='q-who';who.textContent=p.sender;chip.append(who)}
@@ -2697,9 +2744,9 @@ function renderQueue(q){if(typeof q.revision==='number'&&q.revision<queueState.r
   now.onclick=async()=>{now.disabled=true;try{await api('/api/queue/'+encodeURIComponent(p.id)+'/now',{})}catch(e){notice(e.message)}finally{now.disabled=false}};
   if(own){chip.append(grip,t,up,down,ed,del,now);wireQueueDrag(chip,p);if(queueDrafts.has(p.id))editQueuedMessage(p,t,ed)}
  else chip.append(t);
- box.append(chip)}
+ items.append(chip)}
  for(const id of queueDrafts.keys())if(!list.some(p=>p.id===id))queueDrafts.delete(id);
- if(editFocus){const ta=[...box.querySelectorAll('.q-chip')].find(c=>c.dataset.id===editFocus.id)?.querySelector('.q-edit');if(ta){ta.focus({preventScroll:true});ta.setSelectionRange(editFocus.start,editFocus.end)}}
+ if(editFocus){const ta=[...items.querySelectorAll('.q-chip')].find(c=>c.dataset.id===editFocus.id)?.querySelector('.q-edit');if(ta){ta.focus({preventScroll:true});ta.setSelectionRange(editFocus.start,editFocus.end)}}
 }
 
 // ---- Jobs (scheduled prompts, like ChatGPT Tasks)
@@ -2821,7 +2868,7 @@ events.onmessage=e=>{
    if(thinkOpen.delete('live:'+id)&&event.id)thinkOpen.add(event.id);
    if(runOpen.has('live:'+id)){const o=runOpen.get('live:'+id);runOpen.delete('live:'+id);if(event.id)runOpen.set('done:'+event.id,o)}
    if(s&&s.thinkingEnabled!==false&&(s.reasoning||s.tools?.length)){completedTraces.push({name:s.name,content:event.content||s.text||'',reasoning:event.reasoning?'':(s.reasoning||''),ms:liveThinkMs(s),tools:s.tools||[],assignedPosition:null});if(completedTraces.length>40)completedTraces.shift()}
-   if(s?.node)completedHeights.set(event.id,s.node.getBoundingClientRect().height);
+   // Do not persist live status-card dimensions.
    delete streams[id];streamControls();
    refresh().catch(err=>notice(err.message));
   }else if(window.magAgentUI?.event(event)){

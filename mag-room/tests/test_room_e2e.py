@@ -30,7 +30,8 @@ class RoomE2E(unittest.TestCase):
         # priority is covered by test_room_control.py.
         cls.room = Room([{'id': 'a', 'name': 'Alpha', 'vm': '', 'memory': []}])
         cls.pw = sync_playwright().start()
-        cls.browser = cls.pw.chromium.launch()
+        chrome = os.environ.get('MAG_CHROME')
+        cls.browser = cls.pw.chromium.launch(**({'executable_path': chrome} if chrome else {}))
 
     @classmethod
     def tearDownClass(cls):
@@ -240,6 +241,65 @@ class RoomE2E(unittest.TestCase):
             expect(p.locator('#plus-pho')).to_have_attribute('aria-checked', 'true')
         finally:
             self.room.api('/api/bot-settings', {'scope': 'room', 'pho_compress': True}, method='PUT')
+
+    def test_05e_pho_percent_reuses_the_toggle_and_status_line(self):
+        # 390x844: the saving replaces the existing "an" state and, only while
+        # the 22px queue line is already open, sits in that line. Composer
+        # height does not change when the number appears or disappears.
+        p = self.browser.new_page(viewport={'width': 390, 'height': 844},
+                                  is_mobile=True, has_touch=True)
+        try:
+            p.goto(f'http://127.0.0.1:{self.room.ui}/')
+            expect(p.locator('#connection')).to_contain_text('Verbunden', timeout=10000)
+            p.evaluate("""()=>{
+              const a=state.agents[0];
+              a.pho_compress=true;
+              a.pho_save={last_before:35,last_after:27,session_before:100,session_after:77};
+              state.agents.push({id:'b',name:'Beta',pho_compress:true,color:'#48f',
+                pho_save:{last_before:10,last_after:8,session_before:50,session_after:40}});
+              selected.add('b');
+              syncBotSwitches();
+            }""")
+            idle=p.evaluate("document.querySelector('.composer-inner').getBoundingClientRect().height")
+            self.assertFalse(p.locator('#queue-chips').is_visible())
+            self.assertEqual(p.locator('.pho-save').count(), 0)
+            p.click('#plus')
+            expect(p.locator('#plus-pho')).to_contain_text('PhO-Compress')
+            expect(p.locator('#plus-pho-state')).to_have_text('−22 %')
+            tip=p.locator('#plus-pho').get_attribute('title')
+            self.assertIn('35→27', tip)
+            self.assertIn('100→77', tip)
+            self.assertIn('10→8', tip)
+            self.assertIn('50→40', tip)
+            self.assertIn('Alpha', tip)
+            self.assertIn('Beta', tip)
+            box=p.locator('#plus-menu').bounding_box()
+            self.assertGreaterEqual(box['x'], -1)
+            self.assertLessEqual(box['x']+box['width'], 391)
+            self.assertLessEqual(p.evaluate('document.documentElement.scrollWidth-innerWidth'), 1)
+            p.keyboard.press('Escape')
+            self.assertEqual(p.evaluate("document.querySelector('.composer-inner').getBoundingClientRect().height"), idle)
+            p.evaluate("""()=>{
+              renderQueue({pending:[{id:'q1',text:'wartet hier',held:false}],paused:false,revision:999999});
+            }""")
+            expect(p.locator('#queue-chips .pho-save')).to_have_text('PhO −22 %')
+            queued=p.locator('#queue-chips').bounding_box()['height']
+            self.assertLessEqual(queued, 26)
+            self.assertLessEqual(p.evaluate('document.documentElement.scrollWidth-innerWidth'), 1)
+            p.evaluate("""()=>{state.agents.forEach(a=>a.pho_compress=false);syncBotSwitches()}""")
+            expect(p.locator('#plus-pho-state')).to_have_text('aus')
+            self.assertEqual(p.locator('.pho-save').count(), 0)
+            self.assertEqual(p.locator('#queue-chips').bounding_box()['height'], queued)
+            p.evaluate("""()=>{
+              state.agents.forEach(a=>{a.pho_compress=true;delete a.pho_save});
+              syncBotSwitches();
+            }""")
+            expect(p.locator('#plus-pho-state')).to_have_text('an')
+            self.assertEqual(p.locator('.pho-save').count(), 0)
+            self.assertEqual(p.locator('#queue-chips').bounding_box()['height'], queued)
+            self.assertNotIn('→', p.locator('#plus-pho').get_attribute('title'))
+        finally:
+            p.close()
 
     def test_06_message_after_stop_runs_and_held_queue_waits(self):
         p = self.page

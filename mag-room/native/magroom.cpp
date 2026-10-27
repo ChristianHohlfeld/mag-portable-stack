@@ -2293,7 +2293,7 @@ static std::string build_transcript() {
 // new room input and context. UI labels, clocks, plugin notes and memories
 // never rewrite an old message.
 struct WireSession {
-  std::string fingerprint, memory, plugins, files, company;
+  std::string fingerprint, memory, plugins, files, company, skills;
   std::vector<Val> messages;
   std::set<std::string> seen;
   Val pho_archive=Val::object();
@@ -2352,7 +2352,7 @@ static void wire_store(const std::string &bot, const WireSession &w) {
   for (const auto &m:w.messages) msgs.push(m);
   for (const auto &id:w.seen) ids.push(Val(id));
   out["fingerprint"]=w.fingerprint; out["memory"]=w.memory;out["plugins"]=w.plugins;out["files"]=w.files;
-  out["company"]=w.company;
+  out["company"]=w.company; out["skills"]=w.skills;
   out["messages"]=msgs; out["seen"]=ids;
   out["pho_archive"]=w.pho_archive;out["pho_enabled"]=w.compression;
   out["pho_last_key"]=w.pho_last_key;
@@ -2539,6 +2539,7 @@ static void pho_forget_boundaries(int idx) {
   const auto bot=bot_field(idx,"id");std::lock_guard<std::mutex> wire(WIRE_MTX);
   auto it=WIRE_SESSIONS.find(bot);if(it!=WIRE_SESSIONS.end())it->second.turn_ends.clear();
 }
+static std::string jobs_skill_catalog(const std::string &bot);
 static std::vector<Val> wire_messages(int idx, const std::string &system,
                                       const std::string &tools, const std::string &tail) {
   const auto bot=bot_field(idx,"id");
@@ -2552,7 +2553,7 @@ static std::vector<Val> wire_messages(int idx, const std::string &system,
       w.pho_last_key=mag::str(saved,"pho_last_key");
       if(auto a=saved.find("turn_ends");a&&a->isArr())for(auto &n:a->asArr())w.turn_ends.push_back((size_t)n.asNum());
       w.fingerprint=mag::str(saved,"fingerprint"); w.memory=mag::str(saved,"memory");w.plugins=mag::str(saved,"plugins");w.files=mag::str(saved,"files");
-      w.company=mag::str(saved,"company");
+      w.company=mag::str(saved,"company"); w.skills=mag::str(saved,"skills");
       if(auto a=saved.find("messages");a&&a->isArr())w.messages=a->asArr();
       if(auto a=saved.find("seen");a&&a->isArr())for(const auto &id:a->asArr())w.seen.insert(id.asStr());
     }
@@ -2596,6 +2597,12 @@ static std::vector<Val> wire_messages(int idx, const std::string &system,
   const auto plugins=mcp_prompt_notes(idx),files=file_manifest();
   if(w.plugins!=plugins || initial) {input+=plugins;w.plugins=plugins;}
   if(w.files!=files || initial) {input+="\nAktuell geteilte Raumdateien:\n"+files;w.files=files;}
+  const auto skills=jobs_skill_catalog(bot);
+  if(w.skills!=skills || (initial && !skills.empty())) {
+    if(!(skills.empty() && w.skills.empty()))
+      input+="\n"+(skills.empty()?std::string("[Fähigkeiten]\nKeine eigenen Jobs."):skills);
+    w.skills=skills;
+  }
   // [Kontext] (clock, github, thinking) is ~140 tokens. Re-sending it on every
   // hi re-prefills those tokens (~6s at 22 tok/s; live 10.3s first hi). It
   // belongs on the first user message only. Later turns append new room
@@ -5330,7 +5337,8 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
       Val sys = Val::object();sys["role"]="system";
       sys["content"]=system+"\n"+memory_manifest(bot_id);messages.push_back(sys);
       Val u=Val::object();u["role"]="user";
-      u["content"]=(CURRENT_JOB?job_user_content(CURRENT_JOB):build_transcript())+build_context_tail(bot_idx,autotalk,other);
+      const std::string skills=jobs_skill_catalog(bot_id);
+      u["content"]=(CURRENT_JOB?job_user_content(CURRENT_JOB):build_transcript())+build_context_tail(bot_idx,autotalk,other)+(skills.empty()?"":"\n"+skills);
       messages.push_back(u);
     }
   }
@@ -7167,7 +7175,8 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
         msgs.push(sys);
         Val u = Val::object();
         u["role"] = "user";
-        u["content"] = build_transcript() + build_context_tail(idx, false, "");
+        const std::string skills = jobs_skill_catalog(bot_id);
+        u["content"] = build_transcript() + build_context_tail(idx, false, "") + (skills.empty() ? "" : "\n" + skills);
         msgs.push(u);
         if (CONFIGURED_MODEL) {
           auto wire = wire_messages(idx, system, tool_defs, build_context_tail(idx, false, ""));

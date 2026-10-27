@@ -111,6 +111,7 @@ static void finish_spawn(const std::string &id, std::string vm, bool resume) {
     return;
   }
   drop_bot_refs(id);
+  jobs_drop_bot(id);
   agents_event();
   emit_event("error", id, "", "VM für den neuen Bot konnte nicht erstellt werden: " + error);
 }
@@ -1274,6 +1275,7 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
         VM_IP_CACHE.erase(vm);
       }
       drop_bot_refs(id);
+      jobs_drop_bot(id);
       agents_event();
       send_json(fd, 200, "{\"ok\":true}");
       return;

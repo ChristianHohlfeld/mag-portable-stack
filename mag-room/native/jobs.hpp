@@ -3,8 +3,11 @@
 // STATE_DIR/jobs.json. Runs go through the global scheduler (never parallel
 // to chat), respect Stop/pause, carry idempotent run ids and a persisted
 // lease (queued_run), retry with backoff and post results into the room.
-// The job prompt is never part of the static system prompt (cache rule).
+// The full job prompt is never part of the static system prompt (cache rule).
+// The same record is that bot's skill: a short catalog (name, schedule,
+// one-line summary) is appended to its context, the way memories are.
 #include <openssl/evp.h>
+#include <algorithm>
 #include <set>
 
 struct JobDef {
@@ -194,6 +197,120 @@ static void jobs_ticker() {
     std::this_thread::sleep_for(std::chrono::milliseconds(ms));
   }
 }
+static std::string jobs_schedule_text(const Val &s) {
+  if (!s.isObj()) return "manuell";
+  const std::string type = s.find("type") ? s.find("type")->asStr() : "none";
+  auto str = [&](const char *k) { auto x = s.find(k); return x ? x->asStr() : std::string(); };
+  auto num = [&](const char *k) { auto x = s.find(k); return x ? (int)x->asNum(0) : 0; };
+  if (type == "interval") {
+    const std::string u = str("unit");
+    const char *unit = u == "m" ? "Min." : u == "h" ? "Std." : u == "d" ? "Tage"
+                      : u == "w" ? "Wochen" : u == "s" ? "Sek." : "Einheiten";
+    return "alle " + std::to_string(std::max(1, num("every"))) + " " + unit;
+  }
+  if (type == "daily") {
+    const std::string time = str("time");
+    std::vector<int> days;
+    if (auto d = s.find("days"); d && d->isArr())
+      for (auto &x : d->asArr()) days.push_back((int)x.asNum(-1));
+    if (days.size() == 5) {
+      bool weekdays = true;
+      for (int i = 1; i <= 5 && weekdays; i++) {
+        bool hit = false;
+        for (int d : days) if (d == i) hit = true;
+        if (!hit) weekdays = false;
+      }
+      if (weekdays) return "werktags " + time;
+    }
+    if (days.size() == 1 && days[0] >= 0 && days[0] <= 6) {
+      static const char *wd[] = {"So", "Mo", "Di", "Mi", "Do", "Fr", "Sa"};
+      return std::string(wd[days[0]]) + " " + time;
+    }
+    if (!days.empty()) return "an ausgewählten Tagen " + time;
+    return time.empty() ? "täglich" : "täglich " + time;
+  }
+  if (type == "monthly")
+    return "monatlich am " + std::to_string(std::max(1, num("day"))) + ". " + str("time");
+  if (type == "once") {
+    std::string at = str("at");
+    for (char &c : at) if (c == 'T') c = ' ';
+    return at.empty() ? "einmalig" : "einmalig " + at;
+  }
+  return "manuell";
+}
+static std::string jobs_skill_summary(const std::string &prompt) {
+  std::string one;
+  bool space = false;
+  for (char c : trim(prompt)) {
+    if (c == '\n' || c == '\r' || c == '\t' || c == ' ') {
+      if (!space && !one.empty()) one.push_back(' ');
+      space = true;
+    } else { one.push_back(c); space = false; }
+  }
+  return mj::utf8_cut(one, 160);
+}
+// Active roster or a parked record. Empty is never known.
+static bool jobs_bot_known(const std::string &id) {
+  if (id.empty()) return false;
+  if (agent_index(id) >= 0) return true;
+  std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
+  for (const auto &a : PARKED)
+    if (a.find("id") && a.find("id")->asStr() == id) return true;
+  return false;
+}
+static bool jobs_bot_active(const std::string &id) {
+  return !id.empty() && agent_index(id) >= 0;
+}
+static std::string jobs_fallback_bot() {
+  std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
+  if (AGENTS.empty()) return "";
+  auto id = AGENTS[0].find("id");
+  return id ? id->asStr() : std::string();
+}
+static std::string jobs_sole_bot() {
+  std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
+  if (AGENTS.size() != 1) return "";
+  auto id = AGENTS[0].find("id");
+  return id ? id->asStr() : std::string();
+}
+// JOBDEF_MTX held. Empty or unknown owners become a real bot and are saved.
+static void jobs_bind_orphans_locked() {
+  bool dirty = false;
+  for (auto &j : JOBDEFS) {
+    if (jobs_bot_known(j.bot)) continue;
+    std::string to;
+    if (jobs_bot_known(j.created_by_bot)) to = j.created_by_bot;
+    else to = jobs_fallback_bot();
+    if (to.empty() || to == j.bot) continue;
+    j.bot = to;
+    dirty = true;
+  }
+  if (dirty) jobs_save_locked();
+}
+static std::string jobs_skill_catalog(const std::string &bot) {
+  if (bot.empty()) return "";
+  struct Line { std::string name, sched, sum; bool paused; };
+  std::vector<Line> lines;
+  {
+    std::lock_guard<std::mutex> lk(JOBDEF_MTX);
+    for (const auto &j : JOBDEFS) {
+      if (j.bot != bot) continue;
+      lines.push_back(Line{j.name, jobs_schedule_text(j.schedule), jobs_skill_summary(j.prompt), j.paused});
+    }
+  }
+  if (lines.empty()) return "";
+  std::sort(lines.begin(), lines.end(), [](const Line &a, const Line &b) { return a.name < b.name; });
+  std::string out = "[Fähigkeiten]";
+  for (const auto &ln : lines) {
+    out += "\n- " + ln.name + " (";
+    if (ln.paused) out += "pausiert, ";
+    out += ln.sched + ")";
+    if (!ln.sum.empty()) out += ": " + ln.sum;
+  }
+  out += "\nDas sind deine eigenen Jobs. Sie laufen zum Zeitplan von selbst als Aufgabe; "
+         "der volle Auftrag steht im Lauf. Neue Jobs schlägst du nur vor (jobs_create), Chris bestätigt.";
+  return out;
+}
 static void jobs_load() {
   std::lock_guard<std::mutex> lk(JOBDEF_MTX);
   for (auto &v : load_json_array(jobs_file())) {
@@ -201,6 +318,7 @@ static void jobs_load() {
     if (j.id.empty()) continue;
     JOBDEFS.push_back(j);
   }
+  jobs_bind_orphans_locked();
   // A lease left by a crashed/restarted process: run that exact run again,
   // once (same run id -> history prevents doubles).
   for (auto &j : JOBDEFS)
@@ -228,8 +346,8 @@ static std::string job_plain_prompt(const JobRun *r) {
 }
 static TurnReport run_turn(int bot_idx, bool autotalk, const std::string &other);
 static void run_job(const JobRun &run) {
+  // A job never runs as a different bot. An unknown owner is an error.
   int idx = run.bot.empty() ? -1 : agent_index(run.bot);
-  if (idx < 0) { std::lock_guard<std::recursive_mutex> lk(STATE_MTX); idx = AGENTS.empty() ? -1 : 0; }
   std::string status = "ok", error, text;
   const int64_t started = now_s();
   if (idx < 0) { status = "error"; error = "Kein Bot vorhanden"; }
@@ -271,7 +389,11 @@ static std::string job_apply(JobDef &j, const Val &b, bool create) {
   auto s = [&](const char *k) { auto x = b.find(k); return x ? trim(x->asStr()) : std::string(); };
   if (create || b.find("name")) { j.name = s("name"); if (j.name.empty() || j.name.size() > 120) return "Name fehlt"; }
   if (create || b.find("prompt")) { j.prompt = s("prompt"); if (j.prompt.empty() || j.prompt.size() > 16000) return "Prompt fehlt"; }
-  if (b.find("bot")) j.bot = s("bot");
+  if (b.find("bot")) {
+    const std::string want = s("bot");
+    if (create) j.bot = want;
+    else if (!want.empty() && want != j.bot) return "Job ist an seinen Bot gebunden";
+  }
   if (create || b.find("schedule")) {
     Val sc = b.find("schedule") ? *b.find("schedule") : Val::object();
     std::string err = validate_schedule(sc); if (!err.empty()) return err;
@@ -321,7 +443,8 @@ static JobsResponse jobs_request(const std::string &method,
   };
   if (path == prefix && method == "GET") {
     Val a = Val::array();
-    for (const auto &j : JOBDEFS) a.push(view(j));
+    for (const auto &j : JOBDEFS)
+      if (!actor.is_bot || j.bot == actor.bot) a.push(view(j));
     Val v = Val::object(); v["jobs"] = a;
     v["now"] = (double)now_s(); v["paused"] = QUEUE_PAUSED;
     return {200, v};
@@ -353,6 +476,12 @@ static JobsResponse jobs_request(const std::string &method,
     const std::string err = job_apply(j, body, true);
     if (!err.empty()) return jobs_error(400, err);
     if (actor.is_bot) j.bot = actor.bot; // Bot cannot impersonate another bot
+    if (!jobs_bot_active(j.bot) && j.bot.empty() && !actor.is_bot) {
+      const std::string only = jobs_sole_bot();
+      if (!only.empty()) j.bot = only;
+    }
+    if (!jobs_bot_active(j.bot))
+      return jobs_error(400, j.bot.empty() ? "Bot fehlt" : "Unbekannter Bot");
     std::string secret;
     if (body.find("webhook") && body.find("webhook")->asBool(false)) secret = new_secret(j);
     JOBDEFS.push_back(j);
@@ -363,6 +492,8 @@ static JobsResponse jobs_request(const std::string &method,
     return jobs_error(404, "Unbekannter Job");
   JobDef *j = job_find_locked(id);
   if (!j) return jobs_error(404, "Unbekannter Job");
+  if (actor.is_bot && j->bot != actor.bot)
+    return jobs_error(403, "Dieser Job gehört einem anderen Bot");
   if (action.empty() && method == "GET") return {200, view(*j)};
   if (action == "history" && method == "GET") {
     Val v = Val::object(); v["id"] = id; v["history"] = j->history;
@@ -422,4 +553,21 @@ static JobsResponse jobs_request(const std::string &method,
     return {200, view(*j, sec)};
   }
   return jobs_error(404, "Unbekannte Job-Aktion");
+}
+// Bot removal: its jobs are part of the bot, not of the room.
+static void jobs_drop_bot(const std::string &bot) {
+  if (bot.empty()) return;
+  std::lock_guard<std::mutex> lk(JOBDEF_MTX);
+  const auto before = JOBDEFS.size();
+  JOBDEFS.erase(std::remove_if(JOBDEFS.begin(), JOBDEFS.end(),
+                               [&](const JobDef &j) { return j.bot == bot; }),
+                JOBDEFS.end());
+  {
+    std::lock_guard<std::mutex> jl(JOB_MTX);
+    for (auto it = JOBRUNS.begin(); it != JOBRUNS.end();)
+      it = it->bot == bot ? JOBRUNS.erase(it) : it + 1;
+  }
+  if (JOBDEFS.size() == before) return;
+  jobs_save_locked();
+  jobs_event_locked();
 }

@@ -135,17 +135,32 @@ class FunnelConfig(unittest.TestCase):
         self.assertIn('attr": ["funnel"]', apply)
         self.assertIn("tailscale funnel status", apply)
         self.assertIn("mag-gitea-funnel.service", apply)
+        self.assertIn("mag-gitea-funnel.timer", apply)
+        self.assertIn("keep_nginx=1", apply)
+        self.assertIn("listen[[:space:]]+100\\.123\\.114\\.16:443", apply)
+        self.assertIn("MAG_GITEA_FUNNEL_REQUIRE_PUBLIC", apply)
         unit = (ROOT / "ops/tailscale/mag-gitea-funnel.service").read_text()
         self.assertIn("apply-gitea-funnel.sh", unit)
         self.assertIn("RemainAfterExit=yes", unit)
-        self.assertIn("mag-gitea-funnel.service", (ROOT / "ops/boot/ensure-boot.sh").read_text())
+        timer = (ROOT / "ops/tailscale/mag-gitea-funnel.timer").read_text()
+        self.assertIn("Unit=mag-gitea-funnel.service", timer)
+        self.assertIn("OnUnitActiveSec=5min", timer)
+        boot = (ROOT / "ops/boot/ensure-boot.sh").read_text()
+        self.assertIn("mag-gitea-funnel.service", boot)
+        self.assertIn("mag-gitea-funnel.timer", boot)
 
     def test_retarget_moves_only_the_tailscale_listener(self):
-        old = "    listen 100.123.114.16:443 ssl http2;\nlisten 192.0.2.10:443 ssl;\n"
+        old = (
+            "    listen 100.123.114.16:443 ssl http2;\n"
+            "    listen 100.123.114.16:443 ssl;\n"
+            "listen 192.0.2.10:443 ssl;\n"
+        )
         moved = self.m.retarget_nginx(old)
         self.assertEqual(
             moved,
-            "    listen 127.0.0.1:4443 ssl http2 proxy_protocol;\nlisten 192.0.2.10:443 ssl;\n",
+            "    listen 127.0.0.1:4443 ssl http2 proxy_protocol;\n"
+            "    listen 127.0.0.1:4443 ssl http2 proxy_protocol;\n"
+            "listen 192.0.2.10:443 ssl;\n",
         )
         self.assertEqual(self.m.retarget_nginx(moved), moved)
         self.assertEqual(self.m.retarget_nginx(self.m.NGINX_LISTEN + "\n"), self.m.NGINX_LISTEN + "\n")

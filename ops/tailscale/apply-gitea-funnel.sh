@@ -36,10 +36,14 @@ mkdir -p "$snapdir/files"
 manifest=$snapdir/manifest
 : > "$manifest"
 : > "$snapdir/saved.paths"
+# After nginx has left 100.123.114.16:443, do not put it back. Funnel can only
+# bind that socket once nginx is gone. A missing funnel nodeAttr must not undo
+# the collision fix.
+keep_nginx=0
 cleanup() {
   local rc=$?
   trap - EXIT
-  if (( rc != 0 )); then
+  if (( rc != 0 && keep_nginx == 0 )); then
     if [[ -s $tmp/current && -S $sock ]]; then
       curl -sS --unix-socket "$sock" -o /dev/null -X POST \
         -H 'Content-Type: application/json' --data-binary @"$tmp/current" \
@@ -94,9 +98,9 @@ proxy=/etc/mag-ci/gitea-proxy.inc
 ini=/etc/gitea/app.ini
 shopt -s nullglob
 to_retarget=()
-for file in /etc/nginx/sites-available/*.conf /etc/nginx/conf.d/*.conf; do
+for file in /etc/nginx/sites-available/*.conf /etc/nginx/sites-enabled/*.conf /etc/nginx/conf.d/*.conf; do
   [[ -f $file && ! -L $file ]] || continue
-  grep -Fq 'listen 100.123.114.16:443 ssl http2;' "$file" || continue
+  grep -Eq 'listen[[:space:]]+100\.123\.114\.16:443\b' "$file" || continue
   save_nginx "$file"
   to_retarget+=("$file")
 done
@@ -125,8 +129,12 @@ fi
 # tailscaled must be the only listener on the Tailscale address :443.
 if command -v ss >/dev/null && ss -ltnH 'sport = :443' | grep -q '100.123.114.16:443'; then
   echo 'gitea funnel: 100.123.114.16:443 is still taken; refusing to enable Funnel' >&2
+  if command -v nginx >/dev/null; then
+    nginx -T 2>/dev/null | grep -n 'listen[[:space:]]\+100\.123\.114\.16:443' >&2 || true
+  fi
   exit 1
 fi
+keep_nginx=1
 if [[ -s $ini ]]; then
   before=$(sha256sum "$ini")
   bash "$root/ops/gitea-ci/configure-gitea.sh"
@@ -169,12 +177,18 @@ get_code=$(api GET "$tmp/applied")
 [[ $get_code == 200 ]] || { echo "gitea funnel: serve-config reread HTTP ${get_code}" >&2; exit 1; }
 python3 "$here/merge-gitea-funnel.py" check <"$tmp/applied"
 status=$(tailscale funnel status 2>&1 || true)
+sed "s#@ROOT@#$root#g" "$here/mag-gitea-funnel.service" > /etc/systemd/system/mag-gitea-funnel.service
+install -m 0644 "$here/mag-gitea-funnel.timer" /etc/systemd/system/mag-gitea-funnel.timer
+systemctl daemon-reload
+systemctl enable mag-gitea-funnel.service mag-gitea-funnel.timer
+systemctl start mag-gitea-funnel.timer
 if ! grep -Fq 'http://127.0.0.1:3000' <<<"$status" || ! grep -Eq 'Funnel on|Available on the internet' <<<"$status"; then
   echo 'gitea funnel: public Funnel is not active, so mag.tail3e02ae.ts.net has no public DNS' >&2
   cat >&2 <<'EOF'
-The tailnet policy file needs a funnel node attribute. Without it Tailscale
-does not publish the public A/AAAA record. Add this on the Access controls
-page (a narrower target than autogroup:member is fine) and run this script again:
+nginx is off 100.123.114.16:443 and the serve config points :443 at
+http://127.0.0.1:3000. Public DNS stays empty until the tailnet policy
+grants funnel. Add this on the Access controls page (a narrower target
+than autogroup:member is fine). mag-gitea-funnel.timer retries:
 
 "nodeAttrs": [
   {
@@ -186,9 +200,10 @@ page (a narrower target than autogroup:member is fine) and run this script again
 MagicDNS and HTTPS certificates must be enabled for the tailnet. After Funnel
 is on, public resolvers can take up to 10 minutes to see the name.
 EOF
-  exit 1
+  if [[ ${MAG_GITEA_FUNNEL_REQUIRE_PUBLIC:-0} == 1 ]]; then
+    exit 1
+  fi
+  echo "gitea funnel: ${origin}/ waiting for funnel nodeAttr"
+  exit 0
 fi
-sed "s#@ROOT@#$root#g" "$here/mag-gitea-funnel.service" > /etc/systemd/system/mag-gitea-funnel.service
-systemctl daemon-reload
-systemctl enable mag-gitea-funnel.service
 echo "gitea funnel: ${origin}/"

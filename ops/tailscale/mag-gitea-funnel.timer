@@ -1,0 +1,12 @@
+[Unit]
+Description=Retry Gitea Tailscale Funnel on port 443
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+AccuracySec=30s
+Persistent=true
+Unit=mag-gitea-funnel.service
+
+[Install]
+WantedBy=timers.target

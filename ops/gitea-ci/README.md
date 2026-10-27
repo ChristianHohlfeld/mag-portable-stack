@@ -46,9 +46,10 @@ the Access controls page (Owner, Admin, or Network admin), then run
 ```
 
 MagicDNS and HTTPS certificates must be enabled. Public DNS can take up to
-10 minutes after Funnel is actually on. `apply-gitea-funnel.sh` refuses to
-finish unless `tailscale funnel status` shows Funnel proxying to
-`http://127.0.0.1:3000`.
+10 minutes after Funnel is actually on. `apply-gitea-funnel.sh` still moves
+nginx off `100.123.114.16:443` when Funnel is waiting on that attribute, so
+the next retry can bind `:443`. `mag-gitea-funnel.timer` retries every five
+minutes. Set `MAG_GITEA_FUNNEL_REQUIRE_PUBLIC=1` to fail closed instead.
 
 Registration is off, sign-in is required and **two-factor authentication is
 enforced for every human account** by Gitea itself. Public clients reach Gitea

@@ -6,6 +6,7 @@ on http://127.0.0.1:3000. nginx must not bind the Tailscale address on :443.
 Tailnet serves on 8443, 8445 and 8446 stay HTTPS proxies and are not funneled.
 """
 import json
+import re
 import sys
 
 NODE = "mag.tail3e02ae.ts.net"
@@ -18,7 +19,13 @@ FUNNEL_ORIGIN = "https://mag.tail3e02ae.ts.net"
 # flags is an nginx emerg. The Tailscale address itself is not in the line:
 # tailscaled is the only process bound to 100.123.114.16:443.
 NGINX_LISTEN = "listen 127.0.0.1:4443 ssl http2 proxy_protocol;"
+# Live mag-room.conf since 2026-10-24 uses this exact line. Bots/pages may
+# omit http2. Any listen on the Tailscale address :443 is the collision.
 OLD_NGINX_LISTEN = "listen 100.123.114.16:443 ssl http2;"
+OLD_NGINX_LISTEN_RE = re.compile(
+    r"^([ \t]*)listen[ \t]+100\.123\.114\.16:443\b[^;]*;",
+    re.M,
+)
 # Existing tailnet-only serves. 8443 is already in use. The room stays on 8446.
 TAILNET = {
     "8443": "http://127.0.0.1:18767",
@@ -45,7 +52,7 @@ def retarget_nginx(text):
     """Move an installed tailnet vhost off the Tailscale address."""
     if not isinstance(text, str):
         raise SystemExit("nginx config must be text")
-    return text.replace(OLD_NGINX_LISTEN, NGINX_LISTEN)
+    return OLD_NGINX_LISTEN_RE.sub(r"\1" + NGINX_LISTEN, text)
 
 
 def _https_proxy(tcp, web, port, proxy, only=False):

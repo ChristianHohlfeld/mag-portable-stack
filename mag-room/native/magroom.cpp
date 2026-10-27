@@ -3800,7 +3800,9 @@ class VisibleReplyFilter {
           prefix.compare(0, pending.size(), pending) == 0 && !finish)
         return;
       if (pending.rfind(prefix, 0) == 0) {
-        pending.erase(0, prefix.size()); left_trim(); break;
+        pending.erase(0, prefix.size()); left_trim();
+        if (pending.empty() && !finish) return; // wait for text after the prefix
+        break;
       }
     }
     at_head = false;

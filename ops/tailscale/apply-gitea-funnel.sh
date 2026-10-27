@@ -4,150 +4,316 @@
 # nginx is moved off the Tailscale address so it cannot take that socket.
 # Idempotent. Does not restart a resident model or the room. Does not print keys.
 #   bash ops/tailscale/apply-gitea-funnel.sh [--dry-run]
+# MAG_GITEA_FUNNEL_TEST=1 remaps host paths for tests. It is refused unless
+# MAG_GITEA_FUNNEL_NGINX is a directory outside /etc/nginx.
 set +x
-set -euo pipefail
+set -eEuo pipefail
 here=$(cd -- "$(dirname -- "$0")" && pwd)
 root=$(cd -- "$here/../.." && pwd)
 origin=https://mag.tail3e02ae.ts.net
 node=mag.tail3e02ae.ts.net
+test_mode=${MAG_GITEA_FUNNEL_TEST:-0}
+nginx_root=${MAG_GITEA_FUNNEL_NGINX:-/etc/nginx}
+mag_ci_root=${MAG_GITEA_FUNNEL_MAG_CI:-/etc/mag-ci}
+ini=${MAG_GITEA_FUNNEL_INI:-/etc/gitea/app.ini}
+systemd_dir=${MAG_GITEA_FUNNEL_SYSTEMD:-/etc/systemd/system}
+lib_dir=${MAG_GITEA_FUNNEL_LIB:-/usr/local/lib/mag-ci}
+sock=${MAG_GITEA_FUNNEL_SOCK:-/var/run/tailscale/tailscaled.sock}
+
+on_err() {
+  echo "gitea funnel: failed at line ${1:-?} (exit ${2:-1})" >&2
+}
+trap 'on_err "$LINENO" "$?"' ERR
+
 if [[ ${1:-} == --dry-run ]]; then
   python3 "$here/merge-gitea-funnel.py" merge </dev/null
   echo "funnel ${origin}/ -> http://127.0.0.1:3000; tailnet-only :8443 :8445 :8446"
   exit 0
 fi
-if [[ -e /etc/mag-stack/TEST-HOST ]]; then
+if [[ $test_mode == 1 ]]; then
+  [[ -n $nginx_root && $nginx_root != /etc/nginx && -d $nginx_root && ! -L $nginx_root ]] || {
+    echo 'gitea funnel: TEST mode needs MAG_GITEA_FUNNEL_NGINX as a real directory outside /etc/nginx' >&2
+    exit 1
+  }
+  [[ -n ${MAG_GITEA_FUNNEL_SERVE:-} ]] || {
+    echo 'gitea funnel: TEST mode needs MAG_GITEA_FUNNEL_SERVE' >&2
+    exit 1
+  }
+elif [[ -e /etc/mag-stack/TEST-HOST ]]; then
   echo 'gitea funnel: skipped on TEST-HOST (no tailnet)'
   exit 0
 fi
-[[ $EUID == 0 ]] || { echo 'root required' >&2; exit 1; }
+if [[ $test_mode != 1 ]]; then
+  [[ $EUID == 0 ]] || { echo 'root required' >&2; exit 1; }
+fi
 [[ ${1:-} == "" ]] || { echo 'usage: apply-gitea-funnel.sh [--dry-run]' >&2; exit 2; }
-command -v tailscale >/dev/null
-command -v python3 >/dev/null
-command -v nginx >/dev/null
-command -v systemctl >/dev/null
-dns=$(tailscale status --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["Self"]["DNSName"].rstrip("."))')
+command -v python3 >/dev/null || { echo 'gitea funnel: python3 missing' >&2; exit 1; }
+command -v nginx >/dev/null || { echo 'gitea funnel: nginx missing' >&2; exit 1; }
+command -v systemctl >/dev/null || { echo 'gitea funnel: systemctl missing' >&2; exit 1; }
+command -v tailscale >/dev/null || { echo 'gitea funnel: tailscale missing' >&2; exit 1; }
+if [[ $test_mode != 1 ]]; then
+  command -v curl >/dev/null || { echo 'gitea funnel: curl missing' >&2; exit 1; }
+fi
+dns=$(tailscale status --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["Self"]["DNSName"].rstrip("."))') || {
+  echo 'gitea funnel: tailscale status failed' >&2
+  exit 1
+}
 [[ $dns == "$node" ]] || { echo "gitea funnel: this node is ${dns}, expected ${node}" >&2; exit 1; }
-sock=/var/run/tailscale/tailscaled.sock
-[[ -S $sock ]] || { echo 'gitea funnel: tailscaled socket missing' >&2; exit 1; }
+if [[ $test_mode != 1 ]]; then
+  [[ -S $sock ]] || { echo 'gitea funnel: tailscaled socket missing' >&2; exit 1; }
+fi
 
-tmp=$(mktemp -d /run/mag-gitea-funnel.XXXXXXXX)
+tmp=
+snapdir=
+manifest=
+keep_nginx=0
+if [[ $test_mode == 1 ]]; then
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/mag-gitea-funnel.XXXXXXXX")
+else
+  tmp=$(mktemp -d /run/mag-gitea-funnel.XXXXXXXX)
+fi
 snapdir=$tmp/snap
-mkdir -p "$snapdir/files"
+mkdir -p "$snapdir/files" || { echo 'gitea funnel: cannot create snapshot dir' >&2; exit 1; }
 manifest=$snapdir/manifest
 : > "$manifest"
 : > "$snapdir/saved.paths"
 # After nginx has left 100.123.114.16:443, do not put it back. Funnel can only
 # bind that socket once nginx is gone. A missing funnel nodeAttr must not undo
 # the collision fix.
-keep_nginx=0
 cleanup() {
   local rc=$?
-  trap - EXIT
+  trap - EXIT ERR
   if (( rc != 0 && keep_nginx == 0 )); then
-    if [[ -s $tmp/current && -S $sock ]]; then
+    if [[ $test_mode == 1 && -n ${MAG_GITEA_FUNNEL_SERVE:-} && -n ${tmp:-} && -s $tmp/current ]]; then
+      cp -a "$tmp/current" "$MAG_GITEA_FUNNEL_SERVE" || true
+    elif [[ -n ${tmp:-} && -s $tmp/current && -S ${sock:-} ]]; then
       curl -sS --unix-socket "$sock" -o /dev/null -X POST \
         -H 'Content-Type: application/json' --data-binary @"$tmp/current" \
         http://local-tailscaled.sock/localapi/v0/serve-config || true
     fi
-    if [[ -s $manifest ]]; then
+    if [[ -n ${manifest:-} && -s $manifest ]]; then
       while IFS=$'\t' read -r id file kind; do
         [[ -n ${id:-} ]] || continue
-        if [[ $kind == file ]]; then cp -a "$snapdir/files/$id" "$file"
+        if [[ $kind == file ]]; then cp -a "$snapdir/files/$id" "$file" || true
         elif [[ $kind == link ]]; then
-          rm -f -- "$file"
-          ln -s -- "$(cat "$snapdir/files/$id")" "$file"
-        else rm -f -- "$file"; fi
+          rm -f -- "$file" || true
+          ln -s -- "$(cat "$snapdir/files/$id")" "$file" || true
+        else rm -f -- "$file" || true; fi
       done < "$manifest"
-      nginx -t && systemctl reload nginx.service || true
+      if nginx -t; then
+        systemctl reload nginx.service || true
+      fi
     fi
     echo 'gitea funnel: previous listeners restored' >&2
   fi
-  rm -rf -- "$tmp"
+  if [[ -n ${tmp:-} && -d $tmp ]]; then
+    rm -rf -- "$tmp"
+  fi
   exit "$rc"
 }
+# Restore leftover nginx if anything below fails. Installed before cert, GET,
+# snapshot, and the MAG_NGINX_TXN copy — those used to abort with no message.
+trap cleanup EXIT
+
+allowed_path() {
+  local file=$1
+  case "$file" in
+    "$nginx_root"/*|"$mag_ci_root"/*) return 0 ;;
+  esac
+  return 1
+}
+
 save_nginx() {
   local file=$1 id target
-  [[ -e $snapdir/saved.paths ]] && grep -Fxq "$file" "$snapdir/saved.paths" && return 0
-  printf '%s\n' "$file" >> "$snapdir/saved.paths"
-  id=$(wc -l < "$snapdir/saved.paths")
-  case "$file" in
-    /etc/nginx/*|/etc/mag-ci/*) ;;
-    *) echo "gitea funnel: refusing to snapshot $file" >&2; exit 1 ;;
-  esac
+  if [[ -e $snapdir/saved.paths ]] && grep -Fxq -- "$file" "$snapdir/saved.paths"; then
+    return 0
+  fi
+  printf '%s\n' "$file" >> "$snapdir/saved.paths" || {
+    echo "gitea funnel: cannot record $file" >&2
+    exit 1
+  }
+  id=$(grep -c . "$snapdir/saved.paths" || true)
+  [[ $id =~ ^[1-9][0-9]*$ ]] || { echo "gitea funnel: bad snapshot id for $file" >&2; exit 1; }
+  if ! allowed_path "$file"; then
+    echo "gitea funnel: refusing to snapshot $file" >&2
+    exit 1
+  fi
   if [[ -L $file ]]; then
-    target=$(readlink -- "$file")
+    target=$(readlink -- "$file") || { echo "gitea funnel: cannot read symlink $file" >&2; exit 1; }
     [[ -n $target ]] || { echo "gitea funnel: empty symlink $file" >&2; exit 1; }
-    printf '%s\n' "$target" > "$snapdir/files/$id"
+    printf '%s\n' "$target" > "$snapdir/files/$id" || {
+      echo "gitea funnel: cannot snapshot symlink $file" >&2
+      exit 1
+    }
     printf '%s\t%s\tlink\n' "$id" "$file" >> "$manifest"
   elif [[ -f $file ]]; then
-    cp -a "$file" "$snapdir/files/$id"
+    cp -a "$file" "$snapdir/files/$id" || {
+      echo "gitea funnel: cannot snapshot $file" >&2
+      exit 1
+    }
     printf '%s\t%s\tfile\n' "$id" "$file" >> "$manifest"
   else
     printf '%s\t%s\tabsent\n' "$id" "$file" >> "$manifest"
   fi
 }
+
+publish_snapshot() {
+  local dest=${MAG_NGINX_TXN:-} snap
+  if [[ -z $dest || ! -d $dest || -L $dest ]]; then
+    return 0
+  fi
+  snap=$dest/funnel-snapshot
+  # A leftover dest from a previous attempt used to turn `cp -a snap dest`
+  # into dest/snap, so restore looked at an empty tree. Replace dest with
+  # snap's contents (trailing /.) so a pre-existing directory cannot nest.
+  rm -rf -- "$snap" || { echo "gitea funnel: cannot clear $snap" >&2; exit 1; }
+  mkdir -p -- "$snap/files" || { echo "gitea funnel: cannot create $snap" >&2; exit 1; }
+  cp -a -- "$snapdir"/. "$snap"/ || {
+    echo "gitea funnel: cannot copy snapshot to $snap" >&2
+    exit 1
+  }
+  if [[ ! -f $snap/serve.json || ! -f $snap/manifest || ! -f $snap/saved.paths ]]; then
+    echo "gitea funnel: snapshot copy incomplete at $snap" >&2
+    exit 1
+  fi
+  if [[ -e $snap/snap ]]; then
+    echo "gitea funnel: snapshot nested unexpectedly at $snap/snap" >&2
+    exit 1
+  fi
+}
+
 api() {
-  local method=$1 out=$2
+  local method=$1 out=$2 code=0 http arg src=
   shift 2
-  curl -sS --unix-socket "$sock" -o "$out" -w '%{http_code}' -X "$method" "$@" \
-    http://local-tailscaled.sock/localapi/v0/serve-config
+  if [[ $test_mode == 1 ]]; then
+    local store=${MAG_GITEA_FUNNEL_SERVE:?}
+    if [[ $method == GET ]]; then
+      [[ -f $store ]] || { echo 'gitea funnel: test serve-config missing' >&2; exit 1; }
+      cp -a "$store" "$out" || { echo 'gitea funnel: cannot read test serve-config' >&2; exit 1; }
+      printf '%s' 200
+      return 0
+    fi
+    if [[ $method == POST ]]; then
+      local prev=
+      for arg in "$@"; do
+        case "$arg" in
+          --data-binary@*) src=${arg#--data-binary@} ;;
+          --data-binary) prev=data ;;
+          *)
+            if [[ $prev == data ]]; then
+              src=${arg#@}
+              prev=
+            fi
+            ;;
+        esac
+      done
+      [[ -n $src && -f $src ]] || { echo 'gitea funnel: test POST missing body' >&2; exit 1; }
+      cp -a "$src" "$store" || { echo 'gitea funnel: cannot write test serve-config' >&2; exit 1; }
+      : > "$out"
+      printf '%s' 200
+      return 0
+    fi
+    echo "gitea funnel: test serve-config ${method} unsupported" >&2
+    exit 1
+  fi
+  command -v curl >/dev/null || { echo 'gitea funnel: curl missing' >&2; exit 1; }
+  http=$(curl -sS --unix-socket "$sock" -o "$out" -w '%{http_code}' -X "$method" "$@" \
+    http://local-tailscaled.sock/localapi/v0/serve-config) || code=$?
+  if (( code != 0 )); then
+    echo "gitea funnel: serve-config ${method} curl exit ${code}" >&2
+    exit 1
+  fi
+  printf '%s' "$http"
 }
 
 # Certificate before nginx -t. The gitea vhost cannot load without it.
-bash "$here/issue-tailscale-cert.sh" --no-reload
-get_code=$(api GET "$tmp/current")
+if [[ $test_mode == 1 ]]; then
+  echo "tailscale cert: $node"
+else
+  bash "$here/issue-tailscale-cert.sh" --no-reload || {
+    echo 'gitea funnel: certificate issuance failed' >&2
+    exit 1
+  }
+fi
+get_code=$(api GET "$tmp/current") || {
+  echo 'gitea funnel: serve-config GET failed' >&2
+  exit 1
+}
 [[ $get_code == 200 ]] || { echo "gitea funnel: serve-config GET HTTP ${get_code}" >&2; exit 1; }
-cp -a "$tmp/current" "$snapdir/serve.json"
+[[ -f $tmp/current ]] || { echo 'gitea funnel: serve-config GET wrote no body' >&2; exit 1; }
+cp -a "$tmp/current" "$snapdir/serve.json" || {
+  echo 'gitea funnel: cannot snapshot serve-config' >&2
+  exit 1
+}
 
 # Snapshot first, then move listeners. A failure restores this snapshot,
 # including from deploy rollback via restore-gitea-funnel.sh.
 # nginx -T is the source of truth: sites-enabled/mag-room.conf is a symlink
 # and live bots/pages still sit in conf.d with listen 100.123.114.16:443.
-site=/etc/nginx/conf.d/mag-git.conf
-proxy=/etc/mag-ci/gitea-proxy.inc
-ini=/etc/gitea/app.ini
+site=$nginx_root/conf.d/mag-git.conf
+proxy=$mag_ci_root/gitea-proxy.inc
 nginx -T >"$tmp/nginx-t" 2>"$tmp/nginx-t.err" || true
-mapfile -t to_retarget < <(
-  python3 "$here/merge-gitea-funnel.py" candidates \
-    /etc/nginx/sites-available \
-    /etc/nginx/sites-enabled \
-    /etc/nginx/conf.d \
-    /etc/nginx/snippets \
-    /etc/nginx/streams-enabled \
-    /etc/mag-ci <"$tmp/nginx-t"
-)
+to_retarget=()
+if ! python3 "$here/merge-gitea-funnel.py" candidates \
+    "$nginx_root/sites-available" \
+    "$nginx_root/sites-enabled" \
+    "$nginx_root/conf.d" \
+    "$nginx_root/snippets" \
+    "$nginx_root/streams-enabled" \
+    "$mag_ci_root" <"$tmp/nginx-t" >"$tmp/candidates"
+then
+  echo 'gitea funnel: candidate discovery failed' >&2
+  exit 1
+fi
+if [[ -s $tmp/candidates ]]; then
+  mapfile -t to_retarget < "$tmp/candidates" || {
+    echo 'gitea funnel: cannot read candidate list' >&2
+    exit 1
+  }
+fi
 for file in "${to_retarget[@]}"; do
-  case "$file" in
-    /etc/nginx/*|/etc/mag-ci/*) ;;
-    *) echo "gitea funnel: refusing to rewrite $file" >&2; exit 1 ;;
-  esac
+  if ! allowed_path "$file"; then
+    echo "gitea funnel: refusing to rewrite $file" >&2
+    exit 1
+  fi
   save_nginx "$file"
 done
 save_nginx "$site"
 save_nginx "$proxy"
-if [[ -n ${MAG_NGINX_TXN:-} && -d $MAG_NGINX_TXN && ! -L $MAG_NGINX_TXN ]]; then
-  rm -rf -- "$MAG_NGINX_TXN/funnel-snapshot"
-  cp -a "$snapdir" "$MAG_NGINX_TXN/funnel-snapshot"
+publish_snapshot
+if [[ $test_mode == 1 && ${MAG_GITEA_FUNNEL_FAIL:-} == after-snapshot ]]; then
+  false
 fi
-trap cleanup EXIT
 if (( ${#to_retarget[@]} )); then
   for file in "${to_retarget[@]}"; do
     # Follow a symlink to the live bytes, then replace the path with a
     # regular file so a stale release tree cannot put nginx back on :443.
     if [[ -e $file || -L $file ]]; then
-      mode=$(stat -c %a "$file")
+      mode=$(stat -c %a "$file") || { echo "gitea funnel: cannot stat $file" >&2; exit 1; }
     else
       mode=644
     fi
-    python3 "$here/merge-gitea-funnel.py" retarget <"$file" >"$tmp/retargeted"
-    rm -f -- "$file"
-    install -m "$mode" "$tmp/retargeted" "$file"
+    python3 "$here/merge-gitea-funnel.py" retarget <"$file" >"$tmp/retargeted" || {
+      echo "gitea funnel: cannot retarget $file" >&2
+      exit 1
+    }
+    rm -f -- "$file" || { echo "gitea funnel: cannot replace $file" >&2; exit 1; }
+    install -m "$mode" "$tmp/retargeted" "$file" || {
+      echo "gitea funnel: cannot install $file" >&2
+      exit 1
+    }
     echo "gitea funnel: moved $file off 100.123.114.16:443"
   done
 fi
-install -d -m 0755 /etc/mag-ci
-install -m 0644 "$root/ops/gitea-ci/gitea-proxy.inc" "$proxy"
-install -m 0644 "$root/ops/gitea-ci/public.nginx.in" "$site"
+install -d -m 0755 "$mag_ci_root" || { echo 'gitea funnel: cannot create mag-ci dir' >&2; exit 1; }
+install -m 0644 "$root/ops/gitea-ci/gitea-proxy.inc" "$proxy" || {
+  echo 'gitea funnel: cannot install gitea-proxy.inc' >&2
+  exit 1
+}
+install -m 0644 "$root/ops/gitea-ci/public.nginx.in" "$site" || {
+  echo 'gitea funnel: cannot install mag-git.conf' >&2
+  exit 1
+}
 if ! nginx -t || ! systemctl reload nginx.service; then
   echo 'gitea funnel: nginx config rejected' >&2
   exit 1
@@ -164,7 +330,7 @@ if command -v ss >/dev/null && ss -ltnH 'sport = :443' | grep -q '100.123.114.16
   exit 1
 fi
 keep_nginx=1
-if [[ -s $ini ]]; then
+if [[ $test_mode != 1 && -s $ini ]]; then
   before=$(sha256sum "$ini")
   bash "$root/ops/gitea-ci/configure-gitea.sh"
   after=$(sha256sum "$ini")
@@ -172,16 +338,23 @@ if [[ -s $ini ]]; then
 fi
 # The old lego timer must not run HTTP-01 for a name Funnel now serves.
 systemctl disable --now mag-ci-cert.timer >/dev/null 2>&1 || true
-install -d -m 0755 /usr/local/lib/mag-ci
-install -m 0755 "$here/issue-tailscale-cert.sh" /usr/local/lib/mag-ci/issue-tailscale-cert.sh
-install -m 0644 "$here/mag-tailscale-cert.service" /etc/systemd/system/mag-tailscale-cert.service
-install -m 0644 "$here/mag-tailscale-cert.timer" /etc/systemd/system/mag-tailscale-cert.timer
+install -d -m 0755 "$lib_dir" || { echo 'gitea funnel: cannot create cert lib dir' >&2; exit 1; }
+install -d -m 0755 "$systemd_dir" || { echo 'gitea funnel: cannot create systemd dir' >&2; exit 1; }
+install -m 0755 "$here/issue-tailscale-cert.sh" "$lib_dir/issue-tailscale-cert.sh"
+install -m 0644 "$here/mag-tailscale-cert.service" "$systemd_dir/mag-tailscale-cert.service"
+install -m 0644 "$here/mag-tailscale-cert.timer" "$systemd_dir/mag-tailscale-cert.timer"
 systemctl daemon-reload
 systemctl enable mag-tailscale-cert.timer
 systemctl start mag-tailscale-cert.timer
 
-python3 "$here/merge-gitea-funnel.py" merge <"$tmp/current" >"$tmp/merged"
-python3 "$here/merge-gitea-funnel.py" check <"$tmp/merged"
+python3 "$here/merge-gitea-funnel.py" merge <"$tmp/current" >"$tmp/merged" || {
+  echo 'gitea funnel: serve-config merge failed' >&2
+  exit 1
+}
+python3 "$here/merge-gitea-funnel.py" check <"$tmp/merged" || {
+  echo 'gitea funnel: merged serve-config rejected' >&2
+  exit 1
+}
 same=0
 if python3 - "$tmp/current" "$tmp/merged" <<'PY'
 import json, sys
@@ -196,18 +369,27 @@ PY
 then same=1
 fi
 if (( same == 0 )); then
-  post_code=$(api POST "$tmp/post" -H 'Content-Type: application/json' --data-binary @"$tmp/merged")
+  post_code=$(api POST "$tmp/post" -H 'Content-Type: application/json' --data-binary @"$tmp/merged") || {
+    echo 'gitea funnel: serve-config POST failed' >&2
+    exit 1
+  }
   if [[ $post_code != 200 ]]; then
     echo "gitea funnel: serve-config POST HTTP ${post_code}" >&2
     exit 1
   fi
 fi
-get_code=$(api GET "$tmp/applied")
+get_code=$(api GET "$tmp/applied") || {
+  echo 'gitea funnel: serve-config reread failed' >&2
+  exit 1
+}
 [[ $get_code == 200 ]] || { echo "gitea funnel: serve-config reread HTTP ${get_code}" >&2; exit 1; }
-python3 "$here/merge-gitea-funnel.py" check <"$tmp/applied"
+python3 "$here/merge-gitea-funnel.py" check <"$tmp/applied" || {
+  echo 'gitea funnel: applied serve-config rejected' >&2
+  exit 1
+}
 status=$(tailscale funnel status 2>&1 || true)
-sed "s#@ROOT@#$root#g" "$here/mag-gitea-funnel.service" > /etc/systemd/system/mag-gitea-funnel.service
-install -m 0644 "$here/mag-gitea-funnel.timer" /etc/systemd/system/mag-gitea-funnel.timer
+sed "s#@ROOT@#$root#g" "$here/mag-gitea-funnel.service" > "$systemd_dir/mag-gitea-funnel.service"
+install -m 0644 "$here/mag-gitea-funnel.timer" "$systemd_dir/mag-gitea-funnel.timer"
 systemctl daemon-reload
 systemctl enable mag-gitea-funnel.service mag-gitea-funnel.timer
 systemctl start mag-gitea-funnel.timer

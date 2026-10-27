@@ -2,11 +2,122 @@
 """Serve/Funnel config, nginx exposure and ROOT_URL. No tailscaled, no secrets."""
 import importlib.util
 import json
+import os
 import pathlib
+import stat
 import subprocess
+import tempfile
 import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[3]
+
+
+def _write_exec(path, text):
+    path.write_text(text)
+    path.chmod(path.stat().st_mode | stat.S_IEXEC)
+
+
+def _leftover_host(tree):
+    """Live mag after #137: room on 4443, bots/pages still on Tailscale :443."""
+    nginx = tree / "nginx"
+    mag_ci = tree / "mag-ci"
+    systemd = tree / "systemd"
+    lib = tree / "lib"
+    txn = tree / "txn"
+    bin_dir = tree / "bin"
+    serve = tree / "serve.json"
+    for path in (
+        nginx / "sites-available",
+        nginx / "sites-enabled",
+        nginx / "conf.d",
+        nginx / "snippets",
+        mag_ci,
+        systemd,
+        lib,
+        txn / "funnel-snapshot" / "snap" / "files",
+        bin_dir,
+    ):
+        path.mkdir(parents=True)
+    # Pre-existing snapshot from a rolled-back deploy. `cp -a snap dest`
+    # used to nest as dest/snap and abort or leave restore empty.
+    (txn / "funnel-snapshot" / "manifest").write_text("stale\n")
+    (txn / "funnel-snapshot" / "snap" / "manifest").write_text("nested-stale\n")
+    (nginx / "sites-available" / "mag-room.conf").write_text(
+        "server {\n    listen 127.0.0.1:4443 ssl http2 proxy_protocol;\n}\n"
+    )
+    (nginx / "sites-enabled" / "mag-room.conf").symlink_to(
+        "../sites-available/mag-room.conf"
+    )
+    (nginx / "conf.d" / "mag-bots.conf").write_text(
+        "server {\n    listen 100.123.114.16:443 ssl http2;\n"
+        "    server_name ~^agent[0-9]+\\.bot\\.stardenburg\\.de$;\n}\n"
+    )
+    (nginx / "conf.d" / "mag-pages.conf").write_text(
+        "server {\n    listen 100.123.114.16:443 ssl http2;\n"
+        "    server_name pages.stardenburg.de;\n}\n"
+        "server {\n    listen 100.123.114.16:443 ssl http2;\n"
+        "    server_name ~^[a-z0-9-]+\\.pages\\.stardenburg\\.de$;\n}\n"
+    )
+    serve.write_text(
+        json.dumps(
+            {
+                "TCP": {"8443": {"HTTPS": True}},
+                "Web": {
+                    "mag.tail3e02ae.ts.net:8443": {
+                        "Handlers": {"/": {"Proxy": "http://127.0.0.1:18767"}}
+                    }
+                },
+                "AllowFunnel": {},
+            }
+        )
+    )
+    _write_exec(
+        bin_dir / "nginx",
+        """#!/usr/bin/env bash
+set -euo pipefail
+root=${MAG_GITEA_FUNNEL_NGINX:?}
+if [[ ${1:-} == -T ]]; then
+  for f in "$root"/sites-enabled/* "$root"/conf.d/*; do
+    [[ -e $f || -L $f ]] || continue
+    printf '# configuration file %s:\\n' "$f"
+    cat -- "$f"
+  done
+  exit 0
+fi
+exit 0
+""",
+    )
+    _write_exec(bin_dir / "systemctl", "#!/usr/bin/env bash\nexit 0\n")
+    _write_exec(bin_dir / "ss", "#!/usr/bin/env bash\nexit 0\n")
+    _write_exec(
+        bin_dir / "tailscale",
+        """#!/usr/bin/env bash
+if [[ ${1:-} == status ]]; then
+  echo '{"Self":{"DNSName":"mag.tail3e02ae.ts.net."}}'
+  exit 0
+fi
+if [[ ${1:-} == funnel ]]; then
+  echo 'No funnel'
+  exit 0
+fi
+exit 0
+""",
+    )
+    env = os.environ.copy()
+    env.update(
+        {
+            "MAG_GITEA_FUNNEL_TEST": "1",
+            "MAG_GITEA_FUNNEL_NGINX": str(nginx),
+            "MAG_GITEA_FUNNEL_MAG_CI": str(mag_ci),
+            "MAG_GITEA_FUNNEL_SYSTEMD": str(systemd),
+            "MAG_GITEA_FUNNEL_LIB": str(lib),
+            "MAG_GITEA_FUNNEL_SERVE": str(serve),
+            "MAG_NGINX_TXN": str(txn),
+            "MAG_GITEA_FUNNEL_REQUIRE_PUBLIC": "0",
+            "PATH": f"{bin_dir}:{env.get('PATH', '')}",
+        }
+    )
+    return nginx, txn, env
 
 
 def load_merge():
@@ -139,8 +250,18 @@ class FunnelConfig(unittest.TestCase):
         self.assertIn("keep_nginx=1", apply)
         self.assertIn("merge-gitea-funnel.py\" candidates", apply)
         self.assertIn("merge-gitea-funnel.py\" scan", apply)
-        self.assertIn("/etc/nginx/conf.d", apply)
+        self.assertIn('"$nginx_root/conf.d"', apply)
+        self.assertIn("/etc/nginx", apply)
         self.assertIn("MAG_GITEA_FUNNEL_REQUIRE_PUBLIC", apply)
+        self.assertIn('gitea funnel: failed at line', apply)
+        self.assertIn("trap 'on_err", apply)
+        self.assertIn("trap cleanup EXIT", apply)
+        self.assertLess(
+            apply.index("trap cleanup EXIT"),
+            apply.index('issue-tailscale-cert.sh" --no-reload'),
+        )
+        self.assertIn('cp -a -- "$snapdir"/.', apply)
+        self.assertIn("MAG_GITEA_FUNNEL_TEST", apply)
         activate = (ROOT / "ops/private-access/deploy-nginx.sh").read_text()
         self.assertIn("A managed nginx vhost still listens on the Tailscale :443", activate)
         unit = (ROOT / "ops/tailscale/mag-gitea-funnel.service").read_text()
@@ -279,6 +400,61 @@ class FunnelConfig(unittest.TestCase):
         public = (ROOT / "ops/pages/mag-pages-public.nginx.in").read_text()
         self.assertFalse(self.m.has_tailnet_443(public))
         self.assertNotIn("100.123.114.16", public)
+
+    def test_apply_on_host_with_leftover_conf_d_and_existing_snapshot(self):
+        with tempfile.TemporaryDirectory() as raw:
+            nginx, txn, env = _leftover_host(pathlib.Path(raw))
+            proc = subprocess.run(
+                ["bash", "ops/tailscale/apply-gitea-funnel.sh"],
+                cwd=ROOT, env=env, text=True, capture_output=True,
+            )
+            log = proc.stdout + proc.stderr
+            self.assertEqual(proc.returncode, 0, log)
+            self.assertIn("tailscale cert: mag.tail3e02ae.ts.net", log)
+            self.assertIn("gitea funnel: moved", log)
+            self.assertIn("mag-bots.conf", log)
+            self.assertIn("mag-pages.conf", log)
+            self.assertNotIn("gitea funnel: failed at line", log)
+            self.assertNotIn("previous listeners restored", log)
+            bots = (nginx / "conf.d" / "mag-bots.conf").read_text()
+            pages = (nginx / "conf.d" / "mag-pages.conf").read_text()
+            self.assertIn(self.m.NGINX_LISTEN, bots)
+            self.assertEqual(pages.count(self.m.NGINX_LISTEN), 2)
+            self.assertNotIn("100.123.114.16:443", bots)
+            self.assertNotIn("100.123.114.16:443", pages)
+            snap = txn / "funnel-snapshot"
+            self.assertTrue((snap / "serve.json").is_file(), list(snap.iterdir()) if snap.exists() else snap)
+            self.assertTrue((snap / "manifest").is_file())
+            self.assertTrue((snap / "saved.paths").is_file())
+            self.assertFalse((snap / "snap").exists(), "pre-existing snapshot must not nest")
+            self.assertNotIn("stale", (snap / "manifest").read_text())
+            saved = (snap / "saved.paths").read_text()
+            self.assertIn("mag-bots.conf", saved)
+            self.assertIn("mag-pages.conf", saved)
+            self.assertTrue((nginx / "conf.d" / "mag-git.conf").is_file())
+            self.assertTrue((pathlib.Path(env["MAG_GITEA_FUNNEL_MAG_CI"]) / "gitea-proxy.inc").is_file())
+
+    def test_apply_err_trap_restores_leftover_listens_after_snapshot(self):
+        with tempfile.TemporaryDirectory() as raw:
+            nginx, txn, env = _leftover_host(pathlib.Path(raw))
+            env["MAG_GITEA_FUNNEL_FAIL"] = "after-snapshot"
+            bots_before = (nginx / "conf.d" / "mag-bots.conf").read_text()
+            pages_before = (nginx / "conf.d" / "mag-pages.conf").read_text()
+            proc = subprocess.run(
+                ["bash", "ops/tailscale/apply-gitea-funnel.sh"],
+                cwd=ROOT, env=env, text=True, capture_output=True,
+            )
+            log = proc.stdout + proc.stderr
+            self.assertNotEqual(proc.returncode, 0, log)
+            self.assertIn("tailscale cert: mag.tail3e02ae.ts.net", log)
+            self.assertRegex(log, r"gitea funnel: failed at line [0-9]+ \(exit 1\)")
+            self.assertIn("previous listeners restored", log)
+            self.assertEqual((nginx / "conf.d" / "mag-bots.conf").read_text(), bots_before)
+            self.assertEqual((nginx / "conf.d" / "mag-pages.conf").read_text(), pages_before)
+            self.assertIn("100.123.114.16:443", bots_before)
+            snap = txn / "funnel-snapshot"
+            self.assertTrue((snap / "serve.json").is_file())
+            self.assertFalse((snap / "snap").exists())
 
     def test_host_runner_workflow_matches_registered_labels(self):
         import yaml

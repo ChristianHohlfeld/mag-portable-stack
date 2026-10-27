@@ -3466,77 +3466,41 @@ class ConfiguredNuma(unittest.TestCase):
   room=self.request('/api/state')['room']
   i=max(k for k,m in enumerate(room) if token in (m.get('content') or ''))
   return [m for m in room[i+1:] if m.get('role')=='assistant']
- def test_10_two_bots_answer_concurrently_order_stable(self):
-  bots=self.bots();self.assertEqual(len(bots),2)
-  ids=[a['id'] for a in self.request('/api/state')['agents']]
-  self.wait_idle();Model.slot_delay={'0':.5,'1':.02,'2':.02,'3':.02}
-  gate=threading.Event()
-  try:
-   token=f'Alle {time.monotonic_ns()}'
-   Model.barrier_token=token;Model.barrier_release=gate
-   self.request('/api/message',{'text':token,'bots':ids})
-   for _ in range(400):
-    calls=[sl for c,sl in list(Model.pairs) if token in json.dumps(c,ensure_ascii=False)]
-    if len(calls)>=2:break
-    time.sleep(.01)
-   else:self.fail('not both bots started concurrently')
-   self.assertEqual(sorted(calls[:2]),['0','1'])
-   self.assertEqual(self.round_msgs(token),[],
-    'both started before the fake model releases any response')
-   gate.set()
-   self.wait_idle()
-  finally:
-   gate.set();Model.slot_delay={};Model.barrier_token='';Model.barrier_release=None
-  got=self.round_msgs(token)
-  self.assertEqual(len(got),2)
-  self.assertEqual(got[-1]['bot'],ids[0],'slowest bot (slot 1) finished last in the transcript')
-  # Stable UI order: one turn group, each answer carries the bot's fixed list position.
-  self.assertEqual(len({m['group'] for m in got}),1)
-  self.assertEqual(sorted((m['order'],m['bot']) for m in got),[(i,b) for i,b in enumerate(ids)])
-  html=(ROOT/'mag-room/web/index.html').read_text()
-  self.assertIn('timeline.sort',html)
-  self.assertIn('node.dataset.displayMs',html)
-  self.assertIn("group:event.group||'',order:+event.order||0",html)
- def test_11_reflection_round_optional_and_cancel(self):
-  ids=[a['id'] for a in self.request('/api/state')['agents']]
-  self.assertFalse(self.request('/api/state')['reflect'],'reflection round defaults to OFF')
-  self.assertTrue(self.request('/api/reflect',{'on':True})['on'])
-  try:
-   self.assertTrue(self.request('/api/state')['reflect'])
-   self.wait_idle();token=f'Runde {time.monotonic_ns()}';mark=len(Model.pairs)
-   self.request('/api/message',{'text':token,'bots':ids})
-   for _ in range(600):
-    got=self.round_msgs(token)
-    if len(got)>=2:break
-    time.sleep(.02)
-   self.wait_idle();got=self.round_msgs(token)
-   self.assertEqual(len(got),4,'one reflection answer per bot, never chained')
-   first,second=got[:2],got[2:]
-   self.assertEqual(len({m['group'] for m in first}),1);self.assertEqual(len({m['group'] for m in second}),1)
-   self.assertNotEqual(first[0]['group'],second[0]['group'])
-   refl=[(c,sl) for c,sl in list(Model.pairs)[mark:] if 'Reflexionsrunde' in json.dumps(c,ensure_ascii=False)]
-   self.assertEqual(sorted(sl for _,sl in refl),['0','1'])
-   names={a['id']:a['name'] for a in self.request('/api/state')['agents']}
-   for c,sl in refl:
-    text=json.dumps(c,ensure_ascii=False)
-    for b in ids:self.assertIn(names[b],text,'each bot sees the other first-round answers')
-   # Stop one bot during the first round: the others finish, no reflection round.
-   self.wait_idle();Model.slot_delay={'1':2.0}
-   try:
-    token=f'Stopp {time.monotonic_ns()}'
-    self.request('/api/message',{'text':token,'bots':ids})
-    for _ in range(300):
-     if any(token in json.dumps(c,ensure_ascii=False) and sl=='1' for c,sl in list(Model.pairs)):break
-     time.sleep(.01)
-    time.sleep(.2);self.request('/api/cancel',{'bot':ids[1]})
-    self.wait_idle()
-   finally:Model.slot_delay={}
-   time.sleep(.3);self.wait_idle()
-   got=self.round_msgs(token)
-   self.assertEqual(sorted(m['bot'] for m in got if not m.get('interrupted')),sorted(b for b in ids if b!=ids[1]))
-   self.assertFalse([c for c,_ in list(Model.pairs) if token in json.dumps(c,ensure_ascii=False) and 'Reflexionsrunde' in c['messages'][-1].get('content','')])
-  finally:
-   self.assertFalse(self.request('/api/reflect',{'on':False})['on'])
+ def test_10_one_voice_and_explicit_mentions_serial(self):
+  agents=self.request('/api/state')['agents']
+  ids=[a['id'] for a in agents];names=[a['name'] for a in agents]
+  self.wait_idle()
+  token=f'Gruppe {time.monotonic_ns()}'
+  n=len(Model.pairs)
+  self.request('/api/message',{'text':token,'bots':ids})
+  self.wait_idle()
+  spoken=self.round_msgs(token)
+  self.assertEqual(len(spoken),1,spoken)
+  self.assertEqual(spoken[0]['bot'],ids[0])
+  self.assertEqual(len(Model.pairs)-n,1,'no chorus on unaddressed input')
+  token=f'@{names[0]} @{names[1]} {time.monotonic_ns()}'
+  n=len(Model.pairs)
+  self.request('/api/message',{'text':token,'bots':[ids[0]]})
+  self.wait_idle()
+  responses=self.round_msgs(token)
+  self.assertEqual([m['bot'] for m in responses],ids,'both @ mentions must reply serially')
+  calls=list(Model.pairs)[n:]
+  self.assertEqual(len(calls),2)
+  self.assertTrue(all(call['messages'][-1]['role']=='user' for call,_ in calls))
+  self.assertEqual(len({m['group'] for m in responses}),1)
+ def test_11_no_reflection_rounds_or_toggle(self):
+  self.wait_idle()
+  agents=self.request('/api/state')['agents']
+  ids=[a['id'] for a in agents];names=[a['name'] for a in agents]
+  self.assertFalse(self.request('/api/state')['reflect'])
+  token=f'@{names[0]} @{names[1]} {time.monotonic_ns()}'
+  n=len(Model.pairs)
+  self.request('/api/message',{'text':token,'bots':ids})
+  self.wait_idle()
+  self.assertEqual(len(Model.pairs)-n,2,'no second/third rounds')
+  self.assertEqual(len(self.round_msgs(token)),2)
+  self.error(410,'/api/reflect',{'on':True})
+  self.assertNotIn('id="reflect"',(ROOT/'mag-room/web/index.html').read_text())
  def test_09_prewarm_every_bot_slot_and_share_prefix(self):
   self.wait_idle()
   def warmed(after):

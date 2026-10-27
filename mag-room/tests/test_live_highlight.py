@@ -110,6 +110,13 @@ class LiveHighlight(unittest.TestCase):
    # The real browser reports the target before typing into it. Assert that
    # both the focus target and the subsequent typing stay aligned.
    ev({'action':'target','box':u,'x':u['x']+12,'y':u['y']+u['h']/2})
+   print('HIGHLIGHT_TARGET2:',room.evaluate("""() => ({
+     boxCount:document.querySelectorAll('#browser-overlay .lh-box').length,
+     boxes:[...document.querySelectorAll('#browser-overlay .lh-box')].map(x=>x.getBoundingClientRect().toJSON()),
+     selected:document.querySelector('#browser-agent')?.value,
+     highlight:window.magLiveHighlight?.enabled(),
+     fn:window.browserOverlay?.toString().slice(0,160)
+   })"""),flush=True)
    assert_box(u)
    ev({'action':'type','box':u,'text':'chris@example.org'})
    assert_box(u)

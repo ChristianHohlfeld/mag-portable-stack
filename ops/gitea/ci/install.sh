@@ -15,6 +15,11 @@ install -d -m 0755 /usr/local/lib/mag-ci /etc/mag-ci
 install -d -m 0700 -o mag-ci -g mag-ci /var/lib/mag-ci /var/lib/mag-ci/work
 install -m 0755 "$here/bridge.sh" /usr/local/lib/mag-ci/bridge.sh
 install -m 0644 "$here/runner.yaml" /etc/mag-ci/runner.yaml
+command -v nft >/dev/null
+sed "s/@UID@/$(id -u mag-ci)/g" "$here/runner-egress.nft" > /etc/mag-ci/egress.nft
+chmod 0644 /etc/mag-ci/egress.nft
+install -m 0755 "$here/runner-egress.sh" /usr/local/lib/mag-ci/runner-egress.sh
+bash /usr/local/lib/mag-ci/runner-egress.sh
 for f in mag-ci.slice mag-ci-runner.service mag-ci-bridge.service mag-ci-bridge.timer; do
  install -m 0644 "$here/$f" "/etc/systemd/system/$f"
 done

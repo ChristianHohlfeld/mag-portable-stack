@@ -7,6 +7,7 @@ User=mag-ci
 Group=mag-ci
 WorkingDirectory=/var/lib/mag-ci
 Environment=HOME=/var/lib/mag-ci
+ExecStartPre=+/usr/local/lib/mag-ci/runner-egress.sh
 ExecStart=/usr/local/bin/gitea-runner --config /etc/mag-ci/runner.yaml daemon
 Restart=on-failure
 RestartSec=10

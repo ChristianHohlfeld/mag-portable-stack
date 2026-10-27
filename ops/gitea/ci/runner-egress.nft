@@ -1,0 +1,13 @@
+# Render @UID@ during install. Preserve unrelated tables and bot rules.
+# CI integration fixtures use random ephemeral loopback ports. Fixed host
+# services are denied, including both resident model ports and the room.
+table inet mag_ci_egress {
+ chain output {
+  type filter hook output priority -5; policy accept;
+  meta skuid @UID@ ip daddr 127.0.0.0/8 tcp dport { 53, 3000 } accept
+  meta skuid @UID@ ip daddr 127.0.0.0/8 tcp dport 1-32767 reject
+  meta skuid @UID@ ip6 daddr ::1 tcp dport 1-32767 reject
+  meta skuid @UID@ ip daddr { 10.0.0.0/8, 100.64.0.0/10, 169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16 } reject
+  meta skuid @UID@ ip6 daddr { fc00::/7, fe80::/10 } reject
+ }
+}

@@ -45,11 +45,25 @@ inline std::vector<std::string> select(const std::string &text,
   auto addressed = mentions(text, roster);
   mandatory = !addressed.empty();
   if (mandatory) return addressed;
-  for (const auto &id : preferred)
-    for (const auto &bot : roster)
-      if (bot.first == id) return {id};
-  return roster.empty() ? std::vector<std::string>{}
-                        : std::vector<std::string>{roster.front().first};
+  std::vector<std::string> chosen;
+  for (const auto &id : preferred) {
+    if (std::any_of(roster.begin(), roster.end(),
+                    [&](const Bot &bot) { return bot.first == id; })) {
+      chosen.push_back(id);
+      break;
+    }
+  }
+  if (chosen.empty() && !roster.empty()) chosen.push_back(roster.front().first);
+  const std::string request = lower(text);
+  // A second opinion is explicitly useful here; otherwise one voice.
+  const bool second = request.find("zweite meinung") != std::string::npos ||
+                      request.find("zwei meinungen") != std::string::npos;
+  if (second && !chosen.empty()) {
+    for (const auto &bot : roster) {
+      if (bot.first != chosen.front()) { chosen.push_back(bot.first); break; }
+    }
+  }
+  return chosen;
 }
 inline bool can_reply_to_bot(bool mentioned, int count) { return mentioned && count < 3; }
 inline bool is_pass(const std::string &text) {

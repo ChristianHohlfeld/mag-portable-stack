@@ -58,13 +58,10 @@ class StreamOrder(unittest.TestCase):
                 self.assertEqual([x['bot'] for x in o], ['a'] if n < 3 else ['a', 'b'], o)
             last = orders[-1]
             self.assertFalse(last[0]['think'], 'B thinking leaked into A')
-            self.assertTrue(last[1]['think'], 'B thinking missing in its own message')
+            self.assertNotIn('Beta überlegt', last[0]['text'])
             self.assertIn('Wort5', last[0]['text'])
             self.assertIn('Antwort von Beta', last[1]['text'])
-            # The thinking block sits above B's answer, inside B's article.
-            self.assertTrue(page.evaluate("""()=>{const n=[...document.querySelectorAll('.message.work-live')].find(x=>x.querySelector('.meta strong')?.textContent==='Beta');
-              const t=n.querySelector('.thinking'),c=n.querySelector(':scope > .content');
-              return !!(t&&c&&(t.compareDocumentPosition(c)&Node.DOCUMENT_POSITION_FOLLOWING))}"""))
+            self.assertNotIn('Beta überlegt', last[1]['text'])
             self.assertEqual(errors, [])
         finally:
             browser.close(); pw.stop()

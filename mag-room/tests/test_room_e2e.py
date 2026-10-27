@@ -301,6 +301,19 @@ class RoomE2E(unittest.TestCase):
         self.shot('06b-inline-cls-zero')
         self.room.api('/api/bot-settings',{'bots':['a'],'thinking':True},method='PUT')
 
+    def test_08a_labels_and_stored_reasoning_stay_out_of_the_answer(self):
+        got = self.page.evaluate("""()=>{
+          state.agents=[{id:'q',name:'BotBot'}];
+          return {
+            name: roomBotName({role:'assistant',name:'BotBot',bot:'q'}),
+            text: shownText({role:'assistant',name:'Bot1',content:'Chris tippt nur "Wie".\\n\\nBot1: Ich bin da.'})
+          };
+        }""")
+        self.assertEqual(got['name'], 'Qwen')
+        self.assertEqual(got['text'], 'Ich bin da.')
+        self.assertNotIn('Bot1:', got['text'])
+        self.assertNotIn('Chris tippt', got['text'])
+
     def test_08_mobile_queue_does_not_push_below_last_message(self):
         # 390x844: the last chat node stays a message. The folded queue uses
         # one 22px line; reply activity is an inline dot, not another panel.

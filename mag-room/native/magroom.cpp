@@ -785,9 +785,13 @@ static void load_agents() {
       // Never change an ID: especially deepseek-chat retains its memory and VM.
       const std::string old = mag::str(a, "name");
       const int slot = model_slot_of(a);
-      if (slot && (old == "DeepSeek 4.0" || old == "DeepSeek Chat" ||
-                   old == "DeepSeek Q4" || old == "Qwen" || old == "Qwen 2" ||
-                   old == "BotBot" || old == "Bot1" ||
+      // The second bot's stock placeholder is Qwen. Do this before the
+      // generic label rewrite, and do not rewrite an exact "Qwen" afterwards,
+      // or the next restart would replace it with the long backend label.
+      if (old == "BotBot" || old == "Bot 2" || old == "Bot2") {
+        if (old != "Qwen") { a["name"] = "Qwen"; dirty = true; }
+      } else if (slot && (old == "DeepSeek 4.0" || old == "DeepSeek Chat" ||
+                   old == "DeepSeek Q4" || old == "Qwen 2" ||
                    old == "DeepSeek V4 Flash 1" || old == "DeepSeek V4 Flash 2" ||
                    old == "DeepSeek V4 Flash" || old == "Qwen3.8 Uncensored" || old == "Ornith 1" || old == "Ornith 2" || old == "Ornith 3" || old == "Ornith 4")) {
         const std::string updated = ROOM_MODEL.backends[0].id == ROOM_MODEL.backends[1].id
@@ -849,6 +853,12 @@ static void load_agents() {
       active.push_back(make(id, "Qwen", qwen));
     }
     active[1]["model"] = qwen;
+    {
+      const std::string secondary_name = mag::str(active[1], "name");
+      if (secondary_name == "BotBot" || secondary_name == "Bot 2" ||
+          secondary_name == "Bot2")
+        active[1]["name"] = "Qwen";
+    }
     AGENTS = std::move(active);
     PARKED.clear();
     for (size_t i = 0; i < all.size(); ++i)

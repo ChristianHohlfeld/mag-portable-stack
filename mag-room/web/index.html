@@ -575,8 +575,10 @@ dialog{border-radius:10px;border-color:var(--line);background:var(--surface)}
 #conversation .run .think-head{min-height:20px;height:20px;padding:0;font-size:11px}
 .composer-inner .queue-chips{position:relative;display:block;margin:0 0 5px;min-height:0}
 .composer-inner .queue-chips[hidden]{display:none!important}
-.composer-inner .queue-head{height:22px;min-height:22px;display:flex;align-items:center;padding:0}
-.composer-inner .q-toggle{padding:0 4px;border:0;background:transparent;font-size:12px;color:var(--muted);cursor:pointer;text-align:left}
+.composer-inner .queue-head{height:22px;min-height:22px;max-height:22px;display:flex;align-items:center;gap:8px;padding:0;flex-wrap:nowrap;overflow:hidden}
+.composer-inner .activity-status{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;color:var(--muted)}
+.composer-inner .activity-status:empty,.composer-inner .activity-status[hidden]{display:none}
+.composer-inner .q-toggle{flex:0 0 auto;white-space:nowrap;padding:0 4px;border:0;background:transparent;font-size:12px;color:var(--muted);cursor:pointer;text-align:left}
 .composer-inner .queue-items{display:none;position:absolute;bottom:calc(100% + 5px);left:0;right:0;z-index:24;max-height:min(46dvh,340px);overflow-y:auto;padding:7px;border:1px solid var(--line);border-radius:12px;background:var(--panel);box-shadow:0 10px 28px #0008}
 .composer-inner .queue-chips.expanded .queue-items{display:flex;flex-direction:column;gap:5px}
 .composer-inner .queue-controls{display:flex;gap:5px;flex-wrap:wrap}
@@ -1215,10 +1217,10 @@ addEventListener('popstate',()=>{if(msgPop.skipPop){msgPop.skipPop--;return}if(m
 function roomBotName(msg){
  if(msg.role==='user')return msg.name||'Nutzer';
  const known=(state.agents||[]).find(a=>a.id===(msg.bot||msg.bot_id)||a.name===msg.name);
- if(known)return known.name||msg.name||'Bot';
- if(msg.name==='BotBot')return 'Qwen';
- if(msg.name==='Bot1')return 'DeepSeek';
- return msg.name||'Bot';
+ const name=(known&&known.name)||msg.name||'Bot';
+ // Stock placeholder for the second bot. A stored "BotBot" must not win.
+ if(name==='BotBot'||name==='Bot 2'||name==='Bot2')return 'Qwen';
+ return name;
 }
 function append(msg,scroll=true,trace=null,position=-1){
  const area=$('conversation');let inner=area.querySelector('.conversation-inner');
@@ -1265,11 +1267,22 @@ function workLabelText(s){
  return (s.label==='Liest Verlauf'?READ_LABEL:(s.label||'Denkt nach'))+' … '+clock;
 }
 function stripMarkers(t){return t.replace(/\[\[MAG:(WEITER|ENDE)\]\]/g,'')}
+// Stored replies can still contain a planning paragraph or a "Bot1:" label.
+// Drop only that known preamble and a leading speaker label.
+function visibleAnswer(raw,name){
+ let t=String(raw||'');
+ const names=['Bot1','BotBot','Qwen','DeepSeek'];
+ if(name&&!names.includes(name))names.unshift(name);
+ const esc=s=>s.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+ const lead=new RegExp('^(?:'+names.map(esc).join('|')+')\\s*:\\s*');
+ t=t.replace(/^\s*Chris tippt nur[\s\S]*?(?:\n\n|$)/,'');
+ t=t.replace(lead,'');
+ return t.replace(/^\s+/,'');
+}
 function liveText(s){
  const text=s.text||'';
- if(s.draft==null)return stripMarkers(text);
- const confirmed=text.slice(s.draftBase);
- return stripMarkers(text.slice(0,s.draftBase)+(confirmed.length>=s.draft.length?confirmed:s.draft));
+ const raw=s.draft==null?stripMarkers(text):stripMarkers(text.slice(0,s.draftBase)+(text.slice(s.draftBase).length>=(s.draft||'').length?text.slice(s.draftBase):s.draft));
+ return visibleAnswer(raw,s.name||'');
 }
 // llama reports only after each micro-batch (1.024 tokens, minutes on CPU):
 // estimate the rest from the rate measured so far instead of a frozen count.
@@ -1281,7 +1294,7 @@ function promptEta(p){
  return 'noch ca. '+(sec<90?'1 min':Math.round(sec/60)+' min');
 }
 // Rooms before the stop cleanup stored the note in the text itself.
-function shownText(msg){const t=msg.content||'';return msg.interrupted?t.replace(/\s*\((abgebrochen|unterbrochen)\)\s*$/,''):t}
+function shownText(msg){let t=msg.content||'';if(msg.interrupted)t=t.replace(/\s*\((abgebrochen|unterbrochen)\)\s*$/,'');if(msg.role==='user')return t;return visibleAnswer(t,roomBotName(msg))}
 function stoppedByUser(msg){return msg.interrupted&&msg.stopped!=='system'}
 const QUIET_STEP=/^(?:Liest Verlauf|Liest das Gespräch|Denkt nach(?:…|\.\.\.)?$|Gedacht für(?: \d+ s)?$|Reagiert$|Nimmt die Reaktion zurück$)/;
 function shownSteps(steps){return (steps||[]).filter(x=>!QUIET_STEP.test(x))}
@@ -1351,7 +1364,7 @@ function ensureWork(node,s,botId){
  if(!steps.length)old?.remove();
  else{const fresh=stepsList(steps);fresh.open=!!old?.open;if(old)old.replaceWith(fresh);else runPut(node,fresh)}
 }
-setInterval(()=>{const now=Date.now();for(const id of Object.keys(streams)){const s=streams[id];if(!s)continue;const hung=!s.error&&now-(s.lastEvent||s.started||now)>60000;if(hung!==!!s.hung){s.hung=hung;updateStream(id,true);continue}const label=s.node?.querySelector?.('.work-label');if(label&&s.node.classList.contains('work-live'))label.textContent=workLabelText(s);if(s.thinking){const t=s.node?.querySelector?.(':scope > .run > .thinking .think-time');if(t)t.textContent=thinkSecs(liveThinkMs(s))}}},1000);
+setInterval(()=>{const now=Date.now();for(const id of Object.keys(streams)){const s=streams[id];if(!s)continue;const hung=!s.error&&now-(s.lastEvent||s.started||now)>60000;if(hung!==!!s.hung){s.hung=hung;updateStream(id,true);continue}const label=s.node?.querySelector?.('.work-label');if(label&&s.node.classList.contains('work-live'))label.textContent=workLabelText(s);if(s.thinking){const t=s.node?.querySelector?.(':scope > .run > .thinking .think-time');if(t)t.textContent=thinkSecs(liveThinkMs(s))}}paintActivityStatus()},1000);
 
 function streamControls(){syncComposerButton();if(thinkInit)syncBotSwitches()}
 // One round button, ChatGPT-style: with an empty field and answering bots it
@@ -1657,7 +1670,7 @@ function renderAgents(){const list=$('agents');list.replaceChildren();const sing
 card.setAttribute('role','button');card.setAttribute('aria-label',a.name+' Browser und Terminal anzeigen');
 card.onclick=e=>{if(e.target.closest('button,a,input,label,textarea,select'))return;focusBot(a.id)};
 card.onkeydown=e=>{if(e.target===card&&(e.key==='Enter'||e.key===' ')){e.preventDefault();focusBot(a.id)}};
-const label=document.createElement('label');const check=document.createElement('input');check.type='checkbox';check.checked=selected.has(a.id);check.onchange=()=>{check.checked?selected.add(a.id):selected.delete(a.id);sessionStorage.setItem('mag-selected',JSON.stringify([...selected]));syncModelChoice(state);syncBotSwitches()};const name=document.createElement('span');name.textContent=a.name;name.style.color=a.color;label.append(check,name);const info=document.createElement('small');const modelDisplay=botModelLabel(a);info.textContent=(a.prewarm_eta_s!=null?'Prompt wird vorbereitet (~'+etaMin(a.prewarm_eta_s)+' min) · ':'')+(a.model?modelDisplay+' · ':'')+(a.spawning?'VM wird erstellt …':(a.vm||'nur Chat'))+' · '+(a.memory_count||0)+' Erinnerungen'+(a.plugins?.length?' · '+a.plugins.length+' Plugin'+(a.plugins.length>1?'s':''):'');const actions=document.createElement('div');actions.className='actions';const actList=[];
+const label=document.createElement('label');const check=document.createElement('input');check.type='checkbox';check.checked=selected.has(a.id);check.onchange=()=>{check.checked?selected.add(a.id):selected.delete(a.id);sessionStorage.setItem('mag-selected',JSON.stringify([...selected]));syncModelChoice(state);syncBotSwitches()};const name=document.createElement('span');name.textContent=roomBotName({role:'assistant',bot:a.id,name:a.name});name.style.color=a.color;label.append(check,name);const info=document.createElement('small');const modelDisplay=botModelLabel(a);info.textContent=(a.prewarm_eta_s!=null?'Prompt wird vorbereitet (~'+etaMin(a.prewarm_eta_s)+' min) · ':'')+(a.model?modelDisplay+' · ':'')+(a.spawning?'VM wird erstellt …':(a.vm||'nur Chat'))+' · '+(a.memory_count||0)+' Erinnerungen'+(a.plugins?.length?' · '+a.plugins.length+' Plugin'+(a.plugins.length>1?'s':''):'');const actions=document.createElement('div');actions.className='actions';const actList=[];
 if(can('memory'))actList.push(['Erinnerung',()=>memory(a)]);
 if(state.you?.role==='owner')actList.push(['Umbenennen',()=>renameAgent(a)]);
 if(a.id===single||state.dual_numa){}else if(can('delete'))actList.push(['Entfernen',()=>removeAgent(a)]);
@@ -1881,10 +1894,31 @@ let busyBots=new Set();
 let waitingBots=new Map();
 function setBusyBots(ids,waiting){busyBots=new Set(Array.isArray(ids)?ids:[]);if(Array.isArray(waiting)){const keep=new Map();for(const id of waiting)keep.set(id,waitingBots.get(id)||'');waitingBots=keep}for(const id of [...waitingBots.keys()])if(!busyBots.has(id))waitingBots.delete(id);renderLanes()}
 async function stopBot(id){try{await api('/api/cancel',id?{bot:id}:{})}catch(e){notice(e.message)}}
-function renderLanes(){const box=$('bot-lanes');if(!box)return;const ids=[...busyBots].filter(id=>state.agents.some(a=>a.id===id));box.replaceChildren();box.hidden=true;if(!ids.length){syncComposerButton();return}const allowed=can('stop');
- for(const id of ids){const a=state.agents.find(x=>x.id===id);const chip=document.createElement('span');chip.className='bot-lane';chip.dataset.bot=id;const dot=document.createElement('span');dot.className='pulse';dot.style.background=a.color||'var(--accent)';const name=document.createElement('span');name.className='lane-name';const after=waitingBots.get(id);name.textContent=waitingBots.has(id)?(a.name||'Bot')+' wartet'+(after?' auf '+after:'')+' …':(a.name||'Bot')+' antwortet …';chip.classList.toggle('waiting',waitingBots.has(id));chip.append(dot,name);
-  if(allowed){const b=document.createElement('button');b.type='button';b.textContent='Stopp';b.title=(a.name||'Bot')+' stoppen';b.setAttribute('aria-label',(a.name||'Bot')+' stoppen');b.onclick=()=>stopBot(id);chip.append(b)}box.append(chip)}
- syncComposerButton()}
+function activityStatusText(){
+ const ids=[...busyBots].filter(id=>state.agents.some(a=>a.id===id));
+ for(const id of Object.keys(streams))if(!ids.includes(id)&&state.agents.some(a=>a.id===id))ids.push(id);
+ if(!ids.length)return '';
+ return ids.map(id=>{
+  const a=state.agents.find(x=>x.id===id);
+  const name=roomBotName({role:'assistant',bot:id,name:a?.name||streams[id]?.name});
+  const s=streams[id];
+  if(waitingBots.has(id))return name+' wartet';
+  if(!s)return name+' antwortet';
+  if(s.error)return name+' · Fehler';
+  const clock=streamClock(s);
+  if(s.phase==='read'||s.phase==='prompt'||s.label==='Liest Verlauf')return name+' liest '+clock;
+  if(s.thinking||s.phase==='think')return name+' denkt '+clock;
+  return name+' antwortet '+clock;
+ }).join(' · ');
+}
+function paintActivityStatus(){
+ const box=$('queue-chips');if(!box)return;
+ const el=box.querySelector('.activity-status');if(!el)return;
+ const text=activityStatusText();
+ if(el.textContent!==text)el.textContent=text;
+ el.hidden=!text;
+}
+function renderLanes(){const box=$('bot-lanes');if(box){box.replaceChildren();box.hidden=true}paintActivityStatus();syncComposerButton()}
 let composerSending=false;
 const localSends=new Map(),failedSends=new Map();
 $('send-form').onsubmit=async e=>{
@@ -2713,13 +2747,16 @@ function renderQueue(q){
  if(localSends.size!==previous)render();
  const box=$('queue-chips');if(!box)return;
  const wasOpen=box.classList.contains('expanded'),list=queueState.pending;
+ const statusText=activityStatusText();
  box.replaceChildren();box.hidden=!list.length;if(box.hidden)return;
- box.classList.toggle('paused',queueState.paused);box.classList.toggle('expanded',wasOpen);
+ box.classList.toggle('paused',queueState.paused);box.classList.toggle('expanded',wasOpen&&!!list.length);
  const head=document.createElement('div');head.className='queue-head';
+ const stat=document.createElement('span');stat.className='activity-status';stat.textContent=statusText;stat.hidden=!statusText;head.append(stat);
  const toggle=document.createElement('button');toggle.type='button';toggle.className='q-toggle';
  const held=list.filter(p=>p.held).length;
  toggle.textContent=list.length+' wartet'+(held?' · '+held+' angehalten':'')+(wasOpen?' ▾':' ▸');
  toggle.setAttribute('aria-expanded',String(wasOpen));toggle.setAttribute('aria-controls','queue-items');
+ toggle.hidden=!list.length;
  toggle.onclick=()=>{box.classList.toggle('expanded');renderQueue({...queueState,revision:queueState.revision})};
  head.append(toggle);
  const controls=document.createElement('span');controls.className='queue-controls';

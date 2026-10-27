@@ -6848,8 +6848,9 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
   if (CONFIGURED_MODEL && (!ram_known || slot_busy)) {
     skip = true;
     why = "busy"; // /slots timed out or the slot is prefilling: do not clobber it
-  } else if (ram_warm && have_current && !prefix_changed) {
-    // RAM holds the room prefix we already saved. Leave it.
+  } else if ((ram_warm || decoded_warm) && have_current && !prefix_changed) {
+    // RAM already holds the saved room prefix (n_prompt_tokens or n_decoded
+    // after a reply). Do not restore over it.
     skip = true;
     why = "ram";
     if (CONFIGURED_MODEL) {

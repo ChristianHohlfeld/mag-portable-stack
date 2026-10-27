@@ -1858,12 +1858,13 @@ if(state.you?.role==='owner')actList.push(['Umbenennen',()=>renameAgent(a)]);
 if(a.id===single||state.dual_numa){}else if(can('delete'))actList.push(['Entfernen',()=>removeAgent(a)]);
 if(a.vm)actList.splice(1,0,['Browser öffnen',()=>{location.href='/?bot='+encodeURIComponent(a.id)}]);
 if(actList.length){const more=document.createElement('button');more.type='button';more.className='agent-more';more.textContent='⋯';more.title='Aktionen für '+a.name;more.setAttribute('aria-label','Aktionen für '+a.name);more.setAttribute('aria-haspopup','menu');more.setAttribute('aria-expanded','false');more.onclick=e=>{e.stopPropagation();popMenu(more,actList.map(([t,f])=>[t,f,t==='Entfernen']))};actions.append(more)}
-card.append(row,info,actions);list.append(card);if(!a.vm)continue;const option=document.createElement('option');option.value=a.id;option.textContent=a.name;$('browser-agent').append(option)}if(remoteBotId&&state.agents.some(a=>a.id===remoteBotId)){focusedBotId=remoteBotId;if(!old)history.replaceState(null,'','/')}
+card.append(row,info,actions);list.append(card);if(!a.vm)continue;const option=document.createElement('option');option.value=a.id;option.textContent=a.name;$('browser-agent').append(option)}const remembered=focusedBotId;if(remoteBotId&&state.agents.some(a=>a.id===remoteBotId)){focusedBotId=remoteBotId;if(!old&&location.search)history.replaceState(null,'','/')}
 else if(!state.agents.some(a=>a.id===focusedBotId))focusedBotId=(state.agents.find(a=>a.vm)||state.agents[0]||{}).id||'';
 if(focusedBotId){try{sessionStorage.setItem('mag-focused-bot',focusedBotId)}catch(e){}}
-const view=state.agents.find(a=>a.id===focusedBotId);
-const want=view&&view.vm?view.id:'';
-if(want&&[...$('browser-agent').options].some(o=>o.value===want))$('browser-agent').value=want;else $('browser-agent').value='';
+if(remoteBotId&&!old&&state.agents.some(a=>a.id===remoteBotId&&a.vm))$('browser-agent').value=remoteBotId;
+else if(state.agents.some(a=>a.id===old&&a.vm))$('browser-agent').value=old;
+else if(!old&&state.agents.some(a=>a.id===remembered&&a.vm))$('browser-agent').value=remembered;
+else $('browser-agent').value='';
 const current=$('browser-agent').value;
 if(!current&&livePeer)disconnectLive();
 for(const card of list.querySelectorAll('.agent')){const active=card.dataset.bot===focusedBotId;card.classList.toggle('active',active);card.setAttribute('aria-pressed',String(active));card.setAttribute('aria-current',active?'true':'false')}

@@ -26,6 +26,8 @@ case "$1 $2" in
   "is-enabled gitea.service") echo disabled; exit 1 ;;
   "is-enabled mag-gitea-runner.service") echo disabled; exit 1 ;;
   "is-enabled tailscaled.service") echo disabled; exit 1 ;;
+  "is-enabled mag-gitea-funnel.service") echo disabled; exit 1 ;;
+  "is-enabled mag-gitea-funnel.timer") echo disabled; exit 1 ;;
 esac
 [[ $1 == is-enabled ]] && { echo enabled; exit 0; }
 exit 0
@@ -72,7 +74,7 @@ printf '%s\n' \
   'MAG_ROOM_MODEL_ID_1=qwen3.8-flash-next-uncensored' > "$tmp/room.env"
 echo 'MAG_SECONDARY_MODEL=ornith' > "$tmp/ornith-too.env"
 touch "$tmp/ipmi0"
-out=$(ORNITH="mag-llm-ds-node@0.service mag-llm-qwen.service mag-120.service gitea.service mag-gitea-runner.service tailscaled.service" \
+out=$(ORNITH="mag-llm-ds-node@0.service mag-llm-qwen.service mag-120.service gitea.service mag-gitea-runner.service tailscaled.service mag-gitea-funnel.service mag-gitea-funnel.timer" \
   run "$tmp/ornith-too.env" "$tmp/ipmi0" "$tmp/room.env")
 grep -Fxq 'systemctl enable mag-llm-ds-node@0.service' "$log"
 grep -Fxq 'systemctl enable mag-llm-qwen.service' "$log"
@@ -80,6 +82,8 @@ grep -Fxq 'systemctl enable mag-120.service' "$log"
 grep -Fxq 'systemctl enable gitea.service' "$log"
 grep -Fxq 'systemctl enable mag-gitea-runner.service' "$log"
 grep -Fxq 'systemctl enable tailscaled.service' "$log"
+grep -Fxq 'systemctl enable mag-gitea-funnel.service' "$log"
+grep -Fxq 'systemctl enable mag-gitea-funnel.timer' "$log"
 grep -Fq 'systemctl disable mag-llm-ds-node@1.service' "$log"
 grep -Fq 'systemctl disable mag-llm-ornith@1.service' "$log"
 if grep -Eq 'systemctl enable mag-llm-ornith' "$log"; then exit 1; fi

@@ -13,7 +13,7 @@ while _mag_root != _mag_root.parent and not (_mag_root / 'ops/ci/mag_deadline.py
 _mag_sys.path.insert(0, str(_mag_root / 'ops/ci'))
 import mag_deadline as _mag_deadline
 _mag_deadline.arm(180)
-import importlib.util,pathlib,shutil,unittest
+import importlib.util,json,pathlib,shutil,unittest
 ROOT=pathlib.Path(__file__).resolve().parents[2]
 ART=pathlib.Path('/opt/cursor/artifacts')
 spec=importlib.util.spec_from_file_location('test_pwa',ROOT/'mag-room/tests/test_pwa.py');pwa=importlib.util.module_from_spec(spec);spec.loader.exec_module(pwa)
@@ -33,6 +33,12 @@ class LiveHighlight(unittest.TestCase):
   tmp=pathlib.Path('/tmp/mag-live-highlight')
   if tmp.exists():shutil.rmtree(tmp)
   static=tmp/'static';shutil.copytree(ROOT/'mag-room/static',static)
+  # Browser-overlay test needs a bot with a VM assigned. The visual stream
+  # is synthetic and does not require a running KVM guest.
+  (tmp/'state').mkdir(parents=True,exist_ok=True)
+  (tmp/'state'/'agents.json').write_text(json.dumps([
+   {'id':'test','name':'Test','vm':'agent1','memory':[]}
+  ]))
   proc,log,model,ui,bridge=pwa.start_room(tmp,static,'lh')
   pw=sync_playwright().start();browser=pwa.launch_chromium(pw,headless=True,args=['--no-sandbox','--disable-dev-shm-usage'])
   errors=[]

@@ -154,6 +154,8 @@ class MemoryDialogBrowser(unittest.TestCase):
                     self.assertFalse(failed_assets, 'Broken app resources/API: '+repr(failed_assets))
                     self.assertFalse(page.locator('#notice').inner_text().strip(),
                                      'Frontend reported an initialization error')
+                    self.assertEqual(page.locator('#browser-agent').input_value(), 'test',
+                                     'Bot must remain selectable while its VM is absent')
                     self.assertEqual(page.locator("#area-memory").count(), 0)
                     self.assertEqual(page.locator("#memory-areas").count(), 0)
                     self.assertEqual(page.locator(".data-entry").count(), 0)

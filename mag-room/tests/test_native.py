@@ -4464,7 +4464,7 @@ class SelfTalk(unittest.TestCase):
  once, the next free bot answers it, and the chain keeps going. Names in the
  prompt come from the live roster.
  """
- HARD_S = 20
+ HARD_S = 24
 
  def setUp(self):
   import signal
@@ -4589,6 +4589,7 @@ class SelfTalk(unittest.TestCase):
   self.assertIn('id="selftalk-row"', html)
   self.assertNotIn('top-stat selftalk-toggle', html)
   self.assertIn("$('selftalk-row')", html)
+  self.assertIn("t.id!=='selftalk'", html)
   self.assertNotIn("$('message').disabled", html)
   self.assertIn('The field itself is never disabled', html)
   self.assertFalse(self.api('/api/state')['selftalk'])
@@ -4607,6 +4608,7 @@ class SelfTalk(unittest.TestCase):
   self.api('/api/selftalk', {'on': True})
   self.assertTrue(self.api('/api/state')['selftalk'])
   self.assertEqual((self.state / 'selftalk').read_text().strip(), 'on')
+  self.assertIn('selftalk-start', self.log_path.read_text())
   self.api('/api/message', {'text': 'zweite', 'bots': ['alpha']})
   self.wait_calls(2)
   beta = [c for c in self.chat_calls() if c[0] == '1']
@@ -4655,6 +4657,7 @@ class SelfTalk(unittest.TestCase):
   self.assertEqual(len(self.chat_calls()), frozen)
   self.assertFalse(self.api('/api/state')['selftalk'])
   self.assertEqual((self.state / 'selftalk').read_text().strip(), 'off')
+  self.assertIn('selftalk-stop', self.log_path.read_text())
 
  def test_stop_and_toggle_abort_the_chain(self):
   self._tok = re_token(urllib.request.urlopen('http://127.0.0.1:%d/' % self.ui, timeout=2).read().decode())
@@ -4728,6 +4731,74 @@ class SelfTalk(unittest.TestCase):
   self.assertGreater(len(self.chat_calls()), mark, 'self-talk stopped after Chris wrote')
   self.assertTrue(self.api('/api/state')['selftalk'])
   self.api('/api/cancel', {})
+
+ def test_toggle_starts_from_last_bot_line(self):
+  # Live: Chris toggles Self-Talk after a reply and expects the room loop.
+  self._tok = re_token(urllib.request.urlopen('http://127.0.0.1:%d/' % self.ui, timeout=2).read().decode())
+  self.api('/api/message', {'text': 'nur-alpha', 'bots': ['alpha']})
+  self.wait_calls(1)
+  self.api('/api/selftalk', {'on': True})
+  deadline = time.monotonic() + 6
+  cue = None
+  while time.monotonic() < deadline:
+   for slot, obj in self.chat_calls():
+    blob = json.dumps(obj, ensure_ascii=False)
+    if 'Self-Talk:' in blob:
+     cue = blob
+     break
+   if cue:
+    break
+   time.sleep(0.05)
+  self.assertIsNotNone(cue, 'toggle did not start a bot-to-bot turn\n%s' % self.log_path.read_text()[-2000:])
+  self.assertIn('selftalk-arm', self.log_path.read_text())
+  self.assertIn('Alpha', cue)
+  self.assertNotIn('DeepSeek', cue)
+  self.assertNotIn('Qwen', cue)
+  self.api('/api/cancel', {})
+
+ def test_loop_chris_midchain_and_stop(self):
+  self._tok = re_token(urllib.request.urlopen('http://127.0.0.1:%d/' % self.ui, timeout=2).read().decode())
+  self.api('/api/selftalk', {'on': True})
+  self.api('/api/message', {'text': 'kette-start', 'bots': ['alpha']})
+  deadline = time.monotonic() + 6
+  hops = 0
+  while time.monotonic() < deadline:
+   hops = sum(1 for _, obj in self.chat_calls()
+              if 'Self-Talk:' in json.dumps(obj, ensure_ascii=False))
+   if hops >= 2:
+    break
+   time.sleep(0.05)
+  self.assertGreaterEqual(hops, 2, 'wanted 2 bot-to-bot hops, have %d\n%s' %
+                          (hops, self.log_path.read_text()[-2000:]))
+  t0 = time.monotonic()
+  self.api('/api/message', {'text': 'TOKEN-CHRIS-99', 'bots': ['alpha']})
+  self.assertLess(time.monotonic() - t0, 1.0, 'composer send blocked')
+  users = [m for m in self.api('/api/state')['room']
+           if m.get('content') == 'TOKEN-CHRIS-99' and m.get('role') == 'user']
+  self.assertEqual(len(users), 1)
+  referred = False
+  deadline = time.monotonic() + 5
+  while time.monotonic() < deadline:
+   room = self.api('/api/state')['room']
+   if any(m.get('role') == 'assistant' and 'TOKEN-CHRIS-99' in (m.get('content') or '')
+          for m in room):
+    referred = True
+    break
+   time.sleep(0.05)
+  self.assertTrue(referred, 'Chris mid-chain was ignored')
+  n = len(self.chat_calls())
+  started = time.monotonic()
+  self.api('/api/cancel', {})
+  while time.monotonic() - started < 3:
+   self.assertEqual(len(self.chat_calls()), n, 'Stop let another bot turn start')
+   time.sleep(0.1)
+  self.assertTrue(self.api('/api/state')['selftalk'], 'Stop must leave the switch on')
+  self.api('/api/selftalk', {'on': False})
+  frozen = len(self.chat_calls())
+  time.sleep(0.4)
+  self.assertEqual(len(self.chat_calls()), frozen)
+  self.assertFalse(self.api('/api/state')['selftalk'])
+  self.assertIn('selftalk-stop', self.log_path.read_text())
 
  def wait_calls(self, n):
   deadline = time.monotonic() + 6

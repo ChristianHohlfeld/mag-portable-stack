@@ -2033,7 +2033,14 @@ document.addEventListener('keydown',e=>{
  $('message').focus({preventScroll:true});
 });
 $('message').onkeydown=e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing){e.preventDefault();$('send-form')._interrupt=e.ctrlKey||e.metaKey;$('send-form').requestSubmit()}};
-$('reflect').onchange=async()=>{try{await api('/api/reflect',{on:$('reflect').checked});notice()}catch(e){notice(e.message);await refresh()}};$('autotalk').onchange=async()=>{try{await api('/api/autotalk',{on:$('autotalk').checked});notice()}catch(e){notice(e.message);await refresh()}};$('selftalk').onchange=async()=>{try{await api('/api/selftalk',{on:$('selftalk').checked});notice()}catch(e){notice(e.message);await refresh()}};$('stop').onclick=async()=>{const button=$('stop');button.disabled=true;try{await api('/api/stop',{});$('autotalk').checked=false;await refresh();notice('Alles angehalten. Neue Nachrichten laufen sofort; Wartendes mit „Fortsetzen“.')}catch(e){notice(e.message)}finally{button.disabled=false}};
+$('reflect').onchange=async()=>{try{await api('/api/reflect',{on:$('reflect').checked});notice()}catch(e){notice(e.message);await refresh()}};$('autotalk').onchange=async()=>{try{await api('/api/autotalk',{on:$('autotalk').checked});notice()}catch(e){notice(e.message);await refresh()}};
+document.addEventListener('change',async e=>{
+ const t=e.target;
+ if(!t||t.id!=='selftalk')return;
+ try{await api('/api/selftalk',{on:!!t.checked});notice()}
+ catch(err){notice(err.message);await refresh()}
+});
+$('stop').onclick=async()=>{const button=$('stop');button.disabled=true;try{await api('/api/stop',{});$('autotalk').checked=false;await refresh();notice('Alles angehalten. Neue Nachrichten laufen sofort; Wartendes mit „Fortsetzen“.')}catch(e){notice(e.message)}finally{button.disabled=false}};
 function deN(n,one,many){return n+' '+(n===1?one:many)}
 function purgeAsk({title,lead,items,note,ok}={}){return new Promise(resolve=>{const d=$('purge-dialog');$('purge-title').textContent=title||'Löschen';$('purge-lead').textContent=lead||'';const ul=$('purge-list');ul.replaceChildren();for(const item of items||[]){const li=document.createElement('li');li.textContent=item;ul.append(li)}$('purge-note').textContent=note||'';const okb=$('purge-ok'),cb=$('purge-cancel');okb.textContent=ok||'Löschen';const prev=document.activeElement;let done=false;const finish=v=>{if(done)return;done=true;okb.onclick=cb.onclick=d.onclick=d.onkeydown=null;d.removeEventListener('cancel',onCancel);if(d.open)d.close();try{prev&&prev.focus()}catch(e){}resolve(v)};const onCancel=e=>{e.preventDefault();finish(false)};d.addEventListener('cancel',onCancel);okb.onclick=()=>finish(true);cb.onclick=()=>finish(false);d.onclick=e=>{if(e.target===d)finish(false)};d.onkeydown=e=>{if(e.key==='Escape'){e.preventDefault();finish(false)}};d.showModal();cb.focus()})}
 let undoTimer=0,updateToastTimer=0;

@@ -100,6 +100,8 @@ static thread_local Lane *TL_LANE = nullptr;
 static thread_local std::string TL_GROUP;
 static thread_local int TL_ORDER = 0;
 static thread_local bool TL_REFLECT = false;
+// Self-Talk hop: answer the other room member. Not a new user task.
+static thread_local bool TL_SELFTALK = false;
 // Non-configured group chat staggers lanes: the next lane waits until the
 // previous bot has read its context and starts thinking (or has finished),
 // then a short human pause. Configured bots do not use that gate. Each one
@@ -2175,6 +2177,11 @@ static std::string build_context_tail(int bot_idx, bool autotalk,
            "ihre Antworten. Ergaenze, korrigiere oder widersprich knapp; wiederhole "
            "deine eigene Antwort nicht. Hast du nichts Neues beizutragen, setze nur "
            "eine Reaktion. Starte keine neue Arbeit.";
+  if (TL_SELFTALK)
+    out += "\nSelf-Talk: Antworte jetzt dem anderen Mitglied im Raum. Das ist "
+           "diese Runde — keine neue Nutzerarbeit, kein blosses Reagieren. "
+           "Schreibe eine kurze sichtbare Antwort. Sprich die anderen mit "
+           "ihrem Namen an.";
   out += take_reaction_context(bot_field(bot_idx, "id"));
   if (todo_open_for(bot_field(bot_idx, "id")) > 0)
     out += "\nOffene Ziele (todo):\n" + todo_text_for(bot_field(bot_idx, "id"));
@@ -2596,12 +2603,17 @@ static std::vector<Val> wire_messages(int idx, const std::string &system,
   // [Kontext] (clock, github, thinking) is ~140 tokens. Re-sending it on every
   // hi re-prefills those tokens (~6s at 22 tok/s; live 10.3s first hi). It
   // belongs on the first user message only. Later turns append new room
-  // input. A reflection round still needs its instruction; that is not the
-  // clock block. An empty append (prewarm of an existing wire) is a no-op.
+  // input. Reflection and Self-Talk still need their instruction (and the
+  // live roster line); that is not the clock block. An empty append (prewarm
+  // of an existing wire) is a no-op, except Self-Talk which must always cue.
   std::string extra=input;
   if(initial) extra+=tail;
   else if(TL_REFLECT) {
     auto at=tail.find("Reflexionsrunde");
+    if(at!=std::string::npos) extra+=(at>0&&tail[at-1]=='\n'?"\n":"")+tail.substr(at);
+  } else if(TL_SELFTALK) {
+    auto at=tail.find("\nRaum: ");
+    if(at==std::string::npos) at=tail.find("Self-Talk:");
     if(at!=std::string::npos) extra+=(at>0&&tail[at-1]=='\n'?"\n":"")+tail.substr(at);
   }
   if(initial || !extra.empty()) {
@@ -6557,13 +6569,22 @@ static void handoff_visible_turn(int idx, TurnReport &report, const std::string 
   if (!TL_GROUP.empty()) { start["group"] = TL_GROUP; start["order"] = TL_ORDER; }
   publish(mj::dump(start)); run_begin(id, name);
 }
+// Journal (magroom stderr → systemd). Start, stop and arm failures.
+static void selftalk_journal(const char *kind, const std::string &detail = "") {
+  std::cerr << "selftalk-" << kind;
+  if (!detail.empty()) std::cerr << " " << detail;
+  std::cerr << std::endl;
+}
 // Queue the other bots to answer this message. The speaker is never queued.
 // At most one waiting self-talk job per bot, so the queue cannot fill with
 // duplicates; the transcript already holds every newer line.
 static void arm_selftalk(const std::string &speaker, const std::string &cause,
                          const std::string &text) {
-  if (!SELFTALK.load() || SELF_HOLD.load() || speaker.empty() || cause.empty())
+  if (!SELFTALK.load() || SELF_HOLD.load() || speaker.empty() || cause.empty()) {
+    if (SELFTALK.load() && SELF_HOLD.load())
+      selftalk_journal("error", "arm-skip hold speaker=" + speaker);
     return;
+  }
   std::vector<std::string> listeners;
   {
     std::lock_guard<std::recursive_mutex> st(STATE_MTX);
@@ -6572,10 +6593,18 @@ static void arm_selftalk(const std::string &speaker, const std::string &cause,
       if (!id.empty() && id != speaker) listeners.push_back(id);
     }
   }
-  if (listeners.empty()) return;
+  if (listeners.empty()) {
+    selftalk_journal("error", "arm-skip no-listeners speaker=" + speaker);
+    return;
+  }
   std::lock_guard<std::mutex> lk(JOB_MTX);
-  if (!SELFTALK.load() || SELF_HOLD.load()) return;
+  if (!SELFTALK.load() || SELF_HOLD.load()) {
+    if (SELF_HOLD.load())
+      selftalk_journal("error", "arm-skip hold speaker=" + speaker);
+    return;
+  }
   bool added = false;
+  std::string queued;
   for (const auto &id : listeners) {
     const bool waiting = std::any_of(JOBS.begin(), JOBS.end(), [&](const Job &j) {
       return j.selftalk && std::find(j.ids.begin(), j.ids.end(), id) != j.ids.end();
@@ -6597,11 +6626,17 @@ static void arm_selftalk(const std::string &speaker, const std::string &cause,
     j.selftalk = true;
     j.cause = cause;
     JOBS.push_back(std::move(j));
+    if (!queued.empty()) queued += ",";
+    queued += id;
     added = true;
   }
   if (!added) return;
+  selftalk_journal("arm", "speaker=" + speaker + " listeners=" + queued +
+                              " cause=" + cause);
+  cancel_prewarm();
   save_queue_locked();
   queue_event_locked();
+  while (dispatch_locked()) {}
   JOB_CV.notify_all();
 }
 static TurnReport generate_and_post(int idx, bool automatic, double dispatched_ms = 0) {
@@ -6634,6 +6669,8 @@ static TurnReport generate_and_post(int idx, bool automatic, double dispatched_m
     report.elapsed_s = 0;
   run_end();
   if (epoch == EPOCH.load() && !stop_flag().load() && report.react_only) {
+    if (TL_SELFTALK)
+      selftalk_journal("error", "bot=" + id + " react_only");
     Val msg = append_room("assistant", name, "", id);
     attach_work(msg, report);
     msg["type"] = "bot_done";
@@ -6677,6 +6714,8 @@ static TurnReport generate_and_post(int idx, bool automatic, double dispatched_m
     // Reasoning-only, or a speaker label with no answer after it. The turn
     // is over: do not invent text, do not copy reasoning into the answer,
     // and do not leave the client showing a live run.
+    if (TL_SELFTALK)
+      selftalk_journal("error", "bot=" + id + " empty");
     report.continue_requested = false;
     Val e = Val::object();
     e["type"] = "bot_done";
@@ -7149,6 +7188,9 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
 }
 static void schedule_prewarm() {
   if (env("MAG_ROOM_PREWARM", "1") != "1" || SHUTDOWN.load() || PREWARM_HOLD.load()) return;
+  // An active Self-Talk chain owns both lanes. A leftover generative prewarm
+  // on Qwen blocked the live hop (no abort on client disconnect).
+  if (SELFTALK.load() && !SELF_HOLD.load()) return;
   {
     std::lock_guard<std::mutex> lk(JOB_MTX);
     if (!JOBS.empty() || AUTO_READY) return; // the next turn starts anyway
@@ -7598,7 +7640,8 @@ static void lane_turn(Lane *lane, uint64_t run, std::vector<std::string> ids,
                       std::string input,
                       std::shared_ptr<StartGate> wait_for,
                       std::shared_ptr<StartGate> own, std::string after,
-                      std::shared_ptr<TurnGroup> group, double dispatched_ms) {
+                      std::shared_ptr<TurnGroup> group, double dispatched_ms,
+                      bool selftalk) {
   bool more = false, owner_ran = false;
   std::string progress;
   // Outside TURN_MTX: room-wide operations must not wait for a parked lane.
@@ -7614,6 +7657,7 @@ static void lane_turn(Lane *lane, uint64_t run, std::vector<std::string> ids,
     TL_YIELD = false;
     TL_GROUP = group ? group->id : "";
     TL_REFLECT = group && group->reflect;
+    TL_SELFTALK = selftalk;
     LAST_THINK = think;
     if (!(automatic && !AUTOTALK.load()))
       for (const auto &id : ids) {
@@ -7653,6 +7697,8 @@ static void lane_turn(Lane *lane, uint64_t run, std::vector<std::string> ids,
         } catch (const std::exception &e) {
           more = false;
           emit_event("error", id, "", e.what());
+          if (selftalk)
+            selftalk_journal("error", "bot=" + id + " " + e.what());
         }
       }
     TURN_INPUT.clear();
@@ -7660,6 +7706,7 @@ static void lane_turn(Lane *lane, uint64_t run, std::vector<std::string> ids,
     TL_GATE = nullptr;
     TL_GROUP.clear();
     TL_REFLECT = false;
+    TL_SELFTALK = false;
   }
   if (own) own->release();
   if (group) {
@@ -7747,7 +7794,7 @@ static void start_lanes_locked(const Job &job, bool automatic) {
     auto gate = stagger ? std::make_shared<StartGate>() : nullptr;
     std::thread(lane_turn, lane, run, ids, automatic, job.think, owner,
                 job.generation, EPOCH.load(), job.input,
-                prev, gate, prev_name, group, display_now_ms()).detach();
+                prev, gate, prev_name, group, display_now_ms(), job.selftalk).detach();
     prev = gate;
     prev_name = bot_field(agent_index(ids.front()), "name", "Bot");
   }
@@ -7896,16 +7943,44 @@ static void drop_selftalk_jobs_locked() {
   save_queue_locked();
   queue_event_locked();
 }
+static void kick_selftalk() {
+  if (!SELFTALK.load() || SELF_HOLD.load()) return;
+  std::string speaker, cause, text;
+  {
+    std::lock_guard<std::recursive_mutex> st(STATE_MTX);
+    for (auto it = ROOM.rbegin(); it != ROOM.rend(); ++it) {
+      const std::string role = mag::str(*it, "role");
+      if (role == "user") break;
+      if (role != "assistant") continue;
+      const std::string bot = mag::str(*it, "bot");
+      const std::string id = mag::str(*it, "id");
+      if (bot.empty() || id.empty()) continue;
+      speaker = bot;
+      cause = id;
+      text = mag::str(*it, "content");
+      break;
+    }
+  }
+  if (speaker.empty() || cause.empty()) return;
+  selftalk_journal("start", "kick speaker=" + speaker);
+  arm_selftalk(speaker, cause, text);
+}
 static void start_selftalk() {
   write_file(STATE_DIR + "/selftalk", "on");
   SELFTALK = true;
-  // A chain that Stop already ended stays ended until a new user message.
+  // Toggle on is an explicit start. Stop still holds the chain until a new
+  // user message (or this toggle). A reboot never calls start_selftalk.
+  SELF_HOLD = false;
+  selftalk_journal("start");
+  cancel_prewarm();
+  kick_selftalk();
   JOB_CV.notify_all();
 }
 static void stop_selftalk() {
   SELF_HOLD = true;
   write_file(STATE_DIR + "/selftalk", "off");
   SELFTALK = false;
+  selftalk_journal("stop");
   cancel_active(true);
   {
     std::lock_guard<std::mutex> lk(JOB_MTX);
@@ -7947,6 +8022,8 @@ static Val user_stop(bool pause_jobs) {
   // Stop ends the bot-to-bot chain immediately. Self-Talk itself stays as it
   // was and only starts again after a new user message. Set this before the
   // idle return so a chain waiting between turns is ended too.
+  if (SELFTALK.load())
+    selftalk_journal("stop", "hold");
   SELF_HOLD = true;
   const long long now = duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
   bool fresh = false;

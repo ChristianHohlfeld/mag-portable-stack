@@ -15,7 +15,7 @@ while _mag_root != _mag_root.parent and not (_mag_root / 'ops/ci/mag_deadline.py
 _mag_sys.path.insert(0, str(_mag_root / 'ops/ci'))
 import mag_deadline as _mag_deadline
 _mag_deadline.arm(240)
-import os, pathlib, re, sys, time, unittest
+import json, os, pathlib, re, sys, time, unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
 from test_room_control import BIN, Model, Room, reset_model, tool_call, wait_calls  # noqa: E402
@@ -732,6 +732,122 @@ class RoomE2E(unittest.TestCase):
             self.room.api('/api/cancel', {})
             self.room.api('/api/queue', method='DELETE')
             p.close()
+
+
+@unittest.skipIf(sync_playwright is None, 'playwright not installed')
+class SelfTalkE2E(unittest.TestCase):
+    """Toggle on → two bot-to-bot hops → Chris mid-chain → toggle off.
+
+    Own two-bot room so RoomE2E's single-bot scripts stay ordered.
+    """
+    HARD_S = 20
+
+    @classmethod
+    def setUpClass(cls):
+        if not BIN.exists():
+            raise unittest.SkipTest('build/magroom missing')
+        SHOTS.mkdir(parents=True, exist_ok=True)
+        cls.room = Room([
+            {'id': 'a', 'name': 'Alpha', 'vm': '', 'memory': []},
+            {'id': 'b', 'name': 'Beta', 'vm': '', 'memory': []},
+        ])
+        cls.pw = sync_playwright().start()
+        chrome = os.environ.get('MAG_CHROME')
+        cls.browser = cls.pw.chromium.launch(**({'executable_path': chrome} if chrome else {}))
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.browser.close()
+        cls.pw.stop()
+        cls.room.close()
+
+    def setUp(self):
+        self.room.until(lambda s: not s['busy'], what='idle before self-talk')
+        self.room.api('/api/queue', method='DELETE')
+        self.room.api('/api/queue/resume', {})
+        try:
+            self.room.api('/api/selftalk', {'on': False})
+        except Exception:
+            pass
+        reset_model()
+        self.page = self.browser.new_page(viewport={'width': 1400, 'height': 900})
+        self.page.goto(f'http://127.0.0.1:{self.room.ui}/')
+        expect(self.page.locator('#connection')).to_contain_text('Verbunden', timeout=10000)
+
+    def tearDown(self):
+        try:
+            self.room.api('/api/cancel', {})
+            self.room.api('/api/selftalk', {'on': False})
+        except Exception:
+            pass
+        self.page.close()
+
+    def _selftalk_hops(self):
+        n = 0
+        for rec in Model.calls:
+            if rec[2] != 'turn':
+                continue
+            if 'Self-Talk:' in json.dumps(rec[1], ensure_ascii=False):
+                n += 1
+        return n
+
+    def test_01_toggle_two_hops_chris_then_off(self):
+        p = self.page
+        t0 = time.monotonic()
+        def left():
+            remain = self.HARD_S - (time.monotonic() - t0)
+            self.assertGreater(remain, 0, 'hard timeout')
+            return max(100, int(remain * 1000))
+
+        expect(p.locator('#message')).to_be_enabled()
+        expect(p.locator('#room-line #selftalk-row #selftalk')).to_be_attached()
+        expect(p.locator('#app-header .status-group .top-stat')).to_have_count(2)
+        box = p.locator('#selftalk')
+        box.check()
+        self.room.until(lambda s: s.get('selftalk'), timeout=3, what='selftalk on')
+        expect(p.locator('#message')).to_be_enabled()
+        p.locator('#message').fill('kette-start')
+        p.locator('#message').press('Enter')
+        deadline = time.monotonic() + 8
+        while time.monotonic() < deadline:
+            expect(p.locator('#message')).to_be_enabled()
+            left()
+            if self._selftalk_hops() >= 2:
+                break
+            time.sleep(0.05)
+        else:
+            self.fail('wanted 2 bot-to-bot hops, have %d' % self._selftalk_hops())
+
+        p.locator('#message').fill('TOKEN-CHRIS-E2E')
+        p.locator('#message').press('Enter')
+        expect(p.locator('#message')).to_be_enabled()
+        seen = False
+        deadline = time.monotonic() + 6
+        while time.monotonic() < deadline:
+            left()
+            users = [m for m in self.room.state_()['room']
+                     if m.get('role') == 'user' and m.get('content') == 'TOKEN-CHRIS-E2E']
+            self.assertEqual(len(users), 1, 'Chris message was duplicated')
+            for rec in Model.calls:
+                if rec[2] == 'turn' and 'TOKEN-CHRIS-E2E' in json.dumps(rec[1], ensure_ascii=False):
+                    seen = True
+                    break
+            if seen:
+                break
+            time.sleep(0.05)
+        self.assertTrue(seen, 'Chris mid-chain was not in a later turn')
+
+        p.locator('#selftalk').uncheck()
+        self.room.until(lambda s: not s.get('selftalk') and not s.get('busy'),
+                        timeout=3, what='selftalk off and idle')
+        frozen = len(Model.calls)
+        time.sleep(0.4)
+        self.assertEqual(len(Model.calls), frozen, 'toggle off let another turn start')
+        expect(p.locator('#message')).to_be_enabled()
+        log = pathlib.Path(self.room.dir / 'server.log').read_text()
+        self.assertIn('selftalk-start', log)
+        self.assertIn('selftalk-stop', log)
+        self.assertLess(time.monotonic() - t0, self.HARD_S, 'hard timeout')
 
 
 if __name__ == '__main__':

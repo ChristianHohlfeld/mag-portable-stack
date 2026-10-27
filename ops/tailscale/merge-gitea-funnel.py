@@ -1,19 +1,25 @@
 #!/usr/bin/env python3
 """Merge a tailscaled ServeConfig so only Gitea is published with Funnel.
 
-Tailnet serves stay in place. AllowFunnel is rewritten to the single Gitea
-endpoint. Unknown tailnet handlers and service entries are kept; their funnel
-flags are not.
+Port 443 is raw TCP to nginx. tailscaled must not terminate TLS there: nginx
+already serves the tailnet names, and it owns SNI. Tailnet serves on 8443,
+8445 and 8446 stay HTTPS proxies and are not funneled.
 """
 import json
 import sys
 
 NODE = "mag.tail3e02ae.ts.net"
 FUNNEL_PORT = 443
-FUNNEL_TARGET = "http://127.0.0.1:3010"
+# nginx listens here, with PROXY protocol v2, and routes on SNI.
+FUNNEL_FORWARD = "127.0.0.1:4443"
+FUNNEL_PROXY_PROTOCOL = 2
 FUNNEL_ORIGIN = "https://mag.tail3e02ae.ts.net"
-# Existing tailnet-only serves. These ports are not funnel-capable targets
-# for this change: 8443 is already in use, and the room stays on 8446.
+# Shared by every tailnet vhost. A second listen on this socket with different
+# flags is an nginx emerg. The Tailscale address itself is not in the line:
+# tailscaled is the only process bound to 100.123.114.16:443.
+NGINX_LISTEN = "listen 127.0.0.1:4443 ssl http2 proxy_protocol;"
+OLD_NGINX_LISTEN = "listen 100.123.114.16:443 ssl http2;"
+# Existing tailnet-only serves. 8443 is already in use. The room stays on 8446.
 TAILNET = {
     "8443": "http://127.0.0.1:18767",
     "8445": "http://127.0.0.1:3000",
@@ -35,6 +41,33 @@ def _proxy(value):
     return value.rstrip("/")
 
 
+def retarget_nginx(text):
+    """Move an installed tailnet vhost off the Tailscale address."""
+    if not isinstance(text, str):
+        raise SystemExit("nginx config must be text")
+    return text.replace(OLD_NGINX_LISTEN, NGINX_LISTEN)
+
+
+def _https_proxy(tcp, web, port, proxy):
+    handler = tcp.get(port) or {}
+    if not isinstance(handler, dict):
+        handler = {}
+    for stale in ("TCPForward", "TerminateTLS", "HTTP", "ProxyProtocol"):
+        handler.pop(stale, None)
+    handler["HTTPS"] = True
+    tcp[port] = handler
+    hp = hostport(port)
+    server = web.get(hp) or {}
+    if not isinstance(server, dict):
+        server = {}
+    handlers = server.get("Handlers") or {}
+    if not isinstance(handlers, dict):
+        handlers = {}
+    handlers["/"] = {"Proxy": proxy}
+    server["Handlers"] = handlers
+    web[hp] = server
+
+
 def merge(current):
     if current is None:
         current = {}
@@ -45,25 +78,20 @@ def merge(current):
     web = cfg.get("Web") or {}
     if not isinstance(tcp, dict) or not isinstance(web, dict):
         raise SystemExit("serve TCP/Web must be objects")
-    wanted = {str(FUNNEL_PORT): FUNNEL_TARGET, **TAILNET}
-    for port, proxy in wanted.items():
-        handler = tcp.get(port) or {}
-        if not isinstance(handler, dict):
-            handler = {}
-        for stale in ("TCPForward", "TerminateTLS", "HTTP", "ProxyProtocol"):
-            handler.pop(stale, None)
-        handler["HTTPS"] = True
-        tcp[port] = handler
-        hp = hostport(port)
-        server = web.get(hp) or {}
-        if not isinstance(server, dict):
-            server = {}
-        handlers = server.get("Handlers") or {}
-        if not isinstance(handlers, dict):
-            handlers = {}
-        handlers["/"] = {"Proxy": proxy}
-        server["Handlers"] = handlers
-        web[hp] = server
+    for port, proxy in TAILNET.items():
+        _https_proxy(tcp, web, port, proxy)
+    port = str(FUNNEL_PORT)
+    handler = tcp.get(port) or {}
+    if not isinstance(handler, dict):
+        handler = {}
+    # A previous revision terminated TLS on this port and proxied HTTP. That
+    # steals the address from nginx. Drop the handler and forward the bytes.
+    for stale in ("HTTPS", "TerminateTLS", "HTTP"):
+        handler.pop(stale, None)
+    handler["TCPForward"] = FUNNEL_FORWARD
+    handler["ProxyProtocol"] = FUNNEL_PROXY_PROTOCOL
+    tcp[port] = handler
+    web.pop(funnel_key(), None)
     cfg["TCP"] = tcp
     cfg["Web"] = web
     cfg["AllowFunnel"] = {funnel_key(): True}
@@ -78,16 +106,22 @@ def assert_public_gitea_only(cfg):
         raise SystemExit("funnel allowlist must be Gitea on 443 only")
     web = cfg.get("Web") or {}
     tcp = cfg.get("TCP") or {}
-    got = _proxy(web[funnel_key()]["Handlers"]["/"]["Proxy"])
-    if got != FUNNEL_TARGET:
-        raise SystemExit("funnel target is not the Gitea nginx listener")
-    if tcp.get(str(FUNNEL_PORT), {}).get("HTTPS") is not True:
-        raise SystemExit("funnel port is not HTTPS")
+    block = tcp.get(str(FUNNEL_PORT)) or {}
+    if block.get("TCPForward") != FUNNEL_FORWARD:
+        raise SystemExit("funnel port is not the nginx TCP passthrough")
+    if block.get("ProxyProtocol") != FUNNEL_PROXY_PROTOCOL:
+        raise SystemExit("funnel port is not PROXY protocol v2")
+    if block.get("HTTPS") is True or block.get("TerminateTLS"):
+        raise SystemExit("funnel port terminates TLS in tailscaled")
+    if funnel_key() in web:
+        raise SystemExit("funnel port has an HTTP handler")
     for port, proxy in TAILNET.items():
         if _proxy(web[hostport(port)]["Handlers"]["/"]["Proxy"]) != proxy:
             raise SystemExit(f"tailnet serve :{port} changed")
         if tcp.get(port, {}).get("HTTPS") is not True:
             raise SystemExit(f"tailnet port {port} is not HTTPS")
+        if tcp.get(port, {}).get("TCPForward"):
+            raise SystemExit(f"tailnet port {port} is a raw forward")
         if hostport(port) in allow:
             raise SystemExit(f"tailnet port {port} is funneled")
     for key, on in allow.items():
@@ -97,8 +131,11 @@ def assert_public_gitea_only(cfg):
 
 def main(argv):
     mode = argv[1] if len(argv) > 1 else "merge"
-    raw = sys.stdin.read().strip()
-    current = json.loads(raw) if raw else {}
+    raw = sys.stdin.read()
+    if mode == "retarget":
+        sys.stdout.write(retarget_nginx(raw))
+        return 0
+    current = json.loads(raw) if raw.strip() else {}
     if mode == "merge":
         merged = merge(current)
         assert_public_gitea_only(merged)
@@ -111,7 +148,7 @@ def main(argv):
     if mode == "origin":
         sys.stdout.write(FUNNEL_ORIGIN + "\n")
         return 0
-    raise SystemExit("usage: merge-gitea-funnel.py merge|check|origin")
+    raise SystemExit("usage: merge-gitea-funnel.py merge|check|origin|retarget")
 
 
 if __name__ == "__main__":

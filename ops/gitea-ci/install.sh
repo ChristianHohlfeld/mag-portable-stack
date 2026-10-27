@@ -86,7 +86,9 @@ curl -fsS --max-time 2 http://127.0.0.1:3000/api/healthz >/dev/null
 bash "$root/ops/tailscale/apply-gitea-funnel.sh"
 for n in $(seq 1 60);do curl -fsS --max-time 1 http://127.0.0.1:3000/api/healthz >/dev/null && break;sleep 1;done
 curl -fsS --max-time 2 http://127.0.0.1:3000/api/healthz >/dev/null
-curl -fsS --max-time 5 -H 'Host: mag.tail3e02ae.ts.net' http://127.0.0.1:3010/user/login >/dev/null
+curl -fsS --max-time 5 --haproxy-protocol \
+  --resolve mag.tail3e02ae.ts.net:4443:127.0.0.1 \
+  https://mag.tail3e02ae.ts.net:4443/user/login >/dev/null
 bash /usr/local/lib/mag-ci/install-control.sh "$root"
 bash /usr/local/lib/mag-ci/setup-webhook.sh
 for unit in "$root"/ops/gitea-ci/*.{service,socket,slice,path,timer};do

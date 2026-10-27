@@ -23,9 +23,15 @@ fi
 if [[ -n "$PAGES_PUBLIC_DNS" ]]; then valid_ip "$PAGES_PUBLIC_DNS" || exit 2; fi
 # The following sed eats one backslash in the replacement, so the variable
 # must contain a doubled backslash to leave `\.` in the nginx regex.
+# PAGES_TAILNET_BIND stays the client-facing address (DNS, tailscale0). The
+# template must not contain @TAILNET_BIND@: nginx listens on 127.0.0.1:4443
+# and tailscaled owns the Tailscale :443.
 zone_regex="$(printf %s "$PAGES_ZONE" | sed 's/[.]/\\\\./g')"
-sed -e "s|@TAILNET_BIND@|$PAGES_TAILNET_BIND|g" \
-    -e "s|@ZONE@|$PAGES_ZONE|g" \
+if grep -q '@TAILNET_BIND@' "$here/mag-pages.nginx.in"; then
+  echo 'Pages template must not bind @TAILNET_BIND@; tailscaled owns :443' >&2
+  exit 2
+fi
+sed -e "s|@ZONE@|$PAGES_ZONE|g" \
     -e "s|@ZONE_REGEX@|$zone_regex|g" "$here/mag-pages.nginx.in"
 if [[ -n "$PAGES_PUBLIC_BIND" ]]; then
   sed -e "s|@PUBLIC_BIND@|$PAGES_PUBLIC_BIND|g" \

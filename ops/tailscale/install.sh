@@ -95,7 +95,7 @@ else
 fi
 ip4=$(tailscale ip -4 2>/dev/null | head -1 || true)
 if [[ -n $ip4 && $ip4 != "$EXPECTED_IP" ]]; then
-  echo "tailscale: WARN Tailnet IP is $ip4, but nginx/Pages listen on $EXPECTED_IP (ops/private-access/mag-room.nginx.conf, pages.env)." >&2
-  echo "           Restore the old node state from the backup, or update those listeners deliberately." >&2
+  echo "tailscale: WARN Tailnet IP is $ip4, but clients and DNS use $EXPECTED_IP (pages.env)." >&2
+  echo "           Restore the old node state from the backup. Do not point nginx at this address; tailscaled owns :443." >&2
 fi
 exit 0

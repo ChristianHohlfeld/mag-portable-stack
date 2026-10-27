@@ -1,6 +1,6 @@
 # MAG owner-only admin and backup
 
-Private nginx listens on 100.123.114.16:443. Tailscale LocalAPI WhoIs plus a
+Private nginx listens on 127.0.0.1:4443. Tailnet clients still use 100.123.114.16:443; tailscaled forwards that address. Tailscale LocalAPI WhoIs plus a
 signed identity proof is the only way a browser becomes a user. Guest
 permissions never include admin or backup.
 

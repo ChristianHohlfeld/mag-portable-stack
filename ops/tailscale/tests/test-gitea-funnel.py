@@ -28,19 +28,22 @@ class FunnelConfig(unittest.TestCase):
         checked = json.loads((ROOT / "ops/tailscale/gitea-funnel.json").read_text())
         self.assertEqual(generated, checked)
         self.assertEqual(generated["AllowFunnel"], {"mag.tail3e02ae.ts.net:443": True})
-        self.assertEqual(
-            generated["Web"]["mag.tail3e02ae.ts.net:443"]["Handlers"]["/"]["Proxy"],
-            "http://127.0.0.1:3010",
-        )
+        block = generated["TCP"]["443"]
+        self.assertEqual(block["TCPForward"], "127.0.0.1:4443")
+        self.assertEqual(block["ProxyProtocol"], 2)
+        self.assertNotIn("HTTPS", block)
+        self.assertNotIn("mag.tail3e02ae.ts.net:443", generated["Web"])
 
     def test_only_gitea_stays_public_and_tailnet_serves_remain(self):
         current = {
             "TCP": {
+                "443": {"HTTPS": True},
                 "8443": {"HTTPS": True},
                 "8446": {"HTTPS": True, "TCPForward": "127.0.0.1:8766"},
                 "9000": {"HTTPS": True},
             },
             "Web": {
+                "mag.tail3e02ae.ts.net:443": {"Handlers": {"/": {"Proxy": "http://127.0.0.1:3010"}}},
                 "mag.tail3e02ae.ts.net:8443": {"Handlers": {"/": {"Proxy": "http://127.0.0.1:18767"}}},
                 "mag.tail3e02ae.ts.net:8446": {"Handlers": {"/": {"Proxy": "http://127.0.0.1:1"}, "/extra": {"Text": "keep"}}},
                 "mag.tail3e02ae.ts.net:9000": {"Handlers": {"/": {"Proxy": "http://127.0.0.1:9"}}},
@@ -63,6 +66,9 @@ class FunnelConfig(unittest.TestCase):
         )
         self.assertEqual(merged["Web"]["mag.tail3e02ae.ts.net:8446"]["Handlers"]["/extra"], {"Text": "keep"})
         self.assertNotIn("TCPForward", merged["TCP"]["8446"])
+        self.assertNotIn("mag.tail3e02ae.ts.net:443", merged["Web"])
+        self.assertEqual(merged["TCP"]["443"]["TCPForward"], "127.0.0.1:4443")
+        self.assertNotIn("HTTPS", merged["TCP"]["443"])
         for port in ("8443", "8445", "8446", "10000"):
             self.assertNotIn(f"mag.tail3e02ae.ts.net:{port}", merged["AllowFunnel"])
 
@@ -76,6 +82,7 @@ class FunnelConfig(unittest.TestCase):
         )
         lines = out.strip().splitlines()
         self.assertIn("tailnet-only :8443 :8445 :8446", lines[-1])
+        self.assertIn("tcp://127.0.0.1:4443", lines[-1])
         self.assertNotIn("8766", lines[-1])
         doc = json.loads("\n".join(lines[:-1]))
         self.m.assert_public_gitea_only(doc)
@@ -93,8 +100,12 @@ class FunnelConfig(unittest.TestCase):
         self.assertEqual(policy["public_origin"], origin)
         self.assertEqual(policy["public_hostname"], origin.removeprefix("https://"))
         self.assertIn(f"ROOT_URL {origin}/", configure)
-        self.assertIn("listen 127.0.0.1:3010;", nginx)
+        self.assertIn("listen 127.0.0.1:4443 ssl http2 proxy_protocol;", nginx)
+        self.assertIn("ssl_reject_handshake on;", nginx)
+        self.assertIn("/etc/mag-nginx/tls/tailscale/mag.tail3e02ae.ts.net.crt", nginx)
+        self.assertNotIn("listen 100.123.114.16", nginx)
         self.assertNotIn("listen 443", nginx)
+        self.assertNotIn("3010", nginx)
         self.assertNotIn("listen 80", nginx)
         self.assertNotIn("git.mag.stardenburg.de", nginx)
         self.assertNotIn("acme-challenge", nginx)
@@ -109,6 +120,20 @@ class FunnelConfig(unittest.TestCase):
         self.assertNotIn("git.mag.stardenburg.de", (ROOT / "ops/gitea-ci/install.sh").read_text())
         self.assertNotIn("public.env", (ROOT / "ops/gitea-ci/install.sh").read_text())
         self.assertNotIn("install-lego.sh", (ROOT / "ops/gitea-ci/install.sh").read_text())
+        install = (ROOT / "ops/gitea-ci/install.sh").read_text()
+        self.assertIn("--haproxy-protocol", install)
+        self.assertIn("mag.tail3e02ae.ts.net:4443", install)
+        self.assertNotIn("127.0.0.1:3010", install)
+
+    def test_retarget_moves_only_the_tailscale_listener(self):
+        old = "    listen 100.123.114.16:443 ssl http2;\nlisten 192.0.2.10:443 ssl;\n"
+        moved = self.m.retarget_nginx(old)
+        self.assertEqual(
+            moved,
+            "    listen 127.0.0.1:4443 ssl http2 proxy_protocol;\nlisten 192.0.2.10:443 ssl;\n",
+        )
+        self.assertEqual(self.m.retarget_nginx(moved), moved)
+        self.assertEqual(self.m.retarget_nginx(self.m.NGINX_LISTEN + "\n"), self.m.NGINX_LISTEN + "\n")
 
 
 if __name__ == "__main__":

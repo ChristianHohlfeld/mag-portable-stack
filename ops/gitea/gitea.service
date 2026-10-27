@@ -1,5 +1,6 @@
 # Local Gitea for MAG. HTTP stays on loopback. Tailscale Serve publishes
-# tailnet-only :8445. Tailscale Funnel publishes :443 via the nginx listener.
+# tailnet-only :8445. Funnel and the tailnet share TCP :443 as a raw forward
+# to nginx, which presents the tailscale cert for mag.tail3e02ae.ts.net.
 [Unit]
 Description=Gitea
 After=network.target

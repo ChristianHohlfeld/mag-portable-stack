@@ -194,6 +194,11 @@ rollback() {
  fi
  fi
  rm -f /opt/mag-stack/.current-next
+ # Release tailscaled :443 before nginx tries to bind the Tailscale address.
+ if [[ -d $BACKUP/funnel-snapshot ]]; then
+   MAG_NGINX_TXN="$BACKUP" bash "$SOURCE/ops/tailscale/restore-gitea-funnel.sh" \
+     || echo 'WARN: funnel listener restore incomplete' >&2
+ fi
  bash "$NGINX_SYNC" rollback
 }
 deployment_started=0
@@ -393,6 +398,10 @@ if ! mag_systemctl is-active --quiet mag-120.service; then
   mag_systemctl start mag-120.service
   for i in {1..30}; do deploy_run 4 -- curl -fsS --retry 0 --max-time 2 -o /dev/null http://127.0.0.1:8766/readyz && break; sleep 1; done
 fi
+# One owner of :443. nginx moves to 127.0.0.1:4443 and tailscaled forwards
+# raw TLS there before either smoke. A failed apply restores listeners;
+# deploy rollback releases the forward before restoring the room vhost.
+bash "$SOURCE/ops/tailscale/apply-gitea-funnel.sh"
 bash "$NGINX_SYNC" activate
 bash "$NGINX_SYNC" smoke
 # Public ISRG roots before the room restarts, so MCP HTTPS (and the audit
@@ -463,10 +472,8 @@ bash "$SOURCE/ops/bots/install.sh" || echo 'WARN: bot site install incomplete (d
 [[ -r /etc/mag-stack/room-model.env ]] || bash "$SOURCE/ops/models/retire-deepseek.sh" || echo 'WARN: DeepSeek retirement incomplete (deploy itself succeeded)' >&2
 # Persist the active model units and bot VM autostart for cold reboot.
 bash "$SOURCE/ops/boot/ensure-boot.sh" || echo 'WARN: boot persistence needs operator attention' >&2
-# Public Gitea on Funnel :443. The room and the other tailnet serves stay private.
-# Failure here does not roll the room back; the release is already committed.
-bash "$SOURCE/ops/tailscale/apply-gitea-funnel.sh"
-# Model files, including DeepSeek V4.1, are preserved. Only Chris deletes weights.
+# Funnel/serve was applied before the ingress smoke, while rollback could
+# still release :443. Model files, including DeepSeek V4.1, are preserved. Only Chris deletes weights.
 # Deploy never restarts a loaded model (DeepSeek retirement above is the only stop). Model placement
 # is a separate, measured, operator-controlled change, never a deploy hook.
 printf '\nInstalled release %s; rollback snapshot %s\n' "$RELEASE_ID" "$BACKUP"

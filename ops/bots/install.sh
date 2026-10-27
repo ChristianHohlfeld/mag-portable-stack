@@ -39,8 +39,12 @@ had_conf=0
 if [[ -f $conf ]]; then cp -a "$conf" "$snapshot"; had_conf=1; fi
 trap 'rm -f "$snapshot"' EXIT
 # Single-quoted replacement keeps the dots escaped in the nginx regex.
-sed -e 's|@TAILNET_BIND@|100.123.114.16|g' \
-    -e 's|@ZONE_REGEX@|bot\\.stardenburg\\.de|g' \
+# The vhost listens on 127.0.0.1:4443. Do not substitute the Tailscale IP.
+if grep -q '100.123.114.16:443\|@TAILNET_BIND@' "$here/mag-bots.nginx.in"; then
+  echo "bot vhost must not bind the Tailscale address" >&2
+  exit 1
+fi
+sed -e 's|@ZONE_REGEX@|bot\\.stardenburg\\.de|g' \
     "$here/mag-bots.nginx.in" > "$conf.next"
 install -m 0644 "$conf.next" "$conf"
 rm -f "$conf.next"

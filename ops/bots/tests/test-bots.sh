@@ -166,21 +166,20 @@ grep -Fxq acmedns "$tmp/lego.args"
 openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
   -keyout "$tmp/key.pem" -out "$tmp/cert.pem" \
   -subj '/CN=*.bot.stardenburg.de' >/dev/null 2>&1
-sed -e 's|@TAILNET_BIND@|127.0.0.1|g' \
-    -e 's|@ZONE_REGEX@|bot\\.stardenburg\\.de|g' \
+sed -e 's|@ZONE_REGEX@|bot\\.stardenburg\\.de|g' \
     -e "s|/etc/mag-bots/tls/current/cert.pem|$tmp/cert.pem|g" \
     -e "s|/etc/mag-bots/tls/current/key.pem|$tmp/key.pem|g" \
-    -e 's|:443 ssl http2;|:18443 ssl http2;|' \
+    -e 's|127.0.0.1:4443|127.0.0.1:18443|' \
     "$here/mag-bots.nginx.in" >"$tmp/bots.conf"
-grep -Fq 'listen @TAILNET_BIND@:443 ssl http2;' "$here/mag-bots.nginx.in"
-grep -Fq 'listen 127.0.0.1:18443 ssl http2;' "$tmp/bots.conf"
+grep -Fq 'listen 127.0.0.1:4443 ssl http2 proxy_protocol;' "$here/mag-bots.nginx.in"
+grep -Fq 'listen 127.0.0.1:18443 ssl http2 proxy_protocol;' "$tmp/bots.conf"
 grep -Fq 'server_name ~^(?<botslug>agent[0-9]+)\.bot\.stardenburg\.de$;' "$tmp/bots.conf"
 ! grep -q '0.0.0.0' "$here/mag-bots.nginx.in"
 ! grep -q ':80' "$here/mag-bots.nginx.in"
 # Same address:port as the room vhost. Mismatched listen options are an emerg.
 cat >"$tmp/room.conf" <<EOF
 server {
-    listen 127.0.0.1:18443 ssl http2;
+    listen 127.0.0.1:18443 ssl http2 proxy_protocol;
     server_name mag.stardenburg.de;
     ssl_certificate $tmp/cert.pem;
     ssl_certificate_key $tmp/key.pem;

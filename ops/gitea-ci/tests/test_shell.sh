@@ -14,7 +14,8 @@ for unit in ops/gitea-ci/mag-ci-{vm,image}.service;do
 done
 ! grep -Eq 'virtiofs|virtfs|9p|hostfwd|/var/lib/magbot|/dev/sd[a-z]' ops/gitea-ci/run-vm.sh
 ! grep -F 'LoadCredential=' ops/gitea-ci/mag-ci-vm.service ops/gitea-ci/mag-ci-guest-runner.service
-! grep -E '(stop|restart|reload)[[:space:]]+(mag-llm|mag-120)' ops/gitea-ci/*.sh ops/gitea-ci/*.cpp ops/tailscale/apply-gitea-funnel.sh
+bash -n ops/tailscale/*.sh
+! grep -E '(stop|restart|reload)[[:space:]]+(mag-llm|mag-120|mag-llm-ds-node)' ops/gitea-ci/*.sh ops/gitea-ci/*.cpp ops/tailscale/*.sh
 ! grep -Eq 'sudoers|mag-deploy' ops/gitea-ci/guest-runner.yaml ops/gitea-ci/mag-ci-guest-runner.service
 grep -Fq -- '--ephemeral' ops/gitea-ci/start-worker.sh
 grep -Fq -- '--token-file' ops/gitea-ci/start-worker.sh

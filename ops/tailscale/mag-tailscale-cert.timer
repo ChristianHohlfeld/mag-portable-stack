@@ -1,0 +1,8 @@
+[Unit]
+Description=Renew the Tailscale certificate used for Gitea SNI
+[Timer]
+OnCalendar=daily
+Persistent=true
+RandomizedDelaySec=1h
+[Install]
+WantedBy=timers.target

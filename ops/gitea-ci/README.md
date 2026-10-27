@@ -6,33 +6,44 @@ are unchanged. This change does not stop/restart either resident LLM.
 
 ## Public endpoint
 
-Public URL: **https://mag.tail3e02ae.ts.net/** (HTTPS Git and Gitea login).
-Tailscale Funnel serves that name on port **443** and proxies to nginx on
-`127.0.0.1:3010`, which proxies to Gitea on `127.0.0.1:3000`. Funnel presents
-the `*.ts.net` certificate, so Gitea does not use lego, a public A record, or
-a forwarded router port. There is no Caddy dependency. nginx stays.
+Public URL: **https://mag.tail3e02ae.ts.net/** (HTTPS Git and Gitea login, no
+port). Tailscale Funnel and tailnet clients share **one** TCP listener on
+`:443`. tailscaled does not terminate TLS. It forwards the bytes, with PROXY
+protocol v2, to nginx on `127.0.0.1:4443`. nginx routes on SNI:
 
-The existing tailnet-only serves stay as they are and are not funneled:
+| SNI | Certificate | Upstream |
+| --- | --- | --- |
+| `mag.tail3e02ae.ts.net` | `tailscale cert` (renewed by `mag-tailscale-cert.timer`) | Gitea `127.0.0.1:3000` |
+| `mag.stardenburg.de` | existing room certificate | room `127.0.0.1:8766` |
+| `pages.stardenburg.de` and `*.pages.stardenburg.de` | existing Pages certificate | Pages files |
+| `agentN.bot.stardenburg.de` | existing bot certificate | bot files |
+| anything else | none | handshake rejected |
+
+Those names keep working for tailnet clients because DNS still points at
+`100.123.114.16`. nginx must not bind that address. There is no Caddy
+dependency. Gitea does not use lego, a public A record, or a forwarded router
+port.
+
+The other tailnet-only serves stay HTTPS proxies and are not funneled:
 
 | Serve | Target | Exposure |
 | --- | --- | --- |
-| `:443` | `http://127.0.0.1:3010` | public Funnel (Gitea nginx) |
+| `:443` | `tcp://127.0.0.1:4443` | public Funnel and tailnet; nginx SNI |
 | `:8443` | `http://127.0.0.1:18767` | tailnet only |
 | `:8445` | `http://127.0.0.1:3000` | tailnet only (Gitea direct) |
 | `:8446` | `http://127.0.0.1:8766` | tailnet only (room) |
 
 Port 443 is the Funnel listener because it is the default HTTPS port GitHub
 can call for webhooks and status links. `:8443` is already a private serve.
-The room is not on the public listener. `ROOT_URL` is
-`https://mag.tail3e02ae.ts.net/`.
+`ROOT_URL` is `https://mag.tail3e02ae.ts.net/`.
 
 Registration is off, sign-in is required and **two-factor authentication is
 enforced for every human account** by Gitea itself. nginx limits login and
-two-factor attempts per Funnel client address (5/minute) and the rest of the
-site more loosely, so git clones still work. A host fail2ban jail cannot see
-Funnel clients: their TCP connection arrives through tailscaled. The webhook
-keeps its installer-generated HMAC-SHA256 secret; the bridge rejects a bad
-signature. Unknown Host values are rejected.
+two-factor attempts per client address from the PROXY header (5/minute) and
+the rest of the site more loosely, so git clones still work. A host fail2ban
+jail cannot see Funnel clients: their TCP connection arrives through
+tailscaled. The webhook keeps its installer-generated HMAC-SHA256 secret; the
+bridge rejects a bad signature. Unknown SNI is rejected.
 
 The existing root `/etc/credstore` + systemd `LoadCredential` mechanism is used:
 

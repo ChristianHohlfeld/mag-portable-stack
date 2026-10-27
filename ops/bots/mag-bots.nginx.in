@@ -1,7 +1,9 @@
-# Tailnet-only. This file must NEVER bind 0.0.0.0 or a public IP.
+# Tailnet-only. This file must NEVER bind 0.0.0.0, a public IP, or the
+# Tailscale address. Clients reach 100.123.114.16:443; tailscaled forwards
+# to this socket. The listen line matches the room vhost exactly.
 # agentN.bot.stardenburg.de serves that VM's site and nothing else.
 server {
-    listen @TAILNET_BIND@:443 ssl http2;
+    listen 127.0.0.1:4443 ssl http2 proxy_protocol;
     server_name ~^(?<botslug>agent[0-9]+)\.@ZONE_REGEX@$;
     ssl_certificate /etc/mag-bots/tls/current/cert.pem;
     ssl_certificate_key /etc/mag-bots/tls/current/key.pem;

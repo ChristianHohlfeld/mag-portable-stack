@@ -259,8 +259,8 @@ html,body{overflow-x:hidden;max-width:100vw}
 .photo-preview{display:flex;gap:9px;flex-wrap:wrap;padding:8px 0}.photo-card{position:relative;width:80px;height:80px;border-radius:10px;overflow:hidden;border:1px solid var(--line);background:var(--panel)}.photo-card img{width:100%;height:100%;object-fit:cover}.photo-card button{position:absolute;right:3px;top:3px;width:26px;height:26px;border-radius:50%;background:var(--surface);color:var(--text);border:1px solid var(--line);font-size:16px}.photo-card button::before{content:"";position:absolute;inset:-9px}.side-model-switch{margin:11px 0 0;padding:11px;border:1px solid var(--line);border-radius:10px;background:var(--panel)}.side-model-switch label{display:block;color:var(--secondary);font-size:12px;font-weight:650;margin-bottom:7px}.side-model-switch select{width:100%;min-height:36px}.side-model-switch p{margin:6px 0 0;font-size:11px}.file-preview{display:flex;flex-wrap:wrap;gap:7px;padding:4px 0 8px}.file-chip{display:inline-flex;align-items:center;gap:8px;max-width:100%;border:1px solid var(--line);background:var(--panel);border-radius:10px;padding:6px 7px 6px 10px;font-size:12px}.file-chip span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:260px}.file-chip button{border:0;min-width:24px;min-height:24px;border-radius:6px;color:var(--text);font-size:18px}.file-chip button:hover{background:var(--hover)}.photo-note{margin:0 0 6px;font-size:12px;color:var(--muted)}#send-form.drop-hot{outline:2px dashed var(--sb-red,#e62b2b);outline-offset:4px;border-radius:14px}
 .sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
 </style><style id="stardenburg-theme">/* Stardenburg-Theme · gleiche Tokens wie stardenburg.de (keine externen Fonts: Inter selbst gehostet) */
-:root{--sb-red:#e62b2b;--sb-glow:rgba(230,43,43,.35);--sb-grid:rgba(230,43,43,.045);--bg:#050505;--surface:#0a0a0c;--sidebar:#08080a;--panel:#121216;--panel-2:#17171c;--panel-3:#1f1f25;--text:#ffffff;--secondary:#c4c4cb;--muted:#8a8a93;--line:#2a2a30;--soft-line:#1b1b20;--accent:#e62b2b;--accent-ink:#ffffff;--hover:#16161b;--code:#070708;--bubble:#121216;--radius:8px;--shadow:0 20px 60px #000c;font-family:Inter,sans-serif}
-:root[data-theme=light]{--bg:#f6f6f7;--surface:#ffffff;--sidebar:#f1f1f3;--panel:#f4f4f6;--panel-2:#ececef;--panel-3:#e4e4e8;--text:#0a0a0c;--secondary:#3a3a40;--muted:#6b6b73;--line:#dcdce1;--soft-line:#e8e8ec;--accent:#c81f1f;--accent-ink:#fff;--hover:#ededf0;--bubble:#f1f1f3;--sb-grid:rgba(200,31,31,.05)}
+:root{--sb-red:#e62b2b;--sb-glow:rgba(230,43,43,.35);--sb-grid:rgba(230,43,43,.045);--bg:#050505;--surface:#0a0a0c;--sidebar:#08080a;--panel:#121216;--panel-2:#17171c;--panel-3:#1f1f25;--text:#ffffff;--secondary:#c4c4cb;--muted:#8a8a93;--line:#2a2a30;--soft-line:#1b1b20;--accent:#e62b2b;--accent-ink:#ffffff;--hover:#16161b;--code:#070708;--bubble:#2a2a30;--radius:8px;--shadow:0 20px 60px #000c;font-family:Inter,sans-serif}
+:root[data-theme=light]{--bg:#f6f6f7;--surface:#ffffff;--sidebar:#f1f1f3;--panel:#f4f4f6;--panel-2:#ececef;--panel-3:#e4e4e8;--text:#0a0a0c;--secondary:#3a3a40;--muted:#6b6b73;--line:#dcdce1;--soft-line:#e8e8ec;--accent:#c81f1f;--accent-ink:#fff;--hover:#ededf0;--bubble:#e6e6ea;--sb-grid:rgba(200,31,31,.05)}
 body,.main,.composer-wrap,#app-header{background-color:var(--bg)}
 .main,.left,.right{background-image:linear-gradient(var(--sb-grid) 1px,transparent 1px),linear-gradient(90deg,var(--sb-grid) 1px,transparent 1px);background-size:60px 60px}
 #app-header{background:rgba(5,5,5,.82);backdrop-filter:blur(12px);border-bottom:1px solid rgba(255,255,255,.05)}
@@ -273,7 +273,7 @@ body,.main,.composer-wrap,#app-header{background-color:var(--bg)}
 .pill-btn{border-color:var(--line);background:var(--panel)}.pill-btn:hover{border-color:#3a3a42}
 .primary{box-shadow:0 0 16px var(--sb-glow);transition:box-shadow .3s,transform .3s,background .3s}.primary:hover{filter:none;background:#f73636!important;box-shadow:0 0 24px rgba(230,43,43,.55);transform:translateY(-1px)}
 .message .meta .avatar{border-radius:6px;background:var(--panel)}
-.message.user .content,.message.mine .content,.bubble{background:var(--bubble);border:1px solid var(--line);border-radius:8px}
+.message.user .content,.message.mine .content,.bubble{background:var(--bubble);border:0;border-radius:22px}
 .composer,.composer-box,#composer,textarea#input{border-radius:8px}
 .composer-inner>*:has(textarea){border:1px solid var(--line);background:var(--panel);border-radius:8px;transition:border-color .3s,box-shadow .3s}
 .composer-inner>*:has(textarea:focus){border-color:var(--sb-red);box-shadow:0 0 0 1px var(--sb-red),0 0 18px rgba(230,43,43,.15)}
@@ -624,6 +624,9 @@ dialog{border-radius:10px;border-color:var(--line);background:var(--surface)}
 .bot-face.is-stream .bf-eye{animation:bf-blink 2.4s ease-in-out infinite}
 .bot-face.is-pulse{animation:bf-pulse .7s ease-out 1}
 .bot-face.is-settle .bf-body{animation:bf-settle 1.1s ease-out 1}
+.message.user>.content,.message.user.other>.content,.message.mine>.content{background:var(--bubble);border:0;border-radius:22px;box-shadow:none;padding:10px 16px;line-height:1.45}
+.message.assistant>.content{background:transparent;border:0;box-shadow:none}
+.message.pop-target>.content{background:color-mix(in srgb,var(--accent),transparent 92%);border-radius:12px}
 .message.bot-accent>.meta strong.bot-name{color:var(--bot)}
 .agent label span.bot-name{color:var(--bot)!important}
 .composer-inner .activity-status{display:flex;align-items:center;height:22px;max-height:22px}

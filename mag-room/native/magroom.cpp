@@ -2048,7 +2048,7 @@ static const char *AGENT_RULES =
     "oder Test bis zum Freigabepunkt. Wenn ein Login, CAPTCHA oder 2FA "
     "dich blockiert, bitte um Uebernahme des Browsers, um die Sperre "
     "rechtmaessig zu loesen, statt sie zu umgehen. "
-    "Bei mehrschrittigen Aufgaben lege zuerst mit todo(set) 
+    "Bei mehrschrittigen Aufgaben lege zuerst mit todo(set) "
     "das Ziel und wenige konkrete Schritte an und hake sie mit todo(done) ab, "
     "sobald ein Werkzeugergebnis sie belegt (das sind die Zwischenstaende fuer "
     "den Nutzer). Hoere nicht auf, solange Schritte offen sind; ist einer "

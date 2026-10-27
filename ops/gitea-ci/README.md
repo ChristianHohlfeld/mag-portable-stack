@@ -62,9 +62,9 @@ minutes. Set `MAG_GITEA_FUNNEL_REQUIRE_PUBLIC=1` to fail closed instead.
 
 Registration is off, sign-in is required and **two-factor authentication is
 enforced for every human account** by Gitea itself. Public clients reach Gitea
-through tailscaled, not through nginx, so a host fail2ban jail cannot see
-them. The webhook keeps its installer-generated HMAC-SHA256 secret; the
-bridge rejects a bad signature.
+through tailscaled TCP-forward plus nginx SNI, so a host fail2ban jail on
+Gitea `:3000` cannot see the original client. The webhook keeps its
+installer-generated HMAC-SHA256 secret; the bridge rejects a bad signature.
 
 The existing root `/etc/credstore` + systemd `LoadCredential` mechanism is used:
 

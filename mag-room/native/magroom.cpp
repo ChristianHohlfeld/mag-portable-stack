@@ -100,10 +100,10 @@ static thread_local Lane *TL_LANE = nullptr;
 static thread_local std::string TL_GROUP;
 static thread_local int TL_ORDER = 0;
 static thread_local bool TL_REFLECT = false;
-// Lanes of one request do not all start at once: the next lane waits until
-// the previous bot has read its context and starts thinking (or has
-// finished), then a short human pause. Two cold prompt evaluations never
-// begin at the same moment, and the bots do not answer in lockstep.
+// Non-configured group chat staggers lanes: the next lane waits until the
+// previous bot has read its context and starts thinking (or has finished),
+// then a short human pause. Configured bots do not use that gate. Each one
+// has its own server, queue and worker and starts immediately.
 struct StartGate {
   std::mutex m;
   std::condition_variable cv;
@@ -2505,12 +2505,18 @@ static std::vector<Val> wire_messages(int idx, const std::string &system,
   // A cleared/restored room is an explicit history reset. Do not resurrect it.
   bool intersects=w.seen.empty();
   for(const auto &m:room)if(w.seen.count(mag::str(m,"id")))intersects=true;
-  if(w.fingerprint!=key || !intersects || w.messages.empty()) {
+  // Fingerprint drift (a deploy, the bot list, a tool hash) must not rebuild
+  // history. ik keeps the first ~8k tokens and re-prefills everything after
+  // them; that was the multi-minute hi. A cleared room still starts over.
+  if(!intersects || w.messages.empty()) {
     auto archive=intersects?w.pho_archive:Val::object();
     auto last=intersects?w.pho_last_key:std::string();
     w=WireSession{};w.pho_archive=archive;w.pho_last_key=last;w.fingerprint=key;
     Val sys=Val::object();sys["role"]="system";sys["content"]=system;
     w.messages.push_back(sys);
+  } else if(w.fingerprint!=key) {
+    std::cerr << "prompt-prefix-keep bot=" << bot << std::endl;
+    w.fingerprint=key;
   }
   // Sample preference exactly at a turn boundary, never during streaming.
   w.compression=pho_enabled(idx);
@@ -4068,6 +4074,7 @@ class VisibleReplyFilter {
     pending.clear();
   }
 };
+static void persist_configured_slot(int idx);
 static Turn
 backend_turn(const std::vector<Val> &messages, const std::string &tools,
              double temperature,
@@ -4363,6 +4370,10 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
                        saw_cached, saw_evaluated);
   if (t.error.empty())
     slot_save_after(id_slot, saw_cached, saw_evaluated);
+  // A cancel drops ik's KV ("lack of cache data"). The slot file is what the
+  // next room start reloads, so a restart does not prefill the prompt again.
+  if (t.error.empty())
+    persist_configured_slot(bot_idx);
   return t;
 }
 
@@ -5228,7 +5239,14 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
   {
     // While llama serve loads the weights (minutes on CPU) the turn waits,
     // visibly; download/verification/failure is reported immediately.
-    ModelStatus st = model_status(true);
+    // Configured turns must not GET /health first. ik serves it on the same
+    // queue as prefill, and an unscoped probe lands on DeepSeek, so Qwen's
+    // worker sat there until DeepSeek's prefill finished.
+    ModelStatus st = model_status(CONFIGURED_MODEL ? false : true);
+    if (CONFIGURED_MODEL && !st.ready) {
+      st.ready = true;
+      if (st.state.empty()) st.state = "busy";
+    }
     if (!st.ready) {
       const bool transient = st.state == "loading" || st.state == "starting" ||
                              st.state == "verified";
@@ -6519,6 +6537,42 @@ static std::string prefix_file(int idx, const std::string &model) {
   return CONFIGURED_MODEL ? "mag-prefix-" + model + "-slot" + std::to_string(model_slot(idx)) + ".bin"
                          : "mag-prefix-" + model + ".bin";
 }
+static bool prefix_slot_rpc(int idx, const std::string &model, const char *action,
+                            const std::string &file) {
+  std::string reply;
+  long status = 0;
+  const bool sent = http_simple(
+      BACKEND_HOST, BACKEND_PORT, "POST", std::string("/slots/0?action=") + action,
+      "{\"filename\":\"" + file + "\"}",
+      {{"Content-Type", "application/json"},
+       {"Authorization", "Bearer " + API_KEY},
+       {"X-Mag-Model", model},
+       {"X-Mag-Slot", gateway_slot(idx)},
+       {"X-Mag-Session", action}},
+      reply, &status, nullptr, 120000);
+  return sent && status == 200;
+}
+// After a successful turn the llama slot holds the prompt. Write that KV to
+// the slot file so a later cancel or room restart can load it instead of
+// prefilled the whole prompt again ("lack of cache data").
+static void persist_configured_slot(int idx) {
+  if (!CONFIGURED_MODEL || !PREFIX_DISK || idx < 0) return;
+  const std::string model = bot_model_id(idx);
+  const std::string file = prefix_file(idx, model);
+  const std::string port = model_port(model_slot(idx));
+  const std::string own_key = port + "/" + file;
+  const bool web = WEB_ENABLED.load();
+  const std::string system = build_system(idx, false, "", web);
+  const std::string tool_defs = tools_json(idx, web);
+  const auto cut = system.rfind("[Identitaet]");
+  const std::string shared = system.substr(0, cut == std::string::npos ? system.size() : cut) + tool_defs;
+  const std::string shared_key = model + ":" + std::to_string(fnv64(shared));
+  if (!prefix_slot_rpc(idx, model, "save", file)) return;
+  std::lock_guard<std::mutex> lk(PREFIX_MTX);
+  if (!PREFIX_META.isObj()) PREFIX_META = Val::object();
+  PREFIX_META[own_key] = shared_key;
+  write_file_atomic(STATE_DIR + "/prompt-prefix.json", mj::dump(PREFIX_META));
+}
 static void agents_changed();
 static void prewarm_release(const std::string &lane, const std::string &bot_id) {
   std::lock_guard<std::mutex> lk(PREWARM_MTX);
@@ -6550,19 +6604,7 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
   // minutes of CPU prefill (~50 t/s). Keep the latest one on disk per model:
   // restore it first (a restarted server is cold), save it after the prewarm.
   auto prefix_slot = [&](const char *action, const std::string &file) {
-    std::string reply;
-    long status = 0;
-    // The gateway rewrites /slots/0 to this bot's own llama slot (X-Mag-Slot).
-    const bool sent = http_simple(
-        BACKEND_HOST, BACKEND_PORT, "POST", std::string("/slots/0?action=") + action,
-        "{\"filename\":\"" + file + "\"}",
-        {{"Content-Type", "application/json"},
-         {"Authorization", "Bearer " + API_KEY},
-         {"X-Mag-Model", model},
-         {"X-Mag-Slot", gateway_slot(idx)},
-         {"X-Mag-Session", "prewarm"}},
-        reply, &status, nullptr, 120000);
-    return sent && status == 200;
+    return prefix_slot_rpc(idx, model, action, file);
   };
   // This bot's server keeps the lock for the whole prewarm.
   const std::string port = CONFIGURED_MODEL ? model_port(model_slot(idx)) : model;
@@ -6571,7 +6613,7 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
   const std::string own = prefix_file(idx, model);
   const std::string own_key = port + "/" + own;
   std::string source = own;
-  bool prefix_changed = false;
+  bool prefix_changed = false, have_file = false;
   {
     std::lock_guard<std::mutex> lk(PREFIX_MTX);
     if (!PREFIX_META.isObj()) {
@@ -6584,6 +6626,7 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
     };
     const std::string meta_own = meta(own_key);
     prefix_changed = !meta_own.empty() && meta_own != shared_key;
+    have_file = !meta_own.empty();
     // Own file if it holds the current shared prefix (or is of unknown age);
     // otherwise another bot's file on the SAME server with that prefix.
     if (CONFIGURED_MODEL && !meta(own_key).empty() && meta(own_key) != shared_key)
@@ -6595,7 +6638,8 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
         }
   }
   bool ram_warm = false, ram_known = !CONFIGURED_MODEL;
-  bool saw_slot = false, explicit_empty = false;
+  bool saw_slot = false, explicit_empty = false, slot_busy = false;
+  bool decoded_warm = false;
   if (CONFIGURED_MODEL) {
     std::string raw; long status = 0;
     if (http_simple(BACKEND_HOST, BACKEND_PORT, "GET", "/slots", "",
@@ -6611,18 +6655,16 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
             if (n->asNum() > 0) ram_warm = true;
             else zeros = true;
           }
-        if (auto busy = slot.find("is_processing"); busy && busy->asBool()) ram_warm = true;
+        if (auto busy = slot.find("is_processing"); busy && busy->asBool()) slot_busy = true;
         // Default GET /slots is metrics only (slots_debug=0): no prompt
-        // string and no n_past. The KV is still in RAM. After a reply,
-        // n_decoded stays > 0 while the slot is idle. Treating that as cold
-        // restores a disk checkpoint over the warm KV and posts a new
-        // completion; ik then re-prefills from the previous ubatch checkpoint
-        // (~1-4.5k tokens, ~80s) and the first user message waits on it.
+        // string and no n_past. n_decoded > 0 after a reply does not prove
+        // the KV survived a cancel ("lack of cache data"). A saved slot
+        // file is reloaded instead of posting another completion.
         long decoded = -1;
         if (auto next = slot.find("next_token"); next && next->isObj())
           if (auto n = next->find("n_decoded"); n && n->type == Val::NUM)
             decoded = (long)n->asNum();
-        if (decoded > 0) ram_warm = true;
+        if (decoded > 0) decoded_warm = true;
         if (auto prompt = slot.find("prompt"); prompt &&
             ((prompt->type == Val::STR && !prompt->asStr().empty()) ||
              (prompt->isArr() && !prompt->asArr().empty()))) ram_warm = true;
@@ -6642,18 +6684,26 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
   bool restored = false;
   bool skip = false;
   const char *why = "0";
-  if (CONFIGURED_MODEL && !ram_known) {
+  if (CONFIGURED_MODEL && (!ram_known || slot_busy)) {
     skip = true;
-    why = "busy"; // /slots timed out: the slot is occupied, not cold
-  } else if (ram_warm || (saw_slot && !explicit_empty)) {
-    // A listed slot with no explicit zero still holds its prefix. Do not
-    // restore or complete: both re-prefill the only DeepSeek slot.
+    why = "busy"; // /slots timed out or the slot is prefilling: do not clobber it
+  } else if (ram_warm) {
+    // Explicit cache counters, a prompt, or state>0: the KV is resident.
+    skip = true;
+    why = "ram";
+  } else if (CONFIGURED_MODEL && have_file && saw_slot && PREFIX_DISK) {
+    // Idle metrics, or a cancel that dropped the KV. Reload the slot file
+    // and do not post a completion: that completion was the full re-prefill.
+    restored = prefix_slot("restore", source);
+    skip = true;
+    why = "restored";
+  } else if (decoded_warm || (saw_slot && !explicit_empty)) {
+    // No slot file yet. Leave the listed slot alone.
     skip = true;
     why = "ram";
   } else if (ram_known && !ram_warm) {
-    // Cold slot only: load the saved prefix, then one completion so a server
-    // that actually restarted still has a checkpoint. A warm slot never gets
-    // here, so a room restart does not re-prefill.
+    // Cold server (no listed slot): load a saved prefix, then one completion
+    // so the checkpoint exists. A listed slot never gets here.
     restored = PREFIX_DISK && prefix_slot("restore", source);
   }
   std::string out;
@@ -7116,8 +7166,10 @@ static void lane_finish(Lane *lane, uint64_t run, bool owner_ran, bool more,
 // sees that answer), "off" starts all lanes together.
 // MAG_ROOM_STAGGER_PAUSE_MS: mean human pause before the next bot starts.
 static std::string stagger_mode() {
-  // Configured NUMA servers: both bots answer concurrently by default.
-  const std::string m = env("MAG_ROOM_STAGGER", CONFIGURED_MODEL ? "off" : "think");
+  // One worker per configured bot, started together. MAG_ROOM_STAGGER must
+  // not park Qwen behind DeepSeek's prefill.
+  if (CONFIGURED_MODEL) return "off";
+  const std::string m = env("MAG_ROOM_STAGGER", "think");
   return m == "reply" || m == "off" ? m : "think";
 }
 static int stagger_pause_ms() {

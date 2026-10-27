@@ -12,8 +12,8 @@ ready=$(curl --fail --silent --show-error --max-time 5 http://127.0.0.1:8766/rea
 printf '%s\n' "$ready"
 state=$(python3 -I -c 'import json,sys; print(json.loads(sys.argv[1]).get("model",{}).get("state",""))' "$ready")
 case "$state" in
-  ready)
-    : ;; # model ready via /readyz (DeepSeek mag-llm retired; Ornith health is the status)
+  ready|busy)
+    : ;; # busy: the slot is prefilling. /health is on that queue, so it is slow, not down.
   downloading|verifying|verified|starting|loading)
     echo "WARN: Modell noch nicht bereit ($state)" >&2 ;;
   *)
@@ -21,11 +21,19 @@ case "$state" in
 esac
 # The room may be healthy while one of the two Ornith nodes has failed.
 # Check both real inference instances, not just the room's HTTP listener.
+# During prefill, /health takes longer than this probe. busy already said so.
 if [[ -r /etc/mag-stack/secondary-model.env ]] &&
    grep -Fxq 'MAG_SECONDARY_MODEL=ornith' /etc/mag-stack/secondary-model.env; then
   for p in 8191 8192; do
-    curl --noproxy '*' --fail --silent --show-error --max-time 5       "http://127.0.0.1:$p/health" >/dev/null ||
-      { echo "FEHLER: Ornith :$p nicht bereit" >&2; exit 1; }
+    if ! curl --noproxy '*' --fail --silent --show-error --max-time 5 \
+        "http://127.0.0.1:$p/health" >/dev/null; then
+      if [[ "$state" == "busy" ]]; then
+        echo "WARN: Ornith :$p beschäftigt (Modellstatus busy)" >&2
+      else
+        echo "FEHLER: Ornith :$p nicht bereit" >&2
+        exit 1
+      fi
+    fi
   done
 fi
 curl --fail --silent --show-error --max-time 5 http://127.0.0.1:18784/health

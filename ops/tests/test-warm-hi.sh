@@ -46,23 +46,25 @@ pid=$!
 sleep 0.2
 start=$(date +%s%3N)
 set +e
-MAG_WARM_HI_PORT=$port MAG_WARM_HI_BUDGET_S=2 bash "$script" >/dev/null 2>"$tmp/err"
+MAG_WARM_HI_PORT=$port MAG_WARM_HI_BUDGET_S=2 bash "$script" >"$tmp/out" 2>"$tmp/err"
 rc=$?
 set -e
 ms=$(( $(date +%s%3N) - start ))
-[[ "$rc" -ne 0 && "$ms" -lt 8000 ]]
-grep -q 'Not restarting mag-llm' "$tmp/err"
-echo "hang fail ${ms}ms"
+[[ "$rc" -eq 0 && "$ms" -lt 8000 ]]
+grep -q 'slot busy' "$tmp/out"
+grep -q 'Not restarting mag-llm' "$tmp/out"
+echo "hang tolerated ${ms}ms"
 kill "$pid"; wait "$pid" 2>/dev/null || true
 python3 "$tmp/srv.py" busy "$port" &
 pid=$!
 sleep 0.2
 set +e
-MAG_WARM_HI_PORT=$port MAG_WARM_HI_BUDGET_S=3 bash "$script" >/dev/null 2>"$tmp/err"
+MAG_WARM_HI_PORT=$port MAG_WARM_HI_BUDGET_S=3 bash "$script" >"$tmp/out" 2>"$tmp/err"
 rc=$?
 set -e
-[[ "$rc" -ne 0 ]]
-echo "busy slot rejected"
+[[ "$rc" -eq 0 ]]
+grep -q 'busy' "$tmp/out"
+echo "busy slot accepted"
 kill "$pid"; wait "$pid" 2>/dev/null || true
 python3 "$tmp/srv.py" cold "$port" &
 pid=$!

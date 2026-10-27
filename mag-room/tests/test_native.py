@@ -19,7 +19,7 @@ def _mem(content):
 class Model(http.server.BaseHTTPRequestHandler):
  script_scope=None
  slot_snapshot=[];cache_records=[];tokenizer_fail=False;tokenizer_requests=[]
- protocol_version='HTTP/1.1';calls=[];slots=[];pairs=[];paths=[];slot_delay={};delay=0;reply=None;script=[];health=200;last_prompt={};overflow_once=0;barrier_token='';barrier_release=None;hold_get=0
+ protocol_version='HTTP/1.1';calls=[];slots=[];pairs=[];paths=[];slot_delay={};delay=0;reply=None;script=[];health=200;last_prompt={};saved_prompt={};overflow_once=0;barrier_token='';barrier_release=None;hold_get=0
  # A prompt that misses the pinned slot sleeps this long before any token.
  # 0 keeps the rest of the suite fast. The lock is per gateway slot, like ik.
  prefix_miss_s=0;_slot_locks={};_slot_guard=threading.Lock()
@@ -36,7 +36,17 @@ class Model(http.server.BaseHTTPRequestHandler):
    self.send_response(code);self.send_header('Content-Length',str(len(data)));self.end_headers();self.wfile.write(data)
   except (BrokenPipeError,ConnectionResetError):return
  def do_POST(self):
-  obj=json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+  n=int(self.headers.get('Content-Length') or 0)
+  obj=json.loads(self.rfile.read(n) if n else b'{}')
+  if self.path.startswith('/slots/') and 'action=' in self.path:
+   slot=self.headers.get('X-Mag-Slot')
+   type(self).paths.append((self.path,slot,self.headers.get('X-Mag-Bot'),obj))
+   if 'action=save' in self.path:
+    type(self).saved_prompt[slot]={k:v for k,v in type(self).last_prompt.items() if isinstance(k,tuple) and k[1]==slot}
+   elif 'action=restore' in self.path:
+    for k,v in type(self).saved_prompt.get(slot,{}).items():type(self).last_prompt[k]=v
+   data=b'{"ok":true}'
+   self.send_response(200);self.send_header('Content-Length',str(len(data)));self.end_headers();self.wfile.write(data);return
   if self.path=='/tokenize':
    type(self).tokenizer_requests.append(obj.get('content',''))
    data=json.dumps({'tokens':list(obj.get('content','').encode('utf8'))}).encode()
@@ -3545,13 +3555,13 @@ class MixedNuma(unittest.TestCase):
   self.env['MAG_ROOM_PREWARM']='1'
   try:
    logp=self.tmp_path.joinpath('server.log')
-   seen=logp.read_text().count('skipped=ram') if logp.exists() else 0
+   seen=logp.read_text().count('prompt-prewarm') if logp.exists() else 0
    mark=len(Model.paths);self.start()
    for _ in range(80):
-    if logp.read_text().count('skipped=ram')>=seen+2:break
+    if logp.read_text().count('prompt-prewarm')>=seen+2:break
     time.sleep(.05)
-   else:self.fail('restart did not keep the live DeepSeek slot')
-   posted=[p for p in list(Model.paths)[mark:] if p[0]=='/v1/chat/completions' or str(p[0]).endswith('restore')]
+   else:self.fail('restart did not settle both slots')
+   posted=[p for p in list(Model.paths)[mark:] if p[0]=='/v1/chat/completions']
    self.assertFalse(posted,'room restart posted a completion onto the warm slot')
    token=f'hi {time.monotonic_ns()}'
    t0=time.monotonic();deadline=t0+8
@@ -3574,6 +3584,80 @@ class MixedNuma(unittest.TestCase):
    self.assertEqual(call['messages'][:len(first['messages'])],first['messages'])
   finally:
    Model.prefix_miss_s=0;Model.slot_snapshot=[]
+   self.env['MAG_ROOM_PREWARM']='0'
+   self.stop();self.start()
+ def test_12_qwen_answers_while_deepseek_prefills(self):
+  # Each bot has its own worker. A long DeepSeek prefill must not delay Qwen.
+  self.wait_idle()
+  bots=list(self.bots().values())
+  ds=next(b for b in bots if 'deepseek' in b['model'])
+  qw=next(b for b in bots if 'qwen' in b['model'])
+  Model.slot_delay={'0':6}
+  try:
+   token=f'beide {time.monotonic_ns()}'
+   t0=time.monotonic();deadline=t0+8
+   self.request('/api/message',{'text':token,'bots':[ds['id'],qw['id']]})
+   answered=False
+   while time.monotonic()<deadline:
+    room=self.request('/api/state')['room']
+    for i,m in enumerate(room):
+     if m.get('role')=='user' and token in (m.get('content') or ''):
+      answered=any(x.get('role')=='assistant' and x.get('bot')==qw['id'] and (x.get('content') or '') for x in room[i+1:])
+    if answered:break
+    time.sleep(.02)
+   elapsed=time.monotonic()-t0
+   self.assertTrue(answered,'Qwen exceeded the 8s hard timeout')
+   self.assertLess(elapsed,5,'Qwen must answer while DeepSeek is still prefilling')
+   calls=[sl for c,sl in list(Model.pairs) if token in json.dumps(c,ensure_ascii=False)]
+   self.assertIn('1',calls)
+  finally:
+   Model.slot_delay={}
+   end=time.monotonic()+8
+   while time.monotonic()<end:
+    if not self.request('/api/state')['busy']:break
+    time.sleep(.05)
+   else:self.fail('Scheduler failed to become idle')
+ def test_13_wiped_slot_restores_file_and_hi_is_under_5s(self):
+  # Cancel drops the KV. The room saved it; a restart reloads the file and
+  # does not prefill the prompt again.
+  self.wait_idle()
+  bot=next(b for b in self.bots().values() if b['model']=='deepseek-v4-flash-0731')
+  Model.last_prompt.clear();Model.saved_prompt.clear()
+  self.ask(bot['id'])
+  previous=Model.cache_records[-1]['prompt_size']
+  self.assertTrue(Model.saved_prompt.get('0'),'the turn did not save the slot file')
+  Model.last_prompt.clear()
+  self.stop()
+  Model.slot_snapshot=[{'id':0,'n_ctx':32768,'speculative':False,'is_processing':False,
+    'next_token':{'has_next_token':False,'has_new_line':False,'n_remain':0,'n_decoded':4}}]
+  Model.prefix_miss_s=6
+  self.env['MAG_ROOM_PREWARM']='1'
+  try:
+   mark=len(Model.paths);self.start()
+   deadline=time.monotonic()+8
+   while time.monotonic()<deadline:
+    if any(str(p[0]).endswith('restore') for p in list(Model.paths)[mark:]):break
+    time.sleep(.05)
+   else:self.fail('wiped slot was not restored')
+   self.assertFalse([p for p in list(Model.paths)[mark:] if p[0]=='/v1/chat/completions'])
+   token=f'hi {time.monotonic_ns()}'
+   t0=time.monotonic();deadline=t0+8
+   self.request('/api/message',{'text':token,'bots':[bot['id']]})
+   answered=False
+   while time.monotonic()<deadline:
+    room=self.request('/api/state')['room']
+    for i,m in enumerate(room):
+     if m.get('role')=='user' and token in (m.get('content') or ''):
+      answered=any(x.get('role')=='assistant' and x.get('bot')==bot['id'] and (x.get('content') or '') for x in room[i+1:])
+    if answered:break
+    time.sleep(.02)
+   elapsed=time.monotonic()-t0
+   self.assertTrue(answered,'restored hi exceeded the 8s hard timeout')
+   self.assertLess(elapsed,5,'first hi after restoring the slot file')
+   rec=Model.cache_records[-1]
+   self.assertGreaterEqual(rec['n_past']/max(previous,1),.98,'restored prefix must be reused')
+  finally:
+   Model.prefix_miss_s=0;Model.slot_snapshot=[];Model.saved_prompt.clear()
    self.env['MAG_ROOM_PREWARM']='0'
    self.stop();self.start()
  def test_08_health_timeout_is_busy_not_offline(self):

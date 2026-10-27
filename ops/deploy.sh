@@ -526,8 +526,19 @@ mag_daemon_reload
 bash "$SOURCE/ops/bots/install.sh" || echo 'WARN: bot site install incomplete (deploy itself succeeded)' >&2
 mag_flush_daemon_reload
 unset MAG_DEFER_DAEMON_RELOAD
-mag_systemctl enable mag-cpu-tune.service
-mag_systemctl restart mag-cpu-tune.service || echo 'WARN: CPU tuning not applied' >&2
+# The minimal blank-host CI image intentionally lacks cpupower.
+# CPU tuning is optional there; production still installs and enables its unit.
+if [[ -e /etc/mag-stack/TEST-HOST && ! -x /usr/bin/cpupower ]]; then
+  echo 'TEST-HOST: CPU tuning not needed (cpupower is not installed)'
+else
+  # Other late installers must not leave the next reboot without the unit.
+  if [[ ! -f /etc/systemd/system/mag-cpu-tune.service ]]; then
+    install -m 0644 "$SOURCE/ops/boot/mag-cpu-tune.service" /etc/systemd/system/mag-cpu-tune.service
+    mag_daemon_reload
+  fi
+  mag_systemctl enable mag-cpu-tune.service
+  mag_systemctl restart mag-cpu-tune.service || echo 'WARN: CPU tuning not applied' >&2
+fi
 mag_systemctl enable --now mag-agent-drift.timer || echo 'WARN: agent drift timer not enabled' >&2
 # Unreferenced half-created bot VMs only. Does not restart a model unit.
 bash /usr/local/sbin/mag-agent-drift || echo 'WARN: agent drift check incomplete (deploy itself succeeded)' >&2

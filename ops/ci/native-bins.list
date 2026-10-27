@@ -1,3 +1,4 @@
+group dispatcher :: ./build/test-group-dispatcher
 pho-codec :: ./build/test-pho-codec
 guest-pty :: ./build/test-guest-pty
 browser-recovery :: ./build/test-browser-recovery

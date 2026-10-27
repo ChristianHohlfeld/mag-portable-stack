@@ -3,6 +3,7 @@
 #include "common.hpp"
 #include "json.hpp"
 #include "room_model.hpp"
+#include "group_dispatcher.hpp"
 #include "pho_codec.hpp"
 #include "browser_recovery.hpp"
 #include "browser_events.hpp"
@@ -132,6 +133,7 @@ static thread_local bool TL_IN_TOOL = false;
 // Bot-to-bot turns use a short prompt and a hard output cap. A human turn
 // never sets this, so Chris still gets the full context and token budget.
 static thread_local bool TL_SELFTALK = false;
+static thread_local bool TL_GROUP_CHAT = false, TL_PASS_ALLOWED = false;
 // Set by wire_messages when the stored prompt still ends on this bot's own
 // assistant turn. Sending that with thinking on is the DeepSeek 500
 // "Assistant response prefill is incompatible with enable_thinking".
@@ -5586,17 +5588,25 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
     u["content"] = input;
     messages.push_back(u);
   } else if (TL_SELFTALK) {
-    Val sys = Val::object();
-    sys["role"] = "system";
-    sys["content"] = "Du bist " + bot_name +
-        ". Antworte in höchstens zwei kurzen Sätzen auf die letzte Nachricht im Raum. "
-        "Keine Werkzeuge.";
-    messages.push_back(sys);
-    Val u = Val::object();
-    u["role"] = "user";
-    u["content"] = selftalk_context(bot_idx);
-    messages.push_back(u);
-    tools.clear();
+    // Same system/tools and full cached room wire as normal chat.
+    mcp_auto_once();
+    system = build_system(bot_idx, false, "", web);
+    tools = tools_json(bot_idx, web);
+    if (CONFIGURED_MODEL && !CURRENT_JOB && !TL_TASK) {
+      messages = wire_messages(bot_idx, system, tools, build_context_tail(bot_idx, false, ""));
+      if (TL_WIRE_STALE) {
+        Val u = Val::object(); u["role"] = "user";
+        u["content"] = "[Gruppenchat] Die neue @-Erwaehnung richtet sich an dich.";
+        messages.push_back(u);
+        TL_WIRE_STALE = false;
+      }
+    } else {
+      Val sys = Val::object(); sys["role"] = "system"; sys["content"] = system;
+      messages.push_back(sys);
+      Val u = Val::object(); u["role"] = "user";
+      u["content"] = build_transcript() + "\n[Gruppenchat] Antworte kurz auf die @-Erwaehnung.";
+      messages.push_back(u);
+    }
   } else {
     mcp_auto_once();
     system = build_system(bot_idx, autotalk, other, web);
@@ -5619,6 +5629,13 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
       u["content"]=(CURRENT_JOB?job_user_content(CURRENT_JOB):build_transcript())+build_context_tail(bot_idx,autotalk,other)+(skills.empty()?"":"\n"+skills);
       messages.push_back(u);
     }
+  }
+  if (TL_GROUP_CHAT && !CURRENT_JOB && !stateless) {
+    Val instruction = Val::object(); instruction["role"] = "user";
+    instruction["content"] = TL_PASS_ALLOWED
+      ? "[Gruppenchat] Antworte kurz (1-3 Saetze), nur mit echtem Beitrag. Sonst exakt PASS."
+      : "[Gruppenchat] Du bist mit @ angesprochen. Antworte kurz (1-3 Saetze), niemals PASS.";
+    messages.push_back(instruction);
   }
   // No payloads or secrets in diagnostics. One-message stateless decoding has
   // no tools and doesn't depend on the mutable room/system/memory.
@@ -5703,6 +5720,7 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
       break;
     }
     std::string live;
+    bool pass_prefix_released = false;
     bool draft_dropped = false;
     std::optional<steady_clock::time_point> think_from, think_to;
     auto on_delta = [&](const std::string &kind, const std::string &piece) {
@@ -5766,9 +5784,17 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
       // The same bytes go into the room on the first token so a poll of
       // /api/room does not wait for the rest of the decode.
       live += piece;
+      std::string shown = piece;
+      if (TL_GROUP_CHAT && !pass_prefix_released) {
+        const std::string candidate = trim(live);
+        if (candidate.empty() || ("PASS".rfind(candidate, 0) == 0 && candidate.size() <= 4))
+          return; // PASS never appears as a provisional message
+        shown = live;
+        pass_prefix_released = true;
+      }
       if (!draft_dropped) {
-        emit_event("draft", bot_id, bot_name, piece);
-        reveal_answer(bot_id, bot_name, piece);
+        emit_event("draft", bot_id, bot_name, shown);
+        reveal_answer(bot_id, bot_name, shown);
       }
       // Lines become steps only once the round turns out to be narration.
       run_narration(live, draft_dropped);
@@ -5782,6 +5808,12 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
     for (int attempt = 0; attempt < 3; ++attempt) {
       if (!stateless)
         compact_agent_context(bot_idx, messages, tools, attempt_budget, compacted_steps);
+      if (!messages.empty() &&
+          group_chat::needs_user_tail(mag::str(messages.back(), "role"))) {
+        Val follow = Val::object(); follow["role"] = "user";
+        follow["content"] = "[System] Setze die Aufgabe anhand der bisherigen Werkzeugergebnisse fort.";
+        messages.push_back(follow);
+      }
       t = backend_turn(messages, tools,
                        autotalk ? 0.75 : 0.55, on_delta, turn_thinking(),
                        slot_for_key(bot_id), bot_model_id(bot_idx), bot_idx);
@@ -5843,6 +5875,10 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
         break;
       }
       t.calls.swap(valid);
+    }
+    if (TL_GROUP_CHAT && t.calls.empty() && group_chat::is_pass(t.text)) {
+      if (TL_PASS_ALLOWED) { t.text.clear(); report.skipped = true; }
+      else t.text = "Ich kann dazu gerade keine hilfreiche Antwort geben.";
     }
     Val asst = Val::object();
     asst["role"] = "assistant";
@@ -6317,7 +6353,7 @@ static std::atomic<int> SELFTALK_YIELD{0};
 // Earliest time the next bot-to-bot turn may take a slot.
 static std::atomic<long long> SELFTALK_NOT_BEFORE_MS{0};
 static void note_selftalk_gap() {
-  const int pause = std::clamp(envi("MAG_ROOM_PROAKTIV_PAUSE_MS", 2000), 0, 60000);
+  const int pause = std::clamp(envi("MAG_ROOM_CHAT_PAUSE_MS", 450), 0, 2000);
   if (pause <= 0) return;
   const long long until =
       duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count() + pause;
@@ -6347,6 +6383,7 @@ struct Job {
   std::string input; // one raw chat message, never accumulated context
   bool reflect = false; // second round: read the other bots' answers
   bool selftalk = false; // answer another bot; never the speaker
+  bool pass_allowed = false; // unaddressed human question
   std::string cause; // room message id that armed this follow-up
   std::string cause_label; // "reagiert auf <Name>", shown in the room and queue
 };
@@ -6403,6 +6440,7 @@ static Val job_val(const Job &j) {
   if (!j.input.empty()) o["input"] = j.input;
   if (j.reflect) o["reflect"] = true;
   if (j.selftalk) o["selftalk"] = true;
+  if (j.pass_allowed) o["pass_allowed"] = true;
   if (!j.cause.empty()) o["cause"] = j.cause;
   if (!j.cause_label.empty()) o["cause_label"] = j.cause_label;
   return o;
@@ -6415,6 +6453,7 @@ static Job val_job(const Val &v) {
   if (auto input = v.find("input")) j.input = input->asStr();
   if (auto r = v.find("reflect"); r && r->type == Val::BOOL) j.reflect = r->asBool();
   if (auto s = v.find("selftalk"); s && s->type == Val::BOOL) j.selftalk = s->asBool();
+  if (auto p = v.find("pass_allowed")) j.pass_allowed = p->asBool(false);
   if (auto c = v.find("cause")) j.cause = c->asStr();
   if (auto c = v.find("cause_label")) j.cause_label = c->asStr();
   return j;
@@ -6524,6 +6563,7 @@ static uint64_t AUTO_GENERATION = 0;
 static std::string AUTO_OWNER, AUTO_LAST_PROGRESS;
 static bool AUTO_READY = false;
 static int AUTO_TURNS_LEFT = 0;
+static int BOT_REPLY_COUNT = 0; // JOB_MTX; new human resets
 static constexpr int AUTO_MAX_TURNS = 8;
 
 static void cancel_lane(Lane &l, bool user) {
@@ -6659,6 +6699,14 @@ static std::vector<std::string> first_hi_answerers(std::vector<std::string> ids)
   return out;
 }
 static void cancel_llama_slot(int idx, int timeout_ms);
+static std::vector<group_chat::Bot> active_chat_roster() {
+  std::vector<group_chat::Bot> roster;
+  std::lock_guard<std::recursive_mutex> st(STATE_MTX);
+  for (size_t i = 0; i < AGENTS.size(); ++i)
+    if (bot_enabled_locked((int)i))
+      roster.emplace_back(mag::str(AGENTS[i], "id"), mag::str(AGENTS[i], "name"));
+  return roster;
+}
 // One transaction for every user send: admission, retry deduplication and
 // dispatch use JOB_MTX, so another participant cannot slip between them.
 static Val enqueue_pending(const std::string &text,
@@ -6696,7 +6744,13 @@ static Val enqueue_pending(const std::string &text,
     const int idx = agent_index(id);
     if (idx >= 0 && bot_enabled(idx)) addressed.push_back(id);
   }
-  const std::vector<std::string> answerers = first_hi_answerers(addressed);
+  bool mandatory = false;
+  const auto answerers = group_chat::select(text, active_chat_roster(),
+                                           first_hi_answerers(addressed), mandatory);
+  BOT_REPLY_COUNT = 0;
+  SELF_HOLD = false;
+  SELFTALK_NOT_BEFORE_MS = 0;
+  drop_selftalk_jobs_locked(); // human work is never discarded
   // Self-Talk stays up while Chris writes. The line goes into the room once,
   // never also into the queue. It does not end the chain. The next free bot
   // answers it before any bot-to-bot follow-up.
@@ -6711,26 +6765,13 @@ static Val enqueue_pending(const std::string &text,
     msg["type"] = "message";
     publish(mj::dump(msg));
     std::vector<std::string> talkers = answerers;
-    {
-      std::lock_guard<std::recursive_mutex> st(STATE_MTX);
-      for (size_t i = 0; i < AGENTS.size(); ++i) {
-        if (!bot_enabled_locked((int)i)) continue;
-        const std::string id = mag::str(AGENTS[i], "id");
-        if (id.empty()) continue;
-        if (std::find(talkers.begin(), talkers.end(), id) != talkers.end()) continue;
-        // first-hi dropped a blocked DeepSeek slot; do not put it back
-        if (std::find(ids.begin(), ids.end(), id) != ids.end() &&
-            std::find(answerers.begin(), answerers.end(), id) == answerers.end())
-          continue;
-        talkers.push_back(id);
-      }
-    }
     for (auto it = talkers.rbegin(); it != talkers.rend(); ++it) {
       Job j;
       j.ids = {*it};
       j.think = think;
       j.generation = ++AUTO_GENERATION;
       j.input = text;
+      j.pass_allowed = !mandatory;
       JOBS.push_front(std::move(j));
     }
     if (!talkers.empty()) AUTO_OWNER = talkers.front();
@@ -7190,56 +7231,31 @@ static bool bot_has_seen(const std::string &bot, const std::string &msg_id) {
 }
 static void arm_selftalk(const std::string &speaker, const std::string &cause,
                          const std::string &text) {
-  if (!SELFTALK.load() || SELF_HOLD.load() || speaker.empty() || cause.empty())
-    return;
-  if (selftalk_idle_echo(text)) return;
-  std::vector<std::string> listeners;
-  {
-    std::lock_guard<std::recursive_mutex> st(STATE_MTX);
-    for (size_t i = 0; i < AGENTS.size(); ++i) {
-      if (!bot_proaktiv_locked((int)i)) continue;
-      const std::string id = mag::str(AGENTS[i], "id");
-      if (!id.empty() && id != speaker) listeners.push_back(id);
-    }
-  }
-  if (listeners.empty()) return;
-  const std::string label = cause_label(cause);
+  const auto targets = group_chat::mentions(text, active_chat_roster(), speaker);
+  if (targets.empty() || !SELFTALK.load() || SELF_HOLD.load() || cause.empty()) return;
   std::lock_guard<std::mutex> lk(JOB_MTX);
-  apply_deploy_hold_file_locked();
-  if (!SELFTALK.load() || SELF_HOLD.load()) return;
-  // A user message already waiting must not sit behind a new proactive turn.
+  if (!group_chat::can_reply_to_bot(true, BOT_REPLY_COUNT) ||
+      DEPLOY_HOLD.load() || SELF_HOLD.load()) return;
   if (std::any_of(PENDING.begin(), PENDING.end(),
-                  [](const Pending &p) { return !p.held; }))
-    return;
-  bool added = false;
-  for (const auto &id : listeners) {
-    const bool waiting = std::any_of(JOBS.begin(), JOBS.end(), [&](const Job &j) {
-      return j.selftalk && std::find(j.ids.begin(), j.ids.end(), id) != j.ids.end();
-    });
-    if (waiting) continue;
-    bool active = false;
-    for (const auto &kv : ACTIVE_JOBS) {
-      const Job &j = kv.second;
-      if (j.selftalk && j.cause == cause &&
-          std::find(j.ids.begin(), j.ids.end(), id) != j.ids.end())
-        active = true;
-    }
-    if (active) continue;
-    if (bot_has_seen(id, cause)) continue;
-    Job j;
-    j.ids = {id};
-    j.think = -1;
-    j.generation = AUTO_GENERATION;
-    j.input = text;
-    j.selftalk = true;
-    j.cause = cause;
-    j.cause_label = label;
-    JOBS.push_back(std::move(j));
-    added = true;
-  }
-  if (!added) return;
+                  [](const Pending &p) { return !p.held; })) return;
+  if (std::any_of(JOBS.begin(), JOBS.end(),
+                  [](const Job &j) { return !j.selftalk; })) return;
+  const std::string &target = targets.front(); // one bot at most per bot message
+  if (bot_has_seen(target, cause)) return;
+  if (std::any_of(JOBS.begin(), JOBS.end(), [&](const Job &j) {
+        return j.selftalk && j.cause == cause && !j.ids.empty() && j.ids[0] == target;
+      })) return;
+  Job j;
+  j.ids = {target};
+  j.think = -1;
+  j.generation = AUTO_GENERATION;
+  j.input = text;
+  j.selftalk = true;
+  j.cause = cause;
+  j.cause_label = cause_label(cause);
+  ++BOT_REPLY_COUNT;
+  JOBS.push_back(std::move(j));
   save_queue_locked();
-  queue_event_locked();
   JOB_CV.notify_all();
 }
 static TurnReport generate_and_post(int idx, bool automatic, double dispatched_ms = 0) {
@@ -8432,6 +8448,7 @@ static void lane_finish(Lane *lane, uint64_t run, bool owner_ran, bool more,
     for (auto &kv : ACTIVE_JOBS)
       for (auto &id : kv.second.ids) bb.push(Val(id));
     save_queue_locked();
+    if (!JOBS.empty()) note_selftalk_gap();
     if (owner_ran && generation == AUTO_GENERATION) {
       if (epoch == EPOCH.load() && AUTOTALK.load() && more &&
           AUTO_TURNS_LEFT > 0 && progress != AUTO_LAST_PROGRESS) {
@@ -8519,27 +8536,8 @@ struct TurnGroup {
   std::atomic<bool> cancelled{false};
 };
 static void group_done(const std::shared_ptr<TurnGroup> &g) {
-  if (!g || --g->left > 0) return;
-  if (g->reflect || g->cancelled.load() || !REFLECT.load() || g->ids.size() < 2 ||
-      g->epoch != EPOCH.load() || SHUTDOWN.load())
-    return;
-  // Deterministic bots answer one stateless message only: no second round.
-  std::vector<std::string> ids;
-  for (auto &id : g->ids)
-    if (int idx = agent_index(id); idx >= 0 && !model_settings_for(bot_model_id(idx)).deterministic)
-      ids.push_back(id);
-  if (ids.size() < 2) return;
-  std::lock_guard<std::mutex> lk(JOB_MTX);
-  // A newer user message waiting for these bots wins; the second round is skipped.
-  for (auto &p : PENDING)
-    if (!p.held) return;
-  Job j;
-  j.ids = ids;
-  j.think = g->think;
-  j.reflect = true;
-  JOBS.push_front(j);
-  save_queue_locked();
-  JOB_CV.notify_all();
+  // Display ordering only: there is no second conversation round.
+  if (g) --g->left;
 }
 static void lane_turn(Lane *lane, uint64_t run, std::vector<std::string> ids,
                       bool automatic, int think, std::string owner, uint64_t generation, uint64_t epoch,
@@ -8564,6 +8562,8 @@ static void lane_turn(Lane *lane, uint64_t run, std::vector<std::string> ids,
     TL_REFLECT = group && group->reflect;
     LAST_THINK = think;
     bool job_selftalk = false;
+    TL_GROUP_CHAT = !automatic; // autonomous tool continuations are not chat turns
+    TL_PASS_ALLOWED = false;
     TL_CAUSE.clear();
     TL_CAUSE_LABEL.clear();
     {
@@ -8571,6 +8571,7 @@ static void lane_turn(Lane *lane, uint64_t run, std::vector<std::string> ids,
       auto it = ACTIVE_JOBS.find(run);
       if (it != ACTIVE_JOBS.end()) {
         job_selftalk = it->second.selftalk;
+        TL_PASS_ALLOWED = it->second.pass_allowed;
         TL_CAUSE = it->second.cause;
         TL_CAUSE_LABEL = it->second.cause_label;
       }
@@ -8644,6 +8645,8 @@ static void lane_turn(Lane *lane, uint64_t run, std::vector<std::string> ids,
         }
       }
     TL_SELFTALK = false;
+    TL_GROUP_CHAT = false;
+    TL_PASS_ALLOWED = false;
     TL_CAUSE.clear();
     TL_CAUSE_LABEL.clear();
     TURN_INPUT.clear();
@@ -8796,6 +8799,7 @@ static bool dispatch_locked() {
     return true;
   };
   std::set<Lane *> claimed;
+  if (!ACTIVE_JOBS.empty()) return false; // exactly one room bot at a time
   // Urgent input takes precedence over waiting turns on its lanes, but is
   // dispatched only after the old lane saved its partial answer and ended.
   for (auto it = PENDING.begin(); it != PENDING.end(); ++it) {
@@ -8805,6 +8809,7 @@ static bool dispatch_locked() {
     if (ready.empty() || !dispatchable(split_lanes(ready), claimed)) continue;
     return send_pending(it);
   }
+  if (selftalk_paused()) return false;
   const bool user_queued = std::any_of(
       JOBS.begin(), JOBS.end(), [](const Job &j) { return !j.selftalk; });
   for (auto it = JOBS.begin(); it != JOBS.end(); ++it) {
@@ -8911,7 +8916,7 @@ static void scheduler_loop() {
     }
     if (dispatch_locked())
       continue;
-    JOB_CV.wait_for(lk, any_resume_held() ? milliseconds(200) : seconds(1));
+    JOB_CV.wait_for(lk, (any_resume_held() || selftalk_paused()) ? milliseconds(100) : seconds(1));
   }
 }
 // Offline = the agent VMs have no network at all (host nftables, not just the
@@ -10256,12 +10261,12 @@ int main() {
   retire_frontend_override();
 
   AUTOTALK = trim(read_file(STATE_DIR + "/autotalk")) == "on";
-  SELFTALK = migrated_flag(STATE_DIR + "/proaktiv", STATE_DIR + "/selftalk") == "on";
+  SELFTALK = true; // always-on @ dispatcher
   // A reboot does not resume a bot-to-bot chain. The switch does survive.
   // A deploy marker stays held until /api/deploy-hold {on:false}, which
   // deploy.sh sends after the warm-hi gate.
   SELF_HOLD = true;
-  REFLECT = trim(read_file(STATE_DIR + "/reflect")) == "on";
+  REFLECT = false; // legacy reflection disabled
   load_model_settings();
   // The legacy swap catalog must not hijack configured/Qwen routing.
   if (!CONFIGURED_MODEL && secondary_kind == "iq3") numa_load();

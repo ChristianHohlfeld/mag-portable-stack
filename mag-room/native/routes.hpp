@@ -589,8 +589,8 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
     if (bridge || actor.role != "owner") { error_json(fd, 403, "Nur der Besitzer"); return; }
     Val body;
     if (!mj::parse(r.body, body) || !body.isObj()) { error_json(fd, 400, "Settings required"); return; }
-    const auto think = body.find("thinking"), github = body.find("github_enabled"), pho = body.find("pho_compress"), enabled = body.find("enabled"), proaktiv = body.find("proaktiv");
-    if ((!think && !github && !pho && !enabled && !proaktiv) || (think && think->type != Val::BOOL) || (github && github->type != Val::BOOL) || (pho && pho->type != Val::BOOL) || (enabled && enabled->type != Val::BOOL) || (proaktiv && proaktiv->type != Val::BOOL)) {
+    const auto think = body.find("thinking"), github = body.find("github_enabled"), pho = body.find("pho_compress"), enabled = body.find("enabled");
+    if ((!think && !github && !pho && !enabled) || (think && think->type != Val::BOOL) || (github && github->type != Val::BOOL) || (pho && pho->type != Val::BOOL) || (enabled && enabled->type != Val::BOOL)) {
       error_json(fd, 400, "Boolean settings required"); return;
     }
     const bool room = mag::str(body, "scope") == "room";
@@ -610,7 +610,6 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
         if (github) a["github_enabled"] = github->asBool();
         if (pho) a["pho_compress"] = pho->asBool();
         if (enabled && !room) a["enabled"] = enabled->asBool();
-        if (proaktiv && !room) a["proaktiv"] = proaktiv->asBool();
       }
       save_agents();
     }
@@ -1543,41 +1542,8 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
   if (path == "/api/sampling") {
     error_json(fd, 410, "Bitte Sampling pro Modell konfigurieren"); return;
   }
-  if (m == "POST" && path == "/api/reflect") {
-    // Owner room setting: optional reflection round after concurrent answers.
-    if (bridge || !actor.ok || actor.role != "owner") {
-      error_json(fd, 403, "Nur der Besitzer");
-      return;
-    }
-    if (!has_json || !body.find("on") || body.find("on")->type != Val::BOOL) {
-      error_json(fd, 400, "Boolean on required");
-      return;
-    }
-    REFLECT = body.find("on")->asBool();
-    write_file(STATE_DIR + "/reflect", REFLECT.load() ? "on" : "off");
-    Val e = Val::object();
-    e["type"] = "reflect";
-    e["on"] = REFLECT.load();
-    publish(mj::dump(e));
-    send_json(fd, 200, mj::dump(e));
-    return;
-  }
-  if (m == "POST" && (path == "/api/selftalk" || path == "/api/proaktiv")) {
-    if (!has_json || !body.find("on") || body.find("on")->type != Val::BOOL) {
-      error_json(fd, 400, "Boolean on required");
-      return;
-    }
-    if (body.find("on")->asBool())
-      start_selftalk();
-    else
-      stop_selftalk();
-    Val e = Val::object();
-    e["type"] = "proaktiv";
-    e["on"] = SELFTALK.load();
-    e["proaktiv"] = SELFTALK.load();
-    e["selftalk"] = SELFTALK.load();
-    publish(mj::dump(e));
-    send_json(fd, 200, mj::dump(e));
+  if (m == "POST" && (path == "/api/reflect" || path == "/api/selftalk" || path == "/api/proaktiv")) {
+    error_json(fd, 410, "Gruppenchat-Dispatcher ist immer aktiv; keine Runden oder Schalter");
     return;
   }
   if (m == "POST" && path == "/api/deploy-hold") {

@@ -4764,6 +4764,7 @@ class SelfTalk(unittest.TestCase):
   self.httpd = None
   self.hold = threading.Event()
   TalkModel.calls = []
+  TalkModel.replies = []
   TalkModel.actions = []
   TalkModel.hold = self.hold
   TalkModel.hold_below = 0
@@ -4800,7 +4801,7 @@ class SelfTalk(unittest.TestCase):
    MAG_ROOM_MODEL_STATUS=str(root / 'ms.json'), MAG_NETMODE=str(NETMODE),
    MAG_TEST_NO_MEMGIT='1', MAG_ROOM_AGENT_CTL='/bin/false',
    MAG_ROOM_GUEST_RUN='/bin/false', MAG_ROOM_MCP_AUTO='0', MAG_ROOM_PREWARM='0',
-   MAG_ROOM_PROAKTIV_PAUSE_MS='0',
+   MAG_ROOM_CHAT_PAUSE_MS='0',
    MAG_ROOM_SINGLE_BOT='', MAG_ROOM_DUAL_NUMA='0', MAG_ROOM_THINKING='off',
    MAG_ROOM_MODEL_ID='model-a', MAG_ROOM_MODEL_LABEL='Pair',
    MAG_ROOM_MODEL_PORTS='8191:0,8192:1', MAG_ROOM_MAX_BOTS='2',
@@ -4872,444 +4873,81 @@ class SelfTalk(unittest.TestCase):
   with TalkModel.lock:
    return list(TalkModel.calls)
 
- def test_off_on_persist_and_names(self):
-  _, html = self.token()
-  self._tok = re_token(html)
-  self.assertIn('id="proaktiv"', html)
-  self.assertIn('id="bot-proaktiv"', html)
-  self.assertIn('proaktiv-mark', html)
-  self.assertIn('proaktiv_jobs', html)
-  self.assertIn('>Proaktiv<', html)
-  self.assertIn('id="proaktiv-row"', html)
-  self.assertNotIn('Self-Talk', html)
-  self.assertNotIn('siehe Tooltip', html)
-  self.assertIn('state.proaktiv_note', html)
-  self.assertIn("$('proaktiv-row')", html)
-  self.assertNotIn("$('message').disabled", html)
-  self.assertIn('The field itself is never disabled', html)
-  self.assertFalse(self.api('/api/state')['selftalk'])
-  try:
-   self.api('/api/selftalk', {'on': 'yes'})
-   self.fail('bad selftalk body was accepted')
-  except urllib.error.HTTPError as e:
-   self.assertEqual(e.code, 400)
-  # Off: the other bot does not react.
-  self.api('/api/message', {'text': 'nur-alpha', 'bots': ['alpha']})
-  self.wait_calls(1)
-  time.sleep(0.4)
-  self.assertEqual(len(self.chat_calls()), 1)
-  self.assertEqual(self.chat_calls()[0][0], '0')
-  # On: a new message arms the chain. Beta answers Alpha by name.
-  self.api('/api/selftalk', {'on': True})
+ def wait_calls(self,n):
+  deadline=time.monotonic()+6
+  while time.monotonic()<deadline:
+   if len(self.chat_calls())>=n:return
+   if self.proc.poll() is not None:self.fail('magroom exited: '+self.log_path.read_text()[-1800:])
+   time.sleep(.02)
+  self.fail('wanted %d calls, have %d\n%s'%(n,len(self.chat_calls()),self.log_path.read_text()[-1800:]))
+ def wait_idle(self):
+  deadline=time.monotonic()+6
+  while time.monotonic()<deadline:
+   st=self.api('/api/state')
+   if not st.get('busy') and not st.get('pending'):return st
+   time.sleep(.03)
+  self.fail('room not idle: '+str(self.api('/api/state')))
+ def test_one_unaddressed_voice_and_no_bot_echo(self):
+  self.hold.set()
+  self.api('/api/message',{'text':'hi','bots':['alpha','beta']})
+  self.wait_calls(1);self.wait_idle();time.sleep(.2)
+  self.assertEqual(len(self.chat_calls()),1)
+  self.assertEqual(self.chat_calls()[0][0],'0')
+  room=self.api('/api/state')['room']
+  self.assertEqual(len([m for m in room if m.get('role')=='assistant']),1)
+  self.assertTrue(all(c['messages'][-1]['role']=='user' for _,c in self.chat_calls()))
+ def test_explicit_at_answers_despite_selection(self):
+  self.hold.set()
+  self.api('/api/message',{'text':'@Beta bitte antworte','bots':['alpha']})
+  self.wait_calls(1);self.wait_idle()
+  self.assertEqual([sl for sl,_ in self.chat_calls()],['1'])
+  room=[m for m in self.api('/api/state')['room'] if m.get('role')=='assistant']
+  self.assertEqual([m['bot'] for m in room],['beta'])
+ def test_pass_is_invisible_but_at_cannot_pass(self):
+  self.hold.set()
+  TalkModel.replies=['PASS','PASS']
+  self.api('/api/message',{'text':'nur vielleicht','bots':['alpha']})
+  self.wait_calls(1);self.wait_idle()
+  self.assertFalse([m for m in self.api('/api/state')['room'] if m.get('role')=='assistant'])
+  self.assertEqual(len(self.chat_calls()),1)
+  self.api('/api/message',{'text':'@Beta bitte','bots':['alpha']})
+  self.wait_calls(2);self.wait_idle()
+  result=[m for m in self.api('/api/state')['room'] if m.get('role')=='assistant']
+  self.assertEqual(len(result),1)
+  self.assertNotEqual(result[0]['content'],'PASS')
+  self.assertEqual(result[0]['bot'],'beta')
+ def test_bot_at_chain_is_capped_at_three(self):
+  self.hold.set()
+  TalkModel.replies=['@Beta','@Alpha','@Beta','@Alpha','@Beta']
+  self.api('/api/message',{'text':'diskutiert kurz','bots':['alpha']})
+  self.wait_calls(4);self.wait_idle();time.sleep(.35)
+  self.assertEqual([sl for sl,_ in self.chat_calls()],['0','1','0','1'])
+  self.assertTrue(all(obj['messages'][-1]['role']=='user' for _,obj in self.chat_calls()))
+ def test_new_human_invalidates_stale_bot_mention(self):
+  self.hold.set()
+  TalkModel.replies=['@Beta','NEU-OK']
+  self.env['MAG_ROOM_CHAT_PAUSE_MS']='1200'
+  self.stop_room();self.start_room()
+  self._tok=re_token(urllib.request.urlopen('http://127.0.0.1:%d/'%self.ui,timeout=2).read().decode())
+  self.api('/api/message',{'text':'alt','bots':['alpha']})
+  deadline=time.monotonic()+5
+  while time.monotonic()<deadline:
+   if any(m.get('role')=='assistant' and m.get('content')=='@Beta'
+          for m in self.api('/api/state')['room']):break
+   time.sleep(.02)
+  else:self.fail('first bot did not answer')
+  self.api('/api/message',{'text':'neue menschliche Frage','bots':['alpha']})
+  self.wait_calls(2);self.wait_idle();time.sleep(.3)
+  self.assertEqual([sl for sl,_ in self.chat_calls()],['0','0'],'outdated @Beta survived human input')
+ def test_no_proactive_controls(self):
+  html=self.token()[1]
+  for removed in ('id="proaktiv"','id="bot-proaktiv"','id="reflect"','proaktiv-mark'):
+   self.assertNotIn(removed,html)
   self.assertTrue(self.api('/api/state')['selftalk'])
-  self.assertEqual((self.state / 'selftalk').read_text().strip(), 'on')
-  self.api('/api/message', {'text': 'zweite', 'bots': ['alpha']})
-  self.wait_calls(2)
-  beta = [c for c in self.chat_calls() if c[0] == '1']
-  self.assertTrue(beta, 'Beta was not given a turn')
-  blob = json.dumps(beta[-1][1], ensure_ascii=False)
-  self.assertIn('Alpha', blob)
-  self.assertIn('FACT-77', blob)
-  self.assertIn('Chris', blob)
-  self.assertIn('Alpha (model-a)', blob)
-  # Rename is live: Beta's next turn uses the new name and Alpha's last text.
-  self.api('/api/agents/alpha/name', {'name': 'Gamma'}, method='PUT')
-  deadline = time.monotonic() + 5
-  seen = None
-  while time.monotonic() < deadline:
-   for slot, obj in self.chat_calls():
-    text = json.dumps(obj, ensure_ascii=False)
-    if slot == '1' and 'Gamma (model-a)' in text and 'FACT-77' in text:
-     seen = text
-     break
-   if seen:
-    break
-   time.sleep(0.05)
-  self.assertIsNotNone(seen, 'Beta did not see the renamed bot\n%s' % self.log_path.read_text()[-1500:])
-  deadline = time.monotonic() + 4
-  while time.monotonic() < deadline:
-   room = self.api('/api/state')['room']
-   if any(m.get('bot') == 'beta' and m.get('content') == 'sieht Gamma' for m in room):
-    break
-   time.sleep(0.05)
-  else:
-   self.fail('Beta did not use the new name: %s' % [m.get('content') for m in self.api('/api/state')['room']])
-  marked=[m for m in self.api('/api/state')['room'] if m.get('bot')=='beta' and m.get('selftalk')]
-  self.assertTrue(marked, 'proaktiv answer is not marked')
-  self.assertTrue(marked[-1].get('cause'))
-  self.assertIn('reagiert auf', marked[-1].get('cause_label') or '')
-  # The switch survives a restart. The chain does not resume by itself.
-  self.stop_room()
-  self.hold.set()
-  before = len(self.chat_calls())
-  self.start_room()
-  self._tok = re_token(urllib.request.urlopen('http://127.0.0.1:%d/' % self.ui, timeout=2).read().decode())
-  self.assertTrue(self.api('/api/state')['selftalk'])
-  self.assertEqual((self.state / 'selftalk').read_text().strip(), 'on')
-  time.sleep(0.4)
-  self.assertEqual(len(self.chat_calls()), before)
-  # Off stops the chain at once and that choice is what a later start reads.
-  self.api('/api/selftalk', {'on': False})
-  frozen = len(self.chat_calls())
-  time.sleep(0.6)
-  self.assertEqual(len(self.chat_calls()), frozen)
-  self.assertFalse(self.api('/api/state')['selftalk'])
-  self.assertEqual((self.state / 'selftalk').read_text().strip(), 'off')
-
- def test_stop_and_toggle_abort_the_chain(self):
-  self._tok = re_token(urllib.request.urlopen('http://127.0.0.1:%d/' % self.ui, timeout=2).read().decode())
-  TalkModel.hold_below = 2
-  self.api('/api/selftalk', {'on': True})
-  self.api('/api/message', {'text': 'beide', 'bots': ['alpha', 'beta']})
-  self.wait_calls(2)
-  n = len(self.chat_calls())
-  started = time.monotonic()
-  self.api('/api/cancel', {})
-  while time.monotonic() - started < 3:
-   self.assertEqual(len(self.chat_calls()), n, 'Stop let another bot turn start')
-   time.sleep(0.1)
-  state = self.api('/api/state')
-  self.assertFalse(state['busy'], 'generation was not aborted')
-  self.assertTrue(state['selftalk'], 'Stop must leave the switch on')
-  self.assertFalse(any(m.get('role') == 'assistant' and m.get('content') for m in state['room']))
-  # A new message starts it again.
-  self.api('/api/message', {'text': 'nochmal', 'bots': ['alpha']})
-  self.wait_calls(n + 1)
-  self.assertTrue(any('nochmal' in json.dumps(obj, ensure_ascii=False) for _, obj in self.chat_calls()))
-  # Toggle off aborts the same way, once both bots are generating again.
-  self.api('/api/cancel', {})
-  TalkModel.hold_below = 100
-  self.hold.clear()
-  before = len(self.chat_calls())
-  self.api('/api/selftalk', {'on': True})
-  self.api('/api/message', {'text': 'noch-eine', 'bots': ['alpha', 'beta']})
-  self.wait_calls(before + 2)
-  m = len(self.chat_calls())
-  started = time.monotonic()
-  self.api('/api/selftalk', {'on': False})
-  while time.monotonic() - started < 3:
-   self.assertEqual(len(self.chat_calls()), m, 'toggle off let another bot turn start')
-   time.sleep(0.1)
-  state = self.api('/api/state')
-  self.assertFalse(state['busy'])
-  self.assertFalse(state['selftalk'])
-
- def test_chris_can_write_during_selftalk(self):
-  self._tok = re_token(urllib.request.urlopen('http://127.0.0.1:%d/' % self.ui, timeout=2).read().decode())
-  TalkModel.hold_below = 2
-  self.api('/api/selftalk', {'on': True})
-  self.api('/api/message', {'text': 'start', 'bots': ['alpha', 'beta']})
-  self.wait_calls(2)
-  t0 = time.monotonic()
-  self.api('/api/message', {'text': 'TOKEN-CHRIS-99', 'bots': ['alpha']})
-  self.assertLess(time.monotonic() - t0, 1.0, 'composer send blocked while bots were talking')
-  state = self.api('/api/state')
-  users = [m for m in state['room'] if m.get('content') == 'TOKEN-CHRIS-99' and m.get('role') == 'user']
-  self.assertEqual(len(users), 1)
-  self.assertEqual(users[0].get('name'), 'Chris')
-  pending = state.get('pending') or []
-  self.assertFalse(any(p.get('text') == 'TOKEN-CHRIS-99' for p in pending))
-  self.hold.set()
-  deadline = time.monotonic() + 5
-  referred = False
-  while time.monotonic() < deadline:
-   room = self.api('/api/state')['room']
-   if any(m.get('role') == 'assistant' and 'TOKEN-CHRIS-99' in (m.get('content') or '') for m in room):
-    referred = True
-    break
-   time.sleep(0.05)
-  self.assertTrue(referred, 'next bot answer did not take Chris into account')
-  users = [m for m in self.api('/api/state')['room'] if m.get('content') == 'TOKEN-CHRIS-99' and m.get('role') == 'user']
-  self.assertEqual(len(users), 1, 'Chris message was duplicated')
-  mark = len(self.chat_calls())
-  deadline = time.monotonic() + 3
-  while time.monotonic() < deadline and len(self.chat_calls()) <= mark:
-   time.sleep(0.05)
-  self.assertGreater(len(self.chat_calls()), mark, 'self-talk stopped after Chris wrote')
-  self.assertTrue(self.api('/api/state')['selftalk'])
-  self.api('/api/cancel', {})
-
- def test_deploy_hold_pauses_at_turn_boundary_and_resumes(self):
-  self._tok = re_token(urllib.request.urlopen('http://127.0.0.1:%d/' % self.ui, timeout=2).read().decode())
-  self.hold.set()
-  self.api('/api/selftalk', {'on': True})
-  self.api('/api/message', {'text': 'kette', 'bots': ['alpha']})
-  self.wait_calls(2)
-  held = self.api('/api/deploy-hold', {'on': True})
-  self.assertTrue(held['selftalk'])
-  self.assertTrue(held['held'])
-  deadline = time.monotonic() + 4
-  while time.monotonic() < deadline:
-   st = self.api('/api/state')
-   if not st.get('busy') and not st.get('selftalk_busy'):
-    break
-   time.sleep(0.05)
-  else:
-   self.fail('Self-Talk did not stop at a turn boundary: %s' % self.api('/api/state'))
-  frozen = len(self.chat_calls())
-  time.sleep(0.4)
-  self.assertEqual(len(self.chat_calls()), frozen, 'Self-Talk started another turn after deploy-hold')
-  st = self.api('/api/state')
-  self.assertTrue(st['selftalk'])
-  self.assertTrue(st.get('selftalk_held'))
-  self.assertFalse(st.get('user_busy'))
-  self.assertEqual((self.state / 'selftalk').read_text().strip(), 'on')
-  self.assertEqual((self.state / 'selftalk-resume').read_text().strip(), 'on')
-  self.stop_room()
-  before = len(self.chat_calls())
-  self.start_room()
-  self._tok = re_token(urllib.request.urlopen('http://127.0.0.1:%d/' % self.ui, timeout=2).read().decode())
-  st = self.api('/api/state')
-  self.assertTrue(st['selftalk'])
-  self.assertTrue(st.get('selftalk_held'), st)
-  time.sleep(0.35)
-  self.assertEqual(len(self.chat_calls()), before, 'Proaktiv resumed before the warm-hi gate')
-  released = self.api('/api/deploy-hold', {'on': False})
-  self.assertFalse(released.get('held'))
-  deadline = time.monotonic() + 5
-  while time.monotonic() < deadline:
-   if len(self.chat_calls()) > before:
-    break
-   time.sleep(0.05)
-  else:
-   self.fail('Self-Talk did not resume after the gate released the hold\n%s' % self.log_path.read_text()[-1500:])
-  self.api('/api/cancel', {})
-
- def test_idle_echo_does_not_rearm_selftalk(self):
-  self._tok = re_token(urllib.request.urlopen('http://127.0.0.1:%d/' % self.ui, timeout=2).read().decode())
-  self.hold.set()
-  self.api('/api/selftalk', {'on': True})
-  self.api('/api/message', {'text': 'IDLE-ECHO', 'bots': ['alpha']})
-  self.wait_calls(1)
-  frozen = len(self.chat_calls())
-  time.sleep(0.6)
-  self.assertEqual(len(self.chat_calls()), frozen, 'idle acknowledgement re-armed Self-Talk')
-  st = self.api('/api/state')
-  self.assertTrue(st['selftalk'], 'idle damp must leave the switch on')
-  self.assertFalse(st.get('selftalk_busy'))
-  self.assertFalse(st['busy'])
-  room = [m.get('content') for m in st['room'] if m.get('role') == 'assistant']
-  self.assertTrue(any('Kein Auftrag' in (c or '') or 'bleibe still' in (c or '') for c in room), room)
-  self.api('/api/message', {'text': 'TOKEN-CHRIS-99', 'bots': ['beta']})
-  deadline = time.monotonic() + 5
-  while time.monotonic() < deadline:
-   if any(m.get('role') == 'assistant' and 'TOKEN-CHRIS-99' in (m.get('content') or '')
-          for m in self.api('/api/state')['room']):
-    break
-   time.sleep(0.05)
-  else:
-   self.fail('real user text after idle echo did not get an answer')
-  self.assertTrue(self.api('/api/state')['selftalk'])
-  self.api('/api/cancel', {})
-
- def test_deploy_hold_drains_user_reply(self):
-  self._tok = re_token(urllib.request.urlopen('http://127.0.0.1:%d/' % self.ui, timeout=2).read().decode())
-  TalkModel.hold_below = 1
-  self.hold.clear()
-  self.api('/api/selftalk', {'on': True})
-  self.api('/api/message', {'text': 'user-reply', 'bots': ['alpha']})
-  self.wait_calls(1)
-  st = self.api('/api/state')
-  self.assertTrue(st['busy'])
-  self.assertTrue(st.get('user_busy'), st)
-  self.api('/api/deploy-hold', {'on': True})
-  st = self.api('/api/state')
-  self.assertTrue(st['selftalk'], 'deploy-hold must leave the switch on')
-  self.assertTrue(st.get('user_busy') or st['busy'], 'user reply was cancelled')
-  self.hold.set()
-  deadline = time.monotonic() + 4
-  while time.monotonic() < deadline:
-   st = self.api('/api/state')
-   if not st.get('busy') and not st.get('user_busy'):
-    break
-   time.sleep(0.05)
-  else:
-   self.fail('user reply did not drain: %s' % self.api('/api/state'))
-  frozen = len(self.chat_calls())
-  time.sleep(0.4)
-  self.assertEqual(len(self.chat_calls()), frozen, 'Self-Talk continued after the user reply drained')
-  self.assertTrue(self.api('/api/state')['selftalk'])
-
- def test_proaktiv_migrates_selftalk_file(self):
-  self._tok = re_token(urllib.request.urlopen('http://127.0.0.1:%d/' % self.ui, timeout=2).read().decode())
-  self.stop_room()
-  (self.state / 'selftalk').write_text('on')
-  pro = self.state / 'proaktiv'
-  if pro.exists():
-   pro.unlink()
-  self.start_room()
-  self._tok = re_token(urllib.request.urlopen('http://127.0.0.1:%d/' % self.ui, timeout=2).read().decode())
-  st = self.api('/api/state')
-  self.assertTrue(st['proaktiv'])
-  self.assertTrue(st['selftalk'])
-  self.assertEqual((self.state / 'proaktiv').read_text().strip(), 'on')
-  self.assertEqual((self.state / 'selftalk').read_text().strip(), 'on')
-
- def test_disabled_bot_stays_off_across_proaktiv_and_restart(self):
-  self._tok = re_token(urllib.request.urlopen('http://127.0.0.1:%d/' % self.ui, timeout=2).read().decode())
-  self.hold.set()
-  self.api('/api/bot-settings', {'bots': ['beta'], 'enabled': False}, method='PUT')
-  self.api('/api/proaktiv', {'on': True})
-  st = self.api('/api/state')
-  beta = next(a for a in st['agents'] if a['id'] == 'beta')
-  self.assertIs(beta['enabled'], False)
-  self.assertIn('nur 1 Bot aktiv', st.get('proaktiv_note') or '')
-  before = len(self.chat_calls())
-  self.api('/api/message', {'text': 'nur-user', 'bots': ['alpha', 'beta']})
-  self.wait_calls(before + 1)
-  time.sleep(0.5)
-  slots = [c[0] for c in self.chat_calls()[before:]]
-  self.assertIn('0', slots)
-  self.assertNotIn('1', slots, 'disabled beta must not answer')
-  self.api('/api/proaktiv', {'on': False})
-  self.api('/api/proaktiv', {'on': True})
-  beta = next(a for a in self.api('/api/state')['agents'] if a['id'] == 'beta')
-  self.assertIs(beta['enabled'], False)
-  self.stop_room()
-  self.start_room()
-  self._tok = re_token(urllib.request.urlopen('http://127.0.0.1:%d/' % self.ui, timeout=2).read().decode())
-  st = self.api('/api/state')
-  beta = next(a for a in st['agents'] if a['id'] == 'beta')
-  self.assertIs(beta['enabled'], False)
-  self.assertTrue(st['proaktiv'])
-  frozen = len(self.chat_calls())
-  self.api('/api/message', {'text': 'nach-restart', 'bots': ['alpha', 'beta']})
-  self.wait_calls(frozen + 1)
-  time.sleep(0.4)
-  self.assertNotIn('1', [c[0] for c in self.chat_calls()[frozen:]])
-
- def test_human_hi_preempts_bot_to_bot_and_both_answer(self):
-  # A running bot-to-bot turn must not keep the only slot. Chris's hi cancels
-  # it, restores the prefix, and both bots accept the new prompt within 5s.
-  self.stop_room()
-  self.env['MAG_ROOM_PROAKTIV_PAUSE_MS'] = '1200'
-  TalkModel.calls = []
-  TalkModel.actions = []
-  TalkModel.hold_below = 0
-  self.hold.set()
-  self.start_room()
-  self._tok = re_token(urllib.request.urlopen('http://127.0.0.1:%d/' % self.ui, timeout=2).read().decode())
-  self.api('/api/proaktiv', {'on': True})
-  self.api('/api/message', {'text': 'seed-chain', 'bots': ['alpha']})
-  deadline = time.monotonic() + 6
-  while time.monotonic() < deadline:
-   calls = self.chat_calls()
-   st = self.api('/api/state')
-   short = [c for c in calls if (c[1] or {}).get('max_tokens') == 256]
-   if short and not st.get('busy') and (self.state / 'prompt-prefix.json').is_file():
-    break
-   time.sleep(0.05)
-  else:
-   self.fail('bot-to-bot turn did not settle\n%s' % self.log_path.read_text()[-1500:])
-  n = len(self.chat_calls())
-  TalkModel.hold_below = n + 2
-  self.hold.clear()
-  self.wait_calls(n + 2)
-  held = self.chat_calls()[n:n + 2]
-  self.assertEqual({c[0] for c in held}, {'0', '1'}, held)
-  for _slot, obj in held:
-   self.assertEqual(obj.get('max_tokens'), 256, obj)
-   blob = json.dumps(obj, ensure_ascii=False)
-   self.assertLess(len(blob), 8000, 'bot-to-bot prompt was not shortened')
-   self.assertNotIn('"tools"', blob)
-  t0 = time.monotonic()
-  self.api('/api/message', {'text': 'HI-CHRIS-7', 'bots': ['alpha', 'beta']}, timeout=3)
-  seen = {}
-  while time.monotonic() - t0 < 5:
-   for slot, obj in self.chat_calls()[n + 2:]:
-    if 'HI-CHRIS-7' in json.dumps(obj, ensure_ascii=False):
-     seen[slot] = obj
-   if '0' in seen and '1' in seen:
-    break
-   time.sleep(0.02)
-  self.assertLess(time.monotonic() - t0, 5, 'both bots did not take the hi within 5s: %s' % list(seen))
-  self.assertEqual(set(seen), {'0', '1'})
-  for obj in seen.values():
-   self.assertGreater(obj.get('max_tokens') or 0, 256)
-  with TalkModel.lock:
-   actions = list(TalkModel.actions)
-  cancel_slots = {slot for path, slot in actions if 'action=cancel' in path}
-  self.assertTrue({'0', '1'} <= cancel_slots, actions)
-  self.assertTrue(any('action=restore' in path for path, _slot in actions), actions)
-  self.hold.set()
-  mark = len(self.chat_calls())
-  time.sleep(0.35)
-  self.assertEqual(len(self.chat_calls()), mark, 'proaktiv took the slot during the pause')
-  deadline = time.monotonic() + 3
-  while time.monotonic() < deadline and len(self.chat_calls()) == mark:
-   time.sleep(0.05)
-  self.assertGreater(len(self.chat_calls()), mark, 'proaktiv ended after one pause')
-  self.assertTrue(self.api('/api/state')['proaktiv'])
-  self.api('/api/cancel', {})
-
- def test_user_and_bot_messages_wake_the_other_active_bot(self):
-  self._tok = re_token(urllib.request.urlopen('http://127.0.0.1:%d/' % self.ui, timeout=2).read().decode())
-  self.hold.set()
-  self.api('/api/proaktiv', {'on': True})
-  self.api('/api/message', {'text': 'von-chris', 'bots': ['alpha']})
-  deadline = time.monotonic() + 6
-  user_woke = bot_woke = False
-  while time.monotonic() < deadline and not (user_woke and bot_woke):
-   for slot, obj in self.chat_calls():
-    blob = json.dumps(obj, ensure_ascii=False)
-    if slot == '1' and 'von-chris' in blob:
-     user_woke = True
-    if slot == '0' and '[Beta (' in blob and 'FACT-77' in blob:
-     bot_woke = True
-   time.sleep(0.05)
-  self.assertTrue(user_woke, 'user message did not wake the other active bot')
-  self.assertTrue(bot_woke, 'bot message did not wake the other active bot')
-  self.api('/api/cancel', {})
-
- def test_stop_cancels_both_slots_reloads_prefix_and_next_hi_runs(self):
-  self._tok = re_token(urllib.request.urlopen('http://127.0.0.1:%d/' % self.ui, timeout=2).read().decode())
-  self.hold.set()
-  self.api('/api/message', {'text': 'warm', 'bots': ['alpha', 'beta']})
-  self.wait_calls(2)
-  deadline = time.monotonic() + 4
-  while time.monotonic() < deadline:
-   st = self.api('/api/state')
-   if not st.get('busy') and (self.state / 'prompt-prefix.json').exists():
-    break
-   time.sleep(0.05)
-  else:
-   self.fail('prefix was not saved\n%s' % self.log_path.read_text()[-1500:])
-  self.hold.clear()
-  TalkModel.hold_below = 100
-  self.api('/api/message', {'text': 'beide-laufen', 'bots': ['alpha', 'beta']})
-  self.wait_calls(4)
-  self.api('/api/message', {'text': 'Soll-weg', 'bots': ['alpha']})
-  t0 = time.monotonic()
-  cancelled = self.api('/api/cancel', {})
-  self.assertTrue(cancelled['cancelled'])
-  st = self.api('/api/state')
-  self.assertFalse(st['busy'])
-  self.assertEqual(st.get('pending') or [], [])
-  self.assertEqual(st.get('busy_bots') or [], [])
-  with TalkModel.lock:
-   actions = list(TalkModel.actions)
-  slots = {slot for path, slot in actions}
-  kinds = {path for path, _slot in actions}
-  self.assertTrue(any('action=cancel' in path for path in kinds), actions)
-  self.assertTrue(any('action=restore' in path for path in kinds), actions)
-  self.assertIn('0', slots)
-  self.assertIn('1', slots)
-  self.hold.set()
-  TalkModel.hold_below = 0
-  before = len(self.chat_calls())
-  self.api('/api/message', {'text': 'hi', 'bots': ['alpha']})
-  self.wait_calls(before + 1)
-  self.assertLess(time.monotonic() - t0, 3, 'next hi did not start promptly')
-
- def wait_calls(self, n):
-  deadline = time.monotonic() + 6
-  while time.monotonic() < deadline:
-   if len(self.chat_calls()) >= n:
-    return
-   if self.proc.poll() is not None:
-    self.fail('magroom exited\n%s' % self.log_path.read_text()[-2000:])
-   time.sleep(0.05)
-  self.fail('wanted %d model calls, have %d\n%s' % (n, len(self.chat_calls()), self.log_path.read_text()[-2000:]))
+  for route in ('/api/proaktiv','/api/selftalk','/api/reflect'):
+   try:self.api(route,{'on':False})
+   except urllib.error.HTTPError as e:self.assertEqual(e.code,410)
+   else:self.fail(route+' must not toggle group chat')
 
 def re_token(html):
  import re
@@ -5317,6 +4955,7 @@ def re_token(html):
 
 class TalkModel(http.server.BaseHTTPRequestHandler):
  calls = []
+ replies = []
  actions = []
  hold = None
  hold_below = 0
@@ -5355,6 +4994,8 @@ class TalkModel(http.server.BaseHTTPRequestHandler):
    text = 'zu Chris: TOKEN-CHRIS-99'
   elif 'IDLE-ECHO' in blob:
    text = 'Kein Auftrag. Ich bleibe still.'
+  elif n <= len(type(self).replies):
+   text = type(self).replies[n-1]
   else:
    text = 'FACT-77'
   try:

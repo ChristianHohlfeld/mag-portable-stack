@@ -32,6 +32,10 @@ cat > "$tmp/systemctl" <<'S'
 #!/usr/bin/env bash
 printf 'systemctl %s\n' "$*" >> "$CALLS"
 if [[ $1 == --failed ]]; then
+  if [[ ${MAG_FAKE_FAILED_RC:-0} != 0 ]]; then
+    echo 'Failed to connect to bus: Host is down' >&2
+    exit "$MAG_FAKE_FAILED_RC"
+  fi
   printf '%s\n' "${MAG_FAKE_FAILED:-}"
   exit 0
 fi
@@ -44,9 +48,12 @@ fi
 exit 0
 S
 chmod +x "$tmp/systemctl"
+printf '%s\n' 'MAG_ROOM_MODEL_ID_1=qwen3.8-flash-next-uncensored' > "$tmp/qwen.env"
+printf '%s\n' 'MAG_ROOM_MODEL_ID_1=deepseek-v4-flash-0731' > "$tmp/deepseek.env"
 calls=$tmp/calls
 : > "$calls"
 CALLS="$calls" MAG_FAILED_UNITS_TEST=1 MAG_SYSTEMD_DROPIN_ROOT="$tmp/drop" \
+  MAG_ROOM_MODEL_ENV="$tmp/qwen.env" \
   MAG_SYSTEMD_QUERY_S=5 MAG_SYSTEMD_BUDGET_S=5 \
   PATH="$tmp:$PATH" bash "$root/ops/boot/clear-failed-units.sh" >"$tmp/out"
 grep -Fxq 'systemctl disable mag-llm-ds-node@1.service' "$calls"
@@ -62,10 +69,29 @@ grep -Fxq 'ConditionPathExists=/dev/nvidiactl' "$tmp/drop/set-gpu-compute-mode.s
 grep -Fq 'stack units: none failed' "$tmp/out"
 
 : > "$calls"
+CALLS="$calls" MAG_FAILED_UNITS_TEST=1 MAG_SYSTEMD_DROPIN_ROOT="$tmp/drop2" \
+  MAG_ROOM_MODEL_ENV="$tmp/deepseek.env" \
+  MAG_SYSTEMD_QUERY_S=5 MAG_SYSTEMD_BUDGET_S=5 \
+  PATH="$tmp:$PATH" bash "$root/ops/boot/clear-failed-units.sh" >"$tmp/ds.out"
+if grep -E 'systemctl (disable|reset-failed) mag-llm-ds-node@1' "$calls"; then
+  echo 'dual-DeepSeek layout retired NUMA1' >&2
+  exit 1
+fi
+grep -Fq 'stack units: none failed' "$tmp/ds.out"
+
+: > "$calls"
 if CALLS="$calls" MAG_FAKE_FAILED='hotspot-net-setup.service loaded failed failed' \
   PATH="$tmp:$PATH" bash "$root/ops/boot/check-failed-units.sh" >"$tmp/ok" 2>"$tmp/err"; then
   echo 'failed hotspot was accepted' >&2
   exit 1
 fi
 grep -Fq 'stack unit failed: hotspot-net-setup.service' "$tmp/err"
+
+if CALLS="$calls" MAG_FAKE_FAILED_RC=1 \
+  MAG_SYSTEMD_QUERY_S=5 MAG_SYSTEMD_BUDGET_S=5 PATH="$tmp:$PATH" \
+  bash "$root/ops/boot/check-failed-units.sh" >"$tmp/bus.out" 2>"$tmp/bus.err"; then
+  echo 'unreachable systemd was accepted' >&2
+  exit 1
+fi
+grep -Fq 'could not query systemctl --failed' "$tmp/bus.err"
 echo 'failed units PASS'

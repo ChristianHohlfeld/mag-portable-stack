@@ -70,7 +70,7 @@ mag_deploy_arm_deadline() {
 mag_systemctl() {
   local budget=${MAG_SYSTEMD_BUDGET_S:-180}
   case "${1:-}" in
-    is-active|is-enabled|is-failed|cat|show|status|daemon-reload)
+    is-active|is-enabled|is-failed|cat|show|status|daemon-reload|--failed)
       budget=${MAG_SYSTEMD_QUERY_S:-20} ;;
   esac
   local arg

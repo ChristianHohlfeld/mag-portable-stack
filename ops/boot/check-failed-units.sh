@@ -22,7 +22,10 @@ units=(
   mag-gitea-runner.service
   tailscaled.service
 )
-failed=$(mag_systemctl --failed --plain --no-legend || true)
+failed=$(mag_systemctl --failed --plain --no-legend) || {
+  echo 'could not query systemctl --failed' >&2
+  exit 1
+}
 bad=0
 for unit in "${units[@]}"; do
   if grep -Fq -- "$unit" <<<"$failed"; then

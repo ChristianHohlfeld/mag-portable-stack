@@ -8,9 +8,9 @@ fi
 set -euo pipefail
 root=$(cd -- "$(dirname "$0")/../.." && pwd)
 bash -n "$root/ops/boot/clear-failed-units.sh" "$root/ops/boot/check-failed-units.sh"
-# The live NUMA 0 server is not an argument of disable, stop, restart, or reset-failed.
-if grep -E 'systemctl (disable|stop|restart|reload|reset-failed)[^#]*ds-node@0' "$root/ops/boot/clear-failed-units.sh"; then exit 1; fi
-if grep -E 'systemctl (disable|stop|restart|reload)[^#]*ds-node@0' "$root/ops/boot/check-failed-units.sh"; then exit 1; fi
+# The live NUMA 0 server is not an argument of disable, mask, stop, restart, or reset-failed.
+if grep -E 'systemctl (disable|mask|unmask|stop|restart|reload|reset-failed)[^#]*ds-node@0' "$root/ops/boot/clear-failed-units.sh"; then exit 1; fi
+if grep -E 'systemctl (disable|mask|unmask|stop|restart|reload)[^#]*ds-node@0' "$root/ops/boot/check-failed-units.sh"; then exit 1; fi
 grep -Fq 'mag-llm-ds-node@1.service' "$root/ops/boot/clear-failed-units.sh"
 grep -Fq '/sys/class/net/wlx2023516593f0' "$root/ops/boot/clear-failed-units.sh"
 grep -Fq '/dev/nvidiactl' "$root/ops/boot/clear-failed-units.sh"
@@ -57,23 +57,55 @@ CALLS="$calls" MAG_FAILED_UNITS_TEST=1 MAG_SYSTEMD_DROPIN_ROOT="$tmp/drop" \
   MAG_SYSTEMD_QUERY_S=5 MAG_SYSTEMD_BUDGET_S=5 \
   PATH="$tmp:$PATH" bash "$root/ops/boot/clear-failed-units.sh" >"$tmp/out"
 grep -Fxq 'systemctl disable mag-llm-ds-node@1.service' "$calls"
+grep -Fxq 'systemctl mask mag-llm-ds-node@1.service' "$calls"
 grep -Fxq 'systemctl reset-failed mag-llm-ds-node@1.service' "$calls"
+grep -Fxq 'systemctl disable hotspot-net-setup.service' "$calls"
+grep -Fxq 'systemctl mask hotspot-net-setup.service' "$calls"
+grep -Fxq 'systemctl disable nvidia-persistenced.service' "$calls"
+grep -Fxq 'systemctl mask nvidia-persistenced.service' "$calls"
+grep -Fxq 'systemctl disable set-gpu-compute-mode.service' "$calls"
+grep -Fxq 'systemctl mask set-gpu-compute-mode.service' "$calls"
 grep -Fxq 'systemctl daemon-reload' "$calls"
-if grep -E 'systemctl (disable|stop|restart|reload|reset-failed) mag-llm-ds-node@0' "$calls"; then
+if grep -E 'systemctl (disable|mask|unmask|stop|restart|reload|reset-failed) mag-llm-ds-node@0' "$calls"; then
   echo 'cleanup touched ds-node@0' >&2
   exit 1
 fi
 grep -Fxq 'ConditionPathExists=/sys/class/net/wlx2023516593f0' "$tmp/drop/hotspot-net-setup.service.d/mag-condition.conf"
 grep -Fxq 'ConditionPathExists=/dev/nvidiactl' "$tmp/drop/nvidia-persistenced.service.d/mag-condition.conf"
 grep -Fxq 'ConditionPathExists=/dev/nvidiactl' "$tmp/drop/set-gpu-compute-mode.service.d/mag-condition.conf"
+grep -Fq 'device missing hotspot-net-setup.service' "$tmp/out"
 grep -Fq 'stack units: none failed' "$tmp/out"
+
+: > "$calls"
+mkdir -p "$tmp/present/net" "$tmp/present/nvidia"
+: > "$tmp/present/net/wlx2023516593f0"
+: > "$tmp/present/nvidia/nvidiactl"
+CALLS="$calls" MAG_FAILED_UNITS_TEST=1 MAG_SYSTEMD_DROPIN_ROOT="$tmp/drop-present" \
+  MAG_ROOM_MODEL_ENV="$tmp/qwen.env" \
+  MAG_HOTSPOT_DEV="$tmp/present/net/wlx2023516593f0" \
+  MAG_NVIDIA_DEV="$tmp/present/nvidia/nvidiactl" \
+  MAG_SYSTEMD_QUERY_S=5 MAG_SYSTEMD_BUDGET_S=5 \
+  PATH="$tmp:$PATH" bash "$root/ops/boot/clear-failed-units.sh" >"$tmp/present.out"
+grep -Fxq 'systemctl unmask hotspot-net-setup.service' "$calls"
+grep -Fxq 'systemctl unmask nvidia-persistenced.service' "$calls"
+grep -Fxq 'systemctl unmask set-gpu-compute-mode.service' "$calls"
+if grep -E 'systemctl (disable|mask) (hotspot-net-setup|nvidia-persistenced|set-gpu-compute-mode)' "$calls"; then
+  echo 'present devices were masked' >&2
+  exit 1
+fi
+grep -Fq 'device present hotspot-net-setup.service' "$tmp/present.out"
+if grep -E 'systemctl (disable|mask|unmask|stop|restart|reload|reset-failed) mag-llm-ds-node@0' "$calls"; then
+  echo 'present-device cleanup touched ds-node@0' >&2
+  exit 1
+fi
 
 : > "$calls"
 CALLS="$calls" MAG_FAILED_UNITS_TEST=1 MAG_SYSTEMD_DROPIN_ROOT="$tmp/drop2" \
   MAG_ROOM_MODEL_ENV="$tmp/deepseek.env" \
   MAG_SYSTEMD_QUERY_S=5 MAG_SYSTEMD_BUDGET_S=5 \
   PATH="$tmp:$PATH" bash "$root/ops/boot/clear-failed-units.sh" >"$tmp/ds.out"
-if grep -E 'systemctl (disable|reset-failed) mag-llm-ds-node@1' "$calls"; then
+grep -Fxq 'systemctl unmask mag-llm-ds-node@1.service' "$calls"
+if grep -E 'systemctl (disable|mask|reset-failed) mag-llm-ds-node@1' "$calls"; then
   echo 'dual-DeepSeek layout retired NUMA1' >&2
   exit 1
 fi

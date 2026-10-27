@@ -21,6 +21,7 @@ case "$1 $2" in
   "is-enabled mag-console-only.service") echo disabled; exit 1 ;;
   "is-enabled mag-llm-ornith"*) echo disabled; exit 1 ;;
   "is-enabled mag-llm-ds-node@0.service") echo disabled; exit 1 ;;
+  "is-enabled mag-llm-ds-node@1.service") echo disabled; exit 1 ;;
   "is-enabled mag-llm-qwen.service") echo disabled; exit 1 ;;
   "is-enabled mag-120.service") echo disabled; exit 1 ;;
   "is-enabled gitea.service") echo disabled; exit 1 ;;
@@ -85,12 +86,28 @@ grep -Fxq 'systemctl enable tailscaled.service' "$log"
 grep -Fxq 'systemctl enable mag-gitea-funnel.service' "$log"
 grep -Fxq 'systemctl enable mag-gitea-funnel.timer' "$log"
 grep -Fq 'systemctl disable mag-llm-ds-node@1.service' "$log"
+grep -Fq 'systemctl mask mag-llm-ds-node@1.service' "$log"
 grep -Fq 'systemctl disable mag-llm-ornith@1.service' "$log"
 if grep -Eq 'systemctl enable mag-llm-ornith' "$log"; then exit 1; fi
 if grep -Eq 'systemctl enable mag-llm-ds-node@1' "$log"; then exit 1; fi
 if grep -Fq 'Ornith host' <<<"$out"; then exit 1; fi
 grep -Fq 'BMC power policy' <<<"$out"
 grep -Fxq 'ipmitool chassis policy always-on' "$log"
+common
+
+# 3) Dual-DeepSeek: NUMA 1 stays a boot unit. Mask is cleared, never applied.
+printf '%s\n' \
+  'MAG_ROOM_MODEL_ID_0=deepseek-v4-flash-0731' \
+  'MAG_ROOM_MODEL_ID_1=deepseek-v4-flash-0731' > "$tmp/ds-room.env"
+out=$(ORNITH="mag-llm-ds-node@0.service mag-llm-ds-node@1.service" \
+  run "$tmp/missing.env" "$tmp/no-ipmi0" "$tmp/ds-room.env")
+grep -Fxq 'systemctl unmask mag-llm-ds-node@1.service' "$log"
+grep -Fxq 'systemctl enable mag-llm-ds-node@1.service' "$log"
+if grep -Eq 'systemctl mask mag-llm-ds-node@1' "$log"; then exit 1; fi
+if grep -Eq 'systemctl enable mag-llm-ornith' "$log"; then exit 1; fi
+if grep -Fq 'Ornith host' <<<"$out"; then exit 1; fi
+grep -Fq 'BIOS' <<<"$out"
+if grep -q '^ipmitool' "$log"; then exit 1; fi
 common
 grep -Fq 'MAG_ROOM_MODEL_ID_1=qwen3.8-flash-next-uncensored' "$root/ops/room/mixed.env"
 grep -Fq 'retire-deepseek.sh' "$root/ops/deploy.sh"

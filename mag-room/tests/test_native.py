@@ -4295,5 +4295,341 @@ class QwenFirstHi(unittest.TestCase):
     httpd.shutdown()
    tmp.cleanup()
 
+class SelfTalk(unittest.TestCase):
+ """Bots answer each other while Self-Talk is on. No turn cap.
+
+ Stop or the toggle ends the chain. A user message does not: it is inserted
+ once, the next free bot answers it, and the chain keeps going. Names in the
+ prompt come from the live roster.
+ """
+ HARD_S = 20
+
+ def setUp(self):
+  import signal
+  self._prev = signal.signal(signal.SIGALRM, self._boom)
+  signal.alarm(self.HARD_S + 8)
+  self.tmp = tempfile.TemporaryDirectory()
+  self.proc = None
+  self.httpd = None
+  self.hold = threading.Event()
+  TalkModel.calls = []
+  TalkModel.hold = self.hold
+  TalkModel.hold_below = 0
+  TalkModel.lock = threading.Lock()
+  root = pathlib.Path(self.tmp.name)
+  self.state = root / 'state'
+  self.state.mkdir()
+  self.log_path = root / 'server.log'
+  self.state.joinpath('agents.json').write_text(json.dumps([
+   {'id': 'alpha', 'name': 'Alpha', 'vm': '', 'slot': 1, 'numa': 0,
+    'model': 'model-a', 'memory': []},
+   {'id': 'beta', 'name': 'Beta', 'vm': '', 'slot': 2, 'numa': 1,
+    'model': 'model-b', 'memory': []},
+  ]))
+  self.state.joinpath('access.json').write_text(json.dumps({
+   'owners': ['chris@github'], 'owner_name': 'Chris'}))
+  preset = root / 'presets.json'
+  preset.write_text(json.dumps([{
+   'id': 'test-pair', 'label': 'Test pair',
+   'ports': [{'port': 8191, 'numa': 0, 'model': 'model-a'},
+             {'port': 8192, 'numa': 1, 'model': 'model-b'}]}]))
+  self.preset = preset
+  self.httpd = http.server.ThreadingHTTPServer(('127.0.0.1', 0), TalkModel)
+  self.model_port = self.httpd.server_address[1]
+  threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+  self.ui, self.bridge = port(), port()
+  self.env = dict(os.environ,
+   MAG_OWNER_CANONICAL_LOGIN='chris@github', MAG_TEST_ALLOW_LOCAL_OWNER='1',
+   MAG_ROOM_STATE=str(self.state), MAG_ROOM_PORT=str(self.ui),
+   MAG_ROOM_BRIDGE_PORT=str(self.bridge), MAG_ROOM_BRIDGE_IP='127.0.0.1',
+   MAG_ROOM_BACKEND='http://127.0.0.1:%d/v1/chat/completions' % self.model_port,
+   MAG_ROOM_UI=str(ROOT / 'mag-room/web/index.html'),
+   MAG_ROOM_STATIC=str(ROOT / 'mag-room/static'),
+   MAG_ROOM_MODEL_STATUS=str(root / 'ms.json'), MAG_NETMODE=str(NETMODE),
+   MAG_TEST_NO_MEMGIT='1', MAG_ROOM_AGENT_CTL='/bin/false',
+   MAG_ROOM_GUEST_RUN='/bin/false', MAG_ROOM_MCP_AUTO='0', MAG_ROOM_PREWARM='0',
+   MAG_ROOM_SINGLE_BOT='', MAG_ROOM_DUAL_NUMA='0', MAG_ROOM_THINKING='off',
+   MAG_ROOM_MODEL_ID='model-a', MAG_ROOM_MODEL_LABEL='Pair',
+   MAG_ROOM_MODEL_PORTS='8191:0,8192:1', MAG_ROOM_MAX_BOTS='2',
+   MAG_ROOM_MODEL_ID_0='model-a', MAG_ROOM_MODEL_LABEL_0='Model A',
+   MAG_ROOM_MODEL_ID_1='model-b', MAG_ROOM_MODEL_LABEL_1='Model B',
+   MAG_ROOM_PRESETS=str(self.preset))
+  self.start_room()
+
+ def _boom(self, signum, frame):
+  raise TimeoutError('hard timeout: self-talk test exceeded %ss' % self.HARD_S)
+
+ def start_room(self):
+  log = open(self.log_path, 'a')
+  try:
+   self.proc = subprocess.Popen(
+    ['timeout', '-k', '1', '18', str(ROOT / 'build/magroom')],
+    env=self.env, stdout=log, stderr=log)
+  finally:
+   log.close()
+  deadline = time.monotonic() + 8
+  while time.monotonic() < deadline:
+   if self.proc.poll() is not None:
+    self.fail('magroom exited %s\n%s' % (self.proc.returncode, self.log_path.read_text()[-2000:]))
+   try:
+    urllib.request.urlopen('http://127.0.0.1:%d/healthz' % self.ui, timeout=1).read()
+    return
+   except Exception:
+    time.sleep(0.05)
+  self.fail('hard timeout waiting for healthz\n%s' % self.log_path.read_text()[-2000:])
+
+ def stop_room(self):
+  if self.proc is None or self.proc.poll() is not None:
+   return
+  self.proc.terminate()
+  try:
+   self.proc.wait(timeout=3)
+  except subprocess.TimeoutExpired:
+   self.proc.kill()
+   self.proc.wait(timeout=3)
+
+ def tearDown(self):
+  import signal
+  signal.alarm(0)
+  signal.signal(signal.SIGALRM, self._prev)
+  self.hold.set()
+  self.stop_room()
+  if self.httpd is not None:
+   self.httpd.shutdown()
+  self.tmp.cleanup()
+
+ def token(self):
+  html = urllib.request.urlopen('http://127.0.0.1:%d/' % self.ui, timeout=2).read().decode()
+  import re
+  return re.search(r'name="mag-token" content="([^"]+)"', html).group(1), html
+
+ def api(self, path, body=None, method=None, timeout=2):
+  tok, _ = self.token() if not hasattr(self, '_tok') else (self._tok, '')
+  if not hasattr(self, '_tok'):
+   self._tok = tok
+  data = json.dumps(body).encode() if body is not None else None
+  headers = {'Content-Type': 'application/json', 'X-MAG-Token': self._tok} if data is not None else {}
+  req = urllib.request.Request('http://127.0.0.1:%d%s' % (self.ui, path), data=data,
+                               method=method or ('POST' if data is not None else 'GET'), headers=headers)
+  with urllib.request.urlopen(req, timeout=timeout) as r:
+   raw = r.read()
+   return json.loads(raw) if raw else {}
+
+ def chat_calls(self):
+  with TalkModel.lock:
+   return list(TalkModel.calls)
+
+ def test_off_on_persist_and_names(self):
+  _, html = self.token()
+  self._tok = re_token(html)
+  self.assertIn('id="selftalk"', html)
+  self.assertIn('Self-Talk', html)
+  self.assertIn('id="selftalk-row"', html)
+  self.assertNotIn('top-stat selftalk-toggle', html)
+  self.assertIn("$('selftalk-row')", html)
+  self.assertNotIn("$('message').disabled", html)
+  self.assertIn('The field itself is never disabled', html)
+  self.assertFalse(self.api('/api/state')['selftalk'])
+  try:
+   self.api('/api/selftalk', {'on': 'yes'})
+   self.fail('bad selftalk body was accepted')
+  except urllib.error.HTTPError as e:
+   self.assertEqual(e.code, 400)
+  # Off: the other bot does not react.
+  self.api('/api/message', {'text': 'nur-alpha', 'bots': ['alpha']})
+  self.wait_calls(1)
+  time.sleep(0.4)
+  self.assertEqual(len(self.chat_calls()), 1)
+  self.assertEqual(self.chat_calls()[0][0], '0')
+  # On: a new message arms the chain. Beta answers Alpha by name.
+  self.api('/api/selftalk', {'on': True})
+  self.assertTrue(self.api('/api/state')['selftalk'])
+  self.assertEqual((self.state / 'selftalk').read_text().strip(), 'on')
+  self.api('/api/message', {'text': 'zweite', 'bots': ['alpha']})
+  self.wait_calls(2)
+  beta = [c for c in self.chat_calls() if c[0] == '1']
+  self.assertTrue(beta, 'Beta was not given a turn')
+  blob = json.dumps(beta[-1][1], ensure_ascii=False)
+  self.assertIn('Alpha', blob)
+  self.assertIn('FACT-77', blob)
+  self.assertIn('Chris', blob)
+  self.assertIn('Alpha (model-a)', blob)
+  # Rename is live: Beta's next turn uses the new name and Alpha's last text.
+  self.api('/api/agents/alpha/name', {'name': 'Gamma'}, method='PUT')
+  deadline = time.monotonic() + 5
+  seen = None
+  while time.monotonic() < deadline:
+   for slot, obj in self.chat_calls():
+    text = json.dumps(obj, ensure_ascii=False)
+    if slot == '1' and 'Gamma (model-a)' in text and 'FACT-77' in text:
+     seen = text
+     break
+   if seen:
+    break
+   time.sleep(0.05)
+  self.assertIsNotNone(seen, 'Beta did not see the renamed bot\n%s' % self.log_path.read_text()[-1500:])
+  deadline = time.monotonic() + 4
+  while time.monotonic() < deadline:
+   room = self.api('/api/state')['room']
+   if any(m.get('bot') == 'beta' and m.get('content') == 'sieht Gamma' for m in room):
+    break
+   time.sleep(0.05)
+  else:
+   self.fail('Beta did not use the new name: %s' % [m.get('content') for m in self.api('/api/state')['room']])
+  # The switch survives a restart. The chain does not resume by itself.
+  self.stop_room()
+  self.hold.set()
+  before = len(self.chat_calls())
+  self.start_room()
+  self._tok = re_token(urllib.request.urlopen('http://127.0.0.1:%d/' % self.ui, timeout=2).read().decode())
+  self.assertTrue(self.api('/api/state')['selftalk'])
+  self.assertEqual((self.state / 'selftalk').read_text().strip(), 'on')
+  time.sleep(0.4)
+  self.assertEqual(len(self.chat_calls()), before)
+  # Off stops the chain at once and that choice is what a later start reads.
+  self.api('/api/selftalk', {'on': False})
+  frozen = len(self.chat_calls())
+  time.sleep(0.6)
+  self.assertEqual(len(self.chat_calls()), frozen)
+  self.assertFalse(self.api('/api/state')['selftalk'])
+  self.assertEqual((self.state / 'selftalk').read_text().strip(), 'off')
+
+ def test_stop_and_toggle_abort_the_chain(self):
+  self._tok = re_token(urllib.request.urlopen('http://127.0.0.1:%d/' % self.ui, timeout=2).read().decode())
+  TalkModel.hold_below = 2
+  self.api('/api/selftalk', {'on': True})
+  self.api('/api/message', {'text': 'beide', 'bots': ['alpha', 'beta']})
+  self.wait_calls(2)
+  n = len(self.chat_calls())
+  started = time.monotonic()
+  self.api('/api/cancel', {})
+  while time.monotonic() - started < 3:
+   self.assertEqual(len(self.chat_calls()), n, 'Stop let another bot turn start')
+   time.sleep(0.1)
+  state = self.api('/api/state')
+  self.assertFalse(state['busy'], 'generation was not aborted')
+  self.assertTrue(state['selftalk'], 'Stop must leave the switch on')
+  self.assertFalse(any(m.get('role') == 'assistant' and m.get('content') for m in state['room']))
+  # A new message starts it again.
+  self.api('/api/message', {'text': 'nochmal', 'bots': ['alpha']})
+  self.wait_calls(n + 1)
+  self.assertTrue(any('nochmal' in json.dumps(obj, ensure_ascii=False) for _, obj in self.chat_calls()))
+  # Toggle off aborts the same way, once both bots are generating again.
+  self.api('/api/cancel', {})
+  TalkModel.hold_below = 100
+  self.hold.clear()
+  before = len(self.chat_calls())
+  self.api('/api/selftalk', {'on': True})
+  self.api('/api/message', {'text': 'noch-eine', 'bots': ['alpha', 'beta']})
+  self.wait_calls(before + 2)
+  m = len(self.chat_calls())
+  started = time.monotonic()
+  self.api('/api/selftalk', {'on': False})
+  while time.monotonic() - started < 3:
+   self.assertEqual(len(self.chat_calls()), m, 'toggle off let another bot turn start')
+   time.sleep(0.1)
+  state = self.api('/api/state')
+  self.assertFalse(state['busy'])
+  self.assertFalse(state['selftalk'])
+
+ def test_chris_can_write_during_selftalk(self):
+  self._tok = re_token(urllib.request.urlopen('http://127.0.0.1:%d/' % self.ui, timeout=2).read().decode())
+  TalkModel.hold_below = 2
+  self.api('/api/selftalk', {'on': True})
+  self.api('/api/message', {'text': 'start', 'bots': ['alpha', 'beta']})
+  self.wait_calls(2)
+  t0 = time.monotonic()
+  self.api('/api/message', {'text': 'TOKEN-CHRIS-99', 'bots': ['alpha']})
+  self.assertLess(time.monotonic() - t0, 1.0, 'composer send blocked while bots were talking')
+  state = self.api('/api/state')
+  users = [m for m in state['room'] if m.get('content') == 'TOKEN-CHRIS-99' and m.get('role') == 'user']
+  self.assertEqual(len(users), 1)
+  self.assertEqual(users[0].get('name'), 'Chris')
+  pending = state.get('pending') or []
+  self.assertFalse(any(p.get('text') == 'TOKEN-CHRIS-99' for p in pending))
+  self.hold.set()
+  deadline = time.monotonic() + 5
+  referred = False
+  while time.monotonic() < deadline:
+   room = self.api('/api/state')['room']
+   if any(m.get('role') == 'assistant' and 'TOKEN-CHRIS-99' in (m.get('content') or '') for m in room):
+    referred = True
+    break
+   time.sleep(0.05)
+  self.assertTrue(referred, 'next bot answer did not take Chris into account')
+  users = [m for m in self.api('/api/state')['room'] if m.get('content') == 'TOKEN-CHRIS-99' and m.get('role') == 'user']
+  self.assertEqual(len(users), 1, 'Chris message was duplicated')
+  mark = len(self.chat_calls())
+  deadline = time.monotonic() + 3
+  while time.monotonic() < deadline and len(self.chat_calls()) <= mark:
+   time.sleep(0.05)
+  self.assertGreater(len(self.chat_calls()), mark, 'self-talk stopped after Chris wrote')
+  self.assertTrue(self.api('/api/state')['selftalk'])
+  self.api('/api/cancel', {})
+
+ def wait_calls(self, n):
+  deadline = time.monotonic() + 6
+  while time.monotonic() < deadline:
+   if len(self.chat_calls()) >= n:
+    return
+   if self.proc.poll() is not None:
+    self.fail('magroom exited\n%s' % self.log_path.read_text()[-2000:])
+   time.sleep(0.05)
+  self.fail('wanted %d model calls, have %d\n%s' % (n, len(self.chat_calls()), self.log_path.read_text()[-2000:]))
+
+def re_token(html):
+ import re
+ return re.search(r'name="mag-token" content="([^"]+)"', html).group(1)
+
+class TalkModel(http.server.BaseHTTPRequestHandler):
+ calls = []
+ hold = None
+ hold_below = 0
+ lock = threading.Lock()
+ protocol_version = 'HTTP/1.1'
+ def log_message(self, *a):
+  pass
+ def do_GET(self):
+  data = b'{"status":"ok"}'
+  self.send_response(200)
+  self.send_header('Content-Length', str(len(data)))
+  self.end_headers()
+  self.wfile.write(data)
+ def do_POST(self):
+  raw = self.rfile.read(int(self.headers.get('Content-Length', '0')))
+  if self.path != '/v1/chat/completions':
+   data = b'{"tokens":[1]}'
+   self.send_response(200)
+   self.send_header('Content-Length', str(len(data)))
+   self.end_headers()
+   self.wfile.write(data)
+   return
+  obj = json.loads(raw)
+  with type(self).lock:
+   type(self).calls.append((self.headers.get('X-Mag-Slot'), obj))
+   n = len(type(self).calls)
+  blob = json.dumps(obj, ensure_ascii=False)
+  if n <= type(self).hold_below and type(self).hold is not None:
+   type(self).hold.wait(12)
+  if 'Gamma (model-a)' in blob:
+   text = 'sieht Gamma'
+  elif 'TOKEN-CHRIS-99' in blob:
+   text = 'zu Chris: TOKEN-CHRIS-99'
+  else:
+   text = 'FACT-77'
+  try:
+   self.send_response(200)
+   self.send_header('Transfer-Encoding', 'chunked')
+   self.end_headers()
+   event = json.dumps({'choices': [{'delta': {'content': text}}]}).encode()
+   payload = b'data: ' + event + b'\n\n'
+   self.wfile.write(('%x\r\n' % len(payload)).encode() + payload + b'\r\n')
+   end = b'data: [DONE]\n\n'
+   self.wfile.write(('%x\r\n' % len(end)).encode() + end + b'\r\n0\r\n\r\n')
+   self.wfile.flush()
+  except (BrokenPipeError, ConnectionResetError):
+   pass
+
+
 if __name__=='__main__':unittest.main(verbosity=2)
 

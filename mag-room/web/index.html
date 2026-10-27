@@ -216,7 +216,7 @@ html,body{overflow-x:hidden;max-width:100vw}
  #model-info,.header-title,.header-divider,.brand-caption{display:none!important}
  .composer-wrap{position:sticky;bottom:0;padding:8px max(10px,env(safe-area-inset-right)) max(10px,env(safe-area-inset-bottom)) max(10px,env(safe-area-inset-left))!important;z-index:20}
  #message,input,select,textarea{font-size:16px!important}
- button,.icon-btn,.pill-btn,.send-btn,.nav-btn,.rail-toggle,.rail-edge,.top-stat,select,.control-row{min-height:44px}#model-banner,#model-banner button{min-height:22px!important;height:22px!important;max-height:22px!important}#toast-stack button{min-height:22px!important;height:22px!important}
+ button,.icon-btn,.pill-btn,.send-btn,.nav-btn,.rail-toggle,.rail-edge,.top-stat,select,.control-row{min-height:44px}#model-banner,#model-banner button,#selftalk-row{min-height:22px!important;height:22px!important;max-height:22px!important}#toast-stack button{min-height:22px!important;height:22px!important}
  .icon-btn,.rail-toggle,.nav-btn{min-width:44px}
  .composer-toolbar .icon-btn{width:44px!important;height:44px!important}.composer-toolbar .send-btn{height:44px!important}
  .rail-edge{top:38%;bottom:auto;width:30px;height:52px}
@@ -520,6 +520,9 @@ dialog{border-radius:10px;border-color:var(--line);background:var(--surface)}
 .status-group{display:inline-flex;align-items:center;border:1px solid var(--soft-line);background:var(--sidebar);border-radius:999px;min-width:0}
 .status-group>.top-stat{border:0!important;background:none!important;padding-left:8px;padding-right:8px}
 .status-group>.top-stat+.top-stat{border-left:1px solid var(--soft-line)!important;border-radius:0}
+#selftalk-row,.selftalk-toggle{display:inline-flex;align-items:center;gap:4px;height:22px;min-height:22px;max-height:22px;padding:0;margin:0;border:0;background:transparent;font-size:12px;line-height:22px;color:var(--muted);cursor:pointer;user-select:none;flex:0 0 auto;white-space:nowrap}
+#selftalk-row input,.selftalk-toggle input{margin:0;width:12px;height:12px;min-width:12px;min-height:12px;accent-color:var(--text)}
+#selftalk-row[hidden]{display:none!important}
 @media (max-width:1600px){#model-info{display:none}}
 @media (max-width:720px){#room-menu-btn span,#toggle-agents span,#toggle-tools span{display:none}}
 
@@ -630,7 +633,7 @@ dialog{border-radius:10px;border-color:var(--line);background:var(--surface)}
 <div class="row"><button type="button" class="pill-btn ghost" id="jf-cancel">Abbrechen</button><button type="submit" class="pill-btn" id="jf-save">Speichern</button></div></form></dialog>
 <dialog id="memory-dialog"><h3 id="memory-title"></h3><form id="memory-form" class="mem-add"><textarea id="memory-new" maxlength="500" rows="2" placeholder="Neue Erinnerung, z. B. „Chris mag kurze Antworten“" aria-label="Neue Erinnerung"></textarea><button type="submit" class="pill-btn primary" id="memory-add">Hinzufügen</button></form><p id="memory-err" class="mem-err" role="alert" hidden></p><div id="memory"></div><div class="row"><button type="button" class="pill-btn ghost-danger" id="memory-clear">Gedächtnis leeren</button><button class="pill-btn" onclick="document.getElementById('memory-dialog').close()">Schließen</button></div></dialog>
 <dialog id="purge-dialog" aria-labelledby="purge-title"><h3 id="purge-title"></h3><p id="purge-lead"></p><ul id="purge-list"></ul><p class="hint" id="purge-note"></p><div class="row"><button type="button" class="pill-btn" id="purge-cancel">Abbrechen</button><button type="button" class="pill-btn danger" id="purge-ok">Löschen</button></div></dialog>
-<div id="model-banner" role="status" hidden></div><div id="room-link" role="status" hidden></div><div id="toast-stack"><div class="notice" id="notice" role="status" hidden></div><div id="update-toast" class="undo-toast" hidden role="status"><span>Neue Version – aktualisieren</span><button type="button" id="update-now">Aktualisieren</button></div><div id="undo-toast" class="undo-toast" hidden role="status"><span id="undo-text"></span><button type="button" id="undo-btn">Rückgängig</button></div></div>
+<div id="model-banner" role="status" hidden></div><div id="room-link" role="status" hidden></div><label class="selftalk-toggle" id="selftalk-row" title="Bots reagieren aufeinander, solange das an ist"><input type="checkbox" id="selftalk"><span>Self-Talk</span></label><div id="toast-stack"><div class="notice" id="notice" role="status" hidden></div><div id="update-toast" class="undo-toast" hidden role="status"><span>Neue Version – aktualisieren</span><button type="button" id="update-now">Aktualisieren</button></div><div id="undo-toast" class="undo-toast" hidden role="status"><span id="undo-text"></span><button type="button" id="undo-btn">Rückgängig</button></div></div>
 <!-- Embedded, locally bundled libraries and app logic inserted below. No external assets. -->
 <script src="/static/marked.min.js"></script><script src="/static/purify.min.js"></script>
 <script src="/static/highlight.min.js"></script>
@@ -1498,7 +1501,7 @@ function render(){
   lastScrollTop=area.scrollTop;syncJump();
  });
  syncJump();
- renderAgents();renderFiles();renderData();if($('autotalk'))$('autotalk').checked=!!state.autotalk;if($('reflect'))$('reflect').checked=!!state.reflect;applyAccess();streamControls();
+ renderAgents();renderFiles();renderData();if($('autotalk'))$('autotalk').checked=!!state.autotalk;if($('selftalk'))$('selftalk').checked=!!state.selftalk;if($('reflect'))$('reflect').checked=!!state.reflect;applyAccess();streamControls();
 }
 let focusedBotId=remoteBotId||sessionStorage.getItem('mag-focused-bot')||'';
 function focusBot(id) {
@@ -1530,7 +1533,7 @@ function applyAccess(){const y=state.you;document.body.classList.toggle('is-gues
  hide('guests-section',!(y&&y.role==='owner'));
  if(y&&y.role==='owner')loadGuests();
  hide('add-agent',!can('delete')||!!(state.single_bot));hide('room-add-agent',!can('delete')||!!state.single_bot||!!state.dual_numa);
- hide('offline-row',!can('offline'));hide('reflect-row',state.you?.role!=='owner'||!state.configured_model);hide('autotalk-row',!can('autotalk'));hide('autotalk-desc',!can('autotalk'));
+ hide('offline-row',!can('offline'));hide('reflect-row',state.you?.role!=='owner'||!state.configured_model);hide('autotalk-row',!can('autotalk'));hide('autotalk-desc',!can('autotalk'));hide('selftalk-row',!(y&&y.role==='owner'));if(typeof paintRoomLine==='function')paintRoomLine();
  hide('model-settings',!(y&&y.role==='owner'));
  hide('stop',!can('stop'));hide('reset-wrap',!can('reset'));hide('plus-github',!can('connectors'));hide('plus-mcp',!can('connectors'));
  const badge=$('you-badge');if(!badge)return;if(!y||y.role==='owner'){badge.hidden=true;return}badge.hidden=false;badge.textContent=(y.role==='owner'?'Besitzer':'Gast')+' · '+(y.name||'');badge.title=(y.login||y.role);}
@@ -2030,7 +2033,7 @@ document.addEventListener('keydown',e=>{
  $('message').focus({preventScroll:true});
 });
 $('message').onkeydown=e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing){e.preventDefault();$('send-form')._interrupt=e.ctrlKey||e.metaKey;$('send-form').requestSubmit()}};
-$('reflect').onchange=async()=>{try{await api('/api/reflect',{on:$('reflect').checked});notice()}catch(e){notice(e.message);await refresh()}};$('autotalk').onchange=async()=>{try{await api('/api/autotalk',{on:$('autotalk').checked});notice()}catch(e){notice(e.message);await refresh()}};$('stop').onclick=async()=>{const button=$('stop');button.disabled=true;try{await api('/api/stop',{});$('autotalk').checked=false;await refresh();notice('Alles angehalten. Neue Nachrichten laufen sofort; Wartendes mit „Fortsetzen“.')}catch(e){notice(e.message)}finally{button.disabled=false}};
+$('reflect').onchange=async()=>{try{await api('/api/reflect',{on:$('reflect').checked});notice()}catch(e){notice(e.message);await refresh()}};$('autotalk').onchange=async()=>{try{await api('/api/autotalk',{on:$('autotalk').checked});notice()}catch(e){notice(e.message);await refresh()}};$('selftalk').onchange=async()=>{try{await api('/api/selftalk',{on:$('selftalk').checked});notice()}catch(e){notice(e.message);await refresh()}};$('stop').onclick=async()=>{const button=$('stop');button.disabled=true;try{await api('/api/stop',{});$('autotalk').checked=false;await refresh();notice('Alles angehalten. Neue Nachrichten laufen sofort; Wartendes mit „Fortsetzen“.')}catch(e){notice(e.message)}finally{button.disabled=false}};
 function deN(n,one,many){return n+' '+(n===1?one:many)}
 function purgeAsk({title,lead,items,note,ok}={}){return new Promise(resolve=>{const d=$('purge-dialog');$('purge-title').textContent=title||'Löschen';$('purge-lead').textContent=lead||'';const ul=$('purge-list');ul.replaceChildren();for(const item of items||[]){const li=document.createElement('li');li.textContent=item;ul.append(li)}$('purge-note').textContent=note||'';const okb=$('purge-ok'),cb=$('purge-cancel');okb.textContent=ok||'Löschen';const prev=document.activeElement;let done=false;const finish=v=>{if(done)return;done=true;okb.onclick=cb.onclick=d.onclick=d.onkeydown=null;d.removeEventListener('cancel',onCancel);if(d.open)d.close();try{prev&&prev.focus()}catch(e){}resolve(v)};const onCancel=e=>{e.preventDefault();finish(false)};d.addEventListener('cancel',onCancel);okb.onclick=()=>finish(true);cb.onclick=()=>finish(false);d.onclick=e=>{if(e.target===d)finish(false)};d.onkeydown=e=>{if(e.key==='Escape'){e.preventDefault();finish(false)}};d.showModal();cb.focus()})}
 let undoTimer=0,updateToastTimer=0;
@@ -2823,16 +2826,17 @@ function editQueuedMessage(p,t,button,focus=false){
 }
 
 function closeQueue(){if(!queueOpen)return;queueOpen=false;paintRoomLine()}
-function lineChrome(){return [$('model-banner'),$('room-link'),$('toast-stack')].filter(Boolean)}
+function lineChrome(){return [$('model-banner'),$('room-link'),$('selftalk-row'),$('toast-stack')].filter(Boolean)}
 function paintRoomLine(){
  const box=$('queue-chips');if(!box)return;
  const list=queueState.pending||[];
  if(!list.length)queueOpen=false;
  const statusText=activityStatusText(),pho=phoChip();
- const banner=$('model-banner'),link=$('room-link');
+ const banner=$('model-banner'),link=$('room-link'),talk=$('selftalk-row');
  const bannerOn=!!(banner&&!banner.hidden&&banner.textContent);
  const linkOn=!!(link&&!link.hidden&&link.textContent);
- const show=!!(list.length||statusText||pho||bannerOn||linkOn||toastActive());
+ const talkOn=!!(talk&&!talk.hidden);
+ const show=!!(list.length||statusText||pho||bannerOn||linkOn||talkOn||toastActive());
  const keep=!matchMedia('(max-width:850px)').matches;
  const focused=document.activeElement;
  const editFocus=focused?.matches('.q-edit')?{id:focused.closest('.q-chip')?.dataset.id,start:focused.selectionStart,end:focused.selectionEnd}:null;
@@ -3028,6 +3032,7 @@ events.onmessage=e=>{
    refresh().catch(err=>notice(err.message));
   }else if(event.type==='model_settings'){if(Array.isArray(event.models)){state.models=event.models;syncModelSettings(state);syncModelChoice(state);renderAgents()}}
   else if(event.type==='autotalk')$('autotalk').checked=event.on;
+  else if(event.type==='selftalk'){state.selftalk=!!event.on;if($('selftalk'))$('selftalk').checked=state.selftalk}
   else if(event.type==='reflect'){state.reflect=!!event.on;if($('reflect'))$('reflect').checked=state.reflect}
   else if(event.type==='queue'){renderQueue(event);refresh().catch(err=>notice(err.message))}
   else if(event.type==='bot_wait'){if(event.on){waitingBots.set(id,event.after||'');busyBots.add(id)}else waitingBots.delete(id);renderLanes()}

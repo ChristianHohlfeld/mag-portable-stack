@@ -125,6 +125,9 @@ static std::atomic<bool> &stop_flag() { return TL_LANE ? TL_LANE->stop : STOP; }
 // True while a lane thread executes a tool call: its HTTP requests then end
 // as soon as the turn is stopped.
 static thread_local bool TL_IN_TOOL = false;
+// Visible to Stop on another thread. The composer waits only while this is
+// non-zero, so a model hold does not keep /api/cancel open.
+static std::atomic<int> TOOLS_IN_FLIGHT{0};
 static std::atomic<bool> &user_cancel_flag() {
   return TL_LANE ? TL_LANE->user_cancel : USER_CANCEL;
 }
@@ -5665,11 +5668,13 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
       const auto tool_from = steady_clock::now();
       std::string result;
       TL_IN_TOOL = true;
+      TOOLS_IN_FLIGHT.fetch_add(1);
       try {
         result = dispatch_tool(bot_idx, fname, args);
       } catch (std::exception &ex) {
         result = "Fehler: " + std::string(ex.what());
       }
+      TOOLS_IN_FLIGHT.fetch_sub(1);
       TL_IN_TOOL = false;
       if (stop_flag().load()) {
         // Stopped while the tool ran: no half result reaches the model.
@@ -6854,8 +6859,11 @@ static TurnReport generate_and_post(int idx, bool automatic, double dispatched_m
     const bool by_user = user_cancel_flag().load() ||
                          (epoch != EPOCH.load() && LAST_CANCEL_BY_USER.load());
     report.error.clear();
-    if (!(by_user && partial.empty() && trim(report.reasoning).empty() &&
-          report.steps.empty())) {
+    // A stopped tool is visible output. "abgebrochen" must land on the
+    // message before the lane goes idle, even when no answer text was streamed.
+    const bool bare = partial.empty() && trim(report.reasoning).empty() &&
+                      report.steps.empty() && !report.tools.size();
+    if (!(by_user && bare)) {
       Val msg = append_room("assistant", name, partial, id);
       attach_work(msg, report);
       std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
@@ -8154,6 +8162,11 @@ static void release_lanes_locked() {
   WAITING_BOTS.clear();
   BUSY = false;
 }
+static bool any_lane_busy_for_stop() {
+  for (Lane *l : all_lanes())
+    if (l->busy.load()) return true;
+  return false;
+}
 static void publish_idle_locked() {
   Val state = Val::object();
   state["type"] = "idle";
@@ -8207,12 +8220,15 @@ static Val user_stop(bool pause_jobs) {
     publish(mj::dump(stopping));
   }
   const bool was_busy = work;
+  const int tools_running = TOOLS_IN_FLIGHT.load();
   cancel_active(true);
   task_cancel("", "");
   const bool prewarm = cancel_prewarm();
   cancel_llama_tasks();
   reload_slots_after_cancel();
-  clear_runs();
+  // Leave the run record up so a tool turn can seal its step, kill the
+  // command and append the interrupted message before busy goes false.
+  // A model hold has no tool in flight: do not wait for it.
   std::unique_lock<std::mutex> control(JOB_MTX);
   PREWARM_HOLD = true;
   Val out = Val::object();
@@ -8221,7 +8237,6 @@ static Val user_stop(bool pause_jobs) {
     JOBS.clear();
     PENDING.clear();
     QUEUE_PAUSED = false;
-    release_lanes_locked();
     AUTO_READY = false;
     AUTO_OWNER.clear();
     ++AUTO_GENERATION;
@@ -8238,7 +8253,6 @@ static Val user_stop(bool pause_jobs) {
     size_t held = 0;
     for (auto &p : PENDING) { p.held = true; ++held; }
     QUEUE_PAUSED = true;
-    release_lanes_locked();
     AUTO_READY = false;
     AUTO_OWNER.clear();
     ++AUTO_GENERATION;
@@ -8255,8 +8269,19 @@ static Val user_stop(bool pause_jobs) {
   Val e = Val::object();
   e["type"] = "stopped";
   publish(mj::dump(e));
-  publish_idle_locked();
   control.unlock();
+  JOB_CV.notify_all();
+  if (tools_running > 0) {
+    const auto settled = steady_clock::now() + milliseconds(1800);
+    while (steady_clock::now() < settled && any_lane_busy_for_stop())
+      std::this_thread::sleep_for(milliseconds(15));
+  }
+  clear_runs();
+  if (any_lane_busy_for_stop() || BUSY.load()) {
+    std::lock_guard<std::mutex> lk(JOB_MTX);
+    release_lanes_locked();
+    publish_idle_locked();
+  }
   JOB_CV.notify_all();
   return out;
 }
@@ -8538,6 +8563,10 @@ static std::string state_json(const Actor *actor = nullptr) {
   root["github_default"] = GITHUB_DEFAULT.load();
   root["pho_compress_default"] = PHO_DEFAULT.load();
   root["thinking"] = thinking_of(LAST_THINK.load());
+  // Read busy before the room snapshot. The turn appends the interrupted
+  // message and only then clears BUSY, so a false busy flag cannot pair
+  // with a room that is still missing that message.
+  root["busy"] = BUSY.load();
   const auto pho_gains = pho_message_gains();
   {
     std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
@@ -8570,7 +8599,6 @@ static std::string state_json(const Actor *actor = nullptr) {
   root["version"] = (long)frontend_version();
   root["web"] = WEB_ENABLED.load();
   root["offline"] = OFFLINE.load();
-  root["busy"] = BUSY.load();
   {
     std::lock_guard<std::mutex> lk(RUN_MTX);
     Val acts = Val::array();

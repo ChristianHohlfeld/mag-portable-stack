@@ -338,6 +338,32 @@ class StopAndPriority(unittest.TestCase):
         self.assertTrue(Model.disconnects, 'send now closes the running request')
         self.assertEqual(contents(s)[-2], 'eins (bearbeitet)')
 
+    def test_06b_reasoning_channel_and_speaker_prefix_never_become_answer(self):
+        # Fake backend fragments deliberately split tags/prefixes across SSE.
+        Model.scripts += [[
+            {'reasoning_content': 'Nur interne Analyse. '},
+            'Chris tippt nur "Wie" – er scheint noch zu überlegen.\\n\\n',
+            'Bot', '1:', ' Ich bin da.'
+        ]]
+        self.room.api('/api/message', {'text': 'Wie', 'bots': ['a']})
+        s = self.room.until(lambda s: not s['busy'] and
+                            contents(s)[-1] == 'Ich bin da.',
+                            timeout=8, what='visible answer without leaked thinking')
+        self.assertNotIn('Chris tippt', contents(s)[-1])
+        self.assertNotIn('Nur interne Analyse', contents(s)[-1])
+        self.assertNotIn('Bot1:', contents(s)[-1])
+        assistant = s['room'][-1]
+        self.assertEqual(assistant['role'], 'assistant')
+
+    def test_06c_think_tags_do_not_escape_to_final_content(self):
+        Model.scripts += [['<thi', 'nk>Geheime Gedanken</think>',
+                           'Alpha:', ' Nur Antwort.']]
+        self.room.api('/api/message', {'text': 'Antworte nur', 'bots': ['a']})
+        s = self.room.until(lambda s: not s['busy'] and
+                            contents(s)[-1] == 'Nur Antwort.',
+                            timeout=8, what='think-tag-free content')
+        self.assertNotIn('Geheime Gedanken', contents(s)[-1])
+
     def test_07_bot_stop_only_stops_that_bot(self):
         Model.scripts += [[{'_hold': 30}]]
         self.room.api('/api/message', {'text': 'Nur Alpha', 'bots': ['a']})

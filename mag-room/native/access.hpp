@@ -277,6 +277,10 @@ static std::string required_perm(const std::string &method,
   if (method == "GET" && (path == "/healthz" || path == "/readyz" ||
                           path == "/readyz/model"))
     return "read";
+  // Local deploy drain: pause Self-Talk at a turn boundary. Guests are
+  // rejected in the handler; empty-login loopback (deploy.sh) is allowed.
+  if (method == "POST" && path == "/api/deploy-hold")
+    return "read";
   if (public_guest_read(method, path)) return "read";
   if ((method == "POST" && (path == "/api/message" || path == "/api/stream" ||
         path == "/api/upload" || path == "/api/stt" || path == "/api/speak")) ||

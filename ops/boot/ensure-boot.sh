@@ -20,6 +20,7 @@ if [[ -r $room_env ]]; then
   if grep -Fxq 'MAG_ROOM_MODEL_ID_1=qwen3.8-flash-next-uncensored' "$room_env"; then
     secondary_units=(mag-llm-qwen.service)
     systemctl disable mag-llm-ds-node@1.service >/dev/null 2>&1 || true
+    systemctl reset-failed mag-llm-ds-node@1.service >/dev/null 2>&1 || true
   else
     secondary_units=(mag-llm-ds-node@1.service)
     systemctl disable mag-llm-qwen.service >/dev/null 2>&1 || true

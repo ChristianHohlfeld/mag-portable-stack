@@ -87,6 +87,7 @@ if grep -Eq 'systemctl enable mag-llm-ornith' "$log"; then exit 1; fi
 if grep -Fq 'Ornith host' <<<"$out"; then exit 1; fi
 common
 grep -Fq 'retire-deepseek.sh' "$root/ops/deploy.sh"
+grep -Fq 'clear-failed-units.sh' "$root/ops/deploy.sh"
 grep -Fq 'ops/boot/ensure-boot.sh' "$root/ops/auto-update/apply.sh"
 grep -Fq 'PHASE boot' <<<"$(bash "$root/ops/update.sh" --dry-run)"
 echo 'Boot persistence PASS'

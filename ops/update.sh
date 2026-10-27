@@ -49,17 +49,24 @@ elif [[ ! -x "$ROOT/build/mag-browser-webrtc" ]]; then
 fi
 
 phase deploy
+deploy_rc=0
 if (( DEPLOY )); then
   # sudo resets the environment. Drain/force/layout must be passed explicitly
   # or a forced deploy still waits the full MAG_DEPLOY_DRAIN_S default (900s).
+  # The invoke sits behind `|| deploy_rc=` because a bare `if/else` list would
+  # swallow a postponed drain (exit 75) under `set -e` and print "update done".
   deploy_env=()
-  for name in MAG_ROOM_LAYOUT MAG_DEPLOY_DRAIN_S MAG_DEPLOY_FORCE MAG_DEPLOY_STALE_S MAG_DEPLOY_DEADLINE_S; do
+  for name in MAG_ROOM_LAYOUT MAG_DEPLOY_DRAIN_S MAG_DEPLOY_FORCE MAG_DEPLOY_STALE_S MAG_DEPLOY_DEADLINE_S MAG_ROOM_STATE; do
     if [[ -n ${!name:-} ]]; then deploy_env+=("$name=${!name}"); fi
   done
   if ((${#deploy_env[@]})); then
-    run sudo env "${deploy_env[@]}" bash "$ROOT/ops/deploy.sh"
+    run sudo env "${deploy_env[@]}" bash "$ROOT/ops/deploy.sh" || deploy_rc=$?
   else
-    run sudo bash "$ROOT/ops/deploy.sh"
+    run sudo bash "$ROOT/ops/deploy.sh" || deploy_rc=$?
+  fi
+  if (( deploy_rc )); then
+    echo "deploy aborted (rc=$deploy_rc)" >&2
+    exit "$deploy_rc"
   fi
 else
   echo 'skipped (--no-deploy)'

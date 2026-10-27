@@ -22,6 +22,8 @@ grep -Fq 'MAG_DEPLOY_DRAIN_S=5' <<<"$forced"
 grep -Fq 'MAG_DEPLOY_DEADLINE_S=30' <<<"$forced"
 grep -Fq 'MAG_ROOM_LAYOUT=mixed' <<<"$forced"
 ! grep -Fq 'MAG_DEPLOY_FORCE' <<<"$out"
+grep -Fq 'deploy aborted' "$root/ops/update.sh"
+grep -Fq 'deploy_rc' "$root/ops/update.sh"
 bash -n "$root"/ops/auto-update/*.sh
 grep -Fq 'auto-update/install.sh' <<<"$out"
 grep -Fq -- '--ff-only' "$root/ops/auto-update/auto-update.sh"
@@ -58,28 +60,83 @@ runstub='deploy_run() { shift; [[ ${1:-} == -- ]] && shift; "$@"; }'
 [[ $(PATH="$tmp/bin:$PATH" bash -euc "$runstub"$'\n'"$fn"$'\nwait_http http://x/health') == ok ]]
 echo 0 > "$tmp/n"; printf '#!/bin/sh\nexit 7\n' > "$tmp/bin/curl"
 ! PATH="$tmp/bin:$PATH" bash -euc "$runstub"$'\n'"$fn"$'\nwait_http http://x/health'
+# A postponed deploy (exit 75) must fail update.sh. bash `set -e` does not
+# abort on a failing command in an `if/else` list; capture deploy_rc instead.
+grep -Fq '|| deploy_rc=$?' "$root/ops/update.sh"
+post_rc=0
+bash -c 'set -euo pipefail
+deploy_rc=0
+if true; then
+  false || deploy_rc=75
+  if (( deploy_rc )); then
+    echo "deploy aborted (rc=$deploy_rc)" >&2
+    exit "$deploy_rc"
+  fi
+fi
+echo "update done"' || post_rc=$?
+[[ $post_rc == 75 ]]
+
 # Stuck busy (no token/text progress) continues; a moving reply still defers.
-drain=$(sed -n '/^drain_room() {/,/^}/p' "$root/ops/deploy.sh")
+# Self-Talk without a hold confirmation must not sit out MAG_DEPLOY_DRAIN_S.
+mkdir -p "$tmp/room"
+printf 'on\n' >"$tmp/room/selftalk"
+drain=$(sed -n '/^hold_selftalk_for_deploy() {/,/^# deploy_exit lives/p' "$root/ops/deploy.sh" | sed '$d')
 printf '#!/bin/sh\nprintf %%s '"'"'{"busy":true,"queue":0,"activities":[{"processed":0,"total":0,"phase":"think","steps":[]}],"room":[{"role":"assistant","content":""}]}'"'"'\n' > "$tmp/bin/curl"
 printf '#!/bin/sh\n' > "$tmp/bin/sleep"
 chmod +x "$tmp/bin/curl" "$tmp/bin/sleep"
+drain_env=(PATH="$tmp/bin:$PATH" MAG_DEPLOY_STALE_S=5 MAG_DEPLOY_DRAIN_S=900 RELEASE_ID=t
+  MAG_ROOM_STATE="$tmp/room" MAG_DEPLOY_DRAIN_STATE="$root/ops/deploy-drain-state.py")
 stale_rc=0
-PATH="$tmp/bin:$PATH" MAG_DEPLOY_STALE_S=5 MAG_DEPLOY_DRAIN_S=900 RELEASE_ID=t \
-  bash -euc "$drain"$'\ndrain_room' || stale_rc=$?
+env "${drain_env[@]}" bash -euc "$drain"$'\ndrain_room' || stale_rc=$?
 [[ $stale_rc == 0 ]]
 cat > "$tmp/bin/curl" <<EOF
 #!/bin/sh
 n=\$(cat "$tmp/p" 2>/dev/null || echo 0)
 n=\$((n+1))
 printf '%s\n' "\$n" > "$tmp/p"
-N=\$n python3 -c 'import json,os; n=int(os.environ["N"]); print(json.dumps({"busy":True,"queue":0,"activities":[{"processed":n,"total":9,"phase":"prompt","steps":[]}],"room":[{"role":"assistant","content":"x"*n}]}))'
+N=\$n python3 -c 'import json,os; n=int(os.environ["N"]); print(json.dumps({"busy":True,"queue":0,"user_busy":True,"selftalk_busy":False,"selftalk_held":False,"activities":[{"processed":n,"total":9,"phase":"prompt","steps":[]}],"room":[{"role":"assistant","content":"x"*n}]}))'
 EOF
 defer_rc=0
-PATH="$tmp/bin:$PATH" MAG_DEPLOY_STALE_S=60 MAG_DEPLOY_DRAIN_S=10 RELEASE_ID=t \
+env "${drain_env[@]}" MAG_DEPLOY_STALE_S=60 MAG_DEPLOY_DRAIN_S=10 \
   bash -euc "$drain"$'\ndrain_room' || defer_rc=$?
 [[ $defer_rc == 75 ]]
+[[ ! -e $tmp/room/deploy-hold ]]
+[[ ! -e $tmp/room/selftalk-resume ]]
 force_rc=0
-PATH="$tmp/bin:$PATH" MAG_DEPLOY_STALE_S=60 MAG_DEPLOY_DRAIN_S=10 MAG_DEPLOY_FORCE=1 RELEASE_ID=t \
+printf 'on\n' >"$tmp/room/selftalk"
+env "${drain_env[@]}" MAG_DEPLOY_STALE_S=60 MAG_DEPLOY_DRAIN_S=10 MAG_DEPLOY_FORCE=1 \
   bash -euc "$drain"$'\ndrain_room' || force_rc=$?
 [[ $force_rc == 0 ]]
+# Self-Talk only (old room, no hold ack): drain must return 0 before the 900s budget.
+cat > "$tmp/bin/curl" <<'EOF'
+#!/bin/sh
+printf '%s\n' '{"busy":true,"queue":2,"selftalk":true,"pending":[],"activities":[{"processed":3,"total":9,"phase":"prompt","steps":[]}],"room":[{"role":"assistant","content":"talk"}]}'
+EOF
+talk_rc=0
+env "${drain_env[@]}" MAG_DEPLOY_STALE_S=60 MAG_DEPLOY_DRAIN_S=10 \
+  bash -euc "$drain"$'\ndrain_room' || talk_rc=$?
+[[ $talk_rc == 0 ]]
+[[ -f $tmp/room/deploy-hold ]]
+[[ -f $tmp/room/selftalk-resume ]]
+# Held Self-Talk finishes at the turn boundary (second poll is idle).
+cat > "$tmp/bin/curl" <<EOF
+#!/bin/sh
+n=\$(cat "$tmp/h" 2>/dev/null || echo 0)
+n=\$((n+1))
+printf '%s\n' "\$n" > "$tmp/h"
+if [ "\$n" -le 2 ]; then
+  printf '%s\n' '{"busy":true,"queue":0,"user_busy":false,"selftalk_busy":true,"selftalk_held":true,"pending":[],"activities":[{"processed":1,"total":2,"phase":"prompt","steps":[]}],"room":[{"role":"assistant","content":"x"}]}'
+else
+  printf '%s\n' '{"busy":false,"queue":0,"user_busy":false,"selftalk_busy":false,"selftalk_held":true,"pending":[],"activities":[],"room":[{"role":"assistant","content":"x"}]}'
+fi
+EOF
+held_rc=0
+env "${drain_env[@]}" MAG_DEPLOY_STALE_S=60 MAG_DEPLOY_DRAIN_S=10 \
+  bash -euc "$drain"$'\ndrain_room' || held_rc=$?
+[[ $held_rc == 0 ]]
+talk_line=$(python3 -I "$root/ops/deploy-drain-state.py" <<'JSON'
+{"busy":true,"selftalk":true,"pending":[],"queue":1}
+JSON
+)
+[[ $talk_line == 0\ 0\ 1\ 0\ * ]]
 echo 'Update dry-run PASS'

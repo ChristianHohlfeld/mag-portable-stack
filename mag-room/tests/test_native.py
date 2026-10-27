@@ -4462,9 +4462,9 @@ class SelfTalk(unittest.TestCase):
 
  Stop or the toggle ends the chain. A user message does not: it is inserted
  once, the next free bot answers it, and the chain keeps going. Names in the
- prompt come from the live roster.
+ prompt come from the live roster. Idle acknowledgements do not re-arm.
  """
- HARD_S = 20
+ HARD_S = 28
 
  def setUp(self):
   import signal
@@ -4729,6 +4729,101 @@ class SelfTalk(unittest.TestCase):
   self.assertTrue(self.api('/api/state')['selftalk'])
   self.api('/api/cancel', {})
 
+ def test_deploy_hold_pauses_at_turn_boundary_and_resumes(self):
+  self._tok = re_token(urllib.request.urlopen('http://127.0.0.1:%d/' % self.ui, timeout=2).read().decode())
+  self.hold.set()
+  self.api('/api/selftalk', {'on': True})
+  self.api('/api/message', {'text': 'kette', 'bots': ['alpha']})
+  self.wait_calls(2)
+  held = self.api('/api/deploy-hold', {'on': True})
+  self.assertTrue(held['selftalk'])
+  self.assertTrue(held['held'])
+  deadline = time.monotonic() + 4
+  while time.monotonic() < deadline:
+   st = self.api('/api/state')
+   if not st.get('busy') and not st.get('selftalk_busy'):
+    break
+   time.sleep(0.05)
+  else:
+   self.fail('Self-Talk did not stop at a turn boundary: %s' % self.api('/api/state'))
+  frozen = len(self.chat_calls())
+  time.sleep(0.4)
+  self.assertEqual(len(self.chat_calls()), frozen, 'Self-Talk started another turn after deploy-hold')
+  st = self.api('/api/state')
+  self.assertTrue(st['selftalk'])
+  self.assertTrue(st.get('selftalk_held'))
+  self.assertFalse(st.get('user_busy'))
+  self.assertEqual((self.state / 'selftalk').read_text().strip(), 'on')
+  self.assertEqual((self.state / 'selftalk-resume').read_text().strip(), 'on')
+  self.stop_room()
+  before = len(self.chat_calls())
+  self.start_room()
+  self._tok = re_token(urllib.request.urlopen('http://127.0.0.1:%d/' % self.ui, timeout=2).read().decode())
+  self.assertTrue(self.api('/api/state')['selftalk'])
+  deadline = time.monotonic() + 5
+  while time.monotonic() < deadline:
+   if len(self.chat_calls()) > before:
+    break
+   time.sleep(0.05)
+  else:
+   self.fail('Self-Talk did not resume after deploy restart\n%s' % self.log_path.read_text()[-1500:])
+  self.api('/api/cancel', {})
+
+ def test_idle_echo_does_not_rearm_selftalk(self):
+  self._tok = re_token(urllib.request.urlopen('http://127.0.0.1:%d/' % self.ui, timeout=2).read().decode())
+  self.hold.set()
+  self.api('/api/selftalk', {'on': True})
+  self.api('/api/message', {'text': 'IDLE-ECHO', 'bots': ['alpha']})
+  self.wait_calls(1)
+  frozen = len(self.chat_calls())
+  time.sleep(0.6)
+  self.assertEqual(len(self.chat_calls()), frozen, 'idle acknowledgement re-armed Self-Talk')
+  st = self.api('/api/state')
+  self.assertTrue(st['selftalk'], 'idle damp must leave the switch on')
+  self.assertFalse(st.get('selftalk_busy'))
+  self.assertFalse(st['busy'])
+  room = [m.get('content') for m in st['room'] if m.get('role') == 'assistant']
+  self.assertTrue(any('Kein Auftrag' in (c or '') or 'bleibe still' in (c or '') for c in room), room)
+  self.api('/api/message', {'text': 'TOKEN-CHRIS-99', 'bots': ['beta']})
+  deadline = time.monotonic() + 5
+  while time.monotonic() < deadline:
+   if any(m.get('role') == 'assistant' and 'TOKEN-CHRIS-99' in (m.get('content') or '')
+          for m in self.api('/api/state')['room']):
+    break
+   time.sleep(0.05)
+  else:
+   self.fail('real user text after idle echo did not get an answer')
+  self.assertTrue(self.api('/api/state')['selftalk'])
+  self.api('/api/cancel', {})
+
+ def test_deploy_hold_drains_user_reply(self):
+  self._tok = re_token(urllib.request.urlopen('http://127.0.0.1:%d/' % self.ui, timeout=2).read().decode())
+  TalkModel.hold_below = 1
+  self.hold.clear()
+  self.api('/api/selftalk', {'on': True})
+  self.api('/api/message', {'text': 'user-reply', 'bots': ['alpha']})
+  self.wait_calls(1)
+  st = self.api('/api/state')
+  self.assertTrue(st['busy'])
+  self.assertTrue(st.get('user_busy'), st)
+  self.api('/api/deploy-hold', {'on': True})
+  st = self.api('/api/state')
+  self.assertTrue(st['selftalk'], 'deploy-hold must leave the switch on')
+  self.assertTrue(st.get('user_busy') or st['busy'], 'user reply was cancelled')
+  self.hold.set()
+  deadline = time.monotonic() + 4
+  while time.monotonic() < deadline:
+   st = self.api('/api/state')
+   if not st.get('busy') and not st.get('user_busy'):
+    break
+   time.sleep(0.05)
+  else:
+   self.fail('user reply did not drain: %s' % self.api('/api/state'))
+  frozen = len(self.chat_calls())
+  time.sleep(0.4)
+  self.assertEqual(len(self.chat_calls()), frozen, 'Self-Talk continued after the user reply drained')
+  self.assertTrue(self.api('/api/state')['selftalk'])
+
  def wait_calls(self, n):
   deadline = time.monotonic() + 6
   while time.monotonic() < deadline:
@@ -4777,6 +4872,8 @@ class TalkModel(http.server.BaseHTTPRequestHandler):
    text = 'sieht Gamma'
   elif 'TOKEN-CHRIS-99' in blob:
    text = 'zu Chris: TOKEN-CHRIS-99'
+  elif 'IDLE-ECHO' in blob:
+   text = 'Kein Auftrag. Ich bleibe still.'
   else:
    text = 'FACT-77'
   try:

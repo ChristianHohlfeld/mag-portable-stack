@@ -139,15 +139,31 @@ def rewrite_path(path):
     return str(p)
 
 
+def rewrite_destinations(path):
+    """Include path plus managed symlink target.
+
+    nginx -T reports sites-enabled/mag-room.conf. Following only the
+    symlink used to drop that include path, so a leftover regular file
+    (or a stale include that no longer matches sites-available) stayed
+    on 100.123.114.16:443 after bots/pages were moved.
+    """
+    p = str(pathlib.Path(path))
+    dests = [p]
+    followed = rewrite_path(path)
+    if followed not in dests:
+        dests.append(followed)
+    return dests
+
+
 def candidate_files(nginx_t="", roots=()):
     """Union of nginx -T hits and on-disk leftover listens."""
     found = []
     seen = set()
     for path in files_from_nginx_t(nginx_t) + files_from_trees(roots):
-        dest = rewrite_path(path)
-        if dest not in seen:
-            seen.add(dest)
-            found.append(dest)
+        for dest in rewrite_destinations(path):
+            if dest not in seen:
+                seen.add(dest)
+                found.append(dest)
     return found
 
 

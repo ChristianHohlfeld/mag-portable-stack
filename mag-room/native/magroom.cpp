@@ -90,6 +90,9 @@ struct Lane {
   // (JOB_MTX). They will read a message posted now from the transcript.
   std::vector<std::string> upcoming;
   std::atomic<bool> stop{false}, busy{false}, user_cancel{false};
+  // Human preemption of a bot-to-bot turn. Unlike stop, it is not cleared
+  // for the next bot in the same job: the whole bot-to-bot turn ends.
+  std::atomic<bool> preempt{false};
   std::atomic<int> backend_fd{-1};
   // Identifies the turn that owns the lane. Stop releases the lane so the
   // next message can start; the finishing thread must not clear that turn.
@@ -126,6 +129,9 @@ static std::atomic<bool> &stop_flag() { return TL_LANE ? TL_LANE->stop : STOP; }
 // True while a lane thread executes a tool call: its HTTP requests then end
 // as soon as the turn is stopped.
 static thread_local bool TL_IN_TOOL = false;
+// Bot-to-bot turns use a short prompt and a hard output cap. A human turn
+// never sets this, so Chris still gets the full context and token budget.
+static thread_local bool TL_SELFTALK = false;
 // Visible to Stop on another thread. The composer waits only while this is
 // non-zero, so a model hold does not keep /api/cancel open.
 static std::atomic<int> TOOLS_IN_FLIGHT{0};
@@ -4402,9 +4408,13 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   // Both backends use 32k context; retain the proven Qwen output budget.
   // Bound generated tokens on Qwen only, keeping Q4's established budget.
   // Both models retain all native/MCP tools and immutable audit routing.
-  const int max_output = model == "qwen3.8-flash-next-uncensored"
+  int max_output = model == "qwen3.8-flash-next-uncensored"
       ? std::min(MAX_TOKENS, std::clamp(envi("MAG_ROOM_QWEN_MAX_TOKENS", 4096), 512, 8192))
       : MAX_TOKENS;
+  // Proaktiv must not occupy the only slot for a 4096-token decode.
+  // The cap is below Qwen's floor of 512 on purpose.
+  if (TL_SELFTALK)
+    max_output = std::clamp(envi("MAG_ROOM_PROAKTIV_MAX_TOKENS", 256), 32, 512);
   body["max_tokens"] = max_output;
   body["stream"] = true;
   // llama.cpp: stream prompt_progress {total,cache,processed,time_ms} while
@@ -4429,7 +4439,7 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   // stays identical across the toggle.
   Val kwargs = Val::object();
   // Thinking follows the model default or the per-message switch.
-  kwargs["enable_thinking"] = thinking;
+  kwargs["enable_thinking"] = thinking && !TL_SELFTALK;
   // The Qwen4Exp GGUF Jinja template uses enable_thinking, not the
   // DeepSeek-specific reasoning_effort preamble (preserve prompt cache).
   if (model != "qwen3.8-flash-next-uncensored" && !REASONING_EFFORT.empty())
@@ -4652,7 +4662,9 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
     slot_save_after(id_slot, saw_cached, saw_evaluated);
   // A cancel drops ik's KV ("lack of cache data"). The slot file is what the
   // next room start reloads, so a restart does not prefill the prompt again.
-  if (t.error.empty())
+  // A short Proaktiv prompt must not replace the saved human prefix.
+  // Cancel restores that file so the next hi stays a cache hit.
+  if (t.error.empty() && !TL_SELFTALK)
     persist_configured_slot(bot_idx);
   return t;
 }
@@ -5467,6 +5479,30 @@ static void compact_agent_context(int bot_idx, std::vector<Val> &messages,
   }
 }
 
+// Last few room lines only. The full wire stays untouched so a human hi
+// still extends the saved prefix instead of re-prefilling ~12k tokens.
+static std::string selftalk_context(int idx) {
+  const int cap = std::clamp(envi("MAG_ROOM_PROAKTIV_CONTEXT_CHARS", 1600), 200, 8000);
+  std::vector<Val> room;
+  {
+    std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
+    room = ROOM;
+  }
+  std::string lines;
+  int kept = 0;
+  for (auto it = room.rbegin(); it != room.rend() && kept < 6; ++it) {
+    const std::string role = mag::str(*it, "role");
+    if (role != "user" && role != "assistant") continue;
+    std::string line = render_room_line(*it);
+    if (line.size() > 500) line.resize(500);
+    lines.insert(0, line);
+    ++kept;
+    if ((int)lines.size() >= cap) break;
+  }
+  if ((int)lines.size() > cap) lines = lines.substr(lines.size() - (size_t)cap);
+  return lines + room_company_line(idx);
+}
+
 static TurnReport run_turn(int bot_idx, bool autotalk,
                            const std::string &other) {
   std::string bot_id = bot_field(bot_idx, "id");
@@ -5501,6 +5537,18 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
     u["role"] = "user";
     u["content"] = input;
     messages.push_back(u);
+  } else if (TL_SELFTALK) {
+    Val sys = Val::object();
+    sys["role"] = "system";
+    sys["content"] = "Du bist " + bot_name +
+        ". Antworte in höchstens zwei kurzen Sätzen auf die letzte Nachricht im Raum. "
+        "Keine Werkzeuge.";
+    messages.push_back(sys);
+    Val u = Val::object();
+    u["role"] = "user";
+    u["content"] = selftalk_context(bot_idx);
+    messages.push_back(u);
+    tools.clear();
   } else {
     mcp_auto_once();
     system = build_system(bot_idx, autotalk, other, web);
@@ -5671,7 +5719,7 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
     };
     // Re-read permissions between tool rounds. In particular, turning GitHub
     // off removes its schemas from the next request of an already running turn.
-    if (!stateless) tools = tools_json(bot_idx, web);
+    if (!stateless && !TL_SELFTALK) tools = tools_json(bot_idx, web);
     // Tools remain available on every step, without a forced early final.
     Turn t;
     size_t attempt_budget = context_budget;
@@ -5754,12 +5802,12 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
       asst["tool_calls"] = arr;
     }
     messages.push_back(asst);
-    const bool tool_round = !t.calls.empty();
+    const bool tool_round = !t.calls.empty() && !TL_SELFTALK;
     // Open todo items are an unfinished goal: the turn goes on (bounded).
-    const bool todo_open = !tool_round && !stateless && TL_TODO_TOUCHED &&
+    const bool todo_open = !tool_round && !stateless && !TL_SELFTALK && TL_TODO_TOUCHED &&
         todo_nudges < 2 && !has_next_step(t.text) && todo_open_for(bot_id) > 0;
-    const bool pending = todo_open || (has_next_step(t.text) &&
-        t.text.find("[[MAG:ENDE]]") == std::string::npos);
+    const bool pending = !TL_SELFTALK && (todo_open || (has_next_step(t.text) &&
+        t.text.find("[[MAG:ENDE]]") == std::string::npos));
     if (!t.text.empty()) {
       if (tool_round || pending) {
         if (!draft_dropped) {
@@ -5774,7 +5822,7 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
         emit_answer_deltas(bot_id, bot_name, t.text);
       }
     }
-    if (stateless) { completed = true; break; }
+    if (stateless || TL_SELFTALK) { completed = true; break; }
     if (!tool_round) {
       if (!pending) { completed = true; break; }
       const std::string p = trim(t.text);
@@ -6188,6 +6236,26 @@ static void arm_selftalk(const std::string &speaker, const std::string &cause,
 // Self-Talk: bots answer each other's room messages. No consecutive-turn cap.
 // SELF_HOLD ends the current chain (Stop or toggle off) until a new user message.
 static std::atomic<bool> SELFTALK{false}, SELF_HOLD{false};
+// While a human message is being admitted, bot-to-bot jobs stay queued.
+static std::atomic<int> SELFTALK_YIELD{0};
+// Earliest time the next bot-to-bot turn may take a slot.
+static std::atomic<long long> SELFTALK_NOT_BEFORE_MS{0};
+static void note_selftalk_gap() {
+  const int pause = std::clamp(envi("MAG_ROOM_PROAKTIV_PAUSE_MS", 2000), 0, 60000);
+  if (pause <= 0) return;
+  const long long until =
+      duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count() + pause;
+  long long cur = SELFTALK_NOT_BEFORE_MS.load();
+  while (cur < until && !SELFTALK_NOT_BEFORE_MS.compare_exchange_weak(cur, until)) {}
+}
+static bool selftalk_paused() {
+  const long long until = SELFTALK_NOT_BEFORE_MS.load();
+  if (until <= 0) return false;
+  const long long now =
+      duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
+  return now < until;
+}
+static void preempt_selftalk_lanes();
 // Owner room setting (state/reflect, default off = least blocking): after all
 // bots of a concurrent user turn have answered, each answers once more and
 // then sees the others' first-round answers. Never chained, never autonomous.
@@ -6508,6 +6576,20 @@ static Val enqueue_pending(const std::string &text,
                            const std::vector<std::string> &ids, int think,
                            const std::string &sender, const std::string &login,
                            bool interrupt, const std::string &request_id) {
+  // Drop a running bot-to-bot generation before admission, so both slots
+  // are free for this message. The saved prefix is restored, not rebuilt.
+  struct YieldSelftalk {
+    bool on = false;
+    YieldSelftalk() {
+      if (!SELFTALK.load()) return;
+      on = true;
+      SELFTALK_YIELD.fetch_add(1);
+      preempt_selftalk_lanes();
+    }
+    ~YieldSelftalk() {
+      if (on) SELFTALK_YIELD.fetch_sub(1);
+    }
+  } yield_selftalk;
   std::lock_guard<std::mutex> lk(JOB_MTX);
   Val out = Val::object();
   out["accepted"] = true;
@@ -6917,6 +6999,9 @@ static void apply_deploy_hold_file_locked() {
   hold_selftalk_for_deploy_locked();
 }
 static void resume_selftalk_after_deploy() {
+  // A deploy restart keeps the chain held. deploy.sh releases it only
+  // after the warm-hi gate, so :8192 is idle with its prefix during the check.
+  // A reboot has no marker and also stays held (SELF_HOLD starts true).
   if (migrated_flag(STATE_DIR + "/proaktiv-resume", STATE_DIR + "/selftalk-resume") != "on") return;
   // A generation here is the first prompt after the restart. It occupied
   // Qwen during the warm-hi gate and the next user hi waited behind it.
@@ -6924,6 +7009,7 @@ static void resume_selftalk_after_deploy() {
   // Tests with prewarm off still resume in this process.
   if (CONFIGURED_MODEL && env("MAG_ROOM_PREWARM", "1") == "1") {
     SELF_HOLD = true;
+    DEPLOY_HOLD = true;
     return;
   }
   std::error_code ec;
@@ -6931,11 +7017,8 @@ static void resume_selftalk_after_deploy() {
   std::filesystem::remove(STATE_DIR + "/selftalk-resume", ec);
   std::filesystem::remove(STATE_DIR + "/deploy-hold", ec);
   if (!SELFTALK.load()) return;
-  SELF_HOLD = false;
-  DEPLOY_HOLD = false;
-  std::string speaker, cause, text;
-  last_assistant_for_selftalk(speaker, cause, text);
-  if (!speaker.empty()) arm_selftalk(speaker, cause, text);
+  SELF_HOLD = true;
+  DEPLOY_HOLD = true;
 }
 // Idle acknowledgements must not re-arm Self-Talk. The switch stays on;
 // there is no turn cap. Live drain stayed busy while bots repeated
@@ -7348,6 +7431,85 @@ static void reload_slots_after_cancel() {
     for (size_t i = 0; i < AGENTS.size(); ++i) idxs.push_back((int)i);
   }
   for (int i : idxs) reload_slot_after_cancel(i);
+}
+static bool prefix_is_saved(int idx) {
+  if (!CONFIGURED_MODEL || !PREFIX_DISK || idx < 0) return false;
+  const std::string model = bot_model_id(idx);
+  const std::string file = prefix_file(idx, model);
+  const std::string key = model_port(model_slot(idx)) + "/" + file;
+  std::lock_guard<std::mutex> lk(PREFIX_MTX);
+  if (!PREFIX_META.isObj()) {
+    if (!mj::parse(read_file(STATE_DIR + "/prompt-prefix.json"), PREFIX_META) || !PREFIX_META.isObj())
+      PREFIX_META = Val::object();
+  }
+  if (const Val *v = PREFIX_META.find(key))
+    return v->type == Val::STR && !v->asStr().empty();
+  return false;
+}
+// Direct /slots on the llama port. The gateway is not asked, and the model
+// unit is not restarted. A missing port (tests) is not busy.
+static bool llama_slot_processing(int slot) {
+  const std::string port = model_port(slot);
+  if (port.empty() || port == "0") return false;
+  std::string reply;
+  long status = 0;
+  if (!http_simple("127.0.0.1", std::atoi(port.c_str()), "GET", "/slots", "", {},
+                   reply, &status, nullptr, 1500))
+    return false;
+  if (status != 200) return false;
+  return reply.find("\"is_processing\":true") != std::string::npos ||
+         reply.find("\"is_processing\": true") != std::string::npos;
+}
+// A previous room process exits without closing llama. If that leftover task
+// is still decoding and we still have the prefix file, cancel it and put the
+// file back so the warm-hi gate sees an idle slot with a cached prefix.
+static void release_orphan_slots() {
+  if (!CONFIGURED_MODEL) return;
+  std::vector<int> idxs;
+  {
+    std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
+    for (size_t i = 0; i < AGENTS.size(); ++i) idxs.push_back((int)i);
+  }
+  for (int idx : idxs) {
+    const int slot = model_slot(idx);
+    if (!llama_slot_processing(slot) || !prefix_is_saved(idx)) continue;
+    cancel_llama_slot(idx);
+    reload_slot_after_cancel(idx);
+  }
+}
+// Human message: abort bot-to-bot generations only. User turns keep running.
+// action=cancel drops the live KV; the saved prefix is loaded again.
+static void preempt_selftalk_lanes() {
+  struct Hit { Lane *lane; int idx; };
+  std::vector<Hit> hits;
+  {
+    std::lock_guard<std::mutex> lk(JOB_MTX);
+    for (const auto &kv : ACTIVE_JOBS) {
+      if (!kv.second.selftalk) continue;
+      for (const auto &id : kv.second.ids) {
+        Lane *lane = lane_of(id);
+        if (!lane || !lane->busy.load()) continue;
+        lane->preempt = true;
+        cancel_lane(*lane, true);
+        const int idx = agent_index(id);
+        hits.push_back(Hit{lane, idx});
+      }
+    }
+  }
+  if (hits.empty()) return;
+  for (const auto &h : hits)
+    if (h.idx >= 0) cancel_llama_slot(h.idx);
+  const auto until = steady_clock::now() + milliseconds(1200);
+  while (steady_clock::now() < until) {
+    bool busy = false;
+    for (const auto &h : hits)
+      if (h.lane->busy.load()) busy = true;
+    if (!busy) break;
+    std::this_thread::sleep_for(milliseconds(10));
+  }
+  for (const auto &h : hits)
+    if (h.idx >= 0) reload_slot_after_cancel(h.idx);
+  note_selftalk_gap();
 }
 static void agents_changed();
 // System+tools is ~13k tokens. n_past=1, n_decoded>0 or a 12-token stub is
@@ -8145,6 +8307,13 @@ static void lane_turn(Lane *lane, uint64_t run, std::vector<std::string> ids,
     TL_GROUP = group ? group->id : "";
     TL_REFLECT = group && group->reflect;
     LAST_THINK = think;
+    bool job_selftalk = false;
+    {
+      std::lock_guard<std::mutex> lk(JOB_MTX);
+      auto it = ACTIVE_JOBS.find(run);
+      if (it != ACTIVE_JOBS.end()) job_selftalk = it->second.selftalk;
+    }
+    TL_SELFTALK = job_selftalk;
     if (!(automatic && !AUTOTALK.load()))
       for (const auto &id : ids) {
         {
@@ -8153,6 +8322,7 @@ static void lane_turn(Lane *lane, uint64_t run, std::vector<std::string> ids,
           lane->upcoming.erase(std::remove(lane->upcoming.begin(), lane->upcoming.end(), id),
                                lane->upcoming.end());
           if (lane->cancelled_bots.count(id)) continue;
+          if (lane->preempt.load()) break;
           lane->stop = false;
           lane->user_cancel = false;
           lane->active_bot = id;
@@ -8185,6 +8355,10 @@ static void lane_turn(Lane *lane, uint64_t run, std::vector<std::string> ids,
         try {
           const double visible_start = dispatched_ms; dispatched_ms = 0;
           TurnReport report = generate_and_post(idx, automatic, visible_start);
+          if (job_selftalk) {
+            reload_slot_after_cancel(idx);
+            note_selftalk_gap();
+          }
           if (group && (lane->user_cancel.load() || lane->stop.load())) group->cancelled = true;
           if (TL_ADOPT_GEN) {
             generation = TL_ADOPT_GEN;
@@ -8205,6 +8379,7 @@ static void lane_turn(Lane *lane, uint64_t run, std::vector<std::string> ids,
           emit_event("error", id, "", e.what());
         }
       }
+    TL_SELFTALK = false;
     TURN_INPUT.clear();
     TL_LANE = nullptr;
     TL_GATE = nullptr;
@@ -8294,6 +8469,7 @@ static void start_lanes_locked(const Job &job, bool automatic, const std::string
     lane->upcoming = ids;
     lane->stop = false;
     lane->user_cancel = false;
+    lane->preempt = false;
     Job active = job;
     active.ids = ids;
     ACTIVE_JOBS[run] = std::move(active);
@@ -8368,9 +8544,10 @@ static bool dispatch_locked() {
       save_queue_locked();
       return true;
     }
-    // Proactive work yields to a user turn on any lane. The second hi must
-    // not wait until a bot-to-bot generation finishes.
-    if (it->selftalk && user_queued) continue;
+    // Proactive work yields to a queued user turn, pauses between bot-to-bot
+    // turns, and waits while a human message is taking the lanes.
+    if (it->selftalk && (user_queued || SELFTALK_YIELD.load() > 0 || selftalk_paused()))
+      continue;
     auto parts = split_lanes(it->ids);
     if (parts.empty()) {
       JOBS.erase(it);
@@ -8425,6 +8602,7 @@ static bool dispatch_locked() {
     lane->busy = true;
     lane->stop = false;
     lane->user_cancel = false;
+    lane->preempt = false;
     BUSY = true;
     std::thread(lane_job, lane, run_id, run).detach();
     return true;
@@ -9800,7 +9978,8 @@ int main() {
   AUTOTALK = trim(read_file(STATE_DIR + "/autotalk")) == "on";
   SELFTALK = migrated_flag(STATE_DIR + "/proaktiv", STATE_DIR + "/selftalk") == "on";
   // A reboot does not resume a bot-to-bot chain. The switch does survive.
-  // A deploy-hold marker is the exception: restore Self-Talk (on) and continue.
+  // A deploy marker stays held until /api/deploy-hold {on:false}, which
+  // deploy.sh sends after the warm-hi gate.
   SELF_HOLD = true;
   REFLECT = trim(read_file(STATE_DIR + "/reflect")) == "on";
   load_model_settings();
@@ -9970,6 +10149,7 @@ int main() {
   std::thread(jobs_ticker).detach();
   std::thread(guest_cleanup_loop).detach();
   std::thread(snapshot_retention_loop).detach();
+  release_orphan_slots();
   std::thread(scheduler_loop).detach();
   std::thread(model_watcher_loop).detach();
   std::thread(file_sync_loop).detach();

@@ -4783,6 +4783,7 @@ class SelfTalk(unittest.TestCase):
    MAG_ROOM_MODEL_STATUS=str(root / 'ms.json'), MAG_NETMODE=str(NETMODE),
    MAG_TEST_NO_MEMGIT='1', MAG_ROOM_AGENT_CTL='/bin/false',
    MAG_ROOM_GUEST_RUN='/bin/false', MAG_ROOM_MCP_AUTO='0', MAG_ROOM_PREWARM='0',
+   MAG_ROOM_PROAKTIV_PAUSE_MS='0',
    MAG_ROOM_SINGLE_BOT='', MAG_ROOM_DUAL_NUMA='0', MAG_ROOM_THINKING='off',
    MAG_ROOM_MODEL_ID='model-a', MAG_ROOM_MODEL_LABEL='Pair',
    MAG_ROOM_MODEL_PORTS='8191:0,8192:1', MAG_ROOM_MAX_BOTS='2',
@@ -5034,14 +5035,20 @@ class SelfTalk(unittest.TestCase):
   before = len(self.chat_calls())
   self.start_room()
   self._tok = re_token(urllib.request.urlopen('http://127.0.0.1:%d/' % self.ui, timeout=2).read().decode())
-  self.assertTrue(self.api('/api/state')['selftalk'])
+  st = self.api('/api/state')
+  self.assertTrue(st['selftalk'])
+  self.assertTrue(st.get('selftalk_held'), st)
+  time.sleep(0.35)
+  self.assertEqual(len(self.chat_calls()), before, 'Proaktiv resumed before the warm-hi gate')
+  released = self.api('/api/deploy-hold', {'on': False})
+  self.assertFalse(released.get('held'))
   deadline = time.monotonic() + 5
   while time.monotonic() < deadline:
    if len(self.chat_calls()) > before:
     break
    time.sleep(0.05)
   else:
-   self.fail('Self-Talk did not resume after deploy restart\n%s' % self.log_path.read_text()[-1500:])
+   self.fail('Self-Talk did not resume after the gate released the hold\n%s' % self.log_path.read_text()[-1500:])
   self.api('/api/cancel', {})
 
  def test_idle_echo_does_not_rearm_selftalk(self):
@@ -5146,6 +5153,70 @@ class SelfTalk(unittest.TestCase):
   self.wait_calls(frozen + 1)
   time.sleep(0.4)
   self.assertNotIn('1', [c[0] for c in self.chat_calls()[frozen:]])
+
+ def test_human_hi_preempts_bot_to_bot_and_both_answer(self):
+  # A running bot-to-bot turn must not keep the only slot. Chris's hi cancels
+  # it, restores the prefix, and both bots accept the new prompt within 5s.
+  self.stop_room()
+  self.env['MAG_ROOM_PROAKTIV_PAUSE_MS'] = '1200'
+  TalkModel.calls = []
+  TalkModel.actions = []
+  TalkModel.hold_below = 0
+  self.hold.set()
+  self.start_room()
+  self._tok = re_token(urllib.request.urlopen('http://127.0.0.1:%d/' % self.ui, timeout=2).read().decode())
+  self.api('/api/proaktiv', {'on': True})
+  self.api('/api/message', {'text': 'seed-chain', 'bots': ['alpha']})
+  deadline = time.monotonic() + 6
+  while time.monotonic() < deadline:
+   calls = self.chat_calls()
+   st = self.api('/api/state')
+   short = [c for c in calls if (c[1] or {}).get('max_tokens') == 256]
+   if short and not st.get('busy') and (self.state / 'prompt-prefix.json').is_file():
+    break
+   time.sleep(0.05)
+  else:
+   self.fail('bot-to-bot turn did not settle\n%s' % self.log_path.read_text()[-1500:])
+  n = len(self.chat_calls())
+  TalkModel.hold_below = n + 2
+  self.hold.clear()
+  self.wait_calls(n + 2)
+  held = self.chat_calls()[n:n + 2]
+  self.assertEqual({c[0] for c in held}, {'0', '1'}, held)
+  for _slot, obj in held:
+   self.assertEqual(obj.get('max_tokens'), 256, obj)
+   blob = json.dumps(obj, ensure_ascii=False)
+   self.assertLess(len(blob), 8000, 'bot-to-bot prompt was not shortened')
+   self.assertNotIn('"tools"', blob)
+  t0 = time.monotonic()
+  self.api('/api/message', {'text': 'HI-CHRIS-7', 'bots': ['alpha', 'beta']}, timeout=3)
+  seen = {}
+  while time.monotonic() - t0 < 5:
+   for slot, obj in self.chat_calls()[n + 2:]:
+    if 'HI-CHRIS-7' in json.dumps(obj, ensure_ascii=False):
+     seen[slot] = obj
+   if '0' in seen and '1' in seen:
+    break
+   time.sleep(0.02)
+  self.assertLess(time.monotonic() - t0, 5, 'both bots did not take the hi within 5s: %s' % list(seen))
+  self.assertEqual(set(seen), {'0', '1'})
+  for obj in seen.values():
+   self.assertGreater(obj.get('max_tokens') or 0, 256)
+  with TalkModel.lock:
+   actions = list(TalkModel.actions)
+  cancel_slots = {slot for path, slot in actions if 'action=cancel' in path}
+  self.assertTrue({'0', '1'} <= cancel_slots, actions)
+  self.assertTrue(any('action=restore' in path for path, _slot in actions), actions)
+  self.hold.set()
+  mark = len(self.chat_calls())
+  time.sleep(0.35)
+  self.assertEqual(len(self.chat_calls()), mark, 'proaktiv took the slot during the pause')
+  deadline = time.monotonic() + 3
+  while time.monotonic() < deadline and len(self.chat_calls()) == mark:
+   time.sleep(0.05)
+  self.assertGreater(len(self.chat_calls()), mark, 'proaktiv ended after one pause')
+  self.assertTrue(self.api('/api/state')['proaktiv'])
+  self.api('/api/cancel', {})
 
  def test_user_and_bot_messages_wake_the_other_active_bot(self):
   self._tok = re_token(urllib.request.urlopen('http://127.0.0.1:%d/' % self.ui, timeout=2).read().decode())

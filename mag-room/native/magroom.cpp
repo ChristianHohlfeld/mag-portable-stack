@@ -6740,7 +6740,7 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
   const std::string own = prefix_file(idx, model);
   const std::string own_key = port + "/" + own;
   std::string source = own;
-  bool prefix_changed = false, have_file = false;
+  bool prefix_changed = false, have_file = false, have_current = false;
   {
     std::lock_guard<std::mutex> lk(PREFIX_MTX);
     if (!PREFIX_META.isObj()) {
@@ -6754,15 +6754,16 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
     const std::string meta_own = meta(own_key);
     prefix_changed = !meta_own.empty() && meta_own != shared_key;
     have_file = !meta_own.empty();
-    // Own file if it holds the current shared prefix (or is of unknown age);
-    // otherwise another bot's file on the SAME server with that prefix.
-    if (CONFIGURED_MODEL && !meta(own_key).empty() && meta(own_key) != shared_key)
+    // Own file if it holds the current shared prefix; otherwise another bot's
+    // file on the SAME server with that prefix. A stale key is not current.
+    if (CONFIGURED_MODEL && prefix_changed)
       for (auto &kv : *PREFIX_META.obj)
         if (kv.first.rfind(port + "/", 0) == 0 && kv.second.type == Val::STR &&
             kv.second.asStr() == shared_key) {
           source = kv.first.substr(port.size() + 1);
           break;
         }
+    have_current = meta(port + "/" + source) == shared_key;
   }
   bool ram_warm = false, ram_known = !CONFIGURED_MODEL;
   bool saw_slot = false, explicit_empty = false, slot_busy = false;
@@ -6821,47 +6822,41 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
   if (CONFIGURED_MODEL && ram_known) {
     const int slot = model_slot(idx);
     if (slot >= 1 && slot <= ROOM_MAX_BOTS)
-      SLOT_WARM[slot - 1] = (ram_warm || (saw_slot && !explicit_empty)) ? 1 : 2;
+      // Leftover identity KV reports ram_warm=1. That is not the room prefix
+      // unless the saved hash matches (live: skip=ram, first hi 17s / 48s).
+      SLOT_WARM[slot - 1] = (ram_warm && have_current && !prefix_changed) ? 1 : 2;
   }
+  auto commit_prefix_meta = [&]() {
+    std::lock_guard<std::mutex> lk(PREFIX_MTX);
+    PREFIX_META[own_key] = shared_key;
+    write_file_atomic(STATE_DIR + "/prompt-prefix.json", mj::dump(PREFIX_META));
+  };
   if (CONFIGURED_MODEL && (!ram_known || slot_busy)) {
     skip = true;
     why = "busy"; // /slots timed out or the slot is prefilling: do not clobber it
-  } else if (ram_warm) {
-    // Explicit cache counters, a prompt, or state>0: the KV is resident.
-    // prefix_changed=1 is a stale prompt-prefix.json key, not a cold slot.
+  } else if (ram_warm && have_current && !prefix_changed) {
+    // RAM holds the room prefix we already saved. Leave it.
     skip = true;
     why = "ram";
-    if (prefix_changed) {
-      std::lock_guard<std::mutex> lk(PREFIX_MTX);
-      PREFIX_META[own_key] = shared_key;
-      write_file_atomic(STATE_DIR + "/prompt-prefix.json", mj::dump(PREFIX_META));
-    }
-  } else if (CONFIGURED_MODEL && have_file && PREFIX_DISK && !slot_busy) {
-    // Idle metrics, leftover identity n_decoded, or a cancel that dropped the
-    // KV. Reload the slot file. Do not post a 10k room-prompt completion:
-    // that occupies the only slot for minutes and a deploy restart cancels it.
+  } else if (CONFIGURED_MODEL && PREFIX_DISK && have_current && !slot_busy) {
+    // Current-key file exists. Reload it over leftover / hash-changed RAM.
     restored = prefix_slot("restore", source);
     skip = true;
     why = "restored";
-    if (prefix_changed) {
-      std::lock_guard<std::mutex> lk(PREFIX_MTX);
-      PREFIX_META[own_key] = shared_key;
-      write_file_atomic(STATE_DIR + "/prompt-prefix.json", mj::dump(PREFIX_META));
-    }
-  } else if (listed && !identity_slot) {
-    // No slot file yet. Leave the listed slot alone. n_decoded>0 on a
-    // configured deterministic bot is leftover identity KV, not this path.
+    commit_prefix_meta();
+  } else if (CONFIGURED_MODEL && PREFIX_DISK && have_file && !slot_busy) {
+    // Own file is a different hash. Reload the last checkpoint, then prewarm
+    // the current room prefix. Do not skip=ram (live DeepSeek 17s / Qwen 48s).
+    restored = prefix_slot("restore", own);
+    skip = false;
+    why = "hash";
+  } else if (listed && !identity_slot && have_current && !prefix_changed) {
     skip = true;
     why = "ram";
-    if (prefix_changed) {
-      std::lock_guard<std::mutex> lk(PREFIX_MTX);
-      PREFIX_META[own_key] = shared_key;
-      write_file_atomic(STATE_DIR + "/prompt-prefix.json", mj::dump(PREFIX_META));
-    }
   } else if (ram_known && !ram_warm) {
-    // Cold first boot: restore if a file exists, otherwise one completion so
-    // the checkpoint exists. A listed or busy slot never gets here.
-    restored = PREFIX_DISK && prefix_slot("restore", source);
+    // Cold first boot: restore if a current file exists, otherwise one
+    // completion so the checkpoint exists.
+    restored = PREFIX_DISK && have_current && prefix_slot("restore", source);
     if (CONFIGURED_MODEL && restored) {
       skip = true;
       why = "restored";
@@ -6961,6 +6956,10 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
     std::lock_guard<std::mutex> lk(PREFIX_MTX);
     PREFIX_META[own_key] = shared_key;
     write_file_atomic(STATE_DIR + "/prompt-prefix.json", mj::dump(PREFIX_META));
+  }
+  if (CONFIGURED_MODEL && (saved || (restored && skip))) {
+    const int slot = model_slot(idx);
+    if (slot >= 1 && slot <= ROOM_MAX_BOTS) SLOT_WARM[slot - 1] = 1;
   }
   if (seq.owns_lock()) seq.unlock();
   std::cerr << "prompt-prewarm model=" << model << " ok=" << (ok ? 1 : 0)

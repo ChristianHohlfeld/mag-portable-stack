@@ -1,0 +1,9 @@
+[Unit]
+Description=Shared ceiling for MAG CI and mirror bridge
+[Slice]
+CPUQuota=50%
+CPUWeight=1
+MemoryMax=8G
+MemorySwapMax=0
+IOWeight=1
+TasksMax=1024

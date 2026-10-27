@@ -1,0 +1,8 @@
+[Unit]
+Description=Renew the public Gitea certificate through lego
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/mag-ci/acme.env
+ExecStart=/usr/local/bin/lego run --accept-tos --path /etc/mag-gitea-acme --domains git.mag.stardenburg.de --email ${MAG_ACME_EMAIL} --http --http.webroot /var/lib/mag-gitea-acme
+ExecStartPost=/usr/sbin/nginx -t
+ExecStartPost=/bin/systemctl reload nginx

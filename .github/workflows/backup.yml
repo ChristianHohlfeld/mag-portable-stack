@@ -1,9 +1,6 @@
 name: MAG encrypted backup and restore
 on:
-  push:
-    paths: ['ops/backup/**', 'ops/deploy.sh', 'mag-room/native/routes.hpp', 'mag-room/web/index.html', 'docs/backup.md', '.github/workflows/backup.yml']
-  pull_request:
-    paths: ['ops/backup/**', 'ops/deploy.sh', 'mag-room/native/routes.hpp', 'mag-room/web/index.html', 'docs/backup.md', '.github/workflows/backup.yml']
+  workflow_dispatch:
 permissions:
   contents: read
   pull-requests: read
@@ -67,3 +64,4 @@ jobs:
         uses: gitleaks/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+

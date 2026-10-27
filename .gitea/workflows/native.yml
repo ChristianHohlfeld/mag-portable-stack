@@ -1,0 +1,170 @@
+name: Native MAG stack
+permissions:
+  contents: read
+  pull-requests: read
+'on':
+  push:
+    branches:
+    - main
+    - ci-pr-*
+  workflow_dispatch: null
+jobs:
+  native:
+    runs-on: mag-ci
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    - name: Build
+      run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release && cmake --build build -j 4
+    - name: Prevent CI room-clear from invoking production backup
+      run: 'grep -Fq "MAG_TEST_NO_CLEAR_BACKUP=''1''" mag-room/tests/test_native.py
+
+        ! grep -Fq ''mag-backup-clear.timer'' mag-room/native/routes.hpp
+
+        ! grep -Fq ''start mag-backup-clear.service'' mag-room/native/routes.hpp
+
+        '
+    - name: Tailscale API nft IPv4/v6 egress regression without modifying host firewall
+      if: runner.environment == 'github-hosted'
+      run: sudo bash ops/audit/tests/test-tail-egress.sh
+    - name: Owner-only backup and console access contract
+      run: bash ops/private-access/tests/test-owner-boundaries.sh
+    - name: Native integration checks
+      run: './build/test-pho-codec
+
+        ./build/test-guest-pty
+
+        ./build/test-browser-recovery
+
+        ./build/test-jobs-mcp
+
+        ./build/test-pages-native
+
+        ./build/test-browser-events
+
+        ./build/test-guest-description
+
+        ./build/test-guest-curl
+
+        ./build/test-large-stdin
+
+        ./build/test-gitea-account
+
+        python3 mag-room/tests/test_large_tools.py
+
+        python3 mag-room/tests/test_native.py
+
+        python3 mag-room/tests/test_agent_core.py
+
+        python3 ops/numa/tests/test_numa_swap.py
+
+        python3 mag-room/tests/test_room_control.py
+
+        python3 mag-room/tests/test_tailscale_auth.py
+
+        python3 ops/audit/tests/test_native_gateway.py
+
+        bash ops/qwen/tests/test-qwen.sh
+
+        bash ops/ornith/tests/test-ornith.sh
+
+        python3 mag-room/tests/test_whois_deploy.py
+
+        bash -n ops/deploy.sh ops/rollback.sh ops/private-access/*.sh
+
+        '
+    - name: IK prompt cache regression and rollback shell syntax
+      run: 'bash ops/deepseek/tests/test-ops-38.sh
+
+        bash ops/deepseek/tests/test-numa-isolation.sh
+
+        bash ops/deepseek/tests/test-node0-available.sh
+
+        bash ops/deepseek/tests/test-iq3-parallel.sh
+
+        bash ops/deepseek/tests/test-model-preservation.sh
+
+        bash -n ops/deepseek/verify-iq3.sh ops/deepseek/start-iq3.sh ops/deepseek/iq3-parallel.sh ops/deepseek/hotswap.sh
+
+        bash -n ops/deepseek/numa-isolation.sh ops/deepseek/numa-bench.sh
+
+        bash -n ops/deepseek/prompt-cache-switch.sh
+
+        '
+    - name: nginx syntax without a real Tailnet listener
+      if: runner.environment == 'github-hosted'
+      run: 'openssl req -x509 -newkey rsa:2048 -nodes -days 1 -keyout /tmp/mag-ci.key -out /tmp/mag-ci.crt -subj ''/CN=mag.stardenburg.de'' 2>/dev/null
+
+        sed -e ''s|/etc/mag-nginx/tls/cert.pem|/tmp/mag-ci.crt|'' -e ''s|/etc/mag-nginx/tls/key.pem|/tmp/mag-ci.key|'' -e ''s|100[.]123[.]114[.]16:443|127.0.0.1:18443|''
+        ops/private-access/mag-room.nginx.conf > /tmp/mag-ci-site.conf
+
+        grep -Fq ''listen 127.0.0.1:18443 ssl http2;'' /tmp/mag-ci-site.conf
+
+        printf ''pid /tmp/mag-ci-nginx.pid;\nerror_log /tmp/mag-ci-nginx.err;\nevents {}\nhttp { access_log off; include /tmp/mag-ci-site.conf; }\n'' > /tmp/mag-ci-nginx.conf
+
+        sudo nginx -t -c /tmp/mag-ci-nginx.conf -p /tmp
+
+        '
+    - name: Gitleaks (no secrets)
+      run: gitleaks git --redact --no-banner .
+    - uses: actions/setup-go@v5
+      with:
+        go-version: '1.23'
+    - name: Browser WebRTC UDP gateway
+      run: cd mag-room/webrtc && go test -mod=mod ./... && go build -mod=mod -o /tmp/mag-browser-webrtc .
+    - name: Vendor terminal and verify UI assets
+      run: 'bash ops/vendor-terminal-assets.sh /tmp/mag-terminal-assets
+
+        test -s /tmp/mag-terminal-assets/xterm.js
+
+        test -s /tmp/mag-terminal-assets/xterm-addon-fit.js
+
+        test -s /tmp/mag-terminal-assets/xterm.css
+
+        '
+    - name: Frontend script syntax
+      run: 'python3 -c ''from pathlib import Path; s=Path("mag-room/web/index.html").read_text(); Path("/tmp/mag-room-web.js").write_text(s.split("<script>")[-1].split("</script>")[0])''
+
+        node --check /tmp/mag-room-web.js
+
+        node mag-room/tests/test_composer.cjs
+
+        '
+    - name: Shell syntax
+      run: 'bash -n ops/*.sh ops/magbot-guest-run ops/magbot-agent-ctl
+
+        bash -n ops/bots/*.sh ops/bots/tests/*.sh
+
+        bash ops/bots/tests/test-bots.sh
+
+        '
+    - name: ISRG trust chain verifies without the system store
+      run: bash ops/trust/test-trust.sh
+    - name: Blank-host bootstrap dry run
+      run: bash ops/tests/test-bootstrap.sh
+    - name: Gitea pull mirror against a fake API
+      run: bash ops/tests/test-gitea-mirror.sh
+    - name: Gitea bot rights against a fake API
+      run: bash ops/tests/test-gitea-bot-rights.sh
+    - name: New ops scripts pass shellcheck
+      run: 'if ! command -v shellcheck >/dev/null; then echo ''shellcheck not installed on this runner; skipped''; exit 0; fi
+
+        shellcheck ops/vm/build-golden.sh ops/bootstrap-voice.sh ops/deepseek/bootstrap-runtimes.sh ops/tailscale/install.sh ops/private-access/install-lego.sh ops/gitea/mirror-github.sh
+        ops/tests/e2e-bootstrap.sh ops/ci/promote-green.sh ops/ci/self-hosted-checks.sh
+
+        '
+    - name: Update script dry run
+      run: bash ops/tests/test-update.sh
+    - name: One-shot legacy cleanup in a sandbox
+      run: bash ops/tests/test-cleanup-legacy.sh
+    - name: Unreferenced bot VM drift check
+      run: bash ops/tests/test-agent-drift.sh
+    - name: S23 control API
+      run: python3 devices/s23/tests/test_s23ctl.py
+    - name: Action runner guards
+      run: bash ops/tests/test-runners.sh
+    - name: Green promotion
+      run: bash ops/tests/test-green.sh
+    - name: Boot persistence
+      run: bash ops/tests/test-boot.sh

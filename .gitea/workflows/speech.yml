@@ -1,0 +1,73 @@
+name: MAG German browser speech
+permissions:
+  contents: read
+  pull-requests: read
+'on':
+  push:
+    branches:
+    - main
+    - ci-pr-*
+  workflow_dispatch: null
+jobs:
+  speech:
+    runs-on: mag-ci
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    - name: Dependencies (preinstalled by operator)
+      run: 'command -v cmake ninja node python3
+
+        python3 -m pip install --user playwright
+
+        python3 -m playwright install --with-deps chromium
+
+        '
+    - name: Compile native MAG for browser tests
+      run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release && cmake --build build --target magroom -j 4
+    - name: Vendor pinned terminal browser assets
+      run: 'bash ops/vendor-terminal-assets.sh build/terminal-assets
+
+        test -s build/terminal-assets/xterm.js
+
+        test -s build/terminal-assets/xterm-addon-fit.js
+
+        test -s build/terminal-assets/xterm.css
+
+        '
+    - name: Syntax and fake-model Playwright regressions
+      run: 'node --check mag-room/static/speech-ui.js
+
+        node --check mag-room/static/message-audio.js
+
+        node mag-room/tests/test_message_audio.cjs
+
+        node mag-room/tests/test_piper_warmup.cjs
+
+        node --check mag-room/static/speech-capture.js
+
+        node --check mag-room/web/sw.js
+
+        bash -n ops/vendor-speech-assets.sh ops/deploy.sh
+
+        python3 -m unittest discover -s mag-room/tests -p test_speech.py -v
+
+        '
+    - name: Vendor pinned Moonshine German WASM and model
+      run: bash ops/vendor-speech-assets.sh build/speech-assets
+    - name: Playwright with actual WASM and German model
+      run: python3 -m unittest discover -s mag-room/tests -p test_speech_real.py -v
+    - name: Reject unapproved removal of live files
+      run: "git fetch --no-tags origin main\n# #21 deliberately retires precisely two Python whois artifacts,\n# and only with the native C++ LocalAPI replacement\
+        \ in place.\nwhile IFS= read -r removed; do\n  [ -n \"$removed\" ] || continue\n  case \"$removed\" in\n    ops/private-access/tailscale-whois.py|ops/private-access/mag-whois.service)\n\
+        \      test -s mag-room/native/tailscale_auth.hpp\n      grep -Fq 'proxy_pass http://127.0.0.1:8766/_internal/tailscale/whois;' ops/private-access/mag-room.nginx.conf\n\
+        \      ;;\n    ops/deepseek/both-sockets.sh|ops/mag-120.d/30-multibot.conf)\n      # Retired: no executable compatibility paths remain.\n      test ! -e \"\
+        $removed\"\n      ;;\n    *)\n      echo \"Unexpected deletion in speech integration: $removed\" >&2\n      exit 1\n      ;;\n  esac\ndone < <(git diff --name-only\
+        \ --diff-filter=D origin/main...HEAD)\n"
+  gitleaks:
+    runs-on: mag-ci
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    - run: gitleaks git --redact --no-banner .

@@ -1,0 +1,31 @@
+name: Blank-host bootstrap (e2e)
+'on':
+  push:
+    branches:
+    - main
+    - ci-pr-*
+  workflow_dispatch: null
+permissions:
+  contents: read
+concurrency:
+  group: e2e-bootstrap-${{ github.ref }}
+  cancel-in-progress: 'true'
+jobs:
+  e2e-bootstrap:
+    runs-on: mag-ci-disposable
+    timeout-minutes: 120
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    - name: podman
+      run: command -v podman || { sudo apt-get update && sudo apt-get install -y podman; }
+    - name: Bootstrap a blank Ubuntu 24.04 container and check /readyz
+      run: sudo env MAG_E2E_LOG=/tmp/mag-e2e-bootstrap.log MAG_E2E_MEMORY=12g bash ops/tests/e2e-bootstrap.sh --jobs 4
+    - name: Bootstrap log
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: e2e-bootstrap-log
+        path: /tmp/mag-e2e-bootstrap.log
+        if-no-files-found: ignore

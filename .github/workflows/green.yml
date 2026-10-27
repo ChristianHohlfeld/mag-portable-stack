@@ -3,8 +3,6 @@ name: Green main
 # All green -> move branch `green` there. MAG deploys only `green`
 # (ops/auto-update). Red, cancelled or superseded by a newer push: nothing.
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
 permissions:
   contents: write
@@ -36,3 +34,4 @@ jobs:
     timeout-minutes: 5
     steps:
       - run: date -u +%FT%TZ > /var/lib/mag-deploy/request
+

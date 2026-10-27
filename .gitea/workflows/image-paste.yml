@@ -1,0 +1,27 @@
+name: Screenshot paste browser emulation
+'on':
+  push:
+    branches:
+    - main
+    - ci-pr-*
+  workflow_dispatch: null
+jobs:
+  chromium:
+    runs-on: mag-ci
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+    - name: Install Chromium emulation
+      run: 'python -m pip install playwright
+
+        python -m playwright install --with-deps chromium
+
+        '
+    - name: Test screenshot paste at 375 390 412 and desktop
+      run: python mag-room/tests/test_image_paste.py
+    - name: Memories dialog UI (mobile and desktop)
+      run: python mag-room/tests/test_memory_ui.py
+    - name: Type anywhere goes to the composer (desktop and phones)
+      run: python mag-room/tests/test_type_to_focus.py

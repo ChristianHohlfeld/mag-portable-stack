@@ -1,0 +1,8 @@
+[Unit]
+Description=Watch MAG main and PR heads without GitHub Actions minutes
+[Timer]
+OnBootSec=45s
+OnUnitInactiveSec=60s
+RandomizedDelaySec=5s
+[Install]
+WantedBy=timers.target

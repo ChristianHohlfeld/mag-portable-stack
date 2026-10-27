@@ -54,3 +54,4 @@ jobs:
             exit 1
           }
           gh release view "$tag" --json url,tagName,name,isDraft
+

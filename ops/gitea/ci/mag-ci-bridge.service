@@ -1,0 +1,26 @@
+[Unit]
+Description=Mirror only mag-portable-stack and return Gitea status to GitHub
+After=gitea.service network-online.target
+[Service]
+Type=oneshot
+User=mag-ci-bridge
+Group=mag-ci-bridge
+StateDirectory=mag-ci-bridge
+LoadCredential=github:/etc/credstore/github-ci.token
+LoadCredential=gitea:/etc/credstore/gitea-ci.token
+ExecStart=/usr/local/lib/mag-ci/bridge.sh
+Slice=mag-ci.slice
+CPUAffinity=27 55
+CPUQuota=10%
+MemoryMax=512M
+Nice=19
+IOSchedulingClass=idle
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+UMask=0077

@@ -1,0 +1,35 @@
+[Unit]
+Description=Repository-scoped MAG Gitea CI runner
+After=gitea.service network-online.target
+ConditionPathExists=/var/lib/mag-ci/.runner
+[Service]
+User=mag-ci
+Group=mag-ci
+WorkingDirectory=/var/lib/mag-ci
+Environment=HOME=/var/lib/mag-ci
+ExecStart=/usr/local/bin/gitea-runner --config /etc/mag-ci/runner.yaml daemon
+Restart=on-failure
+RestartSec=10
+Slice=mag-ci.slice
+CPUAffinity=27 55
+CPUQuota=50%
+CPUWeight=1
+MemoryMax=8G
+MemorySwapMax=0
+Nice=19
+IOSchedulingClass=idle
+OOMScoreAdjust=1000
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+ReadWritePaths=/var/lib/mag-ci
+InaccessiblePaths=-/etc/credstore -/etc/gitea -/var/lib/magbot -/var/lib/gitea -/var/lib/mag-stack -/var/lib/mag-deploy -/var/backups -/run/credentials -/opt/mag-stack
+UMask=0077
+[Install]
+WantedBy=multi-user.target

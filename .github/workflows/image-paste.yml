@@ -1,19 +1,6 @@
 name: Screenshot paste browser emulation
 on:
-  push:
-    paths:
-      - 'mag-room/web/index.html'
-      - 'mag-room/tests/test_image_paste.py'
-      - 'mag-room/tests/test_memory_ui.py'
-      - 'mag-room/tests/test_type_to_focus.py'
-      - '.github/workflows/image-paste.yml'
-  pull_request:
-    paths:
-      - 'mag-room/web/index.html'
-      - 'mag-room/tests/test_image_paste.py'
-      - 'mag-room/tests/test_memory_ui.py'
-      - 'mag-room/tests/test_type_to_focus.py'
-      - '.github/workflows/image-paste.yml'
+  workflow_dispatch:
 jobs:
   chromium:
     runs-on: ubuntu-24.04
@@ -32,3 +19,4 @@ jobs:
         run: python mag-room/tests/test_memory_ui.py
       - name: Type anywhere goes to the composer (desktop and phones)
         run: python mag-room/tests/test_type_to_focus.py
+

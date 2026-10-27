@@ -1,0 +1,69 @@
+name: MAG encrypted backup and restore
+'on':
+  push:
+    branches:
+    - main
+    - ci-pr-*
+  workflow_dispatch: null
+permissions:
+  contents: read
+  pull-requests: read
+jobs:
+  recovery:
+    runs-on: mag-ci
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    - name: Install restic and test tools
+      if: runner.environment == 'github-hosted'
+      run: 'curl -fsSLo /tmp/restic.bz2 https://github.com/restic/restic/releases/download/v0.18.1/restic_0.18.1_linux_amd64.bz2
+
+        echo ''680838f19d67151adba227e1570cdd8af12c19cf1735783ed1ba928bc41f363d  /tmp/restic.bz2'' | sha256sum -c -
+
+        /usr/local/bin/restic version
+
+        '
+    - name: shell syntax, executable hook and no destructive model action
+      run: 'bash -n ops/backup/*.sh ops/backup/tests/*.sh ops/deploy.sh
+
+        test "$(grep -Ec ''^[a-f0-9]{64}[[:space:]]+'' ops/backup/models.sha256)" -eq 5
+
+        test "$(grep -Ec ''^[a-f0-9]{64}[[:space:]]+'' ops/backup/models-iq3.sha256)" -eq 4
+
+        grep -Fq ''sha256sum --check'' ops/backup/bootstrap-models.sh
+
+        grep -Fq ''/var/lib/tailscale'' ops/backup/backup.sh
+
+        grep -Fq ''/var/spool/cron/crontabs'' ops/backup/backup.sh
+
+        grep -Fq ''systemctl start mag-backup-deploy.service'' ops/deploy.sh
+
+        ! grep -Fq ''mag-backup-clear.timer'' mag-room/native/routes.hpp
+
+        grep -Fq ''actor.role != "owner"'' mag-room/native/routes.hpp
+
+        ! grep -R -E ''(stop|restart) mag-llm.service'' ops/backup
+
+        ! grep -R -q ''openssl rand -hex 32'' ops/backup/install.sh
+
+        grep -Fq -- ''--insecure-no-password'' ops/backup/common.sh
+
+        test -f ops/backup/migrate-passwordless.sh
+
+        '
+    - name: Validate calendar and systemd units
+      run: "for f in ops/backup/units/*.timer; do\n  expr=$(sed -n 's/^OnCalendar=//p' \"$f\")\n  [[ -z \"$expr\" ]] || systemd-analyze calendar \"$expr\" >/dev/null\n\
+        done\nfor f in ops/backup/units/*.service ops/backup/units/*.timer; do\n  systemd-analyze verify \"$PWD/$f\" 2>&1 | tee /tmp/mag-unit-verify.out\n  ! grep\
+        \ -E 'Failed to parse calendar|Unknown key|Invalid argument' /tmp/mag-unit-verify.out\ndone\ngrep -Fq 'NUMAMask=1' ops/backup/units/mag-backup-daily.service\n\
+        for f in ops/backup/units/mag-backup-{daily,deploy,clear,weekly,monthly,restore-test}.service; do\n  grep -Fq 'CPUQuota=15%' \"$f\"\n  grep -Fq 'MemoryMax=2G'\
+        \ \"$f\"\n  grep -Fq 'MemorySwapMax=0' \"$f\"\n  grep -Fq 'Nice=19' \"$f\"\ndone\ngrep -Fq 'CPUAffinity=14-27 42-55' ops/backup/units/mag-backup-clear.service\n"
+    - name: Migrate actual password-protected repo to no-password without data loss
+      if: runner.environment == 'github-hosted'
+      run: bash ops/backup/tests/test-passwordless-migrate.sh
+    - name: Disposable repository with Gitea SQLite, room and Pages restore
+      run: bash ops/backup/tests/test-backup.sh
+    - name: Empty legacy Gitea directory does not hide real repositories
+      run: bash ops/backup/tests/test-gitea-root.sh
+    - name: No committed secrets
+      run: gitleaks git --redact --no-banner .

@@ -4,21 +4,6 @@ name: Blank-host bootstrap (e2e)
 # Needs root and podman, so it runs on a GitHub-hosted runner only (the
 # self-hosted MAG runners are unprivileged by design).
 on:
-  push:
-    branches: [main]
-    paths:
-      - 'ops/**'
-      - 'CMakeLists.txt'
-      - 'mag-room/native/**'
-      - '.github/workflows/e2e-bootstrap.yml'
-  pull_request:
-    paths:
-      - 'ops/**'
-      - 'CMakeLists.txt'
-      - 'mag-room/native/**'
-      - '.github/workflows/e2e-bootstrap.yml'
-  schedule:
-    - cron: '17 3 * * 1'
   workflow_dispatch:
 permissions:
   contents: read
@@ -47,3 +32,4 @@ jobs:
           name: e2e-bootstrap-log
           path: /tmp/mag-e2e-bootstrap.log
           if-no-files-found: ignore
+

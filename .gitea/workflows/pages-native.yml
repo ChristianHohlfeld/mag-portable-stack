@@ -1,0 +1,41 @@
+name: MAG Pages native C++ / nginx / secrets
+'on':
+  push:
+    branches:
+    - main
+    - ci-pr-*
+  workflow_dispatch: null
+permissions:
+  contents: read
+  pull-requests: read
+jobs:
+  pages:
+    runs-on: mag-ci
+    steps:
+    - uses: actions/checkout@v4
+    - name: Native C++ unit tests + MAG compilation
+      run: 'cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+
+        cmake --build build --target test-pages-native magroom -j 4
+
+        ./build/test-pages-native
+
+        '
+    - name: Tailnet-only, public opt-in, lego v5 and DNS-01 onboarding tests
+      run: bash ops/pages/tests/test-pages-ops.sh
+    - name: Full Pages lifecycle and root cleanup regressions
+      env:
+        RUNNER_ENVIRONMENT: ${{ runner.environment }}
+      run: "bash ops/pages/tests/test-pages-lifecycle.sh\nbash ops/pages/tests/test-pages-tools.sh\nif [ \"$RUNNER_ENVIRONMENT\" = github-hosted ]; then sudo bash\
+        \ ops/pages/tests/test-pages-sandbox.sh; fi\nfor script in ops/pages/*.sh ops/pages/tests/*.sh; do\n  bash -n \"$script\"\ndone\n"
+    - name: Shell syntax; no new runtime units
+      run: "for script in ops/pages/*.sh; do\n  bash -n \"$script\"\ndone\ntest -z \"$(find ops/pages \\( -name '*.py' -o -name '*.timer' \\) -print)\"\ntest \"$(find\
+        \ ops/pages -name '*.service' -printf '%f\\n')\" = mag-pages-reconcile.service\ngrep -F 'ProtectHome=yes' ops/pages/mag-pages-reconcile.service\n! grep -R\
+        \ -E 'pages-policy.sh \\*|sudo -n /usr/local/lib/mag-pages/pages-gc.sh' ops/pages\n! grep -R -E 'systemctl (restart|stop) (mag-llm|deepseek)' ops/pages\n"
+  secrets:
+    runs-on: mag-ci
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    - run: gitleaks git --redact --no-banner .

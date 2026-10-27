@@ -52,7 +52,7 @@ class LiveHighlight(unittest.TestCase):
    room.goto('http://127.0.0.1:%s/'%ui,wait_until='domcontentloaded');room.wait_for_function('()=>window.magLiveHighlight&&window.magViewTools')
    if not room.locator('#browser-view').is_visible():room.locator('#toggle-tools').click()
    room.locator('#browser-view').wait_for(state='visible')
-   room.evaluate("""async(png)=>{const c=document.getElementById('screen');c.hidden=false;c.style.display='block';c.style.width='100%';c.style.height='420px';
+   room.evaluate("""async(png)=>{const c=document.getElementById('screen');c.hidden=false;Object.defineProperty(c,'hidden',{configurable:true,get:()=>false,set(){}});c.style.display='block';c.style.width='100%';c.style.height='420px';
      const i=new Image();i.src=png;await i.decode();c.getContext('2d').drawImage(i,0,0,1440,900);magViewTools.fit()}""",png)
    bot=room.evaluate("document.getElementById('browser-agent').value")
    ev=lambda e:room.evaluate("(e)=>browserOverlay(e)",{**e,'type':'browser_action','bot':bot})

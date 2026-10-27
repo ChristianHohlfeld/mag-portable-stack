@@ -69,13 +69,13 @@ chmod +x "$tmp/bin/curl"
 MAG_PROMOTE_NO_GH=1 GH_TOKEN=fake-token PROMOTE_WAIT=0 bash "$root/ops/ci/promote-green.sh" >/dev/null
 git fetch -q origin; [[ $(git rev-parse origin/green) == "$(git rev-parse origin/main)" ]]
 rm -f "$tmp/bin/curl"
-grep -Fq "fromJSON(vars.MAG_RUNS_ON" "$root/.github/workflows/green.yml"
-grep -Fq 'statuses: read' "$root/.github/workflows/green.yml"
-grep -Fq 'fetch -q origin green' "$root/ops/auto-update/auto-update.sh"
-grep -Fq 'merge -q --ff-only origin/green' "$root/ops/auto-update/auto-update.sh"
-! grep -Eq 'origin/main' "$root/ops/auto-update/auto-update.sh"
-grep -Fq 'promote-green.sh' "$root/.github/workflows/green.yml"
+grep -Fq 'if: false' "$root/.github/workflows/green.yml"
+grep -Fq 'workflow_dispatch:' "$root/.github/workflows/green.yml"
+! grep -Fq 'promote-green.sh' "$root/.github/workflows/green.yml"
 ! grep -Fq 'workflow_run' "$root/.github/workflows/green.yml"
+! grep -Eq 'origin/main|origin/green|api.github.com' "$root/ops/auto-update/auto-update.sh"
+grep -Fq 'fetch-gitea-green.sh' "$root/ops/auto-update/auto-update.sh"
+grep -Fq -- '--green-only' "$root/ops/auto-update/auto-update.sh"
 # Restore the URL-aware gh stub. Status calls must not advance the wait counter.
 cat > "$tmp/bin/gh" <<'GH'
 #!/usr/bin/env bash

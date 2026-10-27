@@ -1,40 +1,17 @@
 name: Green main
-# On every push to main: wait until all other checks on that commit finished.
-# All green -> move branch `green` there. MAG deploys only `green`
-# (ops/auto-update). Red, cancelled or superseded by a newer push: nothing.
+# Promotion and deploy run on Gitea (.gitea/workflows/green.yml). This file
+# stays workflow_dispatch only. The job is skipped so a dispatch starts no
+# GitHub-hosted runner and cannot move green or deploy.
 on:
   workflow_dispatch:
 permissions:
-  contents: write
-  checks: read
-  statuses: read
-concurrency:
-  group: green-main
-  cancel-in-progress: true
+  contents: read
 jobs:
-  promote-green:
-    runs-on: ${{ fromJSON(vars.MAG_RUNS_ON || '"ubuntu-24.04"') }}
-    timeout-minutes: 120
-    outputs:
-      promoted: ${{ steps.promote.outputs.promoted }}
-    steps:
-      - uses: actions/checkout@v4
-        timeout-minutes: 10
-        with:
-          ref: main
-          fetch-depth: 0
-      - id: promote
-        timeout-minutes: 15
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: bash ops/ci/promote-green.sh
-  # Optional instant deploy on the self-hosted runner on MAG (docs/RUNNERS.md).
-  # Without it the MAG timer picks up `green` within 2 minutes.
-  deploy-live:
-    needs: promote-green
-    if: vars.MAG_SELF_HOSTED == 'on' && needs.promote-green.outputs.promoted == 'true'
-    runs-on: [self-hosted, mag]
+  skip:
+    if: false
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      - run: date -u +%FT%TZ > /var/lib/mag-deploy/request
-        timeout-minutes: 15
+      - name: gitea owns green
+        timeout-minutes: 1
+        run: echo 'GitHub does not promote green or deploy.'

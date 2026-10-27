@@ -27,13 +27,20 @@ The other tailnet-only serves stay HTTPS proxies and are not funneled:
 re-applies this serve config after reboot. deploy and bootstrap call the same
 idempotent script.
 
-### Funnel node attribute
+### Funnel node attribute and public DNS
 
-Funnel stays off, and public resolvers return NXDOMAIN, until the tailnet
-policy file grants the `funnel` node attribute. On the current node it is
-missing: `tailscale funnel status` lists only the tailnet serves, and
-`8.8.8.8` / `1.1.1.1` have no A/AAAA for `mag.tail3e02ae.ts.net`. Add this on
-the Access controls page (Owner, Admin, or Network admin), then run
+`apply-gitea-funnel.sh` already posts ServeConfig (AllowFunnel
+`mag.tail3e02ae.ts.net:443` → `http://127.0.0.1:3000`). That is the LocalAPI
+equivalent of `tailscale funnel --bg` / `tailscale serve --bg` on :443. The
+repo does not run a second serve. Public A/AAAA for `mag.tail3e02ae.ts.net`
+is published only by Tailscale's control plane.
+
+If `tailscale funnel status` already says Funnel on and public resolvers
+still return NXDOMAIN, bootstrap is not missing a command. On the admin
+console (Owner / Admin / Network admin): grant `funnel` nodeAttrs (also in
+`ops/tailscale/policy.hujson`), turn MagicDNS and HTTPS Certificates on,
+then wait up to 10 minutes and query `dig @8.8.8.8 mag.tail3e02ae.ts.net A`.
+A cached NXDOMAIN can outlive Funnel coming on. Then run
 `sudo bash ops/tailscale/apply-gitea-funnel.sh` again:
 
 ```json

@@ -176,6 +176,9 @@ grep -Fq 'listen 127.0.0.1:18443 ssl http2 proxy_protocol;' "$tmp/bots.conf"
 grep -Fq 'server_name ~^(?<botslug>agent[0-9]+)\.bot\.stardenburg\.de$;' "$tmp/bots.conf"
 ! grep -q '0.0.0.0' "$here/mag-bots.nginx.in"
 ! grep -q ':80' "$here/mag-bots.nginx.in"
+# The template mentions the Tailscale socket in a comment; listen lines must not.
+grep -Fq '100.123.114.16:443' "$here/mag-bots.nginx.in"
+! grep -E '^[[:space:]]*listen[[:space:]]+' "$here/mag-bots.nginx.in" | grep -qE '100\.123\.114\.16:443|@TAILNET_BIND@'
 # Same address:port as the room vhost. Mismatched listen options are an emerg.
 cat >"$tmp/room.conf" <<EOF
 server {
@@ -279,11 +282,51 @@ grep -Fq 'ExecStart=/usr/local/lib/mag-bots/mag-bots-publish' "$here/mag-bots-pu
 ! grep -q python "$here/mag-bots-publish.service"
 grep -Fq '/var/lib/mag-bots/ready' "$here/install.sh"
 grep -Fq 'firewall.sh' "$here/install.sh"
-grep -Fq 'ExecStartPost=-/usr/local/lib/mag-bots/issue-wildcard.sh renew' "$here/install.sh"
+grep -Fq 'ExecStartPost=-$lib_dir/issue-wildcard.sh renew' "$here/install.sh"
 # The repo copy is 0644 (git); install.sh must not depend on an exec bit.
 grep -Fxq 'bash "$here/issue-wildcard.sh" renew' "$here/install.sh"
 grep -Fq 's|@ZONE_REGEX@|bot\\.stardenburg\\.de|g' "$here/install.sh"
 ! grep -R -E 'systemctl (restart|stop).*mag-llm' "$here" "$repo/ops/magbot-agent-ctl" "$repo/ops/deploy.sh"
+unset MAG_BOTS_TESTING
 "$here/install.sh" >"$tmp/install.out" 2>&1
 grep -Fq 'not root' "$tmp/install.out"
+grep -Fq 'keeping current cert' "$here/install.sh"
+grep -Fq '/opt/mag-stack/current/bin/mag-bots-publish' "$here/install.sh"
+grep -Fq 'WARN: bot firewall refresh failed' "$here/install.sh"
+grep -Fq 'listen[[:space:]]+(100\.123\.114\.16:443|@TAILNET_BIND@)' "$here/install.sh"
+# Due renew (lego fails) must not abort install when the current cert exists.
+# Live abort #1: comment 100.123.114.16:443 matched a whole-file grep.
+# Live abort #2: due renew + missing lego exited 1 even with a valid current cert.
+rm -rf "$tmp/lego-due" "$tmp/tls-due"
+make_cert 10 "$tmp/lego-due"
+install -d -m 0755 "$tmp/tls-due/releases/due" "$tmp/bots-lib" "$tmp/bots-www/www" \
+  "$tmp/bots-www/tokens" "$tmp/nginx-confd" "$tmp/systemd/mag-acme-renew.service.d"
+cp -a "$tmp/lego-due/certificates/"*.crt "$tmp/tls-due/releases/due/cert.pem"
+cp -a "$tmp/lego-due/certificates/"*.key "$tmp/tls-due/releases/due/key.pem"
+ln -sfn "$tmp/tls-due/releases/due" "$tmp/tls-due/current"
+printf '#!/bin/bash\nexit 99\n' >"$tmp/lego-fail"
+printf '#!/bin/bash\nexit 0\n' >"$tmp/publish-stub"
+chmod +x "$tmp/lego-fail" "$tmp/publish-stub"
+export MAG_BOTS_TESTING=1
+export MAG_BOTS_LEGO_DIR="$tmp/lego-due" MAG_BOTS_TLS_DIR="$tmp/tls-due"
+export MAG_BOTS_LEGO="$tmp/lego-fail" MAG_BOTS_ACME_STORAGE="$tmp/storage.json"
+export MAG_BOTS_ACME_ENV="$tmp/no-such-env" MAG_BOTS_DIG="$tmp/dig"
+export MAG_BOTS_LIB_DIR="$tmp/bots-lib" MAG_BOTS_ROOT="$tmp/bots-www"
+export MAG_BOTS_NGINX_CONFD="$tmp/nginx-confd" MAG_BOTS_SYSTEMD="$tmp/systemd"
+export MAG_BOTS_READY="$tmp/bots-ready" MAG_BOTS_PUBLISH="$tmp/publish-stub"
+export MAG_BOTS_MAGBOT="$tmp/magbot"
+"$here/install.sh" >"$tmp/install-due.out" 2>&1
+grep -Fq 'keeping current cert' "$tmp/install-due.out"
+grep -Fq 'rc=99' "$tmp/install-due.out"
+grep -Fq 'MAG bot sites ready' "$tmp/install-due.out"
+! grep -Fq 'bot vhost must not bind the Tailscale address' "$tmp/install-due.out"
+grep -Fq 'listen 127.0.0.1:4443 ssl http2 proxy_protocol;' "$tmp/nginx-confd/mag-bots.conf"
+! grep -Fq 'bot site install incomplete' "$tmp/install-due.out"
+# Fallback to the already-installed publisher must not copy onto itself.
+grep -Fq 'pub -ef $installed_pub' "$here/install.sh"
+unset MAG_BOTS_PUBLISH
+install -m 0755 "$tmp/publish-stub" "$tmp/bots-lib/mag-bots-publish"
+"$here/install.sh" >"$tmp/install-libpub.out" 2>&1
+grep -Fq 'MAG bot sites ready' "$tmp/install-libpub.out"
+! grep -Fq 'are the same file' "$tmp/install-libpub.out"
 echo "bot site regression OK"

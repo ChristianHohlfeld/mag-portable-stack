@@ -2658,7 +2658,8 @@ static void pho_rollover(int idx,std::vector<Val> &messages) {
        content.rfind("[Bisher ausgefuehrte Schritte",0)==0)continue;
     // The newest user is the still-pending request. Keep it PLUS the two
     // preceding complete turns byte-identical through a rollover.
-    if(++recent_users==3){recent_begin=k;break;}
+    recent_begin=k;
+    if(++recent_users==3)break;
   }
   const size_t end=std::min({pho_old_end(w),messages.size(),recent_begin});
   size_t changed=0;
@@ -5548,7 +5549,8 @@ static void compact_agent_context(int bot_idx, std::vector<Val> &messages,
       if(content.rfind("[System]",0)==0 ||
          content.rfind("[Bisher ausgefuehrte Schritte",0)==0)continue;
       // Current input is not a completed turn: also retain its two predecessors.
-      if(++user_count==3){protect_from=k;break;}
+      protect_from=k;
+      if(++user_count==3)break;
     }
     if(at>=protect_from)break;
     size_t end = at + 1;

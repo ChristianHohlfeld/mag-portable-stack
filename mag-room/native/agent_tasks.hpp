@@ -17,7 +17,7 @@ static bool user_turn_waiting(const std::string &bot_id) {
 }
 
 struct BgTask {
-  std::string id, bot, title, prompt, status = "running", result;
+  std::string id, bot, requester, title, prompt, status = "running", result;
   int64_t started = 0, ended = 0;
   Lane lane;
 };
@@ -29,6 +29,7 @@ static Val task_val_locked(const BgTask &t) {
   Val v = Val::object();
   v["id"] = t.id;
   v["bot"] = t.bot;
+  if (!t.requester.empty()) v["requester"] = t.requester;
   v["title"] = t.title;
   v["status"] = t.status;
   v["started"] = (double)t.started;
@@ -41,7 +42,7 @@ static Val tasks_public(const std::string &bot = "") {
   std::lock_guard<std::mutex> lk(TASKS_MTX);
   Val arr = Val::array();
   for (auto &t : TASKS)
-    if (bot.empty() || t->bot == bot) arr.push(task_val_locked(*t));
+    if (bot.empty() || t->bot == bot || t->requester == bot) arr.push(task_val_locked(*t));
   return arr;
 }
 static void tasks_event() {
@@ -103,7 +104,8 @@ static void task_main(std::shared_ptr<BgTask> t) {
   tasks_event();
 }
 
-static std::string task_start(int bot_idx, const std::string &title_in, const std::string &prompt) {
+static std::string task_start(int bot_idx, const std::string &title_in,
+                              const std::string &prompt, const std::string &requester = "") {
   if (TL_TASK) throw std::runtime_error("Unteraufgaben koennen keine weiteren Aufgaben starten.");
   const std::string bot = bot_field(bot_idx, "id");
   const std::string p = trim(prompt);
@@ -120,6 +122,7 @@ static std::string task_start(int bot_idx, const std::string &title_in, const st
                                " Aufgaben aktiv (Limit). Warte oder brich eine ab.");
     t->id = "t" + token_hex(4);
     t->bot = bot;
+    t->requester = requester;
     t->title = title;
     t->prompt = p;
     t->started = now_s();
@@ -142,7 +145,9 @@ static bool task_cancel(const std::string &id, const std::string &bot = "") {
   {
     std::lock_guard<std::mutex> lk(TASKS_MTX);
     for (auto &t : TASKS)
-      if ((id.empty() || t->id == id) && (bot.empty() || t->bot == bot) && t->status == "running") {
+      if ((id.empty() || t->id == id) &&
+          (bot.empty() || t->bot == bot || t->requester == bot) &&
+          t->status == "running") {
         cancel_lane(t->lane, true);
         found = true;
       }
@@ -159,6 +164,35 @@ static std::string task_tool(int bot_idx, const Val &a) {
   auto s = [&](const char *k) { auto v = a.find(k); return v ? trim(v->asStr()) : std::string(); };
   const std::string action = s("action"), bot = bot_field(bot_idx, "id");
   if (action == "start") return task_start(bot_idx, s("title"), s("prompt"));
+  if (action == "delegate") {
+    if (TL_TASK) throw std::runtime_error("Unteraufgaben duerfen nicht weiterdelegieren.");
+    const std::string target_name = s("to_bot");
+    if (target_name.empty()) throw std::runtime_error("to_bot fehlt.");
+    int target = -1;
+    {
+      std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
+      target = agent_index(target_name);
+      if (target < 0)
+        for (int i = 0; i < (int)AGENTS.size(); ++i)
+          if (lc(bot_field(i, "name")) == lc(target_name)) { target = i; break; }
+      if (target >= 0) {
+        const Val *enabled = AGENTS[target].find("enabled");
+        if (enabled && !enabled->asBool(true))
+          throw std::runtime_error("Zielbot ist deaktiviert.");
+      }
+    }
+    if (target < 0) throw std::runtime_error("Zielbot nicht gefunden.");
+    if (bot_field(target, "id") == bot)
+      throw std::runtime_error("Fuer eigene Unteraufgaben task(start) verwenden.");
+    const std::string sender = bot_field(bot_idx, "name", "Bot");
+    // No impersonated user turn. The target independently runs under its
+    // own model, VM and tool permissions; existing approvals still apply.
+    const std::string delegated = "[Explizite Bot-Delegation von " + sender +
+      ", keine neue Benutzernachricht. Pruefe den Stand vor Aktionen. " +
+      "Fuer irreversible/externe Aktionen gelten dieselben Freigaben.]\\n" + s("prompt");
+    const std::string title = sender + " → " + s("title");
+    return task_start(target, title, delegated, bot);
+  }
   if (action == "cancel") {
     if (s("id").empty()) throw std::runtime_error("id fehlt.");
     return task_cancel(s("id"), bot) ? "Abgebrochen." : "Keine laufende Aufgabe mit dieser id.";
@@ -167,7 +201,7 @@ static std::string task_tool(int bot_idx, const Val &a) {
     std::string out;
     std::lock_guard<std::mutex> lk(TASKS_MTX);
     for (auto &t : TASKS)
-      if (t->bot == bot)
+      if (t->bot == bot || t->requester == bot)
         out += t->id + " · " + t->status + " · " + t->title +
                (t->result.empty() ? "" : " → " + one_line(t->result).substr(0, 200)) + "\n";
     return out.empty() ? "Keine Aufgaben." : out;

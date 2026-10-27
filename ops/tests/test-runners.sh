@@ -142,11 +142,11 @@ install_github_archive() (
   tar -xzf "$tmp/r.tgz" -C "$tmp" || return 1
   echo stamped > "$tmp/.version"
 )
-if ! install_github_archive deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef 2>/dev/null; then
+if ! install_github_archive deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef >/dev/null 2>&1; then
   :
 fi
 [[ ! -e $tmp/.version ]]
-if ! install_github_archive "$goodsha" 2>/dev/null; then
+if ! install_github_archive "$goodsha" >/dev/null 2>&1; then
   :
 fi
 [[ ! -e $tmp/.version ]]

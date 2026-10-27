@@ -74,7 +74,17 @@ class ViewTools(unittest.TestCase):
     ref=[m for m in page.evaluate('__sent') if m.get('kind')=='pointer'][0]
     bar.locator('button[aria-label=Vergrößern]').click();bar.locator('button[aria-label=Vergrößern]').click();s=st()['s'];self.assertGreater(s,1.5)
     page.evaluate('__sent.length=0');ox=box['x']+st()['x']+s*(box['width']/2+dx);oy=box['y']+st()['y']+s*(box['height']/2+dy)
-    page.mouse.click(ox,oy);got=[m for m in page.evaluate('__sent') if m.get('kind')=='pointer'][0]
+    page.mouse.click(ox,oy)
+    sent=[m for m in page.evaluate('__sent') if m.get('kind')=='pointer']
+    if not sent:
+     debug=page.evaluate("""([x,y])=>{const el=document.elementFromPoint(x,y),
+       c=document.querySelector('#screen'),v=document.querySelector('#browser-view');
+       return {hit:el?.id||el?.className||el?.tagName,coord:[x,y],
+       screen:c?.getBoundingClientRect().toJSON(),view:v?.getBoundingClientRect().toJSON(),
+       mode:magViewTools.state(),withinViewport:x>=0&&x<innerWidth&&y>=0&&y<innerHeight}}""",[ox,oy])
+     print('VIEW_POINTER_DEBUG:', {'before':box,'ref':ref,'debug':debug},flush=True)
+    self.assertTrue(sent,'zoomed browser click must reach the bot; see VIEW_POINTER_DEBUG')
+    got=sent[0]
     self.assertAlmostEqual(got['x'],ref['x'],delta=2);self.assertAlmostEqual(got['y'],ref['y'],delta=2)
     bar.locator('.vt-fit').click()
     bar.locator('.vt-mode').click();n=len(page.evaluate('__sent'));page.locator('#screen').click(position={'x':60,'y':60})

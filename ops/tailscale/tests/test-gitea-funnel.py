@@ -29,7 +29,21 @@ def _write_exec(path, text):
     path.chmod(path.stat().st_mode | stat.S_IEXEC)
 
 
-def _leftover_host(tree, room_on_tailnet=False, ss_taken=0, funnel_on=False):
+LIVE_HTTPS_443 = {
+    "TCP": {"443": {"HTTPS": True}, "8443": {"HTTPS": True}},
+    "Web": {
+        "mag.tail3e02ae.ts.net:443": {
+            "Handlers": {"/": {"Proxy": "http://127.0.0.1:3000"}}
+        },
+        "mag.tail3e02ae.ts.net:8443": {
+            "Handlers": {"/": {"Proxy": "http://127.0.0.1:18767"}}
+        },
+    },
+    "AllowFunnel": {"mag.tail3e02ae.ts.net:443": True},
+}
+
+
+def _leftover_host(tree, room_on_tailnet=False, ss_taken=0, funnel_on=False, serve=None):
     """Live mag leftovers: bots/pages on Tailscale :443.
 
     room_on_tailnet=False is post-#137: sites-available already on 4443 and
@@ -43,6 +57,7 @@ def _leftover_host(tree, room_on_tailnet=False, ss_taken=0, funnel_on=False):
     lib = tree / "lib"
     txn = tree / "txn"
     bin_dir = tree / "bin"
+    serve_cfg = serve
     serve = tree / "serve.json"
     for path in (
         nginx / "sites-available",
@@ -82,19 +97,17 @@ def _leftover_host(tree, room_on_tailnet=False, ss_taken=0, funnel_on=False):
         "server {\n    listen 100.123.114.16:443 ssl http2;\n"
         "    server_name ~^[a-z0-9-]+\\.pages\\.stardenburg\\.de$;\n}\n"
     )
-    serve.write_text(
-        json.dumps(
-            {
-                "TCP": {"8443": {"HTTPS": True}},
-                "Web": {
-                    "mag.tail3e02ae.ts.net:8443": {
-                        "Handlers": {"/": {"Proxy": "http://127.0.0.1:18767"}}
-                    }
-                },
-                "AllowFunnel": {},
-            }
-        )
-    )
+    if serve_cfg is None:
+        serve_cfg = {
+            "TCP": {"8443": {"HTTPS": True}},
+            "Web": {
+                "mag.tail3e02ae.ts.net:8443": {
+                    "Handlers": {"/": {"Proxy": "http://127.0.0.1:18767"}}
+                }
+            },
+            "AllowFunnel": {},
+        }
+    serve.write_text(json.dumps(serve_cfg))
     _write_exec(
         bin_dir / "nginx",
         """#!/usr/bin/env bash
@@ -306,6 +319,13 @@ class FunnelConfig(unittest.TestCase):
         self.assertIn("BASH_COMMAND", apply)
         self.assertIn('die 1', apply)
         self.assertIn("MAG_GITEA_FUNNEL_SS_TRIES", apply)
+        self.assertIn("needs-transition", apply)
+        self.assertIn("merge-gitea-funnel.py\" transition", apply)
+        self.assertIn("cleared TCP/Web/AllowFunnel :443", apply)
+        self.assertIn("serve-config ${method} body:", apply)
+        restore = (ROOT / "ops/tailscale/restore-gitea-funnel.sh").read_text()
+        self.assertIn("needs-transition", restore)
+        self.assertIn("transition", restore)
         self.assertIn("waiting for 100.123.114.16:443 to leave", apply)
         self.assertIn("ss -ltnH 'sport = :443' | grep -q '100.123.114.16:443' || break", apply)
         self.assertIn("public DNS", apply)
@@ -611,6 +631,145 @@ class FunnelConfig(unittest.TestCase):
             self.assertIn("HTTPS Certificates ON", log)
             self.assertIn("cannot grant the attr", log)
             self.assertIn("https://mag.tail3e02ae.ts.net/", log)
+
+    def test_https_to_tcp_needs_an_empty_port_in_between(self):
+        https = LIVE_HTTPS_443
+        tcp = self.m.merge(https)
+        self.m.assert_public_gitea_only(tcp)
+        trans = self.m.transition(https)
+        self.assertNotIn("443", trans.get("TCP", {}))
+        self.assertNotIn("mag.tail3e02ae.ts.net:443", trans.get("Web", {}))
+        self.assertNotIn("mag.tail3e02ae.ts.net:443", trans.get("AllowFunnel", {}))
+        self.assertEqual(trans["TCP"]["8443"]["HTTPS"], True)
+        self.assertEqual(
+            self.m.conflict_message(https, tcp),
+            "want to serve tcp, but port 443 is already serving https",
+        )
+        self.assertEqual(
+            self.m.conflict_message(tcp, https),
+            "want to serve https, but port 443 is already serving tcp",
+        )
+        self.assertIsNone(self.m.conflict_message(https, trans))
+        self.assertIsNone(self.m.conflict_message(trans, tcp))
+        self.assertIsNone(self.m.conflict_message(tcp, trans))
+        self.assertIsNone(self.m.conflict_message(trans, https))
+        with tempfile.TemporaryDirectory() as raw:
+            tree = pathlib.Path(raw)
+            cur = tree / "current.json"
+            want = tree / "wanted.json"
+            cur.write_text(json.dumps(https))
+            want.write_text(json.dumps(tcp))
+            need = subprocess.run(
+                [
+                    "python3",
+                    "ops/tailscale/merge-gitea-funnel.py",
+                    "needs-transition",
+                    str(cur),
+                    str(want),
+                ],
+                cwd=ROOT,
+                text=True,
+                capture_output=True,
+            )
+            self.assertEqual(need.returncode, 0, need.stderr)
+            self.assertIn("want to serve tcp", need.stdout)
+            back = subprocess.run(
+                [
+                    "python3",
+                    "ops/tailscale/merge-gitea-funnel.py",
+                    "needs-transition",
+                    str(want),
+                    str(cur),
+                ],
+                cwd=ROOT,
+                text=True,
+                capture_output=True,
+            )
+            self.assertEqual(back.returncode, 0, back.stderr)
+            self.assertIn("want to serve https", back.stdout)
+            dumped = subprocess.check_output(
+                ["python3", "ops/tailscale/merge-gitea-funnel.py", "transition"],
+                cwd=ROOT,
+                input=json.dumps(https),
+                text=True,
+            )
+            self.assertEqual(json.loads(dumped), trans)
+
+    def test_apply_switches_live_https_443_to_tcp_via_transition(self):
+        with tempfile.TemporaryDirectory() as raw:
+            nginx, txn, env = _leftover_host(
+                pathlib.Path(raw), serve=LIVE_HTTPS_443, funnel_on=True
+            )
+            serve = pathlib.Path(env["MAG_GITEA_FUNNEL_SERVE"])
+            proc = subprocess.run(
+                ["bash", "ops/tailscale/apply-gitea-funnel.sh"],
+                cwd=ROOT,
+                env=env,
+                text=True,
+                capture_output=True,
+            )
+            log = proc.stdout + proc.stderr
+            self.assertEqual(proc.returncode, 0, log)
+            self.assertIn("cleared TCP/Web/AllowFunnel :443 before type change", log)
+            self.assertNotIn("serve-config POST HTTP 500", log)
+            cfg = json.loads(serve.read_text())
+            self.m.assert_public_gitea_only(cfg)
+            self.assertEqual(cfg["TCP"]["443"]["TCPForward"], "127.0.0.1:4443")
+            self.assertNotIn("HTTPS", cfg["TCP"]["443"])
+            self.assertNotIn("mag.tail3e02ae.ts.net:443", cfg.get("Web", {}))
+
+    def test_apply_rejects_direct_https_to_tcp_post(self):
+        with tempfile.TemporaryDirectory() as raw:
+            nginx, txn, env = _leftover_host(
+                pathlib.Path(raw), serve=LIVE_HTTPS_443
+            )
+            serve = pathlib.Path(env["MAG_GITEA_FUNNEL_SERVE"])
+            wanted = ROOT / "ops/tailscale/gitea-funnel.json"
+            need = subprocess.run(
+                [
+                    "python3",
+                    "ops/tailscale/merge-gitea-funnel.py",
+                    "needs-transition",
+                    str(serve),
+                    str(wanted),
+                ],
+                cwd=ROOT,
+                text=True,
+                capture_output=True,
+            )
+            self.assertEqual(need.returncode, 0, need.stderr)
+            self.assertIn("already serving https", need.stdout)
+            apply = (ROOT / "ops/tailscale/apply-gitea-funnel.sh").read_text()
+            self.assertIn("needs-transition \"$store\" \"$src\"", apply)
+
+    def test_restore_tcp_to_https_uses_transition(self):
+        with tempfile.TemporaryDirectory() as raw:
+            tree = pathlib.Path(raw)
+            nginx, txn, env = _leftover_host(tree, serve=LIVE_HTTPS_443)
+            serve = pathlib.Path(env["MAG_GITEA_FUNNEL_SERVE"])
+            tcp = self.m.merge(LIVE_HTTPS_443)
+            snap = txn / "funnel-snapshot"
+            snap.mkdir(parents=True, exist_ok=True)
+            (snap / "serve.json").write_text(json.dumps(LIVE_HTTPS_443))
+            (snap / "manifest").write_text("")
+            serve.write_text(json.dumps(tcp))
+            env = {**env, "MAG_NGINX_TXN": str(txn)}
+            proc = subprocess.run(
+                ["bash", "ops/tailscale/restore-gitea-funnel.sh"],
+                cwd=ROOT,
+                env=env,
+                text=True,
+                capture_output=True,
+            )
+            log = proc.stdout + proc.stderr
+            self.assertEqual(proc.returncode, 0, log)
+            self.assertNotIn("POST HTTP 500", log)
+            restored = json.loads(serve.read_text())
+            self.assertEqual(restored["TCP"]["443"], {"HTTPS": True})
+            self.assertEqual(
+                restored["Web"]["mag.tail3e02ae.ts.net:443"]["Handlers"]["/"]["Proxy"],
+                "http://127.0.0.1:3000",
+            )
 
     def test_host_runner_workflow_matches_registered_labels(self):
         import yaml

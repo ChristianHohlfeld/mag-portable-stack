@@ -130,7 +130,7 @@ exit 0
         funnel_body = (
             "  echo 'https://mag.tail3e02ae.ts.net/'\n"
             "  echo 'Funnel on'\n"
-            "  echo '|-- proxy http://127.0.0.1:3000'\n"
+            "  echo '|-- proxy tcp://127.0.0.1:4443'\n"
         )
     else:
         funnel_body = "  echo 'No funnel'\n"
@@ -187,13 +187,11 @@ class FunnelConfig(unittest.TestCase):
         self.assertEqual(generated, checked)
         self.assertEqual(generated["AllowFunnel"], {"mag.tail3e02ae.ts.net:443": True})
         block = generated["TCP"]["443"]
-        self.assertIs(block["HTTPS"], True)
-        self.assertNotIn("TCPForward", block)
-        self.assertNotIn("ProxyProtocol", block)
-        self.assertEqual(
-            generated["Web"]["mag.tail3e02ae.ts.net:443"]["Handlers"],
-            {"/": {"Proxy": "http://127.0.0.1:3000"}},
-        )
+        self.assertEqual(block["TCPForward"], "127.0.0.1:4443")
+        self.assertEqual(block["ProxyProtocol"], 2)
+        self.assertNotIn("HTTPS", block)
+        self.assertNotIn("TerminateTLS", block)
+        self.assertNotIn("mag.tail3e02ae.ts.net:443", generated["Web"])
 
     def test_only_gitea_stays_public_and_tailnet_serves_remain(self):
         current = {
@@ -227,12 +225,11 @@ class FunnelConfig(unittest.TestCase):
         )
         self.assertEqual(merged["Web"]["mag.tail3e02ae.ts.net:8446"]["Handlers"]["/extra"], {"Text": "keep"})
         self.assertNotIn("TCPForward", merged["TCP"]["8446"])
-        self.assertIs(merged["TCP"]["443"]["HTTPS"], True)
-        self.assertNotIn("TCPForward", merged["TCP"]["443"])
-        self.assertEqual(
-            merged["Web"]["mag.tail3e02ae.ts.net:443"]["Handlers"],
-            {"/": {"Proxy": "http://127.0.0.1:3000"}},
-        )
+        self.assertEqual(merged["TCP"]["443"]["TCPForward"], "127.0.0.1:4443")
+        self.assertEqual(merged["TCP"]["443"]["ProxyProtocol"], 2)
+        self.assertNotIn("HTTPS", merged["TCP"]["443"])
+        self.assertNotIn("TerminateTLS", merged["TCP"]["443"])
+        self.assertNotIn("mag.tail3e02ae.ts.net:443", merged["Web"])
         for port in ("8443", "8445", "8446", "10000"):
             self.assertNotIn(f"mag.tail3e02ae.ts.net:{port}", merged["AllowFunnel"])
 
@@ -246,8 +243,8 @@ class FunnelConfig(unittest.TestCase):
         )
         lines = out.strip().splitlines()
         self.assertIn("tailnet-only :8443 :8445 :8446", lines[-1])
-        self.assertIn("http://127.0.0.1:3000", lines[-1])
-        self.assertNotIn("tcp://", lines[-1])
+        self.assertIn("127.0.0.1:4443", lines[-1])
+        self.assertIn("PROXY", lines[-1])
         self.assertNotIn("8766", lines[-1])
         doc = json.loads("\n".join(lines[:-1]))
         self.m.assert_public_gitea_only(doc)
@@ -313,6 +310,9 @@ class FunnelConfig(unittest.TestCase):
         self.assertIn("ss -ltnH 'sport = :443' | grep -q '100.123.114.16:443' || break", apply)
         self.assertIn("public DNS", apply)
         self.assertIn("HTTPS Certificates", apply)
+        self.assertIn("127.0.0.1:4443", apply)
+        self.assertIn("PROXY", apply)
+        self.assertIn("swallows", apply)
         policy_hujson = (ROOT / "ops/tailscale/policy.hujson").read_text()
         self.assertIn('"attr": ["funnel"]', policy_hujson)
         self.assertIn('"nodeAttrs"', policy_hujson)
@@ -340,6 +340,7 @@ class FunnelConfig(unittest.TestCase):
             "    listen 100.123.114.16:443 ssl;\n"
             "    listen @TAILNET_BIND@:443 ssl http2;\n"
             "listen 192.0.2.10:443 ssl;\n"
+            "    listen 100.123.114.16:443;\n"
         )
         moved = self.m.retarget_nginx(old)
         self.assertEqual(
@@ -347,10 +348,13 @@ class FunnelConfig(unittest.TestCase):
             "    listen 127.0.0.1:4443 ssl http2 proxy_protocol;\n"
             "    listen 127.0.0.1:4443 ssl http2 proxy_protocol;\n"
             "    listen 127.0.0.1:4443 ssl http2 proxy_protocol;\n"
-            "listen 192.0.2.10:443 ssl;\n",
+            "listen 192.0.2.10:443 ssl;\n"
+            "    listen 100.123.114.16:443;\n",
         )
         self.assertEqual(self.m.retarget_nginx(moved), moved)
         self.assertEqual(self.m.retarget_nginx(self.m.NGINX_LISTEN + "\n"), self.m.NGINX_LISTEN + "\n")
+        self.assertFalse(self.m.has_tailnet_443("    listen 100.123.114.16:443;\n"))
+        self.assertTrue(self.m.has_tailnet_443("    listen 100.123.114.16:443 ssl http2;\n"))
 
     def test_funnel_fails_if_conf_d_still_listens_on_tailnet_443(self):
         # Live mag after #137: room was moved, bots (1x) and pages (2x) were not.

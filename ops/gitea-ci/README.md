@@ -7,18 +7,20 @@ are unchanged. This change does not stop/restart either resident LLM.
 ## Public endpoint
 
 Public URL: **https://mag.tail3e02ae.ts.net/** (HTTPS Git and Gitea login, no
-port). tailscaled terminates TLS on `:443` and reverse-proxies to Gitea at
-`http://127.0.0.1:3000`. That HTTPS Funnel is what publishes the public DNS
-name. A raw TCP forward does not. nginx must not listen on
-`100.123.114.16:443` (the Tailscale address); its tailnet vhosts listen on
-`127.0.0.1:4443` instead. There is no Caddy dependency and no router port
-forward.
+port). tailscaled owns `100.123.114.16:443` and TCP-forwards with PROXY
+protocol v2 to nginx `127.0.0.1:4443`. nginx terminates TLS and SNI-selects
+`mag.stardenburg.de`, `*.bot.stardenburg.de`, `*.pages.stardenburg.de` and
+Gitea. HTTPS-on-443 is forbidden: tailscaled would terminate TLS and reject
+every other name (`no webserver configured for name/port`). Funnel on `:443`
+is the same TCP path (the Funnel relay does not decrypt). HTTP vhosts must
+not bind the Tailscale address. There is no Caddy dependency and no router
+port forward.
 
 The other tailnet-only serves stay HTTPS proxies and are not funneled:
 
 | Serve | Target | Exposure |
 | --- | --- | --- |
-| `:443` | `http://127.0.0.1:3000` | public Funnel and tailnet (Gitea) |
+| `:443` | `tcp://127.0.0.1:4443` PROXY → nginx SNI | public Funnel and tailnet |
 | `:8443` | `http://127.0.0.1:18767` | tailnet only |
 | `:8445` | `http://127.0.0.1:3000` | tailnet only (Gitea direct) |
 | `:8446` | `http://127.0.0.1:8766` | tailnet only (room) |
@@ -30,9 +32,9 @@ idempotent script.
 ### Funnel node attribute and public DNS
 
 `apply-gitea-funnel.sh` already posts ServeConfig (AllowFunnel
-`mag.tail3e02ae.ts.net:443` → `http://127.0.0.1:3000`). That is the LocalAPI
-equivalent of `tailscale funnel --bg` / `tailscale serve --bg` on :443. The
-repo does not run a second serve. Public A/AAAA for `mag.tail3e02ae.ts.net`
+`mag.tail3e02ae.ts.net:443` → `tcp://127.0.0.1:4443` PROXY). That is the
+LocalAPI equivalent of `tailscale funnel --bg --tcp=443`, not HTTPS-on-443.
+The repo does not run a second serve. Public A/AAAA for `mag.tail3e02ae.ts.net`
 is published only by Tailscale's control plane.
 
 If `tailscale funnel status` already says Funnel on and public resolvers

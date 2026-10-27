@@ -22,6 +22,7 @@ import socket
 import ssl
 import subprocess
 import tempfile
+import threading
 import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[3]
@@ -91,20 +92,22 @@ class SniMap(unittest.TestCase):
         self.assertEqual(gitea.count(LISTEN), 1)
         self.assertIn("listen 127.0.0.1:4443 ssl http2 proxy_protocol default_server;", gitea)
         self.assertIn("ssl_reject_handshake on;", gitea)
+        room_src = (ROOT / "ops/private-access/mag-room.nginx.conf").read_text()
+        self.assertIn("location = /readyz", room_src)
+        self.assertIn("auth_request off;", room_src)
         blob = "\n".join(path.read_text() for path in TAILNET)
         self.assertIn("server_name mag.stardenburg.de;", blob)
         self.assertIn("server_name mag.tail3e02ae.ts.net;", blob)
         self.assertIn("server_name @ZONE@;", pages)
         self.assertIn("agent[0-9]+", bots)
         self.assertIn("pageslug", pages)
-        # tailscaled owns :443 for the Funnel. nginx's socket is 4443.
+        # tailscaled TCP-forwards :443 to nginx. HTTPS-on-443 swallows SNI.
         serve = json.loads((ROOT / "ops/tailscale/gitea-funnel.json").read_text())
-        self.assertIs(serve["TCP"]["443"]["HTTPS"], True)
-        self.assertNotIn("TCPForward", serve["TCP"]["443"])
-        self.assertEqual(
-            serve["Web"]["mag.tail3e02ae.ts.net:443"]["Handlers"]["/"]["Proxy"],
-            "http://127.0.0.1:3000",
-        )
+        self.assertEqual(serve["TCP"]["443"]["TCPForward"], "127.0.0.1:4443")
+        self.assertEqual(serve["TCP"]["443"]["ProxyProtocol"], 2)
+        self.assertNotIn("HTTPS", serve["TCP"]["443"])
+        self.assertNotIn("TerminateTLS", serve["TCP"]["443"])
+        self.assertNotIn("mag.tail3e02ae.ts.net:443", serve["Web"])
         self.assertEqual(list(serve["AllowFunnel"]), ["mag.tail3e02ae.ts.net:443"])
         for port in ("8443", "8445", "8446"):
             self.assertNotIn(f"mag.tail3e02ae.ts.net:{port}", serve["AllowFunnel"])
@@ -224,6 +227,166 @@ class SniMap(unittest.TestCase):
                 err = tmp / "nginx.err"
                 if err.exists() and err.stat().st_size and proc.returncode not in (0, None, -15):
                     pass
+
+    def test_curl_resolve_readyz_and_gitea(self):
+        """Live: curl --resolve mag.stardenburg.de:443:100.123.114.16 …/readyz.
+
+        The TCP proxy is tailscaled (PROXY v2 to 127.0.0.1:4443). This test
+        uses loopback ports; the resolve line is the same shape.
+        """
+        nginx = subprocess.run(["nginx", "-v"], capture_output=True, text=True)
+        if nginx.returncode != 0 and not (nginx.stderr or nginx.stdout):
+            self.fail("nginx is not installed")
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = pathlib.Path(raw)
+            room_crt, room_key = certificate("mag.stardenburg.de", tmp)
+            git_crt, git_key = certificate("mag.tail3e02ae.ts.net", tmp)
+            for name in ("body", "proxy", "fastcgi", "uwsgi", "scgi"):
+                (tmp / name).mkdir()
+            with socket.socket() as probe:
+                probe.bind(("127.0.0.1", 0))
+                http_port = probe.getsockname()[1]
+            with socket.socket() as probe:
+                probe.bind(("127.0.0.1", 0))
+                edge_port = probe.getsockname()[1]
+            (tmp / "http.conf").write_text(
+                "server {\n"
+                f"    listen 127.0.0.1:{http_port} ssl http2 proxy_protocol default_server;\n"
+                "    server_name _;\n"
+                "    ssl_reject_handshake on;\n"
+                "}\n"
+                "server {\n"
+                f"    listen 127.0.0.1:{http_port} ssl http2 proxy_protocol;\n"
+                "    server_name mag.stardenburg.de;\n"
+                f"    ssl_certificate {room_crt};\n"
+                f"    ssl_certificate_key {room_key};\n"
+                "    location = /readyz { default_type application/json; return 200 '{\"ready\":true}\\n'; }\n"
+                "}\n"
+                "server {\n"
+                f"    listen 127.0.0.1:{http_port} ssl http2 proxy_protocol;\n"
+                "    server_name mag.tail3e02ae.ts.net;\n"
+                f"    ssl_certificate {git_crt};\n"
+                f"    ssl_certificate_key {git_key};\n"
+                "    location / { default_type text/plain; return 200 'gitea\\n'; }\n"
+                "}\n"
+            )
+            config = tmp / "nginx.conf"
+            config.write_text(
+                "worker_processes 1;\n"
+                f"pid {tmp}/nginx.pid;\n"
+                f"error_log {tmp}/nginx.err;\n"
+                "events { worker_connections 64; }\n"
+                "http {\n"
+                "  access_log off;\n"
+                f"  client_body_temp_path {tmp}/body;\n"
+                f"  proxy_temp_path {tmp}/proxy;\n"
+                f"  fastcgi_temp_path {tmp}/fastcgi;\n"
+                f"  uwsgi_temp_path {tmp}/uwsgi;\n"
+                f"  scgi_temp_path {tmp}/scgi;\n"
+                f"  include {tmp}/http.conf;\n"
+                "}\n"
+            )
+            test = subprocess.run(
+                ["nginx", "-t", "-c", str(config), "-p", str(tmp)],
+                capture_output=True, text=True)
+            if test.returncode:
+                self.fail(test.stderr)
+            proc = subprocess.Popen(
+                ["nginx", "-c", str(config), "-p", str(tmp), "-g", "daemon off;"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            stop = self._start_proxy(edge_port, http_port)
+            try:
+                self._wait(http_port)
+                self._wait(edge_port)
+                room = self._curl_resolve(
+                    edge_port, "mag.stardenburg.de", "/readyz")
+                self.assertEqual(room[0], 200, room)
+                self.assertIn("ready", room[1])
+                gitea = self._curl_resolve(
+                    edge_port, "mag.tail3e02ae.ts.net", "/")
+                self.assertEqual(gitea[0], 200, gitea)
+                self.assertIn("gitea", gitea[1])
+            finally:
+                stop.set()
+                proc.terminate()
+                try:
+                    proc.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+
+    def _start_proxy(self, listen_port, dest_port):
+        stop = threading.Event()
+
+        def accept_loop():
+            srv = socket.socket()
+            srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            srv.bind(("127.0.0.1", listen_port))
+            srv.listen(8)
+            srv.settimeout(0.2)
+            while not stop.is_set():
+                try:
+                    client, _ = srv.accept()
+                except socket.timeout:
+                    continue
+                threading.Thread(
+                    target=self._splice, args=(client, dest_port), daemon=True
+                ).start()
+            srv.close()
+
+        threading.Thread(target=accept_loop, daemon=True).start()
+        return stop
+
+    def _splice(self, client, dest_port):
+        backend = None
+        try:
+            backend = socket.create_connection(("127.0.0.1", dest_port), timeout=3)
+            backend.sendall(b"PROXY TCP4 192.0.2.10 127.0.0.1 41000 443\r\n")
+            client.settimeout(5)
+            backend.settimeout(5)
+            threading.Thread(
+                target=self._pump, args=(client, backend), daemon=True
+            ).start()
+            self._pump(backend, client)
+        except OSError:
+            pass
+        finally:
+            for sock in (client, backend):
+                if sock is None:
+                    continue
+                try:
+                    sock.close()
+                except OSError:
+                    pass
+
+    @staticmethod
+    def _pump(src, dst):
+        try:
+            while True:
+                chunk = src.recv(4096)
+                if not chunk:
+                    break
+                dst.sendall(chunk)
+        except OSError:
+            pass
+        try:
+            dst.shutdown(socket.SHUT_WR)
+        except OSError:
+            pass
+
+    def _curl_resolve(self, port, name, path):
+        proc = subprocess.run(
+            [
+                "curl", "-sS", "-k", "--max-time", "5", "--http1.1",
+                "--resolve", f"{name}:{port}:127.0.0.1",
+                "-w", "\n%{http_code}",
+                f"https://{name}:{port}{path}",
+            ],
+            capture_output=True, text=True, timeout=8,
+        )
+        body, _, code = proc.stdout.rpartition("\n")
+        if proc.returncode != 0:
+            self.fail(f"curl {name}{path}: {proc.returncode} {proc.stderr} {proc.stdout}")
+        return int(code), body
 
     def _wait(self, port):
         import time

@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
 """Merge a tailscaled ServeConfig so only Gitea is published with Funnel.
 
-Port 443 is an HTTPS Funnel. tailscaled terminates TLS and proxies to Gitea
-on http://127.0.0.1:3000. nginx must not bind the Tailscale address on :443.
-Tailnet serves on 8443, 8445 and 8446 stay HTTPS proxies and are not funneled.
+Port 443 is a raw TCP Funnel with PROXY protocol v2 to nginx 127.0.0.1:4443.
+tailscaled must not terminate TLS on that port: HTTPS mode only knows
+mag.tail3e02ae.ts.net and answers other SNI with 'no webserver configured
+for name/port' (tlsv1 alert internal error). nginx SNI-selects the room,
+bots, pages and Gitea. Public https://mag.tail3e02ae.ts.net/ is the same
+TCP path (Funnel relay does not decrypt). HTTP vhosts must not bind
+100.123.114.16:443. Tailnet serves on 8443, 8445 and 8446 stay HTTPS
+proxies and are not funneled.
 """
 import json
 import pathlib
@@ -12,13 +17,15 @@ import sys
 
 NODE = "mag.tail3e02ae.ts.net"
 FUNNEL_PORT = 443
-# tailscaled is the HTTPS endpoint. It proxies HTTP to Gitea. Only 127.0.0.1
-# is a valid Funnel backend.
+# Raw TLS + PROXY v2. nginx on this socket terminates TLS and picks SNI.
+FUNNEL_TCP = "127.0.0.1:4443"
+FUNNEL_PROXY_PROTOCOL = 2
+# Gitea behind the shared nginx vhost (not tailscaled HTTP).
 FUNNEL_PROXY = "http://127.0.0.1:3000"
 FUNNEL_ORIGIN = "https://mag.tail3e02ae.ts.net"
 # Shared by every tailnet vhost. A second listen on this socket with different
-# flags is an nginx emerg. The Tailscale address itself is not in the line:
-# tailscaled is the only process bound to 100.123.114.16:443.
+# flags is an nginx emerg. HTTP must not bind 100.123.114.16:443; tailscaled
+# TCP-forwards that address here.
 NGINX_LISTEN = "listen 127.0.0.1:4443 ssl http2 proxy_protocol;"
 # Live mag-room.conf since 2026-10-24 uses this exact line. Bots/pages may
 # omit http2. Any listen on the Tailscale address :443 is the collision.
@@ -26,13 +33,15 @@ OLD_NGINX_LISTEN = "listen 100.123.114.16:443 ssl http2;"
 # Live bots/pages still use this after @TAILNET_BIND@ substitution. Any
 # listen on the Tailscale address :443 is the Funnel collision, including
 # variants without http2 and leftover template placeholders.
+# HTTP/ssl leftover only. A stream `listen 100.123.114.16:443;` has no ssl
+# and must not be rewritten onto 4443.
 OLD_NGINX_LISTEN_RE = re.compile(
-    r"^([ \t]*)listen[ \t]+(?:100\.123\.114\.16|@TAILNET_BIND@):443\b[^;]*;",
+    r"^([ \t]*)listen[ \t]+(?:100\.123\.114\.16|@TAILNET_BIND@):443\b[^;]*\bssl[^;]*;",
     re.M,
 )
 NGINX_T_FILE_RE = re.compile(r"^# configuration file (.+):$")
 TAILNET_443_NEEDLE = re.compile(
-    r"listen[ \t]+(?:100\.123\.114\.16|@TAILNET_BIND@):443\b"
+    r"listen[ \t]+(?:100\.123\.114\.16|@TAILNET_BIND@):443\b[^;]*\bssl\b"
 )
 # Existing tailnet-only serves. 8443 is already in use. The room stays on 8446.
 TAILNET = {
@@ -202,10 +211,14 @@ def merge(current):
         raise SystemExit("serve TCP/Web must be objects")
     for port, proxy in TAILNET.items():
         _https_proxy(tcp, web, port, proxy)
-    # Public Funnel. HTTPS here is what publishes the ts.net name. A raw TCP
-    # forward does not. nginx is moved off the Tailscale address first so
-    # tailscaled can bind :443.
-    _https_proxy(tcp, web, str(FUNNEL_PORT), FUNNEL_PROXY, only=True)
+    # Public Funnel is TCP passthrough. HTTPS-on-443 made tailscaled terminate
+    # TLS and reject every SNI except mag.tail3e02ae.ts.net.
+    port = str(FUNNEL_PORT)
+    tcp[port] = {
+        "TCPForward": FUNNEL_TCP,
+        "ProxyProtocol": FUNNEL_PROXY_PROTOCOL,
+    }
+    web.pop(funnel_key(), None)
     cfg["TCP"] = tcp
     cfg["Web"] = web
     cfg["AllowFunnel"] = {funnel_key(): True}
@@ -221,13 +234,14 @@ def assert_public_gitea_only(cfg):
     web = cfg.get("Web") or {}
     tcp = cfg.get("TCP") or {}
     block = tcp.get(str(FUNNEL_PORT)) or {}
-    if block.get("HTTPS") is not True:
-        raise SystemExit("funnel port is not HTTPS")
-    if block.get("TCPForward") or block.get("TerminateTLS") or block.get("ProxyProtocol"):
-        raise SystemExit("funnel port is not a plain HTTPS proxy")
-    handlers = (web.get(funnel_key()) or {}).get("Handlers") or {}
-    if set(handlers) != {"/"} or _proxy(handlers["/"]["Proxy"]) != FUNNEL_PROXY:
-        raise SystemExit("funnel port does not proxy to Gitea")
+    if block.get("TCPForward") != FUNNEL_TCP:
+        raise SystemExit("funnel port is not TCP-forwarded to nginx 4443")
+    if block.get("ProxyProtocol") != FUNNEL_PROXY_PROTOCOL:
+        raise SystemExit("funnel port is missing PROXY protocol v2")
+    if block.get("HTTPS") or block.get("HTTP") or block.get("TerminateTLS"):
+        raise SystemExit("funnel port must not terminate TLS (that swallows tailnet SNI)")
+    if funnel_key() in web:
+        raise SystemExit("funnel port must not have a Web handler")
     for port, proxy in TAILNET.items():
         if _proxy(web[hostport(port)]["Handlers"]["/"]["Proxy"]) != proxy:
             raise SystemExit(f"tailnet serve :{port} changed")

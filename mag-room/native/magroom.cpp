@@ -730,6 +730,9 @@ static std::array<std::atomic<int>, ROOM_MAX_BOTS> ROOM_MODEL_HEALTH{}; // 0 ?, 
 // Last observed KV warmth for a configured slot. 0 unknown, 1 warm, 2 cold.
 static std::array<std::atomic<int>, ROOM_MAX_BOTS> SLOT_WARM{};
 static std::array<std::atomic<bool>, ROOM_MAX_BOTS> FIRST_HI_USED{};
+// The previous process left this llama slot generating. A resumed job waits
+// until the slot is idle so it does not start a second prefill.
+static std::array<std::atomic<bool>, ROOM_MAX_BOTS> SLOT_RESUME_HELD{};
 static int model_slot_of(const Val &a) {
   auto s = a.find("slot");
   const int v = s && s->type == Val::NUM ? (int)s->asNum() : 0;
@@ -6228,6 +6231,9 @@ static std::string manifest_body() {
 // wait for every running turn.
 static std::atomic<bool> AUTOTALK{false};
 static std::atomic<bool> DEPLOY_HOLD{false};
+// Deploy: parked jobs stay out of the slot until the warm-hi gate releases.
+static std::atomic<bool> RESTART_JOBS_HELD{false};
+static void unpark_jobs_locked();
 static void drop_selftalk_jobs_locked();
 static void hold_selftalk_for_deploy_locked();
 static void apply_deploy_hold_file_locked();
@@ -6274,6 +6280,9 @@ struct Job {
   std::string cause; // room message id that armed this follow-up
 };
 static std::deque<Job> JOBS;
+// Jobs loaded from the previous process. They are not dispatched until the
+// llama slot is idle and, during a deploy, until the warm-hi gate releases.
+static std::deque<Job> PARKED_JOBS;
 // Queue persistence: pending jobs + the jobs being answered survive a room
 // restart (deploy). Caller holds JOB_MTX. Key = dispatch number.
 static std::map<uint64_t, Job> ACTIVE_JOBS;
@@ -6413,6 +6422,7 @@ static void save_queue_locked() {
   }
   Val jobs = Val::array();
   for (auto &j : JOBS) jobs.push(job_val(j));
+  for (auto &j : PARKED_JOBS) jobs.push(job_val(j));
   q["jobs"] = jobs;
   if (!ACTIVE_JOBS.empty()) {
     Val act = Val::array();
@@ -6977,6 +6987,8 @@ static void hold_selftalk_for_deploy() {
 }
 static void release_deploy_hold_locked() {
   DEPLOY_HOLD = false;
+  RESTART_JOBS_HELD = false;
+  unpark_jobs_locked();
   std::error_code ec;
   std::filesystem::remove(STATE_DIR + "/deploy-hold", ec);
   std::filesystem::remove(STATE_DIR + "/proaktiv-resume", ec);
@@ -6988,6 +7000,7 @@ static void release_deploy_hold() {
   {
     std::lock_guard<std::mutex> lk(JOB_MTX);
     release_deploy_hold_locked();
+    JOB_CV.notify_all();
   }
   if (!SELFTALK.load()) return;
   last_assistant_for_selftalk(speaker, cause, text);
@@ -7446,35 +7459,106 @@ static bool prefix_is_saved(int idx) {
     return v->type == Val::STR && !v->asStr().empty();
   return false;
 }
-// Direct /slots on the llama port. The gateway is not asked, and the model
-// unit is not restarted. A missing port (tests) is not busy.
-static bool llama_slot_processing(int slot) {
-  const std::string port = model_port(slot);
-  if (port.empty() || port == "0") return false;
-  std::string reply;
+// What GET /slots says about this bot's backend. Does not cancel and does not
+// start a completion. An empty document (tests before a snapshot) is unknown.
+struct SlotProbe {
+  bool known = false;
+  bool processing = false;
+  bool warm = false;
+};
+static SlotProbe probe_backend_slot(int idx) {
+  SlotProbe p;
+  if (!CONFIGURED_MODEL || idx < 0) return p;
+  std::string raw;
   long status = 0;
-  if (!http_simple("127.0.0.1", std::atoi(port.c_str()), "GET", "/slots", "", {},
-                   reply, &status, nullptr, 1500))
-    return false;
-  if (status != 200) return false;
-  return reply.find("\"is_processing\":true") != std::string::npos ||
-         reply.find("\"is_processing\": true") != std::string::npos;
-}
-// A previous room process exits without closing llama. If that leftover task
-// is still decoding and we still have the prefix file, cancel it and put the
-// file back so the warm-hi gate sees an idle slot with a cached prefix.
-static void release_orphan_slots() {
-  if (!CONFIGURED_MODEL) return;
-  std::vector<int> idxs;
-  {
-    std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
-    for (size_t i = 0; i < AGENTS.size(); ++i) idxs.push_back((int)i);
+  const std::string model = bot_model_id(idx);
+  if (!http_simple(BACKEND_HOST, BACKEND_PORT, "GET", "/slots", "",
+                   {{"Authorization", "Bearer " + API_KEY},
+                    {"X-Mag-Model", model},
+                    {"X-Mag-Slot", gateway_slot(idx)}},
+                   raw, &status, nullptr, 1500) ||
+      status != 200)
+    return p;
+  Val slots;
+  if (!mj::parse(raw, slots) || !slots.isArr() || slots.asArr().empty()) return p;
+  for (const auto &slot : slots.asArr()) {
+    p.known = true;
+    if (auto busy = slot.find("is_processing"); busy && busy->asBool()) p.processing = true;
+    for (const char *key : {"n_past", "n_prompt_tokens", "n_cached_tokens"})
+      if (auto n = slot.find(key); n && n->type == Val::NUM && n->asNum() > 0) p.warm = true;
+    if (auto prompt = slot.find("prompt"); prompt &&
+        ((prompt->type == Val::STR && !prompt->asStr().empty()) ||
+         (prompt->isArr() && !prompt->asArr().empty())))
+      p.warm = true;
+    if (auto state = slot.find("state"); state && state->type == Val::NUM && state->asNum() > 0)
+      p.warm = true;
   }
-  for (int idx : idxs) {
+  return p;
+}
+// Restore a cold idle slot. A slot that is still generating is left alone:
+// cancelling it is "srv stop: cancel task" and the next prompt prefills.
+static void observe_slot(int idx, bool wait) {
+  const int slot = model_slot(idx);
+  if (slot < 1 || slot > ROOM_MAX_BOTS) return;
+  if (!prefix_is_saved(idx)) {
+    SLOT_RESUME_HELD[slot - 1] = false;
+    return;
+  }
+  SlotProbe p = probe_backend_slot(idx);
+  if (wait)
+    for (int i = 0; p.known && p.processing && i < 5; ++i) {
+      std::this_thread::sleep_for(milliseconds(100));
+      p = probe_backend_slot(idx);
+    }
+  if (p.known && p.processing) {
+    if (!SLOT_RESUME_HELD[slot - 1].exchange(true))
+      std::cerr << "slot " << slot << " still generating; not cancelling, holding resumed jobs\n";
+    return;
+  }
+  SLOT_RESUME_HELD[slot - 1] = false;
+  if (p.known && !p.warm) reload_slot_after_cancel(idx);
+}
+static std::vector<int> agent_indexes() {
+  std::vector<int> idxs;
+  std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
+  for (size_t i = 0; i < AGENTS.size(); ++i) idxs.push_back((int)i);
+  return idxs;
+}
+static void settle_prefix_slots() {
+  if (!CONFIGURED_MODEL) return;
+  for (int idx : agent_indexes()) observe_slot(idx, true);
+}
+static void poll_resume_holds() {
+  if (!CONFIGURED_MODEL) return;
+  for (int idx : agent_indexes()) {
     const int slot = model_slot(idx);
-    if (!llama_slot_processing(slot) || !prefix_is_saved(idx)) continue;
-    cancel_llama_slot(idx);
-    reload_slot_after_cancel(idx);
+    if (slot < 1 || slot > ROOM_MAX_BOTS || !SLOT_RESUME_HELD[slot - 1].load()) continue;
+    observe_slot(idx, false);
+  }
+}
+static bool slot_resume_held_for(const std::vector<std::string> &ids) {
+  for (const auto &id : ids) {
+    const int idx = agent_index(id);
+    if (idx < 0) continue;
+    const int slot = model_slot(idx);
+    if (slot >= 1 && slot <= ROOM_MAX_BOTS && SLOT_RESUME_HELD[slot - 1].load()) return true;
+  }
+  return false;
+}
+static bool any_resume_held() {
+  for (const auto &h : SLOT_RESUME_HELD)
+    if (h.load()) return true;
+  return false;
+}
+static void unpark_jobs_locked() {
+  if (RESTART_JOBS_HELD.load()) return;
+  for (auto it = PARKED_JOBS.begin(); it != PARKED_JOBS.end();) {
+    if (slot_resume_held_for(it->ids)) {
+      ++it;
+      continue;
+    }
+    JOBS.push_back(std::move(*it));
+    it = PARKED_JOBS.erase(it);
   }
 }
 // Human message: abort bot-to-bot generations only. User turns keep running.
@@ -8429,6 +8513,9 @@ static bool dispatchable(const std::vector<std::pair<Lane *, std::vector<std::st
   bool ok = true;
   for (auto &p : parts) {
     if (p.first->busy.load() || claimed.count(p.first)) ok = false;
+    // The previous process may still be decoding. A new completion would
+    // cancel that task and prefill from scratch.
+    if (slot_resume_held_for(p.second)) ok = false;
     // Bots on a node that is swapping its model wait (queued, not failed).
     for (auto &id : p.second)
       if (numa_bot_swapping(id)) ok = false;
@@ -8634,9 +8721,15 @@ static bool dispatch_locked() {
 static void scheduler_loop() {
   std::unique_lock<std::mutex> lk(JOB_MTX);
   while (!SHUTDOWN.load()) {
+    if (any_resume_held() || !PARKED_JOBS.empty()) {
+      lk.unlock();
+      poll_resume_holds();
+      lk.lock();
+      unpark_jobs_locked();
+    }
     if (dispatch_locked())
       continue;
-    JOB_CV.wait_for(lk, seconds(1));
+    JOB_CV.wait_for(lk, any_resume_held() ? milliseconds(200) : seconds(1));
   }
 }
 // Offline = the agent VMs have no network at all (host nftables, not just the
@@ -9209,7 +9302,7 @@ static std::string state_json(const Actor *actor = nullptr) {
   }
   {
     std::lock_guard<std::mutex> lk(JOB_MTX);
-    root["queue"] = (double)(JOBS.size() + PENDING.size());
+    root["queue"] = (double)(JOBS.size() + PARKED_JOBS.size() + PENDING.size());
     Val qv = queue_view_locked();
     root["pending"] = *qv.find("pending");
     root["queue_paused"] = QUEUE_PAUSED;
@@ -10016,7 +10109,9 @@ int main() {
       if (auto jobs = q.find("jobs"); jobs && jobs->isArr())
         for (auto &j : jobs->asArr()) {
           Job job = val_job(j);
-          if (!job.ids.empty() && !job.selftalk) JOBS.push_back(job);
+          // A bot-to-bot turn does not survive the restart. Resuming it
+          // would cancel whatever Qwen is still decoding and prefill again.
+          if (!job.ids.empty() && !job.selftalk) PARKED_JOBS.push_back(job);
         }
       std::vector<Job> running;
       if (auto a = q.find("actives"); a && a->isArr())
@@ -10044,14 +10139,18 @@ int main() {
           }
           if (!noted) append_room("assistant", bot_field(idx, "name"), note, id);
         }
-        if (std::none_of(JOBS.begin(), JOBS.end(),
+        if (std::none_of(PARKED_JOBS.begin(), PARKED_JOBS.end(),
                          [&](const Job &j) { return j.ids == r->ids; }))
-          JOBS.push_front(*r);
+          PARKED_JOBS.push_front(*r);
       }
-      if (!JOBS.empty()) {
-        AUTO_OWNER = JOBS.front().ids.front();
-        std::cerr << "queue resumed: " << JOBS.size() << " job(s)\n";
+      if (!PARKED_JOBS.empty()) {
+        AUTO_OWNER = PARKED_JOBS.front().ids.front();
+        std::cerr << "queue resumed: " << PARKED_JOBS.size() << " job(s)\n";
       }
+      // Deploy keeps these jobs queued until the warm-hi gate has seen an
+      // idle slot. A restart without that marker still waits for settle.
+      if (trim(read_file(STATE_DIR + "/deploy-hold")) == "on")
+        RESTART_JOBS_HELD = true;
       save_queue_locked();
     }
   }
@@ -10149,7 +10248,11 @@ int main() {
   std::thread(jobs_ticker).detach();
   std::thread(guest_cleanup_loop).detach();
   std::thread(snapshot_retention_loop).detach();
-  release_orphan_slots();
+  settle_prefix_slots();
+  {
+    std::lock_guard<std::mutex> lk(JOB_MTX);
+    unpark_jobs_locked();
+  }
   std::thread(scheduler_loop).detach();
   std::thread(model_watcher_loop).detach();
   std::thread(file_sync_loop).detach();

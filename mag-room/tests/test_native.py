@@ -3848,6 +3848,57 @@ class MixedNuma(unittest.TestCase):
    Model.prefix_miss_s=0;Model.slot_snapshot=[]
    self.env['MAG_ROOM_PREWARM']='0'
    self.stop();self.start()
+ def test_16_restart_does_not_cancel_qwen_or_reprefill(self):
+  # Deploy restarts the room while Qwen is still decoding. Resuming that job
+  # used to close the slot ("srv stop: cancel task") and prefill from scratch.
+  # The new process must leave a live task alone, drop the bot-to-bot job,
+  # restore the prefix once the slot is idle, and answer hi from the cache.
+  self.wait_idle()
+  bots=list(self.bots().values())
+  qwen=next(b for b in bots if 'qwen' in b['model'])
+  Model.last_prompt.clear()
+  for bot in bots:self.ask(bot['id'])
+  self.assertTrue(Model.saved_prompt.get('0') and Model.saved_prompt.get('1'))
+  self.stop()
+  (self.state/'queue.json').write_text(json.dumps({
+   'jobs':[{'ids':[qwen['id']],'think':-1,'selftalk':True,'input':'bot-to-bot','cause':'m-bot'}],
+   'actives':[{'ids':[qwen['id']],'think':-1,'input':'RESUMED-QWEN-JOB'}],
+   'pending':[]}))
+  (self.state/'deploy-hold').write_text('on\n')
+  Model.slot_snapshot=[{'id':0,'is_processing':True,'n_prompt_tokens':0,'n_past':0,'state':0}]
+  Model.prefix_miss_s=6
+  self.env['MAG_ROOM_PREWARM']='1'
+  try:
+   mark=len(Model.paths);self.start()
+   time.sleep(0.7)
+   early=list(Model.paths)[mark:]
+   self.assertFalse([p for p in early if p[0]=='/v1/chat/completions'], early)
+   self.assertFalse([p for p in early if 'action=cancel' in str(p[0])], early)
+   log=self.tmp_path.joinpath('server.log').read_text()
+   self.assertIn('queue resumed: 1 job(s)', log)
+   self.assertIn('still generating; not cancelling', log)
+   self.assertFalse(self.request('/api/state')['busy'])
+   Model.slot_snapshot=[{'id':0,'is_processing':False,'n_prompt_tokens':0,'n_past':0,'state':0,'prompt':''}]
+   deadline=time.monotonic()+4
+   while time.monotonic()<deadline:
+    if any('action=restore' in str(p[0]) for p in list(Model.paths)[mark:]):break
+    time.sleep(0.05)
+   else:self.fail('idle cold slot was not restored')
+   time.sleep(0.35)
+   self.assertFalse([p for p in list(Model.paths)[mark:] if p[0]=='/v1/chat/completions'],
+                    'resumed job prefilled before the slot was idle and warm')
+   self.assertFalse([p for p in list(Model.paths)[mark:] if 'action=cancel' in str(p[0])])
+   for bot in bots:
+    token=f'hi {bot["id"]} {time.monotonic_ns()}'
+    t0=time.monotonic()
+    self.assertTrue(self._first_hi(bot, token, t0+8),'first hi exceeded the 8s hard timeout for '+bot['model'])
+    self.assertLess(time.monotonic()-t0, 5, 'first hi after restart for '+bot['model'])
+  finally:
+   Model.prefix_miss_s=0;Model.slot_snapshot=[]
+   self.env['MAG_ROOM_PREWARM']='0'
+   for name in ('deploy-hold','proaktiv-resume','selftalk-resume','proaktiv','selftalk'):
+    (self.state/name).unlink(missing_ok=True)
+   self.stop();self.start()
  def test_12_qwen_answers_while_deepseek_prefills(self):
   # Each bot has its own worker. A long DeepSeek prefill must not delay Qwen.
   self.wait_idle()

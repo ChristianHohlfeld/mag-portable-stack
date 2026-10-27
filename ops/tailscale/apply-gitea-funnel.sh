@@ -53,6 +53,9 @@ cleanup() {
       while IFS=$'\t' read -r id file kind; do
         [[ -n ${id:-} ]] || continue
         if [[ $kind == file ]]; then cp -a "$snapdir/files/$id" "$file"
+        elif [[ $kind == link ]]; then
+          rm -f -- "$file"
+          ln -s -- "$(cat "$snapdir/files/$id")" "$file"
         else rm -f -- "$file"; fi
       done < "$manifest"
       nginx -t && systemctl reload nginx.service || true
@@ -63,15 +66,20 @@ cleanup() {
   exit "$rc"
 }
 save_nginx() {
-  local file=$1 id
+  local file=$1 id target
   [[ -e $snapdir/saved.paths ]] && grep -Fxq "$file" "$snapdir/saved.paths" && return 0
   printf '%s\n' "$file" >> "$snapdir/saved.paths"
   id=$(wc -l < "$snapdir/saved.paths")
   case "$file" in
-    /etc/nginx/*|/etc/mag-ci/gitea-proxy.inc) ;;
+    /etc/nginx/*|/etc/mag-ci/*) ;;
     *) echo "gitea funnel: refusing to snapshot $file" >&2; exit 1 ;;
   esac
-  if [[ -f $file && ! -L $file ]]; then
+  if [[ -L $file ]]; then
+    target=$(readlink -- "$file")
+    [[ -n $target ]] || { echo "gitea funnel: empty symlink $file" >&2; exit 1; }
+    printf '%s\n' "$target" > "$snapdir/files/$id"
+    printf '%s\t%s\tlink\n' "$id" "$file" >> "$manifest"
+  elif [[ -f $file ]]; then
     cp -a "$file" "$snapdir/files/$id"
     printf '%s\t%s\tfile\n' "$id" "$file" >> "$manifest"
   else
@@ -93,18 +101,28 @@ cp -a "$tmp/current" "$snapdir/serve.json"
 
 # Snapshot first, then move listeners. A failure restores this snapshot,
 # including from deploy rollback via restore-gitea-funnel.sh.
+# nginx -T is the source of truth: sites-enabled/mag-room.conf is a symlink
+# and live bots/pages still sit in conf.d with listen 100.123.114.16:443.
 site=/etc/nginx/conf.d/mag-git.conf
 proxy=/etc/mag-ci/gitea-proxy.inc
 ini=/etc/gitea/app.ini
-shopt -s nullglob
-to_retarget=()
-for file in /etc/nginx/sites-available/*.conf /etc/nginx/sites-enabled/*.conf /etc/nginx/conf.d/*.conf; do
-  [[ -f $file && ! -L $file ]] || continue
-  grep -Eq 'listen[[:space:]]+100\.123\.114\.16:443\b' "$file" || continue
+nginx -T >"$tmp/nginx-t" 2>"$tmp/nginx-t.err" || true
+mapfile -t to_retarget < <(
+  python3 "$here/merge-gitea-funnel.py" candidates \
+    /etc/nginx/sites-available \
+    /etc/nginx/sites-enabled \
+    /etc/nginx/conf.d \
+    /etc/nginx/snippets \
+    /etc/nginx/streams-enabled \
+    /etc/mag-ci <"$tmp/nginx-t"
+)
+for file in "${to_retarget[@]}"; do
+  case "$file" in
+    /etc/nginx/*|/etc/mag-ci/*) ;;
+    *) echo "gitea funnel: refusing to rewrite $file" >&2; exit 1 ;;
+  esac
   save_nginx "$file"
-  to_retarget+=("$file")
 done
-shopt -u nullglob
 save_nginx "$site"
 save_nginx "$proxy"
 if [[ -n ${MAG_NGINX_TXN:-} && -d $MAG_NGINX_TXN && ! -L $MAG_NGINX_TXN ]]; then
@@ -114,9 +132,17 @@ fi
 trap cleanup EXIT
 if (( ${#to_retarget[@]} )); then
   for file in "${to_retarget[@]}"; do
-    mode=$(stat -c %a "$file")
+    # Follow a symlink to the live bytes, then replace the path with a
+    # regular file so a stale release tree cannot put nginx back on :443.
+    if [[ -e $file || -L $file ]]; then
+      mode=$(stat -c %a "$file")
+    else
+      mode=644
+    fi
     python3 "$here/merge-gitea-funnel.py" retarget <"$file" >"$tmp/retargeted"
+    rm -f -- "$file"
     install -m "$mode" "$tmp/retargeted" "$file"
+    echo "gitea funnel: moved $file off 100.123.114.16:443"
   done
 fi
 install -d -m 0755 /etc/mag-ci
@@ -126,12 +152,15 @@ if ! nginx -t || ! systemctl reload nginx.service; then
   echo 'gitea funnel: nginx config rejected' >&2
   exit 1
 fi
-# tailscaled must be the only listener on the Tailscale address :443.
+# Funnel cannot bind :443 while any managed vhost still listens there.
+# nginx -T is required: ss alone misses a listen that failed to leave conf.d.
+if ! nginx -T 2>/dev/null | python3 "$here/merge-gitea-funnel.py" scan; then
+  echo 'gitea funnel: refusing to enable Funnel while nginx still binds the Tailscale :443' >&2
+  exit 1
+fi
 if command -v ss >/dev/null && ss -ltnH 'sport = :443' | grep -q '100.123.114.16:443'; then
   echo 'gitea funnel: 100.123.114.16:443 is still taken; refusing to enable Funnel' >&2
-  if command -v nginx >/dev/null; then
-    nginx -T 2>/dev/null | grep -n 'listen[[:space:]]\+100\.123\.114\.16:443' >&2 || true
-  fi
+  nginx -T 2>/dev/null | grep -n 'listen[[:space:]]\+100\.123\.114\.16:443' >&2 || true
   exit 1
 fi
 keep_nginx=1

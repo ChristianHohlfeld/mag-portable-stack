@@ -137,8 +137,12 @@ class FunnelConfig(unittest.TestCase):
         self.assertIn("mag-gitea-funnel.service", apply)
         self.assertIn("mag-gitea-funnel.timer", apply)
         self.assertIn("keep_nginx=1", apply)
-        self.assertIn("listen[[:space:]]+100\\.123\\.114\\.16:443", apply)
+        self.assertIn("merge-gitea-funnel.py\" candidates", apply)
+        self.assertIn("merge-gitea-funnel.py\" scan", apply)
+        self.assertIn("/etc/nginx/conf.d", apply)
         self.assertIn("MAG_GITEA_FUNNEL_REQUIRE_PUBLIC", apply)
+        activate = (ROOT / "ops/private-access/deploy-nginx.sh").read_text()
+        self.assertIn("A managed nginx vhost still listens on the Tailscale :443", activate)
         unit = (ROOT / "ops/tailscale/mag-gitea-funnel.service").read_text()
         self.assertIn("apply-gitea-funnel.sh", unit)
         self.assertIn("RemainAfterExit=yes", unit)
@@ -153,6 +157,7 @@ class FunnelConfig(unittest.TestCase):
         old = (
             "    listen 100.123.114.16:443 ssl http2;\n"
             "    listen 100.123.114.16:443 ssl;\n"
+            "    listen @TAILNET_BIND@:443 ssl http2;\n"
             "listen 192.0.2.10:443 ssl;\n"
         )
         moved = self.m.retarget_nginx(old)
@@ -160,10 +165,120 @@ class FunnelConfig(unittest.TestCase):
             moved,
             "    listen 127.0.0.1:4443 ssl http2 proxy_protocol;\n"
             "    listen 127.0.0.1:4443 ssl http2 proxy_protocol;\n"
+            "    listen 127.0.0.1:4443 ssl http2 proxy_protocol;\n"
             "listen 192.0.2.10:443 ssl;\n",
         )
         self.assertEqual(self.m.retarget_nginx(moved), moved)
         self.assertEqual(self.m.retarget_nginx(self.m.NGINX_LISTEN + "\n"), self.m.NGINX_LISTEN + "\n")
+
+    def test_funnel_fails_if_conf_d_still_listens_on_tailnet_443(self):
+        # Live mag after #137: room was moved, bots (1x) and pages (2x) were not.
+        dump = (
+            "# configuration file /etc/nginx/sites-enabled/mag-room.conf:\n"
+            "    listen 127.0.0.1:4443 ssl http2 proxy_protocol;\n"
+            "# configuration file /etc/nginx/conf.d/mag-bots.conf:\n"
+            "    listen 100.123.114.16:443 ssl http2;\n"
+            "# configuration file /etc/nginx/conf.d/mag-pages.conf:\n"
+            "    listen 100.123.114.16:443 ssl http2;\n"
+            "    listen 100.123.114.16:443 ssl http2;\n"
+        )
+        leftover = self.m.files_from_nginx_t(dump)
+        self.assertEqual(
+            leftover,
+            [
+                "/etc/nginx/conf.d/mag-bots.conf",
+                "/etc/nginx/conf.d/mag-pages.conf",
+            ],
+        )
+        scan = subprocess.run(
+            ["python3", "ops/tailscale/merge-gitea-funnel.py", "scan"],
+            cwd=ROOT, input=dump, text=True, capture_output=True,
+        )
+        self.assertEqual(scan.returncode, 1, scan.stderr)
+        self.assertIn("mag-bots.conf", scan.stderr)
+        self.assertIn("mag-pages.conf", scan.stderr)
+        self.assertNotIn("mag-room.conf", scan.stderr)
+
+        import tempfile
+        with tempfile.TemporaryDirectory() as raw:
+            tree = pathlib.Path(raw)
+            confd = tree / "conf.d"
+            enabled = tree / "sites-enabled"
+            available = tree / "sites-available"
+            confd.mkdir()
+            enabled.mkdir()
+            available.mkdir()
+            room = (
+                "server {\n"
+                "    listen 127.0.0.1:4443 ssl http2 proxy_protocol;\n"
+                "    server_name mag.stardenburg.de;\n"
+                "}\n"
+            )
+            bots = (
+                "server {\n"
+                "    listen 100.123.114.16:443 ssl http2;\n"
+                "    server_name ~^agent[0-9]+\\.bot\\.stardenburg\\.de$;\n"
+                "}\n"
+            )
+            pages = (
+                "server {\n"
+                "    listen 100.123.114.16:443 ssl http2;\n"
+                "    server_name pages.stardenburg.de;\n"
+                "}\n"
+                "server {\n"
+                "    listen 100.123.114.16:443 ssl http2;\n"
+                "    server_name ~^[a-z0-9-]+\\.pages\\.stardenburg\\.de$;\n"
+                "}\n"
+            )
+            (available / "mag-room.conf").write_text(room)
+            (enabled / "mag-room.conf").symlink_to("../sites-available/mag-room.conf")
+            (confd / "mag-bots.conf").write_text(bots)
+            (confd / "mag-pages.conf").write_text(pages)
+            (available / "mag-room-old.conf").write_text(
+                "server {\n    listen 100.123.114.16:443 ssl http2;\n}\n"
+            )
+            (enabled / "mag-room-old.conf").symlink_to("../sites-available/mag-room-old.conf")
+            found = self.m.candidate_files("", [str(tree)])
+            names = [pathlib.Path(p).name for p in found]
+            self.assertEqual(names, ["mag-bots.conf", "mag-pages.conf", "mag-room-old.conf"])
+            self.assertTrue(any(p.endswith("sites-available/mag-room-old.conf") for p in found))
+            self.assertFalse(any(p.endswith("sites-enabled/mag-room-old.conf") for p in found))
+            for path in found:
+                pathlib.Path(path).write_text(
+                    self.m.retarget_nginx(pathlib.Path(path).read_text())
+                )
+            after = "\n".join(
+                f"# configuration file {path}:\n{pathlib.Path(path).read_text()}"
+                for path in (
+                    enabled / "mag-room.conf",
+                    confd / "mag-bots.conf",
+                    confd / "mag-pages.conf",
+                )
+            )
+            self.assertEqual(self.m.files_from_nginx_t(after), [])
+            self.assertFalse(self.m.has_tailnet_443(after))
+            self.assertEqual((confd / "mag-bots.conf").read_text().count(self.m.NGINX_LISTEN), 1)
+            self.assertEqual((confd / "mag-pages.conf").read_text().count(self.m.NGINX_LISTEN), 2)
+            # Funnel is on only after every managed leftover listen is gone.
+            scan_ok = subprocess.run(
+                ["python3", "ops/tailscale/merge-gitea-funnel.py", "scan"],
+                cwd=ROOT, input=after, text=True, capture_output=True,
+            )
+            self.assertEqual(scan_ok.returncode, 0, scan_ok.stderr)
+
+        templates = (
+            ROOT / "ops/private-access/mag-room.nginx.conf",
+            ROOT / "ops/bots/mag-bots.nginx.in",
+            ROOT / "ops/pages/mag-pages.nginx.in",
+            ROOT / "ops/gitea-ci/public.nginx.in",
+        )
+        for path in templates:
+            text = path.read_text()
+            self.assertFalse(self.m.has_tailnet_443(text), path.name)
+            self.assertIn(self.m.NGINX_LISTEN, text)
+        public = (ROOT / "ops/pages/mag-pages-public.nginx.in").read_text()
+        self.assertFalse(self.m.has_tailnet_443(public))
+        self.assertNotIn("100.123.114.16", public)
 
     def test_host_runner_workflow_matches_registered_labels(self):
         import yaml

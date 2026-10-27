@@ -91,6 +91,9 @@ class RoomE2E(unittest.TestCase):
         self.assertEqual(p.locator('#plus-web').count(), 0, 'offline only in the room menu')
         # One header: one status group, one room menu, one settings button.
         self.assertEqual(p.locator('#app-header .status-group .top-stat').count(), 2)
+        self.assertEqual(p.locator('#app-header #selftalk-row, #app-header #selftalk').count(), 0)
+        expect(p.locator('#room-line #selftalk-row #selftalk')).to_be_attached()
+        expect(p.locator('#room-line #selftalk-row')).to_contain_text('Self-Talk')
         self.assertEqual(p.locator('#app-header #room-menu-btn').count(), 1)
         self.assertEqual(p.locator('#app-header #settings-open').count(), 1)
         # One Stop: the composer button (the room menu's "Alles anhalten"

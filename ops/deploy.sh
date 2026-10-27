@@ -192,6 +192,44 @@ wait_http() {
   for i in {1..30}; do curl -fsS --max-time 2 -o /dev/null "$1" 2>/dev/null && break; sleep 1; done
   curl -fsS --max-time 5 "$1"
 }
+# Idle room, or a busy flag that is not producing tokens. A stuck busy=true
+# (no prompt/output progress) must not sit out the whole drain window.
+# MAG_DEPLOY_STALE_S=0 disables the stale shortcut. Returns 75 to defer.
+drain_room() {
+  local drain_s="${MAG_DEPLOY_DRAIN_S:-900}" stale_s="${MAG_DEPLOY_STALE_S:-60}"
+  local waited=0 still=0 prev="" st busy=0 queued=0 progress=""
+  while :; do
+    st=$(curl -fsS --max-time 5 http://127.0.0.1:8766/api/state 2>/dev/null \
+         | python3 -c 'import json,sys
+try:
+ d=json.load(sys.stdin)
+except Exception:
+ print("0 0 -"); raise SystemExit
+b=1 if d.get("busy") else 0
+q=0 if d.get("queue_paused") else int(d.get("queue") or 0)
+bits=[]
+for a in d.get("activities") or []:
+ if isinstance(a,dict): bits.append("%s/%s/%s/%s"%(a.get("processed"),a.get("total"),a.get("phase"),len(a.get("steps") or [])))
+n=0
+for m in d.get("room") or []:
+ if isinstance(m,dict): n+=len(m.get("content") or "")+len(m.get("reasoning") or "")
+print("%d %d p%s:t%d"%(b,q,",".join(bits),n))' || echo "0 0 -")
+    read -r busy queued progress <<<"$st"
+    [[ "$busy" == 0 && "$queued" == 0 ]] && return 0
+    if [[ "$progress" == "$prev" ]]; then still=$((still + 5)); else still=0; prev=$progress; fi
+    if (( waited == 0 )); then echo "Deploy wartet: Antwort läuft ($busy) / $queued in der Warteschlange – warte bis max. ${drain_s}s …" >&2; fi
+    if (( busy == 1 && stale_s > 0 && still >= stale_s )); then
+      echo "Deploy: busy ohne neue Tokens seit ${still}s – Deploy läuft weiter (Warteschlange bleibt gespeichert)." >&2
+      return 0
+    fi
+    if (( waited >= drain_s )); then
+      if [[ "${MAG_DEPLOY_FORCE:-0}" == 1 ]]; then echo "Drain-Timeout – MAG_DEPLOY_FORCE=1: deploye trotzdem (Warteschlange wird nach dem Neustart fortgesetzt)." >&2; return 0; fi
+      echo "Drain-Timeout nach ${drain_s}s: Raum ist nicht leer – Deploy verschoben (Release $RELEASE_ID bleibt unbenutzt). Später erneut ausführen oder MAG_DEPLOY_FORCE=1." >&2
+      return 75
+    fi
+    sleep 5; waited=$((waited + 5))
+  done
+}
 deploy_exit() {
  local rc=$?
  trap - EXIT ERR INT TERM
@@ -203,22 +241,14 @@ deploy_exit() {
 
 # Drain: never cut a running reply or a queued message. Wait until the room is
 # idle (no turn running, queue empty). MAG_DEPLOY_DRAIN_S (default 900 s);
-# on timeout the deploy is deferred (exit 75) unless MAG_DEPLOY_FORCE=1 –
-# the queue is persisted and resumed after the restart either way.
-drain_s="${MAG_DEPLOY_DRAIN_S:-900}"; waited=0
-while :; do
-  st=$(curl -fsS --max-time 5 http://127.0.0.1:8766/api/state 2>/dev/null \
-       | python3 -c 'import json,sys;d=json.load(sys.stdin);print("%d %d"%(bool(d.get("busy")),0 if d.get("queue_paused") else int(d.get("queue",0))))' 2>/dev/null || echo "0 0")
-  read -r busy queued <<<"$st"
-  [[ "$busy" == 0 && "$queued" == 0 ]] && break
-  if (( waited == 0 )); then echo "Deploy wartet: Antwort läuft ($busy) / $queued in der Warteschlange – warte bis max. ${drain_s}s …" >&2; fi
-  if (( waited >= drain_s )); then
-    if [[ "${MAG_DEPLOY_FORCE:-0}" == 1 ]]; then echo "Drain-Timeout – MAG_DEPLOY_FORCE=1: deploye trotzdem (Warteschlange wird nach dem Neustart fortgesetzt)." >&2; break; fi
-    echo "Drain-Timeout nach ${drain_s}s: Raum ist nicht leer – Deploy verschoben (Release $RELEASE_ID bleibt unbenutzt). Später erneut ausführen oder MAG_DEPLOY_FORCE=1." >&2
-    rm -rf "$RELEASE"; exit 75
-  fi
-  sleep 5; waited=$((waited + 5))
-done
+# on timeout the deploy is deferred (exit 75) unless MAG_DEPLOY_FORCE=1.
+# A busy flag with no token progress for MAG_DEPLOY_STALE_S (default 60 s)
+# is stale: continue. The queue is persisted and resumed after the restart.
+if ! drain_room; then
+  rc=$?
+  if (( rc == 75 )); then rm -rf "$RELEASE"; exit 75; fi
+  exit "$rc"
+fi
 # A changed nginx/whois config needs the Owner smoke from a second Tailnet
 # device; otherwise smoke is the local 443 ingress check (deploy-nginx.sh).
 # nginx.stage snapshots the old vhost and validates the candidate BEFORE
@@ -350,7 +380,7 @@ systemctl enable mag-120.service
 # whois subrequest, so the new room starts first (rollback disables it).
 if ! systemctl is-active --quiet mag-120.service; then
   systemctl start mag-120.service
-  for i in {1..30}; do curl -fsS --max-time 2 -o /dev/null http://127.0.0.1:8766/readyz && break; sleep 1; done
+  for i in {1..30}; do curl -fsS --max-time 2 -o /dev/null http://127.0.0.1:8766/readyz 2>/dev/null && break; sleep 1; done
 fi
 bash "$NGINX_SYNC" activate
 bash "$NGINX_SYNC" smoke
@@ -358,10 +388,13 @@ bash "$NGINX_SYNC" smoke
 # proxy's upstream check) trust Let's Encrypt Generation Y. Does not touch
 # golden.qcow2 or any model unit.
 bash "$SOURCE/ops/trust/install-trust.sh"
-# Prove that the actual host-side libcurl CA bundle validates the public
-# Free MCP and that the 4 essential tools are available. Do not roll out a
-# room whose automatic MCP cannot even initialize. TLS verification stays ON.
-bash "$SOURCE/ops/trust/probe-free-mcp.sh"
+# Prove the audited proxy can reach the public Free MCP. nginx is already
+# switched and the room process is still the previous healthy one. A 429,
+# timeout, or other probe miss must not roll that room back. TLS stays ON.
+# Does not restart mag-llm (NUMA 0 stays loaded).
+if ! bash "$SOURCE/ops/trust/probe-free-mcp.sh"; then
+  echo 'WARN: free MCP probe failed; not rolling back a healthy room' >&2
+fi
 systemctl restart mag-120.service
 systemctl enable --now mag-browser-webrtc.service
 systemctl restart mag-browser-webrtc.service

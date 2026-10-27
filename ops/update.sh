@@ -51,8 +51,14 @@ fi
 
 phase deploy
 if (( DEPLOY )); then
-  if [[ -n ${MAG_ROOM_LAYOUT:-} ]]; then
-    run sudo env MAG_ROOM_LAYOUT="$MAG_ROOM_LAYOUT" bash "$ROOT/ops/deploy.sh"
+  # sudo resets the environment. Drain/force/layout must be passed explicitly
+  # or a forced deploy still waits the full MAG_DEPLOY_DRAIN_S default (900s).
+  deploy_env=()
+  for name in MAG_ROOM_LAYOUT MAG_DEPLOY_DRAIN_S MAG_DEPLOY_FORCE MAG_DEPLOY_STALE_S; do
+    if [[ -n ${!name:-} ]]; then deploy_env+=("$name=${!name}"); fi
+  done
+  if ((${#deploy_env[@]})); then
+    run sudo env "${deploy_env[@]}" bash "$ROOT/ops/deploy.sh"
   else
     run sudo bash "$ROOT/ops/deploy.sh"
   fi

@@ -2194,9 +2194,14 @@ static std::string pho_once(int idx,WireSession &w,const std::string &key,
   if(w.compression&&pho::eligible(original)) {
     const auto encoded=pho::encode(original).text;
     if(encoded!=original) {
-      const auto candidate=std::string("[PhO-Compress] ")+encoded;
-      before=pho_tokens(idx,original);if(before>0)after=pho_tokens(idx,candidate);
-      if(before>0&&after>0&&after<before)selected=candidate;
+      // No per-turn "[PhO-Compress] " label. On the DeepSeek V4 Flash and
+      // Qwen3.8 tokenizers that literal is 7 tokens once its trailing space
+      // merges into the next word (8 alone). Live 10–18 token turns only
+      // lose about one token to articles and 1-for-1 stems, so the label
+      // made tokens_after = tokens_before + 6 and every attempt was rejected.
+      // pho::instruction already tells the model how to read compact history.
+      before=pho_tokens(idx,original);if(before>0)after=pho_tokens(idx,encoded);
+      if(before>0&&after>0&&after<before)selected=encoded;
       std::cerr<<"pho-compress model="<<bot_model_id(idx)<<" tokens_before="<<before
                <<" tokens_after="<<after<<" accepted="<<(selected!=original?1:0)<<std::endl;
     }

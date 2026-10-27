@@ -3517,6 +3517,7 @@ class PhoCompress(unittest.TestCase):
    self.assertTrue(accepted,'older ordinary prose must be archived compactly for '+b['model'])
    for r in accepted:
     self.assertLess(r['tokens_after'],r['tokens_before'])
+    self.assertNotIn('[PhO-Compress]',r['content'])
     if '001234' in r['original']:
      for literal in ('001234','-1.23e-4','https://example.test/a?x=12','user_id-ABC_123'):
       self.assertIn(literal,r['content'])
@@ -3550,7 +3551,7 @@ class PhoCompress(unittest.TestCase):
    previous=None;rolled=None
    for n in range(32):
     call=self.send(b['id'],self.PROSE*13+' Lange Historie '+str(n))
-    if any('[PhO-Compress]' in m.get('content','') for m in call['messages'][2:]):
+    if any('today bund' in m.get('content','') for m in call['messages'][2:]):
      rolled=call
      if previous:
       recent=[m for m in previous['messages'] if m.get('role')=='user'][-2:]

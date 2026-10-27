@@ -65,14 +65,31 @@ class LiveHighlight(unittest.TestCase):
     # The overlay updates on the next browser frame. Wait for the NEW target
     # rather than accidentally sampling the previous target's outline.
     # Still assert exact positioning/size below: a stale or misplaced box fails.
+    # Compute expected geometry inside each browser frame: the browser
+    # preview can change its width while asynchronous room state is loading.
+    # A captured pre-frame rectangle is stale even if the overlay is correct.
+    try:
+     room.wait_for_function("""b => {
+       const c=document.querySelector('#screen'),e=document.querySelector('#browser-overlay .lh-box');
+       if(!c||!e)return false;
+       const r=e.getBoundingClientRect(),cr=c.getBoundingClientRect();
+       const s=Math.min(cr.width/1440,cr.height/900);
+       const [px,py]=magStreamOrigin(c);
+       const want={x:cr.left+(cr.width-1440*s)*px+b.x*s,
+         y:cr.top+(cr.height-900*s)*py+b.y*s,w:b.w*s,h:b.h*s};
+       return Math.abs(r.x+3-want.x)<3 && Math.abs(r.y+3-want.y)<3 &&
+              Math.abs(r.width-6-want.w)<3 && Math.abs(r.height-6-want.h)<3;
+     }""",arg=b,timeout=4000)
+    except Exception:
+     print('HIGHLIGHT_TIMEOUT:',room.evaluate("""() => ({
+       selected:document.querySelector('#browser-agent')?.value,
+       box:document.querySelector('.lh-box')?.getBoundingClientRect().toJSON(),
+       screen:document.querySelector('#screen')?.getBoundingClientRect().toJSON(),
+       visible:!document.querySelector('#screen')?.hidden,
+       active:window.magLiveHighlight?.enabled()
+     })"""),flush=True)
+     raise
     want=canvas_pos(b)
-    room.wait_for_function("""want => {
-      const e=document.querySelector('#browser-overlay .lh-box');
-      if(!e)return false;
-      const r=e.getBoundingClientRect();
-      return Math.abs(r.x+3-want.x)<3 && Math.abs(r.y+3-want.y)<3 &&
-             Math.abs(r.width-6-want.w)<3 && Math.abs(r.height-6-want.h)<3;
-    }""",arg=want,timeout=2500)
     got=box.bounding_box()
     if abs(got['x']+3-want['x'])>=3 or abs(got['y']+3-want['y'])>=3:
      diag=room.evaluate("""()=>{const c=document.querySelector('#screen'),v=document.querySelector('#browser-view'),o=document.querySelector('#browser-overlay'),b=document.querySelector('.lh-box');return {

@@ -3809,7 +3809,8 @@ class PhoCompress(unittest.TestCase):
   self.assertIn('function phoGainText(',html)
   self.assertIn("return phoK(before)+' → '+phoK(after)+' Tokens (−'+pct+'%)'",html)
   self.assertIn("className='pho-gain'",html)
-  self.assertNotIn("chip:'PhO −'+pct+' %'",html)
+  self.assertIn("return pct==null?'':'PhO −'+pct+' %'",html)
+  self.assertIn('function paintRoomLine(',html)
   self.assertIn('async function roomRetry(',html)
   self.assertIn("roomLink('Verbinde neu…')",html)
  def test_08_aged_history_is_compressed_and_the_prefix_stays_cacheable(self):

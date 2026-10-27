@@ -119,8 +119,10 @@ class LiveHighlight(unittest.TestCase):
    })"""),flush=True)
    assert_box(u)
    ev({'action':'type','box':u,'text':'chris@example.org'})
+   # The typing caption is intentionally transient. Observe it before the
+   # separate animation/geometry assertion may consume that short window.
+   room.wait_for_function("()=>document.querySelector('#browser-overlay .bo-type')?.textContent.includes('chris@example.org')",timeout=2500)
    assert_box(u)
-   room.wait_for_function("()=>document.querySelector('#browser-overlay .bo-type')?.textContent.includes('chris@example.org')",timeout=4000)
    # secret field: dots only (server sends masked; client also refuses a leaked value)
    p=boxes['pw'];ev({'action':'type','box':p,'masked':True,'text':FIELD_VALUE})
    print('HIGHLIGHT_MASKED_EVENT:',room.evaluate("""()=>({

@@ -3451,6 +3451,46 @@ class MixedNuma(unittest.TestCase):
  wait_idle=Native.wait_idle
  ask=ConfiguredNuma.ask
  bots=ConfiguredNuma.bots
+ MIXED_MODELS=('deepseek-v4-flash-0731','qwen3.8-flash-next-uncensored')
+ def _prewarm_count(self):
+  logp=self.tmp_path.joinpath('server.log')
+  if not logp.exists():return 0
+  return len([ln for ln in logp.read_text().splitlines() if 'prompt-prewarm' in ln])
+ def _prewarm_since(self,seen):
+  logp=self.tmp_path.joinpath('server.log')
+  if not logp.exists():return []
+  return [ln for ln in logp.read_text().splitlines() if 'prompt-prewarm' in ln][seen:]
+ def _wait_until(self,pred,timeout=20):
+  end=time.monotonic()+timeout
+  while time.monotonic()<end:
+   if pred():return True
+   time.sleep(.02)
+  return False
+ def _wait_prewarm_models(self,seen,pred,models=None,timeout=20,what='prewarm'):
+  models=models or self.MIXED_MODELS
+  got={}
+  def ready():
+   lines=self._prewarm_since(seen)
+   found={}
+   for m in models:
+    hit=[ln for ln in lines if 'model='+m in ln]
+    if hit and pred(hit[-1]):found[m]=hit[-1]
+   if len(found)==len(models):
+    got.clear();got.update(found);return True
+   return False
+  if self._wait_until(ready,timeout):return got
+  log=self.tmp_path.joinpath('server.log').read_text()[-1600:] if self.tmp_path.joinpath('server.log').exists() else ''
+  self.fail(what+': '+log)
+ def _wait_paths(self,mark,pred,timeout=20,what='paths'):
+  found=[]
+  def ready():
+   got=list(Model.paths)[mark:]
+   if pred(got):
+    found.clear();found.extend(got);return True
+   return False
+  if self._wait_until(ready,timeout):return found
+  sample=[(p[0],p[1],p[3].get('model') if isinstance(p[3],dict) else None) for p in list(Model.paths)[mark:][-12:]]
+  self.fail(what+': '+repr(sample))
  def test_01_per_node_identity_and_preset(self):
   s=self.request('/api/state');bots=s['agents']
   self.assertEqual([(b['slot'],b['model'],b['name']) for b in bots],[(1,'deepseek-v4-flash-0731','DeepSeek V4 Flash'),(2,'qwen3.8-flash-next-uncensored','Qwen3.8 Uncensored')])
@@ -3476,12 +3516,9 @@ class MixedNuma(unittest.TestCase):
   self.stop();Model.slot_snapshot=[{'id':0,'n_prompt_tokens':4321}]
   self.env['MAG_ROOM_PREWARM']='1'
   try:
-   mark=len(Model.paths);self.start()
-   for _ in range(150):
-    log=self.tmp_path.joinpath('server.log').read_text()
-    if all('prompt-prewarm model='+m in log and 'skipped=ram' in log for m in ('deepseek-v4-flash-0731','qwen3.8-flash-next-uncensored')):break
-    time.sleep(.02)
-   time.sleep(.1)
+   seen=self._prewarm_count();mark=len(Model.paths);self.start()
+   self._wait_prewarm_models(seen,lambda ln:'skipped=ram' in ln,
+    what='restart did not skip both warm RAM slots')
    self.assertEqual([p for p in list(Model.paths)[mark:] if p[0].startswith('/slots/') or p[0]=='/v1/chat/completions'],[])
   finally:
    self.stop();Model.slot_snapshot=[];self.env['MAG_ROOM_PREWARM']='0';self.start()
@@ -3523,20 +3560,15 @@ class MixedNuma(unittest.TestCase):
   Model.prefix_miss_s=6
   self.env['MAG_ROOM_PREWARM']='1'
   try:
-   logp=self.tmp_path.joinpath('server.log')
-   seen=logp.read_text().count('prompt-prewarm') if logp.exists() else 0
-   mark=len(Model.paths);self.start()
-   for _ in range(150):
-    lines=[ln for ln in logp.read_text().splitlines() if 'prompt-prewarm' in ln][seen:]
-    if len(lines)>=2:break
-    time.sleep(.05)
-   else:self.fail('stale hash did not prewarm both slots: '+logp.read_text()[-800:])
-   lines=[ln for ln in logp.read_text().splitlines() if 'prompt-prewarm' in ln][-2:]
-   for ln in lines:
+   seen=self._prewarm_count();mark=len(Model.paths);self.start()
+   got=self._wait_prewarm_models(seen,
+    lambda ln:'skipped=ram' not in ln and ('skipped=hash' in ln or 'saved=1' in ln or 'restored=1' in ln),
+    what='stale hash did not prewarm both slots')
+   for ln in got.values():
     self.assertNotIn('skipped=ram',ln,'must not skip leftover RAM when the prefix hash changed')
-    self.assertTrue('skipped=hash' in ln or 'saved=1' in ln or 'restored=1' in ln,ln)
-   warmed=[p for p in list(Model.paths)[mark:] if p[0]=='/v1/chat/completions' or str(p[0]).endswith(('restore','save'))]
-   self.assertTrue(warmed,'stale hash must restore or prewarm the room prefix')
+   self._wait_paths(mark,
+    lambda ps:{p[1] for p in ps if p[0]=='/v1/chat/completions' or str(p[0]).endswith(('restore','save'))}>={'0','1'},
+    what='stale hash must restore or prewarm both backends')
    self._assert_first_hi_both(prev)
   finally:
    Model.prefix_miss_s=0;Model.slot_snapshot=[]
@@ -3555,10 +3587,9 @@ class MixedNuma(unittest.TestCase):
   self.stop();Model.slot_snapshot=[{'id':0,'n_prompt_tokens':4321,'prompt':'cached-prefix'}]
   self.env['MAG_ROOM_PREWARM']='1'
   try:
-   mark=len(Model.paths);self.start()
-   for _ in range(150):
-    if 'skipped=ram' in self.tmp_path.joinpath('server.log').read_text():break
-    time.sleep(.02)
+   seen=self._prewarm_count();mark=len(Model.paths);self.start()
+   self._wait_prewarm_models(seen,lambda ln:'skipped=ram' in ln,
+    models=('deepseek-v4-flash-0731',),what='prefix-stable restart did not skip warm RAM')
    self.assertFalse([p for p in list(Model.paths)[mark:] if p[0]=='/v1/chat/completions' and p[3].get('max_tokens')==1 and p[3].get('model')=='deepseek-v4-flash-0731'])
    third,_=self.ask(bot['id'])
    self.assertEqual(third['messages'][0]['content'],system)
@@ -3578,11 +3609,9 @@ class MixedNuma(unittest.TestCase):
   Model.delay=3
   started=time.monotonic()
   try:
-   mark=len(Model.paths);self.start()
-   for _ in range(80):
-    if 'skipped=ram' in self.tmp_path.joinpath('server.log').read_text():break
-    time.sleep(.05)
-   else:self.fail('prewarm did not skip a slot that already holds the prefix')
+   seen=self._prewarm_count();mark=len(Model.paths);self.start()
+   self._wait_prewarm_models(seen,lambda ln:'skipped=ram' in ln,
+    what='prewarm did not skip a slot that already holds the prefix')
    self.assertFalse([p for p in list(Model.paths)[mark:] if p[0]=='/v1/chat/completions'])
    before=len([p for p in Model.paths if p[0]=='/v1/chat/completions'])
    bot=next(iter(self.bots()))
@@ -3626,15 +3655,12 @@ class MixedNuma(unittest.TestCase):
   Model.prefix_miss_s=6
   self.env['MAG_ROOM_PREWARM']='1'
   try:
-   logp=self.tmp_path.joinpath('server.log')
-   seen=logp.read_text().count('prompt-prewarm') if logp.exists() else 0
-   mark=len(Model.paths);self.start()
-   for _ in range(150):
-    if logp.read_text().count('prompt-prewarm')>=seen+2:break
-    time.sleep(.05)
-   else:self.fail('restart did not settle both slots: '+logp.read_text()[-800:])
+   seen=self._prewarm_count();mark=len(Model.paths);self.start()
+   self._wait_prewarm_models(seen,lambda ln:True,what='restart did not settle both slots')
    posted=[p for p in list(Model.paths)[mark:] if p[0]=='/v1/chat/completions']
    self.assertFalse(posted,'room restart posted a completion onto a warm slot')
+   self._wait_paths(mark,lambda ps:len([p for p in ps if str(p[0]).endswith('restore')])>=2,
+    what='both slot files must be restored after a room restart')
    restored=[p for p in list(Model.paths)[mark:] if str(p[0]).endswith('restore')]
    self.assertGreaterEqual(len(restored),2,'both slot files must be restored after a room restart')
    self.assertTrue(Model.saved_prompt.get('0') and Model.saved_prompt.get('1'),'slot save must write both files')
@@ -3747,14 +3773,9 @@ class MixedNuma(unittest.TestCase):
      'next_token':{'has_next_token':False,'n_decoded':4}}]
    Model.prefix_miss_s=6
    self.env['MAG_ROOM_PREWARM']='1'
-   logp=self.tmp_path.joinpath('server.log')
-   mark=len(Model.paths);self.start()
-   deadline=time.monotonic()+8
-   while time.monotonic()<deadline:
-    log=logp.read_text() if logp.exists() else ''
-    if 'prompt-prewarm model=qwen3.8-flash-next-uncensored' in log:break
-    time.sleep(.05)
-   else:self.fail('Qwen was not prewarmed')
+   seen=self._prewarm_count();mark=len(Model.paths);self.start()
+   self._wait_prewarm_models(seen,lambda ln:True,models=('qwen3.8-flash-next-uncensored',),
+    what='Qwen was not prewarmed')
    token=f'hi qwen {time.monotonic_ns()}'
    t0=time.monotonic()
    self.assertTrue(self._first_hi(qw,token,t0+8),'Qwen first hi exceeded the 8s hard timeout')
@@ -3790,22 +3811,16 @@ class MixedNuma(unittest.TestCase):
   Model.prefix_miss_s=6
   self.env['MAG_ROOM_PREWARM']='1'
   try:
-   logp=self.tmp_path.joinpath('server.log')
-   seen=logp.read_text().count('prompt-prewarm') if logp.exists() else 0
-   mark=len(Model.paths);self.start()
-   for _ in range(150):
-    lines=[ln for ln in logp.read_text().splitlines() if 'prompt-prewarm' in ln][seen:]
-    if len(lines)>=2:break
-    time.sleep(.05)
-   else:self.fail('leftover RAM did not prewarm both slots: '+logp.read_text()[-800:])
-   lines=[ln for ln in logp.read_text().splitlines() if 'prompt-prewarm' in ln][-2:]
-   for ln in lines:
+   seen=self._prewarm_count();mark=len(Model.paths);self.start()
+   got=self._wait_prewarm_models(seen,
+    lambda ln:'skipped=ram' not in ln and 'saved=1' in ln,
+    what='leftover RAM did not prewarm both slots')
+   for ln in got.values():
     self.assertNotIn('skipped=ram',ln,'leftover identity KV is not the room prefix')
     self.assertIn('saved=1',ln)
-   posted=[p for p in list(Model.paths)[mark:] if p[0]=='/v1/chat/completions']
-   self.assertGreaterEqual(len({p[1] for p in posted}),2,'both backends must prewarm the room prefix')
-   saved=[p for p in list(Model.paths)[mark:] if str(p[0]).endswith('save')]
-   self.assertGreaterEqual(len(saved),2,'both backends must save the slot file')
+   self._wait_paths(mark,
+    lambda ps:len({p[1] for p in ps if p[0]=='/v1/chat/completions'})>=2 and len([p for p in ps if str(p[0]).endswith('save')])>=2,
+    what='both backends must prewarm and save the room prefix')
    self._assert_first_hi_both(prev)
   finally:
    Model.prefix_miss_s=0;Model.slot_snapshot=[]

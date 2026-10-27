@@ -3685,7 +3685,14 @@ static void model_watcher_loop() {
       }
       key += "|" + health_key;
     }
-    if (backend_became_ready || (st.ready && !was_ready) || (secondary_ready && !was_secondary_ready))
+    const bool slots_pending = CONFIGURED_MODEL &&
+        env("MAG_ROOM_PREWARM", "1") == "1" &&
+        (SLOT_WARM[0].load() != 1 || SLOT_WARM[1].load() != 1);
+    // A slot that returned early, timed out on /slots, or was not yet in
+    // AGENTS must be retried. Waiting only for a ready-edge left Qwen cold
+    // (live: no prompt-prewarm line, 39s first-hi eval).
+    if (backend_became_ready || (st.ready && !was_ready) ||
+        (secondary_ready && !was_secondary_ready) || slots_pending)
       schedule_prewarm();
     else if (secondary_ready && CONFIGURED_MODEL)
       prewarm_if_prompt_changed(); // system prompt, tools, persona or bot set changed
@@ -3699,7 +3706,8 @@ static void model_watcher_loop() {
       if (CONFIGURED_MODEL) e["model_instances"] = model_instances();
       publish(mj::dump(e));
     }
-    std::this_thread::sleep_for(seconds(st.ready ? 10 : 4));
+    std::this_thread::sleep_for(
+        seconds(slots_pending ? 1 : (st.ready ? 10 : 4)));
   }
 }
 
@@ -6715,6 +6723,10 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
   {
     std::shared_lock<std::shared_mutex> turn(TURN_MTX);
     if (epoch != EPOCH.load() || bot_model_id(idx) != model) {
+      std::cerr << "prompt-prewarm model=" << model
+                << " ok=0 status=0 ms=0 ram_warm=0 restored=0 saved=0"
+                << " cancelled=0 skipped=stale prefix_changed=0 source="
+                << std::endl;
       prewarm_release(lane, "");
       return;
     }
@@ -6825,7 +6837,8 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
     if (slot >= 1 && slot <= ROOM_MAX_BOTS)
       // Leftover identity KV reports ram_warm=1. That is not the room prefix
       // unless the saved hash matches (live: skip=ram, first hi 17s / 48s).
-      SLOT_WARM[slot - 1] = (ram_warm && have_current && !prefix_changed) ? 1 : 2;
+      SLOT_WARM[slot - 1] =
+          (have_current && !prefix_changed && (ram_warm || decoded_warm)) ? 1 : 2;
   }
   auto commit_prefix_meta = [&]() {
     std::lock_guard<std::mutex> lk(PREFIX_MTX);
@@ -6839,6 +6852,10 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
     // RAM holds the room prefix we already saved. Leave it.
     skip = true;
     why = "ram";
+    if (CONFIGURED_MODEL) {
+      const int slot = model_slot(idx);
+      if (slot >= 1 && slot <= ROOM_MAX_BOTS) SLOT_WARM[slot - 1] = 1;
+    }
   } else if (CONFIGURED_MODEL && PREFIX_DISK && have_current && !slot_busy) {
     // Current-key file exists. Reload it over leftover / hash-changed RAM.
     restored = prefix_slot("restore", source);
@@ -6854,6 +6871,10 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
   } else if (listed && !identity_slot && have_current && !prefix_changed) {
     skip = true;
     why = "ram";
+    if (CONFIGURED_MODEL) {
+      const int slot = model_slot(idx);
+      if (slot >= 1 && slot <= ROOM_MAX_BOTS) SLOT_WARM[slot - 1] = 1;
+    }
   } else if (ram_known && !ram_warm) {
     // Cold first boot: restore if a current file exists, otherwise one
     // completion so the checkpoint exists.
@@ -7004,6 +7025,13 @@ static void schedule_prewarm() {
     if (shared.count(key) || lane_named(key).busy.load() ||
         (!CONFIGURED_MODEL && model_settings_for(model).deterministic))
       continue;
+    if (CONFIGURED_MODEL) {
+      const int slot = model_slot(idx);
+      // A warm slot stays put. The watcher retries only the cold one so a
+      // leftover DeepSeek skip=ram cannot starve Qwen (or the reverse).
+      if (slot >= 1 && slot <= ROOM_MAX_BOTS && SLOT_WARM[slot - 1].load() == 1)
+        continue;
+    }
     {
       std::lock_guard<std::mutex> lk(PREWARM_MTX);
       if (!PREWARM_RUNNING.insert(key).second) continue;
@@ -7030,6 +7058,8 @@ static void prewarm_if_prompt_changed() {
   turn.unlock();
   if (key == last) return;
   last = key;
+  if (CONFIGURED_MODEL)
+    for (auto &warm : SLOT_WARM) warm.store(0);
   schedule_prewarm();
 }
 // Radius query around the deterministic answer. Greedy decoding picks the
@@ -9092,6 +9122,7 @@ int main() {
             << ", max_tokens " << MAX_TOKENS << ", LLM-Timeout "
             << LLM_TIMEOUT_S << "s)"
             << ", UI " << PORT << ", Bridge " << BRIDGE_PORT << std::endl;
+  schedule_prewarm();
 
   std::thread([] {
     int bridge = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);

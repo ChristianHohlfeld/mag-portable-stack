@@ -10,7 +10,7 @@ while _mag_root != _mag_root.parent and not (_mag_root / 'ops/ci/mag_deadline.py
 _mag_sys.path.insert(0, str(_mag_root / 'ops/ci'))
 import mag_deadline as _mag_deadline
 _mag_deadline.arm(180)
-import importlib.util,pathlib,shutil,unittest
+import importlib.util,json,pathlib,shutil,unittest
 ROOT=pathlib.Path(__file__).resolve().parents[2]
 ART=pathlib.Path('/opt/cursor/artifacts')
 spec=importlib.util.spec_from_file_location('test_pwa',ROOT/'mag-room/tests/test_pwa.py');pwa=importlib.util.module_from_spec(spec);spec.loader.exec_module(pwa)
@@ -23,6 +23,12 @@ class ViewTools(unittest.TestCase):
   tmp=pathlib.Path('/tmp/mag-view-ui')
   if tmp.exists():shutil.rmtree(tmp)
   static=tmp/'static';shutil.copytree(ROOT/'mag-room/static',static)
+  # This is a browser/terminal UI test: the bot must have an assigned VM
+  # identity. The display stream itself is mocked by SETUP (no KVM host).
+  (tmp/'state').mkdir(parents=True,exist_ok=True)
+  (tmp/'state'/'agents.json').write_text(json.dumps([
+   {'id':'test','name':'Test','vm':'agent1','memory':[]}
+  ]))
   proc,log,model,ui,bridge=pwa.start_room(tmp,static,'view')
   pw=sync_playwright().start();browser=pwa.launch_chromium(pw,headless=True,args=['--no-sandbox','--disable-dev-shm-usage'])
   errors=[]
@@ -88,10 +94,9 @@ class ViewTools(unittest.TestCase):
      const ys=[...th.querySelectorAll('button')].filter(e=>e.offsetParent).map(e=>Math.round(e.getBoundingClientRect().top+e.getBoundingClientRect().height/2));
      return {nav:ov(q('#browser-view .browser-nav')),th:ov(th),rows:Math.max(...ys)-Math.min(...ys),hidden:hits.filter(x=>!x).length,doc:ov(document.documentElement)}}''')
     self.assertEqual((r['nav'],r['th'],r['doc'],r['hidden']),(0,0,0,0),(vp,r));self.assertLessEqual(r['rows'],2,(vp,r))
-    # room menu: icons/checkboxes and labels in one aligned column, same icon size
-    page.evaluate("()=>{document.getElementById('room-menu').hidden=false}")
-    m=page.evaluate('''()=>[...document.querySelectorAll('#room-menu > button, #room-menu > label')].filter(e=>e.offsetParent).map(e=>{const i=e.querySelector('svg,input').getBoundingClientRect(),t=e.querySelector('span').getBoundingClientRect();return [Math.round(i.left),Math.round(i.width),Math.round(t.left)]})''')
-    self.assertGreaterEqual(len(m),3);self.assertEqual(len({tuple(x) for x in m}),1,m)
+    # The retired room-menu must not cover the compact browser controls.
+    self.assertFalse(page.locator('#room-menu-btn').is_visible())
+    self.assertTrue(page.locator('#settings-open').is_visible())
     ctx.close()
    self.assertEqual(errors,[])
   finally:

@@ -3379,8 +3379,8 @@ class ConfiguredNuma(unittest.TestCase):
   self.wait_idle()
   def warmed(after):
    for _ in range(400):
-    got=[p for p in list(Model.paths)[after:] if p[0].startswith('/slots/') and p[3].get('filename','').startswith('mag-prefix-deepseek-v4-flash-0731') and p[0].endswith('save')]
-    if len(got)>=2:return list(Model.paths)[after:]
+    got=[p for p in list(Model.paths)[after:] if p[0].startswith('/slots/') and p[3].get('filename','').startswith('mag-prefix-deepseek-v4-flash-0731') and (p[0].endswith('save') or p[0].endswith('restore'))]
+    if len({p[1] for p in got})>=2:return list(Model.paths)[after:]
     time.sleep(.03)
    self.fail('not both bot slots prewarmed')
   self.stop();type(self).env['MAG_ROOM_PREWARM']='1'
@@ -3464,13 +3464,18 @@ class MixedNuma(unittest.TestCase):
     self.assertTrue(any(t['function']['name']=='github' for t in call['tools'])) # schema stable; execution is still gated
   before=self.bots();self.stop();self.start();self.assertEqual(self.bots(),before)
  def test_04_restart_keeps_both_warm_ram_slots(self):
-  self.wait_idle();self.stop();Model.slot_snapshot=[{'id':0,'n_prompt_tokens':4321}]
+  # RAM is trusted only after both backends saved the current prefix hash.
+  # Leftover n_prompt_tokens without that hash is not the room prefix.
+  self.wait_idle()
+  for bot in self.bots().values():self.ask(bot['id'])
+  self.assertTrue(Model.saved_prompt.get('0') and Model.saved_prompt.get('1'))
+  self.stop();Model.slot_snapshot=[{'id':0,'n_prompt_tokens':4321}]
   self.env['MAG_ROOM_PREWARM']='1'
   try:
    mark=len(Model.paths);self.start()
    for _ in range(150):
     log=self.tmp_path.joinpath('server.log').read_text()
-    if all('prompt-prewarm model='+m in log and 'ram_warm=1' in log for m in ('deepseek-v4-flash-0731','qwen3.8-flash-next-uncensored')):break
+    if all('prompt-prewarm model='+m in log and 'skipped=ram' in log for m in ('deepseek-v4-flash-0731','qwen3.8-flash-next-uncensored')):break
     time.sleep(.02)
    time.sleep(.1)
    self.assertEqual([p for p in list(Model.paths)[mark:] if p[0].startswith('/slots/') or p[0]=='/v1/chat/completions'],[])
@@ -3550,7 +3555,7 @@ class MixedNuma(unittest.TestCase):
    for _ in range(150):
     if 'skipped=ram' in self.tmp_path.joinpath('server.log').read_text():break
     time.sleep(.02)
-   self.assertFalse([p for p in list(Model.paths)[mark:] if p[0]=='/v1/chat/completions' and p[3].get('max_tokens')==1])
+   self.assertFalse([p for p in list(Model.paths)[mark:] if p[0]=='/v1/chat/completions' and p[3].get('max_tokens')==1 and p[3].get('model')=='deepseek-v4-flash-0731'])
    third,_=self.ask(bot['id'])
    self.assertEqual(third['messages'][0]['content'],system)
    self.assertEqual(json.dumps(third['tools'],sort_keys=True,ensure_ascii=False),tools)
@@ -3700,7 +3705,7 @@ class MixedNuma(unittest.TestCase):
     if any(str(p[0]).endswith('restore') for p in list(Model.paths)[mark:]):break
     time.sleep(.05)
    else:self.fail('wiped slot was not restored')
-   self.assertFalse([p for p in list(Model.paths)[mark:] if p[0]=='/v1/chat/completions'])
+   self.assertFalse([p for p in list(Model.paths)[mark:] if p[0]=='/v1/chat/completions' and p[1]=='0'])
    token=f'hi {time.monotonic_ns()}'
    t0=time.monotonic();deadline=t0+8
    self.request('/api/message',{'text':token,'bots':[bot['id']]})

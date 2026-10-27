@@ -106,6 +106,52 @@ class RoomE2E(unittest.TestCase):
         self.room.until(lambda s: not s['busy'], timeout=3)
         self.assertTrue(Model.disconnects, 'model request closed')
 
+    def test_02b_stop_is_immediate_on_phone_and_desktop(self):
+        # One tap shows Stoppt… before the model thread unwinds. A second tap
+        # does not send. Reasoning never appears in the live answer. No
+        # contentless Denkt-nach card. 390x844 and a desktop window.
+        for width, height in ((390, 844), (1280, 800)):
+            reset_model()
+            self.room.until(lambda s: not s['busy'], timeout=3)
+            self.room.api('/api/queue', method='DELETE')
+            self.room.api('/api/queue/resume', {})
+            page = self.browser.new_page(viewport={'width': width, 'height': height})
+            try:
+                page.goto(f'http://127.0.0.1:{self.room.ui}/')
+                expect(page.locator('#connection')).to_contain_text('Verbunden', timeout=10000)
+                Model.scripts.append([
+                    {'reasoning_content': 'Nicht zeigen 8191 '},
+                    '<think>Nicht zeigen 8192</think>',
+                    {'_hold': 30},
+                ])
+                page.locator('#message').fill('Halt bitte')
+                page.locator('#message').press('Enter')
+                wait_calls(1)
+                time.sleep(.3)
+                button = page.locator('#send-button')
+                expect(button).to_have_attribute('data-mode', 'stop', timeout=5000)
+                live = page.locator('.message.assistant .content').last
+                expect(live).to_be_attached()
+                self.assertNotIn('Nicht zeigen', live.inner_text())
+                self.assertEqual(page.locator('.work-steps', has_text='Denkt nach').count(), 0)
+                t0 = time.monotonic()
+                seen = page.evaluate("""()=>{
+                  const b=document.getElementById('send-button');
+                  b.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,cancelable:true}));
+                  b.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,cancelable:true}));
+                  return b.getAttribute('aria-label');
+                }""")
+                self.assertEqual(seen, 'Stoppt…')
+                self.assertLess(time.monotonic() - t0, 0.4, 'stop paints before the request returns')
+                expect(button).to_have_attribute('data-mode', 'send', timeout=3000)
+                self.room.until(lambda s: not s['busy'], timeout=3)
+                self.assertTrue(Model.disconnects, 'llama stream closed without a service restart')
+                text = '\n'.join(page.locator('.message.assistant .content').all_inner_texts())
+                self.assertNotIn('Nicht zeigen', text)
+                self.assertNotIn('<think>', text)
+            finally:
+                page.close()
+
     def test_03_escape_stops(self):
         p = self.page
         Model.scripts.append([{'_hold': 30}])
@@ -242,64 +288,50 @@ class RoomE2E(unittest.TestCase):
         finally:
             self.room.api('/api/bot-settings', {'scope': 'room', 'pho_compress': True}, method='PUT')
 
-    def test_05e_pho_percent_reuses_the_toggle_and_status_line(self):
-        # 390x844: the saving replaces the existing "an" state and, only while
-        # the 22px queue line is already open, sits in that line. Composer
-        # height does not change when the number appears or disappears.
-        p = self.browser.new_page(viewport={'width': 390, 'height': 844},
-                                  is_mobile=True, has_touch=True)
-        try:
-            p.goto(f'http://127.0.0.1:{self.room.ui}/')
-            expect(p.locator('#connection')).to_contain_text('Verbunden', timeout=10000)
-            p.evaluate("""()=>{
-              const a=state.agents[0];
-              a.pho_compress=true;
-              a.pho_save={last_before:35,last_after:27,session_before:100,session_after:77};
-              state.agents.push({id:'b',name:'Beta',pho_compress:true,color:'#48f',
-                pho_save:{last_before:10,last_after:8,session_before:50,session_after:40}});
-              selected.add('b');
-              syncBotSwitches();
-            }""")
-            idle=p.evaluate("document.querySelector('.composer-inner').getBoundingClientRect().height")
-            self.assertFalse(p.locator('#queue-chips').is_visible())
-            self.assertEqual(p.locator('.pho-save').count(), 0)
-            p.click('#plus')
-            expect(p.locator('#plus-pho')).to_contain_text('PhO-Compress')
-            expect(p.locator('#plus-pho-state')).to_have_text('−22 %')
-            tip=p.locator('#plus-pho').get_attribute('title')
-            self.assertIn('35→27', tip)
-            self.assertIn('100→77', tip)
-            self.assertIn('10→8', tip)
-            self.assertIn('50→40', tip)
-            self.assertIn('Alpha', tip)
-            self.assertIn('Beta', tip)
-            box=p.locator('#plus-menu').bounding_box()
-            self.assertGreaterEqual(box['x'], -1)
-            self.assertLessEqual(box['x']+box['width'], 391)
-            self.assertLessEqual(p.evaluate('document.documentElement.scrollWidth-innerWidth'), 1)
-            p.keyboard.press('Escape')
-            self.assertEqual(p.evaluate("document.querySelector('.composer-inner').getBoundingClientRect().height"), idle)
-            p.evaluate("""()=>{
-              renderQueue({pending:[{id:'q1',text:'wartet hier',held:false}],paused:false,revision:999999});
-            }""")
-            expect(p.locator('#queue-chips .pho-save')).to_have_text('PhO −22 %')
-            queued=p.locator('#queue-chips').bounding_box()['height']
-            self.assertLessEqual(queued, 26)
-            self.assertLessEqual(p.evaluate('document.documentElement.scrollWidth-innerWidth'), 1)
-            p.evaluate("""()=>{state.agents.forEach(a=>a.pho_compress=false);syncBotSwitches()}""")
-            expect(p.locator('#plus-pho-state')).to_have_text('aus')
-            self.assertEqual(p.locator('.pho-save').count(), 0)
-            self.assertEqual(p.locator('#queue-chips').bounding_box()['height'], queued)
-            p.evaluate("""()=>{
-              state.agents.forEach(a=>{a.pho_compress=true;delete a.pho_save});
-              syncBotSwitches();
-            }""")
-            expect(p.locator('#plus-pho-state')).to_have_text('an')
-            self.assertEqual(p.locator('.pho-save').count(), 0)
-            self.assertEqual(p.locator('#queue-chips').bounding_box()['height'], queued)
-            self.assertNotIn('→', p.locator('#plus-pho').get_attribute('title'))
-        finally:
-            p.close()
+    def test_05e_compression_gain_sits_on_the_message(self):
+        # The saving is one line on the compressed message. It is not a
+        # percentage in the plus menu, the queue, or a second copy.
+        for width, height, touch in ((390, 844, True), (1280, 800, False)):
+            p = self.browser.new_page(viewport={'width': width, 'height': height},
+                                      is_mobile=touch, has_touch=touch)
+            try:
+                p.goto(f'http://127.0.0.1:{self.room.ui}/')
+                p.wait_for_selector('#send-button', timeout=3000)
+                p.evaluate("""()=>{
+                  state.room=[{id:'old',role:'user',name:'Du',content:'Alter Verlauf',
+                    pho_before:12400,pho_after:3100,ts:1}];
+                  state.agents[0].pho_compress=true;
+                  render();
+                  syncBotSwitches();
+                }""")
+                gain = p.locator('.message .pho-gain')
+                expect(gain).to_have_count(1, timeout=3000)
+                expect(gain).to_have_text('12.4k → 3.1k Tokens (−75%)', timeout=3000)
+                box = p.evaluate("""()=>{
+                  const g=document.querySelector('.message .pho-gain');
+                  const msg=g.closest('.message');
+                  const gb=g.getBoundingClientRect(), mb=msg.getBoundingClientRect();
+                  const cs=getComputedStyle(g);
+                  return {inside:g.parentElement===msg,
+                    above:gb.bottom<=mb.bottom+1, left:gb.left>=mb.left-1,
+                    right:gb.right<=mb.right+1, h:gb.height,
+                    border:cs.borderTopWidth, bg:cs.backgroundColor,
+                    copies:document.querySelectorAll('.pho-gain').length};
+                }""")
+                self.assertTrue(box['inside'])
+                self.assertTrue(box['above'])
+                self.assertTrue(box['left'] and box['right'])
+                self.assertLessEqual(box['h'], 18)
+                self.assertEqual(box['border'], '0px')
+                self.assertEqual(box['copies'], 1)
+                self.assertEqual(p.locator('.pho-save').count(), 0)
+                self.assertEqual(p.locator('#queue-chips .pho-gain').count(), 0)
+                self.assertEqual(p.locator('.composer-wrap .pho-gain').count(), 0)
+                p.click('#plus')
+                expect(p.locator('#plus-pho-state')).to_have_text('an', timeout=3000)
+                self.assertNotIn('%', p.locator('#plus-pho').inner_text())
+            finally:
+                p.close()
 
     def test_06_message_after_stop_runs_and_held_queue_waits(self):
         p = self.page
@@ -435,6 +467,173 @@ class RoomE2E(unittest.TestCase):
             p.screenshot(path=str(SHOTS / '07-mobile-drawer.png'))
             p.keyboard.press('Escape')
             expect(p.locator('#left-panel')).to_be_hidden()
+        finally:
+            p.close()
+
+
+    def test_09_reset_opens_on_one_tap_and_banner_stays_one_line(self):
+        # One tap/click opens Bot zurücksetzen. The same gesture must not
+        # dismiss the dialog. The model line stays 22px and names both bots.
+        for width, height, touch in ((390, 844, True), (1280, 800, False)):
+            page = self.browser.new_page(
+                viewport={'width': width, 'height': height},
+                is_mobile=touch, has_touch=touch)
+            try:
+                page.goto(f'http://127.0.0.1:{self.room.ui}/')
+                page.wait_for_selector('#send-button')
+                page.evaluate("""()=>{
+                  state.agents=[
+                    {id:'ds',name:'DeepSeek',vm:'agent1',model:'deepseek-v4-flash-0731',slot:1},
+                    {id:'qw',name:'Qwen',vm:'agent2',model:'qwen3.8-flash-next-uncensored',slot:2}
+                  ];
+                  state.model_instances=[
+                    {slot:1,model:'deepseek-v4-flash-0731',label:'DeepSeek',state:'down'},
+                    {slot:2,model:'qwen3.8-flash-next-uncensored',label:'Qwen',state:'ok'}
+                  ];
+                  state.busy=false; busyBots=new Set();
+                  selected=new Set(['ds']);
+                  renderData();
+                  document.getElementById('settings-dialog').showModal();
+                }""")
+                btn = page.locator('#work-areas button', has_text='Bot zurücksetzen').first
+                btn.scroll_into_view_if_needed()
+                box = btn.bounding_box()
+                if touch:
+                    page.touchscreen.tap(box['x'] + box['width'] / 2, box['y'] + box['height'] / 2)
+                else:
+                    btn.click()
+                modal = page.locator('#mag-modal')
+                expect(modal).to_be_visible()
+                expect(page.locator('#mag-modal-title')).to_have_text('Bot zurücksetzen')
+                page.wait_for_timeout(300)
+                expect(modal).to_be_visible()
+                self.assertNotIn('Tooltip', page.locator('#mag-modal-text').inner_text())
+                page.locator('#mag-modal-cancel').click()
+                expect(modal).to_be_hidden()
+                page.evaluate("""()=>{
+                  document.getElementById('settings-dialog').close();
+                  modelStatus({state:'offline',ready:false,label:'Modell-Backend nicht erreichbar',detail:'Port 8191'});
+                }""")
+                banner = page.locator('#model-banner')
+                expect(banner).to_be_visible()
+                text = banner.inner_text()
+                self.assertIn('DeepSeek nicht erreichbar', text)
+                self.assertIn('Qwen bereit', text)
+                self.assertNotIn('Tooltip', text)
+                self.assertNotIn('nicht verfügbar', text)
+                h0 = banner.bounding_box()['height']
+                self.assertLessEqual(h0, 24)
+                wrap0 = page.locator('.composer-wrap').bounding_box()['height']
+                banner.locator('.model-banner-line').click()
+                self.assertIn('Modell-Backend nicht erreichbar', banner.inner_text())
+                self.assertIn('Port 8191', banner.inner_text())
+                self.assertEqual(banner.bounding_box()['height'], h0)
+                self.assertEqual(page.locator('.composer-wrap').bounding_box()['height'], wrap0)
+                page.locator('.model-banner-switch').click()
+                self.assertEqual(page.evaluate('[...selected]'), ['qw'])
+                page.evaluate("""()=>{
+                  state.model_instances[0].state='busy';
+                  busyBots=new Set(['ds']);
+                  modelStatus({state:'prefilling',ready:false,label:'prefilling',detail:'slot 0'});
+                }""")
+                shown = banner.inner_text()
+                self.assertIn('beschäftigt', shown)
+                self.assertNotIn('nicht verfügbar', shown)
+                self.assertNotIn('Tooltip', shown)
+            finally:
+                page.close()
+
+
+    def test_10_toasts_stay_above_the_composer(self):
+        # Phone portrait, phone landscape, and desktop. Bot info and the
+        # delete toast must sit above the composer, including its status line.
+        def overlaps(a, b):
+            return not (a['x'] + a['width'] <= b['x'] or b['x'] + b['width'] <= a['x']
+                        or a['y'] + a['height'] <= b['y'] or b['y'] + b['height'] <= a['y'])
+
+        for width, height, touch in ((390, 844, True), (844, 390, True), (1280, 800, False)):
+            page = self.browser.new_page(
+                viewport={'width': width, 'height': height},
+                is_mobile=touch, has_touch=touch)
+            try:
+                page.goto(f'http://127.0.0.1:{self.room.ui}/')
+                page.wait_for_selector('#send-button')
+                page.evaluate("""()=>{
+                  const banner=document.getElementById('model-banner');
+                  banner.hidden=false;
+                  banner.textContent='Modell beschäftigt';
+                  showUndo('Nachricht gelöscht','undo-1');
+                  notice('Bot info');
+                  placeToasts();
+                }""")
+                composer = page.locator('.composer-wrap').bounding_box()
+                self.assertIsNotNone(composer)
+                for sel in ('#undo-toast', '#notice'):
+                    box = page.locator(sel).bounding_box()
+                    self.assertIsNotNone(box, sel)
+                    self.assertFalse(overlaps(box, composer), f'{sel} covers the composer at {width}x{height}')
+                    self.assertLessEqual(box['y'] + box['height'], composer['y'] + 1, sel)
+                    self.assertLessEqual(box['height'], 36, sel)
+                self.assertIn('Nachricht gelöscht', page.locator('#undo-toast').inner_text())
+                self.assertEqual(page.locator('#notice').inner_text(), 'Bot info')
+            finally:
+                page.close()
+
+
+    def test_11_clear_retries_through_a_restart(self):
+        # A restart answers 503. The clear is kept and retried; the only
+        # status is the slim line, and the test itself dies at 4s.
+        p = self.browser.new_page(viewport={'width': 390, 'height': 844},
+                                  is_mobile=True, has_touch=True)
+        try:
+            p.goto(f'http://127.0.0.1:{self.room.ui}/')
+            p.wait_for_selector('#send-button', timeout=3000)
+            p.evaluate("""()=>{
+              const orig=window.fetch;
+              window.__clearPosts=0;
+              window.__roomRelink='';
+              let stateFails=0, cleared=false;
+              window.fetch=async function(url, opts){
+                const u=String(url);
+                if(u.includes('/api/room/clear')){
+                  window.__clearPosts++;
+                  if(window.__clearPosts<=2)
+                    return new Response(JSON.stringify({error:'Raum nicht erreichbar'}),
+                      {status:503,statusText:'Service Unavailable',
+                       headers:{'Content-Type':'application/json'}});
+                  cleared=true;
+                }
+                if(cleared && u.includes('/api/state') && stateFails<1){
+                  stateFails++;
+                  return new Response('down',{status:502,statusText:'Bad Gateway'});
+                }
+                return orig(url, opts);
+              };
+              state.busy=false; state.pending=[]; busyBots=new Set();
+              ROOM_RETRY.base=800; ROOM_RETRY.cap=800; ROOM_RETRY.limit=4000;
+              document.getElementById('reset').hidden=false;
+              document.getElementById('settings-dialog').showModal();
+            }""")
+            p.locator('#reset').click(timeout=3000)
+            p.wait_for_function("window.__roomRelink==='Verbinde neu…'", timeout=3000)
+            link = p.locator('#room-link')
+            expect(link).to_be_visible(timeout=3000)
+            expect(link).to_have_text('Verbinde neu…', timeout=3000)
+            place = p.evaluate("""()=>{
+              const el=document.getElementById('room-link');
+              const msg=document.getElementById('message');
+              const eb=el.getBoundingClientRect(), mb=msg.getBoundingClientRect();
+              return {inComposer:!!el.closest('.composer-wrap'),
+                above:eb.bottom<=mb.top+1, h:eb.height,
+                border:getComputedStyle(el).borderTopWidth};
+            }""")
+            self.assertTrue(place['inComposer'])
+            self.assertTrue(place['above'])
+            self.assertLessEqual(place['h'], 24)
+            self.assertEqual(place['border'], '0px')
+            p.wait_for_function('window.__clearPosts>=3', timeout=4000)
+            expect(p.locator('#notice')).not_to_have_text('Raum nicht erreichbar', timeout=3000)
+            expect(link).to_be_hidden(timeout=3000)
         finally:
             p.close()
 

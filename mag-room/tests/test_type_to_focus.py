@@ -13,7 +13,7 @@ while _mag_root != _mag_root.parent and not (_mag_root / 'ops/ci/mag_deadline.py
 _mag_sys.path.insert(0, str(_mag_root / 'ops/ci'))
 import mag_deadline as _mag_deadline
 _mag_deadline.arm(180)
-import pathlib, sys, threading, unittest
+import os, pathlib, sys, threading, unittest
 from http.server import ThreadingHTTPServer
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
@@ -30,10 +30,7 @@ class TypeToFocus(unittest.TestCase):
         cls.server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
         threading.Thread(target=cls.server.serve_forever, daemon=True).start()
         cls.pw = sync_playwright().start()
-        try:
-            cls.browser = cls.pw.chromium.launch(args=['--no-sandbox'])
-        except Exception:
-            cls.browser = cls.pw.chromium.launch(channel='chrome', args=['--no-sandbox'])
+        cls.browser = cls.pw.chromium.launch(args=['--no-sandbox'], **({'executable_path': os.environ['MAG_CHROME']} if os.environ.get('MAG_CHROME') else {}))
 
     @classmethod
     def tearDownClass(cls):

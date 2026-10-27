@@ -468,12 +468,16 @@ mag_systemctl restart mag-browser-webrtc.service
 # /readyz = Raum bereit (Modellstatus steht im JSON, ist aber kein Rollback-Grund)
 wait_http http://127.0.0.1:8766/readyz
 wait_http http://127.0.0.1:18784/health
-# Both NUMA slots must already hold a prefix a first hi can extend in under
-# 5s. Keep the release either way: rolling back restarts mag-120, and this
-# never restarts mag-llm-ds-node@0.
-if ! bash "$SOURCE/ops/deploy-warm-hi.sh"; then
-  echo 'WARN: warm hi gate failed; keeping this release and not restarting mag-llm' >&2
+# Both NUMA slots must already hold a prefix, and a real room hi must show
+# each bot's first token in under 5s. Failure rolls the release back.
+# rollback restarts mag-120 only; it does not restart mag-llm.
+if ! MAG_WARM_HI_REQUIRE_ROOM=1 bash "$SOURCE/ops/deploy-warm-hi.sh"; then
+  echo 'warm hi gate failed; rolling back this release. Not restarting mag-llm.' >&2
+  exit 1
 fi
+# Proactive stays held through the gate so it cannot occupy a slot or sit
+# in front of this hi. Release it now that both answers were visible.
+release_selftalk_hold
 # Revalidate the new room through the already-verified nginx ingress.
 bash "$NGINX_SYNC" smoke
 /usr/local/bin/magbot status

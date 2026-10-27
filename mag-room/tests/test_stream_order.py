@@ -38,7 +38,7 @@ class StreamOrder(unittest.TestCase):
         static = tmp / 'static'; shutil.copytree(ROOT / 'mag-room/static', static)
         proc, log, model, ui, bridge = pwa.start_room(tmp, static, 'so')
         pw = sync_playwright().start()
-        browser = pw.chromium.launch(channel='chrome', headless=True, args=['--no-sandbox', '--disable-dev-shm-usage'])
+        browser = pwa.launch_chromium(pw, headless=True, args=['--no-sandbox', '--disable-dev-shm-usage'])
         errors = []
         try:
             page = browser.new_page(viewport={'width': 1200, 'height': 900})

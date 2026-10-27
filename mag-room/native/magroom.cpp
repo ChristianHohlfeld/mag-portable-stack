@@ -697,6 +697,12 @@ static std::vector<Val> AGENTS;
 static std::atomic<bool> THINKING_DEFAULT{true}, GITHUB_DEFAULT{false}, PHO_DEFAULT{true};
 static thread_local double TL_DISPLAY_MS = 0;
 static thread_local bool TL_THINKING_ENABLED = true;
+// Assistant text already stored for this lane, so the room shows the first
+// content token instead of waiting until decode finishes.
+static thread_local std::string TL_PARTIAL_ID, TL_PARTIAL_TEXT;
+// First user turn after this process starts. Thinking stays off so the first
+// streamed token is the answer, and the wire appends only that user line.
+static thread_local bool TL_FIRST_HI = false;
 // Single-bot mode (MAG_ROOM_SINGLE_BOT=<id>): only this bot is active. All
 // other stored bots are parked: invisible, never scheduled, but kept verbatim
 // in agents.json (memory included) so nothing is lost and the mode is
@@ -717,6 +723,7 @@ static constexpr int ROOM_MAX_BOTS = RoomModel::max_bots;
 static std::array<std::atomic<int>, ROOM_MAX_BOTS> ROOM_MODEL_HEALTH{}; // 0 ?, 1 ok, 2 down
 // Last observed KV warmth for a configured slot. 0 unknown, 1 warm, 2 cold.
 static std::array<std::atomic<int>, ROOM_MAX_BOTS> SLOT_WARM{};
+static std::array<std::atomic<bool>, ROOM_MAX_BOTS> FIRST_HI_USED{};
 static int model_slot_of(const Val &a) {
   auto s = a.find("slot");
   const int v = s && s->type == Val::NUM ? (int)s->asNum() : 0;
@@ -1300,6 +1307,38 @@ static Val append_room(const std::string &role, const std::string &name,
     save_room();
   }
   return m;
+}
+static void publish(const std::string &jsonLine);
+// First content token is the visible answer. Later tokens update the same
+// message in memory; the file is written again when the turn closes.
+static void reveal_answer(const std::string &bot, const std::string &name,
+                          const std::string &piece) {
+  if (piece.empty()) return;
+  TL_PARTIAL_TEXT += piece;
+  if (TL_PARTIAL_ID.empty()) {
+    Val msg = append_room("assistant", name, TL_PARTIAL_TEXT, bot);
+    TL_PARTIAL_ID = mag::str(msg, "id");
+    msg["type"] = "message";
+    publish(mj::dump(msg));
+    return;
+  }
+  std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
+  for (auto &m : ROOM)
+    if (mag::str(m, "id") == TL_PARTIAL_ID) {
+      m["content"] = TL_PARTIAL_TEXT;
+      break;
+    }
+}
+static void drop_revealed() {
+  if (TL_PARTIAL_ID.empty()) return;
+  const std::string id = TL_PARTIAL_ID;
+  TL_PARTIAL_ID.clear();
+  TL_PARTIAL_TEXT.clear();
+  std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
+  ROOM.erase(std::remove_if(ROOM.begin(), ROOM.end(),
+                            [&](const Val &m) { return mag::str(m, "id") == id; }),
+             ROOM.end());
+  save_room();
 }
 static void clear_reaction_notes();
 static void reset_room(bool purge) {
@@ -2135,16 +2174,11 @@ static std::string bot_site_rules(int bot_idx) {
 // change is appended on the next turn without a restart and without growing
 // first-token prefill when the roster is unchanged.
 static std::string room_company_line(int self_idx) {
-  std::string human;
+  // Roster only. The speaker's name is already on the room line. Putting it
+  // here changed the suffix on every hi (live: ~90 new tokens, 5–7s prefill).
   std::vector<std::pair<std::string, std::string>> others;
   {
     std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
-    for (auto it = ROOM.rbegin(); it != ROOM.rend(); ++it) {
-      if (mag::str(*it, "role") == "user") {
-        human = mag::str(*it, "name");
-        break;
-      }
-    }
     for (int i = 0; i < (int)AGENTS.size(); ++i) {
       if (i == self_idx) continue;
       const std::string id = mag::str(AGENTS[i], "id");
@@ -2153,10 +2187,9 @@ static std::string room_company_line(int self_idx) {
                         bot_model_id(i)});
     }
   }
-  if (human.empty() && others.empty()) return "";
+  if (others.empty()) return "";
   std::string line = "\nRaum: ";
   bool any = false;
-  if (!human.empty()) { line += human; any = true; }
   for (const auto &o : others) {
     if (any) line += ", ";
     line += o.first + " (" + o.second + ")";
@@ -2600,22 +2633,49 @@ static std::vector<Val> wire_messages(int idx, const std::string &system,
   // request must resend every previous message byte-for-byte.
   pho_archive_turns(idx,w);
   const bool initial=w.messages.size()==1;
+  // One shot. A tool round later in this turn must append normally.
+  const bool first_hi=TL_FIRST_HI;
+  if(first_hi) TL_FIRST_HI=false;
+  // History without a seen-set would resend the whole room as new tokens
+  // (live DeepSeek: 226 tokens, 9.3s at 24 tok/s). Keep the cached messages
+  // and treat every line but the newest user turn as already sent.
+  if(!initial && w.seen.empty() && !room.empty()) {
+    for(const auto &m:room) {
+      const auto id=mag::str(m,"id");
+      if(!id.empty()) w.seen.insert(id);
+    }
+    if(mag::str(room.back(),"role")=="user")
+      w.seen.erase(mag::str(room.back(),"id"));
+  }
   std::string input;
-  if(initial)input=pho_initial_transcript(idx,w,room,build_transcript());
+  if(first_hi) {
+    // The resident KV already holds system, tools and the transcript.
+    // [Kontext], memory and the roster are the 23–226 token suffix
+    // (Qwen 10 tok/s: 66 tokens is already 6.6s before the first answer token).
+    for(auto it=room.rbegin();it!=room.rend();++it) {
+      if(mag::str(*it,"role")!="user") continue;
+      input=render_room_line(*it);
+      break;
+    }
+    for(const auto &m:room) {
+      const auto id=mag::str(m,"id");
+      if(!id.empty()) w.seen.insert(id);
+    }
+  } else if(initial) input=pho_initial_transcript(idx,w,room,build_transcript());
   for(const auto &m:room) {
     const auto id=mag::str(m,"id");
-    if(!w.seen.insert(id).second || initial)continue;
+    if(first_hi || !w.seen.insert(id).second || initial)continue;
     // This bot's response is already present as its original assistant/tool
     // wire messages, including reasoning; do not reformat it as room prose.
     if(mag::str(m,"role")=="assistant"&&mag::str(m,"bot")==bot)continue;
     input+=render_room_line(m);
   }
-  if(w.memory!=memory || initial) {input+="\n"+memory;w.memory=memory;}
   const auto plugins=mcp_prompt_notes(idx),files=file_manifest();
-  if(w.plugins!=plugins || initial) {input+=plugins;w.plugins=plugins;}
-  if(w.files!=files || initial) {input+="\nAktuell geteilte Raumdateien:\n"+files;w.files=files;}
+  if(!first_hi && (w.memory!=memory || initial)) {input+="\n"+memory;w.memory=memory;}
+  if(!first_hi && (w.plugins!=plugins || initial)) {input+=plugins;w.plugins=plugins;}
+  if(!first_hi && (w.files!=files || initial)) {input+="\nAktuell geteilte Raumdateien:\n"+files;w.files=files;}
   const auto skills=jobs_skill_catalog(bot);
-  if(w.skills!=skills || (initial && !skills.empty())) {
+  if(!first_hi && (w.skills!=skills || (initial && !skills.empty()))) {
     if(!(skills.empty() && w.skills.empty()))
       input+="\n"+(skills.empty()?std::string("[Fähigkeiten]\nKeine eigenen Jobs."):skills);
     w.skills=skills;
@@ -2630,13 +2690,16 @@ static std::vector<Val> wire_messages(int idx, const std::string &system,
   // and Self-Talk still sees a rename on the next turn.
   const std::string company=room_company_line(idx);
   std::string extra=input;
-  if(initial) extra+=tail;
+  if(first_hi) {
+    // Roster and clock stay out of this one request. The next turn appends
+    // them once the first answer is already on screen.
+  } else if(initial) extra+=tail;
   else if(TL_REFLECT) {
     auto at=tail.find("Reflexionsrunde");
     if(at!=std::string::npos) extra+=(at>0&&tail[at-1]=='\n'?"\n":"")+tail.substr(at);
   }
-  if(!initial && company!=w.company) extra+=company;
-  w.company=company;
+  if(!first_hi && !initial && company!=w.company) extra+=company;
+  if(!first_hi) w.company=company;
   if(initial || !extra.empty()) {
     Val user=Val::object();user["role"]="user";user["content"]=extra;
     w.messages.push_back(user);
@@ -3325,17 +3388,51 @@ static bool backend_accepts() {
   c.timeout_ms = 300;
   return c.connectTo(BACKEND_HOST, BACKEND_PORT);
 }
+// ik answers /health and /slots on the same task queue as prefill. A probe
+// opened while that queue is busy stays established until the generation
+// ends (live: 64 connections on :8191, then "srv stop: cancel task" on the
+// next chat). The room BUSY flag is set before the socket exists; the
+// pre-turn health check must still run, or a loading model is never seen.
+static std::atomic<bool> BUSY{false};
+static std::vector<Lane *> all_lanes();
+static bool inference_hot() {
+  {
+    std::lock_guard<std::mutex> lk(BACKEND_FD_MTX);
+    if (!PREWARM_FDS.empty() || BACKEND_FD.load() >= 0) return true;
+  }
+  for (Lane *l : all_lanes())
+    if (l && l->backend_fd.load() >= 0) return true;
+  return false;
+}
+static bool slot_is_busy(int slot);
+static std::atomic<bool> HEALTH_PROBE_BUSY{false};
 static ModelStatus probe_model_status() {
   ModelStatus st;
   st.at = now_s();
+  if (inference_hot()) {
+    st.state = "busy";
+    st.ready = true;
+    st.label = "Modell rechnet";
+    return st;
+  }
+  bool idle = false;
+  if (!HEALTH_PROBE_BUSY.compare_exchange_strong(idle, true)) {
+    std::lock_guard<std::mutex> lk(MODEL_ST_MTX);
+    if (MODEL_ST.at) return MODEL_ST;
+    st.state = "busy";
+    st.ready = true;
+    st.label = "Modell rechnet";
+    return st;
+  }
+  struct ProbeDone { ~ProbeDone() { HEALTH_PROBE_BUSY = false; } } done;
   std::string body;
   long code = 0;
-  // Long enough for an idle /health. A prefill still occupies ik's task
-  // queue for much longer; that timeout is "busy", not "offline".
+  // Idle /health is a few milliseconds. Anything longer is the task queue;
+  // do not sit on it (a 4s probe is how the deploy gate saw HTTP 000).
   const bool reach =
       http_simple(BACKEND_HOST, BACKEND_PORT, "GET", "/health", "",
                   {{"Authorization", "Bearer " + API_KEY}}, body, &code,
-                  nullptr, 4000);
+                  nullptr, 800);
   if (reach && code == 200) {
     st.state = "ready";
     st.ready = true;
@@ -3349,17 +3446,17 @@ static ModelStatus probe_model_status() {
   // connection is offline; a timeout is the slot computing.
   if (!reach && backend_accepts()) {
     bool qwen_up = false;
-    if (CONFIGURED_MODEL) {
+    if (CONFIGURED_MODEL && !inference_hot()) {
       for (int s = 1; s <= ROOM_MAX_BOTS; ++s) {
         const std::string id = ROOM_MODEL.backend(s).id;
-        if (id.find("qwen") == std::string::npos) continue;
+        if (id.find("qwen") == std::string::npos || slot_is_busy(s)) continue;
         std::string reply;
         long health = 0;
         qwen_up = http_simple(BACKEND_HOST, BACKEND_PORT, "GET", "/health", "",
                               {{"Authorization", "Bearer " + API_KEY},
                                {"X-Mag-Model", id},
                                {"X-Mag-Slot", std::to_string(s - 1)}},
-                              reply, &health, nullptr, 1500) &&
+                              reply, &health, nullptr, 300) &&
                   health == 200;
         if (qwen_up) break;
       }
@@ -3416,11 +3513,26 @@ static ModelStatus probe_model_status() {
 static void note_model_busy(ModelStatus &st);
 static bool slot_is_busy(int slot);
 static ModelStatus model_status(bool refresh) {
-  {
+  // A generation already holds ik's task queue. Do not open /health, and do
+  // not store this overlay: the next idle read must still see download or
+  // ready, not a busy sample taken during the turn.
+  if (inference_hot()) {
+    ModelStatus st;
     std::lock_guard<std::mutex> lk(MODEL_ST_MTX);
-    if (!refresh && MODEL_ST.at && (MODEL_WATCHER.load() ||
-                                    now_s() - MODEL_ST.at < 3))
-      return MODEL_ST;
+    st = MODEL_ST.at ? MODEL_ST : ModelStatus{};
+    st.at = now_s();
+    if (st.state != "downloading" && st.state != "verifying" &&
+        st.state != "failed" && st.state != "loading") {
+      st.state = "busy";
+      st.ready = true;
+      if (st.label.empty() || st.label.find("nicht erreichbar") != std::string::npos)
+        st.label = "Modell rechnet";
+    }
+    return st;
+  }
+  if (!refresh) {
+    std::lock_guard<std::mutex> lk(MODEL_ST_MTX);
+    if (MODEL_ST.at) return MODEL_ST;
   }
   ModelStatus st = probe_model_status();
   note_model_busy(st);
@@ -3591,7 +3703,10 @@ static void publish_prompt_cache(int slot, const std::string &model,
             << (long long)(cached < 0 ? -1 : cached) << " tokens_evaluated="
             << (long long)(evaluated < 0 ? -1 : evaluated)
             << " model=" << model
-            << " prompt_tps=" << num("prompt_per_second") << std::endl;
+            << " prompt_n=" << (long long)num("prompt_n")
+            << " prompt_tps=" << num("prompt_per_second")
+            << " predicted_n=" << (long long)num("predicted_n")
+            << " predicted_tps=" << num("predicted_per_second") << std::endl;
 }
 // One llama slot per conversation. With --parallel 1 (bug #25259) every key
 // maps to slot 0 and no id_slot is sent (see backend_turn). MAG_ROOM_SLOTS
@@ -3712,6 +3827,12 @@ static void model_watcher_loop() {
   std::string last;
   bool was_ready = false, was_secondary_ready = false;
   while (!SHUTDOWN.load()) {
+    // While a turn or prefill holds the queue, do not GET /health and do not
+    // replace the last idle sample with "busy". The caller overlays that.
+    if (inference_hot()) {
+      std::this_thread::sleep_for(seconds(5));
+      continue;
+    }
     ModelStatus st = probe_model_status();
     note_model_busy(st);
     {
@@ -3734,9 +3855,16 @@ static void model_watcher_loop() {
                       reply, &health, nullptr, 2000) && health == 200;
     }
     if (CONFIGURED_MODEL) {
-      // Probe both NUMA servers through the gateway.
+      // Probe both NUMA servers through the gateway. Never while a generation
+      // holds the task queue: that probe is the /health flood on :8191.
       std::string health_key;
+      const bool hot = inference_hot();
       for (int s = 1; s <= ROOM_MAX_BOTS; ++s) {
+        if (hot || slot_is_busy(s)) {
+          health_key += 'b';
+          secondary_ready = secondary_ready || ROOM_MODEL_HEALTH[s - 1] == 1;
+          continue;
+        }
         std::string reply;
         long health = 0;
         const bool sent =
@@ -3744,7 +3872,7 @@ static void model_watcher_loop() {
                         {{"Authorization", "Bearer " + API_KEY},
                          {"X-Mag-Model", ROOM_MODEL.backend(s).id},
                          {"X-Mag-Slot", std::to_string(s - 1)}},
-                        reply, &health, nullptr, 1500);
+                        reply, &health, nullptr, 800);
         const bool ok = sent && health == 200;
         // A timeout is the slot's task queue, not a crashed server. Marking
         // it down made the next success look like a fresh start and queued
@@ -3767,10 +3895,11 @@ static void model_watcher_loop() {
     // A slot that returned early, timed out on /slots, or was not yet in
     // AGENTS must be retried. Waiting only for a ready-edge left Qwen cold
     // (live: no prompt-prewarm line, 39s first-hi eval).
-    if (backend_became_ready || (st.ready && !was_ready) ||
-        (secondary_ready && !was_secondary_ready) || slots_pending)
+    const bool hot = inference_hot();
+    if (!hot && (backend_became_ready || (st.ready && !was_ready) ||
+        (secondary_ready && !was_secondary_ready) || slots_pending))
       schedule_prewarm();
-    else if (secondary_ready && CONFIGURED_MODEL)
+    else if (!hot && secondary_ready && CONFIGURED_MODEL)
       prewarm_if_prompt_changed(); // system prompt, tools, persona or bot set changed
     was_ready = st.ready;
     was_secondary_ready = secondary_ready;
@@ -3782,8 +3911,10 @@ static void model_watcher_loop() {
       if (CONFIGURED_MODEL) e["model_instances"] = model_instances();
       publish(mj::dump(e));
     }
+    // While a turn is running, stay off llama. Idle slots still retry
+    // prewarm quickly; a cold prefix must not wait a full UI interval.
     std::this_thread::sleep_for(
-        seconds(slots_pending ? 1 : (st.ready ? 10 : 4)));
+        seconds(hot ? 5 : slots_pending ? 2 : (st.ready ? 10 : 4)));
   }
 }
 
@@ -4184,6 +4315,12 @@ class VisibleReplyFilter {
   }
 };
 static void persist_configured_slot(int idx);
+static bool prefix_slot_rpc(int idx, const std::string &model, const char *action,
+                            const std::string &file, int timeout_ms);
+static std::string prefix_file(int idx, const std::string &model);
+// Set when a user message aborts a proactive generation. The next turn on
+// that slot reloads the saved prefix once, then sends the user prompt.
+static std::atomic<int> PREEMPT_RESTORE_SLOT[8]{};
 static Turn
 backend_turn(const std::vector<Val> &messages, const std::string &tools,
              double temperature,
@@ -4195,6 +4332,16 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   ThinkingContent thinking_content;
   VisibleReplyFilter visible_reply(bot_idx >= 0 ? bot_field(bot_idx, "name", "Bot") : "");
   slot_restore_if_cold(id_slot);
+  if (CONFIGURED_MODEL && bot_idx >= 0) {
+    const int slot = model_slot(bot_idx);
+    if (slot >= 1 && slot <= 8 && PREEMPT_RESTORE_SLOT[slot - 1].exchange(0) == 1) {
+      // The proactive task was aborted. Reload the saved room prefix so this
+      // user turn does not prefill system+tools again.
+      prefix_slot_rpc(bot_idx, model.empty() ? bot_model_id(bot_idx) : model,
+                      "restore", prefix_file(bot_idx, model.empty() ? bot_model_id(bot_idx) : model),
+                      3000);
+    }
+  }
   HttpClient c;
   c.timeout_ms = std::max(LLM_TIMEOUT_S, LLM_TIMEOUT_MIN_S) * 1000;
   // An explicit turn budget shortens the hard cap. The default stays the
@@ -5504,6 +5651,7 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
         if (!live.empty() && !draft_dropped) {
           draft_dropped = true;
           emit_event("draft_drop", bot_id, bot_name, "");
+          drop_revealed();
         }
         run_show("draft", label, true, true);
         return;
@@ -5511,9 +5659,13 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
       // Content stays a provisional step until the round ends. Tool-round
       // narration must not be appended to the answer: clients show it as a
       // revocable draft until "delta" confirms or "draft_drop" revokes it.
+      // The same bytes go into the room on the first token so a poll of
+      // /api/room does not wait for the rest of the decode.
       live += piece;
-      if (!draft_dropped)
+      if (!draft_dropped) {
         emit_event("draft", bot_id, bot_name, piece);
+        reveal_answer(bot_id, bot_name, piece);
+      }
       // Lines become steps only once the round turns out to be narration.
       run_narration(live, draft_dropped);
     };
@@ -5610,8 +5762,10 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
         t.text.find("[[MAG:ENDE]]") == std::string::npos);
     if (!t.text.empty()) {
       if (tool_round || pending) {
-        if (!draft_dropped)
+        if (!draft_dropped) {
           emit_event("draft_drop", bot_id, bot_name, "");
+          drop_revealed();
+        }
         fallback_narration = trim(t.text);
         run_narration(t.text);
       } else {
@@ -6024,7 +6178,7 @@ static std::string manifest_body() {
 // BUSY = at least one lane is answering. Turns hold TURN_MTX shared;
 // room-wide operations (reset, clear, bot removal) take it exclusively and so
 // wait for every running turn.
-static std::atomic<bool> AUTOTALK{false}, BUSY{false};
+static std::atomic<bool> AUTOTALK{false};
 static std::atomic<bool> DEPLOY_HOLD{false};
 static void drop_selftalk_jobs_locked();
 static void hold_selftalk_for_deploy_locked();
@@ -6347,6 +6501,7 @@ static std::vector<std::string> first_hi_answerers(std::vector<std::string> ids)
   }
   return out;
 }
+static void cancel_llama_slot(int idx, int timeout_ms);
 // One transaction for every user send: admission, retry deduplication and
 // dispatch use JOB_MTX, so another participant cannot slip between them.
 static Val enqueue_pending(const std::string &text,
@@ -6411,6 +6566,28 @@ static Val enqueue_pending(const std::string &text,
     AUTO_LAST_PROGRESS.clear();
     AUTO_TURNS_LEFT = AUTO_MAX_TURNS;
     AUTO_READY = false;
+    // A running bot-to-bot turn keeps the llama slot (live: Qwen is_processing,
+    // 5696 tokens, cache 0; a hi then sits until curl gives up). Abort that
+    // generation once, before this user message is sent. Do not cancel again
+    // after the user request is connected.
+    std::vector<int> preempt_idx;
+    for (auto &kv : ACTIVE_JOBS) {
+      if (!kv.second.selftalk) continue;
+      for (const auto &id : kv.second.ids) {
+        if (Lane *l = lane_of(id)) {
+          l->stop = true;
+          std::lock_guard<std::mutex> fk(BACKEND_FD_MTX);
+          if (l->backend_fd.load() >= 0)
+            shutdown(l->backend_fd.load(), SHUT_RDWR);
+        }
+        const int bidx = agent_index(id);
+        if (bidx < 0) continue;
+        preempt_idx.push_back(bidx);
+        const int slot = model_slot(bidx);
+        if (slot >= 1 && slot <= 8) PREEMPT_RESTORE_SLOT[slot - 1] = 1;
+      }
+    }
+    for (int bidx : preempt_idx) cancel_llama_slot(bidx, 800);
     cancel_prewarm();
     PREWARM_HOLD = false;
     save_queue_locked();
@@ -6741,6 +6918,14 @@ static void apply_deploy_hold_file_locked() {
 }
 static void resume_selftalk_after_deploy() {
   if (migrated_flag(STATE_DIR + "/proaktiv-resume", STATE_DIR + "/selftalk-resume") != "on") return;
+  // A generation here is the first prompt after the restart. It occupied
+  // Qwen during the warm-hi gate and the next user hi waited behind it.
+  // The marker stays until POST /api/deploy-hold {on:false} after the gate.
+  // Tests with prewarm off still resume in this process.
+  if (CONFIGURED_MODEL && env("MAG_ROOM_PREWARM", "1") == "1") {
+    SELF_HOLD = true;
+    return;
+  }
   std::error_code ec;
   std::filesystem::remove(STATE_DIR + "/proaktiv-resume", ec);
   std::filesystem::remove(STATE_DIR + "/selftalk-resume", ec);
@@ -6793,6 +6978,10 @@ static void arm_selftalk(const std::string &speaker, const std::string &cause,
   std::lock_guard<std::mutex> lk(JOB_MTX);
   apply_deploy_hold_file_locked();
   if (!SELFTALK.load() || SELF_HOLD.load()) return;
+  // A user message already waiting must not sit behind a new proactive turn.
+  if (std::any_of(PENDING.begin(), PENDING.end(),
+                  [](const Pending &p) { return !p.held; }))
+    return;
   bool added = false;
   for (const auto &id : listeners) {
     const bool waiting = std::any_of(JOBS.begin(), JOBS.end(), [&](const Job &j) {
@@ -6861,6 +7050,7 @@ static TurnReport generate_and_post(int idx, bool automatic, double dispatched_m
     if (automatic) {
       std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
       for (auto it = ROOM.rbegin(); it != ROOM.rend(); ++it) {
+        if (mag::str(*it, "id") == TL_PARTIAL_ID) continue;
         const auto rid = it->find("bot");
         const auto content = it->find("content");
         if (rid && rid->asStr() == id && content) {
@@ -6870,7 +7060,26 @@ static TurnReport generate_and_post(int idx, bool automatic, double dispatched_m
       }
     }
     if (!duplicate) {
-      Val msg = append_room("assistant", name, report.text, id);
+      Val msg = Val::object();
+      if (!TL_PARTIAL_ID.empty()) {
+        msg["id"] = TL_PARTIAL_ID;
+        msg["role"] = "assistant";
+        msg["name"] = name;
+        msg["bot"] = id;
+        msg["content"] = report.text;
+        {
+          std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
+          for (auto &stored : ROOM)
+            if (mag::str(stored, "id") == TL_PARTIAL_ID) {
+              stored["content"] = report.text;
+              break;
+            }
+        }
+        TL_PARTIAL_ID.clear();
+        TL_PARTIAL_TEXT.clear();
+      } else {
+        msg = append_room("assistant", name, report.text, id);
+      }
       attach_work(msg, report);
       msg["type"] = "bot_done";
       publish(mj::dump(msg));
@@ -6888,6 +7097,9 @@ static TurnReport generate_and_post(int idx, bool automatic, double dispatched_m
       }
     } else {
       report.continue_requested = false;
+      // Streaming already opened this answer. A rejected duplicate must not
+      // stay in the room or be written by the next save.
+      drop_revealed();
       emit_event("error", id, name, "Autonomie gestoppt: doppelte Antwort.");
     }
   } else if (epoch == EPOCH.load() && !stop_flag().load() && report.text.empty() &&
@@ -6896,6 +7108,7 @@ static TurnReport generate_and_post(int idx, bool automatic, double dispatched_m
     // is over: do not invent text, do not copy reasoning into the answer,
     // and do not leave the client showing a live run.
     report.continue_requested = false;
+    drop_revealed();
     Val e = Val::object();
     e["type"] = "bot_done";
     e["bot"] = id;
@@ -6918,10 +7131,27 @@ static TurnReport generate_and_post(int idx, bool automatic, double dispatched_m
     report.error.clear();
     // A stopped tool is visible output. "abgebrochen" must land on the
     // message before the lane goes idle, even when no answer text was streamed.
+    // A first content token already opened the message; update that row.
     const bool bare = partial.empty() && trim(report.reasoning).empty() &&
                       report.steps.empty() && !report.tools.size();
     if (!(by_user && bare)) {
-      Val msg = append_room("assistant", name, partial, id);
+      Val msg = Val::object();
+      if (!TL_PARTIAL_ID.empty()) {
+        msg["id"] = TL_PARTIAL_ID;
+        msg["content"] = partial;
+        {
+          std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
+          for (auto &stored : ROOM)
+            if (mag::str(stored, "id") == TL_PARTIAL_ID) {
+              stored["content"] = partial;
+              break;
+            }
+        }
+        TL_PARTIAL_ID.clear();
+        TL_PARTIAL_TEXT.clear();
+      } else {
+        msg = append_room("assistant", name, partial, id);
+      }
       attach_work(msg, report);
       std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
       for (auto it = ROOM.rbegin(); it != ROOM.rend(); ++it)
@@ -7032,7 +7262,7 @@ static std::string prefix_file(int idx, const std::string &model) {
                          : "mag-prefix-" + model + ".bin";
 }
 static bool prefix_slot_rpc(int idx, const std::string &model, const char *action,
-                            const std::string &file) {
+                            const std::string &file, int timeout_ms = 120000) {
   std::string reply;
   long status = 0;
   const bool sent = http_simple(
@@ -7043,7 +7273,7 @@ static bool prefix_slot_rpc(int idx, const std::string &model, const char *actio
        {"X-Mag-Model", model},
        {"X-Mag-Slot", gateway_slot(idx)},
        {"X-Mag-Session", action}},
-      reply, &status, nullptr, 120000);
+      reply, &status, nullptr, timeout_ms);
   return sent && status == 200;
 }
 // After a successful turn the llama slot holds the prompt. Write that KV to
@@ -7071,9 +7301,12 @@ static void persist_configured_slot(int idx) {
   PREFIX_META[own_key] = shared_key;
   write_file_atomic(STATE_DIR + "/prompt-prefix.json", mj::dump(PREFIX_META));
 }
-static void cancel_llama_slot(int idx) {
+static void cancel_llama_slot(int idx, int timeout_ms = 120000) {
   if (!CONFIGURED_MODEL || idx < 0) return;
-  prefix_slot_rpc(idx, bot_model_id(idx), "cancel", "");
+  // Gateway ?action=cancel closes the current upstream fd and returns.
+  // It must not be sent after the user chat has already connected, or it
+  // aborts that request ("srv stop: cancel task" on the hi itself).
+  prefix_slot_rpc(idx, bot_model_id(idx), "cancel", "", timeout_ms);
 }
 static void cancel_llama_tasks() {
   std::vector<int> idxs;
@@ -7117,6 +7350,41 @@ static void reload_slots_after_cancel() {
   for (int i : idxs) reload_slot_after_cancel(i);
 }
 static void agents_changed();
+// System+tools is ~13k tokens. n_past=1, n_decoded>0 or a 12-token stub is
+// not that prefix (live: cache_size=12, then a 3.5 min prefill).
+static const long PREFIX_RESIDENT_TOKENS = 2048;
+static bool prefix_gate_on() {
+  return CONFIGURED_MODEL && env("MAG_ROOM_PREWARM", "1") == "1";
+}
+static bool bot_prefix_ready(const std::string &id) {
+  if (!prefix_gate_on() || id.empty()) return true;
+  const int idx = agent_index(id);
+  if (idx < 0) return true;
+  const int slot = model_slot(idx);
+  if (slot < 1 || slot > ROOM_MAX_BOTS) return true;
+  return SLOT_WARM[slot - 1].load() == 1;
+}
+static void mark_prefix_warm(int slot) {
+  if (slot < 1 || slot > ROOM_MAX_BOTS) return;
+  SLOT_WARM[slot - 1] = 1;
+  JOB_CV.notify_all();
+}
+// Caller holds JOB_MTX. A job that is only waiting for its prefix must not
+// block the prewarm that would make it runnable (otherwise Self-Talk resumed
+// by a deploy occupies the slot before the prefix exists).
+static bool work_needs_slot_locked() {
+  if (!prefix_gate_on()) return !JOBS.empty() || AUTO_READY;
+  auto ready = [](const std::vector<std::string> &ids) {
+    for (const auto &id : ids)
+      if (bot_prefix_ready(id)) return true;
+    return false;
+  };
+  for (const auto &j : JOBS)
+    if (ready(j.ids)) return true;
+  for (const auto &p : PENDING)
+    if (!p.held && ready(p.ids)) return true;
+  return AUTO_READY && (AUTO_OWNER.empty() || bot_prefix_ready(AUTO_OWNER));
+}
 static void prewarm_release(const std::string &lane, const std::string &bot_id) {
   std::lock_guard<std::mutex> lk(PREWARM_MTX);
   PREWARM_RUNNING.erase(lane);
@@ -7185,43 +7453,46 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
         }
     have_current = meta(port + "/" + source) == shared_key;
   }
-  bool ram_warm = false, ram_known = !CONFIGURED_MODEL;
-  bool saw_slot = false, explicit_empty = false, slot_busy = false;
-  bool decoded_warm = false;
+  bool ram_warm = false, ram_known = !CONFIGURED_MODEL, count_known = false;
+  bool slot_busy = false;
+  long cache_tokens = 0;
+  // /slots shares ik's task queue with generation. While THIS bot's turn
+  // holds that queue, another GET sits there and the next chat is
+  // "srv stop: cancel task". The other bot's server is independent.
+  bool lane_busy = false;
   if (CONFIGURED_MODEL) {
+    if (Lane *l = lane_of(bot_id); l && l->busy.load()) lane_busy = true;
+  }
+  if (CONFIGURED_MODEL && !lane_busy) {
     std::string raw; long status = 0;
     if (http_simple(BACKEND_HOST, BACKEND_PORT, "GET", "/slots", "",
-        {{"Authorization", "Bearer " + API_KEY}, {"X-Mag-Model", model}, {"X-Mag-Slot", gateway_slot(idx)}}, raw, &status, nullptr, 1500) && status == 200) {
+        {{"Authorization", "Bearer " + API_KEY}, {"X-Mag-Model", model}, {"X-Mag-Slot", gateway_slot(idx)}}, raw, &status, nullptr, 800) && status == 200) {
       Val slots;
       if (mj::parse(raw, slots) && slots.isArr()) {
         ram_known = true;
         for (const auto &slot : *slots.arr) {
-        saw_slot = true;
-        bool zeros = false;
+        bool saw_count = false;
         for (const char *key : {"n_past", "n_prompt_tokens", "n_cached_tokens"})
           if (auto n = slot.find(key); n && n->type == Val::NUM) {
+            saw_count = true;
+            if (n->asNum() > cache_tokens) cache_tokens = (long)n->asNum();
             if (n->asNum() > 0) ram_warm = true;
-            else zeros = true;
           }
+        if (saw_count) count_known = true;
         if (auto busy = slot.find("is_processing"); busy && busy->asBool()) slot_busy = true;
         // Default GET /slots is metrics only (slots_debug=0): no prompt
         // string and no n_past. n_decoded > 0 after a reply does not prove
-        // the KV survived a cancel ("lack of cache data"). A saved slot
-        // file is reloaded instead of posting another completion.
-        long decoded = -1;
-        if (auto next = slot.find("next_token"); next && next->isObj())
-          if (auto n = next->find("n_decoded"); n && n->type == Val::NUM)
-            decoded = (long)n->asNum();
-        if (decoded > 0) decoded_warm = true;
+        // the KV survived a cancel ("lack of cache data"). A nonempty prompt
+        // with no numeric count is the pinned runtime's warm slot.
         if (auto prompt = slot.find("prompt"); prompt &&
             ((prompt->type == Val::STR && !prompt->asStr().empty()) ||
              (prompt->isArr() && !prompt->asArr().empty()))) ram_warm = true;
-        if (auto state = slot.find("state"); state && state->asNum() > 0) ram_warm = true;
-        if (!ram_warm && zeros) explicit_empty = true;
-        if (!ram_warm && decoded == 0 && zeros) explicit_empty = true;
         }
       }
     }
+  } else if (CONFIGURED_MODEL && lane_busy) {
+    slot_busy = true;
+    ram_known = true;
   }
   const uint64_t pw_epoch = PREWARM_EPOCH.load();
   // One llama slot. A generative prewarm is a prefill ik_llama does not abort
@@ -7230,21 +7501,20 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
   // slot instead. A stale prefix key must not force that prefill: the next
   // user turn's cache_prompt evaluates only the tokens that actually differ.
   //
-  // n_decoded>0 on a configured deterministic bot (live Qwen) is leftover
-  // from the old identity-only prompt, not the room wire. Do not skip that
-  // slot: prewarm the same wire the first hi will send.
-  const bool listed = ram_warm || decoded_warm || (saw_slot && !explicit_empty);
-  const bool identity_slot = CONFIGURED_MODEL && !ram_warm &&
-                             model_settings_for(model).deterministic;
+  // A startup completion is the cold 10130-token prefill (410s, load 23–25)
+  // and the prompt that wiped a resident KV at p0=0. A numeric count below
+  // the system+tools prefix is not that KV (live n_past=1). A large count,
+  // or a prompt string with no count, is left untouched.
+  const bool prefix_resident = count_known
+      ? cache_tokens >= PREFIX_RESIDENT_TOKENS
+      : (ram_warm && have_current && !prefix_changed);
   bool restored = false;
   bool skip = false;
   const char *why = "0";
   if (CONFIGURED_MODEL && ram_known) {
     const int slot = model_slot(idx);
-    if (slot >= 1 && slot <= ROOM_MAX_BOTS)
-      // Leftover identity KV reports ram_warm=1. That is not the room prefix
-      // unless the saved hash matches (live: skip=ram, first hi 17s / 48s).
-      SLOT_WARM[slot - 1] = (ram_warm && have_current && !prefix_changed) ? 1 : 2;
+    if (slot >= 1 && slot <= ROOM_MAX_BOTS && SLOT_WARM[slot - 1].load() != 1)
+      SLOT_WARM[slot - 1] = 2;
   }
   auto commit_prefix_meta = [&]() {
     std::lock_guard<std::mutex> lk(PREFIX_MTX);
@@ -7254,41 +7524,35 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
   if (CONFIGURED_MODEL && (!ram_known || slot_busy)) {
     skip = true;
     why = "busy"; // /slots timed out or the slot is prefilling: do not clobber it
-  } else if (ram_warm && have_current && !prefix_changed) {
-    // RAM holds the room prefix we already saved. Leave it.
+  } else if (count_known && cache_tokens >= PREFIX_RESIDENT_TOKENS) {
+    // The slot already holds system+tools. Restoring a file or posting a
+    // chat completion here is the p0=0 wipe and the second full prefill.
+    // A stale on-disk hash does not change that: the KV is the resident one.
     skip = true;
     why = "ram";
-    if (CONFIGURED_MODEL) {
-      const int slot = model_slot(idx);
-      if (slot >= 1 && slot <= ROOM_MAX_BOTS) SLOT_WARM[slot - 1] = 1;
-    }
+    mark_prefix_warm(model_slot(idx));
+  } else if (prefix_resident && have_current && !prefix_changed) {
+    // Prompt string, no numeric count, hash matches (pinned runtime).
+    skip = true;
+    why = "ram";
+    mark_prefix_warm(model_slot(idx));
   } else if (CONFIGURED_MODEL && PREFIX_DISK && have_current && !slot_busy) {
-    // Current-key file exists. Reload it over leftover / hash-changed RAM.
+    // Count is below the prefix, or there is no count. Reload the checkpoint
+    // and do not generate: the file is the room prefix, a POST is the
+    // 10130-token prefill.
     restored = prefix_slot("restore", source);
     skip = true;
     why = "restored";
-    commit_prefix_meta();
+    if (restored) commit_prefix_meta();
   } else if (CONFIGURED_MODEL && PREFIX_DISK && have_file && !slot_busy) {
-    // Own file is a different hash. Reload the last checkpoint, then prewarm
-    // the current room prefix. Do not skip=ram (live DeepSeek 17s / Qwen 48s).
+    // Own file is a different hash and the slot is cold. Reload it and let
+    // the first hi extend it. Do not prefill the new wire at startup
+    // (load 23–25 beside the other bot). The key matches again only after
+    // the file actually loaded.
     restored = prefix_slot("restore", own);
-    skip = false;
-    why = "hash";
-  } else if (listed && !identity_slot && have_current && !prefix_changed) {
     skip = true;
-    why = "ram";
-    if (CONFIGURED_MODEL) {
-      const int slot = model_slot(idx);
-      if (slot >= 1 && slot <= ROOM_MAX_BOTS) SLOT_WARM[slot - 1] = 1;
-    }
-  } else if (ram_known && !ram_warm) {
-    // Cold first boot: restore if a current file exists, otherwise one
-    // completion so the checkpoint exists.
-    restored = PREFIX_DISK && have_current && prefix_slot("restore", source);
-    if (CONFIGURED_MODEL && restored) {
-      skip = true;
-      why = "restored";
-    }
+    why = "hash";
+    if (restored) commit_prefix_meta();
   }
   std::string out;
   long code = 0;
@@ -7298,7 +7562,7 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
   if (!skip && pw_epoch == PREWARM_EPOCH.load() && !PREWARM_HOLD.load()) {
     {
       std::lock_guard<std::mutex> lk(JOB_MTX);
-      if (!JOBS.empty()) {
+      if (work_needs_slot_locked()) {
         skip = true;
         why = "user";
       }
@@ -7386,10 +7650,9 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
     PREFIX_META[own_key] = shared_key;
     write_file_atomic(STATE_DIR + "/prompt-prefix.json", mj::dump(PREFIX_META));
   }
-  if (CONFIGURED_MODEL && (saved || (restored && skip))) {
-    const int slot = model_slot(idx);
-    if (slot >= 1 && slot <= ROOM_MAX_BOTS) SLOT_WARM[slot - 1] = 1;
-  }
+  if (CONFIGURED_MODEL && (saved || (restored && skip) ||
+                           (ok && code == 200 && !cancelled && !skip)))
+    mark_prefix_warm(model_slot(idx));
   if (seq.owns_lock()) seq.unlock();
   std::cerr << "prompt-prewarm model=" << model << " ok=" << (ok ? 1 : 0)
             << " status=" << code << " ms=" << ms
@@ -7409,7 +7672,13 @@ static void schedule_prewarm() {
   if (env("MAG_ROOM_PREWARM", "1") != "1" || SHUTDOWN.load() || PREWARM_HOLD.load()) return;
   {
     std::lock_guard<std::mutex> lk(JOB_MTX);
-    if (!JOBS.empty() || AUTO_READY) return; // the next turn starts anyway
+    // A queued turn uses the slot. The non-configured guard is the old
+    // check, so prewarm never starts in front of work that can run now.
+    // With the prefix gate, a job that is only waiting for that prefix
+    // does not count: prewarm is what makes it runnable.
+    if (!prefix_gate_on()) {
+      if (!JOBS.empty() || AUTO_READY) return; // never delays a queued turn
+    } else if (work_needs_slot_locked()) return;
   }
   // One slot per model server: prewarm only models answered by exactly one bot.
   // Configured lanes are per bot slot (lane_key), so every bot prewarms;
@@ -7892,6 +8161,26 @@ static void lane_turn(Lane *lane, uint64_t run, std::vector<std::string> ids,
         if (idx < 0)
           continue;
         TURN_THINK = think < 0 ? (bot_thinking(idx) ? 1 : 0) : think;
+        TL_FIRST_HI = false;
+        bool selftalk_job = false;
+        {
+          std::lock_guard<std::mutex> lk(JOB_MTX);
+          if (auto active = ACTIVE_JOBS.find(run); active != ACTIVE_JOBS.end())
+            selftalk_job = active->second.selftalk;
+        }
+        // Live after restart: Qwen generated 190 tokens before any visible
+        // answer (reasoning at 5.9 tok/s). The first user turn of each bot
+        // disables thinking so the first streamed token is the answer.
+        // MAG_ROOM_FIRST_HI_THINK=on keeps the suite's explicit switch.
+        if (!automatic && !selftalk_job &&
+            env("MAG_ROOM_FIRST_HI_THINK", "off") != "on") {
+          const int slot = model_slot(idx);
+          if (slot >= 1 && slot <= ROOM_MAX_BOTS &&
+              !FIRST_HI_USED[slot - 1].exchange(true)) {
+            TURN_THINK = 0;
+            TL_FIRST_HI = true;
+          }
+        }
         TL_ORDER = idx; // fixed position in the bot list
         try {
           const double visible_start = dispatched_ms; dispatched_ms = 0;
@@ -7973,8 +8262,11 @@ static bool dispatchable(const std::vector<std::pair<Lane *, std::vector<std::st
   return ok;
 }
 static int AUTO_THINK = -1;
-static void start_lanes_locked(const Job &job, bool automatic) {
-  const std::string owner = job.ids.empty() ? "" : job.ids.front();
+static void start_lanes_locked(const Job &job, bool automatic, const std::string &task_owner = "") {
+  // A split leaves the cold bots queued. The owner stays the first bot the
+  // user selected, even when that bot is not in this dispatch.
+  const std::string owner = !task_owner.empty() ? task_owner
+                           : (job.ids.empty() ? "" : job.ids.front());
   if (!automatic && job.generation == AUTO_GENERATION) AUTO_THINK = job.think;
   STOP = false;
   LAST_STOP_MS = 0;
@@ -8015,49 +8307,99 @@ static void start_lanes_locked(const Job &job, bool automatic) {
   }
   save_queue_locked();
 }
+static void split_prefix(const std::vector<std::string> &ids,
+                         std::vector<std::string> &ready,
+                         std::vector<std::string> &later) {
+  ready.clear();
+  later.clear();
+  for (const auto &id : ids)
+    (bot_prefix_ready(id) ? ready : later).push_back(id);
+}
 // Starts at most one piece of work; true if the queue state changed.
 static bool dispatch_locked() {
   apply_deploy_hold_file_locked();
   auto send_pending = [&](std::deque<Pending>::iterator it) {
+    std::vector<std::string> ready, later;
+    split_prefix(it->ids, ready, later);
+    if (ready.empty()) return false;
     Pending p = *it;
     PENDING.erase(it);
+    // One generation for both portions. The cold bot is the same request,
+    // so its later result can still arm the original owner.
+    const uint64_t generation = ++AUTO_GENERATION;
+    const std::string owner = p.ids.empty() ? std::string() : p.ids.front();
+    AUTO_OWNER = owner;
+    AUTO_LAST_PROGRESS.clear(); AUTO_TURNS_LEFT = AUTO_MAX_TURNS; AUTO_READY = false;
+    if (!later.empty()) {
+      // One room line. The cold bot stays queued and does not post again.
+      Job rest;
+      rest.ids = later;
+      rest.think = p.think;
+      rest.input = p.text;
+      rest.generation = generation;
+      JOBS.push_front(std::move(rest));
+      // Prefix readiness picked who runs now. It must not pick the owner.
+      std::cerr << "dispatch-owner owner=" << owner
+                << " ready=" << ready.front()
+                << " later=" << later.front() << std::endl;
+    }
     PREWARM_HOLD = false;
     Val msg = append_room("user", p.sender.empty() ? "Nutzer" : p.sender, p.text, "", nullptr, p.login, "", p.display_ms, p.client_id);
     msg["type"] = "message"; publish(mj::dump(msg));
-    AUTO_OWNER = p.ids.empty() ? "" : p.ids.front();
-    AUTO_LAST_PROGRESS.clear(); AUTO_TURNS_LEFT = AUTO_MAX_TURNS; AUTO_READY = false;
-    start_lanes_locked(Job{p.ids, p.think, ++AUTO_GENERATION, p.text}, false);
+    start_lanes_locked(Job{ready, p.think, generation, p.text}, false, owner);
     queue_event_locked();
     return true;
   };
   std::set<Lane *> claimed;
   // Urgent input takes precedence over waiting turns on its lanes, but is
   // dispatched only after the old lane saved its partial answer and ended.
-  for (auto it = PENDING.begin(); it != PENDING.end(); ++it)
-    if (it->urgent && !it->held && dispatchable(split_lanes(it->ids), claimed))
-      return send_pending(it);
+  for (auto it = PENDING.begin(); it != PENDING.end(); ++it) {
+    if (!it->urgent || it->held) continue;
+    std::vector<std::string> ready, later;
+    split_prefix(it->ids, ready, later);
+    if (ready.empty() || !dispatchable(split_lanes(ready), claimed)) continue;
+    return send_pending(it);
+  }
+  const bool user_queued = std::any_of(
+      JOBS.begin(), JOBS.end(), [](const Job &j) { return !j.selftalk; });
   for (auto it = JOBS.begin(); it != JOBS.end(); ++it) {
     if (it->selftalk && SELF_HOLD.load()) {
       JOBS.erase(it);
       save_queue_locked();
       return true;
     }
+    // Proactive work yields to a user turn on any lane. The second hi must
+    // not wait until a bot-to-bot generation finishes.
+    if (it->selftalk && user_queued) continue;
     auto parts = split_lanes(it->ids);
     if (parts.empty()) {
       JOBS.erase(it);
       save_queue_locked();
       return true;
     }
-    if (dispatchable(parts, claimed)) {
-      Job job = *it;
-      JOBS.erase(it);
-      start_lanes_locked(job, false);
-      return true;
+    std::vector<std::string> ready, later;
+    split_prefix(it->ids, ready, later);
+    if (ready.empty() || !dispatchable(split_lanes(ready), claimed)) continue;
+    Job job = *it;
+    JOBS.erase(it);
+    const std::string owner = job.ids.empty() ? std::string() : job.ids.front();
+    if (!later.empty()) {
+      Job rest = job;
+      rest.ids = later;
+      JOBS.push_front(std::move(rest));
+      std::cerr << "dispatch-owner owner=" << owner
+                << " ready=" << ready.front()
+                << " later=" << later.front() << std::endl;
     }
+    job.ids = ready;
+    start_lanes_locked(job, false, owner);
+    return true;
   }
   for (auto it = PENDING.begin(); it != PENDING.end(); ++it) {
     if (it->held) continue; // waits for "Fortsetzen"; never blocks newer input
-    if (!dispatchable(split_lanes(it->ids), claimed)) continue;
+    std::vector<std::string> ready, later;
+    split_prefix(it->ids, ready, later);
+    if (ready.empty() || !dispatchable(split_lanes(ready), claimed)) continue;
     return send_pending(it);
   }
   if (!JOBS.empty() ||
@@ -8073,6 +8415,8 @@ static bool dispatch_locked() {
                             : &lane_named(lane_key(0));
     }
     if (lane->busy.load())
+      return false;
+    if (!bot.empty() && !bot_prefix_ready(bot))
       return false;
     JobRun run = JOBRUNS.front();
     JOBRUNS.pop_front();
@@ -8095,7 +8439,7 @@ static bool dispatch_locked() {
       AUTO_READY = false;
       return true;
     }
-    if (lane->busy.load())
+    if (lane->busy.load() || !bot_prefix_ready(AUTO_OWNER))
       return false;
     AUTO_READY = false;
     --AUTO_TURNS_LEFT;
@@ -8657,6 +9001,20 @@ static std::string state_json(const Actor *actor = nullptr) {
   root["version"] = (long)frontend_version();
   root["web"] = WEB_ENABLED.load();
   root["offline"] = OFFLINE.load();
+  {
+    bool prefix_ready = !prefix_gate_on();
+    if (!prefix_ready) {
+      prefix_ready = true;
+      std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
+      if (AGENTS.empty()) prefix_ready = false;
+      for (size_t i = 0; i < AGENTS.size(); ++i) {
+        const int slot = model_slot((int)i);
+        if (slot < 1 || slot > ROOM_MAX_BOTS || SLOT_WARM[slot - 1].load() != 1)
+          prefix_ready = false;
+      }
+    }
+    root["prefix_ready"] = prefix_ready;
+  }
   {
     std::lock_guard<std::mutex> lk(RUN_MTX);
     Val acts = Val::array();

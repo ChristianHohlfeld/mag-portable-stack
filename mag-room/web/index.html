@@ -144,6 +144,7 @@ body:has(.layout.hide-left) .rail-edge-left,body:has(.layout.hide-right) .rail-e
 #model-state.is-loading .dot{background:transparent;border:2px solid var(--sb-red,#e62b2b);animation:magpulse 1.2s ease-in-out infinite}
 #model-state.failed .dot,#model-state.error .dot,#model-state.offline .dot{background:#c81f1f}
 #model-state.is-loading::after{content:'';position:absolute;left:8px;right:8px;bottom:-3px;height:2px;border-radius:2px;background:linear-gradient(90deg,transparent,var(--sb-red,#e62b2b),transparent);background-size:50% 100%;background-repeat:no-repeat;animation:magbar 1.4s linear infinite}
+#model-state{flex:0 0 auto}#model-state .txt{display:inline-block;flex:0 0 92px;width:92px;min-width:92px;max-width:92px;overflow:hidden;text-overflow:clip}
 @keyframes magpulse{0%,100%{transform:scale(.8);opacity:.6}50%{transform:scale(1.15);opacity:1}}@keyframes magbar{0%{background-position:-50% 0}100%{background-position:150% 0}}
 
 .model-setting-card{margin:7px 8px 10px;padding:11px;border:1px solid var(--line);border-radius:10px;background:var(--surface)}

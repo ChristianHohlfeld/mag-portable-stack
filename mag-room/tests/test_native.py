@@ -12,6 +12,9 @@ import hashlib,http.server,json,os,pathlib,socket,socketserver,subprocess,tempfi
 ROOT=pathlib.Path(__file__).resolve().parents[2]
 # Idle prompt prewarm adds background model calls; tests count Model.calls exactly.
 os.environ.setdefault('MAG_ROOM_PREWARM','0')
+# Production turns thinking off for the first user hi. The suite's explicit
+# thinking switch stays in force unless a test removes this.
+os.environ.setdefault('MAG_ROOM_FIRST_HI_THINK','on')
 NETMODE=pathlib.Path(tempfile.mkdtemp(prefix='magnet-'))/'netmode.sh';NETLOG=NETMODE.with_suffix('.log')
 NETMODE.write_text('#!/bin/sh\necho "$1" >> %s\n'%NETLOG);NETMODE.chmod(0o755)
 def port():
@@ -52,7 +55,10 @@ class Model(http.server.BaseHTTPRequestHandler):
   if self.path=='/health':
    code=type(self).health
    data={200:b'{"status":"ok"}',503:b'{"error":{"code":503,"message":"Loading model","type":"unavailable_error"}}'}.get(code,b'{"error":"upstream unavailable"}')
-  elif self.path=='/slots':data=json.dumps(type(self).slot_snapshot).encode()
+  elif self.path=='/slots':
+   snap=type(self).slot_snapshot
+   if isinstance(snap,dict):snap=snap.get(self.headers.get('X-Mag-Slot'),snap.get('*',[]))
+   data=json.dumps(snap).encode()
   else:data=b'{"data":[{"id":"deepseek-v4-flash-0731"}]}'
   try:
    self.send_response(code);self.send_header('Content-Length',str(len(data)));self.end_headers();self.wfile.write(data)
@@ -1311,6 +1317,21 @@ class Native(unittest.TestCase):
    self.assertTrue(state['autotalk'],'Autonomy may remain enabled while idle')
   finally:
    self.request('/api/stop',{});self.request('/api/queue/resume',{});Model.script=[]
+ def test_10c_repeated_autonomy_answer_is_dropped(self):
+  # The step streams "Gleich", then the concluding round streams it again.
+  # The room and the saved history keep the first answer once.
+  command={'tool_calls':[{'index':0,'id':'dup1','function':{'name':'remember','arguments':'{"fact":"dup"}'}}]}
+  Model.script=[[command],['Gleich [[MAG:WEITER]]'],['Gleich']]
+  try:
+   self.request('/api/autotalk',{'on':True})
+   self.request('/api/message',{'text':'Wiederhole nicht','bots':['test']})
+   self.wait_idle();time.sleep(.4)
+   texts=[m.get('content') for m in self.request('/api/state')['room'] if m.get('role')=='assistant']
+   self.assertEqual(texts.count('Gleich'),1,texts)
+   saved=[m.get('content') for m in json.loads(self.state.joinpath('room.json').read_text()) if m.get('role')=='assistant']
+   self.assertEqual(saved.count('Gleich'),1,saved)
+  finally:
+   self.request('/api/autotalk',{'on':False});Model.script=[];self.wait_idle()
  def test_10b_coding_run_many_tool_steps(self):
   """A single user instruction performs many tool calls without autotalk."""
   self.wait_idle();Model.calls.clear()
@@ -3740,10 +3761,13 @@ class MixedNuma(unittest.TestCase):
   finally:
    self.stop();Model.slot_snapshot=[];self.env['MAG_ROOM_PREWARM']='0';self.start()
  def test_10_held_prefix_skips_prewarm_and_silent_stream_is_not_resent(self):
-  # Idle ik /slots: state 0, empty prompt, n_decoded>0. The KV is still there.
-  # A silent in-progress completion must stay one request (no cancel+resend).
+  # A held prefix is a live count of the system+tools KV
+  # (n_prompt_tokens >= 2048). n_decoded with an empty prompt is not that
+  # KV, so this snapshot carries the count. Prewarm must not post.
+  # A silent in-progress user completion stays one request.
   self.wait_idle();self.stop()
   Model.slot_snapshot=[{'id':0,'state':0,'prompt':'','is_processing':False,
+    'n_prompt_tokens':4321,
     'next_token':{'has_next_token':False,'n_decoded':4,'n_remain':0}}]
   self.env['MAG_ROOM_PREWARM']='1'
   self.env['MAG_ROOM_STREAM_IDLE_S']='1'
@@ -3751,11 +3775,10 @@ class MixedNuma(unittest.TestCase):
   started=time.monotonic()
   try:
    seen=self._prewarm_count();mark=len(Model.paths);self.start()
-   # n_decoded>0 does not prove the KV survived a cancel. Matching hash
-   # restores the file; a live n_prompt_tokens skip=ram. Neither posts.
-   self._wait_prewarm_models(seen,lambda ln:'skipped=ram' in ln or 'skipped=restored' in ln,
-    what='prewarm did not skip a slot that already holds the prefix')
-   self.assertFalse([p for p in list(Model.paths)[mark:] if p[0]=='/v1/chat/completions'])
+   self._wait_prewarm_models(seen,lambda ln:'skipped=ram' in ln,
+    what='prewarm did not skip a slot whose token count already holds the prefix')
+   self.assertFalse([p for p in list(Model.paths)[mark:] if p[0]=='/v1/chat/completions'],
+    'resident prefix must not cold-prefill')
    before=len([p for p in Model.paths if p[0]=='/v1/chat/completions'])
    bot=next(iter(self.bots()))
    self.ask(bot)
@@ -3793,7 +3816,7 @@ class MixedNuma(unittest.TestCase):
   self.assertTrue(Model.saved_prompt.get('0') and Model.saved_prompt.get('1'),
                   'both bots must save the slot file before a restart')
   self.stop()
-  Model.slot_snapshot=[{'id':0,'n_ctx':32768,'speculative':False,'is_processing':False,
+  Model.slot_snapshot=[{'id':0,'n_ctx':32768,'n_prompt_tokens':12,'speculative':False,'is_processing':False,
     'next_token':{'has_next_token':False,'has_new_line':False,'n_remain':0,'n_decoded':4}}]
   Model.prefix_miss_s=6
   self.env['MAG_ROOM_PREWARM']='1'
@@ -3968,6 +3991,114 @@ class MixedNuma(unittest.TestCase):
   finally:
    Model.prefix_miss_s=0;Model.slot_snapshot=[]
    self.env['MAG_ROOM_PREWARM']='0'
+   self.stop();self.start()
+ def test_16_first_hi_thinks_off_and_shows_the_first_token(self):
+  # Live: 190 reasoning tokens at 5.9 tok/s before any visible answer, and a
+  # 226-token suffix before that. The first user turn disables thinking and
+  # publishes the first content token while the rest of the stream is still open.
+  self.wait_idle();self.stop()
+  self.env.pop('MAG_ROOM_FIRST_HI_THINK',None)
+  Model.script=[[{'content':'Hi'},{'_sleep':1.5},{'content':' dort'}]]
+  try:
+   self.start()
+   bot=next(iter(self.bots().values()))
+   self.request('/api/bot-settings',{'thinking':True,'bots':[bot['id']]},method='PUT')
+   token=f'hi {bot["id"]} {time.monotonic_ns()}'
+   t0=time.monotonic()
+   self.request('/api/message',{'text':token,'bots':[bot['id']]})
+   seen=False
+   while time.monotonic()-t0<1.0:
+    room=self.request('/api/state')['room']
+    if any(m.get('role')=='assistant' and m.get('bot')==bot['id'] and str(m.get('content') or '').startswith('Hi') for m in room):
+     seen=True
+     break
+    time.sleep(.02)
+   self.assertTrue(seen,'first token was not in the room within 1s')
+   self.assertLess(time.monotonic()-t0,1.0)
+   call=next(c for c,_ in reversed(list(Model.pairs)) if token in json.dumps(c,ensure_ascii=False))
+   self.assertFalse(call['chat_template_kwargs']['enable_thinking'])
+   self.assertNotIn('[Kontext]',call['messages'][-1]['content'])
+   self.assertLess(len(call['messages'][-1]['content']),180)
+   self.wait_idle()
+   call2,_=self.ask(bot['id'])
+   self.assertTrue(call2['chat_template_kwargs']['enable_thinking'])
+  finally:
+   Model.script=[]
+   self.env['MAG_ROOM_FIRST_HI_THINK']='on'
+   self.stop();self.start()
+ def test_18_ready_bot_does_not_take_the_autonomy_owner(self):
+  # An existing room, DeepSeek cold and Qwen already resident. The user
+  # selected DeepSeek first. Qwen may answer now; it must not become the
+  # autonomous owner, and the user line is posted once.
+  self.wait_idle()
+  self.ask('deepseek-chat')
+  self.stop()
+  for name in ('proaktiv','proaktiv-resume','selftalk','selftalk-resume','deploy-hold'):
+   (self.state/name).unlink(missing_ok=True)
+  meta=self.state/'prompt-prefix.json'
+  meta.write_text('{}')
+  Model.saved_prompt.clear();Model.last_prompt.clear()
+  hold=threading.Event()
+  Model.slot_block={'0':hold}
+  Model.slot_snapshot={
+   '0':[{'id':0,'state':0,'prompt':'','is_processing':False,'n_prompt_tokens':12}],
+   '1':[{'id':0,'state':0,'prompt':'','is_processing':False,'n_prompt_tokens':4321}]}
+  self.env['MAG_ROOM_PREWARM']='1'
+  try:
+   seen=self._prewarm_count();mark=len(Model.paths);self.start()
+   self._wait_prewarm_models(seen,lambda ln:'skipped=ram' in ln,
+    models=('qwen3.8-flash-next-uncensored',),
+    what='resident Qwen prefix was not left in RAM')
+   self._wait_paths(mark,lambda ps:any(p[0]=='/v1/chat/completions' and p[1]=='0' and p[3].get('max_tokens')==1 for p in ps),
+    what='cold DeepSeek prewarm did not reach the slot')
+   self.assertFalse(self.request('/api/state').get('selftalk'),'proaktiv must stay off so the pending split owns the turn')
+   self.request('/api/autotalk',{'on':True})
+   command={'tool_calls':[{'index':0,'id':'own1','function':{'name':'remember','arguments':'{"fact":"owner"}'}}]}
+   Model.script=[[command],['Qwen bleibt Gast [[MAG:ENDE]]']]
+   token=f'Besitzer {time.monotonic_ns()}'
+   self.request('/api/message',{'text':token,'bots':['deepseek-chat','lehotbot']})
+   def qwen_user(ps):
+    return [p for p in ps if p[0]=='/v1/chat/completions' and p[1]=='1' and p[3].get('max_tokens')!=1 and token in json.dumps(p[3],ensure_ascii=False)]
+   self._wait_paths(mark,lambda ps:len(qwen_user(ps))>=2,what='Qwen did not finish the split turn')
+   time.sleep(.6)
+   got=qwen_user(list(Model.paths)[mark:])
+   self.assertEqual(len(got),2,[(p[1],p[3].get('max_tokens')) for p in list(Model.paths)[mark:] if p[0]=='/v1/chat/completions'])
+   room=self.request('/api/state')['room']
+   self.assertEqual(sum(1 for m in room if m.get('role')=='user' and token in (m.get('content') or '')),1)
+   jobs=json.loads((self.state/'queue.json').read_text()).get('jobs') or []
+   self.assertTrue(any('deepseek-chat' in (j.get('ids') or []) for j in jobs),jobs)
+   log=self.tmp_path.joinpath('server.log').read_text()
+   self.assertIn('dispatch-owner owner=deepseek-chat ready=lehotbot later=deepseek-chat',log)
+   self.assertNotIn('dispatch-owner owner=lehotbot',log)
+  finally:
+   hold.set()
+   Model.slot_block={};Model.slot_snapshot=[];Model.script=[]
+   self.env['MAG_ROOM_PREWARM']='0'
+   try:self.request('/api/autotalk',{'on':False})
+   except Exception:pass
+   self.stop();self.start()
+ def test_17_restart_does_not_prefill_or_resume_selftalk(self):
+  self.wait_idle()
+  for bot in self.bots().values():self.ask(bot['id'])
+  self.stop()
+  (self.state/'selftalk').write_text('on\n')
+  (self.state/'selftalk-resume').write_text('on\n')
+  (self.state/'deploy-hold').write_text('on\n')
+  Model.slot_snapshot=[{'id':0,'n_prompt_tokens':4321,'is_processing':False}]
+  self.env['MAG_ROOM_PREWARM']='1'
+  try:
+   seen=self._prewarm_count();mark=len(Model.paths);self.start()
+   self._wait_prewarm_models(seen,lambda ln:'skipped=ram' in ln,
+    what='resident prefix was not left untouched')
+   time.sleep(0.4)
+   self.assertFalse([p for p in list(Model.paths)[mark:] if p[0]=='/v1/chat/completions'],
+    'restart posted a completion or resumed proactive work')
+   self.assertTrue((self.state/'deploy-hold').is_file())
+  finally:
+   Model.slot_snapshot=[]
+   self.env['MAG_ROOM_PREWARM']='0'
+   for name in ('proaktiv','proaktiv-resume','selftalk','selftalk-resume','deploy-hold'):
+    (self.state/name).unlink(missing_ok=True)
    self.stop();self.start()
  def test_08_health_timeout_is_busy_not_offline(self):
   self.wait_idle();self.stop();Model.hold_get=6;self.env['MAG_ROOM_PREWARM']='1'

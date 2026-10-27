@@ -1,7 +1,9 @@
 # Gitea on the shared tailnet TLS socket. tailscaled owns 100.123.114.16:443
-# and forwards raw TCP (PROXY protocol v2) to 127.0.0.1:4443. Every other
-# tailnet name uses this same listen line. Unknown SNI is rejected here so a
-# missing name cannot borrow another certificate.
+# and forwards raw TCP (PROXY protocol v2) to 127.0.0.1:4443. Do not switch
+# that port to HTTPS: tailscaled would terminate TLS and reject every SNI
+# except mag.tail3e02ae.ts.net. Every other tailnet name uses this same
+# listen line. Unknown SNI is rejected here so a missing name cannot borrow
+# another certificate.
 # $binary_remote_addr is the address from the PROXY header (the tailnet or
 # Funnel client). A host firewall ban cannot see that client.
 map $http_upgrade $mag_git_upgrade { default upgrade; '' close; }

@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Publish Gitea on https://mag.tail3e02ae.ts.net/ (no port).
-# tailscaled terminates TLS on :443 and proxies to http://127.0.0.1:3000.
-# nginx is moved off the Tailscale address so it cannot take that socket.
+# tailscaled owns 100.123.114.16:443 and TCP-forwards with PROXY v2 to
+# nginx 127.0.0.1:4443. nginx SNI-selects mag.stardenburg.de, bots, pages
+# and Gitea. HTTPS-on-443 is forbidden: that terminates TLS in tailscaled
+# and rejects every other name (tlsv1 alert internal error).
 # Idempotent. Does not restart a resident model or the room. Does not print keys.
 #   bash ops/tailscale/apply-gitea-funnel.sh [--dry-run]
 # MAG_GITEA_FUNNEL_TEST=1 remaps host paths for tests. It is refused unless
@@ -49,7 +51,7 @@ run_cmd() {
 
 if [[ ${1:-} == --dry-run ]]; then
   python3 "$here/merge-gitea-funnel.py" merge </dev/null
-  echo "funnel ${origin}/ -> http://127.0.0.1:3000; tailnet-only :8443 :8445 :8446"
+  echo "funnel ${origin}/ -> tcp://127.0.0.1:4443 PROXY; tailnet-only :8443 :8445 :8446"
   exit 0
 fi
 if [[ $test_mode == 1 ]]; then
@@ -350,11 +352,12 @@ if command -v ss >/dev/null; then
     sleep "$ss_sleep"
   done
 fi
-# Funnel cannot bind :443 while any managed vhost still listens there.
-# nginx -T is required: ss alone misses a listen that failed to leave conf.d.
+# HTTP vhosts must leave :443 so tailscaled can TCP-forward it. nginx -T
+# is required: ss alone misses a listen that failed to leave conf.d.
+# A stream listen without ssl is allowed; scan only flags HTTP/ssl leftovers.
 dump_nginx_t "$tmp/nginx-scan"
 if ! python3 "$here/merge-gitea-funnel.py" scan <"$tmp/nginx-scan"; then
-  die 1 'nginx still binds 100.123.114.16:443 (scan)'
+  die 1 'nginx HTTP still binds 100.123.114.16:443 (scan)'
 fi
 if command -v ss >/dev/null && ss -ltnH 'sport = :443' | grep -q '100.123.114.16:443'; then
   echo 'gitea funnel: 100.123.114.16:443 is still taken; refusing to enable Funnel' >&2
@@ -420,9 +423,10 @@ funnel_admin_note() {
   cat >&2 <<'EOF'
 Public DNS for mag.tail3e02ae.ts.net is published by Tailscale's control
 plane, not by this repo. The node already posts ServeConfig via LocalAPI
-(AllowFunnel mag.tail3e02ae.ts.net:443 -> http://127.0.0.1:3000). That is
-the same as `tailscale funnel --bg` / `tailscale serve --bg` on :443.
-Do not add a second serve on :443.
+(AllowFunnel mag.tail3e02ae.ts.net:443 -> tcp://127.0.0.1:4443 PROXY).
+That is `tailscale funnel --bg --tcp=443` with proxy protocol, not
+`tailscale funnel --bg` HTTPS. Do not add HTTPS-on-443: that swallows
+mag.stardenburg.de / bots / pages. Do not add a second serve on :443.
 
 If `tailscale funnel status` says Funnel on but 8.8.8.8 / 1.1.1.1 still
 return NXDOMAIN, the missing piece is Tailscale admin (Owner / Admin /
@@ -444,9 +448,9 @@ Network admin), not bootstrap:
    mag.tail3e02ae.ts.net A`). Local resolvers can keep NXDOMAIN longer.
 EOF
 }
-if ! grep -Fq 'http://127.0.0.1:3000' <<<"$status" || ! grep -Eq 'Funnel on|Available on the internet' <<<"$status"; then
+if ! grep -Fq '127.0.0.1:4443' <<<"$status" || ! grep -Eq 'Funnel on|Available on the internet' <<<"$status"; then
   echo 'gitea funnel: public Funnel is not active, so mag.tail3e02ae.ts.net has no public DNS' >&2
-  echo 'nginx is off 100.123.114.16:443 and the serve config points :443 at http://127.0.0.1:3000.' >&2
+  echo 'nginx HTTP is off 100.123.114.16:443; tailscaled TCP-forwards :443 to 127.0.0.1:4443.' >&2
   funnel_admin_note
   if [[ ${MAG_GITEA_FUNNEL_REQUIRE_PUBLIC:-0} == 1 ]]; then
     die 1 'public Funnel is not active'

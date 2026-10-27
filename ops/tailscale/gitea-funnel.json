@@ -4,7 +4,8 @@
   },
   "TCP": {
     "443": {
-      "HTTPS": true
+      "ProxyProtocol": 2,
+      "TCPForward": "127.0.0.1:4443"
     },
     "8443": {
       "HTTPS": true
@@ -17,13 +18,6 @@
     }
   },
   "Web": {
-    "mag.tail3e02ae.ts.net:443": {
-      "Handlers": {
-        "/": {
-          "Proxy": "http://127.0.0.1:3000"
-        }
-      }
-    },
     "mag.tail3e02ae.ts.net:8443": {
       "Handlers": {
         "/": {

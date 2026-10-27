@@ -1,5 +1,6 @@
 #include "mag_deadline.hpp"
 #include "../native/pho_codec.hpp"
+#include "../native/pho_live.hpp"
 #include <iostream>
 #include <stdexcept>
 static void require(bool ok,const char *why){if(!ok)throw std::runtime_error(why);}
@@ -32,6 +33,61 @@ int main() {
   for(const auto *code:{"`a=1`","```cpp\nx();\n```","GitHub pull request","diff --git a/x b/x","[Kontext]\nZeit: jetzt", "SELECT * FROM foo WHERE id = 1", "git status"})
     require(!pho::eligible(code),"code/tool/GitHub/context eligible");
   require(pho::eligible(prose),"ordinary history excluded");
+  // The live path must save tokens according to the active model, never bytes.
+  const std::string long_text=prose+prose;
+  const auto token_count=[](const std::string &s)->long{
+    return s.find("Bundestag")!=std::string::npos?120:60;
+  };
+  const auto live=pho::live_encode(long_text,token_count);
+  require(live.accepted && live.text.find("bund")!=std::string::npos,"eligible live prose compressed");
+  require(live.text.find("Bundestag")==std::string::npos,"live prose kept the raw token");
+  {
+    const auto short_in=pho::live_encode("hi",token_count);
+    require(!short_in.accepted && short_in.text=="hi","short live input changed");
+  }
+  {
+    const auto down=pho::live_encode(long_text,[](const std::string &)->long{return -1;});
+    require(!down.accepted && down.text==long_text,"tokenizer error must fail closed");
+  }
+  {
+    const auto same=pho::live_encode(long_text,[](const std::string &)->long{return 120;});
+    require(!same.accepted && same.text==long_text,"no token saving accepted");
+  }
+  {
+    const auto barely=pho::live_encode(long_text,[](const std::string &s)->long{
+      return s.find("Bundestag")!=std::string::npos?100:86;});
+    require(!barely.accepted && barely.text==long_text,"14% saving rejected");
+  }
+  {
+    const auto enough=pho::live_encode(long_text,[](const std::string &s)->long{
+      return s.find("Bundestag")!=std::string::npos?100:85;});
+    require(enough.accepted && enough.before-enough.after==15,"15% saving accepted");
+  }
+  {
+    const auto quoted="\"Zitat\" "+long_text;
+    const auto q=pho::live_encode(quoted,token_count);
+    require(!q.accepted && q.text==quoted,"quoted live content changed");
+  }
+  {
+    const auto code="```cpp\nint main(){}\n``` "+long_text;
+    const auto c=pho::live_encode(code,token_count);
+    require(!c.accepted && c.text==code,"code entered live codec");
+  }
+  {
+    const auto lines=long_text+"\n"+long_text;
+    const auto n=pho::live_encode(lines,token_count);
+    require(!n.accepted && n.text==lines,"multiline live content changed");
+  }
+  {
+    const auto brackets="siehe [1] "+long_text;
+    const auto b=pho::live_encode(brackets,token_count);
+    require(!b.accepted && b.text==brackets,"bracketed live content changed");
+  }
+  {
+    const std::string few=std::string(40,'a')+" "+std::string(40,'b');
+    const auto w=pho::live_encode(few,token_count);
+    require(!w.accepted && w.text==few,"under 16 words rejected");
+  }
   require(std::string(pho::instruction).find("normaler lesbarer Sprache")!=std::string::npos,"normal output instruction");
-  std::cout<<"PhO native codec: stems, U protection, negation, deterministic history PASS\n";
+  std::cout<<"PhO native codec: stems, U protection, negation, deterministic history, live gate PASS\n";
 }

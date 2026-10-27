@@ -1283,7 +1283,7 @@ function promptEta(p){
 // Rooms before the stop cleanup stored the note in the text itself.
 function shownText(msg){const t=msg.content||'';return msg.interrupted?t.replace(/\s*\((abgebrochen|unterbrochen)\)\s*$/,''):t}
 function stoppedByUser(msg){return msg.interrupted&&msg.stopped!=='system'}
-const QUIET_STEP=/^(Liest Verlauf|Reagiert$|Nimmt die Reaktion zurück$)/;
+const QUIET_STEP=/^(?:Liest Verlauf|Liest das Gespräch|Denkt nach(?:…|\.\.\.)?$|Gedacht für(?: \d+ s)?$|Reagiert$|Nimmt die Reaktion zurück$)/;
 function shownSteps(steps){return (steps||[]).filter(x=>!QUIET_STEP.test(x))}
 function doneLabel(msg){
  if(msg.work_error&&!stoppedByUser(msg))return 'Fehler · '+msg.work_error;
@@ -1303,7 +1303,7 @@ function stepsList(steps){
 }
 function attachWork(div,msg,content){
  if(!msg||msg.role==='user')return;
- if(msg.thinking_enabled===false&&!msg.work_error&&!msg.interrupted)return;
+ // Tool steps and errors remain useful even with thinking switched off.
  if(!msg.work_error&&!msg.interrupted&&!shownSteps(msg.steps).length&&!shownTools(storedTools(msg)).length)return;
  const box=document.createElement('div');
  box.className='work-status '+(stoppedByUser(msg)?'phase-stopped':msg.work_error?'phase-error':(msg.interrupted?'phase-hung':'phase-done'));
@@ -2707,6 +2707,10 @@ function renderQueue(q){
  const editFocus=focused?.matches('.q-edit')?{id:focused.closest('.q-chip')?.dataset.id,start:focused.selectionStart,end:focused.selectionEnd}:null;
  queueState={pending:q.pending||[],paused:!!q.paused,revision:q.revision??queueState.revision};
  state.pending=queueState.pending;state.queue_paused=queueState.paused;
+ // An SSE queue acknowledgment can precede the POST response; dedupe immediately.
+ const previous=localSends.size;
+ for(const p of queueState.pending)if(p.client_id)localSends.delete(p.client_id);
+ if(localSends.size!==previous)render();
  const box=$('queue-chips');if(!box)return;
  const wasOpen=box.classList.contains('expanded'),list=queueState.pending;
  box.replaceChildren();box.hidden=!list.length;if(box.hidden)return;

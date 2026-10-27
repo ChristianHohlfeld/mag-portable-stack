@@ -54,12 +54,40 @@ def _kill_pid(pid):
             pass
 
 
+def _worktree_magroom():
+    env = os.environ.get('MAG_CI_MAGROOM')
+    if env:
+        return os.path.realpath(env)
+    here = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    return os.path.realpath(os.path.join(here, 'build', 'magroom'))
+
+
+def _kill_worktree_magroom():
+    """Kill this checkout's magroom only. Production binaries stay running."""
+    magroom = _worktree_magroom()
+    if not magroom or not os.path.exists(magroom):
+        return
+    for entry in os.listdir('/proc'):
+        if not entry.isdigit():
+            continue
+        try:
+            exe = os.path.realpath('/proc/%s/exe' % entry)
+        except OSError:
+            continue
+        if exe == magroom:
+            try:
+                os.kill(int(entry), signal.SIGKILL)
+            except OSError:
+                pass
+
+
 def _kill_tracked():
     with _LOCK:
         procs = list(_CHILDREN)
     for proc in procs:
         if proc.poll() is None:
             _kill_pid(proc.pid)
+    _kill_worktree_magroom()
 
 
 def _track_popen(*args, **kwargs):

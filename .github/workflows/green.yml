@@ -7,6 +7,7 @@ on:
   workflow_dispatch:
 permissions:
   contents: write
+  actions: read
 concurrency:
   group: github-green-main
   cancel-in-progress: true
@@ -27,6 +28,57 @@ jobs:
           git diff --check HEAD^ HEAD
           grep -Fq 'fetch-github-green.sh' ops/update.sh
           grep -Fq 'fetch-github-green.sh' ops/auto-update/auto-update.sh
+      # Keep green as the last fully tested main, not merely shell-syntax-clean.
+      # The independent workflows all run on pushes to main. Fail closed if
+      # any is missing, pending past deadline, cancelled or failed.
+      - name: Require all release workflows to succeed
+        uses: actions/github-script@v7
+        timeout-minutes: 16
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const required = [
+              'Native MAG stack',
+              'Room agent-chat contract (Stop, priority, queue, browser)',
+              'Screenshot paste browser emulation',
+              'Blank-host bootstrap (e2e)',
+              'MAG encrypted backup and restore',
+              'Private nginx cutover security',
+              'MAG Pages native C++ / nginx / secrets',
+              'MAG German browser speech',
+            ];
+            const { owner, repo } = context.repo;
+            const deadline = Date.now() + 14 * 60_000;
+            while (Date.now() < deadline) {
+              // Only the same main push is relevant; a passing unrelated PR or
+              // historic main run must never authorize a release.
+              const result = await github.rest.actions.listWorkflowRunsForRepo({
+                owner, repo, head_sha: context.sha, event: 'push', per_page: 100,
+              });
+              const runs = result.data.workflow_runs.filter(r =>
+                r.head_sha === context.sha &&
+                r.head_branch === 'main' &&
+                r.event === 'push');
+              const pending = [];
+              for (const name of required) {
+                const match = runs.filter(r => r.name === name)
+                  .sort((a,b) => b.id-a.id)[0];
+                if (!match || match.status !== 'completed') {
+                  pending.push(name);
+                } else if (match.conclusion !== 'success') {
+                  core.setFailed(name + ' = ' + match.conclusion +
+                    '; retaining previous GitHub green');
+                  return;
+                }
+              }
+              if (!pending.length) {
+                core.info('All release workflows succeeded on main ' + context.sha);
+                return;
+              }
+              core.info('Waiting on: ' + pending.join('; '));
+              await new Promise(resolve => setTimeout(resolve, 15000));
+            }
+            core.setFailed('Timed out waiting for release workflows; green unchanged');
       - id: promote
         name: Promote GitHub green
         timeout-minutes: 5

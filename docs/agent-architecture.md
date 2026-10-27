@@ -1,5 +1,10 @@
 # MAG agent architecture (Grok-Bot-style turn model)
 
+MAG implements a comparable agent workflow, not proprietary Grok Bot software.
+Unlike Grok Bot's shared account computer, each MAG bot retains a separate
+restricted VM. Explicit delegation passes a task and outcome through the room;
+it never shares browser cookies, credentials or filesystem privileges.
+
 How a MAG room bot pursues a goal to completion. Everything is enforced in
 the C++ room (`mag-room/native/magroom.cpp`, `agent_core.hpp`, `numa_models.hpp`);
 the model only proposes text and tool calls.

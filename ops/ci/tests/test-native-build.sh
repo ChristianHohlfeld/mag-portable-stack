@@ -52,4 +52,14 @@ fi
 printf '\n' >>"$tmp/src/CMakeLists.txt"
 PATH="$tmp/bin:$PATH" bash "$tmp/src/ops/ci/native-build.sh" magroom
 grep -q 'cmake ' "$log"
+# No-arg invocation sources MAG_BUILD_TARGETS (set -u) and still caches.
+: >"$log"
+PATH="$tmp/bin:$PATH" bash "$tmp/src/ops/ci/native-build.sh"
+[[ -x $tmp/src/build/mag-audit-gateway ]]
+: >"$log"
+PATH="$tmp/bin:$PATH" bash "$tmp/src/ops/ci/native-build.sh"
+if grep -q 'cmake ' "$log"; then
+  echo 'cache miss after no-arg rebuild' >&2
+  exit 1
+fi
 echo 'native-build cache PASS'

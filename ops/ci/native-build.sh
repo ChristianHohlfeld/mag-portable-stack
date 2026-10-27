@@ -7,6 +7,8 @@
 set -euo pipefail
 ROOT=$(cd -- "$(dirname -- "$(readlink -f "$0")")/../.." && pwd)
 cd "$ROOT"
+# shellcheck source=../build-targets.sh disable=SC1091
+source "$ROOT/ops/build-targets.sh"
 dir=${MAG_CI_BUILD_DIR:-$ROOT/build}
 jobs=${MAG_CI_JOBS:-$(nproc 2>/dev/null || echo 2)}
 stamp="$dir/.mag-native-hash"

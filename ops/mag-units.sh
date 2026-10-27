@@ -44,7 +44,9 @@ mag_flush_daemon_reload() {
   local force=0 stamp
   [[ ${1:-} == --force ]] && force=1
   stamp=$(mag_units_dirty_file)
-  if [[ $force -eq 0 && -n $stamp && ! -e $stamp ]]; then
+  # Empty stamp (standalone layout/tests) must not fail under set -e.
+  # --force still reloads so rollback can restore unit files.
+  if [[ $force -eq 0 && ( -z $stamp || ! -e $stamp ) ]]; then
     return 0
   fi
   local saved=${MAG_DEFER_DAEMON_RELOAD:-0}

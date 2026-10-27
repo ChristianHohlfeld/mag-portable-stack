@@ -17,7 +17,7 @@ echo "systemctl $*" >> "$CALLS"
 exit 0
 EOF
 chmod +x "$tmp/bin/systemctl"
-# shellcheck disable=SC1091
+# shellcheck source=../mag-units.sh disable=SC1091
 source "$root/ops/mag-units.sh"
 
 export PATH="$tmp/bin:$PATH" CALLS=$log
@@ -44,6 +44,17 @@ export MAG_DEFER_DAEMON_RELOAD=0
 mag_daemon_reload
 mag_daemon_reload
 [[ $(grep -c 'systemctl daemon-reload' "$log") == 2 ]]
+
+# Standalone layout/rollback has no dirty stamp. Flush must stay 0 under set -e.
+unset MAG_UNITS_DIRTY_FILE MAG_NGINX_TXN
+: >"$log"
+mag_flush_daemon_reload
+if [[ -s $log ]]; then
+  echo 'flush without stamp still called systemctl' >&2
+  exit 1
+fi
+mag_flush_daemon_reload --force
+[[ $(grep -c 'systemctl daemon-reload' "$log") == 1 ]]
 
 # apply-gitea-funnel installs both unit families, then one reload.
 [[ $(grep -c 'daemon-reload' "$root/ops/tailscale/apply-gitea-funnel.sh") == 1 ]]

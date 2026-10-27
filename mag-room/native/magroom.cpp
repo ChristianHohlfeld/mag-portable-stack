@@ -2163,8 +2163,10 @@ static std::string build_transcript() {
   return out;
 }
 
-// Persist the exact wire messages per bot. Completed assistant/tool messages
-// are replayed verbatim; a new turn only appends new room input and context.
+// Persist the exact wire messages per bot. The system prompt and the first
+// transcript stay byte-identical. Aged prose after that prefix is substituted
+// once from the sealed PhO archive; tool payloads, code and the latest user
+// message stay verbatim. A new turn only appends new room input and context.
 // UI labels, clocks, plugin notes and memories never rewrite an old message.
 struct WireSession {
   std::string fingerprint, memory, plugins, files;
@@ -2277,6 +2279,29 @@ static size_t pho_old_end(const WireSession &w) {
 static std::string pho_message_key(const Val &m) {
   return "wire-"+fnv_hex(mj::dump(m));
 }
+// Archive lookup by the raw line or by the sealed text. Content-derived keys
+// change once a line is substituted, so a second pass must not encode again.
+static const Val *pho_find(const Val &archive, const std::string &prose) {
+  if(!archive.isObj()||prose.empty())return nullptr;
+  const Val *by_content=nullptr;
+  for(const auto &kv:*archive.obj) {
+    if(!kv.second.isObj())continue;
+    if(mag::str(kv.second,"original")==prose)return &kv.second;
+    if(!by_content&&mag::str(kv.second,"content")==prose)by_content=&kv.second;
+  }
+  return by_content;
+}
+static void pho_split_speaker(const std::string &line, std::string &prefix, std::string &body) {
+  prefix.clear();body=line;
+  if(!line.empty()&&line[0]=='[') {
+    const auto mark=line.find("]: ");
+    if(mark!=std::string::npos&&mark<200){prefix=line.substr(0,mark+3);body=line.substr(mark+3);}
+  }
+}
+static void pho_archive_body(int idx,WireSession &w,const std::string &body) {
+  if(body.empty()||pho_find(w.pho_archive,body))return;
+  pho_once(idx,w,"line-"+fnv_hex(body),body);
+}
 static void pho_archive_turns(int idx,WireSession &w) {
   const size_t end=std::min(pho_old_end(w),w.messages.size());
   for(size_t i=2;i<end;++i) {
@@ -2286,8 +2311,62 @@ static void pho_archive_turns(int idx,WireSession &w) {
     // Keep the historical status tail exactly; compress only room prose.
     const auto at=text.rfind("\n[Kontext]");
     const auto prose=at==std::string::npos?text:text.substr(0,at);
-    if(!prose.empty())pho_once(idx,w,pho_message_key(m),prose);
+    if(!pho::eligible(prose))continue;
+    size_t pos=0;
+    while(pos<prose.size()) {
+      auto nl=prose.find('\n',pos);
+      if(nl==std::string::npos)nl=prose.size();
+      std::string prefix,body;pho_split_speaker(prose.substr(pos,nl-pos),prefix,body);
+      (void)prefix;pho_archive_body(idx,w,body);
+      if(nl>=prose.size())break;
+      pos=nl+1;
+    }
   }
+}
+// Substitute sealed prose into aged wire messages. messages[0] is the system
+// prompt and messages[1] is the first transcript: both stay byte-identical so
+// the prewarmed prefix is never re-prefilled. The recent window, tool
+// payloads and the not-yet-appended latest user message stay verbatim.
+// Speaker labels stay verbatim. A sealed line is deterministic, so the next
+// turn matches through that line and the prompt cache extends again.
+static void pho_apply_history(int idx,WireSession &w) {
+  if(!w.compression)return;
+  const size_t end=std::min(pho_old_end(w),w.messages.size());
+  if(end<=2)return;
+  long before_sum=0,after_sum=0;
+  for(size_t i=2;i<end;++i) {
+    auto &m=w.messages[i];const auto role=mag::str(m,"role");
+    if(role=="tool"||m.find("tool_calls"))continue;
+    if(role!="user"&&role!="assistant")continue;
+    const auto text=mag::str(m,"content");
+    const auto at=text.rfind("\n[Kontext]");
+    const auto prose=at==std::string::npos?text:text.substr(0,at);
+    if(!pho::eligible(prose))continue;
+    const auto tail=at==std::string::npos?std::string():text.substr(at);
+    std::string rebuilt;size_t pos=0;
+    while(pos<prose.size()) {
+      auto nl=prose.find('\n',pos);
+      const bool more=nl!=std::string::npos;
+      if(!more)nl=prose.size();
+      const auto line=prose.substr(pos,nl-pos);
+      std::string prefix,body;pho_split_speaker(line,prefix,body);
+      std::string sealed=body;
+      if(const auto *rec=pho_find(w.pho_archive,body)) {
+        long before=0,after=0;
+        if(pho_accepted(*rec,before,after)) {
+          before_sum+=before;after_sum+=after;
+          sealed=mag::str(*rec,"content",body);
+        }
+      }
+      rebuilt+=prefix+sealed;
+      if(more)rebuilt.push_back('\n');
+      pos=nl+1;
+    }
+    if(rebuilt!=prose)m["content"]=rebuilt+tail;
+  }
+  std::cerr<<"pho-compress scope=history model="<<bot_model_id(idx)
+           <<" tokens_before="<<before_sum<<" tokens_after="<<after_sum
+           <<" saved="<<(before_sum-after_sum)<<std::endl;
 }
 static std::string pho_initial_transcript(int idx,WireSession &w,
                                           const std::vector<Val> &room,std::string text) {
@@ -2372,6 +2451,7 @@ static std::vector<Val> wire_messages(int idx, const std::string &system,
   // Sample preference exactly at a turn boundary, never during streaming.
   w.compression=pho_enabled(idx);
   pho_archive_turns(idx,w);
+  pho_apply_history(idx,w);
   const bool initial=w.messages.size()==1;
   std::string input;
   if(initial)input=pho_initial_transcript(idx,w,room,build_transcript());

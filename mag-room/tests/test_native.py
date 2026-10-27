@@ -3498,6 +3498,30 @@ class PhoCompress(unittest.TestCase):
  def wire(self,model):
   files=[json.loads(p.read_text()) for p in self.state.glob('prompt-wire-*.json')]
   return next(w for w in files if model in w['messages'][0]['content'])
+ def assert_stable_prefix(self,previous,call,record):
+  # System prompt, tool schema and the first transcript stay byte-identical.
+  # Aged history after that prefix may switch raw->sealed once. The prompt
+  # cache reuses every byte before that single change.
+  self.assertEqual(call['messages'][0],previous['messages'][0])
+  self.assertEqual(call.get('tools'),previous.get('tools'))
+  self.assertGreater(record['n_past'],len(call['messages'][0]['content']))
+  def joined(msgs):
+   parts=[]
+   for m in msgs:
+    c=m.get('content')
+    parts.append(c if isinstance(c,str) else json.dumps(c,ensure_ascii=False,sort_keys=True))
+   return '\x1e'.join(parts)
+  for i,(old,new) in enumerate(zip(previous['messages'],call['messages'])):
+   if old==new:continue
+   self.assertGreaterEqual(i,2,'compression must not touch the stable prefix')
+   self.assertEqual(old.get('role'),new.get('role'))
+   self.assertNotEqual(old.get('role'),'tool')
+   self.assertNotIn('tool_calls',old)
+   prefix=joined(previous['messages'][:i])
+   self.assertTrue(joined(call['messages']).startswith(prefix))
+   self.assertGreaterEqual(record['n_past'],len(prefix))
+   return
+  self.assertGreaterEqual(record['n_past'],len(joined(previous['messages'])))
  def test_01_default_switch_and_room_persistence(self):
   self.assertTrue(self.request('/api/state')['pho_compress_default'])
   self.assertTrue(all(b['pho_compress'] for b in self.bots().values()))
@@ -3517,8 +3541,7 @@ class PhoCompress(unittest.TestCase):
     mark=len(Model.cache_records)
     call=self.send(b['id'],self.PROSE+' Zahlen 001234 -1.23e-4 URL https://example.test/a?x=12 ID user_id-ABC_123. Turn '+str(turn))
     if previous:
-     self.assertEqual(call['messages'][:len(previous['messages'])],previous['messages'])
-     self.assertGreater(Model.cache_records[mark]['n_past'],0)
+     self.assert_stable_prefix(previous,call,Model.cache_records[mark])
     self.assertEqual(call['id_slot'],0);self.assertTrue(call['cache_prompt'])
     previous=call
     w=self.wire(b['model'])
@@ -3532,11 +3555,19 @@ class PhoCompress(unittest.TestCase):
     if '001234' in r['original']:
      for literal in ('001234','-1.23e-4','https://example.test/a?x=12','user_id-ABC_123'):
       self.assertIn(literal,r['content'])
-   # Archiving is not a rewrite of resident KV; current prompt stays raw.
-   self.assertFalse(any('[PhO-Compress]' in m.get('content','') for m in previous['messages'][2:]))
+   self.assertFalse(any('[PhO-Compress]' in m.get('content','') for m in previous['messages']))
+   self.assertTrue(any('today bund' in m.get('content','') for m in previous['messages'][2:]),
+                   'aged history on the model wire is compressed')
+   users=[m for m in previous['messages'] if m.get('role')=='user']
+   self.assertIn('Bundestag',users[-1]['content'])
+   self.assertIn('Bundestag',users[-2]['content'])
+   room=self.request('/api/state')['room']
+   self.assertTrue(any('Bundestag' in (m.get('content') or '') for m in room))
+   self.assertFalse(any('today bund' in (m.get('content') or '') for m in room))
    self.stop();self.start()
+   mark=len(Model.cache_records)
    resumed=self.send(b['id'],self.PROSE+' Wiederaufnahme')
-   self.assertEqual(resumed['messages'][:len(previous['messages'])],previous['messages'])
+   self.assert_stable_prefix(previous,resumed,Model.cache_records[mark])
    after=self.wire(b['model'])['pho_archive']
    for key,value in archive.items():self.assertEqual(after[key],value)
   log=self.tmp_path.joinpath('server.log').read_text()
@@ -3570,11 +3601,11 @@ class PhoCompress(unittest.TestCase):
      break
     previous=call
    self.assertIsNotNone(rolled,'regular context rollover must consume stored compression for '+b['model'])
-   # The following request reuses the freshly established compact prefix.
+   # The following request reuses the stable prefix. A newly aged line may
+   # switch to its sealed form once; everything before that stays identical.
    mark=len(Model.cache_records)
    warm=self.send(b['id'],'Kurze Anschlussfrage nach dem Kontextwechsel.')
-   self.assertGreater(Model.cache_records[mark]['n_past'],0)
-   self.assertEqual(warm['messages'][:len(rolled['messages'])],rolled['messages'])
+   self.assert_stable_prefix(rolled,warm,Model.cache_records[mark])
    self.assertFalse(any(r['content']!=r['original'] for r in self.wire(b['model'])['pho_archive'].values() if code in r['original']))
  def test_03_plus_menu_label_and_order(self):
   html=(ROOT/'mag-room/web/index.html').read_text()
@@ -3633,6 +3664,50 @@ class PhoCompress(unittest.TestCase):
   self.assertIn('function phoSaveView()',html)
   self.assertIn("chip:'PhO −'+pct+' %'",html)
   self.assertIn('className=\'pho-save\'',html)
+ def test_08_aged_history_is_compressed_and_the_prefix_stays_cacheable(self):
+  b=next(iter(self.bots().values()))
+  code='```cpp\nconst char *URL = "https://github.com/o/r"; int id = 001234;\n```'
+  first=self.send(b['id'],self.PROSE+' Turn A')
+  mark=len(Model.cache_records)
+  second=self.send(b['id'],'Bitte Code exakt aufbewahren: '+code)
+  # A second turn must not re-prefill the system prompt or the first transcript.
+  self.assertEqual(second['messages'][0],first['messages'][0])
+  self.assertEqual(second['messages'][1],first['messages'][1])
+  self.assertEqual(second.get('tools'),first.get('tools'))
+  self.assertGreater(Model.cache_records[mark]['n_past'],len(first['messages'][0]['content']))
+  Model.script=[[{'tool_calls':[{'index':0,'id':'pho-hist','function':{'name':'list_room_files','arguments':'{}'}}]}],['Werkzeug ist fertig.']]
+  try:self.send(b['id'],self.PROSE+' Turn tool')
+  finally:Model.script=[]
+  tool_text=next(m.get('content') for c in Model.calls for m in c.get('messages',[]) if m.get('role')=='tool')
+  self.assertTrue(tool_text)
+  previous=None
+  for n in range(6):
+   mark=len(Model.cache_records)
+   call=self.send(b['id'],self.PROSE+' Verlauf '+str(n))
+   if previous:self.assert_stable_prefix(previous,call,Model.cache_records[mark])
+   previous=call
+  texts=[m.get('content','') for m in previous['messages']]
+  self.assertIn(code,'\n'.join(texts))
+  self.assertIn(tool_text,'\n'.join(texts))
+  self.assertTrue(any(m.get('role')=='tool' and m.get('content')==tool_text for m in previous['messages']))
+  self.assertTrue(any('today bund' in t for t in texts[2:]))
+  users=[m for m in previous['messages'] if m.get('role')=='user']
+  self.assertIn('Verlauf 5',users[-1]['content'])
+  self.assertIn('Bundestag',users[-1]['content'])
+  self.assertNotIn('today bund',users[-1]['content'])
+  self.assertIn('Bundestag',users[-2]['content'])
+  room=self.request('/api/state')['room']
+  self.assertTrue(any('Verlauf 5' in (m.get('content') or '') and 'Bundestag' in (m.get('content') or '') for m in room))
+  self.assertFalse(any('today bund' in (m.get('content') or '') for m in room))
+  mark=len(Model.cache_records)
+  again=self.send(b['id'],self.PROSE+' Verlauf nochmal')
+  self.assert_stable_prefix(previous,again,Model.cache_records[mark])
+  self.assertEqual(again['messages'][0]['content'],previous['messages'][0]['content'])
+  saves=[]
+  for line in self.tmp_path.joinpath('server.log').read_text().splitlines():
+   if 'scope=history' in line and 'saved=' in line:
+    saves.append(int(line.split('saved=',1)[1].split()[0]))
+  self.assertTrue(any(s>0 for s in saves),'aged history must log a positive token saving')
 
 if __name__=='__main__':unittest.main(verbosity=2)
 

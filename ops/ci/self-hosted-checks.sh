@@ -51,6 +51,8 @@ bash ops/tests/test-runners.sh
 bash ops/tests/test-green.sh
 bash ops/tests/test-boot.sh
 bash ops/tests/test-clear-failed-units.sh
+python3 ops/tailscale/tests/test-gitea-funnel.py
+python3 ops/tailscale/tests/test-sni-map.py
 bash ops/tests/test-retire-deepseek.sh
 bash ops/tests/test-gitea-mirror.sh
 bash ops/backup/tests/test-backup.sh

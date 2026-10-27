@@ -6642,10 +6642,34 @@ static void resume_selftalk_after_deploy() {
   last_assistant_for_selftalk(speaker, cause, text);
   if (!speaker.empty()) arm_selftalk(speaker, cause, text);
 }
+// Idle acknowledgements must not re-arm Self-Talk. The switch stays on;
+// there is no turn cap. Live drain stayed busy while bots repeated
+// "Kein Auftrag. Ich bleibe still." / "Verstanden. Ich bin bereit."
+static bool selftalk_idle_echo(const std::string &text) {
+  std::string t = trim(text);
+  if (t.empty()) return true;
+  std::string lower;
+  lower.reserve(t.size());
+  for (unsigned char c : t) {
+    if (c == '\n' || c == '\r' || c == '\t')
+      lower.push_back(' ');
+    else
+      lower.push_back(static_cast<char>(std::tolower(c)));
+  }
+  if (lower.find("kein auftrag") != std::string::npos) return true;
+  if (lower.find("bleibe still") != std::string::npos) return true;
+  if (lower.find("bin bereit") != std::string::npos) return true;
+  while (!lower.empty() &&
+         (lower.back() == '.' || lower.back() == '!' || lower.back() == '?' ||
+          lower.back() == ' '))
+    lower.pop_back();
+  return lower == "verstanden" || lower == "ok" || lower == "okay";
+}
 static void arm_selftalk(const std::string &speaker, const std::string &cause,
                          const std::string &text) {
   if (!SELFTALK.load() || SELF_HOLD.load() || speaker.empty() || cause.empty())
     return;
+  if (selftalk_idle_echo(text)) return;
   std::vector<std::string> listeners;
   {
     std::lock_guard<std::recursive_mutex> st(STATE_MTX);

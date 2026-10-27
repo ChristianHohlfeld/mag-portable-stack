@@ -1,5 +1,17 @@
 #!/usr/bin/env python3
+# mag-test-timeout: 180
 """Serve/Funnel config, nginx exposure and ROOT_URL. No tailscaled, no secrets."""
+import pathlib as _mag_path
+import sys as _mag_sys
+
+_mag_root = _mag_path.Path(__file__).resolve()
+while _mag_root != _mag_root.parent and not (_mag_root / "ops/ci/mag_deadline.py").is_file():
+    _mag_root = _mag_root.parent
+_mag_sys.path.insert(0, str(_mag_root / "ops/ci"))
+import mag_deadline as _mag_deadline
+
+_mag_deadline.arm(180)
+
 import importlib.util
 import json
 import os
@@ -17,8 +29,14 @@ def _write_exec(path, text):
     path.chmod(path.stat().st_mode | stat.S_IEXEC)
 
 
-def _leftover_host(tree):
-    """Live mag after #137: room on 4443, bots/pages still on Tailscale :443."""
+def _leftover_host(tree, room_on_tailnet=False):
+    """Live mag leftovers: bots/pages on Tailscale :443.
+
+    room_on_tailnet=False is post-#137: sites-available already on 4443 and
+    sites-enabled is a symlink. room_on_tailnet=True is the live abort after
+    #157: leftover regular sites-enabled/mag-room.conf still on :443 while
+    sites-available is already off that socket.
+    """
     nginx = tree / "nginx"
     mag_ci = tree / "mag-ci"
     systemd = tree / "systemd"
@@ -45,9 +63,15 @@ def _leftover_host(tree):
     (nginx / "sites-available" / "mag-room.conf").write_text(
         "server {\n    listen 127.0.0.1:4443 ssl http2 proxy_protocol;\n}\n"
     )
-    (nginx / "sites-enabled" / "mag-room.conf").symlink_to(
-        "../sites-available/mag-room.conf"
-    )
+    if room_on_tailnet:
+        (nginx / "sites-enabled" / "mag-room.conf").write_text(
+            "server {\n    listen 100.123.114.16:443 ssl http2;\n"
+            "    server_name mag.stardenburg.de;\n}\n"
+        )
+    else:
+        (nginx / "sites-enabled" / "mag-room.conf").symlink_to(
+            "../sites-available/mag-room.conf"
+        )
     (nginx / "conf.d" / "mag-bots.conf").write_text(
         "server {\n    listen 100.123.114.16:443 ssl http2;\n"
         "    server_name ~^agent[0-9]+\\.bot\\.stardenburg\\.de$;\n}\n"
@@ -77,10 +101,11 @@ def _leftover_host(tree):
 set -euo pipefail
 root=${MAG_GITEA_FUNNEL_NGINX:?}
 if [[ ${1:-} == -T ]]; then
+  # Live nginx -T prints the dump on stderr. Candidates/scan must read both.
   for f in "$root"/sites-enabled/* "$root"/conf.d/*; do
     [[ -e $f || -L $f ]] || continue
-    printf '# configuration file %s:\\n' "$f"
-    cat -- "$f"
+    printf '# configuration file %s:\\n' "$f" >&2
+    cat -- "$f" >&2
   done
   exit 0
 fi
@@ -256,6 +281,11 @@ class FunnelConfig(unittest.TestCase):
         self.assertIn('gitea funnel: failed at line', apply)
         self.assertIn("trap 'on_err", apply)
         self.assertIn("trap cleanup EXIT", apply)
+        self.assertIn("dump_nginx_t", apply)
+        self.assertIn('nginx -T >"$dest.stdout" 2>"$dest.stderr"', apply)
+        self.assertIn("run_cmd", apply)
+        self.assertIn("BASH_COMMAND", apply)
+        self.assertIn('die 1', apply)
         self.assertLess(
             apply.index("trap cleanup EXIT"),
             apply.index('issue-tailscale-cert.sh" --no-reload'),
@@ -311,6 +341,15 @@ class FunnelConfig(unittest.TestCase):
                 "/etc/nginx/conf.d/mag-pages.conf",
             ],
         )
+        regular_room = (
+            "# configuration file /etc/nginx/sites-enabled/mag-room.conf:\n"
+            "    listen 100.123.114.16:443 ssl http2;\n"
+            "# configuration file /etc/nginx/conf.d/mag-bots.conf:\n"
+            "    listen 100.123.114.16:443 ssl http2;\n"
+        )
+        both = self.m.candidate_files(regular_room)
+        self.assertIn("/etc/nginx/sites-enabled/mag-room.conf", both)
+        self.assertIn("/etc/nginx/conf.d/mag-bots.conf", both)
         scan = subprocess.run(
             ["python3", "ops/tailscale/merge-gitea-funnel.py", "scan"],
             cwd=ROOT, input=dump, text=True, capture_output=True,
@@ -361,9 +400,11 @@ class FunnelConfig(unittest.TestCase):
             (enabled / "mag-room-old.conf").symlink_to("../sites-available/mag-room-old.conf")
             found = self.m.candidate_files("", [str(tree)])
             names = [pathlib.Path(p).name for p in found]
-            self.assertEqual(names, ["mag-bots.conf", "mag-pages.conf", "mag-room-old.conf"])
+            self.assertEqual(names.count("mag-bots.conf"), 1)
+            self.assertEqual(names.count("mag-pages.conf"), 1)
+            self.assertGreaterEqual(names.count("mag-room-old.conf"), 2)
             self.assertTrue(any(p.endswith("sites-available/mag-room-old.conf") for p in found))
-            self.assertFalse(any(p.endswith("sites-enabled/mag-room-old.conf") for p in found))
+            self.assertTrue(any(p.endswith("sites-enabled/mag-room-old.conf") for p in found))
             for path in found:
                 pathlib.Path(path).write_text(
                     self.m.retarget_nginx(pathlib.Path(path).read_text())
@@ -414,6 +455,7 @@ class FunnelConfig(unittest.TestCase):
             self.assertIn("gitea funnel: moved", log)
             self.assertIn("mag-bots.conf", log)
             self.assertIn("mag-pages.conf", log)
+            self.assertIn("https://mag.tail3e02ae.ts.net/", log)
             self.assertNotIn("gitea funnel: failed at line", log)
             self.assertNotIn("previous listeners restored", log)
             bots = (nginx / "conf.d" / "mag-bots.conf").read_text()
@@ -447,7 +489,9 @@ class FunnelConfig(unittest.TestCase):
             log = proc.stdout + proc.stderr
             self.assertNotEqual(proc.returncode, 0, log)
             self.assertIn("tailscale cert: mag.tail3e02ae.ts.net", log)
-            self.assertRegex(log, r"gitea funnel: failed at line [0-9]+ \(exit 1\)")
+            self.assertRegex(
+                log, r"gitea funnel: failed at line [0-9]+ \(exit 1\): .+"
+            )
             self.assertIn("previous listeners restored", log)
             self.assertEqual((nginx / "conf.d" / "mag-bots.conf").read_text(), bots_before)
             self.assertEqual((nginx / "conf.d" / "mag-pages.conf").read_text(), pages_before)
@@ -455,6 +499,38 @@ class FunnelConfig(unittest.TestCase):
             snap = txn / "funnel-snapshot"
             self.assertTrue((snap / "serve.json").is_file())
             self.assertFalse((snap / "snap").exists())
+
+    def test_apply_rewrites_leftover_regular_sites_enabled_and_continues(self):
+        with tempfile.TemporaryDirectory() as raw:
+            nginx, txn, env = _leftover_host(pathlib.Path(raw), room_on_tailnet=True)
+            room_before = (nginx / "sites-enabled" / "mag-room.conf").read_text()
+            self.assertIn("100.123.114.16:443", room_before)
+            self.assertFalse((nginx / "sites-enabled" / "mag-room.conf").is_symlink())
+            proc = subprocess.run(
+                ["bash", "ops/tailscale/apply-gitea-funnel.sh"],
+                cwd=ROOT, env=env, text=True, capture_output=True,
+            )
+            log = proc.stdout + proc.stderr
+            self.assertEqual(proc.returncode, 0, log)
+            self.assertIn("gitea funnel: moved", log)
+            self.assertIn("mag-room.conf", log)
+            self.assertIn("mag-bots.conf", log)
+            self.assertIn("mag-pages.conf", log)
+            self.assertIn("https://mag.tail3e02ae.ts.net/", log)
+            self.assertNotIn("gitea funnel: failed at line", log)
+            self.assertNotIn("previous listeners restored", log)
+            room = (nginx / "sites-enabled" / "mag-room.conf").read_text()
+            bots = (nginx / "conf.d" / "mag-bots.conf").read_text()
+            pages = (nginx / "conf.d" / "mag-pages.conf").read_text()
+            self.assertIn(self.m.NGINX_LISTEN, room)
+            self.assertNotIn("100.123.114.16:443", room)
+            self.assertNotIn("100.123.114.16:443", bots)
+            self.assertNotIn("100.123.114.16:443", pages)
+            snap = txn / "funnel-snapshot"
+            saved = (snap / "saved.paths").read_text()
+            self.assertIn("mag-room.conf", saved)
+            self.assertIn("mag-bots.conf", saved)
+            self.assertIn("mag-pages.conf", saved)
 
     def test_host_runner_workflow_matches_registered_labels(self):
         import yaml

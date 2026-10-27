@@ -16,6 +16,18 @@ if [[ -f "$MAG_BACKUP_CONFIG/config.env" ]]; then
   # shellcheck disable=SC1091
   source "$MAG_BACKUP_CONFIG/config.env"
 fi
+# 99999999 MiB (~95 TiB) is the low-disk test sentinel. It leaked into
+# mag's config.env and refused daily with 372 GiB free. Production floors
+# stay small (default 4096 MiB). Tests that need a refuse use
+# MAG_BACKUP_TEST_LOW_DISK=1.
+_mag_backup_min=${MAG_BACKUP_MIN_FREE_MIB:-4096}
+if [[ ${MAG_BACKUP_TEST_LOW_DISK:-0} != 1 ]]; then
+  if [[ ! $_mag_backup_min =~ ^[1-9][0-9]*$ ]] || (( _mag_backup_min > 65536 )); then
+    echo "MAG backup: MAG_BACKUP_MIN_FREE_MIB=${_mag_backup_min} is not a production floor; using 4096 MiB" >&2
+    MAG_BACKUP_MIN_FREE_MIB=4096
+  fi
+fi
+unset _mag_backup_min
 # S3 offsite was removed for good. A stale opt-in fails closed so nobody
 # believes an offsite copy exists. A residual aws.env is never read.
 if [[ "${MAG_BACKUP_OFFSITE_ENABLED:-0}" != 0 ]]; then

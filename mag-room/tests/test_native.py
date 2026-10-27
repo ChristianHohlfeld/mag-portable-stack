@@ -4462,7 +4462,7 @@ class SelfTalk(unittest.TestCase):
 
  Stop or the toggle ends the chain. A user message does not: it is inserted
  once, the next free bot answers it, and the chain keeps going. Names in the
- prompt come from the live roster.
+ prompt come from the live roster. Idle acknowledgements do not re-arm.
  """
  HARD_S = 28
 
@@ -4769,6 +4769,33 @@ class SelfTalk(unittest.TestCase):
    self.fail('Self-Talk did not resume after deploy restart\n%s' % self.log_path.read_text()[-1500:])
   self.api('/api/cancel', {})
 
+ def test_idle_echo_does_not_rearm_selftalk(self):
+  self._tok = re_token(urllib.request.urlopen('http://127.0.0.1:%d/' % self.ui, timeout=2).read().decode())
+  self.hold.set()
+  self.api('/api/selftalk', {'on': True})
+  self.api('/api/message', {'text': 'IDLE-ECHO', 'bots': ['alpha']})
+  self.wait_calls(1)
+  frozen = len(self.chat_calls())
+  time.sleep(0.6)
+  self.assertEqual(len(self.chat_calls()), frozen, 'idle acknowledgement re-armed Self-Talk')
+  st = self.api('/api/state')
+  self.assertTrue(st['selftalk'], 'idle damp must leave the switch on')
+  self.assertFalse(st.get('selftalk_busy'))
+  self.assertFalse(st['busy'])
+  room = [m.get('content') for m in st['room'] if m.get('role') == 'assistant']
+  self.assertTrue(any('Kein Auftrag' in (c or '') or 'bleibe still' in (c or '') for c in room), room)
+  self.api('/api/message', {'text': 'TOKEN-CHRIS-99', 'bots': ['beta']})
+  deadline = time.monotonic() + 5
+  while time.monotonic() < deadline:
+   if any(m.get('role') == 'assistant' and 'TOKEN-CHRIS-99' in (m.get('content') or '')
+          for m in self.api('/api/state')['room']):
+    break
+   time.sleep(0.05)
+  else:
+   self.fail('real user text after idle echo did not get an answer')
+  self.assertTrue(self.api('/api/state')['selftalk'])
+  self.api('/api/cancel', {})
+
  def test_deploy_hold_drains_user_reply(self):
   self._tok = re_token(urllib.request.urlopen('http://127.0.0.1:%d/' % self.ui, timeout=2).read().decode())
   TalkModel.hold_below = 1
@@ -4845,6 +4872,8 @@ class TalkModel(http.server.BaseHTTPRequestHandler):
    text = 'sieht Gamma'
   elif 'TOKEN-CHRIS-99' in blob:
    text = 'zu Chris: TOKEN-CHRIS-99'
+  elif 'IDLE-ECHO' in blob:
+   text = 'Kein Auftrag. Ich bleibe still.'
   else:
    text = 'FACT-77'
   try:

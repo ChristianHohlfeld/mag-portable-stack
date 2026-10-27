@@ -20,10 +20,32 @@ systemd_dir=${MAG_GITEA_FUNNEL_SYSTEMD:-/etc/systemd/system}
 lib_dir=${MAG_GITEA_FUNNEL_LIB:-/usr/local/lib/mag-ci}
 sock=${MAG_GITEA_FUNNEL_SOCK:-/var/run/tailscale/tailscaled.sock}
 
+funnel_logged=0
 on_err() {
-  echo "gitea funnel: failed at line ${1:-?} (exit ${2:-1})" >&2
+  funnel_logged=1
+  echo "gitea funnel: failed at line ${1:-?} (exit ${2:-1}): ${3:-unknown command}" >&2
 }
-trap 'on_err "$LINENO" "$?"' ERR
+die() {
+  local rc=${1:-1} why=${2:-${BASH_COMMAND:-exit}}
+  echo "gitea funnel: failed at line ${BASH_LINENO[0]:-?} (exit ${rc}): ${why}" >&2
+  funnel_logged=1
+  exit "$rc"
+}
+trap 'on_err "$LINENO" "$?" "$BASH_COMMAND"' ERR
+dump_nginx_t() {
+  local dest=$1
+  # Live `nginx -T` prints the config dump on stderr. Candidates/scan must
+  # read both streams or leftover sites-enabled listens stay invisible.
+  nginx -T >"$dest.stdout" 2>"$dest.stderr" || true
+  cat -- "$dest.stdout" "$dest.stderr" >"$dest"
+}
+run_cmd() {
+  local rc=0
+  echo "gitea funnel: + $*" >&2
+  "$@" || rc=$?
+  echo "gitea funnel: rc=${rc} $*" >&2
+  return "$rc"
+}
 
 if [[ ${1:-} == --dry-run ]]; then
   python3 "$here/merge-gitea-funnel.py" merge </dev/null
@@ -83,6 +105,10 @@ manifest=$snapdir/manifest
 cleanup() {
   local rc=$?
   trap - EXIT ERR
+  if (( rc != 0 && funnel_logged == 0 )); then
+    echo "gitea funnel: failed at line ${BASH_LINENO[0]:-?} (exit ${rc}): ${BASH_COMMAND:-exit}" >&2
+    funnel_logged=1
+  fi
   if (( rc != 0 && keep_nginx == 0 )); then
     if [[ $test_mode == 1 && -n ${MAG_GITEA_FUNNEL_SERVE:-} && -n ${tmp:-} && -s $tmp/current ]]; then
       cp -a "$tmp/current" "$MAG_GITEA_FUNNEL_SERVE" || true
@@ -252,7 +278,7 @@ cp -a "$tmp/current" "$snapdir/serve.json" || {
 # and live bots/pages still sit in conf.d with listen 100.123.114.16:443.
 site=$nginx_root/conf.d/mag-git.conf
 proxy=$mag_ci_root/gitea-proxy.inc
-nginx -T >"$tmp/nginx-t" 2>"$tmp/nginx-t.err" || true
+dump_nginx_t "$tmp/nginx-t"
 to_retarget=()
 if ! python3 "$here/merge-gitea-funnel.py" candidates \
     "$nginx_root/sites-available" \
@@ -305,56 +331,50 @@ if (( ${#to_retarget[@]} )); then
     echo "gitea funnel: moved $file off 100.123.114.16:443"
   done
 fi
-install -d -m 0755 "$mag_ci_root" || { echo 'gitea funnel: cannot create mag-ci dir' >&2; exit 1; }
-install -m 0644 "$root/ops/gitea-ci/gitea-proxy.inc" "$proxy" || {
-  echo 'gitea funnel: cannot install gitea-proxy.inc' >&2
-  exit 1
-}
-install -m 0644 "$root/ops/gitea-ci/public.nginx.in" "$site" || {
-  echo 'gitea funnel: cannot install mag-git.conf' >&2
-  exit 1
-}
-if ! nginx -t || ! systemctl reload nginx.service; then
-  echo 'gitea funnel: nginx config rejected' >&2
-  exit 1
+run_cmd install -d -m 0755 "$mag_ci_root" || die 1 "install -d $mag_ci_root"
+run_cmd install -m 0644 "$root/ops/gitea-ci/gitea-proxy.inc" "$proxy" ||
+  die 1 "install gitea-proxy.inc"
+run_cmd install -m 0644 "$root/ops/gitea-ci/public.nginx.in" "$site" ||
+  die 1 "install mag-git.conf"
+if ! run_cmd nginx -t || ! run_cmd systemctl reload nginx.service; then
+  die 1 'nginx -t || systemctl reload nginx.service'
 fi
 # Funnel cannot bind :443 while any managed vhost still listens there.
 # nginx -T is required: ss alone misses a listen that failed to leave conf.d.
-if ! nginx -T 2>/dev/null | python3 "$here/merge-gitea-funnel.py" scan; then
-  echo 'gitea funnel: refusing to enable Funnel while nginx still binds the Tailscale :443' >&2
-  exit 1
+dump_nginx_t "$tmp/nginx-scan"
+if ! python3 "$here/merge-gitea-funnel.py" scan <"$tmp/nginx-scan"; then
+  die 1 'nginx still binds 100.123.114.16:443 (scan)'
 fi
 if command -v ss >/dev/null && ss -ltnH 'sport = :443' | grep -q '100.123.114.16:443'; then
   echo 'gitea funnel: 100.123.114.16:443 is still taken; refusing to enable Funnel' >&2
-  nginx -T 2>/dev/null | grep -n 'listen[[:space:]]\+100\.123\.114\.16:443' >&2 || true
-  exit 1
+  grep -n 'listen[[:space:]]\+100\.123\.114\.16:443' "$tmp/nginx-scan" >&2 || true
+  die 1 'ss: 100.123.114.16:443 still taken'
 fi
 keep_nginx=1
 if [[ $test_mode != 1 && -s $ini ]]; then
   before=$(sha256sum "$ini")
-  bash "$root/ops/gitea-ci/configure-gitea.sh"
+  bash "$root/ops/gitea-ci/configure-gitea.sh" || die 1 'configure-gitea.sh'
   after=$(sha256sum "$ini")
   if [[ $before != "$after" ]]; then systemctl restart gitea.service; fi
 fi
 # The old lego timer must not run HTTP-01 for a name Funnel now serves.
 systemctl disable --now mag-ci-cert.timer >/dev/null 2>&1 || true
-install -d -m 0755 "$lib_dir" || { echo 'gitea funnel: cannot create cert lib dir' >&2; exit 1; }
-install -d -m 0755 "$systemd_dir" || { echo 'gitea funnel: cannot create systemd dir' >&2; exit 1; }
-install -m 0755 "$here/issue-tailscale-cert.sh" "$lib_dir/issue-tailscale-cert.sh"
-install -m 0644 "$here/mag-tailscale-cert.service" "$systemd_dir/mag-tailscale-cert.service"
-install -m 0644 "$here/mag-tailscale-cert.timer" "$systemd_dir/mag-tailscale-cert.timer"
-systemctl daemon-reload
-systemctl enable mag-tailscale-cert.timer
-systemctl start mag-tailscale-cert.timer
+run_cmd install -d -m 0755 "$lib_dir" || die 1 "install -d $lib_dir"
+run_cmd install -d -m 0755 "$systemd_dir" || die 1 "install -d $systemd_dir"
+run_cmd install -m 0755 "$here/issue-tailscale-cert.sh" "$lib_dir/issue-tailscale-cert.sh" ||
+  die 1 'install issue-tailscale-cert.sh'
+run_cmd install -m 0644 "$here/mag-tailscale-cert.service" "$systemd_dir/mag-tailscale-cert.service" ||
+  die 1 'install mag-tailscale-cert.service'
+run_cmd install -m 0644 "$here/mag-tailscale-cert.timer" "$systemd_dir/mag-tailscale-cert.timer" ||
+  die 1 'install mag-tailscale-cert.timer'
+run_cmd systemctl daemon-reload || die 1 'systemctl daemon-reload'
+run_cmd systemctl enable mag-tailscale-cert.timer || die 1 'enable mag-tailscale-cert.timer'
+run_cmd systemctl start mag-tailscale-cert.timer || die 1 'start mag-tailscale-cert.timer'
 
-python3 "$here/merge-gitea-funnel.py" merge <"$tmp/current" >"$tmp/merged" || {
-  echo 'gitea funnel: serve-config merge failed' >&2
-  exit 1
-}
-python3 "$here/merge-gitea-funnel.py" check <"$tmp/merged" || {
-  echo 'gitea funnel: merged serve-config rejected' >&2
-  exit 1
-}
+python3 "$here/merge-gitea-funnel.py" merge <"$tmp/current" >"$tmp/merged" ||
+  die 1 'serve-config merge failed'
+python3 "$here/merge-gitea-funnel.py" check <"$tmp/merged" ||
+  die 1 'merged serve-config rejected'
 same=0
 if python3 - "$tmp/current" "$tmp/merged" <<'PY'
 import json, sys
@@ -369,24 +389,16 @@ PY
 then same=1
 fi
 if (( same == 0 )); then
-  post_code=$(api POST "$tmp/post" -H 'Content-Type: application/json' --data-binary @"$tmp/merged") || {
-    echo 'gitea funnel: serve-config POST failed' >&2
-    exit 1
-  }
+  post_code=$(api POST "$tmp/post" -H 'Content-Type: application/json' --data-binary @"$tmp/merged") ||
+    die 1 'serve-config POST failed'
   if [[ $post_code != 200 ]]; then
-    echo "gitea funnel: serve-config POST HTTP ${post_code}" >&2
-    exit 1
+    die 1 "serve-config POST HTTP ${post_code}"
   fi
 fi
-get_code=$(api GET "$tmp/applied") || {
-  echo 'gitea funnel: serve-config reread failed' >&2
-  exit 1
-}
-[[ $get_code == 200 ]] || { echo "gitea funnel: serve-config reread HTTP ${get_code}" >&2; exit 1; }
-python3 "$here/merge-gitea-funnel.py" check <"$tmp/applied" || {
-  echo 'gitea funnel: applied serve-config rejected' >&2
-  exit 1
-}
+get_code=$(api GET "$tmp/applied") || die 1 'serve-config reread failed'
+[[ $get_code == 200 ]] || die 1 "serve-config reread HTTP ${get_code}"
+python3 "$here/merge-gitea-funnel.py" check <"$tmp/applied" ||
+  die 1 'applied serve-config rejected'
 status=$(tailscale funnel status 2>&1 || true)
 sed "s#@ROOT@#$root#g" "$here/mag-gitea-funnel.service" > "$systemd_dir/mag-gitea-funnel.service"
 install -m 0644 "$here/mag-gitea-funnel.timer" "$systemd_dir/mag-gitea-funnel.timer"
@@ -412,7 +424,7 @@ MagicDNS and HTTPS certificates must be enabled for the tailnet. After Funnel
 is on, public resolvers can take up to 10 minutes to see the name.
 EOF
   if [[ ${MAG_GITEA_FUNNEL_REQUIRE_PUBLIC:-0} == 1 ]]; then
-    exit 1
+    die 1 'public Funnel is not active'
   fi
   echo "gitea funnel: ${origin}/ waiting for funnel nodeAttr"
   exit 0

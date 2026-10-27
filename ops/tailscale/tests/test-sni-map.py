@@ -1,9 +1,21 @@
 #!/usr/bin/env python3
+# mag-test-timeout: 180
 """Every tailnet name is one nginx socket. Nothing else claims :443.
 
 Starts a throwaway nginx on a high loopback port. Does not reload a system
 nginx and does not touch a model unit.
 """
+import pathlib as _mag_path
+import sys as _mag_sys
+
+_mag_root = _mag_path.Path(__file__).resolve()
+while _mag_root != _mag_root.parent and not (_mag_root / "ops/ci/mag_deadline.py").is_file():
+    _mag_root = _mag_root.parent
+_mag_sys.path.insert(0, str(_mag_root / "ops/ci"))
+import mag_deadline as _mag_deadline
+
+_mag_deadline.arm(180)
+
 import json
 import pathlib
 import socket

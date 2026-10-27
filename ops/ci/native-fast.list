@@ -20,3 +20,5 @@ runners :: bash ops/tests/test-runners.sh
 green promotion :: bash ops/tests/test-green.sh
 boot :: bash ops/tests/test-boot.sh
 failed units :: bash ops/tests/test-clear-failed-units.sh
+gitea funnel :: python3 ops/tailscale/tests/test-gitea-funnel.py
+sni map :: python3 ops/tailscale/tests/test-sni-map.py

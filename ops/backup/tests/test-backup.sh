@@ -140,12 +140,22 @@ while IFS= read -r meta; do
 done < <(find "$MAG_BACKUP_ROOT" -name META)
 [[ "$found" -eq 1 ]]
 before=$(verified_n)
-if MAG_BACKUP_MIN_FREE_MIB=99999999 "$here/backup.sh" daily >"$tmp/space.out" 2>&1; then
+if MAG_BACKUP_TEST_LOW_DISK=1 MAG_BACKUP_MIN_FREE_MIB=99999999 "$here/backup.sh" daily >"$tmp/space.out" 2>&1; then
   echo 'Low disk space was accepted' >&2; exit 1
 fi
 grep -Fq 'MAG backup refused' "$tmp/space.out"
 grep -Fq 'no old backup was deleted' "$tmp/space.out"
 [[ "$(verified_n)" -eq "$before" ]]
+if ! MAG_BACKUP_MIN_FREE_MIB=99999999 bash -c "
+  set -euo pipefail
+  source '$here/common.sh'
+  [[ \"\$MAG_BACKUP_MIN_FREE_MIB\" == 4096 ]]
+" >"$tmp/clamp.out" 2>&1; then
+  echo 'Leaked MAG_BACKUP_MIN_FREE_MIB=99999999 was not clamped' >&2
+  cat "$tmp/clamp.out" >&2
+  exit 1
+fi
+grep -Fq 'not a production floor; using 4096 MiB' "$tmp/clamp.out"
 if MAG_BACKUP_MIN_FREE_MIB=64 MAG_BACKUP_TEST_ABORT=1 "$here/backup.sh" daily >"$tmp/abort.out" 2>&1; then
   echo 'Aborted backup was treated as success' >&2; exit 1
 fi

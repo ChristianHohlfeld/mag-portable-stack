@@ -1,17 +1,35 @@
-name: Green main
-# Promotion and deploy run on Gitea (.gitea/workflows/green.yml). This file
-# stays workflow_dispatch only. The job is skipped so a dispatch starts no
-# GitHub-hosted runner and cannot move green or deploy.
+name: Green main (GitHub only)
+# Public GitHub standard runners are free; MAG polls GitHub green.
+# No Gitea statuses or Gitea Actions can promote or deploy a release.
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
 permissions:
-  contents: read
+  contents: write
+concurrency:
+  group: github-green-main
+  cancel-in-progress: true
 jobs:
-  skip:
-    if: false
+  promote-green:
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 20
     steps:
-      - name: gitea owns green
-        timeout-minutes: 1
-        run: echo 'GitHub does not promote green or deploy.'
+      - uses: actions/checkout@v4
+        timeout-minutes: 5
+        with:
+          fetch-depth: 0
+      - name: Bounded deployment-script checks
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          bash -n ops/update.sh ops/auto-update/auto-update.sh ops/ci/fetch-github-green.sh ops/ci/promote-github.sh
+          git diff --check HEAD^ HEAD
+          grep -Fq 'fetch-github-green.sh' ops/update.sh
+          grep -Fq 'fetch-github-green.sh' ops/auto-update/auto-update.sh
+      - id: promote
+        name: Promote GitHub green
+        timeout-minutes: 5
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash ops/ci/promote-github.sh

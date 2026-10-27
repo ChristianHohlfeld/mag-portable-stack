@@ -3615,6 +3615,24 @@ class PhoCompress(unittest.TestCase):
   result=self.wire(b['model'])
   self.assertGreaterEqual(len(result['messages']),5,'tool rounds grew the vector back beyond its old size')
   self.assertEqual(result['turn_ends'],[len(result['messages'])],'erased-message offsets must be forgotten immediately')
+ def test_07_ui_savings_are_measured_tokens_and_omitted_when_none(self):
+  b=next(iter(self.bots().values()))
+  self.request('/api/bot-settings',{'bots':[b['id']],'pho_compress':False},method='PUT')
+  self.send(b['id'],self.PROSE+' aus')
+  self.assertNotIn('pho_save',self.bots()[b['id']])
+  self.request('/api/bot-settings',{'bots':[b['id']],'pho_compress':True},method='PUT')
+  for n in range(6):self.send(b['id'],self.PROSE+' Ersparnis '+str(n))
+  save=self.bots()[b['id']]['pho_save']
+  self.assertGreater(save['session_before'],save['session_after'])
+  self.assertGreater(save['session_before'],0)
+  wire=self.wire(b['model']);rec=wire['pho_archive'][wire['pho_last_key']]
+  self.assertEqual(save['last_before'],rec['tokens_before'])
+  self.assertEqual(save['last_after'],rec['tokens_after'])
+  self.assertGreater(save['last_before'],save['last_after'])
+  html=(ROOT/'mag-room/web/index.html').read_text()
+  self.assertIn('function phoSaveView()',html)
+  self.assertIn("chip:'PhO −'+pct+' %'",html)
+  self.assertIn('className=\'pho-save\'',html)
 
 if __name__=='__main__':unittest.main(verbosity=2)
 

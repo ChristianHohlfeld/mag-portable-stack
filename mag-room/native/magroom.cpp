@@ -2171,13 +2171,55 @@ struct WireSession {
   std::vector<Val> messages;
   std::set<std::string> seen;
   Val pho_archive=Val::object();
+  std::string pho_last_key;
   std::vector<size_t> turn_ends;
   bool compression=true;
 };
+struct PhoSave {
+  long last_before=0,last_after=0,session_before=0,session_after=0;
+};
 static std::mutex WIRE_MTX;
+static std::mutex PHO_STAT_MTX;
+static std::map<std::string, PhoSave> PHO_STATS;
 static std::map<std::string, WireSession> WIRE_SESSIONS;
 static std::string wire_path(const std::string &bot) {
   return STATE_DIR + "/prompt-wire-" + fnv_hex(bot) + ".json";
+}
+static bool pho_accepted(const Val &r, long &before, long &after) {
+  if(!r.isObj())return false;
+  before=mag::num(r,"tokens_before",-1);after=mag::num(r,"tokens_after",-1);
+  return before>0&&after>0&&after<before&&mag::str(r,"content")!=mag::str(r,"original");
+}
+static PhoSave pho_tally(const Val &archive, const std::string &last_key) {
+  PhoSave s;
+  if(archive.isObj())for(const auto &kv:*archive.obj) {
+    long before=0,after=0;
+    if(pho_accepted(kv.second,before,after)){s.session_before+=before;s.session_after+=after;}
+  }
+  if(!last_key.empty())if(const auto *rec=archive.find(last_key)) {
+    const long before=mag::num(*rec,"tokens_before",-1),after=mag::num(*rec,"tokens_after",-1);
+    if(before>0&&after>0){s.last_before=before;s.last_after=after;}
+  }
+  return s;
+}
+static void pho_publish(const std::string &bot, const WireSession &w) {
+  const auto s=pho_tally(w.pho_archive,w.pho_last_key);
+  std::lock_guard<std::mutex> lk(PHO_STAT_MTX);
+  PHO_STATS[bot]=s;
+}
+static PhoSave pho_stats_for(const std::string &bot) {
+  {
+    std::lock_guard<std::mutex> lk(PHO_STAT_MTX);
+    auto it=PHO_STATS.find(bot);if(it!=PHO_STATS.end())return it->second;
+  }
+  PhoSave s;Val saved;
+  if(mj::parse(read_file(wire_path(bot)),saved)&&saved.isObj()) {
+    const Val *a=saved.find("pho_archive");
+    s=pho_tally(a&&a->isObj()?*a:Val::object(),mag::str(saved,"pho_last_key"));
+  }
+  std::lock_guard<std::mutex> lk(PHO_STAT_MTX);
+  auto it=PHO_STATS.find(bot);if(it!=PHO_STATS.end())return it->second;
+  return PHO_STATS.emplace(bot,s).first->second;
 }
 static void wire_store(const std::string &bot, const WireSession &w) {
   Val out=Val::object(), msgs=Val::array(), ids=Val::array();
@@ -2186,8 +2228,10 @@ static void wire_store(const std::string &bot, const WireSession &w) {
   out["fingerprint"]=w.fingerprint; out["memory"]=w.memory;out["plugins"]=w.plugins;out["files"]=w.files;
   out["messages"]=msgs; out["seen"]=ids;
   out["pho_archive"]=w.pho_archive;out["pho_enabled"]=w.compression;
+  out["pho_last_key"]=w.pho_last_key;
   Val ends=Val::array();for(auto end:w.turn_ends)ends.push(Val((double)end));out["turn_ends"]=ends;
   write_file_atomic(wire_path(bot),mj::dump(out));
+  pho_publish(bot,w);
 }
 // Tokenizer calls do not touch inference slots or KV. Use the selected model's
 // real vocabulary; never infer token savings from bytes or o200k estimates.
@@ -2218,6 +2262,7 @@ static std::string pho_once(int idx,WireSession &w,const std::string &key,
       // pho::instruction already tells the model how to read compact history.
       before=pho_tokens(idx,original);if(before>0)after=pho_tokens(idx,encoded);
       if(before>0&&after>0&&after<before)selected=encoded;
+      if(before>0&&after>0)w.pho_last_key=key;
       std::cerr<<"pho-compress model="<<bot_model_id(idx)<<" tokens_before="<<before
                <<" tokens_after="<<after<<" accepted="<<(selected!=original?1:0)<<std::endl;
     }
@@ -2304,6 +2349,7 @@ static std::vector<Val> wire_messages(int idx, const std::string &system,
     Val saved;
     if(mj::parse(read_file(wire_path(bot)),saved)&&saved.isObj()) {
       if(auto a=saved.find("pho_archive");a&&a->isObj())w.pho_archive=*a;
+      w.pho_last_key=mag::str(saved,"pho_last_key");
       if(auto a=saved.find("turn_ends");a&&a->isArr())for(auto &n:a->asArr())w.turn_ends.push_back((size_t)n.asNum());
       w.fingerprint=mag::str(saved,"fingerprint"); w.memory=mag::str(saved,"memory");w.plugins=mag::str(saved,"plugins");w.files=mag::str(saved,"files");
       if(auto a=saved.find("messages");a&&a->isArr())w.messages=a->asArr();
@@ -2317,7 +2363,9 @@ static std::vector<Val> wire_messages(int idx, const std::string &system,
   bool intersects=w.seen.empty();
   for(const auto &m:room)if(w.seen.count(mag::str(m,"id")))intersects=true;
   if(w.fingerprint!=key || !intersects || w.messages.empty()) {
-    auto archive=intersects?w.pho_archive:Val::object();w=WireSession{};w.pho_archive=archive; w.fingerprint=key;
+    auto archive=intersects?w.pho_archive:Val::object();
+    auto last=intersects?w.pho_last_key:std::string();
+    w=WireSession{};w.pho_archive=archive;w.pho_last_key=last;w.fingerprint=key;
     Val sys=Val::object();sys["role"]="system";sys["content"]=system;
     w.messages.push_back(sys);
   }
@@ -2347,7 +2395,7 @@ static std::vector<Val> wire_messages(int idx, const std::string &system,
 static void wire_finish(int idx,const std::vector<Val> &messages,bool valid) {
   const auto bot=bot_field(idx,"id");
   std::lock_guard<std::mutex> wire(WIRE_MTX);
-  if(!valid) {auto &w=WIRE_SESSIONS[bot];auto archive=w.pho_archive;w=WireSession{};w.pho_archive=archive;wire_store(bot,w);return;}
+  if(!valid) {auto &w=WIRE_SESSIONS[bot];auto archive=w.pho_archive;auto last=w.pho_last_key;w=WireSession{};w.pho_archive=archive;w.pho_last_key=last;wire_store(bot,w);return;}
   auto it=WIRE_SESSIONS.find(bot);if(it==WIRE_SESSIONS.end())return;
   it->second.messages=messages;
   if(!it->second.turn_ends.empty()&&it->second.turn_ends.back()>messages.size())it->second.turn_ends.clear();
@@ -7312,6 +7360,17 @@ static Val public_agent(int idx) {
   o["thinking"] = bot_thinking(idx);
   o["github_enabled"] = github_enabled(idx);
   o["pho_compress"] = pho_enabled(idx);
+  {
+    const auto save = pho_stats_for(o["id"].asStr());
+    if (save.session_before > save.session_after && save.session_before > 0) {
+      Val v = Val::object();
+      v["last_before"] = save.last_before;
+      v["last_after"] = save.last_after;
+      v["session_before"] = save.session_before;
+      v["session_after"] = save.session_after;
+      o["pho_save"] = v;
+    }
+  }
   if (CONFIGURED_MODEL) {
     o["slot"] = model_slot(idx);
     o["numa"] = ROOM_MODEL.backends[model_slot(idx) - 1].numa;

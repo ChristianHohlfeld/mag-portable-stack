@@ -67,6 +67,7 @@ body{font-weight:400}h1,h2,h3,h4,.header-title,dialog h3,.brand-word,.brand-capt
 .plus-menu[hidden]{display:none}.plus-menu button{display:flex;align-items:center;gap:10px;width:100%;padding:9px 10px;border-radius:8px;font-size:13px;color:var(--text);text-align:left}
 .plus-menu button:hover,.plus-menu button:focus-visible{background:var(--hover);outline:none}.menu-state{margin-left:auto;font-size:11px;color:var(--muted)}
 .menu-sep{height:1px;background:var(--soft-line,var(--line));margin:6px 4px}.menu-label{font-size:10px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);padding:4px 10px}
+#plus-pho-state{white-space:nowrap;font-variant-numeric:tabular-nums}
 /* ---- plugins & MCP */
 .mcp-dialog{max-width:660px;padding:0}.mcp-wrap{padding:22px 22px 18px}
 .mcp-head{display:flex;align-items:center;gap:10px}.mcp-head h3{margin:0;flex:1}
@@ -577,6 +578,7 @@ dialog{border-radius:10px;border-color:var(--line);background:var(--surface)}
 .composer-inner .queue-chips[hidden]{display:none!important}
 .composer-inner .queue-head{height:22px;min-height:22px;max-height:22px;display:flex;align-items:center;gap:8px;padding:0;flex-wrap:nowrap;overflow:hidden}
 .composer-inner .activity-status{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;color:var(--muted)}
+.composer-inner #queue-chips .queue-head .pho-save{flex:0 0 auto;margin:0;padding:0;text-transform:none;letter-spacing:0;font-weight:400;font-size:12px;line-height:22px;color:var(--muted);white-space:nowrap;font-variant-numeric:tabular-nums}
 .composer-inner .activity-status:empty,.composer-inner .activity-status[hidden]{display:none}
 .composer-inner .q-toggle{flex:0 0 auto;white-space:nowrap;padding:0 4px;border:0;background:transparent;font-size:12px;color:var(--muted);cursor:pointer;text-align:left}
 .composer-inner .queue-items{display:none;position:absolute;bottom:calc(100% + 5px);left:0;right:0;z-index:24;max-height:min(46dvh,340px);overflow-y:auto;padding:7px;border:1px solid var(--line);border-radius:12px;background:var(--panel);box-shadow:0 10px 28px #0008}
@@ -1684,6 +1686,36 @@ for(const card of list.querySelectorAll('.agent')){const active=card.dataset.bot
 updateConsoleLabel();try{const nv=$('browser-agent').value;if(nv&&(!livePeer||nv!==old)&&rightOpen&&(!isCompact()||layout.classList.contains('mobile-right'))&&!document.hidden)connectLive()}catch(e){}}
 function renderFiles(){const list=$('files');if(!list)return;list.replaceChildren();for(const f of state.files){const row=document.createElement('div');row.className='file';const a=document.createElement('a');a.href='/api/file/'+encodeURIComponent(f.stored);a.textContent=f.name;row.append(a);const size=document.createElement('small');size.textContent=' · '+Math.ceil(f.size/1024)+' KB';row.append(size);if(f.mime==='text/html'){const b=document.createElement('button');b.textContent='Vorschau';b.onclick=async()=>{try{$('canvas').srcdoc=await(await fetch(a.href)).text();$('canvas').hidden=false}catch(e){notice(e.message)}};row.append(b)}const del=document.createElement('button');del.type='button';del.className='file-trash';del.title='Datei löschen';del.setAttribute('aria-label','Datei löschen');del.innerHTML='<svg class="i sm" aria-hidden="true"><use href="#ic-trash"></use></svg>';del.onclick=()=>askDeleteFile(f);del.hidden=state.you?.role!=='owner';row.append(del);list.append(row)}}
 let thinkInit=false;
+const PHO_TIP='Ältere Verlaufsturns einmalig komprimieren; Änderung gilt ab der nächsten Turn-Grenze.';
+function phoPct(before,after){
+ if(!(before>0)||!(after>=0)||after>=before)return null;
+ const pct=Math.round(100*(before-after)/before);
+ return pct<1?1:pct;
+}
+function phoSaveView(){
+ const chosen=chosenBots(),bots=chosen.length?chosen:(state.agents||[]);
+ const on=bots.length?bots.every(a=>a.pho_compress!==false):state.pho_compress_default!==false;
+ if(!on)return null;
+ let sb=0,sa=0;const lines=[];
+ for(const a of bots){
+  const s=a.pho_save;if(!s||!(+s.session_before>+s.session_after))continue;
+  sb+=+s.session_before;sa+=+s.session_after;
+  const last=phoPct(+s.last_before,+s.last_after),sess=phoPct(+s.session_before,+s.session_after);
+  const lastText=last==null?(+s.last_before>0?s.last_before+'→'+s.last_after+' Tokens':'–'):s.last_before+'→'+s.last_after+' Tokens (−'+last+' %)';
+  lines.push((a.name||a.id)+': letzter Turn '+lastText+', Sitzung '+s.session_before+'→'+s.session_after+' Tokens (−'+sess+' %)');
+ }
+ const pct=phoPct(sb,sa);if(pct==null)return null;
+ return {text:'−'+pct+' %',chip:'PhO −'+pct+' %',tip:lines.join('\n')};
+}
+function paintPhoSave(){
+ const view=phoSaveView(),head=document.querySelector('#queue-chips .queue-head');
+ if(!head)return;
+ let mark=head.querySelector('.pho-save');
+ if(!view){if(mark)mark.remove();return}
+ if(!mark){mark=document.createElement('span');mark.className='pho-save';head.append(mark)}
+ if(mark.textContent!==view.chip)mark.textContent=view.chip;
+ mark.title=view.tip;
+}
 function syncBotSwitches(){
  const bots=chosenBots();
  if(bots.length)$('think').checked=bots.every(a=>!!a.thinking);
@@ -1691,7 +1723,11 @@ function syncBotSwitches(){
  const gh=bots.length>0&&bots.every(a=>!!a.github_enabled),b=$('plus-github-access');
  if(b){b.setAttribute('aria-checked',String(gh));$('plus-github-access-state').textContent=gh?'an':'aus'}
  const ph=bots.length?bots.every(a=>a.pho_compress!==false):state.pho_compress_default!==false;
- $('plus-pho').setAttribute('aria-checked',String(ph));$('plus-pho-state').textContent=ph?'an':'aus';
+ const view=phoSaveView();
+ $('plus-pho').setAttribute('aria-checked',String(ph));
+ $('plus-pho-state').textContent=ph?(view?view.text:'an'):'aus';
+ $('plus-pho').title=view?PHO_TIP+'\n'+view.tip:PHO_TIP;
+ paintPhoSave();
 }
 function initThink(){if(!thinkInit){thinkInit=true;$('think').onchange=async()=>{syncThink();try{await api('/api/bot-settings',{bots:[...selected],thinking:$('think').checked},'PUT');await refresh()}catch(e){notice(e.message)}}}syncBotSwitches()}
 function syncThink(){const on=$('think').checked;$('plus-think').setAttribute('aria-checked',String(on));$('plus-think-state').textContent=on?'an':'aus'}
@@ -2752,6 +2788,8 @@ function renderQueue(q){
  box.classList.toggle('paused',queueState.paused);box.classList.toggle('expanded',wasOpen&&!!list.length);
  const head=document.createElement('div');head.className='queue-head';
  const stat=document.createElement('span');stat.className='activity-status';stat.textContent=statusText;stat.hidden=!statusText;head.append(stat);
+ const pho=phoSaveView();
+ if(pho){const mark=document.createElement('span');mark.className='pho-save';mark.textContent=pho.chip;mark.title=pho.tip;head.append(mark)}
  const toggle=document.createElement('button');toggle.type='button';toggle.className='q-toggle';
  const held=list.filter(p=>p.held).length;
  toggle.textContent=list.length+' wartet'+(held?' · '+held+' angehalten':'')+(wasOpen?' ▾':' ▸');

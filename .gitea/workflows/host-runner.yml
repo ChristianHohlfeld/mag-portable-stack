@@ -1,0 +1,22 @@
+# Host act_runner ping. mag-ci.yml is workflow_dispatch on mag-ci-vm, so it
+# never creates a FetchTask for the registered mag/self-hosted runner.
+# runs-on must name both labels from ops/runners/gitea-runner.yaml.
+name: Host runner
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  group: host-runner-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  ping:
+    runs-on: [self-hosted, mag]
+    timeout-minutes: 5
+    steps:
+      - name: ping
+        timeout-minutes: 2
+        run: timeout --kill-after=5s 30s true

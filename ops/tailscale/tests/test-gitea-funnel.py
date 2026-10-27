@@ -165,6 +165,26 @@ class FunnelConfig(unittest.TestCase):
         self.assertEqual(self.m.retarget_nginx(moved), moved)
         self.assertEqual(self.m.retarget_nginx(self.m.NGINX_LISTEN + "\n"), self.m.NGINX_LISTEN + "\n")
 
+    def test_host_runner_workflow_matches_registered_labels(self):
+        import yaml
+        host = yaml.safe_load((ROOT / ".gitea/workflows/host-runner.yml").read_text())
+        on = host.get("on", host.get(True))
+        self.assertIn("push", on)
+        self.assertIn("pull_request", on)
+        self.assertEqual(set(host["jobs"]["ping"]["runs-on"]), {"self-hosted", "mag"})
+        self.assertLessEqual(host["jobs"]["ping"]["timeout-minutes"], 5)
+        labels = yaml.safe_load((ROOT / "ops/runners/gitea-runner.yaml").read_text())["runner"]["labels"]
+        have = {item.split(":", 1)[0] for item in labels}
+        self.assertTrue({"self-hosted", "mag"} <= have, labels)
+        ci = yaml.safe_load((ROOT / ".gitea/workflows/mag-ci.yml").read_text())
+        ci_on = ci.get("on", ci.get(True))
+        self.assertEqual(ci["jobs"]["checks"]["runs-on"], "mag-ci-vm")
+        self.assertNotIn("push", ci_on)
+        self.assertNotIn("pull_request", ci_on)
+        text = (ROOT / ".gitea/workflows/host-runner.yml").read_text()
+        self.assertIn("timeout --kill-after=5s 30s", text)
+        self.assertNotRegex(text, r"ListenStream|^listen ")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

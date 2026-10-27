@@ -339,6 +339,17 @@ run_cmd install -m 0644 "$root/ops/gitea-ci/public.nginx.in" "$site" ||
 if ! run_cmd nginx -t || ! run_cmd systemctl reload nginx.service; then
   die 1 'nginx -t || systemctl reload nginx.service'
 fi
+# Workers can keep 100.123.114.16:443 for a few seconds after reload.
+# A same-tick ss check aborted live deploy; wait up to 15s first.
+if command -v ss >/dev/null; then
+  ss_tries=${MAG_GITEA_FUNNEL_SS_TRIES:-30}
+  ss_sleep=${MAG_GITEA_FUNNEL_SS_SLEEP:-0.5}
+  for ((i=1; i<=ss_tries; i++)); do
+    ss -ltnH 'sport = :443' | grep -q '100.123.114.16:443' || break
+    echo "gitea funnel: waiting for 100.123.114.16:443 to leave ($i/${ss_tries})" >&2
+    sleep "$ss_sleep"
+  done
+fi
 # Funnel cannot bind :443 while any managed vhost still listens there.
 # nginx -T is required: ss alone misses a listen that failed to leave conf.d.
 dump_nginx_t "$tmp/nginx-scan"
@@ -405,13 +416,20 @@ install -m 0644 "$here/mag-gitea-funnel.timer" "$systemd_dir/mag-gitea-funnel.ti
 systemctl daemon-reload
 systemctl enable mag-gitea-funnel.service mag-gitea-funnel.timer
 systemctl start mag-gitea-funnel.timer
-if ! grep -Fq 'http://127.0.0.1:3000' <<<"$status" || ! grep -Eq 'Funnel on|Available on the internet' <<<"$status"; then
-  echo 'gitea funnel: public Funnel is not active, so mag.tail3e02ae.ts.net has no public DNS' >&2
+funnel_admin_note() {
   cat >&2 <<'EOF'
-nginx is off 100.123.114.16:443 and the serve config points :443 at
-http://127.0.0.1:3000. Public DNS stays empty until the tailnet policy
-grants funnel. Add this on the Access controls page (a narrower target
-than autogroup:member is fine). mag-gitea-funnel.timer retries:
+Public DNS for mag.tail3e02ae.ts.net is published by Tailscale's control
+plane, not by this repo. The node already posts ServeConfig via LocalAPI
+(AllowFunnel mag.tail3e02ae.ts.net:443 -> http://127.0.0.1:3000). That is
+the same as `tailscale funnel --bg` / `tailscale serve --bg` on :443.
+Do not add a second serve on :443.
+
+If `tailscale funnel status` says Funnel on but 8.8.8.8 / 1.1.1.1 still
+return NXDOMAIN, the missing piece is Tailscale admin (Owner / Admin /
+Network admin), not bootstrap:
+
+1. Access controls → nodeAttrs funnel for this node (or autogroup:member).
+   mag-gitea-funnel.timer retries the serve-config; it cannot grant the attr.
 
 "nodeAttrs": [
   {
@@ -420,13 +438,37 @@ than autogroup:member is fine). mag-gitea-funnel.timer retries:
   }
 ]
 
-MagicDNS and HTTPS certificates must be enabled for the tailnet. After Funnel
-is on, public resolvers can take up to 10 minutes to see the name.
+2. DNS page: MagicDNS ON and HTTPS Certificates ON. Funnel does not
+   publish a public A/AAAA until both are on.
+3. Wait up to 10 minutes. Flush a cached NXDOMAIN (`dig @8.8.8.8
+   mag.tail3e02ae.ts.net A`). Local resolvers can keep NXDOMAIN longer.
 EOF
+}
+if ! grep -Fq 'http://127.0.0.1:3000' <<<"$status" || ! grep -Eq 'Funnel on|Available on the internet' <<<"$status"; then
+  echo 'gitea funnel: public Funnel is not active, so mag.tail3e02ae.ts.net has no public DNS' >&2
+  echo 'nginx is off 100.123.114.16:443 and the serve config points :443 at http://127.0.0.1:3000.' >&2
+  funnel_admin_note
   if [[ ${MAG_GITEA_FUNNEL_REQUIRE_PUBLIC:-0} == 1 ]]; then
     die 1 'public Funnel is not active'
   fi
   echo "gitea funnel: ${origin}/ waiting for funnel nodeAttr"
   exit 0
+fi
+# Funnel on still yields NXDOMAIN until Tailscale publishes the name.
+dns_out=
+if [[ $test_mode == 1 && -n ${MAG_GITEA_FUNNEL_DIG:-} ]]; then
+  dns_out=$("${MAG_GITEA_FUNNEL_DIG}" "$node" 2>/dev/null || true)
+elif command -v dig >/dev/null; then
+  dns_out=$(dig +time=2 +tries=1 +short A "$node" @8.8.8.8 2>/dev/null || true)
+  dns_out+=$'\n'$(dig +time=2 +tries=1 +short AAAA "$node" @8.8.8.8 2>/dev/null || true)
+fi
+if [[ -z ${dns_out//[$' \t\n']/} || $dns_out == *NXDOMAIN* ]]; then
+  echo "gitea funnel: public DNS ${node} is NXDOMAIN (Funnel is on)" >&2
+  funnel_admin_note
+  if [[ ${MAG_GITEA_FUNNEL_REQUIRE_PUBLIC:-0} == 1 ]]; then
+    die 1 "public DNS ${node} is NXDOMAIN"
+  fi
+else
+  echo "gitea funnel: public DNS ${node} $(tr '\n' ' ' <<<"$dns_out")"
 fi
 echo "gitea funnel: ${origin}/"

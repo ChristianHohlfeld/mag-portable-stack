@@ -29,7 +29,7 @@ def _write_exec(path, text):
     path.chmod(path.stat().st_mode | stat.S_IEXEC)
 
 
-def _leftover_host(tree, room_on_tailnet=False):
+def _leftover_host(tree, room_on_tailnet=False, ss_taken=0, funnel_on=False):
     """Live mag leftovers: bots/pages on Tailscale :443.
 
     room_on_tailnet=False is post-#137: sites-available already on 4443 and
@@ -113,21 +113,41 @@ exit 0
 """,
     )
     _write_exec(bin_dir / "systemctl", "#!/usr/bin/env bash\nexit 0\n")
-    _write_exec(bin_dir / "ss", "#!/usr/bin/env bash\nexit 0\n")
+    left = bin_dir / "ss.left"
+    left.write_text(str(int(ss_taken)))
     _write_exec(
-        bin_dir / "tailscale",
-        """#!/usr/bin/env bash
-if [[ ${1:-} == status ]]; then
-  echo '{"Self":{"DNSName":"mag.tail3e02ae.ts.net."}}'
-  exit 0
-fi
-if [[ ${1:-} == funnel ]]; then
-  echo 'No funnel'
-  exit 0
+        bin_dir / "ss",
+        f"""#!/usr/bin/env bash
+n=$(cat -- '{left}' 2>/dev/null || echo 0)
+if [[ $n =~ ^[1-9][0-9]*$ ]]; then
+  echo $((n - 1)) > '{left}'
+  echo 'LISTEN 0  511  100.123.114.16:443  0.0.0.0:*'
 fi
 exit 0
 """,
     )
+    if funnel_on:
+        funnel_body = (
+            "  echo 'https://mag.tail3e02ae.ts.net/'\n"
+            "  echo 'Funnel on'\n"
+            "  echo '|-- proxy http://127.0.0.1:3000'\n"
+        )
+    else:
+        funnel_body = "  echo 'No funnel'\n"
+    _write_exec(
+        bin_dir / "tailscale",
+        f"""#!/usr/bin/env bash
+if [[ ${{1:-}} == status ]]; then
+  echo '{{"Self":{{"DNSName":"mag.tail3e02ae.ts.net."}}}}'
+  exit 0
+fi
+if [[ ${{1:-}} == funnel ]]; then
+{funnel_body}  exit 0
+fi
+exit 0
+""",
+    )
+    _write_exec(bin_dir / "dig-empty", "#!/usr/bin/env bash\nexit 0\n")
     env = os.environ.copy()
     env.update(
         {
@@ -139,6 +159,8 @@ exit 0
             "MAG_GITEA_FUNNEL_SERVE": str(serve),
             "MAG_NGINX_TXN": str(txn),
             "MAG_GITEA_FUNNEL_REQUIRE_PUBLIC": "0",
+            "MAG_GITEA_FUNNEL_SS_TRIES": "30",
+            "MAG_GITEA_FUNNEL_SS_SLEEP": "0.01",
             "PATH": f"{bin_dir}:{env.get('PATH', '')}",
         }
     )
@@ -286,6 +308,14 @@ class FunnelConfig(unittest.TestCase):
         self.assertIn("run_cmd", apply)
         self.assertIn("BASH_COMMAND", apply)
         self.assertIn('die 1', apply)
+        self.assertIn("MAG_GITEA_FUNNEL_SS_TRIES", apply)
+        self.assertIn("waiting for 100.123.114.16:443 to leave", apply)
+        self.assertIn("ss -ltnH 'sport = :443' | grep -q '100.123.114.16:443' || break", apply)
+        self.assertIn("public DNS", apply)
+        self.assertIn("HTTPS Certificates", apply)
+        policy_hujson = (ROOT / "ops/tailscale/policy.hujson").read_text()
+        self.assertIn('"attr": ["funnel"]', policy_hujson)
+        self.assertIn('"nodeAttrs"', policy_hujson)
         self.assertLess(
             apply.index("trap cleanup EXIT"),
             apply.index('issue-tailscale-cert.sh" --no-reload'),
@@ -531,6 +561,52 @@ class FunnelConfig(unittest.TestCase):
             self.assertIn("mag-room.conf", saved)
             self.assertIn("mag-bots.conf", saved)
             self.assertIn("mag-pages.conf", saved)
+
+    def test_apply_waits_for_tailnet_443_to_leave_after_reload(self):
+        with tempfile.TemporaryDirectory() as raw:
+            nginx, txn, env = _leftover_host(pathlib.Path(raw), ss_taken=2)
+            proc = subprocess.run(
+                ["bash", "ops/tailscale/apply-gitea-funnel.sh"],
+                cwd=ROOT, env=env, text=True, capture_output=True,
+            )
+            log = proc.stdout + proc.stderr
+            self.assertEqual(proc.returncode, 0, log)
+            self.assertIn("waiting for 100.123.114.16:443 to leave", log)
+            self.assertNotIn("refusing to enable Funnel", log)
+            self.assertIn("https://mag.tail3e02ae.ts.net/", log)
+
+    def test_apply_refuses_if_tailnet_443_still_taken_after_wait(self):
+        with tempfile.TemporaryDirectory() as raw:
+            nginx, txn, env = _leftover_host(pathlib.Path(raw), ss_taken=99)
+            env["MAG_GITEA_FUNNEL_SS_TRIES"] = "3"
+            proc = subprocess.run(
+                ["bash", "ops/tailscale/apply-gitea-funnel.sh"],
+                cwd=ROOT, env=env, text=True, capture_output=True,
+            )
+            log = proc.stdout + proc.stderr
+            self.assertNotEqual(proc.returncode, 0, log)
+            self.assertIn("waiting for 100.123.114.16:443 to leave", log)
+            self.assertIn("100.123.114.16:443 is still taken", log)
+            self.assertRegex(log, r"gitea funnel: failed at line [0-9]+ \(exit 1\): .+")
+
+    def test_funnel_on_with_nxdomain_logs_admin_steps(self):
+        with tempfile.TemporaryDirectory() as raw:
+            nginx, txn, env = _leftover_host(
+                pathlib.Path(raw), funnel_on=True
+            )
+            env["MAG_GITEA_FUNNEL_DIG"] = str(
+                pathlib.Path(env["PATH"].split(":", 1)[0]) / "dig-empty"
+            )
+            proc = subprocess.run(
+                ["bash", "ops/tailscale/apply-gitea-funnel.sh"],
+                cwd=ROOT, env=env, text=True, capture_output=True,
+            )
+            log = proc.stdout + proc.stderr
+            self.assertEqual(proc.returncode, 0, log)
+            self.assertIn("public DNS mag.tail3e02ae.ts.net is NXDOMAIN", log)
+            self.assertIn("HTTPS Certificates ON", log)
+            self.assertIn("cannot grant the attr", log)
+            self.assertIn("https://mag.tail3e02ae.ts.net/", log)
 
     def test_host_runner_workflow_matches_registered_labels(self):
         import yaml

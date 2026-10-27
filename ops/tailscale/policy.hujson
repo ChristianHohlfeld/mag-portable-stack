@@ -23,6 +23,15 @@
     },
   ],
 
+  // Public Funnel DNS for mag.tail3e02ae.ts.net. The node posts ServeConfig
+  // itself; it cannot grant this attribute. Merge on the Access controls page.
+  "nodeAttrs": [
+    {
+      "target": ["autogroup:member"],
+      "attr": ["funnel"],
+    },
+  ],
+
   // Older tailnets without grants: one accept rule, nothing else.
   // "acls": [
   //   {"action": "accept", "src": ["group:mag-guests"], "dst": ["100.123.114.16:443"]},

@@ -13,12 +13,16 @@ EnvironmentFile=-/etc/default/mag-room
 EnvironmentFile=-/etc/mag-stack/secondary-model.env
 # Per-NUMA model hot-swap (ops/numa/install.sh); absent = feature off.
 EnvironmentFile=-/etc/mag-stack/numa.env
+# Also listed by 20-room-audit.conf. systemd applies EnvironmentFile= after
+# Environment=, so keys in this file win. MAG_ROOM_MODEL_ID selects configured
+# mode, which clears the single-bot fallback below. Absent file keeps one bot.
+EnvironmentFile=-/etc/mag-stack/room-model.env
 # Optional until provisioned at /etc/credstore/mag-guest-oauth (root-only). In-memory runtime copy.
 LoadCredential=mag-guest-oauth
 # Key of the encrypted bot secret store (ops/secrets/install.sh).
 LoadCredential=mag-secrets-key
 Environment=MAG_ROOM_STATE=/var/lib/magbot/room
-# One existing agent (prefer active coding VM), one worker lane, selectable Q4/IQ3.
+# Fallback when room-model.env is absent (legacy IQ3). Configured mode clears it.
 Environment=MAG_ROOM_SINGLE_BOT=auto
 Environment=MAG_ROOM_BIND=127.0.0.1
 Environment=MAG_ROOM_STATIC=/opt/mag-stack/current/web/static

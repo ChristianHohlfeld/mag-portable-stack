@@ -6,8 +6,14 @@ means **port:NUMA**, not llama slot. Both servers have one llama slot (`0`), exp
 `MAG_ROOM_MAX_BOTS` must be `2`. Thinking follows `MAG_ROOM_THINKING` and the
 per-message switch; it is no longer forced off by a model name.
 
-`presets.json` supplies the constellation picker. Adding a bot uses the next
-free persistent slot/NUMA node automatically. Existing IDs, names chosen by
+`mag-120.service` loads `room-model.env` itself. systemd applies every
+`EnvironmentFile=` after every `Environment=`, so the file overrides the
+unit's single-bot fallback when it is present. Room start then fills each
+empty slot: a legacy one-bot `agents.json` becomes DeepSeek on 8191/NUMA 0
+and the second configured model on 8192/NUMA 1, and that pair is what comes
+back after reboot. The count is the persisted bot list, not the VM inventory.
+
+`presets.json` supplies the constellation picker. Existing IDs, names chosen by
 the owner, VMs and memory survive; surplus bots remain parked. A third bot
 is refused with `Maximum 2 Bots erreicht`. Prefix files contain model ID and
 bot slot, so a different model cannot restore the previous model's KV state.

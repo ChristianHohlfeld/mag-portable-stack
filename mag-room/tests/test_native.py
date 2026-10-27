@@ -3425,9 +3425,17 @@ class ConfiguredNuma(unittest.TestCase):
   _,slot=self.ask('lehotbot')
   self.assertEqual(slot,'1','existing bot keeps its instance after delete/re-add')
  def test_06_restart_is_idempotent(self):
-  before=self.state.joinpath('agents.json').read_text()
+  # Startup can sort persisted bots by NUMA slot and finish provisioning a VM.
+  # Identity, model routing, memory, and already-owned VMs must stay stable.
+  before={a['id']:a for a in json.loads(self.state.joinpath('agents.json').read_text())}
   self.stop();self.start()
-  self.assertEqual(json.loads(self.state.joinpath('agents.json').read_text()),json.loads(before))
+  after={a['id']:a for a in json.loads(self.state.joinpath('agents.json').read_text())}
+  self.assertEqual(set(after),set(before))
+  for bid,original in before.items():
+   for field in ('slot','model','memory'):
+    self.assertEqual(after[bid].get(field),original.get(field),(bid,field))
+   if original.get('vm'):
+    self.assertEqual(after[bid].get('vm'),original['vm'],bid)
   self.assertEqual(sorted(a['slot'] for a in self.request('/api/state')['agents']),[1,2])
  def test_07_ui_uses_config_label_and_preset(self):
   html=(ROOT/'mag-room/web/index.html').read_text()

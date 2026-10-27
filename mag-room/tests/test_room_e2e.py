@@ -72,14 +72,12 @@ class RoomE2E(unittest.TestCase):
         p = self.page
         self.assertEqual(p.locator('#left-panel >> text=Zusammenarbeit').count(), 0)
         self.assertEqual(p.locator('#left-panel #stop, #left-panel #autotalk, #left-panel #settings-section').count(), 0)
+        # The old room menu is retained only for legacy event bindings; it
+        # must not be an actionable part of the minimal worker-room UI.
+        expect(p.locator('#room-menu-btn')).to_be_hidden()
         expect(p.locator('#room-menu')).to_be_hidden()
-        p.click('#room-menu-btn')
-        expect(p.locator('#room-menu')).to_be_visible()
         for sel in ('#autotalk', '#offline', '#stop'):
             expect(p.locator('#room-menu ' + sel)).to_be_attached()
-        self.shot('01-room-menu')
-        p.keyboard.press('Escape')
-        expect(p.locator('#room-menu')).to_be_hidden()
         p.click('#settings-open')
         d = p.locator('#settings-dialog')
         expect(d).to_be_visible()
@@ -495,14 +493,10 @@ class RoomE2E(unittest.TestCase):
             over = p.evaluate("document.querySelector('#app-header').scrollWidth-document.querySelector('#app-header').clientWidth")
             p.screenshot(path=str(SHOTS / '07-mobile.png'))
             self.assertLessEqual(over, 2, 'header fits on a phone')
-            p.click('#room-menu-btn')
-            expect(p.locator('#room-menu')).to_be_visible()
-            box = p.locator('#room-menu').bounding_box()
-            self.assertGreaterEqual(box['x'], 0)
-            self.assertLessEqual(box['x'] + box['width'], 391)
-            p.screenshot(path=str(SHOTS / '07-mobile-menu.png'))
-            p.keyboard.press('Escape')
+            expect(p.locator('#room-menu-btn')).to_be_hidden()
             expect(p.locator('#room-menu')).to_be_hidden()
+            # The header must reserve room for two worker names, not the
+            # retired room menu. Bot and tool drawers remain reachable.
             # Drawers open from the header, over the chat, and close with Esc.
             self.assertEqual(p.locator('.rail-edge').count(), 0, 'no floating edge tabs')
             p.click('#toggle-agents')

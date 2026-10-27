@@ -481,13 +481,56 @@ if [[ -e /etc/mag-stack/TEST-HOST ]] && systemctl is-active --quiet mag-llm-stub
     release_selftalk_hold
     exit 1
   }
-elif ! MAG_WARM_HI_REQUIRE_ROOM=1 bash "$SOURCE/ops/deploy-warm-hi.sh"; then
-  echo 'FAIL: warm hi gate failed; rolling back this release. Not restarting mag-llm.' >&2
-  release_selftalk_hold
-  exit 1
+elif [[ "${MAG_DEPLOY_REQUIRE_WARM_PREFIX:-0}" == 1 ]]; then
+  # Opt-in performance gate. On slow CPU models cold prefilling is not a
+  # broken installation; do not make a 5-second token deadline mandatory.
+  if ! MAG_WARM_HI_REQUIRE_ROOM=1 bash "$SOURCE/ops/deploy-warm-hi.sh"; then
+    echo 'FAIL: warm hi gate failed; rolling back this release. Not restarting mag-llm.' >&2
+    release_selftalk_hold
+    exit 1
+  fi
+else
+  # Always verify the two real model endpoints and the active bot roster.
+  # Unlike a prefix-cache benchmark this is a functional readiness check.
+  ready=1
+  for port in 8191 8192; do
+    if ! curl --noproxy '*' -fsS --max-time 10 "http://127.0.0.1:${port}/health" >/dev/null; then
+      echo "FAIL: model on :${port} not healthy" >&2
+      ready=0
+    fi
+  done
+  if ! python3 - <<'PY'
+import json, sys, urllib.request
+try:
+    with urllib.request.urlopen("http://127.0.0.1:8766/api/state", timeout=8) as r:
+        state = json.load(r)
+    agents = [a for a in state.get("agents", []) if a.get("enabled") is not False]
+    kinds = set()
+    for bot in agents:
+        label = str(bot.get("model", "")) + " " + str(bot.get("name", ""))
+        if "deepseek" in label.lower():
+            kinds.add("deepseek")
+        if "qwen" in label.lower():
+            kinds.add("qwen")
+    if kinds != {"deepseek", "qwen"}:
+        raise ValueError("expected live DeepSeek and Qwen; agents="+repr(
+            [(a.get("name"), a.get("model")) for a in agents]))
+    print("Release ready: DeepSeek and Qwen listed; both backends healthy")
+except Exception as exc:
+    print("FAIL: room bot readiness: "+str(exc), file=sys.stderr)
+    sys.exit(1)
+PY
+  then
+    ready=0
+  fi
+  if (( ! ready )); then
+    echo 'FAIL: model/room readiness failed; rolling back release.' >&2
+    release_selftalk_hold
+    exit 1
+  fi
 fi
 # Proaktiv stayed held across the restart so the gate saw idle slots.
-# Release it now that both answers were visible.
+# Release it now after functional readiness was confirmed.
 release_selftalk_hold
 # Revalidate the new room through the already-verified nginx ingress.
 bash "$NGINX_SYNC" smoke

@@ -112,12 +112,10 @@ cleanup() {
     funnel_logged=1
   fi
   if (( rc != 0 && keep_nginx == 0 )); then
-    if [[ $test_mode == 1 && -n ${MAG_GITEA_FUNNEL_SERVE:-} && -n ${tmp:-} && -s $tmp/current ]]; then
-      cp -a "$tmp/current" "$MAG_GITEA_FUNNEL_SERVE" || true
-    elif [[ -n ${tmp:-} && -s $tmp/current && -S ${sock:-} ]]; then
-      curl -sS --unix-socket "$sock" -o /dev/null -X POST \
-        -H 'Content-Type: application/json' --data-binary @"$tmp/current" \
-        http://local-tailscaled.sock/localapi/v0/serve-config || true
+    if [[ -n ${tmp:-} && -s $tmp/current ]]; then
+      if [[ $test_mode == 1 && -n ${MAG_GITEA_FUNNEL_SERVE:-} ]] || [[ -S ${sock:-} ]]; then
+        restore_serve_config "$tmp/current" || true
+      fi
     fi
     if [[ -n ${manifest:-} && -s $manifest ]]; then
       while IFS=$'\t' read -r id file kind; do
@@ -222,7 +220,7 @@ api() {
       return 0
     fi
     if [[ $method == POST ]]; then
-      local prev=
+      local prev= msg=
       for arg in "$@"; do
         case "$arg" in
           --data-binary@*) src=${arg#--data-binary@} ;;
@@ -236,6 +234,15 @@ api() {
         esac
       done
       [[ -n $src && -f $src ]] || { echo 'gitea funnel: test POST missing body' >&2; exit 1; }
+      # tailscaled 1.104.1: HTTPS↔TCP on the same port is HTTP 500.
+      if msg=$(python3 "$here/merge-gitea-funnel.py" needs-transition "$store" "$src"); then
+        printf '%s\n' "$msg" >"$out"
+        echo "gitea funnel: serve-config POST HTTP 500" >&2
+        echo "gitea funnel: serve-config POST body:" >&2
+        cat -- "$out" >&2
+        printf '%s' 500
+        return 0
+      fi
       cp -a "$src" "$store" || { echo 'gitea funnel: cannot write test serve-config' >&2; exit 1; }
       : > "$out"
       printf '%s' 200
@@ -251,7 +258,28 @@ api() {
     echo "gitea funnel: serve-config ${method} curl exit ${code}" >&2
     exit 1
   fi
+  if [[ $http != 200 ]]; then
+    echo "gitea funnel: serve-config ${method} HTTP ${http}" >&2
+    if [[ -s $out ]]; then
+      echo "gitea funnel: serve-config ${method} body:" >&2
+      cat -- "$out" >&2
+    fi
+  fi
   printf '%s' "$http"
+}
+
+restore_serve_config() {
+  # HTTPS↔TCP needs an empty :443 in between or tailscaled returns 500.
+  local snap=$1 live=$tmp/restore-live trans=$tmp/restore-trans out=$tmp/restore-out src code
+  [[ -n ${tmp:-} && -d $tmp && -s $snap ]] || return 0
+  src=$snap
+  code=$(api GET "$live") || true
+  if [[ $code == 200 && -s $live ]]; then
+    src=$live
+  fi
+  python3 "$here/merge-gitea-funnel.py" transition <"$src" >"$trans" || return 0
+  api POST "$out" -H 'Content-Type: application/json' --data-binary @"$trans" >/dev/null || true
+  api POST "$out" -H 'Content-Type: application/json' --data-binary @"$snap" >/dev/null || true
 }
 
 # Certificate before nginx -t. The gitea vhost cannot load without it.
@@ -403,6 +431,17 @@ PY
 then same=1
 fi
 if (( same == 0 )); then
+  if msg=$(python3 "$here/merge-gitea-funnel.py" needs-transition "$tmp/current" "$tmp/merged"); then
+    echo "gitea funnel: ${msg}" >&2
+    python3 "$here/merge-gitea-funnel.py" transition <"$tmp/current" >"$tmp/transition" ||
+      die 1 'serve-config transition failed'
+    post_code=$(api POST "$tmp/post-transition" -H 'Content-Type: application/json' --data-binary @"$tmp/transition") ||
+      die 1 'serve-config transition POST failed'
+    if [[ $post_code != 200 ]]; then
+      die 1 "serve-config transition POST HTTP ${post_code}"
+    fi
+    echo 'gitea funnel: cleared TCP/Web/AllowFunnel :443 before type change' >&2
+  fi
   post_code=$(api POST "$tmp/post" -H 'Content-Type: application/json' --data-binary @"$tmp/merged") ||
     die 1 'serve-config POST failed'
   if [[ $post_code != 200 ]]; then

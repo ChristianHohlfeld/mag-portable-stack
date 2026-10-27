@@ -201,6 +201,77 @@ def _https_proxy(tcp, web, port, proxy, only=False):
     web[hp] = server
 
 
+def load_cfg(path):
+    raw = pathlib.Path(path).read_text().strip()
+    if not raw:
+        return {}
+    data = json.loads(raw)
+    return {} if data is None else data
+
+
+def serve_kind(block):
+    """https, tcp, or empty. tailscaled 1.104.1 rejects https↔tcp on one port."""
+    if not isinstance(block, dict):
+        return ""
+    if block.get("HTTPS") is True or block.get("HTTP") is True:
+        return "https"
+    if block.get("TCPForward"):
+        return "tcp"
+    return ""
+
+
+def conflict_message(current, wanted):
+    """Match validateServeConfigUpdate: want tcp but port already serving https."""
+    if not isinstance(current, dict):
+        current = {}
+    if not isinstance(wanted, dict):
+        wanted = {}
+    current_tcp = current.get("TCP") or {}
+    wanted_tcp = wanted.get("TCP") or {}
+    if not isinstance(current_tcp, dict):
+        current_tcp = {}
+    if not isinstance(wanted_tcp, dict):
+        wanted_tcp = {}
+    ports = {str(p) for p in current_tcp} | {str(p) for p in wanted_tcp}
+    for port in sorted(ports, key=lambda item: (len(item), item)):
+        have = serve_kind(current_tcp.get(port))
+        want = serve_kind(wanted_tcp.get(port))
+        if have and want and have != want:
+            return f"want to serve {want}, but port {port} is already serving {have}"
+    return None
+
+
+def transition(current):
+    """Drop :443 so a later POST can change HTTPS↔TCP without a 500."""
+    if current is None:
+        current = {}
+    if not isinstance(current, dict):
+        raise SystemExit("serve config must be a JSON object")
+    cfg = json.loads(json.dumps(current))
+    tcp = cfg.get("TCP")
+    if isinstance(tcp, dict):
+        tcp.pop(str(FUNNEL_PORT), None)
+        if tcp:
+            cfg["TCP"] = tcp
+        else:
+            cfg.pop("TCP", None)
+    web = cfg.get("Web")
+    if isinstance(web, dict):
+        web.pop(funnel_key(), None)
+        if web:
+            cfg["Web"] = web
+        else:
+            cfg.pop("Web", None)
+    allow = cfg.get("AllowFunnel")
+    if isinstance(allow, dict):
+        allow.pop(funnel_key(), None)
+        if allow:
+            cfg["AllowFunnel"] = allow
+        else:
+            cfg.pop("AllowFunnel", None)
+    return cfg
+
+
 def merge(current):
     if current is None:
         current = {}
@@ -260,6 +331,16 @@ def assert_public_gitea_only(cfg):
 
 def main(argv):
     mode = argv[1] if len(argv) > 1 else "merge"
+    if mode == "needs-transition":
+        if len(argv) < 4:
+            raise SystemExit(
+                "usage: merge-gitea-funnel.py needs-transition CURRENT WANTED"
+            )
+        msg = conflict_message(load_cfg(argv[2]), load_cfg(argv[3]))
+        if msg:
+            sys.stdout.write(msg + "\n")
+            return 0
+        return 1
     raw = sys.stdin.read()
     if mode == "retarget":
         sys.stdout.write(retarget_nginx(raw))
@@ -279,6 +360,11 @@ def main(argv):
             return 1
         return 0
     current = json.loads(raw) if raw.strip() else {}
+    if mode == "transition":
+        cfg = transition(current if current is not None else {})
+        json.dump(cfg, sys.stdout, indent=2, sort_keys=True)
+        sys.stdout.write("\n")
+        return 0
     if mode == "merge":
         merged = merge(current)
         assert_public_gitea_only(merged)
@@ -292,7 +378,7 @@ def main(argv):
         sys.stdout.write(FUNNEL_ORIGIN + "\n")
         return 0
     raise SystemExit(
-        "usage: merge-gitea-funnel.py merge|check|origin|retarget|candidates|scan"
+        "usage: merge-gitea-funnel.py merge|check|origin|retarget|candidates|scan|transition|needs-transition"
     )
 
 

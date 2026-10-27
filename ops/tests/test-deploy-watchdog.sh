@@ -25,6 +25,22 @@ grep -q 'disable=SC2016' "$root/ops/ci/promote-green.sh"
 
 tmp=$(mktemp -d)
 trap 'kill "$srv" 2>/dev/null || true; rm -rf "$tmp"' EXIT
+# BASH_ENV used to be `exec 8>&- 2>/dev/null`, which redirected every bash
+# child's stderr to /dev/null (apply-gitea-funnel errors vanished on mag).
+grep -Fq '{ exec 8>&-; } 2>/dev/null || true' "$root/ops/deploy-watchdog.sh"
+! grep -F 'exec 8>&- 2>/dev/null' "$root/ops/deploy-watchdog.sh"
+(
+  set -euo pipefail
+  # shellcheck source=../deploy-watchdog.sh
+  source "$root/ops/deploy-watchdog.sh"
+  exec 8>"$tmp/wd.lock"
+  deploy_lock_cloexec 8
+  [[ -n ${BASH_ENV:-} && -f $BASH_ENV ]]
+  grep -Fq '{ exec 8>&-; } 2>/dev/null || true' "$BASH_ENV"
+  bash -c 'echo CHILD_STDERR_OK >&2' 2>"$tmp/child.err"
+  grep -Fq CHILD_STDERR_OK "$tmp/child.err"
+)
+echo 'deploy watchdog: BASH_ENV child stderr reaches the parent'
 port=$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1]);s.close()')
 python3 - "$port" >"$tmp/srv.log" 2>&1 <<'PY' &
 import sys

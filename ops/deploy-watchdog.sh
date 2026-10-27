@@ -15,7 +15,7 @@ deploy_lock_cloexec() {
   drop=$(mktemp)
   prev=${BASH_ENV:-}
   {
-    printf 'exec %s>&- 2>/dev/null || true\n' "$fd"
+    printf '{ exec %s>&-; } 2>/dev/null || true\n' "$fd"
     if [[ -n $prev && -f $prev ]]; then printf '. %q\n' "$prev"; fi
   } >"$drop"
   export BASH_ENV=$drop
@@ -94,7 +94,7 @@ deploy_watchdog_arm() {
   stamp=$(awk '{print $22}' /proc/$$/stat)
   # Own session, so the sleeper is not killed by the signal it sends.
   # shellcheck disable=SC2016 # inner shell expands the positional parameters
-  setsid bash -c 'exec 8>&- 2>/dev/null || true; source "$1"; deploy_watchdog_fire "$2" "$3" "$4" "$5" "$6"' _ \
+  setsid bash -c '{ exec 8>&-; } 2>/dev/null || true; source "$1"; deploy_watchdog_fire "$2" "$3" "$4" "$5" "$6"' _ \
     "${BASH_SOURCE[0]}" "$seconds" "$$" "$DEPLOY_CHILD_LIST" "$stamp" \
     "${MAG_DEPLOY_ROLLBACK_GRACE_S:-120}" &
   DEPLOY_WATCHDOG_PID=$!
@@ -131,7 +131,7 @@ deploy_run() {
   (( budget > 0 )) || budget=1
   # Close the lock fd in this process, then replace it with the command in
   # its own session. $! stays the command: setsid execs without forking.
-  bash -c 'exec 8>&- 2>/dev/null || true; exec setsid "$@"' _ "$@" &
+  bash -c '{ exec 8>&-; } 2>/dev/null || true; exec setsid "$@"' _ "$@" &
   pid=$!
   printf '%s\n' "$pid" >>"$DEPLOY_CHILD_LIST"
   start=$SECONDS

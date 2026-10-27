@@ -31,11 +31,15 @@ branch="$(as git -C "$ROOT" symbolic-ref --short HEAD 2>/dev/null || true)"
 ref="$(as bash "$SCRIPT_ROOT/ops/ci/fetch-github-green.sh" --green-only "$ROOT")" || { log 'GitHub green not reachable yet; nothing to do'; exit 0; }
 new="$(as git -C "$ROOT" rev-parse "$ref")"
 [[ "$new" != "$(cat "$STATE/deployed-sha" 2>/dev/null || true)" ]] || exit 0
-if [[ "$new" == "$(cat "$STATE/failed-sha" 2>/dev/null || true)" && -z "$(find "$STATE/failed-sha" -mmin +60)" ]]; then
-  log "$new failed less than an hour ago; retrying later"
+# The failed-sha file is a SHA-specific cooldown, not a permanent block.
+# An unrelated new green SHA is always attempted immediately.
+source "$SCRIPT_ROOT/ops/auto-update/failure-state.sh"
+remaining=$(mag_retry_remaining "$new")
+if (( remaining > 0 )); then
+  log "$new: last failure at $(cat "$STATE/failed-stage" 2>/dev/null || echo unknown); retry in ${remaining}s"
   exit 0
 fi
-fail() { echo "$new" > "$STATE/failed-sha"; log "FAILED at $1 for $new"; exit 1; }
+fail() { mag_record_failure "$new" "$1"; log "FAILED at $1 for $new"; exit 1; }
 log "updating to $new"
 as git -C "$ROOT" merge -q --ff-only "$ref" || fail merge
 [[ "$(as git -C "$ROOT" rev-parse HEAD)" == "$new" ]] || { log 'checkout is ahead of green; skipping'; exit 0; }

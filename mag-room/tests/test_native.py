@@ -2193,6 +2193,35 @@ class Native(unittest.TestCase):
    self.assertEqual(self._jget(j['id'])['id'],j['id'])
   finally:
    self.request('/api/jobs/'+j['id'],method='DELETE');Model.script=[]
+ def test_17d_human_mcp_create_names_the_owning_bot(self):
+  self.wait_idle()
+  create=next(t for t in self._mcp('tools/list')['result']['tools'] if t['name']=='jobs_create')
+  self.assertIn('bot',create['inputSchema']['properties'])
+  self.assertNotIn('bot',create['inputSchema']['required'])
+  other=None;made=[]
+  try:
+   other=self.request('/api/agents',{'name':'Neben','vm':False})
+   missing={'name':'Ohne','prompt':'x','schedule':{'kind':'webhook'},'idempotency_key':'human-mcp-missing-bot'}
+   bad=self._mcp('tools/call',{'name':'jobs_create','arguments':missing})['result']
+   self.assertTrue(bad['isError']);self.assertIn('Bot fehlt',bad['content'][0]['text'])
+   named=dict(missing,name='Mit Bot',prompt='y',idempotency_key='human-mcp-with-bot',bot=other['id'])
+   ok=self._mcp('tools/call',{'name':'jobs_create','arguments':named})['result']
+   self.assertFalse(ok['isError'])
+   j=json.loads(ok['content'][0]['text']);made.append(j['id'])
+   self.assertEqual(j['bot'],other['id']);self.assertEqual(j['created_by'],'user')
+   self._bot_tool_turn('jobs_create',{'name':'Eigener','prompt':'z','schedule':{'kind':'webhook'},'idempotency_key':'bot-cannot-reassign','bot':other['id']})
+   own=[x for x in self.request('/api/jobs',method='GET')['jobs'] if x['name']=='Eigener']
+   self.assertEqual(len(own),1);self.assertEqual(own[0]['bot'],'test');made.append(own[0]['id'])
+   spec=next(t for t in Model.calls[0].get('tools') or [] if t['function']['name']=='jobs_create')
+   self.assertNotIn('bot',spec['function']['parameters']['properties'])
+  finally:
+   Model.script=[]
+   if other:
+    try:self.request('/api/agents/'+other['id'],method='DELETE')
+    except Exception:pass
+   for jid in made:
+    try:self.request('/api/jobs/'+jid,method='DELETE')
+    except Exception:pass
 
 
 class SingleBot(unittest.TestCase):

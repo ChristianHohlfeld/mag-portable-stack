@@ -26,6 +26,8 @@ int main() {
     assert(x.find("name")->asStr() == expected[i]);
     assert(x.find("inputSchema")->find("type")->asStr() == "object");
   }
+  assert(tools.asArr()[2].find("inputSchema")->find("properties")->find("bot"));
+  assert(std::string(JOBS_TOOL_DEFS[2]).find("\"bot\"") == std::string::npos);
   struct Case { const char *in, *type, *unit; };
   const Case cases[] = {
     {R"({"kind":"every_minutes","every":2})","interval","m"},

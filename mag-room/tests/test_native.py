@@ -3871,5 +3871,122 @@ class PhoCompress(unittest.TestCase):
     saves.append(int(line.split('saved=',1)[1].split()[0]))
   self.assertTrue(any(s>0 for s in saves),'aged history must log a positive token saving')
 
+class TwoAgentsAtStart(unittest.TestCase):
+ """A legacy one-bot agents.json still starts as DeepSeek plus Qwen.
+
+ The banner count is AGENTS after load_agents. MAG_ROOM_MAX_BOTS=2 used to
+ only validate the contract, so every mag-120 start logged 1 Agenten.
+ """
+ HARD_S = 20
+
+ def test_room_start_has_deepseek_and_qwen(self):
+  import signal
+  def boom(signum, frame):
+   raise TimeoutError('hard timeout: room start did not reach 2 agents in %ss' % self.HARD_S)
+  previous = signal.signal(signal.SIGALRM, boom)
+  signal.alarm(self.HARD_S + 10)
+  tmp = tempfile.TemporaryDirectory()
+  proc = None
+  try:
+   root = pathlib.Path(tmp.name)
+   state = root / 'state'
+   state.mkdir()
+   state.joinpath('agents.json').write_text(json.dumps([{
+    'id': 'deepseek-chat', 'name': 'DeepSeek Chat', 'vm': 'agent1',
+    'model': 'deepseek-v4-flash-0731', 'memory': [{'text': 'bleibt'}],
+   }]))
+   ui, bridge = port(), port()
+   log_path = root / 'server.log'
+   env = dict(os.environ,
+    MAG_OWNER_CANONICAL_LOGIN='chris@github', MAG_TEST_ALLOW_LOCAL_OWNER='1',
+    MAG_ROOM_STATE=str(state), MAG_ROOM_PORT=str(ui), MAG_ROOM_BRIDGE_PORT=str(bridge),
+    MAG_ROOM_BRIDGE_IP='127.0.0.1', MAG_ROOM_BACKEND='http://127.0.0.1:9/v1/chat/completions',
+    MAG_ROOM_UI=str(ROOT / 'mag-room/web/index.html'),
+    MAG_ROOM_STATIC=str(ROOT / 'mag-room/static'),
+    MAG_ROOM_MODEL_STATUS=str(root / 'ms.json'), MAG_NETMODE=str(NETMODE),
+    MAG_TEST_NO_MEMGIT='1', MAG_ROOM_AGENT_CTL='/bin/false', MAG_ROOM_GUEST_RUN='/bin/false',
+    MAG_ROOM_MCP_AUTO='0', MAG_ROOM_PREWARM='0',
+    MAG_ROOM_SINGLE_BOT='auto', MAG_ROOM_SINGLE_BOT_VM='on', MAG_ROOM_DUAL_NUMA='1',
+    MAG_ROOM_MODEL_ID='deepseek-v4-flash-0731',
+    MAG_ROOM_MODEL_LABEL='DeepSeek V4 Flash + Qwen3.8 Uncensored',
+    MAG_ROOM_MODEL_PORTS='8191:0,8192:1', MAG_ROOM_MAX_BOTS='2',
+    MAG_ROOM_MODEL_ID_0='deepseek-v4-flash-0731', MAG_ROOM_MODEL_LABEL_0='DeepSeek V4 Flash',
+    MAG_ROOM_MODEL_ID_1='qwen3.8-flash-next-uncensored', MAG_ROOM_MODEL_LABEL_1='Qwen3.8 Uncensored',
+    MAG_ROOM_THINKING='on', MAG_ROOM_PRESETS=str(ROOT / 'ops/room/presets.json'))
+   def start():
+    nonlocal proc
+    log = open(log_path, 'w')
+    try:
+     # timeout(1) SIGKILLs a stuck magroom even if this thread is blocked.
+     proc = subprocess.Popen(
+      ['timeout', '-k', '1', '12', str(ROOT / 'build/magroom')],
+      env=env, stdout=log, stderr=log)
+    finally:
+     log.close()
+    deadline = time.monotonic() + 8
+    while time.monotonic() < deadline:
+     if proc.poll() is not None:
+      self.fail('magroom exited %s\n%s' % (proc.returncode, log_path.read_text()[-2000:]))
+     try:
+      urllib.request.urlopen('http://127.0.0.1:%d/healthz' % ui, timeout=1).read()
+      return
+     except Exception:
+      time.sleep(0.05)
+    self.fail('hard timeout waiting for healthz\n%s' % log_path.read_text()[-2000:])
+   def stop():
+    nonlocal proc
+    if proc is None or proc.poll() is not None:
+     return
+    proc.terminate()
+    try:
+     proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+     proc.kill()
+     proc.wait(timeout=5)
+   def agents():
+    with urllib.request.urlopen('http://127.0.0.1:%d/api/state' % ui, timeout=2) as r:
+     body = json.loads(r.read())
+    return body
+   try:
+    start()
+    banner = log_path.read_text()
+    self.assertIn('2 Agenten', banner)
+    self.assertIn('Modell deepseek-v4-flash-0731', banner)
+    self.assertNotIn('1 Agenten', banner)
+    body = agents()
+    self.assertTrue(body['configured_model'])
+    self.assertEqual(body['single_bot'], '')
+    self.assertFalse(body['dual_numa'])
+    got = [(a['id'], a['name'], a['slot'], a['model'], a['numa'], a['vm']) for a in body['agents']]
+    self.assertEqual(got, [
+     ('deepseek-chat', 'DeepSeek V4 Flash', 1, 'deepseek-v4-flash-0731', 0, 'agent1'),
+     ('qwen-numa1', 'Qwen3.8 Uncensored', 2, 'qwen3.8-flash-next-uncensored', 1, ''),
+    ])
+    self.assertEqual([(i['port'], i['numa'], i['model'], i['label']) for i in body['model_instances']],
+     [(8191, 0, 'deepseek-v4-flash-0731', 'DeepSeek V4 Flash'),
+      (8192, 1, 'qwen3.8-flash-next-uncensored', 'Qwen3.8 Uncensored')])
+    stored = json.loads(state.joinpath('agents.json').read_text())
+    self.assertEqual(stored[0]['memory'][0]['text'], 'bleibt')
+    self.assertEqual(len(stored), 2)
+    stop()
+    start()
+    self.assertIn('2 Agenten', log_path.read_text())
+    again = agents()['agents']
+    self.assertEqual([(a['id'], a['slot'], a['name'], a['model']) for a in again],
+     [(a[0], a[2], a[1], a[3]) for a in got])
+    self.assertEqual(json.loads(state.joinpath('agents.json').read_text())[0]['memory'][0]['text'], 'bleibt')
+    unit = (ROOT / 'ops/mag-120.service').read_text()
+    self.assertIn('EnvironmentFile=-/etc/mag-stack/room-model.env\n', unit)
+    self.assertIn('Environment=MAG_ROOM_SINGLE_BOT=auto\n', unit)
+   finally:
+    stop()
+  finally:
+   signal.alarm(0)
+   signal.signal(signal.SIGALRM, previous)
+   if proc is not None and proc.poll() is None:
+    proc.kill()
+    proc.wait(timeout=5)
+   tmp.cleanup()
+
 if __name__=='__main__':unittest.main(verbosity=2)
 

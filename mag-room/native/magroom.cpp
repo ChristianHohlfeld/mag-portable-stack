@@ -763,9 +763,10 @@ static void load_agents() {
     AGENTS = active;
   }
   if (CONFIGURED_MODEL) {
-    // One-time, idempotent migration (bots without a slot): legacy names become
+    // Idempotent migration (bots without a slot): legacy names become
     // config-label + N; ids, VMs and memory stay. Existing slots are kept; free slots
-    // go to the remaining bots in order. Surplus bots stay parked in agents.json.
+    // go to the remaining bots in order, then any slot that is still empty is
+    // created. Surplus bots stay parked in agents.json.
     std::vector<Val> all = AGENTS;
     AGENTS.clear();
     PARKED.clear();
@@ -819,6 +820,49 @@ static void load_agents() {
         if (old != updated) { a["name"] = updated; dirty = true; }
       }
     }
+    // MAG_ROOM_MAX_BOTS is a floor here, not only the cap checked in from_env.
+    // Configured mode turns DUAL_NUMA off, and that was the only path that
+    // created the second bot. The count is this file, not the VM list: a
+    // missing agent2 domain does not drop a bot, and a legacy one-bot
+    // agents.json stayed at 1 on every mag-120 start. Fill each empty slot
+    // once, with a stable id, and persist it so reboot does not mint another.
+    auto id_taken = [&](const std::string &cand) {
+      for (const auto *list : {&AGENTS, &PARKED})
+        for (const auto &a : *list)
+          if (mag::str(a, "id") == cand) return true;
+      return false;
+    };
+    for (int s = 1; s <= ROOM_MAX_BOTS; ++s) {
+      bool used = false;
+      for (const auto &a : AGENTS) used = used || model_slot_of(a) == s;
+      if (used) continue;
+      const auto &backend = ROOM_MODEL.backend(s);
+      const bool same = ROOM_MODEL.backends[0].id == ROOM_MODEL.backends[1].id;
+      std::string id = backend.id.find("qwen") != std::string::npos
+                           ? "qwen-numa" + std::to_string(backend.numa)
+                           : "deepseek-numa" + std::to_string(backend.numa);
+      if (id_taken(id)) {
+        const std::string base = id;
+        for (int n = 2; n < 100 && id_taken(id); ++n)
+          id = base + "-" + std::to_string(n);
+      }
+      if (id.size() > 32) id.resize(32);
+      Val bot = Val::object();
+      bot["id"] = id;
+      bot["name"] = same ? backend.label + " " + std::to_string(s) : backend.label;
+      bot["model"] = backend.id;
+      bot["slot"] = s;
+      bot["numa"] = backend.numa;
+      bot["vm"] = "";
+      bot["color"] = "#8fd0ff";
+      bot["persona"] = "Neugierig, freundlich und eigenstaendig.";
+      bot["memory"] = Val::array();
+      AGENTS.push_back(std::move(bot));
+      dirty = true;
+    }
+    std::stable_sort(AGENTS.begin(), AGENTS.end(), [](const Val &a, const Val &b) {
+      return model_slot_of(a) < model_slot_of(b);
+    });
   }
   if (DUAL_NUMA) {
     // Recover one existing coding bot on NUMA0 (prefer its live VM), and one

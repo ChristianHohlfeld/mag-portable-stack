@@ -11,6 +11,7 @@ test ! -e ops/mag-120.d/30-multibot.conf
 grep -Fq 'Environment=MAG_ROOM_SINGLE_BOT=auto' ops/mag-120.service
 grep -Fxq 'Environment=MAG_ROOM_SINGLE_BOT=' ops/mag-120.d/20-room-audit.conf
 grep -Fxq 'EnvironmentFile=-/etc/mag-stack/room-model.env' ops/mag-120.d/20-room-audit.conf
+grep -Fxq 'EnvironmentFile=-/etc/mag-stack/room-model.env' ops/mag-120.service
 grep -Fxq 'MAG_ROOM_SINGLE_BOT=' mag-room/.env.example
 grep -Fxq 'MAG_ROOM_MODEL_ID=deepseek-v4-flash-0731' mag-room/.env.example
 grep -Fxq 'Environment=MAG_ROOM_DUAL_NUMA=1' ops/mag-120.d/30-dual-numa.conf

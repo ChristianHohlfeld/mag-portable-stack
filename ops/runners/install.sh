@@ -6,8 +6,8 @@
 #  - GitHub runner (runs-on: [self-hosted, mag]) only when the owner has put a
 #    registration token into /etc/credstore/mag-github-runner.token.
 # Jobs run as unprivileged users with CPU/RAM caps; they never see the models,
-# room state, credentials or backups. A job deploys by writing to
-# /var/lib/mag-deploy/request, which starts the normal auto-update
+# room state, credentials or backups. Legacy jobs formerly deployed by writing to
+# /var/lib/mag-deploy/request. GitHub green alone now drives auto-update
 # (fast-forward main, build, deploy.sh with backup and automatic rollback).
 # Disable the GitHub runner: sudo touch /etc/mag-stack/runners.disabled
 # Disable the Gitea runner: sudo touch /etc/mag-stack/gitea-runner.disabled
@@ -173,7 +173,9 @@ if ! install_github_runner; then
 fi
 
 systemctl daemon-reload
-systemctl enable --now mag-deploy-request.path
+# Retire the Gitea/GitHub runner-triggered deploy path. Only GitHub green
+# is pulled by the independent mag-auto-update.timer.
+systemctl disable --now mag-deploy-request.path >/dev/null 2>&1 || true
 if [[ ! -e /etc/mag-stack/gitea-runner.disabled && -e /etc/systemd/system/mag-gitea-runner.service ]]; then
   systemctl enable --now mag-gitea-runner.service
   # Restart only on a new binary/config/unit so a running job is not cut off.

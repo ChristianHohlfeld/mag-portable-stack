@@ -14,7 +14,7 @@ import importlib.util,json,pathlib,shutil,unittest
 ROOT=pathlib.Path(__file__).resolve().parents[2]
 ART=pathlib.Path('/opt/cursor/artifacts')
 spec=importlib.util.spec_from_file_location('test_pwa',ROOT/'mag-room/tests/test_pwa.py');pwa=importlib.util.module_from_spec(spec);spec.loader.exec_module(pwa)
-SETUP="""()=>{const c=document.getElementById('screen');c.hidden=false;c.style.width='100%';c.style.height='260px';c.style.display='block';
+SETUP="""()=>{const c=document.getElementById('screen');c.hidden=false;\n // Synthetic video fixture: a real stream keeps the canvas visible while\n // the room's disconnected WebRTC transport must not hide this fake frame.\n Object.defineProperty(c,'hidden',{configurable:true,get:()=>false,set(){}});\n c.style.width='100%';c.style.height='260px';c.style.display='block';
  window.__sent=[];window.liveSend=m=>{__sent.push(m);return true};try{localStorage.removeItem('mag-view-mode')}catch(e){}magViewTools.setMode('watch');magViewTools.fit()}"""
 class ViewTools(unittest.TestCase):
  def test_zoom_watch_takeover_rotation(self):

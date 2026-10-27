@@ -7981,10 +7981,15 @@ static void stop_selftalk() {
   write_file(STATE_DIR + "/selftalk", "off");
   SELFTALK = false;
   selftalk_journal("stop");
+  // Abort in-flight hops here. Do not call user_stop: its 800ms debounce
+  // would skip the cancel when the composer Stop ran just before the toggle.
   cancel_active(true);
+  cancel_prewarm();
   {
     std::lock_guard<std::mutex> lk(JOB_MTX);
-    drop_selftalk_jobs_locked();
+    JOBS.clear();
+    save_queue_locked();
+    queue_event_locked();
   }
   JOB_CV.notify_all();
 }

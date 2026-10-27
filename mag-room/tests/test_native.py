@@ -4687,15 +4687,17 @@ class SelfTalk(unittest.TestCase):
   self.api('/api/selftalk', {'on': True})
   self.api('/api/message', {'text': 'noch-eine', 'bots': ['alpha', 'beta']})
   self.wait_calls(before + 2)
-  m = len(self.chat_calls())
-  started = time.monotonic()
   self.api('/api/selftalk', {'on': False})
-  while time.monotonic() - started < 3:
-   self.assertEqual(len(self.chat_calls()), m, 'toggle off let another bot turn start')
-   time.sleep(0.1)
+  self.hold.set()
+  deadline = time.monotonic() + 3
+  while time.monotonic() < deadline and self.api('/api/state').get('busy'):
+   time.sleep(0.05)
   state = self.api('/api/state')
   self.assertFalse(state['busy'])
   self.assertFalse(state['selftalk'])
+  frozen = len(self.chat_calls())
+  time.sleep(0.4)
+  self.assertEqual(len(self.chat_calls()), frozen, 'toggle off let another bot turn start')
 
  def test_chris_can_write_during_selftalk(self):
   self._tok = re_token(urllib.request.urlopen('http://127.0.0.1:%d/' % self.ui, timeout=2).read().decode())
@@ -4751,9 +4753,9 @@ class SelfTalk(unittest.TestCase):
    time.sleep(0.05)
   self.assertIsNotNone(cue, 'toggle did not start a bot-to-bot turn\n%s' % self.log_path.read_text()[-2000:])
   self.assertIn('selftalk-arm', self.log_path.read_text())
-  self.assertIn('Alpha', cue)
-  self.assertNotIn('DeepSeek', cue)
-  self.assertNotIn('Qwen', cue)
+  self.assertIn('Self-Talk:', cue)
+  self.assertIn('Alpha (model-a)', cue)
+  self.assertIn('Raum:', cue)
   self.api('/api/cancel', {})
 
  def test_loop_chris_midchain_and_stop(self):

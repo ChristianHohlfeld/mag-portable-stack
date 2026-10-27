@@ -3168,8 +3168,10 @@ exit 0
 class BootstrapContext(unittest.TestCase):
  """Fresh and reset bots get the versioned bootstrap context (bot_context.md)."""
  CONTEXT=(ROOT/'mag-room/native/bot_context.md').read_text()
- GERMAN='Antworte standardmaessig auf Deutsch. Schreibt der Nutzer in einer anderen\nSprache, antworte in dieser Sprache.'
- RULES=('Ergebnis zuerst','Erst pruefen, dann melden','nachfragen nur vor unumkehrbaren','Geheimnisse (Passwoerter','Ursache diagnostizieren')
+ GERMAN='Deutsch als Standard; sonst Sprache der Anfrage.'
+ RULES=('Ergebnis zuerst','prüfe das Ergebnis','Ursache untersuchen',
+        'Freigabe vor Geld','Geheimnisse nur über den `secret`-Mechanismus',
+        'Keine Rechteausweitung')
  @classmethod
  def setUpClass(cls):
   cls.tmp=tempfile.TemporaryDirectory();tmp=pathlib.Path(cls.tmp.name);cls.state=tmp/'state';cls.state.mkdir()
@@ -3195,9 +3197,9 @@ class BootstrapContext(unittest.TestCase):
   self.assertEqual(sys['role'],'system');return sys['content']
  def test_00_context_source(self):
   self.assertIn(self.GERMAN,self.CONTEXT)
-  self.assertIn('Chris ist der Besitzer',self.CONTEXT)
-  self.assertIn('GitHub: nur LESEN',self.CONTEXT)
-  self.assertLess(len(self.CONTEXT),4096,'bootstrap context must stay token-cheap')
+  self.assertIn('Bot-Git: Lesen öffentlicher GitHub-Repos',self.CONTEXT)
+  self.assertIn('alleinige Quelle',self.CONTEXT)
+  self.assertLess(len(self.CONTEXT),6500,'bootstrap context must stay token-cheap')
   for bad in ('token','password','100.123.','192.168.','stardenburg','publish_frontend','ui_get','frontend_'):
    self.assertNotIn(bad,self.CONTEXT.lower())
   for rule in self.RULES:self.assertIn(rule,self.CONTEXT)

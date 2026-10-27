@@ -2447,6 +2447,35 @@ class MultiBot(unittest.TestCase):
  def test_02_each_bot_talks_to_its_own_model(self):
   self.assertEqual(self._ask('iq3bot')['model'],self.IQ3)
   self.assertEqual(self._ask('q4bot')['model'],self.Q4)
+ def test_02b_explicit_cross_bot_delegation_uses_target_identity(self):
+  # Grok-Bot-style handoff without the discarded groupchat dispatcher:
+  # only an explicit tool request launches work in the OTHER bot's lane.
+  self.wait_idle()
+  call={'tool_calls':[{'index':0,'id':'call_delegate','function':{
+   'name':'task','arguments':json.dumps({'action':'delegate','to_bot':'iq3bot',
+    'title':'Independent review','prompt':'Review one safe text calculation.'})}}]}
+  Model.script=[[call],['Delegation accepted.'],['Review complete.']]
+  try:
+   self.request('/api/message',{'text':'Delegate a review to IQ3 Bot','bots':['q4bot']})
+   rows=[]
+   for _ in range(200):
+    rows=self.request('/api/tasks')['tasks']
+    if any(t.get('requester')=='q4bot' and t.get('bot')=='iq3bot' for t in rows):
+     break
+    time.sleep(.05)
+   else:self.fail('task(delegate) did not create a cross-bot task')
+   item=next(t for t in rows if t.get('requester')=='q4bot')
+   self.assertEqual(item['bot'],'iq3bot')
+   self.assertEqual(item['requester'],'q4bot')
+   self.assertTrue(any(t['id']==item['id'] for t in self.request('/api/tasks?bot=q4bot')['tasks']))
+   self.assertTrue(any(t['id']==item['id'] for t in self.request('/api/tasks?bot=iq3bot')['tasks']))
+   for _ in range(200):
+    if next((t['status'] for t in self.request('/api/tasks')['tasks']
+             if t['id']==item['id']),None)!='running':break
+    time.sleep(.05)
+  finally:
+   self.request('/api/stop',{})
+   Model.script=[]
  def test_03_model_route_validation(self):
   self.error(400,'/api/agents/q4bot/model',{'model':'unbekannt'})
   self.error(400,'/api/agents/q4bot/model',{})

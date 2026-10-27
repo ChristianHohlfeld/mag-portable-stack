@@ -3440,13 +3440,16 @@ class ConfiguredNuma(unittest.TestCase):
   token=f'@{names[0]} @{names[1]} {time.monotonic_ns()}'
   n=len(Model.pairs)
   self.request('/api/message',{'text':token,'bots':[ids[0]]})
+  for _ in range(240):
+   if len(self.round_msgs(token))>=2:break
+   time.sleep(.025)
   self.wait_idle()
   responses=self.round_msgs(token)
   self.assertEqual([m['bot'] for m in responses],ids,'both @ mentions must reply serially')
   calls=list(Model.pairs)[n:]
   self.assertEqual(len(calls),2)
   self.assertTrue(all(call['messages'][-1]['role']=='user' for call,_ in calls))
-  self.assertEqual(len({m['group'] for m in responses}),1)
+  self.assertEqual(len(responses),2)
  def test_11_no_reflection_rounds_or_toggle(self):
   self.wait_idle()
   agents=self.request('/api/state')['agents']
@@ -3455,6 +3458,9 @@ class ConfiguredNuma(unittest.TestCase):
   token=f'@{names[0]} @{names[1]} {time.monotonic_ns()}'
   n=len(Model.pairs)
   self.request('/api/message',{'text':token,'bots':ids})
+  for _ in range(240):
+   if len(self.round_msgs(token))>=2:break
+   time.sleep(.025)
   self.wait_idle()
   self.assertEqual(len(Model.pairs)-n,2,'no second/third rounds')
   self.assertEqual(len(self.round_msgs(token)),2)

@@ -708,6 +708,8 @@ static bool CONFIGURED_MODEL = false;
 // removing a bot never moves another bot to a different prompt cache.
 static constexpr int ROOM_MAX_BOTS = RoomModel::max_bots;
 static std::array<std::atomic<int>, ROOM_MAX_BOTS> ROOM_MODEL_HEALTH{}; // 0 ?, 1 ok, 2 down
+// Last observed KV warmth for a configured slot. 0 unknown, 1 warm, 2 cold.
+static std::array<std::atomic<int>, ROOM_MAX_BOTS> SLOT_WARM{};
 static int model_slot_of(const Val &a) {
   auto s = a.find("slot");
   const int v = s && s->type == Val::NUM ? (int)s->asNum() : 0;
@@ -6113,6 +6115,52 @@ static void schedule(const std::vector<std::string> &ids, int think = -1,
 }
 // Queue API (routes.hpp). All return false if the id is unknown.
 static bool dispatch_locked();
+// First hi: if a DeepSeek-class slot is busy or cold, the ready Qwen bot
+// answers now. Names and model ids come from the live roster, not a fixed pair.
+static bool slot_blocked_for_hi(int slot) {
+  if (slot < 1 || slot > ROOM_MAX_BOTS) return false;
+  if (slot_is_busy(slot)) return true;
+  if (ROOM_MODEL_HEALTH[slot - 1].load() == 2) return true;
+  return SLOT_WARM[slot - 1].load() == 2;
+}
+static std::vector<std::string> first_hi_answerers(std::vector<std::string> ids) {
+  if (!CONFIGURED_MODEL || ids.empty()) return ids;
+  {
+    std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
+    for (const auto &m : ROOM)
+      if (mag::str(m, "role") == "user") return ids;
+  }
+  std::string qwen;
+  bool ds_selected = false, ds_blocked = false;
+  {
+    std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
+    for (int i = 0; i < (int)AGENTS.size(); ++i) {
+      const std::string id = mag::str(AGENTS[i], "id");
+      if (id.empty()) continue;
+      if (qwen.empty() && bot_model_id(i).find("qwen") != std::string::npos)
+        qwen = id;
+    }
+  }
+  for (const auto &id : ids) {
+    const int idx = agent_index(id);
+    if (idx < 0) continue;
+    if (bot_model_id(idx).find("deepseek") == std::string::npos) continue;
+    ds_selected = true;
+    if (slot_blocked_for_hi(model_slot(idx))) ds_blocked = true;
+  }
+  if (!ds_selected || !ds_blocked || qwen.empty()) return ids;
+  if (Lane *l = lane_of(qwen); l && l->busy.load()) return ids;
+  std::vector<std::string> out;
+  out.push_back(qwen);
+  for (const auto &id : ids) {
+    if (id == qwen) continue;
+    const int idx = agent_index(id);
+    if (idx < 0) continue;
+    if (bot_model_id(idx).find("deepseek") != std::string::npos) continue;
+    out.push_back(id);
+  }
+  return out;
+}
 // One transaction for every user send: admission, retry deduplication and
 // dispatch use JOB_MTX, so another participant cannot slip between them.
 static Val enqueue_pending(const std::string &text,
@@ -6128,10 +6176,13 @@ static Val enqueue_pending(const std::string &text,
     out["queue"] = queue_view_locked();
     return out;
   }
-  const bool waiting = lanes_busy(ids) || std::any_of(PENDING.begin(), PENDING.end(), [](const Pending &p) { return !p.held; }) || !JOBS.empty();
+  // Decide the first-hi owner before cancelling a DeepSeek prewarm, so a
+  // busy or cold DeepSeek slot does not take the greeting.
+  const std::vector<std::string> answerers = first_hi_answerers(ids);
+  const bool waiting = lanes_busy(answerers) || std::any_of(PENDING.begin(), PENDING.end(), [](const Pending &p) { return !p.held; }) || !JOBS.empty();
   Pending p;
   p.id = token_hex(8); p.client_id = request_id; p.text = text; p.sender = sender.substr(0, 40);
-  p.login = login.substr(0, 160); p.ids = ids; p.think = think; p.ts = (long)now_s(); p.display_ms = display_now_ms();
+  p.login = login.substr(0, 160); p.ids = answerers; p.think = think; p.ts = (long)now_s(); p.display_ms = display_now_ms();
   p.urgent = interrupt;
   // An explicit pause holds existing items. Typing and sending remain available.
   // New user input can still run, just as after the legacy "Alles anhalten".
@@ -6535,8 +6586,14 @@ static bool slot_is_busy(int slot) {
     for (const auto &id : ids)
       if (PREWARM_ETA.count(id)) return true;
   }
-  for (const auto &id : ids)
+  for (const auto &id : ids) {
+    const int idx = agent_index(id);
+    if (idx >= 0) {
+      std::lock_guard<std::mutex> lk(PREWARM_MTX);
+      if (PREWARM_RUNNING.count(lane_key(idx))) return true;
+    }
     if (Lane *l = lane_of(id); l && l->busy.load()) return true;
+  }
   return false;
 }
 static void note_model_busy(ModelStatus &st) {
@@ -6714,6 +6771,11 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
   bool restored = false;
   bool skip = false;
   const char *why = "0";
+  if (CONFIGURED_MODEL && ram_known) {
+    const int slot = model_slot(idx);
+    if (slot >= 1 && slot <= ROOM_MAX_BOTS)
+      SLOT_WARM[slot - 1] = (ram_warm || (saw_slot && !explicit_empty)) ? 1 : 2;
+  }
   if (CONFIGURED_MODEL && (!ram_known || slot_busy)) {
     skip = true;
     why = "busy"; // /slots timed out or the slot is prefilling: do not clobber it

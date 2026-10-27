@@ -28,7 +28,7 @@ def _mem(content):
 class Model(http.server.BaseHTTPRequestHandler):
  script_scope=None
  slot_snapshot=[];cache_records=[];tokenizer_fail=False;tokenizer_requests=[]
- protocol_version='HTTP/1.1';calls=[];slots=[];pairs=[];paths=[];slot_delay={};delay=0;reply=None;script=[];health=200;last_prompt={};saved_prompt={};overflow_once=0;barrier_token='';barrier_release=None;hold_get=0
+ protocol_version='HTTP/1.1';calls=[];slots=[];pairs=[];paths=[];slot_delay={};delay=0;reply=None;script=[];health=200;last_prompt={};saved_prompt={};overflow_once=0;barrier_token='';barrier_release=None;hold_get=0;slot_block={}
  # A prompt that misses the pinned slot sleeps this long before any token.
  # 0 keeps the rest of the suite fast. The lock is per gateway slot, like ik.
  prefix_miss_s=0;_slot_locks={};_slot_guard=threading.Lock()
@@ -78,6 +78,8 @@ class Model(http.server.BaseHTTPRequestHandler):
   type(self).slots.append(self.headers.get('X-Mag-Slot'))
   type(self).pairs.append((obj,self.headers.get('X-Mag-Slot')))  # one atomic append
   type(self).paths.append((self.path,self.headers.get('X-Mag-Slot'),self.headers.get('X-Mag-Bot'),obj))
+  ev=type(self).slot_block.get(self.headers.get('X-Mag-Slot'))
+  if ev is not None:ev.wait(12)
   if type(self).overflow_once:
    type(self).overflow_once-=1
    error=b'{"error":{"code":400,"message":"request (35178 tokens) exceeds the available context size (32768 tokens)","type":"exceed_context_size_error"}}'
@@ -4159,6 +4161,139 @@ class TwoBackendStartup(unittest.TestCase):
    except subprocess.TimeoutExpired:proc.kill();proc.wait(timeout=5)
    log.close();model.shutdown();model.server_close();tmp.cleanup()
 
+class QwenFirstHi(unittest.TestCase):
+ """When DeepSeek is busy or cold, Qwen answers the first hi in under 5s."""
+ HARD_S = 20
+
+ def test_qwen_answers_first_hi_while_deepseek_is_busy(self):
+  import signal, re
+  def boom(signum, frame):
+   raise TimeoutError('hard timeout: first hi did not finish in %ss' % self.HARD_S)
+  previous = signal.signal(signal.SIGALRM, boom)
+  signal.alarm(self.HARD_S + 8)
+  tmp = tempfile.TemporaryDirectory()
+  proc = None
+  httpd = None
+  hold = threading.Event()
+  Model.slot_block = {'0': hold}
+  Model.paths = []
+  Model.calls = []
+  Model.pairs = []
+  try:
+   root = pathlib.Path(tmp.name)
+   state = root / 'state'
+   state.mkdir()
+   state.joinpath('agents.json').write_text(json.dumps([
+    {'id': 'deepseek-chat', 'name': 'DeepSeek Chat', 'vm': '', 'slot': 1,
+     'numa': 0, 'model': 'deepseek-v4-flash-0731', 'memory': []},
+    {'id': 'qwen-numa1', 'name': 'Qwen', 'vm': '', 'slot': 2,
+     'numa': 1, 'model': 'qwen3.8-flash-next-uncensored', 'memory': []},
+   ]))
+   state.joinpath('access.json').write_text(json.dumps({
+    'owners': ['chris@github'], 'owner_name': 'Chris'}))
+   httpd = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Model)
+   model_port = httpd.server_address[1]
+   threading.Thread(target=httpd.serve_forever, daemon=True).start()
+   ui, bridge = port(), port()
+   log_path = root / 'server.log'
+   env = dict(os.environ,
+    MAG_OWNER_CANONICAL_LOGIN='chris@github', MAG_TEST_ALLOW_LOCAL_OWNER='1',
+    MAG_ROOM_STATE=str(state), MAG_ROOM_PORT=str(ui), MAG_ROOM_BRIDGE_PORT=str(bridge),
+    MAG_ROOM_BRIDGE_IP='127.0.0.1',
+    MAG_ROOM_BACKEND='http://127.0.0.1:%d/v1/chat/completions' % model_port,
+    MAG_ROOM_UI=str(ROOT / 'mag-room/web/index.html'),
+    MAG_ROOM_STATIC=str(ROOT / 'mag-room/static'),
+    MAG_ROOM_MODEL_STATUS=str(root / 'ms.json'), MAG_NETMODE=str(NETMODE),
+    MAG_TEST_NO_MEMGIT='1', MAG_ROOM_AGENT_CTL='/bin/false',
+    MAG_ROOM_GUEST_RUN='/bin/false', MAG_ROOM_MCP_AUTO='0', MAG_ROOM_PREWARM='1',
+    MAG_ROOM_PREFIX_DISK='0',
+    MAG_ROOM_SINGLE_BOT='', MAG_ROOM_DUAL_NUMA='0', MAG_ROOM_THINKING='off',
+    MAG_ROOM_MODEL_ID='deepseek-v4-flash-0731',
+    MAG_ROOM_MODEL_LABEL='DeepSeek V4 Flash + Qwen3.8 Uncensored',
+    MAG_ROOM_MODEL_PORTS='8191:0,8192:1', MAG_ROOM_MAX_BOTS='2',
+    MAG_ROOM_MODEL_ID_0='deepseek-v4-flash-0731', MAG_ROOM_MODEL_LABEL_0='DeepSeek V4 Flash',
+    MAG_ROOM_MODEL_ID_1='qwen3.8-flash-next-uncensored', MAG_ROOM_MODEL_LABEL_1='Qwen3.8 Uncensored',
+    MAG_ROOM_PRESETS=str(ROOT / 'ops/room/presets.json'))
+   log = open(log_path, 'w')
+   try:
+    proc = subprocess.Popen(
+     ['timeout', '-k', '1', '16', str(ROOT / 'build/magroom')],
+     env=env, stdout=log, stderr=log)
+   finally:
+    log.close()
+   deadline = time.monotonic() + 8
+   while time.monotonic() < deadline:
+    if proc.poll() is not None:
+     self.fail('magroom exited %s\n%s' % (proc.returncode, log_path.read_text()[-2000:]))
+    try:
+     urllib.request.urlopen('http://127.0.0.1:%d/healthz' % ui, timeout=1).read()
+     break
+    except Exception:
+     time.sleep(0.05)
+   else:
+    self.fail('hard timeout waiting for healthz\n%s' % log_path.read_text()[-2000:])
+   html = urllib.request.urlopen('http://127.0.0.1:%d/' % ui, timeout=2).read().decode()
+   tok = re.search(r'name="mag-token" content="([^"]+)"', html).group(1)
+   def api(path, body=None, timeout=2):
+    data = json.dumps(body).encode() if body is not None else None
+    headers = {'Content-Type': 'application/json', 'X-MAG-Token': tok} if data is not None else {}
+    req = urllib.request.Request('http://127.0.0.1:%d%s' % (ui, path), data=data,
+                                 method='POST' if data is not None else 'GET', headers=headers)
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+     raw = r.read()
+     return json.loads(raw) if raw else {}
+   body = api('/api/state')
+   self.assertEqual([(a['id'], a['slot'], a['model']) for a in body['agents']],
+    [('deepseek-chat', 1, 'deepseek-v4-flash-0731'),
+     ('qwen-numa1', 2, 'qwen3.8-flash-next-uncensored')])
+   # DeepSeek is held in a cold prewarm. Wait until that slot is occupied.
+   deadline = time.monotonic() + 6
+   while time.monotonic() < deadline:
+    if any(p[1] == '0' for p in Model.paths):
+     break
+    agents = api('/api/state').get('agents') or []
+    if any(a.get('id') == 'deepseek-chat' and a.get('prewarm_eta_s') is not None for a in agents):
+     break
+    time.sleep(0.05)
+   else:
+    self.fail('DeepSeek never went busy/cold\n%s' % log_path.read_text()[-2000:])
+   token = 'hi %d' % time.monotonic_ns()
+   t0 = time.monotonic()
+   api('/api/message', {'text': token, 'bots': ['deepseek-chat']})
+   answered = None
+   deadline = t0 + 5
+   while time.monotonic() < deadline:
+    room = api('/api/state')['room']
+    for i, m in enumerate(room):
+     if m.get('role') == 'user' and token in (m.get('content') or ''):
+      for x in room[i + 1:]:
+       if x.get('role') == 'assistant' and (x.get('content') or ''):
+        answered = x
+        break
+    if answered:
+     break
+    time.sleep(0.05)
+   elapsed = time.monotonic() - t0
+   self.assertIsNotNone(answered, 'first hi exceeded 5s\n%s' % log_path.read_text()[-2000:])
+   self.assertLess(elapsed, 5, 'first hi while DeepSeek is busy')
+   self.assertEqual(answered.get('bot'), 'qwen-numa1')
+   self.assertFalse(any(m.get('bot') == 'deepseek-chat' and m.get('role') == 'assistant'
+                        and (m.get('content') or '') for m in api('/api/state')['room']))
+  finally:
+   hold.set()
+   Model.slot_block = {}
+   signal.alarm(0)
+   signal.signal(signal.SIGALRM, previous)
+   if proc is not None and proc.poll() is None:
+    proc.terminate()
+    try:
+     proc.wait(timeout=3)
+    except subprocess.TimeoutExpired:
+     proc.kill()
+     proc.wait(timeout=3)
+   if httpd is not None:
+    httpd.shutdown()
+   tmp.cleanup()
 
 if __name__=='__main__':unittest.main(verbosity=2)
 

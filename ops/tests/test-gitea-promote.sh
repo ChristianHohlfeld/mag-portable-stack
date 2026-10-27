@@ -296,6 +296,9 @@ ci = yaml.safe_load((root / ".gitea/workflows/mag-ci.yml").read_text())
 ci_on = ci.get("on", ci.get(True))
 assert ci["jobs"]["checks"]["runs-on"] == "mag-ci-vm"
 assert "push" not in ci_on and "pull_request" not in ci_on, ci_on
+host = yaml.safe_load((root / ".gitea/workflows/host-runner.yml").read_text())
+assert set(host["jobs"]["ping"]["runs-on"]) == {"self-hosted", "mag"}
+assert "push" in host.get("on", host.get(True))
 PY
 grep -Fq 'timeout-minutes: 5' "$root/.gitea/workflows/green.yml"
 grep -Fq 'timeout-minutes: 20' "$root/.gitea/workflows/green.yml"

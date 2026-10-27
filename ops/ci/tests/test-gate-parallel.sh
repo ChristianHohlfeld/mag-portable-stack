@@ -54,9 +54,116 @@ end=$(date +%s)
 [[ $((end - start)) -lt 5 ]]
 grep -q 'per-test timeout' "$tmp/alarm" "$tmp/alarm.err"
 
-grep -q 'worktree_magroom_pids' ops/ci/native-gate.sh
+grep -q 'mag_ci_worktree_magroom_pids' ops/ci/reap.sh
 grep -q 'FAIL leftover magroom after merge gate' ops/ci/native-gate.sh
+grep -q '_kill_worktree_magroom' ops/ci/mag_deadline.py
+if grep -R -n 'pgrep -f.*run_ci_force' --include='*.py' --include='*.sh' \
+  --exclude='test-gate-parallel.sh' ops mag-room .github >/dev/null 2>&1; then
+  echo 'queued-run wait still matches its own command line' >&2
+  exit 1
+fi
+
+# Leftover magroom is identified by this worktree's executable, not argv.
+# /bin/sleep copied to that path keeps exe == MAG_CI_MAGROOM.
+fake=$tmp/magroom
+cp /bin/sleep "$fake"
+chmod +x "$fake"
+"$fake" 3600 &
+leak=$!
+for _ in $(seq 1 50); do
+  kill -0 "$leak" 2>/dev/null && break
+  sleep 0.05
+done
+kill -0 "$leak"
+echo 'ok :: true' >"$tmp/list"
+export MAG_CI_MAGROOM=$fake
+set +e
+MAG_CI_GATE_LIST=$tmp/list MAG_CI_JOBS=1 bash ops/ci/native-gate.sh --parallel >"$tmp/before" 2>"$tmp/before.err"
+before_st=$?
+set -e
+[[ $before_st -eq 0 ]]
+grep -q 'killing leftover magroom from this worktree' "$tmp/before.err"
+if kill -0 "$leak" 2>/dev/null; then
+  echo 'before-reap left magroom running' >&2
+  kill -KILL "$leak" 2>/dev/null || true
+  exit 1
+fi
+wait "$leak" 2>/dev/null || true
+
+"$fake" 3600 &
+leak=$!
+for _ in $(seq 1 50); do
+  kill -0 "$leak" 2>/dev/null && break
+  sleep 0.05
+done
+kill -0 "$leak"
+set +e
+MAG_CI_SKIP_BEFORE_REAP=1 MAG_CI_GATE_LIST=$tmp/list MAG_CI_JOBS=1 \
+  bash ops/ci/native-gate.sh --parallel >"$tmp/after" 2>"$tmp/after.err"
+after_st=$?
+set -e
+[[ $after_st -ne 0 ]]
+grep -q 'FAIL leftover magroom after merge gate' "$tmp/after.err"
+if kill -0 "$leak" 2>/dev/null; then
+  echo 'after-reap left magroom running' >&2
+  kill -KILL "$leak" 2>/dev/null || true
+  exit 1
+fi
+wait "$leak" 2>/dev/null || true
+
+"$fake" 3600 &
+leak=$!
+for _ in $(seq 1 50); do
+  kill -0 "$leak" 2>/dev/null && break
+  sleep 0.05
+done
+kill -0 "$leak"
+PYTHONPATH=$root/ops/ci MAG_CI_MAGROOM=$fake python3 -c 'import mag_deadline; mag_deadline.arm(30); mag_deadline._kill_tracked()'
+if kill -0 "$leak" 2>/dev/null; then
+  echo 'mag_deadline left magroom running' >&2
+  kill -KILL "$leak" 2>/dev/null || true
+  exit 1
+fi
+wait "$leak" 2>/dev/null || true
+
 echo 'ok :: true' >"$tmp/list"
 MAG_CI_GATE_LIST=$tmp/list MAG_CI_JOBS=1 bash ops/ci/native-gate.sh --parallel >"$tmp/tiny" 2>&1
 grep -q 'MERGE GATE wall ' "$tmp/tiny"
+
+# Incremental cache, parallel contracts, abort on first failure.
+if grep -E 'rm[[:space:]]+-r' ops/ci/native-gate.sh ops/ci/incremental-build.sh ops/ci/local-ci.sh; then
+  echo 'incremental build must not delete build/' >&2
+  exit 1
+fi
+grep -q 'ops/ci/incremental-build.sh' ops/ci/native-gate.sh
+grep -q 'native-fast.list' ops/ci/native-gate.sh
+grep -q 'MERGE GATE wall' ops/ci/native-gate.sh
+# shellcheck disable=SC2016 # literal local-ci assignment, not a shell expansion
+grep -F 'JOBS=${MAG_CI_JOBS:-$(nproc' ops/ci/local-ci.sh >/dev/null
+if grep -q 'JOBS=4' ops/ci/local-ci.sh; then
+  echo 'local-ci still hardcodes JOBS=4' >&2
+  exit 1
+fi
+grep -q -- '--prepare' ops/ci/native-gate.sh
+build_before=$(readlink -f "$root/build" 2>/dev/null || true)
+printed=$(MAG_CI_CACHE="$tmp/cache" bash ops/ci/incremental-build.sh --print-cache)
+printf '%s\n' "$printed" | grep -q "MAG_CI_CACHE=$tmp/cache"
+printf '%s\n' "$printed" | grep -q "CCACHE_DIR=$tmp/cache/ccache"
+[[ -d $tmp/cache/ccache && -d $tmp/cache/build ]]
+build_after=$(readlink -f "$root/build" 2>/dev/null || true)
+if [[ $build_before != "$build_after" ]]; then
+  echo '--print-cache retargeted ./build' >&2
+  exit 1
+fi
+inside=$(MAG_CI_CACHE="$root/work/cache" HOME="$tmp/home" bash ops/ci/incremental-build.sh --print-cache)
+if printf '%s\n' "$inside" | grep -q "MAG_CI_CACHE=$root/work/cache"; then
+  echo 'cache was placed inside the wiped work/ tree' >&2
+  exit 1
+fi
+printf '%s\n' "$inside" | grep -E -q 'MAG_CI_CACHE=.*/.cache/mag-ci|MAG_CI_CACHE=/var/tmp/mag-ci-'
+# Mag runner HOME is often /work; never put the cache there.
+wiped=$(MAG_CI_CACHE='' CCACHE_DIR=/work/.cache/ccache HOME=/work \
+  bash ops/ci/incremental-build.sh --print-cache)
+printf '%s\n' "$wiped" | grep -q "MAG_CI_CACHE=/var/tmp/mag-ci-$(id -u)"
+printf '%s\n' "$wiped" | grep -q "CCACHE_DIR=/var/tmp/mag-ci-$(id -u)/ccache"
 echo 'gate parallel PASS'

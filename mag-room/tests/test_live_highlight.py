@@ -49,7 +49,11 @@ class LiveHighlight(unittest.TestCase):
    shot=site.screenshot(type='png')
    import base64;png='data:image/png;base64,'+base64.b64encode(shot).decode()
    room=browser.new_page(viewport={'width':1400,'height':900});room.on('pageerror',lambda e:errors.append(str(e)))
-   room.goto('http://127.0.0.1:%s/'%ui,wait_until='domcontentloaded');room.wait_for_function('()=>window.magLiveHighlight&&window.magViewTools')
+   room.goto('http://127.0.0.1:%s/'%ui,wait_until='domcontentloaded')
+   # Wait for the real VM bot; early events with bot="" are silently
+   # ignored once the delayed /api/state refresh selects the correct bot.
+   room.wait_for_function("""()=>window.magLiveHighlight&&window.magViewTools&&
+     document.getElementById('browser-agent')?.value==='test'""",timeout=10000)
    if not room.locator('#browser-view').is_visible():room.locator('#toggle-tools').click()
    room.locator('#browser-view').wait_for(state='visible')
    room.evaluate("""async(png)=>{const c=document.getElementById('screen');c.hidden=false;Object.defineProperty(c,'hidden',{configurable:true,get:()=>false,set(){}});c.style.display='block';c.style.width='100%';c.style.height='420px';

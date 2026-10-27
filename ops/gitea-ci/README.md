@@ -151,16 +151,14 @@ did not change exits 0 without rerunning, so its required context stays
 success; that is an unaffected pass, not a Gitea `skipped` conclusion. Push to
 main uses the same sha for base and head, so every suite runs.
 
-Only a fully successful validated Gitea run can advance GitHub `green`, and only
-if its SHA is still the current GitHub main. Updates never force an older green
-ref backwards. The bridge does that directly, without a GitHub-hosted job.
-`ops/ci/promote-green.sh` accepts the same result: when any of the ten required
-contexts exists as a GitHub commit status, that status set decides those names.
-A missing, pending, failed or duplicate context does not count as success, and a
-same-named Actions check-run does not override the status. With no Gitea
-statuses, check-runs alone decide, as before. The existing `mag-auto-update`
-timer follows the same GitHub `green` branch and existing deployment/rollback
-path. Jobs have no deployment credentials or root host trigger.
+The host act_runner (`.gitea/workflows/green.yml`, CPUs 42-55) runs the merge
+gate on every push and pull request to main. A green push moves the Gitea
+`green` ref and writes `/var/lib/mag-deploy/request`. `mag-deploy-request.path`
+starts `mag-auto-update`, which fetches that Gitea ref and deploys. GitHub is
+not on this path. `ops/ci/promote-green.sh` still understands the old GitHub
+status shape for its unit test: when any of the ten required contexts exists
+as a commit status, that status set decides those names. A missing, pending,
+failed or duplicate context does not count as success.
 
 GitHub required-status sources must permit these commit-status contexts. If a
 repository ruleset pins a context specifically to the GitHub Actions App, its

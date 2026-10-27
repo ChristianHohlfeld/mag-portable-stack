@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Action runners on the MAG host (idempotent, run as root; ops/update.sh and the
 # auto-update call it after each successful deploy).
-#  - Gitea runner (GitHub-style workflows in .gitea/workflows, runs-on: mag),
+#  - Gitea runner (GitHub-style workflows in .gitea/workflows, runs-on: [self-hosted, mag]),
 #    registered automatically against the local Gitea.
 #  - GitHub runner (runs-on: [self-hosted, mag]) only when the owner has put a
 #    registration token into /etc/credstore/mag-github-runner.token.
@@ -9,19 +9,19 @@
 # room state, credentials or backups. A job deploys by writing to
 # /var/lib/mag-deploy/request, which starts the normal auto-update
 # (fast-forward main, build, deploy.sh with backup and automatic rollback).
-# Disable: sudo touch /etc/mag-stack/runners.disabled
+# Disable the GitHub runner: sudo touch /etc/mag-stack/runners.disabled
+# Disable the Gitea runner: sudo touch /etc/mag-stack/gitea-runner.disabled
 set -euo pipefail
 [[ $EUID == 0 ]] || { echo 'root required' >&2; exit 1; }
 here="$(cd -- "$(dirname "$0")" && pwd)"
 # shellcheck source=gitea-local.sh
 source "$here/gitea-local.sh"
 log() { echo "runners: $*"; }
-# New single-repository CI replaces host-execution runners once the scoped
-# GitHub credential is present. Funnel itself is applied by deploy/bootstrap.
-if [[ -s /etc/credstore/mag-ci-github.token || -e /etc/mag-stack/gitea-ci.enabled ]]; then
-  exec bash "$here/../gitea-ci/install.sh"
-fi
-[[ ! -e /etc/mag-stack/runners.disabled ]] || { log 'disabled'; exit 0; }
+# The Gitea host runner is the merge gate. Do not replace this install with
+# ops/gitea-ci/install.sh: that cutover needs a GitHub credential and used to
+# disable the deploy request path. runners.disabled stops only the optional
+# GitHub runner. gitea-runner.disabled stops the Gitea runner. The deploy
+# request path stays installed either way.
 
 GITEA_RUNNER_VER=5.1.1
 GITEA_RUNNER_SHA=07b7304cafac138152a9d34790c100af9493278ef63f097de47fa16071d768a1
@@ -48,8 +48,11 @@ install -m 0644 "$here/mag-deploy-request.path" /etc/systemd/system/mag-deploy-r
 restart_gitea=0
 
 
-# Gitea runner
-if [[ -x /usr/local/bin/gitea && -r /etc/gitea/app.ini ]] && systemctl is-active --quiet gitea.service; then
+# Gitea runner. Register only against loopback after the Actions connect
+# path answers. A public Funnel URL 404s that path.
+if [[ -e /etc/mag-stack/gitea-runner.disabled ]]; then
+  log 'Gitea runner disabled'
+elif [[ -x /usr/local/bin/gitea && -r /etc/gitea/app.ini ]] && systemctl is-active --quiet gitea.service; then
   if ! /usr/local/bin/gitea-runner --version 2>/dev/null | grep -Fq "$GITEA_RUNNER_VER"; then
     tmp="$(mktemp -d /var/tmp/mag-runner.XXXXXXXX)"
     fetch "https://gitea.com/gitea/runner/releases/download/v${GITEA_RUNNER_VER}/gitea-runner-${GITEA_RUNNER_VER}-linux-amd64.xz" "$GITEA_RUNNER_SHA" "$tmp/r.xz"
@@ -133,10 +136,15 @@ fi
 # Optional GitHub runner. A GitHub outage must not skip the Gitea runner enable
 # below. The body is a subshell with its own errexit: `if ! fn` / `fn ||` would
 # otherwise keep going after a checksum mismatch, extract the archive, write
-# .version, and consume the registration token.
+# .version, and consume the registration token. Gitea CI and runners.disabled
+# skip this runner only.
 install_github_runner() (
   set -euo pipefail
   local GH=/var/lib/mag-ghrunner
+  if [[ -e /etc/mag-stack/gitea-ci.enabled || -e /etc/mag-stack/runners.disabled ]]; then
+    log 'GitHub runner skipped'
+    return 0
+  fi
   [[ -s /etc/credstore/mag-github-runner.token || -s $GH/runner/.runner ]] || return 0
   ensure_user mag-ghrunner "$GH"
   if [[ ! -x $GH/runner/config.sh ]] || ! grep -Fq "$GH_RUNNER_VER" "$GH/runner/.version" 2>/dev/null; then
@@ -166,12 +174,12 @@ fi
 
 systemctl daemon-reload
 systemctl enable --now mag-deploy-request.path
-if [[ -e /etc/systemd/system/mag-gitea-runner.service ]]; then
+if [[ ! -e /etc/mag-stack/gitea-runner.disabled && -e /etc/systemd/system/mag-gitea-runner.service ]]; then
   systemctl enable --now mag-gitea-runner.service
   # Restart only on a new binary/config/unit so a running job is not cut off.
   if (( restart_gitea )); then systemctl restart mag-gitea-runner.service; fi
 fi
-if [[ -e /etc/systemd/system/mag-github-runner.service ]]; then
+if [[ ! -e /etc/mag-stack/gitea-ci.enabled && ! -e /etc/mag-stack/runners.disabled && -e /etc/systemd/system/mag-github-runner.service ]]; then
   systemctl enable --now mag-github-runner.service
 fi
-log done
+log 'done'

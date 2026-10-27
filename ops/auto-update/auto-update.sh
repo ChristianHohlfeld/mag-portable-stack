@@ -1,32 +1,47 @@
 #!/usr/bin/env bash
-# Runs as root from mag-auto-update.timer. Branch `green` is the newest main
-# commit on which all CI checks passed (.github/workflows/green.yml). If it
-# moved: fast-forward the checkout, build as the checkout owner, then deploy.
-# deploy.sh keeps its backup and automatic rollback. A failed commit is retried
-# once an hour. No network or no `green` yet: nothing happens. no model unit is ever touched.
+# Runs as root from mag-auto-update.timer (and from mag-deploy-request.path).
+# Branch `green` is the newest main commit that passed the Gitea merge gate.
+# If it moved: fast-forward the checkout, build as the checkout owner, then
+# deploy. deploy.sh keeps its backup and automatic rollback. A failed commit is
+# retried once an hour. Gitea unreachable, or no `green` yet: nothing happens.
+# No model unit is ever touched. GitHub is not consulted.
 set -euo pipefail
-ROOT="$(cd -- "$(dirname "$0")/../.." && pwd)"
-STATE=/var/lib/mag-stack/auto-update
-log() { echo "auto-update: $*"; }
-[[ $EUID == 0 ]] || { log 'root required' >&2; exit 1; }
-[[ ! -e /etc/mag-stack/auto-update.disabled ]] || { log 'disabled'; exit 0; }
-install -d -m 0755 /run/lock "$STATE"
-exec 9>/run/lock/mag-auto-update.lock
-flock -n 9 || { log 'another run is active'; exit 0; }
-OWNER="$(stat -c %U "$ROOT")"
-as() { runuser -u "$OWNER" -- "$@"; }
+SCRIPT_ROOT="$(cd -- "$(dirname "$0")/../.." && pwd)"
+log() { echo "auto-update: $*" >&2; }
+
+if [[ ${MAG_AUTO_UPDATE_TEST:-} == 1 ]]; then
+  ROOT="${MAG_AUTO_UPDATE_ROOT:?}"
+  STATE="${MAG_AUTO_UPDATE_STATE:?}"
+  as() { "$@"; }
+else
+  ROOT="$SCRIPT_ROOT"
+  STATE=/var/lib/mag-stack/auto-update
+  [[ $EUID == 0 ]] || { log 'root required' >&2; exit 1; }
+  [[ ! -e /etc/mag-stack/auto-update.disabled ]] || { log 'disabled'; exit 0; }
+  install -d -m 0755 /run/lock "$STATE"
+  exec 9>/run/lock/mag-auto-update.lock
+  flock -n 9 || { log 'another run is active'; exit 0; }
+  OWNER="$(stat -c %U "$ROOT")"
+  as() { runuser -u "$OWNER" -- "$@"; }
+fi
+
 branch="$(as git -C "$ROOT" symbolic-ref --short HEAD 2>/dev/null || true)"
 [[ "$branch" == main ]] || { log "checkout is on '$branch', not main; skipping"; exit 0; }
 [[ -z "$(as git -C "$ROOT" status --porcelain --untracked-files=no)" ]] || { log 'local changes in checkout; skipping'; exit 0; }
-as git -C "$ROOT" fetch -q origin green 2>/dev/null || { log 'origin/green not reachable yet; nothing to do'; exit 0; }
-new="$(as git -C "$ROOT" rev-parse origin/green)"
+ref="$(as bash "$SCRIPT_ROOT/ops/ci/fetch-gitea-green.sh" --green-only "$ROOT")" || { log 'gitea green not reachable yet; nothing to do'; exit 0; }
+new="$(as git -C "$ROOT" rev-parse "$ref")"
 [[ "$new" != "$(cat "$STATE/deployed-sha" 2>/dev/null || true)" ]] || exit 0
 if [[ "$new" == "$(cat "$STATE/failed-sha" 2>/dev/null || true)" && -z "$(find "$STATE/failed-sha" -mmin +60)" ]]; then
-  log "$new failed less than an hour ago; retrying later"; exit 0
+  log "$new failed less than an hour ago; retrying later"
+  exit 0
 fi
 fail() { echo "$new" > "$STATE/failed-sha"; log "FAILED at $1 for $new"; exit 1; }
 log "updating to $new"
-as git -C "$ROOT" merge -q --ff-only origin/green || fail merge
+as git -C "$ROOT" merge -q --ff-only "$ref" || fail merge
 [[ "$(as git -C "$ROOT" rev-parse HEAD)" == "$new" ]] || { log 'checkout is ahead of green; skipping'; exit 0; }
+if [[ ${MAG_AUTO_UPDATE_TEST:-} == 1 ]]; then
+  printf '%s\n' "$new"
+  exit 0
+fi
 # Continue with the freshly merged code; the lock (fd 9) is inherited.
 exec bash "$ROOT/ops/auto-update/apply.sh" "$new"

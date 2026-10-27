@@ -61,7 +61,7 @@ units=(
 )
 for u in "${units[@]}"; do
   if [[ -e /etc/mag-stack/gitea-ci.enabled ]];then
-    case "$u" in mag-gitea-runner.service|mag-github-runner.service|mag-deploy-request.path) continue;;esac
+    case "$u" in mag-github-runner.service) continue;;esac
   fi
   systemctl is-active --quiet "$u" || continue
   state="$(systemctl is-enabled "$u" 2>/dev/null || true)"

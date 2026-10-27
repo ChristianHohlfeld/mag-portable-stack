@@ -96,10 +96,9 @@ for unit in "$root"/ops/gitea-ci/*.{service,socket,slice,path,timer};do
  [[ $base == mag-ci-guest-runner.service || $base == mag-ci-cert.service || $base == mag-ci-cert.timer ]] && continue
  install -m 0644 "$unit" /etc/systemd/system/
 done
-# Disable the old host-execution paths. Never grant a job mag-deploy membership
-# or a way to trigger root auto-update. The normal green timer remains intact.
-systemctl disable --now mag-gitea-runner.service mag-github-runner.service mag-deploy-request.path 2>/dev/null || true
-touch /etc/mag-stack/runners.disabled
+# The host Gitea runner is the merge gate: it may write the deploy request.
+# The GitHub runner is not part of promotion or deploy.
+systemctl disable --now mag-github-runner.service 2>/dev/null || true
 systemctl daemon-reload
 systemctl disable --now mag-ci-cert.timer mag-ci-cert.service >/dev/null 2>&1 || true
 systemctl enable --now mag-ci-network.service mag-ci-git.socket

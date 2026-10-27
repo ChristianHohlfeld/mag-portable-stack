@@ -4,6 +4,7 @@
 #include "json.hpp"
 #include "room_model.hpp"
 #include "pho_codec.hpp"
+#include "pho_live.hpp"
 #include "browser_recovery.hpp"
 #include "browser_events.hpp"
 #include "pages.hpp"
@@ -2446,6 +2447,25 @@ static long pho_tokens(int idx,const std::string &text) {
       !mj::parse(reply,parsed))return -1;
   auto tokens=parsed.find("tokens");return tokens&&tokens->isArr()?(long)tokens->asArr().size():-1;
 }
+// Compress only when a room message first enters this bot's prompt wire.
+// Its persisted copy remains byte-identical on every later cached request.
+// Room/UI records, tool payloads, and the stable system prefix are untouched.
+static std::string pho_live_room_line(int idx,const Val &m,bool enabled) {
+  const auto raw=render_room_line(m);
+  if(!enabled||!envi("MAG_ROOM_PHO_LIVE",0))return raw;
+  const auto role=mag::str(m,"role");
+  if(role!="user"&&role!="assistant")return raw;
+  if(m.find("file")||m.find("files")||m.find("tool_calls")||
+     m.find("run")||m.find("steps")||m.find("interrupted"))return raw;
+  const auto original=mag::str(m,"content");
+  const auto d=pho::live_encode(original,[idx](const std::string &s){return pho_tokens(idx,s);});
+  if(!d.accepted)return raw;
+  auto copy=m;copy["content"]=d.text;
+  std::cerr<<"pho-compress scope=live model="<<bot_model_id(idx)
+           <<" tokens_before="<<d.before<<" tokens_after="<<d.after
+           <<" saved="<<(d.before-d.after)<<std::endl;
+  return render_room_line(copy);
+}
 static int pho_words(const std::string &s) {
   int n=0;bool in=false;
   for(unsigned char c:s) {
@@ -2584,6 +2604,16 @@ static std::string pho_initial_transcript(int idx,WireSession &w,
     auto copy=m;copy["content"]=compressed;
     text.replace(pos,line.size(),render_room_line(copy));
   }
+  // The loop above compacts only completed turns older than the recent
+  // window. The pending user turn has not been sent. Apply the live gate
+  // once, before this transcript is stored. Later requests resend these
+  // bytes and must not encode them again.
+  if(!room.empty()&&mag::str(room.back(),"role")=="user") {
+    const auto line=render_room_line(room.back());
+    const auto at=text.rfind(line);
+    if(at!=std::string::npos&&(at==0||text[at-1]=='\n'))
+      text.replace(at,line.size(),pho_live_room_line(idx,room.back(),w.compression));
+  }
   return text;
 }
 static void pho_rollover(int idx,std::vector<Val> &messages) {
@@ -2692,7 +2722,10 @@ static std::vector<Val> wire_messages(int idx, const std::string &system,
     // This bot's response is already present as its original assistant/tool
     // wire messages, including reasoning; do not reformat it as room prose.
     if(mag::str(m,"role")=="assistant"&&mag::str(m,"bot")==bot)continue;
-    input+=render_room_line(m);
+    // First insertion only (`seen` above). A live decision is stored with
+    // this append; the next turn resends it unchanged so the prefix cache
+    // stays valid.
+    input+=pho_live_room_line(idx,m,w.compression);
   }
   const auto plugins=mcp_prompt_notes(idx),files=file_manifest();
   if(!first_hi && (w.memory!=memory || initial)) {input+="\n"+memory;w.memory=memory;}

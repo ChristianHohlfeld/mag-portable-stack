@@ -4296,6 +4296,7 @@ class PhoCompress(unittest.TestCase):
   log=self.tmp_path.joinpath('server.log').read_text()
   for model in ('deepseek-v4-flash-0731','qwen3.8-flash-next-uncensored'):
    self.assertIn('pho-compress scope=history model='+model+' tokens_before=',log)
+  self.assertNotIn('scope=live',log,'live compression stays off unless MAG_ROOM_PHO_LIVE=1')
  def test_03b_missing_tokenizer_keeps_original_and_warm_slot(self):
   b=next(iter(self.bots().values()));previous=None;Model.tokenizer_fail=True
   marker='TokenizerFallback'+str(time.monotonic_ns())
@@ -4453,6 +4454,78 @@ class PhoCompress(unittest.TestCase):
    if 'scope=history' in line and 'saved=' in line:
     saves.append(int(line.split('saved=',1)[1].split()[0]))
   self.assertTrue(any(s>0 for s in saves),'aged history must log a positive token saving')
+
+ def test_09_live_compacts_new_prose_once_and_keeps_the_prefix(self):
+  # Single-line prose the byte tokenizer accepts (>=15% and >=4). Quotes,
+  # code and a line break must stay verbatim. The room record stays original.
+  news=('Heute hat der Bundestag den Entwurf zur Datenspeicherung beschlossen. '
+        'Kritiker warnen vor einem Eingriff in die Privatsphäre. Bitte die wichtige '
+        'Frage zur Architektur und zur Kompression der Sprache beantworten.')
+  other_prose=('Bitte prüfe die bestehende Änderung der Arbeit und gib eine klare Antwort '
+               'mit einem Beispiel für die Bedeutung der Aufgabe. Der Nutzer soll die Anfrage '
+               'behalten und die Aufmerksamkeit auf den Anfang der Änderung legen. Die Frage '
+               'zur Architektur der Kompression bleibt wichtig und die Sprache soll verständlich bleiben.')
+  self.stop();type(self).env['MAG_ROOM_PHO_LIVE']='1';self.start()
+  ids=list(self.bots());b=ids[0];other=ids[1]
+  mark_tok=len(Model.tokenizer_requests)
+  first=self.send(b,news)
+  self.assertEqual(len(Model.tokenizer_requests)-mark_tok,2,'an accepted live line tokenizes original and candidate once')
+  users=[m for m in first['messages'] if m.get('role')=='user']
+  self.assertIn('today bund',users[-1]['content'])
+  self.assertNotIn('Bundestag',users[-1]['content'])
+  room=self.request('/api/state')['room']
+  self.assertTrue(any(news in (m.get('content') or '') for m in room))
+  self.assertFalse(any('today bund' in (m.get('content') or '') for m in room))
+  self.stop()
+  stored=json.loads(self.state.joinpath('room.json').read_text())
+  stored.append({'id':'pho-live-other','role':'assistant','name':'Andere','bot':other,
+                 'content':other_prose,'ts':1,'display_ms':1})
+  self.state.joinpath('room.json').write_text(json.dumps(stored))
+  self.start()
+  mark=len(Model.cache_records);mark_tok=len(Model.tokenizer_requests)
+  second=self.send(b,'Hallo')
+  self.assertGreaterEqual(len(Model.tokenizer_requests)-mark_tok,2,'the other bot line is tokenized when it first enters the wire')
+  self.assert_warm_prefix(first,second,Model.cache_records[mark])
+  latest=[m for m in second['messages'] if m.get('role')=='user'][-1]['content']
+  self.assertIn('Hallo',latest)
+  self.assertIn('attention',latest)
+  self.assertNotIn('Aufmerksamkeit',latest)
+  self.assertNotIn(other_prose,latest)
+  room=self.request('/api/state')['room']
+  self.assertTrue(any(other_prose in (m.get('content') or '') for m in room))
+  mark=len(Model.cache_records);mark_tok=len(Model.tokenizer_requests)
+  code='```cpp\nconst char *URL = "https://github.com/o/r"; int id = 001234;\n```'
+  coded=self.send(b,'Bitte Code exakt aufbewahren: '+code)
+  self.assertEqual(len(Model.tokenizer_requests)-mark_tok,0,'code must not call the tokenizer')
+  self.assert_warm_prefix(second,coded,Model.cache_records[mark])
+  self.assertIn(code,[m for m in coded['messages'] if m.get('role')=='user'][-1]['content'])
+  mark=len(Model.cache_records);mark_tok=len(Model.tokenizer_requests)
+  quoted='"Zitat" '+news
+  q=self.send(b,quoted)
+  self.assertEqual(len(Model.tokenizer_requests)-mark_tok,0,'quoted prose must not call the tokenizer')
+  self.assert_warm_prefix(coded,q,Model.cache_records[mark])
+  self.assertIn('Bundestag',[m for m in q['messages'] if m.get('role')=='user'][-1]['content'])
+  mark=len(Model.cache_records)
+  multi=news+'\n'+news
+  m=self.send(b,multi)
+  self.assert_warm_prefix(q,m,Model.cache_records[mark])
+  self.assertIn(news,[m for m in m['messages'] if m.get('role')=='user'][-1]['content'])
+  Model.tokenizer_fail=True
+  try:
+   mark=len(Model.cache_records)
+   failed=self.send(b,news+' Tokenizer aus.')
+   self.assert_warm_prefix(m,failed,Model.cache_records[mark])
+   self.assertIn('Bundestag',[m for m in failed['messages'] if m.get('role')=='user'][-1]['content'])
+  finally:Model.tokenizer_fail=False
+  self.request('/api/bot-settings',{'bots':[b],'pho_compress':False},method='PUT')
+  mark=len(Model.cache_records);mark_tok=len(Model.tokenizer_requests)
+  off=self.send(b,news+' Schalter aus.')
+  self.assertEqual(len(Model.tokenizer_requests)-mark_tok,0,'PhO off skips the live tokenizer')
+  self.assert_warm_prefix(failed,off,Model.cache_records[mark])
+  self.assertIn('Schalter aus.',[m for m in off['messages'] if m.get('role')=='user'][-1]['content'])
+  self.assertIn('Bundestag',[m for m in off['messages'] if m.get('role')=='user'][-1]['content'])
+  log=self.tmp_path.joinpath('server.log').read_text()
+  self.assertIn('pho-compress scope=live model=',log)
 
 class TwoAgentsAtStart(unittest.TestCase):
  """A legacy one-bot agents.json still starts as DeepSeek plus Qwen.

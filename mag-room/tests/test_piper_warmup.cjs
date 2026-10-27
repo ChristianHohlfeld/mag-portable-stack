@@ -48,7 +48,7 @@ function setup(warmOk, opts = {}) {
     getElementById(id) { return id === 'language' ? {value: opts.language || 'de'} : null; },
     dispatchEvent() {},
   };
-  const fetch = async () => ({ok: true, json: async () => ({dir: 'tts-x', voices: [{id: 'thorsten', label: 'Thorsten', model: 'de_DE-thorsten-high.onnx'}]})});
+  const fetch = async () => ({ok: true, json: async () => ({dir: 'tts-x', voices: [{id: 'thorsten', label: 'Thorsten', model: 'de_DE-thorsten-medium.onnx'}]})});
   vm.runInNewContext(source, {window, document, navigator: {language: opts.navLang || 'de-DE'}, Worker: FakeWorker, fetch,
     CustomEvent: class {}, localStorage: {getItem(k) { return k in store ? store[k] : null; }, setItem(k, v) { store[k] = String(v); }}, setTimeout: (f) => timers.push(f),
     SpeechSynthesisUtterance: window.SpeechSynthesisUtterance});
@@ -69,7 +69,7 @@ const tick = () => new Promise(r => setTimeout(r, 0));
   assert.equal(t.timers.length, 1, 'warm-up deferred after load');
   t.timers.shift()();
   await tick(); await tick();
-  assert.deepEqual(t.posted.map(m => [m.type, m.model]), [['warm', 'de_DE-thorsten-high.onnx']], 'Thorsten warmed in background');
+  assert.deepEqual(t.posted.map(m => [m.type, m.model]), [['warm', 'de_DE-thorsten-medium.onnx']], 'Thorsten warmed in background');
 
   // 2) tap while loading -> busy button, no system voice; then Piper speaks
   const read = t.window.magMessageAudio;
@@ -83,7 +83,7 @@ const tick = () => new Promise(r => setTimeout(r, 0));
   for (let i = 0; i < 6; i++) await tick();
   assert.equal(t.spoken.length, 0, 'Piper, not the system voice, speaks');
   assert(t.played.length >= 1, 'Piper audio played');
-  assert(t.posted.some(m => m.type === 'speak' && m.model === 'de_DE-thorsten-high.onnx'));
+  assert(t.posted.some(m => m.type === 'speak' && m.model === 'de_DE-thorsten-medium.onnx'));
   assert.equal(b.getAttribute('aria-busy'), 'false');
 
   // 3) Piper failure -> neural system voice, never espeak
@@ -103,7 +103,7 @@ const tick = () => new Promise(r => setTimeout(r, 0));
   t = setup(true, {language: 'auto', navLang: 'en-US'});
   t.events.get('load')(); t.timers.shift()();
   await tick(); await tick();
-  assert.deepEqual(t.posted.map(m => m.model), ['de_DE-thorsten-high.onnx'], 'Thorsten warmed on an English device');
+  assert.deepEqual(t.posted.map(m => m.model), ['de_DE-thorsten-medium.onnx'], 'Thorsten warmed on an English device');
   const read3 = t.window.magMessageAudio;
   const d = t.makeButton();
   read3.attach(d, 'Ich habe die Seite geöffnet und das Ergebnis ist da', 'voice-3');
@@ -111,7 +111,7 @@ const tick = () => new Promise(r => setTimeout(r, 0));
   t.worker().finishWarm();
   for (let i = 0; i < 6; i++) await tick();
   assert.equal(t.spoken.length, 0, 'no English system voice for German text');
-  assert(t.posted.some(m => m.type === 'speak' && m.model === 'de_DE-thorsten-high.onnx'), 'Piper speaks German text');
+  assert(t.posted.some(m => m.type === 'speak' && m.model === 'de_DE-thorsten-medium.onnx'), 'Piper speaks German text');
   // German without umlauts, still German by default
   read3.stop?.();
   const e = t.makeButton();
@@ -147,6 +147,8 @@ const tick = () => new Promise(r => setTimeout(r, 0));
   g.onclick();
   for (let i = 0; i < 8; i++) await tick();
   assert(t.rates.length >= 1 && t.rates.every(v => v === 1.75), 'Piper playbackRate = chosen rate');
+  const speaks = t.posted.filter(m => m.type === 'speak').map(m => m.text);
+  assert.deepEqual(speaks, ['Hallo Chris.', 'Wie geht es dir heute so?'], 'first sentence starts playback; the next is separate');
   t = setup(true, {language: 'en', store: {'mag-tts-rate': '1.5'}});
   const h = t.makeButton();
   t.window.magMessageAudio.attach(h, 'Hello there. '.repeat(30), 'voice-7');
@@ -155,5 +157,23 @@ const tick = () => new Promise(r => setTimeout(r, 0));
   t.window.magMessageAudio.setRate(2);
   t.spoken[0].onend();
   assert.equal(t.spoken[1].rate, 2, 'speed change applies to the next part');
-  console.log('MAG Piper warm-up: background load, loading state, Piper playback, neural-only fallback PASS');
+  // 7) a long sentence is capped so playback does not wait for the whole message
+  t = setup(true);
+  t.events.get('load')(); t.timers.shift()();
+  await tick(); await tick();
+  t.worker().finishWarm();
+  await tick();
+  const read7 = t.window.magMessageAudio;
+  const j = t.makeButton();
+  const long = 'Dies ist ein sehr langer Satz ohne Punkt ' + 'Wort '.repeat(40);
+  read7.attach(j, long, 'voice-8');
+  j.onclick();
+  for (let i = 0; i < 4; i++) await tick();
+  const first = t.posted.find(m => m.type === 'speak');
+  assert(first && first.text.length <= 120, 'first Piper chunk stays within the start cap: ' + (first && first.text));
+  assert(first.text.length < long.length, 'first chunk is not the whole message');
+  const sw = fs.readFileSync(path.join(root, 'mag-room/web/sw.js'), 'utf8');
+  assert(sw.includes('(?:speech|tts)'), 'service worker caches hashed TTS runtime');
+  assert(sw.includes('tts-[a-f0-9]{12}\\/[^/]+\\.onnx'), 'ONNX weights are not copied into the service worker cache');
+  console.log('MAG Piper warm-up: background load, sentence start, Piper playback, neural-only fallback PASS');
 })().catch(e => { console.error(e); process.exit(1); });

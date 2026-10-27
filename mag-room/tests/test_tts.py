@@ -35,14 +35,30 @@ class TTS(unittest.TestCase):
     self.assertEqual(page.evaluate("async()=>(await magMessageAudio.voiceOptions()).map(v=>v.id)"),['system'])
     return
    self.assertEqual(page.evaluate("async()=>(await magMessageAudio.voiceOptions()).map(v=>v.id)"),['thorsten','kerstin','system'])
-   for voice in ('thorsten','kerstin'):
-    n=page.evaluate("""async(voice)=>{const cfg=await (await fetch('/static/tts-config.json')).json();const v=cfg.voices.find(x=>x.id===voice);
+   def measure(voice, text):
+    return page.evaluate("""async({voice,text})=>{const cfg=await (await fetch('/static/tts-config.json')).json();const v=cfg.voices.find(x=>x.id===voice);
       const w=new Worker('/static/'+cfg.dir+'/tts-worker.js');
-      return await new Promise((ok,bad)=>{w.onmessage=e=>{if(e.data.type==='audio')ok([e.data.audio.length,e.data.rate]);if(e.data.type==='error')bad(e.data.error)};
-        w.postMessage({type:'speak',id:1,text:'Hallo Chris, das ist die neue Vorlesestimme.',model:v.model})})}""",voice)
-    self.assertGreater(n[0],n[1]*1.0,voice)  # more than one second of audio
+      const once=pred=>new Promise((ok,bad)=>{const on=e=>{if(e.data.type==='error'){w.removeEventListener('message',on);bad(new Error(e.data.error))}
+        else if(pred(e.data)){w.removeEventListener('message',on);ok(e.data)}};w.addEventListener('message',on)});
+      const warmP=once(m=>m.type==='ready'); const tWarm=performance.now();
+      w.postMessage({type:'warm',id:1,model:v.model}); await warmP; const warmMs=performance.now()-tWarm;
+      const audioP=once(m=>m.type==='audio'&&m.id===2); const t0=performance.now();
+      w.postMessage({type:'speak',id:2,text,model:v.model}); const audio=await audioP;
+      return {samples:audio.audio.length,rate:audio.rate,synthMs:audio.synthMs,wallMs:performance.now()-t0,warmMs};
+    }""", {'voice': voice, 'text': text})
+   sentence='Hallo Chris, das ist die neue Vorlesestimme.'
+   for voice in ('thorsten','kerstin'):
+    n=measure(voice, sentence)
+    self.assertGreater(n['samples'], n['rate']*1.0, voice)  # more than one second of audio
+    self.assertIsInstance(n['synthMs'], int)
+    self.assertLess(n['wallMs'], 20000, voice)
+    print('TTS %s hot-start %.0f ms (synth %s ms, warm %.0f ms, audio %.2f s)'%(
+      voice, n['wallMs'], n['synthMs'], n['warmMs'], n['samples']/n['rate']))
+   long=measure('thorsten', 'Dies ist ein längerer Absatz ohne Punkt. '*8)
+   print('TTS thorsten paragraph hot-start %.0f ms (synth %s ms, audio %.2f s)'%(
+     long['wallMs'], long['synthMs'], long['samples']/long['rate']))
    cached=page.evaluate("async()=>(await (await caches.open('mag-tts-v1')).keys()).map(r=>r.url.split('/').pop())")
-   self.assertIn('de_DE-thorsten-high.onnx',cached)
+   self.assertIn('de_DE-thorsten-medium.onnx',cached)
    self.assertEqual(errors,[])
   finally:
    pwa.stop_room(proc,log,model);browser.close();pw.stop()

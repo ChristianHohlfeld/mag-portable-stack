@@ -771,15 +771,24 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
       error_json(fd, 404, "Unknown asset");
       return;
     }
+    const std::string full = STATIC_DIR + "/" + name;
+    const auto headers = std::vector<std::pair<std::string, std::string>>{
+        {"Cache-Control", asset_cache_control(r.query, name)},
+        {"Cross-Origin-Embedder-Policy", "require-corp"},
+        {"Cross-Origin-Resource-Policy", "same-origin"}};
+    // Voices and STT weights stay on disk. Reading them into a string allocated
+    // the whole model inside the room process on a cold download.
+    if (hashed_speech_asset(name)) {
+      if (!send_file_response(fd, full, mime_for(name), headers))
+        error_json(fd, 404, "Unknown asset");
+      return;
+    }
     bool ok;
-    std::string data = read_file(STATIC_DIR + "/" + name, &ok);
+    std::string data = read_file(full, &ok);
     if (!ok)
       error_json(fd, 404, "Unknown asset");
     else
-      send_response(fd, 200, mime_for(name), data,
-                    {{"Cache-Control", asset_cache_control(r.query, name)},
-                     {"Cross-Origin-Embedder-Policy", "require-corp"},
-                     {"Cross-Origin-Resource-Policy", "same-origin"}});
+      send_response(fd, 200, mime_for(name), data, headers);
     return;
   }
   if (m == "GET" && path.rfind("/api/file/", 0) == 0) {

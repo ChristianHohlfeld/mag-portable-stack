@@ -19,6 +19,7 @@
 #include <poll.h>
 #include <signal.h>
 #include <stdexcept>
+#include <sys/sendfile.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -5841,6 +5842,54 @@ static void send_response(
     h += e.first + ": " + e.second + "\r\n";
   h += "\r\n";
   write_all(fd, h + body);
+}
+// Hashed speech/TTS weights are tens of megabytes. Stream them from disk so a
+// download never copies the model into the room process. nginx normally
+// serves these itself; this is the path when a request still reaches magroom.
+static bool send_file_response(
+    int fd, const std::string &path, const std::string &ctype,
+    const std::vector<std::pair<std::string, std::string>> &extra) {
+  int file = open(path.c_str(), O_RDONLY | O_CLOEXEC);
+  if (file < 0)
+    return false;
+  struct stat st {};
+  if (fstat(file, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size < 0) {
+    close(file);
+    return false;
+  }
+  bool cache_set = false;
+  for (auto &e : extra)
+    if (lc(e.first) == "cache-control")
+      cache_set = true;
+  std::string h = "HTTP/1.1 200 OK\r\nContent-Type: " + ctype +
+                  "\r\nContent-Length: " + std::to_string((long long)st.st_size) +
+                  "\r\nX-Content-Type-Options: nosniff\r\n";
+  if (!cache_set)
+    h += "Cache-Control: no-store\r\n";
+  h += "Connection: close\r\n";
+  for (auto &e : extra)
+    h += e.first + ": " + e.second + "\r\n";
+  h += "\r\n";
+  timeval slow{180, 0};
+  setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &slow, sizeof(slow));
+  if (write_all(fd, h) < 0) {
+    close(file);
+    return true;
+  }
+  off_t off = 0;
+  while (off < st.st_size) {
+    size_t chunk = (size_t)std::min<off_t>(st.st_size - off, 1 << 20);
+    ssize_t n = sendfile(fd, file, &off, chunk);
+    if (n < 0) {
+      if (errno == EINTR)
+        continue;
+      break;
+    }
+    if (n == 0)
+      break;
+  }
+  close(file);
+  return true;
 }
 static void send_json(int fd, int code, const std::string &js) {
   send_response(fd, code, "application/json; charset=utf-8", js);

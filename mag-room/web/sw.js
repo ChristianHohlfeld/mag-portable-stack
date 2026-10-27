@@ -29,9 +29,9 @@ self.addEventListener('message', (event) => {
 });
 
 function versionedStatic(url) {
-  // Content-hashed speech folders have immutable paths, including their internal
-  // ESM imports and the WASM binary (which cannot inherit a ?v query).
-  if (/^\/static\/speech-[a-f0-9]{12}\/[^/]+$/.test(url.pathname)) return true;
+  // Content-hashed speech and read-aloud folders have immutable paths, including
+  // their internal ESM imports and WASM binaries (which cannot inherit a ?v query).
+  if (/^\/static\/(?:speech|tts)-[a-f0-9]{12}\/[^/]+$/.test(url.pathname)) return true;
   if (!url.searchParams.has('v'))
     return false;
   return url.pathname.startsWith('/static/') ||
@@ -80,9 +80,11 @@ self.addEventListener('fetch', (event) => {
     event.respondWith(networkShell(event.request));
     return;
   }
-  // Upstream Moonshine caches immutable model files in its own Cache API.
-  // Do not duplicate 120+ MB model weights in the service worker cache.
+  // Moonshine and Piper keep weights in their own Cache Storage.
+  // Do not duplicate those 60–120 MB files in the service worker cache.
   if (/^\/static\/speech-[a-f0-9]{12}\/[^/]+\.(?:ort|bin|json)$/.test(url.pathname))
+    return;
+  if (/^\/static\/tts-[a-f0-9]{12}\/[^/]+\.onnx$/.test(url.pathname))
     return;
   if (versionedStatic(url))
     event.respondWith(cacheFirst(event.request));

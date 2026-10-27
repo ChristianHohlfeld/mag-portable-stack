@@ -1,0 +1,13 @@
+large tools :: python3 mag-room/tests/test_large_tools.py
+@120 hang invariants :: python3 mag-room/tests/test_hang_invariants.py
+@90 hang deadlines :: bash ops/tests/test-hang-deadlines.sh
+agent core :: python3 mag-room/tests/test_agent_core.py
+numa swap :: python3 ops/numa/tests/test_numa_swap.py
+room control :: python3 mag-room/tests/test_room_control.py
+tailscale auth :: python3 mag-room/tests/test_tailscale_auth.py
+native gateway :: python3 ops/audit/tests/test_native_gateway.py
+qwen :: bash ops/qwen/tests/test-qwen.sh
+ornith :: bash ops/ornith/tests/test-ornith.sh
+whois deploy :: python3 mag-room/tests/test_whois_deploy.py
+deploy syntax :: bash -n ops/deploy.sh ops/deploy-guard.sh ops/rollback.sh ops/private-access/*.sh
+s23 :: python3 devices/s23/tests/test_s23ctl.py

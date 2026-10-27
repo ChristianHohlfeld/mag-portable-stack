@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+# mag-test-timeout: 180
+if [ -z "${MAG_TEST_DEADLINE_ARMED:-}" ]; then
+  export MAG_TEST_DEADLINE_ARMED=1
+  exec timeout --kill-after=5s 180s bash "$0" "$@"
+fi
 # Static unit/start checks + cutover success/rollback paths with mocked systemctl/curl.
 set -euo pipefail
 refute(){ if "$@"; then echo "unexpected match: $*" >&2; exit 1; fi; }
@@ -110,6 +115,7 @@ SH
   local SRC=$T/repo
   mkdir -p "$SRC/ops/qwen" "$SRC/ops/audit/systemd" "$SRC/build"
   cp -a ops/ornith "$SRC/ops/"
+  cp ops/deploy-guard.sh "$SRC/ops/deploy-guard.sh"
   cp ops/qwen/runtime.sha "$SRC/ops/qwen/"
   cp build/mag-audit-gateway "$SRC/build/"
   printf '[Service]\nEnvironment=MAG_MODEL_ORNITH_PORTS=8191:0,8192:0,8191:1,8192:1\n' > "$SRC/ops/audit/systemd/mag-audit-gateway.service"

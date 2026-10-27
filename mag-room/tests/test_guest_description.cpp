@@ -1,3 +1,4 @@
+#include "mag_deadline.hpp"
 // Real C++17 unit regressions for Tailscale auth-key descriptions and logs.
 // No network, OAuth credential, Python, Node or server process required.
 #include "../native/guest_key_description.hpp"
@@ -22,6 +23,7 @@ static bool allowed_description(std::string_view value) {
 }
 
 int main() {
+  mag_test_deadline(60); // mag-test-timeout: 60
   try {
     struct Case { std::string name, expected; };
     const std::vector<Case> cases{

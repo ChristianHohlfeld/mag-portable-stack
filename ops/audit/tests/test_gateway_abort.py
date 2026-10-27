@@ -1,5 +1,14 @@
 """Gateway bricht die Anfrage an llama ab, wenn der Client die Verbindung schließt (Runde 3.6).
 Fake-Upstream misst, wann seine Verbindung geschlossen wird. Ohne Netz, ohne llama."""
+# mag-test-timeout: 180
+import pathlib as _mag_path
+import sys as _mag_sys
+_mag_root = _mag_path.Path(__file__).resolve()
+while _mag_root != _mag_root.parent and not (_mag_root / 'ops/ci/mag_deadline.py').is_file():
+    _mag_root = _mag_root.parent
+_mag_sys.path.insert(0, str(_mag_root / 'ops/ci'))
+import mag_deadline as _mag_deadline
+_mag_deadline.arm(180)
 import json, os, pathlib, socket, subprocess, sys, tempfile, threading, time, unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[3]

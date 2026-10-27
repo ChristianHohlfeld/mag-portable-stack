@@ -2,6 +2,8 @@
 # Called by .github/workflows/green.yml on every push to main. Waits until all
 # other checks on the newest main commit have finished, then moves `green`
 # there if every one succeeded (or was skipped). PROMOTE_WAIT=0 checks once.
+# The poll starts immediately: a fixed sleep before the first request only
+# delayed a green main. PROMOTE_SLEEP is the gap between polls (default 5s).
 #
 # Gitea publishes the ten required contexts as GitHub commit statuses. When any
 # of those contexts is present, that status set is authoritative for those
@@ -14,8 +16,7 @@ echo "promoted=false" >> "$out"
 wait="${PROMOTE_WAIT:-1}"
 sha="$(git rev-parse origin/main)"
 deadline=$((SECONDS + 5400))
-step="${PROMOTE_SLEEP:-30}"
-if (( wait )); then sleep $((step * 2)); fi
+step="${PROMOTE_SLEEP:-5}"
 script_root=$(cd -- "$(dirname "$0")/../.." && pwd)
 required=$(jq -c '.contexts' "$script_root/ops/gitea-ci/policy.json")
 [[ $(jq 'length' <<<"$required") == 10 ]] || { echo 'check policy mismatch' >&2; exit 1; }

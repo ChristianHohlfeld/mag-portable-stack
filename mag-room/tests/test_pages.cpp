@@ -1,3 +1,4 @@
+#include "mag_deadline.hpp"
 #include "../native/pages.hpp"
 using Val=mj::Val;
 #include "../native/pages_tools.hpp"
@@ -44,6 +45,7 @@ static bool throws(const std::function<void()>& f) {
   try{f();return false;}catch(const std::exception&){return true;}
 }
 int main() {
+  mag_test_deadline(60); // mag-test-timeout: 60
   using namespace magpages;
   REQUIRE(slug("alice/hello")=="hello--alice");
   REQUIRE(slug("alice/my_repo")!=slug("alice/my-repo"));

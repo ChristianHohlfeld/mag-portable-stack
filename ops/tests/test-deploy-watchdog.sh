@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+# mag-test-timeout: 180
+if [ -z "${MAG_TEST_DEADLINE_ARMED:-}" ]; then
+  export MAG_TEST_DEADLINE_ARMED=1
+  exec timeout --kill-after=5s 180s bash "$0" "$@"
+fi
 # A hanging probe must not keep /run/lock/mag-private-deploy.lock. The deploy
 # watchdog kills that process group at the deadline and the EXIT/rollback path
 # still runs. Does not start mag-llm.

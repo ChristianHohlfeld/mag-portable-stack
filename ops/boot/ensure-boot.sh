@@ -10,13 +10,14 @@ log() { echo "boot: $*"; }
 # (ops/models/retire-deepseek.sh disables it on a healthy Ornith host).
 # Paths are overridable for tests only; production uses the defaults.
 secondary_env=${MAG_SECONDARY_MODEL_ENV:-/etc/mag-stack/secondary-model.env}
+room_env=${MAG_ROOM_MODEL_ENV:-/etc/mag-stack/room-model.env}
 agents_json=${MAG_AGENTS_JSON:-/var/lib/magbot/room/agents.json}
 ipmi_devs=${MAG_IPMI_DEVICES:-/dev/ipmi0 /dev/ipmi/0}
 secondary_unit=
 secondary_units=()
-if [[ -r /etc/mag-stack/room-model.env ]]; then
+if [[ -r $room_env ]]; then
   secondary_unit=mag-llm-ds-node@0.service
-  if grep -Fxq 'MAG_ROOM_MODEL_ID_1=qwen3.8-flash-next-uncensored' /etc/mag-stack/room-model.env; then
+  if grep -Fxq 'MAG_ROOM_MODEL_ID_1=qwen3.8-flash-next-uncensored' "$room_env"; then
     secondary_units=(mag-llm-qwen.service)
     systemctl disable mag-llm-ds-node@1.service >/dev/null 2>&1 || true
   else

@@ -1,3 +1,4 @@
+#include "mag_deadline.hpp"
 #include "../native/browser_recovery.hpp"
 #include <csignal>
 #include <cstdlib>
@@ -41,6 +42,7 @@ static void cleanup(pid_t pid) {
 }
 
 int main() {
+  mag_test_deadline(60); // mag-test-timeout: 60
   char tmp[] = "/tmp/mag-browser-recovery-XXXXXX";
   char *folder = mkdtemp(tmp);
   if (!folder) return 1;

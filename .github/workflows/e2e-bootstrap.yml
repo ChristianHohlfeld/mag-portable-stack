@@ -5,6 +5,14 @@ name: Blank-host bootstrap (e2e)
 # self-hosted MAG runners are unprivileged by design).
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - 'ops/bootstrap.sh'
+      - 'ops/bootstrap-voice.sh'
+      - 'ops/tests/e2e-bootstrap.sh'
+      - '.github/workflows/e2e-bootstrap.yml'
 permissions:
   contents: read
 concurrency:
@@ -16,16 +24,20 @@ jobs:
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
+        timeout-minutes: 10
         with:
           # Full history: the harness bundles HEAD and go build stamps VCS info.
           fetch-depth: 0
       - name: podman
+        timeout-minutes: 20
         run: command -v podman || { sudo apt-get update && sudo apt-get install -y podman; }
       # Locally (sandboxes without container egress) add --host-network on a
       # disposable host; hosted runners give containers their own network.
       - name: Bootstrap a blank Ubuntu 24.04 container and check /readyz
+        timeout-minutes: 100
         run: sudo env MAG_E2E_LOG=/tmp/mag-e2e-bootstrap.log MAG_E2E_MEMORY=12g bash ops/tests/e2e-bootstrap.sh --jobs 4
       - name: Bootstrap log
+        timeout-minutes: 10
         if: always()
         uses: actions/upload-artifact@v4
         with:

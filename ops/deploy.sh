@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # Run as root after building and checking the native source.
 set -euo pipefail
+# shellcheck source=deploy-guard.sh
+source "$(cd -- "$(dirname -- "$0")" && pwd)/deploy-guard.sh"
+mag_deploy_arm_deadline "$@"
 SOURCE="$(cd -- "$(dirname -- "$0")/.." && pwd)"
 RELEASE_ID="${MAG_RELEASE_ID:-$(date -u +%Y%m%dT%H%M%SZ)}"
 RELEASE="/opt/mag-stack/releases/$RELEASE_ID"
@@ -46,7 +49,7 @@ NGINX_SYNC="$SOURCE/ops/private-access/deploy-nginx.sh"
 bash "$NGINX_SYNC" preflight
 # Fail-closed synchronous encrypted snapshot, only AFTER the read-only #36/#38
 # nginx/Whois/Owner preflight and BEFORE any release or service changes.
-systemctl is-enabled --quiet mag-backup-daily.timer || {
+mag_systemctl is-enabled --quiet mag-backup-daily.timer || {
   echo 'Backup not installed/enabled. Run sudo bash ops/backup/install.sh first.' >&2; exit 1;
 }
 # The unit runs the installed copy. Refresh it first so the snapshot is a
@@ -59,7 +62,7 @@ printf '%s\n' "$RELEASE_ID" > /run/mag-backup-release
 chmod 0644 /run/mag-backup-release
 # Retry a failed/stale unit with the current script, but never accept an old
 # VERIFIED marker as proof that this deployment's snapshot succeeded.
-if ! systemctl start mag-backup-deploy.service; then
+if ! mag_systemctl start mag-backup-deploy.service; then
   echo 'Backup unit failed; trying the installed backup script.' >&2
   /usr/local/lib/mag-backup/backup.sh deploy || {
     echo 'Pre-deploy snapshot failed; no release switched.' >&2; exit 1;
@@ -145,13 +148,13 @@ rollback() {
  if [[ -f "$BACKUP/mag-120.service" ]]; then
    cp -a "$BACKUP/mag-120.service" /etc/systemd/system/mag-120.service
  else
-   systemctl disable --now mag-120.service >/dev/null 2>&1 || true
+   mag_systemctl disable --now mag-120.service >/dev/null 2>&1 || true
    rm -f /etc/systemd/system/mag-120.service
  fi
  if [[ -f "$BACKUP/mag-browser-webrtc.service" ]]; then
    cp -a "$BACKUP/mag-browser-webrtc.service" /etc/systemd/system/mag-browser-webrtc.service
  else
-   systemctl disable --now mag-browser-webrtc.service >/dev/null 2>&1 || true
+   mag_systemctl disable --now mag-browser-webrtc.service >/dev/null 2>&1 || true
    rm -f /etc/systemd/system/mag-browser-webrtc.service
  fi
  if [[ -e "$BACKUP/magbot" ]]; then cp -a "$BACKUP/magbot" /usr/local/bin/magbot; else rm -f /usr/local/bin/magbot; fi
@@ -183,11 +186,11 @@ rollback() {
      mv -f /opt/mag-audit/bin/.mag-audit-gateway.restore /opt/mag-audit/bin/mag-audit-gateway
    fi
  fi
- systemctl daemon-reload
- if (( gateway_switched )); then systemctl restart mag-audit-gateway.service || true; fi
- if [[ -f "$BACKUP/mag-120.service" ]]; then systemctl restart mag-120.service; fi
+ mag_systemctl daemon-reload
+ if (( gateway_switched )); then mag_systemctl restart mag-audit-gateway.service || true; fi
+ if [[ -f "$BACKUP/mag-120.service" ]]; then mag_systemctl restart mag-120.service; fi
  if [[ -f "$BACKUP/mag-browser-webrtc.service" ]]; then
-   systemctl restart mag-browser-webrtc.service
+   mag_systemctl restart mag-browser-webrtc.service
  fi
  fi
  rm -f /opt/mag-stack/.current-next
@@ -196,7 +199,7 @@ rollback() {
 deployment_started=0
 room_switched=0
 gateway_switched=0
-# Units are Type=simple: `systemctl restart` returns before the process
+# Units are Type=simple: `mag_systemctl restart` returns before the process
 # listens. Retry a local health URL for up to 30 s, then one strict check.
 wait_http() {
   local i
@@ -268,7 +271,7 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 bash "$NGINX_SYNC" stage
 # Retire the old installer timer before changing its service executable.
-if systemctl cat mag-120-finalize.timer >/dev/null 2>&1; then systemctl disable --now mag-120-finalize.timer; fi
+if mag_systemctl cat mag-120-finalize.timer >/dev/null 2>&1; then mag_systemctl disable --now mag-120-finalize.timer; fi
 room_switched=1
 ln -sfn "$RELEASE" /opt/mag-stack/.current-next
 mv -Tf /opt/mag-stack/.current-next /opt/mag-stack/current
@@ -313,7 +316,7 @@ install -m 0755 "$SOURCE/ops/gitea/bot-rights.sh" /usr/local/sbin/mag-gitea-bot-
 install -d -m 0755 /usr/local/lib/mag-ci
 install -m 0644 "$SOURCE/ops/gitea-ci/admin-session.sh" /usr/local/lib/mag-ci/admin-session.sh
 install -m 0755 "$SOURCE/ops/gitea-ci/bot-auth.sh" /usr/local/sbin/mag-gitea-bot-auth
-if systemctl is-active --quiet gitea.service; then
+if mag_systemctl is-active --quiet gitea.service; then
   /usr/local/sbin/mag-gitea-bot-rights || echo 'WARN: Gitea bot rights not applied' >&2
 fi
 # Qwen host, use exactly two model-pinned bots with separate KVM workspaces.
@@ -322,7 +325,7 @@ if [[ -e /etc/mag-stack/room-model.env || -e /etc/systemd/system/mag-llm-ds-node
   # The layout helper owns its own NUMA1 snapshot, including config and boot state.
   # Stop the drained room while switching so no new turn reaches the old router.
   if (( ! FIRST_INSTALL )); then
-    systemctl stop mag-120.service
+    mag_systemctl stop mag-120.service
     bash "$SOURCE/ops/qwen/layout.sh" apply "$BACKUP"
   fi
   bash "$SOURCE/ops/room/install.sh"
@@ -351,8 +354,8 @@ install -m 0644 "$SOURCE/ops/audit/systemd/mag-audit-gateway.service" /etc/syste
 install -d -m 0755 /opt/mag-audit/bin
 install -m 0755 "$SOURCE/build/mag-audit-gateway" /opt/mag-audit/bin/.mag-audit-gateway.next
 mv -f /opt/mag-audit/bin/.mag-audit-gateway.next /opt/mag-audit/bin/mag-audit-gateway
-systemctl daemon-reload
-systemctl restart mag-audit-gateway.service
+mag_systemctl daemon-reload
+mag_systemctl restart mag-audit-gateway.service
 # Type=simple returns before the new gateway has bound :8080. Use the same
 # bounded readiness retry as the room/RTC smoke checks (also on a blank host).
 gateway_models=$(wait_http http://127.0.0.1:8080/v1/models)
@@ -379,15 +382,15 @@ assert ids == [sys.argv[2]], "gateway exposes retired model"
 ' "$gateway_models" "$required" || { echo 'Gateway model route mismatch; rollback' >&2; exit 1; }
   fi
 fi
-systemctl enable --now mag-agents-network.service
-systemctl restart mag-agents-network.service
-systemctl enable mag-120.service
+mag_systemctl enable --now mag-agents-network.service
+mag_systemctl restart mag-agents-network.service
+mag_systemctl enable mag-120.service
 # Switch nginx while the previous native whois backend is still available.
 # A failed ingress check rolls back BEFORE replacing the running room process.
 # First install (blank host): there is no previous room to answer nginx's
 # whois subrequest, so the new room starts first (rollback disables it).
-if ! systemctl is-active --quiet mag-120.service; then
-  systemctl start mag-120.service
+if ! mag_systemctl is-active --quiet mag-120.service; then
+  mag_systemctl start mag-120.service
   for i in {1..30}; do deploy_run 4 -- curl -fsS --retry 0 --max-time 2 -o /dev/null http://127.0.0.1:8766/readyz && break; sleep 1; done
 fi
 bash "$NGINX_SYNC" activate
@@ -405,9 +408,9 @@ bash "$SOURCE/ops/trust/install-trust.sh"
 if ! deploy_run "${MAG_FREE_MCP_PROBE_TIMEOUT:-40}" -- bash "$SOURCE/ops/trust/probe-free-mcp.sh"; then
   echo 'WARN: free MCP probe failed; not rolling back a healthy room' >&2
 fi
-systemctl restart mag-120.service
-systemctl enable --now mag-browser-webrtc.service
-systemctl restart mag-browser-webrtc.service
+mag_systemctl restart mag-120.service
+mag_systemctl enable --now mag-browser-webrtc.service
+mag_systemctl restart mag-browser-webrtc.service
 # /readyz = Raum bereit (Modellstatus steht im JSON, ist aber kein Rollback-Grund)
 wait_http http://127.0.0.1:8766/readyz
 wait_http http://127.0.0.1:18784/health
@@ -429,12 +432,12 @@ if [[ -d /etc/mag-audit/vm ]]; then
       || echo "WARN: guest trust not applied in $id" >&2
   done < <(/usr/local/bin/magbot status || true)
 fi
-for unit in mag-chat.service pm2-chris.service; do if systemctl cat "$unit" >/dev/null 2>&1; then systemctl disable --now "$unit"; fi; done
-systemctl enable --now mag-stack-check.timer mag-git-gateway.socket
+for unit in mag-chat.service pm2-chris.service; do if mag_systemctl cat "$unit" >/dev/null 2>&1; then mag_systemctl disable --now "$unit"; fi; done
+mag_systemctl enable --now mag-stack-check.timer mag-git-gateway.socket
 install -m 0644 "$SOURCE/ops/boot/mag-cpu-tune.service" /etc/systemd/system/mag-cpu-tune.service
-systemctl daemon-reload
-systemctl enable mag-cpu-tune.service
-systemctl restart mag-cpu-tune.service || echo 'WARN: CPU tuning not applied' >&2
+mag_systemctl daemon-reload
+mag_systemctl enable mag-cpu-tune.service
+mag_systemctl restart mag-cpu-tune.service || echo 'WARN: CPU tuning not applied' >&2
 bash "$NGINX_SYNC" commit
 # Late steps must not roll a switched release back. The deadline stays armed
 # so a hang here still kills child groups and runs deploy_exit.
@@ -447,8 +450,8 @@ bash "$SOURCE/ops/cleanup-legacy.sh" || echo 'WARN: legacy cleanup incomplete (d
 install -m 0755 "$SOURCE/ops/agent-drift.sh" /usr/local/sbin/mag-agent-drift
 install -m 0644 "$SOURCE/ops/mag-agent-drift.service" /etc/systemd/system/mag-agent-drift.service
 install -m 0644 "$SOURCE/ops/mag-agent-drift.timer" /etc/systemd/system/mag-agent-drift.timer
-systemctl daemon-reload
-systemctl enable --now mag-agent-drift.timer || echo 'WARN: agent drift timer not enabled' >&2
+mag_systemctl daemon-reload
+mag_systemctl enable --now mag-agent-drift.timer || echo 'WARN: agent drift timer not enabled' >&2
 # Unreferenced half-created bot VMs only. Does not restart a model unit.
 bash /usr/local/sbin/mag-agent-drift || echo 'WARN: agent drift check incomplete (deploy itself succeeded)' >&2
 # Tailnet name for each bot VM. No-op until the one-time wildcard cert exists.

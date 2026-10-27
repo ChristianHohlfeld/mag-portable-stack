@@ -12,8 +12,12 @@ NEW=mag-llm-qwen.service
 fail() { echo "Qwen cutover: $*" >&2; exit 4; }
 [[ $EUID == 0 ]] || fail "root required"
 [[ $ACTION == check || $ACTION == apply || $ACTION == resume || $ACTION == rollback || $ACTION == status ]] || fail "usage: cutover.sh check|apply|resume|rollback|status"
-exec 8>/run/lock/mag-private-deploy.lock
-flock -n 8 || fail "MAG deploy/cutover already in progress"
+# shellcheck source=../deploy-guard.sh
+source "$ROOT/ops/deploy-guard.sh"
+export MAG_DEPLOY_LOCK=/run/lock/mag-private-deploy.lock
+export MAG_DEPLOY_LOCK_MESSAGE='MAG deploy/cutover already in progress'
+export MAG_DEPLOY_LOCK_EXIT=4
+mag_deploy_lock "$@"
 health() { curl --noproxy '*' -fsS -o /dev/null --max-time 5 "http://127.0.0.1:$1/health"; }
 pid() { systemctl show -p MainPID --value "$1" 2>/dev/null || true; }
 wait_health() {

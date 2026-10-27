@@ -1,21 +1,37 @@
 name: Screenshot paste browser emulation
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - 'mag-room/web/**'
+      - 'mag-room/tests/test_image_paste.py'
+      - 'mag-room/tests/test_memory_ui.py'
+      - 'mag-room/tests/test_type_to_focus.py'
+      - '.github/workflows/image-paste.yml'
 jobs:
   chromium:
+    timeout-minutes: 30
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+        timeout-minutes: 10
       - uses: actions/setup-python@v5
+        timeout-minutes: 10
         with:
           python-version: '3.12'
       - name: Install Chromium emulation
+        timeout-minutes: 20
         run: |
           python -m pip install playwright
           python -m playwright install --with-deps chromium
       - name: Test screenshot paste at 375 390 412 and desktop
+        timeout-minutes: 15
         run: python mag-room/tests/test_image_paste.py
       - name: Memories dialog UI (mobile and desktop)
+        timeout-minutes: 15
         run: python mag-room/tests/test_memory_ui.py
       - name: Type anywhere goes to the composer (desktop and phones)
+        timeout-minutes: 15
         run: python mag-room/tests/test_type_to_focus.py

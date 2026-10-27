@@ -15,9 +15,11 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
+        timeout-minutes: 10
         with:
           persist-credentials: false
       - name: Verify tested release target and publish once
+        timeout-minutes: 15
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}

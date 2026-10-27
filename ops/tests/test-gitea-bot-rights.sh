@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+# mag-test-timeout: 180
+if [ -z "${MAG_TEST_DEADLINE_ARMED:-}" ]; then
+  export MAG_TEST_DEADLINE_ARMED=1
+  exec timeout --kill-after=5s 180s bash "$0" "$@"
+fi
 # ops/gitea/bot-rights.sh against a fake Gitea CLI + API that, like Gitea,
 # refuses POST /admin/users/{u}/orgs once allow_create_organization=false.
 # Every bot ends locked down and owner of bots-<agent>; reruns are no-ops; one

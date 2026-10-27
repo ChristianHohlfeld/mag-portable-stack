@@ -1,19 +1,9 @@
 {
   "native": [
     {
-      "name": "Install build dependencies",
-      "kind": "image-dependency",
-      "command": "sudo apt-get update && sudo apt-get install -y ninja-build libssl-dev libcurl4-openssl-dev libarchive-dev"
-    },
-    {
-      "name": "Build",
+      "name": "Test and workflow deadlines",
       "kind": "test",
-      "command": "cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release && cmake --build build -j 4"
-    },
-    {
-      "name": "Prevent CI room-clear from invoking production backup",
-      "kind": "test",
-      "command": "grep -Fq \"MAG_TEST_NO_CLEAR_BACKUP='1'\" mag-room/tests/test_native.py\n! grep -Fq 'mag-backup-clear.timer' mag-room/native/routes.hpp\n! grep -Fq 'start mag-backup-clear.service' mag-room/native/routes.hpp\n"
+      "command": "python3 ops/ci/check-timeouts.py"
     },
     {
       "name": "Tailscale API nft IPv4/v6 egress regression without modifying host firewall",
@@ -21,104 +11,49 @@
       "command": "sudo bash ops/audit/tests/test-tail-egress.sh"
     },
     {
-      "name": "Owner-only backup and console access contract",
+      "name": "Independent fast contracts",
       "kind": "test",
-      "command": "bash ops/private-access/tests/test-owner-boundaries.sh"
+      "command": "bash ops/ci/run-parallel.sh --jobs 4 --timeout 180 < ops/ci/native-fast.list"
     },
     {
-      "name": "Native integration checks",
-      "kind": "test",
-      "command": "./build/test-guest-pty\n./build/test-browser-recovery\n./build/test-jobs-mcp\n./build/test-pages-native\n./build/test-browser-events\n./build/test-guest-description\n./build/test-guest-curl\n./build/test-large-stdin\n./build/test-gitea-account\npython3 mag-room/tests/test_large_tools.py\npython3 mag-room/tests/test_native.py\npython3 mag-room/tests/test_agent_core.py\npython3 ops/numa/tests/test_numa_swap.py\npython3 mag-room/tests/test_room_control.py\npython3 mag-room/tests/test_tailscale_auth.py\npython3 ops/audit/tests/test_native_gateway.py\nbash ops/qwen/tests/test-qwen.sh\nbash ops/ornith/tests/test-ornith.sh\npython3 mag-room/tests/test_whois_deploy.py\nbash -n ops/deploy.sh ops/rollback.sh ops/private-access/*.sh\n"
+      "name": "Install build dependencies",
+      "kind": "image-dependency",
+      "command": "sudo apt-get update && sudo apt-get install -y ninja-build ccache libssl-dev libcurl4-openssl-dev libarchive-dev"
     },
     {
-      "name": "IK prompt cache regression and rollback shell syntax",
+      "name": "Build",
       "kind": "test",
-      "command": "bash ops/deepseek/tests/test-ops-38.sh\nbash ops/deepseek/tests/test-numa-isolation.sh\nbash ops/deepseek/tests/test-node0-available.sh\nbash ops/deepseek/tests/test-iq3-parallel.sh\nbash ops/deepseek/tests/test-model-preservation.sh\nbash -n ops/deepseek/verify-iq3.sh ops/deepseek/start-iq3.sh ops/deepseek/iq3-parallel.sh ops/deepseek/hotswap.sh\nbash -n ops/deepseek/numa-isolation.sh ops/deepseek/numa-bench.sh\nbash -n ops/deepseek/prompt-cache-switch.sh\n"
+      "command": "cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache && cmake --build build -j 4"
     },
     {
-      "name": "nginx syntax without a real Tailnet listener",
+      "name": "Native C++ binaries",
       "kind": "test",
-      "command": "sudo apt-get install -y nginx\nopenssl req -x509 -newkey rsa:2048 -nodes -days 1 -keyout /tmp/mag-ci.key -out /tmp/mag-ci.crt -subj '/CN=mag.stardenburg.de' 2>/dev/null\nsed -e 's|/etc/mag-nginx/tls/cert.pem|/tmp/mag-ci.crt|' -e 's|/etc/mag-nginx/tls/key.pem|/tmp/mag-ci.key|' -e 's|100[.]123[.]114[.]16:443|127.0.0.1:18443|' ops/private-access/mag-room.nginx.conf > /tmp/mag-ci-site.conf\ngrep -Fq 'listen 127.0.0.1:18443 ssl http2;' /tmp/mag-ci-site.conf\nprintf 'pid /tmp/mag-ci-nginx.pid;\\nerror_log /tmp/mag-ci-nginx.err;\\nevents {}\\nhttp { access_log off; include /tmp/mag-ci-site.conf; }\\n' > /tmp/mag-ci-nginx.conf\nsudo nginx -t -c /tmp/mag-ci-nginx.conf -p /tmp\n"
+      "command": "bash ops/ci/run-parallel.sh --jobs 4 --timeout 90 < ops/ci/native-bins.list"
+    },
+    {
+      "name": "Native room integration",
+      "kind": "test",
+      "command": "python3 mag-room/tests/test_native.py"
+    },
+    {
+      "name": "Native companion checks",
+      "kind": "test",
+      "command": "bash ops/ci/run-parallel.sh --jobs 4 --timeout 240 < ops/ci/native-rest.list"
     },
     {
       "name": "Browser WebRTC UDP gateway",
       "kind": "test",
-      "command": "cd mag-room/webrtc && go test -mod=mod ./... && go build -mod=mod -o /tmp/mag-browser-webrtc ."
+      "command": "cd mag-room/webrtc && go test -mod=mod -timeout 60s ./... && go build -mod=mod -o /tmp/mag-browser-webrtc ."
     },
     {
-      "name": "Vendor terminal and verify UI assets",
+      "name": "nginx syntax without a real Tailnet listener",
       "kind": "test",
-      "command": "bash ops/vendor-terminal-assets.sh /tmp/mag-terminal-assets\ntest -s /tmp/mag-terminal-assets/xterm.js\ntest -s /tmp/mag-terminal-assets/xterm-addon-fit.js\ntest -s /tmp/mag-terminal-assets/xterm.css\n"
-    },
-    {
-      "name": "Frontend script syntax",
-      "kind": "test",
-      "command": "python3 -c 'from pathlib import Path; s=Path(\"mag-room/web/index.html\").read_text(); Path(\"/tmp/mag-room-web.js\").write_text(s.split(\"<script>\")[-1].split(\"</script>\")[0])'\nnode --check /tmp/mag-room-web.js\nnode mag-room/tests/test_composer.cjs\n"
+      "command": "sudo nginx -t -c /tmp/mag-ci-nginx.conf -p /tmp"
     },
     {
       "name": "Shell syntax",
       "kind": "test",
-      "command": "bash -n ops/*.sh ops/magbot-guest-run ops/magbot-agent-ctl\nbash -n ops/bots/*.sh ops/bots/tests/*.sh\nbash ops/bots/tests/test-bots.sh\n"
-    },
-    {
-      "name": "ISRG trust chain verifies without the system store",
-      "kind": "test",
-      "command": "bash ops/trust/test-trust.sh"
-    },
-    {
-      "name": "Blank-host bootstrap dry run",
-      "kind": "test",
-      "command": "bash ops/tests/test-bootstrap.sh"
-    },
-    {
-      "name": "Gitea pull mirror against a fake API",
-      "kind": "test",
-      "command": "bash ops/tests/test-gitea-mirror.sh"
-    },
-    {
-      "name": "Gitea bot rights against a fake API",
-      "kind": "test",
-      "command": "bash ops/tests/test-gitea-bot-rights.sh"
-    },
-    {
-      "name": "New ops scripts pass shellcheck",
-      "kind": "test",
-      "command": "if ! command -v shellcheck >/dev/null; then echo 'shellcheck not installed on this runner; skipped'; exit 0; fi\nshellcheck ops/vm/build-golden.sh ops/bootstrap-voice.sh ops/deepseek/bootstrap-runtimes.sh ops/tailscale/install.sh ops/private-access/install-lego.sh ops/gitea/mirror-github.sh ops/tests/e2e-bootstrap.sh ops/ci/promote-green.sh ops/ci/self-hosted-checks.sh\n"
-    },
-    {
-      "name": "Update script dry run",
-      "kind": "test",
-      "command": "bash ops/tests/test-update.sh"
-    },
-    {
-      "name": "One-shot legacy cleanup in a sandbox",
-      "kind": "test",
-      "command": "bash ops/tests/test-cleanup-legacy.sh"
-    },
-    {
-      "name": "Unreferenced bot VM drift check",
-      "kind": "test",
-      "command": "bash ops/tests/test-agent-drift.sh"
-    },
-    {
-      "name": "S23 control API",
-      "kind": "test",
-      "command": "python3 devices/s23/tests/test_s23ctl.py"
-    },
-    {
-      "name": "Action runner guards",
-      "kind": "test",
-      "command": "bash ops/tests/test-runners.sh"
-    },
-    {
-      "name": "Green promotion",
-      "kind": "test",
-      "command": "bash ops/tests/test-green.sh"
-    },
-    {
-      "name": "Boot persistence",
-      "kind": "test",
-      "command": "bash ops/tests/test-boot.sh"
+      "command": "bash -n ops/*.sh ops/magbot-guest-run ops/magbot-agent-ctl && bash -n ops/bots/*.sh ops/bots/tests/*.sh && bash ops/bots/tests/test-bots.sh"
     }
   ],
   "pages": [

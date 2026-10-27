@@ -1,3 +1,5 @@
+// mag-test-timeout: 60
+require('./mag_deadline.cjs').arm(60);
 // Piper warm-up: the voice loads in the background after page load; a tap before
 // it is ready shows a loading state (never the robotic system voice), then plays
 // with Piper. Only a Piper failure falls back to a neural system voice.

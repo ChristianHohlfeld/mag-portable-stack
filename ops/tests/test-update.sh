@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+# mag-test-timeout: 180
+if [ -z "${MAG_TEST_DEADLINE_ARMED:-}" ]; then
+  export MAG_TEST_DEADLINE_ARMED=1
+  exec timeout --kill-after=5s 180s bash "$0" "$@"
+fi
 # Dry-run only: update builds before it deploys and never touches mag-llm.
 set -euo pipefail
 root=$(cd -- "$(dirname "$0")/../.." && pwd)
@@ -39,9 +44,9 @@ grep -Fxq 'wait_http http://127.0.0.1:18784/health' "$root/ops/deploy.sh"
 # curling :8080 after restarting a Type=simple unit races the port bind.
 grep -Fq 'gateway_models=$(wait_http http://127.0.0.1:8080/v1/models)' "$root/ops/deploy.sh"
 [[ $(grep -n 'gateway_models=$(wait_http http://127.0.0.1:8080/v1/models)' "$root/ops/deploy.sh" | cut -d: -f1) -gt \
-   $(grep -n '^systemctl restart mag-audit-gateway.service' "$root/ops/deploy.sh" | tail -1 | cut -d: -f1) ]]
+   $(grep -n '^mag_systemctl restart mag-audit-gateway.service' "$root/ops/deploy.sh" | tail -1 | cut -d: -f1) ]]
 [[ $(grep -n 'wait_http http://127.0.0.1:18784/health' "$root/ops/deploy.sh" | cut -d: -f1) -gt \
-   $(grep -n 'systemctl restart mag-browser-webrtc.service' "$root/ops/deploy.sh" | tail -1 | cut -d: -f1) ]]
+   $(grep -n 'mag_systemctl restart mag-browser-webrtc.service' "$root/ops/deploy.sh" | tail -1 | cut -d: -f1) ]]
 [[ $(tail -2 "$root/ops/rollback.sh" | head -1) == 'for i in {1..30}; do curl '*'/healthz 2>/dev/null && break; sleep 1; done' ]]
 mkdir "$tmp/bin"
 printf '#!/bin/sh\nn=$(($(cat "%s/n" 2>/dev/null || echo 0) + 1)); echo $n > "%s/n"\n[ $n -ge 4 ] || exit 7\ncase " $* " in *" -o "*) ;; *) echo ok ;; esac\n' "$tmp" "$tmp" > "$tmp/bin/curl"

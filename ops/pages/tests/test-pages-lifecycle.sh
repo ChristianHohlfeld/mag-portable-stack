@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+# mag-test-timeout: 600
+if [ -z "${MAG_TEST_DEADLINE_ARMED:-}" ]; then
+  export MAG_TEST_DEADLINE_ARMED=1
+  exec timeout --kill-after=5s 600s bash "$0" "$@"
+fi
 set -euo pipefail
 here="$(cd "$(dirname "$0")/../../.." && pwd)"
 tmp="$(mktemp -d)"

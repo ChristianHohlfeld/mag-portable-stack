@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+# mag-test-timeout: 180
+if [ -z "${MAG_TEST_DEADLINE_ARMED:-}" ]; then
+  export MAG_TEST_DEADLINE_ARMED=1
+  exec timeout --kill-after=5s 180s bash "$0" "$@"
+fi
 # Sandbox only: the one-shot cleanup removes leftovers and keeps everything
 # that is referenced, in use, a model, or the stack checkout.
 set -euo pipefail

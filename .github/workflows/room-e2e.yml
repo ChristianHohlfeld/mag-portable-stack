@@ -3,26 +3,48 @@ permissions:
   contents: read
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - 'mag-room/web/**'
+      - 'mag-room/tests/test_room_e2e.py'
+      - 'mag-room/tests/test_room_control.py'
+      - 'mag-room/tests/test_reactions.py'
+      - 'mag-room/tests/test_numa_ui.py'
+      - 'mag-room/tests/test_cards_ui.py'
+      - 'mag-room/tests/test_tts.py'
+      - 'mag-room/tests/test_view_tools.py'
+      - 'mag-room/tests/test_live_highlight.py'
+      - 'mag-room/tests/test_stream_order.py'
+      - '.github/workflows/room-e2e.yml'
 jobs:
   room:
+    timeout-minutes: 45
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+        timeout-minutes: 10
       - name: Build dependencies and Playwright Chromium
+        timeout-minutes: 20
         run: |
           sudo apt-get update
           sudo apt-get install -y ninja-build libssl-dev libcurl4-openssl-dev libarchive-dev
           python3 -m pip install --user playwright
           python3 -m playwright install --with-deps chromium
       - name: Build the native room
+        timeout-minutes: 20
         run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release && cmake --build build --target magroom -j 4
       - name: Stop, user priority and queue against a fake model
+        timeout-minutes: 40
         run: python3 mag-room/tests/test_room_control.py
       - name: Browser e2e (composer Stop/Esc, queue, run card, menus, mobile drawers)
+        timeout-minutes: 40
         env:
           MAG_E2E_SHOTS: ${{ runner.temp }}/room-e2e-shots
         run: python3 mag-room/tests/test_room_e2e.py
       - name: Message popover and NUMA selector (phone portrait/landscape, desktop)
+        timeout-minutes: 15
         run: |
           python3 mag-room/tests/test_reactions.py
           python3 mag-room/tests/test_numa_ui.py
@@ -32,6 +54,7 @@ jobs:
           python3 mag-room/tests/test_live_highlight.py
           python3 mag-room/tests/test_stream_order.py
       - uses: actions/upload-artifact@v4
+        timeout-minutes: 10
         if: always()
         with:
           name: room-e2e-screenshots

@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+# mag-test-timeout: 180
+if [ -z "${MAG_TEST_DEADLINE_ARMED:-}" ]; then
+  export MAG_TEST_DEADLINE_ARMED=1
+  exec timeout --kill-after=5s 180s bash "$0" "$@"
+fi
 # Offline regression: lego 5 CLI, ACME-DNS onboarding, public listener opt-in.
 set -euo pipefail
 here="$(cd "$(dirname "$0")/.." && pwd)"

@@ -372,12 +372,24 @@ static void proxy(int fd){
   request<<"X-Mag-Audit-Id: "<<id<<"\r\nConnection: close\r\nContent-Length: "<<forwarded.size()<<"\r\n\r\n";
   bool wrote=write_all(up,request.str())&&write_all(up,forwarded);
   std::string full;full.reserve(8192);bool aborted=!wrote;size_t received=0;
+  auto last_byte=std::chrono::steady_clock::now();
+  const auto gateway_budget=std::chrono::seconds(std::clamp(number("MAG_GATEWAY_DEADLINE_S",3700),1,86400));
+  const auto gateway_idle=std::chrono::seconds(std::clamp(number("MAG_GATEWAY_IDLE_S",75),1,3600));
   if(wrote){
     char b[32768];for(;;){
       pollfd pfd[2]={{up,POLLIN,0},{fd,POLLIN,0}};
       int result=poll(pfd,2,1000);
       if(result<0){if(errno==EINTR)continue;aborted=true;break;}
-      if(!result)continue;
+      if(!result){
+        // A stalled upstream with a client that stays connected used to spin
+        // here forever. Idle is silence; the deadline caps a stream that
+        // never ends. Closing both sockets frees this gateway slot.
+        auto now=std::chrono::steady_clock::now();
+        if(now-started>=gateway_budget||now-last_byte>=gateway_idle){
+          aborted=true;break;
+        }
+        continue;
+      }
       if(pfd[1].revents&(POLLIN|POLLHUP|POLLERR)){
         char probe;ssize_t n=recv(fd,&probe,1,MSG_PEEK|MSG_DONTWAIT);
         if(n==0||n<0&&(errno!=EAGAIN&&errno!=EWOULDBLOCK)){aborted=true;break;}
@@ -386,6 +398,7 @@ static void proxy(int fd){
         ssize_t n=recv(up,b,sizeof(b),0);
         if(n==0)break;
         if(n<0){if(errno==EINTR||errno==EAGAIN)continue;aborted=true;break;}
+        last_byte=std::chrono::steady_clock::now();
         received+=(size_t)n;
         if(full.size()<64*1024*1024)full.append(b,(size_t)std::min((size_t)n,(size_t)(64*1024*1024-full.size())));
         if(!write_all(fd,std::string(b,(size_t)n))){aborted=true;break;}
@@ -429,7 +442,14 @@ int main(){
       if(pfd.revents&POLLIN){
         int fd=accept4(public_fd,nullptr,nullptr,SOCK_CLOEXEC);
         if(fd<0)continue;
-        std::thread([fd]{timeval timeout{7200,0};setsockopt(fd,SOL_SOCKET,SO_RCVTIMEO,&timeout,sizeof(timeout));proxy(fd);close(fd);}).detach();
+        std::thread([fd]{
+          // Bound the request headers/body. The stream itself is bounded in proxy().
+          int read_s=std::clamp(number("MAG_GATEWAY_READ_S",60),1,300);
+          timeval timeout{read_s,0};
+          setsockopt(fd,SOL_SOCKET,SO_RCVTIMEO,&timeout,sizeof(timeout));
+          setsockopt(fd,SOL_SOCKET,SO_SNDTIMEO,&timeout,sizeof(timeout));
+          proxy(fd);close(fd);
+        }).detach();
       }
     }
   }catch(const std::exception &e){std::cerr<<"mag-audit-gateway: "<<e.what()<<"\n";return 1;}

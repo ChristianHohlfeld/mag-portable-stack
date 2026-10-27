@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+# mag-test-timeout: 180
+if [ -z "${MAG_TEST_DEADLINE_ARMED:-}" ]; then
+  export MAG_TEST_DEADLINE_ARMED=1
+  exec timeout --kill-after=5s 180s bash "$0" "$@"
+fi
 # The shipped Root YE must verify Let's Encrypt YE2 with no system trust store.
 # Guest install stays on the overlay: despawn deletes the disk, golden stays read-only.
 set -euo pipefail

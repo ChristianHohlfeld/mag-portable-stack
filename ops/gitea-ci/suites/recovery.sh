@@ -12,7 +12,7 @@ test "$(grep -Ec '^[a-f0-9]{64}[[:space:]]+' ops/backup/models-iq3.sha256)" -eq 
 grep -Fq 'sha256sum --check' ops/backup/bootstrap-models.sh
 grep -Fq '/var/lib/tailscale' ops/backup/backup.sh
 grep -Fq '/var/spool/cron/crontabs' ops/backup/backup.sh
-grep -Fq 'systemctl start mag-backup-deploy.service' ops/deploy.sh
+grep -Fq 'mag_systemctl start mag-backup-deploy.service' ops/deploy.sh
 ! grep -Fq 'mag-backup-clear.timer' mag-room/native/routes.hpp
 grep -Fq 'actor.role != "owner"' mag-room/native/routes.hpp
 ! grep -R -E '(stop|restart) mag-llm.service' ops/backup

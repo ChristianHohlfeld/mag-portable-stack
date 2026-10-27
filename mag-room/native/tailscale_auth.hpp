@@ -93,7 +93,12 @@ static bool ts_lookup(const std::string &remote, mj::Val &profile) {
   int sock = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
   if (sock < 0) return false;
   timeval tv{};
-  tv.tv_sec = 2;
+  // 2s was shorter than a loaded scheduler, so whois failed closed (403) with
+  // the fake tailscaled still about to answer. 10s keeps a hard deadline.
+  int sock_s = envi("MAG_TAILSCALE_SOCKET_S", 10);
+  if (sock_s < 1) sock_s = 1;
+  if (sock_s > 30) sock_s = 30;
+  tv.tv_sec = sock_s;
   setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
   setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv);
   sockaddr_un addr{};

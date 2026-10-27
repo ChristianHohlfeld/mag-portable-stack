@@ -667,9 +667,14 @@ class RoomE2E(unittest.TestCase):
         # never cover the last message. The test itself dies at 8s.
         p = self.browser.new_page(viewport={'width': 390, 'height': 844},
                                   is_mobile=True, has_touch=True)
+        t0 = time.monotonic()
+        def ms():
+            left = 8 - (time.monotonic() - t0)
+            self.assertGreater(left, 0, 'hard timeout')
+            return max(1, int(left * 1000))
         try:
             p.goto(f'http://127.0.0.1:{self.room.ui}/')
-            p.wait_for_selector('#send-button', timeout=3000)
+            p.wait_for_selector('#send-button', timeout=ms())
 
             def share():
                 return p.evaluate("""()=>{
@@ -693,23 +698,24 @@ class RoomE2E(unittest.TestCase):
             Model.scripts += [[{'_hold': 30}], ['Zweite']]
             p.locator('#message').fill('Viewport lange Aufgabe')
             p.locator('#message').press('Enter')
-            wait_calls(1)
-            expect(p.locator('.message.work-live')).to_be_visible(timeout=5000)
+            wait_calls(1, timeout=max(0.1, 8 - (time.monotonic() - t0)))
+            expect(p.locator('.message.work-live')).to_be_visible(timeout=ms())
             self.assertGreaterEqual(share(), 0.80, 'busy chat should still own the phone')
             self.assertTrue(uncovered())
             line = p.locator('#room-line')
-            expect(line).to_be_visible(timeout=3000)
+            expect(line).to_be_visible(timeout=ms())
             self.assertLessEqual(line.bounding_box()['height'], 24)
             p.locator('#message').fill('Viewport-Zwischenfrage')
             p.locator('#message').press('Enter')
-            expect(p.locator('#queue-chips .q-toggle')).to_contain_text('1 wartet', timeout=5000)
+            expect(p.locator('#queue-chips .q-toggle')).to_contain_text('1 wartet', timeout=ms())
             expect(p.locator('#queue-chips')).not_to_have_class(re.compile(r'\bexpanded\b'))
             expect(p.locator('#queue-chips .queue-items')).to_be_hidden()
             p.evaluate('()=>{render();paintRoomLine()}')
-            p.wait_for_function("""()=>![...document.querySelectorAll('#conversation .message.user .content')].some(el=>el.textContent.includes('Viewport-Zwischenfrage'))""", timeout=5000)
+            p.wait_for_function("""()=>![...document.querySelectorAll('#conversation .message.user .content')].some(el=>el.textContent.includes('Viewport-Zwischenfrage'))""", timeout=ms())
             self.assertGreaterEqual(share(), 0.80, 'queued chat should still own the phone')
             self.assertTrue(uncovered())
             self.assertLessEqual(p.locator('#queue-chips .queue-head').bounding_box()['height'], 24)
+            self.assertLess(time.monotonic() - t0, 8, 'hard timeout')
         finally:
             self.room.api('/api/cancel', {})
             self.room.api('/api/queue', method='DELETE')

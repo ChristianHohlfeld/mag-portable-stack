@@ -468,10 +468,20 @@ mag_systemctl restart mag-browser-webrtc.service
 # /readyz = Raum bereit (Modellstatus steht im JSON, ist aber kein Rollback-Grund)
 wait_http http://127.0.0.1:8766/readyz
 wait_http http://127.0.0.1:18784/health
-# Both NUMA slots must already hold a prefix, and a real room hi must show
-# each bot's first token in under 5s. Failure rolls the release back.
-# rollback restarts mag-120 only; it does not restart mag-llm.
-if ! MAG_WARM_HI_REQUIRE_ROOM=1 bash "$SOURCE/ops/deploy-warm-hi.sh"; then
+# Production: both NUMA slots must already hold a prefix, and a real room hi
+# must show each bot's first token in under 5s. Failure rolls back the release.
+# Blank-host CI has only the explicitly marked mag-llm-stub on :8090/:8091;
+# it has no real model, NUMA slots, or prefix files. The e2e test separately
+# requires /readyz/model through the stub gateway. Do not bypass on a host
+# without both the TEST-HOST marker AND the active stub unit.
+if [[ -e /etc/mag-stack/TEST-HOST ]] && systemctl is-active --quiet mag-llm-stub.service; then
+  echo 'TEST-HOST: synthetic model; checking stub /readyz/model instead of live NUMA prefix'
+  curl -fsS --max-time 10 http://127.0.0.1:8766/readyz/model >/dev/null || {
+    echo 'FAIL: TEST-HOST stub model not ready' >&2
+    release_selftalk_hold
+    exit 1
+  }
+elif ! MAG_WARM_HI_REQUIRE_ROOM=1 bash "$SOURCE/ops/deploy-warm-hi.sh"; then
   echo 'FAIL: warm hi gate failed; rolling back this release. Not restarting mag-llm.' >&2
   release_selftalk_hold
   exit 1

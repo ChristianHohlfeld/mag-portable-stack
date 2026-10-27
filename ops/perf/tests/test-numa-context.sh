@@ -60,7 +60,7 @@ assert 'const size_t target = limit * 65 / 100;' in room
 assert 'if (prompt_wire_bytes(messages, tools) <= limit) return;' in room
 assert 'utf8_suffix(t.reasoning, keep)' in room
 assert 'report.reasoning += piece' in room  # full reasoning stays in report
-assert 'cache_prompt"] = CONFIGURED_MODEL ? true : !deterministic' in room  # configured keeps the slot prefix
+assert 'cache_prompt"] = !deterministic' in room  # cached unless deterministic
 assert 'id_slot"] = id_slot' in room and 'if (PROMPT_SLOTS > 1)' in room
 assert 'MCP_MAX_BOT_TOOLS = 64' in mcp
 assert 'MAG_MCP_TOOL_DESC_BYTES' in mcp and 'fn["parameters"]' in mcp

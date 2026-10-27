@@ -4179,10 +4179,11 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   // llama.cpp: stream prompt_progress {total,cache,processed,time_ms} while
   // the prompt is evaluated (minutes on CPU) instead of staying silent.
   body["return_progress"] = true;
+  body["cache_prompt"] = !deterministic;
   // Configured NUMA bots keep the slot prefix. Deterministic still greedily
   // decodes; it must not drop cache_prompt (live Qwen: tokens_cached=0 and a
   // 39s identity prefill because cache_prompt was off).
-  body["cache_prompt"] = CONFIGURED_MODEL ? true : !deterministic;
+  if (CONFIGURED_MODEL) body["cache_prompt"] = true;
   // Dedicated NUMA servers keep the same live KV slot across prewarm/chat.
   // Do not run the generic RAM-cache slot selector on this fixed deployment.
   if (CONFIGURED_MODEL) body["id_slot"] = 0;

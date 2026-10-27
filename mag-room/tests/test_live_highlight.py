@@ -62,7 +62,18 @@ class LiveHighlight(unittest.TestCase):
       return {x:c.left+(c.width-1440*s)*px+b.x*s,y:c.top+(c.height-900*s)*py+b.y*s,w:b.w*s,h:b.h*s}}""",b)
    def assert_box(b):
     box=room.locator('#browser-overlay .lh-box');box.wait_for(state='visible')
-    got=box.bounding_box();want=canvas_pos(b)
+    # The overlay updates on the next browser frame. Wait for the NEW target
+    # rather than accidentally sampling the previous target's outline.
+    # Still assert exact positioning/size below: a stale or misplaced box fails.
+    want=canvas_pos(b)
+    room.wait_for_function("""want => {
+      const e=document.querySelector('#browser-overlay .lh-box');
+      if(!e)return false;
+      const r=e.getBoundingClientRect();
+      return Math.abs(r.x+3-want.x)<3 && Math.abs(r.y+3-want.y)<3 &&
+             Math.abs(r.width-6-want.w)<3 && Math.abs(r.height-6-want.h)<3;
+    }""",want,timeout=2500)
+    got=box.bounding_box()
     if abs(got['x']+3-want['x'])>=3 or abs(got['y']+3-want['y'])>=3:
      diag=room.evaluate("""()=>{const c=document.querySelector('#screen'),v=document.querySelector('#browser-view'),o=document.querySelector('#browser-overlay'),b=document.querySelector('.lh-box');return {
       bot:document.querySelector('#browser-agent')?.value,screen:c?.getBoundingClientRect().toJSON(),

@@ -6837,8 +6837,7 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
     if (slot >= 1 && slot <= ROOM_MAX_BOTS)
       // Leftover identity KV reports ram_warm=1. That is not the room prefix
       // unless the saved hash matches (live: skip=ram, first hi 17s / 48s).
-      SLOT_WARM[slot - 1] =
-          (have_current && !prefix_changed && (ram_warm || decoded_warm)) ? 1 : 2;
+      SLOT_WARM[slot - 1] = (ram_warm && have_current && !prefix_changed) ? 1 : 2;
   }
   auto commit_prefix_meta = [&]() {
     std::lock_guard<std::mutex> lk(PREFIX_MTX);
@@ -6848,9 +6847,8 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
   if (CONFIGURED_MODEL && (!ram_known || slot_busy)) {
     skip = true;
     why = "busy"; // /slots timed out or the slot is prefilling: do not clobber it
-  } else if ((ram_warm || decoded_warm) && have_current && !prefix_changed) {
-    // RAM already holds the saved room prefix (n_prompt_tokens or n_decoded
-    // after a reply). Do not restore over it.
+  } else if (ram_warm && have_current && !prefix_changed) {
+    // RAM holds the room prefix we already saved. Leave it.
     skip = true;
     why = "ram";
     if (CONFIGURED_MODEL) {

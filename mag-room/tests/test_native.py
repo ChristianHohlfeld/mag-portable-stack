@@ -3610,7 +3610,9 @@ class MixedNuma(unittest.TestCase):
   started=time.monotonic()
   try:
    seen=self._prewarm_count();mark=len(Model.paths);self.start()
-   self._wait_prewarm_models(seen,lambda ln:'skipped=ram' in ln,
+   # n_decoded>0 does not prove the KV survived a cancel. Matching hash
+   # restores the file; a live n_prompt_tokens skip=ram. Neither posts.
+   self._wait_prewarm_models(seen,lambda ln:'skipped=ram' in ln or 'skipped=restored' in ln,
     what='prewarm did not skip a slot that already holds the prefix')
    self.assertFalse([p for p in list(Model.paths)[mark:] if p[0]=='/v1/chat/completions'])
    before=len([p for p in Model.paths if p[0]=='/v1/chat/completions'])

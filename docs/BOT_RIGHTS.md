@@ -15,9 +15,8 @@ Bots are never administrators. Enforced in code and by `ops/deploy.sh`.
   the bot to its `Owners` team, then leaves the org. Reruns are no-ops; a
   failing user is reported, the others are still applied, and the script exits
   non-zero (deploy prints `WARN: Gitea bot rights not applied`).
-- Actions stay `ENABLED=false` by default. If enabled, register runners only at
-  the bot org level (`bots-<agent>`), unprivileged, never on the host and never
-  with deploy rights. There is no host deploy runner.
+- Actions are enabled so the host runner can register. It registers only at
+  `http://127.0.0.1:3000`. Bots stay non-admin and never receive a runner token.
 
 ## GitHub
 - Personal connector (`connectors/github.token`) must be a **fine-grained

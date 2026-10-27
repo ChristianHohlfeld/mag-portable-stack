@@ -9,12 +9,20 @@ Group=mag-ghrunner
 SupplementaryGroups=mag-deploy
 WorkingDirectory=/var/lib/mag-ghrunner/runner
 Environment=HOME=/var/lib/mag-ghrunner
+Environment=NO_PROXY=127.0.0.1,localhost,::1
+Environment=no_proxy=127.0.0.1,localhost,::1
 ExecStart=/var/lib/mag-ghrunner/runner/run.sh
 Restart=always
 RestartSec=10
-# Never compete with the resident models.
+TimeoutStartSec=30
+TimeoutStopSec=40
+# Never compete with the resident models. NUMA0 is 0-13 and 28-41;
+# this runner stays on 42-55. IOSchedulingClass=idle is ionice class 3.
 Nice=15
 IOSchedulingClass=idle
+IOSchedulingPriority=7
+CPUAffinity=42-55
+AllowedCPUs=42-55
 CPUQuota=200%
 MemoryMax=6G
 MemorySwapMax=0

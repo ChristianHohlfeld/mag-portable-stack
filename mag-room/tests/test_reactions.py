@@ -1,11 +1,13 @@
 """Playwright: reaction bar, toggle, and a second client seeing the pill live."""
 import importlib.util
+import os
 import pathlib
 import shutil
+import tempfile
 import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
-ART = pathlib.Path('/opt/cursor/artifacts')
+ART = pathlib.Path(os.environ.get('MAG_TEST_ARTIFACTS', pathlib.Path(tempfile.gettempdir()) / 'mag-artifacts'))
 spec = importlib.util.spec_from_file_location('test_pwa', ROOT / 'mag-room/tests/test_pwa.py')
 pwa = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(pwa)
@@ -134,3 +136,4 @@ class Reactions(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)
+

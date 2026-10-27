@@ -17,6 +17,7 @@ def _rules(content):
 def _mem(content):
  i=content.index('\n[Erinnerungen]');return content[i+1:]
 class Model(http.server.BaseHTTPRequestHandler):
+ script_scope=None
  slot_snapshot=[];cache_records=[];tokenizer_fail=False;tokenizer_requests=[]
  protocol_version='HTTP/1.1';calls=[];slots=[];pairs=[];paths=[];slot_delay={};delay=0;reply=None;script=[];health=200;last_prompt={};overflow_once=0;barrier_token='';barrier_release=None
  def log_message(self,*a):pass
@@ -49,7 +50,9 @@ class Model(http.server.BaseHTTPRequestHandler):
   if self.delay:time.sleep(self.delay)
   if obj.get('max_tokens')!=1 and self.headers.get('X-Mag-Slot') in type(self).slot_delay:time.sleep(type(self).slot_delay[self.headers.get('X-Mag-Slot')])
   try:
-   scripted=type(self).script.pop(0) if type(self).script else None
+   scope=type(self).script_scope
+   matches=scope is None or any(scope in m.get('content','') for m in obj.get('messages',[]) if isinstance(m.get('content'),str))
+   scripted=type(self).script.pop(0) if matches and type(self).script else None
    chunks=scripted if scripted is not None else ([type(self).reply] if type(self).reply is not None else ['Hallo ','aus dem ','Modell.'])
    for piece in chunks:
     if isinstance(piece,dict) and '_sleep' in piece:
@@ -808,15 +811,18 @@ class Native(unittest.TestCase):
   # the two scripted responses to avoid racy Model.script consumption.
   self.request('/api/autotalk',{'on':False})
   self.wait_idle()
+  self.request('/api/queue/resume',{})
+  marker='Merke DeepSeek-Test '+str(time.monotonic_ns())
   first=[{'reasoning_content':'Ich merke mir das.'},{'tool_calls':[{'index':0,'id':'call_ds_1','function':{'name':'remember','arguments':'{"fact":"DeepSeek-Test"}'}}]}]
+  Model.script_scope=marker
   Model.script=[first,['Notiert.']]
   try:
    initial=len(Model.calls)
-   self.request('/api/message',{'text':'Merke DeepSeek-Test','bots':['test']})
+   self.request('/api/message',{'text':marker,'bots':['test']})
    self.wait_room('Notiert.');self.wait_idle()
    # Assert this test's tool roundtrip, not unrelated global Model.calls.
    fresh=Model.calls[initial:]
-   own=[x for x in fresh if any('Merke DeepSeek-Test' in (msg.get('content') or '')
+   own=[x for x in fresh if any(marker in (msg.get('content') or '')
                              for msg in x.get('messages',[]) if isinstance(msg.get('content'),str))]
    self.assertEqual(len(own),2,repr([x.get('messages',[])[-1:] for x in fresh])[:1200])
    msgs=own[-1]['messages']
@@ -825,7 +831,9 @@ class Native(unittest.TestCase):
    self.assertEqual(asst[-1]['tool_calls'][0]['function']['name'],'remember')
    tool=[m for m in msgs if m['role']=='tool']
    self.assertEqual(tool[-1]['tool_call_id'],'call_ds_1')
-  finally:Model.script=[]
+  finally:
+   try:self.wait_idle()
+   finally:Model.script=[];Model.script_scope=None
  def test_09c_model_status_ready(self):
   st=self.request('/api/model-status')
   self.assertTrue(st['ready']);self.assertEqual(st['state'],'ready');self.assertEqual(st['model'],'deepseek-v4-flash-0731')
@@ -3458,8 +3466,14 @@ class PhoCompress(unittest.TestCase):
  mixed=True
  start=classmethod(ConfiguredNuma.start.__func__)
  stop=classmethod(ConfiguredNuma.stop.__func__)
- setUpClass=classmethod(ConfiguredNuma.setUpClass.__func__)
- tearDownClass=classmethod(ConfiguredNuma.tearDownClass.__func__)
+ def setUp(self):
+  # Each case gets its own room, wire archive and backend. Restart tests may
+  # retain state inside a case, never from a preceding case.
+  Model.script=[];Model.script_scope=None;Model.reply=None;Model.delay=0
+  Model.tokenizer_fail=False
+  ConfiguredNuma.setUpClass.__func__(type(self))
+  self.addCleanup(ConfiguredNuma.tearDownClass.__func__,type(self))
+  self.addCleanup(self.model.server_close)
  request=classmethod(Native.request.__func__)
  error=Native.error
  wait_idle=Native.wait_idle
@@ -3591,3 +3605,4 @@ class PhoCompress(unittest.TestCase):
   self.assertEqual(result['turn_ends'],[len(result['messages'])],'erased-message offsets must be forgotten immediately')
 
 if __name__=='__main__':unittest.main(verbosity=2)
+

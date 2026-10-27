@@ -787,6 +787,7 @@ static void load_agents() {
       const int slot = model_slot_of(a);
       if (slot && (old == "DeepSeek 4.0" || old == "DeepSeek Chat" ||
                    old == "DeepSeek Q4" || old == "Qwen" || old == "Qwen 2" ||
+                   old == "BotBot" || old == "Bot1" ||
                    old == "DeepSeek V4 Flash 1" || old == "DeepSeek V4 Flash 2" ||
                    old == "DeepSeek V4 Flash" || old == "Qwen3.8 Uncensored" || old == "Ornith 1" || old == "Ornith 2" || old == "Ornith 3" || old == "Ornith 4")) {
         const std::string updated = ROOM_MODEL.backends[0].id == ROOM_MODEL.backends[1].id
@@ -1961,7 +1962,12 @@ static std::string identity_block(int bot_idx) {
   text += "\nDu bist " + name + ": nicht Claude, nicht Anthropic, nicht ChatGPT/OpenAI "
           "und kein anderes Modell oder Assistent. Behaupte das niemals, auch nicht "
           "auf Nachfrage; nach deinem Namen gefragt, antwortest du " + name +
-          ". Antworte standardmaessig auf Deutsch.";
+          ". Antworte standardmaessig auf Deutsch. "
+           "Gib nur die Antwort fuer den Nutzer aus. Interne Ueberlegungen, "
+           "Analyse und Selbstgespraeche gehoeren ausschliesslich in den "
+           "separaten Reasoning-Kanal oder in <think>-Tags, niemals in die "
+           "sichtbare Antwort. Beginne Antworten niemals mit deinem "
+           "Botnamen und Doppelpunkt (z.B. Bot1: oder BotBot:).";
   return text;
 }
 static std::string build_system(int bot_idx, bool autotalk,
@@ -3754,6 +3760,54 @@ public:
     }
   }
 };
+// Separate the visible answer from model-specific unmarked preambles.
+// DeepSeek/Qwen normally report reasoning_content or <think>; the guard also
+// handles a legacy "Chris tippt nur …" preface and speaker prefixes split over
+// arbitrary streaming chunks, *before* any delta reaches SSE or persistence.
+class VisibleReplyFilter {
+  std::string pending, speaker;
+  bool at_head = true;
+ public:
+  explicit VisibleReplyFilter(std::string name) : speaker(std::move(name)) {}
+  void feed(const std::string &piece,
+            const std::function<void(const std::string &)> &emit,
+            bool finish = false) {
+    if (!at_head) { if (!piece.empty()) emit(piece); return; }
+    pending += piece;
+    auto left_trim = [&] {
+      const size_t first = pending.find_first_not_of(" \r\n\t");
+      if (first != std::string::npos && first) pending.erase(0, first);
+    };
+    left_trim();
+    // This text is a leaked planning paragraph, not an answer. Only the
+    // known unmarked form is dropped; do not guess based on other prose.
+    const std::string leak = "Chris tippt nur";
+    if (leak.compare(0, std::min(leak.size(), pending.size()),
+                     pending, 0, std::min(leak.size(), pending.size())) == 0) {
+      const size_t end = pending.find("\n\n");
+      if (end == std::string::npos) {
+        if (finish) { pending.clear(); at_head = false; }
+        return;
+      }
+      pending.erase(0, end + 2);
+      left_trim();
+    }
+    const std::vector<std::string> prefixes = {
+        speaker + ":", "Bot1:", "BotBot:", "DeepSeek:", "Qwen:"};
+    for (const auto &prefix : prefixes) {
+      if (prefix.empty() || prefix == ":") continue;
+      if (pending.size() < prefix.size() &&
+          prefix.compare(0, pending.size(), pending) == 0 && !finish)
+        return;
+      if (pending.rfind(prefix, 0) == 0) {
+        pending.erase(0, prefix.size()); left_trim(); break;
+      }
+    }
+    at_head = false;
+    if (!pending.empty()) emit(pending);
+    pending.clear();
+  }
+};
 static Turn
 backend_turn(const std::vector<Val> &messages, const std::string &tools,
              double temperature,
@@ -3763,6 +3817,7 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
              int bot_idx = -1) {
   Turn t;
   ThinkingContent thinking_content;
+  VisibleReplyFilter visible_reply(bot_idx >= 0 ? bot_field(bot_idx, "name", "Bot") : "");
   slot_restore_if_cold(id_slot);
   HttpClient c;
   c.timeout_ms = std::max(LLM_TIMEOUT_S, LLM_TIMEOUT_MIN_S) * 1000;
@@ -3876,6 +3931,13 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
     backend_fd_slot() = c.fd;
   }
   SseAcc acc;
+  auto visible_delta = [&](const std::string &s, bool finish = false) {
+    visible_reply.feed(s, [&](const std::string &safe) {
+      acc.content += safe;
+      on_delta("delta", safe);
+    }, finish);
+  };
+  
   long long draft_ms = 0;
   double saw_cached = -1, saw_evaluated = -1;
   bool have_cached_field = false, have_eval_field = false;
@@ -3958,8 +4020,8 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
     auto ct = d->find("content");
     if (ct && !ct->asStr().empty()) {
       thinking_content.feed(ct->asStr(), [&](bool reasoning, const std::string &piece) {
-        (reasoning ? acc.reasoning : acc.content) += piece;
-        on_delta(reasoning ? "reasoning" : "delta", piece);
+        if (reasoning) { acc.reasoning += piece; on_delta("reasoning", piece); }
+        else visible_delta(piece);
       });
     }
     auto tc = d->find("tool_calls");
@@ -3988,9 +4050,10 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
     c.close();
   }
   thinking_content.feed("", [&](bool reasoning, const std::string &piece) {
-    (reasoning ? acc.reasoning : acc.content) += piece;
-    on_delta(reasoning ? "reasoning" : "delta", piece);
+    if (reasoning) { acc.reasoning += piece; on_delta("reasoning", piece); }
+    else visible_delta(piece);
   }, true);
+  visible_delta("", true);
   t.text = acc.content;
   t.reasoning = acc.reasoning;
   if (t.error.empty() && t.text.empty() && acc.calls.empty() &&

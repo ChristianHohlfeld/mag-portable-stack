@@ -7097,6 +7097,9 @@ static TurnReport generate_and_post(int idx, bool automatic, double dispatched_m
       }
     } else {
       report.continue_requested = false;
+      // Streaming already opened this answer. A rejected duplicate must not
+      // stay in the room or be written by the next save.
+      drop_revealed();
       emit_event("error", id, name, "Autonomie gestoppt: doppelte Antwort.");
     }
   } else if (epoch == EPOCH.load() && !stop_flag().load() && report.text.empty() &&
@@ -8259,8 +8262,11 @@ static bool dispatchable(const std::vector<std::pair<Lane *, std::vector<std::st
   return ok;
 }
 static int AUTO_THINK = -1;
-static void start_lanes_locked(const Job &job, bool automatic) {
-  const std::string owner = job.ids.empty() ? "" : job.ids.front();
+static void start_lanes_locked(const Job &job, bool automatic, const std::string &task_owner = "") {
+  // A split leaves the cold bots queued. The owner stays the first bot the
+  // user selected, even when that bot is not in this dispatch.
+  const std::string owner = !task_owner.empty() ? task_owner
+                           : (job.ids.empty() ? "" : job.ids.front());
   if (!automatic && job.generation == AUTO_GENERATION) AUTO_THINK = job.think;
   STOP = false;
   LAST_STOP_MS = 0;
@@ -8318,21 +8324,29 @@ static bool dispatch_locked() {
     if (ready.empty()) return false;
     Pending p = *it;
     PENDING.erase(it);
+    // One generation for both portions. The cold bot is the same request,
+    // so its later result can still arm the original owner.
+    const uint64_t generation = ++AUTO_GENERATION;
+    const std::string owner = p.ids.empty() ? std::string() : p.ids.front();
+    AUTO_OWNER = owner;
+    AUTO_LAST_PROGRESS.clear(); AUTO_TURNS_LEFT = AUTO_MAX_TURNS; AUTO_READY = false;
     if (!later.empty()) {
       // One room line. The cold bot stays queued and does not post again.
       Job rest;
       rest.ids = later;
       rest.think = p.think;
       rest.input = p.text;
-      rest.generation = AUTO_GENERATION;
+      rest.generation = generation;
       JOBS.push_front(std::move(rest));
+      // Prefix readiness picked who runs now. It must not pick the owner.
+      std::cerr << "dispatch-owner owner=" << owner
+                << " ready=" << ready.front()
+                << " later=" << later.front() << std::endl;
     }
     PREWARM_HOLD = false;
     Val msg = append_room("user", p.sender.empty() ? "Nutzer" : p.sender, p.text, "", nullptr, p.login, "", p.display_ms, p.client_id);
     msg["type"] = "message"; publish(mj::dump(msg));
-    AUTO_OWNER = ready.front();
-    AUTO_LAST_PROGRESS.clear(); AUTO_TURNS_LEFT = AUTO_MAX_TURNS; AUTO_READY = false;
-    start_lanes_locked(Job{ready, p.think, ++AUTO_GENERATION, p.text}, false);
+    start_lanes_locked(Job{ready, p.think, generation, p.text}, false, owner);
     queue_event_locked();
     return true;
   };
@@ -8368,13 +8382,17 @@ static bool dispatch_locked() {
     if (ready.empty() || !dispatchable(split_lanes(ready), claimed)) continue;
     Job job = *it;
     JOBS.erase(it);
+    const std::string owner = job.ids.empty() ? std::string() : job.ids.front();
     if (!later.empty()) {
       Job rest = job;
       rest.ids = later;
       JOBS.push_front(std::move(rest));
+      std::cerr << "dispatch-owner owner=" << owner
+                << " ready=" << ready.front()
+                << " later=" << later.front() << std::endl;
     }
     job.ids = ready;
-    start_lanes_locked(job, false);
+    start_lanes_locked(job, false, owner);
     return true;
   }
   for (auto it = PENDING.begin(); it != PENDING.end(); ++it) {

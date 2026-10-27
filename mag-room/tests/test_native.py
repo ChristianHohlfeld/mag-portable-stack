@@ -630,13 +630,24 @@ class Native(unittest.TestCase):
   self.assertEqual(len(res),3)
   for m in res:self.assertIn('nur lesbar',json.dumps(m,ensure_ascii=False))
   self.request('/api/connectors/github',method='DELETE')
-  src=(ROOT/'mag-room/native/vm.cpp').read_text()+(ROOT/'mag-room/native/gitea_account.hpp').read_text()
+  vm=(ROOT/'mag-room/native/vm.cpp').read_text()
+  acct=(ROOT/'mag-room/native/gitea_account.hpp').read_text()
+  auth=(ROOT/'ops/gitea-ci/bot-auth.sh').read_text()
+  src=vm+acct
   create=src[src.index('gitea_args({"create"'):src.index('if (!created.code)')]
   self.assertNotIn('--admin',create,'bot Gitea accounts must never be admins')
-  self.assertIn('mag-gitea-bot-rights',src)
+  issued=auth[auth.index('cli create'):auth.index('generate-access-token')]
+  self.assertNotIn('--admin',issued);self.assertIn('--restricted',issued)
+  # issue writes the token into the guest first; commit then restricts the
+  # same account. Rights must run before that account is left able to log in.
+  commit=auth.split('mode == commit',1)[1].split('else',1)[0]
+  self.assertIn('mag-gitea-bot-rights',commit)
+  self.assertLess(commit.index('mag-gitea-bot-rights'),commit.index('prohibit_login'))
+  prov=vm[vm.index('provision_git'):vm.index('undefine_domain')]
+  self.assertLess(prov.index('mag-gitea-bot-auth","issue"'),prov.index('mag-gitea-bot-auth","commit"'))
   prompts=(ROOT/'mag-room/native/magroom.cpp').read_text()
   for bad in ('Administrationsaccount','is an administrator','mag-deploy/request','Runner des MAG-Hosts'):
-   self.assertNotIn(bad,prompts+src)
+   self.assertNotIn(bad,prompts+src+auth)
   self.assertIn('X-MCP-Readonly',(ROOT/'mag-room/native/mcp.hpp').read_text())
  def test_15k_composer_stop_cancels_turn_keeps_queue(self):
   self.wait_idle();Model.script=[self._slow('out',60),['Weiter normal.']]

@@ -56,7 +56,8 @@ printf 'pid /tmp/mag-ci-nginx.pid;\nerror_log /tmp/mag-ci-nginx.err;\nevents {}\
 sudo nginx -t -c /tmp/mag-ci-nginx.conf -p /tmp
 
 printf "\n== %s\n" "Browser WebRTC UDP gateway"
-cd mag-room/webrtc && go test -mod=mod ./... && go build -mod=mod -o /tmp/mag-browser-webrtc .
+# Subshell: this suite is one shell, and the next step uses a repo-relative path.
+( cd mag-room/webrtc && go test -mod=mod ./... && go build -mod=mod -o /tmp/mag-browser-webrtc . )
 printf "\n== %s\n" "Vendor terminal and verify UI assets"
 bash ops/vendor-terminal-assets.sh /tmp/mag-terminal-assets
 test -s /tmp/mag-terminal-assets/xterm.js

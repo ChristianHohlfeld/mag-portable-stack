@@ -3383,7 +3383,11 @@ class ConfiguredNuma(unittest.TestCase):
     if len({p[1] for p in got})>=2:return list(Model.paths)[after:]
     time.sleep(.03)
    self.fail('not both bot slots prewarmed')
-  self.stop();type(self).env['MAG_ROOM_PREWARM']='1'
+  self.stop()
+  Model.saved_prompt.clear()
+  meta=self.state/'prompt-prefix.json'
+  if meta.exists():meta.write_text('{}')
+  type(self).env['MAG_ROOM_PREWARM']='1'
   try:
    mark=len(Model.paths);self.start();seen=warmed(mark)
    saves={(p[1],p[3]['filename']) for p in seen if p[0].endswith('save')}
@@ -3844,7 +3848,11 @@ class MixedNuma(unittest.TestCase):
                      'a later turn must not re-send the ~140-token [Kontext] tail')
    finally:self.request('/api/bot-settings',{'bots':[b['id']],'github_enabled':False,'thinking':False},method='PUT')
  def test_02_prewarm_isolated_per_model(self):
-  self.wait_idle();self.stop();self.env['MAG_ROOM_PREWARM']='1'
+  self.wait_idle();self.stop()
+  Model.saved_prompt.clear()
+  meta=self.state/'prompt-prefix.json'
+  if meta.exists():meta.write_text('{}')
+  self.env['MAG_ROOM_PREWARM']='1'
   try:
    mark=len(Model.paths);self.start()
    for _ in range(400):

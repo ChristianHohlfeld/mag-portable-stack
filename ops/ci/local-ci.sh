@@ -131,6 +131,10 @@ set +e
 bash "$ROOT/ops/ci/run-parallel.sh" --jobs "$JOBS" --timeout 180 <"$list"
 st=$?
 set -e
+if ! mag_ci_kill_worktree_magroom; then
+  echo 'local CI FAIL leftover magroom' >&2
+  exit 1
+fi
 printf '\n== local CI summary (logs: %s)\n' "$LOG"
 if [[ $st -ne 0 ]]; then
   echo 'local CI FAIL'

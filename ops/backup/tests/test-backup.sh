@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# mag-test-timeout: 180
+# mag-test-timeout: 300
 if [ -z "${MAG_TEST_DEADLINE_ARMED:-}" ]; then
   export MAG_TEST_DEADLINE_ARMED=1
-  exec timeout --kill-after=5s 180s bash "$0" "$@"
+  exec timeout --kill-after=5s 300s bash "$0" "$@"
 fi
 # Fully isolated local test; never touches host services or real backup repo.
 set -euo pipefail

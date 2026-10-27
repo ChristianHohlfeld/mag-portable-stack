@@ -23,6 +23,14 @@ cp "$root/ops/build-targets.sh" "$tmp/src/ops/build-targets.sh"
 cat >"$tmp/bin/cmake" <<'EOF'
 #!/bin/sh
 echo "cmake $*" >> "$LOG"
+# Real cmake aborts when CMAKE_HOME_DIRECTORY is another worktree.
+if [ -f "$MAG_CI_BUILD_DIR/CMakeCache.txt" ]; then
+  src=$(sed -n 's/^CMAKE_HOME_DIRECTORY:INTERNAL=//p' "$MAG_CI_BUILD_DIR/CMakeCache.txt" | head -n 1)
+  if [ -n "$src" ] && [ "$src" != "$MAG_CI_SRC_ROOT" ]; then
+    echo "CMake Error: The source $MAG_CI_SRC_ROOT/CMakeLists.txt does not match $src" >&2
+    exit 1
+  fi
+fi
 mkdir -p "$MAG_CI_BUILD_DIR"
 case " $* " in
   *" --build "*)
@@ -38,7 +46,7 @@ exit 0
 EOF
 chmod +x "$tmp/bin/cmake"
 log=$tmp/cmake.log
-export LOG=$log MAG_CI_BUILD_DIR=$tmp/src/build MAG_CI_FORCE_BUILD=0
+export LOG=$log MAG_CI_BUILD_DIR=$tmp/src/build MAG_CI_FORCE_BUILD=0 MAG_CI_SRC_ROOT=$tmp/src
 PATH="$tmp/bin:$PATH" bash "$tmp/src/ops/ci/native-build.sh" magroom
 grep -q 'cmake ' "$log"
 [[ -x $tmp/src/build/magroom ]]
@@ -62,4 +70,12 @@ if grep -q 'cmake ' "$log"; then
   echo 'cache miss after no-arg rebuild' >&2
   exit 1
 fi
+# Leftover cache from another ~/ci-local/wt/prN-<sha4> must not abort cmake.
+printf 'CMAKE_HOME_DIRECTORY:INTERNAL=/old/wt/pr163-72e0\n' >"$tmp/src/build/CMakeCache.txt"
+mkdir -p "$tmp/src/build/CMakeFiles"
+printf 'stale\n' >"$tmp/src/build/CMakeFiles/stale"
+: >"$log"
+MAG_CI_FORCE_BUILD=1 PATH="$tmp/bin:$PATH" bash "$tmp/src/ops/ci/native-build.sh" magroom
+grep -q 'cmake ' "$log"
+[[ ! -e $tmp/src/build/CMakeFiles/stale ]]
 echo 'native-build cache PASS'

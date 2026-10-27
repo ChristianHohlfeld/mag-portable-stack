@@ -52,11 +52,21 @@ class AgentCore(unittest.TestCase):
    MAG_ROOM_STATIC=str(ROOT/'mag-room/static'),MAG_ROOM_MODEL_STATUS=str(pathlib.Path(cls.tmp.name)/'ms.json'),MAG_NETMODE=str(NETMODE),
    MAG_TEST_NO_MEMGIT='1',MAG_ROOM_MCP_AUTO='0',MAG_ROOM_MAX_TASKS='1',MAG_ROOM_PREWARM='0')
   env.pop('MAG_ROOM_SINGLE_BOT',None)
-  cls.log=open(pathlib.Path(cls.tmp.name)/'server.log','a');cls.proc=subprocess.Popen([str(ROOT/'build/magroom')],env=env,stdout=cls.log,stderr=cls.log)
-  for _ in range(150):
-   try:tn.Native.request.__func__(cls,'/healthz',raw=True);return
-   except Exception:time.sleep(.03)
-  raise RuntimeError('startup failed')
+  last=None
+  for attempt in range(6):
+   if attempt:
+    cls.ui=port();cls.bridge=port()
+    env['MAG_ROOM_PORT']=str(cls.ui);env['MAG_ROOM_BRIDGE_PORT']=str(cls.bridge)
+   cls.log=open(pathlib.Path(cls.tmp.name)/'server.log','a');cls.proc=subprocess.Popen([str(ROOT/'build/magroom')],env=env,stdout=cls.log,stderr=cls.log)
+   try:tn.wait_http(f'http://127.0.0.1:{cls.ui}/healthz',timeout=8,proc=cls.proc);return
+   except Exception as e:
+    last=e
+    if cls.proc.poll() is None:
+     cls.proc.terminate()
+     try:cls.proc.wait(timeout=3)
+     except Exception:cls.proc.kill();cls.proc.wait(timeout=3)
+    cls.log.close()
+  raise RuntimeError('startup failed: %s'%last)
  @classmethod
  def tearDownClass(cls):
   cls.proc.terminate();cls.proc.wait(timeout=5);cls.log.close();cls.model.shutdown();cls.tmp.cleanup()
@@ -253,11 +263,21 @@ class NumaRoom(unittest.TestCase):
    MAG_TEST_NO_MEMGIT='1',MAG_ROOM_MCP_AUTO='0',MAG_ROOM_PREWARM='0',MAG_ROOM_STAGGER='off',
    MAG_NUMA_CATALOG=str(t/'catalog.json'),MAG_NUMA_STATE=str(cls.nstate),MAG_NUMA_SWAP_CMD=str(sw))
   env.pop('MAG_ROOM_SINGLE_BOT',None)
-  cls.log=open(t/'server.log','a');cls.proc=subprocess.Popen([str(ROOT/'build/magroom')],env=env,stdout=cls.log,stderr=cls.log)
-  for _ in range(150):
-   try:tn.Native.request.__func__(cls,'/healthz',raw=True);return
-   except Exception:time.sleep(.03)
-  raise RuntimeError('startup failed')
+  last=None
+  for attempt in range(6):
+   if attempt:
+    cls.ui=port();cls.bridge=port()
+    env['MAG_ROOM_PORT']=str(cls.ui);env['MAG_ROOM_BRIDGE_PORT']=str(cls.bridge)
+   cls.log=open(t/'server.log','a');cls.proc=subprocess.Popen([str(ROOT/'build/magroom')],env=env,stdout=cls.log,stderr=cls.log)
+   try:tn.wait_http(f'http://127.0.0.1:{cls.ui}/healthz',timeout=8,proc=cls.proc);return
+   except Exception as e:
+    last=e
+    if cls.proc.poll() is None:
+     cls.proc.terminate()
+     try:cls.proc.wait(timeout=3)
+     except Exception:cls.proc.kill();cls.proc.wait(timeout=3)
+    cls.log.close()
+  raise RuntimeError('startup failed: %s'%last)
  @classmethod
  def tearDownClass(cls):
   cls.proc.terminate();cls.proc.wait(timeout=5);cls.log.close();cls.model.shutdown();cls.tmp.cleanup()

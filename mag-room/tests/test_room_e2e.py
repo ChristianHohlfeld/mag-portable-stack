@@ -823,8 +823,11 @@ class RoomE2E(unittest.TestCase):
               updateStream('qw',true);
               paintActivityStatus();
               const streamFace=document.querySelector('.message.work-live[data-bot="ds"] .bot-face');
+              const streamAnim=streamFace?getComputedStyle(streamFace.querySelector('.bf-body')).animationName:'';
+              const lookAnim=streamFace?getComputedStyle(streamFace.querySelector('.bf-eyes')).animationName:'';
               const dots=[...document.querySelectorAll('#room-line .bot-dot')].map(d=>getComputedStyle(d).backgroundColor);
-              const dotAnim=document.querySelector('#room-line .bot-dot.is-stream');
+              const dotEl=document.querySelector('#room-line .bot-dot.is-stream');
+              const dotAnim=dotEl?getComputedStyle(dotEl).animationName:'none';
               const line=document.getElementById('room-line').getBoundingClientRect();
               const chat=document.getElementById('conversation').getBoundingClientRect();
               const accent=getComputedStyle(msg('ds').querySelector('.content')).boxShadow;
@@ -842,9 +845,7 @@ class RoomE2E(unittest.TestCase):
                 mineNeutral:mineColor===bodyColor,
                 box:{w:box.width,h:box.height},
                 streamClass:streamFace?streamFace.className:'',
-                streamAnim:streamFace?getComputedStyle(streamFace.querySelector('.bf-body')).animationName:'',
-                lookAnim:streamFace?getComputedStyle(streamFace.querySelector('.bf-eyes')).animationName:'',
-                dotAnim:dotAnim?getComputedStyle(dotAnim).animationName:'none',
+                streamAnim,lookAnim,dotAnim,
                 dots,lineH:line.height,share:chat.height/innerHeight,
                 accent,otherAccent,
                 settleClass:settled?settled.className:'',

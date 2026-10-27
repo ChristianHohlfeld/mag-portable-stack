@@ -342,7 +342,7 @@ class StopAndPriority(unittest.TestCase):
         # Fake backend fragments deliberately split tags/prefixes across SSE.
         Model.scripts += [[
             {'reasoning_content': 'Nur interne Analyse. '},
-            'Chris tippt nur "Wie" – er scheint noch zu überlegen.\\n\\n',
+            'Chris tippt nur "Wie" – er scheint noch zu überlegen.\n\n',
             'Bot', '1:', ' Ich bin da.'
         ]]
         self.room.api('/api/message', {'text': 'Wie', 'bots': ['a']})

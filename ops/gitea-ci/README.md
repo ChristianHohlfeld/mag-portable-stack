@@ -12,8 +12,10 @@ protocol v2 to nginx `127.0.0.1:4443`. nginx terminates TLS and SNI-selects
 `mag.stardenburg.de`, `*.bot.stardenburg.de`, `*.pages.stardenburg.de` and
 Gitea. HTTPS-on-443 is forbidden: tailscaled would terminate TLS and reject
 every other name (`no webserver configured for name/port`). Funnel on `:443`
-is the same TCP path (the Funnel relay does not decrypt). HTTP vhosts must
-not bind the Tailscale address. There is no Caddy dependency and no router
+is the same TCP path (the Funnel relay does not decrypt). Room, bots and
+pages allow only tailnet PROXY clients (`100.64.0.0/10` via `geo` +
+`allow`/`deny`) so a public `Host`/`SNI` switch cannot read those vhosts. HTTP vhosts must not bind
+the Tailscale address. There is no Caddy dependency and no router
 port forward.
 
 The other tailnet-only serves stay HTTPS proxies and are not funneled:

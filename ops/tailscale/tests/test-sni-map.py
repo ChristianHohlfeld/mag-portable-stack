@@ -27,6 +27,16 @@ import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[3]
 LISTEN = "listen 127.0.0.1:4443 ssl http2 proxy_protocol;"
+TAILNET_ONLY = (
+    "set_real_ip_from 127.0.0.1;",
+    "real_ip_header proxy_protocol;",
+    "allow 100.64.0.0/10;",
+    "allow fd7a:115c:a1e0::/48;",
+    "deny all;",
+    "if ($mag_tailnet_ok = 0) { return 403; }",
+)
+TAILNET_CLIENT = "100.64.1.2"
+FUNNEL_CLIENT = "192.0.2.10"
 TAILNET = (
     ROOT / "ops/private-access/mag-room.nginx.conf",
     ROOT / "ops/pages/mag-pages.nginx.in",
@@ -95,6 +105,18 @@ class SniMap(unittest.TestCase):
         room_src = (ROOT / "ops/private-access/mag-room.nginx.conf").read_text()
         self.assertIn("location = /readyz", room_src)
         self.assertIn("auth_request off;", room_src)
+        self.assertIn("geo $remote_addr $mag_tailnet_ok", room_src)
+        for path in (ROOT / "ops/private-access/mag-room.nginx.conf",
+                     ROOT / "ops/pages/mag-pages.nginx.in",
+                     ROOT / "ops/bots/mag-bots.nginx.in"):
+            text = path.read_text()
+            for needle in TAILNET_ONLY:
+                self.assertIn(needle, text, path.name)
+        self.assertEqual(pages.count("allow 100.64.0.0/10;"), 2)
+        self.assertEqual(bots.count("allow 100.64.0.0/10;"), 1)
+        self.assertEqual(room_src.count("allow 100.64.0.0/10;"), 1)
+        self.assertNotIn("allow 100.64.0.0/10;", gitea)
+        self.assertNotIn("deny all;", gitea)
         blob = "\n".join(path.read_text() for path in TAILNET)
         self.assertIn("server_name mag.stardenburg.de;", blob)
         self.assertIn("server_name mag.tail3e02ae.ts.net;", blob)
@@ -206,18 +228,44 @@ class SniMap(unittest.TestCase):
                     self.assertEqual(got, cn, sni)
                 with self.assertRaises(ssl.SSLError):
                     self._cn(port, "unknown.example")
-                status, body = self._http(port, "pages.stardenburg.de", "/healthz")
+                status, body = self._http(
+                    port, "pages.stardenburg.de", "/healthz",
+                    proxy_ip=TAILNET_CLIENT)
                 self.assertEqual(status, 200)
                 self.assertIn("ok", body)
-                status, body = self._http(port, "repo.pages.stardenburg.de", "/")
+                status, body = self._http(
+                    port, "repo.pages.stardenburg.de", "/",
+                    proxy_ip=TAILNET_CLIENT)
                 self.assertEqual(status, 200)
                 self.assertIn("pages-wild", body)
-                status, body = self._http(port, "agent1.bot.stardenburg.de", "/")
+                status, body = self._http(
+                    port, "agent1.bot.stardenburg.de", "/",
+                    proxy_ip=TAILNET_CLIENT)
                 self.assertEqual(status, 200)
                 self.assertIn("bot-ok", body)
-                status, body = self._http(port, "mag.tail3e02ae.ts.net", "/user/login")
+                status, body = self._http(
+                    port, "mag.tail3e02ae.ts.net", "/user/login",
+                    proxy_ip=FUNNEL_CLIENT)
                 self.assertEqual(status, 200)
                 self.assertIn("gitea", body)
+                status, body = self._http(
+                    port, "mag.tail3e02ae.ts.net", "/",
+                    host="agent1.bot.stardenburg.de",
+                    proxy_ip=FUNNEL_CLIENT)
+                self.assertEqual(status, 403)
+                status, body = self._http(
+                    port, "mag.tail3e02ae.ts.net", "/",
+                    host="repo.pages.stardenburg.de",
+                    proxy_ip=FUNNEL_CLIENT)
+                self.assertEqual(status, 403)
+                status, body = self._http(
+                    port, "agent1.bot.stardenburg.de", "/",
+                    proxy_ip=FUNNEL_CLIENT)
+                self.assertEqual(status, 403)
+                status, body = self._http(
+                    port, "pages.stardenburg.de", "/healthz",
+                    proxy_ip=FUNNEL_CLIENT)
+                self.assertEqual(status, 403)
             finally:
                 proc.terminate()
                 try:
@@ -260,6 +308,11 @@ class SniMap(unittest.TestCase):
                 "    server_name mag.stardenburg.de;\n"
                 f"    ssl_certificate {room_crt};\n"
                 f"    ssl_certificate_key {room_key};\n"
+                "    set_real_ip_from 127.0.0.1;\n"
+                "    real_ip_header proxy_protocol;\n"
+                "    allow 100.64.0.0/10;\n"
+                "    deny all;\n"
+                "    if ($mag_tailnet_ok = 0) { return 403; }\n"
                 "    location = /readyz { default_type application/json; return 200 '{\"ready\":true}\\n'; }\n"
                 "}\n"
                 "server {\n"
@@ -283,6 +336,11 @@ class SniMap(unittest.TestCase):
                 f"  fastcgi_temp_path {tmp}/fastcgi;\n"
                 f"  uwsgi_temp_path {tmp}/uwsgi;\n"
                 f"  scgi_temp_path {tmp}/scgi;\n"
+                "  geo $remote_addr $mag_tailnet_ok {\n"
+                "    default 0;\n"
+                "    100.64.0.0/10 1;\n"
+                "    127.0.0.1 1;\n"
+                "  }\n"
                 f"  include {tmp}/http.conf;\n"
                 "}\n"
             )
@@ -294,7 +352,8 @@ class SniMap(unittest.TestCase):
             proc = subprocess.Popen(
                 ["nginx", "-c", str(config), "-p", str(tmp), "-g", "daemon off;"],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            stop = self._start_proxy(edge_port, http_port)
+            seen_as = [TAILNET_CLIENT]
+            stop = self._start_proxy(edge_port, http_port, seen_as)
             try:
                 self._wait(http_port)
                 self._wait(edge_port)
@@ -306,6 +365,13 @@ class SniMap(unittest.TestCase):
                     edge_port, "mag.tail3e02ae.ts.net", "/")
                 self.assertEqual(gitea[0], 200, gitea)
                 self.assertIn("gitea", gitea[1])
+                seen_as[0] = FUNNEL_CLIENT
+                blocked = self._curl_resolve(
+                    edge_port, "mag.stardenburg.de", "/readyz")
+                self.assertEqual(blocked[0], 403, blocked)
+                gitea = self._curl_resolve(
+                    edge_port, "mag.tail3e02ae.ts.net", "/")
+                self.assertEqual(gitea[0], 200, gitea)
             finally:
                 stop.set()
                 proc.terminate()
@@ -314,8 +380,11 @@ class SniMap(unittest.TestCase):
                 except subprocess.TimeoutExpired:
                     proc.kill()
 
-    def _start_proxy(self, listen_port, dest_port):
+    def _start_proxy(self, listen_port, dest_port, proxy_ip=TAILNET_CLIENT):
         stop = threading.Event()
+
+        def client_ip():
+            return proxy_ip[0] if isinstance(proxy_ip, list) else proxy_ip
 
         def accept_loop():
             srv = socket.socket()
@@ -329,18 +398,21 @@ class SniMap(unittest.TestCase):
                 except socket.timeout:
                     continue
                 threading.Thread(
-                    target=self._splice, args=(client, dest_port), daemon=True
+                    target=self._splice,
+                    args=(client, dest_port, client_ip()),
+                    daemon=True,
                 ).start()
             srv.close()
 
         threading.Thread(target=accept_loop, daemon=True).start()
         return stop
 
-    def _splice(self, client, dest_port):
+    def _splice(self, client, dest_port, proxy_ip=TAILNET_CLIENT):
         backend = None
         try:
             backend = socket.create_connection(("127.0.0.1", dest_port), timeout=3)
-            backend.sendall(b"PROXY TCP4 192.0.2.10 127.0.0.1 41000 443\r\n")
+            header = f"PROXY TCP4 {proxy_ip} 127.0.0.1 41000 443\r\n".encode()
+            backend.sendall(header)
             client.settimeout(5)
             backend.settimeout(5)
             threading.Thread(
@@ -398,9 +470,9 @@ class SniMap(unittest.TestCase):
                 time.sleep(0.05)
         self.fail("nginx did not bind the test port")
 
-    def _open(self, port, sni):
+    def _open(self, port, sni, proxy_ip=TAILNET_CLIENT):
         raw = socket.create_connection(("127.0.0.1", port), timeout=3)
-        raw.sendall(b"PROXY TCP4 192.0.2.10 127.0.0.1 41000 4443\r\n")
+        raw.sendall(f"PROXY TCP4 {proxy_ip} 127.0.0.1 41000 4443\r\n".encode())
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
@@ -414,11 +486,12 @@ class SniMap(unittest.TestCase):
             tls.close()
         return peer_cn(der)
 
-    def _http(self, port, sni, path):
-        tls = self._open(port, sni)
+    def _http(self, port, sni, path, host=None, proxy_ip=TAILNET_CLIENT):
+        tls = self._open(port, sni, proxy_ip)
         try:
             tls.sendall(
-                f"GET {path} HTTP/1.1\r\nHost: {sni}\r\nConnection: close\r\n\r\n".encode())
+                f"GET {path} HTTP/1.1\r\nHost: {host or sni}\r\n"
+                f"Connection: close\r\n\r\n".encode())
             data = b""
             while True:
                 chunk = tls.recv(4096)

@@ -6,7 +6,9 @@ tailscaled must not terminate TLS on that port: HTTPS mode only knows
 mag.tail3e02ae.ts.net and answers other SNI with 'no webserver configured
 for name/port' (tlsv1 alert internal error). nginx SNI-selects the room,
 bots, pages and Gitea. Public https://mag.tail3e02ae.ts.net/ is the same
-TCP path (Funnel relay does not decrypt). HTTP vhosts must not bind
+TCP path (Funnel relay does not decrypt). Room, bots and pages then
+allow only tailnet PROXY clients (100.64.0.0/10) so a public Host/SNI
+switch cannot read those vhosts. HTTP vhosts must not bind
 100.123.114.16:443. Tailnet serves on 8443, 8445 and 8446 stay HTTPS
 proxies and are not funneled.
 """

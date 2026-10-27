@@ -106,7 +106,13 @@ class LiveHighlight(unittest.TestCase):
    room.locator('#browser-overlay .bo-ripple').wait_for(state='attached',timeout=2000)
    room.screenshot(path=str(ART/'live_highlight_click.png'))
    # type: outline on the field, text appears at the field
-   u=boxes['user'];ev({'action':'type','box':u,'text':'chris@example.org'});assert_box(u)
+   u=boxes['user']
+   # The real browser reports the target before typing into it. Assert that
+   # both the focus target and the subsequent typing stay aligned.
+   ev({'action':'target','box':u,'x':u['x']+12,'y':u['y']+u['h']/2})
+   assert_box(u)
+   ev({'action':'type','box':u,'text':'chris@example.org'})
+   assert_box(u)
    room.wait_for_function("()=>document.querySelector('#browser-overlay .bo-type')?.textContent.includes('chris@example.org')",timeout=4000)
    # secret field: dots only (server sends masked; client also refuses a leaked value)
    p=boxes['pw'];ev({'action':'type','box':p,'masked':True,'text':FIELD_VALUE})

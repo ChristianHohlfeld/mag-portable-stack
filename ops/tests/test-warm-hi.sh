@@ -146,6 +146,8 @@ rc=$?
 set -e
 [[ "$rc" -ne 0 ]]
 echo "second bot cold rejected"
+kill "$pid" "$pid2"; wait "$pid" "$pid2" 2>/dev/null || true
+pid=; pid2=
 
 python3 "$tmp/srv.py" stub "$port" &
 pid=$!

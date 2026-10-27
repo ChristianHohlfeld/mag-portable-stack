@@ -3392,6 +3392,7 @@ static bool backend_accepts() {
 // opened while that queue is busy stays established until the generation
 // ends (live: 64 connections on :8191, then "srv stop: cancel task" on the
 // next chat). Lane state is local and does not touch llama.
+static std::atomic<bool> BUSY{false};
 static bool inference_hot() {
   if (BUSY.load()) return true;
   std::lock_guard<std::mutex> lk(BACKEND_FD_MTX);
@@ -3400,7 +3401,6 @@ static bool inference_hot() {
 }
 static bool slot_is_busy(int slot);
 static std::atomic<bool> HEALTH_PROBE_BUSY{false};
-static std::atomic<bool> BUSY{false};
 static ModelStatus probe_model_status() {
   ModelStatus st;
   st.at = now_s();

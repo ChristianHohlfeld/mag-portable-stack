@@ -41,7 +41,7 @@ text = (root / "ops/runners/mag-gitea-runner.service").read_text()
 spec = re.search(r"^CPUAffinity=(.+)$", text, re.M)
 allowed = re.search(r"^AllowedCPUs=(.+)$", text, re.M)
 assert spec and allowed and spec.group(1) == allowed.group(1) == "42-55", text
-assert "Nice=19" in text and "IOSchedulingClass=idle" in text
+assert "Nice=15" in text and "IOSchedulingClass=idle" in text
 forbid = set(range(0, 14)) | set(range(28, 42))
 cpus = set(range(42, 56))
 assert cpus.isdisjoint(forbid)

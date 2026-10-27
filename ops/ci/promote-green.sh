@@ -20,8 +20,8 @@ step="${PROMOTE_SLEEP:-5}"
 script_root=$(cd -- "$(dirname "$0")/../.." && pwd)
 required=$(jq -c '.contexts' "$script_root/ops/gitea-ci/policy.json")
 [[ $(jq 'length' <<<"$required") == 10 ]] || { echo 'check policy mismatch' >&2; exit 1; }
-# shellcheck disable=SC2016 # jq program: $names are jq variables, not shell
-merge='
+# Quoted heredoc so the jq variables below stay literal.
+merge=$(cat <<'JQ'
   def conclusion($state):
     if $state == "success" then "success"
     elif $state == "pending" or $state == null then null
@@ -44,7 +44,8 @@ merge='
     else
       [ (.check_runs // [])[] | select(.name != "promote-green" and .name != "deploy-live") ]
     end
-'
+JQ
+)
 api_get() {
   local path=$1
   if [[ ${MAG_PROMOTE_NO_GH:-0} != 1 ]] && command -v gh >/dev/null 2>&1; then

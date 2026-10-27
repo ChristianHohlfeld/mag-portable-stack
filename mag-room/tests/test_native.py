@@ -12,6 +12,9 @@ import hashlib,http.server,json,os,pathlib,socket,socketserver,subprocess,tempfi
 ROOT=pathlib.Path(__file__).resolve().parents[2]
 # Idle prompt prewarm adds background model calls; tests count Model.calls exactly.
 os.environ.setdefault('MAG_ROOM_PREWARM','0')
+# Production turns thinking off for the first user hi. The suite's explicit
+# thinking switch stays in force unless a test removes this.
+os.environ.setdefault('MAG_ROOM_FIRST_HI_THINK','on')
 NETMODE=pathlib.Path(tempfile.mkdtemp(prefix='magnet-'))/'netmode.sh';NETLOG=NETMODE.with_suffix('.log')
 NETMODE.write_text('#!/bin/sh\necho "$1" >> %s\n'%NETLOG);NETMODE.chmod(0o755)
 def port():
@@ -3793,7 +3796,7 @@ class MixedNuma(unittest.TestCase):
   self.assertTrue(Model.saved_prompt.get('0') and Model.saved_prompt.get('1'),
                   'both bots must save the slot file before a restart')
   self.stop()
-  Model.slot_snapshot=[{'id':0,'n_ctx':32768,'speculative':False,'is_processing':False,
+  Model.slot_snapshot=[{'id':0,'n_ctx':32768,'n_prompt_tokens':12,'speculative':False,'is_processing':False,
     'next_token':{'has_next_token':False,'has_new_line':False,'n_remain':0,'n_decoded':4}}]
   Model.prefix_miss_s=6
   self.env['MAG_ROOM_PREWARM']='1'
@@ -3968,6 +3971,62 @@ class MixedNuma(unittest.TestCase):
   finally:
    Model.prefix_miss_s=0;Model.slot_snapshot=[]
    self.env['MAG_ROOM_PREWARM']='0'
+   self.stop();self.start()
+ def test_16_first_hi_thinks_off_and_shows_the_first_token(self):
+  # Live: 190 reasoning tokens at 5.9 tok/s before any visible answer, and a
+  # 226-token suffix before that. The first user turn disables thinking and
+  # publishes the first content token while the rest of the stream is still open.
+  self.wait_idle();self.stop()
+  self.env.pop('MAG_ROOM_FIRST_HI_THINK',None)
+  Model.script=[[{'content':'Hi'},{'_sleep':1.5},{'content':' dort'}]]
+  try:
+   self.start()
+   bot=next(iter(self.bots().values()))
+   token=f'hi {bot["id"]} {time.monotonic_ns()}'
+   t0=time.monotonic()
+   self.request('/api/message',{'text':token,'bots':[bot['id']]})
+   seen=False
+   while time.monotonic()-t0<1.0:
+    room=self.request('/api/state')['room']
+    if any(m.get('role')=='assistant' and m.get('bot')==bot['id'] and str(m.get('content') or '').startswith('Hi') for m in room):
+     seen=True
+     break
+    time.sleep(.02)
+   self.assertTrue(seen,'first token was not in the room within 1s')
+   self.assertLess(time.monotonic()-t0,1.0)
+   call=next(c for c,_ in reversed(list(Model.pairs)) if token in json.dumps(c,ensure_ascii=False))
+   self.assertFalse(call['chat_template_kwargs']['enable_thinking'])
+   self.assertNotIn('[Kontext]',call['messages'][-1]['content'])
+   self.assertLess(len(call['messages'][-1]['content']),180)
+   self.wait_idle()
+   call2,_=self.ask(bot['id'])
+   self.assertTrue(call2['chat_template_kwargs']['enable_thinking'])
+  finally:
+   Model.script=[]
+   self.env['MAG_ROOM_FIRST_HI_THINK']='on'
+   self.stop();self.start()
+ def test_17_restart_does_not_prefill_or_resume_selftalk(self):
+  self.wait_idle()
+  for bot in self.bots().values():self.ask(bot['id'])
+  self.stop()
+  (self.state/'selftalk').write_text('on\n')
+  (self.state/'selftalk-resume').write_text('on\n')
+  (self.state/'deploy-hold').write_text('on\n')
+  Model.slot_snapshot=[{'id':0,'n_prompt_tokens':4321,'is_processing':False}]
+  self.env['MAG_ROOM_PREWARM']='1'
+  try:
+   seen=self._prewarm_count();mark=len(Model.paths);self.start()
+   self._wait_prewarm_models(seen,lambda ln:'skipped=ram' in ln,
+    what='resident prefix was not left untouched')
+   time.sleep(0.4)
+   self.assertFalse([p for p in list(Model.paths)[mark:] if p[0]=='/v1/chat/completions'],
+    'restart posted a completion or resumed proactive work')
+   self.assertTrue((self.state/'deploy-hold').is_file())
+  finally:
+   Model.slot_snapshot=[]
+   self.env['MAG_ROOM_PREWARM']='0'
+   for name in ('selftalk','selftalk-resume','deploy-hold'):
+    (self.state/name).unlink(missing_ok=True)
    self.stop();self.start()
  def test_08_health_timeout_is_busy_not_offline(self):
   self.wait_idle();self.stop();Model.hold_get=6;self.env['MAG_ROOM_PREWARM']='1'

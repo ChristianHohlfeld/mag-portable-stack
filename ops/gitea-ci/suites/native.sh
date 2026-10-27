@@ -84,10 +84,12 @@ printf "\n== %s\n" "Gitea bot rights against a fake API"
 bash ops/tests/test-gitea-bot-rights.sh
 printf "\n== %s\n" "New ops scripts pass shellcheck"
 if ! command -v shellcheck >/dev/null; then echo 'shellcheck not installed on this runner; skipped'; exit 0; fi
-shellcheck ops/vm/build-golden.sh ops/bootstrap-voice.sh ops/deepseek/bootstrap-runtimes.sh ops/tailscale/install.sh ops/private-access/install-lego.sh ops/gitea/mirror-github.sh ops/tests/e2e-bootstrap.sh ops/ci/promote-green.sh ops/ci/self-hosted-checks.sh
+shellcheck ops/vm/build-golden.sh ops/bootstrap-voice.sh ops/deepseek/bootstrap-runtimes.sh ops/tailscale/install.sh ops/private-access/install-lego.sh ops/gitea/mirror-github.sh ops/tests/e2e-bootstrap.sh ops/ci/promote-green.sh ops/ci/self-hosted-checks.sh ops/deploy-watchdog.sh
 
 printf "\n== %s\n" "Update script dry run"
 bash ops/tests/test-update.sh
+printf "\n== %s\n" "Deploy deadline releases the lock"
+bash ops/tests/test-deploy-watchdog.sh
 printf "\n== %s\n" "One-shot legacy cleanup in a sandbox"
 bash ops/tests/test-cleanup-legacy.sh
 printf "\n== %s\n" "Unreferenced bot VM drift check"

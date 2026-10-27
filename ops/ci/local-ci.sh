@@ -89,12 +89,12 @@ check 'shell syntax' bash -c 'bash -n ops/*.sh ops/magbot-guest-run ops/magbot-a
 if have nginx; then check 'bots ops tests' bash ops/bots/tests/test-bots.sh
 else skip 'bots ops tests' 'needs the nginx binary (nginx -t on a temp config)'; fi
 check 'ISRG trust chain' bash ops/trust/test-trust.sh
-for t in test-bootstrap test-gitea-mirror test-gitea-bot-rights test-update test-cleanup-legacy \
+for t in test-bootstrap test-gitea-mirror test-gitea-bot-rights test-update test-deploy-watchdog test-cleanup-legacy \
          test-agent-drift test-runners test-green test-boot; do
   check "ops $t" bash "ops/tests/$t.sh"
 done
 if have shellcheck; then
-  check 'shellcheck new ops scripts' shellcheck ops/vm/build-golden.sh ops/bootstrap-voice.sh ops/deepseek/bootstrap-runtimes.sh ops/tailscale/install.sh ops/private-access/install-lego.sh ops/gitea/mirror-github.sh ops/tests/e2e-bootstrap.sh ops/ci/promote-green.sh ops/ci/self-hosted-checks.sh ops/ci/local-ci.sh
+  check 'shellcheck new ops scripts' shellcheck ops/vm/build-golden.sh ops/bootstrap-voice.sh ops/deepseek/bootstrap-runtimes.sh ops/tailscale/install.sh ops/private-access/install-lego.sh ops/gitea/mirror-github.sh ops/tests/e2e-bootstrap.sh ops/ci/promote-green.sh ops/ci/self-hosted-checks.sh ops/ci/local-ci.sh ops/deploy-watchdog.sh
 else skip 'shellcheck' 'not installed'; fi
 check 'S23 control API' python3 devices/s23/tests/test_s23ctl.py
 

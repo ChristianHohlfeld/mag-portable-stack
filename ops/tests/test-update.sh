@@ -10,10 +10,11 @@ grep -Fq 'ops/deploy.sh' <<<"$out"
 [[ $(grep -n 'PHASE build' <<<"$out" | cut -d: -f1) -lt $(grep -n 'PHASE deploy' <<<"$out" | cut -d: -f1) ]]
 ! grep -Eq 'mag-llm' "$root/ops/update.sh"
 ! grep -Eq 'systemctl (restart|stop|reload).*mag-llm' "$root/ops/deploy.sh"
-forced=$(MAG_DEPLOY_FORCE=1 MAG_DEPLOY_DRAIN_S=5 MAG_ROOM_LAYOUT=mixed bash "$root/ops/update.sh" --dry-run)
+forced=$(MAG_DEPLOY_FORCE=1 MAG_DEPLOY_DRAIN_S=5 MAG_DEPLOY_DEADLINE_S=30 MAG_ROOM_LAYOUT=mixed bash "$root/ops/update.sh" --dry-run)
 grep -Fq 'sudo env' <<<"$forced"
 grep -Fq 'MAG_DEPLOY_FORCE=1' <<<"$forced"
 grep -Fq 'MAG_DEPLOY_DRAIN_S=5' <<<"$forced"
+grep -Fq 'MAG_DEPLOY_DEADLINE_S=30' <<<"$forced"
 grep -Fq 'MAG_ROOM_LAYOUT=mixed' <<<"$forced"
 ! grep -Fq 'MAG_DEPLOY_FORCE' <<<"$out"
 bash -n "$root"/ops/auto-update/*.sh
@@ -46,9 +47,12 @@ mkdir "$tmp/bin"
 printf '#!/bin/sh\nn=$(($(cat "%s/n" 2>/dev/null || echo 0) + 1)); echo $n > "%s/n"\n[ $n -ge 4 ] || exit 7\ncase " $* " in *" -o "*) ;; *) echo ok ;; esac\n' "$tmp" "$tmp" > "$tmp/bin/curl"
 printf '#!/bin/sh\n' > "$tmp/bin/sleep"; chmod +x "$tmp/bin/curl" "$tmp/bin/sleep"
 fn=$(sed -n '/^wait_http() {/,/^}/p' "$root/ops/deploy.sh")
-[[ $(PATH="$tmp/bin:$PATH" bash -euc "$fn"$'\nwait_http http://x/health') == ok ]]
+# The room script runs curls through deploy_run (own process group). This
+# harness only checks the retry, so the stub execs the command directly.
+runstub='deploy_run() { shift; [[ ${1:-} == -- ]] && shift; "$@"; }'
+[[ $(PATH="$tmp/bin:$PATH" bash -euc "$runstub"$'\n'"$fn"$'\nwait_http http://x/health') == ok ]]
 echo 0 > "$tmp/n"; printf '#!/bin/sh\nexit 7\n' > "$tmp/bin/curl"
-! PATH="$tmp/bin:$PATH" bash -euc "$fn"$'\nwait_http http://x/health'
+! PATH="$tmp/bin:$PATH" bash -euc "$runstub"$'\n'"$fn"$'\nwait_http http://x/health'
 # Stuck busy (no token/text progress) continues; a moving reply still defers.
 drain=$(sed -n '/^drain_room() {/,/^}/p' "$root/ops/deploy.sh")
 printf '#!/bin/sh\nprintf %%s '"'"'{"busy":true,"queue":0,"activities":[{"processed":0,"total":0,"phase":"think","steps":[]}],"room":[{"role":"assistant","content":""}]}'"'"'\n' > "$tmp/bin/curl"

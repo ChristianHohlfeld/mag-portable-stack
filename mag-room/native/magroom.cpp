@@ -4025,6 +4025,7 @@ static bool assistant_prefill_error(const std::string &err) {
 static void handoff_visible_turn(int idx, TurnReport &report, const std::string &partial, int think);
 #include "mcp.hpp"
 #include "secrets.hpp"
+#include "agent_skills.hpp"
 static std::string tools_json(int bot_idx, bool web) {
   std::string vm = bot_field(bot_idx, "vm", "keine");
   const bool has_vm = !vm.empty() && vm != "keine";
@@ -4044,6 +4045,7 @@ static std::string tools_json(int bot_idx, bool web) {
   if (CONFIGURED_MODEL || github_enabled(bot_idx)) defs.push_back(T_GITHUB); // stable schema; execution remains opt-in
   defs.push_back(T_TODO);
   defs.push_back(T_MEMORY);
+  defs.push_back(T_SKILL);
   defs.push_back(T_TASK);
   defs.push_back(T_SECRET); // a sub-agent gets it too (cache); task_start refuses depth 2
   for (const char *d : JOBS_TOOL_DEFS) defs.push_back(d);
@@ -5415,6 +5417,7 @@ static std::string dispatch_tool_raw(int bot_idx, const std::string &name,
   }
   if (name == "todo") return todo_tool(bot_id, a);
   if (name == "memory") return memory_tool(bot_id, a);
+  if (name == "skill") return skill_tool(bot_idx, a);
   if (name == "task") return task_tool(bot_idx, a);
   if (name == "secret") return secret_tool(bot_idx, a);
   if (name == "remember") {

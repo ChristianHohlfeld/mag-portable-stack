@@ -288,64 +288,50 @@ class RoomE2E(unittest.TestCase):
         finally:
             self.room.api('/api/bot-settings', {'scope': 'room', 'pho_compress': True}, method='PUT')
 
-    def test_05e_pho_percent_reuses_the_toggle_and_status_line(self):
-        # 390x844: the saving replaces the existing "an" state and, only while
-        # the 22px queue line is already open, sits in that line. Composer
-        # height does not change when the number appears or disappears.
-        p = self.browser.new_page(viewport={'width': 390, 'height': 844},
-                                  is_mobile=True, has_touch=True)
-        try:
-            p.goto(f'http://127.0.0.1:{self.room.ui}/')
-            expect(p.locator('#connection')).to_contain_text('Verbunden', timeout=10000)
-            p.evaluate("""()=>{
-              const a=state.agents[0];
-              a.pho_compress=true;
-              a.pho_save={last_before:35,last_after:27,session_before:100,session_after:77};
-              state.agents.push({id:'b',name:'Beta',pho_compress:true,color:'#48f',
-                pho_save:{last_before:10,last_after:8,session_before:50,session_after:40}});
-              selected.add('b');
-              syncBotSwitches();
-            }""")
-            idle=p.evaluate("document.querySelector('.composer-inner').getBoundingClientRect().height")
-            self.assertFalse(p.locator('#queue-chips').is_visible())
-            self.assertEqual(p.locator('.pho-save').count(), 0)
-            p.click('#plus')
-            expect(p.locator('#plus-pho')).to_contain_text('PhO-Compress')
-            expect(p.locator('#plus-pho-state')).to_have_text('−22 %')
-            tip=p.locator('#plus-pho').get_attribute('title')
-            self.assertIn('35→27', tip)
-            self.assertIn('100→77', tip)
-            self.assertIn('10→8', tip)
-            self.assertIn('50→40', tip)
-            self.assertIn('Alpha', tip)
-            self.assertIn('Beta', tip)
-            box=p.locator('#plus-menu').bounding_box()
-            self.assertGreaterEqual(box['x'], -1)
-            self.assertLessEqual(box['x']+box['width'], 391)
-            self.assertLessEqual(p.evaluate('document.documentElement.scrollWidth-innerWidth'), 1)
-            p.keyboard.press('Escape')
-            self.assertEqual(p.evaluate("document.querySelector('.composer-inner').getBoundingClientRect().height"), idle)
-            p.evaluate("""()=>{
-              renderQueue({pending:[{id:'q1',text:'wartet hier',held:false}],paused:false,revision:999999});
-            }""")
-            expect(p.locator('#queue-chips .pho-save')).to_have_text('PhO −22 %')
-            queued=p.locator('#queue-chips').bounding_box()['height']
-            self.assertLessEqual(queued, 26)
-            self.assertLessEqual(p.evaluate('document.documentElement.scrollWidth-innerWidth'), 1)
-            p.evaluate("""()=>{state.agents.forEach(a=>a.pho_compress=false);syncBotSwitches()}""")
-            expect(p.locator('#plus-pho-state')).to_have_text('aus')
-            self.assertEqual(p.locator('.pho-save').count(), 0)
-            self.assertEqual(p.locator('#queue-chips').bounding_box()['height'], queued)
-            p.evaluate("""()=>{
-              state.agents.forEach(a=>{a.pho_compress=true;delete a.pho_save});
-              syncBotSwitches();
-            }""")
-            expect(p.locator('#plus-pho-state')).to_have_text('an')
-            self.assertEqual(p.locator('.pho-save').count(), 0)
-            self.assertEqual(p.locator('#queue-chips').bounding_box()['height'], queued)
-            self.assertNotIn('→', p.locator('#plus-pho').get_attribute('title'))
-        finally:
-            p.close()
+    def test_05e_compression_gain_sits_on_the_message(self):
+        # The saving is one line on the compressed message. It is not a
+        # percentage in the plus menu, the queue, or a second copy.
+        for width, height, touch in ((390, 844, True), (1280, 800, False)):
+            p = self.browser.new_page(viewport={'width': width, 'height': height},
+                                      is_mobile=touch, has_touch=touch)
+            try:
+                p.goto(f'http://127.0.0.1:{self.room.ui}/')
+                p.wait_for_selector('#send-button', timeout=3000)
+                p.evaluate("""()=>{
+                  state.room=[{id:'old',role:'user',name:'Du',content:'Alter Verlauf',
+                    pho_before:12400,pho_after:3100,ts:1}];
+                  state.agents[0].pho_compress=true;
+                  render();
+                  syncBotSwitches();
+                }""")
+                gain = p.locator('.message .pho-gain')
+                expect(gain).to_have_count(1, timeout=3000)
+                expect(gain).to_have_text('12.4k → 3.1k Tokens (−75%)', timeout=3000)
+                box = p.evaluate("""()=>{
+                  const g=document.querySelector('.message .pho-gain');
+                  const msg=g.closest('.message');
+                  const gb=g.getBoundingClientRect(), mb=msg.getBoundingClientRect();
+                  const cs=getComputedStyle(g);
+                  return {inside:g.parentElement===msg,
+                    above:gb.bottom<=mb.bottom+1, left:gb.left>=mb.left-1,
+                    right:gb.right<=mb.right+1, h:gb.height,
+                    border:cs.borderTopWidth, bg:cs.backgroundColor,
+                    copies:document.querySelectorAll('.pho-gain').length};
+                }""")
+                self.assertTrue(box['inside'])
+                self.assertTrue(box['above'])
+                self.assertTrue(box['left'] and box['right'])
+                self.assertLessEqual(box['h'], 18)
+                self.assertEqual(box['border'], '0px')
+                self.assertEqual(box['copies'], 1)
+                self.assertEqual(p.locator('.pho-save').count(), 0)
+                self.assertEqual(p.locator('#queue-chips .pho-gain').count(), 0)
+                self.assertEqual(p.locator('.composer-wrap .pho-gain').count(), 0)
+                p.click('#plus')
+                expect(p.locator('#plus-pho-state')).to_have_text('an', timeout=3000)
+                self.assertNotIn('%', p.locator('#plus-pho').inner_text())
+            finally:
+                p.close()
 
     def test_06_message_after_stop_runs_and_held_queue_waits(self):
         p = self.page
@@ -592,6 +578,64 @@ class RoomE2E(unittest.TestCase):
                 self.assertEqual(page.locator('#notice').inner_text(), 'Bot info')
             finally:
                 page.close()
+
+
+    def test_11_clear_retries_through_a_restart(self):
+        # A restart answers 503. The clear is kept and retried; the only
+        # status is the slim line, and the test itself dies at 4s.
+        p = self.browser.new_page(viewport={'width': 390, 'height': 844},
+                                  is_mobile=True, has_touch=True)
+        try:
+            p.goto(f'http://127.0.0.1:{self.room.ui}/')
+            p.wait_for_selector('#send-button', timeout=3000)
+            p.evaluate("""()=>{
+              const orig=window.fetch;
+              window.__clearPosts=0;
+              window.__roomRelink='';
+              let stateFails=0, cleared=false;
+              window.fetch=async function(url, opts){
+                const u=String(url);
+                if(u.includes('/api/room/clear')){
+                  window.__clearPosts++;
+                  if(window.__clearPosts<=2)
+                    return new Response(JSON.stringify({error:'Raum nicht erreichbar'}),
+                      {status:503,statusText:'Service Unavailable',
+                       headers:{'Content-Type':'application/json'}});
+                  cleared=true;
+                }
+                if(cleared && u.includes('/api/state') && stateFails<1){
+                  stateFails++;
+                  return new Response('down',{status:502,statusText:'Bad Gateway'});
+                }
+                return orig(url, opts);
+              };
+              state.busy=false; state.pending=[]; busyBots=new Set();
+              ROOM_RETRY.base=800; ROOM_RETRY.cap=800; ROOM_RETRY.limit=4000;
+              document.getElementById('reset').hidden=false;
+              document.getElementById('settings-dialog').showModal();
+            }""")
+            p.locator('#reset').click(timeout=3000)
+            p.wait_for_function("window.__roomRelink==='Verbinde neu…'", timeout=3000)
+            link = p.locator('#room-link')
+            expect(link).to_be_visible(timeout=3000)
+            expect(link).to_have_text('Verbinde neu…', timeout=3000)
+            place = p.evaluate("""()=>{
+              const el=document.getElementById('room-link');
+              const msg=document.getElementById('message');
+              const eb=el.getBoundingClientRect(), mb=msg.getBoundingClientRect();
+              return {inComposer:!!el.closest('.composer-wrap'),
+                above:eb.bottom<=mb.top+1, h:eb.height,
+                border:getComputedStyle(el).borderTopWidth};
+            }""")
+            self.assertTrue(place['inComposer'])
+            self.assertTrue(place['above'])
+            self.assertLessEqual(place['h'], 24)
+            self.assertEqual(place['border'], '0px')
+            p.wait_for_function('window.__clearPosts>=3', timeout=4000)
+            expect(p.locator('#notice')).not_to_have_text('Raum nicht erreichbar', timeout=3000)
+            expect(link).to_be_hidden(timeout=3000)
+        finally:
+            p.close()
 
 
 if __name__ == '__main__':

@@ -7704,6 +7704,42 @@ static void alive_loop() {
     publish(mj::dump(e));
   }
 }
+static void pho_note_gain(std::map<std::string, std::pair<long, long>> &best,
+                          const std::string &text, long before, long after) {
+  if (text.empty() || before <= 0 || after < 0 || after >= before) return;
+  auto it = best.find(text);
+  if (it == best.end() || before - after > it->second.first - it->second.second)
+    best[text] = {before, after};
+}
+static void pho_collect_gains(std::map<std::string, std::pair<long, long>> &best,
+                              const Val &archive) {
+  if (!archive.isObj()) return;
+  for (const auto &kv : *archive.obj) {
+    long before = 0, after = 0;
+    if (!pho_accepted(kv.second, before, after)) continue;
+    pho_note_gain(best, mag::str(kv.second, "original"), before, after);
+  }
+}
+// Accepted archives, keyed by the original prose. The room still shows that
+// prose; the gain is drawn on that message, not on a separate status chip.
+static std::map<std::string, std::pair<long, long>> pho_message_gains() {
+  std::map<std::string, std::pair<long, long>> best;
+  std::vector<std::string> bots;
+  {
+    std::lock_guard<std::recursive_mutex> st(STATE_MTX);
+    for (size_t i = 0; i < AGENTS.size(); ++i) bots.push_back(bot_field((int)i, "id"));
+  }
+  {
+    std::lock_guard<std::mutex> lk(WIRE_MTX);
+    for (const auto &kv : WIRE_SESSIONS) pho_collect_gains(best, kv.second.pho_archive);
+  }
+  for (const auto &id : bots) {
+    Val saved;
+    if (!mj::parse(read_file(wire_path(id)), saved) || !saved.isObj()) continue;
+    if (const auto *a = saved.find("pho_archive")) pho_collect_gains(best, *a);
+  }
+  return best;
+}
 static std::string state_json(const Actor *actor = nullptr) {
   Val root = Val::object();
   Val ag = Val::array();
@@ -7726,6 +7762,7 @@ static std::string state_json(const Actor *actor = nullptr) {
   root["github_default"] = GITHUB_DEFAULT.load();
   root["pho_compress_default"] = PHO_DEFAULT.load();
   root["thinking"] = thinking_of(LAST_THINK.load());
+  const auto pho_gains = pho_message_gains();
   {
     std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
     std::set<std::string> gone;
@@ -7733,14 +7770,16 @@ static std::string state_json(const Actor *actor = nullptr) {
       if (f.find("removed")) gone.insert(f.find("stored")->asStr());
     Val rm = Val::array();
     for (auto &m : ROOM) {
-      auto mf = m.find("file");
+      Val c = m;
+      auto mf = c.find("file");
       if (mf && mf->isObj() && mf->find("stored") &&
-          gone.count(mf->find("stored")->asStr())) {
-        Val c = m;
+          gone.count(mf->find("stored")->asStr()))
         c["file"]["removed"] = true;
-        rm.push(c);
-      } else
-        rm.push(m);
+      if (auto g = pho_gains.find(mag::str(c, "content")); g != pho_gains.end()) {
+        c["pho_before"] = g->second.first;
+        c["pho_after"] = g->second.second;
+      }
+      rm.push(c);
     }
     root["room"] = rm;
     Val fl = Val::array();

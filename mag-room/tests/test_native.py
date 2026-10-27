@@ -3698,10 +3698,17 @@ class PhoCompress(unittest.TestCase):
   self.assertEqual(save['last_before'],rec['tokens_before'])
   self.assertEqual(save['last_after'],rec['tokens_after'])
   self.assertGreater(save['last_before'],save['last_after'])
+  gains=[m for m in self.request('/api/state')['room'] if m.get('pho_before',0)>m.get('pho_after',0)]
+  self.assertTrue(gains,'accepted compression is attached to the original message')
+  self.assertEqual(gains[-1]['pho_before'],rec['tokens_before'])
+  self.assertEqual(gains[-1]['pho_after'],rec['tokens_after'])
   html=(ROOT/'mag-room/web/index.html').read_text()
-  self.assertIn('function phoSaveView()',html)
-  self.assertIn("chip:'PhO −'+pct+' %'",html)
-  self.assertIn('className=\'pho-save\'',html)
+  self.assertIn('function phoGainText(',html)
+  self.assertIn("return phoK(before)+' → '+phoK(after)+' Tokens (−'+pct+'%)'",html)
+  self.assertIn("className='pho-gain'",html)
+  self.assertNotIn("chip:'PhO −'+pct+' %'",html)
+  self.assertIn('async function roomRetry(',html)
+  self.assertIn("roomLink('Verbinde neu…')",html)
  def test_08_aged_history_is_compressed_and_the_prefix_stays_cacheable(self):
   b=next(iter(self.bots().values()))
   code='```cpp\nconst char *URL = "https://github.com/o/r"; int id = 001234;\n```'

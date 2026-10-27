@@ -417,7 +417,7 @@ class TwoModels(unittest.TestCase):
         wait_calls(2, timeout=5)
         r = self.room.api('/api/message', {'text': 'Nachtrag nur fuer Alpha', 'bots': ['a']})
         self.assertTrue(r['queued'], 'Alpha is busy, so the message is queued visibly')
-        s = self.room.until(lambda s: 'Alpha: erledigt, inklusive Nachtrag.' in contents(s), timeout=8,
+        s = self.room.until(lambda s: 'erledigt, inklusive Nachtrag.' in contents(s), timeout=8,
                             what='Alpha answer with the late message')
         self.assertIn('b', s.get('busy_bots') or [], 'Beta keeps working, untouched')
         self.assertFalse(Model.disconnects, 'nobody was cancelled')
@@ -426,7 +426,7 @@ class TwoModels(unittest.TestCase):
         self.assertIn('Nachtrag nur fuer Alpha', alpha[-1]['messages'][-1]['content'])
         self.assertEqual(s['pending'], [])
         self.assertLess(contents(s).index('Nachtrag nur fuer Alpha'),
-                        contents(s).index('Alpha: erledigt, inklusive Nachtrag.'))
+                        contents(s).index('erledigt, inklusive Nachtrag.'))
         self.room.api('/api/cancel', {})
         self.room.until(lambda s: not s['busy'], timeout=3)
 

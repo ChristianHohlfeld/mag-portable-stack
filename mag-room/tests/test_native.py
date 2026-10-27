@@ -1556,7 +1556,7 @@ class Native(unittest.TestCase):
   self.assertFalse((ROOT/'ops/private-access/mag-whois.service').exists())
   self.assertFalse((ROOT/'ops/private-access/Caddyfile').exists())
   nginx=(ROOT/'ops/private-access/mag-room.nginx.conf').read_text()
-  for needle in ('listen 100.123.114.16:443','auth_request /_mag_whois',
+  for needle in ('listen 127.0.0.1:4443 ssl http2 proxy_protocol;','auth_request /_mag_whois',
                  'proxy_pass http://127.0.0.1:8766/_internal/tailscale/whois;',
                  'proxy_set_header X-Tailscale-User ""',
                  'proxy_set_header X-Tailscale-Name ""',

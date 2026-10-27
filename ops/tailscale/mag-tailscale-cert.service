@@ -1,0 +1,8 @@
+[Unit]
+Description=Renew the Tailscale certificate for mag.tail3e02ae.ts.net
+After=tailscaled.service nginx.service
+# Certificate only. Never stop or restart a model or the room.
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/mag-ci/issue-tailscale-cert.sh
+UMask=0077

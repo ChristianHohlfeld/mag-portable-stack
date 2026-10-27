@@ -26,7 +26,7 @@ sudo systemctl status nginx tailscaled mag-120 mag-llm --no-pager
 sudo grep -E 'ssl_certificate(_key)? ' /etc/nginx/sites-available/mag-room.conf
 sudo ls -l /etc/mag-acme/lego/certificates/mag.stardenburg.de.*
 ```
-The target is **100.123.114.16:443 → 127.0.0.1:8766**, native magroom Whois at **127.0.0.1:8766/_internal/tailscale/whois**, domain `mag.stardenburg.de`. Check for any other nginx virtual hosts bound to 100.123.114.16:443; an overlapping `server_name` is a blocker. The existing `/etc/mag-acme/lego.env` and acme-dns storage are root-owned host state and **not overwritten** by the installer.
+The target is **100.123.114.16:443 → 127.0.0.1:8766**, native magroom Whois at **127.0.0.1:8766/_internal/tailscale/whois**, domain `mag.stardenburg.de`. nginx no longer binds 100.123.114.16:443: tailscaled forwards that address to the shared `127.0.0.1:4443` socket, and an nginx `listen` on the Tailscale IP is a blocker. An overlapping `server_name` on that socket is still a blocker. The existing `/etc/mag-acme/lego.env` and acme-dns storage are root-owned host state and **not overwritten** by the installer.
 
 **Owner allowlist required before cutover:** Check `/var/lib/magbot/room/access.json` on MAG. It must contain `owners: ["<actual LoginName from tailscale whois>"]` (no guessed addresses or CI placeholder); verify file owner/permissions and that Chris's real login is present. The installer refuses a missing or invalid allowlist. The template `ops/private-access/access.json.example` is **not** an authoritative identity list and must never be copied unedited into production.
 

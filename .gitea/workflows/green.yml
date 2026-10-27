@@ -1,0 +1,58 @@
+# Host merge gate. Push and pull request to main run here on the Gitea
+# act_runner. runs-on must name both labels from ops/runners/gitea-runner.yaml
+# (mag:host and self-hosted:host). mag-ci.yml stays on mag-ci-vm and will not
+# match this runner. A green push to main moves the Gitea green ref and wakes
+# mag-auto-update through /var/lib/mag-deploy/request. GitHub is not used.
+name: Gitea green
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+permissions:
+  contents: write
+  statuses: read
+concurrency:
+  group: gitea-green-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  gate:
+    runs-on: [self-hosted, mag]
+    timeout-minutes: 30
+    env:
+      GITEA_TOKEN: ${{ github.token }}
+      MAG_GITEA_API: http://127.0.0.1:3000/api/v1
+      MAG_GITEA_REPOSITORY: mag-ci/mag-portable-stack
+    steps:
+      - name: checkout
+        timeout-minutes: 5
+        env:
+          GIT_TERMINAL_PROMPT: "0"
+        run: |
+          set -euo pipefail
+          umask 077
+          case "${GITHUB_SERVER_URL:-}" in
+            *github.com*) echo 'GitHub Actions is outside this gate; skipping.'; exit 0 ;;
+          esac
+          ask=$(mktemp)
+          trap 'rm -f "$ask"' EXIT
+          printf '%s\n' '#!/bin/sh' \
+            'case "$1" in' \
+            '  *Username*) printf "%s\n" gitea-actions ;;' \
+            '  *) printf "%s\n" "$GITEA_TOKEN" ;;' \
+            'esac' > "$ask"
+          chmod 700 "$ask"
+          git init -q .
+          git remote remove origin >/dev/null 2>&1 || true
+          git remote add origin "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git"
+          GIT_ASKPASS="$ask" timeout --kill-after=5s 4m \
+            git -c credential.helper= fetch --no-tags --depth=1 origin "$GITHUB_SHA"
+          git checkout -q --detach "$GITHUB_SHA"
+          git remote remove origin
+      - name: merge gate
+        timeout-minutes: 20
+        run: nice -n 19 ionice -c 3 bash ops/ci/gitea-gate.sh
+      - name: promote and request deploy
+        timeout-minutes: 5
+        if: success() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: timeout --kill-after=5s 4m bash ops/ci/promote-gitea.sh

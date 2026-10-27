@@ -1,0 +1,14 @@
+[Unit]
+Description=Publish Gitea on Tailscale Funnel port 443
+After=tailscaled.service network-online.target
+Wants=tailscaled.service
+# Re-asserts the serve config after reboot. Does not stop a model or the room.
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/bash @ROOT@/ops/tailscale/apply-gitea-funnel.sh
+TimeoutStartSec=180
+
+[Install]
+WantedBy=multi-user.target

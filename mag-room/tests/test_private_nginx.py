@@ -83,14 +83,23 @@ class NginxAuth(unittest.TestCase):
         text=text.replace(speech_include, f"include {SPEECH};")
         assert 'location ~ "^/static/speech-[0-9a-f]{12}/' in SPEECH.read_text()
         assert "auth_request off;" in text.split("location = /_mag_whois {",1)[1].split("}",1)[0], "Recursive auth_request risk"
-        text=text.replace("100.123.114.16:443",f"127.0.0.1:{cls.port}")
+        text=text.replace(
+            "listen 127.0.0.1:4443 ssl http2 proxy_protocol;",
+            f"listen 127.0.0.1:{cls.port} ssl http2;")
         text=text.replace("/etc/mag-nginx/tls/cert.pem",str(cls.cert))
         text=text.replace("/etc/mag-nginx/tls/key.pem",str(cls.key))
         text=text.replace("127.0.0.1:8766/_internal/tailscale/whois",f"127.0.0.1:{cls.whois.server_port}/_internal/tailscale/whois")
         text=text.replace("127.0.0.1:8766",f"127.0.0.1:{cls.backend.server_port}")
         site=cls.path/"site.conf";site.write_text(text)
+        for name in ("body","proxy","fastcgi","uwsgi","scgi"):
+            (cls.path/name).mkdir()
         cls.config=cls.path/"nginx.conf"
-        cls.config.write_text(f'pid {cls.path}/nginx.pid;\nerror_log {cls.path}/error.log;\nevents {{}}\nhttp {{ access_log off; include {site}; }}\n')
+        cls.config.write_text(
+            f'pid {cls.path}/nginx.pid;\nerror_log {cls.path}/error.log;\n'
+            f'events {{}}\nhttp {{ access_log off; '
+            f'client_body_temp_path {cls.path}/body; proxy_temp_path {cls.path}/proxy; '
+            f'fastcgi_temp_path {cls.path}/fastcgi; uwsgi_temp_path {cls.path}/uwsgi; '
+            f'scgi_temp_path {cls.path}/scgi; include {site}; }}\n')
         test=subprocess.run(["nginx","-t","-c",str(cls.config),"-p",str(cls.path)],capture_output=True,text=True)
         if test.returncode: raise RuntimeError(test.stderr)
         cls.nginx=subprocess.Popen(["nginx","-c",str(cls.config),"-p",str(cls.path),"-g","daemon off;"],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)

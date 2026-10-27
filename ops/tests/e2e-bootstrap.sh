@@ -163,8 +163,8 @@ check 'room /readyz' grep -q '"ready":true' <<<"$readyz"
 model=$(cx curl -fsS --max-time 10 http://127.0.0.1:8766/readyz/model || true)
 check 'stub model via audit gateway (/readyz/model)' grep -q '"ready":true' <<<"$model"
 check 'audit gateway health' cx curl -fsS --max-time 5 -o /dev/null http://127.0.0.1:8080/audit/v1/health
-code=$(cx curl -sS --max-time 10 -o /dev/null -w '%{http_code}' --resolve mag.stardenburg.de:443:100.123.114.16 https://mag.stardenburg.de/ || true)
-check "nginx Tailnet ingress (HTTP $code)" grep -Eq '^(200|401|403)$' <<<"$code"
+code=$(cx curl -sS --max-time 10 -o /dev/null -w '%{http_code}' --haproxy-protocol --resolve mag.stardenburg.de:4443:127.0.0.1 https://mag.stardenburg.de:4443/ || true)
+check "nginx shared tailnet socket (HTTP $code)" grep -Eq '^(200|401|403)$' <<<"$code"
 for unit in mag-120 mag-audit-gateway mag-audit-webproxy mag-browser-webrtc nginx gitea tailscaled mag-backup-daily.timer mag-auto-update.timer; do
   check "$unit active" cx systemctl is-active --quiet "$unit"
 done

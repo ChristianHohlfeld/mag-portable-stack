@@ -49,6 +49,15 @@ while IFS= read -r removed; do
       grep -Fq 'runs-on: mag-ci-vm' .gitea/workflows/mag-ci.yml
       ! grep -Eq '^[[:space:]]*runs-on:[[:space:]]*mag[[:space:]]*$' .gitea/workflows/mag-ci.yml
       ;;
+    ops/gitea-ci/http.nginx.in|ops/gitea-ci/public.env.example)
+      # Public DNS and the port-80 HTTP-01 vhost. Funnel on 443 replaces them.
+      test ! -e "$removed"
+      test -s ops/tailscale/apply-gitea-funnel.sh
+      test -s ops/gitea-ci/public.nginx.in
+      grep -Fq 'https://mag.tail3e02ae.ts.net/' ops/gitea-ci/configure-gitea.sh
+      grep -Fq 'listen 127.0.0.1:4443 ssl http2 proxy_protocol' ops/gitea-ci/public.nginx.in
+      ! grep -Fq 'git.mag.stardenburg.de' ops/gitea-ci/public.nginx.in
+      ;;
     *)
       echo "Unexpected deletion in speech integration: $removed" >&2
       exit 1

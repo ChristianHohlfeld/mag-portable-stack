@@ -7,7 +7,7 @@ PROTOCOL = http
 HTTP_ADDR = 127.0.0.1
 HTTP_PORT = 3000
 DOMAIN = mag.tail3e02ae.ts.net
-ROOT_URL = https://mag.tail3e02ae.ts.net:8445/
+ROOT_URL = https://mag.tail3e02ae.ts.net/
 # Runner registration uses this loopback URL, never ROOT_URL.
 LOCAL_ROOT_URL = http://127.0.0.1:3000/
 DISABLE_SSH = false

@@ -84,8 +84,13 @@ needs_owner_probe(){
 }
 local_smoke(){
   local status
+  # nginx is on the shared loopback socket. PROXY protocol carries the peer
+  # so whois does not see 127.0.0.1. The tailnet path is 100.123.114.16:443
+  # after tailscaled is forwarding; this check talks to nginx directly.
   status=$(curl -sS --max-time 10 -o /dev/null -w '%{http_code}' \
-    --resolve mag.stardenburg.de:443:100.123.114.16 https://mag.stardenburg.de/ || true)
+    --haproxy-protocol \
+    --resolve mag.stardenburg.de:4443:127.0.0.1 \
+    https://mag.stardenburg.de:4443/ || true)
   [[ $status =~ ^(200|401|403)$ ]] || die "Local ingress check failed (HTTP $status)"
   echo "Smoke OK (local): nginx and room answer on 443 (HTTP $status)"
 }
@@ -167,8 +172,8 @@ activate(){
     die 'Signed whois HMAC header missing'
   grep -Fq 'proxy_set_header X-Tailscale-IP $mag_ip;' <<<"$dump" ||
     die 'Trusted client IP header missing'
-  grep -Fq 'listen 100.123.114.16:443 ssl' <<<"$dump" ||
-    die 'Private 443 listener missing'
+  grep -Fq 'listen 127.0.0.1:4443 ssl http2 proxy_protocol;' <<<"$dump" ||
+    die 'Shared tailnet TLS listener missing'
   systemctl reload nginx.service || die 'nginx reload failed'
   systemctl is-active --quiet nginx.service || die 'nginx unhealthy'
 }

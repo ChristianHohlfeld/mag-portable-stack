@@ -12,11 +12,13 @@ using ci::Val;
 static std::atomic<bool> alive{true},wake{true};
 static const std::string upstream="ChristianHohlfeld/mag-portable-stack";
 struct Bridge {
-  Val policy,state=Val::object();std::string dir,gh,gt,hook,ga,ta,repo,control;
+  Val policy,state=Val::object();std::string dir,gh,gt,hook,ga,ta,repo,control,origin;
   std::vector<std::string> contexts;
   Bridge(const std::string &p,const std::string &d):policy(ci::json(ci::read(p))),dir(d) {
     if(ci::str(policy,"github_repository")!=upstream||ci::str(policy,"gitea_repository")!="mag-ci/mag-portable-stack"||ci::str(policy,"control_ref")!="mag-ci/control")throw std::runtime_error("repository policy mismatch");
     ga=ci::str(policy,"github_api");ta=ci::str(policy,"gitea_api");repo=ci::str(policy,"gitea_repository");control=ci::str(policy,"control_ref");
+    origin=ci::str(policy,"public_origin");
+    if(origin!="https://mag.tail3e02ae.ts.net"||ci::str(policy,"public_hostname")!="mag.tail3e02ae.ts.net")throw std::runtime_error("public origin mismatch");
     if(!mag::env("MAG_CI_TEST","").empty()){}else if(ga!="https://api.github.com"||ta!="http://127.0.0.1:3000/api/v1")throw std::runtime_error("API origin mismatch");
     gh=ci::secret("github");gt=ci::secret("gitea");hook=ci::secret("webhook");
     auto saved=ci::read(dir+"/state.json");if(!saved.empty())state=ci::json(saved);
@@ -61,7 +63,7 @@ struct Bridge {
     auto branch=gitea("/branches/mag-ci%2Fcontrol");if(branch.code!=200)throw std::runtime_error("control workflow unavailable");
     auto c=branch.value.find("commit");const auto control_sha=c?ci::str(*c,"id"):"";if(!ci::sha(control_sha))throw std::runtime_error("invalid control commit");
     auto &entry=state[sha];entry["ref"]=ref;entry["control_sha"]=control_sha;
-    const auto url="https://git.mag.stardenburg.de/"+repo+"/actions";
+    const auto url=origin+"/"+repo+"/actions";
     for(const auto &ctx:contexts)status(sha,ctx,"pending",url);
     // Record before dispatch. If a response is lost, recovery reconciles the
     // unique run title; it never treats an unrelated run as proof of success.
@@ -79,7 +81,7 @@ struct Bridge {
     if(ci::num(job,"run_id")!=id||ci::str(job,"head_sha")!=ci::str(entry,"control_sha")||ci::str(job,"name")!="checks")throw std::runtime_error("job identity mismatch");
     auto labels=job.find("labels");if(!labels||!labels->isArr()||labels->size()!=1||labels->asArr()[0].asStr()!="mag-ci-vm")throw std::runtime_error("worker identity mismatch");
     std::map<std::string,std::vector<Val>> steps;auto a=job.find("steps");if(a&&a->isArr())for(const auto &s:a->asArr())steps[ci::str(s,"name")].push_back(s);
-    bool all=true,finished=ci::str(job,"status")=="completed";const auto url="https://git.mag.stardenburg.de/"+repo+"/actions/runs/"+std::to_string(id);
+    bool all=true,finished=ci::str(job,"status")=="completed";const auto url=origin+"/"+repo+"/actions/runs/"+std::to_string(id);
     for(const auto &ctx:contexts) {
       const auto &matches=steps[ctx];std::string result="pending";
       if(matches.size()==1) {result=ci::conclusion(ci::str(matches[0],"conclusion"));if(ci::str(matches[0],"status")!="completed")result="pending";}

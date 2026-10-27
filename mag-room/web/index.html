@@ -1901,17 +1901,21 @@ if(state.you?.role==='owner'&&!state.configured_model)actList.push(['Umbenennen'
 if(a.id===single||state.dual_numa||state.configured_model){}else if(can('delete'))actList.push(['Entfernen',()=>removeAgent(a)]);
 if(a.vm)actList.splice(1,0,['Browser öffnen',()=>{location.href='/?bot='+encodeURIComponent(a.id)}]);
 if(actList.length){const more=document.createElement('button');more.type='button';more.className='agent-more';more.textContent='⋯';more.title='Aktionen für '+a.name;more.setAttribute('aria-label','Aktionen für '+a.name);more.setAttribute('aria-haspopup','menu');more.setAttribute('aria-expanded','false');more.onclick=e=>{e.stopPropagation();popMenu(more,actList.map(([t,f])=>[t,f,t==='Entfernen']))};actions.append(more)}
-card.append(row,info,actions);list.append(card);if(!a.vm)continue;const option=document.createElement('option');option.value=a.id;option.textContent=a.name;$('browser-agent').append(option)}const remembered=focusedBotId;if(remoteBotId&&state.agents.some(a=>a.id===remoteBotId)){focusedBotId=remoteBotId;if(!old&&location.search)history.replaceState(null,'','/')}
+card.append(row,info,actions);list.append(card);const option=document.createElement('option');option.value=a.id;option.textContent=a.name+(a.vm?'':' · VM startet');$('browser-agent').append(option)}const remembered=focusedBotId;if(remoteBotId&&state.agents.some(a=>a.id===remoteBotId)){focusedBotId=remoteBotId;if(!old&&location.search)history.replaceState(null,'','/')}
 else if(!state.agents.some(a=>a.id===focusedBotId))focusedBotId=(state.agents.find(a=>a.vm)||state.agents[0]||{}).id||'';
 if(focusedBotId){try{sessionStorage.setItem('mag-focused-bot',focusedBotId)}catch(e){}}
-if(remoteBotId&&!old&&state.agents.some(a=>a.id===remoteBotId&&a.vm))$('browser-agent').value=remoteBotId;
-else if(state.agents.some(a=>a.id===old&&a.vm))$('browser-agent').value=old;
-else if(!old&&state.agents.some(a=>a.id===remembered&&a.vm))$('browser-agent').value=remembered;
-else $('browser-agent').value='';
+// Keep bot identity selected across VM provisioning and reconnects. Clearing
+// the selector on a transient missing VM used to drop browser_action events.
+if(remoteBotId&&!old&&state.agents.some(a=>a.id===remoteBotId))$('browser-agent').value=remoteBotId;
+else if(state.agents.some(a=>a.id===old))$('browser-agent').value=old;
+else if(state.agents.some(a=>a.id===remembered))$('browser-agent').value=remembered;
+else if(state.agents.some(a=>a.id===focusedBotId))$('browser-agent').value=focusedBotId;
+else $('browser-agent').value=(state.agents[0]||{}).id||'';
 const current=$('browser-agent').value;
-if(!current&&livePeer)disconnectLive();
+const liveVmReady=state.agents.some(a=>a.id===current&&!!a.vm);
+if(!liveVmReady&&livePeer)disconnectLive();
 for(const card of list.querySelectorAll('.agent')){const active=card.dataset.bot===focusedBotId;card.classList.toggle('active',active);card.setAttribute('aria-pressed',String(active));card.setAttribute('aria-current',active?'true':'false')}
-updateConsoleLabel();syncBotDetail();try{const nv=$('browser-agent').value;if(nv&&(!livePeer||nv!==old)&&rightOpen&&(!isCompact()||layout.classList.contains('mobile-right'))&&!document.hidden)connectLive()}catch(e){}}
+updateConsoleLabel();syncBotDetail();try{const nv=$('browser-agent').value;if(nv&&liveVmReady&&(!livePeer||nv!==old)&&rightOpen&&(!isCompact()||layout.classList.contains('mobile-right'))&&!document.hidden)connectLive()}catch(e){}}
 function renderFiles(){const list=$('files');if(!list)return;list.replaceChildren();for(const f of state.files){const row=document.createElement('div');row.className='file';const a=document.createElement('a');a.href='/api/file/'+encodeURIComponent(f.stored);a.textContent=f.name;row.append(a);const size=document.createElement('small');size.textContent=' · '+Math.ceil(f.size/1024)+' KB';row.append(size);if(f.mime==='text/html'){const b=document.createElement('button');b.textContent='Vorschau';b.onclick=async()=>{try{$('canvas').srcdoc=await(await fetch(a.href)).text();$('canvas').hidden=false}catch(e){notice(e.message)}};row.append(b)}const del=document.createElement('button');del.type='button';del.className='file-trash';del.title='Datei löschen';del.setAttribute('aria-label','Datei löschen');del.innerHTML='<svg class="i sm" aria-hidden="true"><use href="#ic-trash"></use></svg>';del.onclick=()=>askDeleteFile(f);del.hidden=state.you?.role!=='owner';row.append(del);list.append(row)}}
 let thinkInit=false;
 const PHO_TIP='Ältere Verlaufsturns einmalig komprimieren; Änderung gilt ab der nächsten Turn-Grenze.';

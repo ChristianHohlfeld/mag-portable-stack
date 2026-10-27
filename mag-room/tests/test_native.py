@@ -19,16 +19,19 @@ def _mem(content):
 class Model(http.server.BaseHTTPRequestHandler):
  script_scope=None
  slot_snapshot=[];cache_records=[];tokenizer_fail=False;tokenizer_requests=[]
- protocol_version='HTTP/1.1';calls=[];slots=[];pairs=[];paths=[];slot_delay={};delay=0;reply=None;script=[];health=200;last_prompt={};overflow_once=0;barrier_token='';barrier_release=None
+ protocol_version='HTTP/1.1';calls=[];slots=[];pairs=[];paths=[];slot_delay={};delay=0;reply=None;script=[];health=200;last_prompt={};overflow_once=0;barrier_token='';barrier_release=None;hold_get=0
  def log_message(self,*a):pass
  def do_GET(self):
+  if type(self).hold_get: time.sleep(type(self).hold_get)
   code=200
   if self.path=='/health':
    code=type(self).health
    data={200:b'{"status":"ok"}',503:b'{"error":{"code":503,"message":"Loading model","type":"unavailable_error"}}'}.get(code,b'{"error":"upstream unavailable"}')
   elif self.path=='/slots':data=json.dumps(type(self).slot_snapshot).encode()
   else:data=b'{"data":[{"id":"deepseek-v4-flash-0731"}]}'
-  self.send_response(code);self.send_header('Content-Length',str(len(data)));self.end_headers();self.wfile.write(data)
+  try:
+   self.send_response(code);self.send_header('Content-Length',str(len(data)));self.end_headers();self.wfile.write(data)
+  except (BrokenPipeError,ConnectionResetError):return
  def do_POST(self):
   obj=json.loads(self.rfile.read(int(self.headers['Content-Length'])))
   if self.path=='/tokenize':
@@ -3421,21 +3424,65 @@ class MixedNuma(unittest.TestCase):
    self.assertEqual([p for p in list(Model.paths)[mark:] if p[0].startswith('/slots/') or p[0]=='/v1/chat/completions'],[])
   finally:
    self.stop();Model.slot_snapshot=[];self.env['MAG_ROOM_PREWARM']='0';self.start()
- def test_05_changed_prefix_prewarms_ram_without_restoring_old_disk(self):
+ def test_05_warm_ram_is_not_reprefilled_when_prefix_meta_is_stale(self):
+  # ik_llama keeps one slot and does not abort a prefill when the client
+  # disconnects. A stale on-disk prefix key must not start that prefill.
   self.wait_idle();self.stop();Model.slot_snapshot=[{'id':0,'n_prompt_tokens':4321}]
   meta=self.state/'prompt-prefix.json'
-  old=json.loads(meta.read_text());meta.write_text(json.dumps({k:'previous-software-prefix' for k in old}))
+  old=json.loads(meta.read_text()) if meta.exists() else {}
+  if not old:
+   old={'8191/mag-prefix-deepseek-v4-flash-0731-slot1.bin':'old',
+        '8192/mag-prefix-qwen3.8-flash-next-uncensored-slot2.bin':'old'}
+  meta.write_text(json.dumps({k:'previous-software-prefix' for k in old}))
   self.env['MAG_ROOM_PREWARM']='1'
   try:
    mark=len(Model.paths);self.start()
    for _ in range(150):
-    calls=[p for p in list(Model.paths)[mark:] if p[0]=='/v1/chat/completions' and p[3].get('max_tokens')==1]
-    if len(calls)>=2:break
+    log=self.tmp_path.joinpath('server.log').read_text()
+    if log.count('skipped=ram')>=2:break
     time.sleep(.02)
-   self.assertEqual({p[1] for p in calls},{'0','1'})
-   self.assertFalse([p for p in list(Model.paths)[mark:] if p[0].endswith('restore')])
+   else:self.fail(self.tmp_path.joinpath('server.log').read_text()[-800:])
+   self.assertEqual([p for p in list(Model.paths)[mark:] if p[0]=='/v1/chat/completions' or str(p[0]).endswith('restore')],[])
   finally:
    self.stop();Model.slot_snapshot=[];self.env['MAG_ROOM_PREWARM']='0';self.start()
+ def test_07_prefix_stable_across_restart_and_pho(self):
+  self.wait_idle()
+  bot=next(b for b in self.bots().values() if b['model']=='deepseek-v4-flash-0731')
+  first,_=self.ask(bot['id'])
+  system,tools=first['messages'][0]['content'],json.dumps(first['tools'],sort_keys=True,ensure_ascii=False)
+  self.assertNotIn('\n[Kontext]',system)
+  self.request('/api/bot-settings',{'bots':[bot['id']],'pho_compress':not bot.get('pho_compress',True)},method='PUT')
+  second,_=self.ask(bot['id'])
+  self.assertEqual(second['messages'][0]['content'],system)
+  self.assertEqual(json.dumps(second['tools'],sort_keys=True,ensure_ascii=False),tools)
+  self.stop();Model.slot_snapshot=[{'id':0,'n_prompt_tokens':4321,'prompt':'cached-prefix'}]
+  self.env['MAG_ROOM_PREWARM']='1'
+  try:
+   mark=len(Model.paths);self.start()
+   for _ in range(150):
+    if 'skipped=ram' in self.tmp_path.joinpath('server.log').read_text():break
+    time.sleep(.02)
+   self.assertFalse([p for p in list(Model.paths)[mark:] if p[0]=='/v1/chat/completions' and p[3].get('max_tokens')==1])
+   third,_=self.ask(bot['id'])
+   self.assertEqual(third['messages'][0]['content'],system)
+   self.assertEqual(json.dumps(third['tools'],sort_keys=True,ensure_ascii=False),tools)
+   rec=Model.cache_records[-1]
+   self.assertGreaterEqual(rec['n_past']/max(rec['prompt_size'],1),.9)
+  finally:
+   self.stop();Model.slot_snapshot=[];self.env['MAG_ROOM_PREWARM']='0';self.start()
+ def test_08_health_timeout_is_busy_not_offline(self):
+  self.wait_idle();self.stop();Model.hold_get=6;self.env['MAG_ROOM_PREWARM']='1'
+  try:
+   mark=len(Model.paths);self.start()
+   st=self.request('/api/model-status')
+   self.assertEqual(st['state'],'busy');self.assertTrue(st['ready'])
+   self.assertNotIn('nicht erreichbar',st['label']);self.assertIn('rechnet',st['label'])
+   deadline=time.monotonic()+3
+   while time.monotonic()<deadline and not [p for p in list(Model.paths)[mark:] if p[0]=='/v1/chat/completions']:
+    time.sleep(.05)
+   self.assertFalse([p for p in list(Model.paths)[mark:] if p[0]=='/v1/chat/completions'])
+  finally:
+   Model.hold_get=0;self.stop();self.env['MAG_ROOM_PREWARM']='0';self.start()
  def test_03_second_request_uses_positive_n_past_for_both_models(self):
   for b in self.bots().values():
    self.wait_idle();Model.last_prompt.clear();mark=len(Model.cache_records)

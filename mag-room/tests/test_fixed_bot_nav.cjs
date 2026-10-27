@@ -24,8 +24,10 @@ const nav={
   append(x){this.items.push(x)}
 };
 const context={
-  document:{createElement:(tag)=>({tag,attrs:{},classes:[],classList:{add(v){this.classes.push(v)}},
-    setAttribute(key,val){this.attrs[key]=val;}})},
+  document:{createElement:(tag)=>{const element={tag,attrs:{},classes:[],
+    setAttribute(key,val){this.attrs[key]=val;}};
+    element.classList={add(v){element.classes.push(v);}};
+    return element;}},
   $:id=>id==='fixed-bot-nav'?nav:null,
   focusedBotId:'ds',
   focusBot:id=>{context.focusedBotId=id}

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Publish Gitea on https://mag.tail3e02ae.ts.net/ (no port).
-# tailscaled owns TCP 443 and forwards raw TLS, with PROXY protocol v2, to
-# nginx on 127.0.0.1:4443. nginx SNI-routes that socket. Idempotent.
-# Does not restart a resident model or the room. Does not print keys.
+# tailscaled terminates TLS on :443 and proxies to http://127.0.0.1:3000.
+# nginx is moved off the Tailscale address so it cannot take that socket.
+# Idempotent. Does not restart a resident model or the room. Does not print keys.
 #   bash ops/tailscale/apply-gitea-funnel.sh [--dry-run]
 set +x
 set -euo pipefail
@@ -12,7 +12,7 @@ origin=https://mag.tail3e02ae.ts.net
 node=mag.tail3e02ae.ts.net
 if [[ ${1:-} == --dry-run ]]; then
   python3 "$here/merge-gitea-funnel.py" merge </dev/null
-  echo "funnel ${origin}/ -> tcp://127.0.0.1:4443 (nginx SNI); tailnet-only :8443 :8445 :8446"
+  echo "funnel ${origin}/ -> http://127.0.0.1:3000; tailnet-only :8443 :8445 :8446"
   exit 0
 fi
 if [[ -e /etc/mag-stack/TEST-HOST ]]; then
@@ -122,6 +122,11 @@ if ! nginx -t || ! systemctl reload nginx.service; then
   echo 'gitea funnel: nginx config rejected' >&2
   exit 1
 fi
+# tailscaled must be the only listener on the Tailscale address :443.
+if command -v ss >/dev/null && ss -ltnH 'sport = :443' | grep -q '100.123.114.16:443'; then
+  echo 'gitea funnel: 100.123.114.16:443 is still taken; refusing to enable Funnel' >&2
+  exit 1
+fi
 if [[ -s $ini ]]; then
   before=$(sha256sum "$ini")
   bash "$root/ops/gitea-ci/configure-gitea.sh"
@@ -163,4 +168,27 @@ fi
 get_code=$(api GET "$tmp/applied")
 [[ $get_code == 200 ]] || { echo "gitea funnel: serve-config reread HTTP ${get_code}" >&2; exit 1; }
 python3 "$here/merge-gitea-funnel.py" check <"$tmp/applied"
+status=$(tailscale funnel status 2>&1 || true)
+if ! grep -Fq 'http://127.0.0.1:3000' <<<"$status" || ! grep -Eq 'Funnel on|Available on the internet' <<<"$status"; then
+  echo 'gitea funnel: public Funnel is not active, so mag.tail3e02ae.ts.net has no public DNS' >&2
+  cat >&2 <<'EOF'
+The tailnet policy file needs a funnel node attribute. Without it Tailscale
+does not publish the public A/AAAA record. Add this on the Access controls
+page (a narrower target than autogroup:member is fine) and run this script again:
+
+"nodeAttrs": [
+  {
+    "target": ["autogroup:member"],
+    "attr": ["funnel"]
+  }
+]
+
+MagicDNS and HTTPS certificates must be enabled for the tailnet. After Funnel
+is on, public resolvers can take up to 10 minutes to see the name.
+EOF
+  exit 1
+fi
+sed "s#@ROOT@#$root#g" "$here/mag-gitea-funnel.service" > /etc/systemd/system/mag-gitea-funnel.service
+systemctl daemon-reload
+systemctl enable mag-gitea-funnel.service
 echo "gitea funnel: ${origin}/"

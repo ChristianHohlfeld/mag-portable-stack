@@ -29,10 +29,13 @@ class FunnelConfig(unittest.TestCase):
         self.assertEqual(generated, checked)
         self.assertEqual(generated["AllowFunnel"], {"mag.tail3e02ae.ts.net:443": True})
         block = generated["TCP"]["443"]
-        self.assertEqual(block["TCPForward"], "127.0.0.1:4443")
-        self.assertEqual(block["ProxyProtocol"], 2)
-        self.assertNotIn("HTTPS", block)
-        self.assertNotIn("mag.tail3e02ae.ts.net:443", generated["Web"])
+        self.assertIs(block["HTTPS"], True)
+        self.assertNotIn("TCPForward", block)
+        self.assertNotIn("ProxyProtocol", block)
+        self.assertEqual(
+            generated["Web"]["mag.tail3e02ae.ts.net:443"]["Handlers"],
+            {"/": {"Proxy": "http://127.0.0.1:3000"}},
+        )
 
     def test_only_gitea_stays_public_and_tailnet_serves_remain(self):
         current = {
@@ -66,9 +69,12 @@ class FunnelConfig(unittest.TestCase):
         )
         self.assertEqual(merged["Web"]["mag.tail3e02ae.ts.net:8446"]["Handlers"]["/extra"], {"Text": "keep"})
         self.assertNotIn("TCPForward", merged["TCP"]["8446"])
-        self.assertNotIn("mag.tail3e02ae.ts.net:443", merged["Web"])
-        self.assertEqual(merged["TCP"]["443"]["TCPForward"], "127.0.0.1:4443")
-        self.assertNotIn("HTTPS", merged["TCP"]["443"])
+        self.assertIs(merged["TCP"]["443"]["HTTPS"], True)
+        self.assertNotIn("TCPForward", merged["TCP"]["443"])
+        self.assertEqual(
+            merged["Web"]["mag.tail3e02ae.ts.net:443"]["Handlers"],
+            {"/": {"Proxy": "http://127.0.0.1:3000"}},
+        )
         for port in ("8443", "8445", "8446", "10000"):
             self.assertNotIn(f"mag.tail3e02ae.ts.net:{port}", merged["AllowFunnel"])
 
@@ -82,7 +88,8 @@ class FunnelConfig(unittest.TestCase):
         )
         lines = out.strip().splitlines()
         self.assertIn("tailnet-only :8443 :8445 :8446", lines[-1])
-        self.assertIn("tcp://127.0.0.1:4443", lines[-1])
+        self.assertIn("http://127.0.0.1:3000", lines[-1])
+        self.assertNotIn("tcp://", lines[-1])
         self.assertNotIn("8766", lines[-1])
         doc = json.loads("\n".join(lines[:-1]))
         self.m.assert_public_gitea_only(doc)
@@ -124,6 +131,14 @@ class FunnelConfig(unittest.TestCase):
         self.assertIn("--haproxy-protocol", install)
         self.assertIn("mag.tail3e02ae.ts.net:4443", install)
         self.assertNotIn("127.0.0.1:3010", install)
+        apply = (ROOT / "ops/tailscale/apply-gitea-funnel.sh").read_text()
+        self.assertIn('attr": ["funnel"]', apply)
+        self.assertIn("tailscale funnel status", apply)
+        self.assertIn("mag-gitea-funnel.service", apply)
+        unit = (ROOT / "ops/tailscale/mag-gitea-funnel.service").read_text()
+        self.assertIn("apply-gitea-funnel.sh", unit)
+        self.assertIn("RemainAfterExit=yes", unit)
+        self.assertIn("mag-gitea-funnel.service", (ROOT / "ops/boot/ensure-boot.sh").read_text())
 
     def test_retarget_moves_only_the_tailscale_listener(self):
         old = "    listen 100.123.114.16:443 ssl http2;\nlisten 192.0.2.10:443 ssl;\n"

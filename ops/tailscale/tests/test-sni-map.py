@@ -85,11 +85,14 @@ class SniMap(unittest.TestCase):
         self.assertIn("server_name @ZONE@;", pages)
         self.assertIn("agent[0-9]+", bots)
         self.assertIn("pageslug", pages)
-        # tailscaled is the only :443 claim. nginx's socket is 4443.
+        # tailscaled owns :443 for the Funnel. nginx's socket is 4443.
         serve = json.loads((ROOT / "ops/tailscale/gitea-funnel.json").read_text())
-        self.assertEqual(serve["TCP"]["443"]["TCPForward"], "127.0.0.1:4443")
-        self.assertNotIn("HTTPS", serve["TCP"]["443"])
-        self.assertNotIn("mag.tail3e02ae.ts.net:443", serve["Web"])
+        self.assertIs(serve["TCP"]["443"]["HTTPS"], True)
+        self.assertNotIn("TCPForward", serve["TCP"]["443"])
+        self.assertEqual(
+            serve["Web"]["mag.tail3e02ae.ts.net:443"]["Handlers"]["/"]["Proxy"],
+            "http://127.0.0.1:3000",
+        )
         self.assertEqual(list(serve["AllowFunnel"]), ["mag.tail3e02ae.ts.net:443"])
         for port in ("8443", "8445", "8446"):
             self.assertNotIn(f"mag.tail3e02ae.ts.net:{port}", serve["AllowFunnel"])

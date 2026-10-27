@@ -7,43 +7,54 @@ are unchanged. This change does not stop/restart either resident LLM.
 ## Public endpoint
 
 Public URL: **https://mag.tail3e02ae.ts.net/** (HTTPS Git and Gitea login, no
-port). Tailscale Funnel and tailnet clients share **one** TCP listener on
-`:443`. tailscaled does not terminate TLS. It forwards the bytes, with PROXY
-protocol v2, to nginx on `127.0.0.1:4443`. nginx routes on SNI:
-
-| SNI | Certificate | Upstream |
-| --- | --- | --- |
-| `mag.tail3e02ae.ts.net` | `tailscale cert` (renewed by `mag-tailscale-cert.timer`) | Gitea `127.0.0.1:3000` |
-| `mag.stardenburg.de` | existing room certificate | room `127.0.0.1:8766` |
-| `pages.stardenburg.de` and `*.pages.stardenburg.de` | existing Pages certificate | Pages files |
-| `agentN.bot.stardenburg.de` | existing bot certificate | bot files |
-| anything else | none | handshake rejected |
-
-Those names keep working for tailnet clients because DNS still points at
-`100.123.114.16`. nginx must not bind that address. There is no Caddy
-dependency. Gitea does not use lego, a public A record, or a forwarded router
-port.
+port). tailscaled terminates TLS on `:443` and reverse-proxies to Gitea at
+`http://127.0.0.1:3000`. That HTTPS Funnel is what publishes the public DNS
+name. A raw TCP forward does not. nginx must not listen on
+`100.123.114.16:443` (the Tailscale address); its tailnet vhosts listen on
+`127.0.0.1:4443` instead. There is no Caddy dependency and no router port
+forward.
 
 The other tailnet-only serves stay HTTPS proxies and are not funneled:
 
 | Serve | Target | Exposure |
 | --- | --- | --- |
-| `:443` | `tcp://127.0.0.1:4443` | public Funnel and tailnet; nginx SNI |
+| `:443` | `http://127.0.0.1:3000` | public Funnel and tailnet (Gitea) |
 | `:8443` | `http://127.0.0.1:18767` | tailnet only |
 | `:8445` | `http://127.0.0.1:3000` | tailnet only (Gitea direct) |
 | `:8446` | `http://127.0.0.1:8766` | tailnet only (room) |
 
-Port 443 is the Funnel listener because it is the default HTTPS port GitHub
-can call for webhooks and status links. `:8443` is already a private serve.
-`ROOT_URL` is `https://mag.tail3e02ae.ts.net/`.
+`ROOT_URL` is `https://mag.tail3e02ae.ts.net/`. `mag-gitea-funnel.service`
+re-applies this serve config after reboot. deploy and bootstrap call the same
+idempotent script.
+
+### Funnel node attribute
+
+Funnel stays off, and public resolvers return NXDOMAIN, until the tailnet
+policy file grants the `funnel` node attribute. On the current node it is
+missing: `tailscale funnel status` lists only the tailnet serves, and
+`8.8.8.8` / `1.1.1.1` have no A/AAAA for `mag.tail3e02ae.ts.net`. Add this on
+the Access controls page (Owner, Admin, or Network admin), then run
+`sudo bash ops/tailscale/apply-gitea-funnel.sh` again:
+
+```json
+"nodeAttrs": [
+  {
+    "target": ["autogroup:member"],
+    "attr": ["funnel"]
+  }
+]
+```
+
+MagicDNS and HTTPS certificates must be enabled. Public DNS can take up to
+10 minutes after Funnel is actually on. `apply-gitea-funnel.sh` refuses to
+finish unless `tailscale funnel status` shows Funnel proxying to
+`http://127.0.0.1:3000`.
 
 Registration is off, sign-in is required and **two-factor authentication is
-enforced for every human account** by Gitea itself. nginx limits login and
-two-factor attempts per client address from the PROXY header (5/minute) and
-the rest of the site more loosely, so git clones still work. A host fail2ban
-jail cannot see Funnel clients: their TCP connection arrives through
-tailscaled. The webhook keeps its installer-generated HMAC-SHA256 secret; the
-bridge rejects a bad signature. Unknown SNI is rejected.
+enforced for every human account** by Gitea itself. Public clients reach Gitea
+through tailscaled, not through nginx, so a host fail2ban jail cannot see
+them. The webhook keeps its installer-generated HMAC-SHA256 secret; the
+bridge rejects a bad signature.
 
 The existing root `/etc/credstore` + systemd `LoadCredential` mechanism is used:
 

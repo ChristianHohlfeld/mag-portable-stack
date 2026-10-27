@@ -4027,7 +4027,7 @@ class MixedNuma(unittest.TestCase):
     what='resident Qwen prefix was not left in RAM')
    self._wait_paths(mark,lambda ps:any(p[0]=='/v1/chat/completions' and p[1]=='0' and p[3].get('max_tokens')==1 for p in ps),
     what='cold DeepSeek prewarm did not reach the slot')
-   self.assertFalse(self.request('/api/state').get('selftalk'),'proaktiv must stay off so the pending split owns the turn')
+   self.assertTrue(self.request('/api/state').get('selftalk'),'@ routing remains on without autonomously starting a turn')
    self.request('/api/autotalk',{'on':True})
    command={'tool_calls':[{'index':0,'id':'own1','function':{'name':'remember','arguments':'{"fact":"owner"}'}}]}
    Model.script=[[command],['Qwen bleibt Gast [[MAG:ENDE]]']]
@@ -5074,14 +5074,14 @@ class TrailingAssistant(unittest.TestCase):
   saved=json.loads(self.wire_path.read_text())
   self.assertEqual(saved.get('messages'),self.before_messages)
   html=urllib.request.urlopen(f'http://127.0.0.1:{self.ui}/',timeout=2).read().decode()
-  self.assertIn('id="bot-proaktiv"',html)
+  self.assertNotIn('id="bot-proaktiv"',html)
   self.assertIn('id="bot-active"',html)
   agents={a['id']:a for a in self.request('/api/state')['agents']}
-  self.assertIs(agents['deepseek-chat']['proaktiv'],True)
   self.assertIsNot(agents['deepseek-chat']['enabled'],False)
-  self.request('/api/bot-settings',{'bots':['deepseek-chat'],'proaktiv':False},method='PUT')
+  with self.assertRaises(urllib.error.HTTPError) as denied:
+   self.request('/api/bot-settings',{'bots':['deepseek-chat'],'proaktiv':False},method='PUT')
+  self.assertEqual(denied.exception.code,400)
   agents={a['id']:a for a in self.request('/api/state')['agents']}
-  self.assertIs(agents['deepseek-chat']['proaktiv'],False)
   self.assertIsNot(agents['deepseek-chat']['enabled'],False)
 
 if __name__=='__main__':unittest.main(verbosity=2)

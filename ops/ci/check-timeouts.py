@@ -69,7 +69,7 @@ def python_tests():
         if _skipped(rel) or '/.git/' in f'/{rel}':
             continue
         name = path.name
-        if name in ('test_mag_deterministic_engine.py', 'preflight-tests.py') or name.startswith('test_') or name.endswith('_test.py'):
+        if name in ('test_mag_deterministic_engine.py', 'preflight-tests.py') or name.startswith('test_') or name.startswith('test-') or name.endswith('_test.py'):
             found.append(path)
     return found
 

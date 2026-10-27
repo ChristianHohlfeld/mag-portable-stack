@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Runs as root from mag-auto-update.timer (and from mag-deploy-request.path).
-# Branch `green` is the newest main commit that passed the Gitea merge gate.
+# Branch `green` is promoted by GitHub Actions, never by Gitea.
 # If it moved: fast-forward the checkout, build as the checkout owner, then
 # deploy. deploy.sh keeps its backup and automatic rollback. A failed commit is
-# retried once an hour. Gitea unreachable, or no `green` yet: nothing happens.
-# No model unit is ever touched. GitHub is not consulted.
+# retried once an hour. GitHub unreachable, or no `green` yet: nothing happens.
+# No model unit is ever touched. GitHub is the only source.
 set -euo pipefail
 SCRIPT_ROOT="$(cd -- "$(dirname "$0")/../.." && pwd)"
 log() { echo "auto-update: $*" >&2; }
@@ -28,7 +28,7 @@ fi
 branch="$(as git -C "$ROOT" symbolic-ref --short HEAD 2>/dev/null || true)"
 [[ "$branch" == main ]] || { log "checkout is on '$branch', not main; skipping"; exit 0; }
 [[ -z "$(as git -C "$ROOT" status --porcelain --untracked-files=no)" ]] || { log 'local changes in checkout; skipping'; exit 0; }
-ref="$(as bash "$SCRIPT_ROOT/ops/ci/fetch-gitea-green.sh" --green-only "$ROOT")" || { log 'gitea green not reachable yet; nothing to do'; exit 0; }
+ref="$(as bash "$SCRIPT_ROOT/ops/ci/fetch-github-green.sh" --green-only "$ROOT")" || { log 'GitHub green not reachable yet; nothing to do'; exit 0; }
 new="$(as git -C "$ROOT" rev-parse "$ref")"
 [[ "$new" != "$(cat "$STATE/deployed-sha" 2>/dev/null || true)" ]] || exit 0
 if [[ "$new" == "$(cat "$STATE/failed-sha" 2>/dev/null || true)" && -z "$(find "$STATE/failed-sha" -mmin +60)" ]]; then

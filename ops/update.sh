@@ -27,12 +27,14 @@ fi
 
 phase pull
 if (( PULL )); then
-  # Gitea `green` is the newest main commit whose merge gate passed.
-  # Gitea `main` is used only until that ref exists. GitHub is not fetched.
+  # One source: GitHub's last promoted green commit. Never fall back to main.
   if (( DRY )); then
-    echo "+ git fetch gitea green (falls back to gitea main)"
+    echo "+ fetch GitHub green (no fallback to Gitea or unverified main)"
   else
-    ref="$(bash "$ROOT/ops/ci/fetch-gitea-green.sh" "$ROOT")" || { echo 'gitea green/main not reachable' >&2; exit 1; }
+    ref="$(bash "$ROOT/ops/ci/fetch-github-green.sh" "$ROOT")" || {
+      echo 'GitHub green unavailable; no changes made' >&2
+      exit 1
+    }
     run git -C "$ROOT" merge --ff-only "$ref"
   fi
 else

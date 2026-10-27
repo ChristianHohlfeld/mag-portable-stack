@@ -18,6 +18,8 @@ concurrency:
   cancel-in-progress: false
 jobs:
   gate:
+    # GitHub is now the only CI release authority; Gitea stays for bot Git only.
+    if: false
     runs-on: [self-hosted, mag]
     timeout-minutes: 30
     env:

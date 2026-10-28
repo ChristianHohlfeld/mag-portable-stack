@@ -1580,7 +1580,20 @@ function streamControls(){syncComposerButton();if(thinkInit)syncBotSwitches()}
 // bot is actually generating. The field itself is never disabled; Enter only ever sends.
 function composerBusyIds(){const known=new Set((state.agents||[]).map(a=>a.id));return [...new Set([...busyBots,...Object.keys(streams)])].filter(id=>known.has(id))}
 function serverIdle(){return !!(state&&state.busy===false&&!(state.busy_bots||[]).length&&!((state.activities||[]).some(a=>a&&a.on)))}
-function generationLive(){const local=[...busyBots,...Object.keys(streams)].filter(id=>!waitingBots.has(id));if(local.length)return true;return !!state?.busy||(state?.activities||[]).some(a=>a?.on)}
+function generationLive(){
+ // A model may spend minutes reading its prefix before text/tokens arrive.
+ // Neither waiting-bot flags nor a late SSE may hide Stop during that phase.
+ return busyBots.size>0||Object.keys(streams).length>0||
+   !!state?.busy||(state?.busy_bots||[]).length>0||
+   (state?.activities||[]).some(a=>a?.on)||
+   (state?.tasks||[]).some(t=>t.status==='running')||
+   (state?.pending||[]).some(p=>!p.held);
+}
+function stopConfirmedIdle(){
+ return !!state&&!state.busy&&!(state.busy_bots||[]).length&&
+   !(state.activities||[]).some(a=>a?.on)&&
+   !(state.tasks||[]).some(t=>t.status==='running');
+}
 function syncStopButton(){const b=$('stop-run');if(!b)return;
  const on=(generationLive()||stopInFlight)&&can('stop');
  b.hidden=false;b.classList.toggle('is-on',!!on);b.classList.toggle('gbar-stopping',stopInFlight);
@@ -1797,9 +1810,14 @@ async function loadGuests(force=false){
   guestsLast=Date.now();
   $('guest-new').disabled=!info.configured;
   $('guest-new').title=info.configured?'Gast einladen':'OAuth-Client auf mag nicht eingerichtet';
-  $('guest-status').textContent=info.configured
-    ? (info.live_status==='unavailable'?'Tailscale-Status nicht verfügbar':'')
-    : (info.notice||'Einladungen derzeit nicht verfügbar');
+  // An empty guest list is self explanatory. No owner-only or empty-state
+  // banners occupying the sidebar; only actual actionable errors appear.
+  $('guest-status').textContent=info.configured&&info.live_status==='unavailable'
+    ? 'Tailscale-Status nicht verfügbar' : '';
+  $('guest-status').hidden=!$('guest-status').textContent;
+  // Keep the option to invite visible only when it actually works; no
+  // redundant empty-state descriptions or unavailable control.
+  $('guests-section').hidden=!info.configured&&!(info.guests||[]).length;
   const box=$('guest-list');box.replaceChildren();
   for(const entry of info.guests||[]){
    const row=document.createElement('div');row.className='job';
@@ -1819,7 +1837,7 @@ async function loadGuests(force=false){
    row.append(name,details,remove);box.append(row);
   }
   // An empty guest list speaks for itself; avoid placeholder copy.
- }catch(e){$('guest-status').textContent=e.message}
+ }catch(e){$('guest-status').textContent=e.message;$('guest-status').hidden=false}
  finally{guestsBusy=false}
 }
 function clearInvite(){
@@ -2244,37 +2262,52 @@ function clearStopping(){if(stopInFlight)return;syncComposerButton()}
 async function stopBot(id){
  if(stopInFlight||!can('stop'))return;
  stopInFlight=true;
- paintStopping();renderLanes(); // immediate indication, even during long CPU prefill
+ paintStopping();renderLanes();syncStopButton();
+ notice('Stoppt…'); // immediate acknowledgment, before any network access
  const controller=new AbortController();
  const timeout=setTimeout(()=>controller.abort(),15000);
+ let acknowledged=false,confirmed=false;
  try{
+  const headers={'Content-Type':'application/json'};
+  const token=document.querySelector('meta[name="mag-token"]')?.content;
+  if(token)headers['X-Mag-Token']=token;
   const response=await fetch('/api/cancel',{
-   method:'POST',headers:{'Content-Type':'application/json'},
-   body:JSON.stringify(id?{bot:id}:{}),signal:controller.signal
+   method:'POST',headers,body:JSON.stringify(id?{bot:id}:{}),
+   signal:controller.signal,cache:'no-store'
   });
   const payload=await response.json().catch(()=>({}));
   if(!response.ok)throw Error(payload.error||'Stop-Anfrage fehlgeschlagen (HTTP '+response.status+')');
-  // Resolve the canonical busy state before dropping the stopping indication.
-  const synced=await refresh().then(()=>true,()=>false);
-  if(!synced)notice('Stop bestätigt; Raumstatus vorübergehend nicht erreichbar.');
-  else if(!generationLive())notice('');
-  else notice('Stop bestätigt; laufende Werkzeuge werden beendet…');
+  acknowledged=!!payload.cancelled||!!payload.settling;
+  // A 200 with cancelled=false is NOT proof that a running model stopped.
+  // Read only the canonical state; never replay a destructive stop silently.
+  for(let i=0;i<35;i++){
+   const ok=await refresh().then(()=>true,()=>false);
+   if(ok&&stopConfirmedIdle()){confirmed=true;break}
+   if(i===0)notice('Stop angefordert – Ausführung wird beendet…');
+   await new Promise(resolve=>setTimeout(resolve,250));
+  }
+  if(confirmed)notice('');
+  else notice(acknowledged?
+    'Stop angefordert; der Bot ist noch beschäftigt. Erneut stoppen möglich.':
+    'Stop nicht bestätigt – der Bot ist noch beschäftigt.');
  }catch(e){
-  notice(e.name==='AbortError'
-    ? 'Stop nicht bestätigt: Server antwortet nicht. Zustand wird geprüft.'
+  // An aborted browser request says nothing about whether the server already
+  // applied the cancellation; verify read-only before offering a retry.
+  const ok=await refresh().then(()=>true,()=>false);
+  confirmed=ok&&stopConfirmedIdle();
+  notice(confirmed?'':e.name==='AbortError'
+    ? 'Stop-Antwort ausgeblieben. Zustand prüfen und gegebenenfalls erneut stoppen.'
     : 'Stop nicht bestätigt: '+e.message);
-  await refresh().catch(()=>{});
  }finally{
   clearTimeout(timeout);
   stopInFlight=false;
-  // A proxy failure is not proof that Stop succeeded. If the room is still
-  // busy, restore live labels instead of freezing every stream on "Stoppt".
-  for(const s of Object.values(streams))if(s?.stopping){
-   s.stopping=false;
-   if(s.stopBefore){s.phase=s.stopBefore.phase;s.label=s.stopBefore.label;delete s.stopBefore}
+  // Preserve the real server state; never fabricate a stopped run locally.
+  // The SSE idle/cancelled event, or refresh, owns stream removal.
+  for(const st of Object.values(streams))if(st?.stopping){
+   st.stopping=false;
+   if(st.stopBefore){st.phase=st.stopBefore.phase;st.label=st.stopBefore.label;delete st.stopBefore}
   }
-  renderLanes();
-  syncStopButton();
+  renderLanes();syncStopButton();
  }
 }
 function activityItems(){

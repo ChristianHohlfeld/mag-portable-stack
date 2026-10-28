@@ -2814,6 +2814,53 @@ class MultiBot(unittest.TestCase):
   self._idle()
   self.assertEqual(self._last_bot_text('q4bot'),'Hallo aus dem Modell.')
 
+
+ def test_10f_stop_clears_paused_queue_without_model_activity(self):
+  # A paused *existing* queue survives /api/stop by contract. A later
+  # composer Stop must clear it even though no model lane is running.
+  self._idle()
+  Model.delay=5
+  try:
+   n=len(Model.calls)
+   self.request('/api/message',{'text':'Aktiver Lesevorgang','bots':['q4bot']})
+   self._calls_after(n,1,1.5)
+   self.request('/api/message',{'text':'Wartend nicht mehr ausführen','bots':['q4bot']})
+   pre=self.request('/api/state')
+   self.assertTrue(pre['pending'],pre)
+   self.request('/api/stop',{})
+   self._idle()
+   before=self.request('/api/state')
+   self.assertTrue(before['pending'] and before['queue_paused'],before)
+   out=self.request('/api/cancel',{})
+   self.assertTrue(out['cancelled'],out)
+   self.assertFalse(out.get('settling',False))
+   after=self.request('/api/state')
+   self.assertEqual(after['pending'],[])
+   self.assertFalse(after.get('queue_paused',False))
+   self.assertFalse(after['busy'])
+  finally:
+   Model.delay=0
+   self.request('/api/queue',method='DELETE')
+   self.request('/api/queue/resume',{})
+
+ def test_10g_stop_new_prefill_within_previous_stop_window(self):
+  # Never discard Stop #2 just because the next user starts within 800ms.
+  # This was the time-based debounce bug for two quick separate turns.
+  self._idle()
+  self.request('/api/cancel',{})
+  Model.delay=2.5
+  try:
+   n=len(Model.calls)
+   self.request('/api/message',{'text':'Neuer Lesevorgang','bots':['q4bot']})
+   self._calls_after(n,1,1.5)
+   out=self.request('/api/cancel',{})
+   self.assertTrue(out['cancelled'],out)
+   self._idle()
+   self.assertEqual(self.request('/api/state')['busy_bots'],[])
+  finally:
+   Model.delay=0
+
+
  def test_11_cancel_one_bot_keeps_the_other(self):
   self._idle();n=len(Model.calls);Model.delay=2.5
   try:

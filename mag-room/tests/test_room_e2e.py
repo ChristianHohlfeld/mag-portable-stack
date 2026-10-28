@@ -223,6 +223,39 @@ class RoomE2E(unittest.TestCase):
         self.assertFalse(p.evaluate('stopInFlight'))
         expect(stop).not_to_have_attribute('aria-busy','true')
 
+    def test_02d_stop_visible_when_only_background_task_or_prefill_is_active(self):
+        # Native task status and a reading stream must independently enable
+        # the same Stop control, even if the older room busy flag is false.
+        p=self.browser.new_page(viewport={'width':390,'height':844},is_mobile=True,has_touch=True)
+        try:
+            p.goto(f'http://127.0.0.1:{self.room.ui}/')
+            p.wait_for_selector('#send-button',timeout=5000)
+            p.evaluate("""()=>{
+              state.busy=false;state.busy_bots=[];
+              state.activities=[];busyBots.clear();streams={};
+              state.tasks=[{id:'bg-1',status:'running'}];
+              syncStopButton();
+            }""")
+            expect(p.locator('#stop-run')).to_be_visible()
+            expect(p.locator('#stop-run')).to_be_enabled()
+            p.evaluate("""()=>{
+              state.tasks=[];streams.qwen={phase:'prompt',label:'Liest Verlauf',
+                started:Date.now()-41000,lastEvent:Date.now(),text:''};
+              syncStopButton();
+            }""")
+            expect(p.locator('#stop-run')).to_be_visible()
+            expect(p.locator('#stop-run')).to_be_enabled()
+            p.evaluate("""()=>{stopInFlight=true;syncStopButton()}""")
+            expect(p.locator('#stop-run')).to_have_attribute('aria-label','Stoppt…')
+            expect(p.locator('#stop-run')).to_have_attribute('aria-busy','true')
+            expect(p.locator('#stop-run')).to_be_disabled()
+            p.evaluate("""()=>{
+              stopInFlight=false;streams={};state.tasks=[];syncStopButton();
+            }""")
+            expect(p.locator('#stop-run')).to_be_hidden()
+        finally:
+            p.close()
+
     def test_03_escape_stops(self):
         p = self.page
         Model.scripts.append([{'_hold': 30}])

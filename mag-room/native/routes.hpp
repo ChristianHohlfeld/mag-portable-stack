@@ -359,8 +359,10 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
            q == "/api/room" || q == "/api/files" ||
            q == "/api/version" || q == "/api/model-status" ||
            q.rfind("/static/",0)==0 || q.rfind("/api/file/",0)==0);
-      const bool write = m == "POST" &&
-          (q == "/api/message" || q == "/api/upload");
+      const bool write = (m == "POST" &&
+          (q == "/api/message" || q == "/api/upload" || q == "/api/upload/chunk" ||
+           q == "/api/upload/chunk/commit")) ||
+           (m == "GET" && q == "/api/upload/chunk/status");
       if (!read && !write) {
         error_json(fd,403,"Gäste dürfen diese Aktion nicht ausführen");
         return;
@@ -836,69 +838,22 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
       error_json(fd, 404, "Datei entfernt");
       return;
     }
-    bool ok;
-    auto data = read_file(FILES_DIR + "/" + stored, &ok);
-    if (!ok) {
-      error_json(fd, 404, "File missing");
-      return;
-    }
     std::string mime = record.find("mime")->asStr();
-    // Active documents download instead of executing with room privileges.
     std::string disposition = (mime == "text/html" || mime == "image/svg+xml" ||
-                               mime == "text/javascript")
-                                  ? "attachment"
-                                  : "inline";
-    // ?view=1 renders an HTML page in place (bot browser, preview), still in
-    // a CSP sandbox: opaque origin, scripts only, no access to room cookies.
+                               mime == "text/javascript") ? "attachment" : "inline";
     std::string csp = "sandbox";
-    if (mime == "text/html" && qparam(r.query, "view") == "1") {
-      disposition = "inline";
-      csp = "sandbox allow-scripts";
+    if (mime == "text/html" && qparam(r.query,"view") == "1") {
+      disposition = "inline"; csp = "sandbox allow-scripts";
     }
-    // Stored names carry a random token and never change content: cache them,
-    // so inline chat images are not refetched on every re-render. Single
-    // byte ranges let video seek and play at all on Safari/iOS.
-    std::vector<std::pair<std::string, std::string>> hdr = {
-        {"Content-Disposition",
-         disposition + "; filename=\"" + record.find("name")->asStr() + "\""},
-        {"Content-Security-Policy", csp},
-        {"Cache-Control", "private, max-age=31536000, immutable"},
-        {"Accept-Ranges", "bytes"}};
-    std::string range = r.hdrs["range"];
-    size_t a = 0, b = 0;
-    if (range.rfind("bytes=", 0) == 0 && range.find(',') == std::string::npos &&
-        !data.empty()) {
-      std::string spec = range.substr(6);
-      auto dash = spec.find('-');
-      bool okr = dash != std::string::npos;
-      try {
-        if (okr && dash == 0) { // suffix: last N bytes
-          size_t n = std::stoull(spec.substr(1));
-          okr = n > 0;
-          a = n >= data.size() ? 0 : data.size() - n;
-          b = data.size() - 1;
-        } else if (okr) {
-          a = std::stoull(spec.substr(0, dash));
-          b = dash + 1 < spec.size() ? std::stoull(spec.substr(dash + 1))
-                                     : data.size() - 1;
-          b = std::min(b, data.size() - 1);
-          okr = a <= b;
-        }
-      } catch (...) {
-        okr = false;
-      }
-      if (!okr || a >= data.size()) {
-        hdr.push_back({"Content-Range", "bytes */" + std::to_string(data.size())});
-        send_response(fd, 416, mime, "", hdr);
-        return;
-      }
-      hdr.push_back({"Content-Range", "bytes " + std::to_string(a) + "-" +
-                                          std::to_string(b) + "/" +
-                                          std::to_string(data.size())});
-      send_response(fd, 206, mime, data.substr(a, b - a + 1), hdr);
-      return;
-    }
-    send_response(fd, 200, mime, data, hdr);
+    std::vector<std::pair<std::string,std::string>> hdr = {
+      {"Content-Disposition", disposition + "; filename=\"" +
+                                record.find("name")->asStr() + "\""},
+      {"Content-Security-Policy", csp},
+      {"Cache-Control","private, max-age=31536000, immutable"},
+      {"Accept-Ranges","bytes"}};
+    if (!send_file_range_response(fd, FILES_DIR + "/" + stored, mime,
+                                  r.hdrs["range"], hdr))
+      error_json(fd,404,"File missing");
     return;
   }
   if (path == "/api/frontend") {
@@ -1941,6 +1896,60 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
     auto result = undo_action(url_decode(path.substr(std::string("/api/undo/").size())));
     send_json(fd, result.code, result.body);
     return;
+  }
+  // Large file protocol: chunks are independent requests below the HTTP
+  // body limit. A session is owned by the authenticated room identity.
+  // The file enters FILES/ROOM exactly once, only after commit succeeds.
+  if (path == "/api/upload/chunk" ||
+      path == "/api/upload/chunk/status" ||
+      path == "/api/upload/chunk/commit") {
+    const std::string owner = actor.role + ":" + actor.login + ":" + actor.node;
+    const std::string id = qparam(r.query, "id");
+    if (!upload_valid_id(id)) { error_json(fd, 400, "Ungültige Upload-ID"); return; }
+    auto number = [&](const char *key) -> uint64_t {
+      const std::string v = qparam(r.query, key);
+      if (v.empty() || v.size() > 20 ||
+          v.find_first_not_of("0123456789") != std::string::npos)
+        throw std::runtime_error("Ungültige Upload-Länge");
+      return std::stoull(v);
+    };
+    try {
+      if (m == "GET" && path == "/api/upload/chunk/status") {
+        send_json(fd, 200, mj::dump(upload_status(id,owner))); return;
+      }
+      if (m == "POST" && path == "/api/upload/chunk") {
+        const uint64_t total = number("total"), offset = number("offset");
+        const std::string who = actor.name.empty() ? "Nutzer" : actor.name;
+        send_json(fd, 200, mj::dump(upload_chunk(id, qparam(r.query,"name"),
+          total, offset, r.body, owner, who)));
+        return;
+      }
+      if (m == "POST" && path == "/api/upload/chunk/commit") {
+        if (!r.body.empty()) { error_json(fd,400,"Commit darf keinen Body haben");return; }
+        bool fresh = false;
+        const Val file = upload_commit(id, owner, fresh);
+        if (fresh) {
+          const std::string who = actor.name.empty() ? "Nutzer" : actor.name;
+          append_room("user", who, "", "", &file, actor.login);
+          emit_file("", file);
+        }
+        send_json(fd, 201, mj::dump(file)); return;
+      }
+      error_json(fd,405,"Method not allowed"); return;
+    } catch (const std::exception &e) {
+      const std::string msg = e.what();
+      const int code = msg.find("nicht gefunden") != std::string::npos ? 404 :
+                       msg.find("Maximal") != std::string::npos ? 429 :
+                       msg.find("unvollständig") != std::string::npos ||
+                       msg.find("Offset") != std::string::npos ||
+                       msg.find("andere Anfrage") != std::string::npos ||
+                       msg.find("abweicht") != std::string::npos ||
+                       msg.find("weicht ab") != std::string::npos ||
+                       msg.find("Überlappender") != std::string::npos ? 409 :
+                       msg.find("Schreibfehler") != std::string::npos ||
+                       msg.find("Sicherung") != std::string::npos ? 500 : 400;
+      error_json(fd,code,msg); return;
+    }
   }
   if (m == "POST" && path == "/api/upload") {
     std::string name = qparam(r.query, "name");

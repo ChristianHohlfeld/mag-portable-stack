@@ -295,6 +295,48 @@ class Native(unittest.TestCase):
    time.sleep(.05)
   else:self.fail('Chunked model response lost')
   self.assertEqual(Model.calls[-1]['model'],'deepseek-v4-flash-0731');self.assertFalse(s['offline']);self.assertTrue(Model.calls[-1]['stream'])
+ def test_02z_large_audio_chunked_upload_resumes_and_commits_once(self):
+  # Real >64 MiB recording; no individual request exceeds 4 MiB.
+  import urllib.parse
+  uid='a'*32
+  total=64*1024*1024+11
+  name='Aufzeichnung (2).m4a'
+  base='/api/upload/chunk?id='+uid
+  qname=urllib.parse.quote(name)
+  self.error(404,base.replace('/chunk?','/chunk/status?'))
+  self.error(403,base+'&name='+qname+'&offset=0&total='+str(total),
+             b'abcd',headers={'Content-Type':'application/octet-stream','X-No-Token':'1'})
+  self.error(404,base.replace('/chunk?','/chunk/commit?'),b'')
+  buf=b'a'*(4*1024*1024)
+  # Test first packet and idempotent retransmission (lost HTTP ack).
+  first=base+'&name='+qname+'&offset=0&total='+str(total)
+  self.assertEqual(self.request(first,buf)['received'],len(buf))
+  self.assertEqual(self.request(first,buf)['received'],len(buf))
+  self.error(409,first,b'z'*len(buf))
+  self.error(409,base.replace('/chunk?','/chunk/commit?'),b'')
+  offset=len(buf)
+  while offset<total:
+   data=buf[:min(len(buf),total-offset)]
+   result=self.request(base+'&name='+qname+'&offset='+str(offset)+'&total='+str(total),data)
+   self.assertEqual(result['received'],offset+len(data))
+   offset=result['received']
+  status=self.request(base.replace('/chunk?','/chunk/status?'))
+  self.assertFalse(status['done']);self.assertEqual(status['received'],total)
+  before=len(self.request('/api/state')['room'])
+  file=self.request(base.replace('/chunk?','/chunk/commit?'),b'')
+  self.assertEqual(file['size'],total)
+  self.assertEqual(file['mime'],'audio/mp4')
+  self.assertEqual(file['name'],'Aufzeichnung__2_.m4a')
+  self.assertEqual(self.request(base.replace('/chunk?','/chunk/commit?'),b'')['stored'],file['stored'])
+  self.assertTrue(self.request(base.replace('/chunk?','/chunk/status?'))['done'])
+  self.assertEqual(len(self.request('/api/state')['room']),before+1)
+  url='http://127.0.0.1:%d/api/file/%s'%(self.ui,file['stored'])
+  for rng,want in [('bytes=0-3',b'aaaa'),('bytes=-11',b'a'*11),('bytes=67108860-67108868',b'a'*9)]:
+   req=urllib.request.Request(url,headers={'Range':rng})
+   with urllib.request.urlopen(req,timeout=10) as response:
+    self.assertEqual(response.status,206)
+    self.assertEqual(response.read(),want)
+  self.assertTrue((self.state/'files'/file['stored']).is_file())
  def test_03_upload_reset_preserves_memory(self):
   self.request('/api/agent/test/remember',{'fact':'Merke mich'})
   f=self.request('/api/upload?name=hello.txt',b'hello')

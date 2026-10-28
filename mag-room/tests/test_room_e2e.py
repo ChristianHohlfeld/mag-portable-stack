@@ -172,7 +172,7 @@ class RoomE2E(unittest.TestCase):
                   b.click();
                   return {label:b.getAttribute('aria-label'), text:(b.textContent||'').trim()};
                 }""")
-                self.assertEqual(seen['label'], 'Stoppen')
+                self.assertEqual(seen['label'], 'Stoppt…')
                 self.assertEqual(seen['text'], '')
                 self.assertLess(time.monotonic() - t0, 0.4, 'stop paints before the request returns')
                 expect(stop).to_be_hidden(timeout=3000)
@@ -183,6 +183,45 @@ class RoomE2E(unittest.TestCase):
                 self.assertNotIn('<think>', text)
             finally:
                 page.close()
+
+    def test_02c_stop_stays_pending_through_delayed_ack(self):
+        # A model can spend a minute reading context. A delayed cancellation
+        # must not hide Stop or leave the user with a dead-looking button.
+        p = self.page
+        p.evaluate("""()=>{
+          window.__stopPosts=0;
+          window.__ackStop=()=>{};
+          const oldFetch=window.fetch;
+          window.fetch=async (url,options)=>{
+            if(String(url).includes('/api/cancel')){
+              window.__stopPosts++;
+              await new Promise(resolve=>window.__ackStop=resolve);
+              return new Response(JSON.stringify({cancelled:true}),
+                {status:200,headers:{'Content-Type':'application/json'}});
+            }
+            return oldFetch(url,options);
+          };
+          state.busy=true;state.busy_bots=['a'];busyBots=new Set(['a']);
+          streams.a={name:'Alpha',phase:'prompt',label:'Liest Verlauf',
+            started:Date.now()-41000,lastEvent:Date.now(),text:''};
+          syncComposerButton();
+        }""")
+        stop = p.locator('#stop-run')
+        expect(stop).to_be_visible()
+        stop.click()
+        expect(stop).to_have_attribute('aria-label','Stoppt…')
+        expect(stop).to_have_attribute('aria-busy','true')
+        expect(stop).to_be_disabled()
+        expect(stop).to_be_visible()
+        self.assertEqual(p.evaluate('window.__stopPosts'),1)
+        self.assertIn('stoppt',p.locator('#activity-status').inner_text().lower())
+        p.wait_for_timeout(500)
+        self.assertEqual(p.evaluate('window.__stopPosts'),1,
+                         'duplicate Stop while one cancellation is pending')
+        p.evaluate('window.__ackStop()')
+        expect(stop).to_be_hidden(timeout=4000)
+        self.assertFalse(p.evaluate('stopInFlight'))
+        expect(stop).not_to_have_attribute('aria-busy','true')
 
     def test_03_escape_stops(self):
         p = self.page

@@ -21,11 +21,14 @@ struct BgTask {
   int64_t started = 0, ended = 0;
   int attempts = 1;
   bool recovering = false;
+  bool handoff_pending = false; // remains set until owner verifies result
+  std::string handoff_status;
   Lane lane;
 };
 static std::mutex TASKS_MTX;
 static std::vector<std::shared_ptr<BgTask>> TASKS; // newest last, max 40 kept
 static std::string task_id_of(const BgTask *t) { return t->id; }
+static void task_handoff_enqueue(const std::shared_ptr<BgTask> &t);
 
 // Durable task registry. Write-before-execute means an unexpected shutdown
 // never loses ownership, the original goal, or a task's last known state.
@@ -40,6 +43,8 @@ static bool tasks_save_locked() {
     v["status"] = t->status; v["result"] = t->result;
     v["started"] = (double)t->started; v["ended"] = (double)t->ended;
     v["attempts"] = (double)t->attempts;
+    v["handoff_pending"] = t->handoff_pending;
+    v["handoff_status"] = t->handoff_status;
     rows.push(v);
   }
   return write_file_atomic(STATE_DIR + "/tasks.json", mj::dump(rows));
@@ -51,6 +56,8 @@ static void tasks_restore() {
   Val rows;
   if (!mj::parse(raw, rows) || !rows.isArr())
     throw std::runtime_error("tasks.json ist beschädigt; vorhandene Aufgaben nicht überschreiben");
+  std::vector<std::shared_ptr<BgTask>> pending_handoffs;
+  {
   std::lock_guard<std::mutex> lk(TASKS_MTX);
   TASKS.clear();
   bool interrupted = false;
@@ -67,19 +74,27 @@ static void tasks_restore() {
     t->started = (int64_t)(v.find("started") ? v.find("started")->asNum(0) : 0);
     t->ended = (int64_t)(v.find("ended") ? v.find("ended")->asNum(0) : 0);
     t->attempts = std::clamp((int)(v.find("attempts") ? v.find("attempts")->asNum(1) : 1), 1, 1000);
+    t->handoff_pending = v.find("handoff_pending") && v.find("handoff_pending")->asBool();
+    t->handoff_status = field("handoff_status");
     if (t->id.empty() || t->id.size() > 64 || t->bot.empty() ||
         t->prompt.empty() || !seen.insert(t->id).second) continue;
     if (t->status == "running") {
       t->status = "interrupted";
       t->result = "Prozessneustart: zuerst externe Auswirkungen prüfen, dann explizit fortsetzen.";
       t->ended = now_s();
+      if (!t->requester.empty()) t->handoff_pending = true;
       interrupted = true;
     }
     t->lane.model = "task:" + t->id;
     TASKS.push_back(t);
+    if (t->handoff_pending) pending_handoffs.push_back(t);
   }
   if (interrupted && !tasks_save_locked())
     throw std::runtime_error("Unterbrochene Aufgaben konnten nicht gesichert werden");
+  }
+  // Handoff events are recoverable if the room exits between the worker's
+  // result being persisted and the owner's follow-up finishing.
+  for (const auto &t : pending_handoffs) task_handoff_enqueue(t);
 }
 
 
@@ -92,6 +107,10 @@ static Val task_val_locked(const BgTask &t) {
   v["status"] = t.status;
   v["started"] = (double)t.started;
   v["attempts"] = (double)t.attempts;
+  if (!t.requester.empty()) {
+    v["handoff_pending"] = t.handoff_pending;
+    v["handoff_status"] = t.handoff_status;
+  }
   if (t.ended) v["ended"] = (double)t.ended;
   if (!t.result.empty()) v["result"] = t.result.substr(0, 400);
   v["todo"] = todo_public(t.bot + "#" + t.id);
@@ -165,6 +184,8 @@ static void task_main(std::shared_ptr<BgTask> t) {
         " offene Ziele; ggf. begrenzte Schrittzahl). " + text.substr(0, 1600)
       : text.empty() ? rep.error : text;
     t->ended = now_s();
+    t->handoff_pending = !t->requester.empty();
+    t->handoff_status = t->handoff_pending ? "waiting" : "";
     if (!tasks_save_locked())
       std::cerr << "task persist failed at completion: " << t->id << "\n";
   }
@@ -177,6 +198,58 @@ static void task_main(std::shared_ptr<BgTask> t) {
         cancelled ? head : head + "\n\n" + (incomplete ? t->result : text.empty() ? rep.error : text), t->bot);
     msg["type"] = "bot_done";
     publish(mj::dump(msg));
+  }
+  if (!SHUTDOWN.load()) task_handoff_enqueue(t);
+  tasks_event();
+}
+
+// Event-driven owner reactivation. The original child result is durable;
+// this queued JobRun is disposable and reconstructed after a crash.
+static void task_handoff_enqueue(const std::shared_ptr<BgTask> &t) {
+  std::string id, requester, title, target, status, result;
+  {
+    std::lock_guard<std::mutex> lk(TASKS_MTX);
+    if (!t->handoff_pending || t->requester.empty()) return;
+    id=t->id; requester=t->requester; title=t->title;
+    target=t->bot; status=t->status; result=t->result;
+  }
+  if (agent_index(requester) < 0) return;
+  JobRun run;
+  run.job_id = "handoff:" + id;
+  run.run_id = run.job_id;
+  run.name = "Delegation prüfen: " + title;
+  run.bot = requester;
+  run.reason = "delegated_task_result";
+  run.prompt = "[INTERNE EREIGNISAKTIVIERUNG, KEINE NEUE BENUTZERNACHRICHT]\\n"
+    "Du bist weiterhin verantwortlich fuer den urspruenglichen Benutzerauftrag.\\n"
+    "Unteraufgabe: " + title + " (ID " + id + ", Ausfuehrer " + target + ")\\n"
+    "Status: " + status + "\\nErgebnis: " + result.substr(0, 2400) + "\\n"
+    "Lies die bisherigen Auftragsziele und vorhandenen Beweise. Ueberpruefe "
+    "den realen Endzustand mit Werkzeugen. Ein Unteraufgabenergebnis ist "
+    "KEIN Beleg dafuer, dass das Gesamtziel erreicht wurde. Wiederhole keine "
+    "externen Aktionen, deren Auswirkungen nach einer Unterbrechung unklar "
+    "sind; frage vorher nach Freigabe. Schliesse nur verifizierte Ziele ab "
+    "oder nenne den konkreten Blocker.\\n";
+  {
+    std::lock_guard<std::mutex> lk(JOB_MTX);
+    // At-most-once scheduling within one room process; after a crash, the
+    // persisted pending bit is intentionally replayed for verification.
+    if (std::any_of(JOBRUNS.begin(), JOBRUNS.end(),
+        [&](const JobRun &x) { return x.job_id == run.job_id; })) return;
+    JOBRUNS.push_back(std::move(run));
+  }
+  JOB_CV.notify_all();
+}
+static void task_followup_ack(const std::string &id, const std::string &status) {
+  {
+    std::lock_guard<std::mutex> lk(TASKS_MTX);
+    for (auto &t : TASKS) if (t->id == id && t->handoff_pending) {
+      t->handoff_status = status;
+      t->handoff_pending = false;
+      if (!tasks_save_locked())
+        std::cerr << "handoff persist failed: " << id << "\\n";
+      break;
+    }
   }
   tasks_event();
 }

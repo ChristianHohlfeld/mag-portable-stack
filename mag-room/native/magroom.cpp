@@ -7714,18 +7714,18 @@ static void cancel_llama_slot(int idx, int timeout_ms = 120000) {
   // aborts that request ("srv stop: cancel task" on the hi itself).
   prefix_slot_rpc(idx, bot_model_id(idx), "cancel", "", timeout_ms);
 }
-static void cancel_llama_tasks() {
+static void cancel_llama_tasks(int timeout_ms = 120000) {
   std::vector<int> idxs;
   {
     std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
     for (size_t i = 0; i < AGENTS.size(); ++i) idxs.push_back((int)i);
   }
-  for (int i : idxs) cancel_llama_slot(i);
+  for (int i : idxs) cancel_llama_slot(i, timeout_ms);
 }
 // #149: a cancel drops the live KV. Put the saved prefix file back so the
 // next message is a cache hit instead of a full prefill. HTTP restore only;
 // the llama process itself is left running.
-static void reload_slot_after_cancel(int idx) {
+static void reload_slot_after_cancel(int idx, int timeout_ms = 120000) {
   if (!CONFIGURED_MODEL || !PREFIX_DISK || idx < 0) return;
   const std::string model = bot_model_id(idx);
   const std::string file = prefix_file(idx, model);
@@ -7742,18 +7742,18 @@ static void reload_slot_after_cancel(int idx) {
       have = v->type == Val::STR && !v->asStr().empty();
   }
   if (!have) return;
-  if (prefix_slot_rpc(idx, model, "restore", file)) {
+  if (prefix_slot_rpc(idx, model, "restore", file, timeout_ms)) {
     const int slot = model_slot(idx);
     if (slot >= 1 && slot <= ROOM_MAX_BOTS) SLOT_WARM[slot - 1] = 1;
   }
 }
-static void reload_slots_after_cancel() {
+static void reload_slots_after_cancel(int timeout_ms = 120000) {
   std::vector<int> idxs;
   {
     std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
     for (size_t i = 0; i < AGENTS.size(); ++i) idxs.push_back((int)i);
   }
-  for (int i : idxs) reload_slot_after_cancel(i);
+  for (int i : idxs) reload_slot_after_cancel(i, timeout_ms);
 }
 static bool prefix_is_saved(int idx) {
   if (!CONFIGURED_MODEL || !PREFIX_DISK || idx < 0) return false;
@@ -9248,8 +9248,12 @@ static Val user_stop(bool pause_jobs) {
   cancel_active(true);
   task_cancel("", "");
   const bool prewarm = cancel_prewarm();
-  cancel_llama_tasks();
-  reload_slots_after_cancel();
+  // The user-facing Stop must never wait 120 seconds per backend RPC.
+  // Sockets and generation flags were cancelled above; bound cleanup/restore
+  // on this path to a few seconds per lane. Other recovery paths keep their
+  // existing full timeout and continue preserving the prefix cache.
+  cancel_llama_tasks(1500);
+  reload_slots_after_cancel(1500);
   // Leave the run record up so a tool turn can seal its step, kill the
   // command and append the interrupted message before busy goes false.
   // A model hold has no tool in flight: do not wait for it.

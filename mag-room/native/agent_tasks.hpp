@@ -184,7 +184,8 @@ static void task_main(std::shared_ptr<BgTask> t) {
         " offene Ziele; ggf. begrenzte Schrittzahl). " + text.substr(0, 1600)
       : text.empty() ? rep.error : text;
     t->ended = now_s();
-    t->handoff_pending = !t->requester.empty();
+    // Stop is terminal: a cancelled delegated task must not wake its owner.
+    t->handoff_pending = !cancelled && !t->requester.empty();
     t->handoff_status = t->handoff_pending ? "waiting" : "";
     if (!tasks_save_locked())
       std::cerr << "task persist failed at completion: " << t->id << "\n";

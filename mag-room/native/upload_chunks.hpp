@@ -80,7 +80,9 @@ static Val upload_begin(const std::string &name, uint64_t size,
   if (space.available < 64ULL * 1024 * 1024 ||
       size > space.available - 64ULL * 1024 * 1024)
     throw std::runtime_error("Nicht genug Speicherplatz fuer diese Datei");
-  const std::string id = token_hex(16);
+  // token_hex(n) returns exactly n HEX CHARACTERS (not n random bytes).
+  // The ticket validator and path namespace require 32 hex characters.
+  const std::string id = token_hex(32);
   const std::string part = upload_part(id);
   int fd = open(part.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
   if (fd < 0) throw std::runtime_error("Upload-Datei konnte nicht erstellt werden");

@@ -2383,6 +2383,8 @@ $('memory-clear').onclick=()=>{if(!memAgent)return;askClearMemory(memAgent,$('me
 function roomLink(text){const el=$('room-link');if(!el)return;el.textContent=text||'';el.hidden=!text;if(text)window.__roomRelink=text;paintRoomLine()}
 function roomDown(e){if(!e)return false;if(e.name==='TypeError')return true;const s=+e.status||0;if(s===502||s===503||s===504)return true;const m=String(e.message||'');return m==='Raum nicht erreichbar'||/Bad Gateway|Service Unavailable|Gateway Time|Failed to fetch|NetworkError|Load failed/i.test(m)}
 function roomClearedNow(){
+ roomLink('');
+ if(!clearInFlight)notice('Raum geleert');
  ++refreshSeq;closeMsgPop(true);
  for(const live of Object.values(streams))if(live.frame)cancelAnimationFrame(live.frame);
  streams={};busyBots=new Set();waitingBots.clear();completedTraces=[];
@@ -2418,7 +2420,12 @@ $('reset').onclick=async()=>{
   if(roomDown(e)){
    roomLink('Raumstatus unklar – Verbindung prüfen');
    notice('Verbindung verloren. Kein automatischer zweiter Löschversuch.');
-   await refresh().catch(()=>{});
+   // Check authoritative state without repeating the destructive action.
+   const checked=await refresh().then(()=>true,()=>false);
+   if(checked && !(state.room||[]).length && !(state.files||[]).length){
+     roomLink('');
+     notice('Raum ist leer – Serverstatus geprüft.');
+   }
   }else{
    notice('Raum nicht geleert: '+e.message);
   }

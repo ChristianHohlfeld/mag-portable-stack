@@ -68,6 +68,51 @@ class RoomE2E(unittest.TestCase):
         box.fill(text)
         box.press('Enter')
 
+    def test_00_response_pause_selects_only_intended_bot(self):
+        p=self.page
+        p.evaluate("""()=>{
+          state.agents=[
+            {id:'a',name:'Alpha',model:'deepseek-v4-flash-0731',enabled:true},
+            {id:'b',name:'Beta',model:'qwen3.8-flash-next-uncensored',enabled:true}
+          ];
+          selected=new Set(['a','b']);
+          localStorage.removeItem('mag-speaking-bots');
+          sessionStorage.removeItem('mag-selected');
+          renderAgents();
+        }""")
+        a=p.locator('.agent[data-bot="a"] .agent-speaker')
+        b=p.locator('.agent[data-bot="b"] .agent-speaker')
+        expect(a).to_have_attribute('aria-pressed','true')
+        expect(b).to_have_attribute('aria-pressed','true')
+        b.click()
+        expect(b).to_have_attribute('aria-pressed','false')
+        self.assertEqual(p.evaluate('JSON.stringify([...selected])'),'["a"]')
+        self.assertEqual(p.evaluate("localStorage.getItem('mag-speaking-bots')"),'["a"]')
+        # The last active responder cannot be paused: empty bot arrays
+        # would otherwise be interpreted as "all bots" by older servers.
+        a.click()
+        self.assertEqual(p.evaluate('JSON.stringify([...selected])'),'["a"]')
+        expect(p.locator('.agent[data-bot="a"] .agent-flag')).to_have_text('antwortet')
+        expect(p.locator('.agent[data-bot="b"] .agent-flag')).to_have_text('pausiert')
+        # A render/reconnect must retain the selected bot without touching
+        # any server-side bot.enabled flag, running work, or saved jobs.
+        p.evaluate('renderAgents()')
+        self.assertEqual(p.evaluate('JSON.stringify([...selected])'),'["a"]')
+        self.assertEqual(p.evaluate('state.agents[1].enabled'),True)
+        # Existing messenger sends only the selected IDs.
+        sent=[]
+        p.on('request',lambda req: sent.append(req.post_data_json) if
+             req.method=='POST' and '/api/message' in req.url else None)
+        p.locator('#message').fill('Nur Alpha')
+        p.locator('#message').press('Enter')
+        p.wait_for_function("()=>!composerSending",timeout=10000)
+        self.assertTrue(sent)
+        self.assertEqual(sent[-1]['bots'],['a'])
+        # Persistent preference is stored beyond a tab session.
+        p.reload()
+        expect(p.locator('#connection')).to_contain_text('Verbunden',timeout=10000)
+        self.assertEqual(p.evaluate("localStorage.getItem('mag-speaking-bots')"),'["a"]')
+
     def test_01_header_has_one_room_menu_and_one_settings_dialog(self):
         p = self.page
         self.assertEqual(p.locator('#left-panel >> text=Zusammenarbeit').count(), 0)

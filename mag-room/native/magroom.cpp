@@ -4062,7 +4062,6 @@ static std::string tools_json(int bot_idx, bool web) {
   defs.push_back(T_WEB_SEARCH);
   if (CONFIGURED_MODEL || github_enabled(bot_idx)) defs.push_back(T_GITHUB); // stable schema; execution remains opt-in
   defs.push_back(T_TODO);
-  if (has_vm) defs.push_back(T_VERIFY);
   defs.push_back(T_MEMORY);
   defs.push_back(T_SKILL);
   defs.push_back(T_TASK);
@@ -5223,7 +5222,7 @@ static std::string dispatch_tool_raw(int bot_idx, const std::string &name,
     return v ? v->asStr() : "";
   };
 
-  if (name == "verify") {
+  if (name == "todo" && getstr("action") == "verify") {
     // Host-constructed read-only commands, never execute an LLM-supplied
     // shell command as a verification predicate.
     need_vm();

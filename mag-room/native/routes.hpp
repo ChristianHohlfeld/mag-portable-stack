@@ -1874,7 +1874,18 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
     if (!force && work_pending()) { busy_json(fd); return; }
     std::unique_lock<std::mutex> scheduling;
     std::unique_lock<std::shared_mutex> turn;
-    if (!quiesce_all(scheduling, turn, force)) { busy_json(fd); return; }
+    if (!quiesce_all(scheduling, turn, force)) {
+      // A forced clear may be waiting for a long-running VM tool or llama
+      // request to unwind. It has initiated cancellation but MUST NOT erase
+      // persisted room state before the old turn releases its lock. Report
+      // an accepted pending operation, not repeated HTTP 409 conflicts.
+      if (force) {
+        send_json(fd, 202, "{\"ok\":false,\"settling\":true}");
+      } else {
+        busy_json(fd);
+      }
+      return;
+    }
     // Local durable room snapshot is the undo boundary. Full-machine backups
     // belong to the daily/deploy policy, not each interactive clear.
     auto result = clear_room_data();

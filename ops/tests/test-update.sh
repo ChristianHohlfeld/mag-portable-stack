@@ -108,88 +108,6 @@ printf 'on\n' >"$tmp/room/selftalk"
 env "${drain_env[@]}" MAG_DEPLOY_STALE_S=60 MAG_DEPLOY_DRAIN_S=10 MAG_DEPLOY_FORCE=1 \
   bash -euc "$drain"$'\ndrain_room' || force_rc=$?
 [[ $force_rc == 0 ]]
-# Background tasks cannot be mistaken for stale conversational work.
-cat > "$tmp/bin/curl" <<'EOF'
-#!/bin/sh
-printf '%s\n' '{"user_busy":false,"selftalk_busy":false,"selftalk_held":false,"pending":[],"tasks":[{"id":"t1","status":"running"}],"activities":[],"room":[]}'
-EOF
-task_defer_rc=0
-env "${drain_env[@]}" MAG_DEPLOY_STALE_S=5 MAG_DEPLOY_DRAIN_S=10 \
-  bash -euc "$drain"
-cat > "$tmp/bin/curl" <<'EOF'
-#!/bin/sh
-printf '%s\n' '{"busy":true,"queue":2,"selftalk":true,"pending":[],"activities":[{"processed":3,"total":9,"phase":"prompt","steps":[]}],"room":[{"role":"assistant","content":"talk"}]}'
-EOF
-talk_rc=0
-env "${drain_env[@]}" MAG_DEPLOY_STALE_S=60 MAG_DEPLOY_DRAIN_S=10 \
-  bash -euc "$drain"$'\ndrain_room' || talk_rc=$?
-[[ $talk_rc == 0 ]]
-[[ -f $tmp/room/deploy-hold ]]
-[[ -f $tmp/room/selftalk-resume ]]
-# Held Self-Talk finishes at the turn boundary (second poll is idle).
-cat > "$tmp/bin/curl" <<EOF
-#!/bin/sh
-n=\$(cat "$tmp/h" 2>/dev/null || echo 0)
-n=\$((n+1))
-printf '%s\n' "\$n" > "$tmp/h"
-if [ "\$n" -le 2 ]; then
-  printf '%s\n' '{"busy":true,"queue":0,"user_busy":false,"selftalk_busy":true,"selftalk_held":true,"pending":[],"activities":[{"processed":1,"total":2,"phase":"prompt","steps":[]}],"room":[{"role":"assistant","content":"x"}]}'
-else
-  printf '%s\n' '{"busy":false,"queue":0,"user_busy":false,"selftalk_busy":false,"selftalk_held":true,"pending":[],"activities":[],"room":[{"role":"assistant","content":"x"}]}'
-fi
-EOF
-held_rc=0
-env "${drain_env[@]}" MAG_DEPLOY_STALE_S=60 MAG_DEPLOY_DRAIN_S=10 \
-  bash -euc "$drain"$'\ndrain_room' || held_rc=$?
-[[ $held_rc == 0 ]]
-talk_line=$(python3 -I "$root/ops/deploy-drain-state.py" <<'JSON'
-{"busy":true,"selftalk":true,"pending":[],"queue":1}
-JSON
-)
-[[ $talk_line == 0\ 0\ 1\ 0\ * ]]
-echo 'Update dry-run PASS'
-\ndrain_room' || task_defer_rc=$?
-[[ $task_defer_rc == 75 ]]
-# A deferred drain must propagate exit 75 to auto-update; never invert it
-# via `if ! drain_room` and mark an uninstalled release successful.
-guard=$(sed -n '/^if drain_room; then/,/^fi/p' "$root/ops/deploy.sh")
-[[ -n $guard ]]
-gate_rc=0
-RELEASE="$tmp/unused-release" bash -euc "drain_room() { return 75; }"
-cat > "$tmp/bin/curl" <<'EOF'
-#!/bin/sh
-printf '%s\n' '{"busy":true,"queue":2,"selftalk":true,"pending":[],"activities":[{"processed":3,"total":9,"phase":"prompt","steps":[]}],"room":[{"role":"assistant","content":"talk"}]}'
-EOF
-talk_rc=0
-env "${drain_env[@]}" MAG_DEPLOY_STALE_S=60 MAG_DEPLOY_DRAIN_S=10 \
-  bash -euc "$drain"$'\ndrain_room' || talk_rc=$?
-[[ $talk_rc == 0 ]]
-[[ -f $tmp/room/deploy-hold ]]
-[[ -f $tmp/room/selftalk-resume ]]
-# Held Self-Talk finishes at the turn boundary (second poll is idle).
-cat > "$tmp/bin/curl" <<EOF
-#!/bin/sh
-n=\$(cat "$tmp/h" 2>/dev/null || echo 0)
-n=\$((n+1))
-printf '%s\n' "\$n" > "$tmp/h"
-if [ "\$n" -le 2 ]; then
-  printf '%s\n' '{"busy":true,"queue":0,"user_busy":false,"selftalk_busy":true,"selftalk_held":true,"pending":[],"activities":[{"processed":1,"total":2,"phase":"prompt","steps":[]}],"room":[{"role":"assistant","content":"x"}]}'
-else
-  printf '%s\n' '{"busy":false,"queue":0,"user_busy":false,"selftalk_busy":false,"selftalk_held":true,"pending":[],"activities":[],"room":[{"role":"assistant","content":"x"}]}'
-fi
-EOF
-held_rc=0
-env "${drain_env[@]}" MAG_DEPLOY_STALE_S=60 MAG_DEPLOY_DRAIN_S=10 \
-  bash -euc "$drain"$'\ndrain_room' || held_rc=$?
-[[ $held_rc == 0 ]]
-talk_line=$(python3 -I "$root/ops/deploy-drain-state.py" <<'JSON'
-{"busy":true,"selftalk":true,"pending":[],"queue":1}
-JSON
-)
-[[ $talk_line == 0\ 0\ 1\ 0\ * ]]
-echo 'Update dry-run PASS'
-\n'"$guard" || gate_rc=$?
-[[ $gate_rc == 75 ]]
 # Self-Talk only (old room, no hold ack): drain must return 0 before the 900s budget.
 cat > "$tmp/bin/curl" <<'EOF'
 #!/bin/sh
@@ -222,4 +140,10 @@ talk_line=$(python3 -I "$root/ops/deploy-drain-state.py" <<'JSON'
 JSON
 )
 [[ $talk_line == 0\ 0\ 1\ 0\ * ]]
+# A running detached subagent is user work even while the main turn is idle.
+task_line=$(printf '%s\n' '{"user_busy":false,"selftalk_busy":false,"selftalk_held":false,"tasks":[{"id":"t1","status":"running"}]}' | python3 -I "$root/ops/deploy-drain-state.py")
+[[ $task_line == 1\ 0\ 0\ 0\ *:task-active ]]
+# Deferred drain must preserve its real code (75), never invert it with '!'.
+grep -Fq 'if drain_room; then' "$root/ops/deploy.sh"
+! grep -Fq 'if ! drain_room; then' "$root/ops/deploy.sh"
 echo 'Update dry-run PASS'

@@ -214,7 +214,7 @@ class RoomE2E(unittest.TestCase):
         expect(stop).to_be_disabled()
         expect(stop).to_be_visible()
         self.assertEqual(p.evaluate('window.__stopPosts'),1)
-        self.assertIn('stoppt',p.locator('#activity-status').inner_text().lower())
+        self.assertIn('stoppt',p.locator('#room-line .activity-status').inner_text().lower())
         p.wait_for_timeout(500)
         self.assertEqual(p.evaluate('window.__stopPosts'),1,
                          'duplicate Stop while one cancellation is pending')

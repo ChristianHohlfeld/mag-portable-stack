@@ -1944,6 +1944,7 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
                        msg.find("Offset") != std::string::npos ||
                        msg.find("andere Anfrage") != std::string::npos ||
                        msg.find("abweicht") != std::string::npos ||
+                       msg.find("weicht ab") != std::string::npos ||
                        msg.find("Überlappender") != std::string::npos ? 409 :
                        msg.find("Schreibfehler") != std::string::npos ||
                        msg.find("Sicherung") != std::string::npos ? 500 : 400;

@@ -132,30 +132,36 @@ static Val upload_write_chunk(const std::string &id, const std::string &owner,
     close(fd);
     throw std::runtime_error("Upload-Offset oder Dateigroesse falsch");
   }
-  // An ambiguous previous response may have committed the chunk. Accept
-  // a byte-identical replay, but never overwrite already received data.
-  if (offset < have) {
-    if (offset + data.size() > have) {
+  // A network interruption can leave either a complete chunk or a partially
+  // committed prefix. Compare the overlap byte-for-byte, then safely append
+  // only the missing suffix. A changed replay never overwrites existing data.
+  const size_t overlap = offset < have
+      ? (size_t)std::min<uint64_t>(data.size(), have - offset) : 0;
+  size_t checked = 0;
+  std::vector<char> compare(64 * 1024);
+  while (checked < overlap) {
+    size_t nbytes = std::min(overlap - checked, compare.size());
+    ssize_t n = pread(fd, compare.data(), nbytes, (off_t)(offset + checked));
+    if (n != (ssize_t)nbytes ||
+        memcmp(compare.data(), data.data() + checked, nbytes) != 0) {
       close(fd);
-      throw std::runtime_error("Upload-Teil ueberschneidet bestehende Daten");
-    }
-    std::string previous(data.size(), '\0');
-    ssize_t n = pread(fd, previous.data(), previous.size(), (off_t)offset);
-    close(fd);
-    if (n != (ssize_t)data.size() || previous != data)
       throw std::runtime_error("Upload-Wiederholung stimmt nicht ueberein");
-  } else {
-    size_t pos = 0;
-    while (pos < data.size()) {
-      ssize_t n = pwrite(fd, data.data() + pos, data.size() - pos, (off_t)(offset + pos));
-      if (n <= 0) { close(fd); throw std::runtime_error("Upload-Datentraegerfehler"); }
-      pos += (size_t)n;
     }
-    if (fsync(fd) != 0) { close(fd); throw std::runtime_error("Upload nicht gesichert"); }
-    close(fd);
+    checked += nbytes;
   }
+  size_t pos = overlap;
+  while (pos < data.size()) {
+    ssize_t n = pwrite(fd, data.data() + pos, data.size() - pos, (off_t)(offset + pos));
+    if (n <= 0) { close(fd); throw std::runtime_error("Upload-Datentraegerfehler"); }
+    pos += (size_t)n;
+  }
+  if (pos > overlap && fsync(fd) != 0) {
+    close(fd);
+    throw std::runtime_error("Upload nicht gesichert");
+  }
+  close(fd);
   Val out = Val::object();
-  out["received"] = (double)(offset < have ? have : offset + data.size());
+  out["received"] = (double)std::max<uint64_t>(have, offset + data.size());
   out["size"] = (double)wanted;
   return out;
 }

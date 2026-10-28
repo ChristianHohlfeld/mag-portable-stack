@@ -1948,9 +1948,9 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
           error_json(fd,400,"Ungueltige Upload-Metadaten"); return;
         }
         const double bytes = input.find("size")->asNum();
-        if (bytes <= 0 || bytes > (double)UPLOAD_DISK_MAX ||
+        if (bytes <= 0 || bytes > 9007199254740991.0 ||
             (double)(uint64_t)bytes != bytes) {
-          error_json(fd,413,"Datei zu gross (maximal 2 GiB)"); return;
+          error_json(fd,400,"Ungueltige Dateigroesse"); return;
         }
         send_json(fd,200,mj::dump(upload_begin(input.find("name")->asStr(),
                               (uint64_t)bytes,owner)));
@@ -1966,6 +1966,11 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
         }
         send_json(fd,200,mj::dump(upload_write_chunk(id,owner,
                     std::stoull(off),r.body)));
+        return;
+      }
+      if (m == "POST" && path == "/api/upload/cancel") {
+        upload_cancel(id,owner);
+        send_json(fd,200,"{\"ok\":true}");
         return;
       }
       if (m == "POST" && path == "/api/upload/finish") {

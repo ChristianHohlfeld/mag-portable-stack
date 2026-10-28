@@ -894,7 +894,7 @@ class RoomE2E(unittest.TestCase):
         p = self.browser.new_page(viewport={'width':1280,'height':800})
         try:
             p.goto(f'http://127.0.0.1:{self.room.ui}/')
-            p.wait_for_selector('#browser-agent', timeout=3000)
+            p.wait_for_selector('#browser-agent', state='attached', timeout=3000)
             p.evaluate(r"""()=>{
               window.__screenRequests=0;window.__offers=0;
               const nativeFetch=window.fetch.bind(window);

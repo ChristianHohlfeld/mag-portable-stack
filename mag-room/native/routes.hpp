@@ -362,7 +362,7 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
       const bool write = m == "POST" &&
           (q == "/api/message" || q == "/api/upload" ||
            q == "/api/upload/start" || q == "/api/upload/chunk" ||
-           q == "/api/upload/finish");
+           q == "/api/upload/finish" || q == "/api/upload/cancel");
       const upload_status_read = m == "GET" && q == "/api/upload/status";
       if (!read && !upload_status_read && !write) {
         error_json(fd,403,"Gäste dürfen diese Aktion nicht ausführen");

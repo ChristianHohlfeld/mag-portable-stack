@@ -3444,7 +3444,7 @@ function paintRoomLine(){
  if(list.length>1&&can('stop')){const b=document.createElement('button');b.type='button';b.className='q-btn';b.textContent='Zusammenführen';b.onclick=async()=>{b.disabled=true;try{await api('/api/queue/merge',{});await refresh()}catch(e){if(e.status===409)notice('Warteschlange hat sich geändert');else notice(e.message);await refresh().catch(()=>{})}finally{b.disabled=false}};controls.append(b)}
  const items=document.createElement('div');items.className='queue-items';items.id='queue-items';items.append(controls);
  box.append(items);
- for(const p of list){const chip=document.createElement('div');chip.className='q-chip'+(p.held?' held':'');chip.dataset.id=p.id;
+ for(const p of list){const chip=document.createElement('div');chip.className='q-chip'+(p.held?' held':'')+(p.urgent?' priority':'');chip.dataset.id=p.id;
  const own=!state.you||state.you.role==='owner'||(!!p.login&&p.login===state.you.login);
  if(p.sender){const who=document.createElement('span');who.className='q-who';who.textContent=p.sender;chip.append(who)}
  const grip=document.createElement('span');grip.className='q-grip';grip.title='Zum Umsortieren ziehen';grip.textContent='⠿';
@@ -3453,14 +3453,27 @@ function paintRoomLine(){
  const t=document.createElement('span');t.className='q-text';t.textContent=p.text;t.title=p.text;
   const ed=document.createElement('button');ed.type='button';ed.className='q-icon';ed.title='Bearbeiten';ed.setAttribute('aria-label','Bearbeiten');ed.textContent='✎';
   const del=document.createElement('button');del.type='button';del.className='q-icon';del.title='Entfernen';del.setAttribute('aria-label','Entfernen');del.textContent='✕';
-  const now=document.createElement('button');now.type='button';now.className='q-now';now.textContent='Jetzt senden';now.title='Laufende Antwort sofort abbrechen und diese Nachricht senden';
+  const now=document.createElement('button');now.type='button';now.className='q-now';
+  // Queue priority is a durable state, not a delivered-message receipt.
+  // An acknowledged HTTP request may precede model release by seconds.
+  now.textContent=p.urgent?'Vorrang · wartet auf Modell':queueMutations.has(p.id)?'Wird vorgezogen…':'Jetzt senden';
+  now.disabled=!!p.urgent||queueMutations.has(p.id);
+  now.title=p.urgent?'Nachricht hat Vorrang. Der laufende Modellschritt wird beendet.':'Laufende Antwort unterbrechen und diese Nachricht vorziehen';
+  if(p.urgent||queueMutations.has(p.id))now.setAttribute('aria-busy','true');
   ed.onclick=()=>editQueuedMessage(p,t,ed,true);
   del.onclick=()=>mutatePending(p.id,'/api/queue/'+encodeURIComponent(p.id),undefined,'DELETE');
   now.onclick=async()=>{
    if(queueMutations.has(p.id))return;
    now.disabled=true;now.textContent='Wird vorgezogen…';now.setAttribute('aria-busy','true');
-   try{await mutatePending(p.id,'/api/queue/'+encodeURIComponent(p.id)+'/now',{})}
-   finally{now.disabled=false;now.textContent='Jetzt senden';now.removeAttribute('aria-busy')}
+   try{
+    const result=await mutatePending(p.id,'/api/queue/'+encodeURIComponent(p.id)+'/now',{});
+    if(result?.ok&&result.status==='prioritized')
+     notice('Nachricht hat Vorrang. Wartet auf Freigabe des Modellslots.');
+   }finally{
+    // Do not reset a stale, replaced button to "Jetzt senden" after the
+    // server has durably marked this message urgent.
+    paintRoomLine();
+   }
   };
   if(own){chip.append(grip,t,up,down,ed,del,now);wireQueueDrag(chip,p);if(queueDrafts.has(p.id))editQueuedMessage(p,t,ed)}
  else chip.append(t);

@@ -2438,7 +2438,9 @@ async function askDeleteFile(f){const kb=Math.max(1,Math.ceil((f.size||0)/1024))
 async function askDeleteMemory(a,i,text){if(!a)return;if(!await purgeAsk({title:'Eintrag löschen',lead:'Dieser Gedächtnis-Eintrag von '+a.name+' wird entfernt:',items:[previewText(text)],note:'10 Sekunden rückgängig.',ok:'Eintrag löschen'}))return;try{const r=await api('/api/agents/'+encodeURIComponent(a.id)+'/memory/'+i+'?old='+encodeURIComponent(String(text).slice(0,200)),undefined,'DELETE');showUndo('Eintrag gelöscht',r.undo);await refresh();if($('memory-dialog').open)renderMemory(r.memory||[])}catch(e){notice(e.message)}}
 async function askClearMemory(a,n){if(!a)return;if(!await purgeAsk({title:'Gedächtnis leeren',lead:'Das Gedächtnis dieses Bots wird geleert:',items:[deN(n,'Eintrag','Einträge')+' im Gedächtnis von '+a.name],note:'Chat und Arbeitsdaten bleiben. 10 Sekunden rückgängig.',ok:'Gedächtnis leeren'}))return;try{const r=await api('/api/agents/'+encodeURIComponent(a.id)+'/memory',undefined,'DELETE');showUndo('Gedächtnis geleert',r.undo);await refresh();if(memAgent&&memAgent.id===a.id&&$('memory-dialog').open)renderMemory(r.memory||[])}catch(e){notice(e.message)}}
 // Clear/reset: idle -> run at once; a computing or queued bot -> ask, then force (server cancels all work first).
-function workBusy(){return !!state.busy||(state.pending||[]).length>0||busyBots.size>0}
+function workBusy(){return !!state.busy||(state.pending||[]).length>0||busyBots.size>0||
+ (state.busy_bots||[]).length>0||(state.tasks||[]).some(t=>t.status==='running')||
+ (state.activities||[]).some(a=>a&&a.on)}
 async function busyRun(path,verb,ok,keep){const ask=()=>magConfirm({title:'Ein Bot rechnet noch',text:'Laufende und wartende Arbeit wird abgebrochen, danach wird '+verb+'.',ok,cancel:keep,danger:true});
  if(workBusy()){if(!await ask())return null;return api(path,{force:true})}
  try{return await api(path,{})}catch(e){if(e.message!=='Ein Bot rechnet noch')throw e;if(!await ask())return null;return api(path,{force:true})}}
@@ -2496,6 +2498,22 @@ function roomClearedNow(){
  clearStopping();render();renderQueue({pending:[],paused:false});
  refresh().catch(()=>{}); // canonical server state after local response/SSE
 }
+async function waitClearSettled(){
+ const until=Date.now()+90000;
+ roomLink('Bot wird beendet – Raum wird anschließend geleert…');
+ while(Date.now()<until){
+  await new Promise(resolve=>setTimeout(resolve,500));
+  const response=await fetch('/api/state').catch(()=>null);
+  if(!response?.ok)continue;
+  const status=await response.json().catch(()=>null);
+  if(!status)continue;
+  const jobs=(status.tasks||[]).some(t=>t.status==='running');
+  const activity=(status.activities||[]).some(a=>a&&a.on);
+  if(!status.busy&&!(status.busy_bots||[]).length&&!jobs&&!activity&&
+     !(status.pending||[]).length)return true;
+ }
+ return false;
+}
 let clearInFlight=false;
 $('reset').onclick=async()=>{
  if(clearInFlight)return;
@@ -2515,6 +2533,23 @@ $('reset').onclick=async()=>{
    if(!await magConfirm({title:'Raum beschäftigt',text:'Zwischenzeitlich wurde Arbeit gestartet. Diese wirklich abbrechen und den Raum leeren?',ok:'Abbrechen und leeren',cancel:'Nicht leeren',danger:true}))return;
    roomLink('Raum wird geleert…');
    result=await api('/api/room/clear',{force:true});
+  }
+  // 202 is an explicit uncommitted state: forced cancellation began, but
+  // the worker still owns its lane. Never claim the room is already empty.
+  // Once idle is observed, one fresh verified clear may complete the request.
+  if(result?.settling){
+   if(!await waitClearSettled()){
+    roomLink('Raum nicht geleert – Bot beendet sich noch');
+    notice('Abbruch dauert zu lange. Raum bleibt erhalten; erneut versuchen.');
+    return;
+   }
+   roomLink('Raum wird geleert…');
+   result=await api('/api/room/clear',{force:true});
+  }
+  if(result?.settling){
+   roomLink('Raum nicht geleert – Bot beendet sich noch');
+   notice('Bot arbeitet noch. Raum bleibt erhalten; erneut versuchen.');
+   return;
   }
   if(!result?.ok)throw Error('Löschen wurde nicht bestätigt');
   roomClearedNow();

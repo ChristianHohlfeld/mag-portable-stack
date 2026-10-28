@@ -8251,7 +8251,8 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
   agents_changed();
 }
 static void schedule_prewarm() {
-  if (env("MAG_ROOM_PREWARM", "1") != "1" || SHUTDOWN.load() || PREWARM_HOLD.load()) return;
+  if (env("MAG_ROOM_PREWARM", "1") != "1" || SHUTDOWN.load() ||
+      PREWARM_HOLD.load() || STOP_SETTLING.load()) return;
   {
     std::lock_guard<std::mutex> lk(JOB_MTX);
     // A queued turn uses the slot. The non-configured guard is the old

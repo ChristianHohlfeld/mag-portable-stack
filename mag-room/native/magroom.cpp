@@ -5222,6 +5222,33 @@ static std::string dispatch_tool_raw(int bot_idx, const std::string &name,
     return v ? v->asStr() : "";
   };
 
+  if (name == "todo" && getstr("action") == "verify") {
+    // Host-constructed read-only commands, never execute an LLM-supplied
+    // shell command as a verification predicate.
+    need_vm();
+    const std::string kind = getstr("kind"), path = getstr("path"), text = getstr("text");
+    if (path.empty() || path.size() > 1000 || text.size() > 1500)
+      throw std::runtime_error("Verifikationsparameter ungueltig.");
+    std::string command;
+    if (kind == "file_exists")
+      command = "test -f " + shell_quote(path);
+    else if (kind == "file_contains") {
+      if (text.empty()) throw std::runtime_error("Suchtext fehlt.");
+      command = "grep -Fq -- " + shell_quote(text) + " " + shell_quote(path);
+    } else if (kind == "http_2xx") {
+      if (path.rfind("https://", 0) != 0 && path.rfind("http://", 0) != 0)
+        throw std::runtime_error("Nur HTTP(S)-GET-Pruefungen erlaubt.");
+      command = "curl --fail --silent --show-error --location --max-time 15 "
+                "--output /dev/null -- " + shell_quote(path);
+    } else throw std::runtime_error("Unbekannte Pruefbedingung.");
+    const CmdResult check = guest_command(vm, command, 35, true);
+    if (check.code != 0)
+      return "Fehler: Nachweis fehlt; read-only check ergab exit=" +
+             std::to_string(check.code) + ".";
+    const std::string proof = todo_issue_proof(bot_id, kind, path, text);
+    return "Nachweis bestanden (" + kind + "). proof=" + proof +
+           " gilt nur fuer dieses Ziel, diese Bedingung und 15 Minuten.";
+  }
   if (name == "run_command") {
     need_vm();
     std::string cmd = getstr("command");

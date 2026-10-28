@@ -122,6 +122,7 @@ static void task_main(std::shared_ptr<BgTask> t) {
   int idx = agent_index(t->bot);
   std::string name = idx >= 0 ? bot_field(idx, "name", "Bot") : "Bot";
   TurnReport rep;
+  int unfinished_goals = 0;
   {
     std::shared_lock<std::shared_mutex> turn(TURN_MTX);
     TL_TASK = t.get();
@@ -144,17 +145,25 @@ static void task_main(std::shared_ptr<BgTask> t) {
       if (idx >= 0) rep = run_turn(idx, false, "");
       else rep.error = "Bot entfernt";
     } catch (const std::exception &e) { rep.error = e.what(); }
+    unfinished_goals = todo_open_for(t->bot);
     run_end();
     CURRENT_JOB = nullptr;
     TL_LANE = nullptr;
     TL_TASK = nullptr;
   }
   const bool cancelled = t->lane.stop.load();
+  // An LLM saying "done" does not close an open plan or finish a truncated run.
+  const bool incomplete = !cancelled && rep.error.empty() &&
+      (unfinished_goals > 0 || rep.continue_requested || rep.skipped || trim(rep.text).empty());
   std::string text = trim(rep.text);
   {
     std::lock_guard<std::mutex> lk(TASKS_MTX);
-    t->status = cancelled ? "cancelled" : !rep.error.empty() ? "error" : "done";
-    t->result = cancelled ? "abgebrochen" : text.empty() ? rep.error : text;
+    t->status = cancelled ? "cancelled" : !rep.error.empty() ? "error" :
+                incomplete ? "incomplete" : "done";
+    t->result = cancelled ? "abgebrochen" : incomplete
+      ? "Nicht abgeschlossen (" + std::to_string(unfinished_goals) +
+        " offene Ziele; ggf. begrenzte Schrittzahl). " + text.substr(0, 1600)
+      : text.empty() ? rep.error : text;
     t->ended = now_s();
     if (!tasks_save_locked())
       std::cerr << "task persist failed at completion: " << t->id << "\n";
@@ -162,9 +171,10 @@ static void task_main(std::shared_ptr<BgTask> t) {
   t->lane.busy = false;
   if (idx >= 0 && !SHUTDOWN.load()) {
     const std::string head = "↳ Aufgabe „" + t->title + "“" +
-        (cancelled ? " · abgebrochen" : !rep.error.empty() ? " · Fehler" : " · fertig");
+        (cancelled ? " · abgebrochen" : !rep.error.empty() ? " · Fehler" :
+         incomplete ? " · unvollständig" : " · fertig");
     Val msg = append_room("assistant", name,
-        cancelled ? head : head + "\n\n" + (text.empty() ? rep.error : text), t->bot);
+        cancelled ? head : head + "\n\n" + (incomplete ? t->result : text.empty() ? rep.error : text), t->bot);
     msg["type"] = "bot_done";
     publish(mj::dump(msg));
   }

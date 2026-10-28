@@ -1,5 +1,10 @@
 # MAG agent architecture (Grok-Bot-style turn model)
 
+MAG implements a comparable agent workflow, not proprietary Grok Bot software.
+Unlike Grok Bot's shared account computer, each MAG bot retains a separate
+restricted VM. Explicit delegation passes a task and outcome through the room;
+it never shares browser cookies, credentials or filesystem privileges.
+
 How a MAG room bot pursues a goal to completion. Everything is enforced in
 the C++ room (`mag-room/native/magroom.cpp`, `agent_core.hpp`, `numa_models.hpp`);
 the model only proposes text and tool calls.
@@ -33,7 +38,7 @@ the model only proposes text and tool calls.
 | Never stop early | A pending `[[MAG:WEITER]]`/"Nächster Schritt" or **open todo items** inject a system reminder instead of ending; three identical stalls end the turn with a diagnosis. |
 | Milestones | `todo` tool (`set/add/done/block`). Every change is published as a `todo` event and shown in the run card ("✓ item"); interim narration becomes collapsed steps. |
 | Final result | Only the concluding text is a room message; rules require stating verification. Budget exhaustion reports **incomplete**. |
-| Sub-agents | `task` tool (`start/status/cancel`), max `MAG_ROOM_MAX_TASKS` (2) per bot, depth 1. Each runs `run_turn` on its own lane/thread with its own stop flag and run card, yields to queued user turns between steps, and posts its result back as the bot. `GET /api/tasks`, `POST /api/tasks/<id>/cancel`. |
+| Sub-agents and bot handoff | `task` tool (`start/delegate/status/cancel`), max `MAG_ROOM_MAX_TASKS` (2) per target bot, depth 1. `delegate` requires an explicit target bot ID/name; the recipient uses its own model/VM/tools and keeps its own approvals. The delegator may inspect or cancel the delegated task. No free-running groupchat loop. Each runs `run_turn` on its own lane/thread with its own stop flag and run card, yields to queued user turns between steps, and posts its result back as the bot. `GET /api/tasks`, `POST /api/tasks/<id>/cancel`. |
 | Memory | Profile = `remember` facts (agents.json). Journal = `STATE/journal/<bot>.jsonl`. `memory` tool: `recall` (search profile+journal), `journal`, `update`, `forget`. UI: `GET/PUT/DELETE /api/agents/<id>/memory...`. |
 | Routines | Jobs (`jobs.hpp`): schedules (minutes … monthly, once) and webhook events, pause/resume, retries, cancel via Stop. Bots use the routines MCP tool server (`jobs_*` tools in the room, `POST /mcp/jobs` for external MCP clients). **A bot only proposes**: `jobs_create`/`jobs_update`/`jobs_resume` show a confirmation card (name, schedule/trigger, prompt); only "Speichern" stores it. "Ablehnen" is final: the same proposal (idempotency key or name) is refused without a new card (`STATE/routine-rejections.json`). Runs post progress and result into the room as the bot; nothing is sent outside. Every job belongs to exactly one bot (missing owners are bound on load to `created_by_bot`, otherwise the first bot). The full prompt stays out of the static system prefix; a short skill catalog for that bot only is appended with the memories. The left list selects a bot; the right side shows its active switch, browser, console and jobs (create, edit, pause, delete). |
 | Secrets | `secret` tool: `request` shows a masked input card; the value goes to `POST /api/secrets/requests/<id>` → AES-256-GCM in `STATE/secrets.json` with the key from the systemd credential `mag-secrets-key` (`ops/secrets/install.sh`, in the encrypted backup, restored by bootstrap). The bot only gets the handle `{{secret:NAME}}`, expanded inside `browser_type`/`run_command` arguments; every tool result and error is scrubbed (`[secret:NAME]`) before model, room or log. Owner API: list (name, purpose, bots, last used — never values), replace, set bot access, delete. |

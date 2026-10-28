@@ -264,7 +264,11 @@ drain_room() {
     if (( waited == 0 )); then
       echo "Deploy wartet: User-Antwort ($user_busy) / $user_pending in der Warteschlange / Self-Talk $selftalk_busy held=$selftalk_held – warte bis max. ${drain_s}s …" >&2
     fi
-    if (( need == 1 && stale_s > 0 && still >= stale_s )); then
+    # Background subagents may be executing a long command without visible
+    # token progress. They must drain naturally or defer the deploy; never
+    # trigger the stale-token shortcut while any task is still running.
+    if (( need == 1 && stale_s > 0 && still >= stale_s )) &&
+       [[ "$progress" != *:task-active ]]; then
       echo "Deploy: busy ohne neue Tokens seit ${still}s – Deploy läuft weiter (Warteschlange bleibt gespeichert)." >&2
       return 0
     fi
@@ -289,7 +293,11 @@ drain_room() {
 # here so a postponed drain still leaves systemctl --failed empty. Never
 # touches mag-llm-ds-node@0.
 bash "$SOURCE/ops/boot/clear-failed-units.sh" || echo 'WARN: failed unit cleanup incomplete' >&2
-if ! drain_room; then
+# Do not negate the condition: `if ! drain_room` loses the original
+# exit code (75 => 0), letting the updater falsely record an undeployed SHA.
+if drain_room; then
+  :
+else
   rc=$?
   if (( rc == 75 )); then rm -rf "$RELEASE"; exit 75; fi
   exit "$rc"

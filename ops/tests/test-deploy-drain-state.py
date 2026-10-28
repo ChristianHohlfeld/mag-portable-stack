@@ -38,6 +38,21 @@ class DrainState(unittest.TestCase):
         )
         self.assertEqual((u, p, s, h), (1, 1, 1, 1))
 
+    def test_running_subagent_blocks_deploy_even_when_main_lane_idle(self):
+        # The old runtime did not persist detached tasks. A deploy must
+        # not silently discard them or call a long operation "stale".
+        u, p, s, h, progress = MOD.classify(
+            {"user_busy": False, "selftalk_busy": False, "selftalk_held": False,
+             "tasks": [{"id": "t1", "status": "running"}], "pending": []}
+        )
+        self.assertEqual((u, p, s, h), (1, 0, 0, 0))
+        self.assertTrue(progress.endswith(":task-active"))
+        u, p, s, h, progress = MOD.classify(
+            {"user_busy": False, "tasks": [{"status": "interrupted"}, {"status": "done"}]}
+        )
+        self.assertEqual(u, 0)
+        self.assertNotIn(":task-active", progress)
+
     def test_old_room_selftalk_only(self):
         u, p, s, h, _ = MOD.classify(
             {"busy": True, "selftalk": True, "pending": [], "queue": 2}

@@ -38,7 +38,8 @@ mkdir -p "$TMP/runtime" "$TMP/model" "$OUT"
 # Pin the official 0.1.5 *release* WASM bundle by SHA-256. The npm
 # archive contains an outdated native core which rejects split frontend files.
 WASM_BUNDLE='https://github.com/moonshine-ai/moonshine/releases/download/v0.1.5/moonshine-voice-wasm.tar.gz'
-curl --fail --location --retry 3 --retry-delay 2 --silent --show-error \
+curl --fail --location --http1.1 --retry 5 --retry-delay 2 --retry-all-errors \
+  --connect-timeout 15 --max-time 180 --silent --show-error \
   --proto '=https' --proto-redir '=https' "$WASM_BUNDLE" \
   -o "$TMP/moonshine-voice-wasm.tar.gz"
 echo 'c515bf7691e12048f70a92cc82b3b0894c16c3773ffcacb7d48944fb150e4837  '"$TMP/moonshine-voice-wasm.tar.gz" | sha256sum -c -
@@ -61,7 +62,8 @@ FILES=(
 )
 for pair in "${FILES[@]}"; do
   name="${pair%%:*}"; expected="${pair#*:}"
-  curl --fail --location --retry 3 --retry-delay 2 --silent --show-error \
+  curl --fail --location --http1.1 --retry 5 --retry-delay 2 --retry-all-errors \
+    --connect-timeout 15 --max-time 180 --silent --show-error \
     "$BASE/$name" --output "$TMP/model/$name"
   actual="$(wc -c < "$TMP/model/$name" | tr -d ' ')"
   test "$actual" = "$expected" || { echo "Invalid model size for $name: $actual != $expected" >&2; exit 1; }

@@ -140,4 +140,10 @@ talk_line=$(python3 -I "$root/ops/deploy-drain-state.py" <<'JSON'
 JSON
 )
 [[ $talk_line == 0\ 0\ 1\ 0\ * ]]
+# A running detached subagent is user work even while the main turn is idle.
+task_line=$(printf '%s\n' '{"user_busy":false,"selftalk_busy":false,"selftalk_held":false,"tasks":[{"id":"t1","status":"running"}]}' | python3 -I "$root/ops/deploy-drain-state.py")
+[[ $task_line == 1\ 0\ 0\ 0\ *:task-active ]]
+# Deferred drain must preserve its real code (75), never invert it with '!'.
+grep -Fq 'if drain_room; then' "$root/ops/deploy.sh"
+! grep -Fq 'if ! drain_room; then' "$root/ops/deploy.sh"
 echo 'Update dry-run PASS'

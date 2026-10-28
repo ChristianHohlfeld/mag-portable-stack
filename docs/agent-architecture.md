@@ -54,6 +54,7 @@ the model only proposes text and tool calls.
 - Stop cancels main turns *and* tasks; cancelled tasks report `cancelled`.
 - Task registry survives process restart; a restarted task is held until explicit owner recovery, never silently re-executed.
 - Open todos keep the turn going (bounded), done/blocked todos let it end.
+- Background task final state is `incomplete` (never `done`) when any todo remains open, the answer is empty, or the model truncates/skips; the room explicitly labels this outcome `unvollständig`. This is a minimal deterministic guard, **not** a universal proof of external goal completion.
 - Never more than two models are loaded; swaps are never automatic.
 - Routine proposals need confirmation; a rejection is final.
 - A secret value never appears in model requests, room state, logs or

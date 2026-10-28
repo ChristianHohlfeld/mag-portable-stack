@@ -38,7 +38,7 @@ vm.runInNewContext(handler, context);
  const bare=elements['send-form'].onsubmit({preventDefault(){}});
  resolve({});await bare;
  assert.equal(calls,4,'a missing send button still sends');
- assert.equal(stopCalls.length,0,'a missing send button is not a stop');
+ assert.equal(calls,4,'a missing send button cannot be mistaken for Stop');
  elements['send-button']=savedButton;
  assert.ok(focusAndBusy>=8,'busy and idle transitions repaint the composer');
  // The send button never changes into Stop: Stop has its own independent

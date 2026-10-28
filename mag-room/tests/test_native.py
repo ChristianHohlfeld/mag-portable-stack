@@ -2801,6 +2801,20 @@ class MultiBot(unittest.TestCase):
    self.assertEqual(self._last_bot_text('iq3bot'),'Hallo aus dem Modell.')
   finally:
    Model.delay=0;self._idle();self.request('/api/agents/iq3bot/model',{'model':self.IQ3})
+ def test_10da_stop_never_fakes_idle_or_releases_lane_early(self):
+  # Contract against the bug where Stop told UI "idle" while the
+  # cancelled worker still held a socket and could race a new turn.
+  source=(ROOT/'mag-room/native/magroom.cpp').read_text()
+  block=source.split('static Val user_stop(bool pause_jobs) {',1)[1].split(
+   '// Step boundary of a running turn',1)[0]
+  self.assertNotIn('release_lanes_locked()',block)
+  self.assertNotIn('publish_idle_locked()',block)
+  self.assertIn('const bool settling = tasks_running() || any_lane_busy_for_stop() || BUSY.load()',block)
+  html=(ROOT/'mag-room/web/index.html').read_text()
+  self.assertIn('stopAwaitingIdle',html)
+  self.assertIn('stopConfirmedIdle()',html)
+  self.assertIn('startHttpLive(liveGeneration',html)
+
  def test_10d_stop_while_reading_prompt_is_not_an_error(self):
   self._idle();Model.delay=1.5;events=[];room0=len(self.request('/api/state')['room'])
   def listen():
@@ -5338,6 +5352,27 @@ class SelfTalk(unittest.TestCase):
   self.assertFalse(self.api('/api/state')['selftalk'])
   self.assertEqual((self.state / 'selftalk').read_text().strip(), 'off')
 
+ def test_idle_emoji_selftalk_does_not_publish_or_rearm(self):
+  # A legitimate user answer can be followed by an inconsequential
+  # LLM reaction. It must not appear in the room or start an endless chain.
+  self.api('/api/selftalk',{'on':True})
+  self.api('/api/message',{'text':'EMOJI-ONLY','bots':['alpha']})
+  deadline=time.monotonic()+6
+  while time.monotonic()<deadline:
+   room=self.api('/api/state')['room']
+   if any(m.get('role')=='assistant' and
+          m.get('content')=='FACT-77' for m in room) and len(self.chat_calls())>=3:
+    break
+   time.sleep(.05)
+  time.sleep(.8)
+  room=self.api('/api/state')['room']
+  self.assertFalse([m for m in room if m.get('role')=='assistant' and
+                    '👀' in (m.get('content') or '')],room)
+  n=len(self.chat_calls())
+  time.sleep(.5)
+  self.assertEqual(len(self.chat_calls()),n,'emoji-only reply re-armed self-talk')
+  self.api('/api/cancel',{})
+
  def test_stop_and_toggle_abort_the_chain(self):
   self._tok = re_token(urllib.request.urlopen('http://127.0.0.1:%d/' % self.ui, timeout=2).read().decode())
   TalkModel.hold_below = 2
@@ -5737,6 +5772,8 @@ class TalkModel(http.server.BaseHTTPRequestHandler):
    text = 'zu Chris: TOKEN-CHRIS-99'
   elif 'IDLE-ECHO' in blob:
    text = 'Kein Auftrag. Ich bleibe still.'
+  elif 'EMOJI-ONLY' in blob and 'Antworte in höchstens zwei kurzen Sätzen' in blob:
+   text = '[Beta] 👀'
   else:
    text = 'FACT-77'
   try:

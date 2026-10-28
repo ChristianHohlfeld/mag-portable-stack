@@ -1580,7 +1580,7 @@ function streamControls(){syncComposerButton();if(thinkInit)syncBotSwitches()}
 // bot is actually generating. The field itself is never disabled; Enter only ever sends.
 function composerBusyIds(){const known=new Set((state.agents||[]).map(a=>a.id));return [...new Set([...busyBots,...Object.keys(streams)])].filter(id=>known.has(id))}
 function serverIdle(){return !!(state&&state.busy===false&&!(state.busy_bots||[]).length&&!((state.activities||[]).some(a=>a&&a.on)))}
-function generationLive(){const local=[...busyBots,...Object.keys(streams)].filter(id=>!waitingBots.has(id));if(local.length)return true;if(serverIdle())return false;return !!state.busy}
+function generationLive(){const local=[...busyBots,...Object.keys(streams)].filter(id=>!waitingBots.has(id));if(local.length)return true;return !!state?.busy||(state?.activities||[]).some(a=>a?.on)}
 function syncStopButton(){const b=$('stop-run');if(!b)return;
  const on=(generationLive()||stopInFlight)&&can('stop');
  b.hidden=false;b.classList.toggle('is-on',!!on);b.classList.toggle('gbar-stopping',stopInFlight);
@@ -2239,7 +2239,7 @@ let busyBots=new Set();
 let waitingBots=new Map();
 function setBusyBots(ids,waiting){busyBots=new Set(Array.isArray(ids)?ids:[]);if(Array.isArray(waiting)){const keep=new Map();for(const id of waiting)keep.set(id,waitingBots.get(id)||'');waitingBots=keep}for(const id of [...waitingBots.keys()])if(!busyBots.has(id))waitingBots.delete(id);renderLanes();if(state.model_status)modelStatus(state.model_status)}
 let stopInFlight=false;
-function paintStopping(){for(const id of Object.keys(streams)){const s=streams[id];if(!s||s.stopping)continue;s.stopping=true;s.phase='stop';updateStream(id,true)}syncStopButton()}
+function paintStopping(){for(const id of Object.keys(streams)){const s=streams[id];if(!s||s.stopping)continue;s.stopBefore={phase:s.phase,label:s.label};s.stopping=true;s.phase='stop';updateStream(id,true)}syncStopButton()}
 function clearStopping(){if(stopInFlight)return;syncComposerButton()}
 async function stopBot(id){
  if(stopInFlight||!can('stop'))return;
@@ -2267,6 +2267,12 @@ async function stopBot(id){
  }finally{
   clearTimeout(timeout);
   stopInFlight=false;
+  // A proxy failure is not proof that Stop succeeded. If the room is still
+  // busy, restore live labels instead of freezing every stream on "Stoppt".
+  for(const s of Object.values(streams))if(s?.stopping){
+   s.stopping=false;
+   if(s.stopBefore){s.phase=s.stopBefore.phase;s.label=s.stopBefore.label;delete s.stopBefore}
+  }
   renderLanes();
   syncStopButton();
  }

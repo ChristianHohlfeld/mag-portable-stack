@@ -1558,7 +1558,13 @@ class Native(unittest.TestCase):
   # A stale bot identity after single-bot migration is permanent, NOT an
   # invitation to retry WebRTC against a vanished VM forever.
   self.assertIn('err.permanent=r.status===404||r.status===400',html)
-  self.assertIn('if(!e.permanent)scheduleReconnect()',html)
+  self.assertIn('if(!e.permanent){startHttpLive(gen,id);scheduleReconnect()}',html)
+  self.assertIn('browserFallbackError(r.status)',html)
+  self.assertIn('HTTP_SCREEN_TIMEOUT_MS=16000',html)
+  src=(ROOT/'mag-room/native/magroom.cpp').read_text()
+  self.assertIn('browser_start_lock(vm)',src)
+  self.assertIn('std::lock_guard<std::mutex> start(*vm_lock)',src)
+  self.assertNotIn('std::lock_guard<std::mutex> start(BROWSER_START_MTX)',src)
   self.assertIn('state.agents.some(a=>a.id===old)',html)
   self.assertIn('state.agents.some(a=>a.id===remoteBotId)',html)
   self.assertIn('nv&&liveVmReady&&',html,'do not connect WebRTC until VM exists')

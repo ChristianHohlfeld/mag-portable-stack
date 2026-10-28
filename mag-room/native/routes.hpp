@@ -986,6 +986,24 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
                   {{"Cache-Control", "no-store"}});
     return;
   }
+  if (m == "POST" && path == "/api/browser/observe") {
+    // Only the authenticated room owner can confirm what is shown on screen.
+    // A stale, mismatched or background client's nonce cannot unlock a bot.
+    if (actor.role != "owner") {
+      error_json(fd, 403, "Nur der Besitzer"); return;
+    }
+    Val args;
+    if (!mj::parse(r.body, args) || !args.isObj()) {
+      error_json(fd, 400, "JSON erforderlich"); return;
+    }
+    const std::string bot = args.find("bot") ? args.find("bot")->asStr() : "";
+    const std::string nonce = args.find("nonce") ? args.find("nonce")->asStr() : "";
+    if (!browser_watch_ack(bot, nonce)) {
+      error_json(fd, 409, "Browseransicht nicht mehr angefordert"); return;
+    }
+    send_json(fd, 200, "{\\"ok\\":true}");
+    return;
+  }
   if (m == "POST" && path.rfind("/api/browser/", 0) == 0) {
     auto rest = path.substr(13);
     auto slash = rest.find('/');

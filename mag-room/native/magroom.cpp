@@ -7508,6 +7508,9 @@ static TurnReport generate_and_post(int idx, bool automatic, double dispatched_m
   }
   return report;
 }
+// Defined in agent_tasks.hpp after jobs.hpp; jobs use it to acknowledge
+// a completed owner review without requiring a persistent scheduled JobDef.
+static void task_followup_ack(const std::string &id, const std::string &status);
 #include "jobs.hpp"
 #include "jobs_mcp.hpp"
 #include "agent_tasks.hpp"

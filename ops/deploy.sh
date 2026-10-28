@@ -293,7 +293,11 @@ drain_room() {
 # here so a postponed drain still leaves systemctl --failed empty. Never
 # touches mag-llm-ds-node@0.
 bash "$SOURCE/ops/boot/clear-failed-units.sh" || echo 'WARN: failed unit cleanup incomplete' >&2
-if ! drain_room; then
+# Do not negate the condition: `if ! drain_room` loses the original
+# exit code (75 => 0), letting the updater falsely record an undeployed SHA.
+if drain_room; then
+  :
+else
   rc=$?
   if (( rc == 75 )); then rm -rf "$RELEASE"; exit 75; fi
   exit "$rc"

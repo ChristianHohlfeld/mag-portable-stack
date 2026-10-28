@@ -106,6 +106,8 @@ static thread_local Lane *TL_LANE = nullptr;
 // finishes first (no placeholder ever drops below another bot's answer).
 // TL_REFLECT: optional second round, each bot reads the others' answers.
 static thread_local std::string TL_GROUP;
+// Distinct persisted plan identity for each user goal (not per bot).
+static thread_local std::string TL_GOAL_ID;
 static thread_local int TL_ORDER = 0;
 static thread_local bool TL_REFLECT = false;
 // Non-configured group chat staggers lanes: the next lane waits until the
@@ -5471,6 +5473,7 @@ static thread_local uint64_t TL_ADOPT_GEN = 0;
 static thread_local std::string TL_ADOPT_OWNER;
 // Step-boundary hand-over of waiting user messages (take_user_input).
 struct UserInput {
+  std::string goal_id;
   std::string text; // for the model; empty when nothing arrived
   bool yield = false;
   uint64_t generation = 0;
@@ -6130,6 +6133,10 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
         // Keep earlier status/thought/tool output at its original position;
         // the answer to this newer input starts a separate visible segment.
         handoff_visible_turn(bot_idx, report, final_text.empty() ? fallback_narration : final_text, in.think);
+        // A newer human request is a different goal, even if adopted by
+        // the same hot lane between two model steps.
+        TL_GOAL_ID = in.goal_id.empty() ? "g" + token_hex(8) : in.goal_id;
+        TL_TODO_TOUCHED = false;
         final_text.clear(); fallback_narration.clear();
         Val u = Val::object();
         u["role"] = "user";
@@ -6439,6 +6446,7 @@ struct Job {
   bool selftalk = false; // answer another bot; never the speaker
   std::string cause; // room message id that armed this follow-up
   std::string cause_label; // "reagiert auf <Name>", shown in the room and queue
+  std::string goal_id; // stable across room restart and split lanes
 };
 static std::deque<Job> JOBS;
 // Jobs loaded from the previous process. They are not dispatched until the
@@ -6495,6 +6503,7 @@ static Val job_val(const Job &j) {
   if (j.selftalk) o["selftalk"] = true;
   if (!j.cause.empty()) o["cause"] = j.cause;
   if (!j.cause_label.empty()) o["cause_label"] = j.cause_label;
+  if (!j.goal_id.empty()) o["goal_id"] = j.goal_id;
   return o;
 }
 static Job val_job(const Val &v) {
@@ -6507,6 +6516,7 @@ static Job val_job(const Val &v) {
   if (auto s = v.find("selftalk"); s && s->type == Val::BOOL) j.selftalk = s->asBool();
   if (auto c = v.find("cause")) j.cause = c->asStr();
   if (auto c = v.find("cause_label")) j.cause_label = c->asStr();
+  if (auto g = v.find("goal_id")) j.goal_id = g->asStr();
   return j;
 }
 // Messages sent while a reply runs: NOT in the transcript yet (history stays
@@ -8654,6 +8664,7 @@ static void lane_turn(Lane *lane, uint64_t run, std::vector<std::string> ids,
     TL_REFLECT = group && group->reflect;
     LAST_THINK = think;
     bool job_selftalk = false;
+    TL_GOAL_ID.clear();
     TL_CAUSE.clear();
     TL_CAUSE_LABEL.clear();
     {
@@ -8661,6 +8672,7 @@ static void lane_turn(Lane *lane, uint64_t run, std::vector<std::string> ids,
       auto it = ACTIVE_JOBS.find(run);
       if (it != ACTIVE_JOBS.end()) {
         job_selftalk = it->second.selftalk;
+        TL_GOAL_ID = it->second.goal_id;
         TL_CAUSE = it->second.cause;
         TL_CAUSE_LABEL = it->second.cause_label;
       }
@@ -8706,6 +8718,7 @@ static void lane_turn(Lane *lane, uint64_t run, std::vector<std::string> ids,
           }
         }
         TL_ORDER = idx; // fixed position in the bot list
+        TL_TODO_TOUCHED = false;
         try {
           const double visible_start = dispatched_ms; dispatched_ms = 0;
           TurnReport report = generate_and_post(idx, automatic, visible_start);
@@ -8740,6 +8753,7 @@ static void lane_turn(Lane *lane, uint64_t run, std::vector<std::string> ids,
     TL_LANE = nullptr;
     TL_GATE = nullptr;
     TL_GROUP.clear();
+    TL_GOAL_ID.clear();
     TL_REFLECT = false;
   }
   if (own) own->release();
@@ -8759,7 +8773,10 @@ static void lane_job(Lane *lane, uint64_t run, JobRun job) {
     std::shared_lock<std::shared_mutex> turn(TURN_MTX);
     TL_LANE = lane;
     TURN_THINK = -1;
+    TL_GOAL_ID = "job-" + job.run_id;
+    TL_TODO_TOUCHED = false;
     try { run_job(job); } catch (const std::exception &e) { emit_event("error", "", "", e.what()); }
+    TL_GOAL_ID.clear();
     TL_LANE = nullptr;
   }
   lane_finish(lane, run, false, false, "", 0);
@@ -8797,6 +8814,9 @@ static bool dispatchable(const std::vector<std::pair<Lane *, std::vector<std::st
 }
 static int AUTO_THINK = -1;
 static void start_lanes_locked(const Job &job, bool automatic, const std::string &task_owner = "") {
+  // Every user request has its own durable goal. All split bot lanes share it;
+  // their todo keys additionally contain their immutable bot ID.
+  const std::string goal_id = job.goal_id.empty() ? "g" + token_hex(8) : job.goal_id;
   // A split leaves the cold bots queued. The owner stays the first bot the
   // user selected, even when that bot is not in this dispatch.
   const std::string owner = !task_owner.empty() ? task_owner
@@ -8830,6 +8850,7 @@ static void start_lanes_locked(const Job &job, bool automatic, const std::string
     lane->user_cancel = false;
     lane->preempt = false;
     Job active = job;
+    active.goal_id = goal_id;
     active.ids = ids;
     ACTIVE_JOBS[run] = std::move(active);
     BUSY = true;
@@ -9261,6 +9282,7 @@ static UserInput take_user_input(const std::string &bot_id) {
     msg["delivered_to"] = bot_id;
     publish(mj::dump(msg));
     in.text += "[" + sender + "]: " + p.text + "\n";
+    in.goal_id = p.id.empty() ? "g" + token_hex(8) : "g" + p.id;
     std::vector<std::string> rest;
     for (auto &b : p.ids)
       if (b != bot_id && !later.count(b)) rest.push_back(b);
@@ -9278,6 +9300,7 @@ static UserInput take_user_input(const std::string &bot_id) {
   for (auto it = JOBS.begin(); it != JOBS.end();) {
     if (!mine(it->ids) || it->input.empty()) { ++it; continue; }
     in.text += "[Nutzer]: " + it->input + "\n";
+    in.goal_id = it->goal_id.empty() ? "g" + token_hex(8) : it->goal_id;
     in.generation = it->generation;
     in.owner = it->ids.front();
     in.think = it->think;

@@ -29,7 +29,10 @@ static std::mutex TODO_MTX;
 static std::map<std::string, Val> TODOS; // key -> {goal, items:[{text,status,note,ts}]}
 static thread_local bool TL_TODO_TOUCHED = false;
 static std::string todo_key(const std::string &bot_id) {
-  return TL_TASK ? bot_id + "#" + task_id_of(TL_TASK) : bot_id;
+  // A new human request must never inherit another request's open todo plan.
+  // Background subtasks retain their existing stable identity on recovery.
+  if (TL_TASK) return bot_id + "#" + task_id_of(TL_TASK);
+  return TL_GOAL_ID.empty() ? bot_id : bot_id + "#" + TL_GOAL_ID;
 }
 static std::string todo_file(const std::string &key) {
   std::string safe;
@@ -122,7 +125,16 @@ static std::string todo_tool(const std::string &bot_id, const Val &a) {
       ensure_state();
       std::error_code ec;
       std::filesystem::create_directories(STATE_DIR + "/todo", ec);
-      write_file_atomic(todo_file(key), mj::dump(t));
+      if (!write_file_atomic(todo_file(key), mj::dump(t)))
+        throw std::runtime_error("Todo-Plan konnte nicht gespeichert werden.");
+      // Legacy room UI reads /api/todo/<bot> for the current plan.
+      // Keep that read-only/latest view, but never read it when a goal ID is
+      // active. This preserves the API without leaking older plan state.
+      if (!TL_TASK && !TL_GOAL_ID.empty()) {
+        TODOS[bot_id] = t;
+        if (!write_file_atomic(todo_file(bot_id), mj::dump(t)))
+          throw std::runtime_error("Aktuelle Todo-Ansicht konnte nicht gespeichert werden.");
+      }
       TL_TODO_TOUCHED = true;
     }
   }

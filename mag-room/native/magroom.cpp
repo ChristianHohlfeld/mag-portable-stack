@@ -5211,7 +5211,35 @@ static std::string dispatch_tool_raw(int bot_idx, const std::string &name,
   std::string bot_name = bot_field(bot_idx, "name", "Bot");
   if (is_mcp_tool(name)) return mcp_dispatch_tool(bot_idx, name, a);
   if (is_jobs_tool(name)) return jobs_dispatch_tool(bot_idx, name, a);
-  if (is_pages_tool(name)) return pages_dispatch_tool(bot_idx, name, a);
+  if (is_pages_tool(name)) {
+    if (name != "pages_list") {
+      // Publish/unpublish/visibility changes affect readers outside this bot
+      // and must never inherit a generic MCP "auto"/"always" grant.
+      McpApproval request;
+      request.id = token_hex(8);
+      request.bot = bot_id;
+      request.bot_name = bot_name;
+      request.server = "mag-native-pages";
+      request.server_name = "MAG Pages (Veröffentlichung)";
+      request.tool = name;
+      request.kind = "action";
+      request.ts = (long)now_s();
+      Val summary = Val::object();
+      for (const char *field : {"repo", "path", "visibility", "domain"})
+        if (const Val *v = a.find(field)) summary[field] = v->asStr();
+      if (const Val *content = a.find("content"))
+        summary["content_bytes"] = (double)content->asStr().size();
+      request.args = mj::dump(summary); // never include page body or secrets
+      const std::string approved = mcp_await_approval(request);
+      if (approved != "allow" && approved != "always")
+        throw std::runtime_error(std::string("Seitenaktion nicht ausgefuehrt: ") +
+                                 (approved == "timeout" ? "Freigabe fehlt" :
+                                  approved == "stopped" ? "abgebrochen" : "abgelehnt"));
+      // "always" is deliberately accepted for this ONE call only.
+      // No native publication approval gets stored as an auto-grant.
+    }
+    return pages_dispatch_tool(bot_idx, name, a);
+  }
   if (is_s23_tool(name)) return s23_dispatch_tool(bot_idx, name, a);
   auto need_vm = [&]() {
     if (vm.empty() || vm == "keine")

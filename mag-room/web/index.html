@@ -1812,10 +1812,12 @@ async function loadGuests(force=false){
   $('guest-new').title=info.configured?'Gast einladen':'OAuth-Client auf mag nicht eingerichtet';
   // An empty guest list is self explanatory. No owner-only or empty-state
   // banners occupying the sidebar; only actual actionable errors appear.
-  $('guest-status').textContent=info.configured
-    ? (info.live_status==='unavailable'?'Tailscale-Status nicht verfügbar':'')
-    : (info.notice||'');
+  $('guest-status').textContent=info.configured&&info.live_status==='unavailable'
+    ? 'Tailscale-Status nicht verfügbar' : '';
   $('guest-status').hidden=!$('guest-status').textContent;
+  // Keep the option to invite visible only when it actually works; no
+  // redundant empty-state descriptions or unavailable control.
+  $('guests-section').hidden=!info.configured&&!(info.guests||[]).length;
   const box=$('guest-list');box.replaceChildren();
   for(const entry of info.guests||[]){
    const row=document.createElement('div');row.className='job';

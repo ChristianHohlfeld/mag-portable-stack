@@ -392,6 +392,10 @@ dialog{border-radius:10px;border-color:var(--line);background:var(--surface)}
 .agent-row{display:flex;align-items:center;gap:6px;min-width:0}.agent-row label{flex:1;min-width:0}
 .agent-flag{flex:none;font-size:10px;font-weight:650;letter-spacing:.03em;text-transform:uppercase;color:var(--muted)}
 .agent.is-on .agent-flag{color:var(--green,#2ea043)}
+.agent:not(.is-speaking) .agent-flag{color:var(--muted)}
+.agent-speaker{flex:none;display:inline-flex;align-items:center;justify-content:center;min-width:32px;height:28px;border:1px solid var(--line);border-radius:8px;background:var(--panel);color:var(--text);cursor:pointer;font-size:13px}
+.agent-speaker[aria-pressed=false]{color:var(--muted);background:transparent}
+.agent-speaker:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 #bot-detail .control-desc{margin:4px 2px 0}#bot-no-vm{margin:8px 2px 0}
 .react-pills{display:flex;flex-wrap:wrap;gap:4px;margin-top:6px}
 .react-pills:empty{display:none}
@@ -1950,11 +1954,38 @@ document.addEventListener('click',e=>{if(openPop&&!openPop.menu.contains(e.targe
 function botCap(){return state.max_bots||2}
 function etaMin(sec){return Math.max(1,Math.round(sec/60))}
 function botModelLabel(a){return (state.models||[]).find(m=>m.id===a.model)?.label||(a.model?.includes('qwen')?'Qwen':a.model?.includes('deepseek')?'DeepSeek':'')}
-function renderAgents(){const list=$('agents');list.replaceChildren();const single=state.single_bot||'';const addAgent=$('add-agent');if(addAgent)addAgent.hidden=!!single||!!state.dual_numa;if(single){selected.clear();selected.add(single)}const old=$('browser-agent').value;$('browser-agent').replaceChildren();for(const a of state.agents){if(a.enabled===false)selected.delete(a.id);else if(!selected.has(a.id)&&!sessionStorage.getItem('mag-selected'))selected.add(a.id);const on=a.enabled!==false;const card=document.createElement('div');card.className='agent'+(on?' is-on':'');card.dataset.bot=a.id;card.tabIndex=0;
+// This only controls which bots respond to NEW chat messages. It does not
+// disable the VM, interrupt current tasks, or change scheduled jobs.
+function rememberSpeakingBots(){
+ try {
+  const json=JSON.stringify([...selected]);
+  localStorage.setItem('mag-speaking-bots',json);
+  sessionStorage.setItem('mag-selected',json); // migration/compatibility
+ } catch(e){}
+}
+function toggleBotResponses(id){
+ const bot=state.agents.find(a=>a.id===id);
+ if(!bot||bot.enabled===false)return;
+ if(selected.has(id)){
+  if([...selected].filter(x=>state.agents.some(a=>a.id===x&&a.enabled!==false)).length<=1){
+   notice('Mindestens ein Bot muss für neue Nachrichten ausgewählt bleiben.');return;
+  }
+  selected.delete(id);
+ }else selected.add(id);
+ rememberSpeakingBots();
+ renderAgents();syncFixedBotNav(state);syncBotSwitches();syncComposerButton();
+}
+function renderAgents(){const list=$('agents');list.replaceChildren();const single=state.single_bot||'';const addAgent=$('add-agent');if(addAgent)addAgent.hidden=!!single||!!state.dual_numa;if(single){selected.clear();selected.add(single)}const old=$('browser-agent').value;$('browser-agent').replaceChildren();for(const a of state.agents){if(a.enabled===false)selected.delete(a.id);else if(!selected.has(a.id)&&!sessionStorage.getItem('mag-selected')&&!localStorage.getItem('mag-speaking-bots'))selected.add(a.id);const on=a.enabled!==false;const card=document.createElement('div');card.className='agent'+(on?' is-on':'')+(selected.has(a.id)?' is-speaking':'');card.dataset.bot=a.id;card.tabIndex=0;
 card.setAttribute('role','button');card.setAttribute('aria-label',a.name+' auswählen');
 card.onclick=e=>{if(e.target.closest('button,a,input,textarea,select'))return;focusBot(a.id)};
 card.onkeydown=e=>{if(e.target===card&&(e.key==='Enter'||e.key===' ')){e.preventDefault();focusBot(a.id)}};
-const row=document.createElement('div');row.className='agent-row';const label=document.createElement('label');const tone=botToneIndex(a);botVars(card,tone);const name=document.createElement('span');name.className='bot-name';name.textContent=roomBotName({role:'assistant',bot:a.id,name:a.name});const face=botFaceEl(tone,streams[a.id]?'stream':'idle');face.classList.add('roster-face');label.append(face,name);const flag=document.createElement('span');flag.className='agent-flag';flag.textContent=on?'aktiv':'inaktiv';row.append(label,flag);const info=document.createElement('small');info.textContent=(botModelLabel(a)||'Modell unbekannt')+' · '+(a.spawning?'VM wird erstellt …':(a.vm?'VM '+a.vm:'keine VM'));const actions=document.createElement('div');actions.className='actions';const actList=[];
+const row=document.createElement('div');row.className='agent-row';const label=document.createElement('label');const tone=botToneIndex(a);botVars(card,tone);const name=document.createElement('span');name.className='bot-name';name.textContent=roomBotName({role:'assistant',bot:a.id,name:a.name});const face=botFaceEl(tone,streams[a.id]?'stream':'idle');face.classList.add('roster-face');label.append(face,name);const flag=document.createElement('span');flag.className='agent-flag';flag.textContent=!on?'inaktiv':selected.has(a.id)?'antwortet':'pausiert';
+const speaker=document.createElement('button');speaker.type='button';speaker.className='agent-speaker';
+speaker.textContent=selected.has(a.id)?'Ⅱ':'▶';speaker.disabled=!on||!!single;
+speaker.title=selected.has(a.id)?a.name+': Antworten bei neuen Nachrichten pausieren':a.name+': Antworten wieder einschalten';
+speaker.setAttribute('aria-label',speaker.title);speaker.setAttribute('aria-pressed',String(selected.has(a.id)));
+speaker.onclick=e=>{e.stopPropagation();toggleBotResponses(a.id)};
+row.append(label,flag,speaker);const info=document.createElement('small');info.textContent=(botModelLabel(a)||'Modell unbekannt')+' · '+(a.spawning?'VM wird erstellt …':(a.vm?'VM '+a.vm:'keine VM'));const actions=document.createElement('div');actions.className='actions';const actList=[];
 if(can('memory'))actList.push(['Erinnerung',()=>memory(a)]);
 if(state.you?.role==='owner'&&!state.configured_model)actList.push(['Umbenennen',()=>renameAgent(a)]);
 if(a.id===single||state.dual_numa||state.configured_model){}else if(can('delete'))actList.push(['Entfernen',()=>removeAgent(a)]);
@@ -2146,9 +2177,9 @@ function syncFixedBotNav(next){
   const model=String(a?.model||inst?.model||'');
   const label=model.includes('qwen')?'Qwen':model.includes('deepseek')?'DeepSeek':String(inst?.label||a?.name||'NUMA '+(slot-1));
   const b=document.createElement('button');
-  b.type='button';b.className='fixed-bot';b.textContent=label;
+  b.type='button';b.className='fixed-bot';b.textContent=label+(a&&!selected.has(a.id)?' ⏸':'');
   b.disabled=!a;
-  b.title=a?label+' · '+(a.vm?'VM '+a.vm:'noch keine VM'):label+' · Bot fehlt';
+  b.title=a?label+' · '+(selected.has(a.id)?'Antworten an':'Antworten pausiert')+' · '+(a.vm?'VM '+a.vm:'noch keine VM'):label+' · Bot fehlt';
   b.setAttribute('aria-current',String(!!a&&a.id===focusedBotId));
   b.setAttribute('aria-label',label+' auswählen');
   if(inst&&['down','failed','offline'].includes(String(inst.state)))b.classList.add('is-down');
@@ -2380,7 +2411,8 @@ $('send-form').onsubmit=async e=>{
  const interrupt=!!$('send-form')._interrupt;$('send-form')._interrupt=false;
  const text=$('message').value.trim();if(!text&&!stagedPhotos.length&&!stagedFiles.length)return;
  if(/^\/(mcp|plugins?)$/i.test(text)&&can('connectors')&&window.openMcp){$('message').value='';$('message').dispatchEvent(new Event('input'));window.openMcp();return}
- const bots=[...selected],think=$('think').checked;
+ const bots=[...selected].filter(id=>state.agents.some(a=>a.id===id&&a.enabled!==false)),think=$('think').checked;
+ if(!bots.length && text){notice('Aktiviere mindestens einen Bot unter „Im Raum“.');return;}
  const sameThinking=chosenBots().every(a=>!!a.thinking===think);
  // Do not remove attachments until their individual HTTP upload succeeds.
  // Upload failures and ambiguous responses must leave the remaining draft.
@@ -2761,7 +2793,10 @@ $('upload').onclick=()=>$('file-input').click();$('file-input').onchange=e=>{sta
 // The live-view checkbox is gone (always on). An old stored 'false' silently
 // kept the browser view blank with no control left to undo it.
 try{localStorage.removeItem('mag-live')}catch{}
-for(const id of ['language']){const stored=localStorage.getItem('mag-'+id);if(stored!==null){if($(id).type==='checkbox')$(id).checked=stored==='true';else $(id).value=stored}$(id).addEventListener('change',()=>localStorage.setItem('mag-'+id,$(id).type==='checkbox'?$(id).checked:$(id).value))}try{selected=new Set(JSON.parse(sessionStorage.getItem('mag-selected')||'[]'))}catch{}
+for(const id of ['language']){const stored=localStorage.getItem('mag-'+id);if(stored!==null){if($(id).type==='checkbox')$(id).checked=stored==='true';else $(id).value=stored}$(id).addEventListener('change',()=>localStorage.setItem('mag-'+id,$(id).type==='checkbox'?$(id).checked:$(id).value))}try {
+ const saved=localStorage.getItem('mag-speaking-bots')??sessionStorage.getItem('mag-selected');
+ if(saved!==null)selected=new Set(JSON.parse(saved));
+} catch(e){}
 async function browser(action,body={}){const id=$('browser-agent').value;if(!id)throw Error('Bot auswählen');return api('/api/browser/'+encodeURIComponent(id)+'/'+action,body)}
 async function browserAction(action,body){try{const result=await browser(action,body);notice();return result}catch(e){notice(e.message);throw e}}
 

@@ -1402,7 +1402,7 @@ class Native(unittest.TestCase):
   self.assertEqual(self.request('/api/state')['room'][-1]['reasoning'],'intern')
   self.request('/api/bot-settings',{'bots':['test'],'thinking':True},method='PUT')
   html=self.request('/',raw=True).decode()
-  for needle in ('id="think"',"const bots=[...selected],think=$('think').checked","api('/api/bot-settings'",'a.thinking'):self.assertIn(needle,html)
+  for needle in ('id="think"',"const bots=[...selected].filter(id=>state.agents.some(a=>a.id===id&&a.enabled!==false)),think=$('think').checked","api('/api/bot-settings'",'a.thinking'):self.assertIn(needle,html)
  def test_09l_new_message_is_queued_not_aborting(self):
   Model.delay=1.5
   try:

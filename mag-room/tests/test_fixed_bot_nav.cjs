@@ -30,6 +30,7 @@ const context={
     return element;}},
   $:id=>id==='fixed-bot-nav'?nav:null,
   focusedBotId:'ds',
+  selected:new Set(['ds','qw']),
   focusBot:id=>{context.focusedBotId=id}
 };
 vm.runInNewContext(code,context);
@@ -44,6 +45,13 @@ assert.equal(nav.hidden,false);
 assert.deepEqual(nav.items.map(b=>b.textContent),['DeepSeek','Qwen']);
 assert.equal(nav.items[0].attrs['aria-current'],'true');
 assert.equal(nav.items[1].disabled,false);
+context.selected.delete('qw');
+context.syncFixedBotNav({configured_model:true,agents:[
+  {id:'ds',slot:1,model:'deepseek-v4-flash-0731',vm:'agent1'},
+  {id:'qw',slot:2,model:'qwen3.8-flash-next-uncensored',vm:'agent2'}
+],model_instances:[]});
+assert.equal(nav.items[1].textContent,'Qwen ⏸','paused bot stays visible in header');
+context.selected.add('qw');
 nav.items[1].onclick();
 assert.equal(context.focusedBotId,'qw');
 context.syncFixedBotNav({configured_model:true,agents:[],model_instances:[

@@ -9211,6 +9211,9 @@ static void publish_idle_locked() {
 // and switches autonomy off.
 static Val user_stop(bool pause_jobs) {
   SELF_HOLD = true;
+  // Freeze new warmup work BEFORE touching sockets. A prewarm launched while
+  // Stop is closing the old model stream can immediately reoccupy the slot.
+  PREWARM_HOLD = true;
   const long long now = duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
   bool lane_hot = false;
   for (Lane *l : all_lanes())

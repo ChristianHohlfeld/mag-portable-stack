@@ -2032,21 +2032,42 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
   }
   error_json(fd, 404, "Unknown route");
 }
-static std::atomic<int> CONNECTIONS{0};
+// The nginx auth_request runs on THIS native server. If SSE and slow VM
+// requests exhaust the normal connection pool, rejecting whois with HTTP 503
+// denies the entire Tailnet UI even though the service and model are healthy.
+// Reserve independent capacity for the local, security-checked whois route.
+// The global cap still bounds pre-header sockets and prevents unlimited threads.
+static std::atomic<int> CONNECTIONS{0}, NORMAL_CONNECTIONS{0}, WHOIS_CONNECTIONS{0};
 static void serve_connection(int fd, bool bridge) {
-  if (++CONNECTIONS > 128) {
+  const int normal_limit = std::clamp(envi("MAG_ROOM_HTTP_CONNECTIONS", 256), 8, 512);
+  constexpr int WHOIS_LIMIT = 48;
+  constexpr int HEADER_RESERVE = 48;
+  const int accepted = ++CONNECTIONS;
+  if (accepted > normal_limit + WHOIS_LIMIT + HEADER_RESERVE) {
     error_json(fd, 503, "Connection limit");
     --CONNECTIONS;
     close(fd);
     return;
   }
-  timeval timeout{30, 0};
+  timeval timeout{accepted > normal_limit ? 5 : 30, 0};
   setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
   setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
   try {
     Req r;
-    if (read_request(fd, r))
-      route(fd, r, bridge);
+    if (read_request(fd, r)) {
+      const bool whois = !bridge && r.path == "/_internal/tailscale/whois";
+      std::atomic<int> &pool = whois ? WHOIS_CONNECTIONS : NORMAL_CONNECTIONS;
+      const int active = ++pool;
+      if (active > (whois ? WHOIS_LIMIT : normal_limit)) {
+        error_json(fd, 503, whois ? "Whois capacity exceeded" : "Connection limit");
+        if (!whois) std::cerr << "http regular connection limit reached: "
+                              << active << "/" << normal_limit
+                              << "; reserved whois=" << WHOIS_CONNECTIONS.load() << "\n";
+      } else {
+        route(fd, r, bridge); // native auth still validates real Tailnet identity
+      }
+      --pool;
+    }
   } catch (const std::exception &e) {
     error_json(fd, 500, e.what());
   }

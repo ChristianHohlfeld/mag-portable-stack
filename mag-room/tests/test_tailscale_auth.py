@@ -99,6 +99,8 @@ class NativeWhois(unittest.TestCase):
                    MAG_ROOM_UI=str(ROOT / "mag-room/web/index.html"),
                    MAG_NETMODE="/bin/true", MAG_TEST_NO_MEMGIT="1",
                    MAG_ROOM_FILE_SYNC_SECONDS="0",
+                   MAG_ROOM_HTTP_CONNECTIONS="8",  # exercise reserved whois pool
+                   MAG_ROOM_SSE_SESSION_S="2",  # recycle fixture clients quickly
                    MAG_ROOM_GUEST_CLEANUP_SECONDS="0",
                    MAG_ROOM_MODEL_STATUS=str(cls.path / "model.json"),
                    MAG_TAILSCALED_SOCKET=str(cls.sock))
@@ -265,6 +267,44 @@ class NativeWhois(unittest.TestCase):
             self.assertEqual(self.room_request("/api/events", attested)[0], 403)
         finally:
             self.access_file.write_text(original)
+
+    def test_zz_whois_survives_exhausted_sse_connection_pool(self):
+        # Eight long-lived, authenticated SSE connections occupy every
+        # regular slot. nginx's separate whois subrequest MUST still get
+        # a real Tailscale attestation, not a 503 -> whole UI outage.
+        TailnetLocalAPI.mode = "ok"
+        connections = []
+        try:
+            for _ in range(8):
+                sock = socket.create_connection(("127.0.0.1", self.port), timeout=3)
+                sock.settimeout(3)
+                sock.sendall(b"GET /api/events HTTP/1.1\r\nHost: localhost\r\nConnection: keep-alive\r\n\r\n")
+                first = sock.recv(4096)
+                self.assertIn(b"200 OK", first, first[:120])
+                connections.append(sock)
+            code, headers = self.request("100.101.102.103:54321")
+            self.assertEqual(code, 200, "nginx whois may not share SSE pool")
+            self.assertEqual(headers["X-Tailscale-User"], "ada@github")
+            self.assertEqual(self.request("100.101.102.103:54321", method="POST")[0], 405)
+            self.assertEqual(self.request(None)[0], 403,
+                             "reserved whois slots never bypass Tailnet verification")
+            code, body = self.room_request("/healthz")
+            self.assertEqual(code, 503, "regular connection limit remains enforced")
+            self.assertIn(b"Connection limit", body)
+            # Even a client that never closes its socket is recycled: EventSource
+            # will reconnect and refresh its canonical room state.
+            for _ in range(50):
+                code, _ = self.room_request("/healthz")
+                if code == 200:
+                    break
+                time.sleep(.1)
+            self.assertEqual(code, 200, "expired SSE sockets must release slots")
+            self.assertEqual(self.request("100.101.102.103:54321")[0], 200)
+        finally:
+            for sock in connections:
+                try: sock.shutdown(socket.SHUT_RDWR)
+                except OSError: pass
+                sock.close()
 
     def test_guest_invitation_contract_source(self):
         # C++ integration test above covers auth; verify the exact Tailscale

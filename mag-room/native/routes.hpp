@@ -2108,7 +2108,21 @@ static void serve_connection(int fd, bool bridge) {
     if (read_request(fd, r))
       route(fd, r, bridge);
   } catch (const std::exception &e) {
-    error_json(fd, 500, e.what());
+    // A protocol / size error is never a server crash. Return structured
+    // JSON with the correct HTTP status, and keep the room process alive.
+    const std::string cause = e.what();
+    if (cause == "Body limit") {
+      std::cerr << "magroom HTTP 413: request body exceeded per-request limit\n";
+      error_json(fd, 413, "Anfrage zu gross; grosse Dateien in Teilen senden");
+    } else if (cause == "Invalid content length" || cause == "Incomplete body" ||
+               cause == "Incomplete HTTP headers" || cause == "Header limit" ||
+               cause == "Transfer encoding unsupported") {
+      std::cerr << "magroom HTTP 400: " << cause << "\n";
+      error_json(fd, 400, "Ungueltige oder unvollstaendige HTTP-Anfrage");
+    } else {
+      std::cerr << "magroom HTTP 500: " << cause << "\n";
+      error_json(fd, 500, "Serverfehler bei der Anfrage");
+    }
   }
   close(fd);
   --CONNECTIONS;

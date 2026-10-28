@@ -201,6 +201,19 @@ class AgentCore(unittest.TestCase):
                       for c in Router.calls))
   self.assertFalse(self.request(f'/api/tasks/{task_id}/resume',{})['resumed'])
 
+ def test_09zz_open_background_goals_cannot_be_reported_done(self):
+  Router.main=[call('task',{'action':'start','title':'Offene Analyse','prompt':'Recherchiere und verifiziere X'}),['Im Hintergrund.']]
+  Router.task=[call('todo',{'action':'set','goal':'Beweis','items':['Quelle prüfen']}),['Fertig.'],['Fertig.'],['Fertig.']]
+  self.ask('Bitte X recherchieren')
+  outcome=self.until(lambda:[t for t in self.request('/api/tasks')['tasks']
+                             if t['title']=='Offene Analyse' and t['status']=='incomplete'])
+  self.assertEqual(outcome[0]['todo']['items'][0]['status'],'open')
+  self.assertIn('Nicht abgeschlossen',outcome[0]['result'])
+  self.assertTrue(any('Aufgabe „Offene Analyse“ · unvollständig' in m.get('content','')
+                      for m in self.room()))
+  persisted=json.loads(self.state.joinpath('tasks.json').read_text())
+  self.assertTrue(any(t['id']==outcome[0]['id'] and t['status']=='incomplete' for t in persisted))
+
  def approval(self,kind):
   return self.until(lambda:[a for a in self.request('/api/state').get('approvals') or [] if a.get('kind')==kind])[0]
  def tool_results(self):

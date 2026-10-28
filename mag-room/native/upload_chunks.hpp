@@ -55,7 +55,7 @@ static void upload_cleanup_locked() {
     if (ec) break;
     const std::string name = entry.path().filename().string();
     if (name.rfind(".upload-", 0) != 0 ||
-        name.size() < 41 || !upload_id_ok(name.substr(8,32))
+        name.size() < 41 || !upload_id_ok(name.substr(8,32)))
       continue;
     if (entry.path().extension() != ".json" && entry.path().extension() != ".part")
       continue;

@@ -3244,10 +3244,11 @@ async function mutatePending(id,path,body,method='POST'){
   return reply;
  }catch(e){
   if(e.status===409&&e.data?.status==='stale'){
+   const clientId=(queueState.pending||[]).find(p=>p.id===id)?.client_id||
+     (state?.pending||[]).find(p=>p.id===id)?.client_id;
    if(e.data.queue)renderQueue(e.data.queue);
    await refresh().catch(()=>{});
-   const delivered=!!(state?.room||[]).find(m=>m.client_id&&
-     m.client_id===(queueState.pending||[]).find(p=>p.id===id)?.client_id);
+   const delivered=!!clientId&&(state?.room||[]).some(m=>m.client_id===clientId);
    notice(delivered?'Nachricht wird bereits bearbeitet.':'Warteschlange wurde aktualisiert.');
    return {ok:false,status:'stale'};
   }

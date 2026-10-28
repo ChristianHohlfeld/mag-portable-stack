@@ -519,6 +519,45 @@ class Native(unittest.TestCase):
   self.assertEqual(tail[2]['content'],'N-Zwei')
   last=Model.calls[-1]['messages'];self._roles_ok(last);self.assertNotIn('denke',json.dumps(last),'partial reasoning must not leak into history')
   self.assertIn('(abgebrochen)',json.dumps(last,ensure_ascii=False),'the model still learns the turn was interrupted by the user')
+ def test_15b1_stale_send_now_is_conflict_not_missing_message(self):
+  # The scheduler may claim the item after a queue chip was rendered but
+  # before 'Jetzt senden' reaches the backend. Never cancel or send again.
+  self.wait_idle();Model.script=[['Already delivered.']];Model.calls.clear()
+  r=self.request('/api/message',{'text':'Already delivered','bots':['test'],
+                                  'request_id':'stale-now-01'})
+  qid=r['item']['id']
+  state=self._settle(lambda s:not s['busy'] and not s['pending'] and
+      any(m.get('content')=='Already delivered.' for m in s['room']))
+  n=len(Model.calls);before=self.request('/api/queue')['revision']
+  with self.assertRaises(urllib.error.HTTPError) as ctx:
+   self.request('/api/queue/'+qid+'/now',{})
+  self.assertEqual(ctx.exception.code,409)
+  data=json.loads(ctx.exception.read())
+  self.assertEqual(data['status'],'stale')
+  self.assertEqual(data['queue']['pending'],[])
+  self.assertEqual(data['queue']['revision'],before)
+  self.assertEqual(len(Model.calls),n,'stale action must not launch a new turn')
+  self.assertEqual(len([m for m in self.request('/api/state')['room']
+       if m.get('content')=='Already delivered']),1)
+  self.assertFalse(self.request('/api/state')['busy'])
+  Model.script=[]
+
+ def test_15b2_send_receipt_is_idempotent_after_lost_ack(self):
+  # Reuse the same client request ID after a lost HTTP response; no
+  # second room message, no second model job, including after dispatch.
+  self.wait_idle();Model.script=[['Once only.']];Model.calls.clear()
+  body={'text':'Same request once','bots':['test'],'request_id':'same-retry-42'}
+  one=self.request('/api/message',body)
+  duplicate=self.request('/api/message',body)
+  self.assertTrue(one['accepted'])
+  self.assertTrue(duplicate['duplicate'])
+  state=self._settle(lambda s:not s['busy'] and not s['pending'] and
+      any(m.get('content')=='Once only.' for m in s['room']))
+  self.assertEqual(len([m for m in state['room']
+      if m.get('content')=='Same request once']),1)
+  self.assertEqual(len(Model.calls),1)
+  Model.script=[]
+
  def test_15c_send_now_during_output_keeps_partial_and_prefix(self):
   self.wait_idle();Model.calls.clear();Model.script=[self._slow('out'),['Danach.']]
   self.request('/api/message',{'text':'O-Eins','bots':['test']});self._busy();time.sleep(1.0)
@@ -777,7 +816,7 @@ class Native(unittest.TestCase):
    self.assertEqual([p['id'] for p in json.loads((self.state/'queue.json').read_text())['pending']],expected)
    self.request('/api/queue/'+ids[2]+'/move',{'before':''})
    self.assertEqual([p['id'] for p in self.request('/api/queue',method='GET')['pending']],[ids[0],ids[1],ids[2]])
-   self.error(404,'/api/queue/'+ids[0]+'/move',{'before':'not-a-job'})
+   self.error(409,'/api/queue/'+ids[0]+'/move',{'before':'not-a-job'})
    html=self.request('/',raw=True).decode()
    for needle in ("queueDropAt(","queueShift(","dragstart","pointerup","/move","photo-preview","upload-photo"):
     self.assertIn(needle,html)

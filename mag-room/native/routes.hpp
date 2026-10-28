@@ -1438,8 +1438,11 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
     if (rest == "resume" && m == "POST") { queue_resume(); send_json(fd, 200, "{\"ok\":true}"); return; }
     std::string qid = rest, action;
     if (auto sl = rest.find('/'); sl != std::string::npos) { qid = rest.substr(0, sl); action = rest.substr(sl + 1); }
-    if (!bridge && actor.role != "owner" && action.empty() &&
-        (m == "PUT" || m == "DELETE")) {
+    // Every queued mutation (including move/now) respects message ownership.
+    // Otherwise a guest could forcibly interrupt another user's bot.
+    if (!bridge && actor.role != "owner" &&
+        ((action == "move" || action == "now") && m == "POST" ||
+         action.empty() && (m == "PUT" || m == "DELETE"))) {
       std::string owner_login;
       if (!pending_sender(qid, owner_login) || owner_login.empty() ||
           owner_login != actor.login) {
@@ -1463,8 +1466,28 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
       if (text.empty() || text.size() > 32768) { error_json(fd, 400, "Text required (max 32 KiB)"); return; }
       ok = queue_edit(qid, text);
     } else { error_json(fd, 405, "Method not allowed"); return; }
-    if (!ok) { error_json(fd, 404, "Unbekannter Eintrag"); return; }
-    send_json(fd, 200, "{\"ok\":true}");
+    if (!ok) {
+      // Queue items can be claimed by the scheduler between painting the
+      // chip and a click. This is a state conflict, NOT an unknown resource
+      // and must never trigger a second send.
+      Val conflict = Val::object();
+      conflict["error"] = "Warteschlange hat sich geändert";
+      conflict["status"] = "stale";
+      {
+        std::lock_guard<std::mutex> lk(JOB_MTX);
+        conflict["queue"] = queue_view_locked();
+      }
+      send_json(fd, 409, mj::dump(conflict));
+      return;
+    }
+    Val result = Val::object();
+    result["ok"] = true;
+    result["status"] = action == "now" ? "prioritized" : "updated";
+    {
+      std::lock_guard<std::mutex> lk(JOB_MTX);
+      result["queue"] = queue_view_locked();
+    }
+    send_json(fd, 200, mj::dump(result));
     return;
   }
   // Owner-controlled metadata only: stable model IDs and NUMA routing are untouched.

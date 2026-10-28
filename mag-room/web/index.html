@@ -742,7 +742,7 @@ const magAlert=(title,text)=>magConfirm({title,text,ok:'OK',alertOnly:true});
 const magAsk=(title,value,ok='Speichern')=>magConfirm({title,ok,input:value||''});
 function termTheme(){return document.documentElement.dataset.theme==='light'?{background:'#fbfbfb',foreground:'#1f1f22',cursor:'#3f3f46',selectionBackground:'#0000001f'}:{background:'#141415',foreground:'#e4e4e7',cursor:'#d4d4d8',selectionBackground:'#ffffff26'}}
 new MutationObserver(()=>{try{for(const t of terminals.values())t.term.options.theme=termTheme()}catch(e){}}).observe(document.documentElement,{attributes:true,attributeFilter:['data-theme']});
-let noticeTimer=0;function notice(t=''){const n=$('notice');if(!n)return;n.textContent=t||'';n.hidden=!t;clearTimeout(noticeTimer);if(t)noticeTimer=setTimeout(()=>{n.textContent='';n.hidden=true;placeToasts()},5000);placeToasts()}async function api(path,body,method='POST'){const options={method};if(body!==undefined){options.body=typeof body==='string'?body:JSON.stringify(body);options.headers={'Content-Type':'application/json'}}const r=await fetch(path,options);const text=await r.text();let data;try{data=JSON.parse(text)}catch{data={error:text}}if(!r.ok){const err=Error(data.error||r.statusText||'Raum nicht erreichbar');err.status=r.status;throw err}return data}
+let noticeTimer=0;function notice(t=''){const n=$('notice');if(!n)return;n.textContent=t||'';n.hidden=!t;clearTimeout(noticeTimer);if(t)noticeTimer=setTimeout(()=>{n.textContent='';n.hidden=true;placeToasts()},5000);placeToasts()}async function api(path,body,method='POST'){const options={method};if(body!==undefined){options.body=typeof body==='string'?body:JSON.stringify(body);options.headers={'Content-Type':'application/json'}}const r=await fetch(path,options);const text=await r.text();let data;try{data=JSON.parse(text)}catch{data={error:text}}if(!r.ok){const err=Error(data.error||r.statusText||'Raum nicht erreichbar');err.status=r.status;err.data=data;throw err}return data}
 
 // Markdown is rendered as inert HTML and passed through a strict element / URL
 // allowlist. Neither Markdown HTML nor streamed tokens are trusted DOM.
@@ -1603,7 +1603,7 @@ function syncStopButton(){const b=$('stop-run');if(!b)return;
  if(stopInFlight)b.setAttribute('aria-busy','true');else b.removeAttribute('aria-busy');
  if(on)b.removeAttribute('tabindex');else b.tabIndex=-1
 }
-function syncComposerButton(){const b=$('send-button'),field=$('message');if(!b||!field)return;b.dataset.mode='send';b.dataset.state='';b.classList.remove('gbar-stopping');b.removeAttribute('aria-busy');b.dataset.count='';const typed=!!field.value.trim()||stagedPhotos.length>0||stagedFiles.length>0;b.setAttribute('aria-label','Senden');b.title='Senden';b.querySelector('use')?.setAttribute('href','#ic-up');b.disabled=!typed;syncStopButton()}
+function syncComposerButton(){const b=$('send-button'),field=$('message');if(!b||!field)return;b.dataset.mode='send';b.dataset.state='';b.classList.remove('gbar-stopping');b.removeAttribute('aria-busy');b.dataset.count='';const typed=!!field.value.trim()||stagedPhotos.length>0||stagedFiles.length>0;b.setAttribute('aria-label','Senden');b.title='Senden';b.querySelector('use')?.setAttribute('href','#ic-up');b.disabled=composerSending||!typed;if(composerSending)b.setAttribute('aria-busy','true');else b.removeAttribute('aria-busy');syncStopButton()}
 function renderPromptProgress(s,node){if(s.thinkingEnabled===false)return;
  const old=node.querySelector('.prompt-progress');old?.remove();
  if(node.querySelector('.work-status'))return;
@@ -1693,10 +1693,10 @@ function render(){
  // Pending items belong to the queue only; never project them into chat history.
  const pending=state.pending||[];
  const queuedClients=new Set(pending.map(p=>p.client_id).filter(Boolean));
- const queuedText=new Set(pending.map(p=>String(p.text||'')));
  for(const id of queuedClients)localSends.delete(id);
- for(const [key,m] of [...localSends])if(queuedText.has(String(m.content||'')))localSends.delete(key);
- for(let i=timeline.length-1;i>=0;--i){const m=timeline[i];if(m.role!=='user')break;if(queuedClients.has(m.client_id)||queuedText.has(String(m.content||'')))timeline.splice(i,1)}
+ // Messages may legitimately contain identical text. Identity is always the
+ // client request ID; content equality must never erase earlier messages.
+ for(let i=timeline.length-1;i>=0;--i){const m=timeline[i];if(m.role!=='user')break;if(m.client_id&&queuedClients.has(m.client_id))timeline.splice(i,1)}
  for(const [key,m] of localSends){if(timeline.some(x=>x.client_id===key))localSends.delete(key);else timeline.push(m)}
  timeline.sort((a,b)=>(a.display_ms||a.ts*1000||0)-(b.display_ms||b.ts*1000||0));
  timeline.forEach((m,i)=>append(m,false,traceForMessage(m,i),i));
@@ -2363,6 +2363,7 @@ let composerSending=false;
 const localSends=new Map(),failedSends=new Map();
 $('send-form').onsubmit=async e=>{
  e.preventDefault();
+ if(composerSending)return; // Never race two mutations from the same composer.
  const interrupt=!!$('send-form')._interrupt;$('send-form')._interrupt=false;
  const text=$('message').value.trim();if(!text&&!stagedPhotos.length&&!stagedFiles.length)return;
  if(/^\/(mcp|plugins?)$/i.test(text)&&can('connectors')&&window.openMcp){$('message').value='';$('message').dispatchEvent(new Event('input'));window.openMcp();return}
@@ -2376,21 +2377,25 @@ $('send-form').onsubmit=async e=>{
  if(typeof paintStagedPhotos==='function')paintStagedPhotos();if(typeof paintStagedFiles==='function')paintStagedFiles();
  if(mobileSend)$('message').blur();else $('message').focus();
  if(text)localSends.set(request_id,{role:'user',name:state.you?.name||'Du',login:state.you?.login||'',content:text,client_id:request_id,display_ms:Date.now()});
- composerSending=true;jumpForSend();render();
+ composerSending=true;syncComposerButton();jumpForSend();render();
  try{
   if(window.magSpeechBusy?.())await window.magSpeechStop();
   if(photos.length)await flushStagedPhotos(photos);if(files.length)await flushStagedFiles(files);
   if(!text){notice('Dateien geteilt');return}
+  // Acknowledged send is final, even if the subsequent read-only refresh
+  // fails. Never reinsert or re-post an accepted message.
   const r=await api('/api/message',{text,bots,...(sameThinking?{think}:{}),interrupt,request_id});
   failedSends.delete(fingerprint);
   if(r?.queued)localSends.delete(request_id);
   if(r?.queue)renderQueue(r.queue);
-  await refresh();notice('');
+  await refresh().catch(()=>{notice('Gesendet · Anzeige verbindet erneut')});
  }catch(err){
+  // A lost HTTP acknowledgement is ambiguous: retry uses the SAME client
+  // request ID so the server's durable receipt prevents duplicate messages.
   failedSends.set(fingerprint,request_id);
   if(!$('message').value.trim()){$('message').value=text;fitMessageHeight()}
-  localSends.delete(request_id);render();notice(err.message+' · Erneut senden ist möglich.');
- }finally{composerSending=false}
+  localSends.delete(request_id);render();notice(err.message+' · Erneut senden verwendet dieselbe Anfrage.');
+ }finally{composerSending=false;syncComposerButton()}
 };window.addEventListener('load',focusComposer);
 const finePointer=matchMedia('(pointer:fine)');
 function composerReady(){const m=$('message');return !!m&&!m.disabled&&m.getClientRects().length>0&&!document.querySelector('dialog[open]')}
@@ -3226,7 +3231,33 @@ for(const [side,id] of [['left','left-panel'],['right','right-panel']]){const el
 let sx=null;document.addEventListener('touchstart',e=>{if(!isCompact()||layout.classList.contains('mobile-left')||layout.classList.contains('mobile-right'))return;const x=e.touches[0].clientX;sx=(x<18||x>innerWidth-18)?x:null},{passive:true});document.addEventListener('touchend',e=>{if(sx===null)return;const dx=e.changedTouches[0].clientX-sx;if(sx<18&&dx>60)toggleRail('left');else if(sx>innerWidth-18&&dx<-60)toggleRail('right');sx=null},{passive:true});
 })();
 
-async function movePending(id,before){try{await api('/api/queue/'+encodeURIComponent(id)+'/move',{before})}catch(e){notice(e.message);await refresh()}}
+// Optimistic control is not authoritative. Every queue mutation settles from
+// the server revision, including a 409 when the scheduler already claimed it.
+const queueMutations=new Set();
+async function mutatePending(id,path,body,method='POST'){
+ if(queueMutations.has(id))return null;
+ queueMutations.add(id);
+ try{
+  const reply=await api(path,body,method);
+  if(reply.queue)renderQueue(reply.queue);
+  await refresh().catch(()=>{});
+  return reply;
+ }catch(e){
+  if(e.status===409&&e.data?.status==='stale'){
+   const clientId=(queueState.pending||[]).find(p=>p.id===id)?.client_id||
+     (state?.pending||[]).find(p=>p.id===id)?.client_id;
+   if(e.data.queue)renderQueue(e.data.queue);
+   await refresh().catch(()=>{});
+   const delivered=!!clientId&&(state?.room||[]).some(m=>m.client_id===clientId);
+   notice(delivered?'Nachricht wird bereits bearbeitet.':'Warteschlange wurde aktualisiert.');
+   return {ok:false,status:'stale'};
+  }
+  notice(e.message);
+  await refresh().catch(()=>{});
+  return null;
+ }finally{queueMutations.delete(id)}
+}
+async function movePending(id,before){return mutatePending(id,'/api/queue/'+encodeURIComponent(id)+'/move',{before})}
 function queueShift(id,delta){const list=queueState.pending||[],i=list.findIndex(p=>p.id===id),j=i+delta;if(i<0||j<0||j>=list.length)return;movePending(id,delta<0?list[j].id:(list[j+1]?.id||''))}
 let draggingQueue=null;
 function queueDropAt(dragId,targetId,below=false){const list=queueState.pending||[],from=list.findIndex(x=>x.id===dragId),to=list.findIndex(x=>x.id===targetId);if(from<0||to<0||from===to)return;let before=below?list[to+1]?.id||'':targetId;if(before===dragId)before=list[to+2]?.id||'';movePending(dragId,before)}
@@ -3247,7 +3278,7 @@ function editQueuedMessage(p,t,button,focus=false){
  const ta=document.createElement('textarea');ta.className='q-edit';ta.value=queueDrafts.get(p.id)??p.text;ta.rows=Math.min(6,Math.max(1,ta.value.split('\n').length));
  queueDrafts.set(p.id,ta.value);ta.oninput=()=>queueDrafts.set(p.id,ta.value);
  let saving=false;
- const save=async()=>{const text=ta.value.trim();if(!text||saving)return;saving=true;button.disabled=true;try{await api('/api/queue/'+encodeURIComponent(p.id),{text},'PUT');queueDrafts.delete(p.id);renderQueue(queueState)}catch(e){notice(e.message)}finally{saving=false;button.disabled=false}};
+ const save=async()=>{const text=ta.value.trim();if(!text||saving)return;saving=true;button.disabled=true;try{const r=await mutatePending(p.id,'/api/queue/'+encodeURIComponent(p.id),{text},'PUT');if(r){queueDrafts.delete(p.id);renderQueue(queueState)}}finally{saving=false;button.disabled=false}};
  button.textContent='✓';button.title='Speichern';button.setAttribute('aria-label','Speichern');button.onclick=save;
  ta.onkeydown=e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing){e.preventDefault();save()}else if(e.key==='Escape'){e.preventDefault();queueDrafts.delete(p.id);renderQueue(queueState)}};
  t.replaceWith(ta);if(focus)requestAnimationFrame(()=>ta.focus({preventScroll:true}));
@@ -3298,9 +3329,9 @@ function paintRoomLine(){
  box.append(head);
  if(!list.length&&!talkJobs.length)return;
  const controls=document.createElement('span');controls.className='queue-controls';
- if(!queueState.paused&&can('stop')){const b=document.createElement('button');b.type='button';b.className='q-btn';b.textContent='Queue pausieren';b.onclick=()=>api('/api/queue/pause',{}).catch(e=>notice(e.message));controls.append(b)}
+ if(!queueState.paused&&can('stop')){const b=document.createElement('button');b.type='button';b.className='q-btn';b.textContent='Queue pausieren';b.onclick=async()=>{b.disabled=true;try{const r=await api('/api/queue/pause',{});if(r.queue)renderQueue(r.queue);await refresh()}catch(e){notice(e.message)}finally{b.disabled=false}};controls.append(b)}
  if(queueState.paused&&can('stop')){const b=document.createElement('button');b.type='button';b.className='q-btn';b.textContent='Fortsetzen';b.onclick=async()=>{b.disabled=true;try{await api('/api/queue/resume',{});await refresh()}catch(e){notice(e.message)}finally{b.disabled=false}};controls.append(b)}
- if(list.length>1&&can('stop')){const b=document.createElement('button');b.type='button';b.className='q-btn';b.textContent='Zusammenführen';b.onclick=()=>api('/api/queue/merge',{}).catch(e=>notice(e.message));controls.append(b)}
+ if(list.length>1&&can('stop')){const b=document.createElement('button');b.type='button';b.className='q-btn';b.textContent='Zusammenführen';b.onclick=async()=>{b.disabled=true;try{await api('/api/queue/merge',{});await refresh()}catch(e){if(e.status===409)notice('Warteschlange hat sich geändert');else notice(e.message);await refresh().catch(()=>{})}finally{b.disabled=false}};controls.append(b)}
  const items=document.createElement('div');items.className='queue-items';items.id='queue-items';items.append(controls);
  box.append(items);
  for(const p of list){const chip=document.createElement('div');chip.className='q-chip'+(p.held?' held':'');chip.dataset.id=p.id;
@@ -3314,8 +3345,13 @@ function paintRoomLine(){
   const del=document.createElement('button');del.type='button';del.className='q-icon';del.title='Entfernen';del.setAttribute('aria-label','Entfernen');del.textContent='✕';
   const now=document.createElement('button');now.type='button';now.className='q-now';now.textContent='Jetzt senden';now.title='Laufende Antwort sofort abbrechen und diese Nachricht senden';
   ed.onclick=()=>editQueuedMessage(p,t,ed,true);
-  del.onclick=()=>api('/api/queue/'+encodeURIComponent(p.id),undefined,'DELETE').catch(e=>notice(e.message));
-  now.onclick=async()=>{now.disabled=true;try{await api('/api/queue/'+encodeURIComponent(p.id)+'/now',{})}catch(e){notice(e.message)}finally{now.disabled=false}};
+  del.onclick=()=>mutatePending(p.id,'/api/queue/'+encodeURIComponent(p.id),undefined,'DELETE');
+  now.onclick=async()=>{
+   if(queueMutations.has(p.id))return;
+   now.disabled=true;now.textContent='Wird vorgezogen…';now.setAttribute('aria-busy','true');
+   try{await mutatePending(p.id,'/api/queue/'+encodeURIComponent(p.id)+'/now',{})}
+   finally{now.disabled=false;now.textContent='Jetzt senden';now.removeAttribute('aria-busy')}
+  };
   if(own){chip.append(grip,t,up,down,ed,del,now);wireQueueDrag(chip,p);if(queueDrafts.has(p.id))editQueuedMessage(p,t,ed)}
  else chip.append(t);
  items.append(chip)}
@@ -3336,7 +3372,7 @@ function renderQueue(q){
  const previous=localSends.size;
  for(const p of queueState.pending){
   if(p.client_id)localSends.delete(p.client_id);
-  for(const [key,m] of [...localSends])if(String(m.content||'')===String(p.text||''))localSends.delete(key);
+  // Different messages with the same text must stay independent.
  }
  if(localSends.size!==previous||queueState.pending.length)render();
  paintRoomLine();

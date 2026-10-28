@@ -1737,6 +1737,13 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
     return;
   }
   if (m == "POST" && path.rfind("/api/tasks/", 0) == 0 &&
+      path.size() > 18 && path.compare(path.size() - 7, 7, "/resume") == 0) {
+    if (actor.role != "owner") { error_json(fd, 403, "Nur der Besitzer darf Aufgaben fortsetzen"); return; }
+    const std::string id = url_decode(path.substr(11, path.size() - 18));
+    send_json(fd, 200, task_resume(id) ? "{\\"resumed\\":true}" : "{\\"resumed\\":false}");
+    return;
+  }
+  if (m == "POST" && path.rfind("/api/tasks/", 0) == 0 &&
       path.size() > 18 && path.compare(path.size() - 7, 7, "/cancel") == 0) {
     const std::string id = path.substr(11, path.size() - 18);
     send_json(fd, 200, task_cancel(id) ? "{\"cancelled\":true}" : "{\"cancelled\":false}");

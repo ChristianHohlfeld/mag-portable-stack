@@ -998,6 +998,9 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
     }
     const std::string bot = args.find("bot") ? args.find("bot")->asStr() : "";
     const std::string nonce = args.find("nonce") ? args.find("nonce")->asStr() : "";
+    if (bot.empty() || nonce.empty()) {
+      error_json(fd, 400, "Bot und Ansichtsticket erforderlich"); return;
+    }
     if (!browser_watch_ack(bot, nonce)) {
       error_json(fd, 409, "Browseransicht nicht mehr angefordert"); return;
     }

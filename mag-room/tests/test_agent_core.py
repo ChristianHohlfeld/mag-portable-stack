@@ -180,10 +180,11 @@ class AgentCore(unittest.TestCase):
   persisted=json.loads(self.state.joinpath('tasks.json').read_text())
   self.assertTrue(any(t['id']==task_id and t['status']=='running' and
                       t['prompt']=='Check X and save result' for t in persisted))
-  self.proc.kill();self.proc.wait(timeout=4);self.log.close()
-  self.log=open(pathlib.Path(self.tmp.name)/'server.log','a')
-  self.proc=subprocess.Popen([str(ROOT/'build/magroom')],env=self.env,stdout=self.log,stderr=self.log)
-  tn.wait_http(f'http://127.0.0.1:{self.ui}/healthz',timeout=8,proc=self.proc)
+  cls=type(self)
+  cls.proc.kill();cls.proc.wait(timeout=4);cls.log.close()
+  cls.log=open(pathlib.Path(cls.tmp.name)/'server.log','a')
+  cls.proc=subprocess.Popen([str(ROOT/'build/magroom')],env=cls.env,stdout=cls.log,stderr=cls.log)
+  tn.wait_http(f'http://127.0.0.1:{cls.ui}/healthz',timeout=8,proc=cls.proc)
   recovered=[t for t in self.request('/api/tasks')['tasks'] if t['id']==task_id][0]
   self.assertEqual(recovered['status'],'interrupted')
   self.assertEqual(recovered['attempts'],1)

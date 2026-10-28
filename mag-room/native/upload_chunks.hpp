@@ -1,8 +1,9 @@
-// Large authenticated attachments: 4 MiB idempotent chunks, disk-backed.
+// Large authenticated attachments: up to 16 MiB idempotent chunks, disk-backed.
+// Fewer network roundtrips and fdatasyncs without parallel offset races.
 // Included after add_file() and before routes.hpp; never expose partial files.
 #pragma once
 static constexpr uint64_t MAX_CHUNKED_FILE = 512ULL * 1024 * 1024;
-static constexpr size_t UPLOAD_PART_BYTES = 4 * 1024 * 1024;
+static constexpr size_t UPLOAD_PART_BYTES = 16 * 1024 * 1024;
 static std::mutex UPLOAD_MTX;
 static std::string upload_dir() {
   const std::string dir = STATE_DIR + "/upload-parts";
@@ -115,9 +116,19 @@ static Val upload_start_or_read(const std::string &id, const std::string &name,
 }
 static Val upload_status(const std::string &id, const std::string &owner) {
   std::lock_guard<std::mutex> lock(UPLOAD_MTX);
+  // No session yet is the normal first-request state, not an HTTP error.
+  // A different owner's existing session remains inaccessible (404).
+  if (!std::filesystem::exists(upload_meta(id))) {
+    Val out = Val::object();
+    out["exists"] = false;
+    out["done"] = false;
+    out["received"] = 0;
+    return out;
+  }
   Val v = upload_load(id);
   if (upload_field(v,"owner") != owner) throw std::runtime_error("Upload nicht gefunden");
   Val out = Val::object();
+  out["exists"] = true;
   if (auto done = v.find("done")) {
     out["done"] = true; out["file"] = *done;
     out["received"] = (double)upload_total(v);

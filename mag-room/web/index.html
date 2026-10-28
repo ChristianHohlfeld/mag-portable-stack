@@ -2577,7 +2577,7 @@ $('reset').onclick=async()=>{
 // Images are staged locally until sending. Canvas conversion strips EXIF/GPS
 // and standardizes HEIC/HEIF when supported by the current browser.
 let stagedPhotos=[],stagedFiles=[];const PHOTO_MAX_PX=2048;
-const FILE_MAX_BYTES=512*1024*1024, FILE_CHUNK_BYTES=4*1024*1024;
+const FILE_MAX_BYTES=512*1024*1024, FILE_CHUNK_BYTES=16*1024*1024;
 const fileUploadSessions=new WeakMap(), fileUploadProgress=new WeakMap();
 function stageFiles(files){
  for(const file of files){
@@ -2616,8 +2616,10 @@ async function chunkReply(response,file){
 }
 async function chunkStatus(id){
  const r=await fetch('/api/upload/chunk/status?id='+id,{cache:'no-store'});
+ // A new session returns an ordinary empty state; legacy servers return 404.
  if(r.status===404)return null;
- return chunkReply(r,{name:'Datei'});
+ const status=await chunkReply(r,{name:'Datei'});
+ return status.exists===false?null:status;
 }
 async function uploadLargeFile(file){
  let id=fileUploadSessions.get(file);

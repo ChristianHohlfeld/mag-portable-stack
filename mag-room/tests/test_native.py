@@ -303,11 +303,16 @@ class Native(unittest.TestCase):
   name='Aufzeichnung (2).m4a'
   base='/api/upload/chunk?id='+uid
   qname=urllib.parse.quote(name)
-  self.error(404,base.replace('/chunk?','/chunk/status?'))
+  absent=self.request(base.replace('/chunk?','/chunk/status?'))
+  self.assertEqual(absent['received'],0)
+  self.assertFalse(absent['done'])
+  self.assertFalse(absent['exists'])
   self.error(403,base+'&name='+qname+'&offset=0&total='+str(total),
              b'abcd',headers={'Content-Type':'application/octet-stream','X-No-Token':'1'})
   self.error(404,base.replace('/chunk?','/chunk/commit?'),b'')
-  buf=b'a'*(4*1024*1024)
+  # Exercise the full 16 MiB client chunk without relaxing the 64 MiB
+  # ordinary upload cap or the 512 MiB per-session total.
+  buf=b'a'*(16*1024*1024)
   # Test first packet and idempotent retransmission (lost HTTP ack).
   first=base+'&name='+qname+'&offset=0&total='+str(total)
   self.assertEqual(self.request(first,buf)['received'],len(buf))

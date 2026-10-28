@@ -62,6 +62,22 @@ def classify(data, state_dir=""):
         if isinstance(msg, dict):
             text += len(msg.get("content") or "") + len(msg.get("reasoning") or "")
     progress = "p%s:t%d" % (",".join(bits), text)
+    # The pre-persistence room could lose a detached subagent at deploy time.
+    # Treat it as user work even when the main conversational lane is idle.
+    # The marker also prevents deploy.sh's stale-token shortcut from killing
+    # a long-running tool action just because it has no text delta.
+    tasks = data.get("tasks") or []
+    task_busy = isinstance(tasks, list) and any(
+        isinstance(t, dict) and t.get("status") == "running" for t in tasks
+    )
+    if task_busy:
+        progress += ":task-active"
+        return (
+            1, user_pending,
+            1 if data.get("selftalk_busy") else 0,
+            1 if data.get("selftalk_held") else 0,
+            progress,
+        )
 
     if "user_busy" in data or "selftalk_busy" in data or "selftalk_held" in data:
         return (

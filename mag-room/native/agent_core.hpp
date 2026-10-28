@@ -116,8 +116,8 @@ static std::string todo_tool(const std::string &bot_id, const Val &a) {
       i["text"] = text.substr(0, 300);
       i["status"] = "open";
       if (check && check->isObj() && check->find("kind") && check->find("path")) {
-        const std::string kind = (*check)["kind"].asStr();
-        const std::string path = (*check)["path"].asStr();
+        const std::string kind = check->find("kind")->asStr();
+        const std::string path = check->find("path")->asStr();
         if ((kind != "file_exists" && kind != "file_contains" && kind != "http_2xx") ||
             path.empty() || path.size() > 1000)
           throw std::runtime_error("Ungueltige maschinelle Pruefbedingung.");
@@ -149,9 +149,9 @@ static std::string todo_tool(const std::string &bot_id, const Val &a) {
       if (action == "done") if (const Val *check = i.find("check"); check && check->isObj()) {
         const auto id = s("proof");
         auto found = TODO_PROOFS.find(id);
-        const std::string ck = check->find("kind") ? (*check)["kind"].asStr() : "";
-        const std::string cp = check->find("path") ? (*check)["path"].asStr() : "";
-        const std::string ct = check->find("text") ? (*check)["text"].asStr() : "";
+        const std::string ck = check->find("kind") ? check->find("kind")->asStr() : "";
+        const std::string cp = check->find("path") ? check->find("path")->asStr() : "";
+        const std::string ct = check->find("text") ? check->find("text")->asStr() : "";
         if (found == TODO_PROOFS.end() || found->second.key != key ||
             found->second.kind != ck || found->second.path != cp ||
             found->second.text != ct || now_s() - found->second.ts > 900)

@@ -1,7 +1,6 @@
 // Resumable, disk-backed room uploads. Each HTTP request is at most 8 MiB;
 // the complete file never enters magroom's heap or the model prompt.
 static std::mutex UPLOAD_MTX;
-static constexpr uint64_t UPLOAD_DISK_MAX = 2ULL * 1024 * 1024 * 1024;
 static constexpr size_t UPLOAD_CHUNK_MAX = 8 * 1024 * 1024;
 static std::string upload_part(const std::string &id) {
   return FILES_DIR + "/.upload-" + id + ".part";
@@ -47,14 +46,39 @@ static uint64_t upload_received_locked(const std::string &id, const Val &v) {
     return (uint64_t)st.st_size;
   throw std::runtime_error("Upload-Datei nicht gefunden");
 }
+// Remove abandoned, server-issued temporary uploads older than 24 hours.
+// Never touch committed chat files, only '.upload-' tickets and parts.
+static void upload_cleanup_locked() {
+  std::error_code ec;
+  const auto now = std::filesystem::file_time_type::clock::now();
+  for (const auto &entry : std::filesystem::directory_iterator(FILES_DIR, ec)) {
+    if (ec) break;
+    const std::string name = entry.path().filename().string();
+    if (name.rfind(".upload-", 0) != 0 ||
+        name.size() < 41 || !upload_id_ok(name.substr(8,32))
+      continue;
+    if (entry.path().extension() != ".json" && entry.path().extension() != ".part")
+      continue;
+    std::error_code se;
+    if (!entry.is_regular_file(se)) continue;
+    const auto modified = entry.last_write_time(se);
+    if (!se && now - modified > std::chrono::hours(24))
+      std::filesystem::remove(entry.path(), se);
+  }
+}
 static Val upload_begin(const std::string &name, uint64_t size,
                         const std::string &owner) {
+  // No product-imposed total-file limit. Browser-safe 53-bit integers,
+  // off_t and actual free disk space set the practical bounds.
   if (owner.empty() || name.empty() || name.size() > 255 || size == 0 ||
-      size > UPLOAD_DISK_MAX)
-    throw std::runtime_error("Ungueltige Dateigroesse oder Name (maximal 2 GiB)");
+      size > (uint64_t)std::numeric_limits<int64_t>::max() ||
+      size > 9007199254740991ULL)
+    throw std::runtime_error("Ungueltige Dateigroesse oder Name");
   std::lock_guard<std::mutex> lk(UPLOAD_MTX);
+  upload_cleanup_locked();
   auto space = std::filesystem::space(FILES_DIR);
-  if (space.available < size + 64ULL * 1024 * 1024)
+  if (space.available < 64ULL * 1024 * 1024 ||
+      size > space.available - 64ULL * 1024 * 1024)
     throw std::runtime_error("Nicht genug Speicherplatz fuer diese Datei");
   const std::string id = token_hex(16);
   const std::string part = upload_part(id);
@@ -164,10 +188,27 @@ static Val upload_finish(const std::string &id, const std::string &owner,
     rec["by"] = by.substr(0,40);
     rec["ts"] = (double)now_s();
     FILES.push_back(rec);
-    save_json_array(FILES_JSON, FILES);
+    try { save_json_array(FILES_JSON, FILES); }
+    catch (...) { FILES.pop_back(); throw; }
     v["done"] = true;
     write_file_atomic(upload_info(id), mj::dump(v));
     created = true;
     return rec;
   }
+}
+
+// Deleting a never-published upload drops its partial file and ticket.
+// A committed room file is never silently removed here.
+static void upload_cancel(const std::string &id, const std::string &owner) {
+  std::lock_guard<std::mutex> lk(UPLOAD_MTX);
+  Val v = upload_meta_locked(id, owner);
+  const std::string stored = id + "_" + upload_safe_name(v.find("name")->asStr());
+  {
+    std::lock_guard<std::recursive_mutex> st(STATE_MTX);
+    for (const auto &f : FILES)
+      if (f.find("stored") && f.find("stored")->asStr() == stored)
+        throw std::runtime_error("Datei bereits im Chat; Chat-Anhang separat entfernen");
+  }
+  unlink(upload_part(id).c_str());
+  unlink(upload_info(id).c_str());
 }

@@ -7161,17 +7161,45 @@ static void handoff_visible_turn(int idx, TurnReport &report, const std::string 
   report.elapsed_s = std::max(0L, (long)((duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count() - TL_DISPLAY_MS) / 1000));
   std::string text = partial;
   replaceAll(text, "[[MAG:WEITER]]", ""); replaceAll(text, "[[MAG:ENDE]]", "");
-  Val msg = append_room("assistant", name, trim(text), id);
-  attach_work(msg, report);
-  {
-    std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
-    for (auto &stored : ROOM) if (mag::str(stored, "id") == mag::str(msg, "id")) {
-      stored["interrupted"] = true; stored["stopped"] = "system"; break;
+  text = trim(text);
+  // A hot-lane handoff can happen after reveal_answer has already created a
+  // durable streaming message. Reuse that SAME ID; otherwise users see two
+  // DeepSeek messages for one response, one with thought and one with text.
+  // A reasoning-only turn is a live activity, not an empty chat message.
+  if (text.empty()) {
+    drop_revealed();
+    Val ended = Val::object();
+    ended["type"] = "bot_done"; ended["bot"] = id;
+    ended["name"] = name; ended["content"] = ""; ended["skipped"] = true;
+    publish(mj::dump(ended));
+  } else {
+    Val msg = Val::object();
+    if (!TL_PARTIAL_ID.empty()) {
+      msg["id"] = TL_PARTIAL_ID;
+      msg["role"] = "assistant"; msg["name"] = name;
+      msg["bot"] = id; msg["content"] = text;
+      std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
+      for (auto &stored : ROOM) if (mag::str(stored, "id") == TL_PARTIAL_ID) {
+        stored["content"] = text;
+        break;
+      }
+      TL_PARTIAL_ID.clear();
+      TL_PARTIAL_TEXT.clear();
+    } else {
+      msg = append_room("assistant", name, text, id);
     }
-    save_room();
+    attach_work(msg, report);
+    {
+      std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
+      for (auto &stored : ROOM) if (mag::str(stored, "id") == mag::str(msg, "id")) {
+        stored["interrupted"] = true; stored["stopped"] = "system"; break;
+      }
+      save_room();
+    }
+    msg["interrupted"] = true; msg["stopped"] = "system";
+    msg["type"] = "bot_done";
+    publish(mj::dump(msg));
   }
-  msg["interrupted"] = true; msg["stopped"] = "system"; msg["type"] = "bot_done";
-  publish(mj::dump(msg));
   // The model keeps its valid assistant/tool/user history in this run. Only
   // the visible segment changes, so no tool is repeated or result discarded.
   report.reasoning.clear(); report.thought_ms = 0; report.steps.clear(); report.tools = Val::array();

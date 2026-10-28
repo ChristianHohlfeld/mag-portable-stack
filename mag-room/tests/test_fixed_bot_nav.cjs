@@ -56,3 +56,27 @@ context.syncFixedBotNav({configured_model:false,agents:[]});
 assert.equal(nav.hidden,true);
 assert.equal(nav.items.length,0);
 console.log('Fixed bot nav PASS');
+
+
+// A transient/legacy room page can lack the (now disabled) add-agent button.
+// Re-rendering after a message must still update the agents without throwing.
+const agentStart=html.indexOf('function renderAgents(){');
+const agentEnd=html.indexOf('function renderFiles(){',agentStart);
+assert.ok(agentStart>0&&agentEnd>agentStart);
+const agentsNode={replaceChildren(){},querySelectorAll(){return []}};
+const browserNode={value:'',replaceChildren(){}};
+const rosterContext={
+  $:id=>id==='agents'?agentsNode:id==='browser-agent'?browserNode:null,
+  state:{agents:[],single_bot:'',dual_numa:false},
+  selected:new Set(),focusedBotId:'',remoteBotId:'',
+  sessionStorage:{getItem(){return null},setItem(){}},
+  updateConsoleLabel(){},syncBotDetail(){},
+  livePeer:null,disconnectLive(){},rightOpen:false,
+  isCompact(){return false},layout:{classList:{contains(){return false}}},
+  document:{hidden:false},connectLive(){}
+};
+vm.runInNewContext(html.slice(agentStart,agentEnd),rosterContext);
+assert.doesNotThrow(()=>rosterContext.renderAgents(),
+  'renderAgents must not crash if the legacy add-agent element is absent');
+assert.equal(browserNode.value,'');
+console.log('Agent roster null-element regression PASS');

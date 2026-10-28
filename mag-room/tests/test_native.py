@@ -2352,7 +2352,7 @@ class SingleBot(unittest.TestCase):
   self.assertIn("[hidden]{display:none!important}",html)
   for needle in ('id="browser-back"','id="browser-forward"','id="browser-reload"','id="browser-nav-form"',"browserNav('back')","browserNav('forward')","syncBrowserUrl",'id="browser-overlay"',"event.type==='browser_action'",'bo-ripple'):self.assertIn(needle,html)
   for needle in ("html-preview","sandbox','allow-scripts'","$('message').focus()","function focusComposer(","e.key==='Enter'&&!e.shiftKey"):self.assertIn(needle,html)
-  for needle in ("state.single_bot","$('add-agent').hidden=!!single","a.id===single"):self.assertIn(needle,html)
+  for needle in ("state.single_bot","const addAgent=$('add-agent');if(addAgent)addAgent.hidden=!!single","a.id===single"):self.assertIn(needle,html)
 class SingleBotVM(unittest.TestCase):
  """MAG_ROOM_SINGLE_BOT_VM=on: the single bot gets its own VM (full sandbox) via the normal spawn path."""
  @classmethod

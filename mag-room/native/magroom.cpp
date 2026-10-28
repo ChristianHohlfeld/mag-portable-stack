@@ -6367,6 +6367,71 @@ static bool send_file_response(
   close(file);
   return true;
 }
+// Stream large chat files and byte-ranged audio/video without ever loading
+// a 512 MiB recording into the room process. Safe even for old small uploads.
+static bool send_file_range_response(
+    int fd, const std::string &path, const std::string &mime,
+    const std::string &range,
+    const std::vector<std::pair<std::string, std::string>> &headers) {
+  if (range.empty() || range.rfind("bytes=", 0) != 0 ||
+      range.find(',') != std::string::npos)
+    return send_file_response(fd, path, mime, headers);
+  int f = open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+  if (f < 0) return false;
+  struct stat st{};
+  if (fstat(f, &st) || !S_ISREG(st.st_mode) || st.st_size <= 0) {
+    close(f); return false;
+  }
+  const uint64_t total = (uint64_t)st.st_size;
+  uint64_t first = 0, last = total - 1;
+  bool valid = true;
+  const auto spec = range.substr(6), dash = spec.find('-');
+  auto parse = [](const std::string &x) -> uint64_t {
+    if (x.empty() || x.find_first_not_of("0123456789") != std::string::npos)
+      throw std::runtime_error("bad range");
+    return std::stoull(x);
+  };
+  try {
+    if (dash == std::string::npos) valid = false;
+    else if (dash == 0) {
+      const uint64_t n = parse(spec.substr(1));
+      if (!n) valid = false;
+      else first = n >= total ? 0 : total - n;
+    } else {
+      first = parse(spec.substr(0, dash));
+      if (dash + 1 < spec.size())
+        last = std::min(parse(spec.substr(dash+1)), total-1);
+      valid = first <= last && first < total;
+    }
+  } catch (...) { valid = false; }
+  if (!valid) {
+    close(f);
+    auto h=headers;
+    h.push_back({"Content-Range","bytes */"+std::to_string(total)});
+    send_response(fd,416,mime,"",h);
+    return true;
+  }
+  std::string h="HTTP/1.1 206 Partial Content\r\nContent-Type: "+mime+
+    "\r\nContent-Length: "+std::to_string(last-first+1)+
+    "\r\nContent-Range: bytes "+std::to_string(first)+"-"+
+    std::to_string(last)+"/"+std::to_string(total)+
+    "\r\nX-Content-Type-Options: nosniff\r\nConnection: close\r\n";
+  for (const auto &p : headers) h += p.first+": "+p.second+"\r\n";
+  h += "\r\n";
+  timeval slow{180,0};
+  setsockopt(fd,SOL_SOCKET,SO_SNDTIMEO,&slow,sizeof(slow));
+  if (write_all(fd,h) >= 0) {
+    off_t offset=(off_t)first;
+    while ((uint64_t)offset<=last) {
+      size_t block=(size_t)std::min<uint64_t>(last-(uint64_t)offset+1,1<<20);
+      ssize_t n=sendfile(fd,f,&offset,block);
+      if(n<0 && errno==EINTR)continue;
+      if(n<=0)break;
+    }
+  }
+  close(f);
+  return true;
+}
 static void send_json(int fd, int code, const std::string &js) {
   send_response(fd, code, "application/json; charset=utf-8", js);
 }

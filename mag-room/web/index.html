@@ -1573,7 +1573,9 @@ function ensureWork(node,s,botId){
  if(!steps.length)old?.remove();
  else{const fresh=stepsList(steps);fresh.open=!!old?.open;if(old)old.replaceWith(fresh);else runPut(node,fresh)}
 }
-setInterval(()=>{const now=Date.now();for(const id of Object.keys(streams)){const s=streams[id];if(!s)continue;const hung=!s.error&&now-(s.lastEvent||s.started||now)>60000;if(hung!==!!s.hung){s.hung=hung;updateStream(id,true);continue}const label=s.node?.querySelector?.('.work-label');if(label&&s.node.classList.contains('work-live'))label.textContent=workLabelText(s);if(s.thinking){const t=s.node?.querySelector?.(':scope > .run > .thinking .think-time');if(t)t.textContent=thinkSecs(liveThinkMs(s))}}paintActivityStatus()},1000);
+setInterval(()=>{const now=Date.now();for(const id of Object.keys(streams)){const s=streams[id];if(!s)continue;const hung=!s.error&&now-(s.lastEvent||s.started||now)>60000;if(hung!==!!s.hung){s.hung=hung;updateStream(id,true);continue}const label=s.node?.querySelector?.('.work-label');if(label&&s.node.classList.contains('work-live'))label.textContent=workLabelText(s);if(s.thinking){const t=s.node?.querySelector?.(':scope > .run > .thinking .think-time');if(t)t.textContent=thinkSecs(liveThinkMs(s))}}if(stopAwaitingIdle&&!stopInFlight&&Date.now()-stopVerifyAt>1500){
+ stopVerifyAt=Date.now();refresh().catch(()=>{});
+}paintActivityStatus()},1000);
 
 function streamControls(){syncComposerButton();if(thinkInit)syncBotSwitches()}
 // The send button only sends. Stop is a separate icon, visible only while a
@@ -1595,12 +1597,12 @@ function stopConfirmedIdle(){
    !(state.tasks||[]).some(t=>t.status==='running');
 }
 function syncStopButton(){const b=$('stop-run');if(!b)return;
- const on=(generationLive()||stopInFlight)&&can('stop');
- b.hidden=false;b.classList.toggle('is-on',!!on);b.classList.toggle('gbar-stopping',stopInFlight);
+ const on=(generationLive()||stopInFlight||stopAwaitingIdle)&&can('stop');
+ b.hidden=false;b.classList.toggle('is-on',!!on);b.classList.toggle('gbar-stopping',stopInFlight||stopAwaitingIdle);
  b.disabled=!on||stopInFlight;b.setAttribute('aria-hidden',on?'false':'true');
- b.setAttribute('aria-label',stopInFlight?'Stoppt…':'Stoppen');
- b.title=stopInFlight?'Wird angehalten…':'Stoppen';
- if(stopInFlight)b.setAttribute('aria-busy','true');else b.removeAttribute('aria-busy');
+ b.setAttribute('aria-label',stopInFlight||stopAwaitingIdle?'Stoppt…':'Stoppen');
+ b.title=stopInFlight||stopAwaitingIdle?'Ausführung wird beendet…':'Stoppen';
+ if(stopInFlight||stopAwaitingIdle)b.setAttribute('aria-busy','true');else b.removeAttribute('aria-busy');
  if(on)b.removeAttribute('tabindex');else b.tabIndex=-1
 }
 function syncComposerButton(){const b=$('send-button'),field=$('message');if(!b||!field)return;b.dataset.mode='send';b.dataset.state='';b.classList.remove('gbar-stopping');b.removeAttribute('aria-busy');b.dataset.count='';const typed=!!field.value.trim()||stagedPhotos.length>0||stagedFiles.length>0;b.setAttribute('aria-label','Senden');b.title='Senden';b.querySelector('use')?.setAttribute('href','#ic-up');b.disabled=composerSending||!typed;if(composerSending)b.setAttribute('aria-busy','true');else b.removeAttribute('aria-busy');syncStopButton()}
@@ -2021,7 +2023,16 @@ async function refreshBackup(){
  }catch(e){el.hidden=false;el.textContent='Backup-Status nicht verfügbar.'}
 }
 function dropStaleGeneration(next){const idle=next&&next.busy===false&&!(next.busy_bots||[]).length&&!((next.activities||(next.activity?[next.activity]:[])).some(a=>a&&a.on));if(!idle)return;for(const s of Object.values(streams))if(s.frame)cancelAnimationFrame(s.frame);streams={};busyBots=new Set()}
-async function refresh(){const seq=++refreshSeq;const r=await fetch('/api/state');if(!r.ok)throw Error('Raum nicht erreichbar');const next=await r.json();if(seq!==refreshSeq)return;dropStaleGeneration(next);state=next;if(state.you?.role==='owner'&&Date.now()-backupPollAt>60000){backupPollAt=Date.now();refreshBackup()}if(state.you?.role!=='owner'&&$('backup-warning'))$('backup-warning').hidden=true;for(const a of (state.activities||(state.activity?[state.activity]:[])))if(a&&a.on)mergeActivity(a);setBusyBots(next.busy_bots,next.waiting_bots);syncApprovals(next.approvals);if(seq!==refreshSeq)return;render();window.mcpMenuState&&window.mcpMenuState();renderQueue({pending:next.pending||[],paused:!!next.queue_paused,revision:next.queue_revision,proaktiv_jobs:next.proaktiv_jobs||[]});if($('offline')){$('offline').checked=!!next.offline;window.syncWeb&&window.syncWeb()}initThink();syncModelSettings(next);if(next.model_status)modelStatus(next.model_status);modelInfo(next.model_info);syncModelChoice(next)}
+async function refresh(){const seq=++refreshSeq;const r=await fetch('/api/state');if(!r.ok)throw Error('Raum nicht erreichbar');const next=await r.json();if(seq!==refreshSeq)return;dropStaleGeneration(next);state=next;
+ if(stopAwaitingIdle&&stopConfirmedIdle()){
+  stopAwaitingIdle=false;
+  for(const st of Object.values(streams))if(st?.stopping){
+   st.stopping=false;
+   if(st.stopBefore){st.phase=st.stopBefore.phase;st.label=st.stopBefore.label;delete st.stopBefore}
+  }
+  notice('');syncStopButton();
+ }
+ if(state.you?.role==='owner'&&Date.now()-backupPollAt>60000){backupPollAt=Date.now();refreshBackup()}if(state.you?.role!=='owner'&&$('backup-warning'))$('backup-warning').hidden=true;for(const a of (state.activities||(state.activity?[state.activity]:[])))if(a&&a.on)mergeActivity(a);setBusyBots(next.busy_bots,next.waiting_bots);syncApprovals(next.approvals);if(seq!==refreshSeq)return;render();window.mcpMenuState&&window.mcpMenuState();renderQueue({pending:next.pending||[],paused:!!next.queue_paused,revision:next.queue_revision,proaktiv_jobs:next.proaktiv_jobs||[]});if($('offline')){$('offline').checked=!!next.offline;window.syncWeb&&window.syncWeb()}initThink();syncModelSettings(next);if(next.model_status)modelStatus(next.model_status);modelInfo(next.model_info);syncModelChoice(next)}
 async function saveModelSetting(id,patch,control){
  control.disabled=true;
  try{
@@ -2256,12 +2267,12 @@ for(const id of ['add-agent','room-add-agent']){const b=$(id);if(b){b.hidden=tru
 let busyBots=new Set();
 let waitingBots=new Map();
 function setBusyBots(ids,waiting){busyBots=new Set(Array.isArray(ids)?ids:[]);if(Array.isArray(waiting)){const keep=new Map();for(const id of waiting)keep.set(id,waitingBots.get(id)||'');waitingBots=keep}for(const id of [...waitingBots.keys()])if(!busyBots.has(id))waitingBots.delete(id);renderLanes();if(state.model_status)modelStatus(state.model_status)}
-let stopInFlight=false;
+let stopInFlight=false,stopAwaitingIdle=false,stopVerifyAt=0;
 function paintStopping(){for(const id of Object.keys(streams)){const s=streams[id];if(!s||s.stopping)continue;s.stopBefore={phase:s.phase,label:s.label};s.stopping=true;s.phase='stop';updateStream(id,true)}syncStopButton()}
 function clearStopping(){if(stopInFlight)return;syncComposerButton()}
 async function stopBot(id){
  if(stopInFlight||!can('stop'))return;
- stopInFlight=true;
+ stopInFlight=true;stopAwaitingIdle=true;stopVerifyAt=Date.now();
  paintStopping();renderLanes();syncStopButton();
  notice('Stoppt…'); // immediate acknowledgment, before any network access
  const controller=new AbortController();
@@ -2286,6 +2297,7 @@ async function stopBot(id){
    if(i===0)notice('Stop angefordert – Ausführung wird beendet…');
    await new Promise(resolve=>setTimeout(resolve,250));
   }
+  stopAwaitingIdle=!confirmed&&acknowledged;
   if(confirmed)notice('');
   else notice(acknowledged?
     'Stop angefordert; der Bot ist noch beschäftigt. Erneut stoppen möglich.':
@@ -2295,6 +2307,7 @@ async function stopBot(id){
   // applied the cancellation; verify read-only before offering a retry.
   const ok=await refresh().then(()=>true,()=>false);
   confirmed=ok&&stopConfirmedIdle();
+  stopAwaitingIdle=!confirmed&&(e.name==='AbortError'||[502,503,504].includes(e.status));
   notice(confirmed?'':e.name==='AbortError'
     ? 'Stop-Antwort ausgeblieben. Zustand prüfen und gegebenenfalls erneut stoppen.'
     : 'Stop nicht bestätigt: '+e.message);
@@ -2303,7 +2316,7 @@ async function stopBot(id){
   stopInFlight=false;
   // Preserve the real server state; never fabricate a stopped run locally.
   // The SSE idle/cancelled event, or refresh, owns stream removal.
-  for(const st of Object.values(streams))if(st?.stopping){
+  if(!stopAwaitingIdle)for(const st of Object.values(streams))if(st?.stopping){
    st.stopping=false;
    if(st.stopBefore){st.phase=st.stopBefore.phase;st.label=st.stopBefore.label;delete st.stopBefore}
   }
@@ -2318,7 +2331,7 @@ function activityItems(){
   const name=roomBotName({role:'assistant',bot:id,name:a?.name||streams[id]?.name});
   const s=streams[id];
   let text;
-  if(stopInFlight)text=name+' stoppt …';
+  if(stopInFlight||stopAwaitingIdle)text=name+' stoppt …';
   else if(waitingBots.has(id))text=name+' wartet';
   else if(!s)text=name+' antwortet';
   else if(s.error)text=name+' · Fehler';
@@ -2341,7 +2354,7 @@ function fillActivity(stat){
  const items=activityItems();
  const note=String(state.proaktiv_note||'').trim();
  stat.replaceChildren();
- stat.hidden=!items.length&&!note&&!stopInFlight;
+ stat.hidden=!items.length&&!note&&!stopInFlight&&!stopAwaitingIdle;
  items.forEach((p,i)=>{
   if(i)stat.append(document.createTextNode(' · '));
   const dot=document.createElement('i');
@@ -2353,7 +2366,7 @@ function fillActivity(stat){
  });
  if(stopInFlight&&!items.length){const txt=document.createElement('span');txt.textContent='Stoppt …';stat.append(txt)}
  if(note){
-  if(items.length||stopInFlight)stat.append(document.createTextNode(' · '));
+  if(items.length||stopInFlight||stopAwaitingIdle)stat.append(document.createTextNode(' · '));
   const lab=document.createElement('span');lab.textContent=note;stat.append(lab);
  }
 }
@@ -2885,10 +2898,12 @@ function liveStatus(v){$('browser-status').textContent=v}
 // expose only mDNS host candidates): poll the existing JPEG endpoint and send
 // taps over HTTPS. Stops as soon as UDP frames arrive or the view closes.
 let httpLive=null,httpLiveFor='';
+function freshUdpFrame(){return frameLastAt&&performance.now()-frameLastAt<5000}
 function startHttpLive(gen,id){
- if(httpLive||gen!==liveGeneration)return;httpLive={gen,id};httpLiveFor=id;
+ if(httpLive||gen!==liveGeneration||!$('live').checked)return;
+ httpLive={gen,id};httpLiveFor=id;
  const tick=async()=>{
-  if(!httpLive||httpLive.gen!==liveGeneration||frameLastAt){httpLive=null;return}
+  if(!httpLive||httpLive.gen!==liveGeneration||freshUdpFrame()){stopHttpLive();return}
   try{const r=await fetch('/api/screen/'+encodeURIComponent(id)+'?format=jpeg',{cache:'no-store'});
    if(r.ok){const b=await createImageBitmap(await r.blob());if(httpLive?.gen===liveGeneration){const c=$('screen');if(c.width!==b.width||c.height!==b.height){c.width=b.width;c.height=b.height}c.getContext('2d',{alpha:false}).drawImage(b,0,0);c.hidden=false;liveStatus('HTTP-Fallback · '+liveVM+' · UDP nicht erreichbar')}b.close()}
   }catch{}
@@ -2926,6 +2941,7 @@ async function displayFrame(parts,sequence,generation){
   context.drawImage(bitmap,0,0);
   canvas.hidden=false;
   lastFrameSeq=sequence;frameLastAt=performance.now();
+  if(httpLive)stopHttpLive();
   liveStatus('WebRTC/UDP · '+liveVM+' · live');
  }catch(e){liveStatus('Frame: '+e.message)}
  finally{bitmap?.close();paintBusy=false}
@@ -3019,8 +3035,14 @@ setInterval(()=>{
  if($('live').checked&&liveControl?.readyState==='open'){
   liveSend({kind:'subscribe'});
   if(videoChunks&&performance.now()-videoChunks.stamp>550)videoChunks=null;
-  if(frameLastAt&&performance.now()-frameLastAt>5000)liveStatus('UDP verbunden · keine neuen Browserframes');
-  else if(!frameLastAt&&liveOpenAt&&performance.now()-liveOpenAt>6000)liveStatus('UDP verbunden · noch kein Browserbild');
+  if(frameLastAt&&performance.now()-frameLastAt>5000){
+   liveStatus('UDP verbunden · Browserbild stockt · HTTP-Fallback');
+   startHttpLive(liveGeneration,$('browser-agent').value);
+  }
+  else if(!frameLastAt&&liveOpenAt&&performance.now()-liveOpenAt>6000){
+   liveStatus('UDP verbunden · noch kein Browserbild');
+   startHttpLive(liveGeneration,$('browser-agent').value);
+  }
  }
  // PTY output arrives as independent bounded datagrams; no fragment cache.
 },2000);

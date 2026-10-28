@@ -256,6 +256,38 @@ class RoomE2E(unittest.TestCase):
         finally:
             p.close()
 
+    def test_02d_browser_http_fallback_recovers_after_udp_stalls(self):
+        # Regression: old startHttpLive stopped whenever frameLastAt was
+        # nonzero, even if that successful frame was minutes old.
+        p=self.page
+        p.evaluate("""()=>{
+          const old=window.fetch;
+          window.__fallbackCalls=0;
+          window.fetch=(url,options)=> {
+            if(String(url).includes('/api/screen/')){
+              window.__fallbackCalls++;
+              return Promise.resolve(new Response('',{status:404}));
+            }
+            return old(url,options);
+          };
+          document.getElementById('live').checked=true;
+          ++liveGeneration;stopHttpLive();
+          frameLastAt=performance.now()-11000;
+          startHttpLive(liveGeneration,'fakebot');
+        }""")
+        p.wait_for_function('window.__fallbackCalls>0',timeout=2500)
+        self.assertFalse(p.evaluate('freshUdpFrame()'),
+                         'an old frame must not disable HTTP fallback')
+        p.evaluate("""()=>{
+          frameLastAt=performance.now();
+          stopHttpLive();
+        }""")
+        self.assertTrue(p.evaluate('freshUdpFrame()'))
+        old=p.evaluate('window.__fallbackCalls')
+        p.wait_for_timeout(1000)
+        self.assertEqual(p.evaluate('window.__fallbackCalls'),old,
+                         'restored UDP frames must stop HTTP polling')
+
     def test_03_escape_stops(self):
         p = self.page
         Model.scripts.append([{'_hold': 30}])

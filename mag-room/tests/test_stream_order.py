@@ -45,6 +45,10 @@ class StreamOrder(unittest.TestCase):
             page.on('pageerror', lambda e: errors.append(str(e)))
             page.goto('http://127.0.0.1:%s/' % ui, wait_until='domcontentloaded')
             page.wait_for_function("()=>typeof render==='function'&&state&&state.agents&&state.agents.length===2")
+            # This test injects synthetic SSE events. The real SSE socket
+            # must not concurrently replay an idle snapshot, otherwise it
+            # removes the synthetic streams before the assertion.
+            page.evaluate('events.close()')
             send = lambda e: page.evaluate("(e)=>{events.onmessage({data:JSON.stringify(e)});return new Promise(r=>requestAnimationFrame(()=>r()))}", e)
             orders = []
             def snap():

@@ -264,7 +264,11 @@ drain_room() {
     if (( waited == 0 )); then
       echo "Deploy wartet: User-Antwort ($user_busy) / $user_pending in der Warteschlange / Self-Talk $selftalk_busy held=$selftalk_held – warte bis max. ${drain_s}s …" >&2
     fi
-    if (( need == 1 && stale_s > 0 && still >= stale_s )); then
+    # Background subagents may be executing a long command without visible
+    # token progress. They must drain naturally or defer the deploy; never
+    # trigger the stale-token shortcut while any task is still running.
+    if (( need == 1 && stale_s > 0 && still >= stale_s )) &&
+       [[ "$progress" != *:task-active ]]; then
       echo "Deploy: busy ohne neue Tokens seit ${still}s – Deploy läuft weiter (Warteschlange bleibt gespeichert)." >&2
       return 0
     fi

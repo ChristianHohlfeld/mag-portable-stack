@@ -73,6 +73,8 @@ static std::atomic<bool> PREWARM_HOLD{false};
 // Composer Stop is one action. A second tap in this window must not bump
 // EPOCH again: that aborted the queued message the first tap had just released.
 static std::atomic<long long> LAST_STOP_MS{0};
+static std::mutex STOP_REQUEST_MTX;
+static std::atomic<bool> STOP_SETTLING{false};
 static bool cancel_prewarm() {
   std::lock_guard<std::mutex> lk(BACKEND_FD_MTX);
   ++PREWARM_EPOCH;
@@ -8935,6 +8937,9 @@ static void split_prefix(const std::vector<std::string> &ids,
 }
 // Starts at most one piece of work; true if the queue state changed.
 static bool dispatch_locked() {
+  // No new work may acquire a model slot while a previous Stop is still
+  // cancelling requests and restoring that slot's stable prefix.
+  if (STOP_SETTLING.load()) return false;
   apply_deploy_hold_file_locked();
   auto send_pending = [&](std::deque<Pending>::iterator it) {
     std::vector<std::string> ready, later;
@@ -9210,6 +9215,17 @@ static void publish_idle_locked() {
 // runs at once. pause_jobs (/api/stop) holds the queue instead of clearing it
 // and switches autonomy off.
 static Val user_stop(bool pause_jobs) {
+  // Deduplicate concurrent Stop requests by ownership, never by elapsed
+  // milliseconds: a NEW turn may begin within 800 ms of a previous Stop.
+  // The in-flight response reports settling, not a misleading "no work".
+  std::unique_lock<std::mutex> stop_guard(STOP_REQUEST_MTX, std::defer_lock);
+  if (pause_jobs) stop_guard.lock();
+  else if (!stop_guard.try_lock()) {
+    Val out = Val::object();
+    out["cancelled"] = true; out["settling"] = true;
+    out["held"] = 0.0; out["paused"] = QUEUE_PAUSED;
+    return out;
+  }
   SELF_HOLD = true;
   // Freeze new warmup work BEFORE touching sockets. A prewarm launched while
   // Stop is closing the old model stream can immediately reoccupy the slot.
@@ -9223,7 +9239,13 @@ static Val user_stop(bool pause_jobs) {
     std::lock_guard<std::mutex> lk(BACKEND_FD_MTX);
     prewarm_open = !PREWARM_FDS.empty();
   }
-  const bool work = lane_hot || prewarm_open || tasks_running() || runs_hot() || BUSY.load();
+  bool queue_hot = false;
+  {
+    std::lock_guard<std::mutex> lk(JOB_MTX);
+    queue_hot = !JOBS.empty() || !PENDING.empty();
+  }
+  const bool work = lane_hot || prewarm_open || tasks_running() ||
+                    runs_hot() || BUSY.load() || queue_hot;
   auto idle_stop = [&](bool cancelled) {
     {
       std::lock_guard<std::mutex> lk(JOB_MTX);
@@ -9231,20 +9253,21 @@ static Val user_stop(bool pause_jobs) {
     }
     Val out = Val::object();
     out["cancelled"] = cancelled;
+    out["settling"] = false;
     out["held"] = 0.0;
     out["paused"] = QUEUE_PAUSED;
     return out;
   };
-  // Second tap while this stop is still settling: do not touch EPOCH.
-  const long long prev = LAST_STOP_MS.load();
-  if (!pause_jobs && prev && now - prev < 800)
-    return idle_stop(false);
   if (!work && !pause_jobs)
     return idle_stop(false);
-  long long claimed = prev;
-  if (!pause_jobs && !LAST_STOP_MS.compare_exchange_strong(claimed, now))
-    return idle_stop(false);
-  if (pause_jobs) LAST_STOP_MS.store(now);
+  LAST_STOP_MS.store(now);
+  STOP_SETTLING = true;
+  struct SettlingGuard {
+    ~SettlingGuard() {
+      STOP_SETTLING = false;
+      JOB_CV.notify_all();
+    }
+  } settling_guard;
   {
     Val stopping = Val::object();
     stopping["type"] = "stopping";
@@ -9317,6 +9340,7 @@ static Val user_stop(bool pause_jobs) {
     release_lanes_locked();
     publish_idle_locked();
   }
+  out["settling"] = tasks_running() || any_lane_busy_for_stop() || BUSY.load();
   JOB_CV.notify_all();
   return out;
 }

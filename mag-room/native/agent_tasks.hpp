@@ -220,16 +220,16 @@ static void task_handoff_enqueue(const std::shared_ptr<BgTask> &t) {
   run.name = "Delegation prüfen: " + title;
   run.bot = requester;
   run.reason = "delegated_task_result";
-  run.prompt = "[INTERNE EREIGNISAKTIVIERUNG, KEINE NEUE BENUTZERNACHRICHT]\\n"
-    "Du bist weiterhin verantwortlich fuer den urspruenglichen Benutzerauftrag.\\n"
-    "Unteraufgabe: " + title + " (ID " + id + ", Ausfuehrer " + target + ")\\n"
-    "Status: " + status + "\\nErgebnis: " + result.substr(0, 2400) + "\\n"
+  run.prompt = "[INTERNE EREIGNISAKTIVIERUNG, KEINE NEUE BENUTZERNACHRICHT]\n"
+    "Du bist weiterhin verantwortlich fuer den urspruenglichen Benutzerauftrag.\n"
+    "Unteraufgabe: " + title + " (ID " + id + ", Ausfuehrer " + target + ")\n"
+    "Status: " + status + "\nErgebnis: " + result.substr(0, 2400) + "\n"
     "Lies die bisherigen Auftragsziele und vorhandenen Beweise. Ueberpruefe "
     "den realen Endzustand mit Werkzeugen. Ein Unteraufgabenergebnis ist "
     "KEIN Beleg dafuer, dass das Gesamtziel erreicht wurde. Wiederhole keine "
     "externen Aktionen, deren Auswirkungen nach einer Unterbrechung unklar "
     "sind; frage vorher nach Freigabe. Schliesse nur verifizierte Ziele ab "
-    "oder nenne den konkreten Blocker.\\n";
+    "oder nenne den konkreten Blocker.\n";
   {
     std::lock_guard<std::mutex> lk(JOB_MTX);
     // At-most-once scheduling within one room process; after a crash, the

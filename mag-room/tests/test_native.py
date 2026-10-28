@@ -2502,6 +2502,17 @@ class MultiBot(unittest.TestCase):
     if next((t['status'] for t in self.request('/api/tasks')['tasks']
              if t['id']==item['id']),None)!='running':break
     time.sleep(.05)
+   # A completed child must proactively schedule its original owner on the
+   # owner's lane. Merely posting a room message does not satisfy this test.
+   for _ in range(200):
+    row=next((t for t in self.request('/api/tasks')['tasks'] if t['id']==item['id']),{})
+    if row.get('handoff_status')=='ok' and not row.get('handoff_pending'):break
+    time.sleep(.05)
+   else:self.fail('delegated completion did not wake and finish the owner review')
+   self.assertTrue(any('INTERNE EREIGNISAKTIVIERUNG' in
+     json.dumps(c.get('messages',[]),ensure_ascii=False) for c in Model.calls),
+     'The responsible bot must receive a real model/tool turn after the subagent')
+   self.assertEqual(row['requester'],'q4bot')
   finally:
    self.request('/api/stop',{})
    Model.script=[]

@@ -7046,21 +7046,72 @@ static bool queue_merge() {
   save_queue_locked(); queue_event_locked();
   return true;
 }
-// "Jetzt senden": move to the front, stop the running turn cleanly (token
-// boundary; a running tool step finishes first), then the item is dispatched
-// as the next regular turn.
+// "Jetzt senden" is an explicit preemption, not just a reorder. Record the
+// priority durably before touching the model. Never acknowledge that an item
+// was delivered until the scheduler has appended its user message to ROOM.
+// Stop synchronization prevents an old llama cancellation from hitting the
+// next request on the same slot; only targeted active bot slots are cancelled.
+static void reload_slot_after_cancel(int idx, int timeout_ms);
 static bool queue_send_now(const std::string &id) {
-  std::lock_guard<std::mutex> lk(JOB_MTX);
-  auto it = std::find_if(PENDING.begin(), PENDING.end(), [&](const Pending &p) { return p.id == id; });
-  if (it == PENDING.end()) return false;
-  Pending p = *it; PENDING.erase(it);
-  p.held = false; p.urgent = true;
-  PENDING.push_front(p);
-  AUTO_READY = false;
-  // Promotion and cancellation are atomic relative to dispatch. No queued
-  // user work is discarded; only the selected bots' running streams close.
-  cancel_bots_locked(p.ids, true);
-  save_queue_locked(); queue_event_locked(); JOB_CV.notify_all();
+  std::unique_lock<std::mutex> stopping(STOP_REQUEST_MTX);
+  std::vector<std::pair<int, Lane *>> interrupted;
+  {
+    std::lock_guard<std::mutex> lk(JOB_MTX);
+    auto it = std::find_if(PENDING.begin(), PENDING.end(),
+                           [&](const Pending &p) { return p.id == id; });
+    if (it == PENDING.end()) return false;
+    // Repeated clicks / lost HTTP acknowledgement must not cancel the
+    // same slot twice and must not create a second user turn.
+    if (it->urgent && !it->held) return true;
+    Pending p = *it;
+    PENDING.erase(it);
+    p.held = false;
+    p.urgent = true;
+    PENDING.push_front(p);
+    AUTO_READY = false;
+    // Freeze dispatch and prewarm until the previous stream has detached
+    // and the model cancellation/optional prefix restore are complete.
+    STOP_SETTLING = true;
+    PREWARM_HOLD = true;
+    for (const std::string &bot : p.ids) {
+      Lane *lane = lane_of(bot);
+      if (!lane || !lane->busy.load()) continue;
+      if (std::find_if(interrupted.begin(), interrupted.end(),
+                       [&](const auto &x) { return x.second == lane; }) != interrupted.end())
+        continue;
+      const int idx = agent_index(bot);
+      if (idx >= 0) interrupted.emplace_back(idx, lane);
+    }
+    cancel_bots_locked(p.ids, true);
+    save_queue_locked();
+    queue_event_locked();
+  }
+  struct PriorityGate {
+    ~PriorityGate() {
+      PREWARM_HOLD = false;
+      STOP_SETTLING = false;
+      JOB_CV.notify_all();
+    }
+  } priority_gate;
+
+  // Closing the HTTP socket usually ends the old turn promptly. When llama
+  // keeps pre-filling without a client, cancel ONLY the old target slot.
+  // Do not issue that cancellation once the next turn may be connected.
+  if (!interrupted.empty()) {
+    const auto grace = steady_clock::now() + milliseconds(350);
+    while (steady_clock::now() < grace) {
+      bool any = false;
+      for (const auto &[idx, lane] : interrupted)
+        if (lane->busy.load()) any = true;
+      if (!any) break;
+      std::this_thread::sleep_for(milliseconds(20));
+    }
+    for (const auto &[idx, lane] : interrupted) {
+      if (!lane->busy.load()) continue;
+      cancel_llama_slot(idx, 1500);
+      reload_slot_after_cancel(idx, 1500);
+    }
+  }
   return true;
 }
 // Despawn cleanup: nothing queued, owned or remembered for a removed bot may

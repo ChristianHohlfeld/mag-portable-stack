@@ -19,11 +19,69 @@ static bool user_turn_waiting(const std::string &bot_id) {
 struct BgTask {
   std::string id, bot, requester, title, prompt, status = "running", result;
   int64_t started = 0, ended = 0;
+  int attempts = 1;
+  bool recovering = false;
   Lane lane;
 };
 static std::mutex TASKS_MTX;
 static std::vector<std::shared_ptr<BgTask>> TASKS; // newest last, max 40 kept
 static std::string task_id_of(const BgTask *t) { return t->id; }
+
+// Durable task registry. Write-before-execute means an unexpected shutdown
+// never loses ownership, the original goal, or a task's last known state.
+// A restarted process cannot know which external side effects completed, so
+// it NEVER replays an interrupted task without an explicit owner resume.
+static bool tasks_save_locked() {
+  Val rows = Val::array();
+  for (const auto &t : TASKS) {
+    Val v = Val::object();
+    v["id"] = t->id; v["bot"] = t->bot; v["requester"] = t->requester;
+    v["title"] = t->title; v["prompt"] = t->prompt;
+    v["status"] = t->status; v["result"] = t->result;
+    v["started"] = (double)t->started; v["ended"] = (double)t->ended;
+    v["attempts"] = (double)t->attempts;
+    rows.push(v);
+  }
+  return write_file_atomic(STATE_DIR + "/tasks.json", mj::dump(rows));
+}
+static void tasks_restore() {
+  bool exists = false;
+  const std::string raw = read_file(STATE_DIR + "/tasks.json", &exists);
+  if (!exists) return;
+  Val rows;
+  if (!mj::parse(raw, rows) || !rows.isArr())
+    throw std::runtime_error("tasks.json ist beschädigt; vorhandene Aufgaben nicht überschreiben");
+  std::lock_guard<std::mutex> lk(TASKS_MTX);
+  TASKS.clear();
+  bool interrupted = false;
+  std::set<std::string> seen;
+  for (const Val &v : *rows.arr) {
+    if (!v.isObj()) continue;
+    auto field = [&](const char *key) -> std::string {
+      auto p = v.find(key); return p ? p->asStr() : "";
+    };
+    auto t = std::make_shared<BgTask>();
+    t->id = field("id"); t->bot = field("bot"); t->requester = field("requester");
+    t->title = field("title"); t->prompt = field("prompt");
+    t->status = field("status"); t->result = field("result");
+    t->started = (int64_t)(v.find("started") ? v.find("started")->asNum(0) : 0);
+    t->ended = (int64_t)(v.find("ended") ? v.find("ended")->asNum(0) : 0);
+    t->attempts = std::clamp((int)(v.find("attempts") ? v.find("attempts")->asNum(1) : 1), 1, 1000);
+    if (t->id.empty() || t->id.size() > 64 || t->bot.empty() ||
+        t->prompt.empty() || !seen.insert(t->id).second) continue;
+    if (t->status == "running") {
+      t->status = "interrupted";
+      t->result = "Prozessneustart: zuerst externe Auswirkungen prüfen, dann explizit fortsetzen.";
+      t->ended = now_s();
+      interrupted = true;
+    }
+    t->lane.model = "task:" + t->id;
+    TASKS.push_back(t);
+  }
+  if (interrupted && !tasks_save_locked())
+    throw std::runtime_error("Unterbrochene Aufgaben konnten nicht gesichert werden");
+}
+
 
 static Val task_val_locked(const BgTask &t) {
   Val v = Val::object();
@@ -33,6 +91,7 @@ static Val task_val_locked(const BgTask &t) {
   v["title"] = t.title;
   v["status"] = t.status;
   v["started"] = (double)t.started;
+  v["attempts"] = (double)t.attempts;
   if (t.ended) v["ended"] = (double)t.ended;
   if (!t.result.empty()) v["result"] = t.result.substr(0, 400);
   v["todo"] = todo_public(t.bot + "#" + t.id);
@@ -71,7 +130,13 @@ static void task_main(std::shared_ptr<BgTask> t) {
     jr.job_id = "task:" + t->id;
     jr.run_id = t->id;
     jr.name = t->title;
-    jr.prompt = t->prompt;
+    jr.prompt = t->recovering
+      ? "[WIEDERAUFNAHME: Diese Aufgabe wurde durch Neustart unterbrochen. "
+        "Pruefe mit realen Werkzeugen zuerst, was bereits geschehen ist. "
+        "Fuehre externe, irreversible oder nicht-idempotente Aktionen NICHT "
+        "erneut ohne neue explizite Freigabe aus. Setze die gespeicherte "
+        "Todo-Liste kontrolliert fort; melde ungeklaerte Schritte als blockiert.]\n\n"
+        + t->prompt : t->prompt;
     jr.bot = t->bot;
     CURRENT_JOB = &jr;
     run_begin(t->bot + "#" + t->id, name + " · " + t->title);
@@ -91,6 +156,8 @@ static void task_main(std::shared_ptr<BgTask> t) {
     t->status = cancelled ? "cancelled" : !rep.error.empty() ? "error" : "done";
     t->result = cancelled ? "abgebrochen" : text.empty() ? rep.error : text;
     t->ended = now_s();
+    if (!tasks_save_locked())
+      std::cerr << "task persist failed at completion: " << t->id << "\n";
   }
   t->lane.busy = false;
   if (idx >= 0 && !SHUTDOWN.load()) {
@@ -129,15 +196,52 @@ static std::string task_start(int bot_idx, const std::string &title_in,
     t->lane.model = "task:" + t->id;
     t->lane.busy = true;
     TASKS.push_back(t);
+    if (!tasks_save_locked()) {
+      TASKS.pop_back();
+      throw std::runtime_error("Aufgabe nicht dauerhaft speicherbar; nicht gestartet.");
+    }
     while (TASKS.size() > 40) {
       auto it = std::find_if(TASKS.begin(), TASKS.end(), [](auto &x) { return x->status != "running"; });
       if (it == TASKS.end()) break;
       TASKS.erase(it);
     }
+    if (!tasks_save_locked())
+      std::cerr << "task retention persist failed\n";
   }
   std::thread(task_main, t).detach();
   tasks_event();
   return "Aufgabe " + t->id + " „" + title + "“ gestartet; Ergebnis kommt in den Raum.";
+}
+// Explicit recovery: never silently repeat an interrupted action.
+static bool task_resume(const std::string &id) {
+  std::shared_ptr<BgTask> t;
+  {
+    std::lock_guard<std::mutex> lk(TASKS_MTX);
+    for (auto &x : TASKS)
+      if (x->id == id && x->status == "interrupted") { t = x; break; }
+    if (!t || agent_index(t->bot) < 0) return false;
+    int running = 0;
+    for (const auto &x : TASKS)
+      if (x->bot == t->bot && x->status == "running") ++running;
+    if (running >= task_limit()) return false;
+    t->status = "running";
+    t->recovering = true;
+    ++t->attempts;
+    t->ended = 0;
+    t->lane.stop.store(false);
+    t->lane.user_cancel.store(false);
+    t->lane.backend_fd.store(-1);
+    t->lane.busy = true;
+    if (!tasks_save_locked()) {
+      t->status = "interrupted";
+      t->lane.busy = false;
+      --t->attempts;
+      return false;
+    }
+  }
+  std::thread(task_main, t).detach();
+  tasks_event();
+  return true;
 }
 // "" bot = any; returns true if a running task was found.
 static bool task_cancel(const std::string &id, const std::string &bot = "") {
@@ -193,6 +297,7 @@ static std::string task_tool(int bot_idx, const Val &a) {
     const std::string title = sender + " → " + s("title");
     return task_start(target, title, delegated, bot);
   }
+  if (action == "resume") return "Nur der Besitzer kann eine unterbrochene Aufgabe nach Prüfung der externen Auswirkungen fortsetzen.";
   if (action == "cancel") {
     if (s("id").empty()) throw std::runtime_error("id fehlt.");
     return task_cancel(s("id"), bot) ? "Abgebrochen." : "Keine laufende Aufgabe mit dieser id.";

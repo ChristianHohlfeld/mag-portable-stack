@@ -52,6 +52,7 @@ class AgentCore(unittest.TestCase):
    MAG_ROOM_STATIC=str(ROOT/'mag-room/static'),MAG_ROOM_MODEL_STATUS=str(pathlib.Path(cls.tmp.name)/'ms.json'),MAG_NETMODE=str(NETMODE),
    MAG_TEST_NO_MEMGIT='1',MAG_ROOM_MCP_AUTO='0',MAG_ROOM_MAX_TASKS='1',MAG_ROOM_PREWARM='0')
   env.pop('MAG_ROOM_SINGLE_BOT',None)
+  cls.env=env.copy()
   last=None
   for attempt in range(6):
    if attempt:
@@ -166,6 +167,39 @@ class AgentCore(unittest.TestCase):
   self.assertLess(time.time()-t0,3)
   self.assertIn('Sofort da.',self.room()[-1]['content'])
   self.request('/api/cancel',{})
+
+ def test_09z_background_task_survives_restart_without_unsafe_replay(self):
+  # Durability invariant: persisted before execution; no automatic replay of
+  # potentially irreversible commands after SIGKILL; owner explicitly resumes.
+  Router.main=[call('task',{'action':'start','title':'Restart probe','prompt':'Check X and save result'}),['Läuft.']]
+  Router.task=[[{'_sleep':8},'stale answer']]
+  self.ask('Starte die Restart probe')
+  run=self.until(lambda:[t for t in self.request('/api/tasks')['tasks']
+                         if t['status']=='running' and t['title']=='Restart probe'])
+  task_id=run[0]['id']
+  persisted=json.loads(self.state.joinpath('tasks.json').read_text())
+  self.assertTrue(any(t['id']==task_id and t['status']=='running' and
+                      t['prompt']=='Check X and save result' for t in persisted))
+  cls=type(self)
+  cls.proc.kill();cls.proc.wait(timeout=4);cls.log.close()
+  cls.log=open(pathlib.Path(cls.tmp.name)/'server.log','a')
+  cls.proc=subprocess.Popen([str(ROOT/'build/magroom')],env=cls.env,stdout=cls.log,stderr=cls.log)
+  tn.wait_http(f'http://127.0.0.1:{cls.ui}/healthz',timeout=8,proc=cls.proc)
+  recovered=[t for t in self.request('/api/tasks')['tasks'] if t['id']==task_id][0]
+  self.assertEqual(recovered['status'],'interrupted')
+  self.assertEqual(recovered['attempts'],1)
+  time.sleep(.15)
+  self.assertEqual([t['status'] for t in self.request('/api/tasks')['tasks'] if t['id']==task_id],['interrupted'])
+  Router.task=[['Geprüft: keine vorherige Aktion nötig.']]
+  self.assertTrue(self.request(f'/api/tasks/{task_id}/resume',{})['resumed'])
+  finished=self.until(lambda:[t for t in self.request('/api/tasks')['tasks']
+                              if t['id']==task_id and t['status']=='done'])
+  self.assertEqual(finished[0]['attempts'],2)
+  restored=json.loads(self.state.joinpath('tasks.json').read_text())
+  self.assertTrue(any(t['id']==task_id and t['status']=='done' for t in restored))
+  self.assertTrue(any('WIEDERAUFNAHME' in json.dumps(c['messages'],ensure_ascii=False)
+                      for c in Router.calls))
+  self.assertFalse(self.request(f'/api/tasks/{task_id}/resume',{})['resumed'])
 
  def approval(self,kind):
   return self.until(lambda:[a for a in self.request('/api/state').get('approvals') or [] if a.get('kind')==kind])[0]

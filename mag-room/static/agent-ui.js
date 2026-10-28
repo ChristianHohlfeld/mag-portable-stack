@@ -196,15 +196,37 @@
       lanes.before(box);
     }
     box.replaceChildren();
-    for (const t of tasks.filter(t => t.status === 'running')) {
+    for (const t of tasks.filter(t => t.status === 'running' || t.status === 'interrupted')) {
       const bot = ((typeof state !== 'undefined' && state?.agents) || []).find(a => a.id === t.bot);
       const c = el('span', 'task-chip');
       const todo = t.todo?.items || [];
       const done = todo.filter(i => i.status !== 'open').length;
-      c.append(el('span', 'spin'), el('span', 't', (bot ? bot.name + ' · ' : '') + t.title + (todo.length ? ' ' + done + '/' + todo.length : '')));
-      const x = el('button', '', '✕'); x.type = 'button'; x.setAttribute('aria-label', 'Aufgabe abbrechen');
-      x.onclick = () => api('/api/tasks/' + encodeURIComponent(t.id) + '/cancel', {}).catch(() => {});
-      c.append(x);
+      const interrupted = t.status === 'interrupted';
+      c.title = interrupted ? 'Neustart während der Ausführung. Externe Auswirkungen vor Wiederaufnahme prüfen.' : 'Hintergrundaufgabe läuft';
+      c.append(el('span', interrupted ? '' : 'spin', interrupted ? '⚠' : null),
+        el('span', 't', (bot ? bot.name + ' · ' : '') + t.title +
+          (interrupted ? ' · unterbrochen' : '') +
+          (todo.length ? ' ' + done + '/' + todo.length : '')));
+      if (interrupted) {
+        if (state?.you?.role === 'owner') {
+          const resume = el('button', '', '↻'); resume.type = 'button';
+          resume.title = 'Unterbrochene Aufgabe nach Prüfung fortsetzen';
+          resume.setAttribute('aria-label', 'Aufgabe kontrolliert fortsetzen');
+          resume.onclick = async () => {
+            if (!await magConfirm({title: 'Aufgabe fortsetzen?', text: 'Prüfe zuerst, ob externe Änderungen bereits erfolgt sind. Der Bot kontrolliert den Stand, bevor er Schritte wiederholt.', ok: 'Fortsetzen', danger: true})) return;
+            try {
+              const r = await api('/api/tasks/' + encodeURIComponent(t.id) + '/resume', {});
+              if (!r.resumed) throw Error('Aufgabe konnte nicht fortgesetzt werden');
+              await refresh();
+            } catch (e) { (window.notice || console.warn)(e.message); }
+          };
+          c.append(resume);
+        }
+      } else {
+        const x = el('button', '', '✕'); x.type = 'button'; x.setAttribute('aria-label', 'Aufgabe abbrechen');
+        x.onclick = () => api('/api/tasks/' + encodeURIComponent(t.id) + '/cancel', {}).catch(() => {});
+        c.append(x);
+      }
       box.append(c);
     }
   }

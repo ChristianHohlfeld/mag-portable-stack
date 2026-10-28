@@ -10339,6 +10339,7 @@ int main() {
   ensure_state();
   undo_drop_all();
   load_agents();
+  tasks_restore(); // recover durable sub-agent states before serving the room
   FILES = load_json_array(FILES_JSON);
   ROOM = load_json_array(ROOM_JSON);
   load_reaction_notes();

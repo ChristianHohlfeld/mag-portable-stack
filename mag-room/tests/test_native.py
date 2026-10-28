@@ -1568,6 +1568,18 @@ class Native(unittest.TestCase):
   self.assertIn('state.agents.some(a=>a.id===old)',html)
   self.assertIn('state.agents.some(a=>a.id===remoteBotId)',html)
   self.assertIn('nv&&liveVmReady&&',html,'do not connect WebRTC until VM exists')
+ def test_11x_browser_observer_requires_current_one_time_request(self):
+  # A guessed/replayed nonce or a browser for the wrong bot cannot permit a
+  # model tool to operate invisibly. This endpoint never navigates a VM.
+  self.error(409,'/api/browser/observe',{'bot':'test','nonce':'old-nonce'})
+  self.error(409,'/api/browser/observe',{'bot':'another-bot','nonce':'old-nonce'})
+  self.error(400,'/api/browser/observe',{})
+  html=self.request('/',raw=True).decode()
+  self.assertIn('function watchBotBrowser(',html)
+  self.assertIn("event.type==='browser_watch'",html)
+  self.assertIn('fresh&&liveVM===bot.vm',html)
+  self.assertIn('document.hidden',html)
+
  def test_12_malformed_http_rejected(self):
   for headers in ['Content-Length: -1\r\n','Content-Length: 2\r\nContent-Length: 3\r\n','Transfer-Encoding: chunked\r\n']:
    with socket.create_connection(('127.0.0.1',self.ui),timeout=3) as s:

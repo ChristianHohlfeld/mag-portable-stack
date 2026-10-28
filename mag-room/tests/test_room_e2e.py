@@ -339,6 +339,32 @@ class RoomE2E(unittest.TestCase):
         self.assertNotIn('Unbekannter Eintrag',p.locator('#notice').inner_text())
         self.assertEqual(len(self.room.api('/api/queue',method='GET')['pending']),0)
 
+    def test_04b1_prioritized_queue_state_keeps_visible_progress_until_delivery(self):
+        # Priority acknowledgement is not proof of dispatch. The same
+        # message must not become a clickable 'Jetzt senden' again after
+        # a queue refresh, even while the model is still reading.
+        p=self.page
+        p.evaluate("""()=>{
+          const item={id:'priority-state-probe',text:'Wird wirklich gesendet',
+             sender:'Nutzer',login:'',bots:['test'],urgent:true};
+          window.__priorityItem=item;
+          renderQueue({pending:[item],paused:true,revision:queueState.revision+1});
+        }""")
+        button=p.locator('#queue-chips .q-chip[data-id="priority-state-probe"] .q-now')
+        expect(button).to_have_text('Vorrang · wartet auf Modell')
+        expect(button).to_be_disabled()
+        self.assertEqual(button.get_attribute('aria-busy'),'true')
+        p.evaluate("""()=>{
+          renderQueue({pending:[window.__priorityItem],paused:true,
+                       revision:queueState.revision+1});
+        }""")
+        expect(button).to_have_text('Vorrang · wartet auf Modell')
+        expect(button).to_be_disabled()
+        p.evaluate("""()=>{
+          renderQueue({pending:[],paused:true,revision:queueState.revision+1});
+        }""")
+        expect(button).to_have_count(0)
+
     def test_04c_accepted_send_remains_sent_if_refresh_fails(self):
         p=self.page
         p.evaluate("""()=>{
@@ -927,6 +953,9 @@ class RoomE2E(unittest.TestCase):
               }
               window.RTCPeerConnection=DeadPeer;
               state.agents=[{id:'a',name:'DeepSeek V4 Flash',vm:'agent1'}];
+              // This test manually injects a VM bot after the initial
+              // no-VM render; expose its browser just as the real agent UI does.
+              document.getElementById('browser-section').hidden=false;
               document.getElementById('browser-agent').replaceChildren(new Option('DeepSeek V4 Flash','a'));
               document.getElementById('browser-agent').value='a';
               document.getElementById('live').checked=true;

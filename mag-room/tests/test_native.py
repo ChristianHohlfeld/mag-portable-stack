@@ -542,6 +542,37 @@ class Native(unittest.TestCase):
   self.assertFalse(self.request('/api/state')['busy'])
   Model.script=[]
 
+ def test_15b1a_send_now_releases_held_item_without_resuming_other_queue(self):
+  # Stop intentionally holds queued messages across restart. Explicit
+  # Send Now is an exception for ONE selected item, not a global resume.
+  self.wait_idle();Model.script=[self._slow('out',40)]
+  try:
+   self.request('/api/message',{'text':'Running before Stop','bots':['test']})
+   self._busy()
+   first=self.request('/api/message',{'text':'Keep held','bots':['test']})['item']['id']
+   selected=self.request('/api/message',{'text':'Send this now','bots':['test']})['item']['id']
+   self.request('/api/stop',{})
+   self.wait_idle()
+   st=self.request('/api/state')
+   self.assertTrue(st['queue_paused'])
+   self.assertTrue(all(p['held'] for p in st['pending']))
+   Model.script=[['Priority sent.']]
+   result=self.request('/api/queue/'+selected+'/now',{})
+   self.assertTrue(result['ok'])
+   self.assertEqual(result['status'],'prioritized')
+   self.assertTrue(result['queue']['paused'],'global pause remains intact')
+   self.assertTrue(any(p['id']==first and p['held'] for p in result['queue']['pending']))
+   delivered=self._settle(lambda x:not x['busy'] and
+     any(m.get('content')=='Priority sent.' for m in x['room']))
+   self.assertEqual([p['id'] for p in delivered['pending']],[first])
+   self.assertTrue(delivered['pending'][0]['held'])
+   self.assertEqual(len([m for m in delivered['room']
+                         if m.get('content')=='Send this now']),1)
+  finally:
+   self.request('/api/queue',method='DELETE')
+   self.request('/api/queue/resume',{})
+   Model.script=[]
+
  def test_15b2_send_receipt_is_idempotent_after_lost_ack(self):
   # Reuse the same client request ID after a lost HTTP response; no
   # second room message, no second model job, including after dispatch.

@@ -3447,6 +3447,51 @@ static void emit_browser_action(const std::string &bot, const std::string &actio
   publish(mj::dump(browser_action_val(bot, action, pos,
                                       masked ? "" : secret_scrub(bot, text), box, masked)));
 }
+// Bot browser tools act ONLY on the browser currently displayed to the
+// owner. No other VM or hidden Chrome tab may receive model-driven input.
+static std::mutex BROWSER_MODEL_SERIAL;
+static std::mutex BROWSER_WATCH_MTX;
+static std::condition_variable BROWSER_WATCH_CV;
+static std::string BROWSER_WATCH_BOT, BROWSER_WATCH_NONCE;
+static bool BROWSER_WATCH_ACK = false;
+static bool browser_watch_ack(const std::string &bot, const std::string &nonce) {
+  std::lock_guard<std::mutex> lk(BROWSER_WATCH_MTX);
+  if (bot.empty() || nonce.empty() || bot != BROWSER_WATCH_BOT ||
+      nonce != BROWSER_WATCH_NONCE) return false;
+  BROWSER_WATCH_ACK = true;
+  BROWSER_WATCH_CV.notify_all();
+  return true;
+}
+static void browser_require_visible(const std::string &bot) {
+  if (stop_flag().load()) throw std::runtime_error("Browseraktion abgebrochen.");
+  const std::string nonce = token_hex(32);
+  {
+    std::lock_guard<std::mutex> lk(BROWSER_WATCH_MTX);
+    BROWSER_WATCH_BOT = bot;
+    BROWSER_WATCH_NONCE = nonce;
+    BROWSER_WATCH_ACK = false;
+  }
+  Val e = Val::object();
+  e["type"] = "browser_watch"; e["bot"] = bot; e["nonce"] = nonce;
+  publish(mj::dump(e));
+  bool seen = false;
+  {
+    std::unique_lock<std::mutex> lk(BROWSER_WATCH_MTX);
+    const auto deadline = steady_clock::now() + seconds(15);
+    while (!BROWSER_WATCH_ACK && !stop_flag().load() &&
+           !SHUTDOWN.load() && steady_clock::now() < deadline)
+      BROWSER_WATCH_CV.wait_for(lk, milliseconds(150));
+    seen = BROWSER_WATCH_ACK && !stop_flag().load() && !SHUTDOWN.load();
+    if (BROWSER_WATCH_NONCE == nonce) {
+      BROWSER_WATCH_NONCE.clear();
+      BROWSER_WATCH_BOT.clear();
+      BROWSER_WATCH_ACK = false;
+    }
+  }
+  if (!seen) throw std::runtime_error(
+      "Browseraktion nicht ausgefuehrt: Keine sichtbare, bestaetigte "
+      "Browseransicht dieses Bots. Raumfenster im Vordergrund oeffnen.");
+}
 static Val browser_json(const std::string &vm, const std::string &path,
                         const std::string &method = "GET",
                         const std::string &body = "") {
@@ -5422,6 +5467,8 @@ static std::string dispatch_tool_raw(int bot_idx, const std::string &name,
 
   if (name.rfind("browser_", 0) == 0) {
     need_vm();
+    std::unique_lock<std::mutex> view_lock(BROWSER_MODEL_SERIAL);
+    browser_require_visible(bot_id);
     if (name == "browser_open") {
       Val b = Val::object();
       b["url"] = getstr("url");

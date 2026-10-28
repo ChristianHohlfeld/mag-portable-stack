@@ -5916,10 +5916,12 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
       // The same bytes go into the room on the first token so a poll of
       // /api/room does not wait for the rest of the decode.
       live += piece;
-      if (!draft_dropped) {
+      if (!draft_dropped && !TL_SELFTALK) {
         emit_event("draft", bot_id, bot_name, piece);
         reveal_answer(bot_id, bot_name, piece);
       }
+      // Short proactive replies are published only after completion so
+      // a model's transient emoji/echo cannot flash in the visible room.
       // Lines become steps only once the round turns out to be narration.
       run_narration(live, draft_dropped);
     };
@@ -7297,6 +7299,16 @@ static void resume_selftalk_after_deploy() {
 static bool selftalk_idle_echo(const std::string &text) {
   std::string t = trim(text);
   if (t.empty()) return true;
+  // Some chat templates echo the bot name before a reaction. A lone
+  // emoji (e.g. "[Qwen3.8 Uncensored] 👀") is not meaningful bot work.
+  if (t.size() < 96 && t.front() == '[') {
+    auto close = t.find(']');
+    if (close != std::string::npos && close < 64)
+      t = trim(t.substr(close + 1));
+  }
+  if (t == "👀" || t == "👍" || t == "👋" || t == "👌" ||
+      t == "✅" || t == "🙂" || t == "🤔" || t == "😂" ||
+      t == "💯" || t == "👁️") return true;
   std::string lower;
   lower.reserve(t.size());
   for (unsigned char c : t) {
@@ -7433,6 +7445,7 @@ static TurnReport generate_and_post(int idx, bool automatic, double dispatched_m
   if (report.elapsed_s < 0)
     report.elapsed_s = 0;
   run_end();
+  if (TL_SELFTALK && selftalk_idle_echo(report.text)) report.skipped = true;
   if (report.skipped) {
     drop_revealed();
     Val e = Val::object();

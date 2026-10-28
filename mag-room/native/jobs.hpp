@@ -363,9 +363,16 @@ static void run_job(const JobRun &run) {
     else if (!rep.error.empty()) { status = "error"; error = rep.error; }
     else if (text.empty() || text.rfind("Antwort fehlgeschlagen", 0) == 0 ||
              text.find("Es wurde keine Antwort erzeugt.") != std::string::npos) { status = "error"; error = text.empty() ? "leere Antwort" : text.substr(0, 300); }
-    std::string head = "🗓 Job „" + run.name + "“ · " + fmt_local(started) + (status == "ok" ? "" : " · " + status);
+    const bool handoff = run.job_id.rfind("handoff:", 0) == 0;
+    std::string head = (handoff ? "↳ Delegation „" : "🗓 Job „") + run.name + "“ · " + fmt_local(started) + (status == "ok" ? "" : " · " + status);
     Val msg = append_room("assistant", name, head + "\n\n" + (text.empty() ? "(" + error + ")" : text), bid);
     msg["type"] = "bot_done"; publish(mj::dump(msg));
+  }
+  if (run.job_id.rfind("handoff:", 0) == 0) {
+    // This is a one-shot owner continuation, not a scheduled user job.
+    // Acknowledge only after its model/tool loop finished and result posted.
+    task_followup_ack(run.job_id.substr(8), status);
+    return;
   }
   std::lock_guard<std::mutex> lk(JOBDEF_MTX);
   JobDef *j = job_find_locked(run.job_id);

@@ -129,6 +129,23 @@ class AgentCore(unittest.TestCase):
   self.assertTrue(any(json.loads(p.read_text()).get('goal')=='Erster Auftrag'
                       for p in files))
 
+ def test_02c_machine_check_requires_real_goal_scoped_proof(self):
+  # An unverified claim must not close a machine-checkable criterion.
+  Router.main=[
+   call('todo',{'action':'set','goal':'File must exist','items':['Artifact present'],
+                'checks':[{'kind':'file_exists','path':'/home/bot/result.txt'}]}),
+   call('todo',{'action':'done','item':1,'proof':'proof-fabricated'},'c2'),
+   call('todo',{'action':'block','item':1,'text':'Noch kein echter Nachweis'},'c3'),
+   ['Nicht verifiziert.']]
+  self.ask('Pruefe die Datei')
+  results=[m['content'] for c in Router.calls for m in c['messages']
+           if m.get('role')=='tool']
+  self.assertTrue(any('verify-Nachweis' in x for x in results),results)
+  latest=self.request('/api/todo/ali')
+  self.assertEqual(latest['items'][0]['status'],'blocked')
+  self.assertFalse(latest['items'][0].get('verified',False))
+  self.assertEqual(latest['items'][0]['check']['kind'],'file_exists')
+
  def test_03_todo_nudge_is_bounded(self):
   Router.main=[call('todo',{'action':'set','items':['A']}),['Fertig.'],['Fertig.'],['Fertig.'],['Nie erreicht.']]
   self.ask('Endlos?')

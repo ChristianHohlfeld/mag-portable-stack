@@ -9435,22 +9435,30 @@ static void handle_sse(int fd, const std::string &guest_node = "") {
       "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: "
       "no-cache\r\nConnection: keep-alive\r\nAccess-Control-Allow-Origin: "
       "*\r\nX-Accel-Buffering: no\r\n\r\n";
-  if (write_all(fd, hdr) < 0) {
-    sub->dead = true;
-    return;
+  // EventSource reconnects automatically. Give idle/dead clients a finite
+  // lifetime so SSE sockets and their native worker threads are recycled,
+  // including clients whose connection survived a laptop suspend.
+  const int session_s = std::clamp(envi("MAG_ROOM_SSE_SESSION_S", 600), 1, 3600);
+  const auto deadline = steady_clock::now() + seconds(session_s);
+  bool opened = write_all(fd, hdr) >= 0;
+  if (opened) {
+    int fdflags = fcntl(fd, F_GETFL, 0);
+    fcntl(fd, F_SETFL, fdflags | O_NONBLOCK);
   }
-  int fdflags = fcntl(fd, F_GETFL, 0);
-  fcntl(fd, F_SETFL, fdflags | O_NONBLOCK);
-  while (true) {
+  while (opened && steady_clock::now() < deadline) {
     std::deque<std::string> batch;
     {
       std::unique_lock<std::mutex> lk(sub->m);
-      sub->cv.wait_for(lk, std::chrono::seconds(guest_node.empty() ? 15 : 1),
+      const auto remaining = deadline - steady_clock::now();
+      if (remaining <= steady_clock::duration::zero()) break;
+      sub->cv.wait_for(lk, std::min(seconds(guest_node.empty() ? 15 : 1),
+                                    duration_cast<seconds>(remaining) + seconds(1)),
                        [&] { return !sub->q.empty() || sub->dead; });
       if (sub->dead)
         break;
       batch.swap(sub->q);
     }
+    if (steady_clock::now() >= deadline) break;
     if (!guest_node.empty() && !guest_live(guest_node)) break;
     std::string out;
     for (auto &line : batch)

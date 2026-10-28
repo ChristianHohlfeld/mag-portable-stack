@@ -9330,13 +9330,15 @@ static Val user_stop(bool pause_jobs) {
       std::this_thread::sleep_for(milliseconds(15));
   }
   clear_runs();
-  if (any_lane_busy_for_stop() || BUSY.load()) {
-    std::lock_guard<std::mutex> lk(JOB_MTX);
-    release_lanes_locked();
-    publish_idle_locked();
-  }
+  // Do not manufacture an idle state while a cancelled worker still owns
+  // its lane. Such a worker can still be in llama prefill or an external
+  // tool: clearing busy/turn here allows a new turn to reuse that slot and
+  // lets the old thread race the new turn's state. lane_finish() is the
+  // only place that may release its dispatched turn.
   const bool settling = tasks_running() || any_lane_busy_for_stop() || BUSY.load();
   out["settling"] = settling;
+  if (settling)
+    std::cerr << "stop: waiting for running lane/task to unwind; actual busy state retained\n";
   // "stopped" is final confirmation, not an optimistic acknowledgement.
   // If an external tool is still unwinding, publish only a settling state.
   Val e = Val::object();

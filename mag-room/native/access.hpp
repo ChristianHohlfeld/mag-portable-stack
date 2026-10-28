@@ -283,7 +283,9 @@ static std::string required_perm(const std::string &method,
     return "read";
   if (public_guest_read(method, path)) return "read";
   if ((method == "POST" && (path == "/api/message" || path == "/api/stream" ||
-        path == "/api/upload" || path == "/api/stt" || path == "/api/speak")) ||
+        path == "/api/upload" || path == "/api/upload/chunk" ||
+        path == "/api/upload/chunk/commit" || path == "/api/stt" || path == "/api/speak")) ||
+      (method == "GET" && path == "/api/upload/chunk/status") ||
       ((method == "POST" || method == "DELETE") && guest_reaction_path(path)))
     return "chat";
   if (path == "/api/offline" && method == "POST") return "offline";

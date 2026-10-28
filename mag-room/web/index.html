@@ -625,8 +625,8 @@ dialog{border-radius:10px;border-color:var(--line);background:var(--surface)}
 #model-banner[hidden],#room-link[hidden]{display:none}
 .composer-inner .activity-status:empty,.composer-inner .activity-status[hidden],.composer-inner .pho-save:empty,.composer-inner .pho-save[hidden]{display:none}
 .composer-inner .q-toggle{flex:0 0 auto;white-space:nowrap;padding:0;border:0;background:transparent;font-size:12px;line-height:22px;height:22px;color:var(--muted);cursor:pointer;text-align:left}
-.composer-inner .queue-items{display:none;position:static;left:auto;right:auto;bottom:auto;z-index:auto;max-height:min(28vh,160px);overflow-y:auto;padding:4px 0 0;margin:0;border:0;border-radius:0;background:transparent;box-shadow:none}
-.composer-inner .queue-chips.expanded .queue-items{display:flex;flex-direction:column;gap:4px}
+.composer-inner .queue-items{display:flex;flex-direction:column;gap:4px;position:static;left:auto;right:auto;bottom:auto;z-index:auto;max-height:min(28vh,160px);overflow-y:auto;padding:4px 0 0;margin:0;border:0;border-radius:0;background:transparent;box-shadow:none}
+/* Pending messages remain visible until processed; only the list itself scrolls. */
 .composer-inner .queue-controls{display:flex;gap:5px;flex-wrap:wrap}
 .composer-inner .q-chip{min-width:0;margin:0;min-height:28px;padding:2px 4px;box-shadow:none}
 @media(max-width:850px){#app-header{height:48px!important}#app-header .header-title,.brand-caption{display:none!important}.layout{height:calc(var(--vvh,100dvh) - 48px)!important}#conversation,.conversation{padding:10px 12px 12px}#conversation .message{margin-bottom:12px}.composer-wrap{padding:6px 10px max(6px,env(safe-area-inset-bottom))!important}.composer-inner .q-chip .q-icon,.composer-inner .q-chip .q-now{min-height:28px;height:28px}}
@@ -733,7 +733,7 @@ dialog{border-radius:10px;border-color:var(--line);background:var(--surface)}
 const $=id=>document.getElementById(id);
 const remoteBotId=((new URLSearchParams(location.search).get('bot')||'').match(/^[a-z][a-z0-9-]{0,31}$/)||[])[0]||null;
 let state={agents:[],room:[],files:[]},streams={},selected=new Set(),rendered=false,refreshSeq=0;
-let queueState={pending:[],paused:false,revision:-1},queueOpen=false;
+let queueState={pending:[],paused:false,revision:-1};
 const queueDrafts=new Map();
 const MAG_TOKEN=document.querySelector('meta[name=mag-token]')?.content||'';{const of=window.fetch.bind(window);window.fetch=(input,init={})=>{const method=((init&&init.method)||(input&&input.method)||'GET').toUpperCase();let same=true;try{same=new URL(typeof input==='string'?input:input.url,location.href).origin===location.origin}catch{}if(same&&method!=='GET'&&method!=='HEAD'&&MAG_TOKEN){const h=new Headers(init.headers||{});h.set('X-MAG-Token',MAG_TOKEN);init={...init,headers:h}}return of(input,init)}}
 function magConfirm({title='Bestätigen',text='',ok='OK',cancel='Abbrechen',danger=false,alertOnly=false,input=null}={}){return new Promise(resolve=>{const d=$('mag-modal');$('mag-modal-title').textContent=title;$('mag-modal-text').textContent=text;const inp=$('mag-modal-input');inp.hidden=input===null;inp.value=input===null?'':String(input);const okb=$('mag-modal-ok'),cb=$('mag-modal-cancel');okb.textContent=ok;cb.textContent=cancel;cb.hidden=alertOnly;okb.classList.toggle('danger',!!danger);const prev=document.activeElement;let done=false;const finish=v=>{if(done)return;done=true;okb.onclick=cb.onclick=d.onclick=d.onkeydown=null;d.removeEventListener('cancel',onCancel);if(d.open)d.close();try{prev&&prev.focus()}catch{}resolve(v)};const openedAt=performance.now();const onCancel=e=>{e.preventDefault();if(performance.now()-openedAt<450)return;finish(false)};d.addEventListener('cancel',onCancel);okb.onclick=()=>finish(input===null?true:inp.value);cb.onclick=()=>finish(input===null?false:null);d.onclick=e=>{if(e.target===d)finish(input===null?false:null)};d.onkeydown=e=>{if(e.key==='Escape'){e.preventDefault();finish(input===null?false:null);return}if(e.key==='Enter'&&input!==null&&e.target===inp){e.preventDefault();finish(inp.value);return}if(e.key!=='Tab')return;const f=[...d.querySelectorAll('button:not([hidden]),[href],input,textarea,select')].filter(x=>!x.disabled&&x.offsetParent!==null);if(!f.length)return;const first=f[0],last=f[f.length-1];if(e.shiftKey&&document.activeElement===first){e.preventDefault();last.focus()}else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first.focus()}};d.showModal();setTimeout(()=>{if(!d.open)return;if(input!==null){inp.focus();inp.select()}else(danger?cb:okb).focus()},0)})}
@@ -3286,7 +3286,6 @@ function editQueuedMessage(p,t,button,focus=false){
  t.replaceWith(ta);if(focus)requestAnimationFrame(()=>ta.focus({preventScroll:true}));
 }
 
-function closeQueue(){if(!queueOpen)return;queueOpen=false;paintRoomLine()}
 function lineChrome(){return [$('model-banner'),$('room-link'),$('proaktiv-row'),$('toast-stack')].filter(Boolean)}
 function queuePending(){
  const queued=queueState.pending||[];
@@ -3297,7 +3296,6 @@ function paintRoomLine(){
  const box=$('queue-chips');if(!box)return;
  const list=queuePending();
  const talkJobs=queueState.proaktiv_jobs||[];
- if(!list.length&&!talkJobs.length)queueOpen=false;
  const statusText=activityStatusText(),pho=phoChip();
  const banner=$('model-banner'),link=$('room-link'),talk=$('proaktiv-row');
  const bannerOn=!!(banner&&!banner.hidden&&banner.textContent);
@@ -3311,21 +3309,19 @@ function paintRoomLine(){
  box.replaceChildren();
  box.hidden=!(show||keep);
  box.classList.toggle('paused',queueState.paused);
- box.classList.toggle('expanded',queueOpen&&!!(list.length||talkJobs.length));
+ box.classList.toggle('expanded',!!(list.length||talkJobs.length));
  const head=document.createElement('div');head.id='room-line';head.className='queue-head';
  if(!show){for(const el of chrome)head.append(el);box.append(head);return}
  const stat=document.createElement('span');stat.className='activity-status';fillActivity(stat);head.append(stat);
  if(pho){const mark=document.createElement('span');mark.className='pho-save';mark.textContent=pho;head.append(mark)}
  for(const el of chrome)head.append(el);
  if(list.length||talkJobs.length){
-  const toggle=document.createElement('button');toggle.type='button';toggle.className='q-toggle';
+  const toggle=document.createElement('span');toggle.className='q-toggle';toggle.setAttribute('role','status');toggle.setAttribute('aria-live','polite');
   const held=list.filter(p=>p.held).length;
   const parts=[];
   if(list.length)parts.push(list.length+' wartet'+(held?' · '+held+' angehalten':''));
   if(talkJobs.length)parts.push(talkJobs.length===1?'Proaktiv':talkJobs.length+' Proaktiv');
-  toggle.textContent=parts.join(' · ')+(queueOpen?' ▾':' ▸');
-  toggle.setAttribute('aria-expanded',String(queueOpen));toggle.setAttribute('aria-controls','queue-items');
-  toggle.onclick=e=>{e.stopPropagation();queueOpen=!queueOpen;paintRoomLine();if(queueOpen&&stickToBottom){const area=$('conversation');if(area)area.scrollTop=area.scrollHeight}};
+  toggle.textContent=parts.join(' · ');
   head.append(toggle);
  }
  box.append(head);
@@ -3379,7 +3375,6 @@ function renderQueue(q){
  if(localSends.size!==previous||queueState.pending.length)render();
  paintRoomLine();
 }
-document.addEventListener('pointerdown',e=>{if(!queueOpen)return;if(e.target.closest&&e.target.closest('#queue-chips'))return;closeQueue()},true);
 
 // ---- Jobs (scheduled prompts, like ChatGPT Tasks)
 let jobsState={jobs:[]},jobEdit=null;

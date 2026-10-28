@@ -662,8 +662,10 @@ class RoomE2E(unittest.TestCase):
             p.evaluate('window.__releaseClear()')
             p.wait_for_function('window.__clearPosts===1 && !clearInFlight',timeout=3000)
             self.assertEqual(p.evaluate('window.__clearPosts'),1)
-            expect(p.locator('#notice')).to_contain_text('Kein automatischer zweiter Löschversuch')
-            expect(p.locator('#room-link')).to_have_text('Raumstatus unklar – Verbindung prüfen')
+            # The read-only verification sees the empty server room; the
+            # uncertain state must resolve without another destructive POST.
+            expect(p.locator('#notice')).to_contain_text('Raum ist leer – Serverstatus geprüft')
+            expect(p.locator('#room-link')).to_be_hidden()
             expect(p.locator('#reset')).to_have_text('Raum leeren')
             p.wait_for_timeout(800)
             self.assertEqual(p.evaluate('window.__clearPosts'),1,

@@ -2531,7 +2531,6 @@ $('reset').onclick=async()=>{
 let stagedPhotos=[],stagedFiles=[];const PHOTO_MAX_PX=2048;
 function stageFiles(files){
  for(const file of files){
-  if(stagedFiles.length>=20){notice('Maximal 20 Dateien pro Nachricht');break}
   if(!file.size){notice(file.name+': Leere Datei kann nicht hochgeladen werden');continue}
   if(!Number.isSafeInteger(file.size)){notice(file.name+': Dateigröße nicht zuverlässig darstellbar');continue}
   if(stagedFiles.some(x=>x.name===file.name&&x.size===file.size&&x.lastModified===file.lastModified))continue;
@@ -2624,7 +2623,7 @@ async function flushStagedFiles(files=[...stagedFiles]){
 }
 function stageAttachments(files){
  const images=[],other=[];
- for(const file of files)(/^image\//.test(file.type)||/\.(heic|heif)$/i.test(file.name)?images:other).push(file);
+ for(const file of files)((/^image\//.test(file.type)||/\.(heic|heif)$/i.test(file.name))&&file.size<=30*1024*1024?images:other).push(file);
  if(other.length)stageFiles(other);
  if(images.length)void stagePhotos(images);
 }
@@ -2639,10 +2638,11 @@ function paintStagedPhotos(){const box=$('photo-preview');box.replaceChildren();
 }
 async function stagePhotos(files){
  for(const file of files){
-  if(stagedPhotos.length>=8){notice('Maximal 8 Bilder pro Nachricht');break}
   if(!(/^image\//.test(file.type)||/\.(heic|heif)$/i.test(file.name)))continue;
   try{
-   if(file.size>30*1024*1024)throw Error('Bild über 30 MB; bitte vorher verkleinern');
+   // Huge originals are shared losslessly using the disk-backed file path.
+   // Decoding them into a browser canvas could exhaust mobile memory.
+   if(file.size>30*1024*1024){stageFiles([file]);continue}
    let bitmap=null;
    // Safari/iOS sometimes exposes HEIC as an image file yet createImageBitmap
    // rejects it. Fallback to the native Image decoder before giving up.

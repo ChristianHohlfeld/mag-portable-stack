@@ -816,7 +816,7 @@ class Native(unittest.TestCase):
    self.assertEqual([p['id'] for p in json.loads((self.state/'queue.json').read_text())['pending']],expected)
    self.request('/api/queue/'+ids[2]+'/move',{'before':''})
    self.assertEqual([p['id'] for p in self.request('/api/queue',method='GET')['pending']],[ids[0],ids[1],ids[2]])
-   self.error(404,'/api/queue/'+ids[0]+'/move',{'before':'not-a-job'})
+   self.error(409,'/api/queue/'+ids[0]+'/move',{'before':'not-a-job'})
    html=self.request('/',raw=True).decode()
    for needle in ("queueDropAt(","queueShift(","dragstart","pointerup","/move","photo-preview","upload-photo"):
     self.assertIn(needle,html)

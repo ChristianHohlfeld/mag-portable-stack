@@ -8,6 +8,7 @@ deepseek iq3 parallel :: bash ops/deepseek/tests/test-iq3-parallel.sh
 deepseek model preservation :: bash ops/deepseek/tests/test-model-preservation.sh
 deepseek syntax :: bash -n ops/deepseek/verify-iq3.sh ops/deepseek/start-iq3.sh ops/deepseek/iq3-parallel.sh ops/deepseek/hotswap.sh && bash -n ops/deepseek/numa-isolation.sh ops/deepseek/numa-bench.sh && bash -n ops/deepseek/prompt-cache-switch.sh
 vendor terminal :: bash ops/vendor-terminal-assets.sh /tmp/mag-terminal-assets && test -s /tmp/mag-terminal-assets/xterm.js && test -s /tmp/mag-terminal-assets/xterm-addon-fit.js && test -s /tmp/mag-terminal-assets/xterm.css
+moonshine resume :: bash ops/tests/test-speech-resume.sh
 fixed bot nav :: node mag-room/tests/test_fixed_bot_nav.cjs
 frontend syntax :: python3 -c 'from pathlib import Path; s=Path("mag-room/web/index.html").read_text(); Path("/tmp/mag-room-web.js").write_text(s.split("<script>")[-1].split("</script>")[0])' && node --check /tmp/mag-room-web.js && node mag-room/tests/test_composer.cjs
 trust chain :: bash ops/trust/test-trust.sh

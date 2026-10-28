@@ -8,7 +8,9 @@
 #include <fstream>
 
 static const char *T_TODO =
-    R"({"type":"function","function":{"name":"todo","description":"Track the goal of the current task as a short todo list. set replaces the list (items), add appends one item, done/block mark item (1-based) as finished or blocked (with note). Open items mean the task is not finished: keep working until each is done or blocked. Each change is shown to the user as a milestone.","parameters":{"type":"object","properties":{"action":{"type":"string","enum":["set","add","done","block","list"]},"goal":{"type":"string"},"items":{"type":"array","items":{"type":"string"}},"item":{"type":"integer"},"text":{"type":"string"}},"required":["action"],"additionalProperties":false}}})";
+    R"({"type":"function","function":{"name":"todo","description":"Durable goal checklist. Set/add concise items, optionally with machine-checkable checks by index. Mark checked items done ONLY with a proof ID returned by verify; open items keep the task running. Non-machine-checkable items are human/model asserted, not independently verified.","parameters":{"type":"object","properties":{"action":{"type":"string","enum":["set","add","done","block","list"]},"goal":{"type":"string"},"items":{"type":"array","items":{"type":"string"}},"checks":{"type":"array","items":{"type":"object"}},"check":{"type":"object"},"proof":{"type":"string"},"item":{"type":"integer"},"text":{"type":"string"}},"required":["action"],"additionalProperties":false}}})";
+static const char *T_VERIFY =
+    R"({"type":"function","function":{"name":"verify","description":"Run a read-only machine check in your VM and return an unguessable proof ID for todo(done). Supported: file_exists(path), file_contains(path,text), http_2xx(url in path). A passing check proves only that predicate, not that the whole user goal is fulfilled.","parameters":{"type":"object","properties":{"kind":{"type":"string","enum":["file_exists","file_contains","http_2xx"]},"path":{"type":"string"},"text":{"type":"string"}},"required":["kind","path"],"additionalProperties":false}}})";
 static const char *T_MEMORY =
     R"({"type":"function","function":{"name":"memory","description":"Your durable memory. recall searches profile facts and journal (query); journal appends a dated journal entry (text); update replaces profile fact number item with text; forget deletes profile fact number item. Use remember for new profile facts.","parameters":{"type":"object","properties":{"action":{"type":"string","enum":["recall","journal","update","forget"]},"query":{"type":"string"},"text":{"type":"string"},"item":{"type":"integer"}},"required":["action"],"additionalProperties":false}}})";
 static const char *T_SKILL =
@@ -27,12 +29,28 @@ static std::string task_tool(int bot_idx, const Val &a);
 // ---- todo
 static std::mutex TODO_MTX;
 static std::map<std::string, Val> TODOS; // key -> {goal, items:[{text,status,note,ts}]}
+// Proofs are scoped to the exact bot+goal and have a limited lifetime.
+// A restart requires rechecking live state, never trusting a stale proof.
+struct TodoProof { std::string key, kind, path, text; int64_t ts; };
+static std::map<std::string, TodoProof> TODO_PROOFS; // TODO_MTX
 static thread_local bool TL_TODO_TOUCHED = false;
 static std::string todo_key(const std::string &bot_id) {
   // A new human request must never inherit another request's open todo plan.
   // Background subtasks retain their existing stable identity on recovery.
   if (TL_TASK) return bot_id + "#" + task_id_of(TL_TASK);
   return TL_GOAL_ID.empty() ? bot_id : bot_id + "#" + TL_GOAL_ID;
+}
+static std::string todo_issue_proof(const std::string &bot_id,
+                                   const std::string &kind,
+                                   const std::string &path,
+                                   const std::string &text) {
+  const std::string id = "proof-" + token_hex(16);
+  std::lock_guard<std::mutex> lk(TODO_MTX);
+  for (auto it = TODO_PROOFS.begin(); it != TODO_PROOFS.end();)
+    if (now_s() - it->second.ts > 900) it = TODO_PROOFS.erase(it);
+    else ++it;
+  TODO_PROOFS[id] = {todo_key(bot_id), kind, path, text, now_s()};
+  return id;
 }
 static std::string todo_file(const std::string &key) {
   std::string safe;
@@ -91,29 +109,56 @@ static std::string todo_tool(const std::string &bot_id, const Val &a) {
     t = todo_get_locked(key);
     Val &items = t["items"];
     if (!items.isArr()) items = Val::array();
-    auto add = [&](const std::string &text) {
+    auto add = [&](const std::string &text, const Val *check) {
       if (text.empty()) return;
       if (items.arr->size() >= 30) throw std::runtime_error("Maximal 30 Ziele.");
       Val i = Val::object();
       i["text"] = text.substr(0, 300);
       i["status"] = "open";
+      if (check && check->isObj() && check->find("kind") && check->find("path")) {
+        const std::string kind = (*check)["kind"].asStr();
+        const std::string path = (*check)["path"].asStr();
+        if ((kind != "file_exists" && kind != "file_contains" && kind != "http_2xx") ||
+            path.empty() || path.size() > 1000)
+          throw std::runtime_error("Ungueltige maschinelle Pruefbedingung.");
+        i["check"] = *check;
+      }
       i["ts"] = (double)now_s();
       items.push(i);
     };
     if (action == "set") {
       items = Val::array();
       t["goal"] = s("goal").substr(0, 300);
-      if (auto arr = a.find("items"); arr && arr->isArr())
-        for (auto &x : *arr->arr) add(trim(x.asStr()));
+      if (auto arr = a.find("items"); arr && arr->isArr()) {
+        const Val *checks = a.find("checks");
+        for (size_t j = 0; j < arr->arr->size(); ++j) {
+          const Val *check = checks && checks->isArr() && j < checks->arr->size()
+              ? &(*checks->arr)[j] : nullptr;
+          add(trim((*arr->arr)[j].asStr()), check);
+        }
+      }
       milestone = "Plan: " + std::to_string(items.arr->size()) + " Schritte";
     } else if (action == "add") {
-      add(s("text"));
+      add(s("text"), a.find("check"));
       milestone = "Neues Ziel: " + s("text");
     } else if (action == "done" || action == "block") {
       int n = (int)(a.find("item") ? a.find("item")->asNum(0) : 0);
       if (n < 1 || n > (int)items.arr->size())
         throw std::runtime_error("Ungueltige Ziel-Nummer " + std::to_string(n) + ".");
       Val &i = (*items.arr)[n - 1];
+      if (action == "done") if (const Val *check = i.find("check"); check && check->isObj()) {
+        const auto id = s("proof");
+        auto found = TODO_PROOFS.find(id);
+        const std::string ck = check->find("kind") ? (*check)["kind"].asStr() : "";
+        const std::string cp = check->find("path") ? (*check)["path"].asStr() : "";
+        const std::string ct = check->find("text") ? (*check)["text"].asStr() : "";
+        if (found == TODO_PROOFS.end() || found->second.key != key ||
+            found->second.kind != ck || found->second.path != cp ||
+            found->second.text != ct || now_s() - found->second.ts > 900)
+          throw std::runtime_error("Todo darf erst nach passendem verify-Nachweis geschlossen werden.");
+        i["verified"] = true;
+        i["proof"] = id;
+      }
       i["status"] = action == "done" ? "done" : "blocked";
       if (!s("text").empty()) i["note"] = s("text").substr(0, 300);
       milestone = (action == "done" ? "✓ " : "⚠ ") + i["text"].asStr();

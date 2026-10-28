@@ -10,8 +10,8 @@ assert.ok(start >= 0);
 const handler = html.slice(start, html.indexOf(';window.addEventListener(\'load\'', start));
 let focusCalls=0, blurCalls=0, coarse=false;
 const elements = {'send-form':{}, 'send-button':{dataset:{mode:'send',state:''}}, message:{value:'First',focus(){focusCalls++},blur(){blurCalls++}},think:{checked:false}};
-let resolve, calls=0, stopCalls=[];
-const context = {window:{}, matchMedia:()=>({matches:coarse}), $:id=>elements[id],selected:new Set(['a']),state:{agents:[],busy_bots:[],pending:[]},streams:{},async refresh(){},chosenBots(){return []},stagedPhotos:[],stagedFiles:[],jumpForSend(){},render(){},notice(){},fitMessageHeight(){},stopBot(id){stopCalls.push(id)},api(){calls++;return new Promise(r=>resolve=r)}};
+let resolve, calls=0, focusAndBusy=0;
+const context = {window:{}, matchMedia:()=>({matches:coarse}), $:id=>elements[id],selected:new Set(['a']),state:{agents:[],busy_bots:[],pending:[]},streams:{},async refresh(){},chosenBots(){return []},stagedPhotos:[],stagedFiles:[],jumpForSend(){},render(){},notice(){},fitMessageHeight(){},syncComposerButton(){focusAndBusy++},api(){calls++;return new Promise(r=>resolve=r)}};
 vm.runInNewContext(handler, context);
 (async()=>{
  const first=elements['send-form'].onsubmit({preventDefault(){}});
@@ -40,18 +40,14 @@ vm.runInNewContext(handler, context);
  assert.equal(calls,4,'a missing send button still sends');
  assert.equal(stopCalls.length,0,'a missing send button is not a stop');
  elements['send-button']=savedButton;
+ assert.ok(focusAndBusy>=8,'busy and idle transitions repaint the composer');
+ // The send button never changes into Stop: Stop has its own independent
+ // control. A stale send-button dataset must not suppress a valid new send.
  elements['send-button'].dataset.mode='stop';
- elements['send-button'].dataset.state='';
- elements.message.value='Held while stopping';
- const beforeStop=calls;
- await elements['send-form'].onsubmit({preventDefault(){}});
- assert.deepEqual(stopCalls,[''],'stop mode stops instead of sending');
- assert.equal(calls,beforeStop,'stop mode does not post the draft');
- assert.equal(elements.message.value,'Held while stopping','stop mode keeps the unsent text');
- elements['send-button'].dataset.mode='send';
- elements['send-button'].dataset.state='stopping';
- await elements['send-form'].onsubmit({preventDefault(){}});
- assert.deepEqual(stopCalls,['',''],'stopping state also stops');
- assert.equal(calls,beforeStop,'stopping state does not post the draft');
+ elements.message.value='Still a send';
+ const sent=elements['send-form'].onsubmit({preventDefault(){}});
+ assert.equal(calls,5,'independent Stop button never hijacks the send form');
+ resolve({});await sent;
+ assert.equal(elements.message.value,'','message was submitted despite stale legacy mode');
  console.log('composer regressions PASS');
 })().catch(e=>{console.error(e);process.exitCode=1});

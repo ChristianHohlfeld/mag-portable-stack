@@ -60,13 +60,52 @@ FILES=(
   'streaming_config.json:512'
   'tokenizer.bin:103319'
 )
+# The official Moonshine CDN sometimes stalls or closes a large transfer
+# (curl 18/28). Retries of a fresh --output discard all downloaded bytes.
+# Resume the SAME partial file using HTTP Range; verify exact pinned length.
+# Never accept a truncated response, silent fallback to 200, or oversized file.
+download_model() {
+  local url=$1 target=$2 expected=$3 attempt=0 before after rc=0 stagnant=0
+  : > "$target"
+  while (( attempt < 25 )); do
+    before=$(stat -c %s "$target")
+    if (( before == expected )); then return 0; fi
+    if (( before > expected )); then
+      echo "Model exceeds pinned size: $target ($before > $expected)" >&2
+      return 1
+    fi
+    attempt=$((attempt + 1))
+    rc=0
+    curl --fail --location --http1.1 --retry 0 \
+      --proto '=https' --proto-redir '=https' \
+      --connect-timeout 15 --max-time 90 --silent --show-error \
+      --continue-at - --output "$target" "$url" || rc=$?
+    after=$(stat -c %s "$target")
+    echo "Moonshine download: ${target##*/} attempt=$attempt bytes=$after/$expected rc=$rc"
+    if (( after == expected )); then return 0; fi
+    if (( after > expected )); then
+      echo "Model exceeds pinned size: $target ($after > $expected)" >&2
+      return 1
+    fi
+    if (( after <= before )); then
+      stagnant=$((stagnant + 1))
+    else
+      stagnant=0
+    fi
+    # Range not supported: curl cannot safely resume, do not concatenate
+    # a full-body HTTP 200 response onto a partially downloaded file.
+    if (( rc == 33 || stagnant >= 5 )); then
+      echo "Moonshine model download stalled or cannot resume: $target (curl=$rc)" >&2
+      return 1
+    fi
+    sleep 1
+  done
+  echo "Moonshine model download incomplete: $target (expected $expected)" >&2
+  return 1
+}
 for pair in "${FILES[@]}"; do
   name="${pair%%:*}"; expected="${pair#*:}"
-  curl --fail --location --http1.1 --retry 5 --retry-delay 2 --retry-all-errors \
-    --connect-timeout 15 --max-time 180 --silent --show-error \
-    "$BASE/$name" --output "$TMP/model/$name"
-  actual="$(wc -c < "$TMP/model/$name" | tr -d ' ')"
-  test "$actual" = "$expected" || { echo "Invalid model size for $name: $actual != $expected" >&2; exit 1; }
+  download_model "$BASE/$name" "$TMP/model/$name" "$expected"
 done
 hash_dir() {
   (cd "$1"; find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -c1-12)

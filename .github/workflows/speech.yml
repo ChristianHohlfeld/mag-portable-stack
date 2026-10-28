@@ -20,7 +20,7 @@ on:
       - '.github/workflows/speech.yml'
 jobs:
   speech:
-    timeout-minutes: 60
+    timeout-minutes: 95
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -56,7 +56,7 @@ jobs:
           bash -n ops/vendor-speech-assets.sh ops/deploy.sh
           python3 -m unittest discover -s mag-room/tests -p test_speech.py -v
       - name: Vendor pinned Moonshine German WASM and model
-        timeout-minutes: 20
+        timeout-minutes: 40
         run: bash ops/vendor-speech-assets.sh build/speech-assets
       - name: Playwright with actual WASM and German model
         timeout-minutes: 40

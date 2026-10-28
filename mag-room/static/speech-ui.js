@@ -51,7 +51,9 @@ async function getEngine() {
   if (enginePromise) return enginePromise;
   enginePromise = (async () => {
     const res = await fetch('/static/speech-config.json', {cache: 'no-store'});
-    if (!res.ok) throw new Error('Sprachmodell noch nicht installiert (Ali: vendor-speech-assets.sh)');
+    if (!res.ok) throw new Error(res.status === 404
+      ? 'Sprachmodell fehlt im installierten MAG-Release (Server-Assets prüfen).'
+      : 'Sprachmodell nicht erreichbar (HTTP ' + res.status + ').');
     const cfg = await res.json();
     if (!VERSIONED.test(cfg.runtime) || !VERSIONED.test(cfg.model) || cfg.arch !== 4)
       throw new Error('Ungültige lokale Sprachmodell-Konfiguration');

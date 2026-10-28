@@ -630,60 +630,90 @@ class RoomE2E(unittest.TestCase):
                 page.close()
 
 
-    def test_11_clear_retries_through_a_restart(self):
-        # A restart answers 503. The clear is kept and retried; the only
-        # status is the slim line, and the test itself dies at 4s.
-        p = self.browser.new_page(viewport={'width': 390, 'height': 844},
-                                  is_mobile=True, has_touch=True)
+    def test_11_clear_feedback_and_no_silent_retries(self):
+        # Destructive POSTs are never blindly retried after an ambiguous
+        # gateway failure. The user sees progress BEFORE the request starts.
+        p = self.browser.new_page(viewport={'width':390,'height':844},
+                                  is_mobile=True,has_touch=True)
         try:
             p.goto(f'http://127.0.0.1:{self.room.ui}/')
-            p.wait_for_selector('#send-button', timeout=3000)
+            p.wait_for_selector('#send-button',timeout=3000)
             p.evaluate("""()=>{
-              const orig=window.fetch;
               window.__clearPosts=0;
-              window.__roomRelink='';
-              let stateFails=0, cleared=false;
-              window.fetch=async function(url, opts){
+              window.__releaseClear=()=>{};
+              const old=window.fetch;
+              window.fetch=async function(url,opts){
                 const u=String(url);
                 if(u.includes('/api/room/clear')){
                   window.__clearPosts++;
-                  if(window.__clearPosts<=2)
-                    return new Response(JSON.stringify({error:'Raum nicht erreichbar'}),
-                      {status:503,statusText:'Service Unavailable',
-                       headers:{'Content-Type':'application/json'}});
-                  cleared=true;
+                  await new Promise(resolve=>{window.__releaseClear=resolve});
+                  return new Response(JSON.stringify({error:'Backend wurde neu gestartet'}),
+                    {status:503,headers:{'Content-Type':'application/json'}});
                 }
-                if(cleared && u.includes('/api/state') && stateFails<1){
-                  stateFails++;
-                  return new Response('down',{status:502,statusText:'Bad Gateway'});
+                if(u.includes('/api/state')&&window.__clearPosts){
+                  const reply=await old(url,opts), data=await reply.json();
+                  return new Response(JSON.stringify({...data,room:[],files:[],pending:[],busy:false}),
+                    {status:200,headers:{'Content-Type':'application/json'}});
                 }
-                return orig(url, opts);
+                return old(url,opts);
               };
-              state.busy=false; state.pending=[]; busyBots=new Set();
-              ROOM_RETRY.base=800; ROOM_RETRY.cap=800; ROOM_RETRY.limit=4000;
+              state.busy=false;state.pending=[];busyBots=new Set();
               document.getElementById('reset').hidden=false;
               document.getElementById('settings-dialog').showModal();
             }""")
             p.locator('#reset').click(timeout=3000)
-            p.wait_for_function("window.__roomRelink==='Verbinde neu…'", timeout=3000)
-            link = p.locator('#room-link')
-            expect(link).to_be_visible(timeout=3000)
-            expect(link).to_have_text('Verbinde neu…', timeout=3000)
-            place = p.evaluate("""()=>{
-              const el=document.getElementById('room-link');
-              const msg=document.getElementById('message');
-              const eb=el.getBoundingClientRect(), mb=msg.getBoundingClientRect();
-              return {inComposer:!!el.closest('.composer-wrap'),
-                above:eb.bottom<=mb.top+1, h:eb.height,
-                border:getComputedStyle(el).borderTopWidth};
+            expect(p.locator('#reset')).to_have_text('Raum wird geleert…',timeout=1500)
+            self.assertEqual(p.locator('#reset').get_attribute('aria-busy'),'true')
+            expect(p.locator('#room-link')).to_have_text('Raum wird geleert…')
+            p.evaluate('window.__releaseClear()')
+            p.wait_for_function('window.__clearPosts===1 && !clearInFlight',timeout=3000)
+            self.assertEqual(p.evaluate('window.__clearPosts'),1)
+            # The read-only verification sees the empty server room; the
+            # uncertain state must resolve without another destructive POST.
+            expect(p.locator('#notice')).to_contain_text('Raum ist leer – Serverstatus geprüft')
+            expect(p.locator('#room-link')).to_be_hidden()
+            expect(p.locator('#reset')).to_have_text('Raum leeren')
+            p.wait_for_timeout(800)
+            self.assertEqual(p.evaluate('window.__clearPosts'),1,
+                             'never repeat destructive operation in background')
+            p.evaluate("""()=>{
+              state.room=[{id:'m1',role:'assistant',name:'Bot',content:'Alt',ts:1}];
+              state.pending=[{id:'p1',input:'Alt'}];
+              streams.test={text:'alt'};
+              render();
+              events.onmessage({data:JSON.stringify({type:'room_cleared'})});
             }""")
-            self.assertTrue(place['inComposer'])
-            self.assertTrue(place['above'])
-            self.assertLessEqual(place['h'], 24)
-            self.assertEqual(place['border'], '0px')
-            p.wait_for_function('window.__clearPosts>=3', timeout=4000)
-            expect(p.locator('#notice')).not_to_have_text('Raum nicht erreichbar', timeout=3000)
-            expect(link).to_be_hidden(timeout=3000)
+            self.assertEqual(p.evaluate('state.room.length'),0)
+            self.assertEqual(p.evaluate('state.pending.length'),0)
+            self.assertEqual(p.evaluate('Object.keys(streams).length'),0)
+        finally:
+            p.close()
+
+    def test_11b_message_hover_does_not_open_emoji_menu(self):
+        p = self.browser.new_page(viewport={'width':1280,'height':800})
+        try:
+            p.goto(f'http://127.0.0.1:{self.room.ui}/')
+            p.wait_for_selector('#send-button',timeout=3000)
+            p.evaluate("""()=>{
+              state.room=[{id:'hover-probe',role:'assistant',name:'Bot',
+                           content:'Text bleibt sichtbar',ts:1}];
+              render();
+            }""")
+            msg=p.locator('#conversation .message').last
+            msg.hover()
+            p.wait_for_timeout(550)
+            expect(p.locator('#msg-pop.open')).to_have_count(0)
+            trigger=msg.locator('.message-action-trigger')
+            expect(trigger).to_be_visible()
+            trigger.click()
+            expect(p.locator('#msg-pop.open')).to_be_visible()
+            expect(p.locator('#msg-pop .pop-emoji')).to_be_hidden()
+            expect(p.locator('#msg-pop .pop-grid')).to_be_hidden()
+            p.locator('#msg-pop button',has_text='Reagieren').click()
+            expect(p.locator('#msg-pop .pop-emoji')).to_be_visible()
+            p.keyboard.press('Escape')
+            expect(p.locator('#msg-pop.open')).to_have_count(0)
+            self.assertIn('Text bleibt sichtbar',msg.inner_text())
         finally:
             p.close()
 

@@ -375,6 +375,16 @@ dialog{border-radius:10px;border-color:var(--line);background:var(--surface)}
 .jump-bottom.has-new .jump-dot{opacity:1}
 .pwa-block{padding:2px 10px 8px}.pwa-block .hint{margin:4px 0}.pwa-block .pill-btn{margin:4px 0}
 #update-toast{bottom:auto}#update-toast button{color:var(--accent)}
+/* A single discreet action trigger, no menu on passive hover. */
+.message-action-trigger{position:absolute;top:0;right:0;z-index:2;display:grid;place-items:center;width:27px;height:27px;border:1px solid var(--line);border-radius:9px;background:var(--panel);color:var(--muted);font-size:19px;line-height:1;opacity:0;pointer-events:none}
+.message-action-trigger:focus-visible{opacity:1;pointer-events:auto}
+@media(hover:hover) and (pointer:fine){.message:hover>.message-action-trigger,.message:focus-within>.message-action-trigger{opacity:1;pointer-events:auto}}
+@media(hover:none){.message-action-trigger{display:none}}
+.msg-pop .pop-emoji[hidden],.msg-pop .pop-grid[hidden]{display:none!important}
+.msg-pop{max-width:min(250px,calc(100vw - 16px))}
+.msg-pop .pop-actions{flex-direction:column;align-items:stretch;border:0;padding:0}
+.msg-pop .pop-actions button{justify-content:flex-start;width:100%;min-height:32px}
+.msg-pop .pop-emoji{max-width:244px}
 /* One message popover (reactions + actions); one open at a time. */
 .react-quick,.react-more,.react-pill{min-height:30px!important;height:30px;padding:0 8px;border-radius:999px;border:1px solid var(--line);background:var(--panel);font-size:15px;line-height:1;color:var(--text);cursor:pointer}
 .react-pill.mine{border-color:var(--accent);background:color-mix(in srgb,var(--accent),transparent 82%)}
@@ -408,6 +418,15 @@ dialog{border-radius:10px;border-color:var(--line);background:var(--surface)}
 .message.user .react-bar{right:-44px}
 .react-quick,.react-more,.react-pill{min-height:36px!important;height:36px}
 }
+/* Desktop/touch-independent menu sizing; overrides legacy popover layout. */
+.msg-pop{width:max-content;max-width:min(246px,calc(100vw - 16px))}
+.msg-pop .pop-actions{flex-direction:column;align-items:stretch;border:0;padding:0;min-width:156px}
+.msg-pop .pop-actions button{width:100%;flex:none;justify-content:flex-start;min-height:32px;padding:5px 9px}
+.msg-pop .pop-emoji[hidden],.msg-pop .pop-grid[hidden]{display:none!important}
+.message-action-trigger{position:absolute;top:0;right:0;z-index:2;display:grid;place-items:center;width:27px;height:27px;border:1px solid var(--line);border-radius:9px;background:var(--panel);color:var(--muted);font-size:19px;line-height:1;opacity:0;pointer-events:none}
+.message-action-trigger:focus-visible{opacity:1;pointer-events:auto}
+@media(hover:hover) and (pointer:fine){.message:hover>.message-action-trigger,.message:focus-within>.message-action-trigger{opacity:1;pointer-events:auto}}
+@media(hover:none){.message-action-trigger{display:none}}
 .agent.active{background:var(--panel);border-color:var(--accent)!important;box-shadow:inset 3px 0 var(--accent)}.agent[role=button]:focus-visible{outline:2px solid var(--accent);outline-offset:2px}.browser-access{font-size:12px;color:var(--orange);padding:8px 0}.browser-access[hidden]{display:none}
 
 /* Browser-local German dictation / shared composer UI */
@@ -1246,24 +1265,25 @@ function openMsgPop(node,msg,mode){
  const el=popEl();msgPop.node=node;msgPop.msg=msg;msgPop.mode=mode;
  const choose=emoji=>{closeMsgPop();toggleReaction(msg,emoji)};
  const btn=(emoji,parent)=>{const b=document.createElement('button');b.type='button';b.textContent=emoji;b.setAttribute('role','menuitem');b.setAttribute('aria-label','Reagiere mit '+emoji);if(mineReaction(msg,emoji))b.classList.add('mine');b.onclick=ev=>{ev.stopPropagation();choose(emoji)};parent.append(b)};
- const row=document.createElement('div');row.className='pop-emoji';
+ const row=document.createElement('div');row.className='pop-emoji';row.hidden=true;
  for(const e of REACT_QUICK)btn(e,row);
  const more=document.createElement('button');more.type='button';more.className='pop-more';more.textContent='⋯';more.setAttribute('aria-label','Weitere Emojis');
- more.onclick=ev=>{ev.stopPropagation();el.classList.toggle('expanded');placeMsgPop()};row.append(more);
- const grid=document.createElement('div');grid.className='pop-grid';for(const e of REACT_MORE)btn(e,grid);
+ more.onclick=ev=>{ev.stopPropagation();el.classList.toggle('expanded');grid.hidden=!el.classList.contains('expanded');placeMsgPop()};row.append(more);
+ const grid=document.createElement('div');grid.className='pop-grid';grid.hidden=true;for(const e of REACT_MORE)btn(e,grid);
  const acts=document.createElement('div');acts.className='pop-actions';
  const act=(label,icon,fn,cls)=>{const b=document.createElement('button');b.type='button';b.setAttribute('role','menuitem');if(cls)b.className=cls;b.innerHTML=icon+'<span>'+label+'</span>';b.onclick=ev=>{ev.stopPropagation();closeMsgPop();fn()};acts.append(b)};
+ const react=document.createElement('button');react.type='button';react.setAttribute('role','menuitem');react.textContent='☺  Reagieren';react.onclick=ev=>{ev.stopPropagation();row.hidden=!row.hidden;if(row.hidden){el.classList.remove('expanded');grid.hidden=true}placeMsgPop()};acts.append(react);
  const text=shownText(msg);
  if(text){
   act('Kopieren',ICON_COPY,()=>{copyText(text,null);notice('Kopiert');setTimeout(()=>notice(''),1500)});
   if(window.magMessageAudio?.toggle)act('Vorlesen','<svg class="i sm" aria-hidden="true" viewBox="0 0 24 24"><path d="M11 5 6 9H3v6h3l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/></svg>',()=>window.magMessageAudio.toggle(msg.id||text.slice(0,40),text));
  }
  if(msg.id)act('Löschen','<svg class="i sm" aria-hidden="true" viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>',()=>askDeleteMessage(msg),'danger');
- el.append(row,grid);if(acts.children.length)el.append(acts);
+ if(acts.children.length)el.append(acts);el.append(row,grid);
  el.classList.add('open');node.classList.add('pop-target');placeMsgPop();
  if(hadPush)msgPop.pushed=true;
  else if(mode!=='hover'){try{history.pushState({magPop:1},'');msgPop.pushed=true}catch(e){}}
- (mode==='key'?row.querySelector('button'):null)?.focus();
+ (mode==='key'?acts.querySelector('button'):null)?.focus();
 }
 function placeMsgPop(){
  const el=msgPop.el,node=msgPop.node;if(!el||!node)return;
@@ -1287,8 +1307,13 @@ function attachReactions(node,msg){
  const cancel=()=>{clearTimeout(hold);hold=0};
  node.addEventListener('pointerup',cancel);node.addEventListener('pointercancel',cancel);
  node.addEventListener('contextmenu',ev=>{if(ev.target.closest&&ev.target.closest('a,pre,textarea,input'))return;ev.preventDefault();openMsgPop(node,msg,'click')});
- node.addEventListener('pointerenter',ev=>{if(ev.pointerType!=='mouse')return;clearTimeout(msgPop.leave);clearTimeout(msgPop.hover);msgPop.hover=setTimeout(()=>{if(!msgPop.el?.classList.contains('open')||msgPop.mode==='hover')openMsgPop(node,msg,'hover')},350)});
- node.addEventListener('pointerleave',ev=>{if(ev.pointerType!=='mouse')return;clearTimeout(msgPop.hover);if(msgPop.node===node&&msgPop.mode==='hover')scheduleHoverClose()});
+ // Ordinary mouse movement never opens the menu or the emoji picker.
+ node.addEventListener('pointerleave',()=>clearTimeout(msgPop.hover));
+ const trigger=document.createElement('button');trigger.type='button';
+ trigger.className='message-action-trigger';trigger.textContent='⋯';trigger.title='Nachrichtenaktionen';
+ trigger.setAttribute('aria-label','Aktionen für Nachricht');trigger.setAttribute('aria-haspopup','menu');
+ trigger.onclick=ev=>{ev.preventDefault();ev.stopPropagation();openMsgPop(node,msg,'click')};
+ node.append(trigger);
  node.addEventListener('keydown',ev=>{if((ev.key==='ContextMenu'||(ev.shiftKey&&ev.key==='F10'))&&ev.target===node){ev.preventDefault();openMsgPop(node,msg,'key')}});
 }
 document.addEventListener('pointerdown',ev=>{if(msgPop.el?.classList.contains('open')&&!msgPop.el.contains(ev.target)&&!(msgPop.mode==='hover'&&msgPop.node?.contains(ev.target)))closeMsgPop()},true);
@@ -2353,13 +2378,63 @@ function memErr(t=''){const el=$('memory-err');el.textContent=t;el.hidden=!t}
 $('memory-new').oninput=()=>memErr();
 $('memory-new').onkeydown=e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing){e.preventDefault();$('memory-form').requestSubmit()}};
 $('memory-clear').onclick=()=>{if(!memAgent)return;askClearMemory(memAgent,$('memory').querySelectorAll('.mem-row').length)};
-const ROOM_RETRY={base:400,cap:4000,limit:45000};
+// A destructive clear is NEVER silently retried: a proxy 503 might have
+// hidden a successful server-side delete. Explicit progress precedes the POST.
 function roomLink(text){const el=$('room-link');if(!el)return;el.textContent=text||'';el.hidden=!text;if(text)window.__roomRelink=text;paintRoomLine()}
 function roomDown(e){if(!e)return false;if(e.name==='TypeError')return true;const s=+e.status||0;if(s===502||s===503||s===504)return true;const m=String(e.message||'');return m==='Raum nicht erreichbar'||/Bad Gateway|Service Unavailable|Gateway Time|Failed to fetch|NetworkError|Load failed/i.test(m)}
-function roomSleep(ms){return new Promise(r=>setTimeout(r,ms))}
-async function roomRetry(run){const started=Date.now();let wait=ROOM_RETRY.base;for(;;){try{return await run()}catch(e){const left=ROOM_RETRY.limit-(Date.now()-started);if(!roomDown(e)||left<=0)throw e;roomLink('Verbinde neu…');const step=Math.min(wait,ROOM_RETRY.cap,left);if(step<=0)throw e;await roomSleep(step);wait=Math.min(wait*2,ROOM_RETRY.cap)}}}
+function roomClearedNow(){
+ roomLink('');
+ if(!clearInFlight)notice('Raum geleert');
+ ++refreshSeq;closeMsgPop(true);
+ for(const live of Object.values(streams))if(live.frame)cancelAnimationFrame(live.frame);
+ streams={};busyBots=new Set();waitingBots.clear();completedTraces=[];
+ if(state){state.room=[];state.files=[];state.pending=[];state.busy=false;state.busy_bots=[];state.activities=[]}
+ clearStopping();render();renderQueue({pending:[],paused:false});
+ refresh().catch(()=>{}); // canonical server state after local response/SSE
+}
 let clearInFlight=false;
-$('reset').onclick=async()=>{if(clearInFlight)return;clearInFlight=true;try{const force=workBusy();if(force&&!await magConfirm({title:'Ein Bot rechnet noch',text:'Laufende und wartende Arbeit wird abgebrochen, danach wird der Raum geleert.',ok:'Abbrechen und leeren',cancel:'Nicht leeren',danger:true}))return;const payload=force?{force:true}:{};const r=await roomRetry(async()=>{try{return await api('/api/room/clear',payload)}catch(e){if(e.message!=='Ein Bot rechnet noch')throw e;return api('/api/room/clear',{force:true})}});if(!r)return;streams={};r.unchanged?notice('Raum ist bereits leer'):showUndo('Raum geleert',r.undo);await roomRetry(()=>refresh())}catch(e){notice(roomDown(e)?'Raum nicht erreichbar':e.message)}finally{clearInFlight=false;roomLink('')}};
+$('reset').onclick=async()=>{
+ if(clearInFlight)return;
+ let force=workBusy();
+ if(force&&!await magConfirm({title:'Laufende Arbeit abbrechen?',text:'Bots und Warteschlange werden gestoppt. Der Raum wird erst nach der Sicherung geleert.',ok:'Abbrechen und leeren',cancel:'Nicht leeren',danger:true}))return;
+ const btn=$('reset'),label=btn.textContent;clearInFlight=true;
+ btn.disabled=true;btn.textContent='Raum wird geleert…';btn.setAttribute('aria-busy','true');
+ roomLink('Raum wird geleert…');
+ try{
+  let result;
+  try{result=await api('/api/room/clear',force?{force:true}:{})}
+  catch(e){
+   if(e.status!==409)throw e;
+   // The server may have started new work after the first check. Never
+   // escalate to forced cancellation without another explicit confirmation.
+   roomLink('Raum beschäftigt');
+   if(!await magConfirm({title:'Raum beschäftigt',text:'Zwischenzeitlich wurde Arbeit gestartet. Diese wirklich abbrechen und den Raum leeren?',ok:'Abbrechen und leeren',cancel:'Nicht leeren',danger:true}))return;
+   roomLink('Raum wird geleert…');
+   result=await api('/api/room/clear',{force:true});
+  }
+  if(!result?.ok)throw Error('Löschen wurde nicht bestätigt');
+  roomClearedNow();
+  if(result.unchanged)notice('Raum ist bereits leer');
+  else showUndo('Raum geleert',result.undo);
+ }catch(e){
+  if(roomDown(e)){
+   roomLink('Raumstatus unklar – Verbindung prüfen');
+   notice('Verbindung verloren. Kein automatischer zweiter Löschversuch.');
+   // Check authoritative state without repeating the destructive action.
+   const checked=await refresh().then(()=>true,()=>false);
+   if(checked && !(state.room||[]).length && !(state.files||[]).length){
+     roomLink('');
+     notice('Raum ist leer – Serverstatus geprüft.');
+   }
+  }else{
+   notice('Raum nicht geleert: '+e.message);
+  }
+ }finally{
+  clearInFlight=false;btn.disabled=false;btn.textContent=label;
+  btn.removeAttribute('aria-busy');
+  if($('room-link')?.textContent==='Raum wird geleert…'||$('room-link')?.textContent==='Raum beschäftigt')roomLink('');
+ }
+};
 // Images are staged locally until sending. Canvas conversion strips EXIF/GPS
 // and standardizes HEIC/HEIF when supported by the current browser.
 let stagedPhotos=[],stagedFiles=[];const PHOTO_MAX_PX=2048;
@@ -3310,6 +3385,8 @@ events.onmessage=e=>{
    delete streams[id];busyBots.delete(id);if(!composerBusyIds().length)clearStopping();else streamControls();
    refresh().catch(err=>notice(err.message));
   }else if(window.magAgentUI?.event(event)){
+  }else if(event.type==='room_cleared'){
+   roomClearedNow();
   }else if(event.type==='reaction'){
    applyReaction(event);
   }else if(['message','file','agents','reset','idle','room'].includes(event.type)){

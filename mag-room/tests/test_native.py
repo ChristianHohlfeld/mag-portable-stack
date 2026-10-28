@@ -4551,8 +4551,10 @@ class PhoCompress(unittest.TestCase):
   self.assertIn("className='pho-gain'",html)
   self.assertIn("return pct==null?'':'PhO −'+pct+' %'",html)
   self.assertIn('function paintRoomLine(',html)
-  self.assertIn('async function roomRetry(',html)
-  self.assertIn("roomLink('Verbinde neu…')",html)
+  self.assertIn('function roomClearedNow(',html)
+  self.assertIn("event.type==='room_cleared'",html)
+  self.assertNotIn('async function roomRetry(',html)
+  self.assertIn('Kein automatischer zweiter Löschversuch',html)
  def test_08_aged_history_is_compressed_and_the_prefix_stays_cacheable(self):
   b=next(iter(self.bots().values()))
   code='```cpp\nconst char *URL = "https://github.com/o/r"; int id = 001234;\n```'

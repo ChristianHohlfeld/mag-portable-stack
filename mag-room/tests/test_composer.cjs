@@ -49,5 +49,21 @@ vm.runInNewContext(handler, context);
  assert.equal(calls,5,'independent Stop button never hijacks the send form');
  resolve({});await sent;
  assert.equal(elements.message.value,'','message was submitted despite stale legacy mode');
+ // Unacknowledged uploads must leave both the text and the remaining
+ // files/photos in the composer. They were previously spliced out up front.
+ context.stagedFiles.push({name:'draft.txt',size:10});
+ context.flushStagedFiles=async()=>{throw Error('Upload fehlgeschlagen')};
+ elements.message.value='Nachricht mit Anhang';
+ await elements['send-form'].onsubmit({preventDefault(){}});
+ assert.equal(elements.message.value,'Nachricht mit Anhang');
+ assert.equal(context.stagedFiles.length,1,'a failed upload retains its staged file');
+ context.stagedFiles.length=0;
+ context.stagedPhotos.push({name:'draft.jpg',blob:{},url:'blob:test'});
+ context.flushStagedPhotos=async()=>{throw Error('Bild-Upload fehlgeschlagen')};
+ elements.message.value='Nachricht mit Bild';
+ await elements['send-form'].onsubmit({preventDefault(){}});
+ assert.equal(elements.message.value,'Nachricht mit Bild');
+ assert.equal(context.stagedPhotos.length,1,'a failed upload retains its staged image');
+ context.stagedPhotos.length=0;
  console.log('composer regressions PASS');
 })().catch(e=>{console.error(e);process.exitCode=1});

@@ -60,9 +60,14 @@ class Reactions(unittest.TestCase):
             self.assertEqual(page.locator('.react-bar, .react-more, .msg-trash').count(), 0)
             pop = page.locator('#msg-pop')
             msg.locator('.content').hover()
+            self.assertFalse(pop.is_visible(), 'hover must never cover the message')
+            msg.locator('.message-action-trigger').click()
             pop.wait_for(state='visible')
+            self.assertFalse(pop.locator('.pop-emoji').is_visible())
+            self.assertEqual(pop.locator('.pop-actions button').count(), 4)  # reaction, copy, audio, delete
+            pop.locator('.pop-actions button', has_text='Reagieren').click()
+            self.assertTrue(pop.locator('.pop-emoji').is_visible())
             self.assertEqual(pop.locator('.pop-emoji button').count(), 7)  # 6 emoji + more
-            self.assertEqual(pop.locator('.pop-actions button').count(), 3)  # copy, read aloud, delete
             box = msg.bounding_box()
             page.screenshot(path=str(ART / 'reactions_bar.png'), clip={
                 'x': max(0, box['x'] - 16), 'y': max(0, box['y'] - 90),
@@ -75,6 +80,7 @@ class Reactions(unittest.TestCase):
             page.mouse.click(5, 5)
             pop.wait_for(state='hidden')
             msg.click(button='right')
+            pop.locator('.pop-actions button', has_text='Reagieren').click()
             pop.locator('.pop-more').click()
             self.assertTrue(pop.locator('.pop-grid').is_visible())
             pop.locator('.pop-emoji button', has_text='👍').click()
@@ -121,6 +127,9 @@ class Reactions(unittest.TestCase):
                 msg.locator('.content').dispatch_event('pointerup', {'pointerType': 'touch', 'bubbles': True})
                 pop.wait_for(state='visible')
             long_press()
+            self.assertFalse(pop.locator('.pop-emoji').is_visible())
+            pop.locator('.pop-actions button', has_text='Reagieren').click()
+            self.assertTrue(pop.locator('.pop-emoji').is_visible())
             box = pop.bounding_box()
             self.assertLessEqual(box['x'] + box['width'], 390)
             self.assertGreaterEqual(box['x'], 0)

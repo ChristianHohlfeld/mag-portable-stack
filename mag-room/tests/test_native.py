@@ -2786,6 +2786,34 @@ class MultiBot(unittest.TestCase):
   self.assertEqual([m.get('role') for m in room],['user'],'no empty stub for a stop before any output')
   html=self.request('/',raw=True).decode()
   for needle in ("'Gestoppt · '",'phase-stopped','function shownText('):self.assertIn(needle,html)
+ def test_10e_global_stop_during_both_prefills_keeps_clean_next_turn(self):
+  # Backend sockets are still pre-filling (no output). Stop must interrupt
+  # both model lanes, release pending queue, and let a new message start.
+  self._idle();Model.delay=5
+  try:
+   n=len(Model.calls)
+   self.request('/api/message',{'text':'Zwei lange Lesevorgaenge','bots':['q4bot','iq3bot']})
+   self._calls_after(n,2,1.5)
+   queued=self.request('/api/message',{'text':'Verworfen nach Stop','bots':['q4bot']})
+   self.assertTrue(queued.get('queued') or self.request('/api/state').get('pending'))
+   at=time.monotonic()
+   result=self.request('/api/cancel',{})
+   self.assertLess(time.monotonic()-at,5,'Stop must not wait for long-running model reads')
+   self.assertTrue(result['cancelled'])
+   self._idle()
+   after=self.request('/api/state')
+   self.assertFalse(after['busy'])
+   self.assertEqual(after['busy_bots'],[])
+   self.assertEqual(after['pending'],[])
+   self.assertFalse(after.get('queue_paused',False))
+  finally:
+   Model.delay=0
+  n=len(Model.calls)
+  self.request('/api/message',{'text':'Neue Nachricht nach Stop','bots':['q4bot']})
+  self._calls_after(n,1,1.5)
+  self._idle()
+  self.assertEqual(self._last_bot_text('q4bot'),'Hallo aus dem Modell.')
+
  def test_11_cancel_one_bot_keeps_the_other(self):
   self._idle();n=len(Model.calls);Model.delay=2.5
   try:
@@ -2840,8 +2868,8 @@ class MultiBot(unittest.TestCase):
    Model.script=[];self.request('/api/autotalk',{'on':False});self._idle()
  def test_13_frontend_lane_contract(self):
   html=self.request('/',raw=True).decode()
-  for needle in ("api('/api/cancel',id?{bot:id}:{})",'id="bot-lanes"','id="stop-run"','aria-label="Stoppen"','id="proaktiv"','>Proaktiv<','setBusyBots(next.busy_bots,next.waiting_bots)',"event.type==='idle'&&Array.isArray(event.busy_bots)","event.type==='cancelled'&&event.bot",'state.activities','state.proaktiv_note'):self.assertIn(needle,html)
-  for gone in ('Alle stoppen','send-halting','Stoppt','>Stoppen<','siehe Tooltip','Self-Talk','id="selftalk"','id="selftalk-row"'):self.assertNotIn(gone,html)
+  for needle in ("fetch('/api/cancel'",'id="bot-lanes"','id="stop-run"','aria-label="Stoppen"','id="proaktiv"','>Proaktiv<','setBusyBots(next.busy_bots,next.waiting_bots)',"event.type==='idle'&&Array.isArray(event.busy_bots)","event.type==='cancelled'&&event.bot",'state.activities','state.proaktiv_note'):self.assertIn(needle,html)
+  for gone in ('Alle stoppen','send-halting','>Stoppen<','siehe Tooltip','Self-Talk','id="selftalk"','id="selftalk-row"'):self.assertNotIn(gone,html)
   # Composer bar: round +, pill with mic, a send button that only sends, and a
   # separate stop icon with no visible text.
   for needle in ('<form id="send-form" class="gbar">','id="plus"','class="composer-card gbar-pill"','id="mic"','id="send-button"','id="stop-run"','id="plus-think"','id="upload-camera"','id="upload-screen"',

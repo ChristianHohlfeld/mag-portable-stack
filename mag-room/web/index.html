@@ -452,6 +452,10 @@ dialog{border-radius:10px;border-color:var(--line);background:var(--surface)}
 .gbar-send:disabled{opacity:1;background:var(--panel-3);color:var(--muted);box-shadow:none;cursor:default}
 #stop-run{flex:0 0 32px!important;width:32px!important;height:32px!important;min-width:32px!important;max-width:32px!important;min-height:32px!important;max-height:32px!important;padding:0;overflow:hidden;border:0;border-radius:8px;background:transparent;color:#fff;display:inline-flex!important;align-items:center;justify-content:center;visibility:hidden;pointer-events:none}
 #stop-run.is-on{visibility:visible;pointer-events:auto;background:var(--sb-red)}
+#stop-run.gbar-stopping{opacity:1!important;visibility:visible;pointer-events:none;cursor:progress}
+#stop-run.gbar-stopping svg{animation:mag-stop-pulse .85s ease-in-out infinite}
+@keyframes mag-stop-pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.42;transform:scale(.76)}}
+@media(prefers-reduced-motion:reduce){#stop-run.gbar-stopping svg{animation:none}}
 #stop-run svg{width:12px;height:12px;display:block;flex:none}
 @keyframes gbarpulse{0%{box-shadow:0 0 0 0 rgba(230,43,43,.5)}70%{box-shadow:0 0 0 8px transparent}100%{box-shadow:0 0 0 0 transparent}}
 .composer-inner>.speech-status{padding:0 4px 8px 56px}
@@ -1576,8 +1580,16 @@ function streamControls(){syncComposerButton();if(thinkInit)syncBotSwitches()}
 // bot is actually generating. The field itself is never disabled; Enter only ever sends.
 function composerBusyIds(){const known=new Set((state.agents||[]).map(a=>a.id));return [...new Set([...busyBots,...Object.keys(streams)])].filter(id=>known.has(id))}
 function serverIdle(){return !!(state&&state.busy===false&&!(state.busy_bots||[]).length&&!((state.activities||[]).some(a=>a&&a.on)))}
-function generationLive(){const local=[...busyBots,...Object.keys(streams)].filter(id=>!waitingBots.has(id));if(local.length)return true;if(serverIdle())return false;return !!state.busy}
-function syncStopButton(){const b=$('stop-run');if(!b)return;const on=generationLive()&&can('stop');b.hidden=false;b.classList.toggle('is-on',!!on);b.disabled=!on;b.setAttribute('aria-hidden',on?'false':'true');if(on)b.removeAttribute('tabindex');else b.tabIndex=-1}
+function generationLive(){const local=[...busyBots,...Object.keys(streams)].filter(id=>!waitingBots.has(id));if(local.length)return true;return !!state?.busy||(state?.activities||[]).some(a=>a?.on)}
+function syncStopButton(){const b=$('stop-run');if(!b)return;
+ const on=(generationLive()||stopInFlight)&&can('stop');
+ b.hidden=false;b.classList.toggle('is-on',!!on);b.classList.toggle('gbar-stopping',stopInFlight);
+ b.disabled=!on||stopInFlight;b.setAttribute('aria-hidden',on?'false':'true');
+ b.setAttribute('aria-label',stopInFlight?'Stoppt…':'Stoppen');
+ b.title=stopInFlight?'Wird angehalten…':'Stoppen';
+ if(stopInFlight)b.setAttribute('aria-busy','true');else b.removeAttribute('aria-busy');
+ if(on)b.removeAttribute('tabindex');else b.tabIndex=-1
+}
 function syncComposerButton(){const b=$('send-button'),field=$('message');if(!b||!field)return;b.dataset.mode='send';b.dataset.state='';b.classList.remove('gbar-stopping');b.removeAttribute('aria-busy');b.dataset.count='';const typed=!!field.value.trim()||stagedPhotos.length>0||stagedFiles.length>0;b.setAttribute('aria-label','Senden');b.title='Senden';b.querySelector('use')?.setAttribute('href','#ic-up');b.disabled=!typed;syncStopButton()}
 function renderPromptProgress(s,node){if(s.thinkingEnabled===false)return;
  const old=node.querySelector('.prompt-progress');old?.remove();
@@ -1785,7 +1797,9 @@ async function loadGuests(force=false){
   guestsLast=Date.now();
   $('guest-new').disabled=!info.configured;
   $('guest-new').title=info.configured?'Gast einladen':'OAuth-Client auf mag nicht eingerichtet';
-  $('guest-status').textContent=info.configured?(info.live_status==='unavailable'?'Tailscale-Status derzeit nicht verfügbar':'Nur du kannst Gäste verwalten'):(info.notice||'Tailscale-OAuth fehlt: Einladung deaktiviert, Chat voll verfügbar.');
+  $('guest-status').textContent=info.configured
+    ? (info.live_status==='unavailable'?'Tailscale-Status nicht verfügbar':'')
+    : (info.notice||'Einladungen derzeit nicht verfügbar');
   const box=$('guest-list');box.replaceChildren();
   for(const entry of info.guests||[]){
    const row=document.createElement('div');row.className='job';
@@ -1804,7 +1818,7 @@ async function loadGuests(force=false){
    };
    row.append(name,details,remove);box.append(row);
   }
-  if(!(info.guests||[]).length)box.textContent='Keine Gäste oder offenen Einladungen.';
+  // An empty guest list speaks for itself; avoid placeholder copy.
  }catch(e){$('guest-status').textContent=e.message}
  finally{guestsBusy=false}
 }
@@ -2225,9 +2239,44 @@ let busyBots=new Set();
 let waitingBots=new Map();
 function setBusyBots(ids,waiting){busyBots=new Set(Array.isArray(ids)?ids:[]);if(Array.isArray(waiting)){const keep=new Map();for(const id of waiting)keep.set(id,waitingBots.get(id)||'');waitingBots=keep}for(const id of [...waitingBots.keys()])if(!busyBots.has(id))waitingBots.delete(id);renderLanes();if(state.model_status)modelStatus(state.model_status)}
 let stopInFlight=false;
-function paintStopping(){for(const id of Object.keys(streams)){const s=streams[id];if(!s||s.stopping)continue;s.stopping=true;s.phase='stop';updateStream(id,true)}syncStopButton()}
-function clearStopping(){stopInFlight=false;syncComposerButton()}
-async function stopBot(id){if(stopInFlight)return;stopInFlight=true;paintStopping();try{await api('/api/cancel',id?{bot:id}:{})}catch(e){notice(e.message)}finally{stopInFlight=false;syncStopButton()}}
+function paintStopping(){for(const id of Object.keys(streams)){const s=streams[id];if(!s||s.stopping)continue;s.stopBefore={phase:s.phase,label:s.label};s.stopping=true;s.phase='stop';updateStream(id,true)}syncStopButton()}
+function clearStopping(){if(stopInFlight)return;syncComposerButton()}
+async function stopBot(id){
+ if(stopInFlight||!can('stop'))return;
+ stopInFlight=true;
+ paintStopping();renderLanes(); // immediate indication, even during long CPU prefill
+ const controller=new AbortController();
+ const timeout=setTimeout(()=>controller.abort(),15000);
+ try{
+  const response=await fetch('/api/cancel',{
+   method:'POST',headers:{'Content-Type':'application/json'},
+   body:JSON.stringify(id?{bot:id}:{}),signal:controller.signal
+  });
+  const payload=await response.json().catch(()=>({}));
+  if(!response.ok)throw Error(payload.error||'Stop-Anfrage fehlgeschlagen (HTTP '+response.status+')');
+  // Resolve the canonical busy state before dropping the stopping indication.
+  const synced=await refresh().then(()=>true,()=>false);
+  if(!synced)notice('Stop bestätigt; Raumstatus vorübergehend nicht erreichbar.');
+  else if(!generationLive())notice('');
+  else notice('Stop bestätigt; laufende Werkzeuge werden beendet…');
+ }catch(e){
+  notice(e.name==='AbortError'
+    ? 'Stop nicht bestätigt: Server antwortet nicht. Zustand wird geprüft.'
+    : 'Stop nicht bestätigt: '+e.message);
+  await refresh().catch(()=>{});
+ }finally{
+  clearTimeout(timeout);
+  stopInFlight=false;
+  // A proxy failure is not proof that Stop succeeded. If the room is still
+  // busy, restore live labels instead of freezing every stream on "Stoppt".
+  for(const s of Object.values(streams))if(s?.stopping){
+   s.stopping=false;
+   if(s.stopBefore){s.phase=s.stopBefore.phase;s.label=s.stopBefore.label;delete s.stopBefore}
+  }
+  renderLanes();
+  syncStopButton();
+ }
+}
 function activityItems(){
  const ids=[...busyBots].filter(id=>state.agents.some(a=>a.id===id));
  for(const id of Object.keys(streams))if(!ids.includes(id)&&state.agents.some(a=>a.id===id))ids.push(id);
@@ -2236,7 +2285,8 @@ function activityItems(){
   const name=roomBotName({role:'assistant',bot:id,name:a?.name||streams[id]?.name});
   const s=streams[id];
   let text;
-  if(waitingBots.has(id))text=name+' wartet';
+  if(stopInFlight)text=name+' stoppt …';
+  else if(waitingBots.has(id))text=name+' wartet';
   else if(!s)text=name+' antwortet';
   else if(s.error)text=name+' · Fehler';
   else{
@@ -2258,7 +2308,7 @@ function fillActivity(stat){
  const items=activityItems();
  const note=String(state.proaktiv_note||'').trim();
  stat.replaceChildren();
- stat.hidden=!items.length&&!note;
+ stat.hidden=!items.length&&!note&&!stopInFlight;
  items.forEach((p,i)=>{
   if(i)stat.append(document.createTextNode(' · '));
   const dot=document.createElement('i');
@@ -2268,8 +2318,9 @@ function fillActivity(stat){
   const lab=document.createElement('span');lab.textContent=p.text;
   stat.append(dot,lab);
  });
+ if(stopInFlight&&!items.length){const txt=document.createElement('span');txt.textContent='Stoppt …';stat.append(txt)}
  if(note){
-  if(items.length)stat.append(document.createTextNode(' · '));
+  if(items.length||stopInFlight)stat.append(document.createTextNode(' · '));
   const lab=document.createElement('span');lab.textContent=note;stat.append(lab);
  }
 }

@@ -20,7 +20,7 @@ for phase in release-check packages restic users restore place-state config tail
   lego gitea gitea-mirror build voice llm-runtime golden backup-install audit gateway \
   tailscale-egress acme models deploy private-access pages auto-update runners \
   start-llm console-lockdown-skipped; do
-  grep -Fq "PHASE $phase" <<<"$out" || { echo "missing phase $phase" >&2; exit 1; }
+  [[ "$out" == *"PHASE $phase"* ]] || { echo "missing phase $phase" >&2; exit 1; }
 done
 # Order matters: audit (web proxy + CA) before deploy's free-MCP probe; the
 # LLM runtime before units; voice before deploy (deploy needs whisper-cli).
@@ -42,7 +42,7 @@ for needle in install-restic-0181.sh ops/gitea/install.sh ops/deploy.sh \
   ops/private-access/install-lego.sh 'ops/audit/install-audit.sh --apply' \
   ops/pages/install.sh ops/auto-update/install.sh ops/runners/install.sh \
   ops/gitea/mirror-github.sh issue-cert.sh mag-acme-renew.timer; do
-  grep -Fq -- "$needle" <<<"$out" || { echo "dry run does not mention $needle" >&2; exit 1; }
+  [[ "$out" == *"$needle"* ]] || { echo "dry run does not mention $needle" >&2; exit 1; }
 done
 grep -Fq 'bootstrap-models.sh' "$root/ops/bootstrap.sh"
 grep -Fq 'ops/deepseek/build-ik.sh' "$root/ops/bootstrap.sh"
@@ -51,7 +51,7 @@ grep -Fq 'ops/room/install.sh' "$root/ops/bootstrap.sh"
 grep -Fq 'deepseek/model-manifest.sh' "$root/ops/backup/bootstrap-models.sh"
 grep -Fq 'mag-llm-ds-node@' "$root/ops/bootstrap.sh"
 grep -Fq 'install-tailscale-egress.sh' "$root/ops/bootstrap.sh"
-grep -Fq 'ops/tailscale/apply-gitea-funnel.sh' <<<"$out"
+[[ "$out" == *'ops/tailscale/apply-gitea-funnel.sh'* ]]
 if grep -Eq 'bash .*console-lockdown' "$root/ops/bootstrap.sh"; then echo 'bootstrap runs console lockdown' >&2; exit 1; fi
 for f in "$root/ops/bootstrap.sh" "$root/ops/deepseek/bootstrap-runtimes.sh" "$root/ops/vm/build-golden.sh"; do
   if grep -Eq 'systemctl (restart|stop|kill|try-restart|reload-or-restart) (mag-llm|"?\$secondary)' "$f"; then
@@ -75,7 +75,7 @@ source "$root/ops/build-targets.sh"
 for binary in "${MAG_RELEASE_BINARIES[@]}"; do
   printf '%s\n' "${MAG_BUILD_TARGETS[@]}" | grep -Fxq "$binary"
 done
-grep -Fq 'mag-det' <<<"$out"
+[[ "$out" == *'mag-det'* ]]
 grep -Fq 'MAG_RELEASE_BINARIES' "$root/ops/deploy.sh"
 grep -Fq 'MAG_BUILD_TARGETS' "$root/ops/update.sh"
 # Pins: whisper model SHA256, cloud image SHA256, lego SHA256 (64 hex each).

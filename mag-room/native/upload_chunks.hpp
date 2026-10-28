@@ -5,7 +5,7 @@ static constexpr uint64_t MAX_CHUNKED_FILE = 512ULL * 1024 * 1024;
 static constexpr size_t UPLOAD_PART_BYTES = 4 * 1024 * 1024;
 static std::mutex UPLOAD_MTX;
 static std::string upload_dir() {
-  const std::string dir = FILES_DIR + "/.uploads";
+  const std::string dir = STATE_DIR + "/upload-parts";
   std::filesystem::create_directories(dir);
   chmod(dir.c_str(), 0700);
   return dir;
@@ -52,6 +52,11 @@ static uint64_t upload_size(const std::string &path) {
   std::error_code ec;
   auto n = std::filesystem::file_size(path, ec);
   return ec ? 0 : (uint64_t)n;
+}
+static void upload_purge_sessions() {
+  std::lock_guard<std::mutex> lock(UPLOAD_MTX);
+  std::error_code ec;
+  std::filesystem::remove_all(upload_dir(), ec);
 }
 static void upload_gc() {
   const auto dir = upload_dir();

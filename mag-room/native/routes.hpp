@@ -359,8 +359,10 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
            q == "/api/room" || q == "/api/files" ||
            q == "/api/version" || q == "/api/model-status" ||
            q.rfind("/static/",0)==0 || q.rfind("/api/file/",0)==0);
-      const bool write = m == "POST" &&
-          (q == "/api/message" || q == "/api/upload");
+      const bool write = (m == "POST" &&
+          (q == "/api/message" || q == "/api/upload" || q == "/api/upload/chunk" ||
+           q == "/api/upload/chunk/commit")) ||
+           (m == "GET" && q == "/api/upload/chunk/status");
       if (!read && !write) {
         error_json(fd,403,"Gäste dürfen diese Aktion nicht ausführen");
         return;
@@ -1941,6 +1943,59 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
     auto result = undo_action(url_decode(path.substr(std::string("/api/undo/").size())));
     send_json(fd, result.code, result.body);
     return;
+  }
+  // Large file protocol: chunks are independent requests below the HTTP
+  // body limit. A session is owned by the authenticated room identity.
+  // The file enters FILES/ROOM exactly once, only after commit succeeds.
+  if (path == "/api/upload/chunk" ||
+      path == "/api/upload/chunk/status" ||
+      path == "/api/upload/chunk/commit") {
+    const std::string owner = actor.role + ":" + actor.login + ":" + actor.node;
+    const std::string id = qparam(r.query, "id");
+    if (!upload_valid_id(id)) { error_json(fd, 400, "Ungültige Upload-ID"); return; }
+    auto number = [&](const char *key) -> uint64_t {
+      const std::string v = qparam(r.query, key);
+      if (v.empty() || v.size() > 20 ||
+          v.find_first_not_of("0123456789") != std::string::npos)
+        throw std::runtime_error("Ungültige Upload-Länge");
+      return std::stoull(v);
+    };
+    try {
+      if (m == "GET" && path == "/api/upload/chunk/status") {
+        send_json(fd, 200, mj::dump(upload_status(id,owner))); return;
+      }
+      if (m == "POST" && path == "/api/upload/chunk") {
+        const uint64_t total = number("total"), offset = number("offset");
+        const std::string who = actor.name.empty() ? "Nutzer" : actor.name;
+        send_json(fd, 200, mj::dump(upload_chunk(id, qparam(r.query,"name"),
+          total, offset, r.body, owner, who)));
+        return;
+      }
+      if (m == "POST" && path == "/api/upload/chunk/commit") {
+        if (!r.body.empty()) { error_json(fd,400,"Commit darf keinen Body haben");return; }
+        bool fresh = false;
+        const Val file = upload_commit(id, owner, fresh);
+        if (fresh) {
+          const std::string who = actor.name.empty() ? "Nutzer" : actor.name;
+          append_room("user", who, "", "", &file, actor.login);
+          emit_file("", file);
+        }
+        send_json(fd, 201, mj::dump(file)); return;
+      }
+      error_json(fd,405,"Method not allowed"); return;
+    } catch (const std::exception &e) {
+      const std::string msg = e.what();
+      const int code = msg.find("nicht gefunden") != std::string::npos ? 404 :
+                       msg.find("Maximal") != std::string::npos ? 429 :
+                       msg.find("unvollständig") != std::string::npos ||
+                       msg.find("Offset") != std::string::npos ||
+                       msg.find("andere Anfrage") != std::string::npos ||
+                       msg.find("abweicht") != std::string::npos ||
+                       msg.find("Überlappender") != std::string::npos ? 409 :
+                       msg.find("Schreibfehler") != std::string::npos ||
+                       msg.find("Sicherung") != std::string::npos ? 500 : 400;
+      error_json(fd,code,msg); return;
+    }
   }
   if (m == "POST" && path == "/api/upload") {
     std::string name = qparam(r.query, "name");

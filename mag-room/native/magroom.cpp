@@ -6387,7 +6387,8 @@ static bool send_file_range_response(
   const uint64_t total = (uint64_t)st.st_size;
   uint64_t first = 0, last = total - 1;
   bool valid = true;
-  const auto spec = range.substr(6), dash = spec.find('-');
+  const auto spec = range.substr(6);
+  const auto dash = spec.find('-');
   auto parse = [](const std::string &x) -> uint64_t {
     if (x.empty() || x.find_first_not_of("0123456789") != std::string::npos)
       throw std::runtime_error("bad range");

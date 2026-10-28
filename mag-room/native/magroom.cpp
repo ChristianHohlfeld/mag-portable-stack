@@ -7709,6 +7709,10 @@ static void persist_configured_slot(int idx) {
 }
 static void cancel_llama_slot(int idx, int timeout_ms = 120000) {
   if (!CONFIGURED_MODEL || idx < 0) return;
+  // A cancelled KV is no longer known to be warm. If the bounded restore
+  // below times out, the next request must not trust the old cached prefix.
+  const int slot = model_slot(idx);
+  if (slot >= 1 && slot <= ROOM_MAX_BOTS) SLOT_WARM[slot - 1] = 0;
   // Gateway ?action=cancel closes the current upstream fd and returns.
   // It must not be sent after the user chat has already connected, or it
   // aborts that request ("srv stop: cancel task" on the hi itself).

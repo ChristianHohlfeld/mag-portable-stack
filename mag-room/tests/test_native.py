@@ -306,7 +306,7 @@ class Native(unittest.TestCase):
   self.error(404,base.replace('/chunk?','/chunk/status?'))
   self.error(403,base+'&name='+qname+'&offset=0&total='+str(total),
              b'abcd',headers={'Content-Type':'application/octet-stream','X-No-Token':'1'})
-  self.error(409,base.replace('/chunk?','/chunk/commit?'),b'')
+  self.error(404,base.replace('/chunk?','/chunk/commit?'),b'')
   buf=b'a'*(4*1024*1024)
   # Test first packet and idempotent retransmission (lost HTTP ack).
   first=base+'&name='+qname+'&offset=0&total='+str(total)

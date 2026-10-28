@@ -105,6 +105,30 @@ class AgentCore(unittest.TestCase):
   todo=self.request('/api/todo/ali')
   self.assertEqual([i['status'] for i in todo['items']],['done','blocked'])
   self.assertIn('Erledigt: Daten geholt',self.room()[-1]['content'])
+ def test_02b_new_request_does_not_inherit_previous_open_todos(self):
+  # Regression: bot-scoped TODOs from an earlier user goal used to keep
+  # unrelated requests alive. A goal-scoped plan is loaded independently.
+  Router.main=[call('todo',{'action':'set','goal':'Erster Auftrag','items':['unfertig']}),
+               ['Ich versuche es.'],['Ich versuche es.'],['Ich versuche es.']]
+  self.ask('Erster Auftrag')
+  first=self.request('/api/todo/ali')
+  self.assertEqual(first['goal'],'Erster Auftrag')
+  self.assertEqual(first['items'][0]['status'],'open')
+  Router.calls=[]
+  Router.main=[call('todo',{'action':'list'}),['Zweiter Auftrag erledigt.']]
+  self.ask('Zweite unabhaengige Frage')
+  self.assertEqual(len(Router.calls),2,
+                   'Keine Fortsetzung des alten Plans nach neuem User-Turn')
+  results=[m['content'] for m in Router.calls[-1]['messages']
+           if m.get('role')=='tool']
+  self.assertTrue(any('keine Ziele' in x for x in results), results)
+  # Latest-view compatibility still exposes the previous plan until a new
+  # todo(set) commits one; its per-goal source stays isolated.
+  files=list((self.state/'todo').glob('ali_g*.json'))
+  self.assertGreaterEqual(len(files),1)
+  self.assertTrue(any(json.loads(p.read_text()).get('goal')=='Erster Auftrag'
+                      for p in files))
+
  def test_03_todo_nudge_is_bounded(self):
   Router.main=[call('todo',{'action':'set','items':['A']}),['Fertig.'],['Fertig.'],['Fertig.'],['Nie erreicht.']]
   self.ask('Endlos?')

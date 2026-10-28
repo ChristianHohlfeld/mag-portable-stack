@@ -302,6 +302,53 @@ class Native(unittest.TestCase):
   self.request('/api/reset',{})
   self.assertFalse(self.request('/api/state')['files']);self.assertEqual(self.request('/api/agents/test/memory')[0]['text'],'Merke mich')
   self.assertFalse(list(self.state.joinpath('files').iterdir()));self.error(404,'/api/file/'+f['stored'])
+ def test_03b_large_file_chunked_disk_resumable_and_cancel(self):
+  # A real >64MiB attachment must not require a 64MiB HTTP request or
+  # full-file heap allocation. Partial-chunk replay and duplicate finalize
+  # are idempotent, never produce duplicate room messages.
+  size=65*1024*1024+17
+  started=self.request('/api/upload/start',{'name':'meeting.wav','size':size})
+  ticket=started['ticket']
+  self.assertEqual(started['chunk_size'],8*1024*1024)
+  self.error(409,'/api/upload/status?ticket='+'0'*32)
+  base='/api/upload/chunk?ticket='+ticket+'&offset='
+  self.request(base+'0',b'abc')
+  self.request(base+'0',b'abcdef') # true interrupted-partial replay
+  self.error(409,base+'0',b'abcDEF')
+  self.assertEqual(self.request('/api/upload/status?ticket='+ticket)['received'],6)
+  offset=6
+  while offset<size:
+   part=b'x'*min(8*1024*1024,size-offset)
+   got=self.request(base+str(offset),part)
+   offset+=len(part)
+   self.assertEqual(got['received'],offset)
+  self.assertEqual(offset,size)
+  first=self.request('/api/upload/finish?ticket='+ticket,{})
+  duplicate=self.request('/api/upload/finish?ticket='+ticket,{})
+  self.assertEqual(duplicate['stored'],first['stored'])
+  self.assertEqual(first['size'],size)
+  with urllib.request.urlopen('http://127.0.0.1:%d/api/file/%s'%(self.ui,first['stored']),timeout=15) as response:
+   self.assertEqual(response.headers['Content-Length'],str(size))
+   self.assertEqual(response.read(6),b'abcdef')
+  self.assertEqual(len([m for m in self.request('/api/state')['room']
+                        if m.get('file',{}).get('stored')==first['stored']]),1)
+  pending=self.request('/api/upload/start',{'name':'unsent.wav','size':123})
+  pt=pending['ticket']
+  self.request('/api/upload/chunk?ticket='+pt+'&offset=0',b'temp')
+  self.request('/api/upload/cancel?ticket='+pt,{})
+  self.error(409,'/api/upload/status?ticket='+pt)
+  self.assertFalse(list((self.state/'files').glob('.upload-'+pt+'*')))
+  self.assertFalse(any(x.get('stored','').startswith(pt) for x in self.request('/api/state')['files']))
+  self.error(400,'/api/upload/start',{'name':'bad.wav','size':0})
+  self.error(403,'/api/upload/start',{'name':'blocked.wav','size':2},
+             headers={'Content-Type':'application/json','X-No-Token':'1'})
+  # A malformed large request is 413, not an opaque HTML 500 or crash.
+  with socket.create_connection(('127.0.0.1',self.ui),timeout=3) as sock:
+   sock.sendall(b'POST /api/upload HTTP/1.1\\r\\nHost: localhost\\r\\nContent-Length: 999999999999\\r\\n\\r\\n')
+   data=sock.recv(512)
+   self.assertIn(b'413 Payload Too Large',data)
+  self.assertTrue(self.request('/readyz')['ready'])
+
  def test_03a_memory_entries_edit_and_delete(self):
   mem=self.request('/api/agents/test/memory');self.assertEqual(mem[0]['text'],'Merke mich')
   self.error(409,'/api/agents/test/memory/0',{'text':'Neu','old':'Anders'},method='PUT')

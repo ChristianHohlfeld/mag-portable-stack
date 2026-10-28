@@ -643,11 +643,17 @@ class RoomE2E(unittest.TestCase):
               window.__releaseClear=()=>{};
               const old=window.fetch;
               window.fetch=async function(url,opts){
-                if(String(url).includes('/api/room/clear')){
+                const u=String(url);
+                if(u.includes('/api/room/clear')){
                   window.__clearPosts++;
                   await new Promise(resolve=>{window.__releaseClear=resolve});
                   return new Response(JSON.stringify({error:'Backend wurde neu gestartet'}),
                     {status:503,headers:{'Content-Type':'application/json'}});
+                }
+                if(u.includes('/api/state')&&window.__clearPosts){
+                  const reply=await old(url,opts), data=await reply.json();
+                  return new Response(JSON.stringify({...data,room:[],files:[],pending:[],busy:false}),
+                    {status:200,headers:{'Content-Type':'application/json'}});
                 }
                 return old(url,opts);
               };

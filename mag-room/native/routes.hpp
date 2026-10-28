@@ -2062,7 +2062,7 @@ static void serve_connection(int fd, bool bridge) {
         error_json(fd, 503, whois ? "Whois capacity exceeded" : "Connection limit");
         if (!whois) std::cerr << "http regular connection limit reached: "
                               << active << "/" << normal_limit
-                              << "; reserved whois=" << WHOIS_CONNECTIONS.load() << "\\n";
+                              << "; reserved whois=" << WHOIS_CONNECTIONS.load() << "\n";
       } else {
         route(fd, r, bridge); // native auth still validates real Tailnet identity
       }

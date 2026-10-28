@@ -1363,7 +1363,9 @@ static void drop_revealed() {
   save_room();
 }
 static void clear_reaction_notes();
+static void upload_purge_sessions();
 static void reset_room(bool purge) {
+  if (purge) upload_purge_sessions(); // Lock uploads first, never while holding STATE_MTX.
   std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
   ROOM.clear();
   clear_reaction_notes();

@@ -888,6 +888,63 @@ class RoomE2E(unittest.TestCase):
             p.close()
 
 
+    def test_11c_webudp_stall_uses_visible_http_browser_without_reconnect_flicker(self):
+        # A reverse proxy can serve HTTPS while direct UDP ICE never connects.
+        # The real UI must not stay at "WebRTC/UDP · verbinde …" forever.
+        p = self.browser.new_page(viewport={'width':1280,'height':800})
+        try:
+            p.goto(f'http://127.0.0.1:{self.room.ui}/')
+            p.wait_for_selector('#browser-agent', state='attached', timeout=3000)
+            p.evaluate(r"""()=>{
+              window.__screenRequests=0;window.__offers=0;
+              const nativeFetch=window.fetch.bind(window);
+              window.fetch=(url,opts)=>{
+                const path=String(url);
+                if(path.includes('/api/browser-live/offer')){
+                  ++window.__offers;
+                  return new Promise(()=>{}); // deliberately stuck SDP
+                }
+                if(path.includes('/api/screen/')){
+                  ++window.__screenRequests;
+                  if(window.__screenRequests===1)
+                    return Promise.resolve(new Response('',{status:502}));
+                  return Promise.resolve(new Response(new Blob(['jpeg'],{type:'image/jpeg'}),
+                    {status:200,headers:{'Content-Type':'image/jpeg'}}));
+                }
+                return nativeFetch(url,opts);
+              };
+              window.createImageBitmap=async()=>{
+                const canvas=document.createElement('canvas');
+                canvas.width=2;canvas.height=2;canvas.close=()=>{};
+                return canvas;
+              };
+              class DeadPeer {
+                constructor(){this.connectionState='connecting';this.iceGatheringState='complete'}
+                createDataChannel(){return {readyState:'connecting'}}
+                async createOffer(){return {type:'offer',sdp:'v=0'}}
+                async setLocalDescription(v){this.localDescription=v}
+                close(){this.connectionState='closed'}
+              }
+              window.RTCPeerConnection=DeadPeer;
+              state.agents=[{id:'a',name:'DeepSeek V4 Flash',vm:'agent1'}];
+              document.getElementById('browser-agent').replaceChildren(new Option('DeepSeek V4 Flash','a'));
+              document.getElementById('browser-agent').value='a';
+              document.getElementById('live').checked=true;
+              connectLive();
+            }""")
+            p.wait_for_function("window.__screenRequests>=1",timeout=8000)
+            expect(p.locator('#browser-status')).to_contain_text(
+                'VM-Browser noch nicht erreichbar (HTTP 502)',timeout=3000)
+            p.wait_for_function("window.__screenRequests>=2",timeout=8500)
+            expect(p.locator('#browser-status')).to_contain_text(
+                'Browser über HTTPS · agent1 · live',timeout=2500)
+            expect(p.locator('#screen')).to_be_visible()
+            p.wait_for_timeout(1300)
+            self.assertEqual(p.evaluate('window.__offers'),1,
+                             'functional HTTPS fallback must not cycle/restart WebRTC')
+        finally:
+            p.close()
+
     def test_12_phone_chat_keeps_most_of_the_viewport(self):
         # Idle, busy, and queued: the conversation owns about 80% of the
         # phone screen. Status remains compact, queued text is always

@@ -2778,6 +2778,9 @@ const terminals=new Map(),utf8Encoder=new TextEncoder();
 let termPending=[],consoleHbAt=0,reconnectTimer=0,reconnectDelay=1000;
 function scheduleReconnect(){
  if(reconnectTimer||document.hidden||!rightOpen)return;
+ // An HTTPS view is a functioning browser session. Do not repeatedly
+ // destroy it while ICE cannot traverse a reverse proxy/Funnel.
+ if(httpLive&&httpLive.failures<3)return;
  reconnectTimer=setTimeout(()=>{reconnectTimer=0;reconnectDelay=Math.min(reconnectDelay*2,10000);try{connectLive()}catch(e){}},reconnectDelay);
 }
 // Watchdog: the gateway sends {"kind":"hb"} every 2 s on the console channel.
@@ -2933,19 +2936,63 @@ function liveStatus(v){$('browser-status').textContent=v}
 // expose only mDNS host candidates): poll the existing JPEG endpoint and send
 // taps over HTTPS. Stops as soon as UDP frames arrive or the view closes.
 let httpLive=null,httpLiveFor='';
+const HTTP_SCREEN_TIMEOUT_MS=16000;
+function browserFallbackError(status){
+ if(status===502||status===503||status===504)return 'VM-Browser noch nicht erreichbar (HTTP '+status+')';
+ if(status===401||status===403)return 'Browserzugriff abgelehnt (HTTP '+status+')';
+ if(status===404)return 'Browser-Endpunkt nicht verfügbar (HTTP 404)';
+ return 'Browserbild fehlgeschlagen (HTTP '+status+')';
+}
 function freshUdpFrame(){return frameLastAt&&performance.now()-frameLastAt<5000}
 function startHttpLive(gen,id){
  if(httpLive||gen!==liveGeneration||!$('live').checked)return;
- httpLive={gen,id};httpLiveFor=id;
+ const session={gen,id,t:0,abort:null,failures:0,lastFrame:0};
+ httpLive=session;httpLiveFor=id;
+ liveStatus('UDP nicht erreichbar · prüfe Browserbild über HTTPS …');
  const tick=async()=>{
-  if(!httpLive||httpLive.gen!==liveGeneration||freshUdpFrame()){stopHttpLive();return}
-  try{const r=await fetch('/api/screen/'+encodeURIComponent(id)+'?format=jpeg',{cache:'no-store'});
-   if(r.ok){const b=await createImageBitmap(await r.blob());if(httpLive?.gen===liveGeneration){const c=$('screen');if(c.width!==b.width||c.height!==b.height){c.width=b.width;c.height=b.height}c.getContext('2d',{alpha:false}).drawImage(b,0,0);c.hidden=false;liveStatus('HTTP-Fallback · '+liveVM+' · UDP nicht erreichbar')}b.close()}
-  }catch{}
-  if(httpLive)httpLive.t=setTimeout(tick,900);
- };tick();
+  if(httpLive!==session||gen!==liveGeneration||freshUdpFrame()){stopHttpLive();return}
+  const ac=new AbortController();
+  session.abort=ac;
+  const deadline=setTimeout(()=>ac.abort(),HTTP_SCREEN_TIMEOUT_MS);
+  try{
+   const r=await fetch('/api/screen/'+encodeURIComponent(id)+'?format=jpeg',
+     {cache:'no-store',signal:ac.signal});
+   if(!r.ok)throw Error(browserFallbackError(r.status));
+   const b=await createImageBitmap(await r.blob());
+   try{
+    if(httpLive===session&&gen===liveGeneration){
+     const c=$('screen');
+     if(c.width!==b.width||c.height!==b.height){c.width=b.width;c.height=b.height}
+     c.getContext('2d',{alpha:false}).drawImage(b,0,0);
+     c.hidden=false;session.lastFrame=performance.now();session.failures=0;
+     liveStatus('Browser über HTTPS · '+liveVM+' · live (UDP nicht erreichbar)');
+    }
+   }finally{b.close()}
+  }catch(e){
+   if(httpLive===session&&gen===liveGeneration){
+    session.failures++;
+    // Never silently hide screenshot/VM failures behind a perpetual
+    // "verbinde …"; keep an already visible frame until recovery.
+    const why=e.name==='AbortError'?'Browserbild: Antwort dauert zu lange':e.message;
+    liveStatus(why+' · erneuter Versuch');
+    if(session.failures===3) scheduleReconnect();
+   }
+  }finally{
+   clearTimeout(deadline);
+   if(session.abort===ac)session.abort=null;
+   if(httpLive===session){
+    session.t=setTimeout(tick,session.failures?3000:900);
+   }
+  }
+ };
+ void tick();
 }
-function stopHttpLive(){if(httpLive){clearTimeout(httpLive.t);httpLive=null}}
+function stopHttpLive(){
+ if(httpLive){
+  clearTimeout(httpLive.t);httpLive.abort?.abort();
+  httpLive=null;
+ }
+}
 function liveSend(data){
  if((!liveControl||liveControl.readyState!=='open')&&httpLive&&data.kind==='pointer'){
   if(data.action!=='down'&&data.action!=='up')return true;
@@ -3005,7 +3052,13 @@ async function connectLive(){
  const pc=new RTCPeerConnection({iceServers:[]});
  livePeer=pc;liveVM=bot.vm;
  liveStatus('WebRTC/UDP · verbinde '+bot.name+' …');
- setTimeout(()=>{if(gen===liveGeneration&&!frameLastAt)startHttpLive(gen,id)},httpLiveFor===id?0:7000);
+ setTimeout(()=>{if(gen===liveGeneration&&!frameLastAt)startHttpLive(gen,id)},httpLiveFor===id?0:4000);
+ // A peer can stay "connecting" forever without firing failure callbacks.
+ // The transport and its VM are separate; move to the HTTPS path on timeout.
+ setTimeout(()=>{
+  if(gen!==liveGeneration||frameLastAt||liveControl?.readyState==='open')return;
+  startHttpLive(gen,id);
+ },8000);
  const ctrl=pc.createDataChannel('control',{ordered:true});
  liveControl=ctrl;
  ctrl.onopen=()=>{liveOpenAt=performance.now();if($('live').checked)liveSend({kind:'subscribe'});liveStatus('WebRTC/UDP · verbunden')};
@@ -3032,8 +3085,9 @@ async function connectLive(){
  pc.onconnectionstatechange=()=>{
   if(gen!==liveGeneration)return;
   if(['failed','disconnected','closed'].includes(pc.connectionState)){
-   liveStatus('WebRTC/UDP · Verbindung '+pc.connectionState+' · verbinde neu …');if(!frameLastAt)startHttpLive(gen,$('browser-agent').value);
-   terminalStatus('Shell getrennt · verbinde neu …');scheduleReconnect();
+   liveStatus('WebRTC/UDP · '+pc.connectionState+' · prüfe HTTPS-Fallback');
+   if(!frameLastAt)startHttpLive(gen,id);
+   terminalStatus('Shell getrennt · prüfe Verbindung');scheduleReconnect();
   }
  };
  try{
@@ -3060,9 +3114,10 @@ async function connectLive(){
  }catch(e){
   if(gen!==liveGeneration){pc.close();return}
   // Transient failures retry quietly in the status line; only lasting ones pop up.
-  liveStatus('Browser: '+e.message+(e.permanent?'':' · verbinde neu …'));if(e.permanent)notice('Browser: '+e.message);
+  liveStatus('Browser: '+e.message+(e.permanent?'':' · HTTPS-Fallback wird geprüft'));
+  if(e.permanent)notice('Browser: '+e.message);
   pc.close();
-  if(!e.permanent)scheduleReconnect();
+  if(!e.permanent){startHttpLive(gen,id);scheduleReconnect()}
   else terminalStatus('Browser erst nach Auswahl einer aktiven VM verfügbar');
  }
 }

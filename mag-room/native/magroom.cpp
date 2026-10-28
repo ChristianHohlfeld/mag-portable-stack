@@ -3271,7 +3271,16 @@ static HttpResp browser_call(const std::string &ip, int port,
   resp.ctype = it == c.hdrs.end() ? "" : it->second;
   return resp;
 }
+// Only one browser start per VM. A broken Chromium/CDP in agent2 must
+// never stall agent1's screenshot, SDP offer or browser tools.
 static std::mutex BROWSER_START_MTX;
+static std::map<std::string, std::shared_ptr<std::mutex>> BROWSER_START_LOCKS;
+static std::shared_ptr<std::mutex> browser_start_lock(const std::string &vm) {
+  std::lock_guard<std::mutex> guard(BROWSER_START_MTX);
+  auto &slot = BROWSER_START_LOCKS[vm];
+  if (!slot) slot = std::make_shared<std::mutex>();
+  return slot;
+}
 // Central web audit: make sure the guest uses the logging proxy and trusts
 // its CA before its browser controller (and Chromium) is started. Runs once
 // per VM and room process; the guest side is idempotent and cheap.
@@ -3299,7 +3308,8 @@ static void ensure_audit_proxy(const std::string &vm) {
   }
 }
 static std::string ensure_browser(const std::string &vm) {
-  std::lock_guard<std::mutex> start(BROWSER_START_MTX);
+  auto vm_lock = browser_start_lock(vm);
+  std::lock_guard<std::mutex> start(*vm_lock);
   // Each VM owns a unique cryptographic UDP key. The room bridge token
   // must not permit one bot to impersonate another bot's video/input.
   if (vm.empty() || vm.size() > 32 ||

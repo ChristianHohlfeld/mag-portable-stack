@@ -2577,11 +2577,13 @@ $('reset').onclick=async()=>{
 // Images are staged locally until sending. Canvas conversion strips EXIF/GPS
 // and standardizes HEIC/HEIF when supported by the current browser.
 let stagedPhotos=[],stagedFiles=[];const PHOTO_MAX_PX=2048;
+const FILE_MAX_BYTES=512*1024*1024, FILE_CHUNK_BYTES=4*1024*1024;
+const fileUploadSessions=new WeakMap(), fileUploadProgress=new WeakMap();
 function stageFiles(files){
  for(const file of files){
   if(stagedFiles.length>=20){notice('Maximal 20 Dateien pro Nachricht');break}
   if(!file.size){notice(file.name+': Leere Datei kann nicht hochgeladen werden');continue}
-  if(file.size>64*1024*1024){notice(file.name+': Datei über 64 MB');continue}
+  if(file.size>FILE_MAX_BYTES){notice(file.name+': Datei über 512 MB');continue}
   if(stagedFiles.some(x=>x.name===file.name&&x.size===file.size&&x.lastModified===file.lastModified))continue;
   stagedFiles.push(file);
  }
@@ -2591,19 +2593,82 @@ function paintStagedFiles(){
  const box=$('file-preview');box.replaceChildren();box.hidden=!stagedFiles.length;
  stagedFiles.forEach((file,i)=>{
   const chip=document.createElement('span');chip.className='file-chip';
-  const name=document.createElement('span');name.textContent='📎 '+file.name+' · '+Math.max(1,Math.ceil(file.size/1024))+' KB';name.title=file.name;
+  const name=document.createElement('span');const progress=fileUploadProgress.get(file);
+  name.textContent='📎 '+file.name+' · '+(file.size>=1024*1024?(file.size/(1024*1024)).toFixed(1)+' MB':Math.max(1,Math.ceil(file.size/1024))+' KB')+(progress==null?'':' · '+progress+' %');name.title=file.name;
   const remove=document.createElement('button');remove.type='button';remove.textContent='×';remove.setAttribute('aria-label',file.name+' entfernen');
   remove.onclick=()=>{stagedFiles.splice(i,1);paintStagedFiles()};chip.append(name,remove);box.append(chip);
  });
  syncComposerButton();
 }
+function fileUploadStatus(file,received){
+ const percent=Math.max(0,Math.min(100,Math.floor(100*received/file.size)));
+ fileUploadProgress.set(file,percent);paintStagedFiles();
+ notice('Lade '+file.name+' · '+percent+' %');
+}
+function newUploadId(){
+ const b=new Uint8Array(16);crypto.getRandomValues(b);
+ return [...b].map(v=>v.toString(16).padStart(2,'0')).join('');
+}
+async function chunkReply(response,file){
+ const data=await response.json().catch(()=>({}));
+ if(!response.ok)throw Error(file.name+': '+(data.error||'Upload fehlgeschlagen (HTTP '+response.status+')'));
+ return data;
+}
+async function chunkStatus(id){
+ const r=await fetch('/api/upload/chunk/status?id='+id,{cache:'no-store'});
+ if(r.status===404)return null;
+ return chunkReply(r,{name:'Datei'});
+}
+async function uploadLargeFile(file){
+ let id=fileUploadSessions.get(file);
+ if(!id){id=newUploadId();fileUploadSessions.set(file,id)}
+ const base='/api/upload/chunk?id='+id;
+ const name=encodeURIComponent(file.name);
+ let remote=await chunkStatus(id);
+ let offset=remote?.received||0;
+ if(remote?.done)return remote.file;
+ if(!Number.isSafeInteger(offset)||offset<0||offset>file.size)
+  throw Error(file.name+': Ungültiger Server-Uploadzustand');
+ while(offset<file.size){
+  const part=file.slice(offset,Math.min(file.size,offset+FILE_CHUNK_BYTES));
+  const url=base+'&name='+name+'&total='+file.size+'&offset='+offset;
+  let next;
+  try{
+   next=await chunkReply(await fetch(url,{method:'POST',body:part}),file);
+  }catch(e){
+   // A lost acknowledgement is ambiguous: check the authoritative byte
+   // offset instead of blindly posting the same large block again.
+   const status=await chunkStatus(id);
+   if(status?.done)return status.file;
+   if(status && Number.isSafeInteger(status.received) &&
+      status.received>offset && status.received<=file.size)next=status;
+   else throw e;
+  }
+  if(!Number.isSafeInteger(next.received)||next.received<=offset||next.received>file.size)
+   throw Error(file.name+': Upload hat keinen Fortschritt gemeldet');
+  offset=next.received;fileUploadStatus(file,offset);
+ }
+ try{
+  return await chunkReply(await fetch(base.replace('/chunk?','/chunk/commit?'),{method:'POST'}),file);
+ }catch(e){
+  const status=await chunkStatus(id);
+  if(status?.done && status.received===file.size)return status.file;
+  throw e;
+ }
+}
 async function flushStagedFiles(files=[...stagedFiles]){
- for(const file of files){notice('Lade '+file.name+' …');
-  const response=await fetch('/api/upload?name='+encodeURIComponent(file.name),{method:'POST',body:file});
-  if(!response.ok){const body=await response.json().catch(()=>({}));throw Error(file.name+': '+(body.error||'Upload fehlgeschlagen'))}
+ for(const file of files){
+  notice('Lade '+file.name+' …');
+  if(file.size>64*1024*1024){
+   await uploadLargeFile(file);
+  }else{
+   const response=await fetch('/api/upload?name='+encodeURIComponent(file.name),{method:'POST',body:file});
+   await chunkReply(response,file);
+  }
+  fileUploadProgress.delete(file);fileUploadSessions.delete(file);
   const i=stagedFiles.indexOf(file);if(i>=0)stagedFiles.splice(i,1);paintStagedFiles();
  }
- await refresh().catch(()=>{}); // An acknowledged upload is not undone by a failed GET.
+ await refresh().catch(()=>{}); // Acknowledged uploads remain saved if refresh fails.
 }
 function stageAttachments(files){
  const images=[],other=[];

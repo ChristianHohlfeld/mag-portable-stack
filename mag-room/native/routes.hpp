@@ -360,8 +360,11 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
            q == "/api/version" || q == "/api/model-status" ||
            q.rfind("/static/",0)==0 || q.rfind("/api/file/",0)==0);
       const bool write = m == "POST" &&
-          (q == "/api/message" || q == "/api/upload");
-      if (!read && !write) {
+          (q == "/api/message" || q == "/api/upload" ||
+           q == "/api/upload/start" || q == "/api/upload/chunk" ||
+           q == "/api/upload/finish");
+      const upload_status_read = m == "GET" && q == "/api/upload/status";
+      if (!read && !upload_status_read && !write) {
         error_json(fd,403,"Gäste dürfen diese Aktion nicht ausführen");
         return;
       }
@@ -1946,7 +1949,7 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
         }
         const double bytes = input.find("size")->asNum();
         if (bytes <= 0 || bytes > (double)UPLOAD_DISK_MAX ||
-            bytes != std::floor(bytes)) {
+            (double)(uint64_t)bytes != bytes) {
           error_json(fd,413,"Datei zu gross (maximal 2 GiB)"); return;
         }
         send_json(fd,200,mj::dump(upload_begin(input.find("name")->asStr(),

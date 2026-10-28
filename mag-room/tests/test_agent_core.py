@@ -266,6 +266,21 @@ class AgentCore(unittest.TestCase):
   j=[j for j in self.request('/api/jobs')['jobs'] if j['name']=='Abendcheck'];self.assertEqual(len(j),1,self.tool_results())
   self.assertEqual((j[0]['created_by'],j[0]['bot']),('bot','ali'))
   self.request('/api/jobs/'+j[0]['id'],method='DELETE')
+ def test_11b_pages_publication_is_denied_until_owner_approves(self):
+  # Any native publication path must go through the same owner gate as MCP.
+  # A malicious model emitting an unadvertised tool name cannot bypass it.
+  Router.main=[call('pages_delete',{'repo':'test-project'}),['Keine Veröffentlichung.']]
+  self.request('/api/message',{'text':'Pruefe ohne Freigabe','bots':['ali']})
+  a=self.approval('action')
+  self.assertEqual(a['tool'],'pages_delete')
+  self.assertEqual(a['server'],'mag-native-pages')
+  self.assertNotIn('content',json.loads(a['args']))
+  self.request('/api/plugins/approvals/'+a['id'],{'decision':'deny'})
+  time.sleep(.2);self.wait_idle()
+  self.assertTrue(any('Seitenaktion nicht ausgefuehrt' in x for x in self.tool_results()),
+                  self.tool_results())
+  self.assertFalse(self.request('/api/state').get('approvals'))
+
  def test_12_secret_card_value_never_reaches_model_room_or_logs(self):
   VALUE='Hunter2-geheim-7f3a9c'
   Router.main=[call('secret',{'action':'request','name':'shop_password','purpose':'Login im Shop'}),

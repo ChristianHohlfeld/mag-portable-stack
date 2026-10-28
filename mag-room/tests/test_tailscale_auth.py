@@ -100,6 +100,7 @@ class NativeWhois(unittest.TestCase):
                    MAG_NETMODE="/bin/true", MAG_TEST_NO_MEMGIT="1",
                    MAG_ROOM_FILE_SYNC_SECONDS="0",
                    MAG_ROOM_HTTP_CONNECTIONS="8",  # exercise reserved whois pool
+                   MAG_ROOM_SSE_SESSION_S="2",  # recycle fixture clients quickly
                    MAG_ROOM_GUEST_CLEANUP_SECONDS="0",
                    MAG_ROOM_MODEL_STATUS=str(cls.path / "model.json"),
                    MAG_TAILSCALED_SOCKET=str(cls.sock))
@@ -290,6 +291,15 @@ class NativeWhois(unittest.TestCase):
             code, body = self.room_request("/healthz")
             self.assertEqual(code, 503, "regular connection limit remains enforced")
             self.assertIn(b"Connection limit", body)
+            # Even a client that never closes its socket is recycled: EventSource
+            # will reconnect and refresh its canonical room state.
+            for _ in range(50):
+                code, _ = self.room_request("/healthz")
+                if code == 200:
+                    break
+                time.sleep(.1)
+            self.assertEqual(code, 200, "expired SSE sockets must release slots")
+            self.assertEqual(self.request("100.101.102.103:54321")[0], 200)
         finally:
             for sock in connections:
                 try: sock.shutdown(socket.SHUT_RDWR)

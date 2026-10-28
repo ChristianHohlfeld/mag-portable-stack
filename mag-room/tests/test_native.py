@@ -2816,14 +2816,21 @@ class MultiBot(unittest.TestCase):
 
 
  def test_10f_stop_clears_paused_queue_without_model_activity(self):
-  # Regression: queued-only work was excluded from user_stop(work), so a
-  # legitimate Stop silently returned cancelled=false without clearing it.
+  # A paused *existing* queue survives /api/stop by contract. A later
+  # composer Stop must clear it even though no model lane is running.
   self._idle()
-  self.request('/api/queue/pause',{})
+  Model.delay=5
   try:
-   queued=self.request('/api/message',{'text':'Nicht mehr ausführen','bots':['q4bot']})
+   n=len(Model.calls)
+   self.request('/api/message',{'text':'Aktiver Lesevorgang','bots':['q4bot']})
+   self._calls_after(n,1,1.5)
+   self.request('/api/message',{'text':'Wartend nicht mehr ausführen','bots':['q4bot']})
+   pre=self.request('/api/state')
+   self.assertTrue(pre['pending'],pre)
+   self.request('/api/stop',{})
+   self._idle()
    before=self.request('/api/state')
-   self.assertTrue(before['pending'] or queued.get('queued'),before)
+   self.assertTrue(before['pending'] and before['queue_paused'],before)
    out=self.request('/api/cancel',{})
    self.assertTrue(out['cancelled'],out)
    self.assertFalse(out.get('settling',False))
@@ -2832,6 +2839,7 @@ class MultiBot(unittest.TestCase):
    self.assertFalse(after.get('queue_paused',False))
    self.assertFalse(after['busy'])
   finally:
+   Model.delay=0
    self.request('/api/queue',method='DELETE')
    self.request('/api/queue/resume',{})
 

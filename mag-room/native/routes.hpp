@@ -360,8 +360,11 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
            q == "/api/version" || q == "/api/model-status" ||
            q.rfind("/static/",0)==0 || q.rfind("/api/file/",0)==0);
       const bool write = m == "POST" &&
-          (q == "/api/message" || q == "/api/upload");
-      if (!read && !write) {
+          (q == "/api/message" || q == "/api/upload" ||
+           q == "/api/upload/start" || q == "/api/upload/chunk" ||
+           q == "/api/upload/finish" || q == "/api/upload/cancel");
+      const bool upload_status_read = m == "GET" && q == "/api/upload/status";
+      if (!read && !upload_status_read && !write) {
         error_json(fd,403,"Gäste dürfen diese Aktion nicht ausführen");
         return;
       }
@@ -1942,6 +1945,63 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
     send_json(fd, result.code, result.body);
     return;
   }
+  if (path.rfind("/api/upload/", 0) == 0) {
+    // Authentication and CSRF checks have already run. The URL only carries
+    // an unguessable server-issued ticket; ownership is checked on EVERY call.
+    const std::string owner = !actor.login.empty() ? actor.login :
+         !actor.node.empty() ? actor.node : actor.name;
+    const std::string id = qparam(r.query, "ticket");
+    try {
+      if (m == "POST" && path == "/api/upload/start") {
+        Val input;
+        if (!mj::parse(r.body, input) || !input.isObj() ||
+            !input.find("name") || !input.find("size")) {
+          error_json(fd,400,"Ungueltige Upload-Metadaten"); return;
+        }
+        const double bytes = input.find("size")->asNum();
+        if (bytes <= 0 || bytes > 9007199254740991.0 ||
+            (double)(uint64_t)bytes != bytes) {
+          error_json(fd,400,"Ungueltige Dateigroesse"); return;
+        }
+        send_json(fd,200,mj::dump(upload_begin(input.find("name")->asStr(),
+                              (uint64_t)bytes,owner)));
+        return;
+      }
+      if (m == "GET" && path == "/api/upload/status") {
+        send_json(fd,200,mj::dump(upload_status(id,owner))); return;
+      }
+      if (m == "POST" && path == "/api/upload/chunk") {
+        const std::string off = qparam(r.query,"offset");
+        if (off.empty() || off.find_first_not_of("0123456789") != std::string::npos) {
+          error_json(fd,400,"Ungueltiger Upload-Offset"); return;
+        }
+        send_json(fd,200,mj::dump(upload_write_chunk(id,owner,
+                    std::stoull(off),r.body)));
+        return;
+      }
+      if (m == "POST" && path == "/api/upload/cancel") {
+        upload_cancel(id,owner);
+        send_json(fd,200,"{\"ok\":true}");
+        return;
+      }
+      if (m == "POST" && path == "/api/upload/finish") {
+        bool created = false;
+        const std::string who = actor.name.empty() ? "Nutzer" : actor.name;
+        Val file = upload_finish(id,owner,who,created);
+        if (created) {
+          append_room("user",who,"","",&file,actor.login);
+          emit_file("",file);
+        }
+        send_json(fd,201,mj::dump(file));
+        return;
+      }
+    } catch (const std::exception &e) {
+      error_json(fd,409,e.what()); // recoverable; never an HTML 500
+      return;
+    }
+    error_json(fd,405,"Methode nicht erlaubt");
+    return;
+  }
   if (m == "POST" && path == "/api/upload") {
     std::string name = qparam(r.query, "name");
     if (name.empty())
@@ -2080,7 +2140,21 @@ static void serve_connection(int fd, bool bridge) {
       --pool;
     }
   } catch (const std::exception &e) {
-    error_json(fd, 500, e.what());
+    // A protocol / size error is never a server crash. Return structured
+    // JSON with the correct HTTP status, and keep the room process alive.
+    const std::string cause = e.what();
+    if (cause == "Body limit") {
+      std::cerr << "magroom HTTP 413: request body exceeded per-request limit\n";
+      error_json(fd, 413, "Anfrage zu gross; grosse Dateien in Teilen senden");
+    } else if (cause == "Invalid content length" || cause == "Incomplete body" ||
+               cause == "Incomplete HTTP headers" || cause == "Header limit" ||
+               cause == "Transfer encoding unsupported") {
+      std::cerr << "magroom HTTP 400: " << cause << "\n";
+      error_json(fd, 400, "Ungueltige oder unvollstaendige HTTP-Anfrage");
+    } else {
+      std::cerr << "magroom HTTP 500: " << cause << "\n";
+      error_json(fd, 500, "Serverfehler bei der Anfrage");
+    }
   }
   close(fd);
   --CONNECTIONS;

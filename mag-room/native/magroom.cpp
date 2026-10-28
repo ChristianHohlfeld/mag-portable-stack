@@ -1214,6 +1214,9 @@ static Val add_file(const std::string &name, const std::string &data,
   }
   return rec;
 }
+// Separate disk-backed upload protocol; does not change MAX_UPLOAD, model
+// prompt serialization, PhO compression or cached prefix behavior.
+#include "upload_chunks.hpp"
 static const Val *find_file(const std::string &name) {
   std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
   static thread_local Val snapshot;

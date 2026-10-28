@@ -282,8 +282,11 @@ static std::string required_perm(const std::string &method,
   if (method == "POST" && path == "/api/deploy-hold")
     return "read";
   if (public_guest_read(method, path)) return "read";
+  if (method == "GET" && path == "/api/upload/status") return "read";
   if ((method == "POST" && (path == "/api/message" || path == "/api/stream" ||
-        path == "/api/upload" || path == "/api/stt" || path == "/api/speak")) ||
+        path == "/api/upload" || path == "/api/stt" || path == "/api/speak" ||
+        path == "/api/upload/start" || path == "/api/upload/chunk" ||
+        path == "/api/upload/finish" || path == "/api/upload/cancel")) ||
       ((method == "POST" || method == "DELETE") && guest_reaction_path(path)))
     return "chat";
   if (path == "/api/offline" && method == "POST") return "offline";

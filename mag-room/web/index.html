@@ -2898,10 +2898,12 @@ function liveStatus(v){$('browser-status').textContent=v}
 // expose only mDNS host candidates): poll the existing JPEG endpoint and send
 // taps over HTTPS. Stops as soon as UDP frames arrive or the view closes.
 let httpLive=null,httpLiveFor='';
+function freshUdpFrame(){return frameLastAt&&performance.now()-frameLastAt<5000}
 function startHttpLive(gen,id){
- if(httpLive||gen!==liveGeneration)return;httpLive={gen,id};httpLiveFor=id;
+ if(httpLive||gen!==liveGeneration||!$('live').checked)return;
+ httpLive={gen,id};httpLiveFor=id;
  const tick=async()=>{
-  if(!httpLive||httpLive.gen!==liveGeneration||frameLastAt){httpLive=null;return}
+  if(!httpLive||httpLive.gen!==liveGeneration||freshUdpFrame()){stopHttpLive();return}
   try{const r=await fetch('/api/screen/'+encodeURIComponent(id)+'?format=jpeg',{cache:'no-store'});
    if(r.ok){const b=await createImageBitmap(await r.blob());if(httpLive?.gen===liveGeneration){const c=$('screen');if(c.width!==b.width||c.height!==b.height){c.width=b.width;c.height=b.height}c.getContext('2d',{alpha:false}).drawImage(b,0,0);c.hidden=false;liveStatus('HTTP-Fallback · '+liveVM+' · UDP nicht erreichbar')}b.close()}
   }catch{}
@@ -2939,6 +2941,7 @@ async function displayFrame(parts,sequence,generation){
   context.drawImage(bitmap,0,0);
   canvas.hidden=false;
   lastFrameSeq=sequence;frameLastAt=performance.now();
+  if(httpLive)stopHttpLive();
   liveStatus('WebRTC/UDP · '+liveVM+' · live');
  }catch(e){liveStatus('Frame: '+e.message)}
  finally{bitmap?.close();paintBusy=false}
@@ -3032,8 +3035,14 @@ setInterval(()=>{
  if($('live').checked&&liveControl?.readyState==='open'){
   liveSend({kind:'subscribe'});
   if(videoChunks&&performance.now()-videoChunks.stamp>550)videoChunks=null;
-  if(frameLastAt&&performance.now()-frameLastAt>5000)liveStatus('UDP verbunden · keine neuen Browserframes');
-  else if(!frameLastAt&&liveOpenAt&&performance.now()-liveOpenAt>6000)liveStatus('UDP verbunden · noch kein Browserbild');
+  if(frameLastAt&&performance.now()-frameLastAt>5000){
+   liveStatus('UDP verbunden · Browserbild stockt · HTTP-Fallback');
+   startHttpLive(liveGeneration,$('browser-agent').value);
+  }
+  else if(!frameLastAt&&liveOpenAt&&performance.now()-liveOpenAt>6000){
+   liveStatus('UDP verbunden · noch kein Browserbild');
+   startHttpLive(liveGeneration,$('browser-agent').value);
+  }
  }
  // PTY output arrives as independent bounded datagrams; no fragment cache.
 },2000);

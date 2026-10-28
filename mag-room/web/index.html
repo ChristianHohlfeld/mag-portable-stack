@@ -2369,7 +2369,9 @@ $('send-form').onsubmit=async e=>{
  if(/^\/(mcp|plugins?)$/i.test(text)&&can('connectors')&&window.openMcp){$('message').value='';$('message').dispatchEvent(new Event('input'));window.openMcp();return}
  const bots=[...selected],think=$('think').checked;
  const sameThinking=chosenBots().every(a=>!!a.thinking===think);
- const photos=stagedPhotos.splice(0),files=stagedFiles.splice(0);
+ // Do not remove attachments until their individual HTTP upload succeeds.
+ // Upload failures and ambiguous responses must leave the remaining draft.
+ const photos=[...stagedPhotos],files=[...stagedFiles];
  const fingerprint=JSON.stringify([text,bots,think,interrupt]);
  const request_id=failedSends.get(fingerprint)||globalThis.crypto?.randomUUID?.()||Date.now().toString(36)+'-'+Math.random().toString(36).slice(2);
  const mobileSend=matchMedia('(pointer:coarse)').matches;
@@ -2553,7 +2555,7 @@ async function flushStagedFiles(files=[...stagedFiles]){
   if(!response.ok){const body=await response.json().catch(()=>({}));throw Error(file.name+': '+(body.error||'Upload fehlgeschlagen'))}
   const i=stagedFiles.indexOf(file);if(i>=0)stagedFiles.splice(i,1);paintStagedFiles();
  }
- await refresh();
+ await refresh().catch(()=>{}); // An acknowledged upload is not undone by a failed GET.
 }
 function stageAttachments(files){
  const images=[],other=[];
@@ -2602,7 +2604,7 @@ async function flushStagedPhotos(photos=[...stagedPhotos]){
   if(!resp.ok){let msg='Upload fehlgeschlagen';try{msg=(await resp.json()).error||msg}catch{}throw Error(msg)}
   uploaded++;const i=stagedPhotos.indexOf(p);if(i>=0)stagedPhotos.splice(i,1);URL.revokeObjectURL(p.url);
  }
- paintStagedPhotos();await refresh();return uploaded;
+ paintStagedPhotos();await refresh().catch(()=>{});return uploaded;
 }
 $('upload-photo').onclick=()=>$('photo-input').click();
 $('photo-input').onchange=async e=>{await stagePhotos(e.target.files);e.target.value=''};

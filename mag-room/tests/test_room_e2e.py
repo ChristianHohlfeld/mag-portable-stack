@@ -298,6 +298,36 @@ class RoomE2E(unittest.TestCase):
         expect(p.locator('#stop-run')).to_be_hidden(timeout=3000)
         self.room.until(lambda s: not s['busy'], timeout=3, what='idle after Esc')
 
+    def test_03b_stream_first_token_is_not_duplicate_assistant_card(self):
+        # The first content token is saved immediately in ROOM. It must
+        # REPLACE the live bubble, not show a second thought-only bubble.
+        p = self.page
+        p.evaluate("""()=>{
+          const now=Date.now();
+          state.room=[{id:'partial-one',role:'assistant',name:'Alpha',bot:'a',
+                      content:'Ich',display_ms:now,ts:Math.floor(now/1000)}];
+          streams={a:{name:'Alpha',text:'Ich',phase:'answer',label:'Antwortet',
+                      displayMs:now,started:now,thinkingEnabled:true,
+                      reasoning:'Kurz nachgedacht',steps:[],tools:[],
+                      partialId:'partial-one'}};
+          render();
+        }""")
+        self.assertEqual(p.locator('#conversation .message').count(), 1,
+                         'streaming + durable first token must share a card')
+        self.assertEqual(p.locator('#conversation .message[data-live-bot="a"]').count(), 1)
+        p.evaluate("""()=>{
+          streams.a.partialId='';
+          render();
+        }""")
+        self.assertEqual(p.locator('#conversation .message').count(), 1,
+                         'fallback matches exact turn display_ms, not content')
+        p.evaluate("""()=>{
+          delete streams.a;
+          render();
+        }""")
+        self.assertEqual(p.locator('#conversation .message').count(), 1,
+                         'after bot_done the saved message replaces live card')
+
     def test_04_queue_is_visible_editable_and_send_now_interrupts(self):
         p = self.page
         Model.scripts += [[{'_hold': 30}], ['Sofort beantwortet.']]

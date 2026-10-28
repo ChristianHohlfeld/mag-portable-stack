@@ -5232,7 +5232,7 @@ static std::string dispatch_tool_raw(int bot_idx, const std::string &name,
       request.args = mj::dump(summary); // never include page body or secrets
       const std::string approved = mcp_await_approval(request);
       if (approved != "allow" && approved != "always")
-        throw std::runtime_error("Seitenaktion nicht ausgefuehrt: " +
+        throw std::runtime_error(std::string("Seitenaktion nicht ausgefuehrt: ") +
                                  (approved == "timeout" ? "Freigabe fehlt" :
                                   approved == "stopped" ? "abgebrochen" : "abgelehnt"));
       // "always" is deliberately accepted for this ONE call only.

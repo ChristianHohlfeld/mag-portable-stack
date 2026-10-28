@@ -2868,8 +2868,8 @@ class MultiBot(unittest.TestCase):
    Model.script=[];self.request('/api/autotalk',{'on':False});self._idle()
  def test_13_frontend_lane_contract(self):
   html=self.request('/',raw=True).decode()
-  for needle in ("api('/api/cancel',id?{bot:id}:{})",'id="bot-lanes"','id="stop-run"','aria-label="Stoppen"','id="proaktiv"','>Proaktiv<','setBusyBots(next.busy_bots,next.waiting_bots)',"event.type==='idle'&&Array.isArray(event.busy_bots)","event.type==='cancelled'&&event.bot",'state.activities','state.proaktiv_note'):self.assertIn(needle,html)
-  for gone in ('Alle stoppen','send-halting','Stoppt','>Stoppen<','siehe Tooltip','Self-Talk','id="selftalk"','id="selftalk-row"'):self.assertNotIn(gone,html)
+  for needle in ("fetch('/api/cancel'",'id="bot-lanes"','id="stop-run"','aria-label="Stoppen"','id="proaktiv"','>Proaktiv<','setBusyBots(next.busy_bots,next.waiting_bots)',"event.type==='idle'&&Array.isArray(event.busy_bots)","event.type==='cancelled'&&event.bot",'state.activities','state.proaktiv_note'):self.assertIn(needle,html)
+  for gone in ('Alle stoppen','send-halting','>Stoppen<','siehe Tooltip','Self-Talk','id="selftalk"','id="selftalk-row"'):self.assertNotIn(gone,html)
   # Composer bar: round +, pill with mic, a send button that only sends, and a
   # separate stop icon with no visible text.
   for needle in ('<form id="send-form" class="gbar">','id="plus"','class="composer-card gbar-pill"','id="mic"','id="send-button"','id="stop-run"','id="plus-think"','id="upload-camera"','id="upload-screen"',

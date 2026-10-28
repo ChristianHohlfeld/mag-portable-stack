@@ -1001,7 +1001,7 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
     if (!browser_watch_ack(bot, nonce)) {
       error_json(fd, 409, "Browseransicht nicht mehr angefordert"); return;
     }
-    send_json(fd, 200, "{\\"ok\\":true}");
+    send_json(fd, 200, R"({"ok":true})");
     return;
   }
   if (m == "POST" && path.rfind("/api/browser/", 0) == 0) {

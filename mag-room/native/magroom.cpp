@@ -5473,6 +5473,7 @@ static thread_local uint64_t TL_ADOPT_GEN = 0;
 static thread_local std::string TL_ADOPT_OWNER;
 // Step-boundary hand-over of waiting user messages (take_user_input).
 struct UserInput {
+  std::string goal_id;
   std::string text; // for the model; empty when nothing arrived
   bool yield = false;
   uint64_t generation = 0;
@@ -6132,6 +6133,10 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
         // Keep earlier status/thought/tool output at its original position;
         // the answer to this newer input starts a separate visible segment.
         handoff_visible_turn(bot_idx, report, final_text.empty() ? fallback_narration : final_text, in.think);
+        // A newer human request is a different goal, even if adopted by
+        // the same hot lane between two model steps.
+        TL_GOAL_ID = in.goal_id.empty() ? "g" + token_hex(8) : in.goal_id;
+        TL_TODO_TOUCHED = false;
         final_text.clear(); fallback_narration.clear();
         Val u = Val::object();
         u["role"] = "user";
@@ -9277,6 +9282,7 @@ static UserInput take_user_input(const std::string &bot_id) {
     msg["delivered_to"] = bot_id;
     publish(mj::dump(msg));
     in.text += "[" + sender + "]: " + p.text + "\n";
+    in.goal_id = p.id.empty() ? "g" + token_hex(8) : "g" + p.id;
     std::vector<std::string> rest;
     for (auto &b : p.ids)
       if (b != bot_id && !later.count(b)) rest.push_back(b);
@@ -9294,6 +9300,7 @@ static UserInput take_user_input(const std::string &bot_id) {
   for (auto it = JOBS.begin(); it != JOBS.end();) {
     if (!mine(it->ids) || it->input.empty()) { ++it; continue; }
     in.text += "[Nutzer]: " + it->input + "\n";
+    in.goal_id = it->goal_id.empty() ? "g" + token_hex(8) : it->goal_id;
     in.generation = it->generation;
     in.owner = it->ids.front();
     in.think = it->think;

@@ -164,8 +164,7 @@ static Val upload_finish(const std::string &id, const std::string &owner,
     rec["by"] = by.substr(0,40);
     rec["ts"] = (double)now_s();
     FILES.push_back(rec);
-    if (!save_json_array(FILES_JSON, FILES))
-      throw std::runtime_error("Upload-Metadaten konnten nicht gespeichert werden");
+    save_json_array(FILES_JSON, FILES);
     v["done"] = true;
     write_file_atomic(upload_info(id), mj::dump(v));
     created = true;

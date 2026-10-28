@@ -1,7 +1,7 @@
 """Playwright: the agent-chat contract in a real browser.
 
-One composer button that sends or stops (and Esc), an on-demand folded
-queue (not in chat history), and inline status for bots without real tool
+One composer button that sends or stops (and Esc), an always-visible
+scrollable queue (not in chat history), and inline status for bots without real tool
 steps. One room menu and one settings dialog. Runs the native room
 against the scripted fake model of test_room_control.py.
 Screenshots: $MAG_E2E_SHOTS (default /tmp/mag-e2e-shots).
@@ -276,10 +276,10 @@ class RoomE2E(unittest.TestCase):
         chip = p.locator('#queue-chips .q-chip')
         expect(chip).to_have_count(1, timeout=5000)
         expect(p.locator('#queue-chips .q-toggle')).to_contain_text('1 wartet')
-        expect(p.locator('#queue-chips .queue-items')).to_be_hidden()
+        expect(p.locator('#queue-chips .queue-items')).to_be_visible()
+        expect(chip.locator('.q-text')).to_have_text('Zwischenfrage')
         self.assertEqual(p.locator('.message.user .content', has_text='Zwischenfrage').count(), 0,
                          'queued messages are absent from the conversation')
-        p.locator('#queue-chips .q-toggle').click()
         chip.locator('button[title="Bearbeiten"]').click()
         edit = p.locator('#queue-chips .q-edit')
         edit.fill('Zwischenfrage (geändert)')
@@ -300,7 +300,7 @@ class RoomE2E(unittest.TestCase):
             client_id:'now-stale-id',sender:'Nutzer',login:'',bots:['test']}],
             paused:false,revision});
         }""")
-        p.locator('#queue-chips .q-toggle').click()
+        expect(p.locator('#queue-chips .q-chip')).to_be_visible()
         p.locator('#queue-chips .q-now').click()
         expect(p.locator('#queue-chips .q-chip')).to_have_count(0,timeout=5000)
         expect(p.locator('#notice')).to_contain_text('Warteschlange wurde aktualisiert.',timeout=5000)
@@ -510,7 +510,7 @@ class RoomE2E(unittest.TestCase):
         expect(p.locator('#stop-run')).to_be_visible(timeout=5000)
         self.send('Gewartet')
         expect(p.locator('#queue-chips .q-chip')).to_have_count(1, timeout=5000)
-        p.locator('#queue-chips .q-toggle').click()
+        expect(p.locator('#queue-chips .q-chip')).to_be_visible()
         p.locator('#queue-chips .q-btn', has_text='Queue pausieren').click()
         p.locator('#message').press('Escape')
         expect(p.locator('#queue-chips .q-chip')).to_have_count(0, timeout=5000)
@@ -574,8 +574,8 @@ class RoomE2E(unittest.TestCase):
         self.assertNotIn('Chris tippt', got['text'])
 
     def test_08_mobile_queue_does_not_push_below_last_message(self):
-        # 390x844: the last chat node stays a message. The folded queue uses
-        # one 22px line; reply activity is an inline dot, not another panel.
+        # 390x844: pending text is always visible below the chat; it must
+        # never overlay or insert itself into the conversation history.
         p = self.browser.new_page(viewport={'width':390,'height':844},
                                   is_mobile=True, has_touch=True)
         try:
@@ -591,16 +591,16 @@ class RoomE2E(unittest.TestCase):
             p.locator('#message').press('Enter')
             expect(p.locator('#queue-chips .q-toggle')).to_contain_text('1 wartet', timeout=5000)
             self.assertEqual(p.locator('.message.user .content',has_text='Mobile Zwischenfrage').count(),0)
-            self.assertEqual(p.locator('.q-chip:visible').count(),0)
+            expect(p.locator('#queue-chips .q-chip')).to_be_visible()
+            expect(p.locator('#queue-chips .q-text')).to_have_text('Mobile Zwischenfrage')
             self.assertFalse(p.locator('#bot-lanes').is_visible())
             height=p.locator('#queue-chips').bounding_box()['height']
-            self.assertLessEqual(height,26,'status and queue fit in one compact line')
+            self.assertLessEqual(height,170,'pending list is capped to preserve the chat')
             self.assertEqual(p.evaluate("""()=>document.querySelector('#conversation .conversation-inner').lastElementChild.classList.contains('message')"""),True)
             self.assertLessEqual(p.evaluate("document.documentElement.scrollWidth-innerWidth"),1)
             p.screenshot(path=str(SHOTS/'08-mobile-queue-compact.png'))
             last = p.locator('#conversation .message').last
             last_box = last.bounding_box()
-            p.locator('#queue-chips .q-toggle').click()
             expect(p.locator('#queue-chips .q-chip')).to_be_visible(timeout=3000)
             expect(p.locator('#queue-chips')).to_have_class(re.compile(r'\bexpanded\b'), timeout=3000)
             place = p.evaluate("""()=>{
@@ -615,7 +615,8 @@ class RoomE2E(unittest.TestCase):
             self.assertFalse(place['cover'], 'expanded queue covers the last message')
             self.assertLessEqual(place['lastBottom'], place['queueTop'] + 1)
             p.locator('#conversation').click(position={'x': 20, 'y': 20})
-            expect(p.locator('#queue-chips .queue-items')).to_be_hidden(timeout=3000)
+            expect(p.locator('#queue-chips .queue-items')).to_be_visible(timeout=3000)
+            expect(p.locator('#queue-chips .q-text')).to_have_text('Mobile Zwischenfrage')
         finally:
             self.room.api('/api/cancel', {})
             self.room.api('/api/queue', method='DELETE')
@@ -857,8 +858,8 @@ class RoomE2E(unittest.TestCase):
 
     def test_12_phone_chat_keeps_most_of_the_viewport(self):
         # Idle, busy, and queued: the conversation owns about 80% of the
-        # phone screen. Status/queue/PhO/toasts stay in one 22px line and
-        # never cover the last message. The test itself dies at 8s.
+        # phone screen. Status remains compact, queued text is always
+        # readable in a bounded area, and nothing covers the last message.
         p = self.browser.new_page(viewport={'width': 390, 'height': 844},
                                   is_mobile=True, has_touch=True)
         t0 = time.monotonic()
@@ -902,11 +903,12 @@ class RoomE2E(unittest.TestCase):
             p.locator('#message').fill('Viewport-Zwischenfrage')
             p.locator('#message').press('Enter')
             expect(p.locator('#queue-chips .q-toggle')).to_contain_text('1 wartet', timeout=ms())
-            expect(p.locator('#queue-chips')).not_to_have_class(re.compile(r'\bexpanded\b'))
-            expect(p.locator('#queue-chips .queue-items')).to_be_hidden()
+            expect(p.locator('#queue-chips')).to_have_class(re.compile(r'\bexpanded\b'))
+            expect(p.locator('#queue-chips .queue-items')).to_be_visible()
+            expect(p.locator('#queue-chips .q-text')).to_have_text('Viewport-Zwischenfrage')
             p.evaluate('()=>{render();paintRoomLine()}')
             p.wait_for_function("""()=>![...document.querySelectorAll('#conversation .message.user .content')].some(el=>el.textContent.includes('Viewport-Zwischenfrage'))""", timeout=ms())
-            self.assertGreaterEqual(share(), 0.80, 'queued chat should still own the phone')
+            self.assertGreaterEqual(share(), 0.68, 'visible queue must preserve most of the phone for chat')
             self.assertTrue(uncovered())
             self.assertLessEqual(p.locator('#queue-chips .queue-head').bounding_box()['height'], 24)
             self.assertLess(time.monotonic() - t0, 8, 'hard timeout')

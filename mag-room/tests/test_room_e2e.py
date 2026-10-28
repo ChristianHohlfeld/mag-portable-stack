@@ -953,6 +953,9 @@ class RoomE2E(unittest.TestCase):
               }
               window.RTCPeerConnection=DeadPeer;
               state.agents=[{id:'a',name:'DeepSeek V4 Flash',vm:'agent1'}];
+              // This test manually injects a VM bot after the initial
+              // no-VM render; expose its browser just as the real agent UI does.
+              document.getElementById('browser-section').hidden=false;
               document.getElementById('browser-agent').replaceChildren(new Option('DeepSeek V4 Flash','a'));
               document.getElementById('browser-agent').value='a';
               document.getElementById('live').checked=true;

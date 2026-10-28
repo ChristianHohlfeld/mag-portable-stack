@@ -5434,6 +5434,8 @@ static std::string dispatch_tool_raw(int bot_idx, const std::string &name,
                          public_url(rec.find("stored")->asStr()) +
                          "?view=1&token=" + bridge_token();
       try {
+        std::unique_lock<std::mutex> view_lock(BROWSER_MODEL_SERIAL);
+        browser_require_visible(bot_id);
         (void)browser_json(vm, "/navigate?url=" + url_encode(page));
         return result.out + "\nIn deinem Browser geoeffnet (Live-Ansicht im Raum).";
       } catch (const std::exception &e) {
@@ -5451,6 +5453,8 @@ static std::string dispatch_tool_raw(int bot_idx, const std::string &name,
     return host_ocr(getstr("name"));
   if (name == "screenshot_room") {
     need_vm();
+    std::unique_lock<std::mutex> view_lock(BROWSER_MODEL_SERIAL);
+    browser_require_visible(bot_id);
     Val args = Val::object();
     args["url"] = room_url();
     Val report = browser_json(vm, "/snapshot", "POST", mj::dump(args));

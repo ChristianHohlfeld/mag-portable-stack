@@ -452,6 +452,10 @@ dialog{border-radius:10px;border-color:var(--line);background:var(--surface)}
 .gbar-send:disabled{opacity:1;background:var(--panel-3);color:var(--muted);box-shadow:none;cursor:default}
 #stop-run{flex:0 0 32px!important;width:32px!important;height:32px!important;min-width:32px!important;max-width:32px!important;min-height:32px!important;max-height:32px!important;padding:0;overflow:hidden;border:0;border-radius:8px;background:transparent;color:#fff;display:inline-flex!important;align-items:center;justify-content:center;visibility:hidden;pointer-events:none}
 #stop-run.is-on{visibility:visible;pointer-events:auto;background:var(--sb-red)}
+#stop-run.gbar-stopping{opacity:1!important;visibility:visible;pointer-events:none;cursor:progress}
+#stop-run.gbar-stopping svg{animation:mag-stop-pulse .85s ease-in-out infinite}
+@keyframes mag-stop-pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.42;transform:scale(.76)}}
+@media(prefers-reduced-motion:reduce){#stop-run.gbar-stopping svg{animation:none}}
 #stop-run svg{width:12px;height:12px;display:block;flex:none}
 @keyframes gbarpulse{0%{box-shadow:0 0 0 0 rgba(230,43,43,.5)}70%{box-shadow:0 0 0 8px transparent}100%{box-shadow:0 0 0 0 transparent}}
 .composer-inner>.speech-status{padding:0 4px 8px 56px}
@@ -2251,8 +2255,9 @@ async function stopBot(id){
   const payload=await response.json().catch(()=>({}));
   if(!response.ok)throw Error(payload.error||'Stop-Anfrage fehlgeschlagen (HTTP '+response.status+')');
   // Resolve the canonical busy state before dropping the stopping indication.
-  await refresh();
-  if(!generationLive())notice('');
+  const synced=await refresh().then(()=>true,()=>false);
+  if(!synced)notice('Stop bestätigt; Raumstatus vorübergehend nicht erreichbar.');
+  else if(!generationLive())notice('');
   else notice('Stop bestätigt; laufende Werkzeuge werden beendet…');
  }catch(e){
   notice(e.name==='AbortError'

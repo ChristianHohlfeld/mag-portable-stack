@@ -9278,15 +9278,9 @@ static Val user_stop(bool pause_jobs) {
   cancel_active(true);
   task_cancel("", "");
   const bool prewarm = cancel_prewarm();
-  // The user-facing Stop must never wait 120 seconds per backend RPC.
-  // Sockets and generation flags were cancelled above; bound cleanup/restore
-  // on this path to a few seconds per lane. Other recovery paths keep their
-  // existing full timeout and continue preserving the prefix cache.
-  cancel_llama_tasks(1500);
-  reload_slots_after_cancel(1500);
-  // Leave the run record up so a tool turn can seal its step, kill the
-  // command and append the interrupted message before busy goes false.
-  // A model hold has no tool in flight: do not wait for it.
+  // The queue transaction precedes slow backend RPCs. Messages submitted
+  // *after* Stop may safely wait on STOP_SETTLING and must NOT be erased
+  // when prefix restore finishes several seconds later.
   std::unique_lock<std::mutex> control(JOB_MTX);
   PREWARM_HOLD = true;
   Val out = Val::object();
@@ -9324,11 +9318,11 @@ static Val user_stop(bool pause_jobs) {
     write_file(STATE_DIR + "/autotalk", "off");
     AUTOTALK = false;
   }
-  Val e = Val::object();
-  e["type"] = "stopped";
-  publish(mj::dump(e));
   control.unlock();
-  JOB_CV.notify_all();
+  // Shutdown must finish before a new queued turn may reuse its llama slot.
+  // STOP_SETTLING is still true, so scheduler dispatch remains disabled.
+  cancel_llama_tasks(1500);
+  reload_slots_after_cancel(1500);
   if (tools_running > 0) {
     const auto settled = steady_clock::now() + milliseconds(1800);
     while (steady_clock::now() < settled && any_lane_busy_for_stop())
@@ -9340,7 +9334,13 @@ static Val user_stop(bool pause_jobs) {
     release_lanes_locked();
     publish_idle_locked();
   }
-  out["settling"] = tasks_running() || any_lane_busy_for_stop() || BUSY.load();
+  const bool settling = tasks_running() || any_lane_busy_for_stop() || BUSY.load();
+  out["settling"] = settling;
+  // "stopped" is final confirmation, not an optimistic acknowledgement.
+  // If an external tool is still unwinding, publish only a settling state.
+  Val e = Val::object();
+  e["type"] = settling ? "stop_settling" : "stopped";
+  publish(mj::dump(e));
   JOB_CV.notify_all();
   return out;
 }

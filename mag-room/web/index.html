@@ -1690,8 +1690,16 @@ function render(){
  const area=$('conversation'),follow=stickToBottom||!rendered,oldScroll=area.scrollTop,prevH=area.scrollHeight;rendered=true;
  programmatic++;
  area.replaceChildren();const inner=document.createElement('div');inner.className='conversation-inner';area.append(inner);
- if(!state.room.length){inner.innerHTML='<div class="empty"><div class="empty-symbol">✳</div><h1>Worum geht es?</h1><p>Eine Frage, eine Notiz oder eine Aufgabe für die Bots. Alles bleibt auf deinem Server.</p></div>'}
- const timeline=[...state.room];
+ if(!state.room.length&&!Object.keys(streams).length){inner.innerHTML='<div class="empty"><div class="empty-symbol">✳</div><h1>Worum geht es?</h1><p>Eine Frage, eine Notiz oder eine Aufgabe für die Bots. Alles bleibt auf deinem Server.</p></div>'}
+ // reveal_answer saves the first streamed content token as a durable message.
+ // Show its LIVE card until bot_done, not the durable row alongside that card.
+ // Exact identity (message ID or turn display_ms) – never dedupe by content.
+ const timeline=(state.room||[]).filter(m=>{
+  if(m.role!=='assistant'||!m.bot)return true;
+  const live=streams[m.bot];
+  return !(live&&(live.partialId===m.id||
+    (m.display_ms&&live.displayMs&&+m.display_ms===+live.displayMs)));
+ });
  // Pending items belong to the queue only; never project them into chat history.
  const pending=state.pending||[];
  const queuedClients=new Set(pending.map(p=>p.client_id).filter(Boolean));
@@ -3658,6 +3666,8 @@ events.onmessage=e=>{
   }else if(event.type==='reaction'){
    applyReaction(event);
   }else if(['message','file','agents','reset','idle','room'].includes(event.type)){
+   if(event.type==='message'&&event.role==='assistant'&&event.id&&streams[id])
+    streams[id].partialId=event.id;
    if(event.type==='idle'&&Array.isArray(event.busy_bots)){if(!event.busy_bots.length){state.busy=false;state.busy_bots=[];state.activities=[]}setBusyBots(event.busy_bots);const live=new Set(event.busy_bots);for(const bot of Object.keys(streams))if(!live.has(bot))delete streams[bot];if(!event.busy_bots.length)clearStopping()}
    refresh().catch(err=>notice(err.message));
   }else if(event.type==='model_settings'){if(Array.isArray(event.models)){state.models=event.models;syncModelSettings(state);syncModelChoice(state);renderAgents()}}

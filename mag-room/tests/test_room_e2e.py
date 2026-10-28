@@ -292,6 +292,71 @@ class RoomE2E(unittest.TestCase):
         users = p.locator('.message.user .content').all_inner_texts()
         self.assertEqual(users[-1], 'Zwischenfrage (geändert)')
 
+    def test_04b_stale_now_reconciles_canonical_queue(self):
+        p = self.page
+        p.evaluate("""()=>{
+          const revision=queueState.revision;
+          renderQueue({pending:[{id:'already-claimed',text:'Bereits bearbeitet',
+            client_id:'now-stale-id',sender:'Nutzer',login:'',bots:['test']}],
+            paused:false,revision});
+        }""")
+        p.locator('#queue-chips .q-toggle').click()
+        p.locator('#queue-chips .q-now').click()
+        expect(p.locator('#queue-chips .q-chip')).to_have_count(0,timeout=5000)
+        expect(p.locator('#notice')).to_contain_text('Warteschlange wurde aktualisiert.',timeout=5000)
+        self.assertNotIn('Unbekannter Eintrag',p.locator('#notice').inner_text())
+        self.assertEqual(len(self.room.api('/api/queue',method='GET')['pending']),0)
+
+    def test_04c_accepted_send_remains_sent_if_refresh_fails(self):
+        p=self.page
+        p.evaluate("""()=>{
+          window.__previousRefresh=refresh;
+          refresh=async()=>{throw new Error('simulierter GET-Fehler')};
+        }""")
+        try:
+            self.send('Senden mit verlorener Statusabfrage')
+            expect(p.locator('#notice')).to_contain_text('Gesendet',timeout=7000)
+            expect(p.locator('#message')).to_have_value('')
+            self.assertEqual(p.evaluate("failedSends.size"),0)
+        finally:
+            p.evaluate('refresh=window.__previousRefresh')
+        p.evaluate('refresh()')
+        state=self.room.until(lambda s:any(m.get('content')=='Senden mit verlorener Statusabfrage'
+                            for m in s['room']),timeout=10,what='acked send')
+        self.assertEqual(len([m for m in state['room']
+             if m.get('content')=='Senden mit verlorener Statusabfrage']),1)
+
+    def test_04d_double_submit_is_one_request(self):
+        p=self.page
+        p.evaluate("""()=>{
+          window.__sendCount=0;
+          window.__finishSend=()=>{};
+          const original=window.fetch;
+          window.fetch=async (url,options)=>{
+            if(String(url).includes('/api/message')){
+              window.__sendCount++;
+              const response=await original(url,options);
+              await new Promise(resolve=>{window.__finishSend=resolve});
+              return response;
+            }
+            return original(url,options);
+          };
+        }""")
+        try:
+            p.locator('#message').fill('Einmal trotz Doppelklick')
+            p.locator('#message').press('Enter')
+            p.wait_for_function('window.__sendCount===1')
+            # Even a second form submit while HTTP acknowledgement is withheld
+            # must never produce another network write.
+            p.evaluate("document.getElementById('send-form').requestSubmit()")
+            self.assertEqual(p.evaluate('window.__sendCount'),1)
+        finally:
+            p.evaluate("window.__finishSend()")
+        self.room.until(lambda s:any(m.get('content')=='Einmal trotz Doppelklick'
+                        for m in s['room']),timeout=10,what='single send')
+        p.wait_for_function('composerSending===false',timeout=5000)
+        self.assertEqual(p.evaluate('window.__sendCount'),1)
+
     def test_05_run_card_groups_status_thoughts_and_tools(self):
         p = self.page
         Model.scripts += [[{'reasoning_content': 'Ich prüfe erst das Gedächtnis. '},

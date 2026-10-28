@@ -2516,6 +2516,35 @@ class MultiBot(unittest.TestCase):
   finally:
    self.request('/api/stop',{})
    Model.script=[]
+ def test_02c_stop_cancels_delegation_without_waking_owner(self):
+  self.wait_idle()
+  call={'tool_calls':[{'index':0,'id':'call_delegate_stop','function':{
+   'name':'task','arguments':json.dumps({'action':'delegate','to_bot':'iq3bot',
+    'title':'Stop probe','prompt':'Do long independent read-only work.'})}}]}
+  Model.calls=[]
+  Model.script=[[call],['Delegated.'],[{'_sleep':6},'Should never finish']]
+  try:
+   self.request('/api/message',{'text':'Delegate and then stop','bots':['q4bot']})
+   for _ in range(100):
+    rows=self.request('/api/tasks')['tasks']
+    if any(t.get('title','').endswith('Stop probe') and
+           t.get('status')=='running' for t in rows):break
+    time.sleep(.05)
+   else:self.fail('delegation not launched')
+   self.request('/api/stop',{})
+   self.request('/api/queue/resume',{})
+   for _ in range(100):
+    rows=self.request('/api/tasks')['tasks']
+    ended=[t for t in rows if t.get('title','').endswith('Stop probe')]
+    if ended and ended[0].get('status')=='cancelled':break
+    time.sleep(.05)
+   else:self.fail('delegated work did not cancel')
+   self.assertFalse(ended[0].get('handoff_pending'))
+   self.assertFalse(any('INTERNE EREIGNISAKTIVIERUNG' in
+        json.dumps(c.get('messages',[]),ensure_ascii=False) for c in Model.calls))
+  finally:
+   self.request('/api/stop',{})
+   Model.script=[]
  def test_03_model_route_validation(self):
   self.error(400,'/api/agents/q4bot/model',{'model':'unbekannt'})
   self.error(400,'/api/agents/q4bot/model',{})

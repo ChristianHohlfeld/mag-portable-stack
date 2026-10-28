@@ -3585,7 +3585,10 @@ async function watchBotBrowser(botId,nonce){
  }
  if(!$('live').checked)$('live').checked=true;
  layoutApply();
- $('browser-view')?.scrollIntoView({block:'nearest',behavior:'instant'});
+ // Focus selection may have changed while the pane was collapsed; an old
+ // peer from the previous bot must never count as the current live screen.
+ if(!livePeer||liveVM!==bot.vm)connectLive();
+ $('browser-view')?.scrollIntoView({block:'nearest',behavior:'auto'});
  liveStatus('Bot verwendet den sichtbaren Browser · '+bot.name);
  const deadline=performance.now()+14500;
  while(performance.now()<deadline){

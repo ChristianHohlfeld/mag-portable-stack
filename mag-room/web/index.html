@@ -2533,7 +2533,7 @@ function stageFiles(files){
  for(const file of files){
   if(stagedFiles.length>=20){notice('Maximal 20 Dateien pro Nachricht');break}
   if(!file.size){notice(file.name+': Leere Datei kann nicht hochgeladen werden');continue}
-  if(file.size>64*1024*1024){notice(file.name+': Datei über 64 MB');continue}
+  if(!Number.isSafeInteger(file.size)){notice(file.name+': Dateigröße nicht zuverlässig darstellbar');continue}
   if(stagedFiles.some(x=>x.name===file.name&&x.size===file.size&&x.lastModified===file.lastModified))continue;
   stagedFiles.push(file);
  }
@@ -2545,17 +2545,82 @@ function paintStagedFiles(){
   const chip=document.createElement('span');chip.className='file-chip';
   const name=document.createElement('span');name.textContent='📎 '+file.name+' · '+Math.max(1,Math.ceil(file.size/1024))+' KB';name.title=file.name;
   const remove=document.createElement('button');remove.type='button';remove.textContent='×';remove.setAttribute('aria-label',file.name+' entfernen');
-  remove.onclick=()=>{stagedFiles.splice(i,1);paintStagedFiles()};chip.append(name,remove);box.append(chip);
+  remove.onclick=()=>{stagedFiles.splice(i,1);void discardStagedUpload(file);paintStagedFiles()};chip.append(name,remove);box.append(chip);
  });
  syncComposerButton();
 }
-async function flushStagedFiles(files=[...stagedFiles]){
- for(const file of files){notice('Lade '+file.name+' …');
-  const response=await fetch('/api/upload?name='+encodeURIComponent(file.name),{method:'POST',body:file});
-  if(!response.ok){const body=await response.json().catch(()=>({}));throw Error(file.name+': '+(body.error||'Upload fehlgeschlagen'))}
-  const i=stagedFiles.indexOf(file);if(i>=0)stagedFiles.splice(i,1);paintStagedFiles();
+// Multipart-free chunk upload: <=8 MiB per HTTP request, any file that
+// fits on the server disk. Browser File stays local until Send is pressed.
+async function putChunkedFile(file){
+ if(file._magRemoved)throw Error('Anhang entfernt');
+ if(!file._magUploadTicket){
+  const started=await api('/api/upload/start',{name:file.name,size:file.size});
+  file._magUploadTicket=started.ticket;
  }
- await refresh().catch(()=>{}); // An acknowledged upload is not undone by a failed GET.
+ const ticket=file._magUploadTicket;
+ const chunkSize=8*1024*1024;
+ let status=await api('/api/upload/status?ticket='+encodeURIComponent(ticket),undefined,'GET');
+ let offset=+status.received||0;
+ if(status.done)return;
+ while(offset<file.size){
+  if(file._magRemoved)throw Error('Anhang entfernt');
+  const end=Math.min(file.size,offset+chunkSize);
+  const token=document.querySelector('meta[name="mag-token"]')?.content;
+  let ok=false;
+  for(let attempt=0;attempt<3&&!ok;attempt++){
+   if(file._magRemoved)throw Error('Anhang entfernt');
+   const controller=new AbortController();file._magUploadAbort=controller;
+   try{
+    const resp=await fetch('/api/upload/chunk?ticket='+encodeURIComponent(ticket)+
+      '&offset='+offset,{method:'POST',headers:token?{'X-Mag-Token':token}:{},
+      body:file.slice(offset,end),signal:controller.signal,cache:'no-store'});
+    if(!resp.ok){const data=await resp.json().catch(()=>({}));
+      throw Error(data.error||'Teilübertragung fehlgeschlagen (HTTP '+resp.status+')')}
+    const result=await resp.json();
+    if(+result.received<end)throw Error('Upload wurde nicht bestätigt');
+    offset=+result.received;ok=true;
+   }catch(err){
+    if(file._magRemoved)throw Error('Anhang entfernt');
+    // The server might have committed the bytes before the ACK was lost.
+    status=await api('/api/upload/status?ticket='+encodeURIComponent(ticket),
+                     undefined,'GET').catch(()=>null);
+    if(status&&+status.received>=end){offset=+status.received;ok=true;break}
+    if(attempt===2)throw err;
+   }finally{if(file._magUploadAbort===controller)file._magUploadAbort=null}
+  }
+  notice('Lade '+file.name+' · '+Math.floor(100*offset/file.size)+' %');
+ }
+ if(file._magRemoved)throw Error('Anhang entfernt');
+ await api('/api/upload/finish?ticket='+encodeURIComponent(ticket),{});
+ file._magUploaded=true;
+}
+async function discardStagedUpload(file){
+ file._magRemoved=true;
+ file._magUploadAbort?.abort();
+ const ticket=file._magUploadTicket;
+ if(ticket){
+  try{await api('/api/upload/cancel?ticket='+encodeURIComponent(ticket),{})}
+  catch(e){console.warn('Upload-Cleanup:',e.message)}
+  file._magUploadTicket=null;
+ }
+}
+async function flushStagedFiles(files=[...stagedFiles]){
+ for(const file of files){
+  if(file._magRemoved)continue;
+  notice('Lade '+file.name+' …');
+  if(file.size>8*1024*1024){
+   await putChunkedFile(file);
+  }else{
+   const resp=await fetch('/api/upload?name='+encodeURIComponent(file.name),
+                          {method:'POST',body:file});
+   if(!resp.ok){const data=await resp.json().catch(()=>({}));
+     throw Error(file.name+': '+(data.error||'Upload fehlgeschlagen (HTTP '+resp.status+')'))}
+  }
+  if(file._magRemoved)continue;
+  const i=stagedFiles.indexOf(file);if(i>=0)stagedFiles.splice(i,1);
+  paintStagedFiles();
+ }
+ await refresh().catch(()=>{});
 }
 function stageAttachments(files){
  const images=[],other=[];

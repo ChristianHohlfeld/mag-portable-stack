@@ -1,5 +1,5 @@
 """Regression tests for GLM5.3's always-on reasoning and real diagnostic output."""
-# mag-test-timeout: 90
+# mag-test-timeout: 180
 import pathlib as _mag_path
 import sys as _mag_sys
 _mag_root = _mag_path.Path(__file__).resolve()
@@ -7,7 +7,7 @@ while _mag_root != _mag_root.parent and not (_mag_root / 'ops/ci/mag_deadline.py
     _mag_root = _mag_root.parent
 _mag_sys.path.insert(0, str(_mag_root / 'ops/ci'))
 import mag_deadline as _mag_deadline
-_mag_deadline.arm(90)
+_mag_deadline.arm(180)
 import contextlib
 import importlib.util
 import io

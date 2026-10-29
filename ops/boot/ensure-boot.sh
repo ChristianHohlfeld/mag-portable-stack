@@ -19,11 +19,15 @@ if [[ -r $room_env ]]; then
   secondary_unit=mag-llm-ds-node@0.service
   if grep -Fxq 'MAG_ROOM_MODEL_ID_1=qwen3.8-flash-next-uncensored' "$room_env"; then
     secondary_units=(mag-llm-qwen.service)
-    systemctl disable mag-llm-ds-node@1.service >/dev/null 2>&1 || true
+    systemctl disable mag-llm-ds-node@1.service mag-llm-glm.service >/dev/null 2>&1 || true
+    systemctl reset-failed mag-llm-ds-node@1.service >/dev/null 2>&1 || true
+  elif grep -Fxq 'MAG_ROOM_MODEL_ID_1=glm-5.3-flash' "$room_env"; then
+    secondary_units=(mag-llm-glm.service)
+    systemctl disable mag-llm-ds-node@1.service mag-llm-qwen.service >/dev/null 2>&1 || true
     systemctl reset-failed mag-llm-ds-node@1.service >/dev/null 2>&1 || true
   else
     secondary_units=(mag-llm-ds-node@1.service)
-    systemctl disable mag-llm-qwen.service >/dev/null 2>&1 || true
+    systemctl disable mag-llm-qwen.service mag-llm-glm.service >/dev/null 2>&1 || true
   fi
   systemctl disable mag-llm-ornith@{1..4}.service mag-llm-ornith-node@{0..1}.service >/dev/null 2>&1 || true
 elif [[ -r "$secondary_env" ]] &&

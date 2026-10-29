@@ -11,6 +11,18 @@ as() { runuser -u "$OWNER" -- "$@"; }
 source "$ROOT/ops/auto-update/failure-state.sh"
 fail() { mag_record_failure "$new" "$1"; log "FAILED at $1 for $new"; exit 1; }
 as nice -n 19 ionice -c 3 bash "$ROOT/ops/update.sh" --no-pull --no-deploy --no-auto || fail build
+# A prior failed model cutover is not a successful deployment of the old layout.
+# Probe the pinned, source-declared desired layout *before* backup, release
+# staging or any model service is touched; a matching failure is held until
+# its definition changes or an operator explicitly requests a new attempt.
+layout_rc=0
+bash "$ROOT/ops/qwen/layout.sh" probe "$STATE" || layout_rc=$?
+if (( layout_rc == 78 )); then
+  log "deployment held: desired NUMA1 layout previously failed; deployed-sha unchanged"
+  exit 0
+elif (( layout_rc != 0 )); then
+  fail "layout-probe-rc-$layout_rc"
+fi
 deploy_rc=0
 bash "$ROOT/ops/deploy.sh" || deploy_rc=$?
 if (( deploy_rc == 75 )); then

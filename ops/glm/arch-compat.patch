@@ -31,8 +31,8 @@
 +    : arch(arch), suffix(suffix), arch_override(arch_override) {}
 +
 +std::string LLM_KV::operator()(llm_kv kv) const {
-+    const std::string arch_name = arch_override != nullptr ? arch_override : LLM_ARCH_NAMES.at(arch);
-+    std::string name = ::format(LLM_KV_NAMES.at(kv), arch_name.c_str());
++    const char * arch_name = arch_override != nullptr ? arch_override : LLM_ARCH_NAMES.at(arch);
++    std::string name = ::format(LLM_KV_NAMES.at(kv), arch_name);
  
      if (suffix != nullptr) {
          name += ".";

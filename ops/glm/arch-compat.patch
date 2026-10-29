@@ -1,47 +1,26 @@
---- a/src/llama-arch.h
-+++ b/src/llama-arch.h
-@@ -815,10 +815,12 @@
- };
- 
- struct LLM_KV {
--    LLM_KV(llm_arch arch, const char * suffix = nullptr);
--
--    llm_arch arch;
--    const char * suffix;
-+    LLM_KV(llm_arch arch, const char * suffix = nullptr, const char * arch_override = nullptr);
-+
-+    llm_arch arch;
-+    const char * suffix;
-+    // Preserve legacy GGUF prefixes without changing canonical architecture names.
-+    const char * arch_override;
- 
-     std::string operator()(llm_kv kv) const;
- };
+diff --git a/src/llama-arch.cpp b/src/llama-arch.cpp
+index 1b954f1..450b1f7 100644
 --- a/src/llama-arch.cpp
 +++ b/src/llama-arch.cpp
-@@ -1140,10 +1140,12 @@
+@@ -1140,10 +1140,12 @@ static const std::map<llm_tensor, llm_tensor_info> LLM_TENSOR_INFOS = {
      {LLM_TENSOR_ATTN_V_EXPS,                {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL_MAT_ID}},
  };
  
 -LLM_KV::LLM_KV(llm_arch arch, const char * suffix) : arch(arch), suffix(suffix) {}
--
--std::string LLM_KV::operator()(llm_kv kv) const {
--    std::string name = ::format(LLM_KV_NAMES.at(kv), LLM_ARCH_NAMES.at(arch));
 +LLM_KV::LLM_KV(llm_arch arch, const char * suffix, const char * arch_override)
 +    : arch(arch), suffix(suffix), arch_override(arch_override) {}
-+
-+std::string LLM_KV::operator()(llm_kv kv) const {
+ 
+ std::string LLM_KV::operator()(llm_kv kv) const {
+-    std::string name = ::format(LLM_KV_NAMES.at(kv), LLM_ARCH_NAMES.at(arch));
 +    const char * arch_name = arch_override != nullptr ? arch_override : LLM_ARCH_NAMES.at(arch);
 +    std::string name = ::format(LLM_KV_NAMES.at(kv), arch_name);
  
      if (suffix != nullptr) {
          name += ".";
-@@ -1187,7 +1189,11 @@
-     return it->second;
+@@ -1188,6 +1190,10 @@ const char * llm_arch_name(llm_arch arch) {
  }
  
--llm_arch llm_arch_from_string(const std::string & name) {
-+llm_arch llm_arch_from_string(const std::string & name) {
+ llm_arch llm_arch_from_string(const std::string & name) {
 +    // Early GLM-5.3 Flash GGUF files use 'glm5next' instead of 'glm5-next'.
 +    if (name == "glm5next") {
 +        return LLM_ARCH_GLM5_NEXT;
@@ -49,9 +28,29 @@
      for (const auto & kv : LLM_ARCH_NAMES) { // NOLINT
          if (kv.second == name) {
              return kv.first;
+diff --git a/src/llama-arch.h b/src/llama-arch.h
+index 5a8ca42..44d798a 100644
+--- a/src/llama-arch.h
++++ b/src/llama-arch.h
+@@ -815,10 +815,12 @@ enum llm_tensor_layer {
+ };
+ 
+ struct LLM_KV {
+-    LLM_KV(llm_arch arch, const char * suffix = nullptr);
++    LLM_KV(llm_arch arch, const char * suffix = nullptr, const char * arch_override = nullptr);
+ 
+     llm_arch arch;
+     const char * suffix;
++    // Preserve legacy GGUF prefixes without changing canonical architecture names.
++    const char * arch_override;
+ 
+     std::string operator()(llm_kv kv) const;
+ };
+diff --git a/src/llama-model-loader.cpp b/src/llama-model-loader.cpp
+index bc93c6f..d2fb730 100644
 --- a/src/llama-model-loader.cpp
 +++ b/src/llama-model-loader.cpp
-@@ -575,7 +575,8 @@
+@@ -575,7 +575,8 @@ llama_model_loader::llama_model_loader(
          }
  
          get_key(llm_kv(LLM_KV_GENERAL_ARCHITECTURE), arch_name, false);
@@ -61,7 +60,7 @@
  
          files.emplace_back(new llama_file(fname.c_str(), "rb", use_direct_io));
          contexts.emplace_back(ctx);
-@@ -694,7 +695,8 @@
+@@ -694,7 +695,8 @@ llama_model_loader::llama_model_loader(
          }
  
          get_key(llm_kv(LLM_KV_GENERAL_ARCHITECTURE), arch_name, false);
@@ -71,7 +70,7 @@
  
          files.emplace_back(new llama_file(file));
          contexts.emplace_back(ctx);
-@@ -712,7 +714,8 @@
+@@ -712,7 +714,8 @@ llama_model_loader::llama_model_loader(
          }
      } else {
          get_key(llm_kv(LLM_KV_GENERAL_ARCHITECTURE), arch_name, false);
@@ -81,9 +80,73 @@
      }
  
      n_kv      = gguf_get_n_kv(metadata);
+diff --git a/src/models/glm5-next.cpp b/src/models/glm5-next.cpp
+index 90870bd..7da6136 100644
 --- a/src/models/glm5-next.cpp
 +++ b/src/models/glm5-next.cpp
-@@ -12,15 +12,43 @@
+@@ -4,6 +4,61 @@
+ // GLM5-Next (GLM-5.3-Flash): hybrid KDA (linear) + nope MLA with a k-pool DSA indexer,
+ // mHC residual streams, DeepSeek-style MoE.
+ 
++// Weights consumed by elementwise ops (add/mul, incl. the fused mHC ops) instead
++// of mul_mat. The ggml CPU binary kernels only accept a float src1, but low-bit
++// mixture quantizations may store 2-D ones (e.g. indexer_compressor_ape) as
++// IQ4_NL. Such weights are dequantized in the graph; for F32 files this is a
++// no-op and the graph is unchanged. Validated at load (glm5_check_weight_types).
++static ggml_tensor * glm5_f32(ggml_context * ctx, ggml_tensor * w) {
++    if (w == nullptr || w->type == GGML_TYPE_F32) {
++        return w;
++    }
++    return ggml_cast(ctx, w, GGML_TYPE_F32);
++}
++
++// Fail at load with the tensor name instead of a GGML_ABORT on the first decode.
++//  - cast:   weights passed through glm5_f32(); any type ggml can dequantize is fine
++//  - strict: norm/conv weights used directly by elementwise kernels; must be F32
++static void glm5_check_weight_types(const llama_model & model) {
++    int n_cast = 0;
++    auto cast = [&](const ggml_tensor * t) {
++        if (t == nullptr || t->type == GGML_TYPE_F32) {
++            return;
++        }
++        if (ggml_get_type_traits(t->type)->to_float == nullptr) {
++            throw std::runtime_error(format("glm5-next: %s has type %s, which cannot be dequantized for an elementwise op",
++                    ggml_get_name(t), ggml_type_name(t->type)));
++        }
++        n_cast++;
++    };
++    auto strict = [&](const ggml_tensor * t) {
++        if (t != nullptr && t->type != GGML_TYPE_F32) {
++            throw std::runtime_error(format("glm5-next: %s has type %s; this elementwise weight must be F32 "
++                    "(re-quantize with --tensor-type for this tensor)", ggml_get_name(t), ggml_type_name(t->type)));
++        }
++    };
++    strict(model.output_norm);
++    for (const auto & layer : model.layers) {
++        cast(layer.indexer_kpool_ape);
++        cast(layer.ssm_dt_b);
++        cast(layer.ssm_a);
++        cast(layer.hc_attn_scale);
++        cast(layer.hc_attn_base);
++        cast(layer.hc_ffn_scale);
++        cast(layer.hc_ffn_base);
++        cast(layer.ffn_exp_probs_b);
++        for (const ggml_tensor * t : {layer.attn_norm, layer.ffn_norm, layer.ssm_o_norm,
++                layer.attn_q_a_norm, layer.attn_kv_a_norm, layer.indexer_k_norm, layer.indexer_k_norm_b,
++                layer.ssm_q_conv, layer.ssm_k_conv, layer.ssm_v_conv,
++                layer.nextn.enorm, layer.nextn.hnorm, layer.nextn.shared_head_norm}) {
++            strict(t);
++        }
++    }
++    if (n_cast > 0) {
++        LLAMA_LOG_INFO("%s: %d non-F32 elementwise weights are dequantized to F32 in the graph\n", __func__, n_cast);
++    }
++}
++
+ void llama_model_glm5_next::load_arch_hparams(llama_model_loader & ml) {
+     ml.get_key(LLM_KV_ATTENTION_LAYERNORM_RMS_EPS, hparams.f_norm_rms_eps);
+     ml.get_key(LLM_KV_ATTENTION_LAYERNORM_EPS,     hparams.f_norm_eps, false);
+@@ -12,14 +67,42 @@ void llama_model_glm5_next::load_arch_hparams(llama_model_loader & ml) {
      ml.get_key(LLM_KV_ATTENTION_Q_LORA_RANK,       hparams.n_lora_q);
      ml.get_key(LLM_KV_ATTENTION_KV_LORA_RANK,      hparams.n_lora_kv);
      ml.get_key(LLM_KV_SSM_CONV_KERNEL,             hparams.ssm_d_conv);
@@ -110,7 +173,6 @@
  
 -    for (uint32_t i = 0; i < hparams.n_layer_all; ++i) {
 -        hparams.is_recr_impl[i] = hparams.n_head_kv(i) == 0;
--    }
 +    if (ml.arch_name == "glm5next") {
 +        // The old converter forces n_head_kv=1 on all layers: it cannot be
 +        // used as a recurrent marker. Match the original glm5next loader.
@@ -128,16 +190,14 @@
 +        for (uint32_t i = 0; i < hparams.n_layer_all; ++i) {
 +            hparams.is_recr_impl[i] = hparams.n_head_kv(i) == 0;
 +        }
-+    }
+     }
  
      ml.get_key_or_arr(LLM_KV_EXPERT_FEED_FORWARD_LENGTH, hparams.n_ff_exp_arr, hparams.n_layer_all);
-     ml.get_key(LLM_KV_EXPERT_SHARED_COUNT,        hparams.n_expert_shared);
-@@ -40,8 +68,19 @@
+@@ -40,7 +123,18 @@ void llama_model_glm5_next::load_arch_hparams(llama_model_loader & ml) {
      ml.get_key(LLM_KV_ATTENTION_INDEXER_HEAD_COUNT,        hparams.indexer_n_head);
      ml.get_key(LLM_KV_ATTENTION_INDEXER_KEY_LENGTH,        hparams.indexer_head_size);
      ml.get_key(LLM_KV_ATTENTION_INDEXER_TOP_K,             hparams.indexer_top_k);
 -    ml.get_key(LLM_KV_ATTENTION_INDEXER_KPOOL,             hparams.indexer_kpool);
--    ml.get_key(LLM_KV_ATTENTION_INDEXER_KPOOL_SELECT_TAIL, hparams.indexer_kpool_select_tail, false);
 +    if (ml.arch_name == "glm5next") {
 +        if (!ml.get_key(LLM_KV_ATTENTION_INDEXER_KPOOL, hparams.indexer_kpool, false)) {
 +            // Earlier glm5next GGUFs call kpool "block_size" (same semantics).
@@ -150,52 +210,64 @@
 +        // The legacy k-pool indexer always includes its unfinished tail.
 +        hparams.indexer_kpool_select_tail = true;
 +    }
-+    ml.get_key(LLM_KV_ATTENTION_INDEXER_KPOOL_SELECT_TAIL, hparams.indexer_kpool_select_tail, false);
+     ml.get_key(LLM_KV_ATTENTION_INDEXER_KPOOL_SELECT_TAIL, hparams.indexer_kpool_select_tail, false);
      GGML_ASSERT(hparams.indexer_kpool > 1 && hparams.indexer_top_k % hparams.indexer_kpool == 0);
      std::fill(hparams.is_indexer_full_impl.begin(), hparams.is_indexer_full_impl.end(), 1);
-     ml.get_key_or_arr(LLM_KV_ATTENTION_INDEXER_TYPES, hparams.is_indexer_full_impl, hparams.n_layer(), false);
-@@ -374,9 +413,15 @@
--static ggml_tensor * dsv4_hc_affine(
--        ggml_context * ctx,
--        ggml_tensor  * x,
--        ggml_tensor  * scale,
--        ggml_tensor  * base) {
--    x = ggml_mul(ctx, x, scale);
--    x = ggml_add(ctx, x, base);
-+static ggml_tensor * glm5_elementwise_weight(ggml_context * ctx, ggml_tensor * weight) {
-+    // Only elementwise operands must be floating point. Keep quantized GEMM
-+    // matrices in their original type; never edit GGUF tensor payloads.
-+    return ggml_is_quantized(weight->type) ? ggml_cast(ctx, weight, GGML_TYPE_F32) : weight;
-+}
+@@ -181,6 +275,8 @@ void llama_model_glm5_next::load_arch_tensors(llama_model_loader & ml) {
+             layer.nextn.shared_head_norm = create_tensor(tn(LLM_TENSOR_NEXTN_SHARED_HEAD_NORM, "weight", i), {n_embd}, flags | TENSOR_NOT_REQUIRED);
+         }
+     }
 +
-+static ggml_tensor * dsv4_hc_affine(
-+        ggml_context * ctx,
-+        ggml_tensor  * x,
-+        ggml_tensor  * scale,
-+        ggml_tensor  * base) {
-+    x = ggml_mul(ctx, x, glm5_elementwise_weight(ctx, scale));
-+    x = ggml_add(ctx, x, glm5_elementwise_weight(ctx, base));
-     return x;
++    glm5_check_weight_types(*this);
  }
-@@ -832,9 +877,9 @@
+ 
+ std::unique_ptr<llm_graph_context> llama_model_glm5_next::build_arch_graph(const llm_graph_params & params) const {
+@@ -459,6 +555,9 @@ ggml_tensor * llama_model_glm5_next::graph::build_hc_pre(
+     const int64_t nt         = x->ne[2];
+ 
+     GGML_ASSERT(hc == 4);
++
++    hc_scale = glm5_f32(ctx0, hc_scale);
++    hc_base  = glm5_f32(ctx0, hc_base);
+     GGML_ASSERT(hc_fn->ne[1] == hc_mix_dim);
+ 
+     ggml_tensor * flat = ggml_reshape_2d(ctx0, x, hc_dim, nt);
+@@ -633,7 +732,7 @@ llama_model_glm5_next::graph_mtp::graph_mtp(const llama_model & model, const llm
+             layer.ffn_up_exps,
+             layer.ffn_gate_exps,
+             layer.ffn_down_exps,
+-            layer.ffn_exp_probs_b,
++            glm5_f32(ctx0, layer.ffn_exp_probs_b),
+             n_expert, n_expert_used,
+             LLM_FFN_SILU, hparams.expert_weights_norm,
+             hparams.expert_weights_scale,
+@@ -754,7 +853,7 @@ llama_model_glm5_next::graph::graph(const llama_model & model, const llm_graph_p
+                     layer.ffn_up_exps,
+                     layer.ffn_gate_exps,
+                     layer.ffn_down_exps,
+-                    layer.ffn_exp_probs_b,
++                    glm5_f32(ctx0, layer.ffn_exp_probs_b),
+                     n_expert, n_expert_used,
+                     LLM_FFN_SILU, hparams.expert_weights_norm,
+                     hparams.expert_weights_scale,
+@@ -832,9 +931,9 @@ ggml_tensor * llama_model_glm5_next::graph::build_kda_layer(
      // Decay gate, ssm_a holds -exp(A_log)
      ggml_tensor * f_a = ggml_mul_mat(ctx0, layer.ssm_f_a, cur);
      ggml_tensor * g1  = ggml_mul_mat(ctx0, layer.ssm_f_b, f_a);
 -    g1 = ggml_add(ctx0, g1, layer.ssm_dt_b);
--
++    g1 = ggml_add(ctx0, g1, glm5_f32(ctx0, layer.ssm_dt_b));
+ 
 -    ggml_tensor * A = ggml_reshape_3d(ctx0, layer.ssm_a, 1, n_head_kda, 1);
-+    g1 = ggml_add(ctx0, g1, glm5_elementwise_weight(ctx0, layer.ssm_dt_b));
-+
-+    ggml_tensor * A = ggml_reshape_3d(ctx0, glm5_elementwise_weight(ctx0, layer.ssm_a), 1, n_head_kda, 1);
++    ggml_tensor * A = ggml_reshape_3d(ctx0, glm5_f32(ctx0, layer.ssm_a), 1, n_head_kda, 1);
  
      if (hparams.kda_gate_lower_bound > -INFINITY) {
          g1 = ggml_reshape_3d(ctx0, g1, head_dim, n_head_kda, n_tokens);
-@@ -928,7 +973,7 @@
+@@ -928,7 +1027,7 @@ ggml_tensor * llama_model_glm5_next::graph::build_kpool_select(
      ggml_tensor * pk = ggml_view_3d(ctx0, rows, n_embd_indexer, kpool, n_new, rows->nb[1], rows->nb[2], 0);
      ggml_tensor * pg = ggml_view_3d(ctx0, rows, n_embd_indexer, kpool, n_new, rows->nb[1], rows->nb[2], ggml_row_size(rows->type, n_embd_indexer));
  
 -    ggml_tensor * logits = ggml_add(ctx0, pg, layer.indexer_kpool_ape);
-+    ggml_tensor * logits = ggml_add(ctx0, pg, glm5_elementwise_weight(ctx0, layer.indexer_kpool_ape));
++    ggml_tensor * logits = ggml_add(ctx0, pg, glm5_f32(ctx0, layer.indexer_kpool_ape));
      logits = ggml_cont(ctx0, ggml_permute(ctx0, logits, 1, 0, 2, 3)); // [kpool, head_dim, n_new]
      // fold the pool axis into rows, soft_max maps ne[2] to CUDA gridDim.y which caps at 65535
      ggml_tensor * probs = ggml_soft_max(ctx0, ggml_reshape_2d(ctx0, logits, kpool, n_embd_indexer*n_new));

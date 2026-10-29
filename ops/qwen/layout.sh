@@ -16,13 +16,21 @@ files=(/etc/mag-stack/room-model.env /etc/mag-stack/room-layout /etc/mag-stack/r
        /usr/local/lib/mag-qwen/runtime.sha /etc/mag-qwen/model.sha256
        /etc/systemd/system/mag-llm-glm.service /usr/local/lib/mag-glm/start.sh
        /usr/local/lib/mag-glm/verify-model.sh /usr/local/lib/mag-glm/runtime.sha
-       /usr/local/lib/mag-glm/model.sizes)
+       /usr/local/lib/mag-glm/model.sizes /usr/local/lib/mag-glm/chat-template.jinja)
 # A failed attempt of the repo-declared layout is remembered per identity so the
 # auto-update timer does not stop/restart NUMA1 on every tick (see select below).
 FAILED=${MAG_LAYOUT_FAILED_FILE:-/var/lib/mag-stack/layout-failed}
 disable_if_installed(){
   # A pure-DeepSeek host may never have had a Qwen unit file.
   if systemctl cat "$1" >/dev/null 2>&1; then systemctl disable "$1"; fi
+}
+# A rebuilt runtime is published with mv over the old binary: a resident model
+# keeps running the replaced (now deleted) executable until it is restarted.
+runs_stale_binary(){
+  local pid
+  pid=$(systemctl show -p MainPID --value "$1" 2>/dev/null || true)
+  [[ $pid =~ ^[1-9][0-9]*$ ]] || return 1
+  [[ $(readlink "/proc/$pid/exe" 2>/dev/null || true) == *' (deleted)' ]]
 }
 rollback(){
   [[ -f $TXN/started && ! -f $TXN/restored ]] || return 0
@@ -92,7 +100,7 @@ valid "$layout" || fail 'MAG_ROOM_LAYOUT must be mixed, deepseek or glm'
 # One failed live attempt per identity; a new commit touching them retries.
 case $layout in mixed) env_file=mixed.env ;; glm) env_file=glm.env ;; *) env_file=model.env ;; esac
 id_files=("$ROOT/ops/qwen/runtime.sha" "$ROOT/ops/room/$env_file")
-if [[ $layout == glm ]]; then id_files+=("$ROOT"/ops/glm/{start.sh,verify-model.sh,model.sizes,mag-llm-glm.service,install.sh,arch-compat.patch} "$ROOT/ops/qwen/build-runtime.sh"); fi
+if [[ $layout == glm ]]; then id_files+=("$ROOT"/ops/glm/{start.sh,verify-model.sh,model.sizes,mag-llm-glm.service,install.sh,arch-compat.patch,chat-template.jinja} "$ROOT/ops/qwen/build-runtime.sh"); fi
 identity="$layout $(cat "${id_files[@]}" 2>/dev/null | sha256sum | cut -c1-16)"
 # The probe is read-only and runs BEFORE the deploy's backup and service staging.
 # Never turn a failed desired layout into a successful deploy of the old one.
@@ -184,8 +192,10 @@ if [[ $layout == mixed ]]; then
     cmp -s "$file" "$TXN/files$file" || change=1
   done
 fi
+# New runtime build: restart (and thus smoke-test) the resident model on it.
+if runs_stale_binary "$selected"; then change=1; fi
 if [[ $layout == glm ]]; then
-  for file in /usr/local/lib/mag-glm/start.sh /etc/systemd/system/mag-llm-glm.service /usr/local/lib/mag-glm/runtime.sha; do
+  for file in /usr/local/lib/mag-glm/start.sh /etc/systemd/system/mag-llm-glm.service /usr/local/lib/mag-glm/runtime.sha /usr/local/lib/mag-glm/chat-template.jinja; do
     cmp -s "$file" "$TXN/files$file" || change=1
   done
 fi

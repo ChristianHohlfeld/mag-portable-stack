@@ -78,15 +78,52 @@ def inspect(path):
             raise ValueError('GGUF metadata entry count too large')
         keys = set()
         arch = None
+        inspect.chat_template = None
         for _ in range(count):
             key = _string(f, file_size, 4096)
             typ = _read(f, '<I')
             if key == 'general.architecture' and typ == 8:
                 arch = _string(f, file_size, 256)
+            elif key == 'tokenizer.chat_template' and typ == 8:
+                inspect.chat_template = _string(f, file_size, 1 << 20)
             else:
                 _skip_value(f, typ, file_size)
             keys.add(key)
         return version, tensors, keys, arch
+
+
+inspect.chat_template = None
+
+
+def thinking_switch_problem(template):
+    """None if the embedded Jinja template can turn thinking off, else why not.
+
+    The room and the smoke test send chat_template_kwargs.enable_thinking=false;
+    a template that never reads it always opens a <think> block, and every
+    non-thinking answer then lands in reasoning_content with empty content.
+    """
+    if not template:
+        return 'GGUF has no tokenizer.chat_template'
+    if 'enable_thinking' not in template:
+        return 'chat template ignores enable_thinking (thinking cannot be disabled)'
+    return None
+
+
+# Markers of the GLM-5.3 template family that ops/glm/chat-template.jinja was
+# pinned from. A GGUF with a different embedded template needs a fresh review
+# of the pin (tool-call syntax, effort header, think prefill) before switching.
+GLM_TEMPLATE_MARKERS = ('[gMASK]<sop>', 'Reasoning Effort:', '<tool_call>', '<arg_key>',
+                        '<arg_value>', '<|observation|>', "<|assistant|>{{- '<think>' -}}")
+
+
+def glm_family_problem(template):
+    if not template:
+        return 'GGUF has no tokenizer.chat_template'
+    missing = [m for m in GLM_TEMPLATE_MARKERS if m not in template]
+    if missing:
+        return 'embedded chat template differs from the pinned GLM-5.3 family (missing %s); ' \
+               'review ops/glm/chat-template.jinja' % ', '.join(repr(m) for m in missing)
+    return None
 
 
 def elementwise_weight_types(path):
@@ -139,6 +176,15 @@ def main(argv=None):
                         help='show GGUF tensor types of model weights used in elementwise GLM operations')
     parser.add_argument('--require-elementwise-safe', action='store_true',
                         help='fail before NUMA1 cutover on unsupported GLM elementwise weight types')
+    parser.add_argument('--require-thinking-switch', action='store_true',
+                        help='require that the effective chat template honours enable_thinking')
+    parser.add_argument('--chat-template-file',
+                        help='template llama-server is started with (--chat-template-file); '
+                             'it replaces the embedded one for --require-thinking-switch')
+    parser.add_argument('--require-glm-template-family', action='store_true',
+                        help='require that the embedded template is the reviewed GLM-5.3 family')
+    parser.add_argument('--dump-chat-template', action='store_true',
+                        help='print the embedded tokenizer.chat_template')
     args = parser.parse_args(argv)
     try:
         version, tensors, keys, arch = inspect(args.model)
@@ -151,6 +197,32 @@ def main(argv=None):
                       any(x in k for x in ('kda', 'ssm', 'head', 'attention', 'indexer', 'hyper')))
     for key in relevant:
         print('  ' + key)
+    if args.dump_chat_template:
+        print('--- tokenizer.chat_template ---')
+        print(inspect.chat_template if inspect.chat_template is not None else '(none)')
+        print('--- end ---')
+    effective = inspect.chat_template
+    if args.chat_template_file:
+        try:
+            with open(args.chat_template_file, encoding='utf-8') as f:
+                effective = f.read()
+        except OSError as e:
+            print(f'GLM chat template file unreadable: {e}', file=sys.stderr)
+            return 4
+    if args.require_glm_template_family:
+        problem = glm_family_problem(inspect.chat_template)
+        if problem:
+            print(f'GLM GGUF incompatible: {problem}', file=sys.stderr)
+            print('Refusing model switch; existing NUMA1 service unchanged', file=sys.stderr)
+            return 4
+        print('chat template: embedded template is the pinned GLM-5.3 family')
+    if args.require_thinking_switch:
+        problem = thinking_switch_problem(effective)
+        if problem:
+            print(f'GLM GGUF incompatible: {problem}', file=sys.stderr)
+            print('Refusing model switch; existing NUMA1 service unchanged', file=sys.stderr)
+            return 4
+        print('chat template: enable_thinking switch present')
     if args.show_elementwise_weights or args.require_elementwise_safe:
         try:
             for name, typ in elementwise_weight_types(args.model):

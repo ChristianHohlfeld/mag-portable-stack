@@ -11,16 +11,12 @@ TOOL = {"type": "function", "function": {"name": "echo",
                        "required": ["value"], "additionalProperties": False}}}
 
 def request(port, messages, thinking=False, choice=None, stream=False):
-    glm = request.model == "glm-5.3-flash"
-    # GLM-5.3-Flash has no non-thinking mode. Its Jinja template ignores
-    # enable_thinking, defaults to Reasoning Effort: Max and can exhaust 192
-    # output tokens inside reasoning_content before reaching visible content.
-    # The inexpensive GLM option is reasoning_effort=low (not "off").
-    template_kwargs = ({"reasoning_effort": "high" if thinking else "low"}
-                       if glm else {"enable_thinking": thinking})
+    # Same contract the room uses for both models: enable_thinking. GLM runs
+    # with the pinned ops/glm/chat-template.jinja (the embedded template ignores
+    # enable_thinking); thinking off prefills "<think></think>", default effort Low.
     body = {"model": request.model, "messages": messages, "stream": stream,
-            "max_tokens": (512 if thinking else 384) if glm else (512 if thinking else 192),
-            "temperature": 0, "chat_template_kwargs": template_kwargs,
+            "max_tokens": 512 if thinking else 192,
+            "temperature": 0, "chat_template_kwargs": {"enable_thinking": thinking},
             "cache_prompt": True, "id_slot": 0}
     if choice:
         body["tools"] = [TOOL]
@@ -114,7 +110,13 @@ def main():
         print("DIAGNOSE ONLY: no acceptance assertion or model switch", flush=True)
         return
     require_visible_content(msg, "Normal chat failed")
-    print("PASS chat", flush=True)
+    # Thinking is off: the answer must be plain content that ends on its own.
+    finish = request.last_response["choices"][0].get("finish_reason")
+    assert "READY" in msg["content"].upper(), "Normal chat failed: no READY in %r" % msg["content"][:200]
+    assert finish == "stop", "Normal chat failed: finish_reason=%s" % finish
+    t = request.last_response.get("timings") or {}
+    print("PASS chat %r (generation %.1f tok/s, prompt %.1f tok/s)" % (
+        msg["content"].strip()[:40], t.get("predicted_per_second", 0), t.get("prompt_per_second", 0)), flush=True)
     if opt.port == 8192:
         # Inspect actual server state, then repeat the identical cached request.
         with urllib.request.urlopen("http://127.0.0.1:8192/slots", timeout=10) as res:

@@ -24,15 +24,13 @@ AllowedCPUs=14-27
 NUMAPolicy=bind
 NUMAMask=1
 MemoryAccounting=yes
-# ~62 GiB mlocked weights + KV/recurrent state + 16 GiB prompt RAM cache.
+# ~62 GiB weights (anonymous, node1, --load-mode dio) + KV/recurrent state + 16 GiB prompt RAM cache.
 MemoryLow=64G
 MemoryHigh=100G
 MemoryMax=120G
 MemorySwapMax=0
 LimitMEMLOCK=infinity
 OOMScoreAdjust=-600
-Nice=10
-IOSchedulingClass=idle
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=no

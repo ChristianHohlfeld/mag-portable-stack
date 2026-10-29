@@ -1,4 +1,4 @@
-"""Regression tests for GLM5.3's always-on reasoning and real diagnostic output."""
+"""GLM-5.3 smoke contract: enable_thinking via the pinned template, real diagnostic output."""
 # mag-test-timeout: 180
 import pathlib as _mag_path
 import sys as _mag_sys
@@ -38,27 +38,32 @@ class SmokeGLM(unittest.TestCase):
             return io.BytesIO(json.dumps(answer).encode())
         return received, urlopen
 
-    def test_glm_low_reasoning_and_explicit_empty_content_failure(self):
+    def test_glm_thinking_off_uses_enable_thinking_and_reports_empty_content(self):
         calls, opener = self.fake()
         with mock.patch.object(SMOKE.urllib.request, "urlopen", side_effect=opener):
             with contextlib.redirect_stdout(io.StringIO()) as log:
                 msg = SMOKE.request(8192, [{"role": "user", "content": "Reply READY."}])
-        self.assertEqual(calls[0]["chat_template_kwargs"], {"reasoning_effort": "low"})
-        self.assertEqual(calls[0]["max_tokens"], 384)
-        self.assertNotIn("enable_thinking", calls[0]["chat_template_kwargs"])
+        # The room's contract; the pinned GLM template honours it.
+        self.assertEqual(calls[0]["chat_template_kwargs"], {"enable_thinking": False})
+        self.assertEqual(calls[0]["max_tokens"], 192)
         self.assertIn('"finish_reason": "length"', log.getvalue())
         self.assertIn('"reasoning_content": "working"', log.getvalue())
         with self.assertRaisesRegex(AssertionError, "reasoning exhausted max_tokens"):
             SMOKE.require_visible_content(msg, "Normal chat failed")
 
-    def test_glm_thinking_is_high_not_disabled(self):
+    def test_glm_thinking_on(self):
         calls, opener = self.fake(content="READY", reasoning="small", finish="stop")
         with mock.patch.object(SMOKE.urllib.request, "urlopen", side_effect=opener):
             with contextlib.redirect_stdout(io.StringIO()):
                 msg = SMOKE.request(8192, [{"role": "user", "content": "Reply READY."}], thinking=True)
-        self.assertEqual(calls[0]["chat_template_kwargs"], {"reasoning_effort": "high"})
+        self.assertEqual(calls[0]["chat_template_kwargs"], {"enable_thinking": True})
         self.assertEqual(calls[0]["max_tokens"], 512)
         SMOKE.require_visible_content(msg, "Normal chat failed")
+
+    def test_chat_requires_ready_and_stop(self):
+        src = (ROOT / "ops/qwen/smoke.py").read_text()
+        self.assertIn('assert "READY" in msg["content"].upper()', src)
+        self.assertIn('assert finish == "stop"', src)
 
     def test_qwen_keeps_previous_contract(self):
         SMOKE.request.model = "qwen3.8-flash-next-uncensored"

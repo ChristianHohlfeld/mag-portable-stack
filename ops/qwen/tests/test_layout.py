@@ -48,6 +48,7 @@ for name in start.sh verify-model.sh model.sizes; do
  install -D -m 0755 "$REPO/ops/glm/$name" "$HOST/usr/local/lib/mag-glm/$name"
 done
 install -D -m 0644 "$REPO/ops/qwen/runtime.sha" "$HOST/usr/local/lib/mag-glm/runtime.sha"
+install -D -m 0644 "$REPO/ops/glm/chat-template.jinja" "$HOST/usr/local/lib/mag-glm/chat-template.jinja"
 install -D -m 0644 "$REPO/ops/glm/mag-llm-glm.service" "$HOST/etc/systemd/system/mag-llm-glm.service"
 ''')
   (self.repo/'ops/qwen/smoke.py').write_text("import os,sys;open(os.environ['SMOKE_LOG'],'a').write(' '.join(sys.argv[1:])+'\\n');sys.exit(int(os.environ.get('SMOKE_FAIL','0')))\n")
@@ -331,18 +332,77 @@ json.dump(s,open(p,'w'))
   self.assertEqual(no_flag.returncode,4,no_flag.stdout+no_flag.stderr)
   patch=(ROOT/'ops/glm/arch-compat.patch').read_text()
   self.assertIn('--- a/src/models/glm5-next.cpp',patch)
-  self.assertIn('ggml_is_quantized(weight->type)',patch)
-  self.assertIn('ggml_cast(ctx, weight, GGML_TYPE_F32)',patch)
-  self.assertIn('ggml_add(ctx0, pg, glm5_elementwise_weight(ctx0, layer.indexer_kpool_ape))',patch)
-  self.assertIn('ggml_mul(ctx, x, glm5_elementwise_weight(ctx, scale))',patch)
-  self.assertIn('ggml_add(ctx0, g1, glm5_elementwise_weight(ctx0, layer.ssm_dt_b))',patch)
-  self.assertIn('glm5_elementwise_weight(ctx0, layer.ssm_a)',patch)
+  # Type-driven: every non-F32 elementwise weight is cast, not one tensor name.
+  self.assertIn('w->type == GGML_TYPE_F32',patch)
+  self.assertIn('return ggml_cast(ctx, w, GGML_TYPE_F32);',patch)
+  for use in ('ggml_add(ctx0, pg, glm5_f32(ctx0, layer.indexer_kpool_ape))',
+              'glm5_f32(ctx0, layer.ssm_dt_b)','glm5_f32(ctx0, layer.ssm_a)',
+              'hc_scale = glm5_f32(ctx0, hc_scale);','hc_base  = glm5_f32(ctx0, hc_base);'):
+   self.assertIn(use,patch)
+  self.assertEqual(patch.count('glm5_f32(ctx0, layer.ffn_exp_probs_b)'),2)
+  # Fail-fast at load with the tensor name, instead of GGML_ABORT on decode.
+  self.assertIn('glm5_check_weight_types(*this);',patch)
+  self.assertIn('throw std::runtime_error',patch)
   self.assertNotIn('--- a/ggml/src/ggml-cpu/binary-ops.cpp',patch)
+  self.assertNotIn('+++ b/ggml/',patch)
+ def test_glm_scanner_requires_thinking_switch(self):
+  import struct
+  def ggstr(v):
+   b=v.encode();return struct.pack('<Q',len(b))+b
+  def gguf(template):
+   kv=[('general.architecture','glm5next')]+([('tokenizer.chat_template',template)] if template else [])
+   d=bytearray(b'GGUF'+struct.pack('<IQQ',3,0,len(kv)))
+   for k,v in kv: d+=ggstr(k)+struct.pack('<I',8)+ggstr(v)
+   return bytes(d)
+  scan=lambda: subprocess.run(['python3','-I',str(ROOT/'ops/glm/inspect-gguf.py'),str(path),
+                               '--require-thinking-switch','--dump-chat-template'],capture_output=True,text=True)
+  path=self.base/'tmpl.gguf'
+  path.write_bytes(gguf("<|assistant|>{{ '</think>' if (enable_thinking is defined and not enable_thinking) else '<think>' }}"))
+  ok=scan();self.assertEqual(ok.returncode,0,ok.stderr);self.assertIn('enable_thinking switch present',ok.stdout)
+  self.assertIn('--- tokenizer.chat_template ---',ok.stdout)
+  path.write_bytes(gguf("<|assistant|><think>"))
+  bad=scan();self.assertEqual(bad.returncode,4);self.assertIn('ignores enable_thinking',bad.stderr)
+  path.write_bytes(gguf(None))
+  none=scan();self.assertEqual(none.returncode,4);self.assertIn('no tokenizer.chat_template',none.stderr)
+  # The real GLM-5.3 template ignores enable_thinking: deploy uses the reviewed pin,
+  # and the scanner checks the pin plus the embedded template family.
+  emb=(ROOT/'ops/glm/chat-template.jinja').read_text()
+  path.write_bytes(gguf(emb.replace("'<think></think>' if (enable_thinking is defined and not enable_thinking) else '<think>'","'<think>'")))
+  pinned=subprocess.run(['python3','-I',str(ROOT/'ops/glm/inspect-gguf.py'),str(path),'--require-glm-template-family',
+                         '--chat-template-file',str(ROOT/'ops/glm/chat-template.jinja'),'--require-thinking-switch'],
+                        capture_output=True,text=True)
+  self.assertEqual(pinned.returncode,0,pinned.stderr)
+  self.assertIn('pinned GLM-5.3 family',pinned.stdout)
+  path.write_bytes(gguf("<|assistant|>{{ '<think>' }} enable_thinking"))
+  other=subprocess.run(['python3','-I',str(ROOT/'ops/glm/inspect-gguf.py'),str(path),'--require-glm-template-family'],
+                       capture_output=True,text=True)
+  self.assertEqual(other.returncode,4);self.assertIn('review ops/glm/chat-template.jinja',other.stderr)
+  inst=(ROOT/'ops/glm/install.sh').read_text()
+  self.assertIn('--require-glm-template-family',inst)
+  self.assertIn('--chat-template-file "$ROOT/ops/glm/chat-template.jinja" --require-thinking-switch',inst)
+ def test_glm_pinned_template_and_runtime_flags(self):
+  t=(ROOT/'ops/glm/chat-template.jinja').read_text()
+  self.assertIn("'<think></think>' if (enable_thinking is defined and not enable_thinking) else '<think>'",t)
+  self.assertIn("in ['low', 'high', 'max'] else 'low'",t)
+  self.assertNotIn('enable_thinking',t.split('effective_reasoning_effort',2)[1].split('-%}')[0])
+  st=(ROOT/'ops/glm/start.sh').read_text();u=(ROOT/'ops/glm/mag-llm-glm.service').read_text()
+  self.assertIn('--chat-template-file "$TEMPLATE"',st);self.assertIn('--load-mode dio',st)
+  self.assertNotIn('IOSchedulingClass=idle',u);self.assertNotIn('Nice=10',u)
+  lay=(ROOT/'ops/qwen/layout.sh').read_text()
+  self.assertIn('/usr/local/lib/mag-glm/chat-template.jinja',lay)
+ def test_runtime_rebuild_restarts_and_rollback_verifies_qwen(self):
+  lay=(ROOT/'ops/qwen/layout.sh').read_text()
+  self.assertIn("== *' (deleted)'",lay)
+  self.assertIn('if runs_stale_binary "$selected"; then change=1; fi',lay)
+  b=(ROOT/'ops/qwen/build-runtime.sh').read_text()
+  pub=b.index('install -m 0755 "$BUILD/bin/llama-server"')
+  self.assertLess(b.index('"$BUILD/bin/mag-glm-elementwise-cast"'),pub)
+  self.assertLess(b.index('"$BUILD/bin/mag-glm-chat-template" "$ROOT/ops/glm/chat-template.jinja"'),pub)
  def test_glm_unit_and_start_are_numa1_only(self):
   u=(ROOT/'ops/glm/mag-llm-glm.service').read_text();st=(ROOT/'ops/glm/start.sh').read_text()
   self.assertIn('Conflicts=mag-llm-ds-node@1.service mag-llm-iq3.service mag-llm-qwen.service',u)
   self.assertNotIn('ds-node@0',u);self.assertIn('NUMAMask=1',u);self.assertIn('AllowedCPUs=14-27',u)
-  self.assertIn('--physcpubind=14-27 --membind=1',st);self.assertIn('--load-mode mlock',st)
+  self.assertIn('--physcpubind=14-27 --membind=1',st);self.assertIn('--load-mode dio',st)
   self.assertIn('--port "${GLM_PORT:-8192}"',st);self.assertNotIn('--no-mmap',st)
   self.assertEqual((ROOT/'ops/room/layout').read_text().strip(),'glm')
   sizes=[l.split() for l in (ROOT/'ops/glm/model.sizes').read_text().splitlines()]

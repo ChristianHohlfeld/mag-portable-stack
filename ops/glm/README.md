@@ -33,6 +33,35 @@ layout instead of restarting NUMA1 again; a commit that changes `ops/glm/*`,
 `ops/room/glm.env` or the runtime retries once. Logs: `journalctl -u mag-llm-glm`
 and the auto-update journal.
 
+## Thinking control (pinned chat template)
+
+The GGUF's embedded template ignores `enable_thinking` and always ends the
+prompt with `<|assistant|><think>` under `Reasoning Effort: Max`; with thinking
+"off" every answer ended up in `reasoning_content` (diagnosis 2026-10-29,
+`ops/glm/diag-chat.sh`). `start.sh` therefore runs llama-server with
+`--chat-template-file ops/glm/chat-template.jinja`, the embedded template with
+two reviewed changes:
+
+- `enable_thinking=false` prefills `<think></think>` (the form the template
+  itself uses for assistant turns without reasoning) → plain `content`;
+- default `Reasoning Effort: Low` (the room never sends `reasoning_effort`;
+  `low`/`high`/`max` remain selectable via `chat_template_kwargs`). The header
+  does not depend on `enable_thinking`, so the cached system prefix is shared.
+
+Gates: `install.sh` refuses a GGUF whose embedded template is not this family
+(`--require-glm-template-family`), and `build-runtime.sh` builds and runs
+`ops/glm/tests/test-chat-template.cpp` (llama.cpp's own chat/PEG parser:
+thinking on/off, content, reasoning, tool calls) before publishing a runtime.
+
+## Loading and speed
+
+`--load-mode dio` (O_DIRECT into anonymous memory on node1). `mlock` failed with
+ENOMEM because page cache and locked copy both had to fit on node1; swap is off
+for the unit, so locking added nothing. The unit runs without `Nice` and
+without idle I/O class. Acceptance logs generation/prompt tok/s on the
+`PASS chat` line. Measured 2026-10-29 (diag, IQ1_M, 14 cores): ~3 tok/s
+generation; IQ1_M CPU kernels, not configuration, are the limit.
+
 ## Operator overrides
 
 ```bash

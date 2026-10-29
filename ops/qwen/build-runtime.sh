@@ -20,8 +20,17 @@ git -C "$SRC" apply "$ROOT/ops/qwen/end-checkpoint.patch"
 # Support early GLM-5.3 Flash GGUF metadata without changing canonical GLM or Qwen.
 git -C "$SRC" apply --check "$ROOT/ops/glm/arch-compat.patch"
 git -C "$SRC" apply "$ROOT/ops/glm/arch-compat.patch"
-cmake -S "$SRC" -B "$BUILD" -G Ninja -DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=ON -DBUILD_SHARED_LIBS=OFF
-cmake --build "$BUILD" -j 4 --target llama-server
+# MAG runtime gates, built by llama.cpp's own test helper so they link exactly
+# like llama-server (same chat/PEG parser, same ggml CPU backend).
+install -m 0644 "$ROOT/ops/glm/tests/test-elementwise-cast.cpp" "$SRC/tests/mag-glm-elementwise-cast.cpp"
+install -m 0644 "$ROOT/ops/glm/tests/test-chat-template.cpp" "$SRC/tests/mag-glm-chat-template.cpp"
+printf '%s\n' 'llama_build(mag-glm-elementwise-cast.cpp)' 'llama_build(mag-glm-chat-template.cpp)' >> "$SRC/tests/CMakeLists.txt"
+cmake -S "$SRC" -B "$BUILD" -G Ninja -DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=ON -DBUILD_SHARED_LIBS=OFF -DLLAMA_BUILD_TESTS=ON
+cmake --build "$BUILD" -j 4 --target llama-server mag-glm-elementwise-cast mag-glm-chat-template
+# Gate before publish: the elementwise-weight cast is an exact dequantize, and
+# the pinned GLM template switches thinking and parses content/reasoning/tools.
+"$BUILD/bin/mag-glm-elementwise-cast"
+"$BUILD/bin/mag-glm-chat-template" "$ROOT/ops/glm/chat-template.jinja"
 BIN="/home/chris/.local/qwen4exp/$REV-mag-cp1/bin/llama-server"
 mkdir -p "$(dirname "$BIN")"
 # Atomic publish after the entire patched runtime has built successfully.

@@ -61,15 +61,15 @@ static Val cfg() {
   for (auto p : std::vector<std::pair<std::string, double>>{
            {"max_bots", 4},
            {"max_total_vcpus", 8},
-           {"max_total_ram_gib", 24},
+           {"max_total_ram_gib", 96},
            {"min_host_available_ram_gib", 64},
            {"min_host_free_disk_gib", 100},
            {"max_host_load_per_cpu", .75},
            {"default_vcpus", 2},
-           {"default_ram_gib", 4},
+           {"default_ram_gib", 16},
            {"default_disk_gib", 20},
            {"max_bot_vcpus", 4},
-           {"max_bot_ram_gib", 8},
+           {"max_bot_ram_gib", 24},
            {"max_bot_disk_gib", 32},
            {"disk_bytes_sec", 40000000},
            {"disk_iops_sec", 400}})

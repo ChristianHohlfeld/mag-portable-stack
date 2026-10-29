@@ -83,7 +83,7 @@
      n_kv      = gguf_get_n_kv(metadata);
 --- a/src/models/glm5-next.cpp
 +++ b/src/models/glm5-next.cpp
-@@ -12,15 +12,39 @@
+@@ -12,15 +12,43 @@
      ml.get_key(LLM_KV_ATTENTION_Q_LORA_RANK,       hparams.n_lora_q);
      ml.get_key(LLM_KV_ATTENTION_KV_LORA_RANK,      hparams.n_lora_kv);
      ml.get_key(LLM_KV_SSM_CONV_KERNEL,             hparams.ssm_d_conv);
@@ -92,8 +92,12 @@
 +    // Early 6block GGUFs (general.architecture=glm5next) predate the
 +    // dedicated KDA metadata; the original glm5next loader falls back to
 +    // ssm.state_size for the same per-head dimension.
-+    if (!ml.get_key(LLM_KV_KDA_HEAD_DIM, hparams.n_embd_head_kda, false)) {
-+        ml.get_key(LLM_KV_SSM_STATE_SIZE, hparams.n_embd_head_kda);
++    if (ml.arch_name == "glm5next") {
++        if (!ml.get_key(LLM_KV_KDA_HEAD_DIM, hparams.n_embd_head_kda, false)) {
++            ml.get_key(LLM_KV_SSM_STATE_SIZE, hparams.n_embd_head_kda);
++        }
++    } else {
++        ml.get_key(LLM_KV_KDA_HEAD_DIM, hparams.n_embd_head_kda);
 +    }
 +    if (!ml.get_key(LLM_KV_KDA_GATE_LOWER_BOUND, hparams.kda_gate_lower_bound, false) &&
 +        ml.arch_name == "glm5next") {
@@ -128,15 +132,19 @@
  
      ml.get_key_or_arr(LLM_KV_EXPERT_FEED_FORWARD_LENGTH, hparams.n_ff_exp_arr, hparams.n_layer_all);
      ml.get_key(LLM_KV_EXPERT_SHARED_COUNT,        hparams.n_expert_shared);
-@@ -40,8 +64,15 @@
+@@ -40,8 +68,19 @@
      ml.get_key(LLM_KV_ATTENTION_INDEXER_HEAD_COUNT,        hparams.indexer_n_head);
      ml.get_key(LLM_KV_ATTENTION_INDEXER_KEY_LENGTH,        hparams.indexer_head_size);
      ml.get_key(LLM_KV_ATTENTION_INDEXER_TOP_K,             hparams.indexer_top_k);
 -    ml.get_key(LLM_KV_ATTENTION_INDEXER_KPOOL,             hparams.indexer_kpool);
 -    ml.get_key(LLM_KV_ATTENTION_INDEXER_KPOOL_SELECT_TAIL, hparams.indexer_kpool_select_tail, false);
-+    if (!ml.get_key(LLM_KV_ATTENTION_INDEXER_KPOOL, hparams.indexer_kpool, false)) {
-+        // Earlier glm5next GGUFs call kpool "block_size" (same semantics).
-+        ml.get_key(LLM_KV_ATTENTION_INDEXER_BLOCK_SIZE, hparams.indexer_kpool);
++    if (ml.arch_name == "glm5next") {
++        if (!ml.get_key(LLM_KV_ATTENTION_INDEXER_KPOOL, hparams.indexer_kpool, false)) {
++            // Earlier glm5next GGUFs call kpool "block_size" (same semantics).
++            ml.get_key(LLM_KV_ATTENTION_INDEXER_BLOCK_SIZE, hparams.indexer_kpool);
++        }
++    } else {
++        ml.get_key(LLM_KV_ATTENTION_INDEXER_KPOOL, hparams.indexer_kpool);
 +    }
 +    if (ml.arch_name == "glm5next") {
 +        // The legacy k-pool indexer always includes its unfinished tail.

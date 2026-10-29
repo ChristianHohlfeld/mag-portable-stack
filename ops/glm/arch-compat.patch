@@ -154,3 +154,20 @@
      GGML_ASSERT(hparams.indexer_kpool > 1 && hparams.indexer_top_k % hparams.indexer_kpool == 0);
      std::fill(hparams.is_indexer_full_impl.begin(), hparams.is_indexer_full_impl.end(), 1);
      ml.get_key_or_arr(LLM_KV_ATTENTION_INDEXER_TYPES, hparams.is_indexer_full_impl, hparams.n_layer(), false);
+@@ -928,7 +972,15 @@
+     ggml_tensor * pk = ggml_view_3d(ctx0, rows, n_embd_indexer, kpool, n_new, rows->nb[1], rows->nb[2], 0);
+     ggml_tensor * pg = ggml_view_3d(ctx0, rows, n_embd_indexer, kpool, n_new, rows->nb[1], rows->nb[2], ggml_row_size(rows->type, n_embd_indexer));
+ 
+-    ggml_tensor * logits = ggml_add(ctx0, pg, layer.indexer_kpool_ape);
++    // Some IQ1_M mixture quantizations store the small indexer APE table
++    // as IQ4_NL. ggml_add's CPU binary kernel requires a float operand.
++    // Dequantize only this small GGUF weight; never alter the model file or
++    // the shared CPU binary-op implementation. F32 input is unchanged.
++    ggml_tensor * indexer_ape = layer.indexer_kpool_ape;
++    if (ggml_is_quantized(indexer_ape->type)) {
++        indexer_ape = ggml_cast(ctx0, indexer_ape, GGML_TYPE_F32);
++    }
++    ggml_tensor * logits = ggml_add(ctx0, pg, indexer_ape);
+     logits = ggml_cont(ctx0, ggml_permute(ctx0, logits, 1, 0, 2, 3)); // [kpool, head_dim, n_new]
+     // fold the pool axis into rows, soft_max maps ne[2] to CUDA gridDim.y which caps at 65535
+     ggml_tensor * probs = ggml_soft_max(ctx0, ggml_reshape_2d(ctx0, logits, kpool, n_embd_indexer*n_new));

@@ -154,20 +154,48 @@
      GGML_ASSERT(hparams.indexer_kpool > 1 && hparams.indexer_top_k % hparams.indexer_kpool == 0);
      std::fill(hparams.is_indexer_full_impl.begin(), hparams.is_indexer_full_impl.end(), 1);
      ml.get_key_or_arr(LLM_KV_ATTENTION_INDEXER_TYPES, hparams.is_indexer_full_impl, hparams.n_layer(), false);
-@@ -928,7 +967,15 @@
+@@ -374,9 +413,15 @@
+-static ggml_tensor * dsv4_hc_affine(
+-        ggml_context * ctx,
+-        ggml_tensor  * x,
+-        ggml_tensor  * scale,
+-        ggml_tensor  * base) {
+-    x = ggml_mul(ctx, x, scale);
+-    x = ggml_add(ctx, x, base);
++static ggml_tensor * glm5_elementwise_weight(ggml_context * ctx, ggml_tensor * weight) {
++    // Only elementwise operands must be floating point. Keep quantized GEMM
++    // matrices in their original type; never edit GGUF tensor payloads.
++    return ggml_is_quantized(weight->type) ? ggml_cast(ctx, weight, GGML_TYPE_F32) : weight;
++}
++
++static ggml_tensor * dsv4_hc_affine(
++        ggml_context * ctx,
++        ggml_tensor  * x,
++        ggml_tensor  * scale,
++        ggml_tensor  * base) {
++    x = ggml_mul(ctx, x, glm5_elementwise_weight(ctx, scale));
++    x = ggml_add(ctx, x, glm5_elementwise_weight(ctx, base));
+     return x;
+ }
+@@ -832,9 +877,9 @@
+     // Decay gate, ssm_a holds -exp(A_log)
+     ggml_tensor * f_a = ggml_mul_mat(ctx0, layer.ssm_f_a, cur);
+     ggml_tensor * g1  = ggml_mul_mat(ctx0, layer.ssm_f_b, f_a);
+-    g1 = ggml_add(ctx0, g1, layer.ssm_dt_b);
+-
+-    ggml_tensor * A = ggml_reshape_3d(ctx0, layer.ssm_a, 1, n_head_kda, 1);
++    g1 = ggml_add(ctx0, g1, glm5_elementwise_weight(ctx0, layer.ssm_dt_b));
++
++    ggml_tensor * A = ggml_reshape_3d(ctx0, glm5_elementwise_weight(ctx0, layer.ssm_a), 1, n_head_kda, 1);
+ 
+     if (hparams.kda_gate_lower_bound > -INFINITY) {
+         g1 = ggml_reshape_3d(ctx0, g1, head_dim, n_head_kda, n_tokens);
+@@ -928,7 +973,7 @@
      ggml_tensor * pk = ggml_view_3d(ctx0, rows, n_embd_indexer, kpool, n_new, rows->nb[1], rows->nb[2], 0);
      ggml_tensor * pg = ggml_view_3d(ctx0, rows, n_embd_indexer, kpool, n_new, rows->nb[1], rows->nb[2], ggml_row_size(rows->type, n_embd_indexer));
  
 -    ggml_tensor * logits = ggml_add(ctx0, pg, layer.indexer_kpool_ape);
-+    // Some IQ1_M mixture quantizations store the small indexer APE table
-+    // as IQ4_NL. ggml_add's CPU binary kernel requires a float operand.
-+    // Dequantize only this small GGUF weight; never alter the model file or
-+    // the shared CPU binary-op implementation. F32 input is unchanged.
-+    ggml_tensor * indexer_ape = layer.indexer_kpool_ape;
-+    if (ggml_is_quantized(indexer_ape->type)) {
-+        indexer_ape = ggml_cast(ctx0, indexer_ape, GGML_TYPE_F32);
-+    }
-+    ggml_tensor * logits = ggml_add(ctx0, pg, indexer_ape);
++    ggml_tensor * logits = ggml_add(ctx0, pg, glm5_elementwise_weight(ctx0, layer.indexer_kpool_ape));
      logits = ggml_cont(ctx0, ggml_permute(ctx0, logits, 1, 0, 2, 3)); // [kpool, head_dim, n_new]
      // fold the pool axis into rows, soft_max maps ne[2] to CUDA gridDim.y which caps at 65535
      ggml_tensor * probs = ggml_soft_max(ctx0, ggml_reshape_2d(ctx0, logits, kpool, n_embd_indexer*n_new));

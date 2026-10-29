@@ -141,6 +141,8 @@ json.dump(s,open(p,'w'))
   self.assertEqual((self.host/'etc/mag-stack/room-layout').read_text(),'glm\n')
   self.assertFalse((self.host/'etc/mag-stack/room-layout.pinned').exists())
   self.assertIn('--port 8192 --model glm-5.3-flash',(self.base/'smoke').read_text())
+  self.assertIn('--require-elementwise-safe',(ROOT/'ops/glm/install.sh').read_text())
+  self.assertIn('QWEN ROLLBACK SMOKE PASS',(ROOT/'ops/qwen/layout.sh').read_text())
   # Qwen weights and unit file stay on the host; only the stack stops using them.
   self.assertTrue((self.host/'etc/systemd/system/mag-llm-qwen.service').exists())
   mark=self.log.stat().st_size
@@ -158,6 +160,8 @@ json.dump(s,open(p,'w'))
   (self.repo/'ops/room/layout').write_text('glm\n')
   p=self.run_layout(backup=self.base/'backup2',SMOKE_FAIL='1');self.assertNotEqual(p.returncode,0)
   state=json.loads(self.state.read_text());self.assertIn('mag-llm-qwen.service',state['active']);self.assertNotIn('mag-llm-glm.service',state['active'])
+  self.assertIn('--model qwen3.8-flash-next-uncensored --quick',(self.base/'smoke').read_text())
+  self.assertIn('rollback smoke failed',p.stderr)
   self.assertIn('MAG_ROOM_MODEL_ID_1=qwen',(self.host/'etc/mag-stack/room-model.env').read_text())
   self.assertTrue((self.host/'var/lib/mag-stack/layout-failed').read_text().startswith('glm '))
   # Same candidate is held before backup/staging, and never marked deployed.
@@ -287,6 +291,11 @@ json.dump(s,open(p,'w'))
   self.assertEqual(scan.returncode,0,scan.stderr)
   self.assertIn('blk.3.indexer_compressor_ape.weight: iq4_nl',scan.stdout)
   self.assertIn('blk.3.ssm_a: f32',scan.stdout)
+  # Type-level fail-fast is permitted to accept the APE IQ4_NL because
+  # the pinned GLM graph now casts this operand before ggml_add.
+  safe=subprocess.run(['python3','-I',str(ROOT/'ops/glm/inspect-gguf.py'),
+                       str(path),'--require-elementwise-safe'],capture_output=True,text=True)
+  self.assertEqual(safe.returncode,0,safe.stderr)
   # Other shards in a split GGUF omit general.architecture. Reading their
   # tensor types is allowed only for diagnostics, never for deploy preflight.
   split=bytearray(b'GGUF'+struct.pack('<IQQ',3,len(entries),0))
@@ -299,6 +308,19 @@ json.dump(s,open(p,'w'))
                       capture_output=True,text=True)
   self.assertEqual(diag.returncode,0,diag.stderr)
   self.assertIn('blk.3.indexer_compressor_ape.weight: iq4_nl',diag.stdout)
+  split_safe=subprocess.run(['python3','-I',str(ROOT/'ops/glm/inspect-gguf.py'),
+                             str(path),'--require-elementwise-safe'],
+                            capture_output=True,text=True)
+  self.assertEqual(split_safe.returncode,0,split_safe.stderr)
+  # Unknown quantized elementwise weight fails before any model is stopped.
+  bad=split.replace(struct.pack('<IQ',20,0),struct.pack('<IQ',29,0),1)
+  path.write_bytes(bad)
+  rejected=subprocess.run(['python3','-I',str(ROOT/'ops/glm/inspect-gguf.py'),
+                           str(path),'--require-elementwise-safe'],
+                          capture_output=True,text=True)
+  self.assertEqual(rejected.returncode,4)
+  self.assertIn('unsupported elementwise operand',rejected.stderr)
+  path.write_bytes(split)
   strict=subprocess.run(['python3','-I',str(ROOT/'ops/glm/inspect-gguf.py'),
                          str(path),'--require-kda-head-dim'],
                         capture_output=True,text=True)
@@ -309,9 +331,12 @@ json.dump(s,open(p,'w'))
   self.assertEqual(no_flag.returncode,4,no_flag.stdout+no_flag.stderr)
   patch=(ROOT/'ops/glm/arch-compat.patch').read_text()
   self.assertIn('--- a/src/models/glm5-next.cpp',patch)
-  self.assertIn('ggml_is_quantized(indexer_ape->type)',patch)
-  self.assertIn('ggml_cast(ctx0, indexer_ape, GGML_TYPE_F32)',patch)
-  self.assertIn('ggml_add(ctx0, pg, indexer_ape)',patch)
+  self.assertIn('ggml_is_quantized(weight->type)',patch)
+  self.assertIn('ggml_cast(ctx, weight, GGML_TYPE_F32)',patch)
+  self.assertIn('ggml_add(ctx0, pg, glm5_elementwise_weight(ctx0, layer.indexer_kpool_ape))',patch)
+  self.assertIn('ggml_mul(ctx, x, glm5_elementwise_weight(ctx, scale))',patch)
+  self.assertIn('ggml_add(ctx0, g1, glm5_elementwise_weight(ctx0, layer.ssm_dt_b))',patch)
+  self.assertIn('glm5_elementwise_weight(ctx0, layer.ssm_a)',patch)
   self.assertNotIn('--- a/ggml/src/ggml-cpu/binary-ops.cpp',patch)
  def test_glm_unit_and_start_are_numa1_only(self):
   u=(ROOT/'ops/glm/mag-llm-glm.service').read_text();st=(ROOT/'ops/glm/start.sh').read_text()

@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT=$(cd -- "$(dirname -- "$(readlink -f "$0")")/../.." && pwd)
 # shellcheck source=../mag-units.sh
 source "$ROOT/ops/mag-units.sh"
-ACTION=${1:?apply|rollback}; BACKUP=${2:?deployment backup directory}
+ACTION=${1:?apply|rollback|probe}; BACKUP=${2:?deployment backup directory}
 TXN="$BACKUP/qwen-layout"
 fail(){ echo "NUMA1 layout: $*" >&2; exit 4; }
 [[ $EUID == 0 ]] || fail 'root required'
@@ -42,7 +42,7 @@ rollback(){
   touch "$TXN/restored"
 }
 if [[ $ACTION == rollback ]]; then rollback; exit; fi
-[[ $ACTION == apply ]] || fail 'unknown action'
+[[ $ACTION == apply || $ACTION == probe ]] || fail 'unknown action'
 # Layout source, highest first:
 #  1. MAG_ROOM_LAYOUT=mixed|deepseek|glm  explicit operator choice; it is pinned
 #     on the host and survives later automatic updates (MAG_ROOM_LAYOUT=repo unpins).
@@ -69,10 +69,14 @@ case $layout in mixed) env_file=mixed.env ;; glm) env_file=glm.env ;; *) env_fil
 id_files=("$ROOT/ops/qwen/runtime.sha" "$ROOT/ops/room/$env_file")
 if [[ $layout == glm ]]; then id_files+=("$ROOT"/ops/glm/{start.sh,verify-model.sh,model.sizes,mag-llm-glm.service,install.sh,arch-compat.patch} "$ROOT/ops/qwen/build-runtime.sh"); fi
 identity="$layout $(cat "${id_files[@]}" 2>/dev/null | sha256sum | cut -c1-16)"
+# The probe is read-only and runs BEFORE the deploy's backup and service staging.
+# Never turn a failed desired layout into a successful deploy of the old one.
 if [[ $source == repo && $layout != "$previous" && -f $FAILED && $(cat "$FAILED") == "$identity" ]]; then
-  echo "WARN NUMA1 layout: repo layout '$layout' already failed live ($identity); keeping '$previous'" >&2
-  layout=$previous
+  echo "NUMA1 layout blocked: repo layout '$layout' previously failed live ($identity); previous '$previous' retained" >&2
+  if [[ $ACTION == probe ]]; then exit 78; fi
+  fail "desired layout '$layout' has a matching prior failure; refusing to claim deployment success"
 fi
+[[ $ACTION != probe ]] || exit 0
 # Fresh bootstrap has no Qwen download. Keep its existing DeepSeek provisioning.
 [[ -f /etc/mag-stack/room-model.env ]] || exit 0
 if [[ $layout == mixed || $layout == glm ]]; then

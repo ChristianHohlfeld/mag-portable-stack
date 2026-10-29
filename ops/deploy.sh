@@ -509,9 +509,15 @@ else
       ready=0
     fi
   done
-  if ! python3 - <<'PY'
-import json, sys, urllib.request
+  if ! python3 - /etc/mag-stack/room-layout <<'PY'
+import json, pathlib, sys, urllib.request
 try:
+    layout = pathlib.Path(sys.argv[1]).read_text().strip()
+    if layout not in ("glm", "mixed", "deepseek", "qwen"):
+        raise ValueError("unknown active NUMA1 room layout: "+repr(layout))
+    secondary = "glm" if layout == "glm" else "qwen"
+    expected = {"deepseek", secondary}
+    expected_names = "DeepSeek and GLM" if layout == "glm" else "DeepSeek and Qwen"
     with urllib.request.urlopen("http://127.0.0.1:8766/api/state", timeout=8) as r:
         state = json.load(r)
     agents = [a for a in state.get("agents", []) if a.get("enabled") is not False]
@@ -522,10 +528,12 @@ try:
             kinds.add("deepseek")
         if "qwen" in label.lower():
             kinds.add("qwen")
-    if kinds != {"deepseek", "qwen"}:
-        raise ValueError("expected live DeepSeek and Qwen; agents="+repr(
+        if "glm" in label.lower():
+            kinds.add("glm")
+    if kinds != expected:
+        raise ValueError("expected live "+expected_names+"; agents="+repr(
             [(a.get("name"), a.get("model")) for a in agents]))
-    print("Release ready: DeepSeek and Qwen listed; both backends healthy")
+    print("Release ready: "+expected_names+" listed; both backends healthy")
 except Exception as exc:
     print("FAIL: room bot readiness: "+str(exc), file=sys.stderr)
     sys.exit(1)

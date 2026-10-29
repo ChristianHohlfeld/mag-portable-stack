@@ -3,8 +3,11 @@
 # Same pinned upstream llama.cpp runtime as Qwen (ops/qwen/runtime.sha; the
 # commit has src/models/glm5-next.cpp). 14 physical cores of socket 1, every
 # weight page allocated on node1:
-# --load-mode mlock reads into anonymous memory (see ops/qwen/start.sh: mmap
-# pages left in the page cache by an earlier read cannot be moved by --membind).
+# --load-mode dio reads the GGUF with O_DIRECT into anonymous memory on node1:
+# no page-cache copy (mmap pages cached on node0 by an earlier read could not be
+# moved by --membind, and "mlock" doubled the footprint as page cache + locked
+# copy, which failed with ENOMEM). Swap is off for the unit (MemorySwapMax=0),
+# so locking adds nothing.
 # The model is hybrid (KDA linear layers + MLA), so prompt reuse needs context
 # checkpoints, exactly like the hybrid Qwen.
 set -euo pipefail
@@ -13,7 +16,8 @@ REV=$(cat /usr/local/lib/mag-glm/runtime.sha)
 [[ $REV =~ ^[a-f0-9]{40}$ ]] || fail 'runtime sha invalid'
 BIN="/home/chris/.local/qwen4exp/$REV-mag-cp1/bin/llama-server"
 MODEL="/home/chris/models/GLM-5.3-Flash-GGUF-IQ1_M/GLM-5.3-Flash-IQ1_M-00001-of-00015.gguf"
-[[ -x "$BIN" && -f "$MODEL" ]] || fail 'runtime / GGUF missing'
+TEMPLATE=/usr/local/lib/mag-glm/chat-template.jinja
+[[ -x "$BIN" && -f "$MODEL" && -f "$TEMPLATE" ]] || fail 'runtime / GGUF / chat template missing'
 [[ $(cat "/home/chris/.local/qwen4exp/$REV-mag-cp1/bin/source-commit") == "$REV" ]] || fail 'runtime version not pinned'
 [[ $(cat /sys/devices/system/node/node1/cpulist) == "14-27,42-55" ]] || fail 'unexpected NUMA1 topology'
 systemctl is-active --quiet mag-llm-iq3.service && fail 'IQ3 still running; explicit operator stop required'
@@ -30,6 +34,6 @@ exec /usr/bin/numactl --physcpubind=14-27 --membind=1 "$BIN" \
   --model "$MODEL" --alias glm-5.3-flash \
   --host 127.0.0.1 --port "${GLM_PORT:-8192}" --ctx-size 32768 --parallel 1 \
   --threads 14 --threads-batch 14 --numa numactl \
-  --load-mode mlock \
-  --jinja --reasoning-format auto --cache-ram 16384 --ctx-checkpoints 8 --checkpoint-min-step 128 \
+  --load-mode dio \
+  --jinja --chat-template-file "$TEMPLATE" --reasoning-format auto --cache-ram 16384 --ctx-checkpoints 8 --checkpoint-min-step 128 \
   --slots --slot-save-path /var/lib/mag-llm/slots/glm --no-ui

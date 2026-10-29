@@ -187,6 +187,21 @@ json.dump(s,open(p,'w'))
   p=self.run_layout(backup=self.base/'backup3',MAG_ROOM_LAYOUT='repo');self.assertEqual(p.returncode,0,p.stderr)
   self.assertFalse((self.host/'etc/mag-stack/room-layout.pinned').exists())
   self.assertIn('mag-llm-glm.service',json.loads(self.state.read_text())['active'])
+ def test_gguf_arch_compat_uses_c_string_for_printf_formatter(self):
+  # Regression: passing a std::string object to ::format("%s", ...) emitted
+  # random prefixes in Qwen's .context_length key and broke *both* NUMA1 models.
+  p=(ROOT/'ops/glm/arch-compat.patch').read_text()
+  self.assertIn('const char * arch_name = arch_override != nullptr ? arch_override : LLM_ARCH_NAMES.at(arch);',p)
+  self.assertIn('::format(LLM_KV_NAMES.at(kv), arch_name)',p)
+  self.assertNotIn('const std::string arch_name',p)
+  self.assertIn('if (name == "glm5next")',p)
+  self.assertIn('arch_name == "glm5next" ? "glm5next" : nullptr',p)
+  # This patch must change the binary identity, not silently reuse the old server.
+  build=(ROOT/'ops/qwen/build-runtime.sh').read_text()
+  layout=(ROOT/'ops/qwen/layout.sh').read_text()
+  self.assertIn('git -C "$SRC" apply "$ROOT/ops/glm/arch-compat.patch"',build)
+  self.assertIn('"$ROOT/ops/glm/arch-compat.patch" | sha256sum',build)
+  self.assertIn('"$ROOT/ops/glm/arch-compat.patch" | sha256sum',layout)
  def test_glm_unit_and_start_are_numa1_only(self):
   u=(ROOT/'ops/glm/mag-llm-glm.service').read_text();st=(ROOT/'ops/glm/start.sh').read_text()
   self.assertIn('Conflicts=mag-llm-ds-node@1.service mag-llm-iq3.service mag-llm-qwen.service',u)

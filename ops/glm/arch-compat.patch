@@ -83,7 +83,7 @@
      n_kv      = gguf_get_n_kv(metadata);
 --- a/src/models/glm5-next.cpp
 +++ b/src/models/glm5-next.cpp
-@@ -12,8 +12,17 @@
+@@ -12,15 +12,39 @@
      ml.get_key(LLM_KV_ATTENTION_Q_LORA_RANK,       hparams.n_lora_q);
      ml.get_key(LLM_KV_ATTENTION_KV_LORA_RANK,      hparams.n_lora_kv);
      ml.get_key(LLM_KV_SSM_CONV_KERNEL,             hparams.ssm_d_conv);
@@ -101,9 +101,6 @@
 +        hparams.kda_gate_lower_bound = -5.0f;
 +    }
  
-     // the MLA cache holds the compressed latent
-     hparams.n_embd_head_v_full = hparams.n_lora_kv;
-@@ -18,9 +27,24 @@
      // the MLA cache holds the compressed latent
      hparams.n_embd_head_v_full = hparams.n_lora_kv;
  

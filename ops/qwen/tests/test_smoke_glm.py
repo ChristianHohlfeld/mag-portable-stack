@@ -62,8 +62,40 @@ class SmokeGLM(unittest.TestCase):
 
     def test_chat_requires_ready_and_stop(self):
         src = (ROOT / "ops/qwen/smoke.py").read_text()
-        self.assertIn('assert "READY" in msg["content"].upper()', src)
+        self.assertIn('require_glm_ready(msg, "Normal chat failed")', src)
         self.assertIn('assert finish == "stop"', src)
+        self.assertIn('require_glm_ready(cached_msg, "Cached normal chat failed")', src)
+        self.assertIn('require_glm_ready(again, "Tool result roundtrip failed", roundtrip=True)', src)
+
+    def test_glm_rejects_false_positive_responses(self):
+        # These examples previously passed as long as READY occurred anywhere.
+        for content in (
+            "I'm sorry, but I cannot answer that question. </think>READY.",
+            "</think>READY",
+            "nonsense READY",
+            "READY but this is a broken response",
+            "echo: 0x7f4a0e5c...",
+            "just another answer",
+            "",
+        ):
+            with self.subTest(content=content):
+                with self.assertRaisesRegex(AssertionError, "plain READY"):
+                    SMOKE.require_glm_ready({"content": content}, "GLM")
+        for content in ("READY", "ready.", " Ready! "):
+            with self.subTest(content=content):
+                SMOKE.require_glm_ready({"content": content}, "GLM")
+        for extra in ({"reasoning_content": "unwanted thinking"}, {"tool_calls": [{"function": {}}]}):
+            with self.subTest(extra=extra):
+                with self.assertRaisesRegex(AssertionError, "plain READY"):
+                    SMOKE.require_glm_ready(dict(content="READY", **extra), "GLM")
+
+    def test_glm_tool_roundtrip_requires_echoed_value(self):
+        for content in ("READY", "echo: READY.", "Echo: ready!"):
+            SMOKE.require_glm_ready({"content": content}, "Roundtrip", roundtrip=True)
+        for content in ("echo: 0x7f4a0e5c...", "random text with READY", "</think>READY", "READY, 0x1"):
+            with self.subTest(content=content):
+                with self.assertRaisesRegex(AssertionError, "plain READY"):
+                    SMOKE.require_glm_ready({"content": content}, "Roundtrip", roundtrip=True)
 
     def test_qwen_keeps_previous_contract(self):
         SMOKE.request.model = "qwen3.8-flash-next-uncensored"

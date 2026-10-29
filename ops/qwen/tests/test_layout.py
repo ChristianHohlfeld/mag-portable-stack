@@ -127,6 +127,10 @@ json.dump(s,open(p,'w'))
  def test_repo_glm_replaces_qwen_and_keeps_numa0(self):
   self.assertEqual(self.run_layout().returncode,0)
   (self.repo/'ops/room/layout').write_text('glm\n')
+  mark=self.log.stat().st_size
+  probe=self.run_layout('probe',backup=self.base/'backup2')
+  self.assertEqual(probe.returncode,0,probe.stderr)
+  self.assertEqual(self.log.stat().st_size,mark,'probe must never mutate systemd')
   p=self.run_layout(backup=self.base/'backup2');self.assertEqual(p.returncode,0,p.stderr)
   state=json.loads(self.state.read_text())
   self.assertIn('mag-llm-glm.service',state['active']);self.assertIn('mag-llm-glm.service',state['enabled'])
@@ -144,6 +148,11 @@ json.dump(s,open(p,'w'))
   self.assertFalse([c for c in self.log.read_text()[mark:].splitlines() if c.startswith(('stop ','start '))])
   p=self.run_layout('rollback',backup=self.base/'backup2');self.assertEqual(p.returncode,0,p.stderr)
   state=json.loads(self.state.read_text());self.assertIn('mag-llm-qwen.service',state['active']);self.assertNotIn('mag-llm-glm.service',state['active'])
+ def test_auto_updater_probes_before_deploy(self):
+  body=(ROOT/'ops/auto-update/apply.sh').read_text()
+  self.assertIn('"$ROOT/ops/qwen/layout.sh" probe "$STATE"',body)
+  self.assertLess(body.index('layout.sh" probe'),body.index('bash "$ROOT/ops/deploy.sh"'))
+  self.assertIn('deployed-sha unchanged',body)
  def test_failed_glm_restores_qwen_once_then_stays_put(self):
   self.assertEqual(self.run_layout().returncode,0)
   (self.repo/'ops/room/layout').write_text('glm\n')

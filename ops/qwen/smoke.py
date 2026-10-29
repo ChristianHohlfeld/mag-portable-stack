@@ -95,7 +95,7 @@ def require_glm_ready(msg, label, roundtrip=False):
     Qwen retains its existing acceptance behaviour.
     """
     content = (msg.get("content") or "").strip()
-    pattern = r"(?:READY|ECHO:\\s*READY)[.!]?" if roundtrip else r"READY[.!]?"
+    pattern = r"(?:READY|ECHO:\s*READY)[.!]?" if roundtrip else r"READY[.!]?"
     if (not re.fullmatch(pattern, content, re.IGNORECASE)
             or msg.get("reasoning_content") or msg.get("tool_calls")):
         raise AssertionError(label + ": expected a plain READY answer, got " +

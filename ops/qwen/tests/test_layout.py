@@ -272,7 +272,7 @@ json.dump(s,open(p,'w'))
    blob=value.encode('utf-8')
    return struct.pack('<Q',len(blob))+blob
   entries=[
-   ('blk.3.indexer_kpool_ape.weight',20),
+   ('blk.3.indexer_compressor_ape.weight',20),
    ('blk.3.ssm_a',0),
   ]
   data=bytearray(b'GGUF'+struct.pack('<IQQ',3,len(entries),1))
@@ -285,8 +285,28 @@ json.dump(s,open(p,'w'))
                        str(path),'--show-elementwise-weights'],
                       capture_output=True,text=True)
   self.assertEqual(scan.returncode,0,scan.stderr)
-  self.assertIn('blk.3.indexer_kpool_ape.weight: iq4_nl',scan.stdout)
+  self.assertIn('blk.3.indexer_compressor_ape.weight: iq4_nl',scan.stdout)
   self.assertIn('blk.3.ssm_a: f32',scan.stdout)
+  # Other shards in a split GGUF omit general.architecture. Reading their
+  # tensor types is allowed only for diagnostics, never for deploy preflight.
+  split=bytearray(b'GGUF'+struct.pack('<IQQ',3,len(entries),0))
+  for name,typ in entries:
+   split+=ggstr(name)+struct.pack('<I',2)+struct.pack('<QQ',128,4)
+   split+=struct.pack('<IQ',typ,0)
+  path.write_bytes(split)
+  diag=subprocess.run(['python3','-I',str(ROOT/'ops/glm/inspect-gguf.py'),
+                       str(path),'--show-elementwise-weights'],
+                      capture_output=True,text=True)
+  self.assertEqual(diag.returncode,0,diag.stderr)
+  self.assertIn('blk.3.indexer_compressor_ape.weight: iq4_nl',diag.stdout)
+  strict=subprocess.run(['python3','-I',str(ROOT/'ops/glm/inspect-gguf.py'),
+                         str(path),'--require-kda-head-dim'],
+                        capture_output=True,text=True)
+  self.assertEqual(strict.returncode,4,strict.stdout+strict.stderr)
+  self.assertIn('architecture=None',strict.stderr)
+  no_flag=subprocess.run(['python3','-I',str(ROOT/'ops/glm/inspect-gguf.py'),str(path)],
+                         capture_output=True,text=True)
+  self.assertEqual(no_flag.returncode,4,no_flag.stdout+no_flag.stderr)
   patch=(ROOT/'ops/glm/arch-compat.patch').read_text()
   self.assertIn('--- a/src/models/glm5-next.cpp',patch)
   self.assertIn('ggml_is_quantized(indexer_ape->type)',patch)

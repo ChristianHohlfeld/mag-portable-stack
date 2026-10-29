@@ -1,0 +1,83 @@
+--- a/src/llama-arch.h
++++ b/src/llama-arch.h
+@@ -815,10 +815,12 @@
+ };
+ 
+ struct LLM_KV {
+-    LLM_KV(llm_arch arch, const char * suffix = nullptr);
+-
+-    llm_arch arch;
+-    const char * suffix;
++    LLM_KV(llm_arch arch, const char * suffix = nullptr, const char * arch_override = nullptr);
++
++    llm_arch arch;
++    const char * suffix;
++    // Preserve legacy GGUF prefixes without changing canonical architecture names.
++    const char * arch_override;
+ 
+     std::string operator()(llm_kv kv) const;
+ };
+--- a/src/llama-arch.cpp
++++ b/src/llama-arch.cpp
+@@ -1140,10 +1140,12 @@
+     {LLM_TENSOR_ATTN_V_EXPS,                {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL_MAT_ID}},
+ };
+ 
+-LLM_KV::LLM_KV(llm_arch arch, const char * suffix) : arch(arch), suffix(suffix) {}
+-
+-std::string LLM_KV::operator()(llm_kv kv) const {
+-    std::string name = ::format(LLM_KV_NAMES.at(kv), LLM_ARCH_NAMES.at(arch));
++LLM_KV::LLM_KV(llm_arch arch, const char * suffix, const char * arch_override)
++    : arch(arch), suffix(suffix), arch_override(arch_override) {}
++
++std::string LLM_KV::operator()(llm_kv kv) const {
++    const std::string arch_name = arch_override != nullptr ? arch_override : LLM_ARCH_NAMES.at(arch);
++    std::string name = ::format(LLM_KV_NAMES.at(kv), arch_name);
+ 
+     if (suffix != nullptr) {
+         name += ".";
+@@ -1187,7 +1189,11 @@
+     return it->second;
+ }
+ 
+-llm_arch llm_arch_from_string(const std::string & name) {
++llm_arch llm_arch_from_string(const std::string & name) {
++    // Early GLM-5.3 Flash GGUF files use 'glm5next' instead of 'glm5-next'.
++    if (name == "glm5next") {
++        return LLM_ARCH_GLM5_NEXT;
++    }
+     for (const auto & kv : LLM_ARCH_NAMES) { // NOLINT
+         if (kv.second == name) {
+             return kv.first;
+--- a/src/llama-model-loader.cpp
++++ b/src/llama-model-loader.cpp
+@@ -575,7 +575,8 @@
+         }
+ 
+         get_key(llm_kv(LLM_KV_GENERAL_ARCHITECTURE), arch_name, false);
+-        llm_kv = LLM_KV(llm_arch_from_string(arch_name));
++        llm_kv = LLM_KV(llm_arch_from_string(arch_name), nullptr,
++                arch_name == "glm5next" ? "glm5next" : nullptr);
+ 
+         files.emplace_back(new llama_file(fname.c_str(), "rb", use_direct_io));
+         contexts.emplace_back(ctx);
+@@ -694,7 +695,8 @@
+         }
+ 
+         get_key(llm_kv(LLM_KV_GENERAL_ARCHITECTURE), arch_name, false);
+-        llm_kv = LLM_KV(llm_arch_from_string(arch_name));
++        llm_kv = LLM_KV(llm_arch_from_string(arch_name), nullptr,
++                arch_name == "glm5next" ? "glm5next" : nullptr);
+ 
+         files.emplace_back(new llama_file(file));
+         contexts.emplace_back(ctx);
+@@ -712,7 +714,8 @@
+         }
+     } else {
+         get_key(llm_kv(LLM_KV_GENERAL_ARCHITECTURE), arch_name, false);
+-        llm_kv = LLM_KV(llm_arch_from_string(arch_name));
++        llm_kv = LLM_KV(llm_arch_from_string(arch_name), nullptr,
++                arch_name == "glm5next" ? "glm5next" : nullptr);
+     }
+ 
+     n_kv      = gguf_get_n_kv(metadata);

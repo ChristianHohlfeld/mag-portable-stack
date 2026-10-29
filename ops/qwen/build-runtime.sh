@@ -17,11 +17,18 @@ git -C "$SRC" checkout --force --detach "$REV"
 [[ $(git -C "$SRC" rev-parse HEAD) == "$REV" ]] || exit 4
 git -C "$SRC" apply --check "$ROOT/ops/qwen/end-checkpoint.patch"
 git -C "$SRC" apply "$ROOT/ops/qwen/end-checkpoint.patch"
+# Support early GLM-5.3 Flash GGUF metadata without changing canonical GLM or Qwen.
+git -C "$SRC" apply --check "$ROOT/ops/glm/arch-compat.patch"
+git -C "$SRC" apply "$ROOT/ops/glm/arch-compat.patch"
 cmake -S "$SRC" -B "$BUILD" -G Ninja -DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=ON -DBUILD_SHARED_LIBS=OFF
 cmake --build "$BUILD" -j 4 --target llama-server
 BIN="/home/chris/.local/qwen4exp/$REV-mag-cp1/bin/llama-server"
 mkdir -p "$(dirname "$BIN")"
-install -m 0755 "$BUILD/bin/llama-server" "$BIN"
+# Atomic publish after the entire patched runtime has built successfully.
+# Resident Qwen remains mapped to its existing executable until the normal switch.
+install -m 0755 "$BUILD/bin/llama-server" "$BIN.next"
+mv -f "$BIN.next" "$BIN"
 printf '%s\n' "$REV" > "$(dirname "$BIN")/source-commit"
-echo "Qwen runtime built: $BIN"
-
+patch_id=$(sha256sum "$ROOT/ops/qwen/end-checkpoint.patch" "$ROOT/ops/glm/arch-compat.patch" | sha256sum | cut -d' ' -f1)
+printf '%s\n' "$patch_id" > "$(dirname "$BIN")/patch-identity"
+echo "Pinned Qwen/GLM runtime built: $BIN (patch $patch_id)"

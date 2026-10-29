@@ -104,19 +104,60 @@ class BrowserSpeech(unittest.TestCase):
         self.page = self.context.new_page()
         self.requests = []
         self.page.on('request', lambda request: self.requests.append(request.url))
-        self.page.goto(f'http://127.0.0.1:{self.port}/', wait_until='domcontentloaded')
-        self.page.wait_for_function(
-            '() => navigator.serviceWorker && navigator.serviceWorker.controller',
-            timeout=20000)
-
-    def tearDown(self):
-        if hasattr(self, 'context'):
+        self.page_errors = []
+        self.page.on('pageerror', lambda exc: self.page_errors.append(str(exc)))
+        try:
+            response = self.page.goto(f'http://127.0.0.1:{self.port}/',
+                                      wait_until='domcontentloaded')
+            self.assertIsNotNone(response, 'Room document not served')
+            self.assertEqual(response.status, 200, 'Room document must return HTTP 200')
+            # A first-visit page can install the service worker without
+            # becoming controlled until its next navigation. Check the
+            # registration explicitly, then reload once; never skip SW tests.
+            registration = self.page.evaluate("""async () => {
+              if (!('serviceWorker' in navigator)) throw Error('SW API unavailable');
+              return await Promise.race([
+                navigator.serviceWorker.ready.then(r => ({scope:r.scope,active:!!r.active})),
+                new Promise((_,reject)=>setTimeout(()=>reject(Error('SW not ready')),12000))
+              ]);
+            }""")
+            self.assertTrue(registration['active'])
+            if not self.page.evaluate('!!navigator.serviceWorker.controller'):
+                self.page.reload(wait_until='domcontentloaded')
+            self.page.wait_for_function(
+                '() => !!navigator.serviceWorker?.controller',
+                timeout=12000)
+        except Exception as exc:
+            # setUp failures do NOT call tearDown: close Chromium/Playwright
+            # so a stale event loop cannot poison subsequent sync tests.
+            try:
+                status = self.page.evaluate("""async () => ({
+                  href:location.href,
+                  controlled:!!navigator.serviceWorker?.controller,
+                  registrations:(await navigator.serviceWorker.getRegistrations())
+                    .map(r=>({scope:r.scope,active:r.active?.state})),
+                  errors:[]})""")
+            except Exception:
+                status = {}
             self.context.close()
             self.browser.close()
             self.pw.stop()
-        if hasattr(self, 'proc'):
             harness.stop_room(self.proc, self.log, self.model)
-        if hasattr(self, 'tmp'):
+            self.tmp.cleanup()
+            self.context = None
+            self.proc = None
+            self.tmp = None
+            raise AssertionError(f'Speech SW bootstrap failed: {status}; '
+                                 f'page errors={self.page_errors}') from exc
+
+    def tearDown(self):
+        if getattr(self, 'context', None):
+            self.context.close()
+            self.browser.close()
+            self.pw.stop()
+        if getattr(self, 'proc', None):
+            harness.stop_room(self.proc, self.log, self.model)
+        if getattr(self, 'tmp', None):
             self.tmp.cleanup()
 
     def test_lazy_worker_partial_final_and_no_server_stt(self):

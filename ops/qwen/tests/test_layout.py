@@ -8,7 +8,7 @@ while _mag_root != _mag_root.parent and not (_mag_root / 'ops/ci/mag_deadline.py
 _mag_sys.path.insert(0, str(_mag_root / 'ops/ci'))
 import mag_deadline as _mag_deadline
 _mag_deadline.arm(180)
-import json, os, pathlib, shutil, subprocess, tempfile, unittest
+import hashlib, json, os, pathlib, shutil, subprocess, tempfile, unittest
 ROOT=pathlib.Path(__file__).resolve().parents[3]
 class Layout(unittest.TestCase):
  def setUp(self):
@@ -30,6 +30,10 @@ class Layout(unittest.TestCase):
   self.write('/home/chris/.local/qwen4exp/'+rev+'-mag-cp1/bin/llama-server','binary')
   (self.host/('home/chris/.local/qwen4exp/'+rev+'-mag-cp1/bin/llama-server')).chmod(0o755)
   self.write('/home/chris/.local/qwen4exp/'+rev+'-mag-cp1/bin/source-commit',rev+'\n')
+  # Match the patched-runtime identity expected by layout.sh without building llama.cpp.
+  patch_files=[str(self.repo/'ops/qwen/end-checkpoint.patch'),str(self.repo/'ops/glm/arch-compat.patch')]
+  patch_id=hashlib.sha256(subprocess.check_output(['sha256sum',*patch_files])).hexdigest()
+  self.write('/home/chris/.local/qwen4exp/'+rev+'-mag-cp1/bin/patch-identity',patch_id+'\n')
   self.write('/home/chris/models/qwen3.8-flash-next-uncensored/upstream.sha256','verified upstream pin\n')
   stage=self.repo/'ops/qwen/install.sh';stage.write_text('''#!/bin/bash
 set -eu

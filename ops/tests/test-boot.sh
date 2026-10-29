@@ -18,6 +18,7 @@ case "$1 $2" in
   "is-enabled mag-llm.service") echo enabled; exit 0 ;;
   "is-enabled mag-llm-iq3.service") echo static; exit 0 ;;
   "is-enabled mag-auto-update.timer") echo disabled; exit 1 ;;
+  "is-enabled mag-llm-glm.service") echo disabled; exit 1 ;;
   "is-enabled mag-console-only.service") echo disabled; exit 1 ;;
   "is-enabled mag-llm-ornith"*) echo disabled; exit 1 ;;
 esac
@@ -39,7 +40,7 @@ chmod +x "$tmp/bin/"*
 run() { # $1 = secondary-model.env path, $2 = ipmi devices, $3 = room-model.env (missing if omitted)
   local room=${3:-$tmp/no-room-model.env}
   : > "$log"
-  CALLS="$log" ACTIVE="mag-llm.service mag-llm-iq3.service mag-auto-update.timer mag-120.service $ORNITH" \
+  CALLS="$log" ACTIVE="${MAG_TEST_ACTIVE:-mag-llm.service mag-llm-iq3.service mag-auto-update.timer mag-120.service $ORNITH}" \
     MAG_SECONDARY_MODEL_ENV="$1" MAG_ROOM_MODEL_ENV="$room" MAG_AGENTS_JSON="$tmp/none.json" MAG_IPMI_DEVICES="$2" \
     PATH="$tmp/bin:$PATH" bash <(sed 's/^\[\[ \$EUID == 0 \]\].*$//' "$root/ops/boot/ensure-boot.sh")
 }
@@ -89,5 +90,12 @@ common
 grep -Fq 'retire-deepseek.sh' "$root/ops/deploy.sh"
 grep -Fq 'clear-failed-units.sh' "$root/ops/deploy.sh"
 grep -Fq 'ops/boot/ensure-boot.sh' "$root/ops/auto-update/apply.sh"
+# 5) GLM layout survives reboot: it is the sole NUMA1 model enabled for boot.
+printf 'MAG_ROOM_MODEL_ID_0=deepseek-v4-flash-0731\nMAG_ROOM_MODEL_ID_1=glm-5.3-flash\n' > "$tmp/room-glm.env"
+out=$(ORNITH="" MAG_TEST_ACTIVE="mag-llm-ds-node@0.service mag-llm-glm.service mag-auto-update.timer mag-120.service" run "$tmp/missing.env" "$tmp/no-ipmi0" "$tmp/room-glm.env")
+grep -Fxq 'systemctl disable mag-llm-ds-node@1.service mag-llm-qwen.service' "$log"
+grep -Fxq 'systemctl enable mag-llm-glm.service' "$log"
+! grep -Eq 'systemctl enable mag-llm-(qwen|ds-node@1).service' "$log"
+common
 grep -Fq 'PHASE boot' <<<"$(bash "$root/ops/update.sh" --dry-run)"
 echo 'Boot persistence PASS'

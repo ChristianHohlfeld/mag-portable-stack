@@ -1,5 +1,22 @@
 <!doctype html>
-<html lang="de"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="color-scheme" content="dark light"><link rel="stylesheet" href="/static/xterm.css"><title>MAG · Privater Raum</title><style>/* MAG 2026 · standalone interface */
+<html lang="de"><head>
+<!-- MAG_SERVE_OWNER_REDIRECT_START -->
+<script>
+(() => {
+  // :8446 is a direct Tailscale Serve recovery proxy. It cannot attest
+  // the nginx/WhoIs proof required by Jobs, guests, backups and other
+  // owner-only routes. Never weaken that proof to make this port work.
+  if (location.protocol !== "https:" ||
+      location.hostname !== "mag.tail3e02ae.ts.net" || location.port !== "8446") return;
+  // Opt-in read-only rescue view if the authenticated nginx path is down.
+  if (new URLSearchParams(location.search).get("recovery") === "1") return;
+  const destination = new URL(location.href);
+  destination.hostname = "mag.stardenburg.de";
+  destination.port = "";
+  location.replace(destination.href);
+})();
+</script>
+<!-- MAG_SERVE_OWNER_REDIRECT_END --><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="color-scheme" content="dark light"><link rel="stylesheet" href="/static/xterm.css"><title>MAG · Privater Raum</title><style>/* MAG 2026 · standalone interface */
 :root{color-scheme:dark;--bg:#111216;--surface:#17191e;--sidebar:#15171b;--panel:#1c1e24;--panel-2:#23262d;--panel-3:#2b2e36;--text:#f1f0ed;--secondary:#b7b7ba;--muted:#858790;--line:#31333b;--soft-line:#282a31;--accent:#d9a885;--accent-ink:#261b16;--hover:#25272e;--code:#0f1116;--green:#7bca9d;--orange:#e4b77a;--red:#ef9999;--shadow:0 20px 70px #0007;--bubble:#282a31;--radius:16px;font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,Arial,sans-serif;font-synthesis:none}
 :root[data-theme=light]{color-scheme:light;--bg:#fff;--surface:#fff;--sidebar:#f8f8f6;--panel:#f6f5f2;--panel-2:#eeedea;--panel-3:#e8e6e1;--text:#242522;--secondary:#4e504e;--muted:#777974;--line:#e0dfdb;--soft-line:#eae9e5;--accent:#8c4f34;--accent-ink:#fff;--hover:#f0efeb;--code:#f2f3f5;--green:#28814c;--orange:#a66a24;--red:#ad4242;--shadow:0 12px 40px #0002;--bubble:#f4f3f0}
 [hidden]{display:none!important}*{box-sizing:border-box}html,body{height:100%;margin:0}body{background:var(--bg);color:var(--text);overflow:hidden}button,input,textarea,select{font:inherit;color:inherit}button{cursor:pointer;border:0;background:none}button:disabled{opacity:.45;cursor:not-allowed}button:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-visible,a:focus-visible,summary:focus-visible{outline:2px solid var(--accent);outline-offset:3px}input,select,textarea{outline:none}a{color:var(--accent);text-decoration-thickness:1px;text-underline-offset:3px}.i{width:18px;height:18px;display:inline-block;vertical-align:-4px;fill:none;stroke:currentColor;stroke-width:1.75;stroke-linecap:round;stroke-linejoin:round;flex:none}.i.sm{width:16px;height:16px}.i.lg{width:21px;height:21px}.muted{color:var(--muted)}.hint{color:var(--muted);font-size:12px;line-height:1.5}.eyebrow{color:var(--muted);font-size:10px;font-weight:750;letter-spacing:.14em;text-transform:uppercase}.icon-btn{display:inline-flex;align-items:center;justify-content:center;gap:7px;width:36px;height:36px;border-radius:10px;color:var(--secondary);border:1px solid transparent;flex-shrink:0}.icon-btn:hover{background:var(--hover);color:var(--text)}.pill-btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;border:1px solid var(--line);color:var(--secondary);padding:8px 12px;border-radius:10px;font-weight:550;font-size:12px;min-height:35px}.pill-btn:hover{background:var(--hover);color:var(--text)}.primary{background:var(--accent)!important;color:var(--accent-ink)!important;border-color:transparent!important;font-weight:650}.primary:hover{filter:brightness(1.08)}.danger{color:var(--red)}.spacer{flex:1}.dot{display:inline-block;flex:none;width:7px;height:7px;border-radius:50%;background:var(--orange);box-shadow:0 0 0 3px color-mix(in srgb,var(--orange),transparent 88%)}

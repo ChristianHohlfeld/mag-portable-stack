@@ -93,6 +93,8 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('model', help='first GGUF shard')
     parser.add_argument('--require', action='append', default=[], help='required metadata key')
+    parser.add_argument('--require-kda-head-dim', action='store_true',
+                        help='require the KDA head dimension consumed by the pinned llama.cpp loader')
     args = parser.parse_args(argv)
     try:
         version, tensors, keys, arch = inspect(args.model)
@@ -105,7 +107,10 @@ def main(argv=None):
                       any(x in k for x in ('kda', 'ssm', 'head', 'attention', 'indexer', 'hyper')))
     for key in relevant:
         print('  ' + key)
-    missing = [key for key in args.require if key not in keys]
+    required = list(args.require)
+    if args.require_kda_head_dim and arch in ('glm5next', 'glm5-next'):
+        required.append(f'{arch}.kda.head_dim')
+    missing = [key for key in required if key not in keys]
     if missing:
         print(f'GLM GGUF incompatible: missing required metadata: {", ".join(missing)}', file=sys.stderr)
         print('Refusing model switch; existing NUMA1 service unchanged', file=sys.stderr)

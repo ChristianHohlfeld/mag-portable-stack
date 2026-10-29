@@ -81,3 +81,76 @@
      }
  
      n_kv      = gguf_get_n_kv(metadata);
+--- a/src/models/glm5-next.cpp
++++ b/src/models/glm5-next.cpp
+@@ -12,15 +12,43 @@
+     ml.get_key(LLM_KV_ATTENTION_Q_LORA_RANK,       hparams.n_lora_q);
+     ml.get_key(LLM_KV_ATTENTION_KV_LORA_RANK,      hparams.n_lora_kv);
+     ml.get_key(LLM_KV_SSM_CONV_KERNEL,             hparams.ssm_d_conv);
+-    ml.get_key(LLM_KV_KDA_HEAD_DIM,                hparams.n_embd_head_kda);
+-    ml.get_key(LLM_KV_KDA_GATE_LOWER_BOUND,        hparams.kda_gate_lower_bound, false);
++    // Early 6block GGUFs (general.architecture=glm5next) predate the
++    // dedicated KDA metadata; the original glm5next loader falls back to
++    // ssm.state_size for the same per-head dimension.
++    if (ml.arch_name == "glm5next") {
++        if (!ml.get_key(LLM_KV_KDA_HEAD_DIM, hparams.n_embd_head_kda, false)) {
++            ml.get_key(LLM_KV_SSM_STATE_SIZE, hparams.n_embd_head_kda);
++        }
++    } else {
++        ml.get_key(LLM_KV_KDA_HEAD_DIM, hparams.n_embd_head_kda);
++    }
++    if (!ml.get_key(LLM_KV_KDA_GATE_LOWER_BOUND, hparams.kda_gate_lower_bound, false) &&
++        ml.arch_name == "glm5next") {
++        // Original GLM-5.3 converter encoded no gate bound: HF default -5.
++        hparams.kda_gate_lower_bound = -5.0f;
++    }
+ 
+     // the MLA cache holds the compressed latent
+     hparams.n_embd_head_v_full = hparams.n_lora_kv;
+ 
+-    for (uint32_t i = 0; i < hparams.n_layer_all; ++i) {
+-        hparams.is_recr_impl[i] = hparams.n_head_kv(i) == 0;
+-    }
++    if (ml.arch_name == "glm5next") {
++        // The old converter forces n_head_kv=1 on all layers: it cannot be
++        // used as a recurrent marker. Match the original glm5next loader.
++        std::fill(hparams.is_recr_impl.begin(), hparams.is_recr_impl.end(), 0);
++        if (!ml.get_key_or_arr(LLM_KV_ATTENTION_RECURRENT_LAYERS,
++                               hparams.is_recr_impl, hparams.n_layer(), false)) {
++            uint32_t full_attn_interval = 4;
++            ml.get_key(LLM_KV_FULL_ATTENTION_INTERVAL, full_attn_interval, false);
++            GGML_ASSERT(full_attn_interval > 0);
++            for (uint32_t i = 0; i < hparams.n_layer(); ++i) {
++                hparams.is_recr_impl[i] = (i + 1) % full_attn_interval != 0;
++            }
++        }
++    } else {
++        for (uint32_t i = 0; i < hparams.n_layer_all; ++i) {
++            hparams.is_recr_impl[i] = hparams.n_head_kv(i) == 0;
++        }
++    }
+ 
+     ml.get_key_or_arr(LLM_KV_EXPERT_FEED_FORWARD_LENGTH, hparams.n_ff_exp_arr, hparams.n_layer_all);
+     ml.get_key(LLM_KV_EXPERT_SHARED_COUNT,        hparams.n_expert_shared);
+@@ -40,8 +68,19 @@
+     ml.get_key(LLM_KV_ATTENTION_INDEXER_HEAD_COUNT,        hparams.indexer_n_head);
+     ml.get_key(LLM_KV_ATTENTION_INDEXER_KEY_LENGTH,        hparams.indexer_head_size);
+     ml.get_key(LLM_KV_ATTENTION_INDEXER_TOP_K,             hparams.indexer_top_k);
+-    ml.get_key(LLM_KV_ATTENTION_INDEXER_KPOOL,             hparams.indexer_kpool);
+-    ml.get_key(LLM_KV_ATTENTION_INDEXER_KPOOL_SELECT_TAIL, hparams.indexer_kpool_select_tail, false);
++    if (ml.arch_name == "glm5next") {
++        if (!ml.get_key(LLM_KV_ATTENTION_INDEXER_KPOOL, hparams.indexer_kpool, false)) {
++            // Earlier glm5next GGUFs call kpool "block_size" (same semantics).
++            ml.get_key(LLM_KV_ATTENTION_INDEXER_BLOCK_SIZE, hparams.indexer_kpool);
++        }
++    } else {
++        ml.get_key(LLM_KV_ATTENTION_INDEXER_KPOOL, hparams.indexer_kpool);
++    }
++    if (ml.arch_name == "glm5next") {
++        // The legacy k-pool indexer always includes its unfinished tail.
++        hparams.indexer_kpool_select_tail = true;
++    }
++    ml.get_key(LLM_KV_ATTENTION_INDEXER_KPOOL_SELECT_TAIL, hparams.indexer_kpool_select_tail, false);
+     GGML_ASSERT(hparams.indexer_kpool > 1 && hparams.indexer_top_k % hparams.indexer_kpool == 0);
+     std::fill(hparams.is_indexer_full_impl.begin(), hparams.is_indexer_full_impl.end(), 1);
+     ml.get_key_or_arr(LLM_KV_ATTENTION_INDEXER_TYPES, hparams.is_indexer_full_impl, hparams.n_layer(), false);

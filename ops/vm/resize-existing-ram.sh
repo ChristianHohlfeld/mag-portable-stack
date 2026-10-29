@@ -33,7 +33,8 @@ backup_dir="/var/backups/mag-stack/vm-ram-$(date -u +%Y%m%dT%H%M%SZ)"
 mkdir -p "$backup_dir"
 chmod 0700 "$backup_dir"
 vir() { virsh -c qemu:///system "$@"; }
-for name in "${@:-agent1 agent2}"; do
+if (( $# == 0 )); then set -- agent1 agent2; fi
+for name in "$@"; do
   [[ "$name" =~ ^[a-z][a-z0-9-]{0,31}$ ]] || { echo "Invalid bot VM: $name" >&2; exit 64; }
   id="magbot-$name"
   meta="$root/bots/$name/metadata.json"

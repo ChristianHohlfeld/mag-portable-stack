@@ -202,6 +202,37 @@ json.dump(s,open(p,'w'))
   self.assertIn('git -C "$SRC" apply "$ROOT/ops/glm/arch-compat.patch"',build)
   self.assertIn('"$ROOT/ops/glm/arch-compat.patch" | sha256sum',build)
   self.assertIn('"$ROOT/ops/glm/arch-compat.patch" | sha256sum',layout)
+ def test_glm_gguf_metadata_preflight_before_qwen_stop(self):
+  # A legacy GGUF can pass split sizes and still lack a required KDA key.
+  # The live 6block IQ1_M first shard failed on glm5next.kda.head_dim.
+  import struct
+  model=self.base/'glm-header.gguf'
+  scanner=ROOT/'ops/glm/inspect-gguf.py'
+  def make(fields):
+   data=bytearray(b'GGUF'+struct.pack('<IQQ',3,0,len(fields)))
+   for key,value in fields.items():
+    k=key.encode('utf-8');is_str=isinstance(value,str)
+    data+=struct.pack('<Q',len(k))+k+struct.pack('<I',8 if is_str else 4)
+    if is_str:
+     v=value.encode('utf-8');data+=struct.pack('<Q',len(v))+v
+    else:data+=struct.pack('<I',value)
+   model.write_bytes(data)
+  run=lambda:subprocess.run(['python3','-I',str(scanner),str(model),'--require-kda-head-dim'],
+                             capture_output=True,text=True)
+  for arch in ('glm5next','glm5-next'):
+   make({'general.architecture':arch,'tokenizer.ggml.model':'gpt2'})
+   p=run();self.assertEqual(p.returncode,4,p.stdout+p.stderr)
+   self.assertIn(arch+'.kda.head_dim',p.stderr)
+   make({'general.architecture':arch,arch+'.kda.head_dim':128})
+   p=run();self.assertEqual(p.returncode,0,p.stdout+p.stderr)
+  model.write_bytes(b'GGUF\\x03')
+  p=run();self.assertEqual(p.returncode,4,p.stdout+p.stderr)
+  self.assertIn('invalid header',p.stderr)
+  stage=(ROOT/'ops/glm/install.sh').read_text()
+  self.assertIn('--require-kda-head-dim',stage)
+  self.assertLess(stage.index('verify-model.sh'),stage.index('inspect-gguf.py'))
+  layout=(ROOT/'ops/qwen/layout.sh').read_text()
+  self.assertLess(layout.index('ops/glm/install.sh'),layout.index('systemctl stop "$unit"'))
  def test_glm_unit_and_start_are_numa1_only(self):
   u=(ROOT/'ops/glm/mag-llm-glm.service').read_text();st=(ROOT/'ops/glm/start.sh').read_text()
   self.assertIn('Conflicts=mag-llm-ds-node@1.service mag-llm-iq3.service mag-llm-qwen.service',u)

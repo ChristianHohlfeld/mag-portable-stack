@@ -146,4 +146,59 @@ task_line=$(printf '%s\n' '{"user_busy":false,"selftalk_busy":false,"selftalk_he
 # Deferred drain must preserve its real code (75), never invert it with '!'.
 grep -Fq 'if drain_room; then' "$root/ops/deploy.sh"
 ! grep -Fq 'if ! drain_room; then' "$root/ops/deploy.sh"
+# Exercise the *actual* embedded room-readiness gate with a stubbed room API
+# and isolated active-layout file; no systemd or live model is touched.
+python3 -I - "$root/ops/deploy.sh" <<'PY'
+import io
+import json
+import pathlib
+import re
+import subprocess
+import sys
+import tempfile
+
+deploy = pathlib.Path(sys.argv[1]).read_text()
+match = re.search(
+    r"  if ! python3 - /etc/mag-stack/room-layout <<'PY'\n(.*?)\nPY\n",
+    deploy, re.S,
+)
+assert match, "embedded room readiness gate missing"
+gate = match.group(1)
+
+def bot(model, name=None, enabled=True):
+    return {"name": name or model, "model": model, "enabled": enabled}
+
+ds = bot("deepseek-v4-flash-0731", "DeepSeek V4 Flash")
+glm = bot("glm-5.3-flash", "GLM-5.3 Flash")
+qwen = bot("qwen3.8-flash-next-uncensored", "Qwen3.8 Flash Next")
+
+with tempfile.TemporaryDirectory() as directory:
+    layout_path = pathlib.Path(directory) / "room-layout"
+    def probe(layout, agents, accepted, expected_label):
+        layout_path.write_text(layout + "\n")
+        payload = repr(json.dumps({"agents": agents}))
+        stub = ("import io,json,urllib.request\n"
+                "urllib.request.urlopen = lambda *args, **kwargs: "
+                "io.BytesIO(" + payload + ".encode())\n")
+        result = subprocess.run(
+            [sys.executable, "-I", "-c", stub + gate, str(layout_path)],
+            capture_output=True, text=True, timeout=15,
+        )
+        assert (result.returncode == 0) is accepted, (
+            layout, [(a["name"], a["model"]) for a in agents],
+            result.stdout, result.stderr,
+        )
+        assert expected_label in (result.stdout if accepted else result.stderr), (
+            result.stdout, result.stderr,
+        )
+    probe("glm", [ds, glm], True, "Release ready: DeepSeek and GLM")
+    probe("mixed", [ds, qwen], True, "Release ready: DeepSeek and Qwen")
+    probe("qwen", [ds, qwen], True, "Release ready: DeepSeek and Qwen")
+    probe("glm", [ds, qwen], False, "expected live DeepSeek and GLM")
+    probe("mixed", [ds, glm], False, "expected live DeepSeek and Qwen")
+    probe("glm", [ds, glm, qwen], False, "expected live DeepSeek and GLM")
+    probe("glm", [ds, glm, bot("qwen3", enabled=False)], True,
+          "Release ready: DeepSeek and GLM")
+    probe("unexpected", [ds, glm], False, "unknown active NUMA1 room layout")
+PY
 echo 'Update dry-run PASS'

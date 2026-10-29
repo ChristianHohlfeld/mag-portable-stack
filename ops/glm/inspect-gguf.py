@@ -137,6 +137,8 @@ def main(argv=None):
                         help='require compatible KDA head dimension (legacy glm5next aliases supported)')
     parser.add_argument('--show-elementwise-weights', action='store_true',
                         help='show GGUF tensor types of model weights used in elementwise GLM operations')
+    parser.add_argument('--require-elementwise-safe', action='store_true',
+                        help='fail before NUMA1 cutover on unsupported GLM elementwise weight types')
     args = parser.parse_args(argv)
     try:
         version, tensors, keys, arch = inspect(args.model)
@@ -149,10 +151,19 @@ def main(argv=None):
                       any(x in k for x in ('kda', 'ssm', 'head', 'attention', 'indexer', 'hyper')))
     for key in relevant:
         print('  ' + key)
-    if args.show_elementwise_weights:
+    if args.show_elementwise_weights or args.require_elementwise_safe:
         try:
             for name, typ in elementwise_weight_types(args.model):
-                print(f'  tensor {name}: {typ}')
+                if args.show_elementwise_weights:
+                    print(f'  tensor {name}: {typ}')
+                # The patched GLM elementwise graph casts IQ4_NL weights to
+                # F32; other quantization formats have not been validated by
+                # a CPU runtime acceptance test. Reject rather than SIGABRT.
+                if args.require_elementwise_safe and typ not in (
+                        'f32', 'f16', 'bf16', 'iq4_nl'):
+                    print(f'GLM GGUF unsupported elementwise operand: {name}={typ}',
+                          file=sys.stderr)
+                    return 4
         except (OSError, UnicodeError, ValueError) as e:
             print(f'GLM GGUF tensor-directory error: {e}', file=sys.stderr)
             return 4
@@ -175,7 +186,8 @@ def main(argv=None):
         # A split GGUF may omit general.architecture from secondary shards.
         # Their tensor directory is still inspectable; this diagnostic-only
         # allowance must never relax the strict deploy/preflight contract.
-        if arch is None and args.show_elementwise_weights and not (
+        if arch is None and (args.show_elementwise_weights or
+                             args.require_elementwise_safe) and not (
                 args.require or args.require_kda_head_dim):
             return 0
         print(f'GLM GGUF incompatible: architecture={arch}', file=sys.stderr)

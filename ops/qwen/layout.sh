@@ -40,6 +40,31 @@ rollback(){
     if [[ -f $TXN/changed ]] && grep -Fxq "$unit" "$TXN/active"; then systemctl start "$unit"; fi
   done
   touch "$TXN/restored"
+  # The rollback is complete before we probe the restored Qwen. It now uses
+  # the pinned shared runtime built for this release. A smoke failure must
+  # NEVER abort or undo the rollback: signal the degraded state visibly.
+  if [[ -f $TXN/changed ]] &&
+     grep -Fxq mag-llm-qwen.service "$TXN/active"; then
+    qwen_ready=0
+    for ((qi=0; qi<120; qi++)); do
+      if systemctl is-active --quiet mag-llm-qwen.service &&
+         curl --noproxy '*' -fsS --max-time 3 -o /dev/null http://127.0.0.1:8192/health 2>/dev/null; then
+        qwen_ready=1
+        break
+      fi
+      sleep 5
+    done
+    if (( qwen_ready )); then
+      if python3 -I "$ROOT/ops/qwen/smoke.py" --port 8192 \
+          --model qwen3.8-flash-next-uncensored --quick; then
+        echo 'QWEN ROLLBACK SMOKE PASS (new pinned runtime)'
+      else
+        echo 'WARNING: Qwen restored and healthy, but rollback smoke failed' >&2
+      fi
+    else
+      echo 'WARNING: Qwen rollback service restored, health still unavailable' >&2
+    fi
+  fi
 }
 if [[ $ACTION == rollback ]]; then rollback; exit; fi
 [[ $ACTION == apply || $ACTION == probe ]] || fail 'unknown action'

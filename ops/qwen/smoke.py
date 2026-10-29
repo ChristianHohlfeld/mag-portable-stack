@@ -11,9 +11,16 @@ TOOL = {"type": "function", "function": {"name": "echo",
                        "required": ["value"], "additionalProperties": False}}}
 
 def request(port, messages, thinking=False, choice=None, stream=False):
+    glm = request.model == "glm-5.3-flash"
+    # GLM-5.3-Flash has no non-thinking mode. Its Jinja template ignores
+    # enable_thinking, defaults to Reasoning Effort: Max and can exhaust 192
+    # output tokens inside reasoning_content before reaching visible content.
+    # The inexpensive GLM option is reasoning_effort=low (not "off").
+    template_kwargs = ({"reasoning_effort": "high" if thinking else "low"}
+                       if glm else {"enable_thinking": thinking})
     body = {"model": request.model, "messages": messages, "stream": stream,
-            "max_tokens": 512 if thinking else 192, "temperature": 0,
-            "chat_template_kwargs": {"enable_thinking": thinking},
+            "max_tokens": (512 if thinking else 384) if glm else (512 if thinking else 192),
+            "temperature": 0, "chat_template_kwargs": template_kwargs,
             "cache_prompt": True, "id_slot": 0}
     if choice:
         body["tools"] = [TOOL]
@@ -26,6 +33,10 @@ def request(port, messages, thinking=False, choice=None, stream=False):
             answer = json.load(res)
             request.last_response = answer
             assert answer.get("choices"), "Missing OpenAI choices"
+            if request.model == "glm-5.3-flash":
+                # Synthetic test prompts only. Always expose parsed reasoning
+                # vs visible text and finish reason so failures are actionable.
+                report(answer, full=request.diagnose_only)
             return answer["choices"][0]["message"]
         seen = 0
         done = False
@@ -49,6 +60,36 @@ def request(port, messages, thinking=False, choice=None, stream=False):
         return {"tool_calls": [{"function": c} for _, c in sorted(calls.items())]}
 
 request.model = MODEL
+request.diagnose_only = False
+
+def report(answer, full=False):
+    """Show actual GLM output classification, without dumping user conversations."""
+    item = (answer.get("choices") or [{}])[0]
+    message = item.get("message") or {}
+    cap = 8192 if full else 320
+    payload = {
+        "finish_reason": item.get("finish_reason"),
+        "usage": answer.get("usage"),
+        "content": str(message.get("content") or "")[:cap],
+        "reasoning_content": str(message.get("reasoning_content") or "")[:cap],
+        "tool_calls": message.get("tool_calls"),
+        "truncated_preview": any(len(str(message.get(k) or "")) > cap
+                                  for k in ("content", "reasoning_content")),
+    }
+    print("GLM SMOKE RESPONSE " + json.dumps(payload, ensure_ascii=False), flush=True)
+
+
+def require_visible_content(msg, label):
+    if msg.get("content"):
+        return
+    response = request.last_response
+    item = (response.get("choices") or [{}])[0]
+    why = ("reasoning exhausted max_tokens" if item.get("finish_reason") == "length"
+           and msg.get("reasoning_content") else
+           "missing parsed visible answer")
+    raise AssertionError(label + ": " + why +
+                         " (see GLM SMOKE RESPONSE for actual generated output)")
+
 
 def tool(msg):
     calls = msg.get("tool_calls") or []
@@ -63,10 +104,16 @@ def main():
     a.add_argument("--port", choices=[8080, 8091, 8192], type=int, default=8091)
     a.add_argument("--quick", action="store_true")
     a.add_argument("--model", choices=[MODEL, "glm-5.3-flash"], default=MODEL)
+    a.add_argument("--diagnose-only", action="store_true",
+                   help="single synthetic chat request, print parsed reasoning/content and exit; no PASS claim")
     opt = a.parse_args()
     request.model = opt.model
+    request.diagnose_only = opt.diagnose_only
     msg = request(opt.port, [{"role": "user", "content": "Reply READY."}])
-    assert msg.get("content"), "Normal chat failed"
+    if opt.diagnose_only:
+        print("DIAGNOSE ONLY: no acceptance assertion or model switch", flush=True)
+        return
+    require_visible_content(msg, "Normal chat failed")
     print("PASS chat", flush=True)
     if opt.port == 8192:
         # Inspect actual server state, then repeat the identical cached request.
@@ -90,7 +137,7 @@ def main():
         {"role": "assistant", "content": msg.get("content"),
          "tool_calls": msg["tool_calls"]},
         {"role": "tool", "tool_call_id": tc["id"], "name": "echo", "content": "READY"}])
-    assert again.get("content") or again.get("reasoning_content"), "Tool result roundtrip failed"
+    require_visible_content(again, "Tool result roundtrip failed")
     print("PASS tool result roundtrip", flush=True)
     if not opt.quick:
         tool(request(opt.port, prompt, choice="required"))

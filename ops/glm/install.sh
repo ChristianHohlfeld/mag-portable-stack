@@ -25,6 +25,14 @@ bash /usr/local/lib/mag-glm/verify-model.sh
 python3 -I "$ROOT/ops/glm/inspect-gguf.py" \
   /home/chris/models/GLM-5.3-Flash-GGUF-IQ1_M/GLM-5.3-Flash-IQ1_M-00001-of-00015.gguf \
   --require-kda-head-dim
+# Read only tensor directories (all 15 shards). A known quantized small
+# elementwise GLM weight may be cast to float; unknown quantized operands
+# fail closed BEFORE Qwen on NUMA1 is stopped.
+for part in /home/chris/models/GLM-5.3-Flash-GGUF-IQ1_M/GLM-5.3-Flash-IQ1_M-*-of-00015.gguf; do
+  python3 -I "$ROOT/ops/glm/inspect-gguf.py" "$part" \
+    --require-elementwise-safe >/dev/null
+done
+echo 'GLM GGUF elementwise types preflight passed (15 shards)'
 install -d -o chris -g chris -m 0700 /var/lib/mag-llm/slots/glm
 install -m 0644 "$ROOT/ops/glm/mag-llm-glm.service" /etc/systemd/system/mag-llm-glm.service
 mag_daemon_reload

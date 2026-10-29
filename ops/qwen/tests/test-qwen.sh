@@ -57,5 +57,7 @@ ast.parse(pathlib.Path("ops/qwen/smoke.py").read_text())
 PY
 bash ops/perf/tests/test-numa-context.sh
 python3 ops/qwen/tests/test_layout.py
-echo 'Qwen NUMA1 layout + Jinja/Thinking/tools contract PASS'
+# Exercise GLM smoke quality assertions in the actual CI contract.
+python3 ops/qwen/tests/test_smoke_glm.py
+echo 'Qwen/GLM NUMA1 layout + Jinja/Thinking/tools contract PASS'
 

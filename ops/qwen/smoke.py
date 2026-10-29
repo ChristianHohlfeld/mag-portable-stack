@@ -2,6 +2,7 @@
 """NUMA1 live acceptance (Qwen or GLM): MAG-style auto tools, reasoning, streaming."""
 import argparse
 import json
+import re
 import urllib.request
 
 MODEL = "qwen3.8-flash-next-uncensored"
@@ -87,6 +88,21 @@ def require_visible_content(msg, label):
                          " (see GLM SMOKE RESPONSE for actual generated output)")
 
 
+
+def require_glm_ready(msg, label, roundtrip=False):
+    """A synthetic readiness prompt must not accept a disclaimer, leaked think
+    delimiter or arbitrary text merely because it contains the word READY.
+    Qwen retains its existing acceptance behaviour.
+    """
+    content = (msg.get("content") or "").strip()
+    pattern = r"(?:READY|ECHO:\s*READY)[.!]?" if roundtrip else r"READY[.!]?"
+    if (not re.fullmatch(pattern, content, re.IGNORECASE)
+            or msg.get("reasoning_content") or msg.get("tool_calls")):
+        raise AssertionError(label + ": expected a plain READY answer, got " +
+                             repr(content[:200]) + " (see GLM SMOKE RESPONSE)")
+
+
+
 def tool(msg):
     calls = msg.get("tool_calls") or []
     assert calls, "Tool call emitted as text or absent"
@@ -112,7 +128,10 @@ def main():
     require_visible_content(msg, "Normal chat failed")
     # Thinking is off: the answer must be plain content that ends on its own.
     finish = request.last_response["choices"][0].get("finish_reason")
-    assert "READY" in msg["content"].upper(), "Normal chat failed: no READY in %r" % msg["content"][:200]
+    if opt.model == "glm-5.3-flash":
+        require_glm_ready(msg, "Normal chat failed")
+    else:
+        assert "READY" in msg["content"].upper(), "Normal chat failed: no READY in %r" % msg["content"][:200]
     assert finish == "stop", "Normal chat failed: finish_reason=%s" % finish
     t = request.last_response.get("timings") or {}
     print("PASS chat %r (generation %.1f tok/s, prompt %.1f tok/s)" % (
@@ -123,7 +142,9 @@ def main():
             slots = json.load(res)
         n_past = max([int(s.get("n_past", s.get("n_prompt_tokens", 0))) for s in slots] or [0])
         assert n_past > 0, "%s has no warm prompt before request 2" % opt.model
-        request(opt.port, [{"role": "user", "content": "Reply READY."}])
+        cached_msg = request(opt.port, [{"role": "user", "content": "Reply READY."}])
+        if opt.model == "glm-5.3-flash":
+            require_glm_ready(cached_msg, "Cached normal chat failed")
         timings = request.last_response.get("timings") or {}
         cached = timings.get("cache_n", request.last_response.get("tokens_cached"))
         if cached is not None:
@@ -140,6 +161,8 @@ def main():
          "tool_calls": msg["tool_calls"]},
         {"role": "tool", "tool_call_id": tc["id"], "name": "echo", "content": "READY"}])
     require_visible_content(again, "Tool result roundtrip failed")
+    if opt.model == "glm-5.3-flash":
+        require_glm_ready(again, "Tool result roundtrip failed", roundtrip=True)
     print("PASS tool result roundtrip", flush=True)
     if not opt.quick:
         tool(request(opt.port, prompt, choice="required"))

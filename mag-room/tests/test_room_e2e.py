@@ -343,6 +343,75 @@ class RoomE2E(unittest.TestCase):
         expect(p.locator('#stop-run')).to_be_hidden(timeout=3000)
         self.room.until(lambda s: not s['busy'], timeout=3, what='idle after Esc')
 
+    def test_03b_stream_first_token_is_not_duplicate_assistant_card(self):
+        # The first content token is saved immediately in ROOM. It must
+        # REPLACE the live bubble, not show a second thought-only bubble.
+        p = self.page
+        p.evaluate("""()=>{
+          const now=Date.now();
+          state.room=[{id:'partial-one',role:'assistant',name:'Alpha',bot:'a',
+                      content:'Ich',display_ms:now,ts:Math.floor(now/1000)}];
+          streams={a:{name:'Alpha',text:'Ich',phase:'answer',label:'Antwortet',
+                      displayMs:now,started:now,thinkingEnabled:true,
+                      reasoning:'Kurz nachgedacht',steps:[],tools:[],
+                      partialId:'partial-one'}};
+          render();
+        }""")
+        self.assertEqual(p.locator('#conversation .message').count(), 1,
+                         'streaming + durable first token must share a card')
+        self.assertEqual(p.locator('#conversation .message[data-live-bot="a"]').count(), 1)
+        p.evaluate("""()=>{
+          streams.a.partialId='';
+          render();
+        }""")
+        self.assertEqual(p.locator('#conversation .message').count(), 1,
+                         'fallback matches exact turn display_ms, not content')
+        p.evaluate("""()=>{
+          delete streams.a;
+          render();
+        }""")
+        self.assertEqual(p.locator('#conversation .message').count(), 1,
+                         'after bot_done the saved message replaces live card')
+
+    def test_03c_browser_tool_requires_visible_matching_bot_frame(self):
+        # Synthetic camera stream: no VM/Chrome needed. Only a foreground
+        # right-pane frame of the requested bot is allowed to ACK.
+        p=self.page
+        p.evaluate("""()=>{
+          state.agents=[{id:'a',name:'Alpha',vm:'agent1',memory:[]},
+                        {id:'b',name:'Beta',vm:'agent2',memory:[]}];
+          state.single_bot='';
+          renderAgents();
+          window.__watchAcks=[];
+          const oldFetch=window.fetch.bind(window);
+          window.fetch=(url,opts)=>{
+            if(String(url).includes('/api/browser/observe')){
+              window.__watchAcks.push(JSON.parse(opts.body));
+              return Promise.resolve(new Response('{"ok":true}',{
+                status:200,headers:{'Content-Type':'application/json'}}));
+            }
+            return oldFetch(url,opts);
+          };
+          // Avoid starting a real VM connection in this frontend-only test.
+          connectLive=()=>{livePeer={close(){}};liveVM='agent2'};
+          $('screen').hidden=true;
+          void watchBotBrowser('b','no-frame');
+        }""")
+        p.wait_for_timeout(350)
+        self.assertEqual(p.evaluate('window.__watchAcks.length'),0,
+                         'invisible browser must never unlock a model tool')
+        p.evaluate("""()=>{
+          const canvas=$('screen');
+          canvas.width=1440;canvas.height=900;canvas.hidden=false;
+          liveVM='agent2';frameLastAt=performance.now();
+          void watchBotBrowser('b','visible-frame');
+        }""")
+        p.wait_for_function("""()=>window.__watchAcks.some(
+          x=>x.bot==='b'&&x.nonce==='visible-frame')""",timeout=3000)
+        self.assertEqual(p.evaluate("window.__watchAcks.filter(x=>x.bot==='a').length"),0)
+        self.assertEqual(p.evaluate("$('browser-agent').value"),'b')
+        self.assertFalse(p.evaluate("$('screen').hidden"))
+
     def test_04_queue_is_visible_editable_and_send_now_interrupts(self):
         p = self.page
         Model.scripts += [[{'_hold': 30}], ['Sofort beantwortet.']]

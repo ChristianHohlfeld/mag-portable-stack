@@ -1711,8 +1711,16 @@ function render(){
  const area=$('conversation'),follow=stickToBottom||!rendered,oldScroll=area.scrollTop,prevH=area.scrollHeight;rendered=true;
  programmatic++;
  area.replaceChildren();const inner=document.createElement('div');inner.className='conversation-inner';area.append(inner);
- if(!state.room.length){inner.innerHTML='<div class="empty"><div class="empty-symbol">✳</div><h1>Worum geht es?</h1><p>Eine Frage, eine Notiz oder eine Aufgabe für die Bots. Alles bleibt auf deinem Server.</p></div>'}
- const timeline=[...state.room];
+ if(!state.room.length&&!Object.keys(streams).length){inner.innerHTML='<div class="empty"><div class="empty-symbol">✳</div><h1>Worum geht es?</h1><p>Eine Frage, eine Notiz oder eine Aufgabe für die Bots. Alles bleibt auf deinem Server.</p></div>'}
+ // reveal_answer saves the first streamed content token as a durable message.
+ // Show its LIVE card until bot_done, not the durable row alongside that card.
+ // Exact identity (message ID or turn display_ms) – never dedupe by content.
+ const timeline=(state.room||[]).filter(m=>{
+  if(m.role!=='assistant'||!m.bot)return true;
+  const live=streams[m.bot];
+  return !(live&&(live.partialId===m.id||
+    (m.display_ms&&live.displayMs&&+m.display_ms===+live.displayMs)));
+ });
  // Pending items belong to the queue only; never project them into chat history.
  const pending=state.pending||[];
  const queuedClients=new Set(pending.map(p=>p.client_id).filter(Boolean));
@@ -3692,12 +3700,54 @@ $('theme-toggle').onclick=()=>{
 };
 updateThemeIcon();
 
+// When a bot asks to use its browser, reveal THAT exact VM and wait for an
+// actual video frame before permitting model-driven input. A hidden window or
+// an invisible/other bot's VM never acknowledges the operation.
+async function watchBotBrowser(botId,nonce){
+ if(!nonce||document.hidden||!state?.agents||remoteBotId&&remoteBotId!==botId)return;
+ const bot=state.agents.find(a=>a.id===botId&&a.vm);
+ if(!bot)return;
+ focusBot(botId);
+ rightOpen=true;
+ if(isCompact()){
+  layout.classList.remove('mobile-left');
+  layout.classList.add('mobile-right');
+ }else{
+  localStorage.setItem('mag-right-open','true');
+ }
+ if(!$('live').checked)$('live').checked=true;
+ layoutApply();
+ // Focus selection may have changed while the pane was collapsed; an old
+ // peer from the previous bot must never count as the current live screen.
+ if(!livePeer||liveVM!==bot.vm)connectLive();
+ $('browser-view')?.scrollIntoView({block:'nearest',behavior:'auto'});
+ liveStatus('Bot verwendet den sichtbaren Browser · '+bot.name);
+ const deadline=performance.now()+14500;
+ while(performance.now()<deadline){
+  if(document.hidden||remoteBotId&&remoteBotId!==botId)return;
+  if($('browser-agent').value!==botId)return; // user chose another VM
+  const screen=$('screen'),rect=screen?.getBoundingClientRect();
+  const visible=screen&&!screen.hidden&&rect&&rect.width>0&&rect.height>0&&
+   rect.bottom>0&&rect.top<innerHeight&&rect.right>0&&rect.left<innerWidth;
+  const fresh=(frameLastAt&&performance.now()-frameLastAt<5000)||
+   (httpLive?.id===botId&&httpLive.lastFrame&&performance.now()-httpLive.lastFrame<5000);
+  if(visible&&fresh&&liveVM===bot.vm){
+   try{await api('/api/browser/observe',{bot:botId,nonce})}catch(e){
+    if(e.status!==409)notice('Browseranzeige: '+e.message);
+   }
+   return;
+  }
+  await new Promise(resolve=>setTimeout(resolve,100));
+ }
+ notice('Browseraktion pausiert: Kein sichtbares Live-Bild von '+bot.name);
+}
 const events=new EventSource('/api/events');
 events.onopen=()=>{$('connection').innerHTML='<span class="dot" style="background:var(--green)"></span><span class="txt">Verbunden</span>';refresh().catch(e=>notice(e.message))};
 events.onerror=()=>{$('connection').innerHTML='<span class="dot" style="background:var(--orange)"></span><span class="txt">Verbinde …</span>';for(const s of Object.values(streams))if(s.frame)cancelAnimationFrame(s.frame);streams={};busyBots=new Set();syncStopButton()};
 events.onmessage=e=>{
  try{
   const event=JSON.parse(e.data),id=event.bot;
+  if(event.type==='browser_watch'){void watchBotBrowser(id,event.nonce);return}
   if(event.type==='browser_action'){browserOverlay(event);return}
   if(event.type==='bot_start'){
    const prev=streams[id];
@@ -3741,7 +3791,7 @@ events.onmessage=e=>{
    faceSettle.set(id,Date.now()+1600);if(s?.node)armBotFace(s.node,id,false);
    if(thinkOpen.delete('live:'+id)&&event.id)thinkOpen.add(event.id);
    if(runOpen.has('live:'+id)){const o=runOpen.get('live:'+id);runOpen.delete('live:'+id);if(event.id)runOpen.set('done:'+event.id,o)}
-   if(s&&s.thinkingEnabled!==false&&(s.reasoning||s.tools?.length)){completedTraces.push({name:s.name,content:event.content||s.text||'',reasoning:event.reasoning?'':(s.reasoning||''),ms:liveThinkMs(s),tools:s.tools||[],assignedPosition:null});if(completedTraces.length>40)completedTraces.shift()}
+   if(!event.skipped&&s&&s.thinkingEnabled!==false&&(s.reasoning||s.tools?.length)){completedTraces.push({name:s.name,content:event.content||s.text||'',reasoning:event.reasoning?'':(s.reasoning||''),ms:liveThinkMs(s),tools:s.tools||[],assignedPosition:null});if(completedTraces.length>40)completedTraces.shift()}
    // Do not persist live status-card dimensions.
    delete streams[id];busyBots.delete(id);if(!composerBusyIds().length)clearStopping();else streamControls();
    refresh().catch(err=>notice(err.message));
@@ -3751,6 +3801,8 @@ events.onmessage=e=>{
   }else if(event.type==='reaction'){
    applyReaction(event);
   }else if(['message','file','agents','reset','idle','room'].includes(event.type)){
+   if(event.type==='message'&&event.role==='assistant'&&event.id&&streams[id])
+    streams[id].partialId=event.id;
    if(event.type==='idle'&&Array.isArray(event.busy_bots)){if(!event.busy_bots.length){state.busy=false;state.busy_bots=[];state.activities=[]}setBusyBots(event.busy_bots);const live=new Set(event.busy_bots);for(const bot of Object.keys(streams))if(!live.has(bot))delete streams[bot];if(!event.busy_bots.length)clearStopping()}
    refresh().catch(err=>notice(err.message));
   }else if(event.type==='model_settings'){if(Array.isArray(event.models)){state.models=event.models;syncModelSettings(state);syncModelChoice(state);renderAgents()}}

@@ -236,7 +236,9 @@ json.dump(s,open(p,'w'))
    p=run();self.assertEqual(p.returncode,4,p.stdout+p.stderr)
    self.assertIn(missing,p.stderr)
   # The canonical, modern architecture must never accept legacy aliases.
-  make({k.replace('glm5next','glm5-next'):v for k,v in legacy.items()})
+  make({k.replace('glm5next','glm5-next'):
+        v.replace('glm5next','glm5-next') if isinstance(v,str) else v
+        for k,v in legacy.items()})
   p=run();self.assertEqual(p.returncode,4,p.stdout+p.stderr)
   self.assertIn('glm5-next.kda.head_dim',p.stderr)
   model.write_bytes(b'GGUF\\x03')

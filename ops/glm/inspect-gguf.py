@@ -117,7 +117,10 @@ def elementwise_weight_types(path):
             typ = _read(f, '<I')
             _read(f, '<Q')  # tensor offset, not tensor contents
             if any(key in name for key in (
-                    'indexer_kpool_ape', 'ssm_a', 'ssm_dt',
+                    # Actual llama.cpp tensor name for LLM_TENSOR_INDEXER_KPOOL_APE
+                    # is blk.N.indexer_compressor_ape.weight (not kpool_ape).
+                    'indexer_compressor_ape', 'indexer_kpool_ape',
+                    'ssm_a', 'ssm_dt',
                     'hc_attn_scale', 'hc_attn_base',
                     'hc_ffn_scale', 'hc_ffn_base')):
                 result.append((name, {0: 'f32', 1: 'f16', 8: 'q8_0',
@@ -169,6 +172,12 @@ def main(argv=None):
         print('Refusing model switch; existing NUMA1 service unchanged', file=sys.stderr)
         return 4
     if arch not in ('glm5next', 'glm5-next'):
+        # A split GGUF may omit general.architecture from secondary shards.
+        # Their tensor directory is still inspectable; this diagnostic-only
+        # allowance must never relax the strict deploy/preflight contract.
+        if arch is None and args.show_elementwise_weights and not (
+                args.require or args.require_kda_head_dim):
+            return 0
         print(f'GLM GGUF incompatible: architecture={arch}', file=sys.stderr)
         return 4
     return 0

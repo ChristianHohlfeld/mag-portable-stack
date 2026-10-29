@@ -1,3 +1,5 @@
+// mag-test-timeout: 60
+require('./mag_deadline.cjs').arm(60);
 // Port 8446 is a recovery proxy, not a signed owner ingress.
 // Keep the redirect extremely narrow so the independent rescue route remains.
 const test = require('node:test');

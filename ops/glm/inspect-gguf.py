@@ -89,12 +89,51 @@ def inspect(path):
         return version, tensors, keys, arch
 
 
+def elementwise_weight_types(path):
+    """Inspect tensor descriptors only; no tensor payload is accessed."""
+    file_size = os.path.getsize(path)
+    result = []
+    with open(path, 'rb', buffering=1024*1024) as f:
+        if f.read(4) != b'GGUF':
+            raise ValueError('missing GGUF signature')
+        version = _read(f, '<I')
+        if version not in (2, 3):
+            raise ValueError('unsupported GGUF version')
+        n_tensors = _read(f, '<Q')
+        n_metadata = _read(f, '<Q')
+        if n_tensors > 1_000_000 or n_metadata > 100_000:
+            raise ValueError('unreasonably many GGUF tensors / metadata keys')
+        for _ in range(n_metadata):
+            _string(f, file_size, 4096)
+            typ = _read(f, '<I')
+            _skip_value(f, typ, file_size)
+        for _ in range(n_tensors):
+            name = _string(f, file_size, 4096)
+            ndim = _read(f, '<I')
+            if ndim < 1 or ndim > 4:
+                raise ValueError('invalid GGUF tensor rank')
+            for _ in range(ndim):
+                _read(f, '<Q')
+            typ = _read(f, '<I')
+            _read(f, '<Q')  # tensor offset, not tensor contents
+            if any(key in name for key in (
+                    'indexer_kpool_ape', 'ssm_a', 'ssm_dt',
+                    'hc_attn_scale', 'hc_attn_base',
+                    'hc_ffn_scale', 'hc_ffn_base')):
+                result.append((name, {0: 'f32', 1: 'f16', 8: 'q8_0',
+                                      20: 'iq4_nl', 29: 'iq1_m', 30: 'bf16'}.get(
+                                          typ, f'ggml_type_{typ}')))
+    return result
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('model', help='first GGUF shard')
     parser.add_argument('--require', action='append', default=[], help='required metadata key')
     parser.add_argument('--require-kda-head-dim', action='store_true',
                         help='require compatible KDA head dimension (legacy glm5next aliases supported)')
+    parser.add_argument('--show-elementwise-weights', action='store_true',
+                        help='show GGUF tensor types of model weights used in elementwise GLM operations')
     args = parser.parse_args(argv)
     try:
         version, tensors, keys, arch = inspect(args.model)
@@ -107,6 +146,13 @@ def main(argv=None):
                       any(x in k for x in ('kda', 'ssm', 'head', 'attention', 'indexer', 'hyper')))
     for key in relevant:
         print('  ' + key)
+    if args.show_elementwise_weights:
+        try:
+            for name, typ in elementwise_weight_types(args.model):
+                print(f'  tensor {name}: {typ}')
+        except (OSError, UnicodeError, ValueError) as e:
+            print(f'GLM GGUF tensor-directory error: {e}', file=sys.stderr)
+            return 4
     required = list(args.require)
     if args.require_kda_head_dim and arch in ('glm5next', 'glm5-next'):
         # The original glm5next converter stores the same KDA head width as

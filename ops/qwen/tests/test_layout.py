@@ -222,9 +222,23 @@ json.dump(s,open(p,'w'))
   for arch in ('glm5next','glm5-next'):
    make({'general.architecture':arch,'tokenizer.ggml.model':'gpt2'})
    p=run();self.assertEqual(p.returncode,4,p.stdout+p.stderr)
-   self.assertIn(arch+'.kda.head_dim',p.stderr)
+   self.assertIn(arch+'.'+('ssm.state_size' if arch=='glm5next' else 'kda.head_dim'),p.stderr)
    make({'general.architecture':arch,arch+'.kda.head_dim':128})
    p=run();self.assertEqual(p.returncode,0,p.stdout+p.stderr)
+  # 6block's legacy metadata is a supported *pair*: KDA head width and
+  # k-pool dimension have different but documented GGUF key names.
+  legacy={'general.architecture':'glm5next',
+          'glm5next.ssm.state_size':128,
+          'glm5next.attention.indexer.block_size':4}
+  make(legacy);p=run();self.assertEqual(p.returncode,0,p.stdout+p.stderr)
+  for missing in ('glm5next.ssm.state_size','glm5next.attention.indexer.block_size'):
+   make({k:v for k,v in legacy.items() if k!=missing})
+   p=run();self.assertEqual(p.returncode,4,p.stdout+p.stderr)
+   self.assertIn(missing,p.stderr)
+  # The canonical, modern architecture must never accept legacy aliases.
+  make({k.replace('glm5next','glm5-next'):v for k,v in legacy.items()})
+  p=run();self.assertEqual(p.returncode,4,p.stdout+p.stderr)
+  self.assertIn('glm5-next.kda.head_dim',p.stderr)
   model.write_bytes(b'GGUF\\x03')
   p=run();self.assertEqual(p.returncode,4,p.stdout+p.stderr)
   self.assertIn('invalid header',p.stderr)
@@ -233,6 +247,21 @@ json.dump(s,open(p,'w'))
   self.assertLess(stage.index('verify-model.sh'),stage.index('inspect-gguf.py'))
   layout=(ROOT/'ops/qwen/layout.sh').read_text()
   self.assertLess(layout.index('ops/glm/install.sh'),layout.index('systemctl stop "$unit"'))
+ def test_glm_legacy_adapter_isolated_from_qwen(self):
+  p=(ROOT/'ops/glm/arch-compat.patch').read_text()
+  # Only modify GLM5-Next hparams; metadata keys and tensor names of Qwen stay
+  # untouched. The old and new model paths have separate recurrent layouts.
+  self.assertIn('--- a/src/models/glm5-next.cpp',p)
+  self.assertIn('ml.arch_name == "glm5next"',p)
+  self.assertIn('LLM_KV_SSM_STATE_SIZE',p)
+  self.assertIn('LLM_KV_ATTENTION_INDEXER_BLOCK_SIZE',p)
+  self.assertIn('LLM_KV_ATTENTION_RECURRENT_LAYERS',p)
+  self.assertIn('LLM_KV_FULL_ATTENTION_INTERVAL',p)
+  self.assertIn('hparams.indexer_kpool_select_tail = true',p)
+  self.assertIn('hparams.kda_gate_lower_bound = -5.0f',p)
+  build=(ROOT/'ops/qwen/build-runtime.sh').read_text()
+  self.assertIn('git -C "$SRC" apply --check "$ROOT/ops/glm/arch-compat.patch"',build)
+  self.assertIn('git -C "$SRC" apply "$ROOT/ops/glm/arch-compat.patch"',build)
  def test_glm_unit_and_start_are_numa1_only(self):
   u=(ROOT/'ops/glm/mag-llm-glm.service').read_text();st=(ROOT/'ops/glm/start.sh').read_text()
   self.assertIn('Conflicts=mag-llm-ds-node@1.service mag-llm-iq3.service mag-llm-qwen.service',u)

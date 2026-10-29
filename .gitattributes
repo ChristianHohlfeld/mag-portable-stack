@@ -2,3 +2,5 @@
 *.sh text eol=lf
 *.cpp text eol=lf
 *.hpp text eol=lf
+# Unified diff context lines are a single required space; do not flag them as trailing whitespace.
+ops/glm/*.patch whitespace=-blank-at-eol

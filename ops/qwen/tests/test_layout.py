@@ -264,6 +264,35 @@ json.dump(s,open(p,'w'))
   build=(ROOT/'ops/qwen/build-runtime.sh').read_text()
   self.assertIn('git -C "$SRC" apply --check "$ROOT/ops/glm/arch-compat.patch"',build)
   self.assertIn('git -C "$SRC" apply "$ROOT/ops/glm/arch-compat.patch"',build)
+ def test_glm_iq4nl_ape_tensor_diagnostic_and_cast(self):
+  # Minimal GGUF with two tensor descriptors, no payload required.
+  import struct
+  path=self.base/'ape-directory.gguf'
+  def ggstr(value):
+   blob=value.encode('utf-8')
+   return struct.pack('<Q',len(blob))+blob
+  entries=[
+   ('blk.3.indexer_kpool_ape.weight',20),
+   ('blk.3.ssm_a',0),
+  ]
+  data=bytearray(b'GGUF'+struct.pack('<IQQ',3,len(entries),1))
+  data+=ggstr('general.architecture')+struct.pack('<I',8)+ggstr('glm5next')
+  for name,typ in entries:
+   data+=ggstr(name)+struct.pack('<I',2)+struct.pack('<QQ',128,4)
+   data+=struct.pack('<IQ',typ,0)
+  path.write_bytes(data)
+  scan=subprocess.run(['python3','-I',str(ROOT/'ops/glm/inspect-gguf.py'),
+                       str(path),'--show-elementwise-weights'],
+                      capture_output=True,text=True)
+  self.assertEqual(scan.returncode,0,scan.stderr)
+  self.assertIn('blk.3.indexer_kpool_ape.weight: iq4_nl',scan.stdout)
+  self.assertIn('blk.3.ssm_a: f32',scan.stdout)
+  patch=(ROOT/'ops/glm/arch-compat.patch').read_text()
+  self.assertIn('--- a/src/models/glm5-next.cpp',patch)
+  self.assertIn('ggml_is_quantized(indexer_ape->type)',patch)
+  self.assertIn('ggml_cast(ctx0, indexer_ape, GGML_TYPE_F32)',patch)
+  self.assertIn('ggml_add(ctx0, pg, indexer_ape)',patch)
+  self.assertNotIn('--- a/ggml/src/ggml-cpu/binary-ops.cpp',patch)
  def test_glm_unit_and_start_are_numa1_only(self):
   u=(ROOT/'ops/glm/mag-llm-glm.service').read_text();st=(ROOT/'ops/glm/start.sh').read_text()
   self.assertIn('Conflicts=mag-llm-ds-node@1.service mag-llm-iq3.service mag-llm-qwen.service',u)

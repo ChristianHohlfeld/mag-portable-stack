@@ -1,5 +1,12 @@
 # MAG Architecture — Ornith, NUMA 0/1
 
+**Stand 29.10.2026 (gilt vor dem Ornith-Abschnitt unten):** Zwei Bots, ein Modell pro
+NUMA-Knoten. NUMA0 DeepSeek V4 Flash (`mag-llm-ds-node@0`, :8191), NUMA1 GLM-5.3-Flash
+(`mag-llm-glm`, :8192, Layout `glm`). Das gewünschte Layout steht im Repo in
+`ops/room/layout` und wird bei jedem Deploy transaktional von `ops/qwen/layout.sh`
+angewendet (Details und Rollback: `ops/glm/README.md`). Qwen3.8 ist aus dem Stack
+genommen, Gewichte und Unit bleiben auf der Platte (`MAG_ROOM_LAYOUT=mixed`).
+
 **Aktueller Betriebsstand (Oktober 2026):** Vier Ornith-1.5-35B-A3B-Bots, zwei NUMA-Server
 (`mag-llm-ornith-node@0/1.service`, 127.0.0.1:8191/8192, je zwei llama-Slots).
 Audit-Gateway :8080, C++-Raum `mag-120.service` :8766, nginx.

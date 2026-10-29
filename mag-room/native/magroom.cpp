@@ -851,15 +851,20 @@ static void load_agents() {
       // Never change an ID: especially deepseek-chat retains its memory and VM.
       const std::string old = mag::str(a, "name");
       const int slot = model_slot_of(a);
-      // The second bot's stock placeholder is Qwen. Do this before the
-      // generic label rewrite, and do not rewrite an exact "Qwen" afterwards,
-      // or the next restart would replace it with the long backend label.
-      if (old == "BotBot" || old == "Bot 2" || old == "Bot2") {
-        if (old != "Qwen") { a["name"] = "Qwen"; dirty = true; }
+      // The second bot's stock placeholder is Qwen while its slot serves Qwen.
+      // Do this before the generic label rewrite, and do not rewrite an exact
+      // "Qwen" afterwards, or the next restart would replace it with the long
+      // backend label. A slot that now serves another model (layout "glm")
+      // drops the stale stock name "Qwen" for that model's label.
+      const bool qwen_slot = backend.id.find("qwen") != std::string::npos;
+      if (qwen_slot && (old == "BotBot" || old == "Bot 2" || old == "Bot2")) {
+        a["name"] = "Qwen"; dirty = true;
       } else if (slot && (old == "DeepSeek 4.0" || old == "DeepSeek Chat" ||
                    old == "DeepSeek Q4" || old == "Qwen 2" ||
                    old == "DeepSeek V4 Flash 1" || old == "DeepSeek V4 Flash 2" ||
-                   old == "DeepSeek V4 Flash" || old == "Qwen3.8 Uncensored" || old == "Ornith 1" || old == "Ornith 2" || old == "Ornith 3" || old == "Ornith 4")) {
+                   old == "DeepSeek V4 Flash" || old == "Qwen3.8 Uncensored" || old == "Ornith 1" || old == "Ornith 2" || old == "Ornith 3" || old == "Ornith 4" ||
+                   old == "GLM-5.3 Flash" ||
+                   (!qwen_slot && (old == "Qwen" || old == "BotBot" || old == "Bot 2" || old == "Bot2")))) {
         const std::string updated = ROOM_MODEL.backends[0].id == ROOM_MODEL.backends[1].id
             ? backend.label + " " + std::to_string(slot) : backend.label;
         if (old != updated) { a["name"] = updated; dirty = true; }
@@ -885,6 +890,8 @@ static void load_agents() {
       const bool same = ROOM_MODEL.backends[0].id == ROOM_MODEL.backends[1].id;
       std::string id = backend.id.find("qwen") != std::string::npos
                            ? "qwen-numa" + std::to_string(backend.numa)
+                       : backend.id.rfind("glm", 0) == 0
+                           ? "glm-numa" + std::to_string(backend.numa)
                            : "deepseek-numa" + std::to_string(backend.numa);
       if (id_taken(id)) {
         const std::string base = id;

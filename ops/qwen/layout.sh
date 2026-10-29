@@ -8,11 +8,18 @@ ACTION=${1:?apply|rollback}; BACKUP=${2:?deployment backup directory}
 TXN="$BACKUP/qwen-layout"
 fail(){ echo "NUMA1 layout: $*" >&2; exit 4; }
 [[ $EUID == 0 ]] || fail 'root required'
-units=(mag-llm-ds-node@1.service mag-llm-qwen.service)
-files=(/etc/mag-stack/room-model.env /etc/mag-stack/room-layout /etc/mag-qwen/runtime.env
+units=(mag-llm-ds-node@1.service mag-llm-qwen.service mag-llm-glm.service)
+files=(/etc/mag-stack/room-model.env /etc/mag-stack/room-layout /etc/mag-stack/room-layout.pinned
+       /etc/mag-qwen/runtime.env
        /etc/systemd/system/mag-llm-qwen.service /etc/systemd/system/mag-llm-ds-node@.service
        /usr/local/lib/mag-qwen/start.sh /usr/local/lib/mag-qwen/verify-model.sh
-       /usr/local/lib/mag-qwen/runtime.sha /etc/mag-qwen/model.sha256)
+       /usr/local/lib/mag-qwen/runtime.sha /etc/mag-qwen/model.sha256
+       /etc/systemd/system/mag-llm-glm.service /usr/local/lib/mag-glm/start.sh
+       /usr/local/lib/mag-glm/verify-model.sh /usr/local/lib/mag-glm/runtime.sha
+       /usr/local/lib/mag-glm/model.sizes)
+# A failed attempt of the repo-declared layout is remembered per identity so the
+# auto-update timer does not stop/restart NUMA1 on every tick (see select below).
+FAILED=${MAG_LAYOUT_FAILED_FILE:-/var/lib/mag-stack/layout-failed}
 disable_if_installed(){
   # A pure-DeepSeek host may never have had a Qwen unit file.
   if systemctl cat "$1" >/dev/null 2>&1; then systemctl disable "$1"; fi
@@ -36,17 +43,46 @@ rollback(){
 }
 if [[ $ACTION == rollback ]]; then rollback; exit; fi
 [[ $ACTION == apply ]] || fail 'unknown action'
-# A rollback selection persists across subsequent automatic updates.
-layout=${MAG_ROOM_LAYOUT:-$(cat /etc/mag-stack/room-layout 2>/dev/null || echo mixed)}
-[[ $layout == mixed || $layout == deepseek ]] || fail 'MAG_ROOM_LAYOUT must be mixed or deepseek'
+# Layout source, highest first:
+#  1. MAG_ROOM_LAYOUT=mixed|deepseek|glm  explicit operator choice; it is pinned
+#     on the host and survives later automatic updates (MAG_ROOM_LAYOUT=repo unpins).
+#  2. the pinned host choice (/etc/mag-stack/room-layout.pinned)
+#  3. the repository's ops/room/layout (normal case: the stack follows the repo)
+#  4. the last applied host layout, then mixed
+valid(){ [[ $1 == mixed || $1 == deepseek || $1 == glm ]]; }
+previous=$(cat /etc/mag-stack/room-layout 2>/dev/null || echo mixed)
+valid "$previous" || previous=mixed
+pin=''
+if [[ -n ${MAG_ROOM_LAYOUT:-} && ${MAG_ROOM_LAYOUT} != repo ]]; then
+  layout=$MAG_ROOM_LAYOUT; pin=$layout; source=operator
+elif [[ -z ${MAG_ROOM_LAYOUT:-} && -s /etc/mag-stack/room-layout.pinned ]]; then
+  layout=$(cat /etc/mag-stack/room-layout.pinned); pin=$layout; source=pinned
+elif [[ -s $ROOT/ops/room/layout ]]; then
+  layout=$(tr -d '[:space:]' < "$ROOT/ops/room/layout"); source=repo
+else
+  layout=$previous; source=host
+fi
+valid "$layout" || fail 'MAG_ROOM_LAYOUT must be mixed, deepseek or glm'
+# Identity of the repo-declared target: runtime + every file that defines it.
+# One failed live attempt per identity; a new commit touching them retries.
+case $layout in mixed) env_file=mixed.env ;; glm) env_file=glm.env ;; *) env_file=model.env ;; esac
+id_files=("$ROOT/ops/qwen/runtime.sha" "$ROOT/ops/room/$env_file")
+if [[ $layout == glm ]]; then id_files+=("$ROOT"/ops/glm/{start.sh,verify-model.sh,model.sizes,mag-llm-glm.service,install.sh}); fi
+identity="$layout $(cat "${id_files[@]}" 2>/dev/null | sha256sum | cut -c1-16)"
+if [[ $source == repo && $layout != "$previous" && -f $FAILED && $(cat "$FAILED") == "$identity" ]]; then
+  echo "WARN NUMA1 layout: repo layout '$layout' already failed live ($identity); keeping '$previous'" >&2
+  layout=$previous
+fi
 # Fresh bootstrap has no Qwen download. Keep its existing DeepSeek provisioning.
 [[ -f /etc/mag-stack/room-model.env ]] || exit 0
-if [[ $layout == mixed ]]; then
+if [[ $layout == mixed || $layout == glm ]]; then
   REV=$(cat "$ROOT/ops/qwen/runtime.sha")
   BIN="/home/chris/.local/qwen4exp/$REV-mag-cp1/bin/llama-server"
   if [[ ! -x $BIN || $(cat "$(dirname "$BIN")/source-commit" 2>/dev/null || true) != "$REV" ]]; then
     runuser -u chris -- env HOME=/home/chris nice -n 19 ionice -c3 bash "$ROOT/ops/qwen/build-runtime.sh"
   fi
+fi
+if [[ $layout == mixed ]]; then
   [[ -s /home/chris/models/qwen3.8-flash-next-uncensored/upstream.sha256 ]] || fail 'download/upstream.sha256 missing'
 fi
 install -d -m 0700 "$TXN"
@@ -81,19 +117,34 @@ if not done:
 file.write_text("".join(out))
 PY
 touch "$TXN/started"
-trap 'rc=$?; trap - EXIT; if (( rc )); then rollback; fi; exit "$rc"' EXIT
-# Qwen stage verifies all 98 GB (or its root-owned identity stamp) BEFORE stopping ds1.
+on_exit(){
+  local rc=$?; trap - EXIT
+  if (( rc )); then
+    # Remember only a failed switch to a new layout, never an explicit pin.
+    if [[ -z $pin && $layout != "$previous" ]]; then
+      install -d -m 0755 "$(dirname "$FAILED")" && printf '%s\n' "$identity" > "$FAILED" || true
+    fi
+    rollback
+  fi
+  exit "$rc"
+}
+trap on_exit EXIT
+# Stage scripts verify the GGUF (Qwen: 98 GB SHA or stamp; GLM: 15 pinned
+# part sizes) BEFORE any NUMA1 unit is stopped.
 if [[ $layout == mixed ]]; then bash "$ROOT/ops/qwen/install.sh" refresh; fi
+if [[ $layout == glm ]]; then bash "$ROOT/ops/glm/install.sh" refresh; fi
 # Remove the obsolete global Qwen conflict before starting it; reload changes
 # systemd's dependency graph, not the running DeepSeek process on NUMA0.
 install -m 0644 "$ROOT/ops/room/mag-llm-ds-node@.service" /etc/systemd/system/mag-llm-ds-node@.service
 install -d -m 0755 /etc/mag-stack /etc/mag-qwen
-if [[ $layout == mixed ]]; then
-  selected=mag-llm-qwen.service; other=mag-llm-ds-node@1.service; config=mixed.env
-  printf 'QWEN_PORT=8192\n' > /etc/mag-qwen/runtime.env
-else
-  selected=mag-llm-ds-node@1.service; other=mag-llm-qwen.service; config=model.env
-fi
+case $layout in
+  mixed) selected=mag-llm-qwen.service; config=mixed.env
+         printf 'QWEN_PORT=8192\n' > /etc/mag-qwen/runtime.env ;;
+  glm)   selected=mag-llm-glm.service; config=glm.env ;;
+  *)     selected=mag-llm-ds-node@1.service; config=model.env ;;
+esac
+others=()
+for unit in "${units[@]}"; do [[ $unit == "$selected" ]] || others+=("$unit"); done
 # Existing warm Qwen on :8192 stays resident on ordinary redeploys.
 change=0
 if ! systemctl is-active --quiet "$selected"; then change=1; fi
@@ -102,18 +153,29 @@ if [[ $layout == mixed ]]; then
     cmp -s "$file" "$TXN/files$file" || change=1
   done
 fi
+if [[ $layout == glm ]]; then
+  for file in /usr/local/lib/mag-glm/start.sh /etc/systemd/system/mag-llm-glm.service /usr/local/lib/mag-glm/runtime.sha; do
+    cmp -s "$file" "$TXN/files$file" || change=1
+  done
+fi
 install -m 0644 "$ROOT/ops/room/$config" /etc/mag-stack/room-model.env
 printf '%s\n' "$layout" > /etc/mag-stack/room-layout
+if [[ -n $pin ]]; then printf '%s\n' "$pin" > /etc/mag-stack/room-layout.pinned
+elif [[ ${MAG_ROOM_LAYOUT:-} == repo ]]; then rm -f /etc/mag-stack/room-layout.pinned; fi
 mag_daemon_reload
 mag_flush_daemon_reload
-if systemctl is-active --quiet "$other"; then change=1; fi
+for unit in "${others[@]}"; do
+  if systemctl is-active --quiet "$unit"; then change=1; fi
+done
 if (( change )); then
   touch "$TXN/changed"
-  if systemctl is-active --quiet "$other"; then systemctl stop "$other"; fi
+  for unit in "${others[@]}"; do
+    if systemctl is-active --quiet "$unit"; then systemctl stop "$unit"; fi
+  done
   # A previous :8091 Qwen or changed runtime may need one NUMA1 restart.
   if systemctl is-active --quiet "$selected"; then systemctl stop "$selected"; fi
 fi
-disable_if_installed "$other"
+for unit in "${others[@]}"; do disable_if_installed "$unit"; done
 systemctl enable "$selected"
 if (( change )); then
   systemctl start "$selected"
@@ -125,13 +187,15 @@ if (( change )); then
     sleep 5
   done
   (( ready )) || fail 'NUMA1 health timeout'
-  if [[ $layout == mixed ]]; then
-    python3 -I "$ROOT/ops/qwen/smoke.py" --port 8192
+  if [[ $layout == mixed || $layout == glm ]]; then
+    model_id=$([[ $layout == glm ]] && echo glm-5.3-flash || echo qwen3.8-flash-next-uncensored)
+    python3 -I "$ROOT/ops/qwen/smoke.py" --port 8192 --model "$model_id"
     # Acceptance used a tiny synthetic prompt. Clear only this newly started
-    # Qwen slot so the room can asynchronously prewarm its real system prefix.
+    # NUMA1 slot so the room can asynchronously prewarm its real system prefix.
     # This is never done to an already-warm Qwen on ordinary redeploys.
     curl --noproxy '*' -fsS --max-time 30 -H 'Content-Type: application/json' \
       -d '{}' 'http://127.0.0.1:8192/slots/0?action=erase' >/dev/null
   fi
 fi
-echo "NUMA1 layout ready: $layout; NUMA0 resident process untouched"
+rm -f "$FAILED"
+echo "NUMA1 layout ready: $layout ($source); NUMA0 resident process untouched"

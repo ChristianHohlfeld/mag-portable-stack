@@ -384,9 +384,11 @@ if [[ -e /etc/mag-stack/room-model.env || -e /etc/systemd/system/mag-llm-ds-node
   fi
   mag_flush_daemon_reload
   mag_systemctl enable mag-llm-ds-node@0.service
-  if [[ $(cat /etc/mag-stack/room-layout 2>/dev/null || true) != mixed ]]; then
-    mag_systemctl enable mag-llm-ds-node@1.service
-  fi
+  # Only the pure-DeepSeek layout boots DeepSeek on NUMA1 (mixed: Qwen, glm: GLM).
+  case $(cat /etc/mag-stack/room-layout 2>/dev/null || true) in
+    mixed|glm) ;;
+    *) mag_systemctl enable mag-llm-ds-node@1.service ;;
+  esac
 elif [[ -r /etc/mag-stack/secondary-model.env ]] &&
    grep -Fxq 'MAG_SECONDARY_MODEL=ornith' /etc/mag-stack/secondary-model.env; then
   echo 'Ornith cutover required: stop Ornith, then run ops/room/install.sh before deploy' >&2

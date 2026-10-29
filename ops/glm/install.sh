@@ -18,6 +18,13 @@ install -m 0644 "$ROOT/ops/glm/model.sizes" /usr/local/lib/mag-glm/model.sizes
 install -m 0755 "$ROOT/ops/glm/verify-model.sh" /usr/local/lib/mag-glm/verify-model.sh
 install -m 0755 "$ROOT/ops/glm/start.sh" /usr/local/lib/mag-glm/start.sh
 bash /usr/local/lib/mag-glm/verify-model.sh
+# Fail before NUMA1 cutover if the GGUF is not compatible with the pinned
+# GLM5-Next loader. The 6block IQ1_M first shard has an older metadata
+# contract; a size/header check alone cannot catch missing KDA hyperparameters.
+# This reads only the GGUF metadata header and never modifies model weights.
+python3 -I "$ROOT/ops/glm/inspect-gguf.py" \
+  /home/chris/models/GLM-5.3-Flash-GGUF-IQ1_M/GLM-5.3-Flash-IQ1_M-00001-of-00015.gguf \
+  --require-kda-head-dim
 install -d -o chris -g chris -m 0700 /var/lib/mag-llm/slots/glm
 install -m 0644 "$ROOT/ops/glm/mag-llm-glm.service" /etc/systemd/system/mag-llm-glm.service
 mag_daemon_reload

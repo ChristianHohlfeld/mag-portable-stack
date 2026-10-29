@@ -8,7 +8,7 @@ while _mag_root != _mag_root.parent and not (_mag_root / 'ops/ci/mag_deadline.py
 _mag_sys.path.insert(0, str(_mag_root / 'ops/ci'))
 import mag_deadline as _mag_deadline
 _mag_deadline.arm(300)
-import hashlib,http.server,json,os,pathlib,socket,socketserver,subprocess,tempfile,threading,time,unittest,urllib.request,urllib.error,urllib.parse
+import hashlib,shlex,http.server,json,os,pathlib,socket,socketserver,subprocess,tempfile,threading,time,unittest,urllib.request,urllib.error,urllib.parse
 ROOT=pathlib.Path(__file__).resolve().parents[2]
 # Idle prompt prewarm adds background model calls; tests count Model.calls exactly.
 os.environ.setdefault('MAG_ROOM_PREWARM','0')
@@ -5086,6 +5086,56 @@ class TwoBackendStartup(unittest.TestCase):
     self.assertEqual(hit[1],slot)
     self.assertEqual(hit[0]['model'],bots[int(slot)]['model'])
     self.assertEqual(hit[0]['id_slot'],0)
+  finally:
+   proc.terminate()
+   try:proc.wait(timeout=5)
+   except subprocess.TimeoutExpired:proc.kill();proc.wait(timeout=5)
+   log.close();model.shutdown();model.server_close();tmp.cleanup()
+
+class GlmLayoutStartup(unittest.TestCase):
+ """Layout glm: the NUMA1 bot keeps id, memory and slot, drops the stale 'Qwen' name."""
+ def test_numa1_bot_follows_glm_backend(self):
+  deadline=time.monotonic()+20
+  Model.delay=0;Model.slot_delay={};Model.script=[];Model.reply=None
+  Model.barrier_token='';Model.barrier_release=None;Model.hold_get=0;Model.health=200
+  tmp=tempfile.TemporaryDirectory();root=pathlib.Path(tmp.name)
+  state=root/'state';state.mkdir()
+  state.joinpath('agents.json').write_text(json.dumps([
+   {'id':'deepseek-chat','name':'DeepSeek Chat','vm':'','slot':1,'numa':0,'model':'deepseek-v4-flash-0731','memory':[]},
+   {'id':'qwen-numa1','name':'Qwen','vm':'','slot':2,'numa':1,'model':'qwen3.8-flash-next-uncensored','memory':[{'text':'bleibt'}]}]))
+  model=http.server.ThreadingHTTPServer(('127.0.0.1',0),Model)
+  threading.Thread(target=model.serve_forever,daemon=True).start()
+  ui,bridge=port(),port()
+  log_path=root/'server.log'
+  glm={}
+  for line in (ROOT/'ops/room/glm.env').read_text().splitlines():
+   parts=shlex.split(line,comments=True)
+   if parts and '=' in parts[0]:
+    k,v=parts[0].split('=',1);glm[k]=v
+  glm['MAG_ROOM_PRESETS']=str(ROOT/'ops/room/presets.json');glm['MAG_ROOM_PREWARM']='0'
+  env=dict(os.environ,MAG_OWNER_CANONICAL_LOGIN='chris@github',MAG_TEST_ALLOW_LOCAL_OWNER='1',
+    MAG_ROOM_STATE=str(state),MAG_ROOM_PORT=str(ui),MAG_ROOM_BRIDGE_PORT=str(bridge),
+    MAG_ROOM_BRIDGE_IP='127.0.0.1',MAG_ROOM_BACKEND=f'http://127.0.0.1:{model.server_port}/v1/chat/completions',
+    MAG_ROOM_UI=str(ROOT/'mag-room/web/index.html'),MAG_ROOM_STATIC=str(ROOT/'mag-room/static'),
+    MAG_ROOM_MODEL_STATUS=str(root/'ms.json'),MAG_NETMODE=str(NETMODE),MAG_TEST_NO_MEMGIT='1',
+    MAG_ROOM_AGENT_CTL='/bin/false',MAG_ROOM_GUEST_RUN='/bin/false',MAG_ROOM_MCP_AUTO='0',
+    MAG_ROOM_SINGLE_BOT='auto',MAG_ROOM_SINGLE_BOT_VM='on',MAG_ROOM_DUAL_NUMA='0',**glm)
+  log=open(log_path,'a')
+  proc=subprocess.Popen(['timeout','-k','1','18',str(ROOT/'build/magroom')],env=env,stdout=log,stderr=log)
+  try:
+   while True:
+    self.assertGreater(deadline-time.monotonic(),0,'room did not start')
+    try:
+     with urllib.request.urlopen(f'http://127.0.0.1:{ui}/api/state',timeout=2) as r:doc=json.loads(r.read());break
+    except Exception:
+     if proc.poll() is not None:self.fail('magroom exited %s\n%s'%(proc.returncode,log_path.read_text(errors='replace')[-2000:]))
+     time.sleep(.03)
+   self.assertEqual([(b['slot'],b['id'],b['name'],b['model'],b['numa']) for b in doc['agents']],[
+    (1,'deepseek-chat','DeepSeek V4 Flash','deepseek-v4-flash-0731',0),
+    (2,'qwen-numa1','GLM-5.3 Flash','glm-5.3-flash',1)])
+   saved=json.loads(state.joinpath('agents.json').read_text())
+   self.assertEqual([b['name'] for b in saved[:2]],['DeepSeek V4 Flash','GLM-5.3 Flash'])
+   self.assertEqual(saved[1]['memory'][0]['text'],'bleibt')
   finally:
    proc.terminate()
    try:proc.wait(timeout=5)

@@ -37,6 +37,7 @@ if [[ ${MAG_DEFER_DAEMON_RELOAD:-0} == 1 ]]; then
   exit 0
 fi
 systemctl enable mag-llm-ds-node@0.service
-if [[ $(cat /etc/mag-stack/room-layout 2>/dev/null || true) != mixed ]]; then
-  systemctl enable mag-llm-ds-node@1.service
-fi
+case $(cat /etc/mag-stack/room-layout 2>/dev/null || true) in
+  mixed|glm) ;;
+  *) systemctl enable mag-llm-ds-node@1.service ;;
+esac

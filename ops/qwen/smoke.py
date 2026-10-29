@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Qwen live acceptance: actual MAG-style auto tools, reasoning and streaming."""
+"""NUMA1 live acceptance (Qwen or GLM): MAG-style auto tools, reasoning, streaming."""
 import argparse
 import json
 import urllib.request
@@ -11,7 +11,7 @@ TOOL = {"type": "function", "function": {"name": "echo",
                        "required": ["value"], "additionalProperties": False}}}
 
 def request(port, messages, thinking=False, choice=None, stream=False):
-    body = {"model": MODEL, "messages": messages, "stream": stream,
+    body = {"model": request.model, "messages": messages, "stream": stream,
             "max_tokens": 512 if thinking else 192, "temperature": 0,
             "chat_template_kwargs": {"enable_thinking": thinking},
             "cache_prompt": True, "id_slot": 0}
@@ -48,6 +48,8 @@ def request(port, messages, thinking=False, choice=None, stream=False):
         assert done and seen, "SSE incomplete"
         return {"tool_calls": [{"function": c} for _, c in sorted(calls.items())]}
 
+request.model = MODEL
+
 def tool(msg):
     calls = msg.get("tool_calls") or []
     assert calls, "Tool call emitted as text or absent"
@@ -60,7 +62,9 @@ def main():
     a = argparse.ArgumentParser()
     a.add_argument("--port", choices=[8080, 8091, 8192], type=int, default=8091)
     a.add_argument("--quick", action="store_true")
+    a.add_argument("--model", choices=[MODEL, "glm-5.3-flash"], default=MODEL)
     opt = a.parse_args()
+    request.model = opt.model
     msg = request(opt.port, [{"role": "user", "content": "Reply READY."}])
     assert msg.get("content"), "Normal chat failed"
     print("PASS chat", flush=True)
@@ -69,12 +73,12 @@ def main():
         with urllib.request.urlopen("http://127.0.0.1:8192/slots", timeout=10) as res:
             slots = json.load(res)
         n_past = max([int(s.get("n_past", s.get("n_prompt_tokens", 0))) for s in slots] or [0])
-        assert n_past > 0, "Qwen has no warm prompt before request 2"
+        assert n_past > 0, "%s has no warm prompt before request 2" % opt.model
         request(opt.port, [{"role": "user", "content": "Reply READY."}])
         timings = request.last_response.get("timings") or {}
         cached = timings.get("cache_n", request.last_response.get("tokens_cached"))
         if cached is not None:
-            assert cached > 0, "Qwen request 2 did not reuse the prompt cache"
+            assert cached > 0, "%s request 2 did not reuse the prompt cache" % opt.model
         print("PASS warm request 2 n_past=%d" % n_past, flush=True)
     prompt = [{"role": "user", "content":
         "Call the echo tool with the value READY. You MUST call the tool and must not reply in prose."}]
@@ -97,7 +101,7 @@ def main():
         print("PASS reasoning_content", flush=True)
         tool(request(opt.port, prompt, choice="required", stream=True))
         print("PASS streaming tool calls", flush=True)
-    print("QWEN ACCEPTANCE PASS", flush=True)
+    print("%s ACCEPTANCE PASS" % ("GLM" if opt.model.startswith("glm") else "QWEN"), flush=True)
 
 if __name__ == "__main__":
     main()

@@ -119,3 +119,13 @@ The choice persists across automatic updates. To select mixed again, use
 `MAG_ROOM_LAYOUT=mixed bash ops/update.sh`. `ops/rollback.sh RELEASE_ID` also
 restores the paired NUMA1 transaction when rolling back this release. No manual
 model service commands are needed.
+
+## GLM-5.3-Flash on NUMA1 (layout `glm`, default since 2026-10-29)
+
+`ops/room/layout` declares the layout the stack follows (`glm`): NUMA0 DeepSeek
+on 8191, NUMA1 GLM-5.3-Flash on 8192 (`glm.env`, preset `deepseek-glm-dual-numa`).
+Selection order in `ops/qwen/layout.sh`: explicit `MAG_ROOM_LAYOUT` (pinned on
+the host) > host pin > repo file > last applied layout. `MAG_ROOM_LAYOUT=repo`
+removes a pin. A failed repo-declared switch is not retried until its definition
+changes. The NUMA1 bot keeps its id, slot, memory and VM; the stock name "Qwen"
+becomes the backend label. See `ops/glm/README.md`.

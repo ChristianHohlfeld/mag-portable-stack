@@ -1,0 +1,43 @@
+# NUMA1 model of the "glm" room layout (ops/qwen/layout.sh). Started and
+# stopped only by that transaction; Qwen and DeepSeek NUMA1 stay installed.
+[Unit]
+Description=MAG GLM-5.3-Flash CPU model, NUMA1
+After=network-online.target
+Conflicts=mag-llm-ds-node@1.service mag-llm-iq3.service mag-llm-qwen.service
+Wants=network-online.target
+ConditionPathExists=/usr/local/lib/mag-glm/model.sizes
+StartLimitIntervalSec=1800
+StartLimitBurst=2
+[Service]
+Type=simple
+User=chris
+Group=chris
+WorkingDirectory=/home/chris
+EnvironmentFile=-/etc/mag-glm/runtime.env
+ExecStart=/usr/local/lib/mag-glm/start.sh
+Restart=on-failure
+RestartSec=60
+TimeoutStartSec=10800
+TimeoutStopSec=120
+CPUAffinity=14-27
+AllowedCPUs=14-27
+NUMAPolicy=bind
+NUMAMask=1
+MemoryAccounting=yes
+# ~62 GiB mlocked weights + KV/recurrent state + 16 GiB prompt RAM cache.
+MemoryLow=64G
+MemoryHigh=100G
+MemoryMax=120G
+MemorySwapMax=0
+LimitMEMLOCK=infinity
+OOMScoreAdjust=-600
+Nice=10
+IOSchedulingClass=idle
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=no
+ReadWritePaths=/var/lib/mag-llm/slots/glm
+PrivateTmp=yes
+RestrictAddressFamilies=AF_INET AF_UNIX
+[Install]
+WantedBy=multi-user.target

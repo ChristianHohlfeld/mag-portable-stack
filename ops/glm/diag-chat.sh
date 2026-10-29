@@ -4,11 +4,11 @@
 #
 # Stage A (no service touched): print the GGUF's embedded chat template and
 #   whether it honours enable_thinking.
-# Stage B (temporary, ~10 min): stop Qwen, run GLM as the transient unit
+# Stage B (temporary, bounded): stop Qwen, run GLM as the transient unit
 #   mag-glm-diag on 127.0.0.1:8193 (not :8192, so the room never talks to it),
 #   print rendered prompts and raw/parsed answers, then ALWAYS stop GLM and
 #   restart Qwen (EXIT/INT/TERM trap) and run the Qwen quick acceptance.
-# Nothing on disk is changed except the log file.
+# Only a diagnostic log is written; the transient unit and Qwen state are restored.
 set -euo pipefail
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 MODEL=/home/chris/models/GLM-5.3-Flash-GGUF-IQ1_M/GLM-5.3-Flash-IQ1_M-00001-of-00015.gguf
@@ -16,7 +16,7 @@ REV=$(cat "$ROOT/ops/qwen/runtime.sha")
 BIN="/home/chris/.local/qwen4exp/$REV-mag-cp1/bin/llama-server"
 LOG="$HOME/glm-diag-$(date +%Y%m%d-%H%M).log"
 [[ $(id -un) == chris ]] || { echo 'run as chris (sudo is used where needed)' >&2; exit 4; }
-[[ -x $BIN && -f $MODEL ]] || { echo "missing runtime or GGUF: $BIN $MODEL" >&2; exit 4; }
+[[ -x $BIN && -f $MODEL && -f "$ROOT/ops/glm/chat-template.jinja" ]] || { echo "missing runtime, GGUF or pinned template" >&2; exit 4; }
 exec > >(tee -a "$LOG") 2>&1
 echo "log: $LOG"
 
@@ -42,9 +42,9 @@ systemctl is-active --quiet mag-llm-qwen.service && QWEN_WAS_ACTIVE=1
 restore(){
   trap - EXIT INT TERM
   echo '== restore'
-  sudo systemctl stop mag-glm-diag.service 2>/dev/null || true
+  sudo -n systemctl stop mag-glm-diag.service 2>/dev/null || true
   if (( QWEN_WAS_ACTIVE )); then
-    sudo systemctl start mag-llm-qwen.service
+    sudo -n systemctl start mag-llm-qwen.service
     if wait_health 8192 5400; then
       python3 -I "$ROOT/ops/qwen/smoke.py" --port 8192 --quick --model qwen3.8-flash-next-uncensored \
         && echo 'Qwen restored and accepted' || echo 'WARNING: Qwen restored but acceptance failed' >&2
@@ -55,15 +55,15 @@ restore(){
 }
 trap restore EXIT INT TERM
 
-sudo systemctl stop mag-llm-qwen.service
-sudo systemd-run --unit=mag-glm-diag --collect --uid=chris --gid=chris -p LimitMEMLOCK=infinity \
+sudo -n systemctl stop mag-llm-qwen.service
+sudo -n systemd-run --unit=mag-glm-diag --collect --uid=chris --gid=chris -p LimitMEMLOCK=infinity \
   /usr/bin/numactl --physcpubind=14-27 --membind=1 "$BIN" \
   --model "$MODEL" --alias glm-5.3-flash --host 127.0.0.1 --port 8193 \
   --ctx-size 8192 --parallel 1 --threads 14 --threads-batch 14 --numa numactl \
-  --jinja --reasoning-format auto --no-ui
+  --load-mode dio --jinja --chat-template-file "$ROOT/ops/glm/chat-template.jinja" --reasoning-format auto --no-ui
 echo 'loading GLM (~3 min) ...'
 for ((i=0; i<360; i++)); do
-  systemctl is-active --quiet mag-glm-diag.service || { echo 'GLM exited during load:'; sudo journalctl -u mag-glm-diag --no-pager | tail -40; exit 4; }
+  systemctl is-active --quiet mag-glm-diag.service || { echo 'GLM exited during load:'; sudo -n journalctl -u mag-glm-diag --no-pager | tail -40; exit 4; }
   wait_health 8193 5 && break
 done
 
@@ -82,4 +82,4 @@ api /v1/chat/completions "{\"model\":\"glm-5.3-flash\",\"messages\":$MSG,\"max_t
 echo '== same request, raw text (reasoning_format none)'
 api /v1/chat/completions "{\"model\":\"glm-5.3-flash\",\"messages\":$MSG,\"max_tokens\":192,\"temperature\":0,\"reasoning_format\":\"none\",\"chat_template_kwargs\":{\"enable_thinking\":false}}" | python3 -c "$show"
 echo '== server log (template/format lines)'
-sudo journalctl -u mag-glm-diag --no-pager | grep -iE 'chat|template|think|reason|format|elementwise|warn|error' | tail -40
+sudo -n journalctl -u mag-glm-diag --no-pager | grep -iE 'chat|template|think|reason|format|elementwise|warn|error' | tail -40

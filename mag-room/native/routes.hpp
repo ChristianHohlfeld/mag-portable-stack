@@ -169,7 +169,7 @@ static bool quiesce_all(std::unique_lock<std::mutex> &sched,
     task_cancel("", "");
     cancel_prewarm();
     std::lock_guard<std::mutex> lk(JOB_MTX);
-    JOBS.clear(); ACTIVE_JOBS.clear(); PENDING.clear(); QUEUE_PAUSED = false;
+    JOBS.clear(); ACTIVE_JOBS.clear(); PENDING.clear(); PARKED_JOBS.clear(); QUEUE_PAUSED = false;
     AUTO_READY = false; AUTO_OWNER.clear(); ++AUTO_GENERATION;
     AUTO_LAST_PROGRESS.clear(); AUTO_TURNS_LEFT = 0;
     save_queue_locked(); queue_event_locked();
@@ -1831,34 +1831,23 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
     if (actor.role != "owner" || actor.login.empty() || !ts_proof_valid(r.hdrs)) {
       error_json(fd, 403, "Nur der Besitzer"); return;
     }
-    Val body; (void)mj::parse(r.body, body);
-    const bool force = body.isObj() && body.find("force") && body.find("force")->truthy();
-    if (!force && work_pending()) { busy_json(fd); return; }
+    // Every clear is forced: abort all in-flight turns before touching data.
+    // Fail closed if a worker has not released its lane; never send false 200.
     std::unique_lock<std::mutex> scheduling;
     std::unique_lock<std::shared_mutex> turn;
-    if (!quiesce_all(scheduling, turn, force)) {
-      // A forced clear may be waiting for a long-running VM tool or llama
-      // request to unwind. It has initiated cancellation but MUST NOT erase
-      // persisted room state before the old turn releases its lock. Report
-      // an accepted pending operation, not repeated HTTP 409 conflicts.
-      if (force) {
-        send_json(fd, 202, "{\"ok\":false,\"settling\":true}");
-      } else {
-        busy_json(fd);
-      }
+    if (!quiesce_all(scheduling, turn, true)) {
+      error_json(fd, 503, "Bots werden noch gestoppt – Raum nicht geleert");
       return;
     }
-    // Local durable room snapshot is the undo boundary. Full-machine backups
-    // belong to the daily/deploy policy, not each interactive clear.
+    JOBS.clear(); PENDING.clear(); PARKED_JOBS.clear(); JOBRUNS.clear();
+    ACTIVE_JOBS.clear(); QUEUE_PAUSED = false;
+    AUTO_READY = false; AUTO_OWNER.clear(); ++AUTO_GENERATION;
+    AUTO_LAST_PROGRESS.clear(); AUTO_TURNS_LEFT = 0;
+    save_queue_locked(); queue_event_locked();
+    clear_runs();
     auto result = clear_room_data();
     if (result.code == 200) {
-      JOBS.clear(); PENDING.clear(); QUEUE_PAUSED = false;
-      AUTO_READY = false; AUTO_OWNER.clear(); ++AUTO_GENERATION;
-      save_queue_locked(); queue_event_locked();
-      Val response;
-      if (mj::parse(result.body,response))
-        guest_audit("room_clear",actor.login,guest_field(response,"snapshot"));
-      // Every client drops live streams/thinking indicators, then refetches.
+      guest_audit("room_clear", actor.login, "hard");
       publish("{\"type\":\"room_cleared\"}");
     }
     send_json(fd, result.code, result.body);

@@ -923,9 +923,15 @@ class RoomE2E(unittest.TestCase):
               document.getElementById('settings-dialog').showModal();
             }""")
             p.locator('#reset').click(timeout=3000)
+            # An irreversible clear first requires one explicit confirmation.
+            expect(p.locator('#mag-modal')).to_be_visible()
+            expect(p.locator('#mag-modal-text')).to_contain_text('Kein Rückgängig')
+            self.assertEqual(p.evaluate('window.__clearPosts'),0,
+                             'no destructive call before confirmation')
+            p.locator('#mag-modal-ok').click()
             expect(p.locator('#reset')).to_have_text('Raum wird geleert…',timeout=1500)
             self.assertEqual(p.locator('#reset').get_attribute('aria-busy'),'true')
-            expect(p.locator('#room-link')).to_have_text('Raum wird geleert…')
+            expect(p.locator('#room-link')).to_contain_text('Bots werden gestoppt')
             p.evaluate('window.__releaseClear()')
             p.wait_for_function('window.__clearPosts===1 && !clearInFlight',timeout=3000)
             self.assertEqual(p.evaluate('window.__clearPosts'),1)

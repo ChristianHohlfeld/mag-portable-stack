@@ -423,6 +423,29 @@ class Native(unittest.TestCase):
   self.request('/api/model-settings',{'id':second,'deterministic':True})
   self.assertFalse(self.request('/api/state')['models'][0]['deterministic'])
   self.assertTrue(self.request('/api/state')['models'][1]['deterministic'])
+ def test_05aa_new_model_does_not_inherit_legacy_sampling(self):
+  self.wait_idle()
+  models=self.request('/api/state')['models']
+  first,second=[m['id'] for m in models]
+  path=self.state/'model-settings.json'
+  previous=path.read_bytes() if path.exists() else None
+  legacy=self.state/'sampling'
+  old=legacy.read_bytes() if legacy.exists() else None
+  try:
+   legacy.write_text('on\\n')
+   path.write_text(json.dumps({first:{'deterministic':True}}))
+   self.proc.terminate();self.proc.wait(timeout=5);self.log.close();self.start()
+   states={m['id']:m['deterministic'] for m in self.request('/api/state')['models']}
+   self.assertTrue(states[first],'explicit saved deterministic=true must survive')
+   self.assertFalse(states[second],'new model must ignore old sampling=on')
+  finally:
+   self.proc.terminate();self.proc.wait(timeout=5);self.log.close()
+   if previous is None:path.unlink(missing_ok=True)
+   else:path.write_bytes(previous)
+   if old is None:legacy.unlink(missing_ok=True)
+   else:legacy.write_bytes(old)
+   self.start()
+
  def test_05b_stateless_identical_input_always_recomputed_without_history(self):
   self.wait_idle()
   models=self.request('/api/state')['models']
@@ -906,21 +929,30 @@ class Native(unittest.TestCase):
   finally:
    self.request('/api/queue',method='DELETE');self.request('/api/cancel',{});self.request('/api/queue/resume',{});Model.script=[]
 
- def test_15l_room_clear_busy_needs_force_and_leaves_no_ghost(self):
-  acc=self.state/'access.json';had=acc.read_bytes() if acc.exists() else None
-  self._access(['chris@github']);owner=self._ts('chris@github','Chris')
-  self.addCleanup(lambda:acc.write_bytes(had) if had is not None else acc.unlink(missing_ok=True))
-  self.wait_idle();Model.script=[self._slow('out',80),['Nie.']]
-  self.request('/api/message',{'text':'Clear-Busy','bots':['test']});self._busy();time.sleep(.5)
-  self.request('/api/message',{'text':'Wartet','bots':['test']})
-  with self.assertRaises(urllib.error.HTTPError) as ctx:self.request('/api/room/clear',{},headers=owner)
-  self.assertEqual(ctx.exception.code,409);self.assertTrue(json.loads(ctx.exception.read())['busy'])
-  self.assertTrue(self.request('/api/state')['room'],'refused clear keeps the room')
-  wiped=self.request('/api/room/clear',{'force':True},headers=owner);self.assertTrue(wiped['ok'])
-  time.sleep(1.0);s=self.request('/api/state')
-  self.assertEqual(s['room'],[],'no ghost/partial answer after forced clear');self.assertFalse(s['busy']);self.assertFalse(s['pending'])
-  self.assertEqual(self.request('/api/room/clear',{},headers=owner).get('unchanged'),True,'idle clear needs no force')
-  self.request('/api/undo/'+wiped['undo'],{});self.request('/api/queue/resume',{});Model.script=[]
+ def test_15l_room_clear_stops_live_bot_and_queue(self):
+  self.wait_idle()
+  self._access(['chris@github'])
+  owner=self._ts('chris@github','Chris')
+  Model.script=[self._slow('out',80),['Nie.']]
+  try:
+   self.request('/api/message',{'text':'Clear-Busy','bots':['test']})
+   self._busy()
+   self.request('/api/message',{'text':'Wartet','bots':['test']})
+   result=self.request('/api/room/clear',{},headers=owner)
+   self.assertTrue(result['ok'])
+   self.assertNotIn('undo',result)
+   self.assertNotIn('snapshot',result)
+   time.sleep(.4)
+   state=self.request('/api/state')
+   self.assertEqual(state['room'],[])
+   self.assertEqual(state['files'],[])
+   self.assertEqual(state['pending'],[])
+   self.assertFalse(state['busy'])
+   self.assertTrue(self.request('/api/room/clear',{},headers=owner)['ok'])
+  finally:
+   self.request('/api/queue/resume',{})
+   Model.script=[]
+
  def test_15m_bot_rights_github_read_only_no_gitea_admin(self):
   self.request('/api/bot-settings',{'bots':['test'],'github_enabled':True},method='PUT')
   self.wait_idle();self.request('/api/connectors/github',{'token':'ghp_'+'c'*36})
@@ -2025,17 +2057,17 @@ class Native(unittest.TestCase):
   self.assertTrue(any(x.get('text')=='trennung-bleibt' for x in self.request('/api/agents/test/memory')))
   mem=self.request('/api/agents/test/memory')
   wiped=self.request('/api/room/clear',{},headers=owner)
-  self.assertNotIn('backup_queued',wiped,'CI must not schedule any real restic snapshots')
-  self.assertTrue((self.state/'snapshots'/wiped['snapshot']/'room.json').is_file())
+  self.assertNotIn('undo',wiped)
+  self.assertNotIn('snapshot',wiped)
+  self.assertFalse((self.state/'snapshots').exists())
   st=self.request('/api/state')
   self.assertFalse(st['room']);self.assertFalse(st['files'])
   self.assertEqual(self.request('/api/agents/test/memory'),mem)
   self.assertFalse((self.state/'files'/stored).exists())
-  self.request('/api/undo/'+wiped['undo'],{})
   st=self.request('/api/state')
-  self.assertTrue(any(m.get('id')==mid for m in st['room']))
-  self.assertTrue(any(f.get('stored')==stored for f in st['files']))
-  self.assertEqual(self.request('/api/file/'+stored,raw=True),b'trennung')
+  self.assertEqual(st['room'],[])
+  self.assertEqual(st['files'],[])
+  self.assertNotIn("showUndo('Raum geleert'",self.request('/',raw=True).decode())
   self.error(404,'/api/agents/kein-bot/workspace/reset',{})
   html=self.request('/',raw=True).decode()
   for needle in ('id="purge-dialog"','id="data-areas"','id="area-room"','id="area-work"','id="memory-dialog"','id="memory-title"','id="memory-clear"','/api/room/clear','workspace/reset','Rückgängig','id="reset"','id="jump-bottom"','stickToBottom','AT_BOTTOM_PX','overflow-anchor:none','ResizeObserver','aria-label="Nach unten scrollen"'):
@@ -2066,144 +2098,64 @@ class Native(unittest.TestCase):
    self.request('/api/agents/test/workspace/reset',{})
   self.assertEqual(ctx.exception.code,400)
   self.assertIn('Nur-Chat-Bot',json.loads(ctx.exception.read())['error'])
- def test_17z_room_clear_snapshot_restore_and_guest_denial(self):
+ def test_17z_hard_clear_owner_only_and_no_undo(self):
   self.wait_idle()
   self._access(['chris@github'])
   owner=self._ts('chris@github','Chris')
   guest=self._ts('ada@github','Ada')
-  self.request('/api/agent/test/say',{'text':'Snapshot dauerhaft'})
-  file=self.request('/api/upload?name=recovery.txt',b'RECOVER ME')
-  stored=file['stored']
-  before=self.request('/api/state')
-  room_disk=(self.state/'room.json').read_bytes()
-  files_disk=(self.state/'files.json').read_bytes()
-  forbidden=[
-   ('/api/room/clear','POST',{}),
-   ('/api/reset','POST',{}),
-   ('/api/room/messages/abcdef12','DELETE',None),
-   ('/api/room/files/'+stored,'DELETE',None),
-   ('/api/room/snapshots','GET',None),
-   ('/api/room/snapshots/1234567890-'+'a'*24+'/restore','POST',{}),
-   ('/api/undo/abcdef12','POST',{}),
-   ('/api/queue','DELETE',None),
-   ('/api/queue/merge','POST',{}),
-   ('/api/frontend','POST',{'html':'bad'}),
-   ('/api/pages','POST',{}),
-   ('/api/connectors/github','DELETE',None),
-   ('/api/jobs','GET',None),
-   ('/api/unknown-destructive','POST',{}),
-  ]
-  for uri,method,data in forbidden:
-   with self.subTest(uri=uri,method=method):
-    self.error(403,uri,data,method=method,headers=guest)
-  self.assertEqual((self.state/'room.json').read_bytes(),room_disk)
-  self.assertEqual((self.state/'files.json').read_bytes(),files_disk)
-  self.assertEqual(self.request('/api/file/'+stored,raw=True),b'RECOVER ME')
-  self.error(403,'/api/room/clear',{},headers={'X-Tailscale-User':'chris@github',
-               'X-Tailscale-IP':'100.101.102.103'})
-  self.error(403,'/api/room/clear',{}) # local loopback is NOT attested owner
-  cleared=self.request('/api/room/clear',{},headers=owner)
-  id=cleared['snapshot']
-  folder=self.state/'snapshots'/id
-  self.assertEqual(json.loads((folder/'room.json').read_text()),before['room'])
-  self.assertEqual((folder/'files'/stored).read_bytes(),b'RECOVER ME')
-  self.assertFalse(self.request('/api/state')['room'])
-  self.assertFalse(self.request('/api/state')['files'])
-  self.proc.terminate();self.proc.wait(timeout=5);self.log.close();self.start()
-  owner=self._ts('chris@github','Chris')
-  self.assertIn(id,[x['id'] for x in self.request('/api/room/snapshots',headers=owner)['snapshots']])
-  self.error(403,'/api/room/snapshots/'+id+'/restore',{},headers=owner)
-  h={**owner,'Host':'mag.stardenburg.de','Origin':'https://mag.stardenburg.de','Sec-Fetch-Site':'same-origin'}
-  restored=self.request('/api/room/snapshots/'+id+'/restore',{},headers=h)
-  self.assertEqual(restored['restored'],id)
-  self.assertTrue((self.state/'snapshots'/restored['previous_snapshot']).is_dir())
-  self.assertEqual(self.request('/api/file/'+stored,raw=True),b'RECOVER ME')
-  st=self.request('/api/state')
-  self.assertTrue(any(m.get('content')=='Snapshot dauerhaft' for m in st['room']))
-  self.assertTrue(any(f.get('stored')==stored for f in st['files']))
-  # A compromised/symlinked shared file must fail the snapshot, NOT clear.
-  target=self.state/'files'/stored
-  target.rename(target.with_suffix('.saved'))
-  target.symlink_to('/etc/passwd')
-  try:
-   original=self.request('/api/state')['room']
-   self.error(507,'/api/room/clear',{},headers=owner)
-   self.assertEqual(self.request('/api/state')['room'],original)
-  finally:
-   target.unlink()
-   target.with_suffix('.saved').rename(target)
-  useful=self.request('/api/room/clear',{},headers=owner)['snapshot']
-  snapshots_before=self.request('/api/room/snapshots',headers=owner)['snapshots']
-  for _ in range(6):
-   self.assertTrue(self.request('/api/room/clear',{},headers=owner)['unchanged'])
-  self.assertEqual(self.request('/api/room/snapshots',headers=owner)['snapshots'],snapshots_before)
-  self.assertTrue((self.state/'snapshots'/useful/'room.json').is_file())
-  remaining=self.request('/api/room/snapshots',headers=owner)['snapshots']
-  self.assertLessEqual(len(remaining),5)
-  self.assertTrue(all((self.state/'snapshots'/x['id']/'meta.json').is_file() for x in remaining))
+  self.request('/api/agent/test/say',{'text':'Wird gelöscht'})
+  record=self.request('/api/upload?name=clear.txt',b'GONE')
+  stored=record['stored']
+  self.error(403,'/api/room/clear',{},headers=guest)
+  self.error(403,'/api/room/clear',{})
+  snap=self.state/'snapshots'
+  snap.mkdir(exist_ok=True)
+  (snap/'old').write_text('legacy')
+  result=self.request('/api/room/clear',{},headers=owner)
+  self.assertTrue(result['ok'])
+  self.assertNotIn('undo',result)
+  self.assertNotIn('snapshot',result)
+  self.assertFalse(snap.exists())
+  self.assertEqual(self.request('/api/state')['room'],[])
+  self.assertEqual(self.request('/api/state')['files'],[])
+  self.assertEqual(json.loads((self.state/'files.json').read_text()),[])
+  self.assertFalse(list((self.state/'files').iterdir()))
+  self.error(404,'/api/file/'+stored)
+  self.assertTrue(self.request('/api/room/clear',{},headers=owner)['ok'])
 
- def test_17zz_large_recording_snapshot_clear_undo_and_restore(self):
-  # Legacy/VM recordings above the 64 MiB upload limit remain snapshotable.
-  # The snapshot budget is aggregate, bounded at 512 MiB, and fail-closed.
+ def test_17zz_large_file_and_running_bot_hard_clear(self):
   self.wait_idle()
   self._access(['chris@github'])
   owner=self._ts('chris@github','Chris')
-  h={**owner,'Host':'mag.stardenburg.de','Origin':'https://mag.stardenburg.de','Sec-Fetch-Site':'same-origin'}
   self.request('/api/room/clear',{},headers=owner)
-  rec=self.request('/api/upload?name=recording.m4a',b'SNAPSHOT')
-  stored=rec['stored']
-  disk=self.state/'files'/stored
-  length=132_318_913
-  with disk.open('r+b') as stream:
-   stream.truncate(length)
-   stream.seek(length-4)
-   stream.write(b'TAIL')
-  self.assertEqual(disk.stat().st_size,length)
-  def digest(p):
-   with p.open('rb') as stream:return hashlib.file_digest(stream,'sha256').hexdigest()
-  original_sha=digest(disk)
-  before=self.request('/api/state')
-  first=self.request('/api/room/clear',{},headers=owner)
-  self.assertTrue(first['ok'])
-  saved=self.state/'snapshots'/first['snapshot']/'files'/stored
-  self.assertEqual(saved.stat().st_size,length)
-  self.assertEqual(digest(saved),original_sha,'large recording snapshot changed bytes')
-  self.assertFalse(self.request('/api/state')['files'])
-  self.request('/api/undo/'+first['undo'],{})
-  self.assertEqual(disk.stat().st_size,length)
-  self.assertEqual(digest(disk),original_sha,'Undo must restore all recording bytes')
-  self.assertTrue(any(f['stored']==stored for f in self.request('/api/state')['files']))
-  # Snapshot restore uses the same copy gate: it must accept large files too.
-  second=self.request('/api/room/clear',{},headers=owner)
-  restored=self.request('/api/room/snapshots/'+second['snapshot']+'/restore',{},headers=h)
-  self.assertEqual(restored['restored'],second['snapshot'])
-  self.assertEqual(disk.stat().st_size,length)
-  self.assertEqual(digest(disk),original_sha,'Snapshot restore changed bytes')
-  self.assertTrue(any(f['stored']==stored for f in self.request('/api/state')['files']))
-  self.assertTrue(any(f['stored']==stored for f in before['files']))
-  # A sparse >512 MiB file must be REJECTED BEFORE copying, preserving
-  # everything, including existing snapshots, and cleaning up .tmp staging.
-  room_before=(self.state/'room.json').read_bytes()
-  files_before=(self.state/'files.json').read_bytes()
-  snap_home=self.state/'snapshots'
-  snapshots_before={p.name for p in snap_home.iterdir()}
-  oversize=513*1024*1024
+  rec=self.request('/api/upload?name=large.m4a',b'RECORDING')
+  disk=self.state/'files'/rec['stored']
+  with disk.open('r+b') as fp:fp.truncate(132_318_913)
+  Model.delay=3
   try:
-   with disk.open('r+b') as stream:stream.truncate(oversize)
-   with self.assertRaises(urllib.error.HTTPError) as ctx:
-    self.request('/api/room/clear',{},headers=owner)
-   self.assertEqual(ctx.exception.code,507)
-   error=json.loads(ctx.exception.read())['error']
-   self.assertIn('512 MiB',error,'507 must report the actual aggregate snapshot limit')
-   self.assertEqual(disk.stat().st_size,oversize,'failed clear deleted the active recording')
-   self.assertEqual((self.state/'room.json').read_bytes(),room_before)
-   self.assertEqual((self.state/'files.json').read_bytes(),files_before)
-   self.assertEqual({p.name for p in snap_home.iterdir()},snapshots_before,
-                    'failed snapshot must not leave a .tmp directory')
+   calls=len(Model.calls)
+   self.request('/api/message',{'text':'Old turn must not reply','bots':['test']})
+   for _ in range(120):
+    if len(Model.calls)>calls:break
+    time.sleep(.025)
+   self.assertGreater(len(Model.calls),calls,'live model request required')
+   self.assertTrue(self.request('/api/state')['busy'])
+   done=self.request('/api/room/clear',{},headers=owner)
+   self.assertTrue(done['ok'])
+   self.assertNotIn('undo',done)
+   self.assertNotIn('snapshot',done)
+   self.assertFalse((self.state/'snapshots').exists())
+   self.assertEqual(json.loads((self.state/'files.json').read_text()),[])
+   self.assertFalse(list((self.state/'files').iterdir()))
+   time.sleep(.3)
+   state=self.request('/api/state')
+   self.assertEqual(state['room'],[])
+   self.assertEqual(state['files'],[])
+   self.assertEqual(state['pending'],[])
+   self.assertFalse(state['busy'])
   finally:
-   with disk.open('r+b') as stream:stream.truncate(length)
-  self.assertEqual(digest(disk),original_sha,'failed oversize clear must retain content')
-  self.assertTrue(any(f['stored']==stored for f in self.request('/api/state')['files']))
+   Model.delay=0
+   Model.script=[]
 
  def test_18_pwa_shell_is_not_cached(self):
   import base64

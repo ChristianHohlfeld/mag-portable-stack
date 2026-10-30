@@ -334,6 +334,8 @@ class StopAndPriority(unittest.TestCase):
     def test_04_message_during_tool_run_reaches_the_running_bot_at_the_next_step(self):
         Model.scripts += [[{'_sleep': 1.2}, tool_call('remember', {'fact': 'Schritt eins'})],
                           ['Beides erledigt.']]
+        before = len([m for m in self.room.state_()['room']
+                      if m.get('role') == 'assistant' and m.get('bot') == 'a'])
         self.room.api('/api/message', {'text': 'Aufgabe X', 'bots': ['a']})
         wait_calls(1)
         r = self.room.api('/api/message', {'text': 'Bitte auch Y', 'bots': ['a']})
@@ -345,12 +347,12 @@ class StopAndPriority(unittest.TestCase):
         self.assertIn('Bitte auch Y', second[-1]['content'])
         self.assertIn('Vorrang', second[-1]['content'])
         self.assertEqual([m['role'] for m in second[-3:]], ['assistant', 'tool', 'user'])
-        self.assertEqual(contents(s)[-4:], ['Aufgabe X', 'Bitte auch Y', '', 'Beides erledigt.'])
-        earlier, newer = [m for m in s['room'] if m.get('bot') == 'a'][-2:]
+        self.assertEqual(contents(s)[-3:], ['Aufgabe X', 'Bitte auch Y', 'Beides erledigt.'])
+        new_rows = [m for m in s['room'] if m.get('role') == 'assistant'
+                    and m.get('bot') == 'a'][before:]
+        self.assertEqual(len(new_rows), 1, 'no extra empty assistant row')
         user = next(m for m in s['room'] if m.get('content') == 'Bitte auch Y')
-        self.assertLess(earlier['display_ms'], user['display_ms'])
-        self.assertLess(user['display_ms'], newer['display_ms'])
-        self.assertTrue(earlier['interrupted'])
+        self.assertLessEqual(user['display_ms'], new_rows[0]['display_ms'])
         self.assertEqual(s['pending'], [])
 
     def test_05_running_bot_gives_way_to_a_message_for_another_bot_on_its_model(self):

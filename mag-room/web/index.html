@@ -1711,8 +1711,16 @@ function render(){
  const area=$('conversation'),follow=stickToBottom||!rendered,oldScroll=area.scrollTop,prevH=area.scrollHeight;rendered=true;
  programmatic++;
  area.replaceChildren();const inner=document.createElement('div');inner.className='conversation-inner';area.append(inner);
- if(!state.room.length){inner.innerHTML='<div class="empty"><div class="empty-symbol">✳</div><h1>Worum geht es?</h1><p>Eine Frage, eine Notiz oder eine Aufgabe für die Bots. Alles bleibt auf deinem Server.</p></div>'}
- const timeline=[...state.room];
+ if(!state.room.length&&!Object.keys(streams).length){inner.innerHTML='<div class="empty"><div class="empty-symbol">✳</div><h1>Worum geht es?</h1><p>Eine Frage, eine Notiz oder eine Aufgabe für die Bots. Alles bleibt auf deinem Server.</p></div>'}
+ // The first streamed token already lives in ROOM. While it is streaming,
+ // render its live card, not a second durable card with the same turn ID.
+ // Match by message ID or display timestamp, never by identical text.
+ const timeline=(state.room||[]).filter(m=>{
+  if(m.role!=='assistant'||!m.bot)return true;
+  const live=streams[m.bot];
+  return !(live&&(live.partialId===m.id||
+    (m.display_ms&&live.displayMs&&+m.display_ms===+live.displayMs)));
+ });
  // Pending items belong to the queue only; never project them into chat history.
  const pending=state.pending||[];
  const queuedClients=new Set(pending.map(p=>p.client_id).filter(Boolean));

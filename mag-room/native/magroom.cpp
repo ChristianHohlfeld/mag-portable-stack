@@ -9152,10 +9152,12 @@ struct TurnGroup {
   uint64_t epoch = 0;
   std::atomic<int> left{0};
   std::atomic<bool> cancelled{false};
+  std::atomic<bool> invalid_reply{false};
 };
 static void group_done(const std::shared_ptr<TurnGroup> &g) {
   if (!g || --g->left > 0) return;
-  if (g->reflect || g->cancelled.load() || !REFLECT.load() || g->ids.size() < 2 ||
+  if (g->reflect || g->cancelled.load() || g->invalid_reply.load() ||
+      !REFLECT.load() || g->ids.size() < 2 ||
       g->epoch != EPOCH.load() || SHUTDOWN.load())
     return;
   // Deterministic bots answer one stateless message only: no second round.
@@ -9193,6 +9195,8 @@ static void lane_turn(Lane *lane, uint64_t run, std::vector<std::string> ids,
     TL_GATE = own && stagger_mode() == "think" ? own.get() : nullptr;
     TURN_THINK = think;
     TURN_INPUT = automatic ? "" : input;
+    if (group && !automatic && short_glm_input(TURN_INPUT))
+      group->invalid_reply = true; // no reflection on trivial chat
     TL_ADOPT_GEN = 0;
     TL_ADOPT_OWNER.clear();
     TL_YIELD = false;
@@ -9258,6 +9262,9 @@ static void lane_turn(Lane *lane, uint64_t run, std::vector<std::string> ids,
         try {
           const double visible_start = dispatched_ms; dispatched_ms = 0;
           TurnReport report = generate_and_post(idx, automatic, visible_start);
+          if (group && (report.skipped || !report.error.empty() ||
+                        report.text.empty()))
+            group->invalid_reply = true;
           if (job_selftalk) {
             reload_slot_after_cancel(idx);
             note_selftalk_gap();
@@ -9672,7 +9679,7 @@ static void stop_selftalk() {
   {
     std::lock_guard<std::mutex> lk(JOB_MTX);
     drop_selftalk_jobs_locked();
-    release_lanes_locked();
+    if (!CONFIGURED_MODEL) release_lanes_locked();
   }
   JOB_CV.notify_all();
 }
@@ -10912,7 +10919,8 @@ int main() {
 
   STATE_DIR = env("MAG_ROOM_STATE", "/var/lib/magbot/room");
   { Val prefs; if (mj::parse(read_file(STATE_DIR + "/bot-defaults.json"), prefs) && prefs.isObj()) {
-      if (auto v = prefs.find("thinking"); v && v->type == Val::BOOL) THINKING_DEFAULT = v->asBool();
+      if (!CONFIGURED_MODEL)
+        if (auto v = prefs.find("thinking"); v && v->type == Val::BOOL) THINKING_DEFAULT = v->asBool();
       if (auto v = prefs.find("github_enabled"); v && v->type == Val::BOOL) GITHUB_DEFAULT = v->asBool();
       if (auto v = prefs.find("pho_compress"); v && v->type == Val::BOOL) PHO_DEFAULT = v->asBool();
     }
@@ -11020,7 +11028,8 @@ int main() {
           Job job = val_job(j);
           // A bot-to-bot turn does not survive the restart. Resuming it
           // would cancel whatever Qwen is still decoding and prefill again.
-          if (!job.ids.empty() && !job.selftalk) PARKED_JOBS.push_back(job);
+          if (!job.ids.empty() && !job.selftalk && !(CONFIGURED_MODEL && job.reflect))
+            PARKED_JOBS.push_back(job);
         }
       std::vector<Job> running;
       if (auto a = q.find("actives"); a && a->isArr())
@@ -11030,7 +11039,7 @@ int main() {
       const std::string note =
           "(Antwort unterbrochen – Raum wurde neu gestartet, wird fortgesetzt)";
       for (auto r = running.rbegin(); r != running.rend(); ++r) {
-        if (r->ids.empty() || r->selftalk) continue;
+        if (r->ids.empty() || r->selftalk || (CONFIGURED_MODEL && r->reflect)) continue;
         for (auto &id : r->ids) {
           int idx = agent_index(id);
           if (idx < 0) continue;

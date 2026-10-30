@@ -10990,8 +10990,13 @@ int main() {
   retire_frontend_override();
 
   if (CONFIGURED_MODEL && env("MAG_ROOM_MODEL_ID", "").rfind("glm-5.3-flash", 0) == 0) {
-    write_file(STATE_DIR + "/autotalk", "off");
-    write_file(STATE_DIR + "/reflect", "off");
+    // One-time migration only. Later UI changes must survive room restarts.
+    const std::string marker = STATE_DIR + "/glm-fast-defaults-v1";
+    if (!std::filesystem::exists(marker)) {
+      write_file(STATE_DIR + "/autotalk", "off");
+      write_file(STATE_DIR + "/reflect", "off");
+      write_file_atomic(marker, "1\n");
+    }
   }
   AUTOTALK = trim(read_file(STATE_DIR + "/autotalk")) == "on";
   SELFTALK = migrated_flag(STATE_DIR + "/proaktiv", STATE_DIR + "/selftalk") == "on";

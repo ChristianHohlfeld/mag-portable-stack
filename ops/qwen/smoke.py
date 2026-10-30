@@ -16,8 +16,12 @@ def request(port, messages, thinking=False, choice=None, stream=False):
     # with the pinned ops/glm/chat-template.jinja (the embedded template ignores
     # enable_thinking); thinking off prefills "<think></think>", default effort Low.
     body = {"model": request.model, "messages": messages, "stream": stream,
-            "max_tokens": 512 if thinking else 192,
-            "temperature": 0, "chat_template_kwargs": {"enable_thinking": thinking},
+            "max_tokens": 24 if getattr(request, "startup_only", False) else (512 if thinking else 192),
+            "temperature": 1.0 if request.model.startswith("glm-5.3-flash") else 0,
+            "top_p": 0.95 if request.model.startswith("glm-5.3-flash") else 1,
+            "chat_template_kwargs": {"enable_thinking": thinking,
+                **({"reasoning_effort": "low", "clear_thinking": True}
+                   if request.model.startswith("glm-5.3-flash") else {})},
             "cache_prompt": True, "id_slot": 0}
     if choice:
         body["tools"] = [TOOL]
@@ -30,7 +34,7 @@ def request(port, messages, thinking=False, choice=None, stream=False):
             answer = json.load(res)
             request.last_response = answer
             assert answer.get("choices"), "Missing OpenAI choices"
-            if request.model == "glm-5.3-flash":
+            if request.model.startswith("glm-5.3-flash"):
                 # Synthetic test prompts only. Always expose parsed reasoning
                 # vs visible text and finish reason so failures are actionable.
                 report(answer, full=request.diagnose_only)
@@ -124,25 +128,30 @@ def tool(msg):
 
 def main():
     a = argparse.ArgumentParser()
-    a.add_argument("--port", choices=[8080, 8091, 8192], type=int, default=8091)
+    a.add_argument("--port", choices=[8080, 8091, 8191, 8192], type=int, default=8091)
     a.add_argument("--quick", action="store_true")
-    a.add_argument("--model", choices=[MODEL, "glm-5.3-flash"], default=MODEL)
+    a.add_argument("--model", choices=[MODEL, "glm-5.3-flash", "glm-5.3-flash-iq1-m"], default=MODEL)
+    a.add_argument("--startup-only", action="store_true", help="one small synthetic response only")
     a.add_argument("--diagnose-only", action="store_true",
                    help="single synthetic chat request, print parsed reasoning/content and exit; no PASS claim")
     opt = a.parse_args()
     request.model = opt.model
     request.diagnose_only = opt.diagnose_only
+    request.startup_only = opt.startup_only
     ready_prompt = [{"role": "user", "content": (
         "Reply with exactly the single word READY and nothing else."
-        if opt.model == "glm-5.3-flash" else "Reply READY.")}]
+        if opt.model.startswith("glm-5.3-flash") else "Reply READY.")}]
     msg = request(opt.port, ready_prompt)
     if opt.diagnose_only:
         print("DIAGNOSE ONLY: no acceptance assertion or model switch", flush=True)
         return
     require_visible_content(msg, "Normal chat failed")
+    if opt.startup_only:
+        print("PASS startup %s :%d" % (opt.model,opt.port), flush=True)
+        return
     # Thinking is off: the answer must be plain content that ends on its own.
     finish = request.last_response["choices"][0].get("finish_reason")
-    if opt.model == "glm-5.3-flash":
+    if opt.model.startswith("glm-5.3-flash"):
         require_glm_ready(msg, "Normal chat failed")
     else:
         assert "READY" in msg["content"].upper(), "Normal chat failed: no READY in %r" % msg["content"][:200]
@@ -157,7 +166,7 @@ def main():
         n_past = max([int(s.get("n_past", s.get("n_prompt_tokens", 0))) for s in slots] or [0])
         assert n_past > 0, "%s has no warm prompt before request 2" % opt.model
         cached_msg = request(opt.port, ready_prompt)
-        if opt.model == "glm-5.3-flash":
+        if opt.model.startswith("glm-5.3-flash"):
             require_glm_ready(cached_msg, "Cached normal chat failed")
         timings = request.last_response.get("timings") or {}
         cached = timings.get("cache_n", request.last_response.get("tokens_cached"))
@@ -168,7 +177,7 @@ def main():
         "Call the echo tool with the value READY. You MUST call the tool first, "
         "without replying in prose before the result. When the tool returns, "
         "begin your final reply with ECHO: READY. You may add a brief sentence."
-        if opt.model == "glm-5.3-flash" else
+        if opt.model.startswith("glm-5.3-flash") else
         "Call the echo tool with the value READY. You MUST call the tool and must not reply in prose.")
     prompt = [{"role": "user", "content": tool_prompt}]
     msg = request(opt.port, prompt, choice="auto")
@@ -180,7 +189,7 @@ def main():
          "tool_calls": msg["tool_calls"]},
         {"role": "tool", "tool_call_id": tc["id"], "name": "echo", "content": "READY"}])
     require_visible_content(again, "Tool result roundtrip failed")
-    if opt.model == "glm-5.3-flash":
+    if opt.model.startswith("glm-5.3-flash"):
         require_glm_ready(again, "Tool result roundtrip failed", roundtrip=True)
     print("PASS tool result roundtrip", flush=True)
     if not opt.quick:

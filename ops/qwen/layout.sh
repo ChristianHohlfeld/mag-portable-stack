@@ -8,13 +8,16 @@ ACTION=${1:?apply|rollback|probe}; BACKUP=${2:?deployment backup directory}
 TXN="$BACKUP/qwen-layout"
 fail(){ echo "NUMA1 layout: $*" >&2; exit 4; }
 [[ $EUID == 0 ]] || fail 'root required'
-units=(mag-llm-ds-node@1.service mag-llm-qwen.service mag-llm-glm.service)
+units=(mag-llm-ds-node@1.service mag-llm-qwen.service mag-llm-glm.service mag-llm-glm@q1.service mag-llm-glm@q2.service)
+[[ ! -f "$TXN/glm-dual" ]] || units+=(mag-llm-ds-node@0.service mag-llm-ornith-node@0.service mag-llm-ornith@1.service)
 files=(/etc/mag-stack/room-model.env /etc/mag-stack/room-layout /etc/mag-stack/room-layout.pinned
        /etc/mag-qwen/runtime.env
        /etc/systemd/system/mag-llm-qwen.service /etc/systemd/system/mag-llm-ds-node@.service
        /usr/local/lib/mag-qwen/start.sh /usr/local/lib/mag-qwen/verify-model.sh
        /usr/local/lib/mag-qwen/runtime.sha /etc/mag-qwen/model.sha256
        /etc/systemd/system/mag-llm-glm.service /usr/local/lib/mag-glm/start.sh
+       /etc/systemd/system/mag-llm-glm@.service /etc/mag-glm/q1.env /etc/mag-glm/q2.env
+       /etc/systemd/system/mag-audit-gateway.service.d/50-two-bots.conf
        /usr/local/lib/mag-glm/verify-model.sh /usr/local/lib/mag-glm/runtime.sha
        /usr/local/lib/mag-glm/model.sizes /usr/local/lib/mag-glm/model.sha256 /usr/local/lib/mag-glm/chat-template.jinja)
 # A failed attempt of the repo-declared layout is remembered per identity so the
@@ -36,6 +39,9 @@ rollback(){
   [[ -f $TXN/started && ! -f $TXN/restored ]] || return 0
   # Stop only an instance this transaction changed. Never touch ds-node@0.
   if [[ -f $TXN/changed ]]; then systemctl stop "${units[@]}"; fi
+   if [[ -f $TXN/hidden-dropins ]]; then
+     while IFS= read -r f; do [[ ! -f "$f.glm-inactive" ]] || mv -f -- "$f.glm-inactive" "$f"; done < "$TXN/hidden-dropins"
+   fi
   for unit in "${units[@]}"; do disable_if_installed "$unit"; done
   for file in "${files[@]}"; do
     if [[ -f $TXN/files$file ]]; then
@@ -100,7 +106,7 @@ valid "$layout" || fail 'MAG_ROOM_LAYOUT must be mixed, deepseek or glm'
 # One failed live attempt per identity; a new commit touching them retries.
 case $layout in mixed) env_file=mixed.env ;; glm) env_file=glm.env ;; *) env_file=model.env ;; esac
 id_files=("$ROOT/ops/qwen/runtime.sha" "$ROOT/ops/room/$env_file")
-if [[ $layout == glm ]]; then id_files+=("$ROOT"/ops/glm/{start.sh,verify-model.sh,model.sizes,model.sha256,mag-llm-glm.service,install.sh,arch-compat.patch,chat-template.jinja} "$ROOT/ops/qwen/build-runtime.sh"); fi
+if [[ $layout == glm ]]; then id_files+=("$ROOT"/ops/glm/{start.sh,verify-model.sh,model.sizes,model.sha256,mag-llm-glm@.service,q1.env,q2.env,install.sh,arch-compat.patch,chat-template.jinja} "$ROOT/ops/qwen/build-runtime.sh"); fi
 identity="$layout $(cat "${id_files[@]}" 2>/dev/null | sha256sum | cut -c1-16)"
 # The probe is read-only and runs BEFORE the deploy's backup and service staging.
 # Never turn a failed desired layout into a successful deploy of the old one.
@@ -126,6 +132,10 @@ if [[ $layout == mixed ]]; then
 fi
 install -d -m 0700 "$TXN"
 [[ ! -e $TXN/started ]] || fail 'transaction already exists'
+if [[ $layout == glm ]]; then
+  touch "$TXN/glm-dual"
+  units+=(mag-llm-ds-node@0.service mag-llm-ornith-node@0.service mag-llm-ornith@1.service)
+fi
 : > "$TXN/active"; : > "$TXN/enabled"
 for unit in "${units[@]}"; do
   if systemctl is-active --quiet "$unit"; then echo "$unit" >> "$TXN/active"; fi
@@ -179,14 +189,21 @@ install -d -m 0755 /etc/mag-stack /etc/mag-qwen
 case $layout in
   mixed) selected=mag-llm-qwen.service; config=mixed.env
          printf 'QWEN_PORT=8192\n' > /etc/mag-qwen/runtime.env ;;
-  glm)   selected=mag-llm-glm.service; config=glm.env ;;
+  glm)   selected=mag-llm-glm@q2.service; config=glm.env ;;
   *)     selected=mag-llm-ds-node@1.service; config=model.env ;;
 esac
+selected_units=("$selected")
+if [[ $layout == glm ]]; then selected_units=(mag-llm-glm@q1.service mag-llm-glm@q2.service); fi
 others=()
-for unit in "${units[@]}"; do [[ $unit == "$selected" ]] || others+=("$unit"); done
-# Existing warm Qwen on :8192 stays resident on ordinary redeploys.
+for unit in "${units[@]}"; do
+  keep=0
+  for chosen in "${selected_units[@]}"; do [[ $unit != "$chosen" ]] || keep=1; done
+  (( keep )) || others+=("$unit")
+done
 change=0
-if ! systemctl is-active --quiet "$selected"; then change=1; fi
+for unit in "${selected_units[@]}"; do
+  if ! systemctl is-active --quiet "$unit"; then change=1; fi
+done
 if [[ $layout == mixed ]]; then
   for file in /usr/local/lib/mag-qwen/start.sh /etc/systemd/system/mag-llm-qwen.service /etc/mag-qwen/runtime.env; do
     cmp -s "$file" "$TXN/files$file" || change=1
@@ -195,7 +212,7 @@ fi
 # New runtime build: restart (and thus smoke-test) the resident model on it.
 if runs_stale_binary "$selected"; then change=1; fi
 if [[ $layout == glm ]]; then
-  for file in /usr/local/lib/mag-glm/start.sh /etc/systemd/system/mag-llm-glm.service /usr/local/lib/mag-glm/runtime.sha /usr/local/lib/mag-glm/chat-template.jinja; do
+  for file in /usr/local/lib/mag-glm/start.sh /etc/systemd/system/mag-llm-glm@.service /etc/mag-glm/q1.env /etc/mag-glm/q2.env /usr/local/lib/mag-glm/runtime.sha /usr/local/lib/mag-glm/chat-template.jinja; do
     cmp -s "$file" "$TXN/files$file" || change=1
   done
 fi
@@ -203,6 +220,23 @@ install -m 0644 "$ROOT/ops/room/$config" /etc/mag-stack/room-model.env
 printf '%s\n' "$layout" > /etc/mag-stack/room-layout
 if [[ -n $pin ]]; then printf '%s\n' "$pin" > /etc/mag-stack/room-layout.pinned
 elif [[ ${MAG_ROOM_LAYOUT:-} == repo ]]; then rm -f /etc/mag-stack/room-layout.pinned; fi
+# Avoid stale :8191 owners and the legacy Ornith gateway override.
+# Moved .conf files are outside systemd's drop-in glob; rollback restores them.
+if [[ $layout == glm ]]; then
+  rm -f /etc/systemd/system/mag-audit-gateway.service.d/50-two-bots.conf
+  : > "$TXN/hidden-dropins"
+  for legacy in mag-llm-ds-node@0.service mag-llm-ornith-node@0.service mag-llm-ornith@1.service; do
+    dir="/etc/systemd/system/$legacy.d"
+    [[ -d $dir ]] || continue
+    for f in "$dir"/*.conf; do
+      [[ -f $f ]] || continue
+      if grep -Eq '(^|[^0-9])8191([^0-9]|$)' "$f"; then
+        mv -f -- "$f" "$f.glm-inactive"
+        printf '%s\n' "$f" >> "$TXN/hidden-dropins"
+      fi
+    done
+  done
+fi
 mag_daemon_reload
 mag_flush_daemon_reload
 for unit in "${others[@]}"; do
@@ -214,29 +248,35 @@ if (( change )); then
     if systemctl is-active --quiet "$unit"; then systemctl stop "$unit"; fi
   done
   # A previous :8091 Qwen or changed runtime may need one NUMA1 restart.
-  if systemctl is-active --quiet "$selected"; then systemctl stop "$selected"; fi
+  for unit in "${selected_units[@]}"; do
+    if systemctl is-active --quiet "$unit"; then systemctl stop "$unit"; fi
+  done
 fi
 for unit in "${others[@]}"; do disable_if_installed "$unit"; done
-systemctl enable "$selected"
+for unit in "${selected_units[@]}"; do systemctl enable "$unit"; done
 if (( change )); then
-  systemctl start "$selected"
-  # Model loading is minutes on CPU. Each poll remains short and bounded.
-  ready=0
-  for ((i=0; i<1080; i++)); do
-    systemctl is-active --quiet "$selected" || fail "$selected exited during load"
-    if curl --noproxy '*' -fsS --max-time 3 -o /dev/null http://127.0.0.1:8192/health; then ready=1; break; fi
-    sleep 5
+  systemctl start "${selected_units[@]}"
+  ports=(8192)
+  [[ $layout != glm ]] || ports=(8191 8192)
+  for port in "${ports[@]}"; do
+    unit=$selected
+    [[ $port != 8191 ]] || unit=mag-llm-glm@q1.service
+    ready=0
+    for ((i=0; i<1080; i++)); do
+      systemctl is-active --quiet "$unit" || fail "$unit exited during load"
+      if curl --noproxy '*' -fsS --max-time 3 -o /dev/null "http://127.0.0.1:$port/health" 2>/dev/null; then ready=1; break; fi
+      sleep 5
+    done
+    (( ready )) || fail "model on $port health timeout"
+    if [[ $layout == glm ]]; then
+      model_id=glm-5.3-flash
+      [[ $port != 8191 ]] || model_id=glm-5.3-flash-iq1-m
+      python3 -I "$ROOT/ops/qwen/smoke.py" --port "$port" --model "$model_id" --startup-only
+    elif [[ $layout == mixed ]]; then
+      python3 -I "$ROOT/ops/qwen/smoke.py" --port "$port" --model qwen3.8-flash-next-uncensored
+      curl --noproxy '*' -fsS --max-time 30 -H 'Content-Type: application/json' -d '{}' "http://127.0.0.1:$port/slots/0?action=erase" >/dev/null
+    fi
   done
-  (( ready )) || fail 'NUMA1 health timeout'
-  if [[ $layout == mixed || $layout == glm ]]; then
-    model_id=$([[ $layout == glm ]] && echo glm-5.3-flash || echo qwen3.8-flash-next-uncensored)
-    python3 -I "$ROOT/ops/qwen/smoke.py" --port 8192 --model "$model_id"
-    # Acceptance used a tiny synthetic prompt. Clear only this newly started
-    # NUMA1 slot so the room can asynchronously prewarm its real system prefix.
-    # This is never done to an already-warm Qwen on ordinary redeploys.
-    curl --noproxy '*' -fsS --max-time 30 -H 'Content-Type: application/json' \
-      -d '{}' 'http://127.0.0.1:8192/slots/0?action=erase' >/dev/null
-  fi
 fi
 rm -f "$FAILED"
-echo "NUMA1 layout ready: $layout ($source); NUMA0 resident process untouched"
+echo "Room layout ready: $layout ($source); two GLM units on NUMA0/NUMA1"

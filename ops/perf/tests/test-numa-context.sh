@@ -11,7 +11,11 @@ bash -n ops/qwen/start.sh ops/perf/diagnose-ai.sh ops/deploy.sh ops/boot/ensure-
 python3 -I - <<'PY'
 from pathlib import Path
 glm = Path('ops/glm/start.sh').read_text()
-glm_unit = Path('ops/glm/mag-llm-glm.service').read_text()
+glm_unit = Path('ops/glm/mag-llm-glm@.service').read_text()
+glm_q1 = Path('ops/glm/q1.env').read_text()
+glm_q2 = Path('ops/glm/q2.env').read_text()
+glm_layout = Path('ops/room/glm.env').read_text()
+glm_txn = Path('ops/qwen/layout.sh').read_text()
 ds_node = Path('ops/room/start-ds-node.sh').read_text()
 qwen = Path('ops/qwen/start.sh').read_text()
 unit = Path('ops/qwen/mag-llm-qwen.service').read_text()
@@ -32,14 +36,24 @@ for option in ('-fa on','-b 4096','-ub 1024','--load-mode dio',
 for option in ('-ctk q8_0','-ctv q8_0','--cache-reuse'):
     assert option not in glm, option
 assert "kv-f16-f16:ctx32768:slot0" in glm
-assert 'CPUAffinity=14-27 42-55' in glm_unit
-assert 'AllowedCPUs=14-27,42-55' in glm_unit
+assert 'EnvironmentFile=/etc/mag-glm/%i.env' in glm_unit
+assert 'ExecStart=/usr/local/lib/mag-glm/start.sh %i' in glm_unit
+assert 'GLM_CPU_TOPOLOGY=0-13,28-41' in glm_q1
+assert 'GLM_CPU_TOPOLOGY=14-27,42-55' in glm_q2
+assert 'GLM_PORT=8191' in glm_q1 and 'GLM_PORT=8192' in glm_q2
+assert 'GLM_SLOT_DIR=/var/lib/mag-llm/slots/glm-q1' in glm_q1
+assert 'GLM_SLOT_DIR=/var/lib/mag-llm/slots/glm' in glm_q2
+assert 'binding=(--cpunodebind=0 --membind=0)' in glm
+assert 'extra=(--mlock)' in glm
+assert 'glm-5.3-flash-iq1-m:kv-f16-f16' in glm
+assert 'GLM-Q1' in glm_layout and 'GLM-Q2' in glm_layout
+assert 'mag-llm-glm@q1.service' in glm_txn and 'mag-llm-glm@q2.service' in glm_txn
 assert 'FORMAT=' in glm and '.kv-format' in glm and 'mag-prefix-glm-5.3-flash-slot2.bin' in glm
 assert '--no-mmap --mlock --flash-attn' in ds_node and '--load-mode mlock' not in ds_node  # avoid file-cache duplication on NUMA0
 assert 'if (slot_is_busy(s)) {' in room  # health probes per NUMA, not globally suppressed
 assert 'if (!bot_prefix_ready(secondary)) return ids;' in room
 assert 'SLOT_WARM[slot - 1].load() != 1' in room
-assert 'kv.first == "description"' in room and 'bot_model_id(bot_idx) == "glm-5.3-flash"' in room
+assert 'kv.first == "description"' in room and 'bot_model_id(bot_idx).rfind("glm-5.3-flash", 0) == 0' in room
 assert 'body["id_slot"] = 0;' in room and 'body["cache_prompt"] = true;' in room
 
 assert '--threads 14 --threads-batch 14 --numa numactl' in qwen
@@ -62,9 +76,9 @@ assert 'Environment=MAG_ROOM_QWEN_MAX_TOKENS=8192' in conf
 assert 'MAG_ROOM_QWEN_MAX_TOKENS' in room and 'model == "qwen3.8-flash-next-uncensored"' in room
 assert 'std::min(MAX_TOKENS, std::clamp(' in room  # valid for small-token tests
 assert 'MAG_ROOM_REASONING_HISTORY_BYTES' in room
-assert 'model != "glm-5.3-flash" && model_settings_for(model).deterministic' in room
-assert 'model == "glm-5.3-flash") body["cache_prompt"] = true;' in room
-assert 'model == "glm-5.3-flash") body["id_slot"] = 0;' in room
+assert 'model.rfind("glm-5.3-flash", 0) != 0 && model_settings_for(model).deterministic' in room
+assert 'model.rfind("glm-5.3-flash", 0) == 0) body["cache_prompt"] = true;' in room
+assert 'model.rfind("glm-5.3-flash", 0) == 0) body["id_slot"] = 0;' in room
 assert 'asst["reasoning_content"] = !CONFIGURED_MODEL && t.reasoning.size() > keep' in room
 assert room.count('kwargs["reasoning_effort"] = "low";') == 2
 assert room.count('kwargs["clear_thinking"] = true;') == 2

@@ -1,7 +1,7 @@
 [
   {
     "id": "deepseek-v4-dual-numa",
-    "label": "DeepSeek V4 Flash \u00b7 1 Bot pro NUMA (2 Bots)",
+    "label": "DeepSeek V4 Flash · 1 Bot pro NUMA (2 Bots)",
     "model": "deepseek-v4-flash-0731",
     "ports": [
       {
@@ -31,13 +31,13 @@
     ]
   },
   {
-    "id": "deepseek-glm-dual-numa",
-    "label": "DeepSeek V4 Flash (NUMA 0) + GLM-5.3 Flash (NUMA 1)",
+    "id": "glm-quant-dual-numa",
+    "label": "GLM-Q1 (NUMA0) + GLM-Q2 (NUMA1)",
     "ports": [
       {
         "port": 8191,
         "numa": 0,
-        "model": "deepseek-v4-flash-0731"
+        "model": "glm-5.3-flash-iq1-m"
       },
       {
         "port": 8192,

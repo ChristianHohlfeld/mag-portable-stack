@@ -18,6 +18,8 @@ install -m 0644 "$ROOT/ops/glm/model.sizes" /usr/local/lib/mag-glm/model.sizes
 install -m 0644 "$ROOT/ops/glm/model.sha256" /usr/local/lib/mag-glm/model.sha256
 install -m 0755 "$ROOT/ops/glm/verify-model.sh" /usr/local/lib/mag-glm/verify-model.sh
 install -m 0755 "$ROOT/ops/glm/start.sh" /usr/local/lib/mag-glm/start.sh
+install -m 0644 "$ROOT/ops/glm/q1.env" /etc/mag-glm/q1.env
+install -m 0644 "$ROOT/ops/glm/q2.env" /etc/mag-glm/q2.env
 # Reviewed template: the embedded one cannot switch thinking off (ops/glm/README.md).
 install -m 0644 "$ROOT/ops/glm/chat-template.jinja" /usr/local/lib/mag-glm/chat-template.jinja
 bash /usr/local/lib/mag-glm/verify-model.sh
@@ -37,7 +39,12 @@ for part in /home/chris/models/GLM-5.3-Flash-GGUF-IQ2_XS/GLM-5.3-Flash-IQ2_XS-*-
     --require-elementwise-safe >/dev/null
 done
 echo 'GLM GGUF elementwise types preflight passed (15 shards)'
-install -d -o chris -g chris -m 0700 /var/lib/mag-llm/slots/glm
-install -m 0644 "$ROOT/ops/glm/mag-llm-glm.service" /etc/systemd/system/mag-llm-glm.service
+install -d -o chris -g chris -m 0700 /var/lib/mag-llm/slots/glm /var/lib/mag-llm/slots/glm-q1
+# IQ1_M may be split, but its first GGUF must be present and nonempty.
+shopt -s nullglob
+iq1=(/home/chris/models/GLM-5.3-Flash-GGUF-IQ1_M/*IQ1_M*00001*.gguf)
+(( ${#iq1[@]} > 0 )) || { echo 'Missing IQ1_M first GGUF in GLM-5.3-Flash-GGUF-IQ1_M' >&2; exit 4; }
+[[ $(head -c 4 "${iq1[0]}") == GGUF ]] || { echo 'Invalid IQ1_M GGUF header' >&2; exit 4; }
+install -m 0644 "$ROOT/ops/glm/mag-llm-glm@.service" /etc/systemd/system/mag-llm-glm@.service
 mag_daemon_reload
-echo 'GLM staged: unit installed, NUMA1 untouched'
+echo 'GLM staged: unit installed, model instances not started'

@@ -1,0 +1,35 @@
+# Shared GLM5-Next model service: instance-specific GGUF/port/NUMA/slot env.
+[Unit]
+Description=MAG GLM-5.3-Flash CPU model (%i)
+After=network-online.target
+Wants=network-online.target
+Conflicts=mag-llm-iq3.service mag-llm-qwen.service
+StartLimitIntervalSec=1800
+StartLimitBurst=2
+
+[Service]
+Type=simple
+User=chris
+Group=chris
+WorkingDirectory=/home/chris
+EnvironmentFile=/etc/mag-glm/%i.env
+ExecStart=/usr/local/lib/mag-glm/start.sh %i
+Restart=on-failure
+RestartSec=60
+TimeoutStartSec=10800
+TimeoutStopSec=120
+MemoryAccounting=yes
+MemoryLow=96G
+MemoryHigh=140G
+MemoryMax=175G
+MemorySwapMax=0
+LimitMEMLOCK=infinity
+OOMScoreAdjust=-600
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=no
+ReadWritePaths=/var/lib/mag-llm/slots/glm /var/lib/mag-llm/slots/glm-q1
+PrivateTmp=yes
+RestrictAddressFamilies=AF_INET AF_UNIX
+[Install]
+WantedBy=multi-user.target

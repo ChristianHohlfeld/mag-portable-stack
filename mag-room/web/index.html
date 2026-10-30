@@ -3719,6 +3719,8 @@ events.onmessage=e=>{
   }else if(event.type==='reaction'){
    applyReaction(event);
   }else if(['message','file','agents','reset','idle','room'].includes(event.type)){
+   if(event.type==='message'&&event.role==='assistant'&&event.id&&streams[id])
+    streams[id].partialId=event.id;
    if(event.type==='idle'&&Array.isArray(event.busy_bots)){if(!event.busy_bots.length){state.busy=false;state.busy_bots=[];state.activities=[]}setBusyBots(event.busy_bots);const live=new Set(event.busy_bots);for(const bot of Object.keys(streams))if(!live.has(bot))delete streams[bot];if(!event.busy_bots.length)clearStopping()}
    refresh().catch(err=>notice(err.message));
   }else if(event.type==='model_settings'){if(Array.isArray(event.models)){state.models=event.models;syncModelSettings(state);syncModelChoice(state);renderAgents()}}

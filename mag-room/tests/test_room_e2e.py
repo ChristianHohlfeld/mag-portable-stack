@@ -344,24 +344,54 @@ class RoomE2E(unittest.TestCase):
         self.room.until(lambda s: not s['busy'], timeout=3, what='idle after Esc')
 
     def test_03b_streamed_reply_does_not_duplicate_durable_card(self):
-        # Exactly one visible card while both live stream and saved first
-        # token refer to the same turn; preserve the saved card after done.
+        # Real room + scripted SSE backend + actual browser. In particular, a
+        # reload MUST rejoin the active stream without rendering the saved
+        # first token as an additional assistant card.
         p = self.page
-        p.evaluate("""()=>{
-          const now=Date.now();
-          state.room=[{id:'partial-one',role:'assistant',name:'Alpha',bot:'a',
-                      content:'Hallo',display_ms:now,ts:Math.floor(now/1000)}];
-          streams={a:{name:'Alpha',text:'Hallo',phase:'answer',label:'Antwortet',
-                      displayMs:now,started:now,thinkingEnabled:true,
-                      reasoning:'Gedanke',steps:[],tools:[],partialId:'partial-one'}};
-          render();
-        }""")
-        self.assertEqual(p.locator('#conversation .message').count(), 1)
-        self.assertEqual(p.locator('#conversation .message[data-live-bot="a"]').count(), 1)
-        p.evaluate("""()=>{streams.a.partialId='';render()}""")
-        self.assertEqual(p.locator('#conversation .message').count(), 1)
-        p.evaluate("""()=>{delete streams.a;render()}""")
-        self.assertEqual(p.locator('#conversation .message').count(), 1)
+        before = len([m for m in self.room.state_()['room']
+                      if m.get('role') == 'assistant' and m.get('bot') == 'a'])
+        Model.scripts += [['Nur ', {'_sleep': 3.0}, 'eine ',
+                           {'_sleep': 3.0}, 'Antwort.']]
+        self.send('Ein Turn, eine Karte')
+        # First draft token has reached the persistent server room while the
+        # mock is still decoding. The old bug showed BOTH saved and live cards.
+        p.wait_for_function("""n => {
+          const rows=(state.room||[]).filter(m=>m.role==='assistant'&&m.bot==='a');
+          return rows.length===n+1 && rows.at(-1).content==='Nur ' &&
+                 !!streams.a && !!document.querySelector('.message.work-live[data-bot="a"]');
+        }""", arg=before, timeout=6000)
+        live = p.locator('#conversation .message.work-live[data-bot="a"]')
+        self.assertEqual(live.count(), 1)
+        self.assertEqual(p.locator('#conversation .message.assistant[data-bot="a"]').count(), before+1,
+                         'first persisted token must not appear beside its live card')
+        self.assertEqual(len([m for m in self.room.state_()['room']
+                              if m.get('role')=='assistant' and m.get('bot')=='a']), before+1)
+        # Reconnect while inference is still active: the stream is replayed
+        # from the real event bus; no manually fabricated partialId or timestamp.
+        p.reload()
+        expect(p.locator('#connection')).to_contain_text('Verbunden', timeout=10000)
+        p.wait_for_function("""n => {
+          const rows=(state.room||[]).filter(m=>m.role==='assistant'&&m.bot==='a');
+          return rows.length===n+1 && !!streams.a &&
+                 !!document.querySelector('.message.work-live[data-bot="a"]');
+        }""", arg=before, timeout=6000)
+        self.assertEqual(p.locator('#conversation .message.assistant[data-bot="a"]').count(), before+1,
+                         'reload during SSE stream must not resurrect first-token card')
+        # The same stored row is finalized, not appended again.
+        state=self.room.until(lambda s:not s['busy'] and any(
+            m.get('content')=='Nur eine Antwort.' for m in s['room']),timeout=12,
+            what='slow streamed reply finished')
+        p.wait_for_function("""n => {
+          const rows=(state.room||[]).filter(m=>m.role==='assistant'&&m.bot==='a');
+          return rows.length===n+1 && rows.at(-1).content==='Nur eine Antwort.' &&
+                 !streams.a;
+        }""", arg=before, timeout=7000)
+        self.assertEqual(p.locator('#conversation .message.assistant[data-bot="a"]').count(),before+1)
+        self.assertEqual(p.locator('#conversation .message.work-live[data-bot="a"]').count(),0)
+        self.assertEqual(len([m for m in state['room']
+                              if m.get('role')=='assistant' and m.get('bot')=='a']),before+1)
+        self.assertEqual(len([c for c in Model.calls if c[2]=='turn']),1,
+                         'one displayed answer must come from one backend request')
 
     def test_04_queue_is_visible_editable_and_send_now_interrupts(self):
         p = self.page

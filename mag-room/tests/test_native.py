@@ -2143,8 +2143,8 @@ class Native(unittest.TestCase):
   self.assertTrue(all((self.state/'snapshots'/x['id']/'meta.json').is_file() for x in remaining))
 
  def test_17zz_large_recording_snapshot_clear_undo_and_restore(self):
-  # Regression: legacy/VM-synced recordings may exceed the 64 MiB HTTP upload
-  # limit, but are valid as long as the complete snapshot remains <=512 MiB.
+  # Legacy/VM recordings above the 64 MiB upload limit remain snapshotable.
+  # The snapshot budget is aggregate, bounded at 512 MiB, and fail-closed.
   self.wait_idle()
   self._access(['chris@github'])
   owner=self._ts('chris@github','Chris')
@@ -2159,32 +2159,51 @@ class Native(unittest.TestCase):
    stream.seek(length-4)
    stream.write(b'TAIL')
   self.assertEqual(disk.stat().st_size,length)
+  def digest(p):
+   with p.open('rb') as stream:return hashlib.file_digest(stream,'sha256').hexdigest()
+  original_sha=digest(disk)
   before=self.request('/api/state')
   first=self.request('/api/room/clear',{},headers=owner)
   self.assertTrue(first['ok'])
   saved=self.state/'snapshots'/first['snapshot']/'files'/stored
   self.assertEqual(saved.stat().st_size,length)
-  with saved.open('rb') as stream:
-   self.assertEqual(stream.read(8),b'SNAPSHOT')
-   stream.seek(length-4)
-   self.assertEqual(stream.read(4),b'TAIL')
+  self.assertEqual(digest(saved),original_sha,'large recording snapshot changed bytes')
   self.assertFalse(self.request('/api/state')['files'])
   self.request('/api/undo/'+first['undo'],{})
   self.assertEqual(disk.stat().st_size,length)
-  with disk.open('rb') as stream:
-   stream.seek(length-4)
-   self.assertEqual(stream.read(4),b'TAIL')
+  self.assertEqual(digest(disk),original_sha,'Undo must restore all recording bytes')
   self.assertTrue(any(f['stored']==stored for f in self.request('/api/state')['files']))
-  # Restore uses snapshot_copy_checked too: cover the same >64 MiB file.
+  # Snapshot restore uses the same copy gate: it must accept large files too.
   second=self.request('/api/room/clear',{},headers=owner)
   restored=self.request('/api/room/snapshots/'+second['snapshot']+'/restore',{},headers=h)
   self.assertEqual(restored['restored'],second['snapshot'])
   self.assertEqual(disk.stat().st_size,length)
-  with disk.open('rb') as stream:
-   stream.seek(length-4)
-   self.assertEqual(stream.read(4),b'TAIL')
+  self.assertEqual(digest(disk),original_sha,'Snapshot restore changed bytes')
   self.assertTrue(any(f['stored']==stored for f in self.request('/api/state')['files']))
   self.assertTrue(any(f['stored']==stored for f in before['files']))
+  # A sparse >512 MiB file must be REJECTED BEFORE copying, preserving
+  # everything, including existing snapshots, and cleaning up .tmp staging.
+  room_before=(self.state/'room.json').read_bytes()
+  files_before=(self.state/'files.json').read_bytes()
+  snap_home=self.state/'snapshots'
+  snapshots_before={p.name for p in snap_home.iterdir()}
+  oversize=513*1024*1024
+  try:
+   with disk.open('r+b') as stream:stream.truncate(oversize)
+   with self.assertRaises(urllib.error.HTTPError) as ctx:
+    self.request('/api/room/clear',{},headers=owner)
+   self.assertEqual(ctx.exception.code,507)
+   error=json.loads(ctx.exception.read())['error']
+   self.assertIn('512 MiB',error,'507 must report the actual aggregate snapshot limit')
+   self.assertEqual(disk.stat().st_size,oversize,'failed clear deleted the active recording')
+   self.assertEqual((self.state/'room.json').read_bytes(),room_before)
+   self.assertEqual((self.state/'files.json').read_bytes(),files_before)
+   self.assertEqual({p.name for p in snap_home.iterdir()},snapshots_before,
+                    'failed snapshot must not leave a .tmp directory')
+  finally:
+   with disk.open('r+b') as stream:stream.truncate(length)
+  self.assertEqual(digest(disk),original_sha,'failed oversize clear must retain content')
+  self.assertTrue(any(f['stored']==stored for f in self.request('/api/state')['files']))
 
  def test_18_pwa_shell_is_not_cached(self):
   import base64

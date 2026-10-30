@@ -4937,14 +4937,9 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
     // The model used its budget entirely for thinking. Return a short,
     // visible completion instead of surfacing an internal token-limit error.
     // Do not continue the reasoning in another 1024-token round.
-    if (short_chat) {
-      // Explicitly mark this as a local fallback, not a model success.
-      t.text = "Wie bitte?";
-      t.local_fallback = true;
-    } else {
-      // Do not fabricate assistant text in multi-step/tool tasks.
-      t.error = "Antwortlimit beim Denken erreicht, ohne sichtbare Modellantwort.";
-    }
+    // Never invent an answer; GLM's explicit thinking gets one final
+    // non-thinking retry in the room. An unsuccessful retry stays a failure.
+    t.error = "Antwortlimit beim Denken erreicht, ohne sichtbare Modellantwort.";
     std::cerr << "glm-reasoning-limit model=" << model
               << " max_tokens=" << max_output << " fallback=visible\n";
   }

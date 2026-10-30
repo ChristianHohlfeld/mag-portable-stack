@@ -4788,13 +4788,17 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
     auto rc = d->find("reasoning_content");
     if (!rc) rc = d->find("reasoning");
     if (rc && !rc->asStr().empty()) {
-      acc.reasoning += rc->asStr();
-      on_delta("reasoning", rc->asStr());
+      if (!short_chat) {
+        acc.reasoning += rc->asStr();
+        on_delta("reasoning", rc->asStr());
+      }
     }
     auto ct = d->find("content");
     if (ct && !ct->asStr().empty()) {
       thinking_content.feed(ct->asStr(), [&](bool reasoning, const std::string &piece) {
-        if (reasoning) { acc.reasoning += piece; on_delta("reasoning", piece); }
+        if (reasoning) {
+          if (!short_chat) { acc.reasoning += piece; on_delta("reasoning", piece); }
+        }
         else visible_delta(piece);
       });
     }
@@ -4835,7 +4839,9 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
       t.error = "Modell-Stream endete ohne Token; die Anfrage wird nicht erneut gesendet";
   }
   thinking_content.feed("", [&](bool reasoning, const std::string &piece) {
-    if (reasoning) { acc.reasoning += piece; on_delta("reasoning", piece); }
+    if (reasoning) {
+          if (!short_chat) { acc.reasoning += piece; on_delta("reasoning", piece); }
+        }
     else visible_delta(piece);
   }, true);
   visible_delta("", true);

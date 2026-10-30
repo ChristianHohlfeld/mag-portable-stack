@@ -4873,7 +4873,8 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   }
   const char *exit_reason = stop_flag().load() ? "stop" :
       c.budget_hit ? "budget" : c.stalled ? "stalled" :
-      c.hit_deadline ? "budget" : c.eof ? "eof" : "done";
+      c.hit_deadline ? "budget" : !t.finish.empty() ? "done" :
+      c.eof ? "eof" : "done";
   std::cerr << "backend-exit bot="
             << (bot_idx >= 0 ? bot_field(bot_idx, "id") : model)
             << " reason=" << exit_reason
@@ -7276,10 +7277,7 @@ static Val enqueue_pending(const std::string &text,
       if (!kv.second.selftalk) continue;
       for (const auto &id : kv.second.ids) {
         if (Lane *l = lane_of(id)) {
-          l->stop = true;
-          std::lock_guard<std::mutex> fk(BACKEND_FD_MTX);
-          if (l->backend_fd.load() >= 0)
-            shutdown(l->backend_fd.load(), SHUT_RDWR);
+          cancel_lane_reason(*l, false, "enqueue_pending-selftalk");
         }
         const int bidx = agent_index(id);
         if (bidx < 0) continue;
@@ -7430,6 +7428,12 @@ static bool queue_send_now(const std::string &id) {
     p.urgent = true;
     PENDING.push_front(p);
     AUTO_READY = false;
+    // A GLM send-now can move ahead in the queue, but cannot preempt an
+    // already-running human turn. Only owner Stop or bot pause may do that.
+    if (CONFIGURED_MODEL) {
+      save_queue_locked(); queue_event_locked(); JOB_CV.notify_all();
+      return true;
+    }
     // Freeze dispatch and prewarm until the previous stream has detached
     // and the model cancellation/optional prefix restore are complete.
     STOP_SETTLING = true;
@@ -9713,6 +9717,13 @@ static void stop_selftalk() {
   SELF_HOLD = true;
   write_flag_pair(STATE_DIR + "/proaktiv", STATE_DIR + "/selftalk", "off");
   SELFTALK = false;
+  if (CONFIGURED_MODEL) {
+    // Switching off bot-to-bot talk must not disconnect human requests.
+    preempt_selftalk_lanes();
+    { std::lock_guard<std::mutex> lk(JOB_MTX); drop_selftalk_jobs_locked(); }
+    JOB_CV.notify_all();
+    return;
+  }
   cancel_active(true);
   cancel_llama_tasks();
   reload_slots_after_cancel();
@@ -9740,7 +9751,7 @@ static void stop_autotalk(bool pause = false) {
     }
     // Stop button: persistent pause; only "Fortsetzen" resumes. Other stops
     // (autonomy off, agent removal) only hold back pending messages.
-    if (pause || !PENDING.empty()) QUEUE_PAUSED = true;
+    if (pause || (!CONFIGURED_MODEL && !PENDING.empty())) QUEUE_PAUSED = true;
     save_queue_locked();
     queue_event_locked();
     AUTO_READY = false;

@@ -304,7 +304,10 @@ json.dump(s,open(p,'w'))
   self.assertIn('--require-kda-head-dim',stage)
   self.assertLess(stage.index('verify-model.sh'),stage.index('inspect-gguf.py'))
   layout=(ROOT/'ops/qwen/layout.sh').read_text()
-  self.assertLess(layout.index('ops/glm/install.sh'),layout.index('systemctl stop "$unit"'))
+  # Apply-time model preflight must precede the first apply-time stop;
+  # the rollback function above legitimately contains its own stop.
+  stage=layout.index('ops/glm/install.sh')
+  self.assertLess(stage,layout.index('systemctl stop "$unit"',stage))
  def test_glm_legacy_adapter_isolated_from_qwen(self):
   p=(ROOT/'ops/glm/arch-compat.patch').read_text()
   # Only modify GLM5-Next hparams; metadata keys and tensor names of Qwen stay

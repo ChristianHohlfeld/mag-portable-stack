@@ -5374,6 +5374,7 @@ class GlmLayoutStartup(unittest.TestCase):
    if parts and '=' in parts[0]:
     key,value=parts[0].split('=',1);glm[key]=value
   glm['MAG_ROOM_PREWARM']='0'
+  glm['MAG_ROOM_PRESETS']=str(ROOT/'ops/room/presets.json')  # CI, not live /opt path
   env=dict(os.environ,MAG_OWNER_CANONICAL_LOGIN='chris@github',MAG_TEST_ALLOW_LOCAL_OWNER='1',
    MAG_ROOM_STATE=str(state),MAG_ROOM_PORT=str(ui),MAG_ROOM_BRIDGE_PORT=str(bridge),
    MAG_ROOM_BRIDGE_IP='127.0.0.1',MAG_ROOM_BACKEND=f'http://127.0.0.1:{model.server_port}/v1/chat/completions',

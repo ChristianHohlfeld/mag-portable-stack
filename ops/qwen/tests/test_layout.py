@@ -402,7 +402,7 @@ json.dump(s,open(p,'w'))
   u=(ROOT/'ops/glm/mag-llm-glm.service').read_text();st=(ROOT/'ops/glm/start.sh').read_text()
   self.assertIn('Conflicts=mag-llm-ds-node@1.service mag-llm-iq3.service mag-llm-qwen.service',u)
   self.assertNotIn('ds-node@0',u);self.assertIn('NUMAMask=1',u);self.assertIn('AllowedCPUs=14-27',u)
-  self.assertIn('--physcpubind=14-27 --membind=1',st);self.assertIn('--load-mode dio',st)
+  self.assertIn('--physcpubind=14-27,42-55 --membind=1',st);self.assertIn('--load-mode dio',st)
   self.assertIn('--port "${GLM_PORT:-8192}"',st);self.assertNotIn('--no-mmap',st)
   self.assertEqual((ROOT/'ops/room/layout').read_text().strip(),'glm')
   sizes=[l.split() for l in (ROOT/'ops/glm/model.sizes').read_text().splitlines()]

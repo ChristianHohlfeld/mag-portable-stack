@@ -58,6 +58,10 @@ rollback(){
       install -D -m "$(stat -c %a "$TXN/files$file")" "$TXN/files$file" "$file"
     else rm -f "$file"; fi
   done
+  if [[ -f $TXN/glm-dual ]]; then
+    # Remove legacy gateway mapping BEFORE systemd reload, not afterwards.
+    rm -f /etc/systemd/system/mag-audit-gateway.service.d/50-two-bots.conf
+  fi
   MAG_DEFER_DAEMON_RELOAD=0 mag_flush_daemon_reload --force
   for unit in "${units[@]}"; do
     if [[ -f $TXN/glm-dual ]]; then
@@ -73,9 +77,6 @@ rollback(){
       fi
     fi
   done
-  if [[ -f $TXN/glm-dual ]]; then
-    rm -f /etc/systemd/system/mag-audit-gateway.service.d/50-two-bots.conf
-  fi
   touch "$TXN/restored"
   # The rollback is complete before we probe the restored Qwen. It now uses
   # the pinned shared runtime built for this release. A smoke failure must

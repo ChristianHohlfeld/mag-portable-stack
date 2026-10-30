@@ -5920,7 +5920,8 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
   const bool stateless = !CONFIGURED_MODEL &&
                          model_settings_for(bot_model_id(bot_idx)).deterministic;
   const bool short_chat = CONFIGURED_MODEL && !CURRENT_JOB && !TL_TASK &&
-      !autotalk && bot_model_id(bot_idx).rfind("glm-5.3-flash", 0) == 0 &&
+      !autotalk && !turn_thinking() &&
+      bot_model_id(bot_idx).rfind("glm-5.3-flash", 0) == 0 &&
       short_glm_input(TURN_INPUT);
   const bool web = WEB_ENABLED.load();
   std::vector<Val> messages;

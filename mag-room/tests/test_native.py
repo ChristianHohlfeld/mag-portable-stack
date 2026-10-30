@@ -5258,6 +5258,67 @@ class GlmLayoutStartup(unittest.TestCase):
    except subprocess.TimeoutExpired:proc.kill();proc.wait(timeout=5)
    log.close();model.shutdown();model.server_close();tmp.cleanup()
 
+
+ def test_two_glm_turns_complete_after_60_seconds_without_cancel(self):
+  # Native-room regression. Fake upstreams delay both completions 60 s.
+  # The separate live gateway-audit client_disconnected assertion remains
+  # part of MAG post-deploy acceptance (not fabricated by this fake server).
+  Model.delay=0;Model.slot_delay={'0':60,'1':60};Model.script=[]
+  Model.reply=None;Model.health=200;Model.slot_snapshot=[];Model.paths=[]
+  Model.slot_block={};Model.barrier_release=None;Model.restore_missing=False
+  tmp=tempfile.TemporaryDirectory();root=pathlib.Path(tmp.name);state=root/'state';state.mkdir()
+  state.joinpath('agents.json').write_text(json.dumps([
+   {'id':'deepseek-chat','name':'GLM-Q1','slot':1,'numa':0,'vm':'','memory':[]},
+   {'id':'qwen-numa1','name':'GLM-Q2','slot':2,'numa':1,'vm':'','memory':[]}]))
+  model=http.server.ThreadingHTTPServer(('127.0.0.1',0),Model)
+  threading.Thread(target=model.serve_forever,daemon=True).start()
+  ui,bridge=port(),port();glm={}
+  for line in (ROOT/'ops/room/glm.env').read_text().splitlines():
+   parts=shlex.split(line,comments=True)
+   if parts and '=' in parts[0]:
+    key,value=parts[0].split('=',1);glm[key]=value
+  glm['MAG_ROOM_PREWARM']='0'
+  env=dict(os.environ,MAG_OWNER_CANONICAL_LOGIN='chris@github',MAG_TEST_ALLOW_LOCAL_OWNER='1',
+   MAG_ROOM_STATE=str(state),MAG_ROOM_PORT=str(ui),MAG_ROOM_BRIDGE_PORT=str(bridge),
+   MAG_ROOM_BRIDGE_IP='127.0.0.1',MAG_ROOM_BACKEND=f'http://127.0.0.1:{model.server_port}/v1/chat/completions',
+   MAG_ROOM_UI=str(ROOT/'mag-room/web/index.html'),MAG_ROOM_STATIC=str(ROOT/'mag-room/static'),
+   MAG_ROOM_MODEL_STATUS=str(root/'ms.json'),MAG_NETMODE=str(NETMODE),MAG_TEST_NO_MEMGIT='1',
+   MAG_ROOM_AGENT_CTL='/bin/false',MAG_ROOM_GUEST_RUN='/bin/false',MAG_ROOM_MCP_AUTO='0',
+   MAG_ROOM_SINGLE_BOT='auto',MAG_ROOM_SINGLE_BOT_VM='on',MAG_ROOM_DUAL_NUMA='0',**glm)
+  logpath=root/'room.log';log=open(logpath,'a')
+  proc=subprocess.Popen(['timeout','-k','1','85',str(ROOT/'build/magroom')],env=env,stdout=log,stderr=log)
+  try:
+   started=time.monotonic()
+   while time.monotonic()-started<8:
+    try:
+     with urllib.request.urlopen(f'http://127.0.0.1:{ui}/api/state',timeout=1):break
+    except Exception:time.sleep(.05)
+   else:self.fail('room startup timeout')
+   token=_ui_token(ui)
+   req=urllib.request.Request(f'http://127.0.0.1:{ui}/api/message',
+      data=json.dumps({'text':'Hi','bots':['deepseek-chat','qwen-numa1']}).encode(),
+      headers={'Content-Type':'application/json','X-MAG-Token':token})
+   with urllib.request.urlopen(req,timeout=4) as resp:self.assertTrue(json.load(resp)['accepted'])
+   end=time.monotonic()+75
+   while time.monotonic()<end:
+    with urllib.request.urlopen(f'http://127.0.0.1:{ui}/api/state',timeout=3) as resp:st=json.load(resp)
+    answers=[m for m in st.get('room',[]) if m.get('role')=='assistant' and
+             'Hallo' in (m.get('content') or '')]
+    if len(answers)==2:break
+    time.sleep(.2)
+   else:self.fail('two parallel 60-second GLM streams did not complete')
+   calls=[p for p in Model.paths if p[0]=='/v1/chat/completions' and p[3].get('max_tokens')!=1]
+   self.assertEqual({p[1] for p in calls},{'0','1'})
+   self.assertFalse([p for p in Model.paths if 'action=cancel' in p[0]])
+   log.flush()
+   self.assertNotIn('reason=stop',logpath.read_text(errors='replace'))
+  finally:
+   Model.slot_delay={}
+   proc.terminate()
+   try:proc.wait(timeout=5)
+   except subprocess.TimeoutExpired:proc.kill();proc.wait(timeout=5)
+   log.close();model.shutdown();model.server_close();tmp.cleanup()
+
 class QwenFirstHi(unittest.TestCase):
  """When DeepSeek is busy or cold, Qwen answers the first hi in under 5s."""
  HARD_S = 20

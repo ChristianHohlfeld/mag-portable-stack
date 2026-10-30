@@ -4887,7 +4887,10 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   std::string glm_stream_pending;
   bool glm_hard_cut = false;
   GlmRepetitionGuard glm_repetition;
+  bool glm_answer_started = false;
   auto emit_glm_safe = [&](const std::string &piece, bool finish = false) {
+    for (unsigned char c : piece)
+      if (c >= 0x80 || std::isalnum(c)) { glm_answer_started = true; break; }
     glm_hard_cut = glm_repetition.feed(piece, [&](const std::string &visible) {
       acc.content += visible;
       on_delta("delta", visible);
@@ -4911,7 +4914,8 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
         const size_t pos = glm_stream_pending.find(marker);
         if (pos == std::string::npos) continue;
         // A heading at the very start is not an answer-following drift.
-        if (marker == "\n\n## " && acc.content.empty() && pos == 0) continue;
+        if (marker == "\n\n## " && !glm_answer_started &&
+            acc.content.empty() && pos == 0) continue;
         cut = std::min(cut, pos);
       }
       if (cut != std::string::npos) {

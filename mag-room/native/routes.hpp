@@ -23,13 +23,13 @@ static std::vector<std::string> selected_ids(const Val &body) {
     return ids;
   }
   // GLM host arbitration: never let unaddressed input wake both bots.
-  auto add = [&](const std::string &id) {
+  auto add = [&](const std::string &id, bool explicit_address = false) {
     int idx = agent_index(id);
-    if (idx >= 0 && bot_enabled_locked(idx) &&
+    if (idx >= 0 && (explicit_address || bot_enabled_locked(idx)) &&
         std::find(ids.begin(), ids.end(), id) == ids.end()) ids.push_back(id);
   };
   if (selected && selected->isArr() && !selected->asArr().empty()) {
-    for (const auto &id : selected->asArr()) add(id.asStr());
+    for (const auto &id : selected->asArr()) add(id.asStr(), true);
     return ids; // explicit UI selection, including explicit multiple bots
   }
   std::string input = mag::str(body, "text");
@@ -47,7 +47,7 @@ static std::vector<std::string> selected_ids(const Val &body) {
     return false;
   };
   if (token("beide") || token("alle")) {
-    for (const auto &a : AGENTS) add(mag::str(a, "id"));
+    for (const auto &a : AGENTS) add(mag::str(a, "id"), true);
     return ids;
   }
   for (const auto &a : AGENTS) {
@@ -59,7 +59,7 @@ static std::vector<std::string> selected_ids(const Val &body) {
          input.rfind(name + ":", 0) == 0 ||
          input.rfind(name + ",", 0) == 0 ||
          input.rfind(name + " ", 0) == 0))
-      add(mag::str(a, "id"));
+      add(mag::str(a, "id"), true);
   }
   if (!ids.empty()) return ids;
   const std::string configured = env("MAG_ROOM_DEFAULT_BOT_ID", "");

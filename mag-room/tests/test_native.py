@@ -5126,7 +5126,7 @@ class GlmLayoutStartup(unittest.TestCase):
    {'id':'deepseek-chat','name':'DeepSeek Chat','vm':'','slot':1,'numa':0,'model':'deepseek-v4-flash-0731','memory':[]},
    {'id':'qwen-numa1','name':'Qwen','vm':'','slot':2,'numa':1,'model':'qwen3.8-flash-next-uncensored','memory':[{'text':'bleibt'}]}]))
   state.joinpath('prompt-prefix.json').write_text(json.dumps({
-   '8192/mag-prefix-glm-5.3-flash-slot2.bin':'glm-5.3-flash:stale'}))
+   '8192/mag-prefix-glm-5.3-flash-slot2-prefix.bin':'glm-5.3-flash:stale'}))
   model=http.server.ThreadingHTTPServer(('127.0.0.1',0),Model)
   threading.Thread(target=model.serve_forever,daemon=True).start()
   ui,bridge=port(),port()
@@ -5163,14 +5163,14 @@ class GlmLayoutStartup(unittest.TestCase):
    end=time.monotonic()+10
    while time.monotonic()<end:
     paths=list(Model.paths)[mark:]
-    glm_files=[p for p in paths if p[3].get('filename')=='mag-prefix-glm-5.3-flash-slot2.bin']
+    glm_files=[p for p in paths if p[3].get('filename')=='mag-prefix-glm-5.3-flash-slot2-prefix.bin']
     if any(p[0].endswith('save') for p in glm_files):break
     time.sleep(.05)
    else:self.fail('GLM cold prefix not saved: '+log_path.read_text()[-1200:])
    self.assertEqual(sum(p[0].endswith('restore') for p in glm_files),1,glm_files)
    self.assertTrue(any(p[0]=='/v1/chat/completions' and p[3].get('model')=='glm-5.3-flash' and p[3].get('max_tokens')==1 for p in paths))
    time.sleep(.3)
-   self.assertEqual(sum(p[0].endswith('restore') for p in list(Model.paths)[mark:] if p[3].get('filename')=='mag-prefix-glm-5.3-flash-slot2.bin'),1,'infinite restore')
+   self.assertEqual(sum(p[0].endswith('restore') for p in list(Model.paths)[mark:] if p[3].get('filename')=='mag-prefix-glm-5.3-flash-slot2-prefix.bin'),1,'infinite restore')
    token=_ui_token(ui)
    def post(endpoint,payload,method='POST'):
     req=urllib.request.Request(f'http://127.0.0.1:{ui}{endpoint}',data=json.dumps(payload).encode(),
@@ -5190,6 +5190,13 @@ class GlmLayoutStartup(unittest.TestCase):
    # llama --parallel 1 uses id_slot=0, while the checkpoint filename's
    # The MAG room-agent slot and llama id_slot are different namespaces.
    self.assertEqual(first_calls[0][3].get('id_slot'),0)
+   # The cached system/tools body is followed by a bounded, two-message chat.
+   self.assertEqual(len(first_calls[0][3]['messages']),2)
+   self.assertFalse(first_calls[0][3]['chat_template_kwargs']['enable_thinking'])
+   self.assertLessEqual(len(first_calls[0][3]['messages'][1]['content'].encode()),700)
+   self.assertEqual((state/'glm-chat-defaults-v1').read_text().strip(),'1')
+   self.assertEqual((state/'reflect').read_text(),'off')
+   self.assertEqual((state/'autotalk').read_text(),'off')
    tools=first_calls[0][3]['tools']
    self.assertGreater(len(tools),10,'GLM keeps all executable tools')
    self.assertTrue(all(t.get('function',{}).get('name') for t in tools))

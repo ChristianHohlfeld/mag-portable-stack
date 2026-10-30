@@ -115,8 +115,11 @@ assert 'MAG_ROOM_BACKEND=http://127.0.0.1:8080' in room_conf
 assert 'Environment=MAG_ROOM_PREWARM=1' in room_conf
 assert 'MAG_ROOM_PREWARM=1' in Path('ops/room/glm.env').read_text()
 assert 'short_glm_input(TURN_INPUT)' in room
-assert 'body["tool_choice"] = "none"' in room
-assert 'max_output = std::min(max_output, 128)' in room
+# GLM chat intentionally omits the entire tool schema/choice and decodes up to 256.
+# The DeepSeek/Qwen working-mode tool schemas are still retained.
+assert 'if (!(no_tools && model.rfind("glm-5.3-flash", 0) == 0)' in room
+assert 'MAG_ROOM_GLM_CHAT_MAX_TOKENS' in room
+assert 'glm_chat ? std::string() : tools_json(bot_idx, web)' in room
 assert 'glm-reasoning-limit model=' in room
 assert 'tool-failed bot=' in room
 assert 'restart_unit["$unit"]=1' in glm_txn

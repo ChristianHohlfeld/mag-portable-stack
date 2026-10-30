@@ -4634,6 +4634,8 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   // 1024-token limit inside reasoning. Limit that single decode to 128 tokens.
   if (short_chat && model.rfind("glm-5.3-flash", 0) == 0)
     max_output = std::min(max_output, 128);
+  else if (thinking && model.rfind("glm-5.3-flash", 0) == 0)
+    max_output = std::min(max_output, 256);
   body["max_tokens"] = max_output;
   if ((short_chat || force_no_tools) && model.rfind("glm-5.3-flash", 0) == 0)
     body["tool_choice"] = "none"; // keep tool schemas / prefix stable
@@ -6142,6 +6144,24 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
     if (stop_flag().load()) {
       if (t.calls.empty()) final_text += t.text;
       break;
+    }
+    if (glm_chat && turn_thinking() && !t.skipped && !stop_flag().load() &&
+        t.error.find("Antwortlimit beim Denken erreicht") != std::string::npos) {
+      // Exactly one tool-free recovery, with thinking off. Never repeat a
+      // 256-token reasoning-only completion or mark it as task success.
+      std::cerr << "glm-thinking-retry bot=" << bot_id
+                << " max_tokens=128 thinking=off\n";
+      t = backend_turn(messages, tools, 1.0, on_delta, false,
+                       slot_for_key(bot_id), bot_model_id(bot_idx), bot_idx,
+                       true, true);
+      if (t.local_fallback || t.text.empty()) {
+        report.local_fallback = true;
+        report.error = "GLM antwortete auch ohne Thinking nicht sichtbar.";
+        final_text = "Wie bitte?";
+        run_fail(report.error);
+        completed = true;
+        break;
+      }
     }
     if (!t.error.empty()) {
       report.error = t.error.substr(0, 280);
@@ -8312,7 +8332,7 @@ static void preempt_selftalk_lanes() {
 static void agents_changed();
 // System+tools is ~13k tokens. n_past=1, n_decoded>0 or a 12-token stub is
 // not that prefix (live: cache_size=12, then a 3.5 min prefill).
-static const long PREFIX_RESIDENT_TOKENS = 2048;
+static const long PREFIX_RESIDENT_TOKENS = 7780;
 static bool prefix_gate_on() {
   return CONFIGURED_MODEL && env("MAG_ROOM_PREWARM", "1") == "1";
 }
@@ -8500,7 +8520,8 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
   if (CONFIGURED_MODEL && (!ram_known || slot_busy)) {
     skip = true;
     why = "busy"; // /slots timed out or the slot is prefilling: do not clobber it
-  } else if (count_known && cache_tokens >= PREFIX_RESIDENT_TOKENS) {
+  } else if (count_known && cache_tokens >= PREFIX_RESIDENT_TOKENS &&
+             (!CONFIGURED_MODEL || have_current)) {
     // The slot already holds system+tools. Restoring a file or posting a
     // chat completion here is the p0=0 wipe and the second full prefill.
     // A stale on-disk hash does not change that: the KV is the resident one.

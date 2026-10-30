@@ -5217,6 +5217,34 @@ class GlmLayoutStartup(unittest.TestCase):
        p[3].get('max_tokens')==1 and
        'tools' not in p[3] for p in paths),
        'prewarm uses the same no-tools system prefix')
+   # Host-only memory mutations must not trigger the model.
+   count_before=len([p for p in Model.paths if p[0]=='/v1/chat/completions' and
+                     p[3].get('max_tokens')!=1])
+   self.assertTrue(post('/api/message',{'text':'/merk Test-Fakt-ZQ',
+       'bots':['qwen-numa1']})['ok'])
+   st=json.load(urllib.request.urlopen(f'http://127.0.0.1:{ui}/api/state',timeout=2))
+   self.assertTrue(any('Test-Fakt-ZQ' in str(v) for v in st['agents'][1].get('memory',[])))
+   self.assertEqual(count_before,len([p for p in Model.paths
+       if p[0]=='/v1/chat/completions' and p[3].get('max_tokens')!=1]))
+   # The last short greeting, not accumulated room text, enters user message.
+   before=len(Model.paths)
+   post('/api/message',{'text':'Hi','bots':['qwen-numa1'],
+       'request_id':'glm-short-memory'})
+   end=time.monotonic()+6
+   while time.monotonic()<end:
+    greetings=[p for p in list(Model.paths)[before:]
+               if p[0]=='/v1/chat/completions' and
+               p[3].get('max_tokens')!=1]
+    if greetings:break
+    time.sleep(.05)
+   else:self.fail('GLM short greeting missing')
+   self.assertEqual(greetings[0][3]['messages'][1]['content'],'Hi')
+   self.assertIn('Test-Fakt-ZQ',greetings[0][3]['messages'][0]['content'])
+   self.assertNotIn('tools',greetings[0][3])
+   self.assertFalse(greetings[0][3]['chat_template_kwargs']['enable_thinking'])
+   self.assertTrue(post('/api/message',{'text':'/vergiss 1',
+       'bots':['qwen-numa1']})['ok'])
+
    # No DeepSeek cold gate: Q1 and Q2 are separately routable.
    post('/api/bot-settings',{'bots':['deepseek-chat'],'enabled':False},'PUT')
    marker='GLM-PAUSED-'+str(time.monotonic_ns())

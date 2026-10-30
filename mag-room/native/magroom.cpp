@@ -4565,6 +4565,7 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
              bool thinking, int id_slot, const std::string &model = "",
              int bot_idx = -1, bool short_chat = false, bool no_tools = false) {
   Turn t;
+  const auto backend_started = steady_clock::now();
   // DeepSeek rejects an assistant-ending prefill while thinking is on
   // (HTTP 500). Do not open a socket and do not let the caller wipe the wire.
   if (thinking && !TL_SELFTALK && !messages.empty() &&
@@ -4870,6 +4871,14 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
     backend_fd_slot() = -1;
     c.close();
   }
+  const char *exit_reason = stop_flag().load() ? "stop" :
+      c.budget_hit ? "budget" : c.stalled ? "stalled" :
+      c.hit_deadline ? "budget" : c.eof ? "eof" : "done";
+  std::cerr << "backend-exit bot="
+            << (bot_idx >= 0 ? bot_field(bot_idx, "id") : model)
+            << " reason=" << exit_reason
+            << " ms=" << duration_cast<milliseconds>(steady_clock::now()-backend_started).count()
+            << "\n";
   // A deadline is a failure of this one request. Stop already closed the
   // socket and must not be reported as a model timeout. An empty finish
   // would schedule another completion against a slot ik is still prefilling.
@@ -7013,8 +7022,10 @@ static bool AUTO_READY = false;
 static int AUTO_TURNS_LEFT = 0;
 static constexpr int AUTO_MAX_TURNS = 8;
 
-static void cancel_lane(Lane &l, bool user) {
+static void cancel_lane(Lane &l, bool user, const char *reason = "cancel_lane") {
   if (!l.busy.load()) return;
+  std::cerr << "turn-cancel reason=" << reason << " user=" << (user ? 1 : 0)
+            << " bot=" << l.active_bot << "\n";
   if (user) l.user_cancel = true;
   l.stop = true;
   std::lock_guard<std::mutex> lk(BACKEND_FD_MTX);
@@ -7023,16 +7034,27 @@ static void cancel_lane(Lane &l, bool user) {
 }
 // Stop every lane. EPOCH tells finished turns that their result is stale.
 static void cancel_active(bool user = false) {
+  // A background selftalk/health action must not stop active human GLM turns.
+  if (CONFIGURED_MODEL && !user) {
+    std::cerr << "turn-cancel reason=cancel_active-ignored user=0 bot=none\n";
+    return;
+  }
+  std::cerr << "turn-cancel reason=cancel_active user=" << (user ? 1 : 0)
+            << " bot=all\n";
   LAST_CANCEL_BY_USER = user;
   STOP = true;
   ++EPOCH;
-  for (Lane *l : all_lanes()) cancel_lane(*l, user);
+  for (Lane *l : all_lanes()) cancel_lane(*l, user, "cancel_active");
   std::lock_guard<std::mutex> lk(BACKEND_FD_MTX);
   if (BACKEND_FD.load() >= 0)
     shutdown(BACKEND_FD.load(), SHUT_RDWR);
 }
 // Stop only the lanes these bots answer on; other bots keep working.
 static bool cancel_bots_locked(const std::vector<std::string> &ids, bool user) {
+  if (CONFIGURED_MODEL && !user) {
+    std::cerr << "turn-cancel reason=cancel_bots_locked-ignored user=0 bot=none\n";
+    return false;
+  }
   bool found = false;
   for (auto &id : ids) {
     for (auto &entry : ACTIVE_JOBS) {
@@ -7041,7 +7063,7 @@ static bool cancel_bots_locked(const std::vector<std::string> &ids, bool user) {
       for (Lane *lane : all_lanes()) {
         if (!lane->busy.load()) continue;
         // A bot's model can be changed during a turn. Use dispatched ownership.
-        if (lane->active_bot == id) cancel_lane(*lane, user);
+        if (lane->active_bot == id) cancel_lane(*lane, user, "cancel_bots_locked");
         lane->cancelled_bots.insert(id);
       }
       found = true;
@@ -8332,7 +8354,7 @@ static void preempt_selftalk_lanes() {
         Lane *lane = lane_of(id);
         if (!lane || !lane->busy.load()) continue;
         lane->preempt = true;
-        cancel_lane(*lane, true);
+        cancel_lane(*lane, false, "preempt_selftalk_lanes");
         const int idx = agent_index(id);
         hits.push_back(Hit{lane, idx});
       }
@@ -9687,11 +9709,17 @@ static void stop_selftalk() {
 static void stop_autotalk(bool pause = false) {
   write_file(STATE_DIR + "/autotalk", "off");
   AUTOTALK = false;
-  cancel_active();
+  if (CONFIGURED_MODEL) preempt_selftalk_lanes();
+  else cancel_active();
   {
     std::lock_guard<std::mutex> lk(JOB_MTX);
-    JOBS.clear();
-    ACTIVE_JOBS.clear();
+    if (CONFIGURED_MODEL) {
+      JOBS.erase(std::remove_if(JOBS.begin(), JOBS.end(),
+          [](const Job &j) { return j.selftalk; }), JOBS.end());
+    } else {
+      JOBS.clear();
+      ACTIVE_JOBS.clear();
+    }
     // Stop button: persistent pause; only "Fortsetzen" resumes. Other stops
     // (autonomy off, agent removal) only hold back pending messages.
     if (pause || !PENDING.empty()) QUEUE_PAUSED = true;
@@ -9710,6 +9738,8 @@ static void stop_autotalk(bool pause = false) {
 // one, and so busy cannot stay true after the sockets are already closed.
 static void release_lanes_locked() {
   for (Lane *l : all_lanes()) {
+    if (l->busy.load()) std::cerr << "turn-cancel reason=release_lanes_locked user=1 bot="
+                                  << l->active_bot << "\n";
     l->turn = 0;
     l->busy = false;
     l->active_bot.clear();

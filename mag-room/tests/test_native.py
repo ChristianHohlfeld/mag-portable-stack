@@ -423,6 +423,29 @@ class Native(unittest.TestCase):
   self.request('/api/model-settings',{'id':second,'deterministic':True})
   self.assertFalse(self.request('/api/state')['models'][0]['deterministic'])
   self.assertTrue(self.request('/api/state')['models'][1]['deterministic'])
+ def test_05aa_new_model_does_not_inherit_legacy_sampling(self):
+  self.wait_idle()
+  models=self.request('/api/state')['models']
+  first,second=[m['id'] for m in models]
+  path=self.state/'model-settings.json'
+  previous=path.read_bytes() if path.exists() else None
+  legacy=self.state/'sampling'
+  old=legacy.read_bytes() if legacy.exists() else None
+  try:
+   legacy.write_text('on\\n')
+   path.write_text(json.dumps({first:{'deterministic':True}}))
+   self.proc.terminate();self.proc.wait(timeout=5);self.log.close();self.start()
+   states={m['id']:m['deterministic'] for m in self.request('/api/state')['models']}
+   self.assertTrue(states[first],'explicit saved deterministic=true must survive')
+   self.assertFalse(states[second],'new model must ignore old sampling=on')
+  finally:
+   self.proc.terminate();self.proc.wait(timeout=5);self.log.close()
+   if previous is None:path.unlink(missing_ok=True)
+   else:path.write_bytes(previous)
+   if old is None:legacy.unlink(missing_ok=True)
+   else:legacy.write_bytes(old)
+   self.start()
+
  def test_05b_stateless_identical_input_always_recomputed_without_history(self):
   self.wait_idle()
   models=self.request('/api/state')['models']

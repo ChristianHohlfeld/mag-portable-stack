@@ -5469,7 +5469,7 @@ class GlmLayoutStartup(unittest.TestCase):
       ['5','\n\n#','# ','GARBAGE-HEADING'])):
     marker='GLM-CUT-'+str(n)+'-'+str(time.monotonic_ns())
     Model.script_scope=marker
-    Model.script=[parts, ['Saubere Antwort.']] if n<3 else [parts]
+    Model.script=[parts, ['Saubere Antwort.', {'_chunk':{'choices':[{'delta':{},'finish_reason':'stop'}]}}]] if n<3 else [parts]
     before=len(Model.paths)
     self.assertTrue(post({'text':marker,'bots':['deepseek-chat']})['accepted'])
     req=calls_after(before,marker,1)[0][3]

@@ -5517,9 +5517,8 @@ class GlmLayoutStartup(unittest.TestCase):
     calls=calls_after(before,marker,expected)
     idle_after(marker)
     self.assertEqual(len(calls),expected,calls)
-   # Multi-turn GLM template: each historical room message is a role entry.
-   # Q2's answer must be user-with-name from Q1's perspective; Q1's prior
-   # answer stays assistant. No flat transcript or manual <|user|> markup.
+   # Q1 hygiene: at most two own clean user/assistant pairs. Never include
+   # a foreign Q2 response as a fake user turn or an own assistant turn.
    q2mark='GLM-CTX-Q2-'+str(time.monotonic_ns())
    before=len(Model.paths)
    self.assertTrue(post({'text':q2mark,'bots':['qwen-numa1']})['accepted'])
@@ -5532,11 +5531,11 @@ class GlmLayoutStartup(unittest.TestCase):
    roles=q1req['messages']
    self.assertEqual(roles[0]['role'],'system')
    self.assertEqual(roles[-1],{'role':'user','content':q1mark})
-   self.assertLessEqual(len(roles),7,'maximum six role turns plus system')
-   self.assertTrue(any(m['role']=='user' and
-       m['content'].startswith('GLM-Q2: ') for m in roles[1:-1]),roles)
-   self.assertFalse(any(m['role']=='assistant' and
-       m['content'].startswith('GLM-Q2: ') for m in roles[1:-1]),roles)
+   self.assertLessEqual(len(roles),6,'system + two complete Q1 pairs + current user')
+   self.assertFalse(any(m['content'].startswith('GLM-Q2: ')
+       for m in roles[1:-1]),roles)
+   self.assertEqual([m['role'] for m in roles[1:-1]],
+       ['user','assistant']*((len(roles)-2)//2),roles)
    self.assertNotIn('[Raumverlauf]',json.dumps(roles,ensure_ascii=False))
    idle_after(q1mark)
    # Six identical words cause a hard stream cut before the repetition run

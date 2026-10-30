@@ -383,6 +383,12 @@ if [[ -e /etc/mag-stack/room-model.env || -e /etc/systemd/system/mag-llm-ds-node
     bash "$SOURCE/ops/qwen/layout.sh" apply "$BACKUP"
   fi
   mag_flush_daemon_reload
+  # The temporary live GLM-fast override must not mask the versioned defaults.
+  # Previous drop-ins were snapshotted above and are restored on rollback.
+  if [[ $(cat /etc/mag-stack/room-layout 2>/dev/null || true) == glm ]]; then
+    rm -f -- /etc/systemd/system/mag-120.service.d/99-glm-fast.conf
+    mag_daemon_reload
+  fi
   # Preserve the operator's stopped/disabled DeepSeek on ordinary redeploys.
   if (( FIRST_INSTALL )); then mag_systemctl enable mag-llm-ds-node@0.service; fi
   # Only the pure-DeepSeek layout boots DeepSeek on NUMA1 (mixed: Qwen, glm: GLM).

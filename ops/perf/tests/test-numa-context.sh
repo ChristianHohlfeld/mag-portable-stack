@@ -25,9 +25,13 @@ assert '--physcpubind=14-27 --membind=1' in qwen  # Qwen rollback remains untouc
 # GLM uses all 28 NUMA1 logical CPUs (14 cores + HT) for batched prefill.
 assert '--physcpubind=14-27,42-55 --membind=1' in glm
 assert '--threads 14 --threads-batch 28' in glm
-for option in ('-fa on','-b 2048','-ub 1024','-ctk q8_0','-ctv q8_0',
-               '--cache-reuse 256','--load-mode dio','--parallel 1'):
+for option in ('-fa on','-b 4096','-ub 1024','--load-mode dio',
+               '--ctx-checkpoints 64','--checkpoint-min-step 1024',
+               '--parallel 1','--temp 1.0','--top-p 0.95'):
     assert option in glm, option
+for option in ('-ctk q8_0','-ctv q8_0','--cache-reuse'):
+    assert option not in glm, option
+assert "kv-f16-f16:ctx32768:slot0" in glm
 assert 'CPUAffinity=14-27 42-55' in glm_unit
 assert 'AllowedCPUs=14-27,42-55' in glm_unit
 assert 'FORMAT=' in glm and '.kv-format' in glm and 'mag-prefix-glm-5.3-flash-slot2.bin' in glm
@@ -58,6 +62,12 @@ assert 'Environment=MAG_ROOM_QWEN_MAX_TOKENS=8192' in conf
 assert 'MAG_ROOM_QWEN_MAX_TOKENS' in room and 'model == "qwen3.8-flash-next-uncensored"' in room
 assert 'std::min(MAX_TOKENS, std::clamp(' in room  # valid for small-token tests
 assert 'MAG_ROOM_REASONING_HISTORY_BYTES' in room
+assert 'model != "glm-5.3-flash" && model_settings_for(model).deterministic' in room
+assert 'model == "glm-5.3-flash") body["cache_prompt"] = true;' in room
+assert 'model == "glm-5.3-flash") body["id_slot"] = 0;' in room
+assert 'asst["reasoning_content"] = !CONFIGURED_MODEL && t.reasoning.size() > keep' in room
+assert room.count('kwargs["reasoning_effort"] = "low";') == 2
+assert room.count('kwargs["clear_thinking"] = true;') == 2
 assert 'static void schedule_prewarm()' in room and 'schedule_prewarm();' in room
 assert 'MAG_ROOM_PREWARM' in room and 'body["max_tokens"] = 1;' in room
 assert 'MAG_ROOM_PREFIX_DISK' in room and 'restore_or_cold(source)' in room and 'restore_or_cold(own)' in room and 'prefix_slot("restore", file)' in room and 'prefix_slot("save", own)' in room
@@ -84,7 +94,13 @@ assert 'id_slot"] = id_slot' in room and 'if (PROMPT_SLOTS > 1)' in room
 assert 'MCP_MAX_BOT_TOOLS = 64' in mcp
 assert 'MAG_MCP_TOOL_DESC_BYTES' in mcp and 'fn["parameters"]' in mcp
 assert 'for (auto &t : mcp_bot_tools(bot_idx))' in room  # no tool removal
-assert 'MAG_ROOM_BACKEND=http://127.0.0.1:8080' in Path('ops/mag-120.d/20-room-audit.conf').read_text()
+room_conf = Path('ops/mag-120.d/20-room-audit.conf').read_text()
+assert 'MAG_ROOM_BACKEND=http://127.0.0.1:8080' in room_conf
+assert 'Environment=MAG_ROOM_PREWARM=0' in room_conf
+assert 'MAG_ROOM_PREWARM=0' in Path('ops/room/glm.env').read_text()
+assert 'Environment=MAG_ROOM_MAX_TOKENS=8192' in room_conf
+assert 'Environment=MAG_ROOM_GLM_MAX_TOKENS=1024' in room_conf
+assert '/etc/systemd/system/mag-120.service.d/99-glm-fast.conf' in deploy
 assert 'ops/qwen/start.sh" /usr/local/lib/mag-qwen/start.sh' in deploy
 assert 'MAG_ROOM_CONTEXT_BYTES=52000' not in Path('ops/mag-120.d/20-room-audit.conf').read_text() # legacy unchanged
 assert 'mag-llm-qwen' in diag and 'prompt-cache slot=' in diag

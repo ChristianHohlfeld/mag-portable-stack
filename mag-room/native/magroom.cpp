@@ -4583,7 +4583,8 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   // the split between batched prefill and token decoding differs. Do not reuse
   // that cache in deterministic mode. Never replay an earlier answer either.
   // Identical prompts are still required; evolving room history is NOT identical.
-  const bool deterministic = model_settings_for(model).deterministic;
+  // GLM-5.3-Flash follows its model-card sampling even when UI determinism is on.
+  const bool deterministic = model != "glm-5.3-flash" && model_settings_for(model).deterministic;
   if (deterministic) {
     body["temperature"] = 0.0;
     body["top_k"] = 1;
@@ -4613,10 +4614,10 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   // Configured NUMA bots keep the slot prefix. Deterministic still greedily
   // decodes; it must not drop cache_prompt (live Qwen: tokens_cached=0 and a
   // 39s identity prefill because cache_prompt was off).
-  if (CONFIGURED_MODEL) body["cache_prompt"] = true;
+  if (CONFIGURED_MODEL || model == "glm-5.3-flash") body["cache_prompt"] = true;
   // Dedicated NUMA servers keep the same live KV slot across prewarm/chat.
   // Do not run the generic RAM-cache slot selector on this fixed deployment.
-  if (CONFIGURED_MODEL) body["id_slot"] = 0;
+  if (CONFIGURED_MODEL || model == "glm-5.3-flash") body["id_slot"] = 0;
   else if (PROMPT_SLOTS > 1) body["id_slot"] = id_slot;
   // DeepSeek-V4-Flash-0731 template: enable_thinking only changes the
   // generation prompt at the END -> toggling it keeps the prompt cache.
@@ -4634,7 +4635,7 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   if (model == "glm-5.3-flash") {
     // GLM-5.3 defaults to MAX and clear_thinking=false unless explicit.
     // Keep the template preamble byte-stable between all turns.
-    kwargs["reasoning_effort"] = REASONING_EFFORT.empty() ? "low" : REASONING_EFFORT;
+    kwargs["reasoning_effort"] = "low";
     kwargs["clear_thinking"] = true;
   } else if (model != "qwen3.8-flash-next-uncensored" && !REASONING_EFFORT.empty()) {
     kwargs["reasoning_effort"] = REASONING_EFFORT;
@@ -6090,7 +6091,7 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
       // Keep the newest reasoning and the actual structured tool call intact.
       const size_t keep = (size_t)std::clamp(
           envi("MAG_ROOM_REASONING_HISTORY_BYTES", 4096), 1024, 16384);
-      asst["reasoning_content"] = t.reasoning.size() > keep
+      asst["reasoning_content"] = !CONFIGURED_MODEL && t.reasoning.size() > keep
           ? std::string("[Aeltere Gedanken im Protokoll; letzte Schritte:]\n") +
                 utf8_suffix(t.reasoning, keep)
           : t.reasoning;
@@ -8446,7 +8447,7 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
         }
         kwargs["enable_thinking"] = thinking_on;
         if (model == "glm-5.3-flash") {
-          kwargs["reasoning_effort"] = REASONING_EFFORT.empty() ? "low" : REASONING_EFFORT;
+          kwargs["reasoning_effort"] = "low";
           kwargs["clear_thinking"] = true;
           body["temperature"] = 1.0;
           body["top_p"] = 0.95;

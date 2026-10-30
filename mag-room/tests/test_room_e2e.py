@@ -343,6 +343,26 @@ class RoomE2E(unittest.TestCase):
         expect(p.locator('#stop-run')).to_be_hidden(timeout=3000)
         self.room.until(lambda s: not s['busy'], timeout=3, what='idle after Esc')
 
+    def test_03b_streamed_reply_does_not_duplicate_durable_card(self):
+        # Exactly one visible card while both live stream and saved first
+        # token refer to the same turn; preserve the saved card after done.
+        p = self.page
+        p.evaluate("""()=>{
+          const now=Date.now();
+          state.room=[{id:'partial-one',role:'assistant',name:'Alpha',bot:'a',
+                      content:'Hallo',display_ms:now,ts:Math.floor(now/1000)}];
+          streams={a:{name:'Alpha',text:'Hallo',phase:'answer',label:'Antwortet',
+                      displayMs:now,started:now,thinkingEnabled:true,
+                      reasoning:'Gedanke',steps:[],tools:[],partialId:'partial-one'}};
+          render();
+        }""")
+        self.assertEqual(p.locator('#conversation .message').count(), 1)
+        self.assertEqual(p.locator('#conversation .message[data-live-bot="a"]').count(), 1)
+        p.evaluate("""()=>{streams.a.partialId='';render()}""")
+        self.assertEqual(p.locator('#conversation .message').count(), 1)
+        p.evaluate("""()=>{delete streams.a;render()}""")
+        self.assertEqual(p.locator('#conversation .message').count(), 1)
+
     def test_04_queue_is_visible_editable_and_send_now_interrupts(self):
         p = self.page
         Model.scripts += [[{'_hold': 30}], ['Sofort beantwortet.']]

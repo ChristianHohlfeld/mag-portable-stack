@@ -2277,7 +2277,7 @@ static std::string build_context_tail(int bot_idx, bool autotalk,
   // Volatile only, and only after the transcript: network, files, clock,
   // autotalk. Memory is not here; it sits in the cached prefix.
   (void)bot_idx;
-  if (CONFIGURED_MODEL && !autotalk && !TL_REFLECT)
+  if (CONFIGURED_MODEL && env("MAG_ROOM_MODEL_ID", "").rfind("glm-5.3-flash", 0) == 0) && !autotalk && !TL_REFLECT
     return "\nZeit: " + server_clock_minute();
   std::string out = "\n[Kontext]\nNetz: ";
   out += OFFLINE.load() ? "OFFLINE" : "online";
@@ -2365,13 +2365,13 @@ static std::string build_transcript() {
   // Room clear/restore can rewind indices; never retain an invalid offset.
   if (TRANSCRIPT_WINDOW_START >= ROOM.size()) TRANSCRIPT_WINDOW_START = 0;
   start = std::max(start, TRANSCRIPT_WINDOW_START);
-  const size_t limit = CONFIGURED_MODEL ? 600 : (size_t)std::clamp(
+  const size_t limit = (CONFIGURED_MODEL && env("MAG_ROOM_MODEL_ID", "").rfind("glm-5.3-flash", 0) == 0) ? 600 : (size_t)std::clamp(
       envi("MAG_ROOM_TRANSCRIPT_BYTES", 16000), 4000, 64000);
   std::vector<std::pair<std::string, std::string>> lines;
   size_t bytes = 0;
   for (size_t i = ROOM.size(); i > start; --i) {
     const Val &m = ROOM[i-1];
-    if (CONFIGURED_MODEL) {
+    if (CONFIGURED_MODEL && env("MAG_ROOM_MODEL_ID", "").rfind("glm-5.3-flash", 0) == 0) {
       if (m.find("interrupted") && m.find("interrupted")->asBool()) continue;
       if (m.find("work_error")) continue;
       if (mag::str(m,"role")=="assistant" && trim(mag::str(m,"content")).empty()) continue;
@@ -2388,7 +2388,7 @@ static std::string build_transcript() {
       line = render_room_line(m);
     }
     if (!lines.empty() && bytes + line.size() > limit) break;
-    if (CONFIGURED_MODEL && line.size() > limit) line.resize(limit);
+    if (CONFIGURED_MODEL && env("MAG_ROOM_MODEL_ID", "").rfind("glm-5.3-flash", 0) == 0) && line.size() > limit) line.resize(limit);
     bytes += line.size();
     lines.emplace_back(id, std::move(line));
   }
@@ -2396,7 +2396,7 @@ static std::string build_transcript() {
   // headroom, then persist that boundary. Next turns append without shifting
   // the cached prefix until the budget fills again. Never truncate the latest
   // message, and never recompute a fresh sliding cutoff on each request.
-  if (!CONFIGURED_MODEL && ROOM.size() - lines.size() > start) {
+  if (!(CONFIGURED_MODEL && env("MAG_ROOM_MODEL_ID", "").rfind("glm-5.3-flash", 0) == 0) && ROOM.size() - lines.size() > start) {
     const size_t target = std::max((size_t)4000, limit * 3 / 5);
     while (lines.size() > 1 && bytes > target) {
       bytes -= lines.back().second.size();
@@ -4948,9 +4948,11 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   // next room start reloads, so a restart does not prefill the prompt again.
   // A short Proaktiv prompt must not replace the saved human prefix.
   // Cancel restores that file so the next hi stays a cache hit.
-  // Persist only an anchor, not a full tool/chat KV dump.
-  // prewarm_model() owns the prefix-only save.
-  (void)bot_idx;
+  // GLM: only anchor saves. Other configured models retain their
+  // previously working full-slot persistence contract.
+  if (t.error.empty() && !TL_SELFTALK &&
+      model.rfind("glm-5.3-flash", 0) != 0)
+    persist_configured_slot(bot_idx);
   return t;
 }
 
@@ -8364,7 +8366,7 @@ static void preempt_selftalk_lanes() {
 static void agents_changed();
 // System+tools is ~13k tokens. n_past=1, n_decoded>0 or a 12-token stub is
 // not that prefix (live: cache_size=12, then a 3.5 min prefill).
-static const long PREFIX_RESIDENT_TOKENS = 7780;
+static const long PREFIX_RESIDENT_TOKENS = 2048;
 static bool prefix_gate_on() {
   return CONFIGURED_MODEL && env("MAG_ROOM_PREWARM", "1") == "1";
 }
@@ -8517,8 +8519,10 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
   // and the prompt that wiped a resident KV at p0=0. A numeric count below
   // the system+tools prefix is not that KV (live n_past=1). A large count,
   // or a prompt string with no count, is left untouched.
+  const long required_tokens = model.rfind("glm-5.3-flash",0) == 0
+      ? 7780 : PREFIX_RESIDENT_TOKENS;
   const bool prefix_resident = count_known
-      ? cache_tokens >= PREFIX_RESIDENT_TOKENS
+      ? cache_tokens >= required_tokens
       : (ram_warm && have_current && !prefix_changed);
   bool restored = false;
   bool skip = false;
@@ -8552,7 +8556,7 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
   if (CONFIGURED_MODEL && (!ram_known || slot_busy)) {
     skip = true;
     why = "busy"; // /slots timed out or the slot is prefilling: do not clobber it
-  } else if (count_known && cache_tokens >= PREFIX_RESIDENT_TOKENS &&
+  } else if (count_known && cache_tokens >= required_tokens &&
              (!CONFIGURED_MODEL || have_current)) {
     // The slot already holds system+tools. Restoring a file or posting a
     // chat completion here is the p0=0 wipe and the second full prefill.
@@ -8610,13 +8614,15 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
         u["content"] = build_transcript() + build_context_tail(idx, false, "") + (skills.empty() ? "" : "\n" + skills);
         msgs.push(u);
         if (CONFIGURED_MODEL) {
-          // A stable system+tools anchor; no volatile transcript or history.
-          Val anchor=Val::array();
-          anchor.push(sys);
-          msgs=anchor;
-          auto wire = std::vector<Val>{sys};
-          msgs = Val::array();
-          for (const auto &m : wire) msgs.push(m);
+          if (model.rfind("glm-5.3-flash",0) == 0) {
+            // GLM system+tool anchor only, no transcript or history.
+            msgs = Val::array();
+            msgs.push(sys);
+          } else {
+            auto wire = wire_messages(idx, system, tool_defs, build_context_tail(idx, false, ""));
+            msgs = Val::array();
+            for (const auto &m : wire) msgs.push(m);
+          }
         }
         body["messages"] = msgs;
         Val tt;
@@ -8626,7 +8632,7 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
         body["cache_prompt"] = true;
         if (CONFIGURED_MODEL) body["id_slot"] = 0;
         Val kwargs = Val::object();
-        bool thinking_on = CONFIGURED_MODEL ? false : bot_thinking(idx);
+        bool thinking_on = model.rfind("glm-5.3-flash",0) == 0 ? false : bot_thinking(idx);
         // DeepSeek rejects an assistant-ending prefill while thinking is on.
         // The room turn skips that request. Prewarm still has to post
         // (the slot file is written only after this completion); thinking
@@ -10896,7 +10902,7 @@ int main() {
                                 : std::max(LLM_TIMEOUT_S, LLM_TIMEOUT_MIN_S);
   }
   THINKING = env("MAG_ROOM_THINKING", "on");
-  THINKING_DEFAULT = CONFIGURED_MODEL ? false : THINKING != "off";
+  THINKING_DEFAULT = (CONFIGURED_MODEL && env("MAG_ROOM_MODEL_ID", "").rfind("glm-5.3-flash", 0) == 0) ? false : THINKING != "off";
   REASONING_EFFORT = env("MAG_ROOM_REASONING_EFFORT", "");
   if (!REASONING_EFFORT.empty() && REASONING_EFFORT != "low" &&
       REASONING_EFFORT != "high" && REASONING_EFFORT != "max")
@@ -10921,7 +10927,7 @@ int main() {
 
   STATE_DIR = env("MAG_ROOM_STATE", "/var/lib/magbot/room");
   { Val prefs; if (mj::parse(read_file(STATE_DIR + "/bot-defaults.json"), prefs) && prefs.isObj()) {
-      if (!CONFIGURED_MODEL)
+      if (!(CONFIGURED_MODEL && env("MAG_ROOM_MODEL_ID", "").rfind("glm-5.3-flash", 0) == 0))
         if (auto v = prefs.find("thinking"); v && v->type == Val::BOOL) THINKING_DEFAULT = v->asBool();
       if (auto v = prefs.find("github_enabled"); v && v->type == Val::BOOL) GITHUB_DEFAULT = v->asBool();
       if (auto v = prefs.find("pho_compress"); v && v->type == Val::BOOL) PHO_DEFAULT = v->asBool();
@@ -10963,7 +10969,7 @@ int main() {
   ensure_state();
   undo_drop_all();
   load_agents();
-  if (CONFIGURED_MODEL) {
+  if (CONFIGURED_MODEL && env("MAG_ROOM_MODEL_ID", "").rfind("glm-5.3-flash", 0) == 0) {
     // One-time migration, preserving IDs, memories and other settings.
     bool changed = false;
     for (auto &agent : AGENTS) {
@@ -10983,7 +10989,7 @@ int main() {
   UI_DEFAULT = read_file(UI_FILE);
   retire_frontend_override();
 
-  if (CONFIGURED_MODEL) {
+  if (CONFIGURED_MODEL && env("MAG_ROOM_MODEL_ID", "").rfind("glm-5.3-flash", 0) == 0) {
     write_file(STATE_DIR + "/autotalk", "off");
     write_file(STATE_DIR + "/reflect", "off");
   }

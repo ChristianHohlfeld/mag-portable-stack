@@ -8557,7 +8557,7 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
     skip = true;
     why = "busy"; // /slots timed out or the slot is prefilling: do not clobber it
   } else if (count_known && cache_tokens >= required_tokens &&
-             (!CONFIGURED_MODEL || have_current)) {
+             (model.rfind("glm-5.3-flash",0) != 0 || have_current)) {
     // The slot already holds system+tools. Restoring a file or posting a
     // chat completion here is the p0=0 wipe and the second full prefill.
     // A stale on-disk hash does not change that: the KV is the resident one.

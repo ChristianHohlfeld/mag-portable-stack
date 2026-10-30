@@ -5594,7 +5594,10 @@ class GlmLayoutStartup(unittest.TestCase):
  def test_two_glm_turns_complete_after_60_seconds_without_cancel(self):
   # Explicit @alle must reach both GLM lanes, with each fake under 8 s.
   # No real inference; keep the CI per-test deadline at 30 seconds.
-  Model.delay=0;Model.slot_delay={'0':2,'1':2};Model.script=[]
+  Model.delay=0;Model.slot_delay={'0':2,'1':2}
+  Model.script_scope='@alle Hi'
+  Model.script=[['Hallo ', {'_chunk':{'choices':[{'delta':{},'finish_reason':'stop'}]}}]
+                for _ in range(2)]
   Model.reply=None;Model.health=200;Model.slot_snapshot=[];Model.paths=[]
   Model.slot_block={};Model.barrier_release=None;Model.restore_missing=False
   tmp=tempfile.TemporaryDirectory();root=pathlib.Path(tmp.name);state=root/'state';state.mkdir()
@@ -5647,6 +5650,7 @@ class GlmLayoutStartup(unittest.TestCase):
    log.flush()
    self.assertNotIn('reason=stop',logpath.read_text(errors='replace'))
   finally:
+   Model.script_scope=None;Model.script=[]
    Model.slot_delay={}
    proc.terminate()
    try:proc.wait(timeout=5)

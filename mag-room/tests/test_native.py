@@ -5286,6 +5286,9 @@ class GlmLayoutStartup(unittest.TestCase):
     self.assertTrue(retry_calls[0][3]['chat_template_kwargs']['enable_thinking'])
     self.assertFalse(retry_calls[1][3]['chat_template_kwargs']['enable_thinking'])
     self.assertEqual([p[3]['max_tokens'] for p in retry_calls],[256,256])
+    self.assertNotIn('stop',retry_calls[0][3],'Thinking must not stop at </think>')
+    self.assertIn('</think>',retry_calls[1][3]['stop'],'Nonthinking retry needs stop')
+    self.assertNotIn('\n\n## ',retry_calls[1][3]['stop'])
     self.assertEqual(retry_calls[0][3]['messages'],retry_calls[1][3]['messages'])
     self.assertNotIn('tools',retry_calls[1][3])
    finally:
@@ -5457,8 +5460,8 @@ class GlmLayoutStartup(unittest.TestCase):
     self.assertTrue(post({'text':marker,'bots':['deepseek-chat']})['accepted'])
     req=calls_after(before,marker,1)[0][3]
     self.assertLessEqual(req['max_tokens'],256)
-    self.assertTrue({'</think>','<think>','<|user|>','<|observation|>',
-                     '\n\n## '}.issubset(set(req['stop'])),req)
+    self.assertTrue({'</think>','<think>','<|user|>','<|observation|>'}.issubset(set(req['stop'])),req)
+    self.assertNotIn('\n\n## ',req['stop'],'Heading stop is client-side only')
     room=idle_after(marker)
     text=json.dumps(room['room'],ensure_ascii=False)
     self.assertNotIn('GARBAGE-',text)

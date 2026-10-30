@@ -4690,13 +4690,12 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   if (thinking && model.rfind("glm-5.3-flash", 0) == 0)
     max_output = std::min(max_output, 256);
   body["max_tokens"] = max_output;
-  if (no_tools && model.rfind("glm-5.3-flash", 0) == 0) {
-    // llama.cpp /v1/chat/completions: per-request decoding stops, no
-    // llama-server flag, unit change or cold model reload.
+  if (no_tools && model.rfind("glm-5.3-flash", 0) == 0 && !thinking) {
+    // llama.cpp applies stop strings to raw generation, including reasoning.
+    // Preserve </think> for thinking turns; no server flags/model reload.
     Val stops = Val::array();
     for (const char *stop : {"</think>", "<think>", "<|user|>",
-                             "<|observation|>", "<|", "<tool_call",
-                             "\n\n## "})
+                             "<|observation|>", "<|", "<tool_call"})
       stops.push(stop);
     body["stop"] = stops;
   }
@@ -4777,7 +4776,9 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
     backend_fd_slot() = c.fd;
   }
   SseAcc acc;
-  const bool glm_chat_stream = no_tools && model.rfind("glm-5.3-flash", 0) == 0;
+  // Thinking needs ThinkingContent to consume its own <think>…</think>
+  // boundaries; only nonthinking chat treats these as hard stop markers.
+  const bool glm_chat_stream = no_tools && model.rfind("glm-5.3-flash", 0) == 0 && !thinking;
   std::string glm_stream_pending;
   bool glm_hard_cut = false;
   // The server stop array is the primary guard. Hold partial delimiters in

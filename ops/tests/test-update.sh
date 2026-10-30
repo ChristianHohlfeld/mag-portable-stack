@@ -159,7 +159,7 @@ import tempfile
 
 deploy = pathlib.Path(sys.argv[1]).read_text()
 match = re.search(
-    r"  if ! python3 - /etc/mag-stack/room-layout <<'PY'\n(.*?)\nPY\n",
+    r"""  if ! python3 - /etc/mag-stack/room-layout "\$require_deepseek" <<'PY'\n(.*?)\nPY\n""",
     deploy, re.S,
 )
 assert match, "embedded room readiness gate missing"
@@ -174,14 +174,15 @@ qwen = bot("qwen3.8-flash-next-uncensored", "Qwen3.8 Flash Next")
 
 with tempfile.TemporaryDirectory() as directory:
     layout_path = pathlib.Path(directory) / "room-layout"
-    def probe(layout, agents, accepted, expected_label):
+    def probe(layout, agents, accepted, expected_label, require_deepseek=True):
         layout_path.write_text(layout + "\n")
         payload = repr(json.dumps({"agents": agents}))
         stub = ("import io,json,urllib.request\n"
                 "urllib.request.urlopen = lambda *args, **kwargs: "
                 "io.BytesIO(" + payload + ".encode())\n")
         result = subprocess.run(
-            [sys.executable, "-I", "-c", stub + gate, str(layout_path)],
+            [sys.executable, "-I", "-c", stub + gate, str(layout_path),
+             "1" if require_deepseek else "0"],
             capture_output=True, text=True, timeout=15,
         )
         assert (result.returncode == 0) is accepted, (
@@ -192,6 +193,9 @@ with tempfile.TemporaryDirectory() as directory:
             result.stdout, result.stderr,
         )
     probe("glm", [ds, glm], True, "Release ready: DeepSeek and GLM")
+    probe("glm", [glm], True, "Release ready: GLM", False)
+    probe("glm", [ds, glm], True, "Release ready: GLM", False)
+    probe("glm", [ds], False, "expected live GLM", False)
     probe("mixed", [ds, qwen], True, "Release ready: DeepSeek and Qwen")
     probe("qwen", [ds, qwen], True, "Release ready: DeepSeek and Qwen")
     probe("glm", [ds, qwen], False, "expected live DeepSeek and GLM")

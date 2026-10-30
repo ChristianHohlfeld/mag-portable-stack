@@ -383,7 +383,14 @@ if [[ -e /etc/mag-stack/room-model.env || -e /etc/systemd/system/mag-llm-ds-node
     bash "$SOURCE/ops/qwen/layout.sh" apply "$BACKUP"
   fi
   mag_flush_daemon_reload
-  mag_systemctl enable mag-llm-ds-node@0.service
+  # The temporary live GLM-fast override must not mask the versioned defaults.
+  # Previous drop-ins were snapshotted above and are restored on rollback.
+  if [[ $(cat /etc/mag-stack/room-layout 2>/dev/null || true) == glm ]]; then
+    rm -f -- /etc/systemd/system/mag-120.service.d/99-glm-fast.conf
+    mag_daemon_reload
+  fi
+  # Preserve the operator's stopped/disabled DeepSeek on ordinary redeploys.
+  if (( FIRST_INSTALL )); then mag_systemctl enable mag-llm-ds-node@0.service; fi
   # Only the pure-DeepSeek layout boots DeepSeek on NUMA1 (mixed: Qwen, glm: GLM).
   case $(cat /etc/mag-stack/room-layout 2>/dev/null || true) in
     mixed|glm) ;;
@@ -500,24 +507,34 @@ elif [[ "${MAG_DEPLOY_REQUIRE_WARM_PREFIX:-0}" == 1 ]]; then
     exit 1
   fi
 else
-  # Always verify the two real model endpoints and the active bot roster.
-  # Unlike a prefix-cache benchmark this is a functional readiness check.
+  # An intentionally stopped/disabled DeepSeek must not roll back GLM-only.
+  # Require DS only when its unit is both enabled and active.
+  require_deepseek=0
+  if systemctl is-active --quiet mag-llm-ds-node@0.service &&
+     systemctl is-enabled --quiet mag-llm-ds-node@0.service; then
+    require_deepseek=1
+  fi
   ready=1
-  for port in 8191 8192; do
+  model_ports=(8192)
+  if (( require_deepseek )); then model_ports=(8191 8192); fi
+  for port in "${model_ports[@]}"; do
     if ! curl --noproxy '*' -fsS --max-time 10 "http://127.0.0.1:${port}/health" >/dev/null; then
       echo "FAIL: model on :${port} not healthy" >&2
       ready=0
     fi
   done
-  if ! python3 - /etc/mag-stack/room-layout <<'PY'
+  if ! python3 - /etc/mag-stack/room-layout "$require_deepseek" <<'PY'
 import json, pathlib, sys, urllib.request
 try:
     layout = pathlib.Path(sys.argv[1]).read_text().strip()
     if layout not in ("glm", "mixed", "deepseek", "qwen"):
         raise ValueError("unknown active NUMA1 room layout: "+repr(layout))
-    secondary = "glm" if layout == "glm" else "qwen"
-    expected = {"deepseek", secondary}
-    expected_names = "DeepSeek and GLM" if layout == "glm" else "DeepSeek and Qwen"
+    require_ds = sys.argv[2] == "1"
+    secondary = "glm" if layout == "glm" else ("deepseek" if layout == "deepseek" else "qwen")
+    expected = {secondary}
+    if require_ds:
+        expected.add("deepseek")
+    expected_names = ("DeepSeek and " if require_ds else "") + ("GLM" if secondary == "glm" else "Qwen" if secondary == "qwen" else "DeepSeek")
     with urllib.request.urlopen("http://127.0.0.1:8766/api/state", timeout=8) as r:
         state = json.load(r)
     agents = [a for a in state.get("agents", []) if a.get("enabled") is not False]
@@ -530,10 +547,13 @@ try:
             kinds.add("qwen")
         if "glm" in label.lower():
             kinds.add("glm")
-    if kinds != expected:
+    # A stopped DeepSeek may remain listed as an enabled room bot. Its
+    # presence is not proof of a healthy backend and is not a GLM failure.
+    allowed_extras = {"deepseek"} if not require_ds else set()
+    if not expected.issubset(kinds) or (kinds - expected - allowed_extras):
         raise ValueError("expected live "+expected_names+"; agents="+repr(
             [(a.get("name"), a.get("model")) for a in agents]))
-    print("Release ready: "+expected_names+" listed; both backends healthy")
+    print("Release ready: "+expected_names+" listed; required backends healthy")
 except Exception as exc:
     print("FAIL: room bot readiness: "+str(exc), file=sys.stderr)
     sys.exit(1)

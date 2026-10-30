@@ -732,6 +732,10 @@ static bool DUAL_NUMA = false;
 static RoomModel ROOM_MODEL;
 static Val ROOM_PRESETS = Val::array();
 static bool CONFIGURED_MODEL = false;
+// Only the configured GLM-5.3 room, not every configured pair.
+static bool room_is_glm() {
+  return CONFIGURED_MODEL && ROOM_MODEL.id.rfind("glm-5.3-flash", 0) == 0;
+}
 // Configured mode: two bots, each with a persistent "slot" (1..2) stored in
 // agents.json. The slot, never the array index, picks the backend instance, so
 // removing a bot never moves another bot to a different prompt cache.
@@ -7052,7 +7056,7 @@ static void cancel_lane(Lane &l, bool user) {
 // Stop every lane. EPOCH tells finished turns that their result is stale.
 static void cancel_active(bool user = false) {
   // A background selftalk/health action must not stop active human GLM turns.
-  if (CONFIGURED_MODEL && !user) {
+  if (room_is_glm() && !user) {
     std::cerr << "turn-cancel reason=cancel_active-ignored user=0 bot=none\n";
     return;
   }
@@ -7068,7 +7072,7 @@ static void cancel_active(bool user = false) {
 }
 // Stop only the lanes these bots answer on; other bots keep working.
 static bool cancel_bots_locked(const std::vector<std::string> &ids, bool user) {
-  if (CONFIGURED_MODEL && !user) {
+  if (room_is_glm() && !user) {
     std::cerr << "turn-cancel reason=cancel_bots_locked-ignored user=0 bot=none\n";
     return false;
   }
@@ -7435,7 +7439,7 @@ static bool queue_send_now(const std::string &id) {
     AUTO_READY = false;
     // A GLM send-now can move ahead in the queue, but cannot preempt an
     // already-running human turn. Only owner Stop or bot pause may do that.
-    if (CONFIGURED_MODEL) {
+    if (room_is_glm()) {
       save_queue_locked(); queue_event_locked(); JOB_CV.notify_all();
       return true;
     }
@@ -9735,7 +9739,7 @@ static void stop_selftalk() {
   SELF_HOLD = true;
   write_flag_pair(STATE_DIR + "/proaktiv", STATE_DIR + "/selftalk", "off");
   SELFTALK = false;
-  if (CONFIGURED_MODEL) {
+  if (room_is_glm()) {
     // Switching off bot-to-bot talk must not disconnect human requests.
     preempt_selftalk_lanes();
     { std::lock_guard<std::mutex> lk(JOB_MTX); drop_selftalk_jobs_locked(); }
@@ -9756,11 +9760,11 @@ static void stop_selftalk() {
 static void stop_autotalk(bool pause = false) {
   write_file(STATE_DIR + "/autotalk", "off");
   AUTOTALK = false;
-  if (CONFIGURED_MODEL) preempt_selftalk_lanes();
+  if (room_is_glm()) preempt_selftalk_lanes();
   else cancel_active();
   {
     std::lock_guard<std::mutex> lk(JOB_MTX);
-    if (CONFIGURED_MODEL) {
+    if (room_is_glm()) {
       JOBS.erase(std::remove_if(JOBS.begin(), JOBS.end(),
           [](const Job &j) { return j.selftalk; }), JOBS.end());
     } else {
@@ -9769,7 +9773,7 @@ static void stop_autotalk(bool pause = false) {
     }
     // Stop button: persistent pause; only "Fortsetzen" resumes. Other stops
     // (autonomy off, agent removal) only hold back pending messages.
-    if (pause || (!CONFIGURED_MODEL && !PENDING.empty())) QUEUE_PAUSED = true;
+    if (pause || (!room_is_glm() && !PENDING.empty())) QUEUE_PAUSED = true;
     save_queue_locked();
     queue_event_locked();
     AUTO_READY = false;

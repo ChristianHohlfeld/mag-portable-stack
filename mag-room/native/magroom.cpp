@@ -4967,7 +4967,11 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   // next room start reloads, so a restart does not prefill the prompt again.
   // A short Proaktiv prompt must not replace the saved human prefix.
   // Cancel restores that file so the next hi stays a cache hit.
-  // Full-slot save on each turn is disabled; prewarm saves pure anchor only.
+  // Only GLM opts into pure prefix-only checkpointing. Keep the
+  // configured non-GLM regression/legacy slot-save contract intact.
+  if (t.error.empty() && !TL_SELFTALK &&
+      model.rfind("glm-5.3-flash", 0) != 0)
+    persist_configured_slot(bot_idx);
   return t;
 }
 
@@ -8649,9 +8653,15 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
         u["content"] = build_transcript() + build_context_tail(idx, false, "") + (skills.empty() ? "" : "\n" + skills);
         msgs.push(u);
         if (CONFIGURED_MODEL) {
-          // Pure system+tools anchor, no transcript/history in checkpoint.
-          msgs = Val::array();
-          msgs.push(sys);
+          if (model.rfind("glm-5.3-flash", 0) == 0) {
+            // GLM-only: pure system+tools anchor.
+            msgs = Val::array();
+            msgs.push(sys);
+          } else {
+            auto wire = wire_messages(idx, system, tool_defs, build_context_tail(idx, false, ""));
+            msgs = Val::array();
+            for (const auto &m : wire) msgs.push(m);
+          }
         }
         body["messages"] = msgs;
         Val tt;

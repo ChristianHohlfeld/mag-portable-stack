@@ -43,7 +43,7 @@ def _mem(content):
  i=content.index('\n[Erinnerungen]');return content[i+1:]
 class Model(http.server.BaseHTTPRequestHandler):
  script_scope=None
- slot_snapshot=[];cache_records=[];tokenizer_fail=False;tokenizer_requests=[]
+ slot_snapshot=[];cache_records=[];tokenizer_fail=False;tokenizer_requests=[];restore_missing=False
  protocol_version='HTTP/1.1';calls=[];slots=[];pairs=[];paths=[];slot_delay={};delay=0;reply=None;script=[];health=200;last_prompt={};saved_prompt={};overflow_once=0;barrier_token='';barrier_release=None;hold_get=0;slot_block={}
  # A prompt that misses the pinned slot sleeps this long before any token.
  # 0 keeps the rest of the suite fast. The lock is per gateway slot, like ik.
@@ -72,6 +72,9 @@ class Model(http.server.BaseHTTPRequestHandler):
    if 'action=save' in self.path:
     type(self).saved_prompt[slot]={k:v for k,v in type(self).last_prompt.items() if isinstance(k,tuple) and k[1]==slot}
    elif 'action=restore' in self.path:
+    if type(self).restore_missing and not type(self).saved_prompt.get(slot):
+     data=b'{"error":"slot file missing"}'
+     self.send_response(404);self.send_header('Content-Length',str(len(data)));self.end_headers();self.wfile.write(data);return
     for k,v in type(self).saved_prompt.get(slot,{}).items():type(self).last_prompt[k]=v
    data=b'{"ok":true}'
    self.send_response(200);self.send_header('Content-Length',str(len(data)));self.end_headers();self.wfile.write(data);return
@@ -5098,11 +5101,15 @@ class GlmLayoutStartup(unittest.TestCase):
   deadline=time.monotonic()+20
   Model.delay=0;Model.slot_delay={};Model.script=[];Model.reply=None
   Model.barrier_token='';Model.barrier_release=None;Model.hold_get=0;Model.health=200
+  Model.saved_prompt.clear();Model.slot_snapshot=[];Model.restore_missing=True
+  mark=len(Model.paths)
   tmp=tempfile.TemporaryDirectory();root=pathlib.Path(tmp.name)
   state=root/'state';state.mkdir()
   state.joinpath('agents.json').write_text(json.dumps([
    {'id':'deepseek-chat','name':'DeepSeek Chat','vm':'','slot':1,'numa':0,'model':'deepseek-v4-flash-0731','memory':[]},
    {'id':'qwen-numa1','name':'Qwen','vm':'','slot':2,'numa':1,'model':'qwen3.8-flash-next-uncensored','memory':[{'text':'bleibt'}]}]))
+  state.joinpath('prompt-prefix.json').write_text(json.dumps({
+   '8192/mag-prefix-glm-5.3-flash-slot2.bin':'glm-5.3-flash:stale'}))
   model=http.server.ThreadingHTTPServer(('127.0.0.1',0),Model)
   threading.Thread(target=model.serve_forever,daemon=True).start()
   ui,bridge=port(),port()
@@ -5112,7 +5119,7 @@ class GlmLayoutStartup(unittest.TestCase):
    parts=shlex.split(line,comments=True)
    if parts and '=' in parts[0]:
     k,v=parts[0].split('=',1);glm[k]=v
-  glm['MAG_ROOM_PRESETS']=str(ROOT/'ops/room/presets.json');glm['MAG_ROOM_PREWARM']='0'
+  glm['MAG_ROOM_PRESETS']=str(ROOT/'ops/room/presets.json');glm['MAG_ROOM_PREWARM']='1'
   env=dict(os.environ,MAG_OWNER_CANONICAL_LOGIN='chris@github',MAG_TEST_ALLOW_LOCAL_OWNER='1',
     MAG_ROOM_STATE=str(state),MAG_ROOM_PORT=str(ui),MAG_ROOM_BRIDGE_PORT=str(bridge),
     MAG_ROOM_BRIDGE_IP='127.0.0.1',MAG_ROOM_BACKEND=f'http://127.0.0.1:{model.server_port}/v1/chat/completions',
@@ -5136,7 +5143,36 @@ class GlmLayoutStartup(unittest.TestCase):
    saved=json.loads(state.joinpath('agents.json').read_text())
    self.assertEqual([b['name'] for b in saved[:2]],['DeepSeek V4 Flash','GLM-5.3 Flash'])
    self.assertEqual(saved[1]['memory'][0]['text'],'bleibt')
+   end=time.monotonic()+10
+   while time.monotonic()<end:
+    paths=list(Model.paths)[mark:]
+    glm_files=[p for p in paths if p[3].get('filename')=='mag-prefix-glm-5.3-flash-slot2.bin']
+    if any(p[0].endswith('save') for p in glm_files):break
+    time.sleep(.05)
+   else:self.fail('GLM cold prefix not saved: '+log_path.read_text()[-1200:])
+   self.assertEqual(sum(p[0].endswith('restore') for p in glm_files),1,glm_files)
+   self.assertTrue(any(p[0]=='/v1/chat/completions' and p[3].get('model')=='glm-5.3-flash' and p[3].get('max_tokens')==1 for p in paths))
+   time.sleep(.3)
+   self.assertEqual(sum(p[0].endswith('restore') for p in list(Model.paths)[mark:] if p[3].get('filename')=='mag-prefix-glm-5.3-flash-slot2.bin'),1,'infinite restore')
+   token=_ui_token(ui)
+   def post(endpoint,payload,method='POST'):
+    req=urllib.request.Request(f'http://127.0.0.1:{ui}{endpoint}',data=json.dumps(payload).encode(),
+                               method=method,headers={'Content-Type':'application/json','X-MAG-Token':token})
+    with urllib.request.urlopen(req,timeout=5) as resp:return json.load(resp)
+   post('/api/bot-settings',{'bots':['deepseek-chat'],'enabled':False},'PUT')
+   marker='GLM-PAUSED-'+str(time.monotonic_ns())
+   post('/api/message',{'text':marker,'bots':['deepseek-chat','qwen-numa1']})
+   end=time.monotonic()+10
+   while time.monotonic()<end:
+    hits=[p for p in list(Model.paths)[mark:] if p[0]=='/v1/chat/completions' and p[3].get('max_tokens')!=1 and marker in json.dumps(p[3])]
+    if hits:break
+    time.sleep(.05)
+   else:self.fail('GLM turn blocked after missing checkpoint')
+   time.sleep(.2)
+   self.assertEqual(len(hits),1,hits)
+   self.assertEqual(hits[0][3].get('model'),'glm-5.3-flash')
   finally:
+   Model.restore_missing=False
    proc.terminate()
    try:proc.wait(timeout=5)
    except subprocess.TimeoutExpired:proc.kill();proc.wait(timeout=5)

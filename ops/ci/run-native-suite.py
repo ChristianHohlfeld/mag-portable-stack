@@ -17,7 +17,10 @@ import time
 import unittest
 
 # Per-test cap. A longer entry needs a one-line reason in this dict.
-LONGER = {}
+LONGER = {
+    # Two concurrently delayed 60-second fake GLM streams must finish, not time out.
+    "GlmLayoutStartup.test_two_glm_turns_complete_after_60_seconds_without_cancel": 90,
+}
 DEFAULT_PER_TEST = 30
 
 
@@ -85,7 +88,11 @@ def emit_shards(path, jobs):
                 continue
             label = f'native {cls}' if pieces == 1 else f'native {cls}#{n}'
             args = ' '.join(f'--test {name}' for name in shard)
-            rows.append((len(shard), label, _outer_cap(len(shard)), rel, args))
+            # Long integration tests need an enclosing shard cap above their
+            # explicit per-test deadline plus fixture startup/teardown overhead.
+            cap = max(_outer_cap(len(shard)),
+                      max([LONGER.get(name, DEFAULT_PER_TEST) for name in shard]) + 30)
+            rows.append((len(shard), label, cap, rel, args))
     # Long shards first so the cores spend the wall clock on them.
     rows.sort(key=lambda row: (-row[0], row[1]))
     for _count, label, cap, rel, args in rows:

@@ -4752,7 +4752,7 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
       acc.content += safe;
       // tool_choice=none is not always respected by IQ1_M. Do not stream
       // possibly split literal tool markup before filtering the full reply.
-      if (!short_chat) on_delta("delta", safe);
+      if (!short_chat && !no_tools) on_delta("delta", safe);
     }, finish);
   };
   
@@ -4897,7 +4897,7 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
     else visible_delta(piece);
   }, true);
   visible_delta("", true);
-  if (short_chat) {
+  if (short_chat || no_tools) {
     // Remove raw tool markup including partial tags before any visible SSE
     // or persisted content. No tool calls execute in this path.
     const size_t a = acc.content.find("<tool_call");
@@ -5962,8 +5962,16 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
       Val sys=Val::object();sys["role"]="system";sys["content"]=system;
       messages.push_back(sys);
       Val u=Val::object();u["role"]="user";
-      u["content"]=glm_chat_transcript(short_chat)+
-                   (short_chat ? "" : build_context_tail(bot_idx,false,""));
+      std::string input = glm_chat_transcript(short_chat);
+      if (!short_chat) {
+        const std::string memory = memory_manifest(bot_id);
+        if (memory != "[Erinnerungen]") input += "\n" + mj::utf8_cut(memory, 160);
+        const std::string files = file_manifest();
+        if (!files.empty() && files != "(keine)")
+          input += "\nRaumdateien: " + mj::utf8_cut(files, 100);
+        input += build_context_tail(bot_idx,false,"");
+      }
+      u["content"] = input;
       messages.push_back(u);
       TL_WIRE_STALE=false;
     } else if(CONFIGURED_MODEL && !CURRENT_JOB && !TL_TASK) {
@@ -8582,6 +8590,11 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
     skip = true;
     why = "ram";
     mark_prefix_warm(model_slot(idx));
+  } else if (CONFIGURED_MODEL && have_current && !prefix_changed &&
+             !count_known && model_slot(idx) >= 1 &&
+             model_slot(idx) <= ROOM_MAX_BOTS &&
+             SLOT_WARM[model_slot(idx)-1].load() == 1) {
+    skip = true; why = "ram";
   } else if (prefix_resident && have_current && !prefix_changed) {
     // Prompt string, no numeric count, hash matches (pinned runtime).
     skip = true;

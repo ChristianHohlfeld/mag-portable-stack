@@ -637,6 +637,13 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
       }
       save_agents();
     }
+    if (enabled && !room && !enabled->asBool()) {
+      // Pausing also cancels an active response and queued owner continuations.
+      cancel_bots(ids, true);
+      std::lock_guard<std::mutex> lk(JOB_MTX);
+      while (dispatch_locked()) {}
+      JOB_CV.notify_all();
+    }
     agents_event();
     send_json(fd, 200, "{\"ok\":true}"); return;
   }

@@ -26,6 +26,7 @@ class SmokeGLM(unittest.TestCase):
     def setUp(self):
         SMOKE.request.model = "glm-5.3-flash"
         SMOKE.request.diagnose_only = False
+        SMOKE.request.last_response = {"choices": [{"finish_reason": "stop"}]}
 
     def fake(self, content="", reasoning="working", finish="length"):
         answer = {"choices": [{"message": {"content": content, "reasoning_content": reasoning},
@@ -67,35 +68,70 @@ class SmokeGLM(unittest.TestCase):
         self.assertIn('require_glm_ready(cached_msg, "Cached normal chat failed")', src)
         self.assertIn('require_glm_ready(again, "Tool result roundtrip failed", roundtrip=True)', src)
 
-    def test_glm_rejects_false_positive_responses(self):
-        # These examples previously passed as long as READY occurred anywhere.
+    def test_glm_accepts_real_numa1_reply_and_roundtrip_with_prose(self):
+        # The actual IQ2_XS live response on mag: previously a false failure.
+        normal = ("READY.\n\nWhat would you like to do? I'm ready to help with "
+                  "whatever you need — whether it's a question, a task, or "
+                  "just exploring an idea.")
+        for content in ("READY", "ready.", " Ready! ", normal,
+                        "READY. What would you like to do?"):
+            with self.subTest(content=content):
+                SMOKE.require_glm_ready({"content": content}, "Normal chat")
+        for content in ("READY", "echo: READY.", "Echo: ready!",
+                        "ECHO: READY\n\nThe tool successfully returned the value."):
+            with self.subTest(content=content):
+                SMOKE.require_glm_ready({"content": content}, "Roundtrip",
+                                        roundtrip=True)
+
+    def test_glm_rejects_false_positives_and_token_leaks(self):
         for content in (
             "I'm sorry, but I cannot answer that question. </think>READY.",
             "</think>READY",
             "nonsense READY",
-            "READY but this is a broken response",
+            "NOTREADY",
+            "READYXYZ",
             "echo: 0x7f4a0e5c...",
             "just another answer",
             "",
+            "READY.\n<think>secret thinking</think>",
+            "READY.\n[ gMASK ] <|assistant|> a leaked delimiter",
+            "READY. " + "x" * 500,
         ):
             with self.subTest(content=content):
-                with self.assertRaisesRegex(AssertionError, "plain READY"):
+                with self.assertRaisesRegex(AssertionError, "READY at start"):
                     SMOKE.require_glm_ready({"content": content}, "GLM")
-        for content in ("READY", "ready.", " Ready! "):
-            with self.subTest(content=content):
-                SMOKE.require_glm_ready({"content": content}, "GLM")
-        for extra in ({"reasoning_content": "unwanted thinking"}, {"tool_calls": [{"function": {}}]}):
+
+        for extra in ({"reasoning_content": "unwanted thinking"},
+                      {"tool_calls": [{"function": {}}]}):
             with self.subTest(extra=extra):
-                with self.assertRaisesRegex(AssertionError, "plain READY"):
+                with self.assertRaisesRegex(AssertionError, "READY at start"):
                     SMOKE.require_glm_ready(dict(content="READY", **extra), "GLM")
 
-    def test_glm_tool_roundtrip_requires_echoed_value(self):
-        for content in ("READY", "echo: READY.", "Echo: ready!"):
-            SMOKE.require_glm_ready({"content": content}, "Roundtrip", roundtrip=True)
-        for content in ("echo: 0x7f4a0e5c...", "random text with READY", "</think>READY", "READY, 0x1"):
+        for finish in ("length", "tool_calls", None):
+            with self.subTest(finish=finish):
+                SMOKE.request.last_response = {"choices": [{"finish_reason": finish}]}
+                with self.assertRaisesRegex(AssertionError, "finish_reason=stop"):
+                    SMOKE.require_glm_ready({"content": "READY"}, "GLM")
+                with self.assertRaisesRegex(AssertionError, "finish_reason=stop"):
+                    SMOKE.require_glm_ready({"content": "ECHO: READY"}, "Roundtrip",
+                                            roundtrip=True)
+
+    def test_glm_roundtrip_rejects_unrelated_text(self):
+        for content in ("echo: 0x7f4a0e5c...", "random text with READY",
+                        "</think>READY", "READYish", "READY, 0x1"):
             with self.subTest(content=content):
-                with self.assertRaisesRegex(AssertionError, "plain READY"):
-                    SMOKE.require_glm_ready({"content": content}, "Roundtrip", roundtrip=True)
+                with self.assertRaisesRegex(AssertionError, "READY at start"):
+                    SMOKE.require_glm_ready({"content": content}, "Roundtrip",
+                                            roundtrip=True)
+
+    def test_glm_readiness_and_tool_prompt_are_explicit(self):
+        # Check both the initial and identical cached request use the stricter
+        # instruction, while the original Qwen user prompts remain available.
+        import inspect
+        source = inspect.getsource(SMOKE.main)
+        self.assertIn("Reply with exactly the single word READY and nothing else.", source)
+        self.assertIn("cached_msg = request(opt.port, ready_prompt)", source)
+        self.assertIn("begin your final reply with ECHO: READY", source)
 
     def test_qwen_keeps_previous_contract(self):
         SMOKE.request.model = "qwen3.8-flash-next-uncensored"

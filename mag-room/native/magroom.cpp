@@ -1181,6 +1181,8 @@ static void remember_fact(const std::string &bot_id, const std::string &fact,
   }
   // Drop a chunk, not one entry: sliding by one would rewrite the prompt prefix
   // on every new fact once the list is full.
+  if (room_is_glm() && mem.arr->size() > 10)
+    mem.arr->erase(mem.arr->begin(), mem.arr->end() - 10);
   if (mem.arr->size() > (size_t)MEMORY_LIMIT) {
     size_t step = (size_t)std::max(1, MEMORY_CHUNK);
     size_t drop = step;
@@ -2197,8 +2199,22 @@ static std::string identity_block(int bot_idx) {
 static std::string room_company_line(int);
 static bool bot_site_ready(int);
 static std::string bot_site_rules(int);
+// Dedicated low-cost chat contract. Static before [Identitaet], no timestamps.
+static const char *GLM_CHAT_RULES = R"GLM(Du bist ein hilfreicher Gesprächspartner im MAG-Gruppenchat. Antworte direkt, sachlich und auf Deutsch. Wenn du nicht weiterweißt, sage es klar.
+Antworte nur, wenn du angesprochen oder vom Host ausgewählt wurdest. Ergebnis zuerst, meist 1–3 Sätze, außer wenn ausdrücklich mehr gewünscht ist. Keine ungefragten Listen oder Tabellen; sprich niemals für andere Teilnehmer.
+Du hast keine Werkzeuge; behaupte nie, etwas ausgeführt, geöffnet oder gespeichert zu haben.
+Beispiel 1: Nutzer: Hallo. Antwort: Hallo! Wie kann ich helfen?
+Beispiel 2: Nutzer: Was ist ein Cache? Antwort: Ein Cache hält häufig benötigte Daten vor, damit spätere Zugriffe schneller sind.
+)GLM";
+static std::string glm_chat_system(int idx) {
+  return std::string(GLM_CHAT_RULES) + "[Identitaet]\nDu bist " +
+         bot_field(idx, "name", "MAG-Bot") + ", ein Bot im MAG-Raum.\n";
+}
 static std::string build_system(int bot_idx, bool autotalk,
                                 const std::string &other, bool web) {
+  if (bot_model_id(bot_idx).rfind("glm-5.3-flash", 0) == 0 &&
+      !CURRENT_JOB && !TL_TASK && !autotalk && !TL_REFLECT && !TL_SELFTALK)
+    return glm_chat_system(bot_idx);
   std::string vm = bot_field(bot_idx, "vm", "keine");
   std::string bot_id = bot_field(bot_idx, "id");
   const bool has_vm = vm != "keine" && !vm.empty();
@@ -4635,7 +4651,8 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
     msgs.push(const_cast<Val &>(m));
   body["messages"] = msgs;
   Val tt;
-  if (mj::parse(tools, tt))
+  if (!(no_tools && model.rfind("glm-5.3-flash", 0) == 0) &&
+      mj::parse(tools, tt))
     body["tools"] = tt;
   // Deterministic mode always re-evaluates and greedily decodes the full
   // request. llama.cpp's KV prompt cache can change the numerical logits when
@@ -4666,15 +4683,13 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
     max_output = std::clamp(envi("MAG_ROOM_PROAKTIV_MAX_TOKENS", 256), 32, 512);
   // In short, explicitly non-agentic chats, IQ1_M may spend the entire
   // 1024-token limit inside reasoning. Limit that single decode to 128 tokens.
-  if (short_chat && model.rfind("glm-5.3-flash", 0) == 0)
-    max_output = std::min(max_output, 128);
-  else if (thinking && model.rfind("glm-5.3-flash", 0) == 0)
+  if (no_tools && model.rfind("glm-5.3-flash", 0) == 0)
+    max_output = std::min(MAX_TOKENS, std::clamp(
+        envi("MAG_ROOM_GLM_CHAT_MAX_TOKENS", 256), 32, 1024));
+  if (thinking && model.rfind("glm-5.3-flash", 0) == 0)
     max_output = std::min(max_output, 256);
-  else if (no_tools && model.rfind("glm-5.3-flash", 0) == 0)
-    max_output = std::min(max_output, 128);
   body["max_tokens"] = max_output;
-  if ((short_chat || no_tools) && model.rfind("glm-5.3-flash", 0) == 0)
-    body["tool_choice"] = "none"; // keep tool schemas / prefix stable
+  // GLM chat omits tools and tool_choice entirely for a stable template prefix.
   body["stream"] = true;
   // llama.cpp: stream prompt_progress {total,cache,processed,time_ms} while
   // the prompt is evaluated (minutes on CPU) instead of staying silent.

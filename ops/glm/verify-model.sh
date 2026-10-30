@@ -12,7 +12,7 @@ fail(){ echo "GLM model: $*" >&2; exit 4; }
 [[ -f $SIZES && ! -L $SIZES ]] || fail 'size pin missing'
 [[ $(grep -c . "$SIZES") == 15 ]] || fail 'size pin must list 15 parts'
 while read -r size name; do
-  [[ $size =~ ^[0-9]+$ && $name =~ ^GLM-5[.]3-Flash-IQ1_M-000[0-9]{2}-of-00015[.]gguf$ ]] || fail "bad pin line: $size $name"
+  [[ $size =~ ^[0-9]+$ && $name =~ ^GLM-5[.]3-Flash-IQ2_XS-000[0-9]{2}-of-00015[.]gguf$ ]] || fail "bad pin line: $size $name"
   f="$DIR/$name"
   [[ -f $f && ! -L $f ]] || fail "missing part $name"
   [[ $(stat -c %s "$f") == "$size" ]] || fail "size mismatch $name (incomplete download?)"

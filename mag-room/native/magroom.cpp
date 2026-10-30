@@ -4563,7 +4563,7 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
              const std::function<void(const std::string &, const std::string &)>
                  &on_delta,
              bool thinking, int id_slot, const std::string &model = "",
-             int bot_idx = -1, bool short_chat = false) {
+             int bot_idx = -1, bool short_chat = false, bool no_tools = false) {
   Turn t;
   // DeepSeek rejects an assistant-ending prefill while thinking is on
   // (HTTP 500). Do not open a socket and do not let the caller wipe the wire.
@@ -4663,8 +4663,12 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   // 1024-token limit inside reasoning. Limit that single decode to 128 tokens.
   if (short_chat && model.rfind("glm-5.3-flash", 0) == 0)
     max_output = std::min(max_output, 128);
+  else if (thinking && model.rfind("glm-5.3-flash", 0) == 0)
+    max_output = std::min(max_output, 256);
+  else if (no_tools && model.rfind("glm-5.3-flash", 0) == 0)
+    max_output = std::min(max_output, 128);
   body["max_tokens"] = max_output;
-  if (short_chat && model.rfind("glm-5.3-flash", 0) == 0)
+  if ((short_chat || no_tools) && model.rfind("glm-5.3-flash", 0) == 0)
     body["tool_choice"] = "none"; // keep tool schemas / prefix stable
   body["stream"] = true;
   // llama.cpp: stream prompt_progress {total,cache,processed,time_ms} while
@@ -5982,6 +5986,7 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
             << " system_bytes=" << sys_log.size()
             << " tools_bytes=" << tools.size()
             << " input_bytes=" << messages.back()["content"].asStr().size()
+            << " input_tokens_approx=" << messages.back()["content"].asStr().size()/3
             << std::endl;
   std::string final_text;
   TurnReport report;
@@ -6046,6 +6051,10 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
   auto run_deadline = steady_clock::now() + seconds(RUN_BUDGET_S);
   int todo_nudges = 0;
   TL_TODO_TOUCHED = false;
+  const bool glm_chat = CONFIGURED_MODEL && !CURRENT_JOB && !TL_TASK &&
+      !autotalk && bot_model_id(bot_idx).rfind("glm-5.3-flash", 0) == 0;
+  int glm_tool_rounds = 0;
+  const int glm_tool_max = std::clamp(envi("MAG_ROOM_GLM_CHAT_MAX_ROUNDS", 2), 0, 8);
   for (int round = 0; round < MAX_RUN_STEPS; round++) {
     if (stop_flag().load()) break;
     task_yield_point();
@@ -6142,7 +6151,7 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
       t = backend_turn(messages, tools,
                        autotalk ? 0.75 : 0.55, on_delta, turn_thinking(),
                        slot_for_key(bot_id), bot_model_id(bot_idx), bot_idx,
-                       short_chat);
+                       short_chat, glm_chat && glm_tool_rounds >= glm_tool_max);
       if (t.skipped || assistant_prefill_error(t.error)) {
         // The guard already logged a skip. A live 500 of this type must not
         // be posted into the room and must not invalidate the wire below.
@@ -6174,6 +6183,12 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
       if (t.calls.empty()) final_text += t.text;
       break;
     }
+    if (glm_chat && turn_thinking() && t.finish == "length" &&
+        t.text.empty() && !stop_flag().load()) {
+      // Exactly one nonthinking answer after a user-requested thinking round.
+      t = backend_turn(messages, tools, 0.55, on_delta, false,
+           slot_for_key(bot_id), bot_model_id(bot_idx), bot_idx, true, true);
+    }
     if (!t.error.empty()) {
       report.error = t.error.substr(0, 280);
       emit_event("error", bot_id, bot_name, report.error);
@@ -6202,7 +6217,8 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
       completed = true;
       break;
     }
-    if (short_chat) t.calls.clear();
+    if (short_chat || (glm_chat && glm_tool_rounds >= glm_tool_max))
+      t.calls.clear();
     // Stateless means one new model inference per input. Never execute tools
     // or feed the model's output back as a new turn, even if it emits an
     // unexpected tool call or a continuation marker.
@@ -6249,6 +6265,7 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
     }
     messages.push_back(asst);
     const bool tool_round = !t.calls.empty() && !TL_SELFTALK;
+    if (tool_round && glm_chat) ++glm_tool_rounds;
     // Open todo items are an unfinished goal: the turn goes on (bounded).
     const bool todo_open = !short_chat && !tool_round && !stateless && !TL_SELFTALK && TL_TODO_TOUCHED &&
         todo_nudges < 2 && !has_next_step(t.text) && todo_open_for(bot_id) > 0;
@@ -6268,7 +6285,10 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
         emit_answer_deltas(bot_id, bot_name, t.text);
       }
     }
-    if (stateless || TL_SELFTALK) { completed = true; break; }
+    if (stateless || TL_SELFTALK ||
+        (glm_chat && glm_tool_rounds >= glm_tool_max && !tool_round)) {
+      completed = true; break;
+    }
     if (!tool_round) {
       if (!pending) { completed = true; break; }
       const std::string p = trim(t.text);

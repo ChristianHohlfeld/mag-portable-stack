@@ -4036,8 +4036,9 @@ static void model_watcher_loop() {
     // AGENTS must be retried. Waiting only for a ready-edge left Qwen cold
     // (live: no prompt-prewarm line, 39s first-hi eval).
     const bool now_hot = inference_hot();
-    if (!now_hot && (backend_became_ready || (st.ready && !was_ready) ||
-        (secondary_ready && !was_secondary_ready) || slots_pending))
+    if ((!now_hot || CONFIGURED_MODEL) &&
+        (backend_became_ready || (st.ready && !was_ready) ||
+         (secondary_ready && !was_secondary_ready) || slots_pending))
       schedule_prewarm();
     else if (!now_hot && secondary_ready && CONFIGURED_MODEL)
       prewarm_if_prompt_changed(); // system prompt, tools, persona or bot set changed
@@ -4133,6 +4134,49 @@ static std::string tools_json(int bot_idx, bool web) {
         return (x?mag::str(*x,"name"):"") < (y?mag::str(*y,"name"):"");
       });
       arr=mj::dump(defs);
+    }
+  }
+  // Compact only the slow GLM prefix. Keep tool names, parameters,
+  // required sets, enum values and every execution/authorization decision
+  // unchanged; prose descriptions are not part of the callable interface.
+  if (CONFIGURED_MODEL && bot_model_id(bot_idx) == "glm-5.3-flash") {
+    Val parsed;
+    if (mj::parse(arr, parsed) && parsed.isArr()) {
+      std::function<void(Val &, bool)> compact = [&](Val &v, bool top) {
+        if (v.isArr()) {
+          for (auto &item : *v.arr) compact(item, false);
+        } else if (v.isObj()) {
+          auto &fields = *v.obj;
+          fields.erase(std::remove_if(fields.begin(), fields.end(),
+              [&](auto &kv) {
+                if (kv.first != "description") return false;
+                // Preserve a short top-level hint for correct tool selection.
+                if (top && kv.second.type == Val::STR) {
+                  std::string hint = kv.second.asStr();
+                  const auto stop = hint.find_first_of("\\n.");
+                  if (stop != std::string::npos && stop > 0) hint.resize(stop);
+                  kv.second = mj::utf8_cut(hint, 96);
+                  return false;
+                }
+                return true;
+              }), fields.end());
+          for (auto &kv : fields) compact(kv.second, false);
+        }
+      };
+      for (auto &tool : *parsed.arr) {
+        if (!tool.isObj()) continue;
+        if (auto fun = tool.find("function"); fun && fun->isObj()) {
+          auto &fields = *fun->obj;
+          for (auto &kv : fields)
+            if (kv.first == "description" && kv.second.type == Val::STR) {
+              std::string hint = kv.second.asStr();
+              const auto stop = hint.find_first_of("\\n.");
+              if (stop != std::string::npos && stop > 0) hint.resize(stop);
+              kv.second = mj::utf8_cut(hint, 96);
+            } else if (kv.first == "parameters") compact(kv.second, false);
+        }
+      }
+      arr = mj::dump(parsed);
     }
   }
   return arr;
@@ -8480,7 +8524,10 @@ static void schedule_prewarm() {
     // does not count: prewarm is what makes it runnable.
     if (!prefix_gate_on()) {
       if (!JOBS.empty() || AUTO_READY) return; // never delays a queued turn
-    } else if (work_needs_slot_locked()) return;
+    }
+    // In configured NUMA mode a ready turn on DeepSeek must not prevent
+    // GLM prewarming on its independent port/CPU node.
+    // Per-slot eligibility is checked below before each launch.
   }
   // One slot per model server: prewarm only models answered by exactly one bot.
   // Configured lanes are per bot slot (lane_key), so every bot prewarms;
@@ -8508,7 +8555,8 @@ static void schedule_prewarm() {
       // Never prewarm a backend known to be loading/unavailable. The
       // watcher launches it as soon as that exact NUMA slot reports healthy.
       if (slot >= 1 && slot <= ROOM_MAX_BOTS &&
-          ROOM_MODEL_HEALTH[slot - 1].load() == 2) continue;
+          ROOM_MODEL_HEALTH[slot - 1].load() != 1) continue;
+      if (slot_is_busy(slot)) continue;
       // A warm slot stays put. The watcher retries only the cold one.
       if (slot >= 1 && slot <= ROOM_MAX_BOTS && SLOT_WARM[slot - 1].load() == 1)
         continue;

@@ -169,7 +169,8 @@ def bot(model, name=None, enabled=True):
     return {"name": name or model, "model": model, "enabled": enabled}
 
 ds = bot("deepseek-v4-flash-0731", "DeepSeek V4 Flash")
-glm = bot("glm-5.3-flash", "GLM-5.3 Flash")
+q1 = bot("glm-5.3-flash-iq1-m", "GLM-Q1")
+q2 = bot("glm-5.3-flash", "GLM-Q2")
 qwen = bot("qwen3.8-flash-next-uncensored", "Qwen3.8 Flash Next")
 
 with tempfile.TemporaryDirectory() as directory:
@@ -183,26 +184,22 @@ with tempfile.TemporaryDirectory() as directory:
         result = subprocess.run(
             [sys.executable, "-I", "-c", stub + gate, str(layout_path),
              "1" if require_deepseek else "0"],
-            capture_output=True, text=True, timeout=15,
-        )
+            capture_output=True, text=True, timeout=15)
         assert (result.returncode == 0) is accepted, (
             layout, [(a["name"], a["model"]) for a in agents],
-            result.stdout, result.stderr,
-        )
+            result.stdout, result.stderr)
         assert expected_label in (result.stdout if accepted else result.stderr), (
-            result.stdout, result.stderr,
-        )
-    probe("glm", [ds, glm], True, "Release ready: DeepSeek and GLM")
-    probe("glm", [glm], True, "Release ready: GLM", False)
-    probe("glm", [ds, glm], True, "Release ready: GLM", False)
-    probe("glm", [ds], False, "expected live GLM", False)
+            result.stdout, result.stderr)
+    probe("glm", [q1, q2], True, "Release ready: GLM-Q1 (8191) + GLM-Q2 (8192)", False)
+    probe("glm", [ds, q2], False, "expected two GLM bots", False)
+    probe("glm", [q1], False, "expected two GLM bots", False)
+    probe("glm", [q1, q2, qwen], False, "expected two GLM bots", False)
+    probe("glm", [q1, q2, bot("deepseek", enabled=False)], True,
+          "Release ready: GLM-Q1 (8191) + GLM-Q2 (8192)", False)
     probe("mixed", [ds, qwen], True, "Release ready: DeepSeek and Qwen")
     probe("qwen", [ds, qwen], True, "Release ready: DeepSeek and Qwen")
-    probe("glm", [ds, qwen], False, "expected live DeepSeek and GLM")
-    probe("mixed", [ds, glm], False, "expected live DeepSeek and Qwen")
-    probe("glm", [ds, glm, qwen], False, "expected live DeepSeek and GLM")
-    probe("glm", [ds, glm, bot("qwen3", enabled=False)], True,
-          "Release ready: DeepSeek and GLM")
-    probe("unexpected", [ds, glm], False, "unknown active NUMA1 room layout")
+    probe("mixed", [ds, q2], False, "expected live DeepSeek and Qwen")
+    probe("unexpected", [q1,q2], False, "unknown active NUMA1 room layout")
+
 PY
 echo 'Update dry-run PASS'

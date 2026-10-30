@@ -514,11 +514,13 @@ else
   active_layout=$(cat /etc/mag-stack/room-layout 2>/dev/null || echo mixed)
   ready=1
   model_ports=(8192)
+  require_deepseek=0
   if [[ $active_layout == glm ]]; then
     model_ports=(8191 8192)
   elif systemctl is-active --quiet mag-llm-ds-node@0.service &&
        systemctl is-enabled --quiet mag-llm-ds-node@0.service; then
     model_ports=(8191 8192)
+    require_deepseek=1
   fi
   for port in "${model_ports[@]}"; do
     if ! curl --noproxy '*' -fsS --max-time 10 "http://127.0.0.1:${port}/health" >/dev/null; then
@@ -526,20 +528,37 @@ else
       ready=0
     fi
   done
-  if ! python3 - /etc/mag-stack/room-layout <<'PY'
+  if ! python3 - /etc/mag-stack/room-layout "$require_deepseek" <<'PY'
 import json, pathlib, sys, urllib.request
 try:
     layout = pathlib.Path(sys.argv[1]).read_text().strip()
     with urllib.request.urlopen("http://127.0.0.1:8766/api/state", timeout=8) as r:
         state = json.load(r)
     active = [a for a in state.get("agents", []) if a.get("enabled") is not False]
+    if layout not in ("glm", "mixed", "deepseek", "qwen"):
+        raise ValueError("unknown active NUMA1 room layout: "+repr(layout))
     if layout == "glm":
         ids = {a.get("model") for a in active}
         expected = {"glm-5.3-flash-iq1-m", "glm-5.3-flash"}
         if ids != expected: raise ValueError("expected two GLM bots, got "+repr(ids))
         print("Release ready: GLM-Q1 (8191) + GLM-Q2 (8192)")
     else:
-        print("Release ready: model endpoints checked for "+layout)
+        require_ds = sys.argv[2] == "1"
+        secondary = "deepseek" if layout == "deepseek" else "qwen"
+        expected = {secondary}
+        if require_ds: expected.add("deepseek")
+        kinds = set()
+        for bot in active:
+            name = str(bot.get("name",""))+" "+str(bot.get("model",""))
+            for kind in ("deepseek", "qwen", "glm"):
+                if kind in name.lower(): kinds.add(kind)
+        allowed_extras = {"deepseek"} if not require_ds else set()
+        if not expected.issubset(kinds) or (kinds-expected-allowed_extras):
+            raise ValueError("expected live "+("DeepSeek and " if require_ds else "")+
+                             ("Qwen" if secondary=="qwen" else "DeepSeek")+"; agents="+repr(
+                                 [(a.get("name"), a.get("model")) for a in active]))
+        print("Release ready: "+("DeepSeek and " if require_ds else "")+
+              ("Qwen" if secondary=="qwen" else "DeepSeek"))
 except Exception as exc:
     print("FAIL: room bot readiness: "+str(exc), file=sys.stderr)
     sys.exit(1)

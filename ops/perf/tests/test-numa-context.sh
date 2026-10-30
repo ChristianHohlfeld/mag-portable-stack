@@ -119,7 +119,7 @@ assert 'short_glm_input(TURN_INPUT)' in room
 # The DeepSeek/Qwen working-mode tool schemas are still retained.
 assert 'if (!(no_tools && model.rfind("glm-5.3-flash", 0) == 0)' in room
 assert 'MAG_ROOM_GLM_CHAT_MAX_TOKENS' in room
-assert 'glm_chat ? std::string() : tools_json(bot_idx, web)' in room
+assert 'glm_chat_mode ? std::string() : tools_json(bot_idx, web)' in room
 assert 'glm-reasoning-limit model=' in room
 assert 'tool-failed bot=' in room
 assert 'restart_unit["$unit"]=1' in glm_txn

@@ -7303,7 +7303,7 @@ static Val enqueue_pending(const std::string &text,
   // Self-Talk stays up while Chris writes. The line goes into the room once,
   // never also into the queue. It does not end the chain. The next free bot
   // answers it before any bot-to-bot follow-up.
-  if (SELFTALK.load()) {
+  if (SELFTALK.load() && !room_is_glm()) {
     SELF_HOLD = false;
     if (!request_id.empty()) {
       MESSAGE_RECEIPTS.push_back(receipt);

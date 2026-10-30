@@ -5935,7 +5935,7 @@ static std::string glm_chat_memory(const std::string &id) {
   size_t bytes = 0;
   for (size_t i = start; i < items.size(); ++i) {
     const std::string line = "- " + memory_line_text(items[i]);
-    if (bytes + line.size() > 360) break; // conservative approx <=150 tokens
+    if (bytes + line.size() > 150) break; // <=150 byte-level tokens
     out += "\n" + line;
     bytes += line.size();
   }
@@ -5972,7 +5972,7 @@ static std::string glm_chat_skill(const std::string &input) {
       if (line.rfind("name:", 0) == 0) skill_name = trim(line.substr(5));
       if (line.rfind("description:", 0) == 0) description = trim(line.substr(12));
     }
-    if (skill_name != name || description.empty() || body.empty() || body.size() > 1200)
+    if (skill_name != name || description.empty() || body.empty() || body.size() > 300)
       continue;
     if ((explicit_skill && wanted == name) || (!explicit_skill && input == description))
       return "\n[Skill: " + name + "]\n" + body;

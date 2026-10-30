@@ -7218,6 +7218,8 @@ static bool slot_blocked_for_hi(int slot) {
          SLOT_WARM[slot - 1].load() != 1;
 }
 static std::vector<std::string> first_hi_answerers(std::vector<std::string> ids) {
+  // Explicit GLM addressing always wins over speculative cold-slot rerouting.
+  if (room_is_glm()) return ids;
   if (!CONFIGURED_MODEL || ids.empty()) return ids;
   {
     std::lock_guard<std::recursive_mutex> lk(STATE_MTX);

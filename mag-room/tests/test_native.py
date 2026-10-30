@@ -101,7 +101,7 @@ class Model(http.server.BaseHTTPRequestHandler):
   type(self).pairs.append((obj,self.headers.get('X-Mag-Slot')))  # one atomic append
   type(self).paths.append((self.path,self.headers.get('X-Mag-Slot'),self.headers.get('X-Mag-Bot'),obj))
   ev=type(self).slot_block.get(self.headers.get('X-Mag-Slot'))
-  if ev is not None:ev.wait(getattr(type(self),'slot_block_wait_s',12))
+  if ev is not None:ev.wait(12)
   if type(self).overflow_once:
    type(self).overflow_once-=1
    error=b'{"error":{"code":400,"message":"request (35178 tokens) exceeds the available context size (32768 tokens)","type":"exceed_context_size_error"}}'
@@ -4472,15 +4472,17 @@ class MixedNuma(unittest.TestCase):
   # autonomous owner, and the user line is posted once.
   self.wait_idle()
   self.ask('deepseek-chat')
+  self.ask('qwen-numa1')  # establish a real matching Qwen prefix hash
   self.stop()
   for name in ('proaktiv','proaktiv-resume','selftalk','selftalk-resume','deploy-hold'):
    (self.state/name).unlink(missing_ok=True)
   meta=self.state/'prompt-prefix.json'
-  meta.write_text('{}')
+  old_meta=json.loads(meta.read_text()) if meta.exists() else {}
+  meta.write_text(json.dumps({k:v for k,v in old_meta.items() if 'qwen' in k}))
   Model.saved_prompt.clear();Model.last_prompt.clear()
   hold=threading.Event()
   Model.slot_block={'0':hold}
-  Model.slot_block_wait_s=30  # fake cold prewarm must not silently unblock after 12 s
+
   Model.slot_snapshot={
    '0':[{'id':0,'state':0,'prompt':'','is_processing':False,'n_prompt_tokens':12}],
    '1':[{'id':0,'state':0,'prompt':'','is_processing':False,'n_prompt_tokens':4321}]}
@@ -4513,7 +4515,6 @@ class MixedNuma(unittest.TestCase):
    self.assertNotIn('dispatch-owner owner=lehotbot',log)
   finally:
    hold.set()
-   Model.slot_block_wait_s=12
    Model.slot_block={};Model.slot_snapshot=[];Model.script=[]
    self.env['MAG_ROOM_PREWARM']='0'
    try:self.request('/api/autotalk',{'on':False})

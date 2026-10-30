@@ -2211,9 +2211,9 @@ static std::string glm_chat_system(int idx) {
          bot_field(idx, "name", "MAG-Bot") + ", ein Bot im MAG-Raum.\n";
 }
 static std::string build_system(int bot_idx, bool autotalk,
-                                const std::string &other, bool web) {
-  if (bot_model_id(bot_idx).rfind("glm-5.3-flash", 0) == 0 &&
-      !CURRENT_JOB && !TL_TASK && !autotalk && !TL_REFLECT && !TL_SELFTALK)
+                                const std::string &other, bool web,
+                                bool glm_chat_only = false) {
+  if (glm_chat_only && bot_model_id(bot_idx).rfind("glm-5.3-flash", 0) == 0)
     return glm_chat_system(bot_idx);
   std::string vm = bot_field(bot_idx, "vm", "keine");
   std::string bot_id = bot_field(bot_idx, "id");
@@ -6035,7 +6035,7 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
     tools.clear();
   } else {
     if (!glm_chat_mode) mcp_auto_once();
-    system = build_system(bot_idx, autotalk, other, web);
+    system = build_system(bot_idx, autotalk, other, web, glm_chat_mode);
     tools = glm_chat_mode ? std::string() : tools_json(bot_idx, web);
     if (glm_chat_mode) {
       Val sys=Val::object();sys["role"]="system";
@@ -8533,7 +8533,8 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
     web = WEB_ENABLED.load();
     // Slot state is decided before wire_messages. That call appends a user
     // message and would otherwise rewrite a warm transcript on every restart.
-    system = build_system(idx, false, "", web);
+    system = build_system(idx, false, "", web,
+                          model.rfind("glm-5.3-flash", 0) == 0);
     if (model.rfind("glm-5.3-flash", 0) == 0) {
       system += "\n" + glm_chat_memory(bot_id);
       tool_defs.clear();

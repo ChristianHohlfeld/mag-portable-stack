@@ -5144,6 +5144,7 @@ class GlmLayoutStartup(unittest.TestCase):
     MAG_ROOM_MODEL_STATUS=str(root/'ms.json'),MAG_NETMODE=str(NETMODE),MAG_TEST_NO_MEMGIT='1',
     MAG_ROOM_AGENT_CTL='/bin/false',MAG_ROOM_GUEST_RUN='/bin/false',MAG_ROOM_MCP_AUTO='0',
     MAG_ROOM_SINGLE_BOT='auto',MAG_ROOM_SINGLE_BOT_VM='on',MAG_ROOM_DUAL_NUMA='0',**glm)
+  env['MAG_ROOM_SKILLS_DIR']=str(ROOT/'ops/room/skills')
   log=open(log_path,'a')
   proc=subprocess.Popen(['timeout','-k','1','18',str(ROOT/'build/magroom')],env=env,stdout=log,stderr=log)
   try:
@@ -5244,6 +5245,36 @@ class GlmLayoutStartup(unittest.TestCase):
    self.assertFalse(greetings[0][3]['chat_template_kwargs']['enable_thinking'])
    self.assertTrue(post('/api/message',{'text':'/vergiss 1',
        'bots':['qwen-numa1']})['ok'])
+   # Host-selected skill is a user suffix; not system/tool catalog.
+   before=len(Model.paths)
+   post('/api/message',{'text':'/skill kurz','bots':['qwen-numa1'],
+       'request_id':'glm-skill-kurz'})
+   end=time.monotonic()+6
+   while time.monotonic()<end:
+    skill_calls=[p for p in list(Model.paths)[before:]
+                 if p[0]=='/v1/chat/completions' and
+                 p[3].get('max_tokens')!=1 and
+                 '[Skill: kurz]' in str(p[3].get('messages'))]
+    if skill_calls:break
+    time.sleep(.05)
+   else:self.fail('GLM skill was not selected')
+   self.assertNotIn('[Skill:',skill_calls[0][3]['messages'][0]['content'])
+   self.assertNotIn('tools',skill_calls[0][3])
+   # Default unaddressed messages route to only one enabled GLM bot.
+   before=len(Model.paths)
+   marker='GLM-DEFAULT-'+str(time.monotonic_ns())
+   post('/api/message',{'text':marker,'request_id':'glm-one-default'})
+   end=time.monotonic()+6
+   while time.monotonic()<end:
+    default_calls=[p for p in list(Model.paths)[before:]
+                   if p[0]=='/v1/chat/completions' and
+                   p[3].get('max_tokens')!=1 and marker in json.dumps(p[3])]
+    if default_calls:break
+    time.sleep(.05)
+   else:self.fail('GLM default bot did not answer')
+   time.sleep(.15)
+   self.assertEqual(len(default_calls),1,default_calls)
+   self.assertEqual(default_calls[0][3]['model'],'glm-5.3-flash-iq1-m')
 
    # No DeepSeek cold gate: Q1 and Q2 are separately routable.
    post('/api/bot-settings',{'bots':['deepseek-chat'],'enabled':False},'PUT')

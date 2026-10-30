@@ -160,6 +160,48 @@ json.dump(s,open(p,'w'))
   self.assertFalse([c for c in self.log.read_text()[mark:].splitlines() if c.startswith(('stop ','start '))])
   p=self.run_layout('rollback',backup=self.base/'backup2');self.assertEqual(p.returncode,0,p.stderr)
   state=json.loads(self.state.read_text());self.assertIn('mag-llm-qwen.service',state['active']);self.assertNotIn('mag-llm-glm@q1.service',state['active']);self.assertNotIn('mag-llm-glm@q2.service',state['active'])
+ def _assert_glm_single_env_restart(self, instance):
+  # Both models are initially warm/active. Changing one env must not stop,
+  # restart, smoke or evict the other, including on rollback.
+  (self.repo/'ops/room/layout').write_text('glm\n')
+  p=self.run_layout();self.assertEqual(p.returncode,0,p.stderr)
+  altered=self.repo/'ops/glm'/(instance+'.env')
+  altered.write_text(altered.read_text()+'\n# test-only per-instance flag\n')
+  mark=self.log.stat().st_size
+  smoke=(self.base/'smoke')
+  mark_smoke=smoke.stat().st_size
+  target='mag-llm-glm@'+instance+'.service'
+  other='mag-llm-glm@'+('q2' if instance=='q1' else 'q1')+'.service'
+  changed=self.base/'backup2'
+  p=self.run_layout(backup=changed)
+  self.assertEqual(p.returncode,0,p.stderr)
+  actions=self.log.read_text()[mark:].splitlines()
+  self.assertIn('stop '+target,actions)
+  self.assertIn('start '+target,actions)
+  self.assertNotIn('stop '+other,actions)
+  self.assertNotIn('start '+other,actions)
+  smokes=smoke.read_text()[mark_smoke:]
+  port='8191' if instance=='q1' else '8192'
+  untouched='8192' if instance=='q1' else '8191'
+  self.assertIn('--port '+port,smokes)
+  self.assertNotIn('--port '+untouched,smokes)
+  mark=self.log.stat().st_size
+  p=self.run_layout('rollback',backup=changed)
+  self.assertEqual(p.returncode,0,p.stderr)
+  rollback=self.log.read_text()[mark:].splitlines()
+  self.assertIn('stop '+target,rollback)
+  self.assertIn('start '+target,rollback)
+  self.assertNotIn('stop '+other,rollback)
+  self.assertNotIn('start '+other,rollback)
+  state=json.loads(self.state.read_text())
+  self.assertIn(target,state['active']);self.assertIn(other,state['active'])
+
+ def test_glm_q1_env_only_restarts_q1(self):
+  self._assert_glm_single_env_restart('q1')
+
+ def test_glm_q2_env_only_restarts_q2(self):
+  self._assert_glm_single_env_restart('q2')
+
  def test_auto_updater_probes_before_deploy(self):
   body=(ROOT/'ops/auto-update/apply.sh').read_text()
   self.assertIn('"$ROOT/ops/qwen/layout.sh" probe "$STATE"',body)

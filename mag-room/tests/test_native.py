@@ -1071,7 +1071,11 @@ class Native(unittest.TestCase):
   Model.calls.clear();Model.script=[[call],['S23 nicht gestartet.']]
   self.request('/api/message',{'text':'S23-Status','bots':['test']});self.wait_idle();time.sleep(.2)
   self.assertTrue(any(t['function']['name']=='s23_status' for t in Model.calls[0]['tools']))
-  blob=json.dumps(Model.calls[-1]['messages'])
+  # Inspect the S23 tool result, not unrelated timestamps/IDs in the room transcript.
+  tool_results=[m.get('content','') for m in Model.calls[-1]['messages']
+                if m.get('role')=='tool' and m.get('tool_call_id')=='call_s23']
+  self.assertEqual(len(tool_results),1)
+  blob=tool_results[0]
   self.assertIn('nicht konfiguriert',blob)
   self.assertIn('s23pub',blob)
   self.assertNotIn('8720',blob)

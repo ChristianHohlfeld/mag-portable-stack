@@ -8295,6 +8295,12 @@ static SlotProbe probe_backend_slot(int idx) {
 static void observe_slot(int idx, bool wait) {
   const int slot = model_slot(idx);
   if (slot < 1 || slot > ROOM_MAX_BOTS) return;
+  // A live human (or explicitly managed) lane owns this model slot.
+  // /slots reports is_processing=true for it; this is NOT an orphan.
+  if (CONFIGURED_MODEL) {
+    const std::string id = bot_field(idx, "id");
+    if (Lane *lane = lane_of(id); lane && lane->busy.load()) return;
+  }
   if (!prefix_is_saved(idx)) {
     SLOT_RESUME_HELD[slot - 1] = false;
     SlotProbe orphan = probe_backend_slot(idx);

@@ -863,7 +863,8 @@ static void load_agents() {
                    old == "DeepSeek Q4" || old == "Qwen 2" ||
                    old == "DeepSeek V4 Flash 1" || old == "DeepSeek V4 Flash 2" ||
                    old == "DeepSeek V4 Flash" || old == "Qwen3.8 Uncensored" || old == "Ornith 1" || old == "Ornith 2" || old == "Ornith 3" || old == "Ornith 4" ||
-                   old == "GLM-5.3 Flash" ||
+                   old == "GLM-5.3 Flash" || old == "GLM-5.3 Flash 2" ||
+                    old == "GLM-Q2" && backend.label != "GLM-Q2" ||
                    (!qwen_slot && (old == "Qwen" || old == "BotBot" || old == "Bot 2" || old == "Bot2")))) {
         const std::string updated = ROOM_MODEL.backends[0].id == ROOM_MODEL.backends[1].id
             ? backend.label + " " + std::to_string(slot) : backend.label;
@@ -4141,7 +4142,7 @@ static std::string tools_json(int bot_idx, bool web) {
   // Compact only the slow GLM prefix. Keep tool names, parameters,
   // required sets, enum values and every execution/authorization decision
   // unchanged; prose descriptions are not part of the callable interface.
-  if (CONFIGURED_MODEL && bot_model_id(bot_idx) == "glm-5.3-flash") {
+  if (CONFIGURED_MODEL && bot_model_id(bot_idx).rfind("glm-5.3-flash", 0) == 0) {
     Val parsed;
     if (mj::parse(arr, parsed) && parsed.isArr()) {
       std::function<void(Val &)> compact = [&](Val &v) {
@@ -4584,21 +4585,21 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   // that cache in deterministic mode. Never replay an earlier answer either.
   // Identical prompts are still required; evolving room history is NOT identical.
   // GLM-5.3-Flash follows its model-card sampling even when UI determinism is on.
-  const bool deterministic = model != "glm-5.3-flash" && model_settings_for(model).deterministic;
+  const bool deterministic = model.rfind("glm-5.3-flash", 0) != 0 && model_settings_for(model).deterministic;
   if (deterministic) {
     body["temperature"] = 0.0;
     body["top_k"] = 1;
     body["seed"] = 42;
   } else {
-    body["temperature"] = model == "glm-5.3-flash" ? 1.0 : temperature;
-    if (model == "glm-5.3-flash") body["top_p"] = 0.95;
+    body["temperature"] = model.rfind("glm-5.3-flash", 0) == 0 ? 1.0 : temperature;
+    if (model.rfind("glm-5.3-flash", 0) == 0) body["top_p"] = 0.95;
   }
   // Both backends use 32k context; retain the proven Qwen output budget.
   // Bound generated tokens on Qwen only, keeping Q4's established budget.
   // Both models retain all native/MCP tools and immutable audit routing.
   int max_output = model == "qwen3.8-flash-next-uncensored"
       ? std::min(MAX_TOKENS, std::clamp(envi("MAG_ROOM_QWEN_MAX_TOKENS", 4096), 512, 8192))
-      : model == "glm-5.3-flash"
+      : model.rfind("glm-5.3-flash", 0) == 0
       ? std::min(MAX_TOKENS, std::clamp(envi("MAG_ROOM_GLM_MAX_TOKENS", 1024), 128, 8192))
       : MAX_TOKENS;
   // Proaktiv must not occupy the only slot for a 4096-token decode.
@@ -4614,10 +4615,10 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   // Configured NUMA bots keep the slot prefix. Deterministic still greedily
   // decodes; it must not drop cache_prompt (live Qwen: tokens_cached=0 and a
   // 39s identity prefill because cache_prompt was off).
-  if (CONFIGURED_MODEL || model == "glm-5.3-flash") body["cache_prompt"] = true;
+  if (CONFIGURED_MODEL || model.rfind("glm-5.3-flash", 0) == 0) body["cache_prompt"] = true;
   // Dedicated NUMA servers keep the same live KV slot across prewarm/chat.
   // Do not run the generic RAM-cache slot selector on this fixed deployment.
-  if (CONFIGURED_MODEL || model == "glm-5.3-flash") body["id_slot"] = 0;
+  if (CONFIGURED_MODEL || model.rfind("glm-5.3-flash", 0) == 0) body["id_slot"] = 0;
   else if (PROMPT_SLOTS > 1) body["id_slot"] = id_slot;
   // DeepSeek-V4-Flash-0731 template: enable_thinking only changes the
   // generation prompt at the END -> toggling it keeps the prompt cache.
@@ -4632,7 +4633,7 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   kwargs["enable_thinking"] = thinking && !TL_SELFTALK;
   // The Qwen4Exp GGUF Jinja template uses enable_thinking, not the
   // DeepSeek-specific reasoning_effort preamble (preserve prompt cache).
-  if (model == "glm-5.3-flash") {
+  if (model.rfind("glm-5.3-flash", 0) == 0) {
     // GLM-5.3 defaults to MAX and clear_thinking=false unless explicit.
     // Keep the template preamble byte-stable between all turns.
     kwargs["reasoning_effort"] = "low";
@@ -8446,7 +8447,7 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
           thinking_on = false;
         }
         kwargs["enable_thinking"] = thinking_on;
-        if (model == "glm-5.3-flash") {
+        if (model.rfind("glm-5.3-flash", 0) == 0) {
           kwargs["reasoning_effort"] = "low";
           kwargs["clear_thinking"] = true;
           body["temperature"] = 1.0;

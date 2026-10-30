@@ -1,51 +1,60 @@
 #!/usr/bin/env bash
-# GLM-5.3-Flash (llama.cpp arch glm5-next) on NUMA1 only, port 8192.
-# Same pinned upstream llama.cpp runtime as Qwen (ops/qwen/runtime.sha; the
-# commit has src/models/glm5-next.cpp). 14 physical cores of socket 1, every
-# weight page allocated on node1:
-# --load-mode dio reads the GGUF with O_DIRECT into anonymous memory on node1:
-# no page-cache copy (mmap pages cached on node0 by an earlier read could not be
-# moved by --membind, and "mlock" doubled the footprint as page cache + locked
-# copy, which failed with ENOMEM). Swap is off for the unit (MemorySwapMax=0),
-# so locking adds nothing.
-# The model is hybrid (KDA linear layers + MLA), so prompt reuse needs context
-# checkpoints, exactly like the hybrid Qwen.
+# One pinned GLM5-Next runtime for both NUMA nodes; per-instance model, port,
+# CPUs and slot directories are the only hardware/model variations.
 set -euo pipefail
-fail(){ echo "GLM NUMA1: $*" >&2; exit 4; }
+instance=${1:?usage: start.sh q1|q2}
+[[ $instance == q1 || $instance == q2 ]] || exit 4
+source "/etc/mag-glm/$instance.env"
+fail(){ echo "GLM $instance: $*" >&2; exit 4; }
 REV=$(cat /usr/local/lib/mag-glm/runtime.sha)
 [[ $REV =~ ^[a-f0-9]{40}$ ]] || fail 'runtime sha invalid'
 BIN="/home/chris/.local/qwen4exp/$REV-mag-cp1/bin/llama-server"
-MODEL="/home/chris/models/GLM-5.3-Flash-GGUF-IQ2_XS/GLM-5.3-Flash-IQ2_XS-00001-of-00015.gguf"
 TEMPLATE=/usr/local/lib/mag-glm/chat-template.jinja
-[[ -x "$BIN" && -f "$MODEL" && -f "$TEMPLATE" ]] || fail 'runtime / GGUF / chat template missing'
-[[ $(cat "/home/chris/.local/qwen4exp/$REV-mag-cp1/bin/source-commit") == "$REV" ]] || fail 'runtime version not pinned'
-[[ $(cat /sys/devices/system/node/node1/cpulist) == "14-27,42-55" ]] || fail 'unexpected NUMA1 topology'
-systemctl is-active --quiet mag-llm-iq3.service && fail 'IQ3 still running; explicit operator stop required'
-systemctl is-active --quiet mag-llm-qwen.service && fail 'Qwen still running on NUMA1'
+[[ -x $BIN && -f $TEMPLATE ]] || fail 'runtime/template missing'
+[[ $(cat "$(dirname "$BIN")/source-commit" 2>/dev/null) == "$REV" ]] || fail 'runtime version not pinned'
+[[ $GLM_NODE =~ ^[01]$ && $GLM_PORT =~ ^819[12]$ ]] || fail 'bad node/port'
+[[ ( $instance == q1 && $GLM_NODE == 0 && $GLM_PORT == 8191 ) ||
+   ( $instance == q2 && $GLM_NODE == 1 && $GLM_PORT == 8192 ) ]] || fail 'instance routing mismatch'
+# Expand shard-1 from a literal GGUF or glob; never choose a later split shard.
+shopt -s nullglob
+candidates=( $GLM_MODEL )
+(( ${#candidates[@]} > 0 )) || fail "GGUF missing: $GLM_MODEL"
+MODEL=${candidates[0]}
+[[ -f $MODEL && $(head -c 4 "$MODEL") == GGUF ]] || fail 'invalid GGUF first shard'
+[[ -d $GLM_SLOT_DIR && ! -L $GLM_SLOT_DIR ]] || fail 'slot directory missing'
+[[ $(cat "/sys/devices/system/node/node$GLM_NODE/cpulist") == "$GLM_CPU_TOPOLOGY" ]] || fail 'unexpected NUMA topology'
 for u in mag-backup-daily mag-backup-weekly mag-backup-monthly mag-backup-restore-test mag-backup-deploy mag-backup-clear; do
   systemctl is-active --quiet "$u.service" && fail "backup active: $u"
 done
-# 85.8 GiB IQ2_XS weights + 32k KV/recurrent state + 16 GiB prompt RAM cache, plus reserve.
-read -r free file shmem < <(awk '$3=="MemFree:"{f=$4} $3=="FilePages:"{p=$4} $3=="Shmem:"{s=$4} END{print f+0,p+0,s+0}' /sys/devices/system/node/node1/meminfo)
-usable=$((free + (file > shmem ? file-shmem : 0)))
-(( usable >= 145*1024*1024 )) || fail 'NUMA1 reclaimable RAM below 145GiB (reserve for system/backup)'
-bash /usr/local/lib/mag-glm/verify-model.sh || fail 'model verification failed'
-# One-time KV format migration. Changing the KV format invalidates only
-# the GLM slot on first boot (failed restore clears stale prefix metadata).
-SLOTDIR=/var/lib/mag-llm/slots/glm
-FORMAT='glm-5.3-flash:kv-f16-f16:ctx32768:slot0'
-if [[ ! -f "$SLOTDIR/.kv-format" || $(cat "$SLOTDIR/.kv-format") != "$FORMAT" ]]; then
-  rm -f -- "$SLOTDIR/mag-prefix-glm-5.3-flash-slot2.bin"
-  printf '%s\n' "$FORMAT" > "$SLOTDIR/.kv-format.tmp"
-  mv -f -- "$SLOTDIR/.kv-format.tmp" "$SLOTDIR/.kv-format"
+# Keep Q2's exact #231 format and slot directory; Q1 gets a distinct tag/path.
+if [[ $instance == q1 ]]; then
+  FORMAT='glm-5.3-flash-iq1-m:kv-f16-f16:ctx32768:slot0'
+  legacy="mag-prefix-glm-5.3-flash-iq1-m-slot1.bin"
+  binding=(--cpunodebind=0 --membind=0)
+  extra=(--mlock)
+else
+  FORMAT='glm-5.3-flash:kv-f16-f16:ctx32768:slot0'
+  legacy="mag-prefix-glm-5.3-flash-slot2.bin"
+  binding=(--physcpubind=14-27,42-55 --membind=1)
+  extra=()
+  # Original NUMA1 IQ2_XS memory gate from #231.
+  read -r free file shmem < <(awk '$3=="MemFree:"{f=$4} $3=="FilePages:"{p=$4} $3=="Shmem:"{s=$4} END{print f+0,p+0,s+0}' /sys/devices/system/node/node1/meminfo)
+  usable=$((free + (file > shmem ? file-shmem : 0)))
+  (( usable >= 145*1024*1024 )) || fail 'NUMA1 reclaimable RAM below 145GiB'
+  bash /usr/local/lib/mag-glm/verify-model.sh || fail 'IQ2 model verification failed'
 fi
-# slot0 is the llama id_slot: parallel=1; slot2 is the durable room
-# backend identity in the checkpoint filename, not a llama slot index.
-exec /usr/bin/numactl --physcpubind=14-27,42-55 --membind=1 "$BIN" \
-  --model "$MODEL" --alias glm-5.3-flash \
-  --host 127.0.0.1 --port "${GLM_PORT:-8192}" --ctx-size 32768 --parallel 1 \
+if [[ ! -f "$GLM_SLOT_DIR/.kv-format" || $(cat "$GLM_SLOT_DIR/.kv-format") != "$FORMAT" ]]; then
+  rm -f -- "$GLM_SLOT_DIR/$legacy"
+  printf '%s\n' "$FORMAT" > "$GLM_SLOT_DIR/.kv-format.tmp"
+  mv -f -- "$GLM_SLOT_DIR/.kv-format.tmp" "$GLM_SLOT_DIR/.kv-format"
+fi
+# llama id_slot=0 on both servers (--parallel 1); room slot 1/2 is a
+# different identity in the durable checkpoint filename.
+exec /usr/bin/numactl "${binding[@]}" "$BIN" \
+  --model "$MODEL" --alias "$GLM_ALIAS" \
+  --host 127.0.0.1 --port "$GLM_PORT" --ctx-size 32768 --parallel 1 \
   --threads 14 --threads-batch 28 --numa numactl \
-  --load-mode dio -fa on -b 4096 -ub 1024 \
+  --load-mode dio "${extra[@]}" -fa on -b 4096 -ub 1024 \
   --jinja --chat-template-file "$TEMPLATE" --reasoning-format auto \
   --temp 1.0 --top-p 0.95 --cache-ram 16384 --ctx-checkpoints 64 --checkpoint-min-step 1024 \
-  --slots --slot-save-path /var/lib/mag-llm/slots/glm --no-ui
+  --slots --slot-save-path "$GLM_SLOT_DIR" --no-ui

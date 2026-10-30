@@ -5463,13 +5463,13 @@ class GlmLayoutStartup(unittest.TestCase):
    # Stop strings are llama.cpp /v1/chat/completions request parameters, not flags.
    # Multiple SSE fragments deliberately split each forbidden token.
    for n,parts in enumerate((
-      ['5','</thi','nk>','GARBAGE-THINK-END'],
+      ['GARBAGE-PREFIX','</thi','nk>','GARBAGE-THINK-END'],
       ['<thi','nk>','GARBAGE-THINK-OPEN'],
       ['5','<|us','er|>','GARBAGE-SPECIAL'],
       ['5','\n\n#','# ','GARBAGE-HEADING'])):
     marker='GLM-CUT-'+str(n)+'-'+str(time.monotonic_ns())
     Model.script_scope=marker
-    Model.script=[parts]
+    Model.script=[parts, ['Saubere Antwort.']] if n<3 else [parts]
     before=len(Model.paths)
     self.assertTrue(post({'text':marker,'bots':['deepseek-chat']})['accepted'])
     req=calls_after(before,marker,1)[0][3]
@@ -5480,16 +5480,22 @@ class GlmLayoutStartup(unittest.TestCase):
     client=CPP_SOURCE if 'CPP_SOURCE' in globals() else (ROOT/'mag-room/native/magroom.cpp').read_text()
     self.assertIn('"</think>", "<think>", "<|", "<tool_call"',client)
     self.assertNotIn('\n\n## ',req['stop'],'Heading stop is client-side only')
+    requests=calls_after(before,marker,2 if n<3 else 1)
+    if n<3:
+     self.assertEqual(len(requests),2,requests)
+     retry_messages=requests[1][3]['messages']
+     self.assertEqual(len(retry_messages),2,retry_messages)
+     self.assertEqual(retry_messages[-1],{'role':'user','content':marker})
     room=idle_after(marker)
     text=json.dumps(room['room'],ensure_ascii=False)
     self.assertNotIn('GARBAGE-',text)
     self.assertNotIn('</think>',text)
     self.assertNotIn('<think>',text)
     self.assertNotIn('<|user|>',text)
-    if n!=1:
-     self.assertTrue(any(m.get('role')=='assistant' and
-           (m.get('content') or '').strip()=='5'
-           for m in room['room']),room['room'][-3:])
+    expected='Saubere Antwort.' if n<3 else '5'
+    self.assertTrue(any(m.get('role')=='assistant' and
+          (m.get('content') or '').strip()==expected
+          for m in room['room']),room['room'][-3:])
     Model.script_scope=None
     Model.script=[]
    # Q2 streams a split reasoning terminator: never publish raw delimiter.

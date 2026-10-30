@@ -5111,8 +5111,8 @@ class TwoBackendStartup(unittest.TestCase):
    log.close();model.shutdown();model.server_close();tmp.cleanup()
 
 class GlmLayoutStartup(unittest.TestCase):
- """Layout glm: the NUMA1 bot keeps id, memory and slot, drops the stale 'Qwen' name."""
- def test_numa1_bot_follows_glm_backend(self):
+ """Layout glm: both GLM bots preserve their historical IDs and memory."""
+ def test_q1_q2_follow_glm_backend(self):
   deadline=time.monotonic()+20
   Model.delay=0;Model.slot_delay={};Model.script=[];Model.reply=None
   Model.barrier_token='';Model.barrier_release=None;Model.hold_get=0;Model.health=200
@@ -5155,10 +5155,10 @@ class GlmLayoutStartup(unittest.TestCase):
      if proc.poll() is not None:self.fail('magroom exited %s\n%s'%(proc.returncode,log_path.read_text(errors='replace')[-2000:]))
      time.sleep(.03)
    self.assertEqual([(b['slot'],b['id'],b['name'],b['model'],b['numa']) for b in doc['agents']],[
-    (1,'deepseek-chat','DeepSeek V4 Flash','deepseek-v4-flash-0731',0),
-    (2,'qwen-numa1','GLM-5.3 Flash','glm-5.3-flash',1)])
+    (1,'deepseek-chat','GLM-Q1','glm-5.3-flash-iq1-m',0),
+    (2,'qwen-numa1','GLM-Q2','glm-5.3-flash',1)])
    saved=json.loads(state.joinpath('agents.json').read_text())
-   self.assertEqual([b['name'] for b in saved[:2]],['DeepSeek V4 Flash','GLM-5.3 Flash'])
+   self.assertEqual([b['name'] for b in saved[:2]],['GLM-Q1','GLM-Q2'])
    self.assertEqual(saved[1]['memory'][0]['text'],'bleibt')
    end=time.monotonic()+10
    while time.monotonic()<end:
@@ -5186,8 +5186,8 @@ class GlmLayoutStartup(unittest.TestCase):
                   and p[3].get('max_tokens')!=1 and first in json.dumps(p[3])]
     if first_calls:break
     time.sleep(.05)
-   else:self.fail('GLM fallback failed while DeepSeek cold')
-   self.assertEqual([p[3]['model'] for p in first_calls],['glm-5.3-flash'])
+   else:self.fail('GLM-Q1 did not receive first turn')
+   self.assertEqual([p[3]['model'] for p in first_calls],['glm-5.3-flash-iq1-m'])
    # llama --parallel 1 uses id_slot=0, while the checkpoint filename's
    # slot2 is the persisted MAG room-agent identity (different namespaces).
    self.assertEqual(first_calls[0][3].get('id_slot'),0)
@@ -5232,9 +5232,9 @@ class GlmLayoutStartup(unittest.TestCase):
                   and p[3].get('max_tokens')!=1 and second in json.dumps(p[3])]
     if second_calls:break
     time.sleep(.05)
-   else:self.fail('DeepSeek never answered when GLM was paused')
+   else:self.fail('GLM-Q1 did not answer when Q2 was paused')
    time.sleep(.2)
-   self.assertEqual([p[3]['model'] for p in second_calls],['deepseek-v4-flash-0731'])
+   self.assertEqual([p[3]['model'] for p in second_calls],['glm-5.3-flash-iq1-m'])
    # Both paused: publish the user message once, with no fallback/model call.
    post('/api/bot-settings',{'bots':['deepseek-chat'],'enabled':False},'PUT')
    no_one='BOTH-PAUSED-'+str(time.monotonic_ns())

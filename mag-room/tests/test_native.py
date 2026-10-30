@@ -1071,7 +1071,11 @@ class Native(unittest.TestCase):
   Model.calls.clear();Model.script=[[call],['S23 nicht gestartet.']]
   self.request('/api/message',{'text':'S23-Status','bots':['test']});self.wait_idle();time.sleep(.2)
   self.assertTrue(any(t['function']['name']=='s23_status' for t in Model.calls[0]['tools']))
-  blob=json.dumps(Model.calls[-1]['messages'])
+  # Inspect the S23 tool result, not unrelated timestamps/IDs in the room transcript.
+  tool_results=[m.get('content','') for m in Model.calls[-1]['messages']
+                if m.get('role')=='tool' and m.get('tool_call_id')=='call_s23']
+  self.assertEqual(len(tool_results),1)
+  blob=tool_results[0]
   self.assertIn('nicht konfiguriert',blob)
   self.assertIn('s23pub',blob)
   self.assertNotIn('8720',blob)
@@ -5204,7 +5208,7 @@ class GlmLayoutStartup(unittest.TestCase):
    req=first_calls[0][3]
    self.assertNotIn('tools',req,'GLM chat must never send tools schemas')
    self.assertNotIn('tool_choice',req,'GLM chat must omit tool choice too')
-   self.assertEqual(req['max_tokens'],128)
+   self.assertEqual(req['max_tokens'],96)
    self.assertEqual(req['temperature'],0.55)
    self.assertEqual(req['dry_multiplier'],0.8)
    self.assertEqual(req['dry_base'],1.75)
@@ -5295,9 +5299,9 @@ class GlmLayoutStartup(unittest.TestCase):
     self.assertEqual(len(retry_calls),2)
     self.assertTrue(retry_calls[0][3]['chat_template_kwargs']['enable_thinking'])
     self.assertFalse(retry_calls[1][3]['chat_template_kwargs']['enable_thinking'])
-    self.assertEqual([p[3]['max_tokens'] for p in retry_calls],[256,128])
+    self.assertEqual([p[3]['max_tokens'] for p in retry_calls],[256,96])
     self.assertNotIn('stop',retry_calls[0][3],'Thinking must not stop at </think>')
-    self.assertIn('</think>',retry_calls[1][3]['stop'],'Nonthinking retry needs stop')
+    self.assertNotIn('</think>',retry_calls[1][3]['stop'],'Client handles reasoning delimiters')
     self.assertNotIn('\n\n## ',retry_calls[1][3]['stop'])
     self.assertEqual(retry_calls[0][3]['messages'],retry_calls[1][3]['messages'])
     self.assertNotIn('tools',retry_calls[1][3])
@@ -5459,31 +5463,63 @@ class GlmLayoutStartup(unittest.TestCase):
    # Stop strings are llama.cpp /v1/chat/completions request parameters, not flags.
    # Multiple SSE fragments deliberately split each forbidden token.
    for n,parts in enumerate((
-      ['5','</thi','nk>','GARBAGE-THINK-END'],
+      ['GARBAGE-PREFIX','</thi','nk>','GARBAGE-THINK-END'],
       ['<thi','nk>','GARBAGE-THINK-OPEN'],
       ['5','<|us','er|>','GARBAGE-SPECIAL'],
       ['5','\n\n#','# ','GARBAGE-HEADING'])):
     marker='GLM-CUT-'+str(n)+'-'+str(time.monotonic_ns())
     Model.script_scope=marker
-    Model.script=[parts]
+    Model.script=[parts, ['Saubere Antwort.', {'_chunk':{'choices':[{'delta':{},'finish_reason':'stop'}]}}]] if n<3 else [parts]
     before=len(Model.paths)
     self.assertTrue(post({'text':marker,'bots':['deepseek-chat']})['accepted'])
     req=calls_after(before,marker,1)[0][3]
     self.assertLessEqual(req['max_tokens'],256)
-    self.assertTrue({'</think>','<think>','<|user|>','<|observation|>'}.issubset(set(req['stop'])),req)
+    self.assertTrue({'<|user|>','<|observation|>','<tool_call'}.issubset(set(req['stop'])),req)
+    self.assertNotIn('</think>',req['stop'],'Reasoning end stays client-side')
+    self.assertNotIn('<think>',req['stop'],'Reasoning start stays client-side')
+    client=CPP_SOURCE if 'CPP_SOURCE' in globals() else (ROOT/'mag-room/native/magroom.cpp').read_text()
+    self.assertIn('"</think>", "<think>", "<|", "<tool_call"',client)
     self.assertNotIn('\n\n## ',req['stop'],'Heading stop is client-side only')
-    room=idle_after(marker)
+    requests=calls_after(before,marker,2 if n<3 else 1)
+    if n<3:
+     self.assertEqual(len(requests),2,requests)
+     retry_messages=requests[1][3]['messages']
+     self.assertEqual(len(retry_messages),2,retry_messages)
+     self.assertEqual(retry_messages[-1],{'role':'user','content':marker})
+    expected='Saubere Antwort.' if n<3 else '5'
+    end=time.monotonic()+6
+    while time.monotonic()<end:
+     room=idle_after(marker)
+     if any(m.get('role')=='assistant' and
+            (m.get('content') or '').strip()==expected for m in room['room']):
+      break
+     time.sleep(.04)
     text=json.dumps(room['room'],ensure_ascii=False)
     self.assertNotIn('GARBAGE-',text)
     self.assertNotIn('</think>',text)
     self.assertNotIn('<think>',text)
     self.assertNotIn('<|user|>',text)
-    if n!=1:
-     self.assertTrue(any(m.get('role')=='assistant' and
-           (m.get('content') or '').strip()=='5'
-           for m in room['room']),room['room'][-3:])
+    self.assertTrue(any(m.get('role')=='assistant' and
+          (m.get('content') or '').strip()==expected
+          for m in room['room']),room['room'][-3:])
     Model.script_scope=None
     Model.script=[]
+   # Q2 streams a split reasoning terminator: never publish raw delimiter.
+   q2marker='GLM-Q2-CLIENT-STOP-'+str(time.monotonic_ns())
+   Model.script_scope=q2marker
+   Model.script=[['Rauschen','</thi','nk>','Antwort']]
+   before=len(Model.paths)
+   self.assertTrue(post({'text':q2marker,'bots':['qwen-numa1']})['accepted'])
+   q2req=calls_after(before,q2marker,1)[0][3]
+   self.assertEqual(q2req['model'],'glm-5.3-flash')
+   q2room=idle_after(q2marker)
+   q2at=max(i for i,m in enumerate(q2room['room'])
+            if m.get('role')=='user' and m.get('content')==q2marker)
+   q2text=json.dumps(q2room['room'][q2at+1:],ensure_ascii=False)
+   self.assertNotIn('</think>',q2text)
+   self.assertNotIn('Antwort',q2text)
+   Model.script_scope=None
+   Model.script=[]
    # A single leading greeting + group target broadcasts, but a middle
    # mention of 'beide' must retain GLM's one-host arbitration.
    for text_,expected in [('Hi beide: wie viel ist 2+3?',2),
@@ -5495,9 +5531,8 @@ class GlmLayoutStartup(unittest.TestCase):
     calls=calls_after(before,marker,expected)
     idle_after(marker)
     self.assertEqual(len(calls),expected,calls)
-   # Multi-turn GLM template: each historical room message is a role entry.
-   # Q2's answer must be user-with-name from Q1's perspective; Q1's prior
-   # answer stays assistant. No flat transcript or manual <|user|> markup.
+   # Q1 hygiene: at most two own clean user/assistant pairs. Never include
+   # a foreign Q2 response as a fake user turn or an own assistant turn.
    q2mark='GLM-CTX-Q2-'+str(time.monotonic_ns())
    before=len(Model.paths)
    self.assertTrue(post({'text':q2mark,'bots':['qwen-numa1']})['accepted'])
@@ -5510,11 +5545,11 @@ class GlmLayoutStartup(unittest.TestCase):
    roles=q1req['messages']
    self.assertEqual(roles[0]['role'],'system')
    self.assertEqual(roles[-1],{'role':'user','content':q1mark})
-   self.assertLessEqual(len(roles),7,'maximum six role turns plus system')
-   self.assertTrue(any(m['role']=='user' and
-       m['content'].startswith('GLM-Q2: ') for m in roles[1:-1]),roles)
-   self.assertFalse(any(m['role']=='assistant' and
-       m['content'].startswith('GLM-Q2: ') for m in roles[1:-1]),roles)
+   self.assertLessEqual(len(roles),6,'system + two complete Q1 pairs + current user')
+   self.assertFalse(any(m['content'].startswith('GLM-Q2: ')
+       for m in roles[1:-1]),roles)
+   self.assertEqual([m['role'] for m in roles[1:-1]],
+       ['user','assistant']*((len(roles)-2)//2),roles)
    self.assertNotIn('[Raumverlauf]',json.dumps(roles,ensure_ascii=False))
    idle_after(q1mark)
    # Six identical words cause a hard stream cut before the repetition run
@@ -5559,7 +5594,10 @@ class GlmLayoutStartup(unittest.TestCase):
  def test_two_glm_turns_complete_after_60_seconds_without_cancel(self):
   # Explicit @alle must reach both GLM lanes, with each fake under 8 s.
   # No real inference; keep the CI per-test deadline at 30 seconds.
-  Model.delay=0;Model.slot_delay={'0':2,'1':2};Model.script=[]
+  Model.delay=0;Model.slot_delay={'0':2,'1':2}
+  Model.script_scope='@alle Hi'
+  Model.script=[['Hallo ', {'_chunk':{'choices':[{'delta':{},'finish_reason':'stop'}]}}]
+                for _ in range(2)]
   Model.reply=None;Model.health=200;Model.slot_snapshot=[];Model.paths=[]
   Model.slot_block={};Model.barrier_release=None;Model.restore_missing=False
   tmp=tempfile.TemporaryDirectory();root=pathlib.Path(tmp.name);state=root/'state';state.mkdir()
@@ -5612,6 +5650,7 @@ class GlmLayoutStartup(unittest.TestCase):
    log.flush()
    self.assertNotIn('reason=stop',logpath.read_text(errors='replace'))
   finally:
+   Model.script_scope=None;Model.script=[]
    Model.slot_delay={}
    proc.terminate()
    try:proc.wait(timeout=5)

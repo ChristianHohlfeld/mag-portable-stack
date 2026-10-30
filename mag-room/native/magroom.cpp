@@ -5927,6 +5927,63 @@ static std::string selftalk_context(int idx) {
   return lines + room_company_line(idx);
 }
 
+// Bounded host-owned GLM memories; existing manifest remains the storage.
+static std::string glm_chat_memory(const std::string &id) {
+  std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
+  const int idx = agent_index(id);
+  std::string out = "[Erinnerungen]";
+  if (idx < 0) return out;
+  const Val *m = AGENTS[idx].find("memory");
+  if (!m || !m->isArr()) return out;
+  const auto &items = m->asArr();
+  const size_t start = items.size() > 10 ? items.size() - 10 : 0;
+  size_t bytes = 0;
+  for (size_t i = start; i < items.size(); ++i) {
+    const std::string line = "- " + memory_line_text(items[i]);
+    if (bytes + line.size() > 560) break; // conservative <=150-token budget
+    out += "\n" + line;
+    bytes += line.size();
+  }
+  return out;
+}
+// At most one selected skill, appended to the last user turn, never system.
+static std::string glm_chat_skill(const std::string &input) {
+  namespace fs = std::filesystem;
+  const std::string root = env("MAG_ROOM_SKILLS_DIR",
+      "/opt/mag-stack/current/ops/room/skills");
+  const bool explicit_skill = input.rfind("/skill ", 0) == 0;
+  const std::string wanted = explicit_skill ? trim(input.substr(7)) : "";
+  auto safe = [](const std::string &name) {
+    return !name.empty() && name.size() <= 40 &&
+      name.find_first_not_of("abcdefghijklmnopqrstuvwxyz0123456789_-") == std::string::npos;
+  };
+  if (explicit_skill && !safe(wanted)) return "";
+  std::error_code ec;
+  if (!fs::is_directory(root, ec)) return "";
+  for (const auto &entry : fs::directory_iterator(root, ec)) {
+    if (ec || !entry.is_directory(ec)) continue;
+    const std::string name = entry.path().filename().string();
+    if (!safe(name)) continue;
+    const fs::path p = entry.path() / "SKILL.md";
+    if (!fs::is_regular_file(p, ec) || fs::file_size(p, ec) > 4096) continue;
+    const std::string data = read_file(p.string());
+    if (data.rfind("---\n", 0) != 0) continue;
+    const size_t end = data.find("\n---\n", 4);
+    if (end == std::string::npos) continue;
+    std::string meta = data.substr(4, end-4), body = trim(data.substr(end+5));
+    std::string skill_name, description;
+    std::istringstream yaml(meta);
+    for (std::string line; std::getline(yaml, line);) {
+      if (line.rfind("name:", 0) == 0) skill_name = trim(line.substr(5));
+      if (line.rfind("description:", 0) == 0) description = trim(line.substr(12));
+    }
+    if (skill_name != name || description.empty() || body.empty() || body.size() > 1200)
+      continue;
+    if ((explicit_skill && wanted == name) || (!explicit_skill && input == description))
+      return "\n[Skill: " + name + "]\n" + body;
+  }
+  return "";
+}
 static TurnReport run_turn(int bot_idx, bool autotalk,
                            const std::string &other) {
   std::string bot_id = bot_field(bot_idx, "id");
@@ -5938,7 +5995,10 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
   // and never entered the prewarm/cache path.
   const bool stateless = !CONFIGURED_MODEL &&
                          model_settings_for(bot_model_id(bot_idx)).deterministic;
-  const bool short_chat = CONFIGURED_MODEL && !CURRENT_JOB && !TL_TASK &&
+  const bool glm_chat_mode = CONFIGURED_MODEL && !CURRENT_JOB && !TL_TASK &&
+      !autotalk && !TL_REFLECT && !TL_SELFTALK &&
+      bot_model_id(bot_idx).rfind("glm-5.3-flash", 0) == 0;
+  const bool short_chat = glm_chat_mode &&
       !autotalk && !turn_thinking() &&
       bot_model_id(bot_idx).rfind("glm-5.3-flash", 0) == 0 &&
       short_glm_input(TURN_INPUT);
@@ -5979,23 +6039,17 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
     messages.push_back(u);
     tools.clear();
   } else {
-    mcp_auto_once();
+    if (!glm_chat_mode) mcp_auto_once();
     system = build_system(bot_idx, autotalk, other, web);
-    tools = tools_json(bot_idx, web);
-    if(CONFIGURED_MODEL && !CURRENT_JOB && !TL_TASK &&
-        bot_model_id(bot_idx).rfind("glm-5.3-flash", 0) == 0 && !autotalk) {
-      Val sys=Val::object();sys["role"]="system";sys["content"]=system;
+    tools = glm_chat_mode ? std::string() : tools_json(bot_idx, web);
+    if (glm_chat_mode) {
+      Val sys=Val::object();sys["role"]="system";
+      sys["content"]=system + "\n" + glm_chat_memory(bot_id);
       messages.push_back(sys);
       Val u=Val::object();u["role"]="user";
-      std::string input = glm_chat_transcript(short_chat);
-      if (!short_chat) {
-        const std::string memory = memory_manifest(bot_id);
-        if (memory != "[Erinnerungen]") input += "\n" + mj::utf8_cut(memory, 160);
-        const std::string files = file_manifest();
-        if (!files.empty() && files != "(keine)")
-          input += "\nRaumdateien: " + mj::utf8_cut(files, 100);
-        input += build_context_tail(bot_idx,false,"");
-      }
+      // Tiny greetings send only the original last human text.
+      std::string input = short_chat ? TURN_INPUT : glm_chat_transcript(false);
+      input += glm_chat_skill(TURN_INPUT);
       u["content"] = input;
       messages.push_back(u);
       TL_WIRE_STALE=false;
@@ -6092,8 +6146,7 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
   auto run_deadline = steady_clock::now() + seconds(RUN_BUDGET_S);
   int todo_nudges = 0;
   TL_TODO_TOUCHED = false;
-  const bool glm_chat = CONFIGURED_MODEL && !CURRENT_JOB && !TL_TASK &&
-      !autotalk && bot_model_id(bot_idx).rfind("glm-5.3-flash", 0) == 0;
+  const bool glm_chat = glm_chat_mode;
   int glm_tool_rounds = 0;
   const int glm_tool_max = std::clamp(envi("MAG_ROOM_GLM_CHAT_MAX_ROUNDS", 2), 0, 8);
   for (int round = 0; round < MAX_RUN_STEPS; round++) {
@@ -6180,7 +6233,7 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
     };
     // Re-read permissions between tool rounds. In particular, turning GitHub
     // off removes its schemas from the next request of an already running turn.
-    if (!stateless && !TL_SELFTALK) tools = tools_json(bot_idx, web);
+    if (!stateless && !TL_SELFTALK && !glm_chat) tools = tools_json(bot_idx, web);
     // Preserve tool schemas and cache prefix even on short chats, but forbid
     // execution / tool follow-ups for explicit greetings.
     // Tools remain available on real tasks without a forced early final.
@@ -6192,7 +6245,7 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
       t = backend_turn(messages, tools,
                        autotalk ? 0.75 : 0.55, on_delta, turn_thinking(),
                        slot_for_key(bot_id), bot_model_id(bot_idx), bot_idx,
-                       short_chat, glm_chat && glm_tool_rounds >= glm_tool_max);
+                       short_chat, glm_chat);
       if (t.skipped || assistant_prefill_error(t.error)) {
         // The guard already logged a skip. A live 500 of this type must not
         // be posted into the room and must not invalidate the wire below.
@@ -6224,11 +6277,12 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
       if (t.calls.empty()) final_text += t.text;
       break;
     }
-    if (glm_chat && turn_thinking() && t.finish == "length" &&
-        t.text.empty() && !stop_flag().load()) {
+    if (glm_chat && turn_thinking() && !stop_flag().load() &&
+        ((t.finish == "length" && t.text.empty()) ||
+         t.error.find("Antwortlimit beim Denken erreicht") != std::string::npos)) {
       // Exactly one nonthinking answer after a user-requested thinking round.
       t = backend_turn(messages, tools, 0.55, on_delta, false,
-           slot_for_key(bot_id), bot_model_id(bot_idx), bot_idx, true, true);
+           slot_for_key(bot_id), bot_model_id(bot_idx), bot_idx, false, true);
     }
     if (!t.error.empty()) {
       report.error = t.error.substr(0, 280);
@@ -6253,13 +6307,12 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
       // successful answer. Show only a local, explicitly failed fallback.
       report.local_fallback = true;
       report.error = "GLM lieferte keine sichtbare Kurzantwort.";
-      final_text = "Wie bitte?";
+      final_text.clear();
       run_fail(report.error);
       completed = true;
       break;
     }
-    if (short_chat || (glm_chat && glm_tool_rounds >= glm_tool_max))
-      t.calls.clear();
+    if (glm_chat) t.calls.clear();
     // Stateless means one new model inference per input. Never execute tools
     // or feed the model's output back as a new turn, even if it emits an
     // unexpected tool call or a continuation marker.

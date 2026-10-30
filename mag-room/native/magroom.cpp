@@ -6872,15 +6872,18 @@ static std::vector<std::string> first_hi_answerers(std::vector<std::string> ids)
     for (const auto &m : ROOM)
       if (mag::str(m, "role") == "user") return ids;
   }
-  std::string qwen;
+  std::string secondary;
   bool ds_selected = false, ds_blocked = false;
   {
     std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
     for (int i = 0; i < (int)AGENTS.size(); ++i) {
       const std::string id = mag::str(AGENTS[i], "id");
       if (id.empty()) continue;
-      if (qwen.empty() && bot_model_id(i).find("qwen") != std::string::npos)
-        qwen = id;
+      // The NUMA1 agent may be Qwen or GLM. Its stable ID remains
+      // qwen-numa1 after model migration; selection comes from the live slot.
+      if (secondary.empty() && model_slot(i) == 2 && bot_enabled_locked(i) &&
+          bot_model_id(i).find("deepseek") == std::string::npos)
+        secondary = id;
     }
   }
   for (const auto &id : ids) {
@@ -6890,12 +6893,12 @@ static std::vector<std::string> first_hi_answerers(std::vector<std::string> ids)
     ds_selected = true;
     if (slot_blocked_for_hi(model_slot(idx))) ds_blocked = true;
   }
-  if (!ds_selected || !ds_blocked || qwen.empty()) return ids;
-  if (Lane *l = lane_of(qwen); l && l->busy.load()) return ids;
+  if (!ds_selected || !ds_blocked || secondary.empty()) return ids;
+  if (Lane *l = lane_of(secondary); l && l->busy.load()) return ids;
   std::vector<std::string> out;
-  out.push_back(qwen);
+  out.push_back(secondary);
   for (const auto &id : ids) {
-    if (id == qwen) continue;
+    if (id == secondary) continue;
     const int idx = agent_index(id);
     if (idx < 0) continue;
     if (bot_model_id(idx).find("deepseek") != std::string::npos) continue;

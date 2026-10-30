@@ -5286,6 +5286,9 @@ class GlmLayoutStartup(unittest.TestCase):
     self.assertTrue(retry_calls[0][3]['chat_template_kwargs']['enable_thinking'])
     self.assertFalse(retry_calls[1][3]['chat_template_kwargs']['enable_thinking'])
     self.assertEqual([p[3]['max_tokens'] for p in retry_calls],[256,256])
+    self.assertNotIn('stop',retry_calls[0][3],'Thinking must not stop at </think>')
+    self.assertIn('</think>',retry_calls[1][3]['stop'],'Nonthinking retry needs stop')
+    self.assertNotIn('\n\n## ',retry_calls[1][3]['stop'])
     self.assertEqual(retry_calls[0][3]['messages'],retry_calls[1][3]['messages'])
     self.assertNotIn('tools',retry_calls[1][3])
    finally:
@@ -5374,6 +5377,125 @@ class GlmLayoutStartup(unittest.TestCase):
   finally:
    Model.slot_block={}
    Model.restore_missing=False
+   proc.terminate()
+   try:proc.wait(timeout=5)
+   except subprocess.TimeoutExpired:proc.kill();proc.wait(timeout=5)
+   log.close();model.shutdown();model.server_close();tmp.cleanup()
+
+
+ def test_glm_chat_stops_stream_and_routes_greetings(self):
+  # Fast fake llama streams, real GLM room process; no model restart or flags.
+  Model.delay=0;Model.slot_delay={};Model.script=[];Model.reply=None
+  Model.script_scope=None;Model.slot_block={};Model.restore_missing=False
+  Model.barrier_token='';Model.barrier_release=None;Model.hold_get=0
+  tmp=tempfile.TemporaryDirectory();root=pathlib.Path(tmp.name)
+  state=root/'state';state.mkdir()
+  state.joinpath('agents.json').write_text(json.dumps([
+   {'id':'deepseek-chat','name':'GLM-Q1','slot':1,'numa':0,'vm':'','memory':[]},
+   {'id':'qwen-numa1','name':'GLM-Q2','slot':2,'numa':1,'vm':'','memory':[]}]))
+  model=http.server.ThreadingHTTPServer(('127.0.0.1',0),Model)
+  threading.Thread(target=model.serve_forever,daemon=True).start()
+  ui,bridge=port(),port();glm={}
+  for line in (ROOT/'ops/room/glm.env').read_text().splitlines():
+   parts=shlex.split(line,comments=True)
+   if parts and '=' in parts[0]:
+    key,value=parts[0].split('=',1);glm[key]=value
+  glm['MAG_ROOM_PREWARM']='0'
+  glm['MAG_ROOM_PRESETS']=str(ROOT/'ops/room/presets.json')
+  env=dict(os.environ,MAG_OWNER_CANONICAL_LOGIN='chris@github',
+   MAG_TEST_ALLOW_LOCAL_OWNER='1',MAG_ROOM_STATE=str(state),
+   MAG_ROOM_PORT=str(ui),MAG_ROOM_BRIDGE_PORT=str(bridge),
+   MAG_ROOM_BRIDGE_IP='127.0.0.1',
+   MAG_ROOM_BACKEND=f'http://127.0.0.1:{model.server_port}/v1/chat/completions',
+   MAG_ROOM_UI=str(ROOT/'mag-room/web/index.html'),MAG_ROOM_STATIC=str(ROOT/'mag-room/static'),
+   MAG_ROOM_MODEL_STATUS=str(root/'ms.json'),MAG_NETMODE=str(NETMODE),
+   MAG_TEST_NO_MEMGIT='1',MAG_ROOM_AGENT_CTL='/bin/false',
+   MAG_ROOM_GUEST_RUN='/bin/false',MAG_ROOM_MCP_AUTO='0',
+   MAG_ROOM_SINGLE_BOT='auto',MAG_ROOM_SINGLE_BOT_VM='on',
+   MAG_ROOM_DUAL_NUMA='0',**glm)
+  log=open(root/'room.log','a')
+  proc=subprocess.Popen(['timeout','-k','1','29',str(ROOT/'build/magroom')],
+                        env=env,stdout=log,stderr=log)
+  try:
+   wait_http(f'http://127.0.0.1:{ui}/api/state',timeout=8,proc=proc)
+   token=_ui_token(ui)
+   def post(body):
+    req=urllib.request.Request(f'http://127.0.0.1:{ui}/api/message',
+      data=json.dumps(body).encode(),
+      headers={'Content-Type':'application/json','X-MAG-Token':token})
+    with urllib.request.urlopen(req,timeout=4) as resp:return json.load(resp)
+   def state_():
+    with urllib.request.urlopen(f'http://127.0.0.1:{ui}/api/state',timeout=2) as resp:
+     return json.load(resp)
+   def calls_after(start,marker,count):
+    end=time.monotonic()+6
+    while time.monotonic()<end:
+     calls=[p for p in list(Model.paths)[start:]
+            if p[0]=='/v1/chat/completions' and p[3].get('max_tokens')!=1
+            and marker in json.dumps(p[3])]
+     if len(calls)>=count:return calls
+     time.sleep(.03)
+    self.fail('Missing GLM backend calls for '+marker)
+   def idle_after(marker):
+    end=time.monotonic()+7
+    while time.monotonic()<end:
+     room=state_()
+     if (not room['busy'] and not room['pending'] and
+         any(m.get('role')=='user' and marker in (m.get('content') or '')
+             for m in room['room'])):
+      return room
+     time.sleep(.04)
+    self.fail('GLM turn did not finish: '+marker)
+   # Stop strings are llama.cpp /v1/chat/completions request parameters, not flags.
+   # Multiple SSE fragments deliberately split each forbidden token.
+   for n,parts in enumerate((
+      ['5','</thi','nk>','GARBAGE-THINK-END'],
+      ['<thi','nk>','GARBAGE-THINK-OPEN'],
+      ['5','<|us','er|>','GARBAGE-SPECIAL'],
+      ['5','\n\n#','# ','GARBAGE-HEADING'])):
+    marker='GLM-CUT-'+str(n)+'-'+str(time.monotonic_ns())
+    Model.script_scope=marker
+    Model.script=[parts]
+    before=len(Model.paths)
+    self.assertTrue(post({'text':marker,'bots':['deepseek-chat']})['accepted'])
+    req=calls_after(before,marker,1)[0][3]
+    self.assertLessEqual(req['max_tokens'],256)
+    self.assertTrue({'</think>','<think>','<|user|>','<|observation|>'}.issubset(set(req['stop'])),req)
+    self.assertNotIn('\n\n## ',req['stop'],'Heading stop is client-side only')
+    room=idle_after(marker)
+    text=json.dumps(room['room'],ensure_ascii=False)
+    self.assertNotIn('GARBAGE-',text)
+    self.assertNotIn('</think>',text)
+    self.assertNotIn('<think>',text)
+    self.assertNotIn('<|user|>',text)
+    if n!=1:
+     self.assertTrue(any(m.get('role')=='assistant' and
+           (m.get('content') or '').strip()=='5'
+           for m in room['room']),room['room'][-3:])
+    Model.script_scope=None
+    Model.script=[]
+   # A single leading greeting + group target broadcasts, but a middle
+   # mention of 'beide' must retain GLM's one-host arbitration.
+   for text_,expected in [('Hi beide: wie viel ist 2+3?',2),
+                          ('ich mag beide Farben',1)]:
+    marker='GLM-GROUP-'+str(time.monotonic_ns())
+    before=len(Model.paths)
+    self.assertTrue(post({'text':text_+' '+marker,
+                          'bots':['deepseek-chat','qwen-numa1']})['accepted'])
+    calls=calls_after(before,marker,expected)
+    idle_after(marker)
+    self.assertEqual(len(calls),expected,calls)
+   # Forgetting memory indexes across multiple agents is ambiguous.
+   for ids in (['deepseek-chat','qwen-numa1'],None):
+    body={'text':'/vergiss 1'}
+    if ids is not None:body['bots']=ids
+    with self.assertRaises(urllib.error.HTTPError) as error:
+     post(body)
+    self.assertEqual(error.exception.code,400)
+    self.assertIn('Für /vergiss genau einen Bot wählen',
+                  error.exception.read().decode())
+  finally:
+   Model.script_scope=None;Model.script=[]
    proc.terminate()
    try:proc.wait(timeout=5)
    except subprocess.TimeoutExpired:proc.kill();proc.wait(timeout=5)

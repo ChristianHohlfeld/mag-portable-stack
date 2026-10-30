@@ -4571,6 +4571,7 @@ class VisibleReplyFilter {
   }
 };
 static void persist_configured_slot(int idx);
+static void cancel_llama_slot(int idx, int timeout_ms);
 static bool prefix_slot_rpc(int idx, const std::string &model, const char *action,
                             const std::string &file, int timeout_ms);
 static std::string prefix_file(int idx, const std::string &model);
@@ -4685,10 +4686,19 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   // 1024-token limit inside reasoning. Limit that single decode to 128 tokens.
   if (no_tools && model.rfind("glm-5.3-flash", 0) == 0)
     max_output = std::min(MAX_TOKENS, std::clamp(
-        envi("MAG_ROOM_GLM_CHAT_MAX_TOKENS", 256), 32, 1024));
+        envi("MAG_ROOM_GLM_CHAT_MAX_TOKENS", 256), 32, 256));
   if (thinking && model.rfind("glm-5.3-flash", 0) == 0)
     max_output = std::min(max_output, 256);
   body["max_tokens"] = max_output;
+  if (no_tools && model.rfind("glm-5.3-flash", 0) == 0 && !thinking) {
+    // llama.cpp applies stop strings to raw generation, including reasoning.
+    // Preserve </think> for thinking turns; no server flags/model reload.
+    Val stops = Val::array();
+    for (const char *stop : {"</think>", "<think>", "<|user|>",
+                             "<|observation|>", "<|", "<tool_call"})
+      stops.push(stop);
+    body["stop"] = stops;
+  }
   // GLM chat omits tools and tool_choice entirely for a stable template prefix.
   body["stream"] = true;
   // llama.cpp: stream prompt_progress {total,cache,processed,time_ms} while
@@ -4766,22 +4776,32 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
     backend_fd_slot() = c.fd;
   }
   SseAcc acc;
-  const bool glm_chat_stream = no_tools && model.rfind("glm-5.3-flash", 0) == 0;
+  // Thinking needs ThinkingContent to consume its own <think>…</think>
+  // boundaries; only nonthinking chat treats these as hard stop markers.
+  const bool glm_chat_stream = no_tools && model.rfind("glm-5.3-flash", 0) == 0 && !thinking;
   std::string glm_stream_pending;
-  bool glm_tool_cut = false;
+  bool glm_hard_cut = false;
+  // The server stop array is the primary guard. Hold partial delimiters in
+  // client chunks as a fallback so none can reach the room or SSE.
+  const std::vector<std::string> glm_stops = {
+      "</think>", "<think>", "<|", "<tool_call", "\n\n## "};
   auto visible_delta = [&](const std::string &s, bool finish = false) {
+    if (glm_hard_cut) return;
     visible_reply.feed(s, [&](const std::string &safe) {
       if (!glm_chat_stream) {
         acc.content += safe;
         if (!short_chat && !no_tools) on_delta("delta", safe);
         return;
       }
-      if (glm_tool_cut) return;
       glm_stream_pending += safe;
-      // Stream normal text immediately; buffer only a split raw tool tag.
-      const size_t a = glm_stream_pending.find("<tool_call");
-      const size_t b = glm_stream_pending.find("<|tool_call");
-      const size_t cut = std::min(a, b);
+      size_t cut = std::string::npos;
+      for (const auto &marker : glm_stops) {
+        const size_t pos = glm_stream_pending.find(marker);
+        if (pos == std::string::npos) continue;
+        // A heading at the very start is not an answer-following drift.
+        if (marker == "\n\n## " && acc.content.empty() && pos == 0) continue;
+        cut = std::min(cut, pos);
+      }
       if (cut != std::string::npos) {
         if (cut) {
           const std::string visible = glm_stream_pending.substr(0, cut);
@@ -4789,11 +4809,11 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
           on_delta("delta", visible);
         }
         glm_stream_pending.clear();
-        glm_tool_cut = true;
+        glm_hard_cut = true;
         return;
       }
       size_t hold = 0;
-      for (const std::string marker : {std::string("<tool_call"), std::string("<|tool_call")})
+      for (const auto &marker : glm_stops)
         for (size_t n = 1; n < marker.size() && n <= glm_stream_pending.size(); ++n)
           if (glm_stream_pending.compare(glm_stream_pending.size() - n, n, marker, 0, n) == 0)
             hold = std::max(hold, n);
@@ -4805,9 +4825,16 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
         glm_stream_pending.erase(0, ready);
       }
     }, finish);
-    if (finish && glm_chat_stream && !glm_tool_cut && !glm_stream_pending.empty()) {
-      acc.content += glm_stream_pending;
-      on_delta("delta", glm_stream_pending);
+    if (finish && glm_chat_stream && !glm_hard_cut && !glm_stream_pending.empty()) {
+      // An unfinished special-token prefix is not user-visible prose.
+      bool partial_marker = false;
+      for (const auto &marker : glm_stops)
+        if (marker.compare(0, glm_stream_pending.size(), glm_stream_pending) == 0)
+          partial_marker = true;
+      if (!partial_marker) {
+        acc.content += glm_stream_pending;
+        on_delta("delta", glm_stream_pending);
+      }
       glm_stream_pending.clear();
     }
   };
@@ -4888,19 +4915,32 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
     auto rc = d->find("reasoning_content");
     if (!rc) rc = d->find("reasoning");
     if (rc && !rc->asStr().empty()) {
-      if (!short_chat) {
+      if (!short_chat && !glm_chat_stream) {
         acc.reasoning += rc->asStr();
         on_delta("reasoning", rc->asStr());
       }
     }
     auto ct = d->find("content");
     if (ct && !ct->asStr().empty()) {
-      thinking_content.feed(ct->asStr(), [&](bool reasoning, const std::string &piece) {
-        if (reasoning) {
-          if (!short_chat) { acc.reasoning += piece; on_delta("reasoning", piece); }
-        }
-        else visible_delta(piece);
-      });
+      if (glm_chat_stream) {
+        // Do NOT pass GLM chat through ThinkingContent: it consumes the
+        // literal </think> delimiter before the hard-stop filter can see it.
+        visible_delta(ct->asStr());
+      } else {
+        thinking_content.feed(ct->asStr(), [&](bool reasoning, const std::string &piece) {
+          if (reasoning) {
+            if (!short_chat) { acc.reasoning += piece; on_delta("reasoning", piece); }
+          }
+          else visible_delta(piece);
+        });
+      }
+      if (glm_hard_cut) {
+        // Close the live generation immediately; the targeted cancel RPC
+        // below releases the llama slot even if it ignores the disconnect.
+        shutdown(c.fd, SHUT_RDWR);
+        t.finish = "stop";
+        break;
+      }
     }
     auto tc = d->find("tool_calls");
     if (tc && tc->isArr()) {
@@ -4927,6 +4967,8 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
     backend_fd_slot() = -1;
     c.close();
   }
+  if (glm_hard_cut && bot_idx >= 0 && !stop_flag().load())
+    cancel_llama_slot(bot_idx, 1000);
   const char *exit_reason = stop_flag().load() ? "stop" :
       c.budget_hit ? "budget" : c.stalled ? "stalled" :
       c.hit_deadline ? "budget" : !t.finish.empty() ? "done" :

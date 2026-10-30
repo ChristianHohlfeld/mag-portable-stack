@@ -37,7 +37,7 @@ SLOTDIR=/var/lib/mag-llm/slots/glm
 FORMAT='glm-5.3-flash:kv-q8_0-q8_0:ctx32768:slot0'
 if [[ ! -f "$SLOTDIR/.kv-format" || $(cat "$SLOTDIR/.kv-format") != "$FORMAT" ]]; then
   rm -f -- "$SLOTDIR/mag-prefix-glm-5.3-flash-slot2.bin"
-  printf '%s\\n' "$FORMAT" > "$SLOTDIR/.kv-format.tmp"
+  printf '%s\n' "$FORMAT" > "$SLOTDIR/.kv-format.tmp"
   mv -f -- "$SLOTDIR/.kv-format.tmp" "$SLOTDIR/.kv-format"
 fi
 # slot0 is the llama id_slot: parallel=1; slot2 is the durable room

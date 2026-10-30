@@ -4142,25 +4142,15 @@ static std::string tools_json(int bot_idx, bool web) {
   if (CONFIGURED_MODEL && bot_model_id(bot_idx) == "glm-5.3-flash") {
     Val parsed;
     if (mj::parse(arr, parsed) && parsed.isArr()) {
-      std::function<void(Val &, bool)> compact = [&](Val &v, bool top) {
+      std::function<void(Val &)> compact = [&](Val &v) {
         if (v.isArr()) {
-          for (auto &item : *v.arr) compact(item, false);
+          for (auto &item : *v.arr) compact(item);
         } else if (v.isObj()) {
           auto &fields = *v.obj;
           fields.erase(std::remove_if(fields.begin(), fields.end(),
-              [&](auto &kv) {
-                if (kv.first != "description") return false;
-                // Preserve a short top-level hint for correct tool selection.
-                if (top && kv.second.type == Val::STR) {
-                  std::string hint = kv.second.asStr();
-                  const auto stop = hint.find_first_of("\\n.");
-                  if (stop != std::string::npos && stop > 0) hint.resize(stop);
-                  kv.second = mj::utf8_cut(hint, 96);
-                  return false;
-                }
-                return true;
-              }), fields.end());
-          for (auto &kv : fields) compact(kv.second, false);
+              [](const auto &kv) { return kv.first == "description"; }),
+              fields.end());
+          for (auto &kv : fields) compact(kv.second);
         }
       };
       for (auto &tool : *parsed.arr) {
@@ -4170,10 +4160,10 @@ static std::string tools_json(int bot_idx, bool web) {
           for (auto &kv : fields)
             if (kv.first == "description" && kv.second.type == Val::STR) {
               std::string hint = kv.second.asStr();
-              const auto stop = hint.find_first_of("\\n.");
+              const auto stop = hint.find_first_of("\n.");
               if (stop != std::string::npos && stop > 0) hint.resize(stop);
               kv.second = mj::utf8_cut(hint, 96);
-            } else if (kv.first == "parameters") compact(kv.second, false);
+            } else if (kv.first == "parameters") compact(kv.second);
         }
       }
       arr = mj::dump(parsed);

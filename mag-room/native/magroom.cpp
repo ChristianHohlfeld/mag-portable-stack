@@ -4957,8 +4957,7 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   // next room start reloads, so a restart does not prefill the prompt again.
   // A short Proaktiv prompt must not replace the saved human prefix.
   // Cancel restores that file so the next hi stays a cache hit.
-  if (t.error.empty() && !TL_SELFTALK)
-    persist_configured_slot(bot_idx);
+  // Full-slot save on each turn is disabled; prewarm saves pure anchor only.
   return t;
 }
 
@@ -8099,7 +8098,7 @@ static uint64_t fnv64(const std::string &s) {
   return h;
 }
 static std::string prefix_file(int idx, const std::string &model) {
-  return CONFIGURED_MODEL ? "mag-prefix-" + model + "-slot" + std::to_string(model_slot(idx)) + ".bin"
+  return CONFIGURED_MODEL ? "mag-prefix-" + model + "-slot" + std::to_string(model_slot(idx)) + "-prefix.bin"
                          : "mag-prefix-" + model + ".bin";
 }
 static bool prefix_slot_rpc(int idx, const std::string &model, const char *action,
@@ -8358,6 +8357,9 @@ static void agents_changed();
 // System+tools is ~13k tokens. n_past=1, n_decoded>0 or a 12-token stub is
 // not that prefix (live: cache_size=12, then a 3.5 min prefill).
 static const long PREFIX_RESIDENT_TOKENS = 2048;
+static long prefix_required_tokens(const std::string &model) {
+  return model.rfind("glm-5.3-flash", 0) == 0 ? 7700 : PREFIX_RESIDENT_TOKENS;
+}
 static bool prefix_gate_on() {
   return CONFIGURED_MODEL && env("MAG_ROOM_PREWARM", "1") == "1";
 }
@@ -8511,7 +8513,7 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
   // the system+tools prefix is not that KV (live n_past=1). A large count,
   // or a prompt string with no count, is left untouched.
   const bool prefix_resident = count_known
-      ? cache_tokens >= PREFIX_RESIDENT_TOKENS
+      ? cache_tokens >= prefix_required_tokens(model)
       : (ram_warm && have_current && !prefix_changed);
   bool restored = false;
   bool skip = false;
@@ -8545,7 +8547,8 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
   if (CONFIGURED_MODEL && (!ram_known || slot_busy)) {
     skip = true;
     why = "busy"; // /slots timed out or the slot is prefilling: do not clobber it
-  } else if (count_known && cache_tokens >= PREFIX_RESIDENT_TOKENS) {
+  } else if (count_known && cache_tokens >= prefix_required_tokens(model) &&
+             have_current && !prefix_changed) {
     // The slot already holds system+tools. Restoring a file or posting a
     // chat completion here is the p0=0 wipe and the second full prefill.
     // A stale on-disk hash does not change that: the KV is the resident one.
@@ -8602,9 +8605,9 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
         u["content"] = build_transcript() + build_context_tail(idx, false, "") + (skills.empty() ? "" : "\n" + skills);
         msgs.push(u);
         if (CONFIGURED_MODEL) {
-          auto wire = wire_messages(idx, system, tool_defs, build_context_tail(idx, false, ""));
+          // Pure system+tools anchor, no transcript/history in checkpoint.
           msgs = Val::array();
-          for (const auto &m : wire) msgs.push(m);
+          msgs.push(sys);
         }
         body["messages"] = msgs;
         Val tt;
@@ -8614,7 +8617,8 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
         body["cache_prompt"] = true;
         if (CONFIGURED_MODEL) body["id_slot"] = 0;
         Val kwargs = Val::object();
-        bool thinking_on = bot_thinking(idx);
+        bool thinking_on = CONFIGURED_MODEL &&
+            model.rfind("glm-5.3-flash", 0) == 0 ? false : bot_thinking(idx);
         // DeepSeek rejects an assistant-ending prefill while thinking is on.
         // The room turn skips that request. Prewarm still has to post
         // (the slot file is written only after this completion); thinking
@@ -8687,7 +8691,18 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
                            (ok && code == 200 && !cancelled && !skip)))
     mark_prefix_warm(model_slot(idx));
   if (seq.owns_lock()) seq.unlock();
-  if (!(skip && std::string(why) == "busy"))
+  // State transitions only; avoid repeated ram_warm/prefix_changed spam.
+  static std::mutex prewarm_log_mtx;
+  static std::map<std::string, std::string> prewarm_log_states;
+  const std::string next_log = std::string(why) + ":" +
+      (ok ? "1" : "0") + ":" + (saved ? "1" : "0") + ":" + (restored ? "1" : "0");
+  bool log_once = false;
+  {
+    std::lock_guard<std::mutex> lk(prewarm_log_mtx);
+    log_once = prewarm_log_states[model] != next_log;
+    prewarm_log_states[model] = next_log;
+  }
+  if (log_once)
     std::cerr << "prompt-prewarm model=" << model << " ok=" << (ok ? 1 : 0)
             << " status=" << code << " ms=" << ms
             << " ram_warm=" << (ram_warm ? 1 : 0)

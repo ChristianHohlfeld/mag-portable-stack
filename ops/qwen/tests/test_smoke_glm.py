@@ -138,7 +138,7 @@ class SmokeGLM(unittest.TestCase):
         calls, opener = self.fake(content="READY", reasoning="", finish="stop")
         with mock.patch.object(SMOKE.urllib.request, "urlopen", side_effect=opener):
             SMOKE.request(8192, [{"role": "user", "content": "Reply READY."}])
-        self.assertEqual(calls[0]["chat_template_kwargs"], {"enable_thinking": False, "reasoning_effort": "low", "clear_thinking": True})
+        self.assertEqual(calls[0]["chat_template_kwargs"], {"enable_thinking": False})
         self.assertEqual(calls[0]["max_tokens"], 192)
 
     def test_reasoning_alone_never_passes_roundtrip(self):

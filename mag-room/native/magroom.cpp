@@ -5935,7 +5935,7 @@ static std::string glm_chat_memory(const std::string &id) {
   size_t bytes = 0;
   for (size_t i = start; i < items.size(); ++i) {
     const std::string line = "- " + memory_line_text(items[i]);
-    if (bytes + line.size() > 560) break; // conservative <=150-token budget
+    if (bytes + line.size() > 360) break; // conservative approx <=150 tokens
     out += "\n" + line;
     bytes += line.size();
   }

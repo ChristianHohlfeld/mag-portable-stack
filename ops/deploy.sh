@@ -528,7 +528,7 @@ try:
     expected = {secondary}
     if require_ds:
         expected.add("deepseek")
-    expected_names = " and ".join(sorted(expected))
+    expected_names = ("DeepSeek and " if require_ds else "") + ("GLM" if secondary == "glm" else "Qwen" if secondary == "qwen" else "DeepSeek")
     with urllib.request.urlopen("http://127.0.0.1:8766/api/state", timeout=8) as r:
         state = json.load(r)
     agents = [a for a in state.get("agents", []) if a.get("enabled") is not False]

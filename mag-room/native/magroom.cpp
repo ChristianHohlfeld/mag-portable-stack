@@ -8123,7 +8123,9 @@ static uint64_t fnv64(const std::string &s) {
   return h;
 }
 static std::string prefix_file(int idx, const std::string &model) {
-  return CONFIGURED_MODEL ? "mag-prefix-" + model + "-slot" + std::to_string(model_slot(idx)) + "-prefix.bin"
+  if (CONFIGURED_MODEL && model.rfind("glm-5.3-flash", 0) == 0)
+    return "mag-prefix-" + model + "-slot" + std::to_string(model_slot(idx)) + "-prefix.bin";
+  return CONFIGURED_MODEL ? "mag-prefix-" + model + "-slot" + std::to_string(model_slot(idx)) + ".bin"
                          : "mag-prefix-" + model + ".bin";
 }
 static bool prefix_slot_rpc(int idx, const std::string &model, const char *action,

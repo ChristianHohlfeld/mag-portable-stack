@@ -5223,8 +5223,8 @@ class GlmLayoutStartup(unittest.TestCase):
                      p[3].get('max_tokens')!=1])
    self.assertTrue(post('/api/message',{'text':'/merk Test-Fakt-ZQ',
        'bots':['qwen-numa1']})['ok'])
-   st=json.load(urllib.request.urlopen(f'http://127.0.0.1:{ui}/api/state',timeout=2))
-   self.assertTrue(any('Test-Fakt-ZQ' in str(v) for v in st['agents'][1].get('memory',[])))
+   persisted=json.loads((state/'agents.json').read_text())
+   self.assertTrue(any('Test-Fakt-ZQ' in str(v) for v in persisted[1].get('memory',[])))
    self.assertEqual(count_before,len([p for p in Model.paths
        if p[0]=='/v1/chat/completions' and p[3].get('max_tokens')!=1]))
    # The last short greeting, not accumulated room text, enters user message.

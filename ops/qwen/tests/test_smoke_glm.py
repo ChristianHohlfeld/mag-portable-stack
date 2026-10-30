@@ -45,7 +45,7 @@ class SmokeGLM(unittest.TestCase):
             with contextlib.redirect_stdout(io.StringIO()) as log:
                 msg = SMOKE.request(8192, [{"role": "user", "content": "Reply READY."}])
         # The room's contract; the pinned GLM template honours it.
-        self.assertEqual(calls[0]["chat_template_kwargs"], {"enable_thinking": False})
+        self.assertEqual(calls[0]["chat_template_kwargs"], {"enable_thinking": False, "reasoning_effort": "low", "clear_thinking": True})
         self.assertEqual(calls[0]["max_tokens"], 192)
         self.assertIn('"finish_reason": "length"', log.getvalue())
         self.assertIn('"reasoning_content": "working"', log.getvalue())
@@ -57,7 +57,7 @@ class SmokeGLM(unittest.TestCase):
         with mock.patch.object(SMOKE.urllib.request, "urlopen", side_effect=opener):
             with contextlib.redirect_stdout(io.StringIO()):
                 msg = SMOKE.request(8192, [{"role": "user", "content": "Reply READY."}], thinking=True)
-        self.assertEqual(calls[0]["chat_template_kwargs"], {"enable_thinking": True})
+        self.assertEqual(calls[0]["chat_template_kwargs"], {"enable_thinking": True, "reasoning_effort": "low", "clear_thinking": True})
         self.assertEqual(calls[0]["max_tokens"], 512)
         SMOKE.require_visible_content(msg, "Normal chat failed")
 
@@ -138,7 +138,7 @@ class SmokeGLM(unittest.TestCase):
         calls, opener = self.fake(content="READY", reasoning="", finish="stop")
         with mock.patch.object(SMOKE.urllib.request, "urlopen", side_effect=opener):
             SMOKE.request(8192, [{"role": "user", "content": "Reply READY."}])
-        self.assertEqual(calls[0]["chat_template_kwargs"], {"enable_thinking": False})
+        self.assertEqual(calls[0]["chat_template_kwargs"], {"enable_thinking": False, "reasoning_effort": "low", "clear_thinking": True})
         self.assertEqual(calls[0]["max_tokens"], 192)
 
     def test_reasoning_alone_never_passes_roundtrip(self):

@@ -3947,17 +3947,21 @@ static void model_watcher_loop() {
   std::string last;
   bool was_ready = false, was_secondary_ready = false;
   while (!SHUTDOWN.load()) {
-    // While a turn or prefill holds the queue, do not GET /health and do not
-    // replace the last idle sample with "busy". The caller overlays that.
-    if (inference_hot()) {
+    // Configured NUMA backends have separate task queues. DeepSeek can be
+    // loading while GLM is already responding: do not skip *both* health
+    // checks just because either model is doing a long prefill.
+    const bool hot = inference_hot();
+    if (hot && !CONFIGURED_MODEL) {
       std::this_thread::sleep_for(seconds(5));
       continue;
     }
-    ModelStatus st = probe_model_status();
-    note_model_busy(st);
-    {
-      std::lock_guard<std::mutex> lk(MODEL_ST_MTX);
-      MODEL_ST = st;
+    ModelStatus st;
+    if (!CONFIGURED_MODEL) {
+      st = probe_model_status();
+    } else {
+      st.at = now_s();
+      st.state = "loading";
+      st.label = "Modellserver startet …";
     }
     std::string key = st.state + "|" + st.label + "|" + st.detail;
     // A (re)started model server has an empty prompt cache: load the saved
@@ -3975,12 +3979,11 @@ static void model_watcher_loop() {
                       reply, &health, nullptr, 2000) && health == 200;
     }
     if (CONFIGURED_MODEL) {
-      // Probe both NUMA servers through the gateway. Never while a generation
-      // holds the task queue: that probe is the /health flood on :8191.
+      // Probe idle NUMA slots independently. The OTHER model's prefill
+      // must not starve this slot's readiness edge or first-hi dispatch.
       std::string health_key;
-      const bool hot = inference_hot();
       for (int s = 1; s <= ROOM_MAX_BOTS; ++s) {
-        if (hot || slot_is_busy(s)) {
+        if (slot_is_busy(s)) {
           health_key += 'b';
           secondary_ready = secondary_ready || ROOM_MODEL_HEALTH[s - 1] == 1;
           continue;
@@ -4008,6 +4011,23 @@ static void model_watcher_loop() {
         secondary_ready = secondary_ready || ok || ROOM_MODEL_HEALTH[s - 1] == 1;
       }
       key += "|" + health_key;
+      const bool primary_ready = ROOM_MODEL_HEALTH[0].load() == 1;
+      st.ready = primary_ready || secondary_ready;
+      if (primary_ready) {
+        st.state = "ready";
+        st.label = "Modell bereit (" + ROOM_MODEL.backend(1).label + ")";
+      } else if (secondary_ready) {
+        st.state = "loading";
+        st.label = ROOM_MODEL.backend(2).label + " bereit – DeepSeek lädt";
+      } else {
+        st.state = "loading";
+        st.label = "Modelle werden geladen …";
+      }
+    }
+    note_model_busy(st);
+    {
+      std::lock_guard<std::mutex> lk(MODEL_ST_MTX);
+      MODEL_ST = st;
     }
     const bool slots_pending = CONFIGURED_MODEL &&
         env("MAG_ROOM_PREWARM", "1") == "1" &&
@@ -6861,7 +6881,9 @@ static bool slot_blocked_for_hi(int slot) {
   if (slot < 1 || slot > ROOM_MAX_BOTS) return false;
   if (slot_is_busy(slot)) return true;
   if (ROOM_MODEL_HEALTH[slot - 1].load() == 2) return true;
-  return SLOT_WARM[slot - 1].load() == 2;
+  // 0 means not yet probed: it is NOT a known-resident prompt. A first
+  // greeting must not be assigned to that cold/unknown DeepSeek slot.
+  return prefix_gate_on() && SLOT_WARM[slot - 1].load() != 1;
 }
 static std::vector<std::string> first_hi_answerers(std::vector<std::string> ids) {
   if (!CONFIGURED_MODEL || ids.empty()) return ids;
@@ -6892,6 +6914,9 @@ static std::vector<std::string> first_hi_answerers(std::vector<std::string> ids)
     if (slot_blocked_for_hi(model_slot(idx))) ds_blocked = true;
   }
   if (!ds_selected || !ds_blocked || secondary.empty()) return ids;
+  // Only hand off to a resident secondary model: moving the greeting to
+  // another cold prefix would merely transfer the same loading delay.
+  if (!bot_prefix_ready(secondary)) return ids;
   if (Lane *l = lane_of(secondary); l && l->busy.load()) return ids;
   std::vector<std::string> out;
   out.push_back(secondary);
@@ -8479,8 +8504,11 @@ static void schedule_prewarm() {
       continue;
     if (CONFIGURED_MODEL) {
       const int slot = model_slot(idx);
-      // A warm slot stays put. The watcher retries only the cold one so a
-      // leftover DeepSeek skip=ram cannot starve Qwen (or the reverse).
+      // Never prewarm a backend known to be loading/unavailable. The
+      // watcher launches it as soon as that exact NUMA slot reports healthy.
+      if (slot >= 1 && slot <= ROOM_MAX_BOTS &&
+          ROOM_MODEL_HEALTH[slot - 1].load() == 2) continue;
+      // A warm slot stays put. The watcher retries only the cold one.
       if (slot >= 1 && slot <= ROOM_MAX_BOTS && SLOT_WARM[slot - 1].load() == 1)
         continue;
     }

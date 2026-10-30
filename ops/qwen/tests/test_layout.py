@@ -44,7 +44,7 @@ install -D -m 0644 "$REPO/ops/qwen/mag-llm-qwen.service" "$HOST/etc/systemd/syst
 ''')
   glm_stage=self.repo/'ops/glm/install.sh';glm_stage.write_text('''#!/bin/bash
 set -eu
-for name in start.sh verify-model.sh model.sizes; do
+for name in start.sh verify-model.sh model.sizes model.sha256; do
  install -D -m 0755 "$REPO/ops/glm/$name" "$HOST/usr/local/lib/mag-glm/$name"
 done
 install -D -m 0644 "$REPO/ops/qwen/runtime.sha" "$HOST/usr/local/lib/mag-glm/runtime.sha"
@@ -407,15 +407,29 @@ json.dump(s,open(p,'w'))
   self.assertEqual((ROOT/'ops/room/layout').read_text().strip(),'glm')
   sizes=[l.split() for l in (ROOT/'ops/glm/model.sizes').read_text().splitlines()]
   self.assertEqual(len(sizes),15)
+  self.assertEqual(sum(int(row[0]) for row in sizes),92109221728)
+  hashes=[l.split() for l in (ROOT/'ops/glm/model.sha256').read_text().splitlines()]
+  self.assertEqual([row[1] for row in hashes],[row[1] for row in sizes])
+  self.assertTrue(all(len(row[0])==64 for row in hashes))
  def test_verify_model_checks_sizes_and_header(self):
-  d=self.base/'glm';d.mkdir();sizes=self.base/'sizes'
-  lines=[]
+  d=self.base/'glm';d.mkdir();pins=self.base/'sizes';hashfile=self.base/'sha256'
+  lines=[];checks=[]
   for i in range(1,16):
-   n='GLM-5.3-Flash-IQ1_M-%05d-of-00015.gguf'%i;(d/n).write_bytes(b'GGUF'+b'x'*i);lines.append('%d  %s'%(4+i,n))
-  sizes.write_text('\n'.join(lines)+'\n')
-  env=dict(os.environ,MAG_GLM_DIR=str(d),MAG_GLM_SIZES=str(sizes))
+   n='GLM-5.3-Flash-IQ2_XS-%05d-of-00015.gguf'%i
+   payload=b'GGUF'+b'x'*i
+   (d/n).write_bytes(payload)
+   lines.append('%d  %s'%(len(payload),n))
+   checks.append('%s  %s'%(hashlib.sha256(payload).hexdigest(),n))
+  pins.write_text('\n'.join(lines)+'\n')
+  hashfile.write_text('\n'.join(checks)+'\n')
+  env=dict(os.environ,MAG_GLM_DIR=str(d),MAG_GLM_SIZES=str(pins),MAG_GLM_SHA256S=str(hashfile))
   run=lambda:subprocess.run(['bash',str(ROOT/'ops/glm/verify-model.sh')],env=env,capture_output=True,text=True)
   p=run();self.assertEqual(p.returncode,0,p.stderr)
-  (d/'GLM-5.3-Flash-IQ1_M-00004-of-00015.gguf').write_bytes(b'GGUFxx')
-  p=run();self.assertNotEqual(p.returncode,0);self.assertIn('size mismatch',p.stderr)
+  env['MAG_GLM_VERIFY_SHA256']='1'
+  p=run();self.assertEqual(p.returncode,0,p.stderr)
+  (d/'GLM-5.3-Flash-IQ2_XS-00004-of-00015.gguf').write_bytes(b'GGUFxx')
+  p=run();self.assertEqual(p.returncode,4);self.assertIn('size mismatch',p.stderr)
+  # Same length and header, different bytes: only SHA256 detects corruption.
+  (d/'GLM-5.3-Flash-IQ2_XS-00004-of-00015.gguf').write_bytes(b'GGUFzzzz')
+  p=run();self.assertEqual(p.returncode,4);self.assertIn('SHA256 mismatch',p.stderr)
 if __name__=='__main__':unittest.main()

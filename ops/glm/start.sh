@@ -15,7 +15,7 @@ fail(){ echo "GLM NUMA1: $*" >&2; exit 4; }
 REV=$(cat /usr/local/lib/mag-glm/runtime.sha)
 [[ $REV =~ ^[a-f0-9]{40}$ ]] || fail 'runtime sha invalid'
 BIN="/home/chris/.local/qwen4exp/$REV-mag-cp1/bin/llama-server"
-MODEL="/home/chris/models/GLM-5.3-Flash-GGUF-IQ1_M/GLM-5.3-Flash-IQ1_M-00001-of-00015.gguf"
+MODEL="/home/chris/models/GLM-5.3-Flash-GGUF-IQ2_XS/GLM-5.3-Flash-IQ2_XS-00001-of-00015.gguf"
 TEMPLATE=/usr/local/lib/mag-glm/chat-template.jinja
 [[ -x "$BIN" && -f "$MODEL" && -f "$TEMPLATE" ]] || fail 'runtime / GGUF / chat template missing'
 [[ $(cat "/home/chris/.local/qwen4exp/$REV-mag-cp1/bin/source-commit") == "$REV" ]] || fail 'runtime version not pinned'
@@ -25,10 +25,10 @@ systemctl is-active --quiet mag-llm-qwen.service && fail 'Qwen still running on 
 for u in mag-backup-daily mag-backup-weekly mag-backup-monthly mag-backup-restore-test mag-backup-deploy mag-backup-clear; do
   systemctl is-active --quiet "$u.service" && fail "backup active: $u"
 done
-# 66 GB weights + 32k KV/recurrent state + 16 GiB prompt RAM cache, plus reserve.
+# 85.8 GiB IQ2_XS weights + 32k KV/recurrent state + 16 GiB prompt RAM cache, plus reserve.
 read -r free file shmem < <(awk '$3=="MemFree:"{f=$4} $3=="FilePages:"{p=$4} $3=="Shmem:"{s=$4} END{print f+0,p+0,s+0}' /sys/devices/system/node/node1/meminfo)
 usable=$((free + (file > shmem ? file-shmem : 0)))
-(( usable >= 110*1024*1024 )) || fail 'NUMA1 reclaimable RAM below 110GiB (reserve for system/backup)'
+(( usable >= 145*1024*1024 )) || fail 'NUMA1 reclaimable RAM below 145GiB (reserve for system/backup)'
 bash /usr/local/lib/mag-glm/verify-model.sh || fail 'model verification failed'
 exec /usr/bin/numactl --physcpubind=14-27 --membind=1 "$BIN" \
   --model "$MODEL" --alias glm-5.3-flash \

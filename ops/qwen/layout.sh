@@ -16,7 +16,7 @@ files=(/etc/mag-stack/room-model.env /etc/mag-stack/room-layout /etc/mag-stack/r
        /usr/local/lib/mag-qwen/runtime.sha /etc/mag-qwen/model.sha256
        /etc/systemd/system/mag-llm-glm.service /usr/local/lib/mag-glm/start.sh
        /usr/local/lib/mag-glm/verify-model.sh /usr/local/lib/mag-glm/runtime.sha
-       /usr/local/lib/mag-glm/model.sizes /usr/local/lib/mag-glm/chat-template.jinja)
+       /usr/local/lib/mag-glm/model.sizes /usr/local/lib/mag-glm/model.sha256 /usr/local/lib/mag-glm/chat-template.jinja)
 # A failed attempt of the repo-declared layout is remembered per identity so the
 # auto-update timer does not stop/restart NUMA1 on every tick (see select below).
 FAILED=${MAG_LAYOUT_FAILED_FILE:-/var/lib/mag-stack/layout-failed}
@@ -100,7 +100,7 @@ valid "$layout" || fail 'MAG_ROOM_LAYOUT must be mixed, deepseek or glm'
 # One failed live attempt per identity; a new commit touching them retries.
 case $layout in mixed) env_file=mixed.env ;; glm) env_file=glm.env ;; *) env_file=model.env ;; esac
 id_files=("$ROOT/ops/qwen/runtime.sha" "$ROOT/ops/room/$env_file")
-if [[ $layout == glm ]]; then id_files+=("$ROOT"/ops/glm/{start.sh,verify-model.sh,model.sizes,mag-llm-glm.service,install.sh,arch-compat.patch,chat-template.jinja} "$ROOT/ops/qwen/build-runtime.sh"); fi
+if [[ $layout == glm ]]; then id_files+=("$ROOT"/ops/glm/{start.sh,verify-model.sh,model.sizes,model.sha256,mag-llm-glm.service,install.sh,arch-compat.patch,chat-template.jinja} "$ROOT/ops/qwen/build-runtime.sh"); fi
 identity="$layout $(cat "${id_files[@]}" 2>/dev/null | sha256sum | cut -c1-16)"
 # The probe is read-only and runs BEFORE the deploy's backup and service staging.
 # Never turn a failed desired layout into a successful deploy of the old one.
@@ -169,7 +169,7 @@ on_exit(){
 }
 trap on_exit EXIT
 # Stage scripts verify the GGUF (Qwen: 98 GB SHA or stamp; GLM: 15 pinned
-# part sizes) BEFORE any NUMA1 unit is stopped.
+# part sizes, optional SHA256) BEFORE any NUMA1 unit is stopped.
 if [[ $layout == mixed ]]; then bash "$ROOT/ops/qwen/install.sh" refresh; fi
 if [[ $layout == glm ]]; then bash "$ROOT/ops/glm/install.sh" refresh; fi
 # Remove the obsolete global Qwen conflict before starting it; reload changes

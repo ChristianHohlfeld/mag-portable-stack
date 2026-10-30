@@ -5486,13 +5486,19 @@ class GlmLayoutStartup(unittest.TestCase):
      retry_messages=requests[1][3]['messages']
      self.assertEqual(len(retry_messages),2,retry_messages)
      self.assertEqual(retry_messages[-1],{'role':'user','content':marker})
-    room=idle_after(marker)
+    expected='Saubere Antwort.' if n<3 else '5'
+    end=time.monotonic()+6
+    while time.monotonic()<end:
+     room=idle_after(marker)
+     if any(m.get('role')=='assistant' and
+            (m.get('content') or '').strip()==expected for m in room['room']):
+      break
+     time.sleep(.04)
     text=json.dumps(room['room'],ensure_ascii=False)
     self.assertNotIn('GARBAGE-',text)
     self.assertNotIn('</think>',text)
     self.assertNotIn('<think>',text)
     self.assertNotIn('<|user|>',text)
-    expected='Saubere Antwort.' if n<3 else '5'
     self.assertTrue(any(m.get('role')=='assistant' and
           (m.get('content') or '').strip()==expected
           for m in room['room']),room['room'][-3:])

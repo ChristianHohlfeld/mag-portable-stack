@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Transactional NUMA1 switch used by deploy.sh. NUMA0 is never stopped/restarted.
+# Transactional GLM layout switch: avoid evicting warm NUMA model units.
 set -euo pipefail
 ROOT=$(cd -- "$(dirname -- "$(readlink -f "$0")")/../.." && pwd)
 # shellcheck source=../mag-units.sh
@@ -49,7 +49,7 @@ rollback(){
       systemctl stop "${units[@]}"
     fi
   fi
-   if [[ -f $TXN/hidden-dropins ]]; then
+   if [[ ! -f $TXN/glm-dual && -f $TXN/hidden-dropins ]]; then
      while IFS= read -r f; do [[ ! -f "$f.glm-inactive" ]] || mv -f -- "$f.glm-inactive" "$f"; done < "$TXN/hidden-dropins"
    fi
   for unit in "${units[@]}"; do disable_if_installed "$unit"; done
@@ -58,8 +58,18 @@ rollback(){
       install -D -m "$(stat -c %a "$TXN/files$file")" "$TXN/files$file" "$file"
     else rm -f "$file"; fi
   done
+  if [[ -f $TXN/glm-dual ]]; then
+    # Remove legacy gateway mapping BEFORE systemd reload, not afterwards.
+    rm -f /etc/systemd/system/mag-audit-gateway.service.d/50-two-bots.conf
+  fi
   MAG_DEFER_DAEMON_RELOAD=0 mag_flush_daemon_reload --force
   for unit in "${units[@]}"; do
+    if [[ -f $TXN/glm-dual ]]; then
+      case "$unit" in
+        mag-llm-ds-node@*.service|mag-llm-ornith*)
+          disable_if_installed "$unit"; continue ;;
+      esac
+    fi
     if grep -Fxq "$unit" "$TXN/enabled"; then systemctl enable "$unit"; fi
     if [[ -f $TXN/changed ]] && grep -Fxq "$unit" "$TXN/active"; then
       if [[ ! -f $TXN/glm-dual ]] || grep -Fxq "$unit" "$TXN/restarted"; then

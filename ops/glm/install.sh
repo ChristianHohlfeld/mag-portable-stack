@@ -40,11 +40,17 @@ for part in /home/chris/models/GLM-5.3-Flash-GGUF-IQ2_XS/GLM-5.3-Flash-IQ2_XS-*-
 done
 echo 'GLM GGUF elementwise types preflight passed (15 shards)'
 install -d -o chris -g chris -m 0700 /var/lib/mag-llm/slots/glm /var/lib/mag-llm/slots/glm-q1
-# IQ1_M may be split, but its first GGUF must be present and nonempty.
-shopt -s nullglob
-iq1=(/home/chris/models/GLM-5.3-Flash-GGUF-IQ1_M/*IQ1_M*00001*.gguf)
-(( ${#iq1[@]} > 0 )) || { echo 'Missing IQ1_M first GGUF in GLM-5.3-Flash-GGUF-IQ1_M' >&2; exit 4; }
-[[ $(head -c 4 "${iq1[0]}") == GGUF ]] || { echo 'Invalid IQ1_M GGUF header' >&2; exit 4; }
+# Supports single GGUF or full split set, with TOFU size + SHA256 pins.
+# Verification reads weights; never restarts either model.
+install -m 0755 "$ROOT/ops/glm/verify-iq1.sh" /usr/local/lib/mag-glm/verify-iq1.sh
+bash /usr/local/lib/mag-glm/verify-iq1.sh
 install -m 0644 "$ROOT/ops/glm/mag-llm-glm@.service" /etc/systemd/system/mag-llm-glm@.service
+# Drop-ins are instance-local; the shared @.service and each launcher are
+# unchanged, so layout.sh does NOT restart a resident model for this staging.
+for id in q1 q2; do
+  dir="/etc/systemd/system/mag-llm-glm@$id.service.d"
+  install -d -m 0755 "$dir"
+  install -m 0644 "$ROOT/ops/glm/mag-llm-glm@$id.service.d/10-numa.conf" "$dir/10-numa.conf"
+done
 mag_daemon_reload
 echo 'GLM staged: unit installed, model instances not started'

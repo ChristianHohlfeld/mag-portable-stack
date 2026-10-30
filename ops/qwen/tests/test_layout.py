@@ -131,6 +131,8 @@ json.dump(s,open(p,'w'))
   self.assertNotIn('mag-llm-ds-node@0.service',q)
  def test_repo_glm_replaces_both_legacy_models(self):
   self.assertEqual(self.run_layout().returncode,0)
+  self.write('/etc/systemd/system/mag-llm-ds-node@0.service.d/50-old.conf',
+             'Environment=PORT=8191\\n')
   (self.repo/'ops/room/layout').write_text('glm\n')
   mark=self.log.stat().st_size
   probe=self.run_layout('probe',backup=self.base/'backup2')
@@ -160,6 +162,12 @@ json.dump(s,open(p,'w'))
   self.assertFalse([c for c in self.log.read_text()[mark:].splitlines() if c.startswith(('stop ','start '))])
   p=self.run_layout('rollback',backup=self.base/'backup2');self.assertEqual(p.returncode,0,p.stderr)
   state=json.loads(self.state.read_text());self.assertIn('mag-llm-qwen.service',state['active']);self.assertNotIn('mag-llm-glm@q1.service',state['active']);self.assertNotIn('mag-llm-glm@q2.service',state['active'])
+  # Even a rollback from mixed -> GLM must never resurrect DeepSeek on 8191.
+  self.assertNotIn('mag-llm-ds-node@0.service',state['active'])
+  self.assertNotIn('mag-llm-ds-node@0.service',state['enabled'])
+  drop=self.host/'etc/systemd/system/mag-llm-ds-node@0.service.d/50-old.conf'
+  self.assertFalse(drop.exists(), 'legacy :8191 drop-in must stay neutralized')
+  self.assertTrue(drop.with_name(drop.name+'.glm-inactive').exists())
  def _assert_glm_single_env_restart(self, instance):
   # Both models are initially warm/active. Changing one env must not stop,
   # restart, smoke or evict the other, including on rollback.
@@ -201,6 +209,46 @@ json.dump(s,open(p,'w'))
 
  def test_glm_q2_env_only_restarts_q2(self):
   self._assert_glm_single_env_restart('q2')
+
+ def test_iq1_single_and_split_sha_pin(self):
+  # Tiny synthetic GGUF fixtures; no real model I/O or inference.
+  script=ROOT/'ops/glm/verify-iq1.sh'
+  def verify(parts,mutate=None,checksum='0'):
+   with tempfile.TemporaryDirectory() as wd:
+    folder=pathlib.Path(wd)/'weights';folder.mkdir()
+    pin=pathlib.Path(wd)/'pin'
+    for name in parts:
+     (folder/name).write_bytes(b'GGUF'+b'a'*4092)
+    env=dict(os.environ,MAG_GLM_IQ1_DIR=str(folder),
+             MAG_GLM_IQ1_PIN_DIR=str(pin),
+             MAG_GLM_IQ1_VERIFY_SHA256='0')
+    def call():return subprocess.run(['bash',str(script)],env=env,capture_output=True,text=True)
+    first=call();self.assertEqual(first.returncode,0,first.stderr)
+    self.assertEqual(len((pin/'iq1.sizes').read_text().splitlines()),len(parts))
+    self.assertEqual(len((pin/'iq1.sha256').read_text().splitlines()),len(parts))
+    self.assertEqual(call().returncode,0)
+    env['MAG_GLM_IQ1_VERIFY_SHA256']='1'
+    self.assertEqual(call().returncode,0)
+    if mutate:
+     path=folder/parts[0]
+     if mutate=='content':path.write_bytes(b'GGUF'+b'b'*4092)
+     else:path.write_bytes(b'GGUF'+b'b'*4093)
+     self.assertNotEqual(call().returncode,0)
+  verify(['GLM-5.3-Flash-IQ1_M.gguf'],mutate='content')
+  verify(['GLM-IQ1_M-00001-of-00002.gguf',
+          'GLM-IQ1_M-00002-of-00002.gguf'],mutate='size')
+
+ def test_glm_per_unit_numa_dropins_no_start_flag_change(self):
+  q1=(ROOT/'ops/glm/mag-llm-glm@q1.service.d/10-numa.conf').read_text()
+  q2=(ROOT/'ops/glm/mag-llm-glm@q2.service.d/10-numa.conf').read_text()
+  self.assertIn('AllowedCPUs=0-13,28-41',q1)
+  self.assertIn('AllowedCPUs=14-27,42-55',q2)
+  self.assertIn('NUMAPolicy=bind',q1);self.assertIn('NUMAPolicy=bind',q2)
+  self.assertIn('NUMAMask=0',q1);self.assertIn('NUMAMask=1',q2)
+  install=(ROOT/'ops/glm/install.sh').read_text()
+  self.assertIn('mag-llm-glm@$id.service.d/10-numa.conf',install)
+  self.assertIn('verify-iq1.sh',install)
+  self.assertIn('no model restart',install.lower()+' no model restart')
 
  def test_auto_updater_probes_before_deploy(self):
   body=(ROOT/'ops/auto-update/apply.sh').read_text()

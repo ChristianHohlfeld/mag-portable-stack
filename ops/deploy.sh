@@ -206,6 +206,20 @@ rollback() {
 deployment_started=0
 room_switched=0
 gateway_switched=0
+# C7: only the room/gateway may restart; model units are immutable.
+glm_identity_guard=0
+glm_identity_before=""
+if (( ! FIRST_INSTALL )) && [[ $(cat /etc/mag-stack/room-layout 2>/dev/null || true) == glm ]]; then
+  glm_identity_guard=1
+  glm_identity_before=$(systemctl show -p ActiveEnterTimestamp -p MainPID mag-llm-glm@q1.service mag-llm-glm@q2.service)
+fi
+verify_glm_identity() {
+  (( ! glm_identity_guard )) ||
+    [[ $(systemctl show -p ActiveEnterTimestamp -p MainPID mag-llm-glm@q1.service mag-llm-glm@q2.service) == "$glm_identity_before" ]] || {
+    echo 'FAIL: GLM-Q1/Q2 PID or ActiveEnterTimestamp changed: no model restart allowed' >&2
+    return 1
+  }
+}
 layout_applied=0
 # Units are Type=simple: `mag_systemctl restart` returns before the process
 # listens. Retry a local health URL for up to 30 s, then one strict check.
@@ -386,6 +400,7 @@ if [[ -e /etc/mag-stack/room-model.env || -e /etc/systemd/system/mag-llm-ds-node
     fi
     bash "$SOURCE/ops/qwen/layout.sh" apply "$BACKUP"
     layout_applied=1
+    verify_glm_identity
   fi
   mag_flush_daemon_reload
   # The temporary live GLM-fast override must not mask the versioned defaults.
@@ -602,6 +617,7 @@ mag_daemon_reload
 bash "$NGINX_SYNC" commit
 # Late steps must not roll a switched release back. The deadline stays armed
 # so a hang here still kills child groups and runs deploy_exit.
+verify_glm_identity
 deployment_started=0
 MAG_RELEASE_ID="$RELEASE_ID" MAG_RELEASE_PREVIOUS_FILE="$BACKUP/previous-release" \
   bash "$SOURCE/ops/prune-releases.sh"

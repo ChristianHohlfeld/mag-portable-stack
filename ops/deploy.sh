@@ -171,12 +171,13 @@ rollback() {
    rm -f /etc/systemd/system/mag-120.service.d/30-multibot.conf /etc/systemd/system/mag-120.service.d/30-dual-numa.conf
  fi
  for config in room-model.env secondary-model.env; do
+   if (( layout_bypassed )) && [[ $config != room-model.env ]]; then continue; fi
    if [[ $config == room-model.env ]] && (( layout_applied )); then continue; fi
    if [[ -f $BACKUP/$config ]]; then cp -a "$BACKUP/$config" "/etc/mag-stack/$config"
    else rm -f "/etc/mag-stack/$config"; fi
  done
- # Never evict successful GLMs for a later nginx, room or gateway failure.
- if (( ! layout_applied )) && [[ -f $BACKUP/qwen-layout/helper.sh ]]; then
+ # Neither a successful model layout nor a room-only bypass may roll back live GLMs.
+ if (( ! layout_applied && ! layout_bypassed )) && [[ -f $BACKUP/qwen-layout/helper.sh ]]; then
    bash "$BACKUP/qwen-layout/helper.sh" rollback "$BACKUP"
  fi
  if (( gateway_switched )); then
@@ -206,7 +207,22 @@ rollback() {
 deployment_started=0
 room_switched=0
 gateway_switched=0
+# C7: only the room/gateway may restart; model units are immutable.
+glm_identity_guard=0
+glm_identity_before=""
+if (( ! FIRST_INSTALL )) && [[ $(cat /etc/mag-stack/room-layout 2>/dev/null || true) == glm ]]; then
+  glm_identity_guard=1
+  glm_identity_before=$(systemctl show -p ActiveEnterTimestamp -p MainPID mag-llm-glm@q1.service mag-llm-glm@q2.service)
+fi
+verify_glm_identity() {
+  (( ! glm_identity_guard )) ||
+    [[ $(systemctl show -p ActiveEnterTimestamp -p MainPID mag-llm-glm@q1.service mag-llm-glm@q2.service) == "$glm_identity_before" ]] || {
+    echo 'FAIL: GLM-Q1/Q2 PID or ActiveEnterTimestamp changed: no model restart allowed' >&2
+    return 1
+  }
+}
 layout_applied=0
+layout_bypassed=0
 # Units are Type=simple: `mag_systemctl restart` returns before the process
 # listens. Retry a local health URL for up to 30 s, then one strict check.
 wait_http() {
@@ -384,8 +400,36 @@ if [[ -e /etc/mag-stack/room-model.env || -e /etc/systemd/system/mag-llm-ds-node
       MAG_DEFER_DAEMON_RELOAD=0 mag_flush_daemon_reload
       mag_systemctl start mag-120.service
     fi
-    bash "$SOURCE/ops/qwen/layout.sh" apply "$BACKUP"
-    layout_applied=1
+    if (( glm_identity_guard )) && [[ $(cat "$SOURCE/ops/room/layout" 2>/dev/null) == glm ]]; then
+      # GLM is already live. This room-only release MUST NOT even invoke the
+      # model layout transaction (it can restart stale binaries/changed units).
+      # Fail closed if the installed model runtime differs from source.
+      for pair in \
+          "$SOURCE/ops/glm/start.sh:/usr/local/lib/mag-glm/start.sh" \
+          "$SOURCE/ops/glm/mag-llm-glm@.service:/etc/systemd/system/mag-llm-glm@.service" \
+          "$SOURCE/ops/glm/q1.env:/etc/mag-glm/q1.env" \
+          "$SOURCE/ops/glm/q2.env:/etc/mag-glm/q2.env" \
+          "$SOURCE/ops/glm/chat-template.jinja:/usr/local/lib/mag-glm/chat-template.jinja" \
+          "$SOURCE/ops/glm/mag-llm-glm@q1.service.d/10-numa.conf:/etc/systemd/system/mag-llm-glm@q1.service.d/10-numa.conf" \
+          "$SOURCE/ops/glm/mag-llm-glm@q2.service.d/10-numa.conf:/etc/systemd/system/mag-llm-glm@q2.service.d/10-numa.conf" \
+          "$SOURCE/ops/glm/verify-model.sh:/usr/local/lib/mag-glm/verify-model.sh" \
+          "$SOURCE/ops/glm/model.sizes:/usr/local/lib/mag-glm/model.sizes" \
+          "$SOURCE/ops/glm/model.sha256:/usr/local/lib/mag-glm/model.sha256" \
+          "$SOURCE/ops/qwen/runtime.sha:/usr/local/lib/mag-glm/runtime.sha"; do
+        left=${pair%%:*}; right=${pair#*:}
+        if ! cmp -s "$left" "$right"; then
+          echo "FAIL: GLM model runtime changed on disk: $right; refusing room-only deploy" >&2
+          exit 1
+        fi
+      done
+      layout_bypassed=1
+      install -m 0644 "$SOURCE/ops/room/glm.env" /etc/mag-stack/room-model.env
+      echo 'Room-only GLM deploy: bypassing model layout apply; Q1/Q2 stay resident'
+    else
+      bash "$SOURCE/ops/qwen/layout.sh" apply "$BACKUP"
+      layout_applied=1
+    fi
+    verify_glm_identity
   fi
   mag_flush_daemon_reload
   # The temporary live GLM-fast override must not mask the versioned defaults.
@@ -602,6 +646,7 @@ mag_daemon_reload
 bash "$NGINX_SYNC" commit
 # Late steps must not roll a switched release back. The deadline stays armed
 # so a hang here still kills child groups and runs deploy_exit.
+verify_glm_identity
 deployment_started=0
 MAG_RELEASE_ID="$RELEASE_ID" MAG_RELEASE_PREVIOUS_FILE="$BACKUP/previous-release" \
   bash "$SOURCE/ops/prune-releases.sh"

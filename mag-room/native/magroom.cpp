@@ -4745,7 +4745,8 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
              const std::function<void(const std::string &, const std::string &)>
                  &on_delta,
              bool thinking, int id_slot, const std::string &model = "",
-             int bot_idx = -1, bool short_chat = false, bool no_tools = false) {
+             int bot_idx = -1, bool short_chat = false, bool no_tools = false,
+             int q1_deadline_ms = 0) {
   Turn t;
   const auto backend_started = steady_clock::now();
   // DeepSeek rejects an assistant-ending prefill while thinking is on
@@ -4777,6 +4778,8 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   // LLM timeout so a normal answer is not cut at 60s.
   if (const char *turn = getenv("MAG_ROOM_TURN_DEADLINE_S"); turn && *turn)
     c.timeout_ms = std::min(c.timeout_ms, std::max(1, TURN_DEADLINE_S) * 1000);
+  if (no_tools && model == "glm-5.3-flash-iq1-m")
+    c.timeout_ms = std::min(c.timeout_ms, q1_deadline_ms > 0 ? q1_deadline_ms : 30000);
   // Worst measured DeepSeek prefill is several minutes with no SSE bytes.
   // Stay quiet at least that long. MAG_ROOM_STALL_S overrides the gap when
   // a test needs a short silence bound.
@@ -6570,7 +6573,9 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
        if(!messages.empty()) fresh.push_back(messages.front());
        if(!messages.empty()) fresh.push_back(messages.back());
        t=backend_turn(fresh,tools,0.55,on_delta,false,slot_for_key(bot_id),
-                      bot_model_id(bot_idx),bot_idx,false,true);
+                      bot_model_id(bot_idx),bot_idx,false,true,
+                      std::max(1,30000-(int)duration_cast<milliseconds>(
+                          steady_clock::now()-q1_started).count()));
      }
      if(glm_chat && bot_model_id(bot_idx) == "glm-5.3-flash-iq1-m" &&
         (t.finish!="stop" || q1_bad(t.text))) {

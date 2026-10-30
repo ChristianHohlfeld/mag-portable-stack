@@ -30,10 +30,23 @@ read -r free file shmem < <(awk '$3=="MemFree:"{f=$4} $3=="FilePages:"{p=$4} $3=
 usable=$((free + (file > shmem ? file-shmem : 0)))
 (( usable >= 145*1024*1024 )) || fail 'NUMA1 reclaimable RAM below 145GiB (reserve for system/backup)'
 bash /usr/local/lib/mag-glm/verify-model.sh || fail 'model verification failed'
-exec /usr/bin/numactl --physcpubind=14-27 --membind=1 "$BIN" \
+# One-time KV format migration. An old f16 slot cannot be restored with
+# q8_0 K/V. Store a durable format tag; on format changes invalidate only
+# the GLM prefix (the room metadata is corrected on failed restore).
+SLOTDIR=/var/lib/mag-llm/slots/glm
+FORMAT='glm-5.3-flash:kv-q8_0-q8_0:ctx32768:slot0'
+if [[ ! -f "$SLOTDIR/.kv-format" || $(cat "$SLOTDIR/.kv-format") != "$FORMAT" ]]; then
+  rm -f -- "$SLOTDIR/mag-prefix-glm-5.3-flash-slot2.bin"
+  printf '%s\n' "$FORMAT" > "$SLOTDIR/.kv-format.tmp"
+  mv -f -- "$SLOTDIR/.kv-format.tmp" "$SLOTDIR/.kv-format"
+fi
+# slot0 is the llama id_slot: parallel=1; slot2 is the durable room
+# backend identity in the checkpoint filename, not a llama slot index.
+exec /usr/bin/numactl --physcpubind=14-27,42-55 --membind=1 "$BIN" \
   --model "$MODEL" --alias glm-5.3-flash \
   --host 127.0.0.1 --port "${GLM_PORT:-8192}" --ctx-size 32768 --parallel 1 \
-  --threads 14 --threads-batch 14 --numa numactl \
-  --load-mode dio \
+  --threads 14 --threads-batch 28 --numa numactl \
+  --load-mode dio -fa on -b 2048 -ub 1024 -ctk q8_0 -ctv q8_0 \
+  --cache-reuse 256 \
   --jinja --chat-template-file "$TEMPLATE" --reasoning-format auto --cache-ram 16384 --ctx-checkpoints 8 --checkpoint-min-step 128 \
   --slots --slot-save-path /var/lib/mag-llm/slots/glm --no-ui

@@ -44,7 +44,7 @@ assert 'GLM_CPU_TOPOLOGY=14-27,42-55' in glm_q2
 assert 'GLM_PORT=8191' in glm_q1 and 'GLM_PORT=8192' in glm_q2
 assert 'GLM_SLOT_DIR=/var/lib/mag-llm/slots/glm-q1' in glm_q1
 assert 'GLM_SLOT_DIR=/var/lib/mag-llm/slots/glm' in glm_q2
-assert 'binding=(--physcpubind=0-13 --membind=0)' in glm
+assert 'binding=(--physcpubind=0-13,28-41 --membind=0)' in glm
 assert '--mlock' not in glm
 assert '--load-mode dio -fa on -b 4096 -ub 1024' in glm  # known-good #231 llama-server flags
 assert 'glm-5.3-flash-iq1-m:kv-f16-f16' in glm

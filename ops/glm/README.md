@@ -12,7 +12,7 @@ Repo deployment replaces **DeepSeek** on NUMA0 with GLM-Q1 (`IQ1_M`) and retains
 | slot dir | `/var/lib/mag-llm/slots/glm-q1` | `/var/lib/mag-llm/slots/glm` |
 | KV tag | `glm-5.3-flash-iq1-m:kv-f16-f16:ctx32768:slot0` | `glm-5.3-flash:kv-f16-f16:ctx32768:slot0` |
 
-Both use one pinned mainline llama.cpp runtime (`ops/qwen/runtime.sha`) with the reviewed GLM architecture compatibility patch, the existing reviewed official-family chat template, 32k ctx, `--load-mode dio`, `-fa on -b 4096 -ub 1024`, `--ctx-checkpoints 64 --checkpoint-min-step 1024`, `--cache-ram 16384`, no `--cache-reuse`, `temperature=1.0`, `top_p=0.95`, `reasoning_effort=low`, `clear_thinking=true`. Q1 uses `numactl --physcpubind=0-13 --membind=0`, Q2 uses `--physcpubind=14-27 --membind=1`; neither uses `--mlock` (unsupported by this pinned runtime). Q2 retains its original NUMA1 pinning and startup memory guard.
+Both use one pinned mainline llama.cpp runtime (`ops/qwen/runtime.sha`) with the reviewed GLM architecture compatibility patch, the existing reviewed official-family chat template, 32k ctx, `--load-mode dio`, `-fa on -b 4096 -ub 1024`, `--ctx-checkpoints 64 --checkpoint-min-step 1024`, `--cache-ram 16384`, no `--cache-reuse`, `temperature=1.0`, `top_p=0.95`, `reasoning_effort=low`, `clear_thinking=true`. Q1 uses `numactl --physcpubind=0-13,28-41 --membind=0`, Q2 uses `--physcpubind=14-27,42-55 --membind=1`; neither uses `--mlock` (unsupported by this pinned runtime). Q2 retains its original NUMA1 pinning and startup memory guard.
 
 The two model IDs cannot share KV files: Q1 has its own slot directory, its own `.kv-format` marker and the room prefixes include the model ID and fixed room slot. `MAG_ROOM_PREWARM=0` in the existing GLM room env and room systemd drop-in.
 
@@ -37,12 +37,12 @@ Deploy switches both units transactionally, disables legacy port owners, renames
 
 ## Broadwell dual-NUMA low-latency profile (hardware-derived, no throughput benchmark)
 
-As of 2026-10-30, mag has **2 x E5-2680 v4**, each 14 physical cores / 28 SMT logical CPUs, **35 MiB L3** per socket, 4 DDR4-2400 channels per socket, AVX2/FMA/F16C and **no AVX-512 or AMX**. Each GLM process stays on its own node. The current **candidate** (not a measured optimum) reduces the *batch* workers from 28 to 14 and binds all workers to the 14 **physical** cores: Q1 `0-13`, Q2 `14-27`. The historical 28-thread prefill may win on some kernels, so only change it again using ordinary `timings.prompt_per_second` and `predicted_per_second` from representative requests; no long benchmark is needed.
+As of 2026-10-30, mag has **2 x E5-2680 v4**, each 14 physical cores / 28 SMT logical CPUs, **35 MiB L3** per socket, 4 DDR4-2400 channels per socket, AVX2/FMA/F16C and **no AVX-512 or AMX**. Each GLM process stays on its own node. The current **candidate** (not a measured optimum) uses the original 28 *batch* workers over the 14 physical cores plus SMT siblings (live timings disprove the prior 14-batch guess): Q1 `0-13`, Q2 `14-27`. The historical 28-thread prefill may win on some kernels, so only change it again using ordinary `timings.prompt_per_second` and `predicted_per_second` from representative requests; no long benchmark is needed.
 
 | Setting | Q1 / IQ1_M :8191 | Q2 / IQ2_XS :8192 | Reason |
 | --- | --- | --- | --- |
-| `--threads` / `--threads-batch` | `14 / 14` | `14 / 14` | 14 physical cores, no SMT cache/AVX2 execution contention (heuristic only) |
-| CPU / memory binding | `--physcpubind=0-13 --membind=0` | `--physcpubind=14-27 --membind=1` | Keeps weights/KV and workers local across NUMA distance 21 |
+| `--threads` / `--threads-batch` | `14 / 28` | `14 / 28` | Decode uses 14 workers; measured faster prefill uses 28 batch workers (including SMT) |
+| CPU / memory binding | `--physcpubind=0-13,28-41 --membind=0` | `--physcpubind=14-27,42-55 --membind=1` | Keeps weights/KV and SMT workers local across NUMA distance 21 |
 | `--numa` | `numactl` | `numactl` | Respects numactl CPU map; no cross-node distribution |
 | `-b / -ub` | `4096 / 1024` | `4096 / 1024` | Proven pinned-runtime configuration; batch sizes are **not** speed guarantees |
 | `-ctk / -ctv` | implicit **f16 / f16** | implicit **f16 / f16** | Documented defaults; changing KV dtype invalidates the saved KV format |

@@ -4188,9 +4188,8 @@ static void load_model_settings() {
   const std::string raw = read_file(STATE_DIR + "/model-settings.json", &exists);
   Val saved = Val::object();
   const bool valid = exists && mj::parse(raw, saved) && saved.isObj();
-  // Migration: the previous room-wide toggle applies to both models until
-  // individually configured; no global toggle remains in the UI.
-  const bool old_value = trim(read_file(STATE_DIR + "/sampling")) == "on";
+  // Models without an explicitly persisted preference default to false.
+  // Do not import the legacy global sampling toggle for new GLM models.
   std::lock_guard<std::mutex> lk(MODEL_SETTINGS_MTX);
   MODEL_SETTINGS.clear();
   const std::vector<std::string> ids =
@@ -4200,7 +4199,6 @@ static void load_model_settings() {
           : std::vector<std::string>{"deepseek-v4-flash-0731", secondary_room_model()};
   for (const std::string &id : ids) {
     ModelSettings item;
-    item.deterministic = old_value;
     if (valid) {
       if (auto record = saved.find(id); record && record->isObj()) {
         if (auto deterministic = record->find("deterministic");
@@ -10187,68 +10185,35 @@ static ScopedResult delete_room_file(const std::string &stored) {
 }
 #include "room_snapshots.hpp"
 static ScopedResult clear_room_data() {
-  // Never clear even one byte unless the full room and every active file
-  // has already reached a durable snapshot. Holds STATE_MTX across both.
-  std::string snapshot, error;
-  UndoItem u;
+  // Called only after quiesce_all() holds the exclusive turn lock.
+  // Deliberately irreversible: no snapshot and no room Undo.
+  upload_purge_sessions();
   {
-  std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
-  if (ROOM.empty() && FILES.empty()) {
-    Val out = Val::object(); out["ok"] = true; out["unchanged"] = true;
-    return scoped_ok(out);
-  }
-  if (!snapshot_capture_locked(snapshot,error))
-    return scoped_err(507,"Raum nicht geleert: "+error);
-  u.kind = "room";
-  u.id = token_hex(8);
-  std::string dir = trash_slot(u.id);
-  u.trash = dir;
-  Val room = snapshot_array(ROOM), files = snapshot_array(FILES);
-  u.data = Val::object();
-  u.data["room"] = room;
-  u.data["files"] = files;
-  std::vector<std::string> moved;
-  for (auto &f : FILES) {
-    if (f.find("removed")) continue;
-    auto s=f.find("stored");
-    if (!s || !is_stored_name(s->asStr())) {
-      error="Ungültiger Dateieintrag";
-      break;
-    }
-    std::string name=s->asStr();
-    if (!move_path(FILES_DIR+"/"+name,dir+"/"+name)) {
-      error="Datei konnte nicht in den temporären Papierkorb verschoben werden";
-      break;
-    }
-    moved.push_back(name);
-  }
-  if (!error.empty()) {
-    for (auto it=moved.rbegin();it!=moved.rend();++it)
-      (void)move_path(dir+"/"+*it,FILES_DIR+"/"+*it);
-    return scoped_err(507,"Raum unverändert: "+error);
-  }
-  try {
+    std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
+    std::error_code ec;
+    // All room files, including orphaned files not listed in files.json.
+    std::filesystem::remove_all(FILES_DIR, ec);
+    if (ec) return scoped_err(500, "Raumdateien konnten nicht gelöscht werden: " + ec.message());
+    std::filesystem::create_directories(FILES_DIR, ec);
+    if (ec || chmod(FILES_DIR.c_str(), 0700) != 0)
+      return scoped_err(500, "Raumdateiverzeichnis konnte nicht erstellt werden");
     ROOM.clear();
     FILES.clear();
     clear_reaction_notes();
-    save_room();
-    save_json_array(FILES_JSON,FILES);
-  } catch (...) {
-    ROOM=*room.arr;
-    FILES=*files.arr;
-    for (auto it=moved.rbegin();it!=moved.rend();++it)
-      (void)move_path(dir+"/"+*it,FILES_DIR+"/"+*it);
-    try {save_room();save_json_array(FILES_JSON,FILES);}catch(...){}
-    return scoped_err(507,"Raum unverändert: Persistenz fehlgeschlagen");
+    try {
+      save_room();
+      save_json_array(FILES_JSON, FILES);
+    } catch (...) {
+      return scoped_err(500, "Raum-Metadaten konnten nicht gespeichert werden");
+    }
   }
-  } // release STATE_MTX before notifying SSE and committing Undo
-  std::string uid = u.id;
-  undo_commit(std::move(u));
+  undo_drop_all();
+  std::error_code ec;
+  std::filesystem::remove_all(snapshot_home(), ec);
+  if (ec) return scoped_err(500, "Alte Snapshots konnten nicht gelöscht werden: " + ec.message());
   room_changed();
   Val out = Val::object();
   out["ok"] = true;
-  out["undo"] = uid;
-  out["snapshot"] = snapshot;
   return scoped_ok(out);
 }
 static ScopedResult clear_bot_memory(const std::string &id) {

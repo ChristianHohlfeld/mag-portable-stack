@@ -5126,7 +5126,7 @@ class GlmLayoutStartup(unittest.TestCase):
    {'id':'deepseek-chat','name':'DeepSeek Chat','vm':'','slot':1,'numa':0,'model':'deepseek-v4-flash-0731','memory':[]},
    {'id':'qwen-numa1','name':'Qwen','vm':'','slot':2,'numa':1,'model':'qwen3.8-flash-next-uncensored','memory':[{'text':'bleibt'}]}]))
   state.joinpath('prompt-prefix.json').write_text(json.dumps({
-   '8192/mag-prefix-glm-5.3-flash-slot2-prefix.bin':'glm-5.3-flash:stale'}))
+   '8192/mag-prefix-glm-5.3-flash-slot2-chat-v2-prefix.bin':'glm-5.3-flash:stale'}))
   model=http.server.ThreadingHTTPServer(('127.0.0.1',0),Model)
   threading.Thread(target=model.serve_forever,daemon=True).start()
   ui,bridge=port(),port()
@@ -5163,14 +5163,14 @@ class GlmLayoutStartup(unittest.TestCase):
    end=time.monotonic()+10
    while time.monotonic()<end:
     paths=list(Model.paths)[mark:]
-    glm_files=[p for p in paths if p[3].get('filename')=='mag-prefix-glm-5.3-flash-slot2-prefix.bin']
+    glm_files=[p for p in paths if p[3].get('filename')=='mag-prefix-glm-5.3-flash-slot2-chat-v2-prefix.bin']
     if any(p[0].endswith('save') for p in glm_files):break
     time.sleep(.05)
    else:self.fail('GLM cold prefix not saved: '+log_path.read_text()[-1200:])
    self.assertEqual(sum(p[0].endswith('restore') for p in glm_files),1,glm_files)
    self.assertTrue(any(p[0]=='/v1/chat/completions' and p[3].get('model')=='glm-5.3-flash' and p[3].get('max_tokens')==1 for p in paths))
    time.sleep(.3)
-   self.assertEqual(sum(p[0].endswith('restore') for p in list(Model.paths)[mark:] if p[3].get('filename')=='mag-prefix-glm-5.3-flash-slot2-prefix.bin'),1,'infinite restore')
+   self.assertEqual(sum(p[0].endswith('restore') for p in list(Model.paths)[mark:] if p[3].get('filename')=='mag-prefix-glm-5.3-flash-slot2-chat-v2-prefix.bin'),1,'infinite restore')
    token=_ui_token(ui)
    def post(endpoint,payload,method='POST'):
     req=urllib.request.Request(f'http://127.0.0.1:{ui}{endpoint}',data=json.dumps(payload).encode(),
@@ -5197,17 +5197,26 @@ class GlmLayoutStartup(unittest.TestCase):
    self.assertEqual((state/'glm-chat-defaults-v1').read_text().strip(),'1')
    self.assertEqual((state/'reflect').read_text(),'off')
    self.assertEqual((state/'autotalk').read_text(),'off')
-   tools=first_calls[0][3]['tools']
-   self.assertGreater(len(tools),10,'GLM keeps all executable tools')
-   self.assertTrue(all(t.get('function',{}).get('name') for t in tools))
-   self.assertTrue(all(len(t.get('function',{}).get('description',''))<=96 for t in tools))
-   def has_nested_description(v):
-    if isinstance(v,dict):return 'description' in v or any(has_nested_description(x) for x in v.values())
-    if isinstance(v,list):return any(has_nested_description(x) for x in v)
-    return False
-   self.assertFalse(any(has_nested_description(t['function'].get('parameters',{})) for t in tools))
-   self.assertTrue(any(t['function'].get('parameters',{}).get('properties') for t in tools),
-                   'GLM must retain callable JSON schemas')
+   req=first_calls[0][3]
+   self.assertNotIn('tools',req,'GLM chat must never send tools schemas')
+   self.assertNotIn('tool_choice',req,'GLM chat must omit tool choice too')
+   self.assertEqual(req['max_tokens'],256)
+   self.assertEqual(req['chat_template_kwargs']['reasoning_effort'],'low')
+   self.assertTrue(req['chat_template_kwargs']['clear_thinking'])
+   sys=req['messages'][0]['content']
+   self.assertIn('[Identitaet]',sys)
+   self.assertIn('Du hast keine Werkzeuge',sys)
+   self.assertNotIn('todo(',sys)
+   self.assertNotIn('run_command',sys)
+   self.assertNotIn('DeepSeek',sys)
+   self.assertNotIn('Qwen',sys)
+   self.assertLessEqual(len(sys.encode('utf-8'))//3,900)
+   self.assertNotIn('todo(',json.dumps(req,ensure_ascii=False))
+   self.assertNotIn('run_command',json.dumps(req,ensure_ascii=False))
+   self.assertTrue(any(p[0]=='/v1/chat/completions' and
+       p[3].get('max_tokens')==1 and
+       'tools' not in p[3] for p in paths),
+       'prewarm uses the same no-tools system prefix')
    # No DeepSeek cold gate: Q1 and Q2 are separately routable.
    post('/api/bot-settings',{'bots':['deepseek-chat'],'enabled':False},'PUT')
    marker='GLM-PAUSED-'+str(time.monotonic_ns())

@@ -37,8 +37,18 @@ runs_stale_binary(){
 }
 rollback(){
   [[ -f $TXN/started && ! -f $TXN/restored ]] || return 0
-  # Stop only an instance this transaction changed. Never touch ds-node@0.
-  if [[ -f $TXN/changed ]]; then systemctl stop "${units[@]}"; fi
+  # Roll back only affected GLM units, not the other resident model.
+  if [[ -f $TXN/changed ]]; then
+    if [[ -f $TXN/glm-dual ]]; then
+      if [[ -f $TXN/restarted ]]; then
+        while IFS= read -r unit; do
+          [[ -z $unit ]] || systemctl stop "$unit"
+        done < "$TXN/restarted"
+      fi
+    else
+      systemctl stop "${units[@]}"
+    fi
+  fi
    if [[ -f $TXN/hidden-dropins ]]; then
      while IFS= read -r f; do [[ ! -f "$f.glm-inactive" ]] || mv -f -- "$f.glm-inactive" "$f"; done < "$TXN/hidden-dropins"
    fi
@@ -51,7 +61,11 @@ rollback(){
   MAG_DEFER_DAEMON_RELOAD=0 mag_flush_daemon_reload --force
   for unit in "${units[@]}"; do
     if grep -Fxq "$unit" "$TXN/enabled"; then systemctl enable "$unit"; fi
-    if [[ -f $TXN/changed ]] && grep -Fxq "$unit" "$TXN/active"; then systemctl start "$unit"; fi
+    if [[ -f $TXN/changed ]] && grep -Fxq "$unit" "$TXN/active"; then
+      if [[ ! -f $TXN/glm-dual ]] || grep -Fxq "$unit" "$TXN/restarted"; then
+        systemctl start "$unit"
+      fi
+    fi
   done
   touch "$TXN/restored"
   # The rollback is complete before we probe the restored Qwen. It now uses
@@ -200,21 +214,41 @@ for unit in "${units[@]}"; do
   for chosen in "${selected_units[@]}"; do [[ $unit != "$chosen" ]] || keep=1; done
   (( keep )) || others+=("$unit")
 done
+# Unit-local change flags: a q1.env update must never evict Q2.
+# Shared llama binary, template, launcher or unit changes restart both.
 change=0
+declare -A restart_unit=()
 for unit in "${selected_units[@]}"; do
-  if ! systemctl is-active --quiet "$unit"; then change=1; fi
+  if ! systemctl is-active --quiet "$unit"; then
+    restart_unit["$unit"]=1
+    change=1
+  fi
 done
-if [[ $layout == mixed ]]; then
-  for file in /usr/local/lib/mag-qwen/start.sh /etc/systemd/system/mag-llm-qwen.service /etc/mag-qwen/runtime.env; do
-    cmp -s "$file" "$TXN/files$file" || change=1
-  done
-fi
-# New runtime build: restart (and thus smoke-test) the resident model on it.
-if runs_stale_binary "$selected"; then change=1; fi
 if [[ $layout == glm ]]; then
-  for file in /usr/local/lib/mag-glm/start.sh /etc/systemd/system/mag-llm-glm@.service /etc/mag-glm/q1.env /etc/mag-glm/q2.env /usr/local/lib/mag-glm/runtime.sha /usr/local/lib/mag-glm/chat-template.jinja; do
-    cmp -s "$file" "$TXN/files$file" || change=1
+  shared_changed=0
+  for file in /usr/local/lib/mag-glm/start.sh \
+      /etc/systemd/system/mag-llm-glm@.service \
+      /usr/local/lib/mag-glm/runtime.sha \
+      /usr/local/lib/mag-glm/chat-template.jinja; do
+    cmp -s "$file" "$TXN/files$file" || shared_changed=1
   done
+  for unit in "${selected_units[@]}"; do
+    id=q1
+    [[ $unit != mag-llm-glm@q2.service ]] || id=q2
+    if (( shared_changed )) ||
+       ! cmp -s "/etc/mag-glm/$id.env" "$TXN/files/etc/mag-glm/$id.env" ||
+       runs_stale_binary "$unit"; then
+      restart_unit["$unit"]=1
+      change=1
+    fi
+  done
+else
+  if [[ $layout == mixed ]]; then
+    for file in /usr/local/lib/mag-qwen/start.sh /etc/systemd/system/mag-llm-qwen.service /etc/mag-qwen/runtime.env; do
+      cmp -s "$file" "$TXN/files$file" || change=1
+    done
+  fi
+  if runs_stale_binary "$selected"; then change=1; fi
 fi
 install -m 0644 "$ROOT/ops/room/$config" /etc/mag-stack/room-model.env
 printf '%s\n' "$layout" > /etc/mag-stack/room-layout
@@ -244,23 +278,34 @@ for unit in "${others[@]}"; do
 done
 if (( change )); then
   touch "$TXN/changed"
+  : > "$TXN/restarted"
   for unit in "${others[@]}"; do
-    if systemctl is-active --quiet "$unit"; then systemctl stop "$unit"; fi
+    if systemctl is-active --quiet "$unit"; then
+      printf '%s\n' "$unit" >> "$TXN/restarted"
+      systemctl stop "$unit"
+    fi
   done
-  # A previous :8091 Qwen or changed runtime may need one NUMA1 restart.
   for unit in "${selected_units[@]}"; do
-    if systemctl is-active --quiet "$unit"; then systemctl stop "$unit"; fi
+    if [[ $layout != glm || -n ${restart_unit[$unit]:-} ]]; then
+      # Write ahead: a failure during stop/start must remain reversible.
+      printf '%s\n' "$unit" >> "$TXN/restarted"
+      if systemctl is-active --quiet "$unit"; then systemctl stop "$unit"; fi
+    fi
   done
 fi
 for unit in "${others[@]}"; do disable_if_installed "$unit"; done
 for unit in "${selected_units[@]}"; do systemctl enable "$unit"; done
 if (( change )); then
-  systemctl start "${selected_units[@]}"
+  for unit in "${selected_units[@]}"; do
+    if [[ $layout != glm || -n ${restart_unit[$unit]:-} ]]; then systemctl start "$unit"; fi
+  done
   ports=(8192)
   [[ $layout != glm ]] || ports=(8191 8192)
   for port in "${ports[@]}"; do
     unit=$selected
     [[ $port != 8191 ]] || unit=mag-llm-glm@q1.service
+    # A warm, unmodified GLM must receive no smoke decode either.
+    if [[ $layout == glm && -z ${restart_unit[$unit]:-} ]]; then continue; fi
     ready=0
     for ((i=0; i<1080; i++)); do
       systemctl is-active --quiet "$unit" || fail "$unit exited during load"

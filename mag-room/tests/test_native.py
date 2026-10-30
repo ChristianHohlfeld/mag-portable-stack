@@ -5488,6 +5488,20 @@ class GlmLayoutStartup(unittest.TestCase):
            for m in room['room']),room['room'][-3:])
     Model.script_scope=None
     Model.script=[]
+   # Q2 streams a split reasoning terminator: never publish raw delimiter.
+   q2marker='GLM-Q2-CLIENT-STOP-'+str(time.monotonic_ns())
+   Model.script_scope=q2marker
+   Model.script=[['Rauschen','</thi','nk>','Antwort']]
+   before=len(Model.paths)
+   self.assertTrue(post({'text':q2marker,'bots':['qwen-numa1']})['accepted'])
+   q2req=calls_after(before,q2marker,1)[0][3]
+   self.assertEqual(q2req['model'],'glm-5.3-flash')
+   q2room=idle_after(q2marker)
+   q2text=json.dumps(q2room['room'],ensure_ascii=False)
+   self.assertNotIn('</think>',q2text)
+   self.assertNotIn('Antwort',q2text)
+   Model.script_scope=None
+   Model.script=[]
    # A single leading greeting + group target broadcasts, but a middle
    # mention of 'beide' must retain GLM's one-host arbitration.
    for text_,expected in [('Hi beide: wie viel ist 2+3?',2),

@@ -10951,7 +10951,7 @@ int main() {
         }
       }
     }
-    if (changed) write_file_atomic(AGENTS_JSON, mj::dump(AGENTS));
+    if (changed) save_agents();
   }
   tasks_restore(); // recover durable sub-agent states before serving the room
   FILES = load_json_array(FILES_JSON);

@@ -6548,6 +6548,24 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
       t = backend_turn(messages, tools, 0.55, on_delta, false,
            slot_for_key(bot_id), bot_model_id(bot_idx), bot_idx, false, true);
     }
+    if (glm_chat && bot_model_id(bot_idx) == "glm-5.3-flash-iq1-m" &&
+         t.text.empty() && !stop_flag().load() &&
+         duration_cast<seconds>(steady_clock::now()-q1_started).count()<30) {
+       std::vector<Val> fresh;
+       if(!messages.empty()) fresh.push_back(messages.front());
+       if(!messages.empty()) fresh.push_back(messages.back());
+       t=backend_turn(fresh,tools,0.55,on_delta,false,slot_for_key(bot_id),
+                      bot_model_id(bot_idx),bot_idx,false,true,
+                      std::max(1,30000-(int)duration_cast<milliseconds>(
+                          steady_clock::now()-q1_started).count()));
+     }
+     if(glm_chat && bot_model_id(bot_idx) == "glm-5.3-flash-iq1-m" &&
+        (t.finish!="stop" || q1_bad(t.text))) {
+       report.skipped=true;t.text.clear();completed=true;break;
+     }
+    if (!t.error.empty() && glm_chat && bot_model_id(bot_idx) == "glm-5.3-flash-iq1-m") {
+      report.skipped=true; completed=true; break;
+    }
     if (!t.error.empty()) {
       report.error = t.error.substr(0, 280);
       emit_event("error", bot_id, bot_name, report.error);
@@ -6566,21 +6584,6 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
     }
     // Neither short chat nor regular GLM chat may silently post an empty
     // answer when the model returns tool-only output or no visible text.
-    if (glm_chat && bot_model_id(bot_idx) == "glm-5.3-flash-iq1-m" &&
-         t.text.empty() && !stop_flag().load() &&
-         duration_cast<seconds>(steady_clock::now()-q1_started).count()<30) {
-       std::vector<Val> fresh;
-       if(!messages.empty()) fresh.push_back(messages.front());
-       if(!messages.empty()) fresh.push_back(messages.back());
-       t=backend_turn(fresh,tools,0.55,on_delta,false,slot_for_key(bot_id),
-                      bot_model_id(bot_idx),bot_idx,false,true,
-                      std::max(1,30000-(int)duration_cast<milliseconds>(
-                          steady_clock::now()-q1_started).count()));
-     }
-     if(glm_chat && bot_model_id(bot_idx) == "glm-5.3-flash-iq1-m" &&
-        (t.finish!="stop" || q1_bad(t.text))) {
-       report.skipped=true;t.text.clear();completed=true;break;
-     }
      if ((short_chat || glm_chat) && t.text.empty()) {
       // A structured tool-only result with tool_choice=none is not a
       // successful answer. Show only a local, explicitly failed fallback.

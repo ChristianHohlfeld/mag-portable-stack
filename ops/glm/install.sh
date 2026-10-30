@@ -15,23 +15,24 @@ BIN="/home/chris/.local/qwen4exp/$REV-mag-cp1/bin/llama-server"
 install -d -m 0755 /etc/mag-glm /usr/local/lib/mag-glm
 install -m 0644 "$ROOT/ops/qwen/runtime.sha" /usr/local/lib/mag-glm/runtime.sha
 install -m 0644 "$ROOT/ops/glm/model.sizes" /usr/local/lib/mag-glm/model.sizes
+install -m 0644 "$ROOT/ops/glm/model.sha256" /usr/local/lib/mag-glm/model.sha256
 install -m 0755 "$ROOT/ops/glm/verify-model.sh" /usr/local/lib/mag-glm/verify-model.sh
 install -m 0755 "$ROOT/ops/glm/start.sh" /usr/local/lib/mag-glm/start.sh
 # Reviewed template: the embedded one cannot switch thinking off (ops/glm/README.md).
 install -m 0644 "$ROOT/ops/glm/chat-template.jinja" /usr/local/lib/mag-glm/chat-template.jinja
 bash /usr/local/lib/mag-glm/verify-model.sh
 # Fail before NUMA1 cutover if the GGUF is not compatible with the pinned
-# GLM5-Next loader. The 6block IQ1_M first shard has an older metadata
-# contract; a size/header check alone cannot catch missing KDA hyperparameters.
+# GLM5-Next loader. Even with IQ2_XS, size/header checks alone cannot
+# detect missing KDA hyperparameters; keep this architecture preflight.
 # This reads only the GGUF metadata header and never modifies model weights.
 python3 -I "$ROOT/ops/glm/inspect-gguf.py" \
-  /home/chris/models/GLM-5.3-Flash-GGUF-IQ1_M/GLM-5.3-Flash-IQ1_M-00001-of-00015.gguf \
+  /home/chris/models/GLM-5.3-Flash-GGUF-IQ2_XS/GLM-5.3-Flash-IQ2_XS-00001-of-00015.gguf \
   --require-kda-head-dim --require-glm-template-family \
   --chat-template-file "$ROOT/ops/glm/chat-template.jinja" --require-thinking-switch
 # Read only tensor directories (all 15 shards). A known quantized small
 # elementwise GLM weight may be cast to float; unknown quantized operands
 # fail closed BEFORE Qwen on NUMA1 is stopped.
-for part in /home/chris/models/GLM-5.3-Flash-GGUF-IQ1_M/GLM-5.3-Flash-IQ1_M-*-of-00015.gguf; do
+for part in /home/chris/models/GLM-5.3-Flash-GGUF-IQ2_XS/GLM-5.3-Flash-IQ2_XS-*-of-00015.gguf; do
   python3 -I "$ROOT/ops/glm/inspect-gguf.py" "$part" \
     --require-elementwise-safe >/dev/null
 done

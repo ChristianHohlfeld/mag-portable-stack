@@ -11,7 +11,7 @@
 # Only a diagnostic log is written; the transient unit and Qwen state are restored.
 set -euo pipefail
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
-MODEL=/home/chris/models/GLM-5.3-Flash-GGUF-IQ1_M/GLM-5.3-Flash-IQ1_M-00001-of-00015.gguf
+MODEL=/home/chris/models/GLM-5.3-Flash-GGUF-IQ2_XS/GLM-5.3-Flash-IQ2_XS-00001-of-00015.gguf
 REV=$(cat "$ROOT/ops/qwen/runtime.sha")
 BIN="/home/chris/.local/qwen4exp/$REV-mag-cp1/bin/llama-server"
 LOG="$HOME/glm-diag-$(date +%Y%m%d-%H%M).log"

@@ -24,10 +24,10 @@ AllowedCPUs=14-27
 NUMAPolicy=bind
 NUMAMask=1
 MemoryAccounting=yes
-# ~62 GiB weights (anonymous, node1, --load-mode dio) + KV/recurrent state + 16 GiB prompt RAM cache.
-MemoryLow=64G
-MemoryHigh=100G
-MemoryMax=120G
+# 85.8 GiB IQ2_XS weights (anonymous, node1, dio) + state + 16 GiB RAM cache + headroom.
+MemoryLow=96G
+MemoryHigh=140G
+MemoryMax=175G
 MemorySwapMax=0
 LimitMEMLOCK=infinity
 OOMScoreAdjust=-600

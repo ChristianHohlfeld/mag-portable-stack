@@ -4003,7 +4003,8 @@ static void model_watcher_loop() {
         if (ok) {
           backend_became_ready = backend_became_ready || ROOM_MODEL_HEALTH[s - 1] != 1;
           ROOM_MODEL_HEALTH[s - 1] = 1;
-        } else if (sent) {
+        } else if (sent || !slot_is_busy(s)) {
+          // A stopped server has no readiness edge; do not prewarm it forever.
           ROOM_MODEL_HEALTH[s - 1] = 2;
         }
         health_key += ok ? '1' : slot_is_busy(s) ? 'b'
@@ -4031,7 +4032,8 @@ static void model_watcher_loop() {
     }
     const bool slots_pending = CONFIGURED_MODEL &&
         env("MAG_ROOM_PREWARM", "1") == "1" &&
-        (SLOT_WARM[0].load() != 1 || SLOT_WARM[1].load() != 1);
+        ((ROOM_MODEL_HEALTH[0].load() == 1 && SLOT_WARM[0].load() != 1) ||
+          (ROOM_MODEL_HEALTH[1].load() == 1 && SLOT_WARM[1].load() != 1));
     // A slot that returned early, timed out on /slots, or was not yet in
     // AGENTS must be retried. Waiting only for a ready-edge left Qwen cold
     // (live: no prompt-prewarm line, 39s first-hi eval).
@@ -4587,13 +4589,16 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
     body["top_k"] = 1;
     body["seed"] = 42;
   } else {
-    body["temperature"] = temperature;
+    body["temperature"] = model == "glm-5.3-flash" ? 1.0 : temperature;
+    if (model == "glm-5.3-flash") body["top_p"] = 0.95;
   }
   // Both backends use 32k context; retain the proven Qwen output budget.
   // Bound generated tokens on Qwen only, keeping Q4's established budget.
   // Both models retain all native/MCP tools and immutable audit routing.
   int max_output = model == "qwen3.8-flash-next-uncensored"
       ? std::min(MAX_TOKENS, std::clamp(envi("MAG_ROOM_QWEN_MAX_TOKENS", 4096), 512, 8192))
+      : model == "glm-5.3-flash"
+      ? std::min(MAX_TOKENS, std::clamp(envi("MAG_ROOM_GLM_MAX_TOKENS", 1024), 128, 8192))
       : MAX_TOKENS;
   // Proaktiv must not occupy the only slot for a 4096-token decode.
   // The cap is below Qwen's floor of 512 on purpose.
@@ -4626,8 +4631,14 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   kwargs["enable_thinking"] = thinking && !TL_SELFTALK;
   // The Qwen4Exp GGUF Jinja template uses enable_thinking, not the
   // DeepSeek-specific reasoning_effort preamble (preserve prompt cache).
-  if (model != "qwen3.8-flash-next-uncensored" && !REASONING_EFFORT.empty())
+  if (model == "glm-5.3-flash") {
+    // GLM-5.3 defaults to MAX and clear_thinking=false unless explicit.
+    // Keep the template preamble byte-stable between all turns.
+    kwargs["reasoning_effort"] = REASONING_EFFORT.empty() ? "low" : REASONING_EFFORT;
+    kwargs["clear_thinking"] = true;
+  } else if (model != "qwen3.8-flash-next-uncensored" && !REASONING_EFFORT.empty()) {
     kwargs["reasoning_effort"] = REASONING_EFFORT;
+  }
   body["chat_template_kwargs"] = kwargs;
   std::string payload = mj::dump(body);
   std::string req =
@@ -6079,7 +6090,7 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
       // Keep the newest reasoning and the actual structured tool call intact.
       const size_t keep = (size_t)std::clamp(
           envi("MAG_ROOM_REASONING_HISTORY_BYTES", 4096), 1024, 16384);
-      asst["reasoning_content"] = !CONFIGURED_MODEL && t.reasoning.size() > keep
+      asst["reasoning_content"] = t.reasoning.size() > keep
           ? std::string("[Aeltere Gedanken im Protokoll; letzte Schritte:]\n") +
                 utf8_suffix(t.reasoning, keep)
           : t.reasoning;
@@ -8434,8 +8445,14 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
           thinking_on = false;
         }
         kwargs["enable_thinking"] = thinking_on;
-        if (model != "qwen3.8-flash-next-uncensored" && !REASONING_EFFORT.empty())
+        if (model == "glm-5.3-flash") {
+          kwargs["reasoning_effort"] = REASONING_EFFORT.empty() ? "low" : REASONING_EFFORT;
+          kwargs["clear_thinking"] = true;
+          body["temperature"] = 1.0;
+          body["top_p"] = 0.95;
+        } else if (model != "qwen3.8-flash-next-uncensored" && !REASONING_EFFORT.empty()) {
           kwargs["reasoning_effort"] = REASONING_EFFORT;
+        }
         body["chat_template_kwargs"] = kwargs;
         payload = mj::dump(body);
         built = true;
@@ -8490,7 +8507,8 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
                            (ok && code == 200 && !cancelled && !skip)))
     mark_prefix_warm(model_slot(idx));
   if (seq.owns_lock()) seq.unlock();
-  std::cerr << "prompt-prewarm model=" << model << " ok=" << (ok ? 1 : 0)
+  if (!(skip && std::string(why) == "busy"))
+    std::cerr << "prompt-prewarm model=" << model << " ok=" << (ok ? 1 : 0)
             << " status=" << code << " ms=" << ms
             << " ram_warm=" << (ram_warm ? 1 : 0)
             << " restored=" << (restored ? 1 : 0) << " saved=" << (saved ? 1 : 0)
@@ -10671,8 +10689,8 @@ int main() {
   THINKING = env("MAG_ROOM_THINKING", "on");
   THINKING_DEFAULT = THINKING != "off";
   REASONING_EFFORT = env("MAG_ROOM_REASONING_EFFORT", "");
-  if (!REASONING_EFFORT.empty() && REASONING_EFFORT != "high" &&
-      REASONING_EFFORT != "max")
+  if (!REASONING_EFFORT.empty() && REASONING_EFFORT != "low" &&
+      REASONING_EFFORT != "high" && REASONING_EFFORT != "max")
     REASONING_EFFORT = "";
   MODEL_STATUS_FILE = env("MAG_ROOM_MODEL_STATUS", "/var/lib/mag-llm/status.json");
   // Configured hosts use each server's /health

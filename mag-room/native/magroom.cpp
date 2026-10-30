@@ -4766,13 +4766,50 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
     backend_fd_slot() = c.fd;
   }
   SseAcc acc;
+  const bool glm_chat_stream = no_tools && model.rfind("glm-5.3-flash", 0) == 0;
+  std::string glm_stream_pending;
+  bool glm_tool_cut = false;
   auto visible_delta = [&](const std::string &s, bool finish = false) {
     visible_reply.feed(s, [&](const std::string &safe) {
-      acc.content += safe;
-      // tool_choice=none is not always respected by IQ1_M. Do not stream
-      // possibly split literal tool markup before filtering the full reply.
-      if (!short_chat && !no_tools) on_delta("delta", safe);
+      if (!glm_chat_stream) {
+        acc.content += safe;
+        if (!short_chat && !no_tools) on_delta("delta", safe);
+        return;
+      }
+      if (glm_tool_cut) return;
+      glm_stream_pending += safe;
+      // Stream normal text immediately; buffer only a split raw tool tag.
+      const size_t a = glm_stream_pending.find("<tool_call");
+      const size_t b = glm_stream_pending.find("<|tool_call");
+      const size_t cut = std::min(a, b);
+      if (cut != std::string::npos) {
+        if (cut) {
+          const std::string visible = glm_stream_pending.substr(0, cut);
+          acc.content += visible;
+          on_delta("delta", visible);
+        }
+        glm_stream_pending.clear();
+        glm_tool_cut = true;
+        return;
+      }
+      size_t hold = 0;
+      for (const std::string marker : {std::string("<tool_call"), std::string("<|tool_call")})
+        for (size_t n = 1; n < marker.size() && n <= glm_stream_pending.size(); ++n)
+          if (glm_stream_pending.compare(glm_stream_pending.size() - n, n, marker, 0, n) == 0)
+            hold = std::max(hold, n);
+      const size_t ready = glm_stream_pending.size() - hold;
+      if (ready) {
+        const std::string visible = glm_stream_pending.substr(0, ready);
+        acc.content += visible;
+        on_delta("delta", visible);
+        glm_stream_pending.erase(0, ready);
+      }
     }, finish);
+    if (finish && glm_chat_stream && !glm_tool_cut && !glm_stream_pending.empty()) {
+      acc.content += glm_stream_pending;
+      on_delta("delta", glm_stream_pending);
+      glm_stream_pending.clear();
+    }
   };
   
   long long draft_ms = 0;
@@ -4928,7 +4965,7 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
       std::cerr << "glm-short-raw-tool suppressed model=" << model << "\n";
     }
     acc.content = trim(acc.content);
-    if (!acc.content.empty()) on_delta("delta", acc.content);
+    if (!glm_chat_stream && !acc.content.empty()) on_delta("delta", acc.content);
   }
   t.text = acc.content;
   t.reasoning = acc.reasoning;
@@ -7295,6 +7332,8 @@ static Val enqueue_pending(const std::string &text,
     out["queue"] = queue_view_locked();
     return out;
   }
+  // Reset Stop deduplication for genuinely new user input, not retries.
+  LAST_STOP_MS = 0;
   // Decide the first-hi owner before cancelling a DeepSeek prewarm, so a
   // busy or cold DeepSeek slot does not take the greeting.
   std::vector<std::string> addressed;
@@ -7504,12 +7543,8 @@ static bool queue_send_now(const std::string &id) {
     p.urgent = true;
     PENDING.push_front(p);
     AUTO_READY = false;
-    // A GLM send-now can move ahead in the queue, but cannot preempt an
-    // already-running human turn. Only owner Stop or bot pause may do that.
-    if (room_is_glm()) {
-      save_queue_locked(); queue_event_locked(); JOB_CV.notify_all();
-      return true;
-    }
+    // Explicit "Jetzt senden" may preempt GLM as well; only internal
+    // cancellation is suppressed in the GLM chat path.
     // Freeze dispatch and prewarm until the previous stream has detached
     // and the model cancellation/optional prefix restore are complete.
     STOP_SETTLING = true;
@@ -9836,7 +9871,8 @@ static void stop_selftalk() {
 static void stop_autotalk(bool pause = false) {
   write_file(STATE_DIR + "/autotalk", "off");
   AUTOTALK = false;
-  if (room_is_glm()) preempt_selftalk_lanes();
+  if (pause) cancel_active(true); // explicit user Stop aborts GLM
+  else if (room_is_glm()) preempt_selftalk_lanes();
   else cancel_active();
   {
     std::lock_guard<std::mutex> lk(JOB_MTX);
@@ -9904,7 +9940,20 @@ static Val user_stop(bool pause_jobs) {
   if (pause_jobs) stop_guard.lock();
   else if (!stop_guard.try_lock()) {
     Val out = Val::object();
-    out["cancelled"] = true; out["settling"] = true;
+    out["cancelled"] = false; out["settling"] = true;
+    out["held"] = 0.0; out["paused"] = QUEUE_PAUSED;
+    return out;
+  }
+  // A just-stopped lane may still be unwinding when a second tap arrives.
+  // Fresh user input or a new lane resets the deduplication epoch.
+  const long long stop_now =
+      duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
+  const long long prior_stop = LAST_STOP_MS.load();
+  if (!pause_jobs && prior_stop > 0 && stop_now >= prior_stop &&
+      stop_now - prior_stop < 800) {
+    Val out = Val::object();
+    out["cancelled"] = false;
+    out["settling"] = STOP_SETTLING.load() || any_lane_busy_for_stop();
     out["held"] = 0.0; out["paused"] = QUEUE_PAUSED;
     return out;
   }
@@ -9912,7 +9961,7 @@ static Val user_stop(bool pause_jobs) {
   // Freeze new warmup work BEFORE touching sockets. A prewarm launched while
   // Stop is closing the old model stream can immediately reoccupy the slot.
   PREWARM_HOLD = true;
-  const long long now = duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
+  const long long now = stop_now;
   bool lane_hot = false;
   for (Lane *l : all_lanes())
     if (l->busy.load()) lane_hot = true;

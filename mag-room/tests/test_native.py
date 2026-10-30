@@ -5306,9 +5306,31 @@ class GlmLayoutStartup(unittest.TestCase):
    time.sleep(.15)
    self.assertEqual(len(default_calls),1,default_calls)
    self.assertEqual(default_calls[0][3]['model'],'glm-5.3-flash-iq1-m')
+   # The UI sends the enabled roster, which must not broadcast to both.
+   before=len(Model.paths)
+   roster_marker='GLM-ROSTER-'+str(time.monotonic_ns())
+   post('/api/message',{'text':roster_marker,'bots':['deepseek-chat','qwen-numa1']})
+   end=time.monotonic()+6
+   while time.monotonic()<end:
+    roster_calls=[p for p in list(Model.paths)[before:]
+                  if p[0]=='/v1/chat/completions' and p[3].get('max_tokens')!=1
+                  and roster_marker in json.dumps(p[3])]
+    if roster_calls:break
+    time.sleep(.05)
+   else:self.fail('GLM default roster did not answer')
+   time.sleep(.15)
+   self.assertEqual([p[3]['model'] for p in roster_calls],['glm-5.3-flash-iq1-m'])
 
    # No DeepSeek cold gate: Q1 and Q2 are separately routable.
    post('/api/bot-settings',{'bots':['deepseek-chat'],'enabled':False},'PUT')
+   paused_mark='GLM-EXPLICIT-PAUSED-'+str(time.monotonic_ns())
+   before=len(Model.paths)
+   self.assertTrue(post('/api/message',{'text':paused_mark,
+       'bots':['deepseek-chat']})['accepted'])
+   time.sleep(.2)
+   self.assertFalse([p for p in list(Model.paths)[before:]
+       if p[0]=='/v1/chat/completions' and p[3].get('max_tokens')!=1
+       and paused_mark in json.dumps(p[3])])
    marker='GLM-PAUSED-'+str(time.monotonic_ns())
    post('/api/message',{'text':marker,'bots':['deepseek-chat','qwen-numa1']})
    end=time.monotonic()+10
@@ -5359,10 +5381,9 @@ class GlmLayoutStartup(unittest.TestCase):
 
 
  def test_two_glm_turns_complete_after_60_seconds_without_cancel(self):
-  # Native-room regression. Fake upstreams delay both completions 60 s.
-  # The separate live gateway-audit client_disconnected assertion remains
-  # part of MAG post-deploy acceptance (not fabricated by this fake server).
-  Model.delay=0;Model.slot_delay={'0':60,'1':60};Model.script=[]
+  # Explicit @alle must reach both GLM lanes, with each fake under 8 s.
+  # No real inference; keep the CI per-test deadline at 30 seconds.
+  Model.delay=0;Model.slot_delay={'0':2,'1':2};Model.script=[]
   Model.reply=None;Model.health=200;Model.slot_snapshot=[];Model.paths=[]
   Model.slot_block={};Model.barrier_release=None;Model.restore_missing=False
   tmp=tempfile.TemporaryDirectory();root=pathlib.Path(tmp.name);state=root/'state';state.mkdir()
@@ -5386,7 +5407,7 @@ class GlmLayoutStartup(unittest.TestCase):
    MAG_ROOM_AGENT_CTL='/bin/false',MAG_ROOM_GUEST_RUN='/bin/false',MAG_ROOM_MCP_AUTO='0',
    MAG_ROOM_SINGLE_BOT='auto',MAG_ROOM_SINGLE_BOT_VM='on',MAG_ROOM_DUAL_NUMA='0',**glm)
   logpath=root/'room.log';log=open(logpath,'a')
-  proc=subprocess.Popen(['timeout','-k','1','100',str(ROOT/'build/magroom')],env=env,stdout=log,stderr=log)
+  proc=subprocess.Popen(['timeout','-k','1','29',str(ROOT/'build/magroom')],env=env,stdout=log,stderr=log)
   try:
    started=time.monotonic()
    while time.monotonic()-started<18:
@@ -5398,17 +5419,17 @@ class GlmLayoutStartup(unittest.TestCase):
    else:self.fail('room startup timeout; log: '+logpath.read_text(errors='replace')[-2000:])
    token=_ui_token(ui)
    req=urllib.request.Request(f'http://127.0.0.1:{ui}/api/message',
-      data=json.dumps({'text':'Hi','bots':['deepseek-chat','qwen-numa1']}).encode(),
+      data=json.dumps({'text':'@alle Hi','bots':['deepseek-chat','qwen-numa1']}).encode(),
       headers={'Content-Type':'application/json','X-MAG-Token':token})
    with urllib.request.urlopen(req,timeout=4) as resp:self.assertTrue(json.load(resp)['accepted'])
-   end=time.monotonic()+75
+   end=time.monotonic()+16
    while time.monotonic()<end:
     with urllib.request.urlopen(f'http://127.0.0.1:{ui}/api/state',timeout=3) as resp:st=json.load(resp)
     answers=[m for m in st.get('room',[]) if m.get('role')=='assistant' and
              'Hallo' in (m.get('content') or '')]
     if len(answers)==2:break
     time.sleep(.2)
-   else:self.fail('two parallel 60-second GLM streams did not complete')
+   else:self.fail('two explicitly requested GLM streams did not complete')
    calls=[p for p in Model.paths if p[0]=='/v1/chat/completions' and p[3].get('max_tokens')!=1]
    self.assertEqual({p[1] for p in calls},{'0','1'})
    self.assertFalse([p for p in Model.paths if 'action=cancel' in p[0]])

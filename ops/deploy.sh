@@ -176,7 +176,7 @@ rollback() {
    else rm -f "/etc/mag-stack/$config"; fi
  done
  # Never evict successful GLMs for a later nginx, room or gateway failure.
- if (( ! layout_applied )) && [[ -f $BACKUP/qwen-layout/helper.sh ]]; then
+ if (( layout_applied )) && [[ -f $BACKUP/qwen-layout/helper.sh ]]; then
    bash "$BACKUP/qwen-layout/helper.sh" rollback "$BACKUP"
  fi
  if (( gateway_switched )); then
@@ -424,8 +424,8 @@ if [[ -e /etc/mag-stack/room-model.env || -e /etc/systemd/system/mag-llm-ds-node
       echo 'Room-only GLM deploy: bypassing model layout apply; Q1/Q2 stay resident'
     else
       bash "$SOURCE/ops/qwen/layout.sh" apply "$BACKUP"
+      layout_applied=1
     fi
-    layout_applied=1
     verify_glm_identity
   fi
   mag_flush_daemon_reload

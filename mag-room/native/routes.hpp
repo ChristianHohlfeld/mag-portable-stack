@@ -23,15 +23,11 @@ static std::vector<std::string> selected_ids(const Val &body) {
     return ids;
   }
   // GLM host arbitration: never let unaddressed input wake both bots.
-  auto add = [&](const std::string &id, bool explicit_address = false) {
+  auto add = [&](const std::string &id) {
     int idx = agent_index(id);
-    if (idx >= 0 && (explicit_address || bot_enabled_locked(idx)) &&
+    if (idx >= 0 && bot_enabled_locked(idx) &&
         std::find(ids.begin(), ids.end(), id) == ids.end()) ids.push_back(id);
   };
-  if (selected && selected->isArr() && !selected->asArr().empty()) {
-    for (const auto &id : selected->asArr()) add(id.asStr(), true);
-    return ids; // explicit UI selection, including explicit multiple bots
-  }
   std::string input = mag::str(body, "text");
   std::transform(input.begin(), input.end(), input.begin(),
                  [](unsigned char c){ return (char)std::tolower(c); });
@@ -46,9 +42,19 @@ static std::vector<std::string> selected_ids(const Val &body) {
     }
     return false;
   };
-  if (token("beide") || token("alle")) {
-    for (const auto &a : AGENTS) add(mag::str(a, "id"), true);
+  const auto starts_word = [&](const std::string &word) {
+    return input.rfind(word, 0) == 0 &&
+        (input.size() == word.size() ||
+         !std::isalnum((unsigned char)input[word.size()]));
+  };
+  // An enabled-roster array is NOT an explicit multicast.
+  if (starts_word("beide") || starts_word("alle") || token("@alle")) {
+    for (const auto &a : AGENTS) add(mag::str(a, "id"));
     return ids;
+  }
+  if (selected && selected->isArr() && selected->asArr().size() == 1) {
+    add(selected->asArr()[0].asStr());
+    return ids; // even an explicitly addressed paused bot stays paused
   }
   for (const auto &a : AGENTS) {
     std::string name = mag::str(a, "name");
@@ -58,8 +64,10 @@ static std::vector<std::string> selected_ids(const Val &body) {
         (token("@" + name) || input == name ||
          input.rfind(name + ":", 0) == 0 ||
          input.rfind(name + ",", 0) == 0 ||
-         input.rfind(name + " ", 0) == 0))
-      add(mag::str(a, "id"), true);
+         input.rfind(name + " ", 0) == 0)) {
+      add(mag::str(a, "id"));
+      if (!ids.empty()) break;
+    }
   }
   if (!ids.empty()) return ids;
   const std::string configured = env("MAG_ROOM_DEFAULT_BOT_ID", "");
@@ -1452,7 +1460,7 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
       send_json(fd, 200, "{\"ok\":true,\"handled_by\":\"host\"}");
       return;
     }
-    if (ids.empty()) {
+    if (ids.empty() && !room_is_glm()) {
       error_json(fd, 400, "Select an agent");
       return;
     }

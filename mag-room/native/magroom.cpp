@@ -1344,7 +1344,8 @@ static void reveal_answer(const std::string &bot, const std::string &name,
   if (piece.empty()) return;
   TL_PARTIAL_TEXT += piece;
   if (TL_PARTIAL_ID.empty()) {
-    Val msg = append_room("assistant", name, TL_PARTIAL_TEXT, bot);
+    Val msg = append_room("assistant", name, TL_PARTIAL_TEXT, bot,
+                          nullptr, "", "", TL_DISPLAY_MS);
     TL_PARTIAL_ID = mag::str(msg, "id");
     stamp_selftalk(msg);
     msg["type"] = "message";
@@ -1363,11 +1364,18 @@ static void drop_revealed() {
   const std::string id = TL_PARTIAL_ID;
   TL_PARTIAL_ID.clear();
   TL_PARTIAL_TEXT.clear();
-  std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
-  ROOM.erase(std::remove_if(ROOM.begin(), ROOM.end(),
-                            [&](const Val &m) { return mag::str(m, "id") == id; }),
-             ROOM.end());
-  save_room();
+  {
+    std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
+    ROOM.erase(std::remove_if(ROOM.begin(), ROOM.end(),
+                              [&](const Val &m) { return mag::str(m, "id") == id; }),
+               ROOM.end());
+    save_room();
+  }
+  // A tool round can revoke a streamed draft. Tell connected clients that
+  // the provisional room row is gone instead of leaving a ghost until done.
+  Val changed = Val::object();
+  changed["type"] = "room";
+  publish(mj::dump(changed));
 }
 static void clear_reaction_notes();
 static void upload_purge_sessions();

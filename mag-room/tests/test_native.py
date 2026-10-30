@@ -4472,7 +4472,7 @@ class MixedNuma(unittest.TestCase):
   # autonomous owner, and the user line is posted once.
   self.wait_idle()
   self.ask('deepseek-chat')
-  self.ask('qwen-numa1')  # establish a real matching Qwen prefix hash
+  self.ask('lehotbot')  # existing secondary ID, now bound to Qwen
   self.stop()
   for name in ('proaktiv','proaktiv-resume','selftalk','selftalk-resume','deploy-hold'):
    (self.state/name).unlink(missing_ok=True)

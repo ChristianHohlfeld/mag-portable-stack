@@ -16,7 +16,7 @@ def request(port, messages, thinking=False, choice=None, stream=False):
     # with the pinned ops/glm/chat-template.jinja (the embedded template ignores
     # enable_thinking); thinking off prefills "<think></think>", default effort Low.
     body = {"model": request.model, "messages": messages, "stream": stream,
-            "max_tokens": 512 if thinking else 192,
+            "max_tokens": 24 if getattr(request, "startup_only", False) else (512 if thinking else 192),
             "temperature": 1.0 if request.model.startswith("glm-5.3-flash") else 0,
             "top_p": 0.95 if request.model.startswith("glm-5.3-flash") else 1,
             "chat_template_kwargs": {"enable_thinking": thinking,
@@ -137,6 +137,7 @@ def main():
     opt = a.parse_args()
     request.model = opt.model
     request.diagnose_only = opt.diagnose_only
+    request.startup_only = opt.startup_only
     ready_prompt = [{"role": "user", "content": (
         "Reply with exactly the single word READY and nothing else."
         if opt.model.startswith("glm-5.3-flash") else "Reply READY.")}]

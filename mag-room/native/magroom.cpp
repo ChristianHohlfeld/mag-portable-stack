@@ -8254,7 +8254,10 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
     // A metadata entry is not proof that the physical slot file survived a
     // layout switch. Failed restore must allow fresh prefill/save, not loop.
     std::lock_guard<std::mutex> lk(PREFIX_MTX);
-    PREFIX_META.obj->erase(port + "/" + file);
+    auto &entries = *PREFIX_META.obj;
+    entries.erase(std::remove_if(entries.begin(), entries.end(),
+                   [&](const auto &entry) { return entry.first == port + "/" + file; }),
+                  entries.end());
     write_file_atomic(STATE_DIR + "/prompt-prefix.json", mj::dump(PREFIX_META));
   };
   if (CONFIGURED_MODEL && (!ram_known || slot_busy)) {

@@ -5,7 +5,7 @@ static void error_json(int fd, int code, const std::string &message) {
   send_json(fd, code, mj::dump(e));
 }
 // Non-chat operations use literal bot IDs, including paused bots. A missing
-// bots[] selection targets all room agents; never apply GLM host arbitration.
+// bots[] selection targets all AGENTS (not only GLM); never use host arbitration.
 static std::vector<std::string> plain_ids(const Val &body) {
   std::vector<std::string> ids;
   std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
@@ -70,8 +70,28 @@ static std::vector<std::string> selected_ids(const Val &body) {
         (input.size() == word.size() ||
          !std::isalnum((unsigned char)input[word.size()]));
   };
+  // A single initial greeting may precede "beide" / "alle". Do not
+  // broadcast just because "beide" occurs later in ordinary prose.
+  const auto greeted_group = [&]() {
+    for (const std::string greeting : {"hi", "hallo", "hey", "moin", "servus"}) {
+      if (!starts_word(greeting)) continue;
+      size_t pos = greeting.size();
+      if (pos >= input.size() || !std::isspace((unsigned char)input[pos]))
+        continue;
+      while (pos < input.size() && std::isspace((unsigned char)input[pos]))
+        ++pos;
+      const std::string rest = input.substr(pos);
+      for (const std::string target : {"beide", "alle"})
+        if (rest.rfind(target, 0) == 0 &&
+            (rest.size() == target.size() ||
+             !std::isalnum((unsigned char)rest[target.size()])))
+          return true;
+    }
+    return false;
+  };
   // An enabled-roster array is NOT an explicit multicast.
-  if (starts_word("beide") || starts_word("alle") || token("@alle")) {
+  if (starts_word("beide") || starts_word("alle") || greeted_group() ||
+      token("@alle")) {
     for (const auto &a : AGENTS) add(mag::str(a, "id"));
     return ids;
   }
@@ -1465,6 +1485,9 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
         for (const std::string &id : memory_ids)
           remember_fact(id, fact, "Raumbefehl");
       } else {
+        if (memory_ids.size() != 1) {
+          error_json(fd, 400, "Für /vergiss genau einen Bot wählen"); return;
+        }
         const std::string n = trim(command.substr(8));
         if (n.empty() || n.find_first_not_of("0123456789") != std::string::npos ||
             n.size() > 2) {

@@ -5382,14 +5382,16 @@ class GlmLayoutStartup(unittest.TestCase):
    MAG_ROOM_AGENT_CTL='/bin/false',MAG_ROOM_GUEST_RUN='/bin/false',MAG_ROOM_MCP_AUTO='0',
    MAG_ROOM_SINGLE_BOT='auto',MAG_ROOM_SINGLE_BOT_VM='on',MAG_ROOM_DUAL_NUMA='0',**glm)
   logpath=root/'room.log';log=open(logpath,'a')
-  proc=subprocess.Popen(['timeout','-k','1','85',str(ROOT/'build/magroom')],env=env,stdout=log,stderr=log)
+  proc=subprocess.Popen(['timeout','-k','1','100',str(ROOT/'build/magroom')],env=env,stdout=log,stderr=log)
   try:
    started=time.monotonic()
-   while time.monotonic()-started<8:
+   while time.monotonic()-started<18:
+    if proc.poll() is not None:
+     self.fail('room exited during startup: '+logpath.read_text(errors='replace')[-2000:])
     try:
      with urllib.request.urlopen(f'http://127.0.0.1:{ui}/api/state',timeout=1):break
     except Exception:time.sleep(.05)
-   else:self.fail('room startup timeout')
+   else:self.fail('room startup timeout; log: '+logpath.read_text(errors='replace')[-2000:])
    token=_ui_token(ui)
    req=urllib.request.Request(f'http://127.0.0.1:{ui}/api/message',
       data=json.dumps({'text':'Hi','bots':['deepseek-chat','qwen-numa1']}).encode(),

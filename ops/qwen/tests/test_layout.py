@@ -430,6 +430,6 @@ json.dump(s,open(p,'w'))
   (d/'GLM-5.3-Flash-IQ2_XS-00004-of-00015.gguf').write_bytes(b'GGUFxx')
   p=run();self.assertEqual(p.returncode,4);self.assertIn('size mismatch',p.stderr)
   # Same length and header, different bytes: only SHA256 detects corruption.
-  (d/'GLM-5.3-Flash-IQ2_XS-00004-of-00015.gguf').write_bytes(b'GGUFzzz')
+  (d/'GLM-5.3-Flash-IQ2_XS-00004-of-00015.gguf').write_bytes(b'GGUFzzzz')
   p=run();self.assertEqual(p.returncode,4);self.assertIn('SHA256 mismatch',p.stderr)
 if __name__=='__main__':unittest.main()

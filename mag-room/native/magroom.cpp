@@ -9307,7 +9307,7 @@ static void lane_turn(Lane *lane, uint64_t run, std::vector<std::string> ids,
         // answer (reasoning at 5.9 tok/s). The first user turn of each bot
         // disables thinking so the first streamed token is the answer.
         // MAG_ROOM_FIRST_HI_THINK=on keeps the suite's explicit switch.
-        if (!automatic && !selftalk_job &&
+        if (!automatic && !selftalk_job && think != 1 &&
             env("MAG_ROOM_FIRST_HI_THINK", "off") != "on") {
           const int slot = model_slot(idx);
           if (slot >= 1 && slot <= ROOM_MAX_BOTS &&
@@ -9323,7 +9323,8 @@ static void lane_turn(Lane *lane, uint64_t run, std::vector<std::string> ids,
           TurnReport report = generate_and_post(idx, automatic, visible_start);
            if (group && (report.skipped || !report.error.empty() ||
                          (trim(report.text).empty() && !report.react_only) ||
-                         short_glm_input(input)))
+                         (CONFIGURED_MODEL && !input.empty() &&
+                          short_glm_input(input))))
              group->bad_result = true;
           if (job_selftalk) {
             reload_slot_after_cancel(idx);

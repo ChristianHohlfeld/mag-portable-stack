@@ -4522,7 +4522,7 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
              const std::function<void(const std::string &, const std::string &)>
                  &on_delta,
              bool thinking, int id_slot, const std::string &model = "",
-             int bot_idx = -1) {
+             int bot_idx = -1, bool short_chat = false) {
   Turn t;
   // DeepSeek rejects an assistant-ending prefill while thinking is on
   // (HTTP 500). Do not open a socket and do not let the caller wipe the wire.
@@ -4618,7 +4618,13 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   // The cap is below Qwen's floor of 512 on purpose.
   if (TL_SELFTALK)
     max_output = std::clamp(envi("MAG_ROOM_PROAKTIV_MAX_TOKENS", 256), 32, 512);
+  // In short, explicitly non-agentic chats, IQ1_M may spend the entire
+  // 1024-token limit inside reasoning. Limit that single decode to 128 tokens.
+  if (short_chat && model.rfind("glm-5.3-flash", 0) == 0)
+    max_output = std::min(max_output, 128);
   body["max_tokens"] = max_output;
+  if (short_chat && model.rfind("glm-5.3-flash", 0) == 0)
+    body["tool_choice"] = "none"; // keep tool schemas / prefix stable
   body["stream"] = true;
   // llama.cpp: stream prompt_progress {total,cache,processed,time_ms} while
   // the prompt is evaluated (minutes on CPU) instead of staying silent.
@@ -4642,7 +4648,7 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   // stays identical across the toggle.
   Val kwargs = Val::object();
   // Thinking follows the model default or the per-message switch.
-  kwargs["enable_thinking"] = thinking && !TL_SELFTALK;
+  kwargs["enable_thinking"] = thinking && !TL_SELFTALK && !short_chat;
   // The Qwen4Exp GGUF Jinja template uses enable_thinking, not the
   // DeepSeek-specific reasoning_effort preamble (preserve prompt cache).
   if (model.rfind("glm-5.3-flash", 0) == 0) {
@@ -4832,9 +4838,15 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   t.text = acc.content;
   t.reasoning = acc.reasoning;
   if (t.error.empty() && t.text.empty() && acc.calls.empty() &&
-      t.finish == "length")
-    t.error = "Antwortlimit erreicht, bevor das Modell fertig gedacht hat "
-              "(MAG_ROOM_MAX_TOKENS=" + std::to_string(MAX_TOKENS) + ").";
+      t.finish == "length") {
+    // The model used its budget entirely for thinking. Return a short,
+    // visible completion instead of surfacing an internal token-limit error.
+    // Do not continue the reasoning in another 1024-token round.
+    t.text = short_chat ? "Wie bitte?" :
+             "Ich konnte die Antwort noch nicht fertigstellen. Bitte präzisiere die Frage.";
+    std::cerr << "glm-reasoning-limit model=" << model
+              << " max_tokens=" << max_output << " fallback=visible\n";
+  }
   for (auto &kv : acc.calls) {
     Val call = Val::object();
     call["id"] = kv.second.find("id") ? kv.second.find("id")->asStr()
@@ -5621,6 +5633,16 @@ static thread_local int TURN_THINK = -1;
 // Current request's raw text, not the room transcript. Each queued chat turn
 // carries its own value, including after a service restart.
 static thread_local std::string TURN_INPUT;
+// Only exact greetings / confusion interjections. Not "ok", "yes", or
+// questions: those may authorize or alter an existing tool task.
+static bool short_glm_input(std::string value) {
+  value = lc(trim(value));
+  while (!value.empty() && (value.back() == '?' || value.back() == '!' ||
+                             value.back() == '.')) value.pop_back();
+  return value == "hae" || value == "hä" || value == "häh" ||
+         value == "hi" || value == "hey" || value == "hallo" ||
+         value == "moin" || value == "hm" || value == "hmm";
+}
 // Set when a running turn took over a newer user message at a step boundary:
 // the lane then finishes as that task (continuation, owner).
 static thread_local uint64_t TL_ADOPT_GEN = 0;
@@ -5808,6 +5830,9 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
   // and never entered the prewarm/cache path.
   const bool stateless = !CONFIGURED_MODEL &&
                          model_settings_for(bot_model_id(bot_idx)).deterministic;
+  const bool short_chat = CONFIGURED_MODEL && !CURRENT_JOB && !TL_TASK &&
+      !autotalk && bot_model_id(bot_idx).rfind("glm-5.3-flash", 0) == 0 &&
+      short_glm_input(TURN_INPUT);
   const bool web = WEB_ENABLED.load();
   std::vector<Val> messages;
   std::string tools, system;
@@ -6025,7 +6050,9 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
     // Re-read permissions between tool rounds. In particular, turning GitHub
     // off removes its schemas from the next request of an already running turn.
     if (!stateless && !TL_SELFTALK) tools = tools_json(bot_idx, web);
-    // Tools remain available on every step, without a forced early final.
+    // Preserve tool schemas and cache prefix even on short chats, but forbid
+    // execution / tool follow-ups for explicit greetings.
+    // Tools remain available on real tasks without a forced early final.
     Turn t;
     size_t attempt_budget = context_budget;
     for (int attempt = 0; attempt < 3; ++attempt) {
@@ -6033,7 +6060,8 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
         compact_agent_context(bot_idx, messages, tools, attempt_budget, compacted_steps);
       t = backend_turn(messages, tools,
                        autotalk ? 0.75 : 0.55, on_delta, turn_thinking(),
-                       slot_for_key(bot_id), bot_model_id(bot_idx), bot_idx);
+                       slot_for_key(bot_id), bot_model_id(bot_idx), bot_idx,
+                       short_chat);
       if (t.skipped || assistant_prefill_error(t.error)) {
         // The guard already logged a skip. A live 500 of this type must not
         // be posted into the room and must not invalidate the wire below.
@@ -6070,6 +6098,12 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
       emit_event("error", bot_id, bot_name, report.error);
       run_fail(report.error);
       break;
+    }
+    // Non-agentic short chat is always exactly one answer, even if a
+    // quantized GLM ignores tool_choice=none and emits a bogus tool call.
+    if (short_chat) {
+      if (t.text.empty()) t.text = "Wie bitte?";
+      t.calls.clear();
     }
     // Stateless means one new model inference per input. Never execute tools
     // or feed the model's output back as a new turn, even if it emits an
@@ -6118,9 +6152,9 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
     messages.push_back(asst);
     const bool tool_round = !t.calls.empty() && !TL_SELFTALK;
     // Open todo items are an unfinished goal: the turn goes on (bounded).
-    const bool todo_open = !tool_round && !stateless && !TL_SELFTALK && TL_TODO_TOUCHED &&
+    const bool todo_open = !short_chat && !tool_round && !stateless && !TL_SELFTALK && TL_TODO_TOUCHED &&
         todo_nudges < 2 && !has_next_step(t.text) && todo_open_for(bot_id) > 0;
-    const bool pending = !TL_SELFTALK && (todo_open || (has_next_step(t.text) &&
+    const bool pending = !short_chat && !TL_SELFTALK && (todo_open || (has_next_step(t.text) &&
         t.text.find("[[MAG:ENDE]]") == std::string::npos));
     if (!t.text.empty()) {
       if (tool_round || pending) {
@@ -6219,6 +6253,19 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
       if (!failed && (fname == "react" || fname == "unreact"))
         report.reacted = true;
       if (failed) {
+        // User-visible activity already records full tool result. Journal a
+        // bounded human-readable cause WITHOUT dumping args or credentials.
+        std::string cause = result.substr(0, 180);
+        for (char &c : cause) if (c == '\n' || c == '\r' || c == '\t') c = ' ';
+        const std::string lower = lc(cause);
+        for (const char *secret : {"password", "token", "secret",
+                                   "authorization", "api_key", "private_key"})
+          if (lower.find(secret) != std::string::npos) {
+            cause = "[redacted: sensitive error]";
+            break;
+          }
+        std::cerr << "tool-failed bot=" << bot_id << " tool=" << fname
+                  << " cause=" << cause << std::endl;
         ++report.failed_tools;
         const std::string key = fname + "|" + argStr + "|" +
                                 result.substr(0, 240);

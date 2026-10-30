@@ -26,10 +26,10 @@ deploy = Path('ops/deploy.sh').read_text()
 diag = Path('ops/perf/diagnose-ai.sh').read_text()
 
 assert '--physcpubind=14-27 --membind=1' in qwen  # Qwen rollback remains untouched
-# GLM pins 14 physical cores per NUMA node (no SMT sibling contention).
-assert '--physcpubind=0-13 --membind=0' in glm
-assert '--physcpubind=14-27 --membind=1' in glm
-assert '--threads 14 --threads-batch 14' in glm
+# GLM has 14 decode and 28 batch threads, all local to its NUMA node.
+assert '--physcpubind=0-13,28-41 --membind=0' in glm
+assert '--physcpubind=14-27,42-55 --membind=1' in glm
+assert '--threads 14 --threads-batch 28' in glm
 for option in ('-fa on','-b 4096','-ub 1024','--load-mode dio',
                '--ctx-checkpoints 64','--checkpoint-min-step 1024',
                '--parallel 1','--temp 1.0','--top-p 0.95'):
@@ -44,7 +44,7 @@ assert 'GLM_CPU_TOPOLOGY=14-27,42-55' in glm_q2
 assert 'GLM_PORT=8191' in glm_q1 and 'GLM_PORT=8192' in glm_q2
 assert 'GLM_SLOT_DIR=/var/lib/mag-llm/slots/glm-q1' in glm_q1
 assert 'GLM_SLOT_DIR=/var/lib/mag-llm/slots/glm' in glm_q2
-assert 'binding=(--physcpubind=0-13 --membind=0)' in glm
+assert 'binding=(--physcpubind=0-13,28-41 --membind=0)' in glm
 assert '--mlock' not in glm
 assert '--load-mode dio -fa on -b 4096 -ub 1024' in glm  # known-good #231 llama-server flags
 assert 'glm-5.3-flash-iq1-m:kv-f16-f16' in glm
@@ -114,6 +114,13 @@ room_conf = Path('ops/mag-120.d/20-room-audit.conf').read_text()
 assert 'MAG_ROOM_BACKEND=http://127.0.0.1:8080' in room_conf
 assert 'Environment=MAG_ROOM_PREWARM=1' in room_conf
 assert 'MAG_ROOM_PREWARM=1' in Path('ops/room/glm.env').read_text()
+assert 'short_glm_input(TURN_INPUT)' in room
+assert 'body["tool_choice"] = "none"' in room
+assert 'max_output = std::min(max_output, 128)' in room
+assert 'glm-reasoning-limit model=' in room
+assert 'tool-failed bot=' in room
+assert 'restart_unit["$unit"]=1' in glm_txn
+assert 'if [[ $layout == glm && -z ${restart_unit[$unit]:-} ]]; then continue; fi' in glm_txn
 assert 'Environment=MAG_ROOM_MAX_TOKENS=8192' in room_conf
 assert 'Environment=MAG_ROOM_GLM_MAX_TOKENS=1024' in room_conf
 assert 'Environment=MAG_ROOM_PREFILL_TPS=9' in room_conf

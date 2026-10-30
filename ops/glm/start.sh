@@ -30,11 +30,11 @@ done
 if [[ $instance == q1 ]]; then
   FORMAT='glm-5.3-flash-iq1-m:kv-f16-f16:ctx32768:slot0'
   legacy="mag-prefix-glm-5.3-flash-iq1-m-slot1.bin"
-  binding=(--physcpubind=0-13 --membind=0)
+  binding=(--physcpubind=0-13,28-41 --membind=0)
 else
   FORMAT='glm-5.3-flash:kv-f16-f16:ctx32768:slot0'
   legacy="mag-prefix-glm-5.3-flash-slot2.bin"
-  binding=(--physcpubind=14-27 --membind=1)
+  binding=(--physcpubind=14-27,42-55 --membind=1)
   # Original NUMA1 IQ2_XS memory gate from #231.
   read -r free file shmem < <(awk '$3=="MemFree:"{f=$4} $3=="FilePages:"{p=$4} $3=="Shmem:"{s=$4} END{print f+0,p+0,s+0}' /sys/devices/system/node/node1/meminfo)
   usable=$((free + (file > shmem ? file-shmem : 0)))
@@ -46,16 +46,16 @@ if [[ ! -f "$GLM_SLOT_DIR/.kv-format" || $(cat "$GLM_SLOT_DIR/.kv-format") != "$
   printf '%s\n' "$FORMAT" > "$GLM_SLOT_DIR/.kv-format.tmp"
   mv -f -- "$GLM_SLOT_DIR/.kv-format.tmp" "$GLM_SLOT_DIR/.kv-format"
 fi
-# Broadwell: 14 physical cores per socket, 14 SMT siblings deliberately
-# excluded from both inference and prefill. This is a hardware-derived
-# low-contention profile, NOT a benchmark-proven fastest thread count.
-# For another profile, compare normal /props or request timings before tuning.
+# Broadwell: 14 decode workers, 28 batch workers (physical+SMT).
+# Live MAG evidence: 14 batch threads fell to 7.96 t/s Q1 and 6.2-6.5
+# Q2; 28 batch threads previously delivered ~9 t/s Q1. Keep each
+# instance on its own NUMA node; do not claim unmeasured decode speedups.
 # llama id_slot=0 on both servers (--parallel 1); room slot 1/2 is a
 # different identity in the durable checkpoint filename.
 exec /usr/bin/numactl "${binding[@]}" "$BIN" \
   --model "$MODEL" --alias "$GLM_ALIAS" \
   --host 127.0.0.1 --port "$GLM_PORT" --ctx-size 32768 --parallel 1 \
-  --threads 14 --threads-batch 14 --numa numactl \
+  --threads 14 --threads-batch 28 --numa numactl \
   --load-mode dio -fa on -b 4096 -ub 1024 \
   --jinja --chat-template-file "$TEMPLATE" --reasoning-format auto \
   --temp 1.0 --top-p 0.95 --cache-ram 16384 --ctx-checkpoints 64 --checkpoint-min-step 1024 \

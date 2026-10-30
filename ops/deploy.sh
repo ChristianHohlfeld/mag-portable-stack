@@ -171,10 +171,12 @@ rollback() {
    rm -f /etc/systemd/system/mag-120.service.d/30-multibot.conf /etc/systemd/system/mag-120.service.d/30-dual-numa.conf
  fi
  for config in room-model.env secondary-model.env; do
+   if [[ $config == room-model.env ]] && (( layout_applied )); then continue; fi
    if [[ -f $BACKUP/$config ]]; then cp -a "$BACKUP/$config" "/etc/mag-stack/$config"
    else rm -f "/etc/mag-stack/$config"; fi
  done
- if [[ -f $BACKUP/qwen-layout/helper.sh ]]; then
+ # Never evict successful GLMs for a later nginx, room or gateway failure.
+ if (( ! layout_applied )) && [[ -f $BACKUP/qwen-layout/helper.sh ]]; then
    bash "$BACKUP/qwen-layout/helper.sh" rollback "$BACKUP"
  fi
  if (( gateway_switched )); then
@@ -204,6 +206,7 @@ rollback() {
 deployment_started=0
 room_switched=0
 gateway_switched=0
+layout_applied=0
 # Units are Type=simple: `mag_systemctl restart` returns before the process
 # listens. Retry a local health URL for up to 30 s, then one strict check.
 wait_http() {
@@ -373,14 +376,15 @@ install -m 0644 "$SOURCE/ops/audit/systemd/mag-audit-gateway.service" /etc/syste
 mag_daemon_reload
 if [[ -e /etc/mag-stack/room-model.env || -e /etc/systemd/system/mag-llm-ds-node@.service ]]; then
   # The layout helper owns its own NUMA1 snapshot, including config and boot state.
-  # Stop the drained room while switching so no new turn reaches the old router.
-  if (( ! FIRST_INSTALL )); then
-    mag_systemctl stop mag-120.service
-  fi
-  # Stage unit files first so layout's single flush sees room + gateway.
+  # Preserve room HTTP/readyz while a model is loading: no nginx 500.
   bash "$SOURCE/ops/room/install.sh"
   if (( ! FIRST_INSTALL )); then
+    mag_flush_daemon_reload
+    if ! mag_systemctl is-active --quiet mag-120.service; then
+      mag_systemctl start mag-120.service
+    fi
     bash "$SOURCE/ops/qwen/layout.sh" apply "$BACKUP"
+    layout_applied=1
   fi
   mag_flush_daemon_reload
   # The temporary live GLM-fast override must not mask the versioned defaults.

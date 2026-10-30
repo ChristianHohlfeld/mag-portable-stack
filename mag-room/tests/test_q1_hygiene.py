@@ -26,8 +26,8 @@ class Q1Hygiene(unittest.TestCase):
         self.assertIn('max_output = std::min(max_output, 96)', SOURCE)
         self.assertIn('q1_deadline_ms > 0 ? q1_deadline_ms : 30000', SOURCE)
         self.assertIn('answer.find("q1_degenerate")', SOURCE)
-        self.assertIn('reverse_pairs.push_back(answer);reverse_pairs.push_back(user)', SOURCE)
-        self.assertIn('t.finish!="stop" || q1_bad(t.text)', SOURCE)
+        self.assertIn('reverse_pairs.push_back(a);reverse_pairs.push_back(u)', SOURCE)
+        self.assertIn('(t.finish!="stop" && t.finish!="length") || q1_bad(t.text)', SOURCE)
         self.assertIn('std::vector<Val> fresh', SOURCE)
         self.assertIn('fresh.push_back(messages.front())', SOURCE)
         self.assertIn('fresh.push_back(messages.back())', SOURCE)
@@ -40,7 +40,7 @@ class Q1Hygiene(unittest.TestCase):
 #include <algorithm>
 #include <cctype>
 #include <iostream>
-#include <string>
+#include <string>\n#include <vector>\n#include <map>\nstruct Val {std::map<std::string,std::string> fields;};\nstd::vector<Val> AGENTS;\nnamespace mag { std::string str(const Val &v,const std::string &key) {auto it=v.fields.find(key);return it==v.fields.end()?"":it->second;} }
 static std::string trim(std::string s) {
   const auto a=s.find_first_not_of(" \\t\\r\\n");
   if(a==std::string::npos) return "";
@@ -54,7 +54,7 @@ int main() {
   check(q1_clean("Rauschen</think> 2, 3, 5.")=="2, 3, 5.");
   check(q1_clean("Eins. Zwei. Drei.")=="Eins. Zwei.");
   check(q1_clean("1. A\\n2. B\\n3. C")=="1. A\\n2. B\\n3. C");
-  check(q1_bad("GLM-Q1: Echo"));
+  check(q1_bad("GLM-Q1: Echo"));\n  check(!q1_bad("Hinweis: Bitte kurz antworten."));\n  check(!q1_bad("12:30 Uhr"));\n  check(!q1_bad("3:1"));\n  check(q1_clean("Hinweis: alles gut.")=="Hinweis: alles gut.");
   check(q1_bad("a,b,c,d,e,f,g,h,i,j"));
   check(q1_bad(""));
   check(!q1_bad("Die Primzahlen sind 2, 3 und 5."));

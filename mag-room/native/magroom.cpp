@@ -2277,6 +2277,8 @@ static std::string build_context_tail(int bot_idx, bool autotalk,
   // Volatile only, and only after the transcript: network, files, clock,
   // autotalk. Memory is not here; it sits in the cached prefix.
   (void)bot_idx;
+  if (CONFIGURED_MODEL && !autotalk && !TL_REFLECT)
+    return "\nZeit: " + server_clock_minute();
   std::string out = "\n[Kontext]\nNetz: ";
   out += OFFLINE.load() ? "OFFLINE" : "online";
   if(!CONFIGURED_MODEL) out += "\nAktuell geteilte Raumdateien:\n" + file_manifest();
@@ -2363,12 +2365,18 @@ static std::string build_transcript() {
   // Room clear/restore can rewind indices; never retain an invalid offset.
   if (TRANSCRIPT_WINDOW_START >= ROOM.size()) TRANSCRIPT_WINDOW_START = 0;
   start = std::max(start, TRANSCRIPT_WINDOW_START);
-  const size_t limit = (size_t)std::clamp(
+  const size_t limit = CONFIGURED_MODEL ? 600 : (size_t)std::clamp(
       envi("MAG_ROOM_TRANSCRIPT_BYTES", 16000), 4000, 64000);
   std::vector<std::pair<std::string, std::string>> lines;
   size_t bytes = 0;
   for (size_t i = ROOM.size(); i > start; --i) {
     const Val &m = ROOM[i-1];
+    if (CONFIGURED_MODEL) {
+      if (m.find("interrupted") && m.find("interrupted")->asBool()) continue;
+      if (m.find("work_error")) continue;
+      if (mag::str(m,"role")=="assistant" && trim(mag::str(m,"content")).empty()) continue;
+      if (lines.size() >= 4) break;
+    }
     std::string id = m.find("id") ? m.find("id")->asStr() : "";
     std::string line;
     if (!id.empty()) {
@@ -2380,6 +2388,7 @@ static std::string build_transcript() {
       line = render_room_line(m);
     }
     if (!lines.empty() && bytes + line.size() > limit) break;
+    if (CONFIGURED_MODEL && line.size() > limit) line.resize(limit);
     bytes += line.size();
     lines.emplace_back(id, std::move(line));
   }
@@ -2387,7 +2396,7 @@ static std::string build_transcript() {
   // headroom, then persist that boundary. Next turns append without shifting
   // the cached prefix until the budget fills again. Never truncate the latest
   // message, and never recompute a fresh sliding cutoff on each request.
-  if (ROOM.size() - lines.size() > start) {
+  if (!CONFIGURED_MODEL && ROOM.size() - lines.size() > start) {
     const size_t target = std::max((size_t)4000, limit * 3 / 5);
     while (lines.size() > 1 && bytes > target) {
       bytes -= lines.back().second.size();

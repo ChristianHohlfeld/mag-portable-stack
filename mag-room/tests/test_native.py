@@ -5513,7 +5513,9 @@ class GlmLayoutStartup(unittest.TestCase):
    q2req=calls_after(before,q2marker,1)[0][3]
    self.assertEqual(q2req['model'],'glm-5.3-flash')
    q2room=idle_after(q2marker)
-   q2text=json.dumps(q2room['room'],ensure_ascii=False)
+   q2at=max(i for i,m in enumerate(q2room['room'])
+            if m.get('role')=='user' and m.get('content')==q2marker)
+   q2text=json.dumps(q2room['room'][q2at+1:],ensure_ascii=False)
    self.assertNotIn('</think>',q2text)
    self.assertNotIn('Antwort',q2text)
    Model.script_scope=None

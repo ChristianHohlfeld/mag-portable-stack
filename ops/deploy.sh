@@ -379,8 +379,9 @@ if [[ -e /etc/mag-stack/room-model.env || -e /etc/systemd/system/mag-llm-ds-node
   # Preserve room HTTP/readyz while a model is loading: no nginx 500.
   bash "$SOURCE/ops/room/install.sh"
   if (( ! FIRST_INSTALL )); then
-    mag_flush_daemon_reload
     if ! mag_systemctl is-active --quiet mag-120.service; then
+      # Only an already-down room needs an early unit refresh before start.
+      MAG_DEFER_DAEMON_RELOAD=0 mag_flush_daemon_reload
       mag_systemctl start mag-120.service
     fi
     bash "$SOURCE/ops/qwen/layout.sh" apply "$BACKUP"

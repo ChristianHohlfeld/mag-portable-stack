@@ -73,7 +73,10 @@ PY
 d="$root/ops/deploy.sh"
 grep -Fq 'MAG_DEFER_DAEMON_RELOAD=1' "$d"
 grep -Fq 'mag_flush_daemon_reload --force' "$d"
-[[ $(grep -c 'mag_flush_daemon_reload' "$d") == 4 ]]
+# The extra flush is guarded by an already-down room; healthy rooms do
+# not receive it, and both GLM servers stay resident.
+[[ $(grep -c 'mag_flush_daemon_reload' "$d") == 5 ]]
+grep -Fq 'MAG_DEFER_DAEMON_RELOAD=0 mag_flush_daemon_reload' "$d"
 if grep -E 'mag_systemctl daemon-reload' "$d"; then
   echo 'deploy.sh still calls mag_systemctl daemon-reload directly' >&2
   exit 1

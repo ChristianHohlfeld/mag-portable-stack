@@ -2719,7 +2719,8 @@ static void pho_forget_boundaries(int idx) {
 }
 static std::string jobs_skill_catalog(const std::string &bot);
 static std::vector<Val> wire_messages(int idx, const std::string &system,
-                                      const std::string &tools, const std::string &tail) {
+                                      const std::string &tools, const std::string &tail,
+                                      bool short_chat = false) {
   const auto bot=bot_field(idx,"id");
   const auto memory=memory_manifest(bot);
   std::lock_guard<std::mutex> wire(WIRE_MTX);
@@ -2776,7 +2777,19 @@ static std::vector<Val> wire_messages(int idx, const std::string &system,
       w.seen.erase(mag::str(room.back(),"id"));
   }
   std::string input;
-  if(first_hi) {
+  if(short_chat) {
+    // Tiny chat: only the latest human text, no volatile room roster,
+    // memories, tools inventory or historical failure notes in the suffix.
+    for (auto it=room.rbegin(); it!=room.rend(); ++it)
+      if (mag::str(*it,"role")=="user") {
+        input=mag::str(*it,"content");
+        break;
+      }
+    for(const auto &m:room) {
+      const auto id=mag::str(m,"id");
+      if(!id.empty()) w.seen.insert(id);
+    }
+  } else if(first_hi) {
     // The resident KV already holds system, tools and the transcript.
     // [Kontext], memory and the roster are the 23–226 token suffix
     // (Qwen 10 tok/s: 66 tokens is already 6.6s before the first answer token).
@@ -2792,7 +2805,7 @@ static std::vector<Val> wire_messages(int idx, const std::string &system,
   } else if(initial) input=pho_initial_transcript(idx,w,room,build_transcript());
   for(const auto &m:room) {
     const auto id=mag::str(m,"id");
-    if(first_hi || !w.seen.insert(id).second || initial)continue;
+    if(first_hi || short_chat || !w.seen.insert(id).second || initial)continue;
     // This bot's response is already present as its original assistant/tool
     // wire messages, including reasoning; do not reformat it as room prose.
     if(mag::str(m,"role")=="assistant"&&mag::str(m,"bot")==bot)continue;
@@ -2802,9 +2815,9 @@ static std::vector<Val> wire_messages(int idx, const std::string &system,
     input+=pho_live_room_line(idx,m,w.compression);
   }
   const auto plugins=mcp_prompt_notes(idx),files=file_manifest();
-  if(!first_hi && (w.memory!=memory || initial)) {input+="\n"+memory;w.memory=memory;}
-  if(!first_hi && (w.plugins!=plugins || initial)) {input+=plugins;w.plugins=plugins;}
-  if(!first_hi && (w.files!=files || initial)) {input+="\nAktuell geteilte Raumdateien:\n"+files;w.files=files;}
+  if(!short_chat && !first_hi && !memory.empty() && (w.memory!=memory || initial)) {input+="\n"+memory;w.memory=memory;}
+  if(!short_chat && !first_hi && !plugins.empty() && (w.plugins!=plugins || initial)) {input+=plugins;w.plugins=plugins;}
+  if(!short_chat && !first_hi && files!="(keine)" && !files.empty() && (w.files!=files || initial)) {input+="\nAktuell geteilte Raumdateien:\n"+files;w.files=files;}
   // Job name, schedule and prompt summary change whenever Chris edits a job.
   // They used to land in this stored transcript, so the next restart treated
   // the prefix as new and re-prefilled ~13k tokens. The catalog stays on the
@@ -2819,7 +2832,7 @@ static std::vector<Val> wire_messages(int idx, const std::string &system,
   // and Self-Talk still sees a rename on the next turn.
   const std::string company=room_company_line(idx);
   std::string extra=input;
-  if(first_hi) {
+  if(first_hi || short_chat) {
     // Roster and clock stay out of this one request. The next turn appends
     // them once the first answer is already on screen.
   } else if(initial) extra+=tail;
@@ -2827,8 +2840,8 @@ static std::vector<Val> wire_messages(int idx, const std::string &system,
     auto at=tail.find("Reflexionsrunde");
     if(at!=std::string::npos) extra+=(at>0&&tail[at-1]=='\n'?"\n":"")+tail.substr(at);
   }
-  if(!first_hi && !initial && company!=w.company) extra+=company;
-  if(!first_hi) w.company=company;
+  if(!short_chat && !first_hi && !initial && company!=w.company) extra+=company;
+  if(!short_chat && !first_hi) w.company=company;
   if(initial || !extra.empty()) {
     Val user=Val::object();user["role"]="user";user["content"]=extra;
     w.messages.push_back(user);
@@ -5928,7 +5941,7 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
     system = build_system(bot_idx, autotalk, other, web);
     tools = tools_json(bot_idx, web);
     if(CONFIGURED_MODEL && !CURRENT_JOB && !TL_TASK) {
-      messages=wire_messages(bot_idx,system,tools,build_context_tail(bot_idx,autotalk,other));
+      messages=wire_messages(bot_idx,system,tools,build_context_tail(bot_idx,autotalk,other),short_chat);
       // No new room line, memory, roster or file note. Posting nothing keeps
       // the saved prefix; a request here would end on the assistant reply.
       if (TL_WIRE_STALE) {

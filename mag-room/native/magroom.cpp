@@ -2383,13 +2383,19 @@ static std::string render_room_line(const Val &m) {
 }
 // GLM's official chat template must receive actual role turns, not a flat
 // [Raumverlauf] pasted into one user message. Never rewrite ROOM storage.
+static bool q1_speaker_label(const std::string &label) {
+  if(label.rfind("GLM-",0)==0 || label=="Q1" || label=="Q2") return true;
+  for(const auto &agent:AGENTS)
+    if(label==mag::str(agent,"id") || label==mag::str(agent,"name")) return true;
+  return false;
+}
 static bool q1_bad(const std::string &raw) {
   const std::string s=trim(raw);
   if(s.empty() || s.size()>420 || s.find("##")!=std::string::npos ||
      s.find("<|")!=std::string::npos || s.find("</think>")!=std::string::npos ||
      std::count(s.begin(),s.end(),',')>8) return true;
   auto c=s.find(':');
-  if(c!=std::string::npos && c<35 && s.substr(0,c).find(' ')==std::string::npos) return true;
+  if(c!=std::string::npos && c<80 && q1_speaker_label(trim(s.substr(0,c)))) return true;
   for(size_t n=12;2*n<=s.size();++n)
     if(s.compare(s.size()-2*n,n,s,s.size()-n,n)==0) return true;
   return false;
@@ -2404,10 +2410,7 @@ static std::string q1_clean(std::string s) {
       s=i==std::string::npos?"":trim(s.substr(i));continue;
     }
     auto c=s.find(':');if(c==std::string::npos || c==0 || c>35) break;
-    bool label=true;
-    for(size_t j=0;j<c;++j)
-      if(!std::isalnum((unsigned char)s[j]) && s[j]!='_' && s[j]!='-' && s[j]!='.') label=false;
-    if(!label) break;
+    if(!q1_speaker_label(trim(s.substr(0,c)))) break;
     s=trim(s.substr(c+1));
   }
   auto cut=std::min(s.find("\n\n"),s.find("##"));
@@ -4967,13 +4970,13 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
       if (c >= 0x80 || std::isalnum(c)) { glm_answer_started = true; break; }
     glm_hard_cut = glm_repetition.feed(piece, [&](const std::string &visible) {
       acc.content += visible;
-      on_delta("delta", visible);
+      if (!(no_tools && model == "glm-5.3-flash-iq1-m")) on_delta("delta", visible);
     }, finish);
   };
   // The server stop array is the primary guard. Hold partial delimiters in
   // client chunks as a fallback so none can reach the room or SSE.
   const std::vector<std::string> glm_stops = {
-      "<|user|>", "<|observation|>", "<tool_call", "\n\n## "};
+      "</think>", "<think>", "<|", "<tool_call", "\n\n## "};
   auto visible_delta = [&](const std::string &s, bool finish = false) {
     if (glm_hard_cut) return;
     visible_reply.feed(s, [&](const std::string &safe) {
@@ -5197,6 +5200,8 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
     if (!glm_chat_stream && !acc.content.empty()) on_delta("delta", acc.content);
   }
   t.text = no_tools && model == "glm-5.3-flash-iq1-m" ? q1_clean(acc.content) : acc.content;
+  if (no_tools && model == "glm-5.3-flash-iq1-m" && !t.text.empty() && !q1_bad(t.text))
+    on_delta("delta", t.text);
   t.reasoning = acc.reasoning;
   if (t.error.empty() && t.text.empty() && acc.calls.empty() &&
       t.finish == "length") {
@@ -6553,14 +6558,14 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
          duration_cast<seconds>(steady_clock::now()-q1_started).count()<30) {
        std::vector<Val> fresh;
        if(!messages.empty()) fresh.push_back(messages.front());
-       if(!messages.empty()) fresh.push_back(messages.back());
+       if(messages.size()>1) fresh.push_back(messages.back());
        t=backend_turn(fresh,tools,0.55,on_delta,false,slot_for_key(bot_id),
                       bot_model_id(bot_idx),bot_idx,false,true,
                       std::max(1,30000-(int)duration_cast<milliseconds>(
                           steady_clock::now()-q1_started).count()));
      }
      if(glm_chat && bot_model_id(bot_idx) == "glm-5.3-flash-iq1-m" &&
-        (t.finish!="stop" || q1_bad(t.text))) {
+        ((t.finish!="stop" && t.finish!="length") || q1_bad(t.text))) {
        report.skipped=true;t.text.clear();completed=true;break;
      }
     if (!t.error.empty() && glm_chat && bot_model_id(bot_idx) == "glm-5.3-flash-iq1-m") {

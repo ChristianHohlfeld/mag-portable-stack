@@ -398,7 +398,27 @@ if [[ -e /etc/mag-stack/room-model.env || -e /etc/systemd/system/mag-llm-ds-node
       MAG_DEFER_DAEMON_RELOAD=0 mag_flush_daemon_reload
       mag_systemctl start mag-120.service
     fi
-    bash "$SOURCE/ops/qwen/layout.sh" apply "$BACKUP"
+    if (( glm_identity_guard )) && [[ $(cat "$SOURCE/ops/room/layout" 2>/dev/null) == glm ]]; then
+      # GLM is already live. This room-only release MUST NOT even invoke the
+      # model layout transaction (it can restart stale binaries/changed units).
+      # Fail closed if the installed model runtime differs from source.
+      for pair in \
+          "$SOURCE/ops/glm/start.sh:/usr/local/lib/mag-glm/start.sh" \
+          "$SOURCE/ops/glm/mag-llm-glm@.service:/etc/systemd/system/mag-llm-glm@.service" \
+          "$SOURCE/ops/glm/q1.env:/etc/mag-glm/q1.env" \
+          "$SOURCE/ops/glm/q2.env:/etc/mag-glm/q2.env" \
+          "$SOURCE/ops/glm/chat-template.jinja:/usr/local/lib/mag-glm/chat-template.jinja"; do
+        left=${pair%%:*}; right=${pair#*:}
+        if ! cmp -s "$left" "$right"; then
+          echo "FAIL: GLM model runtime changed on disk: $right; refusing room-only deploy" >&2
+          exit 1
+        fi
+      done
+      install -m 0644 "$SOURCE/ops/room/glm.env" /etc/mag-stack/room-model.env
+      echo 'Room-only GLM deploy: bypassing model layout apply; Q1/Q2 stay resident'
+    else
+      bash "$SOURCE/ops/qwen/layout.sh" apply "$BACKUP"
+    fi
     layout_applied=1
     verify_glm_identity
   fi

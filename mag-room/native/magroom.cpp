@@ -6140,10 +6140,17 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
     }
     // Non-agentic short chat is always exactly one answer, even if a
     // quantized GLM ignores tool_choice=none and emits a bogus tool call.
-    if (short_chat) {
-      if (t.text.empty()) t.text = "Wie bitte?";
-      t.calls.clear();
+    if (short_chat && t.text.empty()) {
+      // A structured tool-only result with tool_choice=none is not a
+      // successful answer. Show only a local, explicitly failed fallback.
+      report.local_fallback = true;
+      report.error = "GLM lieferte keine sichtbare Kurzantwort.";
+      final_text = "Wie bitte?";
+      run_fail(report.error);
+      completed = true;
+      break;
     }
+    if (short_chat) t.calls.clear();
     // Stateless means one new model inference per input. Never execute tools
     // or feed the model's output back as a new turn, even if it emits an
     // unexpected tool call or a continuation marker.

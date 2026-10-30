@@ -10,6 +10,9 @@ cd "$(dirname "$0")/../../.."
 bash -n ops/qwen/start.sh ops/perf/diagnose-ai.sh ops/deploy.sh ops/boot/ensure-boot.sh
 python3 -I - <<'PY'
 from pathlib import Path
+glm = Path('ops/glm/start.sh').read_text()
+glm_unit = Path('ops/glm/mag-llm-glm.service').read_text()
+ds_node = Path('ops/room/start-ds-node.sh').read_text()
 qwen = Path('ops/qwen/start.sh').read_text()
 unit = Path('ops/qwen/mag-llm-qwen.service').read_text()
 conf = Path('ops/mag-120.d/30-dual-numa.conf').read_text()
@@ -18,7 +21,23 @@ mcp = Path('mag-room/native/mcp.hpp').read_text()
 deploy = Path('ops/deploy.sh').read_text()
 diag = Path('ops/perf/diagnose-ai.sh').read_text()
 
-assert '--physcpubind=14-27 --membind=1' in qwen  # NUMA1 physical cores; DeepSeek is on NUMA0
+assert '--physcpubind=14-27 --membind=1' in qwen  # Qwen rollback remains untouched
+# GLM uses all 28 NUMA1 logical CPUs (14 cores + HT) for batched prefill.
+assert '--physcpubind=14-27,42-55 --membind=1' in glm
+assert '--threads 14 --threads-batch 28' in glm
+for option in ('-fa on','-b 2048','-ub 1024','-ctk q8_0','-ctv q8_0',
+               '--cache-reuse 256','--load-mode dio','--parallel 1'):
+    assert option in glm, option
+assert 'CPUAffinity=14-27 42-55' in glm_unit
+assert 'AllowedCPUs=14-27,42-55' in glm_unit
+assert 'FORMAT=' in glm and '.kv-format' in glm and 'mag-prefix-glm-5.3-flash-slot2.bin' in glm
+assert '--load-mode mlock' in ds_node and '--mlock --flash-attn' not in ds_node
+assert 'if (slot_is_busy(s)) {' in room  # health probes per NUMA, not globally suppressed
+assert 'if (!bot_prefix_ready(secondary)) return ids;' in room
+assert 'SLOT_WARM[slot - 1].load() != 1' in room
+assert 'kv.first == "description"' in room and 'bot_model_id(bot_idx) == "glm-5.3-flash"' in room
+assert 'body["id_slot"] = 0;' in room and 'body["cache_prompt"] = true;' in room
+
 assert '--threads 14 --threads-batch 14 --numa numactl' in qwen
 assert 'CPUAffinity=14-27' in unit
 assert 'AllowedCPUs=14-27' in unit

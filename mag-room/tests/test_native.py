@@ -5188,6 +5188,20 @@ class GlmLayoutStartup(unittest.TestCase):
     time.sleep(.05)
    else:self.fail('GLM fallback failed while DeepSeek cold')
    self.assertEqual([p[3]['model'] for p in first_calls],['glm-5.3-flash'])
+   # llama --parallel 1 uses id_slot=0, while the checkpoint filename's
+   # slot2 is the persisted MAG room-agent identity (different namespaces).
+   self.assertEqual(first_calls[0][3].get('id_slot'),0)
+   tools=first_calls[0][3]['tools']
+   self.assertGreater(len(tools),10,'GLM keeps all executable tools')
+   self.assertTrue(all(t.get('function',{}).get('name') for t in tools))
+   self.assertTrue(all(len(t.get('function',{}).get('description',''))<=96 for t in tools))
+   def has_nested_description(v):
+    if isinstance(v,dict):return 'description' in v or any(has_nested_description(x) for x in v.values())
+    if isinstance(v,list):return any(has_nested_description(x) for x in v)
+    return False
+   self.assertFalse(any(has_nested_description(t['function'].get('parameters',{})) for t in tools))
+   self.assertTrue(any(t['function'].get('parameters',{}).get('properties') for t in tools),
+                   'GLM must retain callable JSON schemas')
    deepseek_gate.set()
    # Allow the original DeepSeek prewarm to complete before testing reverse.
    end=time.monotonic()+6

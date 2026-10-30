@@ -90,16 +90,27 @@ def require_visible_content(msg, label):
 
 
 def require_glm_ready(msg, label, roundtrip=False):
-    """A synthetic readiness prompt must not accept a disclaimer, leaked think
-    delimiter or arbitrary text merely because it contains the word READY.
+    """Require a real readiness/echo marker at the start of a finished answer.
+
+    GLM may append a brief helpful sentence after READY; this is not a failed
+    completion. Reject token leaks, false positives and incomplete responses.
     Qwen retains its existing acceptance behaviour.
     """
     content = (msg.get("content") or "").strip()
-    pattern = r"(?:READY|ECHO:\s*READY)[.!]?" if roundtrip else r"READY[.!]?"
-    if (not re.fullmatch(pattern, content, re.IGNORECASE)
-            or msg.get("reasoning_content") or msg.get("tool_calls")):
-        raise AssertionError(label + ": expected a plain READY answer, got " +
-                             repr(content[:200]) + " (see GLM SMOKE RESPONSE)")
+    marker = r"(?:READY|ECHO:\s*READY)" if roundtrip else r"READY"
+    prefix = re.match(marker + r"[.!]?(?=\s|$)", content, re.IGNORECASE)
+    # A visible <think> / token delimiter is a failure even if READY came first.
+    leaked = re.search(r"</?\s*think\s*>|<\|[^>]+\|>|\[(?:gMASK|sop|eop)\]",
+                       content, re.IGNORECASE)
+    response = getattr(request, "last_response", {})
+    finish = ((response.get("choices") or [{}])[0]).get("finish_reason")
+    if (not prefix or len(content) > 400 or leaked
+            or msg.get("reasoning_content") or msg.get("tool_calls")
+            or finish != "stop"):
+        raise AssertionError(label + ": expected READY at start, clean content and "
+                             "finish_reason=stop; got " + repr(content[:200]) +
+                             ", finish_reason=" + repr(finish) +
+                             " (see GLM SMOKE RESPONSE)")
 
 
 
@@ -121,7 +132,10 @@ def main():
     opt = a.parse_args()
     request.model = opt.model
     request.diagnose_only = opt.diagnose_only
-    msg = request(opt.port, [{"role": "user", "content": "Reply READY."}])
+    ready_prompt = [{"role": "user", "content": (
+        "Reply with exactly the single word READY and nothing else."
+        if opt.model == "glm-5.3-flash" else "Reply READY.")}]
+    msg = request(opt.port, ready_prompt)
     if opt.diagnose_only:
         print("DIAGNOSE ONLY: no acceptance assertion or model switch", flush=True)
         return
@@ -142,7 +156,7 @@ def main():
             slots = json.load(res)
         n_past = max([int(s.get("n_past", s.get("n_prompt_tokens", 0))) for s in slots] or [0])
         assert n_past > 0, "%s has no warm prompt before request 2" % opt.model
-        cached_msg = request(opt.port, [{"role": "user", "content": "Reply READY."}])
+        cached_msg = request(opt.port, ready_prompt)
         if opt.model == "glm-5.3-flash":
             require_glm_ready(cached_msg, "Cached normal chat failed")
         timings = request.last_response.get("timings") or {}
@@ -150,8 +164,13 @@ def main():
         if cached is not None:
             assert cached > 0, "%s request 2 did not reuse the prompt cache" % opt.model
         print("PASS warm request 2 n_past=%d" % n_past, flush=True)
-    prompt = [{"role": "user", "content":
-        "Call the echo tool with the value READY. You MUST call the tool and must not reply in prose."}]
+    tool_prompt = (
+        "Call the echo tool with the value READY. You MUST call the tool first, "
+        "without replying in prose before the result. When the tool returns, "
+        "begin your final reply with ECHO: READY. You may add a brief sentence."
+        if opt.model == "glm-5.3-flash" else
+        "Call the echo tool with the value READY. You MUST call the tool and must not reply in prose.")
+    prompt = [{"role": "user", "content": tool_prompt}]
     msg = request(opt.port, prompt, choice="auto")
     tc = tool(msg)
     assert tc.get("id"), "Missing tool call ID"

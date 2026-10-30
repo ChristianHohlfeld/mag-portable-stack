@@ -4035,11 +4035,11 @@ static void model_watcher_loop() {
     // A slot that returned early, timed out on /slots, or was not yet in
     // AGENTS must be retried. Waiting only for a ready-edge left Qwen cold
     // (live: no prompt-prewarm line, 39s first-hi eval).
-    const bool hot = inference_hot();
-    if (!hot && (backend_became_ready || (st.ready && !was_ready) ||
+    const bool now_hot = inference_hot();
+    if (!now_hot && (backend_became_ready || (st.ready && !was_ready) ||
         (secondary_ready && !was_secondary_ready) || slots_pending))
       schedule_prewarm();
-    else if (!hot && secondary_ready && CONFIGURED_MODEL)
+    else if (!now_hot && secondary_ready && CONFIGURED_MODEL)
       prewarm_if_prompt_changed(); // system prompt, tools, persona or bot set changed
     was_ready = st.ready;
     was_secondary_ready = secondary_ready;
@@ -4054,7 +4054,7 @@ static void model_watcher_loop() {
     // While a turn is running, stay off llama. Idle slots still retry
     // prewarm quickly; a cold prefix must not wait a full UI interval.
     std::this_thread::sleep_for(
-        seconds(hot ? 5 : slots_pending ? 2 : (st.ready ? 10 : 4)));
+        seconds(now_hot ? 5 : slots_pending ? 2 : (st.ready ? 10 : 4)));
   }
 }
 
@@ -6883,7 +6883,8 @@ static bool slot_blocked_for_hi(int slot) {
   if (ROOM_MODEL_HEALTH[slot - 1].load() == 2) return true;
   // 0 means not yet probed: it is NOT a known-resident prompt. A first
   // greeting must not be assigned to that cold/unknown DeepSeek slot.
-  return prefix_gate_on() && SLOT_WARM[slot - 1].load() != 1;
+  return CONFIGURED_MODEL && env("MAG_ROOM_PREWARM", "1") == "1" &&
+         SLOT_WARM[slot - 1].load() != 1;
 }
 static std::vector<std::string> first_hi_answerers(std::vector<std::string> ids) {
   if (!CONFIGURED_MODEL || ids.empty()) return ids;

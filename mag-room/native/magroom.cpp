@@ -7022,7 +7022,7 @@ static bool AUTO_READY = false;
 static int AUTO_TURNS_LEFT = 0;
 static constexpr int AUTO_MAX_TURNS = 8;
 
-static void cancel_lane(Lane &l, bool user, const char *reason = "cancel_lane") {
+static void cancel_lane_reason(Lane &l, bool user, const char *reason) {
   if (!l.busy.load()) return;
   std::cerr << "turn-cancel reason=" << reason << " user=" << (user ? 1 : 0)
             << " bot=" << l.active_bot << "\n";
@@ -7031,6 +7031,9 @@ static void cancel_lane(Lane &l, bool user, const char *reason = "cancel_lane") 
   std::lock_guard<std::mutex> lk(BACKEND_FD_MTX);
   if (l.backend_fd.load() >= 0)
     shutdown(l.backend_fd.load(), SHUT_RDWR);
+}
+static void cancel_lane(Lane &l, bool user) {
+  cancel_lane_reason(l, user, "cancel_lane");
 }
 // Stop every lane. EPOCH tells finished turns that their result is stale.
 static void cancel_active(bool user = false) {
@@ -7044,7 +7047,7 @@ static void cancel_active(bool user = false) {
   LAST_CANCEL_BY_USER = user;
   STOP = true;
   ++EPOCH;
-  for (Lane *l : all_lanes()) cancel_lane(*l, user, "cancel_active");
+  for (Lane *l : all_lanes()) cancel_lane_reason(*l, user, "cancel_active");
   std::lock_guard<std::mutex> lk(BACKEND_FD_MTX);
   if (BACKEND_FD.load() >= 0)
     shutdown(BACKEND_FD.load(), SHUT_RDWR);
@@ -7063,7 +7066,7 @@ static bool cancel_bots_locked(const std::vector<std::string> &ids, bool user) {
       for (Lane *lane : all_lanes()) {
         if (!lane->busy.load()) continue;
         // A bot's model can be changed during a turn. Use dispatched ownership.
-        if (lane->active_bot == id) cancel_lane(*lane, user, "cancel_bots_locked");
+        if (lane->active_bot == id) cancel_lane_reason(*lane, user, "cancel_bots_locked");
         lane->cancelled_bots.insert(id);
       }
       found = true;
@@ -8354,7 +8357,7 @@ static void preempt_selftalk_lanes() {
         Lane *lane = lane_of(id);
         if (!lane || !lane->busy.load()) continue;
         lane->preempt = true;
-        cancel_lane(*lane, false, "preempt_selftalk_lanes");
+        cancel_lane_reason(*lane, false, "preempt_selftalk_lanes");
         const int idx = agent_index(id);
         hits.push_back(Hit{lane, idx});
       }

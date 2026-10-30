@@ -5204,7 +5204,14 @@ class GlmLayoutStartup(unittest.TestCase):
    req=first_calls[0][3]
    self.assertNotIn('tools',req,'GLM chat must never send tools schemas')
    self.assertNotIn('tool_choice',req,'GLM chat must omit tool choice too')
-   self.assertEqual(req['max_tokens'],256)
+   self.assertEqual(req['max_tokens'],128)
+   self.assertEqual(req['temperature'],0.55)
+   self.assertEqual(req['dry_multiplier'],0.8)
+   self.assertEqual(req['dry_base'],1.75)
+   self.assertEqual(req['dry_allowed_length'],2)
+   self.assertEqual(req['dry_penalty_last_n'],64)
+   self.assertEqual(req['messages'][-1],{'role':'user','content':first})
+   self.assertNotIn('[Raumverlauf]',json.dumps(req['messages'],ensure_ascii=False))
    self.assertEqual(req['chat_template_kwargs']['reasoning_effort'],'low')
    self.assertTrue(req['chat_template_kwargs']['clear_thinking'])
    sys=req['messages'][0]['content']
@@ -5230,7 +5237,7 @@ class GlmLayoutStartup(unittest.TestCase):
    self.assertTrue(any('Test-Fakt-ZQ' in str(v) for v in persisted[1].get('memory',[])))
    self.assertEqual(count_before,len([p for p in Model.paths
        if p[0]=='/v1/chat/completions' and p[3].get('max_tokens')!=1]))
-   # The last short greeting, not accumulated room text, enters user message.
+   # Short greetings stay user role messages; prior turns use separate roles.
    before=len(Model.paths)
    post('/api/message',{'text':'Hi','bots':['qwen-numa1'],
        'request_id':'glm-short-memory'})
@@ -5242,8 +5249,11 @@ class GlmLayoutStartup(unittest.TestCase):
     if greetings:break
     time.sleep(.05)
    else:self.fail('GLM short greeting missing')
-   self.assertEqual(greetings[0][3]['messages'][1]['content'],'Hi')
+   self.assertEqual(greetings[0][3]['messages'][-1],{'role':'user','content':'Hi'})
+   self.assertLessEqual(len(greetings[0][3]['messages']),7)
    self.assertIn('Test-Fakt-ZQ',greetings[0][3]['messages'][0]['content'])
+   self.assertEqual(greetings[0][3]['temperature'],1.0)
+   self.assertNotIn('dry_multiplier',greetings[0][3],'Q2 sampler stays unchanged')
    self.assertNotIn('tools',greetings[0][3])
    self.assertFalse(greetings[0][3]['chat_template_kwargs']['enable_thinking'])
    self.assertTrue(post('/api/message',{'text':'/vergiss 1',
@@ -5285,7 +5295,7 @@ class GlmLayoutStartup(unittest.TestCase):
     self.assertEqual(len(retry_calls),2)
     self.assertTrue(retry_calls[0][3]['chat_template_kwargs']['enable_thinking'])
     self.assertFalse(retry_calls[1][3]['chat_template_kwargs']['enable_thinking'])
-    self.assertEqual([p[3]['max_tokens'] for p in retry_calls],[256,256])
+    self.assertEqual([p[3]['max_tokens'] for p in retry_calls],[256,128])
     self.assertNotIn('stop',retry_calls[0][3],'Thinking must not stop at </think>')
     self.assertIn('</think>',retry_calls[1][3]['stop'],'Nonthinking retry needs stop')
     self.assertNotIn('\n\n## ',retry_calls[1][3]['stop'])
@@ -5485,6 +5495,50 @@ class GlmLayoutStartup(unittest.TestCase):
     calls=calls_after(before,marker,expected)
     idle_after(marker)
     self.assertEqual(len(calls),expected,calls)
+   # Multi-turn GLM template: each historical room message is a role entry.
+   # Q2's answer must be user-with-name from Q1's perspective; Q1's prior
+   # answer stays assistant. No flat transcript or manual <|user|> markup.
+   q2mark='GLM-CTX-Q2-'+str(time.monotonic_ns())
+   before=len(Model.paths)
+   self.assertTrue(post({'text':q2mark,'bots':['qwen-numa1']})['accepted'])
+   calls_after(before,q2mark,1)
+   idle_after(q2mark)
+   q1mark='GLM-CTX-Q1-'+str(time.monotonic_ns())
+   before=len(Model.paths)
+   self.assertTrue(post({'text':q1mark,'bots':['deepseek-chat']})['accepted'])
+   q1req=calls_after(before,q1mark,1)[0][3]
+   roles=q1req['messages']
+   self.assertEqual(roles[0]['role'],'system')
+   self.assertEqual(roles[-1],{'role':'user','content':q1mark})
+   self.assertLessEqual(len(roles),7,'maximum six role turns plus system')
+   self.assertTrue(any(m['role']=='user' and
+       m['content'].startswith('GLM-Q2: ') for m in roles[1:-1]),roles)
+   self.assertFalse(any(m['role']=='assistant' and
+       m['content'].startswith('GLM-Q2: ') for m in roles[1:-1]),roles)
+   self.assertNotIn('[Raumverlauf]',json.dumps(roles,ensure_ascii=False))
+   idle_after(q1mark)
+   # Six identical words cause a hard stream cut before the repetition run
+   # enters SSE or persisted room state. A valid prefix is kept.
+   for prefix in ('# ','2, 3 und 5. '):
+    marker='GLM-REPEAT-'+str(time.monotonic_ns())
+    Model.script_scope=marker
+    Model.script=[[prefix]+['primos ']*6+['GARBAGE-REPEAT']]
+    before=len(Model.paths)
+    self.assertTrue(post({'text':marker,'bots':['deepseek-chat']})['accepted'])
+    calls_after(before,marker,1)
+    room=idle_after(marker)['room']
+    user_at=max(i for i,m in enumerate(room) if m.get('role')=='user' and
+                m.get('content')==marker)
+    after=room[user_at+1:]
+    self.assertNotIn('primos',json.dumps(after,ensure_ascii=False))
+    self.assertNotIn('GARBAGE-REPEAT',json.dumps(after,ensure_ascii=False))
+    if prefix.startswith('2,'):
+     self.assertTrue(any(m.get('role')=='assistant' and
+         (m.get('content') or '').strip()=='2, 3 und 5.' for m in after),after)
+    else:
+     self.assertFalse(any(m.get('role')=='assistant' and
+         (m.get('content') or '').strip()=='#' for m in after),after)
+    Model.script_scope=None;Model.script=[]
    # Forgetting memory indexes across multiple agents is ambiguous.
    for ids in (['deepseek-chat','qwen-numa1'],None):
     body={'text':'/vergiss 1'}

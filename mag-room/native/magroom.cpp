@@ -2277,7 +2277,7 @@ static std::string build_context_tail(int bot_idx, bool autotalk,
   // Volatile only, and only after the transcript: network, files, clock,
   // autotalk. Memory is not here; it sits in the cached prefix.
   (void)bot_idx;
-  if (CONFIGURED_MODEL && env("MAG_ROOM_MODEL_ID", "").rfind("glm-5.3-flash", 0) == 0) && !autotalk && !TL_REFLECT
+  if ((CONFIGURED_MODEL && env("MAG_ROOM_MODEL_ID", "").rfind("glm-5.3-flash", 0) == 0) && !autotalk && !TL_REFLECT)
     return "\nZeit: " + server_clock_minute();
   std::string out = "\n[Kontext]\nNetz: ";
   out += OFFLINE.load() ? "OFFLINE" : "online";
@@ -2388,7 +2388,7 @@ static std::string build_transcript() {
       line = render_room_line(m);
     }
     if (!lines.empty() && bytes + line.size() > limit) break;
-    if (CONFIGURED_MODEL && env("MAG_ROOM_MODEL_ID", "").rfind("glm-5.3-flash", 0) == 0) && line.size() > limit) line.resize(limit);
+    if ((CONFIGURED_MODEL && env("MAG_ROOM_MODEL_ID", "").rfind("glm-5.3-flash", 0) == 0) && line.size() > limit) line.resize(limit);
     bytes += line.size();
     lines.emplace_back(id, std::move(line));
   }

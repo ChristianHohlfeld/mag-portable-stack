@@ -2555,83 +2555,40 @@ function roomClearedNow(){
  clearStopping();render();renderQueue({pending:[],paused:false});
  refresh().catch(()=>{}); // canonical server state after local response/SSE
 }
-async function waitClearSettled(){
- const until=Date.now()+90000;
- roomLink('Bot wird beendet – Raum wird anschließend geleert…');
- while(Date.now()<until){
-  await new Promise(resolve=>setTimeout(resolve,500));
-  const response=await fetch('/api/state').catch(()=>null);
-  if(!response?.ok)continue;
-  const status=await response.json().catch(()=>null);
-  if(!status)continue;
-  const jobs=(status.tasks||[]).some(t=>t.status==='running');
-  const activity=(status.activities||[]).some(a=>a&&a.on);
-  if(!status.busy&&!(status.busy_bots||[]).length&&!jobs&&!activity&&
-     !(status.pending||[]).length)return true;
- }
- return false;
-}
 let clearInFlight=false;
 $('reset').onclick=async()=>{
  if(clearInFlight)return;
- let force=workBusy();
- if(force&&!await magConfirm({title:'Laufende Arbeit abbrechen?',text:'Bots und Warteschlange werden gestoppt. Der Raum wird erst nach der Sicherung geleert.',ok:'Abbrechen und leeren',cancel:'Nicht leeren',danger:true}))return;
+ const confirmed=await magConfirm({
+  title:'Raum endgültig leeren?',
+  text:'Alle laufenden Bot-Antworten werden gestoppt. Nachrichten, Dateien und alte Snapshots werden unwiderruflich gelöscht. Kein Rückgängig möglich.',
+  ok:'Endgültig leeren',cancel:'Abbrechen',danger:true
+ });
+ if(!confirmed)return;
  const btn=$('reset'),label=btn.textContent;clearInFlight=true;
  btn.disabled=true;btn.textContent='Raum wird geleert…';btn.setAttribute('aria-busy','true');
- roomLink('Raum wird geleert…');
+ roomLink('Bots werden gestoppt – Raum wird endgültig geleert…');
  try{
-  let result;
-  try{result=await api('/api/room/clear',force?{force:true}:{})}
-  catch(e){
-   if(e.status!==409)throw e;
-   // The server may have started new work after the first check. Never
-   // escalate to forced cancellation without another explicit confirmation.
-   roomLink('Raum beschäftigt');
-   if(!await magConfirm({title:'Raum beschäftigt',text:'Zwischenzeitlich wurde Arbeit gestartet. Diese wirklich abbrechen und den Raum leeren?',ok:'Abbrechen und leeren',cancel:'Nicht leeren',danger:true}))return;
-   roomLink('Raum wird geleert…');
-   result=await api('/api/room/clear',{force:true});
-  }
-  // 202 is an explicit uncommitted state: forced cancellation began, but
-  // the worker still owns its lane. Never claim the room is already empty.
-  // Once idle is observed, one fresh verified clear may complete the request.
-  if(result?.settling){
-   if(!await waitClearSettled()){
-    roomLink('Raum nicht geleert – Bot beendet sich noch');
-    notice('Abbruch dauert zu lange. Raum bleibt erhalten; erneut versuchen.');
-    return;
-   }
-   roomLink('Raum wird geleert…');
-   result=await api('/api/room/clear',{force:true});
-  }
-  if(result?.settling){
-   roomLink('Raum nicht geleert – Bot beendet sich noch');
-   notice('Bot arbeitet noch. Raum bleibt erhalten; erneut versuchen.');
-   return;
-  }
+  // No second destructive request on network errors, no snapshot or Undo.
+  const result=await api('/api/room/clear',{});
   if(!result?.ok)throw Error('Löschen wurde nicht bestätigt');
   roomClearedNow();
-  if(result.unchanged)notice('Raum ist bereits leer');
-  else showUndo('Raum geleert',result.undo);
+  notice('Raum endgültig geleert');
  }catch(e){
   if(roomDown(e)){
    roomLink('Raumstatus unklar – Verbindung prüfen');
    notice('Verbindung verloren. Kein automatischer zweiter Löschversuch.');
-   // Check authoritative state without repeating the destructive action.
    const checked=await refresh().then(()=>true,()=>false);
-   if(checked && !(state.room||[]).length && !(state.files||[]).length){
-     roomLink('');
-     notice('Raum ist leer – Serverstatus geprüft.');
+   if(checked&&!(state.room||[]).length&&!(state.files||[]).length){
+    roomLink('');notice('Raum ist leer – Serverstatus geprüft.');
    }
   }else{
-   // Preserve the authoritative failure on screen, not just in the console
-   // or a transient toast. The room and its files remain untouched on 507.
    roomLink('Raum nicht geleert: '+e.message);
    notice('Raum nicht geleert: '+e.message);
   }
  }finally{
   clearInFlight=false;btn.disabled=false;btn.textContent=label;
   btn.removeAttribute('aria-busy');
-  if($('room-link')?.textContent==='Raum wird geleert…'||$('room-link')?.textContent==='Raum beschäftigt')roomLink('');
+  if(($('room-link')?.textContent||'').startsWith('Bots werden gestoppt'))roomLink('');
  }
 };
 // Images are staged locally until sending. Canvas conversion strips EXIF/GPS

@@ -4908,14 +4908,15 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   }
   publish_prompt_cache(id_slot, model, saw_timings ? &timings_seen : nullptr,
                        saw_cached, saw_evaluated);
-  if (t.error.empty())
+  if (t.error.empty() && !CONFIGURED_MODEL)
     slot_save_after(id_slot, saw_cached, saw_evaluated);
   // A cancel drops ik's KV ("lack of cache data"). The slot file is what the
   // next room start reloads, so a restart does not prefill the prompt again.
   // A short Proaktiv prompt must not replace the saved human prefix.
   // Cancel restores that file so the next hi stays a cache hit.
-  if (t.error.empty() && !TL_SELFTALK)
-    persist_configured_slot(bot_idx);
+  // Persist only an anchor, not a full tool/chat KV dump.
+  // prewarm_model() owns the prefix-only save.
+  (void)bot_idx;
   return t;
 }
 
@@ -5670,7 +5671,11 @@ static bool short_glm_input(std::string value) {
                              value.back() == '.')) value.pop_back();
   return value == "hae" || value == "hä" || value == "häh" ||
          value == "hi" || value == "hey" || value == "hallo" ||
-         value == "moin" || value == "hm" || value == "hmm";
+         value == "moin" || value == "hm" || value == "hmm" ||
+         value == "ok" || value == "okay" || value == "ja" ||
+         value == "nein" || value == "danke" || value == "passt" ||
+         value == "super" || value == "hm ja" || value == "ja bitte" ||
+         value == "hm ja bitte" || value == "und" || value.empty();
 }
 // Set when a running turn took over a newer user message at a step boundary:
 // the lane then finishes as that task (continuation, owner).
@@ -5925,7 +5930,9 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
   // no tools and doesn't depend on the mutable room/system/memory.
   const std::string sys_log = messages.empty() ? system
       : (messages[0].find("content") ? messages[0]["content"].asStr() : system);
-  std::cerr << "prompt-footprint model=" << bot_model_id(bot_idx)
+  std::cerr << "prompt-footprint input_tokens_approx="
+            << (messages.back()["content"].asStr().size() / 3)
+            << " model=" << bot_model_id(bot_idx)
             << " stateless=" << (stateless ? 1 : 0)
             << " system_bytes=" << sys_log.size()
             << " tools_bytes=" << tools.size()
@@ -8027,7 +8034,7 @@ static uint64_t fnv64(const std::string &s) {
   return h;
 }
 static std::string prefix_file(int idx, const std::string &model) {
-  return CONFIGURED_MODEL ? "mag-prefix-" + model + "-slot" + std::to_string(model_slot(idx)) + ".bin"
+  return CONFIGURED_MODEL ? "mag-prefix-" + model + "-slot" + std::to_string(model_slot(idx)) + "-prefix.bin"
                          : "mag-prefix-" + model + ".bin";
 }
 static bool prefix_slot_rpc(int idx, const std::string &model, const char *action,
@@ -8530,7 +8537,11 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
         u["content"] = build_transcript() + build_context_tail(idx, false, "") + (skills.empty() ? "" : "\n" + skills);
         msgs.push(u);
         if (CONFIGURED_MODEL) {
-          auto wire = wire_messages(idx, system, tool_defs, build_context_tail(idx, false, ""));
+          // A stable system+tools anchor; no volatile transcript or history.
+          Val anchor=Val::array();
+          anchor.push(sys);
+          msgs=anchor;
+          auto wire = std::vector<Val>{sys};
           msgs = Val::array();
           for (const auto &m : wire) msgs.push(m);
         }
@@ -8542,7 +8553,7 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
         body["cache_prompt"] = true;
         if (CONFIGURED_MODEL) body["id_slot"] = 0;
         Val kwargs = Val::object();
-        bool thinking_on = bot_thinking(idx);
+        bool thinking_on = CONFIGURED_MODEL ? false : bot_thinking(idx);
         // DeepSeek rejects an assistant-ending prefill while thinking is on.
         // The room turn skips that request. Prewarm still has to post
         // (the slot file is written only after this completion); thinking
@@ -8615,7 +8626,8 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
                            (ok && code == 200 && !cancelled && !skip)))
     mark_prefix_warm(model_slot(idx));
   if (seq.owns_lock()) seq.unlock();
-  if (!(skip && std::string(why) == "busy"))
+  // Spam reduction: only transitions and actual anchor actions are logged.
+  if (!skip || saved || restored || cancelled)
     std::cerr << "prompt-prewarm model=" << model << " ok=" << (ok ? 1 : 0)
             << " status=" << code << " ms=" << ms
             << " ram_warm=" << (ram_warm ? 1 : 0)
@@ -10795,7 +10807,7 @@ int main() {
                                 : std::max(LLM_TIMEOUT_S, LLM_TIMEOUT_MIN_S);
   }
   THINKING = env("MAG_ROOM_THINKING", "on");
-  THINKING_DEFAULT = THINKING != "off";
+  THINKING_DEFAULT = CONFIGURED_MODEL ? false : THINKING != "off";
   REASONING_EFFORT = env("MAG_ROOM_REASONING_EFFORT", "");
   if (!REASONING_EFFORT.empty() && REASONING_EFFORT != "low" &&
       REASONING_EFFORT != "high" && REASONING_EFFORT != "max")
@@ -10861,6 +10873,19 @@ int main() {
   ensure_state();
   undo_drop_all();
   load_agents();
+  if (CONFIGURED_MODEL) {
+    // One-time migration, preserving IDs, memories and other settings.
+    bool changed = false;
+    for (auto &agent : AGENTS) {
+      if (bot_model_id(agent_index(mag::str(agent,"id"))).rfind("glm-5.3-flash",0) == 0) {
+        if (auto v=agent.find("thinking"); v && v->asBool()) {
+          agent["thinking"] = false;
+          changed = true;
+        }
+      }
+    }
+    if (changed) write_file_atomic(AGENTS_JSON, mj::dump(AGENTS));
+  }
   tasks_restore(); // recover durable sub-agent states before serving the room
   FILES = load_json_array(FILES_JSON);
   ROOM = load_json_array(ROOM_JSON);
@@ -10868,6 +10893,10 @@ int main() {
   UI_DEFAULT = read_file(UI_FILE);
   retire_frontend_override();
 
+  if (CONFIGURED_MODEL) {
+    write_file(STATE_DIR + "/autotalk", "off");
+    write_file(STATE_DIR + "/reflect", "off");
+  }
   AUTOTALK = trim(read_file(STATE_DIR + "/autotalk")) == "on";
   SELFTALK = migrated_flag(STATE_DIR + "/proaktiv", STATE_DIR + "/selftalk") == "on";
   // A reboot does not resume a bot-to-bot chain. The switch does survive.

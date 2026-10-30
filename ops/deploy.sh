@@ -407,7 +407,13 @@ if [[ -e /etc/mag-stack/room-model.env || -e /etc/systemd/system/mag-llm-ds-node
           "$SOURCE/ops/glm/mag-llm-glm@.service:/etc/systemd/system/mag-llm-glm@.service" \
           "$SOURCE/ops/glm/q1.env:/etc/mag-glm/q1.env" \
           "$SOURCE/ops/glm/q2.env:/etc/mag-glm/q2.env" \
-          "$SOURCE/ops/glm/chat-template.jinja:/usr/local/lib/mag-glm/chat-template.jinja"; do
+          "$SOURCE/ops/glm/chat-template.jinja:/usr/local/lib/mag-glm/chat-template.jinja" \
+          "$SOURCE/ops/glm/mag-llm-glm@q1.service.d/10-numa.conf:/etc/systemd/system/mag-llm-glm@q1.service.d/10-numa.conf" \
+          "$SOURCE/ops/glm/mag-llm-glm@q2.service.d/10-numa.conf:/etc/systemd/system/mag-llm-glm@q2.service.d/10-numa.conf" \
+          "$SOURCE/ops/glm/verify-model.sh:/usr/local/lib/mag-glm/verify-model.sh" \
+          "$SOURCE/ops/glm/model.sizes:/usr/local/lib/mag-glm/model.sizes" \
+          "$SOURCE/ops/glm/model.sha256:/usr/local/lib/mag-glm/model.sha256" \
+          "$SOURCE/ops/qwen/runtime.sha:/usr/local/lib/mag-glm/runtime.sha"; do
         left=${pair%%:*}; right=${pair#*:}
         if ! cmp -s "$left" "$right"; then
           echo "FAIL: GLM model runtime changed on disk: $right; refusing room-only deploy" >&2

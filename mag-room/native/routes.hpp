@@ -13,13 +13,62 @@ static std::vector<std::string> selected_ids(const Val &body) {
     return ids;
   }
   auto selected = body.find("bots");
-  if (selected && selected->isArr()) {
-    for (const auto &id : selected->asArr())
-      if (agent_index(id.asStr()) >= 0)
-        ids.push_back(id.asStr());
-  } else
-    for (auto &a : AGENTS)
-      ids.push_back(a.find("id")->asStr());
+  if (!room_is_glm()) {
+    if (selected && selected->isArr()) {
+      for (const auto &id : selected->asArr())
+        if (agent_index(id.asStr()) >= 0)
+          ids.push_back(id.asStr());
+    } else
+      for (auto &a : AGENTS) ids.push_back(a.find("id")->asStr());
+    return ids;
+  }
+  // GLM host arbitration: never let unaddressed input wake both bots.
+  auto add = [&](const std::string &id) {
+    int idx = agent_index(id);
+    if (idx >= 0 && bot_enabled_locked(idx) &&
+        std::find(ids.begin(), ids.end(), id) == ids.end()) ids.push_back(id);
+  };
+  if (selected && selected->isArr() && !selected->asArr().empty()) {
+    for (const auto &id : selected->asArr()) add(id.asStr());
+    return ids; // explicit UI selection, including explicit multiple bots
+  }
+  std::string input = mag::str(body, "text");
+  std::transform(input.begin(), input.end(), input.begin(),
+                 [](unsigned char c){ return (char)std::tolower(c); });
+  auto token = [&](const std::string &word) {
+    size_t p = input.find(word);
+    while (p != std::string::npos) {
+      const size_t e = p + word.size();
+      const bool left = p == 0 || !std::isalnum((unsigned char)input[p-1]);
+      const bool right = e == input.size() || !std::isalnum((unsigned char)input[e]);
+      if (left && right) return true;
+      p = input.find(word, p + 1);
+    }
+    return false;
+  };
+  if (token("beide") || token("alle")) {
+    for (const auto &a : AGENTS) add(mag::str(a, "id"));
+    return ids;
+  }
+  for (const auto &a : AGENTS) {
+    std::string name = mag::str(a, "name");
+    std::transform(name.begin(), name.end(), name.begin(),
+                   [](unsigned char c){ return (char)std::tolower(c); });
+    if (!name.empty() &&
+        (token("@" + name) || input == name ||
+         input.rfind(name + ":", 0) == 0 ||
+         input.rfind(name + ",", 0) == 0 ||
+         input.rfind(name + " ", 0) == 0))
+      add(mag::str(a, "id"));
+  }
+  if (!ids.empty()) return ids;
+  const std::string configured = env("MAG_ROOM_DEFAULT_BOT_ID", "");
+  if (!configured.empty()) add(configured);
+  if (ids.empty())
+    for (const auto &a : AGENTS) {
+      add(mag::str(a, "id"));
+      if (!ids.empty()) break;
+    }
   return ids;
 }
 static void agents_event() {
@@ -1366,6 +1415,43 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
       return;
     }
     auto ids = selected_ids(body);
+    const std::string command = trim(str("text"));
+    if (room_is_glm() &&
+        (command.rfind("/merk ", 0) == 0 || command.rfind("/vergiss ", 0) == 0)) {
+      if (actor.role != "owner") {
+        error_json(fd, 403, "Nur der Owner darf Erinnerungen ändern"); return;
+      }
+      if (ids.size() != 1) {
+        error_json(fd, 400, "Für Erinnerungen genau einen Bot auswählen"); return;
+      }
+      const std::string id = ids.front();
+      if (command.rfind("/merk ", 0) == 0) {
+        std::string fact = trim(command.substr(6));
+        if (fact.empty() || fact.size() > 500) {
+          error_json(fd, 400, "Fakt erforderlich (max 500 Bytes)"); return;
+        }
+        remember_fact(id, fact, "Raumbefehl");
+      } else {
+        const std::string n = trim(command.substr(8));
+        if (n.empty() || n.find_first_not_of("0123456789") != std::string::npos ||
+            n.size() > 2) {
+          error_json(fd, 400, "Verwende /vergiss <n>"); return;
+        }
+        const size_t index = (size_t)std::stoul(n);
+        std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
+        const int idx = agent_index(id);
+        if (idx < 0 || !AGENTS[idx]["memory"].isArr() ||
+            index < 1 || index > AGENTS[idx]["memory"].arr->size()) {
+          error_json(fd, 404, "Erinnerung nicht gefunden"); return;
+        }
+        auto &mem = *AGENTS[idx]["memory"].arr;
+        mem.erase(mem.begin() + (std::ptrdiff_t)(index - 1));
+        save_agents();
+        memory_git_sync(id, "forget");
+      }
+      send_json(fd, 200, "{\"ok\":true,\"handled_by\":\"host\"}");
+      return;
+    }
     if (ids.empty()) {
       error_json(fd, 400, "Select an agent");
       return;

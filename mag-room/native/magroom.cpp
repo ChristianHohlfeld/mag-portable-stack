@@ -4533,7 +4533,8 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
              const std::function<void(const std::string &, const std::string &)>
                  &on_delta,
              bool thinking, int id_slot, const std::string &model = "",
-             int bot_idx = -1, bool short_chat = false) {
+             int bot_idx = -1, bool short_chat = false,
+             bool force_no_tools = false) {
   Turn t;
   // DeepSeek rejects an assistant-ending prefill while thinking is on
   // (HTTP 500). Do not open a socket and do not let the caller wipe the wire.
@@ -4634,7 +4635,7 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   if (short_chat && model.rfind("glm-5.3-flash", 0) == 0)
     max_output = std::min(max_output, 128);
   body["max_tokens"] = max_output;
-  if (short_chat && model.rfind("glm-5.3-flash", 0) == 0)
+  if ((short_chat || force_no_tools) && model.rfind("glm-5.3-flash", 0) == 0)
     body["tool_choice"] = "none"; // keep tool schemas / prefix stable
   body["stream"] = true;
   // llama.cpp: stream prompt_progress {total,cache,processed,time_ms} while
@@ -6003,6 +6004,10 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
   }
   std::string fallback_narration, last_pending;
   int stalled_plans = 0;
+  int glm_chat_tool_rounds = 0;
+  const int glm_chat_tool_max = std::clamp(envi("MAG_ROOM_GLM_CHAT_MAX_ROUNDS", 2), 0, 8);
+  const bool glm_chat = CONFIGURED_MODEL && !CURRENT_JOB && !TL_TASK && !autotalk &&
+      bot_model_id(bot_idx).rfind("glm-5.3-flash", 0) == 0;
   bool completed = false;
   std::string compacted_steps;
   const size_t context_budget = (size_t)std::clamp(
@@ -6106,7 +6111,7 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
       t = backend_turn(messages, tools,
                        autotalk ? 0.75 : 0.55, on_delta, turn_thinking(),
                        slot_for_key(bot_id), bot_model_id(bot_idx), bot_idx,
-                       short_chat);
+                       short_chat, glm_chat && glm_chat_tool_rounds >= glm_chat_tool_max);
       if (t.skipped || assistant_prefill_error(t.error)) {
         // The guard already logged a skip. A live 500 of this type must not
         // be posted into the room and must not invalidate the wire below.
@@ -6167,6 +6172,11 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
       break;
     }
     if (short_chat) t.calls.clear();
+    if (glm_chat && glm_chat_tool_rounds >= glm_chat_tool_max) {
+      // A final no-tools request cannot start another tool chain.
+      t.calls.clear();
+      if (t.text.empty()) t.error = "GLM-Chat hat nach Werkzeugrunden keine Antwort geliefert.";
+    }
     // Stateless means one new model inference per input. Never execute tools
     // or feed the model's output back as a new turn, even if it emits an
     // unexpected tool call or a continuation marker.
@@ -6213,6 +6223,7 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
     }
     messages.push_back(asst);
     const bool tool_round = !t.calls.empty() && !TL_SELFTALK;
+    if (tool_round && glm_chat) ++glm_chat_tool_rounds;
     // Open todo items are an unfinished goal: the turn goes on (bounded).
     const bool todo_open = !short_chat && !tool_round && !stateless && !TL_SELFTALK && TL_TODO_TOUCHED &&
         todo_nudges < 2 && !has_next_step(t.text) && todo_open_for(bot_id) > 0;
@@ -6232,7 +6243,7 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
         emit_answer_deltas(bot_id, bot_name, t.text);
       }
     }
-    if (stateless || TL_SELFTALK) { completed = true; break; }
+    if (stateless || TL_SELFTALK || (glm_chat && glm_chat_tool_rounds > glm_chat_tool_max)) { completed = true; break; }
     if (!tool_round) {
       if (!pending) { completed = true; break; }
       const std::string p = trim(t.text);

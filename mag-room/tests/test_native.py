@@ -5102,6 +5102,8 @@ class GlmLayoutStartup(unittest.TestCase):
   Model.delay=0;Model.slot_delay={};Model.script=[];Model.reply=None
   Model.barrier_token='';Model.barrier_release=None;Model.hold_get=0;Model.health=200
   Model.saved_prompt.clear();Model.slot_snapshot=[];Model.restore_missing=True
+  deepseek_gate=threading.Event()
+  Model.slot_block={'0':deepseek_gate}
   mark=len(Model.paths)
   tmp=tempfile.TemporaryDirectory();root=pathlib.Path(tmp.name)
   state=root/'state';state.mkdir()
@@ -5159,6 +5161,25 @@ class GlmLayoutStartup(unittest.TestCase):
     req=urllib.request.Request(f'http://127.0.0.1:{ui}{endpoint}',data=json.dumps(payload).encode(),
                                method=method,headers={'Content-Type':'application/json','X-MAG-Token':token})
     with urllib.request.urlopen(req,timeout=5) as resp:return json.load(resp)
+   # First greeting: DeepSeek is still cold/busy, GLM is resident on
+   # NUMA1. Fallback must use the current slot registry, not 'qwen' in model.
+   first='GLM-FIRST-HI-'+str(time.monotonic_ns())
+   post('/api/message',{'text':first,'bots':['deepseek-chat'],'request_id':'glm-first-hi'})
+   end=time.monotonic()+5
+   while time.monotonic()<end:
+    first_calls=[p for p in list(Model.paths)[mark:] if p[0]=='/v1/chat/completions'
+                  and p[3].get('max_tokens')!=1 and first in json.dumps(p[3])]
+    if first_calls:break
+    time.sleep(.05)
+   else:self.fail('GLM fallback failed while DeepSeek cold')
+   self.assertEqual([p[3]['model'] for p in first_calls],['glm-5.3-flash'])
+   deepseek_gate.set()
+   # Allow the original DeepSeek prewarm to complete before testing reverse.
+   end=time.monotonic()+6
+   while time.monotonic()<end:
+    state_doc=json.load(urllib.request.urlopen(f'http://127.0.0.1:{ui}/api/state',timeout=2))
+    if any(a['id']=='deepseek-chat' and a.get('prewarm_eta_s') is None for a in state_doc['agents']):break
+    time.sleep(.05)
    post('/api/bot-settings',{'bots':['deepseek-chat'],'enabled':False},'PUT')
    marker='GLM-PAUSED-'+str(time.monotonic_ns())
    post('/api/message',{'text':marker,'bots':['deepseek-chat','qwen-numa1']})
@@ -5171,7 +5192,38 @@ class GlmLayoutStartup(unittest.TestCase):
    time.sleep(.2)
    self.assertEqual(len(hits),1,hits)
    self.assertEqual(hits[0][3].get('model'),'glm-5.3-flash')
+   # Reverse: GLM paused, DeepSeek enabled. Only DeepSeek may answer.
+   post('/api/bot-settings',{'bots':['deepseek-chat'],'enabled':True},'PUT')
+   post('/api/bot-settings',{'bots':['qwen-numa1'],'enabled':False},'PUT')
+   second='DEEPSEEK-GLM-PAUSED-'+str(time.monotonic_ns())
+   post('/api/message',{'text':second,'bots':['deepseek-chat','qwen-numa1'],'request_id':'glm-pause-reverse'})
+   end=time.monotonic()+7
+   while time.monotonic()<end:
+    second_calls=[p for p in list(Model.paths)[mark:] if p[0]=='/v1/chat/completions'
+                  and p[3].get('max_tokens')!=1 and second in json.dumps(p[3])]
+    if second_calls:break
+    time.sleep(.05)
+   else:self.fail('DeepSeek never answered when GLM was paused')
+   time.sleep(.2)
+   self.assertEqual([p[3]['model'] for p in second_calls],['deepseek-v4-flash-0731'])
+   # Both paused: publish the user message once, with no fallback/model call.
+   post('/api/bot-settings',{'bots':['deepseek-chat'],'enabled':False},'PUT')
+   no_one='BOTH-PAUSED-'+str(time.monotonic_ns())
+   body={'text':no_one,'bots':['deepseek-chat','qwen-numa1'],'request_id':'glm-both-paused'}
+   self.assertTrue(post('/api/message',body)['accepted'])
+   self.assertTrue(post('/api/message',body).get('duplicate'))
+   time.sleep(.35)
+   no_calls=[p for p in list(Model.paths)[mark:] if p[0]=='/v1/chat/completions'
+             and p[3].get('max_tokens')!=1 and no_one in json.dumps(p[3])]
+   self.assertEqual(no_calls,[],'both paused must not infer')
+   state_doc=json.load(urllib.request.urlopen(f'http://127.0.0.1:{ui}/api/state',timeout=2))
+   user_at=[i for i,m in enumerate(state_doc['room']) if m.get('role')=='user' and m.get('content')==no_one]
+   self.assertEqual(len(user_at),1,'duplicate human room message')
+   self.assertFalse(any(m.get('role')=='assistant' for m in state_doc['room'][user_at[0]+1:]),
+                    'both paused must not append bot response')
   finally:
+   deepseek_gate.set()
+   Model.slot_block={}
    Model.restore_missing=False
    proc.terminate()
    try:proc.wait(timeout=5)

@@ -26,9 +26,10 @@ deploy = Path('ops/deploy.sh').read_text()
 diag = Path('ops/perf/diagnose-ai.sh').read_text()
 
 assert '--physcpubind=14-27 --membind=1' in qwen  # Qwen rollback remains untouched
-# GLM uses all 28 NUMA1 logical CPUs (14 cores + HT) for batched prefill.
-assert '--physcpubind=14-27,42-55 --membind=1' in glm
-assert '--threads 14 --threads-batch 28' in glm
+# GLM pins 14 physical cores per NUMA node (no SMT sibling contention).
+assert '--physcpubind=0-13 --membind=0' in glm
+assert '--physcpubind=14-27 --membind=1' in glm
+assert '--threads 14 --threads-batch 14' in glm
 for option in ('-fa on','-b 4096','-ub 1024','--load-mode dio',
                '--ctx-checkpoints 64','--checkpoint-min-step 1024',
                '--parallel 1','--temp 1.0','--top-p 0.95'):
@@ -43,7 +44,7 @@ assert 'GLM_CPU_TOPOLOGY=14-27,42-55' in glm_q2
 assert 'GLM_PORT=8191' in glm_q1 and 'GLM_PORT=8192' in glm_q2
 assert 'GLM_SLOT_DIR=/var/lib/mag-llm/slots/glm-q1' in glm_q1
 assert 'GLM_SLOT_DIR=/var/lib/mag-llm/slots/glm' in glm_q2
-assert 'binding=(--cpunodebind=0 --membind=0)' in glm
+assert 'binding=(--physcpubind=0-13 --membind=0)' in glm
 assert '--mlock' not in glm
 assert '--load-mode dio -fa on -b 4096 -ub 1024' in glm  # known-good #231 llama-server flags
 assert 'glm-5.3-flash-iq1-m:kv-f16-f16' in glm
@@ -111,10 +112,11 @@ assert 'MAG_MCP_TOOL_DESC_BYTES' in mcp and 'fn["parameters"]' in mcp
 assert 'for (auto &t : mcp_bot_tools(bot_idx))' in room  # no tool removal
 room_conf = Path('ops/mag-120.d/20-room-audit.conf').read_text()
 assert 'MAG_ROOM_BACKEND=http://127.0.0.1:8080' in room_conf
-assert 'Environment=MAG_ROOM_PREWARM=0' in room_conf
-assert 'MAG_ROOM_PREWARM=0' in Path('ops/room/glm.env').read_text()
+assert 'Environment=MAG_ROOM_PREWARM=1' in room_conf
+assert 'MAG_ROOM_PREWARM=1' in Path('ops/room/glm.env').read_text()
 assert 'Environment=MAG_ROOM_MAX_TOKENS=8192' in room_conf
 assert 'Environment=MAG_ROOM_GLM_MAX_TOKENS=1024' in room_conf
+assert 'Environment=MAG_ROOM_PREFILL_TPS=9' in room_conf
 assert '/etc/systemd/system/mag-120.service.d/99-glm-fast.conf' in deploy
 assert 'ops/qwen/start.sh" /usr/local/lib/mag-qwen/start.sh' in deploy
 assert 'MAG_ROOM_CONTEXT_BYTES=52000' not in Path('ops/mag-120.d/20-room-audit.conf').read_text() # legacy unchanged

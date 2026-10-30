@@ -2383,8 +2383,76 @@ static std::string render_room_line(const Val &m) {
 }
 // GLM's official chat template must receive actual role turns, not a flat
 // [Raumverlauf] pasted into one user message. Never rewrite ROOM storage.
+static bool q1_bad(const std::string &raw) {
+  const std::string s=trim(raw);
+  if(s.empty() || s.size()>420 || s.find("##")!=std::string::npos ||
+     s.find("<|")!=std::string::npos || s.find("</think>")!=std::string::npos ||
+     std::count(s.begin(),s.end(),',')>8) return true;
+  auto c=s.find(':');
+  if(c!=std::string::npos && c<35 && s.substr(0,c).find(' ')==std::string::npos) return true;
+  for(size_t n=12;2*n<=s.size();++n)
+    if(s.compare(s.size()-2*n,n,s,s.size()-n,n)==0) return true;
+  return false;
+}
+static std::string q1_clean(std::string s) {
+  auto t=s.rfind("</think>");
+  if(t!=std::string::npos) s=s.substr(t+8);
+  s=trim(s);
+  for(int n=0;n<5;++n) {
+    if(!s.empty() && s[0]=='#') {
+      auto i=s.find_first_not_of("# ");
+      s=i==std::string::npos?"":trim(s.substr(i));continue;
+    }
+    auto c=s.find(':');if(c==std::string::npos || c==0 || c>35) break;
+    bool label=true;
+    for(size_t j=0;j<c;++j)
+      if(!std::isalnum((unsigned char)s[j]) && s[j]!='_' && s[j]!='-' && s[j]!='.') label=false;
+    if(!label) break;
+    s=trim(s.substr(c+1));
+  }
+  auto cut=std::min(s.find("\n\n"),s.find("##"));
+  if(cut!=std::string::npos) s.resize(cut);
+  int sentences=0,entries=0;
+  for(size_t i=0;i<s.size();++i) {
+    if((i==0 || s[i-1]=='\n') && std::isdigit((unsigned char)s[i]) && ++entries>10)
+      {s.resize(i);break;}
+    if(i+1<s.size() && (s[i]=='.'||s[i]=='!'||s[i]=='?') &&
+       (i==0 || !std::isdigit((unsigned char)s[i-1])) &&
+       std::isspace((unsigned char)s[i+1]) && ++sentences==2)
+      {s.resize(i+1);break;}
+  }
+  return trim(s);
+}
 static std::vector<Val> glm_chat_turns(const std::string &bot_id,
                                       const std::string &input) {
+  if (bot_id == bot_field(0,"id") && bot_model_id(0) == "glm-5.3-flash-iq1-m") {
+    std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
+    size_t end=ROOM.size();
+    for(size_t i=end;i>0;--i)
+      if(mag::str(ROOM[i-1],"role")=="user" && mag::str(ROOM[i-1],"content")==input)
+        {end=i-1;break;}
+    std::vector<Val> reverse_pairs;
+    for(size_t i=end;i>0 && reverse_pairs.size()<4;) {
+      const Val &answer=ROOM[--i];
+      if(mag::str(answer,"role")!="assistant" || mag::str(answer,"bot")!=bot_id ||
+         answer.find("q1_degenerate") || answer.find("work_error") ||
+         (answer.find("interrupted") && answer.find("interrupted")->asBool()) ||
+         q1_bad(mag::str(answer,"content"))) continue;
+      size_t j=i;
+      while(j>0 && mag::str(ROOM[j-1],"role")!="user") --j;
+      if(!j) continue;
+      auto question=trim(mag::str(ROOM[j-1],"content"));
+      if(question.empty() || question.size()>280) continue;
+      Val a=Val::object(),u=Val::object();
+      a["role"]="assistant";a["content"]=mag::str(answer,"content");
+      u["role"]="user";u["content"]=question;
+      reverse_pairs.push_back(a);reverse_pairs.push_back(u);i=j-1;
+    }
+    std::reverse(reverse_pairs.begin(),reverse_pairs.end());
+    Val now=Val::object();now["role"]="user";now["content"]=input;
+    reverse_pairs.push_back(now);
+    return reverse_pairs;
+  }
   std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
   constexpr size_t max_turns = 6, max_bytes = 1100;
   std::vector<Val> recent;
@@ -4772,6 +4840,10 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
       body["dry_base"] = 1.75;
       body["dry_allowed_length"] = 2;
       body["dry_penalty_last_n"] = 64;
+       body["min_p"] = 0.08;
+       body["top_k"] = 40;
+       body["repeat_penalty"] = 1.1;
+       body["repeat_last_n"] = 64;
     }
   }
   // Both backends use 32k context; retain the proven Qwen output budget.
@@ -4793,14 +4865,13 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   if (thinking && model.rfind("glm-5.3-flash", 0) == 0)
     max_output = std::min(max_output, 256);
   if (no_tools && !thinking && model == "glm-5.3-flash-iq1-m")
-    max_output = std::min(max_output, 128); // 128 at ~8 tok/s keeps Q1 under ~20 s
+    max_output = std::min(max_output, 96); // bounded IQ1_M decode
   body["max_tokens"] = max_output;
   if (no_tools && model.rfind("glm-5.3-flash", 0) == 0 && !thinking) {
     // llama.cpp applies stop strings to raw generation, including reasoning.
     // Preserve </think> for thinking turns; no server flags/model reload.
     Val stops = Val::array();
-    for (const char *stop : {"</think>", "<think>", "<|user|>",
-                             "<|observation|>", "<|", "<tool_call"})
+    for (const char *stop : {"<|user|>", "<|observation|>", "<tool_call"})
       stops.push(stop);
     body["stop"] = stops;
   }
@@ -4899,7 +4970,7 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   // The server stop array is the primary guard. Hold partial delimiters in
   // client chunks as a fallback so none can reach the room or SSE.
   const std::vector<std::string> glm_stops = {
-      "</think>", "<think>", "<|", "<tool_call", "\n\n## "};
+      "<|user|>", "<|observation|>", "<tool_call", "\n\n## "};
   auto visible_delta = [&](const std::string &s, bool finish = false) {
     if (glm_hard_cut) return;
     visible_reply.feed(s, [&](const std::string &safe) {
@@ -5122,7 +5193,7 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
     acc.content = trim(acc.content);
     if (!glm_chat_stream && !acc.content.empty()) on_delta("delta", acc.content);
   }
-  t.text = acc.content;
+  t.text = no_tools && model == "glm-5.3-flash-iq1-m" ? q1_clean(acc.content) : acc.content;
   t.reasoning = acc.reasoning;
   if (t.error.empty() && t.text.empty() && acc.calls.empty() &&
       t.finish == "length") {
@@ -6427,6 +6498,7 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
     // execution / tool follow-ups for explicit greetings.
     // Tools remain available on real tasks without a forced early final.
     Turn t;
+    const auto q1_started=steady_clock::now();
     size_t attempt_budget = context_budget;
     for (int attempt = 0; attempt < 3; ++attempt) {
       if (!stateless)
@@ -6491,7 +6563,20 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
     }
     // Neither short chat nor regular GLM chat may silently post an empty
     // answer when the model returns tool-only output or no visible text.
-    if ((short_chat || glm_chat) && t.text.empty()) {
+    if (glm_chat && bot_model_id(bot_idx) == "glm-5.3-flash-iq1-m" &&
+         t.text.empty() && !stop_flag().load() &&
+         duration_cast<seconds>(steady_clock::now()-q1_started).count()<30) {
+       std::vector<Val> fresh;
+       if(!messages.empty()) fresh.push_back(messages.front());
+       if(!messages.empty()) fresh.push_back(messages.back());
+       t=backend_turn(fresh,tools,0.55,on_delta,false,slot_for_key(bot_id),
+                      bot_model_id(bot_idx),bot_idx,false,true);
+     }
+     if(glm_chat && bot_model_id(bot_idx) == "glm-5.3-flash-iq1-m" &&
+        (t.finish!="stop" || q1_bad(t.text))) {
+       report.skipped=true;t.text.clear();completed=true;break;
+     }
+     if ((short_chat || glm_chat) && t.text.empty()) {
       // A structured tool-only result with tool_choice=none is not a
       // successful answer. Show only a local, explicitly failed fallback.
       report.local_fallback = true;
@@ -6797,6 +6882,9 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
     report.error.clear();
     finish_steps();
     return report;
+  }
+  if(glm_chat_mode && bot_model_id(bot_idx) == "glm-5.3-flash-iq1-m" && report.text.empty()) {
+    report.skipped=true;report.error.clear();finish_steps();return report;
   }
   if (report.text.empty() && !stop_flag().load()) {
     if (!report.error.empty())

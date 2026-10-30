@@ -7582,7 +7582,8 @@ static TurnReport generate_and_post(int idx, bool automatic, double dispatched_m
   if (report.elapsed_s < 0)
     report.elapsed_s = 0;
   run_end();
-  if (TL_SELFTALK && selftalk_idle_echo(report.text)) report.skipped = true;
+  if (!bot_enabled(idx) || (TL_SELFTALK && selftalk_idle_echo(report.text)))
+    report.skipped = true;
   if (report.skipped) {
     drop_revealed();
     Val e = Val::object();
@@ -8243,6 +8244,22 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
     PREFIX_META[own_key] = shared_key;
     write_file_atomic(STATE_DIR + "/prompt-prefix.json", mj::dump(PREFIX_META));
   };
+  auto restore_or_cold = [&](const std::string &file) {
+    if (prefix_slot("restore", file)) {
+      restored = true;
+      skip = true;
+      commit_prefix_meta();
+      return;
+    }
+    // A metadata entry is not proof that the physical slot file survived a
+    // layout switch. Failed restore must allow fresh prefill/save, not loop.
+    std::lock_guard<std::mutex> lk(PREFIX_MTX);
+    auto &entries = *PREFIX_META.obj;
+    entries.erase(std::remove_if(entries.begin(), entries.end(),
+                   [&](const auto &entry) { return entry.first == port + "/" + file; }),
+                  entries.end());
+    write_file_atomic(STATE_DIR + "/prompt-prefix.json", mj::dump(PREFIX_META));
+  };
   if (CONFIGURED_MODEL && (!ram_known || slot_busy)) {
     skip = true;
     why = "busy"; // /slots timed out or the slot is prefilling: do not clobber it
@@ -8262,19 +8279,15 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
     // Count is below the prefix, or there is no count. Reload the checkpoint
     // and do not generate: the file is the room prefix, a POST is the
     // 10130-token prefill.
-    restored = prefix_slot("restore", source);
-    skip = true;
-    why = "restored";
-    if (restored) commit_prefix_meta();
+    restore_or_cold(source);
+    if (restored) why = "restored";
   } else if (CONFIGURED_MODEL && PREFIX_DISK && have_file && !slot_busy) {
     // Own file is a different hash and the slot is cold. Reload it and let
     // the first hi extend it. Do not prefill the new wire at startup
     // (load 23–25, live 682s/611s). The key matches again only after the
     // file actually loaded.
-    restored = prefix_slot("restore", own);
-    skip = true;
-    why = "hash";
-    if (restored) commit_prefix_meta();
+    restore_or_cold(own);
+    if (restored) why = "hash";
   }
   std::string out;
   long code = 0;
@@ -8748,7 +8761,7 @@ static void lane_finish(Lane *lane, uint64_t run, bool owner_ran, bool more,
       for (auto &id : kv.second.ids) bb.push(Val(id));
     save_queue_locked();
     if (owner_ran && generation == AUTO_GENERATION) {
-      if (epoch == EPOCH.load() && AUTOTALK.load() && more &&
+      if (epoch == EPOCH.load() && AUTOTALK.load() && bot_enabled(agent_index(AUTO_OWNER)) && more &&
           AUTO_TURNS_LEFT > 0 && progress != AUTO_LAST_PROGRESS) {
         AUTO_LAST_PROGRESS = progress;
         AUTO_READY = true;
@@ -8841,7 +8854,8 @@ static void group_done(const std::shared_ptr<TurnGroup> &g) {
   // Deterministic bots answer one stateless message only: no second round.
   std::vector<std::string> ids;
   for (auto &id : g->ids)
-    if (int idx = agent_index(id); idx >= 0 && !model_settings_for(bot_model_id(idx)).deterministic)
+    if (int idx = agent_index(id); idx >= 0 && bot_enabled(idx) &&
+        !model_settings_for(bot_model_id(idx)).deterministic)
       ids.push_back(id);
   if (ids.size() < 2) return;
   std::lock_guard<std::mutex> lk(JOB_MTX);
@@ -8909,7 +8923,7 @@ static void lane_turn(Lane *lane, uint64_t run, std::vector<std::string> ids,
           lane->active_bot = id;
         }
         int idx = agent_index(id);
-        if (idx < 0)
+        if (idx < 0 || !bot_enabled(idx))
           continue;
         TURN_THINK = think < 0 ? (bot_thinking(idx) ? 1 : 0) : think;
         TL_FIRST_HI = false;
@@ -9083,8 +9097,11 @@ static void split_prefix(const std::vector<std::string> &ids,
                          std::vector<std::string> &later) {
   ready.clear();
   later.clear();
-  for (const auto &id : ids)
-    (bot_prefix_ready(id) ? ready : later).push_back(id);
+  for (const auto &id : ids) {
+    int idx = agent_index(id);
+    if (idx >= 0 && bot_enabled(idx))
+      (bot_prefix_ready(id) ? ready : later).push_back(id);
+  }
 }
 // Starts at most one piece of work; true if the queue state changed.
 static bool dispatch_locked() {
@@ -9092,6 +9109,43 @@ static bool dispatch_locked() {
   // cancelling requests and restoring that slot's stable prefix.
   if (STOP_SETTLING.load()) return false;
   apply_deploy_hold_file_locked();
+  // Prune paused bots even from jobs queued before the settings change.
+  // Never leave a human message invisible just because nobody can answer.
+  auto enabled_id = [](const std::string &id) {
+    const int idx = agent_index(id);
+    return idx >= 0 && bot_enabled(idx);
+  };
+  for (auto it = JOBS.begin(); it != JOBS.end();) {
+    auto &ids = it->ids;
+    ids.erase(std::remove_if(ids.begin(), ids.end(),
+                             [&](const std::string &id) { return !enabled_id(id); }), ids.end());
+    if (ids.empty()) {
+      JOBS.erase(it);
+      save_queue_locked(); queue_event_locked();
+      return true;
+    }
+    ++it;
+  }
+  for (auto it = PENDING.begin(); it != PENDING.end();) {
+    auto &ids = it->ids;
+    ids.erase(std::remove_if(ids.begin(), ids.end(),
+                             [&](const std::string &id) { return !enabled_id(id); }), ids.end());
+    if (ids.empty()) {
+      Pending entry = *it;
+      PENDING.erase(it);
+      Val msg = append_room("user", entry.sender.empty() ? "Nutzer" : entry.sender,
+                            entry.text, "", nullptr, entry.login, "",
+                            entry.display_ms, entry.client_id);
+      msg["type"] = "message"; publish(mj::dump(msg));
+      save_queue_locked(); queue_event_locked();
+      return true;
+    }
+    ++it;
+  }
+  if (!AUTO_OWNER.empty() && !enabled_id(AUTO_OWNER)) {
+    AUTO_OWNER.clear();
+    AUTO_READY = false;
+  }
   auto send_pending = [&](std::deque<Pending>::iterator it) {
     std::vector<std::string> ready, later;
     split_prefix(it->ids, ready, later);
@@ -9191,7 +9245,7 @@ static bool dispatch_locked() {
     }
     if (lane->busy.load())
       return false;
-    if (!bot.empty() && !bot_prefix_ready(bot))
+    if (!bot.empty() && (!bot_enabled(agent_index(bot)) || !bot_prefix_ready(bot)))
       return false;
     JobRun run = JOBRUNS.front();
     JOBRUNS.pop_front();
@@ -9206,7 +9260,7 @@ static bool dispatch_locked() {
     return true;
   }
   if (AUTOTALK.load() && AUTO_READY) {
-    if (AUTO_TURNS_LEFT <= 0 || AUTO_OWNER.empty()) {
+    if (AUTO_TURNS_LEFT <= 0 || AUTO_OWNER.empty() || !enabled_id(AUTO_OWNER)) {
       AUTO_READY = false;
       return true;
     }
@@ -9509,7 +9563,7 @@ static UserInput take_user_input(const std::string &bot_id) {
   Lane *lane = TL_LANE;
   if (!lane || CURRENT_JOB || lane->stop.load()) return in;
   const int idx = agent_index(bot_id);
-  if (idx < 0 || model_settings_for(bot_model_id(idx)).deterministic) return in;
+  if (idx < 0 || !bot_enabled(idx) || model_settings_for(bot_model_id(idx)).deterministic) return in;
   std::lock_guard<std::mutex> lk(JOB_MTX);
   std::set<std::string> later; // will read the transcript themselves
   for (Lane *l : all_lanes())

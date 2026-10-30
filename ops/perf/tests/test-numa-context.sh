@@ -41,7 +41,7 @@ assert 'std::min(MAX_TOKENS, std::clamp(' in room  # valid for small-token tests
 assert 'MAG_ROOM_REASONING_HISTORY_BYTES' in room
 assert 'static void schedule_prewarm()' in room and 'schedule_prewarm();' in room
 assert 'MAG_ROOM_PREWARM' in room and 'body["max_tokens"] = 1;' in room
-assert 'MAG_ROOM_PREFIX_DISK' in room and 'prefix_slot("restore", source)' in room and 'prefix_slot("save", own)' in room
+assert 'MAG_ROOM_PREFIX_DISK' in room and 'restore_or_cold(source)' in room and 'restore_or_cold(own)' in room and 'prefix_slot("restore", file)' in room and 'prefix_slot("save", own)' in room
 assert 'server_mutex(port)' in room and 'kv.first.rfind(port + "/", 0) == 0' in room  # cross-bot prefix only on the same server
 assert 'secondary_ready && !was_secondary_ready' in room  # Qwen ready later after reboot
 pty = Path('mag-room/native/guest_pty.hpp').read_text()

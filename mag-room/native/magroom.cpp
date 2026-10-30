@@ -851,6 +851,11 @@ static void load_agents() {
       // Never change an ID: especially deepseek-chat retains its memory and VM.
       const std::string old = mag::str(a, "name");
       const int slot = model_slot_of(a);
+      // Fixed Q1/Q2 bot labels; IDs, chat history and VM remain unchanged.
+      if (backend.label == "GLM-Q1" || backend.label == "GLM-Q2") {
+        if (old != backend.label) { a["name"] = backend.label; dirty = true; }
+        continue;
+      }
       // The second bot's stock placeholder is Qwen while its slot serves Qwen.
       // Do this before the generic label rewrite, and do not rewrite an exact
       // "Qwen" afterwards, or the next restart would replace it with the long

@@ -5146,7 +5146,7 @@ class GlmLayoutStartup(unittest.TestCase):
     MAG_ROOM_SINGLE_BOT='auto',MAG_ROOM_SINGLE_BOT_VM='on',MAG_ROOM_DUAL_NUMA='0',**glm)
   env['MAG_ROOM_SKILLS_DIR']=str(ROOT/'ops/room/skills')
   log=open(log_path,'a')
-  proc=subprocess.Popen(['timeout','-k','1','18',str(ROOT/'build/magroom')],env=env,stdout=log,stderr=log)
+  proc=subprocess.Popen(['timeout','-k','1','35',str(ROOT/'build/magroom')],env=env,stdout=log,stderr=log)
   try:
    while True:
     self.assertGreater(deadline-time.monotonic(),0,'room did not start')
@@ -5260,6 +5260,34 @@ class GlmLayoutStartup(unittest.TestCase):
    else:self.fail('GLM skill was not selected')
    self.assertNotIn('[Skill:',skill_calls[0][3]['messages'][0]['content'])
    self.assertNotIn('tools',skill_calls[0][3])
+   # Explicit thinking-limit error gets exactly one tool-free final retry.
+   retry_marker='GLM-RETRY-'+str(time.monotonic_ns())
+   Model.script_scope=retry_marker
+   Model.script=[
+    [{'_chunk':{'choices':[{'delta':{'reasoning_content':'nur Gedanke'},
+                            'finish_reason':'length'}]}}],
+    ['RETRY-OK']]
+   before=len(Model.paths)
+   try:
+    post('/api/message',{'text':retry_marker,'bots':['deepseek-chat'],
+        'think':True,'request_id':'glm-one-thinking-retry'})
+    end=time.monotonic()+7
+    while time.monotonic()<end:
+     retry_calls=[p for p in list(Model.paths)[before:]
+                  if p[0]=='/v1/chat/completions' and
+                  p[3].get('max_tokens')!=1 and retry_marker in json.dumps(p[3])]
+     if len(retry_calls)>=2:break
+     time.sleep(.05)
+    else:self.fail('GLM thinking retry did not run exactly once')
+    self.assertEqual(len(retry_calls),2)
+    self.assertTrue(retry_calls[0][3]['chat_template_kwargs']['enable_thinking'])
+    self.assertFalse(retry_calls[1][3]['chat_template_kwargs']['enable_thinking'])
+    self.assertEqual([p[3]['max_tokens'] for p in retry_calls],[256,256])
+    self.assertEqual(retry_calls[0][3]['messages'],retry_calls[1][3]['messages'])
+    self.assertNotIn('tools',retry_calls[1][3])
+   finally:
+    Model.script_scope=None
+    Model.script=[]
    # Default unaddressed messages route to only one enabled GLM bot.
    before=len(Model.paths)
    marker='GLM-DEFAULT-'+str(time.monotonic_ns())

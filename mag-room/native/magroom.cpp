@@ -4963,6 +4963,7 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   const bool glm_chat_stream = no_tools && model.rfind("glm-5.3-flash", 0) == 0 && !thinking;
   std::string glm_stream_pending;
   bool glm_hard_cut = false;
+  bool q1_forbidden_cut = false;
   GlmRepetitionGuard glm_repetition;
   bool glm_answer_started = false;
   auto emit_glm_safe = [&](const std::string &piece, bool finish = false) {
@@ -4996,6 +4997,11 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
         cut = std::min(cut, pos);
       }
       if (cut != std::string::npos) {
+        if (no_tools && model == "glm-5.3-flash-iq1-m") {
+          for (const auto &marker : {"</think>", "<think>", "<|"})
+            if (glm_stream_pending.find(marker) != std::string::npos &&
+                glm_stream_pending.find(marker) == cut) q1_forbidden_cut = true;
+        }
         emit_glm_safe(glm_stream_pending.substr(0, cut), true);
         glm_stream_pending.clear();
         glm_hard_cut = true;
@@ -5199,7 +5205,8 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
     acc.content = trim(acc.content);
     if (!glm_chat_stream && !acc.content.empty()) on_delta("delta", acc.content);
   }
-  t.text = no_tools && model == "glm-5.3-flash-iq1-m" ? q1_clean(acc.content) : acc.content;
+  t.text = no_tools && model == "glm-5.3-flash-iq1-m" ?
+      (q1_forbidden_cut ? "" : q1_clean(acc.content)) : acc.content;
   if (no_tools && model == "glm-5.3-flash-iq1-m" && !t.text.empty() && !q1_bad(t.text))
     on_delta("delta", t.text);
   t.reasoning = acc.reasoning;

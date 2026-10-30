@@ -7891,7 +7891,7 @@ static bool bot_has_seen(const std::string &bot, const std::string &msg_id) {
 }
 static void arm_selftalk(const std::string &speaker, const std::string &cause,
                          const std::string &text) {
-  if (!SELFTALK.load() || SELF_HOLD.load() || speaker.empty() || cause.empty())
+  if (room_is_glm() || !SELFTALK.load() || SELF_HOLD.load() || speaker.empty() || cause.empty())
     return;
   if (selftalk_idle_echo(text)) return;
   std::vector<std::string> listeners;
@@ -7907,7 +7907,7 @@ static void arm_selftalk(const std::string &speaker, const std::string &cause,
   const std::string label = cause_label(cause);
   std::lock_guard<std::mutex> lk(JOB_MTX);
   apply_deploy_hold_file_locked();
-  if (!SELFTALK.load() || SELF_HOLD.load()) return;
+  if (room_is_glm() || !SELFTALK.load() || SELF_HOLD.load()) return;
   // A user message already waiting must not sit behind a new proactive turn.
   if (std::any_of(PENDING.begin(), PENDING.end(),
                   [](const Pending &p) { return !p.held; }))
@@ -8213,7 +8213,7 @@ static uint64_t fnv64(const std::string &s) {
 }
 static std::string prefix_file(int idx, const std::string &model) {
   if (CONFIGURED_MODEL && model.rfind("glm-5.3-flash", 0) == 0)
-    return "mag-prefix-" + model + "-slot" + std::to_string(model_slot(idx)) + "-prefix.bin";
+    return "mag-prefix-" + model + "-slot" + std::to_string(model_slot(idx)) + "-chat-v2-prefix.bin";
   return CONFIGURED_MODEL ? "mag-prefix-" + model + "-slot" + std::to_string(model_slot(idx)) + ".bin"
                          : "mag-prefix-" + model + ".bin";
 }
@@ -8480,7 +8480,7 @@ static void agents_changed();
 // not that prefix (live: cache_size=12, then a 3.5 min prefill).
 static const long PREFIX_RESIDENT_TOKENS = 2048;
 static long prefix_required_tokens(const std::string &model) {
-  return model.rfind("glm-5.3-flash", 0) == 0 ? 7700 : PREFIX_RESIDENT_TOKENS;
+  return model.rfind("glm-5.3-flash", 0) == 0 ? 96 : PREFIX_RESIDENT_TOKENS;
 }
 static bool prefix_gate_on() {
   return CONFIGURED_MODEL && env("MAG_ROOM_PREWARM", "1") == "1";
@@ -8539,8 +8539,16 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
     // Slot state is decided before wire_messages. That call appends a user
     // message and would otherwise rewrite a warm transcript on every restart.
     system = build_system(idx, false, "", web);
-    tool_defs = tools_json(idx, web);
-    const std::string shared = system.substr(0, system.rfind("[Identitaet]")) + tool_defs;
+    if (model.rfind("glm-5.3-flash", 0) == 0) {
+      system += "\n" + glm_chat_memory(bot_id);
+      tool_defs.clear();
+      std::cerr << "glm-chat prefix tokens=" << (system.size() / 3)
+                << " (conservative estimate)" << std::endl;
+    } else {
+      tool_defs = tools_json(idx, web);
+    }
+    const std::string shared = model.rfind("glm-5.3-flash", 0) == 0
+        ? system : system.substr(0, system.rfind("[Identitaet]")) + tool_defs;
     shared_key = model + ":" + std::to_string(fnv64(shared));
     shared_len = shared.size();
   }
@@ -8744,7 +8752,7 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
         }
         body["messages"] = msgs;
         Val tt;
-        if (mj::parse(tool_defs, tt)) body["tools"] = tt;
+        if (model.rfind("glm-5.3-flash", 0) != 0 && mj::parse(tool_defs, tt)) body["tools"] = tt;
         body["max_tokens"] = 1;
         body["stream"] = false;
         body["cache_prompt"] = true;
@@ -9205,7 +9213,7 @@ static void lane_finish(Lane *lane, uint64_t run, bool owner_ran, bool more,
       for (auto &id : kv.second.ids) bb.push(Val(id));
     save_queue_locked();
     if (owner_ran && generation == AUTO_GENERATION) {
-      if (epoch == EPOCH.load() && AUTOTALK.load() && bot_enabled(agent_index(AUTO_OWNER)) && more &&
+      if (epoch == EPOCH.load() && !room_is_glm() && AUTOTALK.load() && bot_enabled(agent_index(AUTO_OWNER)) && more &&
           AUTO_TURNS_LEFT > 0 && progress != AUTO_LAST_PROGRESS) {
         AUTO_LAST_PROGRESS = progress;
         AUTO_READY = true;
@@ -9294,7 +9302,7 @@ struct TurnGroup {
 static void group_done(const std::shared_ptr<TurnGroup> &g) {
   if (!g || --g->left > 0) return;
   if (g->reflect || g->cancelled.load() || g->bad_result.load() ||
-      !REFLECT.load() || g->ids.size() < 2 ||
+      room_is_glm() || !REFLECT.load() || g->ids.size() < 2 ||
       g->epoch != EPOCH.load() || SHUTDOWN.load())
     return;
   // Deterministic bots answer one stateless message only: no second round.

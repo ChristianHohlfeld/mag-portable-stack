@@ -5470,7 +5470,11 @@ class GlmLayoutStartup(unittest.TestCase):
     self.assertTrue(post({'text':marker,'bots':['deepseek-chat']})['accepted'])
     req=calls_after(before,marker,1)[0][3]
     self.assertLessEqual(req['max_tokens'],256)
-    self.assertTrue({'</think>','<think>','<|user|>','<|observation|>'}.issubset(set(req['stop'])),req)
+    self.assertTrue({'<|user|>','<|observation|>','<tool_call'}.issubset(set(req['stop'])),req)
+    self.assertNotIn('</think>',req['stop'],'Reasoning end stays client-side')
+    self.assertNotIn('<think>',req['stop'],'Reasoning start stays client-side')
+    client=CPP_SOURCE if 'CPP_SOURCE' in globals() else (ROOT/'mag-room/native/magroom.cpp').read_text()
+    self.assertIn('"</think>", "<think>", "<|", "<tool_call"',client)
     self.assertNotIn('\n\n## ',req['stop'],'Heading stop is client-side only')
     room=idle_after(marker)
     text=json.dumps(room['room'],ensure_ascii=False)

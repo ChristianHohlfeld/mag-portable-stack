@@ -4,6 +4,29 @@ static void error_json(int fd, int code, const std::string &message) {
   e["error"] = message;
   send_json(fd, code, mj::dump(e));
 }
+// Non-chat operations use literal bot IDs, including paused bots. A missing
+// bots[] selection targets all room agents; never apply GLM host arbitration.
+static std::vector<std::string> plain_ids(const Val &body) {
+  std::vector<std::string> ids;
+  std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
+  if (!SINGLE_BOT.empty()) {
+    if (agent_index(SINGLE_BOT) >= 0) ids.push_back(SINGLE_BOT);
+    return ids;
+  }
+  const Val *selected = body.find("bots");
+  if (selected && selected->isArr()) {
+    for (const Val &v : selected->asArr()) {
+      const std::string id = v.asStr();
+      if (agent_index(id) >= 0 &&
+          std::find(ids.begin(), ids.end(), id) == ids.end())
+        ids.push_back(id);
+    }
+  } else {
+    for (const Val &a : AGENTS) ids.push_back(mag::str(a, "id"));
+  }
+  return ids;
+}
+// Only user chat inference is host-arbitrated; controls/memory use plain_ids.
 static std::vector<std::string> selected_ids(const Val &body) {
   std::vector<std::string> ids;
   std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
@@ -674,7 +697,7 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
       error_json(fd, 400, "Boolean settings required"); return;
     }
     const bool room = mag::str(body, "scope") == "room";
-    auto ids = selected_ids(body);
+    auto ids = plain_ids(body);
     if (ids.empty() && !room) { error_json(fd, 400, "Select a bot"); return; }
     {
       std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
@@ -1422,23 +1445,25 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
       error_json(fd, 400, "Message required (max 32 KiB)");
       return;
     }
-    auto ids = selected_ids(body);
     const std::string command = trim(str("text"));
     if (room_is_glm() &&
         (command.rfind("/merk ", 0) == 0 || command.rfind("/vergiss ", 0) == 0)) {
       if (actor.role != "owner") {
         error_json(fd, 403, "Nur der Owner darf Erinnerungen ändern"); return;
       }
-      if (ids.size() != 1) {
-        error_json(fd, 400, "Für Erinnerungen genau einen Bot auswählen"); return;
+      // Commands are not inference: honor every requested ID (including
+      // paused agents); with no bots[] selection, address all GLM agents.
+      const auto memory_ids = plain_ids(body);
+      if (memory_ids.empty()) {
+        error_json(fd, 400, "Select a bot"); return;
       }
-      const std::string id = ids.front();
       if (command.rfind("/merk ", 0) == 0) {
-        std::string fact = trim(command.substr(6));
+        const std::string fact = trim(command.substr(6));
         if (fact.empty() || fact.size() > 500) {
           error_json(fd, 400, "Fakt erforderlich (max 500 Bytes)"); return;
         }
-        remember_fact(id, fact, "Raumbefehl");
+        for (const std::string &id : memory_ids)
+          remember_fact(id, fact, "Raumbefehl");
       } else {
         const std::string n = trim(command.substr(8));
         if (n.empty() || n.find_first_not_of("0123456789") != std::string::npos ||
@@ -1447,19 +1472,27 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
         }
         const size_t index = (size_t)std::stoul(n);
         std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
-        const int idx = agent_index(id);
-        if (idx < 0 || !AGENTS[idx]["memory"].isArr() ||
-            index < 1 || index > AGENTS[idx]["memory"].arr->size()) {
-          error_json(fd, 404, "Erinnerung nicht gefunden"); return;
+        // Validate every target before deleting anything.
+        for (const std::string &id : memory_ids) {
+          const int idx = agent_index(id);
+          if (idx < 0 || !AGENTS[idx]["memory"].isArr() ||
+              index < 1 || index > AGENTS[idx]["memory"].arr->size()) {
+            error_json(fd, 404, "Erinnerung nicht gefunden"); return;
+          }
         }
-        auto &mem = *AGENTS[idx]["memory"].arr;
-        mem.erase(mem.begin() + (std::ptrdiff_t)(index - 1));
+        for (const std::string &id : memory_ids) {
+          const int idx = agent_index(id);
+          auto &mem = *AGENTS[idx]["memory"].arr;
+          mem.erase(mem.begin() + (std::ptrdiff_t)(index - 1));
+        }
         save_agents();
-        memory_git_sync(id, "forget");
+        for (const std::string &id : memory_ids)
+          memory_git_sync(id, "forget");
       }
       send_json(fd, 200, "{\"ok\":true,\"handled_by\":\"host\"}");
       return;
     }
+    auto ids = selected_ids(body);
     if (ids.empty() && !room_is_glm()) {
       error_json(fd, 400, "Select an agent");
       return;

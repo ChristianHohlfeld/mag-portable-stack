@@ -26,10 +26,10 @@ deploy = Path('ops/deploy.sh').read_text()
 diag = Path('ops/perf/diagnose-ai.sh').read_text()
 
 assert '--physcpubind=14-27 --membind=1' in qwen  # Qwen rollback remains untouched
-# GLM pins 14 physical cores per NUMA node (no SMT sibling contention).
-assert '--physcpubind=0-13 --membind=0' in glm
-assert '--physcpubind=14-27 --membind=1' in glm
-assert '--threads 14 --threads-batch 14' in glm
+# GLM has 14 decode and 28 batch threads, all local to its NUMA node.
+assert '--physcpubind=0-13,28-41 --membind=0' in glm
+assert '--physcpubind=14-27,42-55 --membind=1' in glm
+assert '--threads 14 --threads-batch 28' in glm
 for option in ('-fa on','-b 4096','-ub 1024','--load-mode dio',
                '--ctx-checkpoints 64','--checkpoint-min-step 1024',
                '--parallel 1','--temp 1.0','--top-p 0.95'):

@@ -4080,6 +4080,7 @@ struct Turn {
   std::vector<Val> calls;
   std::string error;
   bool skipped = false;
+  bool local_fallback = false;
 };
 struct TurnReport {
   std::string text, progress_key, error, reasoning;
@@ -4092,6 +4093,7 @@ struct TurnReport {
   bool reacted = false;
   bool react_only = false;
   bool skipped = false;
+  bool local_fallback = false;
 };
 static bool assistant_prefill_error(const std::string &err) {
   return err.find("incompatible with enable_thinking") != std::string::npos ||
@@ -4704,7 +4706,9 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   auto visible_delta = [&](const std::string &s, bool finish = false) {
     visible_reply.feed(s, [&](const std::string &safe) {
       acc.content += safe;
-      on_delta("delta", safe);
+      // tool_choice=none is not always respected by IQ1_M. Do not stream
+      // possibly split literal tool markup before filtering the full reply.
+      if (!short_chat) on_delta("delta", safe);
     }, finish);
   };
   
@@ -4835,6 +4839,19 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
     else visible_delta(piece);
   }, true);
   visible_delta("", true);
+  if (short_chat) {
+    // Remove raw tool markup including partial tags before any visible SSE
+    // or persisted content. No tool calls execute in this path.
+    const size_t a = acc.content.find("<tool_call");
+    const size_t b = acc.content.find("<|tool_call");
+    const size_t cut = std::min(a, b);
+    if (cut != std::string::npos) {
+      acc.content.erase(cut);
+      std::cerr << "glm-short-raw-tool suppressed model=" << model << "\n";
+    }
+    acc.content = trim(acc.content);
+    if (!acc.content.empty()) on_delta("delta", acc.content);
+  }
   t.text = acc.content;
   t.reasoning = acc.reasoning;
   if (t.error.empty() && t.text.empty() && acc.calls.empty() &&
@@ -4842,8 +4859,14 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
     // The model used its budget entirely for thinking. Return a short,
     // visible completion instead of surfacing an internal token-limit error.
     // Do not continue the reasoning in another 1024-token round.
-    t.text = short_chat ? "Wie bitte?" :
-             "Ich konnte die Antwort noch nicht fertigstellen. Bitte präzisiere die Frage.";
+    if (short_chat) {
+      // Explicitly mark this as a local fallback, not a model success.
+      t.text = "Wie bitte?";
+      t.local_fallback = true;
+    } else {
+      // Do not fabricate assistant text in multi-step/tool tasks.
+      t.error = "Antwortlimit beim Denken erreicht, ohne sichtbare Modellantwort.";
+    }
     std::cerr << "glm-reasoning-limit model=" << model
               << " max_tokens=" << max_output << " fallback=visible\n";
   }
@@ -6099,6 +6122,16 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
       run_fail(report.error);
       break;
     }
+    if (t.local_fallback) {
+      // No fabricated assistant message in the model wire; expose a
+      // short UI text with explicit work_error instead of a successful turn.
+      report.local_fallback = true;
+      report.error = "GLM verbrauchte das Kurzantwortlimit ohne sichtbare Antwort.";
+      final_text = t.text;
+      run_fail(report.error);
+      completed = true;
+      break;
+    }
     // Non-agentic short chat is always exactly one answer, even if a
     // quantized GLM ignores tool_choice=none and emits a bogus tool call.
     if (short_chat) {
@@ -6259,7 +6292,8 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
         for (char &c : cause) if (c == '\n' || c == '\r' || c == '\t') c = ' ';
         const std::string lower = lc(cause);
         for (const char *secret : {"password", "token", "secret",
-                                   "authorization", "api_key", "private_key"})
+                                   "authorization", "api_key", "private_key",
+                                   "ghp_", "github_pat_", "gho_", "ghs_", "ghu_", "ghr_"})
           if (lower.find(secret) != std::string::npos) {
             cause = "[redacted: sensitive error]";
             break;
@@ -6384,7 +6418,7 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
     report.react_only = true;
     report.continue_requested = false;
     if(CONFIGURED_MODEL && !stateless && !CURRENT_JOB && !TL_TASK && !report.skipped)
-      wire_finish(bot_idx,messages,completed&&!stop_flag().load()&&report.error.empty());
+      wire_finish(bot_idx,messages,completed&&!stop_flag().load()&&report.error.empty()&&!report.local_fallback);
     finish_steps();
     return report;
   }
@@ -6406,7 +6440,7 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
     report.continue_requested = false;
   }
   if(CONFIGURED_MODEL && !stateless && !CURRENT_JOB && !TL_TASK && !report.skipped)
-    wire_finish(bot_idx,messages,completed&&!stop_flag().load()&&report.error.empty());
+    wire_finish(bot_idx,messages,completed&&!stop_flag().load()&&report.error.empty()&&!report.local_fallback);
   finish_steps();
   return report;
 }

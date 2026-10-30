@@ -10886,7 +10886,7 @@ int main() {
     // One-time migration, preserving IDs, memories and other settings.
     bool changed = false;
     for (auto &agent : AGENTS) {
-      if (bot_model_id(agent_index(mag::str(agent,"id"))).rfind("glm-5.3-flash",0) == 0) {
+      if (CONFIGURED_MODEL) {
         if (auto v=agent.find("thinking"); v && v->asBool()) {
           agent["thinking"] = false;
           changed = true;

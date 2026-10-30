@@ -6332,9 +6332,9 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
       completed = true;
       break;
     }
-    // Non-agentic short chat is always exactly one answer, even if a
-    // quantized GLM ignores tool_choice=none and emits a bogus tool call.
-    if (short_chat && t.text.empty()) {
+    // Neither short chat nor regular GLM chat may silently post an empty
+    // answer when the model returns tool-only output or no visible text.
+    if ((short_chat || glm_chat) && t.text.empty()) {
       // A structured tool-only result with tool_choice=none is not a
       // successful answer. Show only a local, explicitly failed fallback.
       report.local_fallback = true;
@@ -9950,7 +9950,8 @@ static Val user_stop(bool pause_jobs) {
       duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
   const long long prior_stop = LAST_STOP_MS.load();
   if (!pause_jobs && prior_stop > 0 && stop_now >= prior_stop &&
-      stop_now - prior_stop < 800) {
+      stop_now - prior_stop < 800 &&
+      (STOP_SETTLING.load() || any_lane_busy_for_stop())) {
     Val out = Val::object();
     out["cancelled"] = false;
     out["settling"] = STOP_SETTLING.load() || any_lane_busy_for_stop();

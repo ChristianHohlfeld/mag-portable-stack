@@ -171,12 +171,13 @@ rollback() {
    rm -f /etc/systemd/system/mag-120.service.d/30-multibot.conf /etc/systemd/system/mag-120.service.d/30-dual-numa.conf
  fi
  for config in room-model.env secondary-model.env; do
+   if (( layout_bypassed )) && [[ $config != room-model.env ]]; then continue; fi
    if [[ $config == room-model.env ]] && (( layout_applied )); then continue; fi
    if [[ -f $BACKUP/$config ]]; then cp -a "$BACKUP/$config" "/etc/mag-stack/$config"
    else rm -f "/etc/mag-stack/$config"; fi
  done
- # Never evict successful GLMs for a later nginx, room or gateway failure.
- if (( layout_applied )) && [[ -f $BACKUP/qwen-layout/helper.sh ]]; then
+ # Neither a successful model layout nor a room-only bypass may roll back live GLMs.
+ if (( ! layout_applied && ! layout_bypassed )) && [[ -f $BACKUP/qwen-layout/helper.sh ]]; then
    bash "$BACKUP/qwen-layout/helper.sh" rollback "$BACKUP"
  fi
  if (( gateway_switched )); then
@@ -221,6 +222,7 @@ verify_glm_identity() {
   }
 }
 layout_applied=0
+layout_bypassed=0
 # Units are Type=simple: `mag_systemctl restart` returns before the process
 # listens. Retry a local health URL for up to 30 s, then one strict check.
 wait_http() {
@@ -420,6 +422,7 @@ if [[ -e /etc/mag-stack/room-model.env || -e /etc/systemd/system/mag-llm-ds-node
           exit 1
         fi
       done
+      layout_bypassed=1
       install -m 0644 "$SOURCE/ops/room/glm.env" /etc/mag-stack/room-model.env
       echo 'Room-only GLM deploy: bypassing model layout apply; Q1/Q2 stay resident'
     else

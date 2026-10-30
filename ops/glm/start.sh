@@ -31,12 +31,10 @@ if [[ $instance == q1 ]]; then
   FORMAT='glm-5.3-flash-iq1-m:kv-f16-f16:ctx32768:slot0'
   legacy="mag-prefix-glm-5.3-flash-iq1-m-slot1.bin"
   binding=(--cpunodebind=0 --membind=0)
-  extra=(--mlock)
 else
   FORMAT='glm-5.3-flash:kv-f16-f16:ctx32768:slot0'
   legacy="mag-prefix-glm-5.3-flash-slot2.bin"
   binding=(--physcpubind=14-27,42-55 --membind=1)
-  extra=()
   # Original NUMA1 IQ2_XS memory gate from #231.
   read -r free file shmem < <(awk '$3=="MemFree:"{f=$4} $3=="FilePages:"{p=$4} $3=="Shmem:"{s=$4} END{print f+0,p+0,s+0}' /sys/devices/system/node/node1/meminfo)
   usable=$((free + (file > shmem ? file-shmem : 0)))
@@ -54,7 +52,7 @@ exec /usr/bin/numactl "${binding[@]}" "$BIN" \
   --model "$MODEL" --alias "$GLM_ALIAS" \
   --host 127.0.0.1 --port "$GLM_PORT" --ctx-size 32768 --parallel 1 \
   --threads 14 --threads-batch 28 --numa numactl \
-  --load-mode dio "${extra[@]}" -fa on -b 4096 -ub 1024 \
+  --load-mode dio -fa on -b 4096 -ub 1024 \
   --jinja --chat-template-file "$TEMPLATE" --reasoning-format auto \
   --temp 1.0 --top-p 0.95 --cache-ram 16384 --ctx-checkpoints 64 --checkpoint-min-step 1024 \
   --slots --slot-save-path "$GLM_SLOT_DIR" --no-ui

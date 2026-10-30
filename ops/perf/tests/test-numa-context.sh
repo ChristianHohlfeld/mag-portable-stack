@@ -44,7 +44,8 @@ assert 'GLM_PORT=8191' in glm_q1 and 'GLM_PORT=8192' in glm_q2
 assert 'GLM_SLOT_DIR=/var/lib/mag-llm/slots/glm-q1' in glm_q1
 assert 'GLM_SLOT_DIR=/var/lib/mag-llm/slots/glm' in glm_q2
 assert 'binding=(--cpunodebind=0 --membind=0)' in glm
-assert 'extra=(--mlock)' in glm
+assert '--mlock' not in glm
+assert '--load-mode dio -fa on -b 4096 -ub 1024' in glm  # known-good #231 llama-server flags
 assert 'glm-5.3-flash-iq1-m:kv-f16-f16' in glm
 assert 'GLM-Q1' in glm_layout and 'GLM-Q2' in glm_layout
 assert 'mag-llm-glm@q1.service' in glm_txn and 'mag-llm-glm@q2.service' in glm_txn

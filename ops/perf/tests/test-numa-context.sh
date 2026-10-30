@@ -31,7 +31,7 @@ for option in ('-fa on','-b 2048','-ub 1024','-ctk q8_0','-ctv q8_0',
 assert 'CPUAffinity=14-27 42-55' in glm_unit
 assert 'AllowedCPUs=14-27,42-55' in glm_unit
 assert 'FORMAT=' in glm and '.kv-format' in glm and 'mag-prefix-glm-5.3-flash-slot2.bin' in glm
-assert '--load-mode mlock' in ds_node and '--mlock --flash-attn' not in ds_node
+assert '--no-mmap --mlock --flash-attn' in ds_node and '--load-mode mlock' not in ds_node  # avoid file-cache duplication on NUMA0
 assert 'if (slot_is_busy(s)) {' in room  # health probes per NUMA, not globally suppressed
 assert 'if (!bot_prefix_ready(secondary)) return ids;' in room
 assert 'SLOT_WARM[slot - 1].load() != 1' in room

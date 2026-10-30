@@ -9834,11 +9834,24 @@ static void stop_selftalk() {
 static void stop_autotalk(bool pause = false) {
   write_file(STATE_DIR + "/autotalk", "off");
   AUTOTALK = false;
-  if (room_is_glm()) preempt_selftalk_lanes();
+  // An automatic stop must never erase a different human's queued/active
+  // work. This applies to mixed DeepSeek/Qwen as well as GLM chat, without
+  // the former overbroad CONFIGURED_MODEL gate.
+  bool human_work = false;
+  {
+    std::lock_guard<std::mutex> lk(JOB_MTX);
+    human_work = std::any_of(JOBS.begin(), JOBS.end(),
+                  [](const Job &j) { return !j.selftalk; }) ||
+                 !PENDING.empty() ||
+                 std::any_of(ACTIVE_JOBS.begin(), ACTIVE_JOBS.end(),
+                  [](const auto &kv) { return !kv.second.selftalk; });
+  }
+  const bool preserve_human = room_is_glm() || (human_work && !pause);
+  if (preserve_human) preempt_selftalk_lanes();
   else cancel_active();
   {
     std::lock_guard<std::mutex> lk(JOB_MTX);
-    if (room_is_glm()) {
+    if (preserve_human) {
       JOBS.erase(std::remove_if(JOBS.begin(), JOBS.end(),
           [](const Job &j) { return j.selftalk; }), JOBS.end());
     } else {
@@ -9847,7 +9860,7 @@ static void stop_autotalk(bool pause = false) {
     }
     // Stop button: persistent pause; only "Fortsetzen" resumes. Other stops
     // (autonomy off, agent removal) only hold back pending messages.
-    if (pause || (!room_is_glm() && !PENDING.empty())) QUEUE_PAUSED = true;
+    if (pause || (!preserve_human && !PENDING.empty())) QUEUE_PAUSED = true;
     save_queue_locked();
     queue_event_locked();
     AUTO_READY = false;

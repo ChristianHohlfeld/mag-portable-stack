@@ -851,7 +851,7 @@ static void load_agents() {
       // Never change an ID: especially deepseek-chat retains its memory and VM.
       const std::string old = mag::str(a, "name");
       const int slot = model_slot_of(a);
-      // Fixed Q1/Q2 bot labels; IDs, chat history and VM remain unchanged.
+      // Fixed Q1/Q2 labels; preserve each bot's original ID, memory and VM.
       if (backend.label == "GLM-Q1" || backend.label == "GLM-Q2") {
         if (old != backend.label) { a["name"] = backend.label; dirty = true; }
         continue;
@@ -868,8 +868,7 @@ static void load_agents() {
                    old == "DeepSeek Q4" || old == "Qwen 2" ||
                    old == "DeepSeek V4 Flash 1" || old == "DeepSeek V4 Flash 2" ||
                    old == "DeepSeek V4 Flash" || old == "Qwen3.8 Uncensored" || old == "Ornith 1" || old == "Ornith 2" || old == "Ornith 3" || old == "Ornith 4" ||
-                   old == "GLM-5.3 Flash" || old == "GLM-5.3 Flash 2" ||
-                    old == "GLM-Q2" && backend.label != "GLM-Q2" ||
+                   old == "GLM-5.3 Flash" ||
                    (!qwen_slot && (old == "Qwen" || old == "BotBot" || old == "Bot 2" || old == "Bot2")))) {
         const std::string updated = ROOM_MODEL.backends[0].id == ROOM_MODEL.backends[1].id
             ? backend.label + " " + std::to_string(slot) : backend.label;
@@ -1350,7 +1349,8 @@ static void reveal_answer(const std::string &bot, const std::string &name,
   if (piece.empty()) return;
   TL_PARTIAL_TEXT += piece;
   if (TL_PARTIAL_ID.empty()) {
-    Val msg = append_room("assistant", name, TL_PARTIAL_TEXT, bot);
+    Val msg = append_room("assistant", name, TL_PARTIAL_TEXT, bot,
+                          nullptr, "", "", TL_DISPLAY_MS);
     TL_PARTIAL_ID = mag::str(msg, "id");
     stamp_selftalk(msg);
     msg["type"] = "message";
@@ -1369,11 +1369,18 @@ static void drop_revealed() {
   const std::string id = TL_PARTIAL_ID;
   TL_PARTIAL_ID.clear();
   TL_PARTIAL_TEXT.clear();
-  std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
-  ROOM.erase(std::remove_if(ROOM.begin(), ROOM.end(),
-                            [&](const Val &m) { return mag::str(m, "id") == id; }),
-             ROOM.end());
-  save_room();
+  {
+    std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
+    ROOM.erase(std::remove_if(ROOM.begin(), ROOM.end(),
+                              [&](const Val &m) { return mag::str(m, "id") == id; }),
+               ROOM.end());
+    save_room();
+  }
+  // A tool round can revoke a streamed draft. Tell connected clients that
+  // the provisional room row is gone instead of leaving a ghost until done.
+  Val changed = Val::object();
+  changed["type"] = "room";
+  publish(mj::dump(changed));
 }
 static void clear_reaction_notes();
 static void upload_purge_sessions();

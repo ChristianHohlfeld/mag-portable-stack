@@ -2142,6 +2142,50 @@ class Native(unittest.TestCase):
   self.assertLessEqual(len(remaining),5)
   self.assertTrue(all((self.state/'snapshots'/x['id']/'meta.json').is_file() for x in remaining))
 
+ def test_17zz_large_recording_snapshot_clear_undo_and_restore(self):
+  # Regression: legacy/VM-synced recordings may exceed the 64 MiB HTTP upload
+  # limit, but are valid as long as the complete snapshot remains <=512 MiB.
+  self.wait_idle()
+  self._access(['chris@github'])
+  owner=self._ts('chris@github','Chris')
+  h={**owner,'Host':'mag.stardenburg.de','Origin':'https://mag.stardenburg.de','Sec-Fetch-Site':'same-origin'}
+  self.request('/api/room/clear',{},headers=owner)
+  rec=self.request('/api/upload?name=recording.m4a',b'SNAPSHOT')
+  stored=rec['stored']
+  disk=self.state/'files'/stored
+  length=132_318_913
+  with disk.open('r+b') as stream:
+   stream.truncate(length)
+   stream.seek(length-4)
+   stream.write(b'TAIL')
+  self.assertEqual(disk.stat().st_size,length)
+  before=self.request('/api/state')
+  first=self.request('/api/room/clear',{},headers=owner)
+  self.assertTrue(first['ok'])
+  saved=self.state/'snapshots'/first['snapshot']/'files'/stored
+  self.assertEqual(saved.stat().st_size,length)
+  with saved.open('rb') as stream:
+   self.assertEqual(stream.read(8),b'SNAPSHOT')
+   stream.seek(length-4)
+   self.assertEqual(stream.read(4),b'TAIL')
+  self.assertFalse(self.request('/api/state')['files'])
+  self.request('/api/undo/'+first['undo'],{})
+  self.assertEqual(disk.stat().st_size,length)
+  with disk.open('rb') as stream:
+   stream.seek(length-4)
+   self.assertEqual(stream.read(4),b'TAIL')
+  self.assertTrue(any(f['stored']==stored for f in self.request('/api/state')['files']))
+  # Restore uses snapshot_copy_checked too: cover the same >64 MiB file.
+  second=self.request('/api/room/clear',{},headers=owner)
+  restored=self.request('/api/room/snapshots/'+second['snapshot']+'/restore',{},headers=h)
+  self.assertEqual(restored['restored'],second['snapshot'])
+  self.assertEqual(disk.stat().st_size,length)
+  with disk.open('rb') as stream:
+   stream.seek(length-4)
+   self.assertEqual(stream.read(4),b'TAIL')
+  self.assertTrue(any(f['stored']==stored for f in self.request('/api/state')['files']))
+  self.assertTrue(any(f['stored']==stored for f in before['files']))
+
  def test_18_pwa_shell_is_not_cached(self):
   import base64
   def headers(path):

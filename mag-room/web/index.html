@@ -2623,6 +2623,9 @@ $('reset').onclick=async()=>{
      notice('Raum ist leer – Serverstatus geprüft.');
    }
   }else{
+   // Preserve the authoritative failure on screen, not just in the console
+   // or a transient toast. The room and its files remain untouched on 507.
+   roomLink('Raum nicht geleert: '+e.message);
    notice('Raum nicht geleert: '+e.message);
   }
  }finally{

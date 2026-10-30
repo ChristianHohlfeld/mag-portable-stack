@@ -63,9 +63,14 @@ static bool snapshot_copy_checked(const std::string &from, const std::string &to
   }
   std::error_code ec;
   uint64_t n = std::filesystem::file_size(from, ec);
-  if (ec || n > (uint64_t)MAX_UPLOAD ||
-      n > SNAPSHOT_MAX_BYTES - size) {
-    error = "Snapshot-Limit von 512 MiB überschritten"; return false;
+  if (ec) {
+    error = "Größe der Raumdatei konnte nicht ermittelt werden"; return false;
+  }
+  // Existing room files (including recordings/VM syncs) can exceed the
+  // 64 MiB HTTP upload limit. Snapshots obey only the 512 MiB TOTAL budget.
+  // The same copy gate is used for both snapshot capture and restore.
+  if (size > SNAPSHOT_MAX_BYTES || n > SNAPSHOT_MAX_BYTES - size) {
+    error = "Snapshot-Gesamtlimit von 512 MiB überschritten"; return false;
   }
   // Never follow a symlink at destination.
   if (std::filesystem::exists(to, ec)) {

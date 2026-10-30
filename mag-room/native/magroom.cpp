@@ -4548,6 +4548,7 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
              bool thinking, int id_slot, const std::string &model = "",
              int bot_idx = -1, bool short_chat = false,
              bool force_no_tools = false) {
+  const auto backend_start = steady_clock::now();
   Turn t;
   // DeepSeek rejects an assistant-ending prefill while thinking is on
   // (HTTP 500). Do not open a socket and do not let the caller wipe the wire.
@@ -4859,7 +4860,7 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
                                c.budget_hit ? "budget" :
                                c.hit_deadline ? "deadline" :
                                c.eof ? "done" : "eof")
-            << " ms=" << (long)0 << "\n";
+            << " ms=" << (long)duration_cast<milliseconds>(steady_clock::now()-backend_start).count() << "\n";
   // A deadline is a failure of this one request. Stop already closed the
   // socket and must not be reported as a model timeout. An empty finish
   // would schedule another completion against a slot ik is still prefilling.

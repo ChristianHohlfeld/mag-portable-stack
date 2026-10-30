@@ -34,7 +34,7 @@ class Q1Hygiene(unittest.TestCase):
 
     @unittest.skipUnless(shutil.which("g++"), "g++ not installed")
     def test_real_cpp_reply_helpers(self):
-        start = SOURCE.index('static bool q1_bad(')
+        start = SOURCE.index('static bool q1_speaker_label(')
         end = SOURCE.index('static std::vector<Val> glm_chat_turns(', start)
         cpp = r"""
 #include <algorithm>

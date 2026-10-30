@@ -6909,6 +6909,7 @@ static void schedule(const std::vector<std::string> &ids, int think = -1,
 }
 // Queue API (routes.hpp). All return false if the id is unknown.
 static bool dispatch_locked();
+static bool bot_prefix_ready(const std::string &id);
 // First hi: if a DeepSeek-class slot is busy or cold, the ready Qwen bot
 // answers now. Names and model ids come from the live roster, not a fixed pair.
 static bool slot_blocked_for_hi(int slot) {

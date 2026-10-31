@@ -144,11 +144,15 @@ json.dump(s,open(p,'w'))
   self.assertNotIn('mag-units.sh', p.stderr)
   self.assertNotIn('/var/backups/mag-stack/ops/mag-units.sh', p.stderr)
   self.assertEqual(json.loads(self.state.read_text()),self.original)
- def test_conflicts_do_not_stop_numa0(self):
-  ds=(ROOT/'ops/room/mag-llm-ds-node@.service').read_text();q=(ROOT/'ops/qwen/mag-llm-qwen.service').read_text()
+ def test_room_qwen_conflicts_only_with_q1_not_q2(self):
+  ds=(ROOT/'ops/room/mag-llm-ds-node@.service').read_text()
+  q=(ROOT/'ops/qwen/mag-llm-qwen.service').read_text()
+  room=(ROOT/'ops/qwen/mag-llm-qwen-room.service').read_text()
   self.assertNotIn('mag-llm-qwen.service',ds)
   self.assertIn('Conflicts=mag-llm-ds-node@1.service mag-llm-iq3.service',q)
   self.assertNotIn('mag-llm-ds-node@0.service',q)
+  self.assertIn('Conflicts=mag-llm-glm@q1.service',room)
+  self.assertNotIn('mag-llm-glm@q2.service',room)
  def test_repo_glm_replaces_both_legacy_models(self):
   self.assertEqual(self.run_layout().returncode,0)
   self.write('/etc/systemd/system/mag-llm-ds-node@0.service.d/50-old.conf',

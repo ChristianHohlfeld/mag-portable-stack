@@ -1,4 +1,4 @@
-# Qwen3.8 Flash Next (uncensored) — staged NUMA1 replacement
+# Qwen3.8 Flash Next Uncensored — standalone fallback and room NUMA0
 
 > **Stand Oktober 2026:** Dieses Dokument enthält historische Q4/IQ3-Cutover-Schritte,
 > die nicht mehr ausgeführt werden dürfen. Qwen ist nun der unabhängige
@@ -25,6 +25,47 @@ Source GGUF: `mradermacher/Qwen3.8-Flash-Next-Uncensored-GGUF`,
 `Qwen3.8-Flash-Next-Uncensored.IQ4_XS.gguf`, ~98.4 GB. No model weight downloaded by deploy.
 Keep optional mmproj separate; no image input/vision is promised in MAG.
 
+## Current GLM-room integration: NUMA0 (:8191)
+
+The repository's `glm` room layout now runs **Qwen Uncensored** as slot 1
+(`qwen-numa0`, NUMA0, :8191) beside the already-running **GLM-Q2**
+(`qwen-numa1`, NUMA1, :8192). This is a separate room unit,
+`mag-llm-qwen-room.service`, which reuses the pinned `qwen4exp` runtime,
+the existing GGUF and `/usr/local/lib/mag-qwen/start.sh`. The standalone
+`mag-llm-qwen.service` remains the NUMA1 fallback for its other layout.
+
+The cutover is repository/deploy-owned and idempotent:
+- It verifies the already-present GGUF against the pinned upstream SHA; it
+  never downloads or deletes model files.
+- It stops and disables only `mag-llm-glm@q1.service`; the IQ1_M file and
+  parked `deepseek-chat` room identity/memory remain.
+- It requires GLM-Q2 to be active, healthy and enabled before changing
+  anything, snapshots its PID, and verifies the same PID and :8192 health
+  after Qwen's cold start. It does not install, enable, stop, start or restart
+  GLM-Q2 and does not change any `ops/glm/*` files.
+- The room-only Qwen unit binds NUMA0 CPUs `0-13,28-41`, `NUMAMask=0`,
+  14 decode threads / 28 batch threads, and :8191. It requires 150 GiB
+  reclaimable node-local RAM after Q1 has been stopped.
+- Deployment waits up to 10,800 seconds for :8191 health; the deploy watchdog
+  allows four hours for the first 98 GB cold load. A failed cutover rolls back
+  the Qwen/Q1 state without touching Q2.
+
+### Room generation policy
+
+The Qwen room bot has no tools or tool schemas, uses one model response per
+message, and caps output at 256 tokens. Thinking is always disabled with
+`chat_template_kwargs.enable_thinking=false`. Live deltas are withheld until
+the final text passes the hidden-token filter; any `<think>`, `</think>`
+or `<|` delimiter drops the whole candidate answer.
+
+Sampling follows the official [Qwen3.8-Flash-Next model card](https://huggingface.co/Qwen/Qwen3.8-Flash-Next)
+for non-thinking instruct mode: `temperature=0.7`, `top_p=0.80`,
+`top_k=20`, `min_p=0`, `presence_penalty=1.5`,
+`repetition_penalty=1.0`. MAG maps the last field to llama.cpp's
+`repeat_penalty` request parameter. The GGUF's embedded Jinja template is
+used with `--jinja`; no custom template override is installed. See the
+[llama.cpp server API and chat-template docs](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md).
+
 ## Prepare on MAG as chris (no service changes)
 
 The user already started `hf download`; wait for completion. Keep that SSH
@@ -45,7 +86,7 @@ bytes before the service unit is staged. Keep the pinned file out of Git;
 never store HF credentials in the repository. Build uses official
 `ggml-org/llama.cpp` commit `4a45de4f2c68f3d144f6c2431ad7c1da7e53c99e`, not a mutable branch at runtime.
 
-Staging installs only `mag-llm-qwen.service` (disabled/stopped), its
+Staging installs `mag-llm-qwen.service` and the room-only `mag-llm-qwen-room.service` (both disabled/stopped), its
 verified runtime launcher, and local upstream SHA. Q4/IQ3 PIDs and backend
 routing are unchanged. Check `systemctl is-enabled mag-llm-qwen.service`
 before enabling; this is **not** an automatic deploy.

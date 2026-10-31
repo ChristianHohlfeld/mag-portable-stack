@@ -9021,10 +9021,10 @@ static bool bot_prefix_ready(const std::string &id) {
   const std::string model = bot_model_id(idx);
   const std::string key = lane_key(idx);
   std::lock_guard<std::mutex> lk(PREWARM_MTX);
-  // A turn arriving during prewarm is allowed onto the lane: prewarm checks
-  // the queue before POST and yields; a failed prewarm opens the lane during
-  // backoff so a 500 can never become a turn-admission lock.
-  return PREWARM_BACKOFF.count(key) != 0 || PREWARM_RUNNING.count(key) != 0;
+  // A running prewarm still owns the model slot; do not dispatch a cold
+  // bot until that prefix is resident. A failed/yielded prewarm opens the
+  // lane during backoff, so a 500 can never become a turn-admission lock.
+  return PREWARM_BACKOFF.count(key) != 0;
 }
 static void mark_prefix_warm(int slot) {
   if (slot < 1 || slot > ROOM_MAX_BOTS) return;

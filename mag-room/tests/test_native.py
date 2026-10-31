@@ -5401,7 +5401,7 @@ class GlmLayoutStartup(unittest.TestCase):
   Model.delay=0;Model.slot_delay={'0':2,'1':2}
   marker='DUAL-ROOM-'+str(time.monotonic_ns())
   Model.script_scope=marker
-  Model.script=[['Hallo Qwen.'],['Hallo GLM-Q2.']]
+  Model.script=[['Hallo Mistral.'],['Hallo GLM-Q2.']]
   Model.reply=None;Model.health=200;Model.slot_snapshot=[];Model.paths=[]
   Model.calls=[];Model.pairs=[];Model.slot_block={};Model.barrier_release=None
   Model.restore_missing=False
@@ -5450,19 +5450,19 @@ class GlmLayoutStartup(unittest.TestCase):
              (m.get('content') or '').startswith('Hallo')]
     if len(answers)==2 and not st['busy']:break
     time.sleep(.2)
-   else:self.fail('both Qwen and GLM-Q2 room streams did not complete')
+   else:self.fail('both Mistral and GLM-Q2 room streams did not complete')
    calls=[p for p in Model.paths if p[0]=='/v1/chat/completions'
           and p[3].get('max_tokens')!=1 and marker in json.dumps(p[3],ensure_ascii=False)]
    self.assertEqual(len(calls),2)
    self.assertEqual({p[1] for p in calls},{'0','1'})
    self.assertEqual({p[3]['model'] for p in calls},
-                    {'qwen3.8-flash-next-uncensored','glm-5.3-flash'})
+                    {'mistral-large4','glm-5.3-flash'})
    for p in calls:self.assertNotIn('tools',p[3])
-   qwen=next(p[3] for p in calls if p[3]['model']=='qwen3.8-flash-next-uncensored')
-   self.assertFalse(qwen['chat_template_kwargs']['enable_thinking'])
-   self.assertEqual(qwen['chat_template_kwargs'],{'enable_thinking':False})
-   self.assertEqual(qwen['reasoning_effort'],'none')
-   self.assertEqual(qwen['max_tokens'],256)
+   mistral=next(p[3] for p in calls if p[3]['model']=='mistral-large4')
+   self.assertFalse(mistral['chat_template_kwargs']['enable_thinking'])
+   self.assertEqual(qwen['chat_template_kwargs'],{'enable_thinking':False,'reasoning_effort':'low'})
+   self.assertEqual(mistral['reasoning_effort'],'low')
+   self.assertEqual(mistral['max_tokens'],8192)
    self.assertFalse([p for p in Model.paths if 'action=cancel' in p[0]])
    log.flush()
    self.assertNotIn('reason=stop',logpath.read_text(errors='replace'))

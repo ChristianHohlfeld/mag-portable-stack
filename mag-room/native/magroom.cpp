@@ -9024,7 +9024,7 @@ static bool bot_prefix_ready(const std::string &id) {
   // retries in the background; a failed 500 is not an admission lock.
   if (CONFIGURED_MODEL &&
       (model == "qwen3.8-flash-next-uncensored" || model == "mistral-large4"))
-    return ROOM_MODEL_HEALTH[slot - 1].load() != 2;
+    return true;
   const std::string key = lane_key(idx);
   std::lock_guard<std::mutex> lk(PREWARM_MTX);
   // A turn arriving during prewarm is allowed onto the lane: prewarm checks

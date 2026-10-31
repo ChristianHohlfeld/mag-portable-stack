@@ -240,11 +240,11 @@ static void resume_pending_spawns() {
           slot_model == "qwen3.8-flash-next-uncensored";
       const bool mistral_chat_only = room_chat_only_model(slot_model) &&
           slot_model == "mistral-large4";
-      // Mistral is strictly chat-only: clear stale automatic or explicit
-      // pending reservations and never resume a VM for that slot. Qwen keeps
-      // its existing operator-explicit /vm escape hatch.
-      if (mistral_chat_only ||
-          (qwen_chat_only && !AGENTS[i].find("vm_explicit_attach"))) {
+      // Qwen and Mistral are chat-only in this configured GLM room.
+      // Clear stale reservations and never resume/provision a KVM VM for
+      // either NUMA0 chat slot. The generic non-configured chat-only bot
+      // path retains its independent VM behavior.
+      if (mistral_chat_only || qwen_chat_only) {
         if (!vm.empty()) {
           SPAWNING_VMS.erase(vm);
           drop_key(AGENTS[i], "pending_vm");

@@ -252,11 +252,6 @@ for unit in "${selected_units[@]}"; do
   fi
 done
 if [[ $layout == glm ]]; then
-  # Q2's executable may have been replaced on disk while its resident
-  # process remains healthy. Never restart it for that reason.
-  if runs_stale_binary mag-llm-glm@q2.service; then
-    echo 'WARN: GLM-Q2 still uses its previous deleted executable; no restart' >&2
-  fi
   qwen_changed=0
   for file in /usr/local/lib/mag-qwen/start.sh \
       /etc/systemd/system/mag-llm-qwen-room.service \

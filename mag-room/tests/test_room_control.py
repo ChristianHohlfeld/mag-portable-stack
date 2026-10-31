@@ -843,6 +843,8 @@ class MistralRoomTurns(unittest.TestCase):
             self.assertEqual(request['messages'][-1].get('role'), 'user', request['messages'])
             self.assertEqual(request.get('temperature'), 1.0)
             self.assertEqual(request.get('top_p'), 0.95)
+            self.assertEqual(request.get('top_k'), 0)
+            self.assertEqual(request.get('min_p'), 0.0)
             self.assertEqual(request.get('reasoning_effort'), 'low')
             self.assertEqual(request.get('chat_template_kwargs', {}).get('reasoning_effort'), 'low')
         self.assertEqual(Model.rejected, [], 'Mistral GGUF template must never receive a missing user query')

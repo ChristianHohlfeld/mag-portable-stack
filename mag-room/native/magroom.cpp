@@ -938,13 +938,17 @@ static void load_agents() {
     });
   }
   if (room_is_glm()) {
-    // Qwen owns slot 1/NUMA0; GLM-Q2 keeps slot 2/NUMA1. The old Q1 record
-    // (deepseek-chat) remains parked with its original memory/VM/identity.
+    // Slot 1 is Qwen (legacy layout) or Mistral (current layout) on NUMA0;
+    // GLM-Q2 stays on NUMA1. Keep the legacy qwen-numa0 ID so old room
+    // messages and memory remain attached while the visible name becomes Mistral.
     const std::string q1_model = "glm-5.3-flash-iq1-m";
     const std::string qwen_model = "qwen3.8-flash-next-uncensored";
+    const std::string slot1_model = ROOM_MODEL.backend(1).id;
+    const std::string slot1_name = slot1_model == "mistral-large4" ? "Mistral" : "Qwen";
+    const std::string slot1_id = "qwen-numa0";
     const std::string q2_model = "glm-5.3-flash";
     std::vector<Val> active;
-    bool have_qwen0 = false, have_q2 = false;
+    bool have_slot1 = false, have_q2 = false;
     for (auto &bot : AGENTS) {
       const std::string id = mag::str(bot, "id");
       const std::string name = mag::str(bot, "name");
@@ -959,17 +963,18 @@ static void load_agents() {
         bot["numa"] = 0;
         PARKED.push_back(std::move(bot));
         dirty = true; // active -> parked roster transition
-      } else if (id == "qwen-numa0" || (slot == 1 && model == qwen_model)) {
-        if (have_qwen0) { PARKED.push_back(std::move(bot)); dirty = true; continue; }
-        if (id != "qwen-numa0" || name != "Qwen" || model != qwen_model ||
+      } else if (id == slot1_id ||
+                 (slot == 1 && (model == qwen_model || model == slot1_model))) {
+        if (have_slot1) { PARKED.push_back(std::move(bot)); dirty = true; continue; }
+        if (id != slot1_id || name != slot1_name || model != slot1_model ||
             slot != 1 || mag::num(bot, "numa", -1) != 0) dirty = true;
-        bot["id"] = "qwen-numa0";
-        bot["name"] = "Qwen";
-        bot["model"] = qwen_model;
+        bot["id"] = slot1_id;
+        bot["name"] = slot1_name;
+        bot["model"] = slot1_model;
         bot["slot"] = 1;
         bot["numa"] = 0;
         active.push_back(std::move(bot));
-        have_qwen0 = true;
+        have_slot1 = true;
       } else if (slot == 2 || id == "qwen-numa1") {
         if (have_q2) { PARKED.push_back(std::move(bot)); dirty = true; continue; }
         if (id != "qwen-numa1" || name != "GLM-Q2" || model != q2_model ||
@@ -1010,16 +1015,17 @@ static void load_agents() {
       bot["memory"] = Val::array();
       return bot;
     };
-    if (!have_qwen0) {
-      auto it = std::find_if(PARKED.begin(), PARKED.end(), [](const Val &a) {
-        return mag::str(a, "id") == "qwen-numa0";
+    if (!have_slot1) {
+      auto it = std::find_if(PARKED.begin(), PARKED.end(), [&](const Val &a) {
+        return mag::str(a, "id") == slot1_id ||
+               (model_slot_of(a) == 1 && mag::str(a, "model") == slot1_model);
       });
       if (it != PARKED.end()) {
         Val bot = *it; PARKED.erase(it);
-        bot["name"] = "Qwen"; bot["model"] = qwen_model;
+        bot["id"] = slot1_id; bot["name"] = slot1_name; bot["model"] = slot1_model;
         bot["slot"] = 1; bot["numa"] = 0;
         active.push_back(std::move(bot));
-      } else active.push_back(make_room_bot("qwen-numa0", "Qwen", qwen_model, 1, 0));
+      } else active.push_back(make_room_bot(slot1_id, slot1_name, slot1_model, 1, 0));
       dirty = true;
     }
     if (!have_q2) {

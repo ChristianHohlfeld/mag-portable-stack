@@ -1,7 +1,5 @@
 # Room: Qwen Uncensored (NUMA0) + GLM-Q2 (NUMA1)
 
-## GLM-Raum: Qwen NUMA0 + GLM-Q2 NUMA1 (31.10.2026)
-
 - **Qwen Uncensored**: slot 1, `qwen-numa0`, NUMA0, `:8191`, IQ4_XS.
 - **GLM-Q2**: slot 2, `qwen-numa1`, NUMA1, `:8192`; existing process/PID stays live.
 - **GLM-Q1**: stopped and disabled. Its `deepseek-chat` identity and memory/VM remain parked; room history is untouched and IQ1_M stays on disk.

@@ -62,7 +62,7 @@ assert 'kv.first == "description"' in room and 'bot_model_id(bot_idx).rfind("glm
 assert 'body["id_slot"] = 0;' in room and 'body["cache_prompt"] = true;' in room
 
 assert '--threads "$THREADS" --threads-batch "$BATCH_THREADS" --numa numactl' in qwen
-assert 'QWEN_THREADS_BATCH=14' in glm_txn and 'QWEN_THREADS_BATCH=28' in glm_txn
+assert 'MISTRAL_THREADS=14' in glm_txn and 'MISTRAL_MIN_RAM_GIB=225' in glm_txn
 assert 'CPUAffinity=14-27' in unit
 assert 'AllowedCPUs=14-27' in unit
 assert 'NUMAPolicy=bind' in unit and 'NUMAMask=1' in unit

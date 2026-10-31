@@ -25,7 +25,9 @@ mcp = Path('mag-room/native/mcp.hpp').read_text()
 deploy = Path('ops/deploy.sh').read_text()
 diag = Path('ops/perf/diagnose-ai.sh').read_text()
 
-assert '--physcpubind=14-27 --membind=1' in qwen  # Qwen rollback remains untouched
+assert "NODE=${QWEN_NODE:-1}" in qwen and "BIND='14-27'" in qwen
+assert "CPU_RANGE='14-27,42-55'" in qwen  # standalone Qwen fallback remains NUMA1
+assert 'exec /usr/bin/numactl --physcpubind="$BIND" --membind="$NODE"' in qwen
 # GLM has 14 decode and 28 batch threads, all local to its NUMA node.
 assert '--physcpubind=0-13,28-41 --membind=0' in glm
 assert '--physcpubind=14-27,42-55 --membind=1' in glm
@@ -48,7 +50,8 @@ assert 'binding=(--physcpubind=0-13,28-41 --membind=0)' in glm
 assert '--mlock' not in glm
 assert '--load-mode dio -fa on -b 4096 -ub 1024' in glm  # known-good #231 llama-server flags
 assert 'glm-5.3-flash-iq1-m:kv-f16-f16' in glm
-assert 'GLM-Q1' in glm_layout and 'GLM-Q2' in glm_layout
+assert 'MAG_ROOM_MODEL_ID_0=qwen3.8-flash-next-uncensored' in glm_layout
+assert 'MAG_ROOM_MODEL_ID_1=glm-5.3-flash' in glm_layout
 assert 'mag-llm-glm@q1.service' in glm_txn and 'mag-llm-glm@q2.service' in glm_txn
 assert 'FORMAT=' in glm and '.kv-format' in glm and 'mag-prefix-glm-5.3-flash-slot2.bin' in glm
 assert '--no-mmap --mlock --flash-attn' in ds_node and '--load-mode mlock' not in ds_node  # avoid file-cache duplication on NUMA0
@@ -58,7 +61,8 @@ assert 'SLOT_WARM[slot - 1].load() != 1' in room
 assert 'kv.first == "description"' in room and 'bot_model_id(bot_idx).rfind("glm-5.3-flash", 0) == 0' in room
 assert 'body["id_slot"] = 0;' in room and 'body["cache_prompt"] = true;' in room
 
-assert '--threads 14 --threads-batch 14 --numa numactl' in qwen
+assert '--threads "$THREADS" --threads-batch "$BATCH_THREADS" --numa numactl' in qwen
+assert 'QWEN_THREADS_BATCH=14' in glm_txn and 'QWEN_THREADS_BATCH=28' in glm_txn
 assert 'CPUAffinity=14-27' in unit
 assert 'AllowedCPUs=14-27' in unit
 assert 'NUMAPolicy=bind' in unit and 'NUMAMask=1' in unit
@@ -117,9 +121,9 @@ assert 'MAG_ROOM_PREWARM=1' in Path('ops/room/glm.env').read_text()
 assert 'short_glm_input(TURN_INPUT)' in room
 # GLM chat intentionally omits the entire tool schema/choice and decodes up to 256.
 # The DeepSeek/Qwen working-mode tool schemas are still retained.
-assert 'if (!(no_tools && model.rfind("glm-5.3-flash", 0) == 0)' in room
+assert 'const bool qwen_chat = no_tools && room_is_glm()' in room
 assert 'MAG_ROOM_GLM_CHAT_MAX_TOKENS' in room
-assert 'glm_chat_mode ? std::string() : tools_json(bot_idx, web)' in room
+assert 'tools = (glm_chat_mode || qwen_room_bot) ? std::string() : tools_json(bot_idx, web);' in room
 assert 'glm-reasoning-limit model=' in room
 assert 'tool-failed bot=' in room
 assert 'restart_unit["$unit"]=1' in glm_txn

@@ -14,7 +14,15 @@ PY
 # The new model requires a separate pinned upstream runtime, not the existing
 # DeepSeek ik_llama.cpp binary or a live deploy swap.
 grep -Fq '4a45de4f2c68f3d144f6c2431ad7c1da7e53c99e' ops/qwen/runtime.sha
-grep -Fq -- '--physcpubind=14-27 --membind=1' ops/qwen/start.sh
+grep -Fq "CPU_RANGE='0-13,28-41'" ops/qwen/start.sh
+grep -Fq 'NUMAMask=0' ops/qwen/mag-llm-qwen-room.service
+grep -Fq 'CPUAffinity=0-13 28-41' ops/qwen/mag-llm-qwen-room.service
+grep -Fq 'QWEN_THREADS_BATCH=28' ops/qwen/layout.sh
+grep -Fq 'QWEN_PORT=8191' ops/qwen/layout.sh
+grep -Fq 'QWEN_NODE=0' ops/qwen/layout.sh
+grep -Fq 'mag-llm-qwen-room.service' ops/qwen/layout.sh
+grep -Fq 'GLM-Q1 still running' ops/qwen/start.sh
+! grep -Eq 'rm .*Qwen3.8-Flash-Next-Uncensored|rm .*IQ1_M' ops/qwen/layout.sh
 grep -Fq -- '--numa numactl' ops/qwen/start.sh
 grep -Fq 'mag-llm-iq3.service && fail' ops/qwen/start.sh
 grep -Fq 'verify-model.sh' ops/qwen/start.sh
@@ -33,7 +41,8 @@ grep -Fq 'unknown or inactive secondary model' mag-room/native/mag_audit_gateway
 ! grep -Eq 'systemctl (stop|start|restart|kill).*mag-llm-iq3[.]service' ops/qwen/*.sh
 ! grep -Fq 'ops/qwen/install.sh' ops/deploy.sh
 # Qwen is installed only on an already-cut-over Qwen host; loaded model not restarted.
-grep -Fq 'ops/qwen/mag-llm-qwen.service' ops/deploy.sh
+grep -Fq 'ops/qwen/layout.sh" apply' ops/deploy.sh
+grep -Fq 'mag-llm-qwen-room.service' ops/boot/ensure-boot.sh
 grep -Fq 'if [[ -r /etc/mag-stack/secondary-model.env ]]' ops/deploy.sh
 grep -Fq 'STAGED ONLY' ops/qwen/install.sh
 grep -Fq -- '--reasoning-format auto' ops/qwen/start.sh
@@ -47,6 +56,24 @@ grep -Fq 'tool result roundtrip' ops/qwen/smoke.py
 grep -Fq 'cutover.sh" apply' ops/qwen/go-live.sh
 bash -n ops/qwen/go-live.sh
 grep -Fq 'enable_thinking' ops/qwen/smoke.py
+! grep -Fq 'preserve_thinking' ops/qwen/smoke.py
+grep -Fq '"reasoning_effort": "none"' ops/qwen/smoke.py
+grep -Fq '"top_k": 20' ops/qwen/smoke.py
+grep -Fq '"presence_penalty": 1.5' ops/qwen/smoke.py
+grep -Fq 'MAG_ROOM_QWEN_CHAT_MAX_TOKENS=256' ops/room/glm.env
+grep -Fq 'body["temperature"] = 0.7' mag-room/native/magroom.cpp
+grep -Fq 'body["top_p"] = 0.80' mag-room/native/magroom.cpp
+grep -Fq 'body["top_k"] = 20' mag-room/native/magroom.cpp
+grep -Fq 'body["presence_penalty"] = 1.5' mag-room/native/magroom.cpp
+grep -Fq 'chat_forbidden_cut' mag-room/native/magroom.cpp
+grep -Fq 'stops.push("<tool_call")' mag-room/native/magroom.cpp
+! grep -Fq 'stops.push("</think>")' mag-room/native/magroom.cpp
+grep -Fq 'Always reserve the full 3-hour load window' ops/deploy.sh
+grep -Fq 'body["reasoning_effort"] = "none"' mag-room/native/magroom.cpp
+grep -Fq 'GLM-Q2 PID changed during Qwen cold start' ops/qwen/layout.sh
+grep -Fq 'GLM-Q2 must already be enabled' ops/qwen/layout.sh
+grep -Fq 'QWEN_MIN_RAM_GIB=150' ops/qwen/layout.sh
+grep -Fq 'Qwen NUMA0 + GLM-Q2 NUMA1' ops/qwen/layout.sh
 grep -Fq 'MAG_SECONDARY_MODEL=qwen' ops/qwen/cutover.sh
 grep -Fq 'Q4 NUMA0 unchanged' ops/qwen/cutover.sh
 ! grep -Eq 'systemctl (stop|restart|kill).*mag-llm[.]service' ops/qwen/cutover.sh
@@ -59,5 +86,5 @@ bash ops/perf/tests/test-numa-context.sh
 python3 ops/qwen/tests/test_layout.py
 # Exercise GLM smoke quality assertions in the actual CI contract.
 python3 ops/qwen/tests/test_smoke_glm.py
-echo 'Qwen/GLM NUMA1 layout + Jinja/Thinking/tools contract PASS'
+echo 'Qwen NUMA0 + GLM-Q2 NUMA1 room layout + chat-only Jinja contract PASS'
 

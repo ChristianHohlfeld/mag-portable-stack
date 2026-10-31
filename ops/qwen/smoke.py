@@ -12,17 +12,21 @@ TOOL = {"type": "function", "function": {"name": "echo",
                        "required": ["value"], "additionalProperties": False}}}
 
 def request(port, messages, thinking=False, choice=None, stream=False):
-    # Same contract the room uses for both models: enable_thinking. GLM runs
-    # with the pinned ops/glm/chat-template.jinja (the embedded template ignores
-    # enable_thinking); thinking off prefills "<think></think>", default effort Low.
+    # Qwen uses its embedded GGUF Jinja template and official non-thinking
+    # instruct sampler; GLM's existing smoke contract is left unchanged.
+    qwen = request.model == "qwen3.8-flash-next-uncensored"
+    kwargs = {"enable_thinking": False if qwen else thinking}
+    if request.model.startswith("glm-5.3-flash"):
+        kwargs.update({"reasoning_effort": "low", "clear_thinking": True})
     body = {"model": request.model, "messages": messages, "stream": stream,
             "max_tokens": 24 if getattr(request, "startup_only", False) else (512 if thinking else 192),
-            "temperature": 1.0 if request.model.startswith("glm-5.3-flash") else 0,
-            "top_p": 0.95 if request.model.startswith("glm-5.3-flash") else 1,
-            "chat_template_kwargs": {"enable_thinking": thinking,
-                **({"reasoning_effort": "low", "clear_thinking": True}
-                   if request.model.startswith("glm-5.3-flash") else {})},
+            "temperature": 0.7 if qwen else (1.0 if request.model.startswith("glm-5.3-flash") else 0),
+            "top_p": 0.80 if qwen else (0.95 if request.model.startswith("glm-5.3-flash") else 1),
+            "chat_template_kwargs": kwargs,
             "cache_prompt": True, "id_slot": 0}
+    if qwen:
+        body.update({"reasoning_effort": "none", "top_k": 20, "min_p": 0.0,
+                     "presence_penalty": 1.5, "repeat_penalty": 1.0})
     if choice:
         body["tools"] = [TOOL]
         body["tool_choice"] = choice

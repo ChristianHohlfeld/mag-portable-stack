@@ -734,7 +734,10 @@ static Val ROOM_PRESETS = Val::array();
 static bool CONFIGURED_MODEL = false;
 // Only the configured GLM-5.3 room, not every configured pair.
 static bool room_is_glm() {
-  return CONFIGURED_MODEL && ROOM_MODEL.id.rfind("glm-5.3-flash", 0) == 0;
+  return CONFIGURED_MODEL &&
+      (ROOM_MODEL.id.rfind("glm-5.3-flash", 0) == 0 ||
+       (ROOM_MODEL.backend(1).id == "qwen3.8-flash-next-uncensored" &&
+        ROOM_MODEL.backend(2).id == "glm-5.3-flash"));
 }
 // Configured mode: two bots, each with a persistent "slot" (1..2) stored in
 // agents.json. The slot, never the array index, picks the backend instance, so
@@ -930,25 +933,106 @@ static void load_agents() {
     });
   }
   if (room_is_glm()) {
-    // Room-only GLM layout: keep Q1's persisted identity/VM/memory parked.
-    // The :8191 model service stays running and its slot is never reassigned.
-    std::vector<Val> q2;
+    // Qwen owns slot 1/NUMA0; GLM-Q2 keeps slot 2/NUMA1. The old Q1 record
+    // (deepseek-chat) remains parked with its original memory/VM/identity.
+    const std::string q1_model = "glm-5.3-flash-iq1-m";
+    const std::string qwen_model = "qwen3.8-flash-next-uncensored";
+    const std::string q2_model = "glm-5.3-flash";
+    std::vector<Val> active;
+    bool have_qwen0 = false, have_q2 = false;
     for (auto &bot : AGENTS) {
-      if (model_slot_of(bot) == 2) {
-        if (mag::str(bot, "id") != "qwen-numa1") {
-          // Preserve an existing qwen-numa1 identity rather than renaming it.
-          bool existing = false;
-          for (const auto &a : PARKED)
-            if (mag::str(a, "id") == "qwen-numa1") existing = true;
-          if (!existing) { bot["id"] = "qwen-numa1"; dirty = true; }
-        }
-        q2.push_back(std::move(bot));
+      const std::string id = mag::str(bot, "id");
+      const std::string name = mag::str(bot, "name");
+      const std::string model = mag::str(bot, "model");
+      const int slot = model_slot_of(bot);
+      if (id == "deepseek-chat" || name == "GLM-Q1" || model == q1_model) {
+        if (model != q1_model || name != "GLM-Q1" || slot != 1 ||
+            mag::num(bot, "numa", -1) != 0) dirty = true;
+        bot["model"] = q1_model;
+        bot["name"] = "GLM-Q1";
+        bot["slot"] = 1;
+        bot["numa"] = 0;
+        PARKED.push_back(std::move(bot));
+        dirty = true; // active -> parked roster transition
+      } else if (id == "qwen-numa0" || (slot == 1 && model == qwen_model)) {
+        if (have_qwen0) { PARKED.push_back(std::move(bot)); dirty = true; continue; }
+        if (id != "qwen-numa0" || name != "Qwen" || model != qwen_model ||
+            slot != 1 || mag::num(bot, "numa", -1) != 0) dirty = true;
+        bot["id"] = "qwen-numa0";
+        bot["name"] = "Qwen";
+        bot["model"] = qwen_model;
+        bot["slot"] = 1;
+        bot["numa"] = 0;
+        active.push_back(std::move(bot));
+        have_qwen0 = true;
+      } else if (slot == 2 || id == "qwen-numa1") {
+        if (have_q2) { PARKED.push_back(std::move(bot)); dirty = true; continue; }
+        if (id != "qwen-numa1" || name != "GLM-Q2" || model != q2_model ||
+            slot != 2 || mag::num(bot, "numa", -1) != 1) dirty = true;
+        bot["id"] = "qwen-numa1";
+        bot["name"] = "GLM-Q2";
+        bot["model"] = q2_model;
+        bot["slot"] = 2;
+        bot["numa"] = 1;
+        active.push_back(std::move(bot));
+        have_q2 = true;
       } else {
         PARKED.push_back(std::move(bot));
-        dirty = true;
       }
     }
-    AGENTS = std::move(q2);
+    // The previous Q1 identity may already be in PARKED (e.g. after a
+    // duplicate-slot migration). Restore its historical slot/model there.
+    for (auto &bot : PARKED) {
+      if (mag::str(bot, "id") == "deepseek-chat" ||
+          mag::str(bot, "name") == "GLM-Q1" ||
+          mag::str(bot, "model") == q1_model) {
+        if (mag::str(bot, "model") != q1_model ||
+            mag::str(bot, "name") != "GLM-Q1" ||
+            model_slot_of(bot) != 1) dirty = true;
+        bot["model"] = q1_model;
+        bot["name"] = "GLM-Q1";
+        bot["slot"] = 1;
+        bot["numa"] = 0;
+      }
+    }
+    auto make_room_bot = [](const std::string &id, const std::string &name,
+                            const std::string &model, int slot, int numa) {
+      Val bot = Val::object();
+      bot["id"] = id; bot["name"] = name; bot["model"] = model;
+      bot["slot"] = slot; bot["numa"] = numa;
+      bot["vm"] = ""; bot["color"] = "#8fd0ff";
+      bot["persona"] = "Neugierig, freundlich und eigenstaendig.";
+      bot["memory"] = Val::array();
+      return bot;
+    };
+    if (!have_qwen0) {
+      auto it = std::find_if(PARKED.begin(), PARKED.end(), [](const Val &a) {
+        return mag::str(a, "id") == "qwen-numa0";
+      });
+      if (it != PARKED.end()) {
+        Val bot = *it; PARKED.erase(it);
+        bot["name"] = "Qwen"; bot["model"] = qwen_model;
+        bot["slot"] = 1; bot["numa"] = 0;
+        active.push_back(std::move(bot));
+      } else active.push_back(make_room_bot("qwen-numa0", "Qwen", qwen_model, 1, 0));
+      dirty = true;
+    }
+    if (!have_q2) {
+      auto it = std::find_if(PARKED.begin(), PARKED.end(), [](const Val &a) {
+        return mag::str(a, "id") == "qwen-numa1";
+      });
+      if (it != PARKED.end()) {
+        Val bot = *it; PARKED.erase(it);
+        bot["name"] = "GLM-Q2"; bot["model"] = q2_model;
+        bot["slot"] = 2; bot["numa"] = 1;
+        active.push_back(std::move(bot));
+      } else active.push_back(make_room_bot("qwen-numa1", "GLM-Q2", q2_model, 2, 1));
+      dirty = true;
+    }
+    std::stable_sort(active.begin(), active.end(), [](const Val &a, const Val &b) {
+      return model_slot_of(a) < model_slot_of(b);
+    });
+    AGENTS = std::move(active);
   }
   if (DUAL_NUMA) {
     // Recover one existing coding bot on NUMA0 (prefer its live VM), and one
@@ -2198,7 +2282,12 @@ static bool bot_proaktiv_locked(int idx) {
 }
 static bool github_enabled(int idx) { return bot_setting(idx, "github_enabled", GITHUB_DEFAULT.load()); }
 static bool pho_enabled(int idx) { return bot_setting(idx, "pho_compress", PHO_DEFAULT.load()); }
-static bool bot_thinking(int idx) { return bot_setting(idx, "thinking", THINKING_DEFAULT.load()); }
+static bool bot_thinking(int idx) {
+  if (CONFIGURED_MODEL && room_is_glm() &&
+      bot_model_id(idx) == "qwen3.8-flash-next-uncensored")
+    return false; // Qwen in the GLM room is chat-only; never enable reasoning.
+  return bot_setting(idx, "thinking", THINKING_DEFAULT.load());
+}
 static std::string identity_block(int bot_idx) {
   const std::string name = bot_field(bot_idx, "name", "Bot");
   const std::string persona = bot_field(bot_idx, "persona");
@@ -2232,7 +2321,9 @@ static std::string glm_chat_system(int idx) {
 static std::string build_system(int bot_idx, bool autotalk,
                                 const std::string &other, bool web,
                                 bool glm_chat_only = false) {
-  if (glm_chat_only && bot_model_id(bot_idx).rfind("glm-5.3-flash", 0) == 0)
+  if (glm_chat_only &&
+      (bot_model_id(bot_idx).rfind("glm-5.3-flash", 0) == 0 ||
+       bot_model_id(bot_idx) == "qwen3.8-flash-next-uncensored"))
     return glm_chat_system(bot_idx);
   std::string vm = bot_field(bot_idx, "vm", "keine");
   std::string bot_id = bot_field(bot_idx, "id");
@@ -4840,8 +4931,7 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
     msgs.push(const_cast<Val &>(m));
   body["messages"] = msgs;
   Val tt;
-  if (!(no_tools && model.rfind("glm-5.3-flash", 0) == 0) &&
-      mj::parse(tools, tt))
+  if (!no_tools && mj::parse(tools, tt))
     body["tools"] = tt;
   // Deterministic mode always re-evaluates and greedily decodes the full
   // request. llama.cpp's KV prompt cache can change the numerical logits when
@@ -4849,7 +4939,10 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   // that cache in deterministic mode. Never replay an earlier answer either.
   // Identical prompts are still required; evolving room history is NOT identical.
   // GLM-5.3-Flash follows its model-card sampling even when UI determinism is on.
-  const bool deterministic = model.rfind("glm-5.3-flash", 0) != 0 && model_settings_for(model).deterministic;
+  const bool qwen_chat = no_tools && room_is_glm() &&
+      model == "qwen3.8-flash-next-uncensored";
+  const bool deterministic = !qwen_chat &&
+      model.rfind("glm-5.3-flash", 0) != 0 && model_settings_for(model).deterministic;
   if (deterministic) {
     body["temperature"] = 0.0;
     body["top_k"] = 1;
@@ -4857,10 +4950,21 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   } else {
     const bool glm = model.rfind("glm-5.3-flash", 0) == 0;
     const bool q1_chat = no_tools && model == "glm-5.3-flash-iq1-m";
-    // Q1's successful direct :8191 test used temperature 0.55.
-    // Q2's existing sampling is intentionally unchanged.
-    body["temperature"] = q1_chat ? 0.55 : glm ? 1.0 : temperature;
-    if (glm) body["top_p"] = 0.95;
+    // Qwen's official non-thinking instruct sampling (mapped to llama.cpp
+    // request fields); the server defaults and GLM-Q2 sampling stay unchanged.
+    if (qwen_chat) {
+      body["temperature"] = 0.7;
+      body["top_p"] = 0.80;
+      body["top_k"] = 20;
+      body["min_p"] = 0.0;
+      body["presence_penalty"] = 1.5;
+      body["repeat_penalty"] = 1.0;
+    } else {
+      // Q1's successful direct :8191 test used temperature 0.55.
+      // Q2's existing sampling is intentionally unchanged.
+      body["temperature"] = q1_chat ? 0.55 : glm ? 1.0 : temperature;
+      if (glm) body["top_p"] = 0.95;
+    }
     if (q1_chat) {
       // llama.cpp server README: request-side DRY (not daemon flags).
       body["dry_multiplier"] = 0.8;
@@ -4877,7 +4981,9 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   // Bound generated tokens on Qwen only, keeping Q4's established budget.
   // Both models retain all native/MCP tools and immutable audit routing.
   int max_output = model == "qwen3.8-flash-next-uncensored"
-      ? std::min(MAX_TOKENS, std::clamp(envi("MAG_ROOM_QWEN_MAX_TOKENS", 4096), 512, 8192))
+      ? (qwen_chat
+          ? std::min(MAX_TOKENS, std::clamp(envi("MAG_ROOM_QWEN_CHAT_MAX_TOKENS", 256), 32, 512))
+          : std::min(MAX_TOKENS, std::clamp(envi("MAG_ROOM_QWEN_MAX_TOKENS", 4096), 512, 8192)))
       : model.rfind("glm-5.3-flash", 0) == 0
       ? std::min(MAX_TOKENS, std::clamp(envi("MAG_ROOM_GLM_MAX_TOKENS", 1024), 128, 8192))
       : MAX_TOKENS;
@@ -4894,12 +5000,18 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   if (no_tools && !thinking && model == "glm-5.3-flash-iq1-m")
     max_output = std::min(max_output, 96); // bounded IQ1_M decode
   body["max_tokens"] = max_output;
-  if (no_tools && model.rfind("glm-5.3-flash", 0) == 0 && !thinking) {
-    // llama.cpp applies stop strings to raw generation, including reasoning.
-    // Preserve </think> for thinking turns; no server flags/model reload.
+  if (no_tools && !thinking && model.rfind("glm-5.3-flash", 0) == 0) {
+    // Preserve the live GLM-Q2 request contract unchanged.
     Val stops = Val::array();
     for (const char *stop : {"<|user|>", "<|observation|>", "<tool_call"})
       stops.push(stop);
+    body["stop"] = stops;
+  } else if (qwen_chat) {
+    // Let hidden reasoning delimiters reach the client-side hard-cut filter.
+    // A server-side stop would hide the delimiter and make its preceding
+    // reasoning look like a clean final answer. Tool syntax remains stopped.
+    Val stops = Val::array();
+    stops.push("<tool_call");
     body["stop"] = stops;
   }
   // GLM chat omits tools and tool_choice entirely for a stable template prefix.
@@ -4927,6 +5039,9 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   Val kwargs = Val::object();
   // Thinking follows the model default or the per-message switch.
   kwargs["enable_thinking"] = thinking && !TL_SELFTALK && !short_chat;
+  if (qwen_chat) {
+    body["reasoning_effort"] = "none"; // llama.cpp: none disables reasoning.
+  }
   // The Qwen4Exp GGUF Jinja template uses enable_thinking, not the
   // DeepSeek-specific reasoning_effort preamble (preserve prompt cache).
   if (model.rfind("glm-5.3-flash", 0) == 0) {
@@ -4981,10 +5096,11 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   SseAcc acc;
   // Thinking needs ThinkingContent to consume its own <think>…</think>
   // boundaries; only nonthinking chat treats these as hard stop markers.
-  const bool glm_chat_stream = no_tools && model.rfind("glm-5.3-flash", 0) == 0 && !thinking;
+  const bool glm_chat_stream = no_tools && !thinking &&
+      (model.rfind("glm-5.3-flash", 0) == 0 || qwen_chat);
   std::string glm_stream_pending;
   bool glm_hard_cut = false;
-  bool q1_forbidden_cut = false;
+  bool chat_forbidden_cut = false;
   GlmRepetitionGuard glm_repetition;
   bool glm_answer_started = false;
   auto emit_glm_safe = [&](const std::string &piece, bool finish = false) {
@@ -4992,7 +5108,8 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
       if (c >= 0x80 || std::isalnum(c)) { glm_answer_started = true; break; }
     glm_hard_cut = glm_repetition.feed(piece, [&](const std::string &visible) {
       acc.content += visible;
-      if (!(no_tools && model == "glm-5.3-flash-iq1-m")) on_delta("delta", visible);
+      if (!(no_tools && (model == "glm-5.3-flash-iq1-m" || qwen_chat)))
+        on_delta("delta", visible);
     }, finish);
   };
   // The server stop array is the primary guard. Hold partial delimiters in
@@ -5018,10 +5135,10 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
         cut = std::min(cut, pos);
       }
       if (cut != std::string::npos) {
-        if (no_tools && model == "glm-5.3-flash-iq1-m") {
+        if (no_tools && (model == "glm-5.3-flash-iq1-m" || qwen_chat)) {
           for (const auto &marker : {"</think>", "<think>", "<|"})
             if (glm_stream_pending.find(marker) != std::string::npos &&
-                glm_stream_pending.find(marker) == cut) q1_forbidden_cut = true;
+                glm_stream_pending.find(marker) == cut) chat_forbidden_cut = true;
         }
         emit_glm_safe(glm_stream_pending.substr(0, cut), true);
         glm_stream_pending.clear();
@@ -5227,9 +5344,11 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
     if (!glm_chat_stream && !acc.content.empty()) on_delta("delta", acc.content);
   }
   t.text = no_tools && model == "glm-5.3-flash-iq1-m" ?
-      (q1_forbidden_cut ? "" : q1_clean(acc.content)) : acc.content;
+      (chat_forbidden_cut ? "" : q1_clean(acc.content)) :
+      no_tools && qwen_chat ? (chat_forbidden_cut ? "" : trim(acc.content)) : acc.content;
   if (no_tools && model == "glm-5.3-flash-iq1-m" && !t.text.empty() && !q1_bad(t.text))
     on_delta("delta", t.text);
+  if (qwen_chat && !t.text.empty()) on_delta("delta", t.text);
   t.reasoning = acc.reasoning;
   if (t.error.empty() && t.text.empty() && acc.calls.empty() &&
       t.finish == "length") {
@@ -6290,12 +6409,13 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
   // and never entered the prewarm/cache path.
   const bool stateless = !CONFIGURED_MODEL &&
                          model_settings_for(bot_model_id(bot_idx)).deterministic;
+  const bool qwen_room_bot = CONFIGURED_MODEL && room_is_glm() &&
+      bot_model_id(bot_idx) == "qwen3.8-flash-next-uncensored";
+  const bool thinking_turn = qwen_room_bot ? false : turn_thinking();
   const bool glm_chat_mode = CONFIGURED_MODEL && !CURRENT_JOB && !TL_TASK &&
       !autotalk && !TL_REFLECT && !TL_SELFTALK &&
-      bot_model_id(bot_idx).rfind("glm-5.3-flash", 0) == 0;
-  const bool short_chat = glm_chat_mode &&
-      !autotalk && !turn_thinking() &&
-      bot_model_id(bot_idx).rfind("glm-5.3-flash", 0) == 0 &&
+      (bot_model_id(bot_idx).rfind("glm-5.3-flash", 0) == 0 || qwen_room_bot);
+  const bool short_chat = glm_chat_mode && !autotalk && !thinking_turn &&
       short_glm_input(TURN_INPUT);
   const bool web = WEB_ENABLED.load();
   std::vector<Val> messages;
@@ -6334,15 +6454,16 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
     messages.push_back(u);
     tools.clear();
   } else {
-    if (!glm_chat_mode) mcp_auto_once();
-    system = build_system(bot_idx, autotalk, other, web, glm_chat_mode);
-    tools = glm_chat_mode ? std::string() : tools_json(bot_idx, web);
+    if (!glm_chat_mode && !qwen_room_bot) mcp_auto_once();
+    system = build_system(bot_idx, autotalk, other, web,
+                          glm_chat_mode || qwen_room_bot);
+    tools = (glm_chat_mode || qwen_room_bot) ? std::string() : tools_json(bot_idx, web);
     if (glm_chat_mode) {
       Val sys=Val::object();sys["role"]="system";
       sys["content"]=system + glm_chat_memory(bot_id);
       messages.push_back(sys);
       auto turns = glm_chat_turns(bot_id, TURN_INPUT);
-      if (!turns.empty()) {
+      if (!turns.empty() && !qwen_room_bot) {
         // Skills belong to the latest user message, not the system prompt.
         turns.back()["content"] =
             mag::str(turns.back(), "content") + glm_chat_skill(TURN_INPUT);
@@ -6442,7 +6563,7 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
   auto run_deadline = steady_clock::now() + seconds(RUN_BUDGET_S);
   int todo_nudges = 0;
   TL_TODO_TOUCHED = false;
-  const bool glm_chat = glm_chat_mode;
+  const bool glm_chat = glm_chat_mode || qwen_room_bot;
   int glm_tool_rounds = 0;
   const int glm_tool_max = std::clamp(envi("MAG_ROOM_GLM_CHAT_MAX_ROUNDS", 2), 0, 8);
   for (int round = 0; round < MAX_RUN_STEPS; round++) {
@@ -6529,7 +6650,7 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
     };
     // Re-read permissions between tool rounds. In particular, turning GitHub
     // off removes its schemas from the next request of an already running turn.
-    if (!stateless && !TL_SELFTALK && !glm_chat) tools = tools_json(bot_idx, web);
+    if (!stateless && !TL_SELFTALK && !glm_chat && !qwen_room_bot) tools = tools_json(bot_idx, web);
     // Preserve tool schemas and cache prefix even on short chats, but forbid
     // execution / tool follow-ups for explicit greetings.
     // Tools remain available on real tasks without a forced early final.
@@ -6540,9 +6661,9 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
       if (!stateless)
         compact_agent_context(bot_idx, messages, tools, attempt_budget, compacted_steps);
       t = backend_turn(messages, tools,
-                       autotalk ? 0.75 : 0.55, on_delta, turn_thinking(),
+                       autotalk ? 0.75 : 0.55, on_delta, thinking_turn,
                        slot_for_key(bot_id), bot_model_id(bot_idx), bot_idx,
-                       short_chat, glm_chat);
+                       short_chat, glm_chat || qwen_room_bot);
       if (t.skipped || assistant_prefill_error(t.error)) {
         // The guard already logged a skip. A live 500 of this type must not
         // be posted into the room and must not invalidate the wire below.
@@ -6574,7 +6695,7 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
       if (t.calls.empty()) final_text += t.text;
       break;
     }
-    if (glm_chat && turn_thinking() && !stop_flag().load() &&
+    if (glm_chat && thinking_turn && !stop_flag().load() &&
         ((t.finish == "length" && t.text.empty()) ||
          t.error.find("Antwortlimit beim Denken erreicht") != std::string::npos)) {
       // Exactly one nonthinking answer after a user-requested thinking round.
@@ -6617,7 +6738,7 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
     }
     // Neither short chat nor regular GLM chat may silently post an empty
     // answer when the model returns tool-only output or no visible text.
-     if ((short_chat || glm_chat) && t.text.empty()) {
+     if ((short_chat || glm_chat || qwen_room_bot) && t.text.empty()) {
       // A structured tool-only result with tool_choice=none is not a
       // successful answer. Show only a local, explicitly failed fallback.
       report.local_fallback = true;
@@ -6627,7 +6748,7 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
       completed = true;
       break;
     }
-    if (glm_chat) t.calls.clear();
+    if (glm_chat || qwen_room_bot) t.calls.clear();
     // Stateless means one new model inference per input. Never execute tools
     // or feed the model's output back as a new turn, even if it emits an
     // unexpected tool call or a continuation marker.
@@ -6676,9 +6797,9 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
     const bool tool_round = !t.calls.empty() && !TL_SELFTALK;
     if (tool_round && glm_chat) ++glm_tool_rounds;
     // Open todo items are an unfinished goal: the turn goes on (bounded).
-    const bool todo_open = !glm_chat && !short_chat && !tool_round && !stateless && !TL_SELFTALK && TL_TODO_TOUCHED &&
+    const bool todo_open = !glm_chat && !qwen_room_bot && !short_chat && !tool_round && !stateless && !TL_SELFTALK && TL_TODO_TOUCHED &&
         todo_nudges < 2 && !has_next_step(t.text) && todo_open_for(bot_id) > 0;
-    const bool pending = !glm_chat && !short_chat && !TL_SELFTALK && (todo_open || (has_next_step(t.text) &&
+    const bool pending = !glm_chat && !qwen_room_bot && !short_chat && !TL_SELFTALK && (todo_open || (has_next_step(t.text) &&
         t.text.find("[[MAG:ENDE]]") == std::string::npos));
     if (!t.text.empty()) {
       if (tool_round || pending) {
@@ -6696,7 +6817,7 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
     }
     // Normal GLM chat has exactly one host-directed answer per bot/user turn.
     // A thinking-budget exhaustion already had its single final retry above.
-    if (glm_chat) { completed = true; break; }
+    if (glm_chat || qwen_room_bot) { completed = true; break; }
     if (stateless || TL_SELFTALK) {
       completed = true; break;
     }
@@ -8532,7 +8653,9 @@ static uint64_t fnv64(const std::string &s) {
   return h;
 }
 static std::string prefix_file(int idx, const std::string &model) {
-  if (CONFIGURED_MODEL && model.rfind("glm-5.3-flash", 0) == 0)
+  if (CONFIGURED_MODEL &&
+      (model.rfind("glm-5.3-flash", 0) == 0 ||
+       (room_is_glm() && model == "qwen3.8-flash-next-uncensored")))
     return "mag-prefix-" + model + "-slot" + std::to_string(model_slot(idx)) + "-chat-v2-prefix.bin";
   return CONFIGURED_MODEL ? "mag-prefix-" + model + "-slot" + std::to_string(model_slot(idx)) + ".bin"
                          : "mag-prefix-" + model + ".bin";
@@ -8562,10 +8685,14 @@ static void persist_configured_slot(int idx) {
   const std::string port = model_port(model_slot(idx));
   const std::string own_key = port + "/" + file;
   const bool web = WEB_ENABLED.load();
-  const std::string system = build_system(idx, false, "", web);
-  const std::string tool_defs = tools_json(idx, web);
+  const bool chat_only = model.rfind("glm-5.3-flash", 0) == 0 ||
+                         (room_is_glm() && model == "qwen3.8-flash-next-uncensored");
+  std::string system = build_system(idx, false, "", web, chat_only);
+  if (chat_only) system += glm_chat_memory(bot_field(idx, "id"));
+  const std::string tool_defs = chat_only ? std::string() : tools_json(idx, web);
   const auto cut = system.rfind("[Identitaet]");
-  const std::string shared = system.substr(0, cut == std::string::npos ? system.size() : cut) + tool_defs;
+  const std::string shared = chat_only ? system :
+      system.substr(0, cut == std::string::npos ? system.size() : cut) + tool_defs;
   const std::string shared_key = model + ":" + std::to_string(fnv64(shared));
   if (!prefix_slot_rpc(idx, model, "save", file)) {
     std::cerr << "prompt-slot save file=" << file << " ok=0" << std::endl;
@@ -8858,17 +8985,19 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
     web = WEB_ENABLED.load();
     // Slot state is decided before wire_messages. That call appends a user
     // message and would otherwise rewrite a warm transcript on every restart.
-    system = build_system(idx, false, "", web,
-                          model.rfind("glm-5.3-flash", 0) == 0);
-    if (model.rfind("glm-5.3-flash", 0) == 0) {
+    const bool chat_only = model.rfind("glm-5.3-flash", 0) == 0 ||
+                           (room_is_glm() && model == "qwen3.8-flash-next-uncensored");
+    system = build_system(idx, false, "", web, chat_only);
+    if (chat_only) {
       system += glm_chat_memory(bot_id);
       tool_defs.clear();
-      std::cerr << "glm-chat prefix tokens=" << (system.size() / 3)
+      std::cerr << "chat-only prefix model=" << model
+                << " tokens=" << (system.size() / 3)
                 << " (conservative estimate)" << std::endl;
     } else {
       tool_defs = tools_json(idx, web);
     }
-    const std::string shared = model.rfind("glm-5.3-flash", 0) == 0
+    const std::string shared = chat_only
         ? system : system.substr(0, system.rfind("[Identitaet]")) + tool_defs;
     shared_key = model + ":" + std::to_string(fnv64(shared));
     shared_len = shared.size();
@@ -9061,8 +9190,9 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
         u["content"] = build_transcript() + build_context_tail(idx, false, "") + (skills.empty() ? "" : "\n" + skills);
         msgs.push(u);
         if (CONFIGURED_MODEL) {
-          if (model.rfind("glm-5.3-flash", 0) == 0) {
-            // GLM-only: pure system+tools anchor.
+          if (model.rfind("glm-5.3-flash", 0) == 0 ||
+              (room_is_glm() && model == "qwen3.8-flash-next-uncensored")) {
+            // Chat-only GLM/Qwen room: system-only prefix; no tool schemas.
             msgs = Val::array();
             msgs.push(sys);
           } else {
@@ -9073,7 +9203,9 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
         }
         body["messages"] = msgs;
         Val tt;
-        if (model.rfind("glm-5.3-flash", 0) != 0 && mj::parse(tool_defs, tt)) body["tools"] = tt;
+        if (model.rfind("glm-5.3-flash", 0) != 0 &&
+            !(room_is_glm() && model == "qwen3.8-flash-next-uncensored") &&
+            mj::parse(tool_defs, tt)) body["tools"] = tt;
         body["max_tokens"] = 1;
         body["stream"] = false;
         body["cache_prompt"] = true;
@@ -9099,6 +9231,8 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
         } else if (model != "qwen3.8-flash-next-uncensored" && !REASONING_EFFORT.empty()) {
           kwargs["reasoning_effort"] = REASONING_EFFORT;
         }
+        if (room_is_glm() && model == "qwen3.8-flash-next-uncensored")
+          body["reasoning_effort"] = "none";
         body["chat_template_kwargs"] = kwargs;
         payload = mj::dump(body);
         built = true;

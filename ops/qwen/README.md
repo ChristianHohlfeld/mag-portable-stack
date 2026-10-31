@@ -1,17 +1,16 @@
-# Qwen3.8 Flash Next (uncensored) — staged NUMA1 replacement
+# Qwen3.8 Flash Next Uncensored — standalone fallback and room NUMA0
 
-> **Stand Oktober 2026:** Dieses Dokument enthält historische Q4/IQ3-Cutover-Schritte,
-> die nicht mehr ausgeführt werden dürfen. Qwen ist nun der unabhängige
-> Operator-Rollback für die vier Ornith-Bots:
-> `sudo bash ops/ornith/rollback.sh qwen`.
-> Dafür müssen der gepinnte Qwen-GGUF, der passende Runtime-Build und
-> ausreichende freie NUMA1-Ressourcen vorhanden sein (Qwen-Preflight: 150 GiB).
-> Kein Q4, IQ3 oder DeepSeek-Dienst wird dabei reaktiviert.
+> **Stand 31.10.2026:** Die alten Q4/IQ3-Cutover-Schritte unten sind historisch
+> und nicht der Weg für den GLM-Raum. Qwen bleibt zusätzlich als separater
+> Operator-Rollback für die vier Ornith-Bots verfügbar:
+> `sudo bash ops/ornith/rollback.sh qwen`. Dieser alternative NUMA1-Rollback
+> ist unabhängig vom neuen Raum-Bot auf NUMA0.
 
-
-Status: **code only**. PR/green/deploy does **not** stop IQ3, install/start Qwen,
-restart Q4, or select a new model in MAG. Default remains IQ3 at :8091,
-DeepSeek Q4 stays warm on NUMA0 :8090.
+Status: **PR implementation**. Im `glm`-Raumlayout wird beim Deploy das
+bereits vorhandene Qwen-IQ4_XS-GGUF auf NUMA0/:8191 gestartet; dafür wird
+GLM-Q1 gestoppt und disabled. GLM-Q2 auf NUMA1/:8192 bleibt aktiv, enabled
+und PID-identisch. Kein Download, keine Löschung. Das separate
+`mag-llm-qwen.service` bleibt der NUMA1-Fallback für das Ornith-Rollback.
 
 Architecture: `qwen4exp` (Gated DeltaNet + Qwen Sparse Attention + MoE +
 51B PLE n-gram table), not DeepSeek4. The old
@@ -21,14 +20,57 @@ not reused; upstream llama.cpp has supported qwen4exp since PR #27742
 `ops/qwen/runtime.sha` (2026-10-20). It is a CPU-only *candidate*:
 do not promise throughput/tool support until real generation tests pass.
 
-Source GGUF: `mradermacher/Qwen3.8-Flash-Next-Uncensored-GGUF`,
+Source GGUF: [mradermacher/Qwen3.8-Flash-Next-Uncensored-GGUF](https://huggingface.co/mradermacher/Qwen3.8-Flash-Next-Uncensored-GGUF),
 `Qwen3.8-Flash-Next-Uncensored.IQ4_XS.gguf`, ~98.4 GB. No model weight downloaded by deploy.
 Keep optional mmproj separate; no image input/vision is promised in MAG.
 
-## Prepare on MAG as chris (no service changes)
+## Current GLM-room integration: NUMA0 (:8191)
 
-The user already started `hf download`; wait for completion. Keep that SSH
-session alive, or resume with the same `hf download` command. Then:
+The repository's `glm` room layout now runs **Qwen Uncensored** as slot 1
+(`qwen-numa0`, NUMA0, :8191) beside the already-running **GLM-Q2**
+(`qwen-numa1`, NUMA1, :8192). This is a separate room unit,
+`mag-llm-qwen-room.service`, which reuses the pinned `qwen4exp` runtime,
+the existing GGUF and `/usr/local/lib/mag-qwen/start.sh`. The standalone
+`mag-llm-qwen.service` remains the NUMA1 fallback for its other layout.
+
+The cutover is repository/deploy-owned and idempotent:
+- It verifies the already-present GGUF against the pinned upstream SHA; it
+  never downloads or deletes model files.
+- It stops and disables only `mag-llm-glm@q1.service`; the IQ1_M file and
+  parked `deepseek-chat` identity, VM and memory remain; room history is untouched.
+- It requires GLM-Q2 to be active, healthy and enabled before changing
+  anything, snapshots its PID, and verifies the same PID and :8192 health
+  after Qwen's cold start. It does not install, enable, stop, start or restart
+  GLM-Q2 and does not change any `ops/glm/*` files.
+- The room-only Qwen unit binds NUMA0 CPUs `0-13,28-41`, `NUMAMask=0`,
+  14 decode threads / 28 batch threads, and :8191. It requires 150 GiB
+  reclaimable node-local RAM after Q1 has been stopped.
+- Deployment waits up to 10,800 seconds for :8191 health; the deploy watchdog
+  allows four hours for the first 98 GB cold load. A failed cutover rolls back
+  the Qwen/Q1 state without touching Q2.
+
+### Room generation policy
+
+The Qwen room bot has no tools or tool schemas, uses one model response per
+message, and caps output at 256 tokens. Thinking is always disabled with
+`chat_template_kwargs.enable_thinking=false` and llama.cpp `reasoning_effort=none`. Live deltas are withheld until
+the final text passes the hidden-token filter; any `<think>`, `</think>`
+or `<|` delimiter drops the whole candidate answer.
+
+The deployed IQ4_XS file is the 98.4 GB quant listed on the [uncensored GGUF card](https://huggingface.co/mradermacher/Qwen3.8-Flash-Next-Uncensored-GGUF), fine-tuned from Qwen's base model. Sampling follows the official [Qwen3.8-Flash-Next model card](https://huggingface.co/Qwen/Qwen3.8-Flash-Next)
+for non-thinking instruct mode: `temperature=0.7`, `top_p=0.80`,
+`top_k=20`, `min_p=0`, `presence_penalty=1.5`,
+`repetition_penalty=1.0`. MAG maps the last field to llama.cpp's
+`repeat_penalty` request parameter. The GGUF's embedded Jinja template is
+used with `--jinja`; no custom template override is installed. See the
+[llama.cpp server API and chat-template docs](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md).
+
+## Legacy manual staging (not used by the GLM-room deploy)
+
+The GLM-room deploy does not download weights or run this manual staging flow;
+it verifies the already-present GGUF and its pinned upstream SHA. The commands
+below are only for rebuilding the separate standalone operator fallback from
+scratch. If the model is already present, do not rerun `hf download`.
 
 ```bash
 cd ~/mag-stack
@@ -45,12 +87,12 @@ bytes before the service unit is staged. Keep the pinned file out of Git;
 never store HF credentials in the repository. Build uses official
 `ggml-org/llama.cpp` commit `4a45de4f2c68f3d144f6c2431ad7c1da7e53c99e`, not a mutable branch at runtime.
 
-Staging installs only `mag-llm-qwen.service` (disabled/stopped), its
+Staging installs `mag-llm-qwen.service` and the room-only `mag-llm-qwen-room.service` (both disabled/stopped), its
 verified runtime launcher, and local upstream SHA. Q4/IQ3 PIDs and backend
 routing are unchanged. Check `systemctl is-enabled mag-llm-qwen.service`
 before enabling; this is **not** an automatic deploy.
 
-## Full MAG integration: one controlled cutover
+## Historical operator rollback flow (Ornith NUMA1; not used by GLM room)
 
 MAG already owns the coding agent, browser/VM, MCP tools, audit log and
 model switch UI. There is **no separate Qwen agent stack** and no hard-coded

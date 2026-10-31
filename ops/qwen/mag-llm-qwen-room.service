@@ -1,0 +1,49 @@
+# Room-only Qwen on NUMA0 (:8191); GLM-Q2 remains independent on NUMA1.
+# Uses the shared verified Qwen runtime/launcher; never conflicts with GLM-Q2.
+[Unit]
+Description=MAG Qwen3.8 Flash Next CPU model, NUMA0 room bot
+After=network-online.target
+Wants=network-online.target
+Conflicts=mag-llm-glm@q1.service mag-llm-ds-node@0.service mag-llm-iq3.service
+ConditionPathExists=/etc/mag-qwen/model.sha256
+StartLimitIntervalSec=1800
+StartLimitBurst=2
+
+[Service]
+Type=simple
+User=chris
+Group=chris
+WorkingDirectory=/home/chris
+EnvironmentFile=-/etc/mag-qwen/runtime.env
+Environment=QWEN_NODE=0
+Environment=QWEN_PORT=8191
+Environment=QWEN_THREADS=14
+Environment=QWEN_THREADS_BATCH=28
+Environment=QWEN_MIN_RAM_GIB=150
+ExecStart=/usr/local/lib/mag-qwen/start.sh
+Restart=on-failure
+RestartSec=60
+TimeoutStartSec=10800
+TimeoutStopSec=120
+CPUAffinity=0-13 28-41
+AllowedCPUs=0-13,28-41
+NUMAPolicy=bind
+NUMAMask=0
+MemoryAccounting=yes
+MemoryLow=116G
+MemoryHigh=160G
+MemoryMax=184G
+MemorySwapMax=0
+LimitMEMLOCK=infinity
+OOMScoreAdjust=-600
+Nice=10
+IOSchedulingClass=idle
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=no
+ReadWritePaths=/var/lib/mag-llm/slots/qwen
+PrivateTmp=yes
+RestrictAddressFamilies=AF_INET AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

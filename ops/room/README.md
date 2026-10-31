@@ -1,23 +1,28 @@
 # Room: DeepSeek V4 Flash, one bot per NUMA node
 
-## GLM-Raum: nur Q2 (31.10.2026)
+## GLM-Raum: Qwen NUMA0 + GLM-Q2 NUMA1 (31.10.2026)
 
-Im Layout `glm` ist **nur GLM-Q2** (`qwen-numa1`, IQ2_XS, :8192/NUMA1)
-aktiver Raum-Bot. Beim Raumstart wird Q1 aus dem aktiven Roster
-ausgegliedert, bleibt aber inklusive ID, Memory und VM in `agents.json`
-gespeichert. Die Raum-History bleibt erhalten; wiederholtes Deployment
-ist idempotent. Die Readiness erwartet ausschließlich Q2 als aktiven Bot.
+Im Layout `glm` sind **Qwen Uncensored** (`qwen-numa0`, slot 1, IQ4_XS,
+:8191/NUMA0) und **GLM-Q2** (`qwen-numa1`, slot 2, IQ2_XS, :8192/NUMA1)
+die zwei aktiven Raum-Bots. GLM-Q1 (`deepseek-chat`) bleibt inklusive ID,
+Memory und VM geparkt in `agents.json`; seine IQ1_M-Datei bleibt auf Platte.
+Die Raum-History bleibt erhalten, und wiederholtes Deployment ist idempotent.
 
-Der GLM-Q1-llama-server auf **:8191/NUMA0 bleibt warm** und wird weder
-gestoppt noch neugestartet. Auch GLM-Q2 wird beim Raum-Deployment nicht
-neugestartet: keine Änderungen an `ops/glm/*`, Modell-Units oder Flags.
+Das Layout stoppt/deaktiviert `mag-llm-glm@q1.service` und deaktiviert
+konkurrierende Legacy-Modell-Units, bevor Qwen NUMA0 lädt. Q2 ist ausdrücklich
+ausgenommen: Er muss bereits aktiv, enabled und gesund sein; sein
+PID wird vor und nach dem Qwen-Kaltstart geprüft. Kein Stop/Start/Restart/
+Enable/Disable von `mag-llm-glm@q2.service`, keine Änderungen an
+`ops/glm/*`, Q2-Units oder Server-Flags. Der Qwen-Start prüft 150 GiB
+reclaimable RAM auf NUMA0 und wartet bis zu drei Stunden auf :8191 health.
 
 
 `model.env` is the shared room/gateway contract, installed as
 `/etc/mag-stack/room-model.env`. `MAG_ROOM_MODEL_PORTS=8191:0,8192:1`
 means **port:NUMA**, not llama slot. Both servers have one llama slot (`0`), explicitly pinned by room and gateway for chat and prewarm.
-`MAG_ROOM_MAX_BOTS` must be `2`. Thinking follows `MAG_ROOM_THINKING` and the
-per-message switch; it is no longer forced off by a model name.
+`MAG_ROOM_MAX_BOTS` must be `2`. Thinking generally follows
+`MAG_ROOM_THINKING` and the per-message switch; the Qwen bot in layout
+`glm` is deliberately chat-only and always has thinking disabled.
 
 `mag-120.service` loads `room-model.env` itself. systemd applies every
 `EnvironmentFile=` after every `Environment=`, so the file overrides the
@@ -133,12 +138,27 @@ The choice persists across automatic updates. To select mixed again, use
 restores the paired NUMA1 transaction when rolling back this release. No manual
 model service commands are needed.
 
-## GLM-5.3-Flash on NUMA1 (layout `glm`, default since 2026-10-29)
+## Qwen Uncensored + GLM-Q2 (layout `glm`)
 
-`ops/room/layout` declares the layout the stack follows (`glm`): NUMA0 DeepSeek
-on 8191, NUMA1 GLM-5.3-Flash on 8192 (`glm.env`, preset `deepseek-glm-dual-numa`).
-Selection order in `ops/qwen/layout.sh`: explicit `MAG_ROOM_LAYOUT` (pinned on
-the host) > host pin > repo file > last applied layout. `MAG_ROOM_LAYOUT=repo`
-removes a pin. A failed repo-declared switch is not retried until its definition
-changes. The NUMA1 bot keeps its id, slot, memory and VM; the stock name "Qwen"
-becomes the backend label. See `ops/glm/README.md`.
+`ops/room/layout` declares `glm`: Qwen Uncensored IQ4_XS on NUMA0/:8191
+(`qwen-numa0`, slot 1) and the already-running GLM-Q2 IQ2_XS on NUMA1/:8192
+(`qwen-numa1`, slot 2). The room-only `mag-llm-qwen-room.service` reuses the
+pinned Qwen runtime and launcher, binds CPUs `0-13,28-41`, NUMAMask 0, 14
+decode / 28 batch threads, and uses the GGUF's embedded Jinja template via
+`--jinja`. It does not download or delete model files.
+
+Qwen room turns have no tools, a 256-token cap, and thinking disabled through
+`enable_thinking=false` and `reasoning_effort=none`. Sampling follows the [official Qwen3.8-Flash-Next
+model card](https://huggingface.co/Qwen/Qwen3.8-Flash-Next): temperature 0.7,
+top_p 0.80, top_k 20, min_p 0, presence_penalty 1.5, repetition_penalty 1.0.
+The latter maps to llama.cpp's `repeat_penalty`; template/request controls
+are documented in the [llama.cpp server API](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md).
+The IQ4_XS file identity and 98.4 GB size are listed on the
+[uncensored GGUF card](https://huggingface.co/mradermacher/Qwen3.8-Flash-Next-Uncensored-GGUF).
+
+Selection order in `ops/qwen/layout.sh`: explicit `MAG_ROOM_LAYOUT` (pinned
+on the host) > host pin > repo file > last applied layout.
+`MAG_ROOM_LAYOUT=repo` removes a pin. A failed repo-declared switch is not
+retried until its definition changes. Q1 remains parked with its old VM and
+memory; the Q1 service is stopped/disabled and its IQ1_M file is retained.
+Q2's live PID is a hard no-touch invariant through apply and rollback.

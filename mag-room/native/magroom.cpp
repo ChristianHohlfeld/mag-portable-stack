@@ -5005,10 +5005,11 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
       stops.push(stop);
     body["stop"] = stops;
   } else if (qwen_chat) {
-    // Qwen is non-thinking; stop and client-filter hidden reasoning delimiters.
+    // Let hidden reasoning delimiters reach the client-side hard-cut filter.
+    // A server-side stop would hide the delimiter and make its preceding
+    // reasoning look like a clean final answer. Tool syntax remains stopped.
     Val stops = Val::array();
-    for (const char *stop : {"</think>", "<think>", "<|", "<tool_call"})
-      stops.push(stop);
+    stops.push("<tool_call");
     body["stop"] = stops;
   }
   // GLM chat omits tools and tool_choice entirely for a stable template prefix.

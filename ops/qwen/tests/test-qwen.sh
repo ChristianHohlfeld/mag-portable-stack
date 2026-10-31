@@ -17,9 +17,9 @@ grep -Fq '4a45de4f2c68f3d144f6c2431ad7c1da7e53c99e' ops/qwen/runtime.sha
 grep -Fq "CPU_RANGE='0-13,28-41'" ops/qwen/start.sh
 grep -Fq 'NUMAMask=0' ops/qwen/mag-llm-qwen-room.service
 grep -Fq 'CPUAffinity=0-13 28-41' ops/qwen/mag-llm-qwen-room.service
-grep -Fq 'QWEN_THREADS_BATCH=28' ops/qwen/layout.sh
-grep -Fq 'QWEN_PORT=8191' ops/qwen/layout.sh
-grep -Fq 'QWEN_NODE=0' ops/qwen/layout.sh
+grep -Fq 'MISTRAL_THREADS=14' ops/qwen/layout.sh
+grep -Fq 'MISTRAL_MIN_RAM_GIB=225' ops/qwen/layout.sh
+grep -Fq 'selected=mag-llm-mistral-room.service' ops/qwen/layout.sh
 grep -Fq 'mag-llm-qwen-room.service' ops/qwen/layout.sh
 grep -Fq 'GLM-Q1 still running' ops/qwen/start.sh
 ! grep -Eq 'rm .*Qwen3.8-Flash-Next-Uncensored|rm .*IQ1_M' ops/qwen/layout.sh
@@ -29,7 +29,7 @@ grep -Fq 'verify-model.sh' ops/qwen/start.sh
 # Boot skips the 98 GB SHA read only via a root-owned stamp bound to inode/ctime.
 grep -Fq 'STAMP=/etc/mag-qwen/model.verified' ops/qwen/verify-model.sh
 grep -Fq '$(stat -c %u "$STAMP") == 0' ops/qwen/verify-model.sh
-grep -Fq "%d %i %s %.9Y %.9Z" ops/qwen/verify-model.sh
+grep -Fq "%d %i %s %y %z" ops/qwen/verify-model.sh
 grep -Fq 'ops/qwen/verify-model.sh" /usr/local/lib/mag-qwen/verify-model.sh' ops/deploy.sh
 grep -Fq 'MAG_SECONDARY_MODEL=qwen' ops/boot/ensure-boot.sh
 grep -Fq 'EnvironmentFile=-/etc/mag-stack/secondary-model.env' ops/mag-120.service
@@ -60,7 +60,18 @@ grep -Fq 'enable_thinking' ops/qwen/smoke.py
 grep -Fq '"reasoning_effort": "none"' ops/qwen/smoke.py
 grep -Fq '"top_k": 20' ops/qwen/smoke.py
 grep -Fq '"presence_penalty": 1.5' ops/qwen/smoke.py
-grep -Fq 'MAG_ROOM_QWEN_CHAT_MAX_TOKENS=256' ops/room/glm.env
+grep -Fq 'MAG_ROOM_MODEL_ID=mistral-large4' ops/room/glm.env
+grep -Fq 'MAG_ROOM_THINKING=on' ops/room/glm.env
+grep -Fq 'body["reasoning_effort"] = "low"' mag-room/native/magroom.cpp
+grep -Fq 'body["top_k"] = 0' mag-room/native/magroom.cpp
+grep -Fq 'body["min_p"] = 0.0' mag-room/native/magroom.cpp
+grep -Fq 'room_chat_only_model' mag-room/native/magroom.cpp
+grep -Fq 'LLM_ARCH_MISTRAL4' ops/mistral/build-runtime.sh
+grep -Fq 'fetch-hf-sha256.py' ops/mistral/install.sh
+grep -Fq 'MemoryMax=244G' ops/mistral/mag-llm-mistral-room.service
+grep -Fq -- '--ctx-size 16384' ops/mistral/start.sh
+grep -Fq -- '--mmap --jinja' ops/mistral/start.sh
+grep -Fq 'mistral_large4' ops/mistral/README.md
 grep -Fq 'body["temperature"] = 0.7' mag-room/native/magroom.cpp
 grep -Fq 'body["top_p"] = 0.80' mag-room/native/magroom.cpp
 grep -Fq 'body["top_k"] = 20' mag-room/native/magroom.cpp

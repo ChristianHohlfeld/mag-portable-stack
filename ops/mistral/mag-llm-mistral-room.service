@@ -13,9 +13,10 @@ Type=simple
 User=chris
 Group=chris
 WorkingDirectory=/home/chris
+EnvironmentFile=-/etc/mag-mistral/runtime.env
 Environment=MISTRAL_THREADS=14
 Environment=MISTRAL_MIN_RAM_GIB=225
-ExecStartPre=/usr/local/lib/mag-mistral/verify-model.sh
+ExecStartPre=+/usr/local/lib/mag-mistral/verify-model.sh
 ExecStart=/usr/local/lib/mag-mistral/start.sh
 Restart=on-failure
 RestartSec=60

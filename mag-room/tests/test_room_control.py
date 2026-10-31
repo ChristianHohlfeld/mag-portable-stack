@@ -162,6 +162,22 @@ class Room:
         # and the actual completion exercise one endpoint.
         if env.get('MAG_ROOM_MODEL_PORTS') == 'FAKE_BACKEND:0,8192:1':
             env['MAG_ROOM_MODEL_PORTS'] = f'{self.model.server_port}:0,8192:1'
+            # Configured room presets validate both model IDs and exact port
+            # mappings. Give this isolated fake server its own matching preset
+            # instead of weakening the production preset validation.
+            model0 = env.get('MAG_ROOM_MODEL_ID_0', env.get('MAG_ROOM_MODEL_ID', ''))
+            model1 = env.get('MAG_ROOM_MODEL_ID_1', env.get('MAG_ROOM_MODEL_ID', ''))
+            preset = [{
+                'id': 'test-room-model',
+                'label': 'Test room model',
+                'ports': [
+                    {'port': self.model.server_port, 'numa': 0, 'model': model0},
+                    {'port': 8192, 'numa': 1, 'model': model1},
+                ],
+            }]
+            preset_path = self.dir / 'room-presets.json'
+            preset_path.write_text(json.dumps(preset))
+            env['MAG_ROOM_PRESETS'] = str(preset_path)
         self.log = open(self.dir / 'server.log', 'a')
         self.proc = subprocess.Popen([str(BIN)], env=env, stdout=self.log, stderr=self.log)
         for _ in range(200):

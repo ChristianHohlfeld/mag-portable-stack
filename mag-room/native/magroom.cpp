@@ -5104,6 +5104,9 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   kwargs["enable_thinking"] = thinking && !TL_SELFTALK && !short_chat;
   if (qwen_chat) {
     body["reasoning_effort"] = "none"; // llama.cpp: none disables reasoning.
+  } else if (mistral_chat) {
+    body["reasoning_effort"] = "low";
+    kwargs["reasoning_effort"] = "low";
   }
   // The Qwen4Exp GGUF Jinja template uses enable_thinking, not the
   // DeepSeek-specific reasoning_effort preamble (preserve prompt cache).
@@ -5411,7 +5414,7 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
       no_tools && qwen_chat ? (chat_forbidden_cut ? "" : trim(acc.content)) : acc.content;
   if (no_tools && model == "glm-5.3-flash-iq1-m" && !t.text.empty() && !q1_bad(t.text))
     on_delta("delta", t.text);
-  if (qwen_chat && !t.text.empty()) on_delta("delta", t.text);
+  if ((qwen_chat || mistral_chat) && !t.text.empty()) on_delta("delta", t.text);
   t.reasoning = acc.reasoning;
   if (t.error.empty() && t.text.empty() && acc.calls.empty() &&
       t.finish == "length") {
@@ -6628,7 +6631,7 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
   auto run_deadline = steady_clock::now() + seconds(RUN_BUDGET_S);
   int todo_nudges = 0;
   TL_TODO_TOUCHED = false;
-  const bool glm_chat = glm_chat_mode || qwen_room_bot;
+  const bool glm_chat = glm_chat_mode || chat_only_room_bot;
   int glm_tool_rounds = 0;
   const int glm_tool_max = std::clamp(envi("MAG_ROOM_GLM_CHAT_MAX_ROUNDS", 2), 0, 8);
   for (int round = 0; round < MAX_RUN_STEPS; round++) {
@@ -6715,7 +6718,7 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
     };
     // Re-read permissions between tool rounds. In particular, turning GitHub
     // off removes its schemas from the next request of an already running turn.
-    if (!stateless && !TL_SELFTALK && !glm_chat && !qwen_room_bot) tools = tools_json(bot_idx, web);
+    if (!stateless && !TL_SELFTALK && !glm_chat && !chat_only_room_bot) tools = tools_json(bot_idx, web);
     // Preserve tool schemas and cache prefix even on short chats, but forbid
     // execution / tool follow-ups for explicit greetings.
     // Tools remain available on real tasks without a forced early final.
@@ -6728,7 +6731,7 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
       t = backend_turn(messages, tools,
                        autotalk ? 0.75 : 0.55, on_delta, thinking_turn,
                        slot_for_key(bot_id), bot_model_id(bot_idx), bot_idx,
-                       short_chat, glm_chat || qwen_room_bot);
+                       short_chat, glm_chat || chat_only_room_bot);
       if (t.skipped || assistant_prefill_error(t.error)) {
         // The guard already logged a skip. A live 500 of this type must not
         // be posted into the room and must not invalidate the wire below.
@@ -6803,7 +6806,7 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
     }
     // Neither short chat nor regular GLM chat may silently post an empty
     // answer when the model returns tool-only output or no visible text.
-     if ((short_chat || glm_chat || qwen_room_bot) && t.text.empty()) {
+     if ((short_chat || glm_chat || chat_only_room_bot) && t.text.empty()) {
       // A structured tool-only result with tool_choice=none is not a
       // successful answer. Show only a local, explicitly failed fallback.
       report.local_fallback = true;
@@ -6813,7 +6816,7 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
       completed = true;
       break;
     }
-    if (glm_chat || qwen_room_bot) t.calls.clear();
+    if (glm_chat || chat_only_room_bot) t.calls.clear();
     // Stateless means one new model inference per input. Never execute tools
     // or feed the model's output back as a new turn, even if it emits an
     // unexpected tool call or a continuation marker.
@@ -6862,7 +6865,7 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
     const bool tool_round = !t.calls.empty() && !TL_SELFTALK;
     if (tool_round && glm_chat) ++glm_tool_rounds;
     // Open todo items are an unfinished goal: the turn goes on (bounded).
-    const bool todo_open = !glm_chat && !qwen_room_bot && !short_chat && !tool_round && !stateless && !TL_SELFTALK && TL_TODO_TOUCHED &&
+    const bool todo_open = !glm_chat && !chat_only_room_bot && !short_chat && !tool_round && !stateless && !TL_SELFTALK && TL_TODO_TOUCHED &&
         todo_nudges < 2 && !has_next_step(t.text) && todo_open_for(bot_id) > 0;
     const bool pending = !glm_chat && !qwen_room_bot && !short_chat && !TL_SELFTALK && (todo_open || (has_next_step(t.text) &&
         t.text.find("[[MAG:ENDE]]") == std::string::npos));

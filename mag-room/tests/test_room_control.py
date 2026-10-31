@@ -792,5 +792,103 @@ class QwenRoomTurns(unittest.TestCase):
                 room.close()
 
 
+class MistralRoomTurns(unittest.TestCase):
+    MISTRAL = 'mistral-large4'
+    GLM = 'glm-5.3-flash'
+
+    def setUp(self):
+        reset_model()
+        Model.reject_missing_user = True
+        agents = [
+            {'id': 'qwen-numa0', 'name': 'Qwen', 'vm': '', 'memory': [], 'slot': 1, 'numa': 0},
+            {'id': 'qwen-numa1', 'name': 'GLM-Q2', 'vm': '', 'memory': [], 'slot': 2, 'numa': 1},
+        ]
+        self.room = Room(agents, {
+            'MAG_ROOM_MODEL_ID': self.MISTRAL,
+            'MAG_ROOM_MODEL_LABEL': 'Mistral + GLM-Q2',
+            'MAG_ROOM_MODEL_PORTS': 'FAKE_BACKEND:0,8192:1',
+            'MAG_ROOM_MODEL_ID_0': self.MISTRAL,
+            'MAG_ROOM_MODEL_LABEL_0': 'Mistral',
+            'MAG_ROOM_MODEL_ID_1': self.GLM,
+            'MAG_ROOM_MODEL_LABEL_1': 'GLM-Q2',
+            'MAG_ROOM_PRESETS': str(ROOT / 'ops/room/presets.json'),
+            'MAG_ROOM_PREWARM': '1',
+            'MAG_ROOM_PREFIX_DISK': '0',
+            'MAG_ROOM_SINGLE_BOT_VM': 'off',
+        })
+
+    def tearDown(self):
+        self.room.close()
+
+    def test_mistral_template_valid_turns_use_card_sampling_and_low_reasoning(self):
+        end = time.monotonic() + 8
+        while time.monotonic() < end:
+            if any(c[1].get('model') == self.MISTRAL and c[2] == 'prewarm' for c in Model.calls):
+                break
+            time.sleep(.03)
+        else:
+            self.fail('Mistral prewarm did not reach the fake template server')
+        self.room.until(lambda state: not state['busy'], timeout=8, what='idle after Mistral prewarm')
+        Model.by_model[self.MISTRAL] = [['Hallo von Mistral.']]
+        self.room.api('/api/message', {'text': 'Hi', 'bots': ['qwen-numa0']})
+        state = self.room.until(lambda state: not state['busy'] and
+            any(m.get('role') == 'assistant' and m.get('bot') == 'qwen-numa0' and
+                m.get('content') == 'Hallo von Mistral.' for m in state['room']),
+            timeout=8, what='Mistral answer to Hi')
+        self.assertEqual(sum(m.get('role') == 'assistant' and m.get('bot') == 'qwen-numa0'
+                             and m.get('content') == 'Hallo von Mistral.' for m in state['room']), 1)
+        requests = [c[1] for c in Model.calls if c[1].get('model') == self.MISTRAL]
+        self.assertGreaterEqual(len(requests), 2, 'prewarm and real turn must both reach Mistral')
+        for request in requests:
+            self.assertEqual(request['messages'][-1].get('role'), 'user', request['messages'])
+            self.assertEqual(request.get('temperature'), 1.0)
+            self.assertEqual(request.get('top_p'), 0.95)
+            self.assertEqual(request.get('reasoning_effort'), 'low')
+            self.assertEqual(request.get('chat_template_kwargs', {}).get('reasoning_effort'), 'low')
+        self.assertEqual(Model.rejected, [], 'Mistral GGUF template must never receive a missing user query')
+
+    def test_mistral_name_and_chat_only_slot_never_gets_a_vm(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = pathlib.Path(d)
+            fakebin = root / 'bin'
+            fakebin.mkdir()
+            calls = root / 'sudo.log'
+            sudo = fakebin / 'sudo'
+            sudo.write_text('#!/bin/sh\\nprintf "%s\\n" "$*" >> "$MAG_TEST_SUDO_LOG"\\nexit 0\\n')
+            sudo.chmod(0o755)
+            reset_model()
+            room = Room([{'id': 'qwen-numa0', 'name': 'Qwen', 'vm': '', 'memory': [],
+                          'slot': 1, 'numa': 0}], {
+                'MAG_ROOM_MODEL_ID': self.MISTRAL,
+                'MAG_ROOM_MODEL_LABEL': 'Mistral + GLM-Q2',
+                'MAG_ROOM_MODEL_PORTS': 'FAKE_BACKEND:0,8192:1',
+                'MAG_ROOM_MODEL_ID_0': self.MISTRAL,
+                'MAG_ROOM_MODEL_LABEL_0': 'Mistral',
+                'MAG_ROOM_MODEL_ID_1': self.GLM,
+                'MAG_ROOM_MODEL_LABEL_1': 'GLM-Q2',
+                'MAG_ROOM_PRESETS': str(ROOT / 'ops/room/presets.json'),
+                'MAG_ROOM_PREWARM': '0',
+                'MAG_ROOM_SINGLE_BOT_VM': 'on',
+                'MAG_TEST_SUDO_LOG': str(calls),
+                'PATH': str(fakebin) + ':' + os.environ.get('PATH', ''),
+            })
+            try:
+                time.sleep(.8)
+                attempted = calls.read_text() if calls.exists() else ''
+                saved = json.loads((room.state / 'agents.json').read_text())
+                mistral = next((a for a in saved if a.get('slot') == 1), None)
+                self.assertIsNotNone(mistral, saved)
+                self.assertEqual((mistral['id'], mistral['name'], mistral['model']),
+                                 ('qwen-numa0', 'Mistral', self.MISTRAL))
+                self.assertFalse(mistral.get('pending_vm'),
+                                 'chat-only Mistral must never reserve a KVM VM')
+                self.assertFalse(mistral.get('vm'),
+                                 'chat-only Mistral must remain without a KVM VM')
+                self.assertNotIn('spawn agent2', attempted,
+                                 'Mistral slot 1 must never be auto-provisioned')
+            finally:
+                room.close()
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)

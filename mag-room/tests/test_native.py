@@ -5260,7 +5260,7 @@ class GlmLayoutStartup(unittest.TestCase):
    parts=shlex.split(line,comments=True)
    if parts and '=' in parts[0]:
     key,value=parts[0].split('=',1);glm[key]=value
-  glm['MAG_ROOM_PREWARM']='0';glm['MAG_ROOM_PRESETS']=str(ROOT/'ops/room/presets.json')
+  glm['MAG_ROOM_PREWARM']='1';glm['MAG_ROOM_PRESETS']=str(ROOT/'ops/room/presets.json')
   env=dict(os.environ,MAG_OWNER_CANONICAL_LOGIN='chris@github',
    MAG_TEST_ALLOW_LOCAL_OWNER='1',MAG_ROOM_STATE=str(state),
    MAG_ROOM_PORT=str(ui),MAG_ROOM_BRIDGE_PORT=str(bridge),
@@ -5278,6 +5278,14 @@ class GlmLayoutStartup(unittest.TestCase):
   try:
    wait_http(f'http://127.0.0.1:{ui}/api/state',timeout=8,proc=proc)
    token=_ui_token(ui)
+   # The configured GLM layout gates chat on a warm resident prefix. Wait for
+   # both fake slots to finish their one-token prewarm before routing tests.
+   warm_deadline=time.monotonic()+8
+   while time.monotonic()<warm_deadline:
+    warm_slots={p[1] for p in Model.paths if p[0]=='/v1/chat/completions' and p[3].get('max_tokens')==1}
+    if {'0','1'}.issubset(warm_slots):break
+    time.sleep(.03)
+   else:self.fail('Qwen/GLM room prefixes did not prewarm')
    def post(body):
     req=urllib.request.Request(f'http://127.0.0.1:{ui}/api/message',
       data=json.dumps(body).encode(),

@@ -238,10 +238,11 @@ static void resume_pending_spawns() {
           ? ROOM_MODEL.backend(slot).id : std::string();
       // These model IDs are chat-only when used in configured NUMA slots.
       // Do not depend on the composite room label: operators may rename it.
+      const std::string agent_model = bot_model_id((int)i);
       const bool qwen_chat_only = CONFIGURED_MODEL &&
-          slot_model == "qwen3.8-flash-next-uncensored";
+          agent_model == "qwen3.8-flash-next-uncensored";
       const bool mistral_chat_only = CONFIGURED_MODEL &&
-          slot_model == "mistral-large4";
+          agent_model == "mistral-large4";
       // Qwen and Mistral are chat-only in this configured GLM room.
       // Clear stale reservations and never resume/provision a KVM VM for
       // either NUMA0 chat slot. The generic non-configured chat-only bot

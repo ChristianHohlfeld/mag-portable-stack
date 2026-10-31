@@ -5125,7 +5125,7 @@ class GlmLayoutStartup(unittest.TestCase):
   Model.script_scope=None;Model.barrier_token='';Model.barrier_release=None
   Model.hold_get=0;Model.health=200;Model.saved_prompt.clear()
   Model.slot_snapshot=[];Model.restore_missing=True;Model.slot_block={}
-  Model.paths=[];Model.calls=[];Model.pairs=[];Model.cache_records=[]
+  Model.paths=[];Model.calls=[];Model.pairs=[];Model.cache_records=[];Model.last_prompt.clear()
   tmp=tempfile.TemporaryDirectory();root=pathlib.Path(tmp.name)
   state=root/'state';state.mkdir()
   state.joinpath('agents.json').write_text(json.dumps([
@@ -5167,6 +5167,12 @@ class GlmLayoutStartup(unittest.TestCase):
    self.assertEqual([(v['slot'],v['id'],v['name'],v['model'],v['numa']) for v in doc['agents']],[
     (1,'qwen-numa0','Qwen','qwen3.8-flash-next-uncensored',0),
     (2,'qwen-numa1','GLM-Q2','glm-5.3-flash',1)])
+   warm_deadline=time.monotonic()+8
+   while time.monotonic()<warm_deadline:
+    saved_slots=set(Model.saved_prompt)
+    if {'0','1'}.issubset(saved_slots):break
+    time.sleep(.03)
+   else:self.fail('Qwen/GLM room prefix checkpoints were not saved')
    saved=json.loads(state.joinpath('agents.json').read_text())
    self.assertEqual([v['id'] for v in saved],['qwen-numa0','qwen-numa1','deepseek-chat'])
    self.assertEqual(saved[0]['vm'],'','Qwen must not inherit Q1 VM')
@@ -5283,7 +5289,7 @@ class GlmLayoutStartup(unittest.TestCase):
    # both fake slots to finish their one-token prewarm before routing tests.
    warm_deadline=time.monotonic()+8
    while time.monotonic()<warm_deadline:
-    warm_slots={p[1] for p in Model.paths if p[0]=='/v1/chat/completions' and p[3].get('max_tokens')==1}
+    warm_slots=set(Model.saved_prompt)
     if {'0','1'}.issubset(warm_slots):break
     time.sleep(.03)
    else:self.fail('Qwen/GLM room prefixes did not prewarm')

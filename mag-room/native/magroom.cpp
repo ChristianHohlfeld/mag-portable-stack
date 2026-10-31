@@ -8996,8 +8996,9 @@ static bool bot_prefix_ready(const std::string &id) {
   const int slot = model_slot(idx);
   if (slot < 1 || slot > ROOM_MAX_BOTS) return true;
   if (SLOT_WARM[slot - 1].load() == 1) return true;
+  const std::string key = lane_key(idx);
   std::lock_guard<std::mutex> lk(PREWARM_MTX);
-  return PREWARM_BACKOFF.count(lane_key(idx)) != 0;
+  return PREWARM_BACKOFF.count(key) != 0;
 }
 static void mark_prefix_warm(int slot) {
   if (slot < 1 || slot > ROOM_MAX_BOTS) return;

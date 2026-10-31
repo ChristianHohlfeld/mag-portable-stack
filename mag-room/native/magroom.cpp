@@ -2540,6 +2540,46 @@ static std::string q1_clean(std::string s) {
 }
 static std::vector<Val> glm_chat_turns(const std::string &bot_id,
                                       const std::string &input) {
+  const int bot_idx = agent_index(bot_id);
+  if (room_is_glm() && bot_idx >= 0 &&
+      bot_model_id(bot_idx) == "qwen3.8-flash-next-uncensored") {
+    std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
+    size_t end = ROOM.size();
+    for (size_t i = end; i > 0; --i)
+      if (mag::str(ROOM[i - 1], "role") == "user" &&
+          mag::str(ROOM[i - 1], "content") == input) {
+        end = i - 1;
+        break;
+      }
+    std::vector<Val> reverse_pairs;
+    for (size_t i = end; i > 0 && reverse_pairs.size() < 4;) {
+      const Val &answer = ROOM[--i];
+      if (mag::str(answer, "role") != "assistant" ||
+          mag::str(answer, "bot") != bot_id || answer.find("work_error") ||
+          answer.find("q1_degenerate") ||
+          (answer.find("interrupted") && answer.find("interrupted")->asBool()))
+        continue;
+      const std::string answer_text = trim(mag::str(answer, "content"));
+      if (answer_text.empty() || answer_text.size() > 600 ||
+          answer_text.find("<|") != std::string::npos ||
+          answer_text.find("</think>") != std::string::npos)
+        continue;
+      size_t j = i;
+      while (j > 0 && mag::str(ROOM[j - 1], "role") != "user") --j;
+      if (!j) continue;
+      const std::string question = trim(mag::str(ROOM[j - 1], "content"));
+      if (question.empty() || question.size() > 280) continue;
+      Val a = Val::object(), u = Val::object();
+      a["role"] = "assistant"; a["content"] = answer_text;
+      u["role"] = "user"; u["content"] = question;
+      reverse_pairs.push_back(a); reverse_pairs.push_back(u);
+      i = j - 1;
+    }
+    std::reverse(reverse_pairs.begin(), reverse_pairs.end());
+    Val now = Val::object(); now["role"] = "user"; now["content"] = input;
+    reverse_pairs.push_back(now);
+    return reverse_pairs;
+  }
   if (bot_id == bot_field(0,"id") && bot_model_id(0) == "glm-5.3-flash-iq1-m") {
     std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
     size_t end=ROOM.size();
@@ -4926,9 +4966,19 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
     return t;
   }
   body["model"] = model;
+  const bool qwen_chat = no_tools && room_is_glm() &&
+      model == "qwen3.8-flash-next-uncensored";
+  std::vector<Val> request_messages = messages;
+  if (qwen_chat && (request_messages.empty() ||
+      mag::str(request_messages.back(), "role") != "user")) {
+    Val user = Val::object();
+    user["role"] = "user";
+    user["content"] = TURN_INPUT.empty()
+        ? "Antworte auf die letzte Nutzeranfrage." : TURN_INPUT;
+    request_messages.push_back(user);
+  }
   Val msgs = Val::array();
-  for (auto &m : messages)
-    msgs.push(const_cast<Val &>(m));
+  for (auto &m : request_messages) msgs.push(m);
   body["messages"] = msgs;
   Val tt;
   if (!no_tools && mj::parse(tools, tt))
@@ -4939,8 +4989,6 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   // that cache in deterministic mode. Never replay an earlier answer either.
   // Identical prompts are still required; evolving room history is NOT identical.
   // GLM-5.3-Flash follows its model-card sampling even when UI determinism is on.
-  const bool qwen_chat = no_tools && room_is_glm() &&
-      model == "qwen3.8-flash-next-uncensored";
   const bool deterministic = !qwen_chat &&
       model.rfind("glm-5.3-flash", 0) != 0 && model_settings_for(model).deterministic;
   if (deterministic) {
@@ -8601,6 +8649,9 @@ static std::mutex &server_mutex(const std::string &port) {
   return *m;
 }
 static std::map<std::string, double> PREWARM_ETA; // bot id -> eta seconds, PREWARM_MTX
+// Failed prewarms are retried with exponential backoff. A failed prefix is
+// not an admission lock: real turns may run uncached while retry is deferred.
+static std::map<std::string, std::pair<steady_clock::time_point, int>> PREWARM_BACKOFF; // lane -> retry time, failures
 static bool slot_is_busy(int slot) {
   std::vector<std::string> ids;
   {
@@ -8938,7 +8989,9 @@ static bool bot_prefix_ready(const std::string &id) {
   if (idx < 0) return true;
   const int slot = model_slot(idx);
   if (slot < 1 || slot > ROOM_MAX_BOTS) return true;
-  return SLOT_WARM[slot - 1].load() == 1;
+  if (SLOT_WARM[slot - 1].load() == 1) return true;
+  std::lock_guard<std::mutex> lk(PREWARM_MTX);
+  return PREWARM_BACKOFF.count(lane_key(idx)) != 0;
 }
 static void mark_prefix_warm(int slot) {
   if (slot < 1 || slot > ROOM_MAX_BOTS) return;
@@ -9195,6 +9248,14 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
             // Chat-only GLM/Qwen room: system-only prefix; no tool schemas.
             msgs = Val::array();
             msgs.push(sys);
+            if (room_is_glm() && model == "qwen3.8-flash-next-uncensored") {
+              // Qwen's embedded Jinja template requires a user query even
+              // for prefix prewarm; a system-only request is HTTP 500.
+              Val u = Val::object();
+              u["role"] = "user";
+              u["content"] = "Hi";
+              msgs.push(u);
+            }
           } else {
             auto wire = wire_messages(idx, system, tool_defs, build_context_tail(idx, false, ""));
             msgs = Val::array();
@@ -9276,6 +9337,17 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
                      });
   }
   const bool cancelled = pw_epoch != PREWARM_EPOCH.load();
+  if (built && !cancelled && (!ok || code != 200)) {
+    std::lock_guard<std::mutex> lk(PREWARM_MTX);
+    auto &retry = PREWARM_BACKOFF[lane];
+    retry.second = std::min(retry.second + 1, 7);
+    const int shift = std::min(retry.second - 1, 6);
+    const int delay_s = std::min(300, 5 * (1 << shift));
+    retry.first = steady_clock::now() + seconds(delay_s);
+  } else if (ok && code == 200 && !cancelled) {
+    std::lock_guard<std::mutex> lk(PREWARM_MTX);
+    PREWARM_BACKOFF.erase(lane);
+  }
   const long ms = (long)duration_cast<milliseconds>(steady_clock::now() - from).count();
   const bool saved = PREFIX_DISK && ok && code == 200 && !cancelled && prefix_slot("save", own);
   if (saved) {
@@ -9350,6 +9422,13 @@ static void schedule_prewarm() {
     if (shared.count(key) || lane_named(key).busy.load() ||
         (!CONFIGURED_MODEL && model_settings_for(model).deterministic))
       continue;
+    {
+      std::lock_guard<std::mutex> lk(PREWARM_MTX);
+      auto retry = PREWARM_BACKOFF.find(key);
+      if (retry != PREWARM_BACKOFF.end() &&
+          steady_clock::now() < retry->second.first)
+        continue;
+    }
     if (CONFIGURED_MODEL) {
       const int slot = model_slot(idx);
       // Never prewarm a backend known to be loading/unavailable. The

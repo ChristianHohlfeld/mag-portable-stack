@@ -5212,8 +5212,9 @@ class GlmLayoutStartup(unittest.TestCase):
     ('Hi',['qwen-numa0'],1,{'qwen3.8-flash-next-uncensored'},{'0'}),
     ('Hi beide',['qwen-numa0','qwen-numa1'],2,
      {'qwen3.8-flash-next-uncensored','glm-5.3-flash'},{'0','1'}),
-    ('GLM-Q1',['qwen-numa0','qwen-numa1'],2,
-     {'qwen3.8-flash-next-uncensored','glm-5.3-flash'},{'0','1'})]
+    # A parked Q1 mention falls back to the active Qwen bot; Q1 never answers.
+    ('GLM-Q1',['qwen-numa0','qwen-numa1'],1,
+     {'qwen3.8-flash-next-uncensored'},{'0'})]
    for phrase,bots,count,models,slots in cases:
     previous_users=user_count()
     before=len(Model.paths)
@@ -5337,7 +5338,7 @@ class GlmLayoutStartup(unittest.TestCase):
    for msg,bots,count,models in [
     ('Hi',['qwen-numa0'],1,{'qwen3.8-flash-next-uncensored'}),
     ('Hi beide',['qwen-numa0','qwen-numa1'],2,{'qwen3.8-flash-next-uncensored','glm-5.3-flash'}),
-    ('GLM-Q1',['qwen-numa0','qwen-numa1'],2,{'qwen3.8-flash-next-uncensored','glm-5.3-flash'})]:
+    ('GLM-Q1',['qwen-numa0','qwen-numa1'],1,{'qwen3.8-flash-next-uncensored'})]:
     previous_users=user_count()
     before=len(Model.paths)
     self.assertTrue(post({'text':msg,'bots':bots})['accepted'])

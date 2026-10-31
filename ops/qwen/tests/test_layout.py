@@ -82,7 +82,7 @@ if a[0] in ('start','stop','enable','disable'):
 json.dump(s,open(p,'w'))
 ''');ctl.chmod(0o755)
   curl=self.bin/'curl';curl.write_text('#!/bin/sh\nexit 0\n');curl.chmod(0o755)
-  self.state=self.base/'state.json';self.log=self.base/'calls'
+  self.state=self.base/'state.json';self.log=self.base/'calls';self.log.touch()
   self.original={'active':['mag-llm-ds-node@0.service','mag-llm-ds-node@1.service'],'enabled':['mag-llm-ds-node@0.service','mag-llm-ds-node@1.service']}
   self.state.write_text(json.dumps(self.original));self.backup=self.base/'backup'
   self.env=dict(os.environ,PATH=str(self.bin)+':'+os.environ['PATH'],HOST=str(self.host),REPO=str(self.repo),SYSTEMD_STATE=str(self.state),SYSTEMD_LOG=str(self.log),
@@ -157,6 +157,9 @@ json.dump(s,open(p,'w'))
  def test_repo_glm_adds_qwen_room_and_never_touches_q2(self):
   self.assertEqual(self.run_layout().returncode,0)
   self.seed_live_glm()
+  # Ignore the initial mixed-layout smoke on Qwen :8192; this assertion is
+  # specifically that the GLM cutover smoke targets Qwen :8191, never Q2.
+  (self.base/'smoke').write_text('')
   (self.repo/'ops/room/layout').write_text('glm\n')
   self.write('/etc/systemd/system/mag-llm-ds-node@0.service.d/50-old.conf',
              'Environment=PORT=8191\n')

@@ -5040,7 +5040,6 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   // Thinking follows the model default or the per-message switch.
   kwargs["enable_thinking"] = thinking && !TL_SELFTALK && !short_chat;
   if (qwen_chat) {
-    kwargs["preserve_thinking"] = false;
     body["reasoning_effort"] = "none"; // llama.cpp: none disables reasoning.
   }
   // The Qwen4Exp GGUF Jinja template uses enable_thinking, not the
@@ -9192,8 +9191,8 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
         msgs.push(u);
         if (CONFIGURED_MODEL) {
           if (model.rfind("glm-5.3-flash", 0) == 0 ||
-              model == "qwen3.8-flash-next-uncensored") {
-            // Chat-only GLM/Qwen: system-only prefix; no tool schemas.
+              (room_is_glm() && model == "qwen3.8-flash-next-uncensored")) {
+            // Chat-only GLM/Qwen room: system-only prefix; no tool schemas.
             msgs = Val::array();
             msgs.push(sys);
           } else {
@@ -9205,7 +9204,7 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
         body["messages"] = msgs;
         Val tt;
         if (model.rfind("glm-5.3-flash", 0) != 0 &&
-            model != "qwen3.8-flash-next-uncensored" &&
+            !(room_is_glm() && model == "qwen3.8-flash-next-uncensored") &&
             mj::parse(tool_defs, tt)) body["tools"] = tt;
         body["max_tokens"] = 1;
         body["stream"] = false;
@@ -9224,8 +9223,6 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
           thinking_on = false;
         }
         kwargs["enable_thinking"] = thinking_on;
-        if (model == "qwen3.8-flash-next-uncensored")
-          kwargs["preserve_thinking"] = false;
         if (model.rfind("glm-5.3-flash", 0) == 0) {
           kwargs["reasoning_effort"] = "low";
           kwargs["clear_thinking"] = true;
@@ -9234,6 +9231,8 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
         } else if (model != "qwen3.8-flash-next-uncensored" && !REASONING_EFFORT.empty()) {
           kwargs["reasoning_effort"] = REASONING_EFFORT;
         }
+        if (room_is_glm() && model == "qwen3.8-flash-next-uncensored")
+          body["reasoning_effort"] = "none";
         body["chat_template_kwargs"] = kwargs;
         payload = mj::dump(body);
         built = true;
@@ -9526,8 +9525,6 @@ static Val model_radius(const std::string &model, const std::string &input,
   tpl["messages"] = msgs;
   Val kwargs = Val::object();
   kwargs["enable_thinking"] = false;
-  if (model == "qwen3.8-flash-next-uncensored")
-    kwargs["preserve_thinking"] = false;
   tpl["chat_template_kwargs"] = kwargs;
   const Val rendered = radius_call(model, "/apply-template", tpl);
   const Val *prompt = rendered.find("prompt");

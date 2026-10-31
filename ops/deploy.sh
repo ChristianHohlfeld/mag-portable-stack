@@ -17,10 +17,22 @@ flock -n 8 || { echo 'Another MAG deploy/ingress install is running' >&2; exit 1
 source "$SOURCE/ops/deploy-watchdog.sh"
 deploy_lock_cloexec 8
 deployment_started=0
-# Drain budget plus 15 minutes. A hung probe cannot hold this flock past the
-# deadline: its process group is killed, then SIGTERM runs deploy_exit.
+# Normal drain budget plus 15 minutes. A first Qwen NUMA0 cold load may
+# read/lock 98 GB; reserve 4 hours for the layout's 3-hour health wait.
 _deploy_drain=${MAG_DEPLOY_DRAIN_S:-900}
-deploy_watchdog_arm "${MAG_DEPLOY_DEADLINE_S:-$((_deploy_drain + 900))}"
+_deploy_default_deadline=$((_deploy_drain + 900))
+_layout_for_deadline=${MAG_ROOM_LAYOUT:-}
+if [[ -z $_layout_for_deadline || $_layout_for_deadline == repo ]]; then
+  if [[ -z ${MAG_ROOM_LAYOUT:-} && -s /etc/mag-stack/room-layout.pinned ]]; then
+    _layout_for_deadline=$(tr -d '[:space:]' < /etc/mag-stack/room-layout.pinned)
+  else
+    _layout_for_deadline=$(tr -d '[:space:]' < "$SOURCE/ops/room/layout" 2>/dev/null || true)
+  fi
+fi
+if [[ $_layout_for_deadline == glm ]] && ! systemctl is-active --quiet mag-llm-qwen-room.service; then
+  _deploy_default_deadline=14400
+fi
+deploy_watchdog_arm "${MAG_DEPLOY_DEADLINE_S:-$_deploy_default_deadline}"
 trap deploy_exit EXIT
 trap 'exit 143' TERM
 trap 'exit 130' INT
@@ -212,12 +224,12 @@ glm_identity_guard=0
 glm_identity_before=""
 if (( ! FIRST_INSTALL )) && [[ $(cat /etc/mag-stack/room-layout 2>/dev/null || true) == glm ]]; then
   glm_identity_guard=1
-  glm_identity_before=$(systemctl show -p ActiveEnterTimestamp -p MainPID mag-llm-glm@q1.service mag-llm-glm@q2.service)
+  glm_identity_before=$(systemctl show -p ActiveEnterTimestamp -p MainPID mag-llm-glm@q2.service)
 fi
 verify_glm_identity() {
   (( ! glm_identity_guard )) ||
-    [[ $(systemctl show -p ActiveEnterTimestamp -p MainPID mag-llm-glm@q1.service mag-llm-glm@q2.service) == "$glm_identity_before" ]] || {
-    echo 'FAIL: GLM-Q1/Q2 PID or ActiveEnterTimestamp changed: no model restart allowed' >&2
+    [[ $(systemctl show -p ActiveEnterTimestamp -p MainPID mag-llm-glm@q2.service) == "$glm_identity_before" ]] || {
+    echo 'FAIL: GLM-Q2 PID or ActiveEnterTimestamp changed: no Q2 restart allowed' >&2
     return 1
   }
 }
@@ -400,35 +412,11 @@ if [[ -e /etc/mag-stack/room-model.env || -e /etc/systemd/system/mag-llm-ds-node
       MAG_DEFER_DAEMON_RELOAD=0 mag_flush_daemon_reload
       mag_systemctl start mag-120.service
     fi
-    if (( glm_identity_guard )) && [[ $(cat "$SOURCE/ops/room/layout" 2>/dev/null) == glm ]]; then
-      # GLM is already live. This room-only release MUST NOT even invoke the
-      # model layout transaction (it can restart stale binaries/changed units).
-      # Fail closed if the installed model runtime differs from source.
-      for pair in \
-          "$SOURCE/ops/glm/start.sh:/usr/local/lib/mag-glm/start.sh" \
-          "$SOURCE/ops/glm/mag-llm-glm@.service:/etc/systemd/system/mag-llm-glm@.service" \
-          "$SOURCE/ops/glm/q1.env:/etc/mag-glm/q1.env" \
-          "$SOURCE/ops/glm/q2.env:/etc/mag-glm/q2.env" \
-          "$SOURCE/ops/glm/chat-template.jinja:/usr/local/lib/mag-glm/chat-template.jinja" \
-          "$SOURCE/ops/glm/mag-llm-glm@q1.service.d/10-numa.conf:/etc/systemd/system/mag-llm-glm@q1.service.d/10-numa.conf" \
-          "$SOURCE/ops/glm/mag-llm-glm@q2.service.d/10-numa.conf:/etc/systemd/system/mag-llm-glm@q2.service.d/10-numa.conf" \
-          "$SOURCE/ops/glm/verify-model.sh:/usr/local/lib/mag-glm/verify-model.sh" \
-          "$SOURCE/ops/glm/model.sizes:/usr/local/lib/mag-glm/model.sizes" \
-          "$SOURCE/ops/glm/model.sha256:/usr/local/lib/mag-glm/model.sha256" \
-          "$SOURCE/ops/qwen/runtime.sha:/usr/local/lib/mag-glm/runtime.sha"; do
-        left=${pair%%:*}; right=${pair#*:}
-        if ! cmp -s "$left" "$right"; then
-          echo "FAIL: GLM model runtime changed on disk: $right; refusing room-only deploy" >&2
-          exit 1
-        fi
-      done
-      layout_bypassed=1
-      install -m 0644 "$SOURCE/ops/room/glm.env" /etc/mag-stack/room-model.env
-      echo 'Room-only GLM deploy: bypassing model layout apply; Q1/Q2 stay resident'
-    else
-      bash "$SOURCE/ops/qwen/layout.sh" apply "$BACKUP"
-      layout_applied=1
-    fi
+    # Always run the idempotent GLM-room transaction: it stages Qwen on
+    # NUMA0, parks/stops Q1 and explicitly guards the already-live Q2 PID.
+    # The helper never installs or restarts the GLM-Q2 unit or its flags.
+    bash "$SOURCE/ops/qwen/layout.sh" apply "$BACKUP"
+    layout_applied=1
     verify_glm_identity
   fi
   mag_flush_daemon_reload
@@ -587,11 +575,16 @@ try:
     if layout not in ("glm", "mixed", "deepseek", "qwen"):
         raise ValueError("unknown active NUMA1 room layout: "+repr(layout))
     if layout == "glm":
-        ids = {a.get("model") for a in active}
-        expected = {"glm-5.3-flash"}
-        if ids != expected or len(active) != 1 or active[0].get("id") != "qwen-numa1":
-            raise ValueError("expected only GLM-Q2 room bot, got "+repr(active))
-        print("Release ready: GLM-Q2 (8192); GLM-Q1 (8191) remains warm")
+        by_id = {a.get("id"): a for a in active}
+        if len(active) != 2:
+            raise ValueError("expected exactly two room bots, got "+repr(active))
+        qwen = by_id.get("qwen-numa0")
+        q2 = by_id.get("qwen-numa1")
+        if not qwen or (qwen.get("model"), qwen.get("slot"), qwen.get("numa"), qwen.get("name")) != ("qwen3.8-flash-next-uncensored", 1, 0, "Qwen"):
+            raise ValueError("expected Qwen NUMA0 slot 1, got "+repr(qwen))
+        if not q2 or (q2.get("model"), q2.get("slot"), q2.get("numa"), q2.get("name")) != ("glm-5.3-flash", 2, 1, "GLM-Q2"):
+            raise ValueError("expected GLM-Q2 NUMA1 slot 2, got "+repr(q2))
+        print("Release ready: Qwen NUMA0 (:8191) + GLM-Q2 NUMA1 (:8192); Q1 disabled")
     else:
         require_ds = sys.argv[2] == "1"
         secondary = "deepseek" if layout == "deepseek" else "qwen"

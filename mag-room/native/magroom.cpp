@@ -9473,8 +9473,11 @@ static void prewarm_if_prompt_changed() {
   turn.unlock();
   if (key == last) return;
   last = key;
-  if (CONFIGURED_MODEL)
+  if (CONFIGURED_MODEL) {
     for (auto &warm : SLOT_WARM) warm.store(0);
+    std::lock_guard<std::mutex> lk(PREWARM_MTX);
+    PREWARM_BACKOFF.clear(); // a changed prompt deserves an immediate fresh attempt
+  }
   schedule_prewarm();
 }
 // Radius query around the deterministic answer. Greedy decoding picks the

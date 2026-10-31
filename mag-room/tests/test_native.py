@@ -5356,16 +5356,17 @@ class GlmLayoutStartup(unittest.TestCase):
    log.close();model.shutdown();model.server_close();tmp.cleanup()
 
 
- def test_two_glm_turns_complete_after_60_seconds_without_cancel(self):
-  # Explicit @alle must reach both GLM lanes, with each fake under 8 s.
-  # No real inference; keep the CI per-test deadline at 30 seconds.
+ def test_two_room_bots_complete_after_60_seconds_without_cancel(self):
+  # @alle reaches both isolated lanes; no real model inference or Q2 restart.
   Model.delay=0;Model.slot_delay={'0':2,'1':2}
-  Model.script_scope='@alle Hi'
-  Model.script=[['Hallo ', {'_chunk':{'choices':[{'delta':{},'finish_reason':'stop'}]}}]
-                for _ in range(1)]
+  marker='DUAL-ROOM-'+str(time.monotonic_ns())
+  Model.script_scope=marker
+  Model.script=[['Hallo Qwen.'],['Hallo GLM-Q2.']]
   Model.reply=None;Model.health=200;Model.slot_snapshot=[];Model.paths=[]
-  Model.slot_block={};Model.barrier_release=None;Model.restore_missing=False
-  tmp=tempfile.TemporaryDirectory();root=pathlib.Path(tmp.name);state=root/'state';state.mkdir()
+  Model.calls=[];Model.pairs=[];Model.slot_block={};Model.barrier_release=None
+  Model.restore_missing=False
+  tmp=tempfile.TemporaryDirectory();root=pathlib.Path(tmp.name)
+  state=root/'state';state.mkdir()
   state.joinpath('agents.json').write_text(json.dumps([
    {'id':'deepseek-chat','name':'GLM-Q1','slot':1,'numa':0,'vm':'','memory':[]},
    {'id':'qwen-numa1','name':'GLM-Q2','slot':2,'numa':1,'vm':'','memory':[]}]))
@@ -5377,16 +5378,17 @@ class GlmLayoutStartup(unittest.TestCase):
    if parts and '=' in parts[0]:
     key,value=parts[0].split('=',1);glm[key]=value
   glm['MAG_ROOM_PREWARM']='0'
-  glm['MAG_ROOM_PRESETS']=str(ROOT/'ops/room/presets.json')  # CI, not live /opt path
+  glm['MAG_ROOM_PRESETS']=str(ROOT/'ops/room/presets.json')
   env=dict(os.environ,MAG_OWNER_CANONICAL_LOGIN='chris@github',MAG_TEST_ALLOW_LOCAL_OWNER='1',
    MAG_ROOM_STATE=str(state),MAG_ROOM_PORT=str(ui),MAG_ROOM_BRIDGE_PORT=str(bridge),
    MAG_ROOM_BRIDGE_IP='127.0.0.1',MAG_ROOM_BACKEND=f'http://127.0.0.1:{model.server_port}/v1/chat/completions',
    MAG_ROOM_UI=str(ROOT/'mag-room/web/index.html'),MAG_ROOM_STATIC=str(ROOT/'mag-room/static'),
    MAG_ROOM_MODEL_STATUS=str(root/'ms.json'),MAG_NETMODE=str(NETMODE),MAG_TEST_NO_MEMGIT='1',
    MAG_ROOM_AGENT_CTL='/bin/false',MAG_ROOM_GUEST_RUN='/bin/false',MAG_ROOM_MCP_AUTO='0',
-   MAG_ROOM_SINGLE_BOT='auto',MAG_ROOM_SINGLE_BOT_VM='on',MAG_ROOM_DUAL_NUMA='0',**glm)
+   MAG_ROOM_SINGLE_BOT='',MAG_ROOM_SINGLE_BOT_VM='on',MAG_ROOM_FIRST_HI_THINK='off',
+   MAG_ROOM_DUAL_NUMA='0',**glm)
   logpath=root/'room.log';log=open(logpath,'a')
-  proc=subprocess.Popen(['timeout','-k','1','29',str(ROOT/'build/magroom')],env=env,stdout=log,stderr=log)
+  proc=subprocess.Popen(['timeout','-k','1','34',str(ROOT/'build/magroom')],env=env,stdout=log,stderr=log)
   try:
    started=time.monotonic()
    while time.monotonic()-started<18:
@@ -5398,29 +5400,37 @@ class GlmLayoutStartup(unittest.TestCase):
    else:self.fail('room startup timeout; log: '+logpath.read_text(errors='replace')[-2000:])
    token=_ui_token(ui)
    req=urllib.request.Request(f'http://127.0.0.1:{ui}/api/message',
-      data=json.dumps({'text':'@alle Hi','bots':['deepseek-chat','qwen-numa1']}).encode(),
+      data=json.dumps({'text':'@alle Hi '+marker,'bots':['qwen-numa0','qwen-numa1']}).encode(),
       headers={'Content-Type':'application/json','X-MAG-Token':token})
    with urllib.request.urlopen(req,timeout=4) as resp:self.assertTrue(json.load(resp)['accepted'])
    end=time.monotonic()+16
    while time.monotonic()<end:
     with urllib.request.urlopen(f'http://127.0.0.1:{ui}/api/state',timeout=3) as resp:st=json.load(resp)
     answers=[m for m in st.get('room',[]) if m.get('role')=='assistant' and
-             'Hallo' in (m.get('content') or '')]
-    if len(answers)==1:break
+             (m.get('content') or '').startswith('Hallo')]
+    if len(answers)==2 and not st['busy']:break
     time.sleep(.2)
-   else:self.fail('single Q2 room stream did not complete')
-   calls=[p for p in Model.paths if p[0]=='/v1/chat/completions' and p[3].get('max_tokens')!=1]
-   self.assertEqual({p[1] for p in calls},{'1'})
+   else:self.fail('both Qwen and GLM-Q2 room streams did not complete')
+   calls=[p for p in Model.paths if p[0]=='/v1/chat/completions'
+          and p[3].get('max_tokens')!=1 and marker in json.dumps(p[3],ensure_ascii=False)]
+   self.assertEqual(len(calls),2)
+   self.assertEqual({p[1] for p in calls},{'0','1'})
+   self.assertEqual({p[3]['model'] for p in calls},
+                    {'qwen3.8-flash-next-uncensored','glm-5.3-flash'})
+   for p in calls:self.assertNotIn('tools',p[3])
+   qwen=next(p[3] for p in calls if p[3]['model']=='qwen3.8-flash-next-uncensored')
+   self.assertFalse(qwen['chat_template_kwargs']['enable_thinking'])
+   self.assertEqual(qwen['max_tokens'],256)
    self.assertFalse([p for p in Model.paths if 'action=cancel' in p[0]])
    log.flush()
    self.assertNotIn('reason=stop',logpath.read_text(errors='replace'))
   finally:
-   Model.script_scope=None;Model.script=[]
-   Model.slot_delay={}
+   Model.script_scope=None;Model.script=[];Model.slot_delay={}
    proc.terminate()
    try:proc.wait(timeout=5)
    except subprocess.TimeoutExpired:proc.kill();proc.wait(timeout=5)
    log.close();model.shutdown();model.server_close();tmp.cleanup()
+
 
 class QwenFirstHi(unittest.TestCase):
  """When DeepSeek is busy or cold, Qwen answers the first hi in under 5s."""

@@ -55,10 +55,10 @@ A load or health failure rolls back to Qwen without touching GLM-Q2.
 
 Download the six shard files into
 `/home/chris/models/Mistral-Large-4-1T-A52B-UD-IQ1_S/`. The stage script queries the Hugging Face Hub tree API with `expand=true`,
-extracts all six `lfs.oid` SHA256 values, and requires an exact match with
-the reviewed `SHA256SUMS` committed here. It writes the manifest into the
-model directory only if absent (and refuses a conflicting file), then
-verifies every full shard before installing the unit. The layout transaction
+extracts all six `lfs.oid` SHA256 values, and compares them with the reviewed
+`SHA256SUMS` committed here. It completes a correct partial manifest already
+in the model directory (including the operator-supplied shard-1 hash), refuses
+any conflicting hash, then verifies every full shard before installing the unit. The layout transaction
 calls stage before it stops Qwen; missing/incomplete shards therefore leave
 Qwen active. Deployment never downloads or deletes model weights.
 

@@ -16,7 +16,7 @@ def request(port, messages, thinking=False, choice=None, stream=False):
     # instruct sampler; GLM's existing smoke contract is left unchanged.
     qwen = request.model == "qwen3.8-flash-next-uncensored"
     kwargs = {"enable_thinking": False if qwen else thinking}
-    elif request.model.startswith("glm-5.3-flash"):
+    if request.model.startswith("glm-5.3-flash"):
         kwargs.update({"reasoning_effort": "low", "clear_thinking": True})
     body = {"model": request.model, "messages": messages, "stream": stream,
             "max_tokens": 24 if getattr(request, "startup_only", False) else (512 if thinking else 192),

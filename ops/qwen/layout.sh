@@ -224,7 +224,7 @@ trap on_exit EXIT
 # Stage/verify the existing 98 GB Qwen GGUF before retiring Q1.
 # Do not run the GLM installer: GLM-Q2's unit, env, launcher and flags stay untouched.
 if [[ $layout == mixed || $layout == glm ]]; then bash "$ROOT/ops/qwen/install.sh" refresh; fi
-# The room-only Qwen unit conflicts with Q1, not Q2; the Q2 PID is guarded below.
+# The room-only Qwen unit conflicts with Q1, not Q2; Q2 is health-checked and never restarted here.
 install -m 0644 "$ROOT/ops/room/mag-llm-ds-node@.service" /etc/systemd/system/mag-llm-ds-node@.service
 install -d -m 0755 /etc/mag-stack /etc/mag-qwen
 case $layout in

@@ -180,7 +180,7 @@ else:
   self.assertNotIn('mag-llm-ds-node@0.service',q)
   self.assertIn('Conflicts=mag-llm-glm@q1.service',room)
   self.assertNotIn('mag-llm-glm@q2.service',room)
- def test_repo_glm_adds_qwen_room_and_never_touches_q2(self):
+ def test_repo_glm_replaces_qwen_with_mistral_and_never_touches_q2(self):
   self.assertEqual(self.run_layout().returncode,0)
   self.seed_live_glm()
   # Ignore the initial mixed-layout smoke on Qwen :8192; this assertion is
@@ -195,8 +195,10 @@ else:
   self.assertEqual(self.log.stat().st_size,mark,'probe must never mutate systemd')
   p=self.run_layout(backup=self.base/'backup2');self.assertEqual(p.returncode,0,p.stderr)
   state=json.loads(self.state.read_text())
-  self.assertIn('mag-llm-qwen-room.service',state['active'])
-  self.assertIn('mag-llm-qwen-room.service',state['enabled'])
+  self.assertIn('mag-llm-mistral-room.service',state['active'])
+  self.assertIn('mag-llm-mistral-room.service',state['enabled'])
+  self.assertNotIn('mag-llm-qwen-room.service',state['active'])
+  self.assertNotIn('mag-llm-qwen-room.service',state['enabled'])
   self.assertIn('mag-llm-glm@q2.service',state['active'])
   self.assertIn('mag-llm-glm@q2.service',state['enabled'])
   self.assertNotIn('mag-llm-glm@q1.service',state['active'])
@@ -207,25 +209,27 @@ else:
   self.assertNotIn('mag-llm-ds-node@0.service',state['enabled'])
   self.assertNotIn('mag-llm-ds-node@1.service',state['active'])
   env=(self.host/'etc/mag-stack/room-model.env').read_text()
-  self.assertIn('MAG_ROOM_MODEL_ID_0=qwen3.8-flash-next-uncensored',env)
+  self.assertIn('MAG_ROOM_MODEL_ID_0=mistral-large4',env)
   self.assertIn('MAG_ROOM_MODEL_ID_1=glm-5.3-flash',env)
   self.assertIn('MAG_ROOM_MODEL_PORTS=8191:0,8192:1',env)
-  runtime=(self.host/'etc/mag-qwen/runtime.env').read_text()
-  self.assertIn('QWEN_NODE=0',runtime);self.assertIn('QWEN_PORT=8191',runtime)
-  self.assertIn('QWEN_THREADS_BATCH=28',runtime)
+  runtime=(self.host/'etc/mag-mistral/runtime.env').read_text()
+  self.assertIn('MISTRAL_THREADS=14',runtime)
+  self.assertIn('MISTRAL_MIN_RAM_GIB=225',runtime)
   self.assertEqual((self.host/'etc/mag-stack/room-layout').read_text(),'glm\n')
   smoke=(self.base/'smoke').read_text()
-  self.assertIn('--port 8191 --model qwen3.8-flash-next-uncensored --startup-only',smoke)
+  self.assertIn('--port 8191 --health-only',smoke)
+  self.assertIn('--port 8191 --timeout 1800',smoke)
   self.assertNotIn('--port 8192',smoke,'GLM-Q2 must not receive a smoke decode')
   actions=self.log.read_text()[mark:].splitlines()
   for verb in ('stop','start','enable','disable'):
    self.assertNotIn(verb+' mag-llm-glm@q2.service',actions)
   self.assertIn('is-active --quiet mag-llm-glm@q2.service',actions)
   self.assertIn('show -p MainPID --value mag-llm-glm@q2.service',actions)
-  self.assertIn('GLM-Q2 PID changed during Qwen cold start',(ROOT/'ops/qwen/layout.sh').read_text())
-  self.assertIn('GLM-Q2 became inactive during Qwen cold start',(ROOT/'ops/qwen/layout.sh').read_text())
+  self.assertIn('GLM-Q2 PID changed during Mistral cold start',(ROOT/'ops/qwen/layout.sh').read_text())
+  self.assertIn('GLM-Q2 became inactive during Mistral cold start',(ROOT/'ops/qwen/layout.sh').read_text())
   self.assertTrue((self.host/'etc/systemd/system/mag-llm-qwen.service').exists())
   self.assertTrue((self.host/'etc/systemd/system/mag-llm-qwen-room.service').exists())
+  self.assertTrue((self.host/'etc/systemd/system/mag-llm-mistral-room.service').exists())
   mark=self.log.stat().st_size
   p=self.run_layout(backup=self.base/'backup3');self.assertEqual(p.returncode,0,p.stderr)
   self.assertFalse([c for c in self.log.read_text()[mark:].splitlines() if c.startswith(('stop ','start '))])
@@ -234,9 +238,9 @@ else:
   self.assertNotIn('start mag-llm-glm@q2.service',actions)
   p=self.run_layout('rollback',backup=self.base/'backup2');self.assertEqual(p.returncode,0,p.stderr)
   state=json.loads(self.state.read_text())
-  self.assertIn('mag-llm-glm@q1.service',state['active'])
+  self.assertIn('mag-llm-mistral-room.service',state['active'])
   self.assertIn('mag-llm-glm@q2.service',state['active'])
-  self.assertNotIn('mag-llm-qwen-room.service',state['active'])
+  self.assertNotIn('mag-llm-mistral-room.service',state['active'])
   self.assertNotIn('mag-llm-glm@q2.service',[
    c.split(' ',1)[1] for c in self.log.read_text()[mark:].splitlines()
    if c.startswith(('stop ','start ','enable ','disable '))])
@@ -259,18 +263,18 @@ else:
   for path in ('ops/deploy.sh','ops/boot/ensure-boot.sh','ops/update.sh'):
    self.assertNotIn('runs_stale_binary',(ROOT/path).read_text(),path)
 
- def test_qwen_room_change_restarts_only_qwen_and_never_q2(self):
+ def test_mistral_room_change_restarts_only_mistral_and_never_q2(self):
   self.seed_live_glm()
   (self.repo/'ops/room/layout').write_text('glm\n')
   p=self.run_layout();self.assertEqual(p.returncode,0,p.stderr)
-  altered=self.repo/'ops/qwen/start.sh'
+  altered=self.repo/'ops/mistral/start.sh'
   altered.write_text(altered.read_text()+'\n# room-only test change\n')
   mark=self.log.stat().st_size
   p=self.run_layout(backup=self.base/'backup2')
   self.assertEqual(p.returncode,0,p.stderr)
   actions=self.log.read_text()[mark:].splitlines()
-  self.assertIn('stop mag-llm-qwen-room.service',actions)
-  self.assertIn('start mag-llm-qwen-room.service',actions)
+  self.assertIn('stop mag-llm-mistral-room.service',actions)
+  self.assertIn('start mag-llm-mistral-room.service',actions)
   for verb in ('stop','start','enable','disable'):
    self.assertNotIn(verb+' mag-llm-glm@q2.service',actions)
   state=json.loads(self.state.read_text())
@@ -280,8 +284,8 @@ else:
   p=self.run_layout('rollback',backup=self.base/'backup2')
   self.assertEqual(p.returncode,0,p.stderr)
   rollback=self.log.read_text()[mark:].splitlines()
-  self.assertIn('stop mag-llm-qwen-room.service',rollback)
-  self.assertIn('start mag-llm-qwen-room.service',rollback)
+  self.assertIn('stop mag-llm-mistral-room.service',rollback)
+  self.assertIn('start mag-llm-mistral-room.service',rollback)
   for verb in ('stop','start','enable','disable'):
    self.assertNotIn(verb+' mag-llm-glm@q2.service',rollback)
 
@@ -325,13 +329,13 @@ else:
   self.assertIn('verify-iq1.sh',install)
   self.assertIn('no model restart',install.lower()+' no model restart')
 
- def test_glm_deploy_deadline_covers_healthy_qwen_restarts(self):
+ def test_glm_deploy_deadline_covers_mistral_cold_start(self):
   deploy=(ROOT/'ops/deploy.sh').read_text()
   start=deploy.index('if [[ $_layout_for_deadline == glm ]]')
   end=deploy.index('deploy_watchdog_arm',start)
   block=deploy[start:end]
-  self.assertIn('_deploy_default_deadline=14400',block)
-  self.assertNotIn('! systemctl is-active --quiet mag-llm-qwen-room.service',block)
+  self.assertIn('_deploy_default_deadline=30000',block)
+  self.assertNotIn('! systemctl is-active --quiet mag-llm-mistral-room.service',block)
   self.assertNotIn('curl --noproxy',block)
 
  def test_auto_updater_probes_before_deploy(self):
@@ -339,7 +343,7 @@ else:
   self.assertIn('"$ROOT/ops/qwen/layout.sh" probe "$STATE"',body)
   self.assertLess(body.index('layout.sh" probe'),body.index('bash "$ROOT/ops/deploy.sh"'))
   self.assertIn('deployed-sha unchanged',body)
- def test_failed_qwen_cold_start_rolls_back_q1_but_never_touches_q2(self):
+ def test_failed_mistral_cold_start_rolls_back_to_qwen_but_never_touches_q2(self):
   self.seed_live_glm()
   (self.repo/'ops/room/layout').write_text('glm\n')
   mark=self.log.stat().st_size
@@ -364,11 +368,11 @@ else:
   self.assertFalse([c for c in self.log.read_text()[mark:].splitlines()
                     if c.startswith(('stop ','start ','enable ','disable '))])
   self.assertEqual(json.loads(self.state.read_text())['active'],state['active'])
-  with open(self.repo/'ops/qwen/start.sh','a') as f:f.write('# tuned room launcher\n')
+  with open(self.repo/'ops/mistral/start.sh','a') as f:f.write('# tuned room launcher\n')
   p=self.run_layout('probe',backup=self.base/'backup3')
   self.assertEqual(p.returncode,0,p.stderr)
   p=self.run_layout(backup=self.base/'backup4');self.assertEqual(p.returncode,0,p.stderr)
-  self.assertIn('mag-llm-qwen-room.service',json.loads(self.state.read_text())['active'])
+  self.assertIn('mag-llm-mistral-room.service',json.loads(self.state.read_text())['active'])
   self.assertIn('mag-llm-glm@q2.service',json.loads(self.state.read_text())['active'])
   self.assertFalse((self.host/'var/lib/mag-stack/layout-failed').exists())
 
@@ -448,7 +452,7 @@ else:
   layout=(ROOT/'ops/qwen/layout.sh').read_text()
   # Apply-time model preflight must precede the first apply-time stop;
   # the rollback function above legitimately contains its own stop.
-  stage=layout.index('ops/qwen/install.sh')
+  stage=layout.index('ops/mistral/install.sh')
   self.assertLess(stage,layout.index('systemctl stop "$unit"',stage))
  def test_glm_legacy_adapter_isolated_from_qwen(self):
   p=(ROOT/'ops/glm/arch-compat.patch').read_text()
@@ -586,7 +590,7 @@ else:
   self.assertNotIn('IOSchedulingClass=idle',u);self.assertNotIn('Nice=10',u)
   lay=(ROOT/'ops/qwen/layout.sh').read_text()
   self.assertNotIn('/usr/local/lib/mag-glm/chat-template.jinja',lay,
-                   'Qwen room deployment must not stage or change GLM-Q2 template files')
+                   'Mistral room deployment must not stage or change GLM-Q2 template files')
   self.assertIn('GLM-Q2 is a strict no-touch invariant',lay)
  def test_runtime_rebuild_restarts_and_rollback_verifies_qwen(self):
   lay=(ROOT/'ops/qwen/layout.sh').read_text()

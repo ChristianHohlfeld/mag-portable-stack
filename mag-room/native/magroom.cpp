@@ -5028,6 +5028,8 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
     } else if (mistral_chat) {
       body["temperature"] = 1.0;
       body["top_p"] = 0.95;
+      body["top_k"] = 0;
+      body["min_p"] = 0.0;
     } else {
       // Q1's successful direct :8191 test used temperature 0.55.
       // Q2's existing sampling is intentionally unchanged.
@@ -9323,6 +9325,8 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
         if (room_is_glm() && model == "mistral-large4") {
           body["temperature"] = 1.0;
           body["top_p"] = 0.95;
+          body["top_k"] = 0;
+          body["min_p"] = 0.0;
           body["reasoning_effort"] = "low";
           kwargs["reasoning_effort"] = "low";
         }

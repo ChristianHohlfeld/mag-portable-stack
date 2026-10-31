@@ -11864,7 +11864,10 @@ int main() {
     {
       std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
       int idx = agent_index(SINGLE_BOT);
-      if (idx >= 0 && bot_field(idx, "vm").empty() &&
+      const bool chat_only = idx >= 0 && CONFIGURED_MODEL &&
+          (bot_model_id(idx) == "qwen3.8-flash-next-uncensored" ||
+           bot_model_id(idx) == "mistral-large4");
+      if (idx >= 0 && !chat_only && bot_field(idx, "vm").empty() &&
           bot_field(idx, "pending_vm").empty()) {
         new_vm = next_vm();
         AGENTS[idx]["pending_vm"] = new_vm;
@@ -11894,7 +11897,10 @@ int main() {
       {
         std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
         int idx = agent_index(id);
-        if (idx >= 0 && bot_field(idx, "vm").empty() &&
+        const bool chat_only = idx >= 0 && CONFIGURED_MODEL &&
+            (bot_model_id(idx) == "qwen3.8-flash-next-uncensored" ||
+             bot_model_id(idx) == "mistral-large4");
+        if (idx >= 0 && !chat_only && bot_field(idx, "vm").empty() &&
             bot_field(idx, "pending_vm").empty()) {
           vm = next_vm();
           AGENTS[idx]["pending_vm"] = vm;

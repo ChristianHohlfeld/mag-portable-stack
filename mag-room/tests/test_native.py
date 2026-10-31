@@ -5256,7 +5256,7 @@ class GlmLayoutStartup(unittest.TestCase):
    log.close();model.shutdown();model.server_close();tmp.cleanup()
 
 
- def test_qwen_chat_hides_think_and_routes_room_messages(self):
+ def test_mistral_chat_hides_think_and_routes_room_messages(self):
   Model.delay=0;Model.slot_delay={};Model.script=[];Model.reply=None
   Model.script_scope=None;Model.slot_block={};Model.restore_missing=False
   Model.barrier_token='';Model.barrier_release=None;Model.hold_get=0;Model.health=200
@@ -5299,7 +5299,7 @@ class GlmLayoutStartup(unittest.TestCase):
     warm_slots=set(Model.saved_prompt)
     if {'0','1'}.issubset(warm_slots):break
     time.sleep(.03)
-   else:self.fail('Qwen/GLM room prefixes did not prewarm')
+   else:self.fail('Mistral/GLM room prefixes did not prewarm')
    def post(body):
     req=urllib.request.Request(f'http://127.0.0.1:{ui}/api/message',
       data=json.dumps(body).encode(),
@@ -5336,9 +5336,9 @@ class GlmLayoutStartup(unittest.TestCase):
      time.sleep(.04)
     self.fail('room turn did not finish: '+marker)
    for msg,bots,count,models in [
-    ('Hi',['qwen-numa0'],1,{'qwen3.8-flash-next-uncensored'}),
-    ('Hi beide',['qwen-numa0','qwen-numa1'],2,{'qwen3.8-flash-next-uncensored','glm-5.3-flash'}),
-    ('GLM-Q1',['qwen-numa0','qwen-numa1'],1,{'qwen3.8-flash-next-uncensored'})]:
+    ('Hi',['qwen-numa0'],1,{'mistral-large4'}),
+    ('Hi beide',['qwen-numa0','qwen-numa1'],2,{'mistral-large4','glm-5.3-flash'}),
+    ('GLM-Q1',['qwen-numa0','qwen-numa1'],1,{'mistral-large4'})]:
     previous_users=user_count()
     before=len(Model.paths)
     self.assertTrue(post({'text':msg,'bots':bots})['accepted'])
@@ -5351,28 +5351,30 @@ class GlmLayoutStartup(unittest.TestCase):
     for p in requests:
      last_user=next(x['content'] for x in reversed(p[3]['messages']) if x['role']=='user')
      self.assertEqual(last_user,msg)
-   # Qwen must not publish even a visible prefix if a hidden delimiter appears later.
-   qwenmarker='QWEN-THINK-CUT-'+str(time.monotonic_ns())
-   Model.script_scope=qwenmarker
+   # Mistral must not publish even a visible prefix if a hidden delimiter appears later.
+   mistralmarker='MISTRAL-THINK-CUT-'+str(time.monotonic_ns())
+   Model.script_scope=mistralmarker
    Model.script=[['sichtbarer Präfix',{'_chunk':{'choices':[{'delta':{'content':'<think>geheim'},'finish_reason':None}]}}]]
    before=len(Model.paths)
-   self.assertTrue(post({'text':qwenmarker,'bots':['qwen-numa0']})['accepted'])
-   qwenreq=calls_after(before,qwenmarker,1)[0][3]
-   self.assertEqual(qwenreq['model'],'qwen3.8-flash-next-uncensored')
-   self.assertIn(qwenmarker,json.dumps(qwenreq,ensure_ascii=False))
-   self.assertNotIn('tools',qwenreq)
-   self.assertFalse(qwenreq['chat_template_kwargs']['enable_thinking'])
-   self.assertEqual(qwenreq['chat_template_kwargs'],{'enable_thinking':False})
-   self.assertEqual(qwenreq['reasoning_effort'],'none')
-   self.assertEqual(qwenreq['max_tokens'],256)
-   self.assertEqual(set(qwenreq['stop']),{'<tool_call'})
-   qwenroom=idle_after(qwenmarker)
-   qat=max(i for i,m in enumerate(qwenroom['room'])
-           if m.get('role')=='user' and m.get('content')==qwenmarker)
-   qwentext=json.dumps(qwenroom['room'][qat+1:],ensure_ascii=False)
-   self.assertNotIn('sichtbarer Präfix',qwentext)
-   self.assertNotIn('geheim',qwentext)
-   self.assertNotIn('<think>',qwentext)
+   self.assertTrue(post({'text':mistralmarker,'bots':['qwen-numa0']})['accepted'])
+   mistralreq=calls_after(before,mistralmarker,1)[0][3]
+   self.assertEqual(mistralreq['model'],'mistral-large4')
+   self.assertIn(mistralmarker,json.dumps(mistralreq,ensure_ascii=False))
+   self.assertNotIn('tools',mistralreq)
+   self.assertFalse(mistralreq['chat_template_kwargs']['enable_thinking'])
+   self.assertEqual(mistralreq['chat_template_kwargs']['reasoning_effort'],'low')
+   self.assertEqual(mistralreq['reasoning_effort'],'low')
+   self.assertEqual(mistralreq['temperature'],1.0)
+   self.assertEqual(mistralreq['top_p'],0.95)
+   self.assertEqual(mistralreq['top_k'],0)
+   self.assertEqual(mistralreq['min_p'],0.0)
+   mistralroom=idle_after(mistralmarker)
+   qat=max(i for i,m in enumerate(mistralroom['room'])
+           if m.get('role')=='user' and m.get('content')==mistralmarker)
+   mistraltext=json.dumps(mistralroom['room'][qat+1:],ensure_ascii=False)
+   self.assertNotIn('sichtbarer Präfix',mistraltext)
+   self.assertNotIn('geheim',mistraltext)
+   self.assertNotIn('<think>',mistraltext)
    # Q2's existing split-terminator protection remains in place.
    q2marker='GLM-Q2-CLIENT-STOP-'+str(time.monotonic_ns())
    Model.script_scope=q2marker

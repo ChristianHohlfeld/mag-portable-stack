@@ -54,9 +54,11 @@ A load or health failure rolls back to Qwen without touching GLM-Q2.
 ## Download and activation
 
 Download the six shard files into
-`/home/chris/models/Mistral-Large-4-1T-A52B-UD-IQ1_S/`. The stage script
-copies `SHA256SUMS` there if absent and refuses a conflicting manifest.
-It verifies every full file before installing the unit. The layout transaction
+`/home/chris/models/Mistral-Large-4-1T-A52B-UD-IQ1_S/`. The stage script queries the Hugging Face Hub tree API with `expand=true`,
+extracts all six `lfs.oid` SHA256 values, and requires an exact match with
+the reviewed `SHA256SUMS` committed here. It writes the manifest into the
+model directory only if absent (and refuses a conflicting file), then
+verifies every full shard before installing the unit. The layout transaction
 calls stage before it stops Qwen; missing/incomplete shards therefore leave
 Qwen active. Deployment never downloads or deletes model weights.
 
@@ -81,4 +83,5 @@ restores the prior Qwen service/config. Qwen model files remain untouched.
 - [Unsloth GGUF card, shard listing and 233 GB quant](https://huggingface.co/unsloth/Mistral-Large-4-1T-A52B-GGUF)
 - [Unsloth llama.cpp guide: memory budget, CPU build, context and sampling](https://unsloth.ai/docs/models/mistral-large-4)
 - [HF UD-IQ1_S shard listing and sizes](https://huggingface.co/unsloth/Mistral-Large-4-1T-A52B-GGUF/tree/main/UD-IQ1_S)
+- [HF Hub tree API used by the stage gate](https://huggingface.co/api/models/unsloth/Mistral-Large-4-1T-A52B-GGUF/tree/main/UD-IQ1_S?recursive=true&expand=true)
 - [llama.cpp architecture loader source at pinned revision](https://github.com/ggml-org/llama.cpp/tree/8642541b255bfb5dc39cd351a178be09013a55d6)

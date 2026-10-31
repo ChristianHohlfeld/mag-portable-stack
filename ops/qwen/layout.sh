@@ -129,8 +129,14 @@ valid "$layout" || fail 'MAG_ROOM_LAYOUT must be mixed, deepseek or glm'
 # Identity of the repo-declared target: runtime + every file that defines it.
 # One failed live attempt per identity; a new commit touching them retries.
 case $layout in mixed) env_file=mixed.env ;; glm) env_file=glm.env ;; *) env_file=model.env ;; esac
-id_files=("$ROOT/ops/qwen/runtime.sha" "$ROOT/ops/room/$env_file")
-if [[ $layout == glm ]]; then id_files+=("$ROOT/ops/qwen/start.sh" "$ROOT/ops/qwen/mag-llm-qwen-room.service" "$ROOT/ops/qwen/install.sh"); fi
+id_files=("$ROOT/ops/qwen/layout.sh" "$ROOT/ops/qwen/runtime.sha"
+          "$ROOT/ops/room/$env_file" "$ROOT/ops/room/layout"
+          "$ROOT/ops/qwen/verify-model.sh" "$ROOT/ops/qwen/smoke.py"
+          "$ROOT/ops/glm/arch-compat.patch")
+if [[ $layout == glm ]]; then
+  id_files+=("$ROOT/ops/qwen/start.sh" "$ROOT/ops/qwen/mag-llm-qwen-room.service"
+             "$ROOT/ops/qwen/install.sh" "$ROOT/ops/deploy.sh")
+fi
 identity="$layout $(cat "${id_files[@]}" 2>/dev/null | sha256sum | cut -c1-16)"
 # The probe is read-only and runs BEFORE the deploy's backup and service staging.
 # Never turn a failed desired layout into a successful deploy of the old one.

@@ -165,13 +165,14 @@ match = re.search(
 assert match, "embedded room readiness gate missing"
 gate = match.group(1)
 
-def bot(model, name=None, enabled=True):
-    return {"id": "qwen-numa1" if model == "glm-5.3-flash" else model, "name": name or model, "model": model, "enabled": enabled}
+def bot(model, name=None, enabled=True, bot_id=None, slot=None, numa=None):
+    return {"id": bot_id or model, "name": name or model, "model": model,
+            "enabled": enabled, "slot": slot, "numa": numa}
 
 ds = bot("deepseek-v4-flash-0731", "DeepSeek V4 Flash")
-q1 = bot("glm-5.3-flash-iq1-m", "GLM-Q1")
-q2 = bot("glm-5.3-flash", "GLM-Q2")
-qwen = bot("qwen3.8-flash-next-uncensored", "Qwen3.8 Flash Next")
+q1 = bot("glm-5.3-flash-iq1-m", "GLM-Q1", bot_id="deepseek-chat", slot=1, numa=0)
+q2 = bot("glm-5.3-flash", "GLM-Q2", bot_id="qwen-numa1", slot=2, numa=1)
+qwen = bot("qwen3.8-flash-next-uncensored", "Qwen", bot_id="qwen-numa0", slot=1, numa=0)
 
 with tempfile.TemporaryDirectory() as directory:
     layout_path = pathlib.Path(directory) / "room-layout"
@@ -190,13 +191,15 @@ with tempfile.TemporaryDirectory() as directory:
             result.stdout, result.stderr)
         assert expected_label in (result.stdout if accepted else result.stderr), (
             result.stdout, result.stderr)
-    probe("glm", [q2], True, "Release ready: GLM-Q2 (8192)", False)
-    probe("glm", [q1, q2], False, "expected only GLM-Q2 room bot", False)
-    probe("glm", [ds, q2], False, "expected only GLM-Q2 room bot", False)
-    probe("glm", [q1], False, "expected only GLM-Q2 room bot", False)
-    probe("glm", [q1, q2, qwen], False, "expected only GLM-Q2 room bot", False)
-    probe("glm", [q2, bot("deepseek", enabled=False)], True,
-          "Release ready: GLM-Q2 (8192)", False)
+    probe("glm", [qwen, q2], True,
+          "Release ready: Qwen NUMA0 (:8191) + GLM-Q2 NUMA1 (:8192); Q1 disabled", False)
+    probe("glm", [q1, q2], False, "expected Qwen NUMA0 slot 1", False)
+    probe("glm", [ds, q2], False, "expected Qwen NUMA0 slot 1", False)
+    probe("glm", [q1], False, "expected exactly two room bots", False)
+    probe("glm", [q1, q2, qwen], False, "expected exactly two room bots", False)
+    parked_q1 = dict(q1, enabled=False)
+    probe("glm", [qwen, q2, parked_q1], True,
+          "Release ready: Qwen NUMA0 (:8191) + GLM-Q2 NUMA1 (:8192); Q1 disabled", False)
     probe("mixed", [ds, qwen], True, "Release ready: DeepSeek and Qwen")
     probe("qwen", [ds, qwen], True, "Release ready: DeepSeek and Qwen")
     probe("mixed", [ds, q2], False, "expected live DeepSeek and Qwen")

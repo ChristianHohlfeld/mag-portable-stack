@@ -25,7 +25,9 @@ mcp = Path('mag-room/native/mcp.hpp').read_text()
 deploy = Path('ops/deploy.sh').read_text()
 diag = Path('ops/perf/diagnose-ai.sh').read_text()
 
-assert '--physcpubind=14-27 --membind=1' in qwen  # Qwen rollback remains untouched
+assert "NODE=${QWEN_NODE:-1}" in qwen and "BIND='14-27'" in qwen
+assert "CPU_RANGE='14-27,42-55'" in qwen  # standalone Qwen fallback remains NUMA1
+assert 'exec /usr/bin/numactl --physcpubind="$BIND" --membind="$NODE"' in qwen
 # GLM has 14 decode and 28 batch threads, all local to its NUMA node.
 assert '--physcpubind=0-13,28-41 --membind=0' in glm
 assert '--physcpubind=14-27,42-55 --membind=1' in glm
@@ -58,7 +60,8 @@ assert 'SLOT_WARM[slot - 1].load() != 1' in room
 assert 'kv.first == "description"' in room and 'bot_model_id(bot_idx).rfind("glm-5.3-flash", 0) == 0' in room
 assert 'body["id_slot"] = 0;' in room and 'body["cache_prompt"] = true;' in room
 
-assert '--threads 14 --threads-batch 14 --numa numactl' in qwen
+assert '--threads "$THREADS" --threads-batch "$BATCH_THREADS" --numa numactl' in qwen
+assert 'QWEN_THREADS_BATCH=14' in glm_txn and 'QWEN_THREADS_BATCH=28' in glm_txn
 assert 'CPUAffinity=14-27' in unit
 assert 'AllowedCPUs=14-27' in unit
 assert 'NUMAPolicy=bind' in unit and 'NUMAMask=1' in unit

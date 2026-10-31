@@ -6,7 +6,7 @@ ROOT=$(cd -- "$(dirname -- "$(readlink -f "$0")")/../.." && pwd)
 source "$ROOT/ops/mag-units.sh"
 ACTION=${1:?apply|rollback|probe}; BACKUP=${2:?deployment backup directory}
 TXN="$BACKUP/qwen-layout"
-fail(){ echo "NUMA1 layout: $*" >&2; exit 4; }
+fail(){ echo "room layout: $*" >&2; exit 4; }
 [[ $EUID == 0 ]] || fail 'root required'
 units=(mag-llm-ds-node@1.service mag-llm-qwen.service mag-llm-qwen-room.service mag-llm-glm.service mag-llm-glm@q1.service mag-llm-glm@q2.service)
 [[ ! -f "$TXN/glm-dual" ]] || units+=(mag-llm-ds-node@0.service mag-llm-ornith-node@0.service mag-llm-ornith@1.service)
@@ -135,7 +135,7 @@ identity="$layout $(cat "${id_files[@]}" 2>/dev/null | sha256sum | cut -c1-16)"
 # The probe is read-only and runs BEFORE the deploy's backup and service staging.
 # Never turn a failed desired layout into a successful deploy of the old one.
 if [[ $source == repo && -f $FAILED && $(cat "$FAILED") == "$identity" ]]; then
-  echo "NUMA1 layout blocked: repo layout '$layout' previously failed live ($identity); previous '$previous' retained" >&2
+  echo "room layout blocked: repo layout '$layout' previously failed live ($identity); previous '$previous' retained" >&2
   if [[ $ACTION == probe ]]; then exit 78; fi
   fail "desired layout '$layout' has a matching prior failure; refusing to claim deployment success"
 fi
@@ -344,10 +344,17 @@ if (( change )); then
   done
 fi
 if [[ $layout == glm ]]; then
+  qwen_ready=0
+  for ((i=0; i<2160; i++)); do
+    systemctl is-active --quiet mag-llm-qwen-room.service || fail 'Qwen room service exited'
+    if curl --noproxy '*' -fsS --max-time 3 -o /dev/null http://127.0.0.1:8191/health 2>/dev/null; then
+      qwen_ready=1; break
+    fi
+    sleep 5
+  done
+  (( qwen_ready )) || fail 'Qwen :8191 health timeout after 10800s'
   [[ $(systemctl show -p MainPID --value mag-llm-glm@q2.service 2>/dev/null || true) == "$q2_pid" ]] || fail 'GLM-Q2 PID changed during Qwen cold start'
   curl --noproxy '*' -fsS --max-time 5 -o /dev/null http://127.0.0.1:8192/health || fail 'GLM-Q2 :8192 unhealthy after Qwen start'
-  systemctl is-active --quiet mag-llm-qwen-room.service || fail 'Qwen room service not active'
-  curl --noproxy '*' -fsS --max-time 5 -o /dev/null http://127.0.0.1:8191/health || fail 'Qwen :8191 unhealthy after cold start'
 fi
 rm -f "$FAILED"
 echo "Room layout ready: $layout ($source); Qwen NUMA0 + GLM-Q2 NUMA1; GLM-Q1 disabled"

@@ -33,6 +33,10 @@ THREADS=${QWEN_THREADS:-14}
 [[ $(cat "/home/chris/.local/qwen4exp/$REV-mag-cp1/bin/source-commit") == "$REV" ]] || fail 'runtime version not pinned'
 [[ $(cat "/sys/devices/system/node/node$NODE/cpulist") == "$CPU_RANGE" ]] || fail 'unexpected NUMA topology'
 systemctl is-active --quiet mag-llm-iq3.service && fail 'IQ3 still running; explicit operator stop required'
+if [[ $NODE == 0 ]]; then
+  systemctl is-active --quiet mag-llm-glm@q1.service &&
+    fail 'GLM-Q1 still running; room transaction must stop it before Qwen NUMA0'
+fi
 # Q4 is checked as root in systemd ExecStartPre (audit firewall blocks chris on port 8090).
 for u in mag-backup-daily mag-backup-weekly mag-backup-monthly mag-backup-restore-test mag-backup-deploy mag-backup-clear; do
   systemctl is-active --quiet "$u.service" && fail "backup active: $u"

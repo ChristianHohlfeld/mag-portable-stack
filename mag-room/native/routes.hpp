@@ -233,8 +233,10 @@ static void resume_pending_spawns() {
       const std::string id = bot_field((int)i, "id");
       if (id.empty()) continue;
       std::string vm = bot_field((int)i, "pending_vm");
-      const bool qwen_chat_only = room_is_glm() &&
-          bot_model_id((int)i) == "qwen3.8-flash-next-uncensored";
+      const int slot = model_slot((int)i);
+      const bool qwen_chat_only = CONFIGURED_MODEL && room_is_glm() &&
+          slot >= 1 && slot <= ROOM_MAX_BOTS &&
+          ROOM_MODEL.backend(slot).id == "qwen3.8-flash-next-uncensored";
       // Retire stale automatic VM reservations for the chat-only Qwen bot.
       // Explicit /vm attachment (vm_attach) remains an operator choice.
       if (qwen_chat_only && !AGENTS[i].find("vm_explicit_attach")) {
@@ -1431,11 +1433,20 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
     const auto vm_flag = body.find("vm");
     const bool vm_requested = !(vm_flag && vm_flag->type == Val::BOOL &&
                                 !vm_flag->asBool());
+    bool qwen_chat_only = false;
+    if (CONFIGURED_MODEL) {
+      std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
+      const int slot = free_model_slot();
+      if (!slot) { error_json(fd, 409, bots_full); return; }
+      qwen_chat_only = room_is_glm() &&
+          ROOM_MODEL.backend(slot).id == "qwen3.8-flash-next-uncensored";
+    }
+    const bool with_vm_requested = vm_requested && !qwen_chat_only;
     bool with_vm = false;
     // One creation path. Preflight validates KVM, the golden image, the
     // network, the data directory and the libvirt tools before any room
     // entry, directory or domain exists. A later failure rolls all of that back.
-    if (vm_requested) {
+    if (with_vm_requested) {
       auto pre = run_argv({"sudo", "-n", AGENT_CTL, "preflight"}, 60);
       if (pre.code != 0) {
         error_json(fd, 503, "Bot-VM Vorprüfung fehlgeschlagen: " +
@@ -1450,11 +1461,8 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
       const int slot = CONFIGURED_MODEL ? free_model_slot() : 0;
       if (CONFIGURED_MODEL && !slot) { error_json(fd, 409, bots_full); return; }
       // Qwen in the GLM room is deliberately chat-only (no VM tools).
-      // Do not provision a KVM workspace for that slot, even when the
-      // generic new-agent default requests one.
-      const bool qwen_chat_only = CONFIGURED_MODEL && room_is_glm() &&
-          slot >= 1 && ROOM_MODEL.backend(slot).id == "qwen3.8-flash-next-uncensored";
-      with_vm = vm_requested && !qwen_chat_only;
+      // Its VM preflight was skipped before entering this creation path.
+      with_vm = with_vm_requested;
       id = slug_id(str("name"));
       vm = with_vm ? next_vm() : "";
       agent["id"] = id;

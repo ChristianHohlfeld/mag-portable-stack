@@ -115,15 +115,16 @@ else:
  def write(self,path,text):
   p=self.host/path.lstrip('/');p.parent.mkdir(parents=True,exist_ok=True);p.write_text(text)
  def seed_live_glm(self):
-  # Live pre-cutover host: GLM-Q1 and GLM-Q2 resident, with Q2 protected.
+  # Live pre-cutover host: Qwen room bot on NUMA0 and protected GLM-Q2 on NUMA1.
   self.state.write_text(json.dumps({
-   'active':['mag-llm-glm@q1.service','mag-llm-glm@q2.service'],
-   'enabled':['mag-llm-glm@q1.service','mag-llm-glm@q2.service']}))
+   'active':['mag-llm-qwen-room.service','mag-llm-glm@q2.service'],
+   'enabled':['mag-llm-qwen-room.service','mag-llm-glm@q2.service']}))
   self.write('/etc/mag-stack/room-layout','glm\n')
   self.write('/etc/mag-stack/room-model.env',
-   'MAG_ROOM_MODEL_ID=glm-5.3-flash\nMAG_ROOM_MODEL_PORTS=8191:0,8192:1\n'
-   'MAG_ROOM_MAX_BOTS=1\nMAG_ROOM_MODEL_ID_0=glm-5.3-flash\n'
-   'MAG_ROOM_MODEL_LABEL_0=GLM-Q2\n')
+   'MAG_ROOM_MODEL_ID=qwen3.8-flash-next-uncensored\nMAG_ROOM_MODEL_LABEL=Qwen + GLM-Q2\n'
+   'MAG_ROOM_MODEL_PORTS=8191:0,8192:1\nMAG_ROOM_MAX_BOTS=2\n'
+   'MAG_ROOM_MODEL_ID_0=qwen3.8-flash-next-uncensored\nMAG_ROOM_MODEL_LABEL_0=Qwen\n'
+   'MAG_ROOM_MODEL_ID_1=glm-5.3-flash\nMAG_ROOM_MODEL_LABEL_1=GLM-Q2\n')
  def run_layout(self,action='apply',backup=None,**env):
   return subprocess.run(['bash',str(self.repo/'ops/qwen/layout.sh'),action,str(backup or self.backup)],env=dict(self.env,**env),capture_output=True,text=True)
  def tearDown(self):

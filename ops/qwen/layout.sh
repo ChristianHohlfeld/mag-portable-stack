@@ -229,7 +229,7 @@ on_exit(){
   local rc=$?; trap - EXIT
   if (( rc )); then
     # Remember only a failed switch to a new layout, never an explicit pin.
-    if [[ -z $pin && $source == repo ]]; then
+    if [[ -z $pin && $source == repo && $layout != glm ]]; then
       install -d -m 0755 "$(dirname "$FAILED")" && printf '%s\n' "$identity" > "$FAILED" || true
     fi
     rollback
@@ -353,12 +353,12 @@ if (( change )); then
     ready=0
     # A 98 GB cold load may take many minutes. The deploy watchdog is extended
     # for this layout; never roll back on a short generic health timeout.
-    for ((i=0; i<2160; i++)); do
+    for ((i=0; i<5040; i++)); do
       systemctl is-active --quiet "$unit" || fail "$unit exited during load"
       if curl --noproxy '*' -fsS --max-time 3 -o /dev/null "http://127.0.0.1:$port/health" 2>/dev/null; then ready=1; break; fi
       sleep 5
     done
-    (( ready )) || fail "model on $port health timeout after 10800s"
+    (( ready )) || fail "model on $port health timeout after 25200s"
     if [[ $layout == glm ]]; then
       python3 -I "$ROOT/ops/mistral/smoke.py" --port 8191 --health-only
       curl --noproxy '*' -fsS --max-time 30 -H 'Content-Type: application/json' -d '{}' "http://127.0.0.1:8191/slots/0?action=erase" >/dev/null

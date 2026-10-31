@@ -5241,15 +5241,15 @@ class GlmLayoutStartup(unittest.TestCase):
    log.close();model.shutdown();model.server_close();tmp.cleanup()
 
 
- def test_glm_chat_stops_stream_and_routes_greetings(self):
-  # Fast fake llama streams, real GLM room process; no model restart or flags.
+ def test_qwen_chat_hides_think_and_routes_room_messages(self):
   Model.delay=0;Model.slot_delay={};Model.script=[];Model.reply=None
   Model.script_scope=None;Model.slot_block={};Model.restore_missing=False
-  Model.barrier_token='';Model.barrier_release=None;Model.hold_get=0
+  Model.barrier_token='';Model.barrier_release=None;Model.hold_get=0;Model.health=200
+  Model.paths=[];Model.calls=[];Model.pairs=[]
   tmp=tempfile.TemporaryDirectory();root=pathlib.Path(tmp.name)
   state=root/'state';state.mkdir()
   state.joinpath('agents.json').write_text(json.dumps([
-   {'id':'deepseek-chat','name':'GLM-Q1','slot':1,'numa':0,'vm':'','memory':[]},
+   {'id':'deepseek-chat','name':'GLM-Q1','slot':1,'numa':0,'vm':'','memory':[{'text':'parked'}]},
    {'id':'qwen-numa1','name':'GLM-Q2','slot':2,'numa':1,'vm':'','memory':[]}]))
   model=http.server.ThreadingHTTPServer(('127.0.0.1',0),Model)
   threading.Thread(target=model.serve_forever,daemon=True).start()
@@ -5258,8 +5258,7 @@ class GlmLayoutStartup(unittest.TestCase):
    parts=shlex.split(line,comments=True)
    if parts and '=' in parts[0]:
     key,value=parts[0].split('=',1);glm[key]=value
-  glm['MAG_ROOM_PREWARM']='0'
-  glm['MAG_ROOM_PRESETS']=str(ROOT/'ops/room/presets.json')
+  glm['MAG_ROOM_PREWARM']='0';glm['MAG_ROOM_PRESETS']=str(ROOT/'ops/room/presets.json')
   env=dict(os.environ,MAG_OWNER_CANONICAL_LOGIN='chris@github',
    MAG_TEST_ALLOW_LOCAL_OWNER='1',MAG_ROOM_STATE=str(state),
    MAG_ROOM_PORT=str(ui),MAG_ROOM_BRIDGE_PORT=str(bridge),
@@ -5269,10 +5268,10 @@ class GlmLayoutStartup(unittest.TestCase):
    MAG_ROOM_MODEL_STATUS=str(root/'ms.json'),MAG_NETMODE=str(NETMODE),
    MAG_TEST_NO_MEMGIT='1',MAG_ROOM_AGENT_CTL='/bin/false',
    MAG_ROOM_GUEST_RUN='/bin/false',MAG_ROOM_MCP_AUTO='0',
-   MAG_ROOM_SINGLE_BOT='auto',MAG_ROOM_SINGLE_BOT_VM='on',
+   MAG_ROOM_SINGLE_BOT='',MAG_ROOM_SINGLE_BOT_VM='on',MAG_ROOM_FIRST_HI_THINK='off',
    MAG_ROOM_DUAL_NUMA='0',**glm)
   log=open(root/'room.log','a')
-  proc=subprocess.Popen(['timeout','-k','1','29',str(ROOT/'build/magroom')],
+  proc=subprocess.Popen(['timeout','-k','1','36',str(ROOT/'build/magroom')],
                         env=env,stdout=log,stderr=log)
   try:
    wait_http(f'http://127.0.0.1:{ui}/api/state',timeout=8,proc=proc)
@@ -5286,34 +5285,55 @@ class GlmLayoutStartup(unittest.TestCase):
     with urllib.request.urlopen(f'http://127.0.0.1:{ui}/api/state',timeout=2) as resp:
      return json.load(resp)
    def calls_after(start,marker,count):
-    end=time.monotonic()+6
-    while time.monotonic()<end:
-     calls=[p for p in list(Model.paths)[start:]
-            if p[0]=='/v1/chat/completions' and p[3].get('max_tokens')!=1
-            and marker in json.dumps(p[3])]
-     if len(calls)>=count:return calls
-     time.sleep(.03)
-    self.fail('Missing GLM backend calls for '+marker)
-   def idle_after(marker):
     end=time.monotonic()+7
     while time.monotonic()<end:
+     calls=[p for p in list(Model.paths)[start:] if p[0]=='/v1/chat/completions'
+            and p[3].get('max_tokens')!=1 and marker in json.dumps(p[3],ensure_ascii=False)]
+     if len(calls)>=count:return calls
+     time.sleep(.03)
+    self.fail('Missing room backend calls for '+marker)
+   def idle_after(marker):
+    end=time.monotonic()+8
+    while time.monotonic()<end:
      room=state_()
-     if (not room['busy'] and not room['pending'] and
-         any(m.get('role')=='user' and marker in (m.get('content') or '')
-             for m in room['room'])):
+     if not room['busy'] and not room['pending'] and any(
+         m.get('role')=='user' and marker in (m.get('content') or '') for m in room['room']):
       return room
      time.sleep(.04)
-    self.fail('GLM turn did not finish: '+marker)
-   # No Q1 stream is routed. A plain greeting and a group greeting reach only Q2.
-   for msg in ('Hi','Hi beide','GLM-Q1'):
-    marker='Q2-ONLY-'+str(time.monotonic_ns())
+    self.fail('room turn did not finish: '+marker)
+   for msg,bots,count,models in [
+    ('Hi',['qwen-numa0'],1,{'qwen3.8-flash-next-uncensored'}),
+    ('Hi beide',['qwen-numa0','qwen-numa1'],2,{'qwen3.8-flash-next-uncensored','glm-5.3-flash'}),
+    ('GLM-Q1',['qwen-numa0','qwen-numa1'],2,{'qwen3.8-flash-next-uncensored','glm-5.3-flash'})]:
+    marker='ROOM-GREET-'+str(time.monotonic_ns())
     before=len(Model.paths)
-    self.assertTrue(post({'text':msg+' '+marker})['accepted'])
-    requests=calls_after(before,marker,1)
-    idle_after(marker)
-    self.assertEqual(len(requests),1)
-    self.assertEqual(requests[0][3]['model'],'glm-5.3-flash')
-   # Q2 streams a split reasoning terminator: never publish raw delimiter.
+    self.assertTrue(post({'text':msg+' '+marker,'bots':bots})['accepted'])
+    requests=calls_after(before,marker,count);idle_after(marker)
+    requests=[p for p in list(Model.paths)[before:] if p[0]=='/v1/chat/completions'
+              and p[3].get('max_tokens')!=1 and marker in json.dumps(p[3],ensure_ascii=False)]
+    self.assertEqual(len(requests),count)
+    self.assertEqual({p[3]['model'] for p in requests},models)
+    self.assertFalse(any(p[3].get('model')=='glm-5.3-flash-iq1-m' for p in requests))
+   # Qwen must not publish even a visible prefix if a hidden delimiter appears later.
+   qwenmarker='QWEN-THINK-CUT-'+str(time.monotonic_ns())
+   Model.script_scope=qwenmarker
+   Model.script=[['sichtbarer Präfix',{'_chunk':{'choices':[{'delta':{'content':'<think>geheim'},'finish_reason':None}]}}]]
+   before=len(Model.paths)
+   self.assertTrue(post({'text':qwenmarker,'bots':['qwen-numa0']})['accepted'])
+   qwenreq=calls_after(before,qwenmarker,1)[0][3]
+   self.assertEqual(qwenreq['model'],'qwen3.8-flash-next-uncensored')
+   self.assertNotIn('tools',qwenreq)
+   self.assertFalse(qwenreq['chat_template_kwargs']['enable_thinking'])
+   self.assertEqual(qwenreq['max_tokens'],256)
+   self.assertTrue({'</think>','<think>','<|','<tool_call'}.issubset(set(qwenreq['stop'])))
+   qwenroom=idle_after(qwenmarker)
+   qat=max(i for i,m in enumerate(qwenroom['room'])
+           if m.get('role')=='user' and m.get('content')==qwenmarker)
+   qwentext=json.dumps(qwenroom['room'][qat+1:],ensure_ascii=False)
+   self.assertNotIn('sichtbarer Präfix',qwentext)
+   self.assertNotIn('geheim',qwentext)
+   self.assertNotIn('<think>',qwentext)
+   # Q2's existing split-terminator protection remains in place.
    q2marker='GLM-Q2-CLIENT-STOP-'+str(time.monotonic_ns())
    Model.script_scope=q2marker
    Model.script=[['Rauschen','</thi','nk>','Antwort']]
@@ -5321,15 +5341,13 @@ class GlmLayoutStartup(unittest.TestCase):
    self.assertTrue(post({'text':q2marker,'bots':['qwen-numa1']})['accepted'])
    q2req=calls_after(before,q2marker,1)[0][3]
    self.assertEqual(q2req['model'],'glm-5.3-flash')
+   self.assertNotIn('tools',q2req)
    q2room=idle_after(q2marker)
    q2at=max(i for i,m in enumerate(q2room['room'])
             if m.get('role')=='user' and m.get('content')==q2marker)
    q2text=json.dumps(q2room['room'][q2at+1:],ensure_ascii=False)
    self.assertNotIn('</think>',q2text)
    self.assertNotIn('Antwort',q2text)
-   Model.script_scope=None
-   Model.script=[]
-   # Q1 is parked. No legacy Q1-only group, history, or retry checks apply.
   finally:
    Model.script_scope=None;Model.script=[]
    proc.terminate()

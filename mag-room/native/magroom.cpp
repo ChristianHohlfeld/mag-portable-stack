@@ -4973,8 +4973,14 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
       mag::str(request_messages.back(), "role") != "user")) {
     Val user = Val::object();
     user["role"] = "user";
-    user["content"] = TURN_INPUT.empty()
-        ? "Antworte auf die letzte Nutzeranfrage." : TURN_INPUT;
+    std::string last_user;
+    for (auto it = request_messages.rbegin(); it != request_messages.rend(); ++it)
+      if (mag::str(*it, "role") == "user") {
+        last_user = mag::str(*it, "content");
+        break;
+      }
+    user["content"] = last_user.empty()
+        ? "Antworte auf die letzte Nutzeranfrage." : last_user;
     request_messages.push_back(user);
   }
   Val msgs = Val::array();

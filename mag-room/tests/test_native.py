@@ -5150,7 +5150,7 @@ class GlmLayoutStartup(unittest.TestCase):
     MAG_ROOM_UI=str(ROOT/'mag-room/web/index.html'),MAG_ROOM_STATIC=str(ROOT/'mag-room/static'),
     MAG_ROOM_MODEL_STATUS=str(root/'ms.json'),MAG_NETMODE=str(NETMODE),MAG_TEST_NO_MEMGIT='1',
     MAG_ROOM_AGENT_CTL='/bin/false',MAG_ROOM_GUEST_RUN='/bin/false',MAG_ROOM_MCP_AUTO='0',
-    MAG_ROOM_SINGLE_BOT='',MAG_ROOM_SINGLE_BOT_VM='on',MAG_ROOM_FIRST_HI_THINK='off',
+    MAG_ROOM_SINGLE_BOT_VM='on',MAG_ROOM_FIRST_HI_THINK='off',
     MAG_ROOM_DUAL_NUMA='0',**glm)
   env['MAG_ROOM_SKILLS_DIR']=str(ROOT/'ops/room/skills')
   log=open(log_path,'a')
@@ -5270,7 +5270,7 @@ class GlmLayoutStartup(unittest.TestCase):
    MAG_ROOM_MODEL_STATUS=str(root/'ms.json'),MAG_NETMODE=str(NETMODE),
    MAG_TEST_NO_MEMGIT='1',MAG_ROOM_AGENT_CTL='/bin/false',
    MAG_ROOM_GUEST_RUN='/bin/false',MAG_ROOM_MCP_AUTO='0',
-   MAG_ROOM_SINGLE_BOT='',MAG_ROOM_SINGLE_BOT_VM='on',MAG_ROOM_FIRST_HI_THINK='off',
+   MAG_ROOM_SINGLE_BOT_VM='on',MAG_ROOM_FIRST_HI_THINK='off',
    MAG_ROOM_DUAL_NUMA='0',**glm)
   log=open(root/'room.log','a')
   proc=subprocess.Popen(['timeout','-k','1','36',str(ROOT/'build/magroom')],
@@ -5389,7 +5389,7 @@ class GlmLayoutStartup(unittest.TestCase):
    MAG_ROOM_UI=str(ROOT/'mag-room/web/index.html'),MAG_ROOM_STATIC=str(ROOT/'mag-room/static'),
    MAG_ROOM_MODEL_STATUS=str(root/'ms.json'),MAG_NETMODE=str(NETMODE),MAG_TEST_NO_MEMGIT='1',
    MAG_ROOM_AGENT_CTL='/bin/false',MAG_ROOM_GUEST_RUN='/bin/false',MAG_ROOM_MCP_AUTO='0',
-   MAG_ROOM_SINGLE_BOT='',MAG_ROOM_SINGLE_BOT_VM='on',MAG_ROOM_FIRST_HI_THINK='off',
+   MAG_ROOM_SINGLE_BOT_VM='on',MAG_ROOM_FIRST_HI_THINK='off',
    MAG_ROOM_DUAL_NUMA='0',**glm)
   logpath=root/'room.log';log=open(logpath,'a')
   proc=subprocess.Popen(['timeout','-k','1','34',str(ROOT/'build/magroom')],env=env,stdout=log,stderr=log)

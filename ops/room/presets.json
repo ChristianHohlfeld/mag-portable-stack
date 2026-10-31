@@ -45,5 +45,21 @@
         "model": "glm-5.3-flash"
       }
     ]
+  },
+  {
+    "id": "qwen-glm-dual-numa",
+    "label": "Qwen Uncensored (NUMA0) + GLM-Q2 (NUMA1)",
+    "ports": [
+      {
+        "port": 8191,
+        "numa": 0,
+        "model": "qwen3.8-flash-next-uncensored"
+      },
+      {
+        "port": 8192,
+        "numa": 1,
+        "model": "glm-5.3-flash"
+      }
+    ]
   }
 ]

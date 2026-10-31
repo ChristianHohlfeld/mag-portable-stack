@@ -20,7 +20,7 @@ if [[ -r $room_env ]]; then
   if grep -Fxq 'MAG_ROOM_MODEL_ID_0=qwen3.8-flash-next-uncensored' "$room_env" &&
      grep -Fxq 'MAG_ROOM_MODEL_ID_1=glm-5.3-flash' "$room_env"; then
     secondary_unit=mag-llm-qwen-room.service
-    secondary_units=(mag-llm-glm@q2.service)
+    secondary_units=() # GLM-Q2 is already enabled; never alter its boot state.
     # Qwen owns NUMA0; Q1 and all legacy NUMA0/NUMA1 model units stay disabled.
     systemctl disable mag-llm-ds-node@0.service mag-llm-ds-node@1.service \
       mag-llm-glm.service mag-llm-glm@q1.service mag-llm-qwen.service \

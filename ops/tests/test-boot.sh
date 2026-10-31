@@ -20,7 +20,7 @@ case "$1 $2" in
   "is-enabled mag-auto-update.timer") echo disabled; exit 1 ;;
   "is-enabled mag-llm-glm.service") echo disabled; exit 1 ;;
   "is-enabled mag-llm-qwen-room.service") echo disabled; exit 1 ;;
-  "is-enabled mag-llm-glm@q2.service") echo disabled; exit 1 ;;
+  "is-enabled mag-llm-glm@q2.service") echo enabled; exit 0 ;;
   "is-enabled mag-console-only.service") echo disabled; exit 1 ;;
   "is-enabled mag-llm-ornith"*) echo disabled; exit 1 ;;
 esac
@@ -97,7 +97,7 @@ printf 'MAG_ROOM_MODEL_ID_0=qwen3.8-flash-next-uncensored\nMAG_ROOM_MODEL_ID_1=g
 out=$(ORNITH="" MAG_TEST_ACTIVE="mag-llm-qwen-room.service mag-llm-glm@q2.service mag-auto-update.timer mag-120.service" run "$tmp/missing.env" "$tmp/no-ipmi0" "$tmp/room-glm.env")
 grep -Fxq 'systemctl disable mag-llm-ds-node@0.service mag-llm-ds-node@1.service mag-llm-glm.service mag-llm-glm@q1.service mag-llm-qwen.service' "$log"
 grep -Fxq 'systemctl enable mag-llm-qwen-room.service' "$log"
-grep -Fxq 'systemctl enable mag-llm-glm@q2.service' "$log"
+! grep -Eq 'systemctl (enable|disable) mag-llm-glm@q2.service' "$log"
 ! grep -Eq 'systemctl enable mag-llm-(qwen|glm@q1|ds-node@[01]).service' "$log"
 common
 grep -Fq 'PHASE boot' <<<"$(bash "$root/ops/update.sh" --dry-run)"

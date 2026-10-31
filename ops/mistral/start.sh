@@ -29,5 +29,5 @@ bash /usr/local/lib/mag-mistral/verify-model.sh || fail 'six-shard SHA256 verifi
 exec /usr/bin/numactl --physcpubind=0-13,28-41 --membind=0 "$BIN" \
   --model "$MODEL" --alias mistral-large4 --host 127.0.0.1 --port "$PORT" \
   --ctx-size 16384 --parallel 1 --threads "$THREADS" --threads-batch "$THREADS" \
-  --numa numactl --batch-size 128 --ubatch-size 64 --mmap --jinja \
+  --numa numactl --batch-size 128 --ubatch-size 64 --load-mode mmap --jinja \
   --temp 1.0 --top-p 0.95 --top-k 0 --min-p 0.0 --slots --slot-save-path /var/lib/mag-llm/slots/mistral --metrics

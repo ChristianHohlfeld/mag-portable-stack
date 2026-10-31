@@ -82,7 +82,8 @@ assert all(len(row.split()) == 2 and len(row.split()[0]) == 64 for row in rows)
 PY
 grep -Fq 'MemoryMax=244G' ops/mistral/mag-llm-mistral-room.service
 grep -Fq -- '--ctx-size 16384' ops/mistral/start.sh
-grep -Fq -- '--mmap --jinja' ops/mistral/start.sh
+grep -Fq -- '--load-mode mmap --jinja' ops/mistral/start.sh
+! grep -Fq -- '--mmap' ops/mistral/start.sh
 grep -Fq 'mistral_large4' ops/mistral/README.md
 grep -Fq 'body["temperature"] = 0.7' mag-room/native/magroom.cpp
 grep -Fq 'body["top_p"] = 0.80' mag-room/native/magroom.cpp

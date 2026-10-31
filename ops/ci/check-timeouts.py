@@ -33,6 +33,7 @@ SH_SECONDS = {
     'ops/ci/tests/test-native-build.sh': 60,
     'ops/ci/tests/test-local-ci.sh': 60,
     'ops/tests/test-daemon-reload-batch.sh': 60,
+    'ops/tests/test-deploy-deadline.sh': 60,
     'ops/backup/tests/test-backup.sh': 300,
 }
 JOB_MINUTES = {

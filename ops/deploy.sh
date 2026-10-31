@@ -3,20 +3,7 @@
 set -euo pipefail
 # shellcheck source=deploy-guard.sh
 source "$(cd -- "$(dirname -- "$0")" && pwd)/deploy-guard.sh"
-mag_deploy_arm_deadline "$@"
 SOURCE="$(cd -- "$(dirname -- "$0")/.." && pwd)"
-RELEASE_ID="${MAG_RELEASE_ID:-$(date -u +%Y%m%dT%H%M%SZ)}"
-RELEASE="/opt/mag-stack/releases/$RELEASE_ID"
-BACKUP="/var/backups/mag-stack/$RELEASE_ID"
-WHISPER_CLI="${MAG_WHISPER_SOURCE:-/home/chris/.cache/mag-stack/whisper-build/bin/whisper-cli}"
-WHISPER_MODEL="${MAG_WHISPER_SOURCE_MODEL:-/home/chris/models/whisper/ggml-large-v3-turbo.bin}"
-[[ $EUID == 0 ]] || { echo 'Run with sudo' >&2; exit 1; }
-exec 8>/run/lock/mag-private-deploy.lock
-flock -n 8 || { echo 'Another MAG deploy/ingress install is running' >&2; exit 1; }
-# shellcheck source=deploy-watchdog.sh
-source "$SOURCE/ops/deploy-watchdog.sh"
-deploy_lock_cloexec 8
-deployment_started=0
 # Normal drain budget plus 15 minutes. Mistral's 233 GB NUMA0 model uses mmap;
 # reserve the full seven-hour service window plus deploy overhead.
 _deploy_drain=${MAG_DEPLOY_DRAIN_S:-900}
@@ -34,7 +21,23 @@ if [[ $_layout_for_deadline == glm ]]; then
   # Reserve the complete 7-hour service load window plus deploy overhead.
   _deploy_default_deadline=30000
 fi
-deploy_watchdog_arm "${MAG_DEPLOY_DEADLINE_S:-$_deploy_default_deadline}"
+# Choose the layout-specific deadline BEFORE the outer timeout wrapper. The
+# wrapper re-execs this script; the armed marker then lets it continue once.
+export MAG_DEPLOY_DEADLINE_S="${MAG_DEPLOY_DEADLINE_S:-$_deploy_default_deadline}"
+mag_deploy_arm_deadline "$@"
+RELEASE_ID="${MAG_RELEASE_ID:-$(date -u +%Y%m%dT%H%M%SZ)}"
+RELEASE="/opt/mag-stack/releases/$RELEASE_ID"
+BACKUP="/var/backups/mag-stack/$RELEASE_ID"
+WHISPER_CLI="${MAG_WHISPER_SOURCE:-/home/chris/.cache/mag-stack/whisper-build/bin/whisper-cli}"
+WHISPER_MODEL="${MAG_WHISPER_SOURCE_MODEL:-/home/chris/models/whisper/ggml-large-v3-turbo.bin}"
+[[ $EUID == 0 ]] || { echo 'Run with sudo' >&2; exit 1; }
+exec 8>/run/lock/mag-private-deploy.lock
+flock -n 8 || { echo 'Another MAG deploy/ingress install is running' >&2; exit 1; }
+# shellcheck source=deploy-watchdog.sh
+source "$SOURCE/ops/deploy-watchdog.sh"
+deploy_lock_cloexec 8
+deployment_started=0
+deploy_watchdog_arm "$MAG_DEPLOY_DEADLINE_S"
 trap deploy_exit EXIT
 trap 'exit 143' TERM
 trap 'exit 130' INT

@@ -18,6 +18,31 @@ on:
       - '.github/workflows/backup.yml'
       - '.gitea/workflows/mag-ci.yml'
 jobs:
+  mistral-cli:
+    timeout-minutes: 50
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        timeout-minutes: 5
+      - name: Install pinned llama.cpp build dependencies
+        timeout-minutes: 10
+        run: sudo apt-get update && sudo apt-get install -y cmake ninja-build g++
+      - name: Build pinned Mistral runtime and validate launcher flags
+        timeout-minutes: 45
+        run: |
+          set -euo pipefail
+          rev=$(tr -d '[:space:]' < ops/mistral/runtime.sha)
+          test "$rev" = 8642541b255bfb5dc39cd351a178be09013a55d6
+          git clone --filter=blob:none https://github.com/ggml-org/llama.cpp.git /tmp/mistral-llama.cpp
+          git -C /tmp/mistral-llama.cpp checkout --detach "$rev"
+          grep -q 'LLM_ARCH_MISTRAL4' /tmp/mistral-llama.cpp/src/llama-arch.h
+          cmake -S /tmp/mistral-llama.cpp -B /tmp/mistral-llama.cpp/build-mag-mistral -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=ON -DGGML_AVX2=ON \
+            -DGGML_AVX512=OFF -DGGML_AVX512_VBMI=OFF -DGGML_AVX512_VNNI=OFF \
+            -DGGML_CUDA=OFF -DBUILD_SHARED_LIBS=OFF -DLLAMA_BUILD_TESTS=OFF \
+            -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_SERVER=ON
+          cmake --build /tmp/mistral-llama.cpp/build-mag-mistral -j 4 --target llama-server
+          python3 ops/mistral/check-cli-flags.py --server /tmp/mistral-llama.cpp/build-mag-mistral/bin/llama-server
   fast:
     timeout-minutes: 20
     runs-on: ${{ fromJSON(vars.MAG_RUNS_ON || '"ubuntu-24.04"') }}

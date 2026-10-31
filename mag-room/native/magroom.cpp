@@ -930,25 +930,102 @@ static void load_agents() {
     });
   }
   if (room_is_glm()) {
-    // Room-only GLM layout: keep Q1's persisted identity/VM/memory parked.
-    // The :8191 model service stays running and its slot is never reassigned.
-    std::vector<Val> q2;
+    // Qwen owns slot 1/NUMA0; GLM-Q2 keeps slot 2/NUMA1. The old Q1 record
+    // (deepseek-chat) remains parked with its original memory/VM/identity.
+    const std::string q1_model = "glm-5.3-flash-iq1-m";
+    const std::string qwen_model = "qwen3.8-flash-next-uncensored";
+    const std::string q2_model = "glm-5.3-flash";
+    std::vector<Val> active;
+    bool have_qwen0 = false, have_q2 = false;
     for (auto &bot : AGENTS) {
-      if (model_slot_of(bot) == 2) {
-        if (mag::str(bot, "id") != "qwen-numa1") {
-          // Preserve an existing qwen-numa1 identity rather than renaming it.
-          bool existing = false;
-          for (const auto &a : PARKED)
-            if (mag::str(a, "id") == "qwen-numa1") existing = true;
-          if (!existing) { bot["id"] = "qwen-numa1"; dirty = true; }
-        }
-        q2.push_back(std::move(bot));
-      } else {
+      const std::string id = mag::str(bot, "id");
+      const std::string name = mag::str(bot, "name");
+      const std::string model = mag::str(bot, "model");
+      const int slot = model_slot_of(bot);
+      if (id == "deepseek-chat" || name == "GLM-Q1" || model == q1_model) {
+        bot["model"] = q1_model;
+        bot["name"] = "GLM-Q1";
+        bot["slot"] = 1;
+        bot["numa"] = 0;
         PARKED.push_back(std::move(bot));
         dirty = true;
+      } else if (id == "qwen-numa0" || (slot == 1 && model == qwen_model)) {
+        if (have_qwen0) { PARKED.push_back(std::move(bot)); continue; }
+        bot["id"] = "qwen-numa0";
+        bot["name"] = "Qwen";
+        bot["model"] = qwen_model;
+        bot["slot"] = 1;
+        bot["numa"] = 0;
+        active.push_back(std::move(bot));
+        have_qwen0 = true;
+        dirty = true;
+      } else if (slot == 2 || id == "qwen-numa1") {
+        if (have_q2) { PARKED.push_back(std::move(bot)); continue; }
+        bot["id"] = "qwen-numa1";
+        bot["name"] = "GLM-Q2";
+        bot["model"] = q2_model;
+        bot["slot"] = 2;
+        bot["numa"] = 1;
+        active.push_back(std::move(bot));
+        have_q2 = true;
+        dirty = true;
+      } else {
+        PARKED.push_back(std::move(bot));
       }
     }
-    AGENTS = std::move(q2);
+    // The previous Q1 identity may already be in PARKED (e.g. after a
+    // duplicate-slot migration). Restore its historical slot/model there.
+    for (auto &bot : PARKED) {
+      if (mag::str(bot, "id") == "deepseek-chat" ||
+          mag::str(bot, "name") == "GLM-Q1" ||
+          mag::str(bot, "model") == q1_model) {
+        if (mag::str(bot, "model") != q1_model ||
+            mag::str(bot, "name") != "GLM-Q1" ||
+            model_slot_of(bot) != 1) dirty = true;
+        bot["model"] = q1_model;
+        bot["name"] = "GLM-Q1";
+        bot["slot"] = 1;
+        bot["numa"] = 0;
+      }
+    }
+    auto make_room_bot = [](const std::string &id, const std::string &name,
+                            const std::string &model, int slot, int numa) {
+      Val bot = Val::object();
+      bot["id"] = id; bot["name"] = name; bot["model"] = model;
+      bot["slot"] = slot; bot["numa"] = numa;
+      bot["vm"] = ""; bot["color"] = "#8fd0ff";
+      bot["persona"] = "Neugierig, freundlich und eigenstaendig.";
+      bot["memory"] = Val::array();
+      return bot;
+    };
+    if (!have_qwen0) {
+      auto it = std::find_if(PARKED.begin(), PARKED.end(), [](const Val &a) {
+        return mag::str(a, "id") == "qwen-numa0";
+      });
+      if (it != PARKED.end()) {
+        Val bot = *it; PARKED.erase(it);
+        bot["name"] = "Qwen"; bot["model"] = qwen_model;
+        bot["slot"] = 1; bot["numa"] = 0;
+        active.push_back(std::move(bot));
+      } else active.push_back(make_room_bot("qwen-numa0", "Qwen", qwen_model, 1, 0));
+      dirty = true;
+    }
+    if (!have_q2) {
+      auto it = std::find_if(PARKED.begin(), PARKED.end(), [](const Val &a) {
+        return mag::str(a, "id") == "qwen-numa1";
+      });
+      if (it != PARKED.end()) {
+        Val bot = *it; PARKED.erase(it);
+        bot["name"] = "GLM-Q2"; bot["model"] = q2_model;
+        bot["slot"] = 2; bot["numa"] = 1;
+        active.push_back(std::move(bot));
+      } else active.push_back(make_room_bot("qwen-numa1", "GLM-Q2", q2_model, 2, 1));
+      dirty = true;
+    }
+    std::stable_sort(active.begin(), active.end(), [](const Val &a, const Val &b) {
+      return model_slot_of(a) < model_slot_of(b);
+    });
+    AGENTS = std::move(active);
   }
   if (DUAL_NUMA) {
     // Recover one existing coding bot on NUMA0 (prefer its live VM), and one
@@ -2232,7 +2309,9 @@ static std::string glm_chat_system(int idx) {
 static std::string build_system(int bot_idx, bool autotalk,
                                 const std::string &other, bool web,
                                 bool glm_chat_only = false) {
-  if (glm_chat_only && bot_model_id(bot_idx).rfind("glm-5.3-flash", 0) == 0)
+  if (glm_chat_only &&
+      (bot_model_id(bot_idx).rfind("glm-5.3-flash", 0) == 0 ||
+       bot_model_id(bot_idx) == "qwen3.8-flash-next-uncensored"))
     return glm_chat_system(bot_idx);
   std::string vm = bot_field(bot_idx, "vm", "keine");
   std::string bot_id = bot_field(bot_idx, "id");
@@ -6290,12 +6369,13 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
   // and never entered the prewarm/cache path.
   const bool stateless = !CONFIGURED_MODEL &&
                          model_settings_for(bot_model_id(bot_idx)).deterministic;
+  const bool qwen_room_bot = CONFIGURED_MODEL &&
+      bot_model_id(bot_idx) == "qwen3.8-flash-next-uncensored";
+  const bool thinking_turn = qwen_room_bot ? false : turn_thinking();
   const bool glm_chat_mode = CONFIGURED_MODEL && !CURRENT_JOB && !TL_TASK &&
       !autotalk && !TL_REFLECT && !TL_SELFTALK &&
-      bot_model_id(bot_idx).rfind("glm-5.3-flash", 0) == 0;
-  const bool short_chat = glm_chat_mode &&
-      !autotalk && !turn_thinking() &&
-      bot_model_id(bot_idx).rfind("glm-5.3-flash", 0) == 0 &&
+      (bot_model_id(bot_idx).rfind("glm-5.3-flash", 0) == 0 || qwen_room_bot);
+  const bool short_chat = glm_chat_mode && !autotalk && !thinking_turn &&
       short_glm_input(TURN_INPUT);
   const bool web = WEB_ENABLED.load();
   std::vector<Val> messages;
@@ -6334,15 +6414,16 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
     messages.push_back(u);
     tools.clear();
   } else {
-    if (!glm_chat_mode) mcp_auto_once();
-    system = build_system(bot_idx, autotalk, other, web, glm_chat_mode);
-    tools = glm_chat_mode ? std::string() : tools_json(bot_idx, web);
+    if (!glm_chat_mode && !qwen_room_bot) mcp_auto_once();
+    system = build_system(bot_idx, autotalk, other, web,
+                          glm_chat_mode || qwen_room_bot);
+    tools = (glm_chat_mode || qwen_room_bot) ? std::string() : tools_json(bot_idx, web);
     if (glm_chat_mode) {
       Val sys=Val::object();sys["role"]="system";
       sys["content"]=system + glm_chat_memory(bot_id);
       messages.push_back(sys);
       auto turns = glm_chat_turns(bot_id, TURN_INPUT);
-      if (!turns.empty()) {
+      if (!turns.empty() && !qwen_room_bot) {
         // Skills belong to the latest user message, not the system prompt.
         turns.back()["content"] =
             mag::str(turns.back(), "content") + glm_chat_skill(TURN_INPUT);
@@ -6442,7 +6523,7 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
   auto run_deadline = steady_clock::now() + seconds(RUN_BUDGET_S);
   int todo_nudges = 0;
   TL_TODO_TOUCHED = false;
-  const bool glm_chat = glm_chat_mode;
+  const bool glm_chat = glm_chat_mode || qwen_room_bot;
   int glm_tool_rounds = 0;
   const int glm_tool_max = std::clamp(envi("MAG_ROOM_GLM_CHAT_MAX_ROUNDS", 2), 0, 8);
   for (int round = 0; round < MAX_RUN_STEPS; round++) {
@@ -6529,7 +6610,7 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
     };
     // Re-read permissions between tool rounds. In particular, turning GitHub
     // off removes its schemas from the next request of an already running turn.
-    if (!stateless && !TL_SELFTALK && !glm_chat) tools = tools_json(bot_idx, web);
+    if (!stateless && !TL_SELFTALK && !glm_chat && !qwen_room_bot) tools = tools_json(bot_idx, web);
     // Preserve tool schemas and cache prefix even on short chats, but forbid
     // execution / tool follow-ups for explicit greetings.
     // Tools remain available on real tasks without a forced early final.
@@ -6540,9 +6621,9 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
       if (!stateless)
         compact_agent_context(bot_idx, messages, tools, attempt_budget, compacted_steps);
       t = backend_turn(messages, tools,
-                       autotalk ? 0.75 : 0.55, on_delta, turn_thinking(),
+                       autotalk ? 0.75 : 0.55, on_delta, thinking_turn,
                        slot_for_key(bot_id), bot_model_id(bot_idx), bot_idx,
-                       short_chat, glm_chat);
+                       short_chat, glm_chat || qwen_room_bot);
       if (t.skipped || assistant_prefill_error(t.error)) {
         // The guard already logged a skip. A live 500 of this type must not
         // be posted into the room and must not invalidate the wire below.
@@ -6574,7 +6655,7 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
       if (t.calls.empty()) final_text += t.text;
       break;
     }
-    if (glm_chat && turn_thinking() && !stop_flag().load() &&
+    if (glm_chat && thinking_turn && !stop_flag().load() &&
         ((t.finish == "length" && t.text.empty()) ||
          t.error.find("Antwortlimit beim Denken erreicht") != std::string::npos)) {
       // Exactly one nonthinking answer after a user-requested thinking round.
@@ -6617,7 +6698,7 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
     }
     // Neither short chat nor regular GLM chat may silently post an empty
     // answer when the model returns tool-only output or no visible text.
-     if ((short_chat || glm_chat) && t.text.empty()) {
+     if ((short_chat || glm_chat || qwen_room_bot) && t.text.empty()) {
       // A structured tool-only result with tool_choice=none is not a
       // successful answer. Show only a local, explicitly failed fallback.
       report.local_fallback = true;
@@ -6627,7 +6708,7 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
       completed = true;
       break;
     }
-    if (glm_chat) t.calls.clear();
+    if (glm_chat || qwen_room_bot) t.calls.clear();
     // Stateless means one new model inference per input. Never execute tools
     // or feed the model's output back as a new turn, even if it emits an
     // unexpected tool call or a continuation marker.
@@ -6676,9 +6757,9 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
     const bool tool_round = !t.calls.empty() && !TL_SELFTALK;
     if (tool_round && glm_chat) ++glm_tool_rounds;
     // Open todo items are an unfinished goal: the turn goes on (bounded).
-    const bool todo_open = !glm_chat && !short_chat && !tool_round && !stateless && !TL_SELFTALK && TL_TODO_TOUCHED &&
+    const bool todo_open = !glm_chat && !qwen_room_bot && !short_chat && !tool_round && !stateless && !TL_SELFTALK && TL_TODO_TOUCHED &&
         todo_nudges < 2 && !has_next_step(t.text) && todo_open_for(bot_id) > 0;
-    const bool pending = !glm_chat && !short_chat && !TL_SELFTALK && (todo_open || (has_next_step(t.text) &&
+    const bool pending = !glm_chat && !qwen_room_bot && !short_chat && !TL_SELFTALK && (todo_open || (has_next_step(t.text) &&
         t.text.find("[[MAG:ENDE]]") == std::string::npos));
     if (!t.text.empty()) {
       if (tool_round || pending) {
@@ -6696,7 +6777,7 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
     }
     // Normal GLM chat has exactly one host-directed answer per bot/user turn.
     // A thinking-budget exhaustion already had its single final retry above.
-    if (glm_chat) { completed = true; break; }
+    if (glm_chat || qwen_room_bot) { completed = true; break; }
     if (stateless || TL_SELFTALK) {
       completed = true; break;
     }

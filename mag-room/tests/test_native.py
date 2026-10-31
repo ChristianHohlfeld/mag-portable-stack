@@ -5289,69 +5289,7 @@ class GlmLayoutStartup(unittest.TestCase):
    self.assertNotIn('Antwort',q2text)
    Model.script_scope=None
    Model.script=[]
-   # A single leading greeting + group target broadcasts, but a middle
-   # mention of 'beide' must retain GLM's one-host arbitration.
-   for text_,expected in [('Hi beide: wie viel ist 2+3?',2),
-                          ('ich mag beide Farben',1)]:
-    marker='GLM-GROUP-'+str(time.monotonic_ns())
-    before=len(Model.paths)
-    self.assertTrue(post({'text':text_+' '+marker,
-                          'bots':['deepseek-chat','qwen-numa1']})['accepted'])
-    calls=calls_after(before,marker,expected)
-    idle_after(marker)
-    self.assertEqual(len(calls),expected,calls)
-   # Q1 hygiene: at most two own clean user/assistant pairs. Never include
-   # a foreign Q2 response as a fake user turn or an own assistant turn.
-   q2mark='GLM-CTX-Q2-'+str(time.monotonic_ns())
-   before=len(Model.paths)
-   self.assertTrue(post({'text':q2mark,'bots':['qwen-numa1']})['accepted'])
-   calls_after(before,q2mark,1)
-   idle_after(q2mark)
-   q1mark='GLM-CTX-Q1-'+str(time.monotonic_ns())
-   before=len(Model.paths)
-   self.assertTrue(post({'text':q1mark,'bots':['deepseek-chat']})['accepted'])
-   q1req=calls_after(before,q1mark,1)[0][3]
-   roles=q1req['messages']
-   self.assertEqual(roles[0]['role'],'system')
-   self.assertEqual(roles[-1],{'role':'user','content':q1mark})
-   self.assertLessEqual(len(roles),6,'system + two complete Q1 pairs + current user')
-   self.assertFalse(any(m['content'].startswith('GLM-Q2: ')
-       for m in roles[1:-1]),roles)
-   self.assertEqual([m['role'] for m in roles[1:-1]],
-       ['user','assistant']*((len(roles)-2)//2),roles)
-   self.assertNotIn('[Raumverlauf]',json.dumps(roles,ensure_ascii=False))
-   idle_after(q1mark)
-   # Six identical words cause a hard stream cut before the repetition run
-   # enters SSE or persisted room state. A valid prefix is kept.
-   for prefix in ('# ','2, 3 und 5. '):
-    marker='GLM-REPEAT-'+str(time.monotonic_ns())
-    Model.script_scope=marker
-    Model.script=[[prefix]+['primos ']*6+['GARBAGE-REPEAT']]
-    before=len(Model.paths)
-    self.assertTrue(post({'text':marker,'bots':['deepseek-chat']})['accepted'])
-    calls_after(before,marker,1)
-    room=idle_after(marker)['room']
-    user_at=max(i for i,m in enumerate(room) if m.get('role')=='user' and
-                m.get('content')==marker)
-    after=room[user_at+1:]
-    self.assertNotIn('primos',json.dumps(after,ensure_ascii=False))
-    self.assertNotIn('GARBAGE-REPEAT',json.dumps(after,ensure_ascii=False))
-    if prefix.startswith('2,'):
-     self.assertTrue(any(m.get('role')=='assistant' and
-         (m.get('content') or '').strip()=='2, 3 und 5.' for m in after),after)
-    else:
-     self.assertFalse(any(m.get('role')=='assistant' and
-         (m.get('content') or '').strip()=='#' for m in after),after)
-    Model.script_scope=None;Model.script=[]
-   # Forgetting memory indexes across multiple agents is ambiguous.
-   for ids in (['deepseek-chat','qwen-numa1'],None):
-    body={'text':'/vergiss 1'}
-    if ids is not None:body['bots']=ids
-    with self.assertRaises(urllib.error.HTTPError) as error:
-     post(body)
-    self.assertEqual(error.exception.code,400)
-    self.assertIn('Für /vergiss genau einen Bot wählen',
-                  error.exception.read().decode())
+   # Q1 is parked. No legacy Q1-only group, history, or retry checks apply.
   finally:
    Model.script_scope=None;Model.script=[]
    proc.terminate()

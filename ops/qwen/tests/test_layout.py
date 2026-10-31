@@ -82,6 +82,15 @@ if a[0] in ('start','stop','enable','disable'):
 json.dump(s,open(p,'w'))
 ''');ctl.chmod(0o755)
   curl=self.bin/'curl';curl.write_text('#!/bin/sh\nexit 0\n');curl.chmod(0o755)
+  readlink_bin=self.bin/'readlink'
+  readlink_bin.write_text("""#!/usr/bin/env python3
+import os,sys
+if os.environ.get('MAG_FAKE_Q2_DELETED') == '1' and sys.argv[-1] == '/proc/99999999/exe':
+ print('/home/chris/.local/qwen4exp/old/bin/llama-server (deleted)')
+else:
+ os.execv('/usr/bin/readlink',['readlink',*sys.argv[1:]])
+""")
+  readlink_bin.chmod(0o755)
   self.state=self.base/'state.json';self.log=self.base/'calls';self.log.touch()
   self.original={'active':['mag-llm-ds-node@0.service','mag-llm-ds-node@1.service'],'enabled':['mag-llm-ds-node@0.service','mag-llm-ds-node@1.service']}
   self.state.write_text(json.dumps(self.original));self.backup=self.base/'backup'
@@ -212,6 +221,24 @@ json.dump(s,open(p,'w'))
   self.assertNotIn('mag-llm-glm@q2.service',[
    c.split(' ',1)[1] for c in self.log.read_text()[mark:].splitlines()
    if c.startswith(('stop ','start ','enable ','disable '))])
+
+ def test_q2_deleted_exe_is_warning_only_and_never_restarted(self):
+  self.seed_live_glm()
+  (self.repo/'ops/room/layout').write_text('glm\\n')
+  mark=self.log.stat().st_size
+  p=self.run_layout(backup=self.base/'backup-deleted-q2',MAG_FAKE_Q2_DELETED='1')
+  self.assertEqual(p.returncode,0,p.stderr+p.stdout)
+  self.assertIn('WARN: GLM-Q2 runs a deleted executable',p.stderr)
+  actions=self.log.read_text()[mark:].splitlines()
+  for verb in ('stop','start','enable','disable'):
+   self.assertNotIn(verb+' mag-llm-glm@q2.service',actions)
+  state=json.loads(self.state.read_text())
+  self.assertIn('mag-llm-qwen-room.service',state['active'])
+  self.assertIn('mag-llm-glm@q2.service',state['active'])
+  # Deploy's identity guard protects against a Q2 restart; boot/update have
+  # no independent stale-executable path.
+  for path in ('ops/deploy.sh','ops/boot/ensure-boot.sh','ops/update.sh'):
+   self.assertNotIn('runs_stale_binary',(ROOT/path).read_text(),path)
 
  def test_qwen_room_change_restarts_only_qwen_and_never_q2(self):
   self.seed_live_glm()

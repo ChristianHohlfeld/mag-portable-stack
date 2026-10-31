@@ -238,7 +238,7 @@ else:
   self.assertNotIn('start mag-llm-glm@q2.service',actions)
   p=self.run_layout('rollback',backup=self.base/'backup2');self.assertEqual(p.returncode,0,p.stderr)
   state=json.loads(self.state.read_text())
-  self.assertIn('mag-llm-mistral-room.service',state['active'])
+  self.assertIn('mag-llm-qwen-room.service',state['active'])
   self.assertIn('mag-llm-glm@q2.service',state['active'])
   self.assertNotIn('mag-llm-mistral-room.service',state['active'])
   self.assertNotIn('mag-llm-glm@q2.service',[
@@ -256,7 +256,7 @@ else:
   for verb in ('stop','start','enable','disable'):
    self.assertNotIn(verb+' mag-llm-glm@q2.service',actions)
   state=json.loads(self.state.read_text())
-  self.assertIn('mag-llm-qwen-room.service',state['active'])
+  self.assertIn('mag-llm-mistral-room.service',state['active'])
   self.assertIn('mag-llm-glm@q2.service',state['active'])
   # Deploy's identity guard protects against a Q2 restart; boot/update have
   # no independent stale-executable path.
@@ -278,7 +278,7 @@ else:
   for verb in ('stop','start','enable','disable'):
    self.assertNotIn(verb+' mag-llm-glm@q2.service',actions)
   state=json.loads(self.state.read_text())
-  self.assertIn('mag-llm-qwen-room.service',state['active'])
+  self.assertIn('mag-llm-mistral-room.service',state['active'])
   self.assertIn('mag-llm-glm@q2.service',state['active'])
   mark=self.log.stat().st_size
   p=self.run_layout('rollback',backup=self.base/'backup2')
@@ -349,9 +349,9 @@ else:
   mark=self.log.stat().st_size
   p=self.run_layout(backup=self.base/'backup2',SMOKE_FAIL='1');self.assertNotEqual(p.returncode,0)
   state=json.loads(self.state.read_text())
-  self.assertIn('mag-llm-glm@q1.service',state['active'])
+  self.assertIn('mag-llm-qwen-room.service',state['active'])
   self.assertIn('mag-llm-glm@q2.service',state['active'])
-  self.assertNotIn('mag-llm-qwen-room.service',state['active'])
+  self.assertNotIn('mag-llm-mistral-room.service',state['active'])
   self.assertTrue((self.host/'var/lib/mag-stack/layout-failed').read_text().startswith('glm '))
   actions=self.log.read_text()[mark:].splitlines()
   for verb in ('stop','start','enable','disable'):
@@ -386,7 +386,7 @@ else:
   p=self.run_layout(backup=self.base/'backup3',MAG_ROOM_LAYOUT='repo');self.assertEqual(p.returncode,0,p.stderr)
   self.assertFalse((self.host/'etc/mag-stack/room-layout.pinned').exists())
   state=json.loads(self.state.read_text())
-  self.assertIn('mag-llm-qwen-room.service',state['active'])
+  self.assertIn('mag-llm-mistral-room.service',state['active'])
   self.assertIn('mag-llm-glm@q2.service',state['active'])
   self.assertNotIn('mag-llm-glm@q1.service',state['active'])
  def test_gguf_arch_compat_uses_c_string_for_printf_formatter(self):

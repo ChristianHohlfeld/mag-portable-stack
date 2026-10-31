@@ -32,7 +32,7 @@ def main():
         raise SystemExit("pinned llama-server --help returned no output")
     missing = [flag for flag in flags
                if not re.search(r"(?<![A-Za-z0-9_-])" + re.escape(flag) +
-                                r"(?=$|[\\s,=])", help_text)]
+                                r"(?=$|[\s,=])", help_text)]
     if missing:
         raise SystemExit("Mistral launcher flags absent from pinned llama-server --help: " +
                          ", ".join(missing))

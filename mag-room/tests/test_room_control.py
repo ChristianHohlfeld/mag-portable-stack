@@ -745,7 +745,7 @@ class QwenRoomTurns(unittest.TestCase):
         s = self.room.until(lambda s: not s['busy'] and
             any(m.get('role') == 'assistant' and m.get('bot') == 'qwen-numa0' and
                 m.get('content') == 'Qwen antwortet einmal.' for m in s['room']) and
-            any(m.get('role') == 'assistant' and m.get('bot') == 'glm' for m in s['room']),
+            any(m.get('role') == 'assistant' and m.get('bot') == 'qwen-numa1' for m in s['room']),
             timeout=8, what='both bots answer Hi beide')
         self.assertEqual(sum(m.get('role') == 'assistant' and m.get('bot') == 'qwen-numa0'
                              and m.get('content') == 'Qwen antwortet einmal.' for m in s['room']), 1)

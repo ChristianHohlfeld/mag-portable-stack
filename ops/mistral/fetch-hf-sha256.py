@@ -41,13 +41,22 @@ def main():
         raise SystemExit("HF API LFS SHA256s differ from the reviewed ops/mistral/SHA256SUMS; refusing activation")
     target = model_dir / "SHA256SUMS"
     if target.exists():
-        if target.is_symlink() or target.read_text() != api_manifest:
-            raise SystemExit("model-directory SHA256SUMS differs from current HF API and reviewed manifest")
-    else:
-        temp = model_dir / ".SHA256SUMS.tmp"
-        temp.write_text(api_manifest)
-        temp.chmod(0o644)
-        temp.replace(target)
+        if target.is_symlink():
+            raise SystemExit("model-directory SHA256SUMS must not be a symlink")
+        # The operator may have recorded only shard 1 while the download is
+        # running. Extend a correct partial manifest from the API, but never
+        # silently repair or replace a conflicting checksum.
+        for line in target.read_text().splitlines():
+            fields = line.split()
+            if len(fields) != 2:
+                raise SystemExit("existing model-directory SHA256SUMS has an invalid row")
+            digest, name = fields
+            if name not in by_name or digest != by_name[name]:
+                raise SystemExit(f"existing SHA256SUMS conflicts with HF API: {name}")
+    temp = model_dir / ".SHA256SUMS.tmp"
+    temp.write_text(api_manifest)
+    temp.chmod(0o644)
+    temp.replace(target)
     print("HF Hub API SHA256 manifest verified for all six UD-IQ1_S shards")
 
 if __name__ == "__main__":

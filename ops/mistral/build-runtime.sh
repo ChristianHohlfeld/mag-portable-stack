@@ -15,11 +15,8 @@ fi
 git -C "$SRC" fetch --no-tags origin "$REV"
 git -C "$SRC" checkout --force --detach "$REV"
 [[ $(git -C "$SRC" rev-parse HEAD) == "$REV" ]] || exit 4
-# Fail closed unless this exact upstream revision contains the Mistral Large 4
-# architecture enum, name mapping and model loader.
-grep -q 'LLM_ARCH_MISTRAL4' "$SRC/src/llama-arch.h"
-grep -q 'LLM_ARCH_MISTRAL4.*"mistral4"' "$SRC/src/llama-arch.cpp"
-grep -q 'case LLM_ARCH_MISTRAL4:' "$SRC/src/llama-model.cpp"
+# Fail closed unless the pinned source recognizes the GGUF architecture and has its loader.
+python3 "$ROOT/ops/mistral/check-architecture.py" --source "$SRC" --gguf-architecture mistral-large4
 cmake -S "$SRC" -B "$BUILD" -G Ninja \
   -DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=ON -DGGML_AVX2=ON \
   -DGGML_AVX512=OFF -DGGML_AVX512_VBMI=OFF -DGGML_AVX512_VNNI=OFF -DGGML_CUDA=OFF \
@@ -32,4 +29,4 @@ install -m 0755 "$BUILD/bin/llama-server" "$BIN.next"
 mv -f "$BIN.next" "$BIN"
 printf '%s\n' "$REV" > "$(dirname "$BIN")/source-commit"
 "$BIN" --version
-echo "Pinned Mistral4 CPU runtime built: $BIN"
+echo "Pinned Mistral Large 4 CPU runtime built: $BIN"

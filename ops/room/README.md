@@ -148,8 +148,7 @@ decode / 28 batch threads, and uses the GGUF's embedded Jinja template via
 `--jinja`. It does not download or delete model files.
 
 Qwen room turns have no tools, a 256-token cap, and thinking disabled through
-`enable_thinking=false`, `preserve_thinking=false` and
-`reasoning_effort=none`. Sampling follows the [official Qwen3.8-Flash-Next
+`enable_thinking=false` and `reasoning_effort=none`. Sampling follows the [official Qwen3.8-Flash-Next
 model card](https://huggingface.co/Qwen/Qwen3.8-Flash-Next): temperature 0.7,
 top_p 0.80, top_k 20, min_p 0, presence_penalty 1.5, repetition_penalty 1.0.
 The latter maps to llama.cpp's `repeat_penalty`; template/request controls

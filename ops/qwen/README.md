@@ -53,7 +53,7 @@ The cutover is repository/deploy-owned and idempotent:
 
 The Qwen room bot has no tools or tool schemas, uses one model response per
 message, and caps output at 256 tokens. Thinking is always disabled with
-`chat_template_kwargs.enable_thinking=false`, `preserve_thinking=false` and llama.cpp `reasoning_effort=none`. Live deltas are withheld until
+`chat_template_kwargs.enable_thinking=false` and llama.cpp `reasoning_effort=none`. Live deltas are withheld until
 the final text passes the hidden-token filter; any `<think>`, `</think>`
 or `<|` delimiter drops the whole candidate answer.
 

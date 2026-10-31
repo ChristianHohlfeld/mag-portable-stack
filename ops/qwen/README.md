@@ -1,17 +1,16 @@
 # Qwen3.8 Flash Next Uncensored — standalone fallback and room NUMA0
 
-> **Stand Oktober 2026:** Dieses Dokument enthält historische Q4/IQ3-Cutover-Schritte,
-> die nicht mehr ausgeführt werden dürfen. Qwen ist nun der unabhängige
-> Operator-Rollback für die vier Ornith-Bots:
-> `sudo bash ops/ornith/rollback.sh qwen`.
-> Dafür müssen der gepinnte Qwen-GGUF, der passende Runtime-Build und
-> ausreichende freie NUMA1-Ressourcen vorhanden sein (Qwen-Preflight: 150 GiB).
-> Kein Q4, IQ3 oder DeepSeek-Dienst wird dabei reaktiviert.
+> **Stand 31.10.2026:** Die alten Q4/IQ3-Cutover-Schritte unten sind historisch
+> und nicht der Weg für den GLM-Raum. Qwen bleibt zusätzlich als separater
+> Operator-Rollback für die vier Ornith-Bots verfügbar:
+> `sudo bash ops/ornith/rollback.sh qwen`. Dieser alternative NUMA1-Rollback
+> ist unabhängig vom neuen Raum-Bot auf NUMA0.
 
-
-Status: **code only**. PR/green/deploy does **not** stop IQ3, install/start Qwen,
-restart Q4, or select a new model in MAG. Default remains IQ3 at :8091,
-DeepSeek Q4 stays warm on NUMA0 :8090.
+Status: **PR implementation**. Im `glm`-Raumlayout wird beim Deploy das
+bereits vorhandene Qwen-IQ4_XS-GGUF auf NUMA0/:8191 gestartet; dafür wird
+GLM-Q1 gestoppt und disabled. GLM-Q2 auf NUMA1/:8192 bleibt aktiv, enabled
+und PID-identisch. Kein Download, keine Löschung. Das separate
+`mag-llm-qwen.service` bleibt der NUMA1-Fallback für das Ornith-Rollback.
 
 Architecture: `qwen4exp` (Gated DeltaNet + Qwen Sparse Attention + MoE +
 51B PLE n-gram table), not DeepSeek4. The old
@@ -66,7 +65,7 @@ for non-thinking instruct mode: `temperature=0.7`, `top_p=0.80`,
 used with `--jinja`; no custom template override is installed. See the
 [llama.cpp server API and chat-template docs](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md).
 
-## Prepare on MAG as chris (no service changes)
+## Legacy manual staging (not used by the GLM-room deploy)
 
 The user already started `hf download`; wait for completion. Keep that SSH
 session alive, or resume with the same `hf download` command. Then:
@@ -91,7 +90,7 @@ verified runtime launcher, and local upstream SHA. Q4/IQ3 PIDs and backend
 routing are unchanged. Check `systemctl is-enabled mag-llm-qwen.service`
 before enabling; this is **not** an automatic deploy.
 
-## Full MAG integration: one controlled cutover
+## Historical operator rollback flow (Ornith NUMA1; not used by GLM room)
 
 MAG already owns the coding agent, browser/VM, MCP tools, audit log and
 model switch UI. There is **no separate Qwen agent stack** and no hard-coded

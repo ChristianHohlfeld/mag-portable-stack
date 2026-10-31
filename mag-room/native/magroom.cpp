@@ -2283,8 +2283,9 @@ static bool bot_proaktiv_locked(int idx) {
 static bool github_enabled(int idx) { return bot_setting(idx, "github_enabled", GITHUB_DEFAULT.load()); }
 static bool pho_enabled(int idx) { return bot_setting(idx, "pho_compress", PHO_DEFAULT.load()); }
 static bool bot_thinking(int idx) {
-  if (CONFIGURED_MODEL && bot_model_id(idx) == "qwen3.8-flash-next-uncensored")
-    return false; // Qwen room bot is chat-only; never enable reasoning.
+  if (CONFIGURED_MODEL && room_is_glm() &&
+      bot_model_id(idx) == "qwen3.8-flash-next-uncensored")
+    return false; // Qwen in the GLM room is chat-only; never enable reasoning.
   return bot_setting(idx, "thinking", THINKING_DEFAULT.load());
 }
 static std::string identity_block(int bot_idx) {
@@ -6408,7 +6409,7 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
   // and never entered the prewarm/cache path.
   const bool stateless = !CONFIGURED_MODEL &&
                          model_settings_for(bot_model_id(bot_idx)).deterministic;
-  const bool qwen_room_bot = CONFIGURED_MODEL &&
+  const bool qwen_room_bot = CONFIGURED_MODEL && room_is_glm() &&
       bot_model_id(bot_idx) == "qwen3.8-flash-next-uncensored";
   const bool thinking_turn = qwen_room_bot ? false : turn_thinking();
   const bool glm_chat_mode = CONFIGURED_MODEL && !CURRENT_JOB && !TL_TASK &&
@@ -8654,7 +8655,7 @@ static uint64_t fnv64(const std::string &s) {
 static std::string prefix_file(int idx, const std::string &model) {
   if (CONFIGURED_MODEL &&
       (model.rfind("glm-5.3-flash", 0) == 0 ||
-       model == "qwen3.8-flash-next-uncensored"))
+       (room_is_glm() && model == "qwen3.8-flash-next-uncensored")))
     return "mag-prefix-" + model + "-slot" + std::to_string(model_slot(idx)) + "-chat-v2-prefix.bin";
   return CONFIGURED_MODEL ? "mag-prefix-" + model + "-slot" + std::to_string(model_slot(idx)) + ".bin"
                          : "mag-prefix-" + model + ".bin";
@@ -8685,7 +8686,7 @@ static void persist_configured_slot(int idx) {
   const std::string own_key = port + "/" + file;
   const bool web = WEB_ENABLED.load();
   const bool chat_only = model.rfind("glm-5.3-flash", 0) == 0 ||
-                         model == "qwen3.8-flash-next-uncensored";
+                         (room_is_glm() && model == "qwen3.8-flash-next-uncensored");
   std::string system = build_system(idx, false, "", web, chat_only);
   if (chat_only) system += glm_chat_memory(bot_field(idx, "id"));
   const std::string tool_defs = chat_only ? std::string() : tools_json(idx, web);
@@ -8985,7 +8986,7 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
     // Slot state is decided before wire_messages. That call appends a user
     // message and would otherwise rewrite a warm transcript on every restart.
     const bool chat_only = model.rfind("glm-5.3-flash", 0) == 0 ||
-                           model == "qwen3.8-flash-next-uncensored";
+                           (room_is_glm() && model == "qwen3.8-flash-next-uncensored");
     system = build_system(idx, false, "", web, chat_only);
     if (chat_only) {
       system += glm_chat_memory(bot_id);

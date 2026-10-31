@@ -58,11 +58,11 @@ for name in q1.env q2.env; do
  install -D -m 0644 "$REPO/ops/glm/$name" "$HOST/etc/mag-glm/$name"
 done
 ''')
-  (self.repo/'ops/qwen/smoke.py').write_text("import os,sys;open(os.environ['SMOKE_LOG'],'a').write(' '.join(sys.argv[1:])+'\\n');sys.exit(int(os.environ.get('SMOKE_FAIL','0')))\n")
+  (self.repo/'ops/qwen/smoke.py').write_text("import os,sys;open(os.environ['SMOKE_LOG'],'a').write(' '.join(sys.argv[1:])+'\n');sys.exit(int(os.environ.get('SMOKE_FAIL','0')))\n")
   ctl=self.bin/'systemctl';ctl.write_text('''#!/usr/bin/env python3
 import json,os,sys
 p=os.environ['SYSTEMD_STATE'];s=json.load(open(p));a=sys.argv[1:]
-with open(os.environ['SYSTEMD_LOG'],'a') as f:f.write(' '.join(a)+'\\n')
+with open(os.environ['SYSTEMD_LOG'],'a') as f:f.write(' '.join(a)+'\n')
 if a[0]=='cat':
  unit=a[-1]
  path=os.environ['HOST']+'/etc/systemd/system/'+unit
@@ -224,7 +224,7 @@ else:
 
  def test_q2_deleted_exe_is_warning_only_and_never_restarted(self):
   self.seed_live_glm()
-  (self.repo/'ops/room/layout').write_text('glm\\n')
+  (self.repo/'ops/room/layout').write_text('glm\n')
   mark=self.log.stat().st_size
   p=self.run_layout(backup=self.base/'backup-deleted-q2',MAG_FAKE_Q2_DELETED='1')
   self.assertEqual(p.returncode,0,p.stderr+p.stdout)

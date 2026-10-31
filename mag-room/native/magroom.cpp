@@ -734,7 +734,10 @@ static Val ROOM_PRESETS = Val::array();
 static bool CONFIGURED_MODEL = false;
 // Only the configured GLM-5.3 room, not every configured pair.
 static bool room_is_glm() {
-  return CONFIGURED_MODEL && ROOM_MODEL.id.rfind("glm-5.3-flash", 0) == 0;
+  return CONFIGURED_MODEL &&
+      (ROOM_MODEL.id.rfind("glm-5.3-flash", 0) == 0 ||
+       (ROOM_MODEL.backend(1).id == "qwen3.8-flash-next-uncensored" &&
+        ROOM_MODEL.backend(2).id == "glm-5.3-flash"));
 }
 // Configured mode: two bots, each with a persistent "slot" (1..2) stored in
 // agents.json. The slot, never the array index, picks the backend instance, so

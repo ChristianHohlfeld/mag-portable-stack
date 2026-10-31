@@ -70,7 +70,7 @@ if a[0]=='cat':
  sys.exit(0 if ok else 1)
 if a[0]=='disable' and a[-1]=='mag-llm-qwen.service' and not os.path.isfile(os.environ['HOST']+'/etc/systemd/system/'+a[-1]):sys.exit(1)
 if a[0]=='show':
- print('4242' if 'mag-llm-glm@q2.service' in a else '0');sys.exit(0)
+ print('99999999' if 'mag-llm-glm@q2.service' in a else '0');sys.exit(0)
 if a[0] in ('is-active','is-enabled'):sys.exit(0 if a[-1] in s['active' if a[0]=='is-active' else 'enabled'] else 3)
 if a[0] in ('start','stop','enable','disable'):
  key='active' if a[0] in ('start','stop') else 'enabled'

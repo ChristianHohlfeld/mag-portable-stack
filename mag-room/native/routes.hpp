@@ -234,12 +234,17 @@ static void resume_pending_spawns() {
       if (id.empty()) continue;
       std::string vm = bot_field((int)i, "pending_vm");
       const int slot = model_slot((int)i);
-      const bool qwen_chat_only = CONFIGURED_MODEL && room_is_glm() &&
-          slot >= 1 && slot <= ROOM_MAX_BOTS &&
-          ROOM_MODEL.backend(slot).id == "qwen3.8-flash-next-uncensored";
-      // Retire stale automatic VM reservations for the chat-only Qwen bot.
-      // Explicit /vm attachment (vm_attach) remains an operator choice.
-      if (qwen_chat_only && !AGENTS[i].find("vm_explicit_attach")) {
+      const std::string slot_model = CONFIGURED_MODEL && slot >= 1 && slot <= ROOM_MAX_BOTS
+          ? ROOM_MODEL.backend(slot).id : std::string();
+      const bool qwen_chat_only = room_chat_only_model(slot_model) &&
+          slot_model == "qwen3.8-flash-next-uncensored";
+      const bool mistral_chat_only = room_chat_only_model(slot_model) &&
+          slot_model == "mistral-large4";
+      // Mistral is strictly chat-only: clear stale automatic or explicit
+      // pending reservations and never resume a VM for that slot. Qwen keeps
+      // its existing operator-explicit /vm escape hatch.
+      if (mistral_chat_only ||
+          (qwen_chat_only && !AGENTS[i].find("vm_explicit_attach"))) {
         if (!vm.empty()) {
           SPAWNING_VMS.erase(vm);
           drop_key(AGENTS[i], "pending_vm");
@@ -1119,6 +1124,10 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
       int idx = agent_index(id);
       if (idx < 0) { error_json(fd, 404, "Unknown agent"); return; }
       if (busy(idx)) { error_json(fd, 409, "Bot hat bereits eine VM"); return; }
+      if (bot_model_id(idx) == "mistral-large4" && room_is_glm()) {
+        error_json(fd, 409, "Mistral ist im GLM-Raum chat-only und erhält keine VM");
+        return;
+      }
     }
     auto pre = run_argv({"sudo", "-n", AGENT_CTL, "preflight"}, 60);
     if (pre.code != 0) {
@@ -1438,8 +1447,7 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
       std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
       const int slot = free_model_slot();
       if (!slot) { error_json(fd, 409, bots_full); return; }
-      qwen_chat_only = room_is_glm() &&
-          ROOM_MODEL.backend(slot).id == "qwen3.8-flash-next-uncensored";
+      qwen_chat_only = room_chat_only_model(ROOM_MODEL.backend(slot).id);
     }
     const bool with_vm_requested = vm_requested && !qwen_chat_only;
     bool with_vm = false;
@@ -1460,8 +1468,8 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
       std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
       const int slot = CONFIGURED_MODEL ? free_model_slot() : 0;
       if (CONFIGURED_MODEL && !slot) { error_json(fd, 409, bots_full); return; }
-      // Qwen in the GLM room is deliberately chat-only (no VM tools).
-      // Its VM preflight was skipped before entering this creation path.
+      // Qwen/Mistral in the GLM room are deliberately chat-only.
+      // Their VM preflight was skipped before entering this creation path.
       with_vm = with_vm_requested;
       id = slug_id(str("name"));
       vm = with_vm ? next_vm() : "";

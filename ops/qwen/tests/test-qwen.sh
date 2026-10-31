@@ -56,7 +56,7 @@ grep -Fq 'tool result roundtrip' ops/qwen/smoke.py
 grep -Fq 'cutover.sh" apply' ops/qwen/go-live.sh
 bash -n ops/qwen/go-live.sh
 grep -Fq 'enable_thinking' ops/qwen/smoke.py
-grep -Fq 'preserve_thinking' ops/qwen/smoke.py
+! grep -Fq 'preserve_thinking' ops/qwen/smoke.py
 grep -Fq '"reasoning_effort": "none"' ops/qwen/smoke.py
 grep -Fq '"top_k": 20' ops/qwen/smoke.py
 grep -Fq '"presence_penalty": 1.5' ops/qwen/smoke.py

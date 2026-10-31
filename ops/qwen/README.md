@@ -20,7 +20,7 @@ not reused; upstream llama.cpp has supported qwen4exp since PR #27742
 `ops/qwen/runtime.sha` (2026-10-20). It is a CPU-only *candidate*:
 do not promise throughput/tool support until real generation tests pass.
 
-Source GGUF: `mradermacher/Qwen3.8-Flash-Next-Uncensored-GGUF`,
+Source GGUF: [mradermacher/Qwen3.8-Flash-Next-Uncensored-GGUF](https://huggingface.co/mradermacher/Qwen3.8-Flash-Next-Uncensored-GGUF),
 `Qwen3.8-Flash-Next-Uncensored.IQ4_XS.gguf`, ~98.4 GB. No model weight downloaded by deploy.
 Keep optional mmproj separate; no image input/vision is promised in MAG.
 
@@ -37,7 +37,7 @@ The cutover is repository/deploy-owned and idempotent:
 - It verifies the already-present GGUF against the pinned upstream SHA; it
   never downloads or deletes model files.
 - It stops and disables only `mag-llm-glm@q1.service`; the IQ1_M file and
-  parked `deepseek-chat` room identity/memory remain.
+  parked `deepseek-chat` identity, VM and memory remain; room history is untouched.
 - It requires GLM-Q2 to be active, healthy and enabled before changing
   anything, snapshots its PID, and verifies the same PID and :8192 health
   after Qwen's cold start. It does not install, enable, stop, start or restart
@@ -53,7 +53,7 @@ The cutover is repository/deploy-owned and idempotent:
 
 The Qwen room bot has no tools or tool schemas, uses one model response per
 message, and caps output at 256 tokens. Thinking is always disabled with
-`chat_template_kwargs.enable_thinking=false` and `preserve_thinking=false`. Live deltas are withheld until
+`chat_template_kwargs.enable_thinking=false`, `preserve_thinking=false` and llama.cpp `reasoning_effort=none`. Live deltas are withheld until
 the final text passes the hidden-token filter; any `<think>`, `</think>`
 or `<|` delimiter drops the whole candidate answer.
 
@@ -67,8 +67,10 @@ used with `--jinja`; no custom template override is installed. See the
 
 ## Legacy manual staging (not used by the GLM-room deploy)
 
-The user already started `hf download`; wait for completion. Keep that SSH
-session alive, or resume with the same `hf download` command. Then:
+The GLM-room deploy does not download weights or run this manual staging flow;
+it verifies the already-present GGUF and its pinned upstream SHA. The commands
+below are only for rebuilding the separate standalone operator fallback from
+scratch. If the model is already present, do not rerun `hf download`.
 
 ```bash
 cd ~/mag-stack

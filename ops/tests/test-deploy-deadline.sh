@@ -17,8 +17,9 @@ layout = deploy.index("if [[ $_layout_for_deadline == glm ]]; then")
 long_deadline = deploy.index("_deploy_default_deadline=30000", layout)
 export_deadline = deploy.index('export MAG_DEPLOY_DEADLINE_S="${MAG_DEPLOY_DEADLINE_S:-$_deploy_default_deadline}"', long_deadline)
 wrapper = deploy.index('mag_deploy_arm_deadline "$@"', export_deadline)
-watchdog = deploy.index('deploy_watchdog_arm "$MAG_DEPLOY_DEADLINE_S"', wrapper)
-assert layout < long_deadline < export_deadline < wrapper < watchdog
+lock = deploy.index('exec 8>/run/lock/mag-private-deploy.lock')
+watchdog = deploy.index('deploy_watchdog_arm "$MAG_DEPLOY_DEADLINE_S"', lock)
+assert layout < long_deadline < export_deadline < wrapper < lock < watchdog
 assert 'local deadline=${MAG_DEPLOY_DEADLINE_S:-3600}' in guard
 assert "--load-mode mmap" in start and "--mmap" not in start
 print("Mistral deploy deadline is selected before timeout wrapper; launcher uses --load-mode mmap")

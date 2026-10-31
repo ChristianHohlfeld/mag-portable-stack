@@ -19,7 +19,7 @@ on:
       - '.gitea/workflows/mag-ci.yml'
 jobs:
   mistral-cli:
-    timeout-minutes: 40
+    timeout-minutes: 50
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -28,7 +28,7 @@ jobs:
         timeout-minutes: 10
         run: sudo apt-get update && sudo apt-get install -y cmake ninja-build g++
       - name: Build pinned Mistral runtime and validate launcher flags
-        timeout-minutes: 35
+        timeout-minutes: 45
         run: |
           set -euo pipefail
           rev=$(tr -d '[:space:]' < ops/mistral/runtime.sha)

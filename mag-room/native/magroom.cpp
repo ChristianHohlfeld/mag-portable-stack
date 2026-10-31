@@ -2275,7 +2275,11 @@ static bool bot_proaktiv_locked(int idx) {
 }
 static bool github_enabled(int idx) { return bot_setting(idx, "github_enabled", GITHUB_DEFAULT.load()); }
 static bool pho_enabled(int idx) { return bot_setting(idx, "pho_compress", PHO_DEFAULT.load()); }
-static bool bot_thinking(int idx) { return bot_setting(idx, "thinking", THINKING_DEFAULT.load()); }
+static bool bot_thinking(int idx) {
+  if (CONFIGURED_MODEL && bot_model_id(idx) == "qwen3.8-flash-next-uncensored")
+    return false; // Qwen room bot is chat-only; never enable reasoning.
+  return bot_setting(idx, "thinking", THINKING_DEFAULT.load());
+}
 static std::string identity_block(int bot_idx) {
   const std::string name = bot_field(bot_idx, "name", "Bot");
   const std::string persona = bot_field(bot_idx, "persona");
@@ -9173,7 +9177,9 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
         }
         body["messages"] = msgs;
         Val tt;
-        if (model.rfind("glm-5.3-flash", 0) != 0 && mj::parse(tool_defs, tt)) body["tools"] = tt;
+        if (model.rfind("glm-5.3-flash", 0) != 0 &&
+            model != "qwen3.8-flash-next-uncensored" &&
+            mj::parse(tool_defs, tt)) body["tools"] = tt;
         body["max_tokens"] = 1;
         body["stream"] = false;
         body["cache_prompt"] = true;

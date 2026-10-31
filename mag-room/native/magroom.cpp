@@ -4939,7 +4939,8 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   // that cache in deterministic mode. Never replay an earlier answer either.
   // Identical prompts are still required; evolving room history is NOT identical.
   // GLM-5.3-Flash follows its model-card sampling even when UI determinism is on.
-  const bool qwen_chat = no_tools && model == "qwen3.8-flash-next-uncensored";
+  const bool qwen_chat = no_tools && room_is_glm() &&
+      model == "qwen3.8-flash-next-uncensored";
   const bool deterministic = !qwen_chat &&
       model.rfind("glm-5.3-flash", 0) != 0 && model_settings_for(model).deterministic;
   if (deterministic) {

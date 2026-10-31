@@ -943,14 +943,18 @@ static void load_agents() {
       const std::string model = mag::str(bot, "model");
       const int slot = model_slot_of(bot);
       if (id == "deepseek-chat" || name == "GLM-Q1" || model == q1_model) {
+        if (model != q1_model || name != "GLM-Q1" || slot != 1 ||
+            mag::num(bot, "numa", -1) != 0) dirty = true;
         bot["model"] = q1_model;
         bot["name"] = "GLM-Q1";
         bot["slot"] = 1;
         bot["numa"] = 0;
         PARKED.push_back(std::move(bot));
-        dirty = true;
+        dirty = true; // active -> parked roster transition
       } else if (id == "qwen-numa0" || (slot == 1 && model == qwen_model)) {
-        if (have_qwen0) { PARKED.push_back(std::move(bot)); continue; }
+        if (have_qwen0) { PARKED.push_back(std::move(bot)); dirty = true; continue; }
+        if (id != "qwen-numa0" || name != "Qwen" || model != qwen_model ||
+            slot != 1 || mag::num(bot, "numa", -1) != 0) dirty = true;
         bot["id"] = "qwen-numa0";
         bot["name"] = "Qwen";
         bot["model"] = qwen_model;
@@ -958,9 +962,10 @@ static void load_agents() {
         bot["numa"] = 0;
         active.push_back(std::move(bot));
         have_qwen0 = true;
-        dirty = true;
       } else if (slot == 2 || id == "qwen-numa1") {
-        if (have_q2) { PARKED.push_back(std::move(bot)); continue; }
+        if (have_q2) { PARKED.push_back(std::move(bot)); dirty = true; continue; }
+        if (id != "qwen-numa1" || name != "GLM-Q2" || model != q2_model ||
+            slot != 2 || mag::num(bot, "numa", -1) != 1) dirty = true;
         bot["id"] = "qwen-numa1";
         bot["name"] = "GLM-Q2";
         bot["model"] = q2_model;
@@ -968,7 +973,6 @@ static void load_agents() {
         bot["numa"] = 1;
         active.push_back(std::move(bot));
         have_q2 = true;
-        dirty = true;
       } else {
         PARKED.push_back(std::move(bot));
       }

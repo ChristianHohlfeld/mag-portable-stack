@@ -86,7 +86,7 @@ assert 'model.rfind("glm-5.3-flash", 0) != 0 && model_settings_for(model).determ
 assert 'model.rfind("glm-5.3-flash", 0) == 0) body["cache_prompt"] = true;' in room
 assert 'model.rfind("glm-5.3-flash", 0) == 0) body["id_slot"] = 0;' in room
 assert 'asst["reasoning_content"] = !CONFIGURED_MODEL && t.reasoning.size() > keep' in room
-assert room.count('kwargs["reasoning_effort"] = "low";') == 2
+assert room.count('kwargs["reasoning_effort"] = "low";') == 4
 assert room.count('kwargs["clear_thinking"] = true;') == 2
 assert 'static void schedule_prewarm()' in room and 'schedule_prewarm();' in room
 assert 'MAG_ROOM_PREWARM' in room and 'body["max_tokens"] = 1;' in room

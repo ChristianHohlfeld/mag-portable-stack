@@ -6867,7 +6867,7 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
     // Open todo items are an unfinished goal: the turn goes on (bounded).
     const bool todo_open = !glm_chat && !chat_only_room_bot && !short_chat && !tool_round && !stateless && !TL_SELFTALK && TL_TODO_TOUCHED &&
         todo_nudges < 2 && !has_next_step(t.text) && todo_open_for(bot_id) > 0;
-    const bool pending = !glm_chat && !qwen_room_bot && !short_chat && !TL_SELFTALK && (todo_open || (has_next_step(t.text) &&
+    const bool pending = !glm_chat && !chat_only_room_bot && !short_chat && !TL_SELFTALK && (todo_open || (has_next_step(t.text) &&
         t.text.find("[[MAG:ENDE]]") == std::string::npos));
     if (!t.text.empty()) {
       if (tool_round || pending) {
@@ -6885,7 +6885,7 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
     }
     // Normal GLM chat has exactly one host-directed answer per bot/user turn.
     // A thinking-budget exhaustion already had its single final retry above.
-    if (glm_chat || qwen_room_bot) { completed = true; break; }
+    if (glm_chat || chat_only_room_bot) { completed = true; break; }
     if (stateless || TL_SELFTALK) {
       completed = true; break;
     }

@@ -732,22 +732,22 @@ class QwenRoomTurns(unittest.TestCase):
         self.wait_qwen_prewarm()
         self.room.until(lambda s: not s['busy'], timeout=8, what='idle after Qwen prewarm')
         Model.by_model[self.QWEN] = [['Hallo von Qwen.'], ['Qwen antwortet einmal.']]
-        self.room.api('/api/message', {'text': 'Hi', 'bots': ['qwen']})
+        self.room.api('/api/message', {'text': 'Hi', 'bots': ['qwen-numa0']})
         s = self.room.until(lambda s: not s['busy'] and
-            any(m.get('role') == 'assistant' and m.get('bot') == 'qwen' and
+            any(m.get('role') == 'assistant' and m.get('bot') == 'qwen-numa0' and
                 m.get('content') == 'Hallo von Qwen.' for m in s['room']),
             timeout=8, what='Qwen answer to Hi')
-        self.assertEqual(sum(m.get('role') == 'assistant' and m.get('bot') == 'qwen'
+        self.assertEqual(sum(m.get('role') == 'assistant' and m.get('bot') == 'qwen-numa0'
                              and m.get('content') == 'Hallo von Qwen.' for m in s['room']), 1)
         self.assertEqual(len(self.qwen_turns()), 1)
 
         self.room.api('/api/message', {'text': 'Hi beide'})
         s = self.room.until(lambda s: not s['busy'] and
-            any(m.get('role') == 'assistant' and m.get('bot') == 'qwen' and
+            any(m.get('role') == 'assistant' and m.get('bot') == 'qwen-numa0' and
                 m.get('content') == 'Qwen antwortet einmal.' for m in s['room']) and
             any(m.get('role') == 'assistant' and m.get('bot') == 'glm' for m in s['room']),
             timeout=8, what='both bots answer Hi beide')
-        self.assertEqual(sum(m.get('role') == 'assistant' and m.get('bot') == 'qwen'
+        self.assertEqual(sum(m.get('role') == 'assistant' and m.get('bot') == 'qwen-numa0'
                              and m.get('content') == 'Qwen antwortet einmal.' for m in s['room']), 1)
         self.assertEqual(len(self.qwen_turns()), 2, 'one Qwen inference per addressed turn')
         second_messages = self.qwen_turns()[1][1]['messages']
@@ -766,9 +766,9 @@ class QwenRoomTurns(unittest.TestCase):
         self.assertEqual(sum(c[1].get('model') == self.QWEN and c[2] == 'prewarm'
                              for c in Model.calls), 1, 'failed prewarm must not retry every 2 seconds')
         Model.by_model[self.QWEN] = [['Trotzdem eine Antwort.']]
-        self.room.api('/api/message', {'text': 'Hi', 'bots': ['qwen']})
+        self.room.api('/api/message', {'text': 'Hi', 'bots': ['qwen-numa0']})
         s = self.room.until(lambda s: not s['busy'] and
-            any(m.get('role') == 'assistant' and m.get('bot') == 'qwen' and
+            any(m.get('role') == 'assistant' and m.get('bot') == 'qwen-numa0' and
                 m.get('content') == 'Trotzdem eine Antwort.' for m in s['room']),
             timeout=8, what='real Qwen turn after failed prewarm')
         self.assertEqual(len(self.qwen_turns()), 1)

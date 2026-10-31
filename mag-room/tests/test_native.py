@@ -5222,6 +5222,7 @@ class GlmLayoutStartup(unittest.TestCase):
      self.assertFalse(body.get('chat_template_kwargs',{}).get('enable_thinking',False))
      if body['model']=='qwen3.8-flash-next-uncensored':
       self.assertFalse(body['chat_template_kwargs']['preserve_thinking'])
+      self.assertEqual(body['reasoning_effort'],'none')
       self.assertEqual(body['max_tokens'],256)
       self.assertEqual(body['temperature'],0.7)
       self.assertEqual(body['top_p'],0.80)
@@ -5326,6 +5327,7 @@ class GlmLayoutStartup(unittest.TestCase):
    self.assertNotIn('tools',qwenreq)
    self.assertFalse(qwenreq['chat_template_kwargs']['enable_thinking'])
    self.assertFalse(qwenreq['chat_template_kwargs']['preserve_thinking'])
+   self.assertEqual(qwenreq['reasoning_effort'],'none')
    self.assertEqual(qwenreq['max_tokens'],256)
    self.assertTrue({'</think>','<think>','<|','<tool_call'}.issubset(set(qwenreq['stop'])))
    qwenroom=idle_after(qwenmarker)
@@ -5423,6 +5425,7 @@ class GlmLayoutStartup(unittest.TestCase):
    qwen=next(p[3] for p in calls if p[3]['model']=='qwen3.8-flash-next-uncensored')
    self.assertFalse(qwen['chat_template_kwargs']['enable_thinking'])
    self.assertFalse(qwen['chat_template_kwargs']['preserve_thinking'])
+   self.assertEqual(qwen['reasoning_effort'],'none')
    self.assertEqual(qwen['max_tokens'],256)
    self.assertFalse([p for p in Model.paths if 'action=cancel' in p[0]])
    log.flush()

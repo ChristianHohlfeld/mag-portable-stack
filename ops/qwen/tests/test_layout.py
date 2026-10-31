@@ -14,7 +14,7 @@ class Layout(unittest.TestCase):
  def setUp(self):
   self.tmp=tempfile.TemporaryDirectory(); self.base=pathlib.Path(self.tmp.name)
   self.repo=self.base/'repo'
-  for name in ('qwen','room','glm'):
+  for name in ('qwen','room','glm','mistral'):
    shutil.copytree(ROOT/'ops'/name,self.repo/'ops'/name,symlinks=True)
   shutil.copy2(ROOT/'ops'/'deploy.sh',self.repo/'ops'/'deploy.sh')
   # The repo-declared layout is set per test; the legacy cases run on mixed.
@@ -33,6 +33,10 @@ class Layout(unittest.TestCase):
   self.write('/home/chris/.local/qwen4exp/'+rev+'-mag-cp1/bin/llama-server','binary')
   (self.host/('home/chris/.local/qwen4exp/'+rev+'-mag-cp1/bin/llama-server')).chmod(0o755)
   self.write('/home/chris/.local/qwen4exp/'+rev+'-mag-cp1/bin/source-commit',rev+'\n')
+  mrev=(ROOT/'ops/mistral/runtime.sha').read_text().strip()
+  self.write('/home/chris/.local/mistral/'+mrev+'-mag-cpu/bin/llama-server','binary')
+  (self.host/('home/chris/.local/mistral/'+mrev+'-mag-cpu/bin/llama-server')).chmod(0o755)
+  self.write('/home/chris/.local/mistral/'+mrev+'-mag-cpu/bin/source-commit',mrev+'\\n')
   # Match the patched-runtime identity expected by layout.sh without building llama.cpp.
   patch_files=[str(self.repo/'ops/qwen/end-checkpoint.patch'),str(self.repo/'ops/glm/arch-compat.patch')]
   patch_id=hashlib.sha256(subprocess.check_output(['sha256sum',*patch_files])).hexdigest()

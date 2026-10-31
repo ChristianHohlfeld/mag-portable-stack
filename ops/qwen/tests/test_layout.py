@@ -280,42 +280,52 @@ json.dump(s,open(p,'w'))
   self.assertIn('"$ROOT/ops/qwen/layout.sh" probe "$STATE"',body)
   self.assertLess(body.index('layout.sh" probe'),body.index('bash "$ROOT/ops/deploy.sh"'))
   self.assertIn('deployed-sha unchanged',body)
- def test_failed_glm_restores_qwen_once_then_stays_put(self):
-  self.assertEqual(self.run_layout().returncode,0)
+ def test_failed_qwen_cold_start_rolls_back_q1_but_never_touches_q2(self):
+  self.seed_live_glm()
   (self.repo/'ops/room/layout').write_text('glm\n')
+  mark=self.log.stat().st_size
   p=self.run_layout(backup=self.base/'backup2',SMOKE_FAIL='1');self.assertNotEqual(p.returncode,0)
-  state=json.loads(self.state.read_text());self.assertIn('mag-llm-qwen.service',state['active']);self.assertNotIn('mag-llm-glm@q1.service',state['active']);self.assertNotIn('mag-llm-glm@q2.service',state['active'])
-  self.assertIn('--model qwen3.8-flash-next-uncensored --quick',(self.base/'smoke').read_text())
-  self.assertIn('rollback smoke failed',p.stderr)
-  self.assertIn('MAG_ROOM_MODEL_ID_1=qwen',(self.host/'etc/mag-stack/room-model.env').read_text())
+  state=json.loads(self.state.read_text())
+  self.assertIn('mag-llm-glm@q1.service',state['active'])
+  self.assertIn('mag-llm-glm@q2.service',state['active'])
+  self.assertNotIn('mag-llm-qwen-room.service',state['active'])
   self.assertTrue((self.host/'var/lib/mag-stack/layout-failed').read_text().startswith('glm '))
-  # Same candidate is held before backup/staging, and never marked deployed.
+  actions=self.log.read_text()[mark:].splitlines()
+  for verb in ('stop','start','enable','disable'):
+   self.assertNotIn(verb+' mag-llm-glm@q2.service',actions)
   mark=self.log.stat().st_size
   p=self.run_layout('probe',backup=self.base/'backup3',SMOKE_FAIL='1')
   self.assertEqual(p.returncode,78,p.stderr)
   self.assertIn('previously failed live',p.stderr)
-  self.assertFalse([c for c in self.log.read_text()[mark:].splitlines() if c.startswith(('stop ','start ','enable ','disable '))])
+  self.assertFalse([c for c in self.log.read_text()[mark:].splitlines()
+                    if c.startswith(('stop ','start ','enable ','disable '))])
   p=self.run_layout(backup=self.base/'backup3',SMOKE_FAIL='1')
   self.assertNotEqual(p.returncode,0,p.stderr)
   self.assertIn('refusing to claim deployment success',p.stderr)
-  self.assertFalse([c for c in self.log.read_text()[mark:].splitlines() if c.startswith(('stop ','start ','enable ','disable '))])
+  self.assertFalse([c for c in self.log.read_text()[mark:].splitlines()
+                    if c.startswith(('stop ','start ','enable ','disable '))])
   self.assertEqual(json.loads(self.state.read_text())['active'],state['active'])
-  # A changed GLM definition (new commit) is attempted again.
-  with open(self.repo/'ops/glm/start.sh','a') as f:f.write('# tuned\n')
+  with open(self.repo/'ops/qwen/start.sh','a') as f:f.write('# tuned room launcher\n')
   p=self.run_layout('probe',backup=self.base/'backup3')
   self.assertEqual(p.returncode,0,p.stderr)
   p=self.run_layout(backup=self.base/'backup4');self.assertEqual(p.returncode,0,p.stderr)
-  self.assertIn('mag-llm-glm@q1.service',json.loads(self.state.read_text())['active']);self.assertIn('mag-llm-glm@q2.service',json.loads(self.state.read_text())['active'])
+  self.assertIn('mag-llm-qwen-room.service',json.loads(self.state.read_text())['active'])
+  self.assertIn('mag-llm-glm@q2.service',json.loads(self.state.read_text())['active'])
   self.assertFalse((self.host/'var/lib/mag-stack/layout-failed').exists())
+
  def test_operator_pin_beats_repo_until_unpinned(self):
   (self.repo/'ops/room/layout').write_text('glm\n')
   p=self.run_layout(MAG_ROOM_LAYOUT='mixed');self.assertEqual(p.returncode,0,p.stderr)
   self.assertEqual((self.host/'etc/mag-stack/room-layout.pinned').read_text(),'mixed\n')
   p=self.run_layout(backup=self.base/'backup2');self.assertEqual(p.returncode,0,p.stderr)
   self.assertIn('mag-llm-qwen.service',json.loads(self.state.read_text())['active'])
+  self.seed_live_glm()
   p=self.run_layout(backup=self.base/'backup3',MAG_ROOM_LAYOUT='repo');self.assertEqual(p.returncode,0,p.stderr)
   self.assertFalse((self.host/'etc/mag-stack/room-layout.pinned').exists())
-  self.assertIn('mag-llm-glm@q1.service',json.loads(self.state.read_text())['active']);self.assertIn('mag-llm-glm@q2.service',json.loads(self.state.read_text())['active'])
+  state=json.loads(self.state.read_text())
+  self.assertIn('mag-llm-qwen-room.service',state['active'])
+  self.assertIn('mag-llm-glm@q2.service',state['active'])
+  self.assertNotIn('mag-llm-glm@q1.service',state['active'])
  def test_gguf_arch_compat_uses_c_string_for_printf_formatter(self):
   # Regression: passing a std::string object to ::format("%s", ...) emitted
   # random prefixes in Qwen's .context_length key and broke *both* NUMA1 models.
@@ -379,7 +389,7 @@ json.dump(s,open(p,'w'))
   layout=(ROOT/'ops/qwen/layout.sh').read_text()
   # Apply-time model preflight must precede the first apply-time stop;
   # the rollback function above legitimately contains its own stop.
-  stage=layout.index('ops/glm/install.sh')
+  stage=layout.index('ops/qwen/install.sh')
   self.assertLess(stage,layout.index('systemctl stop "$unit"',stage))
  def test_glm_legacy_adapter_isolated_from_qwen(self):
   p=(ROOT/'ops/glm/arch-compat.patch').read_text()

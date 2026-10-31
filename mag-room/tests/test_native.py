@@ -5230,7 +5230,7 @@ class GlmLayoutStartup(unittest.TestCase):
       self.assertEqual(body['min_p'],0.0)
       self.assertEqual(body['presence_penalty'],1.5)
       self.assertEqual(body['repeat_penalty'],1.0)
-      self.assertTrue({'</think>','<think>','<|','<tool_call'}.issubset(set(body['stop'])))
+      self.assertEqual(set(body['stop']),{'<tool_call'})
    self.assertFalse(any(p[3].get('model')=='glm-5.3-flash-iq1-m' and
       p[3].get('max_tokens')!=1 for p in Model.paths))
    self.assertEqual([v['id'] for v in json.loads(state.joinpath('agents.json').read_text())],
@@ -5329,7 +5329,7 @@ class GlmLayoutStartup(unittest.TestCase):
    self.assertFalse(qwenreq['chat_template_kwargs']['preserve_thinking'])
    self.assertEqual(qwenreq['reasoning_effort'],'none')
    self.assertEqual(qwenreq['max_tokens'],256)
-   self.assertTrue({'</think>','<think>','<|','<tool_call'}.issubset(set(qwenreq['stop'])))
+   self.assertEqual(set(qwenreq['stop']),{'<tool_call'})
    qwenroom=idle_after(qwenmarker)
    qat=max(i for i,m in enumerate(qwenroom['room'])
            if m.get('role')=='user' and m.get('content')==qwenmarker)

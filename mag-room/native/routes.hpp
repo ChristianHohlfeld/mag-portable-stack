@@ -236,9 +236,11 @@ static void resume_pending_spawns() {
       const int slot = model_slot((int)i);
       const std::string slot_model = CONFIGURED_MODEL && slot >= 1 && slot <= ROOM_MAX_BOTS
           ? ROOM_MODEL.backend(slot).id : std::string();
-      const bool qwen_chat_only = room_chat_only_model(slot_model) &&
+      // These model IDs are chat-only when used in configured NUMA slots.
+      // Do not depend on the composite room label: operators may rename it.
+      const bool qwen_chat_only = CONFIGURED_MODEL &&
           slot_model == "qwen3.8-flash-next-uncensored";
-      const bool mistral_chat_only = room_chat_only_model(slot_model) &&
+      const bool mistral_chat_only = CONFIGURED_MODEL &&
           slot_model == "mistral-large4";
       // Qwen and Mistral are chat-only in this configured GLM room.
       // Clear stale reservations and never resume/provision a KVM VM for
@@ -1124,8 +1126,9 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
       int idx = agent_index(id);
       if (idx < 0) { error_json(fd, 404, "Unknown agent"); return; }
       if (busy(idx)) { error_json(fd, 409, "Bot hat bereits eine VM"); return; }
-      if ((bot_model_id(idx) == "mistral-large4" ||
-           bot_model_id(idx) == "qwen3.8-flash-next-uncensored") && room_is_glm()) {
+      if (CONFIGURED_MODEL &&
+          (bot_model_id(idx) == "mistral-large4" ||
+           bot_model_id(idx) == "qwen3.8-flash-next-uncensored")) {
         error_json(fd, 409, "Der NUMA0-Chat-Bot ist im GLM-Raum chat-only und erhält keine VM");
         return;
       }

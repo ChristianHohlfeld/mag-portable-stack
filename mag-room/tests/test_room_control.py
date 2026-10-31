@@ -711,6 +711,11 @@ class QwenRoomTurns(unittest.TestCase):
         self.assertEqual(sum(m.get('role') == 'assistant' and m.get('bot') == 'qwen'
                              and m.get('content') == 'Qwen antwortet einmal.' for m in s['room']), 1)
         self.assertEqual(len(self.qwen_turns()), 2, 'one Qwen inference per addressed turn')
+        second_messages = self.qwen_turns()[1][1]['messages']
+        self.assertEqual([m.get('role') for m in second_messages[-3:]],
+                         ['user', 'assistant', 'user'], second_messages[-3:])
+        self.assertEqual([m.get('content') for m in second_messages[-3:]],
+                         ['Hi', 'Hallo von Qwen.', 'Hi beide'])
         self.assert_qwen_requests_end_in_user()
         self.assertEqual(Model.rejected, [], 'the Qwen fake Jinja template must never see a missing user query')
 

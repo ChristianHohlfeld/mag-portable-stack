@@ -68,12 +68,12 @@ grep -Fq 'body["presence_penalty"] = 1.5' mag-room/native/magroom.cpp
 grep -Fq 'chat_forbidden_cut' mag-room/native/magroom.cpp
 grep -Fq 'stops.push("<tool_call")' mag-room/native/magroom.cpp
 ! grep -Fq 'stops.push("</think>")' mag-room/native/magroom.cpp
-grep -Fq 'Always reserve the full 3-hour load window' ops/deploy.sh
+grep -Fq 'full seven-hour service window' ops/deploy.sh
 grep -Fq 'body["reasoning_effort"] = "none"' mag-room/native/magroom.cpp
-grep -Fq 'GLM-Q2 PID changed during Qwen cold start' ops/qwen/layout.sh
+grep -Fq 'GLM-Q2 PID changed during Mistral cold start' ops/qwen/layout.sh
 grep -Fq 'GLM-Q2 must already be enabled' ops/qwen/layout.sh
 grep -Fq 'QWEN_MIN_RAM_GIB=150' ops/qwen/layout.sh
-grep -Fq 'Qwen NUMA0 + GLM-Q2 NUMA1' ops/qwen/layout.sh
+grep -Fq 'Mistral NUMA0 + GLM-Q2 NUMA1' ops/qwen/layout.sh
 grep -Fq 'MAG_SECONDARY_MODEL=qwen' ops/qwen/cutover.sh
 grep -Fq 'Q4 NUMA0 unchanged' ops/qwen/cutover.sh
 ! grep -Eq 'systemctl (stop|restart|kill).*mag-llm[.]service' ops/qwen/cutover.sh
@@ -86,5 +86,5 @@ bash ops/perf/tests/test-numa-context.sh
 python3 ops/qwen/tests/test_layout.py
 # Exercise GLM smoke quality assertions in the actual CI contract.
 python3 ops/qwen/tests/test_smoke_glm.py
-echo 'Qwen NUMA0 + GLM-Q2 NUMA1 room layout + chat-only Jinja contract PASS'
+echo 'Mistral NUMA0 + GLM-Q2 NUMA1 room layout + chat-only Jinja contract PASS'
 

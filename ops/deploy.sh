@@ -3,7 +3,6 @@
 set -euo pipefail
 # shellcheck source=deploy-guard.sh
 source "$(cd -- "$(dirname -- "$0")" && pwd)/deploy-guard.sh"
-mag_deploy_arm_deadline "$@"
 SOURCE="$(cd -- "$(dirname -- "$0")/.." && pwd)"
 RELEASE_ID="${MAG_RELEASE_ID:-$(date -u +%Y%m%dT%H%M%SZ)}"
 RELEASE="/opt/mag-stack/releases/$RELEASE_ID"
@@ -34,7 +33,11 @@ if [[ $_layout_for_deadline == glm ]]; then
   # Reserve the complete 7-hour service load window plus deploy overhead.
   _deploy_default_deadline=30000
 fi
-deploy_watchdog_arm "${MAG_DEPLOY_DEADLINE_S:-$_deploy_default_deadline}"
+# Choose the layout-specific deadline BEFORE the outer timeout wrapper. The
+# wrapper re-execs this script; the armed marker then lets it continue once.
+export MAG_DEPLOY_DEADLINE_S="${MAG_DEPLOY_DEADLINE_S:-$_deploy_default_deadline}"
+mag_deploy_arm_deadline "$@"
+deploy_watchdog_arm "$MAG_DEPLOY_DEADLINE_S"
 trap deploy_exit EXIT
 trap 'exit 143' TERM
 trap 'exit 130' INT

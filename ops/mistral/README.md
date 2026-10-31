@@ -13,16 +13,18 @@ remain on disk; this layout does not delete them.
   is retained verbatim.
 - The GGUF's embedded Jinja chat template is used via `--jinja`; no custom
   template is passed.
-- Temperature 1.0, top_p 0.95, reasoning_effort low, following the
-  [Unsloth Mistral Large 4 GGUF card](https://huggingface.co/unsloth/Mistral-Large-4-1T-A52B-GGUF)
-  which documents the Mistral model's recommended settings. The model card
-  states low is for fast chat replies and lists the architecture as
-  `mistral-large4`.
+- Temperature 1.0, top_p 0.95, top_k 0, min_p 0.0, reasoning_effort low,
+  following the [official Mistral model card](https://huggingface.co/mistralai/Mistral-Large-4-1T-A52B)
+  and [Unsloth's llama.cpp guide](https://unsloth.ai/docs/models/mistral-large-4).
+  Mistral says low is for fast chat; Unsloth's llama.cpp example disables
+  top-k/min-p filters and passes reasoning_effort in chat-template kwargs.
+  The official card lists the architecture as `mistral_large4`.
 - Chat-only room integration: no KVM, browser or terminal; every turn and
   prewarm ends in a user message. The Mistral template therefore never sees
   a system-only completion. Failed prewarm uses the existing exponential
   backoff and does not block real turns.
-- Context 16K. mmap is explicit; mlock is deliberately absent. KV cache stays
+- Context 16K (below the 1M model limit because NUMA0 has 252 GiB total).
+  mmap is explicit; mlock is deliberately absent. KV cache stays
   at llama.cpp's default FP16; q8_0 is not enabled without measured evidence.
 
 ## llama.cpp architecture support
@@ -76,6 +78,7 @@ restores the prior Qwen service/config. Qwen model files remain untouched.
 ## Sources
 
 - [Mistral Large 4 official model card](https://huggingface.co/mistralai/Mistral-Large-4-1T-A52B)
-- [Unsloth GGUF card, recommended settings and 233 GB quant](https://huggingface.co/unsloth/Mistral-Large-4-1T-A52B-GGUF)
+- [Unsloth GGUF card, shard listing and 233 GB quant](https://huggingface.co/unsloth/Mistral-Large-4-1T-A52B-GGUF)
+- [Unsloth llama.cpp guide: memory budget, CPU build, context and sampling](https://unsloth.ai/docs/models/mistral-large-4)
 - [HF UD-IQ1_S shard listing and sizes](https://huggingface.co/unsloth/Mistral-Large-4-1T-A52B-GGUF/tree/main/UD-IQ1_S)
 - [llama.cpp architecture loader source at pinned revision](https://github.com/ggml-org/llama.cpp/tree/8642541b255bfb5dc39cd351a178be09013a55d6)

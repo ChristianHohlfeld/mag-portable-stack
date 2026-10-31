@@ -731,5 +731,44 @@ class QwenRoomTurns(unittest.TestCase):
         self.assert_qwen_requests_end_in_user()
 
 
+    def test_qwen_chat_only_is_not_auto_provisioned_a_vm(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = pathlib.Path(d)
+            fakebin = root / 'bin'
+            fakebin.mkdir()
+            calls = root / 'sudo.log'
+            sudo = fakebin / 'sudo'
+            sudo.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$MAG_TEST_SUDO_LOG"\nexit 0\n')
+            sudo.chmod(0o755)
+            reset_model()
+            room = Room([{'id': 'qwen', 'name': 'Qwen', 'vm': '', 'memory': [],
+                          'slot': 1, 'numa': 0}], {
+                'MAG_ROOM_MODEL_ID': self.GLM,
+                'MAG_ROOM_MODEL_LABEL': 'GLM room',
+                'MAG_ROOM_MODEL_PORTS': '8191:0,8192:1',
+                'MAG_ROOM_MODEL_ID_0': self.QWEN,
+                'MAG_ROOM_MODEL_LABEL_0': 'Qwen',
+                'MAG_ROOM_MODEL_ID_1': self.GLM,
+                'MAG_ROOM_MODEL_LABEL_1': 'GLM-Q2',
+                'MAG_ROOM_PRESETS': str(ROOT / 'ops/room/presets.json'),
+                'MAG_ROOM_PREWARM': '0',
+                'MAG_ROOM_SINGLE_BOT_VM': 'on',
+                'MAG_TEST_SUDO_LOG': str(calls),
+                'PATH': str(fakebin) + ':' + os.environ.get('PATH', ''),
+            })
+            try:
+                time.sleep(.8)
+                attempted = calls.read_text() if calls.exists() else ''
+                self.assertNotIn('spawn ', attempted,
+                                 'chat-only Qwen must not allocate a KVM VM')
+                saved = json.loads((room.state / 'agents.json').read_text())
+                self.assertEqual(len(saved), 1)
+                self.assertEqual(saved[0]['id'], 'qwen')
+                self.assertFalse(saved[0].get('pending_vm'))
+                self.assertFalse(saved[0].get('vm'))
+            finally:
+                room.close()
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)

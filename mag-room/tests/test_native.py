@@ -5460,7 +5460,7 @@ class GlmLayoutStartup(unittest.TestCase):
    for p in calls:self.assertNotIn('tools',p[3])
    mistral=next(p[3] for p in calls if p[3]['model']=='mistral-large4')
    self.assertFalse(mistral['chat_template_kwargs']['enable_thinking'])
-   self.assertEqual(qwen['chat_template_kwargs'],{'enable_thinking':False,'reasoning_effort':'low'})
+   self.assertEqual(mistral['chat_template_kwargs'],{'enable_thinking':False,'reasoning_effort':'low'})
    self.assertEqual(mistral['reasoning_effort'],'low')
    self.assertEqual(mistral['max_tokens'],8192)
    self.assertFalse([p for p in Model.paths if 'action=cancel' in p[0]])

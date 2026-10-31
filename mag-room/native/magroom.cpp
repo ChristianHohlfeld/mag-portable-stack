@@ -929,6 +929,27 @@ static void load_agents() {
       return model_slot_of(a) < model_slot_of(b);
     });
   }
+  if (room_is_glm()) {
+    // Room-only GLM layout: keep Q1's persisted identity/VM/memory parked.
+    // The :8191 model service stays running and its slot is never reassigned.
+    std::vector<Val> q2;
+    for (auto &bot : AGENTS) {
+      if (model_slot_of(bot) == 2) {
+        if (mag::str(bot, "id") != "qwen-numa1") {
+          // Preserve an existing qwen-numa1 identity rather than renaming it.
+          bool existing = false;
+          for (const auto &a : PARKED)
+            if (mag::str(a, "id") == "qwen-numa1") existing = true;
+          if (!existing) { bot["id"] = "qwen-numa1"; dirty = true; }
+        }
+        q2.push_back(std::move(bot));
+      } else {
+        PARKED.push_back(std::move(bot));
+        dirty = true;
+      }
+    }
+    AGENTS = std::move(q2);
+  }
   if (DUAL_NUMA) {
     // Recover one existing coding bot on NUMA0 (prefer its live VM), and one
     // existing secondary bot on NUMA1 when present. Other stored bots remain

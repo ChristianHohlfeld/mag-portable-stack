@@ -38,7 +38,7 @@ IOSchedulingPriority=6
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=no
-ReadWritePaths=/var/lib/mag-llm/slots/mistral
+ReadWritePaths=/var/lib/mag-llm/slots/mistral /etc/mag-mistral
 PrivateTmp=yes
 RestrictAddressFamilies=AF_INET AF_UNIX
 

@@ -736,8 +736,13 @@ static bool CONFIGURED_MODEL = false;
 static bool room_is_glm() {
   return CONFIGURED_MODEL &&
       (ROOM_MODEL.id.rfind("glm-5.3-flash", 0) == 0 ||
-       (ROOM_MODEL.backend(1).id == "qwen3.8-flash-next-uncensored" &&
+       ((ROOM_MODEL.backend(1).id == "qwen3.8-flash-next-uncensored" ||
+         ROOM_MODEL.backend(1).id == "mistral-large4") &&
         ROOM_MODEL.backend(2).id == "glm-5.3-flash"));
+}
+static bool room_chat_only_model(const std::string &model) {
+  return room_is_glm() &&
+      (model == "qwen3.8-flash-next-uncensored" || model == "mistral-large4");
 }
 // Configured mode: two bots, each with a persistent "slot" (1..2) stored in
 // agents.json. The slot, never the array index, picks the backend instance, so
@@ -2541,8 +2546,7 @@ static std::string q1_clean(std::string s) {
 static std::vector<Val> glm_chat_turns(const std::string &bot_id,
                                       const std::string &input) {
   const int bot_idx = agent_index(bot_id);
-  if (room_is_glm() && bot_idx >= 0 &&
-      bot_model_id(bot_idx) == "qwen3.8-flash-next-uncensored") {
+  if (room_chat_only_model(bot_idx >= 0 ? bot_model_id(bot_idx) : "")) {
     std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
     size_t end = ROOM.size();
     for (size_t i = end; i > 0; --i)
@@ -4968,8 +4972,10 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   body["model"] = model;
   const bool qwen_chat = no_tools && room_is_glm() &&
       model == "qwen3.8-flash-next-uncensored";
+  const bool mistral_chat = no_tools && room_is_glm() && model == "mistral-large4";
+  const bool chat_only_room = qwen_chat || mistral_chat;
   std::vector<Val> request_messages = messages;
-  if (qwen_chat && (request_messages.empty() ||
+  if (chat_only_room && (request_messages.empty() ||
       mag::str(request_messages.back(), "role") != "user")) {
     Val user = Val::object();
     user["role"] = "user";
@@ -4995,7 +5001,7 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   // that cache in deterministic mode. Never replay an earlier answer either.
   // Identical prompts are still required; evolving room history is NOT identical.
   // GLM-5.3-Flash follows its model-card sampling even when UI determinism is on.
-  const bool deterministic = !qwen_chat &&
+  const bool deterministic = !chat_only_room &&
       model.rfind("glm-5.3-flash", 0) != 0 && model_settings_for(model).deterministic;
   if (deterministic) {
     body["temperature"] = 0.0;
@@ -5013,6 +5019,9 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
       body["min_p"] = 0.0;
       body["presence_penalty"] = 1.5;
       body["repeat_penalty"] = 1.0;
+    } else if (mistral_chat) {
+      body["temperature"] = 1.0;
+      body["top_p"] = 0.95;
     } else {
       // Q1's successful direct :8191 test used temperature 0.55.
       // Q2's existing sampling is intentionally unchanged.
@@ -5151,7 +5160,7 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   // Thinking needs ThinkingContent to consume its own <think>…</think>
   // boundaries; only nonthinking chat treats these as hard stop markers.
   const bool glm_chat_stream = no_tools && !thinking &&
-      (model.rfind("glm-5.3-flash", 0) == 0 || qwen_chat);
+      (model.rfind("glm-5.3-flash", 0) == 0 || qwen_chat || mistral_chat);
   std::string glm_stream_pending;
   bool glm_hard_cut = false;
   bool chat_forbidden_cut = false;
@@ -5162,7 +5171,7 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
       if (c >= 0x80 || std::isalnum(c)) { glm_answer_started = true; break; }
     glm_hard_cut = glm_repetition.feed(piece, [&](const std::string &visible) {
       acc.content += visible;
-      if (!(no_tools && (model == "glm-5.3-flash-iq1-m" || qwen_chat)))
+      if (!(no_tools && (model == "glm-5.3-flash-iq1-m" || qwen_chat || mistral_chat)))
         on_delta("delta", visible);
     }, finish);
   };
@@ -5189,7 +5198,7 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
         cut = std::min(cut, pos);
       }
       if (cut != std::string::npos) {
-        if (no_tools && (model == "glm-5.3-flash-iq1-m" || qwen_chat)) {
+        if (no_tools && (model == "glm-5.3-flash-iq1-m" || qwen_chat || mistral_chat)) {
           for (const auto &marker : {"</think>", "<think>", "<|"})
             if (glm_stream_pending.find(marker) != std::string::npos &&
                 glm_stream_pending.find(marker) == cut) chat_forbidden_cut = true;
@@ -6465,10 +6474,12 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
                          model_settings_for(bot_model_id(bot_idx)).deterministic;
   const bool qwen_room_bot = CONFIGURED_MODEL && room_is_glm() &&
       bot_model_id(bot_idx) == "qwen3.8-flash-next-uncensored";
+  const bool chat_only_room_bot = CONFIGURED_MODEL &&
+      room_chat_only_model(bot_model_id(bot_idx));
   const bool thinking_turn = qwen_room_bot ? false : turn_thinking();
   const bool glm_chat_mode = CONFIGURED_MODEL && !CURRENT_JOB && !TL_TASK &&
       !autotalk && !TL_REFLECT && !TL_SELFTALK &&
-      (bot_model_id(bot_idx).rfind("glm-5.3-flash", 0) == 0 || qwen_room_bot);
+      (bot_model_id(bot_idx).rfind("glm-5.3-flash", 0) == 0 || chat_only_room_bot);
   const bool short_chat = glm_chat_mode && !autotalk && !thinking_turn &&
       short_glm_input(TURN_INPUT);
   const bool web = WEB_ENABLED.load();
@@ -6508,16 +6519,16 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
     messages.push_back(u);
     tools.clear();
   } else {
-    if (!glm_chat_mode && !qwen_room_bot) mcp_auto_once();
+    if (!glm_chat_mode && !chat_only_room_bot) mcp_auto_once();
     system = build_system(bot_idx, autotalk, other, web,
-                          glm_chat_mode || qwen_room_bot);
-    tools = (glm_chat_mode || qwen_room_bot) ? std::string() : tools_json(bot_idx, web);
+                          glm_chat_mode || chat_only_room_bot);
+    tools = (glm_chat_mode || chat_only_room_bot) ? std::string() : tools_json(bot_idx, web);
     if (glm_chat_mode) {
       Val sys=Val::object();sys["role"]="system";
       sys["content"]=system + glm_chat_memory(bot_id);
       messages.push_back(sys);
       auto turns = glm_chat_turns(bot_id, TURN_INPUT);
-      if (!turns.empty() && !qwen_room_bot) {
+      if (!turns.empty() && !chat_only_room_bot) {
         // Skills belong to the latest user message, not the system prompt.
         turns.back()["content"] =
             mag::str(turns.back(), "content") + glm_chat_skill(TURN_INPUT);
@@ -8711,8 +8722,7 @@ static uint64_t fnv64(const std::string &s) {
 }
 static std::string prefix_file(int idx, const std::string &model) {
   if (CONFIGURED_MODEL &&
-      (model.rfind("glm-5.3-flash", 0) == 0 ||
-       (room_is_glm() && model == "qwen3.8-flash-next-uncensored")))
+      (model.rfind("glm-5.3-flash", 0) == 0 || room_chat_only_model(model)))
     return "mag-prefix-" + model + "-slot" + std::to_string(model_slot(idx)) + "-chat-v2-prefix.bin";
   return CONFIGURED_MODEL ? "mag-prefix-" + model + "-slot" + std::to_string(model_slot(idx)) + ".bin"
                          : "mag-prefix-" + model + ".bin";
@@ -8743,7 +8753,7 @@ static void persist_configured_slot(int idx) {
   const std::string own_key = port + "/" + file;
   const bool web = WEB_ENABLED.load();
   const bool chat_only = model.rfind("glm-5.3-flash", 0) == 0 ||
-                         (room_is_glm() && model == "qwen3.8-flash-next-uncensored");
+                         room_chat_only_model(model);
   std::string system = build_system(idx, false, "", web, chat_only);
   if (chat_only) system += glm_chat_memory(bot_field(idx, "id"));
   const std::string tool_defs = chat_only ? std::string() : tools_json(idx, web);
@@ -9046,7 +9056,7 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
     // Slot state is decided before wire_messages. That call appends a user
     // message and would otherwise rewrite a warm transcript on every restart.
     const bool chat_only = model.rfind("glm-5.3-flash", 0) == 0 ||
-                           (room_is_glm() && model == "qwen3.8-flash-next-uncensored");
+                           room_chat_only_model(model);
     system = build_system(idx, false, "", web, chat_only);
     if (chat_only) {
       system += glm_chat_memory(bot_id);
@@ -9187,8 +9197,7 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
   if (CONFIGURED_MODEL && (!ram_known || slot_busy)) {
     skip = true;
     why = "busy"; // /slots timed out or the slot is prefilling: do not clobber it
-  } else if (count_known && cache_tokens >= prefix_required_tokens(model) &&
-             have_current && !prefix_changed) {
+  } else if (count_known && cache_tokens >= prefix_required_tokens(model)) {
     // The slot already holds system+tools. Restoring a file or posting a
     // chat completion here is the p0=0 wipe and the second full prefill.
     // A stale on-disk hash does not change that: the KV is the resident one.
@@ -9251,14 +9260,14 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
         msgs.push(u);
         if (CONFIGURED_MODEL) {
           if (model.rfind("glm-5.3-flash", 0) == 0 ||
-              (room_is_glm() && model == "qwen3.8-flash-next-uncensored")) {
-            // Chat-only GLM/Qwen room: no tool schemas. Qwen adds a
-            // minimal user query because its embedded template requires one.
+              room_chat_only_model(model)) {
+            // Chat-only GLM/Qwen/Mistral room: no tool schemas. Add a
+            // minimal user query because the GGUF chat template requires one.
             msgs = Val::array();
             msgs.push(sys);
-            if (room_is_glm() && model == "qwen3.8-flash-next-uncensored") {
-              // Qwen's embedded Jinja template requires a user query even
-              // for prefix prewarm; a system-only request is HTTP 500.
+            if (room_chat_only_model(model)) {
+              // Qwen/Mistral GGUF templates require a user query even for
+              // prefix prewarm; a system-only request is invalid.
               Val u = Val::object();
               u["role"] = "user";
               u["content"] = "Hi";
@@ -9273,7 +9282,7 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
         body["messages"] = msgs;
         Val tt;
         if (model.rfind("glm-5.3-flash", 0) != 0 &&
-            !(room_is_glm() && model == "qwen3.8-flash-next-uncensored") &&
+            !room_chat_only_model(model) &&
             mj::parse(tool_defs, tt)) body["tools"] = tt;
         body["max_tokens"] = 1;
         body["stream"] = false;
@@ -9302,6 +9311,12 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
         }
         if (room_is_glm() && model == "qwen3.8-flash-next-uncensored")
           body["reasoning_effort"] = "none";
+        if (room_is_glm() && model == "mistral-large4") {
+          body["temperature"] = 1.0;
+          body["top_p"] = 0.95;
+          body["reasoning_effort"] = "low";
+          kwargs["reasoning_effort"] = "low";
+        }
         body["chat_template_kwargs"] = kwargs;
         payload = mj::dump(body);
         built = true;

@@ -1124,8 +1124,9 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
       int idx = agent_index(id);
       if (idx < 0) { error_json(fd, 404, "Unknown agent"); return; }
       if (busy(idx)) { error_json(fd, 409, "Bot hat bereits eine VM"); return; }
-      if (bot_model_id(idx) == "mistral-large4" && room_is_glm()) {
-        error_json(fd, 409, "Mistral ist im GLM-Raum chat-only und erhält keine VM");
+      if ((bot_model_id(idx) == "mistral-large4" ||
+           bot_model_id(idx) == "qwen3.8-flash-next-uncensored") && room_is_glm()) {
+        error_json(fd, 409, "Der NUMA0-Chat-Bot ist im GLM-Raum chat-only und erhält keine VM");
         return;
       }
     }

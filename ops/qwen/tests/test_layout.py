@@ -526,7 +526,9 @@ json.dump(s,open(p,'w'))
   self.assertIn('--chat-template-file "$TEMPLATE"',st);self.assertIn('--load-mode dio',st)
   self.assertNotIn('IOSchedulingClass=idle',u);self.assertNotIn('Nice=10',u)
   lay=(ROOT/'ops/qwen/layout.sh').read_text()
-  self.assertIn('/usr/local/lib/mag-glm/chat-template.jinja',lay)
+  self.assertNotIn('/usr/local/lib/mag-glm/chat-template.jinja',lay,
+                   'Qwen room deployment must not stage or change GLM-Q2 template files')
+  self.assertIn('GLM-Q2 is a strict no-touch invariant',lay)
  def test_runtime_rebuild_restarts_and_rollback_verifies_qwen(self):
   lay=(ROOT/'ops/qwen/layout.sh').read_text()
   self.assertIn("== *' (deleted)'",lay)

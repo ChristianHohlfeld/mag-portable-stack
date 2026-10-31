@@ -4919,8 +4919,7 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
     msgs.push(const_cast<Val &>(m));
   body["messages"] = msgs;
   Val tt;
-  if (!(no_tools && model.rfind("glm-5.3-flash", 0) == 0) &&
-      mj::parse(tools, tt))
+  if (!no_tools && mj::parse(tools, tt))
     body["tools"] = tt;
   // Deterministic mode always re-evaluates and greedily decodes the full
   // request. llama.cpp's KV prompt cache can change the numerical logits when
@@ -4928,7 +4927,9 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   // that cache in deterministic mode. Never replay an earlier answer either.
   // Identical prompts are still required; evolving room history is NOT identical.
   // GLM-5.3-Flash follows its model-card sampling even when UI determinism is on.
-  const bool deterministic = model.rfind("glm-5.3-flash", 0) != 0 && model_settings_for(model).deterministic;
+  const bool qwen_chat = no_tools && model == "qwen3.8-flash-next-uncensored";
+  const bool deterministic = !qwen_chat &&
+      model.rfind("glm-5.3-flash", 0) != 0 && model_settings_for(model).deterministic;
   if (deterministic) {
     body["temperature"] = 0.0;
     body["top_k"] = 1;
@@ -4936,10 +4937,21 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   } else {
     const bool glm = model.rfind("glm-5.3-flash", 0) == 0;
     const bool q1_chat = no_tools && model == "glm-5.3-flash-iq1-m";
-    // Q1's successful direct :8191 test used temperature 0.55.
-    // Q2's existing sampling is intentionally unchanged.
-    body["temperature"] = q1_chat ? 0.55 : glm ? 1.0 : temperature;
-    if (glm) body["top_p"] = 0.95;
+    // Qwen's official non-thinking instruct sampling (mapped to llama.cpp
+    // request fields); the server defaults and GLM-Q2 sampling stay unchanged.
+    if (qwen_chat) {
+      body["temperature"] = 0.7;
+      body["top_p"] = 0.80;
+      body["top_k"] = 20;
+      body["min_p"] = 0.0;
+      body["presence_penalty"] = 1.5;
+      body["repeat_penalty"] = 1.0;
+    } else {
+      // Q1's successful direct :8191 test used temperature 0.55.
+      // Q2's existing sampling is intentionally unchanged.
+      body["temperature"] = q1_chat ? 0.55 : glm ? 1.0 : temperature;
+      if (glm) body["top_p"] = 0.95;
+    }
     if (q1_chat) {
       // llama.cpp server README: request-side DRY (not daemon flags).
       body["dry_multiplier"] = 0.8;
@@ -4956,7 +4968,9 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   // Bound generated tokens on Qwen only, keeping Q4's established budget.
   // Both models retain all native/MCP tools and immutable audit routing.
   int max_output = model == "qwen3.8-flash-next-uncensored"
-      ? std::min(MAX_TOKENS, std::clamp(envi("MAG_ROOM_QWEN_MAX_TOKENS", 4096), 512, 8192))
+      ? (qwen_chat
+          ? std::min(MAX_TOKENS, std::clamp(envi("MAG_ROOM_QWEN_CHAT_MAX_TOKENS", 256), 32, 512))
+          : std::min(MAX_TOKENS, std::clamp(envi("MAG_ROOM_QWEN_MAX_TOKENS", 4096), 512, 8192)))
       : model.rfind("glm-5.3-flash", 0) == 0
       ? std::min(MAX_TOKENS, std::clamp(envi("MAG_ROOM_GLM_MAX_TOKENS", 1024), 128, 8192))
       : MAX_TOKENS;
@@ -4973,11 +4987,12 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   if (no_tools && !thinking && model == "glm-5.3-flash-iq1-m")
     max_output = std::min(max_output, 96); // bounded IQ1_M decode
   body["max_tokens"] = max_output;
-  if (no_tools && model.rfind("glm-5.3-flash", 0) == 0 && !thinking) {
+  if (no_tools && !thinking &&
+      (model.rfind("glm-5.3-flash", 0) == 0 || qwen_chat)) {
     // llama.cpp applies stop strings to raw generation, including reasoning.
-    // Preserve </think> for thinking turns; no server flags/model reload.
+    // These chat-only turns have thinking off; hidden delimiters fail closed.
     Val stops = Val::array();
-    for (const char *stop : {"<|user|>", "<|observation|>", "<tool_call"})
+    for (const char *stop : {"</think>", "<think>", "<|", "<tool_call"})
       stops.push(stop);
     body["stop"] = stops;
   }
@@ -5060,10 +5075,11 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   SseAcc acc;
   // Thinking needs ThinkingContent to consume its own <think>…</think>
   // boundaries; only nonthinking chat treats these as hard stop markers.
-  const bool glm_chat_stream = no_tools && model.rfind("glm-5.3-flash", 0) == 0 && !thinking;
+  const bool glm_chat_stream = no_tools && !thinking &&
+      (model.rfind("glm-5.3-flash", 0) == 0 || qwen_chat);
   std::string glm_stream_pending;
   bool glm_hard_cut = false;
-  bool q1_forbidden_cut = false;
+  bool chat_forbidden_cut = false;
   GlmRepetitionGuard glm_repetition;
   bool glm_answer_started = false;
   auto emit_glm_safe = [&](const std::string &piece, bool finish = false) {
@@ -5071,7 +5087,8 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
       if (c >= 0x80 || std::isalnum(c)) { glm_answer_started = true; break; }
     glm_hard_cut = glm_repetition.feed(piece, [&](const std::string &visible) {
       acc.content += visible;
-      if (!(no_tools && model == "glm-5.3-flash-iq1-m")) on_delta("delta", visible);
+      if (!(no_tools && (model == "glm-5.3-flash-iq1-m" || qwen_chat)))
+        on_delta("delta", visible);
     }, finish);
   };
   // The server stop array is the primary guard. Hold partial delimiters in
@@ -5097,10 +5114,10 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
         cut = std::min(cut, pos);
       }
       if (cut != std::string::npos) {
-        if (no_tools && model == "glm-5.3-flash-iq1-m") {
+        if (no_tools && (model == "glm-5.3-flash-iq1-m" || qwen_chat)) {
           for (const auto &marker : {"</think>", "<think>", "<|"})
             if (glm_stream_pending.find(marker) != std::string::npos &&
-                glm_stream_pending.find(marker) == cut) q1_forbidden_cut = true;
+                glm_stream_pending.find(marker) == cut) chat_forbidden_cut = true;
         }
         emit_glm_safe(glm_stream_pending.substr(0, cut), true);
         glm_stream_pending.clear();
@@ -5306,9 +5323,11 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
     if (!glm_chat_stream && !acc.content.empty()) on_delta("delta", acc.content);
   }
   t.text = no_tools && model == "glm-5.3-flash-iq1-m" ?
-      (q1_forbidden_cut ? "" : q1_clean(acc.content)) : acc.content;
+      (chat_forbidden_cut ? "" : q1_clean(acc.content)) :
+      no_tools && qwen_chat ? (chat_forbidden_cut ? "" : trim(acc.content)) : acc.content;
   if (no_tools && model == "glm-5.3-flash-iq1-m" && !t.text.empty() && !q1_bad(t.text))
     on_delta("delta", t.text);
+  if (qwen_chat && !t.text.empty()) on_delta("delta", t.text);
   t.reasoning = acc.reasoning;
   if (t.error.empty() && t.text.empty() && acc.calls.empty() &&
       t.finish == "length") {

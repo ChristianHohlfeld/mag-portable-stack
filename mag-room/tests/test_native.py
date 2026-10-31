@@ -5196,15 +5196,18 @@ class GlmLayoutStartup(unittest.TestCase):
      if len(calls)>=count:return calls
      time.sleep(.03)
     self.fail('Missing room backend calls for '+marker+'; observed='+repr([(p[1],p[3].get('model')) for p in list(Model.paths)[start:] if p[0]=='/v1/chat/completions' and p[3].get('max_tokens')!=1]))
-   def idle_after(marker):
+   def room_state():
+    with urllib.request.urlopen(f'http://127.0.0.1:{ui}/api/state',timeout=2) as resp:return json.load(resp)
+   def user_count():
+    return sum(m.get('role')=='user' for m in room_state()['room'])
+   def idle_after_user_count(previous):
     end=time.monotonic()+8
     while time.monotonic()<end:
-     with urllib.request.urlopen(f'http://127.0.0.1:{ui}/api/state',timeout=2) as resp:room=json.load(resp)
-     if not room['busy'] and not room['pending'] and any(
-         m.get('role')=='user' and marker in (m.get('content') or '') for m in room['room']):
+     room=room_state()
+     if not room['busy'] and not room['pending'] and sum(m.get('role')=='user' for m in room['room'])>previous:
       return room
      time.sleep(.04)
-    self.fail('room turn did not finish: '+marker)
+    self.fail('room turn did not finish after user count '+str(previous))
    cases=[
     ('Hi',['qwen-numa0'],1,{'qwen3.8-flash-next-uncensored'},{'0'}),
     ('Hi beide',['qwen-numa0','qwen-numa1'],2,
@@ -5212,16 +5215,19 @@ class GlmLayoutStartup(unittest.TestCase):
     ('GLM-Q1',['qwen-numa0','qwen-numa1'],2,
      {'qwen3.8-flash-next-uncensored','glm-5.3-flash'},{'0','1'})]
    for phrase,bots,count,models,slots in cases:
-    marker='ROOM-ROUTE-'+str(time.monotonic_ns())
+    previous_users=user_count()
     before=len(Model.paths)
-    self.assertTrue(send(phrase+' '+marker,bots)['accepted'])
-    calls=calls_after(before,marker,count)
-    idle_after(marker)
+    self.assertTrue(send(phrase,bots)['accepted'])
+    calls=calls_after(before,phrase,count)
+    idle_after_user_count(previous_users)
     calls=[p for p in list(Model.paths)[before:] if p[0]=='/v1/chat/completions'
            and p[3].get('max_tokens')!=1]
     self.assertEqual(len(calls),count)
     self.assertEqual({p[3]['model'] for p in calls},models)
     self.assertEqual({p[1] for p in calls},slots)
+    for p in calls:
+     last_user=next(x['content'] for x in reversed(p[3]['messages']) if x['role']=='user')
+     self.assertEqual(last_user,phrase)
     for p in calls:
      body=p[3]
      self.assertNotIn('tools',body,'both room bots are chat-only')
@@ -5309,6 +5315,16 @@ class GlmLayoutStartup(unittest.TestCase):
      if len(calls)>=count:return calls
      time.sleep(.03)
     self.fail('Missing room backend calls for '+marker+'; observed='+repr([(p[1],p[3].get('model')) for p in list(Model.paths)[start:] if p[0]=='/v1/chat/completions' and p[3].get('max_tokens')!=1]))
+   def user_count():
+    return sum(m.get('role')=='user' for m in state_()['room'])
+   def idle_after_user_count(previous):
+    end=time.monotonic()+8
+    while time.monotonic()<end:
+     room=state_()
+     if not room['busy'] and not room['pending'] and sum(m.get('role')=='user' for m in room['room'])>previous:
+      return room
+     time.sleep(.04)
+    self.fail('room turn did not finish after user count '+str(previous))
    def idle_after(marker):
     end=time.monotonic()+8
     while time.monotonic()<end:
@@ -5322,15 +5338,18 @@ class GlmLayoutStartup(unittest.TestCase):
     ('Hi',['qwen-numa0'],1,{'qwen3.8-flash-next-uncensored'}),
     ('Hi beide',['qwen-numa0','qwen-numa1'],2,{'qwen3.8-flash-next-uncensored','glm-5.3-flash'}),
     ('GLM-Q1',['qwen-numa0','qwen-numa1'],2,{'qwen3.8-flash-next-uncensored','glm-5.3-flash'})]:
-    marker='ROOM-GREET-'+str(time.monotonic_ns())
+    previous_users=user_count()
     before=len(Model.paths)
-    self.assertTrue(post({'text':msg+' '+marker,'bots':bots})['accepted'])
-    requests=calls_after(before,marker,count);idle_after(marker)
+    self.assertTrue(post({'text':msg,'bots':bots})['accepted'])
+    requests=calls_after(before,msg,count);idle_after_user_count(previous_users)
     requests=[p for p in list(Model.paths)[before:] if p[0]=='/v1/chat/completions'
               and p[3].get('max_tokens')!=1]
     self.assertEqual(len(requests),count)
     self.assertEqual({p[3]['model'] for p in requests},models)
     self.assertFalse(any(p[3].get('model')=='glm-5.3-flash-iq1-m' for p in requests))
+    for p in requests:
+     last_user=next(x['content'] for x in reversed(p[3]['messages']) if x['role']=='user')
+     self.assertEqual(last_user,msg)
    # Qwen must not publish even a visible prefix if a hidden delimiter appears later.
    qwenmarker='QWEN-THINK-CUT-'+str(time.monotonic_ns())
    Model.script_scope=qwenmarker

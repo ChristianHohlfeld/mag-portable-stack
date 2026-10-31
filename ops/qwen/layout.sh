@@ -164,7 +164,9 @@ install -d -m 0700 "$TXN"
 [[ ! -e $TXN/started ]] || fail 'transaction already exists'
 if [[ $layout == glm ]]; then
   # Q2 is a live invariant: no staging, restart, or fallback may touch it.
-  systemctl is-active --quiet mag-llm-glm@q2.service || fail 'GLM-Q2 is not active; refusing to start/restart it'
+  q2_pid=$(systemctl show -p MainPID --value mag-llm-glm@q2.service 2>/dev/null || true)
+  [[ $q2_pid =~ ^[1-9][0-9]*$ ]] || fail 'GLM-Q2 must already be running; refusing to start/restart it'
+  systemctl is-enabled --quiet mag-llm-glm@q2.service || fail 'GLM-Q2 must already be enabled; refusing to change its boot state'
   curl --noproxy '*' -fsS --max-time 5 -o /dev/null http://127.0.0.1:8192/health || fail 'GLM-Q2 :8192 is not healthy'
   # A replaced executable does not change the running model's settings or
   # justify a restart. Keep the resident Q2 and report the condition only.
@@ -359,6 +361,8 @@ if [[ $layout == glm ]]; then
   done
   (( qwen_ready )) || fail 'Qwen :8191 health timeout after 10800s'
   systemctl is-active --quiet mag-llm-glm@q2.service || fail 'GLM-Q2 became inactive during Qwen cold start'
+  current_q2_pid=$(systemctl show -p MainPID --value mag-llm-glm@q2.service 2>/dev/null || true)
+  [[ $current_q2_pid == "$q2_pid" ]] || fail 'GLM-Q2 PID changed during Qwen cold start'
   curl --noproxy '*' -fsS --max-time 5 -o /dev/null http://127.0.0.1:8192/health || fail 'GLM-Q2 :8192 unhealthy after Qwen start'
 fi
 rm -f "$FAILED"

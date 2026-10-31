@@ -203,8 +203,8 @@ else:
   actions=self.log.read_text()[mark:].splitlines()
   for verb in ('stop','start','enable','disable'):
    self.assertNotIn(verb+' mag-llm-glm@q2.service',actions)
-  self.assertIn('show -p MainPID --value mag-llm-glm@q2.service',actions)
-  self.assertIn('GLM-Q2 PID changed during Qwen cold start',(ROOT/'ops/qwen/layout.sh').read_text())
+  self.assertIn('is-active --quiet mag-llm-glm@q2.service',actions)
+  self.assertIn('GLM-Q2 became inactive during Qwen cold start',(ROOT/'ops/qwen/layout.sh').read_text())
   self.assertTrue((self.host/'etc/systemd/system/mag-llm-qwen.service').exists())
   self.assertTrue((self.host/'etc/systemd/system/mag-llm-qwen-room.service').exists())
   mark=self.log.stat().st_size

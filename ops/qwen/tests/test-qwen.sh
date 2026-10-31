@@ -54,6 +54,10 @@ grep -Fq 'tool result roundtrip' ops/qwen/smoke.py
 grep -Fq 'cutover.sh" apply' ops/qwen/go-live.sh
 bash -n ops/qwen/go-live.sh
 grep -Fq 'enable_thinking' ops/qwen/smoke.py
+grep -Fq 'preserve_thinking' ops/qwen/smoke.py
+grep -Fq '"reasoning_effort": "none"' ops/qwen/smoke.py
+grep -Fq '"top_k": 20' ops/qwen/smoke.py
+grep -Fq '"presence_penalty": 1.5' ops/qwen/smoke.py
 grep -Fq 'MAG_ROOM_QWEN_CHAT_MAX_TOKENS=256' ops/room/glm.env
 grep -Fq 'body["temperature"] = 0.7' mag-room/native/magroom.cpp
 grep -Fq 'body["top_p"] = 0.80' mag-room/native/magroom.cpp

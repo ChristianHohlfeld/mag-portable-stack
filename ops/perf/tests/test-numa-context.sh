@@ -50,7 +50,7 @@ assert 'binding=(--physcpubind=0-13,28-41 --membind=0)' in glm
 assert '--mlock' not in glm
 assert '--load-mode dio -fa on -b 4096 -ub 1024' in glm  # known-good #231 llama-server flags
 assert 'glm-5.3-flash-iq1-m:kv-f16-f16' in glm
-assert 'MAG_ROOM_MODEL_ID_0=qwen3.8-flash-next-uncensored' in glm_layout
+assert 'MAG_ROOM_MODEL_ID_0=mistral-large4' in glm_layout
 assert 'MAG_ROOM_MODEL_ID_1=glm-5.3-flash' in glm_layout
 assert 'mag-llm-glm@q1.service' in glm_txn and 'mag-llm-glm@q2.service' in glm_txn
 assert 'FORMAT=' in glm and '.kv-format' in glm and 'mag-prefix-glm-5.3-flash-slot2.bin' in glm
@@ -123,7 +123,7 @@ assert 'short_glm_input(TURN_INPUT)' in room
 # The DeepSeek/Qwen working-mode tool schemas are still retained.
 assert 'const bool qwen_chat = no_tools && room_is_glm()' in room
 assert 'MAG_ROOM_GLM_CHAT_MAX_TOKENS' in room
-assert 'tools = (glm_chat_mode || qwen_room_bot) ? std::string() : tools_json(bot_idx, web);' in room
+assert 'tools = (glm_chat_mode || chat_only_room_bot) ? std::string() : tools_json(bot_idx, web);' in room
 assert 'glm-reasoning-limit model=' in room
 assert 'tool-failed bot=' in room
 assert 'restart_unit["$unit"]=1' in glm_txn

@@ -168,6 +168,11 @@ if [[ $layout == glm ]]; then
   [[ $q2_pid =~ ^[1-9][0-9]*$ ]] || fail 'GLM-Q2 must already be running; refusing to start/restart it'
   systemctl is-enabled --quiet mag-llm-glm@q2.service || fail 'GLM-Q2 must already be enabled; refusing to change its boot state'
   curl --noproxy '*' -fsS --max-time 5 -o /dev/null http://127.0.0.1:8192/health || fail 'GLM-Q2 :8192 is not healthy'
+  # A replaced executable does not change the running model's settings or
+  # justify a restart. Keep the resident Q2 and report the condition only.
+  if runs_stale_binary mag-llm-glm@q2.service; then
+    echo 'WARN: GLM-Q2 runs a deleted executable; leaving the healthy process untouched' >&2
+  fi
   REV=$(cat "$ROOT/ops/qwen/runtime.sha")
   BIN="/home/chris/.local/qwen4exp/$REV-mag-cp1/bin/llama-server"
   patch_id=$(sha256sum "$ROOT/ops/qwen/end-checkpoint.patch" "$ROOT/ops/glm/arch-compat.patch" | sha256sum | cut -d' ' -f1)
@@ -221,7 +226,7 @@ trap on_exit EXIT
 # Stage/verify the existing 98 GB Qwen GGUF before retiring Q1.
 # Do not run the GLM installer: GLM-Q2's unit, env, launcher and flags stay untouched.
 if [[ $layout == mixed || $layout == glm ]]; then bash "$ROOT/ops/qwen/install.sh" refresh; fi
-# The room-only Qwen unit conflicts with Q1, not Q2; the Q2 PID is guarded below.
+# The room-only Qwen unit conflicts with Q1, not Q2; Q2 is health-checked and never restarted here.
 install -m 0644 "$ROOT/ops/room/mag-llm-ds-node@.service" /etc/systemd/system/mag-llm-ds-node@.service
 install -d -m 0755 /etc/mag-stack /etc/mag-qwen
 case $layout in
@@ -249,10 +254,6 @@ for unit in "${selected_units[@]}"; do
   fi
 done
 if [[ $layout == glm ]]; then
-  if ! systemctl is-active --quiet mag-llm-glm@q2.service ||
-     runs_stale_binary mag-llm-glm@q2.service; then
-    fail 'GLM-Q2 is not in its original live state; refusing any Q2 restart'
-  fi
   qwen_changed=0
   for file in /usr/local/lib/mag-qwen/start.sh \
       /etc/systemd/system/mag-llm-qwen-room.service \
@@ -359,7 +360,9 @@ if [[ $layout == glm ]]; then
     sleep 5
   done
   (( qwen_ready )) || fail 'Qwen :8191 health timeout after 10800s'
-  [[ $(systemctl show -p MainPID --value mag-llm-glm@q2.service 2>/dev/null || true) == "$q2_pid" ]] || fail 'GLM-Q2 PID changed during Qwen cold start'
+  systemctl is-active --quiet mag-llm-glm@q2.service || fail 'GLM-Q2 became inactive during Qwen cold start'
+  current_q2_pid=$(systemctl show -p MainPID --value mag-llm-glm@q2.service 2>/dev/null || true)
+  [[ $current_q2_pid == "$q2_pid" ]] || fail 'GLM-Q2 PID changed during Qwen cold start'
   curl --noproxy '*' -fsS --max-time 5 -o /dev/null http://127.0.0.1:8192/health || fail 'GLM-Q2 :8192 unhealthy after Qwen start'
 fi
 rm -f "$FAILED"

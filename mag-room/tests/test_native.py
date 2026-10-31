@@ -5236,7 +5236,7 @@ class GlmLayoutStartup(unittest.TestCase):
      if body['model']=='mistral-large4':
       self.assertEqual(body['reasoning_effort'],'low')
       self.assertEqual(body['chat_template_kwargs']['reasoning_effort'],'low')
-      self.assertEqual(body['max_tokens'],700)
+      self.assertEqual(body['max_tokens'],8192)
       self.assertEqual(body['temperature'],1.0)
       self.assertEqual(body['top_p'],0.95)
       self.assertEqual(body['top_k'],0)

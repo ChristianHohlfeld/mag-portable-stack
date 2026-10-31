@@ -5186,10 +5186,10 @@ class GlmLayoutStartup(unittest.TestCase):
     end=time.monotonic()+7
     while time.monotonic()<end:
      calls=[p for p in list(Model.paths)[start:] if p[0]=='/v1/chat/completions'
-            and p[3].get('max_tokens')!=1 and marker in json.dumps(p[3],ensure_ascii=False)]
+            and p[3].get('max_tokens')!=1]
      if len(calls)>=count:return calls
      time.sleep(.03)
-    self.fail('Missing room backend calls for '+marker)
+    self.fail('Missing room backend calls for '+marker+'; observed='+repr([(p[1],p[3].get('model')) for p in list(Model.paths)[start:] if p[0]=='/v1/chat/completions' and p[3].get('max_tokens')!=1]))
    def idle_after(marker):
     end=time.monotonic()+8
     while time.monotonic()<end:
@@ -5212,7 +5212,7 @@ class GlmLayoutStartup(unittest.TestCase):
     calls=calls_after(before,marker,count)
     idle_after(marker)
     calls=[p for p in list(Model.paths)[before:] if p[0]=='/v1/chat/completions'
-           and p[3].get('max_tokens')!=1 and marker in json.dumps(p[3],ensure_ascii=False)]
+           and p[3].get('max_tokens')!=1]
     self.assertEqual(len(calls),count)
     self.assertEqual({p[3]['model'] for p in calls},models)
     self.assertEqual({p[1] for p in calls},slots)
@@ -5299,10 +5299,10 @@ class GlmLayoutStartup(unittest.TestCase):
     end=time.monotonic()+7
     while time.monotonic()<end:
      calls=[p for p in list(Model.paths)[start:] if p[0]=='/v1/chat/completions'
-            and p[3].get('max_tokens')!=1 and marker in json.dumps(p[3],ensure_ascii=False)]
+            and p[3].get('max_tokens')!=1]
      if len(calls)>=count:return calls
      time.sleep(.03)
-    self.fail('Missing room backend calls for '+marker)
+    self.fail('Missing room backend calls for '+marker+'; observed='+repr([(p[1],p[3].get('model')) for p in list(Model.paths)[start:] if p[0]=='/v1/chat/completions' and p[3].get('max_tokens')!=1]))
    def idle_after(marker):
     end=time.monotonic()+8
     while time.monotonic()<end:
@@ -5321,7 +5321,7 @@ class GlmLayoutStartup(unittest.TestCase):
     self.assertTrue(post({'text':msg+' '+marker,'bots':bots})['accepted'])
     requests=calls_after(before,marker,count);idle_after(marker)
     requests=[p for p in list(Model.paths)[before:] if p[0]=='/v1/chat/completions'
-              and p[3].get('max_tokens')!=1 and marker in json.dumps(p[3],ensure_ascii=False)]
+              and p[3].get('max_tokens')!=1]
     self.assertEqual(len(requests),count)
     self.assertEqual({p[3]['model'] for p in requests},models)
     self.assertFalse(any(p[3].get('model')=='glm-5.3-flash-iq1-m' for p in requests))
@@ -5333,6 +5333,7 @@ class GlmLayoutStartup(unittest.TestCase):
    self.assertTrue(post({'text':qwenmarker,'bots':['qwen-numa0']})['accepted'])
    qwenreq=calls_after(before,qwenmarker,1)[0][3]
    self.assertEqual(qwenreq['model'],'qwen3.8-flash-next-uncensored')
+   self.assertIn(qwenmarker,json.dumps(qwenreq,ensure_ascii=False))
    self.assertNotIn('tools',qwenreq)
    self.assertFalse(qwenreq['chat_template_kwargs']['enable_thinking'])
    self.assertFalse(qwenreq['chat_template_kwargs']['preserve_thinking'])
@@ -5354,6 +5355,7 @@ class GlmLayoutStartup(unittest.TestCase):
    self.assertTrue(post({'text':q2marker,'bots':['qwen-numa1']})['accepted'])
    q2req=calls_after(before,q2marker,1)[0][3]
    self.assertEqual(q2req['model'],'glm-5.3-flash')
+   self.assertIn(q2marker,json.dumps(q2req,ensure_ascii=False))
    self.assertNotIn('tools',q2req)
    q2room=idle_after(q2marker)
    q2at=max(i for i,m in enumerate(q2room['room'])

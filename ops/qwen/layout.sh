@@ -229,7 +229,7 @@ on_exit(){
   local rc=$?; trap - EXIT
   if (( rc )); then
     # Remember only a failed switch to a new layout, never an explicit pin.
-    if [[ -z $pin && $source == repo && $layout != glm ]]; then
+    if [[ -z $pin && $source == repo ]] && { [[ $layout != glm ]] || [[ -f $TXN/model-verified ]]; }; then
       install -d -m 0755 "$(dirname "$FAILED")" && printf '%s\n' "$identity" > "$FAILED" || true
     fi
     rollback
@@ -242,6 +242,9 @@ if [[ $layout == mixed ]]; then
   bash "$ROOT/ops/qwen/install.sh" refresh
 elif [[ $layout == glm ]]; then
   bash "$ROOT/ops/mistral/install.sh" stage
+  # From here on the model is complete and SHA256-verified; live start failures
+  # are remembered, while incomplete-download preflight failures remain retryable.
+  touch "$TXN/model-verified"
 fi
 install -m 0644 "$ROOT/ops/room/mag-llm-ds-node@.service" /etc/systemd/system/mag-llm-ds-node@.service
 install -d -m 0755 /etc/mag-stack /etc/mag-qwen /etc/mag-mistral

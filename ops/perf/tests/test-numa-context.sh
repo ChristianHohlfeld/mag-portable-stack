@@ -121,7 +121,7 @@ assert 'MAG_ROOM_PREWARM=1' in Path('ops/room/glm.env').read_text()
 assert 'short_glm_input(TURN_INPUT)' in room
 # GLM chat intentionally omits the entire tool schema/choice and decodes up to 256.
 # The DeepSeek/Qwen working-mode tool schemas are still retained.
-assert 'if (!(no_tools && model.rfind("glm-5.3-flash", 0) == 0)' in room
+assert 'const bool qwen_chat = no_tools && room_is_glm()' in room
 assert 'MAG_ROOM_GLM_CHAT_MAX_TOKENS' in room
 assert 'tools = (glm_chat_mode || qwen_room_bot) ? std::string() : tools_json(bot_idx, web);' in room
 assert 'glm-reasoning-limit model=' in room

@@ -588,9 +588,10 @@ try:
         raise ValueError("unknown active NUMA1 room layout: "+repr(layout))
     if layout == "glm":
         ids = {a.get("model") for a in active}
-        expected = {"glm-5.3-flash-iq1-m", "glm-5.3-flash"}
-        if ids != expected: raise ValueError("expected two GLM bots, got "+repr(ids))
-        print("Release ready: GLM-Q1 (8191) + GLM-Q2 (8192)")
+        expected = {"glm-5.3-flash"}
+        if ids != expected or len(active) != 1 or active[0].get("id") != "qwen-numa1":
+            raise ValueError("expected only GLM-Q2 room bot, got "+repr(active))
+        print("Release ready: GLM-Q2 (8192); GLM-Q1 (8191) remains warm")
     else:
         require_ds = sys.argv[2] == "1"
         secondary = "deepseek" if layout == "deepseek" else "qwen"

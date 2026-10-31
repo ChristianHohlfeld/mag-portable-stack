@@ -5118,7 +5118,7 @@ class TwoBackendStartup(unittest.TestCase):
    log.close();model.shutdown();model.server_close();tmp.cleanup()
 
 class GlmLayoutStartup(unittest.TestCase):
- """Layout glm: both GLM bots preserve their historical IDs and memory."""
+ """Layout glm: only Q2 in room, Q1 preserved in persistent state."""
  def test_q1_q2_follow_glm_backend(self):
   deadline=time.monotonic()+20
   Model.delay=0;Model.slot_delay={};Model.script=[];Model.reply=None
@@ -5162,232 +5162,36 @@ class GlmLayoutStartup(unittest.TestCase):
     except Exception:
      if proc.poll() is not None:self.fail('magroom exited %s\n%s'%(proc.returncode,log_path.read_text(errors='replace')[-2000:]))
      time.sleep(.03)
-   self.assertEqual([(b['slot'],b['id'],b['name'],b['model'],b['numa']) for b in doc['agents']],[
-    (1,'deepseek-chat','GLM-Q1','glm-5.3-flash-iq1-m',0),
-    (2,'qwen-numa1','GLM-Q2','glm-5.3-flash',1)])
+   self.assertEqual([(v['slot'],v['id'],v['name'],v['model']) for v in doc['agents']],
+                    [(2,'qwen-numa1','GLM-Q2','glm-5.3-flash')])
    saved=json.loads(state.joinpath('agents.json').read_text())
-   self.assertEqual([b['name'] for b in saved[:2]],['GLM-Q1','GLM-Q2'])
-   self.assertEqual(saved[1]['memory'][0]['text'],'bleibt')
-   end=time.monotonic()+10
-   while time.monotonic()<end:
-    paths=list(Model.paths)[mark:]
-    glm_files=[p for p in paths if p[3].get('filename')=='mag-prefix-glm-5.3-flash-slot2-chat-v2-prefix.bin']
-    if any(p[0].endswith('save') for p in glm_files):break
-    time.sleep(.05)
-   else:self.fail('GLM cold prefix not saved: '+log_path.read_text()[-1200:])
-   self.assertEqual(sum(p[0].endswith('restore') for p in glm_files),1,glm_files)
-   self.assertTrue(any(p[0]=='/v1/chat/completions' and p[3].get('model')=='glm-5.3-flash' and p[3].get('max_tokens')==1 for p in paths))
-   time.sleep(.3)
-   self.assertEqual(sum(p[0].endswith('restore') for p in list(Model.paths)[mark:] if p[3].get('filename')=='mag-prefix-glm-5.3-flash-slot2-chat-v2-prefix.bin'),1,'infinite restore')
+   self.assertEqual(len(saved),2,'Q1 identity must remain persisted, not deleted')
+   self.assertEqual([v['id'] for v in saved],['qwen-numa1','deepseek-chat'])
+   self.assertEqual(saved[0]['memory'][0]['text'],'bleibt')
+   self.assertEqual(saved[1]['slot'],1)
+   self.assertEqual(saved[1]['name'],'GLM-Q1')
    token=_ui_token(ui)
-   def post(endpoint,payload,method='POST'):
-    req=urllib.request.Request(f'http://127.0.0.1:{ui}{endpoint}',data=json.dumps(payload).encode(),
-                               method=method,headers={'Content-Type':'application/json','X-MAG-Token':token})
+   def send(message,bots=None):
+    req=urllib.request.Request(f'http://127.0.0.1:{ui}/api/message',
+      data=json.dumps({'text':message,**({'bots':bots} if bots else {})}).encode(),
+      headers={'Content-Type':'application/json','X-MAG-Token':token})
     with urllib.request.urlopen(req,timeout=5) as resp:return json.load(resp)
-   # Historical DeepSeek bot ID now uses GLM-Q1 on NUMA0.
-   first='GLM-FIRST-HI-'+str(time.monotonic_ns())
-   post('/api/message',{'text':first,'bots':['deepseek-chat'],'request_id':'glm-first-hi'})
-   end=time.monotonic()+5
-   while time.monotonic()<end:
-    first_calls=[p for p in list(Model.paths)[mark:] if p[0]=='/v1/chat/completions'
-                  and p[3].get('max_tokens')!=1 and first in json.dumps(p[3])]
-    if first_calls:break
-    time.sleep(.05)
-   else:self.fail('GLM-Q1 did not receive first turn')
-   self.assertEqual([p[3]['model'] for p in first_calls],['glm-5.3-flash-iq1-m'])
-   # llama --parallel 1 uses id_slot=0, while the checkpoint filename's
-   # The MAG room-agent slot and llama id_slot are different namespaces.
-   self.assertEqual(first_calls[0][3].get('id_slot'),0)
-   # The cached system/tools body is followed by a bounded, two-message chat.
-   self.assertEqual(len(first_calls[0][3]['messages']),2)
-   self.assertFalse(first_calls[0][3]['chat_template_kwargs']['enable_thinking'])
-   self.assertLessEqual(len(first_calls[0][3]['messages'][1]['content'].encode()),700)
-   self.assertEqual((state/'glm-chat-defaults-v1').read_text().strip(),'1')
-   self.assertEqual((state/'reflect').read_text(),'off')
-   self.assertEqual((state/'autotalk').read_text(),'off')
-   req=first_calls[0][3]
-   self.assertNotIn('tools',req,'GLM chat must never send tools schemas')
-   self.assertNotIn('tool_choice',req,'GLM chat must omit tool choice too')
-   self.assertEqual(req['max_tokens'],96)
-   self.assertEqual(req['temperature'],0.55)
-   self.assertEqual(req['dry_multiplier'],0.8)
-   self.assertEqual(req['dry_base'],1.75)
-   self.assertEqual(req['dry_allowed_length'],2)
-   self.assertEqual(req['dry_penalty_last_n'],64)
-   self.assertEqual(req['messages'][-1],{'role':'user','content':first})
-   self.assertNotIn('[Raumverlauf]',json.dumps(req['messages'],ensure_ascii=False))
-   self.assertEqual(req['chat_template_kwargs']['reasoning_effort'],'low')
-   self.assertTrue(req['chat_template_kwargs']['clear_thinking'])
-   sys=req['messages'][0]['content']
-   self.assertIn('[Identitaet]',sys)
-   self.assertIn('Du hast keine Werkzeuge',sys)
-   self.assertNotIn('todo(',sys)
-   self.assertNotIn('run_command',sys)
-   self.assertNotIn('DeepSeek',sys)
-   self.assertNotIn('Qwen',sys)
-   self.assertLessEqual(len(sys.encode('utf-8'))//3,900)
-   self.assertNotIn('todo(',json.dumps(req,ensure_ascii=False))
-   self.assertNotIn('run_command',json.dumps(req,ensure_ascii=False))
-   self.assertTrue(any(p[0]=='/v1/chat/completions' and
-       p[3].get('max_tokens')==1 and
-       'tools' not in p[3] for p in paths),
-       'prewarm uses the same no-tools system prefix')
-   # Host-only memory mutations must not trigger the model.
-   count_before=len([p for p in Model.paths if p[0]=='/v1/chat/completions' and
-                     p[3].get('max_tokens')!=1])
-   self.assertTrue(post('/api/message',{'text':'/merk Test-Fakt-ZQ',
-       'bots':['qwen-numa1']})['ok'])
-   persisted=json.loads((state/'agents.json').read_text())
-   self.assertTrue(any('Test-Fakt-ZQ' in str(v) for v in persisted[1].get('memory',[])))
-   self.assertEqual(count_before,len([p for p in Model.paths
-       if p[0]=='/v1/chat/completions' and p[3].get('max_tokens')!=1]))
-   # Short greetings stay user role messages; prior turns use separate roles.
-   before=len(Model.paths)
-   post('/api/message',{'text':'Hi','bots':['qwen-numa1'],
-       'request_id':'glm-short-memory'})
-   end=time.monotonic()+6
-   while time.monotonic()<end:
-    greetings=[p for p in list(Model.paths)[before:]
-               if p[0]=='/v1/chat/completions' and
-               p[3].get('max_tokens')!=1]
-    if greetings:break
-    time.sleep(.05)
-   else:self.fail('GLM short greeting missing')
-   self.assertEqual(greetings[0][3]['messages'][-1],{'role':'user','content':'Hi'})
-   self.assertLessEqual(len(greetings[0][3]['messages']),7)
-   self.assertIn('Test-Fakt-ZQ',greetings[0][3]['messages'][0]['content'])
-   self.assertEqual(greetings[0][3]['temperature'],1.0)
-   self.assertNotIn('dry_multiplier',greetings[0][3],'Q2 sampler stays unchanged')
-   self.assertNotIn('tools',greetings[0][3])
-   self.assertFalse(greetings[0][3]['chat_template_kwargs']['enable_thinking'])
-   self.assertTrue(post('/api/message',{'text':'/vergiss 1',
-       'bots':['qwen-numa1']})['ok'])
-   # Host-selected skill is a user suffix; not system/tool catalog.
-   before=len(Model.paths)
-   post('/api/message',{'text':'/skill kurz','bots':['qwen-numa1'],
-       'request_id':'glm-skill-kurz'})
-   end=time.monotonic()+6
-   while time.monotonic()<end:
-    skill_calls=[p for p in list(Model.paths)[before:]
-                 if p[0]=='/v1/chat/completions' and
-                 p[3].get('max_tokens')!=1 and
-                 '[Skill: kurz]' in str(p[3].get('messages'))]
-    if skill_calls:break
-    time.sleep(.05)
-   else:self.fail('GLM skill was not selected')
-   self.assertNotIn('[Skill:',skill_calls[0][3]['messages'][0]['content'])
-   self.assertNotIn('tools',skill_calls[0][3])
-   # Explicit thinking-limit error gets exactly one tool-free final retry.
-   retry_marker='GLM-RETRY-'+str(time.monotonic_ns())
-   Model.script_scope=retry_marker
-   Model.script=[
-    [{'_chunk':{'choices':[{'delta':{'reasoning_content':'nur Gedanke'},
-                            'finish_reason':'length'}]}}],
-    ['RETRY-OK']]
-   before=len(Model.paths)
-   try:
-    post('/api/message',{'text':retry_marker,'bots':['deepseek-chat'],
-        'think':True,'request_id':'glm-one-thinking-retry'})
-    end=time.monotonic()+7
+   for phrase in ('Hi','Hi beide','GLM-Q1'):
+    before=len(Model.paths)
+    self.assertTrue(send(phrase)['accepted'])
+    end=time.monotonic()+5
     while time.monotonic()<end:
-     retry_calls=[p for p in list(Model.paths)[before:]
-                  if p[0]=='/v1/chat/completions' and
-                  p[3].get('max_tokens')!=1 and retry_marker in json.dumps(p[3])]
-     if len(retry_calls)>=2:break
-     time.sleep(.05)
-    else:self.fail('GLM thinking retry did not run exactly once')
-    self.assertEqual(len(retry_calls),2)
-    self.assertTrue(retry_calls[0][3]['chat_template_kwargs']['enable_thinking'])
-    self.assertFalse(retry_calls[1][3]['chat_template_kwargs']['enable_thinking'])
-    self.assertEqual([p[3]['max_tokens'] for p in retry_calls],[256,96])
-    self.assertNotIn('stop',retry_calls[0][3],'Thinking must not stop at </think>')
-    self.assertNotIn('</think>',retry_calls[1][3]['stop'],'Client handles reasoning delimiters')
-    self.assertNotIn('\n\n## ',retry_calls[1][3]['stop'])
-    self.assertEqual(retry_calls[0][3]['messages'],retry_calls[1][3]['messages'])
-    self.assertNotIn('tools',retry_calls[1][3])
-   finally:
-    Model.script_scope=None
-    Model.script=[]
-   # Default unaddressed messages route to only one enabled GLM bot.
-   before=len(Model.paths)
-   marker='GLM-DEFAULT-'+str(time.monotonic_ns())
-   post('/api/message',{'text':marker,'request_id':'glm-one-default'})
-   end=time.monotonic()+6
-   while time.monotonic()<end:
-    default_calls=[p for p in list(Model.paths)[before:]
-                   if p[0]=='/v1/chat/completions' and
-                   p[3].get('max_tokens')!=1 and marker in json.dumps(p[3])]
-    if default_calls:break
-    time.sleep(.05)
-   else:self.fail('GLM default bot did not answer')
-   time.sleep(.15)
-   self.assertEqual(len(default_calls),1,default_calls)
-   self.assertEqual(default_calls[0][3]['model'],'glm-5.3-flash-iq1-m')
-   # The UI sends the enabled roster, which must not broadcast to both.
-   before=len(Model.paths)
-   roster_marker='GLM-ROSTER-'+str(time.monotonic_ns())
-   post('/api/message',{'text':roster_marker,'bots':['deepseek-chat','qwen-numa1']})
-   end=time.monotonic()+6
-   while time.monotonic()<end:
-    roster_calls=[p for p in list(Model.paths)[before:]
-                  if p[0]=='/v1/chat/completions' and p[3].get('max_tokens')!=1
-                  and roster_marker in json.dumps(p[3])]
-    if roster_calls:break
-    time.sleep(.05)
-   else:self.fail('GLM default roster did not answer')
-   time.sleep(.15)
-   self.assertEqual([p[3]['model'] for p in roster_calls],['glm-5.3-flash-iq1-m'])
-
-   # No DeepSeek cold gate: Q1 and Q2 are separately routable.
-   post('/api/bot-settings',{'bots':['deepseek-chat'],'enabled':False},'PUT')
-   paused_mark='GLM-EXPLICIT-PAUSED-'+str(time.monotonic_ns())
-   before=len(Model.paths)
-   self.assertTrue(post('/api/message',{'text':paused_mark,
-       'bots':['deepseek-chat']})['accepted'])
-   time.sleep(.2)
-   self.assertFalse([p for p in list(Model.paths)[before:]
-       if p[0]=='/v1/chat/completions' and p[3].get('max_tokens')!=1
-       and paused_mark in json.dumps(p[3])])
-   marker='GLM-PAUSED-'+str(time.monotonic_ns())
-   post('/api/message',{'text':marker,'bots':['deepseek-chat','qwen-numa1']})
-   end=time.monotonic()+10
-   while time.monotonic()<end:
-    hits=[p for p in list(Model.paths)[mark:] if p[0]=='/v1/chat/completions' and p[3].get('max_tokens')!=1 and marker in json.dumps(p[3])]
-    if hits:break
-    time.sleep(.05)
-   else:self.fail('GLM turn blocked after missing checkpoint')
-   time.sleep(.2)
-   self.assertEqual(len(hits),1,hits)
-   self.assertEqual(hits[0][3].get('model'),'glm-5.3-flash')
-   # Reverse: Q2 paused and Q1 enabled. Only GLM-Q1 may answer.
-   post('/api/bot-settings',{'bots':['deepseek-chat'],'enabled':True},'PUT')
-   post('/api/bot-settings',{'bots':['qwen-numa1'],'enabled':False},'PUT')
-   second='DEEPSEEK-GLM-PAUSED-'+str(time.monotonic_ns())
-   post('/api/message',{'text':second,'bots':['deepseek-chat','qwen-numa1'],'request_id':'glm-pause-reverse'})
-   end=time.monotonic()+7
-   while time.monotonic()<end:
-    second_calls=[p for p in list(Model.paths)[mark:] if p[0]=='/v1/chat/completions'
-                  and p[3].get('max_tokens')!=1 and second in json.dumps(p[3])]
-    if second_calls:break
-    time.sleep(.05)
-   else:self.fail('GLM-Q1 did not answer when Q2 was paused')
-   time.sleep(.2)
-   self.assertEqual([p[3]['model'] for p in second_calls],['glm-5.3-flash-iq1-m'])
-   # Both paused: publish the user message once, with no fallback/model call.
-   post('/api/bot-settings',{'bots':['deepseek-chat'],'enabled':False},'PUT')
-   no_one='BOTH-PAUSED-'+str(time.monotonic_ns())
-   body={'text':no_one,'bots':['deepseek-chat','qwen-numa1'],'request_id':'glm-both-paused'}
-   self.assertTrue(post('/api/message',body)['accepted'])
-   self.assertTrue(post('/api/message',body).get('duplicate'))
-   time.sleep(.35)
-   no_calls=[p for p in list(Model.paths)[mark:] if p[0]=='/v1/chat/completions'
-             and p[3].get('max_tokens')!=1 and no_one in json.dumps(p[3])]
-   self.assertEqual(no_calls,[],'both paused must not infer')
-   state_doc=json.load(urllib.request.urlopen(f'http://127.0.0.1:{ui}/api/state',timeout=2))
-   user_at=[i for i,m in enumerate(state_doc['room']) if m.get('role')=='user' and m.get('content')==no_one]
-   self.assertEqual(len(user_at),1,'duplicate human room message')
-   self.assertFalse(any(m.get('role')=='assistant' for m in state_doc['room'][user_at[0]+1:]),
-                    'both paused must not append bot response')
+     calls=[v for v in list(Model.paths)[before:] if v[0]=='/v1/chat/completions'
+            and v[3].get('max_tokens')!=1 and phrase in json.dumps(v[3])]
+     if calls:break
+     time.sleep(.04)
+    else:self.fail('Q2 did not receive '+phrase)
+    self.assertEqual({v[3]['model'] for v in calls},{'glm-5.3-flash'})
+   self.assertFalse(any(v[3].get('model')=='glm-5.3-flash-iq1-m' and
+      v[3].get('max_tokens')!=1 for v in Model.paths[mark:]))
+   # Room restarts must keep Q1 parked and Q2 identity stable.
+   self.assertEqual([v['id'] for v in json.loads(state.joinpath('agents.json').read_text())],
+                    ['qwen-numa1','deepseek-chat'])
   finally:
    Model.slot_block={}
    Model.restore_missing=False
@@ -5460,50 +5264,15 @@ class GlmLayoutStartup(unittest.TestCase):
       return room
      time.sleep(.04)
     self.fail('GLM turn did not finish: '+marker)
-   # Stop strings are llama.cpp /v1/chat/completions request parameters, not flags.
-   # Multiple SSE fragments deliberately split each forbidden token.
-   for n,parts in enumerate((
-      ['GARBAGE-PREFIX','</thi','nk>','GARBAGE-THINK-END'],
-      ['<thi','nk>','GARBAGE-THINK-OPEN'],
-      ['5','<|us','er|>','GARBAGE-SPECIAL'],
-      ['5','\n\n#','# ','GARBAGE-HEADING'])):
-    marker='GLM-CUT-'+str(n)+'-'+str(time.monotonic_ns())
-    Model.script_scope=marker
-    Model.script=[parts, ['Saubere Antwort.', {'_chunk':{'choices':[{'delta':{},'finish_reason':'stop'}]}}]] if n<3 else [parts]
+   # No Q1 stream is routed. A plain greeting and a group greeting reach only Q2.
+   for msg in ('Hi','Hi beide','GLM-Q1'):
+    marker='Q2-ONLY-'+str(time.monotonic_ns())
     before=len(Model.paths)
-    self.assertTrue(post({'text':marker,'bots':['deepseek-chat']})['accepted'])
-    req=calls_after(before,marker,1)[0][3]
-    self.assertLessEqual(req['max_tokens'],256)
-    self.assertTrue({'<|user|>','<|observation|>','<tool_call'}.issubset(set(req['stop'])),req)
-    self.assertNotIn('</think>',req['stop'],'Reasoning end stays client-side')
-    self.assertNotIn('<think>',req['stop'],'Reasoning start stays client-side')
-    client=CPP_SOURCE if 'CPP_SOURCE' in globals() else (ROOT/'mag-room/native/magroom.cpp').read_text()
-    self.assertIn('"</think>", "<think>", "<|", "<tool_call"',client)
-    self.assertNotIn('\n\n## ',req['stop'],'Heading stop is client-side only')
-    requests=calls_after(before,marker,2 if n<3 else 1)
-    if n<3:
-     self.assertEqual(len(requests),2,requests)
-     retry_messages=requests[1][3]['messages']
-     self.assertEqual(len(retry_messages),2,retry_messages)
-     self.assertEqual(retry_messages[-1],{'role':'user','content':marker})
-    expected='Saubere Antwort.' if n<3 else '5'
-    end=time.monotonic()+6
-    while time.monotonic()<end:
-     room=idle_after(marker)
-     if any(m.get('role')=='assistant' and
-            (m.get('content') or '').strip()==expected for m in room['room']):
-      break
-     time.sleep(.04)
-    text=json.dumps(room['room'],ensure_ascii=False)
-    self.assertNotIn('GARBAGE-',text)
-    self.assertNotIn('</think>',text)
-    self.assertNotIn('<think>',text)
-    self.assertNotIn('<|user|>',text)
-    self.assertTrue(any(m.get('role')=='assistant' and
-          (m.get('content') or '').strip()==expected
-          for m in room['room']),room['room'][-3:])
-    Model.script_scope=None
-    Model.script=[]
+    self.assertTrue(post({'text':msg+' '+marker})['accepted'])
+    requests=calls_after(before,marker,1)
+    idle_after(marker)
+    self.assertEqual(len(requests),1)
+    self.assertEqual(requests[0][3]['model'],'glm-5.3-flash')
    # Q2 streams a split reasoning terminator: never publish raw delimiter.
    q2marker='GLM-Q2-CLIENT-STOP-'+str(time.monotonic_ns())
    Model.script_scope=q2marker
@@ -5520,69 +5289,7 @@ class GlmLayoutStartup(unittest.TestCase):
    self.assertNotIn('Antwort',q2text)
    Model.script_scope=None
    Model.script=[]
-   # A single leading greeting + group target broadcasts, but a middle
-   # mention of 'beide' must retain GLM's one-host arbitration.
-   for text_,expected in [('Hi beide: wie viel ist 2+3?',2),
-                          ('ich mag beide Farben',1)]:
-    marker='GLM-GROUP-'+str(time.monotonic_ns())
-    before=len(Model.paths)
-    self.assertTrue(post({'text':text_+' '+marker,
-                          'bots':['deepseek-chat','qwen-numa1']})['accepted'])
-    calls=calls_after(before,marker,expected)
-    idle_after(marker)
-    self.assertEqual(len(calls),expected,calls)
-   # Q1 hygiene: at most two own clean user/assistant pairs. Never include
-   # a foreign Q2 response as a fake user turn or an own assistant turn.
-   q2mark='GLM-CTX-Q2-'+str(time.monotonic_ns())
-   before=len(Model.paths)
-   self.assertTrue(post({'text':q2mark,'bots':['qwen-numa1']})['accepted'])
-   calls_after(before,q2mark,1)
-   idle_after(q2mark)
-   q1mark='GLM-CTX-Q1-'+str(time.monotonic_ns())
-   before=len(Model.paths)
-   self.assertTrue(post({'text':q1mark,'bots':['deepseek-chat']})['accepted'])
-   q1req=calls_after(before,q1mark,1)[0][3]
-   roles=q1req['messages']
-   self.assertEqual(roles[0]['role'],'system')
-   self.assertEqual(roles[-1],{'role':'user','content':q1mark})
-   self.assertLessEqual(len(roles),6,'system + two complete Q1 pairs + current user')
-   self.assertFalse(any(m['content'].startswith('GLM-Q2: ')
-       for m in roles[1:-1]),roles)
-   self.assertEqual([m['role'] for m in roles[1:-1]],
-       ['user','assistant']*((len(roles)-2)//2),roles)
-   self.assertNotIn('[Raumverlauf]',json.dumps(roles,ensure_ascii=False))
-   idle_after(q1mark)
-   # Six identical words cause a hard stream cut before the repetition run
-   # enters SSE or persisted room state. A valid prefix is kept.
-   for prefix in ('# ','2, 3 und 5. '):
-    marker='GLM-REPEAT-'+str(time.monotonic_ns())
-    Model.script_scope=marker
-    Model.script=[[prefix]+['primos ']*6+['GARBAGE-REPEAT']]
-    before=len(Model.paths)
-    self.assertTrue(post({'text':marker,'bots':['deepseek-chat']})['accepted'])
-    calls_after(before,marker,1)
-    room=idle_after(marker)['room']
-    user_at=max(i for i,m in enumerate(room) if m.get('role')=='user' and
-                m.get('content')==marker)
-    after=room[user_at+1:]
-    self.assertNotIn('primos',json.dumps(after,ensure_ascii=False))
-    self.assertNotIn('GARBAGE-REPEAT',json.dumps(after,ensure_ascii=False))
-    if prefix.startswith('2,'):
-     self.assertTrue(any(m.get('role')=='assistant' and
-         (m.get('content') or '').strip()=='2, 3 und 5.' for m in after),after)
-    else:
-     self.assertFalse(any(m.get('role')=='assistant' and
-         (m.get('content') or '').strip()=='#' for m in after),after)
-    Model.script_scope=None;Model.script=[]
-   # Forgetting memory indexes across multiple agents is ambiguous.
-   for ids in (['deepseek-chat','qwen-numa1'],None):
-    body={'text':'/vergiss 1'}
-    if ids is not None:body['bots']=ids
-    with self.assertRaises(urllib.error.HTTPError) as error:
-     post(body)
-    self.assertEqual(error.exception.code,400)
-    self.assertIn('Für /vergiss genau einen Bot wählen',
-                  error.exception.read().decode())
+   # Q1 is parked. No legacy Q1-only group, history, or retry checks apply.
   finally:
    Model.script_scope=None;Model.script=[]
    proc.terminate()
@@ -5597,7 +5304,7 @@ class GlmLayoutStartup(unittest.TestCase):
   Model.delay=0;Model.slot_delay={'0':2,'1':2}
   Model.script_scope='@alle Hi'
   Model.script=[['Hallo ', {'_chunk':{'choices':[{'delta':{},'finish_reason':'stop'}]}}]
-                for _ in range(2)]
+                for _ in range(1)]
   Model.reply=None;Model.health=200;Model.slot_snapshot=[];Model.paths=[]
   Model.slot_block={};Model.barrier_release=None;Model.restore_missing=False
   tmp=tempfile.TemporaryDirectory();root=pathlib.Path(tmp.name);state=root/'state';state.mkdir()
@@ -5641,11 +5348,11 @@ class GlmLayoutStartup(unittest.TestCase):
     with urllib.request.urlopen(f'http://127.0.0.1:{ui}/api/state',timeout=3) as resp:st=json.load(resp)
     answers=[m for m in st.get('room',[]) if m.get('role')=='assistant' and
              'Hallo' in (m.get('content') or '')]
-    if len(answers)==2:break
+    if len(answers)==1:break
     time.sleep(.2)
-   else:self.fail('two explicitly requested GLM streams did not complete')
+   else:self.fail('single Q2 room stream did not complete')
    calls=[p for p in Model.paths if p[0]=='/v1/chat/completions' and p[3].get('max_tokens')!=1]
-   self.assertEqual({p[1] for p in calls},{'0','1'})
+   self.assertEqual({p[1] for p in calls},{'1'})
    self.assertFalse([p for p in Model.paths if 'action=cancel' in p[0]])
    log.flush()
    self.assertNotIn('reason=stop',logpath.read_text(errors='replace'))

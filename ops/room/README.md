@@ -1,5 +1,18 @@
 # Room: DeepSeek V4 Flash, one bot per NUMA node
 
+## GLM-Raum: nur Q2 (31.10.2026)
+
+Im Layout `glm` ist **nur GLM-Q2** (`qwen-numa1`, IQ2_XS, :8192/NUMA1)
+aktiver Raum-Bot. Beim Raumstart wird Q1 aus dem aktiven Roster
+ausgegliedert, bleibt aber inklusive ID, Memory und VM in `agents.json`
+gespeichert. Die Raum-History bleibt erhalten; wiederholtes Deployment
+ist idempotent. Die Readiness erwartet ausschließlich Q2 als aktiven Bot.
+
+Der GLM-Q1-llama-server auf **:8191/NUMA0 bleibt warm** und wird weder
+gestoppt noch neugestartet. Auch GLM-Q2 wird beim Raum-Deployment nicht
+neugestartet: keine Änderungen an `ops/glm/*`, Modell-Units oder Flags.
+
+
 `model.env` is the shared room/gateway contract, installed as
 `/etc/mag-stack/room-model.env`. `MAG_ROOM_MODEL_PORTS=8191:0,8192:1`
 means **port:NUMA**, not llama slot. Both servers have one llama slot (`0`), explicitly pinned by room and gateway for chat and prewarm.

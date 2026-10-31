@@ -28,7 +28,7 @@ OOMScoreAdjust=-600
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=no
-ReadWritePaths=/var/lib/mag-llm/slots/glm /var/lib/mag-llm/slots/glm-q1
+ReadWritePaths=/var/lib/mag-llm/slots/glm /var/lib/mag-llm/slots/glm-q1 /var/lib/mag-llm/slots/glm-ik
 PrivateTmp=yes
 RestrictAddressFamilies=AF_INET AF_UNIX
 [Install]

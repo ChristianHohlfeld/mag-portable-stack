@@ -20,6 +20,10 @@ install -m 0755 "$ROOT/ops/glm/verify-model.sh" /usr/local/lib/mag-glm/verify-mo
 install -m 0755 "$ROOT/ops/glm/start.sh" /usr/local/lib/mag-glm/start.sh
 install -m 0644 "$ROOT/ops/glm/q1.env" /etc/mag-glm/q1.env
 install -m 0644 "$ROOT/ops/glm/q2.env" /etc/mag-glm/q2.env
+# The launcher verifies the explicit patch identity of the separately built ik runtime.
+install -d -m 0755 /usr/local/lib/mag-glm/ik
+install -m 0644 "$ROOT/ops/glm/ik/0001-glm5next-legacy-6block-hparams.patch" \
+  /usr/local/lib/mag-glm/ik/0001-glm5next-legacy-6block-hparams.patch
 # Reviewed template: the embedded one cannot switch thinking off (ops/glm/README.md).
 install -m 0644 "$ROOT/ops/glm/chat-template.jinja" /usr/local/lib/mag-glm/chat-template.jinja
 bash /usr/local/lib/mag-glm/verify-model.sh
@@ -39,9 +43,7 @@ for part in /home/chris/models/GLM-5.3-Flash-GGUF-IQ2_XS/GLM-5.3-Flash-IQ2_XS-*-
     --require-elementwise-safe >/dev/null
 done
 echo 'GLM GGUF elementwise types preflight passed (15 shards)'
-install -d -o chris -g chris -m 0700 /var/lib/mag-llm/slots/glm /var/lib/mag-llm/slots/glm-q1
-# Supports single GGUF or full split set, with TOFU size + SHA256 pins.
-# Verification reads weights; never restarts either model.
+install -d -o chris -g chris -m 0700 /var/lib/mag-llm/slots/glm /var/lib/mag-llm/slots/glm-q1 /var/lib/mag-llm/slots/glm-ik
 install -m 0755 "$ROOT/ops/glm/verify-iq1.sh" /usr/local/lib/mag-glm/verify-iq1.sh
 bash /usr/local/lib/mag-glm/verify-iq1.sh
 install -m 0644 "$ROOT/ops/glm/mag-llm-glm@.service" /etc/systemd/system/mag-llm-glm@.service

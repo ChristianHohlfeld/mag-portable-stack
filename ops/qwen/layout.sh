@@ -17,7 +17,16 @@ files=(/etc/mag-stack/room-model.env /etc/mag-stack/room-layout /etc/mag-stack/r
        /usr/local/lib/mag-qwen/runtime.sha /etc/mag-qwen/model.sha256
        /usr/local/lib/mag-mistral/start.sh /usr/local/lib/mag-mistral/verify-model.sh /usr/local/lib/mag-mistral/runtime.sha
        /etc/mag-mistral/SHA256SUMS /etc/mag-mistral/runtime.env /etc/mag-mistral/model.verified
-       /etc/systemd/system/mag-audit-gateway.service.d/50-two-bots.conf)
+       /etc/systemd/system/mag-audit-gateway.service.d/50-two-bots.conf
+       /etc/mag-glm/q1.env /etc/mag-glm/q2.env
+       /usr/local/lib/mag-glm/start.sh /usr/local/lib/mag-glm/runtime.sha
+       /usr/local/lib/mag-glm/model.sizes /usr/local/lib/mag-glm/model.sha256
+       /usr/local/lib/mag-glm/verify-model.sh /usr/local/lib/mag-glm/chat-template.jinja
+       /usr/local/lib/mag-glm/ik/0001-glm5next-legacy-6block-hparams.patch
+       /usr/local/lib/mag-glm/verify-iq1.sh
+       /etc/systemd/system/mag-llm-glm@.service
+       /etc/systemd/system/mag-llm-glm@q1.service.d/10-numa.conf
+       /etc/systemd/system/mag-llm-glm@q2.service.d/10-numa.conf)
 # A failed attempt of the repo-declared layout is remembered per identity so the
 # auto-update timer does not stop/restart NUMA1 on every tick (see select below).
 FAILED=${MAG_LAYOUT_FAILED_FILE:-/var/lib/mag-stack/layout-failed}
@@ -33,9 +42,43 @@ runs_stale_binary(){
   [[ $pid =~ ^[1-9][0-9]*$ ]] || return 1
   [[ $(readlink "/proc/$pid/exe" 2>/dev/null || true) == *' (deleted)' ]]
 }
+q2_engine_from_file(){
+  local value
+  value=$(sed -n 's/^GLM_ENGINE=//p' "$1" 2>/dev/null | tail -n1)
+  printf '%s' "${value:-mainline}"
+}
+validate_q2_engine(){
+  local engine=$1 rev patch dir bin rev_override=${2:-}
+  case $engine in
+    mainline)
+      rev=${rev_override:-$(cat /usr/local/lib/mag-glm/runtime.sha 2>/dev/null || true)}
+      [[ $rev =~ ^[a-f0-9]{40}$ ]] || fail 'Q2 mainline runtime sha invalid'
+      dir="/home/chris/.local/qwen4exp/$rev-mag-cp1"
+      bin="$dir/bin/llama-server"
+      [[ -x $bin && $(cat "$dir/source-commit" 2>/dev/null || true) == "$rev" ]] || fail 'Q2 mainline rollback runtime missing or unpinned'
+      ;;
+    ik)
+      patch=$(sha256sum "$ROOT/ops/glm/ik/0001-glm5next-legacy-6block-hparams.patch" | awk '{print $1}' | sha256sum | cut -c1-12)
+      dir="/home/chris/.local/glm-ik/8d21687cc7-mag-$patch"
+      bin="$dir/bin/llama-server"
+      [[ -x $bin && $(cat "$dir/source-commit" 2>/dev/null || true) == 8d21687cc7358de10264d4180ba9b863024d5c4 ]] || fail 'Q2 ik runtime missing or source commit mismatch'
+      [[ $(cat "$dir/patch-identity" 2>/dev/null || true) == "$patch" ]] || fail 'Q2 ik patch identity mismatch'
+      [[ -f "$dir/SHA256SUMS" ]] || fail 'Q2 ik binary checksum missing'
+      (cd "$dir" && sha256sum --check --strict --status SHA256SUMS) || fail 'Q2 ik binary checksum mismatch'
+      ;;
+    *) fail "unsupported Q2 engine: $engine" ;;
+  esac
+}
 rollback(){
   [[ -f $TXN/started && ! -f $TXN/restored ]] || return 0
-  # Roll back the NUMA0 room-model cutover; never stop the resident GLM-Q2.
+  # If the one-time Q2 engine switch failed, restore its old engine transactionally.
+  if [[ -f $TXN/q2-engine-switch-started ]] && systemctl is-active --quiet mag-llm-glm@q2.service; then
+    systemctl stop mag-llm-glm@q2.service || {
+      echo 'FAIL: cannot stop the new Q2 engine; leaving its matching config in place' >&2
+      return 1
+    }
+  fi
+  # Roll back the NUMA0 room-model cutover; Q2 is handled only by its own switch marker.
   if [[ -f $TXN/changed ]]; then
     if [[ -f $TXN/glm-dual ]]; then
       if [[ -f $TXN/restarted ]]; then
@@ -64,6 +107,18 @@ rollback(){
     rm -f /etc/systemd/system/mag-audit-gateway.service.d/50-two-bots.conf
   fi
   MAG_DEFER_DAEMON_RELOAD=0 mag_flush_daemon_reload --force
+  if [[ -f $TXN/q2-engine-switch-started ]] && grep -Fxq mag-llm-glm@q2.service "$TXN/active"; then
+    systemctl start mag-llm-glm@q2.service || echo 'WARNING: Q2 rollback start failed' >&2
+    q2_rollback_ready=0
+    for ((ri=0; ri<5040; ri++)); do
+      if systemctl is-active --quiet mag-llm-glm@q2.service &&
+         curl --noproxy '*' -fsS --max-time 3 -o /dev/null http://127.0.0.1:8192/health 2>/dev/null; then
+        q2_rollback_ready=1; break
+      fi
+      sleep 5
+    done
+    (( q2_rollback_ready )) || echo 'WARNING: previous Q2 engine restored but :8192 health is unavailable' >&2
+  fi
   for unit in "${units[@]}"; do
     if [[ -f $TXN/glm-dual ]]; then
       case "$unit" in
@@ -148,6 +203,9 @@ if [[ $layout == glm ]]; then
              "$ROOT/ops/mistral/build-runtime.sh" "$ROOT/ops/mistral/install.sh"
              "$ROOT/ops/mistral/start.sh" "$ROOT/ops/mistral/verify-model.sh"
              "$ROOT/ops/mistral/fetch-hf-sha256.py" "$ROOT/ops/mistral/mag-llm-mistral-room.service" "$ROOT/ops/mistral/smoke.py"
+             "$ROOT/ops/glm/start.sh" "$ROOT/ops/glm/q2.env" "$ROOT/ops/glm/install.sh"
+             "$ROOT/ops/glm/build-ik-glm.sh" "$ROOT/ops/glm/ik/0001-glm5next-legacy-6block-hparams.patch"
+             "$ROOT/ops/glm/mag-llm-glm@.service" "$ROOT/ops/glm/mag-llm-glm@q2.service.d/10-numa.conf"
              "$ROOT/ops/deploy.sh")
 fi
 identity="$layout $(cat "${id_files[@]}" 2>/dev/null | sha256sum | cut -c1-16)"
@@ -176,15 +234,16 @@ fi
 install -d -m 0700 "$TXN"
 [[ ! -e $TXN/started ]] || fail 'transaction already exists'
 if [[ $layout == glm ]]; then
-  # Q2 is a live invariant: no staging, restart, or fallback may touch it.
   q2_pid=$(systemctl show -p MainPID --value mag-llm-glm@q2.service 2>/dev/null || true)
-  [[ $q2_pid =~ ^[1-9][0-9]*$ ]] || fail 'GLM-Q2 must already be running; refusing to start/restart it'
-  systemctl is-enabled --quiet mag-llm-glm@q2.service || fail 'GLM-Q2 must already be enabled; refusing to change its boot state'
+  [[ $q2_pid =~ ^[1-9][0-9]*$ ]] || fail 'GLM-Q2 must already be running; refusing an implicit start'
+  systemctl is-enabled --quiet mag-llm-glm@q2.service || fail 'GLM-Q2 must already be enabled'
   curl --noproxy '*' -fsS --max-time 5 -o /dev/null http://127.0.0.1:8192/health || fail 'GLM-Q2 :8192 is not healthy'
-  # A replaced executable does not change the running model's settings or
-  # justify a restart. Keep the resident Q2 and report the condition only.
+  q2_engine_before=$(q2_engine_from_file /etc/mag-glm/q2.env)
+  q2_mainline_before=$(cat /usr/local/lib/mag-glm/runtime.sha 2>/dev/null || true)
+  q2_identity_before=$(systemctl show -p ActiveEnterTimestamp -p MainPID mag-llm-glm@q2.service)
+  q2_expected_pid=$q2_pid
   if runs_stale_binary mag-llm-glm@q2.service; then
-    echo 'WARN: GLM-Q2 runs a deleted executable; leaving the healthy process untouched' >&2
+    echo 'WARN: GLM-Q2 runs a deleted executable; it is restarted only if its selected engine changes' >&2
   fi
   REV=$(cat "$ROOT/ops/mistral/runtime.sha")
   BIN="/home/chris/.local/mistral/$REV-mag-cpu/bin/llama-server"
@@ -241,10 +300,48 @@ trap on_exit EXIT
 if [[ $layout == mixed ]]; then
   bash "$ROOT/ops/qwen/install.sh" refresh
 elif [[ $layout == glm ]]; then
+  bash "$ROOT/ops/glm/install.sh" refresh
   bash "$ROOT/ops/mistral/install.sh" stage
-  # From here on the model is complete and SHA256-verified; live start failures
-  # are remembered, while incomplete-download preflight failures remain retryable.
+  # Both model definitions are staged; Mistral's weights are SHA256-verified.
+  # Build/preflight failures remain retryable; only a live switch attempt is remembered.
+  # The Q2-only physical-core drop-in must be active before its one controlled restart.
+  mag_flush_daemon_reload
+  q2_engine_after=$(q2_engine_from_file /etc/mag-glm/q2.env)
+  if [[ $q2_engine_after == ik ]]; then
+    ik_patch_id=$(sha256sum "$ROOT/ops/glm/ik/0001-glm5next-legacy-6block-hparams.patch" | awk '{print $1}' | sha256sum | cut -c1-12)
+    ik_runtime="/home/chris/.local/glm-ik/8d21687cc7-mag-$ik_patch_id/bin/llama-server"
+    if [[ ! -x $ik_runtime ]]; then
+      runuser -u chris -- env HOME=/home/chris nice -n 19 ionice -c3 bash "$ROOT/ops/glm/build-ik-glm.sh"
+    fi
+  fi
+  validate_q2_engine "$q2_engine_after"
+  validate_q2_engine "$q2_engine_before" "$q2_mainline_before"
   touch "$TXN/model-verified"
+  if [[ $q2_engine_before != "$q2_engine_after" ]]; then
+    printf '%s\n' "$q2_engine_before" > "$TXN/q2-engine-before"
+    printf '%s\n' "$q2_engine_after" > "$TXN/q2-engine-after"
+    printf '1\n' > "$TXN/q2-engine-restart-count"
+    touch "$TXN/q2-engine-switch-started"
+    # Exactly one controlled Q2 stop/start. Q1/Mistral and NUMA0 are not involved.
+    systemctl stop mag-llm-glm@q2.service
+    systemctl start mag-llm-glm@q2.service
+    q2_ready=0
+    for ((qi=0; qi<5040; qi++)); do
+      systemctl is-active --quiet mag-llm-glm@q2.service || fail 'GLM-Q2 exited during engine switch'
+      if curl --noproxy '*' -fsS --max-time 3 -o /dev/null http://127.0.0.1:8192/health 2>/dev/null; then
+        q2_ready=1; break
+      fi
+      sleep 5
+    done
+    (( q2_ready )) || fail 'GLM-Q2 :8192 health timeout after engine switch'
+    python3 -I "$ROOT/ops/qwen/smoke.py" --port 8192 --model glm-5.3-flash --quick
+    q2_expected_pid=$(systemctl show -p MainPID --value mag-llm-glm@q2.service 2>/dev/null || true)
+    q2_identity_after=$(systemctl show -p ActiveEnterTimestamp -p MainPID mag-llm-glm@q2.service)
+    [[ $q2_expected_pid =~ ^[1-9][0-9]*$ && $q2_expected_pid != "$q2_pid" &&
+       $q2_identity_after != "$q2_identity_before" ]] || fail 'Q2 engine switch did not produce exactly one new service identity'
+    systemctl show -p ActiveEnterTimestamp -p MainPID mag-llm-glm@q2.service > "$TXN/q2-engine-identity"
+    touch "$TXN/q2-engine-switched"
+  fi
 fi
 install -m 0644 "$ROOT/ops/room/mag-llm-ds-node@.service" /etc/systemd/system/mag-llm-ds-node@.service
 install -d -m 0755 /etc/mag-stack /etc/mag-qwen /etc/mag-mistral
@@ -384,7 +481,7 @@ if [[ $layout == glm ]]; then
   python3 -I "$ROOT/ops/mistral/smoke.py" --port 8191 --timeout 1800
   systemctl is-active --quiet mag-llm-glm@q2.service || fail 'GLM-Q2 became inactive during Mistral cold start'
   current_q2_pid=$(systemctl show -p MainPID --value mag-llm-glm@q2.service 2>/dev/null || true)
-  [[ $current_q2_pid == "$q2_pid" ]] || fail 'GLM-Q2 PID changed during Mistral cold start'
+  [[ $current_q2_pid == "$q2_expected_pid" ]] || fail 'GLM-Q2 PID changed during Mistral cold start'
   curl --noproxy '*' -fsS --max-time 5 -o /dev/null http://127.0.0.1:8192/health || fail 'GLM-Q2 :8192 unhealthy after Mistral start'
 fi
 rm -f "$FAILED"

@@ -6,17 +6,17 @@ Repo deployment replaces **DeepSeek** on NUMA0 with GLM-Q1 (`IQ1_M`) and retains
 |---|---|---|
 | model ID | `glm-5.3-flash-iq1-m` | `glm-5.3-flash` |
 | GGUF root | `/home/chris/models/GLM-5.3-Flash-GGUF-IQ1_M/` | `/home/chris/models/GLM-5.3-Flash-GGUF-IQ2_XS/` |
-| NUMA | 0, CPUs 0–13/28–41 | 1, CPUs 14–27/42–55 |
+| NUMA | 0, CPUs 0–13/28–41 | 1, physical CPUs 14–27 only (SMT 42–55 excluded) |
 | endpoint | `127.0.0.1:8191` | `127.0.0.1:8192` |
 | unit | `mag-llm-glm@q1.service` | `mag-llm-glm@q2.service` |
-| slot dir | `/var/lib/mag-llm/slots/glm-q1` | `/var/lib/mag-llm/slots/glm` |
-| KV tag | `glm-5.3-flash-iq1-m:kv-f16-f16:ctx32768:slot0` | `glm-5.3-flash:kv-f16-f16:ctx32768:slot0` |
+| slot dir | `/var/lib/mag-llm/slots/glm-q1` | `/var/lib/mag-llm/slots/glm-ik` |
+| KV marker | Q1's existing format marker | `engine=ik`, pinned engine commit, 15-shard model fingerprint, `ctx=32768` |
 
-Both use one pinned mainline llama.cpp runtime (`ops/qwen/runtime.sha`) with the reviewed GLM architecture compatibility patch, the existing reviewed official-family chat template, 32k ctx, `--load-mode dio`, `-fa on -b 4096 -ub 1024`, `--ctx-checkpoints 64 --checkpoint-min-step 1024`, `--cache-ram 16384`, no `--cache-reuse`, `temperature=1.0`, `top_p=0.95`, `reasoning_effort=low`, `clear_thinking=true`. Q1 uses `numactl --physcpubind=0-13,28-41 --membind=0`, Q2 uses `--physcpubind=14-27,42-55 --membind=1`; neither uses `--mlock` (unsupported by this pinned runtime). Q2 retains its original NUMA1 pinning and startup memory guard.
+Q1 remains on the pinned mainline llama.cpp runtime (`ops/qwen/runtime.sha`) with the reviewed GLM architecture compatibility patch. Q2 defaults to the separately pinned `ik_llama.cpp` runtime (source commit `8d21687cc7358de10264d4180ba9b863024d5c4`); `GLM_ENGINE=mainline` retains the mainline binary as an explicit rollback. Both keep the existing reviewed official-family chat template, 32k ctx, `--load-mode dio`, `-fa on -b 4096 -ub 1024`, `--ctx-checkpoints 64 --checkpoint-min-step 1024`, `--cache-ram 16384`, no `--cache-reuse`, `temperature=1.0`, `top_p=0.95`, `reasoning_effort=low`, `clear_thinking=true`. Q1 uses `numactl --physcpubind=0-13,28-41 --membind=0`; Q2 uses only physical NUMA1 cores `--physcpubind=14-27 --membind=1` and 14 batch workers. Neither uses `--mlock`.
 
-The two model IDs cannot share KV files: Q1 has its own slot directory, its own `.kv-format` marker and the room prefixes include the model ID and fixed room slot. `MAG_ROOM_PREWARM=0` in the existing GLM room env and room systemd drop-in.
+Q1 and Q2 never share KV files. Q2 restores a saved slot only while its marker exactly matches engine, engine commit, the composite SHA256 fingerprint of all 15 pinned GGUF shards, and context size; a mismatch erases only Q2's slot files before starting. The prior `/var/lib/mag-llm/slots/glm` data is left untouched.
 
-Deploy switches both units transactionally, disables legacy port owners, renames obsolete `:8191` drop-ins to `.glm-inactive` (restored on rollback), removes the legacy gateway `50-two-bots.conf` Ornith mapping and requires each endpoint to answer `/health` and one short synthetic request. Previous units are snapshotted with enabled/active state. The model GGUF directory is verified by header; complete IQ2 SHA256 is opt-in.
+Deploy stages the GLM files and validates both old and new Q2 runtimes before switching. If and only if `GLM_ENGINE` changes, Q2 receives exactly one controlled stop/start and a :8192 chat/cache/tool smoke; failure restores its previous env, launcher, unit drop-in and engine, then restarts the prior Q2. Repeated deploys with the same engine do not restart Q2. The Mistral NUMA0 cutover remains separately transactional; legacy port owners and gateway mappings are handled as before.
 
 ## Explicit deviations and rationale (upstream sources)
 
@@ -37,12 +37,12 @@ Deploy switches both units transactionally, disables legacy port owners, renames
 
 ## Broadwell dual-NUMA low-latency profile (hardware-derived, no throughput benchmark)
 
-As of 2026-10-30, mag has **2 x E5-2680 v4**, each 14 physical cores / 28 SMT logical CPUs, **35 MiB L3** per socket, 4 DDR4-2400 channels per socket, AVX2/FMA/F16C and **no AVX-512 or AMX**. Each GLM process stays on its own node. The current **candidate** (not a measured optimum) uses the original 28 *batch* workers over the 14 physical cores plus SMT siblings (live timings disprove the prior 14-batch guess): Q1 `0-13`, Q2 `14-27`. The historical 28-thread prefill may win on some kernels, so only change it again using ordinary `timings.prompt_per_second` and `predicted_per_second` from representative requests; no long benchmark is needed.
+As of 2026-10-30, mag has **2 x E5-2680 v4**, each 14 physical cores / 28 SMT logical CPUs, **35 MiB L3** per socket, 4 DDR4-2400 channels per socket, AVX2/FMA/F16C and **no AVX-512 or AMX**. Q1 remains on NUMA0. Q2 is deliberately constrained to the 14 physical cores 14–27 only; SMT siblings 42–55 are excluded. This is the requested placement, not a claim that 14 batch workers outperform the previous 28-thread configuration.
 
 | Setting | Q1 / IQ1_M :8191 | Q2 / IQ2_XS :8192 | Reason |
 | --- | --- | --- | --- |
-| `--threads` / `--threads-batch` | `14 / 28` | `14 / 28` | Decode uses 14 workers; measured faster prefill uses 28 batch workers (including SMT) |
-| CPU / memory binding | `--physcpubind=0-13,28-41 --membind=0` | `--physcpubind=14-27,42-55 --membind=1` | Keeps weights/KV and SMT workers local across NUMA distance 21 |
+| `--threads` / `--threads-batch` | `14 / 28` | `14 / 14` | Q2 batch work stays within the 14 allowed physical cores |
+| CPU / memory binding | `--physcpubind=0-13,28-41 --membind=0` | `--physcpubind=14-27 --membind=1` | Q2 excludes SMT siblings and remains local to NUMA1 |
 | `--numa` | `numactl` | `numactl` | Respects numactl CPU map; no cross-node distribution |
 | `-b / -ub` | `4096 / 1024` | `4096 / 1024` | Proven pinned-runtime configuration; batch sizes are **not** speed guarantees |
 | `-ctk / -ctv` | implicit **f16 / f16** | implicit **f16 / f16** | Documented defaults; changing KV dtype invalidates the saved KV format |
@@ -64,10 +64,10 @@ Source of CLI parameter semantics: [official llama.cpp server README](https://gi
 
 ## 2026-10-30 14:43–14:52 live regression (PR #236)
 
-**MAG timing is authoritative over our previous 14-thread guess.** Q1 after PR #235 evaluated 913 tokens in 114.7 seconds (**7.96 tokens/s**, previously ~9.0); Q2 achieved only 6.2–6.5 tokens/s. Both GLM servers now use `--threads 14 --threads-batch 28` and retain **both logical thread groups on their own NUMA node** (Q1 `0-13,28-41`, Q2 `14-27,42-55`). SMT is enabled for batch prefill without crossing sockets. These results do not imply a measured decode improvement: it remains ~2.5–2.6 tokens/s.
+**Historical live measurement before the physical-core-only Q2 pin:** Q1 after PR #235 evaluated 913 tokens in 114.7 seconds (**7.96 tokens/s**, previously ~9.0); Q2 on the former mainline/SMT configuration achieved 6.2–6.5 tokens/s. The current Q2 ik configuration intentionally uses only NUMA1 physical CPUs 14–27 and 14 batch workers. No new throughput improvement is claimed until measured on mag.
 
 **Reasoning/tool loop safeguard.** The official [GLM-5.3-Flash model card](https://huggingface.co/zai-org/GLM-5.3-Flash) explicitly specifies `reasoning_effort=low` to avoid the otherwise default `max`, and `clear_thinking=true` for chat. The room already passes both consistently in the pinned official-family Jinja template; no arbitrary effort name is added (unknown values fall back to max). The [llama.cpp server docs](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md) describe `max_tokens`, `chat_template_kwargs` and `tool_choice=none`. Because local IQ1_M nevertheless emitted 1024 reasoning tokens for `Hae`, **exact trivial interjections only** are restricted to 128 generated tokens, thinking-off, no tools and one round. `max_tokens` is an output limit, not a guaranteed hard cap on internal reasoning; if the model still consumes its allowance without visible text, MAG displays a short local fallback instead of internal error text. This is an intentional CPU/UI deviation, not GLM model-card default. Real tasks/questions keep existing tool access and 1024-token/model-step limit.
 
 **Journal tool errors:** a bounded `tool-failed bot=… tool=… cause=…` entry now appears whenever dispatch marks a tool unsuccessful. No arguments are logged. The short cause strips line breaks and masks obvious token/password/secret labels. Full tool output already belongs in the authenticated run/room audit record and is **not** dumped into the journal.
 
-**Resident unit contract:** staged `q1.env` or `q2.env` changes restart **only** the corresponding systemd instance. Shared `llama-server` runtime, launcher, service template or GLM Jinja change affects both. Rollback retains the other model in memory and performs no unnecessary smoke call on it. Both model files, separate slot-save paths, nginx, and `MAG_ROOM_PREWARM=1` remain unchanged.
+**Resident unit contract:** Q1/Mistral are not restarted by the Q2 engine switch. Q2 restarts only on an actual `GLM_ENGINE` transition; the transaction restores its previous selector and runtime on failed smoke. The Q2 slot directory and KV marker are engine-specific.

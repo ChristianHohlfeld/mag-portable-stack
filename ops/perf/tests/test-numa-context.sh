@@ -50,7 +50,8 @@ assert 'binding=(--physcpubind=0-13,28-41 --membind=0)' in glm
 assert '--mlock' not in glm
 assert '--load-mode dio -fa on -b 4096 -ub 1024' in glm  # known-good #231 llama-server flags
 assert 'glm-5.3-flash-iq1-m:kv-f16-f16' in glm
-assert 'GLM-Q1' in glm_layout and 'GLM-Q2' in glm_layout
+assert 'MAG_ROOM_MODEL_ID_0=qwen3.8-flash-next-uncensored' in glm_layout
+assert 'MAG_ROOM_MODEL_ID_1=glm-5.3-flash' in glm_layout
 assert 'mag-llm-glm@q1.service' in glm_txn and 'mag-llm-glm@q2.service' in glm_txn
 assert 'FORMAT=' in glm and '.kv-format' in glm and 'mag-prefix-glm-5.3-flash-slot2.bin' in glm
 assert '--no-mmap --mlock --flash-attn' in ds_node and '--load-mode mlock' not in ds_node  # avoid file-cache duplication on NUMA0

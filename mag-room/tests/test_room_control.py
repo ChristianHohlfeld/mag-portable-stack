@@ -36,6 +36,9 @@ class Model(http.server.BaseHTTPRequestHandler):
     scripts = []        # per chat request, in order
     by_model = {}       # model id -> scripts, used first (parallel lanes)
     prewarm_script = None
+    reject_missing_user = False
+    fail_prewarms = False
+    rejected = []
     disconnects = []    # (time, kind)
     active = 0
     lock = threading.Lock()
@@ -82,13 +85,27 @@ class Model(http.server.BaseHTTPRequestHandler):
         kind = 'prewarm' if prewarm else 'turn'
         with Model.lock:
             Model.calls.append((time.monotonic(), obj, kind))
+            missing_user = (Model.reject_missing_user and
+                obj.get('model') == 'qwen3.8-flash-next-uncensored' and
+                not any(m.get('role') == 'user' for m in obj.get('messages', [])))
+            forced_failure = prewarm and Model.fail_prewarms
+            if missing_user or forced_failure:
+                Model.rejected.append((obj.get('model'), kind, 'missing user' if missing_user else 'forced prewarm failure'))
             if prewarm:
                 script = Model.prewarm_script or []
             elif Model.by_model.get(obj.get('model')):
                 script = Model.by_model[obj.get('model')].pop(0)
             else:
                 script = Model.scripts.pop(0) if Model.scripts else ['Okay.']
-            Model.active += 1
+            if not (missing_user or forced_failure):
+                Model.active += 1
+        if missing_user or forced_failure:
+            data = b'Jinja Exception: No user query found in messages.'
+            self.send_response(500)
+            self.send_header('Content-Length', str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+            return
         try:
             self.send_response(200)
             self.send_header('Transfer-Encoding', 'chunked')
@@ -190,6 +207,9 @@ def reset_model():
     Model.by_model.clear()
     Model.disconnects.clear()
     Model.prewarm_script = None
+    Model.reject_missing_user = False
+    Model.fail_prewarms = False
+    Model.rejected.clear()
 
 
 def wait_calls(n, timeout=10):
@@ -621,6 +641,94 @@ class StopCancelsPrewarm(unittest.TestCase):
                 break
             time.sleep(.05)
         self.assertTrue(sum(c[2] == 'prewarm' for c in Model.calls[n:]), 'prewarm resumes after a new message')
+
+
+
+class QwenRoomTurns(unittest.TestCase):
+    QWEN = 'qwen3.8-flash-next-uncensored'
+    GLM = 'glm-5.3-flash'
+
+    def setUp(self):
+        reset_model()
+        Model.reject_missing_user = True
+        agents = [
+            {'id': 'qwen', 'name': 'Qwen', 'vm': '', 'memory': [], 'slot': 1, 'numa': 0},
+            {'id': 'glm', 'name': 'GLM-Q2', 'vm': '', 'memory': [], 'slot': 2, 'numa': 1},
+        ]
+        self.room = Room(agents, {
+            'MAG_ROOM_MODEL_ID': self.GLM,
+            'MAG_ROOM_MODEL_LABEL': 'GLM room',
+            'MAG_ROOM_MODEL_PORTS': '8191:0,8192:1',
+            'MAG_ROOM_MODEL_ID_0': self.QWEN,
+            'MAG_ROOM_MODEL_LABEL_0': 'Qwen',
+            'MAG_ROOM_MODEL_ID_1': self.GLM,
+            'MAG_ROOM_MODEL_LABEL_1': 'GLM-Q2',
+            'MAG_ROOM_PRESETS': str(ROOT / 'ops/room/presets.json'),
+            'MAG_ROOM_PREWARM': '1',
+            'MAG_ROOM_PREFIX_DISK': '0',
+            'MAG_ROOM_SINGLE_BOT_VM': 'off',
+        })
+
+    def tearDown(self):
+        self.room.close()
+
+    def wait_qwen_prewarm(self):
+        end = time.monotonic() + 8
+        while time.monotonic() < end:
+            if any(c[1].get('model') == self.QWEN and c[2] == 'prewarm' for c in Model.calls):
+                return
+            time.sleep(.03)
+        self.fail('Qwen prewarm did not reach the fake template server')
+
+    def qwen_turns(self):
+        return [c for c in Model.calls if c[1].get('model') == self.QWEN and c[2] == 'turn']
+
+    def assert_qwen_requests_end_in_user(self):
+        requests = [c[1] for c in Model.calls if c[1].get('model') == self.QWEN]
+        self.assertTrue(requests, 'expected Qwen requests')
+        for req in requests:
+            self.assertEqual(req['messages'][-1].get('role'), 'user', req['messages'])
+
+    def test_qwen_hi_and_hi_beide_each_answer_once_with_template_valid_turns(self):
+        self.wait_qwen_prewarm()
+        self.room.until(lambda s: not s['busy'], timeout=8, what='idle after Qwen prewarm')
+        Model.by_model[self.QWEN] = [['Hallo von Qwen.'], ['Qwen antwortet einmal.']]
+        self.room.api('/api/message', {'text': 'Hi', 'bots': ['qwen']})
+        s = self.room.until(lambda s: not s['busy'] and
+            any(m.get('role') == 'assistant' and m.get('bot') == 'qwen' and
+                m.get('content') == 'Hallo von Qwen.' for m in s['room']),
+            timeout=8, what='Qwen answer to Hi')
+        self.assertEqual(sum(m.get('role') == 'assistant' and m.get('bot') == 'qwen'
+                             and m.get('content') == 'Hallo von Qwen.' for m in s['room']), 1)
+        self.assertEqual(len(self.qwen_turns()), 1)
+
+        self.room.api('/api/message', {'text': 'Hi beide'})
+        s = self.room.until(lambda s: not s['busy'] and
+            any(m.get('role') == 'assistant' and m.get('bot') == 'qwen' and
+                m.get('content') == 'Qwen antwortet einmal.' for m in s['room']) and
+            any(m.get('role') == 'assistant' and m.get('bot') == 'glm' for m in s['room']),
+            timeout=8, what='both bots answer Hi beide')
+        self.assertEqual(sum(m.get('role') == 'assistant' and m.get('bot') == 'qwen'
+                             and m.get('content') == 'Qwen antwortet einmal.' for m in s['room']), 1)
+        self.assertEqual(len(self.qwen_turns()), 2, 'one Qwen inference per addressed turn')
+        self.assert_qwen_requests_end_in_user()
+        self.assertEqual(Model.rejected, [], 'the Qwen fake Jinja template must never see a missing user query')
+
+    def test_failed_prewarm_backoff_does_not_hold_real_qwen_turns(self):
+        Model.fail_prewarms = True
+        self.wait_qwen_prewarm()
+        self.room.until(lambda s: not s['busy'], timeout=8, what='idle after rejected prewarm')
+        time.sleep(2.4)
+        self.assertEqual(sum(c[1].get('model') == self.QWEN and c[2] == 'prewarm'
+                             for c in Model.calls), 1, 'failed prewarm must not retry every 2 seconds')
+        Model.by_model[self.QWEN] = [['Trotzdem eine Antwort.']]
+        self.room.api('/api/message', {'text': 'Hi', 'bots': ['qwen']})
+        s = self.room.until(lambda s: not s['busy'] and
+            any(m.get('role') == 'assistant' and m.get('bot') == 'qwen' and
+                m.get('content') == 'Trotzdem eine Antwort.' for m in s['room']),
+            timeout=8, what='real Qwen turn after failed prewarm')
+        self.assertEqual(len(self.qwen_turns()), 1)
+        self.assert_qwen_requests_end_in_user()
 
 
 if __name__ == '__main__':

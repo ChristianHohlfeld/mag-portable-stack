@@ -228,10 +228,12 @@ class Room:
             if pred(last):
                 return last
             time.sleep(.05)
+        self.log.flush()
+        log_tail = (self.dir / 'server.log').read_text(errors='replace')[-3000:]
         raise AssertionError(f'{what} not reached; busy={last and last.get("busy")} '
                              f'room={[m.get("content") for m in (last or {}).get("room", [])][-6:]} '
                              f'calls={[(c[1].get("model"), c[2], c[1].get("messages", [])[-1].get("role") if c[1].get("messages") else None) for c in Model.calls]} '
-                             f'rejected={Model.rejected}')
+                             f'rejected={Model.rejected} log={log_tail}')
 
 
 def reset_model():
@@ -684,6 +686,10 @@ class QwenRoomTurns(unittest.TestCase):
     def setUp(self):
         reset_model()
         Model.reject_missing_user = True
+        # Set the forced prewarm failure before the room process can start its
+        # asynchronous first prewarm; otherwise the test races its own setup.
+        Model.fail_prewarms = (
+            self._testMethodName == 'test_failed_prewarm_backoff_does_not_hold_real_qwen_turns')
         agents = [
             {'id': 'qwen', 'name': 'Qwen', 'vm': '', 'memory': [], 'slot': 1, 'numa': 0},
             {'id': 'glm', 'name': 'GLM-Q2', 'vm': '', 'memory': [], 'slot': 2, 'numa': 1},

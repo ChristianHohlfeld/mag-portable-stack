@@ -69,7 +69,9 @@ grep -Fq 'body["reasoning_effort"] = "low"' mag-room/native/magroom.cpp
 grep -Fq 'body["top_k"] = 0' mag-room/native/magroom.cpp
 grep -Fq 'body["min_p"] = 0.0' mag-room/native/magroom.cpp
 grep -Fq 'room_chat_only_model' mag-room/native/magroom.cpp
-grep -Fq 'LLM_ARCH_MISTRAL4' ops/mistral/build-runtime.sh
+grep -Fq 'check-architecture.py' ops/mistral/build-runtime.sh
+grep -Fq -- '--gguf-architecture mistral-large4' ops/mistral/build-runtime.sh
+grep -Fq 'LLM_ARCH_MISTRAL_LARGE4' ops/mistral/check-architecture.py
 grep -Fq 'fetch-hf-sha256.py' ops/mistral/install.sh
 grep -Fq 'operator may have recorded only shard 1' ops/mistral/fetch-hf-sha256.py
 python3 - <<'PY'

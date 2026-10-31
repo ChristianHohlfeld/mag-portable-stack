@@ -71,6 +71,15 @@ grep -Fq 'body["min_p"] = 0.0' mag-room/native/magroom.cpp
 grep -Fq 'room_chat_only_model' mag-room/native/magroom.cpp
 grep -Fq 'LLM_ARCH_MISTRAL4' ops/mistral/build-runtime.sh
 grep -Fq 'fetch-hf-sha256.py' ops/mistral/install.sh
+grep -Fq 'operator may have recorded only shard 1' ops/mistral/fetch-hf-sha256.py
+python3 - <<'PY'
+from pathlib import Path
+rows = Path("ops/mistral/SHA256SUMS").read_text().splitlines()
+assert len(rows) == 6
+assert rows[0].split() == ["cbfc979f130a16684be1e590009e1e7af2503b55a20ddd019c3882ff96f3beee",
+                           "Mistral-Large-4-1T-A52B-UD-IQ1_S-00001-of-00006.gguf"]
+assert all(len(row.split()) == 2 and len(row.split()[0]) == 64 for row in rows)
+PY
 grep -Fq 'MemoryMax=244G' ops/mistral/mag-llm-mistral-room.service
 grep -Fq -- '--ctx-size 16384' ops/mistral/start.sh
 grep -Fq -- '--mmap --jinja' ops/mistral/start.sh

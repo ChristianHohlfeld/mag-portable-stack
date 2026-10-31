@@ -17,7 +17,17 @@ secondary_unit=
 secondary_units=()
 if [[ -r $room_env ]]; then
   secondary_unit=mag-llm-ds-node@0.service
-  if grep -Fxq 'MAG_ROOM_MODEL_ID_1=qwen3.8-flash-next-uncensored' "$room_env"; then
+  if grep -Fxq 'MAG_ROOM_MODEL_ID_0=qwen3.8-flash-next-uncensored' "$room_env" &&
+     grep -Fxq 'MAG_ROOM_MODEL_ID_1=glm-5.3-flash' "$room_env"; then
+    secondary_unit=mag-llm-qwen-room.service
+    secondary_units=(mag-llm-glm@q2.service)
+    # Qwen owns NUMA0; Q1 and all legacy NUMA0/NUMA1 model units stay disabled.
+    systemctl disable mag-llm-ds-node@0.service mag-llm-ds-node@1.service \
+      mag-llm-glm.service mag-llm-glm@q1.service mag-llm-qwen.service \
+      >/dev/null 2>&1 || true
+    systemctl reset-failed mag-llm-ds-node@0.service mag-llm-ds-node@1.service \
+      mag-llm-glm@q1.service >/dev/null 2>&1 || true
+  elif grep -Fxq 'MAG_ROOM_MODEL_ID_1=qwen3.8-flash-next-uncensored' "$room_env"; then
     secondary_units=(mag-llm-qwen.service)
     systemctl disable mag-llm-ds-node@1.service mag-llm-glm.service >/dev/null 2>&1 || true
     systemctl reset-failed mag-llm-ds-node@1.service >/dev/null 2>&1 || true
@@ -86,7 +96,7 @@ done
 
 # Bot VMs and their network come back on boot.
 if command -v virsh >/dev/null; then
-  if [[ ( $secondary_unit == mag-llm-ds-node@0.service || $secondary_unit == mag-llm-qwen.service || $secondary_unit == mag-llm-ornith-node@0.service ) &&
+  if [[ ( $secondary_unit == mag-llm-ds-node@0.service || $secondary_unit == mag-llm-qwen.service || $secondary_unit == mag-llm-qwen-room.service || $secondary_unit == mag-llm-ornith-node@0.service ) &&
         -r $agents_json ]] && command -v jq >/dev/null; then
     # The first two persisted agents are the active NUMA bots; PARKED agents
     # retain data but must NOT bring surplus KVM guests back on cold boot.

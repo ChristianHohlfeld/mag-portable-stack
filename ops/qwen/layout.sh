@@ -16,7 +16,7 @@ files=(/etc/mag-stack/room-model.env /etc/mag-stack/room-layout /etc/mag-stack/r
        /usr/local/lib/mag-qwen/start.sh /usr/local/lib/mag-qwen/verify-model.sh
        /usr/local/lib/mag-qwen/runtime.sha /etc/mag-qwen/model.sha256
        /usr/local/lib/mag-mistral/start.sh /usr/local/lib/mag-mistral/verify-model.sh /usr/local/lib/mag-mistral/runtime.sha
-       /etc/mag-mistral/SHA256SUMS /etc/mag-mistral/runtime.env
+       /etc/mag-mistral/SHA256SUMS /etc/mag-mistral/runtime.env /etc/mag-mistral/model.verified
        /etc/systemd/system/mag-audit-gateway.service.d/50-two-bots.conf)
 # A failed attempt of the repo-declared layout is remembered per identity so the
 # auto-update timer does not stop/restart NUMA1 on every tick (see select below).
@@ -35,7 +35,7 @@ runs_stale_binary(){
 }
 rollback(){
   [[ -f $TXN/started && ! -f $TXN/restored ]] || return 0
-  # Roll back only Qwen/Q1 room cutover units; never stop the resident GLM-Q2.
+  # Roll back the NUMA0 room-model cutover; never stop the resident GLM-Q2.
   if [[ -f $TXN/changed ]]; then
     if [[ -f $TXN/glm-dual ]]; then
       if [[ -f $TXN/restarted ]]; then
@@ -260,7 +260,7 @@ for unit in "${units[@]}"; do
   for chosen in "${selected_units[@]}"; do [[ $unit != "$chosen" ]] || keep=1; done
   (( keep )) || others+=("$unit")
 done
-# Qwen may be started/restarted on NUMA0; GLM-Q2 is a strict no-touch invariant.
+# The selected NUMA0 room model may start/restart; GLM-Q2 is a strict no-touch invariant.
 change=0
 declare -A restart_unit=()
 for unit in "${selected_units[@]}"; do
@@ -351,8 +351,8 @@ if (( change )); then
     [[ $port != 8191 ]] || unit=mag-llm-mistral-room.service
     if [[ $layout == glm && -z ${restart_unit[$unit]:-} ]]; then continue; fi
     ready=0
-    # A 98 GB cold load may take many minutes. The deploy watchdog is extended
-    # for this layout; never roll back on a short generic health timeout.
+    # A 233 GB cold mmap load can take hours on CPU. The deploy watchdog is
+    # extended to the full service start budget; never use a short timeout.
     for ((i=0; i<5040; i++)); do
       systemctl is-active --quiet "$unit" || fail "$unit exited during load"
       if curl --noproxy '*' -fsS --max-time 3 -o /dev/null "http://127.0.0.1:$port/health" 2>/dev/null; then ready=1; break; fi
@@ -370,14 +370,14 @@ if (( change )); then
 fi
 if [[ $layout == glm ]]; then
   mistral_ready=0
-  for ((i=0; i<2160; i++)); do
+  for ((i=0; i<5040; i++)); do
     systemctl is-active --quiet mag-llm-mistral-room.service || fail 'Mistral room service exited'
     if curl --noproxy '*' -fsS --max-time 3 -o /dev/null http://127.0.0.1:8191/health 2>/dev/null; then
       mistral_ready=1; break
     fi
     sleep 5
   done
-  (( mistral_ready )) || fail 'Mistral :8191 health timeout after 10800s'
+  (( mistral_ready )) || fail 'Mistral :8191 health timeout after 25200s'
   python3 -I "$ROOT/ops/mistral/smoke.py" --port 8191 --timeout 1800
   systemctl is-active --quiet mag-llm-glm@q2.service || fail 'GLM-Q2 became inactive during Mistral cold start'
   current_q2_pid=$(systemctl show -p MainPID --value mag-llm-glm@q2.service 2>/dev/null || true)

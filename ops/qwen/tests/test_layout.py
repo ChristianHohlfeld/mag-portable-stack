@@ -62,7 +62,7 @@ for name in q1.env q2.env; do
  install -D -m 0644 "$REPO/ops/glm/$name" "$HOST/etc/mag-glm/$name"
 done
 ''')
-  smoke_stub="import os,sys;open(os.environ['SMOKE_LOG'],'a').write(' '.join(sys.argv[1:])+'\\n');sys.exit(int(os.environ.get('SMOKE_FAIL','0')))\\n"
+  smoke_stub="import os,sys;open(os.environ['SMOKE_LOG'],'a').write(' '.join(sys.argv[1:])+'\\n');sys.exit(int(os.environ.get('SMOKE_FAIL','0')))\n"
   (self.repo/'ops/qwen/smoke.py').write_text(smoke_stub)
   (self.repo/'ops/mistral/smoke.py').write_text(smoke_stub)
   (self.repo/'ops/mistral/install.sh').write_text('''#!/bin/bash

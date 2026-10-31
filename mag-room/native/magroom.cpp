@@ -4365,8 +4365,8 @@ static void model_watcher_loop() {
     }
     const bool slots_pending = CONFIGURED_MODEL &&
         env("MAG_ROOM_PREWARM", "1") == "1" &&
-        ((ROOM_MODEL_HEALTH[0].load() == 1 && SLOT_WARM[0].load() != 1) ||
-          (ROOM_MODEL_HEALTH[1].load() == 1 && SLOT_WARM[1].load() != 1));
+        ((ROOM_MODEL_HEALTH[0].load() != 2 && SLOT_WARM[0].load() != 1) ||
+          (ROOM_MODEL_HEALTH[1].load() != 2 && SLOT_WARM[1].load() != 1));
     // A slot that returned early, timed out on /slots, or was not yet in
     // AGENTS must be retried. Waiting only for a ready-edge left Qwen cold
     // (live: no prompt-prewarm line, 39s first-hi eval).
@@ -9471,7 +9471,7 @@ static void schedule_prewarm() {
       // Never prewarm a backend known to be loading/unavailable. The
       // watcher launches it as soon as that exact NUMA slot reports healthy.
       if (slot >= 1 && slot <= ROOM_MAX_BOTS &&
-          ROOM_MODEL_HEALTH[slot - 1].load() != 1) continue;
+          ROOM_MODEL_HEALTH[slot - 1].load() == 2) continue;
       if (slot_is_busy(slot)) continue;
       // A warm slot stays put. The watcher retries only the cold one.
       if (slot >= 1 && slot <= ROOM_MAX_BOTS && SLOT_WARM[slot - 1].load() == 1)

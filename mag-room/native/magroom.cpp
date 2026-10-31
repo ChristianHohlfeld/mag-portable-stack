@@ -4998,10 +4998,14 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   if (no_tools && !thinking && model == "glm-5.3-flash-iq1-m")
     max_output = std::min(max_output, 96); // bounded IQ1_M decode
   body["max_tokens"] = max_output;
-  if (no_tools && !thinking &&
-      (model.rfind("glm-5.3-flash", 0) == 0 || qwen_chat)) {
-    // llama.cpp applies stop strings to raw generation, including reasoning.
-    // These chat-only turns have thinking off; hidden delimiters fail closed.
+  if (no_tools && !thinking && model.rfind("glm-5.3-flash", 0) == 0) {
+    // Preserve the live GLM-Q2 request contract unchanged.
+    Val stops = Val::array();
+    for (const char *stop : {"<|user|>", "<|observation|>", "<tool_call"})
+      stops.push(stop);
+    body["stop"] = stops;
+  } else if (qwen_chat) {
+    // Qwen is non-thinking; stop and client-filter hidden reasoning delimiters.
     Val stops = Val::array();
     for (const char *stop : {"</think>", "<think>", "<|", "<tool_call"})
       stops.push(stop);

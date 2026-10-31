@@ -26,6 +26,8 @@ class Layout(unittest.TestCase):
   helper.write_text(s)
   self.write('/etc/mag-stack/room-model.env',(ROOT/'ops/room/model.env').read_text())
   self.write('/etc/systemd/system/mag-llm-ds-node@.service','old-ds-unit\n')
+  self.write('/etc/systemd/system/mag-llm-glm@.service','existing GLM template\n')
+  self.write('/etc/systemd/system/mag-llm-glm.service','legacy GLM service\n')
   rev=(ROOT/'ops/qwen/runtime.sha').read_text().strip()
   self.write('/home/chris/.local/qwen4exp/'+rev+'-mag-cp1/bin/llama-server','binary')
   (self.host/('home/chris/.local/qwen4exp/'+rev+'-mag-cp1/bin/llama-server')).chmod(0o755)
@@ -41,6 +43,7 @@ for name in start.sh verify-model.sh runtime.sha; do
  install -D -m 0755 "$REPO/ops/qwen/$name" "$HOST/usr/local/lib/mag-qwen/$name"
 done
 install -D -m 0644 "$REPO/ops/qwen/mag-llm-qwen.service" "$HOST/etc/systemd/system/mag-llm-qwen.service"
+install -D -m 0644 "$REPO/ops/qwen/mag-llm-qwen-room.service" "$HOST/etc/systemd/system/mag-llm-qwen-room.service"
 ''')
   glm_stage=self.repo/'ops/glm/install.sh';glm_stage.write_text('''#!/bin/bash
 set -eu
@@ -59,8 +62,15 @@ done
 import json,os,sys
 p=os.environ['SYSTEMD_STATE'];s=json.load(open(p));a=sys.argv[1:]
 with open(os.environ['SYSTEMD_LOG'],'a') as f:f.write(' '.join(a)+'\\n')
-if a[0]=='cat':sys.exit(0 if os.path.isfile(os.environ['HOST']+'/etc/systemd/system/'+a[-1]) or a[-1].startswith('mag-llm-ds-node@') else 1)
+if a[0]=='cat':
+ unit=a[-1]
+ path=os.environ['HOST']+'/etc/systemd/system/'+unit
+ ok=os.path.isfile(path) or unit.startswith('mag-llm-ds-node@')
+ if unit.startswith('mag-llm-glm@'):ok=os.path.isfile(os.environ['HOST']+'/etc/systemd/system/mag-llm-glm@.service')
+ sys.exit(0 if ok else 1)
 if a[0]=='disable' and a[-1]=='mag-llm-qwen.service' and not os.path.isfile(os.environ['HOST']+'/etc/systemd/system/'+a[-1]):sys.exit(1)
+if a[0]=='show':
+ print('4242' if 'mag-llm-glm@q2.service' in a else '0');sys.exit(0)
 if a[0] in ('is-active','is-enabled'):sys.exit(0 if a[-1] in s['active' if a[0]=='is-active' else 'enabled'] else 3)
 if a[0] in ('start','stop','enable','disable'):
  key='active' if a[0] in ('start','stop') else 'enabled'

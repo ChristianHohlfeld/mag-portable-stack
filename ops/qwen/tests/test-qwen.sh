@@ -60,6 +60,7 @@ grep -Fq 'body["top_p"] = 0.80' mag-room/native/magroom.cpp
 grep -Fq 'body["top_k"] = 20' mag-room/native/magroom.cpp
 grep -Fq 'body["presence_penalty"] = 1.5' mag-room/native/magroom.cpp
 grep -Fq 'chat_forbidden_cut' mag-room/native/magroom.cpp
+grep -Fq 'body["reasoning_effort"] = "none"' mag-room/native/magroom.cpp
 grep -Fq 'GLM-Q2 PID changed during Qwen cold start' ops/qwen/layout.sh
 grep -Fq 'GLM-Q2 must already be enabled' ops/qwen/layout.sh
 grep -Fq 'QWEN_MIN_RAM_GIB=150' ops/qwen/layout.sh

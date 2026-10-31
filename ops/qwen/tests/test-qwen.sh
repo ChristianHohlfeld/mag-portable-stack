@@ -27,7 +27,7 @@ grep -Fq 'mag-llm-qwen-room.service' ops/qwen/layout.sh
 grep -Fq 'GLM-Q1 still running' ops/qwen/start.sh
 ! grep -Eq '^[[:space:]]*(sudo[[:space:]]+)?rm[[:space:]].*(Qwen3.8-Flash-Next-Uncensored|IQ1_M)' ops/qwen/layout.sh
 grep -Fq -- '--numa numactl' ops/qwen/start.sh
-grep -Fq 'mag-llm-iq3.service && fail' ops/qwen/start.sh
+grep -Fq "systemctl is-active --quiet mag-llm-iq3.service && fail 'IQ3 still running; explicit operator stop required'" ops/qwen/start.sh
 grep -Fq 'verify-model.sh' ops/qwen/start.sh
 # Boot skips the 98 GB SHA read only via a root-owned stamp bound to inode/ctime.
 grep -Fq 'STAMP=/etc/mag-qwen/model.verified' ops/qwen/verify-model.sh

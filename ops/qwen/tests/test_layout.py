@@ -16,6 +16,7 @@ class Layout(unittest.TestCase):
   self.repo=self.base/'repo'
   for name in ('qwen','room','glm'):
    shutil.copytree(ROOT/'ops'/name,self.repo/'ops'/name,symlinks=True)
+  shutil.copy2(ROOT/'ops'/'deploy.sh',self.repo/'ops'/'deploy.sh')
   # The repo-declared layout is set per test; the legacy cases run on mixed.
   (self.repo/'ops/room/layout').write_text('mixed\n')
   shutil.copy2(ROOT/'ops'/'mag-units.sh',self.repo/'ops'/'mag-units.sh')

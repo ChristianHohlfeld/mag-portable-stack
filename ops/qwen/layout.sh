@@ -8,11 +8,11 @@ ACTION=${1:?apply|rollback|probe}; BACKUP=${2:?deployment backup directory}
 TXN="$BACKUP/qwen-layout"
 fail(){ echo "NUMA1 layout: $*" >&2; exit 4; }
 [[ $EUID == 0 ]] || fail 'root required'
-units=(mag-llm-ds-node@1.service mag-llm-qwen.service mag-llm-glm.service mag-llm-glm@q1.service mag-llm-glm@q2.service)
+units=(mag-llm-ds-node@1.service mag-llm-qwen.service mag-llm-qwen-room.service mag-llm-glm.service mag-llm-glm@q1.service mag-llm-glm@q2.service)
 [[ ! -f "$TXN/glm-dual" ]] || units+=(mag-llm-ds-node@0.service mag-llm-ornith-node@0.service mag-llm-ornith@1.service)
 files=(/etc/mag-stack/room-model.env /etc/mag-stack/room-layout /etc/mag-stack/room-layout.pinned
        /etc/mag-qwen/runtime.env
-       /etc/systemd/system/mag-llm-qwen.service /etc/systemd/system/mag-llm-ds-node@.service
+       /etc/systemd/system/mag-llm-qwen.service /etc/systemd/system/mag-llm-qwen-room.service /etc/systemd/system/mag-llm-ds-node@.service
        /usr/local/lib/mag-qwen/start.sh /usr/local/lib/mag-qwen/verify-model.sh
        /usr/local/lib/mag-qwen/runtime.sha /etc/mag-qwen/model.sha256
        /etc/systemd/system/mag-llm-glm.service /usr/local/lib/mag-glm/start.sh
@@ -37,7 +37,7 @@ runs_stale_binary(){
 }
 rollback(){
   [[ -f $TXN/started && ! -f $TXN/restored ]] || return 0
-  # Roll back only affected GLM units, not the other resident model.
+  # Roll back only Qwen/Q1 room cutover units; never stop the resident GLM-Q2.
   if [[ -f $TXN/changed ]]; then
     if [[ -f $TXN/glm-dual ]]; then
       if [[ -f $TXN/restarted ]]; then
@@ -82,18 +82,18 @@ rollback(){
   # the pinned shared runtime built for this release. A smoke failure must
   # NEVER abort or undo the rollback: signal the degraded state visibly.
   if [[ -f $TXN/changed ]] &&
-     grep -Fxq mag-llm-qwen.service "$TXN/active"; then
+     grep -Fxq mag-llm-qwen-room.service "$TXN/active"; then
     qwen_ready=0
     for ((qi=0; qi<120; qi++)); do
-      if systemctl is-active --quiet mag-llm-qwen.service &&
-         curl --noproxy '*' -fsS --max-time 3 -o /dev/null http://127.0.0.1:8192/health 2>/dev/null; then
+      if systemctl is-active --quiet mag-llm-qwen-room.service &&
+         curl --noproxy '*' -fsS --max-time 3 -o /dev/null http://127.0.0.1:8191/health 2>/dev/null; then
         qwen_ready=1
         break
       fi
       sleep 5
     done
     if (( qwen_ready )); then
-      if python3 -I "$ROOT/ops/qwen/smoke.py" --port 8192 \
+      if python3 -I "$ROOT/ops/qwen/smoke.py" --port 8191 \
           --model qwen3.8-flash-next-uncensored --quick; then
         echo 'QWEN ROLLBACK SMOKE PASS (new pinned runtime)'
       else
@@ -130,11 +130,11 @@ valid "$layout" || fail 'MAG_ROOM_LAYOUT must be mixed, deepseek or glm'
 # One failed live attempt per identity; a new commit touching them retries.
 case $layout in mixed) env_file=mixed.env ;; glm) env_file=glm.env ;; *) env_file=model.env ;; esac
 id_files=("$ROOT/ops/qwen/runtime.sha" "$ROOT/ops/room/$env_file")
-if [[ $layout == glm ]]; then id_files+=("$ROOT"/ops/glm/{start.sh,verify-model.sh,model.sizes,model.sha256,mag-llm-glm@.service,q1.env,q2.env,install.sh,arch-compat.patch,chat-template.jinja} "$ROOT/ops/qwen/build-runtime.sh"); fi
+if [[ $layout == glm ]]; then id_files+=("$ROOT/ops/qwen/start.sh" "$ROOT/ops/qwen/mag-llm-qwen-room.service" "$ROOT/ops/qwen/install.sh"); fi
 identity="$layout $(cat "${id_files[@]}" 2>/dev/null | sha256sum | cut -c1-16)"
 # The probe is read-only and runs BEFORE the deploy's backup and service staging.
 # Never turn a failed desired layout into a successful deploy of the old one.
-if [[ $source == repo && $layout != "$previous" && -f $FAILED && $(cat "$FAILED") == "$identity" ]]; then
+if [[ $source == repo && -f $FAILED && $(cat "$FAILED") == "$identity" ]]; then
   echo "NUMA1 layout blocked: repo layout '$layout' previously failed live ($identity); previous '$previous' retained" >&2
   if [[ $ACTION == probe ]]; then exit 78; fi
   fail "desired layout '$layout' has a matching prior failure; refusing to claim deployment success"
@@ -142,7 +142,7 @@ fi
 [[ $ACTION != probe ]] || exit 0
 # Fresh bootstrap has no Qwen download. Keep its existing DeepSeek provisioning.
 [[ -f /etc/mag-stack/room-model.env ]] || exit 0
-if [[ $layout == mixed || $layout == glm ]]; then
+if [[ $layout == mixed ]]; then
   REV=$(cat "$ROOT/ops/qwen/runtime.sha")
   BIN="/home/chris/.local/qwen4exp/$REV-mag-cp1/bin/llama-server"
   patch_id=$(sha256sum "$ROOT/ops/qwen/end-checkpoint.patch" "$ROOT/ops/glm/arch-compat.patch" | sha256sum | cut -d' ' -f1)
@@ -151,12 +151,21 @@ if [[ $layout == mixed || $layout == glm ]]; then
     runuser -u chris -- env HOME=/home/chris nice -n 19 ionice -c3 bash "$ROOT/ops/qwen/build-runtime.sh"
   fi
 fi
-if [[ $layout == mixed ]]; then
+if [[ $layout == mixed || $layout == glm ]]; then
   [[ -s /home/chris/models/qwen3.8-flash-next-uncensored/upstream.sha256 ]] || fail 'download/upstream.sha256 missing'
 fi
 install -d -m 0700 "$TXN"
 [[ ! -e $TXN/started ]] || fail 'transaction already exists'
 if [[ $layout == glm ]]; then
+  # Q2 is a live invariant: no staging, restart, or fallback may touch it.
+  q2_pid=$(systemctl show -p MainPID --value mag-llm-glm@q2.service 2>/dev/null || true)
+  [[ $q2_pid =~ ^[1-9][0-9]*$ ]] || fail 'GLM-Q2 must already be running; refusing to start/restart it'
+  curl --noproxy '*' -fsS --max-time 5 -o /dev/null http://127.0.0.1:8192/health || fail 'GLM-Q2 :8192 is not healthy'
+  REV=$(cat "$ROOT/ops/qwen/runtime.sha")
+  BIN="/home/chris/.local/qwen4exp/$REV-mag-cp1/bin/llama-server"
+  patch_id=$(sha256sum "$ROOT/ops/qwen/end-checkpoint.patch" "$ROOT/ops/glm/arch-compat.patch" | sha256sum | cut -d' ' -f1)
+  [[ -x $BIN && $(cat "$(dirname "$BIN")/source-commit" 2>/dev/null || true) == "$REV" &&
+     $(cat "$(dirname "$BIN")/patch-identity" 2>/dev/null || true) == "$patch_id" ]] || fail 'Qwen runtime must already match GLM-Q2; refusing shared runtime rebuild'
   touch "$TXN/glm-dual"
   units+=(mag-llm-ds-node@0.service mag-llm-ornith-node@0.service mag-llm-ornith@1.service)
 fi

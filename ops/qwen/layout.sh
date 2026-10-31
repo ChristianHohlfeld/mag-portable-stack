@@ -15,11 +15,7 @@ files=(/etc/mag-stack/room-model.env /etc/mag-stack/room-layout /etc/mag-stack/r
        /etc/systemd/system/mag-llm-qwen.service /etc/systemd/system/mag-llm-qwen-room.service /etc/systemd/system/mag-llm-ds-node@.service
        /usr/local/lib/mag-qwen/start.sh /usr/local/lib/mag-qwen/verify-model.sh
        /usr/local/lib/mag-qwen/runtime.sha /etc/mag-qwen/model.sha256
-       /etc/systemd/system/mag-llm-glm.service /usr/local/lib/mag-glm/start.sh
-       /etc/systemd/system/mag-llm-glm@.service /etc/mag-glm/q1.env /etc/mag-glm/q2.env
-       /etc/systemd/system/mag-audit-gateway.service.d/50-two-bots.conf
-       /usr/local/lib/mag-glm/verify-model.sh /usr/local/lib/mag-glm/runtime.sha
-       /usr/local/lib/mag-glm/model.sizes /usr/local/lib/mag-glm/model.sha256 /usr/local/lib/mag-glm/chat-template.jinja)
+       /etc/systemd/system/mag-audit-gateway.service.d/50-two-bots.conf)
 # A failed attempt of the repo-declared layout is remembered per identity so the
 # auto-update timer does not stop/restart NUMA1 on every tick (see select below).
 FAILED=${MAG_LAYOUT_FAILED_FILE:-/var/lib/mag-stack/layout-failed}
@@ -52,7 +48,10 @@ rollback(){
    if [[ ! -f $TXN/glm-dual && -f $TXN/hidden-dropins ]]; then
      while IFS= read -r f; do [[ ! -f "$f.glm-inactive" ]] || mv -f -- "$f.glm-inactive" "$f"; done < "$TXN/hidden-dropins"
    fi
-  for unit in "${units[@]}"; do disable_if_installed "$unit"; done
+  for unit in "${units[@]}"; do
+    [[ ! -f $TXN/glm-dual || $unit != mag-llm-glm@q2.service ]] || continue
+    disable_if_installed "$unit"
+  done
   for file in "${files[@]}"; do
     if [[ -f $TXN/files$file ]]; then
       install -D -m "$(stat -c %a "$TXN/files$file")" "$TXN/files$file" "$file"
@@ -66,6 +65,7 @@ rollback(){
   for unit in "${units[@]}"; do
     if [[ -f $TXN/glm-dual ]]; then
       case "$unit" in
+        mag-llm-glm@q2.service) continue ;;
         mag-llm-ds-node@*.service|mag-llm-ornith*)
           disable_if_installed "$unit"; continue ;;
       esac
@@ -160,6 +160,7 @@ if [[ $layout == glm ]]; then
   # Q2 is a live invariant: no staging, restart, or fallback may touch it.
   q2_pid=$(systemctl show -p MainPID --value mag-llm-glm@q2.service 2>/dev/null || true)
   [[ $q2_pid =~ ^[1-9][0-9]*$ ]] || fail 'GLM-Q2 must already be running; refusing to start/restart it'
+  systemctl is-enabled --quiet mag-llm-glm@q2.service || fail 'GLM-Q2 must already be enabled; refusing to change its boot state'
   curl --noproxy '*' -fsS --max-time 5 -o /dev/null http://127.0.0.1:8192/health || fail 'GLM-Q2 :8192 is not healthy'
   REV=$(cat "$ROOT/ops/qwen/runtime.sha")
   BIN="/home/chris/.local/qwen4exp/$REV-mag-cp1/bin/llama-server"
@@ -308,7 +309,10 @@ if (( change )); then
   done
 fi
 for unit in "${others[@]}"; do disable_if_installed "$unit"; done
-for unit in "${selected_units[@]}"; do systemctl enable "$unit"; done
+for unit in "${selected_units[@]}"; do
+    [[ $layout != glm || $unit != mag-llm-glm@q2.service ]] || continue
+    systemctl enable "$unit"
+  done
 if (( change )); then
   for unit in "${selected_units[@]}"; do
     if [[ $layout != glm || $unit == mag-llm-qwen-room.service && -n ${restart_unit[$unit]:-} ]]; then

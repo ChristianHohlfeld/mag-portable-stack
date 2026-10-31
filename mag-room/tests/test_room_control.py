@@ -36,6 +36,9 @@ class Model(http.server.BaseHTTPRequestHandler):
     scripts = []        # per chat request, in order
     by_model = {}       # model id -> scripts, used first (parallel lanes)
     prewarm_script = None
+    reject_missing_user = False
+    fail_prewarms = False
+    rejected = []
     disconnects = []    # (time, kind)
     active = 0
     lock = threading.Lock()
@@ -44,7 +47,14 @@ class Model(http.server.BaseHTTPRequestHandler):
         pass
 
     def do_GET(self):
-        data = b'{"status":"ok"}' if self.path == '/health' else b'{"data":[{"id":"deepseek-v4-flash-0731"}]}'
+        # llama.cpp /slots returns a JSON array. The room must distinguish an
+        # idle, cold slot from an unavailable/malformed slot before prewarming.
+        if self.path == '/health':
+            data = b'{"status":"ok"}'
+        elif self.path == '/slots':
+            data = b'[{"id":0,"n_past":0,"is_processing":false}]'
+        else:
+            data = b'{"data":[{"id":"deepseek-v4-flash-0731"}]}'
         self.send_response(200)
         self.send_header('Content-Length', str(len(data)))
         self.end_headers()
@@ -82,13 +92,27 @@ class Model(http.server.BaseHTTPRequestHandler):
         kind = 'prewarm' if prewarm else 'turn'
         with Model.lock:
             Model.calls.append((time.monotonic(), obj, kind))
+            missing_user = (Model.reject_missing_user and
+                obj.get('model') == 'qwen3.8-flash-next-uncensored' and
+                not any(m.get('role') == 'user' for m in obj.get('messages', [])))
+            forced_failure = prewarm and Model.fail_prewarms
+            if missing_user or forced_failure:
+                Model.rejected.append((obj.get('model'), kind, 'missing user' if missing_user else 'forced prewarm failure'))
             if prewarm:
                 script = Model.prewarm_script or []
             elif Model.by_model.get(obj.get('model')):
                 script = Model.by_model[obj.get('model')].pop(0)
             else:
                 script = Model.scripts.pop(0) if Model.scripts else ['Okay.']
-            Model.active += 1
+            if not (missing_user or forced_failure):
+                Model.active += 1
+        if missing_user or forced_failure:
+            data = b'Jinja Exception: No user query found in messages.'
+            self.send_response(500)
+            self.send_header('Content-Length', str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+            return
         try:
             self.send_response(200)
             self.send_header('Transfer-Encoding', 'chunked')
@@ -139,6 +163,28 @@ class Room:
                    MAG_TEST_NO_MEMGIT='1', MAG_TEST_NO_CLEAR_BACKUP='1', MAG_ROOM_MCP_AUTO='0',
                    MAG_ROOM_PREWARM='0', MAG_ROOM_STAGGER='off')
         env.update(extra_env or {})
+        # Configured model health probes use the NUMA port map, while the
+        # fake OpenAI server listens on an ephemeral port. Point Qwen's
+        # configured backend at that same fake server so prewarm readiness
+        # and the actual completion exercise one endpoint.
+        if env.get('MAG_ROOM_MODEL_PORTS') == 'FAKE_BACKEND:0,8192:1':
+            env['MAG_ROOM_MODEL_PORTS'] = f'{self.model.server_port}:0,8192:1'
+            # Configured room presets validate both model IDs and exact port
+            # mappings. Give this isolated fake server its own matching preset
+            # instead of weakening the production preset validation.
+            model0 = env.get('MAG_ROOM_MODEL_ID_0', env.get('MAG_ROOM_MODEL_ID', ''))
+            model1 = env.get('MAG_ROOM_MODEL_ID_1', env.get('MAG_ROOM_MODEL_ID', ''))
+            preset = [{
+                'id': 'test-room-model',
+                'label': 'Test room model',
+                'ports': [
+                    {'port': self.model.server_port, 'numa': 0, 'model': model0},
+                    {'port': 8192, 'numa': 1, 'model': model1},
+                ],
+            }]
+            preset_path = self.dir / 'room-presets.json'
+            preset_path.write_text(json.dumps(preset))
+            env['MAG_ROOM_PRESETS'] = str(preset_path)
         self.log = open(self.dir / 'server.log', 'a')
         self.proc = subprocess.Popen([str(BIN)], env=env, stdout=self.log, stderr=self.log)
         for _ in range(200):
@@ -148,7 +194,9 @@ class Room:
             except Exception:
                 time.sleep(.03)
         else:
-            raise RuntimeError('room did not start')
+            self.log.flush()
+            detail = (self.dir / 'server.log').read_text(errors='replace')
+            raise RuntimeError('room did not start; native log: ' + detail[-4000:])
         html = urllib.request.urlopen(f'http://127.0.0.1:{self.ui}/', timeout=5).read().decode()
         self.token = html.split('name="mag-token" content="', 1)[1].split('"', 1)[0]
 
@@ -180,8 +228,12 @@ class Room:
             if pred(last):
                 return last
             time.sleep(.05)
+        self.log.flush()
+        log_tail = (self.dir / 'server.log').read_text(errors='replace')[-3000:]
         raise AssertionError(f'{what} not reached; busy={last and last.get("busy")} '
-                             f'room={[m.get("content") for m in (last or {}).get("room", [])][-6:]}')
+                             f'room={[m.get("content") for m in (last or {}).get("room", [])][-6:]} '
+                             f'calls={[(c[1].get("model"), c[2], c[1].get("messages", [])[-1].get("role") if c[1].get("messages") else None) for c in Model.calls]} '
+                             f'rejected={Model.rejected} log={log_tail}')
 
 
 def reset_model():
@@ -190,6 +242,9 @@ def reset_model():
     Model.by_model.clear()
     Model.disconnects.clear()
     Model.prewarm_script = None
+    Model.reject_missing_user = False
+    Model.fail_prewarms = False
+    Model.rejected.clear()
 
 
 def wait_calls(n, timeout=10):
@@ -621,6 +676,251 @@ class StopCancelsPrewarm(unittest.TestCase):
                 break
             time.sleep(.05)
         self.assertTrue(sum(c[2] == 'prewarm' for c in Model.calls[n:]), 'prewarm resumes after a new message')
+
+
+
+class QwenRoomTurns(unittest.TestCase):
+    QWEN = 'qwen3.8-flash-next-uncensored'
+    GLM = 'glm-5.3-flash'
+
+    def setUp(self):
+        reset_model()
+        Model.reject_missing_user = True
+        # Set the forced prewarm failure before the room process can start its
+        # asynchronous first prewarm; otherwise the test races its own setup.
+        Model.fail_prewarms = (
+            self._testMethodName == 'test_failed_prewarm_backoff_does_not_hold_real_qwen_turns')
+        agents = [
+            {'id': 'qwen', 'name': 'Qwen', 'vm': '', 'memory': [], 'slot': 1, 'numa': 0},
+            {'id': 'glm', 'name': 'GLM-Q2', 'vm': '', 'memory': [], 'slot': 2, 'numa': 1},
+        ]
+        self.room = Room(agents, {
+            'MAG_ROOM_MODEL_ID': self.GLM,
+            'MAG_ROOM_MODEL_LABEL': 'GLM room',
+            'MAG_ROOM_MODEL_PORTS': 'FAKE_BACKEND:0,8192:1',
+            'MAG_ROOM_MODEL_ID_0': self.QWEN,
+            'MAG_ROOM_MODEL_LABEL_0': 'Qwen',
+            'MAG_ROOM_MODEL_ID_1': self.GLM,
+            'MAG_ROOM_MODEL_LABEL_1': 'GLM-Q2',
+            'MAG_ROOM_PRESETS': str(ROOT / 'ops/room/presets.json'),
+            'MAG_ROOM_PREWARM': '1',
+            'MAG_ROOM_PREFIX_DISK': '0',
+            'MAG_ROOM_SINGLE_BOT_VM': 'off',
+        })
+
+    def tearDown(self):
+        self.room.close()
+
+    def wait_qwen_prewarm(self):
+        end = time.monotonic() + 8
+        while time.monotonic() < end:
+            if any(c[1].get('model') == self.QWEN and c[2] == 'prewarm' for c in Model.calls):
+                return
+            time.sleep(.03)
+        self.fail('Qwen prewarm did not reach the fake template server')
+
+    def qwen_turns(self):
+        return [c for c in Model.calls if c[1].get('model') == self.QWEN and c[2] == 'turn']
+
+    def assert_qwen_requests_end_in_user(self):
+        requests = [c[1] for c in Model.calls if c[1].get('model') == self.QWEN]
+        self.assertTrue(requests, 'expected Qwen requests')
+        for req in requests:
+            self.assertEqual(req['messages'][-1].get('role'), 'user', req['messages'])
+
+    def test_qwen_hi_and_hi_beide_each_answer_once_with_template_valid_turns(self):
+        self.wait_qwen_prewarm()
+        self.room.until(lambda s: not s['busy'], timeout=8, what='idle after Qwen prewarm')
+        Model.by_model[self.QWEN] = [['Hallo von Qwen.'], ['Qwen antwortet einmal.']]
+        self.room.api('/api/message', {'text': 'Hi', 'bots': ['qwen-numa0']})
+        s = self.room.until(lambda s: not s['busy'] and
+            any(m.get('role') == 'assistant' and m.get('bot') == 'qwen-numa0' and
+                m.get('content') == 'Hallo von Qwen.' for m in s['room']),
+            timeout=8, what='Qwen answer to Hi')
+        self.assertEqual(sum(m.get('role') == 'assistant' and m.get('bot') == 'qwen-numa0'
+                             and m.get('content') == 'Hallo von Qwen.' for m in s['room']), 1)
+        self.assertEqual(len(self.qwen_turns()), 1)
+
+        self.room.api('/api/message', {'text': 'Hi beide'})
+        s = self.room.until(lambda s: not s['busy'] and
+            any(m.get('role') == 'assistant' and m.get('bot') == 'qwen-numa0' and
+                m.get('content') == 'Qwen antwortet einmal.' for m in s['room']) and
+            any(m.get('role') == 'assistant' and m.get('bot') == 'qwen-numa1' for m in s['room']),
+            timeout=8, what='both bots answer Hi beide')
+        self.assertEqual(sum(m.get('role') == 'assistant' and m.get('bot') == 'qwen-numa0'
+                             and m.get('content') == 'Qwen antwortet einmal.' for m in s['room']), 1)
+        self.assertEqual(len(self.qwen_turns()), 2, 'one Qwen inference per addressed turn')
+        second_messages = self.qwen_turns()[1][1]['messages']
+        self.assertEqual([m.get('role') for m in second_messages[-3:]],
+                         ['user', 'assistant', 'user'], second_messages[-3:])
+        self.assertEqual([m.get('content') for m in second_messages[-3:]],
+                         ['Hi', 'Hallo von Qwen.', 'Hi beide'])
+        self.assert_qwen_requests_end_in_user()
+        self.assertEqual(Model.rejected, [], 'the Qwen fake Jinja template must never see a missing user query')
+
+    def test_failed_prewarm_backoff_does_not_hold_real_qwen_turns(self):
+        Model.fail_prewarms = True
+        self.wait_qwen_prewarm()
+        self.room.until(lambda s: not s['busy'], timeout=8, what='idle after rejected prewarm')
+        time.sleep(2.4)
+        self.assertEqual(sum(c[1].get('model') == self.QWEN and c[2] == 'prewarm'
+                             for c in Model.calls), 1, 'failed prewarm must not retry every 2 seconds')
+        Model.by_model[self.QWEN] = [['Trotzdem eine Antwort.']]
+        self.room.api('/api/message', {'text': 'Hi', 'bots': ['qwen-numa0']})
+        s = self.room.until(lambda s: not s['busy'] and
+            any(m.get('role') == 'assistant' and m.get('bot') == 'qwen-numa0' and
+                m.get('content') == 'Trotzdem eine Antwort.' for m in s['room']),
+            timeout=8, what='real Qwen turn after failed prewarm')
+        self.assertEqual(len(self.qwen_turns()), 1)
+        self.assert_qwen_requests_end_in_user()
+
+
+    def test_qwen_chat_only_is_not_auto_provisioned_a_vm(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = pathlib.Path(d)
+            fakebin = root / 'bin'
+            fakebin.mkdir()
+            calls = root / 'sudo.log'
+            sudo = fakebin / 'sudo'
+            sudo.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$MAG_TEST_SUDO_LOG"\nexit 0\n')
+            sudo.chmod(0o755)
+            reset_model()
+            room = Room([{'id': 'qwen', 'name': 'Qwen', 'vm': '', 'memory': [],
+                          'slot': 1, 'numa': 0}], {
+                'MAG_ROOM_MODEL_ID': self.GLM,
+                'MAG_ROOM_MODEL_LABEL': 'GLM room',
+                'MAG_ROOM_MODEL_PORTS': 'FAKE_BACKEND:0,8192:1',
+                'MAG_ROOM_MODEL_ID_0': self.QWEN,
+                'MAG_ROOM_MODEL_LABEL_0': 'Qwen',
+                'MAG_ROOM_MODEL_ID_1': self.GLM,
+                'MAG_ROOM_MODEL_LABEL_1': 'GLM-Q2',
+                'MAG_ROOM_PRESETS': str(ROOT / 'ops/room/presets.json'),
+                'MAG_ROOM_PREWARM': '0',
+                'MAG_ROOM_SINGLE_BOT_VM': 'on',
+                'MAG_TEST_SUDO_LOG': str(calls),
+                'PATH': str(fakebin) + ':' + os.environ.get('PATH', ''),
+            })
+            try:
+                time.sleep(.8)
+                attempted = calls.read_text() if calls.exists() else ''
+                saved = json.loads((room.state / 'agents.json').read_text())
+                qwen = next((a for a in saved if a.get('slot') == 1), None)
+                glm = next((a for a in saved if a.get('slot') == 2), None)
+                self.assertIsNotNone(qwen, saved)
+                self.assertEqual(qwen['model'], self.QWEN)
+                self.assertFalse(qwen.get('pending_vm'),
+                                 'chat-only Qwen must never reserve a KVM VM')
+                self.assertFalse(qwen.get('vm'),
+                                 'chat-only Qwen must remain without a KVM VM')
+                # load_agents() fills the second configured GLM slot. That
+                # agent may still receive its normal VM; only Qwen is excluded.
+                self.assertIsNotNone(glm, saved)
+                self.assertEqual(glm['model'], self.GLM)
+                self.assertEqual(attempted.count(' spawn '), 1, attempted)
+                self.assertIn('spawn agent1', attempted)
+                self.assertNotIn('spawn agent2', attempted)
+            finally:
+                room.close()
+
+
+class MistralRoomTurns(unittest.TestCase):
+    MISTRAL = 'mistral-large4'
+    GLM = 'glm-5.3-flash'
+
+    def setUp(self):
+        reset_model()
+        Model.reject_missing_user = True
+        agents = [
+            {'id': 'qwen-numa0', 'name': 'Qwen', 'vm': '', 'memory': [], 'slot': 1, 'numa': 0},
+            {'id': 'qwen-numa1', 'name': 'GLM-Q2', 'vm': '', 'memory': [], 'slot': 2, 'numa': 1},
+        ]
+        self.room = Room(agents, {
+            'MAG_ROOM_MODEL_ID': self.MISTRAL,
+            'MAG_ROOM_MODEL_LABEL': 'Mistral + GLM-Q2',
+            'MAG_ROOM_MODEL_PORTS': 'FAKE_BACKEND:0,8192:1',
+            'MAG_ROOM_MODEL_ID_0': self.MISTRAL,
+            'MAG_ROOM_MODEL_LABEL_0': 'Mistral',
+            'MAG_ROOM_MODEL_ID_1': self.GLM,
+            'MAG_ROOM_MODEL_LABEL_1': 'GLM-Q2',
+            'MAG_ROOM_PRESETS': str(ROOT / 'ops/room/presets.json'),
+            'MAG_ROOM_PREWARM': '1',
+            'MAG_ROOM_PREFIX_DISK': '0',
+            'MAG_ROOM_SINGLE_BOT_VM': 'off',
+        })
+
+    def tearDown(self):
+        self.room.close()
+
+    def test_mistral_template_valid_turns_use_card_sampling_and_low_reasoning(self):
+        end = time.monotonic() + 8
+        while time.monotonic() < end:
+            if any(c[1].get('model') == self.MISTRAL and c[2] == 'prewarm' for c in Model.calls):
+                break
+            time.sleep(.03)
+        else:
+            self.fail('Mistral prewarm did not reach the fake template server')
+        self.room.until(lambda state: not state['busy'], timeout=8, what='idle after Mistral prewarm')
+        Model.by_model[self.MISTRAL] = [['Hallo von Mistral.']]
+        self.room.api('/api/message', {'text': 'Hi', 'bots': ['qwen-numa0']})
+        state = self.room.until(lambda state: not state['busy'] and
+            any(m.get('role') == 'assistant' and m.get('bot') == 'qwen-numa0' and
+                m.get('content') == 'Hallo von Mistral.' for m in state['room']),
+            timeout=8, what='Mistral answer to Hi')
+        self.assertEqual(sum(m.get('role') == 'assistant' and m.get('bot') == 'qwen-numa0'
+                             and m.get('content') == 'Hallo von Mistral.' for m in state['room']), 1)
+        requests = [c[1] for c in Model.calls if c[1].get('model') == self.MISTRAL]
+        self.assertGreaterEqual(len(requests), 2, 'prewarm and real turn must both reach Mistral')
+        for request in requests:
+            self.assertEqual(request['messages'][-1].get('role'), 'user', request['messages'])
+            self.assertEqual(request.get('temperature'), 1.0)
+            self.assertEqual(request.get('top_p'), 0.95)
+            self.assertEqual(request.get('top_k'), 0)
+            self.assertEqual(request.get('min_p'), 0.0)
+            self.assertEqual(request.get('reasoning_effort'), 'low')
+            self.assertEqual(request.get('chat_template_kwargs', {}).get('reasoning_effort'), 'low')
+        self.assertEqual(Model.rejected, [], 'Mistral GGUF template must never receive a missing user query')
+
+    def test_mistral_name_and_chat_only_slot_never_gets_a_vm(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = pathlib.Path(d)
+            fakebin = root / 'bin'
+            fakebin.mkdir()
+            calls = root / 'sudo.log'
+            sudo = fakebin / 'sudo'
+            sudo.write_text('#!/bin/sh\\nprintf "%s\\n" "$*" >> "$MAG_TEST_SUDO_LOG"\\nexit 0\\n')
+            sudo.chmod(0o755)
+            reset_model()
+            room = Room([{'id': 'qwen-numa0', 'name': 'Qwen', 'vm': '', 'memory': [],
+                          'slot': 1, 'numa': 0}], {
+                'MAG_ROOM_MODEL_ID': self.MISTRAL,
+                'MAG_ROOM_MODEL_LABEL': 'Mistral + GLM-Q2',
+                'MAG_ROOM_MODEL_PORTS': 'FAKE_BACKEND:0,8192:1',
+                'MAG_ROOM_MODEL_ID_0': self.MISTRAL,
+                'MAG_ROOM_MODEL_LABEL_0': 'Mistral',
+                'MAG_ROOM_MODEL_ID_1': self.GLM,
+                'MAG_ROOM_MODEL_LABEL_1': 'GLM-Q2',
+                'MAG_ROOM_PRESETS': str(ROOT / 'ops/room/presets.json'),
+                'MAG_ROOM_PREWARM': '0',
+                'MAG_ROOM_SINGLE_BOT_VM': 'on',
+                'MAG_TEST_SUDO_LOG': str(calls),
+                'PATH': str(fakebin) + ':' + os.environ.get('PATH', ''),
+            })
+            try:
+                time.sleep(.8)
+                attempted = calls.read_text() if calls.exists() else ''
+                saved = json.loads((room.state / 'agents.json').read_text())
+                mistral = next((a for a in saved if a.get('slot') == 1), None)
+                self.assertIsNotNone(mistral, saved)
+                self.assertEqual((mistral['id'], mistral['name'], mistral['model']),
+                                 ('qwen-numa0', 'Mistral', self.MISTRAL))
+                self.assertFalse(mistral.get('pending_vm'),
+                                 'chat-only Mistral must never reserve a KVM VM')
+                self.assertFalse(mistral.get('vm'),
+                                 'chat-only Mistral must remain without a KVM VM')
+                self.assertNotIn('spawn agent2', attempted,
+                                 'Mistral slot 1 must never be auto-provisioned')
+            finally:
+                room.close()
 
 
 if __name__ == '__main__':

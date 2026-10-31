@@ -188,6 +188,8 @@ static void finish_spawn(const std::string &id, std::string vm, bool resume) {
       attach = AGENTS[idx].find("vm_attach") != nullptr;
       drop_key(AGENTS[idx], "pending_vm");
       drop_key(AGENTS[idx], "vm_attach");
+      drop_key(AGENTS[idx], "vm_explicit_attach");
+      drop_key(AGENTS[idx], "vm_auto_attach");
       if (ok) AGENTS[idx]["vm"] = vm;
       else if (!attach) AGENTS.erase(AGENTS.begin() + idx);
       try { save_agents(); } catch (...) {}
@@ -231,6 +233,30 @@ static void resume_pending_spawns() {
       const std::string id = bot_field((int)i, "id");
       if (id.empty()) continue;
       std::string vm = bot_field((int)i, "pending_vm");
+      const int slot = model_slot((int)i);
+      const std::string slot_model = CONFIGURED_MODEL && slot >= 1 && slot <= ROOM_MAX_BOTS
+          ? ROOM_MODEL.backend(slot).id : std::string();
+      // These model IDs are chat-only when used in configured NUMA slots.
+      // Do not depend on the composite room label: operators may rename it.
+      const std::string agent_model = bot_model_id((int)i);
+      const bool qwen_chat_only = CONFIGURED_MODEL &&
+          agent_model == "qwen3.8-flash-next-uncensored";
+      const bool mistral_chat_only = CONFIGURED_MODEL &&
+          agent_model == "mistral-large4";
+      // Qwen and Mistral are chat-only in this configured GLM room.
+      // Clear stale reservations and never resume/provision a KVM VM for
+      // either NUMA0 chat slot. The generic non-configured chat-only bot
+      // path retains its independent VM behavior.
+      if (mistral_chat_only || qwen_chat_only) {
+        if (!vm.empty()) {
+          SPAWNING_VMS.erase(vm);
+          drop_key(AGENTS[i], "pending_vm");
+          drop_key(AGENTS[i], "vm_attach");
+          drop_key(AGENTS[i], "vm_auto_attach");
+          changed = true;
+        }
+        continue;
+      }
       if (!vm.empty()) {
         SPAWNING_VMS.insert(vm);
         pending.push_back({id, vm, true});
@@ -240,6 +266,7 @@ static void resume_pending_spawns() {
         vm = next_vm();
         AGENTS[i]["pending_vm"] = vm;
         AGENTS[i]["vm_attach"] = true;
+        AGENTS[i]["vm_auto_attach"] = true;
         SPAWNING_VMS.insert(vm);
         pending.push_back({id, vm, false});
         changed = true;
@@ -1100,6 +1127,12 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
       int idx = agent_index(id);
       if (idx < 0) { error_json(fd, 404, "Unknown agent"); return; }
       if (busy(idx)) { error_json(fd, 409, "Bot hat bereits eine VM"); return; }
+      if (CONFIGURED_MODEL &&
+          (bot_model_id(idx) == "mistral-large4" ||
+           bot_model_id(idx) == "qwen3.8-flash-next-uncensored")) {
+        error_json(fd, 409, "Der NUMA0-Chat-Bot ist im GLM-Raum chat-only und erhält keine VM");
+        return;
+      }
     }
     auto pre = run_argv({"sudo", "-n", AGENT_CTL, "preflight"}, 60);
     if (pre.code != 0) {
@@ -1115,6 +1148,7 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
       vm = next_vm();
       AGENTS[idx]["pending_vm"] = vm;
       AGENTS[idx]["vm_attach"] = true;
+      AGENTS[idx]["vm_explicit_attach"] = true;
       SPAWNING_VMS.insert(vm);
       save_agents();
     }
@@ -1411,12 +1445,21 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
     // "vm": false creates a chat-only bot (no KVM, no browser/terminal);
     // default remains a bot with its own isolated VM.
     const auto vm_flag = body.find("vm");
-    const bool with_vm = !(vm_flag && vm_flag->type == Val::BOOL &&
-                           !vm_flag->asBool());
+    const bool vm_requested = !(vm_flag && vm_flag->type == Val::BOOL &&
+                                !vm_flag->asBool());
+    bool qwen_chat_only = false;
+    if (CONFIGURED_MODEL) {
+      std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
+      const int slot = free_model_slot();
+      if (!slot) { error_json(fd, 409, bots_full); return; }
+      qwen_chat_only = room_chat_only_model(ROOM_MODEL.backend(slot).id);
+    }
+    const bool with_vm_requested = vm_requested && !qwen_chat_only;
+    bool with_vm = false;
     // One creation path. Preflight validates KVM, the golden image, the
     // network, the data directory and the libvirt tools before any room
     // entry, directory or domain exists. A later failure rolls all of that back.
-    if (with_vm) {
+    if (with_vm_requested) {
       auto pre = run_argv({"sudo", "-n", AGENT_CTL, "preflight"}, 60);
       if (pre.code != 0) {
         error_json(fd, 503, "Bot-VM Vorprüfung fehlgeschlagen: " +
@@ -1430,6 +1473,9 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
       std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
       const int slot = CONFIGURED_MODEL ? free_model_slot() : 0;
       if (CONFIGURED_MODEL && !slot) { error_json(fd, 409, bots_full); return; }
+      // Qwen/Mistral in the GLM room are deliberately chat-only.
+      // Their VM preflight was skipped before entering this creation path.
+      with_vm = with_vm_requested;
       id = slug_id(str("name"));
       vm = with_vm ? next_vm() : "";
       agent["id"] = id;

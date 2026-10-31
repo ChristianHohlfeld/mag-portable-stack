@@ -173,6 +173,7 @@ ds = bot("deepseek-v4-flash-0731", "DeepSeek V4 Flash")
 q1 = bot("glm-5.3-flash-iq1-m", "GLM-Q1", bot_id="deepseek-chat", slot=1, numa=0)
 q2 = bot("glm-5.3-flash", "GLM-Q2", bot_id="qwen-numa1", slot=2, numa=1)
 qwen = bot("qwen3.8-flash-next-uncensored", "Qwen", bot_id="qwen-numa0", slot=1, numa=0)
+mistral = bot("mistral-large4", "Mistral", bot_id="qwen-numa0", slot=1, numa=0)
 
 with tempfile.TemporaryDirectory() as directory:
     layout_path = pathlib.Path(directory) / "room-layout"
@@ -191,15 +192,15 @@ with tempfile.TemporaryDirectory() as directory:
             result.stdout, result.stderr)
         assert expected_label in (result.stdout if accepted else result.stderr), (
             result.stdout, result.stderr)
-    probe("glm", [qwen, q2], True,
-          "Release ready: Qwen NUMA0 (:8191) + GLM-Q2 NUMA1 (:8192); Q1 disabled", False)
-    probe("glm", [q1, q2], False, "expected Qwen NUMA0 slot 1", False)
-    probe("glm", [ds, q2], False, "expected Qwen NUMA0 slot 1", False)
+    probe("glm", [mistral, q2], True,
+          "Release ready: Mistral NUMA0 (:8191) + GLM-Q2 NUMA1 (:8192); Q1 disabled", False)
+    probe("glm", [q1, q2], False, "expected Mistral NUMA0 slot 1", False)
+    probe("glm", [ds, q2], False, "expected Mistral NUMA0 slot 1", False)
     probe("glm", [q1], False, "expected exactly two room bots", False)
     probe("glm", [q1, q2, qwen], False, "expected exactly two room bots", False)
     parked_q1 = dict(q1, enabled=False)
-    probe("glm", [qwen, q2, parked_q1], True,
-          "Release ready: Qwen NUMA0 (:8191) + GLM-Q2 NUMA1 (:8192); Q1 disabled", False)
+    probe("glm", [mistral, q2, parked_q1], True,
+          "Release ready: Mistral NUMA0 (:8191) + GLM-Q2 NUMA1 (:8192); Q1 disabled", False)
     probe("mixed", [ds, qwen], True, "Release ready: DeepSeek and Qwen")
     probe("qwen", [ds, qwen], True, "Release ready: DeepSeek and Qwen")
     probe("mixed", [ds, q2], False, "expected live DeepSeek and Qwen")

@@ -17,14 +17,23 @@ secondary_unit=
 secondary_units=()
 if [[ -r $room_env ]]; then
   secondary_unit=mag-llm-ds-node@0.service
-  if grep -Fxq 'MAG_ROOM_MODEL_ID_0=qwen3.8-flash-next-uncensored' "$room_env" &&
+  if grep -Fxq 'MAG_ROOM_MODEL_ID_0=mistral-large4' "$room_env" &&
      grep -Fxq 'MAG_ROOM_MODEL_ID_1=glm-5.3-flash' "$room_env"; then
-    secondary_unit=mag-llm-qwen-room.service
+    secondary_unit=mag-llm-mistral-room.service
     secondary_units=() # GLM-Q2 is already enabled; never alter its boot state.
-    # Qwen owns NUMA0; Q1 and all legacy NUMA0/NUMA1 model units stay disabled.
+    # Mistral owns NUMA0; Qwen, Q1 and legacy model units stay disabled.
     systemctl disable mag-llm-ds-node@0.service mag-llm-ds-node@1.service \
       mag-llm-glm.service mag-llm-glm@q1.service mag-llm-qwen.service \
-      >/dev/null 2>&1 || true
+      mag-llm-qwen-room.service >/dev/null 2>&1 || true
+    systemctl reset-failed mag-llm-ds-node@0.service mag-llm-ds-node@1.service \
+      mag-llm-glm@q1.service >/dev/null 2>&1 || true
+  elif grep -Fxq 'MAG_ROOM_MODEL_ID_0=qwen3.8-flash-next-uncensored' "$room_env" &&
+     grep -Fxq 'MAG_ROOM_MODEL_ID_1=glm-5.3-flash' "$room_env"; then
+    secondary_unit=mag-llm-qwen-room.service
+    secondary_units=() # Legacy Qwen room; GLM-Q2 boot state is never altered.
+    systemctl disable mag-llm-ds-node@0.service mag-llm-ds-node@1.service \
+      mag-llm-glm.service mag-llm-glm@q1.service mag-llm-qwen.service \
+      mag-llm-mistral-room.service >/dev/null 2>&1 || true
     systemctl reset-failed mag-llm-ds-node@0.service mag-llm-ds-node@1.service \
       mag-llm-glm@q1.service >/dev/null 2>&1 || true
   elif grep -Fxq 'MAG_ROOM_MODEL_ID_1=qwen3.8-flash-next-uncensored' "$room_env"; then
@@ -96,7 +105,7 @@ done
 
 # Bot VMs and their network come back on boot.
 if command -v virsh >/dev/null; then
-  if [[ ( $secondary_unit == mag-llm-ds-node@0.service || $secondary_unit == mag-llm-qwen.service || $secondary_unit == mag-llm-qwen-room.service || $secondary_unit == mag-llm-ornith-node@0.service ) &&
+  if [[ ( $secondary_unit == mag-llm-ds-node@0.service || $secondary_unit == mag-llm-qwen.service || $secondary_unit == mag-llm-qwen-room.service || $secondary_unit == mag-llm-mistral-room.service || $secondary_unit == mag-llm-ornith-node@0.service ) &&
         -r $agents_json ]] && command -v jq >/dev/null; then
     # The first two persisted agents are the active NUMA bots; PARKED agents
     # retain data but must NOT bring surplus KVM guests back on cold boot.

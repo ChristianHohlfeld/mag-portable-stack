@@ -171,7 +171,9 @@ class Room:
             except Exception:
                 time.sleep(.03)
         else:
-            raise RuntimeError('room did not start')
+            self.log.flush()
+            detail = (self.dir / 'server.log').read_text(errors='replace')
+            raise RuntimeError('room did not start; native log: ' + detail[-4000:])
         html = urllib.request.urlopen(f'http://127.0.0.1:{self.ui}/', timeout=5).read().decode()
         self.token = html.split('name="mag-token" content="', 1)[1].split('"', 1)[0]
 

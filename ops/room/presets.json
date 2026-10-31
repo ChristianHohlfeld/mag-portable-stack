@@ -31,13 +31,13 @@
     ]
   },
   {
-    "id": "qwen-glm-dual-numa",
-    "label": "Qwen Uncensored (NUMA0) + GLM-Q2 (NUMA1)",
+    "id": "mistral-glm-dual-numa",
+    "label": "Mistral Large 4 (NUMA0) + GLM-Q2 (NUMA1)",
     "ports": [
       {
         "port": 8191,
         "numa": 0,
-        "model": "qwen3.8-flash-next-uncensored"
+        "model": "mistral-large4"
       },
       {
         "port": 8192,

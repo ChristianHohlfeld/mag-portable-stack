@@ -9245,7 +9245,8 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
         if (CONFIGURED_MODEL) {
           if (model.rfind("glm-5.3-flash", 0) == 0 ||
               (room_is_glm() && model == "qwen3.8-flash-next-uncensored")) {
-            // Chat-only GLM/Qwen room: system-only prefix; no tool schemas.
+            // Chat-only GLM/Qwen room: no tool schemas. Qwen adds a
+            // minimal user query because its embedded template requires one.
             msgs = Val::array();
             msgs.push(sys);
             if (room_is_glm() && model == "qwen3.8-flash-next-uncensored") {

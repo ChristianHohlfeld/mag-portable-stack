@@ -156,6 +156,12 @@ class Room:
                    MAG_TEST_NO_MEMGIT='1', MAG_TEST_NO_CLEAR_BACKUP='1', MAG_ROOM_MCP_AUTO='0',
                    MAG_ROOM_PREWARM='0', MAG_ROOM_STAGGER='off')
         env.update(extra_env or {})
+        # Configured model health probes use the NUMA port map, while the
+        # fake OpenAI server listens on an ephemeral port. Point Qwen's
+        # configured backend at that same fake server so prewarm readiness
+        # and the actual completion exercise one endpoint.
+        if env.get('MAG_ROOM_MODEL_PORTS') == 'FAKE_BACKEND:0,8192:1':
+            env['MAG_ROOM_MODEL_PORTS'] = f'{self.model.server_port}:0,8192:1'
         self.log = open(self.dir / 'server.log', 'a')
         self.proc = subprocess.Popen([str(BIN)], env=env, stdout=self.log, stderr=self.log)
         for _ in range(200):
@@ -658,7 +664,7 @@ class QwenRoomTurns(unittest.TestCase):
         self.room = Room(agents, {
             'MAG_ROOM_MODEL_ID': self.GLM,
             'MAG_ROOM_MODEL_LABEL': 'GLM room',
-            'MAG_ROOM_MODEL_PORTS': f'{self.room.model.server_port}:0,8192:1',
+            'MAG_ROOM_MODEL_PORTS': 'FAKE_BACKEND:0,8192:1',
             'MAG_ROOM_MODEL_ID_0': self.QWEN,
             'MAG_ROOM_MODEL_LABEL_0': 'Qwen',
             'MAG_ROOM_MODEL_ID_1': self.GLM,
@@ -750,7 +756,7 @@ class QwenRoomTurns(unittest.TestCase):
                           'slot': 1, 'numa': 0}], {
                 'MAG_ROOM_MODEL_ID': self.GLM,
                 'MAG_ROOM_MODEL_LABEL': 'GLM room',
-                'MAG_ROOM_MODEL_PORTS': f'{room.model.server_port}:0,8192:1',
+                'MAG_ROOM_MODEL_PORTS': 'FAKE_BACKEND:0,8192:1',
                 'MAG_ROOM_MODEL_ID_0': self.QWEN,
                 'MAG_ROOM_MODEL_LABEL_0': 'Qwen',
                 'MAG_ROOM_MODEL_ID_1': self.GLM,

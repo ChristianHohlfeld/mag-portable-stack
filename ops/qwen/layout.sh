@@ -8,13 +8,15 @@ ACTION=${1:?apply|rollback|probe}; BACKUP=${2:?deployment backup directory}
 TXN="$BACKUP/qwen-layout"
 fail(){ echo "room layout: $*" >&2; exit 4; }
 [[ $EUID == 0 ]] || fail 'root required'
-units=(mag-llm-ds-node@1.service mag-llm-qwen.service mag-llm-qwen-room.service mag-llm-glm.service mag-llm-glm@q1.service mag-llm-glm@q2.service)
+units=(mag-llm-ds-node@1.service mag-llm-qwen.service mag-llm-qwen-room.service mag-llm-mistral-room.service mag-llm-glm.service mag-llm-glm@q1.service mag-llm-glm@q2.service)
 [[ ! -f "$TXN/glm-dual" ]] || units+=(mag-llm-ds-node@0.service mag-llm-ornith-node@0.service mag-llm-ornith@1.service)
 files=(/etc/mag-stack/room-model.env /etc/mag-stack/room-layout /etc/mag-stack/room-layout.pinned
        /etc/mag-qwen/runtime.env
-       /etc/systemd/system/mag-llm-qwen.service /etc/systemd/system/mag-llm-qwen-room.service /etc/systemd/system/mag-llm-ds-node@.service
+       /etc/systemd/system/mag-llm-qwen.service /etc/systemd/system/mag-llm-qwen-room.service /etc/systemd/system/mag-llm-mistral-room.service /etc/systemd/system/mag-llm-ds-node@.service
        /usr/local/lib/mag-qwen/start.sh /usr/local/lib/mag-qwen/verify-model.sh
        /usr/local/lib/mag-qwen/runtime.sha /etc/mag-qwen/model.sha256
+       /usr/local/lib/mag-mistral/start.sh /usr/local/lib/mag-mistral/verify-model.sh /usr/local/lib/mag-mistral/runtime.sha
+       /etc/mag-mistral/SHA256SUMS /etc/mag-mistral/runtime.env
        /etc/systemd/system/mag-audit-gateway.service.d/50-two-bots.conf)
 # A failed attempt of the repo-declared layout is remembered per identity so the
 # auto-update timer does not stop/restart NUMA1 on every tick (see select below).
@@ -134,8 +136,11 @@ id_files=("$ROOT/ops/qwen/layout.sh" "$ROOT/ops/qwen/runtime.sha"
           "$ROOT/ops/qwen/verify-model.sh" "$ROOT/ops/qwen/smoke.py"
           "$ROOT/ops/glm/arch-compat.patch")
 if [[ $layout == glm ]]; then
-  id_files+=("$ROOT/ops/qwen/start.sh" "$ROOT/ops/qwen/mag-llm-qwen-room.service"
-             "$ROOT/ops/qwen/install.sh" "$ROOT/ops/deploy.sh")
+  id_files+=("$ROOT/ops/mistral/runtime.sha" "$ROOT/ops/mistral/SHA256SUMS"
+             "$ROOT/ops/mistral/build-runtime.sh" "$ROOT/ops/mistral/install.sh"
+             "$ROOT/ops/mistral/start.sh" "$ROOT/ops/mistral/verify-model.sh"
+             "$ROOT/ops/mistral/mag-llm-mistral-room.service" "$ROOT/ops/mistral/smoke.py"
+             "$ROOT/ops/deploy.sh")
 fi
 identity="$layout $(cat "${id_files[@]}" 2>/dev/null | sha256sum | cut -c1-16)"
 # The probe is read-only and runs BEFORE the deploy's backup and service staging.
@@ -157,8 +162,8 @@ if [[ $layout == mixed ]]; then
     runuser -u chris -- env HOME=/home/chris nice -n 19 ionice -c3 bash "$ROOT/ops/qwen/build-runtime.sh"
   fi
 fi
-if [[ $layout == mixed || $layout == glm ]]; then
-  [[ -s /home/chris/models/qwen3.8-flash-next-uncensored/upstream.sha256 ]] || fail 'download/upstream.sha256 missing'
+if [[ $layout == mixed ]]; then
+  [[ -s /home/chris/models/qwen3.8-flash-next-uncensored/upstream.sha256 ]] || fail 'Qwen download/upstream.sha256 missing'
 fi
 install -d -m 0700 "$TXN"
 [[ ! -e $TXN/started ]] || fail 'transaction already exists'
@@ -173,11 +178,12 @@ if [[ $layout == glm ]]; then
   if runs_stale_binary mag-llm-glm@q2.service; then
     echo 'WARN: GLM-Q2 runs a deleted executable; leaving the healthy process untouched' >&2
   fi
-  REV=$(cat "$ROOT/ops/qwen/runtime.sha")
-  BIN="/home/chris/.local/qwen4exp/$REV-mag-cp1/bin/llama-server"
-  patch_id=$(sha256sum "$ROOT/ops/qwen/end-checkpoint.patch" "$ROOT/ops/glm/arch-compat.patch" | sha256sum | cut -d' ' -f1)
-  [[ -x $BIN && $(cat "$(dirname "$BIN")/source-commit" 2>/dev/null || true) == "$REV" &&
-     $(cat "$(dirname "$BIN")/patch-identity" 2>/dev/null || true) == "$patch_id" ]] || fail 'Qwen runtime must already match GLM-Q2; refusing shared runtime rebuild'
+  REV=$(cat "$ROOT/ops/mistral/runtime.sha")
+  BIN="/home/chris/.local/mistral/$REV-mag-cpu/bin/llama-server"
+  if [[ ! -x $BIN || $(cat "$(dirname "$BIN")/source-commit" 2>/dev/null || true) != "$REV" ]]; then
+    runuser -u chris -- env HOME=/home/chris nice -n 19 ionice -c3 bash "$ROOT/ops/mistral/build-runtime.sh"
+  fi
+  [[ -x $BIN && $(cat "$(dirname "$BIN")/source-commit" 2>/dev/null || true) == "$REV" ]] || fail 'pinned Mistral4 runtime build missing'
   touch "$TXN/glm-dual"
   units+=(mag-llm-ds-node@0.service mag-llm-ornith-node@0.service mag-llm-ornith@1.service)
 fi

@@ -1,0 +1,45 @@
+# Mistral Large 4 room-only NUMA0 server; GLM-Q2 on NUMA1 is a no-touch invariant.
+[Unit]
+Description=MAG Mistral Large 4 CPU model, NUMA0 room bot
+After=network-online.target
+Wants=network-online.target
+Conflicts=mag-llm-qwen-room.service mag-llm-glm@q1.service mag-llm-ds-node@0.service mag-llm-iq3.service
+ConditionPathExists=/etc/mag-mistral/SHA256SUMS
+StartLimitIntervalSec=1800
+StartLimitBurst=2
+
+[Service]
+Type=simple
+User=chris
+Group=chris
+WorkingDirectory=/home/chris
+Environment=MISTRAL_THREADS=14
+Environment=MISTRAL_MIN_RAM_GIB=225
+ExecStartPre=/usr/local/lib/mag-mistral/verify-model.sh
+ExecStart=/usr/local/lib/mag-mistral/start.sh
+Restart=on-failure
+RestartSec=60
+TimeoutStartSec=25200
+TimeoutStopSec=120
+CPUAffinity=0-13 28-41
+AllowedCPUs=0-13,28-41
+NUMAPolicy=bind
+NUMAMask=0
+MemoryAccounting=yes
+MemoryLow=220G
+MemoryHigh=236G
+MemoryMax=244G
+MemorySwapMax=0
+OOMScoreAdjust=-600
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=6
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=no
+ReadWritePaths=/var/lib/mag-llm/slots/mistral
+PrivateTmp=yes
+RestrictAddressFamilies=AF_INET AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

@@ -8,9 +8,11 @@ set -euo pipefail
 set -x
 cd "$(dirname "$0")/../../.."
 bash -n ops/qwen/*.sh
+bash -n ops/mistral/*.sh
 python3 - <<'PY'
 import ast, pathlib
-ast.parse(pathlib.Path("ops/qwen/pin-model.py").read_text())
+for name in ("ops/qwen/pin-model.py", "ops/mistral/fetch-hf-sha256.py", "ops/mistral/smoke.py"):
+    ast.parse(pathlib.Path(name).read_text(), filename=name)
 PY
 # The new model requires a separate pinned upstream runtime, not the existing
 # DeepSeek ik_llama.cpp binary or a live deploy swap.

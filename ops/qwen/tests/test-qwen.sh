@@ -5,6 +5,7 @@ if [ -z "${MAG_TEST_DEADLINE_ARMED:-}" ]; then
   exec timeout --kill-after=5s 180s bash "$0" "$@"
 fi
 set -euo pipefail
+set -x
 cd "$(dirname "$0")/../../.."
 bash -n ops/qwen/*.sh
 python3 - <<'PY'

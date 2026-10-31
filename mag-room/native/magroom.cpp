@@ -5036,7 +5036,10 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   Val kwargs = Val::object();
   // Thinking follows the model default or the per-message switch.
   kwargs["enable_thinking"] = thinking && !TL_SELFTALK && !short_chat;
-  if (qwen_chat) kwargs["preserve_thinking"] = false;
+  if (qwen_chat) {
+    kwargs["preserve_thinking"] = false;
+    body["reasoning_effort"] = "none"; // llama.cpp: none disables reasoning.
+  }
   // The Qwen4Exp GGUF Jinja template uses enable_thinking, not the
   // DeepSeek-specific reasoning_effort preamble (preserve prompt cache).
   if (model.rfind("glm-5.3-flash", 0) == 0) {

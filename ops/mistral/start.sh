@@ -15,7 +15,7 @@ MIN_RAM_GIB=${MISTRAL_MIN_RAM_GIB:-225}
 [[ $THREADS =~ ^[1-9][0-9]*$ && $MIN_RAM_GIB =~ ^[1-9][0-9]*$ ]] || fail 'invalid thread/RAM setting'
 systemctl is-active --quiet mag-llm-qwen-room.service && fail 'Qwen room service still active; refuse co-residency on NUMA0'
 systemctl is-active --quiet mag-llm-glm@q1.service && fail 'GLM-Q1 still active; room transaction must retire it first'
-systemctl is-active --quiet mag-llm-glm@q2.service || systemctl is-active --quiet mag-llm-glm@q2.service || fail 'GLM-Q2 must remain running'
+systemctl is-active --quiet mag-llm-glm@q2.service || fail 'GLM-Q2 must remain running'
 curl --noproxy '*' -fsS --max-time 5 -o /dev/null http://127.0.0.1:8192/health || fail 'GLM-Q2 :8192 unhealthy; no restart attempted'
 for u in mag-backup-daily mag-backup-weekly mag-backup-monthly mag-backup-restore-test mag-backup-deploy mag-backup-clear; do
   systemctl is-active --quiet "$u.service" && fail "backup active: $u"

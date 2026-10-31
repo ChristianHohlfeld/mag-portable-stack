@@ -8636,7 +8636,9 @@ static uint64_t fnv64(const std::string &s) {
   return h;
 }
 static std::string prefix_file(int idx, const std::string &model) {
-  if (CONFIGURED_MODEL && model.rfind("glm-5.3-flash", 0) == 0)
+  if (CONFIGURED_MODEL &&
+      (model.rfind("glm-5.3-flash", 0) == 0 ||
+       model == "qwen3.8-flash-next-uncensored"))
     return "mag-prefix-" + model + "-slot" + std::to_string(model_slot(idx)) + "-chat-v2-prefix.bin";
   return CONFIGURED_MODEL ? "mag-prefix-" + model + "-slot" + std::to_string(model_slot(idx)) + ".bin"
                          : "mag-prefix-" + model + ".bin";
@@ -8666,10 +8668,14 @@ static void persist_configured_slot(int idx) {
   const std::string port = model_port(model_slot(idx));
   const std::string own_key = port + "/" + file;
   const bool web = WEB_ENABLED.load();
-  const std::string system = build_system(idx, false, "", web);
-  const std::string tool_defs = tools_json(idx, web);
+  const bool chat_only = model.rfind("glm-5.3-flash", 0) == 0 ||
+                         model == "qwen3.8-flash-next-uncensored";
+  std::string system = build_system(idx, false, "", web, chat_only);
+  if (chat_only) system += glm_chat_memory(bot_field(idx, "id"));
+  const std::string tool_defs = chat_only ? std::string() : tools_json(idx, web);
   const auto cut = system.rfind("[Identitaet]");
-  const std::string shared = system.substr(0, cut == std::string::npos ? system.size() : cut) + tool_defs;
+  const std::string shared = chat_only ? system :
+      system.substr(0, cut == std::string::npos ? system.size() : cut) + tool_defs;
   const std::string shared_key = model + ":" + std::to_string(fnv64(shared));
   if (!prefix_slot_rpc(idx, model, "save", file)) {
     std::cerr << "prompt-slot save file=" << file << " ok=0" << std::endl;
@@ -8962,17 +8968,19 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
     web = WEB_ENABLED.load();
     // Slot state is decided before wire_messages. That call appends a user
     // message and would otherwise rewrite a warm transcript on every restart.
-    system = build_system(idx, false, "", web,
-                          model.rfind("glm-5.3-flash", 0) == 0);
-    if (model.rfind("glm-5.3-flash", 0) == 0) {
+    const bool chat_only = model.rfind("glm-5.3-flash", 0) == 0 ||
+                           model == "qwen3.8-flash-next-uncensored";
+    system = build_system(idx, false, "", web, chat_only);
+    if (chat_only) {
       system += glm_chat_memory(bot_id);
       tool_defs.clear();
-      std::cerr << "glm-chat prefix tokens=" << (system.size() / 3)
+      std::cerr << "chat-only prefix model=" << model
+                << " tokens=" << (system.size() / 3)
                 << " (conservative estimate)" << std::endl;
     } else {
       tool_defs = tools_json(idx, web);
     }
-    const std::string shared = model.rfind("glm-5.3-flash", 0) == 0
+    const std::string shared = chat_only
         ? system : system.substr(0, system.rfind("[Identitaet]")) + tool_defs;
     shared_key = model + ":" + std::to_string(fnv64(shared));
     shared_len = shared.size();
@@ -9165,8 +9173,9 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
         u["content"] = build_transcript() + build_context_tail(idx, false, "") + (skills.empty() ? "" : "\n" + skills);
         msgs.push(u);
         if (CONFIGURED_MODEL) {
-          if (model.rfind("glm-5.3-flash", 0) == 0) {
-            // GLM-only: pure system+tools anchor.
+          if (model.rfind("glm-5.3-flash", 0) == 0 ||
+              model == "qwen3.8-flash-next-uncensored") {
+            // Chat-only GLM/Qwen: system-only prefix; no tool schemas.
             msgs = Val::array();
             msgs.push(sys);
           } else {

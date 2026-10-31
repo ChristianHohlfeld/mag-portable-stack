@@ -58,7 +58,7 @@ message, and caps output at 256 tokens. Thinking is always disabled with
 the final text passes the hidden-token filter; any `<think>`, `</think>`
 or `<|` delimiter drops the whole candidate answer.
 
-Sampling follows the official [Qwen3.8-Flash-Next model card](https://huggingface.co/Qwen/Qwen3.8-Flash-Next)
+The deployed IQ4_XS file is the 98.4 GB quant listed on the [uncensored GGUF card](https://huggingface.co/mradermacher/Qwen3.8-Flash-Next-Uncensored-GGUF), fine-tuned from Qwen's base model. Sampling follows the official [Qwen3.8-Flash-Next model card](https://huggingface.co/Qwen/Qwen3.8-Flash-Next)
 for non-thinking instruct mode: `temperature=0.7`, `top_p=0.80`,
 `top_k=20`, `min_p=0`, `presence_penalty=1.5`,
 `repetition_penalty=1.0`. MAG maps the last field to llama.cpp's

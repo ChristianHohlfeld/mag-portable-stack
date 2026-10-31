@@ -17,8 +17,8 @@ flock -n 8 || { echo 'Another MAG deploy/ingress install is running' >&2; exit 1
 source "$SOURCE/ops/deploy-watchdog.sh"
 deploy_lock_cloexec 8
 deployment_started=0
-# Normal drain budget plus 15 minutes. A first Qwen NUMA0 cold load may
-# read/lock 98 GB; reserve 4 hours for the layout's 3-hour health wait.
+# Normal drain budget plus 15 minutes. Mistral's 233 GB NUMA0 model uses mmap;
+# reserve the full seven-hour service window plus deploy overhead.
 _deploy_drain=${MAG_DEPLOY_DRAIN_S:-900}
 _deploy_default_deadline=$((_deploy_drain + 900))
 _layout_for_deadline=${MAG_ROOM_LAYOUT:-}
@@ -30,9 +30,9 @@ if [[ -z $_layout_for_deadline || $_layout_for_deadline == repo ]]; then
   fi
 fi
 if [[ $_layout_for_deadline == glm ]]; then
-  # A changed Qwen launcher/unit can require a cold restart even when the
-  # old :8191 process is healthy. Always reserve the full 3-hour load window.
-  _deploy_default_deadline=14400
+  # Mistral's six-shard 233 GB model can require a long cold mmap/startup.
+  # Reserve the complete 7-hour service load window plus deploy overhead.
+  _deploy_default_deadline=30000
 fi
 deploy_watchdog_arm "${MAG_DEPLOY_DEADLINE_S:-$_deploy_default_deadline}"
 trap deploy_exit EXIT
@@ -414,8 +414,8 @@ if [[ -e /etc/mag-stack/room-model.env || -e /etc/systemd/system/mag-llm-ds-node
       MAG_DEFER_DAEMON_RELOAD=0 mag_flush_daemon_reload
       mag_systemctl start mag-120.service
     fi
-    # Always run the idempotent GLM-room transaction: it stages Qwen on
-    # NUMA0, parks/stops Q1 and explicitly guards the already-live Q2 PID.
+    # Always run the idempotent GLM-room transaction: it stages Mistral on
+    # NUMA0 only after all six shards pass SHA256, and guards the live Q2 PID.
     # The helper never installs or restarts the GLM-Q2 unit or its flags.
     bash "$SOURCE/ops/qwen/layout.sh" apply "$BACKUP"
     layout_applied=1
@@ -580,13 +580,13 @@ try:
         by_id = {a.get("id"): a for a in active}
         if len(active) != 2:
             raise ValueError("expected exactly two room bots, got "+repr(active))
-        qwen = by_id.get("qwen-numa0")
+        mistral = by_id.get("qwen-numa0")
         q2 = by_id.get("qwen-numa1")
-        if not qwen or (qwen.get("model"), qwen.get("slot"), qwen.get("numa"), qwen.get("name")) != ("qwen3.8-flash-next-uncensored", 1, 0, "Qwen"):
-            raise ValueError("expected Qwen NUMA0 slot 1, got "+repr(qwen))
+        if not mistral or (mistral.get("model"), mistral.get("slot"), mistral.get("numa"), mistral.get("name")) != ("mistral-large4", 1, 0, "Mistral"):
+            raise ValueError("expected Mistral NUMA0 slot 1, got "+repr(mistral))
         if not q2 or (q2.get("model"), q2.get("slot"), q2.get("numa"), q2.get("name")) != ("glm-5.3-flash", 2, 1, "GLM-Q2"):
             raise ValueError("expected GLM-Q2 NUMA1 slot 2, got "+repr(q2))
-        print("Release ready: Qwen NUMA0 (:8191) + GLM-Q2 NUMA1 (:8192); Q1 disabled")
+        print("Release ready: Mistral NUMA0 (:8191) + GLM-Q2 NUMA1 (:8192); Q1 disabled")
     else:
         require_ds = sys.argv[2] == "1"
         secondary = "deepseek" if layout == "deepseek" else "qwen"

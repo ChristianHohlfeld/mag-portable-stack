@@ -50,7 +50,7 @@ assert 'binding=(--physcpubind=0-13,28-41 --membind=0)' in glm
 assert '--mlock' not in glm
 assert '--load-mode dio -fa on -b 4096 -ub 1024' in glm  # known-good #231 llama-server flags
 assert 'glm-5.3-flash-iq1-m:kv-f16-f16' in glm
-assert 'MAG_ROOM_MODEL_ID_0=qwen3.8-flash-next-uncensored' in glm_layout
+assert 'MAG_ROOM_MODEL_ID_0=mistral-large4' in glm_layout
 assert 'MAG_ROOM_MODEL_ID_1=glm-5.3-flash' in glm_layout
 assert 'mag-llm-glm@q1.service' in glm_txn and 'mag-llm-glm@q2.service' in glm_txn
 assert 'FORMAT=' in glm and '.kv-format' in glm and 'mag-prefix-glm-5.3-flash-slot2.bin' in glm
@@ -62,7 +62,7 @@ assert 'kv.first == "description"' in room and 'bot_model_id(bot_idx).rfind("glm
 assert 'body["id_slot"] = 0;' in room and 'body["cache_prompt"] = true;' in room
 
 assert '--threads "$THREADS" --threads-batch "$BATCH_THREADS" --numa numactl' in qwen
-assert 'QWEN_THREADS_BATCH=14' in glm_txn and 'QWEN_THREADS_BATCH=28' in glm_txn
+assert 'MISTRAL_THREADS=14' in glm_txn and 'MISTRAL_MIN_RAM_GIB=225' in glm_txn
 assert 'CPUAffinity=14-27' in unit
 assert 'AllowedCPUs=14-27' in unit
 assert 'NUMAPolicy=bind' in unit and 'NUMAMask=1' in unit
@@ -86,7 +86,7 @@ assert 'model.rfind("glm-5.3-flash", 0) != 0 && model_settings_for(model).determ
 assert 'model.rfind("glm-5.3-flash", 0) == 0) body["cache_prompt"] = true;' in room
 assert 'model.rfind("glm-5.3-flash", 0) == 0) body["id_slot"] = 0;' in room
 assert 'asst["reasoning_content"] = !CONFIGURED_MODEL && t.reasoning.size() > keep' in room
-assert room.count('kwargs["reasoning_effort"] = "low";') == 2
+assert room.count('kwargs["reasoning_effort"] = "low";') == 4
 assert room.count('kwargs["clear_thinking"] = true;') == 2
 assert 'static void schedule_prewarm()' in room and 'schedule_prewarm();' in room
 assert 'MAG_ROOM_PREWARM' in room and 'body["max_tokens"] = 1;' in room
@@ -123,7 +123,7 @@ assert 'short_glm_input(TURN_INPUT)' in room
 # The DeepSeek/Qwen working-mode tool schemas are still retained.
 assert 'const bool qwen_chat = no_tools && room_is_glm()' in room
 assert 'MAG_ROOM_GLM_CHAT_MAX_TOKENS' in room
-assert 'tools = (glm_chat_mode || qwen_room_bot) ? std::string() : tools_json(bot_idx, web);' in room
+assert 'tools = (glm_chat_mode || chat_only_room_bot) ? std::string() : tools_json(bot_idx, web);' in room
 assert 'glm-reasoning-limit model=' in room
 assert 'tool-failed bot=' in room
 assert 'restart_unit["$unit"]=1' in glm_txn

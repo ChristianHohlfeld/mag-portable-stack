@@ -11,12 +11,8 @@ BIN="/home/chris/.local/mistral/$REV-mag-cpu/bin/llama-server"
 DIR=/home/chris/models/Mistral-Large-4-1T-A52B-UD-IQ1_S
 [[ -d "$DIR" && ! -L "$DIR" ]] || { echo 'Mistral download directory missing' >&2; exit 4; }
 install -d -m 0755 /etc/mag-mistral /usr/local/lib/mag-mistral
+python3 -I "$ROOT/ops/mistral/fetch-hf-sha256.py" "$DIR"
 install -m 0644 "$ROOT/ops/mistral/SHA256SUMS" /etc/mag-mistral/SHA256SUMS
-if [[ -e "$DIR/SHA256SUMS" ]]; then
-  cmp -s "$DIR/SHA256SUMS" "$ROOT/ops/mistral/SHA256SUMS" || { echo 'model-directory SHA256SUMS differs from pinned HF manifest' >&2; exit 4; }
-else
-  install -m 0644 "$ROOT/ops/mistral/SHA256SUMS" "$DIR/SHA256SUMS"
-fi
 bash "$ROOT/ops/mistral/verify-model.sh"
 install -m 0644 "$ROOT/ops/mistral/runtime.sha" /usr/local/lib/mag-mistral/runtime.sha
 install -m 0755 "$ROOT/ops/mistral/verify-model.sh" /usr/local/lib/mag-mistral/verify-model.sh

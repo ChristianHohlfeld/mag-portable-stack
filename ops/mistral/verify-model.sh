@@ -22,7 +22,7 @@ STAMP=/etc/mag-mistral/model.verified
 identity(){
   printf '%s\n' "$(sha256sum < "$PIN" | cut -c1-64)"
   for file in $(awk '{print $2}' "$PIN"); do
-    LC_ALL=C stat -c '%d %i %s %.9Y %.9Z' "$DIR/$file"
+    LC_ALL=C stat -c '%d %i %s %y %z' "$DIR/$file"
   done
 }
 if [[ -f "$STAMP" && ! -L "$STAMP" && $(stat -c %u "$STAMP") == 0 ]] &&

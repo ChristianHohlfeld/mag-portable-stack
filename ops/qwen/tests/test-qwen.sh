@@ -21,6 +21,8 @@ grep -Fq 'QWEN_THREADS_BATCH=28' ops/room/glm.env
 grep -Fq 'QWEN_PORT=8191' ops/qwen/layout.sh
 grep -Fq 'QWEN_NODE=0' ops/qwen/layout.sh
 grep -Fq 'mag-llm-qwen-room.service' ops/qwen/layout.sh
+grep -Fq 'GLM-Q1 still running' ops/qwen/start.sh
+! grep -Eq 'rm .*Qwen3.8-Flash-Next-Uncensored|rm .*IQ1_M' ops/qwen/layout.sh
 grep -Fq -- '--numa numactl' ops/qwen/start.sh
 grep -Fq 'mag-llm-iq3.service && fail' ops/qwen/start.sh
 grep -Fq 'verify-model.sh' ops/qwen/start.sh

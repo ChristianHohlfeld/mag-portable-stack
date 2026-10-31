@@ -147,7 +147,7 @@ if [[ $layout == glm ]]; then
   id_files+=("$ROOT/ops/mistral/runtime.sha" "$ROOT/ops/mistral/SHA256SUMS"
              "$ROOT/ops/mistral/build-runtime.sh" "$ROOT/ops/mistral/install.sh"
              "$ROOT/ops/mistral/start.sh" "$ROOT/ops/mistral/verify-model.sh"
-             "$ROOT/ops/mistral/mag-llm-mistral-room.service" "$ROOT/ops/mistral/smoke.py"
+             "$ROOT/ops/mistral/fetch-hf-sha256.py" "$ROOT/ops/mistral/mag-llm-mistral-room.service" "$ROOT/ops/mistral/smoke.py"
              "$ROOT/ops/deploy.sh")
 fi
 identity="$layout $(cat "${id_files[@]}" 2>/dev/null | sha256sum | cut -c1-16)"

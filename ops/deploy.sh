@@ -29,7 +29,9 @@ if [[ -z $_layout_for_deadline || $_layout_for_deadline == repo ]]; then
     _layout_for_deadline=$(tr -d '[:space:]' < "$SOURCE/ops/room/layout" 2>/dev/null || true)
   fi
 fi
-if [[ $_layout_for_deadline == glm ]] && ! systemctl is-active --quiet mag-llm-qwen-room.service; then
+if [[ $_layout_for_deadline == glm ]] &&
+   { ! systemctl is-active --quiet mag-llm-qwen-room.service ||
+     ! curl --noproxy '*' -fsS --max-time 2 -o /dev/null http://127.0.0.1:8191/health 2>/dev/null; }; then
   _deploy_default_deadline=14400
 fi
 deploy_watchdog_arm "${MAG_DEPLOY_DEADLINE_S:-$_deploy_default_deadline}"

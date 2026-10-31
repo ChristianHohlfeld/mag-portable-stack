@@ -20,8 +20,9 @@ reclaimable RAM auf NUMA0 und wartet bis zu drei Stunden auf :8191 health.
 `model.env` is the shared room/gateway contract, installed as
 `/etc/mag-stack/room-model.env`. `MAG_ROOM_MODEL_PORTS=8191:0,8192:1`
 means **port:NUMA**, not llama slot. Both servers have one llama slot (`0`), explicitly pinned by room and gateway for chat and prewarm.
-`MAG_ROOM_MAX_BOTS` must be `2`. Thinking follows `MAG_ROOM_THINKING` and the
-per-message switch; it is no longer forced off by a model name.
+`MAG_ROOM_MAX_BOTS` must be `2`. Thinking generally follows
+`MAG_ROOM_THINKING` and the per-message switch; the Qwen bot in layout
+`glm` is deliberately chat-only and always has thinking disabled.
 
 `mag-120.service` loads `room-model.env` itself. systemd applies every
 `EnvironmentFile=` after every `Environment=`, so the file overrides the

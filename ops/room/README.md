@@ -8,8 +8,9 @@ die zwei aktiven Raum-Bots. GLM-Q1 (`deepseek-chat`) bleibt inklusive ID,
 Memory und VM geparkt in `agents.json`; seine IQ1_M-Datei bleibt auf Platte.
 Die Raum-History bleibt erhalten, und wiederholtes Deployment ist idempotent.
 
-Das Layout stoppt und deaktiviert ausschließlich `mag-llm-glm@q1.service`,
-bevor Qwen NUMA0 lädt. Q2 muss bereits aktiv, enabled und gesund sein; sein
+Das Layout stoppt/deaktiviert `mag-llm-glm@q1.service` und deaktiviert
+konkurrierende Legacy-Modell-Units, bevor Qwen NUMA0 lädt. Q2 ist ausdrücklich
+ausgenommen: Er muss bereits aktiv, enabled und gesund sein; sein
 PID wird vor und nach dem Qwen-Kaltstart geprüft. Kein Stop/Start/Restart/
 Enable/Disable von `mag-llm-glm@q2.service`, keine Änderungen an
 `ops/glm/*`, Q2-Units oder Server-Flags. Der Qwen-Start prüft 150 GiB

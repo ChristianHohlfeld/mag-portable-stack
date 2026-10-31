@@ -1,4 +1,4 @@
-# Room: DeepSeek V4 Flash, one bot per NUMA node
+# Room: Qwen Uncensored (NUMA0) + GLM-Q2 (NUMA1)
 
 ## GLM-Raum: Qwen NUMA0 + GLM-Q2 NUMA1 (31.10.2026)
 

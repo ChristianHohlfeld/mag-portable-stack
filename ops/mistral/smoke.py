@@ -34,6 +34,8 @@ def main():
         ],
         "temperature": 1.0,
         "top_p": 0.95,
+        "top_k": 0,
+        "min_p": 0.0,
         "reasoning_effort": "low",
         "chat_template_kwargs": {"reasoning_effort": "low"},
         "max_tokens": 48,

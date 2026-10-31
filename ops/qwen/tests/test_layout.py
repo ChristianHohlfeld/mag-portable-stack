@@ -210,7 +210,7 @@ json.dump(s,open(p,'w'))
   self.assertIn('mag-llm-glm@q2.service',state['active'])
   self.assertNotIn('mag-llm-qwen-room.service',state['active'])
   self.assertNotIn('mag-llm-glm@q2.service',[
-   c.split(' ',1)[1] for c in self.log.read_text().splitlines()
+   c.split(' ',1)[1] for c in self.log.read_text()[mark:].splitlines()
    if c.startswith(('stop ','start ','enable ','disable '))])
 
  def test_qwen_room_change_restarts_only_qwen_and_never_q2(self):

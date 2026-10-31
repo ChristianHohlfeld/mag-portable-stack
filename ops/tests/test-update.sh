@@ -166,7 +166,7 @@ assert match, "embedded room readiness gate missing"
 gate = match.group(1)
 
 def bot(model, name=None, enabled=True):
-    return {"name": name or model, "model": model, "enabled": enabled}
+    return {"id": "qwen-numa1" if model == "glm-5.3-flash" else model, "name": name or model, "model": model, "enabled": enabled}
 
 ds = bot("deepseek-v4-flash-0731", "DeepSeek V4 Flash")
 q1 = bot("glm-5.3-flash-iq1-m", "GLM-Q1")
@@ -190,12 +190,13 @@ with tempfile.TemporaryDirectory() as directory:
             result.stdout, result.stderr)
         assert expected_label in (result.stdout if accepted else result.stderr), (
             result.stdout, result.stderr)
-    probe("glm", [q1, q2], True, "Release ready: GLM-Q1 (8191) + GLM-Q2 (8192)", False)
-    probe("glm", [ds, q2], False, "expected two GLM bots", False)
-    probe("glm", [q1], False, "expected two GLM bots", False)
-    probe("glm", [q1, q2, qwen], False, "expected two GLM bots", False)
-    probe("glm", [q1, q2, bot("deepseek", enabled=False)], True,
-          "Release ready: GLM-Q1 (8191) + GLM-Q2 (8192)", False)
+    probe("glm", [q2], True, "Release ready: GLM-Q2 (8192)", False)
+    probe("glm", [q1, q2], False, "expected only GLM-Q2 room bot", False)
+    probe("glm", [ds, q2], False, "expected only GLM-Q2 room bot", False)
+    probe("glm", [q1], False, "expected only GLM-Q2 room bot", False)
+    probe("glm", [q1, q2, qwen], False, "expected only GLM-Q2 room bot", False)
+    probe("glm", [q2, bot("deepseek", enabled=False)], True,
+          "Release ready: GLM-Q2 (8192)", False)
     probe("mixed", [ds, qwen], True, "Release ready: DeepSeek and Qwen")
     probe("qwen", [ds, qwen], True, "Release ready: DeepSeek and Qwen")
     probe("mixed", [ds, q2], False, "expected live DeepSeek and Qwen")

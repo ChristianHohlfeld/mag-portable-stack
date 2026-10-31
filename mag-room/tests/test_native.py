@@ -5253,7 +5253,7 @@ class GlmLayoutStartup(unittest.TestCase):
   Model.delay=0;Model.slot_delay={};Model.script=[];Model.reply=None
   Model.script_scope=None;Model.slot_block={};Model.restore_missing=False
   Model.barrier_token='';Model.barrier_release=None;Model.hold_get=0;Model.health=200
-  Model.paths=[];Model.calls=[];Model.pairs=[];Model.cache_records=[]
+  Model.paths=[];Model.calls=[];Model.pairs=[];Model.cache_records=[];Model.slot_snapshot=[]
   Model.saved_prompt.clear();Model.last_prompt.clear();Model.restore_missing=True
   tmp=tempfile.TemporaryDirectory();root=pathlib.Path(tmp.name)
   state=root/'state';state.mkdir()

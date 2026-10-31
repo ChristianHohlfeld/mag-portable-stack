@@ -17,8 +17,8 @@ flock -n 8 || { echo 'Another MAG deploy/ingress install is running' >&2; exit 1
 source "$SOURCE/ops/deploy-watchdog.sh"
 deploy_lock_cloexec 8
 deployment_started=0
-# Normal drain budget plus 15 minutes. A first Qwen NUMA0 cold load may
-# read/lock 98 GB; reserve 4 hours for the layout's 3-hour health wait.
+# Normal drain budget plus 15 minutes. Mistral's 233 GB NUMA0 model uses mmap;
+# reserve the full seven-hour service window plus deploy overhead.
 _deploy_drain=${MAG_DEPLOY_DRAIN_S:-900}
 _deploy_default_deadline=$((_deploy_drain + 900))
 _layout_for_deadline=${MAG_ROOM_LAYOUT:-}

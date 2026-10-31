@@ -17,7 +17,7 @@ grep -Fq '4a45de4f2c68f3d144f6c2431ad7c1da7e53c99e' ops/qwen/runtime.sha
 grep -Fq "CPU_RANGE='0-13,28-41'" ops/qwen/start.sh
 grep -Fq 'NUMAMask=0' ops/qwen/mag-llm-qwen-room.service
 grep -Fq 'CPUAffinity=0-13 28-41' ops/qwen/mag-llm-qwen-room.service
-grep -Fq 'QWEN_THREADS_BATCH=28' ops/room/glm.env
+grep -Fq 'QWEN_THREADS_BATCH=28' ops/qwen/layout.sh
 grep -Fq 'QWEN_PORT=8191' ops/qwen/layout.sh
 grep -Fq 'QWEN_NODE=0' ops/qwen/layout.sh
 grep -Fq 'mag-llm-qwen-room.service' ops/qwen/layout.sh

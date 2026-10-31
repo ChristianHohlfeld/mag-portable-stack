@@ -5036,6 +5036,7 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   Val kwargs = Val::object();
   // Thinking follows the model default or the per-message switch.
   kwargs["enable_thinking"] = thinking && !TL_SELFTALK && !short_chat;
+  if (qwen_chat) kwargs["preserve_thinking"] = false;
   // The Qwen4Exp GGUF Jinja template uses enable_thinking, not the
   // DeepSeek-specific reasoning_effort preamble (preserve prompt cache).
   if (model.rfind("glm-5.3-flash", 0) == 0) {
@@ -9217,6 +9218,8 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
           thinking_on = false;
         }
         kwargs["enable_thinking"] = thinking_on;
+        if (model == "qwen3.8-flash-next-uncensored")
+          kwargs["preserve_thinking"] = false;
         if (model.rfind("glm-5.3-flash", 0) == 0) {
           kwargs["reasoning_effort"] = "low";
           kwargs["clear_thinking"] = true;
@@ -9517,6 +9520,8 @@ static Val model_radius(const std::string &model, const std::string &input,
   tpl["messages"] = msgs;
   Val kwargs = Val::object();
   kwargs["enable_thinking"] = false;
+  if (model == "qwen3.8-flash-next-uncensored")
+    kwargs["preserve_thinking"] = false;
   tpl["chat_template_kwargs"] = kwargs;
   const Val rendered = radius_call(model, "/apply-template", tpl);
   const Val *prompt = rendered.find("prompt");

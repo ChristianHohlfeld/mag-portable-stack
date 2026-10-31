@@ -80,29 +80,37 @@ rollback(){
     fi
   done
   touch "$TXN/restored"
-  # The rollback is complete before we probe the restored Qwen. It now uses
-  # the pinned shared runtime built for this release. A smoke failure must
-  # NEVER abort or undo the rollback: signal the degraded state visibly.
-  if [[ -f $TXN/changed ]] &&
-     grep -Fxq mag-llm-qwen-room.service "$TXN/active"; then
+  # Rollback smoke checks are observational only; never undo a completed restore.
+  if [[ -f $TXN/changed ]] && grep -Fxq mag-llm-qwen-room.service "$TXN/active"; then
     qwen_ready=0
     for ((qi=0; qi<120; qi++)); do
       if systemctl is-active --quiet mag-llm-qwen-room.service &&
          curl --noproxy '*' -fsS --max-time 3 -o /dev/null http://127.0.0.1:8191/health 2>/dev/null; then
-        qwen_ready=1
-        break
+        qwen_ready=1; break
       fi
       sleep 5
     done
     if (( qwen_ready )); then
-      if python3 -I "$ROOT/ops/qwen/smoke.py" --port 8191 \
-          --model qwen3.8-flash-next-uncensored --quick; then
-        echo 'QWEN ROLLBACK SMOKE PASS (new pinned runtime)'
-      else
-        echo 'WARNING: Qwen restored and healthy, but rollback smoke failed' >&2
-      fi
+      python3 -I "$ROOT/ops/qwen/smoke.py" --port 8191 --model qwen3.8-flash-next-uncensored --quick ||
+        echo 'WARNING: Qwen rollback chat smoke failed' >&2
     else
       echo 'WARNING: Qwen rollback service restored, health still unavailable' >&2
+    fi
+  fi
+  if [[ -f $TXN/changed ]] && grep -Fxq mag-llm-mistral-room.service "$TXN/active"; then
+    mistral_ready=0
+    for ((mi=0; mi<120; mi++)); do
+      if systemctl is-active --quiet mag-llm-mistral-room.service &&
+         curl --noproxy '*' -fsS --max-time 3 -o /dev/null http://127.0.0.1:8191/health 2>/dev/null; then
+        mistral_ready=1; break
+      fi
+      sleep 5
+    done
+    if (( mistral_ready )); then
+      python3 -I "$ROOT/ops/mistral/smoke.py" --port 8191 --timeout 600 ||
+        echo 'WARNING: Mistral rollback chat smoke failed' >&2
+    else
+      echo 'WARNING: Mistral rollback service restored, health still unavailable' >&2
     fi
   fi
 }
@@ -229,21 +237,23 @@ on_exit(){
   exit "$rc"
 }
 trap on_exit EXIT
-# Stage/verify the existing 98 GB Qwen GGUF before retiring Q1.
-# Do not run the GLM installer: GLM-Q2's unit, env, launcher and flags stay untouched.
-if [[ $layout == mixed || $layout == glm ]]; then bash "$ROOT/ops/qwen/install.sh" refresh; fi
-# The room-only Qwen unit conflicts with Q1, not Q2; Q2 is health-checked and never restarted here.
+# Verify the chosen NUMA0 model completely before stopping the current Qwen service.
+if [[ $layout == mixed ]]; then
+  bash "$ROOT/ops/qwen/install.sh" refresh
+elif [[ $layout == glm ]]; then
+  bash "$ROOT/ops/mistral/install.sh" stage
+fi
 install -m 0644 "$ROOT/ops/room/mag-llm-ds-node@.service" /etc/systemd/system/mag-llm-ds-node@.service
-install -d -m 0755 /etc/mag-stack /etc/mag-qwen
+install -d -m 0755 /etc/mag-stack /etc/mag-qwen /etc/mag-mistral
 case $layout in
   mixed) selected=mag-llm-qwen.service; config=mixed.env
          printf 'QWEN_NODE=1\nQWEN_PORT=8192\nQWEN_THREADS=14\nQWEN_THREADS_BATCH=14\nQWEN_MIN_RAM_GIB=150\n' > /etc/mag-qwen/runtime.env ;;
-  glm)   selected=mag-llm-qwen-room.service; config=glm.env
-         printf 'QWEN_NODE=0\nQWEN_PORT=8191\nQWEN_THREADS=14\nQWEN_THREADS_BATCH=28\nQWEN_MIN_RAM_GIB=150\n' > /etc/mag-qwen/runtime.env ;;
+  glm)   selected=mag-llm-mistral-room.service; config=glm.env
+         printf 'MISTRAL_THREADS=14\nMISTRAL_MIN_RAM_GIB=225\n' > /etc/mag-mistral/runtime.env ;;
   *)     selected=mag-llm-ds-node@1.service; config=model.env ;;
 esac
 selected_units=("$selected")
-if [[ $layout == glm ]]; then selected_units=(mag-llm-qwen-room.service mag-llm-glm@q2.service); fi
+if [[ $layout == glm ]]; then selected_units=(mag-llm-mistral-room.service mag-llm-glm@q2.service); fi
 others=()
 for unit in "${units[@]}"; do
   keep=0
@@ -260,14 +270,16 @@ for unit in "${selected_units[@]}"; do
   fi
 done
 if [[ $layout == glm ]]; then
-  qwen_changed=0
-  for file in /usr/local/lib/mag-qwen/start.sh \
-      /etc/systemd/system/mag-llm-qwen-room.service \
-      /usr/local/lib/mag-qwen/runtime.sha /etc/mag-qwen/runtime.env; do
-    cmp -s "$file" "$TXN/files$file" || qwen_changed=1
+  mistral_changed=0
+  for file in /usr/local/lib/mag-mistral/start.sh \
+      /usr/local/lib/mag-mistral/verify-model.sh \
+      /usr/local/lib/mag-mistral/runtime.sha \
+      /etc/systemd/system/mag-llm-mistral-room.service \
+      /etc/mag-mistral/SHA256SUMS /etc/mag-mistral/runtime.env; do
+    cmp -s "$file" "$TXN/files$file" || mistral_changed=1
   done
-  if (( qwen_changed )) || runs_stale_binary mag-llm-qwen-room.service; then
-    restart_unit[mag-llm-qwen-room.service]=1
+  if (( mistral_changed )) || runs_stale_binary mag-llm-mistral-room.service; then
+    restart_unit[mag-llm-mistral-room.service]=1
     change=1
   fi
 else
@@ -328,7 +340,7 @@ for unit in "${selected_units[@]}"; do
   done
 if (( change )); then
   for unit in "${selected_units[@]}"; do
-    if [[ $layout != glm || $unit == mag-llm-qwen-room.service && -n ${restart_unit[$unit]:-} ]]; then
+    if [[ $layout != glm || $unit == mag-llm-mistral-room.service && -n ${restart_unit[$unit]:-} ]]; then
       systemctl start "$unit"
     fi
   done
@@ -336,7 +348,7 @@ if (( change )); then
   [[ $layout != glm ]] || ports=(8191)
   for port in "${ports[@]}"; do
     unit=$selected
-    [[ $port != 8191 ]] || unit=mag-llm-qwen-room.service
+    [[ $port != 8191 ]] || unit=mag-llm-mistral-room.service
     if [[ $layout == glm && -z ${restart_unit[$unit]:-} ]]; then continue; fi
     ready=0
     # A 98 GB cold load may take many minutes. The deploy watchdog is extended
@@ -348,7 +360,7 @@ if (( change )); then
     done
     (( ready )) || fail "model on $port health timeout after 10800s"
     if [[ $layout == glm ]]; then
-      python3 -I "$ROOT/ops/qwen/smoke.py" --port 8191 --model qwen3.8-flash-next-uncensored --startup-only
+      python3 -I "$ROOT/ops/mistral/smoke.py" --port 8191 --health-only
       curl --noproxy '*' -fsS --max-time 30 -H 'Content-Type: application/json' -d '{}' "http://127.0.0.1:8191/slots/0?action=erase" >/dev/null
     elif [[ $layout == mixed ]]; then
       python3 -I "$ROOT/ops/qwen/smoke.py" --port "$port" --model qwen3.8-flash-next-uncensored
@@ -357,19 +369,20 @@ if (( change )); then
   done
 fi
 if [[ $layout == glm ]]; then
-  qwen_ready=0
+  mistral_ready=0
   for ((i=0; i<2160; i++)); do
-    systemctl is-active --quiet mag-llm-qwen-room.service || fail 'Qwen room service exited'
+    systemctl is-active --quiet mag-llm-mistral-room.service || fail 'Mistral room service exited'
     if curl --noproxy '*' -fsS --max-time 3 -o /dev/null http://127.0.0.1:8191/health 2>/dev/null; then
-      qwen_ready=1; break
+      mistral_ready=1; break
     fi
     sleep 5
   done
-  (( qwen_ready )) || fail 'Qwen :8191 health timeout after 10800s'
-  systemctl is-active --quiet mag-llm-glm@q2.service || fail 'GLM-Q2 became inactive during Qwen cold start'
+  (( mistral_ready )) || fail 'Mistral :8191 health timeout after 10800s'
+  python3 -I "$ROOT/ops/mistral/smoke.py" --port 8191 --timeout 1800
+  systemctl is-active --quiet mag-llm-glm@q2.service || fail 'GLM-Q2 became inactive during Mistral cold start'
   current_q2_pid=$(systemctl show -p MainPID --value mag-llm-glm@q2.service 2>/dev/null || true)
-  [[ $current_q2_pid == "$q2_pid" ]] || fail 'GLM-Q2 PID changed during Qwen cold start'
-  curl --noproxy '*' -fsS --max-time 5 -o /dev/null http://127.0.0.1:8192/health || fail 'GLM-Q2 :8192 unhealthy after Qwen start'
+  [[ $current_q2_pid == "$q2_pid" ]] || fail 'GLM-Q2 PID changed during Mistral cold start'
+  curl --noproxy '*' -fsS --max-time 5 -o /dev/null http://127.0.0.1:8192/health || fail 'GLM-Q2 :8192 unhealthy after Mistral start'
 fi
 rm -f "$FAILED"
-echo "Room layout ready: $layout ($source); Qwen NUMA0 + GLM-Q2 NUMA1; GLM-Q1 disabled"
+echo "Room layout ready: $layout ($source); Mistral NUMA0 + GLM-Q2 NUMA1; GLM-Q1 disabled"

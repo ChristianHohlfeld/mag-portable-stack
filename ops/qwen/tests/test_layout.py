@@ -36,7 +36,7 @@ class Layout(unittest.TestCase):
   mrev=(ROOT/'ops/mistral/runtime.sha').read_text().strip()
   self.write('/home/chris/.local/mistral/'+mrev+'-mag-cpu/bin/llama-server','binary')
   (self.host/('home/chris/.local/mistral/'+mrev+'-mag-cpu/bin/llama-server')).chmod(0o755)
-  self.write('/home/chris/.local/mistral/'+mrev+'-mag-cpu/bin/source-commit',mrev+'\\n')
+  self.write('/home/chris/.local/mistral/'+mrev+'-mag-cpu/bin/source-commit',mrev+'\n')
   # Match the patched-runtime identity expected by layout.sh without building llama.cpp.
   patch_files=[str(self.repo/'ops/qwen/end-checkpoint.patch'),str(self.repo/'ops/glm/arch-compat.patch')]
   patch_id=hashlib.sha256(subprocess.check_output(['sha256sum',*patch_files])).hexdigest()

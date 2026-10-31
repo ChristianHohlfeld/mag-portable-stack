@@ -5419,7 +5419,8 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   }
   t.text = no_tools && model == "glm-5.3-flash-iq1-m" ?
       (chat_forbidden_cut ? "" : q1_clean(acc.content)) :
-      no_tools && qwen_chat ? (chat_forbidden_cut ? "" : trim(acc.content)) : acc.content;
+      no_tools && (qwen_chat || mistral_chat) ?
+          (chat_forbidden_cut ? "" : trim(acc.content)) : acc.content;
   if (no_tools && model == "glm-5.3-flash-iq1-m" && !t.text.empty() && !q1_bad(t.text))
     on_delta("delta", t.text);
   if ((qwen_chat || mistral_chat) && !t.text.empty()) on_delta("delta", t.text);

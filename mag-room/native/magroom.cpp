@@ -9018,6 +9018,13 @@ static bool bot_prefix_ready(const std::string &id) {
   const int slot = model_slot(idx);
   if (slot < 1 || slot > ROOM_MAX_BOTS) return true;
   if (SLOT_WARM[slot - 1].load() == 1) return true;
+  const std::string model = bot_model_id(idx);
+  // Qwen/Mistral chat-only turns must never wait on an opportunistic prefix
+  // prewarm. If the model is not known down, run uncached while prewarm
+  // retries in the background; a failed 500 is not an admission lock.
+  if (CONFIGURED_MODEL &&
+      (model == "qwen3.8-flash-next-uncensored" || model == "mistral-large4"))
+    return ROOM_MODEL_HEALTH[slot - 1].load() != 2;
   const std::string key = lane_key(idx);
   std::lock_guard<std::mutex> lk(PREWARM_MTX);
   // A turn arriving during prewarm is allowed onto the lane: prewarm checks

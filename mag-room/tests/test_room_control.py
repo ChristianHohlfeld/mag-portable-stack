@@ -229,7 +229,9 @@ class Room:
                 return last
             time.sleep(.05)
         raise AssertionError(f'{what} not reached; busy={last and last.get("busy")} '
-                             f'room={[m.get("content") for m in (last or {}).get("room", [])][-6:]}')
+                             f'room={[m.get("content") for m in (last or {}).get("room", [])][-6:]} '
+                             f'calls={[(c[1].get("model"), c[2], c[1].get("messages", [])[-1].get("role") if c[1].get("messages") else None) for c in Model.calls]} '
+                             f'rejected={Model.rejected}')
 
 
 def reset_model():

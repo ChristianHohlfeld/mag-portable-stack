@@ -32,7 +32,7 @@ grep -Fq 'verify-model.sh' ops/qwen/start.sh
 # Boot skips the 98 GB SHA read only via a root-owned stamp bound to inode/ctime.
 grep -Fq 'STAMP=/etc/mag-qwen/model.verified' ops/qwen/verify-model.sh
 grep -Fq '$(stat -c %u "$STAMP") == 0' ops/qwen/verify-model.sh
-grep -Fq "%d %i %s %y %z" ops/qwen/verify-model.sh
+grep -Fq "%d %i %s %.9Y %.9Z" ops/qwen/verify-model.sh
 grep -Fq 'ops/qwen/verify-model.sh" /usr/local/lib/mag-qwen/verify-model.sh' ops/deploy.sh
 grep -Fq 'MAG_SECONDARY_MODEL=qwen' ops/boot/ensure-boot.sh
 grep -Fq 'EnvironmentFile=-/etc/mag-stack/secondary-model.env' ops/mag-120.service

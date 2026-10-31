@@ -24,5 +24,5 @@ install -d -o chris -g chris -m 0700 /var/lib/mag-llm/slots/qwen
 install -m 0644 "$ROOT/ops/qwen/mag-llm-qwen.service" /etc/systemd/system/mag-llm-qwen.service
 install -m 0644 "$ROOT/ops/qwen/mag-llm-qwen-room.service" /etc/systemd/system/mag-llm-qwen-room.service
 mag_daemon_reload
-echo 'STAGED ONLY: IQ3/Q4/GLM untouched; both Qwen units remain stopped/disabled, no gateway or room changes.'
+echo 'STAGED ONLY: Qwen runtime/units verified; both Qwen units remain stopped/disabled. No GLM-Q2 unit or process touched.'
 

@@ -62,7 +62,19 @@ for name in q1.env q2.env; do
  install -D -m 0644 "$REPO/ops/glm/$name" "$HOST/etc/mag-glm/$name"
 done
 ''')
-  (self.repo/'ops/qwen/smoke.py').write_text("import os,sys;open(os.environ['SMOKE_LOG'],'a').write(' '.join(sys.argv[1:])+'\\n');sys.exit(int(os.environ.get('SMOKE_FAIL','0')))\n")
+  smoke_stub="import os,sys;open(os.environ['SMOKE_LOG'],'a').write(' '.join(sys.argv[1:])+'\\n');sys.exit(int(os.environ.get('SMOKE_FAIL','0')))\\n"
+  (self.repo/'ops/qwen/smoke.py').write_text(smoke_stub)
+  (self.repo/'ops/mistral/smoke.py').write_text(smoke_stub)
+  (self.repo/'ops/mistral/install.sh').write_text('''#!/bin/bash
+set -eu
+for name in start.sh verify-model.sh runtime.sha; do
+ install -D -m 0755 "$REPO/ops/mistral/$name" "$HOST/usr/local/lib/mag-mistral/$name"
+done
+install -D -m 0644 "$REPO/ops/mistral/SHA256SUMS" "$HOST/etc/mag-mistral/SHA256SUMS"
+install -D -m 0644 "$REPO/ops/mistral/runtime.sha" "$HOST/usr/local/lib/mag-mistral/runtime.sha"
+install -D -m 0644 "$REPO/ops/mistral/mag-llm-mistral-room.service" "$HOST/etc/systemd/system/mag-llm-mistral-room.service"
+touch "$HOST/etc/mag-mistral/model.verified"
+''')
   ctl=self.bin/'systemctl';ctl.write_text('''#!/usr/bin/env python3
 import json,os,sys
 p=os.environ['SYSTEMD_STATE'];s=json.load(open(p));a=sys.argv[1:]

@@ -9020,7 +9020,9 @@ static bool bot_prefix_ready(const std::string &id) {
   if (SLOT_WARM[slot - 1].load() == 1) return true;
   const std::string key = lane_key(idx);
   std::lock_guard<std::mutex> lk(PREWARM_MTX);
-  return PREWARM_BACKOFF.count(key) != 0;
+  // A turn arriving during prewarm is allowed onto the lane: prewarm checks
+  // the queue before POST and yields, while the turn serializes on server_mutex.
+  return PREWARM_BACKOFF.count(key) != 0 || PREWARM_RUNNING.count(key) != 0;
 }
 static void mark_prefix_warm(int slot) {
   if (slot < 1 || slot > ROOM_MAX_BOTS) return;
@@ -9253,6 +9255,14 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
         why = "user";
       }
     }
+  }
+  if (skip && why == "user") {
+    // The user turn owns the slot now. Release the prefix gate while delaying
+    // the next idle prewarm attempt; this is a scheduling yield, not failure.
+    std::lock_guard<std::mutex> lk(PREWARM_MTX);
+    auto &retry = PREWARM_BACKOFF[lane];
+    if (retry.second == 0)
+      retry.first = steady_clock::now() + seconds(5);
   }
   if (!skip && pw_epoch == PREWARM_EPOCH.load() && !PREWARM_HOLD.load()) {
     {

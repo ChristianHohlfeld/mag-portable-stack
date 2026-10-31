@@ -275,6 +275,15 @@ json.dump(s,open(p,'w'))
   self.assertIn('verify-iq1.sh',install)
   self.assertIn('no model restart',install.lower()+' no model restart')
 
+ def test_glm_deploy_deadline_covers_healthy_qwen_restarts(self):
+  deploy=(ROOT/'ops/deploy.sh').read_text()
+  start=deploy.index('if [[ $_layout_for_deadline == glm ]]')
+  end=deploy.index('deploy_watchdog_arm',start)
+  block=deploy[start:end]
+  self.assertIn('_deploy_default_deadline=14400',block)
+  self.assertNotIn('! systemctl is-active --quiet mag-llm-qwen-room.service',block)
+  self.assertNotIn('curl --noproxy',block)
+
  def test_auto_updater_probes_before_deploy(self):
   body=(ROOT/'ops/auto-update/apply.sh').read_text()
   self.assertIn('"$ROOT/ops/qwen/layout.sh" probe "$STATE"',body)

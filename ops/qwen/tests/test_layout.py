@@ -153,86 +153,87 @@ json.dump(s,open(p,'w'))
   self.assertNotIn('mag-llm-ds-node@0.service',q)
   self.assertIn('Conflicts=mag-llm-glm@q1.service',room)
   self.assertNotIn('mag-llm-glm@q2.service',room)
- def test_repo_glm_replaces_both_legacy_models(self):
+ def test_repo_glm_adds_qwen_room_and_never_touches_q2(self):
   self.assertEqual(self.run_layout().returncode,0)
-  self.write('/etc/systemd/system/mag-llm-ds-node@0.service.d/50-old.conf',
-             'Environment=PORT=8191\\n')
+  self.seed_live_glm()
   (self.repo/'ops/room/layout').write_text('glm\n')
+  self.write('/etc/systemd/system/mag-llm-ds-node@0.service.d/50-old.conf',
+             'Environment=PORT=8191\n')
   mark=self.log.stat().st_size
   probe=self.run_layout('probe',backup=self.base/'backup2')
   self.assertEqual(probe.returncode,0,probe.stderr)
   self.assertEqual(self.log.stat().st_size,mark,'probe must never mutate systemd')
   p=self.run_layout(backup=self.base/'backup2');self.assertEqual(p.returncode,0,p.stderr)
   state=json.loads(self.state.read_text())
-  for unit in ('mag-llm-glm@q1.service','mag-llm-glm@q2.service'):
-   self.assertIn(unit,state['active']);self.assertIn(unit,state['enabled'])
+  self.assertIn('mag-llm-qwen-room.service',state['active'])
+  self.assertIn('mag-llm-qwen-room.service',state['enabled'])
+  self.assertIn('mag-llm-glm@q2.service',state['active'])
+  self.assertIn('mag-llm-glm@q2.service',state['enabled'])
+  self.assertNotIn('mag-llm-glm@q1.service',state['active'])
+  self.assertNotIn('mag-llm-glm@q1.service',state['enabled'])
+  self.assertNotIn('mag-llm-qwen.service',state['active'])
+  self.assertNotIn('mag-llm-qwen.service',state['enabled'])
   self.assertNotIn('mag-llm-ds-node@0.service',state['active'])
   self.assertNotIn('mag-llm-ds-node@0.service',state['enabled'])
-  self.assertNotIn('mag-llm-qwen.service',state['active']);self.assertNotIn('mag-llm-qwen.service',state['enabled'])
   self.assertNotIn('mag-llm-ds-node@1.service',state['active'])
   env=(self.host/'etc/mag-stack/room-model.env').read_text()
-  self.assertIn('MAG_ROOM_MODEL_ID_1=glm-5.3-flash',env);self.assertIn('MAG_ROOM_MODEL_ID_0=glm-5.3-flash-iq1-m',env)
+  self.assertIn('MAG_ROOM_MODEL_ID_0=qwen3.8-flash-next-uncensored',env)
+  self.assertIn('MAG_ROOM_MODEL_ID_1=glm-5.3-flash',env)
+  self.assertIn('MAG_ROOM_MODEL_PORTS=8191:0,8192:1',env)
+  runtime=(self.host/'etc/mag-qwen/runtime.env').read_text()
+  self.assertIn('QWEN_NODE=0',runtime);self.assertIn('QWEN_PORT=8191',runtime)
+  self.assertIn('QWEN_THREADS_BATCH=28',runtime)
   self.assertEqual((self.host/'etc/mag-stack/room-layout').read_text(),'glm\n')
-  self.assertFalse((self.host/'etc/mag-stack/room-layout.pinned').exists())
   smoke=(self.base/'smoke').read_text()
-  self.assertIn('--port 8191 --model glm-5.3-flash-iq1-m --startup-only',smoke)
-  self.assertIn('--port 8192 --model glm-5.3-flash --startup-only',smoke)
-  self.assertIn('--require-elementwise-safe',(ROOT/'ops/glm/install.sh').read_text())
-  self.assertIn('QWEN ROLLBACK SMOKE PASS',(ROOT/'ops/qwen/layout.sh').read_text())
-  # Qwen weights and unit file stay on the host; only the stack stops using them.
+  self.assertIn('--port 8191 --model qwen3.8-flash-next-uncensored --startup-only',smoke)
+  self.assertNotIn('--port 8192',smoke,'GLM-Q2 must not receive a smoke decode')
+  actions=self.log.read_text()[mark:].splitlines()
+  for verb in ('stop','start','enable','disable'):
+   self.assertNotIn(verb+' mag-llm-glm@q2.service',actions)
+  self.assertIn('show -p MainPID --value mag-llm-glm@q2.service',actions)
+  self.assertIn('GLM-Q2 PID changed during Qwen cold start',(ROOT/'ops/qwen/layout.sh').read_text())
   self.assertTrue((self.host/'etc/systemd/system/mag-llm-qwen.service').exists())
+  self.assertTrue((self.host/'etc/systemd/system/mag-llm-qwen-room.service').exists())
   mark=self.log.stat().st_size
   p=self.run_layout(backup=self.base/'backup3');self.assertEqual(p.returncode,0,p.stderr)
   self.assertFalse([c for c in self.log.read_text()[mark:].splitlines() if c.startswith(('stop ','start '))])
+  actions=self.log.read_text()[mark:].splitlines()
+  self.assertNotIn('stop mag-llm-glm@q2.service',actions)
+  self.assertNotIn('start mag-llm-glm@q2.service',actions)
   p=self.run_layout('rollback',backup=self.base/'backup2');self.assertEqual(p.returncode,0,p.stderr)
-  state=json.loads(self.state.read_text());self.assertIn('mag-llm-qwen.service',state['active']);self.assertNotIn('mag-llm-glm@q1.service',state['active']);self.assertNotIn('mag-llm-glm@q2.service',state['active'])
-  # Even a rollback from mixed -> GLM must never resurrect DeepSeek on 8191.
-  self.assertNotIn('mag-llm-ds-node@0.service',state['active'])
-  self.assertNotIn('mag-llm-ds-node@0.service',state['enabled'])
-  drop=self.host/'etc/systemd/system/mag-llm-ds-node@0.service.d/50-old.conf'
-  self.assertFalse(drop.exists(), 'legacy :8191 drop-in must stay neutralized')
-  self.assertTrue(drop.with_name(drop.name+'.glm-inactive').exists())
- def _assert_glm_single_env_restart(self, instance):
-  # Both models are initially warm/active. Changing one env must not stop,
-  # restart, smoke or evict the other, including on rollback.
+  state=json.loads(self.state.read_text())
+  self.assertIn('mag-llm-glm@q1.service',state['active'])
+  self.assertIn('mag-llm-glm@q2.service',state['active'])
+  self.assertNotIn('mag-llm-qwen-room.service',state['active'])
+  self.assertNotIn('mag-llm-glm@q2.service',[
+   c.split(' ',1)[1] for c in self.log.read_text().splitlines()
+   if c.startswith(('stop ','start ','enable ','disable '))])
+
+ def test_qwen_room_change_restarts_only_qwen_and_never_q2(self):
+  self.seed_live_glm()
   (self.repo/'ops/room/layout').write_text('glm\n')
   p=self.run_layout();self.assertEqual(p.returncode,0,p.stderr)
-  altered=self.repo/'ops/glm'/(instance+'.env')
-  altered.write_text(altered.read_text()+'\n# test-only per-instance flag\n')
+  altered=self.repo/'ops/qwen/start.sh'
+  altered.write_text(altered.read_text()+'\n# room-only test change\n')
   mark=self.log.stat().st_size
-  smoke=(self.base/'smoke')
-  mark_smoke=smoke.stat().st_size
-  target='mag-llm-glm@'+instance+'.service'
-  other='mag-llm-glm@'+('q2' if instance=='q1' else 'q1')+'.service'
-  changed=self.base/'backup2'
-  p=self.run_layout(backup=changed)
+  p=self.run_layout(backup=self.base/'backup2')
   self.assertEqual(p.returncode,0,p.stderr)
   actions=self.log.read_text()[mark:].splitlines()
-  self.assertIn('stop '+target,actions)
-  self.assertIn('start '+target,actions)
-  self.assertNotIn('stop '+other,actions)
-  self.assertNotIn('start '+other,actions)
-  smokes=smoke.read_text()[mark_smoke:]
-  port='8191' if instance=='q1' else '8192'
-  untouched='8192' if instance=='q1' else '8191'
-  self.assertIn('--port '+port,smokes)
-  self.assertNotIn('--port '+untouched,smokes)
+  self.assertIn('stop mag-llm-qwen-room.service',actions)
+  self.assertIn('start mag-llm-qwen-room.service',actions)
+  for verb in ('stop','start','enable','disable'):
+   self.assertNotIn(verb+' mag-llm-glm@q2.service',actions)
+  state=json.loads(self.state.read_text())
+  self.assertIn('mag-llm-qwen-room.service',state['active'])
+  self.assertIn('mag-llm-glm@q2.service',state['active'])
   mark=self.log.stat().st_size
-  p=self.run_layout('rollback',backup=changed)
+  p=self.run_layout('rollback',backup=self.base/'backup2')
   self.assertEqual(p.returncode,0,p.stderr)
   rollback=self.log.read_text()[mark:].splitlines()
-  self.assertIn('stop '+target,rollback)
-  self.assertIn('start '+target,rollback)
-  self.assertNotIn('stop '+other,rollback)
-  self.assertNotIn('start '+other,rollback)
-  state=json.loads(self.state.read_text())
-  self.assertIn(target,state['active']);self.assertIn(other,state['active'])
-
- def test_glm_q1_env_only_restarts_q1(self):
-  self._assert_glm_single_env_restart('q1')
-
- def test_glm_q2_env_only_restarts_q2(self):
-  self._assert_glm_single_env_restart('q2')
+  self.assertIn('stop mag-llm-qwen-room.service',rollback)
+  self.assertIn('start mag-llm-qwen-room.service',rollback)
+  for verb in ('stop','start','enable','disable'):
+   self.assertNotIn(verb+' mag-llm-glm@q2.service',rollback)
 
  def test_iq1_single_and_split_sha_pin(self):
   # Tiny synthetic GGUF fixtures; no real model I/O or inference.

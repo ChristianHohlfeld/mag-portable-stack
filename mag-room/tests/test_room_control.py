@@ -658,7 +658,7 @@ class QwenRoomTurns(unittest.TestCase):
         self.room = Room(agents, {
             'MAG_ROOM_MODEL_ID': self.GLM,
             'MAG_ROOM_MODEL_LABEL': 'GLM room',
-            'MAG_ROOM_MODEL_PORTS': '8191:0,8192:1',
+            'MAG_ROOM_MODEL_PORTS': f'{self.room.model.server_port}:0,8192:1',
             'MAG_ROOM_MODEL_ID_0': self.QWEN,
             'MAG_ROOM_MODEL_LABEL_0': 'Qwen',
             'MAG_ROOM_MODEL_ID_1': self.GLM,
@@ -750,7 +750,7 @@ class QwenRoomTurns(unittest.TestCase):
                           'slot': 1, 'numa': 0}], {
                 'MAG_ROOM_MODEL_ID': self.GLM,
                 'MAG_ROOM_MODEL_LABEL': 'GLM room',
-                'MAG_ROOM_MODEL_PORTS': '8191:0,8192:1',
+                'MAG_ROOM_MODEL_PORTS': f'{room.model.server_port}:0,8192:1',
                 'MAG_ROOM_MODEL_ID_0': self.QWEN,
                 'MAG_ROOM_MODEL_LABEL_0': 'Qwen',
                 'MAG_ROOM_MODEL_ID_1': self.GLM,
@@ -764,13 +764,22 @@ class QwenRoomTurns(unittest.TestCase):
             try:
                 time.sleep(.8)
                 attempted = calls.read_text() if calls.exists() else ''
-                self.assertNotIn('spawn ', attempted,
-                                 'chat-only Qwen must not allocate a KVM VM')
                 saved = json.loads((room.state / 'agents.json').read_text())
-                self.assertEqual(len(saved), 1)
-                self.assertEqual(saved[0]['id'], 'qwen')
-                self.assertFalse(saved[0].get('pending_vm'))
-                self.assertFalse(saved[0].get('vm'))
+                qwen = next((a for a in saved if a.get('slot') == 1), None)
+                glm = next((a for a in saved if a.get('slot') == 2), None)
+                self.assertIsNotNone(qwen, saved)
+                self.assertEqual(qwen['model'], self.QWEN)
+                self.assertFalse(qwen.get('pending_vm'),
+                                 'chat-only Qwen must never reserve a KVM VM')
+                self.assertFalse(qwen.get('vm'),
+                                 'chat-only Qwen must remain without a KVM VM')
+                # load_agents() fills the second configured GLM slot. That
+                # agent may still receive its normal VM; only Qwen is excluded.
+                self.assertIsNotNone(glm, saved)
+                self.assertEqual(glm['model'], self.GLM)
+                self.assertEqual(attempted.count(' spawn '), 1, attempted)
+                self.assertIn('spawn agent1', attempted)
+                self.assertNotIn('spawn agent2', attempted)
             finally:
                 room.close()
 

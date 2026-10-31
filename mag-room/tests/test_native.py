@@ -5119,7 +5119,7 @@ class TwoBackendStartup(unittest.TestCase):
 
 class GlmLayoutStartup(unittest.TestCase):
  """Layout glm: only Q2 in room, Q1 preserved in persistent state."""
- def test_qwen_q2_follow_glm_backend(self):
+ def test_mistral_q2_follow_glm_backend(self):
   deadline=time.monotonic()+24
   Model.delay=0;Model.slot_delay={};Model.script=[];Model.reply=None
   Model.script_scope=None;Model.barrier_token='';Model.barrier_release=None
@@ -5165,17 +5165,17 @@ class GlmLayoutStartup(unittest.TestCase):
      if proc.poll() is not None:self.fail('magroom exited %s\n%s'%(proc.returncode,log_path.read_text(errors='replace')[-2500:]))
      time.sleep(.03)
    self.assertEqual([(v['slot'],v['id'],v['name'],v['model'],v['numa']) for v in doc['agents']],[
-    (1,'qwen-numa0','Qwen','qwen3.8-flash-next-uncensored',0),
+    (1,'qwen-numa0','Mistral','mistral-large4',0),
     (2,'qwen-numa1','GLM-Q2','glm-5.3-flash',1)])
    warm_deadline=time.monotonic()+8
    while time.monotonic()<warm_deadline:
     saved_slots=set(Model.saved_prompt)
     if {'0','1'}.issubset(saved_slots):break
     time.sleep(.03)
-   else:self.fail('Qwen/GLM room prefix checkpoints were not saved')
+   else:self.fail('Mistral/GLM room prefix checkpoints were not saved')
    saved=json.loads(state.joinpath('agents.json').read_text())
    self.assertEqual([v['id'] for v in saved],['qwen-numa0','qwen-numa1','deepseek-chat'])
-   self.assertEqual(saved[0]['vm'],'','Qwen must not inherit Q1 VM')
+   self.assertEqual(saved[0]['vm'],'','Mistral must not inherit Q1 VM')
    self.assertEqual(saved[1]['memory'][0]['text'],'Q2 memory stays')
    self.assertEqual(saved[2]['slot'],1)
    self.assertEqual(saved[2]['name'],'GLM-Q1')
@@ -5209,12 +5209,12 @@ class GlmLayoutStartup(unittest.TestCase):
      time.sleep(.04)
     self.fail('room turn did not finish after user count '+str(previous))
    cases=[
-    ('Hi',['qwen-numa0'],1,{'qwen3.8-flash-next-uncensored'},{'0'}),
+    ('Hi',['qwen-numa0'],1,{'mistral-large4'},{'0'}),
     ('Hi beide',['qwen-numa0','qwen-numa1'],2,
-     {'qwen3.8-flash-next-uncensored','glm-5.3-flash'},{'0','1'}),
-    # A parked Q1 mention falls back to the active Qwen bot; Q1 never answers.
+     {'mistral-large4','glm-5.3-flash'},{'0','1'}),
+    # A parked Q1 mention falls back to the active Mistral bot; Q1 never answers.
     ('GLM-Q1',['qwen-numa0','qwen-numa1'],1,
-     {'qwen3.8-flash-next-uncensored'},{'0'})]
+     {'mistral-large4'},{'0'})]
    for phrase,bots,count,models,slots in cases:
     previous_users=user_count()
     before=len(Model.paths)
@@ -5233,17 +5233,14 @@ class GlmLayoutStartup(unittest.TestCase):
      body=p[3]
      self.assertNotIn('tools',body,'both room bots are chat-only')
      self.assertFalse(body.get('chat_template_kwargs',{}).get('enable_thinking',False))
-     if body['model']=='qwen3.8-flash-next-uncensored':
-      self.assertNotIn('preserve_thinking',body['chat_template_kwargs'])
-      self.assertEqual(body['reasoning_effort'],'none')
-      self.assertEqual(body['max_tokens'],256)
-      self.assertEqual(body['temperature'],0.7)
-      self.assertEqual(body['top_p'],0.80)
-      self.assertEqual(body['top_k'],20)
+     if body['model']=='mistral-large4':
+      self.assertEqual(body['reasoning_effort'],'low')
+      self.assertEqual(body['chat_template_kwargs']['reasoning_effort'],'low')
+      self.assertEqual(body['max_tokens'],700)
+      self.assertEqual(body['temperature'],1.0)
+      self.assertEqual(body['top_p'],0.95)
+      self.assertEqual(body['top_k'],0)
       self.assertEqual(body['min_p'],0.0)
-      self.assertEqual(body['presence_penalty'],1.5)
-      self.assertEqual(body['repeat_penalty'],1.0)
-      self.assertEqual(set(body['stop']),{'<tool_call'})
    self.assertFalse(any(p[3].get('model')=='glm-5.3-flash-iq1-m' and
       p[3].get('max_tokens')!=1 for p in Model.paths))
    self.assertEqual([v['id'] for v in json.loads(state.joinpath('agents.json').read_text())],

@@ -31,13 +31,13 @@
     ]
   },
   {
-    "id": "glm-quant-dual-numa",
-    "label": "GLM-Q1 (NUMA0) + GLM-Q2 (NUMA1)",
+    "id": "qwen-glm-dual-numa",
+    "label": "Qwen Uncensored (NUMA0) + GLM-Q2 (NUMA1)",
     "ports": [
       {
         "port": 8191,
         "numa": 0,
-        "model": "glm-5.3-flash-iq1-m"
+        "model": "qwen3.8-flash-next-uncensored"
       },
       {
         "port": 8192,

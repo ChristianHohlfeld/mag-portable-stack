@@ -47,7 +47,14 @@ class Model(http.server.BaseHTTPRequestHandler):
         pass
 
     def do_GET(self):
-        data = b'{"status":"ok"}' if self.path == '/health' else b'{"data":[{"id":"deepseek-v4-flash-0731"}]}'
+        # llama.cpp /slots returns a JSON array. The room must distinguish an
+        # idle, cold slot from an unavailable/malformed slot before prewarming.
+        if self.path == '/health':
+            data = b'{"status":"ok"}'
+        elif self.path == '/slots':
+            data = b'[{"id":0,"n_past":0,"is_processing":false}]'
+        else:
+            data = b'{"data":[{"id":"deepseek-v4-flash-0731"}]}'
         self.send_response(200)
         self.send_header('Content-Length', str(len(data)))
         self.end_headers()

@@ -188,6 +188,8 @@ static void finish_spawn(const std::string &id, std::string vm, bool resume) {
       attach = AGENTS[idx].find("vm_attach") != nullptr;
       drop_key(AGENTS[idx], "pending_vm");
       drop_key(AGENTS[idx], "vm_attach");
+      drop_key(AGENTS[idx], "vm_explicit_attach");
+      drop_key(AGENTS[idx], "vm_auto_attach");
       if (ok) AGENTS[idx]["vm"] = vm;
       else if (!attach) AGENTS.erase(AGENTS.begin() + idx);
       try { save_agents(); } catch (...) {}
@@ -235,10 +237,12 @@ static void resume_pending_spawns() {
           bot_model_id((int)i) == "qwen3.8-flash-next-uncensored";
       // Retire stale automatic VM reservations for the chat-only Qwen bot.
       // Explicit /vm attachment (vm_attach) remains an operator choice.
-      if (qwen_chat_only && !AGENTS[i].find("vm_attach")) {
+      if (qwen_chat_only && !AGENTS[i].find("vm_explicit_attach")) {
         if (!vm.empty()) {
           SPAWNING_VMS.erase(vm);
           drop_key(AGENTS[i], "pending_vm");
+          drop_key(AGENTS[i], "vm_attach");
+          drop_key(AGENTS[i], "vm_auto_attach");
           changed = true;
         }
         continue;
@@ -252,6 +256,7 @@ static void resume_pending_spawns() {
         vm = next_vm();
         AGENTS[i]["pending_vm"] = vm;
         AGENTS[i]["vm_attach"] = true;
+        AGENTS[i]["vm_auto_attach"] = true;
         SPAWNING_VMS.insert(vm);
         pending.push_back({id, vm, false});
         changed = true;
@@ -1127,6 +1132,7 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
       vm = next_vm();
       AGENTS[idx]["pending_vm"] = vm;
       AGENTS[idx]["vm_attach"] = true;
+      AGENTS[idx]["vm_explicit_attach"] = true;
       SPAWNING_VMS.insert(vm);
       save_agents();
     }

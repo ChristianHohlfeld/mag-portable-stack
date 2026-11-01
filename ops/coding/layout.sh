@@ -15,6 +15,7 @@ old=(mag-llm-mistral-room.service mag-llm-glm@q2.service
 files=(/etc/mag-stack/room-model.env /etc/mag-stack/room-layout
        /etc/systemd/system/mag-llm-coding@.service
        /usr/local/lib/mag-coding/start-live.sh /usr/local/lib/mag-coding/runtime.sha
+       /usr/local/lib/mag-coding/stage.py /usr/local/lib/mag-coding/models.json
        /etc/systemd/system/mag-120.service.d/80-coding-output.conf)
 wait_port_free(){
   local port=$1 i

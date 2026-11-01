@@ -695,6 +695,24 @@ else:
   hashes=[l.split() for l in (ROOT/'ops/glm/model.sha256').read_text().splitlines()]
   self.assertEqual([row[1] for row in hashes],[row[1] for row in sizes])
   self.assertTrue(all(len(row[0])==64 for row in hashes))
+ def test_ik_revision_and_legacy_hparams_patch_are_pinned_and_well_formed(self):
+  rev='8d21687cc7358de10264d4180dba9b863024d5c4'
+  build=(ROOT/'ops/glm/build-ik-glm.sh').read_text()
+  start=(ROOT/'ops/glm/start.sh').read_text()
+  layout=(ROOT/'ops/qwen/layout.sh').read_text()
+  readme=(ROOT/'ops/glm/README.md').read_text()
+  patch=(ROOT/'ops/glm/ik/0001-glm5next-legacy-6block-hparams.patch').read_text()
+  self.assertIn('REF='+rev,build)
+  self.assertIn('IK_REF='+rev,start)
+  self.assertIn('== '+rev,layout)
+  self.assertIn(rev,readme)
+  self.assertIn('@@ -2513,7 +2513,10 @@',patch)
+  self.assertIn('@@ -2556,6 +2559,18 @@',patch)
+  self.assertIn('glm5next.attention.indexer.block_size',patch)
+  self.assertIn('uint32_t full_attention_interval = 4;',patch)
+  self.assertIn('LLM_KV_FULL_ATTENTION_INTERVAL, full_attention_interval, false',patch)
+  self.assertLess(patch.index('hparams.n_head_kv_arr[il] ='),
+                  patch.index('// per-layer head_count_kv array:'))
  def test_verify_model_checks_sizes_and_header(self):
   d=self.base/'glm';d.mkdir();pins=self.base/'sizes';hashfile=self.base/'sha256'
   lines=[];checks=[]

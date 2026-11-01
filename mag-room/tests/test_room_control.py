@@ -125,6 +125,11 @@ class Model(http.server.BaseHTTPRequestHandler):
                     if not self._hold(piece['_hold'], kind):
                         return
                     continue
+                if isinstance(piece, dict) and '_finish' in piece:
+                    self._chunk(b'data: ' + json.dumps({
+                        'choices': [{'delta': {}, 'finish_reason': piece['_finish']}]
+                    }).encode() + b'\n\n')
+                    continue
                 delta = piece if isinstance(piece, dict) else {'content': piece}
                 self._chunk(b'data: ' + json.dumps({'choices': [{'delta': delta}]}).encode() + b'\n\n')
             self._chunk(b'data: [DONE]\n\n')
@@ -921,6 +926,76 @@ class MistralRoomTurns(unittest.TestCase):
                                  'Mistral slot 1 must never be auto-provisioned')
             finally:
                 room.close()
+
+
+class GlmContinuationTests(unittest.TestCase):
+    GLM = 'glm-5.3-flash'
+
+    def setUp(self):
+        reset_model()
+        agents = [{'id': 'glm', 'name': 'GLM-Q2', 'vm': '', 'memory': [],
+                   'slot': 1, 'numa': 0, 'model': self.GLM}]
+        self.room = Room(agents, {
+            'MAG_ROOM_MODEL_ID': self.GLM,
+            'MAG_ROOM_MODEL_LABEL': 'GLM test',
+            'MAG_ROOM_MODEL_PORTS': 'FAKE_BACKEND:0,8192:1',
+            'MAG_ROOM_MODEL_ID_0': self.GLM,
+            'MAG_ROOM_MODEL_LABEL_0': 'GLM',
+            'MAG_ROOM_MODEL_ID_1': self.GLM,
+            'MAG_ROOM_MODEL_LABEL_1': 'GLM-Q2',
+            'MAG_ROOM_PREWARM': '0',
+            'MAG_ROOM_PREFIX_DISK': '0',
+            'MAG_ROOM_THINKING': 'on',
+            'MAG_ROOM_GLM_CHAT_MAX_TOKENS': '1024',
+            'MAG_ROOM_GLM_CODE_MAX_TOKENS': '4096',
+        })
+
+    def tearDown(self):
+        self.room.close()
+
+    def glm_turns(self):
+        return [call[1] for call in Model.calls
+                if call[1].get('model') == self.GLM and call[2] == 'turn']
+
+    def test_length_continues_in_same_slot_and_streams_one_message(self):
+        Model.by_model[self.GLM] = [
+            ['Antwortteil eins ', {'_finish': 'length'}],
+            ['Antwortteil zwei', {'_finish': 'stop'}],
+        ]
+        self.room.api('/api/message', {'text': 'Erkläre das ausführlich.', 'bots': ['glm'], 'think': True})
+        state = self.room.until(lambda s: not s['busy'] and any(
+            m.get('role') == 'assistant' and m.get('bot') == 'glm' and
+            'Antwortteil zwei' in (m.get('content') or '') for m in s['room']),
+            timeout=12, what='GLM continuation completion')
+        turns = self.glm_turns()
+        self.assertEqual(len(turns), 2, turns)
+        self.assertEqual([t['max_tokens'] for t in turns], [1024, 1024])
+        self.assertTrue(all(t.get('cache_prompt') is True and t.get('id_slot') == 0
+                            for t in turns), turns)
+        self.assertEqual(turns[1]['messages'][-1]['role'], 'assistant')
+        self.assertEqual(turns[1]['messages'][-1]['content'], 'Antwortteil eins')
+        self.assertEqual(turns[1]['chat_template_kwargs'].get('reasoning_effort'), 'low')
+        self.assertTrue(turns[1]['chat_template_kwargs'].get('clear_thinking'))
+        answers = [m for m in state['room'] if m.get('role') == 'assistant' and m.get('bot') == 'glm']
+        self.assertEqual(len(answers), 1, answers)
+        self.assertIn('Antwortteil eins', answers[0]['content'])
+        self.assertIn('Antwortteil zwei', answers[0]['content'])
+        self.assertFalse(answers[0].get('truncated', False))
+
+    def test_repeated_length_reply_is_persisted_as_truncated(self):
+        Model.by_model[self.GLM] = [
+            ['Wiederholung ', {'_finish': 'length'}],
+            ['Wiederholung ', {'_finish': 'length'}],
+        ]
+        self.room.api('/api/message', {'text': 'Schreibe weiter.', 'bots': ['glm'], 'think': True})
+        state = self.room.until(lambda s: not s['busy'] and any(
+            m.get('role') == 'assistant' and m.get('bot') == 'glm' and m.get('truncated')
+            for m in s['room']), timeout=12, what='truncated GLM answer')
+        answer = next(m for m in state['room']
+                      if m.get('role') == 'assistant' and m.get('bot') == 'glm')
+        self.assertTrue(answer['truncated'])
+        self.assertIn('Wiederholung', answer['content'])
+        self.assertEqual(len(self.glm_turns()), 2)
 
 
 if __name__ == '__main__':

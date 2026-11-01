@@ -661,6 +661,8 @@ else:
   self.assertIn('--port "$GLM_PORT"',st);self.assertIn('--no-mmap',st)
   self.assertIn('--ctx-checkpoints-interval 1024',st)
   self.assertIn('--webui none',st)
+  self.assertIn('ENGINE_ARGS=(--no-mmap --ctx-checkpoints 64 --ctx-checkpoints-interval 1024 --webui none)',st)
+  self.assertIn('ENGINE_ARGS=(--load-mode dio --ctx-checkpoints 64 --checkpoint-min-step 1024 --slots --no-ui)',st)
   self.assertIn('--no-mmap',st)
   self.assertIn('ENGINE_ARGS=()',st)
   self.assertIn('GLM_PORT=8191',(ROOT/'ops/glm/q1.env').read_text())

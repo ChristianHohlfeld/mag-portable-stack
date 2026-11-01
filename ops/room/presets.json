@@ -61,5 +61,21 @@
         "model": "glm-5.3-flash"
       }
     ]
+  },
+  {
+    "id": "coding-dual-numa",
+    "label": "Qwen3.6 35B A3B (NUMA0) + Qwen3-Coder 30B A3B (NUMA1)",
+    "ports": [
+      {
+        "port": 8191,
+        "numa": 0,
+        "model": "qwen3.6-35b-a3b"
+      },
+      {
+        "port": 8192,
+        "numa": 1,
+        "model": "qwen3-coder-30b-a3b-instruct"
+      }
+    ]
   }
 ]

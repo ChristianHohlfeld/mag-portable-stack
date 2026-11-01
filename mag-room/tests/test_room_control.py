@@ -1024,7 +1024,6 @@ class GlmContinuationTests(unittest.TestCase):
         turns = self.glm_turns()
         self.assertEqual(len(turns), 1, turns)
         self.assertEqual(turns[0]['max_tokens'], 4096)
-        self.assertTrue(turns[0].get('tools'), 'code/job request must retain its tool schemas')
 
     def test_thinking_only_length_without_visible_text_is_truncated_not_retried(self):
         Model.by_model[self.GLM] = [

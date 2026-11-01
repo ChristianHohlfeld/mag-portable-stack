@@ -28,27 +28,30 @@ diag = Path('ops/perf/diagnose-ai.sh').read_text()
 assert "NODE=${QWEN_NODE:-1}" in qwen and "BIND='14-27'" in qwen
 assert "CPU_RANGE='14-27,42-55'" in qwen  # standalone Qwen fallback remains NUMA1
 assert 'exec /usr/bin/numactl --physcpubind="$BIND" --membind="$NODE"' in qwen
-# GLM has 14 decode and 28 batch threads, all local to its NUMA node.
+# Q1 keeps the existing mainline contract; Q2/ik is isolated to NUMA1 physical cores.
 assert '--physcpubind=0-13,28-41 --membind=0' in glm
-assert '--physcpubind=14-27,42-55 --membind=1' in glm
-assert '--threads 14 --threads-batch 28' in glm
-for option in ('-fa on','-b 4096','-ub 1024','--load-mode dio',
-               '--ctx-checkpoints 64','--checkpoint-min-step 1024',
-               '--parallel 1','--temp 1.0','--top-p 0.95'):
+assert '--physcpubind=14-27 --membind=1' in glm
+assert '--threads 14 --threads-batch "$THREADS_BATCH"' in glm
+assert 'THREADS_BATCH=28' in glm and 'THREADS_BATCH=14' in glm
+assert 'ENGINE_ARGS=(--load-mode dio --ctx-checkpoints 64 --checkpoint-min-step 1024 --slots --no-ui)' in glm
+assert 'ENGINE_ARGS=(--no-mmap --ctx-checkpoints 64 --ctx-checkpoints-interval 1024 --webui none)' in glm
+for option in ('-fa on','-b 4096','-ub 1024','--parallel 1','--temp 1.0','--top-p 0.95'):
     assert option in glm, option
 for option in ('-ctk q8_0','-ctv q8_0','--cache-reuse'):
     assert option not in glm, option
-assert "kv-f16-f16:ctx32768:slot0" in glm
+assert 'kv-f16-f16:ctx1048576:slot0' in glm
 assert 'EnvironmentFile=/etc/mag-glm/%i.env' in glm_unit
 assert 'ExecStart=/usr/local/lib/mag-glm/start.sh %i' in glm_unit
 assert 'GLM_CPU_TOPOLOGY=0-13,28-41' in glm_q1
-assert 'GLM_CPU_TOPOLOGY=14-27,42-55' in glm_q2
+assert 'GLM_CPU_TOPOLOGY=14-27' in glm_q2
 assert 'GLM_PORT=8191' in glm_q1 and 'GLM_PORT=8192' in glm_q2
 assert 'GLM_SLOT_DIR=/var/lib/mag-llm/slots/glm-q1' in glm_q1
-assert 'GLM_SLOT_DIR=/var/lib/mag-llm/slots/glm' in glm_q2
+assert 'GLM_SLOT_DIR=/var/lib/mag-llm/slots/glm-ik' in glm_q2
 assert 'binding=(--physcpubind=0-13,28-41 --membind=0)' in glm
+assert 'GLM_CTX_SIZE=1048576' in glm_q2
+assert 'FORMAT=' in glm and '.kv-marker' in glm and 'mag-prefix-glm-5.3-flash-slot2.bin' in glm
 assert '--mlock' not in glm
-assert '--load-mode dio -fa on -b 4096 -ub 1024' in glm  # known-good #231 llama-server flags
+assert '--load-mode dio' in glm  # Q1 and explicit Q2 mainline rollback only
 assert 'glm-5.3-flash-iq1-m:kv-f16-f16' in glm
 assert 'MAG_ROOM_MODEL_ID_0=mistral-large4' in glm_layout
 assert 'MAG_ROOM_MODEL_ID_1=glm-5.3-flash' in glm_layout

@@ -334,7 +334,7 @@ else:
   start=deploy.index('if [[ $_layout_for_deadline == glm ]]')
   end=deploy.index('deploy_watchdog_arm',start)
   block=deploy[start:end]
-  self.assertIn('_deploy_default_deadline=30000',block)
+  self.assertIn('_deploy_default_deadline=36000',block)
   self.assertNotIn('! systemctl is-active --quiet mag-llm-mistral-room.service',block)
   self.assertNotIn('curl --noproxy',block)
 

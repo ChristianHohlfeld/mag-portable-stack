@@ -42,6 +42,18 @@ runs_stale_binary(){
   [[ $pid =~ ^[1-9][0-9]*$ ]] || return 1
   [[ $(readlink "/proc/$pid/exe" 2>/dev/null || true) == *' (deleted)' ]]
 }
+q2_wait_port_free(){
+  # ik_llama.cpp's cpp-httplib binds with SO_REUSEPORT only (no SO_REUSEADDR),
+  # so it cannot bind :8192 while the stopped mainline Q2 still has TIME_WAIT
+  # sockets there ("couldn't bind to server socket", seen live on #252).
+  # Wait until 127.0.0.1:8192 has no sockets left (TIME_WAIT lasts 60 s).
+  local i
+  for ((i=0; i<90; i++)); do
+    [[ -z $(ss -Htan '( sport = :8192 )' 2>/dev/null) ]] && return 0
+    sleep 2
+  done
+  return 1
+}
 q2_engine_from_file(){
   local value
   value=$(sed -n 's/^GLM_ENGINE=//p' "$1" 2>/dev/null | tail -n1)
@@ -108,6 +120,7 @@ rollback(){
   fi
   MAG_DEFER_DAEMON_RELOAD=0 mag_flush_daemon_reload --force
   if [[ -f $TXN/q2-engine-switch-started ]] && grep -Fxq mag-llm-glm@q2.service "$TXN/active"; then
+    q2_wait_port_free || echo 'WARNING: :8192 still has sockets before Q2 rollback start' >&2
     systemctl start mag-llm-glm@q2.service || echo 'WARNING: Q2 rollback start failed' >&2
     q2_rollback_ready=0
     for ((ri=0; ri<5040; ri++)); do
@@ -324,6 +337,7 @@ elif [[ $layout == glm ]]; then
     touch "$TXN/q2-engine-switch-started"
     # Exactly one controlled Q2 stop/start. Q1/Mistral and NUMA0 are not involved.
     systemctl stop mag-llm-glm@q2.service
+    q2_wait_port_free || fail 'GLM-Q2 :8192 still has sockets 180 s after stop'
     systemctl start mag-llm-glm@q2.service
     q2_ready=0
     for ((qi=0; qi<5040; qi++)); do

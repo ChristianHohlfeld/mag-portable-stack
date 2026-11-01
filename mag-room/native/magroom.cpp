@@ -5229,7 +5229,7 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
         while ((pos = glm_stream_pending.find(marker, search_from)) != std::string::npos) {
           // Ignore fenced-code headings, but keep searching for the next real
           // heading outside the fence in this same pending stream buffer.
-          const bool ignore_heading = marker == "\\n\\n## " &&
+          const bool ignore_heading = marker == "\n\n## " &&
               ((!glm_answer_started && acc.content.empty() && pos == 0) ||
                (glm_model && heading_inside_fence(acc.content + glm_stream_pending,
                                                    acc.content.size() + pos)));

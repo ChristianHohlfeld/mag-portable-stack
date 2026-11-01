@@ -2,6 +2,31 @@
 
 Repo deployment replaces **DeepSeek** on NUMA0 with GLM-Q1 (`IQ1_M`) and retains **IQ2_XS exactly as #231** on NUMA1 (GLM-Q2). No weight files are deleted.
 
+## MAG Room output budget and continuation
+
+The room uses separate GLM output budgets; both remain bounded by the room-wide
+`MAX_TOKENS` setting:
+
+- Human chat: `MAG_ROOM_GLM_CHAT_MAX_TOKENS=1024` by default (clamped to
+  32–8192). Thinking-on requests use the same budget; they retain
+  `reasoning_effort=low` and `clear_thinking=true`.
+- Code/tool work: `MAG_ROOM_GLM_CODE_MAX_TOKENS=8192` by default (clamped to
+  32–8192). Operators/tests can set it to 4096.
+- Exact trivial greetings remain capped at 128 tokens.
+
+A GLM response ending with `finish_reason=length` and visible text continues
+automatically in the same room turn, model slot and prompt-cache prefix. Each
+partial assistant response is kept as the assistant prefix for the next
+completion and streamed into the same room message. Continuation ends on
+`stop`, user Stop, context exhaustion, repeated/no new text, or the 1024-step
+safety guard. A GLM stream has no wall-clock deadline while bytes continue to
+arrive; only 10 minutes without any stream bytes is treated as a stall.
+Context/Stop/guard truncation is persisted as `truncated: true` and shown as
+“Antwort wegen Längenlimit abgeschnitten – weiter schreiben”; it is never
+stored as a complete successful assistant turn.
+
+The chat-template parameters follow the [official GLM-5.3-Flash model card](https://huggingface.co/zai-org/GLM-5.3-Flash).
+
 | | GLM-Q1 | GLM-Q2 |
 |---|---|---|
 | model ID | `glm-5.3-flash-iq1-m` | `glm-5.3-flash` |

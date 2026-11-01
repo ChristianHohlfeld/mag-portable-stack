@@ -5358,7 +5358,7 @@ class GlmLayoutStartup(unittest.TestCase):
    self.assertEqual(mistralreq['model'],'mistral-large4')
    self.assertIn(mistralmarker,json.dumps(mistralreq,ensure_ascii=False))
    self.assertNotIn('tools',mistralreq)
-   self.assertFalse(mistralreq['chat_template_kwargs']['enable_thinking'])
+   self.assertNotIn('enable_thinking',mistralreq['chat_template_kwargs'])
    self.assertEqual(mistralreq['chat_template_kwargs']['reasoning_effort'],'low')
    self.assertEqual(mistralreq['reasoning_effort'],'low')
    self.assertEqual(mistralreq['temperature'],1.0)
@@ -5372,6 +5372,21 @@ class GlmLayoutStartup(unittest.TestCase):
    self.assertNotIn('sichtbarer Präfix',mistraltext)
    self.assertNotIn('geheim',mistraltext)
    self.assertNotIn('<think>',mistraltext)
+   # Mistral's bracketed reasoning opener may be left unclosed at stream end.
+   # The prefix is held until the opener arrives; nothing from that point leaks.
+   mistralmarker2='MISTRAL-UNCLOSED-THINK-'+str(time.monotonic_ns())
+   Model.script_scope=mistralmarker2
+   Model.script=[['sichtbarer Präfix',{'_chunk':{'choices':[{'delta':{'content':'[THINK]geheime interne Gedanken ohne Abschluss'},'finish_reason':None}]}}]]
+   before=len(Model.paths)
+   self.assertTrue(post({'text':mistralmarker2,'bots':['qwen-numa0']})['accepted'])
+   self.assertEqual(calls_after(before,mistralmarker2,1)[0][3]['model'],'mistral-large4')
+   mistralroom2=idle_after(mistralmarker2)
+   qat2=max(i for i,m in enumerate(mistralroom2['room'])
+            if m.get('role')=='user' and m.get('content')==mistralmarker2)
+   mistraltext2=json.dumps(mistralroom2['room'][qat2+1:],ensure_ascii=False)
+   self.assertNotIn('sichtbarer Präfix',mistraltext2)
+   self.assertNotIn('geheime interne Gedanken',mistraltext2)
+   self.assertNotIn('[THINK]',mistraltext2)
    # Q2's existing split-terminator protection remains in place.
    q2marker='GLM-Q2-CLIENT-STOP-'+str(time.monotonic_ns())
    Model.script_scope=q2marker
@@ -5388,6 +5403,21 @@ class GlmLayoutStartup(unittest.TestCase):
    q2text=json.dumps(q2room['room'][q2at+1:],ensure_ascii=False)
    self.assertNotIn('</think>',q2text)
    self.assertNotIn('Antwort',q2text)
+   # A GLM heading after answer text starts is a hard cut, not visible prose.
+   glmheadingmarker='GLM-HEADING-CUT-'+str(time.monotonic_ns())
+   Model.script_scope=glmheadingmarker
+   Model.script=['GLM sichtbare Antwort','\n\n## Interne Überschrift\nNicht veröffentlichen']
+   before=len(Model.paths)
+   self.assertTrue(post({'text':glmheadingmarker,'bots':['qwen-numa1']})['accepted'])
+   glmheadingreq=calls_after(before,glmheadingmarker,1)[0][3]
+   self.assertEqual(glmheadingreq['model'],'glm-5.3-flash')
+   glmheadingroom=idle_after(glmheadingmarker)
+   glmheadingat=max(i for i,m in enumerate(glmheadingroom['room'])
+                    if m.get('role')=='user' and m.get('content')==glmheadingmarker)
+   glmheadingtext=json.dumps(glmheadingroom['room'][glmheadingat+1:],ensure_ascii=False)
+   self.assertIn('GLM sichtbare Antwort',glmheadingtext)
+   self.assertNotIn('Interne Überschrift',glmheadingtext)
+   self.assertNotIn('Nicht veröffentlichen',glmheadingtext)
   finally:
    Model.script_scope=None;Model.script=[]
    proc.terminate()
@@ -5459,8 +5489,8 @@ class GlmLayoutStartup(unittest.TestCase):
                     {'mistral-large4','glm-5.3-flash'})
    for p in calls:self.assertNotIn('tools',p[3])
    mistral=next(p[3] for p in calls if p[3]['model']=='mistral-large4')
-   self.assertFalse(mistral['chat_template_kwargs']['enable_thinking'])
-   self.assertEqual(mistral['chat_template_kwargs'],{'enable_thinking':False,'reasoning_effort':'low'})
+   self.assertNotIn('enable_thinking',mistral['chat_template_kwargs'])
+   self.assertEqual(mistral['chat_template_kwargs'],{'reasoning_effort':'low'})
    self.assertEqual(mistral['reasoning_effort'],'low')
    self.assertEqual(mistral['max_tokens'],8192)
    self.assertFalse([p for p in Model.paths if 'action=cancel' in p[0]])

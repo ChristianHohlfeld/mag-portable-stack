@@ -5108,11 +5108,15 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   // MAG_ROOM_REASONING_EFFORT is set it is sent on EVERY request so the prefix
   // stays identical across the toggle.
   Val kwargs = Val::object();
-  // Thinking follows the model default or the per-message switch.
-  kwargs["enable_thinking"] = thinking && !TL_SELFTALK && !short_chat;
+  // The Mistral GGUF exposes reasoning_effort, not an enable_thinking off switch.
+  // Do not send that unrelated kwarg for Mistral; short_chat only hides its trace.
+  if (!mistral_chat)
+    kwargs["enable_thinking"] = thinking && !TL_SELFTALK && !short_chat;
   if (qwen_chat) {
     body["reasoning_effort"] = "none"; // llama.cpp: none disables reasoning.
   } else if (mistral_chat) {
+    // The deployed GGUF supports low/medium/high only; its card says reasoning
+    // cannot be disabled. Keep the minimum effort on every request (never `none`).
     body["reasoning_effort"] = "low";
     kwargs["reasoning_effort"] = "low";
   }
@@ -5188,8 +5192,12 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   };
   // The server stop array is the primary guard. Hold partial delimiters in
   // client chunks as a fallback so none can reach the room or SSE.
-  const std::vector<std::string> glm_stops = {
+  std::vector<std::string> glm_stops = {
       "</think>", "<think>", "<|", "<tool_call", "\n\n## "};
+  if (mistral_chat) {
+    glm_stops.push_back("[THINK]");
+    glm_stops.push_back("[/THINK]");
+  }
   auto visible_delta = [&](const std::string &s, bool finish = false) {
     if (glm_hard_cut) return;
     visible_reply.feed(s, [&](const std::string &safe) {
@@ -5210,7 +5218,7 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
       }
       if (cut != std::string::npos) {
         if (no_tools && (model == "glm-5.3-flash-iq1-m" || qwen_chat || mistral_chat)) {
-          for (const auto &marker : {"</think>", "<think>", "<|"})
+          for (const auto &marker : {"</think>", "<think>", "<|", "[THINK]", "[/THINK]"})
             if (glm_stream_pending.find(marker) != std::string::npos &&
                 glm_stream_pending.find(marker) == cut) chat_forbidden_cut = true;
         }
@@ -6492,7 +6500,10 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
   const bool glm_chat_mode = CONFIGURED_MODEL && !CURRENT_JOB && !TL_TASK &&
       !autotalk && !TL_REFLECT && !TL_SELFTALK &&
       (bot_model_id(bot_idx).rfind("glm-5.3-flash", 0) == 0 || chat_only_room_bot);
-  const bool short_chat = glm_chat_mode && !autotalk && !thinking_turn &&
+  // Mistral Large 4 cannot disable reasoning (official GGUF card); keep its
+  // minimum `low` effort but bound exact greetings even when the UI toggle is on.
+  const bool short_chat = glm_chat_mode && !autotalk &&
+      (!thinking_turn || bot_model_id(bot_idx) == "mistral-large4") &&
       short_glm_input(TURN_INPUT);
   const bool web = WEB_ENABLED.load();
   std::vector<Val> messages;

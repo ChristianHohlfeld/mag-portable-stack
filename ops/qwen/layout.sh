@@ -381,7 +381,7 @@ if [[ $layout == glm ]]; then
     sleep 5
   done
   (( mistral_ready )) || fail 'Mistral :8191 health timeout after 25200s'
-  python3 -I "$ROOT/ops/mistral/smoke.py" --port 8191 --timeout 1800
+  python3 -I "$ROOT/ops/mistral/smoke.py" --port 8191 --timeout 7200
   systemctl is-active --quiet mag-llm-glm@q2.service || fail 'GLM-Q2 became inactive during Mistral cold start'
   current_q2_pid=$(systemctl show -p MainPID --value mag-llm-glm@q2.service 2>/dev/null || true)
   [[ $current_q2_pid == "$q2_pid" ]] || fail 'GLM-Q2 PID changed during Mistral cold start'

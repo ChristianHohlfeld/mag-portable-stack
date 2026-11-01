@@ -5224,14 +5224,22 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
       glm_stream_pending += safe;
       size_t cut = std::string::npos;
       for (const auto &marker : glm_stops) {
-        const size_t pos = glm_stream_pending.find(marker);
-        if (pos == std::string::npos) continue;
-        // A heading at the very start is not an answer-following drift.
-        if (marker == "\n\n## " &&
-            ((!glm_answer_started && acc.content.empty() && pos == 0) ||
-             (glm_model && heading_inside_fence(acc.content + glm_stream_pending,
-                                                 acc.content.size() + pos)))) continue;
-        cut = std::min(cut, pos);
+        size_t search_from = 0;
+        size_t pos = std::string::npos;
+        while ((pos = glm_stream_pending.find(marker, search_from)) != std::string::npos) {
+          // Ignore fenced-code headings, but keep searching for the next real
+          // heading outside the fence in this same pending stream buffer.
+          const bool ignore_heading = marker == "\\n\\n## " &&
+              ((!glm_answer_started && acc.content.empty() && pos == 0) ||
+               (glm_model && heading_inside_fence(acc.content + glm_stream_pending,
+                                                   acc.content.size() + pos)));
+          if (ignore_heading) {
+            search_from = pos + marker.size();
+            continue;
+          }
+          cut = std::min(cut, pos);
+          break;
+        }
       }
       if (cut != std::string::npos) {
         if (no_tools && (model == "glm-5.3-flash-iq1-m" || qwen_chat || mistral_chat)) {

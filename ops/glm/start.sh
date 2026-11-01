@@ -27,7 +27,7 @@ else
 fi
 
 if [[ $ENGINE == ik ]]; then
-  IK_REF=8d21687cc7358de10264d4180ba9b863024d5c4
+  IK_REF=8d21687cc7358de10264d4180dba9b863024d5c4
   PATCH="$(
     sha256sum /usr/local/lib/mag-glm/ik/0001-glm5next-legacy-6block-hparams.patch 2>/dev/null |
       awk '{print $1}' | sha256sum | cut -c1-12

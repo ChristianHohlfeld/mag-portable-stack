@@ -1,16 +1,3 @@
-From 6b6d2c2e7f4d6d1c9b6f8d5a2e3c4b5a6d7e8f90 Mon Sep 17 00:00:00 2001
-From: MAG Build <mag@localhost>
-Date: Sat, 31 Oct 2026 22:00:00 +0000
-Subject: [PATCH] glm5next: load legacy 6block hparams metadata
-
-The legacy 6block converter writes scalar head_count_kv=1 and uses
-attention.indexer.block_size instead of attention.indexer.kpool.
-Reconstruct the per-layer KDA/MLA pattern from full_attention_interval.
-
----
- src/llama-hparams.cpp | 16 +++++++++++++++-
- 1 file changed, 15 insertions(+), 1 deletion(-)
-
 diff --git a/src/llama-hparams.cpp b/src/llama-hparams.cpp
 --- a/src/llama-hparams.cpp
 +++ b/src/llama-hparams.cpp

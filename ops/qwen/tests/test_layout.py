@@ -296,7 +296,7 @@ else:
   (self.repo/'ops/room/layout').write_text('glm\\n')
   p=self.run_layout(backup=self.base/'backup-q2-fail',SMOKE_FAIL='1')
   self.assertNotEqual(p.returncode,0,p.stdout+p.stderr)
-  self.assertEqual((self.host/'etc/mag-glm/q2.env').read_text(),'GLM_ENGINE=mainline\\n')
+  self.assertEqual((self.host/'etc/mag-glm/q2.env').read_text(),'GLM_ENGINE=mainline\n')
   actions=self.log.read_text().splitlines()
   self.assertEqual(actions.count('stop mag-llm-glm@q2.service'),2,actions)
   self.assertEqual(actions.count('start mag-llm-glm@q2.service'),2,actions)

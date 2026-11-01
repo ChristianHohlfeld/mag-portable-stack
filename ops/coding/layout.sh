@@ -139,6 +139,8 @@ on_exit(){
 trap on_exit EXIT
 install -d -m 0755 /etc/mag-stack /usr/local/lib/mag-coding /etc/systemd/system/mag-120.service.d
 install -m 0755 "$ROOT/ops/coding/start-live.sh" /usr/local/lib/mag-coding/start-live.sh
+install -m 0644 "$ROOT/ops/coding/stage.py" /usr/local/lib/mag-coding/stage.py
+install -m 0644 "$ROOT/ops/coding/models.json" /usr/local/lib/mag-coding/models.json
 install -m 0644 "$ROOT/ops/mistral/runtime.sha" /usr/local/lib/mag-coding/runtime.sha
 install -m 0644 "$ROOT/ops/coding/mag-llm-coding@.service" /etc/systemd/system/mag-llm-coding@.service
 install -m 0644 "$ROOT/ops/coding/80-coding-output.conf" /etc/systemd/system/mag-120.service.d/80-coding-output.conf

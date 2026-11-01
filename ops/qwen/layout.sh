@@ -360,7 +360,7 @@ for unit in "${units[@]}"; do
   for chosen in "${selected_units[@]}"; do [[ $unit != "$chosen" ]] || keep=1; done
   (( keep )) || others+=("$unit")
 done
-# The selected NUMA0 room model may start/restart; GLM-Q2 is a strict no-touch invariant.
+# The selected NUMA0 room model may start/restart; Q2 may restart only in the explicit engine transaction above.
 change=0
 declare -A restart_unit=()
 for unit in "${selected_units[@]}"; do

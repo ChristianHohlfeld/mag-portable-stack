@@ -12,7 +12,7 @@ Repo deployment replaces **DeepSeek** on NUMA0 with GLM-Q1 (`IQ1_M`) and retains
 | slot dir | `/var/lib/mag-llm/slots/glm-q1` | `/var/lib/mag-llm/slots/glm-ik` |
 | KV marker | Q1's existing format marker | `engine=ik`, pinned engine commit, 15-shard model fingerprint, `kv_format=f16-f16`, `ctx=1048576` |
 
-Q1 remains on the pinned mainline llama.cpp runtime (`ops/qwen/runtime.sha`) with the reviewed GLM architecture compatibility patch. Q2 defaults to the separately pinned `ik_llama.cpp` runtime (source commit `8d21687cc7358de10264d4180ba9b863024d5c4`); `GLM_ENGINE=mainline` retains the mainline binary as an explicit rollback. Both keep the existing reviewed official-family chat template; Q1 remains at 32k and Q2 uses the maximum 1,048,576-token context, `--load-mode dio`, `-fa on -b 4096 -ub 1024`, `--ctx-checkpoints 64 --checkpoint-min-step 1024`, `--cache-ram 16384`, no `--cache-reuse`, `temperature=1.0`, `top_p=0.95`, `reasoning_effort=low`, `clear_thinking=true`. Q1 uses `numactl --physcpubind=0-13,28-41 --membind=0`; Q2 uses only physical NUMA1 cores `--physcpubind=14-27 --membind=1` and 14 batch workers. Neither uses `--mlock`.
+Q1 remains on the pinned mainline llama.cpp runtime (`ops/qwen/runtime.sha`) with the reviewed GLM architecture compatibility patch. Q2 defaults to the separately pinned `ik_llama.cpp` runtime (source commit `8d21687cc7358de10264d4180dba9b863024d5c4`); `GLM_ENGINE=mainline` retains the mainline binary as an explicit rollback. Both keep the existing reviewed official-family chat template; Q1 remains at 32k and Q2 uses the maximum 1,048,576-token context. Q1 keeps the mainline flags; Q2/ik uses `--no-mmap`, `--ctx-checkpoints 64 --ctx-checkpoints-interval 1024`, `--webui none`, `-fa on -b 4096 -ub 1024`, `--cache-ram 16384`, `--slot-save-path`, no `--cache-reuse`, `temperature=1.0`, `top_p=0.95`, `reasoning_effort=low`, `clear_thinking=true`. Q1 uses `numactl --physcpubind=0-13,28-41 --membind=0`; Q2 uses only physical NUMA1 cores `--physcpubind=14-27 --membind=1` and 14 batch workers. Neither uses `--mlock`.
 
 Q1 and Q2 never share KV files. Q2 restores a saved slot only while its marker exactly matches engine, engine commit, the composite SHA256 fingerprint of all 15 pinned GGUF shards, and context size; a mismatch erases only Q2's slot files before starting. The prior `/var/lib/mag-llm/slots/glm` data is left untouched.
 
@@ -47,18 +47,18 @@ As of 2026-10-30, mag has **2 x E5-2680 v4**, each 14 physical cores / 28 SMT lo
 | `-b / -ub` | `4096 / 1024` | `4096 / 1024` | Proven pinned-runtime configuration; batch sizes are **not** speed guarantees |
 | `-ctk / -ctv` | implicit **f16 / f16** | implicit **f16 / f16** | Documented defaults; changing KV dtype invalidates the saved KV format |
 | `--ctx-size / --parallel` | `32768 / 1` | `1048576 / 1` | One bot/slot per model; Q2 uses the model's supported maximum after the f16 KV budget calculation below |
-| `--cache-ram / ctx-checkpoints / checkpoint-min-step` | `16384 / 64 / 1024` | same | Preserves existing CPU prefix checkpoint behavior |
+| `--cache-ram / ctx-checkpoints / interval` | `16384 / 64 / 1024` | same | Preserves CPU prefix checkpoint behavior; mainline and ik use different interval flag names |
 | `--load-mode` | `dio` | `dio` | Pinned binary's previously working mode; no `--mlock` |
 | THP / huge pages | no kernel changes | no kernel changes | `madvise`, no reserved HugeTLB pages; mapping changes need live validation |
 | Draft/speculative | disabled | disabled | No validated draft model/token acceptance; extra CPU work and RAM could hurt throughput |
 
 ### Q2 context budget (NUMA1)
 
-GLM-5.3-Flash has 45 decoder layers: 34 recurrent KDA layers and 11 MLA/DSA layers. KDA state is fixed per sequence; the per-token cache is in the 11 MLA/DSA layers. Each stores a 512-element MLA latent plus a 128-element indexer key pooled by 4. With the configured f16 KV type (2 bytes/element):
+GLM-5.3-Flash has 45 decoder layers: 34 recurrent KDA layers and 11 MLA/DSA layers. KDA state is fixed per sequence; the per-token cache is in the 11 MLA/DSA layers. Each stores a 512-element MLA latent plus an unpooled 128-element indexer key and 128-element gate row. With the configured f16 KV type (2 bytes/element):
 
-`11 × (512 + 128/4) × 2 = 11,968 bytes/token`.
+`11 × (512 + 2×128) × 2 = 16,896 bytes/token`.
 
-At 1,048,576 tokens: `11,968 × 1,048,576 = 12,549,357,568 bytes = 11.69 GiB`. The existing `--cache-ram 16384` reserves a further 16 GiB, so KV plus prefix cache is about **27.69 GiB**, before fixed KDA state and runtime/workspace/allocator overhead. With approximately 147 GB (about 136.8 GiB) free on NUMA1, this leaves about **109 GiB gross headroom**. The selected context is therefore the model's supported maximum, 1,048,576; the launcher validates that it never exceeds this ceiling.
+At 1,048,576 tokens: `16,896 × 1,048,576 = 17,711,308,800 bytes = 16.50 GiB`. The existing `--cache-ram 16384` reserves a further 16 GiB. At 1M context and `-ub 1024`, allow roughly another 6–10 GiB for compute buffers (KQ mask, DSA sparse mask, pool bias and members): about **38.5–42.5 GiB** beyond weights, before fixed KDA state and other allocator/runtime overhead. NUMA1 has 252 GiB total and about 147 GB free while Q2 is loaded, so the 1M context remains plausible. The selected context is therefore the model's supported maximum, 1,048,576; the launcher validates that it never exceeds this ceiling.
 
 Sources: [NVIDIA GLM-5.3-Flash architecture and 1M context](https://build.nvidia.com/z-ai/glm-5-3-flash/modelcard); [KV-cache tensor derivation](https://huggingface.co/zai-org/GLM-5.3-Flash/discussions/55); [GGUF architecture/cache notes](https://huggingface.co/aj9o9/GLM-5.3-Flash-GGUF).
 

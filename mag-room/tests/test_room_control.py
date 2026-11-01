@@ -933,9 +933,12 @@ class GlmContinuationTests(unittest.TestCase):
 
     def setUp(self):
         reset_model()
+        # Keep the configured identities stable and pre-bind inert VM names.
+        # These tests exercise model routing/streaming, not KVM provisioning;
+        # an empty VM would launch magbot-agent-ctl in the CI runner.
         agents = [
-            {'id': 'qwen', 'name': 'GLM', 'vm': '', 'memory': [], 'slot': 1, 'numa': 0},
-            {'id': 'glm', 'name': 'GLM-Q2', 'vm': '', 'memory': [], 'slot': 2, 'numa': 1},
+            {'id': 'qwen-numa0', 'name': 'GLM', 'vm': 'test-vm-q1', 'memory': [], 'slot': 1, 'numa': 0},
+            {'id': 'qwen-numa1', 'name': 'GLM-Q2', 'vm': 'test-vm-q2', 'memory': [], 'slot': 2, 'numa': 1},
         ]
         self.room = Room(agents, {
             'MAG_ROOM_MODEL_ID': self.GLM,

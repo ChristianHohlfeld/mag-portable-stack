@@ -293,7 +293,7 @@ else:
 
  def test_q2_engine_smoke_failure_rolls_back_to_mainline(self):
   self.seed_live_glm()
-  (self.repo/'ops/room/layout').write_text('glm\\n')
+  (self.repo/'ops/room/layout').write_text('glm\n')
   p=self.run_layout(backup=self.base/'backup-q2-fail',SMOKE_FAIL='1')
   self.assertNotEqual(p.returncode,0,p.stdout+p.stderr)
   self.assertEqual((self.host/'etc/mag-glm/q2.env').read_text(),'GLM_ENGINE=mainline\n')

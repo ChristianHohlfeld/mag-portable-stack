@@ -5229,8 +5229,8 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
         // A heading at the very start is not an answer-following drift.
         if (marker == "\n\n## " &&
             ((!glm_answer_started && acc.content.empty() && pos == 0) ||
-             heading_inside_fence(acc.content + glm_stream_pending,
-                                   acc.content.size() + pos))) continue;
+             (glm_model && heading_inside_fence(acc.content + glm_stream_pending,
+                                                 acc.content.size() + pos)))) continue;
         cut = std::min(cut, pos);
       }
       if (cut != std::string::npos) {
@@ -6670,15 +6670,17 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
   TL_TODO_TOUCHED = false;
   const bool glm_chat = glm_chat_mode &&
       bot_model_id(bot_idx).rfind("glm-5.3-flash", 0) == 0;
+  const bool glm_generation_turn =
+      bot_model_id(bot_idx).rfind("glm-5.3-flash", 0) == 0;
   int glm_tool_rounds = 0;
   int glm_continuation_rounds = 0;
   std::string previous_glm_chunk;
   const int glm_tool_max = std::clamp(envi("MAG_ROOM_GLM_CHAT_MAX_ROUNDS", 2), 0, 8);
-  for (int round = 0; round < (glm_chat ? 1024 : MAX_RUN_STEPS); round++) {
+  for (int round = 0; round < (glm_generation_turn ? 1024 : MAX_RUN_STEPS); round++) {
     if (stop_flag().load()) break;
     task_yield_point();
     if (stop_flag().load()) break;
-    if (!glm_chat && steady_clock::now() >= run_deadline) {
+    if (!glm_generation_turn && steady_clock::now() >= run_deadline) {
       report.error = "Agent-Zeitbudget erreicht (" + std::to_string(RUN_BUDGET_S) +
                      "s). Aufgabe noch offen; Arbeit in VM erhalten.";
       break;
@@ -6800,7 +6802,7 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
     // Stop closes the backend socket, so the turn fails with a read error
     // (often before any header while the prompt is evaluated): not an error.
     if (stop_flag().load()) {
-      if (glm_chat) report.truncated = true;
+      if (glm_generation_turn) report.truncated = true;
       if (t.calls.empty()) final_text += t.text;
       break;
     }
@@ -6822,7 +6824,7 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
     if (!t.error.empty() && glm_chat && bot_model_id(bot_idx) == "glm-5.3-flash-iq1-m") {
       report.skipped=true; completed=true; break;
     }
-    if (!t.error.empty() && glm_chat && glm_continuation_rounds > 0 &&
+    if (!t.error.empty() && glm_generation_turn && glm_continuation_rounds > 0 &&
         context_overflow_error(t.error)) {
       report.truncated = true;
       completed = true;
@@ -6846,8 +6848,7 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
     }
     // Neither short chat nor regular GLM chat may silently post an empty
     // answer when the model returns tool-only output or no visible text.
-     if (glm_chat && bot_model_id(bot_idx).rfind("glm-5.3-flash", 0) == 0 &&
-         t.finish == "length") {
+     if (glm_generation_turn && t.calls.empty() && t.finish == "length") {
        if (t.text.empty() || t.text == previous_glm_chunk ||
            ++glm_continuation_rounds > 1024) {
          report.truncated = true;
@@ -6935,8 +6936,7 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
     }
     // Normal GLM chat has exactly one host-directed answer per bot/user turn.
     // A thinking-budget exhaustion already had its single final retry above.
-    if (glm_chat && bot_model_id(bot_idx).rfind("glm-5.3-flash", 0) == 0 &&
-        t.finish == "length") {
+    if (glm_generation_turn && t.calls.empty() && t.finish == "length") {
       continue; // messages ends with this assistant prefix; same slot/cache.
     }
     if (glm_chat || chat_only_room_bot) { completed = true; break; }
@@ -7139,7 +7139,7 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
   // The outer scheduler must not silently create a second task.
   report.continue_requested = false;
   if (!report.skipped && !stop_flag().load() && !completed && report.error.empty()) {
-    if (glm_chat) {
+    if (glm_generation_turn) {
       report.truncated = true;
       completed = true;
     } else {

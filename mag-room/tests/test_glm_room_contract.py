@@ -31,6 +31,8 @@ class GlmRoomContract(unittest.TestCase):
         self.assertIn('MAG_ROOM_GLM_CODE_MAX_TOKENS", no_tools ? 1024 : 8192', ROOM)
         self.assertIn('std::clamp(envi(no_tools ?', ROOM)
         self.assertEqual(max(32, min(8192, 4096)), 4096)
+        self.assertNotIn("MAG_ROOM_GLM_CHAT_MAX_ROUNDS", ROOM)
+        self.assertNotIn("MAG_ROOM_GLM_CHAT_MAX_ROUNDS", ENV)
 
     def test_heading_cut_is_fence_aware_but_special_tokens_stay_blocked(self):
         self.assertIn('auto heading_inside_fence = [](const std::string &text, size_t pos)', ROOM)

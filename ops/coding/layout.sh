@@ -145,6 +145,11 @@ on_exit(){
       install -d -m 0755 "$(dirname "$FAILED")"
       printf '%s\n' "$identity" > "$FAILED"
       rollback || echo 'coding: rollback FAILED; manual recovery required' >&2
+    elif [[ -f "$TXN/started" ]]; then
+      # Restore staged files without stopping or waiting on the still-live old models.
+      for f in "${files[@]}"; do restore_file "$f"; done
+      systemctl daemon-reload
+      touch "$TXN/restored"
     fi
   fi
   exit "$rc"

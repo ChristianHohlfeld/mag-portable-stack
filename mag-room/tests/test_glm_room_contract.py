@@ -37,6 +37,7 @@ class GlmRoomContract(unittest.TestCase):
     def test_heading_cut_is_fence_aware_but_special_tokens_stay_blocked(self):
         self.assertIn('auto heading_inside_fence = [](const std::string &text, size_t pos)', ROOM)
         self.assertIn("heading_inside_fence(acc.content + glm_stream_pending", ROOM)
+        self.assertIn("search_from = pos + marker.size()", ROOM)
         self.assertIn('"\\n\\n## "', ROOM)
         self.assertIn('"</think>", "<think>", "<|", "<tool_call"', ROOM)
 

@@ -14,7 +14,7 @@ class Layout(unittest.TestCase):
  def setUp(self):
   self.tmp=tempfile.TemporaryDirectory(); self.base=pathlib.Path(self.tmp.name)
   self.repo=self.base/'repo'
-  for name in ('qwen','room','glm','mistral'):
+  for name in ('qwen','room','glm','mistral','coding'):
    shutil.copytree(ROOT/'ops'/name,self.repo/'ops'/name,symlinks=True)
   shutil.copy2(ROOT/'ops'/'deploy.sh',self.repo/'ops'/'deploy.sh')
   # The repo-declared layout is set per test; the legacy cases run on mixed.

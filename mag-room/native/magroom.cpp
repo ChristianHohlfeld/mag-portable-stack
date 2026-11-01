@@ -4919,7 +4919,8 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   // DeepSeek rejects an assistant-ending prefill while thinking is on
   // (HTTP 500). Do not open a socket and do not let the caller wipe the wire.
   if (thinking && !TL_SELFTALK && !messages.empty() &&
-      mag::str(messages.back(), "role") == "assistant") {
+      mag::str(messages.back(), "role") == "assistant" &&
+      model.rfind("glm-5.3-flash", 0) != 0) {
     std::cerr << "skip-trailing-assistant bot="
               << (bot_idx >= 0 ? bot_field(bot_idx, "id") : std::string())
               << std::endl;

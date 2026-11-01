@@ -16,7 +16,7 @@ if [[ -z $_layout_for_deadline || $_layout_for_deadline == repo ]]; then
     _layout_for_deadline=$(tr -d '[:space:]' < "$SOURCE/ops/room/layout" 2>/dev/null || true)
   fi
 fi
-if [[ $_layout_for_deadline == glm ]]; then
+if [[ $_layout_for_deadline == glm || $_layout_for_deadline == coding ]]; then
   # Mistral's six-shard 233 GB model can require a long cold mmap/startup.
   # Reserve the complete 7-hour service load window plus deploy overhead.
   _deploy_default_deadline=36000

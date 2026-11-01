@@ -5067,7 +5067,6 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   if (TL_SELFTALK)
     max_output = std::clamp(envi("MAG_ROOM_PROAKTIV_MAX_TOKENS", 256), 32, 512);
   // Only trivial greetings keep a small cap; thinking and real chat/code do not.
-  if (short_chat && glm_model) max_output = std::min(max_output, 128);
   if (short_chat && glm_model)
     max_output = std::min(128, max_output); // all trivial GLM greetings stay short
   body["max_tokens"] = max_output;

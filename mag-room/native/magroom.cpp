@@ -6884,6 +6884,15 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
        previous_glm_chunk = t.text;
        glm_seen_chunks.insert(t.text);
      }
+     if (glm_generation_turn && t.text.empty() && t.calls.empty() &&
+         t.finish == "length") {
+       // The model exhausted its output budget on reasoning. Do not turn
+       // that into a normal empty-answer fallback or issue a second request:
+       // persist the turn as explicitly truncated.
+       report.truncated = true;
+       completed = true;
+       break;
+     }
      if ((short_chat || glm_chat || chat_only_room_bot) && t.text.empty()) {
       // A structured tool-only result with tool_choice=none is not a
       // successful answer. Show only a local, explicitly failed fallback.

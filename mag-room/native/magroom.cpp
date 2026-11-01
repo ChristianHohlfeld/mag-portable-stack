@@ -5051,9 +5051,8 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
        body["repeat_last_n"] = 64;
     }
   }
-  // Both backends use 32k context; retain the proven Qwen output budget.
-  // Bound generated tokens on Qwen only, keeping Q4's established budget.
-  // Both models retain all native/MCP tools and immutable audit routing.
+  // Keep Qwen's existing budgets unchanged. GLM chat/code use independent
+  // configurable budgets, both bounded by the room-wide MAX_TOKENS ceiling.
   const bool glm_model = model.rfind("glm-5.3-flash", 0) == 0;
   int max_output = model == "qwen3.8-flash-next-uncensored"
       ? (qwen_chat

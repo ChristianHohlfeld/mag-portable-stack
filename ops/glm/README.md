@@ -58,7 +58,7 @@ GLM-5.3-Flash has 45 decoder layers: 34 recurrent KDA layers and 11 MLA/DSA laye
 
 `11 × (512 + 2×128) × 2 = 16,896 bytes/token`.
 
-At 1,048,576 tokens: `16,896 × 1,048,576 = 17,711,308,800 bytes = 16.50 GiB`. The existing `--cache-ram 16384` reserves a further 16 GiB. At 1M context and `-ub 1024`, allow roughly another 6–10 GiB for compute buffers (KQ mask, DSA sparse mask, pool bias and members): about **38.5–42.5 GiB** beyond weights, before fixed KDA state and other allocator/runtime overhead. NUMA1 has 252 GiB total and about 147 GB free while Q2 is loaded, so the 1M context remains plausible. The selected context is therefore the model's supported maximum, 1,048,576; the launcher validates that it never exceeds this ceiling.
+At 1,048,576 tokens: `16,896 × 1,048,576 = 17,711,308,800 bytes = 16.50 GiB`. The existing `--cache-ram 16384` reserves a further 16 GiB, so KV plus prefix cache is about **32.5 GiB (~33 GiB)**. At 1M context and `-ub 1024`, allow another 6–10 GiB for compute buffers (KQ mask, DSA sparse mask, pool bias and members): about **38.5–42.5 GiB total** beyond weights, before fixed KDA state and other allocator/runtime overhead. NUMA1 has 252 GiB total and about 147 GB free while Q2 is loaded, so the 1M context remains plausible. The selected context is therefore the model's supported maximum, 1,048,576; the launcher validates that it never exceeds this ceiling.
 
 Sources: [NVIDIA GLM-5.3-Flash architecture and 1M context](https://build.nvidia.com/z-ai/glm-5-3-flash/modelcard); [KV-cache tensor derivation](https://huggingface.co/zai-org/GLM-5.3-Flash/discussions/55); [GGUF architecture/cache notes](https://huggingface.co/aj9o9/GLM-5.3-Flash-GGUF).
 

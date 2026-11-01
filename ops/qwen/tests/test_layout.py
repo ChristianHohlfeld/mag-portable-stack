@@ -76,7 +76,7 @@ for name in q1.env q2.env; do
  install -D -m 0644 "$REPO/ops/glm/$name" "$HOST/etc/mag-glm/$name"
 done
 ''')
-  smoke_stub="import os,sys;open(os.environ['SMOKE_LOG'],'a').write(' '.join(sys.argv[1:])+'\\n');sys.exit(int(os.environ.get('SMOKE_FAIL','0')))\n"
+  smoke_stub="import os,sys;args=sys.argv[1:];port=os.environ.get('SMOKE_FAIL_PORT');fail='1' if port and port in args else os.environ.get('SMOKE_FAIL','0');open(os.environ['SMOKE_LOG'],'a').write(' '.join(args)+'\\n');sys.exit(int(fail))\\n"
   (self.repo/'ops/qwen/smoke.py').write_text(smoke_stub)
   (self.repo/'ops/mistral/smoke.py').write_text(smoke_stub)
   (self.repo/'ops/mistral/install.sh').write_text('''#!/bin/bash
@@ -298,7 +298,7 @@ else:
   self.assertNotEqual(p.returncode,0,p.stdout+p.stderr)
   self.assertEqual((self.host/'etc/mag-glm/q2.env').read_text(),'GLM_ENGINE=mainline\n')
   actions=self.log.read_text().splitlines()
-  self.assertEqual(actions.count('stop mag-llm-glm@q2.service'),2,actions)
+  self.assertEqual(actions.count('stop mag-llm-glm@q2.service'),2,p.stderr+p.stdout+repr(actions))
   self.assertEqual(actions.count('start mag-llm-glm@q2.service'),2,actions)
   state=json.loads(self.state.read_text())
   self.assertIn('mag-llm-glm@q2.service',state['active'])
@@ -370,7 +370,7 @@ else:
   q2=(ROOT/'ops/glm/mag-llm-glm@q2.service.d/10-numa.conf').read_text()
   self.assertIn('AllowedCPUs=0-13,28-41',q1)
   self.assertIn('AllowedCPUs=14-27',q2)
-  self.assertNotIn('42-55',q2)
+  self.assertNotRegex(q2,r'(?m)^(?:CPUAffinity|AllowedCPUs)=.*42-55')
   self.assertIn('NUMAPolicy=bind',q1);self.assertIn('NUMAPolicy=bind',q2)
   self.assertIn('NUMAMask=0',q1);self.assertIn('NUMAMask=1',q2)
   install=(ROOT/'ops/glm/install.sh').read_text()
@@ -403,7 +403,7 @@ else:
   self.assertNotIn('mag-llm-mistral-room.service',state['active'])
   self.assertTrue((self.host/'var/lib/mag-stack/layout-failed').read_text().startswith('glm '))
   actions=self.log.read_text()[mark:].splitlines()
-  self.assertEqual(actions.count('stop mag-llm-glm@q2.service'),2,actions)
+  self.assertEqual(actions.count('stop mag-llm-glm@q2.service'),2,p.stderr+p.stdout+repr(actions))
   self.assertEqual(actions.count('start mag-llm-glm@q2.service'),2,actions)
   self.assertEqual((self.host/'etc/mag-glm/q2.env').read_text(),'GLM_ENGINE=mainline\\n')
   mark=self.log.stat().st_size

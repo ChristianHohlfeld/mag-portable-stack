@@ -85,3 +85,19 @@ restores the prior Qwen service/config. Qwen model files remain untouched.
 - [HF UD-IQ1_S shard listing and sizes](https://huggingface.co/unsloth/Mistral-Large-4-1T-A52B-GGUF/tree/main/UD-IQ1_S)
 - [HF Hub tree API used by the stage gate](https://huggingface.co/api/models/unsloth/Mistral-Large-4-1T-A52B-GGUF/tree/main/UD-IQ1_S?recursive=true&expand=true)
 - [llama.cpp architecture loader source at pinned revision](https://github.com/ggml-org/llama.cpp/tree/8642541b255bfb5dc39cd351a178be09013a55d6)
+
+## NUMA0 page-cache placement
+
+Before the Mistral room unit starts, `verify-model.sh` runs under
+`numactl --membind=0`, then `drop-shard-cache.py` requests
+`POSIX_FADV_DONTNEED` on only the six manifest-listed Mistral GGUF shards.
+No global `drop_caches` operation is used; GLM-Q2's NUMA1 pages are not
+targeted. After the Mistral health endpoint is ready, the unit checks
+`numastat -p` and warns (without failing startup) if NUMA1 exceeds 2048 MiB.
+
+From the repository checkout, apply the staged unit and restart Mistral only:
+
+`sudo bash ops/mistral/apply.sh`
+
+The apply script requires healthy GLM-Q2 before staging and verifies that its
+PID and health remain unchanged around the Mistral-only restart.

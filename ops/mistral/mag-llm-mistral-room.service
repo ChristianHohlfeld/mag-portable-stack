@@ -16,7 +16,9 @@ WorkingDirectory=/home/chris
 EnvironmentFile=-/etc/mag-mistral/runtime.env
 Environment=MISTRAL_THREADS=14
 Environment=MISTRAL_MIN_RAM_GIB=225
-ExecStartPre=+/usr/local/lib/mag-mistral/verify-model.sh
+ExecStartPre=+/usr/bin/numactl --membind=0 /usr/local/lib/mag-mistral/verify-model.sh
+ExecStartPre=+/usr/bin/python3 -I /usr/local/lib/mag-mistral/drop-shard-cache.py
+ExecStartPost=+/usr/local/lib/mag-mistral/check-numa-placement.sh
 ExecStart=/usr/local/lib/mag-mistral/start.sh
 Restart=on-failure
 RestartSec=60

@@ -484,7 +484,7 @@ dialog{border-radius:10px;border-color:var(--line);background:var(--surface)}
 @media(max-width:850px){
  .gbar-pill #message:placeholder-shown{white-space:nowrap;overflow:hidden!important;text-overflow:ellipsis}
  .gbar-pill #message::placeholder{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
- .gbar-pill #message{scrollbar-width:none}
+ .gbar-pill #message{scrollbar-width:none;max-height:28dvh}
  .gbar-pill #message::-webkit-scrollbar{display:none}
 }
 </style><style id="compact-chrome">
@@ -3651,7 +3651,7 @@ document.addEventListener('visibilitychange',()=>{if(document.hidden)disconnectL
 window.addEventListener('pagehide',()=>{disconnectLive();events.close()});
 
 
-function fitMessageHeight(){const input=$('message');input.style.height='auto';input.style.height=Math.min(Math.floor(window.innerHeight*.28),Math.max(40,input.scrollHeight))+'px';syncComposerButton()}
+function fitMessageHeight(){const input=$('message');input.style.height='auto';input.style.height=Math.min(Math.floor((window.visualViewport?.height||window.innerHeight)*.28),Math.max(40,input.scrollHeight))+'px';syncComposerButton()}
 $('message').addEventListener('input',fitMessageHeight);
 $('stop-run').addEventListener('click',e=>{e.preventDefault();e.stopPropagation();stopBot('')});
 syncComposerButton();

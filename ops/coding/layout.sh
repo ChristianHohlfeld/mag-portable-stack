@@ -89,6 +89,19 @@ fi
 [[ -f /etc/mag-stack/room-model.env ]] || fail 'existing MAG room required'
 previous=$(cat /etc/mag-stack/room-layout 2>/dev/null || true)
 [[ $previous == glm || $previous == coding ]] || fail "unsupported automatic migration from '$previous'"
+if [[ $previous == coding ]]; then
+  # No undeclared, restart-requiring drift is silently applied on ordinary deploy.
+  for i in 0 1; do
+    systemctl is-active --quiet "mag-llm-coding@$i.service" || fail "coding NUMA$i not active"
+    wait_ready "mag-llm-coding@$i.service" "$((8191+i))" 6 || fail "coding NUMA$i unhealthy"
+  done
+  cmp -s "$ROOT/ops/room/coding.env" /etc/mag-stack/room-model.env || fail 'coding env drift'
+  cmp -s "$ROOT/ops/coding/start-live.sh" /usr/local/lib/mag-coding/start-live.sh || fail 'coding launcher drift'
+  cmp -s "$ROOT/ops/coding/mag-llm-coding@.service" /etc/systemd/system/mag-llm-coding@.service || fail 'coding unit drift'
+  cmp -s "$ROOT/ops/coding/80-coding-output.conf" /etc/systemd/system/mag-120.service.d/80-coding-output.conf || fail 'coding output budget drift'
+  echo 'coding layout unchanged; both resident models healthy'
+  exit 0
+fi
 # All heavyweight preparation is done with the old services still resident.
 python3 -I "$ROOT/ops/coding/stage.py" --model both || fail 'models not verified'
 REV=$(tr -d '[:space:]' < "$ROOT/ops/mistral/runtime.sha")

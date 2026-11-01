@@ -66,6 +66,7 @@ for u in mag-backup-daily mag-backup-weekly mag-backup-monthly mag-backup-restor
 done
 
 THREADS_BATCH=28
+CTX=32768
 if [[ $instance == q1 ]]; then
   FORMAT='glm-5.3-flash-iq1-m:kv-f16-f16:ctx32768:slot0'
   legacy="mag-prefix-glm-5.3-flash-iq1-m-slot1.bin"

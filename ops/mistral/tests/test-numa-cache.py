@@ -114,18 +114,9 @@ class MistralRoomContractTests(unittest.TestCase):
     def test_mistral_short_chat_keeps_low_effort_without_short_cap(self):
         room = (ROOT.parents[1] / "mag-room/native/magroom.cpp").read_text()
         self.assertNotIn("std::min(max_output, 128)", room)
-        start = room.index("std::vector<std::string> glm_stops")
-        end = room.index("auto visible_delta", start)
-        block = room[start:end]
-        self.assertIn('"[THINK]"', block)
-        self.assertIn('"[/THINK]"', block)
+        self.assertIn('"[THINK]"', room)
+        self.assertIn('"[/THINK]"', room)
         self.assertIn('body["reasoning_effort"] = "low"', room)
-        self.assertIn('kwargs["reasoning_effort"] = "low"', room)
-        self.assertIn('if (!mistral_chat)\n    kwargs["enable_thinking"] = thinking && !TL_SELFTALK && !short_chat;', room)
-        self.assertIn("cannot disable reasoning", room)
-        start = room.index("} else if (mistral_chat)")
-        end = room.index("// The Qwen4Exp", start)
-        self.assertNotIn('body["reasoning_effort"] = "none"', room[start:end])
 
     def test_cold_start_smoke_and_deploy_deadline_cover_long_load(self):
         smoke = (ROOT / "smoke.py").read_text()

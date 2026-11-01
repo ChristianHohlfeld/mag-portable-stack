@@ -218,7 +218,7 @@ else:
   self.assertEqual((self.host/'etc/mag-stack/room-layout').read_text(),'glm\n')
   smoke=(self.base/'smoke').read_text()
   self.assertIn('--port 8191 --health-only',smoke)
-  self.assertIn('--port 8191 --timeout 1800',smoke)
+  self.assertIn('--port 8191 --timeout 7200',smoke)
   self.assertNotIn('--port 8192',smoke,'GLM-Q2 must not receive a smoke decode')
   actions=self.log.read_text()[mark:].splitlines()
   for verb in ('stop','start','enable','disable'):

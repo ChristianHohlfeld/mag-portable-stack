@@ -982,6 +982,26 @@ class GlmContinuationTests(unittest.TestCase):
         self.assertIn('Antwortteil zwei', answers[0]['content'])
         self.assertFalse(answers[0].get('truncated', False))
 
+    def test_heading_inside_fence_is_kept_and_heading_outside_is_cut(self):
+        Model.by_model[self.GLM] = [
+            ['```python\\nx = 1\\n\\n## inside fence\\n```\\n\\n## outside fence\\nthis must be cut',
+             {'_finish': 'stop'}],
+        ]
+        self.room.api('/api/message', {
+            'text': 'Zeige einen Codeblock mit Markdown-Heading.',
+            'bots': ['glm'],
+            'think': False,
+        })
+        state = self.room.until(lambda s: not s['busy'] and any(
+            m.get('role') == 'assistant' and m.get('bot') == 'glm' and
+            'inside fence' in (m.get('content') or '') for m in s['room']),
+            timeout=12, what='GLM fenced heading response')
+        answer = next(m for m in state['room']
+                      if m.get('role') == 'assistant' and m.get('bot') == 'glm')
+        self.assertIn('## inside fence', answer['content'])
+        self.assertNotIn('## outside fence', answer['content'])
+        self.assertNotIn('this must be cut', answer['content'])
+
     def test_code_job_uses_configured_4096_token_budget(self):
         Model.by_model[self.GLM] = [['```cpp\\nint main(){return 0;}\\n```', {'_finish': 'stop'}]]
         created = self.room.api('/api/jobs', {

@@ -6803,6 +6803,13 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
       if (t.calls.empty()) final_text += t.text;
       break;
     }
+    // Preserve the existing one-shot visible retry for the Mistral/Qwen
+    // chat-only slots. GLM itself now continues the same assistant prefix.
+    if (chat_only_room_bot && thinking_turn && !stop_flag().load() &&
+        t.finish == "length" && t.text.empty()) {
+      t = backend_turn(messages, tools, 0.55, on_delta, false,
+           slot_for_key(bot_id), bot_model_id(bot_idx), bot_idx, false, true);
+    }
     if (glm_chat && bot_model_id(bot_idx) == "glm-5.3-flash-iq1-m" &&
          t.text.empty() && !stop_flag().load() &&
          duration_cast<seconds>(steady_clock::now()-q1_started).count()<30) {

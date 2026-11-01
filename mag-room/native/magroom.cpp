@@ -6682,6 +6682,7 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
       bot_model_id(bot_idx).rfind("glm-5.3-flash", 0) == 0;
    int glm_continuation_rounds = 0;
   std::string previous_glm_chunk;
+  std::set<std::string> glm_seen_chunks;
   for (int round = 0; round < (glm_generation_turn ? 1024 : MAX_RUN_STEPS); round++) {
     if (stop_flag().load()) break;
     task_yield_point();
@@ -6864,8 +6865,13 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
     }
     // Neither short chat nor regular GLM chat may silently post an empty
     // answer when the model returns tool-only output or no visible text.
+     const bool repeats_glm_chunk = !previous_glm_chunk.empty() &&
+         (t.text == previous_glm_chunk ||
+          (t.text.size() >= previous_glm_chunk.size() &&
+           t.text.compare(0, previous_glm_chunk.size(), previous_glm_chunk) == 0) ||
+          glm_seen_chunks.count(t.text) != 0);
      if (glm_generation_turn && glm_continuation_rounds > 0 &&
-         (t.text.empty() || t.text == previous_glm_chunk)) {
+         (t.text.empty() || repeats_glm_chunk)) {
        report.truncated = true;
        completed = true;
        break;
@@ -6877,6 +6883,7 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
          break;
        }
        previous_glm_chunk = t.text;
+       glm_seen_chunks.insert(t.text);
      }
      if ((short_chat || glm_chat || chat_only_room_bot) && t.text.empty()) {
       // A structured tool-only result with tool_choice=none is not a

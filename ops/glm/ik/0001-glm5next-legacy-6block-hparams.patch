@@ -3,20 +3,18 @@ From: MAG Build <mag@localhost>
 Date: Sat, 31 Oct 2026 22:00:00 +0000
 Subject: [PATCH] glm5next: load legacy 6block hparams metadata
 
-The legacy 6block converter writes a scalar head_count_kv=1 and uses
+The legacy 6block converter writes scalar head_count_kv=1 and uses
 attention.indexer.block_size instead of attention.indexer.kpool.
-Reconstruct the per-layer KDA/MLA pattern from full_attention_interval
-and accept the legacy block_size key without touching tensors.
+Reconstruct the per-layer KDA/MLA pattern from full_attention_interval.
 
 ---
- src/llama-hparams.cpp | 18 +++++++++++++++++-
- 1 file changed, 17 insertions(+), 1 deletion(-)
+ src/llama-hparams.cpp | 16 +++++++++++++++-
+ 1 file changed, 15 insertions(+), 1 deletion(-)
 
 diff --git a/src/llama-hparams.cpp b/src/llama-hparams.cpp
-index 0000000..0000000 100644
 --- a/src/llama-hparams.cpp
 +++ b/src/llama-hparams.cpp
-@@ -2511,10 +2511,16 @@
+@@ -2513,7 +2513,10 @@
                  ml.get_key(LLM_KV_ATTENTION_INDEXER_HEAD_COUNT, hparams.indexer_n_head,    false);
                  ml.get_key(LLM_KV_ATTENTION_INDEXER_KEY_LENGTH, hparams.indexer_head_size, false);
                  ml.get_key(LLM_KV_ATTENTION_INDEXER_TOP_K,      hparams.indexer_top_k,     false);
@@ -28,10 +26,11 @@ index 0000000..0000000 100644
                  if (hparams.indexer_head_size > 0) {
                      GGML_ASSERT(hparams.indexer_n_head > 0 && "GLM5NEXT indexer key length without indexer head count");
                      if (hparams.indexer_block_size > 0 && hparams.indexer_top_k > 0 &&
-@@ -2556,6 +2562,17 @@
+@@ -2556,6 +2559,18 @@
+                 if (!ml.get_key(LLM_KV_SSM_GROUP_COUNT, hparams.ssm_n_group, false)) {
                      hparams.ssm_n_group = hparams.n_head();
                  }
- 
+
 +                // Legacy 6block stores scalar head_count_kv=1 for every layer.
 +                // Rebuild the GLM5NEXT pattern: every Nth layer is full MLA;
 +                // all intervening layers are recurrent KDA (0 head_count_kv).

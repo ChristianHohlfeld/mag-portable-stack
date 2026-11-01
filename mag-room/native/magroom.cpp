@@ -7173,7 +7173,7 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
     report.react_only = true;
     report.continue_requested = false;
     if(CONFIGURED_MODEL && !stateless && !CURRENT_JOB && !TL_TASK && !report.skipped)
-      wire_finish(bot_idx,messages,completed&&!stop_flag().load()&&report.error.empty()&&!report.local_fallback);
+      wire_finish(bot_idx,messages,completed&&!stop_flag().load()&&report.error.empty()&&!report.local_fallback&&!report.truncated);
     finish_steps();
     return report;
   }

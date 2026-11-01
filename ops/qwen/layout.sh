@@ -55,7 +55,7 @@ validate_q2_engine(){
       [[ $rev =~ ^[a-f0-9]{40}$ ]] || fail 'Q2 mainline runtime sha invalid'
       dir="/home/chris/.local/qwen4exp/$rev-mag-cp1"
       bin="$dir/bin/llama-server"
-      [[ -x $bin && $(cat "$dir/source-commit" 2>/dev/null || true) == "$rev" ]] || fail 'Q2 mainline rollback runtime missing or unpinned'
+      [[ -x $bin && $(cat "$dir/bin/source-commit" 2>/dev/null || true) == "$rev" ]] || fail 'Q2 mainline rollback runtime missing or unpinned'
       ;;
     ik)
       patch=$(sha256sum "$ROOT/ops/glm/ik/0001-glm5next-legacy-6block-hparams.patch" | awk '{print $1}' | sha256sum | cut -c1-12)

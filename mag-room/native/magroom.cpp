@@ -5069,7 +5069,7 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   // Only trivial greetings keep a small cap; thinking and real chat/code do not.
   if (short_chat && glm_model) max_output = std::min(max_output, 128);
   if (short_chat && glm_model)
-    max_output = std::min(max_output, 128); // all trivial GLM greetings stay short
+    max_output = std::min(128, max_output); // all trivial GLM greetings stay short
   body["max_tokens"] = max_output;
   if (no_tools && !thinking && model.rfind("glm-5.3-flash", 0) == 0) {
     // Preserve the live GLM-Q2 request contract unchanged.

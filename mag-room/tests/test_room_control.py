@@ -984,7 +984,7 @@ class GlmContinuationTests(unittest.TestCase):
 
     def test_heading_inside_fence_is_kept_and_heading_outside_is_cut(self):
         Model.by_model[self.GLM] = [
-            ['```python\\nx = 1\\n\\n## inside fence\\n```\\n\\n## outside fence\\nthis must be cut',
+            ['```python\nx = 1\n\n## inside fence\n```\n\n## outside fence\nthis must be cut',
              {'_finish': 'stop'}],
         ]
         self.room.api('/api/message', {
@@ -1003,7 +1003,7 @@ class GlmContinuationTests(unittest.TestCase):
         self.assertNotIn('this must be cut', answer['content'])
 
     def test_code_job_uses_configured_4096_token_budget(self):
-        Model.by_model[self.GLM] = [['```cpp\\nint main(){return 0;}\\n```', {'_finish': 'stop'}]]
+        Model.by_model[self.GLM] = [['```cpp\nint main(){return 0;}\n```', {'_finish': 'stop'}]]
         created = self.room.api('/api/jobs', {
             'name': 'GLM code budget test',
             'prompt': 'Schreibe ein kurzes C++-Beispiel.',

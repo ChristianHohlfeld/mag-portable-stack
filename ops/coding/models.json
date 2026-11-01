@@ -1,0 +1,25 @@
+{
+  "schema": 1,
+  "context_tokens": 65536,
+  "coding_output_tokens": 16384,
+  "models": {
+    "general": {
+      "name": "Qwen3.6-35B-A3B",
+      "model_id": "qwen3.6-35b-a3b",
+      "numa": 0,
+      "candidate_port": 8291,
+      "repo": "unsloth/Qwen3.6-35B-A3B-GGUF",
+      "filename": "Qwen3.6-35B-A3B-UD-Q5_K_M.gguf",
+      "sha256": "c13ce26253ea334df472bd8fbd2d6da66d8a41195c17f6fcbf44c4d20ece0932"
+    },
+    "coder": {
+      "name": "Qwen3-Coder-30B-A3B-Instruct",
+      "model_id": "qwen3-coder-30b-a3b-instruct",
+      "numa": 1,
+      "candidate_port": 8292,
+      "repo": "lmstudio-community/Qwen3-Coder-30B-A3B-Instruct-GGUF",
+      "filename": "Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf",
+      "sha256": "79ad15a5ee3caddc3f4ff0db33a14454a5a3eb503d7fa1c1e35feafc579de486"
+    }
+  }
+}

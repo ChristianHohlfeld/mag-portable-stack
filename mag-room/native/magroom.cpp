@@ -6781,6 +6781,9 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
         break;
       }
       if (stop_flag().load() || !context_overflow_error(t.error)) break;
+      // A continuation that reaches the context boundary is final: do not
+      // rewrite/compact its assistant prefix and invalidate the same slot cache.
+      if (glm_generation_turn && glm_continuation_rounds > 0) break;
       if (stateless) {
         t.error = "Stateless-Eingabe überschreitet das Modellkontextfenster; Text nicht verändert.";
         break;

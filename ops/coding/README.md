@@ -53,23 +53,51 @@ Record TTFT, wall time, actual throughput from server timing logs,
 empty, short or length-truncated text. Neither low prompt size nor a 16k
 requested maximum guarantees code quality or speed.
 
-## Live cutover is **NOT part of this PR**
+## Automatischer Live-Deploy (ab PR #257)
 
-Before selecting these models in MAG, a separate transactional integration
-must: build and pin a compatible CPU runtime; verify the staged GGUFs;
-set up correct NUMA-bound systemd units on 8191/8192; wire the audit gateway
-and the room model IDs together; change both host/room max-output budgets
-to 16384 without a model-specific 256/1024 cap; preserve slot/cache/
-Jinja/tool-call semantics; verify long streamed code and Stop; preserve
-the two bot IDs/VMs/history; verify performance and code correctness;
-**only then** promote and auto-update with a one-shot rollback of all
-units/mappings/config on failure. Leave `ops/room/layout=glm` unchanged
-until then. A green syntax or fake-backend CI result does not prove a
-successful host cutover.
+Der bereits vorhandene MAG-Auto-Updater zieht **nur den GitHub-Branch `green`**
+nach vollständiger CI-Freigabe und ruft `ops/auto-update/apply.sh` auf.
 
-Sources:
-- https://huggingface.co/Qwen/Qwen3.6-35B-A3B
-- https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF/blob/main/Qwen3.6-35B-A3B-UD-Q5_K_M.gguf
-- https://huggingface.co/Qwen/Qwen3-Coder-30B-A3B-Instruct
-- https://huggingface.co/lmstudio-community/Qwen3-Coder-30B-A3B-Instruct-GGUF/blob/main/Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf
-- https://github.com/ggml-org/llama.cpp/issues/19480 (why *not* Coder-Next on CPU without a measured fix)
+Die Repo-Vorgabe `ops/room/layout=coding` wählt diesen Ablauf:
+
+1. `ops/coding/desired.sh` respektiert eine explizite Operator-Pinnung. Eine
+   bestehende `/etc/mag-stack/room-layout.pinned` wird **nicht** überschrieben.
+2. `ops/coding/prepare.sh` lädt beide GGUF-Dateien resumierbar und prüft
+   die gepinnten SHA256-Hashes. Ein dedizierter llama.cpp CPU-Build mit
+   verifiziertem `qwen35moe`- und `qwen3moe`-Loader entsteht unter
+   `/home/chris/.local/mag-coding/`. Die bisherigen Modell-Units und Gewichte
+   bleiben währenddessen unverändert.
+3. `ops/coding/layout.sh` ist eine transaktionale, root-eigene Umstellung.
+   Nur aus einem aktiven `glm`-Layout und **nur**, wenn beide alten Bots gesund
+   und neue Modelle vollständig vorbereitet sind. Es zeichnet aktive/enabled
+   Units und frühere Konfigurationen in `$BACKUP/qwen-layout` auf.
+4. Nach Drain stoppt es die beiden alten Units, wartet auf freie Ports 8191
+   und 8192, startet die beiden neuen NUMA-gebundenen Units, prüft deren
+   `/health` **und** führt mit jedem echten GGUF einen Python-Coding-Smoke
+   aus. Erst danach wird `coding.env` aktiviert, der Audit-Gateway neu geladen,
+   und der native Raum erhält **16.384 Ausgabetokens** pro normalem Coding-Turn.
+5. Bricht der Switch oder ein späterer Deploy-Schritt ab, stellt der
+   gesicherte Helper die alten Units und Konfigurationen wieder her. Dabei
+   muss GLM-Q2 vollständig bereit sein, **bevor** Mistral startet. Eine
+   fehlgeschlagene Identität wird für automatische Wiederholungen gesperrt.
+   Alte GGUF-Dateien werden nie gelöscht.
+
+Nach erfolgreichem Wechsel übernimmt `ops/boot/ensure-boot.sh` beide
+Coding-Units für den nächsten Boot, ohne sie unnötig neu zu starten. Auf einem
+bereits gesunden Coding-Layout ist `layout.sh` idempotent; Drift an
+modellrelevanten Startparametern führt zum Fehler statt zum stillen Neustart.
+
+### Grenzen der Verifikation
+
+Die CI führt isolierte Regressionstests aus. Echte CPU-Geschwindigkeit und
+tatsächlicher Live-Status werden ausschließlich im MAG-Host-Test sichtbar.
+Ein Merge allein bestätigt **weder** fertige Downloads **noch** einen laufenden
+Modellwechsel. Prüfen auf MAG:
+```bash
+systemctl status mag-auto-update.service mag-llm-coding@0.service mag-llm-coding@1.service --no-pager
+cat /etc/mag-stack/room-layout
+curl -fsS http://127.0.0.1:8080/v1/models
+```
+
+Bei vorhandener Operator-Pinnung auf ein anderes Layout greift weiterhin
+diese Pinnung; `coding` wird nicht erzwungen.

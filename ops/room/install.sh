@@ -36,10 +36,10 @@ if [[ ${MAG_DEFER_DAEMON_RELOAD:-0} == 1 ]]; then
   echo 'room/install: unit files staged; parent reloads and enables'
   exit 0
 fi
-if [[ $(cat "$ROOT/ops/room/layout" 2>/dev/null || true) != glm ]]; then
+if [[ $(cat "$ROOT/ops/room/layout" 2>/dev/null || true) != glm && $(cat "$ROOT/ops/room/layout" 2>/dev/null || true) != coding ]]; then
   systemctl enable mag-llm-ds-node@0.service
 fi
 case $(cat /etc/mag-stack/room-layout 2>/dev/null || true) in
-  mixed|glm) ;;
+  mixed|glm|coding) ;;
   *) systemctl enable mag-llm-ds-node@1.service ;;
 esac

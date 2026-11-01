@@ -16,7 +16,7 @@ if [[ -z $_layout_for_deadline || $_layout_for_deadline == repo ]]; then
     _layout_for_deadline=$(tr -d '[:space:]' < "$SOURCE/ops/room/layout" 2>/dev/null || true)
   fi
 fi
-if [[ $_layout_for_deadline == glm ]]; then
+if [[ $_layout_for_deadline == glm || $_layout_for_deadline == coding ]]; then
   # Mistral's six-shard 233 GB model can require a long cold mmap/startup.
   # Reserve the complete 7-hour service load window plus deploy overhead.
   _deploy_default_deadline=36000
@@ -194,7 +194,7 @@ rollback() {
    else rm -f "/etc/mag-stack/$config"; fi
  done
  # Neither a successful model layout nor a room-only bypass may roll back live GLMs.
- if (( ! layout_applied && ! layout_bypassed )) && [[ -f $BACKUP/qwen-layout/helper.sh ]]; then
+ if [[ -f $BACKUP/qwen-layout/helper.sh ]] && { (( ! layout_applied && ! layout_bypassed )) || [[ -f $BACKUP/qwen-layout/coding ]]; }; then
    bash "$BACKUP/qwen-layout/helper.sh" rollback "$BACKUP"
  fi
  if (( gateway_switched )); then
@@ -228,7 +228,7 @@ gateway_switched=0
 # All other deployments must preserve its exact PID and ActiveEnterTimestamp.
 glm_identity_guard=0
 glm_identity_before=""
-if (( ! FIRST_INSTALL )) && [[ $(cat /etc/mag-stack/room-layout 2>/dev/null || true) == glm ]]; then
+if (( ! FIRST_INSTALL )) && [[ $(cat /etc/mag-stack/room-layout 2>/dev/null || true) == glm ]] && [[ $(bash "$SOURCE/ops/coding/desired.sh") != coding ]]; then
   glm_identity_guard=1
   glm_identity_before=$(systemctl show -p ActiveEnterTimestamp -p MainPID mag-llm-glm@q2.service)
 fi
@@ -444,19 +444,19 @@ if [[ -e /etc/mag-stack/room-model.env || -e /etc/systemd/system/mag-llm-ds-node
   mag_flush_daemon_reload
   # The temporary live GLM-fast override must not mask the versioned defaults.
   # Previous drop-ins were snapshotted above and are restored on rollback.
-  if [[ $(cat /etc/mag-stack/room-layout 2>/dev/null || true) == glm ]]; then
+  if [[ $(cat /etc/mag-stack/room-layout 2>/dev/null || true) == glm || $(cat /etc/mag-stack/room-layout 2>/dev/null || true) == coding ]]; then
     rm -f -- /etc/systemd/system/mag-120.service.d/99-glm-fast.conf
     mag_daemon_reload
   fi
   # Preserve the operator's stopped/disabled DeepSeek on ordinary redeploys.
-  if [[ $(cat /etc/mag-stack/room-layout 2>/dev/null || true) == glm ]]; then
+  if [[ $(cat /etc/mag-stack/room-layout 2>/dev/null || true) == glm || $(cat /etc/mag-stack/room-layout 2>/dev/null || true) == coding ]]; then
      mag_systemctl disable mag-llm-ds-node@0.service mag-llm-ds-node@1.service >/dev/null 2>&1 || true
    elif (( FIRST_INSTALL )); then
      mag_systemctl enable mag-llm-ds-node@0.service
    fi
   # Only the pure-DeepSeek layout boots DeepSeek on NUMA1 (mixed: Qwen, glm: GLM).
   case $(cat /etc/mag-stack/room-layout 2>/dev/null || true) in
-    mixed|glm) ;;
+    mixed|glm|coding) ;;
     *) mag_systemctl enable mag-llm-ds-node@1.service ;;
   esac
 elif [[ -r /etc/mag-stack/secondary-model.env ]] &&

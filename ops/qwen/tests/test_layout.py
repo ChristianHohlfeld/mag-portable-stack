@@ -14,7 +14,7 @@ class Layout(unittest.TestCase):
  def setUp(self):
   self.tmp=tempfile.TemporaryDirectory(); self.base=pathlib.Path(self.tmp.name)
   self.repo=self.base/'repo'
-  for name in ('qwen','room','glm','mistral'):
+  for name in ('qwen','room','glm','mistral','coding'):
    shutil.copytree(ROOT/'ops'/name,self.repo/'ops'/name,symlinks=True)
   shutil.copy2(ROOT/'ops'/'deploy.sh',self.repo/'ops'/'deploy.sh')
   # The repo-declared layout is set per test; the legacy cases run on mixed.
@@ -380,7 +380,7 @@ else:
 
  def test_glm_deploy_deadline_covers_mistral_cold_start(self):
   deploy=(ROOT/'ops/deploy.sh').read_text()
-  start=deploy.index('if [[ $_layout_for_deadline == glm ]]')
+  start=deploy.index('if [[ $_layout_for_deadline == glm || $_layout_for_deadline == coding ]]')
   end=deploy.index('deploy_watchdog_arm',start)
   block=deploy[start:end]
   self.assertIn('_deploy_default_deadline=36000',block)
@@ -688,7 +688,9 @@ else:
   self.assertIn('--physcpubind=14-27',st)
   self.assertNotIn('--physcpubind=14-27,42-55 --membind=1',st)
   self.assertIn('ReadWritePaths=/var/lib/mag-llm/slots/glm /var/lib/mag-llm/slots/glm-q1 /var/lib/mag-llm/slots/glm-ik',(ROOT/'ops/glm/mag-llm-glm@.service').read_text())
-  self.assertEqual((ROOT/'ops/room/layout').read_text().strip(),'glm')
+  self.assertEqual((ROOT/'ops/room/layout').read_text().strip(),'coding')
+  self.assertIn('mag-llm-coding@0.service', (ROOT/'ops/coding/layout.sh').read_text())
+  self.assertIn('mag-llm-coding@1.service', (ROOT/'ops/coding/layout.sh').read_text())
   sizes=[l.split() for l in (ROOT/'ops/glm/model.sizes').read_text().splitlines()]
   self.assertEqual(len(sizes),15)
   self.assertEqual(sum(int(row[0]) for row in sizes),92109221728)

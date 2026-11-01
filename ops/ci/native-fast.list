@@ -18,6 +18,7 @@ gitea mirror :: bash ops/tests/test-gitea-mirror.sh
 gitea bot rights :: bash ops/tests/test-gitea-bot-rights.sh
 shellcheck :: if ! command -v shellcheck >/dev/null; then echo 'shellcheck not installed on this runner; skipped'; exit 0; fi; shellcheck ops/vm/build-golden.sh ops/bootstrap-voice.sh ops/deepseek/bootstrap-runtimes.sh ops/tailscale/install.sh ops/private-access/install-lego.sh ops/gitea/mirror-github.sh ops/tests/e2e-bootstrap.sh ops/ci/promote-green.sh ops/ci/self-hosted-checks.sh ops/ci/fetch-gitea-green.sh ops/ci/promote-gitea.sh ops/ci/gitea-gate.sh ops/ci/run-parallel.sh ops/ci/native-gate.sh ops/ci/incremental-build.sh ops/ci/affected.sh ops/ci/local-ci.sh ops/ci/reap.sh ops/ci/native-build.sh ops/ci/wait-native-build.sh ops/ci/backup-affected.sh ops/ci/no-secrets.sh ops/mag-units.sh ops/ci/tests/test-gate-parallel.sh ops/ci/tests/test-native-build.sh ops/ci/tests/test-local-ci.sh ops/tests/test-daemon-reload-batch.sh ops/deploy-watchdog.sh ops/tests/test-deploy-deadline.sh
 github deploy pipeline :: bash ops/tests/test-github-pipeline.sh
+coding auto-deploy safety :: python3 -m unittest discover -s ops/coding/tests -p 'test_*.py'
 gate parallel :: bash ops/ci/tests/test-gate-parallel.sh
 ci reap :: bash ops/ci/tests/test-ci-reap.sh
 native build cache :: bash ops/ci/tests/test-native-build.sh

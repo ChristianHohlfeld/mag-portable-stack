@@ -45,7 +45,14 @@ done
 echo 'GLM GGUF elementwise types preflight passed (15 shards)'
 install -d -o chris -g chris -m 0700 /var/lib/mag-llm/slots/glm /var/lib/mag-llm/slots/glm-q1 /var/lib/mag-llm/slots/glm-ik
 install -m 0755 "$ROOT/ops/glm/verify-iq1.sh" /usr/local/lib/mag-glm/verify-iq1.sh
-bash /usr/local/lib/mag-glm/verify-iq1.sh
+# Q1 (IQ1_M) left the room in #243 and its weights are no longer on mag; NUMA0
+# is Mistral. Verify IQ1_M only when its directory exists, so staging GLM-Q2
+# (e.g. the #252 ik engine switch) is not blocked by the absent Q1 model.
+if [[ -d ${MAG_GLM_IQ1_DIR:-/home/chris/models/GLM-5.3-Flash-GGUF-IQ1_M} ]]; then
+  bash /usr/local/lib/mag-glm/verify-iq1.sh
+else
+  echo 'IQ1_M absent: Q1 not in room layout (#243), IQ1 preflight skipped'
+fi
 install -m 0644 "$ROOT/ops/glm/mag-llm-glm@.service" /etc/systemd/system/mag-llm-glm@.service
 # Drop-ins are instance-local; the shared @.service and each launcher are
 # unchanged, so layout.sh does NOT restart a resident model for this staging.

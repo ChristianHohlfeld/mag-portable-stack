@@ -114,8 +114,11 @@ class MistralRoomContractTests(unittest.TestCase):
     def test_mistral_short_chat_keeps_low_effort_without_short_cap(self):
         room = (ROOT.parents[1] / "mag-room/native/magroom.cpp").read_text()
         self.assertNotIn("std::min(max_output, 128)", room)
-        self.assertIn('"[THINK]"', room[room.index("glm_stops"):room.index("body[\"reasoning_effort\"]")])
-        self.assertIn('"[/THINK]"', room[room.index("glm_stops"):room.index("body[\"reasoning_effort\"]")])
+        start = room.index("std::vector<std::string> glm_stops")
+        end = room.index("auto visible_delta", start)
+        block = room[start:end]
+        self.assertIn('"[THINK]"', block)
+        self.assertIn('"[/THINK]"', block)
         self.assertIn('body["reasoning_effort"] = "low"', room)
         self.assertIn('kwargs["reasoning_effort"] = "low"', room)
         self.assertIn('if (!mistral_chat)\n    kwargs["enable_thinking"] = thinking && !TL_SELFTALK && !short_chat;', room)

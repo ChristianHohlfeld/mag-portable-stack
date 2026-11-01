@@ -6846,9 +6846,14 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
     }
     // Neither short chat nor regular GLM chat may silently post an empty
     // answer when the model returns tool-only output or no visible text.
+     if (glm_generation_turn && glm_continuation_rounds > 0 &&
+         (t.text.empty() || t.text == previous_glm_chunk)) {
+       report.truncated = true;
+       completed = true;
+       break;
+     }
      if (glm_generation_turn && t.calls.empty() && t.finish == "length") {
-       if (t.text.empty() || t.text == previous_glm_chunk ||
-           ++glm_continuation_rounds > 1024) {
+       if (++glm_continuation_rounds > 1024) {
          report.truncated = true;
          completed = true;
          break;

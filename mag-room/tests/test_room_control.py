@@ -933,8 +933,12 @@ class GlmContinuationTests(unittest.TestCase):
 
     def setUp(self):
         reset_model()
-        agents = [{'id': 'qwen-numa0', 'name': 'GLM-Q2', 'vm': '', 'memory': [],
-                   'slot': 1, 'numa': 0, 'model': self.GLM}]
+        agents = [
+            {'id': 'qwen-numa0', 'name': 'GLM', 'vm': '', 'memory': [],
+             'slot': 1, 'numa': 0, 'model': self.GLM},
+            {'id': 'qwen-numa1', 'name': 'GLM-Q2', 'vm': '', 'memory': [],
+             'slot': 2, 'numa': 1, 'model': self.GLM},
+        ]
         self.room = Room(agents, {
             'MAG_ROOM_MODEL_ID': self.GLM,
             'MAG_ROOM_MODEL_LABEL': 'GLM test',

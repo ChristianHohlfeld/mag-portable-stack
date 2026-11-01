@@ -55,15 +55,17 @@ rollback(){
   done
   # Old q2 ik backend needs both its port and TIME_WAIT sockets to be clear.
   for port in 8191 8192; do wait_port_free "$port" || fail "rollback port $port still held"; done
+  # Restore and fully load GLM first: Mistral refuses to start without Q2.
+  if grep -Fxq mag-llm-glm@q2.service "$TXN/active"; then
+    systemctl start mag-llm-glm@q2.service || fail 'old Q2 service start failed'
+    wait_ready mag-llm-glm@q2.service 8192 5040 || fail 'GLM-Q2 rollback not ready'
+  fi
   for unit in "${old[@]}"; do
+    [[ $unit != mag-llm-glm@q2.service ]] || continue
     if grep -Fxq "$unit" "$TXN/active"; then
       systemctl start "$unit" || fail "cannot restore $unit"
     fi
   done
-  # Long cold starts are accepted, but never report rollback success prematurely.
-  if grep -Fxq mag-llm-glm@q2.service "$TXN/active"; then
-    wait_ready mag-llm-glm@q2.service 8192 5040 || fail 'GLM-Q2 rollback not ready'
-  fi
   if grep -Fxq mag-llm-mistral-room.service "$TXN/active"; then
     wait_ready mag-llm-mistral-room.service 8191 5040 || fail 'Mistral rollback not ready'
   elif grep -Fxq mag-llm-qwen-room.service "$TXN/active"; then

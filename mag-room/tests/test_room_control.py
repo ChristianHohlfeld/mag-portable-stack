@@ -933,7 +933,7 @@ class GlmContinuationTests(unittest.TestCase):
 
     def setUp(self):
         reset_model()
-        agents = [{'id': 'glm', 'name': 'GLM-Q2', 'vm': '', 'memory': [],
+        agents = [{'id': 'qwen-numa0', 'name': 'GLM-Q2', 'vm': '', 'memory': [],
                    'slot': 1, 'numa': 0, 'model': self.GLM}]
         self.room = Room(agents, {
             'MAG_ROOM_MODEL_ID': self.GLM,
@@ -962,9 +962,9 @@ class GlmContinuationTests(unittest.TestCase):
             ['Antwortteil eins ', {'_finish': 'length'}],
             ['Antwortteil zwei', {'_finish': 'stop'}],
         ]
-        self.room.api('/api/message', {'text': 'Erkläre das ausführlich.', 'bots': ['glm'], 'think': True})
+        self.room.api('/api/message', {'text': 'Erkläre das ausführlich.', 'bots': ['qwen-numa0'], 'think': True})
         state = self.room.until(lambda s: not s['busy'] and any(
-            m.get('role') == 'assistant' and m.get('bot') == 'glm' and
+            m.get('role') == 'assistant' and m.get('bot') == 'qwen-numa0' and
             'Antwortteil zwei' in (m.get('content') or '') for m in s['room']),
             timeout=12, what='GLM continuation completion')
         turns = self.glm_turns()
@@ -976,7 +976,7 @@ class GlmContinuationTests(unittest.TestCase):
         self.assertEqual(turns[1]['messages'][-1]['content'], 'Antwortteil eins')
         self.assertEqual(turns[1]['chat_template_kwargs'].get('reasoning_effort'), 'low')
         self.assertTrue(turns[1]['chat_template_kwargs'].get('clear_thinking'))
-        answers = [m for m in state['room'] if m.get('role') == 'assistant' and m.get('bot') == 'glm']
+        answers = [m for m in state['room'] if m.get('role') == 'assistant' and m.get('bot') == 'qwen-numa0']
         self.assertEqual(len(answers), 1, answers)
         self.assertIn('Antwortteil eins', answers[0]['content'])
         self.assertIn('Antwortteil zwei', answers[0]['content'])
@@ -989,15 +989,15 @@ class GlmContinuationTests(unittest.TestCase):
         ]
         self.room.api('/api/message', {
             'text': 'Zeige einen Codeblock mit Markdown-Heading.',
-            'bots': ['glm'],
+            'bots': ['qwen-numa0'],
             'think': False,
         })
         state = self.room.until(lambda s: not s['busy'] and any(
-            m.get('role') == 'assistant' and m.get('bot') == 'glm' and
+            m.get('role') == 'assistant' and m.get('bot') == 'qwen-numa0' and
             'inside fence' in (m.get('content') or '') for m in s['room']),
             timeout=12, what='GLM fenced heading response')
         answer = next(m for m in state['room']
-                      if m.get('role') == 'assistant' and m.get('bot') == 'glm')
+                      if m.get('role') == 'assistant' and m.get('bot') == 'qwen-numa0')
         self.assertIn('## inside fence', answer['content'])
         self.assertNotIn('## outside fence', answer['content'])
         self.assertNotIn('this must be cut', answer['content'])
@@ -1007,7 +1007,7 @@ class GlmContinuationTests(unittest.TestCase):
         created = self.room.api('/api/jobs', {
             'name': 'GLM code budget test',
             'prompt': 'Schreibe ein kurzes C++-Beispiel.',
-            'bot': 'glm',
+            'bot': 'qwen-numa0',
             'schedule': {'type': 'none'},
         })
         job_id = created['id']
@@ -1029,12 +1029,12 @@ class GlmContinuationTests(unittest.TestCase):
         Model.by_model[self.GLM] = [
             [{'reasoning_content': 'internal reasoning only'}, {'_finish': 'length'}],
         ]
-        self.room.api('/api/message', {'text': 'Denke gründlich nach.', 'bots': ['glm'], 'think': True})
+        self.room.api('/api/message', {'text': 'Denke gründlich nach.', 'bots': ['qwen-numa0'], 'think': True})
         state = self.room.until(lambda s: not s['busy'] and any(
-            m.get('role') == 'assistant' and m.get('bot') == 'glm' and m.get('truncated')
+            m.get('role') == 'assistant' and m.get('bot') == 'qwen-numa0' and m.get('truncated')
             for m in s['room']), timeout=12, what='thinking-only truncated GLM answer')
         answer = next(m for m in state['room']
-                      if m.get('role') == 'assistant' and m.get('bot') == 'glm')
+                      if m.get('role') == 'assistant' and m.get('bot') == 'qwen-numa0')
         self.assertTrue(answer['truncated'])
         self.assertEqual(len(self.glm_turns()), 1,
                          'no empty retry: a round without visible text is explicitly truncated')
@@ -1044,12 +1044,12 @@ class GlmContinuationTests(unittest.TestCase):
             ['Wiederholung ', {'_finish': 'length'}],
             ['Wiederholung ', {'_finish': 'length'}],
         ]
-        self.room.api('/api/message', {'text': 'Schreibe weiter.', 'bots': ['glm'], 'think': True})
+        self.room.api('/api/message', {'text': 'Schreibe weiter.', 'bots': ['qwen-numa0'], 'think': True})
         state = self.room.until(lambda s: not s['busy'] and any(
-            m.get('role') == 'assistant' and m.get('bot') == 'glm' and m.get('truncated')
+            m.get('role') == 'assistant' and m.get('bot') == 'qwen-numa0' and m.get('truncated')
             for m in s['room']), timeout=12, what='truncated GLM answer')
         answer = next(m for m in state['room']
-                      if m.get('role') == 'assistant' and m.get('bot') == 'glm')
+                      if m.get('role') == 'assistant' and m.get('bot') == 'qwen-numa0')
         self.assertTrue(answer['truncated'])
         self.assertIn('Wiederholung', answer['content'])
         self.assertEqual(len(self.glm_turns()), 2)

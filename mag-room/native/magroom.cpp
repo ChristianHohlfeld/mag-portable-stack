@@ -5199,7 +5199,11 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
     for (size_t i = 0; i < pos;) {
       size_t end = text.find('\n', i);
       if (end == std::string::npos || end > pos) end = pos;
-      if (text.substr(i, end - i).find("```") != std::string::npos) fenced = !fenced;
+      const std::string line = text.substr(i, end - i);
+      const size_t first = line.find_first_not_of(" \\t");
+      if (first != std::string::npos &&
+          (line.compare(first, 3, "```") == 0 ||
+           line.compare(first, 3, "~~~") == 0)) fenced = !fenced;
       if (end == pos) break;
       i = end + 1;
     }

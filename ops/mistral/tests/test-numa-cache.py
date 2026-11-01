@@ -119,7 +119,7 @@ class MistralRoomContractTests(unittest.TestCase):
         self.assertIn('body["reasoning_effort"] = "low"', room)
         self.assertIn('kwargs["reasoning_effort"] = "low"', room)
         self.assertIn('if (!mistral_chat)\n    kwargs["enable_thinking"] = thinking && !TL_SELFTALK && !short_chat;', room)
-        self.assertIn("reasoning cannot be disabled", room)
+        self.assertIn("cannot disable reasoning", room)
         start = room.index("} else if (mistral_chat)")
         end = room.index("// The Qwen4Exp", start)
         self.assertNotIn('body["reasoning_effort"] = "none"', room[start:end])

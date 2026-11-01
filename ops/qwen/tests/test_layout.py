@@ -669,6 +669,7 @@ else:
   self.assertIn('engine_commit=',st)
   self.assertIn('model_sha=',st)
   self.assertIn('ctx=',st)
+  self.assertIn('kv_format=f16-f16',st)
   self.assertIn('GLM_CTX_SIZE=1048576',(ROOT/'ops/glm/q2.env').read_text())
   self.assertIn('--ctx-size "$CTX"',st)
   self.assertIn('CTX=${GLM_CTX_SIZE:-32768}',st)

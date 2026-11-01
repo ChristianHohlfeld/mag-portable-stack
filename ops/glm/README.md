@@ -12,15 +12,20 @@ The room uses separate GLM output budgets; both remain bounded by the room-wide
   `reasoning_effort=low` and `clear_thinking=true`.
 - Code/tool work: `MAG_ROOM_GLM_CODE_MAX_TOKENS=8192` by default (clamped to
   32–8192). Operators/tests can set it to 4096.
-- Exact trivial greetings remain capped at 128 tokens.
 
-A GLM response ending with `finish_reason=length` and visible text continues
-automatically in the same room turn, model slot and prompt-cache prefix. Each
-partial assistant response is kept as the assistant prefix for the next
-completion and streamed into the same room message. Continuation ends on
-`stop`, user Stop, context exhaustion, repeated/no new text, or the 1024-step
-safety guard. A GLM stream has no wall-clock deadline while bytes continue to
-arrive; only 10 minutes without any stream bytes is treated as a stall.
+A GLM response ending with `finish_reason=length` continues automatically in
+the same room turn, model slot and prompt-cache prefix: the text so far is sent
+as one growing assistant prefill (byte-exact, so code indentation survives the
+joins) with `enable_thinking=false` — llama.cpp rejects an assistant prefill
+with thinking on — while `reasoning_effort=low` and `clear_thinking=true` stay.
+Verified live on GLM-Q2 :8192 (streamed deltas contain only the new tokens).
+A first round that spends its whole budget on thinking is answered once more
+without thinking. Continuation rounds do not count as agent steps and have no
+time budget; tool rounds in jobs keep `MAG_ROOM_MAX_STEPS`. The answer ends only
+on `stop`, user Stop, context exhaustion, or the loop guard (a round with no new
+text or a repeated chunk). A GLM stream has no wall-clock deadline while bytes
+arrive; only `MAG_ROOM_GLM_STALL_S` (default 600 s = 10 min) without any stream
+byte is a stall (`MAG_ROOM_STALL_S` overrides it for tests).
 Context/Stop/guard truncation is persisted as `truncated: true` and shown as
 “Antwort wegen Längenlimit abgeschnitten – weiter schreiben”; it is never
 stored as a complete successful assistant turn.

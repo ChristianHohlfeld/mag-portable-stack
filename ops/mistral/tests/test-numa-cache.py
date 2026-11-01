@@ -113,8 +113,7 @@ class MistralRoomContractTests(unittest.TestCase):
 
     def test_mistral_short_chat_keeps_low_effort_without_short_cap(self):
         room = (ROOT.parents[1] / "mag-room/native/magroom.cpp").read_text()
-        self.assertIn("max_output = std::min(128, max_output)", room)
-        self.assertNotIn("max_output = std::min(max_output, 128)", room)
+        self.assertNotIn("std::min(max_output, 128)", room)
         self.assertIn('"[THINK]"', room)
         self.assertIn('"[/THINK]"', room)
         self.assertIn('body["reasoning_effort"] = "low"', room)

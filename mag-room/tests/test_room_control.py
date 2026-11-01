@@ -104,8 +104,24 @@ class Model(http.server.BaseHTTPRequestHandler):
                 script = Model.by_model[obj.get('model')].pop(0)
             else:
                 script = Model.scripts.pop(0) if Model.scripts else ['Okay.']
-            if not (missing_user or forced_failure):
+            msgs = obj.get('messages') or []
+            # llama.cpp: an assistant prefill with enable_thinking is HTTP 400.
+            thinking_prefill = (not prewarm and bool(msgs) and
+                msgs[-1].get('role') == 'assistant' and
+                (obj.get('chat_template_kwargs') or {}).get('enable_thinking') is True)
+            if thinking_prefill:
+                Model.rejected.append((obj.get('model'), kind, 'thinking prefill'))
+            elif not (missing_user or forced_failure):
                 Model.active += 1
+        if thinking_prefill:
+            data = json.dumps({'error': {'code': 400, 'type': 'invalid_request_error',
+                'message': 'Assistant response prefill is incompatible with enable_thinking.'}}).encode()
+            self.send_response(400)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Content-Length', str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+            return
         if missing_user or forced_failure:
             data = b'Jinja Exception: No user query found in messages.'
             self.send_response(500)
@@ -978,7 +994,11 @@ class GlmContinuationTests(unittest.TestCase):
         self.assertTrue(all(t.get('cache_prompt') is True and t.get('id_slot') == 0
                             for t in turns), turns)
         self.assertEqual(turns[1]['messages'][-1]['role'], 'assistant')
-        self.assertEqual(turns[1]['messages'][-1]['content'], 'Antwortteil eins')
+        self.assertEqual(turns[1]['messages'][-1]['content'], 'Antwortteil eins ')
+        # Live blocker: llama.cpp rejects an assistant prefill with thinking on.
+        self.assertTrue(turns[0]['chat_template_kwargs'].get('enable_thinking'))
+        self.assertIs(turns[1]['chat_template_kwargs']['enable_thinking'], False)
+        self.assertEqual(Model.rejected, [])
         self.assertEqual(turns[1]['chat_template_kwargs'].get('reasoning_effort'), 'low')
         self.assertTrue(turns[1]['chat_template_kwargs'].get('clear_thinking'))
         answers = [m for m in state['room'] if m.get('role') == 'assistant' and m.get('bot') == 'qwen-numa0']
@@ -1030,19 +1050,98 @@ class GlmContinuationTests(unittest.TestCase):
         self.assertEqual(len(turns), 1, turns)
         self.assertEqual(turns[0]['max_tokens'], 4096)
 
-    def test_thinking_only_length_without_visible_text_is_truncated_not_retried(self):
+    def test_three_chunks_extend_one_prefix_byte_exact(self):
+        c1 = '```python\ndef f():\n    a = 1\n'
+        c2 = '    b = 2\n\n    '
+        c3 = 'return a + b\n```\n\nFertig.'
+        Model.by_model[self.GLM] = [
+            [c1, {'_finish': 'length'}],
+            [c2, {'_finish': 'length'}],
+            [c3, {'_finish': 'stop'}],
+        ]
+        self.room.api('/api/message', {'text': 'Schreibe Code.', 'bots': ['qwen-numa0'], 'think': True})
+        state = self.room.until(lambda s: not s['busy'] and any(
+            m.get('role') == 'assistant' and m.get('bot') == 'qwen-numa0' and
+            'Fertig.' in (m.get('content') or '') for m in s['room']),
+            timeout=12, what='three-chunk GLM answer')
+        turns = self.glm_turns()
+        self.assertEqual(len(turns), 3, turns)
+        for t in turns[1:]:
+            self.assertIs(t['chat_template_kwargs']['enable_thinking'], False)
+            # exactly one trailing assistant prefix, no stacked assistant turns
+            self.assertEqual(t['messages'][-1]['role'], 'assistant')
+            self.assertNotEqual(t['messages'][-2]['role'], 'assistant')
+        self.assertEqual(turns[1]['messages'][-1]['content'], c1)
+        self.assertEqual(turns[2]['messages'][-1]['content'], c1 + c2)
+        answers = [m for m in state['room'] if m.get('role') == 'assistant' and m.get('bot') == 'qwen-numa0']
+        self.assertEqual(len(answers), 1, answers)
+        self.assertEqual(answers[0]['content'], (c1 + c2 + c3).strip())
+        self.assertFalse(answers[0].get('truncated', False))
+
+    def test_fence_opened_in_earlier_round_keeps_heading(self):
+        Model.by_model[self.GLM] = [
+            ['```python\nx = 1', {'_finish': 'length'}],
+            ['\n\n## inside\n```\n\nfertig', {'_finish': 'stop'}],
+        ]
+        self.room.api('/api/message', {'text': 'Code bitte.', 'bots': ['qwen-numa0'], 'think': True})
+        state = self.room.until(lambda s: not s['busy'] and any(
+            m.get('role') == 'assistant' and m.get('bot') == 'qwen-numa0' and
+            'fertig' in (m.get('content') or '') for m in s['room']),
+            timeout=12, what='fenced heading across continuation rounds')
+        answer = next(m for m in state['room']
+                      if m.get('role') == 'assistant' and m.get('bot') == 'qwen-numa0')
+        self.assertIn('## inside', answer['content'])
+        self.assertEqual(answer['content'], '```python\nx = 1\n\n## inside\n```\n\nfertig')
+
+    def test_thinking_only_first_round_continues_without_thinking(self):
         Model.by_model[self.GLM] = [
             [{'reasoning_content': 'internal reasoning only'}, {'_finish': 'length'}],
+            ['Sichtbare Antwort.', {'_finish': 'stop'}],
         ]
         self.room.api('/api/message', {'text': 'Denke gründlich nach.', 'bots': ['qwen-numa0'], 'think': True})
         state = self.room.until(lambda s: not s['busy'] and any(
-            m.get('role') == 'assistant' and m.get('bot') == 'qwen-numa0' and m.get('truncated')
-            for m in s['room']), timeout=12, what='thinking-only truncated GLM answer')
+            m.get('role') == 'assistant' and m.get('bot') == 'qwen-numa0' and
+            'Sichtbare Antwort.' in (m.get('content') or '') for m in s['room']),
+            timeout=12, what='thinking-only round continued without thinking')
+        answers = [m for m in state['room']
+                   if m.get('role') == 'assistant' and m.get('bot') == 'qwen-numa0']
+        self.assertEqual(len(answers), 1, answers)
+        self.assertFalse(answers[0].get('truncated', False))
+        self.assertFalse(answers[0].get('work_error'))
+        turns = self.glm_turns()
+        self.assertEqual(len(turns), 2)
+        self.assertIs(turns[1]['chat_template_kwargs']['enable_thinking'], False)
+        self.assertNotEqual(turns[1]['messages'][-1]['role'], 'assistant')
+
+    def test_thinking_only_twice_is_an_explicit_failure_not_silent(self):
+        Model.by_model[self.GLM] = [
+            [{'reasoning_content': 'internal reasoning only'}, {'_finish': 'length'}],
+            [{'reasoning_content': 'still nothing visible'}, {'_finish': 'length'}],
+        ]
+        self.room.api('/api/message', {'text': 'Denke gründlich nach.', 'bots': ['qwen-numa0'], 'think': True})
+        state = self.room.until(lambda s: not s['busy'] and any(
+            m.get('role') == 'assistant' and m.get('bot') == 'qwen-numa0'
+            for m in s['room']), timeout=12, what='explicit GLM failure after thinking-only rounds')
         answer = next(m for m in state['room']
                       if m.get('role') == 'assistant' and m.get('bot') == 'qwen-numa0')
-        self.assertTrue(answer['truncated'])
-        self.assertEqual(len(self.glm_turns()), 1,
-                         'no empty retry: a round without visible text is explicitly truncated')
+        self.assertTrue(answer.get('work_error'), answer)
+        self.assertEqual(len(self.glm_turns()), 2)
+
+    def test_code_with_repeated_tokens_is_not_cut(self):
+        row = '[' + ', '.join(['0'] * 20) + ']'
+        Model.by_model[self.GLM] = [
+            ['```js\nconst a = ', {'_finish': 'length'}],
+            [row + ';\n```', {'_finish': 'stop'}],
+        ]
+        self.room.api('/api/message', {'text': 'Array bitte.', 'bots': ['qwen-numa0'], 'think': True})
+        state = self.room.until(lambda s: not s['busy'] and any(
+            m.get('role') == 'assistant' and m.get('bot') == 'qwen-numa0' and
+            (m.get('content') or '').endswith('```') for m in s['room']),
+            timeout=12, what='repeated code tokens kept')
+        answer = next(m for m in state['room']
+                      if m.get('role') == 'assistant' and m.get('bot') == 'qwen-numa0')
+        self.assertEqual(answer['content'], '```js\nconst a = ' + row + ';\n```')
+        self.assertFalse(answer.get('truncated', False))
 
     def test_repeated_length_reply_is_persisted_as_truncated(self):
         Model.by_model[self.GLM] = [

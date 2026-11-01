@@ -36,7 +36,7 @@ class GlmRoomContract(unittest.TestCase):
 
     def test_heading_cut_is_fence_aware_but_special_tokens_stay_blocked(self):
         self.assertIn('auto heading_inside_fence = [](const std::string &text, size_t pos)', ROOM)
-        self.assertIn("heading_inside_fence(acc.content + glm_stream_pending", ROOM)
+        self.assertIn("heading_inside_fence(prior + acc.content + glm_stream_pending", ROOM)
         self.assertIn("search_from = pos + marker.size()", ROOM)
         self.assertIn('"\\n\\n## "', ROOM)
         self.assertIn('"</think>", "<think>", "<|", "<tool_call"', ROOM)
@@ -44,14 +44,18 @@ class GlmRoomContract(unittest.TestCase):
     def test_length_continues_and_context_stop_or_guard_marks_truncated(self):
         self.assertIn('t.finish == "length") {', ROOM)
         self.assertIn("previous_glm_chunk", ROOM)
-        self.assertIn("glm_continuation_rounds > 1024", ROOM)
+        self.assertNotIn("glm_continuation_rounds > 1024", ROOM)
+        self.assertIn("round - glm_continuation_rounds < MAX_RUN_STEPS", ROOM)
+        self.assertIn("glm_no_think ? false : thinking_turn", ROOM)
         self.assertIn('report.truncated = true;', ROOM)
         self.assertIn('(*it)["truncated"] = true;', ROOM)
         self.assertIn("!report.truncated", ROOM)
 
     def test_glm_has_no_active_generation_deadline_and_a_long_stall_guard(self):
         self.assertIn("c.no_overall_deadline = true", ROOM)
-        self.assertIn("idle_s = std::max(600, idle_s)", ROOM)
+        self.assertIn('envi("MAG_ROOM_GLM_STALL_S", 600)', ROOM)
+        self.assertNotIn("std::min(max_output, 128)", ROOM)
+        self.assertNotIn("std::min(128, max_output)", ROOM)
         self.assertIn("if (!no_overall_deadline && !overall_set)", ROOM)
 
     def test_mobile_composer_uses_placeholder_single_line_and_bounded_growth(self):

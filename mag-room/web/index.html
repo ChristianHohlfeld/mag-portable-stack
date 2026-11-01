@@ -1535,6 +1535,7 @@ function stoppedByUser(msg){return msg.interrupted&&msg.stopped!=='system'}
 const QUIET_STEP=/^(?:Liest Verlauf|Liest das Gespräch|Denkt nach(?:…|\.\.\.)?$|Gedacht für(?: \d+ s)?$|Reagiert$|Nimmt die Reaktion zurück$)/;
 function shownSteps(steps){return (steps||[]).filter(x=>!QUIET_STEP.test(x))}
 function doneLabel(msg){
+ if(msg.truncated)return 'Antwort wegen Längenlimit abgeschnitten – weiter schreiben';
  if(msg.work_error&&!stoppedByUser(msg))return 'Fehler · '+msg.work_error;
  const n=shownSteps(msg.steps).length;
  let t=((msg.interrupted?(stoppedByUser(msg)?'Gestoppt · ':'Unterbrochen · '):'Fertig · ')+(msg.elapsed_s!=null?fmtClock(msg.elapsed_s):'')).replace(/ · $/,'');
@@ -1553,7 +1554,7 @@ function stepsList(steps){
 function attachWork(div,msg,content){
  if(!msg||msg.role==='user')return;
  // Tool steps and errors remain useful even with thinking switched off.
- if(!msg.work_error&&!msg.interrupted&&!shownSteps(msg.steps).length&&!shownTools(storedTools(msg)).length)return;
+ if(!msg.work_error&&!msg.truncated&&!msg.interrupted&&!shownSteps(msg.steps).length&&!shownTools(storedTools(msg)).length)return;
  const box=document.createElement('div');
  box.className='work-status '+(stoppedByUser(msg)?'phase-stopped':msg.work_error?'phase-error':(msg.interrupted?'phase-hung':'phase-done'));
  const dot=document.createElement('span');dot.className='pulse';

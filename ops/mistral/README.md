@@ -101,3 +101,31 @@ From the repository checkout, apply the staged unit and restart Mistral only:
 
 The apply script requires healthy GLM-Q2 before staging and verifies that its
 PID and health remain unchanged around the Mistral-only restart.
+
+
+## NUMA0 prefetch and short-chat latency
+
+The Mistral unit now performs three ordered pre-start operations: verify the
+six-shard manifest under NUMA0, request POSIX_FADV_DONTNEED for those six
+Mistral files, then run prefetch-numa0.py. The prefetch helper first requests
+POSIX_FADV_DONTNEED for the single known Qwen Uncensored IQ4_XS GGUF only
+when both Qwen units are inactive (and no matching Qwen process is present).
+If Qwen is running, it leaves its cache alone. It never scans or evicts
+arbitrary GGUFs, never touches GLM-Q2's IQ2_XS files, and never deletes files.
+It then reads the six Mistral shards in manifest order with
+numactl --membind=0 dd ... bs=16M before llama-server mmaps them.
+
+Mistral short greetings (Hi, Hallo, etc.) are capped at 128 total generated
+tokens per request. The room continues to send reasoning_effort=low on every
+Mistral request. Reasoning is not actually switchable off for this GGUF: the
+GGUF model card (https://huggingface.co/ggml-org/Mistral-Large-4-1T-A52B-GGUF)
+states that only low/medium/high are supported and reasoning cannot be turned
+off. Mistral's official reasoning docs
+(https://docs.mistral.ai/studio/conversations/reasoning) likewise say Large 4
+does not accept none; low is the minimum and is recommended for fast chat.
+The short-chat path suppresses reasoning from the room display and limits the
+total output budget; it does not claim to stop the model's internal reasoning.
+
+The deploy's post-load chat smoke timeout is 7200 seconds and the overall
+Mistral-layout deploy deadline is 36000 seconds (7h cold service start,
+2h smoke, plus deploy overhead).

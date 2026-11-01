@@ -17,6 +17,7 @@ bash "$ROOT/ops/mistral/verify-model.sh"
 install -m 0644 "$ROOT/ops/mistral/runtime.sha" /usr/local/lib/mag-mistral/runtime.sha
 install -m 0755 "$ROOT/ops/mistral/verify-model.sh" /usr/local/lib/mag-mistral/verify-model.sh
 install -m 0755 "$ROOT/ops/mistral/drop-shard-cache.py" /usr/local/lib/mag-mistral/drop-shard-cache.py
+install -m 0755 "$ROOT/ops/mistral/prefetch-numa0.py" /usr/local/lib/mag-mistral/prefetch-numa0.py
 install -m 0755 "$ROOT/ops/mistral/check-numa-placement.sh" /usr/local/lib/mag-mistral/check-numa-placement.sh
 install -m 0755 "$ROOT/ops/mistral/start.sh" /usr/local/lib/mag-mistral/start.sh
 install -d -o chris -g chris -m 0700 /var/lib/mag-llm/slots/mistral

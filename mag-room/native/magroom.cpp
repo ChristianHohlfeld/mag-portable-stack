@@ -5066,6 +5066,8 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   if (no_tools && model.rfind("glm-5.3-flash", 0) == 0)
     max_output = std::min(MAX_TOKENS, std::clamp(
         envi("MAG_ROOM_GLM_CHAT_MAX_TOKENS", 256), 32, 256));
+  if (mistral_chat && short_chat)
+    max_output = std::min(max_output, 128); // total generation cap, including unavoidable low reasoning
   if (thinking && model.rfind("glm-5.3-flash", 0) == 0)
     max_output = std::min(max_output, 256);
   if (no_tools && !thinking && model == "glm-5.3-flash-iq1-m")
@@ -5113,6 +5115,8 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   if (qwen_chat) {
     body["reasoning_effort"] = "none"; // llama.cpp: none disables reasoning.
   } else if (mistral_chat) {
+    // The deployed GGUF supports low/medium/high only; its card says reasoning
+    // cannot be disabled. Keep the minimum effort on every request (never `none`).
     body["reasoning_effort"] = "low";
     kwargs["reasoning_effort"] = "low";
   }
@@ -6492,7 +6496,10 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
   const bool glm_chat_mode = CONFIGURED_MODEL && !CURRENT_JOB && !TL_TASK &&
       !autotalk && !TL_REFLECT && !TL_SELFTALK &&
       (bot_model_id(bot_idx).rfind("glm-5.3-flash", 0) == 0 || chat_only_room_bot);
-  const bool short_chat = glm_chat_mode && !autotalk && !thinking_turn &&
+  // Mistral Large 4 cannot disable reasoning (official GGUF card); keep its
+  // minimum `low` effort but bound exact greetings even when the UI toggle is on.
+  const bool short_chat = glm_chat_mode && !autotalk &&
+      (!thinking_turn || bot_model_id(bot_idx) == "mistral-large4") &&
       short_glm_input(TURN_INPUT);
   const bool web = WEB_ENABLED.load();
   std::vector<Val> messages;

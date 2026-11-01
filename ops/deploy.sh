@@ -19,7 +19,7 @@ fi
 if [[ $_layout_for_deadline == glm ]]; then
   # Mistral's six-shard 233 GB model can require a long cold mmap/startup.
   # Reserve the complete 7-hour service load window plus deploy overhead.
-  _deploy_default_deadline=30000
+  _deploy_default_deadline=36000
 fi
 # Choose the layout-specific deadline BEFORE the outer timeout wrapper. The
 # wrapper re-execs this script; the armed marker then lets it continue once.

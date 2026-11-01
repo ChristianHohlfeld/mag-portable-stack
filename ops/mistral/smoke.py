@@ -9,7 +9,7 @@ import urllib.request
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=8191)
-    ap.add_argument("--timeout", type=int, default=1800)
+    ap.add_argument("--timeout", type=int, default=7200)
     ap.add_argument("--health-only", action="store_true")
     args = ap.parse_args()
     base = f"http://127.0.0.1:{args.port}"

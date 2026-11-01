@@ -6672,10 +6672,8 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
       bot_model_id(bot_idx).rfind("glm-5.3-flash", 0) == 0;
   const bool glm_generation_turn =
       bot_model_id(bot_idx).rfind("glm-5.3-flash", 0) == 0;
-  int glm_tool_rounds = 0;
-  int glm_continuation_rounds = 0;
+   int glm_continuation_rounds = 0;
   std::string previous_glm_chunk;
-  const int glm_tool_max = std::clamp(envi("MAG_ROOM_GLM_CHAT_MAX_ROUNDS", 2), 0, 8);
   for (int round = 0; round < (glm_generation_turn ? 1024 : MAX_RUN_STEPS); round++) {
     if (stop_flag().load()) break;
     task_yield_point();
@@ -6914,7 +6912,6 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
     }
     messages.push_back(asst);
     const bool tool_round = !t.calls.empty() && !TL_SELFTALK;
-    if (tool_round && glm_chat) ++glm_tool_rounds;
     // Open todo items are an unfinished goal: the turn goes on (bounded).
     const bool todo_open = !glm_chat && !chat_only_room_bot && !short_chat && !tool_round && !stateless && !TL_SELFTALK && TL_TODO_TOUCHED &&
         todo_nudges < 2 && !has_next_step(t.text) && todo_open_for(bot_id) > 0;

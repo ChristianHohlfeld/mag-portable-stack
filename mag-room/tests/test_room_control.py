@@ -1006,6 +1006,20 @@ class GlmContinuationTests(unittest.TestCase):
         self.assertEqual(turns[0]['max_tokens'], 4096)
         self.assertTrue(turns[0].get('tools'), 'code/job request must retain its tool schemas')
 
+    def test_thinking_only_length_without_visible_text_is_truncated_not_retried(self):
+        Model.by_model[self.GLM] = [
+            [{'reasoning_content': 'internal reasoning only'}, {'_finish': 'length'}],
+        ]
+        self.room.api('/api/message', {'text': 'Denke gründlich nach.', 'bots': ['glm'], 'think': True})
+        state = self.room.until(lambda s: not s['busy'] and any(
+            m.get('role') == 'assistant' and m.get('bot') == 'glm' and m.get('truncated')
+            for m in s['room']), timeout=12, what='thinking-only truncated GLM answer')
+        answer = next(m for m in state['room']
+                      if m.get('role') == 'assistant' and m.get('bot') == 'glm')
+        self.assertTrue(answer['truncated'])
+        self.assertEqual(len(self.glm_turns()), 1,
+                         'no empty retry: a round without visible text is explicitly truncated')
+
     def test_repeated_length_reply_is_persisted_as_truncated(self):
         Model.by_model[self.GLM] = [
             ['Wiederholung ', {'_finish': 'length'}],

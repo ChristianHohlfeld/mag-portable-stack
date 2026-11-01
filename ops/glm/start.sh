@@ -89,7 +89,7 @@ else
   MODEL_SHA=$(awk 'NF {print $1}' "$SHA256S" | sha256sum | awk '{print $1}')
   CTX=${GLM_CTX_SIZE:-32768}
   [[ $CTX =~ ^[1-9][0-9]*$ && $CTX -le 1048576 ]] || fail 'GLM context must be between 1 and 1048576 tokens'
-  MARKER=$(printf 'engine=%s\nengine_commit=%s\nmodel_sha=%s\nctx=%s\n' \
+  MARKER=$(printf 'engine=%s\nengine_commit=%s\nmodel_sha=%s\nkv_format=f16-f16\nctx=%s\n' \
     "$ENGINE" "$ENGINE_COMMIT" "$MODEL_SHA" "$CTX")
   marker_file="$GLM_SLOT_DIR/.kv-marker"
   if [[ ! -f $marker_file || $(cat "$marker_file") != "$MARKER" ]]; then

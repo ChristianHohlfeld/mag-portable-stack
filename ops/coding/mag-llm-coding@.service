@@ -1,0 +1,32 @@
+# Two independent NUMA model servers, 8191 and 8192, with per-model slot caches.
+[Unit]
+Description=MAG coding model NUMA%i
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=1800
+StartLimitBurst=2
+
+[Service]
+Type=simple
+User=chris
+Group=chris
+WorkingDirectory=/home/chris
+ExecStart=/usr/local/lib/mag-coding/start-live.sh %i
+Restart=on-failure
+RestartSec=30
+TimeoutStartSec=1800
+TimeoutStopSec=120
+CPUAccounting=yes
+MemoryAccounting=yes
+MemorySwapMax=0
+LimitMEMLOCK=infinity
+Nice=10
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=no
+ReadWritePaths=/var/lib/mag-llm/slots/coding
+PrivateTmp=yes
+RestrictAddressFamilies=AF_INET AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

@@ -210,7 +210,7 @@ else:
   self.assertEqual(self.run_layout().returncode,0)
   self.seed_live_glm()
   # Ignore the initial mixed-layout smoke on Qwen :8192; this assertion is
-  # specifically that the GLM cutover smoke targets Qwen :8191, never Q2.
+  # checks Mistral :8191 and the explicit Q2 engine-switch smoke.
   (self.base/'smoke').write_text('')
   (self.repo/'ops/room/layout').write_text('glm\n')
   self.write('/etc/systemd/system/mag-llm-ds-node@0.service.d/50-old.conf',
@@ -245,9 +245,11 @@ else:
   smoke=(self.base/'smoke').read_text()
   self.assertIn('--port 8191 --health-only',smoke)
   self.assertIn('--port 8191 --timeout 7200',smoke)
-  self.assertNotIn('--port 8192',smoke,'GLM-Q2 must not receive a smoke decode')
+  self.assertIn('--port 8192 --model glm-5.3-flash --quick',smoke,'the selected Q2 engine must receive one chat smoke')
   actions=self.log.read_text()[mark:].splitlines()
-  for verb in ('stop','start','enable','disable'):
+  self.assertEqual(actions.count('stop mag-llm-glm@q2.service'),1,actions)
+  self.assertEqual(actions.count('start mag-llm-glm@q2.service'),1,actions)
+  for verb in ('enable','disable'):
    self.assertNotIn(verb+' mag-llm-glm@q2.service',actions)
   self.assertIn('is-active --quiet mag-llm-glm@q2.service',actions)
   self.assertIn('show -p MainPID --value mag-llm-glm@q2.service',actions)
@@ -667,6 +669,13 @@ else:
   self.assertIn('engine_commit=',st)
   self.assertIn('model_sha=',st)
   self.assertIn('ctx=',st)
+  self.assertIn('GLM_CTX_SIZE=1048576',(ROOT/'ops/glm/q2.env').read_text())
+  self.assertIn('--ctx-size "$CTX"',st)
+  self.assertIn('CTX=${GLM_CTX_SIZE:-32768}',st)
+  readme=(ROOT/'ops/glm/README.md').read_text()
+  self.assertIn('11,968 bytes/token',readme)
+  self.assertIn('12,549,357,568 bytes',readme)
+  self.assertIn('1,048,576',readme)
   self.assertIn("find \"$GLM_SLOT_DIR\" -maxdepth 1 -type f -name 'mag-slot-*.bin' -delete",st)
   self.assertIn('IK_REF=8d21687cc7358de10264d4180ba9b863024d5c4',st)
   self.assertIn('--physcpubind=14-27',st)

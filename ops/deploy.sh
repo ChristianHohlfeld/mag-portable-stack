@@ -224,7 +224,8 @@ rollback() {
 deployment_started=0
 room_switched=0
 gateway_switched=0
-# C7: only the room/gateway may restart; model units are immutable.
+# Q2 may restart exactly once only when layout.sh records an engine change.
+# All other deployments must preserve its exact PID and ActiveEnterTimestamp.
 glm_identity_guard=0
 glm_identity_before=""
 if (( ! FIRST_INSTALL )) && [[ $(cat /etc/mag-stack/room-layout 2>/dev/null || true) == glm ]]; then
@@ -232,10 +233,26 @@ if (( ! FIRST_INSTALL )) && [[ $(cat /etc/mag-stack/room-layout 2>/dev/null || t
   glm_identity_before=$(systemctl show -p ActiveEnterTimestamp -p MainPID mag-llm-glm@q2.service)
 fi
 verify_glm_identity() {
-  (( ! glm_identity_guard )) ||
-    [[ $(systemctl show -p ActiveEnterTimestamp -p MainPID mag-llm-glm@q2.service) == "$glm_identity_before" ]] || {
-    echo 'FAIL: GLM-Q2 PID or ActiveEnterTimestamp changed: no Q2 restart allowed' >&2
-    return 1
+  (( ! glm_identity_guard )) || {
+    local current txn="$BACKUP/qwen-layout"
+    current=$(systemctl show -p ActiveEnterTimestamp -p MainPID mag-llm-glm@q2.service)
+    if [[ -f $txn/q2-engine-switched ]]; then
+      [[ $(cat "$txn/q2-engine-restart-count") == 1 &&
+         -s $txn/q2-engine-identity &&
+         $current == "$(cat "$txn/q2-engine-identity")" ]] || {
+        echo 'FAIL: Q2 engine switch was not exactly one verified restart' >&2
+        return 1
+      }
+      [[ $current != "$glm_identity_before" ]] || {
+        echo 'FAIL: Q2 engine switch marker exists but service identity did not change' >&2
+        return 1
+      }
+    else
+      [[ $current == "$glm_identity_before" ]] || {
+        echo 'FAIL: GLM-Q2 identity changed without an engine-switch transaction' >&2
+        return 1
+      }
+    fi
   }
 }
 layout_applied=0
@@ -418,8 +435,8 @@ if [[ -e /etc/mag-stack/room-model.env || -e /etc/systemd/system/mag-llm-ds-node
       mag_systemctl start mag-120.service
     fi
     # Always run the idempotent GLM-room transaction: it stages Mistral on
-    # NUMA0 only after all six shards pass SHA256, and guards the live Q2 PID.
-    # The helper never installs or restarts the GLM-Q2 unit or its flags.
+    # NUMA0 and performs a single Q2 restart only when GLM_ENGINE changes.
+    # The helper snapshots the old Q2 engine and rolls it back on failed smoke.
     bash "$SOURCE/ops/qwen/layout.sh" apply "$BACKUP"
     layout_applied=1
     verify_glm_identity

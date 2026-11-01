@@ -982,6 +982,30 @@ class GlmContinuationTests(unittest.TestCase):
         self.assertIn('Antwortteil zwei', answers[0]['content'])
         self.assertFalse(answers[0].get('truncated', False))
 
+    def test_code_job_uses_configured_4096_token_budget(self):
+        Model.by_model[self.GLM] = [['```cpp\\nint main(){return 0;}\\n```', {'_finish': 'stop'}]]
+        created = self.room.api('/api/jobs', {
+            'name': 'GLM code budget test',
+            'prompt': 'Schreibe ein kurzes C++-Beispiel.',
+            'bot': 'glm',
+            'schedule': {'type': 'none'},
+        })
+        job_id = created['id']
+        self.room.api('/api/jobs/' + job_id + '/run', {}, method='POST')
+        deadline = time.monotonic() + 12
+        job = None
+        while time.monotonic() < deadline:
+            job = self.room.api('/api/jobs/' + job_id)
+            if job.get('last_status') == 'ok' and not job.get('queued_run'):
+                break
+            time.sleep(.05)
+        self.assertIsNotNone(job, 'job result missing')
+        self.assertEqual(job.get('last_status'), 'ok', job)
+        turns = self.glm_turns()
+        self.assertEqual(len(turns), 1, turns)
+        self.assertEqual(turns[0]['max_tokens'], 4096)
+        self.assertTrue(turns[0].get('tools'), 'code/job request must retain its tool schemas')
+
     def test_repeated_length_reply_is_persisted_as_truncated(self):
         Model.by_model[self.GLM] = [
             ['Wiederholung ', {'_finish': 'length'}],

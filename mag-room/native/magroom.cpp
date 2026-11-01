@@ -6804,13 +6804,6 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
       if (t.calls.empty()) final_text += t.text;
       break;
     }
-    if (glm_chat && thinking_turn && !stop_flag().load() &&
-        ((t.finish == "length" && t.text.empty()) ||
-         t.error.find("Antwortlimit beim Denken erreicht") != std::string::npos)) {
-      // Exactly one nonthinking answer after a user-requested thinking round.
-      t = backend_turn(messages, tools, 0.55, on_delta, false,
-           slot_for_key(bot_id), bot_model_id(bot_idx), bot_idx, false, true);
-    }
     if (glm_chat && bot_model_id(bot_idx) == "glm-5.3-flash-iq1-m" &&
          t.text.empty() && !stop_flag().load() &&
          duration_cast<seconds>(steady_clock::now()-q1_started).count()<30) {
@@ -6853,10 +6846,15 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
     }
     // Neither short chat nor regular GLM chat may silently post an empty
     // answer when the model returns tool-only output or no visible text.
-     if (glm_chat && t.finish == "length" && t.text.empty()) {
-       report.truncated = true;
-       completed = true;
-       break;
+     if (glm_chat && bot_model_id(bot_idx).rfind("glm-5.3-flash", 0) == 0 &&
+         t.finish == "length") {
+       if (t.text.empty() || t.text == previous_glm_chunk ||
+           ++glm_continuation_rounds > 1024) {
+         report.truncated = true;
+         completed = true;
+         break;
+       }
+       previous_glm_chunk = t.text;
      }
      if ((short_chat || glm_chat || chat_only_room_bot) && t.text.empty()) {
       // A structured tool-only result with tool_choice=none is not a
@@ -6939,13 +6937,6 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
     // A thinking-budget exhaustion already had its single final retry above.
     if (glm_chat && bot_model_id(bot_idx).rfind("glm-5.3-flash", 0) == 0 &&
         t.finish == "length") {
-      if (t.text.empty() || t.text == previous_glm_chunk ||
-          ++glm_continuation_rounds > 1024) {
-        report.truncated = true;
-        completed = true;
-        break;
-      }
-      previous_glm_chunk = t.text;
       continue; // messages ends with this assistant prefix; same slot/cache.
     }
     if (glm_chat || chat_only_room_bot) { completed = true; break; }

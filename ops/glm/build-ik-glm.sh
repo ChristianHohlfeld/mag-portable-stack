@@ -3,7 +3,7 @@
 # publishes a versioned binary; it never starts, stops, or signals a model.
 set -euo pipefail
 
-REF=8d21687cc7358de10264d4180ba9b863024d5c4
+REF=8d21687cc7358de10264d4180dba9b863024d5c4
 URL=${IK_URL:-https://github.com/ikawrakow/ik_llama.cpp.git}
 SRC=${IK_GLM_SRC:-/home/chris/src/ik_llama.cpp-glm}
 ROOT=$(cd -- "$(dirname -- "$(readlink -f "$0")")/../.." && pwd)

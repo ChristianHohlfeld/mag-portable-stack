@@ -5225,7 +5225,8 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
         // A heading at the very start is not an answer-following drift.
         if (marker == "\n\n## " &&
             ((!glm_answer_started && acc.content.empty() && pos == 0) ||
-             heading_inside_fence(glm_stream_pending, pos))) continue;
+             heading_inside_fence(acc.content + glm_stream_pending,
+                                   acc.content.size() + pos))) continue;
         cut = std::min(cut, pos);
       }
       if (cut != std::string::npos) {
@@ -5446,7 +5447,7 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   if ((qwen_chat || mistral_chat) && !t.text.empty()) on_delta("delta", t.text);
   t.reasoning = acc.reasoning;
   if (t.error.empty() && t.text.empty() && acc.calls.empty() &&
-      t.finish == "length") {
+      t.finish == "length" && model.rfind("glm-5.3-flash", 0) != 0) {
     // The model used its budget entirely for thinking. Return a short,
     // visible completion instead of surfacing an internal token-limit error.
     // Do not continue the reasoning in another 1024-token round.
@@ -6822,6 +6823,12 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
      }
     if (!t.error.empty() && glm_chat && bot_model_id(bot_idx) == "glm-5.3-flash-iq1-m") {
       report.skipped=true; completed=true; break;
+    }
+    if (!t.error.empty() && glm_chat && glm_continuation_rounds > 0 &&
+        context_overflow_error(t.error)) {
+      report.truncated = true;
+      completed = true;
+      break;
     }
     if (!t.error.empty()) {
       report.error = t.error.substr(0, 280);

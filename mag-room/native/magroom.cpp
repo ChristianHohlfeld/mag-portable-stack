@@ -5110,8 +5110,10 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   // MAG_ROOM_REASONING_EFFORT is set it is sent on EVERY request so the prefix
   // stays identical across the toggle.
   Val kwargs = Val::object();
-  // Thinking follows the model default or the per-message switch.
-  kwargs["enable_thinking"] = thinking && !TL_SELFTALK && !short_chat;
+  // The Mistral GGUF exposes reasoning_effort, not an enable_thinking off switch.
+  // Do not send that unrelated kwarg for Mistral; short_chat only hides its trace.
+  if (!mistral_chat)
+    kwargs["enable_thinking"] = thinking && !TL_SELFTALK && !short_chat;
   if (qwen_chat) {
     body["reasoning_effort"] = "none"; // llama.cpp: none disables reasoning.
   } else if (mistral_chat) {

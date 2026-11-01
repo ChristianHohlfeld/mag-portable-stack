@@ -57,7 +57,8 @@ class GlmRoomContract(unittest.TestCase):
     def test_mobile_composer_uses_placeholder_single_line_and_bounded_growth(self):
         self.assertIn("#message:placeholder-shown{white-space:nowrap;overflow:hidden!important;text-overflow:ellipsis}", UI)
         self.assertIn(".gbar-pill #message::-webkit-scrollbar{display:none}", UI)
-        self.assertIn("Math.floor(window.innerHeight*.28)", UI)
+        self.assertIn("max-height:28dvh", UI)
+        self.assertIn("Math.floor((window.visualViewport?.height||window.innerHeight)*.28)", UI)
 
 
 if __name__ == "__main__":

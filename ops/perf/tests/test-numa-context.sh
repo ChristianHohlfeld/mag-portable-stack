@@ -56,7 +56,7 @@ assert 'glm-5.3-flash-iq1-m:kv-f16-f16' in glm
 assert 'MAG_ROOM_MODEL_ID_0=mistral-large4' in glm_layout
 assert 'MAG_ROOM_MODEL_ID_1=glm-5.3-flash' in glm_layout
 assert 'mag-llm-glm@q1.service' in glm_txn and 'mag-llm-glm@q2.service' in glm_txn
-assert 'FORMAT=' in glm and '.kv-format' in glm and 'mag-prefix-glm-5.3-flash-slot2.bin' in glm
+assert 'FORMAT=' in glm and '.kv-marker' in glm and 'mag-prefix-glm-5.3-flash-slot2.bin' in glm
 assert '--no-mmap --mlock --flash-attn' in ds_node and '--load-mode mlock' not in ds_node  # avoid file-cache duplication on NUMA0
 assert 'if (slot_is_busy(s)) {' in room  # health probes per NUMA, not globally suppressed
 assert 'if (!bot_prefix_ready(secondary)) return ids;' in room

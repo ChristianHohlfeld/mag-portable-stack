@@ -5066,8 +5066,6 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   if (no_tools && model.rfind("glm-5.3-flash", 0) == 0)
     max_output = std::min(MAX_TOKENS, std::clamp(
         envi("MAG_ROOM_GLM_CHAT_MAX_TOKENS", 256), 32, 256));
-  if (mistral_chat && short_chat)
-    max_output = std::min(max_output, 128); // total generation cap, including unavoidable low reasoning
   if (thinking && model.rfind("glm-5.3-flash", 0) == 0)
     max_output = std::min(max_output, 256);
   if (no_tools && !thinking && model == "glm-5.3-flash-iq1-m")
@@ -5195,7 +5193,11 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   // The server stop array is the primary guard. Hold partial delimiters in
   // client chunks as a fallback so none can reach the room or SSE.
   const std::vector<std::string> glm_stops = {
-      "</think>", "<think>", "<|", "<tool_call", "\n\n## "};
+      "</think>", "<think>", "<|", "<tool_call", "\\n\\n## "};
+  if (mistral_chat) {
+    glm_stops.push_back("[THINK]");
+    glm_stops.push_back("[/THINK]");
+  }
   auto visible_delta = [&](const std::string &s, bool finish = false) {
     if (glm_hard_cut) return;
     visible_reply.feed(s, [&](const std::string &safe) {
@@ -5216,7 +5218,7 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
       }
       if (cut != std::string::npos) {
         if (no_tools && (model == "glm-5.3-flash-iq1-m" || qwen_chat || mistral_chat)) {
-          for (const auto &marker : {"</think>", "<think>", "<|"})
+          for (const auto &marker : {"</think>", "<think>", "<|", "[THINK]", "[/THINK]"})
             if (glm_stream_pending.find(marker) != std::string::npos &&
                 glm_stream_pending.find(marker) == cut) chat_forbidden_cut = true;
         }

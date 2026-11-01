@@ -390,6 +390,7 @@ struct HttpClient {
   // MAG_ROOM_STALL_S, when set, is the same gap for tests.
   int idle_timeout_ms = 0;
   bool cancelable = false;
+  bool no_overall_deadline = false;
   bool hit_deadline = false;
   bool stalled = false, budget_hit = false;
   steady_clock::time_point overall_deadline{};
@@ -461,13 +462,13 @@ struct HttpClient {
     // used to be timeout_ms and was reset on every chunk, so a silent prefill
     // died at the 60s default and the turn was sent again. ik_llama does not
     // abort that prefill when the client goes away, so the resend never runs.
-    if (!overall_set) {
+    if (!no_overall_deadline && !overall_set) {
       overall_deadline = steady_clock::now() + milliseconds(std::max(timeout_ms, 1));
       overall_set = true;
     }
     const int gap = idle_timeout_ms > 0 ? idle_timeout_ms : timeout_ms;
     auto deadline = steady_clock::now() + milliseconds(std::max(gap, 1));
-    if (deadline > overall_deadline) deadline = overall_deadline;
+    if (!no_overall_deadline && deadline > overall_deadline) deadline = overall_deadline;
     for (;;) {
       if (cancelable && stop_flag().load()) {
         eof = true;
@@ -484,7 +485,7 @@ struct HttpClient {
       if (steady_clock::now() >= deadline) {
         hit_deadline = true;
         eof = true;
-        if (steady_clock::now() >= overall_deadline) budget_hit = true;
+        if (!no_overall_deadline && steady_clock::now() >= overall_deadline) budget_hit = true;
         else stalled = true;
         return false;
       }
@@ -4414,6 +4415,7 @@ struct TurnReport {
   bool react_only = false;
   bool skipped = false;
   bool local_fallback = false;
+  bool truncated = false;
 };
 static bool assistant_prefill_error(const std::string &err) {
   return err.find("incompatible with enable_thinking") != std::string::npos ||
@@ -4938,20 +4940,21 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
     }
   }
   HttpClient c;
+  const bool glm_generation = model.rfind("glm-5.3-flash", 0) == 0;
   c.timeout_ms = std::max(LLM_TIMEOUT_S, LLM_TIMEOUT_MIN_S) * 1000;
-  // An explicit turn budget shortens the hard cap. The default stays the
-  // LLM timeout so a normal answer is not cut at 60s.
-  if (const char *turn = getenv("MAG_ROOM_TURN_DEADLINE_S"); turn && *turn)
-    c.timeout_ms = std::min(c.timeout_ms, std::max(1, TURN_DEADLINE_S) * 1000);
-  if (no_tools && model == "glm-5.3-flash-iq1-m")
-    c.timeout_ms = std::min(c.timeout_ms, q1_deadline_ms > 0 ? q1_deadline_ms : 30000);
-  // Worst measured DeepSeek prefill is several minutes with no SSE bytes.
-  // Stay quiet at least that long. MAG_ROOM_STALL_S overrides the gap when
-  // a test needs a short silence bound.
+  // GLM generation has no wall-clock deadline; only a long silent gap is a stall.
+  if (glm_generation) c.no_overall_deadline = true;
+  else {
+    if (const char *turn = getenv("MAG_ROOM_TURN_DEADLINE_S"); turn && *turn)
+      c.timeout_ms = std::min(c.timeout_ms, std::max(1, TURN_DEADLINE_S) * 1000);
+    if (no_tools && model == "glm-5.3-flash-iq1-m")
+      c.timeout_ms = std::min(c.timeout_ms, q1_deadline_ms > 0 ? q1_deadline_ms : 30000);
+  }
   int idle_s = std::max(1, envi("MAG_ROOM_STREAM_IDLE_S", 1200));
   if (const char *stall = getenv("MAG_ROOM_STALL_S"); stall && *stall)
     idle_s = std::max(1, STALL_S);
-  c.idle_timeout_ms = std::min(c.timeout_ms, idle_s * 1000);
+  if (glm_generation) idle_s = std::max(600, idle_s);
+  c.idle_timeout_ms = glm_generation ? idle_s * 1000 : std::min(c.timeout_ms, idle_s * 1000);
   c.cancelable = true;
   if (!c.connectTo(BACKEND_HOST, BACKEND_PORT)) {
     t.error = "Backend nicht erreichbar (" + BACKEND_HOST + ":" +
@@ -5051,23 +5054,20 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   // Both backends use 32k context; retain the proven Qwen output budget.
   // Bound generated tokens on Qwen only, keeping Q4's established budget.
   // Both models retain all native/MCP tools and immutable audit routing.
+  const bool glm_model = model.rfind("glm-5.3-flash", 0) == 0;
   int max_output = model == "qwen3.8-flash-next-uncensored"
       ? (qwen_chat
           ? std::min(MAX_TOKENS, std::clamp(envi("MAG_ROOM_QWEN_CHAT_MAX_TOKENS", 256), 32, 512))
           : std::min(MAX_TOKENS, std::clamp(envi("MAG_ROOM_QWEN_MAX_TOKENS", 4096), 512, 8192)))
-      : model.rfind("glm-5.3-flash", 0) == 0
-      ? std::min(MAX_TOKENS, std::clamp(envi("MAG_ROOM_GLM_MAX_TOKENS", 1024), 128, 8192))
+      : glm_model
+      ? std::min(MAX_TOKENS, std::clamp(envi(no_tools ? "MAG_ROOM_GLM_CHAT_MAX_TOKENS" : "MAG_ROOM_GLM_CODE_MAX_TOKENS", no_tools ? 1024 : 8192), 32, 8192))
       : MAX_TOKENS;
   // Proaktiv must not occupy the only slot for a 4096-token decode.
   // The cap is below Qwen's floor of 512 on purpose.
   if (TL_SELFTALK)
     max_output = std::clamp(envi("MAG_ROOM_PROAKTIV_MAX_TOKENS", 256), 32, 512);
-  // GLM chat uses a short bounded decode, independently of room history.
-  if (no_tools && model.rfind("glm-5.3-flash", 0) == 0)
-    max_output = std::min(MAX_TOKENS, std::clamp(
-        envi("MAG_ROOM_GLM_CHAT_MAX_TOKENS", 256), 32, 256));
-  if (thinking && model.rfind("glm-5.3-flash", 0) == 0)
-    max_output = std::min(max_output, 256);
+  // Only trivial greetings keep a small cap; thinking and real chat/code do not.
+  if (short_chat && glm_model) max_output = std::min(max_output, 128);
   if (no_tools && !thinking && model == "glm-5.3-flash-iq1-m")
     max_output = std::min(max_output, 96); // bounded IQ1_M decode
   body["max_tokens"] = max_output;
@@ -5194,6 +5194,17 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   // client chunks as a fallback so none can reach the room or SSE.
   std::vector<std::string> glm_stops = {
       "</think>", "<think>", "<|", "<tool_call", "\n\n## "};
+  auto heading_inside_fence = [](const std::string &text, size_t pos) {
+    bool fenced = false;
+    for (size_t i = 0; i < pos;) {
+      size_t end = text.find('\n', i);
+      if (end == std::string::npos || end > pos) end = pos;
+      if (text.substr(i, end - i).find("```") != std::string::npos) fenced = !fenced;
+      if (end == pos) break;
+      i = end + 1;
+    }
+    return fenced;
+  };
   if (mistral_chat) {
     glm_stops.push_back("[THINK]");
     glm_stops.push_back("[/THINK]");
@@ -5212,8 +5223,9 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
         const size_t pos = glm_stream_pending.find(marker);
         if (pos == std::string::npos) continue;
         // A heading at the very start is not an answer-following drift.
-        if (marker == "\n\n## " && !glm_answer_started &&
-            acc.content.empty() && pos == 0) continue;
+        if (marker == "\n\n## " &&
+            ((!glm_answer_started && acc.content.empty() && pos == 0) ||
+             heading_inside_fence(glm_stream_pending, pos))) continue;
         cut = std::min(cut, pos);
       }
       if (cut != std::string::npos) {
@@ -6653,12 +6665,14 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
   TL_TODO_TOUCHED = false;
   const bool glm_chat = glm_chat_mode || chat_only_room_bot;
   int glm_tool_rounds = 0;
+  int glm_continuation_rounds = 0;
+  std::string previous_glm_chunk;
   const int glm_tool_max = std::clamp(envi("MAG_ROOM_GLM_CHAT_MAX_ROUNDS", 2), 0, 8);
-  for (int round = 0; round < MAX_RUN_STEPS; round++) {
+  for (int round = 0; round < (glm_chat ? 1024 : MAX_RUN_STEPS); round++) {
     if (stop_flag().load()) break;
     task_yield_point();
     if (stop_flag().load()) break;
-    if (steady_clock::now() >= run_deadline) {
+    if (!glm_chat && steady_clock::now() >= run_deadline) {
       report.error = "Agent-Zeitbudget erreicht (" + std::to_string(RUN_BUDGET_S) +
                      "s). Aufgabe noch offen; Arbeit in VM erhalten.";
       break;
@@ -6780,6 +6794,7 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
     // Stop closes the backend socket, so the turn fails with a read error
     // (often before any header while the prompt is evaluated): not an error.
     if (stop_flag().load()) {
+      if (glm_chat) report.truncated = true;
       if (t.calls.empty()) final_text += t.text;
       break;
     }
@@ -6826,6 +6841,11 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
     }
     // Neither short chat nor regular GLM chat may silently post an empty
     // answer when the model returns tool-only output or no visible text.
+     if (glm_chat && t.finish == "length" && t.text.empty()) {
+       report.truncated = true;
+       completed = true;
+       break;
+     }
      if ((short_chat || glm_chat || chat_only_room_bot) && t.text.empty()) {
       // A structured tool-only result with tool_choice=none is not a
       // successful answer. Show only a local, explicitly failed fallback.
@@ -6905,6 +6925,17 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
     }
     // Normal GLM chat has exactly one host-directed answer per bot/user turn.
     // A thinking-budget exhaustion already had its single final retry above.
+    if (glm_chat && bot_model_id(bot_idx).rfind("glm-5.3-flash", 0) == 0 &&
+        t.finish == "length") {
+      if (t.text.empty() || t.text == previous_glm_chunk ||
+          ++glm_continuation_rounds > 1024) {
+        report.truncated = true;
+        completed = true;
+        break;
+      }
+      previous_glm_chunk = t.text;
+      continue; // messages ends with this assistant prefix; same slot/cache.
+    }
     if (glm_chat || chat_only_room_bot) { completed = true; break; }
     if (stateless || TL_SELFTALK) {
       completed = true; break;
@@ -7148,7 +7179,7 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
     report.continue_requested = false;
   }
   if(CONFIGURED_MODEL && !stateless && !CURRENT_JOB && !TL_TASK && !report.skipped)
-    wire_finish(bot_idx,messages,completed&&!stop_flag().load()&&report.error.empty()&&!report.local_fallback);
+    wire_finish(bot_idx,messages,completed&&!stop_flag().load()&&report.error.empty()&&!report.local_fallback&&!report.truncated);
   finish_steps();
   return report;
 }
@@ -8172,6 +8203,10 @@ static void attach_work(Val &msg, const TurnReport &report) {
       std::string err = one_line(report.error).substr(0, 140);
       (*it)["work_error"] = err;
       msg["work_error"] = err;
+    }
+    if (report.truncated) {
+      (*it)["truncated"] = true;
+      msg["truncated"] = true;
     }
     break;
   }

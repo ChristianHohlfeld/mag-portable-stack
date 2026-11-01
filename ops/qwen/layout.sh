@@ -4,6 +4,9 @@ set -euo pipefail
 ROOT=$(cd -- "$(dirname -- "$(readlink -f "$0")")/../.." && pwd)
 # shellcheck source=../mag-units.sh
 source "$ROOT/ops/mag-units.sh"
+if [[ ${1:-} != rollback && $(bash "$ROOT/ops/coding/desired.sh") == coding ]]; then
+  exec bash "$ROOT/ops/coding/layout.sh" "$@"
+fi
 ACTION=${1:?apply|rollback|probe}; BACKUP=${2:?deployment backup directory}
 TXN="$BACKUP/qwen-layout"
 fail(){ echo "room layout: $*" >&2; exit 4; }

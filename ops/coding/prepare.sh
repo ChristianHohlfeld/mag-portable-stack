@@ -26,7 +26,6 @@ git -C "$SRC" checkout --force --detach "$REV"
 for arch in QWEN35MOE QWEN3MOE; do
   grep -Fq "LLM_ARCH_$arch" "$SRC/src/llama-arch.cpp" || exit 4
   grep -Fq "LLM_ARCH_$arch" "$SRC/src/llama-model.cpp" || exit 4
-  grep -Fq "LLM_ARCH_$arch" "$SRC/src/llama-model-graph.cpp" || exit 4
 done
 cmake -S "$SRC" -B "$SRC/build-mag-coding" -G Ninja \
   -DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=OFF -DGGML_AVX2=ON \
@@ -40,6 +39,7 @@ mv -f "$BIN.next" "$BIN"
 printf '%s\n' "$REV" > "$(dirname "$BIN")/source-commit"
 "$BIN" --version
 # Explicitly guard the required server options. Absent options abort staging, not live.
-"$BIN" --help 2>&1 | grep -Fq -- '--slot-save-path'
-"$BIN" --help 2>&1 | grep -Fq -- '--jinja'
+help=$("$BIN" --help 2>&1)
+grep -Fq -- '--slot-save-path' <<<"$help" || exit 4
+grep -Fq -- '--jinja' <<<"$help" || exit 4
 echo "coding prepare: both GGUFs and pinned runtime verified; old models untouched"

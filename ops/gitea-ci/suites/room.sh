@@ -9,6 +9,7 @@ printf "\n== %s\n" "Build the native room"
 bash ops/ci/native-build.sh magroom
 printf "\n== %s\n" "Stop, user priority and queue against a fake model"
 python3 mag-room/tests/test_room_control.py
+python3 mag-room/tests/test_glm_room_contract.py
 printf "\n== %s\n" "Browser e2e (composer Stop/Esc, queue, run card, menus, mobile drawers)"
 python3 mag-room/tests/test_room_e2e.py
 printf "\n== %s\n" "Message popover and NUMA selector (phone portrait/landscape, desktop)"

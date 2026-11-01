@@ -481,6 +481,12 @@ dialog{border-radius:10px;border-color:var(--line);background:var(--surface)}
 @keyframes gbarpulse{0%{box-shadow:0 0 0 0 rgba(230,43,43,.5)}70%{box-shadow:0 0 0 8px transparent}100%{box-shadow:0 0 0 0 transparent}}
 .composer-inner>.speech-status{padding:0 4px 8px 56px}
 @media(max-width:850px){.bot-lanes{flex-wrap:nowrap;overflow-x:auto;scrollbar-width:none;margin-left:-2px;padding-left:2px}.bot-lanes::-webkit-scrollbar{display:none}.bot-lane{flex:none}.bot-lane .lane-name{max-width:38vw}.work-status .work-stop{min-height:34px;padding:0 12px}#send-form.gbar{gap:6px}.gbar-pill #message{padding:11px 4px 11px 16px}#send-form .gbar-mic{width:40px;height:40px;min-width:40px;min-height:40px;margin:2px 0}}
+@media(max-width:850px){
+ .gbar-pill #message:placeholder-shown{white-space:nowrap;overflow:hidden!important;text-overflow:ellipsis}
+ .gbar-pill #message::placeholder{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+ .gbar-pill #message{scrollbar-width:none;max-height:28dvh}
+ .gbar-pill #message::-webkit-scrollbar{display:none}
+}
 </style><style id="compact-chrome">
 /* Slim chrome: 48px header, 42px composer; more room for the conversation. */
 #app-header{height:48px!important;gap:10px;padding:0 14px}
@@ -511,7 +517,7 @@ dialog{border-radius:10px;border-color:var(--line);background:var(--surface)}
  .composer-wrap{padding:6px max(10px,env(safe-area-inset-right)) max(8px,env(safe-area-inset-bottom)) max(10px,env(safe-area-inset-left))!important}
  .gbar-btn,#send-form .gbar-btn{width:42px!important;height:42px!important;min-width:42px;min-height:42px}
  .composer-card.gbar-pill{min-height:42px}
- .gbar-pill #message{height:40px;min-height:40px;padding:9px 4px 9px 16px}
+ .gbar-pill #message{height:40px;min-height:40px;max-height:28dvh;padding:9px 4px 9px 16px}
  #send-form .gbar-mic{width:36px!important;height:36px!important;min-width:36px;min-height:36px;margin:2px 0}
 }
 </style><style id="room-ux">
@@ -1529,6 +1535,7 @@ function stoppedByUser(msg){return msg.interrupted&&msg.stopped!=='system'}
 const QUIET_STEP=/^(?:Liest Verlauf|Liest das Gespräch|Denkt nach(?:…|\.\.\.)?$|Gedacht für(?: \d+ s)?$|Reagiert$|Nimmt die Reaktion zurück$)/;
 function shownSteps(steps){return (steps||[]).filter(x=>!QUIET_STEP.test(x))}
 function doneLabel(msg){
+ if(msg.truncated)return 'Antwort wegen Längenlimit abgeschnitten – weiter schreiben';
  if(msg.work_error&&!stoppedByUser(msg))return 'Fehler · '+msg.work_error;
  const n=shownSteps(msg.steps).length;
  let t=((msg.interrupted?(stoppedByUser(msg)?'Gestoppt · ':'Unterbrochen · '):'Fertig · ')+(msg.elapsed_s!=null?fmtClock(msg.elapsed_s):'')).replace(/ · $/,'');
@@ -1547,7 +1554,7 @@ function stepsList(steps){
 function attachWork(div,msg,content){
  if(!msg||msg.role==='user')return;
  // Tool steps and errors remain useful even with thinking switched off.
- if(!msg.work_error&&!msg.interrupted&&!shownSteps(msg.steps).length&&!shownTools(storedTools(msg)).length)return;
+ if(!msg.work_error&&!msg.truncated&&!msg.interrupted&&!shownSteps(msg.steps).length&&!shownTools(storedTools(msg)).length)return;
  const box=document.createElement('div');
  box.className='work-status '+(stoppedByUser(msg)?'phase-stopped':msg.work_error?'phase-error':(msg.interrupted?'phase-hung':'phase-done'));
  const dot=document.createElement('span');dot.className='pulse';
@@ -3644,7 +3651,7 @@ document.addEventListener('visibilitychange',()=>{if(document.hidden)disconnectL
 window.addEventListener('pagehide',()=>{disconnectLive();events.close()});
 
 
-function fitMessageHeight(){const input=$('message');input.style.height='auto';input.style.height=Math.min(160,Math.max(40,input.scrollHeight))+'px';syncComposerButton()}
+function fitMessageHeight(){const input=$('message');input.style.height='auto';input.style.height=Math.min(Math.floor((window.visualViewport?.height||window.innerHeight)*.28),Math.max(40,input.scrollHeight))+'px';syncComposerButton()}
 $('message').addEventListener('input',fitMessageHeight);
 $('stop-run').addEventListener('click',e=>{e.preventDefault();e.stopPropagation();stopBot('')});
 syncComposerButton();

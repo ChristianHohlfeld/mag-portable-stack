@@ -293,6 +293,10 @@ static std::string trim(const std::string &s) {
   size_t a = s.find_first_not_of(" \t\r\n"), b = s.find_last_not_of(" \t\r\n");
   return a == std::string::npos ? "" : s.substr(a, b - a + 1);
 }
+static std::string ltrim_ws(const std::string &s) {
+  const size_t a = s.find_first_not_of(" \t\r\n");
+  return a == std::string::npos ? std::string() : s.substr(a);
+}
 static std::string basename_of(const std::string &p) {
   auto s = p.find_last_of('/');
   return s == std::string::npos ? p : p.substr(s + 1);
@@ -390,6 +394,7 @@ struct HttpClient {
   // MAG_ROOM_STALL_S, when set, is the same gap for tests.
   int idle_timeout_ms = 0;
   bool cancelable = false;
+  bool no_overall_deadline = false;
   bool hit_deadline = false;
   bool stalled = false, budget_hit = false;
   steady_clock::time_point overall_deadline{};
@@ -461,13 +466,13 @@ struct HttpClient {
     // used to be timeout_ms and was reset on every chunk, so a silent prefill
     // died at the 60s default and the turn was sent again. ik_llama does not
     // abort that prefill when the client goes away, so the resend never runs.
-    if (!overall_set) {
+    if (!no_overall_deadline && !overall_set) {
       overall_deadline = steady_clock::now() + milliseconds(std::max(timeout_ms, 1));
       overall_set = true;
     }
     const int gap = idle_timeout_ms > 0 ? idle_timeout_ms : timeout_ms;
     auto deadline = steady_clock::now() + milliseconds(std::max(gap, 1));
-    if (deadline > overall_deadline) deadline = overall_deadline;
+    if (!no_overall_deadline && deadline > overall_deadline) deadline = overall_deadline;
     for (;;) {
       if (cancelable && stop_flag().load()) {
         eof = true;
@@ -484,7 +489,7 @@ struct HttpClient {
       if (steady_clock::now() >= deadline) {
         hit_deadline = true;
         eof = true;
-        if (steady_clock::now() >= overall_deadline) budget_hit = true;
+        if (!no_overall_deadline && steady_clock::now() >= overall_deadline) budget_hit = true;
         else stalled = true;
         return false;
       }
@@ -4396,10 +4401,13 @@ static void model_watcher_loop() {
 
 // ---------------------------------------------------------------- backend
 struct Turn {
-  std::string text, reasoning, finish;
+  // raw_text is the visible text before the final trim; GLM continuation
+  // rounds join it byte-exactly so code indentation survives chunk joins.
+  std::string text, raw_text, reasoning, finish;
   std::vector<Val> calls;
   std::string error;
   bool skipped = false;
+  bool loop_cut = false; // GLM repetition guard ended the stream
   bool local_fallback = false;
 };
 struct TurnReport {
@@ -4414,6 +4422,7 @@ struct TurnReport {
   bool react_only = false;
   bool skipped = false;
   bool local_fallback = false;
+  bool truncated = false;
 };
 static bool assistant_prefill_error(const std::string &err) {
   return err.find("incompatible with enable_thinking") != std::string::npos ||
@@ -4787,6 +4796,9 @@ class VisibleReplyFilter {
   bool at_head = true;
  public:
   explicit VisibleReplyFilter(std::string name) : speaker(std::move(name)) {}
+  // A continuation round extends an answer mid-text: keep its leading
+  // whitespace (code indentation) and do not strip speaker prefixes.
+  void continuing() { at_head = false; }
   void feed(const std::string &piece,
             const std::function<void(const std::string &)> &emit,
             bool finish = false) {
@@ -4838,6 +4850,9 @@ class GlmRepetitionGuard {
   std::string partial, run, lead, last_word;
   size_t count = 0;
   bool repeated = false;
+ public:
+  size_t limit = 6; // equal consecutive words that count as a loop
+ private:
   static std::string word_key(const std::string &token) {
     size_t begin = 0, end = token.size();
     auto is_word = [](unsigned char ch) {
@@ -4863,7 +4878,7 @@ class GlmRepetitionGuard {
       }
       if (key == last_word) {
         run += token;
-        if (++count >= 6) {
+        if (++count >= limit) {
           repeated = true;
           run.clear(); lead.clear();
         }
@@ -4911,7 +4926,10 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
                  &on_delta,
              bool thinking, int id_slot, const std::string &model = "",
              int bot_idx = -1, bool short_chat = false, bool no_tools = false,
-             int q1_deadline_ms = 0) {
+             int q1_deadline_ms = 0,
+             const std::string *glm_prefix = nullptr) {
+  // glm_prefix: already streamed assistant text of this GLM answer. Set only
+  // for continuation rounds (thinking off, assistant prefill as last message).
   Turn t;
   const auto backend_started = steady_clock::now();
   // DeepSeek rejects an assistant-ending prefill while thinking is on
@@ -4926,6 +4944,7 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   }
   ThinkingContent thinking_content;
   VisibleReplyFilter visible_reply(bot_idx >= 0 ? bot_field(bot_idx, "name", "Bot") : "");
+  if (glm_prefix && !glm_prefix->empty()) visible_reply.continuing();
   slot_restore_if_cold(id_slot);
   if (CONFIGURED_MODEL && bot_idx >= 0) {
     const int slot = model_slot(bot_idx);
@@ -4938,20 +4957,25 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
     }
   }
   HttpClient c;
+  const bool glm_generation = model.rfind("glm-5.3-flash", 0) == 0 &&
+      model != "glm-5.3-flash-iq1-m";
   c.timeout_ms = std::max(LLM_TIMEOUT_S, LLM_TIMEOUT_MIN_S) * 1000;
-  // An explicit turn budget shortens the hard cap. The default stays the
-  // LLM timeout so a normal answer is not cut at 60s.
-  if (const char *turn = getenv("MAG_ROOM_TURN_DEADLINE_S"); turn && *turn)
-    c.timeout_ms = std::min(c.timeout_ms, std::max(1, TURN_DEADLINE_S) * 1000);
-  if (no_tools && model == "glm-5.3-flash-iq1-m")
-    c.timeout_ms = std::min(c.timeout_ms, q1_deadline_ms > 0 ? q1_deadline_ms : 30000);
-  // Worst measured DeepSeek prefill is several minutes with no SSE bytes.
-  // Stay quiet at least that long. MAG_ROOM_STALL_S overrides the gap when
-  // a test needs a short silence bound.
-  int idle_s = std::max(1, envi("MAG_ROOM_STREAM_IDLE_S", 1200));
+  // GLM generation has no wall-clock deadline; only a long silent gap is a stall.
+  if (glm_generation) c.no_overall_deadline = true;
+  else {
+    if (const char *turn = getenv("MAG_ROOM_TURN_DEADLINE_S"); turn && *turn)
+      c.timeout_ms = std::min(c.timeout_ms, std::max(1, TURN_DEADLINE_S) * 1000);
+    if (no_tools && model == "glm-5.3-flash-iq1-m")
+      c.timeout_ms = std::min(c.timeout_ms, q1_deadline_ms > 0 ? q1_deadline_ms : 30000);
+  }
+  // GLM: only 10 minutes without any stream byte (no token, no prompt
+  // progress) is a stall. MAG_ROOM_STALL_S still overrides it for tests.
+  int idle_s = glm_generation
+      ? std::max(1, envi("MAG_ROOM_GLM_STALL_S", 600))
+      : std::max(1, envi("MAG_ROOM_STREAM_IDLE_S", 1200));
   if (const char *stall = getenv("MAG_ROOM_STALL_S"); stall && *stall)
     idle_s = std::max(1, STALL_S);
-  c.idle_timeout_ms = std::min(c.timeout_ms, idle_s * 1000);
+  c.idle_timeout_ms = glm_generation ? idle_s * 1000 : std::min(c.timeout_ms, idle_s * 1000);
   c.cancelable = true;
   if (!c.connectTo(BACKEND_HOST, BACKEND_PORT)) {
     t.error = "Backend nicht erreichbar (" + BACKEND_HOST + ":" +
@@ -5048,28 +5072,20 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
        body["repeat_last_n"] = 64;
     }
   }
-  // Both backends use 32k context; retain the proven Qwen output budget.
-  // Bound generated tokens on Qwen only, keeping Q4's established budget.
-  // Both models retain all native/MCP tools and immutable audit routing.
+  // Keep Qwen's existing budgets unchanged. GLM chat/code use independent
+  // configurable budgets, both bounded by the room-wide MAX_TOKENS ceiling.
+  const bool glm_model = model.rfind("glm-5.3-flash", 0) == 0;
   int max_output = model == "qwen3.8-flash-next-uncensored"
       ? (qwen_chat
           ? std::min(MAX_TOKENS, std::clamp(envi("MAG_ROOM_QWEN_CHAT_MAX_TOKENS", 256), 32, 512))
           : std::min(MAX_TOKENS, std::clamp(envi("MAG_ROOM_QWEN_MAX_TOKENS", 4096), 512, 8192)))
-      : model.rfind("glm-5.3-flash", 0) == 0
-      ? std::min(MAX_TOKENS, std::clamp(envi("MAG_ROOM_GLM_MAX_TOKENS", 1024), 128, 8192))
+      : glm_model
+      ? std::min(MAX_TOKENS, std::clamp(envi(no_tools ? "MAG_ROOM_GLM_CHAT_MAX_TOKENS" : "MAG_ROOM_GLM_CODE_MAX_TOKENS", no_tools ? 1024 : 8192), 32, 8192))
       : MAX_TOKENS;
   // Proaktiv must not occupy the only slot for a 4096-token decode.
   // The cap is below Qwen's floor of 512 on purpose.
   if (TL_SELFTALK)
     max_output = std::clamp(envi("MAG_ROOM_PROAKTIV_MAX_TOKENS", 256), 32, 512);
-  // GLM chat uses a short bounded decode, independently of room history.
-  if (no_tools && model.rfind("glm-5.3-flash", 0) == 0)
-    max_output = std::min(MAX_TOKENS, std::clamp(
-        envi("MAG_ROOM_GLM_CHAT_MAX_TOKENS", 256), 32, 256));
-  if (thinking && model.rfind("glm-5.3-flash", 0) == 0)
-    max_output = std::min(max_output, 256);
-  if (no_tools && !thinking && model == "glm-5.3-flash-iq1-m")
-    max_output = std::min(max_output, 96); // bounded IQ1_M decode
   body["max_tokens"] = max_output;
   if (no_tools && !thinking && model.rfind("glm-5.3-flash", 0) == 0) {
     // Preserve the live GLM-Q2 request contract unchanged.
@@ -5180,6 +5196,10 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   bool glm_hard_cut = false;
   bool chat_forbidden_cut = false;
   GlmRepetitionGuard glm_repetition;
+  // Code legitimately repeats short tokens (0, 0, 0, …); GLM-Q2 answers end
+  // only on a real loop. The 6-word chat guard stays for the other models.
+  if (glm_generation) glm_repetition.limit = 64;
+  bool glm_loop_cut = false;
   bool glm_answer_started = false;
   auto emit_glm_safe = [&](const std::string &piece, bool finish = false) {
     for (unsigned char c : piece)
@@ -5189,11 +5209,27 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
       if (!(no_tools && (model == "glm-5.3-flash-iq1-m" || qwen_chat || mistral_chat)))
         on_delta("delta", visible);
     }, finish);
+    if (glm_hard_cut) glm_loop_cut = true;
   };
   // The server stop array is the primary guard. Hold partial delimiters in
   // client chunks as a fallback so none can reach the room or SSE.
   std::vector<std::string> glm_stops = {
       "</think>", "<think>", "<|", "<tool_call", "\n\n## "};
+  auto heading_inside_fence = [](const std::string &text, size_t pos) {
+    bool fenced = false;
+    for (size_t i = 0; i < pos;) {
+      size_t end = text.find('\n', i);
+      if (end == std::string::npos || end > pos) end = pos;
+      const std::string line = text.substr(i, end - i);
+      const size_t first = line.find_first_not_of(" \t");
+      if (first != std::string::npos &&
+          (line.compare(first, 3, "```") == 0 ||
+           line.compare(first, 3, "~~~") == 0)) fenced = !fenced;
+      if (end == pos) break;
+      i = end + 1;
+    }
+    return fenced;
+  };
   if (mistral_chat) {
     glm_stops.push_back("[THINK]");
     glm_stops.push_back("[/THINK]");
@@ -5209,12 +5245,25 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
       glm_stream_pending += safe;
       size_t cut = std::string::npos;
       for (const auto &marker : glm_stops) {
-        const size_t pos = glm_stream_pending.find(marker);
-        if (pos == std::string::npos) continue;
-        // A heading at the very start is not an answer-following drift.
-        if (marker == "\n\n## " && !glm_answer_started &&
-            acc.content.empty() && pos == 0) continue;
-        cut = std::min(cut, pos);
+        size_t search_from = 0;
+        size_t pos = std::string::npos;
+        while ((pos = glm_stream_pending.find(marker, search_from)) != std::string::npos) {
+          // Ignore fenced-code headings, but keep searching for the next real
+          // heading outside the fence in this same pending stream buffer.
+          // A fence opened in an earlier continuation round is still open:
+          // prepend the streamed assistant prefix for the fence state.
+          const std::string &prior = glm_prefix ? *glm_prefix : std::string();
+          const bool ignore_heading = marker == "\n\n## " &&
+              ((prior.empty() && !glm_answer_started && acc.content.empty() && pos == 0) ||
+               (glm_model && heading_inside_fence(prior + acc.content + glm_stream_pending,
+                                                   prior.size() + acc.content.size() + pos)));
+          if (ignore_heading) {
+            search_from = pos + marker.size();
+            continue;
+          }
+          cut = std::min(cut, pos);
+          break;
+        }
       }
       if (cut != std::string::npos) {
         if (no_tools && (model == "glm-5.3-flash-iq1-m" || qwen_chat || mistral_chat)) {
@@ -5422,8 +5471,11 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
       acc.content.erase(cut);
       std::cerr << "glm-short-raw-tool suppressed model=" << model << "\n";
     }
+    t.raw_text = acc.content;
     acc.content = trim(acc.content);
-    if (!glm_chat_stream && !acc.content.empty()) on_delta("delta", acc.content);
+    // GLM streams the raw text so the room row matches the byte-exact prefix.
+    if (!glm_chat_stream && !acc.content.empty())
+      on_delta("delta", glm_generation ? ltrim_ws(t.raw_text) : acc.content);
   }
   t.text = no_tools && model == "glm-5.3-flash-iq1-m" ?
       (chat_forbidden_cut ? "" : q1_clean(acc.content)) :
@@ -5432,9 +5484,11 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   if (no_tools && model == "glm-5.3-flash-iq1-m" && !t.text.empty() && !q1_bad(t.text))
     on_delta("delta", t.text);
   if ((qwen_chat || mistral_chat) && !t.text.empty()) on_delta("delta", t.text);
+  if (!(short_chat || no_tools)) t.raw_text = acc.content;
+  t.loop_cut = glm_loop_cut;
   t.reasoning = acc.reasoning;
   if (t.error.empty() && t.text.empty() && acc.calls.empty() &&
-      t.finish == "length") {
+      t.finish == "length" && !glm_generation) {
     // The model used its budget entirely for thinking. Return a short,
     // visible completion instead of surfacing an internal token-limit error.
     // Do not continue the reasoning in another 1024-token round.
@@ -6651,14 +6705,27 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
   auto run_deadline = steady_clock::now() + seconds(RUN_BUDGET_S);
   int todo_nudges = 0;
   TL_TODO_TOUCHED = false;
-  const bool glm_chat = glm_chat_mode || chat_only_room_bot;
-  int glm_tool_rounds = 0;
-  const int glm_tool_max = std::clamp(envi("MAG_ROOM_GLM_CHAT_MAX_ROUNDS", 2), 0, 8);
-  for (int round = 0; round < MAX_RUN_STEPS; round++) {
+  const bool glm_chat = glm_chat_mode &&
+      bot_model_id(bot_idx).rfind("glm-5.3-flash", 0) == 0;
+  // GLM-Q2 (and later GLM-5.3-Flash quants); the retired Q1 keeps its path.
+  const bool glm_generation_turn =
+      bot_model_id(bot_idx).rfind("glm-5.3-flash", 0) == 0 &&
+      bot_model_id(bot_idx) != "glm-5.3-flash-iq1-m";
+  // GLM length continuations are one growing answer, not agent steps: they
+  // neither count against MAX_RUN_STEPS nor hit the run time budget. Only
+  // context end, Stop, the 600 s no-byte stall and the loop guard end them.
+  int glm_continuation_rounds = 0;
+  bool glm_continue = false;       // next round continues the assistant prefix
+  bool glm_thinking_retry = false; // thinking-only round: answer without thinking
+  std::string glm_prefix;          // raw assistant text streamed so far
+  std::string previous_glm_chunk;
+  std::set<std::string> glm_seen_chunks;
+  for (int round = 0; round - glm_continuation_rounds < MAX_RUN_STEPS; round++) {
     if (stop_flag().load()) break;
     task_yield_point();
     if (stop_flag().load()) break;
-    if (steady_clock::now() >= run_deadline) {
+    if (!(glm_generation_turn && (glm_continue || glm_thinking_retry)) &&
+        steady_clock::now() >= run_deadline) {
       report.error = "Agent-Zeitbudget erreicht (" + std::to_string(RUN_BUDGET_S) +
                      "s). Aufgabe noch offen; Arbeit in VM erhalten.";
       break;
@@ -6748,10 +6815,21 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
     for (int attempt = 0; attempt < 3; ++attempt) {
       if (!stateless)
         compact_agent_context(bot_idx, messages, tools, attempt_budget, compacted_steps);
+      // Continuation rounds send enable_thinking=false: llama.cpp rejects an
+      // assistant prefill with thinking on (reasoning_effort/clear_thinking stay).
+      const bool glm_no_think = glm_generation_turn && (glm_continue || glm_thinking_retry);
       t = backend_turn(messages, tools,
-                       autotalk ? 0.75 : 0.55, on_delta, thinking_turn,
+                       autotalk ? 0.75 : 0.55, on_delta,
+                       glm_no_think ? false : thinking_turn,
                        slot_for_key(bot_id), bot_model_id(bot_idx), bot_idx,
-                       short_chat, glm_chat || chat_only_room_bot);
+                       short_chat, glm_chat || chat_only_room_bot, 0,
+                       glm_continue ? &glm_prefix : nullptr);
+      if (glm_continue && assistant_prefill_error(t.error)) {
+        // The answer so far stays; it is marked truncated, never skipped.
+        std::cerr << "glm-continuation prefill rejected bot=" << bot_id << std::endl;
+        report.truncated = true;
+        break;
+      }
       if (t.skipped || assistant_prefill_error(t.error)) {
         // The guard already logged a skip. A live 500 of this type must not
         // be posted into the room and must not invalidate the wire below.
@@ -6762,6 +6840,9 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
         break;
       }
       if (stop_flag().load() || !context_overflow_error(t.error)) break;
+      // A continuation that reaches the context boundary is final: do not
+      // rewrite/compact its assistant prefix and invalidate the same slot cache.
+      if (glm_generation_turn && glm_continuation_rounds > 0) break;
       if (stateless) {
         t.error = "Stateless-Eingabe überschreitet das Modellkontextfenster; Text nicht verändert.";
         break;
@@ -6777,16 +6858,24 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
     }
     if (think_from && think_to)
       report.thought_ms += (long)duration_cast<milliseconds>(*think_to - *think_from).count();
+    if (report.truncated && glm_continue && !stop_flag().load()) {
+      completed = true;
+      break;
+    }
     // Stop closes the backend socket, so the turn fails with a read error
     // (often before any header while the prompt is evaluated): not an error.
     if (stop_flag().load()) {
-      if (t.calls.empty()) final_text += t.text;
+      if (glm_generation_turn) {
+        report.truncated = true;
+        if (t.calls.empty())
+          final_text += glm_prefix.empty() ? trim(t.raw_text) : t.raw_text;
+      } else if (t.calls.empty()) final_text += t.text;
       break;
     }
-    if (glm_chat && thinking_turn && !stop_flag().load() &&
-        ((t.finish == "length" && t.text.empty()) ||
-         t.error.find("Antwortlimit beim Denken erreicht") != std::string::npos)) {
-      // Exactly one nonthinking answer after a user-requested thinking round.
+    // Preserve the existing one-shot visible retry for the Mistral/Qwen
+    // chat-only slots. GLM itself now continues the same assistant prefix.
+    if (chat_only_room_bot && thinking_turn && !stop_flag().load() &&
+        t.finish == "length" && t.text.empty()) {
       t = backend_turn(messages, tools, 0.55, on_delta, false,
            slot_for_key(bot_id), bot_model_id(bot_idx), bot_idx, false, true);
     }
@@ -6808,6 +6897,12 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
     if (!t.error.empty() && glm_chat && bot_model_id(bot_idx) == "glm-5.3-flash-iq1-m") {
       report.skipped=true; completed=true; break;
     }
+    if (!t.error.empty() && glm_generation_turn && glm_continuation_rounds > 0 &&
+        context_overflow_error(t.error)) {
+      report.truncated = true;
+      completed = true;
+      break;
+    }
     if (!t.error.empty()) {
       report.error = t.error.substr(0, 280);
       emit_event("error", bot_id, bot_name, report.error);
@@ -6826,6 +6921,80 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
     }
     // Neither short chat nor regular GLM chat may silently post an empty
     // answer when the model returns tool-only output or no visible text.
+    // GLM: the first round may spend its whole budget on thinking. Answer
+    // once more without thinking instead of failing (no prefix yet).
+    if (glm_generation_turn && t.calls.empty() && t.text.empty() &&
+        t.finish == "length" && glm_prefix.empty() && !glm_continue &&
+        !glm_thinking_retry && thinking_turn) {
+      glm_thinking_retry = true;
+      ++glm_continuation_rounds;
+      continue;
+    }
+    // The visible chunk of this round, byte-exact (only the answer's leading
+    // whitespace is dropped) so code joins keep newlines and indentation.
+    const std::string glm_chunk = !glm_generation_turn ? std::string()
+        : glm_prefix.empty() ? ltrim_ws(t.raw_text) : t.raw_text;
+    if (glm_generation_turn && t.calls.empty() && glm_continue) {
+      // Loop guard: a continuation that adds nothing or repeats itself ends.
+      const bool repeats = !previous_glm_chunk.empty() &&
+          (glm_chunk == previous_glm_chunk || glm_seen_chunks.count(glm_chunk) != 0 ||
+           (glm_chunk.size() >= previous_glm_chunk.size() &&
+            glm_chunk.compare(0, previous_glm_chunk.size(), previous_glm_chunk) == 0));
+      if (trim(glm_chunk).empty() || repeats) {
+        std::cerr << "glm-continuation loop-guard bot=" << bot_id
+                  << " rounds=" << glm_continuation_rounds << std::endl;
+        report.truncated = true;
+        completed = true;
+        break;
+      }
+    }
+    // Jobs keep their normal final-answer/todo handling unless the answer
+    // was cut by the token budget (or is already being continued).
+    const bool glm_answer_path = glm_generation_turn && t.calls.empty() &&
+        !trim(glm_chunk).empty() &&
+        (glm_chat || chat_only_room_bot || stateless || TL_SELFTALK ||
+         t.finish == "length" || glm_continue);
+    if (glm_answer_path) {
+      // One growing assistant message: extend the prefix, never add a
+      // second assistant turn, and keep the exact bytes.
+      final_text += glm_chunk;
+      emit_answer_deltas(bot_id, bot_name, glm_chunk);
+      run_answer_phase();
+      if (glm_continue && !messages.empty() &&
+          mag::str(messages.back(), "role") == "assistant") {
+        glm_prefix += glm_chunk;
+        messages.back()["content"] = glm_prefix;
+      } else {
+        glm_prefix = glm_chunk;
+        Val asst = Val::object();
+        asst["role"] = "assistant";
+        asst["content"] = glm_prefix;
+        // A finished one-round answer keeps its reasoning as before; an
+        // assistant prefill for continuation carries only visible text.
+        if (t.finish != "length" && !t.reasoning.empty())
+          asst["reasoning_content"] = t.reasoning;
+        messages.push_back(asst);
+      }
+      if (t.loop_cut) {
+        // The repetition guard ended a looping stream: keep the text but
+        // never store it as a complete answer.
+        report.truncated = true;
+        completed = true;
+        break;
+      }
+      if (t.finish == "length") {
+        ++glm_continuation_rounds;
+        previous_glm_chunk = glm_chunk;
+        glm_seen_chunks.insert(glm_chunk);
+        glm_continue = true;
+        std::cerr << "glm-continuation round=" << glm_continuation_rounds
+                  << " bot=" << bot_id << " chars=" << glm_prefix.size() << std::endl;
+        continue; // same slot, prompt cache and assistant prefix
+      }
+      // Chat: exactly one answer. Jobs: the continued answer is final.
+      completed = true;
+      break;
+    }
      if ((short_chat || glm_chat || chat_only_room_bot) && t.text.empty()) {
       // A structured tool-only result with tool_choice=none is not a
       // successful answer. Show only a local, explicitly failed fallback.
@@ -6883,7 +7052,6 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
     }
     messages.push_back(asst);
     const bool tool_round = !t.calls.empty() && !TL_SELFTALK;
-    if (tool_round && glm_chat) ++glm_tool_rounds;
     // Open todo items are an unfinished goal: the turn goes on (bounded).
     const bool todo_open = !glm_chat && !chat_only_room_bot && !short_chat && !tool_round && !stateless && !TL_SELFTALK && TL_TODO_TOUCHED &&
         todo_nudges < 2 && !has_next_step(t.text) && todo_open_for(bot_id) > 0;
@@ -6904,7 +7072,6 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
       }
     }
     // Normal GLM chat has exactly one host-directed answer per bot/user turn.
-    // A thinking-budget exhaustion already had its single final retry above.
     if (glm_chat || chat_only_room_bot) { completed = true; break; }
     if (stateless || TL_SELFTALK) {
       completed = true; break;
@@ -7123,7 +7290,7 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
     report.react_only = true;
     report.continue_requested = false;
     if(CONFIGURED_MODEL && !stateless && !CURRENT_JOB && !TL_TASK && !report.skipped)
-      wire_finish(bot_idx,messages,completed&&!stop_flag().load()&&report.error.empty()&&!report.local_fallback);
+      wire_finish(bot_idx,messages,completed&&!stop_flag().load()&&report.error.empty()&&!report.local_fallback&&!report.truncated);
     finish_steps();
     return report;
   }
@@ -7148,7 +7315,7 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
     report.continue_requested = false;
   }
   if(CONFIGURED_MODEL && !stateless && !CURRENT_JOB && !TL_TASK && !report.skipped)
-    wire_finish(bot_idx,messages,completed&&!stop_flag().load()&&report.error.empty()&&!report.local_fallback);
+    wire_finish(bot_idx,messages,completed&&!stop_flag().load()&&report.error.empty()&&!report.local_fallback&&!report.truncated);
   finish_steps();
   return report;
 }
@@ -8172,6 +8339,10 @@ static void attach_work(Val &msg, const TurnReport &report) {
       std::string err = one_line(report.error).substr(0, 140);
       (*it)["work_error"] = err;
       msg["work_error"] = err;
+    }
+    if (report.truncated) {
+      (*it)["truncated"] = true;
+      msg["truncated"] = true;
     }
     break;
   }

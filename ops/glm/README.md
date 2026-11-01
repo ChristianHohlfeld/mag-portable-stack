@@ -2,6 +2,36 @@
 
 Repo deployment replaces **DeepSeek** on NUMA0 with GLM-Q1 (`IQ1_M`) and retains **IQ2_XS exactly as #231** on NUMA1 (GLM-Q2). No weight files are deleted.
 
+## MAG Room output budget and continuation
+
+The room uses separate GLM output budgets; both remain bounded by the room-wide
+`MAX_TOKENS` setting:
+
+- Human chat: `MAG_ROOM_GLM_CHAT_MAX_TOKENS=1024` by default (clamped to
+  32–8192). Thinking-on requests use the same budget; they retain
+  `reasoning_effort=low` and `clear_thinking=true`.
+- Code/tool work: `MAG_ROOM_GLM_CODE_MAX_TOKENS=8192` by default (clamped to
+  32–8192). Operators/tests can set it to 4096.
+
+A GLM response ending with `finish_reason=length` continues automatically in
+the same room turn, model slot and prompt-cache prefix: the text so far is sent
+as one growing assistant prefill (byte-exact, so code indentation survives the
+joins) with `enable_thinking=false` — llama.cpp rejects an assistant prefill
+with thinking on — while `reasoning_effort=low` and `clear_thinking=true` stay.
+Verified live on GLM-Q2 :8192 (streamed deltas contain only the new tokens).
+A first round that spends its whole budget on thinking is answered once more
+without thinking. Continuation rounds do not count as agent steps and have no
+time budget; tool rounds in jobs keep `MAG_ROOM_MAX_STEPS`. The answer ends only
+on `stop`, user Stop, context exhaustion, or the loop guard (a round with no new
+text or a repeated chunk). A GLM stream has no wall-clock deadline while bytes
+arrive; only `MAG_ROOM_GLM_STALL_S` (default 600 s = 10 min) without any stream
+byte is a stall (`MAG_ROOM_STALL_S` overrides it for tests).
+Context/Stop/guard truncation is persisted as `truncated: true` and shown as
+“Antwort wegen Längenlimit abgeschnitten – weiter schreiben”; it is never
+stored as a complete successful assistant turn.
+
+The chat-template parameters follow the [official GLM-5.3-Flash model card](https://huggingface.co/zai-org/GLM-5.3-Flash).
+
 | | GLM-Q1 | GLM-Q2 |
 |---|---|---|
 | model ID | `glm-5.3-flash-iq1-m` | `glm-5.3-flash` |

@@ -1335,5 +1335,33 @@ class RoomE2E(unittest.TestCase):
             p.close()
 
 
+    def test_14_mobile_composer_placeholder_and_autogrow(self):
+        p = self.browser.new_page(viewport={'width': 360, 'height': 780},
+                                  is_mobile=True, has_touch=True)
+        try:
+            p.goto(f'http://127.0.0.1:{self.room.ui}/')
+            field = p.locator('#message')
+            expect(field).to_be_visible(timeout=5000)
+            empty = field.evaluate("""el=>({
+              scrollHeight:el.scrollHeight,clientHeight:el.clientHeight,
+              disabled:el.disabled,placeholder:el.getAttribute('placeholder'),
+              overflow:getComputedStyle(el).overflowY
+            })""")
+            self.assertFalse(empty['disabled'])
+            self.assertLessEqual(empty['scrollHeight'], empty['clientHeight'] + 1,
+                                 f'empty placeholder must not wrap/scroll: {empty}')
+            field.fill('Zeile eins\\nZeile zwei\\nZeile drei\\nZeile vier\\nZeile fünf\\nZeile sechs')
+            grown = field.evaluate("""el=>({
+              height:parseFloat(getComputedStyle(el).height),
+              scrollHeight:el.scrollHeight,clientHeight:el.clientHeight,
+              maxHeight:parseFloat(getComputedStyle(el).maxHeight)
+            })""")
+            self.assertGreater(grown['height'], 40, f'textarea did not grow: {grown}')
+            self.assertLessEqual(grown['height'], 780 * .28 + 1, grown)
+            expect(p.locator('#send-button')).to_be_enabled()
+        finally:
+            p.close()
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)

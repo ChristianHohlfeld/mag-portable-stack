@@ -118,6 +118,7 @@ class MistralRoomContractTests(unittest.TestCase):
         self.assertIn("max_output = std::min(max_output, 128)", room)
         self.assertIn('body["reasoning_effort"] = "low"', room)
         self.assertIn('kwargs["reasoning_effort"] = "low"', room)
+        self.assertIn('if (!mistral_chat)\n    kwargs["enable_thinking"] = thinking && !TL_SELFTALK && !short_chat;', room)
         self.assertIn("reasoning cannot be disabled", room)
         start = room.index("} else if (mistral_chat)")
         end = room.index("// The Qwen4Exp", start)

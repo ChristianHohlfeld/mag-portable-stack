@@ -5068,8 +5068,8 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
     max_output = std::clamp(envi("MAG_ROOM_PROAKTIV_MAX_TOKENS", 256), 32, 512);
   // Only trivial greetings keep a small cap; thinking and real chat/code do not.
   if (short_chat && glm_model) max_output = std::min(max_output, 128);
-  if (no_tools && !thinking && model == "glm-5.3-flash-iq1-m")
-    max_output = std::min(max_output, 96); // bounded IQ1_M decode
+  if (short_chat && glm_model)
+    max_output = std::min(max_output, 128); // all trivial GLM greetings stay short
   body["max_tokens"] = max_output;
   if (no_tools && !thinking && model.rfind("glm-5.3-flash", 0) == 0) {
     // Preserve the live GLM-Q2 request contract unchanged.
@@ -6664,7 +6664,8 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
   auto run_deadline = steady_clock::now() + seconds(RUN_BUDGET_S);
   int todo_nudges = 0;
   TL_TODO_TOUCHED = false;
-  const bool glm_chat = glm_chat_mode || chat_only_room_bot;
+  const bool glm_chat = glm_chat_mode &&
+      bot_model_id(bot_idx).rfind("glm-5.3-flash", 0) == 0;
   int glm_tool_rounds = 0;
   int glm_continuation_rounds = 0;
   std::string previous_glm_chunk;
@@ -7143,8 +7144,13 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
   // The outer scheduler must not silently create a second task.
   report.continue_requested = false;
   if (!report.skipped && !stop_flag().load() && !completed && report.error.empty()) {
-    report.error = "Agent-Step-Budget erreicht (" + std::to_string(MAX_RUN_STEPS) +
-                   "). Aufgabe noch offen; VM-Dateien bleiben erhalten.";
+    if (glm_chat) {
+      report.truncated = true;
+      completed = true;
+    } else {
+      report.error = "Agent-Step-Budget erreicht (" + std::to_string(MAX_RUN_STEPS) +
+                     "). Aufgabe noch offen; VM-Dateien bleiben erhalten.";
+    }
   }
   if (!stop_flag().load() && !report.error.empty() && trim(final_text).empty())
     final_text = report.error;

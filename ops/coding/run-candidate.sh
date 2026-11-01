@@ -10,7 +10,7 @@ case "$name" in
     cpus=0-13
     model_id=qwen3.6-35b-a3b
     filename=Qwen3.6-35B-A3B-UD-Q5_K_M.gguf
-    live=mag-llm-mistral-room.service
+    live_services="mag-llm-mistral-room.service mag-llm-qwen-room.service mag-llm-glm@q1.service mag-llm-ds-node@0.service mag-llm-ornith-node@0.service mag-llm.service"
     ;;
   coder)
     port=8292
@@ -18,17 +18,19 @@ case "$name" in
     cpus=14-27
     model_id=qwen3-coder-30b-a3b-instruct
     filename=Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf
-    live=mag-llm-glm@q2.service
+    live_services="mag-llm-glm@q2.service mag-llm-qwen.service mag-llm-ds-node@1.service mag-llm-ornith-node@1.service mag-llm.service"
     ;;
   *) echo 'Choose general or coder' >&2; exit 2 ;;
 esac
 : "${MAG_CODING_LLAMA_BIN:?Set MAG_CODING_LLAMA_BIN to a tested llama-server with qwen35moe and qwen3moe support}"
 [[ -x "$MAG_CODING_LLAMA_BIN" ]] || { echo 'Selected llama-server not executable' >&2; exit 4; }
 # Do not co-schedule a CPU benchmark with its production socket.
-if systemctl is-active --quiet "$live"; then
-  echo "Refusing benchmark: $live is running on NUMA$node; no process was stopped" >&2
-  exit 4
-fi
+for live in $live_services; do
+  if systemctl is-active --quiet "$live"; then
+    echo "Refusing benchmark: $live is running on NUMA$node; no process was stopped" >&2
+    exit 4
+  fi
+done
 # This script must not be run by the root owner of a production service.
 [[ "$EUID" -ne 0 ]] || { echo 'Run as regular user, not root' >&2; exit 4; }
 python3 -I "$ROOT/stage.py" --model "$name"

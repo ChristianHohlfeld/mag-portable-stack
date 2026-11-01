@@ -48,7 +48,7 @@ As of 2026-10-30, mag has **2 x E5-2680 v4**, each 14 physical cores / 28 SMT lo
 | `-ctk / -ctv` | implicit **f16 / f16** | implicit **f16 / f16** | Documented defaults; changing KV dtype invalidates the saved KV format |
 | `--ctx-size / --parallel` | `32768 / 1` | `1048576 / 1` | One bot/slot per model; Q2 uses the model's supported maximum after the f16 KV budget calculation below |
 | `--cache-ram / ctx-checkpoints / interval` | `16384 / 64 / 1024` | same | Preserves CPU prefix checkpoint behavior; mainline and ik use different interval flag names |
-| `--load-mode` | `dio` | `dio` | Pinned binary's previously working mode; no `--mlock` |
+| model loading | mainline: `--load-mode dio` | ik: `--no-mmap` (anonymous load) | NUMA placement remains enforced by `numactl --membind=1`; Q2 rollback to mainline retains `--load-mode dio` |
 | THP / huge pages | no kernel changes | no kernel changes | `madvise`, no reserved HugeTLB pages; mapping changes need live validation |
 | Draft/speculative | disabled | disabled | No validated draft model/token acceptance; extra CPU work and RAM could hurt throughput |
 

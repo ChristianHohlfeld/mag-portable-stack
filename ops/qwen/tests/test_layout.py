@@ -405,7 +405,7 @@ else:
   actions=self.log.read_text()[mark:].splitlines()
   self.assertEqual(actions.count('stop mag-llm-glm@q2.service'),2,p.stderr+p.stdout+repr(actions))
   self.assertEqual(actions.count('start mag-llm-glm@q2.service'),2,actions)
-  self.assertEqual((self.host/'etc/mag-glm/q2.env').read_text(),'GLM_ENGINE=mainline\\n')
+  self.assertEqual((self.host/'etc/mag-glm/q2.env').read_text(),'GLM_ENGINE=mainline\n')
   mark=self.log.stat().st_size
   p=self.run_layout('probe',backup=self.base/'backup3',SMOKE_FAIL='1')
   self.assertEqual(p.returncode,78,p.stderr)

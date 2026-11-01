@@ -5192,8 +5192,8 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   };
   // The server stop array is the primary guard. Hold partial delimiters in
   // client chunks as a fallback so none can reach the room or SSE.
-  const std::vector<std::string> glm_stops = {
-      "</think>", "<think>", "<|", "<tool_call", "\\n\\n## "};
+  std::vector<std::string> glm_stops = {
+      "</think>", "<think>", "<|", "<tool_call", "\n\n## "};
   if (mistral_chat) {
     glm_stops.push_back("[THINK]");
     glm_stops.push_back("[/THINK]");

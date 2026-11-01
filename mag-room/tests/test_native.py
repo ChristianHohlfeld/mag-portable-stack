@@ -5403,6 +5403,21 @@ class GlmLayoutStartup(unittest.TestCase):
    q2text=json.dumps(q2room['room'][q2at+1:],ensure_ascii=False)
    self.assertNotIn('</think>',q2text)
    self.assertNotIn('Antwort',q2text)
+   # A GLM heading after answer text starts is a hard cut, not visible prose.
+   glmheadingmarker='GLM-HEADING-CUT-'+str(time.monotonic_ns())
+   Model.script_scope=glmheadingmarker
+   Model.script=['GLM sichtbare Antwort','\n\n## Interne Überschrift\nNicht veröffentlichen']
+   before=len(Model.paths)
+   self.assertTrue(post({'text':glmheadingmarker,'bots':['qwen-numa1']})['accepted'])
+   glmheadingreq=calls_after(before,glmheadingmarker,1)[0][3]
+   self.assertEqual(glmheadingreq['model'],'glm-5.3-flash')
+   glmheadingroom=idle_after(glmheadingmarker)
+   glmheadingat=max(i for i,m in enumerate(glmheadingroom['room'])
+                    if m.get('role')=='user' and m.get('content')==glmheadingmarker)
+   glmheadingtext=json.dumps(glmheadingroom['room'][glmheadingat+1:],ensure_ascii=False)
+   self.assertIn('GLM sichtbare Antwort',glmheadingtext)
+   self.assertNotIn('Interne Überschrift',glmheadingtext)
+   self.assertNotIn('Nicht veröffentlichen',glmheadingtext)
   finally:
    Model.script_scope=None;Model.script=[]
    proc.terminate()

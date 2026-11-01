@@ -111,12 +111,11 @@ class MistralRoomContractTests(unittest.TestCase):
         install = (ROOT / "install.sh").read_text()
         self.assertIn("prefetch-numa0.py", install)
 
-    def test_mistral_short_chat_keeps_normal_budget_and_official_low_effort(self):
+    def test_mistral_short_chat_keeps_official_low_effort_and_caps_total_tokens(self):
         room = (ROOT.parents[1] / "mag-room/native/magroom.cpp").read_text()
         self.assertIn('(!thinking_turn || bot_model_id(bot_idx) == "mistral-large4")', room)
-        self.assertNotIn("max_output = std::min(max_output, 128)", room)
-        self.assertIn('glm_stops.push_back("[THINK]")', room)
-        self.assertIn('glm_stops.push_back("[/THINK]")', room)
+        self.assertIn("if (mistral_chat && short_chat)", room)
+        self.assertIn("max_output = std::min(max_output, 128)", room)
         self.assertIn('body["reasoning_effort"] = "low"', room)
         self.assertIn('kwargs["reasoning_effort"] = "low"', room)
         self.assertIn('if (!mistral_chat)\n    kwargs["enable_thinking"] = thinking && !TL_SELFTALK && !short_chat;', room)

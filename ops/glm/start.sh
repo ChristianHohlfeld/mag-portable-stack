@@ -86,7 +86,8 @@ else
   SHA256S=/usr/local/lib/mag-glm/model.sha256
   [[ -f $SHA256S && $(grep -c . "$SHA256S") == 15 ]] || fail '15-shard model SHA256 manifest missing'
   MODEL_SHA=$(awk 'NF {print $1}' "$SHA256S" | sha256sum | awk '{print $1}')
-  CTX=32768
+  CTX=${GLM_CTX_SIZE:-32768}
+  [[ $CTX =~ ^[1-9][0-9]*$ && $CTX -le 1048576 ]] || fail 'GLM context must be between 1 and 1048576 tokens'
   MARKER=$(printf 'engine=%s\nengine_commit=%s\nmodel_sha=%s\nctx=%s\n' \
     "$ENGINE" "$ENGINE_COMMIT" "$MODEL_SHA" "$CTX")
   marker_file="$GLM_SLOT_DIR/.kv-marker"
@@ -103,7 +104,7 @@ fi
 # Q2 is intentionally restricted to its 14 physical NUMA1 cores.
 exec /usr/bin/numactl "${binding[@]}" "$BIN" \
   --model "$MODEL" --alias "$GLM_ALIAS" \
-  --host 127.0.0.1 --port "$GLM_PORT" --ctx-size 32768 --parallel 1 \
+  --host 127.0.0.1 --port "$GLM_PORT" --ctx-size "$CTX" --parallel 1 \
   --threads 14 --threads-batch "$THREADS_BATCH" --numa numactl \
   --load-mode dio -fa on -b 4096 -ub 1024 \
   --jinja --chat-template-file "$TEMPLATE" --reasoning-format auto \

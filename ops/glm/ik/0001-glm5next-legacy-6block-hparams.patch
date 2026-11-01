@@ -27,7 +27,6 @@ diff --git a/src/llama-hparams.cpp b/src/llama-hparams.cpp
                      GGML_ASSERT(hparams.indexer_n_head > 0 && "GLM5NEXT indexer key length without indexer head count");
                      if (hparams.indexer_block_size > 0 && hparams.indexer_top_k > 0 &&
 @@ -2556,6 +2559,18 @@
-                 if (!ml.get_key(LLM_KV_SSM_GROUP_COUNT, hparams.ssm_n_group, false)) {
                      hparams.ssm_n_group = hparams.n_head();
                  }
 

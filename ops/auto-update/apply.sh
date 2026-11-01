@@ -23,6 +23,9 @@ if (( layout_rc == 78 )); then
 elif (( layout_rc != 0 )); then
   fail "layout-probe-rc-$layout_rc"
 fi
+if [[ $(bash "$ROOT/ops/coding/desired.sh") == coding ]]; then
+  as nice -n 19 ionice -c 3 bash "$ROOT/ops/coding/prepare.sh" || fail coding-prestage
+fi
 deploy_rc=0
 bash "$ROOT/ops/deploy.sh" || deploy_rc=$?
 if (( deploy_rc == 75 )); then

@@ -1,0 +1,34 @@
+diff --git a/src/llama-hparams.cpp b/src/llama-hparams.cpp
+--- a/src/llama-hparams.cpp
++++ b/src/llama-hparams.cpp
+@@ -2513,7 +2513,10 @@
+                 ml.get_key(LLM_KV_ATTENTION_INDEXER_HEAD_COUNT, hparams.indexer_n_head,    false);
+                 ml.get_key(LLM_KV_ATTENTION_INDEXER_KEY_LENGTH, hparams.indexer_head_size, false);
+                 ml.get_key(LLM_KV_ATTENTION_INDEXER_TOP_K,      hparams.indexer_top_k,     false);
+-                ml.get_key(LLM_KV_ATTENTION_INDEXER_KPOOL,      hparams.indexer_block_size, false);
++                if (!ml.get_key(LLM_KV_ATTENTION_INDEXER_KPOOL, hparams.indexer_block_size, false)) {
++                    // Legacy 6block GGUF uses attention.indexer.block_size.
++                    ml.get_key("glm5next.attention.indexer.block_size", hparams.indexer_block_size, false);
++                }
+                 if (hparams.indexer_head_size > 0) {
+                     GGML_ASSERT(hparams.indexer_n_head > 0 && "GLM5NEXT indexer key length without indexer head count");
+                     if (hparams.indexer_block_size > 0 && hparams.indexer_top_k > 0 &&
+@@ -2556,6 +2559,18 @@
+                     hparams.ssm_n_group = hparams.n_head();
+                 }
+
++                // Legacy 6block stores scalar head_count_kv=1 for every layer.
++                // Rebuild the GLM5NEXT pattern: every Nth layer is full MLA;
++                // all intervening layers are recurrent KDA (0 head_count_kv).
++                uint32_t full_attention_interval = 4;
++                ml.get_key(LLM_KV_FULL_ATTENTION_INTERVAL, full_attention_interval, false);
++                if (full_attention_interval == 0) {
++                    throw std::runtime_error("GLM5NEXT: full_attention_interval must be > 0");
++                }
++                for (uint32_t il = 0; il < hparams.n_layer; ++il) {
++                    hparams.n_head_kv_arr[il] = ((il + 1) % full_attention_interval == 0) ? 1 : 0;
++                }
++
+                 // per-layer head_count_kv array: 0 marks the KDA (linear-attention) layers, 1 the MLA
+                 for (uint32_t il = 0; il < hparams.n_layer; ++il) {
+                     hparams.recurrent_layer_arr[il] = hparams.n_head_kv_arr[il] == 0;

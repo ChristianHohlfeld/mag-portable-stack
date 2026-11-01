@@ -21,7 +21,7 @@ files=(/etc/mag-stack/room-model.env /etc/mag-stack/room-layout /etc/mag-stack/r
        /etc/mag-glm/q1.env /etc/mag-glm/q2.env
        /usr/local/lib/mag-glm/start.sh /usr/local/lib/mag-glm/runtime.sha
        /usr/local/lib/mag-glm/model.sizes /usr/local/lib/mag-glm/model.sha256
-       /usr/local/lib/mag-glm/verify-model.sh /usr/local/lib/mag-glm/chat-template.jinja
+       /usr/local/lib/mag-glm/verify-model.sh
        /usr/local/lib/mag-glm/ik/0001-glm5next-legacy-6block-hparams.patch
        /usr/local/lib/mag-glm/verify-iq1.sh
        /etc/systemd/system/mag-llm-glm@.service

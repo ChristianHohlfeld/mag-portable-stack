@@ -19,6 +19,8 @@ MODEL="/home/chris/models/mag-coding/$name/$file"
 [[ $(cat "/sys/devices/system/node/node$node/cpulist") == $( [[ $node == 0 ]] && echo '0-13,28-41' || echo '14-27,42-55' ) ]] || {
   echo "coding $node: NUMA topology mismatch" >&2; exit 4;
 }
+# A reboot must never load unchecked GGUF bytes.
+python3 -I /usr/local/lib/mag-coding/stage.py --model "$name"
 SLOT="/var/lib/mag-llm/slots/coding/$name"
 [[ -d $SLOT && -w $SLOT ]] || { echo 'coding: slot directory unavailable' >&2; exit 4; }
 exec numactl --physcpubind="$cpus" --membind="$node" "$BIN" \

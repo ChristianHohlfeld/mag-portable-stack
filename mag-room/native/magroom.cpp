@@ -6884,11 +6884,10 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
        previous_glm_chunk = t.text;
        glm_seen_chunks.insert(t.text);
      }
-     if (glm_generation_turn && t.text.empty() && t.calls.empty() &&
-         t.finish == "length") {
-       // The model exhausted its output budget on reasoning. Do not turn
-       // that into a normal empty-answer fallback or issue a second request:
-       // persist the turn as explicitly truncated.
+     if (glm_generation_turn && t.text.empty() && t.calls.empty()) {
+       // No visible answer was produced in this GLM round (for example,
+       // reasoning consumed the output budget). Do not issue an empty retry
+       // or show a normal empty-answer fallback: persist it as truncated.
        report.truncated = true;
        completed = true;
        break;

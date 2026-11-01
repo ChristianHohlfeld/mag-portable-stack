@@ -61,7 +61,7 @@ validate_q2_engine(){
       patch=$(sha256sum "$ROOT/ops/glm/ik/0001-glm5next-legacy-6block-hparams.patch" | awk '{print $1}' | sha256sum | cut -c1-12)
       dir="/home/chris/.local/glm-ik/8d21687cc7-mag-$patch"
       bin="$dir/bin/llama-server"
-      [[ -x $bin && $(cat "$dir/source-commit" 2>/dev/null || true) == 8d21687cc7358de10264d4180ba9b863024d5c4 ]] || fail 'Q2 ik runtime missing or source commit mismatch'
+      [[ -x $bin && $(cat "$dir/source-commit" 2>/dev/null || true) == 8d21687cc7358de10264d4180dba9b863024d5c4 ]] || fail 'Q2 ik runtime missing or source commit mismatch'
       [[ $(cat "$dir/patch-identity" 2>/dev/null || true) == "$patch" ]] || fail 'Q2 ik patch identity mismatch'
       [[ -f "$dir/SHA256SUMS" ]] || fail 'Q2 ik binary checksum missing'
       (cd "$dir" && sha256sum --check --strict --status SHA256SUMS) || fail 'Q2 ik binary checksum mismatch'

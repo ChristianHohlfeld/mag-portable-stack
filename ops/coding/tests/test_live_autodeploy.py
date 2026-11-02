@@ -27,7 +27,7 @@ class CodingDeploy(unittest.TestCase):
   self.assertEqual([data["models"][i]["numa"] for i in ("general","coder")],[0,1])
   self.assertEqual(source("ops/room/layout").strip(),"coding")
   self.assertIn("MAG_ROOM_MAX_TOKENS=16384",source("ops/coding/80-coding-output.conf"))
-  self.assertIn("MAG_ROOM_MODEL_ID_1=qwen3-coder-30b-a3b-instruct",source("ops/room/coding.env"))
+  self.assertIn("MAG_ROOM_MODEL_ID_1=qwen3-coder-next",source("ops/room/coding.env"))
  def test_stage_before_stop(self):
   auto=source("ops/auto-update/apply.sh")
   self.assertLess(auto.index("coding/prepare.sh"),auto.index("ops/deploy.sh"))
@@ -47,8 +47,8 @@ class CodingDeploy(unittest.TestCase):
   self.assertNotIn("fail 'old NUMA1 unhealthy'",src)
   self.assertIn("/etc/mag-stack/room-layout.pinned",src)
   self.assertIn('rm -f /etc/mag-stack/room-layout.pinned',src)
-  self.assertIn('wait_ready mag-llm-coding@0.service 8191 360',src)
-  self.assertIn('wait_ready mag-llm-coding@1.service 8192 360',src)
+  self.assertIn('wait_ready mag-llm-coding@0.service 8191 1440',src)
+  self.assertIn('wait_ready mag-llm-coding@1.service 8192 1440',src)
  def test_operator_pin_migration(self):
   script=source("ops/coding/desired.sh")
   with tempfile.TemporaryDirectory() as d:
@@ -85,4 +85,31 @@ class CodingDeploy(unittest.TestCase):
    sha=hashlib.sha256(b"good").hexdigest()
    self.assertTrue(mod.verified_file(p,sha))
    p.write_bytes(b"bad");self.assertFalse(mod.verified_file(p,sha))
+ def test_coding_room_long_replies_and_chat_only(self):
+  room=source("mag-room/native/magroom.cpp")
+  self.assertIn('static bool long_reply_model(const std::string &model)',room)
+  self.assertIn('const bool glm_generation = long_reply_model(model);',room)
+  self.assertIn('const bool glm_generation_turn = long_reply_model(bot_model_id(bot_idx));',room)
+  self.assertIn('coding_room_model(model);\n}',room)
+  self.assertIn('? MAX_TOKENS // one round; longer answers continue (no total cap)',room)
+  self.assertIn('if (coding_model) glm_stops.pop_back();',room)
+  env=source("ops/room/coding.env")
+  self.assertIn("MAG_ROOM_MODEL_ID_0=qwen3.8-flash-next",env)
+  self.assertIn('CODING_GENERAL_MODEL = "qwen3.8-flash-next"',room)
+  self.assertIn('CODING_CODER_MODEL = "qwen3-coder-next"',room)
+ def test_link_from_never_duplicates(self):
+  spec=importlib.util.spec_from_file_location("coding_stage",C/"stage.py")
+  mod=importlib.util.module_from_spec(spec);spec.loader.exec_module(mod)
+  with tempfile.TemporaryDirectory() as t:
+   t=pathlib.Path(t); src=t/"src.gguf"; src.write_bytes(b"model")
+   sha=hashlib.sha256(b"model").hexdigest()
+   mod.MANIFEST={"models":{"general":{"filename":"x.gguf","sha256":sha,"repo":"a/b","link_from":str(src)}}}
+   mod.stage("general",t/"root",download=False)
+   dst=t/"root/general/x.gguf"
+   self.assertEqual(dst.stat().st_ino,src.stat().st_ino)
+   src2=t/"bad.gguf"; src2.write_bytes(b"partial")
+   mod.MANIFEST["models"]["general"]["link_from"]=str(src2)
+   mod.MANIFEST["models"]["general"]["filename"]="y.gguf"
+   with self.assertRaises(RuntimeError): mod.stage("general",t/"root",download=True)
+   self.assertFalse((t/"root/general/y.gguf.part").exists())
 if __name__=="__main__": unittest.main()

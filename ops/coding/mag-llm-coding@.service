@@ -14,7 +14,8 @@ WorkingDirectory=/home/chris
 ExecStart=/usr/local/lib/mag-coding/start-live.sh %i
 Restart=on-failure
 RestartSec=30
-TimeoutStartSec=1800
+# First start hashes and mlocks up to 98 GB on one node.
+TimeoutStartSec=7200
 TimeoutStopSec=120
 CPUAccounting=yes
 MemoryAccounting=yes

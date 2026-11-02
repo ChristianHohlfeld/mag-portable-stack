@@ -745,9 +745,28 @@ static bool room_is_glm() {
          ROOM_MODEL.backend(1).id == "mistral-large4") &&
         ROOM_MODEL.backend(2).id == "glm-5.3-flash"));
 }
+// Coding room (ops/room/coding.env): Qwen3.8-Flash-Next on NUMA0 and
+// Qwen3-Coder-Next on NUMA1. Chat-only like GLM-Q2, with continued long answers.
+static const char *const CODING_GENERAL_MODEL = "qwen3.8-flash-next";
+static const char *const CODING_CODER_MODEL = "qwen3-coder-next";
+static bool room_is_coding() {
+  return CONFIGURED_MODEL && ROOM_MODEL.backend(1).id == CODING_GENERAL_MODEL &&
+      ROOM_MODEL.backend(2).id == CODING_CODER_MODEL;
+}
+static bool coding_room_model(const std::string &model) {
+  return room_is_coding() &&
+      (model == CODING_GENERAL_MODEL || model == CODING_CODER_MODEL);
+}
 static bool room_chat_only_model(const std::string &model) {
-  return room_is_glm() &&
-      (model == "qwen3.8-flash-next-uncensored" || model == "mistral-large4");
+  return (room_is_glm() &&
+      (model == "qwen3.8-flash-next-uncensored" || model == "mistral-large4")) ||
+      coding_room_model(model);
+}
+// Models whose answers are never cut by a token or wall-clock budget: a
+// finish_reason=length round continues the same assistant prefix (#253).
+static bool long_reply_model(const std::string &model) {
+  return (model.rfind("glm-5.3-flash", 0) == 0 && model != "glm-5.3-flash-iq1-m") ||
+      coding_room_model(model);
 }
 // Configured mode: two bots, each with a persistent "slot" (1..2) stored in
 // agents.json. The slot, never the array index, picks the backend instance, so
@@ -873,9 +892,13 @@ static void load_agents() {
       // coding models. Preserve bot IDs, memory, queued messages and any
       // deliberate custom name.
       if ((previous_model == "mistral-large4" && old == "Mistral" &&
-           backend.id == "qwen3.6-35b-a3b") ||
+           (backend.id == "qwen3.6-35b-a3b" || backend.id == CODING_GENERAL_MODEL)) ||
           (previous_model == "glm-5.3-flash" && old == "GLM-Q2" &&
-           backend.id == "qwen3-coder-30b-a3b-instruct")) {
+           (backend.id == "qwen3-coder-30b-a3b-instruct" || backend.id == CODING_CODER_MODEL)) ||
+          (previous_model == "qwen3.6-35b-a3b" && old == "Qwen3.6" &&
+           backend.id == CODING_GENERAL_MODEL) ||
+          (previous_model == "qwen3-coder-30b-a3b-instruct" && old == "Qwen3-Coder" &&
+           backend.id == CODING_CODER_MODEL)) {
         a["name"] = backend.label; dirty = true;
         continue;
       }
@@ -4968,8 +4991,9 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
     }
   }
   HttpClient c;
-  const bool glm_generation = model.rfind("glm-5.3-flash", 0) == 0 &&
-      model != "glm-5.3-flash-iq1-m";
+  // GLM-Q2 and the coding-room models: no wall-clock deadline (long code).
+  const bool glm_generation = long_reply_model(model);
+  const bool coding_model = coding_room_model(model);
   c.timeout_ms = std::max(LLM_TIMEOUT_S, LLM_TIMEOUT_MIN_S) * 1000;
   // GLM generation has no wall-clock deadline; only a long silent gap is a stall.
   if (glm_generation) c.no_overall_deadline = true;
@@ -5042,7 +5066,7 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   // that cache in deterministic mode. Never replay an earlier answer either.
   // Identical prompts are still required; evolving room history is NOT identical.
   // GLM-5.3-Flash follows its model-card sampling even when UI determinism is on.
-  const bool deterministic = !chat_only_room &&
+  const bool deterministic = !chat_only_room && !coding_model &&
       model.rfind("glm-5.3-flash", 0) != 0 && model_settings_for(model).deterministic;
   if (deterministic) {
     body["temperature"] = 0.0;
@@ -5053,7 +5077,22 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
     const bool q1_chat = no_tools && model == "glm-5.3-flash-iq1-m";
     // Qwen's official non-thinking instruct sampling (mapped to llama.cpp
     // request fields); the server defaults and GLM-Q2 sampling stay unchanged.
-    if (qwen_chat) {
+    if (coding_model && model == CODING_CODER_MODEL) {
+      // Qwen3-Coder-Next card (non-thinking only): temperature=1.0, top_p=0.95, top_k=40.
+      body["temperature"] = 1.0;
+      body["top_p"] = 0.95;
+      body["top_k"] = 40;
+      body["min_p"] = 0.0;
+    } else if (coding_model && thinking && !TL_SELFTALK && !short_chat) {
+      // Qwen3.8-Flash-Next card, thinking mode.
+      body["temperature"] = 1.0;
+      body["top_p"] = 0.95;
+      body["top_k"] = 20;
+      body["min_p"] = 0.0;
+      body["presence_penalty"] = 0.0;
+      body["repeat_penalty"] = 1.0;
+    } else if (qwen_chat || coding_model) {
+      // Qwen3.8 card, instruct (non-thinking) mode.
       body["temperature"] = 0.7;
       body["top_p"] = 0.80;
       body["top_k"] = 20;
@@ -5090,6 +5129,8 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
       ? (qwen_chat
           ? std::min(MAX_TOKENS, std::clamp(envi("MAG_ROOM_QWEN_CHAT_MAX_TOKENS", 256), 32, 512))
           : std::min(MAX_TOKENS, std::clamp(envi("MAG_ROOM_QWEN_MAX_TOKENS", 4096), 512, 8192)))
+      : coding_model
+      ? MAX_TOKENS // one round; longer answers continue (no total cap)
       : glm_model
       ? std::min(MAX_TOKENS, std::clamp(envi(no_tools ? "MAG_ROOM_GLM_CHAT_MAX_TOKENS" : "MAG_ROOM_GLM_CODE_MAX_TOKENS", no_tools ? 1024 : 8192), 32, 8192))
       : MAX_TOKENS;
@@ -5104,7 +5145,7 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
     for (const char *stop : {"<|user|>", "<|observation|>", "<tool_call"})
       stops.push(stop);
     body["stop"] = stops;
-  } else if (qwen_chat) {
+  } else if (qwen_chat || (coding_model && no_tools)) {
     // Let hidden reasoning delimiters reach the client-side hard-cut filter.
     // A server-side stop would hide the delimiter and make its preceding
     // reasoning look like a clean final answer. Tool syntax remains stopped.
@@ -5141,6 +5182,11 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
     kwargs["enable_thinking"] = thinking && !TL_SELFTALK && !short_chat;
   if (qwen_chat) {
     body["reasoning_effort"] = "none"; // llama.cpp: none disables reasoning.
+  } else if (coding_model && model == CODING_GENERAL_MODEL) {
+    // Qwen3.8 template kwarg (levels low/medium/xhigh, default xhigh). Sent on
+    // every request so the template prefix stays byte-stable; it only applies
+    // when the room thinking toggle turns enable_thinking on.
+    kwargs["reasoning_effort"] = "low";
   } else if (mistral_chat) {
     // The deployed GGUF supports low/medium/high only; its card says reasoning
     // cannot be disabled. Keep the minimum effort on every request (never `none`).
@@ -5154,7 +5200,8 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
     // Keep the template preamble byte-stable between all turns.
     kwargs["reasoning_effort"] = "low";
     kwargs["clear_thinking"] = true;
-  } else if (model != "qwen3.8-flash-next-uncensored" && !REASONING_EFFORT.empty()) {
+  } else if (model != "qwen3.8-flash-next-uncensored" && !coding_model &&
+             !REASONING_EFFORT.empty()) {
     kwargs["reasoning_effort"] = REASONING_EFFORT;
   }
   body["chat_template_kwargs"] = kwargs;
@@ -5202,7 +5249,7 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   // Thinking needs ThinkingContent to consume its own <think>…</think>
   // boundaries; only nonthinking chat treats these as hard stop markers.
   const bool glm_chat_stream = no_tools && !thinking &&
-      (model.rfind("glm-5.3-flash", 0) == 0 || qwen_chat || mistral_chat);
+      (model.rfind("glm-5.3-flash", 0) == 0 || qwen_chat || mistral_chat || coding_model);
   std::string glm_stream_pending;
   bool glm_hard_cut = false;
   bool chat_forbidden_cut = false;
@@ -5226,6 +5273,9 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   // client chunks as a fallback so none can reach the room or SSE.
   std::vector<std::string> glm_stops = {
       "</think>", "<think>", "<|", "<tool_call", "\n\n## "};
+  // Coding-room answers legitimately contain Markdown headings between code
+  // blocks; only hidden-token and tool delimiters end them.
+  if (coding_model) glm_stops.pop_back();
   auto heading_inside_fence = [](const std::string &text, size_t pos) {
     bool fenced = false;
     for (size_t i = 0; i < pos;) {
@@ -6719,9 +6769,7 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
   const bool glm_chat = glm_chat_mode &&
       bot_model_id(bot_idx).rfind("glm-5.3-flash", 0) == 0;
   // GLM-Q2 (and later GLM-5.3-Flash quants); the retired Q1 keeps its path.
-  const bool glm_generation_turn =
-      bot_model_id(bot_idx).rfind("glm-5.3-flash", 0) == 0 &&
-      bot_model_id(bot_idx) != "glm-5.3-flash-iq1-m";
+  const bool glm_generation_turn = long_reply_model(bot_model_id(bot_idx));
   // GLM length continuations are one growing answer, not agent steps: they
   // neither count against MAX_RUN_STEPS nor hit the run time budget. Only
   // context end, Stop, the 600 s no-byte stall and the loop guard end them.
@@ -9523,7 +9571,10 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
           kwargs["clear_thinking"] = true;
           body["temperature"] = 1.0;
           body["top_p"] = 0.95;
-        } else if (model != "qwen3.8-flash-next-uncensored" && !REASONING_EFFORT.empty()) {
+        } else if (coding_room_model(model) && model == CODING_GENERAL_MODEL) {
+          kwargs["reasoning_effort"] = "low"; // byte-identical to the room turn prefix
+        } else if (model != "qwen3.8-flash-next-uncensored" && !coding_room_model(model) &&
+                   !REASONING_EFFORT.empty()) {
           kwargs["reasoning_effort"] = REASONING_EFFORT;
         }
         if (room_is_glm() && model == "qwen3.8-flash-next-uncensored")

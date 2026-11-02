@@ -12,6 +12,7 @@ import hashlib,shlex,http.server,json,os,pathlib,socket,socketserver,subprocess,
 ROOT=pathlib.Path(__file__).resolve().parents[2]
 # Idle prompt prewarm adds background model calls; tests count Model.calls exactly.
 os.environ.setdefault('MAG_ROOM_PREWARM','0')
+os.environ.setdefault('MAG_TEST_ALLOW_NO_VM','1')
 # Production turns thinking off for the first user hi. The suite's explicit
 # thinking switch stays in force unless a test removes this.
 os.environ.setdefault('MAG_ROOM_FIRST_HI_THINK','on')
@@ -1242,7 +1243,7 @@ class Native(unittest.TestCase):
    self.assertTrue(self.request('/api/agents/deepseek-chat',method='DELETE')['ok'])
  def test_09g_frontend_model_status_contract(self):
   html=self.request('/',raw=True).decode()
-  for needle in ('id="model-state"','id="model-banner"',"event.type==='model'","event.type==='bot_status'",'id="agent-chat-only"',"keine VM",
+  for needle in ('id="model-state"','id="model-banner"',"event.type==='model'","event.type==='bot_status'","keine VM",
                  "option.textContent=a.name+(a.vm?'':' · VM startet')","if(!bot.vm){","showThinking(s.node","#model-state .txt{display:none}",
                  'nicht erreichbar','beschäftigt','model-banner-switch','model-banner-line'):
    self.assertIn(needle,html)

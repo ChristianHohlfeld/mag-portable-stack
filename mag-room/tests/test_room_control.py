@@ -796,7 +796,7 @@ class QwenRoomTurns(unittest.TestCase):
         self.assert_qwen_requests_end_in_user()
 
 
-    def test_qwen_chat_only_is_not_auto_provisioned_a_vm(self):
+    def test_qwen_is_auto_provisioned_a_vm(self):
         with tempfile.TemporaryDirectory() as d:
             root = pathlib.Path(d)
             fakebin = root / 'bin'
@@ -829,17 +829,12 @@ class QwenRoomTurns(unittest.TestCase):
                 glm = next((a for a in saved if a.get('slot') == 2), None)
                 self.assertIsNotNone(qwen, saved)
                 self.assertEqual(qwen['model'], self.QWEN)
-                self.assertFalse(qwen.get('pending_vm'),
-                                 'chat-only Qwen must never reserve a KVM VM')
-                self.assertFalse(qwen.get('vm'),
-                                 'chat-only Qwen must remain without a KVM VM')
-                # load_agents() fills the second configured GLM slot. That
-                # agent may still receive its normal VM; only Qwen is excluded.
+                # No chat-only mode: every room bot always gets its own VM.
                 self.assertIsNotNone(glm, saved)
                 self.assertEqual(glm['model'], self.GLM)
-                self.assertEqual(attempted.count(' spawn '), 1, attempted)
-                self.assertIn('spawn agent1', attempted)
-                self.assertNotIn('spawn agent2', attempted)
+                self.assertTrue(qwen.get('pending_vm') or qwen.get('vm'), saved)
+                self.assertTrue(glm.get('pending_vm') or glm.get('vm'), saved)
+                self.assertEqual(attempted.count(' spawn '), 2, attempted)
             finally:
                 room.close()
 
@@ -901,14 +896,14 @@ class MistralRoomTurns(unittest.TestCase):
             self.assertEqual(request.get('chat_template_kwargs', {}).get('reasoning_effort'), 'low')
         self.assertEqual(Model.rejected, [], 'Mistral GGUF template must never receive a missing user query')
 
-    def test_mistral_name_and_chat_only_slot_never_gets_a_vm(self):
+    def test_mistral_slot_gets_a_vm(self):
         with tempfile.TemporaryDirectory() as d:
             root = pathlib.Path(d)
             fakebin = root / 'bin'
             fakebin.mkdir()
             calls = root / 'sudo.log'
             sudo = fakebin / 'sudo'
-            sudo.write_text('#!/bin/sh\\nprintf "%s\\n" "$*" >> "$MAG_TEST_SUDO_LOG"\\nexit 0\\n')
+            sudo.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$MAG_TEST_SUDO_LOG"\nexit 0\n')
             sudo.chmod(0o755)
             reset_model()
             room = Room([{'id': 'qwen-numa0', 'name': 'Qwen', 'vm': '', 'memory': [],
@@ -934,12 +929,8 @@ class MistralRoomTurns(unittest.TestCase):
                 self.assertIsNotNone(mistral, saved)
                 self.assertEqual((mistral['id'], mistral['name'], mistral['model']),
                                  ('qwen-numa0', 'Mistral', self.MISTRAL))
-                self.assertFalse(mistral.get('pending_vm'),
-                                 'chat-only Mistral must never reserve a KVM VM')
-                self.assertFalse(mistral.get('vm'),
-                                 'chat-only Mistral must remain without a KVM VM')
-                self.assertNotIn('spawn agent2', attempted,
-                                 'Mistral slot 1 must never be auto-provisioned')
+                self.assertTrue(mistral.get('pending_vm') or mistral.get('vm'), saved)
+                self.assertIn(' spawn ', attempted)
             finally:
                 room.close()
 

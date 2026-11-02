@@ -853,31 +853,20 @@ class RoomE2E(unittest.TestCase):
                   modelStatus({state:'offline',ready:false,label:'Modell-Backend nicht erreichbar',detail:'Port 8191'});
                 }""")
                 banner = page.locator('#model-banner')
-                expect(banner).to_be_visible()
-                text = banner.inner_text()
-                self.assertIn('DeepSeek nicht erreichbar', text)
-                self.assertIn('Qwen bereit', text)
-                self.assertNotIn('Tooltip', text)
-                self.assertNotIn('nicht verfügbar', text)
-                h0 = banner.bounding_box()['height']
-                self.assertLessEqual(h0, 24)
-                wrap0 = page.locator('.composer-wrap').bounding_box()['height']
-                banner.locator('.model-banner-line').click()
-                self.assertIn('Modell-Backend nicht erreichbar', banner.inner_text())
-                self.assertIn('Port 8191', banner.inner_text())
-                self.assertEqual(banner.bounding_box()['height'], h0)
-                self.assertEqual(page.locator('.composer-wrap').bounding_box()['height'], wrap0)
-                page.locator('.model-banner-switch').click()
-                self.assertEqual(page.evaluate('[...selected]'), ['qw'])
+                # Reachability never takes a text line above the composer; it lives in the status tooltip.
+                expect(banner).to_be_hidden()
+                title = page.locator('#model-state').get_attribute('title') or ''
+                self.assertIn('DeepSeek nicht erreichbar', title)
+                self.assertIn('Qwen bereit', title)
+                self.assertIn('Port 8191', title)
+                self.assertNotIn('Tooltip', title)
                 page.evaluate("""()=>{
                   state.model_instances[0].state='busy';
                   busyBots=new Set(['ds']);
                   modelStatus({state:'prefilling',ready:false,label:'prefilling',detail:'slot 0'});
                 }""")
-                shown = banner.inner_text()
-                self.assertIn('beschäftigt', shown)
-                self.assertNotIn('nicht verfügbar', shown)
-                self.assertNotIn('Tooltip', shown)
+                expect(banner).to_be_hidden()
+                self.assertIn('beschäftigt', page.locator('#model-state').get_attribute('title') or '')
             finally:
                 page.close()
 

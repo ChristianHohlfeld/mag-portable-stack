@@ -210,7 +210,7 @@ async function stop() {
     if (current === s) {
       current = null;
       buttonState(false);
-      show('Text erkannt – vor dem Senden prüfen.');
+      show('');
       field.focus();
     }
   })();

@@ -4,22 +4,24 @@
   "coding_output_tokens": 16384,
   "models": {
     "general": {
-      "name": "Qwen3.6-35B-A3B",
-      "model_id": "qwen3.6-35b-a3b",
+      "name": "Qwen3.8-Flash-Next",
+      "model_id": "qwen3.8-flash-next",
       "numa": 0,
       "candidate_port": 8291,
-      "repo": "unsloth/Qwen3.6-35B-A3B-GGUF",
-      "filename": "Qwen3.6-35B-A3B-UD-Q5_K_M.gguf",
-      "sha256": "c13ce26253ea334df472bd8fbd2d6da66d8a41195c17f6fcbf44c4d20ece0932"
+      "repo": "mradermacher/Qwen3.8-Flash-Next-Uncensored-GGUF",
+      "filename": "Qwen3.8-Flash-Next-Uncensored.IQ4_XS.gguf",
+      "sha256": "a1975fd73542230e2b344d112f29f22ff522d051cb4bf33bdb872cb3ffc5dedf",
+      "link_from": "/home/chris/models/qwen3.8-flash-next-uncensored/Qwen3.8-Flash-Next-Uncensored.IQ4_XS.gguf"
     },
     "coder": {
-      "name": "Qwen3-Coder-30B-A3B-Instruct",
-      "model_id": "qwen3-coder-30b-a3b-instruct",
+      "name": "Qwen3-Coder-Next",
+      "model_id": "qwen3-coder-next",
       "numa": 1,
       "candidate_port": 8292,
-      "repo": "lmstudio-community/Qwen3-Coder-30B-A3B-Instruct-GGUF",
-      "filename": "Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf",
-      "sha256": "79ad15a5ee3caddc3f4ff0db33a14454a5a3eb503d7fa1c1e35feafc579de486"
+      "repo": "unsloth/Qwen3-Coder-Next-GGUF",
+      "filename": "Qwen3-Coder-Next-UD-Q4_K_XL.gguf",
+      "sha256": "4bb93f0a0221ef4ff963ca9094df629c8dfdfabc3b4fdd85c1a2e4c0624fce36",
+      "link_from": "/home/chris/models/qwen3-coder-next/Qwen3-Coder-Next-UD-Q4_K_XL.gguf"
     }
   }
 }

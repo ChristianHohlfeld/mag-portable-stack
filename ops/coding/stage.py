@@ -39,6 +39,23 @@ def stage(name, root, download=False):
         return
     if target.exists():
         raise RuntimeError(f"{name}: existing file SHA256 mismatch: {target} (preserved)")
+    # An identical, already-present GGUF (same filesystem) is hard-linked, never
+    # copied or downloaded twice. The link only appears after its SHA256 matched;
+    # the original file is never moved, changed or deleted.
+    source = spec.get("link_from")
+    if source:
+        source = Path(source)
+        if source.is_symlink():
+            raise RuntimeError(f"{name}: symlink link_from refused: {source}")
+        if source.is_file():
+            # A present but different/incomplete source is never downloaded a
+            # second time beside it (disk space): fail and keep both untouched.
+            if not verified_file(source, sha):
+                raise RuntimeError(f"{name}: link_from SHA256 mismatch or incomplete: {source}")
+            target_dir.mkdir(parents=True, exist_ok=True)
+            os.link(source, target)
+            print(f"{name}: VERIFIED {target} (hard link of {source})")
+            return
     if not download:
         raise RuntimeError(f"{name}: not staged. Run with --download to fetch the pinned GGUF")
     target_dir.mkdir(parents=True, exist_ok=True)

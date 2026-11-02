@@ -17,8 +17,8 @@ secondary_unit=
 secondary_units=()
 if [[ -r $room_env ]]; then
   secondary_unit=mag-llm-ds-node@0.service
-  if grep -Fxq 'MAG_ROOM_MODEL_ID_0=qwen3.6-35b-a3b' "$room_env" &&
-     grep -Fxq 'MAG_ROOM_MODEL_ID_1=qwen3-coder-30b-a3b-instruct' "$room_env"; then
+  if grep -Fxq 'MAG_ROOM_MODEL_ID_0=qwen3.8-flash-next' "$room_env" &&
+     grep -Fxq 'MAG_ROOM_MODEL_ID_1=qwen3-coder-next' "$room_env"; then
     secondary_unit=mag-llm-coding@0.service
     secondary_units=(mag-llm-coding@1.service)
     systemctl disable mag-llm-mistral-room.service mag-llm-glm@q2.service \

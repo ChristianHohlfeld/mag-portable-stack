@@ -104,8 +104,8 @@ if [[ $previous == coding ]]; then
 fi
 # All heavyweight preparation is done with the old services still resident.
 python3 -I "$ROOT/ops/coding/stage.py" --model both || fail 'models not verified'
-REV=$(tr -d '[:space:]' < "$ROOT/ops/mistral/runtime.sha")
-BIN="/home/chris/.local/mag-coding/$REV/bin/llama-server"
+REV=$(tr -d '[:space:]' < "$ROOT/ops/qwen/runtime.sha")
+BIN="/home/chris/.local/qwen4exp/$REV-mag-cp1/bin/llama-server"
 [[ -x $BIN && $(cat "$(dirname "$BIN")/source-commit" 2>/dev/null || true) == "$REV" ]] ||
     fail 'pinned coding runtime missing'
 # Do not make recovery from a broken old backend impossible. It is precisely
@@ -160,7 +160,7 @@ install -d -m 0755 /etc/mag-stack /usr/local/lib/mag-coding /etc/systemd/system/
 install -m 0755 "$ROOT/ops/coding/start-live.sh" /usr/local/lib/mag-coding/start-live.sh
 install -m 0644 "$ROOT/ops/coding/stage.py" /usr/local/lib/mag-coding/stage.py
 install -m 0644 "$ROOT/ops/coding/models.json" /usr/local/lib/mag-coding/models.json
-install -m 0644 "$ROOT/ops/mistral/runtime.sha" /usr/local/lib/mag-coding/runtime.sha
+install -m 0644 "$ROOT/ops/qwen/runtime.sha" /usr/local/lib/mag-coding/runtime.sha
 install -m 0644 "$ROOT/ops/coding/mag-llm-coding@.service" /etc/systemd/system/mag-llm-coding@.service
 install -m 0644 "$ROOT/ops/coding/80-coding-output.conf" /etc/systemd/system/mag-120.service.d/80-coding-output.conf
 for name in general coder; do
@@ -175,12 +175,12 @@ if [[ $previous == glm ]]; then
   wait_port_free 8191 || fail 'port 8191 still held after old Mistral stopped'
   wait_port_free 8192 || fail 'port 8192 still held after old GLM stopped'
   systemctl start mag-llm-coding@0.service
-  wait_ready mag-llm-coding@0.service 8191 360 || fail 'Qwen3.6 failed health on 8191'
+  wait_ready mag-llm-coding@0.service 8191 1440 || fail 'Qwen3.8-Flash-Next failed health on 8191'
   systemctl start mag-llm-coding@1.service
-  wait_ready mag-llm-coding@1.service 8192 360 || fail 'Qwen3-Coder failed health on 8192'
+  wait_ready mag-llm-coding@1.service 8192 1440 || fail 'Qwen3-Coder-Next failed health on 8192'
   # Test BOTH actual GGUF decoders, not merely an HTTP listening socket.
-  python3 -I "$ROOT/ops/coding/live-smoke.py" --port 8191 --model qwen3.6-35b-a3b
-  python3 -I "$ROOT/ops/coding/live-smoke.py" --port 8192 --model qwen3-coder-30b-a3b-instruct
+  python3 -I "$ROOT/ops/coding/live-smoke.py" --port 8191 --model qwen3.8-flash-next
+  python3 -I "$ROOT/ops/coding/live-smoke.py" --port 8192 --model qwen3-coder-next
 else
   for i in 0 1; do
     systemctl is-active --quiet "mag-llm-coding@$i.service" || fail "coding NUMA$i not active"
@@ -200,4 +200,4 @@ done
 for unit in "${new[@]}"; do systemctl enable "$unit"; done
 touch "$TXN/coding"
 rm -f "$FAILED"
-echo 'coding layout ready: Qwen3.6 NUMA0 + Qwen3-Coder NUMA1, 16k coding budget'
+echo 'coding layout ready: Qwen3.8-Flash-Next NUMA0 + Qwen3-Coder-Next NUMA1, 16k tokens per round with continuation'

@@ -5120,6 +5120,7 @@ class TwoBackendStartup(unittest.TestCase):
 
 class GlmLayoutStartup(unittest.TestCase):
  """Layout glm: only Q2 in room, Q1 preserved in persistent state."""
+ @unittest.skip('chat-only mode removed (#269); legacy GLM-room Mistral chat-only turn format')
  def test_mistral_q2_follow_glm_backend(self):
   deadline=time.monotonic()+24
   Model.delay=0;Model.slot_delay={};Model.script=[];Model.reply=None

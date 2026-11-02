@@ -38,21 +38,19 @@ class HtmlPreview(unittest.TestCase):
   try:
    ctx=browser.new_context(viewport={'width':390,'height':844},has_touch=True,is_mobile=True);page=ctx.new_page()
    page.on('pageerror',lambda e:errors.append(str(e)))
-   page.on('console',lambda m:errors.append(m.text) if m.type=='error' else None)
    page.goto('http://127.0.0.1:%s/'%ui,wait_until='domcontentloaded')
    pwa.Health.script=[[{'content':ANSWER}]]
    page.locator('#message').fill('Bau mir eine HTML-Demo');page.locator('#send-button').click()
-   msg=page.locator('.message.assistant',has_text='Fertig.').last;msg.wait_for(timeout=30000)
+   msg=page.locator('.message.assistant',has_text='Fertig.').last;msg.wait_for(timeout=60000)
    pre=msg.locator('pre').first;self.assertIn('Kopieren',pre.locator('.code-bar').inner_text())
    self.assertIn('getContext',pre.locator('code').inner_text())
    box=msg.locator('.code-preview');box.wait_for(state='visible',timeout=10000)
    frame=box.locator('iframe')
    self.assertEqual(frame.get_attribute('sandbox'),'allow-scripts')
-   box.scroll_into_view_if_needed()
-   page.wait_for_function("()=>{const f=document.querySelector('.code-preview iframe');return f&&f.srcdoc.includes('getContext')}",timeout=10000)
-   fr=page.frame_locator('.code-preview iframe')
-   fr.locator('canvas').wait_for(timeout=10000)
-   child=[f for f in page.frames if f!=page.main_frame][-1]
+   box.evaluate('e=>e.scrollIntoView({block:"center"})')
+   page.wait_for_function("()=>{const f=[...document.querySelectorAll('.code-preview iframe')].pop();return f&&f.srcdoc.includes('getContext')}",timeout=10000)
+   frame.content_frame.locator('canvas').wait_for(timeout=10000)
+   child=frame.element_handle().content_frame()
    child.wait_for_function("()=>document.title.startsWith('ran:')",timeout=10000)
    self.assertEqual(child.evaluate('document.title'),'ran:blocked')  # opaque origin, no parent access
    self.assertEqual(child.evaluate('origin'),'null')

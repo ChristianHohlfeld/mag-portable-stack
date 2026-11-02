@@ -5429,6 +5429,7 @@ class GlmLayoutStartup(unittest.TestCase):
    log.close();model.shutdown();model.server_close();tmp.cleanup()
 
 
+ @unittest.skip('chat-only mode removed (#269); legacy GLM-room Mistral chat-only request format')
  def test_two_room_bots_complete_after_60_seconds_without_cancel(self):
   # @alle reaches both isolated lanes; no real model inference or Q2 restart.
   Model.delay=0;Model.slot_delay={'0':2,'1':2}

@@ -574,7 +574,7 @@ else
   ready=1
   model_ports=(8192)
   require_deepseek=0
-  if [[ $active_layout == glm ]]; then
+  if [[ $active_layout == glm || $active_layout == coding ]]; then
     model_ports=(8191 8192)
   elif systemctl is-active --quiet mag-llm-ds-node@0.service &&
        systemctl is-enabled --quiet mag-llm-ds-node@0.service; then
@@ -594,7 +594,7 @@ try:
     with urllib.request.urlopen("http://127.0.0.1:8766/api/state", timeout=8) as r:
         state = json.load(r)
     active = [a for a in state.get("agents", []) if a.get("enabled") is not False]
-    if layout not in ("glm", "mixed", "deepseek", "qwen"):
+    if layout not in ("glm", "mixed", "deepseek", "qwen", "coding"):
         raise ValueError("unknown active NUMA1 room layout: "+repr(layout))
     if layout == "glm":
         by_id = {a.get("id"): a for a in active}
@@ -607,6 +607,17 @@ try:
         if not q2 or (q2.get("model"), q2.get("slot"), q2.get("numa"), q2.get("name")) != ("glm-5.3-flash", 2, 1, "GLM-Q2"):
             raise ValueError("expected GLM-Q2 NUMA1 slot 2, got "+repr(q2))
         print("Release ready: Mistral NUMA0 (:8191) + GLM-Q2 NUMA1 (:8192); Q1 disabled")
+    elif layout == "coding":
+        # Qwen3.8 NUMA0 slot 1; NUMA1 slot 2 is Qwen3-Coder-Next, or GLM-Q2 in the interim.
+        if len(active) != 2:
+            raise ValueError("expected exactly two room bots, got "+repr(active))
+        by_slot = {a.get("slot"): a for a in active}
+        b0, b1 = by_slot.get(1), by_slot.get(2)
+        if not b0 or (b0.get("model"), b0.get("numa")) != ("qwen3.8-flash-next", 0):
+            raise ValueError("expected Qwen3.8 NUMA0 slot 1, got "+repr(b0))
+        if not b1 or b1.get("numa") != 1 or b1.get("model") not in ("qwen3-coder-next", "glm-5.3-flash"):
+            raise ValueError("expected Qwen3-Coder-Next or GLM-Q2 NUMA1 slot 2, got "+repr(b1))
+        print("Release ready: Qwen3.8 NUMA0 (:8191) + "+b1.get("model")+" NUMA1 (:8192)")
     else:
         require_ds = sys.argv[2] == "1"
         secondary = "deepseek" if layout == "deepseek" else "qwen"

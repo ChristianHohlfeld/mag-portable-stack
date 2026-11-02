@@ -2318,7 +2318,8 @@ function modelBannerRows(m){
  return [{name:face,word:kind==='busy'?'beschäftigt':'nicht erreichbar',id:bot&&bot.id,ready:false}];
 }
 function useReadyBot(id){if(!id)return;selected.clear();selected.add(id);try{sessionStorage.setItem('mag-selected',JSON.stringify([...selected]))}catch(e){}syncModelChoice(state);syncBotSwitches();renderAgents();if(state.model_status)modelStatus(state.model_status)}
-function modelStatus(m){const el=$('model-state'),b=$('model-banner');if(!m||!el)return;if(state)state.model_status=m;el.className='top-stat '+(m.state||'');el.replaceChildren();const d=document.createElement('span');d.className='dot';const shortLabel=({busy:'beschäftigt',prefilling:'beschäftigt',prefill:'beschäftigt',failed:'Fehler',offline:'offline',error:'Fehler'}[m.state])||(m.ready?'bereit':'lädt …');el.classList.toggle('is-ready',!!m.ready&&shortLabel==='bereit');el.classList.toggle('is-loading',!m.ready&&!['failed','offline','error','busy','prefilling'].includes(m.state));const t=document.createElement('span');t.className='txt';t.textContent=shortLabel;el.append(d,t);const detail=[m.label,m.detail].filter(Boolean).join(' – ');el.title=detail;const rows=modelBannerRows(m);if(!rows.some(r=>!r.ready)){b.hidden=true;b.replaceChildren();b.className='';delete b.dataset.open;paintRoomLine();return}const open=b.dataset.open==='1';b.hidden=false;b.className=rows.some(r=>r.word==='nicht erreichbar')?'failed':'';const summary=rows.map(r=>r.name+' '+r.word).join(' · ');const line=document.createElement('button');line.type='button';line.className='model-banner-line'+(open?' is-detail':'');line.textContent=open&&detail?summary+' – '+detail:summary;line.setAttribute('aria-expanded',open?'true':'false');line.setAttribute('aria-label',summary+(detail?' · '+detail:''));line.onclick=()=>{if(b.dataset.open==='1')delete b.dataset.open;else b.dataset.open='1';modelStatus(m)};b.replaceChildren(line);const alt=rows.find(r=>r.ready&&r.id&&!(selected.size===1&&selected.has(r.id)));if(alt){const sw=document.createElement('button');sw.type='button';sw.className='model-banner-switch';sw.textContent='zu '+alt.name;sw.setAttribute('aria-label','Zu '+alt.name+' wechseln');sw.onclick=e=>{e.stopPropagation();useReadyBot(alt.id)};b.append(sw)}paintRoomLine()}
+function modelStatus(m){const el=$('model-state'),b=$('model-banner');if(!m||!el)return;if(state)state.model_status=m;el.className='top-stat '+(m.state||'');el.replaceChildren();const d=document.createElement('span');d.className='dot';const shortLabel=({busy:'beschäftigt',prefilling:'beschäftigt',prefill:'beschäftigt',failed:'Fehler',offline:'offline',error:'Fehler'}[m.state])||(m.ready?'bereit':'lädt …');el.classList.toggle('is-ready',!!m.ready&&shortLabel==='bereit');el.classList.toggle('is-loading',!m.ready&&!['failed','offline','error','busy','prefilling'].includes(m.state));const t=document.createElement('span');t.className='txt';t.textContent=shortLabel;el.append(d,t);const detail=[m.label,m.detail].filter(Boolean).join(' – ');el.title=detail;const rows=modelBannerRows(m);// Composer stays quiet: per-bot reachability lives in the top status dot tooltip, never in a text line above the input.
+const summary=rows.map(r=>r.name+' '+r.word).join(' · ');if(summary){el.title=summary+(detail?' – '+detail:'');el.setAttribute('aria-label',summary)}b.hidden=true;b.replaceChildren();b.className='';delete b.dataset.open;paintRoomLine()}
 async function memory(a){memAgent=a;memErr();$('memory-new').value='';try{const m=await api('/api/agents/'+encodeURIComponent(a.id)+'/memory',undefined,'GET');$('memory-title').textContent=a.name+' · Erinnerungen';renderMemory(Array.isArray(m)?m:[]);if(!$('memory-dialog').open)$('memory-dialog').showModal()}catch(e){notice(e.message)}}
 let memAgent=null;function renderMemory(m){const box=$('memory');box.replaceChildren();if(!m.length){box.textContent='Noch keine gespeicherten Erinnerungen.';return}m.forEach((x,i)=>{const text=typeof x==='string'?x:(x.text||'');const row=document.createElement('div');row.className='mem-row';const t=document.createElement('div');t.className='mem-text';t.textContent=text;const act=document.createElement('div');act.className='mem-actions';const ed=document.createElement('button');ed.type='button';ed.className='pill-btn';ed.textContent='Bearbeiten';const del=document.createElement('button');del.type='button';del.className='pill-btn danger';del.textContent='Löschen';ed.onclick=()=>{const ta=document.createElement('textarea');ta.value=text;ta.maxLength=500;ta.className='mem-edit';const save=document.createElement('button');save.type='button';save.className='pill-btn primary';save.textContent='Speichern';const cancel=document.createElement('button');cancel.type='button';cancel.className='pill-btn';cancel.textContent='Abbrechen';cancel.onclick=()=>renderMemory(m);save.onclick=async()=>{try{const r=await api('/api/agents/'+encodeURIComponent(memAgent.id)+'/memory/'+i,{text:ta.value,old:text},'PUT');showUndo('Eintrag geändert',r.undo);renderMemory(r.memory||[])}catch(e){memErr(e.message)}};t.replaceChildren(ta);act.replaceChildren(save,cancel);ta.focus()};del.onclick=()=>askDeleteMemory(memAgent,i,text);act.append(ed,del);row.append(t,act);box.append(row)})}
 async function renameAgent(a){const value=await magAsk('Bot umbenennen (1–40 Zeichen)',a.name);if(value===null||value.trim()===a.name)return;try{await api('/api/agents/'+encodeURIComponent(a.id)+'/name',{name:value.trim()},'PUT');await refresh();notice('Bot umbenannt')}catch(e){notice(e.message)}}
@@ -2405,17 +2406,19 @@ function activityItems(){
    else if(s.thinking||s.phase==='think')text=name+' denkt '+clock;
    else text=name+' antwortet '+clock;
   }
-  return {id,text,idx:botToneIndex(a||{id})};
+  const loud=!!(stopInFlight||stopAwaitingIdle||(s&&s.error));
+  return {id,text,loud,idx:botToneIndex(a||{id})};
  });
 }
 function activityStatusText(){
- const line=activityItems().map(x=>x.text).join(' · ');
+ // Thinking/reading/answering timers are not shown above the composer (Stop button already signals a run).
+ const line=activityItems().filter(x=>x.loud).map(x=>x.text).join(' · ');
  const note=String(state.proaktiv_note||'').trim();
  if(!line)return note;
  return note?line+' · '+note:line;
 }
 function fillActivity(stat){
- const items=activityItems();
+ const items=activityItems().filter(x=>x.loud);
  const note=String(state.proaktiv_note||'').trim();
  stat.replaceChildren();
  stat.hidden=!items.length&&!note&&!stopInFlight&&!stopAwaitingIdle;

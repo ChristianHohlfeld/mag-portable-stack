@@ -12,6 +12,7 @@ import hashlib,shlex,http.server,json,os,pathlib,socket,socketserver,subprocess,
 ROOT=pathlib.Path(__file__).resolve().parents[2]
 # Idle prompt prewarm adds background model calls; tests count Model.calls exactly.
 os.environ.setdefault('MAG_ROOM_PREWARM','0')
+os.environ.setdefault('MAG_TEST_ALLOW_NO_VM','1')
 # Production turns thinking off for the first user hi. The suite's explicit
 # thinking switch stays in force unless a test removes this.
 os.environ.setdefault('MAG_ROOM_FIRST_HI_THINK','on')
@@ -1242,7 +1243,7 @@ class Native(unittest.TestCase):
    self.assertTrue(self.request('/api/agents/deepseek-chat',method='DELETE')['ok'])
  def test_09g_frontend_model_status_contract(self):
   html=self.request('/',raw=True).decode()
-  for needle in ('id="model-state"','id="model-banner"',"event.type==='model'","event.type==='bot_status'",'id="agent-chat-only"',"keine VM",
+  for needle in ('id="model-state"','id="model-banner"',"event.type==='model'","event.type==='bot_status'","keine VM",
                  "option.textContent=a.name+(a.vm?'':' · VM startet')","if(!bot.vm){","showThinking(s.node","#model-state .txt{display:none}",
                  'nicht erreichbar','beschäftigt','model-banner-switch','model-banner-line'):
    self.assertIn(needle,html)
@@ -5119,6 +5120,7 @@ class TwoBackendStartup(unittest.TestCase):
 
 class GlmLayoutStartup(unittest.TestCase):
  """Layout glm: only Q2 in room, Q1 preserved in persistent state."""
+ @unittest.skip('chat-only mode removed (#269); legacy GLM-room Mistral chat-only turn format')
  def test_mistral_q2_follow_glm_backend(self):
   deadline=time.monotonic()+24
   Model.delay=0;Model.slot_delay={};Model.script=[];Model.reply=None
@@ -5253,6 +5255,7 @@ class GlmLayoutStartup(unittest.TestCase):
    log.close();model.shutdown();model.server_close();tmp.cleanup()
 
 
+ @unittest.skip('chat-only mode removed (#269); legacy GLM-room Mistral/Qwen-uncensored chat-only turn format')
  def test_mistral_chat_hides_think_and_routes_room_messages(self):
   Model.delay=0;Model.slot_delay={};Model.script=[];Model.reply=None
   Model.script_scope=None;Model.slot_block={};Model.restore_missing=False
@@ -5357,7 +5360,7 @@ class GlmLayoutStartup(unittest.TestCase):
    mistralreq=calls_after(before,mistralmarker,1)[0][3]
    self.assertEqual(mistralreq['model'],'mistral-large4')
    self.assertIn(mistralmarker,json.dumps(mistralreq,ensure_ascii=False))
-   self.assertNotIn('tools',mistralreq)
+   self.assertIn('tools',mistralreq)  # no chat-only mode (#269)
    self.assertNotIn('enable_thinking',mistralreq['chat_template_kwargs'])
    self.assertEqual(mistralreq['chat_template_kwargs']['reasoning_effort'],'low')
    self.assertEqual(mistralreq['reasoning_effort'],'low')
@@ -5426,6 +5429,7 @@ class GlmLayoutStartup(unittest.TestCase):
    log.close();model.shutdown();model.server_close();tmp.cleanup()
 
 
+ @unittest.skip('chat-only mode removed (#269); legacy GLM-room Mistral chat-only request format')
  def test_two_room_bots_complete_after_60_seconds_without_cancel(self):
   # @alle reaches both isolated lanes; no real model inference or Q2 restart.
   Model.delay=0;Model.slot_delay={'0':2,'1':2}
@@ -5487,7 +5491,9 @@ class GlmLayoutStartup(unittest.TestCase):
    self.assertEqual({p[1] for p in calls},{'0','1'})
    self.assertEqual({p[3]['model'] for p in calls},
                     {'mistral-large4','glm-5.3-flash'})
-   for p in calls:self.assertNotIn('tools',p[3])
+   for p in calls:
+    if p[3]['model']=='mistral-large4':self.assertIn('tools',p[3])  # no chat-only mode (#269)
+    else:self.assertNotIn('tools',p[3])
    mistral=next(p[3] for p in calls if p[3]['model']=='mistral-large4')
    self.assertNotIn('enable_thinking',mistral['chat_template_kwargs'])
    self.assertEqual(mistral['chat_template_kwargs'],{'reasoning_effort':'low'})

@@ -1442,17 +1442,16 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
       error_json(fd, 400, "Unbekanntes Modell");
       return;
     }
-    // "vm": false creates a chat-only bot (no KVM, no browser/terminal);
-    // default remains a bot with its own isolated VM.
+    // Every bot always gets its own VM (browser, console, all tools); a
+    // "vm": false request is ignored. Only the unit-test harness (no KVM)
+    // may still create a VM-less bot via MAG_TEST_ALLOW_NO_VM=1.
     const auto vm_flag = body.find("vm");
-    const bool vm_requested = !(vm_flag && vm_flag->type == Val::BOOL &&
-                                !vm_flag->asBool());
-    bool qwen_chat_only = false;
+    const bool vm_requested = !(env("MAG_TEST_ALLOW_NO_VM", "") == "1" &&
+        vm_flag && vm_flag->type == Val::BOOL && !vm_flag->asBool());
+    const bool qwen_chat_only = false;
     if (CONFIGURED_MODEL) {
       std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
-      const int slot = free_model_slot();
-      if (!slot) { error_json(fd, 409, bots_full); return; }
-      qwen_chat_only = room_chat_only_model(ROOM_MODEL.backend(slot).id);
+      if (!free_model_slot()) { error_json(fd, 409, bots_full); return; }
     }
     const bool with_vm_requested = vm_requested && !qwen_chat_only;
     bool with_vm = false;
@@ -1473,8 +1472,6 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
       std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
       const int slot = CONFIGURED_MODEL ? free_model_slot() : 0;
       if (CONFIGURED_MODEL && !slot) { error_json(fd, 409, bots_full); return; }
-      // Qwen/Mistral in the GLM room are deliberately chat-only.
-      // Their VM preflight was skipped before entering this creation path.
       with_vm = with_vm_requested;
       id = slug_id(str("name"));
       vm = with_vm ? next_vm() : "";

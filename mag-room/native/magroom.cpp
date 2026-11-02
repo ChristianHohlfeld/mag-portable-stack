@@ -762,11 +762,9 @@ static bool coding_room_model(const std::string &model) {
       (model == CODING_GENERAL_MODEL ||
        (model == CODING_CODER_MODEL && ROOM_MODEL.backend(2).id == CODING_CODER_MODEL));
 }
-static bool room_chat_only_model(const std::string &model) {
-  return (room_is_glm() &&
-      (model == "qwen3.8-flash-next-uncensored" || model == "mistral-large4")) ||
-      coding_room_model(model);
-}
+// No chat-only (VM/tools-off) mode: every room bot always runs with its VM,
+// browser and full tool set (Chris, 2026-11-02).
+static bool room_chat_only_model(const std::string &) { return false; }
 // Models whose answers are never cut by a token or wall-clock budget: a
 // finish_reason=length round continues the same assistant prefix (#253).
 static bool long_reply_model(const std::string &model) {
@@ -12117,9 +12115,7 @@ int main() {
     {
       std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
       int idx = agent_index(SINGLE_BOT);
-      const bool chat_only = idx >= 0 && CONFIGURED_MODEL &&
-          (bot_model_id(idx) == "qwen3.8-flash-next-uncensored" ||
-           bot_model_id(idx) == "mistral-large4");
+      const bool chat_only = false; // every bot gets its VM
       if (idx >= 0 && !chat_only && bot_field(idx, "vm").empty() &&
           bot_field(idx, "pending_vm").empty()) {
         new_vm = next_vm();
@@ -12150,9 +12146,7 @@ int main() {
       {
         std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
         int idx = agent_index(id);
-        const bool chat_only = idx >= 0 && CONFIGURED_MODEL &&
-            (bot_model_id(idx) == "qwen3.8-flash-next-uncensored" ||
-             bot_model_id(idx) == "mistral-large4");
+        const bool chat_only = false; // every bot gets its VM
         if (idx >= 0 && !chat_only && bot_field(idx, "vm").empty() &&
             bot_field(idx, "pending_vm").empty()) {
           vm = next_vm();

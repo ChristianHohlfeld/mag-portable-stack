@@ -749,6 +749,7 @@ class QwenRoomTurns(unittest.TestCase):
         for req in requests:
             self.assertEqual(req['messages'][-1].get('role'), 'user', req['messages'])
 
+    @unittest.skip('chat-only mode removed (#269); legacy GLM-room Mistral/Qwen-uncensored chat-only turn format')
     def test_qwen_hi_and_hi_beide_each_answer_once_with_template_valid_turns(self):
         self.wait_qwen_prewarm()
         self.room.until(lambda s: not s['busy'], timeout=8, what='idle after Qwen prewarm')
@@ -867,6 +868,7 @@ class MistralRoomTurns(unittest.TestCase):
     def tearDown(self):
         self.room.close()
 
+    @unittest.skip('chat-only mode removed (#269); legacy GLM-room Mistral/Qwen-uncensored chat-only turn format')
     def test_mistral_template_valid_turns_use_card_sampling_and_low_reasoning(self):
         end = time.monotonic() + 8
         while time.monotonic() < end:

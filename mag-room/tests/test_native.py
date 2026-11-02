@@ -5254,6 +5254,7 @@ class GlmLayoutStartup(unittest.TestCase):
    log.close();model.shutdown();model.server_close();tmp.cleanup()
 
 
+ @unittest.skip('chat-only mode removed (#269); legacy GLM-room Mistral/Qwen-uncensored chat-only turn format')
  def test_mistral_chat_hides_think_and_routes_room_messages(self):
   Model.delay=0;Model.slot_delay={};Model.script=[];Model.reply=None
   Model.script_scope=None;Model.slot_block={};Model.restore_missing=False

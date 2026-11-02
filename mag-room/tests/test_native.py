@@ -5360,7 +5360,7 @@ class GlmLayoutStartup(unittest.TestCase):
    mistralreq=calls_after(before,mistralmarker,1)[0][3]
    self.assertEqual(mistralreq['model'],'mistral-large4')
    self.assertIn(mistralmarker,json.dumps(mistralreq,ensure_ascii=False))
-   self.assertNotIn('tools',mistralreq)
+   self.assertIn('tools',mistralreq)  # no chat-only mode (#269)
    self.assertNotIn('enable_thinking',mistralreq['chat_template_kwargs'])
    self.assertEqual(mistralreq['chat_template_kwargs']['reasoning_effort'],'low')
    self.assertEqual(mistralreq['reasoning_effort'],'low')
@@ -5490,7 +5490,9 @@ class GlmLayoutStartup(unittest.TestCase):
    self.assertEqual({p[1] for p in calls},{'0','1'})
    self.assertEqual({p[3]['model'] for p in calls},
                     {'mistral-large4','glm-5.3-flash'})
-   for p in calls:self.assertNotIn('tools',p[3])
+   for p in calls:
+    if p[3]['model']=='mistral-large4':self.assertIn('tools',p[3])  # no chat-only mode (#269)
+    else:self.assertNotIn('tools',p[3])
    mistral=next(p[3] for p in calls if p[3]['model']=='mistral-large4')
    self.assertNotIn('enable_thinking',mistral['chat_template_kwargs'])
    self.assertEqual(mistral['chat_template_kwargs'],{'reasoning_effort':'low'})

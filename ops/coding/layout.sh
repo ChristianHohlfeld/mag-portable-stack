@@ -72,6 +72,13 @@ rollback(){
   elif grep -Fxq mag-llm-qwen-room.service "$TXN/active"; then
     wait_ready mag-llm-qwen-room.service 8191 5040 || fail 'Qwen rollback not ready'
   fi
+  # Node-scoped upgrade (interim -> full): the already-live NUMA0 bot returns too.
+  for unit in "${new[@]}"; do
+    if grep -Fxq "$unit" "$TXN/active"; then
+      systemctl enable "$unit" || true
+      systemctl start "$unit" || fail "cannot restore $unit"
+    fi
+  done
   touch "$TXN/restored"
   echo 'coding layout rollback complete; old model services restored'
 }
@@ -79,7 +86,7 @@ if [[ $ACTION == rollback ]]; then rollback; exit 0; fi
 [[ $ACTION == probe || $ACTION == apply ]] || fail 'unknown action'
 selected="$(bash "$ROOT/ops/coding/desired.sh")"
 [[ $selected == coding ]] || fail "coding helper invoked for $selected"
-identity="coding $(cat "$ROOT/ops/coding/models.json" "$ROOT/ops/coding/layout.sh" "$ROOT/ops/coding/start-live.sh" "$ROOT/ops/coding/prepare.sh" "$ROOT/ops/coding/mag-llm-coding@.service" "$ROOT/ops/room/coding.env" | sha256sum | cut -c1-16)"
+identity="coding $(cat "$ROOT/ops/coding/models.json" "$ROOT/ops/coding/layout.sh" "$ROOT/ops/coding/start-live.sh" "$ROOT/ops/coding/prepare.sh" "$ROOT/ops/coding/mag-llm-coding@.service" "$ROOT/ops/room/coding.env" "$ROOT/ops/room/coding0.env" | sha256sum | cut -c1-16)"
 if [[ $(cat "$FAILED" 2>/dev/null || true) == "$identity" ]]; then
   echo 'coding layout: a prior live cutover failed; refusing unattended retry' >&2
   [[ $ACTION != probe ]] || exit 78
@@ -89,7 +96,26 @@ fi
 [[ -f /etc/mag-stack/room-model.env ]] || fail 'existing MAG room required'
 previous=$(cat /etc/mag-stack/room-layout 2>/dev/null || true)
 [[ $previous == glm || $previous == coding ]] || fail "unsupported automatic migration from '$previous'"
-if [[ $previous == coding ]]; then
+# Node-scoped: NUMA0 switches as soon as Qwen3.8 is verified; NUMA1 keeps
+# GLM-Q2 (ops/room/coding0.env) until Qwen3-Coder-Next is staged and verified.
+python3 -I "$ROOT/ops/coding/stage.py" --model general || fail 'Qwen3.8 GGUF not verified'
+coder_ready=1
+python3 -I "$ROOT/ops/coding/stage.py" --model coder || coder_ready=0
+target_env="$ROOT/ops/room/coding.env"
+(( coder_ready )) || target_env="$ROOT/ops/room/coding0.env"
+interim=0
+if [[ $previous == coding ]] && cmp -s "$ROOT/ops/room/coding0.env" /etc/mag-stack/room-model.env; then
+  interim=1
+fi
+if [[ $previous == coding ]] && (( interim && ! coder_ready )); then
+  systemctl is-active --quiet mag-llm-coding@0.service || fail 'coding NUMA0 not active'
+  wait_ready mag-llm-coding@0.service 8191 6 || fail 'coding NUMA0 unhealthy'
+  cmp -s "$ROOT/ops/coding/start-live.sh" /usr/local/lib/mag-coding/start-live.sh || fail 'coding launcher drift'
+  cmp -s "$ROOT/ops/coding/mag-llm-coding@.service" /etc/systemd/system/mag-llm-coding@.service || fail 'coding unit drift'
+  echo 'coding layout unchanged: Qwen3.8 NUMA0 + GLM-Q2 NUMA1 (Qwen3-Coder-Next not staged yet)'
+  exit 0
+fi
+if [[ $previous == coding ]] && (( ! interim )); then
   # No undeclared, restart-requiring drift is silently applied on ordinary deploy.
   for i in 0 1; do
     systemctl is-active --quiet "mag-llm-coding@$i.service" || fail "coding NUMA$i not active"
@@ -102,8 +128,7 @@ if [[ $previous == coding ]]; then
   echo 'coding layout unchanged; both resident models healthy'
   exit 0
 fi
-# All heavyweight preparation is done with the old services still resident.
-python3 -I "$ROOT/ops/coding/stage.py" --model both || fail 'models not verified'
+# All heavyweight preparation (stage.py above) is done with the old services still resident.
 REV=$(tr -d '[:space:]' < "$ROOT/ops/qwen/runtime.sha")
 BIN="/home/chris/.local/qwen4exp/$REV-mag-cp1/bin/llama-server"
 [[ -x $BIN && $(cat "$(dirname "$BIN")/source-commit" 2>/dev/null || true) == "$REV" ]] ||
@@ -167,37 +192,51 @@ for name in general coder; do
   install -d -o chris -g chris -m 0750 "/var/lib/mag-llm/slots/coding/$name"
 done
 systemctl daemon-reload
+# Write-ahead marker ensures any failure rolls back the running services.
 if [[ $previous == glm ]]; then
-  # Write-ahead marker ensures any failure rolls back the running services.
   touch "$TXN/switch-started"
-  systemctl stop mag-llm-glm@q2.service
+  # NUMA0 first: Mistral -> Qwen3.8. GLM-Q2 is left running unless NUMA1 switches too.
   systemctl stop mag-llm-mistral-room.service
   wait_port_free 8191 || fail 'port 8191 still held after old Mistral stopped'
-  wait_port_free 8192 || fail 'port 8192 still held after old GLM stopped'
   systemctl start mag-llm-coding@0.service
   wait_ready mag-llm-coding@0.service 8191 1440 || fail 'Qwen3.8-Flash-Next failed health on 8191'
+  # Test the actual GGUF decoder, not merely an HTTP listening socket.
+  python3 -I "$ROOT/ops/coding/live-smoke.py" --port 8191 --model qwen3.8-flash-next
+fi
+if (( coder_ready )) && ! systemctl is-active --quiet mag-llm-coding@1.service; then
+  touch "$TXN/switch-started"
+  # NUMA1: GLM-Q2 -> Qwen3-Coder-Next (GGUF kept; rollback restarts GLM-Q2).
+  systemctl stop mag-llm-glm@q2.service
+  wait_port_free 8192 || fail 'port 8192 still held after old GLM stopped'
   systemctl start mag-llm-coding@1.service
   wait_ready mag-llm-coding@1.service 8192 1440 || fail 'Qwen3-Coder-Next failed health on 8192'
-  # Test BOTH actual GGUF decoders, not merely an HTTP listening socket.
-  python3 -I "$ROOT/ops/coding/live-smoke.py" --port 8191 --model qwen3.8-flash-next
   python3 -I "$ROOT/ops/coding/live-smoke.py" --port 8192 --model qwen3-coder-next
-else
-  for i in 0 1; do
-    systemctl is-active --quiet "mag-llm-coding@$i.service" || fail "coding NUMA$i not active"
-    wait_ready "mag-llm-coding@$i.service" "$((8191+i))" 6 ||
-      fail "coding NUMA$i not healthy"
-  done
 fi
-install -m 0644 "$ROOT/ops/room/coding.env" /etc/mag-stack/room-model.env
+systemctl is-active --quiet mag-llm-coding@0.service || fail 'coding NUMA0 not active'
+wait_ready mag-llm-coding@0.service 8191 6 || fail 'coding NUMA0 not healthy'
+if (( coder_ready )); then
+  systemctl is-active --quiet mag-llm-coding@1.service || fail 'coding NUMA1 not active'
+  wait_ready mag-llm-coding@1.service 8192 6 || fail 'coding NUMA1 not healthy'
+else
+  systemctl is-active --quiet mag-llm-glm@q2.service || fail 'GLM-Q2 must stay active on NUMA1'
+fi
+install -m 0644 "$target_env" /etc/mag-stack/room-model.env
 printf 'coding\n' > /etc/mag-stack/room-layout
 # The old host pin must not silently revert coding to GLM next timer tick.
 if [[ $(tr -d '[:space:]' < /etc/mag-stack/room-layout.pinned 2>/dev/null || true) == glm ]]; then
   rm -f /etc/mag-stack/room-layout.pinned
 fi
 for unit in "${old[@]}"; do
+  # Interim: GLM-Q2 keeps its boot state while it still serves NUMA1.
+  if (( ! coder_ready )) && [[ $unit == mag-llm-glm@q2.service ]]; then continue; fi
   systemctl disable "$unit" >/dev/null 2>&1 || true
 done
-for unit in "${new[@]}"; do systemctl enable "$unit"; done
+systemctl enable mag-llm-coding@0.service
+if (( coder_ready )); then systemctl enable mag-llm-coding@1.service; fi
 touch "$TXN/coding"
 rm -f "$FAILED"
-echo 'coding layout ready: Qwen3.8-Flash-Next NUMA0 + Qwen3-Coder-Next NUMA1, 16k tokens per round with continuation'
+if (( coder_ready )); then
+  echo 'coding layout ready: Qwen3.8-Flash-Next NUMA0 + Qwen3-Coder-Next NUMA1, 16k tokens per round with continuation'
+else
+  echo 'coding layout ready (interim): Qwen3.8-Flash-Next NUMA0 + GLM-Q2 NUMA1; NUMA1 switches once Qwen3-Coder-Next is verified'
+fi

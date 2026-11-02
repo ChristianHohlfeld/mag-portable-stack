@@ -9,7 +9,10 @@ REV=$(tr -d '[:space:]' < "$ROOT/ops/qwen/runtime.sha")
 BIN="/home/chris/.local/qwen4exp/$REV-mag-cp1/bin/llama-server"
 # Download and verify in advance, resumably. A hash mismatch never activates a model.
 # An identical GGUF already on disk is hard-linked after its SHA256 check.
-python3 -I "$ROOT/ops/coding/stage.py" --model both --download
+python3 -I "$ROOT/ops/coding/stage.py" --model general --download
+# NUMA1 is node-scoped: until Qwen3-Coder-Next is verified, GLM-Q2 keeps :8192.
+python3 -I "$ROOT/ops/coding/stage.py" --model coder --download ||
+  echo 'coding prepare: Qwen3-Coder-Next not staged yet; NUMA1 stays GLM-Q2'
 # The shared, pinned qwen4exp runtime (also implements qwen3next) is built and
 # checksummed by ops/qwen/build-runtime.sh; never build an unpinned binary here.
 if [[ ! -x $BIN || $(cat "$(dirname "$BIN")/source-commit" 2>/dev/null || true) != "$REV" ]]; then

@@ -47,6 +47,11 @@ def stage(name, root, download=False):
         source = Path(source)
         if source.is_symlink():
             raise RuntimeError(f"{name}: symlink link_from refused: {source}")
+        if source.is_file() and spec.get("size") and source.stat().st_size != spec["size"]:
+            raise RuntimeError(f"{name}: link_from size mismatch (download incomplete?): {source}")
+        # aria2c preallocates the full size: an unfinished control file means incomplete.
+        if source.with_name(source.name + ".aria2").exists():
+            raise RuntimeError(f"{name}: link_from download still in progress: {source}")
         if source.is_file():
             # A present but different/incomplete source is never downloaded a
             # second time beside it (disk space): fail and keep both untouched.

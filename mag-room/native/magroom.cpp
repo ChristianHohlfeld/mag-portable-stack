@@ -742,20 +742,25 @@ static bool room_is_glm() {
   return CONFIGURED_MODEL &&
       (ROOM_MODEL.id.rfind("glm-5.3-flash", 0) == 0 ||
        ((ROOM_MODEL.backend(1).id == "qwen3.8-flash-next-uncensored" ||
-         ROOM_MODEL.backend(1).id == "mistral-large4") &&
+         ROOM_MODEL.backend(1).id == "mistral-large4" ||
+         ROOM_MODEL.backend(1).id == "qwen3.8-flash-next") &&
         ROOM_MODEL.backend(2).id == "glm-5.3-flash"));
 }
 // Coding room (ops/room/coding.env): Qwen3.8-Flash-Next on NUMA0 and
 // Qwen3-Coder-Next on NUMA1. Chat-only like GLM-Q2, with continued long answers.
 static const char *const CODING_GENERAL_MODEL = "qwen3.8-flash-next";
 static const char *const CODING_CODER_MODEL = "qwen3-coder-next";
+// Also the node-scoped interim (ops/room/coding0.env): Qwen3.8 on NUMA0 while
+// GLM-Q2 keeps NUMA1 until Qwen3-Coder-Next is staged; that pair is a GLM room.
 static bool room_is_coding() {
   return CONFIGURED_MODEL && ROOM_MODEL.backend(1).id == CODING_GENERAL_MODEL &&
-      ROOM_MODEL.backend(2).id == CODING_CODER_MODEL;
+      (ROOM_MODEL.backend(2).id == CODING_CODER_MODEL ||
+       ROOM_MODEL.backend(2).id == "glm-5.3-flash");
 }
 static bool coding_room_model(const std::string &model) {
   return room_is_coding() &&
-      (model == CODING_GENERAL_MODEL || model == CODING_CODER_MODEL);
+      (model == CODING_GENERAL_MODEL ||
+       (model == CODING_CODER_MODEL && ROOM_MODEL.backend(2).id == CODING_CODER_MODEL));
 }
 static bool room_chat_only_model(const std::string &model) {
   return (room_is_glm() &&
@@ -2336,6 +2341,8 @@ static bool bot_thinking(int idx) {
   if (CONFIGURED_MODEL && room_is_glm() &&
       bot_model_id(idx) == "qwen3.8-flash-next-uncensored")
     return false; // Qwen in the GLM room is chat-only; never enable reasoning.
+  // Coding room: answer directly (model-card non-thinking sampling, live stream).
+  if (coding_room_model(bot_model_id(idx))) return false;
   return bot_setting(idx, "thinking", THINKING_DEFAULT.load());
 }
 static std::string identity_block(int bot_idx) {

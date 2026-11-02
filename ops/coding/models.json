@@ -11,6 +11,7 @@
       "repo": "mradermacher/Qwen3.8-Flash-Next-Uncensored-GGUF",
       "filename": "Qwen3.8-Flash-Next-Uncensored.IQ4_XS.gguf",
       "sha256": "a1975fd73542230e2b344d112f29f22ff522d051cb4bf33bdb872cb3ffc5dedf",
+      "size": 98421788672,
       "link_from": "/home/chris/models/qwen3.8-flash-next-uncensored/Qwen3.8-Flash-Next-Uncensored.IQ4_XS.gguf"
     },
     "coder": {
@@ -21,6 +22,7 @@
       "repo": "unsloth/Qwen3-Coder-Next-GGUF",
       "filename": "Qwen3-Coder-Next-UD-Q4_K_XL.gguf",
       "sha256": "4bb93f0a0221ef4ff963ca9094df629c8dfdfabc3b4fdd85c1a2e4c0624fce36",
+      "size": 49608478720,
       "link_from": "/home/chris/models/qwen3-coder-next/Qwen3-Coder-Next-UD-Q4_K_XL.gguf"
     }
   }

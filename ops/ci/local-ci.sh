@@ -106,7 +106,7 @@ else
     fi
     if ((BROWSER)) && python3 -c 'import playwright' 2>/dev/null; then
       printf '%s\n' "room-e2e :: bash $WAIT && MAG_E2E_SHOTS=$LOG/shots python3 mag-room/tests/test_room_e2e.py"
-      for t in test_reactions test_numa_ui test_cards_ui test_tts test_view_tools \
+      for t in test_reactions test_numa_ui test_cards_ui test_html_preview test_tts test_view_tools \
                test_live_highlight test_stream_order test_image_paste test_memory_ui test_type_to_focus; do
         printf '%s\n' "browser $t :: bash $WAIT && MAG_E2E_SHOTS=$LOG/shots python3 mag-room/tests/$t.py"
       done

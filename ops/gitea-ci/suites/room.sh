@@ -16,6 +16,7 @@ printf "\n== %s\n" "Message popover and NUMA selector (phone portrait/landscape,
 python3 mag-room/tests/test_reactions.py
 python3 mag-room/tests/test_numa_ui.py
 python3 mag-room/tests/test_cards_ui.py
+python3 mag-room/tests/test_html_preview.py
 python3 mag-room/tests/test_tts.py
 python3 mag-room/tests/test_view_tools.py
 python3 mag-room/tests/test_live_highlight.py

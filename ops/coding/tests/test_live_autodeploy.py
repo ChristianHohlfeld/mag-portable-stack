@@ -54,6 +54,7 @@ class CodingDeploy(unittest.TestCase):
   with tempfile.TemporaryDirectory() as d:
    p=pathlib.Path(d)/"pinned"
    script=script.replace("/etc/mag-stack/room-layout.pinned",str(p))
+   script=script.replace('root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"', 'root="'+str(ROOT)+'"')
    runner=pathlib.Path(d)/"desired.sh"
    runner.write_text(script)
    for pin,env,expected in [
@@ -61,7 +62,7 @@ class CodingDeploy(unittest.TestCase):
       ("mixed",{}, "mixed"),
       ("glm",{"MAG_ROOM_LAYOUT":"glm"},"glm"),
       ("glm",{"MAG_ROOM_LAYOUT":"repo"},"coding")]:
-    p.write_text(pin+"\\n")
+    p.write_text(pin+chr(10))
     import os
     proc=subprocess.run(["bash",str(runner)],cwd=ROOT,
        env={**os.environ,**env},text=True,capture_output=True,timeout=10)

@@ -171,7 +171,7 @@
     {
       "name": "Message popover and NUMA selector (phone portrait/landscape, desktop)",
       "kind": "test",
-      "command": "python3 mag-room/tests/test_reactions.py\npython3 mag-room/tests/test_numa_ui.py\npython3 mag-room/tests/test_cards_ui.py\npython3 mag-room/tests/test_tts.py\npython3 mag-room/tests/test_view_tools.py\npython3 mag-room/tests/test_live_highlight.py\npython3 mag-room/tests/test_stream_order.py\n"
+      "command": "python3 mag-room/tests/test_reactions.py\npython3 mag-room/tests/test_numa_ui.py\npython3 mag-room/tests/test_cards_ui.py\npython3 mag-room/tests/test_html_preview.py\npython3 mag-room/tests/test_tts.py\npython3 mag-room/tests/test_view_tools.py\npython3 mag-room/tests/test_live_highlight.py\npython3 mag-room/tests/test_stream_order.py\n"
     }
   ],
   "chromium": [

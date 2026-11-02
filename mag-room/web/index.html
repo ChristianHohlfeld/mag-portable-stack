@@ -66,6 +66,7 @@ video.att-media{width:100%;max-height:440px;cursor:auto;background:#000}
 .lightbox img{max-width:calc(100vw - 32px);max-height:calc(100vh - 90px);object-fit:contain;border-radius:8px}.lb-bar{display:flex;align-items:center;gap:8px;margin-top:12px;color:#ddd;font-size:13px}.lb-bar .att-btn{color:#ddd}.lb-bar .att-btn:hover{background:#fff2;color:#fff}
 .drop-overlay{position:absolute;inset:8px;z-index:30;display:none;place-items:center;border:2px dashed var(--accent);border-radius:18px;background:color-mix(in srgb,var(--bg) 82%,transparent);color:var(--text);font-size:15px;font-weight:600;pointer-events:none}.chat-scroll.drop-hot .drop-overlay{display:grid}
 @media(hover:hover){.att-actions .att-del{opacity:0}.att:hover .att-del,.att:focus-within .att-del{opacity:1}}
+.code-preview{margin:-8px 0 20px;border:1px solid var(--line);border-radius:12px;overflow:hidden;background:var(--panel);resize:vertical;min-height:140px;height:min(62dvh,460px);display:flex;flex-direction:column}.code-preview[hidden]{display:none}.code-preview-bar{flex:none;height:33px;display:flex;align-items:center;justify-content:space-between;gap:8px;padding:0 8px 0 13px;border-bottom:1px solid var(--line);font:11px/1 ui-monospace,monospace;color:var(--muted)}.code-preview-tools{display:flex;gap:4px}.code-preview-frame{flex:1;display:block;width:100%;min-height:0;border:0;background:#fff}.code-preview.max{position:fixed;inset:0;z-index:2147483000;margin:0;border-radius:0;height:auto!important;resize:none;padding-top:env(safe-area-inset-top);padding-bottom:env(safe-area-inset-bottom)}html.code-preview-open,html.code-preview-open body{overflow:hidden}.code-bar .preview-toggle{margin-left:auto}.code-bar .preview-toggle[aria-pressed=true]{background:var(--panel-3);color:var(--text)}.code-bar .preview-toggle+.copy{margin-left:0}
 .html-preview{margin-top:10px;border:1px solid var(--line);border-radius:12px;overflow:hidden;background:var(--panel)}.html-preview iframe{display:block;width:100%;height:420px;border:0;background:#fff}.html-preview a{display:block;padding:7px 12px;font-size:12px}.browser-nav{display:flex;align-items:center;gap:4px;padding:5px 6px}.browser-nav .nav-btn{min-width:28px;height:28px;border-radius:7px;display:inline-flex;align-items:center;justify-content:center;color:inherit;font-size:14px}.browser-nav .nav-btn:hover{background:var(--hover,#ffffff1a)}.browser-nav .nav-url{flex:1;display:flex;min-width:0;gap:2px}.browser-nav .nav-url input{flex:1;min-width:0;height:28px;border-radius:7px;border:1px solid var(--line);background:var(--surface,#0006);color:inherit;padding:0 9px;font:12px ui-monospace,monospace}#browser-view:fullscreen{display:flex;flex-direction:column;background:#000}#browser-view:fullscreen #screen{flex:1;min-height:0;width:100%;height:auto;object-fit:contain}#browser-view{position:relative}#browser-overlay{position:absolute;inset:0;pointer-events:none;overflow:hidden;opacity:0;transition:opacity .3s}#browser-overlay.on{opacity:1}#browser-overlay .bo-cursor{position:absolute;left:0;top:0;transform:translate(50%,50%);transition:transform .42s cubic-bezier(.3,.7,.2,1);will-change:transform;filter:drop-shadow(0 1px 2px #0009);z-index:2}#browser-overlay .bo-cursor svg{display:block;margin:-3px 0 0 -3px}.bo-type{position:absolute;left:18px;top:16px;max-width:260px;white-space:pre-wrap;word-break:break-word;background:#111d;color:#fff;font:12px ui-monospace,monospace;padding:3px 7px;border-radius:6px;opacity:0;transition:opacity .2s}.bo-type.on{opacity:1}.bo-ripple{position:absolute;width:34px;height:34px;margin:-17px 0 0 -17px;border-radius:50%;border:2px solid #4da3ff;background:#4da3ff33;animation:bo-rip .55s ease-out forwards;z-index:1}@keyframes bo-rip{from{transform:scale(.3);opacity:1}to{transform:scale(1.8);opacity:0}}
 /* ---- 2026-10-16: Inter self-hosted, one font everywhere */
 @font-face{font-family:Inter;src:url(/static/InterVariable.woff2) format('woff2');font-weight:100 900;font-style:normal;font-display:swap}
@@ -831,7 +832,7 @@ function copyText(text,button){
   setTimeout(()=>{if(button.isConnected)button.innerHTML=previous},1600);
  }).catch(()=>{try{fallback();if(button)button.textContent='Kopiert'}catch(e){notice(e.message)}});
 }
-function decorate(el){
+function decorate(el,live=false){
  el.querySelectorAll('pre code').forEach(c=>{
   const lang=(c.className.match(/language-([\w+#.-]+)/)||[])[1]||'Code';
   const pre=c.parentNode;
@@ -842,7 +843,36 @@ function decorate(el){
   const label=document.createElement('span');label.textContent=lang.toLowerCase();
   const btn=document.createElement('button');btn.type='button';btn.className='copy';btn.innerHTML=ICON_COPY+' Kopieren';btn.setAttribute('aria-label','Code kopieren');btn.onclick=()=>copyText(original,btn);
   bar.append(label,btn);pre.prepend(bar);
+  if(htmlPreviewable(lang,original))addHtmlPreview(pre,bar,original,live);
  });
+}
+// HTML code blocks: keep the code (with Kopieren) and add a live preview below.
+// The preview runs in a sandboxed srcdoc iframe (allow-scripts only, never
+// allow-same-origin): an opaque origin, so module scripts, import maps and
+// CDN imports (unpkg, jsdelivr) work while the room page stays out of reach.
+// Live streams only get the toggle; the frame mounts once the answer is final
+// and only when it scrolls into view, so history doesn't spawn WebGL contexts.
+function htmlPreviewable(lang,code){const l=String(lang).toLowerCase();return(l==='html'||l==='htm'||l==='xhtml'||/^\s*(?:<!--[\s\S]*?-->\s*)*(?:<!doctype\s+html|<html[\s>])/i.test(code))&&code.trim().length>0}
+function htmlPreviewDoc(code){return/^\s*(?:<!--[\s\S]*?-->\s*)*(?:<!doctype|<html[\s>])/i.test(code)?code:'<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head><body>'+code+'</body></html>'}
+const htmlPreviewSeen=typeof IntersectionObserver==='function'?new IntersectionObserver(es=>{for(const e of es)if(e.isIntersecting){htmlPreviewSeen.unobserve(e.target);e.target._mount?.()}},{rootMargin:'200px'}):null;
+function addHtmlPreview(pre,bar,code,live){
+ const box=document.createElement('div');box.className='code-preview';box.hidden=!!live;
+ const head=document.createElement('div');head.className='code-preview-bar';
+ const title=document.createElement('span');title.textContent='Vorschau';
+ const tools=document.createElement('span');tools.className='code-preview-tools';
+ const mk=(t,aria,fn)=>{const b=document.createElement('button');b.type='button';b.className='copy';b.textContent=t;b.setAttribute('aria-label',aria);b.onclick=fn;return b};
+ const frame=document.createElement('iframe');frame.className='code-preview-frame';frame.title='HTML-Vorschau';frame.setAttribute('sandbox','allow-scripts');frame.setAttribute('referrerpolicy','no-referrer');frame.setAttribute('allow','fullscreen');
+ const load=()=>{frame.srcdoc=htmlPreviewDoc(code)};
+ box._mount=()=>{if(!box._mounted){box._mounted=true;load()}};
+ const full=mk('Vollbild','Vorschau im Vollbild',()=>{const on=!box.classList.contains('max');box.classList.toggle('max',on);full.textContent=on?'Schließen':'Vollbild';document.documentElement.classList.toggle('code-preview-open',on)});
+ tools.append(mk('Neu laden','Vorschau neu laden',()=>{box._mounted=true;load()}),full);
+ head.append(title,tools);box.append(head,frame);
+ box.addEventListener('keydown',e=>{if(e.key==='Escape'&&box.classList.contains('max'))full.click()});
+ const toggle=mk('Vorschau','HTML-Vorschau ein- oder ausblenden',()=>{const show=box.hidden;box.hidden=!show;toggle.setAttribute('aria-pressed',String(show));if(show)box._mount();else if(box.classList.contains('max'))full.click()});toggle.setAttribute('aria-pressed',String(!live));
+ toggle.classList.add('preview-toggle');bar.lastChild.before(toggle);
+ pre.after(box);
+ if(live)return;
+ if(htmlPreviewSeen)htmlPreviewSeen.observe(box);else box._mount();
 }
 // Thinking: one quiet line ("Denkt nach" with a live clock and a fading
 // preview of the latest thoughts), collapsed into "Nachgedacht · 12 s" once
@@ -1697,7 +1727,7 @@ function updateStream(botId,immediate=false){
   const text=liveText(s);content.hidden=s.thinkingEnabled===false?false:!text;
   content.dataset.loading=s.thinkingEnabled===false&&!text?'1':'0';
   if(!text){s.node.classList.add('processing');if(content._shown!==''){content.replaceChildren();content._shown=''}}
-  else{s.node.classList.remove('processing');if(content._shown!==text){content.innerHTML=safeMarkdown(text);decorate(content);content._shown=text}}
+  else{s.node.classList.remove('processing');if(content._shown!==text){content.innerHTML=safeMarkdown(text);decorate(content,true);content._shown=text}}
   showThinking(s.node,'live:'+botId,s.thinkingEnabled===false||!shownTools(s.tools).length&&!shownSteps(s.steps).length?'':(s.reasoning||''),!!s.thinking,liveThinkMs(s));
   paintApprovals(s.node,botId);
   paintTools(s.node,content,s.tools);

@@ -62,6 +62,7 @@ PATHS = {
         "mag-room/tests/test_reactions.py",
         "mag-room/tests/test_numa_ui.py",
         "mag-room/tests/test_cards_ui.py",
+        "mag-room/tests/test_html_preview.py",
         "mag-room/tests/test_tts.py",
         "mag-room/tests/test_view_tools.py",
         "mag-room/tests/test_live_highlight.py",

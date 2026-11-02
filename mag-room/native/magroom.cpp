@@ -743,15 +743,17 @@ static bool room_is_glm() {
       (ROOM_MODEL.id.rfind("glm-5.3-flash", 0) == 0 ||
        ((ROOM_MODEL.backend(1).id == "qwen3.8-flash-next-uncensored" ||
          ROOM_MODEL.backend(1).id == "mistral-large4" ||
-         ROOM_MODEL.backend(1).id == "qwen3.8-flash-next") &&
+         ROOM_MODEL.backend(1).id == "qwen3.8-flash-next" ||
+         ROOM_MODEL.backend(1).id == "laguna-s-2.1") &&
         ROOM_MODEL.backend(2).id == "glm-5.3-flash"));
 }
-// Coding room (ops/room/coding.env): Qwen3.8-Flash-Next on NUMA0 and
-// Qwen3-Coder-Next on NUMA1. Chat-only like GLM-Q2, with continued long answers.
-static const char *const CODING_GENERAL_MODEL = "qwen3.8-flash-next";
-static const char *const CODING_CODER_MODEL = "qwen3-coder-next";
-// Also the node-scoped interim (ops/room/coding0.env): Qwen3.8 on NUMA0 while
-// GLM-Q2 keeps NUMA1 until Qwen3-Coder-Next is staged; that pair is a GLM room.
+// Coding room (ops/room/coding.env): Laguna S 2.1 on NUMA0 and Flint on NUMA1
+// (owner 2026-11-02 22:18, replacing Qwen3.8 + Qwen3-Coder-Next), with
+// continued long answers.
+static const char *const CODING_GENERAL_MODEL = "laguna-s-2.1";
+static const char *const CODING_CODER_MODEL = "flint";
+// Also the node-scoped interim (ops/room/coding0.env): Laguna on NUMA0 while
+// GLM-Q2 keeps NUMA1 until Flint is staged; that pair is a GLM room.
 static bool room_is_coding() {
   return CONFIGURED_MODEL && ROOM_MODEL.backend(1).id == CODING_GENERAL_MODEL &&
       (ROOM_MODEL.backend(2).id == CODING_CODER_MODEL ||
@@ -901,6 +903,11 @@ static void load_agents() {
           (previous_model == "qwen3.6-35b-a3b" && old == "Qwen3.6" &&
            backend.id == CODING_GENERAL_MODEL) ||
           (previous_model == "qwen3-coder-30b-a3b-instruct" && old == "Qwen3-Coder" &&
+           backend.id == CODING_CODER_MODEL) ||
+          // Qwen3.8 + Qwen3-Coder-Next -> Laguna S 2.1 + Flint (stock names only).
+          (previous_model == "qwen3.8-flash-next" && (old == "Qwen" || old == "Qwen3.8") &&
+           backend.id == CODING_GENERAL_MODEL) ||
+          (previous_model == "qwen3-coder-next" && old == "Qwen3-Coder-Next" &&
            backend.id == CODING_CODER_MODEL)) {
         a["name"] = backend.label; dirty = true;
         continue;
@@ -2339,7 +2346,8 @@ static bool bot_thinking(int idx) {
   if (CONFIGURED_MODEL && room_is_glm() &&
       bot_model_id(idx) == "qwen3.8-flash-next-uncensored")
     return false; // Qwen in the GLM room is chat-only; never enable reasoning.
-  // Coding room: answer directly (model-card non-thinking sampling, live stream).
+  // Coding room: answer directly (Laguna enable_thinking=false, live stream).
+  // Flint has no thinking switch; its reasoning stays in reasoning_content.
   if (coding_room_model(bot_model_id(idx))) return false;
   return bot_setting(idx, "thinking", THINKING_DEFAULT.load());
 }
@@ -5083,20 +5091,22 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
     // Qwen's official non-thinking instruct sampling (mapped to llama.cpp
     // request fields); the server defaults and GLM-Q2 sampling stay unchanged.
     if (coding_model && model == CODING_CODER_MODEL) {
-      // Qwen3-Coder-Next card (non-thinking only): temperature=1.0, top_p=0.95, top_k=40.
-      body["temperature"] = 1.0;
-      body["top_p"] = 0.95;
-      body["top_k"] = 40;
-      body["min_p"] = 0.0;
-    } else if (coding_model && thinking && !TL_SELFTALK && !short_chat) {
-      // Qwen3.8-Flash-Next card, thinking mode.
+      // Flint card (huggingface.co/RecursiveSI/flint): temperature 1.0,
+      // top_p 0.95, top_k 20.
       body["temperature"] = 1.0;
       body["top_p"] = 0.95;
       body["top_k"] = 20;
       body["min_p"] = 0.0;
-      body["presence_penalty"] = 0.0;
       body["repeat_penalty"] = 1.0;
-    } else if (qwen_chat || coding_model) {
+    } else if (coding_model) {
+      // Laguna S 2.1 generation_config.json (huggingface.co/poolside/Laguna-S-2.1):
+      // temperature 1.0, top_p 1.0, top_k 20, min_p 0.0.
+      body["temperature"] = 1.0;
+      body["top_p"] = 1.0;
+      body["top_k"] = 20;
+      body["min_p"] = 0.0;
+      body["repeat_penalty"] = 1.0;
+    } else if (qwen_chat) {
       // Qwen3.8 card, instruct (non-thinking) mode.
       body["temperature"] = 0.7;
       body["top_p"] = 0.80;
@@ -5187,11 +5197,6 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
     kwargs["enable_thinking"] = thinking && !TL_SELFTALK && !short_chat;
   if (qwen_chat) {
     body["reasoning_effort"] = "none"; // llama.cpp: none disables reasoning.
-  } else if (coding_model && model == CODING_GENERAL_MODEL) {
-    // Qwen3.8 template kwarg (levels low/medium/xhigh, default xhigh). Sent on
-    // every request so the template prefix stays byte-stable; it only applies
-    // when the room thinking toggle turns enable_thinking on.
-    kwargs["reasoning_effort"] = "low";
   } else if (mistral_chat) {
     // The deployed GGUF supports low/medium/high only; its card says reasoning
     // cannot be disabled. Keep the minimum effort on every request (never `none`).
@@ -9576,8 +9581,6 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
           kwargs["clear_thinking"] = true;
           body["temperature"] = 1.0;
           body["top_p"] = 0.95;
-        } else if (coding_room_model(model) && model == CODING_GENERAL_MODEL) {
-          kwargs["reasoning_effort"] = "low"; // byte-identical to the room turn prefix
         } else if (model != "qwen3.8-flash-next-uncensored" && !coding_room_model(model) &&
                    !REASONING_EFFORT.empty()) {
           kwargs["reasoning_effort"] = REASONING_EFFORT;

@@ -1,29 +1,26 @@
 #!/usr/bin/env bash
-# Pre-stage both pinned GGUFs and a dedicated CPU runtime BEFORE any live service is stopped.
-# Runs as chris under auto-update/apply.sh; old model files and processes remain unchanged.
+# Pre-stage both pinned GGUFs and the dedicated coding runtime BEFORE any live service is stopped.
+# Runs as chris (ops/coding/clean-deploy.sh, auto-update/apply.sh); old model files and processes remain unchanged.
 set -euo pipefail
 [[ $(id -un) == chris ]] || { echo 'coding prepare: must run as chris' >&2; exit 4; }
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
-REV=$(tr -d '[:space:]' < "$ROOT/ops/qwen/runtime.sha")
+REV=$(tr -d '[:space:]' < "$ROOT/ops/coding/runtime.sha")
 [[ $REV =~ ^[a-f0-9]{40}$ ]] || exit 4
-BIN="/home/chris/.local/qwen4exp/$REV-mag-cp1/bin/llama-server"
+BIN="/home/chris/.local/mag-coding-rt/$REV/bin/llama-server"
 # Download and verify in advance, resumably. A hash mismatch never activates a model.
 # An identical GGUF already on disk is hard-linked after its SHA256 check.
 python3 -I "$ROOT/ops/coding/stage.py" --model general --download
-# NUMA1 is node-scoped: until Qwen3-Coder-Next is verified, GLM-Q2 keeps :8192.
-python3 -I "$ROOT/ops/coding/stage.py" --model coder --download ||
-  echo 'coding prepare: Qwen3-Coder-Next not staged yet; NUMA1 stays GLM-Q2'
-# The shared, pinned qwen4exp runtime (also implements qwen3next) is built and
-# checksummed by ops/qwen/build-runtime.sh; never build an unpinned binary here.
+python3 -I "$ROOT/ops/coding/stage.py" --model coder --download
+# Pinned laguna+flint runtime; never build an unpinned binary here.
 if [[ ! -x $BIN || $(cat "$(dirname "$BIN")/source-commit" 2>/dev/null || true) != "$REV" ]]; then
-  nice -n 19 ionice -c 3 bash "$ROOT/ops/qwen/build-runtime.sh"
+  nice -n 19 ionice -c 3 bash "$ROOT/ops/coding/build-runtime.sh"
 fi
 [[ -x $BIN && $(cat "$(dirname "$BIN")/source-commit" 2>/dev/null || true) == "$REV" ]] || {
-  echo 'coding prepare: pinned qwen4exp runtime missing' >&2; exit 4; }
-SRC=/home/chris/.local/src/mag-qwen-llama.cpp
+  echo 'coding prepare: pinned coding runtime missing' >&2; exit 4; }
+SRC=/home/chris/.local/src/mag-coding-llama.cpp
 if [[ -d $SRC/.git && $(git -C "$SRC" rev-parse HEAD) == "$REV" ]]; then
   # Both architectures require model-specific graph implementations.
-  for arch in QWEN4EXP QWEN3NEXT; do
+  for arch in LAGUNA FLINT; do
     grep -Fq "LLM_ARCH_$arch" "$SRC/src/llama-arch.cpp" || exit 4
   done
 fi

@@ -64,28 +64,28 @@
   },
   {
     "id": "coding-dual-numa",
-    "label": "Qwen3.8-Flash-Next (NUMA0) + Qwen3-Coder-Next (NUMA1)",
+    "label": "Laguna S 2.1 (NUMA0) + Flint (NUMA1)",
     "ports": [
       {
         "port": 8191,
         "numa": 0,
-        "model": "qwen3.8-flash-next"
+        "model": "laguna-s-2.1"
       },
       {
         "port": 8192,
         "numa": 1,
-        "model": "qwen3-coder-next"
+        "model": "flint"
       }
     ]
   },
   {
     "id": "coding0-qwen-glm-dual-numa",
-    "label": "Qwen3.8-Flash-Next (NUMA0) + GLM-Q2 (NUMA1)",
+    "label": "Laguna S 2.1 (NUMA0) + GLM-Q2 (NUMA1)",
     "ports": [
       {
         "port": 8191,
         "numa": 0,
-        "model": "qwen3.8-flash-next"
+        "model": "laguna-s-2.1"
       },
       {
         "port": 8192,

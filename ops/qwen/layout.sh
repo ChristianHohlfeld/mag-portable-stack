@@ -124,9 +124,18 @@ rollback(){
   MAG_DEFER_DAEMON_RELOAD=0 mag_flush_daemon_reload --force
   if [[ -f $TXN/q2-engine-switch-started ]] && grep -Fxq mag-llm-glm@q2.service "$TXN/active"; then
     q2_wait_port_free || echo 'WARNING: :8192 still has sockets before Q2 rollback start' >&2
-    systemctl start mag-llm-glm@q2.service || echo 'WARNING: Q2 rollback start failed' >&2
+    # The failed switch already used systemd's start budget (live: start-limit-hit,
+    # Q2 stayed down until reboot). Clear it so the old engine really starts.
+    systemctl reset-failed mag-llm-glm@q2.service >/dev/null 2>&1 || true
+    q2_rollback_started=1
+    systemctl start mag-llm-glm@q2.service || { q2_rollback_started=0; echo 'WARNING: Q2 rollback start failed' >&2; }
     q2_rollback_ready=0
-    for ((ri=0; ri<5040; ri++)); do
+    # Never wait hours on a unit that did not start: that blocked re-enabling Mistral.
+    for ((ri=0; q2_rollback_started && ri<5040; ri++)); do
+      case $(systemctl show -p ActiveState --value mag-llm-glm@q2.service 2>/dev/null) in
+        active|activating|reloading) ;;
+        *) echo 'WARNING: Q2 rollback unit left active/activating state' >&2; break ;;
+      esac
       if systemctl is-active --quiet mag-llm-glm@q2.service &&
          curl --noproxy '*' -fsS --max-time 3 -o /dev/null http://127.0.0.1:8192/health 2>/dev/null; then
         q2_rollback_ready=1; break

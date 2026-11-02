@@ -159,7 +159,8 @@ python3 - "$TXN/helper.sh" "$ROOT" <<'PY'
 import pathlib,sys
 p=pathlib.Path(sys.argv[1]); s=p.read_text()
 needle='ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"'
-assert s.count(needle)==1
+# The needle also occurs in this heredoc: rewrite only the real line 4.
+assert s.index(needle) < s.index("python3 - ")
 p.write_text(s.replace(needle,"ROOT="+repr(sys.argv[2]),1))
 PY
 touch "$TXN/started"

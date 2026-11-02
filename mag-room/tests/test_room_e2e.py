@@ -92,8 +92,15 @@ class RoomE2E(unittest.TestCase):
         # would otherwise be interpreted as "all bots" by older servers.
         a.click()
         self.assertEqual(p.evaluate('JSON.stringify([...selected])'),'["a"]')
-        expect(p.locator('.agent[data-bot="a"] .agent-flag')).to_have_text('antwortet')
+        # Selected means ready to reply, NOT currently generating text.
+        expect(p.locator('.agent[data-bot="a"] .agent-flag')).to_have_text('eingeschaltet')
         expect(p.locator('.agent[data-bot="b"] .agent-flag')).to_have_text('pausiert')
+        # Only a live stream can show 'antwortet'; after it ends the
+        # selector remains enabled without claiming model health.
+        p.evaluate("streams.a={};renderAgents()")
+        expect(p.locator('.agent[data-bot="a"] .agent-flag')).to_have_text('antwortet')
+        p.evaluate("delete streams.a;renderAgents()")
+        expect(p.locator('.agent[data-bot="a"] .agent-flag')).to_have_text('eingeschaltet')
         # A render/reconnect must retain the selected bot without touching
         # any server-side bot.enabled flag, running work, or saved jobs.
         p.evaluate('renderAgents()')

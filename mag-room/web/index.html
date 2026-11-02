@@ -2011,7 +2011,8 @@ function renderAgents(){const list=$('agents');list.replaceChildren();const sing
 card.setAttribute('role','button');card.setAttribute('aria-label',a.name+' auswählen');
 card.onclick=e=>{if(e.target.closest('button,a,input,textarea,select'))return;focusBot(a.id)};
 card.onkeydown=e=>{if(e.target===card&&(e.key==='Enter'||e.key===' ')){e.preventDefault();focusBot(a.id)}};
-const row=document.createElement('div');row.className='agent-row';const label=document.createElement('label');const tone=botToneIndex(a);botVars(card,tone);const name=document.createElement('span');name.className='bot-name';name.textContent=roomBotName({role:'assistant',bot:a.id,name:a.name});const face=botFaceEl(tone,streams[a.id]?'stream':'idle');face.classList.add('roster-face');label.append(face,name);const flag=document.createElement('span');flag.className='agent-flag';flag.textContent=!on?'inaktiv':selected.has(a.id)?'antwortet':'pausiert';
+const row=document.createElement('div');row.className='agent-row';const label=document.createElement('label');const tone=botToneIndex(a);botVars(card,tone);const name=document.createElement('span');name.className='bot-name';name.textContent=roomBotName({role:'assistant',bot:a.id,name:a.name});const face=botFaceEl(tone,streams[a.id]?'stream':'idle');face.classList.add('roster-face');label.append(face,name);const flag=document.createElement('span');flag.className='agent-flag';// Selection is a reply preference, NOT an inference health indicator.
+flag.textContent=!on?'inaktiv':streams[a.id]?'antwortet':selected.has(a.id)?'eingeschaltet':'pausiert';
 const speaker=document.createElement('button');speaker.type='button';speaker.className='agent-speaker';
 speaker.textContent=selected.has(a.id)?'Ⅱ':'▶';speaker.disabled=!on||!!single;
 speaker.title=selected.has(a.id)?a.name+': Antworten bei neuen Nachrichten pausieren':a.name+': Antworten wieder einschalten';

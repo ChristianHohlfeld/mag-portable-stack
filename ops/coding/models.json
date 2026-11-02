@@ -4,26 +4,26 @@
   "coding_output_tokens": 16384,
   "models": {
     "general": {
-      "name": "Qwen3.8-Flash-Next",
-      "model_id": "qwen3.8-flash-next",
+      "name": "Laguna S 2.1",
+      "model_id": "laguna-s-2.1",
       "numa": 0,
       "candidate_port": 8291,
-      "repo": "mradermacher/Qwen3.8-Flash-Next-Uncensored-GGUF",
-      "filename": "Qwen3.8-Flash-Next-Uncensored.IQ4_XS.gguf",
-      "sha256": "a1975fd73542230e2b344d112f29f22ff522d051cb4bf33bdb872cb3ffc5dedf",
-      "size": 98421788672,
-      "link_from": "/home/chris/models/qwen3.8-flash-next-uncensored/Qwen3.8-Flash-Next-Uncensored.IQ4_XS.gguf"
+      "repo": "ggml-org/Laguna-S-2.1-GGUF",
+      "filename": "Laguna-S-2.1-Q4_K_M.gguf",
+      "sha256": "2bf879f8b15e0e78e3b76c7918cdae306444d049aeb007dda22a507125a5296a",
+      "size": 67661639264,
+      "link_from": "/home/chris/models/laguna-s-2.1/Laguna-S-2.1-Q4_K_M.gguf"
     },
     "coder": {
-      "name": "Qwen3-Coder-Next",
-      "model_id": "qwen3-coder-next",
+      "name": "Flint",
+      "model_id": "flint",
       "numa": 1,
       "candidate_port": 8292,
-      "repo": "unsloth/Qwen3-Coder-Next-GGUF",
-      "filename": "Qwen3-Coder-Next-UD-Q4_K_XL.gguf",
-      "sha256": "4bb93f0a0221ef4ff963ca9094df629c8dfdfabc3b4fdd85c1a2e4c0624fce36",
-      "size": 49608478720,
-      "link_from": "/home/chris/models/qwen3-coder-next/Qwen3-Coder-Next-UD-Q4_K_XL.gguf"
+      "repo": "ggml-org/Flint-GGUF",
+      "filename": "Flint-Q8_0.gguf",
+      "sha256": "8a257b63c0fd1611947db267e3fa84ac3de0ed6f4c43255612236afd226a4f93",
+      "size": 42350359520,
+      "link_from": "/home/chris/models/flint/Flint-Q8_0.gguf"
     }
   }
 }

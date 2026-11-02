@@ -1,33 +1,66 @@
-# MAG coding room: Qwen3.8-Flash-Next (NUMA0) + Qwen3-Coder-Next (NUMA1)
+# MAG coding room: Laguna S 2.1 (NUMA0) + Flint (NUMA1)
 
-Owner decision 2026-11-02 ("Die besten, ihr entscheidet"), replacing the slow
-Mistral Large 4 (~1 tok/s) / GLM-Q2 (~3 tok/s) room pair. Old GGUFs are kept;
-`ops/coding/layout.sh rollback` restores the `glm` layout.
+Owner decision 2026-11-02 22:18 ("Zwei Top-Modelle, die schnell sind, auf dem
+System gut funktionieren und intelligent genug, um langen Code zu schreiben,
+ohne dabei abzubrechen ... nicht so Qwen-Code"), replacing the interim
+Qwen3.8-Flash-Next + Qwen3-Coder-Next pair (#263-#267). Old GGUFs are kept; a
+failed swap restores the previous pair from the transaction snapshot.
 
 | NUMA | Port | Bot | GGUF | Size | SHA256 |
 |---|---|---|---|---|---|
-| 0 | 8191 | Qwen3.8-Flash-Next (125B, 6B active, `qwen4exp`) | [mradermacher/Qwen3.8-Flash-Next-Uncensored-GGUF](https://huggingface.co/mradermacher/Qwen3.8-Flash-Next-Uncensored-GGUF) `IQ4_XS` (already on mag, hard-linked, no download) | 98.4 GB | `a1975fd7…dedf` |
-| 1 | 8192 | Qwen3-Coder-Next (80B, 3B active, `qwen3next`) | [unsloth/Qwen3-Coder-Next-GGUF](https://huggingface.co/unsloth/Qwen3-Coder-Next-GGUF) `UD-Q4_K_XL` | 49.6 GB | `4bb93f0a…ce36` |
+| 0 | 8191 | Laguna S 2.1 (118B, 8B active, `laguna`) | [ggml-org/Laguna-S-2.1-GGUF](https://huggingface.co/ggml-org/Laguna-S-2.1-GGUF) `Q4_K_M` | 67.7 GB | `2bf879f8…296a` |
+| 1 | 8192 | Flint (39.8B, 2.5B active, `flint`) | [ggml-org/Flint-GGUF](https://huggingface.co/ggml-org/Flint-GGUF) `Q8_0` | 42.4 GB | `8a257b63…4f93` |
 
-Runtime: the pinned llama.cpp build of `ops/qwen/runtime.sha`
-(`ops/qwen/build-runtime.sh`), which implements both `qwen4exp`
-(llama.cpp PR #27742) and `qwen3next`. Server flags follow the llama.cpp
+Why these two (vendor model cards; CPU-only host, ~5 tok/s floor per node, so
+only low-active MoE models qualify):
+* **Laguna S 2.1** ([card](https://huggingface.co/poolside/Laguna-S-2.1)):
+  Terminal-Bench 2.1 70.2, SWE-bench Multilingual 78.5, SWE-Bench Pro 59.4 -
+  ahead of DeepSeek-V4-Pro Max (1.6T-A49B) and level with Qwen 3.7 Max on the
+  same table, at 8B active. Built for long-horizon agentic coding.
+* **Flint** ([card](https://huggingface.co/RecursiveSI/flint)): SWE-bench
+  Verified 74.2, Terminal-Bench 2.1 54.9, LiveCodeBench v6 80.3 at 2.5B active;
+  the fastest strong non-Qwen coder, kept at Q8_0 because small active
+  parameter counts lose the most under 4-bit quantization.
+
+Runtime: pinned upstream llama.cpp release b12058 (`ops/coding/runtime.sha`,
+built by `ops/coding/build-runtime.sh` into `~/.local/mag-coding-rt/<sha>`),
+which contains `laguna` (ggml-org/llama.cpp#25165) and `flint`
+(ggml-org/llama.cpp#30928), plus the existing MAG end-checkpoint patch. The
+Qwen/GLM runtime of `ops/qwen/runtime.sha` is untouched (rollback keeps it).
+Server flags follow the llama.cpp
 [server README](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md):
 `--jinja` (GGUF chat template), `--reasoning-format auto`, 64k context,
 one slot, 14 physical cores per node via `numactl --physcpubind/--membind`.
 
+Deviations from the model cards (with sources):
+* Laguna runs non-thinking in the room (`enable_thinking=false`, supported by
+  its [chat template](https://huggingface.co/poolside/Laguna-S-2.1-GGUF/blob/main/chat_template.jinja));
+  the card recommends thinking for agentic tool loops, but on this CPU host
+  thinking would delay every answer. Flint's template has no switch and always
+  reasons; its trace stays in `reasoning_content`.
+* Poolside's card points to its own llama.cpp fork for DFlash speculative
+  decoding; base `laguna` support is upstream (#25165), and we use the
+  official ggml-org GGUF conversion (67.7 GB instead of poolside's 96 GB file,
+  [quantized.uk](https://quantized.uk/quant-hub/laguna-s-2-1-118b-a8b/)).
+
 Room policy (`mag-room/native/magroom.cpp`, `coding_room_model`):
-* chat-only (no tool schemas), exactly one answer per bot and turn;
-* sampling per model card: Qwen3.8 non-thinking `temperature=0.7, top_p=0.8,
-  top_k=20, presence_penalty=1.5`; thinking (room toggle only) `1.0/0.95/20`
-  with `reasoning_effort=low`
-  ([card](https://huggingface.co/Qwen/Qwen3.8-Flash-Next)); Qwen3-Coder-Next
-  `temperature=1.0, top_p=0.95, top_k=40`, non-thinking only
-  ([card](https://huggingface.co/Qwen/Qwen3-Coder-Next));
+* every bot has its VM, browser and full tools (#269), one answer per bot and turn;
+* sampling per model card: Laguna `temperature=1.0, top_p=1.0, top_k=20,
+  min_p=0` ([generation_config](https://huggingface.co/poolside/Laguna-S-2.1/blob/main/generation_config.json));
+  Flint `temperature=1.0, top_p=0.95, top_k=20`
+  ([card](https://huggingface.co/RecursiveSI/flint));
 * no total output cap and no wall-clock deadline: each round may emit
   `MAG_ROOM_MAX_TOKENS=16384`, a `finish_reason=length` round continues the same
   assistant prefix (#253) until the model stops; only Stop, the 10-minute
   no-byte stall, the context end and the loop guard end an answer.
+
+## Switching the pair
+
+`ops/coding/layout.sh` detects a changed `models.json` against the installed
+`/usr/local/lib/mag-coding/models.json`. Only when both new GGUFs are
+SHA-verified does it stop/start `mag-llm-coding@0` then `@1`, checking
+`/health` and a real decode (`live-smoke.py`) on each; any failure restores
+the previous files and restarts the previous pair.
 
 ## Stage models, preserving every currently running service
 
@@ -39,7 +72,7 @@ python3 -I ops/coding/stage.py --model both
 python3 -m unittest discover -s ops/coding/tests -p 'test_*.py'
 ```
 
-Downloads about 45 GB from the two documented Hugging Face sources.
+Downloads about 110 GB from the two documented Hugging Face sources.
 The exact GGUF SHA256s from the upstream file pages are pinned in
 `models.json`. File hash mismatches abort and leave originals untouched.
 A download may still compete for disk I/O/page cache. No unit is changed,

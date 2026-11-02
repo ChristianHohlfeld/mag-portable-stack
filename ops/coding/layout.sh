@@ -12,7 +12,7 @@ new=(mag-llm-coding@0.service mag-llm-coding@1.service)
 old=(mag-llm-mistral-room.service mag-llm-glm@q2.service
      mag-llm-qwen-room.service mag-llm-qwen.service mag-llm-glm@q1.service
      mag-llm-ds-node@0.service mag-llm-ds-node@1.service)
-files=(/etc/mag-stack/room-model.env /etc/mag-stack/room-layout
+files=(/etc/mag-stack/room-model.env /etc/mag-stack/room-layout /etc/mag-stack/room-layout.pinned
        /etc/systemd/system/mag-llm-coding@.service
        /usr/local/lib/mag-coding/start-live.sh /usr/local/lib/mag-coding/runtime.sha
        /usr/local/lib/mag-coding/stage.py /usr/local/lib/mag-coding/models.json
@@ -108,14 +108,15 @@ REV=$(tr -d '[:space:]' < "$ROOT/ops/mistral/runtime.sha")
 BIN="/home/chris/.local/mag-coding/$REV/bin/llama-server"
 [[ -x $BIN && $(cat "$(dirname "$BIN")/source-commit" 2>/dev/null || true) == "$REV" ]] ||
     fail 'pinned coding runtime missing'
-# Existing model pair must be healthy before a fresh switchover.
+# Do not make recovery from a broken old backend impossible. It is precisely
+# why the owner requested replacement. Snapshot the old active/enabled units for
+# rollback, but require *new* model health and real decoder output before routing.
 if [[ $previous == glm ]]; then
-  systemctl is-active --quiet mag-llm-mistral-room.service || fail 'old Mistral not running'
-  systemctl is-active --quiet mag-llm-glm@q2.service || fail 'old GLM-Q2 not running'
-  curl --noproxy '*' -fsS --max-time 5 http://127.0.0.1:8191/health >/dev/null ||
-    fail 'old NUMA0 unhealthy'
-  curl --noproxy '*' -fsS --max-time 5 http://127.0.0.1:8192/health >/dev/null ||
-    fail 'old NUMA1 unhealthy'
+  for port in 8191 8192; do
+    if ! curl --noproxy '*' -fsS --max-time 5 -o /dev/null "http://127.0.0.1:$port/health" 2>/dev/null; then
+      echo "coding layout: old :$port is unhealthy; continuing with staged replacement" >&2
+    fi
+  done
 fi
 install -d -m 0700 "$TXN"
 [[ ! -f $TXN/started ]] || fail 'transaction reused'
@@ -189,6 +190,10 @@ else
 fi
 install -m 0644 "$ROOT/ops/room/coding.env" /etc/mag-stack/room-model.env
 printf 'coding\n' > /etc/mag-stack/room-layout
+# The old host pin must not silently revert coding to GLM next timer tick.
+if [[ $(tr -d '[:space:]' < /etc/mag-stack/room-layout.pinned 2>/dev/null || true) == glm ]]; then
+  rm -f /etc/mag-stack/room-layout.pinned
+fi
 for unit in "${old[@]}"; do
   systemctl disable "$unit" >/dev/null 2>&1 || true
 done

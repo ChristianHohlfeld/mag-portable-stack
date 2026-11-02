@@ -17,6 +17,9 @@ class Layout(unittest.TestCase):
   for name in ('qwen','room','glm','mistral','coding'):
    shutil.copytree(ROOT/'ops'/name,self.repo/'ops'/name,symlinks=True)
   shutil.copy2(ROOT/'ops'/'deploy.sh',self.repo/'ops'/'deploy.sh')
+  # Production pins Q2 to mainline (ik tool calls arrive as text); the fixture
+  # selects ik so the one-time engine switch and its rollback stay covered.
+  q2=self.repo/'ops/glm/q2.env';q2.write_text(q2.read_text().replace('GLM_ENGINE=mainline','GLM_ENGINE=ik'))
   # The repo-declared layout is set per test; the legacy cases run on mixed.
   (self.repo/'ops/room/layout').write_text('mixed\n')
   shutil.copy2(ROOT/'ops'/'mag-units.sh',self.repo/'ops'/'mag-units.sh')
@@ -668,15 +671,15 @@ else:
   self.assertIn('GLM_PORT=8191',(ROOT/'ops/glm/q1.env').read_text())
   self.assertIn('GLM_PORT=8192',(ROOT/'ops/glm/q2.env').read_text())
   q2env=(ROOT/'ops/glm/q2.env').read_text()
-  self.assertIn('GLM_ENGINE=ik',q2env)
+  self.assertIn('GLM_ENGINE=mainline',q2env)
   self.assertIn('GLM_CPU_TOPOLOGY=14-27',q2env)
-  self.assertIn('GLM_SLOT_DIR=/var/lib/mag-llm/slots/glm-ik',q2env)
+  self.assertIn('GLM_SLOT_DIR=/var/lib/mag-llm/slots/glm\n',q2env)
   self.assertIn('GLM_ENGINE must be mainline or ik',st)
   self.assertIn('engine_commit=',st)
   self.assertIn('model_sha=',st)
   self.assertIn('ctx=',st)
   self.assertIn('kv_format=f16-f16',st)
-  self.assertIn('GLM_CTX_SIZE=1048576',(ROOT/'ops/glm/q2.env').read_text())
+  self.assertIn('GLM_CTX_SIZE=32768',(ROOT/'ops/glm/q2.env').read_text())
   self.assertIn('--ctx-size "$CTX"',st)
   self.assertIn('CTX=${GLM_CTX_SIZE:-32768}',st)
   readme=(ROOT/'ops/glm/README.md').read_text()

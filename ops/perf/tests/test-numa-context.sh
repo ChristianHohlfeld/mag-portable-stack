@@ -46,9 +46,9 @@ assert 'GLM_CPU_TOPOLOGY=0-13,28-41' in glm_q1
 assert 'GLM_CPU_TOPOLOGY=14-27' in glm_q2
 assert 'GLM_PORT=8191' in glm_q1 and 'GLM_PORT=8192' in glm_q2
 assert 'GLM_SLOT_DIR=/var/lib/mag-llm/slots/glm-q1' in glm_q1
-assert 'GLM_SLOT_DIR=/var/lib/mag-llm/slots/glm-ik' in glm_q2
+assert 'GLM_SLOT_DIR=/var/lib/mag-llm/slots/glm\n' in glm_q2  # mainline Q2 slot dir (ik pinned off)
 assert 'binding=(--physcpubind=0-13,28-41 --membind=0)' in glm
-assert 'GLM_CTX_SIZE=1048576' in glm_q2
+assert 'GLM_CTX_SIZE=32768' in glm_q2  # proven mainline context
 assert 'FORMAT=' in glm and '.kv-marker' in glm and 'mag-prefix-glm-5.3-flash-slot2.bin' in glm
 assert '--mlock' not in glm
 assert '--load-mode dio' in glm  # Q1 and explicit Q2 mainline rollback only

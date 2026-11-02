@@ -24,6 +24,14 @@ if [[ -r $room_env ]]; then
     systemctl disable mag-llm-mistral-room.service mag-llm-glm@q2.service \
       mag-llm-glm@q1.service mag-llm-qwen.service mag-llm-qwen-room.service \
       mag-llm-ds-node@0.service mag-llm-ds-node@1.service >/dev/null 2>&1 || true
+  elif grep -Fxq 'MAG_ROOM_MODEL_ID_0=qwen3.8-flash-next' "$room_env" &&
+     grep -Fxq 'MAG_ROOM_MODEL_ID_1=glm-5.3-flash' "$room_env"; then
+    # Interim coding room: Qwen3.8 NUMA0; GLM-Q2 boot state is never altered.
+    secondary_unit=mag-llm-coding@0.service
+    secondary_units=()
+    systemctl disable mag-llm-mistral-room.service mag-llm-glm@q1.service \
+      mag-llm-qwen.service mag-llm-qwen-room.service mag-llm-glm.service \
+      mag-llm-ds-node@0.service mag-llm-ds-node@1.service >/dev/null 2>&1 || true
   elif grep -Fxq 'MAG_ROOM_MODEL_ID_0=mistral-large4' "$room_env" &&
      grep -Fxq 'MAG_ROOM_MODEL_ID_1=glm-5.3-flash' "$room_env"; then
     secondary_unit=mag-llm-mistral-room.service

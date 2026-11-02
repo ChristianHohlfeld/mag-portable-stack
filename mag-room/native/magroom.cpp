@@ -862,12 +862,23 @@ static void load_agents() {
     });
     for (auto &a : AGENTS) {
       const auto &backend = ROOM_MODEL.backend(model_slot_of(a));
-      if (mag::str(a, "model") != backend.id) { a["model"] = backend.id; dirty = true; }
+      const std::string previous_model = mag::str(a, "model");
+      if (previous_model != backend.id) { a["model"] = backend.id; dirty = true; }
       a["numa"] = backend.numa;
       // Rename stock labels EVEN for bots that already had a persistent slot.
       // Never change an ID: especially deepseek-chat retains its memory and VM.
       const std::string old = mag::str(a, "name");
       const int slot = model_slot_of(a);
+      // Rename only the known old stock names when upgrading to the new
+      // coding models. Preserve bot IDs, memory, queued messages and any
+      // deliberate custom name.
+      if ((previous_model == "mistral-large4" && old == "Mistral" &&
+           backend.id == "qwen3.6-35b-a3b") ||
+          (previous_model == "glm-5.3-flash" && old == "GLM-Q2" &&
+           backend.id == "qwen3-coder-30b-a3b-instruct")) {
+        a["name"] = backend.label; dirty = true;
+        continue;
+      }
       // Fixed Q1/Q2 labels; preserve each bot's original ID, memory and VM.
       if (backend.label == "GLM-Q1" || backend.label == "GLM-Q2") {
         if (old != backend.label) { a["name"] = backend.label; dirty = true; }

@@ -39,6 +39,44 @@ class CodingDeploy(unittest.TestCase):
   self.assertIn('coding/80-coding-output.conf',layout)
   self.assertIn('qwen-layout/coding',source("ops/deploy.sh"))
   self.assertIn('mag-llm-coding@1.service',source("ops/boot/ensure-boot.sh"))
+ def test_unhealthy_old_model_must_not_block_replacement(self):
+  src=source("ops/coding/layout.sh")
+  self.assertIn("old :$port is unhealthy; continuing with staged replacement",src)
+  self.assertNotIn("fail 'old Mistral not running'",src)
+  self.assertNotIn("fail 'old NUMA0 unhealthy'",src)
+  self.assertNotIn("fail 'old NUMA1 unhealthy'",src)
+  self.assertIn("/etc/mag-stack/room-layout.pinned",src)
+  self.assertIn('rm -f /etc/mag-stack/room-layout.pinned',src)
+  self.assertIn('wait_ready mag-llm-coding@0.service 8191 360',src)
+  self.assertIn('wait_ready mag-llm-coding@1.service 8192 360',src)
+ def test_operator_pin_migration(self):
+  script=source("ops/coding/desired.sh")
+  with tempfile.TemporaryDirectory() as d:
+   p=pathlib.Path(d)/"pinned"
+   script=script.replace("/etc/mag-stack/room-layout.pinned",str(p))
+   script=script.replace('root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"', 'root="'+str(ROOT)+'"')
+   runner=pathlib.Path(d)/"desired.sh"
+   runner.write_text(script)
+   for pin,env,expected in [
+      ("glm",{}, "coding"),
+      ("mixed",{}, "mixed"),
+      ("glm",{"MAG_ROOM_LAYOUT":"glm"},"glm"),
+      ("glm",{"MAG_ROOM_LAYOUT":"repo"},"coding")]:
+    p.write_text(pin+chr(10))
+    import os
+    proc=subprocess.run(["bash",str(runner)],cwd=ROOT,
+       env={**os.environ,**env},text=True,capture_output=True,timeout=10)
+    # Script resolves root relative to its location; point at source tree.
+    self.assertEqual(proc.returncode,0,proc.stderr)
+    self.assertEqual(proc.stdout.strip(),expected)
+ def test_stock_names_renamed_only_after_model_change(self):
+  room=source("mag-room/native/magroom.cpp")
+  self.assertIn('previous_model == "mistral-large4" && old == "Mistral"',room)
+  self.assertIn('previous_model == "glm-5.3-flash" && old == "GLM-Q2"',room)
+  self.assertIn('a["name"] = backend.label',room)
+  ui=source("mag-room/web/index.html")
+  self.assertNotIn("selected.has(a.id)?'antwortet':'pausiert'",ui)
+  self.assertIn("selected.has(a.id)?'eingeschaltet':'pausiert'",ui)
  def test_verified_file(self):
   spec=importlib.util.spec_from_file_location("coding_stage",C/"stage.py")
   mod=importlib.util.module_from_spec(spec);spec.loader.exec_module(mod)

@@ -77,5 +77,21 @@
         "model": "qwen3-coder-next"
       }
     ]
+  },
+  {
+    "id": "coding0-qwen-glm-dual-numa",
+    "label": "Qwen3.8-Flash-Next (NUMA0) + GLM-Q2 (NUMA1)",
+    "ports": [
+      {
+        "port": 8191,
+        "numa": 0,
+        "model": "qwen3.8-flash-next"
+      },
+      {
+        "port": 8192,
+        "numa": 1,
+        "model": "glm-5.3-flash"
+      }
+    ]
   }
 ]

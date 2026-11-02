@@ -106,6 +106,10 @@ class CodingDeploy(unittest.TestCase):
   env=source("ops/room/coding0.env")
   self.assertIn("MAG_ROOM_MODEL_ID_0=qwen3.8-flash-next",env)
   self.assertIn("MAG_ROOM_MODEL_ID_1=glm-5.3-flash",env)
+  import json as _j
+  ids=[[b["model"] for b in x["ports"]] for x in _j.loads(source("ops/room/presets.json")) if all("model" in b for b in x["ports"])]
+  self.assertIn(["qwen3.8-flash-next","glm-5.3-flash"],ids)
+  self.assertIn(["qwen3.8-flash-next","qwen3-coder-next"],ids)
   boot=source("ops/boot/ensure-boot.sh")
   self.assertIn("Interim coding room: Qwen3.8 NUMA0; GLM-Q2 boot state is never altered.",boot)
   room=source("mag-room/native/magroom.cpp")

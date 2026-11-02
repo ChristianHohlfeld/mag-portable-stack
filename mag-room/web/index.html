@@ -2411,23 +2411,28 @@ function activityItems(){
  });
 }
 function activityStatusText(){
- // Thinking/reading/answering timers are not shown above the composer (Stop button already signals a run).
- const line=activityItems().filter(x=>x.loud).map(x=>x.text).join(' · ');
+ const line=activityItems().map(x=>x.text).join(' · ');
  const note=String(state.proaktiv_note||'').trim();
  if(!line)return note;
  return note?line+' · '+note:line;
 }
 function fillActivity(stat){
- const items=activityItems().filter(x=>x.loud);
+ // Composer stays slim: running bots are a coloured dot only (text in tooltip);
+ // only actionable states (Stoppt …, Fehler) get words.
+ const items=activityItems();
+ const full=items.map(x=>x.text).join(' · ');
+ if(full){stat.title=full;stat.setAttribute('aria-label',full)}else{stat.removeAttribute('title');stat.removeAttribute('aria-label')}
  const note=String(state.proaktiv_note||'').trim();
  stat.replaceChildren();
  stat.hidden=!items.length&&!note&&!stopInFlight&&!stopAwaitingIdle;
  items.forEach((p,i)=>{
-  if(i)stat.append(document.createTextNode(' · '));
+  if(i&&(p.loud||items[i-1].loud))stat.append(document.createTextNode(' · '));
   const dot=document.createElement('i');
   dot.className='bot-dot'+(streams[p.id]?' is-stream':' is-idle');
   botVars(dot,p.idx);
   dot.setAttribute('aria-hidden','true');
+  dot.title=p.text;
+  if(!p.loud){stat.append(dot);return}
   const lab=document.createElement('span');lab.textContent=p.text;
   stat.append(dot,lab);
  });

@@ -3224,9 +3224,23 @@ static void wire_finish(int idx,const std::vector<Val> &messages,bool valid) {
   if(!valid) {auto &w=WIRE_SESSIONS[bot];auto archive=w.pho_archive;auto last=w.pho_last_key;w=WireSession{};w.pho_archive=archive;w.pho_last_key=last;wire_store(bot,w);return;}
   auto it=WIRE_SESSIONS.find(bot);if(it==WIRE_SESSIONS.end())return;
   it->second.messages=messages;
-  if(!it->second.turn_ends.empty()&&it->second.turn_ends.back()>messages.size())it->second.turn_ends.clear();
-  if(it->second.turn_ends.empty()||it->second.turn_ends.back()!=messages.size())
-    it->second.turn_ends.push_back(messages.size());
+  // An aborted turn (server restart -> stream eof) can end on an assistant
+  // message with only reasoning: live 17:20 a 20 KB / ~5.6k-token reasoning
+  // with empty content. The slot save of that turn failed, so after the
+  // restore the next hi re-prefilled 5 653 tokens (148 s). Never persist a
+  // reasoning-only tail; the wire then matches the restored slot again.
+  {
+    auto &stored=it->second.messages;
+    while(stored.size()>1&&mag::str(stored.back(),"role")=="assistant"&&
+          trim(mag::str(stored.back(),"content")).empty()&&!stored.back().find("tool_calls")) {
+      stored.pop_back();
+      std::cerr<<"wire-drop-reasoning-only bot="<<bot<<std::endl;
+    }
+  }
+  const size_t stored_n=it->second.messages.size();
+  if(!it->second.turn_ends.empty()&&it->second.turn_ends.back()>stored_n)it->second.turn_ends.clear();
+  if(it->second.turn_ends.empty()||it->second.turn_ends.back()!=stored_n)
+    it->second.turn_ends.push_back(stored_n);
   // User input accepted during tool execution is already in the wire history.
   {std::lock_guard<std::recursive_mutex> state(STATE_MTX);
    for(const auto &m:ROOM) {

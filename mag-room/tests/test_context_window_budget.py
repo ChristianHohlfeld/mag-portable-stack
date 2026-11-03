@@ -56,6 +56,9 @@ class ContextWindowBudget(unittest.TestCase):
         self.assertIn('envi("MAG_ROOM_SHORT_TURN_BYTES", 400)', SOURCE)
         self.assertIn('mag::str(messages.back(), "role") == "user"', SOURCE)
 
+    def test_reasoning_only_tail_not_persisted(self):
+        self.assertIn('wire-drop-reasoning-only bot=', SOURCE)
+
     def test_stray_think_stripped(self):
         # A literal </think> in Flint's visible text must not reach room.json or the wire.
         self.assertIn('auto strip_stray_think = [&](std::string &text, bool move) {', SOURCE)

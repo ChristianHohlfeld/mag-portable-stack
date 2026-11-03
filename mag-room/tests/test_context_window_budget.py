@@ -49,6 +49,19 @@ class ContextWindowBudget(unittest.TestCase):
         self.assertIn('body["reasoning_budget_tokens"] = budget;', SOURCE)
         self.assertIn('const bool uncapped = coding_model && !TL_SELFTALK;', SOURCE)
 
+    def test_stray_think_stripped(self):
+        # A literal </think> in Flint's visible text must not reach room.json or the wire.
+        self.assertIn('auto strip_stray_think = [&](std::string &text, bool move) {', SOURCE)
+        self.assertIn('const bool fixed = strip_stray_think(t.text, true);', SOURCE)
+        def strip(text):
+            at = text.rfind('</think>')
+            if at < 0: return text
+            head, tail = text[:at].replace('<think>', ''), text[at + 8:].strip()
+            return tail if tail else head.strip()
+        self.assertEqual(strip('Hi!</think>Hi Chris!'), 'Hi Chris!')
+        self.assertEqual(strip('Antwort</think>'), 'Antwort')
+        self.assertEqual(strip('ok'), 'ok')
+
     def test_history_window_math(self):
         def budget(n_ctx, bpt, fallback=52000, tokens=32000):
             window = int(n_ctx * bpt * 0.80)

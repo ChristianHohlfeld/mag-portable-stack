@@ -5682,6 +5682,29 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
     on_delta("delta", t.text);
   if ((qwen_chat || mistral_chat) && !t.text.empty()) on_delta("delta", t.text);
   if (!(short_chat || no_tools)) t.raw_text = acc.content;
+  // Flint (coding models) sometimes closes its reasoning twice: llama.cpp
+  // --reasoning-format auto already split reasoning_content, then the visible
+  // text repeats the answer around a literal "</think>" (live 17:05 "Hi
+  // beide": "...helfen?</think>Hi Chris! ..."). Stored in room.json and the
+  // wire, the stray tag is fed back and confused later turns (13 min of
+  // reasoning on fizzbuzz). Keep only the text after the last delimiter; the
+  // text before it moves to the hidden reasoning. Nothing is truncated.
+  if (coding_model) {
+    auto strip_stray_think = [&](std::string &text, bool move) {
+      const size_t at = text.rfind("</think>");
+      if (at == std::string::npos) return false;
+      std::string head = text.substr(0, at), tail = trim(text.substr(at + 8));
+      for (const char *open : {"<think>"})
+        for (size_t o; (o = head.find(open)) != std::string::npos;) head.erase(o, 7);
+      if (tail.empty()) { text = trim(head); return true; }
+      if (move && !trim(head).empty()) acc.reasoning += "\n" + head;
+      text = tail;
+      return true;
+    };
+    const bool fixed = strip_stray_think(t.text, true);
+    strip_stray_think(t.raw_text, false);
+    if (fixed) std::cerr << "stray-think-stripped model=" << model << std::endl;
+  }
   t.loop_cut = glm_loop_cut;
   t.reasoning = acc.reasoning;
   if (t.error.empty() && t.text.empty() && acc.calls.empty() &&

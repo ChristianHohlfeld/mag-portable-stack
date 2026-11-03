@@ -2353,7 +2353,11 @@ static bool bot_proaktiv_locked(int idx) {
   return !(v && v->type == Val::BOOL && !v->asBool());
 }
 static bool github_enabled(int idx) { return bot_setting(idx, "github_enabled", GITHUB_DEFAULT.load()); }
-static bool pho_enabled(int idx) { return bot_setting(idx, "pho_compress", PHO_DEFAULT.load()); }
+// MAG_ROOM_PHO=0 removes PhO-Compress from the request path entirely: no
+// system-prompt instruction, no tokenize calls, no history substitution, no
+// menu switch (owner 2026-11-03 12:08; ops/room/coding.env).
+static bool pho_available() { return envi("MAG_ROOM_PHO", 1) != 0; }
+static bool pho_enabled(int idx) { return pho_available() && bot_setting(idx, "pho_compress", PHO_DEFAULT.load()); }
 static bool bot_thinking(int idx) {
   if (CONFIGURED_MODEL && room_is_glm() &&
       bot_model_id(idx) == "qwen3.8-flash-next-uncensored")
@@ -2414,7 +2418,7 @@ static std::string build_system(int bot_idx, bool autotalk,
   (void)web; // byte-stable prefix: web state lives in the [Kontext] tail
   system += WEB_RULES;
   system += AGENT_RULES;
-  system += pho::instruction;
+  if (pho_available()) system += pho::instruction;
   system += has_vm ? FILES_RULES : FILES_RULES_CHAT;
   if (has_vm)
     system += FRONTEND_RULES;
@@ -11443,6 +11447,7 @@ static std::string state_json(const Actor *actor = nullptr) {
   root["thinking_default"] = THINKING_DEFAULT.load();
   root["github_default"] = GITHUB_DEFAULT.load();
   root["pho_compress_default"] = PHO_DEFAULT.load();
+  root["pho_available"] = pho_available();
   root["thinking"] = thinking_of(LAST_THINK.load());
   // Read busy before the room snapshot. The turn appends the interrupted
   // message and only then clears BUSY, so a false busy flag cannot pair

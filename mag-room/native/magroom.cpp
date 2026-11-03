@@ -4402,6 +4402,12 @@ static void model_watcher_loop() {
         // it down made the next success look like a fresh start and queued
         // another prefill on the only slot. Busy is published as 'b' only.
         if (ok) {
+          // A server that was down (restart of mag-llm-coding@N) comes back
+          // with an empty KV. Without this reset SLOT_WARM stayed 1, the
+          // prewarm took the "ram" branch (fresh /slots has no token count)
+          // and the first hi cold-prefilled ~14k tokens (live 14:30: 4-6 min)
+          // instead of restoring mag-prefix-*.bin via /slots?action=restore.
+          if (ROOM_MODEL_HEALTH[s - 1] == 2) SLOT_WARM[s - 1] = 0;
           backend_became_ready = backend_became_ready || ROOM_MODEL_HEALTH[s - 1] != 1;
           ROOM_MODEL_HEALTH[s - 1] = 1;
         } else if (sent || !slot_is_busy(s)) {

@@ -4,6 +4,11 @@
 # deploy step uses sudo. A failed pull or build stops before anything on the
 # live system is touched. deploy.sh keeps its own backup and automatic rollback.
 set -euo pipefail
+# Everything this script starts (build, stage.py, checksums) stays off the
+# model cores 0-27; systemd-restarted services do not inherit the affinity.
+if [[ -z ${MAG_BUILD_PINNED:-} ]] && command -v ionice >/dev/null && taskset -c "${MAG_BUILD_CPUS:-28-55}" true 2>/dev/null; then
+  MAG_BUILD_PINNED=1 exec taskset -c "${MAG_BUILD_CPUS:-28-55}" nice -n 19 ionice -c3 bash "$0" "$@"
+fi
 ROOT="$(cd -- "$(dirname "$0")/.." && pwd)"
 # shellcheck source=build-targets.sh
 source "$ROOT/ops/build-targets.sh"
@@ -45,8 +50,8 @@ phase build
 run cmake -S "$ROOT" -B "$ROOT/build" -G Ninja -DCMAKE_BUILD_TYPE=Release
 # Model cores 0-27 (NUMA0 0-13, NUMA1 14-27) run the lockstep llama threads;
 # a compile there stalled decode (live 17:52: cc1plus at 100% on core 14).
-BUILD_CPUS="${MAG_BUILD_CPUS:-28-55}"
-run taskset -c "$BUILD_CPUS" nice -n 19 cmake --build "$ROOT/build" -j 8 --target "${MAG_BUILD_TARGETS[@]}"
+# The whole script re-execs under taskset 28-55 / nice 19 / ionice -c3 (top).
+run nice -n 19 cmake --build "$ROOT/build" -j 8 --target "${MAG_BUILD_TARGETS[@]}"
 if (( DRY )); then
   echo '+ go build -mod=mod -o build/mag-browser-webrtc ./mag-room/webrtc'
 elif [[ ! -x "$ROOT/build/mag-browser-webrtc" ]]; then

@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 # Run as root after building and checking the native source.
 set -euo pipefail
+# Everything this script starts (build, stage.py, checksums) stays off the
+# model cores 0-27; systemd-restarted services do not inherit the affinity.
+if [[ -z ${MAG_BUILD_PINNED:-} ]] && command -v ionice >/dev/null && taskset -c "${MAG_BUILD_CPUS:-28-55}" true 2>/dev/null; then
+  MAG_BUILD_PINNED=1 exec taskset -c "${MAG_BUILD_CPUS:-28-55}" nice -n 19 ionice -c3 bash "$0" "$@"
+fi
 # shellcheck source=deploy-guard.sh
 source "$(cd -- "$(dirname -- "$0")" && pwd)/deploy-guard.sh"
 SOURCE="$(cd -- "$(dirname -- "$0")/.." && pwd)"
@@ -711,6 +716,10 @@ bash /usr/local/sbin/mag-agent-drift || echo 'WARN: agent drift check incomplete
 [[ -r /etc/mag-stack/room-model.env ]] || bash "$SOURCE/ops/models/retire-deepseek.sh" || echo 'WARN: DeepSeek retirement incomplete (deploy itself succeeded)' >&2
 # Persist the active model units and bot VM autostart for cold reboot.
 bash "$SOURCE/ops/boot/ensure-boot.sh" || echo 'WARN: boot persistence needs operator attention' >&2
+# Bot VM vCPUs + qemu emulator stay on the HT siblings 28-55 (live and in the
+# persistent domain XML); idempotent, never restarts a VM or a model.
+command -v virsh >/dev/null && bash "$SOURCE/ops/vm/pin-vcpus.sh" || echo 'WARN: VM CPU pinning incomplete (deploy itself succeeded)' >&2
+bash "$SOURCE/ops/check-model-cores.sh" || true
 # Funnel/serve was applied before the ingress smoke, while rollback could
 # still release :443. Model files, including DeepSeek V4.1, are preserved. Only Chris deletes weights.
 # Deploy never restarts a loaded model (DeepSeek retirement above is the only stop). Model placement

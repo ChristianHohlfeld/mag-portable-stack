@@ -3224,9 +3224,23 @@ static void wire_finish(int idx,const std::vector<Val> &messages,bool valid) {
   if(!valid) {auto &w=WIRE_SESSIONS[bot];auto archive=w.pho_archive;auto last=w.pho_last_key;w=WireSession{};w.pho_archive=archive;w.pho_last_key=last;wire_store(bot,w);return;}
   auto it=WIRE_SESSIONS.find(bot);if(it==WIRE_SESSIONS.end())return;
   it->second.messages=messages;
-  if(!it->second.turn_ends.empty()&&it->second.turn_ends.back()>messages.size())it->second.turn_ends.clear();
-  if(it->second.turn_ends.empty()||it->second.turn_ends.back()!=messages.size())
-    it->second.turn_ends.push_back(messages.size());
+  // An aborted turn (server restart -> stream eof) can end on an assistant
+  // message with only reasoning: live 17:20 a 20 KB / ~5.6k-token reasoning
+  // with empty content. The slot save of that turn failed, so after the
+  // restore the next hi re-prefilled 5 653 tokens (148 s). Never persist a
+  // reasoning-only tail; the wire then matches the restored slot again.
+  {
+    auto &stored=it->second.messages;
+    while(stored.size()>1&&mag::str(stored.back(),"role")=="assistant"&&
+          trim(mag::str(stored.back(),"content")).empty()&&!stored.back().find("tool_calls")) {
+      stored.pop_back();
+      std::cerr<<"wire-drop-reasoning-only bot="<<bot<<std::endl;
+    }
+  }
+  const size_t stored_n=it->second.messages.size();
+  if(!it->second.turn_ends.empty()&&it->second.turn_ends.back()>stored_n)it->second.turn_ends.clear();
+  if(it->second.turn_ends.empty()||it->second.turn_ends.back()!=stored_n)
+    it->second.turn_ends.push_back(stored_n);
   // User input accepted during tool execution is already in the wire history.
   {std::lock_guard<std::recursive_mutex> state(STATE_MTX);
    for(const auto &m:ROOM) {
@@ -5348,11 +5362,27 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
     // took 300-800 tokens (47-140 s). Bound the hidden reasoning of that first
     // round only. Tool rounds (last message role=tool) and long requests keep
     // unlimited reasoning; the visible reply and code are never capped.
+    // Two tiers: greetings/short chat 256 (at 7-10 tok/s even 1024 is
+    // 100-130 s for a "Hi"), short code requests 1024. Code is detected from
+    // the newest room line only (keywords or a code fence).
     const std::string last = mag::str(messages.back(), "content");
     const size_t short_bytes = (size_t)std::clamp(envi("MAG_ROOM_SHORT_TURN_BYTES", 400), 0, 8000);
-    const int budget = std::clamp(envi("MAG_ROOM_SHORT_REASONING_BUDGET", 1024), -1, 32768);
-    if (budget >= 0 && last.size() <= short_bytes && last.rfind("[System]", 0) != 0)
-      body["reasoning_budget_tokens"] = budget;
+    if (last.size() <= short_bytes && last.rfind("[System]", 0) != 0) {
+      std::string newest = last;
+      if (auto nl = trim(newest).rfind('\n'); nl != std::string::npos) newest = trim(newest).substr(nl + 1);
+      std::transform(newest.begin(), newest.end(), newest.begin(),
+                     [](unsigned char ch) { return (char)std::tolower(ch); });
+      bool code = false;
+      for (const char *k : {"```", "code", "funktion", "function", "python", "script",
+                            "skript", "schreib", "implement", "programm", "bug", "fehler",
+                            "fix", "klasse", "class", "def ", "sql", "regex", "html",
+                            "javascript", "c++", "rust", "bash", "test", "refactor"})
+        if (newest.find(k) != std::string::npos) { code = true; break; }
+      const int budget = code
+          ? std::clamp(envi("MAG_ROOM_SHORT_CODE_REASONING_BUDGET", 1024), -1, 32768)
+          : std::clamp(envi("MAG_ROOM_SHORT_REASONING_BUDGET", 256), -1, 32768);
+      if (budget >= 0) body["reasoning_budget_tokens"] = budget;
+    }
   }
   std::string payload = mj::dump(body);
   std::string req =

@@ -51,9 +51,13 @@ class ContextWindowBudget(unittest.TestCase):
 
     def test_short_turn_reasoning_budget(self):
         # Short first rounds bound hidden reasoning; tool rounds stay unlimited.
-        self.assertIn('envi("MAG_ROOM_SHORT_REASONING_BUDGET", 1024)', SOURCE)
+        self.assertIn('envi("MAG_ROOM_SHORT_REASONING_BUDGET", 256)', SOURCE)
+        self.assertIn('envi("MAG_ROOM_SHORT_CODE_REASONING_BUDGET", 1024)', SOURCE)
         self.assertIn('envi("MAG_ROOM_SHORT_TURN_BYTES", 400)', SOURCE)
         self.assertIn('mag::str(messages.back(), "role") == "user"', SOURCE)
+
+    def test_reasoning_only_tail_not_persisted(self):
+        self.assertIn('wire-drop-reasoning-only bot=', SOURCE)
 
     def test_stray_think_stripped(self):
         # A literal </think> in Flint's visible text must not reach room.json or the wire.

@@ -5044,7 +5044,18 @@ static size_t window_context_budget(int bot_idx, size_t fallback) {
     if (it != WIRE_BYTES_PER_TOKEN.end())
       bpt = std::clamp(it->second, 2.0, 6.0);
   }
-  return std::max(fallback, (size_t)((double)n_ctx * bpt * 0.80));
+  // Per-bot history window (MAG_ROOM_HISTORY_TOKENS, whole wire incl.
+  // system+tools). Without it the WireSession grew to ~49k tokens before the
+  // n_ctx budget (~200k on Flint) ever compacted: cold prefill of minutes and
+  // decode slowing with depth. compact_agent_context trims in one big step
+  // down to 60% of this cap, so the cached prefix stays stable between trims;
+  // messages[0] (system) and the tools are never touched. room.json keeps the
+  // full history.
+  const long history_tokens = std::clamp(
+      (long)envi("MAG_ROOM_HISTORY_TOKENS", 32000), 16000L, 1000000L);
+  const size_t window = (size_t)((double)n_ctx * bpt * 0.80);
+  const size_t history_cap = (size_t)((double)history_tokens * bpt);
+  return std::max(fallback, std::min(window, history_cap));
 }
 static Turn
 backend_turn(const std::vector<Val> &messages, const std::string &tools,
@@ -6533,7 +6544,7 @@ static void compact_agent_context(int bot_idx, std::vector<Val> &messages,
   // Critical for CPU-only models: compacting ONE old tool round whenever the
   // next response crosses the limit rewrites the early rollup message on EVERY
   // turn. That invalidates the entire later llama KV prefix, causing minutes
-  // of repeated prefill. Compact in infrequent batches, retaining ~35% spare
+  // of repeated prefill. Compact in infrequent batches, retaining ~40% spare
   // window for future tool rounds. Full outputs and files remain in the VM/
   // activity log. Never orphan a tool result or drop the latest tool rounds.
   if (prompt_wire_bytes(messages, tools) <= limit) return;
@@ -6541,7 +6552,9 @@ static void compact_agent_context(int bot_idx, std::vector<Val> &messages,
   // rewritten merely because another turn became old or a switch changed.
   if(!CURRENT_JOB&&!TL_TASK)pho_rollover(bot_idx,messages);
   if (prompt_wire_bytes(messages, tools) <= limit) return;
-  const size_t target = limit * 65 / 100;
+  // One big step (60% of the cap): the next turns append behind a stable
+  // prefix until the window fills again.
+  const size_t target = limit * 60 / 100;
   while (prompt_wire_bytes(messages, tools) > target) {
     const size_t at = rollup.empty() ? 2 : 3;
     if (messages.size() <= at + 2) break;

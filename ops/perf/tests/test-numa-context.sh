@@ -108,7 +108,7 @@ assert 'body["cache_prompt"] = false;' in room and 'body["top_k"] = 1;' in room 
 assert 'Token-ID nicht eindeutig' in room  # ik ids verified via tokenize+detokenize
 assert "api('/api/model-radius'" in ui
 assert 'if (!JOBS.empty() || AUTO_READY) return;' in room  # never delays a queued turn
-assert 'const size_t target = limit * 65 / 100;' in room
+assert 'const size_t target = limit * 60 / 100;' in room
 assert 'if (prompt_wire_bytes(messages, tools) <= limit) return;' in room
 assert 'utf8_suffix(t.reasoning, keep)' in room
 assert 'report.reasoning += piece' in room  # full reasoning stays in report

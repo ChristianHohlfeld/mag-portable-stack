@@ -25,6 +25,26 @@ class ContextWindowBudget(unittest.TestCase):
         self.assertIn('note_wire_ratio(model, prompt_wire_bytes(messages, tools), saw_evaluated)', SOURCE)
         # Never smaller than the configured byte budget.
         self.assertIn('return std::max(fallback,', SOURCE)
+
+    def test_history_window_caps_wire(self):
+        # The per-bot wire must not grow unbounded (live: 49k tokens, minutes of prefill).
+        self.assertIn('envi("MAG_ROOM_HISTORY_TOKENS", 32000)', SOURCE)
+        self.assertIn('return std::max(fallback, std::min(window, history_cap));', SOURCE)
+        # Trim in one big step so the cached prefix stays stable between trims.
+        self.assertIn('const size_t target = limit * 60 / 100;', SOURCE)
+        # System prompt stays byte-identical: compaction starts after messages[1].
+        self.assertIn('const size_t at = rollup.empty() ? 2 : 3;', SOURCE)
+
+    def test_history_window_math(self):
+        def budget(n_ctx, bpt, fallback=52000, tokens=32000):
+            window = int(n_ctx * bpt * 0.80)
+            return max(fallback, min(window, int(tokens * bpt)))
+        # Flint 262k ctx, ~4 bytes/token: cap is 32k tokens, not ~210k.
+        self.assertEqual(budget(262144, 4.0), 128000)
+        # Small backend windows keep the n_ctx rule.
+        self.assertEqual(budget(32768, 4.0), 104857)
+        # Trim target leaves 40% headroom.
+        self.assertEqual(128000 * 60 // 100, 76800)
         # First request after a restart must not compact the resident prefix.
         self.assertIn('double bpt = 4.0;', SOURCE)
 

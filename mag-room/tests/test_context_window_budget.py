@@ -72,7 +72,7 @@ class ContextWindowBudget(unittest.TestCase):
         self.assertIn('group_chat::leading_pass(acc.content)', SOURCE)
         self.assertIn('chipin-pass-cut bytes=', SOURCE)
         # Any bot turn that is PASS (or starts with a PASS line) is dropped, not only chip-ins.
-        self.assertIn('(group_chat::is_pass(report.text) || group_chat::leading_pass(report.text))) ||', SOURCE)
+        self.assertIn('(!report.react_only && !trim(report.text).empty() &&', SOURCE)
 
     def test_finished_turns_drop_reasoning(self):
         # Old reasoning_content is not replayed (server: --no-reasoning-preserve).

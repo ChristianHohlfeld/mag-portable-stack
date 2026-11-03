@@ -4404,8 +4404,8 @@ static void model_watcher_loop() {
       for (int s = 1; s <= ROOM_MAX_BOTS; ++s) {
         // Probe even while a prewarm or turn looks busy. A model-unit restart
         // leaves that request hung on the dead process; skipping the probe
-        // kept health at 1 and SLOT_WARM at 1, so the next chat cold-prefilled
-        // the wire (live 17:31: 5653 tokens, 148 s) instead of restoring.
+        // kept health at 1 and SLOT_WARM at 1, so a model restart that hit a
+        // running turn was never seen and the saved prefix was not restored.
         const bool busy = slot_is_busy(s);
         std::string reply;
         long health = 0;

@@ -42,6 +42,13 @@ class ContextWindowBudget(unittest.TestCase):
         self.assertIn('restore_or_cold(source);', SOURCE)
         self.assertIn('std::string("/slots/0?action=") + action', SOURCE)
 
+    def test_chipin_reasoning_budget(self):
+        # Complement turns bound hidden reasoning only; replies stay uncapped.
+        self.assertIn('envi("MAG_ROOM_CHIPIN_REASONING_BUDGET", 256)', SOURCE)
+        self.assertIn('if (coding_model && TL_CHIPIN && !TL_SELFTALK) {', SOURCE)
+        self.assertIn('body["reasoning_budget_tokens"] = budget;', SOURCE)
+        self.assertIn('const bool uncapped = coding_model && !TL_SELFTALK;', SOURCE)
+
     def test_history_window_math(self):
         def budget(n_ctx, bpt, fallback=52000, tokens=32000):
             window = int(n_ctx * bpt * 0.80)

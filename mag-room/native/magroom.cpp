@@ -9150,7 +9150,8 @@ static TurnReport generate_and_post(int idx, bool automatic, double dispatched_m
       // Empty text is an interrupted/stopped turn, not a PASS: keep it.
       (!report.react_only && !trim(report.text).empty() &&
        (group_chat::is_pass(report.text) || group_chat::leading_pass(report.text))) ||
-      (TL_CHIPIN && !report.react_only && selftalk_idle_echo(report.text)))
+      (TL_CHIPIN && !report.react_only &&
+       (group_chat::is_pass(report.text) || selftalk_idle_echo(report.text))))
     report.skipped = true;
   if (report.skipped) {
     drop_revealed();

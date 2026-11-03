@@ -756,16 +756,23 @@ static bool room_is_glm() {
 // with continued long answers.
 static const char *const CODING_GENERAL_MODEL = "qwen3.8-flash-next";
 static const char *const CODING_CODER_MODEL = "flint";
+// Owner 2026-11-03 12:08: NUMA0 also runs Flint (same Q4_K_M GGUF, own socket).
+static const char *const CODING_FLINT0_MODEL = "flint-numa0";
+static bool flint_model(const std::string &model) {
+  return model == CODING_CODER_MODEL || model == CODING_FLINT0_MODEL;
+}
 // Also the node-scoped interim (ops/room/coding0.env): Qwen3.8 on NUMA0 while
 // GLM-Q2 keeps NUMA1 until Flint is staged; that pair is a GLM room.
 static bool room_is_coding() {
-  return CONFIGURED_MODEL && ROOM_MODEL.backend(1).id == CODING_GENERAL_MODEL &&
+  return CONFIGURED_MODEL && (ROOM_MODEL.backend(1).id == CODING_GENERAL_MODEL ||
+                               ROOM_MODEL.backend(1).id == CODING_FLINT0_MODEL) &&
       (ROOM_MODEL.backend(2).id == CODING_CODER_MODEL ||
        ROOM_MODEL.backend(2).id == "glm-5.3-flash");
 }
 static bool coding_room_model(const std::string &model) {
   return room_is_coding() &&
       (model == CODING_GENERAL_MODEL ||
+       (model == CODING_FLINT0_MODEL && ROOM_MODEL.backend(1).id == CODING_FLINT0_MODEL) ||
        (model == CODING_CODER_MODEL && ROOM_MODEL.backend(2).id == CODING_CODER_MODEL));
 }
 // No chat-only (VM/tools-off) mode: every room bot always runs with its VM,
@@ -910,7 +917,10 @@ static void load_agents() {
            backend.id == CODING_CODER_MODEL) ||
           // Qwen3-Coder-Next -> Flint on NUMA1 (stock name only).
           (previous_model == "qwen3-coder-next" && old == "Qwen3-Coder-Next" &&
-           backend.id == CODING_CODER_MODEL)) {
+           backend.id == CODING_CODER_MODEL) ||
+          // Qwen3.8 -> Flint on NUMA0 (stock name only).
+          (previous_model == CODING_GENERAL_MODEL && old == "Qwen3.8" &&
+           backend.id == CODING_FLINT0_MODEL)) {
         a["name"] = backend.label; dirty = true;
         continue;
       }
@@ -5156,7 +5166,7 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
     const bool q1_chat = no_tools && model == "glm-5.3-flash-iq1-m";
     // Qwen's official non-thinking instruct sampling (mapped to llama.cpp
     // request fields); the server defaults and GLM-Q2 sampling stay unchanged.
-    if (coding_model && model == CODING_CODER_MODEL) {
+    if (coding_model && flint_model(model)) {
       // Flint card (huggingface.co/RecursiveSI/flint): temperature 1.0,
       // top_p 0.95, top_k 20. Flint always reasons (no template switch); the
       // reasoning stays in reasoning_content.
@@ -8162,7 +8172,7 @@ static std::vector<group_chat::Bot> dispatch_roster() {
     group_chat::Bot b;
     b.id = id;
     b.name = mag::str(AGENTS[i], "name");
-    b.coder = model == CODING_CODER_MODEL || model.find("coder") != std::string::npos;
+    b.coder = flint_model(model) || model.find("coder") != std::string::npos;
     out.push_back(std::move(b));
   }
   return out;

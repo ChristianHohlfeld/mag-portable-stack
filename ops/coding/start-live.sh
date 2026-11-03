@@ -13,27 +13,23 @@
 set -euo pipefail
 which=${1:?usage: start-live.sh 0|1}
 case "$which" in
-  0) node=0; cpus=0-13; port=8191; name=general; ctx=65536
-     alias=qwen3.8-flash-next; file=Qwen3.8-Flash-Next-Uncensored.IQ4_XS.gguf
-     # qwen4exp per-layer token embeddings stay in host RAM (as the proven
-     # ops/qwen/start.sh launcher measured at 6.9-7.0 tok/s on this host).
-     extra=(-ot per_layer_token_embd=CPU) ;;
-  1) node=1; cpus=14-27; port=8192; name=coder; ctx=65536
+  # Owner 2026-11-03 12:08: Flint Q4_K_M on BOTH sockets, one instance per
+  # node, never spanning (the NUMA interconnect is the bottleneck). Qwen3.8's
+  # GGUF stays on disk. ctx = Flint card's documented 262,144-token window
+  # (13 of 49 layers are full attention, 4 KV heads: ~7 GB f16 KV per node).
+  0) node=0; cpus=0-13; port=8191; name=general; ctx=262144
+     alias=flint-numa0; file=Flint-Q4_K_M.gguf
+     extra=(--temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.0) ;;
+  1) node=1; cpus=14-27; port=8192; name=coder; ctx=262144
      alias=flint; file=Flint-Q4_K_M.gguf
      extra=(--temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.0) ;;
   *) echo 'coding: invalid NUMA node' >&2; exit 4 ;;
 esac
-if [[ $node == 0 ]]; then
-  # NUMA0: the pinned, already-verified qwen4exp runtime (ops/qwen/build-runtime.sh).
-  REV=$(cat /usr/local/lib/mag-coding/runtime.sha)
-  [[ $REV =~ ^[a-f0-9]{40}$ ]] || exit 4
-  DIR="/home/chris/.local/qwen4exp/$REV-mag-cp1/bin"
-else
-  # NUMA1: the pinned flint runtime (ops/coding/build-runtime.sh).
-  REV=$(cat /usr/local/lib/mag-coding/runtime-coder.sha)
-  [[ $REV =~ ^[a-f0-9]{40}$ ]] || exit 4
-  DIR="/home/chris/.local/mag-coding-rt/$REV/bin"
-fi
+# Both nodes: the pinned flint runtime (ops/coding/build-runtime.sh).
+# (The qwen4exp runtime of ops/qwen/runtime.sha stays installed for rollback.)
+REV=$(cat /usr/local/lib/mag-coding/runtime-coder.sha)
+[[ $REV =~ ^[a-f0-9]{40}$ ]] || exit 4
+DIR="/home/chris/.local/mag-coding-rt/$REV/bin"
 BIN="$DIR/llama-server"
 MODEL="/home/chris/models/mag-coding/$name/$file"
 [[ -x $BIN && -f $MODEL && ! -L $MODEL ]] || { echo "coding $node: runtime/GGUF missing" >&2; exit 4; }

@@ -21,7 +21,7 @@ DATA = json.loads((ROOT / "models.json").read_text(encoding="utf-8"))
 
 class CodingStage(unittest.TestCase):
     def test_candidate_identifiers_and_cpu_layout(self):
-        self.assertEqual(DATA["context_tokens"], 65536)
+        self.assertEqual(DATA["context_tokens"], 262144)
         self.assertEqual(DATA["coding_output_tokens"], 16384)
         self.assertEqual(set(DATA["models"]), {"general", "coder"})
         self.assertEqual([DATA["models"][name]["numa"] for name in ("general", "coder")], [0, 1])
@@ -49,10 +49,10 @@ class CodingStage(unittest.TestCase):
     def test_source_hash_pins_and_long_output_are_explicit(self):
         self.assertEqual(
             DATA["models"]["general"]["sha256"],
-            "a1975fd73542230e2b344d112f29f22ff522d051cb4bf33bdb872cb3ffc5dedf")
+            "c3c4d93f9db92627a2fc47ea8fe8c64a094cabd3549db544bcdd2c00e9a9a347")
         self.assertEqual(
             DATA["models"]["coder"]["sha256"],
-            "8a257b63c0fd1611947db267e3fa84ac3de0ed6f4c43255612236afd226a4f93")
+            "c3c4d93f9db92627a2fc47ea8fe8c64a094cabd3549db544bcdd2c00e9a9a347")
         self.assertIn("default=16384", (ROOT / "smoke.py").read_text())
         self.assertIn("finish == \"length\"", (ROOT / "smoke.py").read_text())
 

@@ -23,7 +23,7 @@ class CodingDeploy(unittest.TestCase):
  def test_model_pins(self):
   data=json.loads(source("ops/coding/models.json"))
   self.assertEqual(data["coding_output_tokens"],16384)
-  self.assertEqual(data["context_tokens"],65536)
+  self.assertEqual(data["context_tokens"],262144)
   self.assertEqual([data["models"][i]["numa"] for i in ("general","coder")],[0,1])
   self.assertEqual(source("ops/room/layout").strip(),"coding")
   self.assertIn("MAG_ROOM_MAX_TOKENS=16384",source("ops/coding/80-coding-output.conf"))
@@ -95,7 +95,8 @@ class CodingDeploy(unittest.TestCase):
   self.assertIn('? MAX_TOKENS // one round; longer answers continue (no total cap)',room)
   self.assertIn('if (coding_model) glm_stops.pop_back();',room)
   env=source("ops/room/coding.env")
-  self.assertIn("MAG_ROOM_MODEL_ID_0=qwen3.8-flash-next",env)
+  self.assertIn("MAG_ROOM_MODEL_ID_0=flint-numa0",env)
+  self.assertIn('CODING_FLINT0_MODEL = "flint-numa0"',room)
   self.assertIn('CODING_GENERAL_MODEL = "qwen3.8-flash-next"',room)
   self.assertIn('CODING_CODER_MODEL = "flint"',room)
  def test_node_scoped_interim(self):
@@ -109,7 +110,7 @@ class CodingDeploy(unittest.TestCase):
   import json as _j
   ids=[[b["model"] for b in x["ports"]] for x in _j.loads(source("ops/room/presets.json")) if all("model" in b for b in x["ports"])]
   self.assertIn(["qwen3.8-flash-next","glm-5.3-flash"],ids)
-  self.assertIn(["qwen3.8-flash-next","flint"],ids)
+  self.assertIn(["flint-numa0","flint"],ids)
   boot=source("ops/boot/ensure-boot.sh")
   self.assertIn("Interim coding room: Qwen3.8 NUMA0; GLM-Q2 boot state is never altered.",boot)
   room=source("mag-room/native/magroom.cpp")
@@ -151,13 +152,12 @@ class CodingDeploy(unittest.TestCase):
   self.assertIn('install -m 0644 "$ROOT/ops/coding/runtime.sha" /usr/local/lib/mag-coding/runtime-coder.sha',layout)
   self.assertIn('install -m 0644 "$ROOT/ops/qwen/runtime.sha" /usr/local/lib/mag-coding/runtime.sha',layout)
   start=source("ops/coding/start-live.sh")
-  self.assertIn('DIR="/home/chris/.local/qwen4exp/$REV-mag-cp1/bin"',start)
   self.assertIn('DIR="/home/chris/.local/mag-coding-rt/$REV/bin"',start)
-  self.assertIn("alias=flint; file=Flint-Q8_0.gguf",start)
-  self.assertIn("alias=qwen3.8-flash-next",start)
+  self.assertIn("alias=flint; file=Flint-Q4_K_M.gguf",start)
+  self.assertIn("alias=flint-numa0; file=Flint-Q4_K_M.gguf",start)
   self.assertIn("FLINT",source("ops/coding/build-runtime.sh"))
   self.assertRegex(source("ops/coding/runtime.sha").strip(),r"^[a-f0-9]{40}$")
-  self.assertEqual([new["models"][i]["model_id"] for i in ("general","coder")],["qwen3.8-flash-next","flint"])
+  self.assertEqual([new["models"][i]["model_id"] for i in ("general","coder")],["flint-numa0","flint"])
   room=source("mag-room/native/magroom.cpp")
   # No per-round token cap on either coding bot (Flint reasons every turn; Chris: no caps).
   self.assertIn("const bool uncapped = coding_model && !TL_SELFTALK;",room)

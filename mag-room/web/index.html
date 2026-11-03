@@ -2099,6 +2099,7 @@ function syncBotSwitches(){
  $('plus-pho').setAttribute('aria-checked',String(ph));
  $('plus-pho-state').textContent=ph?'an':'aus';
  $('plus-pho').title=PHO_TIP;
+ $('plus-pho').hidden=state.pho_available===false;
  paintRoomLine();
 }
 function initThink(){if(!thinkInit){thinkInit=true;$('think').onchange=async()=>{syncThink();try{await api('/api/bot-settings',{bots:[...selected],thinking:$('think').checked},'PUT');await refresh()}catch(e){notice(e.message)}}}syncBotSwitches()}

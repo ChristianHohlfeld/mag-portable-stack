@@ -1,18 +1,18 @@
 {
   "schema": 1,
-  "context_tokens": 65536,
+  "context_tokens": 262144,
   "coding_output_tokens": 16384,
   "models": {
     "general": {
-      "name": "Qwen3.8-Flash-Next",
-      "model_id": "qwen3.8-flash-next",
+      "name": "Flint (NUMA0)",
+      "model_id": "flint-numa0",
       "numa": 0,
       "candidate_port": 8291,
-      "repo": "mradermacher/Qwen3.8-Flash-Next-Uncensored-GGUF",
-      "filename": "Qwen3.8-Flash-Next-Uncensored.IQ4_XS.gguf",
-      "sha256": "a1975fd73542230e2b344d112f29f22ff522d051cb4bf33bdb872cb3ffc5dedf",
-      "size": 98421788672,
-      "link_from": "/home/chris/models/qwen3.8-flash-next-uncensored/Qwen3.8-Flash-Next-Uncensored.IQ4_XS.gguf"
+      "repo": "ggml-org/Flint-GGUF",
+      "filename": "Flint-Q4_K_M.gguf",
+      "sha256": "c3c4d93f9db92627a2fc47ea8fe8c64a094cabd3549db544bcdd2c00e9a9a347",
+      "size": 23387911136,
+      "link_from": "/home/chris/models/flint/Flint-Q4_K_M.gguf"
     },
     "coder": {
       "name": "Flint",
@@ -20,10 +20,10 @@
       "numa": 1,
       "candidate_port": 8292,
       "repo": "ggml-org/Flint-GGUF",
-      "filename": "Flint-Q8_0.gguf",
-      "sha256": "8a257b63c0fd1611947db267e3fa84ac3de0ed6f4c43255612236afd226a4f93",
-      "size": 42350359520,
-      "link_from": "/home/chris/models/flint/Flint-Q8_0.gguf"
+      "filename": "Flint-Q4_K_M.gguf",
+      "sha256": "c3c4d93f9db92627a2fc47ea8fe8c64a094cabd3549db544bcdd2c00e9a9a347",
+      "size": 23387911136,
+      "link_from": "/home/chris/models/flint/Flint-Q4_K_M.gguf"
     }
   }
 }

@@ -64,12 +64,12 @@
   },
   {
     "id": "coding-dual-numa",
-    "label": "Qwen3.8-Flash-Next (NUMA0) + Flint (NUMA1)",
+    "label": "Flint 2 (NUMA0) + Flint (NUMA1)",
     "ports": [
       {
         "port": 8191,
         "numa": 0,
-        "model": "qwen3.8-flash-next"
+        "model": "flint-numa0"
       },
       {
         "port": 8192,

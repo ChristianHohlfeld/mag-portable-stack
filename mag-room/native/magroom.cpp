@@ -746,12 +746,13 @@ static bool room_is_glm() {
          ROOM_MODEL.backend(1).id == "qwen3.8-flash-next") &&
         ROOM_MODEL.backend(2).id == "glm-5.3-flash"));
 }
-// Coding room (ops/room/coding.env): Qwen3.8-Flash-Next on NUMA0 and
-// Qwen3-Coder-Next on NUMA1. Chat-only like GLM-Q2, with continued long answers.
+// Coding room (ops/room/coding.env): Qwen3.8-Flash-Next on NUMA0 and Flint on
+// NUMA1 (owner 2026-11-03 "Flint installieren", replacing Qwen3-Coder-Next),
+// with continued long answers.
 static const char *const CODING_GENERAL_MODEL = "qwen3.8-flash-next";
-static const char *const CODING_CODER_MODEL = "qwen3-coder-next";
+static const char *const CODING_CODER_MODEL = "flint";
 // Also the node-scoped interim (ops/room/coding0.env): Qwen3.8 on NUMA0 while
-// GLM-Q2 keeps NUMA1 until Qwen3-Coder-Next is staged; that pair is a GLM room.
+// GLM-Q2 keeps NUMA1 until Flint is staged; that pair is a GLM room.
 static bool room_is_coding() {
   return CONFIGURED_MODEL && ROOM_MODEL.backend(1).id == CODING_GENERAL_MODEL &&
       (ROOM_MODEL.backend(2).id == CODING_CODER_MODEL ||
@@ -901,6 +902,9 @@ static void load_agents() {
           (previous_model == "qwen3.6-35b-a3b" && old == "Qwen3.6" &&
            backend.id == CODING_GENERAL_MODEL) ||
           (previous_model == "qwen3-coder-30b-a3b-instruct" && old == "Qwen3-Coder" &&
+           backend.id == CODING_CODER_MODEL) ||
+          // Qwen3-Coder-Next -> Flint on NUMA1 (stock name only).
+          (previous_model == "qwen3-coder-next" && old == "Qwen3-Coder-Next" &&
            backend.id == CODING_CODER_MODEL)) {
         a["name"] = backend.label; dirty = true;
         continue;
@@ -5083,11 +5087,14 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
     // Qwen's official non-thinking instruct sampling (mapped to llama.cpp
     // request fields); the server defaults and GLM-Q2 sampling stay unchanged.
     if (coding_model && model == CODING_CODER_MODEL) {
-      // Qwen3-Coder-Next card (non-thinking only): temperature=1.0, top_p=0.95, top_k=40.
+      // Flint card (huggingface.co/RecursiveSI/flint): temperature 1.0,
+      // top_p 0.95, top_k 20. Flint always reasons (no template switch); the
+      // reasoning stays in reasoning_content.
       body["temperature"] = 1.0;
       body["top_p"] = 0.95;
-      body["top_k"] = 40;
+      body["top_k"] = 20;
       body["min_p"] = 0.0;
+      body["repeat_penalty"] = 1.0;
     } else if (coding_model && thinking && !TL_SELFTALK && !short_chat) {
       // Qwen3.8-Flash-Next card, thinking mode.
       body["temperature"] = 1.0;

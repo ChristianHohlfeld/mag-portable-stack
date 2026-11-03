@@ -52,7 +52,7 @@ class CodingStage(unittest.TestCase):
             "a1975fd73542230e2b344d112f29f22ff522d051cb4bf33bdb872cb3ffc5dedf")
         self.assertEqual(
             DATA["models"]["coder"]["sha256"],
-            "4bb93f0a0221ef4ff963ca9094df629c8dfdfabc3b4fdd85c1a2e4c0624fce36")
+            "8a257b63c0fd1611947db267e3fa84ac3de0ed6f4c43255612236afd226a4f93")
         self.assertIn("default=16384", (ROOT / "smoke.py").read_text())
         self.assertIn("finish == \"length\"", (ROOT / "smoke.py").read_text())
 

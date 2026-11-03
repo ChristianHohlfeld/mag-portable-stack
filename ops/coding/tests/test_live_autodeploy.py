@@ -153,7 +153,7 @@ class CodingDeploy(unittest.TestCase):
   start=source("ops/coding/start-live.sh")
   self.assertIn('DIR="/home/chris/.local/qwen4exp/$REV-mag-cp1/bin"',start)
   self.assertIn('DIR="/home/chris/.local/mag-coding-rt/$REV/bin"',start)
-  self.assertIn("alias=flint; file=Flint-Q8_0.gguf",start)
+  self.assertIn("alias=flint; file=Flint-Q4_K_M.gguf",start)
   self.assertIn("alias=qwen3.8-flash-next",start)
   self.assertIn("FLINT",source("ops/coding/build-runtime.sh"))
   self.assertRegex(source("ops/coding/runtime.sha").strip(),r"^[a-f0-9]{40}$")

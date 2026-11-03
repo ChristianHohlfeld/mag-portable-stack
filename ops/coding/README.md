@@ -7,10 +7,14 @@ Mistral Large 4 (~1 tok/s) / GLM-Q2 (~3 tok/s) room pair. Old GGUFs are kept;
 | NUMA | Port | Bot | GGUF | Size | SHA256 |
 |---|---|---|---|---|---|
 | 0 | 8191 | Qwen3.8-Flash-Next (125B, 6B active, `qwen4exp`) | [mradermacher/Qwen3.8-Flash-Next-Uncensored-GGUF](https://huggingface.co/mradermacher/Qwen3.8-Flash-Next-Uncensored-GGUF) `IQ4_XS` (already on mag, hard-linked, no download) | 98.4 GB | `a1975fd7…dedf` |
-| 1 | 8192 | Flint (`flint` arch, always reasons) | [ggml-org/Flint-GGUF](https://huggingface.co/ggml-org/Flint-GGUF) `Q8_0` | 42.4 GB | `8a257b63…4f93` |
+| 1 | 8192 | Flint (`flint` arch, always reasons) | [ggml-org/Flint-GGUF](https://huggingface.co/ggml-org/Flint-GGUF) `Q4_K_M` | 23.4 GB | `c3c4d93f…a347` |
 
 NUMA1 switched from Qwen3-Coder-Next to Flint on 2026-11-03 (owner: "Flint
-installieren"). The Qwen3-Coder-Next GGUF stays on disk; a failed Flint
+installieren"). Later the same day NUMA1 moved from Flint `Q8_0` to the
+same publisher's `Q4_K_M` (owner, 2026-11-03: Q8 decode ~8.6 tok/s is bound by
+the single socket's memory bandwidth; Q4_K_M reads about half the bytes per
+token; spanning both sockets is rejected because the NUMA interconnect is the
+bottleneck). `Flint-Q8_0.gguf` (`8a257b63…4f93`) stays on disk. The Qwen3-Coder-Next GGUF stays on disk; a failed Flint
 cutover rolls back to it (`layout.sh` restores the installed `models.json`,
 `start-live.sh` and runtime pins, then restarts the previous units).
 A models.json change on a live coding layout restarts **only** the NUMA node

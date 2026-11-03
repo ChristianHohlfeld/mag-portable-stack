@@ -19,7 +19,7 @@ case "$which" in
      # ops/qwen/start.sh launcher measured at 6.9-7.0 tok/s on this host).
      extra=(-ot per_layer_token_embd=CPU) ;;
   1) node=1; cpus=14-27; port=8192; name=coder; ctx=65536
-     alias=flint; file=Flint-Q8_0.gguf
+     alias=flint; file=Flint-Q4_K_M.gguf
      extra=(--temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.0) ;;
   *) echo 'coding: invalid NUMA node' >&2; exit 4 ;;
 esac

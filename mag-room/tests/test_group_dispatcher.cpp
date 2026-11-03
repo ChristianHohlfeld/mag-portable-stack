@@ -26,6 +26,10 @@ int main() {
   CHECK(is_pass("PASS"));
   CHECK(is_pass("  pass.\n"));
   CHECK(is_pass("**PASS**"));
+  CHECK(leading_pass("PASS\n\n- User: [Chris]: Hallo?"));
+  CHECK(!leading_pass("PASS"));
+  CHECK(!leading_pass("Passwort ist falsch\nmehr"));
+  CHECK(!leading_pass("Hier ist der Code:\nPASS"));
   CHECK(is_pass("[Flint] PASS"));
   CHECK(!is_pass("Passt so, aber ergänze X"));
   CHECK(maybe_pass("PA"));

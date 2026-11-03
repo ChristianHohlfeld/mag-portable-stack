@@ -5670,6 +5670,13 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
           else visible_delta(piece);
         });
       }
+      if (TL_CHIPIN && coding_model && !glm_hard_cut &&
+          group_chat::leading_pass(acc.content)) {
+        // Complement said PASS and kept going: stop decoding right here.
+        std::cerr << "chipin-pass-cut bytes=" << acc.content.size() << std::endl;
+        acc.content = "PASS";
+        glm_hard_cut = true;
+      }
       if (glm_hard_cut) {
         // Close the live generation immediately; the targeted cancel RPC
         // below releases the llama slot even if it ignores the disconnect.
@@ -9133,7 +9140,7 @@ static TurnReport generate_and_post(int idx, bool automatic, double dispatched_m
   run_end();
   if (!bot_enabled(idx) || (TL_SELFTALK && selftalk_idle_echo(report.text)) ||
       (TL_CHIPIN && !report.react_only &&
-       (group_chat::is_pass(report.text) || selftalk_idle_echo(report.text))))
+       (group_chat::is_pass(report.text) || group_chat::leading_pass(report.text) || selftalk_idle_echo(report.text))))
     report.skipped = true;
   if (report.skipped) {
     drop_revealed();

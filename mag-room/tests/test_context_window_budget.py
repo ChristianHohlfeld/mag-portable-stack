@@ -21,7 +21,7 @@ class ContextWindowBudget(unittest.TestCase):
         self.assertIn('"default_generation_settings"', SOURCE)
         self.assertIn('n->asNum()', SOURCE)
         self.assertIn('(double)n_ctx * bpt * 0.80', SOURCE)
-        self.assertIn('context_budget = window_context_budget(bot_idx,', SOURCE)
+        self.assertIn('attempt_budget = window_context_budget(bot_idx, attempt_budget)', SOURCE)
         self.assertIn('note_wire_ratio(model, prompt_wire_bytes(messages, tools), saw_evaluated)', SOURCE)
         # Never smaller than the configured byte budget.
         self.assertIn('return std::max(fallback,', SOURCE)

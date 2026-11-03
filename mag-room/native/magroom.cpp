@@ -4978,7 +4978,8 @@ static size_t prompt_wire_bytes(const std::vector<Val> &messages,
 // (default_generation_settings.n_ctx); bytes per token is measured from the
 // previous request's tokens_evaluated.
 static std::mutex CTX_WINDOW_MTX;
-static std::map<int, long> BACKEND_NCTX;           // backend port -> n_ctx
+// backend port -> {n_ctx, checked_at}; an unknown window is retried after 60s.
+static std::map<int, std::pair<long, double>> BACKEND_NCTX;
 static std::map<std::string, double> WIRE_BYTES_PER_TOKEN; // model -> ratio
 static long backend_n_ctx(int bot_idx) {
   if (!CONFIGURED_MODEL || bot_idx < 0) return 0;
@@ -4988,7 +4989,9 @@ static long backend_n_ctx(int bot_idx) {
   {
     std::lock_guard<std::mutex> lk(CTX_WINDOW_MTX);
     auto it = BACKEND_NCTX.find(port);
-    if (it != BACKEND_NCTX.end()) return it->second;
+    if (it != BACKEND_NCTX.end() &&
+        (it->second.first > 0 || now_s() - it->second.second < 60))
+      return it->second.first;
   }
   std::string body;
   long code = 0;
@@ -5001,9 +5004,9 @@ static long backend_n_ctx(int bot_idx) {
     if (auto dg = props.find("default_generation_settings"))
       if (auto n = dg->find("n_ctx"); n && n->type == Val::NUM)
         n_ctx = (long)n->asNum();
-  if (n_ctx > 0) {
+  {
     std::lock_guard<std::mutex> lk(CTX_WINDOW_MTX);
-    BACKEND_NCTX[port] = n_ctx;
+    BACKEND_NCTX[port] = {n_ctx, (double)now_s()};
   }
   return n_ctx;
 }
@@ -6848,8 +6851,8 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
   int stalled_plans = 0;
   bool completed = false;
   std::string compacted_steps;
-  const size_t context_budget = window_context_budget(bot_idx, (size_t)std::clamp(
-      envi("MAG_ROOM_CONTEXT_BYTES", 52000), 24000, 100000));
+  const size_t context_budget = (size_t)std::clamp(
+      envi("MAG_ROOM_CONTEXT_BYTES", 52000), 24000, 100000);
   auto run_deadline = steady_clock::now() + seconds(RUN_BUDGET_S);
   int todo_nudges = 0;
   TL_TODO_TOUCHED = false;
@@ -6965,6 +6968,9 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
     Turn t;
     const auto q1_started=steady_clock::now();
     size_t attempt_budget = context_budget;
+    // Only a wire above the byte budget asks the backend for its window.
+    if (!stateless && prompt_wire_bytes(messages, tools) > attempt_budget)
+      attempt_budget = window_context_budget(bot_idx, attempt_budget);
     for (int attempt = 0; attempt < 3; ++attempt) {
       if (!stateless)
         compact_agent_context(bot_idx, messages, tools, attempt_budget, compacted_steps);

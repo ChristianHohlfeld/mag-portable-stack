@@ -83,7 +83,7 @@ if ((${#wanted[@]} == 0)); then
   wanted=("${MAG_BUILD_TARGETS[@]}" s23ctl
     test-pho-codec test-guest-pty test-browser-recovery test-jobs-mcp
     test-pages-native test-browser-events test-guest-description
-    test-guest-curl test-large-stdin test-gitea-account)
+    test-guest-curl test-large-stdin test-gitea-account test-group-dispatcher)
 fi
 
 have_bins() {

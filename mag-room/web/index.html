@@ -577,6 +577,8 @@ dialog{border-radius:10px;border-color:var(--line);background:var(--surface)}
 #proaktiv-row,.selftalk-toggle{display:inline-flex;align-items:center;gap:4px;height:22px;min-height:22px;max-height:22px;padding:0;margin:0;border:0;background:transparent;font-size:12px;line-height:22px;color:var(--muted);cursor:pointer;user-select:none;flex:0 0 auto;white-space:nowrap}
 #proaktiv-row input,.selftalk-toggle input{margin:0;width:12px;height:12px;min-width:12px;min-height:12px;accent-color:var(--text)}
 #proaktiv-row[hidden]{display:none!important}
+/* Group-chat dispatcher is always on: no Proaktiv/Reflexion switches. */
+#proaktiv-row,#bot-proaktiv-row,#reflect-row{display:none!important}
 #bot-switch-row{display:flex;align-items:center;gap:14px;flex-wrap:nowrap;overflow:hidden;height:44px;min-height:44px;max-height:44px;padding:0}
 #bot-switch-row label{display:inline-flex;align-items:center;gap:6px;margin:0;height:22px;min-height:22px;max-height:22px;white-space:nowrap;flex:0 1 auto;font-size:13px}
 #bot-switch-row input{margin:0;width:14px;height:14px;min-width:14px;min-height:14px;flex:none}
@@ -1492,8 +1494,8 @@ function append(msg,scroll=true,trace=null,position=-1){
  }
  const time=document.createElement('time');const date=new Date((msg.ts||Date.now()/1000)*1000);time.textContent=date.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
  meta.append(avatar,name,time);
- if(msg.selftalk||msg.proaktiv){
-  const mark=document.createElement('span');mark.className='proaktiv-mark';mark.textContent='Proaktiv';meta.append(mark);
+ if(msg.selftalk||msg.proaktiv||msg.chipin){
+  const mark=document.createElement('span');mark.className='proaktiv-mark';mark.textContent=msg.chipin?'Ergänzung':'Proaktiv';meta.append(mark);
   const whyText=String(msg.cause_label||'').trim()||(msg.cause?'reagiert auf Nachricht':'');
   if(whyText){const why=document.createElement('span');why.className='proaktiv-why';why.textContent=whyText;why.title=whyText;meta.append(why)}
  }
@@ -1705,7 +1707,7 @@ const completedHeights=new Map();
 let streamSeq=0;
 function liveNode(botId,s){
  if(!s.seq)s.seq=++streamSeq;
- const node=append({role:'assistant',name:s.name,bot:botId,content:s.text||'',thinking_enabled:s.thinkingEnabled,live:true,selftalk:!!s.selftalk,cause:s.cause||'',cause_label:s.causeLabel||'',display_ms:s.displayMs||s.started||Date.now()},false);
+ const node=append({role:'assistant',name:s.name,bot:botId,content:s.text||'',thinking_enabled:s.thinkingEnabled,live:true,selftalk:!!s.selftalk,chipin:!!s.chipin,cause:s.cause||'',cause_label:s.causeLabel||'',display_ms:s.displayMs||s.started||Date.now()},false);
  node.dataset.liveBot=botId;node.dataset.liveSeq=String(s.seq);
  const inner=node.parentNode;
  for(const old of inner.querySelectorAll('.message[data-live-bot]'))if(old!==node&&old.dataset.liveBot===botId)old.remove();
@@ -3565,7 +3567,7 @@ function paintRoomLine(){
   const held=list.filter(p=>p.held).length;
   const parts=[];
   if(list.length)parts.push(list.length+' wartet'+(held?' · '+held+' angehalten':''));
-  if(talkJobs.length)parts.push(talkJobs.length===1?'Proaktiv':talkJobs.length+' Proaktiv');
+  if(talkJobs.length)parts.push(talkJobs.length===1?(talkJobs[0].chipin?'Ergänzung':'Proaktiv'):talkJobs.length+' Ergänzungen');
   toggle.textContent=parts.join(' · ');
   head.append(toggle);
  }
@@ -3615,7 +3617,7 @@ function paintRoomLine(){
   const chip=document.createElement('div');chip.className='q-chip proaktiv-job';
   const t=document.createElement('span');t.className='q-text';
   const who=(j.ids&&j.ids[0])||'';
-  t.textContent='Proaktiv'+(j.cause_label?' · '+j.cause_label:'')+(who?' · '+who:'');
+  t.textContent=(j.chipin?'Ergänzung':'Proaktiv')+(j.cause_label?' · '+j.cause_label:'')+(who?' · '+who:'');
   chip.append(t);items.append(chip);
  }
  for(const id of queueDrafts.keys())if(!list.some(p=>p.id===id))queueDrafts.delete(id);
@@ -3715,7 +3717,7 @@ events.onmessage=e=>{
   if(event.type==='browser_action'){browserOverlay(event);return}
   if(event.type==='bot_start'){
    const prev=streams[id];
-   streams[id]={name:event.name,text:'',status:'Liest Verlauf',label:'Liest Verlauf',phase:'read',steps:[],group:event.group||'',order:+event.order||0,node:prev?.node||null,seq:prev?.seq,frame:0,started:event.display_ms||Date.now(),displayMs:event.display_ms||Date.now(),thinkingEnabled:event.thinking_enabled,selftalk:!!event.selftalk,cause:event.cause||'',causeLabel:event.cause_label||'', lastEvent:Date.now(),reasoning:'',tools:[],error:'',hung:false,progress:null};
+   streams[id]={name:event.name,text:'',status:'Liest Verlauf',label:'Liest Verlauf',phase:'read',steps:[],group:event.group||'',order:+event.order||0,node:prev?.node||null,seq:prev?.seq,frame:0,started:event.display_ms||Date.now(),displayMs:event.display_ms||Date.now(),thinkingEnabled:event.thinking_enabled,selftalk:!!event.selftalk,chipin:!!event.chipin,cause:event.cause||'',causeLabel:event.cause_label||'', lastEvent:Date.now(),reasoning:'',tools:[],error:'',hung:false,progress:null};
    updateStream(id,true);busyBots.add(id);renderLanes();
   }else if(event.type==='step'){
    let s=streams[id];

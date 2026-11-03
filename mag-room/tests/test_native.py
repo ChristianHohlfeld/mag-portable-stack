@@ -7,6 +7,9 @@ while _mag_root != _mag_root.parent and not (_mag_root / 'ops/ci/mag_deadline.py
     _mag_root = _mag_root.parent
 _mag_sys.path.insert(0, str(_mag_root / 'ops/ci'))
 import mag_deadline as _mag_deadline
+# Legacy multi-bot fixtures expect every selected bot to answer; the
+# group-chat dispatcher has its own suite (GroupDispatcher in test_native.py).
+__import__('os').environ.setdefault('MAG_ROOM_DISPATCH', '0')
 _mag_deadline.arm(300)
 import hashlib,shlex,http.server,json,os,pathlib,socket,socketserver,subprocess,tempfile,threading,time,unittest,urllib.request,urllib.error,urllib.parse
 ROOT=pathlib.Path(__file__).resolve().parents[2]
@@ -3082,6 +3085,72 @@ class MultiBot(unittest.TestCase):
   for needle in ('<form id="send-form" class="gbar">','id="plus"','class="composer-card gbar-pill"','id="mic"','id="send-button"','id="stop-run"','id="plus-think"','id="upload-camera"','id="upload-screen"',
                  "function syncStopButton()","$('stop-run').addEventListener('click'",
                  "$('message').addEventListener('input',fitMessageHeight)","syncComposerButton()"):self.assertIn(needle,html)
+class GroupDispatcher(unittest.TestCase):
+ """Always-on group chat: addressed bot answers; open question = one speaker,
+ at most one gated follow-up (PASS hidden), no ping-pong, humans first."""
+ Q4=MultiBot.Q4;IQ3=MultiBot.IQ3
+ EXTRA_ENV={'MAG_ROOM_STAGGER':'off','MAG_ROOM_DISPATCH':'1'}
+ setUpClass=classmethod(MultiBot.setUpClass.__func__)
+ tearDownClass=classmethod(MultiBot.tearDownClass.__func__)
+ request=classmethod(Native.request.__func__)
+ error=Native.error
+ wait_idle=Native.wait_idle
+ def _run(self,text,script,settle=1.0):
+  self.wait_idle();Model.calls=[];Model.script=list(script)
+  before={m['id'] for m in self.request('/api/state')['room']}
+  self.request('/api/message',{'text':text,'bots':['q4bot','iq3bot']})
+  quiet=0
+  for _ in range(300):
+   st=self.request('/api/state')
+   if not st['busy'] and not st.get('proaktiv_jobs') and not st.get('pending'):
+    quiet+=1
+    if quiet*0.05>=settle:break
+   else:quiet=0
+   time.sleep(.05)
+  Model.script=[]
+  return [m for m in self.request('/api/state')['room'] if m['id'] not in before and m.get('role')=='assistant']
+ def test_01_toggles_are_gone(self):
+  for path in ('/api/proaktiv','/api/selftalk','/api/reflect'):
+   self.error(410,path,{'on':True})
+  self.assertFalse(self.request('/api/state')['selftalk'])
+ def test_02_addressed_bot_answers_alone(self):
+  got=self._run('IQ3 Bot, was ist 2+2?',['Vier.','Ergänzung die nie kommen darf'])
+  self.assertEqual([m['bot'] for m in got],['iq3bot'])
+  self.assertEqual(len(Model.calls),1,'no follow-up after an addressed message')
+ def test_03_beide_answer_once_each(self):
+  got=self._run('Hi beide',['Hallo A.','Hallo B.','zu viel'])
+  self.assertEqual(sorted(m['bot'] for m in got),['iq3bot','q4bot'])
+  self.assertEqual(len(Model.calls),2)
+ def test_04_open_question_pass_is_invisible(self):
+  got=self._run('Wie spät ist es eigentlich?',['Es ist spät.','PASS','nie'])
+  self.assertEqual([m['bot'] for m in got],['q4bot'])
+  self.assertEqual(len(Model.calls),2,'exactly one gated follow-up')
+  self.assertIn('[Gruppenchat]',json.dumps(Model.calls[1].get('messages',[]),ensure_ascii=False))
+  self.assertNotIn('PASS',json.dumps(self.request('/api/state')['room'],ensure_ascii=False))
+ def test_05_open_question_one_addition_then_stop(self):
+  got=self._run('Was ist ein guter Name für ein Boot?',['Möwe.','Ergänzung: Albatros klingt auch gut.','Ping','Pong'])
+  self.assertEqual([m['bot'] for m in got],['q4bot','iq3bot'])
+  self.assertTrue(got[1].get('chipin'));self.assertEqual(got[1].get('cause_label'),'ergänzt zu Q4 Bot')
+  self.assertEqual(len(Model.calls),2,'no bot ping-pong')
+ def test_06_human_preempts_followup(self):
+  self.wait_idle();Model.calls=[]
+  Model.script=['Erste Antwort.',[{'_sleep':4},'Zu spaete Ergaenzung'],'Zweite Antwort.']
+  before={m['id'] for m in self.request('/api/state')['room']}
+  self.request('/api/message',{'text':'Erzähl was über Wolken','bots':['q4bot','iq3bot']})
+  for _ in range(200):
+   if len(Model.calls)>=2:break
+   time.sleep(.05)
+  else:self.fail('follow-up never started')
+  self.request('/api/message',{'text':'Q4 Bot, kurz: ja oder nein?','bots':['q4bot','iq3bot']})
+  for _ in range(300):
+   rows=[m for m in self.request('/api/state')['room'] if m['id'] not in before and m.get('role')=='assistant']
+   if any('Zweite' in (m.get('content') or '') for m in rows) and not self.request('/api/state')['busy']:break
+   time.sleep(.05)
+  time.sleep(4.5)
+  Model.script=[]
+  text=json.dumps(self.request('/api/state')['room'],ensure_ascii=False)
+  self.assertIn('Zweite Antwort.',text)
+  self.assertNotIn('Zu spaete',text,'pre-empted follow-up must leave no message')
 class StaggeredLanes(unittest.TestCase):
  """Default group chat: the second model starts after the first bot has read its context, never both at once."""
  Q4=MultiBot.Q4;IQ3=MultiBot.IQ3

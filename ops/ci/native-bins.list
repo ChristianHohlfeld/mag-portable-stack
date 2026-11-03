@@ -8,3 +8,4 @@ guest-description :: ./build/test-guest-description
 guest-curl :: ./build/test-guest-curl
 large-stdin :: ./build/test-large-stdin
 gitea-account :: ./build/test-gitea-account
+group-dispatcher :: ./build/test-group-dispatcher

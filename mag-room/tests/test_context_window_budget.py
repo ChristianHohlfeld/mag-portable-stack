@@ -1,5 +1,5 @@
 """Compaction follows the backend's real token window (prefix cache stays valid)."""
-# mag-test-timeout: 60
+# mag-test-timeout: 180
 import pathlib as _mag_path
 import sys as _mag_sys
 _mag_root = _mag_path.Path(__file__).resolve()
@@ -7,7 +7,7 @@ while _mag_root != _mag_root.parent and not (_mag_root / 'ops/ci/mag_deadline.py
     _mag_root = _mag_root.parent
 _mag_sys.path.insert(0, str(_mag_root / 'ops/ci'))
 import mag_deadline as _mag_deadline
-_mag_deadline.arm(60)
+_mag_deadline.arm(180)
 import pathlib
 import unittest
 

@@ -5329,6 +5329,18 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
     kwargs["reasoning_effort"] = REASONING_EFFORT;
   }
   body["chat_template_kwargs"] = kwargs;
+  // Dispatcher complement (chip-in behind the PASS gate): Flint always thinks
+  // and spent 500-1700 reasoning tokens (86 s to 4 min at ~7-8 tok/s) just to
+  // add one sentence or PASS. llama.cpp 3f8af15a accepts a per-request
+  // reasoning_budget_tokens (tools/server/server-common.cpp, same knob as
+  // --reasoning-budget): once spent, the sampler injects the end-of-thinking
+  // tag and the model writes its visible answer. Only the hidden reasoning is
+  // bounded; the reply itself stays uncapped (no max_tokens). Sampling-only,
+  // so the cached prompt prefix is unchanged. -1 disables the cap.
+  if (coding_model && TL_CHIPIN && !TL_SELFTALK) {
+    const int budget = std::clamp(envi("MAG_ROOM_CHIPIN_REASONING_BUDGET", 256), -1, 32768);
+    if (budget >= 0) body["reasoning_budget_tokens"] = budget;
+  }
   std::string payload = mj::dump(body);
   std::string req =
       "POST /v1/chat/completions HTTP/1.1\r\nHost: " + BACKEND_HOST +

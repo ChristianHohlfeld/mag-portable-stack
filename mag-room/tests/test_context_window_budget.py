@@ -38,9 +38,15 @@ class ContextWindowBudget(unittest.TestCase):
     def test_backend_restart_restores_saved_slot(self):
         # A restarted llama-server has an empty KV: the warm flag must drop so the
         # prewarm restores the saved prefix file instead of skipping as "ram".
-        self.assertIn('if (ROOM_MODEL_HEALTH[s - 1] == 2) SLOT_WARM[s - 1] = 0;', SOURCE)
+        self.assertIn('if (ROOM_MODEL_HEALTH[s - 1] == 2) {', SOURCE)
+        self.assertIn('SLOT_WARM[s - 1] = 0;', SOURCE)
+        self.assertIn('slot_mark_cold(s);', SOURCE)
+        self.assertIn('restore_prefix_if_unwarmed(bot_idx, model.empty() ? bot_model_id(bot_idx) : model);', SOURCE)
         self.assertIn('restore_or_cold(source);', SOURCE)
         self.assertIn('std::string("/slots/0?action=") + action', SOURCE)
+        # A fresh /slots document has no n_prompt_tokens. That is cold, not a
+        # resident prefix, even if SLOT_WARM was left at 1.
+        self.assertNotIn('!count_known && model_slot(idx) >= 1 &&', SOURCE)
 
     def test_chipin_reasoning_budget(self):
         # Complement turns bound hidden reasoning only; replies stay uncapped.
@@ -55,9 +61,16 @@ class ContextWindowBudget(unittest.TestCase):
         self.assertIn('envi("MAG_ROOM_SHORT_CODE_REASONING_BUDGET", 1024)', SOURCE)
         self.assertIn('envi("MAG_ROOM_SHORT_TURN_BYTES", 400)', SOURCE)
         self.assertIn('mag::str(messages.back(), "role") == "user"', SOURCE)
+        # "Hi" is short even when the wire user message is the whole transcript.
+        self.assertIn('!TURN_INPUT.empty() ? TURN_INPUT : wire_last', SOURCE)
 
     def test_reasoning_only_tail_not_persisted(self):
         self.assertIn('wire-drop-reasoning-only bot=', SOURCE)
+
+    def test_chipin_uses_append_only_wire(self):
+        # Complements append to the bot's wire instead of a fresh [Raumverlauf] prompt.
+        self.assertIn('} else if(CONFIGURED_MODEL && (!CURRENT_JOB || TL_CHIPIN) && !TL_TASK) {', SOURCE)
+        self.assertIn('else if(TL_CHIPIN) extra+=group_chat::gate_instruction();', SOURCE)
 
     def test_stray_think_stripped(self):
         # A literal </think> in Flint's visible text must not reach room.json or the wire.

@@ -159,7 +159,7 @@ class CodingDeploy(unittest.TestCase):
   self.assertRegex(source("ops/coding/runtime.sha").strip(),r"^[a-f0-9]{40}$")
   self.assertEqual([new["models"][i]["model_id"] for i in ("general","coder")],["qwen3.8-flash-next","flint"])
   room=source("mag-room/native/magroom.cpp")
-  # Flint reasons on every turn: no per-round token cap on its room replies.
-  self.assertIn("const bool uncapped = coding_model && model == CODING_CODER_MODEL && !TL_SELFTALK;",room)
+  # No per-round token cap on either coding bot (Flint reasons every turn; Chris: no caps).
+  self.assertIn("const bool uncapped = coding_model && !TL_SELFTALK;",room)
   self.assertIn('if (!uncapped) body["max_tokens"] = max_output;',room)
 if __name__=="__main__": unittest.main()

@@ -74,6 +74,10 @@ class ContextWindowBudget(unittest.TestCase):
         # Any bot turn that is PASS (or starts with a PASS line) is dropped, not only chip-ins.
         self.assertIn('(!report.react_only && !trim(report.text).empty() &&', SOURCE)
 
+    def test_direct_turn_lifts_pass_gate(self):
+        self.assertIn('extra+=group_chat::direct_instruction();', SOURCE)
+        self.assertIn('bool chip_open = false;', SOURCE)
+
     def test_finished_turns_drop_reasoning(self):
         # Old reasoning_content is not replayed (server: --no-reasoning-preserve).
         self.assertIn('if(CONFIGURED_MODEL&&envi("MAG_ROOM_WIRE_REASONING",0)==0) {', SOURCE)

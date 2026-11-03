@@ -212,4 +212,12 @@ inline const char *gate_instruction() {
          "ausschliesslich mit dem einen Wort PASS (das sieht niemand).";
 }
 
+// Direct turn after earlier complements in the same wire: the old PASS gate
+// text is still in the history and Flint kept answering PASS to greetings
+// (live 20:04, 20:32). Lift it explicitly for this message.
+inline const char *direct_instruction() {
+  return "\n[Gruppenchat]\nDiese Nachricht richtet sich direkt an dich: "
+         "antworte normal. PASS ist hier nicht erlaubt.";
+}
+
 } // namespace group_chat

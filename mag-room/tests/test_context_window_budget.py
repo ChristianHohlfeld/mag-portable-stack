@@ -35,6 +35,13 @@ class ContextWindowBudget(unittest.TestCase):
         # System prompt stays byte-identical: compaction starts after messages[1].
         self.assertIn('const size_t at = rollup.empty() ? 2 : 3;', SOURCE)
 
+    def test_backend_restart_restores_saved_slot(self):
+        # A restarted llama-server has an empty KV: the warm flag must drop so the
+        # prewarm restores the saved prefix file instead of skipping as "ram".
+        self.assertIn('if (ROOM_MODEL_HEALTH[s - 1] == 2) SLOT_WARM[s - 1] = 0;', SOURCE)
+        self.assertIn('restore_or_cold(source);', SOURCE)
+        self.assertIn('std::string("/slots/0?action=") + action', SOURCE)
+
     def test_history_window_math(self):
         def budget(n_ctx, bpt, fallback=52000, tokens=32000):
             window = int(n_ctx * bpt * 0.80)

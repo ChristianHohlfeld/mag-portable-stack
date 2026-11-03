@@ -48,7 +48,7 @@ SLOT="/var/lib/mag-llm/slots/coding/$name"
 # ik: its own slot dir (mainline slot files do not load: "mismatched layer
 # count"), flags translated per ik --help (no --load-mode/--slots/--no-ui/
 # --checkpoint-min-step/--no-reasoning-preserve), --swa-compress needs -np 1,
-# no -rtr (ik #2611), no -sp (ik #2825).
+# no -rtr (ik #2611), no -sp (ik #2825). Fused MoE is on by default (no -fmoe flag).
 IK_REV=c8873ad5bd0a8947aeac64c349fb8f8e905f6efa
 ENGINE=$(tr -d '[:space:]' < /etc/mag-stack/coding-engine 2>/dev/null || true)
 ENGINE=${ENGINE:-ik}
@@ -63,7 +63,7 @@ if [[ $ENGINE == ik && -x $IK_BIN && $(cat "$(dirname "$IK_BIN")/source-commit" 
     --jinja --reasoning-format deepseek \
     --cache-ram 16384 --ctx-checkpoints 48 --ctx-checkpoints-interval 1024 \
     -fa on --batch-size 2048 --ubatch-size 512 --cache-type-k f16 --cache-type-v f16 \
-    -fmoe --swa-compress \
+    --swa-compress \
     --slot-save-path "$IK_SLOT" --webui none
 fi
 [[ $ENGINE == ik ]] && echo "coding $node: ik runtime $IK_REV missing, using mainline" >&2

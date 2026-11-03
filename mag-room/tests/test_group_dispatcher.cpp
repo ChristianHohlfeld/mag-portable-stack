@@ -1,3 +1,4 @@
+#include "mag_deadline.hpp"
 #include "../native/group_dispatcher.hpp"
 #include <cstdio>
 #include <cstdlib>
@@ -5,6 +6,7 @@ using namespace group_chat;
 static int fails = 0;
 #define CHECK(x) do { if (!(x)) { std::fprintf(stderr, "FAIL %s:%d %s\n", __FILE__, __LINE__, #x); ++fails; } } while (0)
 int main() {
+  mag_test_deadline(60); // mag-test-timeout: 60
   const std::vector<Bot> r = {{"qwen-numa0", "Qwen", false}, {"qwen-numa1", "Flint", true}};
   using V = std::vector<std::string>;
   CHECK(addressed("Flint, schreib mir ein Skript", r) == V{"qwen-numa1"});

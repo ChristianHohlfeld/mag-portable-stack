@@ -124,6 +124,7 @@ jobs:
             build/test-guest-curl
             build/test-large-stdin
             build/test-gitea-account
+            build/test-group-dispatcher
   bins:
     timeout-minutes: 15
     needs: build

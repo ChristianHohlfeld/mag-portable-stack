@@ -67,6 +67,11 @@ class ContextWindowBudget(unittest.TestCase):
     def test_reasoning_only_tail_not_persisted(self):
         self.assertIn('wire-drop-reasoning-only bot=', SOURCE)
 
+    def test_chipin_leading_pass_cut(self):
+        # 19:01 live: complement streamed 'PASS\n\n- User: ...' for 1.8k tokens.
+        self.assertIn('group_chat::leading_pass(acc.content)', SOURCE)
+        self.assertIn('chipin-pass-cut bytes=', SOURCE)
+
     def test_finished_turns_drop_reasoning(self):
         # Old reasoning_content is not replayed (server: --no-reasoning-preserve).
         self.assertIn('if(CONFIGURED_MODEL&&envi("MAG_ROOM_WIRE_REASONING",0)==0) {', SOURCE)

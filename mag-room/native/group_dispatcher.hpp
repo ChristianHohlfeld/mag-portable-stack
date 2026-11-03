@@ -158,6 +158,16 @@ inline bool is_pass(const std::string &text) {
   }
   return core == "pass" || core == "(pass)";
 }
+// "PASS" on its own first line followed by more text: Flint on the append-only
+// complement wire sometimes continues with an invented transcript
+// ("PASS\n\n- User: ..."). The first line decides.
+inline bool leading_pass(const std::string &text) {
+  const auto a = text.find_first_not_of(" \r\n\t");
+  if (a == std::string::npos) return false;
+  const auto nl = text.find('\n', a);
+  if (nl == std::string::npos) return false;
+  return is_pass(text.substr(a, nl - a));
+}
 // While streaming: could this still turn into PASS? Then do not reveal yet.
 inline bool maybe_pass(const std::string &partial) {
   std::string t = lower(partial);

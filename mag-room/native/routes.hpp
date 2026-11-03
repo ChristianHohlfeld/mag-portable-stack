@@ -1742,6 +1742,12 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
   if (path == "/api/sampling") {
     error_json(fd, 410, "Bitte Sampling pro Modell konfigurieren"); return;
   }
+  if (m == "POST" && dispatch_enabled() &&
+      (path == "/api/reflect" || path == "/api/selftalk" || path == "/api/proaktiv")) {
+    // Replaced by the always-on group-chat dispatcher (no toggles).
+    error_json(fd, 410, "Gruppenchat ist immer an: angesprochene Bots antworten, die anderen ergänzen nur bei Bedarf.");
+    return;
+  }
   if (m == "POST" && path == "/api/reflect") {
     // Owner room setting: optional reflection round after concurrent answers.
     if (bridge || !actor.ok || actor.role != "owner") {

@@ -278,7 +278,9 @@ if len(bots) < 1:
     sys.stderr.write("FAIL: warm hi gate: no bots\nNot restarting mag-llm.\n")
     sys.exit(1)
 before = {m.get("id") for m in state.get("room") or []}
-payload = json.dumps({"text": "hi", "bots": bots}).encode()
+# The group-chat dispatcher lets one bot answer an unaddressed "hi";
+# "hi alle" addresses every bot, so each must show its warm answer.
+payload = json.dumps({"text": "hi alle" if len(bots) > 1 else "hi", "bots": bots}).encode()
 req = urllib.request.Request(room + "/api/message", data=payload, method="POST",
     headers={"Content-Type": "application/json", "X-Mag-Token": token})
 started = time.monotonic()

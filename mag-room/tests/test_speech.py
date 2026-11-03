@@ -12,6 +12,9 @@ while _mag_root != _mag_root.parent and not (_mag_root / 'ops/ci/mag_deadline.py
     _mag_root = _mag_root.parent
 _mag_sys.path.insert(0, str(_mag_root / 'ops/ci'))
 import mag_deadline as _mag_deadline
+# Legacy multi-bot fixtures expect every selected bot to answer; the
+# group-chat dispatcher has its own suite (GroupDispatcher in test_native.py).
+__import__('os').environ.setdefault('MAG_ROOM_DISPATCH', '0')
 _mag_deadline.arm(180)
 import importlib.util
 import pathlib

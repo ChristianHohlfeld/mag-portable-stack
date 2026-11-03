@@ -3238,6 +3238,22 @@ static void wire_finish(int idx,const std::vector<Val> &messages,bool valid) {
       std::cerr<<"wire-drop-reasoning-only bot="<<bot<<std::endl;
     }
   }
+  // Finished turns keep only visible text + tool calls. Replaying every old
+  // reasoning_content grew the Flint context to ~18k for ~6k visible text and
+  // decode fell from ~17 to ~6 tok/s with depth. The server runs with
+  // --no-reasoning-preserve, so this matches what the template renders; the
+  // current turn's tool rounds still carry their reasoning until it ends.
+  // Full reasoning stays in the turn report / audit.
+  if(CONFIGURED_MODEL&&envi("MAG_ROOM_WIRE_REASONING",0)==0) {
+    size_t stripped=0;
+    for(auto &m:it->second.messages) {
+      if(!m.isObj()||mag::str(m,"role")!="assistant")continue;
+      auto &o=*m.obj;const size_t n=o.size();
+      o.erase(std::remove_if(o.begin(),o.end(),[](const auto &kv){return kv.first=="reasoning_content";}),o.end());
+      stripped+=n-o.size();
+    }
+    if(stripped)std::cerr<<"wire-strip-reasoning bot="<<bot<<" n="<<stripped<<std::endl;
+  }
   const size_t stored_n=it->second.messages.size();
   if(!it->second.turn_ends.empty()&&it->second.turn_ends.back()>stored_n)it->second.turn_ends.clear();
   if(it->second.turn_ends.empty()||it->second.turn_ends.back()!=stored_n)

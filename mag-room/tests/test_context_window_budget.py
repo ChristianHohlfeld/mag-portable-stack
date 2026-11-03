@@ -67,6 +67,14 @@ class ContextWindowBudget(unittest.TestCase):
     def test_reasoning_only_tail_not_persisted(self):
         self.assertIn('wire-drop-reasoning-only bot=', SOURCE)
 
+    def test_finished_turns_drop_reasoning(self):
+        # Old reasoning_content is not replayed (server: --no-reasoning-preserve).
+        self.assertIn('if(CONFIGURED_MODEL&&envi("MAG_ROOM_WIRE_REASONING",0)==0) {', SOURCE)
+        self.assertIn('wire-strip-reasoning bot=', SOURCE)
+        launcher = (ROOT / 'ops/coding/start-live.sh').read_text() if 'ROOT' in globals() else ''
+        if launcher:
+            self.assertIn('--checkpoint-min-step 1024 --no-reasoning-preserve', launcher)
+
     def test_chipin_uses_append_only_wire(self):
         # Complements append to the bot's wire instead of a fresh [Raumverlauf] prompt.
         self.assertIn('} else if(CONFIGURED_MODEL && (!CURRENT_JOB || TL_CHIPIN) && !TL_TASK) {', SOURCE)

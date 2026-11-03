@@ -7,6 +7,12 @@
 # once its model is SHA-verified (NUMA1 keeps its current model until Flint is; NUMA0 Qwen3.8 is left resident).
 set -euo pipefail
 [[ $(id -un) == chris ]] || { echo "clean-deploy: run as chris" >&2; exit 4; }
+# Builds, staging and hashing stay off the model cores 0-27 (HT siblings
+# 28-55 only). Services restarted by deploy.sh are spawned by systemd and do
+# not inherit this affinity.
+if [[ -z ${MAG_BUILD_PINNED:-} ]] && command -v taskset >/dev/null; then
+  MAG_BUILD_PINNED=1 exec taskset -c "${MAG_BUILD_CPUS:-28-55}" nice -n 19 bash "$0" "$@"
+fi
 fast=0; [[ ${1:-} == --fast ]] && fast=1
 cd "$(dirname -- "$(readlink -f "$0")")/../.."
 git fetch origin main && git merge --ff-only origin/main

@@ -750,6 +750,16 @@ static void spawn(const std::string &n, int cpu, int ram, int disk,
             180);
     virsh({"schedinfo", domain(n), "--set", "vcpu_period=100000", "--set",
            "vcpu_quota=" + std::to_string(cpu * 100000), "--live", "--config"});
+    // Keep bot vCPUs and the qemu emulator thread off the model cores 0-27
+    // (live 17:50: unpinned vCPUs on cores 0, 9, 27 stalled the 14 lockstep
+    // llama threads, decode 6-8 instead of 17-18 tok/s).
+    {
+      const char *pin = getenv("MAG_VM_CPUSET");
+      const std::string cpus = pin && *pin ? pin : "28-55";
+      for (int v = 0; v < cpu; ++v)
+        virsh({"vcpupin", domain(n), std::to_string(v), cpus, "--live", "--config"});
+      virsh({"emulatorpin", domain(n), cpus, "--live", "--config"});
+    }
     virsh({"blkdeviotune", domain(n), "vda", "--total-bytes-sec",
            std::to_string(num(c, "disk_bytes_sec")), "--total-iops-sec",
            std::to_string(num(c, "disk_iops_sec")), "--live", "--config"});

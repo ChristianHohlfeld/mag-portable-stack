@@ -5388,7 +5388,11 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   // so the cached prompt prefix is unchanged. -1 disables the cap.
   if (coding_model && TL_CHIPIN && !TL_SELFTALK) {
     const int budget = std::clamp(envi("MAG_ROOM_CHIPIN_REASONING_BUDGET", 256), -1, 32768);
-    if (budget >= 0) body["reasoning_budget_tokens"] = budget;
+    if (budget >= 0) {
+      body["reasoning_budget_tokens"] = budget;
+      // ik_llama.cpp reads only thinking_budget_tokens.
+      body["thinking_budget_tokens"] = budget;
+    }
   } else if (coding_model && !TL_SELFTALK && !messages.empty() &&
              mag::str(messages.back(), "role") == "user") {
     // First round of a short room turn ("Hi beide", "Schreib fizzbuzz(n)"):
@@ -5416,7 +5420,11 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
       const int budget = code
           ? std::clamp(envi("MAG_ROOM_SHORT_CODE_REASONING_BUDGET", 1024), -1, 32768)
           : std::clamp(envi("MAG_ROOM_SHORT_REASONING_BUDGET", 256), -1, 32768);
-      if (budget >= 0) body["reasoning_budget_tokens"] = budget;
+      if (budget >= 0) {
+        body["reasoning_budget_tokens"] = budget;
+        // ik_llama.cpp reads only thinking_budget_tokens.
+        body["thinking_budget_tokens"] = budget;
+      }
     }
   }
   std::string payload = mj::dump(body);

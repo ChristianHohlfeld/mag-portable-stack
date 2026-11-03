@@ -45,6 +45,7 @@ bash ops/trust/test-trust.sh
 bash ops/private-access/tests/test-owner-boundaries.sh
 bash ops/tests/test-bootstrap.sh
 bash ops/tests/test-update.sh
+bash ops/tests/test-model-cores.sh
 python3 ops/tests/test-deploy-drain-state.py
 bash ops/tests/test-cleanup-legacy.sh
 bash ops/tests/test-runners.sh

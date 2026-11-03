@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 # Run as chris. Dedicated upstream llama.cpp build: never replace ik_llama/DeepSeek.
 set -euo pipefail
+# Everything this script starts (build, stage.py, checksums) stays off the
+# model cores 0-27; systemd-restarted services do not inherit the affinity.
+if [[ -z ${MAG_BUILD_PINNED:-} ]] && command -v ionice >/dev/null && taskset -c "${MAG_BUILD_CPUS:-28-55}" true 2>/dev/null; then
+  MAG_BUILD_PINNED=1 exec taskset -c "${MAG_BUILD_CPUS:-28-55}" nice -n 19 ionice -c3 bash "$0" "$@"
+fi
 [[ "$(id -un)" == chris ]] || { echo 'run as chris, not root' >&2; exit 4; }
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 REV=$(cat "$ROOT/ops/qwen/runtime.sha")
@@ -26,7 +31,7 @@ install -m 0644 "$ROOT/ops/glm/tests/test-elementwise-cast.cpp" "$SRC/tests/mag-
 install -m 0644 "$ROOT/ops/glm/tests/test-chat-template.cpp" "$SRC/tests/mag-glm-chat-template.cpp"
 printf '%s\n' 'llama_build(mag-glm-elementwise-cast.cpp)' 'llama_build(mag-glm-chat-template.cpp)' >> "$SRC/tests/CMakeLists.txt"
 cmake -S "$SRC" -B "$BUILD" -G Ninja -DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=ON -DBUILD_SHARED_LIBS=OFF -DLLAMA_BUILD_TESTS=ON
-taskset -c "${MAG_BUILD_CPUS:-28-55}" nice -n 19 cmake --build "$BUILD" -j 4 --target llama-server mag-glm-elementwise-cast mag-glm-chat-template
+nice -n 19 cmake --build "$BUILD" -j 4 --target llama-server mag-glm-elementwise-cast mag-glm-chat-template
 # Gate before publish: the elementwise-weight cast is an exact dequantize, and
 # the pinned GLM template switches thinking and parses content/reasoning/tools.
 "$BUILD/bin/mag-glm-elementwise-cast"

@@ -10,8 +10,8 @@ set -euo pipefail
 # Builds, staging and hashing stay off the model cores 0-27 (HT siblings
 # 28-55 only). Services restarted by deploy.sh are spawned by systemd and do
 # not inherit this affinity.
-if [[ -z ${MAG_BUILD_PINNED:-} ]] && command -v taskset >/dev/null; then
-  MAG_BUILD_PINNED=1 exec taskset -c "${MAG_BUILD_CPUS:-28-55}" nice -n 19 bash "$0" "$@"
+if [[ -z ${MAG_BUILD_PINNED:-} ]] && command -v ionice >/dev/null && taskset -c "${MAG_BUILD_CPUS:-28-55}" true 2>/dev/null; then
+  MAG_BUILD_PINNED=1 exec taskset -c "${MAG_BUILD_CPUS:-28-55}" nice -n 19 ionice -c3 bash "$0" "$@"
 fi
 fast=0; [[ ${1:-} == --fast ]] && fast=1
 cd "$(dirname -- "$(readlink -f "$0")")/../.."

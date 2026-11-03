@@ -26,7 +26,7 @@ install -m 0644 "$ROOT/ops/glm/tests/test-elementwise-cast.cpp" "$SRC/tests/mag-
 install -m 0644 "$ROOT/ops/glm/tests/test-chat-template.cpp" "$SRC/tests/mag-glm-chat-template.cpp"
 printf '%s\n' 'llama_build(mag-glm-elementwise-cast.cpp)' 'llama_build(mag-glm-chat-template.cpp)' >> "$SRC/tests/CMakeLists.txt"
 cmake -S "$SRC" -B "$BUILD" -G Ninja -DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=ON -DBUILD_SHARED_LIBS=OFF -DLLAMA_BUILD_TESTS=ON
-cmake --build "$BUILD" -j 4 --target llama-server mag-glm-elementwise-cast mag-glm-chat-template
+taskset -c "${MAG_BUILD_CPUS:-28-55}" nice -n 19 cmake --build "$BUILD" -j 4 --target llama-server mag-glm-elementwise-cast mag-glm-chat-template
 # Gate before publish: the elementwise-weight cast is an exact dequantize, and
 # the pinned GLM template switches thinking and parses content/reasoning/tools.
 "$BUILD/bin/mag-glm-elementwise-cast"

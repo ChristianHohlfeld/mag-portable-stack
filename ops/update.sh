@@ -43,7 +43,10 @@ fi
 
 phase build
 run cmake -S "$ROOT" -B "$ROOT/build" -G Ninja -DCMAKE_BUILD_TYPE=Release
-run cmake --build "$ROOT/build" -j "$(nproc)" --target "${MAG_BUILD_TARGETS[@]}"
+# Model cores 0-27 (NUMA0 0-13, NUMA1 14-27) run the lockstep llama threads;
+# a compile there stalled decode (live 17:52: cc1plus at 100% on core 14).
+BUILD_CPUS="${MAG_BUILD_CPUS:-28-55}"
+run taskset -c "$BUILD_CPUS" nice -n 19 cmake --build "$ROOT/build" -j 8 --target "${MAG_BUILD_TARGETS[@]}"
 if (( DRY )); then
   echo '+ go build -mod=mod -o build/mag-browser-webrtc ./mag-room/webrtc'
 elif [[ ! -x "$ROOT/build/mag-browser-webrtc" ]]; then

@@ -40,7 +40,7 @@ for arch in LAGUNA FLINT; do
   grep -Fq "LLM_ARCH_$arch" "$SRC/src/llama-arch.cpp" || { echo "runtime lacks $arch" >&2; exit 4; }
 done
 cmake -S "$SRC" -B "$BUILD" -G Ninja -DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=ON -DBUILD_SHARED_LIBS=OFF
-cmake --build "$BUILD" -j 8 --target llama-server
+taskset -c "${MAG_BUILD_CPUS:-28-55}" nice -n 19 cmake --build "$BUILD" -j 8 --target llama-server
 mkdir -p "$(dirname "$BIN")"
 install -m 0755 "$BUILD/bin/llama-server" "$BIN.next"
 mv -f "$BIN.next" "$BIN"

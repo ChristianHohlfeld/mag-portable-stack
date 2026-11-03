@@ -3203,6 +3203,9 @@ static std::vector<Val> wire_messages(int idx, const std::string &system,
     // them once the first answer is already on screen.
   } else if(initial) extra+=tail;
   else if(TL_CHIPIN) extra+=group_chat::gate_instruction();
+  else if(!TL_REFLECT && !extra.empty() && std::any_of(w.messages.begin(),w.messages.end(),[](const Val &m){
+            return mag::str(m,"role")=="user"&&mag::str(m,"content").find("[Gruppenchat]\nDu wurdest")!=std::string::npos;}))
+    extra+=group_chat::direct_instruction();
   else if(TL_REFLECT) {
     auto at=tail.find("Reflexionsrunde");
     if(at!=std::string::npos) extra+=(at>0&&tail[at-1]=='\n'?"\n":"")+tail.substr(at);
@@ -7064,7 +7067,9 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
     }
     std::string live;
     bool draft_dropped = false;
-    bool chip_open = !TL_CHIPIN; // follow-up text stays hidden while it may be PASS
+    // Every turn stays hidden while it may still be PASS (direct turns too:
+    // live 20:32 a direct 'PASS' flashed in /api/state before the skip).
+    bool chip_open = false;
     std::optional<steady_clock::time_point> think_from, think_to;
     auto on_delta = [&](const std::string &kind, const std::string &piece) {
       Val e = Val::object();

@@ -5340,6 +5340,19 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   if (coding_model && TL_CHIPIN && !TL_SELFTALK) {
     const int budget = std::clamp(envi("MAG_ROOM_CHIPIN_REASONING_BUDGET", 256), -1, 32768);
     if (budget >= 0) body["reasoning_budget_tokens"] = budget;
+  } else if (coding_model && !TL_SELFTALK && !messages.empty() &&
+             mag::str(messages.back(), "role") == "user") {
+    // First round of a short room turn ("Hi beide", "Schreib fizzbuzz(n)"):
+    // live 17:05 Flint 2 reasoned 5 200+ tokens / 13 min on fizzbuzz, deliberating
+    // over tools and then reciting the system prompt, and was aborted; "Hi"
+    // took 300-800 tokens (47-140 s). Bound the hidden reasoning of that first
+    // round only. Tool rounds (last message role=tool) and long requests keep
+    // unlimited reasoning; the visible reply and code are never capped.
+    const std::string last = mag::str(messages.back(), "content");
+    const size_t short_bytes = (size_t)std::clamp(envi("MAG_ROOM_SHORT_TURN_BYTES", 400), 0, 8000);
+    const int budget = std::clamp(envi("MAG_ROOM_SHORT_REASONING_BUDGET", 1024), -1, 32768);
+    if (budget >= 0 && last.size() <= short_bytes && last.rfind("[System]", 0) != 0)
+      body["reasoning_budget_tokens"] = budget;
   }
   std::string payload = mj::dump(body);
   std::string req =

@@ -5150,7 +5150,16 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   // The cap is below Qwen's floor of 512 on purpose.
   if (TL_SELFTALK)
     max_output = std::clamp(envi("MAG_ROOM_PROAKTIV_MAX_TOKENS", 256), 32, 512);
-  body["max_tokens"] = max_output;
+  // Flint always reasons first (its template has no thinking switch, model
+  // card huggingface.co/RecursiveSI/flint); a long code answer spends ~16k
+  // reasoning tokens before the visible reply. A per-round cap would end the
+  // round inside reasoning_content, and an assistant-prefill continuation
+  // cannot resume hidden reasoning. So Flint room replies send no max_tokens:
+  // llama.cpp's default n_predict=-1 generates until EOS or the context end
+  // (tools/server/README.md). Reasoning never counts as the reply: it arrives
+  // in reasoning_content (--reasoning-format auto) or is split from <think>.
+  const bool uncapped = coding_model && model == CODING_CODER_MODEL && !TL_SELFTALK;
+  if (!uncapped) body["max_tokens"] = max_output;
   if (no_tools && !thinking && model.rfind("glm-5.3-flash", 0) == 0) {
     // Preserve the live GLM-Q2 request contract unchanged.
     Val stops = Val::array();

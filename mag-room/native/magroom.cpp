@@ -4968,6 +4968,67 @@ static std::string prefix_file(int idx, const std::string &model);
 // Set when a user message aborts a proactive generation. The next turn on
 // that slot reloads the saved prefix once, then sends the user prompt.
 static std::atomic<int> PREEMPT_RESTORE_SLOT[8]{};
+static size_t prompt_wire_bytes(const std::vector<Val> &messages,
+                                const std::string &tools);
+// Proactive compaction must follow the backend's real token window, not a
+// fixed byte budget. 52000 bytes is less than Flint's system+tools alone
+// (46k bytes), so every new user turn rewrote messages[2] and a hybrid model
+// (checkpoints only near the end, llama.cpp --ctx-checkpoints) re-prefilled
+// the whole ~49k-token wire. n_ctx comes from llama-server GET /props
+// (default_generation_settings.n_ctx); bytes per token is measured from the
+// previous request's tokens_evaluated.
+static std::mutex CTX_WINDOW_MTX;
+// backend port -> {n_ctx, checked_at}; an unknown window is retried after 60s.
+static std::map<int, std::pair<long, double>> BACKEND_NCTX;
+static std::map<std::string, double> WIRE_BYTES_PER_TOKEN; // model -> ratio
+static long backend_n_ctx(int bot_idx) {
+  if (!CONFIGURED_MODEL || bot_idx < 0) return 0;
+  const int slot = model_slot(bot_idx);
+  if (slot < 1 || slot > ROOM_MAX_BOTS) return 0;
+  const int port = ROOM_MODEL.backends[slot - 1].port;
+  {
+    std::lock_guard<std::mutex> lk(CTX_WINDOW_MTX);
+    auto it = BACKEND_NCTX.find(port);
+    if (it != BACKEND_NCTX.end() &&
+        (it->second.first > 0 || now_s() - it->second.second < 60))
+      return it->second.first;
+  }
+  std::string body;
+  long code = 0;
+  Val props;
+  long n_ctx = 0;
+  if (http_simple(BACKEND_HOST, port, "GET", "/props", "",
+                  {{"Authorization", "Bearer " + API_KEY}}, body, &code,
+                  nullptr, 2000) &&
+      code == 200 && mj::parse(body, props) && props.isObj())
+    if (auto dg = props.find("default_generation_settings"))
+      if (auto n = dg->find("n_ctx"); n && n->type == Val::NUM)
+        n_ctx = (long)n->asNum();
+  {
+    std::lock_guard<std::mutex> lk(CTX_WINDOW_MTX);
+    BACKEND_NCTX[port] = {n_ctx, (double)now_s()};
+  }
+  return n_ctx;
+}
+static void note_wire_ratio(const std::string &model, size_t bytes, double tokens) {
+  if (model.empty() || tokens < 1000 || bytes == 0) return;
+  std::lock_guard<std::mutex> lk(CTX_WINDOW_MTX);
+  WIRE_BYTES_PER_TOKEN[model] = (double)bytes / tokens;
+}
+// 80% of the real window (rest: reply and next tool rounds). Unknown ratio:
+// 3 bytes/token underestimates the wire (~4 measured), so it compacts early.
+static size_t window_context_budget(int bot_idx, size_t fallback) {
+  const long n_ctx = backend_n_ctx(bot_idx);
+  if (n_ctx <= 0) return fallback;
+  double bpt = 3.0;
+  {
+    std::lock_guard<std::mutex> lk(CTX_WINDOW_MTX);
+    auto it = WIRE_BYTES_PER_TOKEN.find(bot_model_id(bot_idx));
+    if (it != WIRE_BYTES_PER_TOKEN.end())
+      bpt = std::clamp(it->second, 2.0, 6.0);
+  }
+  return std::max(fallback, (size_t)((double)n_ctx * bpt * 0.80));
+}
 static Turn
 backend_turn(const std::vector<Val> &messages, const std::string &tools,
              double temperature,
@@ -5618,6 +5679,8 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   }
   publish_prompt_cache(id_slot, model, saw_timings ? &timings_seen : nullptr,
                        saw_cached, saw_evaluated);
+  if (t.error.empty() && saw_evaluated > 0)
+    note_wire_ratio(model, prompt_wire_bytes(messages, tools), saw_evaluated);
   if (t.error.empty())
     slot_save_after(id_slot, saw_cached, saw_evaluated);
   // A cancel drops ik's KV ("lack of cache data"). The slot file is what the
@@ -6905,6 +6968,9 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
     Turn t;
     const auto q1_started=steady_clock::now();
     size_t attempt_budget = context_budget;
+    // Only a wire above the byte budget asks the backend for its window.
+    if (!stateless && prompt_wire_bytes(messages, tools) > attempt_budget)
+      attempt_budget = window_context_budget(bot_idx, attempt_budget);
     for (int attempt = 0; attempt < 3; ++attempt) {
       if (!stateless)
         compact_agent_context(bot_idx, messages, tools, attempt_budget, compacted_steps);

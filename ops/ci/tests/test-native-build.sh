@@ -36,7 +36,7 @@ case " $* " in
   *" --build "*)
     for t in magroom mag-audit-gateway mag-browser magbot-native mag-bots-publish mag-det mag-numa-swap mag-ci-bridge mag-ci-guard s23ctl \
       test-pho-codec test-guest-pty test-browser-recovery test-jobs-mcp test-pages-native test-browser-events \
-      test-guest-description test-guest-curl test-large-stdin test-gitea-account; do
+      test-guest-description test-guest-curl test-large-stdin test-gitea-account test-group-dispatcher; do
       printf '#!/bin/sh\nexit 0\n' > "$MAG_CI_BUILD_DIR/$t"
       chmod +x "$MAG_CI_BUILD_DIR/$t"
     done

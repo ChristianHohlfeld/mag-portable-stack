@@ -170,6 +170,7 @@ inline bool leading_pass(const std::string &text) {
 }
 // While streaming: could this still turn into PASS? Then do not reveal yet.
 inline bool maybe_pass(const std::string &partial) {
+  if (leading_pass(partial)) return true; // "PASS\n..." is never shown
   std::string t = lower(partial);
   auto a = t.find_first_not_of(" \r\n\t*_`\"'(");
   if (a == std::string::npos) return true;

@@ -208,6 +208,7 @@ on_exit(){
 trap on_exit EXIT
 install -d -m 0755 /etc/mag-stack /usr/local/lib/mag-coding /etc/systemd/system/mag-120.service.d
 install -m 0755 "$ROOT/ops/coding/start-live.sh" /usr/local/lib/mag-coding/start-live.sh
+install -m 0755 "$ROOT/ops/coding/save-slots.sh" /usr/local/lib/mag-coding/save-slots.sh
 install -m 0644 "$ROOT/ops/coding/stage.py" /usr/local/lib/mag-coding/stage.py
 install -m 0644 "$ROOT/ops/coding/models.json" /usr/local/lib/mag-coding/models.json
 install -m 0644 "$ROOT/ops/qwen/runtime.sha" /usr/local/lib/mag-coding/runtime.sha
@@ -233,6 +234,8 @@ if (( swap )); then
   touch "$TXN/switch-started"
   for i in "${swap_nodes[@]}"; do
     port=$((8191 + i))
+    # Persist KV + checkpoints of the running model first (idle slot, then save).
+    bash "$ROOT/ops/coding/save-slots.sh" "$port" || true
     systemctl stop "mag-llm-coding@$i.service"
     wait_port_free "$port" || fail "port $port still held after the old coding model stopped"
     systemctl start "mag-llm-coding@$i.service"

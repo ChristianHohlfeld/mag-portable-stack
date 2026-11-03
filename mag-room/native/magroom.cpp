@@ -3202,6 +3202,7 @@ static std::vector<Val> wire_messages(int idx, const std::string &system,
     // Roster and clock stay out of this one request. The next turn appends
     // them once the first answer is already on screen.
   } else if(initial) extra+=tail;
+  else if(TL_CHIPIN) extra+=group_chat::gate_instruction();
   else if(TL_REFLECT) {
     auto at=tail.find("Reflexionsrunde");
     if(at!=std::string::npos) extra+=(at>0&&tail[at-1]=='\n'?"\n":"")+tail.substr(at);
@@ -3940,6 +3941,9 @@ static bool inference_hot() {
   return false;
 }
 static bool slot_is_busy(int slot);
+// Process restart: KV is empty. Drop the warm flag and any prewarm backoff
+// that would otherwise let the next turn run before the slot file is loaded.
+static void slot_mark_cold(int slot);
 static std::atomic<bool> HEALTH_PROBE_BUSY{false};
 static ModelStatus probe_model_status() {
   ModelStatus st;
@@ -4398,11 +4402,11 @@ static void model_watcher_loop() {
       // must not starve this slot's readiness edge or first-hi dispatch.
       std::string health_key;
       for (int s = 1; s <= ROOM_MAX_BOTS; ++s) {
-        if (slot_is_busy(s)) {
-          health_key += 'b';
-          secondary_ready = secondary_ready || ROOM_MODEL_HEALTH[s - 1] == 1;
-          continue;
-        }
+        // Probe even while a prewarm or turn looks busy. A model-unit restart
+        // leaves that request hung on the dead process; skipping the probe
+        // kept health at 1 and SLOT_WARM at 1, so a model restart that hit a
+        // running turn was never seen and the saved prefix was not restored.
+        const bool busy = slot_is_busy(s);
         std::string reply;
         long health = 0;
         const bool sent =
@@ -4414,21 +4418,29 @@ static void model_watcher_loop() {
         const bool ok = sent && health == 200;
         // A timeout is the slot's task queue, not a crashed server. Marking
         // it down made the next success look like a fresh start and queued
-        // another prefill on the only slot. Busy is published as 'b' only.
+        // another prefill on the only slot. Busy + no HTTP status stays put.
         if (ok) {
           // A server that was down (restart of mag-llm-coding@N) comes back
           // with an empty KV. Without this reset SLOT_WARM stayed 1, the
           // prewarm took the "ram" branch (fresh /slots has no token count)
           // and the first hi cold-prefilled ~14k tokens (live 14:30: 4-6 min)
           // instead of restoring mag-prefix-*.bin via /slots?action=restore.
-          if (ROOM_MODEL_HEALTH[s - 1] == 2) SLOT_WARM[s - 1] = 0;
+          // Only a confirmed down edge reloads. The initial 0→1 is a cold
+          // start with no slot file to put back.
+          if (ROOM_MODEL_HEALTH[s - 1] == 2) {
+            SLOT_WARM[s - 1] = 0;
+            slot_mark_cold(s);
+          }
           backend_became_ready = backend_became_ready || ROOM_MODEL_HEALTH[s - 1] != 1;
           ROOM_MODEL_HEALTH[s - 1] = 1;
-        } else if (sent || !slot_is_busy(s)) {
-          // A stopped server has no readiness edge; do not prewarm it forever.
+        } else if (sent || !busy) {
+          // HTTP 503 while the new process loads, or an idle timeout.
+          // A timeout during a live prefill (busy && !sent) is not a restart.
+          // Reloading is only for a server that was actually up.
+          if (ROOM_MODEL_HEALTH[s - 1] == 1) slot_mark_cold(s);
           ROOM_MODEL_HEALTH[s - 1] = 2;
         }
-        health_key += ok ? '1' : slot_is_busy(s) ? 'b'
+        health_key += ok ? '1' : busy ? 'b'
                      : ROOM_MODEL_HEALTH[s - 1] == 1 ? '1' : '0';
         secondary_ready = secondary_ready || ok || ROOM_MODEL_HEALTH[s - 1] == 1;
       }
@@ -4999,6 +5011,9 @@ static void cancel_llama_slot(int idx, int timeout_ms);
 static bool prefix_slot_rpc(int idx, const std::string &model, const char *action,
                             const std::string &file, int timeout_ms);
 static std::string prefix_file(int idx, const std::string &model);
+static void restore_prefix_if_unwarmed(int idx, const std::string &model);
+static bool short_coding_utterance(const std::string &wire_last);
+static std::string short_turn_utterance(const std::string &wire_last);
 // Set when a user message aborts a proactive generation. The next turn on
 // that slot reloads the saved prefix once, then sends the user prompt.
 static std::atomic<int> PREEMPT_RESTORE_SLOT[8]{};
@@ -5104,6 +5119,10 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   VisibleReplyFilter visible_reply(bot_idx >= 0 ? bot_field(bot_idx, "name", "Bot") : "");
   if (glm_prefix && !glm_prefix->empty()) visible_reply.continuing();
   slot_restore_if_cold(id_slot);
+  // Configured rooms keep SLOT_SAVE off. A model-only restart still has an
+  // empty KV; load the saved prefix before this completion.
+  if (CONFIGURED_MODEL && bot_idx >= 0)
+    restore_prefix_if_unwarmed(bot_idx, model.empty() ? bot_model_id(bot_idx) : model);
   if (CONFIGURED_MODEL && bot_idx >= 0) {
     const int slot = model_slot(bot_idx);
     if (slot >= 1 && slot <= 8 && PREEMPT_RESTORE_SLOT[slot - 1].exchange(0) == 1) {
@@ -5363,12 +5382,12 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
     // round only. Tool rounds (last message role=tool) and long requests keep
     // unlimited reasoning; the visible reply and code are never capped.
     // Two tiers: greetings/short chat 256 (at 7-10 tok/s even 1024 is
-    // 100-130 s for a "Hi"), short code requests 1024. Code is detected from
-    // the newest room line only (keywords or a code fence).
-    const std::string last = mag::str(messages.back(), "content");
-    const size_t short_bytes = (size_t)std::clamp(envi("MAG_ROOM_SHORT_TURN_BYTES", 400), 0, 8000);
-    if (last.size() <= short_bytes && last.rfind("[System]", 0) != 0) {
-      std::string newest = last;
+    // 100-130 s for a "Hi"), short code requests 1024. Size and code keywords
+    // come from the human utterance (TURN_INPUT, #288), not the transcript
+    // blob in the wire. Tool rounds never get here (role=tool).
+    const std::string wire_last = mag::str(messages.back(), "content");
+    if (short_coding_utterance(wire_last)) {
+      std::string newest = short_turn_utterance(wire_last);
       if (auto nl = trim(newest).rfind('\n'); nl != std::string::npos) newest = trim(newest).substr(nl + 1);
       std::transform(newest.begin(), newest.end(), newest.begin(),
                      [](unsigned char ch) { return (char)std::tolower(ch); });
@@ -6552,6 +6571,17 @@ static thread_local int TURN_THINK = -1;
 // Current request's raw text, not the room transcript. Each queued chat turn
 // carries its own value, including after a service restart.
 static thread_local std::string TURN_INPUT;
+static std::string short_turn_utterance(const std::string &wire_last) {
+  return !TURN_INPUT.empty() ? TURN_INPUT : wire_last;
+}
+static bool short_coding_utterance(const std::string &wire_last) {
+  // The wire's last user message is the transcript blob (often far past
+  // 400 bytes) even when the human just said "Hi" or "Schreib fizzbuzz".
+  const std::string &utterance = !TURN_INPUT.empty() ? TURN_INPUT : wire_last;
+  const size_t short_bytes = (size_t)std::clamp(envi("MAG_ROOM_SHORT_TURN_BYTES", 400), 0, 8000);
+  return utterance.size() <= short_bytes &&
+         wire_last.rfind("[System]", 0) != 0 && utterance.rfind("[System]", 0) != 0;
+}
 // Only exact greetings / confusion interjections. Not "ok", "yes", or
 // questions: those may authorize or alter an existing tool task.
 static bool short_glm_input(std::string value) {
@@ -6879,7 +6909,13 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
       }
       messages.insert(messages.end(), turns.begin(), turns.end());
       TL_WIRE_STALE=false;
-    } else if(CONFIGURED_MODEL && !CURRENT_JOB && !TL_TASK) {
+    } else if(CONFIGURED_MODEL && (!CURRENT_JOB || TL_CHIPIN) && !TL_TASK) {
+      // A dispatcher complement (chip-in job) uses the bot's own append-only
+      // wire too. It used to build one fresh user message ([Raumverlauf] +
+      // files + clock) on the same llama slot: ~1.9k tokens re-prefilled per
+      // complement (live 18:04: 1875 tokens, 37 s) and the 20k chat KV was
+      // overwritten (22 checkpoints -> 5), so the next chat turn re-prefilled
+      // 6-7k tokens. Now it appends only the new room lines + the PASS gate.
       messages=wire_messages(bot_idx,system,tools,build_context_tail(bot_idx,autotalk,other));
       // No new room line, memory, roster or file note. Posting nothing keeps
       // the saved prefix; a request here would end on the assistant reply.
@@ -9303,6 +9339,27 @@ static bool slot_is_busy(int slot) {
   }
   return false;
 }
+static std::array<std::atomic<int>, ROOM_MAX_BOTS> SLOT_RELOAD{};
+static void slot_mark_cold(int slot) {
+  if (slot < 1 || slot > ROOM_MAX_BOTS) return;
+  SLOT_WARM[slot - 1] = 0;
+  SLOT_RELOAD[slot - 1] = 1;
+  std::vector<std::string> keys;
+  {
+    std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
+    for (size_t i = 0; i < AGENTS.size(); ++i) {
+      int s = model_slot_of(AGENTS[i]);
+      if (!s) s = (int)i + 1;
+      if (s != slot) continue;
+      keys.push_back(lane_key((int)i));
+    }
+  }
+  {
+    std::lock_guard<std::mutex> lk(PREWARM_MTX);
+    for (const auto &k : keys) PREWARM_BACKOFF.erase(k);
+  }
+  JOB_CV.notify_all();
+}
 static void note_model_busy(ModelStatus &st) {
   if (st.ready) return;
   if (st.state != "offline" && st.state != "error" && st.state != "failed") return;
@@ -9624,7 +9681,27 @@ static bool bot_prefix_ready(const std::string &id) {
 static void mark_prefix_warm(int slot) {
   if (slot < 1 || slot > ROOM_MAX_BOTS) return;
   SLOT_WARM[slot - 1] = 1;
+  SLOT_RELOAD[slot - 1] = 0;
   JOB_CV.notify_all();
+}
+// Called from the chat path. SLOT_SAVE is off for a configured room, so
+// slot_restore_if_cold does nothing; this loads mag-prefix-*.bin once after
+// a restart, before the completion, and then leaves the live KV alone.
+static void restore_prefix_if_unwarmed(int idx, const std::string &model) {
+  if (!CONFIGURED_MODEL || !PREFIX_DISK || idx < 0) return;
+  const int slot = model_slot(idx);
+  if (slot < 1 || slot > ROOM_MAX_BOTS) return;
+  // Set only after health actually dropped. A cold start (flag still 0)
+  // must prefill, not reload whatever file happens to be on disk.
+  if (SLOT_RELOAD[slot - 1].exchange(0) != 1) return;
+  const std::string m = model.empty() ? bot_model_id(idx) : model;
+  const std::string file = prefix_file(idx, m);
+  if (!prefix_slot_rpc(idx, m, "restore", file, 120000)) {
+    std::cerr << "prompt-slot restore-cold file=" << file << " ok=0\n";
+    return;
+  }
+  std::cerr << "prompt-slot restore-cold file=" << file << " ok=1\n";
+  mark_prefix_warm(slot);
 }
 // Caller holds JOB_MTX. A job that is only waiting for its prefix must not
 // block the prewarm that would make it runnable (otherwise Self-Talk resumed
@@ -9815,11 +9892,6 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
     skip = true;
     why = "ram";
     mark_prefix_warm(model_slot(idx));
-  } else if (CONFIGURED_MODEL && have_current && !prefix_changed &&
-             !count_known && model_slot(idx) >= 1 &&
-             model_slot(idx) <= ROOM_MAX_BOTS &&
-             SLOT_WARM[model_slot(idx)-1].load() == 1) {
-    skip = true; why = "ram";
   } else if (prefix_resident && have_current && !prefix_changed) {
     // Prompt string, no numeric count, hash matches (pinned runtime).
     skip = true;

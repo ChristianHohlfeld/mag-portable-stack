@@ -12,6 +12,9 @@ User=chris
 Group=chris
 WorkingDirectory=/home/chris
 ExecStart=/usr/local/lib/mag-coding/start-live.sh %i
+# Every stop/restart first saves the slot KV + checkpoints (5 s idle wait, an
+# in-flight turn is not waited for: Chris aborts hangs immediately).
+ExecStop=-/usr/bin/env MAG_SLOT_SAVE_WAIT_S=5 /bin/bash /usr/local/lib/mag-coding/save-slots.sh --node %i
 Restart=on-failure
 RestartSec=30
 # First start hashes and mlocks up to 98 GB on one node.

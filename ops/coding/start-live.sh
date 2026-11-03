@@ -47,6 +47,6 @@ exec numactl --physcpubind="$cpus" --membind="$node" "$BIN" \
   --ctx-size "$ctx" --parallel 1 --threads 14 --threads-batch 14 --numa numactl \
   --load-mode mlock --lazy-mode off "${extra[@]}" \
   --jinja --reasoning-format auto \
-  --cache-ram 16384 --ctx-checkpoints 32 --checkpoint-min-step 128 \
+  --cache-ram 16384 --ctx-checkpoints 48 --checkpoint-min-step 1024 \
   --flash-attn on --batch-size 2048 --ubatch-size 512 --cache-type-k f16 --cache-type-v f16 \
   --slots --slot-save-path "$SLOT" --no-ui

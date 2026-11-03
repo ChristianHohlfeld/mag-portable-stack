@@ -58,7 +58,7 @@ assert 'MAG_ROOM_MODEL_ID_1=glm-5.3-flash' in glm_layout
 assert 'mag-llm-glm@q1.service' in glm_txn and 'mag-llm-glm@q2.service' in glm_txn
 assert 'FORMAT=' in glm and '.kv-marker' in glm and 'mag-prefix-glm-5.3-flash-slot2.bin' in glm
 assert '--no-mmap --mlock --flash-attn' in ds_node and '--load-mode mlock' not in ds_node  # avoid file-cache duplication on NUMA0
-assert 'if (slot_is_busy(s)) {' in room  # health probes per NUMA, not globally suppressed
+assert 'const bool busy = slot_is_busy(s);' in room  # health probed per NUMA, also while busy (model restart mid-turn)
 assert 'if (!bot_prefix_ready(secondary)) return ids;' in room
 assert 'SLOT_WARM[slot - 1].load() != 1' in room
 assert 'kv.first == "description"' in room and 'bot_model_id(bot_idx).rfind("glm-5.3-flash", 0) == 0' in room

@@ -25,6 +25,8 @@ class ContextWindowBudget(unittest.TestCase):
         self.assertIn('note_wire_ratio(model, prompt_wire_bytes(messages, tools), saw_evaluated)', SOURCE)
         # Never smaller than the configured byte budget.
         self.assertIn('return std::max(fallback,', SOURCE)
+        # First request after a restart must not compact the resident prefix.
+        self.assertIn('double bpt = 4.0;', SOURCE)
 
 
 if __name__ == "__main__":

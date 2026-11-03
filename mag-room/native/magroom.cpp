@@ -5015,12 +5015,15 @@ static void note_wire_ratio(const std::string &model, size_t bytes, double token
   std::lock_guard<std::mutex> lk(CTX_WINDOW_MTX);
   WIRE_BYTES_PER_TOKEN[model] = (double)bytes / tokens;
 }
-// 80% of the real window (rest: reply and next tool rounds). Unknown ratio:
-// 3 bytes/token underestimates the wire (~4 measured), so it compacts early.
+// 80% of the real window (rest: reply and next tool rounds). Unknown ratio
+// (first request after a room restart): 4.0 bytes/token as measured live on
+// Flint (196.9k wire bytes / 48841 tokens). A lower default would compact the
+// resident prefix on that first request; an overshoot is caught by the
+// existing exceed_context_size retry below, which compacts and retries.
 static size_t window_context_budget(int bot_idx, size_t fallback) {
   const long n_ctx = backend_n_ctx(bot_idx);
   if (n_ctx <= 0) return fallback;
-  double bpt = 3.0;
+  double bpt = 4.0;
   {
     std::lock_guard<std::mutex> lk(CTX_WINDOW_MTX);
     auto it = WIRE_BYTES_PER_TOKEN.find(bot_model_id(bot_idx));

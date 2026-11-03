@@ -27,7 +27,7 @@ class CodingDeploy(unittest.TestCase):
   self.assertEqual([data["models"][i]["numa"] for i in ("general","coder")],[0,1])
   self.assertEqual(source("ops/room/layout").strip(),"coding")
   self.assertIn("MAG_ROOM_MAX_TOKENS=16384",source("ops/coding/80-coding-output.conf"))
-  self.assertIn("MAG_ROOM_MODEL_ID_1=qwen3-coder-next",source("ops/room/coding.env"))
+  self.assertIn("MAG_ROOM_MODEL_ID_1=flint",source("ops/room/coding.env"))
  def test_stage_before_stop(self):
   auto=source("ops/auto-update/apply.sh")
   self.assertLess(auto.index("coding/prepare.sh"),auto.index("ops/deploy.sh"))
@@ -97,7 +97,7 @@ class CodingDeploy(unittest.TestCase):
   env=source("ops/room/coding.env")
   self.assertIn("MAG_ROOM_MODEL_ID_0=qwen3.8-flash-next",env)
   self.assertIn('CODING_GENERAL_MODEL = "qwen3.8-flash-next"',room)
-  self.assertIn('CODING_CODER_MODEL = "qwen3-coder-next"',room)
+  self.assertIn('CODING_CODER_MODEL = "flint"',room)
  def test_node_scoped_interim(self):
   layout=source("ops/coding/layout.sh")
   self.assertIn('target_env="$ROOT/ops/room/coding0.env"',layout)
@@ -109,7 +109,7 @@ class CodingDeploy(unittest.TestCase):
   import json as _j
   ids=[[b["model"] for b in x["ports"]] for x in _j.loads(source("ops/room/presets.json")) if all("model" in b for b in x["ports"])]
   self.assertIn(["qwen3.8-flash-next","glm-5.3-flash"],ids)
-  self.assertIn(["qwen3.8-flash-next","qwen3-coder-next"],ids)
+  self.assertIn(["qwen3.8-flash-next","flint"],ids)
   boot=source("ops/boot/ensure-boot.sh")
   self.assertIn("Interim coding room: Qwen3.8 NUMA0; GLM-Q2 boot state is never altered.",boot)
   room=source("mag-room/native/magroom.cpp")
@@ -130,4 +130,36 @@ class CodingDeploy(unittest.TestCase):
    mod.MANIFEST["models"]["general"]["filename"]="y.gguf"
    with self.assertRaises(RuntimeError): mod.stage("general",t/"root",download=True)
    self.assertFalse((t/"root/general/y.gguf.part").exists())
+ def test_numa1_only_flint_swap(self):
+  layout=source("ops/coding/layout.sh")
+  # Only nodes whose models.json entry changed restart; NUMA0 Qwen3.8 stays.
+  snippet=layout.split("<<'PY'\n",2)[1].split("\nPY\n",1)[0]
+  import subprocess,tempfile,os,copy
+  new=json.loads(source("ops/coding/models.json"))
+  old=copy.deepcopy(new); old["models"]["coder"]["model_id"]="qwen3-coder-next"
+  with tempfile.TemporaryDirectory() as d:
+   a,b=os.path.join(d,"n.json"),os.path.join(d,"o.json")
+   json.dump(new,open(a,"w")); json.dump(old,open(b,"w"))
+   out=subprocess.run(["python3","-I","-",a,b],input=snippet,text=True,capture_output=True,check=True).stdout
+   self.assertEqual(out.split(),["1"])
+   json.dump(new,open(b,"w"))
+   out=subprocess.run(["python3","-I","-",a,b],input=snippet,text=True,capture_output=True,check=True).stdout
+   self.assertEqual(out.split(),[])
+  self.assertIn("new NUMA1 coder GGUF not staged; current pair left running",layout)
+  self.assertLess(layout.index('touch "$TXN/started"'),layout.index('if (( swap )); then\n  touch "$TXN/switch-started"'))
+  self.assertIn("/usr/local/lib/mag-coding/runtime-coder.sha\n",layout.split("wait_port_free()")[0])
+  self.assertIn('install -m 0644 "$ROOT/ops/coding/runtime.sha" /usr/local/lib/mag-coding/runtime-coder.sha',layout)
+  self.assertIn('install -m 0644 "$ROOT/ops/qwen/runtime.sha" /usr/local/lib/mag-coding/runtime.sha',layout)
+  start=source("ops/coding/start-live.sh")
+  self.assertIn('DIR="/home/chris/.local/qwen4exp/$REV-mag-cp1/bin"',start)
+  self.assertIn('DIR="/home/chris/.local/mag-coding-rt/$REV/bin"',start)
+  self.assertIn("alias=flint; file=Flint-Q8_0.gguf",start)
+  self.assertIn("alias=qwen3.8-flash-next",start)
+  self.assertIn("FLINT",source("ops/coding/build-runtime.sh"))
+  self.assertRegex(source("ops/coding/runtime.sha").strip(),r"^[a-f0-9]{40}$")
+  self.assertEqual([new["models"][i]["model_id"] for i in ("general","coder")],["qwen3.8-flash-next","flint"])
+  room=source("mag-room/native/magroom.cpp")
+  # Flint reasons on every turn: no per-round token cap on its room replies.
+  self.assertIn("const bool uncapped = coding_model && model == CODING_CODER_MODEL && !TL_SELFTALK;",room)
+  self.assertIn('if (!uncapped) body["max_tokens"] = max_output;',room)
 if __name__=="__main__": unittest.main()

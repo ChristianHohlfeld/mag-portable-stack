@@ -15,6 +15,7 @@ old=(mag-llm-mistral-room.service mag-llm-glm@q2.service
 files=(/etc/mag-stack/room-model.env /etc/mag-stack/room-layout /etc/mag-stack/room-layout.pinned
        /etc/systemd/system/mag-llm-coding@.service
        /usr/local/lib/mag-coding/start-live.sh /usr/local/lib/mag-coding/runtime.sha
+       /usr/local/lib/mag-coding/runtime-coder.sha
        /usr/local/lib/mag-coding/stage.py /usr/local/lib/mag-coding/models.json
        /etc/systemd/system/mag-120.service.d/80-coding-output.conf)
 wait_port_free(){
@@ -107,6 +108,25 @@ interim=0
 if [[ $previous == coding ]] && cmp -s "$ROOT/ops/room/coding0.env" /etc/mag-stack/room-model.env; then
   interim=1
 fi
+# Node-scoped model change on an already full coding layout: only a node whose
+# models.json entry differs from the installed manifest is restarted (e.g.
+# NUMA1 Qwen3-Coder-Next -> Flint while NUMA0 Qwen3.8 stays resident). The
+# snapshot below restores the previous model on failure.
+swap_nodes=()
+if [[ $previous == coding ]] && (( ! interim )) && [[ -f /usr/local/lib/mag-coding/models.json ]]; then
+  mapfile -t swap_nodes < <(python3 -I - "$ROOT/ops/coding/models.json" /usr/local/lib/mag-coding/models.json <<'PY'
+import json, sys
+new = json.load(open(sys.argv[1]))["models"]; old = json.load(open(sys.argv[2]))["models"]
+for name in ("general", "coder"):
+    if new[name] != old.get(name):
+        print(new[name]["numa"])
+PY
+  )
+  if (( ${#swap_nodes[@]} )) && [[ " ${swap_nodes[*]} " == *" 1 "* ]]; then
+    (( coder_ready )) || fail 'new NUMA1 coder GGUF not staged; current pair left running'
+  fi
+fi
+swap=$(( ${#swap_nodes[@]} > 0 ))
 if [[ $previous == coding ]] && (( interim && ! coder_ready )); then
   systemctl is-active --quiet mag-llm-coding@0.service || fail 'coding NUMA0 not active'
   wait_ready mag-llm-coding@0.service 8191 6 || fail 'coding NUMA0 unhealthy'
@@ -115,7 +135,7 @@ if [[ $previous == coding ]] && (( interim && ! coder_ready )); then
   echo 'coding layout unchanged: Qwen3.8 NUMA0 + GLM-Q2 NUMA1 (Qwen3-Coder-Next not staged yet)'
   exit 0
 fi
-if [[ $previous == coding ]] && (( ! interim )); then
+if [[ $previous == coding ]] && (( ! interim && ! swap )); then
   # No undeclared, restart-requiring drift is silently applied on ordinary deploy.
   for i in 0 1; do
     systemctl is-active --quiet "mag-llm-coding@$i.service" || fail "coding NUMA$i not active"
@@ -133,6 +153,10 @@ REV=$(tr -d '[:space:]' < "$ROOT/ops/qwen/runtime.sha")
 BIN="/home/chris/.local/qwen4exp/$REV-mag-cp1/bin/llama-server"
 [[ -x $BIN && $(cat "$(dirname "$BIN")/source-commit" 2>/dev/null || true) == "$REV" ]] ||
     fail 'pinned coding runtime missing'
+CREV=$(tr -d '[:space:]' < "$ROOT/ops/coding/runtime.sha")
+CBIN="/home/chris/.local/mag-coding-rt/$CREV/bin/llama-server"
+[[ -x $CBIN && $(cat "$(dirname "$CBIN")/source-commit" 2>/dev/null || true) == "$CREV" ]] ||
+    fail 'pinned NUMA1 (flint) runtime missing: run ops/coding/build-runtime.sh'
 # Do not make recovery from a broken old backend impossible. It is precisely
 # why the owner requested replacement. Snapshot the old active/enabled units for
 # rollback, but require *new* model health and real decoder output before routing.
@@ -187,6 +211,7 @@ install -m 0755 "$ROOT/ops/coding/start-live.sh" /usr/local/lib/mag-coding/start
 install -m 0644 "$ROOT/ops/coding/stage.py" /usr/local/lib/mag-coding/stage.py
 install -m 0644 "$ROOT/ops/coding/models.json" /usr/local/lib/mag-coding/models.json
 install -m 0644 "$ROOT/ops/qwen/runtime.sha" /usr/local/lib/mag-coding/runtime.sha
+install -m 0644 "$ROOT/ops/coding/runtime.sha" /usr/local/lib/mag-coding/runtime-coder.sha
 install -m 0644 "$ROOT/ops/coding/mag-llm-coding@.service" /etc/systemd/system/mag-llm-coding@.service
 install -m 0644 "$ROOT/ops/coding/80-coding-output.conf" /etc/systemd/system/mag-120.service.d/80-coding-output.conf
 for name in general coder; do
@@ -202,7 +227,18 @@ if [[ $previous == glm ]]; then
   systemctl start mag-llm-coding@0.service
   wait_ready mag-llm-coding@0.service 8191 1440 || fail 'Qwen3.8-Flash-Next failed health on 8191'
   # Test the actual GGUF decoder, not merely an HTTP listening socket.
-  python3 -I "$ROOT/ops/coding/live-smoke.py" --port 8191 --model qwen3.8-flash-next
+  python3 -I "$ROOT/ops/coding/live-smoke.py" --port 8191
+fi
+if (( swap )); then
+  touch "$TXN/switch-started"
+  for i in "${swap_nodes[@]}"; do
+    port=$((8191 + i))
+    systemctl stop "mag-llm-coding@$i.service"
+    wait_port_free "$port" || fail "port $port still held after the old coding model stopped"
+    systemctl start "mag-llm-coding@$i.service"
+    wait_ready "mag-llm-coding@$i.service" "$port" 1440 || fail "new coding model failed health on $port"
+    python3 -I "$ROOT/ops/coding/live-smoke.py" --port "$port"
+  done
 fi
 if (( coder_ready )) && ! systemctl is-active --quiet mag-llm-coding@1.service; then
   touch "$TXN/switch-started"
@@ -211,7 +247,7 @@ if (( coder_ready )) && ! systemctl is-active --quiet mag-llm-coding@1.service; 
   wait_port_free 8192 || fail 'port 8192 still held after old GLM stopped'
   systemctl start mag-llm-coding@1.service
   wait_ready mag-llm-coding@1.service 8192 1440 || fail 'Qwen3-Coder-Next failed health on 8192'
-  python3 -I "$ROOT/ops/coding/live-smoke.py" --port 8192 --model qwen3-coder-next
+  python3 -I "$ROOT/ops/coding/live-smoke.py" --port 8192
 fi
 systemctl is-active --quiet mag-llm-coding@0.service || fail 'coding NUMA0 not active'
 wait_ready mag-llm-coding@0.service 8191 6 || fail 'coding NUMA0 not healthy'
@@ -237,7 +273,7 @@ if (( coder_ready )); then systemctl enable mag-llm-coding@1.service; fi
 touch "$TXN/coding"
 rm -f "$FAILED"
 if (( coder_ready )); then
-  echo 'coding layout ready: Qwen3.8-Flash-Next NUMA0 + Qwen3-Coder-Next NUMA1, 16k tokens per round with continuation'
+  echo 'coding layout ready: Qwen3.8-Flash-Next NUMA0 + Flint NUMA1, 16k tokens per round with continuation'
 else
   echo 'coding layout ready (interim): Qwen3.8-Flash-Next NUMA0 + GLM-Q2 NUMA1; NUMA1 switches once Qwen3-Coder-Next is verified'
 fi

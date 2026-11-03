@@ -10,9 +10,9 @@ BIN="/home/chris/.local/qwen4exp/$REV-mag-cp1/bin/llama-server"
 # Download and verify in advance, resumably. A hash mismatch never activates a model.
 # An identical GGUF already on disk is hard-linked after its SHA256 check.
 python3 -I "$ROOT/ops/coding/stage.py" --model general --download
-# NUMA1 is node-scoped: until Qwen3-Coder-Next is verified, GLM-Q2 keeps :8192.
+# NUMA1 is node-scoped: until Flint is verified, the current NUMA1 model keeps :8192.
 python3 -I "$ROOT/ops/coding/stage.py" --model coder --download ||
-  echo 'coding prepare: Qwen3-Coder-Next not staged yet; NUMA1 stays GLM-Q2'
+  echo 'coding prepare: Flint not staged yet; NUMA1 keeps its current model'
 # The shared, pinned qwen4exp runtime (also implements qwen3next) is built and
 # checksummed by ops/qwen/build-runtime.sh; never build an unpinned binary here.
 if [[ ! -x $BIN || $(cat "$(dirname "$BIN")/source-commit" 2>/dev/null || true) != "$REV" ]]; then
@@ -20,6 +20,8 @@ if [[ ! -x $BIN || $(cat "$(dirname "$BIN")/source-commit" 2>/dev/null || true) 
 fi
 [[ -x $BIN && $(cat "$(dirname "$BIN")/source-commit" 2>/dev/null || true) == "$REV" ]] || {
   echo 'coding prepare: pinned qwen4exp runtime missing' >&2; exit 4; }
+# NUMA1 Flint: separately pinned upstream runtime (ops/coding/runtime.sha).
+nice -n 19 ionice -c 3 bash "$ROOT/ops/coding/build-runtime.sh"
 SRC=/home/chris/.local/src/mag-qwen-llama.cpp
 if [[ -d $SRC/.git && $(git -C "$SRC" rev-parse HEAD) == "$REV" ]]; then
   # Both architectures require model-specific graph implementations.

@@ -3,7 +3,11 @@
 # Flags follow the llama.cpp server README (tools/server/README.md at the
 # pinned ops/qwen/runtime.sha) and the official model cards:
 #  - Qwen3.8-Flash-Next (qwen4exp): https://huggingface.co/Qwen/Qwen3.8-Flash-Next
-#  - Qwen3-Coder-Next (qwen3next): https://huggingface.co/Qwen/Qwen3-Coder-Next
+#  - Flint (flint, NUMA1):    https://huggingface.co/RecursiveSI/flint
+#    GGUF https://huggingface.co/ggml-org/Flint-GGUF ; card sampling
+#    temperature 1.0, top_p 0.95, top_k 20 (server defaults; the room sends the same).
+#    Needs the separately pinned llama.cpp of ops/coding/runtime.sha (flint arch,
+#    ggml-org/llama.cpp#30928), installed as /usr/local/lib/mag-coding/runtime-coder.sha.
 # Both use the GGUF's own Jinja chat template (--jinja); reasoning is split
 # into reasoning_content (--reasoning-format auto) and never reaches the room text.
 set -euo pipefail
@@ -15,15 +19,21 @@ case "$which" in
      # ops/qwen/start.sh launcher measured at 6.9-7.0 tok/s on this host).
      extra=(-ot per_layer_token_embd=CPU) ;;
   1) node=1; cpus=14-27; port=8192; name=coder; ctx=65536
-     alias=qwen3-coder-next; file=Qwen3-Coder-Next-UD-Q4_K_XL.gguf
-     extra=() ;;
+     alias=flint; file=Flint-Q8_0.gguf
+     extra=(--temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.0) ;;
   *) echo 'coding: invalid NUMA node' >&2; exit 4 ;;
 esac
-REV=$(cat /usr/local/lib/mag-coding/runtime.sha)
-[[ $REV =~ ^[a-f0-9]{40}$ ]] || exit 4
-# The pinned, already-verified qwen4exp runtime (ops/qwen/build-runtime.sh)
-# also implements qwen3next; one binary serves both bots.
-DIR="/home/chris/.local/qwen4exp/$REV-mag-cp1/bin"
+if [[ $node == 0 ]]; then
+  # NUMA0: the pinned, already-verified qwen4exp runtime (ops/qwen/build-runtime.sh).
+  REV=$(cat /usr/local/lib/mag-coding/runtime.sha)
+  [[ $REV =~ ^[a-f0-9]{40}$ ]] || exit 4
+  DIR="/home/chris/.local/qwen4exp/$REV-mag-cp1/bin"
+else
+  # NUMA1: the pinned flint runtime (ops/coding/build-runtime.sh).
+  REV=$(cat /usr/local/lib/mag-coding/runtime-coder.sha)
+  [[ $REV =~ ^[a-f0-9]{40}$ ]] || exit 4
+  DIR="/home/chris/.local/mag-coding-rt/$REV/bin"
+fi
 BIN="$DIR/llama-server"
 MODEL="/home/chris/models/mag-coding/$name/$file"
 [[ -x $BIN && -f $MODEL && ! -L $MODEL ]] || { echo "coding $node: runtime/GGUF missing" >&2; exit 4; }

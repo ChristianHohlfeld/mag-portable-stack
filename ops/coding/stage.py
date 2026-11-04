@@ -67,7 +67,10 @@ def stage(name, root, download=False):
     temp = target.with_name(filename + ".part")
     if temp.is_symlink():
         raise RuntimeError(f"refusing symlink download target: {temp}")
-    url = f"https://huggingface.co/{spec['repo']}/resolve/main/{filename}"
+    revision = spec.get("revision", "main")
+    if not re.fullmatch(r"main|[a-f0-9]{40}", revision):
+        raise RuntimeError("invalid pinned model revision")
+    url = f"https://huggingface.co/{spec['repo']}/resolve/{revision}/{filename}"
     # Resumable. A changed upstream object is rejected by the pinned SHA256.
     subprocess.run(["curl", "--fail", "--location", "--retry", "5", "--continue-at", "-",
                     "--output", str(temp), url], check=True)

@@ -5,8 +5,8 @@
 #  - Qwen3.8-Flash-Next (qwen4exp): https://huggingface.co/Qwen/Qwen3.8-Flash-Next
 #  - Ornith-1.5-35B-A3B (qwen35moe, BOTH nodes since 2026-11-04):
 #    https://huggingface.co/ornith-ai/Ornith-1.5-35B-A3B ; GGUF
-#    https://huggingface.co/bartowski/Ornith-1.5-35B-A3B-GGUF (Q4_K_M, SHA256 in
-#    models.json). Card sampling (general tasks): temperature 0.6, top_p 0.95,
+#    https://huggingface.co/AtomicChat/Ornith-1.5-35B-A3B-GGUF (AD-Q6_K-Q5_K,
+#    revision + SHA256 in models.json). Card sampling (general tasks): temperature 0.6, top_p 0.95,
 #    top_k 20. Official chat_template.jinja (ops/coding/ornith-chat.jinja,
 #    verbatim): enable_thinking=false pre-fills an empty <think></think>.
 #    Engine: mainline llama.cpp (qwen35moe since ggml-org/llama.cpp#19468);
@@ -25,13 +25,16 @@ case "$which" in
   # node, never spanning (the NUMA interconnect is the bottleneck). Qwen3.8's
   # GGUF stays on disk. ctx = Flint card's documented 262,144-token window
   # (13 of 49 layers are full attention, 4 KV heads: ~7 GB f16 KV per node).
-  # Owner 2026-11-04: Ornith-1.5-35B-A3B Q4_K_M on both nodes (ctx = card's
+  # Owner 2026-11-04: Ornith-1.5-35B-A3B on both nodes (ctx = card's
   # native 262,144 tokens; only the full-attention layers hold KV).
+  # 2026-11-04 18:xx: AD-Q6_K-Q5_K (26.2 GB) instead of bartowski Q4_K_M:
+  # AtomicChat card KLD 0.0158 / top-1 94.85 % vs Q4_K_M 0.0477 / 91.0 %,
+  # ~1.2x the bytes per token (decode is DDR4-2400 bandwidth bound per node).
   0) node=0; cpus=0-13; port=8191; name=general; ctx=262144
-     alias=ornith-numa0; file=Ornith-1.5-35B-A3B-Q4_K_M.gguf
+     alias=ornith-numa0; file=Ornith-1.5-35B-A3B-AD-Q6_K-Q5_K.gguf
      extra=(--temp 0.6 --top-p 0.95 --top-k 20 --min-p 0.0) ;;
   1) node=1; cpus=14-27; port=8192; name=coder; ctx=262144
-     alias=ornith; file=Ornith-1.5-35B-A3B-Q4_K_M.gguf
+     alias=ornith; file=Ornith-1.5-35B-A3B-AD-Q6_K-Q5_K.gguf
      extra=(--temp 0.6 --top-p 0.95 --top-k 20 --min-p 0.0) ;;
   *) echo 'coding: invalid NUMA node' >&2; exit 4 ;;
 esac

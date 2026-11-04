@@ -49,10 +49,10 @@ class CodingStage(unittest.TestCase):
     def test_source_hash_pins_and_long_output_are_explicit(self):
         self.assertEqual(
             DATA["models"]["general"]["sha256"],
-            "12d8d5c01bae7f23ea4822b2f96ba069d531f827d02a57c31002f2f95e72614a")
+            "c732a550672b4f8e0d66c8b395e84640d1df0cb929489dd32d4e9a0dea509a04")
         self.assertEqual(
             DATA["models"]["coder"]["sha256"],
-            "12d8d5c01bae7f23ea4822b2f96ba069d531f827d02a57c31002f2f95e72614a")
+            "c732a550672b4f8e0d66c8b395e84640d1df0cb929489dd32d4e9a0dea509a04")
         self.assertIn("default=16384", (ROOT / "smoke.py").read_text())
         self.assertIn("finish == \"length\"", (ROOT / "smoke.py").read_text())
 

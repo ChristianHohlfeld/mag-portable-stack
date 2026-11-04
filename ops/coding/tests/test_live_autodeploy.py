@@ -153,8 +153,8 @@ class CodingDeploy(unittest.TestCase):
   self.assertIn('install -m 0644 "$ROOT/ops/qwen/runtime.sha" /usr/local/lib/mag-coding/runtime.sha',layout)
   start=source("ops/coding/start-live.sh")
   self.assertIn('DIR="/home/chris/.local/mag-coding-rt/$REV/bin"',start)
-  self.assertIn("alias=ornith; file=Ornith-1.5-35B-A3B-Q4_K_M.gguf",start)
-  self.assertIn("alias=ornith-numa0; file=Ornith-1.5-35B-A3B-Q4_K_M.gguf",start)
+  self.assertIn("alias=ornith; file=Ornith-1.5-35B-A3B-AD-Q6_K-Q5_K.gguf",start)
+  self.assertIn("alias=ornith-numa0; file=Ornith-1.5-35B-A3B-AD-Q6_K-Q5_K.gguf",start)
   # Chat without thinking: Flint template override, installed with the launcher.
   self.assertIn('TEMPLATE_ARGS=(--chat-template-file "$TPL")',start)
   self.assertIn('install -m 0644 "$ROOT/ops/coding/flint-chat.jinja" /usr/local/lib/mag-coding/flint-chat.jinja',layout)

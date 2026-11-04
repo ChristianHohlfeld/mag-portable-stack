@@ -132,7 +132,7 @@
   function setRate(v) {
     v = RATES.includes(+v) ? +v : 1;
     try { localStorage.setItem('mag-tts-rate', String(v)); } catch (_) {}
-    try { if (piper.source) piper.source.playbackRate.value = v; } catch (_) {}
+    try { if (piper.source) piper.source.playbackRate.value = v * (piper.pitch || 1); } catch (_) {}
     return v;
   }
   function voicePref() { try { return localStorage.getItem('mag-tts-voice') || 'thorsten'; } catch (_) { return 'thorsten'; } }
@@ -182,10 +182,13 @@
     piper.loading = p;
     return p;
   }
-  // Voices per speaker, all Piper medium quality (tts-config.json "roles"):
-  // Lena female (MLS speaker), Noah male (Thorsten), Chris's own messages a
-  // different male MLS speaker. A system voice only as last-resort fallback.
-  const USER_PITCH = 0.9; // system-voice fallback only
+  // Exactly one fixed Piper voice per speaker (tts-config.json "roles"),
+  // resolved once per playback and used for every part: Lena Kerstin
+  // (female), Noah Thorsten (male), Chris's own messages Thorsten slightly
+  // lower. A speaker with a role never falls back to the device voice: on
+  // iOS that is usually a female default, which made Noah sound female and
+  // switched Lena's voice mid-answer when a later part failed.
+  const USER_PITCH = 0.925;
   function roleVoice(opts) {
     const cfg = piper.config;
     if (!cfg || voicePref() === 'system') return null;
@@ -193,22 +196,43 @@
     let r = null;
     if (opts && opts.user) r = roles.user;
     else if (opts && opts.bot && cfg.bots && cfg.bots[opts.bot]) r = roles[cfg.bots[opts.bot]];
-    return r && r.model ? {id: 'role', label: '', model: r.model, speaker: r.speaker | 0} : piperVoice();
+    else if (opts && opts.name && cfg.names && cfg.names[opts.name]) r = roles[cfg.names[opts.name]];
+    if (r && r.model) return {id: 'role', label: '', model: r.model, speaker: r.speaker | 0, pitch: +r.pitch || 1, fixed: true};
+    const v = piperVoice();
+    return v && {...v, speaker: 0, pitch: 1, fixed: false};
+  }
+  // A crashed worker (WASM out of memory on phones) is replaced once and the
+  // same part is synthesised again with the same voice.
+  function resetWorker() {
+    try { piper.worker?.terminate(); } catch (_) {}
+    piper.worker = null; piper.ready.clear(); piper.failed.clear(); piper.loading = null;
+    for (const p of piper.pending.values()) p.reject(new Error('worker reset'));
+    piper.pending.clear();
+  }
+  async function speakPart(playback, v, i, retry) {
+    const msg = {type: 'speak', text: playback.parts[i], model: v.model, speaker: v.speaker | 0};
+    try { return await ask(msg); }
+    catch (e) {
+      if (!retry || current !== playback) throw e;
+      resetWorker();
+      return ask(msg);
+    }
   }
   async function piperPlay(playback, v) {
     // Synthesis of the next part overlaps playback of the current one.
-    let next = ask({type: 'speak', text: playback.parts[0], model: v.model, speaker: v.speaker | 0});
+    let next = speakPart(playback, v, 0, true);
     for (let i = 0; i < playback.parts.length; i++) {
       playback.at = i;
       const res = await next;
       if (current !== playback) return;
-      next = i + 1 < playback.parts.length ? ask({type: 'speak', text: playback.parts[i + 1], model: v.model, speaker: v.speaker | 0}) : null;
+      next = i + 1 < playback.parts.length ? speakPart(playback, v, i + 1, true) : null;
+      next?.catch(() => {}); // awaited next iteration; avoid an unhandled rejection
       await new Promise(done => {
-        const buf = piper.ctx.createBuffer(1, res.audio.length, res.rate);
-        buf.copyToChannel(res.audio, 0);
+        const buf = piper.ctx.createBuffer(1, Math.max(1, res.audio.length), res.rate);
+        if (res.audio.length) buf.copyToChannel(res.audio, 0);
         const src = piper.ctx.createBufferSource();
-        src.buffer = buf; if (src.playbackRate) src.playbackRate.value = ratePref(); src.connect(piper.ctx.destination);
-        src.onended = done; piper.source = src; src.start();
+        src.buffer = buf; if (src.playbackRate) src.playbackRate.value = ratePref() * (v.pitch || 1); src.connect(piper.ctx.destination);
+        src.onended = done; piper.source = src; piper.pitch = v.pitch || 1; src.start();
       });
       if (current !== playback) return;
     }
@@ -260,21 +284,22 @@
       piper.ctx.resume?.();
       const v = piper.config ? roleVoice(opts) : null;
       if (v && piper.ready.has(v.model)) {
-        piperPlay(playback, v).catch(() => fallback(playback));
+        piperPlay(playback, v).catch(() => fallback(playback, v));
         return true;
       }
       // Not loaded yet: show a loading state instead of a robotic stand-in.
       playback.loading = true;
       setButtons();
-      loadConfig().then(() => { const pv = roleVoice(opts); return pv ? warm(pv).then(ok => ok && pv) : null; })
-        .then(pv => {
+      let pv = null;
+      loadConfig().then(() => { pv = roleVoice(opts); return pv ? warm(pv) : false; })
+        .then(ok => {
           if (current !== playback) return;
           playback.loading = false;
           setButtons();
-          if (pv) return piperPlay(playback, pv);
-          fallback(playback);
+          if (ok) return piperPlay(playback, pv).catch(() => fallback(playback, pv));
+          fallback(playback, pv);
         })
-        .catch(() => fallback(playback));
+        .catch(() => fallback(playback, pv));
       return true;
     }
     if (!systemOk) { current = null; setButtons(); return false; }
@@ -282,11 +307,13 @@
     nextPart(playback);
     return true;
   }
-  // Piper failed or is unavailable for this voice: best neural system voice.
-  function fallback(playback) {
+  // Piper failed or is unavailable for this voice: best neural system voice,
+  // but never for a speaker with a fixed voice or after a part was spoken:
+  // stopping is better than a second, different voice.
+  function fallback(playback, v) {
     if (current !== playback) return;
     playback.loading = false;
-    if (!systemOk) { current = null; setButtons(); return; }
+    if (!systemOk || (v && v.fixed) || playback.at > 0) { current = null; setButtons(); return; }
     setButtons();
     nextPart(playback);
   }
@@ -321,6 +348,7 @@
   }
 
   window.magMessageAudio = {attach, toggle, stop, supported, setVoice, voiceOptions, voicePref, bestVoice, rates: RATES, ratePref, setRate,
+    voiceFor: async opts => { await loadConfig(); const v = roleVoice(opts); return v && {model: v.model, speaker: v.speaker, pitch: v.pitch, fixed: v.fixed}; },
     isPlaying: id => !!current && current.key === id, piperReady: () => { const v = piperVoice(); return !!v && piper.ready.has(v.model); }};
   window.addEventListener('pagehide', stop);
 })();

@@ -8084,6 +8084,7 @@ static std::deque<Job> JOBS;
 static std::string DISP_TRIGGER;
 static std::vector<std::string> DISP_SPOKEN;
 static int DISP_FOLLOWUPS = 0;
+static int DISP_PASSES = 0; // consecutive PASS turns; all bots passed = rest
 static std::string DISP_TEXT;
 // Jobs loaded from the previous process. They are not dispatched until the
 // llama slot is idle and, during a deploy, until the warm-hi gate releases.
@@ -8454,7 +8455,8 @@ static std::vector<group_chat::Bot> dispatch_roster() {
   return out;
 }
 // Who answers a human message: addressed bots (name, @name, "beide"/"ihr"),
-// else an explicit client sub-selection, else ONE suitable bot.
+// else an explicit client sub-selection, else ALL active bots (like "beide"),
+// the preferred speaker (pick_speaker) first.
 static std::vector<std::string> dispatch_answerers(const std::string &text,
                                                    const std::vector<std::string> &client,
                                                    bool &open_floor) {
@@ -8469,9 +8471,11 @@ static std::vector<std::string> dispatch_answerers(const std::string &text,
       sel.push_back(id);
   if (!sel.empty() && sel.size() < roster.size()) return sel;
   const std::string one = group_chat::pick_speaker(text, roster);
-  if (one.empty()) return client;
-  open_floor = true;
-  return {one};
+  std::vector<std::string> all;
+  if (!one.empty()) all.push_back(one);
+  for (const auto &b : roster)
+    if (b.id != one) all.push_back(b.id);
+  return all;
 }
 static void drop_chipin_jobs_locked() {
   const auto gone = std::remove_if(JOBS.begin(), JOBS.end(),
@@ -8479,14 +8483,19 @@ static void drop_chipin_jobs_locked() {
   if (gone == JOBS.end()) return;
   JOBS.erase(gone, JOBS.end());
 }
-// After a bot of the current trigger finished: give the next bot that has
-// not spoken one gated chance to add something. Humans first, hard cap.
+// After a bot of the current trigger finished: hand the turn to the next bot
+// (direct @mention first). Runs purely server-side, no client needed. A bot
+// may PASS; when every bot passed in a row the chat rests until the next
+// human message. Humans and Stop first; MAG_ROOM_BOT_ROUNDS (0 = unlimited).
 static void dispatch_after_turn(uint64_t run, const std::string &speaker,
                                 const std::string &trigger, const TurnReport &r,
                                 Lane *lane) {
   if (!dispatcher_on() || trigger.empty()) return;
   if (lane && (lane->stop.load() || lane->user_cancel.load() || lane->preempt.load())) return;
-  if (!r.error.empty() || r.skipped || trim(r.text).empty() || r.react_only) return;
+  if (!r.error.empty()) return;
+  // PASS (skipped with text) or a bare reaction: the bot chose not to speak.
+  const bool passed = r.react_only || (r.skipped && !trim(r.text).empty());
+  if (!passed && (r.skipped || trim(r.text).empty())) return; // stopped/disabled
   const auto roster = dispatch_roster();
   std::string cause, cause_name;
   {
@@ -8494,7 +8503,7 @@ static void dispatch_after_turn(uint64_t run, const std::string &speaker,
     for (auto it = ROOM.rbegin(); it != ROOM.rend(); ++it) {
       const std::string role = mag::str(*it, "role");
       if (role == "user") break; // only answers to the current human line
-      if (role != "assistant" || mag::str(*it, "bot") != speaker ||
+      if (role != "assistant" || (!passed && mag::str(*it, "bot") != speaker) ||
           trim(mag::str(*it, "content")).empty()) continue;
       cause = mag::str(*it, "id");
       cause_name = mag::str(*it, "name");
@@ -8506,13 +8515,19 @@ static void dispatch_after_turn(uint64_t run, const std::string &speaker,
   if (std::find(DISP_SPOKEN.begin(), DISP_SPOKEN.end(), speaker) == DISP_SPOKEN.end())
     DISP_SPOKEN.push_back(speaker);
   if (cause.empty()) return; // nothing visible to add to
+  if (passed) ++DISP_PASSES; else DISP_PASSES = 0;
+  if (group_chat::conversation_rests(DISP_PASSES, roster.size())) {
+    std::cerr << "dispatch-rest trigger=" << trigger << " passes=" << DISP_PASSES << std::endl;
+    return;
+  }
   if (std::any_of(PENDING.begin(), PENDING.end(), [](const Pending &p) { return !p.held; }))
     return; // a newer human message wins
   if (std::any_of(JOBS.begin(), JOBS.end(), [&](const Job &j) { return j.trigger == trigger; }))
     return;
   for (const auto &kv : ACTIVE_JOBS)
     if (kv.first != run && kv.second.trigger == trigger) return; // last finisher arms
-  const int cap = std::clamp(envi("MAG_ROOM_BOT_ROUNDS",\n      envi("MAG_ROOM_DISPATCH_MAX_FOLLOWUPS", group_chat::kMaxFollowups)), 0, 32);
+  const int cap = std::clamp(envi("MAG_ROOM_BOT_ROUNDS",
+      envi("MAG_ROOM_DISPATCH_MAX_FOLLOWUPS", group_chat::kMaxFollowups)), 0, 1000000);
   const std::string next = group_chat::next_followup(roster, DISP_SPOKEN, speaker, DISP_FOLLOWUPS, cap, r.text);
   if (next.empty()) return;
   ++DISP_FOLLOWUPS;
@@ -10898,7 +10913,15 @@ static void lane_job(Lane *lane, uint64_t run, JobRun job) {
     TURN_THINK = -1;
     TL_GOAL_ID = "job-" + job.run_id;
     TL_TODO_TOUCHED = false;
+    {
+      std::lock_guard<std::mutex> lk(JOB_MTX);
+      JOB_ACTIVE[job.run_id] = JobActive{job.job_id, job.bot, lane};
+    }
     try { run_job(job); } catch (const std::exception &e) { emit_event("error", "", "", e.what()); }
+    {
+      std::lock_guard<std::mutex> lk(JOB_MTX);
+      JOB_ACTIVE.erase(job.run_id);
+    }
     TL_GOAL_ID.clear();
     TL_LANE = nullptr;
   }
@@ -11077,6 +11100,7 @@ static bool dispatch_locked() {
       // later replies (including @mentions) can trigger either bot again.
       DISP_SPOKEN.clear();
       DISP_FOLLOWUPS = 0;
+      DISP_PASSES = 0;
       DISP_TEXT = p.text;
     }
     start_lanes_locked(now_job, false, owner);

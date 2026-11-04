@@ -208,7 +208,7 @@ static NumaSwapResult numa_swap(int node, const std::string &model, bool confirm
       NUMA_SWAP_NODE = -1;
       NUMA_SWAP_TARGET.clear();
       NUMA_STATE_AT = 0; // re-read the committed state now
-      if (r.code != 0) NUMA_LAST_ERROR = trim(r.out).empty() ? "Wechsel fehlgeschlagen (" + std::to_string(r.code) + ")" : trim(r.out).substr(0, 300);
+      if (r.code != 0) NUMA_LAST_ERROR = trim(r.out).empty() ? "Wechsel fehlgeschlagen (" + std::to_string(r.code) + ")" : mj::utf8_cut(trim(r.out), 300);
     }
     std::cerr << "numa-swap node=" << node << " model=" << model << " code=" << r.code << std::endl;
     numa_event();

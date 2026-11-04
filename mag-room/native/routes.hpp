@@ -161,7 +161,7 @@ static void finish_spawn(const std::string &id, std::string vm, bool resume) {
   for (int attempt = 0; attempt < 8 && !ok; ++attempt) {
     auto result = run_argv({"sudo", "-n", AGENT_CTL, "spawn", vm}, 600);
     if (result.code == 0) { ok = true; break; }
-    error = trim(result.out).substr(0, 400);
+    error = mj::utf8_cut(trim(result.out), 400);
     // A restart adopts the VM this same spawn already created.
     if (resume && error.find("already exists") != std::string::npos) { ok = true; break; }
     // Roll back this attempt. A name that belongs to another bot is left alone.
@@ -1066,7 +1066,7 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
     std::string vm = bot_field(idx, "vm");
     try { ensure_browser(vm); }
     catch (const std::exception &e) {
-      error_json(fd, 503, "Browser-Start: " + one_line(e.what()).substr(0, 300));
+      error_json(fd, 503, "Browser-Start: " + mj::utf8_cut(one_line(e.what()), 300));
       return;
     }
     std::string answer;
@@ -1147,7 +1147,7 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
     }
     auto pre = run_argv({"sudo", "-n", AGENT_CTL, "preflight"}, 60);
     if (pre.code != 0) {
-      error_json(fd, 503, "Bot-VM Vorprüfung fehlgeschlagen: " + trim(pre.out).substr(0, 400));
+      error_json(fd, 503, "Bot-VM Vorprüfung fehlgeschlagen: " + mj::utf8_cut(trim(pre.out), 400));
       return;
     }
     std::string vm;
@@ -1473,7 +1473,7 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
       auto pre = run_argv({"sudo", "-n", AGENT_CTL, "preflight"}, 60);
       if (pre.code != 0) {
         error_json(fd, 503, "Bot-VM Vorprüfung fehlgeschlagen: " +
-                                trim(pre.out).substr(0, 400));
+                                mj::utf8_cut(trim(pre.out), 400));
         return;
       }
     }

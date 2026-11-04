@@ -111,7 +111,7 @@ static std::string todo_tool(const std::string &bot_id, const Val &a) {
       if (text.empty()) return;
       if (items.arr->size() >= 30) throw std::runtime_error("Maximal 30 Ziele.");
       Val i = Val::object();
-      i["text"] = text.substr(0, 300);
+      i["text"] = mj::utf8_cut(text, 300);
       i["status"] = "open";
       if (check && check->isObj() && check->find("kind") && check->find("path")) {
         const std::string kind = check->find("kind")->asStr();
@@ -126,7 +126,7 @@ static std::string todo_tool(const std::string &bot_id, const Val &a) {
     };
     if (action == "set") {
       items = Val::array();
-      t["goal"] = s("goal").substr(0, 300);
+      t["goal"] = mj::utf8_cut(s("goal"), 300);
       if (auto arr = a.find("items"); arr && arr->isArr()) {
         const Val *checks = a.find("checks");
         for (size_t j = 0; j < arr->arr->size(); ++j) {
@@ -158,7 +158,7 @@ static std::string todo_tool(const std::string &bot_id, const Val &a) {
         i["proof"] = id;
       }
       i["status"] = action == "done" ? "done" : "blocked";
-      if (!s("text").empty()) i["note"] = s("text").substr(0, 300);
+      if (!s("text").empty()) i["note"] = mj::utf8_cut(s("text"), 300);
       milestone = (action == "done" ? "✓ " : "⚠ ") + i["text"].asStr();
     } else if (action != "list") {
       throw std::runtime_error("Unbekannte todo-Aktion: " + action);
@@ -217,7 +217,7 @@ static std::vector<Val> journal_read(const std::string &bot_id) {
   return out;
 }
 static void journal_append(const std::string &bot_id, const std::string &text) {
-  const std::string t = trim(text).substr(0, 2000);
+  const std::string t = mj::utf8_cut(trim(text), 2000);
   if (t.empty()) throw std::runtime_error("Leerer Journal-Eintrag.");
   std::lock_guard<std::mutex> lk(JOURNAL_MTX);
   std::error_code ec;
@@ -282,7 +282,7 @@ static std::string memory_recall(const std::string &bot_id, const std::string &q
   std::string out;
   // Without a query: newest journal entries matter most.
   if (terms.empty()) std::reverse(hits.begin(), hits.end());
-  for (size_t i = 0; i < hits.size() && i < 12; i++) out += hits[i].second.substr(0, 400) + "\n";
+  for (size_t i = 0; i < hits.size() && i < 12; i++) out += mj::utf8_cut(hits[i].second, 400) + "\n";
   return out;
 }
 static std::string memory_tool(const std::string &bot_id, const Val &a) {
@@ -304,7 +304,7 @@ static std::string memory_tool(const std::string &bot_id, const Val &a) {
     if (action == "forget") {
       mem.arr->erase(mem.arr->begin() + (n - 1));
     } else {
-      const std::string text = s("text").substr(0, 500);
+      const std::string text = mj::utf8_cut(s("text"), 500);
       if (text.empty()) throw std::runtime_error("Text fehlt.");
       (*mem.arr)[n - 1]["text"] = text;
       (*mem.arr)[n - 1]["ts"] = (double)now_s();

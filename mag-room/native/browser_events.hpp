@@ -27,7 +27,7 @@ inline mj::Val browser_action_val(const std::string &bot, const std::string &act
     e["masked"] = true;
     e["text"] = std::string("••••••••");
   } else if (!shown_text.empty()) {
-    e["text"] = shown_text.substr(0, 400);
+    e["text"] = mj::utf8_cut(shown_text, 400);
   }
   return e;
 }

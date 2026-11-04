@@ -68,6 +68,13 @@ video.att-media{width:100%;max-height:440px;cursor:auto;background:#000}
 @media(hover:hover){.att-actions .att-del{opacity:0}.att:hover .att-del,.att:focus-within .att-del{opacity:1}}
 .code-preview{margin:-8px 0 20px;border:1px solid var(--line);border-radius:12px;overflow:hidden;background:var(--panel);resize:vertical;min-height:140px;height:min(62dvh,460px);display:flex;flex-direction:column}.code-preview[hidden]{display:none}.code-preview-bar{flex:none;height:33px;display:flex;align-items:center;justify-content:space-between;gap:8px;padding:0 8px 0 13px;border-bottom:1px solid var(--line);font:11px/1 ui-monospace,monospace;color:var(--muted)}.code-preview-tools{display:flex;gap:4px}.code-preview-frame{flex:1;display:block;width:100%;min-height:0;border:0;background:#fff}.code-preview.max{position:fixed;inset:0;z-index:2147483000;margin:0;border-radius:0;height:auto!important;resize:none;padding-top:env(safe-area-inset-top);padding-bottom:env(safe-area-inset-bottom)}html.code-preview-open,html.code-preview-open body{overflow:hidden}.code-bar .preview-toggle{margin-left:auto}.code-bar .preview-toggle[aria-pressed=true]{background:var(--panel-3);color:var(--text)}.code-bar .preview-toggle+.copy{margin-left:0}
 .html-preview{margin-top:10px;border:1px solid var(--line);border-radius:12px;overflow:hidden;background:var(--panel)}.html-preview iframe{display:block;width:100%;height:420px;border:0;background:#fff}.html-preview a{display:block;padding:7px 12px;font-size:12px}.browser-nav{display:flex;align-items:center;gap:4px;padding:5px 6px}.browser-nav .nav-btn{min-width:28px;height:28px;border-radius:7px;display:inline-flex;align-items:center;justify-content:center;color:inherit;font-size:14px}.browser-nav .nav-btn:hover{background:var(--hover,#ffffff1a)}.browser-nav .nav-url{flex:1;display:flex;min-width:0;gap:2px}.browser-nav .nav-url input{flex:1;min-width:0;height:28px;border-radius:7px;border:1px solid var(--line);background:var(--surface,#0006);color:inherit;padding:0 9px;font:12px ui-monospace,monospace}#browser-view:fullscreen{display:flex;flex-direction:column;background:#000}#browser-view:fullscreen #screen{flex:1;min-height:0;width:100%;height:auto;object-fit:contain}#browser-view{position:relative}#browser-overlay{position:absolute;inset:0;pointer-events:none;overflow:hidden;opacity:0;transition:opacity .3s}#browser-overlay.on{opacity:1}#browser-overlay .bo-cursor{position:absolute;left:0;top:0;transform:translate(50%,50%);transition:transform .42s cubic-bezier(.3,.7,.2,1);will-change:transform;filter:drop-shadow(0 1px 2px #0009);z-index:2}#browser-overlay .bo-cursor svg{display:block;margin:-3px 0 0 -3px}.bo-type{position:absolute;left:18px;top:16px;max-width:260px;white-space:pre-wrap;word-break:break-word;background:#111d;color:#fff;font:12px ui-monospace,monospace;padding:3px 7px;border-radius:6px;opacity:0;transition:opacity .2s}.bo-type.on{opacity:1}.bo-ripple{position:absolute;width:34px;height:34px;margin:-17px 0 0 -17px;border-radius:50%;border:2px solid #4da3ff;background:#4da3ff33;animation:bo-rip .55s ease-out forwards;z-index:1}@keyframes bo-rip{from{transform:scale(.3);opacity:1}to{transform:scale(1.8);opacity:0}}
+/* Read-only live code editor and isolated website preview. */
+#conversation pre:has(.code-bar){position:relative;overflow:auto;max-height:min(65vh,680px);font:12.5px/1.55 ui-monospace,SFMono-Regular,Consolas,monospace;tab-size:2}
+#conversation pre:has(.code-bar) code{font:inherit;white-space:pre;display:block;min-width:max-content}
+#conversation pre:has(.code-bar) .code-bar{position:sticky;top:0;left:0;z-index:2;background:var(--panel)}
+.code-preview.mode-code{height:33px!important;min-height:33px!important;resize:none}
+.code-preview.mode-code .code-preview-frame{display:none}
+.code-preview .code-preview-bar .code-tab[aria-selected=true]{background:var(--panel-3);color:var(--text)}
 /* ---- 2026-10-16: Inter self-hosted, one font everywhere */
 @font-face{font-family:Inter;src:url(/static/InterVariable.woff2) format('woff2');font-weight:100 900;font-style:normal;font-display:swap}
 body,button,input,select,textarea,dialog,.brand-word,.brand-caption,h1,h2,h3,h4{font-family:Inter,sans-serif!important}
@@ -901,27 +908,64 @@ function decorate(el,live=false){
 // CDN imports (unpkg, jsdelivr) work while the room page stays out of reach.
 // Live streams only get the toggle; the frame mounts once the answer is final
 // and only when it scrolls into view, so history doesn't spawn WebGL contexts.
-function htmlPreviewable(lang,code){const l=String(lang).toLowerCase();return(l==='html'||l==='htm'||l==='xhtml'||/^\s*(?:<!--[\s\S]*?-->\s*)*(?:<!doctype\s+html|<html[\s>])/i.test(code))&&code.trim().length>0}
-function htmlPreviewDoc(code){return/^\s*(?:<!--[\s\S]*?-->\s*)*(?:<!doctype|<html[\s>])/i.test(code)?code:'<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head><body>'+code+'</body></html>'}
+function htmlPreviewable(lang,code){
+ const l=String(lang).toLowerCase();
+ return code.trim().length>0&&(l==='html'||l==='htm'||l==='xhtml'||
+  /^\s*(?:<!--[\s\S]*?-->\s*)*(?:<!doctype\s+html|<html[\s>])/i.test(code)||
+  (/^(javascript|js|typescript|ts|jsx)$/.test(l)&&
+   /\b(?:document\.|window\.|WebGLRenderer|from\s*['"]three(?:\/|['"]))/i.test(code)));
+}
+function htmlPreviewDoc(code,lang){
+ const l=String(lang||'').toLowerCase(),js=/^(javascript|js|typescript|ts|jsx)$/.test(l);
+ // Browser cannot run TS/JSX source without transpilation. Plain JS modules work.
+ if(js&&/^(typescript|ts|jsx)$/.test(l))return '<!doctype html><meta charset="utf-8"><p>Diese Vorschau benötigt zuerst kompiliertes JavaScript.</p>';
+ const map='<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/"}}</script>';
+ if(js) return '<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'+map+
+   '</head><body><script type="module">'+code+'<\/script></body></html>';
+ let doc=/^\s*(?:<!--[\s\S]*?-->\s*)*(?:<!doctype|<html[\s>])/i.test(code)
+  ?code:'<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head><body>'+code+'</body></html>';
+ if(!/<script\s+type=["']importmap["']/i.test(doc)){
+  if(/<head\b[^>]*>/i.test(doc))doc=doc.replace(/<head\b[^>]*>/i,m=>m+map);
+  else if(/<html\b[^>]*>/i.test(doc))doc=doc.replace(/<html\b[^>]*>/i,m=>m+'<head>'+map+'</head>');
+  else doc=map+doc;
+ }
+ return doc;
+}
 const htmlPreviewSeen=typeof IntersectionObserver==='function'?new IntersectionObserver(es=>{for(const e of es)if(e.isIntersecting){htmlPreviewSeen.unobserve(e.target);e.target._mount?.()}},{rootMargin:'200px'}):null;
 function addHtmlPreview(pre,bar,code,live){
- const box=document.createElement('div');box.className='code-preview';box.hidden=!!live;box._pkey=code;box._live=!!live;
+ const lang=(pre.querySelector('code')?.className.match(/language-([\w+#.-]+)/)||[])[1]||'html';
+ const box=document.createElement('div');box.className='code-preview';
+ box._pkey=code;box._live=!!live;box._mode=live?'code':'preview';
  const head=document.createElement('div');head.className='code-preview-bar';
- const title=document.createElement('span');title.textContent='Vorschau';
  const tools=document.createElement('span');tools.className='code-preview-tools';
- const mk=(t,aria,fn)=>{const b=document.createElement('button');b.type='button';b.className='copy';b.textContent=t;b.setAttribute('aria-label',aria);b.onclick=fn;return b};
- const frame=document.createElement('iframe');frame.className='code-preview-frame';frame.title='HTML-Vorschau';frame.setAttribute('sandbox','allow-scripts');frame.setAttribute('referrerpolicy','no-referrer');frame.setAttribute('allow','fullscreen');
- const load=()=>{frame.srcdoc=htmlPreviewDoc(code)};
- box._mount=()=>{if(!box._mounted){box._mounted=true;load()}};
+ const mk=(text,title,fn)=>{const b=document.createElement('button');b.type='button';b.className='copy';b.textContent=text;b.title=title;b.onclick=fn;return b};
+ const frame=document.createElement('iframe');frame.className='code-preview-frame';
+ frame.title='Isolierte Website-Vorschau';frame.setAttribute('sandbox','allow-scripts');
+ frame.setAttribute('referrerpolicy','no-referrer');frame.setAttribute('allow','fullscreen');
+ const load=()=>{frame.srcdoc=htmlPreviewDoc(code,lang)};
+ box._mount=()=>{if(!box._mounted&&!live){box._mounted=true;load()}};
+ const tabCode=mk('Code','Quellcode mit Syntax-Highlighting',()=>switchMode('code'));
+ const tabPreview=mk(live?'Vorschau nach Abschluss':'Vorschau','Gerenderte Website',()=>switchMode('preview'));
+ tabPreview.disabled=!!live;
+ for(const t of [tabCode,tabPreview]){t.classList.add('code-tab');t.setAttribute('role','tab')}
+ const switchMode=mode=>{
+  if(mode==='preview'&&live)return;
+  box._mode=mode;box.classList.toggle('mode-code',mode==='code');
+  pre.hidden=mode==='preview';frame.hidden=mode!=='preview';
+  tabCode.setAttribute('aria-selected',String(mode==='code'));
+  tabPreview.setAttribute('aria-selected',String(mode==='preview'));
+  if(mode==='preview')box._mount();
+  if(mode==='code'&&box.classList.contains('max'))full.click();
+ };
  const full=mk('Vollbild','Vorschau im Vollbild',()=>{const on=!box.classList.contains('max');box.classList.toggle('max',on);full.textContent=on?'Schließen':'Vollbild';document.documentElement.classList.toggle('code-preview-open',on)});
- tools.append(mk('Neu laden','Vorschau neu laden',()=>{box._mounted=true;load()}),full);
- head.append(title,tools);box.append(head,frame);
+ const reload=mk('Neu laden','Website-Vorschau aktualisieren',()=>{box._mounted=true;load()});
+ tools.append(reload,full);head.append(tabCode,tabPreview,tools);box.append(head,frame);
  box.addEventListener('keydown',e=>{if(e.key==='Escape'&&box.classList.contains('max'))full.click()});
- const toggle=mk('Vorschau','HTML-Vorschau ein- oder ausblenden',()=>{const b=pre._previewBox||box;const show=b.hidden;b.hidden=!show;toggle.setAttribute('aria-pressed',String(show));if(show)b._mount();else if(b.classList.contains('max'))b.querySelector('.code-preview-tools button:last-child')?.click()});toggle.setAttribute('aria-pressed',String(!live));
- toggle.classList.add('preview-toggle');bar.lastChild.before(toggle);
- pre.after(box);
- if(live)return;
- if(htmlPreviewSeen)htmlPreviewSeen.observe(box);else box._mount();
+ // Keep the editor's own header; the tabs remain available while its code is hidden.
+ pre.after(box);pre._previewBox=box;
+ switchMode(live?'code':'preview');
+ if(!live&&htmlPreviewSeen)htmlPreviewSeen.observe(box);
+ else if(!live)box._mount();
 }
 // Thinking: one quiet line ("Denkt nach" with a live clock and a fading
 // preview of the latest thoughts), collapsed into "Nachgedacht · 12 s" once

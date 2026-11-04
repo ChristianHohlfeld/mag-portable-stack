@@ -8080,7 +8080,7 @@ struct Job {
 };
 static std::deque<Job> JOBS;
 // Group-chat dispatcher state for the latest dispatched human message.
-// Guarded by JOB_MTX. Each bot speaks at most once per trigger.
+// Guarded by JOB_MTX. Bots may speak repeatedly, bounded by rounds per trigger.
 static std::string DISP_TRIGGER;
 static std::vector<std::string> DISP_SPOKEN;
 static int DISP_FOLLOWUPS = 0;
@@ -8486,7 +8486,7 @@ static void dispatch_after_turn(uint64_t run, const std::string &speaker,
                                 Lane *lane) {
   if (!dispatcher_on() || trigger.empty()) return;
   if (lane && (lane->stop.load() || lane->user_cancel.load() || lane->preempt.load())) return;
-  if (!r.error.empty()) return;
+  if (!r.error.empty() || r.skipped || trim(r.text).empty() || r.react_only) return;
   const auto roster = dispatch_roster();
   std::string cause, cause_name;
   {
@@ -8494,7 +8494,7 @@ static void dispatch_after_turn(uint64_t run, const std::string &speaker,
     for (auto it = ROOM.rbegin(); it != ROOM.rend(); ++it) {
       const std::string role = mag::str(*it, "role");
       if (role == "user") break; // only answers to the current human line
-      if (role != "assistant" || mag::str(*it, "bot").empty() ||
+      if (role != "assistant" || mag::str(*it, "bot") != speaker ||
           trim(mag::str(*it, "content")).empty()) continue;
       cause = mag::str(*it, "id");
       cause_name = mag::str(*it, "name");
@@ -8512,8 +8512,8 @@ static void dispatch_after_turn(uint64_t run, const std::string &speaker,
     return;
   for (const auto &kv : ACTIVE_JOBS)
     if (kv.first != run && kv.second.trigger == trigger) return; // last finisher arms
-  const int cap = std::clamp(envi("MAG_ROOM_DISPATCH_MAX_FOLLOWUPS", group_chat::kMaxFollowups), 0, 4);
-  const std::string next = group_chat::next_followup(roster, DISP_SPOKEN, speaker, DISP_FOLLOWUPS, cap);
+  const int cap = std::clamp(envi("MAG_ROOM_BOT_ROUNDS",\n      envi("MAG_ROOM_DISPATCH_MAX_FOLLOWUPS", group_chat::kMaxFollowups)), 0, 32);
+  const std::string next = group_chat::next_followup(roster, DISP_SPOKEN, speaker, DISP_FOLLOWUPS, cap, r.text);
   if (next.empty()) return;
   ++DISP_FOLLOWUPS;
   DISP_SPOKEN.push_back(next);
@@ -8525,7 +8525,7 @@ static void dispatch_after_turn(uint64_t run, const std::string &speaker,
   j.input = DISP_TEXT;
   j.trigger = trigger;
   j.cause = cause;
-  j.cause_label = "ergänzt zu " + (cause_name.empty() ? std::string("Antwort") : cause_name);
+  j.cause_label = "antwortet auf " + (cause_name.empty() ? std::string("Bot") : cause_name);
   JOBS.push_back(std::move(j));
   std::cerr << "dispatch-followup trigger=" << trigger << " after=" << speaker
             << " next=" << next << " n=" << DISP_FOLLOWUPS << std::endl;
@@ -8553,7 +8553,7 @@ static Val enqueue_pending(const std::string &text,
       if (on) SELFTALK_YIELD.fetch_sub(1);
     }
   } yield_selftalk;
-  // Humans first: a running dispatcher follow-up yields to this message.
+  // Humans first: interrupt any active bot-to-bot turn before queuing input.
   if (dispatcher_on()) preempt_selftalk_lanes();
   std::lock_guard<std::mutex> lk(JOB_MTX);
   Val out = Val::object();
@@ -11073,13 +11073,9 @@ static bool dispatch_locked() {
     if (dispatcher_on()) {
       now_job.trigger = p.id;
       DISP_TRIGGER = p.id;
-      // Addressed bots answer alone; only an open question lets the others
-      // add something (each once, behind the PASS gate).
-      DISP_SPOKEN = p.ids;
-      if (!p.open_floor)
-        for (const auto &b : dispatch_roster())
-          if (std::find(DISP_SPOKEN.begin(), DISP_SPOKEN.end(), b.id) == DISP_SPOKEN.end())
-            DISP_SPOKEN.push_back(b.id);
+      // Every bot sees the room. Directly addressed bots respond first;
+      // later replies (including @mentions) can trigger either bot again.
+      DISP_SPOKEN.clear();
       DISP_FOLLOWUPS = 0;
       DISP_TEXT = p.text;
     }

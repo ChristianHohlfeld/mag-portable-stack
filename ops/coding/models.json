@@ -22,7 +22,8 @@
         "filename": "mtp-Ornith-1.5-35B-A3B-Q8_0.gguf",
         "sha256": "c3191614e6863b908349fe5c29cd15a24c181bdab98b16089f7271a806ab79af",
         "size": 1990649856,
-        "link_from": "/home/chris/models/ornith-1.5-35b-a3b-atomic/mtp-Ornith-1.5-35B-A3B-Q8_0.gguf"
+        "link_from": "/home/chris/models/ornith-1.5-35b-a3b-atomic/mtp-Ornith-1.5-35B-A3B-Q8_0.gguf",
+        "draft_p_min": 0.75
       },
       "chat_template": {
         "repo": "ornith-ai/Ornith-1.5-35B-A3B",
@@ -51,7 +52,8 @@
       },
       "mtp": {
         "source": "embedded",
-        "draft_n_max": 3
+        "draft_n_max": 3,
+        "draft_p_min": 0.75
       }
     }
   }

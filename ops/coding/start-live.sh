@@ -36,6 +36,8 @@ case "$which" in
   # top-1 94.85 % vs Q4_K_M 0.0477 / 91.0 %) + its pinned Q8_0 MTP head;
   # NUMA1 (Noah): bartowski Q4_K_M + embedded MTP (fast lane). Both files stay
   # on disk; switching back is a models.json/start-live.sh change.
+  # p-min 0.75: a draft stops at the first token the MTP head is unsure of
+  # (live 19:57: chat at 11 % acceptance ran 4.8 tok/s vs ~11 without MTP).
   0) node=0; cpus=0-13; port=8191; name=general; ctx=262144
      alias=ornith-numa0; file=Ornith-1.5-35B-A3B-AD-Q6_K-Q5_K.gguf; mtp=mtp-Ornith-1.5-35B-A3B-Q8_0.gguf
      extra=(--temp 0.6 --top-p 0.95 --top-k 20 --min-p 0.0) ;;
@@ -98,11 +100,11 @@ fi
 [[ $ENGINE == ik ]] && echo "coding $node: ik runtime $IK_REV missing, using mainline" >&2
 SPEC_ARGS=()
 if [[ $mtp == embedded ]]; then
-  SPEC_ARGS=(--spec-type draft-mtp --spec-draft-n-max 3)
+  SPEC_ARGS=(--spec-type draft-mtp --spec-draft-n-max 3 --spec-draft-p-min 0.75)
 elif [[ -n $mtp ]]; then
   DRAFT="/home/chris/models/mag-coding/$name/$mtp"
   [[ -f $DRAFT && ! -L $DRAFT ]] || { echo "coding $node: MTP head missing" >&2; exit 4; }
-  SPEC_ARGS=(--spec-type draft-mtp --spec-draft-n-max 3 --model-draft "$DRAFT")
+  SPEC_ARGS=(--spec-type draft-mtp --spec-draft-n-max 3 --spec-draft-p-min 0.75 --model-draft "$DRAFT")
 fi
 exec numactl --physcpubind="$cpus" --membind="$node" "$BIN" \
   --model "$MODEL" --alias "$alias" --host 127.0.0.1 --port "$port" \

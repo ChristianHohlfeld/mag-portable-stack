@@ -415,6 +415,7 @@ dialog{border-radius:10px;border-color:var(--line);background:var(--surface)}
 .react-pill.mine{border-color:var(--accent);background:color-mix(in srgb,var(--accent),transparent 82%)}
 .jobs-bot{font-size:11px;font-weight:650;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin:10px 2px 4px}
 .agent-row{display:flex;align-items:center;gap:6px;min-width:0}.agent-row label{flex:1;min-width:0}
+.agent-live{display:block;font-size:12px;color:var(--muted);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-variant-numeric:tabular-nums}.agent-live.is-active{color:var(--text,inherit)}.agent-live.is-error{color:var(--red,#d1242f)}
 .agent-flag{flex:none;font-size:10px;font-weight:650;letter-spacing:.03em;text-transform:uppercase;color:var(--muted)}
 .agent.is-on .agent-flag{color:var(--green,#2ea043)}
 .agent:not(.is-speaking) .agent-flag{color:var(--muted)}
@@ -1751,7 +1752,7 @@ function ensureWork(node,s,botId){
  if(!steps.length)old?.remove();
  else{const fresh=stepsList(steps);fresh.open=!!old?.open;if(old)old.replaceWith(fresh);else runPut(node,fresh)}
 }
-setInterval(()=>{const now=Date.now();for(const id of Object.keys(streams)){const s=streams[id];if(!s)continue;const hung=!s.error&&now-(s.lastEvent||s.started||now)>60000;if(hung!==!!s.hung){s.hung=hung;updateStream(id,true);continue}const label=s.node?.querySelector?.('.work-label');if(label&&s.node.classList.contains('work-live'))label.textContent=workLabelText(s);if(s.thinking){const t=s.node?.querySelector?.(':scope > .run > .thinking .think-time');if(t)t.textContent=thinkSecs(liveThinkMs(s))}}if(stopAwaitingIdle&&!stopInFlight&&Date.now()-stopVerifyAt>1500){
+setInterval(()=>{paintRosterStatus();const now=Date.now();for(const id of Object.keys(streams)){const s=streams[id];if(!s)continue;const hung=!s.error&&now-(s.lastEvent||s.started||now)>60000;if(hung!==!!s.hung){s.hung=hung;updateStream(id,true);continue}const label=s.node?.querySelector?.('.work-label');if(label&&s.node.classList.contains('work-live'))label.textContent=workLabelText(s);if(s.thinking){const t=s.node?.querySelector?.(':scope > .run > .thinking .think-time');if(t)t.textContent=thinkSecs(liveThinkMs(s))}}if(stopAwaitingIdle&&!stopInFlight&&Date.now()-stopVerifyAt>1500){
  stopVerifyAt=Date.now();refresh().catch(()=>{});
 }paintActivityStatus()},1000);
 
@@ -2333,7 +2334,12 @@ function syncModelSettings(next){
  const host=$('model-settings');if(!host)return;
  host.hidden=next.you?.role!=='owner';
  if(host.hidden)return;
- const models=Array.isArray(next.models)?next.models:[];
+ // Only models that a running backend slot serves right now: a configured
+ // but unloaded model is not current information.
+ const instances=Array.isArray(next.model_instances)?next.model_instances:null;
+ const allModels=Array.isArray(next.models)?next.models:[];
+ const models=instances?[...new Set(instances.filter(i=>i.state!=='down').map(i=>i.model))]
+   .map(id=>allModels.find(m=>m.id===id)||{id,label:instances.find(i=>i.model===id)?.label||id}):allModels;
  const signature=models.map(x=>x.id).join('|');
  if(host.dataset.models!==signature){
   host.replaceChildren();host.dataset.models=signature;
@@ -2363,12 +2369,12 @@ function syncModelSettings(next){
  }
  for(const model of models){
   const card=[...host.children].find(x=>x.dataset.modelId===model.id);if(!card)continue;
-  const live=(next.model_instances||[]).find(x=>x.model===model.id);
-  const bot=live&&(next.agents||[]).find(a=>a.slot===live.slot);
-  card.querySelector('.model-setting-title').textContent=(bot?.name?bot.name+' · ':'')+(live?.label||model.label||model.id);
-  card.querySelector('.model-setting-id').textContent=live
-   ? 'NUMA '+live.numa+' · :'+live.port+' · '+live.model+' · '+live.state
-   : model.id+' · derzeit nicht geladen';
+  const lives=(instances||[]).filter(x=>x.model===model.id&&x.state!=='down');
+  const bots=lives.map(l=>(next.agents||[]).find(a=>a.slot===l.slot)?.name).filter(Boolean);
+  card.querySelector('.model-setting-title').textContent=(bots.length?bots.join(', ')+' · ':'')+(lives[0]?.label||model.label||model.id);
+  card.querySelector('.model-setting-id').textContent=lives.length
+   ? lives.map(l=>'NUMA '+l.numa+' · :'+l.port+' · '+(l.gguf||l.model)+(l.n_ctx?' · '+Math.round(l.n_ctx/1024)+'k Kontext':'')+' · '+({ok:'bereit',busy:'arbeitet',unknown:'wird geprüft'}[l.state]||l.state)).join(' | ')
+   : model.id;
   const input=card.querySelector('.model-setting-name input');
   if(document.activeElement!==input)input.value=model.label||model.id;
   const check=card.querySelector('input[type=checkbox]');
@@ -2486,8 +2492,8 @@ function modelInfo(mi){const el=$('model-info');if(!el)return;el.replaceChildren
  const agents=state.agents||[];
  const descriptions=instances.map(inst=>{
   const bot=agents.find(a=>a.slot===inst.slot);
-  return (bot?.name||'Bot '+inst.slot)+' · '+(inst.label||inst.model||'Modell')+
-    ' · NUMA'+inst.numa+' :'+inst.port+' · '+(inst.state||'unbekannt');
+  return (bot?.name||'Bot '+inst.slot)+' · '+(inst.gguf||inst.label||inst.model||'Modell')+
+    ' · NUMA'+inst.numa+' :'+inst.port+' · '+({ok:'bereit',busy:'arbeitet',down:'nicht erreichbar',unknown:'wird geprüft'}[inst.state]||inst.state||'unbekannt');
  });
  el.textContent=descriptions.join(' | ');el.title=descriptions.join('\n');return}if(!mi||!mi.gguf){el.title='Modellinfo nicht verfügbar';return}const n=document.createElement('b');n.textContent=state.model_label||mi.gguf;el.append(n);const eng=(mi.engine||'Engine?')+(mi.build?' '+mi.build:'');let txt=' · '+eng;const l=mi.last;const f=v=>(typeof v==='number'&&v>=0)?v.toFixed(v<10?2:1):'–';if(l&&(l.prompt_per_second>=0||l.predicted_per_second>=0))txt+=' · Prompt '+f(l.prompt_per_second)+' t/s · Gen '+f(l.predicted_per_second)+' t/s';el.append(document.createTextNode(txt));let cacheTip='';if(l&&typeof l.tokens_evaluated==='number'&&l.tokens_evaluated>=0)cacheTip='\nCache (Debug): '+(typeof l.tokens_cached==='number'&&l.tokens_cached>=0?Math.round(l.tokens_cached):'?')+' gecacht / '+Math.round(l.tokens_evaluated)+' Prompt-Tokens';el.title='Modell: '+mi.gguf+'\nEngine: '+eng+(l?'\nLetzte Antwort: Prompt '+f(l.prompt_per_second)+' t/s ('+(l.prompt_n>=0?l.prompt_n:'?')+' Tokens), Gen '+f(l.predicted_per_second)+' t/s ('+(l.predicted_n>=0?l.predicted_n:'?')+' Tokens)':'\nNoch keine Antwort seit Raumstart')+cacheTip}
 function modelFace(id,label){const blob=((label||'')+' '+(id||'')).toLowerCase();if(blob.includes('qwen'))return 'Qwen';if(blob.includes('deepseek')||blob.includes('q4'))return 'DeepSeek';const raw=String(label||id||'Modell').replace(/^\d+\s*·\s*/,'').split(/[\s(·]/)[0];return raw||'Modell'}
@@ -2594,22 +2600,24 @@ function activityItems(){
   const a=state.agents.find(x=>x.id===id);
   const name=roomBotName({role:'assistant',bot:id,name:a?.name||streams[id]?.name});
   const s=streams[id];
-  let text;
-  if(stopInFlight||stopAwaitingIdle)text=name+' stoppt …';
-  else if(waitingBots.has(id))text=name+' wartet';
-  else if(!s)text=name+' · Lauf aktiv';
-  else if(s.error)text=name+' · Fehler';
+  // what: the bot's current live action, also shown on its roster card.
+  let what;
+  if(stopInFlight||stopAwaitingIdle)what='stoppt …';
+  else if(waitingBots.has(id))what='wartet auf seinen Slot';
+  else if(!s)what='Lauf aktiv';
+  else if(s.error)what='Fehler';
   else{
    const clock=streamClock(s);
-   if(s.phase==='read'||s.phase==='prompt'||s.label==='Liest Verlauf')text=name+' liest Gespräch · '+clock;
-   else if(s.thinking||s.phase==='think')text=name+' denkt nach · '+clock;
-   else if(s.phase==='tool')text=name+' · '+(s.label||'Werkzeug')+' · '+clock;
-   else if(s.phase==='speech'||s.phase==='speak')text=name+' spricht · '+clock;
-   else if(s.phase==='narration'||s.phase==='answer'||(s.text||'').length)text=name+' schreibt · '+clock;
-   else text=name+' · '+(s.label||s.phase||'arbeitet')+' · '+clock;
+   if(s.phase==='read'||s.phase==='prompt'||s.label==='Liest Verlauf')what='liest Gespräch · '+clock;
+   else if(s.thinking||s.phase==='think')what='denkt nach · '+clock;
+   else if(s.phase==='tool')what=(s.label||'Werkzeug')+' · '+clock;
+   else if(s.phase==='speech'||s.phase==='speak')what='spricht · '+clock;
+   else if(s.phase==='narration'||s.phase==='answer'||(s.text||'').length)what='schreibt · '+clock;
+   else what=(s.label||s.phase||'arbeitet')+' · '+clock;
   }
+  const text=name+' '+what;
   const loud=!!(stopInFlight||stopAwaitingIdle||(s&&s.error));
-  return {id,text,loud,idx:botToneIndex(a||{id})};
+  return {id,text,what,loud,idx:botToneIndex(a||{id})};
  });
 }
 function activityStatusText(){
@@ -2618,6 +2626,21 @@ function activityStatusText(){
  if(!line)return note;
  return note?line+' · '+note:line;
 }
+// Per-bot live status on the roster card: what the bot is doing right now.
+function paintRosterStatus(){
+ if(!state?.agents)return;
+ const live=new Map(activityItems().map(x=>[x.id,x]));
+ for(const card of document.querySelectorAll('#agents .agent[data-bot]')){
+  const a=state.agents.find(x=>x.id===card.dataset.bot);if(!a)continue;
+  let st=card.querySelector('.agent-live');
+  if(!st){st=document.createElement('small');st.className='agent-live';st.setAttribute('role','status');card.querySelector('.agent-row')?.after(st)}
+  const it=live.get(a.id);
+  const text=it?it.what:a.enabled===false?'inaktiv':a.spawning?'VM wird erstellt …':'bereit';
+  if(st.textContent!==text)st.textContent=text;
+  st.classList.toggle('is-active',!!it);st.classList.toggle('is-error',!!it?.loud);
+ }
+}
+{const renderAgentsBase=renderAgents;renderAgents=function(){renderAgentsBase.apply(this,arguments);paintRosterStatus()}}
 function fillActivity(stat){
  // Composer stays slim: running bots are a coloured dot only (text in tooltip);
  // only actionable states (Stoppt …, Fehler) get words.
@@ -2628,7 +2651,7 @@ function fillActivity(stat){
  stat.replaceChildren();
  stat.hidden=!items.length&&!note&&!stopInFlight&&!stopAwaitingIdle;
  items.forEach((p,i)=>{
-  if(i&&(p.loud||items[i-1].loud))stat.append(document.createTextNode(' · '));
+  if(i)stat.append(document.createTextNode(' · '));
   const dot=document.createElement('i');
   dot.className='bot-dot'+(streams[p.id]?' is-stream':' is-idle');
   botVars(dot,p.idx);
@@ -3715,6 +3738,7 @@ function queuePending(){
  return (state&&state.pending)||[];
 }
 function paintRoomLine(){
+ paintRosterStatus();
  const box=$('queue-chips');if(!box)return;
  const list=queuePending();
  const talkJobs=queueState.proaktiv_jobs||[];
@@ -4135,7 +4159,7 @@ events.onmessage=e=>{
   else if(event.type==='jobs')loadJobs();
   else if(event.type==='offline'){$('offline').checked=!!event.offline;window.syncWeb&&window.syncWeb()}
   else if(event.type==='models'){window.syncHalt&&window.syncHalt(!!event.halted);refresh().catch(()=>{})}
-  else if(event.type==='model'){if(state&&event.model_instances)state.model_instances=event.model_instances;modelStatus(event.status);if(event.model_instances&&state)syncModelChoice(state)}
+  else if(event.type==='model'){if(state&&event.model_instances)state.model_instances=event.model_instances;modelStatus(event.status);if(event.model_instances&&state){syncModelChoice(state);syncModelSettings(state)}}
   else if(event.type==='bot_status'){
    const s=streams[id];if(s){s.lastEvent=Date.now();s.hung=false;if(event.text){s.label=String(event.text).split('\n')[0].slice(0,140);s.phase=s.phase||'think'}updateStream(id)}
   }

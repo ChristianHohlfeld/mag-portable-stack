@@ -4430,6 +4430,39 @@ static std::string model_port(int slot) {
   return slot >= 1 && slot <= ROOM_MAX_BOTS
       ? std::to_string(ROOM_MODEL.backends[slot - 1].port) : "";
 }
+// Live identity per slot as reported by the running llama-server (/props),
+// refreshed on every ready edge and cleared when the slot goes down, so the
+// settings never show a configured-but-not-running model as current.
+static std::mutex SLOT_LIVE_MTX;
+static std::string SLOT_LIVE_GGUF[ROOM_MAX_BOTS];
+static long SLOT_LIVE_CTX[ROOM_MAX_BOTS] = {};
+static std::chrono::steady_clock::time_point SLOT_LIVE_AT[ROOM_MAX_BOTS];
+static void probe_slot_live(int s) {
+  std::string body; long code = 0; Val props;
+  std::string gguf; long ctx = 0;
+  if (http_simple(BACKEND_HOST, BACKEND_PORT, "GET", "/props", "",
+                  {{"Authorization", "Bearer " + API_KEY},
+                   {"X-Mag-Model", ROOM_MODEL.backend(s).id},
+                   {"X-Mag-Slot", std::to_string(s - 1)}},
+                  body, &code, nullptr, 1500) &&
+      code == 200 && mj::parse(body, props) && props.isObj()) {
+    std::string path = mag::str(props, "model_path");
+    if (path.empty()) path = mag::str(props, "model_alias");
+    if (path.empty())
+      if (auto dg = props.find("default_generation_settings")) path = mag::str(*dg, "model");
+    if (!path.empty()) gguf = gguf_display_name(path);
+    if (auto dg = props.find("default_generation_settings"))
+      if (auto n = dg->find("n_ctx")) ctx = (long)n->asNum();
+  }
+  std::lock_guard<std::mutex> lk(SLOT_LIVE_MTX);
+  SLOT_LIVE_GGUF[s - 1] = gguf;
+  SLOT_LIVE_CTX[s - 1] = ctx;
+}
+static void clear_slot_live(int s) {
+  std::lock_guard<std::mutex> lk(SLOT_LIVE_MTX);
+  SLOT_LIVE_GGUF[s - 1].clear();
+  SLOT_LIVE_CTX[s - 1] = 0;
+}
 static Val model_instances() {
   Val inst = Val::array();
   for (int s = 1; s <= ROOM_MAX_BOTS; ++s) {
@@ -4442,6 +4475,11 @@ static Val model_instances() {
     i["state"] = ROOM_MODEL_HEALTH[s - 1] == 1 ? "ok"
                : slot_is_busy(s) ? "busy"
                : ROOM_MODEL_HEALTH[s - 1] == 2 ? "down" : "unknown";
+    {
+      std::lock_guard<std::mutex> lk(SLOT_LIVE_MTX);
+      if (!SLOT_LIVE_GGUF[s - 1].empty()) i["gguf"] = SLOT_LIVE_GGUF[s - 1];
+      if (SLOT_LIVE_CTX[s - 1] > 0) i["n_ctx"] = (double)SLOT_LIVE_CTX[s - 1];
+    }
     inst.push(i);
   }
   return inst;
@@ -4541,17 +4579,30 @@ static void model_watcher_loop() {
             SLOT_WARM[s - 1] = 0;
             slot_mark_cold(s);
           }
-          backend_became_ready = backend_became_ready || ROOM_MODEL_HEALTH[s - 1] != 1;
+          const bool edge = ROOM_MODEL_HEALTH[s - 1] != 1;
+          backend_became_ready = backend_became_ready || edge;
           ROOM_MODEL_HEALTH[s - 1] = 1;
+          bool retry;
+          {
+            std::lock_guard<std::mutex> lk(SLOT_LIVE_MTX);
+            retry = SLOT_LIVE_GGUF[s - 1].empty() &&
+                std::chrono::steady_clock::now() - SLOT_LIVE_AT[s - 1] > std::chrono::seconds(60);
+          }
+          if (edge || retry) {
+            { std::lock_guard<std::mutex> lk(SLOT_LIVE_MTX); SLOT_LIVE_AT[s - 1] = std::chrono::steady_clock::now(); }
+            probe_slot_live(s);
+          }
         } else if (sent || !busy) {
           // HTTP 503 while the new process loads, or an idle timeout.
           // A timeout during a live prefill (busy && !sent) is not a restart.
           // Reloading is only for a server that was actually up.
           if (ROOM_MODEL_HEALTH[s - 1] == 1) slot_mark_cold(s);
           ROOM_MODEL_HEALTH[s - 1] = 2;
+          clear_slot_live(s);
         }
         health_key += ok ? '1' : busy ? 'b'
                      : ROOM_MODEL_HEALTH[s - 1] == 1 ? '1' : '0';
+        { std::lock_guard<std::mutex> lk(SLOT_LIVE_MTX); health_key += ":" + SLOT_LIVE_GGUF[s - 1]; }
         secondary_ready = secondary_ready || ok || ROOM_MODEL_HEALTH[s - 1] == 1;
       }
       key += "|" + health_key;

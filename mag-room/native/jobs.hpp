@@ -374,7 +374,7 @@ static void run_job(const JobRun &run) {
     if (stop_flag().load()) { status = "abgebrochen"; error = "gestoppt"; }
     else if (!rep.error.empty()) { status = "error"; error = rep.error; }
     else if (text.empty() || text.rfind("Antwort fehlgeschlagen", 0) == 0 ||
-             text.find("Es wurde keine Antwort erzeugt.") != std::string::npos) { status = "error"; error = text.empty() ? "leere Antwort" : text.substr(0, 300); }
+             text.find("Es wurde keine Antwort erzeugt.") != std::string::npos) { status = "error"; error = text.empty() ? "leere Antwort" : mj::utf8_cut(text, 300); }
     const bool handoff = run.job_id.rfind("handoff:", 0) == 0;
     std::string head = (handoff ? "↳ Delegation „" : "🗓 Job „") + run.name + "“ · " + fmt_local(started) + (status == "ok" ? "" : " · " + status);
     Val msg = append_room("assistant", name, head + "\n\n" + (text.empty() ? "(" + error + ")" : text), bid);
@@ -393,7 +393,7 @@ static void run_job(const JobRun &run) {
   j->last_run_id = run.run_id; j->last_run = started;
   Val h = Val::object(); h["run_id"] = run.run_id; h["ts"] = (double)started;
   h["status"] = status; h["reason"] = run.reason; h["version"] = run.version;
-  h["summary"] = text.substr(0, 400); if (!error.empty()) h["error"] = error;
+  h["summary"] = mj::utf8_cut(text, 400); if (!error.empty()) h["error"] = error;
   j->history.push(h);
   while (j->history.asArr().size() > 30) j->history.arr->erase(j->history.arr->begin());
   if (status == "error") {

@@ -1278,7 +1278,7 @@ static std::string slug_id(const std::string &name) {
     base.pop_back();
   if (base.empty())
     base = "agent";
-  base = base.substr(0, 24);
+  base = mj::utf8_cut(base, 24);
   std::vector<std::string> taken;
   for (auto &a : AGENTS)
     taken.push_back(a.find("id") ? a.find("id")->asStr() : "");
@@ -1287,7 +1287,7 @@ static std::string slug_id(const std::string &name) {
   while (std::find(taken.begin(), taken.end(), cand) != taken.end())
     cand = base + "-" + std::to_string(n++);
   if (cand.size() > 32)
-    cand = cand.substr(0, 32);
+    cand = mj::utf8_cut(cand, 32);
   return cand;
 }
 
@@ -1435,7 +1435,7 @@ static Val add_file(const std::string &name, const std::string &data,
   if (safe.empty())
     safe = "datei";
   if (safe.size() > 80)
-    safe = safe.substr(0, 80);
+    safe = mj::utf8_cut(safe, 80);
   std::string stored = token_hex(8) + "_" + safe;
   if (data.size() > (size_t)MAX_UPLOAD)
     throw std::runtime_error("Datei zu gross");
@@ -1529,7 +1529,7 @@ static std::string safe_file_name(const std::string &name) {
   for (char c : basename_of(name))
     safe.push_back(isalnum((unsigned char)c) || c == '.' || c == '_' || c == '-' ? c : '_');
   if (safe.empty()) safe = "datei";
-  return safe.substr(0, 80);
+  return mj::utf8_cut(safe, 80);
 }
 
 // ---------------------------------------------------------------- room
@@ -3407,7 +3407,7 @@ static Val host_stt(const std::string &audio, const std::string &language) {
        "-f", wav, "-l", lang, "-t", "4", "-otxt", "-of", prefix, "-nt"},
       600);
   if (result.code)
-    throw std::runtime_error("Local STT failed: " + result.out.substr(0, 200));
+    throw std::runtime_error("Local STT failed: " + mj::utf8_cut(result.out, 200));
   Val out = Val::object();
   out["text"] = trim(read_file(output));
   out["language"] = lang;
@@ -3454,7 +3454,7 @@ static std::string github_api(const std::string &method, const std::string &path
   int code = nl == std::string::npos ? 0 : atoi(res.out.c_str() + nl + 1);
   std::string out = nl == std::string::npos ? res.out : res.out.substr(0, nl);
   if (code >= 400) {
-    Val e; std::string msg = mj::parse(out, e) && e.find("message") ? e.find("message")->asStr() : out.substr(0, 200);
+    Val e; std::string msg = mj::parse(out, e) && e.find("message") ? e.find("message")->asStr() : mj::utf8_cut(out, 200);
     throw std::runtime_error("GitHub " + std::to_string(code) + ": " + msg);
   }
   return out;
@@ -3565,8 +3565,8 @@ static Val brave_search(const std::string &query) {
           continue;
         Val s = Val::object();
         s["title"] =
-            row.find("title") ? row.find("title")->asStr().substr(0, 300) : "";
-        s["url"] = url2.substr(0, 2000);
+            row.find("title") ? mj::utf8_cut(row.find("title")->asStr(), 300) : "";
+        s["url"] = mj::utf8_cut(url2, 2000);
         std::string text;
         auto sn = row.find("snippets");
         if (sn && sn->isArr()) {
@@ -3617,7 +3617,7 @@ static std::string guest_file_payload(const std::string &vm,
                      append ? "--append" : "--write", path},
                     GUEST_TIMEOUT, 4 << 20, &stop_flag(), &content);
   if (r.code) throw std::runtime_error(
-      "Atomares Schreiben in der VM fehlgeschlagen: " + r.out.substr(0, 1500));
+      "Atomares Schreiben in der VM fehlgeschlagen: " + mj::utf8_cut(r.out, 1500));
   return r.out;
 }
 // Native DeepSeek Pages tool router: no host Gitea PAT and no arbitrary sudo.
@@ -3674,7 +3674,7 @@ static std::string pages_dispatch_tool(int bot_idx,const std::string& name,
     std::string cmd="bash /home/bot/.mag-pages-tool.sh "+op+" "+repo+" "+owner;
     if(op=="domain" || op=="create" || op=="update")cmd+=" "+extra;
     auto result=guest_command(vm,cmd,120,true);
-    if(result.code!=0)return "Fehler: Pages VM operation failed: "+result.out.substr(0,400);
+    if(result.code!=0)return "Fehler: Pages VM operation failed: "+mj::utf8_cut(result.out, 400);
     if(name=="pages_delete") {
       // Revoke public and private routes before attempting network resync.
       magpages::submit_policy(owner+"/"+repo,"delete");
@@ -3691,7 +3691,7 @@ static std::string pages_dispatch_tool(int bot_idx,const std::string& name,
     }
     return result.out.size()>6000?mj::utf8_cut(result.out,6000):result.out;
   }catch(const std::exception& e) {
-    return "Fehler: Pages operation unavailable: "+std::string(e.what()).substr(0,240);
+    return "Fehler: Pages operation unavailable: "+mj::utf8_cut(std::string(e.what()), 240);
   }
 }
 
@@ -3722,7 +3722,7 @@ static void memory_git_sync(const std::string &bot_id, const std::string &why) {
       else if (i + 2 == json.size()) { unsigned n = ((unsigned char)json[i] << 16) | ((unsigned char)json[i+1] << 8); b64 += t[n >> 18]; b64 += t[(n >> 12) & 63]; b64 += t[(n >> 6) & 63]; b64 += '='; } }
     if (b64.size() > 7000) return; // guest-run argument limit
     CmdResult r = guest_command(vm, "f=$(mktemp) && echo " + b64 + " | base64 -d > \"$f\" && gitmem remember room-memory \"$(cat \"$f\")\" >/dev/null 2>&1; rc=$?; rm -f \"$f\"; exit $rc", 60);
-    if (r.code != 0) { MEMGIT_DIRTY = true; std::cerr << "memory git sync (" << why << ") failed: " << r.out.substr(0, 200) << "\n"; }
+    if (r.code != 0) { MEMGIT_DIRTY = true; std::cerr << "memory git sync (" << why << ") failed: " << mj::utf8_cut(r.out, 200) << "\n"; }
     else MEMGIT_DIRTY = false;
   }).detach();
 }
@@ -3833,7 +3833,7 @@ static void ensure_audit_proxy(const std::string &vm) {
     std::lock_guard<std::mutex> lk(AUDIT_PROXY_MTX);
     AUDIT_PROXY_DONE.insert(vm);
   } else {
-    std::cerr << "audit-proxy (" << vm << "): " << trim(r.out).substr(0, 400)
+    std::cerr << "audit-proxy (" << vm << "): " << mj::utf8_cut(trim(r.out), 400)
               << std::endl;
   }
 }
@@ -3896,7 +3896,7 @@ static std::string ensure_browser(const std::string &vm) {
   if (stale.code)
     throw std::runtime_error(
         "Browser controller recovery blocked (VM " + vm + "): " +
-        stale.out.substr(0, 500) + " [exit " +
+        mj::utf8_cut(stale.out, 500) + " [exit " +
         std::to_string(stale.code) + "]");
   ip = vm_ip(vm, true);
   if (ip.empty())
@@ -3934,8 +3934,8 @@ static std::string ensure_browser(const std::string &vm) {
         10);
     throw std::runtime_error("Browser startup failed (exit " +
                              std::to_string(launch.code) + "): " +
-                             launch.out.substr(0, 320) +
-                             "; guest diagnostics: " + diag.out.substr(0, 450));
+                             mj::utf8_cut(launch.out, 320) +
+                             "; guest diagnostics: " + mj::utf8_cut(diag.out, 450));
   }
   for (int i = 0; i < 60; ++i) {
     auto ready = browser_call(ip, BROWSERD_PORT, "GET", "/state", "", 1000);
@@ -3954,7 +3954,7 @@ static std::string ensure_browser(const std::string &vm) {
       10);
   throw std::runtime_error(
       "Native browser unavailable after controller recovery (VM " + vm +
-      "): " + diag.out.substr(0, 700));
+      "): " + mj::utf8_cut(diag.out, 700));
 }
 // Prewarm a bot browser without blocking the HTTP room or inference slot.
 static void warm_browser_async(const std::string &vm) {
@@ -3993,7 +3993,7 @@ static Val browser_json(const std::string &vm, const std::string &path,
   if (r.status != 200) {
     throw std::runtime_error(
         "Browser HTTP " + std::to_string(r.status) + ": " +
-        (v.find("error") ? v.find("error")->asStr() : r.body.substr(0, 200)));
+        (v.find("error") ? v.find("error")->asStr() : mj::utf8_cut(r.body, 200)));
   }
   return v;
 }
@@ -4628,6 +4628,7 @@ struct TurnReport {
   bool skipped = false;
   bool local_fallback = false;
   bool truncated = false;
+  bool loop_cut = false; // truncated by a repetition guard, not by finish_reason=length
 };
 static bool assistant_prefill_error(const std::string &err) {
   return err.find("incompatible with enable_thinking") != std::string::npos ||
@@ -5759,7 +5760,7 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
       auto msg = err->isObj() && err->find("message")
                      ? err->find("message")->asStr()
                      : mj::dump(*err);
-      t.error = "Modellfehler: " + msg.substr(0, 400);
+      t.error = "Modellfehler: " + mj::utf8_cut(msg, 400);
       break;
     }
     auto ch = chunk.find("choices");
@@ -7404,7 +7405,7 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
       break;
     }
     if (!t.error.empty()) {
-      report.error = t.error.substr(0, 280);
+      report.error = mj::utf8_cut(t.error, 280);
       emit_event("error", bot_id, bot_name, report.error);
       run_fail(report.error);
       break;
@@ -7444,6 +7445,7 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
         std::cerr << "glm-continuation loop-guard bot=" << bot_id
                   << " rounds=" << glm_continuation_rounds << std::endl;
         report.truncated = true;
+        report.loop_cut = true;
         completed = true;
         break;
       }
@@ -7479,6 +7481,7 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
         // The repetition guard ended a looping stream: keep the text but
         // never store it as a complete answer.
         report.truncated = true;
+        report.loop_cut = true;
         completed = true;
         break;
       }
@@ -8727,7 +8730,7 @@ static Val enqueue_pending(const std::string &text,
       if (MESSAGE_RECEIPTS.size() > 256) MESSAGE_RECEIPTS.pop_front();
     }
     const std::string who = sender.empty() ? "Nutzer" : mj::utf8_cut(sender, 40);
-    Val msg = append_room("user", who, text, "", nullptr, login.substr(0, 160), "", display_now_ms(), request_id);
+    Val msg = append_room("user", who, text, "", nullptr, mj::utf8_cut(login, 160), "", display_now_ms(), request_id);
     msg["type"] = "message";
     publish(mj::dump(msg));
     std::vector<std::string> talkers = answerers;
@@ -9060,11 +9063,13 @@ static void attach_work(Val &msg, const TurnReport &report) {
       msg["interrupted"] = true; msg["stopped"] = "user";
       if (it->obj) it->obj->erase(
         std::remove_if(it->obj->begin(), it->obj->end(),
-                       [](const auto &kv) { return kv.first == "truncated"; }),
+                       [](const auto &kv) { return kv.first == "truncated" || kv.first == "truncated_reason"; }),
         it->obj->end());
     } else if (report.truncated) {
-      (*it)["truncated"] = true;
-      msg["truncated"] = true;
+      // Only a real token/context limit is shown as "Längenlimit".
+      const char *why = report.loop_cut ? "loop" : "length";
+      (*it)["truncated"] = true; (*it)["truncated_reason"] = why;
+      msg["truncated"] = true; msg["truncated_reason"] = why;
     }
     break;
   }
@@ -9418,7 +9423,7 @@ static TurnReport generate_and_post(int idx, bool automatic, double dispatched_m
       }
     }
     if (dull) {
-      std::cerr << "reply-dull bot=" << id << " text=" << report.text.substr(0, 40) << std::endl;
+      std::cerr << "reply-dull bot=" << id << " text=" << mj::utf8_cut(report.text, 40) << std::endl;
       report.text = "PASS";
     }
   }
@@ -10638,12 +10643,12 @@ static bool start_model_verify(const std::string &model, std::string &err) {
     out["state"] = r.code == 0 ? "ok" : "failed";
     if (r.code == 0) {
       out["runs"] = 20L;
-      out["hash"] = after_label(r.out, "Token-Stream-Hash:").substr(0, 64);
-      out["fingerprint"] = after_label(r.out, "Konfigurations-Fingerprint:").substr(0, 64);
+      out["hash"] = mj::utf8_cut(after_label(r.out, "Token-Stream-Hash:"), 64);
+      out["fingerprint"] = mj::utf8_cut(after_label(r.out, "Konfigurations-Fingerprint:"), 64);
     } else {
       std::string why = after_label(r.out, "[MAG-FAIL]");
       if (why.empty()) why = r.out.empty() ? "Prüfwerkzeug nicht gestartet (" + cli + ")" : one_line(r.out);
-      out["detail"] = why.substr(0, 400);
+      out["detail"] = mj::utf8_cut(why, 400);
     }
     store_model_verify(model, out);
     MODEL_VERIFY_RUNNING = false;
@@ -13042,7 +13047,7 @@ int main() {
         std::cerr << "MAG_VM_VERIFY_FAILED: " << old_vm
                   << " rc=" << verify.code
                   << " (kept previous binding): "
-                  << one_line(verify.out).substr(0, 240) << '\n';
+                  << mj::utf8_cut(one_line(verify.out), 240) << '\n';
       }
     }
   }

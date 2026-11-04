@@ -112,7 +112,7 @@ static Val task_val_locked(const BgTask &t) {
     v["handoff_status"] = t.handoff_status;
   }
   if (t.ended) v["ended"] = (double)t.ended;
-  if (!t.result.empty()) v["result"] = t.result.substr(0, 400);
+  if (!t.result.empty()) v["result"] = mj::utf8_cut(t.result, 400);
   v["todo"] = todo_public(t.bot + "#" + t.id);
   return v;
 }
@@ -181,7 +181,7 @@ static void task_main(std::shared_ptr<BgTask> t) {
                 incomplete ? "incomplete" : "done";
     t->result = cancelled ? "abgebrochen" : incomplete
       ? "Nicht abgeschlossen (" + std::to_string(unfinished_goals) +
-        " offene Ziele; ggf. begrenzte Schrittzahl). " + text.substr(0, 1600)
+        " offene Ziele; ggf. begrenzte Schrittzahl). " + mj::utf8_cut(text, 1600)
       : text.empty() ? rep.error : text;
     t->ended = now_s();
     // Stop is terminal: a cancelled delegated task must not wake its owner.
@@ -224,7 +224,7 @@ static void task_handoff_enqueue(const std::shared_ptr<BgTask> &t) {
   run.prompt = "[INTERNE EREIGNISAKTIVIERUNG, KEINE NEUE BENUTZERNACHRICHT]\n"
     "Du bist weiterhin verantwortlich fuer den urspruenglichen Benutzerauftrag.\n"
     "Unteraufgabe: " + title + " (ID " + id + ", Ausfuehrer " + target + ")\n"
-    "Status: " + status + "\nErgebnis: " + result.substr(0, 2400) + "\n"
+    "Status: " + status + "\nErgebnis: " + mj::utf8_cut(result, 2400) + "\n"
     "Lies die bisherigen Auftragsziele und vorhandenen Beweise. Ueberpruefe "
     "den realen Endzustand mit Werkzeugen. Ein Unteraufgabenergebnis ist "
     "KEIN Beleg dafuer, dass das Gesamtziel erreicht wurde. Wiederhole keine "
@@ -261,8 +261,8 @@ static std::string task_start(int bot_idx, const std::string &title_in,
   const std::string bot = bot_field(bot_idx, "id");
   const std::string p = trim(prompt);
   if (p.empty() || p.size() > 16000) throw std::runtime_error("prompt fehlt oder ist zu lang.");
-  std::string title = trim(title_in).substr(0, 80);
-  if (title.empty()) title = one_line(p).substr(0, 60);
+  std::string title = mj::utf8_cut(trim(title_in), 80);
+  if (title.empty()) title = mj::utf8_cut(one_line(p), 60);
   auto t = std::make_shared<BgTask>();
   {
     std::lock_guard<std::mutex> lk(TASKS_MTX);
@@ -392,7 +392,7 @@ static std::string task_tool(int bot_idx, const Val &a) {
     for (auto &t : TASKS)
       if (t->bot == bot || t->requester == bot)
         out += t->id + " · " + t->status + " · " + t->title +
-               (t->result.empty() ? "" : " → " + one_line(t->result).substr(0, 200)) + "\n";
+               (t->result.empty() ? "" : " → " + mj::utf8_cut(one_line(t->result), 200)) + "\n";
     return out.empty() ? "Keine Aufgaben." : out;
   }
   throw std::runtime_error("Unbekannte task-Aktion: " + action);

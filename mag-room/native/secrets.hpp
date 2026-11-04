@@ -106,7 +106,7 @@ static void secret_store(const std::string &name, const std::string &value, cons
   if (!s.isObj()) { s = Val::object(); s["created"] = (double)now_s(); s["bots"] = Val::array(); }
   s["enc"] = secret_encrypt(value);
   s["updated"] = (double)now_s();
-  if (!purpose.empty()) s["purpose"] = purpose.substr(0, 200);
+  if (!purpose.empty()) s["purpose"] = mj::utf8_cut(purpose, 200);
   if (!grant_bot.empty() && !secret_allowed(s, grant_bot)) s["bots"].push(grant_bot);
   secrets_save_locked(all);
 }
@@ -219,12 +219,12 @@ static std::string secret_tool(int bot_idx, const Val &a) {
   req.kind = "secret";
   Val info = Val::object();
   info["name"] = name;
-  info["purpose"] = s("purpose").substr(0, 200);
+  info["purpose"] = mj::utf8_cut(s("purpose"), 200);
   req.args = mj::dump(info);
   req.ts = (long)now_s();
   {
     std::lock_guard<std::mutex> lk(SECRETS_MTX);
-    SECRET_REQS[req.id] = SecretReq{bot, name, s("purpose").substr(0, 200)};
+    SECRET_REQS[req.id] = SecretReq{bot, name, mj::utf8_cut(s("purpose"), 200)};
   }
   const std::string d = mcp_await_approval(req);
   {

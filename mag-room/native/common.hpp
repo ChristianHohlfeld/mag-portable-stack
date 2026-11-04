@@ -204,7 +204,7 @@ inline Result run(const std::vector<std::string> &args, int seconds = 120,
 inline std::string checked(const std::vector<std::string> &a, int t = 120) {
   auto r = run(a, t);
   if (r.code)
-    throw std::runtime_error(a[0] + ": " + r.out.substr(0, 1000));
+    throw std::runtime_error(a[0] + ": " + mj::utf8_cut(r.out, 1000));
   return r.out;
 }
 inline std::string decode(const std::string &s) {

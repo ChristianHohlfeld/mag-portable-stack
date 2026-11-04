@@ -289,7 +289,7 @@ static std::string mcp_http_error(const McpHttp &h) {
     if (msg.empty()) msg = mcp_str(v, "message");
   }
   if (msg.empty()) {
-    msg = h.body.substr(0, 160);
+    msg = mj::utf8_cut(h.body, 160);
     for (char &ch : msg)
       if (ch == '\n' || ch == '\r' || ch == '\t') ch = ' ';
     msg = trim(msg);
@@ -316,7 +316,7 @@ static Val mcp_rpc(const Val &srv, const std::string &secret,
   if (!mcp_pick(h, id, msg)) throw std::runtime_error("Keine gültige MCP-Antwort");
   if (auto e = msg.find("error")) {
     std::string m = e->isObj() ? mcp_str(*e, "message") : e->asStr();
-    throw std::runtime_error("MCP-Fehler: " + (m.empty() ? std::string("unbekannt") : m.substr(0, 300)));
+    throw std::runtime_error("MCP-Fehler: " + (m.empty() ? std::string("unbekannt") : mj::utf8_cut(m, 300)));
   }
   auto r = msg.find("result");
   return r ? *r : Val::object();
@@ -344,10 +344,10 @@ static std::string mcp_initialize(const Val &srv, const std::string &secret,
   if (server_info) {
     Val info = Val::object();
     if (auto si = r.find("serverInfo")) {
-      info["name"] = mcp_str(*si, "name").substr(0, 80);
-      info["version"] = mcp_str(*si, "version").substr(0, 40);
+      info["name"] = mj::utf8_cut(mcp_str(*si, "name"), 80);
+      info["version"] = mj::utf8_cut(mcp_str(*si, "version"), 40);
     }
-    info["protocol"] = mcp_str(r, "protocolVersion").substr(0, 20);
+    info["protocol"] = mj::utf8_cut(mcp_str(r, "protocolVersion"), 20);
     const std::string how = mcp_str(r, "instructions");
     if (!how.empty()) info["instructions"] = mj::utf8_cut(mj::utf8_fix(how), 2000);
     *server_info = info;
@@ -372,7 +372,7 @@ static Val mcp_fetch_tools(const Val &srv, const std::string &secret,
         std::string title = mcp_str(t, "title");
         if (title.empty())
           if (auto an = t.find("annotations")) title = mcp_str(*an, "title");
-        if (!title.empty()) o["title"] = title.substr(0, 120);
+        if (!title.empty()) o["title"] = mj::utf8_cut(title, 120);
         o["description"] = mj::utf8_cut(mcp_str(t, "description"), 1024);
         auto schema = t.find("inputSchema");
         if (schema && schema->isObj()) o["input_schema"] = *schema;
@@ -407,7 +407,7 @@ static Val mcp_probe(Val srv) {
     srv["error"] = "";
   } catch (const std::exception &e) {
     srv["status"] = "error";
-    srv["error"] = std::string(e.what()).substr(0, 300);
+    srv["error"] = mj::utf8_cut(std::string(e.what()), 300);
   }
   {
     std::lock_guard<std::mutex> lk(MCP_MTX);

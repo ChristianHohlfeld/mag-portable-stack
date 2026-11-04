@@ -1685,7 +1685,7 @@ const QUIET_STEP=/^(?:Liest Verlauf|Liest das Gespräch|Denkt nach(?:…|\.\.\.)
 function shownSteps(steps){return (steps||[]).filter(x=>!QUIET_STEP.test(x))}
 function doneLabel(msg){
  if(msg.interrupted)return stoppedByUser(msg)?'Gestoppt':'Unterbrochen';
- if(msg.truncated)return 'Antwort wegen Längenlimit abgeschnitten – weiter schreiben';
+ if(msg.truncated)return msg.truncated_reason==='loop'?'Wiederholung erkannt – Antwort beendet':'Antwort wegen Längenlimit abgeschnitten – weiter schreiben';
  if(msg.work_error&&!stoppedByUser(msg))return 'Fehler · '+msg.work_error;
  const n=shownSteps(msg.steps).length;
  let t=((msg.interrupted?(stoppedByUser(msg)?'Gestoppt · ':'Unterbrochen · '):'Fertig · ')+(msg.elapsed_s!=null?fmtClock(msg.elapsed_s):'')).replace(/ · $/,'');

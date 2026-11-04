@@ -100,7 +100,7 @@ static Val upload_start_or_read(const std::string &id, const std::string &name,
     v["name"] = upload_safe_name(name);
     v["total"] = (double)total;
     v["owner"] = owner;
-    v["by"] = by.substr(0, 40);
+    v["by"] = mj::utf8_cut(by, 40);
     v["ts"] = (double)now_s();
     if (!write_file_atomic(meta, mj::dump(v)))
       throw std::runtime_error("Upload konnte nicht angelegt werden");

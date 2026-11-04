@@ -51,6 +51,7 @@ bash ops/tests/test-cleanup-legacy.sh
 bash ops/tests/test-runners.sh
 bash ops/tests/test-green.sh
 bash ops/tests/test-boot.sh
+bash ops/tests/test-inventory.sh
 bash ops/tests/test-clear-failed-units.sh
 python3 ops/tailscale/tests/test-gitea-funnel.py
 python3 ops/tailscale/tests/test-sni-map.py

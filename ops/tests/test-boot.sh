@@ -24,6 +24,7 @@ case "$1 $2" in
   "is-enabled mag-llm-glm@q2.service") echo enabled; exit 0 ;;
   "is-enabled mag-console-only.service") echo disabled; exit 1 ;;
   "is-enabled mag-llm-ornith"*) echo disabled; exit 1 ;;
+  "is-enabled mag-llm-coding@"*) [[ -z ${CODING_DISABLED:-} ]] || { echo disabled; exit 1; } ;;
 esac
 [[ $1 == is-enabled ]] && { echo enabled; exit 0; }
 exit 0
@@ -101,5 +102,15 @@ grep -Fxq 'systemctl enable mag-llm-mistral-room.service' "$log"
 ! grep -Eq 'systemctl (enable|disable) mag-llm-glm@q2.service' "$log"
 ! grep -Eq 'systemctl enable mag-llm-(qwen|glm@q1|ds-node@[01]).service' "$log"
 common
+# 6) Ornith on both nodes (2026-11-04): both coding units persist for boot,
+#    legacy DeepSeek node units are disabled and never enabled.
+printf 'MAG_ROOM_MODEL_ID_0=ornith-numa0\nMAG_ROOM_MODEL_ID_1=ornith\n' > "$tmp/room-ornith.env"
+out=$(ORNITH="" CODING_DISABLED=1 MAG_TEST_ACTIVE="mag-llm-coding@0.service mag-llm-coding@1.service mag-auto-update.timer mag-120.service" run "$tmp/missing.env" "$tmp/no-ipmi0" "$tmp/room-ornith.env")
+grep -Fxq 'systemctl enable mag-llm-coding@0.service' "$log"
+grep -Fxq 'systemctl enable mag-llm-coding@1.service' "$log"
+grep -Fq 'mag-llm-ds-node@0.service mag-llm-ds-node@1.service' <(grep '^systemctl disable' "$log")
+! grep -Eq 'systemctl enable mag-llm-(ds-node|qwen|glm|mistral)' "$log"
+common
+grep -Fq 'Before=mag-llm-coding@0.service mag-llm-coding@1.service' "$root/ops/boot/mag-cpu-tune.service"
 grep -Fq 'PHASE boot' <<<"$(bash "$root/ops/update.sh" --dry-run)"
 echo 'Boot persistence PASS'

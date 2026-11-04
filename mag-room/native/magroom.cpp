@@ -801,6 +801,13 @@ static constexpr int ROOM_MAX_BOTS = RoomModel::max_bots;
 static std::array<std::atomic<int>, ROOM_MAX_BOTS> ROOM_MODEL_HEALTH{}; // 0 ?, 1 ok, 2 down
 // Last observed KV warmth for a configured slot. 0 unknown, 1 warm, 2 cold.
 static std::array<std::atomic<int>, ROOM_MAX_BOTS> SLOT_WARM{};
+// 1 after a prewarm prefill or a turn on this slot was aborted/failed. The
+// server's /slots then still reports the partially processed prompt
+// (n_prompt_tokens above the prefix size), but that KV is not reusable
+// (hybrid models: no checkpoint near it). The next prewarm must not trust
+// the RAM count; it restores the slot file or prefills. Cleared by the next
+// verified warm state (restore, saved prefix, completed prewarm).
+static std::array<std::atomic<int>, ROOM_MAX_BOTS> SLOT_PARTIAL{};
 static std::array<std::atomic<bool>, ROOM_MAX_BOTS> FIRST_HI_USED{};
 // The previous process left this llama slot generating. A resumed job waits
 // until the slot is idle so it does not start a second prefill.
@@ -9565,6 +9572,8 @@ static void persist_configured_slot(int idx) {
     return;
   }
   std::cerr << "prompt-slot save file=" << file << " ok=1" << std::endl;
+  if (const int slot = model_slot(idx); slot >= 1 && slot <= ROOM_MAX_BOTS)
+    SLOT_PARTIAL[slot - 1] = 0; // the saved KV is a completed turn
   std::lock_guard<std::mutex> lk(PREFIX_MTX);
   if (!PREFIX_META.isObj()) PREFIX_META = Val::object();
   PREFIX_META[own_key] = shared_key;
@@ -9575,7 +9584,10 @@ static void cancel_llama_slot(int idx, int timeout_ms = 120000) {
   // A cancelled KV is no longer known to be warm. If the bounded restore
   // below times out, the next request must not trust the old cached prefix.
   const int slot = model_slot(idx);
-  if (slot >= 1 && slot <= ROOM_MAX_BOTS) SLOT_WARM[slot - 1] = 0;
+  if (slot >= 1 && slot <= ROOM_MAX_BOTS) {
+    SLOT_WARM[slot - 1] = 0;
+    SLOT_PARTIAL[slot - 1] = 1;
+  }
   // Gateway ?action=cancel closes the current upstream fd and returns.
   // It must not be sent after the user chat has already connected, or it
   // aborts that request ("srv stop: cancel task" on the hi itself).
@@ -9611,7 +9623,10 @@ static void reload_slot_after_cancel(int idx, int timeout_ms = 120000) {
   if (!have) return;
   if (prefix_slot_rpc(idx, model, "restore", file, timeout_ms)) {
     const int slot = model_slot(idx);
-    if (slot >= 1 && slot <= ROOM_MAX_BOTS) SLOT_WARM[slot - 1] = 1;
+    if (slot >= 1 && slot <= ROOM_MAX_BOTS) {
+      SLOT_WARM[slot - 1] = 1;
+      SLOT_PARTIAL[slot - 1] = 0;
+    }
   }
 }
 static void reload_slots_after_cancel(int timeout_ms = 120000) {
@@ -9817,6 +9832,7 @@ static void mark_prefix_warm(int slot) {
   if (slot < 1 || slot > ROOM_MAX_BOTS) return;
   SLOT_WARM[slot - 1] = 1;
   SLOT_RELOAD[slot - 1] = 0;
+  SLOT_PARTIAL[slot - 1] = 0;
   JOB_CV.notify_all();
 }
 // Called from the chat path. SLOT_SAVE is off for a configured room, so
@@ -9973,6 +9989,19 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
   } else if (CONFIGURED_MODEL && lane_busy) {
     slot_busy = true;
     ram_known = true;
+  }
+  // Live 2026-11-04 15:28: a prewarm cancelled after 136 s left
+  // n_prompt_tokens above the prefix size; the next run logged ram_warm=1
+  // skipped=ram and the first turn re-read the whole prompt (78 s).
+  bool partial = false;
+  if (CONFIGURED_MODEL) {
+    const int slot = model_slot(idx);
+    partial = slot >= 1 && slot <= ROOM_MAX_BOTS && SLOT_PARTIAL[slot - 1].load() == 1;
+  }
+  if (partial && !slot_busy) {
+    ram_warm = false;
+    count_known = false;
+    cache_tokens = 0;
   }
   const uint64_t pw_epoch = PREWARM_EPOCH.load();
   // One llama slot. A generative prewarm is a prefill ik_llama does not abort
@@ -10191,6 +10220,10 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
                      });
   }
   const bool cancelled = pw_epoch != PREWARM_EPOCH.load();
+  if (CONFIGURED_MODEL && built && (cancelled || !ok || code != 200)) {
+    const int slot = model_slot(idx);
+    if (slot >= 1 && slot <= ROOM_MAX_BOTS) SLOT_PARTIAL[slot - 1] = 1;
+  }
   if (built && !cancelled && (!ok || code != 200)) {
     std::lock_guard<std::mutex> lk(PREWARM_MTX);
     auto &retry = PREWARM_BACKOFF[lane];

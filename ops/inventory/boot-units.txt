@@ -1,0 +1,47 @@
+# Units that must come back after a reboot of mag (checked by drift-check.sh).
+# Order on boot (systemd ordering, not a script):
+#   mag-cpu-tune  -> mag-llm-coding@0 (:8191 NUMA0) / @1 (:8192 NUMA1), in parallel;
+#                    each hashes its GGUF (stage.py), then mlocks it.
+#   mag-audit-nft -> mag-audit-gateway (:8080) + mag-audit-webproxy -> mag-120 (:8766)
+#   nginx (127.0.0.1:4443) and tailscaled (:443 -> nginx) independently.
+# The room deliberately has no dependency on a model unit: it watches /health
+# of 8191/8192 and prewarms/restores each slot as soon as that node is ready.
+# unit	expected is-enabled
+mag-cpu-tune.service	enabled
+mag-llm-coding@0.service	enabled
+mag-llm-coding@1.service	enabled
+mag-audit-nft.service	enabled
+mag-audit-gateway.service	enabled
+mag-audit-webproxy.service	enabled
+mag-agents-network.service	enabled
+mag-120.service	enabled
+mag-browser-webrtc.service	enabled
+mag-bots-publish.service	enabled
+mag-git-gateway.socket	enabled
+nginx.service	enabled
+tailscaled.service	enabled
+libvirtd.service	enabled
+gitea.service	enabled
+mag-gitea-runner.service	enabled
+mag-gitea-funnel.service	enabled
+mag-acme-renew.timer	enabled
+mag-stack-check.timer	enabled
+mag-agent-drift.timer	enabled
+mag-tailscale-egress.timer	enabled
+mag-tailscale-cert.timer	enabled
+mag-backup-daily.timer	enabled
+mag-backup-weekly.timer	enabled
+mag-backup-monthly.timer	enabled
+mag-backup-monitor.timer	enabled
+mag-backup-restore-test.timer	enabled
+mag-backup-clear.timer	enabled
+# Retired model units must stay off for boot (they would claim 8191/8192 or the NUMA cores).
+mag-llm.service	disabled
+mag-llm-ds-node@0.service	disabled
+mag-llm-ds-node@1.service	disabled
+mag-llm-qwen.service	disabled
+mag-llm-qwen-room.service	disabled
+mag-llm-mistral-room.service	disabled
+mag-llm-glm.service	disabled
+mag-llm-ornith-node@0.service	disabled
+mag-llm-ornith-node@1.service	disabled

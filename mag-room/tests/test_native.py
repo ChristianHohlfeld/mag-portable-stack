@@ -4506,6 +4506,33 @@ class MixedNuma(unittest.TestCase):
    Model.prefix_miss_s=0;Model.slot_snapshot=[]
    self.env['MAG_ROOM_PREWARM']='0'
    self.stop();self.start()
+ def test_15b_aborted_prewarm_is_not_ram_warm(self):
+  # Live 2026-11-04 15:28: a prewarm aborted mid-prefill left n_prompt_tokens
+  # above the prefix size; the retry logged ram_warm=1 skipped=ram and the
+  # next turn re-read the whole prompt (78 s). A failed/cancelled prefill
+  # must be followed by a real restore or prefill, never by skipped=ram.
+  self.wait_idle();self.stop()
+  meta=self.state/'prompt-prefix.json'
+  if meta.exists():meta.write_text('{}')
+  Model.slot_snapshot=[];Model.overflow_once=len(self.MIXED_MODELS)
+  self.env['MAG_ROOM_PREWARM']='1'
+  try:
+   seen=self._prewarm_count();self.start()
+   self._wait_prewarm_models(seen,lambda ln:'status=400' in ln,
+    what='first prewarm prefill did not fail')
+   # The aborted prefill is still reported as a large resident prompt.
+   Model.slot_snapshot=[{'id':0,'n_prompt_tokens':99999,'is_processing':False}]
+   seen=self._prewarm_count()
+   got=self._wait_prewarm_models(seen,lambda ln:'saved=1' in ln or 'skipped=ram' in ln,
+    timeout=30,what='retry after aborted prewarm')
+   for ln in got.values():
+    self.assertNotIn('skipped=ram',ln,'aborted prefill was trusted as RAM-warm')
+    self.assertIn('ram_warm=0',ln)
+    self.assertIn('saved=1',ln)
+  finally:
+   Model.overflow_once=0;Model.slot_snapshot=[]
+   self.env['MAG_ROOM_PREWARM']='0'
+   self.stop();self.start()
  def test_16_first_hi_thinks_off_and_shows_the_first_token(self):
   # Live: 190 reasoning tokens at 5.9 tok/s before any visible answer, and a
   # 226-token suffix before that. The first user turn disables thinking and

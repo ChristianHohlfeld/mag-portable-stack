@@ -67,6 +67,9 @@ class ContextWindowBudget(unittest.TestCase):
         # react/unreact closes the turn: one budget-0 round, its tools dropped.
         self.assertIn('TL_FORCE_REASONING_BUDGET = 0;', SOURCE)
         self.assertIn('if (react_closing) { completed = true; break; }', SOURCE)
+        # Direct turn: emoji alone is no answer; closing round tool_choice=none, tools kept.
+        self.assertIn('body["tool_choice"] = "none";', SOURCE)
+        self.assertIn('TL_REACT_CLOSE_TEXT = true;', SOURCE)
         # Tool rounds defer the slot save to the end of the turn.
         self.assertIn('if (TL_DEFER_SLOT_SAVE && !t.calls.empty()) TL_SLOT_SAVE_PENDING = bot_idx;', SOURCE)
         # "Hi" is short even when the wire user message is the whole transcript.

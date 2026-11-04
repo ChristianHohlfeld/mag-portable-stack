@@ -200,7 +200,16 @@ inline std::vector<std::string> speaking_order(const std::string &text,
 }
 
 // Should-I-respond gate: the follow-up answer is the bare token PASS.
+// Strip wrapping brackets/markup/punctuation: "[PASS]", "(pass)", "<PASS>".
+inline std::string bare_token(const std::string &s) {
+  static const char *junk = " \r\n\t*_`\"'.!?:;,@[](){}<>-";
+  const auto x = s.find_first_not_of(junk);
+  if (x == std::string::npos) return "";
+  const auto y = s.find_last_not_of(junk);
+  return s.substr(x, y - x + 1);
+}
 inline bool is_pass(const std::string &text) {
+  if (lower(bare_token(text)) == "pass") return true; // **[PASS]**, <pass>, (Pass).
   const auto a = text.find_first_not_of(" \r\n\t*_`\"'.");
   if (a == std::string::npos) return text.find_first_not_of(" \r\n\t") == std::string::npos;
   const auto b = text.find_last_not_of(" \r\n\t*_`\"'.!");
@@ -237,6 +246,25 @@ inline bool name_only(const std::string &text, const std::vector<std::string> &n
   return false;
 }
 
+// While streaming: could this still end up as a bare name ("No", "[Noah",
+// "Noah (qwen-nu")? Then hold the bubble; it may turn out to be silent.
+inline bool maybe_name_only(const std::string &partial, const std::vector<std::string> &names) {
+  const std::string c = lower(bare_token(partial));
+  if (c.empty()) return true;
+  for (const auto &n : names) {
+    const std::string ln = lower(n);
+    if (ln.empty()) continue;
+    if (ln.rfind(c, 0) == 0) return true;
+    if (c.rfind(ln, 0) == 0) {
+      const std::string rest = c.substr(ln.size());
+      if (bare_token(rest).empty()) return true;
+      const auto r = rest.find_first_not_of(" ");
+      if (r != std::string::npos && rest[r] == '(' && rest.size() < 48 &&
+          rest.find(')') == std::string::npos) return true;
+    }
+  }
+  return false;
+}
 // Same words as an earlier line of this chain (case/space/punctuation-blind).
 inline std::string norm_reply(const std::string &text) {
   std::string out;

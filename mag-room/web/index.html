@@ -1707,6 +1707,8 @@ setInterval(()=>{const now=Date.now();for(const id of Object.keys(streams)){cons
 function streamControls(){syncComposerButton();if(thinkInit)syncBotSwitches()}
 // The send button only sends. Stop is a separate icon, visible only while a
 // bot is actually generating. The field itself is never disabled; Enter only ever sends.
+// A bot with nothing to add stays silent: PASS in any form or a bare bot name is never shown (also old stored lines).
+function silentReply(m){if(!m||m.role!=='assistant'||!m.bot)return false;const bare=x=>String(x||'').toLowerCase().replace(/^[\s*_`"'.!?:;,@\[\](){}<>-]+|[\s*_`"'.!?:;,@\[\](){}<>-]+$/g,'');let c=bare(m.content);if(c==='pass')return true;if(!c)return false;c=bare(c.replace(/\s\(.*$/,''));return (state.agents||[]).some(a=>a.name&&bare(a.name)===c)}
 function composerBusyIds(){const known=new Set((state.agents||[]).map(a=>a.id));return [...new Set([...busyBots,...Object.keys(streams)])].filter(id=>known.has(id))}
 function serverIdle(){return !!(state&&state.busy===false&&!(state.busy_bots||[]).length&&!((state.activities||[]).some(a=>a&&a.on)))}
 function generationLive(){
@@ -1848,6 +1850,7 @@ function render(){
  // render its live card, not a second durable card with the same turn ID.
  // Match by message ID or display timestamp, never by identical text.
  const timeline=(state.room||[]).filter(m=>{
+  if(silentReply(m))return false;
   if(m.role!=='assistant'||!m.bot)return true;
   const live=streams[m.bot];
   return !(live&&(live.partialId===m.id||
@@ -3911,8 +3914,8 @@ render=function(){
  const area=$('conversation'),scroll=stableScrollBefore();
  let inner=area.querySelector('.conversation-inner');
  if(!inner){inner=document.createElement('div');inner.className='conversation-inner';area.append(inner)}
- const timeline=(state.room||[]).filter(m=>m.role!=='assistant'||!m.bot||!(streams[m.bot]&&(
-   streams[m.bot].partialId===m.id||(m.display_ms&&+m.display_ms===+streams[m.bot].displayMs))));
+ const timeline=(state.room||[]).filter(m=>!silentReply(m)&&(m.role!=='assistant'||!m.bot||!(streams[m.bot]&&(
+   streams[m.bot].partialId===m.id||(m.display_ms&&+m.display_ms===+streams[m.bot].displayMs)))));
  const pending=new Set((state.pending||[]).map(p=>p.client_id).filter(Boolean));
  for(const id of pending)localSends.delete(id);
  for(let i=timeline.length-1;i>=0;i--){const m=timeline[i];if(m.role!=='user')break;if(m.client_id&&pending.has(m.client_id))timeline.splice(i,1)}

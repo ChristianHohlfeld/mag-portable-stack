@@ -11201,9 +11201,17 @@ static void start_lanes_locked(const Job &job, bool automatic, const std::string
   // (or the AUTO_READY lane check) while holding JOB_MTX.
   for (const auto &[lane, ids] : parts)
     if (lane->busy.load() || lane->turn.load() != 0) {
-      std::cerr << "room-single-flight: refusing overlapping dispatch on "
+      std::cerr << "room-single-flight: deferring overlapping dispatch on "
                 << lane->model << std::endl;
-      return; // Never create a second worker for the same backend.
+      // This function is entered under JOB_MTX after the scheduler has
+      // removed a pending item. Keep it durable: a failed admission must
+      // not silently lose an accepted human message or bot follow-up.
+      // dispatchable() will retry only after the actor has released its lane.
+      JOBS.push_front(job);
+      save_queue_locked();
+      queue_event_locked();
+      JOB_CV.notify_all();
+      return;
     }
   for (auto &[lane, ids] : parts) {
     const uint64_t run = ++DISPATCH_SEQ;

@@ -17,7 +17,11 @@ secondary_unit=
 secondary_units=()
 if [[ -r $room_env ]]; then
   secondary_unit=mag-llm-ds-node@0.service
-  if grep -Fxq 'MAG_ROOM_MODEL_ID_0=qwen3.8-flash-next' "$room_env" &&
+  # Coding layout: one mag-llm-coding@ instance per NUMA node. Since
+  # 2026-11-04 Ornith on both nodes (ornith-numa0 :8191, ornith :8192); the
+  # Flint pair (flint-numa0/flint) uses the same units.
+  if { grep -Fxq 'MAG_ROOM_MODEL_ID_0=qwen3.8-flash-next' "$room_env" ||
+       grep -Eq '^MAG_ROOM_MODEL_ID_0=(ornith|flint)-numa0$' "$room_env"; } &&
      grep -Eq '^MAG_ROOM_MODEL_ID_1=(flint|ornith)$' "$room_env"; then
     secondary_unit=mag-llm-coding@0.service
     secondary_units=(mag-llm-coding@1.service)

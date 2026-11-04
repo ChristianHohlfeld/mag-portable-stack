@@ -132,7 +132,7 @@
   function setRate(v) {
     v = RATES.includes(+v) ? +v : 1;
     try { localStorage.setItem('mag-tts-rate', String(v)); } catch (_) {}
-    try { if (piper.source) piper.source.playbackRate.value = v * (piper.pitch || 1); } catch (_) {}
+    try { if (piper.source) piper.source.playbackRate.value = v; } catch (_) {}
     return v;
   }
   function voicePref() { try { return localStorage.getItem('mag-tts-voice') || 'thorsten'; } catch (_) { return 'thorsten'; } }
@@ -184,11 +184,11 @@
   }
   // Exactly one fixed Piper voice per speaker (tts-config.json "roles"),
   // resolved once per playback and used for every part: Lena Kerstin
-  // (female), Noah Thorsten (male), Chris's own messages Thorsten slightly
-  // lower. A speaker with a role never falls back to the device voice: on
-  // iOS that is usually a female default, which made Noah sound female and
-  // switched Lena's voice mid-answer when a later part failed.
-  const USER_PITCH = 0.925;
+  // (female), Noah Thorsten (male), Chris's own messages Karlsson (male).
+  // Every voice plays at its native sample rate with the model's own
+  // inference settings, without any playbackRate-based shifting (that also
+  // slowed and blurred speech). A speaker with a role never falls back to
+  // the device voice: on iOS that is usually a female default.
   function roleVoice(opts) {
     const cfg = piper.config;
     if (!cfg || voicePref() === 'system') return null;
@@ -197,9 +197,9 @@
     if (opts && opts.user) r = roles.user;
     else if (opts && opts.bot && cfg.bots && cfg.bots[opts.bot]) r = roles[cfg.bots[opts.bot]];
     else if (opts && opts.name && cfg.names && cfg.names[opts.name]) r = roles[cfg.names[opts.name]];
-    if (r && r.model) return {id: 'role', label: '', model: r.model, speaker: r.speaker | 0, pitch: +r.pitch || 1, fixed: true};
+    if (r && r.model) return {id: 'role', label: '', model: r.model, speaker: r.speaker | 0, fixed: true};
     const v = piperVoice();
-    return v && {...v, speaker: 0, pitch: 1, fixed: false};
+    return v && {...v, speaker: 0, fixed: false};
   }
   // A crashed worker (WASM out of memory on phones) is replaced once and the
   // same part is synthesised again with the same voice.
@@ -231,8 +231,8 @@
         const buf = piper.ctx.createBuffer(1, Math.max(1, res.audio.length), res.rate);
         if (res.audio.length) buf.copyToChannel(res.audio, 0);
         const src = piper.ctx.createBufferSource();
-        src.buffer = buf; if (src.playbackRate) src.playbackRate.value = ratePref() * (v.pitch || 1); src.connect(piper.ctx.destination);
-        src.onended = done; piper.source = src; piper.pitch = v.pitch || 1; src.start();
+        src.buffer = buf; if (src.playbackRate) src.playbackRate.value = ratePref(); src.connect(piper.ctx.destination);
+        src.onended = done; piper.source = src; src.start();
       });
       if (current !== playback) return;
     }
@@ -254,7 +254,6 @@
     const utterance = new SpeechSynthesisUtterance(text);
     utterance.lang = playback.lang;
     utterance.rate = ratePref();
-    if (playback.pitch && playback.pitch !== 1) utterance.pitch = playback.pitch;
     const match = bestVoice(playback.lang);
     if (match) utterance.voice = match;
     utterance.onend = () => nextPart(playback);
@@ -275,7 +274,7 @@
     const de = lang.startsWith('de') && piperPossible && voicePref() !== 'system';
     const parts = de ? piperParts(normalized) : split(normalized);
     if (!parts.length) return false;
-    const playback = {key, parts, at: 0, lang, pitch: opts && opts.user ? USER_PITCH : 1};
+    const playback = {key, parts, at: 0, lang};
     current = playback;
     setButtons();
     if (de) {
@@ -348,7 +347,7 @@
   }
 
   window.magMessageAudio = {attach, toggle, stop, supported, setVoice, voiceOptions, voicePref, bestVoice, rates: RATES, ratePref, setRate,
-    voiceFor: async opts => { await loadConfig(); const v = roleVoice(opts); return v && {model: v.model, speaker: v.speaker, pitch: v.pitch, fixed: v.fixed}; },
+    voiceFor: async opts => { await loadConfig(); const v = roleVoice(opts); return v && {model: v.model, speaker: v.speaker, fixed: v.fixed}; },
     isPlaying: id => !!current && current.key === id, piperReady: () => { const v = piperVoice(); return !!v && piper.ready.has(v.model); }};
   window.addEventListener('pagehide', stop);
 })();

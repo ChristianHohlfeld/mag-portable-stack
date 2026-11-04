@@ -6052,12 +6052,14 @@ static std::string one_line(std::string t) {
     }
     sp = false;
     o.push_back((char)c);
-    if (o.size() >= 160)
+    // Allow a few extra bytes so that the cap never splits a UTF-8
+    // sequence (for example "prüft" in a tool/status preview).
+    if (o.size() >= 164)
       break;
   }
   while (!o.empty() && o.back() == ' ')
     o.pop_back();
-  return o;
+  return mj::utf8_cut(o, 160);
 }
 static std::string tool_step_label(const std::string &tool) {
   if (tool == "web_search") return "Prüft Quellen";

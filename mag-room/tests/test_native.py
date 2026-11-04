@@ -21,6 +21,8 @@ os.environ.setdefault('MAG_TEST_ALLOW_NO_VM','1')
 os.environ.setdefault('MAG_ROOM_FIRST_HI_THINK','on')
 NETMODE=pathlib.Path(tempfile.mkdtemp(prefix='magnet-'))/'netmode.sh';NETLOG=NETMODE.with_suffix('.log')
 NETMODE.write_text('#!/bin/sh\necho "$1" >> %s\n'%NETLOG);NETMODE.chmod(0o755)
+MODELCTL=NETMODE.with_name('modelctl.sh');MODELLOG=MODELCTL.with_suffix('.log')
+MODELCTL.write_text('#!/bin/sh\necho "$1" >> %s\n'%MODELLOG);MODELCTL.chmod(0o755)
 def port():
  with socket.socket() as s:
   s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
@@ -203,7 +205,7 @@ class Native(unittest.TestCase):
   last=None
   for attempt in range(6):
    if attempt:cls.ui=port();cls.bridge=port()
-   env=dict(os.environ,MAG_DET_CLI=str(cls.det),MAG_OWNER_CANONICAL_LOGIN='chris@github',MAG_TEST_ALLOW_LOCAL_OWNER='1',MAG_ROOM_STATE=str(cls.state),MAG_ROOM_PORT=str(cls.ui),MAG_ROOM_BRIDGE_PORT=str(cls.bridge),MAG_ROOM_BRIDGE_IP='127.0.0.1',MAG_ROOM_BACKEND=f'http://127.0.0.1:{cls.model.server_port}/v1/chat/completions',MAG_ROOM_UI=str(ROOT/'mag-room/web/index.html'),MAG_ROOM_STATIC=str(ROOT/'mag-room/static'),MAG_ROOM_AUTOTALK_SLEEP='1',MAG_JOBS_MCP_TOKEN='local-unit-test-mcp-token-0123456789',MAG_ROOM_MODEL_STATUS=str(pathlib.Path(cls.tmp.name)/'model-status.json'),MAG_NETMODE=str(NETMODE),MAG_TEST_NO_MEMGIT='1',MAG_TEST_NO_CLEAR_BACKUP='1',MAG_JOBS_ALLOW_SECONDS='1',MAG_JOBS_TICK_MS='200',MAG_JOBS_BACKOFF_S='1',MAG_GITHUB_API=f'http://127.0.0.1:{GHPORT}',MAG_TAILSCALED_SOCKET=cls.whois_socket,MAG_ROOM_MCP_AUTO='0')
+   env=dict(os.environ,MAG_DET_CLI=str(cls.det),MAG_OWNER_CANONICAL_LOGIN='chris@github',MAG_TEST_ALLOW_LOCAL_OWNER='1',MAG_ROOM_STATE=str(cls.state),MAG_ROOM_PORT=str(cls.ui),MAG_ROOM_BRIDGE_PORT=str(cls.bridge),MAG_ROOM_BRIDGE_IP='127.0.0.1',MAG_ROOM_BACKEND=f'http://127.0.0.1:{cls.model.server_port}/v1/chat/completions',MAG_ROOM_UI=str(ROOT/'mag-room/web/index.html'),MAG_ROOM_STATIC=str(ROOT/'mag-room/static'),MAG_ROOM_AUTOTALK_SLEEP='1',MAG_JOBS_MCP_TOKEN='local-unit-test-mcp-token-0123456789',MAG_ROOM_MODEL_STATUS=str(pathlib.Path(cls.tmp.name)/'model-status.json'),MAG_NETMODE=str(NETMODE),MAG_MODELCTL=str(MODELCTL),MAG_TEST_NO_MEMGIT='1',MAG_TEST_NO_CLEAR_BACKUP='1',MAG_JOBS_ALLOW_SECONDS='1',MAG_JOBS_TICK_MS='200',MAG_JOBS_BACKOFF_S='1',MAG_GITHUB_API=f'http://127.0.0.1:{GHPORT}',MAG_TAILSCALED_SOCKET=cls.whois_socket,MAG_ROOM_MCP_AUTO='0')
    cls.log=open(pathlib.Path(cls.tmp.name)/'server.log','a');cls.proc=subprocess.Popen([str(ROOT/'build/magroom')],env=env,stdout=cls.log,stderr=cls.log)
    try:wait_http(f'http://127.0.0.1:{cls.ui}/healthz',timeout=8,proc=cls.proc);return
    except Exception as e:
@@ -760,6 +762,22 @@ class Native(unittest.TestCase):
   self.assertNotIn('(unterbrochen)',self.request('/api/state')['room'][-1]['content']);self.assertTrue(self.request('/api/state')['offline'])
   self.request('/api/offline',{'on':False});self.assertEqual(NETLOG.read_text().split()[-1],'online');self.assertFalse(self.request('/api/state')['offline'])
 
+ def test_15h2_hard_stop_freezes_models_and_resume_thaws(self):
+  html=self.request('/',raw=True).decode()
+  for needle in ['id="net-toggle"','id="halt-toggle"',"'/api/models/halt'","'/api/models/resume'"]:self.assertIn(needle,html)
+  self.wait_idle();MODELLOG.unlink(missing_ok=True)
+  Model.script=[self._slow('out',30)];self.request('/api/message',{'text':'Halt-busy','bots':['test']});self._busy()
+  r=self.request('/api/models/halt',{});self.assertTrue(r['halted']);self.assertTrue(r['frozen'])
+  self.assertEqual(MODELLOG.read_text().split(),['freeze'])
+  s=self.request('/api/state');self.assertTrue(s['models_halted']);self.assertFalse(s['busy'])
+  n=len(Model.calls);self.request('/api/message',{'text':'Halt-wartet','bots':['test']});time.sleep(0.8)
+  self.assertEqual(len(Model.calls),n,'no model request while the models are frozen')
+  self.proc.kill();self.proc.wait(timeout=5);self.log.close();self.start()
+  self.assertEqual(MODELLOG.read_text().split()[-1],'freeze','hard stop re-applied at startup')
+  self.assertTrue(self.request('/api/state')['models_halted'])
+  r=self.request('/api/models/resume',{});self.assertFalse(r['halted']);self.assertEqual(MODELLOG.read_text().split()[-1],'thaw')
+  self.assertFalse(self.request('/api/state')['models_halted']);self.wait_idle()
+
  def test_15i_shell_never_silently_drops_input(self):
   html=self.request('/',raw=True).decode()
   for needle in ["message?.kind==='hb'","consoleHbAt","scheduleReconnect()","termPending.push(","Shell-Verbindung verloren"]:self.assertIn(needle,html)
@@ -786,6 +804,16 @@ class Native(unittest.TestCase):
   s=self.wait_idle();self.assertTrue(any((m.get('content') or '').startswith('🗓 Job „J“') for m in s['room']))
   c=[x for x in Model.calls if x['messages'][1]['content'].startswith('[Geplanter Job')][0]
   self.assertIn('Sag Job-OK',c['messages'][1]['content']);self.assertNotIn('Sag Job-OK',c['messages'][0]['content'],'job prompt never in system prompt')
+ def test_16a2_reset_aborts_job_runs_and_releases_leases(self):
+  self.wait_idle();Model.script=[self._slow('out',60)];self.request('/api/message',{'text':'Reset-busy','bots':['test']});self._busy()
+  j=self._job();self.request('/api/jobs/'+j['id']+'/run',{})
+  self.error(409,'/api/jobs/'+j['id']+'/run',{})
+  self.request('/api/reset',{})
+  s=self.wait_idle();self.assertFalse(s['busy']);self.assertEqual(s.get('pending') or [],[])
+  Model.script=[];Model.reply='Job erledigt.'
+  self.request('/api/jobs/'+j['id']+'/run',{})  # lease released: not 409 forever
+  self._jwait(j['id'],lambda x:x['last_status']=='ok')
+  self.request('/api/jobs/'+j['id'],method='DELETE');Model.reply=None;self.wait_idle()
  def test_16b_no_double_run_and_webhook_auth(self):
   self.wait_idle();Model.script=[self._slow('out',15)]
   j=self._job(webhook=True);sec=j['secret'];self.assertNotIn('secret',self._jget(j['id']));self.assertNotIn('hook_hash',json.dumps(self._jget(j['id'])))

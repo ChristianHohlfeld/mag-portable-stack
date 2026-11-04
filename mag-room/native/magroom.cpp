@@ -10844,51 +10844,11 @@ static int group_pause_ms() {
   static thread_local std::mt19937 rng{std::random_device{}()};
   return std::uniform_int_distribution<int>(mean / 2, mean + mean / 2)(rng);
 }
-// While a later speaker waits for the first answer, its own slot already
-// evaluates the new human line: the wire gets its append now (the real turn
-// then only appends the first answer), max_tokens 1. The prefill overlaps
-// the first bot's decode instead of following it. The lane is busy, so no
-// idle prewarm competes for the slot; the real turn queues behind it.
-static void lookahead_prefill(int idx) {
-  if (!CONFIGURED_MODEL || idx < 0 || env("MAG_ROOM_GROUP_LOOKAHEAD", "1") != "1") return;
-  const std::string model = bot_model_id(idx);
-  if (model.rfind("glm-5.3-flash", 0) == 0 || room_chat_only_model(model)) return;
-  std::string payload, bot_id;
-  {
-    std::shared_lock<std::shared_mutex> turn(TURN_MTX);
-    bot_id = bot_field(idx, "id");
-    const bool web = WEB_ENABLED.load();
-    const std::string system = build_system(idx, false, "", web, false);
-    const std::string tool_defs = tools_json(idx, web);
-    TL_FIRST_HI = false;
-    auto wire = wire_messages(idx, system, tool_defs, build_context_tail(idx, false, ""));
-    if (TL_WIRE_STALE) return;
-    Val body = Val::object();
-    body["model"] = model;
-    Val msgs = Val::array();
-    for (const auto &m : wire) msgs.push(m);
-    body["messages"] = msgs;
-    Val tt;
-    if (mj::parse(tool_defs, tt)) body["tools"] = tt;
-    prefix_request_params(body, idx, model, msgs, bot_id);
-    payload = mj::dump(body);
-  }
-  const auto from = steady_clock::now();
-  std::string out;
-  long code = 0;
-  const bool ok = http_simple(BACKEND_HOST, BACKEND_PORT, "POST", "/v1/chat/completions", payload,
-                              {{"Content-Type", "application/json"},
-                               {"Authorization", "Bearer " + API_KEY},
-                               {"X-Mag-Bot", bot_id},
-                               {"X-Mag-Slot", gateway_slot(idx)},
-                               {"X-Mag-Session", "lookahead"}},
-                              out, &code, nullptr,
-                              std::max(LLM_TIMEOUT_S, LLM_TIMEOUT_MIN_S) * 1000);
-  std::cerr << "group-lookahead bot=" << bot_id << " ok=" << (ok && code == 200 ? 1 : 0)
-            << " status=" << code << " ms="
-            << std::chrono::duration_cast<milliseconds>(steady_clock::now() - from).count()
-            << std::endl;
-}
+// Each configured bot is a single-flight actor: await_gate parks its lane
+// until the previous speaker has answered, but does not make a speculative
+// second /v1/chat/completions call. A timed-out lookahead can outlive its HTTP
+// connection on ik_llama -np 1 and collide with the real reply.
+// The real turn reuses the resident prompt prefix on that same backend.
 static void await_gate(Lane *lane, const std::vector<std::string> &ids,
                        StartGate &gate, const std::string &after,
                        uint64_t epoch) {

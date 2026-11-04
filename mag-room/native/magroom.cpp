@@ -71,6 +71,9 @@ static std::mutex BACKEND_FD_MTX;
 static std::set<int> PREWARM_FDS; // BACKEND_FD_MTX
 static std::atomic<uint64_t> PREWARM_EPOCH{0};
 static std::atomic<bool> PREWARM_HOLD{false};
+// Hard stop ("Bots stoppen"): no turn, job or prewarm may reach a model while
+// the model servers are frozen. Persisted in STATE_DIR/models_halted.
+static std::atomic<bool> MODELS_HALTED{false};
 // Composer Stop is one action. A second tap in this window must not bump
 // EPOCH again: that aborted the queued message the first tap had just released.
 static std::atomic<long long> LAST_STOP_MS{0};
@@ -4039,6 +4042,11 @@ static std::atomic<bool> HEALTH_PROBE_BUSY{false};
 static ModelStatus probe_model_status() {
   ModelStatus st;
   st.at = now_s();
+  if (MODELS_HALTED.load()) {
+    st.state = "halted";
+    st.label = "Bots gestoppt – Modelle eingefroren";
+    return st;
+  }
   if (inference_hot()) {
     st.state = "busy";
     st.ready = true;
@@ -4146,6 +4154,7 @@ static ModelStatus model_status(bool refresh) {
   // A generation already holds ik's task queue. Do not open /health, and do
   // not store this overlay: the next idle read must still see download or
   // ready, not a busy sample taken during the turn.
+  if (MODELS_HALTED.load()) return probe_model_status();
   if (inference_hot()) {
     ModelStatus st;
     std::lock_guard<std::mutex> lk(MODEL_ST_MTX);
@@ -10206,7 +10215,7 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
   int tracked = -1;
   bool ok = false, built = false;
   const auto from = steady_clock::now();
-  if (!skip && pw_epoch == PREWARM_EPOCH.load() && !PREWARM_HOLD.load()) {
+  if (!skip && pw_epoch == PREWARM_EPOCH.load() && !PREWARM_HOLD.load() && !MODELS_HALTED.load()) {
     {
       std::lock_guard<std::mutex> lk(JOB_MTX);
       if (work_needs_slot_locked()) {
@@ -10223,7 +10232,7 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
     if (retry.second == 0)
       retry.first = steady_clock::now() + seconds(5);
   }
-  if (!skip && pw_epoch == PREWARM_EPOCH.load() && !PREWARM_HOLD.load()) {
+  if (!skip && pw_epoch == PREWARM_EPOCH.load() && !PREWARM_HOLD.load() && !MODELS_HALTED.load()) {
     {
       std::shared_lock<std::shared_mutex> turn(TURN_MTX);
       if (epoch == EPOCH.load() && bot_model_id(idx) == model) {
@@ -10362,7 +10371,7 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
 }
 static void schedule_prewarm() {
   if (env("MAG_ROOM_PREWARM", "1") != "1" || SHUTDOWN.load() ||
-      PREWARM_HOLD.load() || STOP_SETTLING.load()) return;
+      PREWARM_HOLD.load() || STOP_SETTLING.load() || MODELS_HALTED.load()) return;
   {
     std::lock_guard<std::mutex> lk(JOB_MTX);
     // A queued turn uses the slot. The non-configured guard is the old
@@ -11185,7 +11194,7 @@ static void split_prefix(const std::vector<std::string> &ids,
 static bool dispatch_locked() {
   // No new work may acquire a model slot while a previous Stop is still
   // cancelling requests and restoring that slot's stable prefix.
-  if (STOP_SETTLING.load()) return false;
+  if (STOP_SETTLING.load() || MODELS_HALTED.load()) return false;
   apply_deploy_hold_file_locked();
   // Prune paused bots even from jobs queued before the settings change.
   // Never leave a human message invisible just because nobody can answer.
@@ -11422,6 +11431,78 @@ static bool set_offline(bool off) {
   e["offline"] = off;
   publish(mj::dump(e));
   return ok;
+}
+// Hard stop: the model servers' cgroups are frozen (systemctl freeze), so
+// weights, KV cache and the restored slot prefixes stay in RAM and no CPU is
+// used. Resume thaws them in milliseconds: no reload, no new prefill.
+static bool apply_models_halt(bool halt) {
+  CmdResult r = run_argv({"sudo", "-n", env("MAG_MODELCTL", "/usr/local/sbin/magbot-modelctl"),
+                          halt ? "freeze" : "thaw"}, 60);
+  if (r.code != 0) {
+    std::cerr << "modelctl " << (halt ? "freeze" : "thaw") << " failed: " << r.out << "\n";
+    return false;
+  }
+  return true;
+}
+static void models_halt_event() {
+  Val e = Val::object();
+  e["type"] = "models";
+  e["halted"] = MODELS_HALTED.load();
+  publish(mj::dump(e));
+}
+static std::mutex MODELCTL_MTX; // serialises halt/resume: UI state == cgroup state
+static Val user_stop(bool pause_jobs);
+static void queue_resume();
+static bool any_lane_busy_for_stop();
+static Val hard_stop_models() {
+  std::lock_guard<std::mutex> g(MODELCTL_MTX);
+  // Gate first: from here no dispatch, job or prewarm reaches a model.
+  const bool had_autotalk = AUTOTALK.load();
+  if (!MODELS_HALTED.exchange(true))
+    write_file(STATE_DIR + "/models_halted", had_autotalk ? "on autotalk" : "on");
+  PREWARM_HOLD = true;
+  // Ends every turn and tool, cancels the llama requests, restores the saved
+  // prefixes and holds the queue (Stop semantics, autonomy off).
+  Val out = user_stop(true);
+  cancel_prewarm();
+  jobs_abort_all();
+  const auto settled = steady_clock::now() + milliseconds(3000);
+  while (steady_clock::now() < settled && (any_lane_busy_for_stop() || tasks_running()))
+    std::this_thread::sleep_for(milliseconds(25));
+  const bool frozen = apply_models_halt(true);
+  out["halted"] = true;
+  out["frozen"] = frozen;
+  if (!frozen) out["error"] = "Turns gestoppt, aber Modell-Services konnten nicht eingefroren werden";
+  std::cerr << "models: hard stop frozen=" << (frozen ? 1 : 0) << "\n";
+  models_halt_event();
+  return out;
+}
+static Val resume_models() {
+  std::lock_guard<std::mutex> g(MODELCTL_MTX);
+  Val out = Val::object();
+  if (!apply_models_halt(false)) {
+    out["halted"] = MODELS_HALTED.load();
+    out["error"] = "Modell-Services konnten nicht fortgesetzt werden";
+    return out;
+  }
+  const bool had_autotalk =
+      read_file(STATE_DIR + "/models_halted").find("autotalk") != std::string::npos;
+  MODELS_HALTED = false;
+  write_file(STATE_DIR + "/models_halted", "off");
+  PREWARM_HOLD = false;
+  {
+    std::lock_guard<std::mutex> lk(MODEL_ST_MTX);
+    MODEL_ST = ModelStatus{}; // next read probes the thawed servers
+  }
+  if (had_autotalk) {
+    write_file(STATE_DIR + "/autotalk", "on");
+    AUTOTALK = true;
+  }
+  queue_resume(); // held messages and jobs run now
+  std::cerr << "models: resumed\n";
+  out["halted"] = false;
+  models_halt_event();
+  return out;
 }
 static void start_autotalk() {
   write_file(STATE_DIR + "/autotalk", "on");
@@ -12006,6 +12087,7 @@ static std::string state_json(const Actor *actor = nullptr) {
   root["version"] = (long)frontend_version();
   root["web"] = WEB_ENABLED.load();
   root["offline"] = OFFLINE.load();
+  root["models_halted"] = MODELS_HALTED.load();
   {
     bool prefix_ready = !prefix_gate_on();
     if (!prefix_ready) {
@@ -12801,6 +12883,12 @@ int main() {
     const bool off = trim(read_file(STATE_DIR + "/offline")) == "on";
     OFFLINE = off; WEB_ENABLED = !off;
     apply_offline(off);
+  }
+  if (trim(read_file(STATE_DIR + "/models_halted")).rfind("on", 0) == 0) {
+    // A hard stop survives room restarts and reboots: re-freeze (idempotent).
+    MODELS_HALTED = true;
+    PREWARM_HOLD = true;
+    apply_models_halt(true);
   }
   // Resume the queue of a previous process. A turn that was running when the
   // room stopped is marked "unterbrochen" in the room and answered again

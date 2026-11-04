@@ -34,7 +34,7 @@ both NUMA nodes (`general` = NUMA0 :8191, `coder` = NUMA1 :8192):
   <https://huggingface.co/AtomicChat/Ornith-1.5-35B-A3B-GGUF> at revision
   `385f6c4c886f2376659fd964be85bff09a77c791`, hard-linked from
   `/home/chris/models/ornith-1.5-35b-a3b-atomic/`
-- MTP self-speculation (`--spec-type draft-mtp`, n_max 3) per node via the
+- MTP self-speculation (`--spec-type draft-mtp`, n_max 3, p_min 0.75) per node via the
   `mtp` field in models.json / `start-live.sh`: `embedded` uses the nextn block
   inside the GGUF (bartowski Q4_K_M), `file` a pinned separate MTP head.
 - Chat template: `ops/coding/ornith-chat.jinja`, verbatim `chat_template.jinja`

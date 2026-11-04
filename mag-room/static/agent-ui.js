@@ -325,7 +325,7 @@
     sel.value = window.magMessageAudio.voicePref();
     if (sel.selectedIndex < 0) sel.value = 'system';
     sel.onchange = () => window.magMessageAudio.setVoice(sel.value);
-    rateSelect(sel);
+    rateSelect(sel);speakerSettings();
   }
   // Read-aloud speed 1x-2x, one global choice for every message.
   function rateSelect(after) {

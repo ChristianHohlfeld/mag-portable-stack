@@ -7,8 +7,12 @@
 # openslr.org/94), staged but unused: its audiobook speakers sounded odd and
 # a second large model in the worker made phones fall back to the system
 # voice mid-answer (2026-11-04). One fixed single-speaker voice per speaker:
-# Lena Kerstin, Chris's own messages Thorsten (unchanged medium), Noah
-# de_DE-karlsson-low (male, M-AILABS); no pitch/rate shifting anywhere.
+# all medium tier: Chris's own messages Thorsten (unchanged), Lena
+# de_DE-mls-medium speaker 68 (MLS 136, female, F0 ~188 Hz), Noah
+# de_DE-mls-medium speaker 32 (MLS 3797, male). Picked out of 236 MLS
+# speakers by synthesising one sentence each and ranking noise floor/SNR,
+# spectral flatness, F0 jitter and bandwidth (2026-11-04). Both bots share
+# one MLS session in the worker; no pitch/rate shifting anywhere.
 # Medium is the German quality/speed point: high is ~114 MB and several times
 # slower on WASM, which delayed the first word and made every cold load heavy.
 # Runtime: onnxruntime-web 1.30.0 (MIT) + @diffusionstudio/piper-wasm 1.0.0
@@ -77,9 +81,9 @@ cat > "$OUT/tts-config.json" <<JSON
  {"id":"thorsten","label":"Thorsten (männlich)","model":"de_DE-thorsten-medium.onnx","license":"CC0"},
  {"id":"kerstin","label":"Kerstin (weiblich)","model":"de_DE-kerstin-low.onnx","license":"CC0"}],
  "roles":{
-  "female":{"model":"de_DE-kerstin-low.onnx","speaker":0,"license":"CC0"},
+  "female":{"model":"de_DE-mls-medium.onnx","speaker":68,"license":"CC-BY 4.0"},
   "user":{"model":"de_DE-thorsten-medium.onnx","speaker":0,"license":"CC0"},
-  "male":{"model":"de_DE-karlsson-low.onnx","speaker":0,"license":"M-AILABS"}},
+  "male":{"model":"de_DE-mls-medium.onnx","speaker":32,"license":"CC-BY 4.0"}},
  "bots":{"qwen-numa0":"female","qwen-numa1":"male"},
  "names":{"Lena":"female","Noah":"male"}}
 JSON

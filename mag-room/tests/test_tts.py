@@ -39,9 +39,9 @@ class TTS(unittest.TestCase):
    page.evaluate("()=>localStorage.setItem('mag-tts-voice','kerstin')")
    who=page.evaluate("""async()=>{const f=o=>magMessageAudio.voiceFor(o);return {lena:await f({bot:'qwen-numa0'}),noah:await f({bot:'qwen-numa1'}),
      noahByName:await f({bot:'',name:'Noah'}),chris:await f({user:true})}}""")
-   self.assertEqual((who['lena']['model'],who['lena']['fixed']),('de_DE-kerstin-low.onnx',True))
-   for k in ('noah','noahByName'):self.assertEqual((who[k]['model'],who[k]['fixed']),('de_DE-thorsten-medium.onnx',True),k)
-   self.assertEqual((who['chris']['model'],who['chris']['fixed']),('de_DE-karlsson-low.onnx',True))
+   self.assertEqual((who['lena']['model'],who['lena']['speaker'],who['lena']['fixed']),('de_DE-mls-medium.onnx',68,True))
+   for k in ('noah','noahByName'):self.assertEqual((who[k]['model'],who[k]['speaker'],who[k]['fixed']),('de_DE-mls-medium.onnx',32,True),k)
+   self.assertEqual((who['chris']['model'],who['chris']['fixed']),('de_DE-thorsten-medium.onnx',True))
    for k in who:self.assertNotIn('pitch',who[k])
    page.evaluate("()=>localStorage.removeItem('mag-tts-voice')")
    def measure(voice, text):

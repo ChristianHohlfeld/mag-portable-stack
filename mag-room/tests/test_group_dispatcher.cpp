@@ -37,10 +37,16 @@ int main() {
   CHECK(maybe_pass("[Fli"));
   CHECK(!maybe_pass("Passt"));
   CHECK(!maybe_pass("Ergänzung: "));
-  // follow-up budget, never self, each once
+  // Real bot dialogue: repeated alternating rounds and direct @mentions.
+  CHECK(kMaxFollowups == 6);
   CHECK(next_followup(r, {"qwen-numa0"}, "qwen-numa0", 0) == "qwen-numa1");
-  CHECK(next_followup(r, {"qwen-numa0", "qwen-numa1"}, "qwen-numa1", 1).empty());
-  CHECK(next_followup(r, {"qwen-numa0"}, "qwen-numa0", kMaxFollowups).empty());
+  CHECK(next_followup(r, {"qwen-numa0", "qwen-numa1"}, "qwen-numa1", 1) == "qwen-numa0");
+  CHECK(next_followup(r, {"qwen-numa0"}, "qwen-numa0", 2, 6, "@Flint bitte prüfen") == "qwen-numa1");
+  CHECK(next_followup(r, {}, "qwen-numa1", 3, 6, "@Qwen widersprich") == "qwen-numa0");
+  CHECK(next_followup(r, {}, "qwen-numa0", 4, 6, "@Qwen bitte") == "qwen-numa1");
+  CHECK(next_followup(r, {}, "qwen-numa1", 6, 6, "@Qwen weiter").empty());
+  CHECK(next_followup(r, {}, "qwen-numa0", 0, 0, "@Flint weiter").empty());
+  CHECK(next_followup({{"solo","Solo",false}}, {}, "solo", 0).empty());
   if (fails) return 1;
   std::puts("test-group-dispatcher ok");
   return 0;

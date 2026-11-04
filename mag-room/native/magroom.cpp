@@ -1377,7 +1377,7 @@ static std::string memory_manifest(const std::string &bot_id) {
 static void memory_git_sync(const std::string &bot_id, const std::string &why);
 static void remember_fact(const std::string &bot_id, const std::string &fact,
                           const std::string &src) {
-  std::string f = trim(fact).substr(0, 500);
+  std::string f = mj::utf8_cut(trim(fact), 500);
   if (f.empty())
     throw std::runtime_error("Leere Erinnerung.");
   std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
@@ -1396,7 +1396,7 @@ static void remember_fact(const std::string &bot_id, const std::string &fact,
     e["ts"] = (long)now_s();
     e["text"] = f;
     if (!src.empty())
-      e["src"] = src.substr(0, 200);
+      e["src"] = mj::utf8_cut(src, 200);
     mem.push(std::move(e));
   }
   // Drop a chunk, not one entry: sliding by one would rewrite the prompt prefix
@@ -1447,7 +1447,7 @@ static Val add_file(const std::string &name, const std::string &data,
   rec["name"] = safe;
   rec["mime"] = mime_for(safe);
   rec["size"] = (long)data.size();
-  rec["by"] = by.substr(0, 40);
+  rec["by"] = mj::utf8_cut(by, 40);
   rec["ts"] = (long)now_s();
   {
     std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
@@ -1550,13 +1550,13 @@ static Val append_room(const std::string &role, const std::string &name,
   Val m = Val::object();
   m["id"] = token_hex(6);
   m["role"] = role;
-  m["name"] = name.substr(0, 40);
+  m["name"] = mj::utf8_cut(name, 40);
   m["content"] = content;
   m["ts"] = (long)now_s();
   m["display_ms"] = display_ms > 0 ? display_ms : display_now_ms();
   if (!client_id.empty()) m["client_id"] = client_id;
   if (!login.empty())
-    m["login"] = login.substr(0, 160);
+    m["login"] = mj::utf8_cut(login, 160);
   if (!bot.empty())
     m["bot"] = bot;
   if (file)
@@ -3362,7 +3362,7 @@ static void wire_finish(int idx,const std::vector<Val> &messages,bool valid) {
 // Voice messages carry only text; browsers synthesise them locally (Piper).
 static Val voice_message(const std::string &name, const std::string &bot,
                          const std::string &textIn) {
-  std::string text = trim(textIn).substr(0, 4000);
+  std::string text = mj::utf8_cut(trim(textIn), 4000);
   if (text.empty())
     throw std::runtime_error("Text required");
   return append_room("assistant", name, text, bot, nullptr, "", "voice");
@@ -3377,7 +3377,7 @@ static std::string host_ocr(const std::string &name) {
       120);
   if (result.code)
     throw std::runtime_error("Local OCR failed");
-  return result.out.substr(0, 12000);
+  return mj::utf8_cut(result.out, 12000);
 }
 static Val host_stt(const std::string &audio, const std::string &language) {
   std::string lang = language.empty() ? "auto" : language;
@@ -3465,14 +3465,14 @@ static bool gh_repo_ok(const std::string &r) {
   return r.find("..") == std::string::npos;
 }
 static std::string gh_pick(const std::string &json, std::initializer_list<const char *> keys, size_t max_items = 30) {
-  Val v; if (!mj::parse(json, v)) return json.substr(0, 6000);
+  Val v; if (!mj::parse(json, v)) return mj::utf8_cut(json, 6000);
   auto one = [&](const Val &x) {
     Val o = Val::object();
     for (const char *k : keys) {
       std::string key = k; auto dot = key.find('.');
       const Val *f = x.find(key.substr(0, dot).c_str());
       if (f && dot != std::string::npos) f = f->find(key.substr(dot + 1).c_str());
-      if (f) { Val c = *f; if (c.type == Val::STR && c.str.size() > 3000) c.str = c.str.substr(0, 3000) + "…"; o[key] = c; }
+      if (f) { Val c = *f; if (c.type == Val::STR && c.str.size() > 3000) c.str = mj::utf8_cut(c.str, 3000) + "…"; o[key] = c; }
     }
     return o;
   };
@@ -3497,12 +3497,12 @@ static std::string github_tool(const Val &a) {
     need_repo(); if (path.find("..") != std::string::npos) throw std::runtime_error("path ungültig");
     std::string q = "/repos/" + repo + "/contents/" + path + (ref.empty() ? "" : "?ref=" + url_encode(ref));
     std::string out = github_api("GET", q);
-    Val v; if (!mj::parse(out, v)) return out.substr(0, 6000);
+    Val v; if (!mj::parse(out, v)) return mj::utf8_cut(out, 6000);
     if (v.isArr()) return gh_pick(out, {"name", "type", "size", "path"}, 200);
     std::string content = v.find("content") ? v.find("content")->asStr() : "";
     content.erase(std::remove(content.begin(), content.end(), '\n'), content.end());
     std::string dec = base64_decode(content);
-    if (dec.size() > 20000) dec = dec.substr(0, 20000) + "\n…[gekürzt]";
+    if (dec.size() > 20000) dec = mj::utf8_cut(dec, 20000) + "\n…[gekürzt]";
     return dec;
   }
   if (act == "search_code") { std::string q = gs("query"); if (!repo.empty()) { need_repo(); q += " repo:" + repo; } return gh_pick(github_api("GET", "/search/code?per_page=20&q=" + url_encode(q)), {"path", "repository.full_name", "html_url"}, 20); }
@@ -3577,7 +3577,7 @@ static Val brave_search(const std::string &query) {
             text += x.asStr() + "\n";
           }
         }
-        s["text"] = text.substr(0, 12000);
+        s["text"] = mj::utf8_cut(text, 12000);
         sources.push(s);
       }
     }
@@ -3599,7 +3599,7 @@ static CmdResult guest_command(const std::string &vm,
                           std::to_string(timeout)}, timeout + 30,
                          4 << 20, cancelable ? &stop_flag() : nullptr, &command);
   if (r.out.size() > (size_t)TOOL_OUTPUT_LIMIT)
-    r.out = r.out.substr(0, TOOL_OUTPUT_LIMIT) + "\n...[gekuerzt]";
+    r.out = mj::utf8_cut(r.out, TOOL_OUTPUT_LIMIT) + "\n...[gekuerzt]";
   if (r.timedout) {
     r.code = 124;
     r.out = "Zeitlimit (" + std::to_string(timeout) + "s) ueberschritten.";
@@ -3689,7 +3689,7 @@ static std::string pages_dispatch_tool(int bot_idx,const std::string& name,
     if(name!="pages_list") {
       magpages::sync_now(owner+"/"+repo,name=="pages_delete");
     }
-    return result.out.size()>6000?result.out.substr(0,6000):result.out;
+    return result.out.size()>6000?mj::utf8_cut(result.out,6000):result.out;
   }catch(const std::exception& e) {
     return "Fehler: Pages operation unavailable: "+std::string(e.what()).substr(0,240);
   }
@@ -6521,7 +6521,7 @@ static std::string dispatch_tool_raw(int bot_idx, const std::string &name,
           out += s.find("text")->asStr() + "\n\n";
       }
     if (out.size() > (size_t)TOOL_OUTPUT_LIMIT)
-      out = out.substr(0, TOOL_OUTPUT_LIMIT) + "\n...[gekuerzt]";
+      out = mj::utf8_cut(out, TOOL_OUTPUT_LIMIT) + "\n...[gekuerzt]";
     return out;
   }
   if (name == "list_room_files")
@@ -6613,7 +6613,7 @@ static std::string dispatch_tool_raw(int bot_idx, const std::string &name,
       emit_file(bot_id, rec);
       *encoded = Val();
     }
-    return mj::dump(report).substr(0, TOOL_OUTPUT_LIMIT);
+    return mj::utf8_cut(mj::dump(report), TOOL_OUTPUT_LIMIT);
   }
 
   if (name.rfind("browser_", 0) == 0) {
@@ -7664,7 +7664,7 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
       if (failed) {
         // User-visible activity already records full tool result. Journal a
         // bounded human-readable cause WITHOUT dumping args or credentials.
-        std::string cause = result.substr(0, 180);
+        std::string cause = mj::utf8_cut(result, 180);
         for (char &c : cause) if (c == '\n' || c == '\r' || c == '\t') c = ' ';
         const std::string lower = lc(cause);
         for (const char *secret : {"password", "token", "secret",
@@ -7678,7 +7678,7 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
                   << " cause=" << cause << std::endl;
         ++report.failed_tools;
         const std::string key = fname + "|" + argStr + "|" +
-                                result.substr(0, 240);
+                                mj::utf8_cut(result, 240);
         if (++failures[key] >= 2) {
           result += "\n[Hinweis] Der gleiche Werkzeugfehler ist wiederholt "
                     "aufgetreten. Andere Methode waehlen; fuer grosse "
@@ -7693,7 +7693,7 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
         }
       } else {
         ++report.successful_tools;
-        report.progress_key += fname + ":" + result.substr(0, 350) + "\n";
+        report.progress_key += fname + ":" + mj::utf8_cut(result, 350) + "\n";
       }
       {
         const long ms = (long)duration_cast<milliseconds>(steady_clock::now() - tool_from).count();
@@ -8703,7 +8703,7 @@ static Val enqueue_pending(const std::string &text,
       MESSAGE_RECEIPTS.push_back(receipt);
       if (MESSAGE_RECEIPTS.size() > 256) MESSAGE_RECEIPTS.pop_front();
     }
-    const std::string who = sender.empty() ? "Nutzer" : sender.substr(0, 40);
+    const std::string who = sender.empty() ? "Nutzer" : mj::utf8_cut(sender, 40);
     Val msg = append_room("user", who, text, "", nullptr, login.substr(0, 160), "", display_now_ms(), request_id);
     msg["type"] = "message";
     publish(mj::dump(msg));
@@ -8766,8 +8766,8 @@ static Val enqueue_pending(const std::string &text,
   }
   const bool waiting = lanes_busy(answerers) || std::any_of(PENDING.begin(), PENDING.end(), [](const Pending &p) { return !p.held; }) || !JOBS.empty();
   Pending p;
-  p.id = token_hex(8); p.client_id = request_id; p.text = text; p.sender = sender.substr(0, 40);
-  p.login = login.substr(0, 160); p.ids = answerers; p.think = think; p.ts = (long)now_s(); p.display_ms = display_now_ms();
+  p.id = token_hex(8); p.client_id = request_id; p.text = text; p.sender = mj::utf8_cut(sender, 40);
+  p.login = mj::utf8_cut(login, 160); p.ids = answerers; p.think = think; p.ts = (long)now_s(); p.display_ms = display_now_ms();
   p.urgent = interrupt;
   p.open_floor = open_floor;
   // An explicit pause holds existing items. Typing and sending remain available.

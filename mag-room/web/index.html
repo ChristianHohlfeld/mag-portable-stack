@@ -858,7 +858,7 @@ function htmlPreviewable(lang,code){const l=String(lang).toLowerCase();return(l=
 function htmlPreviewDoc(code){return/^\s*(?:<!--[\s\S]*?-->\s*)*(?:<!doctype|<html[\s>])/i.test(code)?code:'<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head><body>'+code+'</body></html>'}
 const htmlPreviewSeen=typeof IntersectionObserver==='function'?new IntersectionObserver(es=>{for(const e of es)if(e.isIntersecting){htmlPreviewSeen.unobserve(e.target);e.target._mount?.()}},{rootMargin:'200px'}):null;
 function addHtmlPreview(pre,bar,code,live){
- const box=document.createElement('div');box.className='code-preview';box.hidden=!!live;
+ const box=document.createElement('div');box.className='code-preview';box.hidden=!!live;box._pkey=code;box._live=!!live;
  const head=document.createElement('div');head.className='code-preview-bar';
  const title=document.createElement('span');title.textContent='Vorschau';
  const tools=document.createElement('span');tools.className='code-preview-tools';
@@ -870,7 +870,7 @@ function addHtmlPreview(pre,bar,code,live){
  tools.append(mk('Neu laden','Vorschau neu laden',()=>{box._mounted=true;load()}),full);
  head.append(title,tools);box.append(head,frame);
  box.addEventListener('keydown',e=>{if(e.key==='Escape'&&box.classList.contains('max'))full.click()});
- const toggle=mk('Vorschau','HTML-Vorschau ein- oder ausblenden',()=>{const show=box.hidden;box.hidden=!show;toggle.setAttribute('aria-pressed',String(show));if(show)box._mount();else if(box.classList.contains('max'))full.click()});toggle.setAttribute('aria-pressed',String(!live));
+ const toggle=mk('Vorschau','HTML-Vorschau ein- oder ausblenden',()=>{const b=pre._previewBox||box;const show=b.hidden;b.hidden=!show;toggle.setAttribute('aria-pressed',String(show));if(show)b._mount();else if(b.classList.contains('max'))b.querySelector('.code-preview-tools button:last-child')?.click()});toggle.setAttribute('aria-pressed',String(!live));
  toggle.classList.add('preview-toggle');bar.lastChild.before(toggle);
  pre.after(box);
  if(live)return;
@@ -1746,9 +1746,34 @@ function mergeActivity(a){
  const prev=streams[a.bot]||{};if(prev.frame)cancelAnimationFrame(prev.frame);
  streams[a.bot]={...prev,name:a.name||prev.name||'Bot',text:prev.text||'',phase:a.phase||'read',label:a.label||'Liest Verlauf',steps:Array.isArray(a.steps)?a.steps:(prev.steps||[]),progress:(+a.total>0)?{processed:+a.processed||0,total:+a.total,cache:+a.cache||0}:null,error:a.error||'',started:(a.started?a.started*1000:prev.started)||Date.now(),lastEvent:(a.last?a.last*1000:prev.lastEvent)||Date.now(),thinkingEnabled:a.thinking_enabled??prev.thinkingEnabled,displayMs:a.display_ms||prev.displayMs||a.started*1000||Date.now(),node:prev.node||null,seq:prev.seq,floor:prev.floor,frame:0,reasoning:prev.reasoning||'',tools:prev.tools||[],hung:false,reading:a.reading||null,group:a.group||'',order:+a.order||0};
 }
+// Full re-renders used to recreate every HTML preview iframe, reloading it
+// (white flash, height jump) on each room update. Mounted previews are parked
+// with moveBefore (keeps the iframe document alive) and put back in place of
+// the freshly built, identical preview. Browsers without moveBefore reload as before.
+function parkPreviews(area){
+ if(typeof Element.prototype.moveBefore!=='function')return null;
+ let park=document.getElementById('preview-park');
+ if(!park){park=document.createElement('div');park.id='preview-park';park.style.display='none';document.body.append(park)}
+ const kept=new Map();
+ for(const b of area.querySelectorAll('.code-preview')){if(b._mounted&&b._pkey!=null&&!kept.has(b._pkey)){try{park.moveBefore(b,null);kept.set(b._pkey,b)}catch(e){}}}
+ return kept;
+}
+function restorePreviews(inner,kept){
+ if(!kept)return;
+ for(const b of inner.querySelectorAll('.code-preview')){
+  const old=kept.get(b._pkey);if(!old||b._live)continue;
+  try{b.parentNode.moveBefore(old,b)}catch(e){continue}
+  kept.delete(b._pkey);htmlPreviewSeen?.unobserve(b);
+  const pre=old.previousElementSibling;if(pre)pre._previewBox=old;
+  const t=pre?.querySelector('.preview-toggle');if(t)t.setAttribute('aria-pressed',String(!old.hidden));
+  b.remove();
+ }
+ for(const old of kept.values())old.remove();
+}
 function render(){
  const area=$('conversation'),follow=stickToBottom||!rendered,oldScroll=area.scrollTop,prevH=area.scrollHeight;rendered=true;
  programmatic++;
+ const keptPreviews=parkPreviews(area);
  area.replaceChildren();const inner=document.createElement('div');inner.className='conversation-inner';area.append(inner);
  if(!state.room.length&&!Object.keys(streams).length){inner.innerHTML='<div class="empty"><div class="empty-symbol">✳</div><h1>Worum geht es?</h1><p>Eine Frage, eine Notiz oder eine Aufgabe für die Bots. Alles bleibt auf deinem Server.</p></div>'}
  // The first streamed token already lives in ROOM. While it is streaming,
@@ -1772,6 +1797,7 @@ function render(){
  timeline.forEach((m,i)=>append(m,false,traceForMessage(m,i),i));
  for(const s of Object.values(streams).filter(x=>!x.seq).sort((x,y)=>(x.started||0)-(y.started||0)))s.seq=++streamSeq;
  for(const [botId,s] of Object.entries(streams).sort((x,y)=>x[1].seq-y[1].seq)){s.node=liveNode(botId,s);updateStream(botId,true)}
+ restorePreviews(inner,keptPreviews);
  if(follow){area.scrollTop=area.scrollHeight;stickToBottom=true;newBelow=false}
  else{area.scrollTop=Math.min(oldScroll,Math.max(0,area.scrollHeight-area.clientHeight));if(area.scrollHeight>prevH+2)newBelow=true}
  lastScrollTop=area.scrollTop;watchInner(inner);

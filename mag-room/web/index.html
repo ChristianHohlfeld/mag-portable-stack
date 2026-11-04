@@ -1634,6 +1634,7 @@ function stoppedByUser(msg){return msg.interrupted&&msg.stopped!=='system'}
 const QUIET_STEP=/^(?:Liest Verlauf|Liest das Gespräch|Denkt nach(?:…|\.\.\.)?$|Gedacht für(?: \d+ s)?$|Reagiert$|Nimmt die Reaktion zurück$)/;
 function shownSteps(steps){return (steps||[]).filter(x=>!QUIET_STEP.test(x))}
 function doneLabel(msg){
+ if(msg.interrupted)return stoppedByUser(msg)?'Gestoppt':'Unterbrochen';
  if(msg.truncated)return 'Antwort wegen Längenlimit abgeschnitten – weiter schreiben';
  if(msg.work_error&&!stoppedByUser(msg))return 'Fehler · '+msg.work_error;
  const n=shownSteps(msg.steps).length;

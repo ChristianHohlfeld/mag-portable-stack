@@ -339,7 +339,28 @@
     after.after(sel);
   }
 
-  function render() { css(); voiceSelect(); paintChips(); paintHub(); paintTasks(); loadSecrets(false); if (sheet?.open) fillSheet(); }
+  function speakerSettings(){
+    const audio=window.magMessageAudio,anchor=document.getElementById('tts-rate');
+    if(!anchor||!audio?.rolePref||document.getElementById('tts-role-settings'))return;
+    const root=el('div','tts-role-settings');root.id='tts-role-settings';
+    root.style.cssText='display:grid;gap:8px;margin:10px 0';
+    for(const [role,label] of [['user','Chris'],['lena','Lena'],['noah','Noah']]){
+      const row=el('label','control-row');row.style.cssText='display:flex;align-items:center;gap:7px;flex-wrap:wrap';
+      row.append(el('span','',label));
+      const sel=el('select','side-select'),num=el('input','side-select');
+      for(const [value,text] of [['de_DE-thorsten-medium.onnx','Thorsten'],['de_DE-mls-medium.onnx','MLS']]){
+        const o=el('option','',text);o.value=value;sel.append(o);
+      }
+      num.type='number';num.min='0';num.max='235';num.step='1';num.style.width='80px';num.setAttribute('aria-label',label+' Sprecher-ID');
+      const current=audio.rolePref(role);sel.value=current.model;num.value=String(current.speaker);
+      const sync=()=>{num.max=sel.value.includes('mls')?'235':'0';if(!sel.value.includes('mls'))num.value='0'};
+      const save=()=>{sync();try{audio.setRoleVoice(role,sel.value,Number(num.value))}catch(e){window.notice?.(e.message)}};
+      sel.setAttribute('aria-label',label+' Stimme');sel.onchange=save;num.onchange=save;sync();
+      row.append(sel,num);root.append(row);
+    }
+    anchor.after(root);
+  }
+  function render() { css(); voiceSelect(); speakerSettings(); paintChips(); paintHub(); paintTasks(); loadSecrets(false); if (sheet?.open) fillSheet(); }
 
   function schedText(sc) {
     if (!sc || typeof sc !== 'object') return 'ohne Zeitplan';

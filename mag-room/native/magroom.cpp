@@ -10899,9 +10899,13 @@ static void await_gate(Lane *lane, const std::vector<std::string> &ids,
     return false;
   };
   set_waiting(ids, true, after);
-  if (group)
-    for (const auto &id : ids)
-      if (alive()) lookahead_prefill(agent_index(id));
+  // Actor/mailbox single-flight: while this lane waits, no second
+  // /v1/chat/completions may run ahead of its real turn. A timed-out
+  // speculative HTTP request can still occupy ik's -np 1 backend slot
+  // after the client returns, producing two overlapping apparent runs.
+  // Keep the shared, serialized lane and staggered turn; its existing
+  // resident prefix is reused when the real turn begins.
+  // Do not start speculative inference outside the active turn.
   {
     // Upper bound: a long first turn (tools) must not mute the others.
     const auto cap = steady_clock::now() + seconds(std::max(1, envi("MAG_ROOM_GROUP_STAGGER_MAX_S", 90)));

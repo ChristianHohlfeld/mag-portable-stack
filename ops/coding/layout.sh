@@ -15,6 +15,7 @@ old=(mag-llm-mistral-room.service mag-llm-glm@q2.service
 files=(/etc/mag-stack/room-model.env /etc/mag-stack/room-layout /etc/mag-stack/room-layout.pinned
        /etc/systemd/system/mag-llm-coding@.service
        /usr/local/lib/mag-coding/start-live.sh /usr/local/lib/mag-coding/runtime.sha
+       /usr/local/lib/mag-coding/flint-chat.jinja
        /usr/local/lib/mag-coding/runtime-coder.sha
        /usr/local/lib/mag-coding/stage.py /usr/local/lib/mag-coding/models.json
        /etc/systemd/system/mag-120.service.d/80-coding-output.conf)
@@ -87,7 +88,7 @@ if [[ $ACTION == rollback ]]; then rollback; exit 0; fi
 [[ $ACTION == probe || $ACTION == apply ]] || fail 'unknown action'
 selected="$(bash "$ROOT/ops/coding/desired.sh")"
 [[ $selected == coding ]] || fail "coding helper invoked for $selected"
-identity="coding $(cat "$ROOT/ops/coding/models.json" "$ROOT/ops/coding/layout.sh" "$ROOT/ops/coding/start-live.sh" "$ROOT/ops/coding/prepare.sh" "$ROOT/ops/coding/mag-llm-coding@.service" "$ROOT/ops/room/coding.env" "$ROOT/ops/room/coding0.env" | sha256sum | cut -c1-16)"
+identity="coding $(cat "$ROOT/ops/coding/models.json" "$ROOT/ops/coding/layout.sh" "$ROOT/ops/coding/start-live.sh" "$ROOT/ops/coding/flint-chat.jinja" "$ROOT/ops/coding/prepare.sh" "$ROOT/ops/coding/mag-llm-coding@.service" "$ROOT/ops/room/coding.env" "$ROOT/ops/room/coding0.env" | sha256sum | cut -c1-16)"
 if [[ $(cat "$FAILED" 2>/dev/null || true) == "$identity" ]]; then
   echo 'coding layout: a prior live cutover failed; refusing unattended retry' >&2
   [[ $ACTION != probe ]] || exit 78
@@ -131,6 +132,7 @@ if [[ $previous == coding ]] && (( interim && ! coder_ready )); then
   systemctl is-active --quiet mag-llm-coding@0.service || fail 'coding NUMA0 not active'
   wait_ready mag-llm-coding@0.service 8191 6 || fail 'coding NUMA0 unhealthy'
   cmp -s "$ROOT/ops/coding/start-live.sh" /usr/local/lib/mag-coding/start-live.sh || fail 'coding launcher drift'
+  cmp -s "$ROOT/ops/coding/flint-chat.jinja" /usr/local/lib/mag-coding/flint-chat.jinja || fail 'coding chat template drift'
   cmp -s "$ROOT/ops/coding/mag-llm-coding@.service" /etc/systemd/system/mag-llm-coding@.service || fail 'coding unit drift'
   echo 'coding layout unchanged: Qwen3.8 NUMA0 + GLM-Q2 NUMA1 (Qwen3-Coder-Next not staged yet)'
   exit 0
@@ -143,6 +145,7 @@ if [[ $previous == coding ]] && (( ! interim && ! swap )); then
   done
   cmp -s "$ROOT/ops/room/coding.env" /etc/mag-stack/room-model.env || fail 'coding env drift'
   cmp -s "$ROOT/ops/coding/start-live.sh" /usr/local/lib/mag-coding/start-live.sh || fail 'coding launcher drift'
+  cmp -s "$ROOT/ops/coding/flint-chat.jinja" /usr/local/lib/mag-coding/flint-chat.jinja || fail 'coding chat template drift'
   cmp -s "$ROOT/ops/coding/mag-llm-coding@.service" /etc/systemd/system/mag-llm-coding@.service || fail 'coding unit drift'
   cmp -s "$ROOT/ops/coding/80-coding-output.conf" /etc/systemd/system/mag-120.service.d/80-coding-output.conf || fail 'coding output budget drift'
   echo 'coding layout unchanged; both resident models healthy'
@@ -208,6 +211,7 @@ on_exit(){
 trap on_exit EXIT
 install -d -m 0755 /etc/mag-stack /usr/local/lib/mag-coding /etc/systemd/system/mag-120.service.d
 install -m 0755 "$ROOT/ops/coding/start-live.sh" /usr/local/lib/mag-coding/start-live.sh
+install -m 0644 "$ROOT/ops/coding/flint-chat.jinja" /usr/local/lib/mag-coding/flint-chat.jinja
 install -m 0755 "$ROOT/ops/coding/save-slots.sh" /usr/local/lib/mag-coding/save-slots.sh
 install -m 0644 "$ROOT/ops/coding/stage.py" /usr/local/lib/mag-coding/stage.py
 install -m 0644 "$ROOT/ops/coding/models.json" /usr/local/lib/mag-coding/models.json

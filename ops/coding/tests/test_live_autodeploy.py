@@ -155,6 +155,11 @@ class CodingDeploy(unittest.TestCase):
   self.assertIn('DIR="/home/chris/.local/mag-coding-rt/$REV/bin"',start)
   self.assertIn("alias=flint; file=Flint-Q4_K_M.gguf",start)
   self.assertIn("alias=flint-numa0; file=Flint-Q4_K_M.gguf",start)
+  # Chat without thinking: Flint template override, installed with the launcher.
+  self.assertIn('TEMPLATE_ARGS=(--chat-template-file "$TPL")',start)
+  self.assertIn('install -m 0644 "$ROOT/ops/coding/flint-chat.jinja" /usr/local/lib/mag-coding/flint-chat.jinja',layout)
+  tpl=source("ops/coding/flint-chat.jinja")
+  self.assertIn("{%- if enable_thinking is defined and enable_thinking is false -%}",tpl)
   self.assertIn("FLINT",source("ops/coding/build-runtime.sh"))
   self.assertRegex(source("ops/coding/runtime.sha").strip(),r"^[a-f0-9]{40}$")
   self.assertEqual([new["models"][i]["model_id"] for i in ("general","coder")],["flint-numa0","flint"])

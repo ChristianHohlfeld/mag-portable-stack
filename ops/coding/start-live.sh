@@ -55,12 +55,20 @@ ENGINE=${ENGINE:-ik}
 IK_BIN="/home/chris/.local/mag-coding-ik/$IK_REV/bin/llama-server"
 if [[ $ENGINE == ik && -x $IK_BIN && $(cat "$(dirname "$IK_BIN")/source-commit" 2>/dev/null || true) == "$IK_REV" ]]; then
   IK_SLOT="$SLOT/ik"
+  # Owner 2026-11-04: chat turns without hidden thinking. Flint's GGUF template
+  # ignores enable_thinking; flint-chat.jinja is that template verbatim except
+  # the generation prompt, which pre-fills a closed <think>...</think> block
+  # when enable_thinking=false. Code turns keep thinking (enable_thinking=true).
+  # Server reasoning budget stays -1; the room sets it per request.
+  TEMPLATE_ARGS=()
+  TPL=/usr/local/lib/mag-coding/flint-chat.jinja
+  [[ -r $TPL ]] && TEMPLATE_ARGS=(--chat-template-file "$TPL")
   [[ -d $IK_SLOT ]] || mkdir -p "$IK_SLOT"
   exec numactl --physcpubind="$cpus" --membind="$node" "$IK_BIN" \
     --model "$MODEL" --alias "$alias" --host 127.0.0.1 --port "$port" \
     --ctx-size "$ctx" --parallel 1 --threads 14 --threads-batch 14 --numa numactl \
     --mlock "${extra[@]}" \
-    --jinja --reasoning-format deepseek \
+    --jinja --reasoning-format deepseek "${TEMPLATE_ARGS[@]}" \
     --cache-ram 16384 --ctx-checkpoints 48 --ctx-checkpoints-interval 1024 \
     -fa on --batch-size 2048 --ubatch-size 512 --cache-type-k f16 --cache-type-v f16 \
     --swa-compress \

@@ -50,14 +50,16 @@ class ContextWindowBudget(unittest.TestCase):
 
     def test_chipin_reasoning_budget(self):
         # Complement turns bound hidden reasoning only; replies stay uncapped.
-        self.assertIn('envi("MAG_ROOM_CHIPIN_REASONING_BUDGET", 256)', SOURCE)
-        self.assertIn('if (coding_model && TL_CHIPIN && !TL_SELFTALK) {', SOURCE)
-        self.assertIn('body["reasoning_budget_tokens"] = budget;', SOURCE)
+        self.assertIn('envi("MAG_ROOM_CHIPIN_REASONING_BUDGET", 0)', SOURCE)
+        self.assertIn('} else if (TL_CHIPIN) {', SOURCE)
+        self.assertIn('body["reasoning_budget_tokens"] = flint_budget;', SOURCE)
         self.assertIn('const bool uncapped = coding_model && !TL_SELFTALK;', SOURCE)
 
     def test_short_turn_reasoning_budget(self):
         # Short turns bound hidden reasoning in every round, tool rounds too.
-        self.assertIn('envi("MAG_ROOM_SHORT_REASONING_BUDGET", 256)', SOURCE)
+        self.assertIn('envi("MAG_ROOM_SHORT_REASONING_BUDGET", 0)', SOURCE)
+        # Chat turns: thinking off (budget 0 + enable_thinking=false, Flint template override).
+        self.assertIn('body["chat_template_kwargs"]["enable_thinking"] = flint_think;', SOURCE)
         self.assertIn('envi("MAG_ROOM_SHORT_CODE_REASONING_BUDGET", 1024)', SOURCE)
         self.assertIn('envi("MAG_ROOM_SHORT_TURN_BYTES", 400)', SOURCE)
         self.assertNotIn('mag::str(messages.back(), "role") == "user") {', SOURCE)

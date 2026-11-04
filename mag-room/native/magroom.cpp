@@ -1583,6 +1583,13 @@ static void reveal_answer(const std::string &bot, const std::string &name,
     Val msg = append_room("assistant", name, strip_self_prefix(TL_PARTIAL_TEXT, name), bot,
                           nullptr, "", "", TL_DISPLAY_MS);
     TL_PARTIAL_ID = mag::str(msg, "id");
+    {
+      // Marks a provisional row until attach_work() closes the turn. A
+      // restart uses it to drop the fragment of a turn it resumes silently.
+      std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
+      for (auto it = ROOM.rbegin(); it != ROOM.rend(); ++it)
+        if (mag::str(*it, "id") == TL_PARTIAL_ID) { (*it)["streaming"] = true; break; }
+    }
     stamp_selftalk(msg);
     msg["type"] = "message";
     publish(mj::dump(msg));
@@ -9073,6 +9080,10 @@ static void attach_work(Val &msg, const TurnReport &report) {
   for (auto it = ROOM.rbegin(); it != ROOM.rend(); ++it) {
     if (!it->find("id") || it->find("id")->asStr() != id)
       continue;
+    if (it->obj) it->obj->erase(
+      std::remove_if(it->obj->begin(), it->obj->end(),
+                     [](const auto &kv) { return kv.first == "streaming"; }),
+      it->obj->end());
     if (!TL_GROUP.empty()) {
       (*it)["group"] = TL_GROUP;
       (*it)["order"] = TL_ORDER;
@@ -11210,7 +11221,9 @@ static bool dispatchable(const std::vector<std::pair<Lane *, std::vector<std::st
                          std::set<Lane *> &claimed) {
   bool ok = true;
   for (auto &p : parts) {
-    if (p.first->busy.load() || claimed.count(p.first)) ok = false;
+    // Same predicate as the start_lanes_locked() admission guard, so an
+    // accepted item is never dropped after it left the queue.
+    if (p.first->busy.load() || p.first->turn.load() != 0 || claimed.count(p.first)) ok = false;
     // The previous process may still be decoding. A new completion would
     // cancel that task and prefill from scratch.
     if (slot_resume_held_for(p.second)) ok = false;
@@ -11479,7 +11492,7 @@ static bool dispatch_locked() {
       AUTO_READY = false;
       return true;
     }
-    if (lane->busy.load() || !bot_prefix_ready(AUTO_OWNER))
+    if (lane->busy.load() || lane->turn.load() != 0 || !bot_prefix_ready(AUTO_OWNER))
       return false;
     AUTO_READY = false;
     --AUTO_TURNS_LEFT;
@@ -13049,6 +13062,28 @@ int main() {
         if (std::none_of(PARKED_JOBS.begin(), PARKED_JOBS.end(),
                          [&](const Job &j) { return j.ids == r->ids; }))
           PARKED_JOBS.push_front(*r);
+      }
+      {
+        // A provisional answer row of an unfinished turn: the resumed turn
+        // answers again silently, so drop the fragment. A turn that is not
+        // resumed keeps its text, marked as interrupted by the system.
+        std::set<std::string> resumed;
+        for (const auto &j : PARKED_JOBS) resumed.insert(j.ids.begin(), j.ids.end());
+        std::lock_guard<std::recursive_mutex> st(STATE_MTX);
+        bool changed = false;
+        for (auto m = ROOM.begin(); m != ROOM.end();) {
+          const Val *f = m->find("streaming");
+          if (!f || !f->asBool(false)) { ++m; continue; }
+          changed = true;
+          if (resumed.count(mag::str(*m, "bot"))) { m = ROOM.erase(m); continue; }
+          if (m->obj) m->obj->erase(
+            std::remove_if(m->obj->begin(), m->obj->end(),
+                           [](const auto &kv) { return kv.first == "streaming"; }),
+            m->obj->end());
+          (*m)["interrupted"] = true; (*m)["stopped"] = "system";
+          ++m;
+        }
+        if (changed) save_room();
       }
       if (!PARKED_JOBS.empty()) {
         AUTO_OWNER = PARKED_JOBS.front().ids.front();

@@ -378,7 +378,7 @@ mv -Tf /opt/mag-stack/.current-next /opt/mag-stack/current
 # Compatibility name is deliberately retained for existing guest wrappers/sudoers.
 install -m 0755 "$RELEASE/bin/magbot-native" /usr/local/bin/magbot
 install -m 0755 "$SOURCE/ops/spawnbot" "$SOURCE/ops/despawnbot" /usr/local/bin/
-install -m 0755 "$SOURCE/ops/magbot-guest-run" "$SOURCE/ops/magbot-agent-ctl" "$SOURCE/ops/magbot-netmode" /usr/local/sbin/
+install -m 0755 "$SOURCE/ops/magbot-guest-run" "$SOURCE/ops/magbot-agent-ctl" "$SOURCE/ops/magbot-netmode" "$SOURCE/ops/magbot-modelctl" /usr/local/sbin/
 install -m 0440 "$SOURCE/ops/magbot-guest.sudoers" /etc/sudoers.d/magbot-guest
 visudo -cf /etc/sudoers.d/magbot-guest >/dev/null
 install -m 0644 "$SOURCE/ops/mag-120.service" "$SOURCE/ops/mag-browser-webrtc.service" /etc/systemd/system/
@@ -585,6 +585,12 @@ else
        systemctl is-enabled --quiet mag-llm-ds-node@0.service; then
     model_ports=(8191 8192)
     require_deepseek=1
+  fi
+  # "Bots stoppen" freezes the model units on purpose (room state
+  # models_halted); a frozen server cannot answer /health and is not broken.
+  if [[ $(cat "${MAG_ROOM_STATE:-/var/lib/magbot/room}/models_halted" 2>/dev/null) == on* ]]; then
+    echo 'Models are hard-stopped (frozen) by the room; skipping model health'
+    model_ports=()
   fi
   for port in "${model_ports[@]}"; do
     if ! curl --noproxy '*' -fsS --max-time 10 "http://127.0.0.1:${port}/health" >/dev/null; then

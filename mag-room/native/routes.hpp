@@ -295,11 +295,22 @@ static bool quiesce_all(std::unique_lock<std::mutex> &sched,
     cancel_active(true);
     task_cancel("", "");
     cancel_prewarm();
-    std::lock_guard<std::mutex> lk(JOB_MTX);
-    JOBS.clear(); ACTIVE_JOBS.clear(); PENDING.clear(); PARKED_JOBS.clear(); QUEUE_PAUSED = false;
-    AUTO_READY = false; AUTO_OWNER.clear(); ++AUTO_GENERATION;
-    AUTO_LAST_PROGRESS.clear(); AUTO_TURNS_LEFT = 0;
-    save_queue_locked(); queue_event_locked();
+    jobs_abort_all(); // running job runs, queued runs and their leases
+    {
+      std::lock_guard<std::mutex> lk(JOB_MTX);
+      JOBS.clear(); ACTIVE_JOBS.clear(); PENDING.clear(); PARKED_JOBS.clear(); QUEUE_PAUSED = false;
+      AUTO_READY = false; AUTO_OWNER.clear(); ++AUTO_GENERATION;
+      AUTO_LAST_PROGRESS.clear(); AUTO_TURNS_LEFT = 0;
+      save_queue_locked(); queue_event_locked();
+    }
+    // Same as Stop: the llama slots drop the request now (no generation keeps
+    // running into the reset) and get their saved prefix back. Skipped while
+    // the models are frozen by a hard stop; they are idle then anyway.
+    if (!MODELS_HALTED.load()) {
+      cancel_llama_tasks(1500);
+      reload_slots_after_cancel(1500);
+    }
+    clear_runs();
   }
   for (int i = 0; i < (force ? 400 : 1); ++i) {
     if (i) std::this_thread::sleep_for(std::chrono::milliseconds(50));
@@ -1826,6 +1837,13 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
     send_json(fd, response.status, mj::dump(response.value));
     return;
   }
+  if (m == "POST" && (path == "/api/models/halt" || path == "/api/models/resume")) {
+    if (actor.role != "owner") { error_json(fd, 403, "Nur der Besitzer"); return; }
+    Val out = path == "/api/models/halt" ? hard_stop_models() : resume_models();
+    const bool ok = !out.find("error");
+    send_json(fd, ok ? 200 : 500, mj::dump(out));
+    return;
+  }
   if (m == "POST" && path == "/api/offline") {
     bool off = has_json && body.find("on") && body.find("on")->asBool(false);
     if (!set_offline(off)) {
@@ -1961,7 +1979,15 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
   if (m == "POST" && path == "/api/reset") {
     if (actor.role != "owner") { error_json(fd,403,"Nur der Besitzer"); return; }
     stop_autotalk();
-    std::lock_guard<std::shared_mutex> turn(TURN_MTX);
+    // Abort every turn, job run and queued item first; holding TURN_MTX
+    // without cancelling waited forever behind an unbounded bot dialogue.
+    std::unique_lock<std::mutex> sched;
+    std::unique_lock<std::shared_mutex> turn;
+    if (!quiesce_all(sched, turn, true)) {
+      error_json(fd, 503, "Bots werden noch gestoppt – Raum nicht zurückgesetzt");
+      return;
+    }
+    sched.unlock();
     std::vector<std::string> vms;
     {
       std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
@@ -1971,11 +1997,12 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
           vms.push_back(v->asStr());
       }
     }
+    // A stopped VM has nothing to clean now; it must not block the reset.
     for (auto &vm : vms) {
       auto result = guest_command(
           vm, "rm -rf -- /home/bot/room && mkdir -p /home/bot/room", 20);
       if (result.code)
-        throw std::runtime_error("Guest room cleanup failed: " + vm);
+        std::cerr << "reset: guest room cleanup failed vm=" << vm << "\n";
     }
     reset_room(true);
     retire_frontend_override();

@@ -574,6 +574,25 @@ static JobsResponse jobs_request(const std::string &method,
   }
   return jobs_error(404, "Unbekannte Job-Aktion");
 }
+// Room/bot reset and hard stop: abort every running job run, drop the queued
+// ones and release their leases. A dropped run used to keep queued_run set,
+// so job_enqueue_locked() refused that job forever. A running run clears its
+// own lease when it unwinds (status "abgebrochen").
+static void jobs_abort_all() {
+  std::lock_guard<std::mutex> lk(JOBDEF_MTX);
+  std::set<std::string> running;
+  {
+    std::lock_guard<std::mutex> jl(JOB_MTX);
+    JOBRUNS.clear();
+    for (const auto &kv : JOB_ACTIVE) running.insert(kv.first);
+    jobs_abort_active_locked([](const JobActive &) { return true; });
+  }
+  bool changed = false;
+  for (auto &j : JOBDEFS)
+    if (!j.queued_run.empty() && !running.count(j.queued_run)) { j.queued_run.clear(); changed = true; }
+  if (changed) jobs_save_locked();
+  jobs_event_locked();
+}
 // Bot removal: its jobs are part of the bot, not of the room.
 static void jobs_drop_bot(const std::string &bot) {
   if (bot.empty()) return;

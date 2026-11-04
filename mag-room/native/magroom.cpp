@@ -7550,6 +7550,9 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
       std::string result;
       TL_IN_TOOL = true;
       TOOLS_IN_FLIGHT.fetch_add(1);
+      // Diagnostics (hang 2026-11-04 17:43): a lane that stays busy after the
+      // model finished is inside a tool; name it in the journal.
+      std::cerr << "tool-start bot=" << bot_field(bot_idx, "id") << " tool=" << fname << std::endl;
       try {
         result = dispatch_tool(bot_idx, fname, args);
       } catch (std::exception &ex) {
@@ -7557,6 +7560,8 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
       }
       TOOLS_IN_FLIGHT.fetch_sub(1);
       TL_IN_TOOL = false;
+      std::cerr << "tool-end bot=" << bot_field(bot_idx, "id") << " tool=" << fname << " ms="
+                << duration_cast<milliseconds>(steady_clock::now() - tool_from).count() << std::endl;
       if (stop_flag().load()) {
         // Stopped while the tool ran: no half result reaches the model.
         Val rec = Val::object();
@@ -10907,23 +10912,26 @@ static void lane_turn(Lane *lane, uint64_t run, std::vector<std::string> ids,
   lane_finish(lane, run, owner_ran, more, progress, epoch, generation);
 }
 static void lane_job(Lane *lane, uint64_t run, JobRun job) {
+  // Register/unregister OUTSIDE TURN_MTX: quiesce_all() holds JOB_MTX and then
+  // waits for TURN_MTX exclusively; taking JOB_MTX under the shared TURN_MTX
+  // lock would deadlock the whole room (lock-order inversion).
+  {
+    std::lock_guard<std::mutex> lk(JOB_MTX);
+    JOB_ACTIVE[job.run_id] = JobActive{job.job_id, job.bot, lane};
+  }
   {
     std::shared_lock<std::shared_mutex> turn(TURN_MTX);
     TL_LANE = lane;
     TURN_THINK = -1;
     TL_GOAL_ID = "job-" + job.run_id;
     TL_TODO_TOUCHED = false;
-    {
-      std::lock_guard<std::mutex> lk(JOB_MTX);
-      JOB_ACTIVE[job.run_id] = JobActive{job.job_id, job.bot, lane};
-    }
     try { run_job(job); } catch (const std::exception &e) { emit_event("error", "", "", e.what()); }
-    {
-      std::lock_guard<std::mutex> lk(JOB_MTX);
-      JOB_ACTIVE.erase(job.run_id);
-    }
     TL_GOAL_ID.clear();
     TL_LANE = nullptr;
+  }
+  {
+    std::lock_guard<std::mutex> lk(JOB_MTX);
+    JOB_ACTIVE.erase(job.run_id);
   }
   lane_finish(lane, run, false, false, "", 0);
 }
@@ -11504,7 +11512,8 @@ static Val user_stop(bool pause_jobs) {
   const bool settling = tasks_running() || any_lane_busy_for_stop() || BUSY.load();
   out["settling"] = settling;
   if (settling)
-    std::cerr << "stop: waiting for running lane/task to unwind; actual busy state retained\n";
+    std::cerr << "stop: waiting for running lane/task to unwind; actual busy state retained"
+              << " tools_in_flight=" << TOOLS_IN_FLIGHT.load() << " tasks=" << (tasks_running() ? 1 : 0) << "\n";
   // "stopped" is final confirmation, not an optimistic acknowledgement.
   // If an external tool is still unwinding, publish only a settling state.
   Val e = Val::object();

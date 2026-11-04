@@ -24,9 +24,16 @@ contents; secret files are only checked for existence and mode.
 `ops/coding/models.json` is the model manifest. Ornith-1.5-35B-A3B runs on
 both NUMA nodes (`general` = NUMA0 :8191, `coder` = NUMA1 :8192):
 
-- File `Ornith-1.5-35B-A3B-Q4_K_M.gguf`, 21 864 081 056 bytes,
-  SHA256 `12d8d5c01bae7f23ea4822b2f96ba069d531f827d02a57c31002f2f95e72614a`
-- Source: <https://huggingface.co/bartowski/Ornith-1.5-35B-A3B-GGUF/resolve/main/Ornith-1.5-35B-A3B-Q4_K_M.gguf>
+- NUMA1 (Noah): `Ornith-1.5-35B-A3B-Q4_K_M.gguf`, 21 864 081 056 bytes,
+  SHA256 `12d8d5c01bae7f23ea4822b2f96ba069d531f827d02a57c31002f2f95e72614a`,
+  <https://huggingface.co/bartowski/Ornith-1.5-35B-A3B-GGUF/resolve/main/Ornith-1.5-35B-A3B-Q4_K_M.gguf>
+- NUMA0 (Lena): `Ornith-1.5-35B-A3B-AD-Q6_K-Q5_K.gguf`, 26 249 607 360 bytes,
+  SHA256 `c732a550672b4f8e0d66c8b395e84640d1df0cb929489dd32d4e9a0dea509a04`, plus
+  MTP head `mtp-Ornith-1.5-35B-A3B-Q8_0.gguf`, 1 990 649 856 bytes, SHA256
+  `c3191614e6863b908349fe5c29cd15a24c181bdab98b16089f7271a806ab79af`, both from
+  <https://huggingface.co/AtomicChat/Ornith-1.5-35B-A3B-GGUF> at revision
+  `385f6c4c886f2376659fd964be85bff09a77c791`, hard-linked from
+  `/home/chris/models/ornith-1.5-35b-a3b-atomic/`
 - MTP self-speculation (`--spec-type draft-mtp`, n_max 3) per node via the
   `mtp` field in models.json / `start-live.sh`: `embedded` uses the nextn block
   inside the GGUF (bartowski Q4_K_M), `file` a pinned separate MTP head.

@@ -59,7 +59,10 @@ For each function call, output the function name and arguments within the follow
 {%- if add_generation_prompt -%}
 <|assistant|>
 {%- if enable_thinking is defined and enable_thinking is false -%}
-{%- if tools -%}
+{%- set last = messages[-1] if messages else none -%}
+{%- if last is not none and last.role == 'user' and last.content is string and last.content.startswith('[System] Deine Reaktion ist gesetzt') -%}
+<think>The reaction is set. We need a short visible text reply now, no tool.</think>
+{%- elif tools -%}
 <think>We need respond, using a tool if the request needs one.</think>
 {%- else -%}
 <think>We need answer.</think>

@@ -32,6 +32,13 @@ int main() {
   CHECK(!leading_pass("Passwort ist falsch\nmehr"));
   CHECK(!leading_pass("Hier ist der Code:\nPASS"));
   CHECK(is_pass("[Flint] PASS"));
+  CHECK(is_pass("**[PASS]**"));
+  CHECK(is_pass("<PASS>"));
+  CHECK(!is_pass("Passend dazu: X"));
+  CHECK(maybe_name_only("No", {"Lena", "Noah"}));
+  CHECK(maybe_name_only("[Noah", {"Lena", "Noah"}));
+  CHECK(maybe_name_only("Noah (qwen-nu", {"Lena", "Noah"}));
+  CHECK(!maybe_name_only("Noah hat", {"Lena", "Noah"}));
   CHECK(is_pass("[PASS]"));
   CHECK(is_pass(" [pass]\n"));
   CHECK(is_pass("[Lena] [PASS]"));

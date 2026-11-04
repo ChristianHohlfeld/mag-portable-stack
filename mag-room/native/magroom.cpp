@@ -2438,6 +2438,16 @@ static std::string strip_self_prefix(const std::string &t, const std::string &na
   if (e < t.size() && t[e] == '\n') ++e;
   return t.substr(e);
 }
+// Room bot names: a streamed reply that may still be only one of them stays hidden.
+static std::vector<std::string> room_bot_names() {
+  std::vector<std::string> out;
+  std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
+  for (const auto &a : AGENTS) {
+    const std::string n = mag::str(a, "name");
+    if (!n.empty()) out.push_back(n);
+  }
+  return out;
+}
 static std::string identity_block(int bot_idx) {
   const std::string name = bot_field(bot_idx, "name", "Bot");
   const std::string persona = bot_field(bot_idx, "persona");
@@ -7256,7 +7266,8 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
         if (chip_open) {
           emit_event("draft", bot_id, bot_name, piece);
           reveal_answer(bot_id, bot_name, piece);
-        } else if (!group_chat::maybe_pass(live)) {
+        } else if (!group_chat::maybe_pass(live) &&
+                   !group_chat::maybe_name_only(live, room_bot_names())) {
           chip_open = true;
           emit_event("draft", bot_id, bot_name, live);
           reveal_answer(bot_id, bot_name, live);
@@ -8564,7 +8575,7 @@ static void dispatch_after_turn(uint64_t run, const std::string &speaker,
   // PASS (skipped with text) or a bare reaction: the bot chose not to speak.
   const bool passed = r.react_only || (r.skipped && !trim(r.text).empty());
   if (!passed && (r.skipped || trim(r.text).empty())) return; // stopped/disabled
-  if (passed && TL_CHIPIN) { // nobody answers a PASS: the chain ends here
+  if (passed) { // nobody answers a PASS (chip-in or staggered): the chain ends here
     std::cerr << "dispatch-rest trigger=" << trigger << " reason=chipin-pass" << std::endl;
     return;
   }

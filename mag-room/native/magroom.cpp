@@ -11416,7 +11416,7 @@ static std::mutex NETMODE_MTX; // serialises toggles: UI state == nft state
 static bool set_offline(bool off) {
   std::lock_guard<std::mutex> nl(NETMODE_MTX);
   bool ok = apply_offline(off);
-  if (!ok && off) return false; // never claim offline if not enforced
+  if (!ok) return false; // never claim either state unless nft confirms it
   OFFLINE = off;
   WEB_ENABLED = !off;
   write_file(STATE_DIR + "/offline", off ? "on" : "off");

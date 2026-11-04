@@ -9035,7 +9035,10 @@ static void attach_work(Val &msg, const TurnReport &report) {
     if (stop_flag().load() || (TL_LANE && TL_LANE->user_cancel.load())) {
       (*it)["interrupted"] = true; (*it)["stopped"] = "user";
       msg["interrupted"] = true; msg["stopped"] = "user";
-      (*it).obj->erase("truncated");
+      if (it->obj) it->obj->erase(
+        std::remove_if(it->obj->begin(), it->obj->end(),
+                       [](const auto &kv) { return kv.first == "truncated"; }),
+        it->obj->end());
     } else if (report.truncated) {
       (*it)["truncated"] = true;
       msg["truncated"] = true;

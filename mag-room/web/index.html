@@ -954,7 +954,10 @@ function addHtmlPreview(pre,bar,code,live){
   pre.hidden=mode==='preview';frame.hidden=mode!=='preview';
   tabCode.setAttribute('aria-selected',String(mode==='code'));
   tabPreview.setAttribute('aria-selected',String(mode==='preview'));
-  if(mode==='preview')box._mount();
+  if(mode==='preview'){
+   if(htmlPreviewSeen)htmlPreviewSeen.observe(box);
+   else box._mount();
+  }
   if(mode==='code'&&box.classList.contains('max'))full.click();
  };
  const full=mk('Vollbild','Vorschau im Vollbild',()=>{const on=!box.classList.contains('max');box.classList.toggle('max',on);full.textContent=on?'Schließen':'Vollbild';document.documentElement.classList.toggle('code-preview-open',on)});

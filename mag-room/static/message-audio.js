@@ -224,7 +224,7 @@
   }
   function roleVoice(opts) {
     const cfg = piper.config;
-    if (!cfg || voicePref() === 'system') return null;
+    if (!cfg) return null;
     const role=roleId(opts);
     if(role)return {...savedRoleVoice(role),fixed:true};
     const roles = cfg.roles || {};

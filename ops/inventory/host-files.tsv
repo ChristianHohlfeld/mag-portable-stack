@@ -102,3 +102,25 @@ copy	/usr/local/lib/mag-backup/backup.sh	ops/backup/backup.sh
 copy	/usr/local/lib/mag-backup/common.sh	ops/backup/common.sh
 copy	/usr/local/lib/mag-backup/maintenance.sh	ops/backup/maintenance.sh
 copy	/usr/local/lib/mag-backup/restore.sh	ops/backup/restore.sh
+# --- Host helpers installed by the pages/bots/private-access/CI installers
+copy	/etc/systemd/system/cpu-perf.service	ops/boot/cpu-perf.service
+copy	/usr/local/lib/mag-acme/deploy-hook.sh	ops/private-access/deploy-hook.sh
+copy	/usr/local/lib/mag-acme/issue-cert.sh	ops/private-access/issue-cert.sh
+copy	/usr/local/lib/mag-private/confirm.sh	ops/private-access/confirm.sh
+copy	/usr/local/lib/mag-private/rollback.sh	ops/private-access/rollback.sh
+copy	/usr/local/lib/mag-bots/issue-wildcard.sh	ops/bots/issue-wildcard.sh
+copy	/usr/local/lib/mag-bots/site.sh	ops/bots/site.sh
+generated	/usr/local/lib/mag-bots/mag-bots-publish	ops/bots/install.sh (native build)
+copy	/usr/local/bin/spawnbot	ops/spawnbot
+copy	/usr/local/bin/despawnbot	ops/despawnbot
+copy	/usr/local/lib/mag-pages/issue-wildcard.sh	ops/pages/issue-wildcard.sh
+copy	/usr/local/lib/mag-pages/pages-gc.sh	ops/pages/pages-gc.sh
+copy	/usr/local/lib/mag-pages/pages-policy.sh	ops/pages/pages-policy.sh
+copy	/usr/local/lib/mag-pages/pages-reconcile.sh	ops/pages/pages-reconcile.sh
+copy	/usr/local/lib/mag-pages/refresh-custom.sh	ops/pages/refresh-custom.sh
+copy	/usr/local/lib/mag-pages/render-nginx.sh	ops/pages/render-nginx.sh
+copy	/etc/systemd/system/mag-pages-reconcile.service	ops/pages/mag-pages-reconcile.service
+copy	/usr/local/lib/mag-ci/admin-session.sh	ops/gitea-ci/admin-session.sh
+copy	/usr/local/lib/mag-ci/issue-tailscale-cert.sh	ops/tailscale/issue-tailscale-cert.sh
+copy	/usr/local/sbin/mag-gitea-bot-auth	ops/gitea-ci/bot-auth.sh
+copy	/usr/local/sbin/mag-gitea-bot-rights	ops/gitea/bot-rights.sh

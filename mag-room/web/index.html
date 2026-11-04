@@ -922,7 +922,7 @@ function htmlPreviewDoc(code,lang){
  const l=String(lang||'').toLowerCase(),js=/^(javascript|js|typescript|ts|jsx)$/.test(l);
  // Browser cannot run TS/JSX source without transpilation. Plain JS modules work.
  if(js&&/^(typescript|ts|jsx)$/.test(l))return '<!doctype html><meta charset="utf-8"><p>Diese Vorschau benötigt zuerst kompiliertes JavaScript.</p>';
- const map='<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/"}}</script>';
+ const map='<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/"}}<\/script>';
  if(js) return '<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'+map+
    '</head><body><script type="module">'+code+'<\/script></body></html>';
  let doc=/^\s*(?:<!--[\s\S]*?-->\s*)*(?:<!doctype|<html[\s>])/i.test(code)

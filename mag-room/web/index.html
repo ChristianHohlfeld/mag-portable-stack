@@ -3870,6 +3870,19 @@ function recordBotDelta(id,delta){
  stableLast=s.parts.at(-1).key;
  s.node=stableNodes.get(stableLast)||null;
 }
+function ensureMessageTools(node,m,text){
+ let actions=node.querySelector(':scope > .message-tools');
+ if(!actions){actions=document.createElement('div');actions.className='message-tools';node.append(actions)}
+ actions.style.visibility='';
+ let copy=actions.querySelector('.message-copy');
+ if(!copy){copy=document.createElement('button');copy.type='button';copy.className='message-copy';copy.innerHTML=ICON_COPY+' Kopieren';copy.setAttribute('aria-label','Nachricht kopieren');actions.prepend(copy)}
+ copy.onclick=()=>copyText(text,copy);
+ if(window.magMessageAudio?.attach){
+  let audio=actions.querySelector('.message-speak');
+  if(!audio){audio=document.createElement('button');actions.append(audio)}
+  if(audio._magText!==text||audio._magId!==(m.id||'')){window.magMessageAudio.attach(audio,text,m.id,{user:m.role==='user',bot:m.bot||'',name:m.name||''});audio._magText=text;audio._magId=m.id||''}
+ }
+}
 const stableAppendOriginal=append;
 append=function(m,scroll=false,trace=null,position=-1){
  const key=stableKey(m),old=stableNodes.get(key),text=shownText(m);
@@ -3881,6 +3894,10 @@ append=function(m,scroll=false,trace=null,position=-1){
    const copy=old.querySelector('.message-copy');
    if(copy)copy.onclick=()=>copyText(text,copy);
   }
+  // A streamed reply is built live with an empty text, so its tool row had no
+  // copy/read-aloud buttons. Once the message is final (or has text), make sure
+  // every message - bot and human - carries both, bound to the final text.
+  if(text&&!m.live)ensureMessageTools(old,m,text);
   return old;
  }
  const node=stableAppendOriginal(m,false,trace,position);

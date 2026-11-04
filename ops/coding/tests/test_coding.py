@@ -49,7 +49,10 @@ class CodingStage(unittest.TestCase):
     def test_source_hash_pins_and_long_output_are_explicit(self):
         self.assertEqual(
             DATA["models"]["general"]["sha256"],
-            "12d8d5c01bae7f23ea4822b2f96ba069d531f827d02a57c31002f2f95e72614a")
+            "c732a550672b4f8e0d66c8b395e84640d1df0cb929489dd32d4e9a0dea509a04")
+        self.assertEqual(
+            DATA["models"]["general"]["mtp"]["sha256"],
+            "c3191614e6863b908349fe5c29cd15a24c181bdab98b16089f7271a806ab79af")
         self.assertEqual(
             DATA["models"]["coder"]["sha256"],
             "12d8d5c01bae7f23ea4822b2f96ba069d531f827d02a57c31002f2f95e72614a")

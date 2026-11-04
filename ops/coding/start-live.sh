@@ -32,8 +32,12 @@ case "$which" in
   # Q4_K_M: blk.40, nextn_predict_layers=1); mtp=<file>: separate MTP head GGUF
   # (AtomicChat quants are converted --no-nextn). -np 1 is already the layout
   # (one lane per node), which is MTP's upstream requirement.
+  # NUMA0 (Lena): AtomicChat AD-Q6_K-Q5_K for code quality (card KLD 0.0158 /
+  # top-1 94.85 % vs Q4_K_M 0.0477 / 91.0 %) + its pinned Q8_0 MTP head;
+  # NUMA1 (Noah): bartowski Q4_K_M + embedded MTP (fast lane). Both files stay
+  # on disk; switching back is a models.json/start-live.sh change.
   0) node=0; cpus=0-13; port=8191; name=general; ctx=262144
-     alias=ornith-numa0; file=Ornith-1.5-35B-A3B-Q4_K_M.gguf; mtp=
+     alias=ornith-numa0; file=Ornith-1.5-35B-A3B-AD-Q6_K-Q5_K.gguf; mtp=mtp-Ornith-1.5-35B-A3B-Q8_0.gguf
      extra=(--temp 0.6 --top-p 0.95 --top-k 20 --min-p 0.0) ;;
   1) node=1; cpus=14-27; port=8192; name=coder; ctx=262144
      alias=ornith; file=Ornith-1.5-35B-A3B-Q4_K_M.gguf; mtp=embedded

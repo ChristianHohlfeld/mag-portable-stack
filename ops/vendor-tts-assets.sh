@@ -7,7 +7,7 @@
 # openslr.org/94), staged but unused: its audiobook speakers sounded odd and
 # a second large model in the worker made phones fall back to the system
 # voice mid-answer (2026-11-04). One fixed single-speaker voice per speaker:
-# Lena Kerstin, Noah Thorsten (unchanged medium), Chris's own messages
+# Lena Kerstin, Chris's own messages Thorsten (unchanged medium), Noah
 # de_DE-karlsson-low (male, M-AILABS); no pitch/rate shifting anywhere.
 # Medium is the German quality/speed point: high is ~114 MB and several times
 # slower on WASM, which delayed the first word and made every cold load heavy.
@@ -78,8 +78,8 @@ cat > "$OUT/tts-config.json" <<JSON
  {"id":"kerstin","label":"Kerstin (weiblich)","model":"de_DE-kerstin-low.onnx","license":"CC0"}],
  "roles":{
   "female":{"model":"de_DE-kerstin-low.onnx","speaker":0,"license":"CC0"},
-  "user":{"model":"de_DE-karlsson-low.onnx","speaker":0,"license":"M-AILABS"},
-  "male":{"model":"de_DE-thorsten-medium.onnx","speaker":0,"license":"CC0"}},
+  "user":{"model":"de_DE-thorsten-medium.onnx","speaker":0,"license":"CC0"},
+  "male":{"model":"de_DE-karlsson-low.onnx","speaker":0,"license":"M-AILABS"}},
  "bots":{"qwen-numa0":"female","qwen-numa1":"male"},
  "names":{"Lena":"female","Noah":"male"}}
 JSON

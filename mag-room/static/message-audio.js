@@ -184,7 +184,7 @@
   }
   // Exactly one fixed Piper voice per speaker (tts-config.json "roles"),
   // resolved once per playback and used for every part: Lena Kerstin
-  // (female), Noah Thorsten (male), Chris's own messages Karlsson (male).
+  // (female), Noah Karlsson (male), Chris's own messages Thorsten (male).
   // Every voice plays at its native sample rate with the model's own
   // inference settings, without any playbackRate-based shifting (that also
   // slowed and blurred speech). A speaker with a role never falls back to

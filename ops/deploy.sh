@@ -674,6 +674,8 @@ mag_systemctl enable --now mag-stack-check.timer mag-git-gateway.socket
 export MAG_DEFER_DAEMON_RELOAD=1
 export MAG_UNITS_DIRTY_FILE="$BACKUP/late.dirty"
 install -m 0644 "$SOURCE/ops/boot/mag-cpu-tune.service" /etc/systemd/system/mag-cpu-tune.service
+install -d -m 0755 /etc/systemd/system/nginx.service.d
+install -m 0644 "$SOURCE/ops/nginx/nginx-restart.conf" /etc/systemd/system/nginx.service.d/mag-restart.conf
 mag_daemon_reload
 bash "$NGINX_SYNC" commit
 # Late steps must not roll a switched release back. The deadline stays armed

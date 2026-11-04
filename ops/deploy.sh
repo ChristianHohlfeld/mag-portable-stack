@@ -618,9 +618,9 @@ try:
             raise ValueError("expected exactly two room bots, got "+repr(active))
         by_slot = {a.get("slot"): a for a in active}
         b0, b1 = by_slot.get(1), by_slot.get(2)
-        if not b0 or b0.get("numa") != 0 or b0.get("model") not in ("qwen3.8-flash-next", "flint-numa0"):
+        if not b0 or b0.get("numa") != 0 or b0.get("model") not in ("qwen3.8-flash-next", "flint-numa0", "ornith-numa0"):
             raise ValueError("expected Qwen3.8 or Flint NUMA0 slot 1, got "+repr(b0))
-        if not b1 or b1.get("numa") != 1 or b1.get("model") not in ("flint", "glm-5.3-flash"):
+        if not b1 or b1.get("numa") != 1 or b1.get("model") not in ("flint", "ornith", "glm-5.3-flash"):
             raise ValueError("expected Flint or GLM-Q2 NUMA1 slot 2, got "+repr(b1))
         print("Release ready: "+b0.get("model")+" NUMA0 (:8191) + "+b1.get("model")+" NUMA1 (:8192)")
     else:

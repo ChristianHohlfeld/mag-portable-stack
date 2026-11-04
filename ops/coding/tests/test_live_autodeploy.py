@@ -27,7 +27,7 @@ class CodingDeploy(unittest.TestCase):
   self.assertEqual([data["models"][i]["numa"] for i in ("general","coder")],[0,1])
   self.assertEqual(source("ops/room/layout").strip(),"coding")
   self.assertIn("MAG_ROOM_MAX_TOKENS=16384",source("ops/coding/80-coding-output.conf"))
-  self.assertIn("MAG_ROOM_MODEL_ID_1=flint",source("ops/room/coding.env"))
+  self.assertIn("MAG_ROOM_MODEL_ID_1=ornith",source("ops/room/coding.env"))
  def test_stage_before_stop(self):
   auto=source("ops/auto-update/apply.sh")
   self.assertLess(auto.index("coding/prepare.sh"),auto.index("ops/deploy.sh"))
@@ -95,10 +95,10 @@ class CodingDeploy(unittest.TestCase):
   self.assertIn('? MAX_TOKENS // one round; longer answers continue (no total cap)',room)
   self.assertIn('if (coding_model) glm_stops.pop_back();',room)
   env=source("ops/room/coding.env")
-  self.assertIn("MAG_ROOM_MODEL_ID_0=flint-numa0",env)
-  self.assertIn('CODING_FLINT0_MODEL = "flint-numa0"',room)
+  self.assertIn("MAG_ROOM_MODEL_ID_0=ornith-numa0",env)
+  self.assertIn('CODING_FLINT0_MODEL = "ornith-numa0"',room)
   self.assertIn('CODING_GENERAL_MODEL = "qwen3.8-flash-next"',room)
-  self.assertIn('CODING_CODER_MODEL = "flint"',room)
+  self.assertIn('CODING_CODER_MODEL = "ornith"',room)
  def test_node_scoped_interim(self):
   layout=source("ops/coding/layout.sh")
   self.assertIn('target_env="$ROOT/ops/room/coding0.env"',layout)
@@ -110,7 +110,7 @@ class CodingDeploy(unittest.TestCase):
   import json as _j
   ids=[[b["model"] for b in x["ports"]] for x in _j.loads(source("ops/room/presets.json")) if all("model" in b for b in x["ports"])]
   self.assertIn(["qwen3.8-flash-next","glm-5.3-flash"],ids)
-  self.assertIn(["flint-numa0","flint"],ids)
+  self.assertIn(["ornith-numa0","ornith"],ids)
   boot=source("ops/boot/ensure-boot.sh")
   self.assertIn("Interim coding room: Qwen3.8 NUMA0; GLM-Q2 boot state is never altered.",boot)
   room=source("mag-room/native/magroom.cpp")
@@ -153,16 +153,18 @@ class CodingDeploy(unittest.TestCase):
   self.assertIn('install -m 0644 "$ROOT/ops/qwen/runtime.sha" /usr/local/lib/mag-coding/runtime.sha',layout)
   start=source("ops/coding/start-live.sh")
   self.assertIn('DIR="/home/chris/.local/mag-coding-rt/$REV/bin"',start)
-  self.assertIn("alias=flint; file=Flint-Q4_K_M.gguf",start)
-  self.assertIn("alias=flint-numa0; file=Flint-Q4_K_M.gguf",start)
+  self.assertIn("alias=ornith; file=Ornith-1.5-35B-A3B-Q4_K_M.gguf",start)
+  self.assertIn("alias=ornith-numa0; file=Ornith-1.5-35B-A3B-Q4_K_M.gguf",start)
   # Chat without thinking: Flint template override, installed with the launcher.
   self.assertIn('TEMPLATE_ARGS=(--chat-template-file "$TPL")',start)
   self.assertIn('install -m 0644 "$ROOT/ops/coding/flint-chat.jinja" /usr/local/lib/mag-coding/flint-chat.jinja',layout)
   tpl=source("ops/coding/flint-chat.jinja")
   self.assertIn("{%- if enable_thinking is defined and enable_thinking is false -%}",tpl)
+  self.assertIn("{%- if enable_thinking is defined and enable_thinking is false %}",source("ops/coding/ornith-chat.jinja"))
+  self.assertIn("--chat-template-file /usr/local/lib/mag-coding/ornith-chat.jinja",start)
   self.assertIn("FLINT",source("ops/coding/build-runtime.sh"))
   self.assertRegex(source("ops/coding/runtime.sha").strip(),r"^[a-f0-9]{40}$")
-  self.assertEqual([new["models"][i]["model_id"] for i in ("general","coder")],["flint-numa0","flint"])
+  self.assertEqual([new["models"][i]["model_id"] for i in ("general","coder")],["ornith-numa0","ornith"])
   room=source("mag-room/native/magroom.cpp")
   # No per-round token cap on either coding bot (Flint reasons every turn; Chris: no caps).
   self.assertIn("const bool uncapped = coding_model && !TL_SELFTALK;",room)

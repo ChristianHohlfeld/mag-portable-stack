@@ -4,26 +4,40 @@
   "coding_output_tokens": 16384,
   "models": {
     "general": {
-      "name": "Flint (NUMA0)",
-      "model_id": "flint-numa0",
+      "name": "Ornith 2 (NUMA0)",
+      "model_id": "ornith-numa0",
       "numa": 0,
       "candidate_port": 8291,
-      "repo": "ggml-org/Flint-GGUF",
-      "filename": "Flint-Q4_K_M.gguf",
-      "sha256": "c3c4d93f9db92627a2fc47ea8fe8c64a094cabd3549db544bcdd2c00e9a9a347",
-      "size": 23387911136,
-      "link_from": "/home/chris/models/flint/Flint-Q4_K_M.gguf"
+      "repo": "bartowski/Ornith-1.5-35B-A3B-GGUF",
+      "filename": "Ornith-1.5-35B-A3B-Q4_K_M.gguf",
+      "sha256": "12d8d5c01bae7f23ea4822b2f96ba069d531f827d02a57c31002f2f95e72614a",
+      "size": 21864081056,
+      "link_from": "/home/chris/models/ornith-1.5-35b-a3b/Ornith-1.5-35B-A3B-Q4_K_M.gguf",
+      "chat_template": {
+        "repo": "ornith-ai/Ornith-1.5-35B-A3B",
+        "file": "chat_template.jinja",
+        "git_blob": "b07660ccbbea09ce6ac6741c6d041082033ab031",
+        "sha256": "182e77dd83bd8e9ca818b240b82e28f243762cd5dda32e6eef327df7b1cd107e",
+        "installed_as": "ops/coding/ornith-chat.jinja"
+      }
     },
     "coder": {
-      "name": "Flint",
-      "model_id": "flint",
+      "name": "Ornith (NUMA1)",
+      "model_id": "ornith",
       "numa": 1,
       "candidate_port": 8292,
-      "repo": "ggml-org/Flint-GGUF",
-      "filename": "Flint-Q4_K_M.gguf",
-      "sha256": "c3c4d93f9db92627a2fc47ea8fe8c64a094cabd3549db544bcdd2c00e9a9a347",
-      "size": 23387911136,
-      "link_from": "/home/chris/models/flint/Flint-Q4_K_M.gguf"
+      "repo": "bartowski/Ornith-1.5-35B-A3B-GGUF",
+      "filename": "Ornith-1.5-35B-A3B-Q4_K_M.gguf",
+      "sha256": "12d8d5c01bae7f23ea4822b2f96ba069d531f827d02a57c31002f2f95e72614a",
+      "size": 21864081056,
+      "link_from": "/home/chris/models/ornith-1.5-35b-a3b/Ornith-1.5-35B-A3B-Q4_K_M.gguf",
+      "chat_template": {
+        "repo": "ornith-ai/Ornith-1.5-35B-A3B",
+        "file": "chat_template.jinja",
+        "git_blob": "b07660ccbbea09ce6ac6741c6d041082033ab031",
+        "sha256": "182e77dd83bd8e9ca818b240b82e28f243762cd5dda32e6eef327df7b1cd107e",
+        "installed_as": "ops/coding/ornith-chat.jinja"
+      }
     }
   }
 }

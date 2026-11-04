@@ -49,23 +49,27 @@ trap 'exit 130' INT
 [[ "$RELEASE_ID" =~ ^[a-zA-Z0-9._-]+$ ]] || exit 1
 # shellcheck source=build-targets.sh
 source "$SOURCE/ops/build-targets.sh"
-# Owner 2026-11-04: deploy used to install whatever sat in build/ (a 17:58
-# binary shipped for hours after #313/#314 merged). Always rebuild as the
-# checkout owner first, then refuse to ship if ninja still has pending work.
-if [[ -z ${MAG_DEPLOY_SKIP_BUILD:-} && -f "$SOURCE/build/build.ninja" ]]; then
-  _build_owner=$(stat -c %U "$SOURCE/build/build.ninja")
-  echo "deploy: rebuilding $SOURCE/build as $_build_owner"
-  if [[ $_build_owner == root ]]; then _build_cmd=(ninja); else _build_cmd=(sudo -u "$_build_owner" -H ninja); fi
-  "${_build_cmd[@]}" -C "$SOURCE/build" -j"${MAG_BUILD_JOBS:-10}" \
-    || { echo 'deploy: build failed; nothing installed' >&2; exit 1; }
+# Never install unverified build/ output. Missing graph is a hard error.
+[[ -f "$SOURCE/build/build.ninja" ]] || { echo "deploy: missing Ninja build graph" >&2; exit 1; }
+_build_owner=$(stat -c %U "$SOURCE/build/build.ninja")
+if [[ $_build_owner == root ]]; then _build_cmd=(ninja); else
+  [[ $_build_owner != UNKNOWN ]] || exit 1
+  _build_cmd=(sudo -u "$_build_owner" -H ninja)
 fi
-# Up-to-date check that cannot be fooled by web-only commits: ninja itself
-# must have nothing left to do for the shipped binaries.
-if [[ -f "$SOURCE/build/build.ninja" ]] && ! ninja -C "$SOURCE/build" -n "${MAG_RELEASE_BINARIES[@]}" 2>/dev/null | grep -q '^ninja: no work to do'; then
-  echo 'deploy: build/ is stale relative to the checkout (ninja has pending work); refusing to ship an old binary' >&2
-  exit 1
-fi
-for binary in "${MAG_RELEASE_BINARIES[@]}"; do test -x "$SOURCE/build/$binary"; done
+# Rebuild on EVERY deployment; no environment skip or stale-binary fallback.
+"${_build_cmd[@]}" -C "$SOURCE/build" -j"${MAG_BUILD_JOBS:-10}" "${MAG_BUILD_TARGETS[@]}" || {
+  echo "deploy: build failed; nothing installed" >&2; exit 1;
+}
+# Preserve the real Ninja exit code (no grep pipeline that hides failures).
+_ninja_check=$(ninja -C "$SOURCE/build" -n "${MAG_RELEASE_BINARIES[@]}") || {
+  echo "deploy: Ninja verification failed" >&2; exit 1;
+}
+[[ $_ninja_check == "ninja: no work to do." ]] || {
+  echo "deploy: stale native binaries: $_ninja_check" >&2; exit 1;
+}
+for binary in "${MAG_RELEASE_BINARIES[@]}"; do
+  [[ -x "$SOURCE/build/$binary" ]] || { echo "deploy: missing $binary" >&2; exit 1; }
+done
 # Go is used only for WebRTC/UDP; the room, browsers and VM lifecycle remain C++.
 if [[ ! -x "$SOURCE/build/mag-browser-webrtc" ]]; then
   command -v go >/dev/null || { echo 'Go >=1.23 required to build browser WebRTC gateway' >&2; exit 1; }

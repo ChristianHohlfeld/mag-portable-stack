@@ -5,11 +5,13 @@
 // Turn-taking follows the usual multi-agent group-chat pattern:
 //  - explicit addressing wins (AutoGen GroupChat "speaker selection": a
 //    mentioned agent is the next speaker; "auto"/"round_robin" otherwise),
-//  - with no addressee exactly ONE suitable speaker is selected,
-//  - bot replies may trigger real replies, particularly direct @mentions;
-//    unaddressed bots respond only with substance, otherwise invisible PASS,
-//  - hard round budget per human message (not once-per-bot), never to self,
-//  - a new human message pre-empts every pending follow-up.
+//  - with no addressee every active bot answers the human message for real,
+//  - bot replies trigger further replies, particularly direct @mentions; the
+//    conversation runs server-side on its own like a human chat; a bot may
+//    choose an invisible PASS when it has nothing to say right now,
+//  - when every bot PASSes in a row the chat rests until the next message,
+//  - optional round budget MAG_ROOM_BOT_ROUNDS (0 = unlimited, the default),
+//  - a new human message or Stop pre-empts every pending follow-up.
 #include <algorithm>
 #include <cctype>
 #include <string>
@@ -23,7 +25,7 @@ struct Bot {
   bool coder = false; // code-specialised model (e.g. Flint on NUMA1)
 };
 
-constexpr int kMaxFollowups = 6;
+constexpr int kMaxFollowups = 0; // 0 = unlimited
 
 inline std::string lower(std::string s) {
   for (char &c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
@@ -132,7 +134,7 @@ inline bool looks_like_code(const std::string &text) {
   return false;
 }
 
-// One suitable speaker when nobody is addressed: code -> coder model,
+// Preferred first speaker (ordering hint): code -> coder model,
 // otherwise the first general bot; fallback the first roster bot.
 inline std::string pick_speaker(const std::string &text, const std::vector<Bot> &roster) {
   if (roster.empty()) return "";
@@ -166,6 +168,10 @@ inline bool leading_pass(const std::string &text) {
   if (nl == std::string::npos) return false;
   return is_pass(text.substr(a, nl - a));
 }
+// Consecutive PASSes: rest once every bot passed in a row.
+inline bool conversation_rests(int passes_in_row, size_t roster_size) {
+  return roster_size < 2 || passes_in_row >= (int)roster_size;
+}
 // While streaming: could this still turn into PASS? Then do not reveal yet.
 inline bool maybe_pass(const std::string &partial) {
   if (leading_pass(partial)) return true; // "PASS\n..." is never shown
@@ -188,13 +194,14 @@ inline bool maybe_pass(const std::string &partial) {
 
 // Bot-to-bot next speaker: a direct @mention takes priority. Without one,
 // alternate to another bot and let the recipient decide whether to PASS.
-// The budget is counted per completed bot-to-bot turn, not per distinct bot.
+// The budget is counted per completed bot-to-bot turn; max <= 0 = unlimited.
 inline std::string next_followup(const std::vector<Bot> &roster,
                                  const std::vector<std::string> &spoken,
                                  const std::string &speaker, int followups_used,
                                  int max_followups = kMaxFollowups,
                                  const std::string &reply = "") {
-  if (followups_used >= max_followups) return "";
+  (void)spoken;
+  if (max_followups > 0 && followups_used >= max_followups) return "";
   for (const auto &id : addressed(reply, roster))
     if (id != speaker) return id;
   for (const auto &b : roster)
@@ -203,13 +210,11 @@ inline std::string next_followup(const std::vector<Bot> &roster,
 }
 
 inline const char *gate_instruction() {
-  return "\n[Gruppenchat]\nLies die letzte Nachricht eines anderen Bots aufmerksam. "
-         "Wenn du mit Namen oder @ angesprochen wurdest, antworte direkt darauf, "
-         "frage sinnvoll nach oder widersprich begründet. Sonst antworte nur, "
-         "wenn du wirklich neue Information, eine nötige Korrektur oder eine "
-         "sinnvolle Rückfrage hast. Keine Floskeln, Danksagungen oder "
-         "Höflichkeitsschleifen. Wenn du nichts beizutragen hast, antworte "
-         "ausschliesslich PASS. Das wird nicht angezeigt.";
+  return "\n[Gruppenchat]\nIhr unterhaltet euch ganz natürlich wie Menschen in "
+         "einem Gruppenchat. Lies die letzte Nachricht, geh darauf ein, frag nach, "
+         "erzähl, widersprich, wenn du anderer Meinung bist, sprich andere mit "
+         "Namen oder @ an. Wenn du gerade wirklich nichts sagen magst, antworte "
+         "nur PASS. Das wird nicht angezeigt.";
 }
 
 // Direct turn after earlier complements in the same wire: the old PASS gate

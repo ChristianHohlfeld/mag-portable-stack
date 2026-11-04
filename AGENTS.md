@@ -29,10 +29,12 @@ Enforce autonomy centrally in the C++ scheduler and shared system prompt.
 Chris revoked the ban on bot-triggered room turns on 2026-11-04.
 In the MAG group room, bot messages may trigger another bot's response, including
 explicit @mentions, follow-up questions, corrections and disagreement. Bots see
-other bots' room messages as context and may speak repeatedly, up to
-MAG_ROOM_BOT_ROUNDS (default 6) after each human message. PASS is invisible;
-avoid empty politeness loops. New human input and Stop immediately preempt these
-bot rounds. Per-backend model turns remain serial (one request per -np 1 slot).
+other bots' room messages as context and talk to each other naturally like
+humans, server-side and without any client connected. A human message without
+an addressee is answered by ALL active bots; then the bots keep talking on their
+own (MAG_ROOM_BOT_ROUNDS, default 0 = unlimited). PASS is each bot's own choice
+and invisible; when every bot PASSes in a row the chat rests until the next
+message. New human input and Stop immediately preempt these bot rounds. Per-backend model turns remain serial (one request per -np 1 slot).
 This permission is for room conversation, not unrestricted autonomous tool work.
 Outside room dialogue, continue tools only on a successful tool result, distinct
 progress and [[MAG:WEITER]]; otherwise remain idle.

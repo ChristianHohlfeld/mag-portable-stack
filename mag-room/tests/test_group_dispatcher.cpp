@@ -38,14 +38,20 @@ int main() {
   CHECK(!maybe_pass("Passt"));
   CHECK(!maybe_pass("Ergänzung: "));
   // Real bot dialogue: repeated alternating rounds and direct @mentions.
-  CHECK(kMaxFollowups == 6);
+  CHECK(kMaxFollowups == 0);
+  CHECK(next_followup(r, {}, "qwen-numa0", 500) == "qwen-numa1"); // unlimited
+  CHECK(next_followup(r, {}, "qwen-numa1", 500, 0) == "qwen-numa0");
+  CHECK(!conversation_rests(0, 2));
+  CHECK(!conversation_rests(1, 2));
+  CHECK(conversation_rests(2, 2));
+  CHECK(conversation_rests(0, 1));
   CHECK(next_followup(r, {"qwen-numa0"}, "qwen-numa0", 0) == "qwen-numa1");
   CHECK(next_followup(r, {"qwen-numa0", "qwen-numa1"}, "qwen-numa1", 1) == "qwen-numa0");
   CHECK(next_followup(r, {"qwen-numa0"}, "qwen-numa0", 2, 6, "@Flint bitte prüfen") == "qwen-numa1");
   CHECK(next_followup(r, {}, "qwen-numa1", 3, 6, "@Qwen widersprich") == "qwen-numa0");
   CHECK(next_followup(r, {}, "qwen-numa0", 4, 6, "@Qwen bitte") == "qwen-numa1");
   CHECK(next_followup(r, {}, "qwen-numa1", 6, 6, "@Qwen weiter").empty());
-  CHECK(next_followup(r, {}, "qwen-numa0", 0, 0, "@Flint weiter").empty());
+  CHECK(next_followup(r, {}, "qwen-numa0", 0, 0, "@Flint weiter") == "qwen-numa1"); // 0 = unlimited
   CHECK(next_followup({{"solo","Solo",false}}, {}, "solo", 0).empty());
   if (fails) return 1;
   std::puts("test-group-dispatcher ok");

@@ -12944,9 +12944,20 @@ int main() {
     PREWARM_HOLD = true;
     apply_models_halt(true);
   }
-  // Resume the queue of a previous process. A turn that was running when the
-  // room stopped is marked "unterbrochen" in the room and answered again
-  // first; pending messages follow automatically.
+  // Remove legacy synthetic restart notes from previously persisted rooms.
+  // A pending turn already lives in queue.json and resumes on its actor lane.
+  {
+    std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
+    const size_t before = ROOM.size();
+    ROOM.erase(std::remove_if(ROOM.begin(), ROOM.end(), [](const Val &m) {
+      return mag::str(m, "role") == "assistant" &&
+        mag::str(m, "content") ==
+          "(Antwort unterbrochen – Raum wurde neu gestartet, wird fortgesetzt)";
+    }), ROOM.end());
+    if (ROOM.size() != before) save_room();
+  }
+  // Resume persisted active and queued work automatically and silently
+  // after the backend slot is ready. Pending messages follow in order.
   {
     Val q = Val::object();
     bool ok = false;

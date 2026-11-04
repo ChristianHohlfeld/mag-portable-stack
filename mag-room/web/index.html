@@ -661,6 +661,11 @@ dialog{border-radius:10px;border-color:var(--line);background:var(--surface)}
 .composer-inner .q-chip{min-width:0;margin:0;min-height:28px;padding:2px 4px;box-shadow:none}
 @media(max-width:850px){#app-header{height:48px!important}#app-header .header-title,.brand-caption{display:none!important}.layout{height:calc(var(--vvh,100dvh) - 48px)!important}#conversation,.conversation{padding:10px 12px 12px}#conversation .message{margin-bottom:12px}.composer-wrap{padding:6px 10px max(6px,env(safe-area-inset-bottom))!important}.composer-inner .q-chip .q-icon,.composer-inner .q-chip .q-now{min-height:28px;height:28px}}
 
+/* Stable chat and composer footprint. */
+#conversation{overflow-anchor:none;scroll-behavior:auto}
+.composer-inner #queue-chips,.composer-inner #queue-chips[hidden]{display:block!important;position:relative;height:36px;min-height:36px;max-height:36px;margin:0;overflow:visible}
+.composer-inner #room-line{height:36px;min-height:36px;max-height:36px}
+.composer-inner .queue-items{position:absolute;bottom:100%;left:0;right:0;z-index:30;max-height:min(40vh,320px);overflow:auto;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:8px;box-shadow:0 10px 30px #0003}
 /* Two fixed model bots are the navigation. No legacy room administration chrome. */
 #fixed-bot-nav[hidden]{display:none!important}
 #app-header #fixed-bot-nav{display:flex;align-items:center;gap:4px;min-width:0;flex:0 1 auto}
@@ -1738,7 +1743,8 @@ function updateStream(botId,immediate=false){
   s.frame=0;if(!s.node?.isConnected)return;
   const content=s.node.querySelector('.content');
   ensureWork(s.node,s,botId);
-  const text=liveText(s);content.hidden=s.thinkingEnabled===false?false:!text;
+  const text=s.parts?.length?visibleAnswer(stripMarkers(s.parts.at(-1).text),s.name||''):liveText(s);
+   content.hidden=s.thinkingEnabled===false?false:!text;
   content.dataset.loading=s.thinkingEnabled===false&&!text?'1':'0';
   if(!text){s.node.classList.add('processing');if(content._shown!==''){content.replaceChildren();content._shown=''}}
   else{s.node.classList.remove('processing');if(content._shown!==text){content.innerHTML=safeMarkdown(text);decorate(content,true);content._shown=text}}
@@ -2167,7 +2173,7 @@ async function refresh(){const seq=++refreshSeq;const r=await fetch('/api/state'
   }
   notice('');syncStopButton();
  }
- if(state.you?.role==='owner'&&Date.now()-backupPollAt>60000){backupPollAt=Date.now();refreshBackup()}if(state.you?.role!=='owner'&&$('backup-warning'))$('backup-warning').hidden=true;for(const a of (state.activities||(state.activity?[state.activity]:[])))if(a&&a.on)mergeActivity(a);setBusyBots(next.busy_bots,next.waiting_bots);syncApprovals(next.approvals);if(seq!==refreshSeq)return;render();window.mcpMenuState&&window.mcpMenuState();renderQueue({pending:next.pending||[],paused:!!next.queue_paused,revision:next.queue_revision,proaktiv_jobs:next.proaktiv_jobs||[]});if($('offline')){$('offline').checked=!!next.offline;window.syncWeb&&window.syncWeb()}initThink();syncModelSettings(next);if(next.model_status)modelStatus(next.model_status);modelInfo(next.model_info);syncModelChoice(next)}
+ if(state.you?.role==='owner'&&Date.now()-backupPollAt>60000){backupPollAt=Date.now();refreshBackup()}if(state.you?.role!=='owner'&&$('backup-warning'))$('backup-warning').hidden=true;for(const a of (state.activities||(state.activity?[state.activity]:[])))if(a&&a.on)mergeActivity(a);setBusyBots(next.busy_bots,next.waiting_bots);syncApprovals(next.approvals);if(seq!==refreshSeq)return;scheduleStableChat();window.mcpMenuState&&window.mcpMenuState();renderQueue({pending:next.pending||[],paused:!!next.queue_paused,revision:next.queue_revision,proaktiv_jobs:next.proaktiv_jobs||[]});if($('offline')){$('offline').checked=!!next.offline;window.syncWeb&&window.syncWeb()}initThink();syncModelSettings(next);if(next.model_status)modelStatus(next.model_status);modelInfo(next.model_info);syncModelChoice(next)}
 async function saveModelSetting(id,patch,control){
  control.disabled=true;
  try{
@@ -3592,32 +3598,50 @@ function paintRoomLine(){
  const focused=document.activeElement;
  const editFocus=focused?.matches('.q-edit')?{id:focused.closest('.q-chip')?.dataset.id,start:focused.selectionStart,end:focused.selectionEnd}:null;
  const chrome=lineChrome();
- box.replaceChildren();
- box.hidden=!(show||keep);
+ const previousHead=$('room-line');
+ box.hidden=false;
  box.classList.toggle('paused',queueState.paused);
  box.classList.toggle('expanded',!!(list.length||talkJobs.length));
- const head=document.createElement('div');head.id='room-line';head.className='queue-head';
- if(!show){for(const el of chrome)head.append(el);box.append(head);return}
- const stat=document.createElement('span');stat.className='activity-status';fillActivity(stat);head.append(stat);
- if(pho){const mark=document.createElement('span');mark.className='pho-save';mark.textContent=pho;head.append(mark)}
+ const head=previousHead||document.createElement('div');
+ head.id='room-line';head.className='queue-head';
+ if(!show){
+  head.querySelector('.activity-status')?.remove();
+  head.querySelector('.pho-save')?.remove();
+  head.querySelector('.q-toggle')?.remove();
+  for(const el of chrome)head.append(el);
+  if(!head.isConnected)box.append(head);
+  box.querySelector('.queue-items')?.remove();
+  return;
+ }
+ let stat=head.querySelector('.activity-status');
+ if(!stat){stat=document.createElement('span');stat.className='activity-status';head.prepend(stat)}
+ fillActivity(stat);
+ let mark=head.querySelector('.pho-save');
+ if(pho){if(!mark){mark=document.createElement('span');mark.className='pho-save';head.append(mark)}mark.textContent=pho}
+ else mark?.remove();
  for(const el of chrome)head.append(el);
  if(list.length||talkJobs.length){
-  const toggle=document.createElement('span');toggle.className='q-toggle';toggle.setAttribute('role','status');toggle.setAttribute('aria-live','polite');
+  let toggle=head.querySelector('.q-toggle');
+  if(!toggle){toggle=document.createElement('span');toggle.className='q-toggle';toggle.setAttribute('role','status');toggle.setAttribute('aria-live','polite');head.append(toggle)}
   const held=list.filter(p=>p.held).length;
   const parts=[];
   if(list.length)parts.push(list.length+' wartet'+(held?' · '+held+' angehalten':''));
   if(talkJobs.length)parts.push(talkJobs.length===1?(talkJobs[0].chipin?'Ergänzung':'Proaktiv'):talkJobs.length+' Ergänzungen');
   toggle.textContent=parts.join(' · ');
-  head.append(toggle);
  }
- box.append(head);
- if(!list.length&&!talkJobs.length)return;
+ else head.querySelector('.q-toggle')?.remove();
+ if(!head.isConnected)box.append(head);
+ if(!list.length&&!talkJobs.length){box.querySelector('.queue-items')?.remove();box._queueSignature='';return}
+ const signature=JSON.stringify([list,talkJobs,queueState.paused,state.you?.role]);
+ if(box._queueSignature===signature)return;
+ box._queueSignature=signature;
  const controls=document.createElement('span');controls.className='queue-controls';
  if(!queueState.paused&&can('stop')){const b=document.createElement('button');b.type='button';b.className='q-btn';b.textContent='Queue pausieren';b.onclick=async()=>{b.disabled=true;try{const r=await api('/api/queue/pause',{});if(r.queue)renderQueue(r.queue);await refresh()}catch(e){notice(e.message)}finally{b.disabled=false}};controls.append(b)}
  if(queueState.paused&&can('stop')){const b=document.createElement('button');b.type='button';b.className='q-btn';b.textContent='Fortsetzen';b.onclick=async()=>{b.disabled=true;try{await api('/api/queue/resume',{});await refresh()}catch(e){notice(e.message)}finally{b.disabled=false}};controls.append(b)}
  if(list.length>1&&can('stop')){const b=document.createElement('button');b.type='button';b.className='q-btn';b.textContent='Zusammenführen';b.onclick=async()=>{b.disabled=true;try{await api('/api/queue/merge',{});await refresh()}catch(e){if(e.status===409)notice('Warteschlange hat sich geändert');else notice(e.message);await refresh().catch(()=>{})}finally{b.disabled=false}};controls.append(b)}
  const items=document.createElement('div');items.className='queue-items';items.id='queue-items';items.append(controls);
- box.append(items);
+ const oldItems=box.querySelector('.queue-items');
+ if(oldItems)oldItems.replaceWith(items);else box.append(items);
  for(const p of list){const chip=document.createElement('div');chip.className='q-chip'+(p.held?' held':'')+(p.urgent?' priority':'');chip.dataset.id=p.id;
  const own=!state.you||state.you.role==='owner'||(!!p.login&&p.login===state.you.login);
  if(p.sender){const who=document.createElement('span');who.className='q-who';who.textContent=p.sender;chip.append(who)}
@@ -3671,7 +3695,7 @@ function renderQueue(q){
   if(p.client_id)localSends.delete(p.client_id);
   // Different messages with the same text must stay independent.
  }
- if(localSends.size!==previous||queueState.pending.length)render();
+ if(localSends.size!==previous||queueState.pending.length)scheduleStableChat();
  paintRoomLine();
 }
 
@@ -3762,6 +3786,115 @@ $('theme-toggle').onclick=()=>{
 };
 updateThemeIcon();
 
+
+/* Incremental chat timeline. One immutable appearance sequence per bubble.
+   Bot continuations begin a new bubble when another author wrote after it. */
+const stableNodes=new Map(),stableSeen=new Map(),stableCompleted=new Map();
+let stableSeq=0,stableStream=0,stableLast='',stableFrame=0,stableMounted=false;
+function stableKey(m){return String(m._stableKey||m.id||m.client_id||('room:'+m.role+':'+m.display_ms))}
+function stableOrdinal(k){if(!stableSeen.has(k))stableSeen.set(k,++stableSeq);return stableSeen.get(k)}
+function openBotSegment(id,s){
+ if(!s.seq)s.seq=++stableStream;
+ const key='stream:'+id+':'+s.seq+':'+(s.parts?.length||0);
+ const part={key,offset:(s.text||'').length,text:'',order:stableOrdinal(key)};
+ (s.parts||(s.parts=[])).push(part);stableLast=key;return part;
+}
+function recordBotDelta(id,delta){
+ const s=streams[id];if(!s)return;
+ if(!s.parts?.length||s.parts.at(-1).key!==stableLast)openBotSegment(id,s);
+ s.text=(s.text||'')+delta;s.parts.at(-1).text+=delta;
+ stableLast=s.parts.at(-1).key;
+ s.node=stableNodes.get(stableLast)||null;
+}
+const stableAppendOriginal=append;
+append=function(m,scroll=false,trace=null,position=-1){
+ const key=stableKey(m),old=stableNodes.get(key),text=shownText(m);
+ if(old){
+  const content=old.querySelector(':scope > .content');
+  if(content&&old._stableText!==text){
+   content.innerHTML=safeMarkdown(text);decorate(content);
+   old._stableText=text;
+   const copy=old.querySelector('.message-copy');
+   if(copy)copy.onclick=()=>copyText(text,copy);
+  }
+  return old;
+ }
+ const node=stableAppendOriginal(m,false,trace,position);
+ node.dataset.key=key;node._stableText=text;stableNodes.set(key,node);
+ return node;
+};
+liveNode=function(id,s){
+ const part=s.parts?.at(-1)||openBotSegment(id,s);
+ const node=append({role:'assistant',bot:id,name:s.name,content:part.text,
+  live:true,_stableKey:part.key,thinking_enabled:s.thinkingEnabled,
+  selftalk:s.selftalk,chipin:s.chipin,cause:s.cause,cause_label:s.causeLabel,
+  display_ms:s.displayMs||s.started||Date.now()},false);
+ node.dataset.liveBot=id;node.dataset.liveSeq=String(s.seq);
+ return node;
+};
+function stableScrollBefore(){
+ const area=$('conversation'),y=area.getBoundingClientRect().top;
+ const anchor=[...area.querySelectorAll('.conversation-inner > .message')].find(n=>n.getBoundingClientRect().bottom>y);
+ return {area,anchor,top:anchor?.getBoundingClientRect().top,pin:stickToBottom&&gap(area)<=AT_BOTTOM_PX,height:area.scrollHeight};
+}
+function stableScrollAfter(x){
+ if(x.pin){stickToBottom=true;newBelow=false;writeScroll(x.area,x.area.scrollHeight)}
+ else{
+  if(x.anchor?.isConnected)writeScroll(x.area,x.area.scrollTop+x.anchor.getBoundingClientRect().top-x.top);
+  if(x.area.scrollHeight>x.height+1)newBelow=true;
+ }
+ syncJump();
+}
+function scheduleStableChat(){if(!stableFrame)stableFrame=requestAnimationFrame(()=>{stableFrame=0;render()})}
+render=function(){
+ const area=$('conversation'),scroll=stableScrollBefore();
+ let inner=area.querySelector('.conversation-inner');
+ if(!inner){inner=document.createElement('div');inner.className='conversation-inner';area.append(inner)}
+ const timeline=(state.room||[]).filter(m=>m.role!=='assistant'||!m.bot||!(streams[m.bot]&&(
+   streams[m.bot].partialId===m.id||(m.display_ms&&+m.display_ms===+streams[m.bot].displayMs))));
+ const pending=new Set((state.pending||[]).map(p=>p.client_id).filter(Boolean));
+ for(const id of pending)localSends.delete(id);
+ for(let i=timeline.length-1;i>=0;i--){const m=timeline[i];if(m.role!=='user')break;if(m.client_id&&pending.has(m.client_id))timeline.splice(i,1)}
+ for(const [k,m] of localSends){if(timeline.some(x=>x.client_id===k))localSends.delete(k);else timeline.push(m)}
+ timeline.sort((a,b)=>(a.display_ms||a.ts*1000||0)-(b.display_ms||b.ts*1000||0));
+ const view=[];
+ for(const m of timeline){
+  const parts=m.id&&stableCompleted.get(m.id);
+  if(parts?.length)for(const part of parts)view.push({...m,content:part.text,_stableKey:part.key,_order:part.order});
+  else view.push({...m,_order:stableOrdinal(stableKey(m))});
+ }
+ for(const [id,s] of Object.entries(streams)){
+  if(!s.parts?.length)openBotSegment(id,s);
+  for(const part of s.parts)view.push({role:'assistant',bot:id,name:s.name,content:part.text,
+   live:true,_stableKey:part.key,_order:part.order,thinking_enabled:s.thinkingEnabled,
+   selftalk:s.selftalk,chipin:s.chipin,cause:s.cause,cause_label:s.causeLabel,
+   display_ms:s.displayMs||s.started||Date.now()});
+ }
+ view.sort((a,b)=>a._order-b._order);
+ const keys=new Set();if(view.length)inner.querySelector('.empty')?.remove();
+ for(let i=0;i<view.length;i++){
+  const m=view[i],key=stableKey(m);keys.add(key);
+  const node=append(m,false,traceForMessage(m,i),i);
+  if(m.live&&streams[m.bot]?.parts?.at(-1)?.key===key){streams[m.bot].node=node;updateStream(m.bot,true)}
+ }
+ let cursor=inner.firstElementChild;
+ for(const m of view){
+  const node=stableNodes.get(stableKey(m));
+  if(node!==cursor)inner.insertBefore(node,cursor);
+  cursor=node.nextElementSibling;
+ }
+ for(const [key,node] of [...stableNodes])if(!keys.has(key)){node.remove();stableNodes.delete(key)}
+ if(!view.length&&!inner.querySelector('.empty'))inner.innerHTML='<div class="empty"><div class="empty-symbol">✳</div><h1>Worum geht es?</h1><p>Eine Frage, eine Notiz oder eine Aufgabe für die Bots. Alles bleibt auf deinem Server.</p></div>';
+ if(!stableMounted){stableMounted=true;watchInner(inner)}
+ stableScrollAfter(scroll);
+ renderAgents();renderFiles();renderData();
+ if($('autotalk'))$('autotalk').checked=!!state.autotalk;
+ if($('proaktiv'))$('proaktiv').checked=!!(state.proaktiv!=null?state.proaktiv:state.selftalk);
+ if($('reflect'))$('reflect').checked=!!state.reflect;
+ applyAccess();streamControls();
+};
+// Native <dialog> already closes on Escape; never prevent its cancel event.
+
 const events=new EventSource('/api/events');
 events.onopen=()=>{$('connection').innerHTML='<span class="dot" style="background:var(--green)"></span><span class="txt">Verbunden</span>';refresh().catch(e=>notice(e.message))};
 events.onerror=()=>{$('connection').innerHTML='<span class="dot" style="background:var(--orange)"></span><span class="txt">Verbinde …</span>';for(const s of Object.values(streams))if(s.frame)cancelAnimationFrame(s.frame);streams={};busyBots=new Set();syncStopButton()};
@@ -3771,11 +3904,11 @@ events.onmessage=e=>{
   if(event.type==='browser_action'){browserOverlay(event);return}
   if(event.type==='bot_start'){
    const prev=streams[id];
-   streams[id]={name:event.name,text:'',status:'Liest Verlauf',label:'Liest Verlauf',phase:'read',steps:[],group:event.group||'',order:+event.order||0,node:prev?.node||null,seq:prev?.seq,frame:0,started:event.display_ms||Date.now(),displayMs:event.display_ms||Date.now(),thinkingEnabled:event.thinking_enabled,selftalk:!!event.selftalk,chipin:!!event.chipin,cause:event.cause||'',causeLabel:event.cause_label||'', lastEvent:Date.now(),reasoning:'',tools:[],error:'',hung:false,progress:null};
-   updateStream(id,true);busyBots.add(id);renderLanes();
+   streams[id]={name:event.name,text:'',parts:[],status:'Liest Verlauf',label:'Liest Verlauf',phase:'read',steps:[],group:event.group||'',order:+event.order||0,node:prev?.node||null,seq:prev?.seq,frame:0,started:event.display_ms||Date.now(),displayMs:event.display_ms||Date.now(),thinkingEnabled:event.thinking_enabled,selftalk:!!event.selftalk,chipin:!!event.chipin,cause:event.cause||'',causeLabel:event.cause_label||'', lastEvent:Date.now(),reasoning:'',tools:[],error:'',hung:false,progress:null};
+   openBotSegment(id,streams[id]);scheduleStableChat();busyBots.add(id);renderLanes();
   }else if(event.type==='step'){
    let s=streams[id];
-   if(!s){streams[id]={name:event.name||'Bot',text:'',node:null,frame:0,started:event.started?event.started*1000:Date.now(),reasoning:'',tools:[]};s=streams[id]}
+   if(!s){streams[id]={name:event.name||'Bot',text:'',parts:[],node:null,frame:0,started:event.started?event.started*1000:Date.now(),reasoning:'',tools:[]};s=streams[id]}
    if(event.name)s.name=event.name;
    if(typeof event.thinking_enabled==='boolean')s.thinkingEnabled=event.thinking_enabled;
    if(event.display_ms)s.displayMs=event.display_ms;
@@ -3791,7 +3924,7 @@ events.onmessage=e=>{
    else if(s.phase!=='prompt')s.progress=null;
    updateStream(id);
   }else if(event.type==='delta'){
-   const s=streams[id];if(s){s.text+=event.text||'';if(s.draft!=null&&s.text.length-s.draftBase>=s.draft.length){s.draft=null;s.draftBase=null}s.thinking=false;s.lastEvent=Date.now();s.hung=false;updateStream(id)}
+   const s=streams[id];if(s){recordBotDelta(id,event.text||'');if(s.draft!=null&&s.text.length-s.draftBase>=s.draft.length){s.draft=null;s.draftBase=null}s.thinking=false;s.lastEvent=Date.now();s.hung=false;scheduleStableChat()}
   }else if(event.type==='draft'){
    const s=streams[id];if(s){if(s.draft==null){s.draft='';s.draftBase=s.text.length}s.draft+=event.text||'';s.thinking=false;s.lastEvent=Date.now();s.hung=false;updateStream(id)}
   }else if(event.type==='draft_drop'){
@@ -3808,13 +3941,18 @@ events.onmessage=e=>{
   }else if(event.type==='stopping'){paintStopping()}
   else if(event.type==='bot_done'){
    const s=streams[id];if(s?.frame)cancelAnimationFrame(s.frame);
+   if(s?.parts?.length&&event.id){
+    const full=String(event.content||s.text||''),parts=s.parts.map(x=>({...x}));
+    for(let i=0;i<parts.length;i++)parts[i].text=full.slice(parts[i].offset,parts[i+1]?.offset??full.length);
+    stableCompleted.set(event.id,parts);
+   }
    faceSettle.set(id,Date.now()+1600);if(s?.node)armBotFace(s.node,id,false);
    if(thinkOpen.delete('live:'+id)&&event.id)thinkOpen.add(event.id);
    if(runOpen.has('live:'+id)){const o=runOpen.get('live:'+id);runOpen.delete('live:'+id);if(event.id)runOpen.set('done:'+event.id,o)}
    if(s&&s.thinkingEnabled!==false&&(s.reasoning||s.tools?.length)){completedTraces.push({name:s.name,content:event.content||s.text||'',reasoning:event.reasoning?'':(s.reasoning||''),ms:liveThinkMs(s),tools:s.tools||[],assignedPosition:null});if(completedTraces.length>40)completedTraces.shift()}
    // Do not persist live status-card dimensions.
    delete streams[id];busyBots.delete(id);if(!composerBusyIds().length)clearStopping();else streamControls();
-   refresh().catch(err=>notice(err.message));
+   scheduleStableChat();refresh().catch(err=>notice(err.message));
   }else if(window.magAgentUI?.event(event)){
   }else if(event.type==='room_cleared'){
    roomClearedNow();

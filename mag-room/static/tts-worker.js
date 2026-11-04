@@ -75,19 +75,22 @@ async function loadVoice(model, id) {
   })());
   try { return await voices.get(model); } catch (e) { voices.delete(model); throw e; }
 }
-async function runIds(session, config, ids) {
+async function runIds(session, config, ids, speaker) {
   const inf = config.inference || {};
   const feeds = {
     input: new ort.Tensor('int64', BigInt64Array.from(ids.map(BigInt)), [1, ids.length]),
     input_lengths: new ort.Tensor('int64', BigInt64Array.from([BigInt(ids.length)]), [1]),
     scales: new ort.Tensor('float32', Float32Array.from([inf.noise_scale ?? 0.667, inf.length_scale ?? 1, inf.noise_w ?? 0.8]), [3]),
   };
-  if ((config.num_speakers || 1) > 1) feeds.sid = new ort.Tensor('int64', BigInt64Array.from([0n]), [1]);
+  if ((config.num_speakers || 1) > 1) {
+    const n = config.num_speakers, sid = Number.isInteger(speaker) && speaker >= 0 && speaker < n ? speaker : 0;
+    feeds.sid = new ort.Tensor('int64', BigInt64Array.from([BigInt(sid)]), [1]);
+  }
   const out = await session.run(feeds);
   const audio = out.output.data;
   return audio instanceof Float32Array ? audio : Float32Array.from(audio);
 }
-async function synth(text, model, id) {
+async function synth(text, model, id, speaker) {
   const {config, session} = await loadVoice(model, id);
   const ph = await getPhonemizer();
   phonemeLines.length = 0;
@@ -99,7 +102,7 @@ async function synth(text, model, id) {
   const gap = Math.round(rate * 0.06);
   const parts = [];
   for (let i = 0; i < batch.length; i++) {
-    parts.push(await runIds(session, config, batch[i]));
+    parts.push(await runIds(session, config, batch[i], speaker));
     if (i + 1 < batch.length) parts.push(new Float32Array(gap));
   }
   let n = 0;
@@ -110,11 +113,11 @@ async function synth(text, model, id) {
   return {audio, rate, synthMs: Date.now() - t0};
 }
 self.onmessage = async ev => {
-  const {type, id, text, model} = ev.data || {};
+  const {type, id, text, model, speaker} = ev.data || {};
   try {
     if (type === 'warm') { await loadVoice(model, id); postMessage({type: 'ready', id, threads: ort.env.wasm.numThreads}); return; }
     if (type === 'speak') {
-      const {audio, rate, synthMs} = await synth(text, model, id);
+      const {audio, rate, synthMs} = await synth(text, model, id, speaker);
       postMessage({type: 'audio', id, audio, rate, synthMs}, [audio.buffer]);
     }
   } catch (e) { postMessage({type: 'error', id, error: String(e && e.message || e)}); }

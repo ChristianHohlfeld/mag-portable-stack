@@ -132,7 +132,7 @@
   function setRate(v) {
     v = RATES.includes(+v) ? +v : 1;
     try { localStorage.setItem('mag-tts-rate', String(v)); } catch (_) {}
-    try { if (piper.source) piper.source.playbackRate.value = v * ((current && current.pitch) || 1); } catch (_) {}
+    try { if (piper.source) piper.source.playbackRate.value = v; } catch (_) {}
     return v;
   }
   function voicePref() { try { return localStorage.getItem('mag-tts-voice') || 'thorsten'; } catch (_) { return 'thorsten'; } }
@@ -182,22 +182,32 @@
     piper.loading = p;
     return p;
   }
-  // Human messages: same Piper voice and quality, only a slightly lower pitch
-  // (playback ~-1.3 semitones) so they sound different from every bot.
-  const USER_PITCH = 0.925;
+  // Voices per speaker, all Piper medium quality (tts-config.json "roles"):
+  // Lena female (MLS speaker), Noah male (Thorsten), Chris's own messages a
+  // different male MLS speaker. A system voice only as last-resort fallback.
+  const USER_PITCH = 0.9; // system-voice fallback only
+  function roleVoice(opts) {
+    const cfg = piper.config;
+    if (!cfg || voicePref() === 'system') return null;
+    const roles = cfg.roles || {};
+    let r = null;
+    if (opts && opts.user) r = roles.user;
+    else if (opts && opts.bot && cfg.bots && cfg.bots[opts.bot]) r = roles[cfg.bots[opts.bot]];
+    return r && r.model ? {id: 'role', label: '', model: r.model, speaker: r.speaker | 0} : piperVoice();
+  }
   async function piperPlay(playback, v) {
     // Synthesis of the next part overlaps playback of the current one.
-    let next = ask({type: 'speak', text: playback.parts[0], model: v.model});
+    let next = ask({type: 'speak', text: playback.parts[0], model: v.model, speaker: v.speaker | 0});
     for (let i = 0; i < playback.parts.length; i++) {
       playback.at = i;
       const res = await next;
       if (current !== playback) return;
-      next = i + 1 < playback.parts.length ? ask({type: 'speak', text: playback.parts[i + 1], model: v.model}) : null;
+      next = i + 1 < playback.parts.length ? ask({type: 'speak', text: playback.parts[i + 1], model: v.model, speaker: v.speaker | 0}) : null;
       await new Promise(done => {
         const buf = piper.ctx.createBuffer(1, res.audio.length, res.rate);
         buf.copyToChannel(res.audio, 0);
         const src = piper.ctx.createBufferSource();
-        src.buffer = buf; if (src.playbackRate) src.playbackRate.value = ratePref() * (playback.pitch || 1); src.connect(piper.ctx.destination);
+        src.buffer = buf; if (src.playbackRate) src.playbackRate.value = ratePref(); src.connect(piper.ctx.destination);
         src.onended = done; piper.source = src; src.start();
       });
       if (current !== playback) return;
@@ -248,7 +258,7 @@
       // AudioContext must be created/resumed inside the tap (iOS).
       piper.ctx = piper.ctx || new AudioCtx();
       piper.ctx.resume?.();
-      const v = piper.config ? piperVoice() : null;
+      const v = piper.config ? roleVoice(opts) : null;
       if (v && piper.ready.has(v.model)) {
         piperPlay(playback, v).catch(() => fallback(playback));
         return true;
@@ -256,7 +266,7 @@
       // Not loaded yet: show a loading state instead of a robotic stand-in.
       playback.loading = true;
       setButtons();
-      loadConfig().then(() => { const pv = piperVoice(); return pv ? warm(pv).then(ok => ok && pv) : null; })
+      loadConfig().then(() => { const pv = roleVoice(opts); return pv ? warm(pv).then(ok => ok && pv) : null; })
         .then(pv => {
           if (current !== playback) return;
           playback.loading = false;

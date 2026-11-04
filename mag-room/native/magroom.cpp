@@ -921,6 +921,19 @@ static void load_agents() {
       // Never change an ID: especially deepseek-chat retains its memory and VM.
       const std::string old = mag::str(a, "name");
       const int slot = model_slot_of(a);
+      // Owner 2026-11-04: display names Lena (NUMA0) and Noah (NUMA1). IDs,
+      // models, VMs and memory stay; only old stock names are replaced.
+      {
+        const std::string bid = mag::str(a, "id");
+        const std::string want = bid == "qwen-numa0" ? "Lena" : bid == "qwen-numa1" ? "Noah" : "";
+        if (!want.empty() && old != want &&
+            (old == "Ornith" || old == "Ornith 2" || old == "Ornith 1" || old == "Flint" ||
+             old == "Flint 2" || old == "Qwen" || old == "Qwen 2" || old.empty())) {
+          a["name"] = want; dirty = true;
+          continue;
+        }
+        if (want == old) continue; // never let a stock-label rewrite undo it
+      }
       // Rename only the known old stock names when upgrading to the new
       // coding models. Preserve bot IDs, memory, queued messages and any
       // deliberate custom name.
@@ -1553,12 +1566,13 @@ static void publish(const std::string &jsonLine);
 static void stamp_selftalk(Val &msg);
 // First content token is the visible answer. Later tokens update the same
 // message in memory; the file is written again when the turn closes.
+static std::string strip_self_prefix(const std::string &t, const std::string &name);
 static void reveal_answer(const std::string &bot, const std::string &name,
                           const std::string &piece) {
   if (piece.empty()) return;
   TL_PARTIAL_TEXT += piece;
   if (TL_PARTIAL_ID.empty()) {
-    Val msg = append_room("assistant", name, TL_PARTIAL_TEXT, bot,
+    Val msg = append_room("assistant", name, strip_self_prefix(TL_PARTIAL_TEXT, name), bot,
                           nullptr, "", "", TL_DISPLAY_MS);
     TL_PARTIAL_ID = mag::str(msg, "id");
     stamp_selftalk(msg);
@@ -1569,7 +1583,7 @@ static void reveal_answer(const std::string &bot, const std::string &name,
   std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
   for (auto &m : ROOM)
     if (mag::str(m, "id") == TL_PARTIAL_ID) {
-      m["content"] = TL_PARTIAL_TEXT;
+      m["content"] = strip_self_prefix(TL_PARTIAL_TEXT, name);
       break;
     }
 }
@@ -2388,6 +2402,34 @@ static bool bot_thinking(int idx) {
   if (coding_room_model(bot_model_id(idx))) return false;
   return bot_setting(idx, "thinking", THINKING_DEFAULT.load());
 }
+// "[Lena]", "[Lena (id)]:", "**Lena:**", "Lena:" at the start of a reply:
+// the room already shows the name (live 2026-11-04, "[Ornith 2]" in text).
+static std::string strip_self_prefix(const std::string &t, const std::string &name) {
+  if (name.empty()) return t;
+  const std::string ln = group_chat::lower(name);
+  const size_t p = t.find_first_not_of(" \t\r\n");
+  if (p == std::string::npos) return t;
+  auto name_at = [&](size_t at) {
+    return at + ln.size() <= t.size() && group_chat::lower(t.substr(at, ln.size())) == ln;
+  };
+  size_t e = std::string::npos;
+  if (t[p] == '[' && name_at(p + 1)) {
+    const size_t c = t.find(']', p + 1);
+    if (c != std::string::npos && c - p <= ln.size() + 48) e = c + 1;
+  } else if (t.compare(p, 2, "**") == 0 && name_at(p + 2)) {
+    const size_t c = t.find("**", p + 2 + ln.size());
+    if (c != std::string::npos && c - p <= ln.size() + 8) e = c + 2;
+  } else if (name_at(p)) {
+    size_t q = p + ln.size();
+    while (q < t.size() && t[q] == ' ') ++q;
+    if (q < t.size() && t[q] == ':') e = q + 1;
+  }
+  if (e == std::string::npos) return t;
+  while (e < t.size() && (t[e] == ':' || t[e] == ' ' || t[e] == '\t')) ++e;
+  if (e < t.size() && t[e] == '\r') ++e;
+  if (e < t.size() && t[e] == '\n') ++e;
+  return t.substr(e);
+}
 static std::string identity_block(int bot_idx) {
   const std::string name = bot_field(bot_idx, "name", "Bot");
   const std::string persona = bot_field(bot_idx, "persona");
@@ -2402,8 +2444,10 @@ static std::string identity_block(int bot_idx) {
            "Gib nur die Antwort fuer den Nutzer aus. Interne Ueberlegungen, "
            "Analyse und Selbstgespraeche gehoeren ausschliesslich in den "
            "separaten Reasoning-Kanal oder in <think>-Tags, niemals in die "
-           "sichtbare Antwort. Beginne Antworten niemals mit deinem "
-           "Botnamen und Doppelpunkt (z.B. Bot1: oder BotBot:).";
+           "sichtbare Antwort. Beginne Antworten niemals mit deinem eigenen "
+           "Namen, weder als \"" + name + ":\" noch als \"[" + name + "]\" oder fett; "
+           "der Raum zeigt deinen Namen schon an. Die Kennzeichnung "
+           "\"[Name (id)]:\" im Raumverlauf ist nur Zuordnung, kein Antwortformat.";
   return text;
 }
 static std::string room_company_line(int);
@@ -9274,6 +9318,7 @@ static TurnReport generate_and_post(int idx, bool automatic, double dispatched_m
   if (report.elapsed_s < 0)
     report.elapsed_s = 0;
   run_end();
+  if (!report.react_only) report.text = strip_self_prefix(report.text, name);
   if (!bot_enabled(idx) || (TL_SELFTALK && selftalk_idle_echo(report.text)) ||
       // Empty text is an interrupted/stopped turn, not a PASS: keep it.
       (!report.react_only && !trim(report.text).empty() &&

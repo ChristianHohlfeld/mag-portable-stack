@@ -60,6 +60,7 @@ secret	/etc/credstore/mag-guest-oauth	docs/guest-access.md (owner-provisioned)
 secret	/etc/magbot/config.json	mag-room/native/vm.cpp (MAGBOT_CONFIG)
 # --- nginx (127.0.0.1:4443 behind tailscaled :443; never Caddy)
 copy	/etc/nginx/nginx.conf	ops/nginx/nginx.conf
+copy	/etc/systemd/system/nginx.service.d/mag-restart.conf	ops/nginx/nginx-restart.conf
 copy	/etc/nginx/sites-available/mag-room.conf	ops/private-access/mag-room.nginx.conf
 copy	/etc/nginx/snippets/mag-tailnet-ok.inc	ops/nginx/mag-tailnet-ok.inc
 copy	/etc/nginx/conf.d/mag-git.conf	ops/gitea-ci/public.nginx.in

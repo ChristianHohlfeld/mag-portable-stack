@@ -10913,7 +10913,15 @@ static void lane_job(Lane *lane, uint64_t run, JobRun job) {
     TURN_THINK = -1;
     TL_GOAL_ID = "job-" + job.run_id;
     TL_TODO_TOUCHED = false;
+    {
+      std::lock_guard<std::mutex> lk(JOB_MTX);
+      JOB_ACTIVE[job.run_id] = JobActive{job.job_id, job.bot, lane};
+    }
     try { run_job(job); } catch (const std::exception &e) { emit_event("error", "", "", e.what()); }
+    {
+      std::lock_guard<std::mutex> lk(JOB_MTX);
+      JOB_ACTIVE.erase(job.run_id);
+    }
     TL_GOAL_ID.clear();
     TL_LANE = nullptr;
   }

@@ -28,6 +28,18 @@ static std::mutex JOBDEF_MTX;
 static std::vector<JobDef> JOBDEFS;
 struct JobRun { std::string job_id, run_id, name, prompt, bot, reason; int version = 0; };
 static std::deque<JobRun> JOBRUNS; // guarded by JOB_MTX
+// Runs currently executing on a lane (run_id -> run + lane), guarded by
+// JOB_MTX. Delete/bot removal aborts them; before, only queued runs were
+// dropped and a running run kept working with its job already gone.
+struct JobActive { std::string job_id, bot; Lane *lane = nullptr; };
+static std::map<std::string, JobActive> JOB_ACTIVE;
+template <class Pred> static void jobs_abort_active_locked(Pred pred) {
+  for (auto &kv : JOB_ACTIVE)
+    if (kv.second.lane && pred(kv.second)) {
+      std::cerr << "job-abort run=" << kv.first << " job=" << kv.second.job_id << std::endl;
+      cancel_lane(*kv.second.lane, true);
+    }
+}
 static std::string jobs_file() { return STATE_DIR + "/jobs.json"; }
 static int job_max_attempts() { return std::max(1, atoi(env("MAG_JOBS_MAX_ATTEMPTS", "3").c_str())); }
 static int64_t job_backoff(int attempt) {
@@ -533,6 +545,7 @@ static JobsResponse jobs_request(const std::string &method,
       std::lock_guard<std::mutex> jl(JOB_MTX);
       for (auto it = JOBRUNS.begin(); it != JOBRUNS.end();)
         it = it->job_id == id ? JOBRUNS.erase(it) : it + 1;
+      jobs_abort_active_locked([&](const JobActive &a) { return a.job_id == id; });
     }
     jobs_save_locked(); jobs_event_locked();
     Val v = Val::object(); v["deleted"] = true;
@@ -573,6 +586,7 @@ static void jobs_drop_bot(const std::string &bot) {
     std::lock_guard<std::mutex> jl(JOB_MTX);
     for (auto it = JOBRUNS.begin(); it != JOBRUNS.end();)
       it = it->bot == bot ? JOBRUNS.erase(it) : it + 1;
+    jobs_abort_active_locked([&](const JobActive &a) { return a.bot == bot; });
   }
   if (JOBDEFS.size() == before) return;
   jobs_save_locked();

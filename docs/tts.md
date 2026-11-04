@@ -32,9 +32,9 @@ once the voice is cached.
 
   | Voice | File | Size | License |
   |---|---|---|---|
-  | Thorsten (male, medium) | `de_DE-thorsten-medium.onnx` | 60 MB | CC0 (Thorsten-Voice dataset) |
+  | Thorsten (male, medium; Chris's own messages) | `de_DE-thorsten-medium.onnx` | 60 MB | CC0 (Thorsten-Voice dataset) |
   | Kerstin (female, low) | `de_DE-kerstin-low.onnx` | 63 MB | CC0 (dataset-voice-kerstin) |
-  | Karlsson (male, low; Chris's own messages) | `de_DE-karlsson-low.onnx` | 63 MB | M-AILABS (caito.de) |
+  | MLS (236 speakers, medium; Lena spk 68, Noah spk 32) | `de_DE-mls-medium.onnx` | 77 MB | CC-BY 4.0 (openslr.org/94) |
 
   Thorsten high (114 MB) was the previous default. On WASM it is several
   times slower than medium and was the cold-download that loaded the host.

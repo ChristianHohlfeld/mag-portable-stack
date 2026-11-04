@@ -35,6 +35,14 @@ class TTS(unittest.TestCase):
     self.assertEqual(page.evaluate("async()=>(await magMessageAudio.voiceOptions()).map(v=>v.id)"),['system'])
     return
    self.assertEqual(page.evaluate("async()=>(await magMessageAudio.voiceOptions()).map(v=>v.id)"),['thorsten','kerstin','system'])
+   # One fixed voice per speaker, independent of the voice preference.
+   page.evaluate("()=>localStorage.setItem('mag-tts-voice','kerstin')")
+   who=page.evaluate("""async()=>{const f=o=>magMessageAudio.voiceFor(o);return {lena:await f({bot:'qwen-numa0'}),noah:await f({bot:'qwen-numa1'}),
+     noahByName:await f({bot:'',name:'Noah'}),chris:await f({user:true})}}""")
+   self.assertEqual((who['lena']['model'],who['lena']['fixed']),('de_DE-kerstin-low.onnx',True))
+   for k in ('noah','noahByName'):self.assertEqual((who[k]['model'],who[k]['pitch'],who[k]['fixed']),('de_DE-thorsten-medium.onnx',1,True),k)
+   self.assertEqual((who['chris']['model'],who['chris']['pitch']),('de_DE-thorsten-medium.onnx',0.925))
+   page.evaluate("()=>localStorage.removeItem('mag-tts-voice')")
    def measure(voice, text):
     return page.evaluate("""async({voice,text})=>{const cfg=await (await fetch('/static/tts-config.json')).json();const v=cfg.voices.find(x=>x.id===voice);
       const w=new Worker('/static/'+cfg.dir+'/tts-worker.js');

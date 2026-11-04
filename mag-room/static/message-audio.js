@@ -348,6 +348,7 @@
   }
 
   window.magMessageAudio = {attach, toggle, stop, supported, setVoice, voiceOptions, voicePref, bestVoice, rates: RATES, ratePref, setRate,
+    voiceFor: async opts => { await loadConfig(); const v = roleVoice(opts); return v && {model: v.model, speaker: v.speaker, pitch: v.pitch, fixed: v.fixed}; },
     isPlaying: id => !!current && current.key === id, piperReady: () => { const v = piperVoice(); return !!v && piper.ready.has(v.model); }};
   window.addEventListener('pagehide', stop);
 })();

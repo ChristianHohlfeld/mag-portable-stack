@@ -3985,7 +3985,16 @@ events.onmessage=e=>{
   if(event.type==='browser_action'){browserOverlay(event);return}
   if(event.type==='bot_start'){
    const prev=streams[id];
-   streams[id]={name:event.name,text:'',parts:[],status:'Liest Verlauf',label:'Liest Verlauf',phase:'read',steps:[],group:event.group||'',order:+event.order||0,node:prev?.node||null,seq:prev?.seq,frame:0,started:event.display_ms||Date.now(),displayMs:event.display_ms||Date.now(),thinkingEnabled:event.thinking_enabled,selftalk:!!event.selftalk,chipin:!!event.chipin,cause:event.cause||'',causeLabel:event.cause_label||'', lastEvent:Date.now(),reasoning:'',tools:[],error:'',hung:false,progress:null};
+   // Single-flight handoff: finalize the previous visible activity before
+   // accepting a new bot_start. Never carry a prior DOM node or sequence into
+   // the new turn; the prior reply remains a historical chat message.
+   if(prev?.frame)cancelAnimationFrame(prev.frame);
+   if(prev?.node){
+    prev.node.classList.remove('work-live','processing');
+    prev.node.querySelector(':scope > .meta > .inline-progress')?.remove();
+    prev.node.querySelector(':scope > .run > .work-status')?.remove();
+   }
+   streams[id]={name:event.name,text:'',parts:[],status:'Liest Verlauf',label:'Liest Verlauf',phase:'read',steps:[],group:event.group||'',order:+event.order||0,node:null,seq:0,frame:0,started:event.display_ms||Date.now(),displayMs:event.display_ms||Date.now(),thinkingEnabled:event.thinking_enabled,selftalk:!!event.selftalk,chipin:!!event.chipin,cause:event.cause||'',causeLabel:event.cause_label||'', lastEvent:Date.now(),reasoning:'',tools:[],error:'',hung:false,progress:null};
    openBotSegment(id,streams[id]);scheduleStableChat();busyBots.add(id);renderLanes();
   }else if(event.type==='step'){
    let s=streams[id];

@@ -5819,12 +5819,27 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
       if (!acc.calls.empty() && now_ms - draft_ms >= 1000) {
         draft_ms = now_ms;
         const Val &last = acc.calls.rbegin()->second;
-        size_t chars = 0;
-        for (auto &kv : acc.calls)
-          if (auto a = kv.second.find("args")) chars += a->asStr().size();
+        // Tool arguments are streamed as partial JSON. Count escaped newlines
+        // as code lines, not serialized JSON bytes. This is a provisional
+        // line count until the complete file is committed.
+        size_t lines = 0;
+        for (const auto &kv : acc.calls) if (auto args = kv.second.find("args")) {
+          const std::string &raw = args->asStr();
+          if (raw.empty()) continue;
+          size_t n = 1;
+          for (size_t i = 0; i < raw.size(); ++i) {
+            if (raw[i] == '\n') ++n;
+            else if (raw[i] == '\\' && i + 1 < raw.size() && raw[i + 1] == 'n') {
+              size_t backslashes = 0;
+              for (size_t j = i; j > 0 && raw[j-1] == '\\'; --j) ++backslashes;
+              if (backslashes % 2 == 0) ++n;
+            }
+          }
+          lines += n;
+        }
         auto nm = last.find("name");
         on_delta("tool_draft", (nm ? nm->asStr() : std::string()) + "\t" +
-                                   std::to_string(chars));
+                                   std::to_string(lines));
       }
     }
   }
@@ -6165,13 +6180,14 @@ static Val room_reading() {
   r["items"] = items;
   return r;
 }
-static void run_reading_tool(const std::string &tool, size_t chars, bool ok) {
+static void run_reading_tool(const std::string &tool, const std::string &output, bool ok) {
   std::lock_guard<std::mutex> lk(RUN_MTX);
   Val &r = run_cur().reading;
   if (!r.isObj() || !r.find("kind") || r.find("kind")->asStr() != "tools") {
     r = Val::object(); r["kind"] = "tools"; r["items"] = Val::array();
   }
-  Val o = Val::object(); o["tool"] = tool; o["chars"] = (double)chars; o["ok"] = ok;
+  const size_t lines = output.empty() ? 0 : 1 + std::count(output.begin(), output.end(), '\n');
+  Val o = Val::object(); o["tool"] = tool; o["lines"] = (double)lines; o["ok"] = ok;
   if (r["items"].asArr().size() < 12) r["items"].push(o);
 }
 static void run_begin(const std::string &bot, const std::string &name) {
@@ -7248,13 +7264,11 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
       if (kind == "tool_draft") {
         const auto tab = piece.find('\t');
         const std::string nm = piece.substr(0, tab);
-        const long chars = tab == std::string::npos ? 0 : atol(piece.c_str() + tab + 1);
+        const long lines = tab == std::string::npos ? 0 : atol(piece.c_str() + tab + 1);
         std::string label = nm.empty() ? "Bereitet eine Aktion vor"
                                        : "Bereitet vor: " + tool_step_label(nm);
-        if (chars >= 200) {
-          std::string n = std::to_string(chars);
-          for (int i = (int)n.size() - 3; i > 0; i -= 3) n.insert((size_t)i, ".");
-          label += " · " + n + " Zeichen";
+        if (lines > 0 && (nm == "write_file" || nm == "append_file")) {
+          label += " · " + std::to_string(lines) + (lines == 1 ? " Zeile" : " Zeilen");
         }
         if (!live.empty() && !draft_dropped) {
           draft_dropped = true;
@@ -7706,7 +7720,7 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
         e["ms"] = ms;
         e["result"] = mj::utf8_cut(result, 1500);
         publish(mj::dump(e));
-        run_reading_tool(fname, result.size(), !failed);
+        run_reading_tool(fname, result, !failed);
         // Kept on the message so the trace survives a reload; bounded because
         // the room history is sent with every state.
         if (report.tools.size() < 24) {
@@ -11182,6 +11196,15 @@ static void start_lanes_locked(const Job &job, bool automatic, const std::string
   }
   std::shared_ptr<StartGate> prev;
   std::string prev_name;
+  // Mailbox admission invariant: no existing actor/slot may be overwritten.
+  // Every caller must have acquired all target lanes through dispatchable()
+  // (or the AUTO_READY lane check) while holding JOB_MTX.
+  for (const auto &[lane, ids] : parts)
+    if (lane->busy.load() || lane->turn.load() != 0) {
+      std::cerr << "room-single-flight: refusing overlapping dispatch on "
+                << lane->model << std::endl;
+      return; // Never create a second worker for the same backend.
+    }
   for (auto &[lane, ids] : parts) {
     const uint64_t run = ++DISPATCH_SEQ;
     lane->busy = true;

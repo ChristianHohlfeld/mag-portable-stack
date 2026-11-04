@@ -306,7 +306,9 @@
     if (wasPlaying) return false;
     const normalized = normalize(text);
     const lang = chosenLocale(normalized);
-    const de = lang.startsWith('de') && piperPossible && voicePref() !== 'system';
+    // Per-participant Piper settings override the old global system fallback.
+    const de = lang.startsWith('de') && piperPossible &&
+      (voicePref() !== 'system' || !!roleId(opts));
     const parts = de ? piperParts(normalized) : split(normalized);
     if (!parts.length) return false;
     const playback = {key, parts, at: 0, lang};

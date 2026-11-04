@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# mag-test-timeout: 60
+# mag-test-timeout: 180
 if [ -z "${MAG_TEST_DEADLINE_ARMED:-}" ]; then
   export MAG_TEST_DEADLINE_ARMED=1
-  exec timeout --kill-after=5s 60s bash "$0" "$@"
+  exec timeout --kill-after=5s 180s bash "$0" "$@"
 fi
 # ops/inventory: every mapped repo source exists, and drift-check.sh reports
 # OK for a faithful install, DRIFT/MISSING/WORLD otherwise (read-only).

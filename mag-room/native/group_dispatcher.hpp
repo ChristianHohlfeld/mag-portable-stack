@@ -203,7 +203,7 @@ inline std::string next_followup(const std::vector<Bot> &roster,
 }
 
 inline const char *gate_instruction() {
-  return "\\n[Gruppenchat]\\nLies die letzte Nachricht eines anderen Bots aufmerksam. "
+  return "\n[Gruppenchat]\nLies die letzte Nachricht eines anderen Bots aufmerksam. "
          "Wenn du mit Namen oder @ angesprochen wurdest, antworte direkt darauf, "
          "frage sinnvoll nach oder widersprich begründet. Sonst antworte nur, "
          "wenn du wirklich neue Information, eine nötige Korrektur oder eine "

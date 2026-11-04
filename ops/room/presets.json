@@ -64,17 +64,17 @@
   },
   {
     "id": "coding-dual-numa",
-    "label": "Flint 2 (NUMA0) + Flint (NUMA1)",
+    "label": "Ornith 2 (NUMA0) + Ornith (NUMA1)",
     "ports": [
       {
         "port": 8191,
         "numa": 0,
-        "model": "flint-numa0"
+        "model": "ornith-numa0"
       },
       {
         "port": 8192,
         "numa": 1,
-        "model": "flint"
+        "model": "ornith"
       }
     ]
   },

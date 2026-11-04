@@ -764,9 +764,10 @@ static bool room_is_glm() {
 // NUMA1 (owner 2026-11-03 "Flint installieren", replacing Qwen3-Coder-Next),
 // with continued long answers.
 static const char *const CODING_GENERAL_MODEL = "qwen3.8-flash-next";
-static const char *const CODING_CODER_MODEL = "flint";
-// Owner 2026-11-03 12:08: NUMA0 also runs Flint (same Q4_K_M GGUF, own socket).
-static const char *const CODING_FLINT0_MODEL = "flint-numa0";
+// Owner 2026-11-04: Ornith-1.5-35B-A3B Q4_K_M on both sockets (replaces Flint,
+// whose GGUF stays on disk). Same GGUF, one server per NUMA node.
+static const char *const CODING_CODER_MODEL = "ornith";
+static const char *const CODING_FLINT0_MODEL = "ornith-numa0";
 static bool flint_model(const std::string &model) {
   return model == CODING_CODER_MODEL || model == CODING_FLINT0_MODEL;
 }
@@ -929,7 +930,12 @@ static void load_agents() {
            backend.id == CODING_CODER_MODEL) ||
           // Qwen3.8 -> Flint on NUMA0 (stock name only).
           (previous_model == CODING_GENERAL_MODEL && old == "Qwen3.8" &&
-           backend.id == CODING_FLINT0_MODEL)) {
+           backend.id == CODING_FLINT0_MODEL) ||
+          // Flint -> Ornith on both nodes (stock names only).
+          (previous_model == "flint-numa0" && old == "Flint 2" &&
+           backend.id == CODING_FLINT0_MODEL) ||
+          (previous_model == "flint" && old == "Flint" &&
+           backend.id == CODING_CODER_MODEL)) {
         a["name"] = backend.label; dirty = true;
         continue;
       }
@@ -5249,10 +5255,11 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
     // Qwen's official non-thinking instruct sampling (mapped to llama.cpp
     // request fields); the server defaults and GLM-Q2 sampling stay unchanged.
     if (coding_model && flint_model(model)) {
-      // Flint card (huggingface.co/RecursiveSI/flint): temperature 1.0,
-      // top_p 0.95, top_k 20. Flint always reasons (no template switch); the
+      // Ornith-1.5 card (huggingface.co/ornith-ai/Ornith-1.5-35B-A3B),
+      // general tasks: temperature 0.6, top_p 0.95, top_k 20. Thinking is
+      // switched per request (enable_thinking + budget, see below); the
       // reasoning stays in reasoning_content.
-      body["temperature"] = 1.0;
+      body["temperature"] = 0.6;
       body["top_p"] = 0.95;
       body["top_k"] = 20;
       body["min_p"] = 0.0;

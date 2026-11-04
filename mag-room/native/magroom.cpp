@@ -103,6 +103,12 @@ struct Lane {
   std::atomic<uint64_t> turn{0};
 };
 static thread_local Lane *TL_LANE = nullptr;
+// run_turn: >=0 forces this hidden-reasoning budget on the next request (the
+// closing round after a react-only round uses 0).
+static thread_local int TL_FORCE_REASONING_BUDGET = -1;
+// run_turn: tool rounds defer the 1.5 GB slot save to the end of the turn.
+static thread_local bool TL_DEFER_SLOT_SAVE = false;
+static thread_local int TL_SLOT_SAVE_PENDING = -1;
 // Concurrent room turn (Ornith B: all addressed bots answer at once). A bot
 // message carries its turn group and the bot's fixed list position, so the UI
 // keeps every bot of one group at the group's place, in bot order, whatever
@@ -5389,26 +5395,38 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   // tag and the model writes its visible answer. Only the hidden reasoning is
   // bounded; the reply itself stays uncapped (no max_tokens). Sampling-only,
   // so the cached prompt prefix is unchanged. -1 disables the cap.
-  if (coding_model && TL_CHIPIN && !TL_SELFTALK) {
+  if (coding_model && TL_FORCE_REASONING_BUDGET >= 0) {
+    // Closing round after react/unreact: no new thinking, just the text.
+    body["reasoning_budget_tokens"] = TL_FORCE_REASONING_BUDGET;
+    body["thinking_budget_tokens"] = TL_FORCE_REASONING_BUDGET;
+  } else if (coding_model && TL_CHIPIN && !TL_SELFTALK) {
     const int budget = std::clamp(envi("MAG_ROOM_CHIPIN_REASONING_BUDGET", 256), -1, 32768);
     if (budget >= 0) {
       body["reasoning_budget_tokens"] = budget;
       // ik_llama.cpp reads only thinking_budget_tokens.
       body["thinking_budget_tokens"] = budget;
     }
-  } else if (coding_model && !TL_SELFTALK && !messages.empty() &&
-             mag::str(messages.back(), "role") == "user") {
+  } else if (coding_model && !TL_SELFTALK && !messages.empty()) {
+    // Live 06:41 "Hi": round 1 sent the budget (193 tokens, 18 s), but the
+    // tool-result rounds after react sent none, and Flint ignores
+    // enable_thinking=false -> 3 278 / 1 020 / 517 reasoning tokens (7 min).
+    // Every request of the turn gets the budget, so the tier comes from the
+    // newest real user message, also in tool follow-up rounds (role=tool).
+    size_t ui = messages.size();
+    // Room-made "[System]" nudges are not the human request; skip them.
+    while (ui > 0 && (mag::str(messages[ui - 1], "role") != "user" ||
+                      mag::str(messages[ui - 1], "content").rfind("[System]", 0) == 0)) --ui;
+    const std::string wire_last = ui > 0 ? mag::str(messages[ui - 1], "content") : std::string();
     // First round of a short room turn ("Hi beide", "Schreib fizzbuzz(n)"):
     // live 17:05 Flint 2 reasoned 5 200+ tokens / 13 min on fizzbuzz, deliberating
     // over tools and then reciting the system prompt, and was aborted; "Hi"
     // took 300-800 tokens (47-140 s). Bound the hidden reasoning of that first
-    // round only. Tool rounds (last message role=tool) and long requests keep
-    // unlimited reasoning; the visible reply and code are never capped.
+    // turn (all rounds). Long requests keep unlimited reasoning; the visible
+    // reply and code are never capped.
     // Two tiers: greetings/short chat 256 (at 7-10 tok/s even 1024 is
     // 100-130 s for a "Hi"), short code requests 1024. Size and code keywords
     // come from the human utterance (TURN_INPUT, #288), not the transcript
-    // blob in the wire. Tool rounds never get here (role=tool).
-    const std::string wire_last = mag::str(messages.back(), "content");
+    // blob in the wire.
     if (short_coding_utterance(wire_last)) {
       std::string newest = short_turn_utterance(wire_last);
       if (auto nl = trim(newest).rfind('\n'); nl != std::string::npos) newest = trim(newest).substr(nl + 1);
@@ -5857,8 +5875,13 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   // Only GLM opts into pure prefix-only checkpointing. Keep the
   // configured non-GLM regression/legacy slot-save contract intact.
   if (t.error.empty() && !TL_SELFTALK &&
-      model.rfind("glm-5.3-flash", 0) != 0)
-    persist_configured_slot(bot_idx);
+      model.rfind("glm-5.3-flash", 0) != 0) {
+    // Live 06:41: 4 saves of 1.47 GB (4.5-8 s each) between the rounds of one
+    // "Hi". A tool round is followed by another request of the same turn, so
+    // run_turn saves once at its end instead.
+    if (TL_DEFER_SLOT_SAVE && !t.calls.empty()) TL_SLOT_SAVE_PENDING = bot_idx;
+    else { TL_SLOT_SAVE_PENDING = -1; persist_configured_slot(bot_idx); }
+  }
   return t;
 }
 
@@ -6868,6 +6891,17 @@ static std::string glm_chat_skill(const std::string &input) {
 }
 static TurnReport run_turn(int bot_idx, bool autotalk,
                            const std::string &other) {
+  struct TurnEndGuard {
+    TurnEndGuard() { TL_DEFER_SLOT_SAVE = true; TL_SLOT_SAVE_PENDING = -1; TL_FORCE_REASONING_BUDGET = -1; }
+    ~TurnEndGuard() {
+      TL_DEFER_SLOT_SAVE = false;
+      TL_FORCE_REASONING_BUDGET = -1;
+      const int idx = TL_SLOT_SAVE_PENDING;
+      TL_SLOT_SAVE_PENDING = -1;
+      // A stop drops ik's KV; never overwrite the slot file with that.
+      if (idx >= 0 && !stop_flag().load()) persist_configured_slot(idx);
+    }
+  } turn_end_guard;
   std::string bot_id = bot_field(bot_idx, "id");
   std::string bot_name = bot_field(bot_idx, "name", "Bot");
   TL_WIRE_STALE = false;
@@ -7036,6 +7070,7 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
   std::string fallback_narration, last_pending;
   int stalled_plans = 0;
   bool completed = false;
+  bool react_closing = false; // a react/unreact-only round happened
   std::string compacted_steps;
   const size_t context_budget = (size_t)std::clamp(
       envi("MAG_ROOM_CONTEXT_BYTES", 52000), 24000, 100000);
@@ -7391,6 +7426,12 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
                 utf8_suffix(t.reasoning, keep)
           : t.reasoning;
     }
+    // Closing round after react/unreact: further tool calls are dropped, so
+    // react -> unreact -> react can no longer loop (live 06:41 and 07:58).
+    if (react_closing && !t.calls.empty()) {
+      std::cerr << "react-close drop-calls bot=" << bot_id << " n=" << t.calls.size() << std::endl;
+      t.calls.clear();
+    }
     if (!t.calls.empty()) {
       Val arr = Val::array();
       for (auto &c : t.calls)
@@ -7420,6 +7461,7 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
     }
     // Normal GLM chat has exactly one host-directed answer per bot/user turn.
     if (glm_chat || chat_only_room_bot) { completed = true; break; }
+    if (react_closing) { completed = true; break; }
     if (stateless || TL_SELFTALK) {
       completed = true; break;
     }
@@ -7452,6 +7494,8 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
       continue;
     }
     { std::lock_guard<std::mutex> lk(RUN_MTX); run_cur().reading = Val(); }
+    bool react_only_round = !t.calls.empty();
+    size_t react_calls_done = 0;
     for (auto &call : t.calls) {
       if (stop_flag().load())
         break;
@@ -7502,8 +7546,12 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
           result.rfind("Fehler:", 0) == 0 ||
           (fname == "run_command" && result.rfind("exit=0\n", 0) != 0) ||
           (fname == "web_search" && trim(result).empty());
-      if (!failed && (fname == "react" || fname == "unreact"))
+      if (!failed && (fname == "react" || fname == "unreact")) {
         report.reacted = true;
+        ++react_calls_done;
+      } else {
+        react_only_round = false;
+      }
       if (failed) {
         // User-visible activity already records full tool result. Journal a
         // bounded human-readable cause WITHOUT dumping args or credentials.
@@ -7582,10 +7630,13 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
     }
     if (repeated_failure || stop_flag().load())
       break;
+    if (react_calls_done != t.calls.size()) react_only_round = false;
     run_show("read", "Liest Ergebnis", true, false);
+    bool adopted_input = false;
     if (!stateless && !TL_TASK) {
       UserInput in = take_user_input(bot_id);
       if (!in.text.empty()) {
+        adopted_input = true;
         // Keep earlier status/thought/tool output at its original position;
         // the answer to this newer input starts a separate visible segment.
         handoff_visible_turn(bot_idx, report, final_text.empty() ? fallback_narration : final_text, in.think);
@@ -7613,6 +7664,17 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
         run_show("read", "Pausiert für neue Nachricht", true, false);
         break;
       }
+    }
+    // react/unreact closes the turn: one last request with thinking budget 0
+    // may still add the visible text ("Reagiere und antworte"), but its tool
+    // calls are dropped and the turn ends there. Live 06:41 "Hi" ran
+    // react -> unreact -> react -> text, 4 rounds and 8 minutes.
+    if (react_only_round && !adopted_input) {
+      react_closing = true;
+      TL_FORCE_REASONING_BUDGET = 0;
+    } else {
+      react_closing = false;
+      TL_FORCE_REASONING_BUDGET = -1;
     }
   }
   // Long tasks continue within the same turn, including with Autonomy OFF.

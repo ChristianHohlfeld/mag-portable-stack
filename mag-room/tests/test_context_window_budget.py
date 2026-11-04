@@ -56,11 +56,17 @@ class ContextWindowBudget(unittest.TestCase):
         self.assertIn('const bool uncapped = coding_model && !TL_SELFTALK;', SOURCE)
 
     def test_short_turn_reasoning_budget(self):
-        # Short first rounds bound hidden reasoning; tool rounds stay unlimited.
+        # Short turns bound hidden reasoning in every round, tool rounds too.
         self.assertIn('envi("MAG_ROOM_SHORT_REASONING_BUDGET", 256)', SOURCE)
         self.assertIn('envi("MAG_ROOM_SHORT_CODE_REASONING_BUDGET", 1024)', SOURCE)
         self.assertIn('envi("MAG_ROOM_SHORT_TURN_BYTES", 400)', SOURCE)
-        self.assertIn('mag::str(messages.back(), "role") == "user"', SOURCE)
+        self.assertNotIn('mag::str(messages.back(), "role") == "user") {', SOURCE)
+        self.assertIn('while (ui > 0 && (mag::str(messages[ui - 1], "role") != "user" ||', SOURCE)
+        # react/unreact closes the turn: one budget-0 round, its tools dropped.
+        self.assertIn('TL_FORCE_REASONING_BUDGET = 0;', SOURCE)
+        self.assertIn('if (react_closing) { completed = true; break; }', SOURCE)
+        # Tool rounds defer the slot save to the end of the turn.
+        self.assertIn('if (TL_DEFER_SLOT_SAVE && !t.calls.empty()) TL_SLOT_SAVE_PENDING = bot_idx;', SOURCE)
         # "Hi" is short even when the wire user message is the whole transcript.
         self.assertIn('!TURN_INPUT.empty() ? TURN_INPUT : wire_last', SOURCE)
 

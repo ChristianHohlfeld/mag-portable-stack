@@ -2311,7 +2311,12 @@ function syncModelSettings(next){
  }
  for(const model of models){
   const card=[...host.children].find(x=>x.dataset.modelId===model.id);if(!card)continue;
-  card.querySelector('.model-setting-title').textContent=model.label||model.id;
+  const live=(next.model_instances||[]).find(x=>x.model===model.id);
+  const bot=live&&(next.agents||[]).find(a=>a.slot===live.slot);
+  card.querySelector('.model-setting-title').textContent=(bot?.name?bot.name+' · ':'')+(live?.label||model.label||model.id);
+  card.querySelector('.model-setting-id').textContent=live
+   ? 'NUMA '+live.numa+' · :'+live.port+' · '+live.model+' · '+live.state
+   : model.id+' · derzeit nicht geladen';
   const input=card.querySelector('.model-setting-name input');
   if(document.activeElement!==input)input.value=model.label||model.id;
   const check=card.querySelector('input[type=checkbox]');
@@ -2424,7 +2429,15 @@ function syncModelChoice(next){
  }
  window.magAgentUI?.sync(next);
 }
-function modelInfo(mi){const el=$('model-info');if(!el)return;el.replaceChildren();if(state.configured_model){el.textContent=state.model_label||'';el.title=state.model_label+(mi?.gguf?' · '+mi.gguf:'');return}if(!mi||!mi.gguf){el.title='Modellinfo nicht verfügbar';return}const n=document.createElement('b');n.textContent=state.model_label||mi.gguf;el.append(n);const eng=(mi.engine||'Engine?')+(mi.build?' '+mi.build:'');let txt=' · '+eng;const l=mi.last;const f=v=>(typeof v==='number'&&v>=0)?v.toFixed(v<10?2:1):'–';if(l&&(l.prompt_per_second>=0||l.predicted_per_second>=0))txt+=' · Prompt '+f(l.prompt_per_second)+' t/s · Gen '+f(l.predicted_per_second)+' t/s';el.append(document.createTextNode(txt));let cacheTip='';if(l&&typeof l.tokens_evaluated==='number'&&l.tokens_evaluated>=0)cacheTip='\nCache (Debug): '+(typeof l.tokens_cached==='number'&&l.tokens_cached>=0?Math.round(l.tokens_cached):'?')+' gecacht / '+Math.round(l.tokens_evaluated)+' Prompt-Tokens';el.title='Modell: '+mi.gguf+'\nEngine: '+eng+(l?'\nLetzte Antwort: Prompt '+f(l.prompt_per_second)+' t/s ('+(l.prompt_n>=0?l.prompt_n:'?')+' Tokens), Gen '+f(l.predicted_per_second)+' t/s ('+(l.predicted_n>=0?l.predicted_n:'?')+' Tokens)':'\nNoch keine Antwort seit Raumstart')+cacheTip}
+function modelInfo(mi){const el=$('model-info');if(!el)return;el.replaceChildren();if(state.configured_model){
+ const instances=Array.isArray(state.model_instances)?state.model_instances:[];
+ const agents=state.agents||[];
+ const descriptions=instances.map(inst=>{
+  const bot=agents.find(a=>a.slot===inst.slot);
+  return (bot?.name||'Bot '+inst.slot)+' · '+(inst.label||inst.model||'Modell')+
+    ' · NUMA'+inst.numa+' :'+inst.port+' · '+(inst.state||'unbekannt');
+ });
+ el.textContent=descriptions.join(' | ');el.title=descriptions.join('\n');return}if(!mi||!mi.gguf){el.title='Modellinfo nicht verfügbar';return}const n=document.createElement('b');n.textContent=state.model_label||mi.gguf;el.append(n);const eng=(mi.engine||'Engine?')+(mi.build?' '+mi.build:'');let txt=' · '+eng;const l=mi.last;const f=v=>(typeof v==='number'&&v>=0)?v.toFixed(v<10?2:1):'–';if(l&&(l.prompt_per_second>=0||l.predicted_per_second>=0))txt+=' · Prompt '+f(l.prompt_per_second)+' t/s · Gen '+f(l.predicted_per_second)+' t/s';el.append(document.createTextNode(txt));let cacheTip='';if(l&&typeof l.tokens_evaluated==='number'&&l.tokens_evaluated>=0)cacheTip='\nCache (Debug): '+(typeof l.tokens_cached==='number'&&l.tokens_cached>=0?Math.round(l.tokens_cached):'?')+' gecacht / '+Math.round(l.tokens_evaluated)+' Prompt-Tokens';el.title='Modell: '+mi.gguf+'\nEngine: '+eng+(l?'\nLetzte Antwort: Prompt '+f(l.prompt_per_second)+' t/s ('+(l.prompt_n>=0?l.prompt_n:'?')+' Tokens), Gen '+f(l.predicted_per_second)+' t/s ('+(l.predicted_n>=0?l.predicted_n:'?')+' Tokens)':'\nNoch keine Antwort seit Raumstart')+cacheTip}
 function modelFace(id,label){const blob=((label||'')+' '+(id||'')).toLowerCase();if(blob.includes('qwen'))return 'Qwen';if(blob.includes('deepseek')||blob.includes('q4'))return 'DeepSeek';const raw=String(label||id||'Modell').replace(/^\d+\s*·\s*/,'').split(/[\s(·]/)[0];return raw||'Modell'}
 function botHot(bot){if(!bot)return false;if(busyBots.has(bot.id)||waitingBots.has(bot.id)||bot.prewarm_eta_s!=null)return true;const s=streams[bot.id];return !!(s&&(s.phase==='prompt'||s.phase==='read'||s.phase==='think'||s.thinking))}
 function modelBannerRows(m){
@@ -2532,13 +2545,16 @@ function activityItems(){
   let text;
   if(stopInFlight||stopAwaitingIdle)text=name+' stoppt …';
   else if(waitingBots.has(id))text=name+' wartet';
-  else if(!s)text=name+' antwortet';
+  else if(!s)text=name+' · Lauf aktiv';
   else if(s.error)text=name+' · Fehler';
   else{
    const clock=streamClock(s);
-   if(s.phase==='read'||s.phase==='prompt'||s.label==='Liest Verlauf')text=name+' liest '+clock;
-   else if(s.thinking||s.phase==='think')text=name+' denkt '+clock;
-   else text=name+' antwortet '+clock;
+   if(s.phase==='read'||s.phase==='prompt'||s.label==='Liest Verlauf')text=name+' liest Gespräch · '+clock;
+   else if(s.thinking||s.phase==='think')text=name+' denkt nach · '+clock;
+   else if(s.phase==='tool')text=name+' · '+(s.label||'Werkzeug')+' · '+clock;
+   else if(s.phase==='speech'||s.phase==='speak')text=name+' spricht · '+clock;
+   else if(s.phase==='narration'||s.phase==='answer'||(s.text||'').length)text=name+' schreibt · '+clock;
+   else text=name+' · '+(s.label||s.phase||'arbeitet')+' · '+clock;
   }
   const loud=!!(stopInFlight||stopAwaitingIdle||(s&&s.error));
   return {id,text,loud,idx:botToneIndex(a||{id})};
@@ -2566,7 +2582,6 @@ function fillActivity(stat){
   botVars(dot,p.idx);
   dot.setAttribute('aria-hidden','true');
   dot.title=p.text;
-  if(!p.loud){stat.append(dot);return}
   const lab=document.createElement('span');lab.textContent=p.text;
   stat.append(dot,lab);
  });

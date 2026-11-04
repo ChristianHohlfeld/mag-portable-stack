@@ -190,9 +190,43 @@
   // inference settings, without any playbackRate-based shifting (that also
   // slowed and blurred speech). A speaker with a role never falls back to
   // the device voice: on iOS that is usually a female default.
+  const DEFAULT_ROLE_VOICES = {
+    user: {model:'de_DE-thorsten-medium.onnx', speaker:0},
+    lena: {model:'de_DE-mls-medium.onnx', speaker:68},
+    noah: {model:'de_DE-mls-medium.onnx', speaker:32}
+  };
+  function roleId(opts) {
+    if(opts?.user)return 'user';
+    const id=String(opts?.bot||'').toLowerCase(),name=String(opts?.name||'').toLowerCase();
+    if(id==='qwen-numa0'||name==='lena')return 'lena';
+    if(id==='qwen-numa1'||name==='noah')return 'noah';
+    return '';
+  }
+  function savedRoleVoice(role) {
+    const base=DEFAULT_ROLE_VOICES[role];
+    if(!base)return null;
+    try{
+      const value=JSON.parse(localStorage.getItem('mag-tts-role-'+role)||'null');
+      if(value&&['de_DE-thorsten-medium.onnx','de_DE-mls-medium.onnx'].includes(value.model)&&
+         Number.isInteger(value.speaker)&&value.speaker>=0&&
+         value.speaker<=(value.model.includes('mls')?235:0))return value;
+    }catch(_){}
+    return {...base};
+  }
+  function setRoleVoice(role,model,speaker) {
+    if(!DEFAULT_ROLE_VOICES[role])throw Error('Unbekannter Sprecher');
+    const limit=model==='de_DE-mls-medium.onnx'?235:model==='de_DE-thorsten-medium.onnx'?0:-1;
+    if(!Number.isInteger(+speaker)||+speaker<0||+speaker>limit)throw Error('Ungültige Sprecher-ID');
+    const value={model,speaker:+speaker};
+    localStorage.setItem('mag-tts-role-'+role,JSON.stringify(value));
+    warm(value);
+    return value;
+  }
   function roleVoice(opts) {
     const cfg = piper.config;
-    if (!cfg || voicePref() === 'system') return null;
+    if (!cfg) return null;
+    const role=roleId(opts);
+    if(role)return {...savedRoleVoice(role),fixed:true};
     const roles = cfg.roles || {};
     let r = null;
     if (opts && opts.user) r = roles.user;
@@ -272,7 +306,9 @@
     if (wasPlaying) return false;
     const normalized = normalize(text);
     const lang = chosenLocale(normalized);
-    const de = lang.startsWith('de') && piperPossible && voicePref() !== 'system';
+    // Per-participant Piper settings override the old global system fallback.
+    const de = lang.startsWith('de') && piperPossible &&
+      (voicePref() !== 'system' || !!roleId(opts));
     const parts = de ? piperParts(normalized) : split(normalized);
     if (!parts.length) return false;
     const playback = {key, parts, at: 0, lang};
@@ -348,6 +384,7 @@
   }
 
   window.magMessageAudio = {attach, toggle, stop, supported, setVoice, voiceOptions, voicePref, bestVoice, rates: RATES, ratePref, setRate,
+    rolePref:savedRoleVoice,setRoleVoice,
     voiceFor: async opts => { await loadConfig(); const v = roleVoice(opts); return v && {model: v.model, speaker: v.speaker, fixed: v.fixed}; },
     isPlaying: id => !!current && current.key === id, piperReady: () => { const v = piperVoice(); return !!v && piper.ready.has(v.model); }};
   window.addEventListener('pagehide', stop);

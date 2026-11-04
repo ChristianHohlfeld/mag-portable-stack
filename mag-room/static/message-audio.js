@@ -132,7 +132,7 @@
   function setRate(v) {
     v = RATES.includes(+v) ? +v : 1;
     try { localStorage.setItem('mag-tts-rate', String(v)); } catch (_) {}
-    try { if (piper.source) piper.source.playbackRate.value = v; } catch (_) {}
+    try { if (piper.source) piper.source.playbackRate.value = v * ((current && current.pitch) || 1); } catch (_) {}
     return v;
   }
   function voicePref() { try { return localStorage.getItem('mag-tts-voice') || 'thorsten'; } catch (_) { return 'thorsten'; } }
@@ -182,6 +182,9 @@
     piper.loading = p;
     return p;
   }
+  // Human messages: same Piper voice and quality, only a slightly lower pitch
+  // (playback ~-1.3 semitones) so they sound different from every bot.
+  const USER_PITCH = 0.925;
   async function piperPlay(playback, v) {
     // Synthesis of the next part overlaps playback of the current one.
     let next = ask({type: 'speak', text: playback.parts[0], model: v.model});
@@ -194,7 +197,7 @@
         const buf = piper.ctx.createBuffer(1, res.audio.length, res.rate);
         buf.copyToChannel(res.audio, 0);
         const src = piper.ctx.createBufferSource();
-        src.buffer = buf; if (src.playbackRate) src.playbackRate.value = ratePref(); src.connect(piper.ctx.destination);
+        src.buffer = buf; if (src.playbackRate) src.playbackRate.value = ratePref() * (playback.pitch || 1); src.connect(piper.ctx.destination);
         src.onended = done; piper.source = src; src.start();
       });
       if (current !== playback) return;
@@ -217,6 +220,7 @@
     const utterance = new SpeechSynthesisUtterance(text);
     utterance.lang = playback.lang;
     utterance.rate = ratePref();
+    if (playback.pitch && playback.pitch !== 1) utterance.pitch = playback.pitch;
     const match = bestVoice(playback.lang);
     if (match) utterance.voice = match;
     utterance.onend = () => nextPart(playback);
@@ -227,7 +231,7 @@
     catch (_) { if (current === playback) { current = null; setButtons(); } }
   }
 
-  function toggle(key, text) {
+  function toggle(key, text, opts) {
     if (!supported) return false;
     const wasPlaying = !!current && current.key === key;
     stop();
@@ -237,7 +241,7 @@
     const de = lang.startsWith('de') && piperPossible && voicePref() !== 'system';
     const parts = de ? piperParts(normalized) : split(normalized);
     if (!parts.length) return false;
-    const playback = {key, parts, at: 0, lang};
+    const playback = {key, parts, at: 0, lang, pitch: opts && opts.user ? USER_PITCH : 1};
     current = playback;
     setButtons();
     if (de) {
@@ -277,13 +281,13 @@
     nextPart(playback);
   }
 
-  function attach(button, text, id) {
+  function attach(button, text, id, opts) {
     const key = id || 'temporary-message-' + (++nextEphemeral);
     button.classList.add('message-speak');
     button.dataset.audioKey = key;
     button.type = 'button';
     button.disabled = !supported;
-    button.onclick = () => toggle(key, text);
+    button.onclick = () => toggle(key, text, opts);
     setButton(button);
     if (!supported) button.title = 'Vorlesen auf diesem Gerät nicht verfügbar';
   }

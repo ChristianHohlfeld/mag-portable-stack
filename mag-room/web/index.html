@@ -2576,7 +2576,7 @@ $('send-form').onsubmit=async e=>{
  if(text)localSends.set(request_id,{role:'user',name:state.you?.name||'Du',login:state.you?.login||'',content:text,client_id:request_id,display_ms:Date.now()});
  composerSending=true;syncComposerButton();jumpForSend();render();
  try{
-  if(window.magSpeechBusy?.())await window.magSpeechStop();
+  if(window.magSpeechBusy?.())await window.magSpeechStop({discard:true});
   if(photos.length)await flushStagedPhotos(photos);if(files.length)await flushStagedFiles(files);
   if(!text){notice('Dateien geteilt');return}
   // Acknowledged send is final, even if the subsequent read-only refresh

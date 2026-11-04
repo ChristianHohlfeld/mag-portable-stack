@@ -1,5 +1,6 @@
-// MAG speech input: one German Moonshine Small Streaming model, one WASM worker on every device.
-// This file is built-in and loaded on the user's first microphone gesture; no CDN or MAG STT API.
+// MAG speech input. Primary: the browser/OS built-in recognizer (Web Speech API,
+// same engine as phone/desktop dictation). Fallback only when that API is missing
+// or unusable (e.g. Firefox): the bundled local Moonshine model in a WASM worker.
 const $ = id => document.getElementById(id);
 const field = $('message');
 const button = $('mic');
@@ -115,7 +116,7 @@ function workletCapture(s, ctx, stream, host) {
     }
   })();
 }
-async function start() {
+async function localStart() {
   if (current) return;
   if (!navigator.mediaDevices?.getUserMedia || !window.Worker ||
       !(window.AudioContext || window.webkitAudioContext)) {
@@ -191,9 +192,16 @@ async function start() {
     }
   }
 }
-async function stop() {
+async function localStop(opts) {
   const s = current;
   if (!s) return;
+  if (opts?.discard) {
+    // Send already took the text: detach now so a late final pass can never
+    // write stale words back into the emptied composer.
+    current = null;
+    buttonState(false);
+    show('');
+  }
   if (s.stopping) return s.stopping;
   // Preserve session until the worker delivers its forced final pass.
   s.stopping = (async () => {
@@ -216,17 +224,149 @@ async function stop() {
   })();
   return s.stopping;
 }
+// ---- Native Web Speech API (primary) ----
+const NativeRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+let nativeBroken = !NativeRecognition;
+let native = null;
+const coarse = () => matchMedia('(pointer:coarse)').matches;
+function nativeCompose(n) {
+  if (native !== n) return;
+  const parts = [n.base, n.committed, n.final, n.interim].map(v => (v || '').trim()).filter(Boolean);
+  field.value = parts.join(' ');
+  field.dispatchEvent(new Event('input', { bubbles: true }));
+}
+function nativeFinish(n, keepText) {
+  if (native !== n) return;
+  n.interim = '';
+  if (keepText) nativeCompose(n);
+  native = null;
+  clearTimeout(n.timer);
+  buttonState(false);
+  show('');
+  if (keepText && !coarse()) field.focus();
+}
+function nativeOpen(n) {
+  const rec = new NativeRecognition();
+  n.rec = rec;
+  rec.lang = 'de-DE';
+  // Android Chrome duplicates results in continuous mode: there we use
+  // single-utterance sessions and restart them until the user stops.
+  rec.continuous = !coarse();
+  rec.interimResults = true;
+  rec.maxAlternatives = 1;
+  rec.onstart = () => { if (native === n) show('Zuhören … · Mikro tippen zum Beenden'); };
+  rec.onresult = event => {
+    if (native !== n || n.rec !== rec) return;
+    n.heard = true;
+    let fin = '', inter = '';
+    for (let i = 0; i < event.results.length; i++) {
+      const r = event.results[i];
+      const t = (r[0]?.transcript || '').trim();
+      if (!t) continue;
+      if (r.isFinal) fin += (fin ? ' ' : '') + t;
+      else inter += (inter ? ' ' : '') + t;
+    }
+    n.final = fin;
+    n.interim = inter;
+    nativeCompose(n);
+  };
+  rec.onerror = event => {
+    if (native !== n || n.rec !== rec) return;
+    const code = event.error || '';
+    if (code === 'no-speech' || code === 'aborted') return; // onend decides
+    n.interim = '';
+    if (!n.heard && (code === 'network' || code === 'service-not-allowed' ||
+        code === 'language-not-supported')) {
+      // Built-in recognizer unusable here: fall back to the local model once.
+      nativeBroken = true;
+      n.fallback = true;
+      return;
+    }
+    n.error = code === 'not-allowed'
+      ? 'Mikrofon nicht freigegeben – bitte im Browser erlauben.'
+      : code === 'audio-capture' ? 'Kein Mikrofon gefunden.'
+      : 'Spracherkennung: ' + code;
+  };
+  rec.onend = () => {
+    if (native !== n || n.rec !== rec) return;
+    // Commit this session's final text; interim text is always dropped.
+    n.committed = [n.committed, n.final].map(v => (v || '').trim()).filter(Boolean).join(' ');
+    n.final = '';
+    n.interim = '';
+    if (n.fallback) {
+      nativeFinish(n, true);
+      void localStart();
+      return;
+    }
+    if (n.error) {
+      const msg = n.error;
+      nativeFinish(n, true);
+      show(msg);
+      clearTimeout(n.errTimer);
+      setTimeout(() => { if (!native && !current && status.textContent === msg) show(''); }, 6000);
+      return;
+    }
+    if (!n.stopping && !document.hidden) {
+      try { nativeOpen(n); return; } catch (e) { /* fall through */ }
+    }
+    nativeFinish(n, true);
+  };
+  rec.start();
+}
+function nativeStart() {
+  const n = {base: field.value, committed: '', final: '', interim: ''};
+  native = n;
+  buttonState(true);
+  show('Mikrofon wird geöffnet …');
+  try {
+    nativeOpen(n);
+  } catch (e) {
+    native = null;
+    buttonState(false);
+    nativeBroken = true;
+    void localStart();
+  }
+}
+function nativeStop(opts) {
+  const n = native;
+  if (!n) return Promise.resolve();
+  n.stopping = true;
+  if (opts?.discard) {
+    // Message was sent: never write the recognized text back.
+    native = null;
+    clearTimeout(n.timer);
+    buttonState(false);
+    show('');
+    try { n.rec?.abort(); } catch (e) {}
+    return Promise.resolve();
+  }
+  return new Promise(resolve => {
+    const done = () => { nativeFinish(n, true); resolve(); };
+    const prevEnd = n.rec?.onend;
+    if (n.rec) n.rec.onend = ev => { try { prevEnd?.(ev); } finally { done(); } };
+    n.timer = setTimeout(() => { try { n.rec?.abort(); } catch (e) {} done(); }, 2500);
+    try { n.rec?.stop(); } catch (e) { done(); }
+  });
+}
+
+function start() { return nativeBroken ? localStart() : nativeStart(); }
+function stop(opts) {
+  if (native) return nativeStop(opts);
+  return localStop(opts);
+}
 buttonState(false);
-button.onclick = () => { if (current) void stop(); else void start(); };
+button.onclick = () => { if (native || current) void stop(); else void start(); };
 document.addEventListener('visibilitychange', () => {
-  if (document.hidden && current?.recording) void stop();
+  if (document.hidden && (native || current?.recording)) void stop();
 });
 field.addEventListener('input', event => {
-  if (event.isTrusted && current?.recording) void stop();
+  // Typing or OS keyboard dictation takes over: stop our capture, never block it.
+  if (event.isTrusted && (native || current?.recording)) void stop();
 });
 window.magSpeechStop = stop;
-window.magSpeechBusy = () => !!current;
+window.magSpeechBusy = () => !!(native || current);
 window.addEventListener('pagehide', () => {
+  if (native) { try { native.rec?.abort(); } catch (e) {} native = null; }
   const s = current;
   current = null;
   s?.media?.getTracks().forEach(t => t.stop());

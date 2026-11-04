@@ -61,6 +61,19 @@ FAKE_AUDIO = """(() => {
   window.AudioContext=FakeAudioContext;
   window.webkitAudioContext=FakeAudioContext;
   window.AudioWorkletNode=undefined;
+  // Local-model fallback path: hide the built-in Web Speech API.
+  window.SpeechRecognition=undefined;
+  window.webkitSpeechRecognition=undefined;
+})();"""
+FAKE_NATIVE = """(() => {
+  class FakeRec {
+    constructor(){globalThis.__nativeRec=this}
+    start(){this.running=true;setTimeout(()=>this.onstart?.(),0)}
+    emit(list){this.onresult?.({resultIndex:0,results:list.map(([t,f])=>Object.assign([{transcript:t}],{isFinal:f}))})}
+    stop(){this.running=false;setTimeout(()=>this.onend?.(),0)}
+    abort(){this.running=false;setTimeout(()=>this.onend?.(),0)}
+  }
+  window.SpeechRecognition=FakeRec;
 })();"""
 
 class BrowserSpeech(unittest.TestCase):
@@ -194,6 +207,35 @@ class BrowserSpeech(unittest.TestCase):
                              'cdn.jsdelivr.net' in x for x in self.requests))
         self.assertEqual(len([x for x in self.requests if
                               'speech-config.json' in x]), 1)
+
+    def test_native_web_speech_primary_and_cleared(self):
+        ctx = self.browser.new_context()
+        try:
+            ctx.add_init_script(FAKE_AUDIO)
+            ctx.add_init_script(FAKE_NATIVE)
+            page = ctx.new_page()
+            reqs = []
+            page.on('request', lambda r: reqs.append(r.url))
+            page.goto(f'http://127.0.0.1:{self.port}/', wait_until='domcontentloaded')
+            page.wait_for_function("() => !!window.magSpeechBusy")
+            page.locator('#message').fill('Vorher')
+            page.locator('#mic').click()
+            page.wait_for_function("() => !!window.__nativeRec?.running")
+            self.assertEqual(page.evaluate('window.__nativeRec.lang'), 'de-DE')
+            self.assertTrue(page.evaluate('window.__nativeRec.interimResults'))
+            page.evaluate("() => window.__nativeRec.emit([['Hallo',false]])")
+            self.assertEqual(page.locator('#message').input_value(), 'Vorher Hallo')
+            page.evaluate("() => window.__nativeRec.emit([['Hallo Welt',true],['und',false]])")
+            self.assertEqual(page.locator('#message').input_value(), 'Vorher Hallo Welt und')
+            page.locator('#mic').click()
+            page.wait_for_function(
+                "() => document.querySelector('#mic').getAttribute('aria-pressed') === 'false'")
+            # Interim text is dropped on stop; final text stays; status cleared.
+            self.assertEqual(page.locator('#message').input_value(), 'Vorher Hallo Welt')
+            self.assertTrue(page.locator('#speech-status').is_hidden())
+            self.assertFalse(any('speech-config.json' in x for x in reqs))
+        finally:
+            ctx.close()
 
     def test_hashed_runtime_is_sw_cache_first(self):
         url = '/static/speech-0123456789ab/moonshine.wasm'

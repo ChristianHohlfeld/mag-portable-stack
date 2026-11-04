@@ -37,6 +37,10 @@
         "git_blob": "b07660ccbbea09ce6ac6741c6d041082033ab031",
         "sha256": "182e77dd83bd8e9ca818b240b82e28f243762cd5dda32e6eef327df7b1cd107e",
         "installed_as": "ops/coding/ornith-chat.jinja"
+      },
+      "mtp": {
+        "source": "embedded",
+        "draft_n_max": 3
       }
     }
   }

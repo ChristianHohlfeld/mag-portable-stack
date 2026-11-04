@@ -26,6 +26,14 @@ def verified_file(path, sha):
 
 def stage(name, root, download=False):
     spec = MANIFEST["models"][name]
+    stage_file(name, root, spec, download)
+    # A separate MTP head (draft GGUF) is pinned and verified like the model.
+    mtp = spec.get("mtp", {})
+    if mtp.get("source") == "file":
+        stage_file(name, root, mtp, download)
+
+
+def stage_file(name, root, spec, download):
     filename = spec["filename"]
     sha = spec["sha256"]
     if not re.fullmatch(r"[a-f0-9]{64}", sha) or not re.fullmatch(r"[A-Za-z0-9_.-]+[.]gguf", filename):
@@ -67,7 +75,10 @@ def stage(name, root, download=False):
     temp = target.with_name(filename + ".part")
     if temp.is_symlink():
         raise RuntimeError(f"refusing symlink download target: {temp}")
-    url = f"https://huggingface.co/{spec['repo']}/resolve/main/{filename}"
+    revision = spec.get("revision", "main")
+    if not re.fullmatch(r"main|[a-f0-9]{40}", revision):
+        raise RuntimeError("invalid pinned model revision")
+    url = f"https://huggingface.co/{spec['repo']}/resolve/{revision}/{filename}"
     # Resumable. A changed upstream object is rejected by the pinned SHA256.
     subprocess.run(["curl", "--fail", "--location", "--retry", "5", "--continue-at", "-",
                     "--output", str(temp), url], check=True)

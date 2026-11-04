@@ -155,6 +155,11 @@ class CodingDeploy(unittest.TestCase):
   self.assertIn('DIR="/home/chris/.local/mag-coding-rt/$REV/bin"',start)
   self.assertIn("alias=ornith; file=Ornith-1.5-35B-A3B-Q4_K_M.gguf",start)
   self.assertIn("alias=ornith-numa0; file=Ornith-1.5-35B-A3B-Q4_K_M.gguf",start)
+  # MTP self-speculation keeps the one-lane-per-node layout (-np 1).
+  self.assertIn("mtp=embedded",start)
+  self.assertIn("--spec-type draft-mtp",start)
+  self.assertIn('"${SPEC_ARGS[@]}"',start)
+  self.assertIn("--parallel 1",start)
   # Chat without thinking: Flint template override, installed with the launcher.
   self.assertIn('TEMPLATE_ARGS=(--chat-template-file "$TPL")',start)
   self.assertIn('install -m 0644 "$ROOT/ops/coding/flint-chat.jinja" /usr/local/lib/mag-coding/flint-chat.jinja',layout)

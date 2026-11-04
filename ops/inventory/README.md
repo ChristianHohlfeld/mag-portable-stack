@@ -27,6 +27,9 @@ both NUMA nodes (`general` = NUMA0 :8191, `coder` = NUMA1 :8192):
 - File `Ornith-1.5-35B-A3B-Q4_K_M.gguf`, 21 864 081 056 bytes,
   SHA256 `12d8d5c01bae7f23ea4822b2f96ba069d531f827d02a57c31002f2f95e72614a`
 - Source: <https://huggingface.co/bartowski/Ornith-1.5-35B-A3B-GGUF/resolve/main/Ornith-1.5-35B-A3B-Q4_K_M.gguf>
+- MTP self-speculation (`--spec-type draft-mtp`, n_max 3) per node via the
+  `mtp` field in models.json / `start-live.sh`: `embedded` uses the nextn block
+  inside the GGUF (bartowski Q4_K_M), `file` a pinned separate MTP head.
 - Chat template: `ops/coding/ornith-chat.jinja`, verbatim `chat_template.jinja`
   of <https://huggingface.co/ornith-ai/Ornith-1.5-35B-A3B> (blob/sha256 in models.json)
 - Placement: `/home/chris/models/mag-coding/{general,coder}/<file>`, one

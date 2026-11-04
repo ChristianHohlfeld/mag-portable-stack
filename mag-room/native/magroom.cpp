@@ -5357,6 +5357,47 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   // mag: 1 of 1.212 tokens reused). It is therefore not sent by default; if
   // MAG_ROOM_REASONING_EFFORT is set it is sent on EVERY request so the prefix
   // stays identical across the toggle.
+  // Flint thinking profile for this request (see chat_template_kwargs below).
+  bool flint_profile_set = false, flint_think = true;
+  int flint_budget = -1;
+  if (coding_model && !TL_SELFTALK && !messages.empty()) {
+    if (TL_FORCE_REASONING_BUDGET >= 0) {
+      // Closing round after react/unreact: no new thinking, just the text.
+      flint_profile_set = true; flint_think = false; flint_budget = TL_FORCE_REASONING_BUDGET;
+    } else if (TL_CHIPIN) {
+      // Dispatcher complement (chip-in behind the PASS gate): one sentence or PASS.
+      flint_budget = std::clamp(envi("MAG_ROOM_CHIPIN_REASONING_BUDGET", 0), -1, 32768);
+      flint_profile_set = true; flint_think = flint_budget != 0;
+    } else {
+      // Tier from the newest real user message, also in tool follow-up rounds
+      // (role=tool). Room-made "[System]" nudges are not the human request.
+      size_t ui = messages.size();
+      while (ui > 0 && (mag::str(messages[ui - 1], "role") != "user" ||
+                        mag::str(messages[ui - 1], "content").rfind("[System]", 0) == 0)) --ui;
+      const std::string wire_last = ui > 0 ? mag::str(messages[ui - 1], "content") : std::string();
+      // Size and code keywords come from the human utterance (TURN_INPUT,
+      // #288), not the transcript blob in the wire. Long requests keep
+      // thinking without a budget.
+      if (short_coding_utterance(wire_last)) {
+        std::string newest = short_turn_utterance(wire_last);
+        if (auto nl = trim(newest).rfind('\n'); nl != std::string::npos) newest = trim(newest).substr(nl + 1);
+        std::transform(newest.begin(), newest.end(), newest.begin(),
+                       [](unsigned char ch) { return (char)std::tolower(ch); });
+        bool code = false;
+        for (const char *k : {"```", "code", "funktion", "function", "python", "script",
+                              "skript", "schreib", "implement", "programm", "bug", "fehler",
+                              "fix", "klasse", "class", "def ", "sql", "regex", "html",
+                              "javascript", "c++", "rust", "bash", "test", "refactor"})
+          if (newest.find(k) != std::string::npos) { code = true; break; }
+        flint_budget = code
+            ? std::clamp(envi("MAG_ROOM_SHORT_CODE_REASONING_BUDGET", 1024), -1, 32768)
+            : std::clamp(envi("MAG_ROOM_SHORT_REASONING_BUDGET", 0), -1, 32768);
+        flint_profile_set = true; flint_think = flint_budget != 0;
+      } else {
+        flint_profile_set = true; flint_think = true; // long task: thinking, no budget
+      }
+    }
+  }
   Val kwargs = Val::object();
   // The Mistral GGUF exposes reasoning_effort, not an enable_thinking off switch.
   // Do not send that unrelated kwarg for Mistral; short_chat only hides its trace.
@@ -5387,65 +5428,20 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
     kwargs["reasoning_effort"] = REASONING_EFFORT;
   }
   body["chat_template_kwargs"] = kwargs;
-  // Dispatcher complement (chip-in behind the PASS gate): Flint always thinks
-  // and spent 500-1700 reasoning tokens (86 s to 4 min at ~7-8 tok/s) just to
-  // add one sentence or PASS. llama.cpp 3f8af15a accepts a per-request
-  // reasoning_budget_tokens (tools/server/server-common.cpp, same knob as
-  // --reasoning-budget): once spent, the sampler injects the end-of-thinking
-  // tag and the model writes its visible answer. Only the hidden reasoning is
-  // bounded; the reply itself stays uncapped (no max_tokens). Sampling-only,
-  // so the cached prompt prefix is unchanged. -1 disables the cap.
-  if (coding_model && TL_FORCE_REASONING_BUDGET >= 0) {
-    // Closing round after react/unreact: no new thinking, just the text.
-    body["reasoning_budget_tokens"] = TL_FORCE_REASONING_BUDGET;
-    body["thinking_budget_tokens"] = TL_FORCE_REASONING_BUDGET;
-  } else if (coding_model && TL_CHIPIN && !TL_SELFTALK) {
-    const int budget = std::clamp(envi("MAG_ROOM_CHIPIN_REASONING_BUDGET", 256), -1, 32768);
-    if (budget >= 0) {
-      body["reasoning_budget_tokens"] = budget;
+  // Flint profile (owner 2026-11-04 "half a minute, too slow"): 256 hidden
+  // thinking tokens at ~10 tok/s were 21-26 s before the first visible token
+  // of a "Hi". Chat/Hi/complement turns therefore think not at all: budget 0
+  // plus enable_thinking=false, which ops/coding/flint-chat.jinja turns into a
+  // pre-filled closed <think></think> block (the GGUF template ignores it).
+  // Short code turns keep thinking with 1024. The visible reply is never
+  // capped (no max_tokens). Applied to EVERY round of the turn, tool rounds
+  // too (live 06:41: unbudgeted tool rounds thought 3 278 tokens).
+  if (flint_profile_set) {
+    body["chat_template_kwargs"]["enable_thinking"] = flint_think;
+    if (flint_budget >= 0) {
+      body["reasoning_budget_tokens"] = flint_budget;
       // ik_llama.cpp reads only thinking_budget_tokens.
-      body["thinking_budget_tokens"] = budget;
-    }
-  } else if (coding_model && !TL_SELFTALK && !messages.empty()) {
-    // Live 06:41 "Hi": round 1 sent the budget (193 tokens, 18 s), but the
-    // tool-result rounds after react sent none, and Flint ignores
-    // enable_thinking=false -> 3 278 / 1 020 / 517 reasoning tokens (7 min).
-    // Every request of the turn gets the budget, so the tier comes from the
-    // newest real user message, also in tool follow-up rounds (role=tool).
-    size_t ui = messages.size();
-    // Room-made "[System]" nudges are not the human request; skip them.
-    while (ui > 0 && (mag::str(messages[ui - 1], "role") != "user" ||
-                      mag::str(messages[ui - 1], "content").rfind("[System]", 0) == 0)) --ui;
-    const std::string wire_last = ui > 0 ? mag::str(messages[ui - 1], "content") : std::string();
-    // First round of a short room turn ("Hi beide", "Schreib fizzbuzz(n)"):
-    // live 17:05 Flint 2 reasoned 5 200+ tokens / 13 min on fizzbuzz, deliberating
-    // over tools and then reciting the system prompt, and was aborted; "Hi"
-    // took 300-800 tokens (47-140 s). Bound the hidden reasoning of that first
-    // turn (all rounds). Long requests keep unlimited reasoning; the visible
-    // reply and code are never capped.
-    // Two tiers: greetings/short chat 256 (at 7-10 tok/s even 1024 is
-    // 100-130 s for a "Hi"), short code requests 1024. Size and code keywords
-    // come from the human utterance (TURN_INPUT, #288), not the transcript
-    // blob in the wire.
-    if (short_coding_utterance(wire_last)) {
-      std::string newest = short_turn_utterance(wire_last);
-      if (auto nl = trim(newest).rfind('\n'); nl != std::string::npos) newest = trim(newest).substr(nl + 1);
-      std::transform(newest.begin(), newest.end(), newest.begin(),
-                     [](unsigned char ch) { return (char)std::tolower(ch); });
-      bool code = false;
-      for (const char *k : {"```", "code", "funktion", "function", "python", "script",
-                            "skript", "schreib", "implement", "programm", "bug", "fehler",
-                            "fix", "klasse", "class", "def ", "sql", "regex", "html",
-                            "javascript", "c++", "rust", "bash", "test", "refactor"})
-        if (newest.find(k) != std::string::npos) { code = true; break; }
-      const int budget = code
-          ? std::clamp(envi("MAG_ROOM_SHORT_CODE_REASONING_BUDGET", 1024), -1, 32768)
-          : std::clamp(envi("MAG_ROOM_SHORT_REASONING_BUDGET", 256), -1, 32768);
-      if (budget >= 0) {
-        body["reasoning_budget_tokens"] = budget;
-        // ik_llama.cpp reads only thinking_budget_tokens.
-        body["thinking_budget_tokens"] = budget;
-      }
+      body["thinking_budget_tokens"] = flint_budget;
     }
   }
   std::string payload = mj::dump(body);

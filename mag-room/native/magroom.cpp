@@ -6306,7 +6306,7 @@ static void run_narration(const std::string &live, bool commit) {
     run_cur().narr_lines = idx;
   std::string tail = one_line(cur);
   if (tail.size() > 140)
-    tail = tail.substr(0, 137) + "…";
+    tail = mj::utf8_cut(tail, 137) + "…";
   if (!tail.empty())
     run_cur().label = tail;
   auto now =
@@ -6340,15 +6340,21 @@ static void run_fail(const std::string &text) {
   else
     commit_label_locked(run_cur().label);
   run_cur().phase = "error";
-  run_cur().error = one_line(text).substr(0, 140);
+  run_cur().error = mj::utf8_cut(one_line(text), 140);
   run_cur().label = "Fehler";
   publish_run_locked();
 }
 static void emit_answer_deltas(const std::string &bot, const std::string &name,
                                const std::string &text) {
+  // SSE text is JSON-encoded per event. Never cut a multibyte codepoint
+  // between events, otherwise JSON sanitization emits U+FFFD.
   const size_t chunk = 240;
-  for (size_t i = 0; i < text.size(); i += chunk)
-    emit_event("delta", bot, name, text.substr(i, chunk));
+  for (size_t i = 0; i < text.size();) {
+    const std::string piece = mj::utf8_cut(text.substr(i), chunk);
+    if (piece.empty()) break;
+    emit_event("delta", bot, name, piece);
+    i += piece.size();
+  }
 }
 
 static std::string shell_quote(const std::string &s) {
@@ -7344,7 +7350,7 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
     // (often before any header while the prompt is evaluated): not an error.
     if (stop_flag().load()) {
       if (glm_generation_turn) {
-        report.truncated = true;
+        report.truncated = false; // Stop != finish_reason=length
         if (t.calls.empty())
           final_text += glm_prefix.empty() ? trim(t.raw_text) : t.raw_text;
       } else if (t.calls.empty()) final_text += t.text;
@@ -9018,11 +9024,17 @@ static void attach_work(Val &msg, const TurnReport &report) {
       msg["tools"] = report.tools;
     }
     if (!report.error.empty()) {
-      std::string err = one_line(report.error).substr(0, 140);
+      std::string err = mj::utf8_cut(one_line(report.error), 140);
       (*it)["work_error"] = err;
       msg["work_error"] = err;
     }
-    if (report.truncated) {
+    // Explicit user cancellation takes precedence over a previous
+    // finish_reason=length or a loop guard from an earlier continuation.
+    if (stop_flag().load() || (TL_LANE && TL_LANE->user_cancel.load())) {
+      (*it)["interrupted"] = true; (*it)["stopped"] = "user";
+      msg["interrupted"] = true; msg["stopped"] = "user";
+      (*it).obj->erase("truncated");
+    } else if (report.truncated) {
       (*it)["truncated"] = true;
       msg["truncated"] = true;
     }
@@ -12961,27 +12973,11 @@ int main() {
         for (auto &x : a->asArr()) running.push_back(val_job(x));
       else if (auto a1 = q.find("active"); a1 && a1->isObj())
         running.push_back(val_job(*a1));
-      const std::string note =
-          "(Antwort unterbrochen – Raum wurde neu gestartet, wird fortgesetzt)";
+      // Persisted actor mailboxes are replayed silently after the warm-slot
+      // gate opens. Do not append synthetic assistant notes to ROOM: an
+      // unfinished turn is outstanding work, not a visible bot response.
       for (auto r = running.rbegin(); r != running.rend(); ++r) {
         if (r->ids.empty() || r->selftalk || (CONFIGURED_MODEL && r->reflect)) continue;
-        for (auto &id : r->ids) {
-          int idx = agent_index(id);
-          if (idx < 0) continue;
-          // A crash loop must not stack one note per restart.
-          bool noted = false;
-          {
-            std::lock_guard<std::recursive_mutex> st(STATE_MTX);
-            for (auto it = ROOM.rbegin(); it != ROOM.rend(); ++it) {
-              if (it->find("role") && it->find("role")->asStr() == "user") break;
-              if (it->find("bot") && it->find("bot")->asStr() == id) {
-                noted = it->find("content") && it->find("content")->asStr() == note;
-                break;
-              }
-            }
-          }
-          if (!noted) append_room("assistant", bot_field(idx, "name"), note, id);
-        }
         if (std::none_of(PARKED_JOBS.begin(), PARKED_JOBS.end(),
                          [&](const Job &j) { return j.ids == r->ids; }))
           PARKED_JOBS.push_front(*r);

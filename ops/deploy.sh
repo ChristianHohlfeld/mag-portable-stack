@@ -64,7 +64,9 @@ fi
 _ninja_check=$(ninja -C "$SOURCE/build" -n "${MAG_RELEASE_BINARIES[@]}") || {
   echo "deploy: Ninja verification failed" >&2; exit 1;
 }
-[[ $_ninja_check == "ninja: no work to do." ]] || {
+# `ninja -C` prints "ninja: Entering directory ..." first; judge the last line.
+_ninja_last=${_ninja_check##*$'\n'}
+[[ $_ninja_last == "ninja: no work to do." ]] || {
   echo "deploy: stale native binaries: $_ninja_check" >&2; exit 1;
 }
 for binary in "${MAG_RELEASE_BINARIES[@]}"; do

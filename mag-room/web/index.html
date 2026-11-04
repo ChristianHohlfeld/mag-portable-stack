@@ -3598,38 +3598,50 @@ function paintRoomLine(){
  const focused=document.activeElement;
  const editFocus=focused?.matches('.q-edit')?{id:focused.closest('.q-chip')?.dataset.id,start:focused.selectionStart,end:focused.selectionEnd}:null;
  const chrome=lineChrome();
- const previousHead=$('room-line'),previousItems=box.querySelector('.queue-items');
+ const previousHead=$('room-line');
  box.hidden=false;
- if(previousHead)previousHead.remove();
- if(previousItems)previousItems.remove();
  box.classList.toggle('paused',queueState.paused);
  box.classList.toggle('expanded',!!(list.length||talkJobs.length));
- const head=document.createElement('div');head.id='room-line';head.className='queue-head';
- if(!show){for(const el of chrome)head.append(el);box.append(head);return}
- const stat=document.createElement('span');stat.className='activity-status';fillActivity(stat);head.append(stat);
- if(pho){const mark=document.createElement('span');mark.className='pho-save';mark.textContent=pho;head.append(mark)}
+ const head=previousHead||document.createElement('div');
+ head.id='room-line';head.className='queue-head';
+ if(!show){
+  head.querySelector('.activity-status')?.remove();
+  head.querySelector('.pho-save')?.remove();
+  head.querySelector('.q-toggle')?.remove();
+  for(const el of chrome)head.append(el);
+  if(!head.isConnected)box.append(head);
+  box.querySelector('.queue-items')?.remove();
+  return;
+ }
+ let stat=head.querySelector('.activity-status');
+ if(!stat){stat=document.createElement('span');stat.className='activity-status';head.prepend(stat)}
+ fillActivity(stat);
+ let mark=head.querySelector('.pho-save');
+ if(pho){if(!mark){mark=document.createElement('span');mark.className='pho-save';head.append(mark)}mark.textContent=pho}
+ else mark?.remove();
  for(const el of chrome)head.append(el);
  if(list.length||talkJobs.length){
-  const toggle=document.createElement('span');toggle.className='q-toggle';toggle.setAttribute('role','status');toggle.setAttribute('aria-live','polite');
+  let toggle=head.querySelector('.q-toggle');
+  if(!toggle){toggle=document.createElement('span');toggle.className='q-toggle';toggle.setAttribute('role','status');toggle.setAttribute('aria-live','polite');head.append(toggle)}
   const held=list.filter(p=>p.held).length;
   const parts=[];
   if(list.length)parts.push(list.length+' wartet'+(held?' · '+held+' angehalten':''));
   if(talkJobs.length)parts.push(talkJobs.length===1?(talkJobs[0].chipin?'Ergänzung':'Proaktiv'):talkJobs.length+' Ergänzungen');
   toggle.textContent=parts.join(' · ');
-  head.append(toggle);
  }
- if(previousHead){
-  // Preserve the actual header element and attached controls.
-  previousHead.replaceChildren(...head.childNodes);
-  box.append(previousHead);
- }else box.append(head);
- if(!list.length&&!talkJobs.length)return;
+ else head.querySelector('.q-toggle')?.remove();
+ if(!head.isConnected)box.append(head);
+ if(!list.length&&!talkJobs.length){box.querySelector('.queue-items')?.remove();box._queueSignature='';return}
+ const signature=JSON.stringify([list,talkJobs,queueState.paused,state.you?.role]);
+ if(box._queueSignature===signature)return;
+ box._queueSignature=signature;
  const controls=document.createElement('span');controls.className='queue-controls';
  if(!queueState.paused&&can('stop')){const b=document.createElement('button');b.type='button';b.className='q-btn';b.textContent='Queue pausieren';b.onclick=async()=>{b.disabled=true;try{const r=await api('/api/queue/pause',{});if(r.queue)renderQueue(r.queue);await refresh()}catch(e){notice(e.message)}finally{b.disabled=false}};controls.append(b)}
  if(queueState.paused&&can('stop')){const b=document.createElement('button');b.type='button';b.className='q-btn';b.textContent='Fortsetzen';b.onclick=async()=>{b.disabled=true;try{await api('/api/queue/resume',{});await refresh()}catch(e){notice(e.message)}finally{b.disabled=false}};controls.append(b)}
  if(list.length>1&&can('stop')){const b=document.createElement('button');b.type='button';b.className='q-btn';b.textContent='Zusammenführen';b.onclick=async()=>{b.disabled=true;try{await api('/api/queue/merge',{});await refresh()}catch(e){if(e.status===409)notice('Warteschlange hat sich geändert');else notice(e.message);await refresh().catch(()=>{})}finally{b.disabled=false}};controls.append(b)}
  const items=document.createElement('div');items.className='queue-items';items.id='queue-items';items.append(controls);
- box.append(items);
+ const oldItems=box.querySelector('.queue-items');
+ if(oldItems)oldItems.replaceWith(items);else box.append(items);
  for(const p of list){const chip=document.createElement('div');chip.className='q-chip'+(p.held?' held':'')+(p.urgent?' priority':'');chip.dataset.id=p.id;
  const own=!state.you||state.you.role==='owner'||(!!p.login&&p.login===state.you.login);
  if(p.sender){const who=document.createElement('span');who.className='q-who';who.textContent=p.sender;chip.append(who)}

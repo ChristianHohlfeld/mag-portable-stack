@@ -106,6 +106,9 @@ static thread_local Lane *TL_LANE = nullptr;
 // run_turn: >=0 forces this hidden-reasoning budget on the next request (the
 // closing round after a react-only round uses 0).
 static thread_local int TL_FORCE_REASONING_BUDGET = -1;
+// run_turn: closing round of a direct turn after an emoji-only reaction must
+// be text: tool_choice=none (tools stay in the prompt prefix for the cache).
+static thread_local bool TL_REACT_CLOSE_TEXT = false;
 // run_turn: tool rounds defer the 1.5 GB slot save to the end of the turn.
 static thread_local bool TL_DEFER_SLOT_SAVE = false;
 static thread_local int TL_SLOT_SAVE_PENDING = -1;
@@ -5335,6 +5338,18 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
     stops.push("<tool_call");
     body["stop"] = stops;
   }
+  if (coding_model && TL_REACT_CLOSE_TEXT) {
+    // Owner 2026-11-04: on a direct turn an emoji alone is no answer. The
+    // tool list stays in the request (same template prefix, KV cache kept);
+    // tool_choice=none makes ik parse no tool calls, and raw tool syntax is
+    // stopped so it can never reach the visible text.
+    body["tool_choice"] = "none";
+    if (!body.find("stop")) {
+      Val stops = Val::array();
+      stops.push("<tool_call");
+      body["stop"] = stops;
+    }
+  }
   // GLM chat omits tools and tool_choice entirely for a stable template prefix.
   body["stream"] = true;
   // llama.cpp: stream prompt_progress {total,cache,processed,time_ms} while
@@ -6888,10 +6903,11 @@ static std::string glm_chat_skill(const std::string &input) {
 static TurnReport run_turn(int bot_idx, bool autotalk,
                            const std::string &other) {
   struct TurnEndGuard {
-    TurnEndGuard() { TL_DEFER_SLOT_SAVE = true; TL_SLOT_SAVE_PENDING = -1; TL_FORCE_REASONING_BUDGET = -1; }
+    TurnEndGuard() { TL_DEFER_SLOT_SAVE = true; TL_SLOT_SAVE_PENDING = -1; TL_FORCE_REASONING_BUDGET = -1; TL_REACT_CLOSE_TEXT = false; }
     ~TurnEndGuard() {
       TL_DEFER_SLOT_SAVE = false;
       TL_FORCE_REASONING_BUDGET = -1;
+      TL_REACT_CLOSE_TEXT = false;
       const int idx = TL_SLOT_SAVE_PENDING;
       TL_SLOT_SAVE_PENDING = -1;
       // A stop drops ik's KV; never overwrite the slot file with that.
@@ -7668,9 +7684,24 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
     if (react_only_round && !adopted_input) {
       react_closing = true;
       TL_FORCE_REASONING_BUDGET = 0;
+      // Direct turn (Chris addressed this bot or everyone): the emoji alone
+      // is no answer (live 14:08 Flint 2 only reacted to "Hi beide"). The
+      // closing round runs without tool calls and is asked for text. A
+      // chip-in may still end with just the reaction.
+      if (!TL_CHIPIN && !autotalk && !TL_SELFTALK && !TL_REFLECT &&
+          trim(final_text).empty() && trim(fallback_narration).empty()) {
+        TL_REACT_CLOSE_TEXT = true;
+        Val nudge = Val::object();
+        nudge["role"] = "user";
+        nudge["content"] =
+            "[System] Deine Reaktion ist gesetzt. Antworte jetzt zusaetzlich mit "
+            "einer kurzen sichtbaren Textnachricht an den Raum, ohne Werkzeuge.";
+        messages.push_back(nudge);
+      }
     } else {
       react_closing = false;
       TL_FORCE_REASONING_BUDGET = -1;
+      TL_REACT_CLOSE_TEXT = false;
     }
   }
   // Long tasks continue within the same turn, including with Autonomy OFF.

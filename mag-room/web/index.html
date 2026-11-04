@@ -888,10 +888,13 @@ function decorate(el,live=false){
   if(!pre||pre.querySelector('.code-bar'))return;
   const original=c.textContent;
   try{hljs.highlightElement(c)}catch(e){}
+  const codeLines=original ? original.split(/\r\n|\r|\n/).length : 0;
   const bar=document.createElement('div');bar.className='code-bar';
   const label=document.createElement('span');label.textContent=lang.toLowerCase();
   const btn=document.createElement('button');btn.type='button';btn.className='copy';btn.innerHTML=ICON_COPY+' Kopieren';btn.setAttribute('aria-label','Code kopieren');btn.onclick=()=>copyText(original,btn);
-  bar.append(label,btn);pre.prepend(bar);
+  const count=document.createElement('span');count.className='code-line-count';
+  count.textContent=codeLines.toLocaleString('de-DE')+(codeLines===1?' Zeile':' Zeilen');
+  bar.append(label,count,btn);pre.prepend(bar);
   if(htmlPreviewable(lang,original))addHtmlPreview(pre,bar,original,live);
  });
 }
@@ -1672,7 +1675,7 @@ function readingPanel(node,s){
  const hm=t=>t?new Date(t*1000).toLocaleTimeString('de-DE',{hour:'2-digit',minute:'2-digit'}):'';
  const head=document.createElement('div');head.className='wr-head';const ul=document.createElement('ul');
  if(r.kind==='tools'){const n=(r.items||[]).length;head.textContent='Werkzeug-Ergebnisse: '+n;
-  for(const t of r.items||[]){const li=document.createElement('li');li.textContent=(t.ok?'':'⚠ ')+t.tool+' · '+(+t.chars||0).toLocaleString('de-DE')+' Zeichen';ul.append(li)}}
+  for(const t of r.items||[]){const li=document.createElement('li');li.textContent=(t.ok?'':'⚠ ')+t.tool+' · '+(+t.lines||0).toLocaleString('de-DE')+' Zeilen';ul.append(li)}}
  else{head.textContent='Raum: '+(+r.messages||0)+' Nachrichten'+(r.files?' · '+r.files+' Dateien':'')+(r.first_ts?' · '+hm(r.first_ts)+'–'+hm(r.last_ts):'');
   for(const m of r.items||[]){const li=document.createElement('li');const a=document.createElement('a');a.href='#';a.dataset.msg=m.id||'';a.textContent=(m.name||'?')+' '+hm(m.ts);
    a.onclick=e=>{e.preventDefault();e.stopPropagation();document.querySelector('#conversation [data-id="'+CSS.escape(String(m.id||''))+'"]')?.scrollIntoView({block:'center',behavior:'smooth'})};
@@ -1799,7 +1802,9 @@ function updateStream(botId,immediate=false){
    content.hidden=s.thinkingEnabled===false?false:!text;
   content.dataset.loading=s.thinkingEnabled===false&&!text?'1':'0';
   if(!text){s.node.classList.add('processing');if(content._shown!==''){content.replaceChildren();content._shown=''}}
-  else{s.node.classList.remove('processing');if(content._shown!==text){content.innerHTML=safeMarkdown(text);decorate(content,true);content._shown=text}}
+  else{s.node.classList.remove('processing');if(content._shown!==text){content.innerHTML=safeMarkdown(text);decorate(content,true);content._shown=text}
+    ensureMessageTools(s.node,{role:'assistant',bot:botId,name:s.name,id:'live:'+botId+':'+(s.seq||0)},text);
+  }
   showThinking(s.node,'live:'+botId,s.thinkingEnabled===false||!shownTools(s.tools).length&&!shownSteps(s.steps).length?'':(s.reasoning||''),!!s.thinking,liveThinkMs(s));
   paintApprovals(s.node,botId);
   paintTools(s.node,content,s.tools);
@@ -3897,11 +3902,12 @@ append=function(m,scroll=false,trace=null,position=-1){
   // A streamed reply is built live with an empty text, so its tool row had no
   // copy/read-aloud buttons. Once the message is final (or has text), make sure
   // every message - bot and human - carries both, bound to the final text.
-  if(text&&!m.live)ensureMessageTools(old,m,text);
+  if(text)ensureMessageTools(old,m,text);
   return old;
  }
  const node=stableAppendOriginal(m,false,trace,position);
  node.dataset.key=key;node._stableText=text;stableNodes.set(key,node);
+ if(text)ensureMessageTools(node,m,text);
  return node;
 };
 liveNode=function(id,s){

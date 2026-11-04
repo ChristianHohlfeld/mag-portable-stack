@@ -26,7 +26,8 @@ if [[ "${MAG_TTS_REFRESH:-0}" != 1 && -f "$OUT/tts-config.json" ]]; then
   # The worker is part of the content hash. A source edit must restage,
   # otherwise a deploy keeps the previous tts-<hash> directory.
   if [[ -n $dir && -s "$OUT/$dir/de_DE-thorsten-medium.onnx" && -s "$OUT/$dir/de_DE-mls-medium.onnx" && -s "$OUT/$dir/de_DE-karlsson-low.onnx" && -s "$OUT/$dir/ort-wasm-simd-threaded.wasm" ]] \
-    && cmp -s "$ROOT/mag-room/static/tts-worker.js" "$OUT/$dir/tts-worker.js"; then
+    && cmp -s "$ROOT/mag-room/static/tts-worker.js" "$OUT/$dir/tts-worker.js" \
+    && [[ $(cat "$OUT/.vendor-script.sha" 2>/dev/null) == "$(sha256sum < "$0" | cut -c1-64)" ]]; then
     echo "Reusing staged Piper TTS assets ($dir)"; exit 0
   fi
 fi
@@ -87,4 +88,7 @@ cat > "$OUT/tts-config.json" <<JSON
  "bots":{"qwen-numa0":"female","qwen-numa1":"male"},
  "names":{"Lena":"female","Noah":"male"}}
 JSON
+# The voice/role table lives in this script: a changed script must restage
+# tts-config.json (2026-11-04: #325 roles were skipped by the reuse shortcut).
+sha256sum < "$0" | cut -c1-64 > "$OUT/.vendor-script.sha"
 echo "Piper TTS assets staged in $OUT/$dir"

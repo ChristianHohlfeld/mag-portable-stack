@@ -1845,6 +1845,7 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
     return;
   }
   if (m == "POST" && path == "/api/offline") {
+    if (actor.role != "owner") { error_json(fd, 403, "Nur der Besitzer"); return; }
     bool off = has_json && body.find("on") && body.find("on")->asBool(false);
     if (!set_offline(off)) {
       error_json(fd, 500, "Netzwerkregel konnte nicht gesetzt werden");

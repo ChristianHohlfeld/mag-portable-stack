@@ -32,6 +32,15 @@ int main() {
   CHECK(!leading_pass("Passwort ist falsch\nmehr"));
   CHECK(!leading_pass("Hier ist der Code:\nPASS"));
   CHECK(is_pass("[Flint] PASS"));
+  CHECK(is_pass("[PASS]"));
+  CHECK(is_pass(" [pass]\n"));
+  CHECK(is_pass("[Lena] [PASS]"));
+  CHECK(name_only("Noah", {"Noah", "Lena"}));
+  CHECK(name_only("[Noah]:", {"Noah", "Lena"}));
+  CHECK(name_only("**Lena**", {"Noah", "Lena"}));
+  CHECK(!name_only("Noah, schau mal hier", {"Noah", "Lena"}));
+  CHECK(!name_only("", {"Noah"}));
+  CHECK(norm_reply("Hallo,  Welt!") == norm_reply("hallo welt"));
   CHECK(!is_pass("Passt so, aber ergänze X"));
   CHECK(maybe_pass("PA"));
   CHECK(maybe_pass("[Fli"));

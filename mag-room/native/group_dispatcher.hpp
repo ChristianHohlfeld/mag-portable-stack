@@ -205,13 +205,47 @@ inline bool is_pass(const std::string &text) {
   if (a == std::string::npos) return text.find_first_not_of(" \r\n\t") == std::string::npos;
   const auto b = text.find_last_not_of(" \r\n\t*_`\"'.!");
   std::string core = lower(text.substr(a, b - a + 1));
+  if (core == "[pass]" || core == "(pass)") return true; // live 21:29: "[PASS]"
   if (core.size() > 2 && core.front() == '[') { // "[Name] PASS"
     const auto c = core.find(']');
     if (c != std::string::npos) core = core.substr(c + 1);
     const auto s = core.find_first_not_of(" ");
     core = s == std::string::npos ? "" : core.substr(s);
   }
-  return core == "pass" || core == "(pass)";
+  return core == "pass" || core == "(pass)" || core == "[pass]";
+}
+
+// A reply that is only a participant name ("Noah", "[Noah]", "**Lena:**"):
+// the model echoed a transcript label and stopped. Never real content.
+inline bool name_only(const std::string &text, const std::vector<std::string> &names) {
+  std::string core;
+  for (unsigned char c : text)
+    if (!std::isspace(c) && c != '[' && c != ']' && c != '(' && c != ')' &&
+        c != '*' && c != '_' && c != '`' && c != '"' && c != '\'' && c != ':' &&
+        c != '.' && c != '!' && c != '@' && c != ',' && c != '-')
+      core.push_back(static_cast<char>(std::tolower(c)));
+  if (core.empty()) return false; // empty = interrupted turn, handled elsewhere
+  for (const auto &n : names) {
+    std::string nn;
+    for (unsigned char c : n)
+      if (!std::isspace(c) && c != '[' && c != ']' && c != '(' && c != ')' &&
+          c != '*' && c != '_' && c != '`' && c != '"' && c != '\'' && c != ':' &&
+          c != '.' && c != '!' && c != '@' && c != ',' && c != '-')
+        nn.push_back(static_cast<char>(std::tolower(c)));
+    if (!nn.empty() && core == nn) return true;
+  }
+  return false;
+}
+
+// Same words as an earlier line of this chain (case/space/punctuation-blind).
+inline std::string norm_reply(const std::string &text) {
+  std::string out;
+  bool sp = false;
+  for (unsigned char c : text) {
+    if (std::isalnum(c) || c >= 0x80) { if (sp && !out.empty()) out.push_back(' '); sp = false; out.push_back(static_cast<char>(std::tolower(c))); }
+    else sp = true;
+  }
+  return out;
 }
 // "PASS" on its own first line followed by more text: Flint on the append-only
 // complement wire sometimes continues with an invented transcript

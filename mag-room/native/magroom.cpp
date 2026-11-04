@@ -8564,6 +8564,10 @@ static void dispatch_after_turn(uint64_t run, const std::string &speaker,
   // PASS (skipped with text) or a bare reaction: the bot chose not to speak.
   const bool passed = r.react_only || (r.skipped && !trim(r.text).empty());
   if (!passed && (r.skipped || trim(r.text).empty())) return; // stopped/disabled
+  if (passed && TL_CHIPIN) { // nobody answers a PASS: the chain ends here
+    std::cerr << "dispatch-rest trigger=" << trigger << " reason=chipin-pass" << std::endl;
+    return;
+  }
   const auto roster = dispatch_roster();
   std::string cause, cause_name, cause_bot;
   {
@@ -9345,6 +9349,28 @@ static TurnReport generate_and_post(int idx, bool automatic, double dispatched_m
     report.elapsed_s = 0;
   run_end();
   if (!report.react_only) report.text = strip_self_prefix(report.text, name);
+  // Name-only echo ("Noah") or a line this bot already posted since the
+  // last human message: no content, treat exactly like PASS (live 21:29
+  // loop Lena "[PASS]" <-> Noah "Noah").
+  if (!report.react_only && !trim(report.text).empty() && !report.skipped) {
+    std::vector<std::string> names;
+    for (const auto &b : dispatch_roster()) { names.push_back(b.name); names.push_back(b.id); }
+    names.push_back(name);
+    bool dull = group_chat::name_only(report.text, names);
+    if (!dull) {
+      const std::string mine = group_chat::norm_reply(report.text);
+      std::lock_guard<std::recursive_mutex> st(STATE_MTX);
+      for (auto it = ROOM.rbegin(); it != ROOM.rend() && !mine.empty(); ++it) {
+        if (mag::str(*it, "role") == "user") break;
+        if (mag::str(*it, "role") == "assistant" && mag::str(*it, "id") != TL_PARTIAL_ID &&
+            group_chat::norm_reply(mag::str(*it, "content")) == mine) { dull = true; break; }
+      }
+    }
+    if (dull) {
+      std::cerr << "reply-dull bot=" << id << " text=" << report.text.substr(0, 40) << std::endl;
+      report.text = "PASS";
+    }
+  }
   if (!bot_enabled(idx) || (TL_SELFTALK && selftalk_idle_echo(report.text)) ||
       // Empty text is an interrupted/stopped turn, not a PASS: keep it.
       (!report.react_only && !trim(report.text).empty() &&

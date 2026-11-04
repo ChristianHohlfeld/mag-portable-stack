@@ -8,6 +8,7 @@
 # of 8191/8192 and prewarms/restores each slot as soon as that node is ready.
 # unit	expected is-enabled
 mag-cpu-tune.service	enabled
+cpu-perf.service	enabled
 mag-llm-coding@0.service	enabled
 mag-llm-coding@1.service	enabled
 mag-audit-nft.service	enabled
@@ -24,6 +25,8 @@ libvirtd.service	enabled
 gitea.service	enabled
 mag-gitea-runner.service	enabled
 mag-gitea-funnel.service	enabled
+mag-gitea-funnel.timer	enabled
+mag-auto-update.timer	enabled
 mag-acme-renew.timer	enabled
 mag-stack-check.timer	enabled
 mag-agent-drift.timer	enabled
@@ -45,3 +48,4 @@ mag-llm-mistral-room.service	disabled
 mag-llm-glm.service	disabled
 mag-llm-ornith-node@0.service	disabled
 mag-llm-ornith-node@1.service	disabled
+gitea-backup.timer	disabled

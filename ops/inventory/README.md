@@ -84,4 +84,29 @@ DeepSeek/GLM/Qwen/Mistral model units: `/usr/local/sbin/mag-backup-now`,
 `/etc/systemd/system/mag-auto-update.service.d/force.conf`
 (`MAG_AUTO_UPDATE_FORCE` is not read by any code), the hotspot sysctl/firewall
 and the disabled `mag-llm*`, `mag-llm-ds-node@`, `mag-llm-glm*`,
-`mag-llm-ornith*`, `mag-llm-qwen*`, `mag-llm-mistral-room` units.
+`mag-llm-ornith*`, `mag-llm-qwen*`, `mag-llm-mistral-room`, `mag-llm-iq3`,
+`mag-model-gate`, `mag-model-pin` units with their drop-ins and
+`/usr/local/lib/mag-{deepseek,glm,mistral,ornith,qwen}`,
+`/usr/local/lib/mag-room/start-ds-node.sh`, `/etc/mag-stack/secondary-model.env*`
+(Ornith runs from `/usr/local/lib/mag-coding`), `/usr/local/sbin/gitea-backup-mag` with the disabled `gitea-backup.{service,timer}`
+(Gitea is in the restic archives), `/usr/local/lib/mag-common.sh` with
+`mag-healthcheck`/`mag-restore-fresh`/`mag-backup-maintenance` (old mag-dr tooling)
+and the `mag-120-finalize.bak.*` copies.
+
+Independent of the stack (own services, not in this repo): S23 (`s23-*` units,
+chris' `@reboot`/minutely crontab in `~/s23ctl`), the Wi-Fi hotspot
+(`hostapd*`, `dnsmasq*`, `hotspot-*`), the GPU units (`gpu-perf`,
+`set-gpu-compute-mode`, `hw-sensor-collector`; inference is CPU-only) and
+snap/Ubuntu units.
+
+## Auto-update state
+
+`mag-auto-update.timer` is enabled, but `/etc/mag-stack/auto-update.disabled`
+exists on mag, so every run logs `disabled` and exits: releases are deployed by
+hand through `ops/deploy.sh`. The flag is runtime state (in the config backup);
+`ops/auto-update/install.sh` removes it when auto-update is switched on again.
+
+`cpu-perf.service` (`ops/boot/cpu-perf.service`) is an older host unit that
+only re-sets the performance governor after `multi-user.target`; it keeps the
+limits of `mag-cpu-tune`. No installer writes it: on a rebuilt host install it
+from the repo (or the config backup, which holds `/etc/systemd/system`).

@@ -2116,8 +2116,8 @@ function botCap(){return state.max_bots||2}
 function etaMin(sec){return Math.max(1,Math.round(sec/60))}
 // Owner 2026-11-04: subtitle = real model + quant + node, never the stock
 // slot names "Ornith 2"/"Ornith" (those are env labels, not models).
-const BOT_MODEL_LABELS={ornith-numa0:Ornith 1.5 · Q6,ornith:Ornith 1.5 · Q4};
-function botModelLabel(a){const base=BOT_MODEL_LABELS[a.model]||(state.models||[]).find(m=>m.id===a.model)?.label||(a.model?.includes(qwen)?Qwen:a.model?.includes(deepseek)?DeepSeek:);return base&&BOT_MODEL_LABELS[a.model]&&(a.numa===0||a.numa===1)?base+ · NUMA+a.numa:base}
+const BOT_MODEL_LABELS={'ornith-numa0':'Ornith 1.5 · Q6','ornith':'Ornith 1.5 · Q4'};
+function botModelLabel(a){const base=BOT_MODEL_LABELS[a.model]||(state.models||[]).find(m=>m.id===a.model)?.label||(a.model?.includes('qwen')?'Qwen':a.model?.includes('deepseek')?'DeepSeek':'');return base&&BOT_MODEL_LABELS[a.model]&&(a.numa===0||a.numa===1)?base+' · NUMA'+a.numa:base}
 // This only controls which bots respond to NEW chat messages. It does not
 // disable the VM, interrupt current tasks, or change scheduled jobs.
 function rememberSpeakingBots(){

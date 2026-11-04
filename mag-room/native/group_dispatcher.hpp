@@ -6,11 +6,9 @@
 //  - explicit addressing wins (AutoGen GroupChat "speaker selection": a
 //    mentioned agent is the next speaker; "auto"/"round_robin" otherwise),
 //  - with no addressee exactly ONE suitable speaker is selected,
-//  - every other agent gets one chance to add something, behind a
-//    "should I respond?" gate: the model answers PASS when it has nothing
-//    genuinely new, and PASS is never shown in the room,
-//  - hard caps against loops: each bot speaks at most once per human
-//    message, at most kMaxFollowups bot follow-ups, never to itself,
+//  - bot replies may trigger real replies, particularly direct @mentions;
+//    unaddressed bots respond only with substance, otherwise invisible PASS,
+//  - hard round budget per human message (not once-per-bot), never to self,
 //  - a new human message pre-empts every pending follow-up.
 #include <algorithm>
 #include <cctype>
@@ -25,7 +23,7 @@ struct Bot {
   bool coder = false; // code-specialised model (e.g. Flint on NUMA1)
 };
 
-constexpr int kMaxFollowups = 2;
+constexpr int kMaxFollowups = 6;
 
 inline std::string lower(std::string s) {
   for (char &c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
@@ -188,28 +186,30 @@ inline bool maybe_pass(const std::string &partial) {
          (t.size() == 4 || !word_char((unsigned char)t[4]));
 }
 
-// Who may add a follow-up after `speaker` answered: everybody in the roster
-// that has not spoken for this human message, in roster order, while the
-// follow-up budget lasts. Never the speaker itself.
+// Bot-to-bot next speaker: a direct @mention takes priority. Without one,
+// alternate to another bot and let the recipient decide whether to PASS.
+// The budget is counted per completed bot-to-bot turn, not per distinct bot.
 inline std::string next_followup(const std::vector<Bot> &roster,
                                  const std::vector<std::string> &spoken,
                                  const std::string &speaker, int followups_used,
-                                 int max_followups = kMaxFollowups) {
+                                 int max_followups = kMaxFollowups,
+                                 const std::string &reply = "") {
   if (followups_used >= max_followups) return "";
-  for (const auto &b : roster) {
-    if (b.id == speaker) continue;
-    if (std::find(spoken.begin(), spoken.end(), b.id) != spoken.end()) continue;
-    return b.id;
-  }
+  for (const auto &id : addressed(reply, roster))
+    if (id != speaker) return id;
+  for (const auto &b : roster)
+    if (b.id != speaker) return b.id;
   return "";
 }
 
 inline const char *gate_instruction() {
-  return "\n[Gruppenchat]\nDu wurdest in der letzten Nachricht nicht direkt "
-         "angesprochen; ein anderer Bot hat schon geantwortet (oben im Verlauf). "
-         "Ergänze nur, wenn du etwas wirklich Neues, Wichtiges oder eine Korrektur "
-         "beizutragen hast, knapp und ohne zu wiederholen. Sonst antworte "
-         "ausschliesslich mit dem einen Wort PASS (das sieht niemand).";
+  return "\\n[Gruppenchat]\\nLies die letzte Nachricht eines anderen Bots aufmerksam. "
+         "Wenn du mit Namen oder @ angesprochen wurdest, antworte direkt darauf, "
+         "frage sinnvoll nach oder widersprich begründet. Sonst antworte nur, "
+         "wenn du wirklich neue Information, eine nötige Korrektur oder eine "
+         "sinnvolle Rückfrage hast. Keine Floskeln, Danksagungen oder "
+         "Höflichkeitsschleifen. Wenn du nichts beizutragen hast, antworte "
+         "ausschliesslich PASS. Das wird nicht angezeigt.";
 }
 
 // Direct turn after earlier complements in the same wire: the old PASS gate

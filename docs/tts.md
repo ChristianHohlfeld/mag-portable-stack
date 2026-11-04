@@ -34,6 +34,7 @@ once the voice is cached.
   |---|---|---|---|
   | Thorsten (male, medium) | `de_DE-thorsten-medium.onnx` | 60 MB | CC0 (Thorsten-Voice dataset) |
   | Kerstin (female, low) | `de_DE-kerstin-low.onnx` | 63 MB | CC0 (dataset-voice-kerstin) |
+  | Karlsson (male, low; Chris's own messages) | `de_DE-karlsson-low.onnx` | 63 MB | M-AILABS (caito.de) |
 
   Thorsten high (114 MB) was the previous default. On WASM it is several
   times slower than medium and was the cold-download that loaded the host.

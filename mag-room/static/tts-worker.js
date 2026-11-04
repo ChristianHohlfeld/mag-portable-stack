@@ -66,7 +66,17 @@ async function createSession(buf) {
     return await ort.InferenceSession.create(buf, {executionProviders: ['wasm']});
   }
 }
+// At most two voice sessions stay in the WASM heap (three ~63 MB models made
+// phones run out of memory and drop to the device voice). The least recently
+// used one is released; it reloads from Cache Storage when needed again.
+const MAX_VOICES = 2;
 async function loadVoice(model, id) {
+  if (voices.has(model)) { const v = voices.get(model); voices.delete(model); voices.set(model, v); }
+  while (!voices.has(model) && voices.size >= MAX_VOICES) {
+    const [old, p] = voices.entries().next().value;
+    voices.delete(old);
+    try { (await p).session.release?.(); } catch (e) { /* already gone */ }
+  }
   if (!voices.has(model)) voices.set(model, (async () => {
     const config = await (await cachedFetch(base + model + '.json')).json();
     const buf = await (await cachedFetch(base + model, p => postMessage({type: 'progress', id, progress: p}))).arrayBuffer();

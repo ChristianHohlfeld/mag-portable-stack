@@ -7,7 +7,8 @@
 # openslr.org/94), staged but unused: its audiobook speakers sounded odd and
 # a second large model in the worker made phones fall back to the system
 # voice mid-answer (2026-11-04). One fixed single-speaker voice per speaker:
-# Lena Kerstin, Noah Thorsten, Chris's own messages Thorsten slightly lower.
+# Lena Kerstin, Noah Thorsten (unchanged medium), Chris's own messages
+# de_DE-karlsson-low (male, M-AILABS); no pitch/rate shifting anywhere.
 # Medium is the German quality/speed point: high is ~114 MB and several times
 # slower on WASM, which delayed the first word and made every cold load heavy.
 # Runtime: onnxruntime-web 1.30.0 (MIT) + @diffusionstudio/piper-wasm 1.0.0
@@ -20,7 +21,7 @@ if [[ "${MAG_TTS_REFRESH:-0}" != 1 && -f "$OUT/tts-config.json" ]]; then
   dir=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["dir"])' "$OUT/tts-config.json" 2>/dev/null || true)
   # The worker is part of the content hash. A source edit must restage,
   # otherwise a deploy keeps the previous tts-<hash> directory.
-  if [[ -n $dir && -s "$OUT/$dir/de_DE-thorsten-medium.onnx" && -s "$OUT/$dir/de_DE-mls-medium.onnx" && -s "$OUT/$dir/ort-wasm-simd-threaded.wasm" ]] \
+  if [[ -n $dir && -s "$OUT/$dir/de_DE-thorsten-medium.onnx" && -s "$OUT/$dir/de_DE-mls-medium.onnx" && -s "$OUT/$dir/de_DE-karlsson-low.onnx" && -s "$OUT/$dir/ort-wasm-simd-threaded.wasm" ]] \
     && cmp -s "$ROOT/mag-room/static/tts-worker.js" "$OUT/$dir/tts-worker.js"; then
     echo "Reusing staged Piper TTS assets ($dir)"; exit 0
   fi
@@ -33,6 +34,8 @@ declare -A URL=(
   [de_DE-thorsten-medium.onnx.json]=$HF/thorsten/medium/de_DE-thorsten-medium.onnx.json
   [de_DE-kerstin-low.onnx]=$HF/kerstin/low/de_DE-kerstin-low.onnx
   [de_DE-kerstin-low.onnx.json]=$HF/kerstin/low/de_DE-kerstin-low.onnx.json
+  [de_DE-karlsson-low.onnx]=$HF/karlsson/low/de_DE-karlsson-low.onnx
+  [de_DE-karlsson-low.onnx.json]=$HF/karlsson/low/de_DE-karlsson-low.onnx.json
   [de_DE-mls-medium.onnx]=$HF/mls/medium/de_DE-mls-medium.onnx
   [de_DE-mls-medium.onnx.json]=$HF/mls/medium/de_DE-mls-medium.onnx.json
 )
@@ -43,6 +46,8 @@ declare -A SHA=(
   [de_DE-thorsten-medium.onnx.json]=974adee790533adb273a1ac88f49027d2a1b8f0f2cf4905954a4791e79264e85
   [de_DE-kerstin-low.onnx]=d352a7641892cebf2903859af94e9ba81a141110215fe3943bcda7f7da401b7a
   [de_DE-kerstin-low.onnx.json]=56e708556b7b9b7a53c4f8957e021421e69f11a600962bba554cffbe72cf2d47
+  [de_DE-karlsson-low.onnx]=f9793bf7e461a472b3916cf260774bfc9812e9eb72601b147ed649d01064e8fe
+  [de_DE-karlsson-low.onnx.json]=3b2095adbfeede316f22007a0a09d4bfc25514b7189850740b06800a6cfb9838
   [de_DE-mls-medium.onnx]=69cd1d2aa5a35839a518966fcc4924b5f93e5f8c948ed0752b1a616ad53f65bf
   [de_DE-mls-medium.onnx.json]=b0af1c89ddfdc72d32e015729b0e89b99eec13c2c8caa1db7488d98e9e570b40
 )
@@ -73,7 +78,7 @@ cat > "$OUT/tts-config.json" <<JSON
  {"id":"kerstin","label":"Kerstin (weiblich)","model":"de_DE-kerstin-low.onnx","license":"CC0"}],
  "roles":{
   "female":{"model":"de_DE-kerstin-low.onnx","speaker":0,"license":"CC0"},
-  "user":{"model":"de_DE-thorsten-medium.onnx","speaker":0,"pitch":0.925,"license":"CC0"},
+  "user":{"model":"de_DE-karlsson-low.onnx","speaker":0,"license":"M-AILABS"},
   "male":{"model":"de_DE-thorsten-medium.onnx","speaker":0,"license":"CC0"}},
  "bots":{"qwen-numa0":"female","qwen-numa1":"male"},
  "names":{"Lena":"female","Noah":"male"}}

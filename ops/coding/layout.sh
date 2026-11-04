@@ -245,6 +245,11 @@ if (( swap )); then
     bash "$ROOT/ops/coding/save-slots.sh" "$port" || true
     systemctl stop "mag-llm-coding@$i.service"
     wait_port_free "$port" || fail "port $port still held after the old coding model stopped"
+    # The saved prefix KV was computed by the previous weights/template; the
+    # room would restore it into the new model after the down edge. Drop it
+    # (slot cache only, never a GGUF) so the new model prefills its own.
+    slot_name=$( (( i == 0 )) && echo general || echo coder )
+    find "/var/lib/mag-llm/slots/coding/$slot_name" -maxdepth 1 -type f -name 'mag-prefix-*.bin' -delete
     systemctl start "mag-llm-coding@$i.service"
     wait_ready "mag-llm-coding@$i.service" "$port" 1440 || fail "new coding model failed health on $port"
     python3 -I "$ROOT/ops/coding/live-smoke.py" --port "$port"

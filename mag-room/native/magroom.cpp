@@ -8669,6 +8669,15 @@ static Val enqueue_pending(const std::string &text,
     out["queue"] = queue_view_locked();
     return out;
   }
+  // Actor cancel-and-replace: an accepted new human message supersedes
+  // the active generation on every lane. The old worker keeps owning its lane
+  // until it exits; the scheduler admits the new turn only after lane_finish.
+  // Retry receipts above never cancel a valid in-flight generation.
+  if (dispatcher_on() && !ACTIVE_JOBS.empty()) {
+    cancel_active(true);
+    cancel_prewarm();
+    drop_chipin_jobs_locked();
+  }
   // Reset Stop deduplication for genuinely new user input, not retries.
   LAST_STOP_MS = 0;
   // Decide the first-hi owner before cancelling a DeepSeek prewarm, so a

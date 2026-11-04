@@ -112,8 +112,12 @@ async function synth(text, model, id, speaker) {
   for (const p of parts) { audio.set(p, o); o += p.length; }
   return {audio, rate, synthMs: Date.now() - t0};
 }
-self.onmessage = async ev => {
-  const {type, id, text, model, speaker} = ev.data || {};
+// One request at a time: a stopped playback may still have a part in flight,
+// and two overlapping session.run calls in the shared WASM heap can fail or
+// mix up the shared phoneme buffer.
+let chain = Promise.resolve();
+self.onmessage = ev => { const data = ev.data || {}; chain = chain.then(() => handle(data)); };
+async function handle({type, id, text, model, speaker}) {
   try {
     if (type === 'warm') { await loadVoice(model, id); postMessage({type: 'ready', id, threads: ort.env.wasm.numThreads}); return; }
     if (type === 'speak') {
@@ -121,4 +125,4 @@ self.onmessage = async ev => {
       postMessage({type: 'audio', id, audio, rate, synthMs}, [audio.buffer]);
     }
   } catch (e) { postMessage({type: 'error', id, error: String(e && e.message || e)}); }
-};
+}

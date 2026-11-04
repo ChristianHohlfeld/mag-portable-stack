@@ -1385,7 +1385,7 @@ function openMsgPop(node,msg,mode){
  const text=shownText(msg);
  if(text){
   act('Kopieren',ICON_COPY,()=>{copyText(text,null);notice('Kopiert');setTimeout(()=>notice(''),1500)});
-  if(window.magMessageAudio?.toggle)act('Vorlesen','<svg class="i sm" aria-hidden="true" viewBox="0 0 24 24"><path d="M11 5 6 9H3v6h3l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/></svg>',()=>window.magMessageAudio.toggle(msg.id||text.slice(0,40),text,{user:msg.role==='user',bot:msg.bot||''}));
+  if(window.magMessageAudio?.toggle)act('Vorlesen','<svg class="i sm" aria-hidden="true" viewBox="0 0 24 24"><path d="M11 5 6 9H3v6h3l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/></svg>',()=>window.magMessageAudio.toggle(msg.id||text.slice(0,40),text,{user:msg.role==='user',bot:msg.bot||'',name:msg.name||''}));
  }
  if(msg.id)act('Löschen','<svg class="i sm" aria-hidden="true" viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>',()=>askDeleteMessage(msg),'danger');
  if(acts.children.length)el.append(acts);el.append(row,grid);
@@ -1549,7 +1549,7 @@ function append(msg,scroll=true,trace=null,position=-1){
  const text=shownText(msg);
  const content=document.createElement('div');content.className='content';content.innerHTML=safeMarkdown(text);decorate(content);
  if(!text)content.hidden=human||msg.thinking_enabled!==false;
- if(msg.kind==='voice'&&text){div.classList.add('voice');const vb=document.createElement('div');vb.className='voice-bubble';const pb=document.createElement('button');pb.className='voice-play';const vl=document.createElement('span');vl.textContent='Sprachnachricht';vb.append(pb,vl);if(window.magMessageAudio?.attach)window.magMessageAudio.attach(pb,text,msg.id,{user:human,bot:msg.bot||''});div.append(vb)}
+ if(msg.kind==='voice'&&text){div.classList.add('voice');const vb=document.createElement('div');vb.className='voice-bubble';const pb=document.createElement('button');pb.className='voice-play';const vl=document.createElement('span');vl.textContent='Sprachnachricht';vb.append(pb,vl);if(window.magMessageAudio?.attach)window.magMessageAudio.attach(pb,text,msg.id,{user:human,bot:msg.bot||'',name:msg.name||''});div.append(vb)}
  div.append(content);
  const gain=phoGainText(msg.pho_before,msg.pho_after);if(gain){const g=document.createElement('p');g.className='pho-gain';g.textContent=gain;content.after(g)}
  attachReactions(div,msg);
@@ -1559,7 +1559,7 @@ function append(msg,scroll=true,trace=null,position=-1){
  if(trace?.tools?.some(t=>!QUIET_TOOLS.has(t.name)))addTrace(div,{...trace,key:msg.id||''});
  if(msg.file)div.append(attachmentView(msg.file));
  if(text||msg.live){const actions=document.createElement('div');actions.className='message-tools';if(msg.live)actions.style.visibility='hidden';
- if(text){const b=document.createElement('button');b.type='button';b.className='message-copy';b.innerHTML=ICON_COPY+' Kopieren';b.setAttribute('aria-label','Nachricht kopieren');b.onclick=()=>copyText(text,b);actions.append(b);const audio=document.createElement('button');if(window.magMessageAudio?.attach){window.magMessageAudio.attach(audio,text,msg.id,{user:human,bot:msg.bot||''});actions.append(audio)}}
+ if(text){const b=document.createElement('button');b.type='button';b.className='message-copy';b.innerHTML=ICON_COPY+' Kopieren';b.setAttribute('aria-label','Nachricht kopieren');b.onclick=()=>copyText(text,b);actions.append(b);const audio=document.createElement('button');if(window.magMessageAudio?.attach){window.magMessageAudio.attach(audio,text,msg.id,{user:human,bot:msg.bot||'',name:msg.name||''});actions.append(audio)}}
  div.append(actions)}
  // Completed replies never keep the provisional activity height.
  inner.append(div);return div;

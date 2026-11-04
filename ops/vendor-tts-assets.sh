@@ -4,9 +4,10 @@
 # no CDN is contacted at runtime. Voices: de_DE-thorsten-medium (male) and
 # de_DE-kerstin-low (female), both CC0 (checked against their MODEL_CARD),
 # plus de_DE-mls-medium (236 speakers, CC-BY 4.0, Multilingual LibriSpeech /
-# openslr.org/94): same medium quality tier as Thorsten. The room uses MLS
-# speaker 69 (female, Lena) and 53 (male, Chris's own messages); Noah keeps
-# Thorsten. Speakers were picked by pitch (F0 ~217 Hz / ~127 Hz) and voicing.
+# openslr.org/94), staged but unused: its audiobook speakers sounded odd and
+# a second large model in the worker made phones fall back to the system
+# voice mid-answer (2026-11-04). One fixed single-speaker voice per speaker:
+# Lena Kerstin, Noah Thorsten, Chris's own messages Thorsten slightly lower.
 # Medium is the German quality/speed point: high is ~114 MB and several times
 # slower on WASM, which delayed the first word and made every cold load heavy.
 # Runtime: onnxruntime-web 1.30.0 (MIT) + @diffusionstudio/piper-wasm 1.0.0
@@ -71,9 +72,10 @@ cat > "$OUT/tts-config.json" <<JSON
  {"id":"thorsten","label":"Thorsten (männlich)","model":"de_DE-thorsten-medium.onnx","license":"CC0"},
  {"id":"kerstin","label":"Kerstin (weiblich)","model":"de_DE-kerstin-low.onnx","license":"CC0"}],
  "roles":{
-  "female":{"model":"de_DE-mls-medium.onnx","speaker":69,"license":"CC-BY 4.0 (MLS, openslr.org/94)"},
-  "user":{"model":"de_DE-mls-medium.onnx","speaker":53,"license":"CC-BY 4.0 (MLS, openslr.org/94)"},
+  "female":{"model":"de_DE-kerstin-low.onnx","speaker":0,"license":"CC0"},
+  "user":{"model":"de_DE-thorsten-medium.onnx","speaker":0,"pitch":0.925,"license":"CC0"},
   "male":{"model":"de_DE-thorsten-medium.onnx","speaker":0,"license":"CC0"}},
- "bots":{"qwen-numa0":"female","qwen-numa1":"male"}}
+ "bots":{"qwen-numa0":"female","qwen-numa1":"male"},
+ "names":{"Lena":"female","Noah":"male"}}
 JSON
 echo "Piper TTS assets staged in $OUT/$dir"

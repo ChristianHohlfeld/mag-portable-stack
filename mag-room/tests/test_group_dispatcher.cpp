@@ -53,6 +53,19 @@ int main() {
   CHECK(next_followup(r, {}, "qwen-numa1", 6, 6, "@Qwen weiter").empty());
   CHECK(next_followup(r, {}, "qwen-numa0", 0, 0, "@Flint weiter") == "qwen-numa1"); // 0 = unlimited
   CHECK(next_followup({{"solo","Solo",false}}, {}, "solo", 0).empty());
+  // Staggered group answers: named order, code -> coder, otherwise alternate.
+  const std::vector<Bot> ln = {{"lena", "Lena", false}, {"noah", "Noah", false}};
+  const V both{"lena", "noah"};
+  CHECK(speaking_order("Noah und Lena, was meint ihr?", both, ln, "") == (V{"noah", "lena"}));
+  CHECK(speaking_order("Lena und Noah?", both, ln, "lena") == (V{"lena", "noah"}));
+  CHECK(speaking_order("Hi beide", both, ln, "lena") == (V{"noah", "lena"}));
+  CHECK(speaking_order("Hi beide", both, ln, "noah") == (V{"lena", "noah"}));
+  CHECK(speaking_order("Wie spät ist es?", both, ln, "") == (V{"lena", "noah"}));
+  CHECK(speaking_order("schreib ein python skript", V{"qwen-numa0", "qwen-numa1"}, r, "qwen-numa1") ==
+        (V{"qwen-numa1", "qwen-numa0"}));
+  CHECK(speaking_order("Hi", V{"lena"}, ln, "") == V{"lena"});
+  CHECK(after_instruction("Lena", true).find("PASS") != std::string::npos);
+  CHECK(after_instruction("Lena", false).find("PASS") == std::string::npos);
   if (fails) return 1;
   std::puts("test-group-dispatcher ok");
   return 0;

@@ -144,6 +144,61 @@ inline std::string pick_speaker(const std::string &text, const std::vector<Bot> 
   return roster.front().id;
 }
 
+// Earliest position at which a bot is called by one of its names, npos if
+// never. Used to let "Noah und Lena, ..." start with Noah.
+inline size_t mention_pos(const std::string &text, const Bot &b,
+                          const std::vector<Bot> &roster) {
+  const std::string t = lower(text);
+  size_t best = std::string::npos;
+  for (const auto &al : aliases(b)) {
+    if (!occurs_outside(t, al, roster)) continue;
+    for (size_t p = t.find(al); p != std::string::npos; p = t.find(al, p + 1)) {
+      const size_t e = p + al.size();
+      const bool left = p == 0 || !word_char((unsigned char)t[p - 1]) || t[p - 1] == '@';
+      const bool right = e >= t.size() || !word_char((unsigned char)t[e]);
+      if (left && right) { best = std::min(best, p); break; }
+    }
+  }
+  return best;
+}
+
+// Speaking order for a human message several bots answer. Like people in a
+// group chat they do not start in unison: the bot named first speaks first
+// ("Noah und Lena ..."); code goes to the coder; otherwise the lead
+// alternates, so it is not always the same bot opening.
+inline std::vector<std::string> speaking_order(const std::string &text,
+                                               const std::vector<std::string> &ids,
+                                               const std::vector<Bot> &roster,
+                                               const std::string &last_lead) {
+  if (ids.size() < 2) return ids;
+  std::vector<std::pair<size_t, std::string>> named;
+  for (const auto &id : ids)
+    for (const auto &b : roster)
+      if (b.id == id) {
+        const size_t p = mention_pos(text, b, roster);
+        if (p != std::string::npos) named.push_back({p, id});
+      }
+  std::string lead;
+  if (!named.empty()) {
+    lead = std::min_element(named.begin(), named.end())->second;
+  } else if (looks_like_code(text)) {
+    for (const auto &b : roster)
+      if (b.coder && std::find(ids.begin(), ids.end(), b.id) != ids.end()) { lead = b.id; break; }
+  }
+  if (lead.empty()) {
+    lead = ids.front();
+    for (const auto &id : ids)
+      if (id != last_lead) { lead = id; break; }
+  }
+  std::vector<std::string> out{lead};
+  std::sort(named.begin(), named.end());
+  for (const auto &n : named)
+    if (std::find(out.begin(), out.end(), n.second) == out.end()) out.push_back(n.second);
+  for (const auto &id : ids)
+    if (std::find(out.begin(), out.end(), id) == out.end()) out.push_back(id);
+  return out;
+}
+
 // Should-I-respond gate: the follow-up answer is the bare token PASS.
 inline bool is_pass(const std::string &text) {
   const auto a = text.find_first_not_of(" \r\n\t*_`\"'.");
@@ -215,6 +270,18 @@ inline const char *gate_instruction() {
          "erzähl, widersprich, wenn du anderer Meinung bist, sprich andere mit "
          "Namen oder @ an. Wenn du gerade wirklich nichts sagen magst, antworte "
          "nur PASS. Das wird nicht angezeigt.";
+}
+
+// Staggered answer to a human message: `lead` has already answered it (the
+// line above). React like a person who has just read that answer.
+inline std::string after_instruction(const std::string &lead, bool may_pass) {
+  std::string s = "\n[Gruppenchat]\n" + lead +
+      " hat auf die Nachricht schon geantwortet (siehe oben). Antworte jetzt du, "
+      "wie ein Mensch, der das gerade gelesen hat: bezieh dich darauf, wenn es "
+      "passt, ergänze, widersprich oder frag nach, aber wiederhole nichts, was " +
+      lead + " schon gesagt hat.";
+  if (may_pass) s += " Hast du wirklich nichts hinzuzufügen, antworte nur PASS. Das wird nicht angezeigt.";
+  return s;
 }
 
 // Direct turn after earlier complements in the same wire: the old PASS gate

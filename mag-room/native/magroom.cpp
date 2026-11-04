@@ -150,6 +150,11 @@ static thread_local bool TL_SELFTALK = false;
 // Group-chat dispatcher follow-up ("ergänzt zu …"): a full room turn behind
 // the PASS gate. TL_TRIGGER is the pending id of the human message it serves.
 static thread_local bool TL_CHIPIN = false;
+// Staggered group answer: name of the bot that answered this human message
+// first (empty otherwise) and whether this later speaker may PASS. Consumed
+// by the next wire append (group_chat::after_instruction).
+static thread_local std::string TL_AFTER;
+static thread_local bool TL_AFTER_PASS = false;
 static thread_local std::string TL_TRIGGER;
 // Set by wire_messages when the stored prompt still ends on this bot's own
 // assistant turn. Sending that with thinking on is the DeepSeek 500
@@ -3268,6 +3273,7 @@ static std::vector<Val> wire_messages(int idx, const std::string &system,
     // Roster and clock stay out of this one request. The next turn appends
     // them once the first answer is already on screen.
   } else if(initial) extra+=tail;
+  else if(!TL_AFTER.empty()) {extra+=group_chat::after_instruction(TL_AFTER,TL_AFTER_PASS);TL_AFTER.clear();}
   else if(TL_CHIPIN) extra+=group_chat::gate_instruction();
   else if(!TL_REFLECT && !extra.empty() && std::any_of(w.messages.begin(),w.messages.end(),[](const Val &m){
             return mag::str(m,"role")=="user"&&mag::str(m,"content").find("[Gruppenchat]\nDu wurdest")!=std::string::npos;}))
@@ -8126,6 +8132,7 @@ struct Job {
   std::string goal_id; // stable across room restart and split lanes
   bool chipin = false; // dispatcher follow-up behind the PASS gate
   std::string trigger; // pending id of the human message this job serves
+  bool open_floor = false; // nobody addressed: later speakers may PASS
 };
 static std::deque<Job> JOBS;
 // Group-chat dispatcher state for the latest dispatched human message.
@@ -8135,6 +8142,7 @@ static std::vector<std::string> DISP_SPOKEN;
 static int DISP_FOLLOWUPS = 0;
 static int DISP_PASSES = 0; // consecutive PASS turns; all bots passed = rest
 static std::string DISP_TEXT;
+static std::string DISP_LAST_LEAD; // who opened the last group answer (alternates)
 // Jobs loaded from the previous process. They are not dispatched until the
 // llama slot is idle and, during a deploy, until the warm-hi gate releases.
 static std::deque<Job> PARKED_JOBS;
@@ -8192,6 +8200,7 @@ static Val job_val(const Job &j) {
   if (!j.goal_id.empty()) o["goal_id"] = j.goal_id;
   if (j.chipin) o["chipin"] = true;
   if (!j.trigger.empty()) o["trigger"] = j.trigger;
+  if (j.open_floor) o["open_floor"] = true;
   return o;
 }
 static Job val_job(const Val &v) {
@@ -8207,6 +8216,7 @@ static Job val_job(const Val &v) {
   if (auto g = v.find("goal_id")) j.goal_id = g->asStr();
   if (auto c = v.find("chipin"); c && c->type == Val::BOOL) j.chipin = c->asBool();
   if (auto t = v.find("trigger")) j.trigger = t->asStr();
+  if (auto f = v.find("open_floor"); f && f->type == Val::BOOL) j.open_floor = f->asBool();
   return j;
 }
 // Messages sent while a reply runs: NOT in the transcript yet (history stays
@@ -8504,8 +8514,9 @@ static std::vector<group_chat::Bot> dispatch_roster() {
   return out;
 }
 // Who answers a human message: addressed bots (name, @name, "beide"/"ihr"),
-// else an explicit client sub-selection, else ALL active bots (like "beide"),
-// the preferred speaker (pick_speaker) first.
+// else an explicit client sub-selection, else ALL active bots (like "beide").
+// The order is the speaking order (speaking_order): the first one answers
+// right away, the others follow staggered (start_lanes_locked).
 static std::vector<std::string> dispatch_answerers(const std::string &text,
                                                    const std::vector<std::string> &client,
                                                    bool &open_floor) {
@@ -8513,18 +8524,17 @@ static std::vector<std::string> dispatch_answerers(const std::string &text,
   const auto roster = dispatch_roster();
   if (roster.size() < 2) return client;
   auto named = group_chat::addressed(text, roster);
-  if (!named.empty()) return named;
+  if (!named.empty()) return group_chat::speaking_order(text, named, roster, DISP_LAST_LEAD);
   std::vector<std::string> sel;
   for (const auto &id : client)
     if (std::any_of(roster.begin(), roster.end(), [&](const group_chat::Bot &b) { return b.id == id; }))
       sel.push_back(id);
-  if (!sel.empty() && sel.size() < roster.size()) return sel;
-  const std::string one = group_chat::pick_speaker(text, roster);
+  if (!sel.empty() && sel.size() < roster.size())
+    return group_chat::speaking_order(text, sel, roster, DISP_LAST_LEAD);
+  open_floor = true;
   std::vector<std::string> all;
-  if (!one.empty()) all.push_back(one);
-  for (const auto &b : roster)
-    if (b.id != one) all.push_back(b.id);
-  return all;
+  for (const auto &b : roster) all.push_back(b.id);
+  return group_chat::speaking_order(text, all, roster, DISP_LAST_LEAD);
 }
 static void drop_chipin_jobs_locked() {
   const auto gone = std::remove_if(JOBS.begin(), JOBS.end(),
@@ -8546,7 +8556,7 @@ static void dispatch_after_turn(uint64_t run, const std::string &speaker,
   const bool passed = r.react_only || (r.skipped && !trim(r.text).empty());
   if (!passed && (r.skipped || trim(r.text).empty())) return; // stopped/disabled
   const auto roster = dispatch_roster();
-  std::string cause, cause_name;
+  std::string cause, cause_name, cause_bot;
   {
     std::lock_guard<std::recursive_mutex> st(STATE_MTX);
     for (auto it = ROOM.rbegin(); it != ROOM.rend(); ++it) {
@@ -8556,6 +8566,7 @@ static void dispatch_after_turn(uint64_t run, const std::string &speaker,
           trim(mag::str(*it, "content")).empty()) continue;
       cause = mag::str(*it, "id");
       cause_name = mag::str(*it, "name");
+      cause_bot = mag::str(*it, "bot");
       break;
     }
   }
@@ -8579,6 +8590,12 @@ static void dispatch_after_turn(uint64_t run, const std::string &speaker,
       envi("MAG_ROOM_DISPATCH_MAX_FOLLOWUPS", group_chat::kMaxFollowups)), 0, 1000000);
   const std::string next = group_chat::next_followup(roster, DISP_SPOKEN, speaker, DISP_FOLLOWUPS, cap, r.text);
   if (next.empty()) return;
+  // A PASS after the staggered first answer: nobody has anything new to
+  // react to; the first speaker is not asked to answer itself.
+  if (passed && next == cause_bot) {
+    std::cerr << "dispatch-rest trigger=" << trigger << " reason=own-line" << std::endl;
+    return;
+  }
   ++DISP_FOLLOWUPS;
   DISP_SPOKEN.push_back(next);
   Job j;
@@ -9940,6 +9957,50 @@ static void prewarm_release(const std::string &lane, const std::string &bot_id) 
   PREWARM_RUNNING.erase(lane);
   if (!bot_id.empty()) PREWARM_ETA.erase(bot_id);
 }
+// Request parameters of a prefix prefill (prewarm, group lookahead):
+// byte-identical template prefix to the room turn, one output token.
+static void prefix_request_params(Val &body, int idx, const std::string &model,
+                                  const Val &msgs, const std::string &bot_id) {
+  body["max_tokens"] = 1;
+  body["stream"] = false;
+  body["cache_prompt"] = true;
+  if (CONFIGURED_MODEL) body["id_slot"] = 0;
+  Val kwargs = Val::object();
+  bool thinking_on = CONFIGURED_MODEL &&
+      model.rfind("glm-5.3-flash", 0) == 0 ? false : bot_thinking(idx);
+  // DeepSeek rejects an assistant-ending prefill while thinking is on.
+  // The room turn skips that request. Prewarm still has to post
+  // (the slot file is written only after this completion); thinking
+  // stays off for that one call so the prefix is cached without a 500.
+  if (thinking_on && msgs.isArr() && !msgs.asArr().empty() &&
+      mag::str(msgs.asArr().back(), "role") == "assistant") {
+    std::cerr << "skip-trailing-assistant bot=" << bot_id << std::endl;
+    thinking_on = false;
+  }
+  kwargs["enable_thinking"] = thinking_on;
+  if (model.rfind("glm-5.3-flash", 0) == 0) {
+    kwargs["reasoning_effort"] = "low";
+    kwargs["clear_thinking"] = true;
+    body["temperature"] = 1.0;
+    body["top_p"] = 0.95;
+  } else if (coding_room_model(model) && model == CODING_GENERAL_MODEL) {
+    kwargs["reasoning_effort"] = "low"; // byte-identical to the room turn prefix
+  } else if (model != "qwen3.8-flash-next-uncensored" && !coding_room_model(model) &&
+             !REASONING_EFFORT.empty()) {
+    kwargs["reasoning_effort"] = REASONING_EFFORT;
+  }
+  if (room_is_glm() && model == "qwen3.8-flash-next-uncensored")
+    body["reasoning_effort"] = "none";
+  if (room_is_glm() && model == "mistral-large4") {
+    body["temperature"] = 1.0;
+    body["top_p"] = 0.95;
+    body["top_k"] = 0;
+    body["min_p"] = 0.0;
+    body["reasoning_effort"] = "low";
+    kwargs["reasoning_effort"] = "low";
+  }
+  body["chat_template_kwargs"] = kwargs;
+}
 static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
                           const std::string &lane) {
   std::string payload, bot_id, shared_key, system, tool_defs;
@@ -10204,45 +10265,7 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
         if (model.rfind("glm-5.3-flash", 0) != 0 &&
             !room_chat_only_model(model) &&
             mj::parse(tool_defs, tt)) body["tools"] = tt;
-        body["max_tokens"] = 1;
-        body["stream"] = false;
-        body["cache_prompt"] = true;
-        if (CONFIGURED_MODEL) body["id_slot"] = 0;
-        Val kwargs = Val::object();
-        bool thinking_on = CONFIGURED_MODEL &&
-            model.rfind("glm-5.3-flash", 0) == 0 ? false : bot_thinking(idx);
-        // DeepSeek rejects an assistant-ending prefill while thinking is on.
-        // The room turn skips that request. Prewarm still has to post
-        // (the slot file is written only after this completion); thinking
-        // stays off for that one call so the prefix is cached without a 500.
-        if (thinking_on && msgs.isArr() && !msgs.asArr().empty() &&
-            mag::str(msgs.asArr().back(), "role") == "assistant") {
-          std::cerr << "skip-trailing-assistant bot=" << bot_id << std::endl;
-          thinking_on = false;
-        }
-        kwargs["enable_thinking"] = thinking_on;
-        if (model.rfind("glm-5.3-flash", 0) == 0) {
-          kwargs["reasoning_effort"] = "low";
-          kwargs["clear_thinking"] = true;
-          body["temperature"] = 1.0;
-          body["top_p"] = 0.95;
-        } else if (coding_room_model(model) && model == CODING_GENERAL_MODEL) {
-          kwargs["reasoning_effort"] = "low"; // byte-identical to the room turn prefix
-        } else if (model != "qwen3.8-flash-next-uncensored" && !coding_room_model(model) &&
-                   !REASONING_EFFORT.empty()) {
-          kwargs["reasoning_effort"] = REASONING_EFFORT;
-        }
-        if (room_is_glm() && model == "qwen3.8-flash-next-uncensored")
-          body["reasoning_effort"] = "none";
-        if (room_is_glm() && model == "mistral-large4") {
-          body["temperature"] = 1.0;
-          body["top_p"] = 0.95;
-          body["top_k"] = 0;
-          body["min_p"] = 0.0;
-          body["reasoning_effort"] = "low";
-          kwargs["reasoning_effort"] = "low";
-        }
-        body["chat_template_kwargs"] = kwargs;
+        prefix_request_params(body, idx, model, msgs, bot_id);
         payload = mj::dump(body);
         built = true;
       } else {
@@ -10754,26 +10777,100 @@ static void set_waiting(const std::vector<std::string> &ids, bool on,
     publish(mj::dump(e));
   }
 }
+// Configured NUMA bots answering one human message (start_lanes_locked):
+// the next bot waits until the previous one has answered, then a short,
+// variable human pause. MAG_ROOM_GROUP_STAGGER=off starts them together.
+static bool group_stagger_on() {
+  return CONFIGURED_MODEL && dispatcher_on() && env("MAG_ROOM_GROUP_STAGGER", "reply") != "off";
+}
+static int group_pause_ms() {
+  const int mean = envi("MAG_ROOM_GROUP_PAUSE_MS", 700);
+  if (mean <= 0) return 0;
+  static thread_local std::mt19937 rng{std::random_device{}()};
+  return std::uniform_int_distribution<int>(mean / 2, mean + mean / 2)(rng);
+}
+// While a later speaker waits for the first answer, its own slot already
+// evaluates the new human line: the wire gets its append now (the real turn
+// then only appends the first answer), max_tokens 1. The prefill overlaps
+// the first bot's decode instead of following it. The lane is busy, so no
+// idle prewarm competes for the slot; the real turn queues behind it.
+static void lookahead_prefill(int idx) {
+  if (!CONFIGURED_MODEL || idx < 0 || env("MAG_ROOM_GROUP_LOOKAHEAD", "1") != "1") return;
+  const std::string model = bot_model_id(idx);
+  if (model.rfind("glm-5.3-flash", 0) == 0 || room_chat_only_model(model)) return;
+  std::string payload, bot_id;
+  {
+    std::shared_lock<std::shared_mutex> turn(TURN_MTX);
+    bot_id = bot_field(idx, "id");
+    const bool web = WEB_ENABLED.load();
+    const std::string system = build_system(idx, false, "", web, false);
+    const std::string tool_defs = tools_json(idx, web);
+    TL_FIRST_HI = false;
+    auto wire = wire_messages(idx, system, tool_defs, build_context_tail(idx, false, ""));
+    if (TL_WIRE_STALE) return;
+    Val body = Val::object();
+    body["model"] = model;
+    Val msgs = Val::array();
+    for (const auto &m : wire) msgs.push(m);
+    body["messages"] = msgs;
+    Val tt;
+    if (mj::parse(tool_defs, tt)) body["tools"] = tt;
+    prefix_request_params(body, idx, model, msgs, bot_id);
+    payload = mj::dump(body);
+  }
+  const auto from = steady_clock::now();
+  std::string out;
+  long code = 0;
+  const bool ok = http_simple(BACKEND_HOST, BACKEND_PORT, "POST", "/v1/chat/completions", payload,
+                              {{"Content-Type", "application/json"},
+                               {"Authorization", "Bearer " + API_KEY},
+                               {"X-Mag-Bot", bot_id},
+                               {"X-Mag-Slot", gateway_slot(idx)},
+                               {"X-Mag-Session", "lookahead"}},
+                              out, &code, nullptr,
+                              std::max(LLM_TIMEOUT_S, LLM_TIMEOUT_MIN_S) * 1000);
+  std::cerr << "group-lookahead bot=" << bot_id << " ok=" << (ok && code == 200 ? 1 : 0)
+            << " status=" << code << " ms="
+            << std::chrono::duration_cast<milliseconds>(steady_clock::now() - from).count()
+            << std::endl;
+}
 static void await_gate(Lane *lane, const std::vector<std::string> &ids,
                        StartGate &gate, const std::string &after,
                        uint64_t epoch) {
+  const bool group = CONFIGURED_MODEL;
+  bool human = false;
   auto alive = [&] {
     if (lane->stop.load() || SHUTDOWN.load() || epoch != EPOCH.load())
       return false;
     std::lock_guard<std::mutex> lk(JOB_MTX);
+    // A newer human message wins over a staggered answer to the old one.
+    if (group && std::any_of(PENDING.begin(), PENDING.end(), [](const Pending &p) { return !p.held; })) {
+      human = true;
+      return false;
+    }
     for (auto &id : ids)
       if (!lane->cancelled_bots.count(id)) return true;
     return false;
   };
   set_waiting(ids, true, after);
+  if (group)
+    for (const auto &id : ids)
+      if (alive()) lookahead_prefill(agent_index(id));
   {
+    // Upper bound: a long first turn (tools) must not mute the others.
+    const auto cap = steady_clock::now() + seconds(std::max(1, envi("MAG_ROOM_GROUP_STAGGER_MAX_S", 90)));
     std::unique_lock<std::mutex> lk(gate.m);
-    while (!gate.open && alive())
+    while (!gate.open && alive() && (!group || steady_clock::now() < cap))
       gate.cv.wait_for(lk, milliseconds(200));
   }
-  for (auto until = steady_clock::now() + milliseconds(stagger_pause_ms());
+  for (auto until = steady_clock::now() + milliseconds(group ? group_pause_ms() : stagger_pause_ms());
        alive() && steady_clock::now() < until;)
     std::this_thread::sleep_for(milliseconds(100));
+  if (human) {
+    std::lock_guard<std::mutex> lk(JOB_MTX);
+    for (auto &id : ids) lane->cancelled_bots.insert(id);
+    std::cerr << "group-stagger-yield bots=" << ids.size() << " reason=human" << std::endl;
+  }
   set_waiting(ids, false, after);
 }
 // Lanes of one concurrent user turn. The last lane to finish queues the
@@ -10851,8 +10948,11 @@ static void lane_turn(Lane *lane, uint64_t run, std::vector<std::string> ids,
         TL_GOAL_ID = it->second.goal_id;
         TL_CAUSE = it->second.cause;
         TL_CAUSE_LABEL = it->second.cause_label;
+        TL_AFTER_PASS = it->second.open_floor;
       }
     }
+    TL_AFTER = wait_for && CONFIGURED_MODEL ? after : std::string();
+    if (TL_AFTER.empty()) TL_AFTER_PASS = false;
     TL_SELFTALK = job_selftalk;
     if (TL_SELFTALK && TL_CAUSE_LABEL.empty() && !TL_CAUSE.empty())
       TL_CAUSE_LABEL = cause_label(TL_CAUSE);
@@ -10893,7 +10993,9 @@ static void lane_turn(Lane *lane, uint64_t run, std::vector<std::string> ids,
           if (slot >= 1 && slot <= ROOM_MAX_BOTS &&
               !FIRST_HI_USED[slot - 1].exchange(true)) {
             TURN_THINK = 0;
-            TL_FIRST_HI = true;
+            // A staggered later speaker must read the first answer too; the
+            // first-hi path appends only the newest human line.
+            TL_FIRST_HI = TL_AFTER.empty();
           }
         }
         TL_ORDER = idx; // fixed position in the bot list
@@ -10934,6 +11036,8 @@ static void lane_turn(Lane *lane, uint64_t run, std::vector<std::string> ids,
       }
     TL_SELFTALK = false;
     TL_CHIPIN = false;
+    TL_AFTER.clear();
+    TL_AFTER_PASS = false;
     TL_TRIGGER.clear();
     TL_CAUSE.clear();
     TL_CAUSE_LABEL.clear();
@@ -11025,7 +11129,11 @@ static void start_lanes_locked(const Job &job, bool automatic, const std::string
   LAST_STOP_MS = 0;
   USER_CANCEL = false;
   const auto parts = split_lanes(job.ids);
-  const bool stagger = parts.size() > 1 && stagger_mode() != "off";
+  // Several configured bots answering one human message do not start in
+  // unison: the first answers at once, each next one follows its answer.
+  const bool group_stagger = !automatic && parts.size() > 1 && group_stagger_on() &&
+      !job.trigger.empty() && !job.chipin && !job.selftalk && !job.reflect;
+  const bool stagger = parts.size() > 1 && (stagger_mode() != "off" || group_stagger);
   std::shared_ptr<TurnGroup> group;
   if (!automatic && (parts.size() > 1 || job.reflect)) {
     group = std::make_shared<TurnGroup>();
@@ -11148,6 +11256,8 @@ static bool dispatch_locked() {
     Job now_job{ready, p.think, generation, p.text};
     if (dispatcher_on()) {
       now_job.trigger = p.id;
+      now_job.open_floor = p.open_floor;
+      if (ready.size() > 1) DISP_LAST_LEAD = ready.front();
       DISP_TRIGGER = p.id;
       // Every bot sees the room. Directly addressed bots respond first;
       // later replies (including @mentions) can trigger either bot again.

@@ -24,15 +24,16 @@ contents; secret files are only checked for existence and mode.
 `ops/coding/models.json` is the model manifest. Ornith-1.5-35B-A3B runs on
 both NUMA nodes (`general` = NUMA0 :8191, `coder` = NUMA1 :8192):
 
-- File `Ornith-1.5-35B-A3B-AD-Q6_K-Q5_K.gguf`, 26 249 607 360 bytes,
-  SHA256 `c732a550672b4f8e0d66c8b395e84640d1df0cb929489dd32d4e9a0dea509a04`
-- Source: <https://huggingface.co/AtomicChat/Ornith-1.5-35B-A3B-GGUF/resolve/385f6c4c886f2376659fd964be85bff09a77c791/Ornith-1.5-35B-A3B-AD-Q6_K-Q5_K.gguf>
-  (chosen 2026-11-04 over bartowski Q4_K_M, which stays on disk for rollback:
-  card KLD 0.0158 vs 0.0477, top-1 94.85 % vs 91.0 %, +20 % bytes per token)
+- File `Ornith-1.5-35B-A3B-Q4_K_M.gguf`, 21 864 081 056 bytes,
+  SHA256 `12d8d5c01bae7f23ea4822b2f96ba069d531f827d02a57c31002f2f95e72614a`
+- Source: <https://huggingface.co/bartowski/Ornith-1.5-35B-A3B-GGUF/resolve/main/Ornith-1.5-35B-A3B-Q4_K_M.gguf>
+- MTP self-speculation (`--spec-type draft-mtp`, n_max 3) per node via the
+  `mtp` field in models.json / `start-live.sh`: `embedded` uses the nextn block
+  inside the GGUF (bartowski Q4_K_M), `file` a pinned separate MTP head.
 - Chat template: `ops/coding/ornith-chat.jinja`, verbatim `chat_template.jinja`
   of <https://huggingface.co/ornith-ai/Ornith-1.5-35B-A3B> (blob/sha256 in models.json)
 - Placement: `/home/chris/models/mag-coding/{general,coder}/<file>`, one
-  hard link to `/home/chris/models/ornith-1.5-35b-a3b-atomic/<file>` (no second copy)
+  hard link to `/home/chris/models/ornith-1.5-35b-a3b/<file>` (no second copy)
 
 `ops/coding/stage.py --model general|coder` verifies (and with `--download`
 fetches) the file against that SHA256. `start-live.sh` re-verifies on every

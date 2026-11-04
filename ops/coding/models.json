@@ -8,12 +8,11 @@
       "model_id": "ornith-numa0",
       "numa": 0,
       "candidate_port": 8291,
-      "repo": "AtomicChat/Ornith-1.5-35B-A3B-GGUF",
-      "revision": "385f6c4c886f2376659fd964be85bff09a77c791",
-      "filename": "Ornith-1.5-35B-A3B-AD-Q6_K-Q5_K.gguf",
-      "sha256": "c732a550672b4f8e0d66c8b395e84640d1df0cb929489dd32d4e9a0dea509a04",
-      "size": 26249607360,
-      "link_from": "/home/chris/models/ornith-1.5-35b-a3b-atomic/Ornith-1.5-35B-A3B-AD-Q6_K-Q5_K.gguf",
+      "repo": "bartowski/Ornith-1.5-35B-A3B-GGUF",
+      "filename": "Ornith-1.5-35B-A3B-Q4_K_M.gguf",
+      "sha256": "12d8d5c01bae7f23ea4822b2f96ba069d531f827d02a57c31002f2f95e72614a",
+      "size": 21864081056,
+      "link_from": "/home/chris/models/ornith-1.5-35b-a3b/Ornith-1.5-35B-A3B-Q4_K_M.gguf",
       "chat_template": {
         "repo": "ornith-ai/Ornith-1.5-35B-A3B",
         "file": "chat_template.jinja",
@@ -27,18 +26,21 @@
       "model_id": "ornith",
       "numa": 1,
       "candidate_port": 8292,
-      "repo": "AtomicChat/Ornith-1.5-35B-A3B-GGUF",
-      "revision": "385f6c4c886f2376659fd964be85bff09a77c791",
-      "filename": "Ornith-1.5-35B-A3B-AD-Q6_K-Q5_K.gguf",
-      "sha256": "c732a550672b4f8e0d66c8b395e84640d1df0cb929489dd32d4e9a0dea509a04",
-      "size": 26249607360,
-      "link_from": "/home/chris/models/ornith-1.5-35b-a3b-atomic/Ornith-1.5-35B-A3B-AD-Q6_K-Q5_K.gguf",
+      "repo": "bartowski/Ornith-1.5-35B-A3B-GGUF",
+      "filename": "Ornith-1.5-35B-A3B-Q4_K_M.gguf",
+      "sha256": "12d8d5c01bae7f23ea4822b2f96ba069d531f827d02a57c31002f2f95e72614a",
+      "size": 21864081056,
+      "link_from": "/home/chris/models/ornith-1.5-35b-a3b/Ornith-1.5-35B-A3B-Q4_K_M.gguf",
       "chat_template": {
         "repo": "ornith-ai/Ornith-1.5-35B-A3B",
         "file": "chat_template.jinja",
         "git_blob": "b07660ccbbea09ce6ac6741c6d041082033ab031",
         "sha256": "182e77dd83bd8e9ca818b240b82e28f243762cd5dda32e6eef327df7b1cd107e",
         "installed_as": "ops/coding/ornith-chat.jinja"
+      },
+      "mtp": {
+        "source": "embedded",
+        "draft_n_max": 3
       }
     }
   }

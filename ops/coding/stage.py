@@ -26,6 +26,14 @@ def verified_file(path, sha):
 
 def stage(name, root, download=False):
     spec = MANIFEST["models"][name]
+    stage_file(name, root, spec, download)
+    # A separate MTP head (draft GGUF) is pinned and verified like the model.
+    mtp = spec.get("mtp", {})
+    if mtp.get("source") == "file":
+        stage_file(name, root, mtp, download)
+
+
+def stage_file(name, root, spec, download):
     filename = spec["filename"]
     sha = spec["sha256"]
     if not re.fullmatch(r"[a-f0-9]{64}", sha) or not re.fullmatch(r"[A-Za-z0-9_.-]+[.]gguf", filename):

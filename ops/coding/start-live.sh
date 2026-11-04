@@ -5,8 +5,8 @@
 #  - Qwen3.8-Flash-Next (qwen4exp): https://huggingface.co/Qwen/Qwen3.8-Flash-Next
 #  - Ornith-1.5-35B-A3B (qwen35moe, BOTH nodes since 2026-11-04):
 #    https://huggingface.co/ornith-ai/Ornith-1.5-35B-A3B ; GGUF
-#    https://huggingface.co/AtomicChat/Ornith-1.5-35B-A3B-GGUF (AD-Q6_K-Q5_K,
-#    revision + SHA256 in models.json). Card sampling (general tasks): temperature 0.6, top_p 0.95,
+#    https://huggingface.co/bartowski/Ornith-1.5-35B-A3B-GGUF (Q4_K_M, SHA256 in
+#    models.json). Card sampling (general tasks): temperature 0.6, top_p 0.95,
 #    top_k 20. Official chat_template.jinja (ops/coding/ornith-chat.jinja,
 #    verbatim): enable_thinking=false pre-fills an empty <think></think>.
 #    Engine: mainline llama.cpp (qwen35moe since ggml-org/llama.cpp#19468);
@@ -27,14 +27,16 @@ case "$which" in
   # (13 of 49 layers are full attention, 4 KV heads: ~7 GB f16 KV per node).
   # Owner 2026-11-04: Ornith-1.5-35B-A3B on both nodes (ctx = card's
   # native 262,144 tokens; only the full-attention layers hold KV).
-  # 2026-11-04 18:xx: AD-Q6_K-Q5_K (26.2 GB) instead of bartowski Q4_K_M:
-  # AtomicChat card KLD 0.0158 / top-1 94.85 % vs Q4_K_M 0.0477 / 91.0 %,
-  # ~1.2x the bytes per token (decode is DDR4-2400 bandwidth bound per node).
+  # 2026-11-04 19:xx: MTP self-speculation (llama.cpp --spec-type draft-mtp).
+  # mtp=embedded: the GGUF carries the Ornith nextn block itself (bartowski
+  # Q4_K_M: blk.40, nextn_predict_layers=1); mtp=<file>: separate MTP head GGUF
+  # (AtomicChat quants are converted --no-nextn). -np 1 is already the layout
+  # (one lane per node), which is MTP's upstream requirement.
   0) node=0; cpus=0-13; port=8191; name=general; ctx=262144
-     alias=ornith-numa0; file=Ornith-1.5-35B-A3B-AD-Q6_K-Q5_K.gguf
+     alias=ornith-numa0; file=Ornith-1.5-35B-A3B-Q4_K_M.gguf; mtp=
      extra=(--temp 0.6 --top-p 0.95 --top-k 20 --min-p 0.0) ;;
   1) node=1; cpus=14-27; port=8192; name=coder; ctx=262144
-     alias=ornith; file=Ornith-1.5-35B-A3B-AD-Q6_K-Q5_K.gguf
+     alias=ornith; file=Ornith-1.5-35B-A3B-Q4_K_M.gguf; mtp=embedded
      extra=(--temp 0.6 --top-p 0.95 --top-k 20 --min-p 0.0) ;;
   *) echo 'coding: invalid NUMA node' >&2; exit 4 ;;
 esac
@@ -90,6 +92,14 @@ if [[ $ENGINE == ik && -x $IK_BIN && $(cat "$(dirname "$IK_BIN")/source-commit" 
     --slot-save-path "$IK_SLOT" --webui none
 fi
 [[ $ENGINE == ik ]] && echo "coding $node: ik runtime $IK_REV missing, using mainline" >&2
+SPEC_ARGS=()
+if [[ $mtp == embedded ]]; then
+  SPEC_ARGS=(--spec-type draft-mtp --spec-draft-n-max 3)
+elif [[ -n $mtp ]]; then
+  DRAFT="/home/chris/models/mag-coding/$name/$mtp"
+  [[ -f $DRAFT && ! -L $DRAFT ]] || { echo "coding $node: MTP head missing" >&2; exit 4; }
+  SPEC_ARGS=(--spec-type draft-mtp --spec-draft-n-max 3 --model-draft "$DRAFT")
+fi
 exec numactl --physcpubind="$cpus" --membind="$node" "$BIN" \
   --model "$MODEL" --alias "$alias" --host 127.0.0.1 --port "$port" \
   --ctx-size "$ctx" --parallel 1 --threads 14 --threads-batch 14 --numa numactl \
@@ -97,4 +107,5 @@ exec numactl --physcpubind="$cpus" --membind="$node" "$BIN" \
   --jinja --reasoning-format auto --chat-template-file /usr/local/lib/mag-coding/ornith-chat.jinja \
   --cache-ram 16384 --ctx-checkpoints 48 --checkpoint-min-step 1024 --no-reasoning-preserve \
   --flash-attn on --batch-size 2048 --ubatch-size 512 --cache-type-k f16 --cache-type-v f16 \
+  "${SPEC_ARGS[@]}" \
   --slots --slot-save-path "$SLOT" --no-ui

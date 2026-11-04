@@ -49,6 +49,22 @@ trap 'exit 130' INT
 [[ "$RELEASE_ID" =~ ^[a-zA-Z0-9._-]+$ ]] || exit 1
 # shellcheck source=build-targets.sh
 source "$SOURCE/ops/build-targets.sh"
+# Owner 2026-11-04: deploy used to install whatever sat in build/ (a 17:58
+# binary shipped for hours after #313/#314 merged). Always rebuild as the
+# checkout owner first, then refuse to ship if ninja still has pending work.
+if [[ -z ${MAG_DEPLOY_SKIP_BUILD:-} && -f "$SOURCE/build/build.ninja" ]]; then
+  _build_owner=$(stat -c %U "$SOURCE/build/build.ninja")
+  echo "deploy: rebuilding $SOURCE/build as $_build_owner"
+  if [[ $_build_owner == root ]]; then _build_cmd=(ninja); else _build_cmd=(sudo -u "$_build_owner" -H ninja); fi
+  "${_build_cmd[@]}" -C "$SOURCE/build" -j"${MAG_BUILD_JOBS:-10}" \
+    || { echo 'deploy: build failed; nothing installed' >&2; exit 1; }
+fi
+# Up-to-date check that cannot be fooled by web-only commits: ninja itself
+# must have nothing left to do for the shipped binaries.
+if [[ -f "$SOURCE/build/build.ninja" ]] && ! ninja -C "$SOURCE/build" -n "${MAG_RELEASE_BINARIES[@]}" 2>/dev/null | grep -q '^ninja: no work to do'; then
+  echo 'deploy: build/ is stale relative to the checkout (ninja has pending work); refusing to ship an old binary' >&2
+  exit 1
+fi
 for binary in "${MAG_RELEASE_BINARIES[@]}"; do test -x "$SOURCE/build/$binary"; done
 # Go is used only for WebRTC/UDP; the room, browsers and VM lifecycle remain C++.
 if [[ ! -x "$SOURCE/build/mag-browser-webrtc" ]]; then

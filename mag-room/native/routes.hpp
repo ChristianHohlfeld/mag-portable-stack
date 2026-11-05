@@ -746,6 +746,33 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
     return;
   }
   if (mcp_route(fd, r, m, path)) return;
+  // Per-speaker read-aloud voice/tempo. Only ids and numbers are stored; the
+  // browser maps a voice id to a self-hosted Piper model.
+  if (path == "/api/tts-voices" && m == "PUT") {
+    if (bridge || actor.role != "owner") { error_json(fd, 403, "Nur der Besitzer"); return; }
+    Val body;
+    if (!mj::parse(r.body, body) || !body.isObj()) { error_json(fd, 400, "Einstellung fehlt"); return; }
+    const std::string key = mag::str(body, "key");
+    const Val *voice = body.find("voice"), *rate = body.find("rate");
+    if (!tts_pref_key(key) || (!voice && !rate) ||
+        (voice && (voice->type != Val::STR || !tts_voice_id(voice->asStr()))) ||
+        (rate && (rate->type != Val::NUM || !(rate->asNum() >= 0.5 && rate->asNum() <= 2.5)))) {
+      error_json(fd, 400, "Ungültige Stimme oder Tempo"); return;
+    }
+    Val saved;
+    {
+      std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
+      if (!TTS_PREFS.find(key) && TTS_PREFS.isObj() && TTS_PREFS.obj->size() >= 64) { error_json(fd, 400, "Zu viele Sprecher"); return; }
+      Val entry = TTS_PREFS.find(key) && TTS_PREFS.find(key)->isObj() ? *TTS_PREFS.find(key) : Val::object();
+      if (voice) entry["voice"] = voice->asStr();
+      if (rate) entry["rate"] = std::round(rate->asNum() * 100) / 100;
+      TTS_PREFS[key] = entry;
+      if (!write_file_atomic(STATE_DIR + "/tts-voices.json", mj::dump(TTS_PREFS))) { error_json(fd, 500, "Speichern fehlgeschlagen"); return; }
+      saved = entry;
+    }
+    Val out = Val::object(); out["ok"] = true; out["key"] = key; out["prefs"] = saved;
+    send_json(fd, 200, mj::dump(out)); return;
+  }
   if (path == "/api/bot-settings" && m == "PUT") {
     if (bridge || actor.role != "owner") { error_json(fd, 403, "Nur der Besitzer"); return; }
     Val body;

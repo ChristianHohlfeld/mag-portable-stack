@@ -2031,6 +2031,53 @@ class Native(unittest.TestCase):
   ans=[m for m in self.request('/api/state')['room'] if m.get('role')=='assistant' and 'Zweite Zeile' in (m.get('content') or '')][-1]
   self.assertFalse(any('Zeile' in s for s in ans.get('steps') or []),ans.get('steps'))
   self.assertTrue(any('schaue kurz nach' in s for s in ans.get('steps') or []),ans.get('steps'))
+ def test_16h_tool_file_content_streams_as_live_code(self):
+  # Code written through write_file never reaches the answer text; the room
+  # must stream the decoded file content line by line (code_draft) and keep
+  # the full file loadable for the chat's code editor.
+  self.wait_idle();events=[]
+  def listen():
+   r=urllib.request.urlopen(f'http://127.0.0.1:{self.ui}/api/events',timeout=10);r.fp.raw._sock.settimeout(6)
+   try:
+    while True:
+     line=r.readline().decode()
+     if line.startswith('data: '):
+      e=json.loads(line[6:]);events.append(e)
+      if e.get('type')=='bot_done':break
+   except Exception:pass
+   finally:r.close()
+  t=threading.Thread(target=listen,daemon=True);t.start();time.sleep(.3)
+  code=''.join('<p class="z%d">Zeile %d \u00e4 "q" \\ \U0001F600</p>\n'%(i,i) for i in range(60))
+  args=json.dumps({'path':'/home/bot/live.html','content':code})
+  pieces=[];step=97
+  for i in range(0,len(args),step):
+   pieces.append({'tool_calls':[{'index':0,'id':'call_code' if i==0 else None,'function':{'name':'write_file' if i==0 else None,'arguments':args[i:i+step]}}]})
+   pieces.append({'_sleep':.04})
+  for p in pieces:
+   if 'tool_calls' in p:
+    f=p['tool_calls'][0]
+    if f['id'] is None:del f['id']
+    if f['function']['name'] is None:del f['function']['name']
+  Model.script=[pieces,['Fertig.']]
+  try:
+   self.request('/api/message',{'text':'Schreib eine Seite','bots':['test']})
+   self.wait_room('Fertig.');self.wait_idle()
+  finally:Model.script=[]
+  t.join(8)
+  drafts=[e for e in events if e.get('type')=='code_draft']
+  self.assertGreater(len(drafts),2,[e.get('type') for e in events])
+  got=''
+  for e in drafts:
+   self.assertEqual(e['off'],len(got.encode()),'offsets are contiguous');got+=e['text']
+   self.assertEqual(e['tool'],'write_file')
+  self.assertTrue(got.endswith('\n'));self.assertTrue(code.startswith(got),got[-80:])
+  self.assertGreater(len(got),len(code)//2)
+  msg=[m for m in self.request('/api/state')['room'] if m.get('role')=='assistant' and m.get('tools')][-1]
+  rec=[x for x in msg['tools'] if x.get('tool')=='write_file'][-1]
+  self.assertEqual(rec['args']['path'],'/home/bot/live.html')
+  self.assertEqual(self.request('/api/code/'+rec['code_ref'],raw=True).decode(),code)
+  html=self.request('/',raw=True).decode()
+  self.assertIn('/static/code-canvas.js',html);self.assertIn("event.type==='code_draft'",html)
  def test_16i_tool_calls_pair_input_output_and_survive_reload(self):
   self.wait_idle();events=[]
   def listen():

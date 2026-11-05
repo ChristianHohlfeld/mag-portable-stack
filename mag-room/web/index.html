@@ -70,6 +70,25 @@ video.att-media{width:100%;max-height:440px;cursor:auto;background:#000}
 .code-bar .preview-toggle{margin-left:auto}.code-bar .preview-toggle[aria-pressed=true]{background:var(--panel-3);color:var(--text)}.code-bar .preview-toggle+.copy{margin-left:0}
 .html-preview{margin-top:10px;border:1px solid var(--line);border-radius:12px;overflow:hidden;background:var(--panel)}.html-preview iframe{display:block;width:100%;height:420px;border:0;background:#fff}.html-preview a{display:block;padding:7px 12px;font-size:12px}.browser-nav{display:flex;align-items:center;gap:4px;padding:5px 6px}.browser-nav .nav-btn{min-width:28px;height:28px;border-radius:7px;display:inline-flex;align-items:center;justify-content:center;color:inherit;font-size:14px}.browser-nav .nav-btn:hover{background:var(--hover,#ffffff1a)}.browser-nav .nav-url{flex:1;display:flex;min-width:0;gap:2px}.browser-nav .nav-url input{flex:1;min-width:0;height:28px;border-radius:7px;border:1px solid var(--line);background:var(--surface,#0006);color:inherit;padding:0 9px;font:12px ui-monospace,monospace}#browser-view:fullscreen{display:flex;flex-direction:column;background:#000}#browser-view:fullscreen #screen{flex:1;min-height:0;width:100%;height:auto;object-fit:contain}#browser-view{position:relative}#browser-overlay{position:absolute;inset:0;pointer-events:none;overflow:hidden;opacity:0;transition:opacity .3s}#browser-overlay.on{opacity:1}#browser-overlay .bo-cursor{position:absolute;left:0;top:0;transform:translate(50%,50%);transition:transform .42s cubic-bezier(.3,.7,.2,1);will-change:transform;filter:drop-shadow(0 1px 2px #0009);z-index:2}#browser-overlay .bo-cursor svg{display:block;margin:-3px 0 0 -3px}.bo-type{position:absolute;left:18px;top:16px;max-width:260px;white-space:pre-wrap;word-break:break-word;background:#111d;color:#fff;font:12px ui-monospace,monospace;padding:3px 7px;border-radius:6px;opacity:0;transition:opacity .2s}.bo-type.on{opacity:1}.bo-ripple{position:absolute;width:34px;height:34px;margin:-17px 0 0 -17px;border-radius:50%;border:2px solid #4da3ff;background:#4da3ff33;animation:bo-rip .55s ease-out forwards;z-index:1}@keyframes bo-rip{from{transform:scale(.3);opacity:1}to{transform:scale(1.8);opacity:0}}
 /* Read-only live code editor and isolated website preview. */
+.code-canvas{margin:6px 0 14px;border:1px solid var(--line);border-radius:12px;overflow:hidden;background:var(--panel);display:flex;flex-direction:column}
+.code-canvas .cc-bar{flex:none;min-height:34px;display:flex;align-items:center;gap:8px;padding:0 8px 0 12px;border-bottom:1px solid var(--line);font:11px/1.3 ui-monospace,monospace;color:var(--muted)}
+.code-canvas .cc-title{color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.code-canvas .cc-meta{white-space:nowrap}.code-canvas[data-state=live] .cc-meta{color:var(--accent,#4da3ff)}.code-canvas[data-state=fail] .cc-meta{color:var(--red,#e5534b)}
+.code-canvas .cc-tabs{margin-left:auto;display:flex;gap:2px}.code-canvas .cc-tools{display:flex;gap:2px}
+.code-canvas .code-tab[aria-selected=true]{background:var(--panel-3);color:var(--text)}
+.code-canvas .cc-body{position:relative;display:flex;flex-direction:column;min-height:0}
+.code-canvas .cc-scroll{display:flex;overflow:auto;max-height:min(60vh,620px);font:12.5px/1.55 ui-monospace,SFMono-Regular,Consolas,monospace;tab-size:2}
+.code-canvas pre{margin:0;padding:10px 0;font:inherit;background:none;border:0;border-radius:0}
+.code-canvas .cc-gutter{flex:none;position:sticky;left:0;z-index:1;padding:10px 10px 10px 12px;text-align:right;color:var(--muted);opacity:.65;user-select:none;background:var(--panel);border-right:1px solid var(--line);min-width:3.2em}
+.code-canvas .cc-pre{flex:1;padding-left:12px;padding-right:14px;white-space:pre;min-width:max-content}
+.code-canvas .cc-pre code{font:inherit;white-space:pre;background:none;padding:0;display:inline}
+.code-canvas .cc-caret{display:none;width:.55em;height:1.1em;vertical-align:text-bottom;background:var(--accent,#4da3ff);animation:cc-blink 1s steps(1) infinite}
+.code-canvas[data-state=live] .cc-caret{display:inline-block}@keyframes cc-blink{50%{opacity:0}}
+.code-canvas .cc-note{padding:6px 12px;font-size:12px;color:var(--red,#e5534b);border-top:1px solid var(--line)}
+.code-canvas .cc-frame{display:block;width:100%;height:min(62dvh,460px);border:0;background:#fff}
+.code-canvas.mode-preview .cc-scroll{display:none}.code-canvas:not(.mode-preview) .cc-frame{display:none}
+.code-canvas.max{position:fixed;inset:0;z-index:2147483000;margin:0;border-radius:0;padding-top:env(safe-area-inset-top);padding-bottom:env(safe-area-inset-bottom)}
+.code-canvas.max .cc-body{flex:1}.code-canvas.max .cc-scroll{max-height:none;flex:1}.code-canvas.max .cc-frame{flex:1;height:auto}
 #conversation pre:has(.code-bar){position:relative;overflow:auto;max-height:min(65vh,680px);font:12.5px/1.55 ui-monospace,SFMono-Regular,Consolas,monospace;tab-size:2}
 #conversation pre:has(.code-bar) code{font:inherit;white-space:pre;display:block;min-width:max-content}
 #conversation pre:has(.code-bar) .code-bar{position:sticky;top:0;left:0;z-index:2;background:var(--panel)}
@@ -811,7 +830,7 @@ dialog{border-radius:10px;border-color:var(--line);background:var(--surface)}
 <div id="model-banner" role="status" hidden></div><div id="room-link" role="status" hidden></div><label class="selftalk-toggle" id="proaktiv-row"><input type="checkbox" id="proaktiv"><span>Proaktiv</span></label><div id="toast-stack"><div class="notice" id="notice" role="status" hidden></div><div id="update-toast" class="undo-toast" hidden role="status"><span>Neue Version – aktualisieren</span><button type="button" id="update-now">Aktualisieren</button></div><div id="undo-toast" class="undo-toast" hidden role="status"><span id="undo-text"></span><button type="button" id="undo-btn">Rückgängig</button></div></div>
 <!-- Embedded, locally bundled libraries and app logic inserted below. No external assets. -->
 <script src="/static/marked.min.js"></script><script src="/static/purify.min.js"></script>
-<script src="/static/highlight.min.js"></script>
+<script src="/static/highlight.min.js"></script><script src="/static/code-canvas.js"></script>
 <script src="/static/qrcode.min.js"></script>
 <script src="/static/agent-ui.js" defer></script><script src="/static/view-tools.js" defer></script><script src="/static/live-highlight.js" defer></script><script src="/static/xterm.js"></script><script src="/static/xterm-addon-fit.js"></script>
 <script>
@@ -1165,7 +1184,7 @@ function paintTools(node,content,tools){
  tools.forEach((t,i)=>{const row=body.children[i];const next=toolRow(row,t);if(!row)body.append(next)});
  while(body.children.length>tools.length)body.lastChild.remove();
 }
-function storedTools(msg){return Array.isArray(msg.tools)?msg.tools.map(t=>({name:t.tool,label:t.label,args:t.args,args_text:t.args_text,result:typeof t.result==='string'?t.result:'',ok:t.ok!==false,ms:t.ms})):[]}
+function storedTools(msg){return Array.isArray(msg.tools)?msg.tools.map(t=>({name:t.tool,label:t.label,args:t.args,args_text:t.args_text,code_ref:t.code_ref,code_bytes:t.code_bytes,result:typeof t.result==='string'?t.result:'',ok:t.ok!==false,ms:t.ms})):[]}
 function addTrace(node,trace){
  if(!trace)return;
  const content=node.querySelector('.content');if(!content)return;
@@ -1626,7 +1645,7 @@ function append(msg,scroll=true,trace=null,position=-1){
  attachReactions(div,msg);
  attachWork(div,msg,content);
  if(!human&&msg.thinking_enabled!==false&&msg.reasoning&&(shownSteps(msg.steps).length||shownTools(storedTools(msg)).length))showThinking(div,msg.id||'',msg.reasoning,false,msg.thought_ms);
- if(!human&&msg.tools?.length)paintTools(div,content,storedTools(msg));
+ if(!human&&msg.tools?.length){paintTools(div,content,storedTools(msg));window.magCodeCanvas?.paint(div,storedTools(msg),null)}
  if(trace?.tools?.some(t=>!QUIET_TOOLS.has(t.name)))addTrace(div,{...trace,key:msg.id||''});
  if(msg.file)div.append(attachmentView(msg.file));
  if(text||msg.live){const actions=document.createElement('div');actions.className='message-tools';if(msg.live)actions.style.visibility='hidden';
@@ -1858,6 +1877,7 @@ function updateStream(botId,immediate=false){
   showThinking(s.node,'live:'+botId,s.thinkingEnabled===false||!shownTools(s.tools).length&&!shownSteps(s.steps).length?'':(s.reasoning||''),!!s.thinking,liveThinkMs(s));
   paintApprovals(s.node,botId);
   paintTools(s.node,content,s.tools);
+  window.magCodeCanvas?.paint(s.node,s.tools,liveCode(s));
   // No redundant full-width prompt progress: the inline activity dot reports it.
   // A live reply never shrinks: the thinking peek folding away, a revoked
   // draft or a shorter status line would otherwise pull the chat down.
@@ -1865,6 +1885,13 @@ function updateStream(botId,immediate=false){
  };
  if(immediate){if(s.frame)cancelAnimationFrame(s.frame);update()}
  else if(!s.frame)s.frame=requestAnimationFrame(update);
+}
+// The streaming tool call as canvas input: file content as is, a shell
+// command only when it carries a heredoc (the code being written).
+function liveCode(s){
+ const c=s.code;if(!c||!c.raw)return null;const cc=window.magCodeCanvas;if(!cc)return null;
+ if(c.tool==='run_command'){const h=cc.heredoc(c.raw);return h?{...h,live:true}:null}
+ return {path:c.path,lang:cc.langFor(c.path,c.raw),text:c.raw,file:true,live:true};
 }
 function mergeActivity(a){
  if(!a||!a.on||!a.bot)return;
@@ -1898,7 +1925,7 @@ function restorePreviews(inner,kept){
 function render(){
  const area=$('conversation'),follow=stickToBottom||!rendered,oldScroll=area.scrollTop,prevH=area.scrollHeight;rendered=true;
  programmatic++;
- const keptPreviews=parkPreviews(area);
+ const keptPreviews=parkPreviews(area),keptCanvas=window.magCodeCanvas?.park(area);
  area.replaceChildren();const inner=document.createElement('div');inner.className='conversation-inner';area.append(inner);
  if(!state.room.length&&!Object.keys(streams).length){inner.innerHTML='<div class="empty"><div class="empty-symbol">✳</div><h1>Worum geht es?</h1><p>Eine Frage, eine Notiz oder eine Aufgabe für die Bots. Alles bleibt auf deinem Server.</p></div>'}
  // The first streamed token already lives in ROOM. While it is streaming,
@@ -1923,7 +1950,7 @@ function render(){
  timeline.forEach((m,i)=>append(m,false,traceForMessage(m,i),i));
  for(const s of Object.values(streams).filter(x=>!x.seq).sort((x,y)=>(x.started||0)-(y.started||0)))s.seq=++streamSeq;
  for(const [botId,s] of Object.entries(streams).sort((x,y)=>x[1].seq-y[1].seq)){s.node=liveNode(botId,s);updateStream(botId,true)}
- restorePreviews(inner,keptPreviews);
+ restorePreviews(inner,keptPreviews);window.magCodeCanvas?.restore(inner,keptCanvas);
  if(follow){area.scrollTop=area.scrollHeight;stickToBottom=true;newBelow=false}
  else{area.scrollTop=Math.min(oldScroll,Math.max(0,area.scrollHeight-area.clientHeight));if(area.scrollHeight>prevH+2)newBelow=true}
  lastScrollTop=area.scrollTop;watchInner(inner);
@@ -4118,8 +4145,11 @@ events.onmessage=e=>{
    const s=streams[id];if(s){const total=+event.total||0,cache=Math.max(0,+event.cache||0),done=Math.max(0,+event.processed||0);s.lastEvent=Date.now();s.hung=false;if(total>0){s.progress={processed:done,total,cache,ms:Math.max(0,+event.time_ms||0),at:Date.now()};if(s.phase!=='tool'&&s.phase!=='narration'&&s.phase!=='answer'){s.phase='prompt';s.label='Liest Verlauf'}updateStream(id)}}
   }else if(event.type==='reasoning'){
    const s=streams[id];if(s){const now=Date.now();const first=!s.thinking;s.reasoning=(s.reasoning||'')+(event.text||'');s.thought=s.reasoning.length;s.thinkStart=s.thinkStart||(event.replay&&s.started?s.started:now);s.thinkLast=now;s.thinking=true;s.lastEvent=now;s.hung=false;if(first||!s.thoughtAt||now-s.thoughtAt>250){s.thoughtAt=now;updateStream(id)}}
+  }else if(event.type==='code_draft'){
+   // Code inside a streaming tool call (write_file content, run_command heredoc).
+   const s=streams[id];if(s){const off=+event.off||0;if(!off||!s.code||s.code.call!==event.call)s.code={call:event.call||'',tool:event.tool||'',path:event.path||'',raw:'',bytes:0};if(off===s.code.bytes){s.code.raw+=event.text||'';s.code.bytes+=new TextEncoder().encode(event.text||'').length;if(event.path)s.code.path=event.path;s.lastEvent=Date.now();s.hung=false;updateStream(id)}}
   }else if(event.type==='tool'){
-   const s=streams[id];if(s){(s.tools||(s.tools=[])).push({id:event.id||'',name:event.tool||'Aktion',label:event.label||'',args:event.args,result:null});s.thinking=false;s.lastEvent=Date.now();s.hung=false;if(event.label){s.phase='tool';s.label=event.label}updateStream(id)}
+   const s=streams[id];if(s){s.code=null;(s.tools||(s.tools=[])).push({id:event.id||'',name:event.tool||'Aktion',label:event.label||'',args:event.args,result:null});s.thinking=false;s.lastEvent=Date.now();s.hung=false;if(event.label){s.phase='tool';s.label=event.label}updateStream(id)}
   }else if(event.type==='tool_result'){
    const s=streams[id];if(s){const list=s.tools||(s.tools=[]);const t=[...list].reverse().find(x=>x.result==null&&(event.id?x.id===event.id:x.name===event.tool));const r={result:typeof event.result==='string'?event.result:'',ok:event.ok!==false,ms:event.ms};if(t)Object.assign(t,r);else list.push({id:event.id||'',name:event.tool||'Aktion',...r});s.lastEvent=Date.now();s.hung=false;updateStream(id)}
   }else if(event.type==='stopping'){paintStopping()}

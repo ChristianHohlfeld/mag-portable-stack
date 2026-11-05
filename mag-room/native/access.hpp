@@ -263,7 +263,8 @@ static bool public_guest_read(const std::string &method, const std::string &p) {
          p == "/favicon.svg" || p == "/api/state" || p == "/api/events" ||
          p == "/api/version" || p == "/api/model-status" ||
          p == "/api/bots" || p == "/api/room" || p == "/api/files" ||
-         p.rfind("/static/", 0) == 0 || p.rfind("/api/file/", 0) == 0;
+         p.rfind("/static/", 0) == 0 || p.rfind("/api/file/", 0) == 0 ||
+         p.rfind("/api/code/", 0) == 0;
 }
 static bool guest_reaction_path(const std::string &p) {
   const std::string root = "/api/messages/", end = "/reactions";

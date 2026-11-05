@@ -154,22 +154,25 @@ async function synth(text, model, id, speaker, rate) {
 }
 // One request at a time: a stopped playback may still have a part in flight,
 // and two overlapping session.run calls in the shared WASM heap can fail or
-// mix up the shared phoneme buffer. 'cancel' is handled at once: speak requests of a stopped playback that
-// are still queued are answered as cancelled without synthesis.
+// mix up the shared phoneme buffer. 'cancel' is handled at once: speak
+// requests of a stopped playback that are still queued are answered as
+// cancelled without synthesis.
 let chain = Promise.resolve();
 let cancelledBefore = 0;
 self.onmessage = ev => {
   const data = ev.data || {};
   if (data.type === 'cancel') { cancelledBefore = Math.max(cancelledBefore, +data.before || 0); return; }
+  // Download-only prefetch touches no WASM state and must not hold up speech.
+  if (data.type === 'prefetch') {
+    Promise.all([cachedFetch(base + data.model + '.json'), cachedFetch(base + data.model)])
+      .then(() => postMessage({type: 'ready', id: data.id}), e => postMessage({type: 'error', id: data.id, error: String(e && e.message || e)}));
+    return;
+  }
   chain = chain.then(() => handle(data));
 };
 async function handle({type, id, text, model, speaker, rate}) {
   try {
     if (type === 'warm') { await loadVoice(model, id); postMessage({type: 'ready', id, threads: ort.env.wasm.numThreads}); return; }
-    if (type === 'prefetch') {
-      await cachedFetch(base + model + '.json'); await cachedFetch(base + model);
-      postMessage({type: 'ready', id}); return;
-    }
     if (type === 'speak') {
       if (id <= cancelledBefore) { postMessage({type: 'error', id, error: 'cancelled'}); return; }
       const out = await synth(text, model, id, speaker, rate);

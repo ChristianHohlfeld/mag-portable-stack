@@ -294,7 +294,12 @@
   function ask(msg, timeout) {
     const id = ++piper.seq;
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => { if (piper.pending.has(id)) { resetWorker(); reject(new Error('Zeitüberschreitung der Stimme')); } }, timeout);
+      const timer = setTimeout(() => {
+        if (!piper.pending.has(id)) return;
+        // A slow background download is not a stuck worker.
+        if (msg.type === 'prefetch') piper.pending.delete(id); else resetWorker();
+        reject(new Error('Zeitüberschreitung der Stimme'));
+      }, timeout);
       piper.pending.set(id, {resolve, reject, timer});
       try { worker().postMessage({...msg, id}); } catch (e) { piper.pending.delete(id); clearTimeout(timer); reject(e); }
     });
@@ -325,6 +330,8 @@
     try { return await ask(msg, SPEAK_TIMEOUT_MS); }
     catch (e) {
       if (current !== pb) throw e;
+      // Nothing speakable (only symbols/emoji): skip this part, keep reading.
+      if (/Phonemisierung/.test(e.message)) return {audio: new Float32Array(0), rate: 16000};
       resetWorker();
       return ask(msg, SPEAK_TIMEOUT_MS);
     }
@@ -559,7 +566,9 @@
   function warmUp() {
     loadConfig().then(cfg => {
       if (!cfg) return;
-      const models = [...new Set([profile({name: 'Lena'}), profile({name: 'Noah'}), profile({user: true})]
+      const bots = (roomState()?.agents || []).map(a => ({bot: a.id, name: a.name}));
+      const who = bots.length ? bots : [{name: 'Lena'}, {name: 'Noah'}];
+      const models = [...new Set([...who, {user: true}].map(profile)
         .map(p => p.voice?.model).filter(Boolean))];
       if (!models.length) return;
       warm({model: models[0]});

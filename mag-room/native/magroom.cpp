@@ -1785,7 +1785,7 @@ static std::vector<std::shared_ptr<Sub>> SUBS;
 // (re)connects mid-stream gets bot_start + tools + reasoning + text so far,
 // then continues with live deltas - no gap, no duplicate, no new generation.
 // The unconfirmed draft of the current round follows the confirmed text.
-struct LiveTurn { std::string start, bot, name, text, reasoning, draft; size_t draft_confirmed = 0; std::vector<std::string> tools; bool on = false; };
+struct LiveTurn { std::string start, bot, name, text, reasoning, draft, code, code_tool, code_path, code_call; size_t draft_confirmed = 0; std::vector<std::string> tools; bool on = false; };
 static std::map<std::string, LiveTurn> LIVE_TURNS;
 static std::string event_type_of(const std::string &j) {
   Val v; return mj::parse(j, v) ? mag::str(v, "type") : "";
@@ -1811,7 +1811,15 @@ static void live_track_locked(const std::string &j) {
       live.draft.clear(); live.draft_confirmed = 0;
     }
   } else if (t == "draft_drop") { live.draft.clear(); live.draft_confirmed = 0; }
-  else if ((t == "tool" || t == "tool_result") && live.tools.size() < 200) live.tools.push_back(j);
+  else if (t == "code_draft") {
+    const size_t off = (size_t)std::max(0L, mag::num(v, "off", 0));
+    if (off == 0 || off != live.code.size() || mag::str(v, "call") != live.code_call) live.code.clear();
+    if (live.code.empty() && off) return;
+    live.code += piece; live.code_tool = mag::str(v, "tool");
+    live.code_path = mag::str(v, "path"); live.code_call = mag::str(v, "call");
+  }
+  else if (t == "tool") live.code.clear();
+  if ((t == "tool" || t == "tool_result") && live.tools.size() < 200) live.tools.push_back(j);
 }
 static std::vector<std::string> live_replay_locked() {
   std::vector<std::string> out;
@@ -1826,6 +1834,11 @@ static std::vector<std::string> live_replay_locked() {
     piece("reasoning", live.reasoning);
     for (const auto &t : live.tools) out.push_back(t);
     piece("delta", live.text);
+    if (!live.code.empty()) {
+      Val e = Val::object(); e["type"] = "code_draft"; e["bot"] = live.bot; e["name"] = live.name;
+      e["tool"] = live.code_tool; e["path"] = live.code_path; e["call"] = live.code_call;
+      e["off"] = 0.0; e["text"] = live.code; e["replay"] = true; out.push_back(mj::dump(e));
+    }
     if (live.draft.size() > live.draft_confirmed) piece("draft", live.draft.substr(live.draft_confirmed));
   }
   return out;
@@ -4827,6 +4840,88 @@ static void merge_tool_delta(SseAcc &acc, const Val &tc) {
   }
 }
 
+// Decodes the string value of a top-level "key" from streamed, still
+// incomplete JSON tool arguments (write_file content, run_command command).
+// Stops before a partial escape; *done reports the closing quote.
+static bool partial_json_string(const std::string &raw, const std::string &key,
+                                std::string &out, bool *done = nullptr) {
+  out.clear();
+  if (done) *done = false;
+  const std::string needle = "\"" + key + "\"";
+  size_t at = 0, v = std::string::npos;
+  while ((at = raw.find(needle, at)) != std::string::npos) {
+    size_t bs = 0;
+    for (size_t j = at; j > 0 && raw[j - 1] == '\\'; --j) ++bs;
+    size_t p = at + needle.size();
+    while (p < raw.size() && std::isspace((unsigned char)raw[p])) ++p;
+    if (bs % 2 == 0 && p < raw.size() && raw[p] == ':') {
+      ++p;
+      while (p < raw.size() && std::isspace((unsigned char)raw[p])) ++p;
+      if (p < raw.size() && raw[p] == '"') { v = p + 1; break; }
+    }
+    at += needle.size();
+  }
+  if (v == std::string::npos) return false;
+  auto put = [&](unsigned cp) {
+    if (cp < 0x80) out += (char)cp;
+    else if (cp < 0x800) { out += (char)(0xC0 | (cp >> 6)); out += (char)(0x80 | (cp & 0x3F)); }
+    else if (cp < 0x10000) { out += (char)(0xE0 | (cp >> 12)); out += (char)(0x80 | ((cp >> 6) & 0x3F)); out += (char)(0x80 | (cp & 0x3F)); }
+    else { out += (char)(0xF0 | (cp >> 18)); out += (char)(0x80 | ((cp >> 12) & 0x3F)); out += (char)(0x80 | ((cp >> 6) & 0x3F)); out += (char)(0x80 | (cp & 0x3F)); }
+  };
+  auto hex4 = [&](size_t p, unsigned &cp) {
+    if (p + 4 > raw.size()) return false;
+    cp = 0;
+    for (size_t k = p; k < p + 4; ++k) {
+      const char c = raw[k];
+      cp <<= 4;
+      if (c >= '0' && c <= '9') cp |= c - '0';
+      else if (c >= 'a' && c <= 'f') cp |= c - 'a' + 10;
+      else if (c >= 'A' && c <= 'F') cp |= c - 'A' + 10;
+      else return false;
+    }
+    return true;
+  };
+  for (size_t i = v; i < raw.size(); ++i) {
+    const char c = raw[i];
+    if (c == '"') { if (done) *done = true; return true; }
+    if (c != '\\') { out += c; continue; }
+    if (i + 1 >= raw.size()) break;
+    const char e = raw[++i];
+    if (e == 'n') out += '\n';
+    else if (e == 't') out += '\t';
+    else if (e == 'r') out += '\r';
+    else if (e == 'b') out += '\b';
+    else if (e == 'f') out += '\f';
+    else if (e == 'u') {
+      unsigned cp;
+      if (!hex4(i + 1, cp)) break;
+      i += 4;
+      if (cp >= 0xD800 && cp < 0xDC00) {
+        unsigned lo;
+        if (i + 2 >= raw.size() || raw[i + 1] != '\\' || raw[i + 2] != 'u' || !hex4(i + 3, lo)) break;
+        i += 6;
+        cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00);
+      }
+      put(cp);
+    } else out += e;
+  }
+  return true;
+}
+
+static std::string sha256_hex(const std::string &s); // jobs.hpp
+// Content-addressed code of tool calls (write_file content, run_command
+// heredocs) for the chat's live code editor; bounded per blob.
+static std::string code_blob_dir() { return STATE_DIR + "/code"; }
+static std::string store_code_blob(const std::string &code) {
+  if (code.empty() || code.size() > (size_t)4 * 1024 * 1024) return "";
+  const std::string ref = sha256_hex(code);
+  std::error_code ec;
+  std::filesystem::create_directories(code_blob_dir(), ec);
+  const std::string path = code_blob_dir() + "/" + ref + ".txt";
+  if (std::filesystem::exists(path, ec)) return ref;
+  return write_file_atomic(path, code) ? ref : "";
+}
+
 static std::mutex ROOM_MODEL_MTX;
 static std::string ROOM_MODEL_ID;
 // Exactly two configured warm NUMA backends; deployment defaults to existing IQ3.
@@ -5772,7 +5867,9 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
       emit_glm_safe("", true);
   };
   
-  long long draft_ms = 0;
+  long long draft_ms = 0, code_ms = 0;
+  size_t code_sent = 0;
+  int code_idx = -1;
   double saw_cached = -1, saw_evaluated = -1;
   bool have_cached_field = false, have_eval_field = false;
   Val timings_seen;
@@ -5890,6 +5987,32 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
       // and would otherwise be silent: report its name and size once a second.
       const long long now_ms =
           duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
+      // Code written through a tool call never reaches the chat text: stream
+      // the decoded file content (write_file) or shell command (run_command,
+      // heredocs) as complete lines so the room shows a live code editor.
+      if (!acc.calls.empty() && now_ms - code_ms >= 150) {
+        const Val &last = acc.calls.rbegin()->second;
+        const Val *nm = last.find("name"), *args = last.find("args");
+        const std::string tool = nm ? nm->asStr() : std::string();
+        const bool file_tool = tool == "write_file" || tool == "append_file";
+        if ((file_tool || tool == "run_command") && args) {
+          std::string code, path;
+          partial_json_string(args->asStr(), file_tool ? "content" : "command", code);
+          if (file_tool) partial_json_string(args->asStr(), "path", path);
+          const size_t nl = code.rfind('\n');
+          code.resize(nl == std::string::npos ? 0 : nl + 1);
+          if (code_idx != acc.calls.rbegin()->first) {
+            code_idx = acc.calls.rbegin()->first;
+            code_sent = 0;
+          }
+          if (code.size() > code_sent) {
+            code_ms = now_ms;
+            code_sent = code.size();
+            on_delta("code_draft", std::to_string(acc.calls.rbegin()->first) + "\t" +
+                                       tool + "\t" + path + "\t" + code);
+          }
+        }
+      }
       if (!acc.calls.empty() && now_ms - draft_ms >= 1000) {
         draft_ms = now_ms;
         const Val &last = acc.calls.rbegin()->second;
@@ -7293,7 +7416,7 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
                      "s). Aufgabe noch offen; Arbeit in VM erhalten.";
       break;
     }
-    std::string live;
+    std::string live, code_live, code_key;
     bool draft_dropped = false;
     // Every turn stays hidden while it may still be PASS (direct turns too:
     // live 20:32 a direct 'PASS' flashed in /api/state before the skip).
@@ -7332,6 +7455,30 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
         e["bot"] = bot_id;
         e["name"] = bot_name;
         e["text"] = piece;
+        publish(mj::dump(e));
+        return;
+      }
+      if (kind == "code_draft") {
+        // piece = index \t tool \t path \t decoded code (complete lines).
+        const size_t a = piece.find('\t'), b = piece.find('\t', a + 1),
+                     c = piece.find('\t', b + 1);
+        if (c == std::string::npos) return;
+        const std::string key = piece.substr(0, a), tool = piece.substr(a + 1, b - a - 1),
+                          path = piece.substr(b + 1, c - b - 1), code = piece.substr(c + 1);
+        size_t off = 0;
+        if (key == code_key && code.compare(0, code_live.size(), code_live) == 0)
+          off = code_live.size();
+        code_key = key;
+        code_live = code;
+        if (off >= code.size()) return;
+        e["type"] = "code_draft";
+        e["bot"] = bot_id;
+        e["name"] = bot_name;
+        e["tool"] = tool;
+        e["path"] = path;
+        e["call"] = key;
+        e["off"] = (double)off;
+        e["text"] = code.substr(off);
         publish(mj::dump(e));
         return;
       }
@@ -7805,7 +7952,23 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
           rec["tool"] = fname;
           rec["label"] = tool_step_label(fname);
           if (a.size() <= 1200) rec["args"] = args;
-          else rec["args_text"] = mj::utf8_cut(a, 1200);
+          else {
+            rec["args_text"] = mj::utf8_cut(a, 1200);
+            // Large file contents / heredocs stay out of room.json; the chat's
+            // code editor loads them by content hash from STATE_DIR/code.
+            const bool file_tool = fname == "write_file" || fname == "append_file";
+            if (file_tool || fname == "run_command") {
+              const std::string code = mag::str(args, file_tool ? "content" : "command");
+              const std::string ref = store_code_blob(code);
+              if (!ref.empty()) {
+                Val small = Val::object();
+                small["path"] = mag::str(args, "path");
+                rec["args"] = small;
+                rec["code_ref"] = ref;
+                rec["code_bytes"] = (double)code.size();
+              }
+            }
+          }
           rec["result"] = mj::utf8_cut(result, 900);
           rec["ok"] = !failed;
           rec["ms"] = ms;

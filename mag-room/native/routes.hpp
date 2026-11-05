@@ -496,7 +496,8 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
            q == "/api/events" || q == "/api/bots" ||
            q == "/api/room" || q == "/api/files" ||
            q == "/api/version" || q == "/api/model-status" ||
-           q.rfind("/static/",0)==0 || q.rfind("/api/file/",0)==0);
+           q.rfind("/static/",0)==0 || q.rfind("/api/file/",0)==0 ||
+           q.rfind("/api/code/",0)==0);
       const bool write = (m == "POST" &&
           (q == "/api/message" || q == "/api/upload" || q == "/api/upload/chunk" ||
            q == "/api/upload/chunk/commit")) ||
@@ -987,6 +988,19 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
       error_json(fd, 404, "Unknown asset");
     else
       send_response(fd, 200, mime_for(name), data, headers);
+    return;
+  }
+  if (m == "GET" && path.rfind("/api/code/", 0) == 0) {
+    const std::string ref = path.substr(10);
+    bool hex = ref.size() == 64;
+    for (char c : ref) hex = hex && ((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'));
+    bool ok = false;
+    const std::string data = hex ? read_file(code_blob_dir() + "/" + ref + ".txt", &ok) : "";
+    if (!ok) { error_json(fd, 404, "Unknown code"); return; }
+    send_response(fd, 200, "text/plain; charset=utf-8", data,
+                  {{"Content-Security-Policy", "sandbox"},
+                   {"X-Content-Type-Options", "nosniff"},
+                   {"Cache-Control", "private, max-age=31536000, immutable"}});
     return;
   }
   if (m == "GET" && path.rfind("/api/file/", 0) == 0) {

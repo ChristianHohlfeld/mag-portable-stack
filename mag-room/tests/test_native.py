@@ -4770,6 +4770,18 @@ class PhoCompress(unittest.TestCase):
   self.assertTrue(all(not b['pho_compress'] for b in self.bots().values()))
   self.error(400,'/api/bot-settings',{'scope':'room','pho_compress':'yes'},method='PUT')
   self.request('/api/bot-settings',{'scope':'room','pho_compress':True},method='PUT')
+ def test_01b_tts_voice_and_tempo_per_speaker_persist(self):
+  # Read-aloud voice/tempo belong to one speaker and survive a restart.
+  self.assertEqual(self.request('/api/state').get('tts_voices'),{})
+  bot=next(iter(self.bots()))
+  self.request('/api/tts-voices',{'key':'bot:'+bot,'voice':'kerstin','rate':1.15},method='PUT')
+  self.request('/api/tts-voices',{'key':'user','rate':0.85},method='PUT')
+  self.request('/api/tts-voices',{'key':'bot:'+bot,'rate':1.3},method='PUT')
+  for bad in ({'key':'all','rate':1},{'key':'bot:a/b','rate':1},{'key':'user','rate':9},{'key':'user','rate':'1'},
+              {'key':'user','voice':'../x'},{'key':'user'}):
+   self.error(400,'/api/tts-voices',bad,method='PUT')
+  self.stop();self.start()
+  self.assertEqual(self.request('/api/state')['tts_voices'],{'bot:'+bot:{'voice':'kerstin','rate':1.3},'user':{'rate':0.85}})
  def test_02_each_model_archives_once_without_rewriting_warm_prefix(self):
   for b in self.bots().values():
    previous=None;archive={}

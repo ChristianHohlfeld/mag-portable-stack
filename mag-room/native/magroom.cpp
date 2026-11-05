@@ -738,6 +738,21 @@ static void save_json_array(const std::string &path,
 // ---------------------------------------------------------------- agents
 static std::vector<Val> AGENTS;
 static std::atomic<bool> THINKING_DEFAULT{true}, GITHUB_DEFAULT{false}, PHO_DEFAULT{true};
+// Read-aloud voice and tempo per speaker ("user" or "bot:<id>"), shared by
+// every device of the room. Browsers synthesise locally; the server only
+// stores the choice (STATE_DIR/tts-voices.json, guarded by STATE_MTX).
+static Val TTS_PREFS = Val::object();
+static bool tts_pref_key(const std::string &k) {
+  const std::string id = k == "user" ? "x" : k.rfind("bot:", 0) == 0 ? k.substr(4) : "";
+  if (id.empty() || id.size() > 64) return false;
+  for (char c : id) if (!isalnum((unsigned char)c) && c != '-' && c != '_' && c != '.') return false;
+  return true;
+}
+static bool tts_voice_id(const std::string &v) {
+  if (v.empty() || v.size() > 32) return false;
+  for (char c : v) if (!islower((unsigned char)c) && !isdigit((unsigned char)c) && c != '-' && c != '_') return false;
+  return true;
+}
 static thread_local double TL_DISPLAY_MS = 0;
 static thread_local bool TL_THINKING_ENABLED = true;
 // Assistant text already stored for this lane, so the room shows the first
@@ -12168,6 +12183,7 @@ static std::string state_json(const Actor *actor = nullptr) {
   root["thinking_default"] = THINKING_DEFAULT.load();
   root["github_default"] = GITHUB_DEFAULT.load();
   root["pho_compress_default"] = PHO_DEFAULT.load();
+  { std::lock_guard<std::recursive_mutex> lk(STATE_MTX); root["tts_voices"] = TTS_PREFS; }
   root["pho_available"] = pho_available();
   root["thinking"] = thinking_of(LAST_THINK.load());
   // Read busy before the room snapshot. The turn appends the interrupted
@@ -12928,6 +12944,9 @@ int main() {
       if (auto v = prefs.find("github_enabled"); v && v->type == Val::BOOL) GITHUB_DEFAULT = v->asBool();
       if (auto v = prefs.find("pho_compress"); v && v->type == Val::BOOL) PHO_DEFAULT = v->asBool();
     }
+  }
+  { Val prefs; if (mj::parse(read_file(STATE_DIR + "/tts-voices.json"), prefs) && prefs.isObj())
+      for (auto &kv : *prefs.obj) if (tts_pref_key(kv.first) && kv.second.isObj()) TTS_PREFS[kv.first] = kv.second;
   }
   if (DUAL_NUMA && secondary_room_model() != "qwen3.8-flash-next-uncensored" && !CONFIGURED_MODEL) {
     std::cerr << "Dual NUMA requires the already activated Qwen secondary model\n";

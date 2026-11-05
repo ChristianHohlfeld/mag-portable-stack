@@ -314,53 +314,40 @@
     }
   }
 
-  // Read-aloud voice choice next to the language setting.
-  async function voiceSelect() {
-    const lang = document.getElementById('language');
-    if (!lang || document.getElementById('tts-voice') || !window.magMessageAudio?.voiceOptions) return;
-    const sel = el('select', 'side-select'); sel.id = 'tts-voice'; sel.setAttribute('aria-label', 'Vorlesestimme');
-    sel.style.marginTop = '8px';
-    lang.after(sel);
-    for (const v of await window.magMessageAudio.voiceOptions()) { const o = el('option', '', 'Vorlesen: ' + v.label); o.value = v.id; sel.append(o); }
-    sel.value = window.magMessageAudio.voicePref();
-    if (sel.selectedIndex < 0) sel.value = 'system';
-    sel.onchange = () => window.magMessageAudio.setVoice(sel.value);
-    rateSelect(sel);speakerSettings();
-  }
-  // Read-aloud speed 1x-2x, one global choice for every message.
-  function rateSelect(after) {
-    const audio = window.magMessageAudio;
-    if (document.getElementById('tts-rate') || !audio?.rates) return;
-    const sel = el('select', 'side-select'); sel.id = 'tts-rate'; sel.setAttribute('aria-label', 'Vorlesegeschwindigkeit');
-    sel.style.marginTop = '8px'; sel.style.minHeight = '40px';
-    for (const r of audio.rates) { const o = el('option', '', 'Vorlesegeschwindigkeit: ' + String(r).replace('.', ',') + 'x'); o.value = String(r); sel.append(o); }
-    sel.value = String(audio.ratePref());
-    sel.onchange = () => { sel.value = String(audio.setRate(sel.value)); };
-    after.after(sel);
-  }
-
-  function speakerSettings(){
-    const audio=window.magMessageAudio,anchor=document.getElementById('tts-rate');
-    if(!anchor||!audio?.rolePref||document.getElementById('tts-role-settings'))return;
-    const root=el('div','tts-role-settings');root.id='tts-role-settings';
-    root.style.cssText='display:grid;gap:8px;margin:10px 0';
-    for(const [role,label] of [['user','Chris'],['lena','Lena'],['noah','Noah']]){
-      const row=el('label','control-row');row.style.cssText='display:flex;align-items:center;gap:7px;flex-wrap:wrap';
-      row.append(el('span','',label));
-      const sel=el('select','side-select'),num=el('input','side-select');
-      for(const [value,text] of [['de_DE-thorsten-medium.onnx','Thorsten'],['de_DE-mls-medium.onnx','MLS']]){
-        const o=el('option','',text);o.value=value;sel.append(o);
-      }
-      num.type='number';num.min='0';num.max='235';num.step='1';num.style.width='80px';num.setAttribute('aria-label',label+' Sprecher-ID');
-      const current=audio.rolePref(role);sel.value=current.model;num.value=String(current.speaker);
-      const sync=()=>{num.max=sel.value.includes('mls')?'235':'0';if(!sel.value.includes('mls'))num.value='0'};
-      const save=()=>{sync();try{audio.setRoleVoice(role,sel.value,Number(num.value))}catch(e){window.notice?.(e.message)}};
-      sel.setAttribute('aria-label',label+' Stimme');sel.onchange=save;num.onchange=save;sync();
-      row.append(sel,num);root.append(row);
+  // Read-aloud voice per speaker (Chris, Lena, Noah, other bots), stored on
+  // the room server. Tempo is not here: it sits next to each speaker button.
+  function speakerVoices() {
+    const audio = window.magMessageAudio, lang = document.getElementById('language');
+    if (!lang || !audio?.voiceOptions || !audio.setSpeakerVoice) return;
+    let root = document.getElementById('tts-speakers');
+    if (!root) {
+      root = el('div', 'tts-speakers'); root.id = 'tts-speakers';
+      root.style.cssText = 'display:grid;gap:6px;margin:10px 0';
+      root.append(el('div', 'hint', 'Vorlesestimme pro Sprecher'));
+      lang.after(root);
+      audio.voiceOptions().then(list => { root._voices = list; speakerVoices(); });
     }
-    anchor.after(root);
+    if (!root._voices) return;
+    const speakers = [{opts: {user: true}, label: 'Chris'}];
+    for (const a of (typeof state !== 'undefined' && state?.agents) || []) speakers.push({opts: {bot: a.id, name: a.name}, label: a.name || a.id});
+    for (const sp of speakers) {
+      const key = audio.speakerKey(sp.opts);
+      let row = root.querySelector('[data-speaker="' + CSS.escape(key) + '"]');
+      if (!row) {
+        row = el('label', 'control-row'); row.dataset.speaker = key;
+        row.style.cssText = 'display:flex;align-items:center;gap:8px';
+        const name = el('span', '', sp.label); name.style.minWidth = '64px';
+        const sel = el('select', 'side-select'); sel.setAttribute('aria-label', 'Stimme für ' + sp.label);
+        for (const v of root._voices) { const o = el('option', '', v.label); o.value = v.id; sel.append(o); }
+        sel.onchange = () => { try { audio.setSpeakerVoice(key, sel.value); } catch (e) { window.notice?.(e.message); } };
+        row.append(name, sel); root.append(row);
+      }
+      const sel = row.querySelector('select');
+      if (document.activeElement !== sel) sel.value = audio.profile(sp.opts).voiceId;
+      row.querySelector('span').textContent = sp.label;
+    }
   }
-  function render() { css(); voiceSelect(); speakerSettings(); paintChips(); paintHub(); paintTasks(); loadSecrets(false); if (sheet?.open) fillSheet(); }
+  function render() { css(); speakerVoices(); paintChips(); paintHub(); paintTasks(); loadSecrets(false); if (sheet?.open) fillSheet(); }
 
   function schedText(sc) {
     if (!sc || typeof sc !== 'object') return 'ohne Zeitplan';

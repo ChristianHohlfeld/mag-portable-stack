@@ -34,16 +34,19 @@ class TTS(unittest.TestCase):
    if not assets:
     self.assertEqual(page.evaluate("async()=>(await magMessageAudio.voiceOptions()).map(v=>v.id)"),['system'])
     return
-   self.assertEqual(page.evaluate("async()=>(await magMessageAudio.voiceOptions()).map(v=>v.id)"),['thorsten','kerstin','system'])
-   # One fixed voice per speaker, independent of the voice preference.
-   page.evaluate("()=>localStorage.setItem('mag-tts-voice','kerstin')")
-   who=page.evaluate("""async()=>{const f=o=>magMessageAudio.voiceFor(o);return {lena:await f({bot:'qwen-numa0'}),noah:await f({bot:'qwen-numa1'}),
+   self.assertEqual(page.evaluate("async()=>(await magMessageAudio.voiceOptions()).map(v=>v.id)"),['thorsten','kerstin','ramona','karlsson','system'])
+   # One single-speaker voice per participant: Lena female, Noah male, Chris Thorsten.
+   who=page.evaluate("""async()=>{const f=o=>magMessageAudio.voiceFor(o);return {lena:await f({bot:'qwen-numa0',name:'Lena'}),noah:await f({bot:'qwen-numa1',name:'Noah'}),
      noahByName:await f({bot:'',name:'Noah'}),chris:await f({user:true})}}""")
-   self.assertEqual((who['lena']['model'],who['lena']['speaker'],who['lena']['fixed']),('de_DE-mls-medium.onnx',68,True))
-   for k in ('noah','noahByName'):self.assertEqual((who[k]['model'],who[k]['speaker'],who[k]['fixed']),('de_DE-mls-medium.onnx',32,True),k)
-   self.assertEqual((who['chris']['model'],who['chris']['fixed']),('de_DE-thorsten-medium.onnx',True))
-   for k in who:self.assertNotIn('pitch',who[k])
-   page.evaluate("()=>localStorage.removeItem('mag-tts-voice')")
+   self.assertEqual(who['lena']['model'],'de_DE-kerstin-low.onnx')
+   for k in ('noah','noahByName'):self.assertEqual(who[k]['model'],'de_DE-karlsson-low.onnx',k)
+   self.assertEqual(who['chris']['model'],'de_DE-thorsten-medium.onnx')
+   # A per-speaker choice is stored on the server and changes only that speaker.
+   page.evaluate("()=>magMessageAudio.setSpeakerVoice('bot:qwen-numa0','ramona')")
+   page.wait_for_timeout(300)
+   st=page.evaluate("async()=>(await (await fetch('/api/state')).json()).tts_voices")
+   self.assertEqual(st.get('bot:qwen-numa0',{}).get('voice'),'ramona')
+   self.assertEqual(page.evaluate("async()=>(await magMessageAudio.voiceFor({bot:'qwen-numa1',name:'Noah'})).model"),'de_DE-karlsson-low.onnx')
    def measure(voice, text):
     return page.evaluate("""async({voice,text})=>{const cfg=await (await fetch('/static/tts-config.json')).json();const v=cfg.voices.find(x=>x.id===voice);
       const w=new Worker('/static/'+cfg.dir+'/tts-worker.js');
@@ -52,17 +55,22 @@ class TTS(unittest.TestCase):
       const warmP=once(m=>m.type==='ready'); const tWarm=performance.now();
       w.postMessage({type:'warm',id:1,model:v.model}); await warmP; const warmMs=performance.now()-tWarm;
       const audioP=once(m=>m.type==='audio'&&m.id===2); const t0=performance.now();
-      w.postMessage({type:'speak',id:2,text,model:v.model}); const audio=await audioP;
-      return {samples:audio.audio.length,rate:audio.rate,synthMs:audio.synthMs,wallMs:performance.now()-t0,warmMs};
+      w.postMessage({type:'speak',id:2,text,model:v.model,rate:1}); const audio=await audioP;
+      let peak=0,e=0;for(const x of audio.audio){peak=Math.max(peak,Math.abs(x));e+=x*x}
+      return {peak,rms:Math.sqrt(e/Math.max(1,audio.audio.length)),samples:audio.audio.length,rate:audio.rate,synthMs:audio.synthMs,wallMs:performance.now()-t0,warmMs};
     }""", {'voice': voice, 'text': text})
    sentence='Hallo Chris, das ist die neue Vorlesestimme.'
-   for voice in ('thorsten','kerstin'):
+   levels={}
+   for voice in ('thorsten','kerstin','karlsson'):
     n=measure(voice, sentence)
     self.assertGreater(n['samples'], n['rate']*1.0, voice)  # more than one second of audio
     self.assertIsInstance(n['synthMs'], int)
+    self.assertLessEqual(n['peak'], 0.96, voice); self.assertGreater(n['rms'], 0.03, voice)  # levelled, not clipped
+    levels[voice]=n['rms']
     self.assertLess(n['wallMs'], 20000, voice)
     print('TTS %s hot-start %.0f ms (synth %s ms, warm %.0f ms, audio %.2f s)'%(
       voice, n['wallMs'], n['synthMs'], n['warmMs'], n['samples']/n['rate']))
+   self.assertLess(max(levels.values())/min(levels.values()), 1.6, levels)  # equally loud
    long=measure('thorsten', 'Dies ist ein längerer Absatz ohne Punkt. '*8)
    print('TTS thorsten paragraph hot-start %.0f ms (synth %s ms, audio %.2f s)'%(
      long['wallMs'], long['synthMs'], long['samples']/long['rate']))

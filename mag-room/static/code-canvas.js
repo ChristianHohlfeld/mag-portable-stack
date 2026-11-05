@@ -170,6 +170,7 @@
       frame.setAttribute('allow', 'fullscreen');
       box.querySelector('.cc-body').append(frame);
     }
+    box._frameText = box._text;
     frame.srcdoc = typeof root.htmlPreviewDoc === 'function' ? root.htmlPreviewDoc(box._text, box._lang) : box._text;
   }
 
@@ -245,7 +246,9 @@
     if (!live && c.key) textByKey.set(c.key, {text, path: c.path, lang: c.lang});
     paintText(box, text, live);
     const can = !live && c.state === 'ok' && previewable(c);
-    const err = can ? syntaxError(c) : '';
+    if (box._errFor !== text || box._errCan !== can) { box._errFor = text; box._errCan = can; box._err = can ? syntaxError(c) : ''; }
+    const err = box._err;
+    if (box._mounted && box._frameText !== text) box._mounted = false;
     const note = box.querySelector('.cc-note');
     note.hidden = !err; note.textContent = err ? 'Syntaxfehler: ' + err : '';
     box._canPreview = can;

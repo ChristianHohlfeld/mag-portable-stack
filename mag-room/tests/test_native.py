@@ -1712,7 +1712,12 @@ class Native(unittest.TestCase):
   self.assertIn('HTTP_SCREEN_TIMEOUT_MS=16000',html)
   src=(ROOT/'mag-room/native/magroom.cpp').read_text()
   self.assertIn('browser_start_lock(vm)',src)
-  self.assertIn('std::lock_guard<std::mutex> start(*vm_lock)',src)
+  # UI polls must never queue unboundedly behind a failing VM recovery
+  # (2026-11-06: 257/256 connection limit from stuck /state threads).
+  self.assertIn('start.try_lock_for(std::chrono::milliseconds(wait_ms))',src)
+  self.assertIn('BROWSER_FAIL_COOLDOWN_S',src)
+  routes=(ROOT/'mag-room/native/routes.hpp').read_text()
+  self.assertEqual(routes.count('BROWSER_UI_WAIT_MS'),3)
   self.assertNotIn('std::lock_guard<std::mutex> start(BROWSER_START_MTX)',src)
   self.assertIn('state.agents.some(a=>a.id===old)',html)
   self.assertIn('state.agents.some(a=>a.id===remoteBotId)',html)

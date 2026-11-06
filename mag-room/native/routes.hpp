@@ -1064,7 +1064,13 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
     }
     std::string vm = bot_field(idx, "vm");
     const bool jpeg = qparam(r.query, "format") == "jpeg";
-    HttpResp shot = browser_call(ensure_browser(vm), BROWSERD_PORT, "GET",
+    std::string ip;
+    try { ip = ensure_browser(vm, BROWSER_UI_WAIT_MS); }
+    catch (const std::exception &e) {
+      error_json(fd, 503, mj::utf8_cut(one_line(e.what()), 300));
+      return;
+    }
+    HttpResp shot = browser_call(ip, BROWSERD_PORT, "GET",
                                  jpeg ? "/screenshot.jpg" : "/screenshot.png",
                                  "", 10000);
     if (!shot.ok || shot.status != 200)
@@ -1105,7 +1111,7 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
       return;
     }
     std::string vm = bot_field(idx, "vm");
-    try { ensure_browser(vm); }
+    try { ensure_browser(vm, BROWSER_UI_WAIT_MS); }
     catch (const std::exception &e) {
       error_json(fd, 503, "Browser-Start: " + mj::utf8_cut(one_line(e.what()), 300));
       return;
@@ -1158,7 +1164,8 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
       error_json(fd, 400, "JSON required");
       return;
     }
-    auto out = browser_json(bot_field(idx, "vm"), "/" + action, "POST", r.body);
+    auto out = browser_json(bot_field(idx, "vm"), "/" + action, "POST", r.body,
+                            BROWSER_UI_WAIT_MS);
     send_json(fd, 200, mj::dump(out));
     return;
   }

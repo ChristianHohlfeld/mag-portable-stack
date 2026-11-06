@@ -3838,14 +3838,27 @@ static HttpResp browser_call(const std::string &ip, int port,
 }
 // Only one browser start per VM. A broken Chromium/CDP in agent2 must
 // never stall agent1's screenshot, SDP offer or browser tools.
+// 2026-11-06: a broken agent3 controller made every queued UI poll
+// (/state, /api/screen, SDP offer) re-run the full ~2 min recovery in
+// turn. Those HTTP threads outlived nginx's timeout and exhausted all 256
+// room connections. Waiters now give up after a bounded time, and a
+// recent failure is reported instead of being recovered again.
+struct BrowserStart {
+  std::timed_mutex m;
+  int64_t failed_at = 0; // guarded by m
+  std::string failure;
+};
 static std::mutex BROWSER_START_MTX;
-static std::map<std::string, std::shared_ptr<std::mutex>> BROWSER_START_LOCKS;
-static std::shared_ptr<std::mutex> browser_start_lock(const std::string &vm) {
+static std::map<std::string, std::shared_ptr<BrowserStart>> BROWSER_START_LOCKS;
+static std::shared_ptr<BrowserStart> browser_start_lock(const std::string &vm) {
   std::lock_guard<std::mutex> guard(BROWSER_START_MTX);
   auto &slot = BROWSER_START_LOCKS[vm];
-  if (!slot) slot = std::make_shared<std::mutex>();
+  if (!slot) slot = std::make_shared<BrowserStart>();
   return slot;
 }
+constexpr int BROWSER_UI_WAIT_MS = 3000;
+constexpr int BROWSER_TOOL_WAIT_MS = 300000;
+constexpr int64_t BROWSER_FAIL_COOLDOWN_S = 30;
 // Central web audit: make sure the guest uses the logging proxy and trusts
 // its CA before its browser controller (and Chromium) is started. Runs once
 // per VM and room process; the guest side is idempotent and cheap.
@@ -3872,15 +3885,55 @@ static void ensure_audit_proxy(const std::string &vm) {
               << std::endl;
   }
 }
-static std::string ensure_browser(const std::string &vm) {
-  auto vm_lock = browser_start_lock(vm);
-  std::lock_guard<std::mutex> start(*vm_lock);
+static bool browser_controller_current(const HttpResp &reply) {
+  if (!reply.ok || reply.status != 200) return false;
+  Val state;
+  if (!mj::parse(reply.body, state)) return false;
+  auto ver = state.find("udp_transport");
+  return ver && ver->asStr() == "MGB5"; // older controllers are replaced
+}
+static std::string ensure_browser_locked(const std::string &vm);
+// wait_ms bounds how long a caller queues behind another start of the same
+// VM; force skips the failure cooldown (explicit reset after a kill).
+static std::string ensure_browser(const std::string &vm,
+                                  int wait_ms = BROWSER_TOOL_WAIT_MS,
+                                  bool force = false) {
   // Each VM owns a unique cryptographic UDP key. The room bridge token
   // must not permit one bot to impersonate another bot's video/input.
   if (vm.empty() || vm.size() > 32 ||
       vm.find_first_not_of("abcdefghijklmnopqrstuvwxyz0123456789-") !=
           std::string::npos)
     throw std::runtime_error("Invalid browser VM identity");
+  auto st = browser_start_lock(vm);
+  std::unique_lock<std::timed_mutex> start(st->m, std::defer_lock);
+  if (!start.try_lock()) {
+    // A healthy controller needs no start lock; only wait for a real start.
+    if (!force) {
+      std::string ip = vm_ip(vm);
+      if (!ip.empty() &&
+          browser_controller_current(
+              browser_call(ip, BROWSERD_PORT, "GET", "/state", "", 1500)))
+        return ip;
+    }
+    if (!start.try_lock_for(std::chrono::milliseconds(wait_ms)))
+      throw std::runtime_error("Browser wird gerade gestartet (VM " + vm +
+                               "), bitte gleich erneut versuchen");
+  }
+  if (!force && st->failed_at &&
+      now_s() - st->failed_at < BROWSER_FAIL_COOLDOWN_S)
+    throw std::runtime_error(st->failure);
+  try {
+    std::string ip = ensure_browser_locked(vm);
+    st->failed_at = 0;
+    st->failure.clear();
+    return ip;
+  } catch (const std::exception &e) {
+    st->failed_at = now_s();
+    st->failure = e.what();
+    throw;
+  }
+}
+static std::string ensure_browser_locked(const std::string &vm) {
   // Resolve DHCP before touching the guest audit/browser controller. A
   // stale or unstarted VM must not hold the global browser lock for 900 s
   // while audit-proxy provisioning tries to reach an absent guest.
@@ -3904,13 +3957,7 @@ static std::string ensure_browser(const std::string &vm) {
   }
   // A busy VM can miss a short health probe. Retry before replacing a
   // controller to avoid interrupting a healthy browser's live session.
-  auto current_controller = [](const HttpResp &reply) {
-    if (!reply.ok || reply.status != 200) return false;
-    Val state;
-    if (!mj::parse(reply.body, state)) return false;
-    auto ver = state.find("udp_transport");
-    return ver && ver->asStr() == "MGB5"; // older controllers are replaced
-  };
+  const auto current_controller = browser_controller_current;
   for (int probe = 0; probe < 3; ++probe) {
     auto status = browser_call(ip, BROWSERD_PORT, "GET", "/state", "",
                                probe ? 3000 : 1500);
@@ -4014,8 +4061,9 @@ static void emit_browser_action(const std::string &bot, const std::string &actio
 }
 static Val browser_json(const std::string &vm, const std::string &path,
                         const std::string &method = "GET",
-                        const std::string &body = "") {
-  std::string ip = ensure_browser(vm);
+                        const std::string &body = "",
+                        int wait_ms = BROWSER_TOOL_WAIT_MS) {
+  std::string ip = ensure_browser(vm, wait_ms);
   HttpResp r = browser_call(ip, BROWSERD_PORT, method, path, body);
   if (!r.ok)
     throw std::runtime_error("Browser nicht erreichbar.");
@@ -12918,7 +12966,7 @@ static ScopedResult reset_bot_workspace(const std::string &id, bool force = fals
   if (ran.code)
     return scoped_err(502, "Arbeitsdaten konnten nicht geleert werden.");
   try {
-    ensure_browser(vm);
+    ensure_browser(vm, BROWSER_TOOL_WAIT_MS, true);
   } catch (const std::exception &e) {
     std::string why = one_line(e.what());
     if (why.size() > 140)

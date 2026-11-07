@@ -1,3 +1,5 @@
+// mag-test-timeout: 60
+require('./mag_deadline.cjs').arm(60);
 // Heredoc/tool-call extraction of the chat's live code canvas.
 const assert = require('assert');
 const cc = require('../static/code-canvas.js');

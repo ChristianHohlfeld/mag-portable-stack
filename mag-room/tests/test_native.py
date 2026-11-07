@@ -4002,6 +4002,12 @@ class ConfiguredNuma(unittest.TestCase):
   try:
    self.assertTrue(self.request('/api/state')['reflect'])
    self.wait_idle();token=f'Runde {time.monotonic_ns()}';mark=len(Model.pairs)
+   # Two independent model outputs per round: a reflection must not be an
+   # identical repetition of this bot's first answer (the real loop guard
+   # intentionally suppresses such echoes). Scope the script to this turn.
+   Model.script_scope=token
+   Model.script=[['Erstantwort A.'],['Erstantwort B.'],
+                 ['Reflexionsantwort A.'],['Reflexionsantwort B.']]
    self.request('/api/message',{'text':token,'bots':ids})
    for _ in range(600):
     got=self.round_msgs(token)
@@ -4034,6 +4040,7 @@ class ConfiguredNuma(unittest.TestCase):
    self.assertEqual(sorted(m['bot'] for m in got if not m.get('interrupted')),sorted(b for b in ids if b!=ids[1]))
    self.assertFalse([c for c,_ in list(Model.pairs) if token in json.dumps(c,ensure_ascii=False) and 'Reflexionsrunde' in c['messages'][-1].get('content','')])
   finally:
+   Model.script=[];Model.script_scope=None
    self.assertFalse(self.request('/api/reflect',{'on':False})['on'])
  def test_09_prewarm_every_bot_slot_and_share_prefix(self):
   self.wait_idle()

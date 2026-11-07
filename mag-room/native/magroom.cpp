@@ -8875,9 +8875,9 @@ static std::vector<group_chat::Bot> dispatch_roster() {
   return out;
 }
 // Who answers a human message: addressed bots (name, @name, "beide"/"ihr"),
-// else an explicit client sub-selection, else ALL active bots (like "beide").
-// The order is the speaking order (speaking_order): the first one answers
-// right away, the others follow staggered (start_lanes_locked).
+// else an explicit client sub-selection, else ONE first speaker. Only an
+// unaddressed open question arms a subsequent PASS-gated chip-in; it must not
+// send both direct completions and then schedule yet another follow-up.
 static std::vector<std::string> dispatch_answerers(const std::string &text,
                                                    const std::vector<std::string> &client,
                                                    bool &open_floor) {
@@ -8893,9 +8893,9 @@ static std::vector<std::string> dispatch_answerers(const std::string &text,
   if (!sel.empty() && sel.size() < roster.size())
     return group_chat::speaking_order(text, sel, roster, DISP_LAST_LEAD);
   open_floor = true;
-  std::vector<std::string> all;
-  for (const auto &b : roster) all.push_back(b.id);
-  return group_chat::speaking_order(text, all, roster, DISP_LAST_LEAD);
+  const std::string lead = group_chat::pick_speaker(text, roster);
+  return lead.empty() ? std::vector<std::string>{}
+                      : std::vector<std::string>{lead};
 }
 static void drop_chipin_jobs_locked() {
   const auto gone = std::remove_if(JOBS.begin(), JOBS.end(),

@@ -113,9 +113,12 @@ class Model(http.server.BaseHTTPRequestHandler):
    error=b'{"error":{"code":400,"message":"request (35178 tokens) exceeds the available context size (32768 tokens)","type":"exceed_context_size_error"}}'
    self.send_response(400);self.send_header('Content-Length',str(len(error)));self.end_headers();self.wfile.write(error);return
   self.send_response(200);self.send_header('Transfer-Encoding','chunked');self.end_headers()
-  # Deterministic concurrency test: hold fake responses until all slots arrived.
+  # The concurrency fixture models two distinct bot replies, not echoes of
+  # a single text. Keep the barrier and every original concurrency assertion.
+  barrier_reply=None
   if type(self).barrier_release is not None and type(self).barrier_token and type(self).barrier_token in json.dumps(obj,ensure_ascii=False):
    type(self).barrier_release.wait(timeout=10)
+   barrier_reply='Antwort von Slot '+str(self.headers.get('X-Mag-Slot'))+'.'
   if self.delay:time.sleep(self.delay)
   if type(self).prefix_miss_s and obj.get('cache_prompt') is True and obj.get('id_slot') is not None:
    parts=[]
@@ -133,7 +136,7 @@ class Model(http.server.BaseHTTPRequestHandler):
    scope=type(self).script_scope
    matches=scope is None or any(scope in m.get('content','') for m in obj.get('messages',[]) if isinstance(m.get('content'),str))
    scripted=type(self).script.pop(0) if matches and type(self).script else None
-   chunks=scripted if scripted is not None else ([type(self).reply] if type(self).reply is not None else ['Hallo ','aus dem ','Modell.'])
+   chunks=scripted if scripted is not None else ([barrier_reply] if barrier_reply is not None else ([type(self).reply] if type(self).reply is not None else ['Hallo ','aus dem ','Modell.']))
    for piece in chunks:
     if isinstance(piece,dict) and '_sleep' in piece:
      time.sleep(piece['_sleep']);continue
@@ -3980,7 +3983,10 @@ class ConfiguredNuma(unittest.TestCase):
   finally:
    gate.set();Model.slot_delay={};Model.barrier_token='';Model.barrier_release=None
   got=self.round_msgs(token)
-  self.assertEqual(len(got),2)
+  self.assertEqual(len(got),2,'both distinct slot replies must appear: '+repr(got))
+  self.assertEqual({m['bot']:m['content'] for m in got},
+   {ids[0]:'Antwort von Slot 0.',ids[1]:'Antwort von Slot 1.'},
+   'each model completion belongs to its assigned bot')
   self.assertEqual(got[-1]['bot'],ids[0],'slowest bot (slot 1) finished last in the transcript')
   # Stable UI order: one turn group, each answer carries the bot's fixed list position.
   self.assertEqual(len({m['group'] for m in got}),1)

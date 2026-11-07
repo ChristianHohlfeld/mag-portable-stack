@@ -12127,8 +12127,8 @@ static Val user_stop(bool pause_jobs) {
   // In a configured two-slot room /api/cancel must not acknowledge an
   // apparently busy turn that is already unwinding; the immediate state
   // poll and next user hi must see the actor lanes genuinely released.
-  // Wait for lane_finish() (the sole owner of busy/turn), NOT a synthetic
-  // release_lanes_locked() that would permit two workers on one slot.
+  // Wait for lane_finish() (the sole owner of busy/turn); never release
+  // a still-running lane from the Stop handler or reuse its model slot.
   // Bound this wait to keep Stop responsive even if a backend is stuck.
   if (tools_running > 0 || CONFIGURED_MODEL) {
     const auto max_wait = milliseconds(tools_running > 0 ? 1800 : 900);

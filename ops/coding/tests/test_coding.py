@@ -47,14 +47,17 @@ class CodingStage(unittest.TestCase):
         self.assertIn("numactl --physcpubind", runner)
 
     def test_source_hash_pins_and_long_output_are_explicit(self):
+        self.assertEqual(DATA["models"]["general"]["repo"], "bartowski/Qwen3.8-27B-GGUF")
+        self.assertEqual(DATA["models"]["general"]["filename"], "Qwen3.8-27B-Q6_K.gguf")
+        self.assertEqual(DATA["models"]["general"]["context_tokens"], 65536)
+        self.assertEqual(DATA["models"]["general"]["model_id"], "ornith-numa0")
+        self.assertEqual(DATA["models"]["general"]["gpu"]["backend"], "vulkan")
+        self.assertTrue(DATA["models"]["general"]["gpu"]["no_host"])
+        self.assertNotIn("n_cpu_moe", DATA["models"]["general"]["gpu"])
+        self.assertNotIn("parts", DATA["models"]["general"])
         self.assertEqual(
             DATA["models"]["general"]["sha256"],
-            "dec1cee704800267d9d836d5a61aefc33705be939bbb3058fa9006d98191576d")
-        self.assertEqual(
-            [part["sha256"] for part in DATA["models"]["general"]["parts"]],
-            ["3064d3c4c1d6363e9f9ad88e90a3e2c5fb2d6f7ae16ca72135c3ce6a5c984da5",
-             "2e9b2732eca7da8324f731653624a4f5c9846258926fd9f468cc703afb51a019",
-             "4ca79d8e5107dd1b9bb57b176a7c09948837425dee49f0f1dfd6547a3769fea7"])
+            "539041d2cf400b02f53a53cae54339ea65103d276645a34a68eac1c8d69a9db3")
         self.assertEqual(
             DATA["models"]["coder"]["sha256"],
             "12d8d5c01bae7f23ea4822b2f96ba069d531f827d02a57c31002f2f95e72614a")

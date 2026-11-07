@@ -64,7 +64,7 @@
   },
   {
     "id": "coding-dual-numa",
-    "label": "Ornith 2 (NUMA0) + Ornith (NUMA1)",
+    "label": "Qwen3.8-27B Q6_K (NUMA0) + Ornith (NUMA1)",
     "ports": [
       {
         "port": 8191,

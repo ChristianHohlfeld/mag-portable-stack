@@ -1,4 +1,21 @@
-# MAG coding room: Qwen3.8-Flash-Next (NUMA0) + Flint (NUMA1)
+# MAG coding room: Lena Qwen3.8-27B Q6_K + Noah Ornith Q4_K_M
+
+**Live-Konfiguration (2026-11-07):** NUMA0/:8191: `Qwen3.8-27B-Q6_K.gguf`
+(bartowski, SHA256 539041d2…c8d69a9db3), MI50 Vulkan, full GPU
+(`--device Vulkan0 --n-gpu-layers 99 --no-host`), 65.536 Kontext,
+q8_0 K/V, ubatch 1024, GGUF-eigenes Jinja-Template, Slot `general/qwen27b`.
+Alias `ornith-numa0` bleibt für das Room-Routing erhalten. NUMA1/:8192:
+Ornith-1.5-35B-A3B Q4_K_M auf CPU unverändert. Start über
+`mag-llm-coding@0` / `ops/coding/start-live.sh 0`; kein stiller CPU-Fallback.
+Das Manifest prüft die komplette GGUF-SHA256 vor Aktivierung; eine noch
+laufende Dateiübertragung verhindert den Neustart.
+
+Qwen3.8-Sampling im Room: Thinking 1.0/0.95/top-k20/presence0,
+Non-Thinking 0.7/0.80/top-k20/presence1.5. Reasoning-Effort low;
+der Room setzt Thinking pro Nachricht. Noah behält Ornith-Sampling.
+
+## Ältere Layout- und Migrationsdokumentation (historisch)
+
 
 Owner decision 2026-11-02 ("Die besten, ihr entscheidet"), replacing the slow
 Mistral Large 4 (~1 tok/s) / GLM-Q2 (~3 tok/s) room pair. Old GGUFs are kept;

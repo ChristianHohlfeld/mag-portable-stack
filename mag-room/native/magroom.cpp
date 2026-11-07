@@ -5561,8 +5561,8 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
     const bool q1_chat = no_tools && model == "glm-5.3-flash-iq1-m";
     // Qwen's official non-thinking instruct sampling (mapped to llama.cpp
     // request fields); the server defaults and GLM-Q2 sampling stay unchanged.
-    if (coding_model && flint_model(model)) {
-      // Ornith-1.5 card (huggingface.co/ornith-ai/Ornith-1.5-35B-A3B),
+    if (coding_model && model == CODING_CODER_MODEL) {
+      // Noah only: Ornith-1.5 card (huggingface.co/ornith-ai/Ornith-1.5-35B-A3B),
       // general tasks: temperature 0.6, top_p 0.95, top_k 20. Thinking is
       // switched per request (enable_thinking + budget, see below); the
       // reasoning stays in reasoning_content.
@@ -5572,7 +5572,7 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
       body["min_p"] = 0.0;
       body["repeat_penalty"] = 1.0;
     } else if (coding_model && thinking && !TL_SELFTALK && !short_chat) {
-      // Qwen3.8-Flash-Next card, thinking mode.
+      // Qwen3.8 card, thinking mode (also Lena alias ornith-numa0).
       body["temperature"] = 1.0;
       body["top_p"] = 0.95;
       body["top_k"] = 20;
@@ -5734,8 +5734,8 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
     kwargs["enable_thinking"] = thinking && !TL_SELFTALK && !short_chat;
   if (qwen_chat) {
     body["reasoning_effort"] = "none"; // llama.cpp: none disables reasoning.
-  } else if (coding_model && model == CODING_GENERAL_MODEL) {
-    // Qwen3.8 template kwarg (levels low/medium/xhigh, default xhigh). Sent on
+  } else if (coding_model && (model == CODING_GENERAL_MODEL || model == CODING_FLINT0_MODEL)) {
+    // Qwen3.8 template kwarg (also Lena's stable ornith-numa0 alias). Sent on
     // every request so the template prefix stays byte-stable; it only applies
     // when the room thinking toggle turns enable_thinking on.
     kwargs["reasoning_effort"] = "low";

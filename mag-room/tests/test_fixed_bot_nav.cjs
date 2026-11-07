@@ -31,9 +31,15 @@ const context={
   $:id=>id==='fixed-bot-nav'?nav:null,
   focusedBotId:'ds',
   selected:new Set(['ds','qw']),
+  state:{models:[]},
   focusBot:id=>{context.focusedBotId=id}
 };
-vm.runInNewContext(code,context);
+// Use the production label helper in the same isolated VM as the nav.
+const labelStart=html.indexOf('const BOT_MODEL_LABELS=');
+const labelFunction=html.indexOf('function botModelLabel(a){',labelStart);
+const labelEnd=html.indexOf('\n',labelFunction);
+assert.ok(labelStart>0&&labelFunction>labelStart&&labelEnd>labelFunction);
+vm.runInNewContext(html.slice(labelStart,labelEnd)+'\n'+code,context);
 context.syncFixedBotNav({configured_model:true,agents:[
   {id:'ds',slot:1,model:'deepseek-v4-flash-0731',vm:'agent1'},
   {id:'qw',slot:2,model:'qwen3.8-flash-next-uncensored',vm:'agent2'}
@@ -45,6 +51,7 @@ assert.equal(nav.hidden,false);
 assert.deepEqual(nav.items.map(b=>b.textContent),['DeepSeek','Qwen']);
 assert.equal(nav.items[0].attrs['aria-current'],'true');
 assert.equal(nav.items[1].disabled,false);
+assert.ok(html.includes("'ornith-numa0':'Qwen3.8-27B Q6_K'"));
 context.selected.delete('qw');
 context.syncFixedBotNav({configured_model:true,agents:[
   {id:'ds',slot:1,model:'deepseek-v4-flash-0731',vm:'agent1'},

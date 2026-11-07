@@ -22,10 +22,16 @@ fi
   echo 'coding prepare: pinned qwen4exp runtime missing' >&2; exit 4; }
 # NUMA1 Flint: separately pinned upstream runtime (ops/coding/runtime.sha).
 nice -n 19 ionice -c 3 bash "$ROOT/ops/coding/build-runtime.sh"
-# NUMA0 Lena on the MI50: same pin with the Vulkan backend (start-live.sh
-# falls back to the CPU runtime while this build or the card is missing).
-MAG_CODING_GPU=vulkan nice -n 19 ionice -c 3 bash "$ROOT/ops/coding/build-runtime.sh" ||
-  echo 'coding prepare: Vulkan runtime not built; NUMA0 stays on CPU'
+# NUMA0 requires the pinned MI50 Vulkan runtime; never fall back to CPU.
+MAG_CODING_GPU=vulkan nice -n 19 ionice -c 3 bash "$ROOT/ops/coding/build-runtime.sh"
+CREV=$(tr -d '[:space:]' < "$ROOT/ops/coding/runtime.sha")
+VBIN="/home/chris/.local/mag-coding-rt/$CREV-vulkan/bin/llama-server"
+[[ -x $VBIN && $(cat "$(dirname "$VBIN")/source-commit" 2>/dev/null || true) == "$CREV" ]] || {
+  echo "coding prepare: pinned Vulkan runtime missing" >&2; exit 4; }
+VHELP=$("$VBIN" --help 2>&1)
+for opt in --device --n-gpu-layers --no-host --ubatch-size --cache-type-k --cache-type-v; do
+  grep -Fq -- "$opt" <<<"$VHELP" || { echo "coding prepare: Vulkan runtime lacks $opt" >&2; exit 4; }
+done
 SRC=/home/chris/.local/src/mag-qwen-llama.cpp
 if [[ -d $SRC/.git && $(git -C "$SRC" rev-parse HEAD) == "$REV" ]]; then
   # Both architectures require model-specific graph implementations.

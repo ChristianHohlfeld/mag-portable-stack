@@ -21,50 +21,20 @@
 set -euo pipefail
 which=${1:?usage: start-live.sh 0|1}
 case "$which" in
-  # Owner 2026-11-03 12:08: Flint Q4_K_M on BOTH sockets, one instance per
-  # node, never spanning (the NUMA interconnect is the bottleneck). Qwen3.8's
-  # GGUF stays on disk. ctx = Flint card's documented 262,144-token window
-  # (13 of 49 layers are full attention, 4 KV heads: ~7 GB f16 KV per node).
-  # Owner 2026-11-04: Ornith-1.5-35B-A3B on both nodes (ctx = card's
-  # native 262,144 tokens; only the full-attention layers hold KV).
-  # 2026-11-04 19:xx: MTP self-speculation (llama.cpp --spec-type draft-mtp).
-  # mtp=embedded: the GGUF carries the Ornith nextn block itself (bartowski
-  # Q4_K_M: blk.40, nextn_predict_layers=1); mtp=<file>: separate MTP head GGUF
-  # (AtomicChat quants are converted --no-nextn). -np 1 is already the layout
-  # (one lane per node), which is MTP's upstream requirement.
-  # NUMA0 (Lena): AtomicChat AD-Q6_K-Q5_K for code quality (card KLD 0.0158 /
-  # top-1 94.85 % vs Q4_K_M 0.0477 / 91.0 %) + its pinned Q8_0 MTP head;
-  # NUMA1 (Noah): bartowski Q4_K_M + embedded MTP (fast lane). Both files stay
-  # on disk; switching back is a models.json/start-live.sh change.
-  # p-min 0.75: a draft stops at the first token the MTP head is unsure of
-  # (live 19:57: chat at 11 % acceptance ran 4.8 tok/s vs ~11 without MTP).
-  # Owner 2026-11-07: NUMA0 (Lena) uses the AMD Instinct MI50 32 GB (gfx906,
-  # PCI 0000:05:00.0, attached to CPU1 = NUMA0) through llama.cpp's Vulkan
-  # backend on Mesa RADV (ROCm dropped gfx906). Same Q6_K-Q5_K GGUF and MTP
-  # head; everything except the routed experts of the first $cpu_moe layers
-  # lives in VRAM: 2.5 GiB dense/attention + 1.9 GiB MTP head + 5 GiB f16 KV
-  # (10 full-attention layers x 262,144) + buffers + 30 of 40 expert blocks
-  # (0.55 GiB each), ~28 GiB. The remaining 10 expert blocks run on cores 0-13.
-  # Owner 2026-11-07 18:39: NUMA0 (Lena) runs DeepSeek-V4-Flash-0731
-  # UD-IQ3_XXS (unsloth, 4 split parts, 98 GB; deepseek4 arch is in the pinned
-  # mainline build). MI50 (Vulkan) holds attention/indexer, shared experts,
-  # dense tensors, embeddings/output and the KV (6.9 GiB + KV), plus the routed
-  # experts of layers 35-42 (8 x ~2.1 GiB); --n-cpu-moe 35 keeps the routed
-  # experts of layers 0-34 (~73 GiB) mlocked in NUMA0 RAM, cores 0-13 (the
-  # NUMA0 half of the model cores 0-27; 28-55 stay for builds). The room keeps the
-  # wire id ornith-numa0 (magroom.cpp CODING_FLINT0_MODEL), so no room deploy
-  # is needed; the GGUF's DeepSeek template handles enable_thinking. Ornith
-  # Q6_K-Q5_K + MTP head stay on disk; switching back = this case + models.json.
-  0) node=0; cpus=0-13; threads=14; threads_batch=14; port=8191; name=general; ctx=262144
-     alias=ornith-numa0; file=DeepSeek-V4-Flash-0731-UD-IQ3_XXS-00001-of-00004.gguf; mtp=
-     gpu=vulkan; gpu_pci=0000:05:00.0; cpu_moe=35; template=deepseek-v4-flash-chat.jinja; slot_sub=deepseek
-     extra=(--temp 1.0 --top-p 0.95 --min-p 0.01) ;;
+  # Lena: Qwen3.8-27B Q6_K, 100% MI50 Vulkan, native GGUF Jinja.
+  # Stable room alias ornith-numa0; isolated qwen27b cache. Noah unchanged.
+  0) node=0; cpus=0-13; threads=14; threads_batch=14; port=8191; name=general; ctx=65536
+     alias=ornith-numa0; file=Qwen3.8-27B-Q6_K.gguf; mtp=
+     gpu=vulkan; gpu_pci=0000:05:00.0; cpu_moe=; template=; slot_sub=qwen27b
+     cache_k=q8_0; cache_v=q8_0; ubatch=1024
+     extra=(--temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.0 --presence-penalty 0.0 --repeat-penalty 1.0) ;;
   1) node=1; cpus=14-27; threads=14; threads_batch=14; port=8192; name=coder; ctx=262144
      alias=ornith; file=Ornith-1.5-35B-A3B-Q4_K_M.gguf; mtp=embedded
      gpu=; gpu_pci=; cpu_moe=; template=ornith-chat.jinja; slot_sub=
      extra=(--temp 0.6 --top-p 0.95 --top-k 20 --min-p 0.0) ;;
   *) echo 'coding: invalid NUMA node' >&2; exit 4 ;;
 esac
+cache_k=${cache_k:-f16}; cache_v=${cache_v:-f16}; ubatch=${ubatch:-512}
 # Both nodes: the pinned flint runtime (ops/coding/build-runtime.sh).
 # (The qwen4exp runtime of ops/qwen/runtime.sha stays installed for rollback.)
 REV=$(cat /usr/local/lib/mag-coding/runtime-coder.sha)
@@ -119,9 +89,7 @@ if [[ $ENGINE == ik && -x $IK_BIN && $(cat "$(dirname "$IK_BIN")/source-commit" 
     --slot-save-path "$IK_SLOT" --webui none
 fi
 [[ $ENGINE == ik ]] && echo "coding $node: ik runtime $IK_REV missing, using mainline" >&2
-# GPU node: the same pinned revision built with GGML_VULKAN
-# (MAG_CODING_GPU=vulkan ops/coding/build-runtime.sh). Without the card or
-# that build the node keeps serving from the CPU runtime above.
+# GPU node: pinned GGML_VULKAN build; NUMA0 must fail closed without MI50.
 GPU_ARGS=()
 DRAFT_GPU_ARGS=()
 if [[ $gpu == vulkan ]]; then
@@ -138,12 +106,15 @@ if [[ $gpu == vulkan ]]; then
     export GGML_VK_DISABLE_HOST_VISIBLE_VIDMEM=1
     export MESA_SHADER_CACHE_DIR="$SLOT/mesa-shader-cache"
     mkdir -p "$MESA_SHADER_CACHE_DIR"
-    GPU_ARGS=(--device Vulkan0 --n-gpu-layers 99 --n-cpu-moe "$cpu_moe")
+    GPU_ARGS=(--device Vulkan0 --n-gpu-layers 99 --no-host)
+    [[ -z $cpu_moe ]] || GPU_ARGS+=(--n-cpu-moe "$cpu_moe")
     DRAFT_GPU_ARGS=(--device-draft Vulkan0 --n-gpu-layers-draft 99)
   else
-    echo "coding $node: Vulkan runtime or GPU $gpu_pci missing, CPU fallback" >&2
+    echo "coding $node: Vulkan runtime or GPU $gpu_pci missing" >&2
+    [[ $node == 0 ]] && exit 4
   fi
 fi
+[[ $node != 0 || ${#GPU_ARGS[@]} -gt 0 ]] || { echo "coding 0: MI50 Vulkan required" >&2; exit 4; }
 SPEC_ARGS=()
 if [[ $mtp == embedded ]]; then
   SPEC_ARGS=(--spec-type draft-mtp --spec-draft-n-max 3 --spec-draft-p-min 0.75)
@@ -152,12 +123,14 @@ elif [[ -n $mtp ]]; then
   [[ -f $DRAFT && ! -L $DRAFT ]] || { echo "coding $node: MTP head missing" >&2; exit 4; }
   SPEC_ARGS=(--spec-type draft-mtp --spec-draft-n-max 3 --spec-draft-p-min 0.75 --model-draft "$DRAFT" "${DRAFT_GPU_ARGS[@]}")
 fi
+TEMPLATE_ARGS=()
+[[ -z $template ]] || TEMPLATE_ARGS=(--chat-template-file "/usr/local/lib/mag-coding/$template")
 exec numactl --physcpubind="$cpus" --membind="$node" "$BIN" \
   --model "$MODEL" --alias "$alias" --host 127.0.0.1 --port "$port" \
   --ctx-size "$ctx" --parallel 1 --threads "$threads" --threads-batch "$threads_batch" --numa numactl \
   --load-mode mlock --lazy-mode off "${extra[@]}" \
-  --jinja --reasoning-format auto --chat-template-file "/usr/local/lib/mag-coding/$template" \
+  --jinja --reasoning-format auto "${TEMPLATE_ARGS[@]}" \
   --cache-ram 16384 --ctx-checkpoints 48 --checkpoint-min-step 1024 --no-reasoning-preserve \
-  --flash-attn on --batch-size 2048 --ubatch-size 512 --cache-type-k f16 --cache-type-v f16 \
+  --flash-attn on --batch-size 2048 --ubatch-size "$ubatch" --cache-type-k "$cache_k" --cache-type-v "$cache_v" \
   "${GPU_ARGS[@]}" "${SPEC_ARGS[@]}" \
   --slots --slot-save-path "$SLOT" --no-ui

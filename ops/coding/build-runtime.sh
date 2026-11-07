@@ -50,7 +50,7 @@ git -C "$SRC" clean -fdxq -e build-mag-coding -e build-mag-coding-vulkan
 # checkpoint for SWA models (both Laguna and Flint use sliding-window layers).
 git -C "$SRC" apply --check "$ROOT/ops/qwen/end-checkpoint.patch"
 git -C "$SRC" apply "$ROOT/ops/qwen/end-checkpoint.patch"
-for arch in LAGUNA FLINT; do
+for arch in LAGUNA FLINT QWEN35; do
   grep -Fq "LLM_ARCH_$arch" "$SRC/src/llama-arch.cpp" || { echo "runtime lacks $arch" >&2; exit 4; }
 done
 cmake -S "$SRC" -B "$BUILD" -G Ninja -DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=ON -DBUILD_SHARED_LIBS=OFF "${GPU_ARGS[@]}"

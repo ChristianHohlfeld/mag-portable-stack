@@ -3216,6 +3216,19 @@ static void pho_forget_boundaries(int idx) {
   auto it=WIRE_SESSIONS.find(bot);if(it!=WIRE_SESSIONS.end())it->second.turn_ends.clear();
 }
 static std::string jobs_skill_catalog(const std::string &bot);
+// A skipped turn is stored as the bare "PASS" whatever variant the model
+// wrote ("Kein Content", "[PASS]"): live 2026-11-07 Lena saw three of her own
+// "Kein Content" replies in the wire and kept answering with it.
+static void wire_normalize_passes(std::vector<Val> &msgs,const std::string &bot) {
+  size_t n=0;
+  for(auto &m:msgs) {
+    if(!m.isObj()||mag::str(m,"role")!="assistant"||m.find("tool_calls"))continue;
+    const auto c=mag::str(m,"content");
+    if(trim(c).empty()||c=="PASS"||!group_chat::is_pass(c))continue;
+    m["content"]=std::string("PASS");++n;
+  }
+  if(n)std::cerr<<"wire-normalize-pass bot="<<bot<<" n="<<n<<std::endl;
+}
 static std::vector<Val> wire_messages(int idx, const std::string &system,
                                       const std::string &tools, const std::string &tail) {
   const auto bot=bot_field(idx,"id");
@@ -3230,7 +3243,7 @@ static std::vector<Val> wire_messages(int idx, const std::string &system,
       if(auto a=saved.find("turn_ends");a&&a->isArr())for(auto &n:a->asArr())w.turn_ends.push_back((size_t)n.asNum());
       w.fingerprint=mag::str(saved,"fingerprint"); w.memory=mag::str(saved,"memory");w.plugins=mag::str(saved,"plugins");w.files=mag::str(saved,"files");
       w.company=mag::str(saved,"company"); w.skills=mag::str(saved,"skills");
-      if(auto a=saved.find("messages");a&&a->isArr())w.messages=a->asArr();
+      if(auto a=saved.find("messages");a&&a->isArr()){w.messages=a->asArr();wire_normalize_passes(w.messages,bot);}
       if(auto a=saved.find("seen");a&&a->isArr())for(const auto &id:a->asArr())w.seen.insert(id.asStr());
     }
   }
@@ -3348,6 +3361,7 @@ static void wire_finish(int idx,const std::vector<Val> &messages,bool valid) {
   if(!valid) {auto &w=WIRE_SESSIONS[bot];auto archive=w.pho_archive;auto last=w.pho_last_key;w=WireSession{};w.pho_archive=archive;w.pho_last_key=last;wire_store(bot,w);return;}
   auto it=WIRE_SESSIONS.find(bot);if(it==WIRE_SESSIONS.end())return;
   it->second.messages=messages;
+  wire_normalize_passes(it->second.messages,bot);
   // An aborted turn (server restart -> stream eof) can end on an assistant
   // message with only reasoning: live 17:20 a 20 KB / ~5.6k-token reasoning
   // with empty content. The slot save of that turn failed, so after the

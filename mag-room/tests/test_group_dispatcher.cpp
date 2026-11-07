@@ -35,6 +35,14 @@ int main() {
   CHECK(is_pass("**[PASS]**"));
   CHECK(is_pass("<PASS>"));
   CHECK(!is_pass("Passend dazu: X"));
+  CHECK(is_pass("Kein Content")); // live 2026-11-07 Lena chip-in
+  CHECK(is_pass("*kein content.*"));
+  CHECK(is_pass("No content"));
+  CHECK(!is_pass("Kein Content-Problem, nur ein Layoutfehler"));
+  CHECK(!is_pass("Keine Antwort."));
+  CHECK(maybe_pass("Kein Con"));
+  CHECK(maybe_pass("Kein Content."));
+  CHECK(!maybe_pass("Kein Problem"));
   CHECK(maybe_name_only("No", {"Lena", "Noah"}));
   CHECK(maybe_name_only("[Noah", {"Lena", "Noah"}));
   CHECK(maybe_name_only("Noah (qwen-nu", {"Lena", "Noah"}));

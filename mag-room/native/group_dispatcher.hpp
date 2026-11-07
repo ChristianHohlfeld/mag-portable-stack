@@ -208,8 +208,29 @@ inline std::string bare_token(const std::string &s) {
   const auto y = s.find_last_not_of(junk);
   return s.substr(x, y - x + 1);
 }
+// Same words as an earlier line of this chain (case/space/punctuation-blind).
+inline std::string norm_reply(const std::string &text) {
+  std::string out;
+  bool sp = false;
+  for (unsigned char c : text) {
+    if (std::isalnum(c) || c >= 0x80) { if (sp && !out.empty()) out.push_back(' '); sp = false; out.push_back(static_cast<char>(std::tolower(c))); }
+    else sp = true;
+  }
+  return out;
+}
+// Meta lines a model writes instead of PASS. Never chat content: live
+// 2026-11-06/07 Ornith Lena chipped in with "Kein Content" (posted), and the
+// three copies in her own wire made her repeat it.
+inline const std::vector<std::string> &silent_markers() {
+  // Only phrases no human answer consists of ("Keine Antwort." can be one).
+  static const std::vector<std::string> m = {"kein content", "no content"};
+  return m;
+}
 inline bool is_pass(const std::string &text) {
   if (lower(bare_token(text)) == "pass") return true; // **[PASS]**, <pass>, (Pass).
+  const std::string words = norm_reply(text);
+  for (const auto &m : silent_markers())
+    if (words == m) return true; // "Kein Content", "*kein Inhalt.*"
   const auto a = text.find_first_not_of(" \r\n\t*_`\"'.");
   if (a == std::string::npos) return text.find_first_not_of(" \r\n\t") == std::string::npos;
   const auto b = text.find_last_not_of(" \r\n\t*_`\"'.!");
@@ -265,16 +286,6 @@ inline bool maybe_name_only(const std::string &partial, const std::vector<std::s
   }
   return false;
 }
-// Same words as an earlier line of this chain (case/space/punctuation-blind).
-inline std::string norm_reply(const std::string &text) {
-  std::string out;
-  bool sp = false;
-  for (unsigned char c : text) {
-    if (std::isalnum(c) || c >= 0x80) { if (sp && !out.empty()) out.push_back(' '); sp = false; out.push_back(static_cast<char>(std::tolower(c))); }
-    else sp = true;
-  }
-  return out;
-}
 // "PASS" on its own first line followed by more text: Flint on the append-only
 // complement wire sometimes continues with an invented transcript
 // ("PASS\n\n- User: ..."). The first line decides.
@@ -305,6 +316,9 @@ inline bool maybe_pass(const std::string &partial) {
     t = t.substr(a);
   }
   if (std::string("pass").rfind(t, 0) == 0) return true; // "p", "pa", ...
+  if (t.size() < 32) // "Kein Con" may still become the "Kein Content" marker
+    for (const auto &m : silent_markers())
+      if (m.rfind(t, 0) == 0 || norm_reply(t) == m) return true;
   return t.rfind("pass", 0) == 0 && t.size() <= 8 &&
          (t.size() == 4 || !word_char((unsigned char)t[4]));
 }

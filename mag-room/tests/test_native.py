@@ -6477,6 +6477,10 @@ class TalkModel(http.server.BaseHTTPRequestHandler):
    text = 'Kein Auftrag. Ich bleibe still.'
   elif 'EMOJI-ONLY' in blob and 'Antworte in höchstens zwei kurzen Sätzen' in blob:
    text = '[Beta] 👀'
+  elif 'seed-chain' in blob:
+   # Each follow-up has a new stimulus: don't fake a literal repeated echo
+   # that the production same-cause safeguard is meant to suppress.
+   text = 'FACT-77 turn %d' % n
   else:
    text = 'FACT-77'
   try:

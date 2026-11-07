@@ -1893,7 +1893,9 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
     return;
   }
   if (m == "POST" && path == "/api/offline") {
-    if (actor.role != "owner") { error_json(fd, 403, "Nur der Besitzer"); return; }
+    // Central permit_request already checked the explicitly granted offline
+    // permission. Do not add a conflicting owner-only route check.
+    if (!actor_can(actor, "offline")) { error_json(fd, 403, "Keine Offline-Berechtigung"); return; }
     bool off = has_json && body.find("on") && body.find("on")->asBool(false);
     if (!set_offline(off)) {
       error_json(fd, 500, "Netzwerkregel konnte nicht gesetzt werden");

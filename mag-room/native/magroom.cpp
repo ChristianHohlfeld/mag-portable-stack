@@ -158,6 +158,7 @@ static thread_local bool TL_CHIPIN = false;
 // by the next wire append (group_chat::after_instruction).
 static thread_local std::string TL_AFTER;
 static thread_local bool TL_AFTER_PASS = false;
+static thread_local bool TL_DISPATCH_OPEN_FLOOR = false;
 static thread_local std::string TL_TRIGGER;
 // Set by wire_messages when the stored prompt still ends on this bot's own
 // assistant turn. Sending that with thinking on is the DeepSeek 500
@@ -6081,10 +6082,11 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
         // Tool arguments are streamed as partial JSON. Count escaped newlines
         // as code lines, not serialized JSON bytes. This is a provisional
         // line count until the complete file is committed.
-        size_t lines = 0;
+        size_t lines = 0, chars = 0;
         for (const auto &kv : acc.calls) if (auto args = kv.second.find("args")) {
           const std::string &raw = args->asStr();
           if (raw.empty()) continue;
+          chars += raw.size();
           size_t n = 1;
           for (size_t i = 0; i < raw.size(); ++i) {
             if (raw[i] == '\n') ++n;
@@ -6098,7 +6100,9 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
         }
         auto nm = last.find("name");
         on_delta("tool_draft", (nm ? nm->asStr() : std::string()) + "\t" +
-                                   std::to_string(lines));
+                                   std::to_string(lines) + "\t" +
+                                   std::to_string(chars) + "\t" +
+                                   std::to_string(acc.calls.rbegin()->first + 1));
       }
     }
   }
@@ -7548,11 +7552,17 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
         const auto tab = piece.find('\t');
         const std::string nm = piece.substr(0, tab);
         const long lines = tab == std::string::npos ? 0 : atol(piece.c_str() + tab + 1);
+        const size_t second = tab == std::string::npos ? std::string::npos : piece.find('\t', tab + 1);
+        const size_t third = second == std::string::npos ? std::string::npos : piece.find('\t', second + 1);
+        const long chars = second == std::string::npos ? 0 : atol(piece.c_str() + second + 1);
+        const long ordinal = third == std::string::npos ? 1 : atol(piece.c_str() + third + 1);
         std::string label = nm.empty() ? "Bereitet eine Aktion vor"
                                        : "Bereitet vor: " + tool_step_label(nm);
         if (lines > 0 && (nm == "write_file" || nm == "append_file")) {
           label += " · " + std::to_string(lines) + (lines == 1 ? " Zeile" : " Zeilen");
         }
+        label += " · " + std::to_string(std::max(1L, ordinal)) + ". " +
+                 std::to_string(chars) + " Zeichen";
         if (!live.empty() && !draft_dropped) {
           draft_dropped = true;
           emit_event("draft_drop", bot_id, bot_name, "");
@@ -8899,8 +8909,10 @@ static void drop_chipin_jobs_locked() {
 // human message. Humans and Stop first; MAG_ROOM_BOT_ROUNDS (0 = unlimited).
 static void dispatch_after_turn(uint64_t run, const std::string &speaker,
                                 const std::string &trigger, const TurnReport &r,
-                                Lane *lane) {
-  if (!dispatcher_on() || trigger.empty()) return;
+                                Lane *lane, bool open_floor) {
+  // Directly addressed bots need no follow-up. An open question can get
+  // one gated addition; chip-in jobs never schedule another chip-in.
+  if (!open_floor || !dispatcher_on() || trigger.empty()) return;
   if (lane && (lane->stop.load() || lane->user_cancel.load() || lane->preempt.load())) return;
   if (!r.error.empty()) return;
   // PASS (skipped with text) or a bare reaction: the bot chose not to speak.
@@ -11309,6 +11321,7 @@ static void lane_turn(Lane *lane, uint64_t run, std::vector<std::string> ids,
     TL_CAUSE_LABEL.clear();
     TL_CHIPIN = false;
     TL_TRIGGER.clear();
+    TL_DISPATCH_OPEN_FLOOR = false;
     {
       std::lock_guard<std::mutex> lk(JOB_MTX);
       auto it = ACTIVE_JOBS.find(run);
@@ -11316,6 +11329,7 @@ static void lane_turn(Lane *lane, uint64_t run, std::vector<std::string> ids,
         job_selftalk = it->second.selftalk;
         TL_CHIPIN = it->second.chipin;
         TL_TRIGGER = it->second.trigger;
+        TL_DISPATCH_OPEN_FLOOR = it->second.open_floor;
         TL_GOAL_ID = it->second.goal_id;
         TL_CAUSE = it->second.cause;
         TL_CAUSE_LABEL = it->second.cause_label;
@@ -11383,7 +11397,8 @@ static void lane_turn(Lane *lane, uint64_t run, std::vector<std::string> ids,
             reload_slot_after_cancel(idx);
             note_selftalk_gap();
           } else if (!automatic) {
-            dispatch_after_turn(run, id, TL_TRIGGER, report, lane);
+            dispatch_after_turn(run, id, TL_TRIGGER, report, lane,
+                                TL_DISPATCH_OPEN_FLOOR);
           }
           if (group && (lane->user_cancel.load() || lane->stop.load())) group->cancelled = true;
           if (TL_ADOPT_GEN) {
@@ -11409,6 +11424,7 @@ static void lane_turn(Lane *lane, uint64_t run, std::vector<std::string> ids,
     TL_CHIPIN = false;
     TL_AFTER.clear();
     TL_AFTER_PASS = false;
+    TL_DISPATCH_OPEN_FLOOR = false;
     TL_TRIGGER.clear();
     TL_CAUSE.clear();
     TL_CAUSE_LABEL.clear();
@@ -13312,9 +13328,16 @@ int main() {
         for (auto &x : a->asArr()) running.push_back(val_job(x));
       else if (auto a1 = q.find("active"); a1 && a1->isObj())
         running.push_back(val_job(*a1));
-      // Persisted actor mailboxes are replayed silently after the warm-slot
-      // gate opens. Do not append synthetic assistant notes to ROOM: an
-      // unfinished turn is outstanding work, not a visible bot response.
+      // A crashed active turn is interrupted even before its first token.
+      // Log a system status, not a fabricated assistant answer, and then
+      // resume the original work on its actor lane.
+      if (!running.empty()) {
+        Val note = append_room("system", "MAG",
+            "(Lauf unterbrochen – Raum wurde neu gestartet; Antwort wird fortgesetzt)");
+        note["type"] = "message";
+        publish(mj::dump(note));
+      }
+      // Persisted actor mailboxes resume after the warm-slot gate opens.
       for (auto r = running.rbegin(); r != running.rend(); ++r) {
         if (r->ids.empty() || r->selftalk || (CONFIGURED_MODEL && r->reflect)) continue;
         if (std::none_of(PARKED_JOBS.begin(), PARKED_JOBS.end(),

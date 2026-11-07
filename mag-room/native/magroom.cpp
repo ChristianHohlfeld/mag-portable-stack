@@ -2500,7 +2500,7 @@ static std::string identity_block(int bot_idx) {
            "sichtbare Antwort. Beginne Antworten niemals mit deinem eigenen "
            "Namen, weder als \"" + name + ":\" noch als \"[" + name + "]\" oder fett; "
            "der Raum zeigt deinen Namen schon an. Die Kennzeichnung "
-           "\"[Name (id)]:\" im Raumverlauf ist nur Zuordnung, kein Antwortformat.";
+           "\"[Name (id)]:\" in der Chatansicht ist nur Zuordnung, kein Antwortformat.";
   return text;
 }
 static std::string room_company_line(int);

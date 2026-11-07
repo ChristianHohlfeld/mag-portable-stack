@@ -9728,7 +9728,8 @@ static TurnReport generate_and_post(int idx, bool automatic, double dispatched_m
       std::lock_guard<std::recursive_mutex> st(STATE_MTX);
       for (auto it = ROOM.rbegin(); it != ROOM.rend() && !mine.empty(); ++it) {
         if (mag::str(*it, "role") == "user") break;
-        if (mag::str(*it, "role") == "assistant" && mag::str(*it, "id") != TL_PARTIAL_ID &&
+        if (mag::str(*it, "role") == "assistant" && mag::str(*it, "bot") == id &&
+            mag::str(*it, "id") != TL_PARTIAL_ID &&
             group_chat::norm_reply(mag::str(*it, "content")) == mine) { dull = true; break; }
       }
     }

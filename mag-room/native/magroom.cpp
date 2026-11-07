@@ -8973,7 +8973,7 @@ static void dispatch_after_turn(uint64_t run, const std::string &speaker,
   j.input = DISP_TEXT;
   j.trigger = trigger;
   j.cause = cause;
-  j.cause_label = "antwortet auf " + (cause_name.empty() ? std::string("Bot") : cause_name);
+  j.cause_label = "ergänzt zu " + (cause_name.empty() ? std::string("Bot") : cause_name);
   JOBS.push_back(std::move(j));
   std::cerr << "dispatch-followup trigger=" << trigger << " after=" << speaker
             << " next=" << next << " n=" << DISP_FOLLOWUPS << std::endl;
@@ -12123,10 +12123,21 @@ static Val user_stop(bool pause_jobs) {
   // STOP_SETTLING is still true, so scheduler dispatch remains disabled.
   cancel_llama_tasks(1500);
   reload_slots_after_cancel(1500);
-  if (tools_running > 0) {
-    const auto settled = steady_clock::now() + milliseconds(1800);
-    while (steady_clock::now() < settled && any_lane_busy_for_stop())
-      std::this_thread::sleep_for(milliseconds(15));
+  // A cancelled backend socket may detach just AFTER cancel+restore return.
+  // In a configured two-slot room /api/cancel must not acknowledge an
+  // apparently busy turn that is already unwinding; the immediate state
+  // poll and next user hi must see the actor lanes genuinely released.
+  // Wait for lane_finish() (the sole owner of busy/turn), NOT a synthetic
+  // release_lanes_locked() that would permit two workers on one slot.
+  // Bound this wait to keep Stop responsive even if a backend is stuck.
+  if (tools_running > 0 || CONFIGURED_MODEL) {
+    const auto max_wait = milliseconds(tools_running > 0 ? 1800 : 900);
+    std::unique_lock<std::mutex> lk(JOB_MTX);
+    JOB_CV.wait_for(lk, max_wait, [] {
+      for (Lane *l : all_lanes())
+        if (l->busy.load()) return false;
+      return true;
+    });
   }
   clear_runs();
   // Do not manufacture an idle state while a cancelled worker still owns

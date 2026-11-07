@@ -4,7 +4,7 @@
   "coding_output_tokens": 16384,
   "models": {
     "general": {
-      "name": "Ornith 2 (NUMA0)",
+      "name": "DeepSeek V4 Flash (NUMA0)",
       "model_id": "ornith-numa0",
       "numa": 0,
       "candidate_port": 8291,
@@ -13,34 +13,50 @@
         "device": "AMD Instinct MI50 32 GB (gfx906, Mesa RADV)",
         "pci": "0000:05:00.0",
         "n_gpu_layers": 99,
-        "n_cpu_moe": 10,
-        "env": {"GGML_VK_DISABLE_HOST_VISIBLE_VIDMEM": "1"},
-        "draft_on_gpu": true
+        "n_cpu_moe": 35,
+        "env": {
+          "GGML_VK_DISABLE_HOST_VISIBLE_VIDMEM": "1"
+        },
+        "draft_on_gpu": false
       },
-      "repo": "AtomicChat/Ornith-1.5-35B-A3B-GGUF",
-      "filename": "Ornith-1.5-35B-A3B-AD-Q6_K-Q5_K.gguf",
-      "sha256": "c732a550672b4f8e0d66c8b395e84640d1df0cb929489dd32d4e9a0dea509a04",
-      "size": 26249607360,
-      "link_from": "/home/chris/models/ornith-1.5-35b-a3b-atomic/Ornith-1.5-35B-A3B-AD-Q6_K-Q5_K.gguf",
-      "revision": "385f6c4c886f2376659fd964be85bff09a77c791",
-      "mtp": {
-        "source": "file",
-        "draft_n_max": 3,
-        "repo": "AtomicChat/Ornith-1.5-35B-A3B-GGUF",
-        "revision": "385f6c4c886f2376659fd964be85bff09a77c791",
-        "filename": "mtp-Ornith-1.5-35B-A3B-Q8_0.gguf",
-        "sha256": "c3191614e6863b908349fe5c29cd15a24c181bdab98b16089f7271a806ab79af",
-        "size": 1990649856,
-        "link_from": "/home/chris/models/ornith-1.5-35b-a3b-atomic/mtp-Ornith-1.5-35B-A3B-Q8_0.gguf",
-        "draft_p_min": 0.75
-      },
+      "repo": "unsloth/DeepSeek-V4-Flash-0731-GGUF",
+      "filename": "DeepSeek-V4-Flash-0731-UD-IQ3_XXS-00001-of-00004.gguf",
+      "sha256": "dec1cee704800267d9d836d5a61aefc33705be939bbb3058fa9006d98191576d",
+      "size": 5257696,
+      "link_from": "/home/chris/models/deepseek-v4-UD-IQ3_XXS/DeepSeek-V4-Flash-0731-UD-IQ3_XXS-00001-of-00004.gguf",
+      "parts": [
+        {
+          "filename": "DeepSeek-V4-Flash-0731-UD-IQ3_XXS-00002-of-00004.gguf",
+          "sha256": "3064d3c4c1d6363e9f9ad88e90a3e2c5fb2d6f7ae16ca72135c3ce6a5c984da5",
+          "size": 49910532416,
+          "link_from": "/home/chris/models/deepseek-v4-UD-IQ3_XXS/DeepSeek-V4-Flash-0731-UD-IQ3_XXS-00002-of-00004.gguf",
+          "repo": "unsloth/DeepSeek-V4-Flash-0731-GGUF",
+          "repo_dir": "UD-IQ3_XXS"
+        },
+        {
+          "filename": "DeepSeek-V4-Flash-0731-UD-IQ3_XXS-00003-of-00004.gguf",
+          "sha256": "2e9b2732eca7da8324f731653624a4f5c9846258926fd9f468cc703afb51a019",
+          "size": 49257859456,
+          "link_from": "/home/chris/models/deepseek-v4-UD-IQ3_XXS/DeepSeek-V4-Flash-0731-UD-IQ3_XXS-00003-of-00004.gguf",
+          "repo": "unsloth/DeepSeek-V4-Flash-0731-GGUF",
+          "repo_dir": "UD-IQ3_XXS"
+        },
+        {
+          "filename": "DeepSeek-V4-Flash-0731-UD-IQ3_XXS-00004-of-00004.gguf",
+          "sha256": "4ca79d8e5107dd1b9bb57b176a7c09948837425dee49f0f1dfd6547a3769fea7",
+          "size": 5034198464,
+          "link_from": "/home/chris/models/deepseek-v4-UD-IQ3_XXS/DeepSeek-V4-Flash-0731-UD-IQ3_XXS-00004-of-00004.gguf",
+          "repo": "unsloth/DeepSeek-V4-Flash-0731-GGUF",
+          "repo_dir": "UD-IQ3_XXS"
+        }
+      ],
       "chat_template": {
-        "repo": "ornith-ai/Ornith-1.5-35B-A3B",
-        "file": "chat_template.jinja",
-        "git_blob": "b07660ccbbea09ce6ac6741c6d041082033ab031",
-        "sha256": "182e77dd83bd8e9ca818b240b82e28f243762cd5dda32e6eef327df7b1cd107e",
-        "installed_as": "ops/coding/ornith-chat.jinja"
-      }
+        "repo": "ggml-org/llama.cpp",
+        "file": "models/templates/deepseek-ai-DeepSeek-V4-Flash-0731.jinja",
+        "sha256": "aec3d906bce80d43a9e6e89922c04e8e752c05f71f10040ba3f61b746ebacd6d",
+        "installed_as": "ops/coding/deepseek-v4-flash-chat.jinja"
+      },
+      "repo_dir": "UD-IQ3_XXS"
     },
     "coder": {
       "name": "Ornith (NUMA1)",

@@ -45,13 +45,23 @@ case "$which" in
   # lives in VRAM: 2.5 GiB dense/attention + 1.9 GiB MTP head + 5 GiB f16 KV
   # (10 full-attention layers x 262,144) + buffers + 30 of 40 expert blocks
   # (0.55 GiB each), ~28 GiB. The remaining 10 expert blocks run on cores 0-13.
-  0) node=0; cpus=0-13; port=8191; name=general; ctx=262144
-     alias=ornith-numa0; file=Ornith-1.5-35B-A3B-AD-Q6_K-Q5_K.gguf; mtp=mtp-Ornith-1.5-35B-A3B-Q8_0.gguf
-     gpu=vulkan; gpu_pci=0000:05:00.0; cpu_moe=10
-     extra=(--temp 0.6 --top-p 0.95 --top-k 20 --min-p 0.0) ;;
-  1) node=1; cpus=14-27; port=8192; name=coder; ctx=262144
+  # Owner 2026-11-07 18:39: NUMA0 (Lena) runs DeepSeek-V4-Flash-0731
+  # UD-IQ3_XXS (unsloth, 4 split parts, 98 GB; deepseek4 arch is in the pinned
+  # mainline build). MI50 (Vulkan) holds attention/indexer, shared experts,
+  # dense tensors, embeddings/output and the KV (6.9 GiB + KV), plus the routed
+  # experts of layers 35-42 (8 x ~2.1 GiB); --n-cpu-moe 35 keeps the routed
+  # experts of layers 0-34 (~73 GiB) mlocked in NUMA0 RAM, cores 0-13 (the
+  # NUMA0 half of the model cores 0-27; 28-55 stay for builds). The room keeps the
+  # wire id ornith-numa0 (magroom.cpp CODING_FLINT0_MODEL), so no room deploy
+  # is needed; the GGUF's DeepSeek template handles enable_thinking. Ornith
+  # Q6_K-Q5_K + MTP head stay on disk; switching back = this case + models.json.
+  0) node=0; cpus=0-13; threads=14; threads_batch=14; port=8191; name=general; ctx=262144
+     alias=ornith-numa0; file=DeepSeek-V4-Flash-0731-UD-IQ3_XXS-00001-of-00004.gguf; mtp=
+     gpu=vulkan; gpu_pci=0000:05:00.0; cpu_moe=35; template=deepseek-v4-flash-chat.jinja; slot_sub=deepseek
+     extra=(--temp 1.0 --top-p 0.95 --min-p 0.01) ;;
+  1) node=1; cpus=14-27; threads=14; threads_batch=14; port=8192; name=coder; ctx=262144
      alias=ornith; file=Ornith-1.5-35B-A3B-Q4_K_M.gguf; mtp=embedded
-     gpu=; gpu_pci=; cpu_moe=
+     gpu=; gpu_pci=; cpu_moe=; template=ornith-chat.jinja; slot_sub=
      extra=(--temp 0.6 --top-p 0.95 --top-k 20 --min-p 0.0) ;;
   *) echo 'coding: invalid NUMA node' >&2; exit 4 ;;
 esac
@@ -72,6 +82,8 @@ MODEL="/home/chris/models/mag-coding/$name/$file"
 numactl --cpunodebind="$node" --membind="$node" python3 -I /usr/local/lib/mag-coding/stage.py --model "$name"
 SLOT="/var/lib/mag-llm/slots/coding/$name"
 [[ -d $SLOT && -w $SLOT ]] || { echo 'coding: slot directory unavailable' >&2; exit 4; }
+# Slot files of another model never load (layer/state mismatch): own subdir.
+if [[ -n $slot_sub ]]; then SLOT="$SLOT/$slot_sub"; mkdir -p "$SLOT"; fi
 # Engine switch (owner 2026-11-03 19:43): ik_llama.cpp is live on both nodes.
 # Mainline fallback without a deploy:
 #   echo mainline | sudo tee /etc/mag-stack/coding-engine; systemctl restart mag-llm-coding@0 @1
@@ -142,9 +154,9 @@ elif [[ -n $mtp ]]; then
 fi
 exec numactl --physcpubind="$cpus" --membind="$node" "$BIN" \
   --model "$MODEL" --alias "$alias" --host 127.0.0.1 --port "$port" \
-  --ctx-size "$ctx" --parallel 1 --threads 14 --threads-batch 14 --numa numactl \
+  --ctx-size "$ctx" --parallel 1 --threads "$threads" --threads-batch "$threads_batch" --numa numactl \
   --load-mode mlock --lazy-mode off "${extra[@]}" \
-  --jinja --reasoning-format auto --chat-template-file /usr/local/lib/mag-coding/ornith-chat.jinja \
+  --jinja --reasoning-format auto --chat-template-file "/usr/local/lib/mag-coding/$template" \
   --cache-ram 16384 --ctx-checkpoints 48 --checkpoint-min-step 1024 --no-reasoning-preserve \
   --flash-attn on --batch-size 2048 --ubatch-size 512 --cache-type-k f16 --cache-type-v f16 \
   "${GPU_ARGS[@]}" "${SPEC_ARGS[@]}" \

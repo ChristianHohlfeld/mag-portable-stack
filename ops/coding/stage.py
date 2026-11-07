@@ -27,6 +27,10 @@ def verified_file(path, sha):
 def stage(name, root, download=False):
     spec = MANIFEST["models"][name]
     stage_file(name, root, spec, download)
+    # Split GGUFs (DeepSeek-V4-Flash): every further part is pinned and staged
+    # the same way; llama.cpp loads the siblings of the first part.
+    for part in spec.get("parts", []):
+        stage_file(name, root, part, download)
     # A separate MTP head (draft GGUF) is pinned and verified like the model.
     mtp = spec.get("mtp", {})
     if mtp.get("source") == "file":
@@ -78,7 +82,10 @@ def stage_file(name, root, spec, download):
     revision = spec.get("revision", "main")
     if not re.fullmatch(r"main|[a-f0-9]{40}", revision):
         raise RuntimeError("invalid pinned model revision")
-    url = f"https://huggingface.co/{spec['repo']}/resolve/{revision}/{filename}"
+    repo_dir = spec.get("repo_dir", "")
+    if repo_dir and not re.fullmatch(r"[A-Za-z0-9_.-]+", repo_dir):
+        raise RuntimeError("invalid pinned model directory")
+    url = f"https://huggingface.co/{spec['repo']}/resolve/{revision}/{repo_dir + '/' if repo_dir else ''}{filename}"
     # Resumable. A changed upstream object is rejected by the pinned SHA256.
     subprocess.run(["curl", "--fail", "--location", "--retry", "5", "--continue-at", "-",
                     "--output", str(temp), url], check=True)

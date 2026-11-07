@@ -9728,6 +9728,11 @@ static TurnReport generate_and_post(int idx, bool automatic, double dispatched_m
       std::lock_guard<std::recursive_mutex> st(STATE_MTX);
       for (auto it = ROOM.rbegin(); it != ROOM.rend() && !mine.empty(); ++it) {
         if (mag::str(*it, "role") == "user") break;
+        // A bot-to-bot turn answers a NEW assistant message. An identical
+        // earlier reply by this bot, before that cause, is not a duplicate
+        // of the current reaction. Still suppress replays of the same cause.
+        if (TL_SELFTALK && !TL_CAUSE.empty() &&
+            mag::str(*it, "id") == TL_CAUSE) break;
         if (mag::str(*it, "role") == "assistant" && mag::str(*it, "bot") == id &&
             mag::str(*it, "id") != TL_PARTIAL_ID &&
             group_chat::norm_reply(mag::str(*it, "content")) == mine) { dull = true; break; }

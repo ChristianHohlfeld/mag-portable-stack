@@ -106,7 +106,9 @@ if a[0]=='disable' and a[-1]=='mag-llm-qwen.service' and not os.path.isfile(os.e
 if a[0]=='show':
  if 'mag-llm-glm@q2.service' in a:
   pid=str(s.get('q2_pid',99999999));entered=str(s.get('q2_enter','old'))
-  if 'ActiveEnterTimestamp' in a:
+  if 'ActiveState' in a:
+   print('active' if 'mag-llm-glm@q2.service' in s['active'] else 'inactive')
+  elif 'ActiveEnterTimestamp' in a:
    print('ActiveEnterTimestamp='+entered)
    print('MainPID='+pid)
   else: print(pid)
@@ -125,6 +127,12 @@ if a[0] in ('start','stop','enable','disable'):
 json.dump(s,open(p,'w'))
 ''');ctl.chmod(0o755)
   curl=self.bin/'curl';curl.write_text('#!/bin/sh\nexit 0\n');curl.chmod(0o755)
+  # Mock the socket table as well as systemd and HTTP. The fake services do
+  # not bind ports: querying the host's real :8192 can otherwise keep the
+  # Q2 engine-switch/rollback loop asleep for 180s on a live MAG worker.
+  ss=self.bin/'ss'
+  ss.write_text('#!/bin/sh\n# Fake services have no listening or TIME_WAIT sockets.\nexit 0\n')
+  ss.chmod(0o755)
   readlink_bin=self.bin/'readlink'
   readlink_bin.write_text("""#!/usr/bin/env python3
 import os,sys

@@ -43,6 +43,9 @@ int main() {
   CHECK(maybe_pass("Kein Con"));
   CHECK(maybe_pass("Kein Content."));
   CHECK(!maybe_pass("Kein Problem"));
+  CHECK(is_pass("[[MAG:ENDE]]")); // live 2026-11-07 Noah
+  CHECK(is_pass(" [[MAG:WEITER]]\n"));
+  CHECK(!is_pass("Fertig. [[MAG:ENDE]]"));
   CHECK(maybe_name_only("No", {"Lena", "Noah"}));
   CHECK(maybe_name_only("[Noah", {"Lena", "Noah"}));
   CHECK(maybe_name_only("Noah (qwen-nu", {"Lena", "Noah"}));

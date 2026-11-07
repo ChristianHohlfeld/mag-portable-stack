@@ -220,10 +220,12 @@ inline std::string norm_reply(const std::string &text) {
 }
 // Meta lines a model writes instead of PASS. Never chat content: live
 // 2026-11-06/07 Ornith Lena chipped in with "Kein Content" (posted), and the
-// three copies in her own wire made her repeat it.
+// three copies in her own wire made her repeat it; Noah answered with a bare
+// room control marker "[[MAG:ENDE]]" (words "mag ende").
 inline const std::vector<std::string> &silent_markers() {
   // Only phrases no human answer consists of ("Keine Antwort." can be one).
-  static const std::vector<std::string> m = {"kein content", "no content"};
+  static const std::vector<std::string> m = {"kein content", "no content",
+                                             "mag ende", "mag weiter"};
   return m;
 }
 inline bool is_pass(const std::string &text) {

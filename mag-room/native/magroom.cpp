@@ -8125,6 +8125,14 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
   }
   if (!stop_flag().load() && !report.error.empty() && trim(final_text).empty())
     final_text = report.error;
+  // Only a control marker and no tool work: the model's way of saying
+  // nothing (live 2026-11-07 Noah answered "Hi beide" with a bare
+  // "[[MAG:ENDE]]", stripped to "", posted as "Es wurde keine Antwort
+  // erzeugt"). Same as PASS; the wire keeps "PASS" (wire_normalize_passes).
+  if (!report.reacted && report.successful_tools + report.failed_tools == 0 &&
+      report.error.empty() && !stop_flag().load() && !trim(final_text).empty() &&
+      group_chat::is_pass(final_text))
+    final_text = "PASS";
   replaceAll(final_text, "[[MAG:WEITER]]", "");
   replaceAll(final_text, "[[MAG:ENDE]]", "");
   replaceAll(fallback_narration, "[[MAG:WEITER]]", "");

@@ -6,6 +6,9 @@
 #  - `laguna` arch: ggml-org/llama.cpp#25165 (merged 2026-07-22)
 #  - `flint`  arch: ggml-org/llama.cpp#30928 (merged 2026-10-21)
 # Pin: release b12058 (ops/coding/runtime.sha), which contains both.
+# MAG_CODING_GPU=vulkan builds the same pin with GGML_VULKAN into
+# ~/.local/mag-coding-rt/<rev>-vulkan (NUMA0 Lena on the MI50, gfx906 via Mesa
+# RADV; ROCm dropped gfx906). Needs libvulkan-dev glslc spirv-headers.
 set -euo pipefail
 # Everything this script starts (build, stage.py, checksums) stays off the
 # model cores 0-27; systemd-restarted services do not inherit the affinity.
@@ -16,12 +19,18 @@ fi
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 REV=$(tr -d '[:space:]' < "$ROOT/ops/coding/runtime.sha")
 [[ "$REV" =~ ^[a-f0-9]{40}$ ]] || exit 4
-BIN="/home/chris/.local/mag-coding-rt/$REV/bin/llama-server"
+GPU=${MAG_CODING_GPU:-}
+case "$GPU" in
+  '') SUFFIX=; GPU_ARGS=() ;;
+  vulkan) SUFFIX=-vulkan; GPU_ARGS=(-DGGML_VULKAN=ON) ;;
+  *) echo "unknown MAG_CODING_GPU=$GPU" >&2; exit 4 ;;
+esac
+BIN="/home/chris/.local/mag-coding-rt/$REV$SUFFIX/bin/llama-server"
 if [[ -x $BIN && $(cat "$(dirname "$BIN")/source-commit" 2>/dev/null || true) == "$REV" ]]; then
   echo "coding runtime already built: $BIN"; exit 0
 fi
 SRC=/home/chris/.local/src/mag-coding-llama.cpp
-BUILD="$SRC/build-mag-coding"
+BUILD="$SRC/build-mag-coding$SUFFIX"
 if [[ ! -e "$SRC/.git" ]]; then
   [[ ! -e "$SRC" ]] || { echo 'non-git source dir exists' >&2; exit 4; }
   mkdir -p "$(dirname "$SRC")"
@@ -35,7 +44,7 @@ if [[ ! -e "$SRC/.git" ]]; then
 fi
 git -C "$SRC" fetch -q --no-tags origin "$REV"
 git -C "$SRC" checkout -q --force --detach "$REV"
-git -C "$SRC" clean -fdxq -e build-mag-coding
+git -C "$SRC" clean -fdxq -e build-mag-coding -e build-mag-coding-vulkan
 [[ $(git -C "$SRC" rev-parse HEAD) == "$REV" ]] || exit 4
 # Same MAG server patch as the Qwen runtime: keep the completed-answer
 # checkpoint for SWA models (both Laguna and Flint use sliding-window layers).
@@ -44,7 +53,7 @@ git -C "$SRC" apply "$ROOT/ops/qwen/end-checkpoint.patch"
 for arch in LAGUNA FLINT; do
   grep -Fq "LLM_ARCH_$arch" "$SRC/src/llama-arch.cpp" || { echo "runtime lacks $arch" >&2; exit 4; }
 done
-cmake -S "$SRC" -B "$BUILD" -G Ninja -DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=ON -DBUILD_SHARED_LIBS=OFF
+cmake -S "$SRC" -B "$BUILD" -G Ninja -DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=ON -DBUILD_SHARED_LIBS=OFF "${GPU_ARGS[@]}"
 nice -n 19 cmake --build "$BUILD" -j 8 --target llama-server
 mkdir -p "$(dirname "$BIN")"
 install -m 0755 "$BUILD/bin/llama-server" "$BIN.next"

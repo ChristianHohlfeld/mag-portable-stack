@@ -10,6 +10,8 @@ StartLimitBurst=2
 Type=simple
 User=chris
 Group=chris
+# NUMA0 drives the MI50 through /dev/dri/renderD128 (Vulkan/RADV).
+SupplementaryGroups=render video
 WorkingDirectory=/home/chris
 ExecStart=/usr/local/lib/mag-coding/start-live.sh %i
 # Every stop/restart first saves the slot KV + checkpoints (5 s idle wait, an

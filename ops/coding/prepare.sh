@@ -22,6 +22,10 @@ fi
   echo 'coding prepare: pinned qwen4exp runtime missing' >&2; exit 4; }
 # NUMA1 Flint: separately pinned upstream runtime (ops/coding/runtime.sha).
 nice -n 19 ionice -c 3 bash "$ROOT/ops/coding/build-runtime.sh"
+# NUMA0 Lena on the MI50: same pin with the Vulkan backend (start-live.sh
+# falls back to the CPU runtime while this build or the card is missing).
+MAG_CODING_GPU=vulkan nice -n 19 ionice -c 3 bash "$ROOT/ops/coding/build-runtime.sh" ||
+  echo 'coding prepare: Vulkan runtime not built; NUMA0 stays on CPU'
 SRC=/home/chris/.local/src/mag-qwen-llama.cpp
 if [[ -d $SRC/.git && $(git -C "$SRC" rev-parse HEAD) == "$REV" ]]; then
   # Both architectures require model-specific graph implementations.

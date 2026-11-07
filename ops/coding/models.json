@@ -8,6 +8,15 @@
       "model_id": "ornith-numa0",
       "numa": 0,
       "candidate_port": 8291,
+      "gpu": {
+        "backend": "vulkan",
+        "device": "AMD Instinct MI50 32 GB (gfx906, Mesa RADV)",
+        "pci": "0000:05:00.0",
+        "n_gpu_layers": 99,
+        "n_cpu_moe": 10,
+        "env": {"GGML_VK_DISABLE_HOST_VISIBLE_VIDMEM": "1"},
+        "draft_on_gpu": true
+      },
       "repo": "AtomicChat/Ornith-1.5-35B-A3B-GGUF",
       "filename": "Ornith-1.5-35B-A3B-AD-Q6_K-Q5_K.gguf",
       "sha256": "c732a550672b4f8e0d66c8b395e84640d1df0cb929489dd32d4e9a0dea509a04",

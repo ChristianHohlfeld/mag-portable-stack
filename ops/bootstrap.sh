@@ -130,6 +130,9 @@ run env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommend
   nginx jq sqlite3 numactl git curl ca-certificates openssl python3 python3-venv \
   bzip2 dnsutils acl golang-go nodejs nftables iproute2 openssh-client sudo dnsmasq-base \
   libvirt-daemon-system libvirt-clients qemu-system-x86 qemu-utils virtinst cloud-image-utils
+# NUMA0 coding bot on the MI50 (gfx906): llama.cpp Vulkan backend on Mesa RADV.
+run env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+  mesa-vulkan-drivers libvulkan-dev glslc spirv-headers vulkan-tools
 # Do not rely on package postinst autostart (policy-rc.d, image defaults):
 # deploy needs nginx up, bot VMs need libvirtd.
 run systemctl enable --now nginx.service libvirtd.service

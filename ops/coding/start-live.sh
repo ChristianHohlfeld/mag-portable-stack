@@ -38,11 +38,20 @@ case "$which" in
   # on disk; switching back is a models.json/start-live.sh change.
   # p-min 0.75: a draft stops at the first token the MTP head is unsure of
   # (live 19:57: chat at 11 % acceptance ran 4.8 tok/s vs ~11 without MTP).
+  # Owner 2026-11-07: NUMA0 (Lena) uses the AMD Instinct MI50 32 GB (gfx906,
+  # PCI 0000:05:00.0, attached to CPU1 = NUMA0) through llama.cpp's Vulkan
+  # backend on Mesa RADV (ROCm dropped gfx906). Same Q6_K-Q5_K GGUF and MTP
+  # head; everything except the routed experts of the first $cpu_moe layers
+  # lives in VRAM: 2.5 GiB dense/attention + 1.9 GiB MTP head + 5 GiB f16 KV
+  # (10 full-attention layers x 262,144) + buffers + 30 of 40 expert blocks
+  # (0.55 GiB each), ~28 GiB. The remaining 10 expert blocks run on cores 0-13.
   0) node=0; cpus=0-13; port=8191; name=general; ctx=262144
      alias=ornith-numa0; file=Ornith-1.5-35B-A3B-AD-Q6_K-Q5_K.gguf; mtp=mtp-Ornith-1.5-35B-A3B-Q8_0.gguf
+     gpu=vulkan; gpu_pci=0000:05:00.0; cpu_moe=10
      extra=(--temp 0.6 --top-p 0.95 --top-k 20 --min-p 0.0) ;;
   1) node=1; cpus=14-27; port=8192; name=coder; ctx=262144
      alias=ornith; file=Ornith-1.5-35B-A3B-Q4_K_M.gguf; mtp=embedded
+     gpu=; gpu_pci=; cpu_moe=
      extra=(--temp 0.6 --top-p 0.95 --top-k 20 --min-p 0.0) ;;
   *) echo 'coding: invalid NUMA node' >&2; exit 4 ;;
 esac
@@ -98,13 +107,38 @@ if [[ $ENGINE == ik && -x $IK_BIN && $(cat "$(dirname "$IK_BIN")/source-commit" 
     --slot-save-path "$IK_SLOT" --webui none
 fi
 [[ $ENGINE == ik ]] && echo "coding $node: ik runtime $IK_REV missing, using mainline" >&2
+# GPU node: the same pinned revision built with GGML_VULKAN
+# (MAG_CODING_GPU=vulkan ops/coding/build-runtime.sh). Without the card or
+# that build the node keeps serving from the CPU runtime above.
+GPU_ARGS=()
+DRAFT_GPU_ARGS=()
+if [[ $gpu == vulkan ]]; then
+  GDIR="/home/chris/.local/mag-coding-rt/$REV-vulkan/bin"
+  if [[ -x $GDIR/llama-server && $(cat "$GDIR/source-commit" 2>/dev/null || true) == "$REV" &&
+        -e /sys/bus/pci/devices/$gpu_pci/drm && -r /dev/dri/renderD128 ]]; then
+    BIN="$GDIR/llama-server"
+    # Only the RADV discrete device (no llvmpipe), shader cache on writable state.
+    export GGML_VK_VISIBLE_DEVICES=0
+    # RADV splits the 32 GiB into a 16 GiB CPU-visible (BAR) and a 16 GiB
+    # invisible heap. ggml prefers the BAR heap, and the kernel then silently
+    # put the overflow into GTT (system RAM over PCIe; live 16:47: 16.7 GB
+    # VRAM + 18.5 GB GTT). Device-local only fills both VRAM halves.
+    export GGML_VK_DISABLE_HOST_VISIBLE_VIDMEM=1
+    export MESA_SHADER_CACHE_DIR="$SLOT/mesa-shader-cache"
+    mkdir -p "$MESA_SHADER_CACHE_DIR"
+    GPU_ARGS=(--device Vulkan0 --n-gpu-layers 99 --n-cpu-moe "$cpu_moe")
+    DRAFT_GPU_ARGS=(--device-draft Vulkan0 --n-gpu-layers-draft 99)
+  else
+    echo "coding $node: Vulkan runtime or GPU $gpu_pci missing, CPU fallback" >&2
+  fi
+fi
 SPEC_ARGS=()
 if [[ $mtp == embedded ]]; then
   SPEC_ARGS=(--spec-type draft-mtp --spec-draft-n-max 3 --spec-draft-p-min 0.75)
 elif [[ -n $mtp ]]; then
   DRAFT="/home/chris/models/mag-coding/$name/$mtp"
   [[ -f $DRAFT && ! -L $DRAFT ]] || { echo "coding $node: MTP head missing" >&2; exit 4; }
-  SPEC_ARGS=(--spec-type draft-mtp --spec-draft-n-max 3 --spec-draft-p-min 0.75 --model-draft "$DRAFT")
+  SPEC_ARGS=(--spec-type draft-mtp --spec-draft-n-max 3 --spec-draft-p-min 0.75 --model-draft "$DRAFT" "${DRAFT_GPU_ARGS[@]}")
 fi
 exec numactl --physcpubind="$cpus" --membind="$node" "$BIN" \
   --model "$MODEL" --alias "$alias" --host 127.0.0.1 --port "$port" \
@@ -113,5 +147,5 @@ exec numactl --physcpubind="$cpus" --membind="$node" "$BIN" \
   --jinja --reasoning-format auto --chat-template-file /usr/local/lib/mag-coding/ornith-chat.jinja \
   --cache-ram 16384 --ctx-checkpoints 48 --checkpoint-min-step 1024 --no-reasoning-preserve \
   --flash-attn on --batch-size 2048 --ubatch-size 512 --cache-type-k f16 --cache-type-v f16 \
-  "${SPEC_ARGS[@]}" \
+  "${GPU_ARGS[@]}" "${SPEC_ARGS[@]}" \
   --slots --slot-save-path "$SLOT" --no-ui

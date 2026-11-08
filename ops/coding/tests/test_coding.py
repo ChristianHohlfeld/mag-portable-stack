@@ -58,9 +58,21 @@ class CodingStage(unittest.TestCase):
         self.assertEqual(
             DATA["models"]["general"]["sha256"],
             "539041d2cf400b02f53a53cae54339ea65103d276645a34a68eac1c8d69a9db3")
-        self.assertEqual(
-            DATA["models"]["coder"]["sha256"],
-            "12d8d5c01bae7f23ea4822b2f96ba069d531f827d02a57c31002f2f95e72614a")
+        self.assertEqual(DATA["models"]["coder"]["model_id"], "ornith")  # stable API wire
+        self.assertEqual(DATA["models"]["coder"]["repo"], "unsloth/DeepSeek-V4-Flash-0731-GGUF")
+        shards = [DATA["models"]["coder"], *DATA["models"]["coder"]["parts"]]
+        self.assertEqual(len(shards), 4)
+        expected = [
+            "dec1cee704800267d9d836d5a61aefc33705be939bbb3058fa9006d98191576d",
+            "3064d3c4c1d6363e9f9ad88e90a3e2c5fb2d6f7ae16ca72135c3ce6a5c984da5",
+            "2e9b2732eca7da8324f731653624a4f5c9846258926fd9f468cc703afb51a019",
+            "4ca79d8e5107dd1b9bb57b176a7c09948837425dee49f0f1dfd6547a3769fea7",
+        ]
+        self.assertEqual([s["sha256"] for s in shards], expected)
+        for i, shard in enumerate(shards, 1):
+            self.assertEqual(shard["filename"], f"DeepSeek-V4-Flash-0731-UD-IQ3_XXS-{i:05d}-of-00004.gguf")
+            self.assertEqual(shard["repo_dir"], "UD-IQ3_XXS")
+            self.assertTrue(shard["link_from"].endswith(shard["filename"]))
         self.assertIn("default=16384", (ROOT / "smoke.py").read_text())
         self.assertIn("finish == \"length\"", (ROOT / "smoke.py").read_text())
 

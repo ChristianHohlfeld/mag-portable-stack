@@ -2424,6 +2424,10 @@ static bool bot_setting(int idx, const char *key, bool fallback) {
 // Missing means active. Proaktiv on/off, reload and room restart never write it.
 static bool bot_enabled_locked(int idx) {
   if (idx < 0 || (size_t)idx >= AGENTS.size()) return false;
+  // Noah is excluded from all room assignment; NUMA1 model stays resident.
+  if (CONFIGURED_MODEL && room_is_coding() &&
+      env("MAG_ROOM_NOAH_ENABLED","1") == "0" &&
+      model_slot_of(AGENTS[idx]) == 2) return false;
   const Val *v = AGENTS[idx].find("enabled");
   return !(v && v->type == Val::BOOL && !v->asBool());
 }
@@ -3370,21 +3374,31 @@ static std::vector<Val> wire_messages(int idx, const std::string &system,
     Val user=Val::object();user["role"]="user";user["content"]=extra;
     w.messages.push_back(user);
   }
-  // Prewarm and interactive chat MUST use the same persisted rollover.
-  // Invoke once at a budget boundary, never rewrite a warm prefix just because
-  // one older turn aged out. Dynamic budgets exclude immutable system/tools.
-  if (envi("MAG_ROOM_CONTEXT_MASKING", 1)) {
-    size_t dynamic_bytes = 0;
-    for (size_t i=1;i<w.messages.size();++i)
-      dynamic_bytes += mj::dump(w.messages[i]).size();
-    const size_t cap = (size_t)std::clamp(
-        envi(bot_model_id(idx).find("deepseek") != std::string::npos ?
-             "MAG_ROOM_NOAH_CONTEXT_TOKENS" : "MAG_ROOM_LENA_CONTEXT_TOKENS",
-             (int)room_context::token_budget(bot_model_id(idx))), 1024, 32768) * 4;
-    if (dynamic_bytes > cap && room_context::mask_old(w.messages, STATE_DIR, 512)) {
-      w.turn_ends.clear(); // No stale PhO offsets after a rollover.
-      std::cerr << "context-wire-rollover model=" << bot_model_id(idx)
-                << " dynamic_bytes=" << dynamic_bytes << std::endl;
+  // Enforce the same persistent, slot-specific wire boundary on prewarm/chat.
+  if (envi("MAG_ROOM_CONTEXT_MASKING",1)) {
+    size_t dynamic_bytes=0;
+    for(size_t i=1;i<w.messages.size();++i) dynamic_bytes+=mj::dump(w.messages[i]).size();
+    const size_t cap=(size_t)std::clamp(
+        envi(model_slot(idx)==2?"MAG_ROOM_NOAH_CONTEXT_TOKENS":"MAG_ROOM_LENA_CONTEXT_TOKENS",
+             (int)room_context::slot_budget_tokens(model_slot(idx))),512,32768)*4;
+    if(dynamic_bytes>cap) {
+      bool changed=false;
+      if(w.messages.size()==2) {
+        // First message contains the ENTIRE room transcript; archive it
+        // byte-for-byte, then carry the real latest user instruction verbatim.
+        for(auto it=room.rbegin();it!=room.rend();++it)
+          if(mag::str(*it,"role")=="user") {
+            changed=room_context::mask_initial(w.messages,STATE_DIR,
+                render_room_line(*it),512);
+            break;
+          }
+      } else changed=room_context::mask_old(w.messages,STATE_DIR,512);
+      if(changed) {
+        w.turn_ends.clear();
+        std::cerr<<"context-wire-rollover model="<<bot_model_id(idx)
+                 <<" slot="<<model_slot(idx)
+                 <<" before_bytes="<<dynamic_bytes<<std::endl;
+      }
     }
   }
   // Nothing new for this bot: the stored wire still ends on its own assistant
@@ -4875,10 +4889,11 @@ static std::string tools_json(int bot_idx, bool web) {
       arr=mj::dump(defs);
     }
   }
-  // Compact only the slow GLM prefix. Keep tool names, parameters,
+  // Compact stable GLM/coding prefixes. Keep tool names, parameters,
   // required sets, enum values and every execution/authorization decision
   // unchanged; prose descriptions are not part of the callable interface.
-  if (CONFIGURED_MODEL && bot_model_id(bot_idx).rfind("glm-5.3-flash", 0) == 0) {
+  if (CONFIGURED_MODEL && (room_is_coding() ||
+      bot_model_id(bot_idx).rfind("glm-5.3-flash", 0) == 0)) {
     Val parsed;
     if (mj::parse(arr, parsed) && parsed.isArr()) {
       std::function<void(Val &)> compact = [&](Val &v) {
@@ -7463,9 +7478,8 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
   std::string compacted_steps;
   const std::string context_model = bot_model_id(bot_idx);
   const size_t context_tokens = (size_t)std::clamp(
-      envi(context_model.find("deepseek") != std::string::npos ?
-           "MAG_ROOM_NOAH_CONTEXT_TOKENS" : "MAG_ROOM_LENA_CONTEXT_TOKENS",
-           (int)room_context::token_budget(context_model)), 1024, 32768);
+      envi(model_slot(bot_idx)==2?"MAG_ROOM_NOAH_CONTEXT_TOKENS":"MAG_ROOM_LENA_CONTEXT_TOKENS",
+           (int)room_context::slot_budget_tokens(model_slot(bot_idx))),512,32768);
   // Tool schemas/system prefix and reply budget are separate; only the
   // dynamic conversation is capped. Never apply an estimate to source code.
   const size_t static_bytes = messages.empty() ? 0 : mj::dump(messages.front()).size() + tools.size() + 2048;
@@ -7617,8 +7631,8 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
     const auto q1_started=steady_clock::now();
     size_t attempt_budget = context_budget;
     // Only a wire above the byte budget asks the backend for its window.
-    if (!stateless && prompt_wire_bytes(messages, tools) > attempt_budget)
-      attempt_budget = window_context_budget(bot_idx, attempt_budget);
+    // Do not overwrite a small prompt budget with the 262k/65k n_ctx window.
+    (void)attempt_budget;
     for (int attempt = 0; attempt < 3; ++attempt) {
       if (!stateless)
         compact_agent_context(bot_idx, messages, tools, attempt_budget, compacted_steps);

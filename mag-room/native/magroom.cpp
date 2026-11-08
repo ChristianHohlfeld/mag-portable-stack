@@ -3112,6 +3112,7 @@ static void pho_archive_body(int idx,WireSession &w,const std::string &body) {
   pho_once(idx,w,"line-"+fnv_hex(body),body);
 }
 static void pho_archive_turns(int idx,WireSession &w) {
+  if (!w.compression) return; // Coding: no lexical archival work or tokenizer calls.
   const size_t end=std::min(pho_old_end(w),w.messages.size());
   for(size_t i=2;i<end;++i) {
     const auto &m=w.messages[i];const auto role=mag::str(m,"role");
@@ -3157,6 +3158,7 @@ static std::string pho_sealed_prose(const Val &archive, const std::string &prose
 static std::string pho_initial_transcript(int idx,WireSession &w,
                                           const std::vector<Val> &room,std::string text) {
   // Imported history and an explicit fresh context have no warm wire prefix.
+  if (!w.compression) return text;
   // Only whole turns older than the last N user requests are eligible.
   const size_t recent=(size_t)std::clamp(envi("MAG_ROOM_PHO_KEEP_TURNS",2),1,20);
   size_t cutoff=0,count=0;bool answered=false;
@@ -8023,7 +8025,15 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
               }
             }
           }
-          rec["result"] = mj::utf8_cut(result, 900);
+          if (result.size() <= 900) rec["result"] = result;
+          else {
+            const std::string obs_ref = room_context::save(STATE_DIR, result);
+            rec["result"] = obs_ref.empty() ?
+                "[Werkzeugausgabe konnte nicht archiviert werden; im laufenden Kontext erhalten]" :
+                "[Vollstaendige Werkzeugausgabe als SHA256-Artefakt gespeichert]";
+            if (!obs_ref.empty()) rec["artifact_ref"] = obs_ref;
+            rec["result_bytes"] = (double)result.size();
+          }
           rec["ok"] = !failed;
           rec["ms"] = ms;
           report.tools.push(rec);

@@ -53,6 +53,32 @@ inline std::string save(const std::string &root, const std::string &data) {
   if (!ok) { ::unlink(path.c_str()); return ""; }
   return ref;
 }
+// Exact byte-range retrieval for very long one-line JSON records and source.
+ // Offset is 0-based, end is exclusive (0 means EOF). Refuse UTF-8 splits:
+ // the model transport is UTF-8 and must not silently replace a broken codepoint.
+inline bool load_bytes(const std::string &root, const std::string &ref,
+                       size_t first, size_t end, std::string &out, std::string &error) {
+  if (!valid_ref(ref) || (end && end <= first)) {
+    error = "Ungueltige Artefakt-ID oder Byte-Bereich"; return false;
+  }
+  std::ifstream in(artifact_path(root, ref), std::ios::binary);
+  if (!in) { error = "Artefakt nicht vorhanden"; return false; }
+  const std::string data((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  if (in.bad() || digest(data) != ref) {
+    error = "SHA-256-Abweichung oder Lesefehler"; return false;
+  }
+  if (first >= data.size()) { error = "Byte-Start hinter EOF"; return false; }
+  if (end == 0) end = data.size();
+  if (end > data.size()) { error = "Byte-Ende hinter EOF"; return false; }
+  const auto continuation = [](char c) {
+    return (static_cast<unsigned char>(c) & 0xc0u) == 0x80u;
+  };
+  if (continuation(data[first]) || (end < data.size() && continuation(data[end]))) {
+    error = "Byte-Grenze trennt UTF-8-Zeichen"; return false;
+  }
+  out = data.substr(first, end - first);
+  return true;
+}
 // Exact read, optionally by inclusive one-based lines. Zero means through EOF.
 inline bool load(const std::string &root, const std::string &ref,
                  size_t first, size_t last, std::string &out, std::string &error) {

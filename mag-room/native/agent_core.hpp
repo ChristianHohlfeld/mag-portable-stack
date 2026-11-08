@@ -7,6 +7,9 @@
 // Schemas stay registered on every turn (stable tool list = prompt cache).
 #include <fstream>
 
+// Stable read-only artifact tool; SHA256 identifies exact archived bytes.
+static const char *T_CONTEXT_ARTIFACT =
+    R"({"type":"function","function":{"name":"context_artifact","description":"Read an immutable archived room observation by SHA-256. No reconstruction or summary; request line ranges for large code, logs or diffs.","parameters":{"type":"object","properties":{"ref":{"type":"string","description":"64-character lowercase SHA-256 artifact id"},"start_line":{"type":"integer","minimum":1},"end_line":{"type":"integer","minimum":1}},"required":["ref"],"additionalProperties":false}}})";
 static const char *T_TODO =
     R"({"type":"function","function":{"name":"todo","description":"Goal checklist; set/add may include machine checks. verify(kind,path,text) reads the bot VM and yields a proof ID. done on checked items requires matching proof; otherwise block or keep working.","parameters":{"type":"object","properties":{"action":{"type":"string","enum":["set","add","done","block","list","verify"]},"goal":{"type":"string"},"items":{"type":"array","items":{"type":"string"}},"checks":{"type":"array","items":{"type":"object"}},"check":{"type":"object"},"proof":{"type":"string"},"kind":{"type":"string","enum":["file_exists","file_contains","http_2xx"]},"path":{"type":"string"},"item":{"type":"integer"},"text":{"type":"string"}},"required":["action"],"additionalProperties":false}}})";
 static const char *T_MEMORY =

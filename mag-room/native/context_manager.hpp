@@ -38,62 +38,68 @@ inline std::string reference_note(const std::string &ref, size_t n) {
       ". Exaktes Original mit context_artifact(ref) nachladen. "
       "Code, Fehlermeldungen und Diffs niemals aus dieser Referenz rekonstruieren.]";
 }
-// Mask a contiguous prefix of OLD, complete conversation turns ONLY.
-// All removed bytes, including tool calls/results, are archived verbatim.
-// Never mask the most recent three user turns or anything within them.
-// Fail-closed: return false when no safe grouping/storage is available.
-inline bool mask_old(std::vector<mj::Val> &messages, const std::string &root,
-                     size_t min_savings_bytes) {
-  if (messages.size() < 7) return false;
-  size_t protect = messages.size();
-  size_t users = 0;
-  for (size_t i = messages.size(); i-- > 2;) {
-    const mj::Val &m = messages[i];
-    if (!m.find("role") || m.find("role")->asStr() != "user") continue;
-    const std::string content = m.find("content") ? m.find("content")->asStr() : "";
-    if (content.rfind("[System]", 0) == 0 ||
-        content.rfind("[Bisher ausgefuehrte Schritte", 0) == 0 ||
-        content.rfind("[Aeltere Beobachtungen", 0) == 0) continue;
-    protect = i;
-    if (++users >= 3) break;
-  }
-  // With fewer than three real user turns, preserve all available recent
-  // turns. Very long single-turn tool loops may still archive completed older
-  // rounds while keeping the newest six messages untouched.
-  if (!users && messages.size() > 12) protect = messages.size() - 6;
-  if (protect <= 2) return false;
-  // Preserve system and the first transcript (system, first user, then history).
-  const size_t from = 2;
-  size_t to = protect;
-  // To prevent dangling tool results, rollovers may archive entire completed
-  // pairs. The last item before the protected user must never be a tool call.
-  // Do not orphan an assistant tool call or a following tool result.
-  while (to > from && (messages[to-1].find("tool_calls") ||
-         (to < messages.size() && messages[to].find("role") &&
-          messages[to].find("role")->asStr() == "tool"))) --to;
-  if (to <= from) return false;
-  bool has_fresh_history = false;
-  for (size_t i = from; i < to; ++i) {
-    const std::string content = messages[i].find("content") ?
-        messages[i].find("content")->asStr() : "";
-    if (content.rfind("[Aeltere Beobachtungen", 0) != 0)
-      has_fresh_history = true;
-  }
-  // Never create a chain of SHA references for the same old content.
-  if (!has_fresh_history) return false;
-  std::string archive;
-  for (size_t i = from; i < to; ++i) {
-    archive += mj::dump(messages[i]);
-    archive += "\n";
-  }
-  if (archive.size() <= min_savings_bytes) return false;
-  std::string ref = save(root, archive);
+// Keep this mapping independent of the GGUF alias and of the reviewer flag:
+// slot 1 on MI50 is Lena; slot 2 on NUMA1 CPU is Noah.
+inline size_t slot_budget_tokens(int slot) { return slot == 2 ? 4096 : 8192; }
+inline size_t fresh_budget_tokens(int slot) { return slot == 2 ? 50 : 500; }
+// Initial Room wire has the ENTIRE history inside messages[1]. Store it
+// intact, then reinsert the real current human instruction independently.
+// A single huge code instruction is preserved verbatim in the final user turn.
+inline bool mask_initial(std::vector<mj::Val> &messages,
+                         const std::string &root,
+                         const std::string &current_user,
+                         size_t min_savings_bytes = 512) {
+  if (messages.size() != 2 || current_user.empty() ||
+      messages[1].find("role") == nullptr ||
+      messages[1].find("role")->asStr() != "user") return false;
+  const std::string old = mj::dump(messages[1]) + "\n";
+  if (old.size() <= min_savings_bytes) return false;
+  const std::string ref = save(root, old);
   if (ref.empty()) return false;
-  mj::Val note = mj::Val::object();
-  note["role"] = "user";
-  note["content"] = reference_note(ref, to-from);
-  messages.erase(messages.begin()+from, messages.begin()+to);
-  messages.insert(messages.begin()+from, note);
+  messages[1]["content"] = reference_note(ref, 1);
+  mj::Val u=mj::Val::object();u["role"]="user";u["content"]=current_user;
+  messages.push_back(u);
+  return true;
+}
+// Mask whole completed old turns (including the formerly protected first user).
+// No inference and no truncation; failed archival always retains original bytes.
+// Never mask the latest user's instruction or an active assistant/tool exchange.
+inline bool mask_old(std::vector<mj::Val> &messages,const std::string &root,
+                     size_t min_savings_bytes) {
+  if (messages.size()<3) return false;
+  size_t protect=messages.size();
+  for(size_t i=messages.size();i-->1;) {
+    if(messages[i].find("role")&&messages[i].find("role")->asStr()=="user") {
+      const std::string content=messages[i].find("content")?
+          messages[i].find("content")->asStr():"";
+      if(content.rfind("[Aeltere Beobachtungen",0)==0)continue;
+      protect=i;break;
+    }
+  }
+  // The last 1 user turn, plus every subsequent tool/result, is protected.
+  // If no newer real instruction exists, do not risk losing current code.
+  if(protect<=1||protect==messages.size())return false;
+  const size_t from=1;
+  size_t to=protect;
+  while(to>from && (messages[to-1].find("tool_calls") ||
+      (to<messages.size()&&messages[to].find("role")&&
+       messages[to].find("role")->asStr()=="tool"))) --to;
+  if(to<=from)return false;
+  std::string archive;
+  bool fresh=false;
+  for(size_t i=from;i<to;++i) {
+    const std::string content=messages[i].find("content")?
+        messages[i].find("content")->asStr():"";
+    if(content.rfind("[Aeltere Beobachtungen",0)!=0)fresh=true;
+    archive+=mj::dump(messages[i])+"\n";
+  }
+  if(!fresh||archive.size()<=min_savings_bytes)return false;
+  const std::string ref=save(root,archive);
+  if(ref.empty())return false;
+  mj::Val note=mj::Val::object();
+  note["role"]="user";note["content"]=reference_note(ref,to-from);
+  messages.erase(messages.begin()+from,messages.begin()+to);
+  messages.insert(messages.begin()+from,note);
   return true;
 }
 } // namespace room_context

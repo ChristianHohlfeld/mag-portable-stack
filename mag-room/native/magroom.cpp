@@ -5873,6 +5873,43 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
       body["thinking_budget_tokens"] = flint_budget;
     }
   }
+  if(CONFIGURED_MODEL && bot_idx>=0 && !TL_SELFTALK &&
+     envi("MAG_ROOM_CONTEXT_MASKING",1)) {
+    // Last-mile guard applies to *every* coding-room request, including
+    // retries/continuations, independent of the dispatcher selection path.
+    const long total=room_exact_tokens(bot_idx,body);
+    const int cap=room_prompt_cap(bot_idx);
+    if(total<0) {
+      t.error="Prompt-Tokenizer (/apply-template oder /tokenize) nicht verfuegbar; "
+              "kein ungepruefter langer Prefill.";
+      return t;
+    }
+    long static_tokens=-1;
+    Val fixed=Val::object();
+    Val static_messages=Val::array();
+    if(!request_messages.empty())static_messages.push(request_messages.front());
+    Val user=Val::object();user["role"]="user";user["content"]="x";
+    static_messages.push(user);
+    fixed["messages"]=static_messages;
+    for(const char *key:{"tools","chat_template_kwargs","reasoning_effort","tool_choice"})
+      if(const Val *v=body.find(key))fixed[key]=*v;
+    static_tokens=room_exact_tokens(bot_idx,fixed);
+    const long dynamic=static_tokens>=0?std::max(0L,total-static_tokens): -1;
+    std::cerr<<"prompt-budget model="<<model
+             <<" slot="<<model_slot(bot_idx)
+             <<" total="<<total<<" static="<<static_tokens
+             <<" dynamic="<<dynamic<<" cap="<<cap
+             <<" fresh_budget="<<room_context::fresh_budget_tokens(model_slot(bot_idx))
+             <<" mask="<<envi("MAG_ROOM_CONTEXT_MASKING",1)
+             <<std::endl;
+    if(total>cap) {
+      t.error="Prompt zu lang: "+std::to_string(total)+" echte Tokens, Limit "+
+              std::to_string(cap)+
+              ". Alte Nachrichten konnten nicht sicher weiter maskiert werden; "
+              "Code und aktuelle Anweisungen bleiben unveraendert.";
+      return t;
+    }
+  }
   std::string payload = mj::dump(body);
   std::string req =
       "POST /v1/chat/completions HTTP/1.1\r\nHost: " + BACKEND_HOST +
@@ -6335,6 +6372,17 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
   }
   publish_prompt_cache(id_slot, model, saw_timings ? &timings_seen : nullptr,
                        saw_cached, saw_evaluated);
+  if(CONFIGURED_MODEL && bot_idx>=0 && !TL_SELFTALK) {
+    const long cached=saw_cached>=0?(long)saw_cached:-1;
+    const long total=saw_evaluated>=0?(long)saw_evaluated:-1;
+    const long uncached=(total>=0&&cached>=0)?std::max(0L,total-cached):-1;
+    const long target=(long)room_context::fresh_budget_tokens(model_slot(bot_idx));
+    std::cerr<<"prompt-prefill model="<<model<<" slot="<<model_slot(bot_idx)
+             <<" total="<<total<<" cached="<<cached<<" uncached="<<uncached
+             <<" target="<<target<<" cache_prompt=1"
+             <<" warning="<<(uncached>target?"slow-prefill":"none")
+             <<std::endl;
+  }
   if (t.error.empty() && saw_evaluated > 0)
     note_wire_ratio(model, prompt_wire_bytes(messages, tools), saw_evaluated);
   if (t.error.empty())

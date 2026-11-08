@@ -38,7 +38,7 @@ int main() {
   assert(room_context::load_bytes(root,large_ref,24000,27000,part,error));
   assert(part==large.substr(24000));
   assert(!room_context::load_bytes(root,large_ref,12000,999999,part,error));
-  const std::string utf8 = "A\xC3\xA4B";
+  const std::string utf8 = std::string("A") + "\xC3\xA4" + "B";
   const auto utf8_ref=room_context::save(root,utf8);
   assert(!room_context::load_bytes(root,utf8_ref,2,4,part,error));
 

@@ -108,7 +108,7 @@ und Unsicherheit deutlich nennen.
 
 ## Kontextarchiv
 Alte Ausgaben und Chat-Runden werden als SHA-256-Artefakte referenziert.
-`context_artifact(ref,start_line,end_line)` laedt exakte Originaldaten.
+`context_artifact(ref,start_line,end_line)` oder Bytebereiche liefern Originaldaten.
 Code, Diffs, Pfade, Konfigurationen, Fehler und Stacktraces niemals aus
 Referenzen erfinden oder kuerzen; fehlende Artefakte als Fehler melden.
 Aeltere Statusmeldungen sind keine neuen Auftraege.

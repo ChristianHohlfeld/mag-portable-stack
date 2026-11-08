@@ -1,3 +1,4 @@
+#include "mag_deadline.hpp"
 #include "../native/json.hpp"
 #include "../native/context_manager.hpp"
 #include <cassert>
@@ -10,6 +11,7 @@ static mj::Val msg(const std::string &role, const std::string &s) {
   mj::Val x=mj::Val::object();x["role"]=role;x["content"]=s;return x;
 }
 int main() {
+  mag_test_deadline(60); // mag-test-timeout: 60
   assert(room_context::token_budget("deepseek-v4-flash-0731") == 4096);
   assert(room_context::token_budget("qwen3.8-27b") == 8192);
   const std::string root="/tmp/mag-context-test-"+std::to_string((long)getpid());

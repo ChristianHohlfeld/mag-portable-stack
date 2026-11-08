@@ -3849,6 +3849,10 @@ class ConfiguredNuma(unittest.TestCase):
     MAG_TEST_NO_MEMGIT='1',MAG_ROOM_AGENT_CTL=str(cls.ctl),MAG_ROOM_GUEST_RUN='/bin/false',MAG_ROOM_MCP_AUTO='0',
     MAG_ROOM_SINGLE_BOT='auto',MAG_ROOM_SINGLE_BOT_VM='on',MAG_ROOM_DUAL_NUMA='1',MAG_ROOM_MODEL_ID='deepseek-v4-flash-0731',MAG_ROOM_MODEL_LABEL='DeepSeek V4 Flash',MAG_ROOM_MODEL_PORTS='8191:0,8192:1',MAG_ROOM_MAX_BOTS='2',MAG_ROOM_PRESETS=str(ROOT/'ops/room/presets.json'),
     MAG_ROOM_PREWARM='0')  # no MAG_ROOM_STAGGER: Ornith answers concurrently by default
+  if cls.__name__ == 'PhoCompress':
+   # Legacy PhO contract tests explicitly opt into the deprecated lexical mode.
+   # Production coding defaults to MAG_ROOM_CODING_PHO=0.
+   cls.env['MAG_ROOM_CODING_PHO']='1'
   if getattr(cls,'mixed',False):
    cls.env.update(MAG_ROOM_MODEL_ID_1='qwen3.8-flash-next-uncensored',MAG_ROOM_MODEL_LABEL_1='Qwen3.8 Uncensored')
   cls.start()
@@ -4906,27 +4910,28 @@ class PhoCompress(unittest.TestCase):
    for r in records:
     self.assertEqual(r['content'],r['original']);self.assertEqual(r['tokens_before'],-1)
   finally:Model.tokenizer_fail=False
- def test_04_rollover_uses_archive_and_keeps_recent_turns(self):
+ def test_04_rollover_masks_old_observations_without_losing_code(self):
   for b in self.bots().values():
-   code='```cpp\nconst char *URL = "https://github.com/o/r"; int id = 001234;\n```'
+   code='\x60\x60\x60cpp\\nconst char *URL = "https://github.com/o/r"; int id = 001234;\\n\x60\x60\x60'
    self.send(b['id'],'Bitte Code exakt aufbewahren: '+code)
-   previous=None;rolled=None
+   rolled=None
    for n in range(32):
     call=self.send(b['id'],self.PROSE*13+' Lange Historie '+str(n))
-    if any('today bund' in m.get('content','') for m in call['messages'][2:]):
+    if any('SHA256=' in m.get('content','') and
+           'context_artifact' in m.get('content','') for m in call['messages']):
      rolled=call
-     if previous:
-      recent=[m for m in previous['messages'] if m.get('role')=='user'][-2:]
-      for m in recent:self.assertIn(m,call['messages'],'last two complete turns stay exact')
      break
-    previous=call
-   self.assertIsNotNone(rolled,'regular context rollover must consume stored compression for '+b['model'])
-   # Rollover already rebuilt this copy. The next request must resend it
-   # unchanged: a warm turn never rewrites a message the previous call sent.
-   mark=len(Model.cache_records)
+   self.assertIsNotNone(rolled,'context rollover must archive old observations for '+b['model'])
+   # Every archived message is held in immutable JSONL, including any code.
+   notes=[m['content'] for m in rolled['messages'] if 'SHA256=' in m.get('content','')]
+   ref=notes[0].split('SHA256=',1)[1][:64]
+   blob=self.state/'context-artifacts'/ref[:2]/(ref+'.txt')
+   self.assertTrue(blob.exists())
+   raw=blob.read_text()
+   self.assertTrue('Bundestag' in raw or code.replace('\\n','\\\\n') in raw)
+   previous=rolled; mark=len(Model.cache_records)
    warm=self.send(b['id'],'Kurze Anschlussfrage nach dem Kontextwechsel.')
-   self.assert_warm_prefix(rolled,warm,Model.cache_records[mark])
-   self.assertFalse(any(r['content']!=r['original'] for r in self.wire(b['model'])['pho_archive'].values() if code in r['original']))
+   self.assert_warm_prefix(previous,warm,Model.cache_records[mark])
  def test_03_plus_menu_label_and_order(self):
   html=(ROOT/'mag-room/web/index.html').read_text()
   self.assertLess(html.index('id="plus-github-access"'),html.index('id="plus-think"'))

@@ -6,6 +6,7 @@
 #include "room_model.hpp"
 #include "pho_codec.hpp"
 #include "pho_live.hpp"
+#include "context_manager.hpp"
 #include "browser_recovery.hpp"
 #include "browser_events.hpp"
 #include "pages.hpp"
@@ -3191,7 +3192,7 @@ static std::string pho_initial_transcript(int idx,WireSession &w,
   return text;
 }
 static void pho_rollover(int idx,std::vector<Val> &messages) {
-  if(!CONFIGURED_MODEL)return;
+  if(!CONFIGURED_MODEL || !envi("MAG_ROOM_CODING_PHO",0))return;
   const auto bot=bot_field(idx,"id");std::lock_guard<std::mutex> wire(WIRE_MTX);
   auto it=WIRE_SESSIONS.find(bot);if(it==WIRE_SESSIONS.end()||!it->second.compression)return;
   // Context budget is already rebuilding this copy. Substitute sealed line
@@ -3285,7 +3286,7 @@ static std::vector<Val> wire_messages(int idx, const std::string &system,
     w.fingerprint=key;
   }
   // Sample preference exactly at a turn boundary, never during streaming.
-  w.compression=pho_enabled(idx);
+  w.compression=pho_enabled(idx) && envi("MAG_ROOM_CODING_PHO",0)!=0;
   // Seal aged prose for a later rollover. Do not rewrite w.messages: the next
   // request must resend every previous message byte-for-byte.
   pho_archive_turns(idx,w);
@@ -4826,6 +4827,7 @@ static std::string tools_json(int bot_idx, bool web) {
   defs.push_back(T_MEMORY);
   defs.push_back(T_SKILL);
   defs.push_back(T_TASK);
+  defs.push_back(T_CONTEXT_ARTIFACT);
   defs.push_back(T_SECRET); // a sub-agent gets it too (cache); task_start refuses depth 2
   for (const char *d : JOBS_TOOL_DEFS) defs.push_back(d);
   for (const char *d : S23_TOOL_DEFS) defs.push_back(d);
@@ -6721,6 +6723,20 @@ static std::string dispatch_tool_raw(int bot_idx, const std::string &name,
   std::string vm = bot_field(bot_idx, "vm", "keine");
   std::string bot_id = bot_field(bot_idx, "id");
   std::string bot_name = bot_field(bot_idx, "name", "Bot");
+  if (name == "context_artifact") {
+    const std::string ref = mag::str(a, "ref");
+    const long first = mag::num(a, "start_line", 1);
+    const long last = mag::num(a, "end_line", 0);
+    if (first < 1 || last < 0) return "Fehler: Ungueltiger Zeilenbereich";
+    std::string content, error;
+    if (!room_context::load(STATE_DIR, ref, (size_t)first, (size_t)last, content, error))
+      return "Fehler: " + error;
+    // Never cut a code/diff. Ask for a smaller exact range instead.
+    if (content.size() > 24000)
+      return "Fehler: Artefaktbereich zu gross (" + std::to_string(content.size()) +
+             " Bytes); bitte kleineren start_line/end_line-Bereich lesen. Unveraendert gespeichert.";
+    return content;
+  }
   if (is_mcp_tool(name)) return mcp_dispatch_tool(bot_idx, name, a);
   if (is_jobs_tool(name)) return jobs_dispatch_tool(bot_idx, name, a);
   if (is_pages_tool(name)) {
@@ -7116,89 +7132,23 @@ static bool context_overflow_error(const std::string &error) {
           error.find("context_length") != std::string::npos);
 }
 static void compact_agent_context(int bot_idx, std::vector<Val> &messages,
-                                  const std::string &tools, size_t limit,
-                                  std::string &rollup) {
-  // Critical for CPU-only models: compacting ONE old tool round whenever the
-  // next response crosses the limit rewrites the early rollup message on EVERY
-  // turn. That invalidates the entire later llama KV prefix, causing minutes
-  // of repeated prefill. Compact in infrequent batches, retaining ~40% spare
-  // window for future tool rounds. Full outputs and files remain in the VM/
-  // activity log. Never orphan a tool result or drop the latest tool rounds.
-  if (prompt_wire_bytes(messages, tools) <= limit) return;
-  // This is the existing infrequent context rollover: active KV is never
-  // rewritten merely because another turn became old or a switch changed.
-  if(!CURRENT_JOB&&!TL_TASK)pho_rollover(bot_idx,messages);
-  if (prompt_wire_bytes(messages, tools) <= limit) return;
-  // One big step (60% of the cap): the next turns append behind a stable
-  // prefix until the window fills again.
-  const size_t target = limit * 60 / 100;
-  while (prompt_wire_bytes(messages, tools) > target) {
-    const size_t at = rollup.empty() ? 2 : 3;
-    if (messages.size() <= at + 2) break;
-    // Preserve two previous completed user turns AND the pending user request when collapsing older
-    // rounds. If those alone exceed the budget, handle the initial transcript
-    // below instead of silently discarding a live instruction.
-    size_t protect_from=messages.size();
-    int user_count=0;
-    for(size_t k=messages.size();k-->2;) {
-      if(mag::str(messages[k],"role")!="user")continue;
-      const std::string content=mag::str(messages[k],"content");
-      if(content.rfind("[System]",0)==0 ||
-         content.rfind("[Bisher ausgefuehrte Schritte",0)==0)continue;
-      // Current input is not a completed turn: also retain its two predecessors.
-      protect_from=k;
-      if(++user_count==3)break;
-    }
-    if(at>=protect_from)break;
-    size_t end = at + 1;
-    const Val &first = messages[at];
-    std::string note;
-    if (mag::str(first, "role") == "assistant") {
-      note = mj::utf8_cut(mag::str(first, "content"), 180);
-      if (auto tc = first.find("tool_calls"); tc && tc->isArr() &&
-          !tc->asArr().empty()) {
-        auto fn = tc->asArr().front().find("function");
-        if (fn) note = mag::str(*fn, "name") + ": " + note;
-      }
-      while (end < messages.size() && mag::str(messages[end], "role") == "tool") {
-        note += " -> " + mj::utf8_cut(mag::str(messages[end], "content"), 280);
-        ++end;
-      }
-      // A pending-step reminder belongs to its preceding assistant round.
-      if (end < messages.size() &&
-          mag::str(messages[end], "role") == "user" &&
-          mag::str(messages[end], "content").rfind("[System]", 0) == 0) ++end;
-    } else {
-      note = mj::utf8_cut(mag::str(first, "content"), 220);
-    }
-    if (end > protect_from) break;
-    if (note.empty()) note = "Abgeschlossener Zwischenschritt";
-    // Tool rounds may grow back beyond the old size later in this turn.
-    // Invalidate stale offsets at the actual erasure, never infer from size.
-    if(!CURRENT_JOB&&!TL_TASK)pho_forget_boundaries(bot_idx);
-    messages.erase(messages.begin() + at, messages.begin() + end);
-    rollup += "\n- " + note;
-    if (rollup.size() > 3200)
-      rollup = "[Aeltere Schritte gekuerzt]" + utf8_suffix(rollup, 2800);
-    Val handoff = Val::object();
-    handoff["role"] = "user";
-    handoff["content"] = "[Bisher ausgefuehrte Schritte; keine neuen Auftraege]\n" + rollup;
-    if (at == 2) messages.insert(messages.begin() + 2, handoff);
-    else messages[2] = handoff;
+                                   const std::string &tools, size_t limit,
+                                   std::string &rollup) {
+  (void)rollup;
+  // Never touch the warm prefix until the request would exceed the budget.
+  if (!envi("MAG_ROOM_CONTEXT_MASKING",1) || prompt_wire_bytes(messages, tools) <= limit)
+    return;
+  // The system/tool prefix is immutable. Archive complete old observation
+  // turns, never cut code, diffs or a user instruction, and leave current
+  // work + at least two preceding user turns intact.
+  const bool changed = room_context::mask_old(messages, STATE_DIR, 512);
+  if (changed) {
+    if (!CURRENT_JOB && !TL_TASK) pho_forget_boundaries(bot_idx);
+    std::cerr << "context-mask-rollover model=" << bot_model_id(bot_idx)
+              << " remaining_bytes=" << prompt_wire_bytes(messages,tools) << std::endl;
   }
-  // The initial room transcript can itself be larger than the model window.
-  // Preserve the newest user instruction and volatile [Kontext] tail.
-  for (int i = 0; i < 3 && prompt_wire_bytes(messages, tools) > limit &&
-                  messages.size() >= 2; ++i) {
-    auto field = messages[1].find("content");
-    const std::string u = field ? field->asStr() : "";
-    const size_t excess = prompt_wire_bytes(messages, tools) - limit;
-    if (u.size() <= excess + 1400) break;
-    const std::string header = "[Aelterer Raumverlauf gekuerzt]\n";
-    size_t keep = u.size() - excess - header.size() - 128;
-    if (keep < 1200) break;
-    messages[1]["content"] = header + utf8_suffix(u, keep);
-  }
+  // No fallback to utf8_suffix: if the remaining verbatim material does not
+  // fit, report backend context error and let the user select smaller ranges.
 }
 
 // Last few room lines only. The full wire stays untouched so a human hi
@@ -7479,8 +7429,15 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
   bool completed = false;
   bool react_closing = false; // a react/unreact-only round happened
   std::string compacted_steps;
-  const size_t context_budget = (size_t)std::clamp(
-      envi("MAG_ROOM_CONTEXT_BYTES", 52000), 24000, 100000);
+  const std::string context_model = bot_model_id(bot_idx);
+  const size_t context_tokens = (size_t)std::clamp(
+      envi(context_model.find("deepseek") != std::string::npos ?
+           "MAG_ROOM_NOAH_CONTEXT_TOKENS" : "MAG_ROOM_LENA_CONTEXT_TOKENS",
+           (int)room_context::token_budget(context_model)), 1024, 32768);
+  // Tool schemas/system prefix and reply budget are separate; only the
+  // dynamic conversation is capped. Never apply an estimate to source code.
+  const size_t static_bytes = messages.empty() ? 0 : mj::dump(messages.front()).size() + tools.size() + 2048;
+  const size_t context_budget = static_bytes + context_tokens * 4;
   auto run_deadline = steady_clock::now() + seconds(RUN_BUDGET_S);
   int todo_nudges = 0;
   TL_TODO_TOUCHED = false;
@@ -8079,10 +8036,18 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
       // terminal output again at every subsequent model step.
       const size_t tool_limit = (size_t)std::clamp(
           envi("MAG_ROOM_TOOL_CONTEXT_BYTES", 6000), 1000, 12000);
-      tr["content"] = result.size() > tool_limit
-          ? mj::utf8_cut(result, tool_limit) +
-            "\n[Ausgabe fuer Modell gekuerzt; Details erneut gezielt lesen]"
-          : result;
+      if (fname == "context_artifact") {
+        // The reader already enforces exact ranges; never re-archive/re-cut.
+        tr["content"] = result;
+      } else if (result.size() > tool_limit) {
+        const std::string ref = room_context::save(STATE_DIR, result);
+        // Fail-closed: if storage fails do NOT drop any result bytes.
+        tr["content"] = ref.empty() ? result :
+            "[Vollstaendige Werkzeugausgabe unveraendert gespeichert; " +
+            std::to_string(result.size()) + " Bytes; SHA256=" + ref +
+            ". Mit context_artifact(ref,start_line,end_line) exakt nachladen. "
+            "Keine Rekonstruktion oder stillschweigende Kuerzung.]";
+      } else tr["content"] = result;
       messages.push_back(tr);
       if (repeated_failure)
         break;

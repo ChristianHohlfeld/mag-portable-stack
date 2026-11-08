@@ -7674,6 +7674,47 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
     for (int attempt = 0; attempt < 3; ++attempt) {
       if (!stateless)
         compact_agent_context(bot_idx, messages, tools, attempt_budget, compacted_steps);
+      if (CONFIGURED_MODEL && !stateless && !TL_SELFTALK &&
+          envi("MAG_ROOM_CONTEXT_MASKING",1)) {
+        // Real tokenizer, real chat template, same model and tools. This is a
+        // preflight, not another LLM. A failed archive cannot discard code.
+        int before=-1,after=-1,rollovers=0;
+        const int cap=room_prompt_cap(bot_idx);
+        for(int reduce=0;reduce<16;++reduce) {
+          Val draft=Val::object(),msg=Val::array();
+          for(const auto &m:messages)msg.push(m);
+          draft["messages"]=msg;
+          Val defs;
+          if(mj::parse(tools,defs)&&defs.isArr())draft["tools"]=defs;
+          Val kw=Val::object();
+          kw["enable_thinking"]=thinking_turn;
+          if(model_slot(bot_idx)==2)kw["reasoning_effort"]="high";
+          else kw["reasoning_effort"]="low";
+          draft["chat_template_kwargs"]=kw;
+          after=(int)room_exact_tokens(bot_idx,draft);
+          if(before<0)before=after;
+          if(after<0 || after<=cap)break;
+          bool changed=false;
+          if(messages.size()==2) {
+            std::string latest=TURN_INPUT;
+            if(latest.empty()) {
+              std::lock_guard<std::recursive_mutex> lock(STATE_MTX);
+              for(auto it=ROOM.rbegin();it!=ROOM.rend();++it)
+                if(mag::str(*it,"role")=="user") {
+                  latest=render_room_line(*it);break;
+                }
+            }
+            changed=room_context::mask_initial(messages,STATE_DIR,latest,128);
+          } else changed=room_context::mask_old(messages,STATE_DIR,128);
+          if(!changed)break;
+          ++rollovers;
+        }
+        if(rollovers)
+          std::cerr<<"context-exact-rollover model="<<bot_model_id(bot_idx)
+                   <<" slot="<<model_slot(bot_idx)<<" tokens_before="<<before
+                   <<" tokens_after="<<after<<" budget="<<cap
+                   <<" count="<<rollovers<<" reason=hard-prompt-cap"<<std::endl;
+      }
       // Continuation rounds send enable_thinking=false: llama.cpp rejects an
       // assistant prefill with thinking on (reasoning_effort/clear_thinking stay).
       const bool glm_no_think = glm_generation_turn && (glm_continue || glm_thinking_retry);

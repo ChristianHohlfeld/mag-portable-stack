@@ -52,18 +52,35 @@ inline bool mask_old(std::vector<mj::Val> &messages, const std::string &root,
     if (!m.find("role") || m.find("role")->asStr() != "user") continue;
     const std::string content = m.find("content") ? m.find("content")->asStr() : "";
     if (content.rfind("[System]", 0) == 0 ||
-        content.rfind("[Bisher ausgefuehrte Schritte", 0) == 0) continue;
+        content.rfind("[Bisher ausgefuehrte Schritte", 0) == 0 ||
+        content.rfind("[Aeltere Beobachtungen", 0) == 0) continue;
     protect = i;
     if (++users >= 3) break;
   }
-  if (users < 3 || protect <= 3) return false;
+  // With fewer than three real user turns, preserve all available recent
+  // turns. Very long single-turn tool loops may still archive completed older
+  // rounds while keeping the newest six messages untouched.
+  if (!users && messages.size() > 12) protect = messages.size() - 6;
+  if (protect <= 2) return false;
   // Preserve system and the first transcript (system, first user, then history).
   const size_t from = 2;
   size_t to = protect;
   // To prevent dangling tool results, rollovers may archive entire completed
   // pairs. The last item before the protected user must never be a tool call.
-  if (to > from && messages[to-1].find("tool_calls")) --to;
+  // Do not orphan an assistant tool call or a following tool result.
+  while (to > from && (messages[to-1].find("tool_calls") ||
+         (to < messages.size() && messages[to].find("role") &&
+          messages[to].find("role")->asStr() == "tool"))) --to;
   if (to <= from) return false;
+  bool has_fresh_history = false;
+  for (size_t i = from; i < to; ++i) {
+    const std::string content = messages[i].find("content") ?
+        messages[i].find("content")->asStr() : "";
+    if (content.rfind("[Aeltere Beobachtungen", 0) != 0)
+      has_fresh_history = true;
+  }
+  // Never create a chain of SHA references for the same old content.
+  if (!has_fresh_history) return false;
   std::string archive;
   for (size_t i = from; i < to; ++i) {
     archive += mj::dump(messages[i]);

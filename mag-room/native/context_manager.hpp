@@ -8,8 +8,8 @@
 #include <vector>
 namespace room_context {
 inline size_t token_budget(const std::string &model) {
-  if (model.find("deepseek") != std::string::npos) return 4096; // Noah NUMA1 CPU
-  if (model.find("qwen") != std::string::npos) return 8192;     // Lena MI50
+  if (model == "ornith" || model.find("deepseek") != std::string::npos) return 4096; // Noah NUMA1 CPU
+  if (model == "ornith-numa0" || model.find("qwen") != std::string::npos) return 8192; // Lena MI50
   return 8192;
 }
 inline size_t budget_bytes(const std::string &model) {

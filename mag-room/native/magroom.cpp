@@ -3026,6 +3026,44 @@ static long pho_tokens(int idx,const std::string &text) {
       !mj::parse(reply,parsed))return -1;
   auto tokens=parsed.find("tokens");return tokens&&tokens->isArr()?(long)tokens->asArr().size():-1;
 }
+// Count the fully rendered Jinja chat prompt with the active backend's own
+// tokenizer. No inference slot is acquired and no decode occurs.
+static long room_exact_tokens(int idx, const Val &request) {
+  if (idx < 0 || !request.isObj()) return -1;
+  Val tpl=Val::object();
+  for(const char *key:{"messages","tools","chat_template_kwargs",
+                       "reasoning_effort","tool_choice"})
+    if(const Val *v=request.find(key))tpl[key]=*v;
+  tpl["add_generation_prompt"]=true;
+  const auto headers=std::vector<std::pair<std::string,std::string>>{
+    {"Content-Type","application/json"},
+    {"Authorization","Bearer "+API_KEY},
+    {"X-Mag-Model",bot_model_id(idx)},
+    {"X-Mag-Slot",gateway_slot(idx)},
+    {"X-Mag-Session","room-token-budget"}};
+  std::string reply;long status=0;Val rendered;
+  if(!http_simple(BACKEND_HOST,BACKEND_PORT,"POST","/apply-template",
+       mj::dump(tpl),headers,reply,&status,nullptr,8000) ||
+       status!=200 || !mj::parse(reply,rendered))return -1;
+  const Val *prompt=rendered.find("prompt");
+  if(!prompt || prompt->type!=Val::STR)return -1;
+  Val tok=Val::object();
+  tok["content"]=prompt->asStr();
+  tok["add_special"]=false;
+  tok["parse_special"]=true;
+  reply.clear();status=0;Val result;
+  if(!http_simple(BACKEND_HOST,BACKEND_PORT,"POST","/tokenize",
+       mj::dump(tok),headers,reply,&status,nullptr,8000) ||
+       status!=200 || !mj::parse(reply,result))return -1;
+  const Val *tokens=result.find("tokens");
+  return tokens && tokens->isArr() ? (long)tokens->asArr().size() : -1;
+}
+static int room_prompt_cap(int idx) {
+  const bool noah=model_slot(idx)==2;
+  const int fallback=noah?4096:8192;
+  return std::clamp(envi(noah?"MAG_ROOM_NOAH_PROMPT_TOKENS":
+                  "MAG_ROOM_LENA_PROMPT_TOKENS",fallback),256,65536);
+}
 // Compress only when a room message first enters this bot's prompt wire.
 // Its persisted copy remains byte-identical on every later cached request.
 // Room/UI records, tool payloads, and the stable system prefix are untouched.

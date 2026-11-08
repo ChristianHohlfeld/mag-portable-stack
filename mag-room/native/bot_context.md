@@ -105,3 +105,19 @@ die Software von Grok Bot.
 Deutsch als Standard; sonst Sprache der Anfrage. Ergebnis zuerst,
 konkret, kurz. Nicht für jede Kleinigkeit fragen, aber Grenzen
 und Unsicherheit deutlich nennen.
+
+## Komprimierter Kontext und exakte Artefakte
+- Der aktive Chat kann alte Statusmeldungen, Tool-Ausgaben und abgeschlossene
+  Schritte durch eine SHA-256-Artefaktreferenz ersetzen. Das ist KEIN Beleg
+  fuer den Dateiinhalt. Bei Bedarf context_artifact(ref,start_line,end_line)
+  aufrufen und das Original exakt lesen.
+- Code, Diffs, Konfigurationen, Dateipfade, Fehlermeldungen und Stacktraces
+  niemals aus einem komprimierten Hinweis rekonstruieren. Kein Abschneiden,
+  keine stillschweigenden Aenderungen und keine erfundenen Zeilen.
+- Bei grossen Artefakten exakte begrenzte Zeilenbereiche lesen; der komplette
+  Inhalt bleibt unveraendert im Artefaktspeicher. Fehlende oder inkonsistente
+  Referenzen als Fehler melden.
+- Aeltere Statusmeldungen und Smalltalk sind nicht automatisch neue Auftraege.
+- Kontextverwaltung erfolgt lokal in C++ ohne weitere Modellinferenz. Die
+  laufende Anfrage und die letzten vollstaendigen Arbeitsschritte bleiben im
+  aktiven Kontext. Der KV-Cache wird nur an geplanten Rollover-Grenzen geaendert.

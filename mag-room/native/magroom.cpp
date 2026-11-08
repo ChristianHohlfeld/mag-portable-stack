@@ -3370,6 +3370,23 @@ static std::vector<Val> wire_messages(int idx, const std::string &system,
     Val user=Val::object();user["role"]="user";user["content"]=extra;
     w.messages.push_back(user);
   }
+  // Prewarm and interactive chat MUST use the same persisted rollover.
+  // Invoke once at a budget boundary, never rewrite a warm prefix just because
+  // one older turn aged out. Dynamic budgets exclude immutable system/tools.
+  if (envi("MAG_ROOM_CONTEXT_MASKING", 1)) {
+    size_t dynamic_bytes = 0;
+    for (size_t i=1;i<w.messages.size();++i)
+      dynamic_bytes += mj::dump(w.messages[i]).size();
+    const size_t cap = (size_t)std::clamp(
+        envi(bot_model_id(idx).find("deepseek") != std::string::npos ?
+             "MAG_ROOM_NOAH_CONTEXT_TOKENS" : "MAG_ROOM_LENA_CONTEXT_TOKENS",
+             (int)room_context::token_budget(bot_model_id(idx))), 1024, 32768) * 4;
+    if (dynamic_bytes > cap && room_context::mask_old(w.messages, STATE_DIR, 512)) {
+      w.turn_ends.clear(); // No stale PhO offsets after a rollover.
+      std::cerr << "context-wire-rollover model=" << bot_model_id(idx)
+                << " dynamic_bytes=" << dynamic_bytes << std::endl;
+    }
+  }
   // Nothing new for this bot: the stored wire still ends on its own assistant
   // reply. Do not append an empty user turn; the caller skips the request.
   TL_WIRE_STALE = !w.messages.empty() && mag::str(w.messages.back(), "role") == "assistant";

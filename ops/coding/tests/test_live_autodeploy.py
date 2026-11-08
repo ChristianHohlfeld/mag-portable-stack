@@ -176,17 +176,17 @@ class CodingDeploy(unittest.TestCase):
   self.assertNotIn("n-cpu-moe 35",start)
   self.assertIn("ctx=65536",start)
   self.assertIn('[[ -z $template ]] || TEMPLATE_ARGS=(--chat-template-file "/usr/local/lib/mag-coding/$template")',start)
-  self.assertIn("--reasoning-format auto",start)
+  self.assertIn("reasoning_format=auto",start)  # Lena remains unchanged
   self.assertIn("Qwen3.8-27B Q6_K",source("ops/room/coding.env"))
   self.assertIn("MAG_ROOM_NOAH_REVIEW=1",source("ops/room/coding.env"))
   self.assertIn("MAG_ROOM_GROUP_STAGGER=reply",source("ops/room/coding.env"))
-  # MTP self-speculation keeps the one-lane-per-node layout (-np 1).
+  # The GPU path remains unchanged; DeepSeek on NUMA1 has no speculative draft.
   self.assertIn("template=deepseek-v4-flash-chat.jinja; slot_sub=deepseek-v4-iq3xxs",start)
   self.assertIn("cache_k=f16; cache_v=f16; ubatch=512; cache_ram=8192",start)
   self.assertIn("--spec-type draft-mtp",start)
   self.assertIn('"${SPEC_ARGS[@]}"',start)
   self.assertIn("--parallel 1",start)
-  # Chat without thinking: Flint template override, installed with the launcher.
+  # Legacy Flint Jinja remains staged for rollback; DeepSeek uses its own template.
   self.assertIn('TEMPLATE_ARGS=(--chat-template-file "$TPL")',start)
   self.assertIn('install -m 0644 "$ROOT/ops/coding/flint-chat.jinja" /usr/local/lib/mag-coding/flint-chat.jinja',layout)
   tpl=source("ops/coding/flint-chat.jinja")
@@ -198,7 +198,7 @@ class CodingDeploy(unittest.TestCase):
   self.assertRegex(source("ops/coding/runtime.sha").strip(),r"^[a-f0-9]{40}$")
   self.assertEqual([new["models"][i]["model_id"] for i in ("general","coder")],["ornith-numa0","ornith"])
   room=source("mag-room/native/magroom.cpp")
-  # No per-round token cap on either coding bot (Flint reasons every turn; Chris: no caps).
+  # No per-round token cap on either coding bot (Noah may reason at length).
   self.assertIn("const bool uncapped = coding_model && !TL_SELFTALK;",room)
   self.assertIn('if (!uncapped) body["max_tokens"] = max_output;',room)
 if __name__=="__main__": unittest.main()

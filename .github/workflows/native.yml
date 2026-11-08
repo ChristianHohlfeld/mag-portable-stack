@@ -115,6 +115,7 @@ jobs:
             build/mag-numa-swap
             build/s23ctl
             build/test-pho-codec
+            build/test-context-manager
             build/test-guest-pty
             build/test-browser-recovery
             build/test-jobs-mcp

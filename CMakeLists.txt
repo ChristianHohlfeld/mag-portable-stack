@@ -65,6 +65,8 @@ install(TARGETS magroom mag-browser magbot-native mag-audit-gateway mag-bots-pub
 install(DIRECTORY mag-room/web/ DESTINATION web)
 install(DIRECTORY mag-room/static/ DESTINATION web/static)
 
+add_executable(test-context-manager mag-room/tests/test_context_manager.cpp)
+target_link_libraries(test-context-manager PRIVATE OpenSSL::Crypto icuuc)
 add_executable(test-pho-codec mag-room/tests/test_pho_codec.cpp)
 add_executable(test-group-dispatcher mag-room/tests/test_group_dispatcher.cpp)
 target_link_libraries(test-pho-codec PRIVATE icuuc)

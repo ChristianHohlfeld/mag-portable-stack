@@ -9,3 +9,5 @@ guest-curl :: ./build/test-guest-curl
 large-stdin :: ./build/test-large-stdin
 gitea-account :: ./build/test-gitea-account
 group-dispatcher :: ./build/test-group-dispatcher
+
+context-manager :: ./build/test-context-manager

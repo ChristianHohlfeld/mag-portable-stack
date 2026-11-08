@@ -108,8 +108,13 @@ assert 'body["cache_prompt"] = false;' in room and 'body["top_k"] = 1;' in room 
 assert 'Token-ID nicht eindeutig' in room  # ik ids verified via tokenize+detokenize
 assert "api('/api/model-radius'" in ui
 assert 'if (!JOBS.empty() || AUTO_READY) return;' in room  # never delays a queued turn
-assert 'const size_t target = limit * 60 / 100;' in room
-assert 'if (prompt_wire_bytes(messages, tools) <= limit) return;' in room
+# Old lossy 60%-rollover and utf8 suffix trimming have been replaced.
+assert 'room_context::mask_old(messages, STATE_DIR, 512)' in room
+assert 'No fallback to utf8_suffix' in room
+assert 'context-wire-rollover model=' in room
+assert 'room_context::save(STATE_DIR, result)' in room
+assert 'room_context::load(STATE_DIR, ref' in room
+assert 'body["cache_prompt"] = true;' in room
 assert 'utf8_suffix(t.reasoning, keep)' in room
 assert 'report.reasoning += piece' in room  # full reasoning stays in report
 assert 'cache_prompt"] = !deterministic' in room  # cached unless deterministic

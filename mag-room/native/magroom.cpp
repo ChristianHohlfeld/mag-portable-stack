@@ -6746,14 +6746,27 @@ static std::string dispatch_tool_raw(int bot_idx, const std::string &name,
     const std::string ref = mag::str(a, "ref");
     const long first = mag::num(a, "start_line", 1);
     const long last = mag::num(a, "end_line", 0);
-    if (first < 1 || last < 0) return "Fehler: Ungueltiger Zeilenbereich";
+    const bool bytes = a.find("start_byte") || a.find("end_byte");
+    if (first < 1 || last < 0 ||
+        (bytes && (a.find("start_line") || a.find("end_line"))))
+      return "Fehler: Zeilen- und Byte-Bereiche nicht mischen";
     std::string content, error;
-    if (!room_context::load(STATE_DIR, ref, (size_t)first, (size_t)last, content, error))
-      return "Fehler: " + error;
+    if (bytes) {
+      if (!a.find("start_byte") || !a.find("end_byte"))
+        return "Fehler: Beide Byte-Grenzen angeben (0-basiert, Ende exklusiv)";
+      const long start_byte = mag::num(a, "start_byte", -1);
+      const long end_byte = mag::num(a, "end_byte", -1);
+      if (start_byte < 0 || end_byte <= start_byte || end_byte - start_byte > 24000)
+        return "Fehler: Ungueltiger Byte-Bereich (max. 24000 Bytes)";
+      if (!room_context::load_bytes(STATE_DIR, ref, (size_t)start_byte,
+                                    (size_t)end_byte, content, error))
+        return "Fehler: " + error;
+    } else if (!room_context::load(STATE_DIR, ref, (size_t)first, (size_t)last,
+                                   content, error)) return "Fehler: " + error;
     // Never cut a code/diff. Ask for a smaller exact range instead.
     if (content.size() > 24000)
       return "Fehler: Artefaktbereich zu gross (" + std::to_string(content.size()) +
-             " Bytes); bitte kleineren start_line/end_line-Bereich lesen. Unveraendert gespeichert.";
+             " Bytes); bitte kleineren start_line/end_line oder start_byte/end_byte-Bereich lesen. Unveraendert gespeichert.";
     return content;
   }
   if (is_mcp_tool(name)) return mcp_dispatch_tool(bot_idx, name, a);

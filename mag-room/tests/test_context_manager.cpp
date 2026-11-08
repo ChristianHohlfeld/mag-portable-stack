@@ -14,6 +14,8 @@ int main() {
   mag_test_deadline(60); // mag-test-timeout: 60
   assert(room_context::token_budget("deepseek-v4-flash-0731") == 4096);
   assert(room_context::token_budget("qwen3.8-27b") == 8192);
+  assert(room_context::token_budget("ornith") == 4096);
+  assert(room_context::token_budget("ornith-numa0") == 8192);
   const std::string root="/tmp/mag-context-test-"+std::to_string((long)getpid());
   std::filesystem::create_directories(root);
   const std::string code="diff --git a/main.cpp b/main.cpp\n@@ -1 +1 @@\n-int a=1;\n+int a=2;\n";

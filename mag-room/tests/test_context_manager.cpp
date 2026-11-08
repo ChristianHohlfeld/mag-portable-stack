@@ -25,6 +25,23 @@ int main() {
   std::string restored, error;
   assert(room_context::load(root,ref,1,0,restored,error));
   assert(restored==code);
+  // A single archived JSONL record can exceed the normal 24 KB tool return.
+  // The whole text must remain addressable without cutting or re-encoding.
+  const std::string large(27000, 'x');
+  const auto large_ref = room_context::save(root,large);
+  assert(room_context::valid_ref(large_ref));
+  std::string part;
+  assert(room_context::load_bytes(root,large_ref,0,12000,part,error));
+  assert(part==large.substr(0,12000));
+  assert(room_context::load_bytes(root,large_ref,12000,24000,part,error));
+  assert(part==large.substr(12000,12000));
+  assert(room_context::load_bytes(root,large_ref,24000,27000,part,error));
+  assert(part==large.substr(24000));
+  assert(!room_context::load_bytes(root,large_ref,12000,999999,part,error));
+  const std::string utf8 = "A\xC3\xA4B";
+  const auto utf8_ref=room_context::save(root,utf8);
+  assert(!room_context::load_bytes(root,utf8_ref,2,4,part,error));
+
   assert(!room_context::load(root,"../bad",1,0,restored,error));
   std::vector<mj::Val> msgs={
     msg("system","immutable system"),msg("user","initial bootstrap"),

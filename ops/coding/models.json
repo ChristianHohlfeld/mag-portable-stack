@@ -25,26 +25,42 @@
       "sha256": "539041d2cf400b02f53a53cae54339ea65103d276645a34a68eac1c8d69a9db3"
     },
     "coder": {
-      "name": "Ornith (NUMA1)",
+      "name": "DeepSeek-V4-Flash-0731 UD-IQ3_XXS (Noah, NUMA1)",
       "model_id": "ornith",
       "numa": 1,
       "candidate_port": 8292,
-      "repo": "bartowski/Ornith-1.5-35B-A3B-GGUF",
-      "filename": "Ornith-1.5-35B-A3B-Q4_K_M.gguf",
-      "sha256": "12d8d5c01bae7f23ea4822b2f96ba069d531f827d02a57c31002f2f95e72614a",
-      "size": 21864081056,
-      "link_from": "/home/chris/models/ornith-1.5-35b-a3b/Ornith-1.5-35B-A3B-Q4_K_M.gguf",
+      "context_tokens": 262144,
+      "filename": "DeepSeek-V4-Flash-0731-UD-IQ3_XXS-00001-of-00004.gguf",
+      "sha256": "dec1cee704800267d9d836d5a61aefc33705be939bbb3058fa9006d98191576d",
+      "repo": "unsloth/DeepSeek-V4-Flash-0731-GGUF",
+      "repo_dir": "UD-IQ3_XXS",
+      "link_from": "/home/chris/models/deepseek-v4-UD-IQ3_XXS/DeepSeek-V4-Flash-0731-UD-IQ3_XXS-00001-of-00004.gguf",
+      "parts": [
+        {
+          "filename": "DeepSeek-V4-Flash-0731-UD-IQ3_XXS-00002-of-00004.gguf",
+          "sha256": "3064d3c4c1d6363e9f9ad88e90a3e2c5fb2d6f7ae16ca72135c3ce6a5c984da5",
+          "repo": "unsloth/DeepSeek-V4-Flash-0731-GGUF",
+          "repo_dir": "UD-IQ3_XXS",
+          "link_from": "/home/chris/models/deepseek-v4-UD-IQ3_XXS/DeepSeek-V4-Flash-0731-UD-IQ3_XXS-00002-of-00004.gguf"
+        },
+        {
+          "filename": "DeepSeek-V4-Flash-0731-UD-IQ3_XXS-00003-of-00004.gguf",
+          "sha256": "2e9b2732eca7da8324f731653624a4f5c9846258926fd9f468cc703afb51a019",
+          "repo": "unsloth/DeepSeek-V4-Flash-0731-GGUF",
+          "repo_dir": "UD-IQ3_XXS",
+          "link_from": "/home/chris/models/deepseek-v4-UD-IQ3_XXS/DeepSeek-V4-Flash-0731-UD-IQ3_XXS-00003-of-00004.gguf"
+        },
+        {
+          "filename": "DeepSeek-V4-Flash-0731-UD-IQ3_XXS-00004-of-00004.gguf",
+          "sha256": "4ca79d8e5107dd1b9bb57b176a7c09948837425dee49f0f1dfd6547a3769fea7",
+          "repo": "unsloth/DeepSeek-V4-Flash-0731-GGUF",
+          "repo_dir": "UD-IQ3_XXS",
+          "link_from": "/home/chris/models/deepseek-v4-UD-IQ3_XXS/DeepSeek-V4-Flash-0731-UD-IQ3_XXS-00004-of-00004.gguf"
+        }
+      ],
       "chat_template": {
-        "repo": "ornith-ai/Ornith-1.5-35B-A3B",
-        "file": "chat_template.jinja",
-        "git_blob": "b07660ccbbea09ce6ac6741c6d041082033ab031",
-        "sha256": "182e77dd83bd8e9ca818b240b82e28f243762cd5dda32e6eef327df7b1cd107e",
-        "installed_as": "ops/coding/ornith-chat.jinja"
-      },
-      "mtp": {
-        "source": "embedded",
-        "draft_n_max": 3,
-        "draft_p_min": 0.75
+        "installed_as": "ops/coding/deepseek-v4-flash-chat.jinja",
+        "source": "llama.cpp/models/templates/deepseek-ai-DeepSeek-V4-Flash-0731.jinja"
       }
     }
   }

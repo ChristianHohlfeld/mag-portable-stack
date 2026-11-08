@@ -2,6 +2,10 @@
 # Pre-stage both pinned GGUFs and a dedicated CPU runtime BEFORE any live service is stopped.
 # Runs as chris under auto-update/apply.sh; old model files and processes remain unchanged.
 set -euo pipefail
+# All checksum and build CPU work on sibling threads, not active model cores.
+if [[ -z ${MAG_PREPARE_PINNED:-} ]] && taskset -c "${MAG_BUILD_CPUS:-28-55}" true 2>/dev/null; then
+  MAG_PREPARE_PINNED=1 exec taskset -c "${MAG_BUILD_CPUS:-28-55}" nice -n 19 ionice -c3 bash "$0" "$@"
+fi
 [[ $(id -un) == chris ]] || { echo 'coding prepare: must run as chris' >&2; exit 4; }
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 REV=$(tr -d '[:space:]' < "$ROOT/ops/qwen/runtime.sha")
@@ -10,9 +14,9 @@ BIN="/home/chris/.local/qwen4exp/$REV-mag-cp1/bin/llama-server"
 # Download and verify in advance, resumably. A hash mismatch never activates a model.
 # An identical GGUF already on disk is hard-linked after its SHA256 check.
 python3 -I "$ROOT/ops/coding/stage.py" --model general --download
-# NUMA1 is node-scoped: until Flint is verified, the current NUMA1 model keeps :8192.
+# NUMA1 is node-scoped: until all four DeepSeek shards verify, the current NUMA1 model keeps :8192.
 python3 -I "$ROOT/ops/coding/stage.py" --model coder --download ||
-  echo 'coding prepare: Flint not staged yet; NUMA1 keeps its current model'
+  echo 'coding prepare: DeepSeek shards not staged yet; NUMA1 keeps its current model'
 # The shared, pinned qwen4exp runtime (also implements qwen3next) is built and
 # checksummed by ops/qwen/build-runtime.sh; never build an unpinned binary here.
 if [[ ! -x $BIN || $(cat "$(dirname "$BIN")/source-commit" 2>/dev/null || true) != "$REV" ]]; then

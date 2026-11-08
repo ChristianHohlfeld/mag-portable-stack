@@ -14,6 +14,7 @@ old=(mag-llm-mistral-room.service mag-llm-glm@q2.service
      mag-llm-ds-node@0.service mag-llm-ds-node@1.service)
 files=(/etc/mag-stack/room-model.env /etc/mag-stack/room-layout /etc/mag-stack/room-layout.pinned
        /etc/systemd/system/mag-llm-coding@.service
+       /etc/systemd/system/mag-llm-coding@1.service.d/10-numa-reviewer.conf
        /usr/local/lib/mag-coding/start-live.sh /usr/local/lib/mag-coding/runtime.sha
        /usr/local/lib/mag-coding/flint-chat.jinja /usr/local/lib/mag-coding/ornith-chat.jinja /usr/local/lib/mag-coding/deepseek-v4-flash-chat.jinja
        /usr/local/lib/mag-coding/runtime-coder.sha
@@ -46,7 +47,22 @@ restore_file(){
 }
 rollback(){
   [[ -f "$TXN/switch-started" && ! -e "$TXN/restored" ]] || return 0
-  # Stop newly started coding services, and restore the old model configuration.
+  # A coding->coding NUMA1-only swap must never stop or restart Lena.
+  if [[ -f "$TXN/coding-swap-nodes" ]]; then
+    while IFS= read -r node; do
+      [[ $node == 0 || $node == 1 ]] || continue
+      systemctl stop "mag-llm-coding@$node.service" || true
+    done < "$TXN/coding-swap-nodes"
+    for f in "${files[@]}"; do restore_file "$f"; done
+    systemctl daemon-reload
+    while IFS= read -r node; do
+      [[ $node == 0 || $node == 1 ]] || continue
+      systemctl start "mag-llm-coding@$node.service" || fail "failed to restore NUMA$node"
+    done < "$TXN/coding-swap-nodes"
+    touch "$TXN/restored"
+    return 0
+  fi
+  # Old-layout migration rollback: restore both old services.
   for unit in "${new[@]}"; do
     systemctl stop "$unit" || true
     systemctl disable "$unit" || true
@@ -195,6 +211,9 @@ assert s.index(needle) < s.index("python3 - ")
 p.write_text(s.replace(needle,"ROOT="+repr(sys.argv[2]),1))
 PY
 touch "$TXN/started"
+if [[ $previous == coding && $swap == 1 ]]; then
+  printf '%s\n' "${swap_nodes[@]}" > "$TXN/coding-swap-nodes"
+fi
 on_exit(){
   local rc=$?
   trap - EXIT
@@ -224,6 +243,7 @@ install -m 0644 "$ROOT/ops/coding/models.json" /usr/local/lib/mag-coding/models.
 install -m 0644 "$ROOT/ops/qwen/runtime.sha" /usr/local/lib/mag-coding/runtime.sha
 install -m 0644 "$ROOT/ops/coding/runtime.sha" /usr/local/lib/mag-coding/runtime-coder.sha
 install -m 0644 "$ROOT/ops/coding/mag-llm-coding@.service" /etc/systemd/system/mag-llm-coding@.service
+install -D -m 0644 "$ROOT/ops/coding/mag-llm-coding@1.service.d/10-numa-reviewer.conf" /etc/systemd/system/mag-llm-coding@1.service.d/10-numa-reviewer.conf
 install -m 0644 "$ROOT/ops/coding/80-coding-output.conf" /etc/systemd/system/mag-120.service.d/80-coding-output.conf
 for name in general coder; do
   install -d -o chris -g chris -m 0750 "/var/lib/mag-llm/slots/coding/$name"
@@ -255,7 +275,9 @@ if (( swap )); then
     find "/var/lib/mag-llm/slots/coding/$slot_name" -maxdepth 1 -type f -name 'mag-prefix-*.bin' -delete
     systemctl start "mag-llm-coding@$i.service"
     wait_ready "mag-llm-coding@$i.service" "$port" 1440 || fail "new coding model failed health on $port"
-    python3 -I "$ROOT/ops/coding/live-smoke.py" --port "$port"
+    # Noah switches immediately after readiness; the only human live check is "Hi beide".
+    # Keep the decoder smoke for future NUMA0 changes, not for this NUMA1 swap.
+    if (( i == 0 )); then python3 -I "$ROOT/ops/coding/live-smoke.py" --port "$port"; fi
   done
 fi
 if (( coder_ready )) && ! systemctl is-active --quiet mag-llm-coding@1.service; then

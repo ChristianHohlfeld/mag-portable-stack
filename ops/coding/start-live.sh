@@ -22,19 +22,21 @@ set -euo pipefail
 which=${1:?usage: start-live.sh 0|1}
 case "$which" in
   # Lena: Qwen3.8-27B Q6_K, 100% MI50 Vulkan, native GGUF Jinja.
-  # Stable room alias ornith-numa0; isolated qwen27b cache. Noah unchanged.
+  # Stable room alias ornith-numa0; isolated qwen27b cache. Lena unchanged.
   0) node=0; cpus=0-13; threads=14; threads_batch=14; port=8191; name=general; ctx=65536
      alias=ornith-numa0; file=Qwen3.8-27B-Q6_K.gguf; mtp=
      gpu=vulkan; gpu_pci=0000:05:00.0; cpu_moe=; template=; slot_sub=qwen27b
      cache_k=q8_0; cache_v=q8_0; ubatch=1024
      extra=(--temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.0 --presence-penalty 0.0 --repeat-penalty 1.0) ;;
+  # Keep the old 'ornith' API alias/agent ID; weights and template are DeepSeek.
   1) node=1; cpus=14-27; threads=14; threads_batch=14; port=8192; name=coder; ctx=262144
-     alias=ornith; file=Ornith-1.5-35B-A3B-Q4_K_M.gguf; mtp=embedded
-     gpu=; gpu_pci=; cpu_moe=; template=ornith-chat.jinja; slot_sub=
-     extra=(--temp 0.6 --top-p 0.95 --top-k 20 --min-p 0.0) ;;
+     alias=ornith; file=DeepSeek-V4-Flash-0731-UD-IQ3_XXS-00001-of-00004.gguf; mtp=
+     gpu=; gpu_pci=; cpu_moe=; template=deepseek-v4-flash-chat.jinja; slot_sub=deepseek-v4-iq3xxs
+     cache_k=f16; cache_v=f16; ubatch=512; cache_ram=8192
+     extra=(--temp 1.0 --top-p 1.0 --top-k 0 --min-p 0.0 --presence-penalty 0.0 --repeat-penalty 1.0) ;;
   *) echo 'coding: invalid NUMA node' >&2; exit 4 ;;
 esac
-cache_k=${cache_k:-f16}; cache_v=${cache_v:-f16}; ubatch=${ubatch:-512}
+cache_k=${cache_k:-f16}; cache_v=${cache_v:-f16}; ubatch=${ubatch:-512}; cache_ram=${cache_ram:-16384}
 # Both nodes: the pinned flint runtime (ops/coding/build-runtime.sh).
 # (The qwen4exp runtime of ops/qwen/runtime.sha stays installed for rollback.)
 REV=$(cat /usr/local/lib/mag-coding/runtime-coder.sha)
@@ -125,12 +127,14 @@ elif [[ -n $mtp ]]; then
 fi
 TEMPLATE_ARGS=()
 [[ -z $template ]] || TEMPLATE_ARGS=(--chat-template-file "/usr/local/lib/mag-coding/$template")
+reasoning_format=auto
+[[ $node != 1 ]] || reasoning_format=deepseek
 exec numactl --physcpubind="$cpus" --membind="$node" "$BIN" \
   --model "$MODEL" --alias "$alias" --host 127.0.0.1 --port "$port" \
   --ctx-size "$ctx" --parallel 1 --threads "$threads" --threads-batch "$threads_batch" --numa numactl \
   --load-mode mlock --lazy-mode off "${extra[@]}" \
-  --jinja --reasoning-format auto "${TEMPLATE_ARGS[@]}" \
-  --cache-ram 16384 --ctx-checkpoints 48 --checkpoint-min-step 1024 --no-reasoning-preserve \
+  --jinja --reasoning-format "$reasoning_format" "${TEMPLATE_ARGS[@]}" \
+  --cache-ram "$cache_ram" --ctx-checkpoints 48 --checkpoint-min-step 1024 --no-reasoning-preserve \
   --flash-attn on --batch-size 2048 --ubatch-size "$ubatch" --cache-type-k "$cache_k" --cache-type-v "$cache_v" \
   "${GPU_ARGS[@]}" "${SPEC_ARGS[@]}" \
   --slots --slot-save-path "$SLOT" --no-ui

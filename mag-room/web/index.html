@@ -3786,6 +3786,12 @@ function paintRoomLine(){
  box.hidden=false;
  box.classList.toggle('paused',queueState.paused);
  box.classList.toggle('expanded',!!(list.length||talkJobs.length));
+ // New pending work expands the queue automatically once; the user may
+ // collapse it afterward without the polling render reopening it.
+ const queueFirst=list[0]?.id||'';
+ if(queueFirst&&box.dataset.seenQueue!==queueFirst){box.classList.add('open');box.dataset.seenQueue=queueFirst;}
+ if(!list.length){box.dataset.seenQueue='';box.classList.remove('open');}
+
  const head=previousHead||document.createElement('div');
  head.id='room-line';head.className='queue-head';
  if(!show){

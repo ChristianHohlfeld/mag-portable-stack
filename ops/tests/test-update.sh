@@ -159,7 +159,7 @@ import tempfile
 
 deploy = pathlib.Path(sys.argv[1]).read_text()
 match = re.search(
-    r"""  if ! python3 - /etc/mag-stack/room-layout "\$require_deepseek" <<'PY'\n(.*?)\nPY\n""",
+    r"""  if ! python3 - /etc/mag-stack/room-layout "\$require_deepseek" "\$coding_noah_enabled" <<'PY'\n(.*?)\nPY\n""",
     deploy, re.S,
 )
 assert match, "embedded room readiness gate missing"
@@ -177,7 +177,7 @@ mistral = bot("mistral-large4", "Mistral", bot_id="qwen-numa0", slot=1, numa=0)
 
 with tempfile.TemporaryDirectory() as directory:
     layout_path = pathlib.Path(directory) / "room-layout"
-    def probe(layout, agents, accepted, expected_label, require_deepseek=True):
+    def probe(layout, agents, accepted, expected_label, require_deepseek=True, noah_enabled=True):
         layout_path.write_text(layout + "\n")
         payload = repr(json.dumps({"agents": agents}))
         stub = ("import io,json,urllib.request\n"
@@ -185,7 +185,7 @@ with tempfile.TemporaryDirectory() as directory:
                 "io.BytesIO(" + payload + ".encode())\n")
         result = subprocess.run(
             [sys.executable, "-I", "-c", stub + gate, str(layout_path),
-             "1" if require_deepseek else "0"],
+             "1" if require_deepseek else "0", "1" if noah_enabled else "0"],
             capture_output=True, text=True, timeout=15)
         assert (result.returncode == 0) is accepted, (
             layout, [(a["name"], a["model"]) for a in agents],
@@ -205,6 +205,15 @@ with tempfile.TemporaryDirectory() as directory:
     probe("qwen", [ds, qwen], True, "Release ready: DeepSeek and Qwen")
     probe("mixed", [ds, q2], False, "expected live DeepSeek and Qwen")
     probe("unexpected", [q1,q2], False, "unknown active NUMA1 room layout")
+    lena = bot("ornith-numa0", "Lena", bot_id="ornith-numa0", slot=1, numa=0)
+    noah = bot("ornith", "Noah", bot_id="ornith-numa1", slot=2, numa=1)
+    probe("coding", [lena, noah], True, "Release ready:", False)
+    probe("coding", [lena], False, "unexpected active room bots", False)
+    probe("coding", [lena], True, "Noah disabled", False, False)
+    probe("coding", [lena, noah], True, "Noah disabled", False, False)
+    probe("coding", [noah], False, "expected Qwen3.8 or Flint NUMA0 slot 1", False, False)
+    probe("coding", [lena, bot("wrong", slot=2, numa=1)], False,
+          "invalid NUMA1 slot 2", False, False)
 
 PY
 echo 'Update dry-run PASS'

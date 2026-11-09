@@ -697,6 +697,11 @@ dialog{border-radius:10px;border-color:var(--line);background:var(--surface)}
 /* Reserve one compact 22px status line; queue options overlay above it. */
 .composer-inner #queue-chips,.composer-inner #queue-chips[hidden]{height:22px;min-height:22px;max-height:22px}
 .composer-inner #room-line{height:22px;min-height:22px;max-height:22px;line-height:22px}
+/* Mobile queue stays in the composer's flow, never overlays the last chat row. */
+@media(max-width:850px){
+ .composer-inner #queue-chips{height:auto;min-height:22px;max-height:170px}
+ .composer-inner #queue-chips .queue-items{position:static;max-height:130px;box-shadow:none;background:transparent;border:0;padding:4px 0}
+}
 /* Two fixed model bots are the navigation. No legacy room administration chrome. */
 #fixed-bot-nav[hidden]{display:none!important}
 #app-header #fixed-bot-nav{display:flex;align-items:center;gap:4px;min-width:0;flex:0 1 auto}

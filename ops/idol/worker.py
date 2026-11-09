@@ -50,7 +50,7 @@ def available_vram():
         if isinstance(obj, dict):
             for key, value in obj.items():
                 if isinstance(value, (dict, list)): yield from totals(value)
-                elif "total" in key.lower() and ("vram" in key.lower() or "memory" in key.lower()):
+                elif "total" in key.lower() and "used" not in key.lower() and ("vram" in key.lower() or "memory" in key.lower()):
                     try: yield int(str(value).replace(",", "").split()[0])
                     except ValueError: pass
         elif isinstance(obj, list):
@@ -88,13 +88,15 @@ def execute():
             env["TRANSFORMERS_OFFLINE"] = "1"
             out = folder / "outputs"
             out.mkdir()
-            # idol-sdk upstream sample.py does NOT support --device; choose CUDA
-            # through visible GPU and pipeline auto-selection. FP16 must be
-            # implemented in the locally installed MI50-compatible idol-sdk.
-            command = ["taskset", "-c", "28-55", PYTHON, "-m", "idol.sample",
+            # Upstream sample CLI lacks --device and forces BF16 in the VAE.
+            # Our adapter calls IdolPipeline directly with cuda:0, SDPA and FP16.
+            command = ["taskset", "-c", "28-55", PYTHON,
+                       str(Path(__file__).with_name("runner.py")),
                        "--image", str(folder / "input.png"), "--out", str(out),
-                       "--mode", "real", "--weights", WEIGHTS, "--no_optimize",
-                       "--dinov3_dtype", "fp32", "--num_gaussians", "131072"]
+                       "--weights", WEIGHTS,
+                       "--dinov3", os.environ.get("MAG_IDOL_DINOV3", "/home/chris/idol-mi50/weights/dinov3-timm"),
+                       "--flux2vae", os.environ.get("MAG_IDOL_FLUX2VAE", "/home/chris/idol-mi50/weights/flux2vae"),
+                       "--device", "cuda:0"]
             with (folder / "idol.log").open("w") as log:
                 result = subprocess.run(command, env=env, stdout=log, stderr=subprocess.STDOUT,
                                         timeout=1800, check=False)

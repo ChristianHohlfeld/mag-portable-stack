@@ -364,24 +364,11 @@ drain_room() {
 # deploy_exit lives in deploy-watchdog.sh: stop the deadline sleeper, then
 # roll back when this shell is signalled after the release switch started.
 
-# Drain: never cut a running user reply or a queued user message. Self-Talk
-# is paused at a turn boundary (switch stays on) and restored after restart.
-# MAG_DEPLOY_DRAIN_S (default 900 s); on timeout the deploy is deferred
-# (exit 75) unless MAG_DEPLOY_FORCE=1. A busy flag with no token progress
-# for MAG_DEPLOY_STALE_S (default 60 s) is stale: continue.
-# Leftover failed units (retired ds-node@1, unused host oneshots) are cleared
-# here so a postponed drain still leaves systemctl --failed empty. Never
-# touches mag-llm-ds-node@0.
+# Owner policy: zero drain. Stop the old room immediately; running bot
+# generations abort. No exit-75 postponement and no waiting for busy models.
+# This deploy does NOT restart either llama-server/model service.
 bash "$SOURCE/ops/boot/clear-failed-units.sh" || echo 'WARN: failed unit cleanup incomplete' >&2
-# Do not negate the condition: `if ! drain_room` loses the original
-# exit code (75 => 0), letting the updater falsely record an undeployed SHA.
-if drain_room; then
-  :
-else
-  rc=$?
-  if (( rc == 75 )); then rm -rf "$RELEASE"; exit 75; fi
-  exit "$rc"
-fi
+echo "Deploy: sofortiger Room-Release-Wechsel (keine Drain-Wartezeit)." >&2
 # A changed nginx/whois config needs the Owner smoke from a second Tailnet
 # device; otherwise smoke is the local 443 ingress check (deploy-nginx.sh).
 # nginx.stage snapshots the old vhost and validates the candidate BEFORE

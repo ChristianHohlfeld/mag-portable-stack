@@ -4877,6 +4877,7 @@ static void handoff_visible_turn(int idx, TurnReport &report, const std::string 
 #include "mcp.hpp"
 #include "secrets.hpp"
 #include "agent_skills.hpp"
+static thread_local bool FULL_CODING_TOOLS=false;
 static std::string tools_json(int bot_idx, bool web) {
   std::string vm = bot_field(bot_idx, "vm", "keine");
   const bool has_vm = !vm.empty() && vm != "keine";
@@ -4909,13 +4910,28 @@ static std::string tools_json(int bot_idx, bool web) {
           T_BROWSER_SHOT, T_BROWSER_POINTER, T_BROWSER_BACK, T_BROWSER_SCROLL, T_SCREENSHOT_ROOM})
       defs.push_back(d);
   }
+  // MAG: compact and BYTE-STABLE coding tool prefix. The full set remains
+  // callable through tool_list + tool_call (same authorization dispatcher).
+  // Never switch schemas based on a changing conversation or clock.
+  const bool lazy = CONFIGURED_MODEL && room_is_coding() &&
+      envi("MAG_ROOM_CODING_LAZY_TOOLS",1)!=0 && !FULL_CODING_TOOLS;
+  if(lazy) {
+    defs.clear();
+    if(has_vm) {
+      defs={T_RUN_COMMAND,T_WRITE_FILE,T_APPEND_FILE,
+            T_LIST_FILES,T_FETCH_FILE,T_SHARE_FILE};
+    } else defs={T_LIST_FILES};
+    defs.push_back(T_CONTEXT_ARTIFACT);
+    defs.push_back(T_TOOL_LIST);
+    defs.push_back(T_TOOL_CALL);
+  }
   std::string arr = "[";
   for (size_t i = 0; i < defs.size(); i++) {
     if (i)
       arr += ",";
     arr += defs[i];
   }
-  for (auto &t : mcp_bot_tools(bot_idx)) arr += "," + mj::dump(t.def);
+  if(!lazy) for (auto &t : mcp_bot_tools(bot_idx)) arr += "," + mj::dump(t.def);
   arr += "]";
   if(CONFIGURED_MODEL) {
     Val defs;
@@ -6843,6 +6859,32 @@ static std::string dispatch_tool_raw(int bot_idx, const std::string &name,
   std::string vm = bot_field(bot_idx, "vm", "keine");
   std::string bot_id = bot_field(bot_idx, "id");
   std::string bot_name = bot_field(bot_idx, "name", "Bot");
+  if(name=="tool_list" || name=="tool_call") {
+    FULL_CODING_TOOLS=true;
+    const std::string all=tools_json(bot_idx,WEB_ENABLED.load());
+    FULL_CODING_TOOLS=false;
+    Val defs;
+    if(!mj::parse(all,defs)||!defs.isArr())return "Fehler: Tool-Katalog nicht verfuegbar";
+    std::string catalog;
+    const std::string requested=mag::str(a,"name");
+    bool allowed=false;
+    for(const Val &d:*defs.arr) {
+      const Val *fn=d.find("function");if(!fn)continue;
+      const std::string n=mag::str(*fn,"name");
+      if(n.empty()||n=="tool_call"||n=="tool_list")continue;
+      if(n==requested)allowed=true;
+      if(name=="tool_list") {
+        catalog+=n;
+        if(const Val *desc=fn->find("description"))catalog+=": "+mj::utf8_cut(desc->asStr(),85);
+        catalog+="\\n";
+      }
+    }
+    if(name=="tool_list")return catalog;
+    if(!allowed||requested.empty())return "Fehler: Tool nicht freigegeben/registriert";
+    if(const Val *args=a.find("arguments");args&&args->isObj())
+      return dispatch_tool(bot_idx,requested,*args);
+    return "Fehler: arguments muss ein JSON-Objekt sein";
+  }
   if (name == "context_artifact") {
     const std::string ref = mag::str(a, "ref");
     const long first = mag::num(a, "start_line", 1);

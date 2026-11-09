@@ -39,7 +39,7 @@
       inlineCard=document.createElement("article");
       inlineCard.className="idol-chat-card";
       inlineCard.dataset.job=current;
-      inlineCard.style.cssText="max-width:min(100%,560px);margin:5px 0 10px 36px;padding:10px;border:1px solid var(--line,#343840);border-radius:12px;background:var(--panel,#1b1d23);color:inherit;font-size:12px";
+      inlineCard.style.cssText="max-width:min(calc(100% - 36px),560px);margin:5px 0 10px 36px;padding:10px;border:1px solid var(--line,#343840);border-radius:12px;background:var(--panel,#1b1d23);color:inherit;font-size:12px";
       inlineCard.innerHTML='<div style="display:flex;gap:8px;align-items:center"><strong style="flex:1">Foto zu 3D · MI50</strong><span class="idol-chat-status" role="status">Wartet auf Status …</span></div><p class="idol-lena" style="margin:4px 0;color:var(--orange,#e9b87f)"></p><progress max="50" value="0" style="width:100%;height:7px"></progress><div style="display:flex;align-items:center;gap:8px"><small class="idol-steps" style="flex:1">0/50</small><button type="button" class="idol-abort">Abbrechen</button><button type="button" class="idol-new">Neues Foto</button></div><canvas width="600" height="420" class="idol-preview" style="display:none;width:100%;max-height:45dvh;aspect-ratio:10/7;touch-action:none;background:#101115;border-radius:10px"></canvas><div class="idol-downloads" style="display:flex;gap:12px;flex-wrap:wrap;margin-top:7px"></div>';
       inlineCard.querySelector(".idol-new").onclick=()=>file.click();
       inlineCard.querySelector(".idol-abort").onclick=()=>cancelButton.click();

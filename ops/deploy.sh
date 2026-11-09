@@ -650,15 +650,17 @@ try:
     elif layout == "coding":
         # Qwen3.8 NUMA0 slot 1; NUMA1 slot 2 is Flint, or GLM-Q2 in the interim.
         noah_enabled = sys.argv[3] == "1"
-        if len(active) != (2 if noah_enabled else 1):
+        if len(active) not in ((2,) if noah_enabled else (1, 2)):
             raise ValueError("unexpected active room bots for coding layout: "+repr(active))
         by_slot = {a.get("slot"): a for a in active}
         b0, b1 = by_slot.get(1), by_slot.get(2)
         if not b0 or b0.get("numa") != 0 or b0.get("model") not in ("qwen3.8-flash-next", "flint-numa0", "ornith-numa0"):
             raise ValueError("expected Qwen3.8 or Flint NUMA0 slot 1, got "+repr(b0))
+        if b1 and (b1.get("numa") != 1 or b1.get("model") not in ("flint", "ornith", "glm-5.3-flash")):
+            raise ValueError("invalid NUMA1 slot 2, got "+repr(b1))
+        if noah_enabled and not b1:
+            raise ValueError("expected NUMA1 slot 2, got "+repr(b1))
         if noah_enabled:
-            if not b1 or b1.get("numa") != 1 or b1.get("model") not in ("flint", "ornith", "glm-5.3-flash"):
-                raise ValueError("expected Flint or GLM-Q2 NUMA1 slot 2, got "+repr(b1))
             print("Release ready: "+b0.get("model")+" NUMA0 (:8191) + "+b1.get("model")+" NUMA1 (:8192)")
         else:
             print("Release ready: "+b0.get("model")+" NUMA0 (:8191); Noah disabled")

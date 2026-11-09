@@ -27,9 +27,12 @@ class LiveToolTimeline(unittest.TestCase):
         self.assertIn("window.magToolTimeline={paint,tick,status,redact}",self.js)
 
     def test_real_arguments_and_completed_output_not_fake_stream(self):
-        for value in ('t?.args_text||t?.args','typeof a.command','t.result','result==null','stdout folgt mit tool_result'):
+        for value in ('t?.args_text||t?.args','typeof a.command','t.result','result==null','output_tail'):
             self.assertIn(value,self.js)
-        self.assertIn("Noch keine Tool-Ausgabe vom Server",self.js)
+        self.assertIn("Noch keine stdout-Daten vom laufenden Befehl",self.js)
+        self.assertIn("event.type==='tool_output'",self.html)
+        self.assertIn('e["type"] = "tool_output";',self.backend)
+        self.assertIn('on_output(std::string(b, (size_t)n))',(ROOT/"mag-room/native/common.hpp").read_text())
         self.assertNotIn('Math.random(',self.js)
 
     def test_cancel_uses_existing_targeted_stop(self):

@@ -20,6 +20,8 @@ assert.deepStrictEqual([c.path, c.lang, c.state, c.file], ['/home/bot/a.html', '
 assert.strictEqual(c.key, 'write_file|/home/bot/a.html|12');
 c = cc.toolCode({name: 'write_file', args: {path: 'ü.py'}, code_ref: 'f'.repeat(64), code_bytes: 900, result: '', ok: true});
 assert.deepStrictEqual([c.text, c.ref, c.lang, c.key], [null, 'f'.repeat(64), 'python', 'write_file|ü.py|900']);
+c = cc.toolCode({name:'tool_call',args:{name:'write_file',arguments:{path:'site.html',content:'<h1>Neu</h1>'}},result:'ok',ok:true});
+assert.deepStrictEqual([c.path,c.lang,c.text,c.state],['site.html','html','<h1>Neu</h1>','ok']);
 assert.strictEqual(cc.toolCode({name: 'run_command', args: {command: 'ls'}, result: ''}), null);
 assert.strictEqual(cc.toolCode({name: 'browser_open', args: {url: 'x'}}), null);
 console.log('code canvas ok');

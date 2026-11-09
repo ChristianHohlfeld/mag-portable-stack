@@ -12737,6 +12737,7 @@ static std::string state_json(const Actor *actor = nullptr) {
       std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
       if (AGENTS.empty()) prefix_ready = false;
       for (size_t i = 0; i < AGENTS.size(); ++i) {
+        if(!bot_enabled_locked((int)i))continue;
         const int slot = model_slot((int)i);
         if (slot < 1 || slot > ROOM_MAX_BOTS || SLOT_WARM[slot - 1].load() != 1)
           prefix_ready = false;

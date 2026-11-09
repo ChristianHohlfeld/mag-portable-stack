@@ -37,3 +37,7 @@
  .mag-tool-stop{min-height:29px;padding:3px 6px}
  .mag-tool-body{padding:6px;max-height:55dvh}
 }
+
+/* The timeline replaces the prior generic one-line work-status while live.
+   Existing detailed trace remains in DOM and returns on completed messages. */
+.message.work-live:has(> .mag-tool-timeline:not([hidden])) > .run > .work-status{display:none}

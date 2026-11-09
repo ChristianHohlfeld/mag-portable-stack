@@ -10,7 +10,9 @@ User=chris
 Group=chris
 SupplementaryGroups=render video
 WorkingDirectory=/home/chris/idol-mi50
+ExecStartPre=+/usr/local/lib/mag-idol/gpu-lease.sh restore
 ExecStart=/usr/bin/python3 -I /opt/mag-stack/current/ops/idol/worker.py
+ExecStopPost=+/usr/local/lib/mag-idol/gpu-lease.sh restore
 Environment=MAG_IDOL_JOB_ROOT=/var/lib/mag-idol/jobs
 Environment=MAG_IDOL_PYTHON=/home/chris/idol-mi50/venv/bin/python
 Environment=MAG_IDOL_WEIGHTS=/home/chris/idol-mi50/weights/idol

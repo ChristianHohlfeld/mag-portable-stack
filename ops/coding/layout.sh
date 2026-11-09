@@ -299,7 +299,7 @@ if (( swap )); then
     if (( i == 0 )); then python3 -I "$ROOT/ops/coding/live-smoke.py" --port "$port"; fi
   done
 fi
-if (( noah_enabled && coder_ready )) && ! systemctl is-active --quiet mag-llm-coding@1.service; then
+if (( coder_ready )) && ! systemctl is-active --quiet mag-llm-coding@1.service; then
   touch "$TXN/switch-started"
   # NUMA1: GLM-Q2 -> Qwen3-Coder-Next (GGUF kept; rollback restarts GLM-Q2).
   systemctl stop mag-llm-glm@q2.service

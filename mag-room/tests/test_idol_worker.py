@@ -86,8 +86,7 @@ class IdolHTTPContract(unittest.TestCase):
         unit=(ROOT/"ops/idol/mag-idol.service").read_text()
         worker_src=(ROOT/"ops/idol/worker.py").read_text()
         ui=(ROOT/"mag-room/static/idol-ui.js").read_text()
-        for required in ("torch.cuda.set_per_process_memory_fraction", "7.8 * (1024 ** 3)",
-                         'runpy.run_module("idol.sample"', "IDOL_DINOV3", "IDOL_FLUX2_VAE",
+        for required in ('runpy.run_module("idol.sample"', "IDOL_DINOV3", "IDOL_FLUX2_VAE",
                          'os.environ["ATTN_BACKEND"] = "sdpa"'):
             self.assertIn(required,runner)
         self.assertIn("--no-deps 'tensordict==0.9.1'",installer)
@@ -97,6 +96,16 @@ class IdolHTTPContract(unittest.TestCase):
         self.assertIn("RUN_TIMEOUT = max(3600",worker_src)
         self.assertNotIn("rocm-smi",worker_src.split("def execute():")[1].split("class API")[0])
         self.assertIn("step=step, total_steps=50",worker_src)
+        self.assertNotIn("set_per_process_memory_fraction",runner)
+        self.assertIn('lena_lease("acquire")',worker_src)
+        self.assertIn('lena_lease("restore")',worker_src)
+        self.assertIn('lena_health(job_id)',worker_src)
+        self.assertIn("ExecStopPost=+/usr/local/lib/mag-idol/gpu-lease.sh restore",unit)
+        self.assertIn("mag-llm-coding@0.service",(ROOT/"ops/idol/gpu-lease.sh").read_text())
+        self.assertIn("window.magIdolUI={render:attachInline}",ui)
+        self.assertIn("Lena pausiert für Foto zu 3D",ui)
+        self.assertIn('window.magIdolUI?.render()', (ROOT/"mag-room/web/index.html").read_text())
+
         self.assertIn('"/cancel"',ui)
         self.assertIn('job.step',ui)
 

@@ -24,7 +24,7 @@ case "$1" in
   mv -f "$MARKER.tmp" "$MARKER"
   # Queue stop first to suppress Restart=on-failure; no model drain.
   systemctl stop --no-block "$UNIT"
-  systemctl kill --signal=SIGKILL --kill-who=all "$UNIT" 2>/dev/null || :
+  systemctl kill --signal=SIGKILL --kill-whom=all "$UNIT" 2>/dev/null || :
   for ((i=0;i<100;i++)); do
     PID="$(systemctl show --property=MainPID --value "$UNIT")"
     if [[ "$PID" == 0 ]] && ! systemctl is-active --quiet "$UNIT"; then

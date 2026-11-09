@@ -110,12 +110,25 @@ inline bool get(const std::string &root, const std::string &bot,
   return true;
 }
 inline bool put(const std::string &root, const std::string &bot,
-                const std::string &path, const std::string &content, bool only_if_absent=false) {
+                const std::string &path, const std::string &content,
+                bool only_if_absent=false, uint64_t revision=0) {
   if(!valid_bot(bot)||!valid_path(path)||content.size()>4ULL*1024*1024)return false;
   const std::string sha=hash(content), key=id(path);
   std::lock_guard<std::mutex> lock(MUTEX);
   const std::string ref=index_path(root,bot,key), blob=blob_path(root,sha);
-  if (only_if_absent && std::filesystem::exists(ref)) return true;
+  if (std::filesystem::exists(ref)) {
+    if(only_if_absent) return true;
+    if(revision>0) {
+      bool entry_ok=false; mj::Val previous;
+      const std::string serialized=read_text(ref,entry_ok);
+      if(entry_ok && mj::parse(serialized,previous) && previous.isObj()) {
+        const mj::Val *older=previous.find("revision");
+        // A stale chat bubble may never overwrite a newer version.
+        if(older && older->type==mj::Val::NUM &&
+           older->asNum()>=(double)revision) return true;
+      }
+    }
+  }
   std::error_code ec;
   std::filesystem::create_directories(std::filesystem::path(blob).parent_path(),ec);
   std::filesystem::create_directories(std::filesystem::path(ref).parent_path(),ec);
@@ -125,7 +138,7 @@ inline bool put(const std::string &root, const std::string &bot,
   const std::string verify=read_text(blob,readok);
   if(!readok || hash(verify)!=sha || verify!=content)return false;
   mj::Val entry=mj::Val::object();
-  entry["bot"]=bot;entry["path"]=path;entry["sha256"]=sha;
+  entry["bot"]=bot;entry["path"]=path;entry["sha256"]=sha;entry["revision"]=(double)revision;
   return write_atomic(ref,mj::dump(entry));
 }
 inline bool append(const std::string &root, const std::string &bot,

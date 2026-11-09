@@ -1,4 +1,5 @@
 room-clear :: grep -Fq "MAG_TEST_NO_CLEAR_BACKUP='1'" mag-room/tests/test_native.py && ! grep -Fq 'mag-backup-clear.timer' mag-room/native/routes.hpp && ! grep -Fq 'start mag-backup-clear.service' mag-room/native/routes.hpp
+room fresh-context and 3D history :: python3 mag-room/tests/test_room_kv_idol_contract.py
 owner boundaries :: bash ops/private-access/tests/test-owner-boundaries.sh
 nginx stage include :: bash ops/private-access/tests/test-stage-include.sh
 deepseek ops-38 :: bash ops/deepseek/tests/test-ops-38.sh

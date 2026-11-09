@@ -25,7 +25,7 @@
   const stepText=dialog.querySelector("#mag-idol-step");
   const cancelButton=dialog.querySelector("#mag-idol-cancel");
   const newButton=dialog.querySelector("#mag-idol-new");
-  let timer=null, current=null;
+  let timer=null, current=sessionStorage.getItem("mag-idol-current")||null;
   function stop(){if(timer){clearTimeout(timer);timer=null}}
   dialog.querySelector("#mag-idol-close").onclick=()=>dialog.close();
   dialog.addEventListener("close",stop);
@@ -47,7 +47,7 @@
   file.onchange=async()=>{
     const image=file.files?.[0];file.value="";
     if(!image)return;
-    stop();current=null;
+    stop();current=null;sessionStorage.removeItem("mag-idol-current");
     if(!dialog.open)dialog.showModal();
     links.replaceChildren();canvas.style.display="none";progressBox.style.display="none";cancelButton.style.display="none";
     if(image.size>20*1024*1024){status.textContent="Maximal 20 MB";return}
@@ -56,7 +56,7 @@
       const res=await fetch("/api/idol/jobs",{method:"POST",headers:{"Content-Type":image.type||"application/octet-stream","X-Mag-Idol-UI":"1"},body:image});
       const data=await res.json();
       if(!res.ok)throw Error(data.error||"Upload fehlgeschlagen");
-      current=data.id;progressBox.style.display="block";cancelButton.style.display="inline-block";
+      current=data.id;sessionStorage.setItem("mag-idol-current",current);progressBox.style.display="block";cancelButton.style.display="inline-block";
       await pollCurrent();
     }catch(err){status.textContent=err.message}
   };

@@ -295,6 +295,9 @@ static std::string required_perm(const std::string &method,
       path.find('/', 11) == std::string::npos &&
       path != "/api/queue/merge" && path != "/api/queue/resume" &&
       (method == "PUT" || method == "DELETE")) return "queue-own";
+  // Agent preview is owner-only; raw HTML is sandboxed in a separate frame.
+  if ((method=="GET" && path.rfind("/agent-preview/",0)==0) ||
+      (method=="POST" && path=="/api/agent-preview")) return "owner";
   // Never let a config-based guest permission accidentally authorize one
   // of the destructive operations (or future routes).
   if (path == "/api/room/clear" || path == "/api/reset" ||

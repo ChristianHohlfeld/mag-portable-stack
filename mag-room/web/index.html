@@ -4037,7 +4037,7 @@ liveNode=function(id,s){
 function stableScrollBefore(){
  const area=$('conversation'),y=area.getBoundingClientRect().top;
  const anchor=[...area.querySelectorAll('.conversation-inner > .message')].find(n=>n.getBoundingClientRect().bottom>y);
- return {area,anchor,top:anchor?.getBoundingClientRect().top,pin:stickToBottom&&gap(area)<=AT_BOTTOM_PX,height:area.scrollHeight};
+ return {area,anchor,top:anchor?.getBoundingClientRect().top,pin:gap(area)<=AT_BOTTOM_PX,height:area.scrollHeight};
 }
 function stableScrollAfter(x){
  if(x.pin){stickToBottom=true;newBelow=false;writeScroll(x.area,x.area.scrollHeight)}
@@ -4059,6 +4059,23 @@ render=function(){
  for(let i=timeline.length-1;i>=0;i--){const m=timeline[i];if(m.role!=='user')break;if(m.client_id&&pending.has(m.client_id))timeline.splice(i,1)}
  for(const [k,m] of localSends){if(timeline.some(x=>x.client_id===k))localSends.delete(k);else timeline.push(m)}
  timeline.sort((a,b)=>(a.display_ms||a.ts*1000||0)-(b.display_ms||b.ts*1000||0));
+ // Stable chronological streaming: a later human turn splits the live
+ // assistant bubble. The original part stays immutable above that human.
+ for(const m of timeline) stableOrdinal(stableKey(m));
+ const lastHuman=[...timeline].reverse().find(m=>m.role==='user');
+ if(lastHuman){
+  const humanKey=stableKey(lastHuman), humanOrdinal=stableOrdinal(humanKey);
+  const humanAt=+(lastHuman.display_ms||lastHuman.ts*1000||0);
+  for(const [id,stream] of Object.entries(streams)){
+   const part=stream.parts?.at(-1);
+   if(part && part.order<humanOrdinal && humanAt>+(stream.displayMs||stream.started||0)
+      && stream.afterHumanKey!==humanKey){
+    stream.afterHumanKey=humanKey;
+    openBotSegment(id,stream);
+    stream.node=null;
+   }
+  }
+ }
  const view=[];
  for(const m of timeline){
   const parts=m.id&&stableCompleted.get(m.id);

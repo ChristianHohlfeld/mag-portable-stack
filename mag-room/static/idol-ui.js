@@ -177,80 +177,156 @@
     canvas._idolShell=shell;
   }
 
-  // Chat-history card, not a modal or an extra status/composer row. Keep the
-  // same DOM node across normal room re-renders so WebGL does not reset.
-  let inlineCard=null;
+  // Idol results live in the same persisted ROOM array as text messages.
+  // Their ordinary .message node owns the card and native message actions.
+  const cards=new Map(),jobStatuses=new Map(),jobTimers=new Map(),jobFetching=new Set();
   let lastJob=null;
-  function attachInline(){
-    if(!current)return;
-    const root=document.querySelector("#conversation .conversation-inner");
-    if(!root)return;
-    if(!inlineCard || inlineCard.dataset.job!==current){
-      inlineCard=document.createElement("article");
-      inlineCard.className="idol-chat-card";
-      inlineCard.dataset.job=current;
-      inlineCard.style.cssText="max-width:min(calc(100% - 36px),560px);margin:5px 0 10px 36px;padding:10px;border:1px solid var(--line,#343840);border-radius:12px;background:var(--panel,#1b1d23);color:inherit;font-size:12px";
-      inlineCard.innerHTML='<div style="display:flex;gap:8px;align-items:center"><strong style="flex:1">Foto zu 3D · MI50</strong><span class="idol-chat-status" role="status">Wartet auf Status …</span></div><p class="idol-lena" style="margin:4px 0;color:var(--orange,#e9b87f)"></p><progress max="50" value="0" style="width:100%;height:7px"></progress><div style="display:flex;align-items:center;gap:8px"><small class="idol-steps" style="flex:1">0/50</small><button type="button" class="idol-abort">Abbrechen</button><button type="button" class="idol-new">Neues Foto</button></div><canvas width="600" height="420" class="idol-preview" style="display:none;width:100%;max-height:45dvh;aspect-ratio:10/7;touch-action:none;background:#101115;border-radius:10px"></canvas><div class="idol-downloads" style="display:flex;gap:12px;flex-wrap:wrap;margin-top:7px"></div>';
-      const actionRow=inlineCard.querySelector(".idol-new").parentElement;
-      actionRow.style.gap="3px";
-      actionRow.style.flexWrap="nowrap";
-      actionRow.style.minWidth="0";
-      const steps=actionRow.querySelector(".idol-steps");
-      steps.style.flex="1 1 0";
-      steps.style.minWidth="0";
-      steps.style.overflow="hidden";
-      steps.style.textOverflow="ellipsis";
-      for(const b of actionRow.querySelectorAll("button")){
-        b.style.fontSize="11px";
-        b.style.padding="3px 4px";
-        b.style.whiteSpace="nowrap";
-        b.style.flexShrink="0";
+  const parkRoot=document.createElement("div");
+  parkRoot.style.display="none";
+  parkRoot.id="idol-card-park";
+  document.body.append(parkRoot);
+
+  function park(area){
+    for(const card of cards.values()){
+      if(area.contains(card))parkRoot.append(card);
+    }
+  }
+  function clear(){
+    stop();
+    if(fullscreenState)closePreviewFullscreen(true);
+    for(const timer of jobTimers.values())clearTimeout(timer);
+    jobTimers.clear();jobFetching.clear();jobStatuses.clear();
+    for(const card of cards.values())card.remove();
+    cards.clear();current=null;lastJob=null;
+    sessionStorage.removeItem("mag-idol-current");
+    links.replaceChildren();
+    canvas.style.display="none";
+    if(canvas._idolShell)canvas._idolShell.style.display="none";
+  }
+  function cardFor(jobId){
+    let card=cards.get(jobId);
+    if(card)return card;
+    card=document.createElement("section");
+    card.className="idol-chat-card";
+    card.dataset.job=jobId;
+    card.style.cssText="width:100%;max-width:560px;margin:5px 0;padding:8px;border:1px solid var(--line,#343840);border-radius:12px;background:var(--panel,#1b1d23);color:inherit;font-size:12px";
+    card.innerHTML='<div style="display:flex;gap:6px;align-items:center"><strong style="flex:1">Foto zu 3D · MI50</strong><span class="idol-chat-status" role="status">Status laden …</span></div><p class="idol-lena" style="margin:4px 0;color:var(--orange,#e9b87f)"></p><progress max="50" value="0" style="width:100%;height:7px"></progress><div class="idol-actions" style="display:flex;align-items:center;gap:3px;min-width:0;white-space:nowrap"><small class="idol-steps" style="flex:1 1 0;min-width:0;overflow:hidden;text-overflow:ellipsis">0/50</small><button type="button" class="idol-abort">Abbrechen</button><button type="button" class="idol-new">Neues Foto</button></div><canvas width="600" height="420" class="idol-preview" style="display:none;width:100%;max-height:45dvh;aspect-ratio:10/7;touch-action:none;background:#101115;border-radius:10px"></canvas><div class="idol-downloads" style="display:flex;gap:12px;flex-wrap:wrap;margin-top:7px"></div>';
+    const actions=card.querySelector(".idol-actions");
+    for(const b of actions.querySelectorAll("button")){
+      b.style.cssText="font-size:11px;padding:3px 4px;white-space:nowrap;flex-shrink:0";
+    }
+    actions.insertBefore(makeQualitySelect(),card.querySelector(".idol-new"));
+    card.querySelector(".idol-new").onclick=()=>file.click();
+    card.querySelector(".idol-abort").onclick=()=>cancelJob(jobId);
+    cards.set(jobId,card);
+    return card;
+  }
+  function renderHistory(messages=[]){
+    const live=new Set();
+    for(const msg of messages){
+      if(msg?.kind!=="idol"||!/^[a-f0-9]{32}$/.test(msg.idol_job||""))continue;
+      const id=msg.idol_job,domId=String(msg.id||"");
+      const node=document.querySelector('#conversation .message[data-id="'+CSS.escape(domId)+'"]');
+      const content=node?.querySelector(".content");
+      if(!content)continue;
+      live.add(id);
+      const card=cardFor(id);
+      if(card.parentNode!==content)content.append(card);
+      const job=jobStatuses.get(id);
+      if(job)paintInline(job);
+      else void pollJob(id);
+    }
+    for(const [id,card] of cards){
+      if(live.has(id))continue;
+      if(fullscreenState?.canvas===card.querySelector("canvas"))closePreviewFullscreen(true);
+      card.remove();cards.delete(id);jobStatuses.delete(id);
+      if(jobTimers.has(id))clearTimeout(jobTimers.get(id));
+      jobTimers.delete(id);
+    }
+  }
+  async function pollJob(jobId){
+    if(jobFetching.has(jobId)||!cards.has(jobId))return;
+    jobFetching.add(jobId);
+    try{
+      const response=await fetch("/api/idol/jobs/"+jobId,{cache:"no-store"});
+      if(!response.ok){
+        if(response.status===404)throw Error("3D-Dateien nicht mehr vorhanden");
+        throw Error("Job HTTP "+response.status);
       }
-      actionRow.insertBefore(makeQualitySelect(),inlineCard.querySelector(".idol-new"));
-      inlineCard.querySelector(".idol-new").onclick=()=>file.click();
-      inlineCard.querySelector(".idol-abort").onclick=()=>cancelButton.click();
-    }
-    if(inlineCard.parentElement!==root){
-      const created=Number(lastJob?.created||0)*1000;
-      const next=[...root.children].find(n=>+n.dataset.displayMs>created && created>0);
-      root.insertBefore(inlineCard,next||null);
-    }
-    // State is painted by polling; reattachment never recursively repaints.
+      const job=await response.json();
+      paintInline(job);
+      if(job.state==="queued"||job.state==="running"){
+        const t=setTimeout(()=>{jobTimers.delete(jobId);void pollJob(jobId)},2000);
+        jobTimers.set(jobId,t);
+      }
+    }catch(error){
+      const card=cards.get(jobId);
+      if(card)card.querySelector(".idol-chat-status").textContent=error.message;
+    }finally{jobFetching.delete(jobId)}
   }
   function paintInline(job){
-    lastJob=job;attachInline();
-    if(!inlineCard||inlineCard.dataset.job!==job.id)return;
-    const state=job.state;
-    const running=state==="queued"||state==="running";
+    lastJob=job;
+    if(!job?.id)return;
+    jobStatuses.set(job.id,job);
+    const card=cards.get(job.id);
+    if(!card)return;
+    const running=job.state==="queued"||job.state==="running";
     const step=Math.max(0,Math.min(50,+job.step||0));
-    inlineCard.querySelector(".idol-chat-status").textContent=job.stage||state;
-    inlineCard.querySelector(".idol-lena").textContent=job.lena_state==="pausiert für Foto zu 3D"?
+    card.querySelector(".idol-chat-status").textContent=job.stage||job.state;
+    card.querySelector(".idol-lena").textContent=job.lena_state==="pausiert für Foto zu 3D"?
       "Lena pausiert für Foto zu 3D":job.lena_state==="wird neu gestartet"?
       "Lena wird neu gestartet …":job.lena_state==="Wiederanlauf fehlgeschlagen"?
       "Lena: Wiederanlauf fehlgeschlagen":job.lena_state==="bereit"?"Lena wieder bereit":"";
-    inlineCard.querySelector("progress").value=step;
-    inlineCard.querySelector(".idol-steps").textContent=step+"/50 Schritte";
-    inlineCard.querySelector(".idol-abort").hidden=!running;
-    if(!running && job.error)inlineCard.querySelector(".idol-chat-status").textContent=job.error;
-    if(state==="done"){
-      const downloads=inlineCard.querySelector(".idol-downloads");
-      if(!downloads.children.length)for(const [name,label] of [["splat.ply","PLY"],["mesh.glb","GLB"],["mesh.stl","STL"]]){
-        const a=document.createElement("a");a.textContent=label+" herunterladen";
-        a.href="/api/idol/jobs/"+job.id+"/"+name;a.download=name;
-        a.style.color="var(--accent,#d9a885)";downloads.append(a);
+    card.querySelector("progress").value=step;
+    card.querySelector(".idol-steps").textContent=step+"/50";
+    card.querySelector(".idol-abort").hidden=!running;
+    if(!running&&job.error)card.querySelector(".idol-chat-status").textContent=job.error;
+    if(job.state==="done"){
+      const downloads=card.querySelector(".idol-downloads");
+      if(!downloads.children.length){
+        for(const [name,label] of [["splat.ply","PLY"],["mesh.glb","GLB"],["mesh.stl","STL"]]){
+          const a=document.createElement("a");a.textContent=label+" herunterladen";
+          a.href="/api/idol/jobs/"+job.id+"/"+name;a.download=name;
+          a.style.color="var(--accent,#d9a885)";downloads.append(a);
+        }
+        if(navigator.share){
+          const share=document.createElement("button");share.type="button";
+          share.textContent="Teilen";share.style.cssText="border:0;background:transparent;color:var(--accent,#d9a885);padding:0";
+          share.onclick=()=>navigator.share({
+            title:"Foto zu 3D",
+            url:new URL("/api/idol/jobs/"+job.id+"/mesh.glb",location.origin).href
+          }).catch(()=>{});
+          downloads.append(share);
+        }
       }
-      const canvas=inlineCard.querySelector(".idol-preview");
-      if(inlineCard.dataset.preview!==job.id){
-        inlineCard.dataset.preview=job.id;
-        preview("/api/idol/jobs/"+job.id+"/mesh.glb",canvas)
-          .then(()=>{if(canvas.isConnected)showPreview(canvas)})
-          .catch(e=>{inlineCard.querySelector(".idol-chat-status").textContent="3D-Vorschau nicht verfügbar: "+e.message});
+      const previewCanvas=card.querySelector(".idol-preview");
+      if(card.dataset.preview!==job.id){
+        card.dataset.preview=job.id;
+        preview("/api/idol/jobs/"+job.id+"/mesh.glb",previewCanvas)
+          .then(()=>{if(previewCanvas.isConnected)showPreview(previewCanvas)})
+          .catch(e=>{card.querySelector(".idol-chat-status").textContent="3D-Vorschau nicht verfügbar: "+e.message});
       }
     }
   }
-  window.magIdolUI={render:attachInline};
+  async function cancelJob(jobId){
+    try{
+      const res=await fetch("/api/idol/jobs/"+jobId+"/cancel",
+        {method:"POST",headers:{"X-Mag-Idol-UI":"1"}});
+      const data=await res.json();
+      if(!res.ok)throw Error(data.error||"Abbruch fehlgeschlagen");
+      await pollJob(jobId);
+    }catch(error){const card=cards.get(jobId);if(card)card.querySelector(".idol-chat-status").textContent=error.message}
+  }
+  async function registerCurrent(jobId){
+    if(!/^[a-f0-9]{32}$/.test(jobId||""))return;
+    const res=await fetch("/api/room/idol",{method:"POST",
+      headers:{"Content-Type":"application/json"},body:JSON.stringify({job_id:jobId})});
+    if(!res.ok)throw Error("Raum-Eintrag fehlgeschlagen: "+res.status);
+    return res.json();
+  }
+  window.magIdolUI={render:renderHistory,park,clear};
 
-  function stop(){if(timer){clearTimeout(timer);timer=null}}
+  function stop(){if(timer){clearTimeout(timer);timer=null}}  function stop(){if(timer){clearTimeout(timer);timer=null}}
   dialog.querySelector("#mag-idol-close").onclick=()=>dialog.close();
   dialog.addEventListener("close",()=>{stop();if(fullscreenState?.canvas===canvas)closePreviewFullscreen()});
   newButton.onclick=()=>file.click();
@@ -284,8 +360,10 @@
         {method:"POST",headers:{"Content-Type":image.type||"application/octet-stream","X-Mag-Idol-UI":"1"},body:image});
       const data=await res.json();
       if(!res.ok)throw Error(data.error||"Upload fehlgeschlagen");
-      current=data.id;lastJob=data;inlineCard=null;sessionStorage.setItem("mag-idol-current",current);progressBox.style.display="block";cancelButton.style.display="inline-block";
-      attachInline();if(dialog.open)dialog.close();
+      current=data.id;lastJob=data;sessionStorage.setItem("mag-idol-current",current);
+      progressBox.style.display="block";cancelButton.style.display="inline-block";
+      await registerCurrent(current); // native ROOM message; server persists order and identity
+      if(dialog.open)dialog.close();
       await pollCurrent();
     }catch(err){status.textContent=err.message}
   };
@@ -330,7 +408,10 @@
       await poll();
   }
 
-  if(current)setTimeout(()=>pollCurrent(),200);
+  if(current)setTimeout(async()=>{
+    try{await registerCurrent(current)}catch(_error){} // idempotent recovery of lost POST ACK
+    await pollCurrent();
+  },200);
 
   // Minimal WebGL2 glTF 2.0/GLB renderer. Only triangle primitives are used,
   // exported by trimesh. No external CDN, framework, or dependency.

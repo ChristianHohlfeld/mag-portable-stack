@@ -69,6 +69,10 @@ function patchRow(row,t,i,now){
 function paint(node,s,cancel){
  if(!node||!s)return;
  const tools=Array.isArray(s.tools)?s.tools:[];
+ // Preserve the room's zero-layout-shift contract: no new card for reading,
+ // thinking, quiet steps or messages with no real tool invocation.
+ if(!tools.length){node.querySelector(':scope > .mag-tool-timeline')?.remove();return;}
+
  const steps=Array.isArray(s.steps)?s.steps:[];
  let card=node.querySelector(':scope > .mag-tool-timeline');
  if(!card){

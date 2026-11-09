@@ -8,6 +8,11 @@
 #include <fstream>
 
 // Stable read-only artifact tool; SHA256 identifies exact archived bytes.
+// Stable small schemas; full list is returned only when the model asks for it.
+static const char *T_TOOL_LIST =
+    R"({"type":"function","function":{"name":"tool_list","description":"List available additional tools by name; use tool_call to invoke them.","parameters":{"type":"object","properties":{},"additionalProperties":false}}})";
+static const char *T_TOOL_CALL =
+    R"({"type":"function","function":{"name":"tool_call","description":"Invoke an allowed additional tool; arguments is the exact JSON object for that tool.","parameters":{"type":"object","properties":{"name":{"type":"string"},"arguments":{"type":"object"}},"required":["name","arguments"],"additionalProperties":false}}})";
 static const char *T_CONTEXT_ARTIFACT =
     R"({"type":"function","function":{"name":"context_artifact","description":"Read an immutable archived room observation by SHA-256. No reconstruction or summary; request exact line ranges or 0-based byte ranges (end exclusive) for large code, logs or diffs.","parameters":{"type":"object","properties":{"ref":{"type":"string","description":"64-character lowercase SHA-256 artifact id"},"start_line":{"type":"integer","minimum":1},"end_line":{"type":"integer","minimum":1},"start_byte":{"type":"integer","minimum":0},"end_byte":{"type":"integer","minimum":1}},"required":["ref"],"additionalProperties":false}}})";
 static const char *T_TODO =

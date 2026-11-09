@@ -125,7 +125,7 @@ inline bool put(const std::string &root, const std::string &bot,
         const mj::Val *older=previous.find("revision");
         // A stale chat bubble may never overwrite a newer version.
         if(older && older->type==mj::Val::NUM &&
-           older->asNum()>=(double)revision) return true;
+           older->asNum()>(double)revision) return true;
       }
     }
   }

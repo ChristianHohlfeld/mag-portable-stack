@@ -34,7 +34,7 @@ class IdolHTTPContract(unittest.TestCase):
         self.tmp.cleanup()
 
     def request(self, path, data=None, method=None):
-        req=Request(self.base+path,data=data,method=method)
+        req=Request(self.base+path,data=data,method=method,headers={"X-Mag-Idol-UI":"1"} if data is not None else {})
         try:
             with urlopen(req,timeout=3) as response:
                 return response.status,json.loads(response.read())

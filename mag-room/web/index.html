@@ -4238,6 +4238,7 @@ $('update-now').onclick=async()=>{const reg=await navigator.serviceWorker.getReg
 if('serviceWorker' in navigator){navigator.serviceWorker.addEventListener('controllerchange',()=>{if(sawController)location.reload();sawController=true});navigator.serviceWorker.register('/sw.js').then(reg=>{reg.addEventListener('updatefound',()=>{const nw=reg.installing;if(!nw)return;nw.addEventListener('statechange',()=>{if(nw.state==='installed')checkVersion()})})}).catch(()=>{});window.addEventListener('focus',()=>checkVersion());document.addEventListener('visibilitychange',()=>checkVersion());checkVersion();refreshPushUi()}
 
 </script>
+<script defer src="/static/idol-ui.js"></script>
 <script type="module" src="/static/speech-ui.js"></script>
 </body></html>
 

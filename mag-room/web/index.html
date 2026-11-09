@@ -3758,7 +3758,7 @@ function editQueuedMessage(p,t,button,focus=false){
  const ta=document.createElement('textarea');ta.className='q-edit';ta.value=queueDrafts.get(p.id)??p.text;ta.rows=Math.min(6,Math.max(1,ta.value.split('\n').length));
  queueDrafts.set(p.id,ta.value);ta.oninput=()=>queueDrafts.set(p.id,ta.value);
  let saving=false;
- const save=async()=>{const text=ta.value.trim();if(!text||saving)return;saving=true;button.disabled=true;try{const r=await mutatePending(p.id,'/api/queue/'+encodeURIComponent(p.id),{text},'PUT');if(r){queueDrafts.delete(p.id);renderQueue(queueState)}}finally{saving=false;button.disabled=false}};
+ const save=async()=>{const text=ta.value.trim();if(!text||saving)return;saving=true;button.disabled=true;try{const r=await mutatePending(p.id,'/api/queue/'+encodeURIComponent(p.id),{text},'PUT');if(r){queueDrafts.delete(p.id);$('queue-chips')._queueSignature='';renderQueue(queueState)}}finally{saving=false;button.disabled=false}};
  button.textContent='✓';button.title='Speichern';button.setAttribute('aria-label','Speichern');button.onclick=save;
  ta.onkeydown=e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing){e.preventDefault();save()}else if(e.key==='Escape'){e.preventDefault();queueDrafts.delete(p.id);renderQueue(queueState)}};
  t.replaceWith(ta);if(focus)requestAnimationFrame(()=>ta.focus({preventScroll:true}));

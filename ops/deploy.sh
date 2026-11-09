@@ -706,6 +706,13 @@ install -d -m 0755 /etc/systemd/system/nginx.service.d
 install -m 0644 "$SOURCE/ops/nginx/nginx-restart.conf" /etc/systemd/system/nginx.service.d/mag-restart.conf
 mag_daemon_reload
 bash "$NGINX_SYNC" commit
+# Optional Idol job worker shares MI50 with Lena but never changes either LLM.
+# Install only after the atomic release switch; absence of local Idol weights
+# must not block the native room deployment.
+if [[ -x /home/chris/idol-mi50/venv/bin/python && -d /home/chris/idol-mi50/weights/idol ]]; then
+  bash "$SOURCE/ops/idol/install.sh" || echo 'WARN: optional Idol worker is not healthy' >&2
+fi
+
 # Late steps must not roll a switched release back. The deadline stays armed
 # so a hang here still kills child groups and runs deploy_exit.
 verify_glm_identity

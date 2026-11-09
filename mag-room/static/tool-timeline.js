@@ -46,7 +46,7 @@ function patchRow(row,t,i,now){
  const duration=active?Math.max(0,now-(t.at||now)):Math.max(0,+t.ms||0);
  const label=t.name||t.tool||'Tool';
  const preview=safeArgs(t);
- const end=text(t.result||'');
+ const end=active?text(t.output_tail||''):text(t.result||'');
  const body=make('div','mag-tool-entry');
  const line=make('div','mag-tool-entry-line');
  line.append(make('span','mag-tool-state '+(active?'running':status(t)==='fertig'?'ok':'bad'),status(t)),
@@ -60,8 +60,8 @@ function patchRow(row,t,i,now){
  body.append(args);
  const out=make('details','mag-tool-output');
  out.open=openOut;
- const output=end?end.slice(-3000):active?'Noch keine Tool-Ausgabe vom Server (stdout folgt mit tool_result).':'Keine Ausgabe gemeldet';
- out.append(make('summary','',active?'stdout · wartet auf Ergebnis':'stdout · '+(end.length?end.length+' Zeichen':'leer')));
+ const output=end?end.slice(-3000):active?'Noch keine stdout-Daten vom laufenden Befehl':'Keine Ausgabe gemeldet';
+ out.append(make('summary','',active?'stdout live · '+(end.length?end.length+' Zeichen':'wartet'):'stdout · '+(end.length?end.length+' Zeichen':'leer')));
  out.append(make('pre','',redact(output)));
  body.append(out);
  row.replaceChildren(body);

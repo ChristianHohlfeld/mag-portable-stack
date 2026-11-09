@@ -326,6 +326,12 @@
     return res.json();
   }
   window.magIdolUI={render:renderHistory,park,clear};
+  // Main's initial /api/state refresh can finish before this defer script
+  // loads. Mount old persisted 3D messages even with no current session job.
+  requestAnimationFrame(()=>{
+    if(typeof state!=="undefined" && Array.isArray(state.room))
+      renderHistory(state.room);
+  });
 
   function stop(){if(timer){clearTimeout(timer);timer=null}}  function stop(){if(timer){clearTimeout(timer);timer=null}}
   dialog.querySelector("#mag-idol-close").onclick=()=>dialog.close();

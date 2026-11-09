@@ -6,6 +6,7 @@ from pathlib import Path
 import queue
 import re
 import signal
+import shutil
 import subprocess
 import threading
 import time
@@ -42,7 +43,7 @@ def save(job):
 
 def update(job_id, **fields):
     with lock:
-        if jobs[job_id]["state"] in ("cancelled", "error", "done"):
+        if jobs[job_id]["state"] in ("cancelled", "error", "done", "deleted"):
             return False
         jobs[job_id].update(fields)
         save(jobs[job_id])
@@ -177,7 +178,7 @@ def execute():
         leased = False
         try:
             with lock:
-                if jobs[job_id]["state"] == "cancelled":
+                if jobs[job_id]["state"] in ("cancelled", "deleted"):
                     continue
             if not update(job_id, state="running", stage="Lena wird für Foto zu 3D pausiert",
                           step=0, total_steps=50, progress=0.0,
@@ -247,10 +248,60 @@ def execute():
                             item["stage"] = "Export fertig; Lena nicht bereit"
                         save(item)
             with lock:
+                remove_files = jobs[job_id]["state"] == "deleted"
+                if remove_files:
+                    jobs.pop(job_id, None)
                 abort.discard(job_id)
+            if remove_files:
+                shutil.rmtree(ROOT / job_id, ignore_errors=False)
             pending.task_done()
 
+def delete_job(job_id):
+    """Only the native room's fixed loopback caller may initiate removal.
+
+    Running/queued jobs are tombstoned, interrupted and removed by execute()
+    after GPU lease restoration. Completed jobs are removed immediately.
+    """
+    with lock:
+        item = jobs.get(job_id)
+        if item is None:
+            return None
+        if item["state"] == "deleted":
+            return True
+        state = item["state"]
+        if state in ("queued", "running"):
+            abort.add(job_id)
+            item["state"] = "deleted"
+            item["stage"] = "3D-Nachricht gelöscht"
+            save(item)
+            child = processes.get(job_id)
+        else:
+            child = None
+            jobs.pop(job_id)
+    if child is not None:
+        terminate(child)
+    if state not in ("queued", "running"):
+        shutil.rmtree(ROOT / job_id)
+    return True
+
+
 class API(BaseHTTPRequestHandler):
+    def do_DELETE(self):
+        # Not exposed through the public nginx /api/idol/ proxy: this
+        # header is internal and native also authorizes its room deletion.
+        if self.headers.get("X-Mag-Idol-Internal") != "1":
+            return self.reply(403, {"error": "Nur interner Raum-Cleanup"})
+        parts = urlsplit(self.path).path.strip("/").split("/")
+        if len(parts) != 4 or parts[:3] != ["api", "idol", "jobs"] or not VALID_ID.fullmatch(parts[3]):
+            return self.reply(404, {"error": "Job nicht gefunden"})
+        try:
+            deleted = delete_job(parts[3])
+        except OSError as exc:
+            return self.reply(500, {"error": "3D-Dateien konnten nicht gelöscht werden: " + str(exc)[:160]})
+        if deleted is None:
+            return self.reply(404, {"error": "Job nicht gefunden"})
+        return self.reply(200, {"ok": True, "deleted": True})
+
     def log_message(self, fmt, *args):
         pass
 
@@ -343,6 +394,9 @@ def main():
         try:
             item = json.loads(path.read_text())
             if not VALID_ID.fullmatch(item["id"]):
+                continue
+            if item["state"] == "deleted":
+                shutil.rmtree(path.parent)
                 continue
             if item["state"] in ("running", "queued"):
                 item["state"] = "error"

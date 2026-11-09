@@ -15,53 +15,88 @@
   const dialog = document.createElement("dialog");
   dialog.id="mag-idol-dialog";
   dialog.style.cssText="width:min(94vw,580px);max-height:88dvh;overflow:auto;border:1px solid #555;border-radius:14px;background:#1c1e24;color:#f1f0ed;padding:16px;box-shadow:0 20px 75px #0009";
-  dialog.innerHTML='<div style="display:flex;justify-content:space-between;align-items:center;gap:12px"><strong>Foto zu 3D · MI50</strong><button type="button" id="mag-idol-close" style="color:inherit;background:transparent;border:0;font-size:24px" aria-label="Schließen">×</button></div><p id="mag-idol-status" role="status" aria-live="polite">Bild auswählen</p><canvas id="mag-idol-canvas" width="600" height="420" aria-label="Drehbare 3D-Vorschau" style="display:none;width:100%;max-height:45dvh;aspect-ratio:10/7;touch-action:none;background:#101115;border-radius:10px"></canvas><div id="mag-idol-files" style="display:flex;gap:12px;flex-wrap:wrap;margin-top:10px"></div><p style="font-size:12px;opacity:.72">GLB: farbiges Mesh · STL: druckbares Mesh ohne Farben · PLY: originale Gaussians. Die Mesh-Oberfläche ist eine Näherung.</p>';
+  dialog.innerHTML='<div style="display:flex;justify-content:space-between;align-items:center;gap:12px"><strong>Foto zu 3D · MI50</strong><button type="button" id="mag-idol-close" style="color:inherit;background:transparent;border:0;font-size:24px" aria-label="Schließen">×</button></div><p id="mag-idol-status" role="status" aria-live="polite">Bild auswählen</p><div id="mag-idol-progress" style="display:none;margin:6px 0 9px"><progress id="mag-idol-meter" max="50" value="0" style="width:100%;height:8px"></progress><small id="mag-idol-step" style="display:block;opacity:.8">0/50 Schritte</small></div><div style="display:flex;justify-content:flex-end;gap:8px;margin-bottom:8px"><button type="button" id="mag-idol-new" style="border:1px solid #555;border-radius:7px;padding:5px 9px;background:transparent;color:inherit">Neues Foto</button><button type="button" id="mag-idol-cancel" style="display:none;border:1px solid #a44;border-radius:7px;padding:5px 9px;background:transparent;color:inherit">Job abbrechen</button></div><canvas id="mag-idol-canvas" width="600" height="420" aria-label="Drehbare 3D-Vorschau" style="display:none;width:100%;max-height:45dvh;aspect-ratio:10/7;touch-action:none;background:#101115;border-radius:10px"></canvas><div id="mag-idol-files" style="display:flex;gap:12px;flex-wrap:wrap;margin-top:10px"></div><p style="font-size:12px;opacity:.72">GLB: farbiges Mesh · STL: druckbares Mesh ohne Farben · PLY: originale Gaussians. Die Mesh-Oberfläche ist eine Näherung.</p>';
   document.body.append(dialog);
   const status=dialog.querySelector("#mag-idol-status");
   const links=dialog.querySelector("#mag-idol-files");
   const canvas=dialog.querySelector("#mag-idol-canvas");
+  const progressBox=dialog.querySelector("#mag-idol-progress");
+  const meter=dialog.querySelector("#mag-idol-meter");
+  const stepText=dialog.querySelector("#mag-idol-step");
+  const cancelButton=dialog.querySelector("#mag-idol-cancel");
+  const newButton=dialog.querySelector("#mag-idol-new");
   let timer=null, current=null;
   function stop(){if(timer){clearTimeout(timer);timer=null}}
   dialog.querySelector("#mag-idol-close").onclick=()=>dialog.close();
   dialog.addEventListener("close",stop);
-  button.onclick=()=>{menu.hidden=true;document.getElementById("plus")?.setAttribute("aria-expanded","false");file.click()};
+  newButton.onclick=()=>file.click();
+  cancelButton.onclick=async()=>{
+    if(!current)return;
+    cancelButton.disabled=true;status.textContent="Abbruch angefordert …";
+    try{
+      const res=await fetch("/api/idol/jobs/"+current+"/cancel",{method:"POST",headers:{"X-Mag-Idol-UI":"1"}});
+      const reply=await res.json();
+      if(!res.ok)throw Error(reply.error||"Abbruch fehlgeschlagen");
+      if(reply.cancelled){stop();cancelButton.style.display="none";status.textContent="Job abgebrochen";}
+      else status.textContent="Job bereits abgeschlossen – Status aktualisieren";
+    }catch(error){status.textContent=error.message}
+    finally{cancelButton.disabled=false}
+  };
+  button.onclick=()=>{menu.hidden=true;document.getElementById("plus")?.setAttribute("aria-expanded","false");
+    if(current){dialog.showModal();pollCurrent();}else file.click()};
   file.onchange=async()=>{
     const image=file.files?.[0];file.value="";
     if(!image)return;
-    dialog.showModal();links.replaceChildren();canvas.style.display="none";
+    stop();current=null;
+    if(!dialog.open)dialog.showModal();
+    links.replaceChildren();canvas.style.display="none";progressBox.style.display="none";cancelButton.style.display="none";
     if(image.size>20*1024*1024){status.textContent="Maximal 20 MB";return}
     status.textContent="Foto übertragen …";
     try{
       const res=await fetch("/api/idol/jobs",{method:"POST",headers:{"Content-Type":image.type||"application/octet-stream","X-Mag-Idol-UI":"1"},body:image});
       const data=await res.json();
       if(!res.ok)throw Error(data.error||"Upload fehlgeschlagen");
-      current=data.id;
+      current=data.id;progressBox.style.display="block";cancelButton.style.display="inline-block";
+      await pollCurrent();
+    }catch(err){status.textContent=err.message}
+  };
+  async function pollCurrent(){
+      stop();
+      const target=current;
+      if(!target||!dialog.open)return;
       async function poll(){
-        if(!dialog.open||current!==data.id)return;
+        if(!dialog.open||current!==target)return;
         try{
-          const response=await fetch("/api/idol/jobs/"+data.id,{cache:"no-store"});
+          const response=await fetch("/api/idol/jobs/"+target,{cache:"no-store"});
           const job=await response.json();
           if(!response.ok)throw Error(job.error||"Job nicht gefunden");
+          const step=Math.max(0,Math.min(50,Number(job.step)||0));
+          progressBox.style.display=job.state==="queued"||job.state==="running"?"block":"none";
+          meter.value=step;stepText.textContent=step+"/50 Schritte · Idol auf MI50 (ein Bild kann über 30 Minuten dauern)";
+          cancelButton.style.display=job.state==="queued"||job.state==="running"?"inline-block":"none";
           status.textContent=job.state==="queued"?"In Warteschlange …":job.stage||job.state;
           if(job.state==="done"){
             links.replaceChildren();
             for(const [name,label] of [["splat.ply","PLY · Gaussians"],["mesh.glb","GLB · farbig"],["mesh.stl","STL · Druck"]]){
               const a=document.createElement("a");
-              a.href="/api/idol/jobs/"+data.id+"/"+name;
+              a.href="/api/idol/jobs/"+target+"/"+name;
               a.textContent=label;a.download=name;a.style.color="#d9a885";links.append(a);
             }
             status.textContent="Fertig · 3D-Vorschau laden …";
             try{
-              await preview("/api/idol/jobs/"+data.id+"/mesh.glb",canvas);
+              await preview("/api/idol/jobs/"+target+"/mesh.glb",canvas);
               canvas.style.display="block"; status.textContent="Fertig · zum Drehen ziehen, zum Zoomen scrollen";
             }catch(err){status.textContent="Fertig · Vorschau nicht verfügbar: "+err.message}
-          } else if(job.state==="error"){status.textContent=job.error||"Idol-Job fehlgeschlagen"}
+          } else if(job.state==="error"||job.state==="cancelled"){
+            status.textContent=job.error||job.stage||"Idol-Job abgebrochen";}
           else timer=setTimeout(poll,1800);
-        }catch(err){status.textContent=err.message}
+        }catch(err){
+          status.textContent="Statusabfrage fehlgeschlagen: "+err.message+" · erneuter Versuch …";
+          if(dialog.open&&current===target)timer=setTimeout(poll,5000);
+        }
       }
       await poll();
-    }catch(err){status.textContent=err.message}
-  };
+  }
 
   // Minimal WebGL2 glTF 2.0/GLB renderer. Only triangle primitives are used,
   // exported by trimesh. No external CDN, framework, or dependency.

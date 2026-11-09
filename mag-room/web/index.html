@@ -1756,7 +1756,7 @@ function readingPanel(node,s){
 }
 function ensureWork(node,s,botId){
  const steps=shownSteps(s.steps),tools=shownTools(s.tools);
- const meaningful=steps.length||tools.length||s.error||s.hung;
+ const meaningful=tools.length||s.error||s.hung||(steps.length&&s.phase==='tool');
  let dot=node.querySelector(':scope > .meta > .inline-progress');
  if(!dot){dot=document.createElement('span');dot.className='inline-progress';node.querySelector(':scope > .meta')?.append(dot)}
  dot.classList.toggle('failed',!!(s.error||s.hung));dot.title=workLabelText(s);

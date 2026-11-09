@@ -10216,6 +10216,150 @@ static void reload_slots_after_cancel(int timeout_ms = 120000) {
   }
   for (int i : idxs) reload_slot_after_cancel(i, timeout_ms);
 }
+// Reset means fresh logical context, not merely an empty visible ROOM.
+// Clearing slot KV without invalidating prefix checkpoints would resurrect
+// historical turns on the next restart/cancel. The dedicated root helper may
+// remove only mag-prefix-*.bin files (never models or clean snapshots).
+static bool erase_room_backend_slots(int idx, const std::string &model,
+                                     long *after_tokens = nullptr) {
+  const auto headers = std::vector<std::pair<std::string,std::string>>{
+    {"Authorization", "Bearer " + API_KEY},
+    {"X-Mag-Model", model}, {"X-Mag-Slot", gateway_slot(idx)}};
+  std::string data; long status = 0; Val slots;
+  if (!http_simple(BACKEND_HOST, BACKEND_PORT, "GET", "/slots", "",
+                   headers, data, &status, nullptr, 3000) ||
+      status != 200 || !mj::parse(data, slots) || !slots.isArr() ||
+      slots.asArr().empty()) return false;
+  std::set<int> ids;
+  int fallback = 0;
+  for (const auto &slot : slots.asArr()) {
+    int id = (int)mag::num(slot, "id", mag::num(slot, "id_slot", fallback));
+    if (id < 0 || id > 31) return false;
+    ids.insert(id);
+    ++fallback;
+  }
+  for (const int id : ids) {
+    std::string response; long code = 0;
+    if (!http_simple(BACKEND_HOST, BACKEND_PORT, "POST",
+                     "/slots/" + std::to_string(id) + "?action=erase",
+                     "{}", {{"Authorization", "Bearer " + API_KEY},
+                             {"X-Mag-Model", model}, {"X-Mag-Slot", gateway_slot(idx)},
+                             {"Content-Type", "application/json"}},
+                     response, &code, nullptr, 10000) || code != 200)
+      return false;
+  }
+  data.clear(); status = 0;
+  if (!http_simple(BACKEND_HOST, BACKEND_PORT, "GET", "/slots", "",
+                   headers, data, &status, nullptr, 3000) ||
+      status != 200 || !mj::parse(data, slots) || !slots.isArr())
+    return false;
+  long count = -1;
+  for (const auto &slot : slots.asArr()) {
+    for (const char *k : {"n_past", "n_cached_tokens", "n_prompt_tokens"})
+      if (auto n = slot.find(k); n && n->type == Val::NUM)
+        count = std::max(count, (long)n->asNum());
+  }
+  if (after_tokens) *after_tokens = count;
+  // If exposed, a fully erased KV must contain at most one BOS token.
+  return count < 0 || count <= 1;
+}
+static bool reset_room_prefix_cache(std::string &why) {
+  if (!CONFIGURED_MODEL) return true;
+  cancel_prewarm();
+  ++EPOCH;
+  std::vector<int> active;
+  {
+    std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
+    for (size_t i=0; i<AGENTS.size(); ++i)
+      if (auto enabled=AGENTS[i].find("enabled"); !enabled || enabled->asBool(true))
+        active.push_back((int)i);
+  }
+  // Securely erase every running model's KV, including additional /slots IDs.
+  // Disabled/offline Noah is not started or modified.
+  for (int idx : active) {
+    if (!erase_room_backend_slots(idx, bot_model_id(idx))) {
+      why = "llama slot erase/verification failed for " + bot_model_id(idx);
+      return false;
+    }
+  }
+  // The magbot user cannot read chris' 0700 slot directory. A fixed sudoers
+  // helper removes only old room snapshot files. No arbitrary shell arguments.
+  if (std::system("/usr/bin/sudo -n /usr/local/lib/mag-room/purge-prefix.sh"
+                  " >/dev/null 2>&1") != 0) {
+    why = "room slot-file purge failed";
+    return false;
+  }
+  {
+    std::lock_guard<std::mutex> lk(PREFIX_MTX);
+    if (!PREFIX_META.isObj()) PREFIX_META = Val::object();
+    auto &entries = *PREFIX_META.obj;
+    entries.erase(std::remove_if(entries.begin(), entries.end(),
+      [](const auto &entry) { return entry.first.rfind("clean/", 0) != 0; }),
+      entries.end());
+    if (!write_file_atomic(STATE_DIR + "/prompt-prefix.json", mj::dump(PREFIX_META))) {
+      why = "prefix metadata reset failed";
+      return false;
+    }
+  }
+  {
+    std::lock_guard<std::mutex> lk(WIRE_MTX);
+    WIRE_SESSIONS.clear();
+  }
+  {
+    std::lock_guard<std::mutex> lk(PHO_STAT_MTX);
+    PHO_STATS.clear();
+  }
+  std::error_code ec;
+  for (auto &entry : std::filesystem::directory_iterator(STATE_DIR, ec)) {
+    if (ec) break;
+    const auto name=entry.path().filename().string();
+    if (name.rfind("prompt-wire-",0)==0 && entry.path().extension()==".json")
+      std::filesystem::remove(entry.path(), ec);
+    if (ec) break;
+  }
+  if (ec) {
+    why = "prompt wire archive cleanup failed: " + ec.message();
+    return false;
+  }
+  // Restore ONLY a clean, history-free system/tools snapshot, if it exists
+  // and its system/tool fingerprint still matches. Otherwise mark cold and
+  // prewarm asynchronously after releasing the room turn lock.
+  for (int idx : active) {
+    const int slot = model_slot(idx);
+    const std::string model = bot_model_id(idx);
+    const bool chat_only = model.rfind("glm-5.3-flash",0)==0 ||
+                           room_chat_only_model(model);
+    std::string system = build_system(idx, false, "", WEB_ENABLED.load(), chat_only);
+    if (chat_only) system += glm_chat_memory(bot_field(idx, "id"));
+    const std::string tools = chat_only ? "" : tools_json(idx, WEB_ENABLED.load());
+    const auto cut=system.rfind("[Identitaet]");
+    const std::string shared=chat_only ? system :
+        system.substr(0, cut==std::string::npos ? system.size() : cut)+tools;
+    const std::string key=model+":"+std::to_string(fnv64(shared));
+    const std::string own=prefix_file(idx,model);
+    const std::string clean="mag-clean-" + own;
+    const std::string meta_key="clean/"+model_port(slot)+"/"+clean;
+    bool found=false;
+    {
+      std::lock_guard<std::mutex> lk(PREFIX_MTX);
+      if (const Val *x=PREFIX_META.find(meta_key))
+        found=x->type==Val::STR && x->asStr()==key;
+    }
+    bool restored=found && prefix_slot_rpc(idx,model,"restore",clean,30000);
+    if (slot>=1 && slot<=ROOM_MAX_BOTS) {
+      SLOT_WARM[slot-1]=restored?1:0;
+      SLOT_PARTIAL[slot-1]=restored?0:1;
+    }
+    if (restored) {
+      std::cerr<<"room-clear clean-prefix restored model="<<model<<std::endl;
+    } else {
+      std::cerr<<"room-clear clean-prefix cold model="<<model
+               <<" (prewarm required before next answer)"<<std::endl;
+    }
+  }
+  if (!MODELS_HALTED.load()) PREWARM_HOLD=false;
+  return true;
+}
 static bool prefix_is_saved(int idx) {
   if (!CONFIGURED_MODEL || !PREFIX_DISK || idx < 0) return false;
   const std::string model = bot_model_id(idx);
@@ -10832,6 +10976,19 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
   if (saved) {
     std::lock_guard<std::mutex> lk(PREFIX_MTX);
     PREFIX_META[own_key] = shared_key;
+    write_file_atomic(STATE_DIR + "/prompt-prefix.json", mj::dump(PREFIX_META));
+  }
+  // A truly empty room gets a stable clean prefix snapshot. Later completed
+  // turns update only the ordinary slot file; they never poison this snapshot.
+  // Created at startup or after first clear, with no historical ROOM entries.
+  bool empty_room = false;
+  {
+    std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
+    empty_room = ROOM.empty();
+  }
+  if (saved && empty_room && prefix_slot("save", "mag-clean-" + own)) {
+    std::lock_guard<std::mutex> lk(PREFIX_MTX);
+    PREFIX_META["clean/" + port + "/mag-clean-" + own] = shared_key;
     write_file_atomic(STATE_DIR + "/prompt-prefix.json", mj::dump(PREFIX_META));
   }
   if (CONFIGURED_MODEL && (saved || (restored && skip) ||

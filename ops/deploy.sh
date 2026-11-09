@@ -403,6 +403,11 @@ install -m 0755 "$SOURCE/ops/spawnbot" "$SOURCE/ops/despawnbot" /usr/local/bin/
 install -m 0755 "$SOURCE/ops/magbot-guest-run" "$SOURCE/ops/magbot-agent-ctl" "$SOURCE/ops/magbot-netmode" "$SOURCE/ops/magbot-modelctl" /usr/local/sbin/
 install -m 0440 "$SOURCE/ops/magbot-guest.sudoers" /etc/sudoers.d/magbot-guest
 visudo -cf /etc/sudoers.d/magbot-guest >/dev/null
+# magbot cannot access chris-owned 0700 slot files; one fixed-action helper.
+install -d -o root -g root -m 0755 /usr/local/lib/mag-room
+install -o root -g root -m 0755 "$SOURCE/ops/room/purge-prefix.sh" /usr/local/lib/mag-room/purge-prefix.sh
+install -o root -g root -m 0440 "$SOURCE/ops/room/mag-room-prefix.sudoers" /etc/sudoers.d/mag-room-prefix
+visudo -cf /etc/sudoers.d/mag-room-prefix >/dev/null
 install -m 0644 "$SOURCE/ops/mag-120.service" "$SOURCE/ops/mag-browser-webrtc.service" /etc/systemd/system/
 install -m 0644 "$SOURCE/ops/mag-stack-check.service" "$SOURCE/ops/mag-stack-check.timer" "$SOURCE/ops/mag-git-gateway.socket" "$SOURCE/ops/mag-git-gateway.service" "$SOURCE/ops/mag-agents-network.service" /etc/systemd/system/
 # Read-only backing image; existing VM overlays remain untouched. A host

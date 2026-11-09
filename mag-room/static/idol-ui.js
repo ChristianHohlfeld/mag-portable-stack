@@ -95,7 +95,7 @@
       const res=await fetch("/api/idol/jobs/"+current+"/cancel",{method:"POST",headers:{"X-Mag-Idol-UI":"1"}});
       const reply=await res.json();
       if(!res.ok)throw Error(reply.error||"Abbruch fehlgeschlagen");
-      if(reply.cancelled){stop();cancelButton.style.display="none";status.textContent="Job abgebrochen";
+      if(reply.cancelled){cancelButton.style.display="none";status.textContent="Job abgebrochen · Lena wird wieder gestartet";
         const response=await fetch("/api/idol/jobs/"+current,{cache:"no-store"});
         if(response.ok)paintInline(await response.json());}
       else status.textContent="Job bereits abgeschlossen – Status aktualisieren";
@@ -151,7 +151,9 @@
             }catch(err){status.textContent="Fertig · Vorschau nicht verfügbar: "+err.message}
           } else if(job.state==="error"||job.state==="cancelled"){
             status.textContent=job.error||job.stage||"Idol-Job abgebrochen";}
-          else timer=setTimeout(poll,1800);
+          if(job.state==="queued"||job.state==="running"||
+             (job.lena_state==="wird neu gestartet"||
+              job.lena_state==="pausiert für Foto zu 3D"))timer=setTimeout(poll,1800);
         }catch(err){
           status.textContent="Statusabfrage fehlgeschlagen: "+err.message+" · erneuter Versuch …";
           if(current===target)timer=setTimeout(poll,5000);

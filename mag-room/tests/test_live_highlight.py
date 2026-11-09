@@ -54,7 +54,9 @@ class LiveHighlight(unittest.TestCase):
    # ignored once the delayed /api/state refresh selects the correct bot.
    room.wait_for_function("""()=>window.magLiveHighlight&&window.magViewTools&&
      document.getElementById('browser-agent')?.value==='test'""",timeout=10000)
-   if not room.locator('#browser-view').is_visible():room.locator('#toggle-tools').click()
+   if not room.locator('#browser-section').is_visible():room.locator('#toggle-tools').click()
+   if 'collapsed' in (room.locator('#browser-section').get_attribute('class') or ''):
+    room.locator('#browser-section .side-section-head').click()
    room.locator('#browser-view').wait_for(state='visible')
    room.evaluate("""async(png)=>{const c=document.getElementById('screen');c.hidden=false;Object.defineProperty(c,'hidden',{configurable:true,get:()=>false,set(){}});c.style.display='block';c.style.width='100%';c.style.height='420px';
      const i=new Image();i.src=png;await i.decode();c.getContext('2d').drawImage(i,0,0,1440,900);magViewTools.fit()}""",png)

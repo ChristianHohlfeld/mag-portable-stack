@@ -1,110 +1,292 @@
 #!/usr/bin/env python3
-"""Bounded, approximate Gaussian-splat-to-surface conversion (not lossless)."""
+"""Bounded, CPU-only Idol splat -> coloured UV/GLB and printable STL conversion.
+
+Approximate surface reconstruction: high quality reduces aliasing, but an Idol
+splat does not guarantee watertight geometry or accurate hidden surfaces.
+The original splat.ply is never modified.
+"""
 import argparse
+import os
 from pathlib import Path
 
 import numpy as np
+from PIL import Image, ImageDraw
 from plyfile import PlyData
-from scipy.ndimage import gaussian_filter
+from scipy.ndimage import gaussian_filter, binary_dilation, distance_transform_edt
 from scipy.spatial import cKDTree
 from skimage.measure import marching_cubes
 import trimesh
 
-def reconstruct(input_path: Path, output_dir: Path, resolution=128, max_points=120000):
+# Single source of truth for mesh preset parameters; worker mirrors timeouts.
+QUALITY_PRESETS = {
+    "fast": {"resolution": 128, "max_points": 150000, "max_faces": 150000,
+             "texture": 1024, "smooth": 2, "percentile": 52, "floor": 0.035,
+             "crop": 0.5, "neighbors": 8},
+    "normal": {"resolution": 224, "max_points": 400000, "max_faces": 400000,
+               "texture": 2048, "smooth": 3, "percentile": 43, "floor": 0.03,
+               "crop": 0.1, "neighbors": 12},
+    "high": {"resolution": 320, "max_points": 1000000, "max_faces": 800000,
+             "texture": 4096, "smooth": 2, "percentile": 30, "floor": 0.02,
+             "crop": 0.02, "neighbors": 16},
+}
+
+
+def splat_density(xyz, alpha, radii, lo, spacing, resolution):
+    """Float32 density, Gaussian-filtered in X slabs with a 4-sigma halo.
+
+    Does not allocate three full resolution^3 impulse volumes. Slab halos
+    give the same values as full-volume Gaussian filtering at each output
+    voxel; peak buffers remain bounded even at the 320^3 high preset.
+    """
+    field = np.zeros((resolution,) * 3, dtype=np.float32)
+    ijk = np.rint((xyz - lo) / spacing).astype(np.int32)
+    valid = np.all((ijk >= 0) & (ijk < resolution), axis=1)
+    ijk = ijk[valid]
+    alpha = alpha[valid]
+    radii = radii[valid]
+    if len(ijk) < 32:
+        raise ValueError("Zu wenige Gaussians innerhalb des Dichtegitters")
+
+    # Use three scale bands, retaining small Gaussians that form handles/knobs.
+    edges = np.quantile(radii, [0, 1/3, 2/3, 1])
+    for group in range(3):
+        selected = (radii >= edges[group]) & (
+            (radii <= edges[group+1]) if group == 2 else (radii < edges[group+1])
+        )
+        if not np.any(selected):
+            continue
+        vox = ijk[selected]
+        weights = alpha[selected]
+        sigma = float(np.median(radii[selected]))
+        halo = int(np.ceil(4.0 * sigma))
+        for first in range(0, resolution, 32):
+            last = min(resolution, first + 32)
+            start = max(0, first - halo)
+            end = min(resolution, last + halo)
+            contributing = (vox[:, 0] >= start) & (vox[:, 0] < end)
+            if not np.any(contributing):
+                continue
+            local = np.zeros((end-start, resolution, resolution), np.float32)
+            points = vox[contributing]
+            np.add.at(local, (points[:, 0] - start, points[:, 1], points[:, 2]),
+                      weights[contributing])
+            smoothed = gaussian_filter(local, sigma=sigma, mode="constant",
+                                       output=np.float32, truncate=4.0)
+            field[first:last] += smoothed[first-start:last-start]
+    return field
+
+
+def opacity_colors(vertices, names, indices):
+    if all("f_dc_" + str(i) in names for i in range(3)):
+        colors = np.column_stack([
+            vertices["f_dc_" + str(i)][indices] for i in range(3)
+        ]).astype(np.float32)
+        return np.clip(colors * 0.28209479177387814 + 0.5, 0, 1)
+    if all(k in names for k in ("red", "green", "blue")):
+        return (np.column_stack([vertices[k][indices] for k in
+                                  ("red", "green", "blue")]).astype(np.float32) / 255.0)
+    return np.full((len(indices), 3), 185.0/255.0, np.float32)
+
+
+def gaussian_albedo(points, tree, centers, colors, alpha, radii, spacing, neighbors):
+    """Gather multiple nearby splats per surface sample; opacity * Gaussian weight.
+
+    Chunking is handled by the caller, including 4K UV texel baking.
+    """
+    distances, ids = tree.query(points, k=min(neighbors, len(centers)), workers=8)
+    if np.ndim(ids) == 1:
+        ids, distances = ids[:, None], distances[:, None]
+    width = np.maximum(radii[ids], spacing * 0.7)
+    weight = alpha[ids] * np.exp(
+        -0.5 * np.minimum((distances / width)**2, 80.0))
+    # Prefer high-confidence near splats while blending neighbours.
+    weight = np.maximum(weight, 0.0) ** 1.5
+    total = weight.sum(axis=1)
+    rgb = (weight[..., None] * colors[ids]).sum(axis=1)
+    rgb /= np.maximum(total[:, None], 1e-12)
+    weak = total < 1e-10
+    if np.any(weak):
+        rgb[weak] = colors[ids[weak, 0]]
+    return np.clip(rgb, 0.0, 1.0)
+
+
+def bake_texture(verts, faces, xyz, alpha, radii, colors, spacing, size, neighbors):
+    """Unwrap with xatlas, rasterize UV triangle IDs and bake at each texel.
+
+    UVs sample the actual 3D surface, not interpolated per-vertex colors.
+    Face IDs are rasterized using Pillow's C implementation. Barycentric
+    interpolation and neighbourhood colour sampling run in bounded chunks.
+    """
+    import xatlas
+
+    print(f"UV unwrap: {len(faces)} faces -> {size}² atlas", flush=True)
+    vmapping, uv_faces, uvs = xatlas.parametrize(
+        np.ascontiguousarray(verts, np.float32),
+        np.ascontiguousarray(faces, np.uint32))
+    vmapping = np.asarray(vmapping, np.int64)
+    uv_faces = np.asarray(uv_faces, np.int32)
+    uvs = np.asarray(uvs, np.float32)
+    if not len(uv_faces) or not np.isfinite(uvs).all():
+        raise ValueError("xatlas UV-Unwrap fehlgeschlagen")
+
+    uv_px = np.column_stack((
+        uvs[:, 0] * (size-1),
+        (1.0 - uvs[:, 1]) * (size-1))).astype(np.float32)
+    index_image = Image.new("I", (size, size), 0)
+    drawing = ImageDraw.Draw(index_image)
+    for i, tri in enumerate(uv_faces):
+        points = [tuple(float(x) for x in uv_px[j]) for j in tri]
+        drawing.polygon(points, fill=i+1)
+
+    face_map = np.asarray(index_image, dtype=np.int32)
+    flat = face_map.reshape(-1)
+    covered = flat > 0
+    if not covered.any():
+        raise RuntimeError("Kein UV-Texel abgedeckt")
+    tex_flat = np.zeros((size*size, 3), dtype=np.uint8)
+    all_pixels = np.flatnonzero(covered)
+    tree = cKDTree(xyz)
+    verts = np.asarray(verts, np.float32)[vmapping]
+    total = len(all_pixels)
+    for start in range(0, total, 32768):
+        samples = all_pixels[start:start+32768]
+        fi = flat[samples].astype(np.int64) - 1
+        tri = uv_faces[fi]
+        uv_tri = uv_px[tri]
+        px = (samples % size).astype(np.float32) + 0.5
+        py = (samples // size).astype(np.float32) + 0.5
+        p0, p1, p2 = uv_tri[:, 0], uv_tri[:, 1], uv_tri[:, 2]
+        a = p1 - p0
+        b = p2 - p0
+        c = np.stack((px, py), axis=1) - p0
+        det = a[:, 0]*b[:, 1] - a[:, 1]*b[:, 0]
+        safe = np.where(np.abs(det) < 1e-8, 1.0, det)
+        u = (c[:, 0]*b[:, 1] - c[:, 1]*b[:, 0]) / safe
+        v = (a[:, 0]*c[:, 1] - a[:, 1]*c[:, 0]) / safe
+        u = np.clip(u, 0, 1)
+        v = np.clip(v, 0, 1)
+        # Pixel coverage at triangle boundaries may be outside by <1 pixel.
+        factor = np.maximum(u + v, 1.0)
+        u /= factor
+        v /= factor
+        w = 1.0 - u - v
+        tri_verts = verts[tri]
+        positions = (w[:, None]*tri_verts[:, 0] + u[:, None]*tri_verts[:, 1]
+                     + v[:, None]*tri_verts[:, 2])
+        rgb = gaussian_albedo(positions, tree, xyz, colors, alpha, radii,
+                              spacing, neighbors)
+        tex_flat[samples] = np.rint(rgb*255).astype(np.uint8)
+    texture = tex_flat.reshape(size, size, 3)
+    # Extend colors 8 pixels beyond UV islands to avoid bilinear seam bleed.
+    filled = covered.reshape(size, size)
+    rim = binary_dilation(filled, iterations=8) & ~filled
+    if rim.any():
+        nearest = distance_transform_edt(~filled, return_distances=False,
+                                         return_indices=True)
+        texture[rim] = texture[nearest[0][rim], nearest[1][rim]]
+    return vmapping, uv_faces, uvs, Image.fromarray(texture, mode="RGB")
+
+
+def reconstruct(input_path: Path, output_dir: Path, quality="normal"):
+    if quality not in QUALITY_PRESETS:
+        raise ValueError(f"Ungültige Qualitätsstufe: {quality}")
+    settings = QUALITY_PRESETS[quality]
+    resolution = settings["resolution"]
+    max_points = settings["max_points"]
+    output_dir.mkdir(parents=True, exist_ok=True)
     ply = PlyData.read(str(input_path))
     vertices = ply["vertex"].data
     names = vertices.dtype.names
     xyz = np.column_stack([vertices[k] for k in ("x", "y", "z")]).astype(np.float32)
-    if len(xyz) < 32: raise ValueError("Zu wenige Gaussians")
+    if len(xyz) < 32:
+        raise ValueError("Zu wenige Gaussians")
     mask = np.isfinite(xyz).all(axis=1)
     if "opacity" in names:
         op = vertices["opacity"].astype(np.float32)
         alpha = 1.0 / (1.0 + np.exp(-np.clip(op, -15, 15)))
-        mask &= alpha > 0.06
+        mask &= alpha > (0.04 if quality == "high" else 0.06)
     else:
         alpha = np.ones(len(xyz), dtype=np.float32)
-    xyz, alpha = xyz[mask], alpha[mask]
-    if len(xyz) < 32: raise ValueError("Keine gültigen Gaussians")
-    if len(xyz) > max_points:
-        # Stable, opacity-weighted, evenly spaced sampling to bound CPU/RAM.
-        ids = np.linspace(0, len(xyz)-1, max_points, dtype=int)
-        xyz, alpha = xyz[ids], alpha[ids]
-        mask_indices = np.flatnonzero(mask)[ids]
-    else: mask_indices = np.flatnonzero(mask)
-    if all(k in names for k in ("f_dc_0", "f_dc_1", "f_dc_2")):
-        colors = np.column_stack([vertices["f_dc_"+str(i)][mask_indices] for i in range(3)])
-        colors = np.clip((colors * 0.28209479177387814 + 0.5)*255, 0, 255).astype(np.uint8)
-    elif all(k in names for k in ("red", "green", "blue")):
-        colors = np.column_stack([vertices[k][mask_indices] for k in ("red", "green", "blue")]).astype(np.uint8)
-    else:
-        colors = np.full((len(xyz), 3), 185, np.uint8)
-    # 3DGS PLY stores log-scales. Use geometric-mean Gaussian radius per
-    # component, grouped into three bounded kernels. Rotation/anisotropy are
-    # intentionally approximated for an affordable CPU mesh.
-    if all("scale_"+str(i) in names for i in range(3)):
-        log_scale = np.column_stack([vertices["scale_"+str(i)][mask_indices] for i in range(3)])
+    original_ids = np.flatnonzero(mask)
+    if len(original_ids) < 32:
+        raise ValueError("Keine gültigen Gaussians")
+    if len(original_ids) > max_points:
+        # Deterministic uniform sample, never accidentally dropping a whole range.
+        chosen = np.linspace(0, len(original_ids)-1, max_points, dtype=np.int64)
+        original_ids = original_ids[chosen]
+    xyz = xyz[original_ids]
+    alpha = alpha[original_ids]
+    colors = opacity_colors(vertices, names, original_ids)
+
+    # Keep each splat's geometric-mean radius, but never erase thin Gaussians.
+    if all("scale_" + str(i) in names for i in range(3)):
+        log_scale = np.column_stack([
+            vertices["scale_" + str(i)][original_ids] for i in range(3)
+        ])
         gaussian_radius = np.exp(np.clip(log_scale.mean(axis=1), -12, 3))
     else:
-        gaussian_radius = np.full(len(xyz), 0.01)
-    lo = np.percentile(xyz, 0.5, axis=0)
-    hi = np.percentile(xyz, 99.5, axis=0)
+        gaussian_radius = np.full(len(xyz), 0.01, np.float32)
+
+    lo = np.percentile(xyz, settings["crop"], axis=0)
+    hi = np.percentile(xyz, 100-settings["crop"], axis=0)
     span = np.maximum(hi-lo, 1e-4)
-    # Crop outliers and pad by 10% of the largest extent to leave a closed shell.
     pad = 0.10 * float(span.max())
-    lo -= pad; hi += pad
-    extent = np.max(hi-lo)
-    spacing = float(extent) / (resolution-1)
-    ijk = np.rint((xyz-lo)/spacing).astype(int)
-    inside = np.all((ijk>=0)&(ijk<resolution), axis=1)
-    ijk, xyz, alpha, colors = ijk[inside], xyz[inside], alpha[inside], colors[inside]
-    radii = np.clip(gaussian_radius[inside]/spacing, 0.7, 5.0)
-    blurred = np.zeros((resolution,)*3, dtype=np.float32)
-    edges = np.quantile(radii, [0,1/3,2/3,1])
-    for group in range(3):
-        selection = (radii>=edges[group]) & ((radii<=edges[group+1]) if group==2 else (radii<edges[group+1]))
-        if not np.any(selection): continue
-        vox = ijk[selection]
-        grid = np.zeros_like(blurred)
-        np.add.at(grid, (vox[:,0], vox[:,1], vox[:,2]), alpha[selection])
-        blurred += gaussian_filter(grid, sigma=float(np.median(radii[selection])), mode="constant")
-    # Covariance rotations/aniso are approximated by scale-equivalent isotropic
-    # kernels; raw PLY remains the authoritative splat representation.
-    maximum = float(blurred.max())
-    if maximum <= 0: raise ValueError("Leeres Dichtefeld")
-    positive = blurred[blurred > maximum*0.01]
-    threshold = max(float(np.percentile(positive, 55)), maximum*0.04)
-    if threshold >= maximum: threshold = maximum*0.5
-    verts, faces, _, _ = marching_cubes(blurred, level=threshold, spacing=(spacing,)*3)
+    lo -= pad
+    hi += pad
+    spacing = float(np.max(hi-lo)) / (resolution-1)
+    radii_vox = np.clip(gaussian_radius / spacing, 0.7, 5.0)
+    print(f"Idol mesh {quality}: {len(xyz)} Gaussians; {resolution}³ float32", flush=True)
+    density = splat_density(xyz, alpha, radii_vox, lo, spacing, resolution)
+    maximum = float(density.max())
+    if maximum <= 0:
+        raise ValueError("Leeres Dichtefeld")
+    positive = density[density > maximum*0.005]
+    if not len(positive):
+        raise ValueError("Kein positives Dichtefeld")
+    threshold = max(
+        float(np.percentile(positive, settings["percentile"])),
+        maximum*settings["floor"])
+    if threshold >= maximum:
+        threshold = maximum*0.5
+    verts, faces, _, _ = marching_cubes(
+        density, level=threshold, spacing=(spacing,)*3, allow_degenerate=False)
+    del density
     verts += lo
-    if not len(faces): raise ValueError("Marching Cubes hat keine Oberfläche erzeugt")
-    mesh = trimesh.Trimesh(vertices=verts, faces=faces, process=False)
-    # Smooth before colors. Keep conservative settings for thin structures.
-    trimesh.smoothing.filter_laplacian(mesh, lamb=0.25, iterations=3, volume_constraint=False)
-    # Optional decimation. Reproject colors AFTER simplification so GLB retains
-    # vertex colors even when the simplification backend loses attributes.
-    if len(mesh.faces) > 200000:
-        try: mesh = mesh.simplify_quadric_decimation(face_count=200000)
-        except (ImportError, ValueError, AttributeError) as exc:
-            print(f"Decimation skipped ({type(exc).__name__}); original mesh retained")
-    tree = cKDTree(xyz)
-    dist, neighbors = tree.query(mesh.vertices, k=min(4, len(xyz)), workers=1)
-    if neighbors.ndim == 1: neighbors = neighbors[:, None]; dist = dist[:, None]
-    weights = 1.0 / np.maximum(dist, spacing*0.1)**2
-    rgb = (colors[neighbors].astype(np.float32)*weights[...,None]).sum(axis=1)/weights.sum(axis=1)[:,None]
-    mesh.visual.vertex_colors = np.column_stack([np.clip(rgb,0,255).astype(np.uint8), np.full(len(rgb),255,np.uint8)])
-    # Idol's output is Y-down. Verified on the teapot: turn 180 degrees
-    # about the camera-facing Z axis, then stand the GLB on its Y=0 base.
-    # Keep splat.ply untouched. A proper rotation retains triangle winding.
-    upright = trimesh.transformations.rotation_matrix(np.pi, [0.0, 0.0, 1.0])
-    mesh.apply_transform(upright)
+    if not len(faces):
+        raise ValueError("Marching Cubes hat keine Oberfläche erzeugt")
+    geometry = trimesh.Trimesh(vertices=verts, faces=faces, process=False)
+    # Taubin lambda/mu smoothing (non-shrinking); fewer passes for thin details.
+    trimesh.smoothing.filter_taubin(
+        geometry, lamb=0.45, nu=0.48, iterations=settings["smooth"])
+    if len(geometry.faces) > settings["max_faces"]:
+        geometry = geometry.simplify_quadric_decimation(
+            face_count=settings["max_faces"])
+        if len(geometry.faces) > settings["max_faces"]:
+            raise RuntimeError("Dezimierung konnte Face-Limit nicht einhalten")
+
+    # Preserve full colour resolution: bake using Gaussian neighborhoods at
+    # each UV texel on the unrotated surface, before GLB/STL transforms.
+    vmapping, uv_faces, uvs, texture = bake_texture(
+        geometry.vertices, geometry.faces, xyz, alpha, gaussian_radius, colors,
+        spacing, settings["texture"], settings["neighbors"])
+
+    material = trimesh.visual.material.PBRMaterial(
+        baseColorTexture=texture, metallicFactor=0.0, roughnessFactor=1.0)
+    mesh = trimesh.Trimesh(
+        vertices=np.asarray(geometry.vertices)[vmapping], faces=uv_faces,
+        visual=trimesh.visual.TextureVisuals(uv=uvs, material=material),
+        process=False)
+    # Idol Y-down -> GLB Y-up. Verified on the teapot: rotate about camera Z.
+    mesh.apply_transform(trimesh.transformations.rotation_matrix(np.pi, [0.0, 0.0, 1.0]))
     mesh.apply_translation([0.0, -float(mesh.bounds[0, 1]), 0.0])
-    # GLB is Y-up (glTF's unit is metres); preserve the original vertex colors.
     mesh.export(output_dir / "mesh.glb", file_type="glb")
-    # STL is unitless: expressly set print coordinates in millimetres.
-    # Default 120 mm model height, configurable without changing the worker.
-    stl = mesh.copy()
+
+    # Print STL, without colors: +90° X rotates Y-up to Z-up, then scale to mm.
+    stl = geometry.copy()
+    stl.apply_transform(trimesh.transformations.rotation_matrix(np.pi, [0.0, 0.0, 1.0]))
+    stl.apply_translation([0.0, -float(stl.bounds[0, 1]), 0.0])
     stl.apply_transform(trimesh.transformations.rotation_matrix(np.pi / 2, [1.0, 0.0, 0.0]))
-    target_height = float(__import__("os").environ.get("MAG_IDOL_STL_HEIGHT_MM", "120"))
+    target_height = float(os.environ.get("MAG_IDOL_STL_HEIGHT_MM", "120"))
     if not np.isfinite(target_height) or target_height <= 0:
         raise ValueError("MAG_IDOL_STL_HEIGHT_MM must be positive")
     measured_height = float(stl.extents[2])
@@ -113,12 +295,15 @@ def reconstruct(input_path: Path, output_dir: Path, resolution=128, max_points=1
     stl.apply_scale(target_height / measured_height)
     stl.apply_translation([0.0, 0.0, -float(stl.bounds[0, 2])])
     stl.export(output_dir / "mesh.stl", file_type="stl")
-    print(f"Mesh: {len(mesh.vertices)} vertices, {len(mesh.faces)} faces; STL height {target_height:g} mm")
+    print(f"Mesh: {len(geometry.vertices)} vertices, {len(geometry.faces)} faces; "
+          f"{settings['texture']}² PNG in GLB; STL height {target_height:g} mm",
+          flush=True)
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("ply", type=Path)
     parser.add_argument("out", type=Path)
-    parser.add_argument("--resolution", type=int, choices=(96,128,160), default=128)
+    parser.add_argument("--quality", choices=tuple(QUALITY_PRESETS), default="normal")
     args = parser.parse_args()
-    reconstruct(args.ply, args.out, args.resolution)
+    reconstruct(args.ply, args.out, args.quality)

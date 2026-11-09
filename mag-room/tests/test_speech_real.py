@@ -46,10 +46,19 @@ AUDIO_MOCK = """(() => {
       });
     }
   };
-  Object.defineProperty(navigator,'mediaDevices',{
-    configurable:true,
-    value:{getUserMedia:async()=>({getTracks:()=>[{stop(){}}]})}
-  });
+  // Chromium may expose a non-configurable mediaDevices getter in an
+  // isolated context. Keep the real WASM worker; fake only microphone I/O.
+  const fakeGetUserMedia=async()=>({getTracks:()=>[{stop(){}}]});
+  try {
+    Object.defineProperty(navigator,'mediaDevices',{
+      configurable:true,value:{getUserMedia:fakeGetUserMedia}
+    });
+  } catch (_) {
+    Object.defineProperty(navigator.mediaDevices,'getUserMedia',{
+      configurable:true,value:fakeGetUserMedia
+    });
+  }
+  window.__speechFakeMic=fakeGetUserMedia;
   class FakeAudioContext {
     constructor(){this.sampleRate=16000;this.destination={};this.state='running'}
     resume(){return Promise.resolve()}
@@ -113,6 +122,11 @@ class RealWasmLoad(unittest.TestCase):
                 self.assertTrue(page.evaluate('window.crossOriginIsolated'),
                                 'WASM threads need COOP/COEP')
                 self.assertEqual(page.locator('#mic').count(), 1)
+                # Fail immediately if the capture fixture did not initialize.
+                self.assertTrue(page.evaluate("""() =>
+                    navigator.mediaDevices?.getUserMedia===window.__speechFakeMic &&
+                    window.AudioContext?.name==='FakeAudioContext'"""),
+                    'Headless microphone fixture failed to initialize')
                 page.locator('#mic').click()
                 try:
                     page.wait_for_function("""() => {

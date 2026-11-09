@@ -121,23 +121,26 @@
 
   const modeByKey = new Map(), previewPublished = new Map();
   const previewUrl = (bot,path) => '/agent-preview/' + encodeURIComponent(bot) + '/' + path;
-  function publishPreview(bot,path,content) {
+  function publishPreview(bot,path,content,revision=0) {
     if (!bot || !path || typeof content !== 'string') return Promise.reject(Error('Agent oder Datei fehlt'));
     const token = typeof document === 'undefined' ? '' : (document.querySelector('meta[name="mag-token"]')?.content || '');
     return fetch('/api/agent-preview', {method:'POST', credentials:'same-origin',
       headers:{'Content-Type':'application/json','X-Mag-Token':token},
-      body:JSON.stringify({bot,path,content})}).then(async response => {
+      body:JSON.stringify({bot,path,content,revision})}).then(async response => {
         if(!response.ok)throw Error('Vorschau: HTTP '+response.status);
         return response.json();
       });
   }
   function schedulePreview(box) {
-    const bot=box._bot,path=box._path,text=box._text;
+    const bot=box._bot,path=box._path,text=box._text,revision=box._revision||0;
     if(!bot||!path||typeof text!=='string'||box._state!=='ok'||box._lang!=='html')return;
     const key=bot+'\n'+path;
-    if(previewPublished.get(key)===text)return;
-    previewPublished.set(key,text);
-    publishPreview(bot,path,text).catch(()=>{if(previewPublished.get(key)===text)previewPublished.delete(key)});
+    const last=previewPublished.get(key);
+    if(last && last.revision>=revision)return;
+    previewPublished.set(key,{revision,text});
+    publishPreview(bot,path,text,revision).catch(()=>{
+      if(previewPublished.get(key)?.text===text)previewPublished.delete(key);
+    });
   }
   const seen = typeof IntersectionObserver === 'function'
     ? new IntersectionObserver(es => { for (const e of es) if (e.isIntersecting) { seen.unobserve(e.target); e.target._mountFrame && e.target._mountFrame(); } }, {rootMargin: '200px'})
@@ -185,7 +188,7 @@
       if(!box._bot||!box._path||typeof box._text!=='string')return;
       const tab=window.open('about:blank','_blank'); // direct user gesture: no popup blocker
       if(tab)tab.opener=null;
-      publishPreview(box._bot,box._path,box._text).then(data => {
+      publishPreview(box._bot,box._path,box._text,box._revision||0).then(data => {
         if(tab)tab.location.replace(data.url);
         else window.open(data.url,'_blank','noopener,noreferrer');
       }).catch(e => { if(tab)tab.close(); box.querySelector('.cc-note').hidden=false;
@@ -322,6 +325,7 @@
       if (content) content.before(box); else node.append(box);
     }
     box._bot=node.dataset.bot||node.dataset.liveBot||'';
+    box._revision=Number(node.dataset.displayMs)||0;
     apply(box, c, isLive);
   }
 

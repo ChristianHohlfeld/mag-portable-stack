@@ -694,6 +694,9 @@ dialog{border-radius:10px;border-color:var(--line);background:var(--surface)}
 .composer-inner #queue-chips,.composer-inner #queue-chips[hidden]{display:block!important;position:relative;height:36px;min-height:36px;max-height:36px;margin:0;overflow:visible}
 .composer-inner #room-line{height:36px;min-height:36px;max-height:36px}
 .composer-inner .queue-items{position:absolute;bottom:100%;left:0;right:0;z-index:30;max-height:min(40vh,320px);overflow:auto;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:8px;box-shadow:0 10px 30px #0003}
+/* Reserve one compact 22px status line; queue options overlay above it. */
+.composer-inner #queue-chips,.composer-inner #queue-chips[hidden]{height:22px;min-height:22px;max-height:22px}
+.composer-inner #room-line{height:22px;min-height:22px;max-height:22px;line-height:22px}
 /* Two fixed model bots are the navigation. No legacy room administration chrome. */
 #fixed-bot-nav[hidden]{display:none!important}
 #app-header #fixed-bot-nav{display:flex;align-items:center;gap:4px;min-width:0;flex:0 1 auto}

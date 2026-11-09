@@ -3963,7 +3963,7 @@ $('job-form').onsubmit=async e=>{e.preventDefault();const body={name:$('jf-name'
  try{const r=jobEdit?await api('/api/jobs/'+jobEdit.id,body,'PUT'):await api('/api/jobs',body);$('job-dialog').close();await showSecret(r);loadJobs()}catch(err){notice(err.message)}};
 loadJobs();setInterval(()=>{if(!document.hidden)loadJobs()},30000);
 // Queue list opens as an overlay only on a tap on the status line; it never covers the chat by itself.
-document.addEventListener('click',e=>{const q=$('queue-chips');if(!q)return;if(e.target.closest&&e.target.closest('#room-line')&&!e.target.closest('button,a,input,textarea')){q.classList.toggle('open');return}if(q.classList.contains('open')&&!q.contains(e.target))q.classList.remove('open')});
+document.addEventListener('click',e=>{const q=$('queue-chips');if(!q)return;if(e.target.closest&&e.target.closest('#room-line')&&!e.target.closest('button,a,input,textarea')){q.classList.toggle('open');return}if(q.classList.contains('open')&&!q.contains(e.target)&&!matchMedia('(max-width:850px)').matches)q.classList.remove('open')});
 // Browser and console: each collapsible on its own, collapsed by default (localStorage).
 function setupCollapse(secId,headSel,key,onOpen){const sec=$(secId),head=sec&&sec.querySelector(headSel);if(!head)return;
  head.classList.add('sec-toggle');head.tabIndex=0;head.setAttribute('role','button');head.setAttribute('aria-controls',secId);
@@ -4047,6 +4047,8 @@ append=function(m,scroll=false,trace=null,position=-1){
    }
    const label=old.querySelector(':scope > .meta > strong.bot-name');
    if(label)label.textContent=roomBotName(m);
+   // An existing face may become settled without a new message or slot.
+   armBotFace(old,m.bot,!!m.live);
   }
   const content=old.querySelector(':scope > .content');
   if(content&&old._stableText!==text){

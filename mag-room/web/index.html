@@ -4184,7 +4184,7 @@ events.onmessage=e=>{
   }else if(['message','file','agents','reset','idle','room'].includes(event.type)){
    if(event.type==='message'&&event.role==='assistant'&&event.id&&streams[id])
     streams[id].partialId=event.id;
-   if(event.type==='idle'&&Array.isArray(event.busy_bots)){if(!event.busy_bots.length){state.busy=false;state.busy_bots=[];state.activities=[]}setBusyBots(event.busy_bots);const live=new Set(event.busy_bots);for(const bot of Object.keys(streams))if(!live.has(bot))delete streams[bot];if(!event.busy_bots.length)clearStopping()}
+   if(event.type==='idle'&&Array.isArray(event.busy_bots)){if(!event.busy_bots.length){state.busy=false;state.busy_bots=[];state.activities=[]}setBusyBots(event.busy_bots);const live=new Set(event.busy_bots);for(const bot of Object.keys(streams))if(!live.has(bot)){streams[bot].node?.classList.remove('work-live');delete streams[bot]}if(!event.busy_bots.length)clearStopping()}
    refresh().catch(err=>notice(err.message));
   }else if(event.type==='model_settings'){if(Array.isArray(event.models)){state.models=event.models;syncModelSettings(state);syncModelChoice(state);renderAgents()}}
   else if(event.type==='autotalk')$('autotalk').checked=event.on;
@@ -4210,9 +4210,11 @@ events.onmessage=e=>{
   else if(event.type==='cancelled'&&event.bot){
    const s=streams[event.bot];if(s?.frame)cancelAnimationFrame(s.frame);
    faceSettle.set(event.bot,Date.now()+1600);if(s?.node)armBotFace(s.node,event.bot,false);
+   s?.node?.classList.remove('work-live');
    delete streams[event.bot];busyBots.delete(event.bot);if(!composerBusyIds().length)clearStopping();else renderLanes();notice('');refresh().catch(err=>notice(err.message));
   }else if(event.type==='stopped'||event.type==='cancelled'||event.type==='room_cleared'){
    for(const s of Object.values(streams))if(s.frame)cancelAnimationFrame(s.frame);
+   for(const st of Object.values(streams))st.node?.classList.remove('work-live');
    streams={};state.busy=false;state.busy_bots=[];state.activities=[];setBusyBots([]);clearStopping();notice('');refresh().catch(err=>notice(err.message));
   }
  }catch(err){notice(err.message)}

@@ -34,6 +34,7 @@ lock = threading.Lock()
 pending = queue.Queue(maxsize=MAX_PENDING)
 processes = {}  # ID -> subprocess only while actually running
 abort = set()
+active_job = None  # guarded by lock; includes post-inference Lena lease restore
 
 def save(job):
     folder = ROOT / job["id"]
@@ -173,8 +174,11 @@ def lena_health(job_id, timeout=360):
                        + str(timeout) + " Sekunden kein HTTP 200: " + last[:160])
 
 def execute():
+    global active_job
     while True:
         job_id = pending.get()
+        with lock:
+            active_job = job_id
         leased = False
         try:
             with lock:
@@ -252,6 +256,8 @@ def execute():
                 if remove_files:
                     jobs.pop(job_id, None)
                 abort.discard(job_id)
+                if active_job == job_id:
+                    active_job = None
             if remove_files:
                 shutil.rmtree(ROOT / job_id, ignore_errors=False)
             pending.task_done()
@@ -269,7 +275,7 @@ def delete_job(job_id):
         if item["state"] == "deleted":
             return True
         state = item["state"]
-        if state in ("queued", "running"):
+        if state in ("queued", "running") or job_id in abort or active_job == job_id:
             abort.add(job_id)
             item["state"] = "deleted"
             item["stage"] = "3D-Nachricht gelöscht"
@@ -280,7 +286,7 @@ def delete_job(job_id):
             jobs.pop(job_id)
     if child is not None:
         terminate(child)
-    if state not in ("queued", "running"):
+    if state not in ("queued", "running") and job_id not in abort and active_job != job_id:
         shutil.rmtree(ROOT / job_id)
     return True
 

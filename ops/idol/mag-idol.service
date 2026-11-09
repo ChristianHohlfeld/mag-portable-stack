@@ -14,6 +14,8 @@ ExecStartPre=+/usr/local/lib/mag-idol/gpu-lease.sh restore
 ExecStart=/usr/bin/python3 -I /opt/mag-stack/current/ops/idol/worker.py
 ExecStopPost=+/usr/local/lib/mag-idol/gpu-lease.sh restore
 Environment=MAG_IDOL_JOB_ROOT=/var/lib/mag-idol/jobs
+Environment=MIOPEN_USER_DB_PATH=/var/lib/mag-idol/miopen
+Environment=MIOPEN_CUSTOM_CACHE_DIR=/var/lib/mag-idol/miopen-cache
 Environment=MAG_IDOL_PYTHON=/home/chris/idol-mi50/venv/bin/python
 Environment=MAG_IDOL_WEIGHTS=/home/chris/idol-mi50/weights/idol
 Environment=IDOL_DINOV3=/home/chris/idol-mi50/weights/dinov3-timm

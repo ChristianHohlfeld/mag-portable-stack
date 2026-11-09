@@ -92,10 +92,28 @@ def reconstruct(input_path: Path, output_dir: Path, resolution=128, max_points=1
     weights = 1.0 / np.maximum(dist, spacing*0.1)**2
     rgb = (colors[neighbors].astype(np.float32)*weights[...,None]).sum(axis=1)/weights.sum(axis=1)[:,None]
     mesh.visual.vertex_colors = np.column_stack([np.clip(rgb,0,255).astype(np.uint8), np.full(len(rgb),255,np.uint8)])
-    # GLB includes vertex color; STL does not support vertex colors by design.
+    # Idol's output is Y-down. Verified on the teapot: turn 180 degrees
+    # about the camera-facing Z axis, then stand the GLB on its Y=0 base.
+    # Keep splat.ply untouched. A proper rotation retains triangle winding.
+    upright = trimesh.transformations.rotation_matrix(np.pi, [0.0, 0.0, 1.0])
+    mesh.apply_transform(upright)
+    mesh.apply_translation([0.0, -float(mesh.bounds[0, 1]), 0.0])
+    # GLB is Y-up (glTF's unit is metres); preserve the original vertex colors.
     mesh.export(output_dir / "mesh.glb", file_type="glb")
-    mesh.export(output_dir / "mesh.stl", file_type="stl")
-    print(f"Mesh: {len(mesh.vertices)} vertices, {len(mesh.faces)} faces")
+    # STL is unitless: expressly set print coordinates in millimetres.
+    # Default 120 mm model height, configurable without changing the worker.
+    stl = mesh.copy()
+    stl.apply_transform(trimesh.transformations.rotation_matrix(np.pi / 2, [1.0, 0.0, 0.0]))
+    target_height = float(__import__("os").environ.get("MAG_IDOL_STL_HEIGHT_MM", "120"))
+    if not np.isfinite(target_height) or target_height <= 0:
+        raise ValueError("MAG_IDOL_STL_HEIGHT_MM must be positive")
+    measured_height = float(stl.extents[2])
+    if measured_height <= 0:
+        raise ValueError("STL has no usable height")
+    stl.apply_scale(target_height / measured_height)
+    stl.apply_translation([0.0, 0.0, -float(stl.bounds[0, 2])])
+    stl.export(output_dir / "mesh.stl", file_type="stl")
+    print(f"Mesh: {len(mesh.vertices)} vertices, {len(mesh.faces)} faces; STL height {target_height:g} mm")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

@@ -27,6 +27,114 @@
   const newButton=dialog.querySelector("#mag-idol-new");
   let timer=null, current=sessionStorage.getItem("mag-idol-current")||null;
 
+
+  // Shared preview chrome. The wrapper is display:none until the model loads,
+  // so the icon adds zero height to the chat history before rendering.
+  let fullscreenState=null;
+  function scheduleViewRender(canvas){
+    requestAnimationFrame(()=>canvas._idolRender?.());
+  }
+  function showPreview(canvas){
+    if(canvas._idolShell)canvas._idolShell.style.display="block";
+    canvas.style.display="block";
+    scheduleViewRender(canvas);
+  }
+  function closePreviewFullscreen(fromBack=false){
+    const state=fullscreenState;
+    if(!state)return;
+    fullscreenState=null;
+    if(state.native && document.fullscreenElement===state.shell){
+      const leaving=document.exitFullscreen?.();
+      leaving?.catch?.(()=>{});
+    }
+    if(state.placeholder.parentNode)state.placeholder.replaceWith(state.shell);
+    else state.parent.append(state.shell);
+    state.shell.style.cssText=state.shellStyle;
+    state.canvas.style.cssText=state.canvasStyle;
+    state.button.setAttribute("aria-label","Vollbild öffnen");
+    state.button.setAttribute("aria-pressed","false");
+    state.button.textContent="⛶";
+    document.body.style.overflow=state.bodyOverflow;
+    scheduleViewRender(state.canvas);
+    // Consume only the synthetic history entry we added on entering full screen.
+    if(!fromBack && state.historyArmed)history.back();
+  }
+  async function openPreviewFullscreen(canvas){
+    if(fullscreenState){
+      closePreviewFullscreen();
+      return;
+    }
+    const shell=canvas._idolShell;
+    if(!shell)return;
+    const state={
+      shell,canvas,parent:shell.parentNode,
+      placeholder:document.createComment("idol-preview-placeholder"),
+      shellStyle:shell.style.cssText,
+      canvasStyle:canvas.style.cssText,
+      button:shell.querySelector(".idol-fullscreen"),
+      bodyOverflow:document.body.style.overflow,
+      native:false,historyArmed:false
+    };
+    shell.before(state.placeholder);
+    fullscreenState=state;
+    try{
+      if(typeof shell.requestFullscreen==="function"){
+        await shell.requestFullscreen({navigationUI:"hide"});
+        state.native=document.fullscreenElement===shell;
+      }
+    }catch(_error){ /* iOS Safari and denied fullscreen: fixed overlay below. */ }
+    if(fullscreenState!==state)return;
+    if(!state.native)document.body.append(shell);
+    shell.style.cssText="position:fixed;inset:0;width:100vw;height:100dvh;z-index:2147483647;background:#101115;display:block;overflow:hidden;margin:0;padding:0;border:0;border-radius:0";
+    canvas.style.cssText="display:block;width:100%;height:100%;max-height:none;aspect-ratio:auto;touch-action:none;background:#101115;border-radius:0";
+    state.button.setAttribute("aria-label","Vollbild schließen");
+    state.button.setAttribute("aria-pressed","true");
+    state.button.textContent="×";
+    document.body.style.overflow="hidden";
+    history.pushState({magIdolFullscreen:true},"");
+    state.historyArmed=true;
+    scheduleViewRender(canvas);
+  }
+  document.addEventListener("keydown",event=>{
+    if(fullscreenState && event.key==="Escape"){
+      event.preventDefault();
+      closePreviewFullscreen();
+    }
+  });
+  window.addEventListener("popstate",()=>{
+    if(fullscreenState)closePreviewFullscreen(true);
+  });
+  document.addEventListener("fullscreenchange",()=>{
+    if(fullscreenState && fullscreenState.native &&
+       document.fullscreenElement!==fullscreenState.shell){
+      closePreviewFullscreen();
+    }
+  });
+  function preparePreview(canvas){
+    if(canvas._idolShell)return;
+    const shell=document.createElement("div");
+    shell.className="idol-viewer-shell";
+    shell.style.cssText="position:relative;width:100%;display:none";
+    canvas.before(shell);
+    shell.append(canvas);
+    const button=document.createElement("button");
+    button.type="button";
+    button.className="idol-fullscreen";
+    button.textContent="⛶";
+    button.title="Vollbild";
+    button.setAttribute("aria-label","Vollbild öffnen");
+    button.setAttribute("aria-pressed","false");
+    button.style.cssText="position:absolute;top:6px;right:6px;z-index:2;display:grid;place-items:center;width:32px;height:32px;padding:0;border-radius:8px;border:1px solid #9998;background:#111b;color:white;font-size:23px;line-height:1;cursor:pointer";
+    button.onclick=event=>{
+      event.preventDefault();
+      event.stopPropagation();
+      if(fullscreenState?.shell===shell)closePreviewFullscreen();
+      else void openPreviewFullscreen(canvas);
+    };
+    shell.append(button);
+    canvas._idolShell=shell;
+  }
+
   // Chat-history card, not a modal or an extra status/composer row. Keep the
   // same DOM node across normal room re-renders so WebGL does not reset.
   let inlineCard=null;
@@ -77,7 +185,7 @@
       if(inlineCard.dataset.preview!==job.id){
         inlineCard.dataset.preview=job.id;
         preview("/api/idol/jobs/"+job.id+"/mesh.glb",canvas)
-          .then(()=>{if(canvas.isConnected)canvas.style.display="block"})
+          .then(()=>{if(canvas.isConnected)showPreview(canvas)})
           .catch(e=>{inlineCard.querySelector(".idol-chat-status").textContent="3D-Vorschau nicht verfügbar: "+e.message});
       }
     }
@@ -86,7 +194,7 @@
 
   function stop(){if(timer){clearTimeout(timer);timer=null}}
   dialog.querySelector("#mag-idol-close").onclick=()=>dialog.close();
-  dialog.addEventListener("close",stop);
+  dialog.addEventListener("close",()=>{stop();if(fullscreenState?.canvas===canvas)closePreviewFullscreen()});
   newButton.onclick=()=>file.click();
   cancelButton.onclick=async()=>{
     if(!current)return;
@@ -109,7 +217,7 @@
     if(!image)return;
     stop();current=null;sessionStorage.removeItem("mag-idol-current");
     if(!dialog.open)dialog.showModal();
-    links.replaceChildren();canvas.style.display="none";progressBox.style.display="none";cancelButton.style.display="none";
+    links.replaceChildren();canvas.style.display="none";if(canvas._idolShell)canvas._idolShell.style.display="none";progressBox.style.display="none";cancelButton.style.display="none";
     if(image.size>20*1024*1024){status.textContent="Maximal 20 MB";return}
     status.textContent="Foto übertragen …";
     try{
@@ -147,7 +255,7 @@
             status.textContent="Fertig · 3D-Vorschau laden …";
             try{
               await preview("/api/idol/jobs/"+target+"/mesh.glb",canvas);
-              canvas.style.display="block"; status.textContent="Fertig · zum Drehen ziehen, zum Zoomen scrollen";
+              showPreview(canvas); status.textContent="Fertig · zum Drehen ziehen, zum Zoomen scrollen";
             }catch(err){status.textContent="Fertig · Vorschau nicht verfügbar: "+err.message}
           } else if(job.state==="error"||job.state==="cancelled"){
             status.textContent=job.error||job.stage||"Idol-Job abgebrochen";}
@@ -167,6 +275,8 @@
   // Minimal WebGL2 glTF 2.0/GLB renderer. Only triangle primitives are used,
   // exported by trimesh. No external CDN, framework, or dependency.
   async function preview(url,canvas){
+    preparePreview(canvas);
+    if(canvas.dataset.previewUrl===url && canvas._idolRender)return;
     const response=await fetch(url,{cache:"no-store"});
     if(!response.ok)throw Error("GLB HTTP "+response.status);
     const buffer=await response.arrayBuffer();
@@ -229,26 +339,92 @@
     let min=[Infinity,Infinity,Infinity],max=[-Infinity,-Infinity,-Infinity];
     for(let i=0;i<pos.length;i+=3)for(let k=0;k<3;k++){min[k]=Math.min(min[k],pos[i+k]);max[k]=Math.max(max[k],pos[i+k])}
     const center=min.map((v,i)=>(v+max[i])/2),scale=2/Math.max(...max.map((v,i)=>v-min[i]),1e-5);
-    let yaw=.5,pitch=.2,zoom=3.3,last=null;
+    // GLB arrives Y-up. Do not rotate it again in the viewer.
+    let yaw=.5,pitch=.2,zoom=3.3,panX=0,panY=0;
+    const pointers=new Map();
+    let lastTap=0,lastTapPos=null,previous=null;
+    const clamp=(v,lo,hi)=>Math.max(lo,Math.min(hi,v));
     function render(){
+      const rect=canvas.getBoundingClientRect();
+      const dpr=Math.min(2,window.devicePixelRatio||1);
+      const w=Math.min(2400,Math.max(1,Math.round((rect.width||600)*dpr)));
+      const h=Math.min(2400,Math.max(1,Math.round((rect.height||420)*dpr)));
+      if(canvas.width!==w||canvas.height!==h){canvas.width=w;canvas.height=h}
       gl.viewport(0,0,canvas.width,canvas.height);gl.clearColor(.06,.065,.08,1);gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);gl.enable(gl.DEPTH_TEST);gl.disable(gl.CULL_FACE);
       const cy=Math.cos(yaw),sy=Math.sin(yaw),cx=Math.cos(pitch),sx=Math.sin(pitch),f=1.7;
+      const fx=f/(canvas.width/canvas.height);
       const m=new Float32Array([
-        cy*scale*f/zoom,sx*sy*scale*f/zoom,sy*cx*scale/zoom,0,
+        cy*scale*fx/zoom,sx*sy*scale*f/zoom,sy*cx*scale/zoom,0,
         0,cx*scale*f/zoom,-sx*scale/zoom,0,
-        -sy*scale*f/zoom,sx*cy*scale*f/zoom,cy*cx*scale/zoom,0,
-        -(cy*center[0]-sy*center[2])*scale*f/zoom,
-        -(sx*(sy*center[0]+cy*center[2])+cx*center[1])*scale*f/zoom,
+        -sy*scale*fx/zoom,sx*cy*scale*f/zoom,cy*cx*scale/zoom,0,
+        -(cy*center[0]-sy*center[2])*scale*fx/zoom+panX,
+        -(sx*(sy*center[0]+cy*center[2])+cx*center[1])*scale*f/zoom+panY,
         0,1
       ]);
       gl.uniformMatrix4fv(gl.getUniformLocation(program,"m"),false,m);
       gl.bindVertexArray(vao);
       if(indices)mode();else gl.drawArrays(gl.TRIANGLES,0,count);
     }
-    canvas.onpointerdown=e=>{canvas.setPointerCapture(e.pointerId);last=[e.clientX,e.clientY]};
-    canvas.onpointermove=e=>{if(!last)return;yaw+=(e.clientX-last[0])*.008;pitch=Math.max(-1.5,Math.min(1.5,pitch+(e.clientY-last[1])*.008));last=[e.clientX,e.clientY];render()};
-    canvas.onpointerup=()=>last=null;canvas.onpointercancel=()=>last=null;
-    canvas.onwheel=e=>{e.preventDefault();zoom=Math.max(1.2,Math.min(9,zoom*Math.exp(e.deltaY*.001)));render()};
+    function resetView(){yaw=.5;pitch=.2;zoom=3.3;panX=0;panY=0;render()}
+    function gesture(){
+      const v=[...pointers.values()];
+      if(v.length===1)return {count:1,x:v[0].x,y:v[0].y};
+      if(v.length>=2){
+        const a=v[0],b=v[1];
+        return {count:2,x:(a.x+b.x)/2,y:(a.y+b.y)/2,
+          distance:Math.max(1,Math.hypot(a.x-b.x,a.y-b.y))};
+      }
+      return null;
+    }
+    canvas.onpointerdown=e=>{
+      if(e.pointerType==="mouse"&&e.button!==0)return;
+      e.preventDefault();
+      try{canvas.setPointerCapture(e.pointerId)}catch(_error){}
+      pointers.set(e.pointerId,{x:e.clientX,y:e.clientY});
+      previous=gesture();
+    };
+    canvas.onpointermove=e=>{
+      if(!pointers.has(e.pointerId))return;
+      e.preventDefault();
+      const before=previous;
+      pointers.set(e.pointerId,{x:e.clientX,y:e.clientY});
+      const now=gesture();
+      if(before?.count===1&&now?.count===1){
+        yaw+=(now.x-before.x)*.008;
+        pitch=clamp(pitch+(now.y-before.y)*.008,-1.5,1.5);
+      }else if(before?.count===2&&now?.count===2){
+        zoom=clamp(zoom*before.distance/now.distance,.6,15);
+        const rect=canvas.getBoundingClientRect();
+        panX=clamp(panX+2*(now.x-before.x)/Math.max(1,rect.width),-2,2);
+        panY=clamp(panY-2*(now.y-before.y)/Math.max(1,rect.height),-2,2);
+      }
+      previous=now;render();
+    };
+    function endPointer(e){
+      if(!pointers.has(e.pointerId))return;
+      const single=pointers.size===1;
+      pointers.delete(e.pointerId);
+      previous=gesture();
+      if(single && e.type==="pointerup" && e.pointerType!=="mouse"){
+        const now=Date.now(),point=[e.clientX,e.clientY];
+        if(now-lastTap<325 && lastTapPos &&
+           Math.hypot(point[0]-lastTapPos[0],point[1]-lastTapPos[1])<25){
+          resetView();lastTap=0;lastTapPos=null;
+        }else{lastTap=now;lastTapPos=point}
+      }
+    }
+    canvas.onpointerup=endPointer;
+    canvas.onpointercancel=endPointer;
+    canvas.onlostpointercapture=endPointer;
+    canvas.ondblclick=e=>{e.preventDefault();resetView()};
+    canvas.onwheel=e=>{e.preventDefault();zoom=clamp(zoom*Math.exp(e.deltaY*.001),.6,15);render()};
+    canvas._idolResizeObserver?.disconnect();
+    if(typeof ResizeObserver!=="undefined"){
+      canvas._idolResizeObserver=new ResizeObserver(()=>render());
+      canvas._idolResizeObserver.observe(canvas);
+    }
+    canvas._idolRender=render;
+    canvas.dataset.previewUrl=url;
     render();
   }
 })();

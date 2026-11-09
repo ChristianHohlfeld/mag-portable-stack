@@ -144,6 +144,9 @@ class API(BaseHTTPRequestHandler):
     def do_POST(self):
         if urlsplit(self.path).path != "/api/idol/jobs":
             return self.reply(404, {"error": "Nicht gefunden"})
+        # Browser CSRF gate: cross-origin POST cannot set this non-simple header.
+        if self.headers.get("X-Mag-Idol-UI") != "1":
+            return self.reply(403, {"error": "MAG-Idol-Header fehlt"})
         try: length = int(self.headers.get("Content-Length", "0"))
         except ValueError: length = 0
         if not (8 <= length <= MAX_UPLOAD):

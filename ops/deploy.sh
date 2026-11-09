@@ -11,7 +11,7 @@ source "$(cd -- "$(dirname -- "$0")" && pwd)/deploy-guard.sh"
 SOURCE="$(cd -- "$(dirname -- "$0")/.." && pwd)"
 # Normal drain budget plus 15 minutes. Mistral's 233 GB NUMA0 model uses mmap;
 # reserve the full seven-hour service window plus deploy overhead.
-_deploy_drain=${MAG_DEPLOY_DRAIN_S:-900}
+_deploy_drain=0
 _deploy_default_deadline=$((_deploy_drain + 900))
 _layout_for_deadline=${MAG_ROOM_LAYOUT:-}
 if [[ -z $_layout_for_deadline || $_layout_for_deadline == repo ]]; then
@@ -294,20 +294,7 @@ wait_http() {
   done
   deploy_run 8 -- curl -fsS --retry 0 --max-time 5 "$1"
 }
-# Pause Self-Talk at the next turn boundary without flipping the switch off.
-# Markers in MAG_ROOM_STATE survive the mag-120 restart so the new process
-# can restore Self-Talk (on) and continue. A postponed drain releases the hold.
-hold_selftalk_for_deploy() {
-  local room_state="${MAG_ROOM_STATE:-/var/lib/magbot/room}"
-  if [[ -d $room_state && -w $room_state ]]; then
-    if [[ -f $room_state/selftalk && $(tr -d '[:space:]' <"$room_state/selftalk") == on ]]; then
-      printf 'on\n' >"$room_state/selftalk-resume"
-    fi
-    printf 'on\n' >"$room_state/deploy-hold"
-  fi
-  curl -fsS -o /dev/null --max-time 5 -X POST -H 'Content-Type: application/json' \
-    -d '{"on":true}' http://127.0.0.1:8766/api/deploy-hold >/dev/null 2>&1 || true
-}
+# Clean up any persisted hold markers after an immediate room restart.
 release_selftalk_hold() {
   local room_state="${MAG_ROOM_STATE:-/var/lib/magbot/room}"
   curl -fsS -o /dev/null --max-time 5 -X POST -H 'Content-Type: application/json' \
@@ -315,51 +302,6 @@ release_selftalk_hold() {
   if [[ -d $room_state && -w $room_state ]]; then
     rm -f "$room_state/deploy-hold" "$room_state/selftalk-resume" "$room_state/proaktiv-resume"
   fi
-}
-# Idle room, or a busy flag that is not producing tokens. A stuck busy=true
-# (no prompt/output progress) must not sit out the whole drain window.
-# MAG_DEPLOY_STALE_S=0 disables the stale shortcut. Returns 75 to defer.
-# Self-Talk is paused at a turn boundary and does not block the switch; a
-# normal user reply still has to finish (or go stale) before we continue.
-drain_room() {
-  local drain_s="${MAG_DEPLOY_DRAIN_S:-900}" stale_s="${MAG_DEPLOY_STALE_S:-60}"
-  local classify="${MAG_DEPLOY_DRAIN_STATE:-$SOURCE/ops/deploy-drain-state.py}"
-  local waited=0 still=0 prev="" st user_busy=0 user_pending=0 selftalk_busy=0 selftalk_held=0 progress=""
-  hold_selftalk_for_deploy
-  while :; do
-    st=$(curl -fsS --max-time 5 http://127.0.0.1:8766/api/state 2>/dev/null \
-         | python3 -I "$classify" || echo "0 0 0 0 -")
-    read -r user_busy user_pending selftalk_busy selftalk_held progress <<<"$st"
-    local need=0
-    if [[ "$user_busy" == 1 || "$user_pending" != 0 ]]; then need=1
-    elif [[ "$selftalk_busy" == 1 && "$selftalk_held" == 1 ]]; then need=1
-    fi
-    if (( ! need )); then
-      if [[ "$selftalk_busy" == 1 ]]; then
-        echo "Deploy: Self-Talk läuft ohne Hold-Bestätigung – Release wechselt an der nächsten Turn-Grenze (Zustand bleibt an)." >&2
-      fi
-      return 0
-    fi
-    if [[ "$progress" == "$prev" ]]; then still=$((still + 5)); else still=0; prev=$progress; fi
-    if (( waited == 0 )); then
-      echo "Deploy wartet: User-Antwort ($user_busy) / $user_pending in der Warteschlange / Self-Talk $selftalk_busy held=$selftalk_held – warte bis max. ${drain_s}s …" >&2
-    fi
-    # Background subagents may be executing a long command without visible
-    # token progress. They must drain naturally or defer the deploy; never
-    # trigger the stale-token shortcut while any task is still running.
-    if (( need == 1 && stale_s > 0 && still >= stale_s )) &&
-       [[ "$progress" != *:task-active ]]; then
-      echo "Deploy: busy ohne neue Tokens seit ${still}s – Deploy läuft weiter (Warteschlange bleibt gespeichert)." >&2
-      return 0
-    fi
-    if (( waited >= drain_s )); then
-      if [[ "${MAG_DEPLOY_FORCE:-0}" == 1 ]]; then echo "Drain-Timeout – MAG_DEPLOY_FORCE=1: deploye trotzdem (Warteschlange wird nach dem Neustart fortgesetzt)." >&2; return 0; fi
-      echo "Drain-Timeout nach ${drain_s}s: Raum ist nicht leer – Deploy verschoben (Release $RELEASE_ID bleibt unbenutzt). Später erneut ausführen oder MAG_DEPLOY_FORCE=1." >&2
-      release_selftalk_hold
-      return 75
-    fi
-    sleep 5; waited=$((waited + 5))
-  done
 }
 # deploy_exit lives in deploy-watchdog.sh: stop the deadline sleeper, then
 # roll back when this shell is signalled after the release switch started.

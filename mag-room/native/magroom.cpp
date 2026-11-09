@@ -5890,7 +5890,7 @@ backend_turn(const std::vector<Val> &messages, const std::string &tools,
       body["thinking_budget_tokens"] = flint_budget;
     }
   }
-  if(CONFIGURED_MODEL && bot_idx>=0 && !TL_SELFTALK &&
+  if(CONFIGURED_MODEL && room_is_coding() && bot_idx>=0 && !TL_SELFTALK &&
      envi("MAG_ROOM_CONTEXT_MASKING",1)) {
     // Last-mile guard applies to *every* coding-room request, including
     // retries/continuations, independent of the dispatcher selection path.
@@ -7765,7 +7765,7 @@ static TurnReport run_turn(int bot_idx, bool autotalk,
     for (int attempt = 0; attempt < 3; ++attempt) {
       if (!stateless)
         compact_agent_context(bot_idx, messages, tools, attempt_budget, compacted_steps);
-      if (CONFIGURED_MODEL && !stateless && !TL_SELFTALK &&
+      if (CONFIGURED_MODEL && room_is_coding() && !stateless && !TL_SELFTALK &&
           envi("MAG_ROOM_CONTEXT_MASKING",1)) {
         // Real tokenizer, real chat template, same model and tools. This is a
         // preflight, not another LLM. A failed archive cannot discard code.

@@ -10,7 +10,7 @@ import subprocess
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, parse_qs
 from uuid import uuid4
 
 ROOT = Path(os.environ.get("MAG_IDOL_JOB_ROOT", "/var/lib/mag-idol/jobs"))
@@ -22,6 +22,7 @@ PORT = int(os.environ.get("MAG_IDOL_PORT", "8793"))
 RUN_TIMEOUT = max(3600, int(os.environ.get("MAG_IDOL_TIMEOUT_S", "4200")))
 MAX_UPLOAD = 20 * 1024 * 1024
 MAX_PENDING = 8
+MESH_TIMEOUTS = {"fast": 300, "normal": 900, "high": 1800}
 RESULTS = {"splat.ply": "application/octet-stream", "mesh.glb": "model/gltf-binary",
            "mesh.stl": "model/stl"}
 VALID_ID = re.compile(r"^[a-f0-9]{32}$")
@@ -207,10 +208,15 @@ def execute():
                 raise RuntimeError("Idol hat keine PLY-Datei erzeugt")
             source.rename(folder / "splat.ply")
             update(job_id, stage="Mesh rekonstruieren", step=50, progress=1.0)
+            with lock:
+                quality = jobs[job_id].get("quality", "normal")
+            if quality not in MESH_TIMEOUTS:
+                raise ValueError("Ungültige gespeicherte Idol-Qualität")
             mesh = ["taskset", "-c", "28-55", PYTHON,
                     str(Path(__file__).with_name("mesh.py")),
-                    str(folder / "splat.ply"), str(folder)]
-            run(job_id, mesh, folder / "mesh.log", 600)
+                    str(folder / "splat.ply"), str(folder),
+                    "--quality", quality]
+            run(job_id, mesh, folder / "mesh.log", MESH_TIMEOUTS[quality])
             if job_id in abort:
                 continue
             if not all((folder / name).is_file() for name in RESULTS):
@@ -258,7 +264,8 @@ class API(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_POST(self):
-        path = urlsplit(self.path).path
+        url = urlsplit(self.path)
+        path = url.path
         if self.headers.get("X-Mag-Idol-UI") != "1":
             return self.reply(403, {"error": "MAG-Idol-Header fehlt"})
         parts = path.strip("/").split("/")
@@ -270,6 +277,11 @@ class API(BaseHTTPRequestHandler):
             return self.reply(200, {"cancelled": outcome})
         if path != "/api/idol/jobs":
             return self.reply(404, {"error": "Nicht gefunden"})
+        supplied = parse_qs(url.query, keep_blank_values=True)
+        quality_values = supplied.get("quality", ["normal"])
+        if len(quality_values) != 1 or quality_values[0] not in MESH_TIMEOUTS:
+            return self.reply(400, {"error": "Qualität muss fast, normal oder high sein"})
+        quality = quality_values[0]
         try:
             length = int(self.headers.get("Content-Length", "0"))
         except ValueError:
@@ -288,7 +300,8 @@ class API(BaseHTTPRequestHandler):
             folder.mkdir(mode=0o700, parents=True)
             (folder / "input.png").write_bytes(data)
             item = {"id": identity, "state": "queued", "stage": "Warteschlange",
-                    "created": int(time.time()), "step": 0, "total_steps": 50}
+                    "quality": quality, "created": int(time.time()),
+                    "step": 0, "total_steps": 50}
             jobs[identity] = item
             save(item)
             pending.put_nowait(identity)

@@ -1772,7 +1772,7 @@ function ensureWork(node,s,botId){
  if(!steps.length)old?.remove();
  else{const fresh=stepsList(steps);fresh.open=!!old?.open;if(old)old.replaceWith(fresh);else runPut(node,fresh)}
 }
-setInterval(()=>{paintRosterStatus();const now=Date.now();for(const id of Object.keys(streams)){const s=streams[id];if(!s)continue;const hung=!s.error&&now-(s.lastEvent||s.started||now)>60000;if(hung!==!!s.hung){s.hung=hung;updateStream(id,true);continue}const label=s.node?.querySelector?.('.work-label');if(label&&s.node.classList.contains('work-live'))label.textContent=workLabelText(s);if(s.thinking){const t=s.node?.querySelector?.(':scope > .run > .thinking .think-time');if(t)t.textContent=thinkSecs(liveThinkMs(s))}}if(stopAwaitingIdle&&!stopInFlight&&Date.now()-stopVerifyAt>1500){
+setInterval(()=>{paintRosterStatus();const now=Date.now();for(const id of Object.keys(streams)){const s=streams[id];if(!s)continue;const hung=!s.error&&now-(s.lastEvent||s.started||now)>60000;if(hung!==!!s.hung){s.hung=hung;updateStream(id,true);continue}const label=s.node?.querySelector?.('.work-label');if(label&&s.node.classList.contains('work-live'))label.textContent=workLabelText(s);window.magToolTimeline?.tick(s.node,s);if(s.thinking){const t=s.node?.querySelector?.(':scope > .run > .thinking .think-time');if(t)t.textContent=thinkSecs(liveThinkMs(s))}}if(stopAwaitingIdle&&!stopInFlight&&Date.now()-stopVerifyAt>1500){
  stopVerifyAt=Date.now();refresh().catch(()=>{});
 }paintActivityStatus()},1000);
 
@@ -1877,6 +1877,7 @@ function updateStream(botId,immediate=false){
   showThinking(s.node,'live:'+botId,s.thinkingEnabled===false||!shownTools(s.tools).length&&!shownSteps(s.steps).length?'':(s.reasoning||''),!!s.thinking,liveThinkMs(s));
   paintApprovals(s.node,botId);
   paintTools(s.node,content,s.tools);
+  window.magToolTimeline?.paint(s.node,s,id=>stopBot(id));
   window.magCodeCanvas?.paint(s.node,s.tools,liveCode(s));
   // No redundant full-width prompt progress: the inline activity dot reports it.
   // A live reply never shrinks: the thinking peek folding away, a revoked
@@ -4149,7 +4150,7 @@ events.onmessage=e=>{
    // Code inside a streaming tool call (write_file content, run_command heredoc).
    const s=streams[id];if(s){const off=+event.off||0;if(!off||!s.code||s.code.call!==event.call)s.code={call:event.call||'',tool:event.tool||'',path:event.path||'',raw:'',bytes:0};if(off===s.code.bytes){s.code.raw+=event.text||'';s.code.bytes+=new TextEncoder().encode(event.text||'').length;if(event.path)s.code.path=event.path;s.lastEvent=Date.now();s.hung=false;updateStream(id)}}
   }else if(event.type==='tool'){
-   const s=streams[id];if(s){s.code=null;(s.tools||(s.tools=[])).push({id:event.id||'',name:event.tool||'Aktion',label:event.label||'',args:event.args,result:null});s.thinking=false;s.lastEvent=Date.now();s.hung=false;if(event.label){s.phase='tool';s.label=event.label}updateStream(id)}
+   const s=streams[id];if(s){s.code=null;(s.tools||(s.tools=[])).push({id:event.id||'',name:event.tool||'Aktion',label:event.label||'',args:event.args,result:null,at:Date.now()});s.thinking=false;s.lastEvent=Date.now();s.hung=false;if(event.label){s.phase='tool';s.label=event.label}updateStream(id)}
   }else if(event.type==='tool_result'){
    const s=streams[id];if(s){const list=s.tools||(s.tools=[]);const t=[...list].reverse().find(x=>x.result==null&&(event.id?x.id===event.id:x.name===event.tool));const r={result:typeof event.result==='string'?event.result:'',ok:event.ok!==false,ms:event.ms};if(t)Object.assign(t,r);else list.push({id:event.id||'',name:event.tool||'Aktion',...r});s.lastEvent=Date.now();s.hung=false;updateStream(id)}
   }else if(event.type==='stopping'){paintStopping()}
@@ -4239,6 +4240,7 @@ if('serviceWorker' in navigator){navigator.serviceWorker.addEventListener('contr
 
 </script>
 <script defer src="/static/idol-ui.js"></script>
+<script src="/static/tool-timeline.js"></script>
 <script type="module" src="/static/speech-ui.js"></script>
 </body></html>
 

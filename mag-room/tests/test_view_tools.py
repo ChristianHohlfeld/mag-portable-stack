@@ -36,7 +36,10 @@ class ViewTools(unittest.TestCase):
    for name,vp,mobile in [('desktop',{'width':1280,'height':860},False),('phone',{'width':390,'height':844},True)]:
     ctx=browser.new_context(viewport=vp,has_touch=mobile,is_mobile=mobile);page=ctx.new_page();page.on('pageerror',lambda e:errors.append(str(e)))
     page.goto('http://127.0.0.1:%s/'%ui,wait_until='domcontentloaded');page.wait_for_function('()=>window.magViewTools')
-    if not page.locator('#browser-view').is_visible():page.locator('#toggle-tools').click()
+    page.wait_for_function("()=>document.getElementById('browser-agent')?.value==='test'",timeout=10000)
+    if not page.locator('#browser-section').is_visible():page.locator('#toggle-tools').click()
+    if 'collapsed' in (page.locator('#browser-section').get_attribute('class') or ''):
+     page.locator('#browser-section .side-section-head').click()
     page.locator('#browser-view').wait_for(state='visible')
     page.evaluate(SETUP)
     st=lambda:page.evaluate('magViewTools.state()')
@@ -62,7 +65,9 @@ class ViewTools(unittest.TestCase):
      # rotate to landscape: zoom stays
      before=st()['s'];page.set_viewport_size({'width':844,'height':390});page.wait_for_timeout(200)
      self.assertAlmostEqual(st()['s'],before,2)
-     if not page.locator('#browser-view').is_visible():page.locator('#toggle-tools').click()
+     if not page.locator('#browser-section').is_visible():page.locator('#toggle-tools').click()
+     if 'collapsed' in (page.locator('#browser-section').get_attribute('class') or ''):
+      page.locator('#browser-section .side-section-head').click()
      page.evaluate(SETUP)  # no live stream in the fixture: re-show the canvas
     # take over: input now reaches the bot; give back: it stops
     bar.locator('.vt-mode').click();self.assertEqual(st()['mode'],'control')

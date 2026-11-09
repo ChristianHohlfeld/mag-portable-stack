@@ -555,7 +555,10 @@
   }
 
   async function voiceOptions() {
-    await loadConfig();
+    // Model names are not selectable until a local Piper manifest exists.
+    // Fall back to the actual system voice rather than advertising absent files.
+    const cfg = await loadConfig();
+    if (!cfg) return [{id: 'system', label: 'Systemstimme'}];
     const list = voiceList().map(v => ({id: v.id, label: v.label}));
     list.push({id: 'system', label: 'Systemstimme'});
     return list;

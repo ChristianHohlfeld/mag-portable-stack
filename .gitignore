@@ -9,5 +9,5 @@ __pycache__/
 !.env.example
 vapid*.pem
 **/*vapid*private*
-models/
-state/
+/models/
+/state/

@@ -142,58 +142,21 @@ def run(job_id, command, log_path, timeout, progress=False):
                 terminate(proc)
             proc.stdout.close()
 
-def lena_state(job_id, state):
-    with lock:
-        item = jobs.get(job_id)
-        if item:
-            item["lena_state"] = state
-            save(item)
-
-def lena_lease(action):
-    command = ["sudo", "-n", "/usr/local/lib/mag-idol/gpu-lease.sh", action]
-    result = subprocess.run(command, capture_output=True, text=True, timeout=25)
-    if result.returncode:
-        raise RuntimeError(f"Lena GPU-{action} fehlgeschlagen: " + (result.stderr or result.stdout).strip()[-240:])
-
-def lena_health(job_id, timeout=360):
-    import urllib.request
-    last = ""
-    end = time.monotonic() + timeout
-    while time.monotonic() < end:
-        try:
-            with urllib.request.urlopen("http://127.0.0.1:8191/health", timeout=3) as response:
-                if response.status == 200:
-                    lena_state(job_id, "bereit")
-                    return
-        except Exception as exc:
-            last = str(exc)
-        time.sleep(2)
-    raise RuntimeError("Lena startete, aber :8191/health meldet nach "
-                       + str(timeout) + " Sekunden kein HTTP 200: " + last[:160])
-
 def execute():
     while True:
         job_id = pending.get()
-        leased = False
         try:
             with lock:
                 if jobs[job_id]["state"] == "cancelled":
                     continue
-            if not update(job_id, state="running", stage="Lena wird für Foto zu 3D pausiert",
-                          step=0, total_steps=50, progress=0.0,
-                          lena_state="pausiert für Foto zu 3D"):
-                continue
-            # Mark lease before calling acquire. Even if acquire times out or
-            # partly stops Lena, the finally path MUST request restoration.
-            leased = True
-            lena_lease("acquire")
-            if job_id in abort:
+            # The MI50 belongs to Idol alone (both bots run CPU-only), so a
+            # job never pauses or restarts a model.
+            if not update(job_id, state="running", stage="Idol startet",
+                          step=0, total_steps=50, progress=0.0):
                 continue
             folder = ROOT / job_id
             out = folder / "outputs"
             out.mkdir(exist_ok=True)
-            # No unreliable GPU-driver free-VRAM check: Lena uses Vulkan.
-            # Lena systemd lease has stopped its Vulkan process; Idol uses full VRAM.
             command = ["taskset", "-c", "28-55", PYTHON,
                        str(Path(__file__).with_name("runner.py")),
                        "--image", str(folder / "input.png"),
@@ -230,22 +193,6 @@ def execute():
         except Exception as exc:
             update(job_id, state="error", stage="Fehler", error=str(exc)[:500])
         finally:
-            if leased:
-                # This also runs on failure, timeout and user cancellation.
-                # systemd ExecStopPost is an independent crash/kill safeguard.
-                try:
-                    lena_state(job_id, "wird neu gestartet")
-                    lena_lease("restore")
-                    lena_health(job_id)
-                except Exception as exc:
-                    lena_state(job_id, "Wiederanlauf fehlgeschlagen")
-                    with lock:
-                        item = jobs[job_id]
-                        item["error"] = (str(item.get("error", "")) + "; "
-                                         + str(exc))[-500:]
-                        if item["state"] == "done":
-                            item["stage"] = "Export fertig; Lena nicht bereit"
-                        save(item)
             with lock:
                 abort.discard(job_id)
             pending.task_done()

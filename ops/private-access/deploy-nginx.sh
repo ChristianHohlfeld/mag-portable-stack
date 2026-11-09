@@ -135,7 +135,9 @@ preflight(){
   status=$(curl -sS --max-time 5 -o /dev/null -w '%{http_code}' \
      -H 'X-Mag-Remote: 192.0.2.1:34567' \
      http://127.0.0.1:8766/_internal/tailscale/whois || true)
-  [[ $status == 403 ]] || die "Native whois unavailable (HTTP $status)"
+  # A hung or crashed room must stay replaceable by a deploy: the new room is
+  # verified through nginx by activate/smoke after the switch.
+  [[ $status == 403 ]] || echo "WARN: running room does not answer native whois (HTTP $status); verifying after the switch" >&2
   if [[ ! -s /etc/credstore/mag-guest-oauth ]]; then
     echo 'Optional guest OAuth absent: invitation disabled; do not block Owner room' >&2
   fi

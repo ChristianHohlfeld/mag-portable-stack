@@ -1,0 +1,32 @@
+# Starts each bot's model server once its GGUF is complete and verified,
+# resumes interrupted downloads and publishes /run/mag-models/status.json.
+[Unit]
+Description=MAG model supervisor (download, verify, start)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/lib/mag-models/mag-modeld
+Restart=always
+RestartSec=5
+RuntimeDirectory=mag-models
+RuntimeDirectoryMode=0755
+RuntimeDirectoryPreserve=yes
+# SHA256 of a 65 GB file must not touch the model cores 0-27.
+CPUAffinity=28-55
+Nice=10
+IOSchedulingClass=idle
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/lib/mag-models
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

@@ -1,46 +1,15 @@
 #!/usr/bin/env bash
-# Read-only Health-Check (mag-stack-check.timer, minütlich). Probes bleiben kurz (--max-time 5).
-# Modell: Download/Prüfung/Laden sind ein normaler Zustand (Warnung, kein Fehler);
-# nur eine fehlgeschlagene Prüfung oder ein nicht erreichbares Backend bei freigegebenem Modell ist ein Fehler.
+# Read-only health check (mag-stack-check.timer). Short probes only.
+# A bot that is downloading, loading, paused or stopped is a normal state:
+# it is printed, never an error. Only the room and its ingress must be up.
 set -euo pipefail
-systemctl is-active --quiet mag-120.service mag-browser-webrtc.service gitea.service tailscaled.service
-# Zentrales Logging, sobald installiert
-for unit in mag-audit-nft.service mag-audit-gateway.service mag-audit-webproxy.service; do
+systemctl is-active --quiet mag-120.service nginx.service tailscaled.service
+for unit in mag-audit-gateway.service mag-modeld.service; do
   if systemctl cat "$unit" >/dev/null 2>&1; then systemctl is-active --quiet "$unit"; fi
 done
-ready=$(curl --fail --silent --show-error --max-time 5 http://127.0.0.1:8766/readyz)
-printf '%s\n' "$ready"
-state=$(python3 -I -c 'import json,sys; print(json.loads(sys.argv[1]).get("model",{}).get("state",""))' "$ready")
-case "$state" in
-  ready|busy)
-    : ;; # busy: the slot is prefilling. /health is on that queue, so it is slow, not down.
-  downloading|verifying|verified|starting|loading)
-    echo "WARN: Modell noch nicht bereit ($state)" >&2 ;;
-  *)
-    echo "FEHLER: Modellstatus '$state'" >&2; exit 1 ;;
-esac
-# The room may be healthy while one of the two Ornith nodes has failed.
-# Check both real inference instances, not just the room's HTTP listener.
-# During prefill, /health takes longer than this probe. busy already said so.
-if [[ -r /etc/mag-stack/secondary-model.env ]] &&
-   grep -Fxq 'MAG_SECONDARY_MODEL=ornith' /etc/mag-stack/secondary-model.env; then
-  model_ports=(8191 8192)
-  if [[ $(cat /etc/mag-stack/room-layout 2>/dev/null || true) == coding ]] &&
-     ! systemctl is-enabled --quiet mag-llm-coding@1.service; then
-    model_ports=(8191)
-  fi
-  for p in "${model_ports[@]}"; do
-    if ! curl --noproxy '*' --fail --silent --show-error --max-time 5 \
-        "http://127.0.0.1:$p/health" >/dev/null; then
-      if [[ "$state" == "busy" ]]; then
-        echo "WARN: Ornith :$p beschäftigt (Modellstatus busy)" >&2
-      else
-        echo "FEHLER: Ornith :$p nicht bereit" >&2
-        exit 1
-      fi
-    fi
-  done
+curl --noproxy '*' --fail --silent --show-error --max-time 5 -o /dev/null http://127.0.0.1:8766/readyz
+if [[ -r /run/mag-models/status.json ]]; then
+  jq -r '.bots | to_entries[] | "model \(.key): \(.value.state)" + (if .value.detail != "" then " (\(.value.detail))" else "" end)' \
+    /run/mag-models/status.json 2>/dev/null || true
 fi
-curl --fail --silent --show-error --max-time 5 http://127.0.0.1:18784/health
-printf '\n'
-/usr/local/bin/magbot status
+echo ok

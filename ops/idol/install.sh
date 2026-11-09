@@ -39,17 +39,29 @@ assert torch.__version__.startswith("2.7.1+") and torch.version.hip
 assert tensordict.__version__.split("+")[0] == "0.9.1"
 PY
 install -d -o chris -g chris -m 0700 /var/lib/mag-idol/jobs
-# Root-only lease helper; sudoers permits only these fixed actions.
 install -m 0644 /opt/mag-stack/current/ops/idol/mag-idol.tmpfiles.conf /etc/tmpfiles.d/mag-idol.conf
 systemd-tmpfiles --create /etc/tmpfiles.d/mag-idol.conf
 install -d -o root -g root -m 0755 /usr/local/lib/mag-idol
-install -o root -g root -m 0755 /opt/mag-stack/current/ops/idol/gpu-lease.sh /usr/local/lib/mag-idol/gpu-lease.sh
-install -o root -g root -m 0440 /opt/mag-stack/current/ops/idol/mag-idol.sudoers /etc/sudoers.d/mag-idol
-visudo -cf /etc/sudoers.d/mag-idol
+install -o root -g root -m 0755 /opt/mag-stack/current/ops/idol/power-cap.sh /usr/local/lib/mag-idol/power-cap.sh
+# The GPU lease that paused Lena is gone (both bots are CPU-only), and the
+# MIOpen cache paths of the first hotfix drop-in are part of the unit file.
+rm -f /usr/local/lib/mag-idol/gpu-lease.sh /etc/sudoers.d/mag-idol
+if grep -q '^Environment=MIOPEN_USER_DB_PATH=' /opt/mag-stack/current/ops/idol/mag-idol.service; then
+  rm -f /etc/systemd/system/mag-idol.service.d/miopen.conf
+  rmdir /etc/systemd/system/mag-idol.service.d 2>/dev/null || :
+fi
 install -m 0644 /opt/mag-stack/current/ops/idol/mag-idol.service /etc/systemd/system/mag-idol.service
 systemctl daemon-reload
 systemctl enable mag-idol.service
-systemctl restart mag-idol.service
-curl --fail --silent --show-error --retry 3 --retry-delay 1 --max-time 5 \
-  http://127.0.0.1:8793/api/idol/health
+# Restart only when the worker code or unit changed: a deploy must not kill
+# a running photo-to-3D job for nothing.
+rev=$(cat /opt/mag-stack/current/ops/idol/{worker,runner,mesh}.py /etc/systemd/system/mag-idol.service | sha256sum | cut -d' ' -f1)
+if [[ $(cat /run/mag-idol.rev 2>/dev/null) != "$rev" ]] || ! systemctl is-active --quiet mag-idol.service; then
+  systemctl restart mag-idol.service
+  printf '%s\n' "$rev" > /run/mag-idol.rev
+fi
+for _ in {1..15}; do
+  curl --noproxy '*' -fsS --max-time 3 http://127.0.0.1:8793/api/idol/health && break
+  sleep 1
+done
 printf '\n'

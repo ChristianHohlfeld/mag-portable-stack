@@ -1,4 +1,0 @@
-# Allow the unprivileged Idol worker to pause/resume only Lena's fixed unit.
-# No arbitrary shell, flags, units, or systemctl privileges.
-chris ALL=(root) NOPASSWD: /usr/local/lib/mag-idol/gpu-lease.sh acquire
-chris ALL=(root) NOPASSWD: /usr/local/lib/mag-idol/gpu-lease.sh restore

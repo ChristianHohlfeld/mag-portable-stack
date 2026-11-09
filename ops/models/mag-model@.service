@@ -1,0 +1,33 @@
+# One CPU-only llama.cpp server per bot (lena: NUMA0 :8191, noah: NUMA1 :8192).
+# Not enabled at boot on purpose: mag-modeld is the single owner of the
+# lifecycle and starts a bot as soon as its GGUF is complete and verified.
+[Unit]
+Description=MAG model server (%i)
+After=network.target
+StartLimitIntervalSec=900
+StartLimitBurst=4
+
+[Service]
+Type=simple
+User=chris
+Group=chris
+WorkingDirectory=/home/chris
+ExecStart=/usr/local/lib/mag-models/run.sh %i
+Restart=on-failure
+RestartSec=10
+# 78 = configuration/verification problem: retrying cannot help.
+RestartPreventExitStatus=78
+# Loading reads up to 65 GB into locked node-local memory.
+TimeoutStartSec=infinity
+TimeoutStopSec=20
+KillMode=control-group
+LimitMEMLOCK=infinity
+MemorySwapMax=0
+OOMScoreAdjust=-600
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/lib/mag-models/slots
+PrivateTmp=yes
+RestrictAddressFamilies=AF_INET AF_UNIX
+LockPersonality=yes

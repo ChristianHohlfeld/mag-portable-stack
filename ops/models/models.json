@@ -1,0 +1,47 @@
+{
+  "schema": 1,
+  "runtime": {
+    "rev": "3f8af15a76ac8675812e856da45454bafc90f12c",
+    "dir": "/home/chris/.local/mag-coding-rt"
+  },
+  "state_dir": "/var/lib/mag-models",
+  "bots": {
+    "lena": {
+      "label": "Gemma 4 26B-A4B · Q4_K_M",
+      "numa": 0,
+      "cpus": "0-13",
+      "threads": 14,
+      "port": 8191,
+      "ctx": 65536,
+      "model": {
+        "path": "/home/chris/models/gemma4-26b-a4b-uncensored/Gemma4-26B-A4B-QAT-Uncensored-HauhauCS-Balanced-Q4_K_M.gguf",
+        "url": "https://huggingface.co/HauhauCS/Gemma4-26B-A4B-QAT-Uncensored-HauhauCS-Balanced-MTP/resolve/main/Gemma4-26B-A4B-QAT-Uncensored-HauhauCS-Balanced-Q4_K_M.gguf",
+        "size": 16796015520,
+        "sha256": "3c13133469e431312fffb8b1d9c85ae42199e6bb5746ea1da84e8ddf2097d73c"
+      },
+      "draft": {
+        "path": "/home/chris/models/gemma4-26b-a4b-uncensored/mtp-gemma-4-26B-A4B-it.gguf",
+        "url": "https://huggingface.co/HauhauCS/Gemma4-26B-A4B-QAT-Uncensored-HauhauCS-Balanced-MTP/resolve/main/mtp-gemma-4-26B-A4B-it.gguf",
+        "size": 251937728,
+        "sha256": "62bd3af7f66c9308de9a5454233852f8c7324c93767e8dfb824ed45b9179864a",
+        "args": ["--spec-type", "draft-mtp", "--spec-draft-n-max", "3", "--spec-draft-p-min", "0.75"]
+      },
+      "args": ["--temp", "1.0", "--top-k", "64", "--top-p", "0.95", "--min-p", "0.0", "--repeat-penalty", "1.0"]
+    },
+    "noah": {
+      "label": "gpt-oss 120B · MXFP4",
+      "numa": 1,
+      "cpus": "14-27",
+      "threads": 14,
+      "port": 8192,
+      "ctx": 65536,
+      "model": {
+        "path": "/home/chris/models/gpt-oss-120b-heretic-v2/gpt-oss-120b-heretic-v2-MXFP4.gguf",
+        "url": "https://huggingface.co/llmfan46/gpt-oss-120b-heretic-v2-GGUF/resolve/main/gpt-oss-120b-heretic-v2-MXFP4.gguf",
+        "size": 65369016608,
+        "sha256": "8f2bc3ba1f84707ce18bbc75a4cdbb211f365928e60a1ed076238dfd3de0c0f7"
+      },
+      "args": ["--reasoning-effort", "low", "--temp", "1.0", "--top-p", "1.0", "--top-k", "0", "--min-p", "0.0", "--repeat-penalty", "1.0"]
+    }
+  }
+}

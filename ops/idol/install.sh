@@ -1,27 +1,41 @@
 #!/usr/bin/env bash
-# Optional installer, called after release activation. No LLM restarts.
+# Optional MAG Idol service only. Preserve already-working ROCm torch and patch.
 set -euo pipefail
 [[ $EUID -eq 0 ]] || { echo "root required" >&2; exit 1; }
-[[ -x /home/chris/idol-mi50/venv/bin/python ]] || { echo "Idol venv absent: skipping" >&2; exit 0; }
-[[ -d /home/chris/idol-mi50/weights/idol ]] || { echo "Idol weights absent: skipping" >&2; exit 0; }
-# Only install missing mesh dependencies into the existing Idol venv.
-# Does not replace torch/ROCm or touch any LLM environment.
-if ! /home/chris/idol-mi50/venv/bin/python -c 'import scipy, skimage, trimesh, plyfile' >/dev/null 2>&1; then
-  /home/chris/idol-mi50/venv/bin/python -m pip install --disable-pip-version-check --no-input \
-    'scipy>=1.14,<1.16' 'scikit-image>=0.24,<0.26' 'trimesh>=4.4,<4.8' || {
-      echo 'Idol mesh packages unavailable; optional service not started' >&2
-      exit 1
-    }
+BASE=/home/chris/idol-mi50
+PY="$BASE/venv/bin/python"
+[[ -x $PY && -d $BASE/weights/idol && -d $BASE/weights/dinov3-timm && -d $BASE/weights/flux2vae ]] || {
+  echo 'Idol MI50 venv/local weights missing; optional worker skipped' >&2
+  exit 0
+}
+# Never allow idol-sdk dependency resolution to replace ROCm torch with CUDA.
+"$PY" - <<'PY'
+import torch
+assert torch.__version__.startswith("2.7.1+") and torch.version.hip, \
+    "Expected torch 2.7.1+rocm6.3 in the pre-existing Idol venv"
+PY
+# Exact pin without transitive dependencies; no torch/ROCm changes.
+if ! "$PY" -c 'import tensordict; assert tensordict.__version__.split("+")[0]=="0.9.1"' 2>/dev/null; then
+  "$PY" -m pip install --no-input --disable-pip-version-check --no-deps 'tensordict==0.9.1'
 fi
-# Optional face decimation; an unavailable wheel must never block GLB/STL.
-/home/chris/idol-mi50/venv/bin/python -m pip show fast-simplification >/dev/null 2>&1 || \
-  /home/chris/idol-mi50/venv/bin/python -m pip install --disable-pip-version-check --no-input \
-    'fast-simplification>=0.1,<0.2' || true
+# Use the existing editable idol-sdk, including ~/idol-mi50/mi50.patch.
+# Reinstall editable metadata only if missing; never fetch dependency upgrades.
+if ! "$PY" -m pip show idol-sdk >/dev/null 2>&1; then
+  [[ -f $BASE/idol-sdk/pyproject.toml ]] || { echo 'Local idol-sdk missing' >&2; exit 1; }
+  "$PY" -m pip install --no-input --disable-pip-version-check --no-deps -e "$BASE/idol-sdk"
+fi
+# Mesh requirements must already exist on the verified host. Missing dependencies
+# fail with a clear message instead of automatic package graph upgrades.
+"$PY" - <<'PY'
+import torch, tensordict, idol, scipy, skimage, trimesh, plyfile
+assert torch.__version__.startswith("2.7.1+") and torch.version.hip
+assert tensordict.__version__.split("+")[0] == "0.9.1"
+PY
 install -d -o chris -g chris -m 0700 /var/lib/mag-idol/jobs
 install -m 0644 /opt/mag-stack/current/ops/idol/mag-idol.service /etc/systemd/system/mag-idol.service
 systemctl daemon-reload
 systemctl enable mag-idol.service
 systemctl restart mag-idol.service
-# Check only that the worker's queue HTTP endpoint is ready, no model load.
-curl --fail --silent --show-error --max-time 5 http://127.0.0.1:8793/api/idol/health
-echo
+curl --fail --silent --show-error --retry 3 --retry-delay 1 --max-time 5 \
+  http://127.0.0.1:8793/api/idol/health
+printf '\n'

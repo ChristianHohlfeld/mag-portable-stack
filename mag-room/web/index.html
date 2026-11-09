@@ -16,7 +16,7 @@
   location.replace(destination.href);
 })();
 </script>
-<!-- MAG_SERVE_OWNER_REDIRECT_END --><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="color-scheme" content="dark light"><link rel="stylesheet" href="/static/xterm.css"><title>MAG · Privater Raum</title><style>/* MAG 2026 · standalone interface */
+<!-- MAG_SERVE_OWNER_REDIRECT_END --><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="color-scheme" content="dark light"><link rel="stylesheet" href="/static/xterm.css"><link rel="stylesheet" href="/static/tool-timeline.css"><title>MAG · Privater Raum</title><style>/* MAG 2026 · standalone interface */
 :root{color-scheme:dark;--bg:#111216;--surface:#17191e;--sidebar:#15171b;--panel:#1c1e24;--panel-2:#23262d;--panel-3:#2b2e36;--text:#f1f0ed;--secondary:#b7b7ba;--muted:#858790;--line:#31333b;--soft-line:#282a31;--accent:#d9a885;--accent-ink:#261b16;--hover:#25272e;--code:#0f1116;--green:#7bca9d;--orange:#e4b77a;--red:#ef9999;--shadow:0 20px 70px #0007;--bubble:#282a31;--radius:16px;font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,Arial,sans-serif;font-synthesis:none}
 :root[data-theme=light]{color-scheme:light;--bg:#fff;--surface:#fff;--sidebar:#f8f8f6;--panel:#f6f5f2;--panel-2:#eeedea;--panel-3:#e8e6e1;--text:#242522;--secondary:#4e504e;--muted:#777974;--line:#e0dfdb;--soft-line:#eae9e5;--accent:#8c4f34;--accent-ink:#fff;--hover:#f0efeb;--code:#f2f3f5;--green:#28814c;--orange:#a66a24;--red:#ad4242;--shadow:0 12px 40px #0002;--bubble:#f4f3f0}
 [hidden]{display:none!important}*{box-sizing:border-box}html,body{height:100%;margin:0}body{background:var(--bg);color:var(--text);overflow:hidden}button,input,textarea,select{font:inherit;color:inherit}button{cursor:pointer;border:0;background:none}button:disabled{opacity:.45;cursor:not-allowed}button:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-visible,a:focus-visible,summary:focus-visible{outline:2px solid var(--accent);outline-offset:3px}input,select,textarea{outline:none}a{color:var(--accent);text-decoration-thickness:1px;text-underline-offset:3px}.i{width:18px;height:18px;display:inline-block;vertical-align:-4px;fill:none;stroke:currentColor;stroke-width:1.75;stroke-linecap:round;stroke-linejoin:round;flex:none}.i.sm{width:16px;height:16px}.i.lg{width:21px;height:21px}.muted{color:var(--muted)}.hint{color:var(--muted);font-size:12px;line-height:1.5}.eyebrow{color:var(--muted);font-size:10px;font-weight:750;letter-spacing:.14em;text-transform:uppercase}.icon-btn{display:inline-flex;align-items:center;justify-content:center;gap:7px;width:36px;height:36px;border-radius:10px;color:var(--secondary);border:1px solid transparent;flex-shrink:0}.icon-btn:hover{background:var(--hover);color:var(--text)}.pill-btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;border:1px solid var(--line);color:var(--secondary);padding:8px 12px;border-radius:10px;font-weight:550;font-size:12px;min-height:35px}.pill-btn:hover{background:var(--hover);color:var(--text)}.primary{background:var(--accent)!important;color:var(--accent-ink)!important;border-color:transparent!important;font-weight:650}.primary:hover{filter:brightness(1.08)}.danger{color:var(--red)}.spacer{flex:1}.dot{display:inline-block;flex:none;width:7px;height:7px;border-radius:50%;background:var(--orange);box-shadow:0 0 0 3px color-mix(in srgb,var(--orange),transparent 88%)}
@@ -694,6 +694,14 @@ dialog{border-radius:10px;border-color:var(--line);background:var(--surface)}
 .composer-inner #queue-chips,.composer-inner #queue-chips[hidden]{display:block!important;position:relative;height:36px;min-height:36px;max-height:36px;margin:0;overflow:visible}
 .composer-inner #room-line{height:36px;min-height:36px;max-height:36px}
 .composer-inner .queue-items{position:absolute;bottom:100%;left:0;right:0;z-index:30;max-height:min(40vh,320px);overflow:auto;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:8px;box-shadow:0 10px 30px #0003}
+/* Reserve one compact 22px status line; queue options overlay above it. */
+.composer-inner #queue-chips,.composer-inner #queue-chips[hidden]{height:22px;min-height:22px;max-height:22px}
+.composer-inner #room-line{height:22px;min-height:22px;max-height:22px;line-height:22px}
+/* Mobile queue stays in the composer's flow, never overlays the last chat row. */
+@media(max-width:850px){
+ .composer-inner #queue-chips{height:auto;min-height:22px;max-height:170px}
+ .composer-inner #queue-chips .queue-items{position:static;max-height:130px;box-shadow:none;background:transparent;border:0;padding:4px 0}
+}
 /* Two fixed model bots are the navigation. No legacy room administration chrome. */
 #fixed-bot-nav[hidden]{display:none!important}
 #app-header #fixed-bot-nav{display:flex;align-items:center;gap:4px;min-width:0;flex:0 1 auto}
@@ -1753,7 +1761,7 @@ function readingPanel(node,s){
 }
 function ensureWork(node,s,botId){
  const steps=shownSteps(s.steps),tools=shownTools(s.tools);
- const meaningful=steps.length||tools.length||s.error||s.hung;
+ const meaningful=tools.length||s.error||s.hung||(steps.length&&s.phase==='tool');
  let dot=node.querySelector(':scope > .meta > .inline-progress');
  if(!dot){dot=document.createElement('span');dot.className='inline-progress';node.querySelector(':scope > .meta')?.append(dot)}
  dot.classList.toggle('failed',!!(s.error||s.hung));dot.title=workLabelText(s);
@@ -1772,7 +1780,7 @@ function ensureWork(node,s,botId){
  if(!steps.length)old?.remove();
  else{const fresh=stepsList(steps);fresh.open=!!old?.open;if(old)old.replaceWith(fresh);else runPut(node,fresh)}
 }
-setInterval(()=>{paintRosterStatus();const now=Date.now();for(const id of Object.keys(streams)){const s=streams[id];if(!s)continue;const hung=!s.error&&now-(s.lastEvent||s.started||now)>60000;if(hung!==!!s.hung){s.hung=hung;updateStream(id,true);continue}const label=s.node?.querySelector?.('.work-label');if(label&&s.node.classList.contains('work-live'))label.textContent=workLabelText(s);if(s.thinking){const t=s.node?.querySelector?.(':scope > .run > .thinking .think-time');if(t)t.textContent=thinkSecs(liveThinkMs(s))}}if(stopAwaitingIdle&&!stopInFlight&&Date.now()-stopVerifyAt>1500){
+setInterval(()=>{paintRosterStatus();const now=Date.now();for(const id of Object.keys(streams)){const s=streams[id];if(!s)continue;const hung=!s.error&&now-(s.lastEvent||s.started||now)>60000;if(hung!==!!s.hung){s.hung=hung;updateStream(id,true);continue}const label=s.node?.querySelector?.('.work-label');if(label&&s.node.classList.contains('work-live'))label.textContent=workLabelText(s);window.magToolTimeline?.tick(s.node,s);if(s.thinking){const t=s.node?.querySelector?.(':scope > .run > .thinking .think-time');if(t)t.textContent=thinkSecs(liveThinkMs(s))}}if(stopAwaitingIdle&&!stopInFlight&&Date.now()-stopVerifyAt>1500){
  stopVerifyAt=Date.now();refresh().catch(()=>{});
 }paintActivityStatus()},1000);
 
@@ -1877,6 +1885,7 @@ function updateStream(botId,immediate=false){
   showThinking(s.node,'live:'+botId,s.thinkingEnabled===false||!shownTools(s.tools).length&&!shownSteps(s.steps).length?'':(s.reasoning||''),!!s.thinking,liveThinkMs(s));
   paintApprovals(s.node,botId);
   paintTools(s.node,content,s.tools);
+  window.magToolTimeline?.paint(s.node,s,id=>stopBot(id));
   window.magCodeCanvas?.paint(s.node,s.tools,liveCode(s));
   // No redundant full-width prompt progress: the inline activity dot reports it.
   // A live reply never shrinks: the thinking peek folding away, a revoked
@@ -1951,6 +1960,7 @@ function render(){
  for(const s of Object.values(streams).filter(x=>!x.seq).sort((x,y)=>(x.started||0)-(y.started||0)))s.seq=++streamSeq;
  for(const [botId,s] of Object.entries(streams).sort((x,y)=>x[1].seq-y[1].seq)){s.node=liveNode(botId,s);updateStream(botId,true)}
  restorePreviews(inner,keptPreviews);window.magCodeCanvas?.restore(inner,keptCanvas);
+ window.magIdolUI?.render();
  if(follow){area.scrollTop=area.scrollHeight;stickToBottom=true;newBelow=false}
  else{area.scrollTop=Math.min(oldScroll,Math.max(0,area.scrollHeight-area.clientHeight));if(area.scrollHeight>prevH+2)newBelow=true}
  lastScrollTop=area.scrollTop;watchInner(inner);
@@ -2301,7 +2311,7 @@ async function refreshBackup(){
   if(problem)el.textContent=b.stale?'Backup-Warnung: letzter Erfolg älter als 26 Stunden.':'Backup-Fehler: Sicherung prüfen.';
  }catch(e){el.hidden=false;el.textContent='Backup-Status nicht verfügbar.'}
 }
-function dropStaleGeneration(next){const idle=next&&next.busy===false&&!(next.busy_bots||[]).length&&!((next.activities||(next.activity?[next.activity]:[])).some(a=>a&&a.on));if(!idle)return;for(const s of Object.values(streams))if(s.frame)cancelAnimationFrame(s.frame);streams={};busyBots=new Set()}
+function dropStaleGeneration(next){const idle=next&&next.busy===false&&!(next.busy_bots||[]).length&&!((next.activities||(next.activity?[next.activity]:[])).some(a=>a&&a.on));if(!idle)return;for(const s of Object.values(streams)){if(s.frame)cancelAnimationFrame(s.frame);s.node?.classList.remove('work-live')}streams={};busyBots=new Set()}
 async function refresh(){const seq=++refreshSeq;const r=await fetch('/api/state');if(!r.ok)throw Error('Raum nicht erreichbar');const next=await r.json();if(seq!==refreshSeq)return;dropStaleGeneration(next);state=next;
  if(stopAwaitingIdle&&stopConfirmedIdle()){
   stopAwaitingIdle=false;
@@ -3753,7 +3763,7 @@ function editQueuedMessage(p,t,button,focus=false){
  const ta=document.createElement('textarea');ta.className='q-edit';ta.value=queueDrafts.get(p.id)??p.text;ta.rows=Math.min(6,Math.max(1,ta.value.split('\n').length));
  queueDrafts.set(p.id,ta.value);ta.oninput=()=>queueDrafts.set(p.id,ta.value);
  let saving=false;
- const save=async()=>{const text=ta.value.trim();if(!text||saving)return;saving=true;button.disabled=true;try{const r=await mutatePending(p.id,'/api/queue/'+encodeURIComponent(p.id),{text},'PUT');if(r){queueDrafts.delete(p.id);renderQueue(queueState)}}finally{saving=false;button.disabled=false}};
+ const save=async()=>{const text=ta.value.trim();if(!text||saving)return;saving=true;button.disabled=true;try{const r=await mutatePending(p.id,'/api/queue/'+encodeURIComponent(p.id),{text},'PUT');if(r){queueDrafts.delete(p.id);$('queue-chips')._queueSignature='';renderQueue(queueState)}}finally{saving=false;button.disabled=false}};
  button.textContent='✓';button.title='Speichern';button.setAttribute('aria-label','Speichern');button.onclick=save;
  ta.onkeydown=e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing){e.preventDefault();save()}else if(e.key==='Escape'){e.preventDefault();queueDrafts.delete(p.id);renderQueue(queueState)}};
  t.replaceWith(ta);if(focus)requestAnimationFrame(()=>ta.focus({preventScroll:true}));
@@ -3784,6 +3794,12 @@ function paintRoomLine(){
  box.hidden=false;
  box.classList.toggle('paused',queueState.paused);
  box.classList.toggle('expanded',!!(list.length||talkJobs.length));
+ // New pending work expands the queue automatically once; the user may
+ // collapse it afterward without the polling render reopening it.
+ const queueFirst=list[0]?.id||'';
+ if(queueFirst&&box.dataset.seenQueue!==queueFirst){box.classList.add('open');box.dataset.seenQueue=queueFirst;}
+ if(!list.length){box.dataset.seenQueue='';box.classList.remove('open');}
+
  const head=previousHead||document.createElement('div');
  head.id='room-line';head.className='queue-head';
  if(!show){
@@ -4149,7 +4165,12 @@ events.onmessage=e=>{
    // Code inside a streaming tool call (write_file content, run_command heredoc).
    const s=streams[id];if(s){const off=+event.off||0;if(!off||!s.code||s.code.call!==event.call)s.code={call:event.call||'',tool:event.tool||'',path:event.path||'',raw:'',bytes:0};if(off===s.code.bytes){s.code.raw+=event.text||'';s.code.bytes+=new TextEncoder().encode(event.text||'').length;if(event.path)s.code.path=event.path;s.lastEvent=Date.now();s.hung=false;updateStream(id)}}
   }else if(event.type==='tool'){
-   const s=streams[id];if(s){s.code=null;(s.tools||(s.tools=[])).push({id:event.id||'',name:event.tool||'Aktion',label:event.label||'',args:event.args,result:null});s.thinking=false;s.lastEvent=Date.now();s.hung=false;if(event.label){s.phase='tool';s.label=event.label}updateStream(id)}
+   const s=streams[id];if(s){s.code=null;(s.tools||(s.tools=[])).push({id:event.id||'',name:event.tool||'Aktion',label:event.label||'',args:event.args,result:null,at:Date.now()});s.thinking=false;s.lastEvent=Date.now();s.hung=false;if(event.label){s.phase='tool';s.label=event.label}updateStream(id)}
+  }else if(event.type==='tool_output'){
+   const s=streams[id];
+   if(s){const list=s.tools||[];const active=[...list].reverse().find(x=>x.result==null&&x.name===event.tool);
+    if(active){active.output_tail=String(event.tail||'').slice(-2000);s.lastEvent=Date.now();s.hung=false;updateStream(id)}
+   }
   }else if(event.type==='tool_result'){
    const s=streams[id];if(s){const list=s.tools||(s.tools=[]);const t=[...list].reverse().find(x=>x.result==null&&(event.id?x.id===event.id:x.name===event.tool));const r={result:typeof event.result==='string'?event.result:'',ok:event.ok!==false,ms:event.ms};if(t)Object.assign(t,r);else list.push({id:event.id||'',name:event.tool||'Aktion',...r});s.lastEvent=Date.now();s.hung=false;updateStream(id)}
   }else if(event.type==='stopping'){paintStopping()}
@@ -4164,6 +4185,8 @@ events.onmessage=e=>{
    if(thinkOpen.delete('live:'+id)&&event.id)thinkOpen.add(event.id);
    if(runOpen.has('live:'+id)){const o=runOpen.get('live:'+id);runOpen.delete('live:'+id);if(event.id)runOpen.set('done:'+event.id,o)}
    if(s&&s.thinkingEnabled!==false&&(s.reasoning||s.tools?.length)){completedTraces.push({name:s.name,content:event.content||s.text||'',reasoning:event.reasoning?'':(s.reasoning||''),ms:liveThinkMs(s),tools:s.tools||[],assignedPosition:null});if(completedTraces.length>40)completedTraces.shift()}
+   // Finalize the current DOM card before asynchronous room reconciliation.
+   if(s?.node?.isConnected)s.node.classList.remove('work-live');
    // Do not persist live status-card dimensions.
    delete streams[id];busyBots.delete(id);if(!composerBusyIds().length)clearStopping();else streamControls();
    scheduleStableChat();refresh().catch(err=>notice(err.message));
@@ -4175,7 +4198,7 @@ events.onmessage=e=>{
   }else if(['message','file','agents','reset','idle','room'].includes(event.type)){
    if(event.type==='message'&&event.role==='assistant'&&event.id&&streams[id])
     streams[id].partialId=event.id;
-   if(event.type==='idle'&&Array.isArray(event.busy_bots)){if(!event.busy_bots.length){state.busy=false;state.busy_bots=[];state.activities=[]}setBusyBots(event.busy_bots);const live=new Set(event.busy_bots);for(const bot of Object.keys(streams))if(!live.has(bot))delete streams[bot];if(!event.busy_bots.length)clearStopping()}
+   if(event.type==='idle'&&Array.isArray(event.busy_bots)){if(!event.busy_bots.length){state.busy=false;state.busy_bots=[];state.activities=[]}setBusyBots(event.busy_bots);const live=new Set(event.busy_bots);for(const bot of Object.keys(streams))if(!live.has(bot)){streams[bot].node?.classList.remove('work-live');delete streams[bot]}if(!event.busy_bots.length)clearStopping()}
    refresh().catch(err=>notice(err.message));
   }else if(event.type==='model_settings'){if(Array.isArray(event.models)){state.models=event.models;syncModelSettings(state);syncModelChoice(state);renderAgents()}}
   else if(event.type==='autotalk')$('autotalk').checked=event.on;
@@ -4201,9 +4224,11 @@ events.onmessage=e=>{
   else if(event.type==='cancelled'&&event.bot){
    const s=streams[event.bot];if(s?.frame)cancelAnimationFrame(s.frame);
    faceSettle.set(event.bot,Date.now()+1600);if(s?.node)armBotFace(s.node,event.bot,false);
+   s?.node?.classList.remove('work-live');
    delete streams[event.bot];busyBots.delete(event.bot);if(!composerBusyIds().length)clearStopping();else renderLanes();notice('');refresh().catch(err=>notice(err.message));
   }else if(event.type==='stopped'||event.type==='cancelled'||event.type==='room_cleared'){
    for(const s of Object.values(streams))if(s.frame)cancelAnimationFrame(s.frame);
+   for(const st of Object.values(streams))st.node?.classList.remove('work-live');
    streams={};state.busy=false;state.busy_bots=[];state.activities=[];setBusyBots([]);clearStopping();notice('');refresh().catch(err=>notice(err.message));
   }
  }catch(err){notice(err.message)}
@@ -4238,6 +4263,8 @@ $('update-now').onclick=async()=>{const reg=await navigator.serviceWorker.getReg
 if('serviceWorker' in navigator){navigator.serviceWorker.addEventListener('controllerchange',()=>{if(sawController)location.reload();sawController=true});navigator.serviceWorker.register('/sw.js').then(reg=>{reg.addEventListener('updatefound',()=>{const nw=reg.installing;if(!nw)return;nw.addEventListener('statechange',()=>{if(nw.state==='installed')checkVersion()})})}).catch(()=>{});window.addEventListener('focus',()=>checkVersion());document.addEventListener('visibilitychange',()=>checkVersion());checkVersion();refreshPushUi()}
 
 </script>
+<script defer src="/static/idol-ui.js"></script>
+<script src="/static/tool-timeline.js"></script>
 <script type="module" src="/static/speech-ui.js"></script>
 </body></html>
 

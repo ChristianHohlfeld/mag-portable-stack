@@ -9,6 +9,7 @@
 #include <fcntl.h>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <iostream>
 #include <map>
 #include <mutex>
@@ -106,7 +107,8 @@ struct Result {
 inline Result run(const std::vector<std::string> &args, int seconds = 120,
                   size_t cap = 4 * 1024 * 1024,
                   const std::atomic<bool> *cancel = nullptr,
-                  const std::string *stdin_data = nullptr) {
+                  const std::string *stdin_data = nullptr,
+                  const std::function<void(const std::string &)> &on_output = {}) {
   if (args.empty())
     throw std::runtime_error("Empty process");
   int p[2];
@@ -171,6 +173,7 @@ inline Result run(const std::vector<std::string> &args, int seconds = 120,
         throw std::runtime_error("Process output limit");
       }
       r.out.append(b, n);
+      if (on_output) on_output(std::string(b, (size_t)n));
     }
     if (n == 0)
       closed = true;

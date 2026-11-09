@@ -35,3 +35,7 @@ boot :: bash ops/tests/test-boot.sh
 failed units :: bash ops/tests/test-clear-failed-units.sh
 gitea funnel :: python3 ops/tailscale/tests/test-gitea-funnel.py
 sni map :: python3 ops/tailscale/tests/test-sni-map.py
+idol private API and WebGL syntax :: python3 mag-room/tests/test_idol_worker.py && node --check mag-room/static/idol-ui.js && bash -n ops/idol/install.sh
+idol image job API :: python3 mag-room/tests/test_idol_worker.py
+live tool timeline :: python3 mag-room/tests/test_live_tool_timeline.py
+timeline frontend syntax :: node --check mag-room/static/tool-timeline.js && node --check mag-room/static/idol-ui.js

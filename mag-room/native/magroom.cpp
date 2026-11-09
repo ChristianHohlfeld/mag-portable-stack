@@ -397,8 +397,9 @@ struct CmdResult {
 static CmdResult run_argv(const std::vector<std::string> &argv,
                           int timeout_sec = 60, size_t cap = 4 << 20,
                           const std::atomic<bool> *cancel = nullptr,
-                          const std::string *stdin_data = nullptr) {
-  auto result = mag::run(argv, timeout_sec, cap, cancel, stdin_data);
+                          const std::string *stdin_data = nullptr,
+                          const std::function<void(const std::string &)> &on_output = {}) {
+  auto result = mag::run(argv, timeout_sec, cap, cancel, stdin_data, on_output);
   return {result.code, result.out};
 }
 
@@ -1827,7 +1828,7 @@ static void live_track_locked(const std::string &j) {
     live.code_path = mag::str(v, "path"); live.code_call = mag::str(v, "call");
   }
   else if (t == "tool") live.code.clear();
-  if ((t == "tool" || t == "tool_result") && live.tools.size() < 200) live.tools.push_back(j);
+  if ((t == "tool" || t == "tool_result" || t == "tool_output") && live.tools.size() < 200) live.tools.push_back(j);
 }
 static std::vector<std::string> live_replay_locked() {
   std::vector<std::string> out;
@@ -3679,12 +3680,13 @@ static Val brave_search(const std::string &query) {
 // browser
 static CmdResult guest_command(const std::string &vm,
                                const std::string &command, int timeout = 70,
-                               bool cancelable = false) {
+                               bool cancelable = false,
+                               const std::function<void(const std::string &)> &on_output = {}) {
   if (command.size() > 32u * 1024 * 1024)
     throw std::runtime_error("Shell-Befehl groesser als 32 MiB; bitte aufteilen.");
   CmdResult r = run_argv({"sudo", "-n", GUEST_RUN, vm, "--stdin",
                           std::to_string(timeout)}, timeout + 30,
-                         4 << 20, cancelable ? &stop_flag() : nullptr, &command);
+                         4 << 20, cancelable ? &stop_flag() : nullptr, &command, on_output);
   if (r.out.size() > (size_t)TOOL_OUTPUT_LIMIT)
     r.out = mj::utf8_cut(r.out, TOOL_OUTPUT_LIMIT) + "\n...[gekuerzt]";
   if (r.timedout) {
@@ -6842,7 +6844,32 @@ static std::string dispatch_tool_raw(int bot_idx, const std::string &name,
     std::string cmd = getstr("command");
     if (trim(cmd).empty())
       throw std::runtime_error("Kein Befehl angegeben.");
-    CmdResult r = guest_command(vm, cmd, GUEST_TIMEOUT, true);
+    // Stream the real stdout/stderr tail from the existing cancellable VM
+    // subprocess. Throttle to 4 updates/s; never log command bytes or output.
+    std::string tail;
+    auto last_emit = steady_clock::now() - milliseconds(1000);
+    auto output = [&](const std::string &chunk) {
+      tail += chunk;
+      if (tail.size() > 2500) tail.erase(0, tail.size() - 2500);
+      const auto now = steady_clock::now();
+      if (now - last_emit < milliseconds(250)) return;
+      last_emit = now;
+      Val e = Val::object();
+      e["type"] = "tool_output";
+      e["bot"] = bot_field(bot_idx, "id");
+      e["tool"] = "run_command";
+      e["tail"] = mj::utf8_cut(mj::utf8_fix(tail), 2000);
+      publish(mj::dump(e));
+    };
+    CmdResult r = guest_command(vm, cmd, GUEST_TIMEOUT, true, output);
+    // A final tail makes the last bytes visible even with throttling.
+    if (!tail.empty()) {
+      Val e = Val::object();
+      e["type"] = "tool_output"; e["bot"] = bot_field(bot_idx, "id");
+      e["tool"] = "run_command";
+      e["tail"] = mj::utf8_cut(mj::utf8_fix(tail), 2000);
+      publish(mj::dump(e));
+    }
     std::string out = "exit=" + std::to_string(r.code) + "\n" + r.out;
     if (r.code != 0)
       out += "\n[hint] Befehl fehlgeschlagen; pruefe Pfad/Rechte/Programmname "

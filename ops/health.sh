@@ -24,7 +24,12 @@ esac
 # During prefill, /health takes longer than this probe. busy already said so.
 if [[ -r /etc/mag-stack/secondary-model.env ]] &&
    grep -Fxq 'MAG_SECONDARY_MODEL=ornith' /etc/mag-stack/secondary-model.env; then
-  for p in 8191 8192; do
+  model_ports=(8191 8192)
+  if [[ $(cat /etc/mag-stack/room-layout 2>/dev/null || true) == coding ]] &&
+     ! systemctl is-enabled --quiet mag-llm-coding@1.service; then
+    model_ports=(8191)
+  fi
+  for p in "${model_ports[@]}"; do
     if ! curl --noproxy '*' --fail --silent --show-error --max-time 5 \
         "http://127.0.0.1:$p/health" >/dev/null; then
       if [[ "$state" == "busy" ]]; then

@@ -2134,11 +2134,23 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
     AUTO_LAST_PROGRESS.clear(); AUTO_TURNS_LEFT = 0;
     save_queue_locked(); queue_event_locked();
     clear_runs();
+    std::string cache_error;
+    // No 200 until every active llama slot has been erased/verified and
+    // historical disk checkpoints invalidated. No model service restart.
+    if (!reset_room_prefix_cache(cache_error)) {
+      error_json(fd, 503, "Raum-Kontext nicht vollständig geleert: " + cache_error);
+      return;
+    }
     auto result = clear_room_data();
     if (result.code == 200) {
       guest_audit("room_clear", actor.login, "hard");
       publish("{\"type\":\"room_cleared\"}");
     }
+    // Fresh empty ROOM is now durable. Release the locks before scheduling
+    // an idle-only clean system prewarm; never queue it behind old turn data.
+    if (turn.owns_lock()) turn.unlock();
+    if (scheduling.owns_lock()) scheduling.unlock();
+    if (result.code == 200) schedule_prewarm();
     send_json(fd, result.code, result.body);
     return;
   }

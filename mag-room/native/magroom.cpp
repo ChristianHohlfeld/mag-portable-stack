@@ -10254,14 +10254,25 @@ static bool erase_room_backend_slots(int idx, const std::string &model,
       status != 200 || !mj::parse(data, slots) || !slots.isArr())
     return false;
   long count = -1;
-  for (const auto &slot : slots.asArr()) {
-    for (const char *k : {"n_past", "n_cached_tokens", "n_prompt_tokens"})
-      if (auto n = slot.find(k); n && n->type == Val::NUM)
-        count = std::max(count, (long)n->asNum());
-  }
+  for (const auto &slot : slots.asArr())
+    if (auto n = slot.find("n_past"); n && n->type == Val::NUM)
+      count = std::max(count, (long)n->asNum());
   if (after_tokens) *after_tokens = count;
   // If exposed, a fully erased KV must contain at most one BOS token.
   return count < 0 || count <= 1;
+}
+static long room_backend_n_past(int idx, const std::string &model) {
+  std::string data; long status = 0; Val slots;
+  if (!http_simple(BACKEND_HOST, BACKEND_PORT, "GET", "/slots", "",
+       {{"Authorization", "Bearer " + API_KEY},
+        {"X-Mag-Model", model}, {"X-Mag-Slot", gateway_slot(idx)}},
+       data, &status, nullptr, 3000) || status != 200 ||
+      !mj::parse(data, slots) || !slots.isArr()) return -1;
+  long past = -1;
+  for (const auto &slot : slots.asArr())
+    if (auto n=slot.find("n_past"); n && n->type==Val::NUM)
+      past = std::max(past, (long)n->asNum());
+  return past;
 }
 static bool reset_room_prefix_cache(std::string &why) {
   if (!CONFIGURED_MODEL) return true;
@@ -10294,7 +10305,7 @@ static bool reset_room_prefix_cache(std::string &why) {
     if (!PREFIX_META.isObj()) PREFIX_META = Val::object();
     auto &entries = *PREFIX_META.obj;
     entries.erase(std::remove_if(entries.begin(), entries.end(),
-      [](const auto &entry) { return entry.first.rfind("clean/", 0) != 0; }),
+      [](const auto &entry) { return entry.first.rfind("clean/", 0) != 0 && entry.first.rfind("clean_tokens/", 0) != 0; }),
       entries.end());
     if (!write_file_atomic(STATE_DIR + "/prompt-prefix.json", mj::dump(PREFIX_META))) {
       why = "prefix metadata reset failed";
@@ -10346,6 +10357,20 @@ static bool reset_room_prefix_cache(std::string &why) {
         found=x->type==Val::STR && x->asStr()==key;
     }
     bool restored=found && prefix_slot_rpc(idx,model,"restore",clean,30000);
+    const long n_past=restored?room_backend_n_past(idx,model):-1;
+    long expected=-1;
+    {
+      std::lock_guard<std::mutex> lk(PREFIX_MTX);
+      if (const Val *n=PREFIX_META.find("clean_tokens/"+model_port(slot)+"/"+clean);
+          n && n->type==Val::NUM) expected=(long)n->asNum();
+    }
+    // Runtime check: saved clean context must restore to ~system/tools
+    // prompt length, not a larger historical conversation.
+    if (restored && n_past>=0 && expected>0 &&
+        std::labs(n_past-expected) > std::max(128L,expected/10)) {
+      why="restored slot n_past differs from clean system prefix";
+      return false;
+    }
     if (slot>=1 && slot<=ROOM_MAX_BOTS) {
       SLOT_WARM[slot-1]=restored?1:0;
       SLOT_PARTIAL[slot-1]=restored?0:1;
@@ -10987,8 +11012,11 @@ static void prewarm_model(int idx, const std::string &model, uint64_t epoch,
     empty_room = ROOM.empty();
   }
   if (saved && empty_room && prefix_slot("save", "mag-clean-" + own)) {
+    const long clean_tokens=room_backend_n_past(idx,model);
     std::lock_guard<std::mutex> lk(PREFIX_MTX);
     PREFIX_META["clean/" + port + "/mag-clean-" + own] = shared_key;
+    if (clean_tokens>0)
+      PREFIX_META["clean_tokens/" + port + "/mag-clean-" + own] = clean_tokens;
     write_file_atomic(STATE_DIR + "/prompt-prefix.json", mj::dump(PREFIX_META));
   }
   if (CONFIGURED_MODEL && (saved || (restored && skip) ||

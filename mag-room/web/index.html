@@ -4059,6 +4059,10 @@ append=function(m,scroll=false,trace=null,position=-1){
   if(content&&old._stableText!==text){
    content.innerHTML=safeMarkdown(text);decorate(content);
    old._stableText=text;
+   // The old live node may have hidden its empty content. On the first
+   // completed answer the same node is reused, so reveal it explicitly.
+   content.hidden=!text&&(m.role==='user'||m.thinking_enabled!==false);
+   if(text)old.classList.remove('processing');
    const copy=old.querySelector('.message-copy');
    if(copy)copy.onclick=()=>copyText(text,copy);
   }

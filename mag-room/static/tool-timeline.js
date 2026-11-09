@@ -129,8 +129,7 @@ function paint(node,s,cancel){
    prior.querySelector('summary').textContent='Bisherige Schritte ('+steps.length+')';
    prior.open=isOpen;
  }else prior.hidden=true;
- if(!tools.length&&steps.length===0&&!s.error)card.hidden=true;
- else card.hidden=false;
+ card.hidden=false;
 }
 function tick(node,s){if(!node?.isConnected||!s)return;const card=node.querySelector(':scope > .mag-tool-timeline');if(!card)return;
  const t=s.tools?.at(-1),active=t&&current(t),now=Date.now();

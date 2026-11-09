@@ -136,7 +136,7 @@
     if(!bot||!path||typeof text!=='string'||box._state!=='ok'||box._lang!=='html')return;
     const key=bot+'\n'+path;
     const last=previewPublished.get(key);
-    if(last && last.revision>=revision)return;
+    if(last && (last.revision>revision || (last.revision===revision && last.text===text)))return;
     previewPublished.set(key,{revision,text});
     publishPreview(bot,path,text,revision).catch(()=>{
       if(previewPublished.get(key)?.text===text)previewPublished.delete(key);

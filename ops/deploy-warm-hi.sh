@@ -15,6 +15,11 @@ if [[ -n "${MAG_WARM_HI_PORT:-}" ]]; then
   ports=$MAG_WARM_HI_PORT
 else
   ports=${MAG_WARM_HI_PORTS:-8191,8192}
+  if [[ -z "${MAG_WARM_HI_PORTS:-}" ]] &&
+     [[ $(cat /etc/mag-stack/room-layout 2>/dev/null || true) == coding ]] &&
+     ! systemctl is-enabled --quiet mag-llm-coding@1.service; then
+    ports=8191
+  fi
 fi
 IFS=',' read -r -a port_list <<<"$ports"
 fail() { echo "FAIL: $*" >&2; echo "Not restarting mag-llm." >&2; exit 1; }

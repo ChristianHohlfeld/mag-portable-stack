@@ -84,6 +84,15 @@ class Model(http.server.BaseHTTPRequestHandler):
     for k,v in type(self).saved_prompt.get(slot,{}).items():type(self).last_prompt[k]=v
    data=b'{"ok":true}'
    self.send_response(200);self.send_header('Content-Length',str(len(data)));self.end_headers();self.wfile.write(data);return
+  if self.path=='/apply-template':
+   parts=[]
+   for message in obj.get('messages',[]):
+    parts.append(str(message.get('role',''))+':'+str(message.get('content','')))
+   parts.append(json.dumps(obj.get('tools',[]),sort_keys=True))
+   rendered='\\n'.join(parts)
+   data=json.dumps({'prompt':rendered}).encode()
+   self.send_response(200);self.send_header('Content-Length',str(len(data)))
+   self.end_headers();self.wfile.write(data);return
   if self.path=='/tokenize':
    type(self).tokenizer_requests.append(obj.get('content',''))
    data=json.dumps({'tokens':list(obj.get('content','').encode('utf8'))}).encode()
@@ -3848,7 +3857,8 @@ class ConfiguredNuma(unittest.TestCase):
     MAG_ROOM_MODEL_STATUS=str(cls.tmp_path/'ms.json'),MAG_NETMODE=str(NETMODE),
     MAG_TEST_NO_MEMGIT='1',MAG_ROOM_AGENT_CTL=str(cls.ctl),MAG_ROOM_GUEST_RUN='/bin/false',MAG_ROOM_MCP_AUTO='0',
     MAG_ROOM_SINGLE_BOT='auto',MAG_ROOM_SINGLE_BOT_VM='on',MAG_ROOM_DUAL_NUMA='1',MAG_ROOM_MODEL_ID='deepseek-v4-flash-0731',MAG_ROOM_MODEL_LABEL='DeepSeek V4 Flash',MAG_ROOM_MODEL_PORTS='8191:0,8192:1',MAG_ROOM_MAX_BOTS='2',MAG_ROOM_PRESETS=str(ROOT/'ops/room/presets.json'),
-    MAG_ROOM_PREWARM='0')  # no MAG_ROOM_STAGGER: Ornith answers concurrently by default
+    MAG_ROOM_PREWARM='0',MAG_ROOM_LENA_PROMPT_TOKENS='65536',
+    MAG_ROOM_NOAH_PROMPT_TOKENS='65536')  # mock tokenizer counts bytes
   if cls.__name__ == 'PhoCompress':
    # Legacy PhO contract tests explicitly opt into the deprecated lexical mode.
    # Production coding defaults to MAG_ROOM_CODING_PHO=0.

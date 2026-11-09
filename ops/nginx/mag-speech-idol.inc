@@ -9,6 +9,8 @@ location ^~ /api/idol/ {
     proxy_set_header Connection "";
     proxy_set_header X-Forwarded-For "";
     proxy_set_header X-Mag-Remote "";
+    # Never expose the localhost-only 3D deletion capability to browsers.
+    proxy_set_header X-Mag-Idol-Internal "";
     proxy_connect_timeout 3s;
     proxy_read_timeout 60s;
     proxy_request_buffering on;

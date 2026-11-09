@@ -120,6 +120,34 @@ class IdolHTTPContract(unittest.TestCase):
         installer=(ROOT/"ops/idol/install.sh").read_text()
         self.assertIn("--no-deps \"$package\"",installer)
 
+    def test_delete_completed_job_files_internal_only(self):
+        payload=b"\\x89PNG\\r\\n\\x1a\\n" + b"dummy-image"
+        _, created = self.request("/api/idol/jobs",data=payload)
+        jid=created["id"]
+        folder=worker.ROOT/jid
+        (folder/"mesh.glb").write_bytes(b"fake-glb")
+        worker.jobs[jid]["state"]="done"
+        worker.save(worker.jobs[jid])
+        # This new method is deliberately unavailable to normal HTTP clients.
+        status,_=self.request("/api/idol/jobs/"+jid,method="DELETE")
+        self.assertEqual(status,403)
+        self.assertTrue(folder.exists())
+        req=Request(self.base+"/api/idol/jobs/"+jid,method="DELETE",
+                    headers={"X-Mag-Idol-Internal":"1"})
+        with urlopen(req,timeout=3) as response:
+            self.assertEqual(response.status,200)
+        self.assertFalse(folder.exists())
+        self.assertNotIn(jid,worker.jobs)
+
+    def test_delete_queued_job_tombstones_until_worker_drain(self):
+        payload=b"\\x89PNG\\r\\n\\x1a\\n" + b"dummy-image"
+        _,created=self.request("/api/idol/jobs",data=payload)
+        jid=created["id"]
+        self.assertTrue(worker.delete_job(jid))
+        self.assertEqual(worker.jobs[jid]["state"],"deleted")
+        self.assertTrue((worker.ROOT/jid/"status.json").exists())
+        self.assertTrue(worker.delete_job(jid)) # idempotent while draining
+
     def test_cancel_queued_job_without_gpu(self):
         status,created=self.request("/api/idol/jobs",data=b"\x89PNG\r\n\x1a\n" + b"payload")
         self.assertEqual(status,202)
@@ -179,7 +207,12 @@ class IdolHTTPContract(unittest.TestCase):
         self.assertIn('lena_health(job_id)',worker_src)
         self.assertIn("ExecStopPost=+/usr/local/lib/mag-idol/gpu-lease.sh restore",unit)
         self.assertIn("mag-llm-coding@0.service",(ROOT/"ops/idol/gpu-lease.sh").read_text())
-        self.assertIn("window.magIdolUI={render:attachInline}",ui)
+        self.assertIn("window.magIdolUI={render:renderHistory,park,clear}",ui)
+        self.assertIn("registerCurrent(current)",ui)
+        self.assertIn('/api/room/idol',ui)
+        self.assertIn("msg.idol_job",ui)
+        self.assertIn("parkRoot.append(card)",ui)
+        self.assertIn("cardFor(id)",ui)
         self.assertIn("Lena pausiert für Foto zu 3D",ui)
         self.assertIn('window.magIdolUI?.render()', (ROOT/"mag-room/web/index.html").read_text())
 

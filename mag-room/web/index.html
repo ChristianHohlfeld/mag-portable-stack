@@ -2303,7 +2303,7 @@ async function refreshBackup(){
   if(problem)el.textContent=b.stale?'Backup-Warnung: letzter Erfolg älter als 26 Stunden.':'Backup-Fehler: Sicherung prüfen.';
  }catch(e){el.hidden=false;el.textContent='Backup-Status nicht verfügbar.'}
 }
-function dropStaleGeneration(next){const idle=next&&next.busy===false&&!(next.busy_bots||[]).length&&!((next.activities||(next.activity?[next.activity]:[])).some(a=>a&&a.on));if(!idle)return;for(const s of Object.values(streams))if(s.frame)cancelAnimationFrame(s.frame);streams={};busyBots=new Set()}
+function dropStaleGeneration(next){const idle=next&&next.busy===false&&!(next.busy_bots||[]).length&&!((next.activities||(next.activity?[next.activity]:[])).some(a=>a&&a.on));if(!idle)return;for(const s of Object.values(streams)){if(s.frame)cancelAnimationFrame(s.frame);s.node?.classList.remove('work-live')}streams={};busyBots=new Set()}
 async function refresh(){const seq=++refreshSeq;const r=await fetch('/api/state');if(!r.ok)throw Error('Raum nicht erreichbar');const next=await r.json();if(seq!==refreshSeq)return;dropStaleGeneration(next);state=next;
  if(stopAwaitingIdle&&stopConfirmedIdle()){
   stopAwaitingIdle=false;

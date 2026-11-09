@@ -1952,6 +1952,7 @@ function render(){
  for(const s of Object.values(streams).filter(x=>!x.seq).sort((x,y)=>(x.started||0)-(y.started||0)))s.seq=++streamSeq;
  for(const [botId,s] of Object.entries(streams).sort((x,y)=>x[1].seq-y[1].seq)){s.node=liveNode(botId,s);updateStream(botId,true)}
  restorePreviews(inner,keptPreviews);window.magCodeCanvas?.restore(inner,keptCanvas);
+ window.magIdolUI?.render();
  if(follow){area.scrollTop=area.scrollHeight;stickToBottom=true;newBelow=false}
  else{area.scrollTop=Math.min(oldScroll,Math.max(0,area.scrollHeight-area.clientHeight));if(area.scrollHeight>prevH+2)newBelow=true}
  lastScrollTop=area.scrollTop;watchInner(inner);

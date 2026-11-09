@@ -4151,6 +4151,11 @@ events.onmessage=e=>{
    const s=streams[id];if(s){const off=+event.off||0;if(!off||!s.code||s.code.call!==event.call)s.code={call:event.call||'',tool:event.tool||'',path:event.path||'',raw:'',bytes:0};if(off===s.code.bytes){s.code.raw+=event.text||'';s.code.bytes+=new TextEncoder().encode(event.text||'').length;if(event.path)s.code.path=event.path;s.lastEvent=Date.now();s.hung=false;updateStream(id)}}
   }else if(event.type==='tool'){
    const s=streams[id];if(s){s.code=null;(s.tools||(s.tools=[])).push({id:event.id||'',name:event.tool||'Aktion',label:event.label||'',args:event.args,result:null,at:Date.now()});s.thinking=false;s.lastEvent=Date.now();s.hung=false;if(event.label){s.phase='tool';s.label=event.label}updateStream(id)}
+  }else if(event.type==='tool_output'){
+   const s=streams[id];
+   if(s){const list=s.tools||[];const active=[...list].reverse().find(x=>x.result==null&&x.name===event.tool);
+    if(active){active.output_tail=String(event.tail||'').slice(-2000);s.lastEvent=Date.now();s.hung=false;updateStream(id)}
+   }
   }else if(event.type==='tool_result'){
    const s=streams[id];if(s){const list=s.tools||(s.tools=[]);const t=[...list].reverse().find(x=>x.result==null&&(event.id?x.id===event.id:x.name===event.tool));const r={result:typeof event.result==='string'?event.result:'',ok:event.ok!==false,ms:event.ms};if(t)Object.assign(t,r);else list.push({id:event.id||'',name:event.tool||'Aktion',...r});s.lastEvent=Date.now();s.hung=false;updateStream(id)}
   }else if(event.type==='stopping'){paintStopping()}

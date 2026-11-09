@@ -3330,6 +3330,10 @@ function startHttpLive(gen,id){
      if(c.width!==b.width||c.height!==b.height){c.width=b.width;c.height=b.height}
      c.getContext('2d',{alpha:false}).drawImage(b,0,0);
      c.hidden=false;session.lastFrame=performance.now();session.failures=0;
+     // A functional fallback is visible even when the browser panel was
+     // previously collapsed; never show a "live" status behind hidden canvas.
+     const section=$('browser-section');
+     if(section&&!section.hidden)section.classList.remove('collapsed');
      liveStatus('Browser über HTTPS · '+liveVM+' · live (UDP nicht erreichbar)');
     }
    }finally{b.close()}
@@ -3893,7 +3897,16 @@ function renderQueue(q){
   if(p.client_id)localSends.delete(p.client_id);
   // Different messages with the same text must stay independent.
  }
- if(localSends.size!==previous||queueState.pending.length)scheduleStableChat();
+ // A queued optimistic bubble must disappear before the queue is shown,
+ // not one animation frame afterward (especially visible on mobile).
+ if(localSends.size!==previous||queueState.pending.length){
+  for(const p of queueState.pending){
+   if(!p.client_id)continue;
+   const optimistic=stableNodes.get(p.client_id);
+   if(optimistic){optimistic.remove();stableNodes.delete(p.client_id)}
+  }
+  scheduleStableChat();
+ }
  paintRoomLine();
 }
 
@@ -4023,6 +4036,18 @@ const stableAppendOriginal=append;
 append=function(m,scroll=false,trace=null,position=-1){
  const key=stableKey(m),old=stableNodes.get(key),text=shownText(m);
  if(old){
+  // Stable DOM reuse must still reflect live slot assignments and renames.
+  // Otherwise an assistant keeps the color/face of its original slot forever.
+  if(m.role==='assistant'&&m.bot){
+   const agent=rosterAgent(m),idx=botToneIndex(agent||{id:m.bot});
+   if(old.dataset.botTone!==String(idx)){
+    botVars(old,idx);old.dataset.botTone=String(idx);
+    const face=old.querySelector(':scope > .meta > .bot-face');
+    if(face)face.replaceWith(botFaceEl(idx,faceMode(m.bot,!!m.live)));
+   }
+   const label=old.querySelector(':scope > .meta > strong.bot-name');
+   if(label)label.textContent=roomBotName(m);
+  }
   const content=old.querySelector(':scope > .content');
   if(content&&old._stableText!==text){
    content.innerHTML=safeMarkdown(text);decorate(content);
@@ -4070,9 +4095,15 @@ render=function(){
  if(!inner){inner=document.createElement('div');inner.className='conversation-inner';area.append(inner)}
  const timeline=(state.room||[]).filter(m=>!silentReply(m)&&(m.role!=='assistant'||!m.bot||!(streams[m.bot]&&(
    streams[m.bot].partialId===m.id||(m.display_ms&&+m.display_ms===+streams[m.bot].displayMs)))));
- const pending=new Set((state.pending||[]).map(p=>p.client_id).filter(Boolean));
+ // Prefer the newest queue snapshot; queue events may arrive ahead of /state.
+ const queue=queuePending(),pending=new Set(queue.map(p=>p.client_id).filter(Boolean));
  for(const id of pending)localSends.delete(id);
- for(let i=timeline.length-1;i>=0;i--){const m=timeline[i];if(m.role!=='user')break;if(m.client_id&&pending.has(m.client_id))timeline.splice(i,1)}
+ // Pending items never belong in the conversation, regardless of where a
+ // streamed bot segment falls in chronological order.
+ for(let i=timeline.length-1;i>=0;i--){
+  const m=timeline[i];
+  if(m.role==='user'&&m.client_id&&pending.has(m.client_id))timeline.splice(i,1);
+ }
  for(const [k,m] of localSends){if(timeline.some(x=>x.client_id===k))localSends.delete(k);else timeline.push(m)}
  timeline.sort((a,b)=>(a.display_ms||a.ts*1000||0)-(b.display_ms||b.ts*1000||0));
  const view=[];

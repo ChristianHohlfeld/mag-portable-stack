@@ -10281,9 +10281,16 @@ static bool reset_room_prefix_cache(std::string &why) {
   std::vector<int> active;
   {
     std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
-    for (size_t i=0; i<AGENTS.size(); ++i)
-      if (auto enabled=AGENTS[i].find("enabled"); !enabled || enabled->asBool(true))
-        active.push_back((int)i);
+    for (size_t i=0; i<AGENTS.size(); ++i) {
+      const auto enabled=AGENTS[i].find("enabled");
+      if (enabled && !enabled->asBool(true)) continue;
+      const int slot=model_slot((int)i);
+      // An operator-disabled / down Noah has no resident KV to erase.
+      // Its stale saved files are still purged for any later re-enable.
+      if (slot>=1 && slot<=ROOM_MAX_BOTS && ROOM_MODEL_HEALTH[slot-1].load()==2)
+        continue;
+      active.push_back((int)i);
+    }
   }
   // Securely erase every running model's KV, including additional /slots IDs.
   // Disabled/offline Noah is not started or modified.

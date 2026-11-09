@@ -8,12 +8,18 @@ ConditionPathExists=/home/chris/idol-mi50/weights/idol
 Type=simple
 User=chris
 Group=chris
+SupplementaryGroups=render video
 WorkingDirectory=/home/chris/idol-mi50
 ExecStart=/usr/bin/python3 -I /opt/mag-stack/current/ops/idol/worker.py
 Environment=MAG_IDOL_JOB_ROOT=/var/lib/mag-idol/jobs
 Environment=MAG_IDOL_PYTHON=/home/chris/idol-mi50/venv/bin/python
 Environment=MAG_IDOL_WEIGHTS=/home/chris/idol-mi50/weights/idol
-Environment=MAG_IDOL_MIN_FREE_MIB=10000
+Environment=IDOL_DINOV3=/home/chris/idol-mi50/weights/dinov3-timm
+Environment=IDOL_FLUX2_VAE=/home/chris/idol-mi50/weights/flux2vae
+Environment=HF_HUB_OFFLINE=1
+Environment=TRANSFORMERS_OFFLINE=1
+Environment=ATTN_BACKEND=sdpa
+Environment=MAG_IDOL_TIMEOUT_S=4200
 Environment=PYTHONUNBUFFERED=1
 CPUAccounting=yes
 AllowedCPUs=28-55
@@ -26,8 +32,9 @@ PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=read-only
 ReadWritePaths=/var/lib/mag-idol
+DevicePolicy=auto
 UMask=0077
-TimeoutStopSec=25
+TimeoutStopSec=35
 
 [Install]
 WantedBy=multi-user.target

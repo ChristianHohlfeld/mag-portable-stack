@@ -102,7 +102,10 @@ class ViewTools(unittest.TestCase):
    for vp in ({'width':390,'height':844},{'width':470,'height':1000}):
     ctx=browser.new_context(viewport=vp,has_touch=True,is_mobile=True);page=ctx.new_page()
     page.goto('http://127.0.0.1:%s/'%ui,wait_until='domcontentloaded');page.wait_for_function('()=>window.magViewTools')
-    if not page.locator('#browser-view').is_visible():page.locator('#toggle-tools').click()
+    page.wait_for_function("()=>document.getElementById('browser-agent')?.value==='test'",timeout=10000)
+    if not page.locator('#browser-section').is_visible():page.locator('#toggle-tools').click()
+    if 'collapsed' in (page.locator('#browser-section').get_attribute('class') or ''):
+     page.locator('#browser-section .side-section-head').click()
     page.locator('#browser-view').wait_for(state='visible')
     r=page.evaluate('''()=>{const q=s=>document.querySelector(s),ov=e=>e.scrollWidth-e.clientWidth;const th=q('.terminal-heading');
      const hits=[...document.querySelectorAll('#browser-view .browser-nav button,#browser-view .browser-nav input,.terminal-heading button')].filter(b=>b.offsetParent).map(b=>{const c=b.getBoundingClientRect();const e=document.elementFromPoint(c.x+c.width/2,c.y+c.height/2);return e===b||b.contains(e)});

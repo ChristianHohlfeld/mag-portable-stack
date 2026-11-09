@@ -32,6 +32,11 @@ assert torch.__version__.startswith("2.7.1+") and torch.version.hip
 assert tensordict.__version__.split("+")[0] == "0.9.1"
 PY
 install -d -o chris -g chris -m 0700 /var/lib/mag-idol/jobs
+# Root-only lease helper; sudoers permits only these fixed actions.
+install -d -o root -g root -m 0755 /usr/local/lib/mag-idol
+install -o root -g root -m 0755 /opt/mag-stack/current/ops/idol/gpu-lease.sh /usr/local/lib/mag-idol/gpu-lease.sh
+install -o root -g root -m 0440 /opt/mag-stack/current/ops/idol/mag-idol.sudoers /etc/sudoers.d/mag-idol
+visudo -cf /etc/sudoers.d/mag-idol
 install -m 0644 /opt/mag-stack/current/ops/idol/mag-idol.service /etc/systemd/system/mag-idol.service
 systemctl daemon-reload
 systemctl enable mag-idol.service

@@ -154,7 +154,7 @@ def execute():
             folder = ROOT / job_id
             out = folder / "outputs"
             out.mkdir(exist_ok=True)
-            # No unreliable rocm-smi free-VRAM check: Lena uses Vulkan.
+            # No unreliable GPU-driver free-VRAM check: Lena uses Vulkan.
             # runner.py limits torch allocator to 7.8 GiB before loading Idol.
             command = ["taskset", "-c", "28-55", PYTHON,
                        str(Path(__file__).with_name("runner.py")),

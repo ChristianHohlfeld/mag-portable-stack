@@ -515,6 +515,78 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
     }
   }
   const std::string path = r.path;
+  // Owner-only persistent agent/file URL. Never on the bot VM bridge,
+  // never directly from localhost without an authenticated Tailnet login.
+  if(!bridge && ((m=="GET" && path.rfind("/agent-preview/",0)==0) ||
+                 (m=="POST" && path=="/api/agent-preview"))) {
+    if(actor.role!="owner" || actor.login.empty() || !ts_proof_valid(r.hdrs)) {
+      error_json(fd,403,"Agenten-Vorschau nur fuer den Besitzer");return;
+    }
+    if(m=="POST") {
+      if(r.body.size()>4ULL*1024*1024+8192) {
+        error_json(fd,413,"Vorschau-Datei zu gross");return;
+      }
+      Val input;
+      if(!mj::parse(r.body,input)||!input.isObj()) {
+        error_json(fd,400,"JSON erforderlich");return;
+      }
+      const std::string bot=mag::str(input,"bot"),
+          filename=mag::str(input,"path");
+      const Val *content=input.find("content");
+      if(agent_index(bot)<0 || !mag_preview::valid_bot(bot) ||
+         !mag_preview::valid_path(filename) ||
+         !content || content->type!=Val::STR ||
+         (!ui_token().empty() && content->asStr().find(ui_token())!=std::string::npos)) {
+        error_json(fd,400,"Ungueltige Agenten-Datei");return;
+      }
+      if(!mag_preview::put(STATE_DIR,bot,filename,content->asStr())) {
+        error_json(fd,507,"Vorschau konnte nicht gespeichert werden");return;
+      }
+      Val reply=Val::object();reply["url"]=mag_preview::url(bot,filename);
+      reply["sha256"]=mag_preview::hash(content->asStr());
+      send_json(fd,200,mj::dump(reply));return;
+    }
+    const std::string suffix=path.substr(std::string("/agent-preview/").size());
+    const size_t slash=suffix.find('/');
+    if(slash==std::string::npos || suffix.find('/',slash+1)!=std::string::npos) {
+      error_json(fd,404,"Unbekannte Agenten-Vorschau");return;
+    }
+    const std::string bot=suffix.substr(0,slash),key=suffix.substr(slash+1);
+    mag_preview::File file;
+    if(!mag_preview::get(STATE_DIR,bot,key,file) || agent_index(bot)<0) {
+      error_json(fd,404,"Agenten-Datei nicht gefunden");return;
+    }
+    if(qparam(r.query,"meta")=="1") {
+      Val result=Val::object();
+      result["bot"]=file.bot;result["path"]=file.path;result["sha256"]=file.digest;
+      send_response(fd,200,"application/json; charset=utf-8",mj::dump(result),
+          {{"Cache-Control","no-store"},{"X-Content-Type-Options","nosniff"}});
+      return;
+    }
+    if(qparam(r.query,"raw")=="1") {
+      const bool html=file.mimetype.rfind("text/html",0)==0;
+      send_response(fd,200,file.mimetype,
+          html?mag_preview::instrument(file.content):file.content,
+          {{"Cache-Control","no-store"},
+           {"Content-Disposition","inline"},
+           {"X-Content-Type-Options","nosniff"},
+           {"Referrer-Policy","no-referrer"},
+           {"Content-Security-Policy",
+              "sandbox allow-scripts; default-src 'self' https: data: blob:; "
+              "script-src 'unsafe-inline' 'unsafe-eval' https: 'self'; "
+              "style-src 'unsafe-inline' https: 'self'; connect-src https: 'self'; "
+              "img-src https: data: blob:; font-src https: data:"}});
+      return;
+    }
+    send_response(fd,200,"text/html; charset=utf-8",mag_preview::shell(),
+        {{"Cache-Control","no-store"},
+         {"Referrer-Policy","no-referrer"},
+         {"Content-Security-Policy",
+            "default-src 'none'; script-src 'unsafe-inline'; "
+            "style-src 'unsafe-inline'; frame-src 'self'; connect-src 'self'; "
+            "img-src 'self' data:"}});
+    return;
+  }
   if (!bridge && path == "/api/guest/claim" && m == "POST") {
     if (actor.role != "guest" || actor.node.empty() || r.body.size() > 2048) {
       error_json(fd,403,"Kein Gastgerät"); return;

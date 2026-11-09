@@ -4014,7 +4014,12 @@ function openBotSegment(id,s){
 }
 function recordBotDelta(id,delta){
  const s=streams[id];if(!s)return;
- if(!s.parts?.length||s.parts.at(-1).key!==stableLast)openBotSegment(id,s);
+ // A second bot merely thinking has not added a visible message.
+ // Continue writing into the original bot card; a truly intervening text
+ // segment may start a new one, but an empty placeholder must never split it.
+ const last=s.parts?.at(-1);
+ const prev=Object.values(streams).flatMap(x=>x.parts||[]).find(p=>p.key===stableLast);
+ if(!last||(last.text&&last.key!==stableLast&&(!prev||prev.text)))openBotSegment(id,s);
  s.text=(s.text||'')+delta;s.parts.at(-1).text+=delta;
  stableLast=s.parts.at(-1).key;
  s.node=stableNodes.get(stableLast)||null;
@@ -4057,6 +4062,9 @@ append=function(m,scroll=false,trace=null,position=-1){
    const copy=old.querySelector('.message-copy');
    if(copy)copy.onclick=()=>copyText(text,copy);
   }
+  // The DOM is intentionally reused; the server may update reaction counters
+  // without changing the message text. Repaint pills on every state refresh.
+  if(m.id)paintPills(old,m);
   // A streamed reply is built live with an empty text, so its tool row had no
   // copy/read-aloud buttons. Once the message is final (or has text), make sure
   // every message - bot and human - carries both, bound to the final text.

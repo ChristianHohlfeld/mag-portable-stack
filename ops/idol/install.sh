@@ -24,10 +24,17 @@ if ! "$PY" -m pip show idol-sdk >/dev/null 2>&1; then
   [[ -f $BASE/idol-sdk/pyproject.toml ]] || { echo 'Local idol-sdk missing' >&2; exit 1; }
   "$PY" -m pip install --no-input --disable-pip-version-check --no-deps -e "$BASE/idol-sdk"
 fi
-# Mesh requirements must already exist on the verified host. Missing dependencies
-# fail with a clear message instead of automatic package graph upgrades.
+# Install missing mesh-only wheels without dependency resolution, preserving
+# the known-good ROCm torch, numpy, patched Idol and encoder versions.
+for spec in 'xatlas:xatlas' 'PIL:Pillow' 'fast_simplification:fast-simplification'; do
+  module=${spec%%:*}
+  package=${spec#*:}
+  if ! "$PY" -c "import ${module}" >/dev/null 2>&1; then
+    "$PY" -m pip install --no-input --disable-pip-version-check --no-deps "$package"
+  fi
+done
 "$PY" - <<'PY'
-import torch, tensordict, idol, scipy, skimage, trimesh, plyfile
+import torch, tensordict, idol, scipy, skimage, trimesh, plyfile, xatlas, PIL, fast_simplification
 assert torch.__version__.startswith("2.7.1+") and torch.version.hip
 assert tensordict.__version__.split("+")[0] == "0.9.1"
 PY

@@ -9,6 +9,7 @@ import mag_deadline as _mag_deadline
 _mag_deadline.arm(180)
 """Contract-only tests: never load models or allocate GPU memory."""
 import importlib.util
+import ast
 import json
 import os
 from pathlib import Path
@@ -61,12 +62,63 @@ class IdolHTTPContract(unittest.TestCase):
         self.assertEqual(status,202)
         self.assertRegex(created["id"],r"^[a-f0-9]{32}$")
         self.assertEqual(created["state"],"queued")
+        self.assertEqual(created["quality"],"normal")
         status,job=self.request("/api/idol/jobs/"+created["id"])
         self.assertEqual(status,200)
         self.assertEqual(job["id"],created["id"])
+        self.assertEqual(job["quality"],"normal")
+        self.assertEqual(json.loads((worker.ROOT/created["id"]/"status.json").read_text())["quality"],"normal")
         self.assertTrue((worker.ROOT/created["id"]/"status.json").is_file())
         status,_=self.request("/api/idol/jobs/"+created["id"]+"/mesh.glb")
         self.assertEqual(status,404)
+
+    def test_quality_validation_and_status_persistence(self):
+        payload=b"\x89PNG\r\n\x1a\n" + b"test-image"
+        for quality in ("fast", "normal", "high"):
+            status,item=self.request("/api/idol/jobs?quality="+quality,data=payload)
+            self.assertEqual(status,202)
+            self.assertEqual(item["quality"],quality)
+            saved=json.loads((worker.ROOT/item["id"]/"status.json").read_text())
+            self.assertEqual(saved["quality"],quality)
+            self.assertEqual(self.request("/api/idol/jobs/"+item["id"])[1]["quality"],quality)
+        count=len(worker.jobs)
+        for suffix in ("?quality=ultra", "?quality=", "?quality=fast&quality=high"):
+            status,result=self.request("/api/idol/jobs"+suffix,data=payload)
+            self.assertEqual(status,400)
+            self.assertIn("Qualität",result["error"])
+            self.assertEqual(len(worker.jobs),count)
+
+    def test_preset_mapping_and_mesh_timeouts(self):
+        expected={
+            "fast": (128, 150000, 150000, 1024, 300),
+            "normal": (224, 400000, 400000, 2048, 900),
+            "high": (320, 1000000, 800000, 4096, 1800),
+        }
+        source=(ROOT/"ops/idol/mesh.py").read_text()
+        module=ast.parse(source)
+        assignment=next(node for node in module.body if isinstance(node,ast.Assign)
+                        and any(isinstance(t,ast.Name) and t.id=="QUALITY_PRESETS"
+                                for t in node.targets))
+        presets=ast.literal_eval(assignment.value)
+        self.assertEqual(set(presets),set(expected))
+        self.assertEqual(set(worker.MESH_TIMEOUTS),set(expected))
+        for name,values in expected.items():
+            self.assertEqual(tuple(presets[name][key] for key in
+                                   ("resolution","max_points","max_faces","texture")),
+                             values[:4])
+            self.assertEqual(worker.MESH_TIMEOUTS[name],values[4])
+        worker_src=(ROOT/"ops/idol/worker.py").read_text()
+        self.assertIn('"--quality", quality',worker_src)
+        self.assertIn("MESH_TIMEOUTS[quality]",worker_src)
+        self.assertIn("gaussian_albedo(",source)
+        self.assertIn("xatlas.parametrize(",source)
+        self.assertIn("baseColorTexture=texture",source)
+        self.assertIn("binary_dilation(filled, iterations=8)",source)
+        self.assertIn("Float32 density",source)
+        self.assertIn("filter_taubin(",source)
+        self.assertNotIn("filter_laplacian(",source)
+        installer=(ROOT/"ops/idol/install.sh").read_text()
+        self.assertIn("--no-deps \"$package\"",installer)
 
     def test_cancel_queued_job_without_gpu(self):
         status,created=self.request("/api/idol/jobs",data=b"\x89PNG\r\n\x1a\n" + b"payload")
@@ -156,5 +208,12 @@ class IdolHTTPContract(unittest.TestCase):
         self.assertIn('document.getElementById("plus-menu")',js)
         self.assertIn("Foto zu 3D",js)
         self.assertIn("webgl2",js)
+        self.assertIn("mag-idol-quality",js)
+        self.assertIn("makeQualitySelect()",js)
+        self.assertIn("localStorage.setItem(QUALITY_KEY",js)
+        self.assertIn("/api/idol/jobs?quality=",js)
+        self.assertIn("TEXCOORD_0",js)
+        self.assertIn("baseColorTexture",js)
+        self.assertIn("gl.texImage2D",js)
 
 if __name__=="__main__": unittest.main()

@@ -22,7 +22,15 @@ CPU-Pinning taskset -c 28-55 und systemd AllowedCPUs=28-55. Lena nutzt dieselbe 
 
 ## Mesh-Grenzen
 
-Das originale PLY enthält die Gaussians. Mesh-Konvertierung erstellt ein begrenztes 128³-Dichtefeld mit approximiertem gaußschem Weichzeichnen, nutzt Marching Cubes, Laplace-Glättung und optional Dezimierung auf maximal 200000 Faces. GLB speichert interpolierte Vertexfarben; STL speichert keine Farben. Das Mesh ist nicht verlustfrei, nicht maßstabsgetreu und möglicherweise nicht wasserdicht; vor einem 3D-Druck reparieren und skalieren. Unsichtbare Rückseiten werden von Idol geschätzt.
+Das originale PLY bleibt unverändert. Direkt vor der Bildauswahl bietet der Dialog und die Inline-Chat-Karte in derselben Aktionszeile **Qualität: Schnell · Normal · Hoch** (letzte Wahl in localStorage, Standard Normal). Die private API nimmt den URL-Parameter `quality=fast|normal|high` bei ihrem unveränderten Raw-Image-POST entgegen, prüft ihn und speichert die Auswahl in `status.json`. Die Inferenz mit Idol/MI50 bleibt identisch (50 Schritte); Qualität betrifft ausschließlich die CPU-Mesh-Rekonstruktion.
+
+| Qualität | Dichtegitter | max. Gaussians | Face-Limit | UV-PNG | Mesh-Timeout |
+|---|---:|---:|---:|---:|---:|
+| Schnell | 128³ | 150.000 | 150.000 | 1024² | 300 s |
+| Normal | 224³ | 400.000 | 400.000 | 2048² | 900 s |
+| Hoch | 320³ | 1.000.000 | 800.000 | 4096² | 1800 s |
+
+Die Dichtebildung erfolgt als Float32-X-Slabs mit Gaussian-Filter-Halo statt drei kompletten Zwischenvolumen; Marching Cubes, schwächerer Schwellwert bei Hoch, Taubin-Glättung und Face-Limit folgen. xatlas erzeugt UVs, danach werden die Texel anhand der geometrischen Oberfläche aus mehreren nahen, opacity-gewichteten Gaussians gebacken; 8 Pixel Dilatation an UV-Rändern, PNG im GLB. Der Canvas-Renderer zeigt diese PNG-Textur; STL bleibt farblos. Y-down-Idol-Mesh wird um Z um 180° gedreht (GLB Y-up), STL zusätzlich um X um 90° und in Millimeter auf Z=0 gestellt. Das Ergebnis ist weiterhin eine approximierte Oberfläche; ein wasserdichtes Druckmesh wird **nicht garantiert**, Drucker-Slicer und Wandstärken müssen geprüft werden. Unsichtbare Rückseiten bleiben Modellschätzungen.
 
 ## Betrieb
 

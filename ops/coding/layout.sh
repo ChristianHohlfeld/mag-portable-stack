@@ -8,7 +8,15 @@ TXN="$BACKUP/qwen-layout"
 FAILED=${MAG_LAYOUT_FAILED_FILE:-/var/lib/mag-stack/layout-failed}
 fail(){ echo "coding layout: $*" >&2; exit 4; }
 [[ $EUID == 0 ]] || fail 'root required'
-new=(mag-llm-coding@0.service mag-llm-coding@1.service)
+# Operator-disabled Noah is an explicit opt-out, not an unhealthy deployment.
+# Never stage/hash his huge GGUF or start/change his systemd unit in this mode.
+noah_enabled=1
+if ! systemctl is-enabled --quiet mag-llm-coding@1.service; then
+  noah_enabled=0
+  echo 'coding layout: Noah NUMA1 disabled by operator; Lena-only deploy'
+fi
+new=(mag-llm-coding@0.service)
+if (( noah_enabled )); then new+=(mag-llm-coding@1.service); fi
 old=(mag-llm-mistral-room.service mag-llm-glm@q2.service
      mag-llm-qwen-room.service mag-llm-qwen.service mag-llm-glm@q1.service
      mag-llm-ds-node@0.service mag-llm-ds-node@1.service)
@@ -117,10 +125,13 @@ previous=$(cat /etc/mag-stack/room-layout 2>/dev/null || true)
 # Node-scoped: NUMA0 switches as soon as Qwen3.8 is verified; NUMA1 keeps
 # GLM-Q2 (ops/room/coding0.env) until Qwen3-Coder-Next is staged and verified.
 python3 -I "$ROOT/ops/coding/stage.py" --model general || fail 'Qwen3.8 GGUF not verified'
-coder_ready=1
-python3 -I "$ROOT/ops/coding/stage.py" --model coder || coder_ready=0
+coder_ready=0
+if (( noah_enabled )); then
+  coder_ready=1
+  python3 -I "$ROOT/ops/coding/stage.py" --model coder || coder_ready=0
+fi
 target_env="$ROOT/ops/room/coding.env"
-(( coder_ready )) || target_env="$ROOT/ops/room/coding0.env"
+if (( noah_enabled && ! coder_ready )); then target_env="$ROOT/ops/room/coding0.env"; fi
 interim=0
 if [[ $previous == coding ]] && cmp -s "$ROOT/ops/room/coding0.env" /etc/mag-stack/room-model.env; then
   interim=1
@@ -131,10 +142,13 @@ fi
 # snapshot below restores the previous model on failure.
 swap_nodes=()
 if [[ $previous == coding ]] && (( ! interim )) && [[ -f /usr/local/lib/mag-coding/models.json ]]; then
-  mapfile -t swap_nodes < <(python3 -I - "$ROOT/ops/coding/models.json" /usr/local/lib/mag-coding/models.json <<'PY'
+  mapfile -t swap_nodes < <(python3 -I - "$ROOT/ops/coding/models.json" /usr/local/lib/mag-coding/models.json "$noah_enabled" <<'PY'
 import json, sys
 new = json.load(open(sys.argv[1]))["models"]; old = json.load(open(sys.argv[2]))["models"]
 for name in ("general", "coder"):
+    # Tests without a third parameter still validate the two-node comparison.
+    if name == "coder" and len(sys.argv) > 3 and sys.argv[3] == "0":
+        continue
     if new[name] != old.get(name):
         print(new[name]["numa"])
 PY
@@ -144,7 +158,7 @@ PY
   fi
 fi
 swap=$(( ${#swap_nodes[@]} > 0 ))
-if [[ $previous == coding ]] && (( interim && ! coder_ready )); then
+if [[ $previous == coding ]] && (( noah_enabled && interim && ! coder_ready )); then
   systemctl is-active --quiet mag-llm-coding@0.service || fail 'coding NUMA0 not active'
   wait_ready mag-llm-coding@0.service 8191 6 || fail 'coding NUMA0 unhealthy'
   cmp -s "$ROOT/ops/coding/start-live.sh" /usr/local/lib/mag-coding/start-live.sh || fail 'coding launcher drift'
@@ -157,18 +171,21 @@ if [[ $previous == coding ]] && (( interim && ! coder_ready )); then
 fi
 if [[ $previous == coding ]] && (( ! interim && ! swap )); then
   # No undeclared, restart-requiring drift is silently applied on ordinary deploy.
-  for i in 0 1; do
+  check_nodes=(0)
+  if (( noah_enabled )); then check_nodes+=(1); fi
+  for i in "${check_nodes[@]}"; do
     systemctl is-active --quiet "mag-llm-coding@$i.service" || fail "coding NUMA$i not active"
     wait_ready "mag-llm-coding@$i.service" "$((8191+i))" 6 || fail "coding NUMA$i unhealthy"
   done
-  cmp -s "$ROOT/ops/room/coding.env" /etc/mag-stack/room-model.env || fail 'coding env drift'
+  cmp -s "$target_env" /etc/mag-stack/room-model.env || fail 'coding env drift'
   cmp -s "$ROOT/ops/coding/start-live.sh" /usr/local/lib/mag-coding/start-live.sh || fail 'coding launcher drift'
   cmp -s "$ROOT/ops/coding/flint-chat.jinja" /usr/local/lib/mag-coding/flint-chat.jinja || fail 'coding chat template drift'
   cmp -s "$ROOT/ops/coding/ornith-chat.jinja" /usr/local/lib/mag-coding/ornith-chat.jinja || fail 'coding chat template drift'
   cmp -s "$ROOT/ops/coding/deepseek-v4-flash-chat.jinja" /usr/local/lib/mag-coding/deepseek-v4-flash-chat.jinja || fail 'coding chat template drift'
   cmp -s "$ROOT/ops/coding/mag-llm-coding@.service" /etc/systemd/system/mag-llm-coding@.service || fail 'coding unit drift'
   cmp -s "$ROOT/ops/coding/80-coding-output.conf" /etc/systemd/system/mag-120.service.d/80-coding-output.conf || fail 'coding output budget drift'
-  echo 'coding layout unchanged; both resident models healthy'
+  if (( noah_enabled )); then echo 'coding layout unchanged; both resident models healthy'
+  else echo 'coding layout unchanged; Lena NUMA0 healthy, disabled Noah deliberately skipped'; fi
   exit 0
 fi
 # All heavyweight preparation (stage.py above) is done with the old services still resident.
@@ -176,10 +193,12 @@ REV=$(tr -d '[:space:]' < "$ROOT/ops/qwen/runtime.sha")
 BIN="/home/chris/.local/qwen4exp/$REV-mag-cp1/bin/llama-server"
 [[ -x $BIN && $(cat "$(dirname "$BIN")/source-commit" 2>/dev/null || true) == "$REV" ]] ||
     fail 'pinned coding runtime missing'
-CREV=$(tr -d '[:space:]' < "$ROOT/ops/coding/runtime.sha")
-CBIN="/home/chris/.local/mag-coding-rt/$CREV/bin/llama-server"
-[[ -x $CBIN && $(cat "$(dirname "$CBIN")/source-commit" 2>/dev/null || true) == "$CREV" ]] ||
-    fail 'pinned NUMA1 (flint) runtime missing: run ops/coding/build-runtime.sh'
+if (( noah_enabled )); then
+  CREV=$(tr -d '[:space:]' < "$ROOT/ops/coding/runtime.sha")
+  CBIN="/home/chris/.local/mag-coding-rt/$CREV/bin/llama-server"
+  [[ -x $CBIN && $(cat "$(dirname "$CBIN")/source-commit" 2>/dev/null || true) == "$CREV" ]] ||
+      fail 'pinned NUMA1 (flint) runtime missing: run ops/coding/build-runtime.sh'
+fi
 # Do not make recovery from a broken old backend impossible. It is precisely
 # why the owner requested replacement. Snapshot the old active/enabled units for
 # rollback, but require *new* model health and real decoder output before routing.
@@ -280,7 +299,7 @@ if (( swap )); then
     if (( i == 0 )); then python3 -I "$ROOT/ops/coding/live-smoke.py" --port "$port"; fi
   done
 fi
-if (( coder_ready )) && ! systemctl is-active --quiet mag-llm-coding@1.service; then
+if (( noah_enabled && coder_ready )) && ! systemctl is-active --quiet mag-llm-coding@1.service; then
   touch "$TXN/switch-started"
   # NUMA1: GLM-Q2 -> Qwen3-Coder-Next (GGUF kept; rollback restarts GLM-Q2).
   systemctl stop mag-llm-glm@q2.service
@@ -291,11 +310,13 @@ if (( coder_ready )) && ! systemctl is-active --quiet mag-llm-coding@1.service; 
 fi
 systemctl is-active --quiet mag-llm-coding@0.service || fail 'coding NUMA0 not active'
 wait_ready mag-llm-coding@0.service 8191 6 || fail 'coding NUMA0 not healthy'
-if (( coder_ready )); then
-  systemctl is-active --quiet mag-llm-coding@1.service || fail 'coding NUMA1 not active'
-  wait_ready mag-llm-coding@1.service 8192 6 || fail 'coding NUMA1 not healthy'
-else
-  systemctl is-active --quiet mag-llm-glm@q2.service || fail 'GLM-Q2 must stay active on NUMA1'
+if (( noah_enabled )); then
+  if (( coder_ready )); then
+    systemctl is-active --quiet mag-llm-coding@1.service || fail 'coding NUMA1 not active'
+    wait_ready mag-llm-coding@1.service 8192 6 || fail 'coding NUMA1 not healthy'
+  else
+    systemctl is-active --quiet mag-llm-glm@q2.service || fail 'GLM-Q2 must stay active on NUMA1'
+  fi
 fi
 install -m 0644 "$target_env" /etc/mag-stack/room-model.env
 printf 'coding\n' > /etc/mag-stack/room-layout
@@ -305,14 +326,16 @@ if [[ $(tr -d '[:space:]' < /etc/mag-stack/room-layout.pinned 2>/dev/null || tru
 fi
 for unit in "${old[@]}"; do
   # Interim: GLM-Q2 keeps its boot state while it still serves NUMA1.
-  if (( ! coder_ready )) && [[ $unit == mag-llm-glm@q2.service ]]; then continue; fi
+  if (( ! noah_enabled || ! coder_ready )) && [[ $unit == mag-llm-glm@q2.service ]]; then continue; fi
   systemctl disable "$unit" >/dev/null 2>&1 || true
 done
 systemctl enable mag-llm-coding@0.service
-if (( coder_ready )); then systemctl enable mag-llm-coding@1.service; fi
+if (( noah_enabled && coder_ready )); then systemctl enable mag-llm-coding@1.service; fi
 touch "$TXN/coding"
 rm -f "$FAILED"
-if (( coder_ready )); then
+if (( ! noah_enabled )); then
+  echo 'coding layout ready: Lena NUMA0 :8191; Noah disabled by operator, NUMA1 untouched'
+elif (( coder_ready )); then
   echo 'coding layout ready: Qwen3.8-Flash-Next NUMA0 + Flint NUMA1, 16k tokens per round with continuation'
 else
   echo 'coding layout ready (interim): Qwen3.8-Flash-Next NUMA0 + GLM-Q2 NUMA1; NUMA1 switches once Qwen3-Coder-Next is verified'

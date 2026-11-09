@@ -148,7 +148,7 @@ class CodingDeploy(unittest.TestCase):
   new=json.loads(source("ops/coding/models.json"))
   old=copy.deepcopy(new)
   old["models"]["coder"]["model_id"]="deliberately-different"
-  snippet=layout.split("<<'PY'\\n",2)[1].split("\\nPY\\n",1)[0]
+  snippet=layout.split("<<'PY'\n",2)[1].split("\nPY\n",1)[0]
   with tempfile.TemporaryDirectory() as d:
    a=pathlib.Path(d)/"new.json";z=pathlib.Path(d)/"old.json"
    a.write_text(json.dumps(new));z.write_text(json.dumps(old))

@@ -1,0 +1,3 @@
+# Fixed privileged file cleanup; magbot has no arbitrary root shell.
+Defaults!/usr/local/lib/mag-room/purge-prefix.sh !requiretty
+magbot ALL=(root) NOPASSWD: /usr/local/lib/mag-room/purge-prefix.sh

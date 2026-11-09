@@ -4065,6 +4065,19 @@ append=function(m,scroll=false,trace=null,position=-1){
   // The DOM is intentionally reused; the server may update reaction counters
   // without changing the message text. Repaint pills on every state refresh.
   if(m.id)paintPills(old,m);
+  // A server-completed reply may reuse the same stable node as its streaming
+  // segment. Materialize its durable status, thoughts and tools exactly once;
+  // otherwise the final text appears but its run card silently disappears.
+  if(!m.live&&m.role==='assistant'&&m.id&&old.dataset.durableDone!==m.id){
+   old.querySelector(':scope > .run')?.remove();
+   const content=old.querySelector(':scope > .content');
+   attachWork(old,m,content);
+   if(m.thinking_enabled!==false&&m.reasoning&&
+      (shownSteps(m.steps).length||shownTools(storedTools(m)).length))
+    showThinking(old,m.id,m.reasoning,false,m.thought_ms);
+   if(m.tools?.length)paintTools(old,content,storedTools(m));
+   old.dataset.durableDone=m.id;
+  }
   // A streamed reply is built live with an empty text, so its tool row had no
   // copy/read-aloud buttons. Once the message is final (or has text), make sure
   // every message - bot and human - carries both, bound to the final text.

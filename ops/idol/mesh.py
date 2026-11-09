@@ -96,7 +96,7 @@ def gaussian_albedo(points, tree, centers, colors, alpha, radii, spacing, neighb
     distances, ids = tree.query(points, k=min(neighbors, len(centers)), workers=8)
     if np.ndim(ids) == 1:
         ids, distances = ids[:, None], distances[:, None]
-    width = np.maximum(radii[ids], spacing * 0.7)
+    width = np.maximum(radii[ids]*1.5, spacing * 1.25)
     weight = alpha[ids] * np.exp(
         -0.5 * np.minimum((distances / width)**2, 80.0))
     # Prefer high-confidence near splats while blending neighbours.
@@ -106,7 +106,10 @@ def gaussian_albedo(points, tree, centers, colors, alpha, radii, spacing, neighb
     rgb /= np.maximum(total[:, None], 1e-12)
     weak = total < 1e-10
     if np.any(weak):
-        rgb[weak] = colors[ids[weak, 0]]
+        # Never turn weak areas into nearest-neighbour vertex colours.
+        fallback = alpha[ids[weak]] / np.maximum(distances[weak], spacing*0.25)**2
+        fallback /= np.maximum(fallback.sum(axis=1, keepdims=True), 1e-12)
+        rgb[weak] = (fallback[..., None] * colors[ids[weak]]).sum(axis=1)
     return np.clip(rgb, 0.0, 1.0)
 
 

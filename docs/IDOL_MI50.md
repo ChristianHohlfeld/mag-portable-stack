@@ -27,3 +27,9 @@ Das originale PLY enthält die Gaussians. Mesh-Konvertierung erstellt ein begren
 ## Betrieb
 
 Nur Quellcode-/API-Vertrag-Checks in CI; keine Benchmarks oder Testphasen. Reale gfx906-Inferenz und lokale Encoder-Struktur sind erst auf MAG prüfbar. Diagnose: systemctl status mag-idol, journalctl -u mag-idol und privates /var/lib/mag-idol/jobs/<id>/idol.log. Nie Bilddaten oder Logdateien in Git einchecken.
+
+## MAG-Chat: laufende Werkzeugaktivität (Zusatzauftrag)
+
+Die bestehende C++-SSE-Verbindung überträgt Bot-Start, Schrittverlauf, echte Tool-Argumente, Tool-Ergebnis, Laufzeit und Erfolg/Fehler. Für den nativen VM-Befehl run_command wird der schon bestehende Subprocess-Pipe-Leser um einen optionalen Callback erweitert: tool_output veröffentlicht höchstens viermal pro Sekunde die letzten 2.000 Zeichen tatsächlich empfangener stdout/stderr-Ausgabe. Die Ausgabe kann durch das Programm selbst gepuffert sein; ohne empfangene Bytes wird nichts vorgetäuscht. Nach Abschluss bleibt tool_result die maßgebliche Quelle für Exitstatus und Ergebnis. Abbrechen verwendet unverändert /api/cancel mit Bot-ID und die vorhandene Stop-Synchronisierung.
+
+Die Live-Karte sitzt direkt im Bot-Nachrichtenartikel unter der Antwort, standardmäßig als eine Zeile. Sie enthält eine aufklappbare Liste der bisherigen Tool-Aufrufe mit Befehl/Argumenten, stdout-Ende, Laufzeit und Zustand sowie den Schrittverlauf. Der Chat besitzt bereits scroll-pinning und stableScrollBefore/stableScrollAfter; die Karte erweitert weder Composer noch die Statusleiste. Kein separater Audit-Dienst und keine neue offene Schnittstelle. Tool-Ausgaben sind auf der privaten Besitzer-UI sichtbar und werden clientseitig bei gängigen Credential-Mustern maskiert; dies ersetzt keine sorgfältige Geheimnisbehandlung im Bot.

@@ -11045,6 +11045,7 @@ static void schedule_prewarm() {
   {
     std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
     for (size_t i = 0; i < AGENTS.size(); ++i) {
+      if(!bot_enabled_locked((int)i))continue; // model stays in RAM
       const std::string m = lane_key((int)i); // configured per-bot backend
       if (!by_model.emplace(m, (int)i).second) shared.insert(m);
     }
@@ -13405,6 +13406,9 @@ int main() {
   STT_LANG = env("STT_LANG", "de");
   GUEST_TIMEOUT = std::max(30, envi("MAG_ROOM_GUEST_TIMEOUT", 600));
   MAX_RUN_STEPS = std::clamp(envi("MAG_ROOM_MAX_STEPS", 96), 1, 1000);
+  if(CONFIGURED_MODEL && room_is_coding())
+    MAX_RUN_STEPS=std::min(MAX_RUN_STEPS,
+        std::clamp(envi("MAG_ROOM_CODING_MAX_STEPS",12),2,16));
   RUN_BUDGET_S = std::clamp(envi("MAG_ROOM_RUN_BUDGET_S", 14400), 60, 86400);
   TOOL_OUTPUT_LIMIT = std::clamp(envi("MAG_ROOM_TOOL_OUTPUT_LIMIT", 32768), 1000, 256*1024);
   UNDO_WINDOW = std::max(1, envi("MAG_ROOM_UNDO_S", 10));

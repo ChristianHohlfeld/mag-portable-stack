@@ -68,6 +68,38 @@ class IdolHTTPContract(unittest.TestCase):
         status,_=self.request("/api/idol/jobs/"+created["id"]+"/mesh.glb")
         self.assertEqual(status,404)
 
+    def test_cancel_queued_job_without_gpu(self):
+        status,created=self.request("/api/idol/jobs",data=b"\x89PNG\r\n\x1a\n" + b"payload")
+        self.assertEqual(status,202)
+        jid=created["id"]
+        status,cancelled=self.request("/api/idol/jobs/"+jid+"/cancel",data=b"")
+        self.assertEqual(status,200)
+        self.assertTrue(cancelled["cancelled"])
+        status,job=self.request("/api/idol/jobs/"+jid)
+        self.assertEqual(status,200)
+        self.assertEqual(job["state"],"cancelled")
+        self.assertEqual(self.request("/api/idol/jobs/"+jid+"/cancel",data=b"")[1]["cancelled"],False)
+
+    def test_verified_rocm_contracts(self):
+        runner=(ROOT/"ops/idol/runner.py").read_text()
+        installer=(ROOT/"ops/idol/install.sh").read_text()
+        unit=(ROOT/"ops/idol/mag-idol.service").read_text()
+        worker_src=(ROOT/"ops/idol/worker.py").read_text()
+        ui=(ROOT/"mag-room/static/idol-ui.js").read_text()
+        for required in ("torch.cuda.set_per_process_memory_fraction", "7.8 * (1024 ** 3)",
+                         'runpy.run_module("idol.sample"', "IDOL_DINOV3", "IDOL_FLUX2_VAE",
+                         'os.environ["ATTN_BACKEND"] = "sdpa"'):
+            self.assertIn(required,runner)
+        self.assertIn("--no-deps 'tensordict==0.9.1'",installer)
+        self.assertIn('--no-deps -e "$BASE/idol-sdk"',installer)
+        self.assertIn("SupplementaryGroups=render video",unit)
+        self.assertIn("MAG_IDOL_TIMEOUT_S=4200",unit)
+        self.assertIn("RUN_TIMEOUT = max(3600",worker_src)
+        self.assertNotIn("rocm-smi",worker_src.split("def execute():")[1].split("class API")[0])
+        self.assertIn("step=step, total_steps=50",worker_src)
+        self.assertIn('"/cancel"',ui)
+        self.assertIn('job.step',ui)
+
     def test_reject_invalid_and_oversized(self):
         self.assertEqual(self.request("/api/idol/jobs",data=b"not an image")[0],415)
         self.assertEqual(self.request("/api/idol/jobs",data=b"a")[0],413)

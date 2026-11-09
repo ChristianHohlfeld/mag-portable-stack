@@ -142,6 +142,10 @@ class CodingDeploy(unittest.TestCase):
   self.assertIn('if (( noah_enabled && coder_ready )); then systemctl enable mag-llm-coding@1.service; fi',layout)
   self.assertIn("if name == \"coder\" and len(sys.argv) > 3 and sys.argv[3] == \"0\":",layout)
   self.assertIn('MAG_ROOM_NOAH_REVIEW=0',env)
+  prepare=source("ops/coding/prepare.sh")
+  self.assertIn('if ! systemctl is-enabled --quiet mag-llm-coding@1.service; then noah_enabled=0; fi',prepare)
+  self.assertIn('if (( noah_enabled )); then\\n  python3 -I "$ROOT/ops/coding/stage.py" --model coder --download',prepare)
+  self.assertIn('if (( noah_enabled )); then\\n  nice -n 19 ionice -c 3 bash "$ROOT/ops/coding/build-runtime.sh"',prepare)
   # The operator-disabled mode must never request staging/hash of the huge
   # DeepSeek GGUF even when its manifest differs from the installed one.
   import copy

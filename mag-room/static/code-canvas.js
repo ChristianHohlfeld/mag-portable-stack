@@ -60,7 +60,10 @@
 
   // Code of a tool call: {key, path, lang, text|null, ref, state}.
   function toolCode(t, i) {
-    const name = t && (t.name || t.tool), a = t && t.args && typeof t.args === 'object' ? t.args : {};
+    let name = t && (t.name || t.tool), a = t && t.args && typeof t.args === 'object' ? t.args : {};
+    if (name === 'tool_call' && typeof a.name === 'string' && a.arguments && typeof a.arguments === 'object') {
+      name = a.name; a = a.arguments;
+    }
     const file = name === 'write_file' || name === 'append_file';
     if (!file && name !== 'run_command') return null;
     const state = t.result == null ? 'run' : t.ok === false ? 'fail' : 'ok';
@@ -116,7 +119,26 @@
     return list[list.length - 1];
   }
 
-  const modeByKey = new Map();
+  const modeByKey = new Map(), previewPublished = new Map();
+  const previewUrl = (bot,path) => '/agent-preview/' + encodeURIComponent(bot) + '/' + path;
+  function publishPreview(bot,path,content) {
+    if (!bot || !path || typeof content !== 'string') return Promise.reject(Error('Agent oder Datei fehlt'));
+    const token = typeof document === 'undefined' ? '' : (document.querySelector('meta[name="mag-token"]')?.content || '');
+    return fetch('/api/agent-preview', {method:'POST', credentials:'same-origin',
+      headers:{'Content-Type':'application/json','X-Mag-Token':token},
+      body:JSON.stringify({bot,path,content})}).then(async response => {
+        if(!response.ok)throw Error('Vorschau: HTTP '+response.status);
+        return response.json();
+      });
+  }
+  function schedulePreview(box) {
+    const bot=box._bot,path=box._path,text=box._text;
+    if(!bot||!path||typeof text!=='string'||box._state!=='ok'||box._lang!=='html')return;
+    const key=bot+'\n'+path;
+    if(previewPublished.get(key)===text)return;
+    previewPublished.set(key,text);
+    publishPreview(bot,path,text).catch(()=>{if(previewPublished.get(key)===text)previewPublished.delete(key)});
+  }
   const seen = typeof IntersectionObserver === 'function'
     ? new IntersectionObserver(es => { for (const e of es) if (e.isIntersecting) { seen.unobserve(e.target); e.target._mountFrame && e.target._mountFrame(); } }, {rootMargin: '200px'})
     : null;
@@ -152,9 +174,27 @@
       box.classList.toggle('max', on); full.textContent = on ? 'Schließen' : 'Vollbild';
       document.documentElement.classList.toggle('code-preview-open', on);
     });
+    const download = button('Download', 'Datei herunterladen', () => {
+      if(box._text==null)return;
+      const name=(box._path||'code.txt').split('/').pop()||'code.txt';
+      const url=URL.createObjectURL(new Blob([box._text],{type:'text/plain;charset=utf-8'}));
+      const a=document.createElement('a');a.href=url;a.download=name;document.body.append(a);a.click();a.remove();
+      setTimeout(()=>URL.revokeObjectURL(url),1000);
+    });
+    const newTab = button('In neuem Tab öffnen', 'Aktuelle Agenten-Datei mit JavaScript-Fehlerkonsole öffnen', () => {
+      if(!box._bot||!box._path||typeof box._text!=='string')return;
+      const tab=window.open('about:blank','_blank'); // direct user gesture: no popup blocker
+      if(tab)tab.opener=null;
+      publishPreview(box._bot,box._path,box._text).then(data => {
+        if(tab)tab.location.replace(data.url);
+        else window.open(data.url,'_blank','noopener,noreferrer');
+      }).catch(e => { if(tab)tab.close(); box.querySelector('.cc-note').hidden=false;
+        box.querySelector('.cc-note').textContent=e.message; });
+    });
+    box._newTab=newTab;box._download=download;
     box._reload = reload;
     box.addEventListener('keydown', e => { if (e.key === 'Escape' && box.classList.contains('max')) full.click(); });
-    box.querySelector('.cc-tools').append(copy, reload, full);
+    box.querySelector('.cc-tools').append(copy, download, newTab, reload, full);
     box._mountFrame = () => mountFrame(box);
     return box;
   }
@@ -222,6 +262,7 @@
 
   function apply(box, c, live) {
     box._key = c.key || ('live|' + (c.path || ''));
+    box._path=c.path||'';
     box._lang = c.lang || '';
     box._state = live ? 'live' : c.state;
     box.dataset.state = box._state;
@@ -246,6 +287,10 @@
     if (!live && c.key) textByKey.set(c.key, {text, path: c.path, lang: c.lang});
     paintText(box, text, live);
     const can = !live && c.state === 'ok' && previewable(c);
+    box._newTab.disabled=!(can && box._bot && box._path);
+    box._newTab.hidden=!previewable(c);
+    box._download.disabled=typeof text!=='string';
+    if(can && !syntaxError(c))schedulePreview(box);
     if (box._errFor !== text || box._errCan !== can) { box._errFor = text; box._errCan = can; box._err = can ? syntaxError(c) : ''; }
     const err = box._err;
     if (box._mounted && box._frameText !== text) box._mounted = false;
@@ -276,6 +321,7 @@
       const content = node.querySelector(':scope > .content');
       if (content) content.before(box); else node.append(box);
     }
+    box._bot=node.dataset.bot||node.dataset.liveBot||'';
     apply(box, c, isLive);
   }
 

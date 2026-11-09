@@ -16,6 +16,11 @@ int main() {
   assert(room_context::token_budget("qwen3.8-27b") == 8192);
   assert(room_context::token_budget("ornith") == 4096);
   assert(room_context::token_budget("ornith-numa0") == 8192);
+  // Alias is NOT a model family: role/slot is the authority.
+  assert(room_context::slot_budget_tokens(2)==4096); // ornith -> Noah
+  assert(room_context::slot_budget_tokens(1)==8192); // ornith-numa0 -> Lena
+  assert(room_context::fresh_budget_tokens(1)==500);
+  assert(room_context::fresh_budget_tokens(2)==50);
   const std::string root="/tmp/mag-context-test-"+std::to_string((long)getpid());
   std::filesystem::create_directories(root);
   const std::string code="diff --git a/main.cpp b/main.cpp\n@@ -1 +1 @@\n-int a=1;\n+int a=2;\n";
@@ -53,18 +58,31 @@ int main() {
   const auto before=msgs;
   assert(room_context::mask_old(msgs,root,50));
   assert(msgs[0].find("content")->asStr()=="immutable system");
-  assert(msgs[1].find("content")->asStr()=="initial bootstrap");
-  assert(msgs.back().find("content")->asStr()=="current task");
-  assert(msgs[2].find("content")->asStr().find("context_artifact")!=std::string::npos);
-  const std::string note=msgs[2].find("content")->asStr();
+  assert(msgs.size()==3); // system + immutable archive ref + current user
+  assert(msgs[1].find("content")->asStr().find("context_artifact")!=std::string::npos);
+  assert(msgs[2].find("content")->asStr()=="current task");
+  const std::string note=msgs[1].find("content")->asStr();
   const auto p=note.find("SHA256=");
   assert(p!=std::string::npos);
   std::string old_wire;
   assert(room_context::load(root,note.substr(p+7,64),1,0,old_wire,error));
   std::string expected;
-  for(size_t i=2;i<6;++i)expected+=mj::dump(before[i])+"\n";
-  assert(old_wire==expected); // tool/diff/stack/content/roles recovered byte-identically
-  assert(!room_context::mask_old(msgs,root,50)); // no per-turn churn
+  for(size_t i=1;i<before.size()-1;++i)expected+=mj::dump(before[i])+"\\n";
+  assert(old_wire==expected); // 9 original messages incl code/diff/tool bytes
+  assert(!room_context::mask_old(msgs,root,50)); // no archive-chaining
+  // PR #339 failed on the initial giant transcript: it was messages[1].
+  std::vector<mj::Val> initial={msg("system","system byte-stable"),
+      msg("user",std::string(40000,'A')+"\\n"+code)};
+  const std::string initial_old=mj::dump(initial[1])+"\\n";
+  assert(room_context::mask_initial(initial,root,"[Chris]: Behalte alle neuen Dateien",512));
+  assert(initial.size()==3);
+  assert(initial[0].find("content")->asStr()=="system byte-stable");
+  assert(initial[2].find("content")->asStr()=="[Chris]: Behalte alle neuen Dateien");
+  const std::string initial_note=initial[1].find("content")->asStr();
+  const auto anchor=initial_note.find("SHA256=");
+  assert(anchor!=std::string::npos);
+  assert(room_context::load(root,initial_note.substr(anchor+7,64),1,0,restored,error));
+  assert(restored==initial_old);
   std::filesystem::remove_all(root);
   std::cout<<"context artifacts and masking OK\n";
 }

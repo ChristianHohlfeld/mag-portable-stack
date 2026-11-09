@@ -214,7 +214,7 @@ class IdolHTTPContract(unittest.TestCase):
         self.assertIn("parkRoot.append(card)",ui)
         self.assertIn("cardFor(id)",ui)
         self.assertIn("Lena pausiert für Foto zu 3D",ui)
-        self.assertIn('window.magIdolUI?.render()', (ROOT/"mag-room/web/index.html").read_text())
+        self.assertIn('window.magIdolUI?.render(timeline)', (ROOT/"mag-room/web/index.html").read_text())
 
         self.assertIn('"/cancel"',ui)
         self.assertIn('job.step',ui)

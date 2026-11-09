@@ -121,7 +121,7 @@ class IdolHTTPContract(unittest.TestCase):
         self.assertIn("--no-deps \"$package\"",installer)
 
     def test_delete_completed_job_files_internal_only(self):
-        payload=b"\\x89PNG\\r\\n\\x1a\\n" + b"dummy-image"
+        payload=b"\x89PNG\r\n\x1a\n" + b"dummy-image"
         _, created = self.request("/api/idol/jobs",data=payload)
         jid=created["id"]
         folder=worker.ROOT/jid
@@ -140,7 +140,7 @@ class IdolHTTPContract(unittest.TestCase):
         self.assertNotIn(jid,worker.jobs)
 
     def test_delete_queued_job_tombstones_until_worker_drain(self):
-        payload=b"\\x89PNG\\r\\n\\x1a\\n" + b"dummy-image"
+        payload=b"\x89PNG\r\n\x1a\n" + b"dummy-image"
         _,created=self.request("/api/idol/jobs",data=payload)
         jid=created["id"]
         self.assertTrue(worker.delete_job(jid))

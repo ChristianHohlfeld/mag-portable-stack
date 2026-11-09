@@ -1570,7 +1570,8 @@ static Val append_room(const std::string &role, const std::string &name,
                        const std::string &content, const std::string &bot = "",
                        const Val *file = nullptr,
                        const std::string &login = "",
-                       const std::string &kind = "", double display_ms = 0, const std::string &client_id = "") {
+                       const std::string &kind = "", double display_ms = 0, const std::string &client_id = "",
+                       const std::string &idol_job = "") {
   Val m = Val::object();
   m["id"] = token_hex(6);
   m["role"] = role;
@@ -1587,6 +1588,7 @@ static Val append_room(const std::string &role, const std::string &name,
     m["file"] = *file;
   if (!kind.empty())
     m["kind"] = kind;
+  if (!idol_job.empty()) m["idol_job"] = idol_job;
   {
     std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
     ROOM.push_back(m);
@@ -12782,6 +12784,55 @@ static std::string undo_memory_snapshot(const std::string &bot, int index,
   u.data = previous;
   return undo_commit(std::move(u));
 }
+// Idol records are first-class ROOM messages. Their payload is a validated
+// worker job id, not a file path. Only the fixed loopback worker is queried.
+static bool valid_idol_job_id(const std::string &id) {
+  return id.size() == 32 &&
+    std::all_of(id.begin(), id.end(), [](unsigned char c) {
+      return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+    });
+}
+static bool idol_worker_request(const std::string &job, const char *method,
+                                Val *out = nullptr) {
+  if (!valid_idol_job_id(job)) return false;
+  std::string response;
+  long status = 0;
+  const bool sent = http_simple("127.0.0.1", 8793, method, "/api/idol/jobs/" + job,
+    "", {{"X-Mag-Idol-Internal", "1"}}, response, &status, nullptr, 5000);
+  if (!sent || (status != 200 && !(status == 404 && std::string(method) == "DELETE")))
+    return false;
+  if (out && (status != 200 || !mj::parse(response, *out) || !out->isObj() ||
+              mag::str(*out, "id") != job)) return false;
+  return true;
+}
+static ScopedResult register_idol_message(const std::string &job,
+                                          const std::string &login,
+                                          const std::string &name) {
+  if (!valid_idol_job_id(job)) return scoped_err(400, "Ungültige Idol-ID");
+  Val status;
+  if (!idol_worker_request(job, "GET", &status))
+    return scoped_err(503, "Idol-Job ist nicht erreichbar");
+  {
+    std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
+    for (const auto &m : ROOM)
+      if (mag::str(m, "idol_job") == job) {
+        Val result = Val::object();
+        result["ok"] = true; result["id"] = mag::str(m, "id");
+        return scoped_ok(result); // idempotent registration across reconnects
+      }
+  }
+  const std::string quality = mag::str(status, "quality", "normal");
+  Val m = append_room("user", name.empty() ? "Du" : name,
+                       "Foto zu 3D · " + quality, "", nullptr, login,
+                       "idol", 0, "", job);
+  Val event = m;
+  event["type"] = "message";
+  publish(mj::dump(event));
+  room_changed();
+  Val result = Val::object();
+  result["ok"] = true; result["id"] = mag::str(m, "id");
+  return scoped_ok(result);
+}
 static ScopedResult delete_room_message(const std::string &id) {
   if (!is_hex_id(id))
     return scoped_err(400, "Ungültige Nachrichten-ID");
@@ -12797,17 +12848,24 @@ static ScopedResult delete_room_message(const std::string &id) {
       }
     if (found < 0)
       return scoped_err(404, "Nachricht nicht gefunden");
+    const std::string idol_job = mag::str(ROOM[found], "idol_job");
+    if (!idol_job.empty() && !idol_worker_request(idol_job, "DELETE"))
+      return scoped_err(503, "3D-Dateien konnten nicht gelöscht werden");
     u.index = found;
     u.data = ROOM[found];
     ROOM.erase(ROOM.begin() + found);
     drop_reaction_notes(id, "");
     save_room();
+    if (!idol_job.empty()) u.kind = "idol_deleted";
   }
-  std::string uid = undo_commit(std::move(u));
+  // A removed Idol job's binary payload is not undoable. Do not offer a
+  // broken Undo which would revive a message pointing to deleted files.
+  const bool idol_deleted = u.kind == "idol_deleted";
+  std::string uid = idol_deleted ? "" : undo_commit(std::move(u));
   room_changed();
   Val out = Val::object();
   out["ok"] = true;
-  out["undo"] = uid;
+  if (!uid.empty()) out["undo"] = uid;
   return scoped_ok(out);
 }
 static ScopedResult delete_room_file(const std::string &stored) {
@@ -12852,6 +12910,13 @@ static ScopedResult clear_room_data() {
   // Called only after quiesce_all() holds the exclusive turn lock.
   // Deliberately irreversible: no snapshot and no room Undo.
   upload_purge_sessions();
+  // Don't silently orphan persisted 3D binaries during the room purge.
+  // Worker deletes completed jobs immediately and tombstones active jobs.
+  for (const auto &m : ROOM) {
+    const std::string job = mag::str(m, "idol_job");
+    if (!job.empty() && !idol_worker_request(job, "DELETE"))
+      return scoped_err(503, "Idol-Jobdateien konnten nicht gelöscht werden");
+  }
   {
     std::lock_guard<std::recursive_mutex> lk(STATE_MTX);
     std::error_code ec;

@@ -7,6 +7,7 @@
 #include "pho_codec.hpp"
 #include "pho_live.hpp"
 #include "context_manager.hpp"
+#include "agent_preview.hpp"
 #include "browser_recovery.hpp"
 #include "browser_events.hpp"
 #include "pages.hpp"

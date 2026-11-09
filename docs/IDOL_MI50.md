@@ -40,3 +40,15 @@ Die Live-Karte sitzt direkt im Bot-Nachrichtenartikel unter der Antwort, standar
 - Gated Encoder werden offline aus DINOv3-timm und FLUX.2-klein VAE geladen. Die Python-Umgebung darf durch eine automatische pip-Abhängigkeitsauflösung nicht geändert werden.
 - Die Sample-CLI braucht rund 33 Minuten (50 Schritte); MAG setzt 70 Minuten Inferenz-Timeout, zeigt die aus stdout gelesene Schrittzahl und erlaubt POST /api/idol/jobs/{id}/cancel. Abbruch beendet die laufende Prozessgruppe auch beim Mesh-Export. Wartende Jobs sind ebenfalls abbrechbar.
 - Mesh-Konvertierung im PR bleibt die eigenständige CPU-Rekonstruktion unter ops/idol/mesh.py mit 200.000 Faces als Obergrenze. Die auf MAG bestätigte Datei ~/idol-mi50/idol2mesh.py ist nicht Teil des Repositories und wurde **nicht** unbesehen kopiert: deren Quellcode/Schnittstelle kann hier nicht gelesen werden. Es wird keine unbelegte Gleichheit oder Laufzeit von 6 Sekunden behauptet.
+
+
+## Exklusive MI50-Belegung: Lena pausieren (Auftrag 09.11.)
+
+Die neue, im Repository bestätigte Lena-Unit ist `mag-llm-coding@0.service` (Vulkan an :8191). **Nur** sie wird vor Idol gestoppt, Noah und MAG-Raum bleiben aktiv. Root installiert den unveränderlichen Helfer `/usr/local/lib/mag-idol/gpu-lease.sh`; die sudoers-Datei erlaubt dem Benutzer `chris` ausschließlich dessen feste `acquire`-/`restore`-Aktionen. Kein beliebiges `systemctl` über die Chat-API.
+
+- `acquire`: Setzt zuerst einen Root-Marker in `/run/mag-idol/lena-paused`, stellt einen nicht-blockierenden Stop ein und beendet den Unit-Prozess ohne Drain-Warten. Der Idol-Job startet nur, wenn der Service nicht mehr aktiv ist und kein MainPID mehr gemeldet wird.
+- Während Idol: **keine 7,8-GiB-PyTorch-Grenze**; Idol nutzt die freigegebene GPU. Die unveränderte lokale ROCm/FP16/SDPA-/Chunking-Patchinstallation ist weiterhin Voraussetzung.
+- `finally` fordert nach Erfolg, Timeout, Jobfehler oder Abbruch die Wiederherstellung der Lena-Unit an. Es prüft bis zu 360 Sekunden den HTTP-200-Status von `127.0.0.1:8191/health`. Ein Fehlschlag wird als Warnung im Jobstatus gespeichert, nicht versteckt. Zusätzlich lösen `ExecStartPre` und `ExecStopPost` die Root-Wiederherstellung bei Worker-Restart/Stop aus.
+- Der Chat zeigt während der Belegung **„Lena pausiert für Foto zu 3D“** und danach den Wiederanlauf. Der Job erscheint als kompakte Karte direkt im Verlauf (kein zusätzliches Composer-Element), einschließlich echter Sampling-Schritte 1–50, Abbrechen, GLB-WebGL2-Vorschau und PLY-/GLB-/STL-Downloads. Der Kartenknoten überlebt normale Chat-Re-Renders.
+
+**Sicherheitsgrenze:** Ein physischer Hardwaredefekt oder eine fehlgeschlagene systemd-Neustart-Anforderung lässt sich nicht softwareseitig „garantiert“ beheben. Die Fehleranzeige und das separate `ExecStopPost` sind ausdrücklich Teil der Absicherung; der Worker darf die MI50 nicht beanspruchen, wenn Lena sich nicht sicher beenden lässt. Die übrigen MAG-Dienste bleiben unverändert.

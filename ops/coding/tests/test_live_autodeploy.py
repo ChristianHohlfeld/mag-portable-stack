@@ -178,7 +178,7 @@ class CodingDeploy(unittest.TestCase):
   self.assertIn('[[ -z $template ]] || TEMPLATE_ARGS=(--chat-template-file "/usr/local/lib/mag-coding/$template")',start)
   self.assertIn("reasoning_format=auto",start)  # Lena remains unchanged
   self.assertIn("Qwen3.8-27B Q6_K",source("ops/room/coding.env"))
-  self.assertIn("MAG_ROOM_NOAH_REVIEW=1",source("ops/room/coding.env"))
+  self.assertIn("MAG_ROOM_NOAH_REVIEW=0",source("ops/room/coding.env"))
   self.assertIn("MAG_ROOM_GROUP_STAGGER=reply",source("ops/room/coding.env"))
   # The GPU path remains unchanged; DeepSeek on NUMA1 has no speculative draft.
   self.assertIn("template=deepseek-v4-flash-chat.jinja; slot_sub=deepseek-v4-iq3xxs",start)

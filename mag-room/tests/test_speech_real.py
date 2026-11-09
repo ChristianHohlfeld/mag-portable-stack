@@ -48,7 +48,8 @@ AUDIO_MOCK = """(() => {
   };
   // Chromium may expose a non-configurable mediaDevices getter in an
   // isolated context. Keep the real WASM worker; fake only microphone I/O.
-  const fakeGetUserMedia=async()=>({getTracks:()=>[{stop(){}}]});
+  window.__speechMockTrace=[];
+  const fakeGetUserMedia=async()=>{window.__speechMockTrace.push('media');return {getTracks:()=>[{stop(){}}]};};
   try {
     Object.defineProperty(navigator,'mediaDevices',{
       configurable:true,value:{getUserMedia:fakeGetUserMedia}
@@ -60,9 +61,9 @@ AUDIO_MOCK = """(() => {
   }
   window.__speechFakeMic=fakeGetUserMedia;
   class FakeAudioContext {
-    constructor(){this.sampleRate=16000;this.destination={};this.state='running'}
-    resume(){return Promise.resolve()}
-    close(){this.state='closed';return Promise.resolve()}
+    constructor(){window.__speechMockTrace.push('context');this.sampleRate=16000;this.destination={};this.state='running'}
+    resume(){window.__speechMockTrace.push('resume');return Promise.resolve()}
+    close(){window.__speechMockTrace.push('close');this.state='closed';return Promise.resolve()}
     createMediaStreamSource(){return {connect(){},disconnect(){}}}
     createScriptProcessor(){return {connect(){},disconnect(){}}}
   }
@@ -138,7 +139,8 @@ class RealWasmLoad(unittest.TestCase):
                     }""",timeout=90000)
                 except Exception as err:
                     label = page.locator('#speech-status').inner_text()
-                    raise AssertionError('Actual model stalled: '+label+'; '+str(errors)) from err
+                    trace=page.evaluate('window.__speechMockTrace || []')
+                    raise AssertionError('Actual model stalled: '+label+'; microphone trace='+str(trace)+'; '+str(errors)) from err
                 label = page.locator('#speech-status').inner_text()
                 worker_errors=page.evaluate('window.__speechWorkerErrors || []')
                 self.assertTrue(label.startswith('Aufnahme läuft'),

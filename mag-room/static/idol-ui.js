@@ -62,8 +62,10 @@
   const stepText=dialog.querySelector("#mag-idol-step");
   const cancelButton=dialog.querySelector("#mag-idol-cancel");
   const newButton=dialog.querySelector("#mag-idol-new");
-  newButton.parentElement.style.gap="5px";
+  newButton.parentElement.style.gap="4px";
   newButton.parentElement.style.flexWrap="nowrap";
+  newButton.style.cssText+=";padding:4px 5px;font-size:11px;white-space:nowrap";
+  cancelButton.style.cssText+=";padding:4px 5px;font-size:11px;white-space:nowrap";
   newButton.parentElement.insertBefore(makeQualitySelect(),newButton);
   let timer=null, current=sessionStorage.getItem("mag-idol-current")||null;
 
@@ -190,8 +192,20 @@
       inlineCard.style.cssText="max-width:min(calc(100% - 36px),560px);margin:5px 0 10px 36px;padding:10px;border:1px solid var(--line,#343840);border-radius:12px;background:var(--panel,#1b1d23);color:inherit;font-size:12px";
       inlineCard.innerHTML='<div style="display:flex;gap:8px;align-items:center"><strong style="flex:1">Foto zu 3D · MI50</strong><span class="idol-chat-status" role="status">Wartet auf Status …</span></div><p class="idol-lena" style="margin:4px 0;color:var(--orange,#e9b87f)"></p><progress max="50" value="0" style="width:100%;height:7px"></progress><div style="display:flex;align-items:center;gap:8px"><small class="idol-steps" style="flex:1">0/50</small><button type="button" class="idol-abort">Abbrechen</button><button type="button" class="idol-new">Neues Foto</button></div><canvas width="600" height="420" class="idol-preview" style="display:none;width:100%;max-height:45dvh;aspect-ratio:10/7;touch-action:none;background:#101115;border-radius:10px"></canvas><div class="idol-downloads" style="display:flex;gap:12px;flex-wrap:wrap;margin-top:7px"></div>';
       const actionRow=inlineCard.querySelector(".idol-new").parentElement;
-      actionRow.style.gap="4px";
+      actionRow.style.gap="3px";
       actionRow.style.flexWrap="nowrap";
+      actionRow.style.minWidth="0";
+      const steps=actionRow.querySelector(".idol-steps");
+      steps.style.flex="1 1 0";
+      steps.style.minWidth="0";
+      steps.style.overflow="hidden";
+      steps.style.textOverflow="ellipsis";
+      for(const b of actionRow.querySelectorAll("button")){
+        b.style.fontSize="11px";
+        b.style.padding="3px 4px";
+        b.style.whiteSpace="nowrap";
+        b.style.flexShrink="0";
+      }
       actionRow.insertBefore(makeQualitySelect(),inlineCard.querySelector(".idol-new"));
       inlineCard.querySelector(".idol-new").onclick=()=>file.click();
       inlineCard.querySelector(".idol-abort").onclick=()=>cancelButton.click();

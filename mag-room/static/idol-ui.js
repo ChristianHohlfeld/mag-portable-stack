@@ -240,6 +240,7 @@
       if(live.has(id))continue;
       if(fullscreenState?.canvas===card.querySelector("canvas"))closePreviewFullscreen(true);
       card.remove();cards.delete(id);jobStatuses.delete(id);
+      if(current===id){current=null;sessionStorage.removeItem("mag-idol-current");stop()}
       if(jobTimers.has(id))clearTimeout(jobTimers.get(id));
       jobTimers.delete(id);
     }

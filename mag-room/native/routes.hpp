@@ -2104,6 +2104,18 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
     error_json(fd,405,"Methode nicht erlaubt");
     return;
   }
+  if (m == "POST" && path == "/api/room/idol") {
+    if (actor.role != "owner" || actor.login.empty() || !ts_proof_valid(r.hdrs)) {
+      error_json(fd, 403, "Nur der Besitzer"); return;
+    }
+    Val body;
+    if (r.body.size() > 512 || !mj::parse(r.body, body) || !body.isObj()) {
+      error_json(fd, 400, "Ungültige Idol-Anfrage"); return;
+    }
+    auto result = register_idol_message(mag::str(body, "job_id"), actor.login, actor.name);
+    send_json(fd, result.code, result.body);
+    return;
+  }
   if (m == "POST" && path == "/api/room/clear") {
     if (actor.role != "owner" || actor.login.empty() || !ts_proof_valid(r.hdrs)) {
       error_json(fd, 403, "Nur der Besitzer"); return;

@@ -49,7 +49,7 @@
       const next=[...root.children].find(n=>+n.dataset.displayMs>created && created>0);
       root.insertBefore(inlineCard,next||null);
     }
-    if(lastJob && lastJob.id===current)paintInline(lastJob);
+    // State is painted by polling; reattachment never recursively repaints.
   }
   function paintInline(job){
     lastJob=job;attachInline();

@@ -132,6 +132,11 @@ class BrowserSpeech(unittest.TestCase):
             # registration explicitly, then reload once; never skip SW tests.
             registration = self.page.evaluate("""async () => {
               if (!('serviceWorker' in navigator)) throw Error('SW API unavailable');
+              // A domcontentloaded first visit can race app registration on
+              // a loaded CI host. Explicit registration is idempotent and
+              // still exercises the actual shipped /sw.js and cache policy.
+              if (!await navigator.serviceWorker.getRegistration('/'))
+                await navigator.serviceWorker.register('/sw.js');
               return await Promise.race([
                 navigator.serviceWorker.ready.then(r => ({scope:r.scope,active:!!r.active})),
                 new Promise((_,reject)=>setTimeout(()=>reject(Error('SW not ready')),12000))

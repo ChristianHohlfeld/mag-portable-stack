@@ -12,6 +12,43 @@
   const file = document.createElement("input");
   file.type="file"; file.accept="image/png,image/jpeg,image/webp"; file.hidden=true;
   document.body.append(file);
+
+  // One compact selector in the existing upload-action row (dialog + chat).
+  // Never add a second row or new status/composer height on mobile.
+  const QUALITY_KEY="mag-idol-quality";
+  const QUALITY_VALUES=["fast","normal","high"];
+  const QUALITY_LABELS=["Schnell","Normal","Hoch"];
+  let qualityChoice="normal";
+  try{
+    const saved=localStorage.getItem(QUALITY_KEY);
+    if(QUALITY_VALUES.includes(saved))qualityChoice=saved;
+  }catch(_error){}
+  function makeQualitySelect(){
+    const label=document.createElement("label");
+    label.className="idol-quality-label";
+    label.style.cssText="display:inline-flex;align-items:center;gap:3px;white-space:nowrap;flex-shrink:0;font-size:11px";
+    label.append("Qualität:");
+    const select=document.createElement("select");
+    select.className="idol-quality-select";
+    select.setAttribute("aria-label","Qualität");
+    select.style.cssText="max-width:74px;min-width:0;padding:3px 1px;border-radius:5px;border:1px solid #777;background:var(--panel,#1b1d23);color:inherit;font:inherit";
+    for(let i=0;i<QUALITY_VALUES.length;i++){
+      const option=document.createElement("option");
+      option.value=QUALITY_VALUES[i];
+      option.textContent=QUALITY_LABELS[i];
+      select.append(option);
+    }
+    select.value=qualityChoice;
+    select.onchange=()=>{
+      qualityChoice=select.value;
+      try{localStorage.setItem(QUALITY_KEY,qualityChoice)}catch(_error){}
+      for(const other of document.querySelectorAll(".idol-quality-select"))
+        other.value=qualityChoice;
+    };
+    label.append(select);
+    return label;
+  }
+
   const dialog = document.createElement("dialog");
   dialog.id="mag-idol-dialog";
   dialog.style.cssText="width:min(94vw,580px);max-height:88dvh;overflow:auto;border:1px solid #555;border-radius:14px;background:#1c1e24;color:#f1f0ed;padding:16px;box-shadow:0 20px 75px #0009";
@@ -25,6 +62,9 @@
   const stepText=dialog.querySelector("#mag-idol-step");
   const cancelButton=dialog.querySelector("#mag-idol-cancel");
   const newButton=dialog.querySelector("#mag-idol-new");
+  newButton.parentElement.style.gap="5px";
+  newButton.parentElement.style.flexWrap="nowrap";
+  newButton.parentElement.insertBefore(makeQualitySelect(),newButton);
   let timer=null, current=sessionStorage.getItem("mag-idol-current")||null;
 
 
@@ -149,6 +189,10 @@
       inlineCard.dataset.job=current;
       inlineCard.style.cssText="max-width:min(calc(100% - 36px),560px);margin:5px 0 10px 36px;padding:10px;border:1px solid var(--line,#343840);border-radius:12px;background:var(--panel,#1b1d23);color:inherit;font-size:12px";
       inlineCard.innerHTML='<div style="display:flex;gap:8px;align-items:center"><strong style="flex:1">Foto zu 3D · MI50</strong><span class="idol-chat-status" role="status">Wartet auf Status …</span></div><p class="idol-lena" style="margin:4px 0;color:var(--orange,#e9b87f)"></p><progress max="50" value="0" style="width:100%;height:7px"></progress><div style="display:flex;align-items:center;gap:8px"><small class="idol-steps" style="flex:1">0/50</small><button type="button" class="idol-abort">Abbrechen</button><button type="button" class="idol-new">Neues Foto</button></div><canvas width="600" height="420" class="idol-preview" style="display:none;width:100%;max-height:45dvh;aspect-ratio:10/7;touch-action:none;background:#101115;border-radius:10px"></canvas><div class="idol-downloads" style="display:flex;gap:12px;flex-wrap:wrap;margin-top:7px"></div>';
+      const actionRow=inlineCard.querySelector(".idol-new").parentElement;
+      actionRow.style.gap="4px";
+      actionRow.style.flexWrap="nowrap";
+      actionRow.insertBefore(makeQualitySelect(),inlineCard.querySelector(".idol-new"));
       inlineCard.querySelector(".idol-new").onclick=()=>file.click();
       inlineCard.querySelector(".idol-abort").onclick=()=>cancelButton.click();
     }
@@ -211,7 +255,8 @@
     finally{cancelButton.disabled=false}
   };
   button.onclick=()=>{menu.hidden=true;document.getElementById("plus")?.setAttribute("aria-expanded","false");
-    if(current){dialog.showModal();pollCurrent();}else file.click()};
+    if(!dialog.open)dialog.showModal();
+    if(current)pollCurrent();else status.textContent="Qualität wählen und Neues Foto antippen";};
   file.onchange=async()=>{
     const image=file.files?.[0];file.value="";
     if(!image)return;
@@ -221,7 +266,8 @@
     if(image.size>20*1024*1024){status.textContent="Maximal 20 MB";return}
     status.textContent="Foto übertragen …";
     try{
-      const res=await fetch("/api/idol/jobs",{method:"POST",headers:{"Content-Type":image.type||"application/octet-stream","X-Mag-Idol-UI":"1"},body:image});
+      const res=await fetch("/api/idol/jobs?quality="+encodeURIComponent(qualityChoice),
+        {method:"POST",headers:{"Content-Type":image.type||"application/octet-stream","X-Mag-Idol-UI":"1"},body:image});
       const data=await res.json();
       if(!res.ok)throw Error(data.error||"Upload fehlgeschlagen");
       current=data.id;lastJob=data;inlineCard=null;sessionStorage.setItem("mag-idol-current",current);progressBox.style.display="block";cancelButton.style.display="inline-block";
@@ -295,10 +341,12 @@
     const primitive=json.meshes?.[0]?.primitives?.[0];
     if(!primitive||primitive.mode && primitive.mode!==4)throw Error("Nur Dreiecksmeshes unterstützt");
     function accessor(id){
-      const a=json.accessors[id],b=json.bufferViews[a.bufferView];
+      const a=json.accessors[id];
+      if(!a)throw Error("Accessor fehlt");
+      const b=json.bufferViews[a.bufferView];
       if(!a||!b||a.sparse)throw Error("Accessor nicht unterstützt");
       const start=(b.byteOffset||0)+(a.byteOffset||0),n=a.count;
-      const width={SCALAR:1,VEC3:3,VEC4:4}[a.type];
+      const width={SCALAR:1,VEC2:2,VEC3:3,VEC4:4}[a.type];
       const ctor={5121:Uint8Array,5123:Uint16Array,5125:Uint32Array,5126:Float32Array}[a.componentType];
       if(!width||!ctor)throw Error("GLB-Format nicht unterstützt");
       const stride=b.byteStride||width*ctor.BYTES_PER_ELEMENT;
@@ -319,16 +367,63 @@
     for(let i=0;i<pos.length/3;i++)for(let j=0;j<3;j++)
       colors[i*3+j]=col?(col.componentType===5121?col.data[i*col.width+j]/255:col.data[i*col.width+j]):0.76;
     const indices=primitive.indices===undefined?null:accessor(primitive.indices).data;
+    const uv=primitive.attributes.TEXCOORD_0===undefined?null:accessor(primitive.attributes.TEXCOORD_0).data;
+    // Trimesh's PBRMaterial embeds the BaseColor PNG in a GLB bufferView.
+    const material=json.materials?.[primitive.material??0];
+    const textureRef=material?.pbrMetallicRoughness?.baseColorTexture?.index;
+    const imageRef=textureRef===undefined?null:json.textures?.[textureRef]?.source;
+    const imageDef=imageRef===null?null:json.images?.[imageRef];
+    let textureImage=null;
+    if(uv&&imageDef){
+      let blob;
+      if(imageDef.bufferView!==undefined){
+        const imageView=json.bufferViews?.[imageDef.bufferView];
+        if(!imageView)throw Error("GLB Textur-Buffer fehlt");
+        const start=imageView.byteOffset||0;
+        blob=new Blob([binary.slice(start,start+imageView.byteLength)],
+          {type:imageDef.mimeType||"image/png"});
+      }else if(imageDef.uri?.startsWith("data:")){
+        const response=await fetch(imageDef.uri);
+        blob=await response.blob();
+      }
+      if(blob){
+        textureImage=await new Promise((resolve,reject)=>{
+          const source=URL.createObjectURL(blob);
+          const img=new Image();
+          img.onload=()=>{URL.revokeObjectURL(source);resolve(img)};
+          img.onerror=()=>{URL.revokeObjectURL(source);reject(Error("GLB PNG konnte nicht geladen werden"))};
+          img.src=source;
+        });
+      }
+    }
     const gl=canvas.getContext("webgl2",{antialias:true,alpha:false});
     if(!gl)throw Error("WebGL2 nicht verfügbar");
-    const vert="#version 300 es\nin vec3 p;in vec3 c;out vec3 vc;uniform mat4 m;void main(){vc=c;gl_Position=m*vec4(p,1.);}";
-    const frag="#version 300 es\nprecision mediump float;in vec3 vc;out vec4 outColor;void main(){outColor=vec4(vc,1.);}";
+    const vert="#version 300 es\nin vec3 p;in vec3 c;in vec2 t;out vec3 vc;out vec2 vt;uniform mat4 m;void main(){vc=c;vt=t;gl_Position=m*vec4(p,1.);}";
+    const frag="#version 300 es\nprecision mediump float;in vec3 vc;in vec2 vt;uniform bool useTexture;uniform sampler2D baseColor;out vec4 outColor;void main(){outColor=vec4(useTexture?texture(baseColor,vt).rgb:vc,1.);}";
     function shader(type,code){const s=gl.createShader(type);gl.shaderSource(s,code);gl.compileShader(s);if(!gl.getShaderParameter(s,gl.COMPILE_STATUS))throw Error(gl.getShaderInfoLog(s));return s}
     const program=gl.createProgram();gl.attachShader(program,shader(gl.VERTEX_SHADER,vert));gl.attachShader(program,shader(gl.FRAGMENT_SHADER,frag));gl.linkProgram(program);
     if(!gl.getProgramParameter(program,gl.LINK_STATUS))throw Error("GLB shader");
     gl.useProgram(program);
     function attr(name,values){const gpu=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,gpu);gl.bufferData(gl.ARRAY_BUFFER,values,gl.STATIC_DRAW);const loc=gl.getAttribLocation(program,name);gl.enableVertexAttribArray(loc);gl.vertexAttribPointer(loc,3,gl.FLOAT,false,0,0)}
     const vao=gl.createVertexArray();gl.bindVertexArray(vao);attr("p",pos);attr("c",colors);
+    const uvBuffer=gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER,uvBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER,uv||new Float32Array((pos.length/3)*2),gl.STATIC_DRAW);
+    const uvLoc=gl.getAttribLocation(program,"t");
+    if(uvLoc>=0){gl.enableVertexAttribArray(uvLoc);gl.vertexAttribPointer(uvLoc,2,gl.FLOAT,false,0,0)}
+    gl.uniform1i(gl.getUniformLocation(program,"useTexture"),Boolean(uv&&textureImage)?1:0);
+    if(uv&&textureImage){
+      const tex=gl.createTexture();
+      gl.activeTexture(gl.TEXTURE0);gl.bindTexture(gl.TEXTURE_2D,tex);
+      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL,false);
+      gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,gl.RGBA,gl.UNSIGNED_BYTE,textureImage);
+      gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR_MIPMAP_LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
+      gl.generateMipmap(gl.TEXTURE_2D);
+      gl.uniform1i(gl.getUniformLocation(program,"baseColor"),0);
+    }
     let count=pos.length/3,mode=gl.drawArrays;
     if(indices){
       const gpu=gl.createBuffer();gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,gpu);

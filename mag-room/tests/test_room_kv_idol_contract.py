@@ -1,6 +1,13 @@
 # mag-test-timeout: 30
 """No-GPU contracts for destructive room context reset and first-class 3D jobs."""
 import pathlib
+import sys as _mag_sys
+_mag_root = pathlib.Path(__file__).resolve()
+while _mag_root != _mag_root.parent and not (_mag_root / 'ops/ci/mag_deadline.py').is_file():
+    _mag_root = _mag_root.parent
+_mag_sys.path.insert(0, str(_mag_root / 'ops/ci'))
+import mag_deadline as _mag_deadline
+_mag_deadline.arm(30)
 import re
 import unittest
 

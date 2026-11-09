@@ -1,0 +1,33 @@
+[Unit]
+Description=MAG Idol MI50 image-to-splat queue (optional)
+After=network.target
+ConditionPathExists=/home/chris/idol-mi50/venv/bin/python
+ConditionPathExists=/home/chris/idol-mi50/weights/idol
+
+[Service]
+Type=simple
+User=chris
+Group=chris
+WorkingDirectory=/home/chris/idol-mi50
+ExecStart=/usr/bin/python3 -I /opt/mag-stack/current/ops/idol/worker.py
+Environment=MAG_IDOL_JOB_ROOT=/var/lib/mag-idol/jobs
+Environment=MAG_IDOL_PYTHON=/home/chris/idol-mi50/venv/bin/python
+Environment=MAG_IDOL_WEIGHTS=/home/chris/idol-mi50/weights/idol
+Environment=MAG_IDOL_MIN_FREE_MIB=10000
+Environment=PYTHONUNBUFFERED=1
+CPUAccounting=yes
+AllowedCPUs=28-55
+MemoryMax=20G
+TasksMax=128
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/lib/mag-idol
+UMask=0077
+TimeoutStopSec=25
+
+[Install]
+WantedBy=multi-user.target

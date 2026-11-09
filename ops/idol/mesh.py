@@ -82,8 +82,8 @@ def reconstruct(input_path: Path, output_dir: Path, resolution=128, max_points=1
     trimesh.smoothing.filter_laplacian(mesh, lamb=0.25, iterations=3, volume_constraint=False)
     # Optional decimation. Reproject colors AFTER simplification so GLB retains
     # vertex colors even when the simplification backend loses attributes.
-    if len(mesh.faces) > 90000:
-        try: mesh = mesh.simplify_quadric_decimation(face_count=90000)
+    if len(mesh.faces) > 200000:
+        try: mesh = mesh.simplify_quadric_decimation(face_count=200000)
         except (ImportError, ValueError, AttributeError) as exc:
             print(f"Decimation skipped ({type(exc).__name__}); original mesh retained")
     tree = cKDTree(xyz)

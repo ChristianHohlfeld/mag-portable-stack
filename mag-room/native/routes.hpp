@@ -539,11 +539,17 @@ else document.getElementById('status').textContent='Bitte den vollständigen Ein
          (!ui_token().empty() && content->asStr().find(ui_token())!=std::string::npos)) {
         error_json(fd,400,"Ungueltige Agenten-Datei");return;
       }
-      if(!mag_preview::put(STATE_DIR,bot,filename,content->asStr())) {
+      const long revision=mag::num(input,"revision",0);
+      if(revision<0 || !mag_preview::put(STATE_DIR,bot,filename,content->asStr(),
+                                      false,(uint64_t)revision)) {
         error_json(fd,507,"Vorschau konnte nicht gespeichert werden");return;
       }
       Val reply=Val::object();reply["url"]=mag_preview::url(bot,filename);
-      reply["sha256"]=mag_preview::hash(content->asStr());
+      mag_preview::File current;
+      if(!mag_preview::get(STATE_DIR,bot,mag_preview::id(filename),current)) {
+        error_json(fd,500,"Vorschau-Index unlesbar");return;
+      }
+      reply["sha256"]=current.digest;
       send_json(fd,200,mj::dump(reply));return;
     }
     const std::string suffix=path.substr(std::string("/agent-preview/").size());

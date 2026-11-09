@@ -26,6 +26,64 @@
   const cancelButton=dialog.querySelector("#mag-idol-cancel");
   const newButton=dialog.querySelector("#mag-idol-new");
   let timer=null, current=sessionStorage.getItem("mag-idol-current")||null;
+
+  // Chat-history card, not a modal or an extra status/composer row. Keep the
+  // same DOM node across normal room re-renders so WebGL does not reset.
+  let inlineCard=null;
+  let lastJob=null;
+  function attachInline(){
+    if(!current)return;
+    const root=document.querySelector("#conversation .conversation-inner");
+    if(!root)return;
+    if(!inlineCard || inlineCard.dataset.job!==current){
+      inlineCard=document.createElement("article");
+      inlineCard.className="idol-chat-card";
+      inlineCard.dataset.job=current;
+      inlineCard.style.cssText="max-width:min(100%,560px);margin:5px 0 10px 36px;padding:10px;border:1px solid var(--line,#343840);border-radius:12px;background:var(--panel,#1b1d23);color:inherit;font-size:12px";
+      inlineCard.innerHTML='<div style="display:flex;gap:8px;align-items:center"><strong style="flex:1">Foto zu 3D · MI50</strong><span class="idol-chat-status" role="status">Wartet auf Status …</span></div><p class="idol-lena" style="margin:4px 0;color:var(--orange,#e9b87f)"></p><progress max="50" value="0" style="width:100%;height:7px"></progress><div style="display:flex;align-items:center;gap:8px"><small class="idol-steps" style="flex:1">0/50</small><button type="button" class="idol-abort">Abbrechen</button><button type="button" class="idol-new">Neues Foto</button></div><canvas width="600" height="420" class="idol-preview" style="display:none;width:100%;max-height:45dvh;aspect-ratio:10/7;touch-action:none;background:#101115;border-radius:10px"></canvas><div class="idol-downloads" style="display:flex;gap:12px;flex-wrap:wrap;margin-top:7px"></div>';
+      inlineCard.querySelector(".idol-new").onclick=()=>file.click();
+      inlineCard.querySelector(".idol-abort").onclick=()=>cancelButton.click();
+    }
+    if(inlineCard.parentElement!==root){
+      const created=Number(lastJob?.created||0)*1000;
+      const next=[...root.children].find(n=>+n.dataset.displayMs>created && created>0);
+      root.insertBefore(inlineCard,next||null);
+    }
+    if(lastJob && lastJob.id===current)paintInline(lastJob);
+  }
+  function paintInline(job){
+    lastJob=job;attachInline();
+    if(!inlineCard||inlineCard.dataset.job!==job.id)return;
+    const state=job.state;
+    const running=state==="queued"||state==="running";
+    const step=Math.max(0,Math.min(50,+job.step||0));
+    inlineCard.querySelector(".idol-chat-status").textContent=job.stage||state;
+    inlineCard.querySelector(".idol-lena").textContent=job.lena_state==="pausiert für Foto zu 3D"?
+      "Lena pausiert für Foto zu 3D":job.lena_state==="wird neu gestartet"?
+      "Lena wird neu gestartet …":job.lena_state==="Wiederanlauf fehlgeschlagen"?
+      "Lena: Wiederanlauf fehlgeschlagen":job.lena_state==="bereit"?"Lena wieder bereit":"";
+    inlineCard.querySelector("progress").value=step;
+    inlineCard.querySelector(".idol-steps").textContent=step+"/50 Schritte";
+    inlineCard.querySelector(".idol-abort").hidden=!running;
+    if(!running && job.error)inlineCard.querySelector(".idol-chat-status").textContent=job.error;
+    if(state==="done"){
+      const downloads=inlineCard.querySelector(".idol-downloads");
+      if(!downloads.children.length)for(const [name,label] of [["splat.ply","PLY"],["mesh.glb","GLB"],["mesh.stl","STL"]]){
+        const a=document.createElement("a");a.textContent=label+" herunterladen";
+        a.href="/api/idol/jobs/"+job.id+"/"+name;a.download=name;
+        a.style.color="var(--accent,#d9a885)";downloads.append(a);
+      }
+      const canvas=inlineCard.querySelector(".idol-preview");
+      if(inlineCard.dataset.preview!==job.id){
+        inlineCard.dataset.preview=job.id;
+        preview("/api/idol/jobs/"+job.id+"/mesh.glb",canvas)
+          .then(()=>{if(canvas.isConnected)canvas.style.display="block"})
+          .catch(e=>{inlineCard.querySelector(".idol-chat-status").textContent="3D-Vorschau nicht verfügbar: "+e.message});
+      }
+    }
+  }
+  window.magIdolUI={render:attachInline};
+
   function stop(){if(timer){clearTimeout(timer);timer=null}}
   dialog.querySelector("#mag-idol-close").onclick=()=>dialog.close();
   dialog.addEventListener("close",stop);
@@ -37,7 +95,9 @@
       const res=await fetch("/api/idol/jobs/"+current+"/cancel",{method:"POST",headers:{"X-Mag-Idol-UI":"1"}});
       const reply=await res.json();
       if(!res.ok)throw Error(reply.error||"Abbruch fehlgeschlagen");
-      if(reply.cancelled){stop();cancelButton.style.display="none";status.textContent="Job abgebrochen";}
+      if(reply.cancelled){stop();cancelButton.style.display="none";status.textContent="Job abgebrochen";
+        const response=await fetch("/api/idol/jobs/"+current,{cache:"no-store"});
+        if(response.ok)paintInline(await response.json());}
       else status.textContent="Job bereits abgeschlossen – Status aktualisieren";
     }catch(error){status.textContent=error.message}
     finally{cancelButton.disabled=false}
@@ -56,19 +116,21 @@
       const res=await fetch("/api/idol/jobs",{method:"POST",headers:{"Content-Type":image.type||"application/octet-stream","X-Mag-Idol-UI":"1"},body:image});
       const data=await res.json();
       if(!res.ok)throw Error(data.error||"Upload fehlgeschlagen");
-      current=data.id;sessionStorage.setItem("mag-idol-current",current);progressBox.style.display="block";cancelButton.style.display="inline-block";
+      current=data.id;lastJob=data;inlineCard=null;sessionStorage.setItem("mag-idol-current",current);progressBox.style.display="block";cancelButton.style.display="inline-block";
+      attachInline();if(dialog.open)dialog.close();
       await pollCurrent();
     }catch(err){status.textContent=err.message}
   };
   async function pollCurrent(){
       stop();
       const target=current;
-      if(!target||!dialog.open)return;
+      if(!target)return;
       async function poll(){
-        if(!dialog.open||current!==target)return;
+        if(current!==target)return;
         try{
           const response=await fetch("/api/idol/jobs/"+target,{cache:"no-store"});
           const job=await response.json();
+          if(response.ok)paintInline(job);
           if(!response.ok)throw Error(job.error||"Job nicht gefunden");
           const step=Math.max(0,Math.min(50,Number(job.step)||0));
           progressBox.style.display=job.state==="queued"||job.state==="running"?"block":"none";
@@ -92,11 +154,13 @@
           else timer=setTimeout(poll,1800);
         }catch(err){
           status.textContent="Statusabfrage fehlgeschlagen: "+err.message+" · erneuter Versuch …";
-          if(dialog.open&&current===target)timer=setTimeout(poll,5000);
+          if(current===target)timer=setTimeout(poll,5000);
         }
       }
       await poll();
   }
+
+  if(current)setTimeout(()=>pollCurrent(),200);
 
   // Minimal WebGL2 glTF 2.0/GLB renderer. Only triangle primitives are used,
   // exported by trimesh. No external CDN, framework, or dependency.

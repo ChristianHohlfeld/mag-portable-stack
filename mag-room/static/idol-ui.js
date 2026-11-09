@@ -32,7 +32,7 @@
     if(image.size>20*1024*1024){status.textContent="Maximal 20 MB";return}
     status.textContent="Foto übertragen …";
     try{
-      const res=await fetch("/api/idol/jobs",{method:"POST",headers:{"Content-Type":image.type||"application/octet-stream"},body:image});
+      const res=await fetch("/api/idol/jobs",{method:"POST",headers:{"Content-Type":image.type||"application/octet-stream","X-Mag-Idol-UI":"1"},body:image});
       const data=await res.json();
       if(!res.ok)throw Error(data.error||"Upload fehlgeschlagen");
       current=data.id;

@@ -33,6 +33,8 @@ assert tensordict.__version__.split("+")[0] == "0.9.1"
 PY
 install -d -o chris -g chris -m 0700 /var/lib/mag-idol/jobs
 # Root-only lease helper; sudoers permits only these fixed actions.
+install -m 0644 /opt/mag-stack/current/ops/idol/mag-idol.tmpfiles.conf /etc/tmpfiles.d/mag-idol.conf
+systemd-tmpfiles --create /etc/tmpfiles.d/mag-idol.conf
 install -d -o root -g root -m 0755 /usr/local/lib/mag-idol
 install -o root -g root -m 0755 /opt/mag-stack/current/ops/idol/gpu-lease.sh /usr/local/lib/mag-idol/gpu-lease.sh
 install -o root -g root -m 0440 /opt/mag-stack/current/ops/idol/mag-idol.sudoers /etc/sudoers.d/mag-idol

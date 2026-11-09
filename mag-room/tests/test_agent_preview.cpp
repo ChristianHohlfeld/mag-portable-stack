@@ -21,6 +21,10 @@ int main(){
   assert(mag_preview::put(root,bot,path,"<p>Aktuell</p>"));
   assert(mag_preview::get(root,bot,key,file));
   assert(file.content=="<p>Aktuell</p>"); // same stable URL, newest version
+  assert(mag_preview::put(root,bot,path,"<p>Neue Version</p>",false,200));
+  assert(mag_preview::put(root,bot,path,"<p>Alte Nachricht</p>",false,100));
+  assert(mag_preview::get(root,bot,key,file));
+  assert(file.content=="<p>Neue Version</p>");
   assert(mag_preview::url(bot,path)=="/agent-preview/"+bot+"/"+key);
   assert(mag_preview::instrument("<html><head></head><body></body></html>")
          .find("unhandledrejection")!=std::string::npos);

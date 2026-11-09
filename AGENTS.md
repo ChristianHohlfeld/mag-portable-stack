@@ -14,8 +14,22 @@ Production is `mag-120.service` -> `/opt/mag-stack/current/bin/magroom`.
 Deploy versioned releases through `ops/deploy.sh`; use `ops/rollback.sh` to revert
 executables. Runtime state, VM overlays, models and credentials live outside Git.
 Preserve existing room data and immutable backing disks through deployments.
-The warm `mag-llm` inference instance is intentionally independent; do not stop
-or reload it as part of ordinary application changes.
+A deploy never drains, never waits for a model and never fails because a bot
+is downloading, loading, paused or stopped.
+
+## Models
+
+Two CPU-only llama.cpp servers, declared in `ops/models/models.json`:
+Lena = Gemma 4 26B-A4B on NUMA0 (physical cores 0-13, :8191), Noah = gpt-oss
+120B on NUMA1 (cores 14-27, :8192). No GPU offload: the MI50 belongs to MAG
+Idol alone and its power cap stays at 72 W (`ops/idol/power-cap.sh` only ever
+lowers it). `mag-modeld` is the single owner of the model lifecycle: it checks
+each GGUF against the Hugging Face size, verifies its SHA256 once, starts
+`mag-model@<bot>.service` and publishes `/run/mag-models/status.json`.
+Do not start, stop or enable model units by hand or from a deploy; use
+`mag-modeld ctl <bot> start|stop|restart|freeze|thaw`. Never delete a model
+file, including the retired Qwen, DeepSeek, Ornith and Flint weights.
+Builds and jobs run on CPUs 28-55 only (`taskset -c 28-55`).
 
 S23, SSH, Tailscale, Gitea, Codex and Cursor are independent working services.
 Use the actual current inventory, not old session statements, when changing

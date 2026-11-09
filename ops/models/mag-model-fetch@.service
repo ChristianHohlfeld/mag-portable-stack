@@ -1,0 +1,20 @@
+# Resumable GGUF download for one bot; started on demand by mag-modeld.
+[Unit]
+Description=MAG model download (%i)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=chris
+Group=chris
+ExecStart=/usr/local/lib/mag-models/fetch.sh %i
+# Off the model cores: physical cores 0-27 belong to the llama servers.
+CPUAffinity=28-55
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=infinity
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/home/chris/models
+PrivateTmp=yes

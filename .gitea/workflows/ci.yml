@@ -1,0 +1,23 @@
+# Same minimal gate as .github/workflows/ci.yml, on the host runner
+# (labels from ops/runners/gitea-runner.yaml; pinned to CPUs 42-55).
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+jobs:
+  build-test:
+    runs-on: [self-hosted, mag]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build release targets
+        run: |
+          source ops/build-targets.sh
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build build -j 8 --target "${MAG_BUILD_TARGETS[@]}"
+      - name: Shell syntax
+        run: bash ops/ci/check.sh
+      - name: Model supervisor
+        run: python3 ops/models/tests/test_modeld.py

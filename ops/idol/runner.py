@@ -31,10 +31,9 @@ def main():
     arch = str(getattr(torch.cuda.get_device_properties(0), "gcnArchName", ""))
     if "gfx906" not in arch:
         raise RuntimeError("Erwartet MI50/gfx906, erhalten " + arch)
-    # Lena is stopped and its GPU occupancy released by the root-controlled
-    # GPU lease before this process starts. No arbitrary VRAM fraction: Idol
-    # may use the full MI50. The worker fails closed if acquiring fails.
-    print("MAG-IDOL: exclusive MI50 lease active; no PyTorch VRAM cap", flush=True)
+    # The MI50 is Idol's alone (both bots are CPU-only): no VRAM fraction,
+    # Idol may use the full card.
+    print("MAG-IDOL: MI50 exclusive; no PyTorch VRAM cap", flush=True)
 
     # No duplicate ImageEncoder or modified checkpoint overlay. The locally
     # installed patched package must accept --dinov3_dtype fp16 and the two

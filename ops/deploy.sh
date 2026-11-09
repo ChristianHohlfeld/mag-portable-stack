@@ -1,779 +1,244 @@
 #!/usr/bin/env bash
-# Run as root after building and checking the native source.
+# MAG release deploy. Run as root from the checkout:
+#   cd ~/mag-stack && taskset -c 28-55 sudo -n bash ops/deploy.sh
+#
+# One job: build, stage a release, switch to it, verify, roll back on failure.
+#  - Never waits for a running answer (the room persists its state) and never
+#    stops, restarts or waits for a model: mag-modeld owns the model lifecycle.
+#    A missing, downloading, loading or paused bot is not a deploy failure.
+#  - Fails, and restores the previous release, only when the build breaks, the
+#    new room does not answer /readyz or nginx no longer serves the room.
+#  - Room data, VM overlays, models and credentials live outside releases and
+#    are never touched (a rollback copy of the room state is kept).
+# MAG_DEPLOY_DRAIN_S / MAG_DEPLOY_FORCE of earlier versions are accepted and
+# ignored: there is no drain any more.
 set -euo pipefail
-# Everything this script starts (build, stage.py, checksums) stays off the
-# model cores 0-27; systemd-restarted services do not inherit the affinity.
-if [[ -z ${MAG_BUILD_PINNED:-} ]] && command -v ionice >/dev/null && taskset -c "${MAG_BUILD_CPUS:-28-55}" true 2>/dev/null; then
-  MAG_BUILD_PINNED=1 exec taskset -c "${MAG_BUILD_CPUS:-28-55}" nice -n 19 ionice -c3 bash "$0" "$@"
-fi
-# shellcheck source=deploy-guard.sh
-source "$(cd -- "$(dirname -- "$0")" && pwd)/deploy-guard.sh"
 SOURCE="$(cd -- "$(dirname -- "$0")/.." && pwd)"
-# Normal drain budget plus 15 minutes. Mistral's 233 GB NUMA0 model uses mmap;
-# reserve the full seven-hour service window plus deploy overhead.
-_deploy_drain=${MAG_DEPLOY_DRAIN_S:-900}
-_deploy_default_deadline=$((_deploy_drain + 900))
-_layout_for_deadline=${MAG_ROOM_LAYOUT:-}
-if [[ -z $_layout_for_deadline || $_layout_for_deadline == repo ]]; then
-  if [[ -z ${MAG_ROOM_LAYOUT:-} && -s /etc/mag-stack/room-layout.pinned ]]; then
-    _layout_for_deadline=$(tr -d '[:space:]' < /etc/mag-stack/room-layout.pinned)
-  else
-    _layout_for_deadline=$(tr -d '[:space:]' < "$SOURCE/ops/room/layout" 2>/dev/null || true)
-  fi
-fi
-if [[ $_layout_for_deadline == glm || $_layout_for_deadline == coding ]]; then
-  # Mistral's six-shard 233 GB model can require a long cold mmap/startup.
-  # Reserve the complete 7-hour service load window plus deploy overhead.
-  _deploy_default_deadline=36000
-fi
-# Choose the layout-specific deadline BEFORE the outer timeout wrapper. The
-# wrapper re-execs this script; the armed marker then lets it continue once.
-export MAG_DEPLOY_DEADLINE_S="${MAG_DEPLOY_DEADLINE_S:-$_deploy_default_deadline}"
-mag_deploy_arm_deadline "$@"
-RELEASE_ID="${MAG_RELEASE_ID:-$(date -u +%Y%m%dT%H%M%SZ)}"
-RELEASE="/opt/mag-stack/releases/$RELEASE_ID"
-BACKUP="/var/backups/mag-stack/$RELEASE_ID"
-WHISPER_CLI="${MAG_WHISPER_SOURCE:-/home/chris/.cache/mag-stack/whisper-build/bin/whisper-cli}"
-WHISPER_MODEL="${MAG_WHISPER_SOURCE_MODEL:-/home/chris/models/whisper/ggml-large-v3-turbo.bin}"
 [[ $EUID == 0 ]] || { echo 'Run with sudo' >&2; exit 1; }
+# Everything started here (build, checksums) stays off the model cores 0-27;
+# services restarted through systemd do not inherit this affinity.
+if [[ -z ${MAG_BUILD_PINNED:-} ]] && taskset -c "${MAG_BUILD_CPUS:-28-55}" true 2>/dev/null; then
+  MAG_BUILD_PINNED=1 exec taskset -c "${MAG_BUILD_CPUS:-28-55}" nice -n 10 bash "$0" "$@"
+fi
+# One hard deadline for the whole deploy. timeout(1) signals the process
+# group, so no child can outlive it; the TERM trap below still rolls back.
+if [[ -z ${MAG_DEPLOY_DEADLINE_ARMED:-} ]]; then
+  MAG_DEPLOY_DEADLINE_ARMED=1 exec timeout --kill-after=180s "${MAG_DEPLOY_DEADLINE_S:-1500}s" bash "$0" "$@"
+fi
 exec 8>/run/lock/mag-private-deploy.lock
 flock -n 8 || { echo 'Another MAG deploy/ingress install is running' >&2; exit 1; }
-# shellcheck source=deploy-watchdog.sh
-source "$SOURCE/ops/deploy-watchdog.sh"
-deploy_lock_cloexec 8
-deployment_started=0
-deploy_watchdog_arm "$MAG_DEPLOY_DEADLINE_S"
-trap deploy_exit EXIT
-trap 'exit 143' TERM
-trap 'exit 130' INT
-[[ "$RELEASE_ID" =~ ^[a-zA-Z0-9._-]+$ ]] || exit 1
-# shellcheck source=build-targets.sh
-source "$SOURCE/ops/build-targets.sh"
-# Never install unverified build/ output. Missing graph is a hard error.
-[[ -f "$SOURCE/build/build.ninja" ]] || { echo "deploy: missing Ninja build graph" >&2; exit 1; }
-_build_owner=$(stat -c %U "$SOURCE/build/build.ninja")
-if [[ $_build_owner == root ]]; then _build_cmd=(ninja); else
-  [[ $_build_owner != UNKNOWN ]] || exit 1
-  _build_cmd=(sudo -u "$_build_owner" -H ninja)
-fi
-# Rebuild on EVERY deployment; no environment skip or stale-binary fallback.
-"${_build_cmd[@]}" -C "$SOURCE/build" -j"${MAG_BUILD_JOBS:-10}" "${MAG_BUILD_TARGETS[@]}" || {
-  echo "deploy: build failed; nothing installed" >&2; exit 1;
-}
-# Preserve the real Ninja exit code (no grep pipeline that hides failures).
-_ninja_check=$(ninja -C "$SOURCE/build" -n "${MAG_RELEASE_BINARIES[@]}") || {
-  echo "deploy: Ninja verification failed" >&2; exit 1;
-}
-# `ninja -C` prints "ninja: Entering directory ..." first; judge the last line.
-_ninja_last=${_ninja_check##*$'\n'}
-[[ $_ninja_last == "ninja: no work to do." ]] || {
-  echo "deploy: stale native binaries: $_ninja_check" >&2; exit 1;
-}
-for binary in "${MAG_RELEASE_BINARIES[@]}"; do
-  [[ -x "$SOURCE/build/$binary" ]] || { echo "deploy: missing $binary" >&2; exit 1; }
-done
-# Go is used only for WebRTC/UDP; the room, browsers and VM lifecycle remain C++.
-if [[ ! -x "$SOURCE/build/mag-browser-webrtc" ]]; then
-  command -v go >/dev/null || { echo 'Go >=1.23 required to build browser WebRTC gateway' >&2; exit 1; }
-  (cd "$SOURCE/mag-room/webrtc" && go build -mod=mod -o "$SOURCE/build/mag-browser-webrtc" .)
-fi
-test -x "$SOURCE/build/mag-browser-webrtc"
-test -x "$WHISPER_CLI" && test -r "$WHISPER_MODEL" || {
-  echo "Whisper missing ($WHISPER_CLI, $WHISPER_MODEL): run ops/bootstrap-voice.sh as the checkout owner" >&2; exit 1;
+
+RELEASE_ID="${MAG_RELEASE_ID:-$(date -u +%Y%m%dT%H%M%SZ)}"
+[[ $RELEASE_ID =~ ^[a-zA-Z0-9._-]+$ ]] || exit 1
+RELEASE="/opt/mag-stack/releases/$RELEASE_ID"
+BACKUP="/var/backups/mag-stack/$RELEASE_ID"
+STATE=/var/lib/magbot/room
+ROOM=http://127.0.0.1:8766
+NGINX_SYNC="$SOURCE/ops/private-access/deploy-nginx.sh"
+UNITS=/etc/systemd/system
+log() { printf 'deploy: %s\n' "$*"; }
+warn() { printf 'deploy: WARN: %s\n' "$*" >&2; }
+soft() { "$@" || warn "optional step failed: $*"; }
+wait_http() { # url [seconds]
+  local i
+  for ((i = 0; i < ${2:-45}; i++)); do
+    curl --noproxy '*' -fsS --max-time 3 -o /dev/null "$1" 2>/dev/null && return 0
+    sleep 1
+  done
+  return 1
 }
 test ! -e "$RELEASE"
-# First install on a blank host (ops/bootstrap.sh): there is no previous
-# release, room unit, magbot binary or room state to snapshot, and no running
-# room whose native whois could be probed. Later deploys are unchanged.
-FIRST_INSTALL=0
-[[ -L /opt/mag-stack/current ]] || FIRST_INSTALL=1
-MAG_DEPLOY_FIRST_INSTALL=$FIRST_INSTALL; export MAG_DEPLOY_FIRST_INSTALL
-# No release state mutation before complete nginx/Tailnet/Owner-probe validation.
-NGINX_SYNC="$SOURCE/ops/private-access/deploy-nginx.sh"
-bash "$NGINX_SYNC" preflight
-# Fail-closed synchronous encrypted snapshot, only AFTER the read-only #36/#38
-# nginx/Whois/Owner preflight and BEFORE any release or service changes.
-mag_systemctl is-enabled --quiet mag-backup-daily.timer || {
-  echo 'Backup not installed/enabled. Run sudo bash ops/backup/install.sh first.' >&2; exit 1;
+# phase 0: nothing live changed, 1: nginx candidate staged, 2: release is
+# current, 3: release verified and committed (never rolled back).
+phase=0
+on_exit() {
+  local rc=$?
+  trap - EXIT INT TERM
+  if (( rc != 0 && phase >= 1 && phase < 3 )); then rollback; fi
+  if (( rc != 0 && phase < 3 )); then rm -rf "$RELEASE"; fi
+  exit "$rc"
 }
-# The unit runs the installed copy. Refresh it first so the snapshot is a
-# verified full archive under /var/backups/mag-full (keep the last 3).
-install -d -m 0755 /usr/local/lib/mag-backup
-for name in common.sh backup.sh restore.sh maintenance.sh; do
-  install -m 0755 "$SOURCE/ops/backup/$name" "/usr/local/lib/mag-backup/$name"
+trap on_exit EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+# A blank host or a room that is down has no running whois to probe.
+FIRST_INSTALL=0
+[[ -L /opt/mag-stack/current ]] && systemctl is-active --quiet mag-120.service || FIRST_INSTALL=1
+export MAG_DEPLOY_FIRST_INSTALL=$FIRST_INSTALL
+
+# ----------------------------------------------------------------- 1. build
+# shellcheck source=build-targets.sh
+source "$SOURCE/ops/build-targets.sh"
+owner=$(stat -c %U "$SOURCE")
+as_owner() { if [[ $owner == root ]]; then "$@"; else sudo -u "$owner" -H "$@"; fi; }
+[[ -f $SOURCE/build/build.ninja ]] ||
+  as_owner cmake -S "$SOURCE" -B "$SOURCE/build" -G Ninja -DCMAKE_BUILD_TYPE=Release >/dev/null
+as_owner ninja -C "$SOURCE/build" -j"${MAG_BUILD_JOBS:-12}" "${MAG_BUILD_TARGETS[@]}" ||
+  { echo 'deploy: build failed; nothing installed' >&2; exit 1; }
+for binary in "${MAG_BUILD_TARGETS[@]}"; do
+  [[ -x $SOURCE/build/$binary ]] || { echo "deploy: missing $binary" >&2; exit 1; }
 done
-printf '%s\n' "$RELEASE_ID" > /run/mag-backup-release
-chmod 0644 /run/mag-backup-release
-# Retry a failed/stale unit with the current script, but never accept an old
-# VERIFIED marker as proof that this deployment's snapshot succeeded.
-if ! mag_systemctl start mag-backup-deploy.service; then
-  echo 'Backup unit failed; trying the installed backup script.' >&2
-  /usr/local/lib/mag-backup/backup.sh deploy || {
-    echo 'Pre-deploy snapshot failed; no release switched.' >&2; exit 1;
-  }
+# Go is used only for the WebRTC/UDP gateway of the VM browsers.
+RTC="$SOURCE/build/mag-browser-webrtc"
+if [[ ! -x $RTC || -n $(find "$SOURCE/mag-room/webrtc" -name '*.go' -newer "$RTC" -print -quit) ]]; then
+  GO=$(command -v go || echo /snap/bin/go)
+  (cd "$SOURCE/mag-room/webrtc" && as_owner "$GO" build -mod=mod -o "$RTC" .) ||
+    { [[ -x $RTC ]] && warn 'WebRTC gateway rebuild failed; keeping the previous binary' || exit 1; }
 fi
-verified_full=$(find /var/backups/mag-full -mindepth 2 -maxdepth 2 -name VERIFIED -print -quit 2>/dev/null || true)
-if [[ -z "$verified_full" ]]; then
-  /usr/local/lib/mag-backup/backup.sh deploy
-  verified_full=$(find /var/backups/mag-full -mindepth 2 -maxdepth 2 -name VERIFIED -print -quit 2>/dev/null || true)
-fi
-[[ -n "$verified_full" ]] || { echo 'No verified full backup; deploy refused.' >&2; exit 1; }
-# Das Modell ist unabhängig vom Raum-Release (lädt evtl. noch herunter / wird geprüft).
-# Nur informieren; der Raum zeigt den Modellstatus selbst an.
-deploy_run 8 -- curl -fsS --retry 0 --max-time 5 http://127.0.0.1:8080/v1/models >/dev/null \
-  || echo 'Hinweis: Modell-Backend noch nicht bereit – Deploy läuft weiter.' >&2
-install -d -m 0755 /opt/mag-stack/releases "$RELEASE/bin" "$RELEASE/web" "$RELEASE/ops"
+
+# --------------------------------------------------- 2. preflight + snapshot
+bash "$NGINX_SYNC" preflight
+install -d -m 0755 /opt/mag-stack/releases
 install -d -m 0700 "$BACKUP"
-install -m 0700 "$NGINX_SYNC" "$BACKUP/deploy-nginx.sh"
-if [[ -f /etc/systemd/system/mag-120.service ]]; then
-  cp -a /etc/systemd/system/mag-120.service "$BACKUP/mag-120.service"
-fi
-for config in room-model.env secondary-model.env; do
-  [[ ! -f /etc/mag-stack/$config ]] || cp -a "/etc/mag-stack/$config" "$BACKUP/$config"
-done
-# Gateway binary and unit roll back together with the room.
-if [[ -f /etc/systemd/system/mag-audit-gateway.service ]]; then
-  cp -a /etc/systemd/system/mag-audit-gateway.service "$BACKUP/mag-audit-gateway.service"
-fi
-if [[ -x /opt/mag-audit/bin/mag-audit-gateway ]]; then
-  cp -a /opt/mag-audit/bin/mag-audit-gateway "$BACKUP/mag-audit-gateway.bin"
-fi
-if [[ -f /etc/systemd/system/mag-browser-webrtc.service ]]; then
-  cp -a /etc/systemd/system/mag-browser-webrtc.service "$BACKUP/mag-browser-webrtc.service"
-fi
-if [[ -e /usr/local/bin/magbot ]]; then cp -a /usr/local/bin/magbot "$BACKUP/magbot"
-elif (( ! FIRST_INSTALL )); then echo '/usr/local/bin/magbot missing on an installed host' >&2; exit 1; fi
-if [[ -d /var/lib/magbot/room ]]; then cp -a /var/lib/magbot/room "$BACKUP/room"
-elif (( ! FIRST_INSTALL )); then echo '/var/lib/magbot/room missing on an installed host' >&2; exit 1; fi
-if [[ -L /opt/mag-stack/current ]]; then readlink /opt/mag-stack/current > "$BACKUP/previous-release"; fi
-install -m 0755 "$SOURCE/build/magroom" "$SOURCE/build/mag-browser" "$SOURCE/build/magbot-native" "$SOURCE/build/mag-bots-publish" "$SOURCE/build/mag-browser-webrtc" "$SOURCE/build/mag-det" "$WHISPER_CLI" "$RELEASE/bin/"
-cp -a "$SOURCE/mag-room/web/." "$RELEASE/web/"
-# Long MCP names wrap. The page is applied here so the source file stays the
-# one CI already syntax-checks, plus this one reviewed diff.
-patch --forward --batch "$RELEASE/web/index.html" \
-  "$SOURCE/ops/trust/mcp-card-overflow.patch"
-install -d "$RELEASE/web/static"
-cp -a "$SOURCE/mag-room/static/." "$RELEASE/web/static/"
-# Vendor once into a persistent local cache. Existing assets work offline;
-# no CDN dependencies at runtime and no half-installed web release.
-bash "$SOURCE/ops/vendor-terminal-assets.sh" "$SOURCE/build/terminal-assets"
-cp -a "$SOURCE/build/terminal-assets/." "$RELEASE/web/static/"
-# Stage pinned German Moonshine model/WASM while old room remains active.
-# If staging fails, set -e aborts before the current-release symlink changes.
-bash "$SOURCE/ops/vendor-speech-assets.sh" "$SOURCE/build/speech-assets"
-cp -a "$SOURCE/build/speech-assets/." "$RELEASE/web/static/"
-# Piper read-aloud voices (CC0). Optional: without them the room falls back
-# to the best system voice, so a failed download never blocks a deploy.
-if bash "$SOURCE/ops/vendor-tts-assets.sh" "$SOURCE/build/tts-assets"; then
-  cp -a "$SOURCE/build/tts-assets/." "$RELEASE/web/static/"
+# Encrypted pre-deploy snapshot (restic, ~10 s). A backup problem is reported
+# but does not block a release: the rollback copy below is always taken.
+if systemctl cat mag-backup-deploy.service >/dev/null 2>&1; then
+  install -d -m 0755 /usr/local/lib/mag-backup
+  for name in common.sh backup.sh restore.sh maintenance.sh; do
+    install -m 0755 "$SOURCE/ops/backup/$name" "/usr/local/lib/mag-backup/$name"
+  done
+  printf '%s\n' "$RELEASE_ID" > /run/mag-backup-release
+  timeout --kill-after=10s "${MAG_BACKUP_BUDGET_S:-300}s" systemctl start mag-backup-deploy.service ||
+    warn 'pre-deploy backup snapshot failed (journalctl -u mag-backup-deploy)'
 else
-  echo "WARN: Piper TTS assets unavailable; read-aloud uses system voices" >&2
+  warn 'backup not installed (ops/backup/install.sh)'
 fi
+snapshot() { [[ ! -e $1 ]] || cp -a "$1" "$BACKUP/$2"; }
+snapshot $UNITS/mag-120.service mag-120.service
+snapshot $UNITS/mag-120.service.d mag-120.service.d
+snapshot $UNITS/mag-browser-webrtc.service mag-browser-webrtc.service
+snapshot $UNITS/mag-audit-gateway.service mag-audit-gateway.service
+snapshot /opt/mag-audit/bin/mag-audit-gateway mag-audit-gateway.bin
+snapshot /usr/local/bin/magbot magbot
+snapshot "$STATE" room
+[[ ! -L /opt/mag-stack/current ]] || readlink /opt/mag-stack/current > "$BACKUP/previous-release"
+install -m 0700 "$NGINX_SYNC" "$BACKUP/deploy-nginx.sh"
+
+# ------------------------------------------------------------ 3. stage release
+install -d -m 0755 "$RELEASE/bin" "$RELEASE/web/static" "$RELEASE/ops"
+for binary in "${MAG_RELEASE_BINARIES[@]}" mag-browser-webrtc; do
+  install -m 0755 "$SOURCE/build/$binary" "$RELEASE/bin/"
+done
+# Speech-to-text is optional: without whisper the mic button reports it.
+WHISPER_CLI="${MAG_WHISPER_SOURCE:-/home/chris/.cache/mag-stack/whisper-build/bin/whisper-cli}"
+WHISPER_MODEL="${MAG_WHISPER_SOURCE_MODEL:-/home/chris/models/whisper/ggml-large-v3-turbo.bin}"
+if [[ -x $WHISPER_CLI && -r $WHISPER_MODEL ]]; then
+  install -m 0755 "$WHISPER_CLI" "$RELEASE/bin/whisper-cli"
+  install -d -o magbot -g magbot -m 0750 /var/lib/mag-stack/models
+  installed=/var/lib/mag-stack/models/ggml-large-v3-turbo.bin
+  [[ -f $installed && $(stat -c %s "$installed") == $(stat -c %s "$WHISPER_MODEL") ]] ||
+    install -o magbot -g magbot -m 0640 "$WHISPER_MODEL" "$installed"
+else
+  warn 'whisper missing: speech-to-text disabled (ops/bootstrap-voice.sh)'
+fi
+cp -a "$SOURCE/mag-room/web/." "$RELEASE/web/"
+cp -a "$SOURCE/mag-room/static/." "$RELEASE/web/static/"
+[[ ! -f $SOURCE/ops/trust/mcp-card-overflow.patch ]] ||
+  soft patch --forward --batch --silent "$RELEASE/web/index.html" "$SOURCE/ops/trust/mcp-card-overflow.patch"
+# Vendored browser assets come from a persistent local cache; a release works
+# offline and never depends on a CDN. A failed refresh keeps the cached copy.
+for kind in terminal speech tts; do
+  script="$SOURCE/ops/vendor-$kind-assets.sh"
+  [[ -f $script ]] || continue
+  as_owner bash "$script" "$SOURCE/build/$kind-assets" || warn "$kind assets not refreshed"
+  [[ ! -d $SOURCE/build/$kind-assets ]] || cp -a "$SOURCE/build/$kind-assets/." "$RELEASE/web/static/"
+done
 cp -a "$SOURCE/ops/." "$RELEASE/ops/"
-find "$RELEASE/ops" -type d -name '__pycache__' -prune -exec rm -rf {} +
-find "$RELEASE/ops" -name '*.pyc' -delete
-install -d -o magbot -g magbot -m 0750 /var/lib/mag-stack/models
-install -o magbot -g magbot -m 0640 "$WHISPER_MODEL" /var/lib/mag-stack/models/ggml-large-v3-turbo.bin
-# The room UI comes only from the release. A bot-published override (the
-# removed publish_frontend tool) is moved aside next to itself, never deleted.
-if [[ -f /var/lib/magbot/room/frontend.html ]]; then
- mv /var/lib/magbot/room/frontend.html "/var/lib/magbot/room/frontend.html.bak-$(date +%Y%m%d%H%M%S)"
-fi
+find "$RELEASE/ops" -type d \( -name '__pycache__' -o -name 'perf-results' \) -prune -exec rm -rf {} +
 (cd "$RELEASE"; find bin web ops -type f -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS)
-# Root reads the user's checkout; without sudo's SUDO_UID (timer) git refuses it.
 git -c safe.directory="$SOURCE" -C "$SOURCE" rev-parse HEAD > "$RELEASE/SOURCE_COMMIT"
 chown -R root:root "$RELEASE"
 chmod -R a+rX "$RELEASE"
-# All changes after this point must unwind both the native room and nginx.
-# Only the explicit NUMA1 layout transaction may switch a model.
-rollback() {
- echo 'Deployment failed; restoring previous room and nginx state' >&2
- if (( room_switched )); then
- if [[ -f "$BACKUP/mag-120.service" ]]; then
-   cp -a "$BACKUP/mag-120.service" /etc/systemd/system/mag-120.service
- else
-   mag_systemctl disable --now mag-120.service >/dev/null 2>&1 || true
-   rm -f /etc/systemd/system/mag-120.service
- fi
- if [[ -f "$BACKUP/mag-browser-webrtc.service" ]]; then
-   cp -a "$BACKUP/mag-browser-webrtc.service" /etc/systemd/system/mag-browser-webrtc.service
- else
-   mag_systemctl disable --now mag-browser-webrtc.service >/dev/null 2>&1 || true
-   rm -f /etc/systemd/system/mag-browser-webrtc.service
- fi
- if [[ -e "$BACKUP/magbot" ]]; then cp -a "$BACKUP/magbot" /usr/local/bin/magbot; else rm -f /usr/local/bin/magbot; fi
- if [[ -f "$BACKUP/previous-release" ]]; then
-   ln -sfn "$(cat "$BACKUP/previous-release")" /opt/mag-stack/.previous-rollback
-   mv -Tf /opt/mag-stack/.previous-rollback /opt/mag-stack/current
- else
-   rm -f /opt/mag-stack/current
- fi
- if [[ -d "$BACKUP/mag-120.service.d" ]]; then
-   rm -rf /etc/systemd/system/mag-120.service.d
-   cp -a "$BACKUP/mag-120.service.d" /etc/systemd/system/mag-120.service.d
- else
-   rm -f /etc/systemd/system/mag-120.service.d/30-multibot.conf /etc/systemd/system/mag-120.service.d/30-dual-numa.conf
- fi
- for config in room-model.env secondary-model.env; do
-   if (( layout_bypassed )) && [[ $config != room-model.env ]]; then continue; fi
-   if [[ $config == room-model.env ]] && (( layout_applied )); then continue; fi
-   if [[ -f $BACKUP/$config ]]; then cp -a "$BACKUP/$config" "/etc/mag-stack/$config"
-   else rm -f "/etc/mag-stack/$config"; fi
- done
- # Neither a successful model layout nor a room-only bypass may roll back live GLMs.
- if [[ -f $BACKUP/qwen-layout/helper.sh ]] && { (( ! layout_applied && ! layout_bypassed )) || [[ -f $BACKUP/qwen-layout/coding ]]; }; then
-   bash "$BACKUP/qwen-layout/helper.sh" rollback "$BACKUP"
- fi
- if (( gateway_switched )); then
-   if [[ -f "$BACKUP/mag-audit-gateway.service" ]]; then
-     cp -a "$BACKUP/mag-audit-gateway.service" /etc/systemd/system/mag-audit-gateway.service
-   fi
-   if [[ -f "$BACKUP/mag-audit-gateway.bin" ]]; then
-     install -m 0755 "$BACKUP/mag-audit-gateway.bin" /opt/mag-audit/bin/.mag-audit-gateway.restore
-     mv -f /opt/mag-audit/bin/.mag-audit-gateway.restore /opt/mag-audit/bin/mag-audit-gateway
-   fi
- fi
- MAG_DEFER_DAEMON_RELOAD=0 mag_flush_daemon_reload --force
- if (( gateway_switched )); then mag_systemctl restart mag-audit-gateway.service || true; fi
- if [[ -f "$BACKUP/mag-120.service" ]]; then mag_systemctl restart mag-120.service; fi
- if [[ -f "$BACKUP/mag-browser-webrtc.service" ]]; then
-   mag_systemctl restart mag-browser-webrtc.service
- fi
- fi
- rm -f /opt/mag-stack/.current-next
- # Release tailscaled :443 before nginx tries to bind the Tailscale address.
- if [[ -d $BACKUP/funnel-snapshot ]]; then
-   MAG_NGINX_TXN="$BACKUP" bash "$SOURCE/ops/tailscale/restore-gitea-funnel.sh" \
-     || echo 'WARN: funnel listener restore incomplete' >&2
- fi
- bash "$NGINX_SYNC" rollback
-}
-deployment_started=0
-room_switched=0
-gateway_switched=0
-# Q2 may restart exactly once only when layout.sh records an engine change.
-# All other deployments must preserve its exact PID and ActiveEnterTimestamp.
-glm_identity_guard=0
-glm_identity_before=""
-if (( ! FIRST_INSTALL )) && [[ $(cat /etc/mag-stack/room-layout 2>/dev/null || true) == glm ]] && [[ $(bash "$SOURCE/ops/coding/desired.sh") != coding ]]; then
-  glm_identity_guard=1
-  glm_identity_before=$(systemctl show -p ActiveEnterTimestamp -p MainPID mag-llm-glm@q2.service)
-fi
-verify_glm_identity() {
-  (( ! glm_identity_guard )) || {
-    local current txn="$BACKUP/qwen-layout"
-    current=$(systemctl show -p ActiveEnterTimestamp -p MainPID mag-llm-glm@q2.service)
-    if [[ -f $txn/q2-engine-switched ]]; then
-      [[ $(cat "$txn/q2-engine-restart-count") == 1 &&
-         -s $txn/q2-engine-identity &&
-         $current == "$(cat "$txn/q2-engine-identity")" ]] || {
-        echo 'FAIL: Q2 engine switch was not exactly one verified restart' >&2
-        return 1
-      }
-      [[ $current != "$glm_identity_before" ]] || {
-        echo 'FAIL: Q2 engine switch marker exists but service identity did not change' >&2
-        return 1
-      }
-    else
-      [[ $current == "$glm_identity_before" ]] || {
-        echo 'FAIL: GLM-Q2 identity changed without an engine-switch transaction' >&2
-        return 1
-      }
-    fi
-  }
-}
-layout_applied=0
-layout_bypassed=0
-# Units are Type=simple: `mag_systemctl restart` returns before the process
-# listens. Retry a local health URL for up to 30 s, then one strict check.
-wait_http() {
-  local i
-  for i in {1..30}; do
-    deploy_run 4 -- curl -fsS --retry 0 --max-time 2 -o /dev/null "$1" && break
-    sleep 1
-  done
-  deploy_run 8 -- curl -fsS --retry 0 --max-time 5 "$1"
-}
-# Pause Self-Talk at the next turn boundary without flipping the switch off.
-# Markers in MAG_ROOM_STATE survive the mag-120 restart so the new process
-# can restore Self-Talk (on) and continue. A postponed drain releases the hold.
-hold_selftalk_for_deploy() {
-  local room_state="${MAG_ROOM_STATE:-/var/lib/magbot/room}"
-  if [[ -d $room_state && -w $room_state ]]; then
-    if [[ -f $room_state/selftalk && $(tr -d '[:space:]' <"$room_state/selftalk") == on ]]; then
-      printf 'on\n' >"$room_state/selftalk-resume"
-    fi
-    printf 'on\n' >"$room_state/deploy-hold"
-  fi
-  curl -fsS -o /dev/null --max-time 5 -X POST -H 'Content-Type: application/json' \
-    -d '{"on":true}' http://127.0.0.1:8766/api/deploy-hold >/dev/null 2>&1 || true
-}
-release_selftalk_hold() {
-  local room_state="${MAG_ROOM_STATE:-/var/lib/magbot/room}"
-  curl -fsS -o /dev/null --max-time 5 -X POST -H 'Content-Type: application/json' \
-    -d '{"on":false}' http://127.0.0.1:8766/api/deploy-hold >/dev/null 2>&1 || true
-  if [[ -d $room_state && -w $room_state ]]; then
-    rm -f "$room_state/deploy-hold" "$room_state/selftalk-resume" "$room_state/proaktiv-resume"
-  fi
-}
-# Idle room, or a busy flag that is not producing tokens. A stuck busy=true
-# (no prompt/output progress) must not sit out the whole drain window.
-# MAG_DEPLOY_STALE_S=0 disables the stale shortcut. Returns 75 to defer.
-# Self-Talk is paused at a turn boundary and does not block the switch; a
-# normal user reply still has to finish (or go stale) before we continue.
-drain_room() {
-  local drain_s="${MAG_DEPLOY_DRAIN_S:-900}" stale_s="${MAG_DEPLOY_STALE_S:-60}"
-  local classify="${MAG_DEPLOY_DRAIN_STATE:-$SOURCE/ops/deploy-drain-state.py}"
-  local waited=0 still=0 prev="" st user_busy=0 user_pending=0 selftalk_busy=0 selftalk_held=0 progress=""
-  hold_selftalk_for_deploy
-  while :; do
-    st=$(curl -fsS --max-time 5 http://127.0.0.1:8766/api/state 2>/dev/null \
-         | python3 -I "$classify" || echo "0 0 0 0 -")
-    read -r user_busy user_pending selftalk_busy selftalk_held progress <<<"$st"
-    local need=0
-    if [[ "$user_busy" == 1 || "$user_pending" != 0 ]]; then need=1
-    elif [[ "$selftalk_busy" == 1 && "$selftalk_held" == 1 ]]; then need=1
-    fi
-    if (( ! need )); then
-      if [[ "$selftalk_busy" == 1 ]]; then
-        echo "Deploy: Self-Talk läuft ohne Hold-Bestätigung – Release wechselt an der nächsten Turn-Grenze (Zustand bleibt an)." >&2
-      fi
-      return 0
-    fi
-    if [[ "$progress" == "$prev" ]]; then still=$((still + 5)); else still=0; prev=$progress; fi
-    if (( waited == 0 )); then
-      echo "Deploy wartet: User-Antwort ($user_busy) / $user_pending in der Warteschlange / Self-Talk $selftalk_busy held=$selftalk_held – warte bis max. ${drain_s}s …" >&2
-    fi
-    # Background subagents may be executing a long command without visible
-    # token progress. They must drain naturally or defer the deploy; never
-    # trigger the stale-token shortcut while any task is still running.
-    if (( need == 1 && stale_s > 0 && still >= stale_s )) &&
-       [[ "$progress" != *:task-active ]]; then
-      echo "Deploy: busy ohne neue Tokens seit ${still}s – Deploy läuft weiter (Warteschlange bleibt gespeichert)." >&2
-      return 0
-    fi
-    if (( waited >= drain_s )); then
-      if [[ "${MAG_DEPLOY_FORCE:-0}" == 1 ]]; then echo "Drain-Timeout – MAG_DEPLOY_FORCE=1: deploye trotzdem (Warteschlange wird nach dem Neustart fortgesetzt)." >&2; return 0; fi
-      echo "Drain-Timeout nach ${drain_s}s: Raum ist nicht leer – Deploy verschoben (Release $RELEASE_ID bleibt unbenutzt). Später erneut ausführen oder MAG_DEPLOY_FORCE=1." >&2
-      release_selftalk_hold
-      return 75
-    fi
-    sleep 5; waited=$((waited + 5))
-  done
-}
-# deploy_exit lives in deploy-watchdog.sh: stop the deadline sleeper, then
-# roll back when this shell is signalled after the release switch started.
 
-# Drain: never cut a running user reply or a queued user message. Self-Talk
-# is paused at a turn boundary (switch stays on) and restored after restart.
-# MAG_DEPLOY_DRAIN_S (default 900 s); on timeout the deploy is deferred
-# (exit 75) unless MAG_DEPLOY_FORCE=1. A busy flag with no token progress
-# for MAG_DEPLOY_STALE_S (default 60 s) is stale: continue.
-# Leftover failed units (retired ds-node@1, unused host oneshots) are cleared
-# here so a postponed drain still leaves systemctl --failed empty. Never
-# touches mag-llm-ds-node@0.
-bash "$SOURCE/ops/boot/clear-failed-units.sh" || echo 'WARN: failed unit cleanup incomplete' >&2
-# Do not negate the condition: `if ! drain_room` loses the original
-# exit code (75 => 0), letting the updater falsely record an undeployed SHA.
-if drain_room; then
-  :
-else
-  rc=$?
-  if (( rc == 75 )); then rm -rf "$RELEASE"; exit 75; fi
-  exit "$rc"
-fi
-# A changed nginx/whois config needs the Owner smoke from a second Tailnet
-# device; otherwise smoke is the local 443 ingress check (deploy-nginx.sh).
-# nginx.stage snapshots the old vhost and validates the candidate BEFORE
-# switching symlinks or restarting the room.
-MAG_NGINX_TXN="$BACKUP"; export MAG_NGINX_TXN
-deployment_started=1
-trap deploy_exit EXIT
-trap 'exit 130' INT
-trap 'exit 143' TERM
+# ------------------------------------------------------------------ 4. switch
+rollback() {
+  echo 'deploy: FAILED; restoring the previous release' >&2
+  if (( phase >= 2 )); then
+    restore() { if [[ -e $BACKUP/$1 ]]; then rm -rf "$2"; cp -a "$BACKUP/$1" "$2"; fi; }
+    restore mag-120.service $UNITS/mag-120.service
+    restore mag-120.service.d $UNITS/mag-120.service.d
+    restore mag-browser-webrtc.service $UNITS/mag-browser-webrtc.service
+    restore mag-audit-gateway.service $UNITS/mag-audit-gateway.service
+    restore mag-audit-gateway.bin /opt/mag-audit/bin/mag-audit-gateway
+    restore magbot /usr/local/bin/magbot
+    if [[ -f $BACKUP/previous-release ]]; then
+      ln -sfn "$(cat "$BACKUP/previous-release")" /opt/mag-stack/.current-rollback
+      mv -Tf /opt/mag-stack/.current-rollback /opt/mag-stack/current
+    fi
+    systemctl daemon-reload || :
+    systemctl restart mag-audit-gateway.service || :
+    systemctl restart mag-120.service mag-browser-webrtc.service || :
+  fi
+  MAG_NGINX_TXN="$BACKUP" bash "$NGINX_SYNC" rollback || :
+  if (( phase >= 2 )); then
+    wait_http "$ROOM/readyz" 30 || echo 'deploy: previous room did not come back; see journalctl -u mag-120' >&2
+  fi
+}
+
+export MAG_NGINX_TXN="$BACKUP"
+phase=1
 bash "$NGINX_SYNC" stage
-# Retire the old installer timer before changing its service executable.
-if mag_systemctl cat mag-120-finalize.timer >/dev/null 2>&1; then mag_systemctl disable --now mag-120-finalize.timer; fi
-room_switched=1
+phase=2
 ln -sfn "$RELEASE" /opt/mag-stack/.current-next
 mv -Tf /opt/mag-stack/.current-next /opt/mag-stack/current
-# Compatibility name is deliberately retained for existing guest wrappers/sudoers.
+# Guest helpers and their narrow sudo rule (the room runs as magbot).
 install -m 0755 "$RELEASE/bin/magbot-native" /usr/local/bin/magbot
 install -m 0755 "$SOURCE/ops/spawnbot" "$SOURCE/ops/despawnbot" /usr/local/bin/
 install -m 0755 "$SOURCE/ops/magbot-guest-run" "$SOURCE/ops/magbot-agent-ctl" "$SOURCE/ops/magbot-netmode" "$SOURCE/ops/magbot-modelctl" /usr/local/sbin/
-install -m 0440 "$SOURCE/ops/magbot-guest.sudoers" /etc/sudoers.d/magbot-guest
-visudo -cf /etc/sudoers.d/magbot-guest >/dev/null
-install -m 0644 "$SOURCE/ops/mag-120.service" "$SOURCE/ops/mag-browser-webrtc.service" /etc/systemd/system/
-install -m 0644 "$SOURCE/ops/mag-stack-check.service" "$SOURCE/ops/mag-stack-check.timer" "$SOURCE/ops/mag-git-gateway.socket" "$SOURCE/ops/mag-git-gateway.service" "$SOURCE/ops/mag-agents-network.service" /etc/systemd/system/
-# Read-only backing image; existing VM overlays remain untouched. A host
-# without the image (ops/vm/build-golden.sh not run yet) still gets the room;
-# only bot creation is refused by the native preflight until it exists.
-if [[ -f /var/lib/libvirt/images/magbot/base/golden.qcow2 ]]; then
-  chmod 0440 /var/lib/libvirt/images/magbot/base/golden.qcow2
-else
-  echo 'WARN: golden.qcow2 missing; build it with: sudo bash ops/vm/build-golden.sh' >&2
+install -m 0440 "$SOURCE/ops/magbot-guest.sudoers" /etc/sudoers.d/.magbot-guest.next
+visudo -cf /etc/sudoers.d/.magbot-guest.next >/dev/null
+mv -f /etc/sudoers.d/.magbot-guest.next /etc/sudoers.d/magbot-guest
+install -m 0644 "$SOURCE/ops/mag-120.service" "$SOURCE/ops/mag-browser-webrtc.service" \
+  "$SOURCE/ops/mag-stack-check.service" "$SOURCE/ops/mag-stack-check.timer" \
+  "$SOURCE/ops/mag-agents-network.service" "$SOURCE/ops/mag-git-gateway.socket" \
+  "$SOURCE/ops/mag-git-gateway.service" $UNITS/
+install -d -m 0755 $UNITS/mag-120.service.d
+install -m 0644 "$SOURCE/ops/mag-120.d/40-hardening.conf" $UNITS/mag-120.service.d/40-hardening.conf
+# The audit gateway is the only path from the room to the model servers.
+gateway_changed=0
+if ! cmp -s "$SOURCE/build/mag-audit-gateway" /opt/mag-audit/bin/mag-audit-gateway ||
+   ! cmp -s "$SOURCE/ops/audit/systemd/mag-audit-gateway.service" $UNITS/mag-audit-gateway.service; then
+  gateway_changed=1
+  install -d -m 0755 /opt/mag-audit/bin
+  install -m 0755 "$SOURCE/build/mag-audit-gateway" /opt/mag-audit/bin/.mag-audit-gateway.next
+  mv -f /opt/mag-audit/bin/.mag-audit-gateway.next /opt/mag-audit/bin/mag-audit-gateway
+  install -m 0644 "$SOURCE/ops/audit/systemd/mag-audit-gateway.service" $UNITS/mag-audit-gateway.service
 fi
-# Replace a drop-in that still points at an old release before pruning.
-# Snapshot first so a failed smoke restores the previous unit drop-ins.
-if [[ -d /etc/systemd/system/mag-120.service.d ]]; then
-  cp -a /etc/systemd/system/mag-120.service.d "$BACKUP/mag-120.service.d"
+# Backup jobs must stay off the model cores (Noah owns 14-27).
+for unit in "$SOURCE"/ops/backup/units/*.service; do
+  [[ ! -e $UNITS/$(basename "$unit") ]] || install -m 0644 "$unit" "$UNITS/$(basename "$unit")"
+done
+systemctl daemon-reload
+systemctl enable mag-120.service mag-browser-webrtc.service >/dev/null 2>&1 || :
+# VM isolation rules come from the release (ops/firewall.sh, mag-agents.nft).
+systemctl enable mag-agents-network.service >/dev/null 2>&1 || :
+systemctl restart mag-agents-network.service
+if (( gateway_changed )) && systemctl cat mag-audit-gateway.service >/dev/null 2>&1; then
+  systemctl restart mag-audit-gateway.service
+  wait_http http://127.0.0.1:8080/audit/v1/health 20 || { echo 'deploy: audit gateway did not start' >&2; exit 1; }
 fi
-audit_drop=/etc/systemd/system/mag-120.service.d/20-audit.conf
-if [[ -L "$audit_drop" ]]; then
-  audit_target=$(readlink -f "$audit_drop" || true)
-  case "$audit_target" in
-    /opt/mag-stack/releases/*)
-      install -d -m 0755 /etc/systemd/system/mag-120.service.d
-      install -m 0644 "$SOURCE/ops/mag-120.d/20-room-audit.conf" \
-        /etc/systemd/system/mag-120.service.d/20-room-audit.conf
-      rm -f "$audit_drop"
-      ;;
-  esac
-fi
-# Keep the existing single-bot room for legacy IQ3 installs. On a verified
-install -d -m 0755 /etc/systemd/system/mag-120.service.d
-install -m 0644 "$SOURCE/ops/mag-120.d/40-hardening.conf" /etc/systemd/system/mag-120.service.d/40-hardening.conf
-# Gitea bot accounts: never admin, restricted, own org bots-<agent> (idempotent).
-install -m 0755 "$SOURCE/ops/gitea/bot-rights.sh" /usr/local/sbin/mag-gitea-bot-rights
-install -d -m 0755 /usr/local/lib/mag-ci
-install -m 0644 "$SOURCE/ops/gitea-ci/admin-session.sh" /usr/local/lib/mag-ci/admin-session.sh
-install -m 0755 "$SOURCE/ops/gitea-ci/bot-auth.sh" /usr/local/sbin/mag-gitea-bot-auth
-if mag_systemctl is-active --quiet gitea.service; then
-  /usr/local/sbin/mag-gitea-bot-rights || echo 'WARN: Gitea bot rights not applied' >&2
-fi
-# Qwen host, use exactly two model-pinned bots with separate KVM workspaces.
-rm -f /etc/systemd/system/mag-120.service.d/30-multibot.conf
-# One daemon-reload for the unit-file phase (layout + room + gateway).
-export MAG_DEFER_DAEMON_RELOAD=1
-export MAG_UNITS_DIRTY_FILE="$BACKUP/units.dirty"
-# Replace the live gateway in this deployment, never leave an old :8090 router behind.
-test -x "$SOURCE/build/mag-audit-gateway" || { echo 'Native gateway binary missing' >&2; exit 1; }
-gateway_switched=1
-install -m 0644 "$SOURCE/ops/audit/systemd/mag-audit-gateway.service" /etc/systemd/system/mag-audit-gateway.service
-mag_daemon_reload
-if [[ -e /etc/mag-stack/room-model.env || -e /etc/systemd/system/mag-llm-ds-node@.service ]]; then
-  # The layout helper owns its own NUMA1 snapshot, including config and boot state.
-  # Preserve room HTTP/readyz while a model is loading: no nginx 500.
-  bash "$SOURCE/ops/room/install.sh"
-  if (( ! FIRST_INSTALL )); then
-    if ! mag_systemctl is-active --quiet mag-120.service; then
-      # Only an already-down room needs an early unit refresh before start.
-      MAG_DEFER_DAEMON_RELOAD=0 mag_flush_daemon_reload
-      mag_systemctl start mag-120.service
-    fi
-    # Always run the idempotent GLM-room transaction: it stages Mistral on
-    # NUMA0 and performs a single Q2 restart only when GLM_ENGINE changes.
-    # The helper snapshots the old Q2 engine and rolls it back on failed smoke.
-    bash "$SOURCE/ops/qwen/layout.sh" apply "$BACKUP"
-    layout_applied=1
-    verify_glm_identity
-  fi
-  mag_flush_daemon_reload
-  # The temporary live GLM-fast override must not mask the versioned defaults.
-  # Previous drop-ins were snapshotted above and are restored on rollback.
-  if [[ $(cat /etc/mag-stack/room-layout 2>/dev/null || true) == glm || $(cat /etc/mag-stack/room-layout 2>/dev/null || true) == coding ]]; then
-    rm -f -- /etc/systemd/system/mag-120.service.d/99-glm-fast.conf
-    mag_daemon_reload
-  fi
-  # Preserve the operator's stopped/disabled DeepSeek on ordinary redeploys.
-  if [[ $(cat /etc/mag-stack/room-layout 2>/dev/null || true) == glm || $(cat /etc/mag-stack/room-layout 2>/dev/null || true) == coding ]]; then
-     mag_systemctl disable mag-llm-ds-node@0.service mag-llm-ds-node@1.service >/dev/null 2>&1 || true
-   elif (( FIRST_INSTALL )); then
-     mag_systemctl enable mag-llm-ds-node@0.service
-   fi
-  # Only the pure-DeepSeek layout boots DeepSeek on NUMA1 (mixed: Qwen, glm: GLM).
-  case $(cat /etc/mag-stack/room-layout 2>/dev/null || true) in
-    mixed|glm|coding) ;;
-    *) mag_systemctl enable mag-llm-ds-node@1.service ;;
-  esac
-elif [[ -r /etc/mag-stack/secondary-model.env ]] &&
-   grep -Fxq 'MAG_SECONDARY_MODEL=ornith' /etc/mag-stack/secondary-model.env; then
-  echo 'Ornith cutover required: stop Ornith, then run ops/room/install.sh before deploy' >&2
-  exit 1
-elif [[ -r /etc/mag-stack/secondary-model.env ]] &&
-   grep -Fxq 'MAG_SECONDARY_MODEL=qwen' /etc/mag-stack/secondary-model.env; then
-  install -d -m 0755 /etc/systemd/system/mag-120.service.d /usr/local/lib/mag-qwen
-  install -m 0644 "$SOURCE/ops/mag-120.d/30-dual-numa.conf" /etc/systemd/system/mag-120.service.d/30-dual-numa.conf
-  # Update only the on-disk systemd definition; NEVER restart either loaded LLM.
-  [[ -x /usr/local/lib/mag-qwen/start.sh ]] || { echo 'Qwen staged runtime missing' >&2; exit 1; }
-  install -m 0755 "$SOURCE/ops/qwen/start.sh" /usr/local/lib/mag-qwen/start.sh
-  install -m 0755 "$SOURCE/ops/qwen/verify-model.sh" /usr/local/lib/mag-qwen/verify-model.sh
-  install -m 0644 "$SOURCE/ops/qwen/mag-llm-qwen.service" /etc/systemd/system/mag-llm-qwen.service
-  # Remove obsolete Q4 preflight; Qwen starts independently.
-  rm -f /etc/systemd/system/mag-llm-qwen.service.d/20-q4-health.conf
-  mag_daemon_reload
-else
-  rm -f /etc/systemd/system/mag-120.service.d/30-dual-numa.conf
-  mag_daemon_reload
-fi
-mag_flush_daemon_reload
-unset MAG_DEFER_DAEMON_RELOAD
-install -d -m 0755 /opt/mag-audit/bin
-install -m 0755 "$SOURCE/build/mag-audit-gateway" /opt/mag-audit/bin/.mag-audit-gateway.next
-mv -f /opt/mag-audit/bin/.mag-audit-gateway.next /opt/mag-audit/bin/mag-audit-gateway
-mag_systemctl restart mag-audit-gateway.service
-# Type=simple returns before the new gateway has bound :8080. Use the same
-# bounded readiness retry as the room/RTC smoke checks (also on a blank host).
-gateway_models=$(wait_http http://127.0.0.1:8080/v1/models)
-if [[ -r /etc/mag-stack/room-model.env ]]; then
-  python3 -I -c 'import json,sys,shlex
-v={}
-for line in open(sys.argv[2]):
- parts=shlex.split(line,comments=True)
- if parts and "=" in parts[0]:
-  k,value=parts[0].split("=",1);v[k]=value
-expected={v.get("MAG_ROOM_MODEL_ID_"+str(n),v["MAG_ROOM_MODEL_ID"]) for n in (0,1)}
-assert {m["id"] for m in json.loads(sys.argv[1])["data"]} == expected, "gateway model mismatch"
-' "$gateway_models" /etc/mag-stack/room-model.env
-elif [[ -r /etc/mag-stack/secondary-model.env ]]; then
-  case $(cat /etc/mag-stack/secondary-model.env) in
-    MAG_SECONDARY_MODEL=ornith) required=ornith-1.5-35b-a3b ;;
-    MAG_SECONDARY_MODEL=qwen) required=qwen3.8-flash-next-uncensored ;;
-    *) required='' ;;
-  esac
-  if [[ -n $required ]]; then
-    python3 -I -c 'import json,sys
-ids=[m["id"] for m in json.loads(sys.argv[1])["data"]]
-assert ids == [sys.argv[2]], "gateway exposes retired model"
-' "$gateway_models" "$required" || { echo 'Gateway model route mismatch; rollback' >&2; exit 1; }
-  fi
-fi
-mag_systemctl enable --now mag-agents-network.service
-mag_systemctl restart mag-agents-network.service
-mag_systemctl enable mag-120.service
-# Switch nginx while the previous native whois backend is still available.
-# A failed ingress check rolls back BEFORE replacing the running room process.
-# First install (blank host): there is no previous room to answer nginx's
-# whois subrequest, so the new room starts first (rollback disables it).
-if ! mag_systemctl is-active --quiet mag-120.service; then
-  mag_systemctl start mag-120.service
-  for i in {1..30}; do deploy_run 4 -- curl -fsS --retry 0 --max-time 2 -o /dev/null http://127.0.0.1:8766/readyz && break; sleep 1; done
-fi
-# One owner of Tailscale :443. nginx leaves 100.123.114.16:443 for
-# tailscaled, which TCP-forwards (PROXY v2) to nginx 127.0.0.1:4443.
-# Funnel on https://mag.tail3e02ae.ts.net/ is the same TCP path (no HTTPS-on-443).
-# A failed apply before that move restores nginx.
-bash "$SOURCE/ops/tailscale/apply-gitea-funnel.sh"
+systemctl restart mag-120.service
+systemctl restart mag-browser-webrtc.service
+wait_http "$ROOM/readyz" 60 || { echo 'deploy: room did not answer /readyz' >&2; exit 1; }
+soft wait_http http://127.0.0.1:18784/health 20
 bash "$NGINX_SYNC" activate
 bash "$NGINX_SYNC" smoke
-# Public ISRG roots before the room restarts, so MCP HTTPS (and the audit
-# proxy's upstream check) trust Let's Encrypt Generation Y. Does not touch
-# golden.qcow2 or any model unit.
-bash "$SOURCE/ops/trust/install-trust.sh"
-# Prove the audited proxy can reach the public Free MCP. nginx is already
-# switched and the room process is still the previous healthy one. A 429,
-# timeout, or other probe miss must not roll that room back. TLS stays ON.
-# Does not restart mag-llm (NUMA 0 stays loaded).
-# Own process group. curl --retry sleeps on Retry-After outside --max-time;
-# the deadline kills this group so the flock cannot outlive the deploy.
-if ! deploy_run "${MAG_FREE_MCP_PROBE_TIMEOUT:-40}" -- bash "$SOURCE/ops/trust/probe-free-mcp.sh"; then
-  echo 'WARN: free MCP probe failed; not rolling back a healthy room' >&2
-fi
-mag_systemctl restart mag-120.service
-mag_systemctl enable --now mag-browser-webrtc.service
-mag_systemctl restart mag-browser-webrtc.service
-# /readyz = Raum bereit (Modellstatus steht im JSON, ist aber kein Rollback-Grund)
-wait_http http://127.0.0.1:8766/readyz
-wait_http http://127.0.0.1:18784/health
-# Production: both NUMA slots must already hold a prefix, and a real room hi
-# must show each bot's first token in under 5s. Failure rolls back the release.
-# Blank-host CI has only the explicitly marked mag-llm-stub on :8090/:8091;
-# it has no real model, NUMA slots, or prefix files. The e2e test separately
-# requires /readyz/model through the stub gateway. Do not bypass on a host
-# without both the TEST-HOST marker AND the active stub unit.
-if [[ -e /etc/mag-stack/TEST-HOST ]] && systemctl is-active --quiet mag-llm-stub.service; then
-  echo 'TEST-HOST: synthetic model; checking stub /readyz/model instead of live NUMA prefix'
-  curl -fsS --max-time 10 http://127.0.0.1:8766/readyz/model >/dev/null || {
-    echo 'FAIL: TEST-HOST stub model not ready' >&2
-    release_selftalk_hold
-    exit 1
-  }
-elif [[ "${MAG_DEPLOY_REQUIRE_WARM_PREFIX:-0}" == 1 ]]; then
-  # Opt-in performance gate. On slow CPU models cold prefilling is not a
-  # broken installation; do not make a 5-second token deadline mandatory.
-  if ! MAG_WARM_HI_REQUIRE_ROOM=1 bash "$SOURCE/ops/deploy-warm-hi.sh"; then
-    echo 'FAIL: warm hi gate failed; rolling back this release. Not restarting mag-llm.' >&2
-    release_selftalk_hold
-    exit 1
-  fi
-else
-  active_layout=$(cat /etc/mag-stack/room-layout 2>/dev/null || echo mixed)
-  ready=1
-  model_ports=(8192)
-  require_deepseek=0
-  if [[ $active_layout == glm || $active_layout == coding ]]; then
-    model_ports=(8191 8192)
-    if [[ $active_layout == coding ]] && ! systemctl is-enabled --quiet mag-llm-coding@1.service; then
-      model_ports=(8191)
-    fi
-  elif systemctl is-active --quiet mag-llm-ds-node@0.service &&
-       systemctl is-enabled --quiet mag-llm-ds-node@0.service; then
-    model_ports=(8191 8192)
-    require_deepseek=1
-  fi
-  # "Bots stoppen" freezes the model units on purpose (room state
-  # models_halted); a frozen server cannot answer /health and is not broken.
-  if [[ $(cat "${MAG_ROOM_STATE:-/var/lib/magbot/room}/models_halted" 2>/dev/null) == on* ]]; then
-    echo 'Models are hard-stopped (frozen) by the room; skipping model health'
-    model_ports=()
-  fi
-  for port in "${model_ports[@]}"; do
-    if ! curl --noproxy '*' -fsS --max-time 10 "http://127.0.0.1:${port}/health" >/dev/null; then
-      echo "FAIL: model on :${port} not healthy" >&2
-      ready=0
-    fi
-  done
-  coding_noah_enabled=1
-  if [[ $active_layout == coding ]] && ! systemctl is-enabled --quiet mag-llm-coding@1.service; then
-    coding_noah_enabled=0
-  fi
-  if ! python3 - /etc/mag-stack/room-layout "$require_deepseek" "$coding_noah_enabled" <<'PY'
-import json, pathlib, sys, urllib.request
-try:
-    layout = pathlib.Path(sys.argv[1]).read_text().strip()
-    with urllib.request.urlopen("http://127.0.0.1:8766/api/state", timeout=8) as r:
-        state = json.load(r)
-    active = [a for a in state.get("agents", []) if a.get("enabled") is not False]
-    if layout not in ("glm", "mixed", "deepseek", "qwen", "coding"):
-        raise ValueError("unknown active NUMA1 room layout: "+repr(layout))
-    if layout == "glm":
-        by_id = {a.get("id"): a for a in active}
-        if len(active) != 2:
-            raise ValueError("expected exactly two room bots, got "+repr(active))
-        mistral = by_id.get("qwen-numa0")
-        q2 = by_id.get("qwen-numa1")
-        if not mistral or (mistral.get("model"), mistral.get("slot"), mistral.get("numa"), mistral.get("name")) != ("mistral-large4", 1, 0, "Mistral"):
-            raise ValueError("expected Mistral NUMA0 slot 1, got "+repr(mistral))
-        if not q2 or (q2.get("model"), q2.get("slot"), q2.get("numa"), q2.get("name")) != ("glm-5.3-flash", 2, 1, "GLM-Q2"):
-            raise ValueError("expected GLM-Q2 NUMA1 slot 2, got "+repr(q2))
-        print("Release ready: Mistral NUMA0 (:8191) + GLM-Q2 NUMA1 (:8192); Q1 disabled")
-    elif layout == "coding":
-        # Qwen3.8 NUMA0 slot 1; NUMA1 slot 2 is Flint, or GLM-Q2 in the interim.
-        noah_enabled = sys.argv[3] == "1"
-        if len(active) not in ((2,) if noah_enabled else (1, 2)):
-            raise ValueError("unexpected active room bots for coding layout: "+repr(active))
-        by_slot = {a.get("slot"): a for a in active}
-        b0, b1 = by_slot.get(1), by_slot.get(2)
-        if not b0 or b0.get("numa") != 0 or b0.get("model") not in ("qwen3.8-flash-next", "flint-numa0", "ornith-numa0"):
-            raise ValueError("expected Qwen3.8 or Flint NUMA0 slot 1, got "+repr(b0))
-        if b1 and (b1.get("numa") != 1 or b1.get("model") not in ("flint", "ornith", "glm-5.3-flash")):
-            raise ValueError("invalid NUMA1 slot 2, got "+repr(b1))
-        if noah_enabled and not b1:
-            raise ValueError("expected NUMA1 slot 2, got "+repr(b1))
-        if noah_enabled:
-            print("Release ready: "+b0.get("model")+" NUMA0 (:8191) + "+b1.get("model")+" NUMA1 (:8192)")
-        else:
-            print("Release ready: "+b0.get("model")+" NUMA0 (:8191); Noah disabled")
-    else:
-        require_ds = sys.argv[2] == "1"
-        secondary = "deepseek" if layout == "deepseek" else "qwen"
-        expected = {secondary}
-        if require_ds: expected.add("deepseek")
-        kinds = set()
-        for bot in active:
-            name = str(bot.get("name",""))+" "+str(bot.get("model",""))
-            for kind in ("deepseek", "qwen", "glm"):
-                if kind in name.lower(): kinds.add(kind)
-        allowed_extras = {"deepseek"} if not require_ds else set()
-        if not expected.issubset(kinds) or (kinds-expected-allowed_extras):
-            raise ValueError("expected live "+("DeepSeek and " if require_ds else "")+
-                             ("Qwen" if secondary=="qwen" else "DeepSeek")+"; agents="+repr(
-                                 [(a.get("name"), a.get("model")) for a in active]))
-        print("Release ready: "+("DeepSeek and " if require_ds else "")+
-              ("Qwen" if secondary=="qwen" else "DeepSeek"))
-except Exception as exc:
-    print("FAIL: room bot readiness: "+str(exc), file=sys.stderr)
-    sys.exit(1)
-PY
-  then
-    ready=0
-  fi
-  if (( ! ready )); then
-    echo 'FAIL: model/room readiness failed; rolling back release.' >&2
-    release_selftalk_hold
-    exit 1
-  fi
-fi
-# Proaktiv stayed held across the restart so the gate saw idle slots.
-# Release it now after functional readiness was confirmed.
-release_selftalk_hold
-# Revalidate the new room through the already-verified nginx ingress.
-bash "$NGINX_SYNC" smoke
-/usr/local/bin/magbot status
-# Running bots keep their overlay. Push the refreshed guest trust store now;
-# a later despawn deletes that disk and the anchors with it.
-if [[ -d /etc/mag-audit/vm ]]; then
-  while read -r id state _; do
-    [[ "$state" == ready ]] || continue
-    /usr/local/bin/magbot audit-proxy "$id" \
-      || echo "WARN: guest trust not applied in $id" >&2
-  done < <(/usr/local/bin/magbot status || true)
-fi
-for unit in mag-chat.service pm2-chris.service; do if mag_systemctl cat "$unit" >/dev/null 2>&1; then mag_systemctl disable --now "$unit"; fi; done
-mag_systemctl enable --now mag-stack-check.timer mag-git-gateway.socket
-# One daemon-reload for late unit files (cpu-tune, cleanup, drift, bots drop-in).
-export MAG_DEFER_DAEMON_RELOAD=1
-export MAG_UNITS_DIRTY_FILE="$BACKUP/late.dirty"
-install -m 0644 "$SOURCE/ops/boot/mag-cpu-tune.service" /etc/systemd/system/mag-cpu-tune.service
-install -d -m 0755 /etc/systemd/system/nginx.service.d
-install -m 0644 "$SOURCE/ops/nginx/nginx-restart.conf" /etc/systemd/system/nginx.service.d/mag-restart.conf
-mag_daemon_reload
 bash "$NGINX_SYNC" commit
-# Optional Idol job worker shares MI50 with Lena but never changes either LLM.
-# Install only after the atomic release switch; absence of local Idol weights
-# must not block the native room deployment.
+# The release is live and verified: nothing below may roll it back.
+phase=3
+log "release $RELEASE_ID is live"
+
+# ------------------------------------------------------ 5. independent layers
+# Model layer: installs/refreshes the supervisor only. It never restarts a
+# running model; a changed launch spec is reported as "restart pending".
+soft bash "$SOURCE/ops/models/install.sh"
+# Optional Idol worker (photo to 3D on the MI50).
 if [[ -x /home/chris/idol-mi50/venv/bin/python && -d /home/chris/idol-mi50/weights/idol ]]; then
-  bash "$SOURCE/ops/idol/install.sh" || echo 'WARN: optional Idol worker is not healthy' >&2
+  soft bash "$SOURCE/ops/idol/install.sh"
 fi
-
-# Late steps must not roll a switched release back. The deadline stays armed
-# so a hang here still kills child groups and runs deploy_exit.
-verify_glm_identity
-deployment_started=0
+soft systemctl enable --now mag-stack-check.timer
+soft bash "$SOURCE/ops/boot/ensure-boot.sh"
 MAG_RELEASE_ID="$RELEASE_ID" MAG_RELEASE_PREVIOUS_FILE="$BACKUP/previous-release" \
-  bash "$SOURCE/ops/prune-releases.sh"
-# One-shot removal of pre-4.0 leftovers; report in /var/lib/mag-stack/cleanup-report.txt.
-# Backup removal and loose home files run again on later deploys.
-bash "$SOURCE/ops/cleanup-legacy.sh" || echo 'WARN: legacy cleanup incomplete (deploy itself succeeded)' >&2
-install -m 0755 "$SOURCE/ops/agent-drift.sh" /usr/local/sbin/mag-agent-drift
-install -m 0644 "$SOURCE/ops/mag-agent-drift.service" /etc/systemd/system/mag-agent-drift.service
-install -m 0644 "$SOURCE/ops/mag-agent-drift.timer" /etc/systemd/system/mag-agent-drift.timer
-mag_daemon_reload
-# Tailnet name for each bot VM. No-op until the one-time wildcard cert exists.
-# Does not restart a model unit. DNS for *.bot.stardenburg.de stays at the registrar.
-bash "$SOURCE/ops/bots/install.sh" || echo 'WARN: bot site install incomplete (deploy itself succeeded)' >&2
-mag_flush_daemon_reload
-unset MAG_DEFER_DAEMON_RELOAD
-# The minimal blank-host CI image intentionally lacks cpupower.
-# CPU tuning is optional there; production still installs and enables its unit.
-if [[ -e /etc/mag-stack/TEST-HOST && ! -x /usr/bin/cpupower ]]; then
-  echo 'TEST-HOST: CPU tuning not needed (cpupower is not installed)'
-else
-  # Other late installers must not leave the next reboot without the unit.
-  if [[ ! -f /etc/systemd/system/mag-cpu-tune.service ]]; then
-    install -m 0644 "$SOURCE/ops/boot/mag-cpu-tune.service" /etc/systemd/system/mag-cpu-tune.service
-    mag_daemon_reload
-  fi
-  mag_systemctl enable mag-cpu-tune.service
-  mag_systemctl restart mag-cpu-tune.service || echo 'WARN: CPU tuning not applied' >&2
-fi
-mag_systemctl enable --now mag-agent-drift.timer || echo 'WARN: agent drift timer not enabled' >&2
-# Unreferenced half-created bot VMs only. Does not restart a model unit.
-bash /usr/local/sbin/mag-agent-drift || echo 'WARN: agent drift check incomplete (deploy itself succeeded)' >&2
-# DeepSeek is retired (owner decision): only on an Ornith host with 8191+8192
-# healthy, disable --now mag-llm/IQ3/model-gate/model-pin. Before ensure-boot so it
-# never re-enables mag-llm. Never touches mag-120 or model files.
-[[ -r /etc/mag-stack/room-model.env ]] || bash "$SOURCE/ops/models/retire-deepseek.sh" || echo 'WARN: DeepSeek retirement incomplete (deploy itself succeeded)' >&2
-# Persist the active model units and bot VM autostart for cold reboot.
-bash "$SOURCE/ops/boot/ensure-boot.sh" || echo 'WARN: boot persistence needs operator attention' >&2
-# Bot VM vCPUs + qemu emulator stay on the HT siblings 28-55 (live and in the
-# persistent domain XML); idempotent, never restarts a VM or a model.
-command -v virsh >/dev/null && bash "$SOURCE/ops/vm/pin-vcpus.sh" || echo 'WARN: VM CPU pinning incomplete (deploy itself succeeded)' >&2
-bash "$SOURCE/ops/check-model-cores.sh" || true
-# Funnel/serve was applied before the ingress smoke, while rollback could
-# still release :443. Model files, including DeepSeek V4.1, are preserved. Only Chris deletes weights.
-# Deploy never restarts a loaded model (DeepSeek retirement above is the only stop). Model placement
-# is a separate, measured, operator-controlled change, never a deploy hook.
-printf '\nInstalled release %s; rollback snapshot %s\n' "$RELEASE_ID" "$BACKUP"
-
-
+  soft bash "$SOURCE/ops/prune-releases.sh"
+printf '\nInstalled release %s (commit %s); rollback: sudo bash ops/rollback.sh %s\n' \
+  "$RELEASE_ID" "$(cut -c1-12 "$RELEASE/SOURCE_COMMIT")" "$RELEASE_ID"

@@ -1,41 +1,35 @@
 #!/usr/bin/env bash
+# Return to the release that was live before RELEASE_ID was deployed:
+#   sudo bash ops/rollback.sh RELEASE_ID
+# Restores executables and unit files from /var/backups/mag-stack/RELEASE_ID.
+# Room data is not rolled back (the copy stays in that directory under room/),
+# and no model is touched.
 set -euo pipefail
-[[ $EUID == 0 && ${1:-} =~ ^[a-zA-Z0-9._-]+$ ]] || { echo 'Usage: sudo ops/rollback.sh RELEASE_ID'; exit 1; }
+[[ $EUID == 0 && ${1:-} =~ ^[a-zA-Z0-9._-]+$ ]] || { echo 'Usage: sudo ops/rollback.sh RELEASE_ID' >&2; exit 1; }
 BACKUP="/var/backups/mag-stack/$1"
-test -f "$BACKUP/mag-120.service"
-systemctl stop mag-120.service
-if [[ -f $BACKUP/qwen-layout/helper.sh ]]; then
-  bash "$BACKUP/qwen-layout/helper.sh" rollback "$BACKUP"
-fi
-for config in room-model.env secondary-model.env; do
-  [[ ! -f $BACKUP/$config ]] || cp -a "$BACKUP/$config" "/etc/mag-stack/$config"
-done
-if [[ -d $BACKUP/mag-120.service.d ]]; then
-  rm -rf /etc/systemd/system/mag-120.service.d
-  cp -a "$BACKUP/mag-120.service.d" /etc/systemd/system/mag-120.service.d
-fi
-if [[ -f $BACKUP/mag-audit-gateway.service ]]; then
-  cp -a "$BACKUP/mag-audit-gateway.service" /etc/systemd/system/mag-audit-gateway.service
-fi
-if [[ -f $BACKUP/mag-audit-gateway.bin ]]; then
-  install -m 0755 "$BACKUP/mag-audit-gateway.bin" /opt/mag-audit/bin/.mag-audit-gateway.restore
-  mv -f /opt/mag-audit/bin/.mag-audit-gateway.restore /opt/mag-audit/bin/mag-audit-gateway
-fi
-cp -a "$BACKUP/mag-120.service" /etc/systemd/system/mag-120.service
-cp -a "$BACKUP/magbot" /usr/local/bin/magbot
-if [[ -f "$BACKUP/previous-release" ]]; then ln -sfn "$(cat "$BACKUP/previous-release")" /opt/mag-stack/current; fi
+UNITS=/etc/systemd/system
+[[ -f $BACKUP/previous-release ]] || { echo "no rollback snapshot for $1" >&2; exit 1; }
+previous=$(cat "$BACKUP/previous-release")
+[[ -x $previous/bin/magroom ]] || { echo "previous release $previous is gone" >&2; exit 1; }
+restore() { if [[ -e $BACKUP/$1 ]]; then rm -rf "$2"; cp -a "$BACKUP/$1" "$2"; fi; }
+restore mag-120.service $UNITS/mag-120.service
+restore mag-120.service.d $UNITS/mag-120.service.d
+restore mag-browser-webrtc.service $UNITS/mag-browser-webrtc.service
+restore mag-audit-gateway.service $UNITS/mag-audit-gateway.service
+restore mag-audit-gateway.bin /opt/mag-audit/bin/mag-audit-gateway
+restore magbot /usr/local/bin/magbot
+ln -sfn "$previous" /opt/mag-stack/.current-rollback
+mv -Tf /opt/mag-stack/.current-rollback /opt/mag-stack/current
 systemctl daemon-reload
-systemctl restart mag-audit-gateway.service
+systemctl restart mag-audit-gateway.service || true
 systemctl restart mag-120.service
-if [[ -x /opt/mag-stack/current/bin/mag-browser-webrtc ]]; then
-  systemctl restart mag-browser-webrtc.service
-else
-  systemctl stop mag-browser-webrtc.service >/dev/null 2>&1 || true
-fi
-# Restore the paired nginx vhost if this release used transactional whois.
-if [[ -f "$BACKUP/nginx.staged" || -f "$BACKUP/nginx.verified" ]]; then
-  [[ -x "$BACKUP/deploy-nginx.sh" ]] || { echo "Missing ingress rollback helper" >&2; exit 1; }
+systemctl restart mag-browser-webrtc.service || true
+if [[ -f $BACKUP/nginx.staged || -f $BACKUP/nginx.verified ]] && [[ -x $BACKUP/deploy-nginx.sh ]]; then
   MAG_NGINX_TXN="$BACKUP" bash "$BACKUP/deploy-nginx.sh" rollback
 fi
-for i in {1..30}; do curl -fsS --max-time 2 -o /dev/null http://127.0.0.1:8766/healthz 2>/dev/null && break; sleep 1; done
-curl -fsS --max-time 10 http://127.0.0.1:8766/healthz
+for _ in {1..30}; do
+  curl --noproxy '*' -fsS --max-time 2 -o /dev/null http://127.0.0.1:8766/readyz 2>/dev/null && { echo "rolled back to $previous"; exit 0; }
+  sleep 1
+done
+echo 'room did not answer /readyz after rollback' >&2
+exit 1

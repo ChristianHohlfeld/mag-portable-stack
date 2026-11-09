@@ -28,6 +28,8 @@ case "$1" in
   for ((i=0;i<100;i++)); do
     PID="$(systemctl show --property=MainPID --value "$UNIT")"
     if [[ "$PID" == 0 ]] && ! systemctl is-active --quiet "$UNIT"; then
+      # Block external restarts/watchdogs throughout the Idol job.
+      systemctl mask --runtime "$UNIT"
       echo 'Lena stopped; MI50 lease acquired'
       exit 0
     fi
@@ -39,6 +41,7 @@ case "$1" in
  restore)
   [[ -e "$MARKER" ]] || exit 0
   # Preserve marker until systemd accepts restart request.
+  systemctl unmask --runtime "$UNIT"
   systemctl start --no-block "$UNIT"
   rm -f "$MARKER"
   echo 'Lena restart scheduled'

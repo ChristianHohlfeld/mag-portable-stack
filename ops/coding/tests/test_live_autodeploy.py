@@ -131,6 +131,32 @@ class CodingDeploy(unittest.TestCase):
    mod.MANIFEST["models"]["general"]["filename"]="y.gguf"
    with self.assertRaises(RuntimeError): mod.stage("general",t/"root",download=True)
    self.assertFalse((t/"root/general/y.gguf.part").exists())
+ def test_disabled_noah_skips_staging_health_and_restart(self):
+  layout=source("ops/coding/layout.sh")
+  env=source("ops/room/coding.env")
+  self.assertIn('systemctl is-enabled --quiet mag-llm-coding@1.service',layout)
+  self.assertIn('noah_enabled=0',layout)
+  self.assertIn('if (( noah_enabled )); then\n  coder_ready=1\n  python3 -I "$ROOT/ops/coding/stage.py" --model coder || coder_ready=0',layout)
+  self.assertIn('if (( noah_enabled )); then check_nodes+=(1); fi',layout)
+  self.assertIn('if (( noah_enabled )); then\n  if (( coder_ready )); then',layout)
+  self.assertIn('if (( noah_enabled && coder_ready )); then systemctl enable mag-llm-coding@1.service; fi',layout)
+  self.assertIn("if name == \"coder\" and len(sys.argv) > 3 and sys.argv[3] == \"0\":",layout)
+  self.assertIn('MAG_ROOM_NOAH_REVIEW=0',env)
+  # The operator-disabled mode must never request staging/hash of the huge
+  # DeepSeek GGUF even when its manifest differs from the installed one.
+  import copy
+  new=json.loads(source("ops/coding/models.json"))
+  old=copy.deepcopy(new)
+  old["models"]["coder"]["model_id"]="deliberately-different"
+  snippet=layout.split("<<'PY'\\n",2)[1].split("\\nPY\\n",1)[0]
+  with tempfile.TemporaryDirectory() as d:
+   a=pathlib.Path(d)/"new.json";z=pathlib.Path(d)/"old.json"
+   a.write_text(json.dumps(new));z.write_text(json.dumps(old))
+   off=subprocess.run(["python3","-I","-",str(a),str(z),"0"],input=snippet,text=True,capture_output=True,check=True)
+   on=subprocess.run(["python3","-I","-",str(a),str(z),"1"],input=snippet,text=True,capture_output=True,check=True)
+   self.assertEqual(off.stdout.strip(),"")
+   self.assertEqual(on.stdout.strip(),"1")
+
  def test_numa1_only_deepseek_swap(self):
   layout=source("ops/coding/layout.sh")
   # Only nodes whose models.json entry changed restart; NUMA0 Qwen3.8 stays.

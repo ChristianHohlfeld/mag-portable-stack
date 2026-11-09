@@ -31,15 +31,10 @@ def main():
     arch = str(getattr(torch.cuda.get_device_properties(0), "gcnArchName", ""))
     if "gfx906" not in arch:
         raise RuntimeError("Erwartet MI50/gfx906, erhalten " + arch)
-    # Hard PyTorch allocator cap independent of ROCm's misleading VRAM "free"
-    # readings while Vulkan Lena holds memory. 7.8 GiB absolute per process.
-    limit = 7.8 * (1024 ** 3)
-    total = int(torch.cuda.get_device_properties(0).total_memory)
-    if total < limit:
-        raise RuntimeError("MI50 hat weniger als 7.8 GiB Gesamt-VRAM")
-    fraction = min(1.0, limit / total)
-    torch.cuda.set_per_process_memory_fraction(fraction, device=0)
-    print(f"MAG-IDOL: torch allocator cap 7.8 GiB (fraction {fraction:.5f}); SDPA; gfx906", flush=True)
+    # Lena is stopped and its GPU occupancy released by the root-controlled
+    # GPU lease before this process starts. No arbitrary VRAM fraction: Idol
+    # may use the full MI50. The worker fails closed if acquiring fails.
+    print("MAG-IDOL: exclusive MI50 lease active; no PyTorch VRAM cap", flush=True)
 
     # No duplicate ImageEncoder or modified checkpoint overlay. The locally
     # installed patched package must accept --dinov3_dtype fp16 and the two

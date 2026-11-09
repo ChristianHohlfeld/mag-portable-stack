@@ -17,6 +17,9 @@ let current = null;
 let seq = 0;
 
 function show(label, progress) {
+  // Completed transcript belongs in the composer, never in a second
+  // persistent mobile status row. Keep microphone/error progress accessible.
+  if (/text erkannt|vor dem senden pr[uü]fen/i.test(label || '')) label='';
   status.hidden = !label;
   status.textContent = label || '';
   status.setAttribute('role', 'status');

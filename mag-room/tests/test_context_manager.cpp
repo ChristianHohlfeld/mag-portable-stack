@@ -67,13 +67,13 @@ int main() {
   std::string old_wire;
   assert(room_context::load(root,note.substr(p+7,64),1,0,old_wire,error));
   std::string expected;
-  for(size_t i=1;i<before.size()-1;++i)expected+=mj::dump(before[i])+"\\n";
+  for(size_t i=1;i<before.size()-1;++i)expected+=mj::dump(before[i])+"\n";
   assert(old_wire==expected); // 9 original messages incl code/diff/tool bytes
   assert(!room_context::mask_old(msgs,root,50)); // no archive-chaining
   // PR #339 failed on the initial giant transcript: it was messages[1].
   std::vector<mj::Val> initial={msg("system","system byte-stable"),
-      msg("user",std::string(40000,'A')+"\\n"+code)};
-  const std::string initial_old=mj::dump(initial[1])+"\\n";
+      msg("user",std::string(40000,'A')+"\n"+code)};
+  const std::string initial_old=mj::dump(initial[1])+"\n";
   assert(room_context::mask_initial(initial,root,"[Chris]: Behalte alle neuen Dateien",512));
   assert(initial.size()==3);
   assert(initial[0].find("content")->asStr()=="system byte-stable");

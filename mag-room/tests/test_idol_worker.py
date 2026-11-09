@@ -114,7 +114,7 @@ class IdolHTTPContract(unittest.TestCase):
         self.assertIn("xatlas.parametrize(",source)
         self.assertIn("baseColorTexture=texture",source)
         self.assertIn("binary_dilation(filled, iterations=8)",source)
-        self.assertIn("float32 density",source)
+        self.assertIn("Float32 density",source)
         self.assertIn("filter_taubin(",source)
         self.assertNotIn("filter_laplacian(",source)
         installer=(ROOT/"ops/idol/install.sh").read_text()

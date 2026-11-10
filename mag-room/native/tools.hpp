@@ -3,6 +3,7 @@
 // user sees (real command, live output, runtime) is the step in the message.
 #pragma once
 #include "room.hpp"
+#include "scene.hpp"
 #include "site.hpp"
 #include "vm.hpp"
 
@@ -18,6 +19,7 @@ struct Ctx {
   std::function<void(const std::string &)> output;       // live output of the step
   std::function<void(const Val &)> attach;               // add a file to the bot message
   std::function<void(const Val &)> page;                 // show a published page in the bot message
+  Scenes *scenes = nullptr;                              // 3D scenes from the models in the chat
 };
 
 struct Result {
@@ -68,6 +70,36 @@ inline Val schemas(bool has_vm) {
                R"({"type":"object","properties":{"name":{"type":"string","description":"file name of the image"}},"required":["name"]})"));
   list.push(fn("remember", "Store one durable fact in your long-term memory (kept when the room is emptied).",
                R"({"type":"object","properties":{"fact":{"type":"string"}},"required":["fact"]})"));
+  list.push(fn("models_3d",
+               "List the 3D models in the chat (results of photo to 3D, uploaded .glb files) and the figures each one shows. "
+               "Call it before scene_3d.",
+               R"({"type":"object","properties":{}})"));
+  list.push(fn("scene_3d",
+               "Build an animated 3D scene from 3D models in the chat (Blender). Every figure gets a skeleton by itself: an animal walks on its "
+               "four legs and moves head and tail, somebody on two legs walks, nods and waves; a thing moves as a whole. The scene appears in the "
+               "chat at once, where Chris turns and plays it; its film follows in the same message. The actions happen one after another in the "
+               "order you give them.",
+               R"j({"type":"object","properties":{)j"
+               R"j("title":{"type":"string","description":"short German title"},)j"
+               R"j("actors":{"type":"array","description":"who is in the scene","items":{"type":"object","properties":{)j"
+               R"j("name":{"type":"string","description":"your name for the figure, e.g. Fuchs"},)j"
+               R"j("model":{"type":"string","description":"file name of its model, e.g. 3d-0d4b6d.glb"},)j"
+               R"j("part":{"type":"integer","description":"number of the figure when the model shows several (see models_3d)"},)j"
+               R"j("kind":{"type":"string","enum":["animal","human","object"],"description":"only when its shape is misread: object moves as a whole without a skeleton"},)j"
+               R"j("faces":{"type":"string","enum":["left","right","camera","away"],"description":"where the figure looks in the photo its model was made from; leave out if you do not know"},)j"
+               R"j("size":{"type":"number","description":"scale factor, default 1"}},"required":["name","model"]}},)j"
+               R"j("actions":{"type":"array","description":"what happens, in order","items":{"type":"object","properties":{)j"
+               R"j("actor":{"type":"string","description":"name of the actor"},)j"
+               R"j("do":{"type":"string","enum":["walk_to","run_to","sneak_to","hop_to","turn_to","look_at","turn","spin","jump","wave","nod","shake_head","wag_tail","wobble","grow","shrink","wait"]},)j"
+               R"j("target":{"type":"string","description":"for walk_to, run_to, sneak_to, hop_to, turn_to, look_at: name of the other actor"},)j"
+               R"j("together":{"type":"boolean","description":"start together with the action before it instead of after it"},)j"
+               R"j("seconds":{"type":"number","description":"how long it takes; default: a natural pace"},)j"
+               R"j("times":{"type":"integer","description":"jump, spin, nod, shake_head: how often"},)j"
+               R"j("degrees":{"type":"number","description":"turn: angle, positive turns left"},)j"
+               R"j("factor":{"type":"number","description":"grow, shrink: by how much"}},"required":["actor","do"]}},)j"
+               R"j("ground":{"type":"string","enum":["snow","grass","sand","stone","studio"]},)j"
+               R"j("light":{"type":"string","enum":["day","evening","night","studio"]}},)j"
+               R"j("required":["actors","actions"]})j"));
   return list;
 }
 
@@ -89,6 +121,8 @@ inline std::string title(const std::string &name, const Val &args) {
   if (name == "web_search") return "Sucht: " + one(jstr(args, "query"), 120);
   if (name == "read_image") return "Liest Bild " + one(jstr(args, "name"), 80);
   if (name == "remember") return "Merkt sich etwas";
+  if (name == "models_3d") return "Sieht die 3D-Modelle durch";
+  if (name == "scene_3d") return "Baut die 3D-Szene " + one(jstr(args, "title", "ohne Titel"), 80);
   return name;
 }
 
@@ -292,6 +326,13 @@ inline Result call(const std::string &name, const Val &args, Ctx &ctx) {
       while (mem.arr->size() > 60) mem.arr->erase(mem.arr->begin());
     });
     return {duplicate ? "Schon gemerkt." : "Gemerkt.", true};
+  }
+  if (name == "models_3d" || name == "scene_3d") {
+    if (!ctx.scenes) return fail("3D-Szenen sind hier nicht eingerichtet.");
+    if (name == "models_3d") return {ctx.scenes->models_text(ctx.cancel), true};
+    bool ok = false;
+    const std::string text = ctx.scenes->start(args, jstr(ctx.bot, "id"), ok, ctx.cancel);
+    return ok ? Result{text, true} : fail(text);
   }
   return fail("Unbekanntes Werkzeug: " + name);
 }

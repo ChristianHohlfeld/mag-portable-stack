@@ -26,7 +26,7 @@ inline const char *kEnd = "[[MAG:ENDE]]";
 
 class Engine {
 public:
-  Engine(Room &room, vm::Guests &guests) : room_(room), guests_(guests) {}
+  Engine(Room &room, vm::Guests &guests, Scenes &scenes) : room_(room), guests_(guests), scenes_(scenes) {}
   ~Engine() { shutdown(); }
 
   void start() {
@@ -339,6 +339,7 @@ private:
 
   Room &room_;
   vm::Guests &guests_;
+  Scenes &scenes_;
   std::vector<std::unique_ptr<Bot>> bots_;
   std::mutex mu_;
   std::condition_variable cv_;
@@ -509,6 +510,9 @@ private:
            "- Braucht dein Auftrag nach einem erfolgreichen Werkzeugschritt noch einen konkreten weiteren Schritt, den du in dieser Antwort nicht mehr schaffst, beende sie mit " + std::string(kContinue) + ". Sonst nie.\n";
     else
       s += "\nDu hast keine eigene VM: keine Shell, kein Browser. Behaupte nie, etwas ausgeführt oder geöffnet zu haben.\n";
+    s += "\n3D-Szenen\n"
+         "- Möchte Chris eine Szene oder Animation mit 3D-Modellen aus dem Chat (zum Beispiel \"lass den Fuchs zum Gnom laufen\"), siehst du mit models_3d nach, "
+         "welche Modelle und Figuren es gibt, und baust sie mit scene_3d. Die Szene erscheint von selbst im Chat; sag danach in einem Satz, was sie zeigt.\n";
     const std::string persona = trim(jstr(me, "persona"));
     if (!persona.empty()) s += "\nDeine Art: " + clip(persona, 1200) + "\n";
     if (const Val *mem = me.find("memory"); mem && mem->isArr() && !mem->asArr().empty()) {
@@ -882,6 +886,27 @@ private:
     head += who + ": ";
     std::string body = trim(jstr(m, "text"));
     const Val *atts = m.find("attachments");
+    if (Scenes::is_scene(m)) {
+      // A scene a bot built from 3D models: what it shows and what became of its film.
+      const Val &m3 = *m.find("model3d");
+      const std::string st = jstr(m3, "state");
+      char seconds[32];
+      snprintf(seconds, sizeof seconds, "%.1f", jnum(m3, "seconds"));
+      std::string cast, by = jstr(m3, "by");
+      if (const Val *list = m3.find("cast"); list && list->isArr())
+        for (auto &name : list->asArr()) cast += (cast.empty() ? "" : ", ") + name.asStr();
+      const Val all = room_.bots();
+      for (auto &o : all.asArr())
+        if (jstr(o, "id") == by) by = jstr(o, "name");
+      body = "\"" + jstr(m3, "title", "Szene") + "\" (" + seconds + " Sekunden; Darsteller: " + cast + ")" + (by.empty() ? "" : ", gebaut von " + by) +
+             ". Chris kann sie im Chat drehen und abspielen. ";
+      body += st == "done" ? "Ihr Film ist fertig." : st == "cancelled" ? "Ihr Film wurde abgebrochen." : "Ihr Film ist fehlgeschlagen: " + jstr(m3, "error", "Fehler");
+      if (atts && atts->isArr() && !atts->asArr().empty()) {
+        body += " Dateien:";
+        for (auto &a : atts->asArr()) body += " " + jstr(a, "name") + " (" + kb(a) + ")";
+      }
+      return "3D-Szene: " + clip(body, 2000, "…");
+    }
     if (const Val *m3 = m.find("model3d"); m3 && m3->isObj()) {
       // A 3D job: what it was made from, how it ended, what came out.
       const std::string st = jstr(*m3, "state"), q = jstr(*m3, "quality");
@@ -1613,6 +1638,7 @@ private:
           result = tools::fail("Die Argumente sind kein gültiges JSON-Objekt.");
         } else {
           tools::Ctx ctx{room_, guests_, me, t.id, cancel.get(), jbool(settings, "web", true), {}, {}, {}};
+          ctx.scenes = &scenes_;
           ctx.output = [&](const std::string &chunk) { room_.step_output(t.id, index, chunk); };
           ctx.attach = [&](const Val &att) { room_.update(t.id, [&](Val &m) { m["attachments"].push(att); }); };
           ctx.page = [&](Val page) {

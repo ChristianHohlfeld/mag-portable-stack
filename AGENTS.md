@@ -54,6 +54,14 @@ system-prefix state; no conversation is ever saved to or restored from disk.
 Everything in the timeline is one message type (text, bot work with its
 steps, files, 3D results), stored one JSON file per message. A 3D result is a
 normal message; deleting it also deletes its files and its Idol job directory.
+The bots build scenes from the 3D models in the chat (`models_3d`,
+`scene_3d`; every bot, with or without a VM): `mag-scene` runs the pinned
+Blender on the CPU (cores 28-55, no device access, never the MI50), reads
+what each figure is, gives animals and two-legged figures a skeleton and
+moves their limbs; only a thing moves as a whole. A scene is described, never
+scripted: no code of a bot or a request runs in Blender. The scene is a normal
+message that plays in the chat at once; its film is rendered as a stage of
+its own, survives restarts like a 3D job and joins the message.
 A 3D job survives everything short of being deleted: its state and the result
 of every finished stage are on disk, a stage runs on its own
 (`KillMode=process`) and is followed again after a restart of the worker, a

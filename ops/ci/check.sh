@@ -5,12 +5,18 @@
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 scripts=(ops/deploy.sh ops/rollback.sh ops/health.sh ops/build-targets.sh ops/prune-releases.sh
-  ops/boot/ensure-boot.sh ops/models/*.sh ops/idol/*.sh ops/stt/*.sh ops/private-access/deploy-nginx.sh
+  ops/boot/ensure-boot.sh ops/models/*.sh ops/idol/*.sh ops/stt/*.sh ops/scene/*.sh ops/private-access/deploy-nginx.sh
   ops/magbot-guest-run ops/magbot-agent-ctl ops/ci/check.sh)
 for f in "${scripts[@]}"; do bash -n "$f"; done
-python3 -m py_compile ops/idol/worker.py ops/idol/runner.py ops/idol/mesh.py
-# A restart of the Idol worker must leave a running stage alone.
+python3 -m py_compile ops/idol/worker.py ops/idol/runner.py ops/idol/mesh.py ops/scene/worker.py ops/scene/scene.py ops/scene/rig.py
+# A restart of the Idol worker must leave a running stage alone, and one of
+# the scene worker a film that is being rendered.
 grep -qx 'KillMode=process' ops/idol/mag-idol.service
+grep -qx 'KillMode=process' ops/scene/mag-scene.service
+# Scenes are rendered on the CPU and cannot reach a GPU: the MI50 belongs to photo-to-3D.
+grep -Fq 'scene.cycles.device = "CPU"' ops/scene/scene.py
+grep -qx 'PrivateDevices=true' ops/scene/mag-scene.service
+grep -qx 'AllowedCPUs=28-55' ops/scene/mag-scene.service
 jq -e '.bots | to_entries | all(.value.port and .value.model.path and (.value.numa == 0 or .value.numa == 1))' \
   ops/models/models.json >/dev/null
 # CPU only: no bot may be launched with a GPU offload flag.
@@ -32,7 +38,7 @@ fi
 # names the models, the room and the Idol worker.
 if command -v perl >/dev/null; then
   perl -e 'our %nrconf; do "./ops/boot/needrestart-mag.conf" or die "needrestart rule: $@$!";
-           for my $unit ("mag-model\@noah.service", "mag-120.service", "mag-idol.service", "mag-stt.service") {
+           for my $unit ("mag-model\@noah.service", "mag-120.service", "mag-idol.service", "mag-scene.service", "mag-stt.service") {
              grep { $unit =~ $_ } @{$nrconf{blacklist_rc}} or die "needrestart rule misses $unit\n" }'
 fi
 # The MI50 power cap may only ever be lowered.

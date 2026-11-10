@@ -12,7 +12,7 @@ units=(
   mag-modeld.service
   mag-audit-nft.service mag-audit-gateway.service mag-audit-webproxy.service
   mag-120.service mag-agents-network.service mag-browser-webrtc.service mag-git-gateway.socket
-  mag-idol.service mag-stt.service mag-bots-publish.service mag-cpu-tune.service
+  mag-idol.service mag-scene.service mag-stt.service mag-bots-publish.service mag-cpu-tune.service
   gitea.service nginx.service tailscaled.service libvirtd.service ssh.service
   mag-gitea-runner.service mag-gitea-funnel.service mag-gitea-funnel.timer
   mag-tailscale-cert.timer mag-tailscale-egress.timer mag-acme-renew.timer

@@ -10,8 +10,8 @@ namespace mag {
 
 class Api {
 public:
-  Api(Room &room, Engine &engine, vm::Guests &guests, Idol &idol, auth::Gate &gate, Push &push)
-      : room_(room), engine_(engine), guests_(guests), idol_(idol), gate_(gate), push_(push) {
+  Api(Room &room, Engine &engine, vm::Guests &guests, Idol &idol, Scenes &scenes, auth::Gate &gate, Push &push)
+      : room_(room), engine_(engine), guests_(guests), idol_(idol), scenes_(scenes), gate_(gate), push_(push) {
     // The version is the cache key of every asset: it must change with each
     // release. A release carries its commit; outside a release (tests,
     // development) the environment or the start time stands in.
@@ -67,7 +67,12 @@ public:
     if (r.method == "POST" && p == "/api/stt") return stt(fd, r);
     if ((r.method == "POST" || r.method == "DELETE") && p == "/api/stt/live") return stt_live(fd, r);
     if (r.method == "POST" && starts_with(p, "/api/3d/") && ends_with(p, "/cancel")) {
-      idol_.cancel(p.substr(8, p.size() - 8 - 7));
+      // A 3D job or the film of a scene: each is cancelled where it runs.
+      Val m;
+      if (room_.get(p.substr(8, p.size() - 8 - 7), m)) {
+        idol_.cancel(m);
+        scenes_.cancel(m);
+      }
       return http::send_ok(fd);
     }
     if (r.method == "POST" && p == "/api/browser-live/offer") return live_offer(fd, r);
@@ -103,6 +108,7 @@ private:
   Engine &engine_;
   vm::Guests &guests_;
   Idol &idol_;
+  Scenes &scenes_;
   auth::Gate &gate_;
   Push &push_;
   std::string version_;
@@ -337,6 +343,7 @@ private:
     Val removed;
     if (!room_.remove(id, &removed)) return http::send_error(fd, 404, "Nachricht nicht gefunden");
     idol_.forget(removed);
+    scenes_.forget(removed);
     engine_.forget(id);
     http::send_ok(fd);
   }
@@ -345,6 +352,7 @@ private:
     std::vector<Val> removed;
     Val report = engine_.clear(&removed);
     idol_.purge();
+    scenes_.purge();
     Val v = Val::object();
     v["ok"] = true;
     v["removed"] = (double)removed.size();
@@ -541,6 +549,7 @@ private:
     Val v = Val::object();
     v["version"] = version_;
     v["idol"] = idol_.available();
+    v["scene"] = scenes_.available();
     Val backup = read_json(env("MAG_BACKUP_STATUS", "/var/lib/mag-backup/status.json"));
     if (backup.isObj()) {
       Val b = Val::object();

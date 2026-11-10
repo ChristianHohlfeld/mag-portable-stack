@@ -19,7 +19,7 @@ jobs:
       - name: Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y ninja-build ccache jq libssl-dev libcurl4-openssl-dev libarchive-dev libicu-dev
+          sudo apt-get install -y ninja-build ccache jq libssl-dev libcurl4-openssl-dev libarchive-dev libicu-dev python3-numpy
       - uses: actions/cache@v4
         with:
           path: ~/.cache/ccache
@@ -36,6 +36,10 @@ jobs:
         run: python3 ops/models/tests/test_modeld.py
       - name: Idol worker (jobs survive restarts)
         run: python3 ops/idol/tests/test_worker.py
+      - name: Scenes (figures get the right skeleton; films survive restarts)
+        run: |
+          python3 ops/scene/tests/test_rig.py
+          python3 ops/scene/tests/test_worker.py
       - name: Room contract (fake models, fake guest)
         run: |
           ./build/test-group-dispatcher

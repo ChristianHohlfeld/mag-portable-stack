@@ -230,6 +230,9 @@ command -v pdftotext >/dev/null || warn 'pdftotext missing: the bots cannot read
 # Speech to text (mag-stt): built against the pinned recognizer when it is
 # there, restarted only when its binary, model or unit changed.
 soft bash "$SOURCE/ops/stt/install.sh"
+# Scenes (mag-scene): the pinned Blender, on the CPU. A film that is being
+# rendered goes on through the worker's restart.
+soft bash "$SOURCE/ops/scene/install.sh"
 # Optional Idol worker (photo to 3D on the MI50).
 if [[ -x /home/chris/idol-mi50/venv/bin/python && -d /home/chris/idol-mi50/weights/idol ]]; then
   soft bash "$SOURCE/ops/idol/install.sh"

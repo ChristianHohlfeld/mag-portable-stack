@@ -24,6 +24,7 @@ ROOT = HERE.parents[1]
 sys.path.insert(0, str(HERE))
 from fake_idol import FakeIdol  # noqa: E402
 from fake_llama import FakeLlama, text_of  # noqa: E402
+from fake_scene import FakeScene  # noqa: E402
 
 BIN = pathlib.Path(os.environ.get("MAGROOM_BIN", ROOT / "build/magroom"))
 
@@ -39,16 +40,17 @@ class Room:
 
     def __init__(self, **env):
         self.tmp = pathlib.Path(tempfile.mkdtemp(prefix="magroom-"))
-        self.lena, self.noah, self.idol = FakeLlama("Lena"), FakeLlama("Noah"), FakeIdol()
+        self.lena, self.noah, self.idol, self.scene = FakeLlama("Lena"), FakeLlama("Noah"), FakeIdol(), FakeScene()
         self.port = free_port()
         self.events = []
         # Nothing here may reach the real host: no sudo, a temp dir as "VM",
-        # no firewall helper, no model supervisor, no Idol worker.
+        # no firewall helper, no model supervisor, no Idol or scene worker.
         self.env = dict(os.environ, MAG_ROOM_STATE=str(self.tmp / "state"), MAG_ROOM_WEB=str(ROOT / "mag-room/web"),
                         MAG_ROOM_PORT=str(self.port), MAG_ROOM_BRIDGE_PORT="0", MAG_ROOM_GATEWAY="direct",
                         MAG_LLM_PORT_LENA=str(self.lena.port), MAG_LLM_PORT_NOAH=str(self.noah.port),
                         MAG_MODELS_STATUS=str(self.tmp / "no-status.json"), MAG_MODELS_CONTROL=str(self.tmp / "control"),
-                        MAG_IDOL_URL="http://127.0.0.1:%d" % self.idol.port, MAG_TEST_ALLOW_LOCAL_OWNER="1", MAG_ROOM_VERSION="test",
+                        MAG_IDOL_URL="http://127.0.0.1:%d" % self.idol.port, MAG_SCENE_URL="http://127.0.0.1:%d" % self.scene.port,
+                        MAG_TEST_ALLOW_LOCAL_OWNER="1", MAG_ROOM_VERSION="test",
                         MAG_ROOM_NO_SUDO="1", MAG_ROOM_GUEST_RUN=str(HERE / "fake_guest_run"),
                         MAG_ROOM_AGENT_CTL="/bin/false", MAG_ROOM_NETMODE="/bin/true",
                         FAKE_GUEST_HOME=str(self.tmp / "guests"), MAG_ROOM_GUEST_HOME=str(self.tmp / "guests" / "agent1"),
@@ -157,6 +159,7 @@ class Room:
         self.lena.close()
         self.noah.close()
         self.idol.close()
+        self.scene.close()
         shutil.rmtree(self.tmp, ignore_errors=True)
 
 
@@ -602,6 +605,110 @@ class RoomContract(unittest.TestCase):
         r.wait(lambda: message(second)["state"] == "done", "written-off 3D job done")
         self.assertEqual((message(second)["model3d"]["state"], message(second)["model3d"].get("error")), ("done", None))
         self.assertEqual(len(r.idol.jobs), 2)   # nothing was ordered twice
+
+    def test_bots_build_a_3d_scene_from_the_models_in_the_chat(self):
+        r = self.room
+        files = pathlib.Path(r.env["MAG_ROOM_STATE"]) / "files"
+
+        def message(message_id):
+            return [m for m in r.messages() if m["id"] == message_id][0]
+
+        def scenes():
+            return [m for m in r.messages() if m.get("model3d", {}).get("kind") == "scene"]
+        # A model in the chat: the result of a photo-to-3D job.
+        photo = r.api("POST", "/api/upload?name=wald.png", raw=b"\x89PNG\r\n\x1a\n" + b"x" * 64)[1]
+        out = r.api("POST", "/api/message", {"text": "", "attachments": [photo["file"]], "mode": "3d", "quality": "fast"})[1]
+        r.wait(lambda: message(out["model3d"])["state"] == "done", "3D job done")
+        model = message(out["model3d"])["attachments"][0]
+        cast = [{"name": "Gnom", "model": model["name"], "part": 1}, {"name": "Fuchs", "model": "3d-000000", "part": 2}]
+        walk = [{"actor": "Fuchs", "do": "walk_to", "target": "Gnom"}, {"actor": "Gnom", "do": "wave"}]
+
+        def build(**what):
+            return {"name": "scene_3d", "arguments": dict({"title": "Fuchs besucht Gnom"}, **what)}
+        script = iter([
+            {"content": "Ich sehe nach, welche Modelle es gibt.", "tool_calls": [{"name": "models_3d", "arguments": {}}]},
+            # Without saying which figure of the model is meant: the worker refuses, and says why.
+            {"content": "", "tool_calls": [build(actors=[{"name": "Fuchs", "model": model["name"]}], actions=[])]},
+            {"content": "", "tool_calls": [build(actors=cast, actions=walk, ground="snow")]},
+            "Der Fuchs läuft jetzt zum Gnom."])
+        r.lena.reply = lambda body: next(script)
+        r.scene.hold = True
+        r.say("@Lena lass den Fuchs zum Gnom laufen")
+        r.idle()
+        steps = [p for m in r.messages() if m["from"] == "lena" for p in m["parts"] if p["k"] == "step"]
+        self.assertEqual([(s["tool"], s["state"]) for s in steps], [("models_3d", "ok"), ("scene_3d", "error"), ("scene_3d", "ok")])
+        self.assertEqual(steps[2]["title"], "Baut die 3D-Szene Fuchs besucht Gnom")
+        # The bot is told what there is: the model, where it comes from, and what each of its figures is.
+        self.assertIn("1. %s (aus dem Foto wald.png) zeigt 2 Figuren" % model["name"], steps[0]["output"])
+        self.assertIn("part 2: Vierbeiner, länglich und niedrig (länger als hoch), 0.18 hoch, 0.50 lang, steht im Bild rechts", steps[0]["output"])
+        self.assertIn("Die Szene wurde nicht gebaut: Das Modell %s zeigt 2 Figuren." % model["name"], steps[1]["output"])
+        self.assertEqual(r.scene.asked, [model["file"]])
+        # The worker gets the room's file for the name the bot used (with or without its ending).
+        spec = r.scene.specs[-1]
+        self.assertEqual([(a["name"], a["file"], a["model"], a["part"]) for a in spec["actors"]],
+                         [("Gnom", model["file"], model["name"], 1), ("Fuchs", model["file"], model["name"], 2)])
+        self.assertEqual((spec["ground"], spec["actions"]), ("snow", walk))
+        told = r.lena.chats()[-1]["messages"][-1]
+        self.assertEqual(told["role"], "tool")
+        self.assertIn("steht jetzt im Chat (4.5 Sekunden; Darsteller: Gnom (Zweibeiner: 2 Beine, Rumpf, Kopf); Fuchs (Vierbeiner: 4 Beine, Kopf und Schwanz))", told["content"])
+        # The scene is a message of its own and can be played at once; its film is still being rendered.
+        self.assertEqual(len(scenes()), 1)       # the refused call left nothing in the chat
+        scene = scenes()[0]
+        m3 = scene["model3d"]
+        self.assertEqual((scene["from"], scene["state"], m3["by"], m3["cast"], m3["kinds"], m3["title"]),
+                         ("idol", "streaming", "lena", ["Gnom", "Fuchs"], ["Zweibeiner", "Vierbeiner"], "Fuchs besucht Gnom"))
+        self.assertEqual([a["name"] for a in scene["attachments"]], ["szene-000000.glb"])
+        self.assertEqual(r.api("GET", "/api/file/" + scene["attachments"][0]["file"])[1], b"glTF-scene")
+        self.assertGreater(scene["id"], [m for m in r.messages() if m["from"] == "lena"][0]["id"])   # below the answer that made it
+        r.wait(lambda: message(scene["id"])["model3d"].get("steps") == 109, "film rendering")
+        self.assertEqual((message(scene["id"])["model3d"]["phase"], message(scene["id"])["model3d"]["stage"]), (2, "Film rendern"))
+        # The film is rendered by the worker: a restart of the room (every deploy is one) does not end it.
+        r.stop()
+        r.start()
+        time.sleep(0.6)
+        self.assertEqual((message(scene["id"])["state"], message(scene["id"])["model3d"].get("error")), ("streaming", None))
+        r.scene.hold = False
+        r.wait(lambda: message(scene["id"])["state"] == "done", "film done after the restart")
+        done = message(scene["id"])
+        self.assertEqual([(a["name"], a["kind"]) for a in done["attachments"]],
+                         [("szene-000000.glb", "model"), ("szene-000000.mp4", "video"), ("szene-000000.blend", "file")])
+        self.assertEqual((done["model3d"]["state"], done["model3d"]["film"], done["model3d"]["took"]), ("done", done["attachments"][1]["file"], 90))
+        self.assertEqual(r.api("GET", "/api/file/" + done["attachments"][1]["file"])[1], b"film")
+        # The other bot reads what was built (it asks him nothing); every bot has the tools, also one without a VM.
+        r.lena.reply = None
+        before = len(r.noah.chats())
+        r.say("@Noah was gibt es Neues?")
+        r.idle()
+        asked = r.noah.chats()[before]
+        self.assertIn('3D-Szene: "Fuchs besucht Gnom" (4.5 Sekunden; Darsteller: Gnom, Fuchs), gebaut von Lena. Chris kann sie im Chat drehen und abspielen. '
+                      "Ihr Film ist fertig. Dateien: szene-000000.glb", text_of(asked["messages"][-1]["content"]))
+        self.assertLessEqual({"models_3d", "scene_3d"}, {t["function"]["name"] for t in asked["tools"]})
+        # A scene is not a model: the next scene is made of the model again, not of the first scene.
+        r.scene.hold = True
+        script = iter([{"content": "", "tool_calls": [{"name": "models_3d", "arguments": {}}]},
+                       {"content": "", "tool_calls": [build(actors=[{"name": "Fuchs", "model": "", "part": 2}], actions=[{"actor": "Fuchs", "do": "jump"}])]},
+                       "Noch eine."])
+        r.lena.reply = lambda body: next(script)
+        r.say("@Lena noch eine Szene, nur mit dem Fuchs")
+        r.idle()
+        steps = [p for m in r.messages() if m["from"] == "lena" for p in m["parts"] if p["k"] == "step"][-2:]
+        self.assertNotIn("szene-", steps[0]["output"])
+        self.assertEqual(r.scene.specs[-1]["actors"][0]["file"], model["file"])   # no name: the newest model
+        # Its film is cancelled: the scene stays in its message. Photo to 3D is not asked about any of this.
+        second = scenes()[-1]
+        self.assertEqual(r.api("POST", "/api/3d/%s/cancel" % second["id"])[0], 200)
+        r.wait(lambda: message(second["id"])["state"] == "stopped", "film cancelled")
+        self.assertEqual((message(second["id"])["model3d"]["state"], len(message(second["id"])["attachments"])), ("cancelled", 1))
+        self.assertEqual((r.scene.cancelled, r.idol.cancelled), ([second["model3d"]["job"]], []))
+        # Deleting a scene removes its files and the worker's folder.
+        stored = [files / a["file"] for a in done["attachments"]]
+        self.assertTrue(all(p.exists() for p in stored))
+        self.assertEqual(r.api("DELETE", "/api/message/" + scene["id"])[0], 200)
+        self.assertFalse(any(p.exists() for p in stored))
+        r.wait(lambda: r.scene.deleted == [done["model3d"]["job"]], "scene folder removed")
+        self.assertEqual(r.idol.deleted, [])
+        r.api("POST", "/api/room/clear", {})
+        r.wait(lambda: r.scene.purges == 1, "scene purge")
 
     def test_bots_read_the_whole_chat_images_files_and_3d_jobs(self):
         # Lena's model takes images, Noah's does not.

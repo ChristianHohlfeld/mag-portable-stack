@@ -10,6 +10,7 @@ phone/desktop ── Tailscale :443 ── nginx (TLS, whois auth_request) ─�
                                             └─ llama-server noah :8192 (NUMA1)
                     mag-modeld (download, verify, start)   /run/mag-models/status.json
                     mag-idol :8793 (photo to 3D on the MI50)
+                    mag-scene :8795 (scenes from 3D models, Blender on the CPU)
                     mag-browser-webrtc :18784 (live view of the VM browsers)
                     mag-stt :8194 (speech to text, cores 28-55)
 ```
@@ -28,6 +29,7 @@ phone/desktop ── Tailscale :443 ── nginx (TLS, whois auth_request) ─�
 | `vm.hpp` | guest exec with live output, file writes, browser controller, VM tokens |
 | `site.hpp` | bot web pages: HTML blocks and `www` files published on the bot's site, shown as live previews |
 | `idol.hpp` | photo-to-3D jobs as room messages |
+| `scene.hpp` | scenes the bots build from 3D models, as room messages |
 | `push.hpp` | Web Push (VAPID) |
 | `api.hpp` | HTTP routes, event stream, VM bridge |
 | `magroom.cpp` | wiring |
@@ -46,7 +48,9 @@ text and steps (tool calls with the real input, output, runtime and exit
 state) in the order they happened. A 3D result carries `model3d` (job,
 progress, quality) and its GLB/STL/PLY as attachments. Attachments live in
 `STATE/files/` and belong to exactly one message: deleting the message
-deletes them, and for a 3D message also the worker's job directory.
+deletes them, and for a 3D message also the worker's job directory. A scene
+is such a message too (`model3d.kind = "scene"`, from `mag-scene`): its
+animated GLB is there from the start, its film joins it.
 
 ### Events
 
@@ -186,6 +190,34 @@ stage whose result is missing; queued and running jobs are taken up again in
 order at every start. The room mirrors the job into its message (phase k of
 n, the sampler's step and its own estimate) and picks jobs up again after its
 own restart.
+
+## Scenes (`ops/scene`)
+
+The bots' tools `models_3d` and `scene_3d` turn 3D models from the chat into
+animated scenes. A scene is a description (who plays, what each one does, in
+order), never code. `mag-scene` (`worker.py`, user `magbot`, cores 28-55, no
+device access) runs the pinned Blender (`blender.lock`, fetched once by
+`bootstrap.sh`) headless with `scene.py`:
+
+- `parts`: a generated model is one mesh that may show several figures; they
+  are told apart, and each one is read (`rig.py`). The mesh is filled into a
+  grid of cubes, so the second wall such models have inside does not matter.
+  What rises from a patch of the ground until it meets another leg or the
+  body is a leg; a tail or a head is followed from its tip until the slice
+  through it widens into the body. Two legs make a figure that walks upright
+  (with arms where they stand off the body), three or four an animal, anything
+  else a thing.
+- `build` (while the tool call waits, so a wrong description comes back in
+  words): every figure gets its skeleton and weights (each vertex follows the
+  bone of its cube, softened along the surface), the actions become
+  keyframes: gaits swing the legs from an even stance, the body rides along,
+  head, tail and arms do their part; a thing moves as a whole. It writes
+  `scene.glb` (skinned, animated), which the room posts at once and the page
+  plays in its own viewer, and `scene.blend`.
+- `render` (a stage on its own, like the Idol stages): Cycles on the CPU,
+  frame by frame, then ffmpeg. A restart of the worker follows the running
+  render again; after a reboot it goes on with the first missing frame. The
+  film and the `.blend` join the scene's message when they are done.
 
 ## Models (`ops/models`)
 

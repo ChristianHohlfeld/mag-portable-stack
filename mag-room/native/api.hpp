@@ -98,17 +98,15 @@ private:
       "<p>Kein Zugang. Dieser Raum gehört Chris.</p>";
 
   static const http::Headers &page_headers() {
-    // Cross-origin isolation lets the speech and read-aloud workers use
-    // threads; the policy keeps model output from loading or running anything
-    // that is not part of this release.
+    // The policy keeps model output from loading or running anything that is
+    // not part of this release. The one exception is deliberate: pages of the
+    // bots run in frames from their own sites (another origin, tailnet only).
     static const http::Headers h = {
-        {"Cross-Origin-Opener-Policy", "same-origin"},
-        {"Cross-Origin-Embedder-Policy", "require-corp"},
         {"Referrer-Policy", "no-referrer"},
         {"Content-Security-Policy",
          "default-src 'self'; img-src 'self' blob: data:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; "
-         "script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self'; frame-src 'self'; "
-         "object-src 'none'; base-uri 'none'; form-action 'self'"}};
+         "script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self'; frame-src 'self' https://*." +
+             site::zone() + "; object-src 'none'; base-uri 'none'; form-action 'self'"}};
     return h;
   }
 
@@ -125,7 +123,6 @@ private:
 
   void asset(int fd, const http::Request &r, const std::string &path, bool templated, http::Headers extra = {}) {
     extra.push_back({"Cross-Origin-Resource-Policy", "same-origin"});
-    extra.push_back({"Cross-Origin-Embedder-Policy", "require-corp"});
     if (templated) {
       std::string body = slurp(path);
       if (body.empty()) return http::send_error(fd, 404, "Nicht gefunden");

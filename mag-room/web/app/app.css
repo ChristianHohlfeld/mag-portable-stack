@@ -213,6 +213,23 @@ svg { width: 20px; height: 20px; flex: none; fill: none; stroke: currentColor; s
 .step .peek { flex-basis: 100%; font: 12px/1.4 var(--mono); color: var(--muted); padding: 2px 0 0 26px; white-space: pre-wrap; overflow: hidden; max-height: 4.3em; overflow-wrap: anywhere; }
 .step .peek:empty, .step[open] .peek { display: none; }
 
+/* ---- page card: a bot's HTML, running from the bot's own site ----------- */
+.page { margin: 6px 0 10px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); overflow: hidden; }
+.page .bar { display: flex; align-items: center; gap: 5px; padding: 6px; }
+.page .bar .grow { flex: 1; min-width: 0; }
+.page .seg { flex: none; }
+.page .seg button { padding: 6px 11px; white-space: nowrap; }
+.page .tool { display: inline-flex; align-items: center; gap: 6px; flex: none; height: 32px; padding: 0 9px; border-radius: 10px; border: 1px solid var(--line); background: var(--surface-2); color: var(--text); font-size: 13px; text-decoration: none; white-space: nowrap; }
+.page .tool svg { width: 16px; height: 16px; }
+.page .stage { position: relative; height: clamp(300px, 64vh, 640px); background: #fff; border-top: 1px solid var(--line); }
+.page iframe { display: block; width: 100%; height: 100%; border: 0; background: #fff; }
+.page .idle { position: absolute; inset: 0; width: 100%; color: #444; font-size: 14px; }
+.page .code { border-top: 1px solid var(--line); max-height: clamp(300px, 64vh, 640px); overflow: auto; }
+.page .code pre { margin: 0; border: 0; border-radius: 0; }
+.page .code pre .copy { display: none; }
+.page .addr { display: block; padding: 6px 10px; border-top: 1px solid var(--line); font-size: 12.5px; color: var(--muted); text-decoration: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+@media (max-width: 380px) { .page .tool svg { display: none; } }
+
 /* attachments */
 .atts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
 .msg.user .atts { justify-content: flex-end; }

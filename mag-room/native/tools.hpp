@@ -3,6 +3,7 @@
 // user sees (real command, live output, runtime) is the step in the message.
 #pragma once
 #include "room.hpp"
+#include "site.hpp"
 #include "vm.hpp"
 
 namespace mag::tools {
@@ -16,6 +17,7 @@ struct Ctx {
   bool web = true;         // room setting: internet tools allowed
   std::function<void(const std::string &)> output;       // live output of the step
   std::function<void(const Val &)> attach;               // add a file to the bot message
+  std::function<void(const Val &)> page;                 // show a published page in the bot message
 };
 
 struct Result {
@@ -43,7 +45,8 @@ inline Val schemas(bool has_vm) {
                  "Use it to inspect, build, test, download, use git.",
                  R"({"type":"object","properties":{"command":{"type":"string","description":"bash command or script"},"timeout_s":{"type":"integer","description":"limit in seconds, default 300, at most 1800"}},"required":["command"]})"));
     list.push(fn("write_file",
-                 "Create or replace a text file in your VM (relative paths are below /home/bot). Prefer this over heredocs.",
+                 "Create or replace a text file in your VM (relative paths are below /home/bot). Prefer this over heredocs. "
+                 "A file below /home/bot/www is published on your website at once; an .html file there is shown to Chris as a live page in the chat.",
                  R"({"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"]})"));
     list.push(fn("browser_open", "Open a URL in your own VM browser (real Chrome, persistent profile).",
                  R"({"type":"object","properties":{"url":{"type":"string"}},"required":["url"]})"));
@@ -56,8 +59,6 @@ inline Val schemas(bool has_vm) {
     list.push(fn("browser_scroll", "Scroll the page vertically; positive dy scrolls down.",
                  R"({"type":"object","properties":{"dy":{"type":"integer"}}})"));
     list.push(fn("browser_back", "Go back one page.", R"({"type":"object","properties":{}})"));
-    list.push(fn("browser_screenshot", "Take a screenshot of your browser and post it in the chat.",
-                 R"({"type":"object","properties":{}})"));
     list.push(fn("share_file", "Post a file from your VM in the chat so Chris can open or download it.",
                  R"({"type":"object","properties":{"path":{"type":"string"},"name":{"type":"string"}},"required":["path"]})"));
   }
@@ -84,7 +85,6 @@ inline std::string title(const std::string &name, const Val &args) {
   if (name == "browser_type") return "Tippt " + one(jstr(args, "text"), 60);
   if (name == "browser_scroll") return "Scrollt";
   if (name == "browser_back") return "Zurück";
-  if (name == "browser_screenshot") return "Screenshot";
   if (name == "share_file") return "Teilt " + one(jstr(args, "path"), 100);
   if (name == "web_search") return "Sucht: " + one(jstr(args, "query"), 120);
   if (name == "read_image") return "Liest Bild " + one(jstr(args, "name"), 80);
@@ -209,7 +209,22 @@ inline Result call(const std::string &name, const Val &args, Ctx &ctx) {
     const auto r = ctx.guests.write(vm, path, content->str, false, ctx.cancel);
     if (r.cancelled) return {"abgebrochen (Stop)", false};
     if (r.code != 0) return fail("Schreiben fehlgeschlagen: " + clip(trim(r.out), 600));
-    return {clip(trim(r.out), 400), true};
+    std::string text = clip(trim(r.out), 400);
+    // "saved <path> <n> bytes": a file of the bot's site goes online at once.
+    std::istringstream saved(r.out);
+    std::string word, where;
+    saved >> word >> where;
+    const std::string rel = word == "saved" ? site::rel_path(where) : "";
+    if (!rel.empty()) {
+      const std::string error = site::publish(ctx.guests, vm, ctx.cancel);
+      const std::string low = lower(rel);
+      if (!error.empty()) text += "\nNicht veröffentlicht: " + error;
+      else if (ends_with(low, ".html") || ends_with(low, ".htm")) {
+        if (ctx.page) ctx.page(site::page(jstr(ctx.bot, "id"), rel, site::title(content->str)));
+        text += "\nVeröffentlicht: " + site::base_url(ctx.bot) + "/" + rel + " (Chris sieht die Seite live im Chat.)";
+      } else text += "\nVeröffentlicht: " + site::base_url(ctx.bot) + "/" + rel;
+    }
+    return {text, true};
   }
   if (starts_with(name, "browser_")) {
     if (!need_vm()) return fail("Du hast keine eigene VM.");
@@ -239,14 +254,6 @@ inline Result call(const std::string &name, const Val &args, Ctx &ctx) {
       Val body = Val::object();
       body["dy"] = std::to_string((int)jnum(args, "dy", 600)); // text: older controllers ignore a number
       return browser_result(ctx.guests.browser(vm, "POST", "/scroll", mj::dump(body), 30, ctx.cancel), 1500);
-    }
-    if (name == "browser_screenshot") {
-      const auto r = ctx.guests.browser(vm, "GET", "/screenshot.png", "", 60, ctx.cancel);
-      if (!r.ok() || r.body.size() < 100) return fail("Kein Screenshot erhalten.");
-      Val att = ctx.room.store_file("browser.png", r.body, jstr(ctx.bot, "id"));
-      if (!att.isObj()) return fail("Screenshot konnte nicht gespeichert werden.");
-      if (ctx.attach) ctx.attach(att);
-      return {"Screenshot im Chat gepostet (" + jstr(att, "name") + ").", true};
     }
     return fail("Unbekanntes Browser-Werkzeug.");
   }

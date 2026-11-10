@@ -85,6 +85,107 @@
   }
   const lastLines = (text) => text.replace(/\s+$/, '').split('\n').slice(-3).join('\n');
 
+  // ---- pages: a bot's HTML, running in a frame from the bot's own site -----
+  // Same fingerprint as the server (FNV-1a over the bytes without whitespace):
+  // it tells which code block of the answer a published page came from.
+  function sigOf(text) {
+    const bytes = new TextEncoder().encode(text.replace(/[ \t\n\r\f\v]+/g, ''));
+    let h = 0x811c9dc5;
+    for (let i = 0; i < bytes.length; i++) h = Math.imul(h ^ bytes[i], 0x01000193) >>> 0;
+    return h.toString(16).padStart(8, '0');
+  }
+  // Frames load when they come into view, and only a few stay alive: a
+  // timeline full of WebGL pages must not eat the phone.
+  const framed = [];
+  let seen = null;
+  function watch(card) {
+    seen ||= new IntersectionObserver((entries) => {
+      for (const e of entries) {
+        const card = e.target;
+        if (!card.isConnected) { seen.unobserve(card); unmount(card); continue; }
+        card._visible = e.isIntersecting;
+        if (e.isIntersecting) mount(card);
+      }
+    }, { root: scroller, rootMargin: '250px 0px' });
+    seen.observe(card);
+  }
+  function mount(card) {
+    if (card._frame || card._mode !== 'preview') return;
+    const frame = el('iframe', { title: card._title, src: card._src });
+    frame.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-forms allow-modals allow-popups allow-popups-to-escape-sandbox allow-pointer-lock allow-downloads');
+    frame.setAttribute('allow', 'fullscreen; autoplay; clipboard-write; accelerometer; gyroscope; gamepad; xr-spatial-tracking');
+    frame.setAttribute('referrerpolicy', 'no-referrer');
+    card._frame = frame;
+    card._stage.replaceChildren(frame);
+    framed.push(card);
+    while (framed.length > 3) {
+      const idle = framed.find((c) => c !== card && !c._visible);
+      if (!idle) break;
+      unmount(idle);
+    }
+  }
+  function unmount(card) {
+    const at = framed.indexOf(card);
+    if (at >= 0) framed.splice(at, 1);
+    if (!card._frame) return;
+    card._frame = null;
+    card._stage.replaceChildren(el('button', { class: 'idle', text: 'Vorschau laden', onclick: () => mount(card) }));
+  }
+  function buildPage(m, page, pre) {
+    const base = MAG.bot(page.bot || m.from)?.site;
+    if (!base || !page.path) return null;
+    const href = base + '/' + page.path.split('/').map(encodeURIComponent).join('/');
+    const stage = el('div', { class: 'stage' }), code = el('div', { class: 'code md', hidden: true });
+    const source = () => (pre ? (pre.querySelector('code') || pre).textContent : m.parts?.[page.part]?.input?.content || '');
+    const tab = (mode, label) => el('button', { role: 'tab', text: label, onclick: () => show(mode) });
+    const tabs = { preview: tab('preview', 'Vorschau'), code: tab('code', 'Code') };
+    const copied = el('span', { text: 'Kopieren' });
+    const card = el('div', { class: 'page', dataset: { path: page.path } },
+      el('div', { class: 'bar' },
+        el('div', { class: 'seg', role: 'tablist' }, tabs.preview, tabs.code),
+        el('span', { class: 'grow' }),
+        el('button', { class: 'tool', 'aria-label': 'Code kopieren', onclick: () => copy(source(), copied) }, MAG.icon('copy'), copied),
+        el('a', { class: 'tool', href, target: '_blank', rel: 'noopener', 'aria-label': 'Vollbild in neuem Tab' }, MAG.icon('full'), el('span', { text: 'Vollbild' }))),
+      stage, code,
+      el('a', { class: 'addr', href, target: '_blank', rel: 'noopener', text: href.replace(/^https?:\/\//, '') }));
+    Object.assign(card, { _src: href + '?v=' + (page.v || m.ts), _title: page.title || page.path, _stage: stage, _mode: 'preview', _visible: false, _frame: null });
+    function show(mode) {
+      card._mode = mode;
+      for (const [key, node] of Object.entries(tabs)) { node.classList.toggle('on', key === mode); node.setAttribute('aria-selected', String(key === mode)); }
+      stage.hidden = mode !== 'preview';
+      code.hidden = mode !== 'code';
+      if (mode === 'code') {
+        if (!code.firstChild) {
+          const block = pre || el('pre', {}, el('code', { class: 'language-html', text: source() }));
+          if (!pre && window.hljs && source().length < 40000) { try { hljs.highlightElement(block.firstChild); } catch {} }
+          code.append(block);
+        }
+        unmount(card);
+        stage.replaceChildren();
+      } else if (card._visible) mount(card);
+    }
+    if (pre) { pre.before(card); code.append(pre); }
+    show('preview');
+    watch(card);
+    return card;
+  }
+  // Puts each page where it belongs: in place of the code block it was made
+  // from, or below the step that wrote it.
+  function placePages(m, body) {
+    if (!(m.pages || []).length) return;
+    const blocks = [...body.querySelectorAll('.md pre')].filter((pre) => pre.querySelector('code'))
+      .map((pre) => ({ pre, sig: sigOf(pre.querySelector('code').textContent), used: false }));
+    for (const page of m.pages) {
+      const hit = page.sig ? blocks.find((b) => !b.used && b.sig === page.sig) : null;
+      if (hit) hit.used = true;
+      const card = buildPage(m, page, hit?.pre);
+      if (!card || hit) continue;
+      const anchor = page.part !== undefined ? body.querySelector(':scope > [data-part="' + page.part + '"]') : null;
+      if (anchor) anchor.after(card);
+      else body.append(card);
+    }
+  }
+
   // ---- attachments and 3D -------------------------------------------------
   const fileUrl = (a, extra) => '/api/file/' + encodeURIComponent(a.file) + (extra || '');
   function buildAttachment(a) {
@@ -149,6 +250,7 @@
       (m.parts || []).forEach((p, i) => body.append(buildPart(m, i)));
       if (!(m.parts || []).length && m.text) body.append(markdown(m.text));
       node.append(body);
+      placePages(m, body);
     }
     const files = (m.attachments || []).filter((a) => !m.model3d);
     if (files.length) node.append(el('div', { class: 'atts' }, files.map(buildAttachment)));
@@ -170,6 +272,7 @@
   function footer(m) {
     if (m.state === 'error' && !m.model3d) return el('div', { class: 'note err', text: m.error || 'Fehler' });
     if (m.state === 'stopped' && !m.model3d) return el('div', { class: 'note', text: 'Gestoppt' });
+    if (m.page_note) return el('div', { class: 'note', text: m.page_note });
     return null;
   }
   function markStreaming(node, m) {
@@ -183,6 +286,8 @@
 
   function upsert(m, fresh) {
     const old = nodes.get(m.id);
+    // The whole message is rebuilt: a queued re-render of one of its parts is obsolete.
+    for (const key of dirty) if (key.startsWith(m.id + ':')) dirty.delete(key);
     const node = build(m);
     if (old) {
       // Keep what the reader opened.

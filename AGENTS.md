@@ -53,6 +53,11 @@ system-prefix state; no conversation is ever saved to or restored from disk.
 Everything in the timeline is one message type (text, bot work with its
 steps, files, 3D results), stored one JSON file per message. A 3D result is a
 normal message; deleting it also deletes its files and its Idol job directory.
+A finished HTML page of a bot (an `html` code block of its answer, or a file
+it writes below `/home/bot/www`) is published on the bot's own tailnet site
+and runs in the chat as a live preview framed from that site, with Code/
+Vorschau, Kopieren and Vollbild (the page in a new tab). Bots post no
+screenshots.
 The UI is mobile first: streamed answers appear below the user message in the
 order they are produced, the view follows only while the reader is at the
 end, and a running step is a live card with the real command, output,

@@ -1027,7 +1027,7 @@ private:
       set_phase(b, "tool", "Sieht sich " + job.name + " an");
       const std::string ask = "(Notiz des Raums, nicht von Chris: Beschreibe das Bild " + job.name +
                               " in zwei bis vier sachlichen Sätzen für jemanden, der es nicht sehen kann: was zu sehen ist, lesbarer Text, "
-                              "auffällige Details. Antworte nur mit der Beschreibung.)";
+                              "auffällige Details. Antworte nur mit der Beschreibung, ohne Werkzeug.)";
       Val msgs = request_messages(b, b.wire["messages"]);
       Val &last = msgs.arr->back();
       if (jstr(last, "role") == "user") {

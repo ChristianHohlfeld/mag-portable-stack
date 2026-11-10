@@ -13,10 +13,10 @@ namespace mag {
 struct Config {
   std::string state_dir, files_dir, web_dir, bind_host, bridge_ip, gateway, models_status,
       models_control, idol_url, scene_url, rtc_url, stt_url, tts_dir, guest_run, agent_ctl, brave_key, browser_binary,
-      version, access_file;
+      version, access_file, s23_token_file;
   bool sudo = true; // the guest wrappers run through sudo (off only for the test fixture)
   int port = 8766, bridge_port = 8767, max_steps = 48, turn_budget_s = 3600, tool_timeout_s = 900,
-      max_tokens = 4096, bot_rounds = 0;
+      max_tokens = 4096, bot_rounds = 0, s23_port = 18721;
   static Config from_env() {
     Config c;
     c.state_dir = env("MAG_ROOM_STATE", "/var/lib/magbot/room");
@@ -40,6 +40,9 @@ struct Config {
     c.brave_key = env("BRAVE_API_KEY", env("MAG_ROOM_BRAVE_KEY"));
     c.stt_url = env("MAG_STT_URL", "http://127.0.0.1:8194");
     c.tts_dir = env("MAG_TTS_DIR", "/opt/mag-tts"); // the voices the browser reads aloud with (ops/tts)
+    // The control daemon of Chris's phone (devices/s23), if he runs it. Its token is read when it is needed.
+    c.s23_port = (int)envl("MAG_S23_PORT", 18721);
+    c.s23_token_file = env("MAG_S23_TOKEN_FILE", "/run/mag-s23/token");
     c.browser_binary = env("MAG_BROWSER_BINARY", "/opt/mag-stack/current/bin/mag-browser");
     c.access_file = env("MAG_ROOM_ACCESS", c.state_dir + "/access.json");
     c.max_steps = (int)envl("MAG_ROOM_MAX_STEPS", 48);

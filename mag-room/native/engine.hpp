@@ -27,7 +27,8 @@ inline const char *kEnd = "[[MAG:ENDE]]";
 
 class Engine {
 public:
-  Engine(Room &room, vm::Guests &guests, Scenes &scenes, Plugins &plugins) : room_(room), guests_(guests), scenes_(scenes), plugins_(plugins) {}
+  Engine(Room &room, vm::Guests &guests, Scenes &scenes, Plugins &plugins)
+      : room_(room), guests_(guests), scenes_(scenes), plugins_(plugins), phone_(!tools::phone_token(room.cfg).empty()) {}
   ~Engine() { shutdown(); }
 
   void start() {
@@ -375,6 +376,7 @@ private:
   vm::Guests &guests_;
   Scenes &scenes_;
   Plugins &plugins_;
+  const bool phone_; // the phone's control daemon was set up when the room started: only then the bots have its tools
   std::vector<std::unique_ptr<Bot>> bots_;
   std::mutex mu_;
   std::condition_variable cv_;
@@ -573,7 +575,7 @@ private:
   // owner bound to it. The list is part of the prompt prefix, so it changes
   // only when the owner changes a binding or refreshes a plugin.
   Val tools_for(const Val &me) {
-    Val list = tools::schemas(vm::valid_name(jstr(me, "vm")));
+    Val list = tools::schemas(vm::valid_name(jstr(me, "vm")), phone_);
     const Val more = plugins_.schemas(me);
     for (auto &def : more.asArr()) list.push(def);
     return list;

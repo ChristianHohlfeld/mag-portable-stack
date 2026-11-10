@@ -50,7 +50,7 @@ Read `X-S23-Latency-Ms`. Do not point this curl at port 8720.
 
 ## Room tools
 
-`s23_status`, `s23_tap`, `s23_swipe`, `s23_text`, `s23_key`, and `s23_screenshot` call `127.0.0.1` only. The token stays in the room process. If the daemon is not configured or not running, the tool returns that fact and does not touch `s23pub`. A screenshot tool result is the byte count, not the image.
+`s23_status`, `s23_tap`, `s23_swipe`, `s23_text`, `s23_key`, and `s23_screenshot` call `127.0.0.1` only (`mag-room/native/tools.hpp`). The room offers them to the bots only when the daemon's token file is there when the room starts (`MAG_S23_TOKEN_FILE`, default `/run/mag-s23/token`, readable by the room's user `magbot`; `MAG_S23_PORT` as above): while the daemon is not in use they take no room in a prompt, and after it is set up a restart of the room brings them. The token is read from that file for each call and stays in the room process. If the daemon is not running, the tool returns that fact and does not touch `s23pub`. A screenshot tool result is the byte count, not the image.
 
 ## Not started by deploy
 

@@ -117,7 +117,7 @@ public:
   Bus bus;
 
   explicit Room(Config c) : cfg(std::move(c)) {
-    for (const char *sub : {"", "/messages", "/files", "/wire", "/uploads"})
+    for (const char *sub : {"", "/messages", "/files", "/wire", "/uploads", "/vision"})
       fs::create_directories(cfg.state_dir + sub);
     load();
   }
@@ -195,6 +195,20 @@ public:
     bus.publish("reasoning", ev);
   }
 
+  // Writes down what a seeing bot saw in an image of this message ("" when
+  // it could not tell): the bots without eyes read it, and nobody asks twice.
+  bool describe(const std::string &id, const std::string &stored, const std::string &text) {
+    return update(id, [&](Val &m) {
+      Val *atts = m.find("attachments");
+      if (!atts || !atts->isArr()) return;
+      for (auto &a : *atts->arr) {
+        if (jstr(a, "file") != stored) continue;
+        a["seen"] = true;
+        if (!text.empty()) a["description"] = text;
+      }
+    });
+  }
+
   // Adds a step part (a tool call) and returns its part index.
   int add_step(const std::string &id, const Val &step) {
     std::lock_guard<std::mutex> lk(mu_);
@@ -268,7 +282,7 @@ public:
     for (auto &kv : messages_) gone.push_back(kv.second);
     messages_.clear();
     std::error_code ec;
-    for (const char *sub : {"/messages", "/files", "/uploads"}) {
+    for (const char *sub : {"/messages", "/files", "/uploads", "/vision"}) {
       fs::remove_all(cfg.state_dir + sub, ec);
       fs::create_directories(cfg.state_dir + sub, ec);
     }
@@ -446,7 +460,9 @@ private:
     if (const Val *atts = m.find("attachments"); atts && atts->isArr())
       for (auto &a : atts->asArr()) {
         const std::string path = file_path(jstr(a, "file"));
-        if (!path.empty()) unlink(path.c_str());
+        if (path.empty()) continue;
+        unlink(path.c_str());
+        unlink((cfg.state_dir + "/vision/" + jstr(a, "file") + ".jpg").c_str()); // its copy for the models
       }
   }
 
@@ -507,6 +523,10 @@ private:
     for (auto &entry : fs::directory_iterator(cfg.files_dir, ec))
       if (!used.count(entry.path().filename().string())) fs::remove(entry.path(), ec);
     for (auto &entry : fs::directory_iterator(cfg.state_dir + "/uploads", ec)) fs::remove(entry.path(), ec);
+    for (auto &entry : fs::directory_iterator(cfg.state_dir + "/vision", ec)) {
+      const std::string name = entry.path().filename().string();
+      if (name.size() < 5 || !used.count(name.substr(0, name.size() - 4))) fs::remove(entry.path(), ec);
+    }
     settings_ = read_json(cfg.state_dir + "/settings.json");
     if (!settings_.isObj()) settings_ = Val::object();
     if (!settings_.find("bot_rounds")) settings_["bot_rounds"] = cfg.bot_rounds;

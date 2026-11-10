@@ -94,7 +94,8 @@
         if (m.state === 'downloading' && f.total) add('Download', MAG.bytes(f.bytes) + ' von ' + MAG.bytes(f.total) + (f.rate > 1 ? ' · ' + MAG.bytes(f.rate) + '/s' : ''));
         if (m.detail && m.state !== 'downloading') add('Hinweis', m.detail);
         if (m.draft) add('Drafter (MTP)', m.draft.active ? 'aktiv' : m.draft.ok ? 'bereit, aktiv nach Neustart' : 'nicht vorhanden');
-        if (m.mmproj) add('Bilder sehen', m.mmproj.active ? 'aktiv' : m.mmproj.ok ? 'bereit, aktiv nach Neustart' : m.mmproj.total ? 'wird geladen ' + Math.floor(((m.mmproj.bytes || 0) / m.mmproj.total) * 100) + ' %' : 'nicht vorhanden');
+        if (m.mmproj && !b.vision) add('Bilder sehen', m.mmproj.ok ? 'bereit, aktiv nach Neustart' : m.mmproj.total ? 'wird geladen ' + Math.floor(((m.mmproj.bytes || 0) / m.mmproj.total) * 100) + ' %' : 'nicht vorhanden');
+        else add('Bilder', b.vision ? 'sieht sie selbst' : 'liest ihre Beschreibung');
         if (m.state === 'ready') {
           add('Kontext', b.ctx_tokens ? b.ctx_tokens.toLocaleString('de-DE') + ' von ' + b.ctx_budget.toLocaleString('de-DE') + ' Tokens' : 'leer');
           if (b.tps) add('Tempo', b.tps.toFixed(1).replace('.', ',') + ' Tokens/s');

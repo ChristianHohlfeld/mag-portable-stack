@@ -192,15 +192,17 @@
   // ---- attachments and 3D -------------------------------------------------
   const fileUrl = (a, extra) => '/api/file/' + encodeURIComponent(a.file) + (extra || '');
   function buildAttachment(a) {
-    if (a.kind === 'image') return el('button', { class: 'att-img', onclick: () => lightbox(fileUrl(a), a.name) }, el('img', { src: fileUrl(a), alt: a.name, loading: 'lazy' }));
+    // What the bots were told about a picture is its caption (and its alt text).
+    if (a.kind === 'image') return el('button', { class: 'att-img', title: a.description || a.name, onclick: () => lightbox(fileUrl(a), a.name, a.description) },
+      el('img', { src: fileUrl(a), alt: a.description || a.name, loading: 'lazy' }));
     if (a.kind === 'audio') return el('audio', { controls: true, preload: 'none', src: fileUrl(a) });
     if (a.kind === 'video') return el('video', { controls: true, preload: 'metadata', src: fileUrl(a), playsInline: true });
     return el('a', { class: 'att-file', href: fileUrl(a, '?download=1'), download: a.name }, MAG.icon(a.kind === 'model' ? 'cube' : 'file'),
       el('span', { text: a.name }), el('small', { text: MAG.bytes(a.size) }));
   }
   // A picture over the chat: Esc, the back gesture, a swipe or the X close it.
-  function lightbox(src, name) {
-    const img = el('img', { src, alt: name || '' });
+  function lightbox(src, name, caption) {
+    const img = el('img', { src, alt: caption || name || '' });
     const leave = () => {
       box.remove();
       document.removeEventListener('keydown', key);
@@ -210,6 +212,7 @@
     const key = (e) => e.key === 'Escape' && close();
     const box = el('div', { id: 'lightbox', onclick: (e) => e.target === box && close() }, img,
       el('div', { class: 'bar' },
+        caption ? el('p', { class: 'cap', text: caption }) : null,
         el('a', { class: 'pill', href: src, target: '_blank', rel: 'noopener' }, MAG.icon('open'), 'In neuem Tab öffnen'),
         el('a', { class: 'pill', href: src + '?download=1', download: name || '' }, MAG.icon('down'), 'Herunterladen')),
       el('button', { class: 'icon-btn', 'aria-label': 'Schließen', html: MAG.icons.x, onclick: close }));
@@ -233,6 +236,12 @@
     window.addEventListener('popstate', leave);
     document.addEventListener('keydown', key);
     document.body.append(box);
+  }
+  // The description a seeing bot wrote for a room file, if there is one.
+  function captionOf(file) {
+    for (const m of S.messages.values())
+      for (const a of m.attachments || []) if (a.file === file && a.description) return a.description;
+    return '';
   }
   const quality = { fast: 'Schnell', normal: 'Normal', high: 'Hoch' };
   const kinds = { glb: 'Modell mit Textur', stl: 'für den 3D-Druck', ply: 'Punktwolke (Gaussian Splat)' };
@@ -265,7 +274,7 @@
     const src = m3.image ? '/api/file/' + encodeURIComponent(m3.image) : '';
     // The photo it is made from: a thumbnail that opens over the chat.
     const thumb = src
-      ? el('button', { class: 'src', 'aria-label': 'Ausgangsbild ansehen', title: 'Ausgangsbild', onclick: () => lightbox(src, m3.source) },
+      ? el('button', { class: 'src', 'aria-label': 'Ausgangsbild ansehen', title: 'Ausgangsbild', onclick: () => lightbox(src, m3.source, captionOf(m3.image)) },
           el('img', { src, alt: '', loading: 'lazy', onerror: (e) => e.target.closest('.src')?.replaceWith(el('span', { class: 'src' }, MAG.icon('cube'))) }))
       : el('span', { class: 'src' }, MAG.icon('cube'));
     const label = 'Qualität ' + (quality[m3.quality] || m3.quality);
@@ -439,7 +448,7 @@
       if (!b.busy && b.phase === 'idle') continue;
       let what = phases[b.phase] || 'arbeitet';
       if (b.phase === 'reading' && b.total > 0) what += ' ' + Math.min(99, Math.round((b.processed / b.total) * 100)) + ' %';
-      rows.push(el('div', { class: 'act', dataset: { bot: b.id, since: b.phase_since } },
+      rows.push(el('div', { class: 'act-row', dataset: { bot: b.id, since: b.phase_since } },
         el('span', { class: 'dots' }, el('i'), el('i'), el('i')), el('b', { text: b.name }), el('span', { class: 'what', text: what }),
         el('span', { class: 't', text: MAG.stopwatch(Date.now() - b.phase_since) }),
         b.busy ? el('button', { class: 'stop', text: 'Stop', onclick: () => MAG.api('POST', '/api/stop', { bot: b.id }).catch((x) => MAG.toast(x.message, true)) }) : null));
@@ -448,7 +457,7 @@
   }
   setInterval(() => {
     if (!activity) return;
-    activity.querySelectorAll('.act').forEach((row) => { row.querySelector('.t').textContent = MAG.stopwatch(Date.now() - +row.dataset.since); });
+    activity.querySelectorAll('.act-row').forEach((row) => { row.querySelector('.t').textContent = MAG.stopwatch(Date.now() - +row.dataset.since); });
     list.querySelectorAll('.m3 .clock').forEach((node) => { node.textContent = clock3d(node.dataset); });
     list.querySelectorAll('.step.running').forEach((node) => {
       const article = node.closest('.msg'), m = S.messages.get(article?.dataset.id);

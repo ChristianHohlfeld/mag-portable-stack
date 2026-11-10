@@ -182,6 +182,24 @@ static std::string prior_log_hash(const fs::path &p){
   catch(const fs::filesystem_error&){}
   return best.empty()?std::string(64,'0'):prev_hash(best);
 }
+// Images travel inline in a chat request (base64) and with every later
+// request of the conversation again. The log records which image it was
+// (SHA-256 and size of the data URL), not megabytes of pixels per turn.
+static void strip_media(Val &body){
+  Val *messages=body.isObj()?body.find("messages"):nullptr;
+  if(!messages||!messages->isArr())return;
+  for(auto &m:*messages->arr){
+    Val *content=m.isObj()?m.find("content"):nullptr;
+    if(!content||!content->isArr())continue;
+    for(auto &part:*content->arr){
+      Val *image=part.isObj()?part.find("image_url"):nullptr;
+      Val *url=image&&image->isObj()?image->find("url"):nullptr;
+      if(!url||url->type!=Val::STR||url->str.compare(0,5,"data:")!=0)continue;
+      const std::string note="[image sha256:"+sha(url->str)+" "+std::to_string(url->str.size())+" bytes]";
+      *url=note;
+    }
+  }
+}
 static void audit(Val entry){
   if(cfg.logs.empty())return;
   std::lock_guard<std::mutex> lk(audit_mtx);
@@ -429,7 +447,7 @@ static void proxy(int fd){
   caller["bot"]=r.headers.count("x-mag-bot")?r.headers["x-mag-bot"]:"";
   caller["session"]=r.headers.count("x-mag-session")?r.headers["x-mag-session"]:"";
   if(!quiet){
-    Val v=Val::object();v["type"]=is_llm?"llm_request":"http_request";v["id"]=id;v["caller"]=caller;v["method"]=r.method;v["path"]=r.path;v["model_variant"]=selected;v["body"]=parse_or_text(r.body);
+    Val v=Val::object();v["type"]=is_llm?"llm_request":"http_request";v["id"]=id;v["caller"]=caller;v["method"]=r.method;v["path"]=r.path;v["model_variant"]=selected;v["body"]=parse_or_text(r.body);strip_media(v["body"]);
     Val hs=Val::object();for(auto &kv:r.headers){std::string k=kv.first;hs[k]=(k=="authorization"||k=="cookie"||k=="x-api-key"||k=="proxy-authorization"||k=="x-auth-token")?"[REDACTED]":kv.second;}v["headers"]=hs;audit(v);
   }
   int up=connect_loopback(upstream,3);

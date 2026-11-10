@@ -22,7 +22,7 @@ HERE = pathlib.Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
 sys.path.insert(0, str(HERE))
 from fake_idol import FakeIdol  # noqa: E402
-from fake_llama import FakeLlama  # noqa: E402
+from fake_llama import FakeLlama, text_of  # noqa: E402
 
 BIN = pathlib.Path(os.environ.get("MAGROOM_BIN", ROOT / "build/magroom"))
 
@@ -420,6 +420,53 @@ class RoomContract(unittest.TestCase):
         # The trash button leaves no job behind either.
         r.api("POST", "/api/room/clear", {})
         r.wait(lambda: r.idol.purges == 1, "idol purge")
+
+    def test_bots_read_the_whole_chat_images_files_and_3d_jobs(self):
+        # Lena's model takes images, Noah's does not.
+        r = Room(MAG_ROOM_VISION="lena", MAG_ROOM_SIGHT_WAIT_S="30")
+        self.addCleanup(r.close)
+
+        def lena(body):
+            text = text_of(body["messages"][-1]["content"])
+            if "Beschreibe das Bild" in text:
+                return "Eine rote Tasse auf einem Holztisch."
+            return "PASS" if "Sonst antworte exakt PASS" in text else "Ich sehe die Tasse."
+        r.lena.reply = lena
+        png = b"\x89PNG\r\n\x1a\n" + b"x" * 64
+        photo = r.api("POST", "/api/upload?name=tasse.png", raw=png)[1]
+        note = r.api("POST", "/api/upload?name=notiz.txt", raw="Einkauf: Milch und Brot".encode())[1]
+        asked = r.say("Was ist auf dem Bild?", attachments=[photo["file"], note["file"]])
+        r.idle()
+        # Lena gets the image itself, in front of the text, and wrote down once what it shows ...
+        seen = [c["messages"][-1]["content"] for c in r.lena.chats() if isinstance(c["messages"][-1]["content"], list)]
+        self.assertTrue(seen and all(parts[0]["type"] == "image_url" and parts[0]["image_url"]["url"].startswith("data:image/png;base64,")
+                                     for parts in seen), seen)
+        described = [parts for parts in seen if "Beschreibe das Bild tasse.png" in text_of(parts)]
+        self.assertEqual(len(described), 1)
+        answered = [parts for parts in seen if "Beschreibe das Bild" not in text_of(parts)]
+        self.assertIn("Chris: Was ist auf dem Bild?", text_of(answered[0]))
+        self.assertTrue(text_of(described[0]).startswith(text_of(answered[0])))  # same prefix: only a short branch is evaluated
+        # ... which is what Noah, who has no eyes, reads; the small text file is simply part of the chat.
+        noah = r.noah.chats()[0]["messages"][-1]["content"]
+        self.assertIsInstance(noah, str)
+        self.assertIn("[Bild tasse.png (image/png, 1 KB). Zu sehen: Eine rote Tasse auf einem Holztisch.]", noah)
+        self.assertIn("Einkauf: Milch und Brot", noah)
+        stored = [m for m in r.messages() if m["id"] == asked["id"]][0]["attachments"][0]
+        self.assertEqual(stored["description"], "Eine rote Tasse auf einem Holztisch.")
+        self.assertEqual(r.texts("lena"), ["Ich sehe die Tasse."])   # the description is not an answer in the chat
+        # A 3D job is context as well: the order with its photo and how it ended. It asks the bots nothing.
+        before = len(r.lena.chats()) + len(r.noah.chats())
+        photo = r.api("POST", "/api/upload?name=figur.png", raw=png)[1]
+        out = r.api("POST", "/api/message", {"text": "", "attachments": [photo["file"]], "mode": "3d", "quality": "fast"})[1]
+        r.wait(lambda: [m for m in r.messages() if m["id"] == out["model3d"]][0]["state"] == "done", "3D job done")
+        time.sleep(0.5)
+        self.assertEqual(len(r.lena.chats()) + len(r.noah.chats()), before)
+        r.say("@Noah was ist seitdem passiert?")
+        r.idle()
+        told = [c["messages"][-1]["content"] for c in r.noah.chats() if "seitdem passiert" in text_of(c["messages"][-1]["content"])][0]
+        self.assertIn("Auftrag an Foto zu 3D", told)
+        self.assertIn("[Bild figur.png (image/png, 1 KB). Zu sehen: Eine rote Tasse auf einem Holztisch.]", told)
+        self.assertIn("Foto zu 3D: 3D-Modell aus dem Foto figur.png (Qualität schnell) ist fertig", told)
 
     def test_deleting_a_message_removes_it_for_the_bots_too(self):
         r = self.room

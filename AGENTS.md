@@ -62,6 +62,8 @@ moves their limbs; only a thing moves as a whole. A scene is described, never
 scripted: no code of a bot or a request runs in Blender. The scene is a normal
 message that plays in the chat at once; its film is rendered as a stage of
 its own, survives restarts like a 3D job and joins the message.
+The film is lit to look like the scene in the chat: key, fill and rim, and
+figures that show their own colours; never ship a preset that renders dark.
 A 3D job survives everything short of being deleted: its state and the result
 of every finished stage are on disk, a stage runs on its own
 (`KillMode=process`) and is followed again after a restart of the worker, a

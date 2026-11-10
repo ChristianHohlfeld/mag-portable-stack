@@ -22,4 +22,11 @@ if grep -nE '819[12]|mag-model@|drain_room|/api/state' ops/deploy.sh; then
 fi
 # The MI50 power cap may only ever be lowered.
 grep -Fq 'if (( now > LIMIT )); then' ops/idol/power-cap.sh
+# The page loads nothing from outside the release, and every script parses.
+if grep -rnE 'https?://[a-z0-9.-]+\.[a-z]{2,}' mag-room/web/index.html mag-room/web/app; then
+  echo 'web: external URL in the page or its scripts' >&2; exit 1
+fi
+if command -v node >/dev/null; then
+  for f in mag-room/web/app/*.js mag-room/web/sw.js; do node --check "$f"; done
+fi
 echo 'static checks ok'

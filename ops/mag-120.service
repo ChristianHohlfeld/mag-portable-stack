@@ -1,44 +1,64 @@
+# The MAG room: chat, event stream, conversation engine and the bots' tools.
+# One unit file, no drop-ins. Models are not a dependency: a bot that is
+# downloading, loading or paused is a normal state the room shows.
 [Unit]
-Description=MAG native C++ room with isolated KVM agents
-After=network-online.target libvirtd.service mag-agents-network.service
+Description=MAG room
+After=network-online.target libvirtd.service mag-agents-network.service mag-audit-nft.service mag-audit-gateway.service mag-audit-webproxy.service
 Wants=network-online.target libvirtd.service
-# No model unit in Wants=/Requires=/After= (DeepSeek mag-llm retired): never stop/restart a model with the room
+# Every model request goes through the audit gateway and every web request of
+# the room through the audit proxy: without them there is no room.
+Requires=mag-audit-nft.service mag-audit-gateway.service mag-audit-webproxy.service
 
 [Service]
 Type=simple
 User=magbot
 Group=magbot
 WorkingDirectory=/opt/mag-stack/current
+# Brave search key and VAPID keys for push (root-only file, never in Git).
 EnvironmentFile=-/etc/default/mag-room
-EnvironmentFile=-/etc/mag-stack/secondary-model.env
-# Per-NUMA model hot-swap (ops/numa/install.sh); absent = feature off.
-EnvironmentFile=-/etc/mag-stack/numa.env
-# Also listed by 20-room-audit.conf. systemd applies EnvironmentFile= after
-# Environment=, so keys in this file win. MAG_ROOM_MODEL_ID selects configured
-# mode, which clears the single-bot fallback below. Absent file keeps one bot.
-EnvironmentFile=-/etc/mag-stack/room-model.env
-# Optional until provisioned at /etc/credstore/mag-guest-oauth (root-only). In-memory runtime copy.
-LoadCredential=mag-guest-oauth
-# Key of the encrypted bot secret store (ops/secrets/install.sh).
-LoadCredential=mag-secrets-key
 Environment=MAG_ROOM_STATE=/var/lib/magbot/room
-# Fallback when room-model.env is absent (legacy IQ3). Configured mode clears it.
-Environment=MAG_ROOM_SINGLE_BOT=auto
+Environment=MAG_ROOM_WEB=/opt/mag-stack/current/web
 Environment=MAG_ROOM_BIND=127.0.0.1
-Environment=MAG_ROOM_STATIC=/opt/mag-stack/current/web/static
-Environment=MAG_ROOM_UI=/opt/mag-stack/current/web/index.html
+Environment=MAG_ROOM_GATEWAY=http://127.0.0.1:8080
 Environment=MAG_BROWSER_BINARY=/opt/mag-stack/current/bin/mag-browser
 Environment=MAG_WHISPER_CLI=/opt/mag-stack/current/bin/whisper-cli
 Environment=MAG_WHISPER_MODEL=/var/lib/mag-stack/models/ggml-large-v3-turbo.bin
+# The room's own web requests (search, push) go through the audit proxy;
+# loopback and the VM network are reached directly.
+Environment=http_proxy=http://127.0.0.1:8888
+Environment=https_proxy=http://127.0.0.1:8888
+Environment=NO_PROXY=127.0.0.1,localhost,::1,192.168.122.0/24
+Environment=no_proxy=127.0.0.1,localhost,::1,192.168.122.0/24
+Environment=SSL_CERT_FILE=/etc/mag-audit/ca-bundle.pem
 ExecStart=/opt/mag-stack/current/bin/magroom
 Restart=on-failure
 RestartSec=2
+TimeoutStopSec=15
+LimitNOFILE=65536
+UMask=0027
+# Helpers started by the room (ffmpeg, whisper, OCR, the sudo wrappers) stay
+# off the model cores 0-27.
+CPUAffinity=28-55
+# Secrets never reach the journal.
+LogFilterPatterns=~(?i)(token=|secret|passw|private[_ -]?key|udp[_ -]?key|authorization:|x-subscription-token)
+
+# Sandbox. The room starts its VM helpers through sudo (narrow sudoers rule,
+# fixed argv); those children inherit this namespace, so NoNewPrivileges and
+# ProtectSystem=strict cannot be used here.
 ProtectSystem=full
 ProtectHome=true
 PrivateTmp=true
-UMask=0027
-LimitNOFILE=65536
-TimeoutStopSec=20
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+LockPersonality=true
+RestrictRealtime=true
+RestrictNamespaces=true
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
 
 [Install]
 WantedBy=multi-user.target

@@ -1,77 +1,58 @@
 cmake_minimum_required(VERSION 3.20)
-project(mag_stack VERSION 1.0.0 LANGUAGES CXX)
+project(mag_stack VERSION 2.0.0 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 find_package(Threads REQUIRED)
 find_package(OpenSSL REQUIRED)
 find_package(CURL REQUIRED)
-find_package(LibArchive REQUIRED)
-# Bot bootstrap context: one versioned markdown, embedded at build time into
-# the room's system prompt and the guest copy (magbot-native, reset).
+
+# What a bot finds as ~/MAG_CONTEXT.md in its VM: one versioned markdown,
+# embedded into magbot at build time.
 set(MAG_BOT_CONTEXT_MD ${CMAKE_CURRENT_SOURCE_DIR}/mag-room/native/bot_context.md)
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${MAG_BOT_CONTEXT_MD})
 file(READ ${MAG_BOT_CONTEXT_MD} MAG_BOT_CONTEXT)
 file(CONFIGURE OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/generated/bot_context.hpp
      CONTENT "#pragma once\n// Generated from mag-room/native/bot_context.md; do not edit.\nstatic const char *const BOT_CONTEXT_MD = R\"MAGCTX(@MAG_BOT_CONTEXT@)MAGCTX\";\n" @ONLY)
 include_directories(${CMAKE_CURRENT_BINARY_DIR}/generated)
+
+set(WARN -Wall -Wextra -Wpedantic)
+
+# The room: HTTP API, event stream, conversation engine, tools.
 add_executable(magroom mag-room/native/magroom.cpp)
-add_executable(mag-audit-gateway mag-room/native/mag_audit_gateway.cpp)
-add_executable(mag-ci-bridge ops/gitea-ci/bridge.cpp)
-add_executable(mag-ci-guard ops/gitea-ci/guard.cpp)
-foreach(target mag-ci-bridge mag-ci-guard)
- target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic)
- target_link_libraries(${target} PRIVATE CURL::libcurl OpenSSL::Crypto Threads::Threads icuuc)
-endforeach()
+target_compile_options(magroom PRIVATE ${WARN})
+target_link_libraries(magroom PRIVATE Threads::Threads OpenSSL::Crypto CURL::libcurl icuuc)
+
 # Model supervisor: download watch, verification and start of the two
 # CPU-only llama.cpp servers (ops/models).
 add_executable(mag-modeld mag-room/native/mag_modeld.cpp)
-target_compile_options(mag-modeld PRIVATE -Wall -Wextra -Wpedantic)
+target_compile_options(mag-modeld PRIVATE ${WARN})
 target_link_libraries(mag-modeld PRIVATE CURL::libcurl OpenSSL::Crypto Threads::Threads icuuc)
-add_executable(mag-numa-swap mag-room/native/mag_numa_swap.cpp)
-target_compile_options(mag-numa-swap PRIVATE -Wall -Wextra -Wpedantic)
-target_link_libraries(mag-numa-swap PRIVATE icuuc)
-target_compile_options(mag-audit-gateway PRIVATE -Wall -Wextra -Wpedantic)
-target_link_libraries(mag-audit-gateway PRIVATE Threads::Threads OpenSSL::Crypto icuuc)
-add_executable(mag-browser mag-room/native/browser.cpp)
-# Determinism checker (C++20), called by the room per model on request.
-add_executable(mag-det mag_deterministic_engine.cpp)
-set_target_properties(mag-det PROPERTIES CXX_STANDARD 20)
-target_compile_options(mag-det PRIVATE -Wall -Wextra)
-target_link_libraries(mag-det PRIVATE Threads::Threads)
-add_executable(magbot-native mag-room/native/vm.cpp)
-add_executable(s23ctl devices/s23/s23ctl.cpp)
-target_compile_options(s23ctl PRIVATE -Wall -Wextra -Wpedantic)
-target_link_libraries(s23ctl PRIVATE Threads::Threads OpenSSL::Crypto)
-foreach(target magroom mag-browser magbot-native)
- target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic)
- target_link_libraries(${target} PRIVATE Threads::Threads icuuc)
-endforeach()
-target_link_libraries(magroom PRIVATE OpenSSL::Crypto CURL::libcurl LibArchive::LibArchive)
-target_link_libraries(mag-browser PRIVATE OpenSSL::Crypto util)
-target_link_libraries(magroom PRIVATE OpenSSL::Crypto)
-add_executable(test-guest-pty mag-room/tests/test_guest_pty.cpp)
-target_link_libraries(test-guest-pty PRIVATE util Threads::Threads)
-add_executable(test-browser-recovery mag-room/tests/test_browser_recovery.cpp)
-add_executable(test-jobs-mcp mag-room/tests/test_jobs_mcp_unit.cpp)
-target_link_libraries(test-jobs-mcp PRIVATE Threads::Threads OpenSSL::Crypto CURL::libcurl LibArchive::LibArchive icuuc)
-add_executable(test-large-stdin mag-room/tests/test_large_stdin.cpp)
-target_link_libraries(test-large-stdin PRIVATE Threads::Threads)
-add_executable(test-guest-description mag-room/tests/test_guest_description.cpp)
-add_executable(test-gitea-account mag-room/tests/test_gitea_account.cpp)
-add_executable(test-guest-curl mag-room/tests/test_guest_curl.cpp)
-target_link_libraries(test-guest-curl PRIVATE CURL::libcurl)
-add_executable(test-pages-native mag-room/tests/test_pages.cpp)
-add_executable(test-browser-events mag-room/tests/test_browser_events.cpp)
-target_link_libraries(test-browser-events PRIVATE icuuc)
-target_link_libraries(test-pages-native PRIVATE OpenSSL::Crypto CURL::libcurl LibArchive::LibArchive icuuc Threads::Threads)
-add_executable(mag-bots-publish ops/bots/publishd.cpp)
-target_compile_options(mag-bots-publish PRIVATE -Wall -Wextra -Wpedantic)
-install(TARGETS magroom mag-browser magbot-native mag-audit-gateway mag-bots-publish mag-numa-swap mag-modeld RUNTIME DESTINATION bin)
-install(DIRECTORY mag-room/web/ DESTINATION web)
-install(DIRECTORY mag-room/static/ DESTINATION web/static)
 
-add_executable(test-context-manager mag-room/tests/test_context_manager.cpp)
-target_link_libraries(test-context-manager PRIVATE OpenSSL::Crypto icuuc)
-add_executable(test-pho-codec mag-room/tests/test_pho_codec.cpp)
+# Audit gateway: the only path from the room to the model servers.
+add_executable(mag-audit-gateway mag-room/native/mag_audit_gateway.cpp)
+target_compile_options(mag-audit-gateway PRIVATE ${WARN})
+target_link_libraries(mag-audit-gateway PRIVATE Threads::Threads OpenSSL::Crypto icuuc)
+
+# VM lifecycle and guest exec (installed as /usr/local/bin/magbot).
+add_executable(magbot-native mag-room/native/vm.cpp)
+target_compile_options(magbot-native PRIVATE ${WARN})
+target_link_libraries(magbot-native PRIVATE Threads::Threads icuuc)
+
+# Browser controller that runs inside each bot VM.
+add_executable(mag-browser mag-room/native/browser.cpp)
+target_compile_options(mag-browser PRIVATE ${WARN})
+target_link_libraries(mag-browser PRIVATE Threads::Threads OpenSSL::Crypto icuuc util)
+
+# Per-VM static site publisher (libvirt bridge only).
+add_executable(mag-bots-publish ops/bots/publishd.cpp)
+target_compile_options(mag-bots-publish PRIVATE ${WARN})
+
 add_executable(test-group-dispatcher mag-room/tests/test_group_dispatcher.cpp)
-target_link_libraries(test-pho-codec PRIVATE icuuc)
+
+install(TARGETS magroom mag-browser magbot-native mag-audit-gateway mag-bots-publish mag-modeld RUNTIME DESTINATION bin)
+install(DIRECTORY mag-room/web/ DESTINATION web)
+
+# Samsung S23 control daemon (devices/s23); independent of the room.
+add_executable(s23ctl devices/s23/s23ctl.cpp)
+target_compile_options(s23ctl PRIVATE ${WARN})
+target_link_libraries(s23ctl PRIVATE Threads::Threads OpenSSL::Crypto)

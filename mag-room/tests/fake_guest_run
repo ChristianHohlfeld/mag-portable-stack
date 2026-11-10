@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# Stand-in for magbot-guest-run in the room tests: the "VM" is a temp dir on
+# this machine. Same argument grammar and the same 0x1e control records.
+set -uo pipefail
+vm=${1:?}; shift
+home="${FAKE_GUEST_HOME:-/tmp}/$vm"; mkdir -p "$home"
+case "${1:-}" in
+  --stdin)
+    script=$(mktemp); cat > "$script"
+    trap 'kill -TERM -- -$child 2>/dev/null; printf "\x1ecancelled\n"; rm -f "$script"; exit 130' TERM
+    (cd "$home" && HOME="$home" exec setsid bash "$script" 2>&1) &
+    child=$!
+    wait "$child"; rc=$?
+    rm -f "$script"
+    printf '\x1elog %s/.mag-shell/test.log 0\n' "$home"
+    exit "$rc" ;;
+  --write|--append)
+    target=$2; [[ $target == /* ]] || target="$home/$target"
+    mkdir -p "$(dirname "$target")"
+    if [[ $1 == --append ]]; then cat >> "$target"; else cat > "$target"; fi
+    echo "saved $target $(stat -c %s "$target") bytes" ;;
+  *) echo 'Invalid guest invocation' >&2; exit 64 ;;
+esac

@@ -4,7 +4,9 @@ set -euo pipefail
 vm=$1; shift
 case "${1:-}" in
   --stdin)
-    [[ $# -le 2 && (${2:-600} =~ ^[0-9]+$) ]] || { echo 'Invalid guest timeout' >&2; exit 64; }
+    # Optional third word --live: output is relayed while the command runs.
+    [[ $# -le 3 && (${2:-600} =~ ^[0-9]+$) && (${3:---live} == --live) ]] || { echo 'Invalid guest timeout' >&2; exit 64; }
+    if [[ $# == 3 ]]; then exec /usr/local/bin/magbot exec "$vm" --stdin "$2" --live; fi
     exec /usr/local/bin/magbot exec "$vm" --stdin "${2:-600}"
     ;;
   --write|--append)

@@ -1,132 +1,55 @@
-// MAG room service worker. The server stamps VERSION and serves this file with
-// Cache-Control: no-store, so a new build is always fetched.
-// HTML is network-first. Versioned static files are cache-first. API, SSE and
-// room data are never cached. A failed navigation gets a tiny offline page,
-// never a stored copy of the room.
-const VERSION = '%%MAG_VERSION%%';
-const CACHE = 'mag-static-' + VERSION;
-const OFFLINE = '<!doctype html><html lang="de"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>MAG</title><style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#050505;color:#fff;font:16px/1.5 sans-serif}main{max-width:28rem;padding:24px}h1{font-size:20px;font-weight:600;margin:0 0 8px}p{margin:0;color:#c4c4cb}</style><main><h1>MAG ist offline</h1><p>Keine Verbindung. Es werden keine alten Raumdaten angezeigt.</p></main></html>';
+// MAG service worker: versioned assets from cache, the page itself always
+// from the network (never stale room data), and push notifications.
+const VERSION = '{{V}}';
+const CACHE = 'mag-' + VERSION;
 
-self.addEventListener('install', (event) => {
-  event.waitUntil(caches.open(CACHE));
-});
-
+self.addEventListener('install', () => self.skipWaiting());
 self.addEventListener('activate', (event) => {
   event.waitUntil((async () => {
-    const keys = await caches.keys();
-    await Promise.all(keys.filter((key) => key.startsWith('mag-static-') && key !== CACHE).map((key) => caches.delete(key)));
+    for (const key of await caches.keys()) if (key.startsWith('mag-') && key !== CACHE) await caches.delete(key);
     await self.clients.claim();
   })());
 });
 
-self.addEventListener('message', (event) => {
-  if (!event.data)
-    return;
-  if (event.data.type === 'SKIP_WAITING')
-    self.skipWaiting();
-  if (event.data.type === 'VERSION' && event.source)
-    event.source.postMessage({version: VERSION});
-});
-
-function versionedStatic(url) {
-  // Content-hashed speech and read-aloud folders have immutable paths, including
-  // their internal ESM imports and WASM binaries (which cannot inherit a ?v query).
-  if (/^\/static\/(?:speech|tts)-[a-f0-9]{12}\/[^/]+$/.test(url.pathname)) return true;
-  if (!url.searchParams.has('v'))
-    return false;
-  return url.pathname.startsWith('/static/') ||
-    url.pathname === '/favicon.svg' ||
-    url.pathname === '/favicon.ico' ||
-    url.pathname === '/apple-touch-icon.png';
-}
-
-async function cacheFirst(request) {
-  const cache = await caches.open(CACHE);
-  const hit = await cache.match(request);
-  if (hit)
-    return hit;
-  const res = await fetch(request);
-  if (res && res.ok && res.type === 'basic')
-    await cache.put(request, res.clone());
-  return res;
-}
-
-async function networkShell(request) {
-  try {
-    return await fetch(request, {cache: 'no-store'});
-  } catch (e) {
-    if (request.mode === 'navigate') {
-      return new Response(OFFLINE, {
-        status: 503,
-        headers: {
-          'Content-Type': 'text/html; charset=utf-8',
-          'Cache-Control': 'no-store'
-        }
-      });
-    }
-    throw e;
-  }
-}
-
 self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url);
-  if (url.origin !== self.location.origin)
-    return;
-  if (event.request.method !== 'GET')
-    return;
-  if (url.pathname.startsWith('/api') || url.pathname.startsWith('/events'))
-    return;
-  if (event.request.mode === 'navigate' || url.pathname === '/' || url.pathname === '/index.html') {
-    event.respondWith(networkShell(event.request));
+  if (event.request.method !== 'GET' || url.origin !== location.origin) return;
+  const versioned = (url.pathname.startsWith('/app/') || url.pathname.startsWith('/static/')) && url.searchParams.get('v') === VERSION;
+  if (versioned) {
+    event.respondWith((async () => {
+      const cache = await caches.open(CACHE);
+      const hit = await cache.match(event.request);
+      if (hit) return hit;
+      const res = await fetch(event.request);
+      if (res.ok) cache.put(event.request, res.clone());
+      return res;
+    })());
     return;
   }
-  // Moonshine and Piper keep weights in their own Cache Storage.
-  // Do not duplicate those 60–120 MB files in the service worker cache.
-  if (/^\/static\/speech-[a-f0-9]{12}\/[^/]+\.(?:ort|bin|json)$/.test(url.pathname))
-    return;
-  if (/^\/static\/tts-[a-f0-9]{12}\/[^/]+\.onnx$/.test(url.pathname))
-    return;
-  if (versionedStatic(url))
-    event.respondWith(cacheFirst(event.request));
+  if (event.request.mode === 'navigate') {
+    event.respondWith(fetch(event.request).catch(() => new Response(
+      '<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1"><title>MAG</title>' +
+      '<body style="font:16px system-ui;background:#0c0d10;color:#ececf0;display:grid;place-items:center;height:100vh;margin:0">' +
+      '<p>MAG ist gerade nicht erreichbar.</p>', { status: 503, headers: { 'Content-Type': 'text/html; charset=utf-8' } })));
+  }
 });
 
 self.addEventListener('push', (event) => {
-  let data = {};
-  try {
-    data = event.data ? event.data.json() : {};
-  } catch (e) {
-    data = {};
-  }
+  let note = {};
+  try { note = event.data.json(); } catch {}
   event.waitUntil((async () => {
-    if (data.kind === 'run') {
-      const open = await self.clients.matchAll({type: 'window', includeUncontrolled: true});
-      if (open.some((client) => client.visibilityState === 'visible'))
-        return;
-    }
-    const target = (typeof data.url === 'string' && data.url.charAt(0) === '/') ? data.url : '/';
-    await self.registration.showNotification(data.title || 'MAG', {
-      body: data.body || '',
-      tag: data.tag || 'mag',
-      icon: '/static/icon-192.png?v=' + VERSION,
-      data: {url: target, kind: data.kind || ''}
-    });
+    const windows = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+    // An answer you are already looking at needs no notification.
+    if (note.kind === 'run' && windows.some((w) => w.visibilityState === 'visible')) return;
+    await self.registration.showNotification(note.title || 'MAG', {
+      body: note.body || '', tag: note.tag || 'mag', icon: '/static/icon-192.png?v=' + VERSION, data: { url: note.url || '/' } });
   })());
 });
-
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
-  const target = (event.notification.data && event.notification.data.url) || '/';
   event.waitUntil((async () => {
-    const open = await self.clients.matchAll({type: 'window', includeUncontrolled: true});
-    for (const client of open) {
-      if ('focus' in client) {
-        await client.focus();
-        try {
-          await client.navigate(target);
-        } catch (e) {}
-        return;
-      }
-    }
-    await self.clients.openWindow(target);
+    const windows = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+    if (windows.length) return windows[0].focus();
+    return self.clients.openWindow(event.notification.data?.url || '/');
   })());
 });

@@ -5,7 +5,7 @@
 #   mag-model-fetch@<bot> resumable download
 # Never waits for a model, never restarts a running one and never deletes a
 # model file. Retired model units are stopped and their unit files moved to
-# /var/backups/mag-stack/legacy-units (the GGUFs stay where they are).
+# /var/backups/mag-legacy-units (the GGUFs stay where they are).
 set -euo pipefail
 [[ $EUID == 0 ]] || { echo 'run as root' >&2; exit 1; }
 SOURCE="$(cd -- "$(dirname -- "$0")/../.." && pwd)"
@@ -33,7 +33,8 @@ if (( ${#legacy[@]} )); then
     systemctl reset-failed "$unit" >/dev/null 2>&1 || :
   done
 fi
-attic=/var/backups/mag-stack/legacy-units
+# Not below /var/backups/mag-stack: prune-releases.sh owns that directory.
+attic=/var/backups/mag-legacy-units
 shopt -s nullglob
 for f in /etc/systemd/system/mag-llm*.service /etc/systemd/system/mag-llm*.service.d \
          /etc/systemd/system/mag-model-gate.* /etc/systemd/system/mag-model-pin.*; do

@@ -42,10 +42,12 @@ def save(job):
 
 def update(job_id, **fields):
     with lock:
-        if jobs[job_id]["state"] in ("cancelled", "error", "done"):
+        item = jobs.get(job_id)  # None: discarded while it ran
+        if item is None or item["state"] in ("cancelled", "error", "done"):
             return False
-        jobs[job_id].update(fields)
-        save(jobs[job_id])
+        item.update(fields)
+        if (ROOT / job_id).is_dir():
+            save(item)
         return True
 
 def terminate(proc):
@@ -75,6 +77,24 @@ def cancel(job_id):
     if child:
         terminate(child)
     return True
+
+def discard(job_id):
+    """Stop the job if it runs and remove everything it left on disk."""
+    cancel(job_id)
+    deadline = time.monotonic() + 12
+    while time.monotonic() < deadline:
+        with lock:
+            if job_id not in processes:
+                break
+        time.sleep(0.1)
+    with lock:
+        jobs.pop(job_id, None)
+    folder = ROOT / job_id
+    if not folder.is_dir():
+        return False
+    import shutil
+    shutil.rmtree(folder, ignore_errors=True)
+    return not folder.exists()
 
 def run(job_id, command, log_path, timeout, progress=False):
     env = os.environ.copy()
@@ -222,6 +242,12 @@ class API(BaseHTTPRequestHandler):
             if outcome is None:
                 return self.reply(404, {"error": "Job nicht gefunden"})
             return self.reply(200, {"cancelled": outcome})
+        if path == "/api/idol/purge":
+            # The room was emptied: no job has a message any more.
+            with lock:
+                known = list(jobs)
+            stray = [p.name for p in ROOT.iterdir() if p.is_dir() and VALID_ID.fullmatch(p.name)]
+            return self.reply(200, {"deleted": sum(discard(i) for i in set(known + stray))})
         if path != "/api/idol/jobs":
             return self.reply(404, {"error": "Nicht gefunden"})
         supplied = parse_qs(url.query, keep_blank_values=True)
@@ -253,6 +279,15 @@ class API(BaseHTTPRequestHandler):
             save(item)
             pending.put_nowait(identity)
         return self.reply(202, item)
+
+    def do_DELETE(self):
+        # The room deletes a job together with its chat message.
+        if self.headers.get("X-Mag-Idol-UI") != "1":
+            return self.reply(403, {"error": "MAG-Idol-Header fehlt"})
+        parts = urlsplit(self.path).path.strip("/").split("/")
+        if len(parts) != 4 or parts[:3] != ["api", "idol", "jobs"] or not VALID_ID.fullmatch(parts[3]):
+            return self.reply(404, {"error": "Nicht gefunden"})
+        return self.reply(200, {"deleted": discard(parts[3])})
 
     def do_GET(self):
         parts = urlsplit(self.path).path.strip("/").split("/")

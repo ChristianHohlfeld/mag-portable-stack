@@ -20,7 +20,7 @@ if ! "$PY" -c 'import tensordict; assert tensordict.__version__.split("+")[0]=="
 fi
 # Use the existing editable idol-sdk, including ~/idol-mi50/mi50.patch.
 # Reinstall editable metadata only if missing; never fetch dependency upgrades.
-if ! "$PY" -m pip show idol-sdk >/dev/null 2>&1; then
+if ! "$PY" -c 'import idol' >/dev/null 2>&1; then
   [[ -f $BASE/idol-sdk/pyproject.toml ]] || { echo 'Local idol-sdk missing' >&2; exit 1; }
   "$PY" -m pip install --no-input --disable-pip-version-check --no-deps -e "$BASE/idol-sdk"
 fi

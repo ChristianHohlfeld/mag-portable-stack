@@ -115,7 +115,7 @@ snapshot "$STATE" room
 install -m 0700 "$NGINX_SYNC" "$BACKUP/deploy-nginx.sh"
 
 # ------------------------------------------------------------ 3. stage release
-install -d -m 0755 "$RELEASE/bin" "$RELEASE/web/static" "$RELEASE/ops"
+install -d -m 0755 "$RELEASE/bin" "$RELEASE/web" "$RELEASE/ops"
 for binary in "${MAG_RELEASE_BINARIES[@]}" mag-browser-webrtc; do
   install -m 0755 "$SOURCE/build/$binary" "$RELEASE/bin/"
 done
@@ -131,18 +131,9 @@ if [[ -x $WHISPER_CLI && -r $WHISPER_MODEL ]]; then
 else
   warn 'whisper missing: speech-to-text disabled (ops/bootstrap-voice.sh)'
 fi
+# The page, its scripts and the few vendored libraries are all in the repo:
+# a release works offline and never depends on a CDN or a download.
 cp -a "$SOURCE/mag-room/web/." "$RELEASE/web/"
-cp -a "$SOURCE/mag-room/static/." "$RELEASE/web/static/"
-[[ ! -f $SOURCE/ops/trust/mcp-card-overflow.patch ]] ||
-  soft patch --forward --batch --silent "$RELEASE/web/index.html" "$SOURCE/ops/trust/mcp-card-overflow.patch"
-# Vendored browser assets come from a persistent local cache; a release works
-# offline and never depends on a CDN. A failed refresh keeps the cached copy.
-for kind in terminal speech tts; do
-  script="$SOURCE/ops/vendor-$kind-assets.sh"
-  [[ -f $script ]] || continue
-  as_owner bash "$script" "$SOURCE/build/$kind-assets" || warn "$kind assets not refreshed"
-  [[ ! -d $SOURCE/build/$kind-assets ]] || cp -a "$SOURCE/build/$kind-assets/." "$RELEASE/web/static/"
-done
 cp -a "$SOURCE/ops/." "$RELEASE/ops/"
 find "$RELEASE/ops" -type d \( -name '__pycache__' -o -name 'perf-results' \) -prune -exec rm -rf {} +
 (cd "$RELEASE"; find bin web ops -type f -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS)
@@ -184,7 +175,8 @@ mv -Tf /opt/mag-stack/.current-next /opt/mag-stack/current
 # Guest helpers and their narrow sudo rule (the room runs as magbot).
 install -m 0755 "$RELEASE/bin/magbot-native" /usr/local/bin/magbot
 install -m 0755 "$SOURCE/ops/spawnbot" "$SOURCE/ops/despawnbot" /usr/local/bin/
-install -m 0755 "$SOURCE/ops/magbot-guest-run" "$SOURCE/ops/magbot-agent-ctl" "$SOURCE/ops/magbot-netmode" "$SOURCE/ops/magbot-modelctl" /usr/local/sbin/
+install -m 0755 "$SOURCE/ops/magbot-guest-run" "$SOURCE/ops/magbot-agent-ctl" "$SOURCE/ops/magbot-netmode" /usr/local/sbin/
+rm -f /usr/local/sbin/magbot-modelctl
 install -m 0440 "$SOURCE/ops/magbot-guest.sudoers" /etc/sudoers.d/.magbot-guest.next
 visudo -cf /etc/sudoers.d/.magbot-guest.next >/dev/null
 mv -f /etc/sudoers.d/.magbot-guest.next /etc/sudoers.d/magbot-guest
@@ -192,8 +184,10 @@ install -m 0644 "$SOURCE/ops/mag-120.service" "$SOURCE/ops/mag-browser-webrtc.se
   "$SOURCE/ops/mag-stack-check.service" "$SOURCE/ops/mag-stack-check.timer" \
   "$SOURCE/ops/mag-agents-network.service" "$SOURCE/ops/mag-git-gateway.socket" \
   "$SOURCE/ops/mag-git-gateway.service" $UNITS/
-install -d -m 0755 $UNITS/mag-120.service.d
-install -m 0644 "$SOURCE/ops/mag-120.d/40-hardening.conf" $UNITS/mag-120.service.d/40-hardening.conf
+# The room unit is complete in one file; drop-ins of earlier releases (model
+# layouts, context budgets) no longer apply. The snapshot above restores them
+# on a rollback.
+rm -rf $UNITS/mag-120.service.d
 # The audit gateway is the only path from the room to the model servers.
 gateway_changed=0
 if ! cmp -s "$SOURCE/build/mag-audit-gateway" /opt/mag-audit/bin/mag-audit-gateway ||

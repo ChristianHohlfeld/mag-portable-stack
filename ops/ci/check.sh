@@ -37,4 +37,15 @@ fi
 if command -v node >/dev/null; then
   for f in mag-room/web/app/*.js mag-room/web/sw.js; do node --check "$f"; done
 fi
+# The VM panel stays on the realtime link: the browser picture over WebRTC/UDP
+# and xterm.js on the PTY. Pictures over HTTPS and single commands are only
+# its fallback; xterm.js stays the published 5.5.0, byte for byte.
+for word in '/api/browser-live/offer' "createDataChannel('control'" 'terminal_input' 'new Terminal('; do
+  grep -Fq -- "$word" mag-room/web/app/live.js || { echo "live.js: the realtime VM view is gone ($word)" >&2; exit 1; }
+done
+sha256sum --quiet -c <<'SUMS'
+1f991ac3b4b283ebf96e60ae23a00a52765dd3a2e46fa6fdda9f1aab032f7495  mag-room/web/static/xterm.js
+ba8e6985669488981ccf40c0cefe3aba80722cb6c92de7ad628b0bd717faf2b6  mag-room/web/static/xterm.css
+bdaefa370b1bfc42ee88d46fe6072400902a4d4b2d45cd93438dda9b23c97089  mag-room/web/static/xterm-addon-fit.js
+SUMS
 echo 'static checks ok'

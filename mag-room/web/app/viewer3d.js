@@ -1,6 +1,6 @@
-// A small WebGL2 viewer for the GLB results of photo-to-3D: drag to rotate,
-// pinch or wheel to zoom, two fingers to pan, double tap to reset, fullscreen.
-// No library: one mesh, one base-colour texture, unlit.
+// A small WebGL2 viewer for the GLB results of photo-to-3D: an orbit camera
+// with inertia, pinch or wheel zoom and two-finger pan in fullscreen, double
+// tap to reset. No library: one mesh, one base-colour texture.
 'use strict';
 (function () {
   const { MAG } = window;
@@ -50,13 +50,30 @@
     return { pos, colors, uv, indices, image };
   }
 
+  // 4x4 matrices, column-major like WebGL.
+  const mul = (a, b) => {
+    const o = new Float32Array(16);
+    for (let c = 0; c < 4; c++)
+      for (let r = 0; r < 4; r++) o[c * 4 + r] = a[r] * b[c * 4] + a[4 + r] * b[c * 4 + 1] + a[8 + r] * b[c * 4 + 2] + a[12 + r] * b[c * 4 + 3];
+    return o;
+  };
+
+  // Orbit camera around the model: a real perspective, turning with inertia,
+  // a slow turn until the first touch. In the timeline a finger turns the
+  // model sideways and the page still scrolls; fullscreen gives every axis,
+  // pinch zoom and two-finger pan.
   function start(canvas, mesh) {
-    const gl = canvas.getContext('webgl2', { antialias: true, alpha: false });
+    const gl = canvas.getContext('webgl2', { antialias: true, alpha: true });
     if (!gl) throw new Error('WebGL2 fehlt auf diesem Gerät');
     const compile = (type, code) => { const s = gl.createShader(type); gl.shaderSource(s, code); gl.compileShader(s); return s; };
     const program = gl.createProgram();
-    gl.attachShader(program, compile(gl.VERTEX_SHADER, '#version 300 es\nin vec3 p;in vec3 c;in vec2 t;out vec3 vc;out vec2 vt;uniform mat4 m;void main(){vc=c;vt=t;gl_Position=m*vec4(p,1.);}'));
-    gl.attachShader(program, compile(gl.FRAGMENT_SHADER, '#version 300 es\nprecision mediump float;in vec3 vc;in vec2 vt;uniform bool useTex;uniform sampler2D base;out vec4 o;void main(){o=vec4(useTex?texture(base,vt).rgb:vc,1.);}'));
+    gl.attachShader(program, compile(gl.VERTEX_SHADER,
+      '#version 300 es\nin vec3 p;in vec3 c;in vec2 t;out vec3 vc;out vec2 vt;out vec3 vp;uniform mat4 mv;uniform mat4 pr;' +
+      'void main(){vc=c;vt=t;vec4 e=mv*vec4(p,1.);vp=e.xyz;gl_Position=pr*e;}'));
+    // Unlit (the texture is baked colour); a little facing-ratio shade gives the shape depth.
+    gl.attachShader(program, compile(gl.FRAGMENT_SHADER,
+      '#version 300 es\nprecision highp float;in vec3 vc;in vec2 vt;in vec3 vp;uniform bool useTex;uniform sampler2D base;out vec4 o;' +
+      'void main(){vec3 n=normalize(cross(dFdx(vp),dFdy(vp)));vec3 col=useTex?texture(base,vt).rgb:vc;o=vec4(col*(0.84+0.16*abs(n.z)),1.);}'));
     gl.linkProgram(program);
     if (!gl.getProgramParameter(program, gl.LINK_STATUS)) throw new Error('Shader');
     gl.useProgram(program);
@@ -95,84 +112,131 @@
     const min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
     for (let i = 0; i < mesh.pos.length; i += 3)
       for (let k = 0; k < 3; k++) { min[k] = Math.min(min[k], mesh.pos[i + k]); max[k] = Math.max(max[k], mesh.pos[i + k]); }
-    const center = min.map((v, i) => (v + max[i]) / 2), scale = 2 / Math.max(...max.map((v, i) => v - min[i]), 1e-5);
-    const uniform = gl.getUniformLocation(program, 'm');
-    let yaw = 0.5, pitch = 0.2, zoom = 2.3, panX = 0, panY = 0;
+    const center = min.map((v, i) => (v + max[i]) / 2), unit = 2 / Math.max(...max.map((v, i) => v - min[i]), 1e-5);
+    const radius = Math.max(0.5, (Math.hypot(...max.map((v, i) => v - min[i])) / 2) * unit); // of the sphere around the model
+    const uMv = gl.getUniformLocation(program, 'mv'), uPr = gl.getUniformLocation(program, 'pr');
+    const home = { yaw: 0.6, pitch: 0.22, zoom: 1, panX: 0, panY: 0 };
+    const cam = { ...home };
+    let spin = 0.35;            // rad/s until the first touch
+    let velYaw = 0, velPitch = 0, visible = true, frame = 0, last = 0, lost = false;
+    const free = () => !!canvas.closest('.stage')?.classList.contains('fs');
 
-    function render() {
+    function draw() {
       const rect = canvas.getBoundingClientRect(), dpr = Math.min(2, window.devicePixelRatio || 1);
-      const w = clamp(Math.round((rect.width || 600) * dpr), 1, 2400), h = clamp(Math.round((rect.height || 400) * dpr), 1, 2400);
+      const w = clamp(Math.round((rect.width || 600) * dpr), 1, 2600), h = clamp(Math.round((rect.height || 400) * dpr), 1, 2600);
       if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
       gl.viewport(0, 0, w, h);
-      gl.clearColor(0.06, 0.065, 0.08, 1);
+      gl.clearColor(0, 0, 0, 0);
       gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
       gl.enable(gl.DEPTH_TEST);
-      const cy = Math.cos(yaw), sy = Math.sin(yaw), cx = Math.cos(pitch), sx = Math.sin(pitch), f = 1.7, fx = f / (w / h), s = scale / zoom;
-      // The GLB is Y-up already; z is squeezed so the whole model stays inside the clip volume.
-      gl.uniformMatrix4fv(uniform, false, new Float32Array([
-        cy * s * fx, sx * sy * s * f, sy * cx * s * 0.2, 0,
-        0, cx * s * f, -sx * s * 0.2, 0,
-        -sy * s * fx, sx * cy * s * f, cy * cx * s * 0.2, 0,
-        -(cy * center[0] - sy * center[2]) * s * fx + panX,
-        -(sx * (sy * center[0] + cy * center[2]) + cx * center[1]) * s * f + panY,
-        -(sy * cx * center[0] - sx * center[1] + cy * cx * center[2]) * s * 0.2, 1]));
+      const aspect = w / h, f = 1 / Math.tan((34 * Math.PI) / 360);
+      // Far enough to hold the whole model at any angle, also in a narrow portrait frame.
+      const half = Math.atan(Math.min(1, aspect) / f);
+      const dist = (cam.zoom * 1.06 * radius) / Math.sin(half), near = Math.max(0.03, dist - 2.5 * radius), far = dist + 2.5 * radius;
+      const cy = Math.cos(cam.yaw), sy = Math.sin(cam.yaw), cx = Math.cos(cam.pitch), sx = Math.sin(cam.pitch);
+      const model = new Float32Array([unit, 0, 0, 0, 0, unit, 0, 0, 0, 0, unit, 0, -center[0] * unit, -center[1] * unit, -center[2] * unit, 1]);
+      const ry = new Float32Array([cy, 0, -sy, 0, 0, 1, 0, 0, sy, 0, cy, 0, 0, 0, 0, 1]);
+      const rx = new Float32Array([1, 0, 0, 0, 0, cx, sx, 0, 0, -sx, cx, 0, 0, 0, 0, 1]);
+      const move = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, cam.panX, cam.panY, -dist, 1]);
+      gl.uniformMatrix4fv(uMv, false, mul(move, mul(rx, mul(ry, model))));
+      gl.uniformMatrix4fv(uPr, false, new Float32Array([f / aspect, 0, 0, 0, 0, f, 0, 0, 0, 0, (far + near) / (near - far), -1, 0, 0, (2 * far * near) / (near - far), 0]));
       gl.bindVertexArray(vao);
       if (mesh.indices) gl.drawElements(gl.TRIANGLES, count, mesh.indices instanceof Uint32Array ? gl.UNSIGNED_INT : gl.UNSIGNED_SHORT, 0);
       else gl.drawArrays(gl.TRIANGLES, 0, count);
     }
-    const reset = () => { yaw = 0.5; pitch = 0.2; zoom = 2.3; panX = panY = 0; render(); };
+    // Draws while something moves; otherwise the viewer is idle.
+    function tick(now) {
+      frame = 0;
+      if (lost) return;
+      const dt = Math.min(0.05, last ? (now - last) / 1000 : 0.016);
+      last = now;
+      const held = pointers.size > 0;
+      if (!held) {
+        cam.yaw += (spin + velYaw) * dt;
+        cam.pitch = clamp(cam.pitch + velPitch * dt, -1.45, 1.45);
+        const drag = Math.pow(0.04, dt); // inertia fades within about a second
+        velYaw *= drag;
+        velPitch *= drag;
+        if (Math.abs(velYaw) < 0.01) velYaw = 0;
+        if (Math.abs(velPitch) < 0.01) velPitch = 0;
+      }
+      draw();
+      if (visible && (held || spin || velYaw || velPitch)) wake();
+      else last = 0;
+    }
+    function wake() { if (!frame && !lost) frame = requestAnimationFrame(tick); }
+    const reset = () => { Object.assign(cam, home); velYaw = velPitch = 0; spin = 0.35; wake(); };
 
-    // Pointer gestures: one pointer rotates, two zoom and pan.
     const pointers = new Map();
-    let previous = null, lastTap = 0, lastPos = null;
+    let previous = null, lastTap = 0, lastPos = null, moved = 0;
     const gesture = () => {
       const v = [...pointers.values()];
-      if (v.length === 1) return { n: 1, x: v[0].x, y: v[0].y };
-      if (v.length >= 2) return { n: 2, x: (v[0].x + v[1].x) / 2, y: (v[0].y + v[1].y) / 2, d: Math.max(1, Math.hypot(v[0].x - v[1].x, v[0].y - v[1].y)) };
+      if (v.length === 1) return { n: 1, x: v[0].x, y: v[0].y, t: performance.now() };
+      if (v.length >= 2) return { n: 2, x: (v[0].x + v[1].x) / 2, y: (v[0].y + v[1].y) / 2, d: Math.max(1, Math.hypot(v[0].x - v[1].x, v[0].y - v[1].y)), t: performance.now() };
       return null;
     };
     canvas.onpointerdown = (e) => {
       if (e.pointerType === 'mouse' && e.button !== 0) return;
-      e.preventDefault();
       try { canvas.setPointerCapture(e.pointerId); } catch {}
       pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
       previous = gesture();
+      spin = velYaw = velPitch = 0;
+      moved = 0;
+      canvas.closest('.stage')?.classList.add('touched');
+      wake();
     };
     canvas.onpointermove = (e) => {
       if (!pointers.has(e.pointerId)) return;
-      e.preventDefault();
       const before = previous;
       pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
       const now = gesture();
       if (before?.n === 1 && now?.n === 1) {
-        yaw += (now.x - before.x) * 0.008;
-        pitch = clamp(pitch + (now.y - before.y) * 0.008, -1.5, 1.5);
-      } else if (before?.n === 2 && now?.n === 2) {
-        zoom = clamp((zoom * before.d) / now.d, 0.5, 16);
+        const dt = Math.max(0.004, (now.t - before.t) / 1000), dx = (now.x - before.x) * 0.0085, dy = (now.y - before.y) * 0.0085;
+        // In the timeline a touch turns sideways only: up and down belongs to the page.
+        const tilt = free() || e.pointerType === 'mouse';
+        cam.yaw += dx;
+        velYaw = dx / dt;
+        if (tilt) { cam.pitch = clamp(cam.pitch + dy, -1.45, 1.45); velPitch = dy / dt; }
+        moved += Math.abs(now.x - before.x) + Math.abs(now.y - before.y);
+      } else if (before?.n === 2 && now?.n === 2 && free()) {
+        cam.zoom = clamp((cam.zoom * before.d) / now.d, 0.25, 4);
         const rect = canvas.getBoundingClientRect();
-        panX = clamp(panX + (2 * (now.x - before.x)) / Math.max(1, rect.width), -2, 2);
-        panY = clamp(panY - (2 * (now.y - before.y)) / Math.max(1, rect.height), -2, 2);
+        cam.panX = clamp(cam.panX + (3 * cam.zoom * (now.x - before.x)) / Math.max(1, rect.height), -3, 3);
+        cam.panY = clamp(cam.panY - (3 * cam.zoom * (now.y - before.y)) / Math.max(1, rect.height), -3, 3);
+        velYaw = velPitch = 0;
       }
       previous = now;
-      render();
+      wake();
     };
     const end = (e) => {
       if (!pointers.has(e.pointerId)) return;
       const single = pointers.size === 1;
       pointers.delete(e.pointerId);
       previous = gesture();
-      if (single && e.type === 'pointerup' && e.pointerType !== 'mouse') {
+      if (e.type !== 'pointerup' || performance.now() - (previous?.t || 0) > 0) { /* velocity stays as measured */ }
+      if (single && e.type === 'pointerup' && moved < 8) {
+        velYaw = velPitch = 0;
         const now = Date.now();
         if (now - lastTap < 320 && lastPos && Math.hypot(e.clientX - lastPos[0], e.clientY - lastPos[1]) < 26) { reset(); lastTap = 0; }
         else { lastTap = now; lastPos = [e.clientX, e.clientY]; }
       }
+      wake();
     };
     canvas.onpointerup = canvas.onpointercancel = canvas.onlostpointercapture = end;
-    canvas.ondblclick = (e) => { e.preventDefault(); reset(); };
-    canvas.addEventListener('wheel', (e) => { e.preventDefault(); zoom = clamp(zoom * Math.exp(e.deltaY * 0.001), 0.5, 16); render(); }, { passive: false });
-    new ResizeObserver(render).observe(canvas);
+    // The wheel zooms in fullscreen; in the timeline it scrolls the chat.
+    canvas.addEventListener('wheel', (e) => {
+      if (!free()) return;
+      e.preventDefault();
+      cam.zoom = clamp(cam.zoom * Math.exp(e.deltaY * 0.0012), 0.25, 4);
+      wake();
+    }, { passive: false });
+    new ResizeObserver(() => { draw(); }).observe(canvas);
+    if ('IntersectionObserver' in window) new IntersectionObserver((entries) => { visible = entries[entries.length - 1].isIntersecting; if (visible) wake(); }).observe(canvas);
+    canvas.addEventListener('webglcontextlost', (e) => { e.preventDefault(); lost = true; });
     canvas.addEventListener('webglcontextrestored', () => MAG.viewer3d.attach(canvas, canvas.dataset.url, true));
-    render();
+    canvas._viewer = { reset };
+    canvas.closest('.stage')?.classList.add('ready');
+    wake();
   }
 
   // Loads the model when its canvas scrolls into view, not before.
@@ -187,11 +251,13 @@
     try {
       start(canvas, await load(canvas.dataset.url));
     } catch (err) {
+      canvas.closest('.stage')?.classList.add('ready');
       canvas.replaceWith(MAG.el('div', { class: 'note err', text: '3D-Vorschau: ' + err.message }));
     }
   }
 
   MAG.viewer3d = {
+    reset(canvas) { canvas._viewer?.reset(); },
     attach(canvas, url, now) {
       canvas.dataset.url = url;
       if (now || !watcher) boot(canvas);

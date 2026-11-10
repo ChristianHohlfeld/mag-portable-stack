@@ -28,6 +28,14 @@ RESULTS = {"splat.ply": "application/octet-stream", "mesh.glb": "model/gltf-bina
 VALID_ID = re.compile(r"^[a-f0-9]{32}$")
 STEP = re.compile(r"(?<!\d)(\d{1,2})\s*/\s*50(?!\d)")
 STEP_ALT = re.compile(r"\b(?:step|schritt)\s*(\d{1,2})\s*(?:of|/|von)\s*50\b", re.I)
+# What tqdm itself expects to remain: "[04:40<15:22, 24.27s/it]".
+REMAINING = re.compile(r"<(\d+(?::\d+){1,2})[,\]]")
+# The pipeline as it really runs, in this order. A job reports the phase it
+# is in (1-based) so the chat can say "Schritt 2 von 5" without guessing:
+# 1 the Idol process loads its weights, 2 it samples (50 steps, from tqdm),
+# 3-5 are the sections of mesh.py, which announces them ("MAG-STEP ...").
+PHASES = ("Modell laden", "3D-Form berechnen", "Mesh rekonstruieren", "Textur backen", "Dateien exportieren")
+MESH_MARKS = {"MAG-STEP texture": 4, "MAG-STEP export": 5}
 jobs = {}
 lock = threading.Lock()
 pending = queue.Queue(maxsize=MAX_PENDING)
@@ -96,7 +104,33 @@ def discard(job_id):
     shutil.rmtree(folder, ignore_errors=True)
     return not folder.exists()
 
-def run(job_id, command, log_path, timeout, progress=False):
+def sampling_line(job_id, value):
+    """One line of the Idol process: the sampler's step counter."""
+    match = STEP.search(value) or STEP_ALT.search(value)
+    if not match:
+        return
+    step = int(match.group(1))
+    with lock:
+        item = jobs.get(job_id) or {}
+        known = int(item.get("step", 0)) if item.get("phase") == 2 else -1
+    if not 0 <= step <= 50 or step <= known:
+        return
+    left = REMAINING.search(value)
+    seconds = None
+    if left:
+        seconds = 0
+        for part in left.group(1).split(":"):
+            seconds = seconds * 60 + int(part)
+    update(job_id, phase=2, stage=PHASES[1], step=step, total_steps=50,
+           progress=step / 50, eta=seconds)
+
+def mesh_line(job_id, value):
+    """One line of mesh.py: it says when texture baking and export begin."""
+    phase = MESH_MARKS.get(value.strip())
+    if phase:
+        update(job_id, phase=phase, stage=PHASES[phase - 1])
+
+def run(job_id, command, log_path, timeout, on_line=None):
     env = os.environ.copy()
     env.update({
         "CUDA_VISIBLE_DEVICES": "0", "HIP_VISIBLE_DEVICES": "0",
@@ -133,22 +167,12 @@ def run(job_id, command, log_path, timeout, progress=False):
                         break
                     logfile.write(data)
                     logfile.flush()
-                    if progress:
+                    if on_line:
                         linebuf = (linebuf + data)[-8192:]
                         parts = re.split(b"[\r\n]", linebuf)
                         linebuf = parts[-1]
                         for part in parts[:-1]:
-                            value = part.decode("utf-8", errors="replace")
-                            match = STEP.search(value) or STEP_ALT.search(value)
-                            if match:
-                                step = int(match.group(1))
-                                if 1 <= step <= 50:
-                                    with lock:
-                                        prev = int(jobs[job_id].get("step", 0))
-                                    if step > prev:
-                                        update(job_id, step=step, total_steps=50,
-                                               progress=step / 50,
-                                               stage=f"Idol · Schritt {step}/50")
+                            on_line(job_id, part.decode("utf-8", errors="replace"))
                 elif proc.poll() is not None:
                     break
             code = proc.wait(timeout=10)
@@ -171,8 +195,9 @@ def execute():
                     continue
             # The MI50 belongs to Idol alone (both bots run CPU-only), so a
             # job never pauses or restarts a model.
-            if not update(job_id, state="running", stage="Idol startet",
-                          step=0, total_steps=50, progress=0.0):
+            if not update(job_id, state="running", phase=1, phases=len(PHASES),
+                          stage=PHASES[0], started=int(time.time()),
+                          step=0, total_steps=50, progress=0.0, eta=None):
                 continue
             folder = ROOT / job_id
             out = folder / "outputs"
@@ -183,14 +208,14 @@ def execute():
                        "--out", str(out), "--mode", "real",
                        "--weights", WEIGHTS, "--steps", "50",
                        "--dinov3_dtype", "fp16", "--no_optimize"]
-            run(job_id, command, folder / "idol.log", RUN_TIMEOUT, progress=True)
+            run(job_id, command, folder / "idol.log", RUN_TIMEOUT, on_line=sampling_line)
             if job_id in abort:
                 continue
             source = out / "input.ply"
             if not source.is_file():
                 raise RuntimeError("Idol hat keine PLY-Datei erzeugt")
             source.rename(folder / "splat.ply")
-            update(job_id, stage="Mesh rekonstruieren", step=50, progress=1.0)
+            update(job_id, phase=3, stage=PHASES[2], step=50, progress=1.0, eta=None)
             with lock:
                 quality = jobs[job_id].get("quality", "normal")
             if quality not in MESH_TIMEOUTS:
@@ -199,7 +224,7 @@ def execute():
                     str(Path(__file__).with_name("mesh.py")),
                     str(folder / "splat.ply"), str(folder),
                     "--quality", quality]
-            run(job_id, mesh, folder / "mesh.log", MESH_TIMEOUTS[quality])
+            run(job_id, mesh, folder / "mesh.log", MESH_TIMEOUTS[quality], on_line=mesh_line)
             if job_id in abort:
                 continue
             if not all((folder / name).is_file() for name in RESULTS):
@@ -274,7 +299,7 @@ class API(BaseHTTPRequestHandler):
             (folder / "input.png").write_bytes(data)
             item = {"id": identity, "state": "queued", "stage": "Warteschlange",
                     "quality": quality, "created": int(time.time()),
-                    "step": 0, "total_steps": 50}
+                    "step": 0, "total_steps": 50, "phase": 0, "phases": len(PHASES)}
             jobs[identity] = item
             save(item)
             pending.put_nowait(identity)

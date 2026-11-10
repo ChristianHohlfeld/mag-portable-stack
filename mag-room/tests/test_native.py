@@ -393,11 +393,16 @@ class RoomContract(unittest.TestCase):
         code, out = r.api("POST", "/api/message", {"text": "", "attachments": [photo["file"]], "mode": "3d", "quality": "high"})
         self.assertEqual(code, 201)
         model_id = out["model3d"]
+        # While it runs, the message carries what the worker reports: step k of n and its name.
+        seen = []
+        r.wait(lambda: seen.append([m for m in r.messages() if m["id"] == model_id][0]["model3d"]) or seen[-1]["state"] == "running", "3D job running")
+        self.assertEqual((seen[-1]["phase"], seen[-1]["phases"], seen[-1]["stage"], seen[-1]["steps"]), (2, 5, "3D-Form berechnen", 50))
+        self.assertEqual(seen[-1]["image"], photo["file"])   # the photo it is made from
         r.wait(lambda: [m for m in r.messages() if m["id"] == model_id][0]["state"] == "done", "3D job done")
         messages = r.messages()
         self.assertEqual([m["from"] for m in messages], ["chris", "idol"])  # stored and ordered like any message
         result = messages[1]
-        self.assertEqual((result["model3d"]["state"], result["model3d"]["quality"]), ("done", "high"))
+        self.assertEqual((result["model3d"]["state"], result["model3d"]["quality"], result["model3d"]["took"]), ("done", "high", 420))
         self.assertEqual(sorted(a["name"].split(".")[-1] for a in result["attachments"]), ["glb", "ply", "stl"])
         files = pathlib.Path(r.env["MAG_ROOM_STATE"]) / "files"
         stored = [files / a["file"] for a in result["attachments"]]

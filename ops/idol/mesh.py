@@ -269,9 +269,12 @@ def reconstruct(input_path: Path, output_dir: Path, quality="normal"):
 
     # Preserve full colour resolution: bake using Gaussian neighborhoods at
     # each UV texel on the unrotated surface, before GLB/STL transforms.
+    # The worker reads the two MAG-STEP lines to show where the job is.
+    print("MAG-STEP texture", flush=True)
     vmapping, uv_faces, uvs, texture = bake_texture(
         geometry.vertices, geometry.faces, xyz, alpha, gaussian_radius, colors,
         spacing, settings["texture"], settings["neighbors"])
+    print("MAG-STEP export", flush=True)
 
     material = trimesh.visual.material.PBRMaterial(
         baseColorTexture=texture, metallicFactor=0.0, roughnessFactor=1.0)

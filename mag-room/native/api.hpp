@@ -94,7 +94,7 @@ private:
 
   static constexpr const char *kNoAccess =
       "<!doctype html><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'>"
-      "<title>MAG</title><body style='font:16px system-ui;background:#0b0c0e;color:#e8e8ea;display:grid;place-items:center;height:100vh;margin:0'>"
+      "<title>MAG</title><body style='font:16px system-ui;background:#17181b;color:#ececee;display:grid;place-items:center;height:100vh;margin:0'>"
       "<p>Kein Zugang. Dieser Raum gehört Chris.</p>";
 
   static const http::Headers &page_headers() {
@@ -144,7 +144,7 @@ private:
     const std::string v = "?v=" + version_;
     const std::string body =
         "{\"name\":\"MAG\",\"short_name\":\"MAG\",\"start_url\":\"/\",\"scope\":\"/\",\"display\":\"standalone\","
-        "\"background_color\":\"#0b0c0e\",\"theme_color\":\"#0b0c0e\",\"lang\":\"de\",\"icons\":["
+        "\"background_color\":\"#17181b\",\"theme_color\":\"#17181b\",\"lang\":\"de\",\"icons\":["
         "{\"src\":\"/static/icon-192.png" + v + "\",\"sizes\":\"192x192\",\"type\":\"image/png\",\"purpose\":\"any\"},"
         "{\"src\":\"/static/icon-512.png" + v + "\",\"sizes\":\"512x512\",\"type\":\"image/png\",\"purpose\":\"any\"},"
         "{\"src\":\"/static/icon-maskable-192.png" + v + "\",\"sizes\":\"192x192\",\"type\":\"image/png\",\"purpose\":\"maskable\"},"

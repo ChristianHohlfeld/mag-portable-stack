@@ -9,8 +9,10 @@ verlässt das Haus.
 | Raum | `magroom` (C++17): Chat, Ereignis-Stream, Gesprächs-Engine, Werkzeuge |
 | Lena | Gemma 4 26B-A4B, llama.cpp, nur CPU, NUMA0, Port 8191 |
 | Noah | gpt-oss 120B, llama.cpp, nur CPU, NUMA1, Port 8192 |
-| Foto zu 3D | MAG Idol auf der MI50 (72 W), Ergebnis als normale Chat-Nachricht |
-| Bot-Rechner | je Bot eine eigene KVM-VM mit Shell und echtem Chrome |
+| Foto zu 3D | MAG Idol auf der MI50 (72 W), Ergebnis als normale Chat-Nachricht; Jobs überstehen Neustarts |
+| Bot-Rechner | je Bot eine eigene KVM-VM mit Shell und echtem Chrome; im Bot-Panel Browser, Terminal und Dateien |
+| Bot-Seiten | `<name>.bot.stardenburg.de` (nur Tailnet); HTML der Bots läuft von dort als Vorschau im Chat |
+| Bilder | Lena sieht sie selbst (Vision-Projektor, CPU), Noah liest ihre Beschreibung |
 | Zugang | Tailscale, nginx mit whois-Prüfung, nur der Besitzer |
 
 Aufbau und Abläufe: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
@@ -23,6 +25,7 @@ cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 taskset -c 28-55 ninja -C build
 bash ops/ci/check.sh                       # statische Verträge
 python3 ops/models/tests/test_modeld.py    # Modell-Aufsicht
+python3 ops/idol/tests/test_worker.py      # 3D-Jobs überstehen Neustarts
 python3 mag-room/tests/test_native.py      # Raum mit Fake-Modellen
 ```
 

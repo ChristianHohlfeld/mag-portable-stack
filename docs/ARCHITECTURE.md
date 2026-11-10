@@ -100,9 +100,22 @@ the bridge listener, with a token derived per VM, so it cannot act as the
 other bot. "Internet für Bots" off is a host firewall switch
 (`magbot-netmode`), not a prompt rule.
 
-In the bot's panel the owner sees that browser, has a terminal (one command at
-a time as user `bot`, streamed) and a file view of the bot's home; both run
-through the same wrappers.
+In the bot's panel the owner has that browser live, a real terminal and a file
+view of the bot's home (`mag-room/web/app/live.js`).
+
+Browser and terminal use the VM's realtime link. `mag-browser` in the VM
+captures its Chrome as JPEG frames (while someone is subscribed, about five a
+second), takes pointer, wheel, key and text input, and holds one Bash PTY as
+user `bot` that outlives every viewer. It talks to `mag-browser-webrtc` on the
+host over UDP, authenticated with a key per VM. The gateway hands that to the
+page as WebRTC data channels: `frames` (unreliable, a late frame is dropped),
+`control` (input for the page) and `console` (the PTY in both directions, with
+a heartbeat every 2 s so a dead session is noticed and reconnected). The room
+only passes the SDP offer on (`POST /api/browser-live/offer`). The page shows
+the frames on a canvas and runs xterm.js (vendored in `web/static`) on the PTY.
+Where UDP cannot get through, the browser view falls back to pictures over
+HTTPS (`/api/screen`) and the terminal offers single commands
+(`/api/vm/<bot>/run`); the file view always goes through the wrappers.
 
 ### Bot sites
 

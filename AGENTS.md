@@ -72,9 +72,13 @@ renamed in the settings; earlier names, the bot id and the VM name
 (`agentN`) redirect to the current address. The ids `lena`/`noah` and the
 VM binding never change with a name.
 Each bot has its own closed VM (browser, shell, files), bound to the bot's
-id. In the bot's panel the owner sees that browser live, has a terminal in
-the VM (one command at a time as user `bot`) and browses, opens, downloads
-and deletes the bot's files; nothing there reaches outside the VM.
+id. In the bot's panel the owner sees that browser live and works in it, has
+a real terminal in the VM (a PTY as user `bot`, xterm.js) and browses, opens,
+downloads and deletes the bot's files; nothing there reaches outside the VM.
+Browser and terminal run over the VM's realtime link: `mag-browser` in the
+VM, authenticated UDP to `mag-browser-webrtc` on the host, WebRTC data
+channels to the page. Pictures over HTTPS and single commands are only the
+fallback where UDP cannot get through; never let them replace the link.
 The bots read the whole chat: text files inline, 3D orders and their
 results, and images. A bot whose model has a vision projector gets the image
 itself; it also writes down once what the image shows (a short branch off

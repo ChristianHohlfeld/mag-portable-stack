@@ -136,7 +136,7 @@ private:
         Val m;
         if (!room_.get(message_id, m)) return; // deleted: forget() cleans up
         http::ClientOptions opt = options("GET");
-        opt.timeout_s = 10;
+        opt.timeout_s = 5;
         const auto res = http::fetch(room_.cfg.idol_url + "/api/idol/jobs/" + job, opt);
         const Val st = jparse(res.body);
         if (res.status == 404) {

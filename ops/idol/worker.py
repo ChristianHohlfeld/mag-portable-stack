@@ -222,12 +222,17 @@ def follow(job_id, key, timeout, on_line):
             pass
         if data:
             offset += len(data)
-            # Split on CR as well: tqdm redraws its line without a newline.
+            # Split on CR as well: tqdm redraws its line without a newline, so
+            # the line it is showing right now is the unfinished last part.
+            # That part is read too (the step counter in it is current), and
+            # the saved offset stays in front of it for a worker that follows
+            # this stage after a restart.
             parts = re.split(b"[\r\n]", (linebuf + data)[-8192:])
             linebuf = parts[-1]
-            for part in parts[:-1]:
-                on_line(job_id, part.decode("utf-8", errors="replace"))
-            update(job_id, log_offset=offset)
+            for part in parts:
+                if part:
+                    on_line(job_id, part.decode("utf-8", errors="replace"))
+            update(job_id, log_offset=offset - len(linebuf))
             continue
         if code is not None:
             break

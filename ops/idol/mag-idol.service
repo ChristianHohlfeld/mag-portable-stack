@@ -31,8 +31,14 @@ MemoryMax=20G
 TasksMax=128
 Restart=on-failure
 RestartSec=5
+# A restart or stop of the worker ends the worker only. A stage that is
+# running (sampling on the MI50, meshing) goes on in this unit's group and
+# the next worker follows it again: a deploy never costs a 3D job.
+KillMode=process
 NoNewPrivileges=true
-PrivateTmp=true
+# Its own /tmp, but one that stays when the worker restarts: a private tmp
+# would be removed under a stage that is still running.
+BindPaths=/var/lib/mag-idol/tmp:/tmp /var/lib/mag-idol/tmp:/var/tmp
 ProtectSystem=strict
 ProtectHome=read-only
 ReadWritePaths=/var/lib/mag-idol

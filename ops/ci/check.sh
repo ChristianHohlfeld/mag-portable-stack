@@ -9,6 +9,8 @@ scripts=(ops/deploy.sh ops/rollback.sh ops/health.sh ops/build-targets.sh ops/pr
   ops/magbot-guest-run ops/magbot-agent-ctl ops/ci/check.sh)
 for f in "${scripts[@]}"; do bash -n "$f"; done
 python3 -m py_compile ops/idol/worker.py ops/idol/runner.py ops/idol/mesh.py
+# A restart of the Idol worker must leave a running stage alone.
+grep -qx 'KillMode=process' ops/idol/mag-idol.service
 jq -e '.bots | to_entries | all(.value.port and .value.model.path and (.value.numa == 0 or .value.numa == 1))' \
   ops/models/models.json >/dev/null
 # CPU only: no bot may be launched with a GPU offload flag.

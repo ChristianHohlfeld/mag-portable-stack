@@ -38,7 +38,7 @@ import torch, tensordict, idol, scipy, skimage, trimesh, plyfile, xatlas, PIL, f
 assert torch.__version__.startswith("2.7.1+") and torch.version.hip
 assert tensordict.__version__.split("+")[0] == "0.9.1"
 PY
-install -d -o chris -g chris -m 0700 /var/lib/mag-idol/jobs
+install -d -o chris -g chris -m 0700 /var/lib/mag-idol/jobs /var/lib/mag-idol/tmp
 install -m 0644 /opt/mag-stack/current/ops/idol/mag-idol.tmpfiles.conf /etc/tmpfiles.d/mag-idol.conf
 systemd-tmpfiles --create /etc/tmpfiles.d/mag-idol.conf
 install -d -o root -g root -m 0755 /usr/local/lib/mag-idol
@@ -53,11 +53,27 @@ fi
 install -m 0644 /opt/mag-stack/current/ops/idol/mag-idol.service /etc/systemd/system/mag-idol.service
 systemctl daemon-reload
 systemctl enable mag-idol.service
-# Restart only when the worker code or unit changed: a deploy must not kill
-# a running photo-to-3D job for nothing.
+# Restart the worker only when its code or unit changed. Its jobs survive
+# the restart: a stage runs on its own (KillMode=process) and the new worker
+# follows it again, so a deploy never costs a photo-to-3D job. The one
+# exception is a job that a worker from before this design started: it dies
+# with that worker, so then the restart waits until the job is done.
 rev=$(cat /opt/mag-stack/current/ops/idol/{worker,runner,mesh}.py /etc/systemd/system/mag-idol.service | sha256sum | cut -d' ' -f1)
 if [[ $(cat /run/mag-idol.rev 2>/dev/null) != "$rev" ]] || ! systemctl is-active --quiet mag-idol.service; then
-  systemctl restart mag-idol.service
+  active() { grep -lE '"state": *"(running|queued)"' /var/lib/mag-idol/jobs/*/status.json >/dev/null 2>&1; }
+  health=$(curl --noproxy '*' -fsS --max-time 3 http://127.0.0.1:8793/api/idol/health 2>/dev/null || :)
+  systemctl stop mag-idol-swap.service >/dev/null 2>&1 || :
+  if [[ -n $health ]] && ! jq -e '.resumable == true' <<<"$health" >/dev/null 2>&1 && active; then
+    echo 'mag-idol: a 3D job runs under the previous worker; the new worker takes over when it is done'
+    systemd-run --quiet --collect --unit=mag-idol-swap --property=CPUAffinity=28-55 /bin/bash -c '
+      for _ in $(seq 1 1080); do
+        grep -lE "\"state\": *\"(running|queued)\"" /var/lib/mag-idol/jobs/*/status.json >/dev/null 2>&1 || break
+        sleep 10
+      done
+      systemctl restart mag-idol.service'
+  else
+    systemctl restart mag-idol.service
+  fi
   printf '%s\n' "$rev" > /run/mag-idol.rev
 fi
 for _ in {1..15}; do

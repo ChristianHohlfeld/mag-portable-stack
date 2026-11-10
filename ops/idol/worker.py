@@ -1,10 +1,21 @@
 #!/usr/bin/env python3
-"""Private, single-flight Idol MI50 worker; no server-side CUDA imports."""
+"""Private, single-flight Idol MI50 worker; no server-side CUDA imports.
+
+A job survives everything short of being deleted. It is a folder: status.json
+says where the job is, and every stage of the pipeline leaves its result
+there (sampling -> splat.ply, meshing -> mesh.glb and mesh.stl). A stage runs
+in its own session, writes its output to a log file and its exit code to a
+file, so it does not need this process: when the worker restarts (a deploy,
+a crash) it finds the stage still running and follows it again, and after a
+reboot it starts the job again at the first stage whose result is missing.
+Nothing is ever written off as "interrupted".
+"""
 import json
 import os
 from pathlib import Path
 import queue
 import re
+import shutil
 import signal
 import subprocess
 import threading
@@ -19,6 +30,7 @@ WEIGHTS = os.environ.get("MAG_IDOL_WEIGHTS", "/home/chris/idol-mi50/weights/idol
 DINO = os.environ.get("IDOL_DINOV3", "/home/chris/idol-mi50/weights/dinov3-timm")
 VAE = os.environ.get("IDOL_FLUX2_VAE", "/home/chris/idol-mi50/weights/flux2vae")
 PORT = int(os.environ.get("MAG_IDOL_PORT", "8793"))
+CPUS = os.environ.get("MAG_IDOL_CPUS", "28-55")  # never the models' cores
 RUN_TIMEOUT = max(3600, int(os.environ.get("MAG_IDOL_TIMEOUT_S", "4200")))
 MAX_UPLOAD = 20 * 1024 * 1024
 MAX_PENDING = 8
@@ -36,11 +48,15 @@ REMAINING = re.compile(r"<(\d+(?::\d+){1,2})[,\]]")
 # 3-5 are the sections of mesh.py, which announces them ("MAG-STEP ...").
 PHASES = ("Modell laden", "3D-Form berechnen", "Mesh rekonstruieren", "Textur backen", "Dateien exportieren")
 MESH_MARKS = {"MAG-STEP texture": 4, "MAG-STEP export": 5}
+LOGS = {"sample": "idol.log", "mesh": "mesh.log"}
 jobs = {}
 lock = threading.Lock()
-pending = queue.Queue(maxsize=MAX_PENDING)
-processes = {}  # ID -> subprocess only while actually running
+pending = queue.Queue()
 abort = set()
+
+
+class Lost(Exception):
+    """A stage vanished without leaving its exit code (killed, reboot)."""
 
 def save(job):
     folder = ROOT / job["id"]
@@ -58,16 +74,48 @@ def update(job_id, **fields):
             save(item)
         return True
 
-def terminate(proc):
+def proc_start(pid):
+    """Start time of a live process (clock ticks since boot); None when it
+    is gone or only a zombie. With the pid it identifies one process."""
     try:
-        if proc.poll() is None:
-            os.killpg(proc.pid, signal.SIGTERM)
-            try: proc.wait(timeout=4)
-            except subprocess.TimeoutExpired:
-                os.killpg(proc.pid, signal.SIGKILL)
-                proc.wait(timeout=5)
-    except (ProcessLookupError, OSError):
+        stat = Path(f"/proc/{pid}/stat").read_text()
+    except (OSError, ValueError):
+        return None
+    fields = stat[stat.rindex(")") + 2:].split()
+    return None if fields[0] == "Z" else int(fields[19])
+
+def stage_alive(item):
+    pid = item.get("pid")
+    return bool(pid) and proc_start(pid) is not None and proc_start(pid) == item.get("pid_start")
+
+def reap():
+    """Collect finished stages this process started itself."""
+    try:
+        while os.waitpid(-1, os.WNOHANG)[0]:
+            pass
+    except ChildProcessError:
         pass
+
+def read_exit(path):
+    try:
+        return int(path.read_text().strip())
+    except (OSError, ValueError):
+        return None
+
+def kill_stage(item):
+    """End the running stage of a job (its whole process group)."""
+    pid = item.get("pid")
+    for sig, patience in ((signal.SIGTERM, 4), (signal.SIGKILL, 6)):
+        if not stage_alive(item):
+            return
+        try:
+            os.killpg(pid, sig)
+        except (ProcessLookupError, PermissionError, OSError):
+            return
+        end = time.monotonic() + patience
+        while time.monotonic() < end and stage_alive(item):
+            reap()
+            time.sleep(0.1)
 
 def cancel(job_id):
     with lock:
@@ -81,26 +129,21 @@ def cancel(job_id):
         item["stage"] = "Abgebrochen"
         item["error"] = "Vom Benutzer abgebrochen"
         save(item)
-        child = processes.get(job_id)
-    if child:
-        terminate(child)
+        snapshot = dict(item)
+    kill_stage(snapshot)
     return True
 
 def discard(job_id):
     """Stop the job if it runs and remove everything it left on disk."""
     cancel(job_id)
-    deadline = time.monotonic() + 12
-    while time.monotonic() < deadline:
-        with lock:
-            if job_id not in processes:
-                break
-        time.sleep(0.1)
+    with lock:
+        item = dict(jobs.get(job_id) or {})
+    kill_stage(item)
     with lock:
         jobs.pop(job_id, None)
     folder = ROOT / job_id
-    if not folder.is_dir():
+    if not VALID_ID.fullmatch(job_id) or not folder.is_dir():
         return False
-    import shutil
     shutil.rmtree(folder, ignore_errors=True)
     return not folder.exists()
 
@@ -130,107 +173,156 @@ def mesh_line(job_id, value):
     if phase:
         update(job_id, phase=phase, stage=PHASES[phase - 1])
 
-def run(job_id, command, log_path, timeout, on_line=None):
+def stage_env(folder):
     env = os.environ.copy()
+    tmp = folder / "tmp"  # not the service's private /tmp: that goes when the worker restarts
+    tmp.mkdir(exist_ok=True)
     env.update({
         "CUDA_VISIBLE_DEVICES": "0", "HIP_VISIBLE_DEVICES": "0",
         "PYTORCH_ROCM_ARCH": "gfx906", "ATTN_BACKEND": "sdpa",
         "HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1",
         "IDOL_DINOV3": DINO, "IDOL_FLUX2_VAE": VAE,
-        "PYTHONUNBUFFERED": "1",
+        "PYTHONUNBUFFERED": "1", "TMPDIR": str(tmp),
     })
-    with log_path.open("wb") as logfile:
-        proc = subprocess.Popen(command, env=env, stdout=subprocess.PIPE,
-                                stderr=subprocess.STDOUT, bufsize=0,
-                                start_new_session=True)
-        with lock:
-            processes[job_id] = proc
-            already_cancelled = job_id in abort
-        if already_cancelled:
-            terminate(proc)
-        start = time.monotonic()
-        linebuf = b""
+    return env
+
+def launch(job_id, key, command):
+    """Start one stage on its own: own session, output in its log, exit code
+    in <stage>.exit. It keeps running when this worker does not."""
+    folder = ROOT / job_id
+    log_path, exit_path = folder / LOGS[key], folder / f"{key}.exit"
+    exit_path.unlink(missing_ok=True)
+    offset = log_path.stat().st_size if log_path.exists() else 0
+    if CPUS:
+        command = ["taskset", "-c", CPUS] + command
+    wrapper = ["/bin/sh", "-c", '"$@"; rc=$?; echo "$rc" > "$0.part"; mv "$0.part" "$0"', str(exit_path)] + command
+    with log_path.open("ab") as log:
+        proc = subprocess.Popen(wrapper, env=stage_env(folder), stdin=subprocess.DEVNULL, stdout=log,
+                                stderr=subprocess.STDOUT, start_new_session=True)
+    update(job_id, stage_key=key, pid=proc.pid, pid_start=proc_start(proc.pid),
+           stage_started=int(time.time()), log_offset=offset)
+
+def follow(job_id, key, timeout, on_line):
+    """Read a stage's log as it grows until its exit code is on disk. Works
+    the same for a stage this process started and for one it found running."""
+    folder = ROOT / job_id
+    log_path, exit_path = folder / LOGS[key], folder / f"{key}.exit"
+    with lock:
+        item = dict(jobs[job_id])
+    offset, linebuf, gone = int(item.get("log_offset") or 0), b"", None
+    while True:
+        reap()
+        code = read_exit(exit_path)
+        data = b""
         try:
-            # Read raw bytes, not readline: tqdm frequently emits CR without LF.
-            while True:
-                if time.monotonic() - start > timeout:
-                    terminate(proc)
-                    raise TimeoutError(f"Zeitlimit {timeout//60} Minuten überschritten")
-                if job_id in abort:
-                    terminate(proc)
-                    raise InterruptedError("Job abgebrochen")
-                import select
-                ready, _, _ = select.select([proc.stdout], [], [], 0.5)
-                if ready:
-                    data = os.read(proc.stdout.fileno(), 8192)
-                    if not data:
-                        break
-                    logfile.write(data)
-                    logfile.flush()
-                    if on_line:
-                        linebuf = (linebuf + data)[-8192:]
-                        parts = re.split(b"[\r\n]", linebuf)
-                        linebuf = parts[-1]
-                        for part in parts[:-1]:
-                            on_line(job_id, part.decode("utf-8", errors="replace"))
-                elif proc.poll() is not None:
-                    break
-            code = proc.wait(timeout=10)
-            if code:
-                raise RuntimeError(f"Prozess Exit {code}; Details im privaten idol.log")
-        finally:
+            with log_path.open("rb") as log:
+                log.seek(offset)
+                data = log.read(65536)
+        except OSError:
+            pass
+        if data:
+            offset += len(data)
+            # Split on CR as well: tqdm redraws its line without a newline.
+            parts = re.split(b"[\r\n]", (linebuf + data)[-8192:])
+            linebuf = parts[-1]
+            for part in parts[:-1]:
+                on_line(job_id, part.decode("utf-8", errors="replace"))
+            update(job_id, log_offset=offset)
+            continue
+        if code is not None:
+            break
+        if job_id in abort:
+            kill_stage(item)
+            raise InterruptedError("Job abgebrochen")
+        if time.time() - float(item.get("stage_started") or time.time()) > timeout:
+            kill_stage(item)
+            raise TimeoutError(f"Zeitlimit {timeout//60} Minuten überschritten")
+        if stage_alive(item):
+            gone = None
+        else:
+            gone = gone or time.monotonic()
+            if time.monotonic() - gone > 3:  # no process and still no exit code
+                raise Lost(key)
+        time.sleep(0.5)
+    if code:
+        raise RuntimeError(f"Prozess Exit {code}; Details im privaten {log_path.name}")
+
+def run_stage(job_id, key, command, timeout, on_line, fresh):
+    """Run a stage to its end. A stage that is still running from before a
+    restart of this worker (or finished meanwhile) is taken over as it is; one
+    that was lost is started again."""
+    for attempt in range(3):
+        with lock:
+            item = dict(jobs[job_id])
+        known = item.get("stage_key") == key and bool(item.get("pid"))
+        finished = known and attempt == 0 and read_exit(ROOT / job_id / f"{key}.exit") is not None
+        if not (known and (stage_alive(item) or finished)):
+            update(job_id, **fresh)
+            launch(job_id, key, command)
+        try:
+            return follow(job_id, key, timeout, on_line)
+        except Lost:
             with lock:
-                if processes.get(job_id) is proc:
-                    del processes[job_id]
-            if proc.poll() is None:
-                terminate(proc)
-            proc.stdout.close()
+                again = int(jobs[job_id].get("resumed", 0)) + 1 if job_id in jobs else 1
+            update(job_id, pid=None, resumed=again)
+    raise RuntimeError("Der Schritt wurde mehrfach unterbrochen")
+
+def process(job_id):
+    folder = ROOT / job_id
+    out = folder / "outputs"
+    out.mkdir(exist_ok=True)
+    with lock:
+        quality = jobs[job_id].get("quality", "normal")
+    if quality not in MESH_TIMEOUTS:
+        raise ValueError("Ungültige gespeicherte Idol-Qualität")
+    here = Path(__file__)
+    # Stage 1: the Idol process loads its weights and samples. Its result is
+    # splat.ply; a job that already has it does not sample again.
+    splat = folder / "splat.ply"
+    if not splat.is_file():
+        command = [PYTHON, str(here.with_name("runner.py")),
+                   "--image", str(folder / "input.png"),
+                   "--out", str(out), "--mode", "real",
+                   "--weights", WEIGHTS, "--steps", "50",
+                   "--dinov3_dtype", "fp16", "--no_optimize"]
+        run_stage(job_id, "sample", command, RUN_TIMEOUT, sampling_line,
+                  dict(phase=1, stage=PHASES[0], step=0, total_steps=50, progress=0.0, eta=None))
+        source = out / "input.ply"
+        if not source.is_file():
+            raise RuntimeError("Idol hat keine PLY-Datei erzeugt")
+        source.rename(splat)
+    # Stage 2: mesh, texture, export. Done only when mesh.py itself said so.
+    def meshed():
+        return read_exit(folder / "mesh.exit") == 0 and all((folder / name).is_file() for name in RESULTS)
+    if not meshed():
+        command = [PYTHON, str(here.with_name("mesh.py")), str(splat), str(folder), "--quality", quality]
+        run_stage(job_id, "mesh", command, MESH_TIMEOUTS[quality], mesh_line,
+                  dict(phase=3, stage=PHASES[2], step=50, progress=1.0, eta=None))
+        if not meshed():
+            raise RuntimeError("Mesh-Export unvollständig (PLY/GLB/STL)")
+    shutil.rmtree(folder / "tmp", ignore_errors=True)
+    update(job_id, state="done", stage="Fertig", phase=len(PHASES), files=list(RESULTS),
+           finished=int(time.time()), pid=None)
 
 def execute():
     while True:
         job_id = pending.get()
         try:
             with lock:
-                if jobs[job_id]["state"] == "cancelled":
-                    continue
+                item = jobs.get(job_id)
+                state = item["state"] if item else "gone"
+                begun = bool(item and item.get("started"))
+            if state not in ("queued", "running"):
+                continue
             # The MI50 belongs to Idol alone (both bots run CPU-only), so a
             # job never pauses or restarts a model.
-            if not update(job_id, state="running", phase=1, phases=len(PHASES),
-                          stage=PHASES[0], started=int(time.time()),
-                          step=0, total_steps=50, progress=0.0, eta=None):
+            fields = dict(state="running", phases=len(PHASES))
+            if not begun:
+                fields.update(started=int(time.time()), phase=1, stage=PHASES[0],
+                              step=0, total_steps=50, progress=0.0, eta=None)
+            if not update(job_id, **fields):
                 continue
-            folder = ROOT / job_id
-            out = folder / "outputs"
-            out.mkdir(exist_ok=True)
-            command = ["taskset", "-c", "28-55", PYTHON,
-                       str(Path(__file__).with_name("runner.py")),
-                       "--image", str(folder / "input.png"),
-                       "--out", str(out), "--mode", "real",
-                       "--weights", WEIGHTS, "--steps", "50",
-                       "--dinov3_dtype", "fp16", "--no_optimize"]
-            run(job_id, command, folder / "idol.log", RUN_TIMEOUT, on_line=sampling_line)
-            if job_id in abort:
-                continue
-            source = out / "input.ply"
-            if not source.is_file():
-                raise RuntimeError("Idol hat keine PLY-Datei erzeugt")
-            source.rename(folder / "splat.ply")
-            update(job_id, phase=3, stage=PHASES[2], step=50, progress=1.0, eta=None)
-            with lock:
-                quality = jobs[job_id].get("quality", "normal")
-            if quality not in MESH_TIMEOUTS:
-                raise ValueError("Ungültige gespeicherte Idol-Qualität")
-            mesh = ["taskset", "-c", "28-55", PYTHON,
-                    str(Path(__file__).with_name("mesh.py")),
-                    str(folder / "splat.ply"), str(folder),
-                    "--quality", quality]
-            run(job_id, mesh, folder / "mesh.log", MESH_TIMEOUTS[quality], on_line=mesh_line)
-            if job_id in abort:
-                continue
-            if not all((folder / name).is_file() for name in RESULTS):
-                raise RuntimeError("Mesh-Export unvollständig (PLY/GLB/STL)")
-            update(job_id, state="done", stage="Fertig", files=list(RESULTS),
-                   finished=int(time.time()))
+            process(job_id)
         except InterruptedError:
             pass
         except TimeoutError as exc:
@@ -291,7 +383,7 @@ class API(BaseHTTPRequestHandler):
                 (data.startswith(b"RIFF") and data[8:12] == b"WEBP")):
             return self.reply(415, {"error": "Nur PNG, JPEG oder WebP erlaubt"})
         with lock:
-            if pending.full():
+            if pending.qsize() >= MAX_PENDING:
                 return self.reply(429, {"error": "Idol-Warteschlange voll"})
             identity = uuid4().hex
             folder = ROOT / identity
@@ -317,7 +409,10 @@ class API(BaseHTTPRequestHandler):
     def do_GET(self):
         parts = urlsplit(self.path).path.strip("/").split("/")
         if parts == ["api", "idol", "health"]:
-            return self.reply(200, {"ok": True, "queued": pending.qsize()})
+            with lock:
+                active = sum(1 for item in jobs.values() if item["state"] in ("queued", "running"))
+            # "resumable": this worker's jobs survive its restart.
+            return self.reply(200, {"ok": True, "queued": pending.qsize(), "active": active, "resumable": True})
         if len(parts) < 4 or parts[:3] != ["api", "idol", "jobs"] or not VALID_ID.fullmatch(parts[3]):
             return self.reply(404, {"error": "Nicht gefunden"})
         with lock:
@@ -339,28 +434,40 @@ class API(BaseHTTPRequestHandler):
         self.end_headers()
         try:
             with file.open("rb") as stream:
-                import shutil
                 shutil.copyfileobj(stream, self.wfile)
         except (BrokenPipeError, ConnectionResetError):
             pass
 
 def main():
     ROOT.mkdir(parents=True, exist_ok=True)
+    resume = []
     for path in ROOT.glob("*/status.json"):
         try:
             item = json.loads(path.read_text())
             if not VALID_ID.fullmatch(item["id"]):
                 continue
-            if item["state"] in ("running", "queued"):
-                item["state"] = "error"
-                item["error"] = "Dienst neu gestartet; bitte erneut senden"
-                item["stage"] = "Unterbrochen"
+            # Written off by an earlier version of this worker when it was
+            # restarted: such a job is taken up again like any unfinished one.
+            interrupted = item["state"] == "error" and item.get("stage") == "Unterbrochen"
+            if item["state"] in ("running", "queued") or interrupted:
+                if item["state"] == "running" or interrupted:
+                    item["resumed"] = int(item.get("resumed", 0)) + 1
+                item.pop("error", None)
+                item["state"] = "running" if stage_alive(item) else "queued"
+                if not stage_alive(item) and item.get("started"):
+                    item["stage"] = "Wird fortgesetzt"
                 save(item)
+                resume.append(item)
             jobs[item["id"]] = item
         except (ValueError, OSError, KeyError):
-            pass
+            continue
+    # The job whose stage is still running comes first (it has the GPU), then by age.
+    for item in sorted(resume, key=lambda job: (not stage_alive(job), job.get("created", 0))):
+        pending.put_nowait(item["id"])
     threading.Thread(target=execute, daemon=True).start()
-    ThreadingHTTPServer(("127.0.0.1", PORT), API).serve_forever()
+    server = ThreadingHTTPServer(("127.0.0.1", PORT), API)
+    server.daemon_threads = True
+    server.serve_forever()
 
 if __name__ == "__main__":
     main()

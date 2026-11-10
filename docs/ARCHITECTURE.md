@@ -100,6 +100,42 @@ the bridge listener, with a token derived per VM, so it cannot act as the
 other bot. "Internet für Bots" off is a host firewall switch
 (`magbot-netmode`), not a prompt rule.
 
+In the bot's panel the owner sees that browser, has a terminal (one command at
+a time as user `bot`, streamed) and a file view of the bot's home; both run
+through the same wrappers.
+
+### Bot sites
+
+A bot's site is `<name>.bot.stardenburg.de`, tailnet only. nginx hands every
+host of that zone to the room; the room resolves the name (the current one
+serves, an earlier name, the bot id or the VM name redirect) and sends the
+files the bot's VM published (`/var/lib/mag-bots/www/<vm>`, uploaded by the VM
+through `mag-bots-publish`). A finished HTML block of an answer, or a file
+written below `/home/bot/www`, is published and framed from that site in the
+chat. The room page's policy allows frames from that zone and nothing else.
+
+### What the bots read
+
+Every finished message of the others, with what belongs to it: small text
+files inline, 3D orders and results, images. A bot with a vision projector
+gets the image itself (a 1280 px copy, images in front of the text); once per
+image it writes down what it shows, asked on a branch of its prompt log that
+is not appended. A bot without eyes waits briefly for that description.
+
+## Photo to 3D (`ops/idol`)
+
+`worker.py` keeps one job at a time on the MI50. A job is a folder below
+`/var/lib/mag-idol/jobs`: `status.json` (state, phase, the running stage's
+process) and the result of every finished stage (`splat.ply` after sampling,
+`mesh.glb`/`mesh.stl` after meshing). A stage runs in its own session with its
+output in a log and its exit code in a file; the unit has `KillMode=process`.
+So a restart of the worker (a deploy) leaves the stage running and the new
+worker follows it again; after a reboot the job starts again at the first
+stage whose result is missing; queued and running jobs are taken up again in
+order at every start. The room mirrors the job into its message (phase k of
+n, the sampler's step and its own estimate) and picks jobs up again after its
+own restart.
+
 ## Models (`ops/models`)
 
 `models.json` declares both bots. `mag-modeld` owns download, verification

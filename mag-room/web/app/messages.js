@@ -260,9 +260,10 @@
   const quality = { fast: 'Schnell', normal: 'Normal', high: 'Hoch' };
   const kinds = { glb: 'Modell mit Textur', stl: 'für den 3D-Druck', ply: 'Punktwolke (Gaussian Splat)' };
   // Runtime, and what the sampler itself expects to remain for its step.
+  // "Fortgesetzt": the job went on after a restart of the room or the worker.
   function clock3d(d) {
     const now = Date.now() / 1000;
-    let text = +d.since ? 'Läuft seit ' + MAG.stopwatch((now - d.since) * 1000) : 'Wartet auf die Grafikkarte';
+    let text = +d.since ? (d.resumed ? 'Fortgesetzt · läuft seit ' : 'Läuft seit ') + MAG.stopwatch((now - d.since) * 1000) : 'Wartet auf die Grafikkarte';
     const left = +d.eta ? d.eta - (now - d.etaAt) : 0;
     if (left > 20) text += ' · dieser Schritt noch etwa ' + (left < 90 ? Math.round(left / 10) * 10 + ' s' : Math.round(left / 60) + ' min');
     return text;
@@ -278,7 +279,7 @@
       const fill = i < k ? 1 : i === k && counted ? (m3.step || 0) / m3.steps : 0;
       segs.append(el('i', { class: (i === 2 ? 'long' : '') + (i === k && !counted ? ' busy' : '') }, el('b', { style: 'width:' + Math.round(fill * 100) + '%' })));
     }
-    const clock = el('span', { class: 'clock', dataset: { since: m3.started || 0, eta: m3.eta || 0, etaAt: m3.eta_at || 0 } });
+    const clock = el('span', { class: 'clock', dataset: { since: m3.started || 0, eta: m3.eta || 0, etaAt: m3.eta_at || 0, resumed: m3.resumed ? '1' : '' } });
     clock.textContent = clock3d(clock.dataset);
     return el('div', { class: 'prog' }, el('div', { class: 'what', text: title }), segs, clock);
   }
@@ -291,8 +292,7 @@
       ? el('button', { class: 'src', 'aria-label': 'Ausgangsbild ansehen', title: 'Ausgangsbild', onclick: () => lightbox(src, m3.source, captionOf(m3.image)) },
           el('img', { src, alt: '', loading: 'lazy', onerror: (e) => e.target.closest('.src')?.replaceWith(el('span', { class: 'src' }, MAG.icon('cube'))) }))
       : el('span', { class: 'src' }, MAG.icon('cube'));
-    // "fortgesetzt": the job went on after a restart of the room or the worker.
-    const label = 'Qualität ' + (quality[m3.quality] || m3.quality) + (m3.resumed && m3.state !== 'done' ? ' · fortgesetzt' : '');
+    const label = 'Qualität ' + (quality[m3.quality] || m3.quality);
     const sub = m3.state === 'done' ? label + (m3.took ? ' · ' + MAG.dur(m3.took * 1000) : '')
       : m3.state === 'error' ? (m3.error || 'Fehler') : m3.state === 'cancelled' ? 'Abgebrochen' : label;
     card.append(el('div', { class: 'head' }, thumb, el('div', { class: 'txt' }, el('b', { text: 'Foto zu 3D' }), el('small', { text: sub })),

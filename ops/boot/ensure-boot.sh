@@ -12,7 +12,7 @@ units=(
   mag-modeld.service
   mag-audit-nft.service mag-audit-gateway.service mag-audit-webproxy.service
   mag-120.service mag-agents-network.service mag-browser-webrtc.service mag-git-gateway.socket
-  mag-idol.service mag-bots-publish.service mag-cpu-tune.service
+  mag-idol.service mag-stt.service mag-bots-publish.service mag-cpu-tune.service
   gitea.service nginx.service tailscaled.service libvirtd.service ssh.service
   mag-gitea-runner.service mag-gitea-funnel.service mag-gitea-funnel.timer
   mag-tailscale-cert.timer mag-tailscale-egress.timer mag-acme-renew.timer
@@ -34,6 +34,13 @@ for u in "${units[@]}"; do
     *) log "left $u as $state" ;;
   esac
 done
+
+# Package updates must not restart the stack behind Chris's back (needrestart
+# restarted the Idol worker after a Tailscale update and after an apt install).
+if [[ -d /etc/needrestart/conf.d ]]; then
+  install -m 0644 "$(dirname -- "$(readlink -f "$0")")/needrestart-mag.conf" /etc/needrestart/conf.d/mag-stack.conf
+  log 'needrestart leaves the MAG services alone'
+fi
 
 # Bot VMs: the VMs of the room's bots come back on boot, others stay off.
 if command -v virsh >/dev/null && command -v jq >/dev/null && [[ -r $agents_json ]]; then

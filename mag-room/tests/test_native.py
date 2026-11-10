@@ -724,6 +724,12 @@ class RoomContract(unittest.TestCase):
         r.wait(lambda: message(second["id"])["state"] == "stopped", "film cancelled")
         self.assertEqual((message(second["id"])["model3d"]["state"], len(message(second["id"])["attachments"])), ("cancelled", 1))
         self.assertEqual((r.scene.cancelled, r.idol.cancelled), ([second["model3d"]["job"]], []))
+        # A film that did not come about can be rendered again; one that is there cannot.
+        r.scene.hold = False
+        self.assertEqual(r.api("POST", "/api/3d/%s/retry" % second["id"])[0], 200)
+        r.wait(lambda: message(second["id"])["state"] == "done", "film rendered after all")
+        self.assertEqual(([a["kind"] for a in message(second["id"])["attachments"]], message(second["id"])["model3d"].get("error")), (["model", "video", "file"], None))
+        self.assertEqual(r.api("POST", "/api/3d/%s/retry" % second["id"])[0], 409)
         # Deleting a scene removes its files and the worker's folder.
         stored = [files / a["file"] for a in done["attachments"]]
         self.assertTrue(all(p.exists() for p in stored))

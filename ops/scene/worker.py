@@ -134,6 +134,24 @@ def cancel(job_id):
     return True
 
 
+def retry(job_id):
+    """Renders the film of a scene again whose film failed or was cancelled:
+    what was rendered stays, the rest is rendered. None: no such job."""
+    with lock:
+        item = jobs.get(job_id)
+        if item is None:
+            return None
+        if item["state"] not in ("error", "cancelled") or not (ROOT / job_id / "scene.blend").is_file():
+            return False
+        abort.discard(job_id)
+        item.update(state="queued", stage="Film wartet", pid=None, eta=None, started=int(time.time()))
+        item.pop("error", None)
+        item.pop("finished", None)
+        save(item)
+        pending.put_nowait(job_id)
+    return True
+
+
 def discard(job_id):
     """Stop the job if it runs and remove everything it left on disk."""
     cancel(job_id)
@@ -274,16 +292,31 @@ def process(job_id):
     quality, frames = item.get("quality", "normal"), int(item.get("frames") or 0)
     film = folder / "scene.mp4"
     stills = folder / "frames"
-    have = len(list(stills.glob("f*.png"))) if stills.is_dir() else 0
+
+    def rendered():
+        return len(list(stills.glob("f*.png"))) if stills.is_dir() else 0
     if not film.is_file():
-        if have < frames or read_exit(folder / "render.exit") != 0:
+        # A render that fails with frames to its name (the denoiser could not
+        # get a thread, the machine was busy) is started again and goes on
+        # where it stopped; one that gets nowhere is an error.
+        while rendered() < frames or read_exit(folder / "render.exit") != 0:
+            with lock:
+                item = dict(jobs[job_id])
+            have = rendered()
             if have and not stage_alive(item):
                 # The frame a killed render was writing may be half a file: render it again.
                 sorted(stills.glob("f*.png"))[-1].unlink(missing_ok=True)
                 have -= 1
             update(job_id, first_frame=have)
-            run_stage(job_id, "render", blender("render", str(folder)), RENDER_TIMEOUT, frame_line,
-                      dict(phase=2, stage=PHASES[1], step=have, total_steps=frames, progress=round(have / max(1, frames), 3), eta=None), quality)
+            try:
+                run_stage(job_id, "render", blender("render", str(folder)), RENDER_TIMEOUT, frame_line,
+                          dict(phase=2, stage=PHASES[1], step=have, total_steps=frames, progress=round(have / max(1, frames), 3), eta=None), quality)
+            except RuntimeError:
+                if rendered() <= have + 1:
+                    raise
+                with lock:
+                    again = int(jobs[job_id].get("resumed") or 0) + 1 if job_id in jobs else 1
+                update(job_id, pid=None, resumed=again)
         encode = [FFMPEG, "-nostdin", "-v", "error", "-y", "-framerate", str(int(item.get("fps") or 24)), "-i", str(stills / "f%04d.png"),
                   "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "20", "-preset", "medium", "-movflags", "+faststart", str(folder / "scene.part.mp4")]
         if CPUS:
@@ -363,6 +396,19 @@ def parts_of(stored):
     return json.loads(out.read_text())
 
 
+def keep_log(folder):
+    """What Blender said about a scene it could not build stays for a while
+    (the newest twenty), so a failure can be understood afterwards."""
+    try:
+        kept = ROOT.parent / "failed"
+        kept.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(folder / LOGS["build"], kept / ("%d-%s.log" % (int(time.time()), folder.name[:6])))
+        for old in sorted(kept.glob("*.log"))[:-20]:
+            old.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
 def create(spec):
     """Builds the scene now and queues its film. Returns the job."""
     if not isinstance(spec, dict) or not isinstance(spec.get("actors"), list) or not spec["actors"]:
@@ -389,9 +435,11 @@ def create(spec):
         run_blender(["build", str(folder / "spec.json"), str(folder)], folder, LOGS["build"])
         facts = json.loads((folder / "scene.json").read_text())
     except Refused:
+        keep_log(folder)
         shutil.rmtree(folder, ignore_errors=True)
         raise
     except (OSError, ValueError):
+        keep_log(folder)
         shutil.rmtree(folder, ignore_errors=True)
         raise Refused("Die Szene wurde nicht vollständig gebaut.")
     item = {"id": identity, "state": "queued", "stage": "Film wartet", "quality": quality, "created": int(time.time()),
@@ -429,9 +477,10 @@ class API(BaseHTTPRequestHandler):
         parts = url.path.strip("/").split("/")
         if not self.allowed():
             return None
-        if len(parts) == 5 and parts[:3] == ["api", "scene", "jobs"] and VALID_ID.fullmatch(parts[3]) and parts[4] == "cancel":
-            outcome = cancel(parts[3])
-            return self.reply(404, {"error": "Job nicht gefunden"}) if outcome is None else self.reply(200, {"cancelled": outcome})
+        if len(parts) == 5 and parts[:3] == ["api", "scene", "jobs"] and VALID_ID.fullmatch(parts[3]) and parts[4] in ("cancel", "retry"):
+            outcome = cancel(parts[3]) if parts[4] == "cancel" else retry(parts[3])
+            what = "cancelled" if parts[4] == "cancel" else "queued"
+            return self.reply(404, {"error": "Job nicht gefunden"}) if outcome is None else self.reply(200, {what: outcome})
         if url.path == "/api/scene/purge":
             with lock:
                 known = list(jobs)

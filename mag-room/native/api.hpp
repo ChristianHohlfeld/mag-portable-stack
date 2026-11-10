@@ -75,6 +75,11 @@ public:
       }
       return http::send_ok(fd);
     }
+    if (r.method == "POST" && starts_with(p, "/api/3d/") && ends_with(p, "/retry")) {
+      Val m;
+      if (!room_.get(p.substr(8, p.size() - 8 - 6), m) || !scenes_.retry(m)) return http::send_error(fd, 409, "Der Film lässt sich nicht noch einmal rendern");
+      return http::send_ok(fd);
+    }
     if (r.method == "POST" && p == "/api/browser-live/offer") return live_offer(fd, r);
     if (r.method == "POST" && starts_with(p, "/api/browser/")) return browser_action(fd, r);
     if (r.method == "POST" && p == "/api/push/subscribe") return push_.subscribe(fd, r.body);

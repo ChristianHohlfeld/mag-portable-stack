@@ -137,6 +137,23 @@ public:
   void cancel(const Val &message) {
     if (is_scene(message)) http::fetch(room_.cfg.scene_url + "/api/scene/jobs/" + jstr(*message.find("model3d"), "job") + "/cancel", options("POST"));
   }
+  // The film failed or was cancelled: render it again (what was rendered stays).
+  bool retry(const Val &message) {
+    if (!is_scene(message) || jstr(message, "state") == "streaming") return false;
+    const std::string job = jstr(*message.find("model3d"), "job");
+    const auto res = http::fetch(room_.cfg.scene_url + "/api/scene/jobs/" + job + "/retry", options("POST"));
+    if (res.status != 200 || !jbool(jparse(res.body), "queued")) return false;
+    room_.update(jstr(message, "id"), [&](Val &msg) {
+      msg["state"] = "streaming";
+      Val &m3 = msg["model3d"];
+      m3["state"] = "queued";
+      m3["stage"] = "Film wartet";
+      m3["started"] = (double)now_s();
+      m3.obj->erase(std::remove_if(m3.obj->begin(), m3.obj->end(), [](const auto &kv) { return kv.first == "error" || kv.first == "eta"; }), m3.obj->end());
+    });
+    watch(jstr(message, "id"), job);
+    return true;
+  }
   // The message is gone: remove what the worker keeps for it.
   void forget(const Val &removed) {
     if (!is_scene(removed)) return;

@@ -747,6 +747,97 @@ private:
     return plain && file_size(src) <= (6 << 20) ? src : "";
   }
 
+  // ---- documents ----------------------------------------------------------
+  static bool document(const Val &a) {
+    const std::string name = lower(jstr(a, "name"));
+    for (const char *ext : {".pdf", ".docx", ".odt", ".pptx", ".odp"})
+      if (ends_with(name, ext)) return true;
+    return false;
+  }
+  // The text of an office XML part: paragraphs become lines, tags go.
+  static std::string xml_text(std::string xml) {
+    for (const char *end : {"</w:p>", "</text:p>", "</text:h>", "</a:p>", "<w:br/>", "<text:line-break/>"}) replace_all(xml, end, "\n");
+    for (const char *tab : {"<w:tab/>", "<text:tab/>"}) replace_all(xml, tab, "\t");
+    std::string out;
+    bool tag = false;
+    for (const char c : xml) {
+      if (c == '<') tag = true;
+      else if (c == '>') tag = false;
+      else if (!tag) out += c;
+    }
+    for (const auto &[from, to] : std::vector<std::pair<const char *, const char *>>{{"&lt;", "<"}, {"&gt;", ">"}, {"&quot;", "\""}, {"&apos;", "'"}, {"&amp;", "&"}})
+      replace_all(out, from, to);
+    return out;
+  }
+  static size_t letters(const std::string &text) {
+    size_t n = 0;
+    for (const unsigned char c : text) n += isalnum(c) || c >= 0x80 ? 1 : 0;
+    return n;
+  }
+  // What a document says: the text layer of a PDF, for a scan what OCR reads
+  // on its first pages, the text of a Word, OpenDocument or PowerPoint file.
+  // Made once per file and kept next to the image copies; "" when there is
+  // nothing to read or the host has no extractor for it.
+  std::string document_text(const Val &a) {
+    const std::string stored = jstr(a, "file"), src = room_.file_path(stored), name = lower(jstr(a, "name"));
+    if (src.empty() || !exists(src)) return "";
+    const std::string out = room_.cfg.state_dir + "/text/" + stored + ".txt", tmp = out + ".part";
+    static std::mutex mu; // both bots ask for the same file at the same moment
+    std::lock_guard<std::mutex> lk(mu);
+    std::string text;
+    if (exists(out)) {
+      read_file(out, text, 4u << 20);
+      return text;
+    }
+    RunOptions opt;
+    opt.timeout_s = 90;
+    const auto piped = [&](const char *command) { // a fixed command line; the paths are arguments, never part of it
+      const RunResult r = run({"sh", "-c", command, "sh", src, tmp}, opt);
+      std::string got;
+      if (r.code == 0) read_file(tmp, got, 4u << 20);
+      unlink(tmp.c_str());
+      return got;
+    };
+    if (ends_with(name, ".pdf")) {
+      text = piped("pdftotext -layout -enc UTF-8 -l 120 \"$1\" \"$2\"");
+      if (letters(text) < 40) {
+        // A scan has no text layer: read its first pages with OCR.
+        const std::string pages = out + ".page";
+        std::string seen;
+        if (run({"pdftoppm", "-r", "150", "-gray", "-png", "-f", "1", "-l", "6", src, pages}, opt).code == 0) {
+          std::vector<std::string> files;
+          std::error_code ec;
+          for (auto &entry : fs::directory_iterator(room_.cfg.state_dir + "/text", ec))
+            if (starts_with(entry.path().string(), pages)) files.push_back(entry.path().string());
+          std::sort(files.begin(), files.end());
+          for (const auto &file : files) {
+            const RunResult page = run({"tesseract", file, "stdout", "-l", "deu+eng"}, opt);
+            if (page.code == 0) seen += page.out + "\n";
+            unlink(file.c_str());
+          }
+        }
+        if (letters(seen) > letters(text)) text = seen;
+      }
+    } else if (ends_with(name, ".docx")) text = xml_text(piped("unzip -p \"$1\" word/document.xml > \"$2\""));
+    else if (ends_with(name, ".pptx")) text = xml_text(piped("unzip -p \"$1\" 'ppt/slides/slide*.xml' > \"$2\""));
+    else text = xml_text(piped("unzip -p \"$1\" content.xml > \"$2\"")); // OpenDocument
+    // Tidy: valid UTF-8, pages apart, no runs of empty lines.
+    text = mj::utf8_fix(text);
+    replace_all(text, "\f", "\n\n");
+    replace_all(text, "\r", "");
+    std::string tidy;
+    size_t blank = 0;
+    std::istringstream lines(text);
+    for (std::string line; std::getline(lines, line);) {
+      while (!line.empty() && (line.back() == ' ' || line.back() == '\t')) line.pop_back();
+      blank = line.empty() ? blank + 1 : 0;
+      if (blank < 2) tidy += line + "\n";
+    }
+    text = letters(tidy) ? trim(tidy) + "\n" : "";
+    write_atomic(out, text, 0640); // also when empty: asked once, not at every turn
+    return text;
+  }
+
   static bool text_file(const Val &a) {
     const std::string mime = jstr(a, "mime"), name = lower(jstr(a, "name"));
     if (starts_with(mime, "text/") || mime == "application/json") return true;
@@ -834,11 +925,21 @@ private:
           content = clip(mj::utf8_fix(content), 8000, "\n…[gekürzt; vollständig in der Datei]");
           inlined += content.size();
           body += "[Datei " + meta + "]\n```\n" + content + (ends_with(content, "\n") ? "" : "\n") + "```";
+        } else if (document(a) && inlined < 24000) {
+          // A document is read for the bots: its text is part of the conversation.
+          const std::string text = document_text(a);
+          if (text.empty()) body += "[Datei " + meta + ". Darin ist kein lesbarer Text]";
+          else {
+            const bool cut = text.size() > 12000;
+            body += "[Dokument " + meta + (cut ? ". Hier der Anfang seines Textes" + (path.empty() ? std::string() : ", der ganze Text steht in " + path + ".txt") : ". Sein Text") +
+                    "]\n```\n" + clip(text, 12000, "\n…[gekürzt]") + (cut || !ends_with(text, "\n") ? "\n" : "") + "```";
+            inlined += std::min<size_t>(text.size(), 12000);
+          }
         } else {
           body += "[Datei " + meta + "]";
         }
       }
-    return head + clip(body, 24000, "\n…[gekürzt]");
+    return head + clip(body, 40000, "\n…[gekürzt]");
   }
 
   // Room messages this bot has not read yet (others' finished messages).
@@ -890,6 +991,10 @@ private:
                                    shell_quote(guests_.bridge("/files/" + url_encode(jstr(a, "file")) + "?token=" + guests_.token(vm))) +
                                    " -o " + shell_quote(dest);
         if (guests_.quiet(vm, script, 150).code == 0) path = dest;
+        // A document's text goes along as <name>.txt, so a long one can be searched with the shell.
+        if (!path.empty() && document(a) && !document_text(a).empty())
+          guests_.quiet(vm, "curl -fsS --max-time 60 " + shell_quote(guests_.bridge("/files/" + url_encode(jstr(a, "file")) + "?text=1&token=" + guests_.token(vm))) +
+                                " -o " + shell_quote(dest + ".txt"), 90);
       }
       paths.push_back(path);
     }

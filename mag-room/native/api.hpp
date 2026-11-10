@@ -800,8 +800,12 @@ private:
     if (r.method == "GET" && r.path == "/tool/mag-browser")
       return http::send_file(fd, r, room_.cfg.browser_binary, "application/octet-stream");
     if (r.method == "GET" && starts_with(r.path, "/files/")) {
-      const std::string path = room_.file_path(url_decode(r.path.substr(7)));
+      const std::string stored = url_decode(r.path.substr(7));
+      std::string path = room_.file_path(stored);
       if (path.empty() || !exists(path)) return http::send_error(fd, 404, "Unknown file");
+      // ?text=1: what the document says, as plain text (made by the engine).
+      if (r.param("text") == "1") path = room_.cfg.state_dir + "/text/" + stored + ".txt";
+      if (!exists(path)) return http::send_error(fd, 404, "No text");
       return http::send_file(fd, r, path, "application/octet-stream");
     }
     if (r.method == "POST" && r.path == "/ingest") {

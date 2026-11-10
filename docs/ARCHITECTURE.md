@@ -118,6 +118,15 @@ Where UDP cannot get through, the browser view falls back to pictures over
 HTTPS (`/api/screen`) and the terminal offers single commands
 (`/api/vm/<bot>/run`); the file view always goes through the wrappers.
 
+### Documents
+
+`Engine::document_text` turns an attached PDF, DOCX, PPTX, ODT or ODP into
+text once and keeps it in `STATE/text/<file>.txt` (removed with the message):
+`pdftotext -layout` for the text layer; when a PDF has none, `pdftoppm` and
+`tesseract` (deu+eng) read its first six pages; office files are unzipped and
+their XML reduced to paragraphs. The bots get up to 12,000 characters of each
+document inline; the whole text is copied to the bot's VM as `<name>.txt`.
+
 ### Dictation
 
 The page captures the microphone in an AudioWorklet (`web/app/capture.js`:

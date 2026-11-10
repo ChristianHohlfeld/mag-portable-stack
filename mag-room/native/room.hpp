@@ -116,7 +116,7 @@ public:
   Bus bus;
 
   explicit Room(Config c) : cfg(std::move(c)) {
-    for (const char *sub : {"", "/messages", "/files", "/wire", "/uploads", "/vision"})
+    for (const char *sub : {"", "/messages", "/files", "/wire", "/uploads", "/vision", "/text"})
       fs::create_directories(cfg.state_dir + sub);
     load();
   }
@@ -281,7 +281,7 @@ public:
     for (auto &kv : messages_) gone.push_back(kv.second);
     messages_.clear();
     std::error_code ec;
-    for (const char *sub : {"/messages", "/files", "/uploads", "/vision"}) {
+    for (const char *sub : {"/messages", "/files", "/uploads", "/vision", "/text"}) {
       fs::remove_all(cfg.state_dir + sub, ec);
       fs::create_directories(cfg.state_dir + sub, ec);
     }
@@ -462,6 +462,7 @@ private:
         if (path.empty()) continue;
         unlink(path.c_str());
         unlink((cfg.state_dir + "/vision/" + jstr(a, "file") + ".jpg").c_str()); // its copy for the models
+        unlink((cfg.state_dir + "/text/" + jstr(a, "file") + ".txt").c_str());   // what a document says
       }
   }
 
@@ -521,10 +522,11 @@ private:
     for (auto &entry : fs::directory_iterator(cfg.files_dir, ec))
       if (!used.count(entry.path().filename().string())) fs::remove(entry.path(), ec);
     for (auto &entry : fs::directory_iterator(cfg.state_dir + "/uploads", ec)) fs::remove(entry.path(), ec);
-    for (auto &entry : fs::directory_iterator(cfg.state_dir + "/vision", ec)) {
-      const std::string name = entry.path().filename().string();
-      if (name.size() < 5 || !used.count(name.substr(0, name.size() - 4))) fs::remove(entry.path(), ec);
-    }
+    for (const char *cache : {"/vision", "/text"})
+      for (auto &entry : fs::directory_iterator(cfg.state_dir + cache, ec)) {
+        const std::string name = entry.path().filename().string();
+        if (name.size() < 5 || !used.count(name.substr(0, name.size() - 4))) fs::remove(entry.path(), ec);
+      }
     settings_ = read_json(cfg.state_dir + "/settings.json");
     if (!settings_.isObj()) settings_ = Val::object();
     if (!settings_.find("bot_rounds")) settings_["bot_rounds"] = cfg.bot_rounds;

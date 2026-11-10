@@ -80,7 +80,10 @@ VM, authenticated UDP to `mag-browser-webrtc` on the host, WebRTC data
 channels to the page. Pictures over HTTPS and single commands are only the
 fallback where UDP cannot get through; never let them replace the link.
 The bots read the whole chat: text files inline, 3D orders and their
-results, and images. A bot whose model has a vision projector gets the image
+results, images and documents. A document is read for them once: the text of
+a PDF (OCR on the first pages of a scan), a Word, OpenDocument or PowerPoint
+file is part of the message, and a long one continues as `<name>.txt` next to
+the file in the bot's VM. A bot whose model has a vision projector gets the image
 itself; it also writes down once what the image shows (a short branch off
 its prompt log, never appended to it), and a bot without eyes reads that.
 The UI is mobile first: streamed answers appear below the user message in the

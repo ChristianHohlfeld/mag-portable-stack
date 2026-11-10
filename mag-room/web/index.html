@@ -19,6 +19,7 @@
 <script defer src="/app/core.js?v={{V}}"></script>
 <script defer src="/app/viewer3d.js?v={{V}}"></script>
 <script defer src="/app/messages.js?v={{V}}"></script>
+<script defer src="/app/mention.js?v={{V}}"></script>
 <script defer src="/app/composer.js?v={{V}}"></script>
 <script defer src="/app/dictate.js?v={{V}}"></script>
 <script defer src="/app/live.js?v={{V}}"></script>
@@ -46,7 +47,7 @@
         <div id="staged"></div>
         <div class="row">
           <button id="attach" class="icon-btn" aria-label="Anhängen"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button>
-          <textarea id="input" rows="1" placeholder="Nachricht" autocomplete="off" enterkeyhint="enter" aria-label="Nachricht"></textarea>
+          <div class="inwrap"><div id="mirror" aria-hidden="true"></div><textarea id="input" rows="1" placeholder="Nachricht" autocomplete="off" enterkeyhint="enter" aria-label="Nachricht"></textarea></div>
           <button id="mic" class="icon-btn" aria-label="Diktieren" title="Diktieren" aria-pressed="false" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg></button>
           <button id="send" aria-label="Senden" disabled></button>
         </div>

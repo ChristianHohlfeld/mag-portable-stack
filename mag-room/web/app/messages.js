@@ -17,6 +17,7 @@
     const html = DOMPurify.sanitize(marked.parse(text || ''), { FORBID_TAGS: ['style', 'form', 'input', 'iframe', 'object', 'embed'], FORBID_ATTR: ['style', 'onerror', 'onclick'] });
     const box = el('div', { class: 'md', html });
     box.querySelectorAll('a').forEach((a) => { a.target = '_blank'; a.rel = 'noopener noreferrer'; });
+    MAG.mentions?.decorate(box);
     box.querySelectorAll('img').forEach((img) => { img.loading = 'lazy'; });
     box.querySelectorAll('pre').forEach((pre) => {
       const code = pre.querySelector('code');

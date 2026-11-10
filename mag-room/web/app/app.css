@@ -386,12 +386,30 @@ audio, video { max-width: 100%; border-radius: 12px; }
 .seg button.on { background: var(--text); color: var(--bg); font-weight: 600; }
 .field .row { display: flex; align-items: flex-end; gap: 2px; }
 .field .icon-btn { border-radius: 50%; }
+/* The field and, behind it, a layer that repeats its text to paint the chips of mentions. */
+.inwrap { position: relative; flex: 1; min-width: 0; display: flex; }
+#input, #mirror { padding: 9px 4px; line-height: 1.4; font-size: 16px; /* no zoom on iOS */ }
 #input {
-  flex: 1; min-width: 0; resize: none; border: 0; background: transparent; outline: none;
-  padding: 9px 4px; line-height: 1.4;
-  font-size: 16px; /* no zoom on iOS */
+  flex: 1; min-width: 0; resize: none; border: 0; background: transparent; outline: none; position: relative;
   overflow-y: auto; scrollbar-width: none; /* grows to seven lines, then scrolls without a bar */
 }
+#mirror { position: absolute; inset: 0; white-space: pre-wrap; overflow-wrap: break-word; color: transparent; overflow: hidden; pointer-events: none; user-select: none; }
+/* @mentions: a chip in the bot's colour, in the field and in the timeline */
+.at { --tone: var(--accent); border-radius: 6px; background: color-mix(in srgb, var(--tone) 20%, transparent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--tone) 20%, transparent); }
+.at[data-bot="lena"] { --tone: var(--lena); }
+.at[data-bot="noah"] { --tone: var(--noah); }
+.msg .at { color: var(--tone); font-weight: 600; white-space: nowrap; }
+.msg .at.all { color: inherit; }
+.field { position: relative; }
+.mention-list { position: absolute; left: 6px; bottom: calc(100% + 6px); z-index: 30; min-width: 220px; max-width: calc(100% - 12px); padding: 5px; border-radius: 14px; border: 1px solid var(--line); background: var(--surface); box-shadow: var(--shadow); }
+.mention-list button { display: flex; align-items: center; gap: 9px; width: 100%; padding: 9px 11px; border-radius: 10px; text-align: left; font-size: 15px; }
+.mention-list button.on, .mention-list button:hover { background: var(--surface-2); }
+.mention-list .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); flex: none; }
+.mention-list button[data-bot="lena"] { --tone: var(--lena); }
+.mention-list button[data-bot="noah"] { --tone: var(--noah); }
+.mention-list button[data-bot] .dot { background: var(--tone, var(--accent)); }
+.mention-list button[data-bot] b { color: var(--tone, var(--text)); }
+.mention-list span:last-child { color: var(--muted); font-size: 13px; margin-left: auto; }
 #input::-webkit-scrollbar { display: none; }
 #input::placeholder { color: var(--faint); }
 #send { width: 36px; height: 36px; margin: 2px; border-radius: 50%; background: var(--text); color: var(--bg); display: grid; place-items: center; flex: none; transition: background .12s, transform .08s; }

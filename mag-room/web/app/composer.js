@@ -17,6 +17,7 @@
     const max = Math.round((parseFloat(style.lineHeight) || 22) * 7 + parseFloat(style.paddingTop) + parseFloat(style.paddingBottom) + frame);
     input.style.height = 'auto';
     input.style.height = Math.min(input.scrollHeight + frame, max) + 'px';
+    MAG.mentions?.paint();
   }
   function refresh() {
     const has3dImage = staged.some((s) => s.att.kind === 'image');

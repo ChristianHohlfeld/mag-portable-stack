@@ -189,12 +189,51 @@ class RoomContract(unittest.TestCase):
 
     def test_named_bot_answers_alone(self):
         r = self.room
-        r.say("@Lena wie geht es dir?")
+        r.say("Lena, wie geht es dir?")
         r.idle()
         self.assertEqual([m["from"] for m in r.messages()], ["chris", "lena"])
         # Noah was not asked; he reads Lena's answer and may pass.
         self.assertEqual(len(r.lena.chats()), 1)
         self.assertEqual(len(r.noah.chats()), 1)
+
+    def test_mention_asks_one_bot_and_the_other_only_reads(self):
+        r = self.room
+        first = r.say("@Lena wie geht es dir?")
+        r.idle()
+        time.sleep(1.0)
+        self.assertEqual(first["mentions"], ["lena"])
+        self.assertEqual([m["from"] for m in r.messages()], ["chris", "lena"])
+        # Noah is not asked at all: no turn, not even one he could pass.
+        self.assertEqual((len(r.lena.chats()), len(r.noah.chats())), (1, 0))
+        # Without a mention both answer again, and Noah reads whom the first message was for.
+        r.say("und was gibt es Neues?")
+        r.idle()
+        noah = json.dumps(r.noah.chats()[0]["messages"], ensure_ascii=False)
+        self.assertIn("Chris an Lena: @Lena wie geht es dir?", noah)
+        self.assertNotIn("Chris an Lena", json.dumps(r.lena.chats()[-1]["messages"], ensure_ascii=False))
+        self.assertIn("lena", [m["from"] for m in r.messages()[2:]])
+        self.assertIn("noah", [m["from"] for m in r.messages()[2:]])
+
+    def test_two_mentions_mean_both_and_a_mention_follows_a_rename(self):
+        r = self.room
+        both = r.say("@Lena @Noah seid ihr da?")
+        r.idle()
+        self.assertEqual(both["mentions"], ["lena", "noah"])
+        self.assertEqual(sorted(m["from"] for m in r.messages()[1:3]), ["lena", "noah"])
+        self.assertEqual(r.say("mail an chris@lena.example und @alle")["mentions"], ["lena", "noah"])  # an address is no mention, "@alle" is
+        r.idle()
+        # Lena becomes Luna: the new name works, and the old one still means her.
+        self.assertEqual(r.api("PUT", "/api/bot/lena", {"name": "Luna"})[0], 200)
+        r.idle()
+        before = (len(r.lena.chats()), len(r.noah.chats()))
+        self.assertEqual(r.say("@Luna hallo")["mentions"], ["lena"])
+        r.idle()
+        self.assertEqual(r.say("@lena noch da?")["mentions"], ["lena"])
+        r.idle()
+        time.sleep(1.0)
+        self.assertGreater(len(r.lena.chats()), before[0])
+        self.assertEqual(len(r.noah.chats()), before[1])
+        self.assertEqual([b["aliases"] for b in r.state()["bots"] if b["id"] == "lena"], [["lena"]])
 
     def test_speaker_labels_are_plain_and_copied_tags_are_cleaned(self):
         r = self.room

@@ -256,7 +256,11 @@ private:
     std::vector<std::string> to;
     if (const Val *list = in.find("to"); list && list->isArr())
       for (auto &b : list->asArr()) to.push_back(b.asStr());
-    if (mode == "3d") m["silent"] = true; // a 3D order is for the worker, not for the bots
+    if (mode == "3d") {
+      // A 3D order is for the worker: the bots read it as context, it asks them nothing.
+      m["silent"] = true;
+      m["order3d"] = jstr(in, "quality", "normal");
+    }
     const Val stored = room_.add(m);
     Val out = Val::object();
     out["message"] = stored;

@@ -419,6 +419,7 @@ audio, video { max-width: 100%; border-radius: 12px; }
 #lightbox .bar { position: absolute; left: 0; right: 0; bottom: calc(12px + env(safe-area-inset-bottom)); display: flex; justify-content: center; gap: 8px; flex-wrap: wrap; padding: 0 10px; }
 #lightbox .bar .pill { display: inline-flex; align-items: center; gap: 6px; padding: 8px 13px; color: #fff; background: rgba(30,30,34,.72); border-color: rgba(255,255,255,.16); backdrop-filter: blur(6px); }
 #lightbox .bar .pill svg { width: 16px; height: 16px; }
+#lightbox .bar .cap { flex-basis: 100%; margin: 0 auto 2px; max-width: 640px; text-align: center; font-size: 13.5px; line-height: 1.4; color: #e6e6ea; text-shadow: 0 1px 3px rgba(0,0,0,.8); }
 
 /* live view of a bot's browser */
 .live { background: #000; border-radius: 12px; overflow: hidden; border: 1px solid var(--line); }

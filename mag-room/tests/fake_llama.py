@@ -9,6 +9,13 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
+def text_of(content):
+    """The text of a message, also when it carries images (a list of parts)."""
+    if isinstance(content, list):
+        return "".join(part.get("text", "") for part in content if part.get("type") == "text")
+    return content or ""
+
+
 class FakeLlama:
     def __init__(self, name):
         self.name = name
@@ -109,7 +116,7 @@ class FakeLlama:
         last = body["messages"][-1]
         if last["role"] == "tool":
             return "Erledigt."
-        if "Sonst antworte exakt PASS" in (last.get("content") or ""):
+        if "Sonst antworte exakt PASS" in text_of(last.get("content")):
             return "PASS"
         return "Hallo von %s." % self.name
 

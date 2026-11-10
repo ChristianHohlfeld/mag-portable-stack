@@ -59,6 +59,10 @@ it writes below `/home/bot/www`) is published on the bot's own tailnet site
 and runs in the chat as a live preview framed from that site, with Code/
 Vorschau, Kopieren and Vollbild (the page in a new tab). Bots post no
 screenshots.
+The bots read the whole chat: text files inline, 3D orders and their
+results, and images. A bot whose model has a vision projector gets the image
+itself; it also writes down once what the image shows (a short branch off
+its prompt log, never appended to it), and a bot without eyes reads that.
 The UI is mobile first: streamed answers appear below the user message in the
 order they are produced, the view follows only while the reader is at the
 end, and a running step is a live card with the real command, output,

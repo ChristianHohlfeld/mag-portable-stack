@@ -39,7 +39,10 @@ public:
       rt->backend.index = index;
       rt->backend.port = (int)envl(("MAG_LLM_PORT_" + upper(rt->id)).c_str(), 8191 + index);
       rt->backend.gateway = room_.cfg.gateway;
-      rt->budget = envl(("MAG_ROOM_CTX_" + upper(rt->id)).c_str(), envl("MAG_ROOM_CTX_TOKENS", 32000));
+      // How much conversation a bot keeps. Reuse makes a turn cheap, but
+      // after a model restart the whole log is evaluated once (CPU: roughly
+      // a minute per 4000 tokens), so the budget stays moderate.
+      rt->budget = envl(("MAG_ROOM_CTX_" + upper(rt->id)).c_str(), envl("MAG_ROOM_CTX_TOKENS", index == 0 ? 16000 : 12000));
       bots_.push_back(std::move(rt));
       ++index;
     }
@@ -317,6 +320,7 @@ private:
   uint64_t clear_epoch_ = 0;
   int bot_turns_ = 0, passes_ = 0;
   long round_limit_ = 0;
+  const long fuse_ = envl("MAG_ROOM_BOT_FUSE", 24);
   std::thread status_thread_;
   std::mutex models_mu_;
   Val models_ = Val::object();
@@ -844,6 +848,9 @@ private:
           // two bots answering each other at once cannot exceed the bound.
           if (reason == "bot") {
             if (round_limit_ > 0 && bot_turns_ >= round_limit_) continue;
+            // "Unlimited" still rests after a long run without a word from
+            // Chris: a safety net against two bots talking all night.
+            if (fuse_ > 0 && bot_turns_ >= fuse_) continue;
             ++bot_turns_;
           }
           b.running = reason;
@@ -1237,13 +1244,18 @@ private:
       m["stats"] = stats;
     });
     tag_turn(b, t);
-    // Saying the same thing again is a PASS, however it is worded.
+    // Saying the same thing again is a PASS, however it is worded; so is a
+    // bare acknowledgement when nobody asked this bot anything.
     const std::string norm = group_chat::norm_reply(text);
     bool repeat = false;
     if (!cancelled && !failed && t.steps == 0 && !norm.empty()) {
       std::lock_guard<std::mutex> lk(mu_);
       repeat = std::find(b.said.begin(), b.said.end(), norm) != b.said.end();
       if (!repeat) b.said.push_back(norm);
+      static const std::set<std::string> filler = {"ok", "okay", "alles klar", "verstanden", "danke", "gerne", "gern geschehen",
+                                                   "genau", "stimmt", "einverstanden", "bin bereit", "kein auftrag", "bleibe still",
+                                                   "dem ist nichts hinzuzufügen", "nichts hinzuzufügen"};
+      if (reason == "bot" && filler.count(norm)) repeat = true;
     }
     if (repeat) {
       room_.remove(t.id);

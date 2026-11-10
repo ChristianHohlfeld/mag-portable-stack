@@ -1,1 +1,0 @@
-nice -n 19 /home/chris/bneck/llama.cpp/build-dbg/bin/llama-quantize --allow-requantize --keep-split --tensor-type _exps=mxfp4 --tensor-type ffn_gate_inp=bf16 --tensor-type hc_=f32 --tensor-type tid2eid=i32 --tensor-type _ape=f32 --token-embedding-type q8_0 --output-tensor-type q8_0

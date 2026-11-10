@@ -1,2 +1,0 @@
-thinking False wall 25.7s cache_n 1 prompt_n 556 pp 22.27 tg 3.15
-thinking True wall 6.7s cache_n 553 prompt_n 4 pp 9.37 tg 3.67

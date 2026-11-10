@@ -71,8 +71,10 @@ other bots' room messages as context and talk to each other naturally like
 humans, server-side and without any client connected. A human message without
 an addressee is answered by ALL active bots; then the bots keep talking on their
 own (MAG_ROOM_BOT_ROUNDS and the setting "Bots untereinander", default 0 =
-unlimited). PASS is each bot's own choice and invisible; when every bot PASSes
-in a row the chat rests until the next message. New human input and Stop
+unlimited; as a safety net the room rests after MAG_ROOM_BOT_FUSE = 24 bot
+turns in a row without a word from Chris). PASS is each bot's own choice and
+invisible; a repeated answer or a bare acknowledgement counts as PASS; when
+every bot PASSes in a row the chat rests until the next message. New human input and Stop
 immediately preempt these bot rounds. Per-backend model turns remain serial
 (one request per -np 1 slot).
 This permission is for room conversation, not unrestricted autonomous tool work.

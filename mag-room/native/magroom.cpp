@@ -33,11 +33,6 @@ int main() {
     logf("magroom: cannot listen on " + room.cfg.bind_host + ":" + std::to_string(room.cfg.port));
     return 1;
   }
-  // The bridge is how the bot VMs reach the room. Without the libvirt
-  // network (a host without VMs, CI) the room still serves the chat.
-  const int bridge_fd = room.cfg.bridge_port > 0 ? http::listen_on(room.cfg.bridge_ip, room.cfg.bridge_port) : -1;
-  if (bridge_fd < 0 && room.cfg.bridge_port > 0)
-    logf("magroom: VM bridge " + room.cfg.bridge_ip + ":" + std::to_string(room.cfg.bridge_port) + " unavailable; bots have no VM access");
 
   engine.start();
   idol.resume();
@@ -45,8 +40,25 @@ int main() {
        std::to_string(room.count()) + " messages");
 
   auto handler = [&](int fd, http::Request &r) { api.handle(fd, r); };
-  std::thread bridge;
-  if (bridge_fd >= 0) bridge = std::thread([&] { http::serve(bridge_fd, true, handler, stop); });
+  // The bridge is how the bot VMs reach the room. Its address belongs to the
+  // libvirt network, which may come up after the room (boot) or not exist at
+  // all (CI): keep trying, and serve the chat meanwhile.
+  std::thread bridge([&] {
+    if (room.cfg.bridge_port <= 0) return;
+    bool told = false;
+    while (!stop) {
+      const int fd = http::listen_on(room.cfg.bridge_ip, room.cfg.bridge_port);
+      if (fd >= 0) {
+        logf("magroom: VM bridge on " + room.cfg.bridge_ip + ":" + std::to_string(room.cfg.bridge_port));
+        http::serve(fd, true, handler, stop);
+        close(fd);
+        return;
+      }
+      if (!told) logf("magroom: VM bridge " + room.cfg.bridge_ip + ":" + std::to_string(room.cfg.bridge_port) + " not available yet; retrying");
+      told = true;
+      for (int i = 0; i < 50 && !stop; ++i) usleep(100000);
+    }
+  });
   http::serve(main_fd, false, handler, stop);
   if (bridge.joinable()) bridge.join();
   engine.shutdown();

@@ -198,6 +198,12 @@ if ! cmp -s "$SOURCE/build/mag-audit-gateway" /opt/mag-audit/bin/mag-audit-gatew
   mv -f /opt/mag-audit/bin/.mag-audit-gateway.next /opt/mag-audit/bin/mag-audit-gateway
   install -m 0644 "$SOURCE/ops/audit/systemd/mag-audit-gateway.service" $UNITS/mag-audit-gateway.service
 fi
+install -m 0644 "$SOURCE/ops/boot/mag-cpu-tune.service" $UNITS/mag-cpu-tune.service
+# The self-updater of earlier versions is gone: releases are deployed on purpose.
+if [[ -e $UNITS/mag-auto-update.timer || -e $UNITS/mag-auto-update.service ]]; then
+  systemctl disable --now mag-auto-update.timer >/dev/null 2>&1 || :
+  rm -rf $UNITS/mag-auto-update.timer $UNITS/mag-auto-update.service $UNITS/mag-auto-update.service.d
+fi
 # Backup jobs must stay off the model cores (Noah owns 14-27).
 for unit in "$SOURCE"/ops/backup/units/*.service; do
   [[ ! -e $UNITS/$(basename "$unit") ]] || install -m 0644 "$unit" "$UNITS/$(basename "$unit")"

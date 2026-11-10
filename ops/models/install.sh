@@ -44,6 +44,13 @@ for f in /etc/systemd/system/mag-llm*.service /etc/systemd/system/mag-llm*.servi
 done
 shopt -u nullglob
 
+# KV dumps of the retired servers hold old conversations and can never be
+# loaded again (other models, other slot directory): remove them. Weights are
+# elsewhere and are not touched.
+if [[ -d /var/lib/mag-llm/slots ]]; then
+  find /var/lib/mag-llm/slots -xdev -type f -name '*.bin' -delete 2>/dev/null || :
+fi
+
 # --- files ---------------------------------------------------------------
 install -d -m 0755 "$LIB"
 install -d -m 0755 "$STATE"

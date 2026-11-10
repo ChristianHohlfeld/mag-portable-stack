@@ -29,7 +29,7 @@ jobs:
         run: |
           source ops/build-targets.sh
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
-          cmake --build build -j "$(nproc)" --target "${MAG_BUILD_TARGETS[@]}" mag-stt test-group-dispatcher
+          cmake --build build -j "$(nproc)" --target "${MAG_BUILD_TARGETS[@]}" mag-stt test-group-dispatcher s23ctl
       - name: Shell syntax
         run: bash ops/ci/check.sh
       - name: Model supervisor
@@ -42,6 +42,8 @@ jobs:
         run: |
           python3 ops/scene/tests/test_rig.py
           python3 ops/scene/tests/test_worker.py
+      - name: Phone control daemon (not part of a release; the room's phone tools are tested against it)
+        run: python3 devices/s23/tests/test_s23ctl.py
       - name: Room contract (fake models, fake guest)
         run: |
           ./build/test-group-dispatcher

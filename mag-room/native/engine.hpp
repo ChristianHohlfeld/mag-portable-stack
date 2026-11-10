@@ -893,7 +893,7 @@ private:
     }
     cv_.notify_all();
     set_phase(b, "reading", "wartet auf die Bildbeschreibung");
-    const int64_t end = mono_ms() + envl("MAG_ROOM_SIGHT_WAIT_S", 120) * 1000;
+    const int64_t end = mono_ms() + envl("MAG_ROOM_SIGHT_WAIT_S", 300) * 1000;
     while (mono_ms() < end && missing() && !(cancel && cancel->stopped())) usleep(200000);
     for (auto &m : fresh) {
       Val now;
@@ -1045,7 +1045,7 @@ private:
       body["messages"] = msgs;
       if (!tools.asArr().empty()) body["tools"] = tools;
       body["chat_template_kwargs"] = template_kwargs(me);
-      body["max_tokens"] = jbool(me, "thinking", false) ? 900 : 320;
+      body["max_tokens"] = jbool(me, "thinking", false) ? 1500 : 320;
       const auto res = llm::chat(b.backend, body, cancel ? cancel.get() : &never, {}, 240);
       std::string text = trim(res.ok() && res.calls.empty() ? res.content : "");
       for (auto &c : text) if (c == '\n' || c == '\r') c = ' ';
@@ -1140,6 +1140,9 @@ private:
         apply_forget(b);
         try {
           turn(b, reason);
+          // Whatever the turn left undescribed (see turn()) is described now.
+          const Val me = room_.bot(b.id);
+          if (me.isObj() && jbool(me, "enabled", true) && model_state(b.id) == "ready") describe_images(b, me);
         } catch (const std::exception &e) {
           logf("engine: " + b.id + " turn failed: " + e.what());
         }
@@ -1353,7 +1356,11 @@ private:
       }
       save_wire(b);
     }
-    describe_images(b, me);
+    // New images are described for the bots without eyes. That is a short
+    // extra request, so it comes first and the others can answer alongside.
+    // A bot that thinks before every answer would spend a whole thinking
+    // pass per image here: it answers first and describes afterwards.
+    if (!jbool(me, "thinking", false)) describe_images(b, me);
 
     b.wire["model_since"] = since;
     bool cancelled = false, failed = false, retried = false;

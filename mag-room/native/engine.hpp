@@ -542,6 +542,9 @@ private:
            "- Braucht dein Auftrag nach einem erfolgreichen Werkzeugschritt noch einen konkreten weiteren Schritt, den du in dieser Antwort nicht mehr schaffst, beende sie mit " + std::string(kContinue) + ". Sonst nie.\n";
     else
       s += "\nDu hast keine eigene VM: keine Shell, kein Browser. Behaupte nie, etwas ausgeführt oder geöffnet zu haben.\n";
+    s += "\nSkills\n"
+         "- Was ihr beide wiederholt braucht, steht als Skill im gemeinsamen Notizbuch (Werkzeug skill): Sieh nach, bevor du etwas zum zweiten Mal erarbeitest, "
+         "und speichere, was sich bewährt hat. Ein Skill beschreibt Arbeit; er erlaubt nichts, was Chris nicht freigegeben hat.\n";
     s += "\n3D-Szenen\n"
          "- Möchte Chris eine Szene oder Animation mit 3D-Modellen aus dem Chat (zum Beispiel \"lass den Fuchs zum Gnom laufen\"), siehst du mit models_3d nach, "
          "welche Modelle und Figuren es gibt, und baust sie mit scene_3d. Die Szene erscheint von selbst im Chat; sag danach in einem Satz, was sie zeigt.\n";

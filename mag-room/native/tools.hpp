@@ -70,6 +70,13 @@ inline Val schemas(bool has_vm) {
                R"({"type":"object","properties":{"name":{"type":"string","description":"file name of the image"}},"required":["name"]})"));
   list.push(fn("remember", "Store one durable fact in your long-term memory (kept when the room is emptied).",
                R"({"type":"object","properties":{"fact":{"type":"string"}},"required":["fact"]})"));
+  list.push(fn("skill",
+               "The how-tos you and the other bot share: list them, read one, save one. A skill says when it applies, its steps, how to check "
+               "the result and what needs Chris's approval. It describes work and grants no permission.",
+               R"j({"type":"object","properties":{"action":{"type":"string","enum":["list","read","save"]},"name":{"type":"string"},)j"
+               R"j("when":{"type":"string","description":"save: when the skill applies"},"steps":{"type":"string","description":"save: the steps"},)j"
+               R"j("verify":{"type":"string","description":"save: how to check the result"},)j"
+               R"j("approval":{"type":"string","description":"save: what needs Chris's approval first"}},"required":["action"]})j"));
   list.push(fn("models_3d",
                "List the 3D models in the chat (results of photo to 3D, uploaded .glb files) and the figures each one shows. "
                "Call it before scene_3d.",
@@ -121,6 +128,10 @@ inline std::string title(const std::string &name, const Val &args) {
   if (name == "web_search") return "Sucht: " + one(jstr(args, "query"), 120);
   if (name == "read_image") return "Liest Bild " + one(jstr(args, "name"), 80);
   if (name == "remember") return "Merkt sich etwas";
+  if (name == "skill") {
+    const std::string action = jstr(args, "action");
+    return action == "save" ? "Speichert den Skill " + one(jstr(args, "name"), 60) : action == "read" ? "Liest den Skill " + one(jstr(args, "name"), 60) : "Sieht die Skills durch";
+  }
   if (name == "models_3d") return "Sieht die 3D-Modelle durch";
   if (name == "scene_3d") return "Baut die 3D-Szene " + one(jstr(args, "title", "ohne Titel"), 80);
   return name;
@@ -326,6 +337,29 @@ inline Result call(const std::string &name, const Val &args, Ctx &ctx) {
       while (mem.arr->size() > 60) mem.arr->erase(mem.arr->begin());
     });
     return {duplicate ? "Schon gemerkt." : "Gemerkt.", true};
+  }
+  if (name == "skill") {
+    const std::string action = jstr(args, "action"), wanted = trim(jstr(args, "name"));
+    const Val all = ctx.room.skills();
+    if (action == "list") {
+      if (all.asArr().empty()) return {"Noch kein Skill gespeichert.", true};
+      std::string out;
+      for (auto &s : all.asArr()) out += "- " + jstr(s, "name") + ": " + clip(jstr(s, "when"), 180, "…") + "\n";
+      return {out, true};
+    }
+    if (action == "read") {
+      for (auto &s : all.asArr())
+        if (lower(jstr(s, "name")) == lower(wanted))
+          return {"Skill " + jstr(s, "name") + "\nWann: " + jstr(s, "when") + "\nSchritte: " + jstr(s, "steps") + "\nPrüfen: " + jstr(s, "verify") +
+                      "\nFreigabe: " + jstr(s, "approval"), true};
+      return fail("Diesen Skill gibt es nicht (skill mit action list zeigt alle).");
+    }
+    if (action != "save") return fail("action ist list, read oder save.");
+    Val skill = Val::object();
+    for (const char *key : {"name", "when", "steps", "verify", "approval"}) skill[key] = jstr(args, key);
+    skill["by"] = jstr(ctx.bot, "id");
+    const std::string why = ctx.room.save_skill(skill);
+    return why.empty() ? Result{"Skill gespeichert: " + wanted + ". Er beschreibt Arbeit und erlaubt nichts: Freigaben gelten wie immer.", true} : fail(why);
   }
   if (name == "models_3d" || name == "scene_3d") {
     if (!ctx.scenes) return fail("3D-Szenen sind hier nicht eingerichtet.");

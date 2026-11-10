@@ -101,6 +101,10 @@ answers about another picture it remembers. The same picture posted again is
 the same picture (one description); the owner can have a wrong one made anew.
 A picture whose file ends in its middle is not taken as it is: the page reads
 the file again first, and photo to 3D refuses it in words.
+The bots share a notebook of skills (`skill`: list, read, save; `skills.json`
+in the room state): how they do recurring work, with the steps, how to check
+the result and what needs Chris's approval. A skill describes work and grants
+nothing; credentials are refused. Chris reads and removes them in the settings.
 The UI is mobile first: streamed answers appear below the user message in the
 order they are produced, the view follows only while the reader is at the
 end, and a running step is a live card with the real command, output,

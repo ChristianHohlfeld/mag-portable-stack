@@ -421,11 +421,57 @@ public:
     bus.publish("settings", ev);
   }
 
+  // ---- skills ---------------------------------------------------------------
+  // How-tos the bots share (STATE/skills.json): when a skill applies, its
+  // steps, how to check the result, what needs the owner's approval. A skill
+  // describes work; it grants nothing.
+  Val skills() {
+    std::lock_guard<std::mutex> lk(skills_mu_);
+    Val all = read_json(cfg.state_dir + "/skills.json");
+    return all.isArr() ? all : Val::array();
+  }
+  // Saves or replaces a skill. Returns "" or why it was not saved.
+  std::string save_skill(Val skill) {
+    const std::string name = trim(jstr(skill, "name"));
+    if (name.empty() || name.size() > 80 || name.find_first_of("\r\n") != std::string::npos) return "Der Name fehlt oder ist zu lang (höchstens 80 Zeichen, eine Zeile).";
+    std::string all_text;
+    for (const char *key : {"when", "steps", "verify", "approval"}) {
+      const std::string text = trim(jstr(skill, key));
+      if (text.empty() || text.size() > (std::string(key) == "steps" ? 4000u : 1000u)) return std::string(key) + " fehlt oder ist zu lang.";
+      skill[key] = text;
+      all_text += text + "\n";
+    }
+    // Nothing that looks like a credential becomes a reusable instruction.
+    for (const char *mark : {"-----BEGIN ", "ghp_", "github_pat_", "hf_", "sk-", "Bearer "})
+      if (all_text.find(mark) != std::string::npos) return "Zugangsdaten gehören nicht in einen Skill.";
+    skill["name"] = name;
+    skill["updated"] = (double)now_s();
+    std::lock_guard<std::mutex> lk(skills_mu_);
+    Val all = read_json(cfg.state_dir + "/skills.json");
+    if (!all.isArr()) all = Val::array();
+    for (auto &known : *all.arr)
+      if (jstr(known, "name") == name) {
+        known = skill;
+        return write_json(cfg.state_dir + "/skills.json", all) ? "" : "Der Skill ließ sich nicht speichern.";
+      }
+    if (all.arr->size() >= 24) return "Es gibt schon 24 Skills; mehr werden nicht gespeichert.";
+    all.push(skill);
+    return write_json(cfg.state_dir + "/skills.json", all) ? "" : "Der Skill ließ sich nicht speichern.";
+  }
+  bool remove_skill(const std::string &name) {
+    std::lock_guard<std::mutex> lk(skills_mu_);
+    Val all = read_json(cfg.state_dir + "/skills.json");
+    if (!all.isArr()) return false;
+    const size_t before = all.arr->size();
+    all.arr->erase(std::remove_if(all.arr->begin(), all.arr->end(), [&](const Val &s) { return jstr(s, "name") == name; }), all.arr->end());
+    return all.arr->size() != before && write_json(cfg.state_dir + "/skills.json", all);
+  }
+
   std::mutex &mutex() { return mu_; }
 
 private:
   static constexpr size_t kStepOutputMax = 96 * 1024;
-  std::mutex mu_;
+  std::mutex mu_, skills_mu_;
   std::map<std::string, Val> messages_;
   std::map<std::string, std::pair<Val, int64_t>> staged_;
   Val bots_ = Val::array(), settings_ = Val::object();

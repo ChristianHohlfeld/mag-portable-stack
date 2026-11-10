@@ -224,6 +224,20 @@
         pushState().then((on) => { sw.firstChild.checked = on; state.textContent = Notification.permission === 'denied' ? 'im Browser blockiert' : on ? 'bei fertigen langen Antworten und Fehlern' : 'aus'; });
       }
 
+      // What the bots wrote down for each other: how they do recurring work.
+      const skills = el('div', { class: 'card' }, el('div', { class: 'set' }, el('div', { class: 'txt' }, el('small', { text: 'wird geladen …' }))));
+      content.append(el('h3', { text: 'Skills der Bots' }), skills);
+      const loadSkills = () => MAG.api('GET', '/api/skills').then((out) => {
+        skills.replaceChildren();
+        if (!out.skills.length) skills.append(el('div', { class: 'set' }, el('div', { class: 'txt' }, el('small', { text: 'Noch keiner. Die Bots speichern hier, wie sie wiederkehrende Arbeit erledigen.' }))));
+        for (const skill of out.skills)
+          skills.append(el('details', { class: 'mem skill' }, el('summary', {}, el('b', { text: skill.name }), el('small', { text: ' · ' + (MAG.bot(skill.by)?.name || skill.by || '') })),
+            el('p', {}, el('b', { text: 'Wann: ' }), skill.when), el('p', {}, el('b', { text: 'Schritte: ' }), skill.steps),
+            el('p', {}, el('b', { text: 'Prüfen: ' }), skill.verify), el('p', {}, el('b', { text: 'Freigabe: ' }), skill.approval),
+            owner() ? el('button', { class: 'pill danger', text: 'Löschen', onclick: () => call('DELETE', '/api/skills/' + encodeURIComponent(skill.name)).then(loadSkills) }) : null));
+      }).catch(() => {});
+      loadSkills();
+
       const sys = el('dl', { class: 'kv' }, el('dt', { text: 'Version' }), el('dd', { text: MAG.version }));
       content.append(el('h3', { text: 'System' }), el('div', { class: 'card' }, sys));
       MAG.api('GET', '/api/system').then((info) => {

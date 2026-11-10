@@ -228,6 +228,7 @@
       content.append(el('h3', { text: 'System' }), el('div', { class: 'card' }, sys));
       MAG.api('GET', '/api/system').then((info) => {
         sys.append(el('dt', { text: 'Foto zu 3D' }), el('dd', { text: info.idol ? 'bereit (MI50)' : 'nicht erreichbar' }));
+        sys.append(el('dt', { text: '3D-Szenen' }), el('dd', { text: info.scene ? 'bereit (Blender, CPU)' : 'nicht erreichbar' }));
         if (info.backup) sys.append(el('dt', { text: 'Backup' }), el('dd', { text: info.backup.healthy ? 'aktuell · ' + MAG.day(info.backup.last_success * 1000) : 'veraltet' }));
       }).catch(() => {});
       if (owner()) content.append(el('h3', { text: 'Raum' }), el('div', { class: 'btns' }, el('button', { class: 'btn danger', text: 'Raum und Bot-Kontext leeren', onclick: clearRoom })));

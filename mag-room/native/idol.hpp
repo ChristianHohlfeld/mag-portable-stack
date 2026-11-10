@@ -52,18 +52,21 @@ public:
     return id;
   }
 
-  void cancel(const std::string &message_id) {
-    Val m;
-    if (!room_.get(message_id, m)) return;
-    const Val *m3 = m.find("model3d");
-    if (!m3) return;
-    http::fetch(room_.cfg.idol_url + "/api/idol/jobs/" + jstr(*m3, "job") + "/cancel", options("POST"));
+  // A job of this worker. (A scene is a 3D message too; it belongs to Scenes.)
+  static const Val *job_of(const Val &message) {
+    const Val *m3 = message.find("model3d");
+    return m3 && !jstr(*m3, "job").empty() && jstr(*m3, "kind").empty() ? m3 : nullptr;
+  }
+
+  void cancel(const Val &message) {
+    if (const Val *m3 = job_of(message))
+      http::fetch(room_.cfg.idol_url + "/api/idol/jobs/" + jstr(*m3, "job") + "/cancel", options("POST"));
   }
 
   // The message is gone: remove what the worker keeps for it.
   void forget(const Val &removed) {
-    const Val *m3 = removed.find("model3d");
-    if (!m3 || jstr(*m3, "job").empty()) return;
+    const Val *m3 = job_of(removed);
+    if (!m3) return;
     const std::string job = jstr(*m3, "job");
     std::thread([this, job] { http::fetch(room_.cfg.idol_url + "/api/idol/jobs/" + job, options("DELETE")); }).detach();
   }
@@ -78,8 +81,8 @@ public:
   // room version declared failed just because the room itself restarted.
   void resume() {
     for (auto &m : room_.all()) {
-      const Val *m3 = m.find("model3d");
-      if (!m3 || jstr(*m3, "job").empty()) continue;
+      const Val *m3 = job_of(m);
+      if (!m3) continue;
       const std::string state = jstr(*m3, "state");
       const bool under_way = jstr(m, "state") == "streaming" || state == "queued" || state == "running";
       const bool written_off = state == "error" && jstr(*m3, "error") == "Dienst neu gestartet";

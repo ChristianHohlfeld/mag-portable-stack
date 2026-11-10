@@ -12,7 +12,7 @@ namespace mag {
 
 struct Config {
   std::string state_dir, files_dir, web_dir, bind_host, bridge_ip, gateway, models_status,
-      models_control, idol_url, rtc_url, stt_url, guest_run, agent_ctl, brave_key, browser_binary,
+      models_control, idol_url, scene_url, rtc_url, stt_url, guest_run, agent_ctl, brave_key, browser_binary,
       version, access_file;
   bool sudo = true; // the guest wrappers run through sudo (off only for the test fixture)
   int port = 8766, bridge_port = 8767, max_steps = 48, turn_budget_s = 3600, tool_timeout_s = 900,
@@ -32,6 +32,7 @@ struct Config {
     c.models_status = env("MAG_MODELS_STATUS", "/run/mag-models/status.json");
     c.models_control = env("MAG_MODELS_CONTROL", "/var/lib/mag-models/control");
     c.idol_url = env("MAG_IDOL_URL", "http://127.0.0.1:8793");
+    c.scene_url = env("MAG_SCENE_URL", "http://127.0.0.1:8795");
     c.rtc_url = env("MAG_RTC_URL", "http://127.0.0.1:18784");
     c.guest_run = env("MAG_ROOM_GUEST_RUN", "/usr/local/sbin/magbot-guest-run");
     c.agent_ctl = env("MAG_ROOM_AGENT_CTL", "/usr/local/sbin/magbot-agent-ctl");
@@ -501,9 +502,10 @@ private:
       const std::string id = jstr(m, "id");
       if (!m.isObj() || id.empty()) continue;
       // A bot answer that was still streaming when the process ended is final
-      // now. A 3D job is not: it runs in the Idol worker, which neither knows
-      // nor cares that the room restarted. Its message stays as it is and the
-      // room picks the job up again (Idol::resume).
+      // now. A 3D job or the film of a scene is not: it runs in its worker,
+      // which neither knows nor cares that the room restarted. Its message
+      // stays as it is and the room picks the job up again (Idol::resume,
+      // Scenes::resume).
       if (jstr(m, "state") == "streaming" && !m.find("model3d")) {
         m["state"] = "stopped";
         if (Val *parts = m.find("parts"); parts && parts->isArr())

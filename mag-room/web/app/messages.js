@@ -316,6 +316,60 @@
     }
     return card;
   }
+  // A scene a bot built from 3D models: it plays in the chat at once, from
+  // every side; its film is rendered meanwhile and joins the card.
+  const sceneFiles = { glb: 'Szene mit Animation', mp4: 'Film', blend: 'für Blender' };
+  function buildScene(m) {
+    const m3 = m.model3d, card = el('div', { class: 'm3 scene ' + m3.state });
+    const running = m3.state === 'queued' || m3.state === 'running';
+    const files = m.attachments || [], glb = files.find((a) => a.name.endsWith('.glb')), film = files.find((a) => a.kind === 'video');
+    const by = MAG.bot(m3.by)?.name;
+    const facts = [m3.seconds ? String(Math.round(m3.seconds * 10) / 10).replace('.', ',') + ' s' : '', (m3.cast || []).join(', '), by ? 'von ' + by : ''].filter(Boolean).join(' · ');
+    const sub = m3.state === 'error' ? 'Kein Film: ' + (m3.error || 'Fehler') : m3.state === 'cancelled' ? facts + ' · Film abgebrochen' : facts;
+    card.append(el('div', { class: 'head' }, el('span', { class: 'src' }, MAG.icon('film')),
+      el('div', { class: 'txt' }, el('b', { text: m3.title || '3D-Szene' }), el('small', { text: sub })),
+      running ? el('button', { class: 'pill danger', text: 'Film abbrechen', onclick: () => MAG.api('POST', '/api/3d/' + m.id + '/cancel').catch((x) => MAG.toast(x.message, true)) }) : null));
+    if (glb) {
+      const canvas = el('canvas', {});
+      // The view stays while the card around it changes (see upsert).
+      const stage = el('div', { class: 'stage', dataset: { keep: glb.file } }, canvas, el('span', { class: 'wait', text: 'Szene wird geladen …' }), el('span', { class: 'hint' }),
+        el('div', { class: 'tools' },
+          el('button', { class: 'play', 'aria-label': 'Abspielen oder anhalten', title: 'Abspielen oder anhalten', html: MAG.icons.pause + MAG.icons.play, onclick: () => MAG.viewer3d.toggle(canvas) }),
+          el('button', { 'aria-label': 'Von vorn', title: 'Von vorn', html: MAG.icons.reset, onclick: () => MAG.viewer3d.reset(canvas) }),
+          el('button', { class: 'full', 'aria-label': 'Vollbild', title: 'Vollbild', html: MAG.icons.full + MAG.icons.x, onclick: () => MAG.viewer3d.fullscreen(stage) })));
+      card.append(stage);
+      MAG.viewer3d.attach(canvas, fileUrl(glb));
+    }
+    if (running) card.append(progress3d(m3));
+    if (film) card.append(el('video', { class: 'film', controls: true, loop: true, preload: 'metadata', playsInline: true, src: fileUrl(film) }));
+    card.append(el('div', { class: 'links' }, files.map((a) => {
+      const ext = a.name.split('.').pop().toLowerCase();
+      return el('a', { class: 'pill', href: fileUrl(a, '?download=1'), download: a.name, title: (sceneFiles[ext] || a.name) + ' herunterladen' },
+        MAG.icon('down'), el('b', { text: ext.toUpperCase() }), el('small', { text: (sceneFiles[ext] ? sceneFiles[ext] + ' · ' : '') + MAG.bytes(a.size) }));
+    })));
+    return card;
+  }
+  // A part of a message that must live on while the message changes (a 3D
+  // view that is playing, perhaps in fullscreen): it stays where it is, and
+  // everything around it becomes the new message. False: nothing to keep.
+  function keep(old, node) {
+    const kept = old.querySelector('[data-keep]'), twin = kept && [...node.querySelectorAll('[data-keep]')].find((n) => n.dataset.keep === kept.dataset.keep);
+    if (!twin) return false;
+    twin.querySelectorAll('canvas').forEach((canvas) => MAG.viewer3d.drop(canvas));
+    for (let a = old, b = node; ;) {
+      a.className = b.className;
+      const stay = [...a.children].find((c) => c === kept || c.contains(kept)), gone = [...b.children].find((c) => c === twin || c.contains(twin));
+      const before = [], after = [];
+      let passed = false;
+      for (const kid of [...b.childNodes]) { if (kid === gone) passed = true; else (passed ? after : before).push(kid); }
+      for (const kid of [...a.childNodes]) if (kid !== stay) kid.remove();
+      stay.before(...before);
+      stay.after(...after);
+      if (stay === kept) return true;
+      a = stay;
+      b = gone;
+    }
+  }
 
   // ---- one message --------------------------------------------------------
   // Actions come after the text, like everywhere else: copy, read aloud, and
@@ -359,7 +413,7 @@
     node.append(el('div', { class: 'meta' }, el('span', { class: 'who', text: MAG.name(m.from) }),
       el('span', { class: 'time', text: MAG.clock(m.ts), title: MAG.day(m.ts) })));
     if (m.model3d) {
-      node.append(build3d(m));
+      node.append(m.model3d.kind === 'scene' ? buildScene(m) : build3d(m));
     } else {
       if (m.reasoning) node.append(buildThoughts(m));
       const body = el('div', { class: 'body' });
@@ -422,7 +476,7 @@
     const old = nodes.get(m.id);
     // The whole message is rebuilt: a queued re-render of one of its parts is obsolete.
     for (const key of dirty) if (key.startsWith(m.id + ':')) dirty.delete(key);
-    const node = build(m);
+    let node = build(m);
     if (old) {
       // Keep what the reader opened.
       if (old.classList.contains('show-acts')) node.classList.add('show-acts');
@@ -430,7 +484,7 @@
         const twin = d.classList.contains('think') ? node.querySelector('.think') : node.querySelector('details[data-part="' + d.dataset.part + '"]');
         if (twin) twin.open = true;
       });
-      grow(() => old.replaceWith(node));
+      grow(() => { if (keep(old, node)) node = old; else old.replaceWith(node); });
     } else {
       // Ids sort by time: a new message goes where its id belongs (almost always the end).
       let after = null;

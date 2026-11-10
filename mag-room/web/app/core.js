@@ -47,6 +47,9 @@
     reset: svg('<path d="M4.5 12a7.5 7.5 0 1 0 2.4-5.5M4.5 4.5v4.6h4.6"/>'),
     open: svg('<path d="M14 5h5v5M19 5l-8 8M11 7H6.5A1.5 1.5 0 0 0 5 8.5v9A1.5 1.5 0 0 0 6.5 19h9a1.5 1.5 0 0 0 1.5-1.5V13"/>'),
     folder: svg('<path d="M3 7.5A1.5 1.5 0 0 1 4.5 6h4.2l2 2.2h8.8A1.5 1.5 0 0 1 21 9.7v7.8a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 17.5z"/>'),
+    play: svg('<path d="M8 5.5v13l10.5-6.5z" fill="currentColor"/>'),
+    pause: svg('<path d="M8.5 5.5v13M15.5 5.5v13"/>'),
+    film: svg('<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M10 9.3v5.4l4.6-2.7z" fill="currentColor"/>'),
     globe: svg('<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/>'),
   };
   MAG.icon = (name) => MAG.el('span', { class: 'ico', html: MAG.icons[name] }).firstChild;

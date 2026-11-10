@@ -19,8 +19,9 @@ int main() {
   auth::Gate gate(room.cfg);
   Push push(room.cfg);
   Idol idol(room);
-  Engine engine(room, guests);
-  Api api(room, engine, guests, idol, gate, push);
+  Scenes scenes(room);
+  Engine engine(room, guests, scenes);
+  Api api(room, engine, guests, idol, scenes, gate, push);
   // A notification when an answer took a while (you probably looked away) or failed.
   const int64_t slow_s = envl("MAG_ROOM_PUSH_RUN_S", 20);
   engine.on_answer = [&](const std::string &bot, const std::string &text, int64_t seconds, bool failed) {
@@ -36,6 +37,7 @@ int main() {
 
   engine.start();
   idol.resume();
+  scenes.resume();
   logf("magroom " + api.version() + " on " + room.cfg.bind_host + ":" + std::to_string(room.cfg.port) + ", " +
        std::to_string(room.count()) + " messages");
 

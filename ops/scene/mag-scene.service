@@ -1,0 +1,41 @@
+[Unit]
+Description=MAG scenes: 3D models from the chat, rigged and animated with Blender (CPU)
+After=network.target
+ConditionPathExists=/opt/mag-scene/blender/blender
+
+[Service]
+Type=simple
+User=magbot
+Group=magbot
+WorkingDirectory=/var/lib/mag-scene
+ExecStart=/usr/bin/python3 -I /opt/mag-stack/current/ops/scene/worker.py
+Environment=MAG_SCENE_ROOT=/var/lib/mag-scene/jobs
+Environment=MAG_SCENE_FILES=/var/lib/magbot/room/files
+Environment=MAG_SCENE_BLENDER=/opt/mag-scene/blender/blender
+# The models own cores 0-27. A film renders on their sibling threads, and not
+# on all of them: dictation and the room stay quick while it does.
+Environment=MAG_SCENE_CPUS=28-55
+Environment=MAG_SCENE_THREADS=20
+Environment=PYTHONUNBUFFERED=1
+CPUAccounting=yes
+AllowedCPUs=28-55
+Nice=10
+MemoryMax=24G
+TasksMax=256
+Restart=on-failure
+RestartSec=5
+# A restart or stop of the worker ends the worker only. A film that is being
+# rendered goes on in this unit's group and the next worker follows it again:
+# a deploy never costs a scene its film.
+KillMode=process
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/mag-scene
+# No GPU: the MI50 belongs to photo-to-3D.
+PrivateDevices=true
+UMask=0077
+TimeoutStopSec=35
+
+[Install]
+WantedBy=multi-user.target

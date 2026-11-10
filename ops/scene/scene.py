@@ -600,6 +600,52 @@ def play(actor, action, actors, fps, start):
                     lean = rock = 0.0
                 actor.key(first + offset + i, z=lift, pitch=lean, roll=rock, squash=squash)
         end = first + offset + frames
+    elif kind == "jump_over":
+        # A run-up, a leap in an arc over the other, a landing behind it.
+        goal, room = target_point()
+        other = find(actors, action.get("target"))
+        way = goal - actor.pos
+        if way.length < 1e-6:
+            fail(actor.name + " steht schon am Ziel.")
+        heading = way.normalized()
+        clear = room + 0.7 * actor.length                # so far before the other it takes off, so far behind it lands
+        takeoff = goal - heading * clear
+        run, needed = (takeoff - actor.pos).dot(heading), 2.4 * actor.length
+        if run < needed and not actor.placed:            # figures of one picture stand side by side: it starts from further away
+            actor.pos = takeoff - heading * needed
+            for frame in list(actor.keys):
+                actor.keys[frame] = (actor.pos.x, actor.pos.y) + actor.keys[frame][2:]
+            run = needed
+        actor.placed = True
+        if run > 0.6 * actor.length:
+            end = play(actor, {"do": "run_to", "target": [takeoff.x, takeoff.y], "distance": 0.0}, actors, fps, start)
+        else:                                            # no room for a run-up: it leaps from where it stands
+            takeoff = actor.pos.copy()
+            end = first + (turn(actor.turn_towards(heading), 0.35) if abs(actor.turn_towards(heading)) > 0.03 else 0)
+        landing = goal + heading * clear
+        span = (landing - takeoff).length
+        peak = (other.height if other else 0.0) + 0.35 * actor.height + 0.1 * span
+        # As the figure sees it: where it is going. Its leading end rises at the take-off and dips before the landing.
+        ahead = Vector((heading.x * math.cos(actor.yaw) + heading.y * math.sin(actor.yaw), heading.y * math.cos(actor.yaw) - heading.x * math.sin(actor.yaw)))
+        lean = math.radians(22.0) if actor.axis is not None else 0.0
+        crouch = max(2, int(round(0.12 * fps)))
+        for i in range(1, crouch + 1):                   # it gathers itself
+            actor.key(end + i, squash=1.0 - 0.1 * math.sin(0.5 * math.pi * i / crouch))
+        end += crouch
+        air = max(8, int(round(min(3.0, max(0.45, 2.6 * math.sqrt(2 * peak / 9.81))) * fps)))   # a little slower than a real fall, so it reads
+        for i in range(1, air + 1):
+            u = i / air
+            up = 4 * u * (1 - u)
+            actor.pos = takeoff + heading * (span * u)
+            tilt = lean * math.cos(math.pi * u)
+            if actor.rig:
+                actor.rig.tuck(end + i, up)
+            actor.key(end + i, z=up * peak, pitch=tilt * ahead.y, roll=-tilt * ahead.x, squash=1.0 if actor.rig else 1.0 + 0.06 * up)
+        end += air
+        settle = max(3, int(round(0.2 * fps)))
+        for i in range(1, settle + 1):                   # and gives in the knees where it lands
+            actor.key(end + i, squash=1.0 - 0.1 * math.sin(math.pi * i / settle))
+        end += settle
     elif kind == "turn_to":
         goal, _ = target_point()
         angle = actor.turn_towards(goal - actor.pos)
@@ -702,7 +748,7 @@ def play(actor, action, actors, fps, start):
         if kind != "look_at" or frames:
             end = first + frames
     else:
-        fail("Unbekannte Aktion: " + str(kind) + ". Es gibt walk_to, run_to, hop_to, sneak_to, turn_to, look_at, turn, spin, jump, wave, nod, "
+        fail("Unbekannte Aktion: " + str(kind) + ". Es gibt walk_to, run_to, hop_to, sneak_to, jump_over, turn_to, look_at, turn, spin, jump, wave, nod, "
              "shake_head, wag_tail, wobble, grow, shrink, wait.")
     actor.key(end)
     actor.clock = end / fps
@@ -723,7 +769,7 @@ def animate(actor, last):
     frames = sorted(actor.keys)
     state = actor.keys[frames[0]]
     at = 0
-    actor.track = []                                 # where it is in every frame: (x, y, reach)
+    actor.track = []                                 # where it is in every frame: (x, y, reach, how high it reaches)
     for frame in range(0, last + 1):
         while at < len(frames) and frames[at] <= frame:
             state = actor.keys[frames[at]]
@@ -735,7 +781,7 @@ def animate(actor, last):
         obj.scale = (wide, wide, scale * squash)
         for path in ("location", "rotation_euler", "scale"):
             obj.keyframe_insert(data_path=path, frame=frame)
-        actor.track.append((x, y, 0.5 * math.hypot(actor.size[0], actor.size[1]) * scale, actor.size[2] * scale))
+        actor.track.append((x, y, 0.5 * math.hypot(actor.size[0], actor.size[1]) * scale, actor.size[2] * scale + max(0.0, z)))
     linear(obj)
     if actor.rig:
         actor.rig.write(last)

@@ -448,7 +448,7 @@
       if (!b.busy && b.phase === 'idle') continue;
       let what = phases[b.phase] || 'arbeitet';
       if (b.phase === 'reading' && b.total > 0) what += ' ' + Math.min(99, Math.round((b.processed / b.total) * 100)) + ' %';
-      rows.push(el('div', { class: 'act', dataset: { bot: b.id, since: b.phase_since } },
+      rows.push(el('div', { class: 'act-row', dataset: { bot: b.id, since: b.phase_since } },
         el('span', { class: 'dots' }, el('i'), el('i'), el('i')), el('b', { text: b.name }), el('span', { class: 'what', text: what }),
         el('span', { class: 't', text: MAG.stopwatch(Date.now() - b.phase_since) }),
         b.busy ? el('button', { class: 'stop', text: 'Stop', onclick: () => MAG.api('POST', '/api/stop', { bot: b.id }).catch((x) => MAG.toast(x.message, true)) }) : null));
@@ -457,7 +457,7 @@
   }
   setInterval(() => {
     if (!activity) return;
-    activity.querySelectorAll('.act').forEach((row) => { row.querySelector('.t').textContent = MAG.stopwatch(Date.now() - +row.dataset.since); });
+    activity.querySelectorAll('.act-row').forEach((row) => { row.querySelector('.t').textContent = MAG.stopwatch(Date.now() - +row.dataset.since); });
     list.querySelectorAll('.m3 .clock').forEach((node) => { node.textContent = clock3d(node.dataset); });
     list.querySelectorAll('.step.running').forEach((node) => {
       const article = node.closest('.msg'), m = S.messages.get(article?.dataset.id);

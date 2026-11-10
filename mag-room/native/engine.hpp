@@ -1282,21 +1282,30 @@ private:
   // log as its prefix and is not appended to it: the server keeps the log's
   // state and evaluates only this short branch, which the next real request
   // drops.
+  // Writes a description to a picture and to every copy of it in the chat
+  // that has none.
+  void settle(const std::string &message, const std::string &stored, const std::string &text) {
+    room_.describe(message, stored, text);
+    if (text.empty()) return;
+    const std::string print = fingerprint(stored);
+    for (auto &m : room_.all())
+      if (const Val *atts = m.find("attachments"); atts && atts->isArr())
+        for (auto &a : atts->asArr())
+          if (undescribed(a) && jstr(a, "file") != stored && fingerprint(jstr(a, "file")) == print) room_.describe(jstr(m, "id"), jstr(a, "file"), text);
+  }
+
   void describe_images(Bot &b, const Val &me) {
     if (!sees(b.id)) return;
     struct Todo { std::string message, file, name; };
     std::vector<Todo> todo;
-    for (auto &wm : b.wire["messages"].asArr())
-      if (const Val *items = wm.find("_items"); items && items->isArr())
-        for (auto &it : items->asArr()) {
-          const Val *images = it.find("images");
-          if (!images || !images->isArr() || images->asArr().empty()) continue;
-          Val m;
-          if (!room_.get(jstr(it, "id"), m)) continue;
-          if (const Val *atts = m.find("attachments"); atts && atts->isArr())
-            for (auto &a : atts->asArr())
-              if (undescribed(a) && todo.size() < 4) todo.push_back({jstr(m, "id"), jstr(a, "file"), jstr(a, "name")});
-        }
+    // Every picture of the chat nobody has described yet, the newest first:
+    // also one whose message has left this bot's log (it is asked about with
+    // the picture itself, so it need not be in the conversation).
+    const auto all = room_.all();
+    for (auto it = all.rbegin(); it != all.rend() && todo.size() < 4; ++it)
+      if (const Val *atts = it->find("attachments"); atts && atts->isArr())
+        for (auto &a : atts->asArr())
+          if (undescribed(a) && todo.size() < 4) todo.push_back({jstr(*it, "id"), jstr(a, "file"), jstr(a, "name")});
     if (todo.empty()) return;
     CancelPtr cancel;
     {
@@ -1307,10 +1316,16 @@ private:
     const Val tools = tools::schemas(vm::valid_name(jstr(me, "vm")));
     for (auto &job : todo) {
       if (cancel && cancel->stopped()) return;
-      // The same picture was posted and described before: it is the same description.
+      // The same picture was posted and described before (or a moment ago, in this pass): it is the same description.
+      Val now;
+      if (room_.get(job.message, now)) {
+        bool open = false;
+        for (auto &a : now["attachments"].asArr()) open = open || (jstr(a, "file") == job.file && undescribed(a));
+        if (!open) continue;
+      }
       const std::string known = described_before(job.file);
       if (!known.empty()) {
-        room_.describe(job.message, job.file, known);
+        settle(job.message, job.file, known);
         continue;
       }
       const Val image = image_part(job.file);
@@ -1349,11 +1364,16 @@ private:
       if (!tools.asArr().empty()) body["tools"] = tools;
       body["chat_template_kwargs"] = template_kwargs(me);
       body["max_tokens"] = jbool(me, "thinking", false) ? 1500 : 320;
-      const auto res = llm::chat(b.backend, body, cancel ? cancel.get() : &never, {}, 240);
-      std::string text = trim(res.ok() && res.calls.empty() ? res.content : "");
+      // After a deploy the server may have to read the whole log again before it gets to the picture.
+      const auto res = llm::chat(b.backend, body, cancel ? cancel.get() : &never, {}, 900);
+      if (!res.ok()) {
+        // The model did not get to answer (stopped, too slow, away): the picture stays to be described.
+        logf("engine: " + b.id + " could not describe " + job.name + ": " + (res.cancelled ? "cancelled" : res.error));
+        return;
+      }
+      std::string text = trim(res.calls.empty() ? res.content : "");
       for (auto &c : text) if (c == '\n' || c == '\r') c = ' ';
-      room_.describe(job.message, job.file, clip(text, 900));
-      if (!res.ok()) logf("engine: " + b.id + " could not describe " + job.name + ": " + (res.cancelled ? "cancelled" : res.error));
+      settle(job.message, job.file, clip(text, 900));
     }
   }
 

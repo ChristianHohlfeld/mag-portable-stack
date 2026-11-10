@@ -21,7 +21,9 @@ CPUAccounting=yes
 AllowedCPUs=28-55
 Nice=10
 MemoryMax=24G
-TasksMax=256
+# A render, a build beside it and the denoiser each bring a thread per core:
+# with too few allowed, the denoiser gets none and the film fails.
+TasksMax=4096
 Restart=on-failure
 RestartSec=5
 # A restart or stop of the worker ends the worker only. A film that is being

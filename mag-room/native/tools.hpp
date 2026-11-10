@@ -81,14 +81,14 @@ inline Val schemas(bool has_vm) {
                "order you give them.",
                R"j({"type":"object","properties":{)j"
                R"j("title":{"type":"string","description":"short German title"},)j"
-               R"j("actors":{"type":"array","description":"who is in the scene","items":{"type":"object","properties":{)j"
+               R"j("actors":{"type":"array","maxItems":8,"description":"who is in the scene","items":{"type":"object","properties":{)j"
                R"j("name":{"type":"string","description":"your name for the figure, e.g. Fuchs"},)j"
                R"j("model":{"type":"string","description":"file name of its model, e.g. 3d-0d4b6d.glb"},)j"
                R"j("part":{"type":"integer","description":"number of the figure when the model shows several (see models_3d)"},)j"
                R"j("kind":{"type":"string","enum":["animal","human","object"],"description":"only when its shape is misread: object moves as a whole without a skeleton"},)j"
                R"j("faces":{"type":"string","enum":["left","right","camera","away"],"description":"where the figure looks in the photo its model was made from; leave out if you do not know"},)j"
                R"j("size":{"type":"number","description":"scale factor, default 1"}},"required":["name","model"]}},)j"
-               R"j("actions":{"type":"array","description":"what happens, in order","items":{"type":"object","properties":{)j"
+               R"j("actions":{"type":"array","maxItems":12,"description":"what happens, in order; a short story of a few actions","items":{"type":"object","properties":{)j"
                R"j("actor":{"type":"string","description":"name of the actor"},)j"
                R"j("do":{"type":"string","enum":["walk_to","run_to","sneak_to","hop_to","turn_to","look_at","turn","spin","jump","wave","nod","shake_head","wag_tail","wobble","grow","shrink","wait"]},)j"
                R"j("target":{"type":"string","description":"for walk_to, run_to, sneak_to, hop_to, turn_to, look_at: name of the other actor"},)j"
@@ -330,6 +330,16 @@ inline Result call(const std::string &name, const Val &args, Ctx &ctx) {
   if (name == "models_3d" || name == "scene_3d") {
     if (!ctx.scenes) return fail("3D-Szenen sind hier nicht eingerichtet.");
     if (name == "models_3d") return {ctx.scenes->models_text(ctx.cancel), true};
+    // One scene per answer: a bot that is not content with its scene says so
+    // and lets Chris decide, instead of filling the chat with versions (and
+    // the machine with their films).
+    Val own;
+    if (ctx.room.get(ctx.message_id, own))
+      if (const Val *parts = own.find("parts"); parts && parts->isArr())
+        for (auto &p : parts->asArr())
+          if (jstr(p, "tool") == "scene_3d" && jstr(p, "state") == "ok")
+            return fail("In dieser Antwort hast du schon eine Szene gebaut; sie steht im Chat. Sag Chris, was sie zeigt und was daran noch nicht passt. "
+                        "Eine neue Fassung baust du erst, wenn er sie möchte.");
     bool ok = false;
     const std::string text = ctx.scenes->start(args, jstr(ctx.bot, "id"), ok, ctx.cancel);
     return ok ? Result{text, true} : fail(text);

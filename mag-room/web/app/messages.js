@@ -339,7 +339,9 @@
     const sub = m3.state === 'error' ? 'Kein Film: ' + (m3.error || 'Fehler') : m3.state === 'cancelled' ? facts + ' · Film abgebrochen' : facts;
     card.append(el('div', { class: 'head' }, el('span', { class: 'src' }, MAG.icon('film')),
       el('div', { class: 'txt' }, el('b', { text: m3.title || '3D-Szene' }), el('small', { text: sub })),
-      running ? el('button', { class: 'pill danger', text: 'Film abbrechen', onclick: () => MAG.api('POST', '/api/3d/' + m.id + '/cancel').catch((x) => MAG.toast(x.message, true)) }) : null));
+      running ? el('button', { class: 'pill danger', text: 'Film abbrechen', onclick: () => MAG.api('POST', '/api/3d/' + m.id + '/cancel').catch((x) => MAG.toast(x.message, true)) })
+        // No film (it failed or was cancelled): what was rendered stays, the rest is rendered.
+        : !film && glb ? el('button', { class: 'pill', text: 'Film rendern', onclick: () => MAG.api('POST', '/api/3d/' + m.id + '/retry').catch((x) => MAG.toast(x.message, true)) }) : null));
     if (glb) {
       const canvas = el('canvas', {});
       // The view stays while the card around it changes (see upsert).

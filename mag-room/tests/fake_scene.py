@@ -65,6 +65,12 @@ class FakeScene:
                     fake.cancelled.append(parts[3])
                     fake.jobs[parts[3]]["state"] = "cancelled"
                     return self.reply(200, {"cancelled": True})
+                if len(parts) == 5 and parts[4] == "retry":
+                    job = fake.jobs.get(parts[3])
+                    if not job or job["state"] not in ("cancelled", "error"):
+                        return self.reply(200, {"queued": False})
+                    job.update(state="queued", polls=0)
+                    return self.reply(200, {"queued": True})
                 spec = json.loads(body)
                 fake.specs.append(spec)
                 names = [actor.get("name") for actor in spec.get("actors", [])]

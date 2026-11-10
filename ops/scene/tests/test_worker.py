@@ -37,6 +37,8 @@ elif args[0] == "build":
     (out / "scene.json").write_text(json.dumps(facts))
     (out / "scene.glb").write_bytes(b"glTF-scene")
     (out / "scene.blend").write_bytes(b"BLENDER")
+    if spec["title"] in ("Stolpert", "Kaputt"):
+        (out / spec["title"]).write_text("")
     print("MAG-BUILT " + json.dumps(facts), flush=True)
 else:
     out = pathlib.Path(args[1])
@@ -45,6 +47,10 @@ else:
         frame = out / "frames" / ("f%04d.png" % i)
         if frame.exists():          # a render that goes on does not repeat what is there
             continue
+        if (out / "Kaputt").exists() or (i == 6 and (out / "Stolpert").exists()):
+            (out / "Stolpert").unlink(missing_ok=True)   # it stumbles once
+            print("Error: OpenImageDenoise error: Resource temporarily unavailable", flush=True)
+            sys.exit(3)
         time.sleep(float(os.environ.get("FAKE_DELAY", "0.1")))
         frame.write_bytes(b"png")
         print("MAG-FRAME %d/12" % (i + 1), flush=True)
@@ -176,9 +182,32 @@ def main():
         assert call("POST", "/api/scene/jobs/%s/cancel" % c) == (200, {"cancelled": True})
         assert status(c)["state"] == "cancelled" and not alive(s["pid"])
         assert call("GET", "/api/scene/jobs/%s/scene.glb" % c, raw=True)[0] == 200
+        # A film that was cancelled (or failed) can be rendered after all: what was rendered stays.
+        before = (root / c / "render.log").read_text().count("MAG-FRAME 1/12")
+        assert call("POST", "/api/scene/jobs/%s/retry" % c) == (200, {"queued": True})
+        s = wait(c, lambda s: s["state"] == "done", "film after a retry")
+        assert "error" not in s and (root / c / "render.log").read_text().count("MAG-FRAME 1/12") == before
+        assert call("POST", "/api/scene/jobs/%s/retry" % c) == (200, {"queued": False})      # there is a film
+        c = call("POST", "/api/scene/jobs", scene())[1]["id"]
+        wait(c, lambda s: s["state"] == "running" and s.get("step", 0) >= 2, "rendering")
+        assert call("POST", "/api/scene/jobs/%s/cancel" % c) == (200, {"cancelled": True})
         assert call("DELETE", "/api/scene/jobs/" + c) == (200, {"deleted": True}) and not (root / c).exists()
         assert call("GET", "/api/scene/jobs/" + c)[0] == 404
-        assert call("POST", "/api/scene/purge")[1]["deleted"] == 2 and not [p for p in root.iterdir() if p.is_dir()]
+        # 4. A render that fails halfway (the denoiser got no thread) is started
+        #    again and goes on; one that gets nowhere is an error, in words.
+        d = call("POST", "/api/scene/jobs", dict(scene(), title="Stolpert"))[1]["id"]
+        s = wait(d, lambda s: s["state"] == "done", "film after a render that stumbled")
+        log = (root / d / "render.log").read_text()
+        assert s["resumed"] == 1 and log.count("OpenImageDenoise error") == 1 and log.count("MAG-FRAME 3/12") == 1, (s, log)
+        e = call("POST", "/api/scene/jobs", dict(scene(), title="Kaputt"))[1]["id"]
+        end = time.time() + 20
+        while status(e)["state"] not in ("error", "done") and time.time() < end:
+            time.sleep(0.05)
+        assert status(e)["state"] == "error" and "Exit 3" in status(e)["error"], status(e)
+        assert call("GET", "/api/scene/jobs/%s/scene.glb" % e, raw=True)[0] == 200              # the scene itself is there
+        # What Blender said about a scene it could not build is kept.
+        assert len(list((tmp / "failed").glob("*.log"))) == 1 and "Niemand" in next((tmp / "failed").glob("*.log")).read_text()
+        assert call("POST", "/api/scene/purge")[1]["deleted"] == 5 and not [p for p in root.iterdir() if p.is_dir()]
         # Only the room may ask.
         req = urllib.request.Request("http://127.0.0.1:%d/api/scene/purge" % port, data=b"", method="POST")
         try:

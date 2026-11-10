@@ -298,6 +298,8 @@ audio, video { max-width: 100%; border-radius: 12px; }
 .skill { display: block; padding: 10px 12px; }
 .skill summary { cursor: pointer; }
 .skill p { margin: 6px 0; font-size: 14px; white-space: pre-wrap; }
+.pair { display: inline-flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+.act[aria-pressed="true"] { color: var(--accent, currentColor); }
 
 /* ---- 3D message ---------------------------------------------------------- */
 .m3 { border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); overflow: hidden; max-width: 600px; }

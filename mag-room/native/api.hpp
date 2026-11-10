@@ -43,6 +43,7 @@ public:
       if (p == "/favicon.ico" || p == "/favicon.svg" || p == "/apple-touch-icon.png")
         return asset(fd, r, room_.cfg.web_dir + "/static" + p, false);
       if (starts_with(p, "/static/") || starts_with(p, "/app/")) return static_file(fd, r);
+      if (starts_with(p, "/tts/")) return voice_file(fd, r);
       if (p == "/api/version") { Val v = Val::object(); v["version"] = version_; return http::send_json(fd, 200, v); }
       if (p == "/api/state") return state(fd, r, who);
       if (p == "/api/messages") return messages(fd, r);
@@ -174,6 +175,20 @@ private:
     asset(fd, r, room_.cfg.web_dir + rel, false);
   }
 
+  // The voices for reading aloud (ops/tts): a worker, its runtime and the
+  // voice models, run in the browser. They live in a folder named after their
+  // content, so the browser keeps them for good; only config.json says which.
+  void voice_file(int fd, const http::Request &r) {
+    const std::string rel = url_decode(r.path.substr(5));
+    if (rel.empty() || rel.find("..") != std::string::npos || rel.find('\\') != std::string::npos || rel[0] == '/' || rel.find('\0') != std::string::npos)
+      return http::send_error(fd, 404, "Nicht gefunden");
+    const std::string path = room_.cfg.tts_dir + "/" + rel;
+    if (!exists(path)) return http::send_error(fd, 404, "Nicht gefunden");
+    http::Headers h = {{"Cache-Control", rel == "config.json" ? "no-store" : "public, max-age=31536000, immutable"},
+                       {"Cross-Origin-Resource-Policy", "same-origin"}, {"X-Content-Type-Options", "nosniff"}};
+    http::send_file(fd, r, path, ends_with(rel, ".onnx") || ends_with(rel, ".data") ? "application/octet-stream" : mime_for(rel), h);
+  }
+
   void manifest(int fd) {
     const std::string v = "?v=" + version_;
     const std::string body =
@@ -219,6 +234,7 @@ private:
     Val features = Val::object();
     features["search"] = !room_.cfg.brave_key.empty();
     features["stt"] = stt_ready();
+    features["tts"] = exists(room_.cfg.tts_dir + "/config.json");
     features["push"] = push_.configured();
     v["features"] = features;
     v["zone"] = site::zone(); // the bots' sites are <name>.<zone>

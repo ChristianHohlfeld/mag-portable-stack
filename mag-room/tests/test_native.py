@@ -77,7 +77,7 @@ class Room:
                         MAG_ROOM_NO_SUDO="1", MAG_ROOM_GUEST_RUN=str(HERE / "fake_guest_run"),
                         MAG_ROOM_AGENT_CTL="/bin/false", MAG_ROOM_NETMODE="/bin/true",
                         FAKE_GUEST_HOME=str(self.tmp / "guests"), MAG_ROOM_GUEST_HOME=str(self.tmp / "guests" / "agent1"),
-                        MAG_BOTS_WWW=str(self.tmp / "www"),
+                        MAG_BOTS_WWW=str(self.tmp / "www"), MAG_TTS_DIR=str(self.tmp / "tts"),
                         MAG_ROOM_BRAVE_KEY="", BRAVE_API_KEY="")
         self.env.update({k: str(v) for k, v in env.items()})
         (self.tmp / "control").mkdir()
@@ -1048,6 +1048,33 @@ class RoomContract(unittest.TestCase):
                 (16).to_bytes(2, "little") + b"data" + len(audio).to_bytes(4, "little") + audio
             code, out = r.api("POST", "/api/stt", raw=wav)
             self.assertEqual((code, out.get("text")), (200, "w1 w2 w3. w4 w5"), out)
+
+    def test_voices_for_reading_aloud_come_from_their_own_folder(self):
+        r = self.room
+
+        def get(path):
+            try:
+                with urllib.request.urlopen(r.url(path), timeout=10) as res:
+                    return res.status, res.headers.get("Cache-Control"), res.headers.get("Content-Type"), res.read()
+            except urllib.error.HTTPError as err:
+                with err:
+                    return err.code, None, None, b""
+        # Not installed: the page is told, and reads with the voice of the device.
+        self.assertEqual((r.state()["features"]["tts"], get("/tts/config.json")[0]), (False, 404))
+        # Installed: a folder named after its content (kept by the browser for good) and a config that says which.
+        voices = r.tmp / "tts" / "v-0123456789ab"
+        voices.mkdir(parents=True)
+        (voices / "tts-worker.js").write_text("// worker")
+        (voices / "stimme.onnx").write_bytes(b"\x08\x07onnx")
+        (r.tmp / "tts" / "config.json").write_text(json.dumps({"dir": "v-0123456789ab", "voices": [{"id": "thorsten", "model": "stimme.onnx"}]}))
+        self.assertTrue(r.state()["features"]["tts"])
+        code, cache, kind, body = get("/tts/config.json")
+        self.assertEqual((code, cache, json.loads(body)["dir"]), (200, "no-store", "v-0123456789ab"))
+        self.assertEqual(get("/tts/v-0123456789ab/tts-worker.js"), (200, "public, max-age=31536000, immutable", "text/javascript; charset=utf-8", b"// worker"))
+        self.assertEqual(get("/tts/v-0123456789ab/stimme.onnx")[2:], ("application/octet-stream", b"\x08\x07onnx"))
+        # Nothing but that folder.
+        for path in ("/tts/../state/bots.json", "/tts/%2e%2e/state/bots.json", "/tts//etc/passwd", "/tts/v-0123456789ab/fehlt.js"):
+            self.assertEqual(get(path)[0], 404, path)
 
     def test_whois_and_csrf_guard(self):
         r = self.room

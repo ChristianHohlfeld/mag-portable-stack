@@ -12,7 +12,7 @@ namespace mag {
 
 struct Config {
   std::string state_dir, files_dir, web_dir, bind_host, bridge_ip, gateway, models_status,
-      models_control, idol_url, scene_url, rtc_url, stt_url, guest_run, agent_ctl, brave_key, browser_binary,
+      models_control, idol_url, scene_url, rtc_url, stt_url, tts_dir, guest_run, agent_ctl, brave_key, browser_binary,
       version, access_file;
   bool sudo = true; // the guest wrappers run through sudo (off only for the test fixture)
   int port = 8766, bridge_port = 8767, max_steps = 48, turn_budget_s = 3600, tool_timeout_s = 900,
@@ -39,6 +39,7 @@ struct Config {
     c.sudo = env("MAG_ROOM_NO_SUDO") != "1";
     c.brave_key = env("BRAVE_API_KEY", env("MAG_ROOM_BRAVE_KEY"));
     c.stt_url = env("MAG_STT_URL", "http://127.0.0.1:8194");
+    c.tts_dir = env("MAG_TTS_DIR", "/opt/mag-tts"); // the voices the browser reads aloud with (ops/tts)
     c.browser_binary = env("MAG_BROWSER_BINARY", "/opt/mag-stack/current/bin/mag-browser");
     c.access_file = env("MAG_ROOM_ACCESS", c.state_dir + "/access.json");
     c.max_steps = (int)envl("MAG_ROOM_MAX_STEPS", 48);

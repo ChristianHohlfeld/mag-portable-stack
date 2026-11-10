@@ -237,6 +237,21 @@
             owner() ? el('button', { class: 'pill danger', text: 'Löschen', onclick: () => call('DELETE', '/api/skills/' + encodeURIComponent(skill.name)).then(loadSkills) }) : null));
       }).catch(() => {});
       loadSkills();
+      // Read aloud: a voice and a tempo for every bot, on this device.
+      if (MAG.voices) {
+        const voices = el('div', { class: 'card' });
+        content.append(el('h3', { text: 'Vorlesen' }), voices);
+        if (!MAG.voices.possible()) voices.append(el('div', { class: 'set' }, el('div', { class: 'txt' }, 'Stimme des Geräts', el('small', { text: 'Die lokalen Stimmen sind auf diesem Server nicht eingerichtet.' }))));
+        else MAG.voices.options().then((options) => {
+          for (const b of S.bots) {
+            const now = MAG.voices.of(b.id);
+            voices.append(row(b.name, null, el('span', { class: 'pair' },
+              select(now.voice, options.map((o) => [o.id, o.label]), (v) => MAG.voices.set(b.id, { voice: v })),
+              select(String(now.rate), MAG.voices.rates.map((r) => [String(r), String(r).replace('.', ',') + '×']), (v) => MAG.voices.set(b.id, { rate: +v })))));
+          }
+          voices.append(el('div', { class: 'set' }, el('div', { class: 'txt' }, el('small', { text: 'Die Stimmen laufen in diesem Browser. Jede wird einmal geladen (rund 60 MB) und bleibt dann auf dem Gerät.' }))));
+        });
+      }
 
       const sys = el('dl', { class: 'kv' }, el('dt', { text: 'Version' }), el('dd', { text: MAG.version }));
       content.append(el('h3', { text: 'System' }), el('div', { class: 'card' }, sys));
@@ -279,27 +294,6 @@
     } catch (err) {
       MAG.toast('Mitteilungen: ' + err.message, true);
     }
-  }
-
-  // ---- read aloud (device voice) ------------------------------------------
-  if ('speechSynthesis' in window) {
-    let reading = null; // message id being read
-    MAG.speak = function (m, button) {
-      const again = reading === m.id && speechSynthesis.speaking;
-      speechSynthesis.cancel();
-      document.querySelectorAll('.act.on').forEach((b) => b.classList.remove('on'));
-      reading = null;
-      if (again) return; // a second tap stops it
-      const text = (m.text || '').replace(/```[\s\S]*?```/g, ' Codeblock. ').replace(/[#*_`>|]/g, ' ').slice(0, 6000);
-      const u = new SpeechSynthesisUtterance(text);
-      u.lang = 'de-DE';
-      const voice = speechSynthesis.getVoices().filter((v) => v.lang.startsWith('de')).sort((a, b) => (b.localService ? 1 : 0) - (a.localService ? 1 : 0))[0];
-      if (voice) u.voice = voice;
-      u.onend = u.onerror = () => { if (reading === m.id) reading = null; button?.classList.remove('on'); };
-      reading = m.id;
-      button?.classList.add('on');
-      speechSynthesis.speak(u);
-    };
   }
 
   document.addEventListener('DOMContentLoaded', () => {

@@ -224,6 +224,9 @@ log "release $RELEASE_ID is live"
 # Model layer: installs/refreshes the supervisor only. It never restarts a
 # running model; a changed launch spec is reported as "restart pending".
 soft bash "$SOURCE/ops/models/install.sh"
+# Documents in the chat are read for the bots with pdftotext; without it a
+# PDF is only a file name to them.
+command -v pdftotext >/dev/null || warn 'pdftotext missing: the bots cannot read PDFs (apt-get install poppler-utils)'
 # Speech to text (mag-stt): built against the pinned recognizer when it is
 # there, restarted only when its binary, model or unit changed.
 soft bash "$SOURCE/ops/stt/install.sh"

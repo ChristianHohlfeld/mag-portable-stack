@@ -660,6 +660,49 @@ class RoomContract(unittest.TestCase):
                  for c in r.lena.chats()[mark:]]
         self.assertEqual(order[:2], ["answer", "describe"], order)
 
+    def test_bots_read_what_a_document_says(self):
+        """A Word file and a PDF are read for the bots: their text is part of
+        the message, not just their name. (The PDF part needs pdftotext.)"""
+        import io
+        import zipfile
+        r = self.room
+
+        def upload(name, data):
+            code, att = r.api("POST", "/api/upload?name=" + name, raw=data)
+            self.assertEqual(code, 201, att)
+            return att["file"]
+
+        docx = io.BytesIO()
+        with zipfile.ZipFile(docx, "w") as z:
+            z.writestr("word/document.xml", "<w:document><w:body><w:p><w:r><w:t>Angebot Nr. 4711</w:t></w:r></w:p>"
+                       "<w:p><w:r><w:t>Summe: 1.234,56 &amp; Skonto</w:t></w:r></w:p></w:body></w:document>")
+        files = [upload("angebot.docx", docx.getvalue())]
+        if shutil.which("pdftotext"):
+            stream = b"BT /F1 12 Tf 72 720 Td (Der Liefertermin ist der 12. Dezember.) Tj ET"
+            objects = [b"<</Type/Catalog/Pages 2 0 R>>", b"<</Type/Pages/Kids[3 0 R]/Count 1>>",
+                       b"<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]/Contents 4 0 R/Resources<</Font<</F1 5 0 R>>>>>>",
+                       b"<</Length %d>>stream\n" % len(stream) + stream + b"\nendstream", b"<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>"]
+            pdf, offsets = b"%PDF-1.4\n", []
+            for i, body in enumerate(objects, 1):
+                offsets.append(len(pdf))
+                pdf += b"%d 0 obj" % i + body + b"endobj\n"
+            xref = len(pdf)
+            pdf += b"xref\n0 6\n0000000000 65535 f \n" + b"".join(b"%010d 00000 n \n" % o for o in offsets)
+            pdf += b"trailer<</Root 1 0 R/Size 6>>\nstartxref\n%d\n%%%%EOF\n" % xref
+            files.append(upload("brief.pdf", pdf))
+        r.say("@Noah was steht in den Dateien?", attachments=files)
+        r.idle()
+        sent = json.dumps(r.noah.chats()[0]["messages"], ensure_ascii=False)
+        self.assertIn("[Dokument angebot.docx", sent)
+        self.assertIn("Angebot Nr. 4711\\nSumme: 1.234,56 & Skonto", sent)
+        if len(files) > 1:
+            self.assertIn("Der Liefertermin ist der 12. Dezember.", sent)
+        # Deleting the message takes the extracted text along with the file.
+        texts = r.tmp / "state" / "text"
+        self.assertEqual(len(list(texts.iterdir())), len(files))
+        self.assertEqual(r.api("DELETE", "/api/message/" + r.messages()[0]["id"])[0], 200)
+        self.assertEqual(list(texts.iterdir()), [])
+
     def test_deleting_a_message_removes_it_for_the_bots_too(self):
         r = self.room
         secret = r.say("@Lena merk dir Kennwort Zitrone")

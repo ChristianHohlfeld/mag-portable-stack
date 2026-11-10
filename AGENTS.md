@@ -94,6 +94,13 @@ file is part of the message, and a long one continues as `<name>.txt` next to
 the file in the bot's VM. A bot whose model has a vision projector gets the image
 itself; it also writes down once what the image shows (a short branch off
 its prompt log, never appended to it), and a bot without eyes reads that.
+An image stands in the prompt right in front of its own `[Bild …]` line,
+never at the head of a bundle of messages, and is asked about with the image
+itself in front of the question, never by its name: otherwise a model
+answers about another picture it remembers. The same picture posted again is
+the same picture (one description); the owner can have a wrong one made anew.
+A picture whose file ends in its middle is not taken as it is: the page reads
+the file again first, and photo to 3D refuses it in words.
 The UI is mobile first: streamed answers appear below the user message in the
 order they are produced, the view follows only while the reader is at the
 end, and a running step is a live card with the real command, output,

@@ -51,11 +51,19 @@
       if (!file.size) continue;
       uploading++;
       paintStaged();
-      try {
-        const att = await MAG.api('POST', '/api/upload?name=' + encodeURIComponent(file.name || 'datei'), file);
-        staged.push({ att, url: '/api/file/' + encodeURIComponent(att.file) });
-      } catch (err) {
-        MAG.toast('Upload fehlgeschlagen: ' + err.message, true);
+      // A photo that was just taken may still be written by the phone: the room
+      // says when a picture ends in its middle, and the file is read again
+      // twice before it is sent as it is.
+      for (let again = 0; ; again++) {
+        try {
+          const att = await MAG.api('POST', '/api/upload?name=' + encodeURIComponent(file.name || 'datei') + (again === 2 ? '&force=1' : ''), file);
+          if (att.cut) MAG.toast((file.name || 'Das Bild') + ' ist unvollständig: die Datei endet mitten im Bild', true);
+          staged.push({ att, url: '/api/file/' + encodeURIComponent(att.file) });
+        } catch (err) {
+          if (err.data?.code === 'truncated' && again < 2) { await new Promise((done) => setTimeout(done, 1500 * (again + 1))); continue; }
+          MAG.toast('Upload fehlgeschlagen: ' + err.message, true);
+        }
+        break;
       }
       uploading--;
       paintStaged();

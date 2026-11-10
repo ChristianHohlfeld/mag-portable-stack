@@ -4,12 +4,14 @@ addressing, bounded bot dialogue and PASS, cancellation, live steps,
 single-owner tool continuation, the trash button and message deletion.
 The fixture proves the room's logic; it does not prove that a real model, a
 real VM or the deployed browser work."""
+import base64
 import http.client
 import json
 import os
 import pathlib
 import shutil
 import socket
+import struct
 import subprocess
 import sys
 import tempfile
@@ -18,6 +20,7 @@ import time
 import unittest
 import urllib.error
 import urllib.request
+import zlib
 
 HERE = pathlib.Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
@@ -27,12 +30,32 @@ from fake_llama import FakeLlama, text_of  # noqa: E402
 from fake_scene import FakeScene  # noqa: E402
 
 BIN = pathlib.Path(os.environ.get("MAGROOM_BIN", ROOT / "build/magroom"))
+# A whole picture (1x1), and what arrives when a JPEG is cut off in its picture data.
+PNG = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==")
+JPEG = (b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00" + b"\xff\xe1\x00\x08Exif\xff\xd9" +
+        b"\xff\xda\x00\x08\x01\x01\x00\x00\x3f\x00" + b"\x12\x34\xff\x00\x56\xff\xd3\x78" * 40 + b"\xff\xd9")
 
 
 def free_port():
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
         return s.getsockname()[1]
+
+
+def picture(red, green, blue):
+    """A small picture of one colour, as a PNG."""
+    def chunk(kind, data):
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+    rows = b"".join(b"\x00" + bytes((red, green, blue)) * 16 for _ in range(16))
+    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 16, 16, 8, 2, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b"")
+
+
+def placed(parts, name):
+    """The image part that stands directly in front of the line "[Bild <name> ..." of a request's content, or None."""
+    for image, text in zip(parts, parts[1:]):
+        if image["type"] == "image_url" and text["type"] == "text" and text["text"].startswith("[Bild " + name + " ("):
+            return image["image_url"]["url"]
+    return None
 
 
 class Room:
@@ -535,7 +558,7 @@ class RoomContract(unittest.TestCase):
 
     def test_3d_result_is_a_normal_message_and_takes_its_files_along(self):
         r = self.room
-        code, photo = r.api("POST", "/api/upload?name=foto.png", raw=b"\x89PNG\r\n\x1a\n" + b"x" * 64)
+        code, photo = r.api("POST", "/api/upload?name=foto.png", raw=PNG)
         self.assertEqual((code, photo["kind"]), (201, "image"))
         code, out = r.api("POST", "/api/message", {"text": "", "attachments": [photo["file"]], "mode": "3d", "quality": "high"})
         self.assertEqual(code, 201)
@@ -555,6 +578,7 @@ class RoomContract(unittest.TestCase):
         stored = [files / a["file"] for a in result["attachments"]]
         self.assertTrue(all(p.exists() for p in stored))
         self.assertEqual(r.api("GET", "/api/file/" + result["attachments"][0]["file"])[1], b"glTF-fake")
+        self.assertEqual(r.idol.jobs[result["model3d"]["job"]]["size"], len(PNG))   # the worker got the whole photo
         self.assertEqual(len(r.lena.chats()) + len(r.noah.chats()), 0)  # a 3D order is not a question to the bots
         # It survives a restart (visible and rotatable again after a reload) ...
         r.stop()
@@ -570,7 +594,7 @@ class RoomContract(unittest.TestCase):
 
     def test_3d_job_goes_on_when_the_room_restarts(self):
         r = self.room
-        png = b"\x89PNG\r\n\x1a\n" + b"x" * 64
+        png = PNG
 
         def order():
             photo = r.api("POST", "/api/upload?name=foto.png", raw=png)[1]
@@ -616,7 +640,7 @@ class RoomContract(unittest.TestCase):
         def scenes():
             return [m for m in r.messages() if m.get("model3d", {}).get("kind") == "scene"]
         # A model in the chat: the result of a photo-to-3D job.
-        photo = r.api("POST", "/api/upload?name=wald.png", raw=b"\x89PNG\r\n\x1a\n" + b"x" * 64)[1]
+        photo = r.api("POST", "/api/upload?name=wald.png", raw=PNG)[1]
         out = r.api("POST", "/api/message", {"text": "", "attachments": [photo["file"]], "mode": "3d", "quality": "fast"})[1]
         r.wait(lambda: message(out["model3d"])["state"] == "done", "3D job done")
         model = message(out["model3d"])["attachments"][0]
@@ -721,17 +745,20 @@ class RoomContract(unittest.TestCase):
                 return "Eine rote Tasse auf einem Holztisch."
             return "PASS" if "Sonst antworte exakt PASS" in text else "Ich sehe die Tasse."
         r.lena.reply = lena
-        png = b"\x89PNG\r\n\x1a\n" + b"x" * 64
+        png = PNG
         photo = r.api("POST", "/api/upload?name=tasse.png", raw=png)[1]
         note = r.api("POST", "/api/upload?name=notiz.txt", raw="Einkauf: Milch und Brot".encode())[1]
         asked = r.say("Was ist auf dem Bild?", attachments=[photo["file"], note["file"]])
         r.idle()
-        # Lena gets the image itself, in front of the text, and wrote down once what it shows ...
+        # Lena gets the image itself, right where the message names it, and wrote down once what it shows ...
         seen = [c["messages"][-1]["content"] for c in r.lena.chats() if isinstance(c["messages"][-1]["content"], list)]
-        self.assertTrue(seen and all(parts[0]["type"] == "image_url" and parts[0]["image_url"]["url"].startswith("data:image/png;base64,")
-                                     for parts in seen), seen)
+        self.assertTrue(seen and all((placed(parts, "tasse.png") or "").startswith("data:image/") for parts in seen), seen)
+        self.assertTrue(all(parts[0]["type"] == "text" and parts[0]["text"].endswith("Chris: Was ist auf dem Bild?\n") for parts in seen), seen)
         described = [parts for parts in seen if "Beschreibe das Bild tasse.png" in text_of(parts)]
         self.assertEqual(len(described), 1)
+        # ... asked with the picture itself right in front of the question, not by its name alone.
+        self.assertEqual((described[0][-2]["type"], described[0][-2]["image_url"]["url"]), ("image_url", placed(described[0], "tasse.png")))
+        self.assertIn("Beschreibe das Bild tasse.png, das direkt vor dieser Notiz steht, und nur dieses", described[0][-1]["text"])
         answered = [parts for parts in seen if "Beschreibe das Bild" not in text_of(parts)]
         self.assertIn("Chris: Was ist auf dem Bild?", text_of(answered[0]))
         self.assertTrue(text_of(described[0]).startswith(text_of(answered[0])))  # same prefix: only a short branch is evaluated
@@ -759,13 +786,105 @@ class RoomContract(unittest.TestCase):
         # A bot that thinks before every answer answers first and describes afterwards
         # (describing would cost it a whole thinking pass per image up front).
         self.assertEqual(r.api("PUT", "/api/bot/lena", {"thinking": True})[0], 200)
-        photo = r.api("POST", "/api/upload?name=blume.png", raw=png)[1]
+        photo = r.api("POST", "/api/upload?name=blume.png", raw=picture(220, 30, 90))[1]   # a picture nobody has described yet
         mark = len(r.lena.chats())
         r.say("@Lena und das hier?", attachments=[photo["file"]])
         r.idle()
         order = ["describe" if "Beschreibe das Bild blume.png" in text_of(c["messages"][-1]["content"]) else "answer"
                  for c in r.lena.chats()[mark:]]
         self.assertEqual(order[:2], ["answer", "describe"], order)
+
+    def test_a_picture_is_seen_where_it_is_said_and_never_mixed_up(self):
+        # What went wrong live: a new picture came in a bundle with other
+        # messages, stood at the head of that bundle, far from the question
+        # about it, and was then asked about by its name alone. The bot
+        # described an older picture, and the bot without eyes repeated it.
+        r = Room(MAG_ROOM_VISION="lena", MAG_ROOM_SIGHT_WAIT_S="30")
+        self.addCleanup(r.close)
+        asked_about = []
+
+        def lena(body):
+            parts = body["messages"][-1]["content"]
+            if isinstance(parts, list) and "Beschreibe das Bild" in parts[-1].get("text", ""):
+                name = parts[-1]["text"].split("Beschreibe das Bild ")[1].split(",")[0]
+                asked_about.append(name)
+                # Where the conversation shows the picture of that name, and what stands in front of the question.
+                shown = [placed(m["content"], name) for m in body["messages"] if isinstance(m["content"], list)]
+                given = parts[-2]["image_url"]["url"] if parts[-2]["type"] == "image_url" else None
+                return "Bild mit dem Inhalt %08x." % zlib.crc32(given.encode()) if given and given in shown else "FALSCHES BILD"
+            return "PASS" if "Sonst antworte exakt PASS" in text_of(parts) else "Gesehen."
+        r.lena.reply = lena
+
+        def image(message_id, index=0):
+            return [m for m in r.messages() if m["id"] == message_id][0]["attachments"][index]
+        robot = r.api("POST", "/api/upload?name=roboter.png", raw=picture(250, 120, 0))[1]
+        first = r.say("@Lena schau mal", attachments=[robot["file"]])
+        r.idle()
+        r.wait(lambda: image(first["id"]).get("description"), "first picture described")
+        # Lena reads the next two messages only as context; the picture arrives in one bundle with them.
+        r.say("@Noah wann kommt die Lieferung?")
+        r.idle()
+        gnome = r.api("POST", "/api/upload?name=Screenshot.png", raw=picture(20, 40, 160))[1]
+        second = r.say("Was seht ihr da", attachments=[gnome["file"]])
+        r.idle()
+        r.wait(lambda: image(second["id"]).get("description"), "second picture described")
+        bundle = [c["messages"][-1]["content"] for c in r.lena.chats() if isinstance(c["messages"][-1]["content"], list)
+                  and "Was seht ihr da" in text_of(c["messages"][-1]["content"])][0]
+        self.assertIn("Chris an Noah: @Noah wann kommt die Lieferung?", bundle[0]["text"])     # other people's words first ...
+        self.assertTrue(bundle[0]["text"].endswith("Chris: Was seht ihr da\n"))                 # ... then the question, the picture,
+        self.assertEqual(bundle[1]["type"], "image_url")                                        # and its own line
+        self.assertTrue(bundle[2]["text"].startswith("[Bild Screenshot.png ("))
+        self.assertNotIn("FALSCH", image(first["id"])["description"] + image(second["id"])["description"])
+        self.assertNotEqual(image(first["id"])["description"], image(second["id"])["description"])
+        # Noah, who has no eyes, reads what this very picture shows.
+        noah = [text_of(c["messages"][-1]["content"]) for c in r.noah.chats() if "Was seht ihr da" in text_of(c["messages"][-1]["content"])][0]
+        self.assertIn("[Bild Screenshot.png (image/png, 1 KB). Zu sehen: " + image(second["id"])["description"] + "]", noah)
+        # Two pictures in one message: each stands in front of its own line.
+        a = r.api("POST", "/api/upload?name=a.png", raw=picture(200, 0, 0))[1]
+        b = r.api("POST", "/api/upload?name=b.png", raw=picture(0, 200, 0))[1]
+        pair = r.say("@Lena und diese zwei?", attachments=[a["file"], b["file"]])
+        r.idle()
+        r.wait(lambda: image(pair["id"], 0).get("description") and image(pair["id"], 1).get("description"), "both pictures described")
+        both = [c["messages"][-1]["content"] for c in r.lena.chats() if isinstance(c["messages"][-1]["content"], list)
+                and "und diese zwei?" in text_of(c["messages"][-1]["content"])][0]
+        self.assertTrue(placed(both, "a.png") and placed(both, "b.png") and placed(both, "a.png") != placed(both, "b.png"))
+        self.assertNotEqual(image(pair["id"], 0)["description"], image(pair["id"], 1)["description"])
+        # The same picture posted again under another name is the same picture: nobody is asked twice.
+        calls = len(asked_about)
+        copy = r.api("POST", "/api/upload?name=nochmal.png", raw=picture(20, 40, 160))[1]
+        third = r.say("@Lena und das?", attachments=[copy["file"]])
+        r.idle()
+        r.wait(lambda: image(third["id"]).get("description"), "copy described")
+        self.assertEqual((image(third["id"])["description"], len(asked_about)), (image(second["id"])["description"], calls))
+        # A description that is wrong can be made anew: for every copy of the picture, by looking at it again ...
+        r.lena.reply = lambda body: "Ein Wichtel mit Laterne im Schnee." if "Beschreibe das Bild" in text_of(body["messages"][-1]["content"]) else "PASS"
+        self.assertEqual(r.api("POST", "/api/file/" + gnome["file"] + "/describe")[0], 200)
+        r.wait(lambda: image(second["id"]).get("description") == "Ein Wichtel mit Laterne im Schnee."
+               and image(third["id"]).get("description") == "Ein Wichtel mit Laterne im Schnee.", "described anew")
+        self.assertNotEqual(image(first["id"])["description"], "Ein Wichtel mit Laterne im Schnee.")   # other pictures stay as they were
+        # ... and the bot that only read about it is told.
+        r.noah.reply = None
+        r.say("@Noah und was war auf dem Screenshot?")
+        r.idle()
+        told = text_of(r.noah.chats()[-1]["messages"][-1]["content"])
+        self.assertIn("(Nachtrag zum Bild Screenshot.png. Zu sehen: Ein Wichtel mit Laterne im Schnee.)", told)
+        self.assertEqual(r.api("POST", "/api/file/gibt-es-nicht.png/describe")[0], 404)
+
+    def test_a_picture_that_ends_in_its_middle_is_not_taken_as_it_is(self):
+        r = self.room
+        cut = JPEG[:len(JPEG) // 2]
+        # Whole pictures pass, also a JPEG with data after its end mark (phones append their own).
+        for name, data in (("ganz.jpg", JPEG), ("anhang.jpg", JPEG + b"\x00\x01\x00\x00"), ("ganz.png", PNG), ("text.txt", b"kein Bild")):
+            code, out = r.api("POST", "/api/upload?name=" + name, raw=data)
+            self.assertEqual((code, out.get("cut")), (201, None), name)
+        # One that ends in its picture data does not: the page reads the file again ...
+        for name, data in (("halb.jpg", cut), ("kopf.jpg", JPEG[:12]), ("halb.png", PNG[:40])):
+            code, out = r.api("POST", "/api/upload?name=" + name, raw=data)
+            self.assertEqual((code, out.get("code")), (422, "truncated"), name)
+            self.assertIn("endet mitten im Bild", out["error"])
+        # ... and only when it insists is the file taken, marked as what it is.
+        code, out = r.api("POST", "/api/upload?name=halb.jpg&force=1", raw=cut)
+        self.assertEqual((code, out["cut"], out["size"]), (201, True, len(cut)))
 
     def test_bots_read_what_a_document_says(self):
         """A Word file and a PDF are read for the bots: their text is part of

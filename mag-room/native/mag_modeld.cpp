@@ -45,6 +45,8 @@ using Clock = std::chrono::steady_clock;
 static std::atomic<bool> g_stop{false};
 // Overridable for the test fixture (fake systemctl); production uses PATH.
 static std::string g_systemctl = "systemctl";
+// A download counts as abandoned after this long without growth.
+static int g_quiet_s = 75;
 static std::string g_state_dir = "/var/lib/mag-models";
 static std::string g_run_dir = "/run/mag-models";
 
@@ -229,6 +231,9 @@ struct Artifact {
   Clock::time_point remote_checked{};
   bool remote_tried = false;
 
+  Clock::time_point last_fetch{};
+  bool fetched_once = false;
+
   bool exists = false;
   uint64_t size = 0;
   time_t mtime = 0;
@@ -385,7 +390,7 @@ static int health(int port) {
 }
 
 struct Bot {
-  std::string id, label, unit, fetch_unit, spec_hash;
+  std::string id, label, unit, spec_hash;
   int port = 0, numa = 0, ctx = 0;
   Artifact model, draft;
 
@@ -394,8 +399,8 @@ struct Bot {
   long seen_restarts = -1;
   Clock::time_point model_verified_at{};
   bool model_verified_seen = false;
-  Clock::time_point last_start{}, last_fetch{};
-  bool started_once = false, fetched_once = false;
+  Clock::time_point last_start{};
+  bool started_once = false;
   time_t ready_since = 0;
   bool restart_pending = false, draft_active = false;
 };
@@ -532,18 +537,23 @@ static void step(Bot &b) {
   b.draft_active = false;
   b.restart_pending = false;
 
-  // Resume a download nobody is working on. 75 s without growth and no open
-  // handle: the foreign wget (if any) is gone.
+  // Resume a download nobody is working on: one file at a time, only when
+  // no process has it open (a second writer would corrupt it), and the
+  // optional drafter only once the model itself is complete.
   for (Artifact *a : {&b.model, &b.draft}) {
     if (!a->configured || a->url.empty() || a->complete() || a->verify == Artifact::OK) continue;
+    if (a == &b.draft && b.model.verify != Artifact::OK) break;
     if (a->exists && a->expected() && a->size > a->expected()) continue; // never touch an oversized file
-    if (a->writer || now - a->last_growth < std::chrono::seconds(75)) continue;
-    if (b.fetched_once && now - b.last_fetch < std::chrono::minutes(5)) continue;
-    if (unit_state(b.fetch_unit).active == "active" || unit_state(b.fetch_unit).active == "activating") continue;
-    systemctl("reset-failed", b.fetch_unit);
-    systemctl("start", b.fetch_unit);
-    b.fetched_once = true;
-    b.last_fetch = now;
+    if (now - a->last_growth < std::chrono::seconds(g_quiet_s)) break;
+    if (a->fetched_once && now - a->last_fetch < std::chrono::minutes(5)) break;
+    const std::string unit = "mag-model-fetch@" + b.id + "-" + a->kind + ".service";
+    const std::string active = unit_state(unit).active;
+    if (active == "active" || active == "activating") break;
+    if (a->exists && has_open_handle(a->path)) break;
+    systemctl("reset-failed", unit);
+    systemctl("start", unit);
+    a->fetched_once = true;
+    a->last_fetch = now;
     break;
   }
 
@@ -593,8 +603,7 @@ static void step(Bot &b) {
   if (m.verify != Artifact::OK) {
     b.state = m.exists || m.writer ? "downloading" : "missing";
     if (!m.expected()) b.detail = "Größe bei Hugging Face noch nicht bekannt";
-    else if (!m.writer && now - m.last_growth > std::chrono::seconds(75) &&
-             unit_state(b.fetch_unit).active != "active")
+    else if (!m.writer && now - m.last_growth > std::chrono::seconds(g_quiet_s))
       b.detail = "Download wird fortgesetzt";
     return;
   }
@@ -626,6 +635,23 @@ static void step(Bot &b) {
   b.started_once = true;
   b.last_start = now;
   b.state = "loading";
+}
+
+// The room saves one small slot file per bot and day (the evaluated system
+// prefix). Older ones are of no use; conversations are never saved to disk.
+static void prune_prefix_files(const std::string &bot) {
+  const std::string dir = g_state_dir + "/slots/" + bot;
+  DIR *d = opendir(dir.c_str());
+  if (!d) return;
+  const time_t now = time(nullptr);
+  while (auto *e = readdir(d)) {
+    const std::string name = e->d_name;
+    if (name.compare(0, 7, "prefix-") != 0 || name.size() < 12 || name.compare(name.size() - 4, 4, ".bin") != 0) continue;
+    struct stat st{};
+    const std::string path = dir + "/" + name;
+    if (stat(path.c_str(), &st) == 0 && S_ISREG(st.st_mode) && now - st.st_mtime > 2 * 86400) unlink(path.c_str());
+  }
+  closedir(d);
 }
 
 static Artifact artifact_from(const Val *v, const char *kind) {
@@ -703,6 +729,7 @@ int main(int argc, char **argv) {
   if (auto p = conf.find("state_dir")) g_state_dir = p->asStr(g_state_dir);
   if (const char *e = getenv("MAG_MODELS_RUN")) g_run_dir = e;
   if (const char *e = getenv("MAG_MODELD_SYSTEMCTL")) g_systemctl = e;
+  if (const char *e = getenv("MAG_MODELD_QUIET_S")) g_quiet_s = std::max(1, atoi(e));
   int poll_ms = 3000;
   if (const char *e = getenv("MAG_MODELD_POLL_MS")) poll_ms = std::max(100, atoi(e));
 
@@ -735,7 +762,6 @@ int main(int argc, char **argv) {
       Bot b;
       b.id = kv.first;
       b.unit = "mag-model@" + b.id + ".service";
-      b.fetch_unit = "mag-model-fetch@" + b.id + ".service";
       auto num = [&](const char *k) { auto p = kv.second.find(k); return p ? (int)p->asNum() : 0; };
       b.label = kv.second.find("label") ? kv.second.find("label")->asStr() : b.id;
       b.port = num("port");
@@ -761,7 +787,12 @@ int main(int argc, char **argv) {
   mkdir(g_run_dir.c_str(), 0755);
   std::map<std::string, std::string> last;
   logf("mag-modeld: " + std::to_string(bots.size()) + " bots from " + config);
+  time_t pruned = 0;
   while (!g_stop) {
+    if (time(nullptr) - pruned > 3600) {
+      pruned = time(nullptr);
+      for (auto &kv : bots) prune_prefix_files(kv.first);
+    }
     read_control(bots);
     for (auto &kv : bots) {
       step(kv.second);

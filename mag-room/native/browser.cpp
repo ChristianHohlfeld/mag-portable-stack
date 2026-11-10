@@ -649,19 +649,29 @@ int main(int argc, char **argv) {
           auto enter = body.find("enter");
           if (enter && enter->asBool()) {
             Val k = Val::object();
+            // Chromium submits a form only when the key event carries the
+            // carriage return as text (same as the live-view input path).
             k["type"] = "keyDown";
+            k["key"] = "Enter";
+            k["code"] = "Enter";
+            k["text"] = "\r";
+            k["windowsVirtualKeyCode"] = 13;
+            c.call("Input.dispatchKeyEvent", k);
+            k = Val::object();
+            k["type"] = "keyUp";
             k["key"] = "Enter";
             k["code"] = "Enter";
             k["windowsVirtualKeyCode"] = 13;
             c.call("Input.dispatchKeyEvent", k);
-            k["type"] = "keyUp";
-            c.call("Input.dispatchKeyEvent", k);
           }
           out = snapshot();
         } else if (r.path == "/scroll") {
+          // dy arrives as a JSON number or as text; negative scrolls up.
           auto dy = value("dy");
-          c.eval("window.scrollBy(0," +
-                 std::to_string(dy.empty() ? 600 : std::stoi(dy)) + ")");
+          int pixels = 600;
+          if (auto n = body.find("dy"); n && n->type == Val::NUM) pixels = (int)n->asNum();
+          else if (!dy.empty()) pixels = std::stoi(dy);
+          c.eval("window.scrollBy(0," + std::to_string(pixels) + ")");
           out = snapshot();
         } else if (r.path == "/back" || r.path == "/forward" ||
                    r.path == "/reload") {

@@ -1,21 +1,31 @@
-# MAG native stack
+# MAG stack
 
-This is the canonical source for the MAG room, native browser controller and
-native VM lifecycle. The user explicitly chose C++ and removed Docker and the old
+One home server, one user (Chris, phone and desktop), one room, two bots.
+This repository is the only source of the room, the model layer, the VM
+helpers and the deployment. Architecture: `docs/ARCHITECTURE.md`.
+
+The user explicitly chose C++ and removed Docker and the old
 Python/ComfyUI/Open-WebUI/Ollama application stack. Do not reintroduce them.
-Python may be used for tests and one-off development/audit scripts.
+Python is used for tests, one-off scripts and the Idol worker (ROCm/PyTorch).
 
-Build with CMake/Ninja. Run `python3 mag-room/tests/test_native.py` after changes
-to HTTP, scheduling, persistence or room routing. Keep frontend JavaScript plain
-and serve dependencies locally. Test VM lifecycle against a disposable VM;
-never use a user's existing bot as a destructive test target.
+Build with CMake/Ninja. Run `python3 mag-room/tests/test_native.py` after
+changes to HTTP, scheduling, persistence or room routing, and
+`python3 ops/models/tests/test_modeld.py` after changes to the model
+supervisor. Keep frontend JavaScript plain (no build step) and serve every
+dependency locally. Builds and jobs run on CPUs 28-55 only
+(`taskset -c 28-55`); the physical cores 0-27 belong to the models.
 
 Production is `mag-120.service` -> `/opt/mag-stack/current/bin/magroom`.
-Deploy versioned releases through `ops/deploy.sh`; use `ops/rollback.sh` to revert
-executables. Runtime state, VM overlays, models and credentials live outside Git.
-Preserve existing room data and immutable backing disks through deployments.
-A deploy never drains, never waits for a model and never fails because a bot
-is downloading, loading, paused or stopped.
+Deploy versioned releases through `ops/deploy.sh`; `ops/rollback.sh` reverts
+executables. A deploy never drains, never waits for a model and never fails
+because a bot is downloading, loading, paused or stopped. Runtime state, VM
+overlays, models and credentials live outside Git. Preserve existing room
+data and immutable backing disks through deployments. nginx stays the ingress.
+
+S23, SSH, Tailscale, Gitea, Codex and Cursor are independent working services.
+Use the actual current inventory, not old session statements, when changing
+operations. Never put secrets, tokens or raw transcripts into a commit or tool
+output; read only the configuration needed for a specific operation.
 
 ## Models
 
@@ -23,40 +33,59 @@ Two CPU-only llama.cpp servers, declared in `ops/models/models.json`:
 Lena = Gemma 4 26B-A4B on NUMA0 (physical cores 0-13, :8191), Noah = gpt-oss
 120B on NUMA1 (cores 14-27, :8192). No GPU offload: the MI50 belongs to MAG
 Idol alone and its power cap stays at 72 W (`ops/idol/power-cap.sh` only ever
-lowers it). `mag-modeld` is the single owner of the model lifecycle: it checks
-each GGUF against the Hugging Face size, verifies its SHA256 once, starts
-`mag-model@<bot>.service` and publishes `/run/mag-models/status.json`.
-Do not start, stop or enable model units by hand or from a deploy; use
-`mag-modeld ctl <bot> start|stop|restart|freeze|thaw`. Never delete a model
-file, including the retired Qwen, DeepSeek, Ornith and Flint weights.
-Builds and jobs run on CPUs 28-55 only (`taskset -c 28-55`).
+lowers it; never add anything that raises it). `mag-modeld` is the single
+owner of the model lifecycle: it checks each GGUF against the Hugging Face
+size, verifies its SHA256 once, starts `mag-model@<bot>.service` and publishes
+`/run/mag-models/status.json`. Do not start, stop or enable model units by
+hand or from a deploy; use `mag-modeld ctl <bot> start|stop|restart|freeze|thaw`.
+A model file has exactly one writer: never start a second download on a file
+another process has open. Never delete a model file, including the retired
+Qwen, DeepSeek, Ornith and Flint weights.
 
-S23, SSH, Tailscale, Gitea, Codex and Cursor are independent working services.
-Use the actual current inventory, not old session statements, when changing
-operations. The audit snapshots in server-audit-20261014 contain historical
-credentials; never include them or their raw transcripts in a commit or tool
-output. Read only the configuration needed for a specific operation.
+Each server has one slot, no host prompt cache and no context checkpoints.
+The room keeps an append-only prompt log per bot so the server only evaluates
+new tokens; never rewrite what was already sent. The trash button erases the
+slot of every server (`/slots/0?action=erase`) and restores only the saved
+system-prefix state; no conversation is ever saved to or restored from disk.
+
+## Room model
+
+Everything in the timeline is one message type (text, bot work with its
+steps, files, 3D results), stored one JSON file per message. A 3D result is a
+normal message; deleting it also deletes its files and its Idol job directory.
+The UI is mobile first: streamed answers appear below the user message in the
+order they are produced, the view follows only while the reader is at the
+end, and a running step is a live card with the real command, output,
+runtime and a cancel button. All settings live in one sheet.
+
+Access: only the owner logins in `access.json`, attested per request by the
+Tailscale whois subrequest of nginx. There are no guests.
 
 ## Default bot execution contract
 
-Enforce autonomy centrally in the C++ scheduler and shared system prompt.
+Enforce autonomy centrally in the C++ engine and the shared system prompt.
 Chris revoked the ban on bot-triggered room turns on 2026-11-04.
 In the MAG group room, bot messages may trigger another bot's response, including
 explicit @mentions, follow-up questions, corrections and disagreement. Bots see
 other bots' room messages as context and talk to each other naturally like
 humans, server-side and without any client connected. A human message without
 an addressee is answered by ALL active bots; then the bots keep talking on their
-own (MAG_ROOM_BOT_ROUNDS, default 0 = unlimited). PASS is each bot's own choice
-and invisible; when every bot PASSes in a row the chat rests until the next
-message. New human input and Stop immediately preempt these bot rounds. Per-backend model turns remain serial (one request per -np 1 slot).
+own (MAG_ROOM_BOT_ROUNDS and the setting "Bots untereinander", default 0 =
+unlimited). PASS is each bot's own choice and invisible; when every bot PASSes
+in a row the chat rests until the next message. New human input and Stop
+immediately preempt these bot rounds. Per-backend model turns remain serial
+(one request per -np 1 slot).
 This permission is for room conversation, not unrestricted autonomous tool work.
 Outside room dialogue, continue tools only on a successful tool result, distinct
 progress and [[MAG:WEITER]]; otherwise remain idle.
 Never fake tool results or treat a site access restriction as a cookie issue
 without supporting evidence. After identical errors, diagnose rather than
 retry blindly. Keep the existing per-agent KVM and browser ownership; do not
-weaken guest sandboxing or introduce headless-stealth bypasses.
+weaken guest sandboxing or introduce headless-stealth bypasses. Test VM
+lifecycle against a disposable VM; never use a user's existing bot as a
+destructive test target.
 
 Keep regression coverage for idle autonomy, cancellation, bounded bot dialogue
-and single-owner tool continuation. The CI fixture uses
-a fake model and does not prove the deployed browser works in existing VMs.
+and single-owner tool continuation. The CI fixture uses a fake model and a
+fake guest runner; it does not prove the deployed models or the browser in
+the existing VMs work.

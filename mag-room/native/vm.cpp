@@ -303,6 +303,151 @@ exit "$rc"
   }
 }
 
+// Live variant of the shell payload: the command's output is written to a
+// guest log and relayed here in small increments while it runs, so the room
+// can show real output and runtime. Control lines start with 0x1e. Returns
+// the command's exit code (124 on timeout, 130 when cancelled).
+static int guest_live(const std::string &n, const std::string &data, int seconds) {
+  payload_cancelled = 0;
+  struct sigaction sa{}, old{};
+  sa.sa_handler = payload_signal;
+  sigemptyset(&sa.sa_mask);
+  sigaction(SIGTERM, &sa, &old);
+  std::string staged;
+  long handle = -1;
+  auto file_cmd = [&](const char *name, Val args) {
+    Val cmd = Val::object();
+    cmd["execute"] = name;
+    cmd["arguments"] = args;
+    return qga(n, cmd, 5);
+  };
+  auto close_log = [&] {
+    if (handle < 0) return;
+    Val a = Val::object();
+    a["handle"] = handle;
+    try { file_cmd("guest-file-close", a); } catch (...) {}
+    handle = -1;
+  };
+  int code = 1;
+  try {
+    auto mk = guest(n, {"/usr/sbin/runuser", "-u", "bot", "--", "/usr/bin/mktemp",
+                        "/home/bot/.mag-input-XXXXXXXX"}, 15);
+    if (mk.code || !std::regex_match(trim(mk.out),
+                      std::regex("/home/bot/\\.mag-input-[A-Za-z0-9]+")))
+      throw std::runtime_error("Cannot create secure guest staging file");
+    staged = trim(mk.out);
+    stage_payload(n, staged, data);
+    if (payload_cancelled) throw std::runtime_error("Abgebrochen (Stop)");
+    const std::string log = "/home/bot/.mag-shell/" + randomhex() + ".log";
+    const std::string shell = R"MAGSH(
+cd /home/bot || exit 1
+export PLAYWRIGHT_BROWSERS_PATH=/opt/magbot/browsers
+umask 077
+mkdir -p /home/bot/.mag-shell
+: > "$2"
+exec bash -l "$1" > "$2" 2>&1
+)MAGSH";
+    Val cmd = Val::object(), args = Val::object(), av = Val::array();
+    cmd["execute"] = "guest-exec";
+    args["path"] = "/usr/bin/setsid";
+    for (const char *a : {"/usr/sbin/runuser", "-u", "bot", "--", "/bin/bash", "-c"}) av.push(a);
+    av.push(shell); av.push("mag-shell"); av.push(staged); av.push(log);
+    args["arg"] = av;
+    args["capture-output"] = false;
+    cmd["arguments"] = args;
+    const long pid = num(qga(n, cmd), "pid");
+    const size_t limit = 2u * 1024 * 1024;
+    size_t offset = 0;
+    bool capped = false;
+    // Relays what the log gained since the last call. Seeking first also
+    // clears the sticky EOF of the guest agent's FILE handle.
+    auto relay = [&](bool final_pass) {
+      for (int rounds = 0; rounds < (final_pass ? 400 : 4); ++rounds) {
+        if (handle < 0) {
+          Val a = Val::object();
+          a["path"] = log; a["mode"] = "r";
+          try {
+            Val opened = file_cmd("guest-file-open", a);
+            handle = opened.type == Val::NUM ? (long)opened.asNum() : num(opened, "handle", -1);
+          } catch (...) { return; }
+          if (handle < 0) return;
+        }
+        Val seek = Val::object();
+        seek["handle"] = handle; seek["offset"] = (double)offset; seek["whence"] = 0;
+        Val rd = Val::object();
+        rd["handle"] = handle; rd["count"] = 49152;
+        Val got;
+        try { file_cmd("guest-file-seek", seek); got = file_cmd("guest-file-read", rd); }
+        catch (...) { close_log(); return; }
+        const std::string chunk = unbase64(str(got, "buf-b64"));
+        if (chunk.empty()) return;
+        offset += chunk.size();
+        if (!capped) {
+          if (offset > limit) {
+            capped = true;
+            std::cout << "\n[Ausgabe sehr lang; der Rest steht nur im Log der VM]\n";
+          } else {
+            std::cout << chunk;
+          }
+          std::cout.flush();
+        }
+        if (chunk.size() < 49152) return;
+      }
+    };
+    const auto end = std::chrono::steady_clock::now() + std::chrono::seconds(seconds);
+    bool exited = false, timed_out = false;
+    int ticks = 0;
+    while (!exited) {
+      if (payload_cancelled) {
+        stop_guest_group(n, pid, "-TERM");
+        relay(true);
+        std::cout << "\x1e" "cancelled\n";
+        code = 130;
+        break;
+      }
+      if (std::chrono::steady_clock::now() >= end) {
+        stop_guest_group(n, pid, "-KILL");
+        timed_out = true;
+        code = 124;
+        break;
+      }
+      Val q = Val::object(), a = Val::object();
+      q["execute"] = "guest-exec-status";
+      a["pid"] = pid;
+      q["arguments"] = a;
+      Val st;
+      try { st = qga(n, q); }
+      catch (...) {
+        if (payload_cancelled) continue; // handled at the top of the loop
+        throw;
+      }
+      auto done = st.find("exited");
+      if (done && done->asBool()) {
+        code = (int)num(st, "exitcode", 1);
+        exited = true;
+        break;
+      }
+      if (++ticks % 2 == 0) relay(false);
+      std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    }
+    if (exited || timed_out) relay(true);
+    if (timed_out) std::cout << "\x1e" "timeout " << seconds << "\n";
+    std::cout << "\x1e" "log " << log << " " << offset << "\n";
+    std::cout.flush();
+    close_log();
+    try { guest(n, {"/bin/rm", "-f", "--", staged}, 10); } catch (...) {}
+    sigaction(SIGTERM, &old, nullptr);
+    return code;
+  } catch (...) {
+    close_log();
+    if (!staged.empty()) {
+      try { guest(n, {"/bin/rm", "-f", "--", staged}, 10); } catch (...) {}
+    }
+    sigaction(SIGTERM, &old, nullptr);
+    throw;
+  }
+}
+
 static std::string state(const std::string &n) {
   try {
     auto s = trim(virsh({"domstate", domain(n)}, 10));
@@ -847,10 +992,12 @@ int main(int argc, char **argv) {
     if (action == "exec" && argc >= 4 && std::string(argv[3]) == "--stdin") {
       marker(n);
       if (state(n) != "ready") throw std::runtime_error("Guest not ready");
-      if (argc > 5) throw std::runtime_error("Invalid guest timeout arguments");
-      int deadline = argc == 5 ? std::stoi(argv[4]) : 600;
+      const bool live = argc == 6 && std::string(argv[5]) == "--live";
+      if (argc > 5 && !live) throw std::runtime_error("Invalid guest timeout arguments");
+      int deadline = argc >= 5 ? std::stoi(argv[4]) : 600;
       if (deadline < 1 || deadline > 3600)
         throw std::runtime_error("Guest timeout must be 1..3600 seconds");
+      if (live) return guest_live(n, from_stdin(), deadline);
       auto r = guest_payload(n, from_stdin(), "", "", deadline);
       std::cout << r.out;
       return r.code;

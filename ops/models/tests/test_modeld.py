@@ -32,10 +32,13 @@ def main():
         d.mkdir(parents=True)
     good, bad = b"GGUF" + os.urandom(300_000), b"GGUF" + os.urandom(1000)
     ports = {"lena": free_port(), "noah": free_port()}
+    draft = b"GGUF" + os.urandom(500)
     conf = {"runtime": {"rev": "0" * 40, "dir": str(tmp)}, "state_dir": str(state), "bots": {
         "lena": {"label": "L", "numa": 0, "port": ports["lena"], "ctx": 4096, "model": {
-            "path": str(models / "lena.gguf"), "url": "", "size": len(good),
-            "sha256": hashlib.sha256(good).hexdigest()}},
+            "path": str(models / "lena.gguf"), "url": "https://models.invalid/lena.gguf", "size": len(good),
+            "sha256": hashlib.sha256(good).hexdigest()},
+            "draft": {"path": str(models / "lena-draft.gguf"), "url": "https://models.invalid/draft.gguf",
+                      "size": len(draft), "sha256": hashlib.sha256(draft).hexdigest()}},
         "noah": {"label": "N", "numa": 1, "port": ports["noah"], "ctx": 4096, "model": {
             "path": str(models / "noah.gguf"), "url": "", "size": len(bad),
             "sha256": "0" * 64}}}}
@@ -52,7 +55,7 @@ case "$1" in
 esac
 """)
     fake.chmod(0o755)
-    env = dict(os.environ, MAG_MODELS_RUN=str(run), MAG_MODELD_SYSTEMCTL=str(fake), MAG_MODELD_POLL_MS="300")
+    env = dict(os.environ, MAG_MODELS_RUN=str(run), MAG_MODELD_SYSTEMCTL=str(fake), MAG_MODELD_POLL_MS="300", MAG_MODELD_QUIET_S="2")
     proc = subprocess.Popen([str(BIN), "--config", str(tmp / "models.json")], env=env,
                             stderr=subprocess.PIPE, text=True)
 
@@ -75,12 +78,24 @@ esac
         return p.read_text() if p.exists() else ""
 
     try:
-        # 1. Partial download: reported with progress, nothing started.
+        # 1. Partial download with a foreign writer (somebody's wget): reported
+        #    with progress, nothing started, and above all no second writer.
         (models / "lena.gguf").write_bytes(good[:100_000])
+        writer = open(models / "lena.gguf", "ab")
         s = wait("lena", "downloading")
         assert s["model"]["bytes"] == 100_000 and s["model"]["total"] == len(good), s
         assert wait("noah", "missing")
+        time.sleep(4)  # twice the quiet time
         assert "start --no-block mag-model@" not in calls()
+        assert "start --no-block mag-model-fetch@" not in calls(), calls()
+        # The writer is gone and the file is still partial: resume exactly this
+        # file, and never the drafter before the model is complete.
+        writer.close()
+        end = time.time() + 20
+        while "start --no-block mag-model-fetch@lena-model.service" not in calls() and time.time() < end:
+            time.sleep(0.2)
+        assert "start --no-block mag-model-fetch@lena-model.service" in calls(), calls()
+        assert "start --no-block mag-model-fetch@lena-draft" not in calls(), calls()
         # 2. Complete and correct: verified, started, ready when /health is 200.
         httpd = http.server.HTTPServer(("127.0.0.1", ports["lena"]), Health)
         threading.Thread(target=httpd.serve_forever, daemon=True).start()
@@ -89,6 +104,11 @@ esac
         wait("lena", "ready")
         assert "start --no-block mag-model@lena.service" in calls()
         assert (state / "lena.model.ok").read_text().split()[2] == conf["bots"]["lena"]["model"]["sha256"]
+        # The optional drafter is fetched on its own once the model is complete.
+        end = time.time() + 20
+        while "start --no-block mag-model-fetch@lena-draft.service" not in calls() and time.time() < end:
+            time.sleep(0.2)
+        assert "start --no-block mag-model-fetch@lena-draft.service" in calls(), calls()
         # 3. Complete but wrong checksum: never started, file untouched.
         (models / "noah.gguf").write_bytes(bad)
         wait("noah", "corrupt")

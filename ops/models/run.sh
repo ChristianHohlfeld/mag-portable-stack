@@ -44,12 +44,16 @@ printf '%s draft=%s\n' "$("$(dirname "$CONF")/mag-modeld" --config "$CONF" spec-
 # Physical cores of one socket only; the hyperthread siblings 28-55 stay free
 # for builds, VMs and Idol. Memory is bound to the same node before the
 # weights are read (load-mode mlock: private, node-local, never swapped).
+# One slot, no host prompt cache, no context checkpoints, full-size SWA cache:
+# the slot holds exactly the room's prompt log, and the server can roll it
+# back or shift it (--cache-reuse) instead of evaluating it again. Batch 512
+# keeps Stop responsive during a long prompt evaluation.
 exec numactl --physcpubind="$cpus" --membind="$node" "$BIN" \
   --model "$model" --alias "$bot" --host 127.0.0.1 --port "$port" \
   --ctx-size "$ctx" --parallel 1 --threads "$threads" --threads-batch "$threads" --numa numactl \
   --load-mode mlock --lazy-mode off --device none --n-gpu-layers 0 \
   --jinja --reasoning-format auto \
-  --cache-ram 0 --ctx-checkpoints 0 --swa-full \
+  --cache-ram 0 --ctx-checkpoints 0 --swa-full --cache-reuse 256 \
   --batch-size 512 --ubatch-size 512 \
   "${extra[@]}" "${draft_args[@]}" \
   --slots --slot-save-path "$SLOTS" --no-ui

@@ -1,4 +1,5 @@
-# Resumable GGUF download for one bot; started on demand by mag-modeld.
+# Resumable download of one GGUF (instance: <bot>-model or <bot>-draft);
+# started on demand by mag-modeld, one writer per file.
 [Unit]
 Description=MAG model download (%i)
 After=network-online.target
@@ -6,6 +7,8 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
+# 75 = somebody else is already writing the file: not a failure.
+SuccessExitStatus=75
 User=chris
 Group=chris
 ExecStart=/usr/local/lib/mag-models/fetch.sh %i

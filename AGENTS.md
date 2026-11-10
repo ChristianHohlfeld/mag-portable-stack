@@ -59,6 +59,12 @@ it writes below `/home/bot/www`) is published on the bot's own tailnet site
 and runs in the chat as a live preview framed from that site, with Code/
 Vorschau, Kopieren and Vollbild (the page in a new tab). Bots post no
 screenshots.
+A bot's name is the one source of truth for how it is called and where its
+site lives: `<name>.bot.stardenburg.de` (tailnet only; nginx hands these
+hosts to the room, which serves the folder the bot's VM published). Bots are
+renamed in the settings; earlier names, the bot id and the VM name
+(`agentN`) redirect to the current address. The ids `lena`/`noah` and the
+VM binding never change with a name.
 The bots read the whole chat: text files inline, 3D orders and their
 results, and images. A bot whose model has a vision projector gets the image
 itself; it also writes down once what the image shows (a short branch off

@@ -2,11 +2,15 @@
 # Tailscale address. Clients reach 100.123.114.16:443; tailscaled forwards
 # to this socket. The listen line matches the room vhost exactly.
 # $mag_tailnet_ok comes from /etc/nginx/snippets/mag-tailnet-ok.inc (room
-# http{} live; isolated tests include the repo file — do not include it here).
-# agentN.bot.stardenburg.de serves that VM's site and nothing else.
+# http{} live; isolated tests include the repo file - do not include it here).
+#
+# <name>.bot.stardenburg.de is the site of the bot with that name. The room
+# knows the names: it serves the files that bot's VM published
+# (/var/lib/mag-bots/www/<vm>) and redirects an earlier name or agentN to the
+# current one. Read only; nothing else of the room is reachable here.
 server {
     listen 127.0.0.1:4443 ssl http2 proxy_protocol;
-    server_name ~^(?<botslug>agent[0-9]+)\.@ZONE_REGEX@$;
+    server_name ~^(?<botslug>[a-z0-9-]+)\.@ZONE_REGEX@$;
     ssl_certificate /etc/mag-bots/tls/current/cert.pem;
     ssl_certificate_key /etc/mag-bots/tls/current/key.pem;
     # Funnel TCP shares :443. Public PROXY clients must not reach this vhost
@@ -20,10 +24,14 @@ server {
     allow ::1;
     deny all;
     if ($mag_tailnet_ok = 0) { return 403; }
-    root /var/lib/mag-bots/www/$botslug;
-    index index.html;
-    autoindex off;
-    add_header X-Content-Type-Options nosniff always;
     location ~ (^|/)\. { return 404; }
-    location / { try_files $uri $uri/ =404; }
+    location / {
+        limit_except GET { deny all; }
+        proxy_pass http://127.0.0.1:8766;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header Connection "";
+        proxy_connect_timeout 5s;
+        proxy_read_timeout 120s;
+    }
 }

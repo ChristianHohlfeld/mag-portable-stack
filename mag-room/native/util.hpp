@@ -295,7 +295,11 @@ inline std::string mime_for(const std::string &name) {
       {"pdf", "application/pdf"}, {"zip", "application/zip"}, {"mp3", "audio/mpeg"},
       {"wav", "audio/wav"}, {"ogg", "audio/ogg"}, {"m4a", "audio/mp4"}, {"mp4", "video/mp4"},
       {"webm", "video/webm"}, {"mov", "video/quicktime"}, {"glb", "model/gltf-binary"},
-      {"stl", "model/stl"}, {"ply", "application/octet-stream"}};
+      {"stl", "model/stl"}, {"ply", "application/octet-stream"}, {"gltf", "model/gltf+json"},
+      {"geojson", "application/geo+json"}, {"xml", "application/xml"}, {"map", "application/json"},
+      {"woff", "font/woff"}, {"ttf", "font/ttf"}, {"otf", "font/otf"}, {"obj", "text/plain; charset=utf-8"},
+      {"mtl", "text/plain; charset=utf-8"}, {"glsl", "text/plain; charset=utf-8"}, {"bmp", "image/bmp"},
+      {"tar", "application/x-tar"}, {"gz", "application/gzip"}};
   const auto dot = name.find_last_of('.');
   if (dot == std::string::npos) return "application/octet-stream";
   const auto it = types.find(lower(name.substr(dot + 1)));

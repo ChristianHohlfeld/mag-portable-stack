@@ -1,6 +1,7 @@
 // Bot web pages. A finished HTML page of a bot lands in its VM's www folder,
-// is published on the bot's own tailnet site (<vm>.<zone>, served by nginx)
-// and runs in the chat as a live preview framed from that site.
+// is published on the bot's own tailnet site and runs in the chat as a live
+// preview framed from that site. The site's address follows the bot's name
+// (lena.<zone>); earlier names and the VM's name (agent3.<zone>) redirect.
 #pragma once
 #include "vm.hpp"
 
@@ -136,11 +137,45 @@ inline std::string sig(const std::string &code) {
 }
 
 inline std::string zone() { return env("MAG_BOTS_ZONE", "bot.stardenburg.de"); }
+// Where the publisher keeps the sites, one folder per VM.
+inline std::string www_root() { return env("MAG_BOTS_WWW", "/var/lib/mag-bots/www"); }
 
-// Address of a bot's site ("" without a VM).
+// The name is the address: "Lena" lives at lena.<zone>.
+inline std::string slug_of(const Val &bot) { return lower(jstr(bot, "name")); }
+
+// A bot name: 2 to 24 letters, digits and hyphens, starting with a letter,
+// so it is a host name as it stands. Returns "" or what is wrong with it.
+inline std::string name_problem(const std::string &name) {
+  if (name.size() < 2 || name.size() > 24) return "Der Name braucht 2 bis 24 Zeichen.";
+  for (unsigned char c : name)
+    if (!(isalnum(c) && c < 128) && c != '-') return "Erlaubt sind Buchstaben (ohne Umlaute), Ziffern und Bindestrich.";
+  if (!isalpha((unsigned char)name[0]) || name.back() == '-') return "Der Name beginnt mit einem Buchstaben und endet nicht mit einem Bindestrich.";
+  const std::string slug = lower(name);
+  static const std::set<std::string> reserved = {"chris", "alle", "beide", "bot", "bots", "idol", "system", "mag", "www", "raum", "room", "api"};
+  if (reserved.count(slug) || vm::valid_name(slug)) return "Dieser Name ist reserviert.";
+  return "";
+}
+
+// Address of a bot's site ("" without a VM: there is nothing to serve).
 inline std::string base_url(const Val &bot) {
-  const std::string vm = jstr(bot, "vm");
-  return vm::valid_name(vm) ? "https://" + vm + "." + zone() : "";
+  return vm::valid_name(jstr(bot, "vm")) ? "https://" + slug_of(bot) + "." + zone() : "";
+}
+
+// Which bot a site name means. `current` says whether it is the bot's name
+// of today; everything else that once pointed to the bot (an earlier name,
+// its id, its VM) is answered with a redirect to the current address.
+inline Val resolve(const Val &bots, const std::string &name, bool &current) {
+  current = true;
+  for (auto &b : bots.asArr())
+    if (slug_of(b) == name) return b;
+  current = false;
+  for (auto &b : bots.asArr())
+    if (const Val *old = b.find("aliases"); old && old->isArr())
+      for (auto &a : old->asArr())
+        if (a.asStr() == name) return b;
+  for (auto &b : bots.asArr())
+    if (jstr(b, "id") == name || (vm::valid_name(name) && (jstr(b, "vm") == name || jstr(b, "vm_lost") == name))) return b;
+  return Val();
 }
 
 // Path below the VM's www folder, "" when the file is not part of the site.

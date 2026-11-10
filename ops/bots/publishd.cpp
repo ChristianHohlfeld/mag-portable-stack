@@ -28,9 +28,10 @@
 namespace fs = std::filesystem;
 
 namespace {
-constexpr size_t kMaxBody = 8 * 1024 * 1024;
-constexpr size_t kMaxFile = 2 * 1024 * 1024;
-constexpr size_t kMaxFiles = 200;
+// A site with models, textures and data: generous, still bounded.
+constexpr size_t kMaxBody = 96 * 1024 * 1024;
+constexpr size_t kMaxFile = 32 * 1024 * 1024;
+constexpr size_t kMaxFiles = 2000;
 constexpr size_t kMaxHeaders = 64 * 1024;
 
 std::string env_or(const char *key, const char *fallback) {

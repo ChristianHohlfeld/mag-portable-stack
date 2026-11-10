@@ -387,6 +387,32 @@ class RoomContract(unittest.TestCase):
         self.assertEqual((code, headers["location"]), (302, "https://lena.bot.stardenburg.de/"))
         self.assertEqual(site("lena", "/")[0], 200)
 
+    def test_owner_terminal_and_files_of_a_bots_vm(self):
+        r = self.room
+
+        def run(command, cwd=""):
+            code, raw = r.api("POST", "/api/vm/lena/run", {"command": command, "cwd": cwd})
+            self.assertEqual(code, 200, raw)
+            text, _, tail = raw.decode().rpartition("\x1e")
+            return text, json.loads(tail)
+        # A command runs as the bot in its VM; the shell's directory carries over to the next one.
+        out, tail = run("mkdir -p projekt && cd projekt && echo hallo > notiz.txt && pwd")
+        self.assertTrue(out.strip().endswith("/projekt"), out)
+        self.assertEqual(tail["exit"], 0)
+        self.assertTrue(tail["cwd"].endswith("/projekt"), tail)
+        out, tail = run("cat notiz.txt; exit 3", tail["cwd"])
+        self.assertEqual((out, tail["exit"]), ("hallo\n", 3))
+        # Its files: list, read, delete. Nothing outside the bot's home.
+        code, listing = r.api("GET", "/api/vm/lena/files?path=projekt")
+        self.assertEqual((code, [(e["name"], e["dir"], e["size"]) for e in listing["entries"]]), (200, [("notiz.txt", False, 6)]))
+        self.assertEqual(r.api("GET", "/api/vm/lena/file?path=projekt/notiz.txt")[1], b"hallo\n")
+        self.assertEqual(r.api("GET", "/api/vm/lena/files?path=/etc")[0], 400)
+        self.assertEqual(r.api("GET", "/api/vm/lena/file?path=../../../etc/passwd")[0], 400)
+        self.assertEqual(r.api("DELETE", "/api/vm/lena/file?path=projekt/notiz.txt")[0], 200)
+        self.assertEqual(r.api("GET", "/api/vm/lena/files?path=projekt")[1]["entries"], [])
+        self.assertEqual(r.api("DELETE", "/api/vm/lena/file?path=.")[0], 400)   # the home itself stays
+        self.assertEqual(r.api("POST", "/api/vm/noah/run", {"command": "id"})[0], 404)   # no VM
+
     def test_tool_work_continues_only_with_marker_success_and_progress(self):
         r = self.room
         calls = iter([{"content": "Schritt eins.", "tool_calls": [{"name": "remember", "arguments": {"fact": "eins"}}]},

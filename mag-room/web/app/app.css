@@ -468,6 +468,33 @@ audio, video { max-width: 100%; border-radius: 12px; }
 #lightbox .bar .pill svg { width: 16px; height: 16px; }
 #lightbox .bar .cap { flex-basis: 100%; margin: 0 auto 2px; max-width: 640px; text-align: center; font-size: 13.5px; line-height: 1.4; color: #e6e6ea; text-shadow: 0 1px 3px rgba(0, 0, 0, .8); }
 
+/* a bot's VM: terminal and files */
+.vm-tabs { margin-bottom: 8px; }
+.vm-tabs button { padding: 6px 13px; }
+.term { border: 1px solid var(--line); border-radius: 12px; overflow: hidden; background: var(--code); }
+.term-out { margin: 0; padding: 10px 12px; min-height: 170px; max-height: 46vh; overflow: auto; font: 12.5px/1.5 var(--mono); letter-spacing: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.term-out .cmd { color: var(--accent); }
+.term-out .err { color: var(--bad); }
+.term-row { display: flex; align-items: center; gap: 6px; padding: 6px; border-top: 1px solid var(--line); background: var(--surface); }
+.term-cwd { font: 12.5px var(--mono); letter-spacing: 0; color: var(--muted); max-width: 30%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.term-in { flex: 1; min-width: 0; background: var(--bg); border: 1px solid var(--line); border-radius: 9px; padding: 7px 9px; font: 16px/1.3 var(--mono); letter-spacing: 0; outline: none; }
+.term-row .pill { flex: none; padding: 7px 11px; }
+.fx { border: 1px solid var(--line); border-radius: 12px; overflow: hidden; background: var(--surface); }
+.fx-path { display: flex; flex-wrap: wrap; align-items: center; gap: 1px; padding: 7px 9px; border-bottom: 1px solid var(--line); font: 13px var(--mono); letter-spacing: 0; color: var(--muted); }
+.fx-path button { color: var(--accent); padding: 3px 5px; border-radius: 6px; }
+.fx-list { max-height: 52vh; overflow: auto; }
+.fx-row { display: flex; align-items: center; gap: 9px; padding: 6px 4px 6px 12px; border-bottom: 1px solid var(--line); cursor: pointer; font-size: 14.5px; min-height: 44px; }
+.fx-row:last-child { border-bottom: 0; }
+.fx-row:hover { background: var(--surface-2); }
+.fx-row > svg { color: var(--muted); width: 18px; height: 18px; }
+.fx-row.dir > svg { color: var(--accent); }
+.fx-row .nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fx-row small { color: var(--muted); font-size: 12.5px; white-space: nowrap; }
+.fx-note { padding: 12px; color: var(--muted); font-size: 14px; }
+.fx-note.err { color: var(--bad); }
+.fx-view .bar { display: flex; align-items: center; gap: 9px; padding: 6px 8px; font-size: 13.5px; border-bottom: 1px solid var(--line); }
+.fx-view pre { margin: 0; padding: 10px 12px; max-height: 52vh; overflow: auto; font: 12.5px/1.5 var(--mono); letter-spacing: 0; white-space: pre-wrap; overflow-wrap: anywhere; background: var(--code); }
+
 /* live view of a bot's browser */
 .live { background: #000; border-radius: 12px; overflow: hidden; border: 1px solid var(--line); }
 .live img, .live canvas { display: block; width: 100%; height: auto; touch-action: manipulation; }

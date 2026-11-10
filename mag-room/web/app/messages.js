@@ -256,6 +256,7 @@
       for (const a of m.attachments || []) if (a.file === file && a.description) return a.description;
     return '';
   }
+  MAG.lightbox = lightbox;
   const quality = { fast: 'Schnell', normal: 'Normal', high: 'Hoch' };
   const kinds = { glb: 'Modell mit Textur', stl: 'für den 3D-Druck', ply: 'Punktwolke (Gaussian Splat)' };
   // Runtime, and what the sampler itself expects to remain for its step.

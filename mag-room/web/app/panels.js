@@ -153,10 +153,19 @@
         loadMemory();
       }
 
+      // The bot's own VM: its browser, a terminal and its files.
       if (b.vm && MAG.liveView) {
-        const box = el('div', {});
-        content.append(el('h3', { text: 'Browser der VM' }), box);
-        box.append(el('button', { class: 'btn', text: 'Live ansehen', onclick: () => { live = MAG.liveView(id); box.replaceChildren(live.node); } }));
+        const box = el('div', { class: 'vm-view' }), tabs = el('div', { class: 'seg vm-tabs' });
+        const views = { browser: ['Browser', MAG.liveView], terminal: ['Terminal', MAG.terminal], files: ['Dateien', MAG.files] };
+        const show = (key) => {
+          live?.stop();
+          live = views[key][1](id);
+          box.replaceChildren(live.node);
+          for (const tab of tabs.children) tab.classList.toggle('on', tab.dataset.key === key);
+        };
+        for (const [key, [label]] of Object.entries(views))
+          if (key === 'browser' || owner()) tabs.append(el('button', { text: label, dataset: { key }, onclick: () => show(key) }));
+        content.append(el('h3', { text: 'VM ' + b.vm }), tabs, box);
       }
     });
     opened.addEventListener('closed', () => live?.stop());

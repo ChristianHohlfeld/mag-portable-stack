@@ -7,10 +7,11 @@ Runs inside Blender, headless, on the CPU:
 
 A generated model is one mesh. Often it shows several figures (a gnome and a
 fox from one picture): `parts` tells them apart, and an actor of a scene is a
-model or one of its parts. The models have no skeleton, so an actor moves as
-a whole: it walks along a path with the bounce and sway of a gait, turns,
-jumps, spins. `build` writes the animated scene as scene.glb (what the chat
-plays) and scene.blend; `render` renders scene.blend to frames with Cycles.
+model or one of its parts. What a figure is, is read from its shape (rig.py):
+an animal and somebody on two legs get a skeleton and move their limbs, only
+a thing moves as a whole. `build` writes the animated scene as scene.glb
+(what the chat plays) and scene.blend, lit for its film; `render` renders
+scene.blend to frames with Cycles.
 Nothing here takes code from a request: a scene is data, the motion is ours.
 """
 import json
@@ -28,18 +29,24 @@ import rig  # noqa: E402  (what a figure is, and its skeleton)
 
 FPS = 24
 MAX_ACTORS, MAX_SECONDS = 8, 30
-GROUNDS = {  # base colour, roughness, exposure
-    "snow": ((0.80, 0.84, 0.90), 0.55, -0.2), "grass": ((0.09, 0.22, 0.05), 0.9, 0.0), "sand": ((0.60, 0.48, 0.28), 0.9, 0.0),
-    "stone": ((0.30, 0.30, 0.32), 0.8, 0.0), "studio": ((0.62, 0.62, 0.64), 0.7, 0.0),
+GROUNDS = {  # base colour, roughness
+    "snow": ((0.80, 0.84, 0.90), 0.55), "grass": ((0.09, 0.22, 0.05), 0.9), "sand": ((0.60, 0.48, 0.28), 0.9),
+    "stone": ((0.30, 0.30, 0.32), 0.8), "studio": ((0.62, 0.62, 0.64), 0.7),
 }
-# Bundled sky, its strength, sun strength, sun colour, exposure, and what the
-# camera sees behind the scene: a colour, or (None) the sky itself, which is
-# small and so looks like a backdrop out of focus.
+# How a scene is lit. The film is to look like the scene in the chat, where
+# every figure shows its colours as they are: a key light over the camera's
+# left shoulder, and for the figures alone a fill from the right and a rim
+# from behind, with the sky around it all. `glow` is the part of its own
+# colour a figure shows even where no light falls (the texture of a generated
+# model is painted light already). `sky`: a bundled sky, or (None) an even
+# white. `backdrop`: what the camera sees behind the scene, a colour, or
+# (None) the sky itself, which is small and so looks out of focus; `behind`
+# is how bright.
 LIGHTS = {
-    "day": ("forest.exr", 1.0, 3.0, (1.0, 0.96, 0.90), -0.3, None),
-    "evening": ("sunset.exr", 0.9, 2.5, (1.0, 0.70, 0.45), -0.3, None),
-    "night": ("night.exr", 0.6, 0.8, (0.55, 0.65, 1.0), 0.0, None),
-    "studio": ("studio.exr", 1.0, 2.0, (1.0, 1.0, 1.0), -0.3, (0.18, 0.18, 0.20)),
+    "day": {"sky": "forest.exr", "ambient": 0.3, "key": 2.8, "colour": (1.0, 0.96, 0.90), "fill": 0.8, "rim": 1.6, "glow": 0.25, "backdrop": None, "behind": 1.0},
+    "evening": {"sky": "sunset.exr", "ambient": 0.6, "key": 2.6, "colour": (1.0, 0.74, 0.50), "fill": 0.6, "rim": 1.8, "glow": 0.25, "backdrop": None, "behind": 0.45},
+    "night": {"sky": "night.exr", "ambient": 0.6, "key": 1.7, "colour": (0.42, 0.58, 1.0), "fill": 0.4, "rim": 2.0, "glow": 0.45, "backdrop": (0.012, 0.022, 0.06), "behind": 1.0},
+    "studio": {"sky": None, "ambient": 0.45, "key": 2.6, "colour": (1.0, 1.0, 1.0), "fill": 0.8, "rim": 1.2, "glow": 0.25, "backdrop": (0.18, 0.18, 0.20), "behind": 1.0},
 }
 GAITS = {  # stride (body lengths), bounce (heights), speed (body lengths per second), sway (radians)
     "walk": (0.55, 0.035, 1.3, 0.05), "run": (0.9, 0.07, 3.0, 0.07), "hop": (0.8, 0.22, 1.6, 0.03), "sneak": (0.35, 0.015, 0.7, 0.03),
@@ -754,11 +761,27 @@ def side_of(actors):
     return side + math.pi if math.cos(side) > 1e-6 else side
 
 
-def dress(spec, centre, radius, side):
-    """Ground, sky and sun."""
-    light = spec.get("light") if spec.get("light") in LIGHTS else "day"
-    sky, strength, sun_power, sun_colour, exposure, backdrop = LIGHTS[light]
-    colour, roughness, bright = GROUNDS.get(spec.get("ground"), GROUNDS["studio" if light == "studio" else "grass"])
+def lamp(name, around, height, energy, colour, only=None):
+    """A light from far away: where it stands around the scene and how high
+    (radians). `only`: the figures it is for; it lights nothing else and
+    casts no shadow."""
+    bpy.ops.object.light_add(type="SUN", rotation=(math.pi / 2 - height, 0, around + math.pi / 2))
+    light = bpy.context.active_object
+    light.name = name
+    light.data.energy = energy
+    light.data.color = colour
+    light.data.angle = math.radians(6)
+    if only is not None:
+        light.data.use_shadow = False
+        light.light_linking.receiver_collection = only
+    return light
+
+
+def dress(spec, centre, radius, side, figures):
+    """Ground, sky and the lights."""
+    name = spec.get("light") if spec.get("light") in LIGHTS else "day"
+    light = LIGHTS[name]
+    colour, roughness = GROUNDS.get(spec.get("ground"), GROUNDS["studio" if name == "studio" else "grass"])
     bpy.ops.mesh.primitive_circle_add(vertices=72, radius=radius, fill_type="NGON", location=(centre.x, centre.y, 0))
     ground = bpy.context.active_object
     ground.name = "Boden"
@@ -774,8 +797,11 @@ def dress(spec, centre, radius, side):
     seen = nodes.new("ShaderNodeLightPath")
     lit = nodes.new("ShaderNodeBackground")
     back = nodes.new("ShaderNodeBackground")
-    lit.inputs["Strength"].default_value = strength
-    path = os.path.join(bpy.utils.resource_path("LOCAL"), "datafiles", "studiolights", "world", sky)
+    lit.inputs["Color"].default_value = (1.0, 1.0, 1.0, 1.0)
+    lit.inputs["Strength"].default_value = light["ambient"]
+    back.inputs["Strength"].default_value = light["behind"]
+    backdrop = light["backdrop"]
+    path = os.path.join(bpy.utils.resource_path("LOCAL"), "datafiles", "studiolights", "world", light["sky"]) if light["sky"] else ""
     if os.path.exists(path):
         image = nodes.new("ShaderNodeTexEnvironment")
         image.image = bpy.data.images.load(path)
@@ -790,20 +816,35 @@ def dress(spec, centre, radius, side):
     links.new(lit.outputs["Background"], mix.inputs[1])
     links.new(back.outputs["Background"], mix.inputs[2])
     links.new(mix.outputs["Shader"], out.inputs["Surface"])
-    # The sun stands behind the camera's left shoulder: faces are lit, shadows fall away.
-    bpy.ops.object.light_add(type="SUN", location=(centre.x, centre.y, 10), rotation=(math.radians(52), 0, side + math.radians(90 - 40)))
-    sun = bpy.context.active_object
-    sun.name = "Sonne"
-    sun.data.energy = sun_power
-    sun.data.color = sun_colour
-    sun.data.angle = math.radians(4)
-    try:
-        scene.view_settings.view_transform = "AgX"
-        scene.view_settings.look = "AgX - Medium High Contrast"
-    except TypeError:
-        pass
-    scene.view_settings.exposure = exposure + bright
+    # Key over the camera's left shoulder: faces are lit, shadows fall away.
+    # The fill opens what the key leaves dark, the rim draws the outline.
+    # Both are for the figures alone: the ground keeps its colour and one shadow.
+    cast = bpy.data.collections.new("Figuren")
+    for figure in figures:
+        cast.objects.link(figure)
+    lamp("Sonne", side - math.radians(40), math.radians(40), light["key"], light["colour"])
+    lamp("Aufhellung", side + math.radians(55), math.radians(20), light["fill"], (1.0, 1.0, 1.0), only=cast)
+    lamp("Kante", side + math.radians(155), math.radians(30), light["rim"], light["colour"], only=cast)
+    # Colours as they are, like the chat shows them: no film curve over the picture.
+    scene.view_settings.view_transform = "Standard"
+    scene.view_settings.look = "None"
+    scene.view_settings.exposure = 0.0
     return ground
+
+
+def glow(objects, part):
+    """Figures show a part of their own colour whatever the light: their
+    texture is painted light, and so the chat shows them."""
+    for material in {slot.material for obj in objects for slot in obj.material_slots if slot.material and slot.material.use_nodes}:
+        shader = material.node_tree.nodes.get("Principled BSDF")
+        if not shader or "Emission Color" not in shader.inputs:
+            continue
+        base = shader.inputs["Base Color"]
+        if base.links:
+            material.node_tree.links.new(base.links[0].from_socket, shader.inputs["Emission Color"])
+        else:
+            shader.inputs["Emission Color"].default_value = base.default_value
+        shader.inputs["Emission Strength"].default_value = part
 
 
 def calm(values, fps):
@@ -952,7 +993,7 @@ def build(spec_path, out):
     scene.frame_start, scene.frame_end = 0, last
     scene.render.fps = fps
     side = side_of(actors)
-    ground = dress(spec, centre, radius * 1.25, side)
+    ground = dress(spec, centre, radius * 1.25, side, [a.part for a in actors.values()])
     film(actors, last, fps, side)
     os.makedirs(out, exist_ok=True)
     bpy.ops.object.select_all(action="DESELECT")
@@ -964,6 +1005,9 @@ def build(spec_path, out):
                               export_animations=True, export_animation_mode="SCENE", export_anim_scene_split_object=False,
                               export_frame_range=True, export_force_sampling=True,
                               export_image_format="JPEG", export_jpeg_quality=88, export_cameras=False, export_lights=False)
+    # The chat shows the figures unlit; in the film they keep a part of that.
+    name = spec.get("light") if spec.get("light") in LIGHTS else "day"
+    glow([a.part for a in actors.values()], LIGHTS[name]["glow"])
     bpy.ops.wm.save_as_mainfile(filepath=os.path.join(out, "scene.blend"), compress=True)
     facts = {"title": str(spec.get("title") or "Szene")[:80], "seconds": round(last / fps, 2), "frames": last + 1, "fps": fps,
              "actors": [{"name": a.name, "height": round(a.height, 3), "kind": rig.KINDS[a.kind], "notes": "; ".join(a.notes)} for a in actors.values()]}

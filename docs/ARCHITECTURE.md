@@ -244,6 +244,12 @@ device access) runs the pinned Blender (`blender.lock`, fetched once by
   render again; after a reboot it goes on with the first missing frame. The
   film and the `.blend` join the scene's message when they are done.
 
+The film is lit like the chat shows the scene (`LIGHTS` in `scene.py`): a key
+light over the camera's left shoulder casts the one shadow, a fill and a rim
+light are linked to the figures alone, and every figure shows a part of its
+texture unlit (`glow`), because generated textures are painted light already.
+Colours go out as they are (view transform Standard).
+
 ## Models (`ops/models`)
 
 `models.json` declares both bots. `mag-modeld` owns download, verification

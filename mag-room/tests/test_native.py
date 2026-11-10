@@ -585,6 +585,16 @@ class RoomContract(unittest.TestCase):
         self.assertIn("Auftrag an Foto zu 3D", told)
         self.assertIn("[Bild figur.png (image/png, 1 KB). Zu sehen: Eine rote Tasse auf einem Holztisch.]", told)
         self.assertIn("Foto zu 3D: 3D-Modell aus dem Foto figur.png (Qualität schnell) ist fertig", told)
+        # A bot that thinks before every answer answers first and describes afterwards
+        # (describing would cost it a whole thinking pass per image up front).
+        self.assertEqual(r.api("PUT", "/api/bot/lena", {"thinking": True})[0], 200)
+        photo = r.api("POST", "/api/upload?name=blume.png", raw=png)[1]
+        mark = len(r.lena.chats())
+        r.say("@Lena und das hier?", attachments=[photo["file"]])
+        r.idle()
+        order = ["describe" if "Beschreibe das Bild blume.png" in text_of(c["messages"][-1]["content"]) else "answer"
+                 for c in r.lena.chats()[mark:]]
+        self.assertEqual(order[:2], ["answer", "describe"], order)
 
     def test_deleting_a_message_removes_it_for_the_bots_too(self):
         r = self.room

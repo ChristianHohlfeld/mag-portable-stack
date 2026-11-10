@@ -45,14 +45,14 @@ def main():
             "path": str(models / "noah.gguf"), "url": "", "size": len(bad),
             "sha256": "0" * 64}}}}
     (tmp / "models.json").write_text(json.dumps(conf))
-    # Fake systemctl: a unit is "active" once started; every call is logged.
+    # Fake systemctl: a unit is "active" once started, and knows since when; every call is logged.
     fake = tmp / "systemctl"
     fake.write_text(f"""#!/bin/sh
 echo "$@" >> {tmp}/calls
 case "$1" in
-  show) if [ -e {tmp}/active.$2 ]; then echo ActiveState=active; else echo ActiveState=inactive; fi
+  show) if [ -e {tmp}/active.$2 ]; then echo ActiveState=active; echo ActiveEnterTimestampMonotonic=$(cat {tmp}/active.$2); else echo ActiveState=inactive; fi
         echo SubState=x; echo Result=success; echo NRestarts=0; echo FreezerState=running ;;
-  start|restart) touch {tmp}/active.$3 ;;
+  start|restart) date +%s%N | cut -c1-16 > {tmp}/active.$3 ;;
   stop) rm -f {tmp}/active.$3 ;;
 esac
 """)
@@ -135,6 +135,24 @@ esac
         subprocess.check_call([str(BIN), "--config", str(tmp / "models.json"), "ctl", "lena", "start"], env=env)
         wait("lena", "ready")
         assert status("noah")["state"] == "corrupt"
+        # 5. `since` names the server process, not this supervisor: it is the
+        #    moment the unit became active. A restart of the supervisor (every
+        #    deploy is one) leaves it as it is, so the room keeps the bot's
+        #    slot; a new server process has a new one.
+        unit = tmp / "active.mag-model@lena.service"
+        since = status("lena")["since"]
+        assert since == int(unit.read_text()), (since, unit.read_text())
+        proc.terminate()
+        proc.communicate(timeout=10)
+        (run / "status.json").unlink()
+        time.sleep(1.1)
+        proc = subprocess.Popen([str(BIN), "--config", str(tmp / "models.json")], env=env, stderr=subprocess.PIPE, text=True)
+        assert wait("lena", "ready")["since"] == since, (status("lena"), since)
+        subprocess.check_call([str(BIN), "--config", str(tmp / "models.json"), "ctl", "lena", "restart"], env=env)
+        end = time.time() + 20
+        while status("lena").get("since") == since and time.time() < end:
+            time.sleep(0.2)
+        assert wait("lena", "ready")["since"] not in (since, None), status("lena")
         print("ok")
     finally:
         proc.terminate()

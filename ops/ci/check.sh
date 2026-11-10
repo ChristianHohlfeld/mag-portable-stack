@@ -28,6 +28,13 @@ grep -Fq -- '--mmproj "$mmproj" --no-mmproj-offload' ops/models/run.sh
 if grep -nE '819[12]|mag-model@|drain_room|/api/state' ops/deploy.sh; then
   echo 'deploy.sh must not depend on model or room-busy state' >&2; exit 1
 fi
+# Package updates never restart the stack: the needrestart rule parses and
+# names the models, the room and the Idol worker.
+if command -v perl >/dev/null; then
+  perl -e 'our %nrconf; do "./ops/boot/needrestart-mag.conf" or die "needrestart rule: $@$!";
+           for my $unit ("mag-model\@noah.service", "mag-120.service", "mag-idol.service", "mag-stt.service") {
+             grep { $unit =~ $_ } @{$nrconf{blacklist_rc}} or die "needrestart rule misses $unit\n" }'
+fi
 # The MI50 power cap may only ever be lowered.
 grep -Fq 'if (( now > LIMIT )); then' ops/idol/power-cap.sh
 # The page loads nothing from outside the release, and every script parses.

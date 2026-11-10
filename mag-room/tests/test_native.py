@@ -525,6 +525,45 @@ class RoomContract(unittest.TestCase):
         r.idle()
         self.assertEqual(len(r.lena.chats()), 5)
 
+    def test_bots_share_a_notebook_of_skills(self):
+        r = self.room
+        skill = {"action": "save", "name": "Release bauen", "when": "Wenn Chris ein Release möchte", "steps": "1. Tests laufen lassen\n2. Tag setzen",
+                 "verify": "CI ist grün", "approval": "Vor dem Veröffentlichen fragen"}
+        script = iter([{"content": "", "tool_calls": [{"name": "skill", "arguments": {"action": "list"}}]},
+                       {"content": "", "tool_calls": [{"name": "skill", "arguments": skill}]},
+                       # Nothing that looks like a credential becomes a reusable instruction.
+                       {"content": "", "tool_calls": [{"name": "skill", "arguments": dict(skill, name="Geheim", steps="Mit dem Token ghp_abc123 anmelden")}]},
+                       {"content": "", "tool_calls": [{"name": "skill", "arguments": dict(skill, name="Halb", verify="")}]},
+                       "Gespeichert."])
+        r.lena.reply = lambda body: next(script)
+        r.say("@Lena merk dir, wie wir ein Release bauen")
+        r.idle()
+        steps = [p for m in r.messages() if m["from"] == "lena" for p in m["parts"] if p["k"] == "step"]
+        self.assertEqual([(s["tool"], s["state"], s["title"]) for s in steps],
+                         [("skill", "ok", "Sieht die Skills durch"), ("skill", "ok", "Speichert den Skill Release bauen"),
+                          ("skill", "error", "Speichert den Skill Geheim"), ("skill", "error", "Speichert den Skill Halb")])
+        self.assertIn("Noch kein Skill gespeichert.", steps[0]["output"])
+        self.assertIn("Er beschreibt Arbeit und erlaubt nichts", steps[1]["output"])
+        self.assertIn("Zugangsdaten gehören nicht in einen Skill.", steps[2]["output"])
+        self.assertIn("verify fehlt", steps[3]["output"])
+        # The other bot (which has no VM) finds and reads it, however it writes the name.
+        script = iter([{"content": "", "tool_calls": [{"name": "skill", "arguments": {"action": "list"}}]},
+                       {"content": "", "tool_calls": [{"name": "skill", "arguments": {"action": "read", "name": "release bauen"}}]},
+                       "So bauen wir ein Release."])
+        r.noah.reply = lambda body: next(script)
+        r.say("@Noah wie bauen wir ein Release?")
+        r.idle()
+        steps = [p for m in r.messages() if m["from"] == "noah" for p in m["parts"] if p["k"] == "step"]
+        self.assertIn("- Release bauen: Wenn Chris ein Release möchte", steps[0]["output"])
+        self.assertIn("Schritte: 1. Tests laufen lassen\n2. Tag setzen\nPrüfen: CI ist grün\nFreigabe: Vor dem Veröffentlichen fragen", steps[1]["output"])
+        # Chris sees what they wrote down; it survives a restart and he can remove it.
+        r.stop()
+        r.start()
+        listed = r.api("GET", "/api/skills")[1]["skills"]
+        self.assertEqual([(s["name"], s["by"]) for s in listed], [("Release bauen", "lena")])
+        self.assertEqual(r.api("DELETE", "/api/skills/Release%20bauen")[0], 200)
+        self.assertEqual((r.api("GET", "/api/skills")[1]["skills"], r.api("DELETE", "/api/skills/Release%20bauen")[0]), ([], 404))
+
     def test_trash_empties_room_and_bot_context_without_reload(self):
         r = self.room
         code, att = r.api("POST", "/api/upload?name=notiz.txt", raw=b"geheim")

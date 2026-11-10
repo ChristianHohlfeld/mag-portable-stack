@@ -51,6 +51,7 @@ public:
       if (starts_with(p, "/api/screen/")) return screen(fd, r);
       if (p == "/api/push/vapid") return http::send_json(fd, 200, push_.vapid());
       if (starts_with(p, "/api/bot/") && ends_with(p, "/memory")) return memory_get(fd, r);
+      if (p == "/api/skills") { Val v = Val::object(); v["skills"] = room_.skills(); return http::send_json(fd, 200, v); }
       if (p == "/api/system") return system_info(fd);
       if (starts_with(p, "/api/vm/")) {
         if (!who.owner()) return http::send_error(fd, 403, "Nur für den Besitzer");
@@ -105,6 +106,8 @@ public:
       return http::send_ok(fd);
     }
     if (r.method == "DELETE" && starts_with(p, "/api/bot/") && p.find("/memory/") != std::string::npos) return memory_delete(fd, r);
+    if (r.method == "DELETE" && starts_with(p, "/api/skills/"))
+      return room_.remove_skill(url_decode(p.substr(12))) ? http::send_ok(fd) : http::send_error(fd, 404, "Skill nicht gefunden");
     // The owner's own look into a bot's VM: a terminal and its files.
     if (r.method == "POST" && starts_with(p, "/api/vm/") && ends_with(p, "/run")) return vm_run(fd, r);
     if (r.method == "DELETE" && starts_with(p, "/api/vm/") && ends_with(p, "/file")) return vm_delete(fd, r);

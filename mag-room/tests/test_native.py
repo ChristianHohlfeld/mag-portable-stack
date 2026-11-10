@@ -996,6 +996,52 @@ class RoomContract(unittest.TestCase):
         self.assertEqual((step["state"], step.get("approval"), len(mcp.calls)), ("error", None, 1))
         self.assertIn("nicht freigegeben", step["output"])
 
+    def test_the_phone_tools_exist_only_with_its_control_service(self):
+        # No control daemon set up (as on the host until Chris starts it): the bots have no phone tools.
+        self.room.say("Hi beide")
+        self.room.idle()
+        self.assertFalse([t for t in self.room.lena.chats()[-1]["tools"] if t["function"]["name"].startswith("s23_")])
+        # With the daemon (the real one, on a scripted adb): its token is read from the file it was given in.
+        tmp = pathlib.Path(tempfile.mkdtemp(prefix="s23-"))
+        self.addCleanup(shutil.rmtree, tmp, True)
+        token, port = "phone-token-0123456789", free_port()
+        (tmp / "token").write_text(token + "\n")
+        (tmp / "adb").write_text("#!/bin/bash\nprintf '%s\\n' \"$*\" >> \"$FAKE_ADB_LOG\"\ncase \"$*\" in\n  *screencap*) printf 'PNGDATA' ;;\n"
+                                 "  *get-state*) echo device ;;\n  *wm\\ size*) echo 'Physical size: 1080x2340' ;;\nesac\n")
+        (tmp / "adb").chmod(0o755)
+        daemon = subprocess.Popen([str(BIN.with_name("s23ctl"))], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                  env=dict(os.environ, MAG_S23_TOKEN=token, MAG_S23_ADB=str(tmp / "adb"), MAG_S23_SERIAL="R5CTEST", MAG_S23_PORT=str(port),
+                                           MAG_S23_BIND="127.0.0.1", FAKE_ADB_LOG=str(tmp / "adb.log")))
+        self.addCleanup(daemon.kill)
+        r = Room(MAG_S23_PORT=port, MAG_S23_TOKEN_FILE=tmp / "token")
+        self.addCleanup(r.close)
+
+        def use(*calls):
+            script = iter([{"content": "", "tool_calls": [{"name": name, "arguments": args}]} for name, args in calls] + ["Erledigt."])
+            r.noah.reply = lambda body: next(script)
+            r.say("@Noah bitte")
+            r.idle()
+            return [(p["title"], p["state"], p["output"]) for m in r.messages() if m["from"] == "noah" for p in m["parts"] if p["k"] == "step"][-len(calls):]
+        steps = use(("s23_status", {}), ("s23_tap", {"x": 540, "y": 1200}), ("s23_swipe", {"x1": 500, "y1": 1600, "x2": 500, "y2": 400}),
+                    ("s23_text", {"text": "Hallo Welt"}), ("s23_key", {"key": "KEYCODE_HOME"}), ("s23_screenshot", {}))
+        self.assertEqual([(title, state) for title, state, _ in steps],
+                         [("S23: Zustand", "ok"), ("S23: tippt auf 540, 1200", "ok"), ("S23: wischt", "ok"), ("S23: schreibt Hallo Welt", "ok"),
+                          ("S23: Taste KEYCODE_HOME", "ok"), ("S23: Bildschirmfoto", "ok")])
+        self.assertIn("1080x2340", steps[0][2])
+        self.assertEqual(steps[5][2], "Bildschirmfoto aufgenommen (7 Bytes). Du siehst es nicht.")
+        did = (tmp / "adb.log").read_text()
+        for what in ("input tap 540 1200", "input swipe 500 1600 500 400 120", "input text Hallo%sWelt", "input keyevent KEYCODE_HOME", "screencap -p"):
+            self.assertIn(what, did)
+        # Every bot has the tools, also one without a VM; the token reaches no prompt.
+        asked = r.noah.chats()[-1]
+        self.assertEqual([t["function"]["name"] for t in asked["tools"] if t["function"]["name"].startswith("s23_")],
+                         ["s23_status", "s23_tap", "s23_swipe", "s23_text", "s23_key", "s23_screenshot"])
+        self.assertNotIn(token, json.dumps(asked))
+        # The daemon is gone: the bot is told so, in words.
+        daemon.kill()
+        daemon.wait()
+        self.assertEqual(use(("s23_tap", {"x": 1, "y": 2})), [("S23: tippt auf 1, 2", "error", "Fehler: Die S23-Steuerung ist nicht erreichbar. Chris startet sie selbst.")])
+
     def test_bots_read_the_whole_chat_images_files_and_3d_jobs(self):
         # Lena's model takes images, Noah's does not.
         r = Room(MAG_ROOM_VISION="lena", MAG_ROOM_SIGHT_WAIT_S="30")

@@ -121,6 +121,9 @@ A tool that is not marked read-only waits in the chat for his yes (allow,
 always, deny; it runs out after 15 minutes) unless he set that binding to
 "ohne Nachfrage"; with his own account behind a plugin (`connector`) nothing
 is ever changed unasked. The scene tools are the room's own, not a plugin.
+The phone tools (`s23_*`) are offered to the bots only while Chris runs the
+phone's control daemon (`devices/s23`, `mag-s23ctl`); nothing here installs or
+starts it, and his other S23 services are never spoken to.
 The UI is mobile first: streamed answers appear below the user message in the
 order they are produced, the view follows only while the reader is at the
 end, and a running step is a live card with the real command, output,

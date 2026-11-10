@@ -38,8 +38,17 @@ inline Val fn(const char *name, const char *description, const char *params_json
   return t;
 }
 
+// Chris's phone (a Samsung S23) through its control daemon on this host
+// (devices/s23: loopback, a bearer token, one session). He alone starts that
+// daemon. Without its token the phone tools are not offered at all, and
+// s23pub on port 8720 is never spoken to from here.
+inline std::string phone_token(const Config &cfg) {
+  const std::string token = trim(slurp(cfg.s23_token_file));
+  return token.size() >= 16 && cfg.s23_port != 8720 ? token : "";
+}
+
 // Same list, same order, for every request of a bot.
-inline Val schemas(bool has_vm) {
+inline Val schemas(bool has_vm, bool phone = false) {
   Val list = Val::array();
   if (has_vm) {
     list.push(fn("shell",
@@ -107,6 +116,18 @@ inline Val schemas(bool has_vm) {
                R"j("ground":{"type":"string","enum":["snow","grass","sand","stone","studio"]},)j"
                R"j("light":{"type":"string","enum":["day","evening","night","studio"]}},)j"
                R"j("required":["actors","actions"]})j"));
+  if (phone) {
+    list.push(fn("s23_status", "Chris's phone (Samsung S23): whether it is connected and how large its display is.", R"({"type":"object","properties":{}})"));
+    list.push(fn("s23_tap", "Tap the phone's screen at a point, in device pixels.",
+                 R"({"type":"object","properties":{"x":{"type":"integer"},"y":{"type":"integer"}},"required":["x","y"]})"));
+    list.push(fn("s23_swipe", "Swipe on the phone's screen, in device pixels.",
+                 R"j({"type":"object","properties":{"x1":{"type":"integer"},"y1":{"type":"integer"},"x2":{"type":"integer"},"y2":{"type":"integer"},)j"
+                 R"j("ms":{"type":"integer","description":"how long, 1 to 5000, default 120"}},"required":["x1","y1","x2","y2"]})j"));
+    list.push(fn("s23_text", "Type visible ASCII text into the phone.", R"({"type":"object","properties":{"text":{"type":"string"}},"required":["text"]})"));
+    list.push(fn("s23_key", "Send one Android key to the phone, e.g. KEYCODE_HOME, KEYCODE_BACK or KEYCODE_ENTER.",
+                 R"({"type":"object","properties":{"key":{"type":"string"}},"required":["key"]})"));
+    list.push(fn("s23_screenshot", "Take a screenshot of the phone. You are told its size, not shown the picture.", R"({"type":"object","properties":{}})"));
+  }
   return list;
 }
 
@@ -134,6 +155,12 @@ inline std::string title(const std::string &name, const Val &args) {
   }
   if (name == "models_3d") return "Sieht die 3D-Modelle durch";
   if (name == "scene_3d") return "Baut die 3D-Szene " + one(jstr(args, "title", "ohne Titel"), 80);
+  if (name == "s23_status") return "S23: Zustand";
+  if (name == "s23_tap") return "S23: tippt auf " + std::to_string((long)jnum(args, "x")) + ", " + std::to_string((long)jnum(args, "y"));
+  if (name == "s23_swipe") return "S23: wischt";
+  if (name == "s23_text") return "S23: schreibt " + one(jstr(args, "text"), 60);
+  if (name == "s23_key") return "S23: Taste " + one(jstr(args, "key"), 40);
+  if (name == "s23_screenshot") return "S23: Bildschirmfoto";
   return name;
 }
 
@@ -227,7 +254,65 @@ inline Result read_image(const Ctx &ctx, const std::string &name) {
   return {text.empty() ? "(Kein Text im Bild erkannt.)" : clip(text, 8000, "\n…[gekürzt]"), true};
 }
 
+// One call to the phone's control daemon. Everything but the status needs
+// the daemon's single session: it is taken for this call and given back.
+inline Result phone(const std::string &name, const Val &args, Ctx &ctx) {
+  const Config &cfg = ctx.room.cfg;
+  const std::string token = phone_token(cfg);
+  if (token.empty()) return fail("Die S23-Steuerung ist nicht eingerichtet. Chris startet sie selbst.");
+  auto ask = [&](const std::string &method, const std::string &path, const std::string &body, const std::string &session) {
+    http::ClientOptions opt;
+    opt.method = method;
+    opt.body = body;
+    opt.timeout_s = 8;
+    opt.connect_timeout_s = 2;
+    opt.cancel = ctx.cancel;
+    opt.headers = {{"Authorization", "Bearer " + token}, {"Content-Type", "application/json"}};
+    if (!session.empty()) opt.headers.push_back({"X-S23-Session", session});
+    return http::fetch("http://127.0.0.1:" + std::to_string(cfg.s23_port) + path, opt);
+  };
+  const char *down = "Die S23-Steuerung ist nicht erreichbar. Chris startet sie selbst.";
+  if (name == "s23_status") {
+    const auto res = ask("GET", "/v1/status", "", "");
+    if (!res.error.empty() || !res.status) return fail(down);
+    return res.status == 200 ? Result{clip(res.body, 2000), true} : fail("S23 antwortet mit HTTP " + std::to_string(res.status) + ".");
+  }
+  std::string method = "POST", path;
+  Val body = Val::object();
+  if (name == "s23_tap") {
+    path = "/v1/input/tap";
+    for (const char *key : {"x", "y"}) body[key] = (double)(long)jnum(args, key);
+  } else if (name == "s23_swipe") {
+    path = "/v1/input/swipe";
+    for (const char *key : {"x1", "y1", "x2", "y2"}) body[key] = (double)(long)jnum(args, key);
+    body["ms"] = (double)std::clamp((long)jnum(args, "ms", 120), 1L, 5000L);
+  } else if (name == "s23_text") {
+    path = "/v1/input/text";
+    body["text"] = jstr(args, "text");
+  } else if (name == "s23_key") {
+    path = "/v1/input/key";
+    body["key"] = jstr(args, "key");
+  } else if (name == "s23_screenshot") {
+    method = "GET";
+    path = "/v1/screenshot";
+  } else {
+    return fail("Unbekanntes Werkzeug: " + name);
+  }
+  const auto open = ask("POST", "/v1/session", "{}", "");
+  if (!open.error.empty() || !open.status) return fail(down);
+  if (open.status == 409) return fail("Das Handy wird gerade von jemand anderem gesteuert.");
+  const std::string session = jstr(jparse(open.body), "session");
+  if (open.status != 200 || session.empty()) return fail("Die S23-Steuerung hat keine Sitzung gegeben (HTTP " + std::to_string(open.status) + ").");
+  const auto res = ask(method, path, method == "GET" ? "" : mj::dump(body), session);
+  ask("DELETE", "/v1/session", "", session);
+  if (!res.error.empty() || !res.status) return fail(down);
+  if (res.status != 200) return fail("S23 " + path + ": HTTP " + std::to_string(res.status) + " " + clip(res.body, 300));
+  if (name == "s23_screenshot") return {"Bildschirmfoto aufgenommen (" + std::to_string(res.body.size()) + " Bytes). Du siehst es nicht.", true};
+  return {res.body.empty() ? "ok" : clip(res.body, 2000), true};
+}
+
 inline Result call(const std::string &name, const Val &args, Ctx &ctx) {
+  if (starts_with(name, "s23_")) return phone(name, args, ctx);
   const std::string vm = jstr(ctx.bot, "vm");
   const bool has_vm = vm::valid_name(vm);
   auto need_vm = [&]() -> bool { return has_vm; };

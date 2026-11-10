@@ -31,7 +31,8 @@ output; read only the configuration needed for a specific operation.
 
 Two CPU-only llama.cpp servers, declared in `ops/models/models.json`:
 Lena = Gemma 4 26B-A4B on NUMA0 (physical cores 0-13, :8191), Noah = gpt-oss
-120B on NUMA1 (cores 14-27, :8192). No GPU offload: the MI50 belongs to MAG
+120B on NUMA1 (cores 14-27, :8192). Lena also loads the Gemma vision projector
+(`mmproj`, on the CPU) so she sees images. No GPU offload: the MI50 belongs to MAG
 Idol alone and its power cap stays at 72 W (`ops/idol/power-cap.sh` only ever
 lowers it; never add anything that raises it). `mag-modeld` is the single
 owner of the model lifecycle: it checks each GGUF against the Hugging Face

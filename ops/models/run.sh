@@ -33,13 +33,21 @@ if [[ -n $draft && ! -e $STATE/$bot.draft.off ]] && verified "$draft" "$STATE/$b
   mapfile -t draft_args < <(q '.draft.args[]')
   draft_args+=(--spec-draft-model "$draft")
 fi
+# Optional vision projector (images in the chat). It runs on the CPU like the
+# model: this runtime has no GPU backend and the MI50 is Idol's.
+vision_args=()
+mmproj=$(q '.mmproj.path // empty')
+if [[ -n $mmproj && ! -e $STATE/$bot.mmproj.off ]] && verified "$mmproj" "$STATE/$bot.mmproj.ok"; then
+  vision_args=(--mmproj "$mmproj" --no-mmproj-offload)
+fi
 mapfile -t extra < <(q '.args[]')
 
 SLOTS="$STATE/slots/$bot"
 mkdir -p "$SLOTS"
 # What this process was started with; mag-modeld compares it to the installed
-# spec ("restart pending") and reports whether the drafter is in use.
-printf '%s draft=%s\n' "$("$(dirname "$CONF")/mag-modeld" --config "$CONF" spec-hash "$bot")" "${#draft_args[@]}" > "$SLOTS/.spec" 2>/dev/null || :
+# spec ("restart pending") and reports whether the drafter and the vision
+# projector are in use.
+printf '%s draft=%s mmproj=%s\n' "$("$(dirname "$CONF")/mag-modeld" --config "$CONF" spec-hash "$bot")" "${#draft_args[@]}" "${#vision_args[@]}" > "$SLOTS/.spec" 2>/dev/null || :
 
 # Physical cores of one socket only; the hyperthread siblings 28-55 stay free
 # for builds, VMs and Idol. Memory is bound to the same node before the
@@ -55,5 +63,5 @@ exec numactl --physcpubind="$cpus" --membind="$node" "$BIN" \
   --jinja --reasoning-format auto \
   --cache-ram 0 --ctx-checkpoints 0 --swa-full --cache-reuse 256 \
   --batch-size 512 --ubatch-size 512 \
-  "${extra[@]}" "${draft_args[@]}" \
+  "${extra[@]}" "${draft_args[@]}" "${vision_args[@]}" \
   --slots --slot-save-path "$SLOTS" --no-ui

@@ -392,7 +392,7 @@ static int health(int port) {
 struct Bot {
   std::string id, label, unit, spec_hash;
   int port = 0, numa = 0, ctx = 0;
-  Artifact model, draft;
+  Artifact model, draft, mmproj; // weights; optional drafter; optional vision projector
 
   std::string state = "unknown", detail;
   bool ever_ready = false;       // since the current unit start
@@ -402,7 +402,7 @@ struct Bot {
   Clock::time_point last_start{};
   bool started_once = false;
   time_t ready_since = 0;
-  bool restart_pending = false, draft_active = false;
+  bool restart_pending = false, draft_active = false, mmproj_active = false;
 };
 
 static bool flag(const std::string &bot, const char *name) {
@@ -530,19 +530,21 @@ static void read_control(std::map<std::string, Bot> &bots) {
 static void step(Bot &b) {
   track(b.id, b.model);
   track(b.id, b.draft);
+  track(b.id, b.mmproj);
   const auto now = Clock::now();
   const Unit u = unit_state(b.unit);
   const bool running = u.active == "active" || u.active == "activating" || u.active == "reloading";
   b.detail.clear();
   b.draft_active = false;
+  b.mmproj_active = false;
   b.restart_pending = false;
 
   // Resume a download nobody is working on: one file at a time, only when
   // no process has it open (a second writer would corrupt it), and the
-  // optional drafter only once the model itself is complete.
-  for (Artifact *a : {&b.model, &b.draft}) {
+  // optional drafter and vision projector only once the model itself is complete.
+  for (Artifact *a : {&b.model, &b.draft, &b.mmproj}) {
     if (!a->configured || a->url.empty() || a->complete() || a->verify == Artifact::OK) continue;
-    if (a == &b.draft && b.model.verify != Artifact::OK) break;
+    if (a != &b.model && b.model.verify != Artifact::OK) break;
     if (a->exists && a->expected() && a->size > a->expected()) continue; // never touch an oversized file
     if (now - a->last_growth < std::chrono::seconds(g_quiet_s)) break;
     if (a->fetched_once && now - a->last_fetch < std::chrono::minutes(5)) break;
@@ -567,12 +569,15 @@ static void step(Bot &b) {
   if (running) {
     const std::string spec = trim(read_file(g_state_dir + "/slots/" + b.id + "/.spec", 256));
     b.draft_active = spec.find("draft=0") == std::string::npos && spec.find("draft=") != std::string::npos;
+    b.mmproj_active = spec.find("mmproj=0") == std::string::npos && spec.find("mmproj=") != std::string::npos;
     b.restart_pending = !spec.empty() && spec.compare(0, b.spec_hash.size(), b.spec_hash) != 0;
-    if (b.seen_restarts >= 0 && u.restarts > b.seen_restarts && !b.ever_ready && b.draft_active) {
-      // The server died before it ever answered /health while the optional
-      // drafter was attached: run without it rather than loop.
-      logf(b.id + ": start with drafter failed; drafter disabled (" + g_state_dir + "/" + b.id + ".draft.off)");
-      set_flag(b.id, "draft.off", true);
+    if (b.seen_restarts >= 0 && u.restarts > b.seen_restarts && !b.ever_ready && (b.draft_active || b.mmproj_active)) {
+      // The server died before it ever answered /health while an optional
+      // part was attached: run without it rather than loop. The projector
+      // goes first, then the drafter.
+      const char *part = b.mmproj_active ? "mmproj" : "draft";
+      logf(b.id + ": start with " + part + " failed; disabled (" + g_state_dir + "/" + b.id + "." + part + ".off)");
+      set_flag(b.id, b.mmproj_active ? "mmproj.off" : "draft.off", true);
       systemctl("restart", b.unit);
     }
     b.seen_restarts = u.restarts;
@@ -703,6 +708,11 @@ static void write_status(const std::map<std::string, Bot> &bots) {
       d["active"] = b.draft_active;
       v["draft"] = d;
     }
+    if (b.mmproj.configured) {
+      Val d = artifact_json(b.mmproj);
+      d["active"] = b.mmproj_active;
+      v["mmproj"] = d;
+    }
     if (b.state == "ready") v["since"] = (double)b.ready_since;
     v["restart_pending"] = b.restart_pending;
     list[kv.first] = v;
@@ -778,6 +788,7 @@ int main(int argc, char **argv) {
       b.ctx = num("ctx");
       b.model = artifact_from(kv.second.find("model"), "model");
       b.draft = artifact_from(kv.second.find("draft"), "draft");
+      b.mmproj = artifact_from(kv.second.find("mmproj"), "mmproj");
       b.spec_hash = spec_hash(kv.second);
       if (!b.model.configured || b.port <= 0) {
         std::cerr << "mag-modeld: bot " << b.id << " lacks model.path/port\n";

@@ -7,9 +7,10 @@ mode=${1:-};user=${2:-}
 [[ $EUID == 0 && $user =~ ^magbot-agent[0-9A-Za-z_-]+$ && $mode =~ ^(issue|commit|lock)$ ]] || exit 64
 cli() { runuser -u git -- /usr/local/bin/gitea --config /etc/gitea/app.ini admin user "$@"; }
 if [[ $mode == issue ]]; then
- if ! cli create --username "$user" --email "$user@mag.local" --user-type Bot --restricted >/dev/null 2>&1; then
-  cli list | awk -v u="$user" 'NR>1&&$2==u {found=1} END {exit !found}' || exit 1
- fi
+ # A VM name that was used before keeps its account. "admin user list" does
+ # not show accounts of type Bot, so existence is not checked here: issuing
+ # the token below fails when the account is missing.
+ cli create --username "$user" --email "$user@mag.local" --user-type Bot --restricted >/dev/null 2>&1 || :
  name="vm-$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')"
  exec runuser -u git -- /usr/local/bin/gitea --config /etc/gitea/app.ini admin user \
   generate-access-token --username "$user" --token-name "$name" --scopes write:repository,write:organization,read:user --raw

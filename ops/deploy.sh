@@ -176,6 +176,10 @@ mv -Tf /opt/mag-stack/.current-next /opt/mag-stack/current
 install -m 0755 "$RELEASE/bin/magbot-native" /usr/local/bin/magbot
 install -m 0755 "$SOURCE/ops/spawnbot" "$SOURCE/ops/despawnbot" /usr/local/bin/
 install -m 0755 "$SOURCE/ops/magbot-guest-run" "$SOURCE/ops/magbot-agent-ctl" "$SOURCE/ops/magbot-netmode" /usr/local/sbin/
+# Creating a bot VM gives it a Gitea account through these helpers.
+install -m 0755 "$SOURCE/ops/gitea-ci/bot-auth.sh" /usr/local/sbin/mag-gitea-bot-auth
+install -m 0755 "$SOURCE/ops/gitea/bot-rights.sh" /usr/local/sbin/mag-gitea-bot-rights
+install -D -m 0644 "$SOURCE/ops/gitea-ci/admin-session.sh" /usr/local/lib/mag-ci/admin-session.sh
 rm -f /usr/local/sbin/magbot-modelctl
 install -m 0440 "$SOURCE/ops/magbot-guest.sudoers" /etc/sudoers.d/.magbot-guest.next
 visudo -cf /etc/sudoers.d/.magbot-guest.next >/dev/null

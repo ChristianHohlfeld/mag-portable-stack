@@ -179,12 +179,15 @@ public:
       std::set<std::string> used;
       const Val bots = room_.bots();
       for (auto &b : bots.asArr()) used.insert(jstr(b, "vm"));
-      for (int n = 1; n <= 16; ++n) {
-        const std::string vm = "agent" + std::to_string(n);
-        if (used.count(vm) || guests_.verify(vm) != 3) continue; // taken or unknown state: never reuse
+      // The name the bot had before comes first: its site and its Gitea
+      // account belong to that name.
+      std::vector<std::string> names = {jstr(room_.bot(bot), "vm_lost")};
+      for (int n = 1; n <= 16; ++n) names.push_back("agent" + std::to_string(n));
+      for (auto &vm : names) {
+        if (!vm::valid_name(vm) || used.count(vm) || guests_.verify(vm) != 3) continue; // taken or unknown state: never reuse
         const RunResult r = guests_.spawn(vm);
         if (r.code == 0) {
-          room_.update_bot(bot, [&](Val &b) { b["vm"] = vm; });
+          room_.update_bot(bot, [&](Val &b) { b["vm"] = vm; b["vm_lost"] = ""; });
           note.clear();
         } else {
           note = "error: " + clip(trim(r.out), 300);

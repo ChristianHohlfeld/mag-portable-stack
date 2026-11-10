@@ -211,7 +211,7 @@
         emit('settings');
         break;
       case 'notice':
-        MAG.toast(ev.text, true);
+        emit('notice', ev);
         break;
     }
   }

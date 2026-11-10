@@ -113,6 +113,8 @@ svg { width: 20px; height: 20px; flex: none; fill: none; stroke: currentColor; s
 .chip.wait .dot { background: var(--warn); }
 .chip.bad .dot { background: var(--bad); }
 .chip.off { opacity: .55; }
+.chip.nudge { border-color: var(--warn); animation: nudge .4s ease-in-out 2; }
+@keyframes nudge { 30% { transform: translateX(-3px); } 70% { transform: translateX(3px); } }
 @keyframes pulse { 50% { opacity: .35; transform: scale(.8); } }
 #top .spacer { flex: 1; }
 .icon-btn {
@@ -141,18 +143,28 @@ svg { width: 20px; height: 20px; flex: none; fill: none; stroke: currentColor; s
 .msg[data-from="lena"] .who { color: var(--lena); }
 .msg[data-from="noah"] .who { color: var(--noah); }
 .msg[data-from="idol"] .who { color: var(--idol); }
-.msg .more { margin-left: auto; width: 30px; height: 24px; border-radius: 8px; color: var(--muted); display: grid; place-items: center; opacity: .7; }
-.msg .more svg { width: 18px; height: 18px; }
-.msg.user { display: flex; flex-direction: column; align-items: flex-end; }
-.msg.user .meta { margin-right: 2px; }
+.msg.user .line { display: flex; justify-content: flex-end; align-items: flex-end; gap: 4px; }
+.msg.user .col { display: flex; flex-direction: column; align-items: flex-end; min-width: 0; max-width: min(88%, 640px); }
 .msg.user .bubble {
   background: var(--user);
   border-radius: 18px 18px 4px 18px;
   padding: 8px 13px;
-  max-width: min(88%, 640px);
+  max-width: 100%;
   overflow-wrap: anywhere;
 }
-.msg.user .more { margin-left: 4px; }
+/* actions: after the text. Your own messages show theirs on hover or tap. */
+.acts { display: flex; align-items: center; gap: 2px; margin-top: 4px; color: var(--muted); }
+.act { width: 32px; height: 30px; border-radius: 9px; display: grid; place-items: center; color: var(--muted); }
+.act svg { width: 17px; height: 17px; }
+.act:hover, .act.on { background: var(--surface-2); color: var(--text); }
+.acts .time { font-size: 12.5px; padding: 0 4px; font-variant-numeric: tabular-nums; }
+.msg.user .acts { margin: 0; opacity: 0; transition: opacity .12s; }
+@media (hover: hover) { .msg.user:hover .acts, .msg.user.show-acts .acts { opacity: 1; } }
+@media (hover: none) {
+  .msg.user .line { flex-direction: column; }
+  .msg.user .acts { order: 2; display: none; opacity: 1; margin-top: 3px; }
+  .msg.user.show-acts .acts { display: flex; }
+}
 .msg .note { font-size: 13px; color: var(--muted); margin-top: 3px; }
 .msg .note.err { color: var(--bad); }
 .cursor::after { content: "▍"; color: var(--accent); animation: pulse 1s steps(2) infinite; margin-left: 1px; }
@@ -271,7 +283,7 @@ audio, video { max-width: 100%; border-radius: 12px; }
 .dots i:nth-child(2) { animation-delay: .2s; } .dots i:nth-child(3) { animation-delay: .4s; }
 
 #jump {
-  position: absolute; left: 50%; transform: translateX(-50%); bottom: 10px; z-index: 5;
+  position: absolute; left: 50%; transform: translateX(-50%); bottom: calc(100% + 8px); z-index: 5;
   background: var(--accent); color: var(--accent-ink); font-size: 14px; font-weight: 600;
   padding: 7px 14px; border-radius: 18px; box-shadow: 0 6px 20px rgba(0,0,0,.35);
   display: flex; align-items: center; gap: 6px; white-space: nowrap;
@@ -298,9 +310,11 @@ audio, video { max-width: 100%; border-radius: 12px; }
 #composer .row { display: flex; align-items: flex-end; gap: 4px; }
 #input {
   flex: 1; min-width: 0; resize: none; border: 1px solid var(--line); background: var(--surface);
-  border-radius: 20px; padding: 9px 14px; max-height: 34vh; line-height: 1.4; outline: none;
+  border-radius: 20px; padding: 9px 14px; line-height: 1.4; outline: none;
   font-size: 16px; /* no zoom on iOS */
+  overflow-y: auto; scrollbar-width: none; /* grows to seven lines, then scrolls without a bar */
 }
+#input::-webkit-scrollbar { display: none; }
 #input:focus { border-color: color-mix(in srgb, var(--accent) 60%, var(--line)); }
 #send { width: 40px; height: 40px; border-radius: 50%; background: var(--accent); color: var(--accent-ink); display: grid; place-items: center; flex: none; }
 #send:disabled { background: var(--surface-2); color: var(--muted); opacity: 1; }
@@ -349,6 +363,7 @@ audio, video { max-width: 100%; border-radius: 12px; }
 .btns { display: flex; gap: 8px; flex-wrap: wrap; }
 .kv { display: grid; grid-template-columns: auto 1fr; gap: 3px 14px; font-size: 14px; padding: 11px 13px; }
 .kv dt { color: var(--muted); } .kv dd { margin: 0; text-align: right; overflow-wrap: anywhere; }
+.kv dd a, .set .txt small a { color: var(--accent); text-decoration: none; }
 .progress { height: 6px; border-radius: 3px; background: var(--surface-2); overflow: hidden; margin-top: 6px; }
 .progress i { display: block; height: 100%; background: var(--accent); width: 0; transition: width .5s; }
 .mem { display: flex; gap: 8px; align-items: flex-start; padding: 9px 13px; border-bottom: 1px solid var(--line); font-size: 14.5px; }

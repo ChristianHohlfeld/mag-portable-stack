@@ -463,8 +463,8 @@ private:
         "Du bist " + name + ", einer von zwei KI-Assistenten im privaten Chatraum MAG von Chris. Der andere heißt " + other +
         ". Ihr lauft lokal auf Chris' Heimserver.\n\n"
         "Gespräch\n"
-        "- Vor jeder fremden Nachricht steht der Absender in eckigen Klammern, zum Beispiel [Chris] oder [" + other +
-        "]. Schreibe selbst ohne Namenspräfix und nur für dich.\n"
+        "- Fremde Nachrichten beginnen mit dem Namen des Absenders und einem Doppelpunkt, zum Beispiel \"Chris: …\" oder \"" + other +
+        ": …\". Das zeigt nur, wer spricht. Schreibe selbst ohne Namenspräfix und nur für dich; Chris sprichst du einfach mit Chris an.\n"
         "- Antworte auf Deutsch, natürlich und knapp, das Ergebnis zuerst. Markdown ist erlaubt.\n"
         "- " + other + " liest mit und darf auch antworten. Wiederhole nicht, was schon gesagt wurde; ergänze, widersprich oder frage nach, wenn es dem Gespräch dient.\n"
         "- Wenn du nichts Neues beizutragen hast, antworte exakt mit dem einen Wort PASS. PASS bleibt unsichtbar.\n"
@@ -700,9 +700,11 @@ private:
       for (auto &b : all.asArr())
         if (jstr(b, "id") == from) who = jstr(b, "name");
     }
-    std::string head = "[" + who;
-    if (jstr(m, "role") == "user") head += " · " + clock_label((int64_t)jnum(m, "ts"));
-    head += "] ";
+    // "Name: text" is a label models read as a speaker and do not copy into
+    // their answer the way a bracketed tag was copied ("Hallo [Chris]").
+    std::string head;
+    if (jstr(m, "role") == "user") head = "(" + clock_label((int64_t)jnum(m, "ts")) + ")\n";
+    head += who + ": ";
     std::string body = trim(jstr(m, "text"));
     if (const Val *m3 = m.find("model3d"); m3 && m3->isObj()) {
       const std::string st = jstr(*m3, "state");
@@ -934,6 +936,23 @@ private:
     return out;
   }
 
+  // A speaker tag the model copied ("[Chris]", "[Noah · Di 10.11. 01:51]")
+  // becomes the plain name. Markdown links stay as they are.
+  static std::string plain_names(std::string text, std::vector<std::string> names) {
+    names.push_back("Chris");
+    for (auto &n : names) {
+      const std::string open = "[" + n;
+      for (size_t at = text.find(open); at != std::string::npos; at = text.find(open, at)) {
+        const size_t after = at + open.size(), close = text.find(']', after);
+        const bool tag = close != std::string::npos && close - at <= 40 && (close == after || text[after] == ' ') &&
+                         (close + 1 >= text.size() || text[close + 1] != '(');
+        if (tag) text.replace(at, close - at + 1, n);
+        at += tag ? n.size() : open.size();
+      }
+    }
+    return text;
+  }
+
   static std::string strip_self(std::string text, const std::string &name) {
     std::string t = text;
     const size_t a = t.find_first_not_of(" \t\r\n");
@@ -977,12 +996,18 @@ private:
     std::string text = t.tail + delta;
     t.tail.clear();
     if (!flush) {
-      const size_t mark = text.rfind("[[");
-      if (mark != std::string::npos && text.find("]]", mark) == std::string::npos && text.size() - mark < 20) {
+      // Hold back what may still become a control marker or a speaker tag.
+      size_t mark = text.rfind("[[");
+      if (mark == std::string::npos || text.find("]]", mark) != std::string::npos || text.size() - mark >= 20) {
+        mark = text.rfind('[');
+        if (mark != std::string::npos && (text.find(']', mark) != std::string::npos || text.size() - mark >= 40)) mark = std::string::npos;
+      }
+      if (mark != std::string::npos) {
         t.tail = text.substr(mark);
         text.erase(mark);
       }
     }
+    text = plain_names(text, names());
     if (!t.visible) {
       t.held += text;
       if (!flush && t.steps == 0 &&

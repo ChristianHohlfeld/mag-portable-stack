@@ -689,6 +689,10 @@ static void write_status(const std::map<std::string, Bot> &bots) {
     Val v = Val::object();
     v["state"] = b.state;
     v["label"] = b.label;
+    // The exact weights: file name without directory and ".gguf".
+    std::string file = b.model.path.substr(b.model.path.find_last_of('/') + 1);
+    if (file.size() > 5 && file.compare(file.size() - 5, 5, ".gguf") == 0) file.resize(file.size() - 5);
+    v["file"] = file;
     v["port"] = b.port;
     v["numa"] = b.numa;
     v["ctx"] = b.ctx;

@@ -908,7 +908,7 @@ class RoomContract(unittest.TestCase):
         r.idle()
         self.assertFalse([t for t in r.noah.chats()[-1]["tools"] if t["function"]["name"].startswith("mcp__")])     # Noah was not given it
         step = steps()[-1]
-        self.assertEqual((step["title"], step["state"], step["output"], step.get("approval")), ("Notizen · lookup", "ok", "blau", None))
+        self.assertEqual((step["title"], step["state"], step["output"], step.get("approval")), ("lookup · Notizen", "ok", "blau", None))
         self.assertEqual((mcp.calls[-1]["tool"], mcp.calls[-1]["args"], mcp.calls[-1]["protocol"], mcp.refused), ("lookup", {"key": "farbe"}, "2025-06-18", 0))
         self.assertEqual(asked["messages"][-1]["content"], "blau")
         # Writing waits for Chris: the step says what is asked, nothing has happened yet.

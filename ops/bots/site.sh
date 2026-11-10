@@ -53,10 +53,12 @@ EOF
 site_note() {
   local id=$1
   cat <<EOF
-Deine Website: https://${id}.${zone}
+Deine Website traegt deinen Namen: https://<dein-name>.${zone}
+(https://${id}.${zone} leitet dorthin weiter.)
 Nur im Tailnet erreichbar, nicht im oeffentlichen Internet.
 Lege Dateien in /home/bot/www ab. index.html ist die Startseite.
-Veroeffentlichen: bash /home/bot/publish-site
+Der Raum veroeffentlicht, was du mit write_file dorthin schreibst; von Hand:
+bash /home/bot/publish-site
 EOF
 }
 

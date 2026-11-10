@@ -240,6 +240,8 @@ soft bash "$SOURCE/ops/models/install.sh"
 if [[ -x /home/chris/idol-mi50/venv/bin/python && -d /home/chris/idol-mi50/weights/idol ]]; then
   soft bash "$SOURCE/ops/idol/install.sh"
 fi
+# The bots' sites (<name>.bot.stardenburg.de): vhost and publisher.
+soft bash "$SOURCE/ops/bots/install.sh"
 soft systemctl enable --now mag-stack-check.timer
 soft bash "$SOURCE/ops/boot/ensure-boot.sh"
 MAG_RELEASE_ID="$RELEASE_ID" MAG_RELEASE_PREVIOUS_FILE="$BACKUP/previous-release" \

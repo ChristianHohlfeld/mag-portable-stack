@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Tailnet-only nginx for *.bot.stardenburg.de. Never restarts mag-llm.
+# The bots' sites: tailnet-only nginx vhost for *.bot.stardenburg.de (it hands
+# the requests to the room, which knows the bots' names) and the publisher
+# the VMs upload their www folder to. Touches no model and no VM.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 # shellcheck source=../mag-units.sh
@@ -60,10 +62,12 @@ install -d -m 0755 "$lib_dir" "$www_root/www" "$nginx_confd"
 install -d -m 0700 "$www_root/tokens"
 install -m 0755 "$here/site.sh" "$here/issue-wildcard.sh" "$lib_dir/"
 installed_pub="$lib_dir/mag-bots-publish"
-# GNU install errors "are the same file" when the fallback is already
-# $lib_dir/mag-bots-publish. That aborted install after the other fixes.
-if [[ ! -e $installed_pub || ! $pub -ef $installed_pub ]]; then
-  install -m 0755 "$pub" "$installed_pub"
+# Replace the publisher only when it changed; it is restarted below then.
+pub_changed=0
+if [[ ! -e $installed_pub ]] || ! cmp -s "$pub" "$installed_pub"; then
+  install -m 0755 "$pub" "$installed_pub.next"
+  mv -f "$installed_pub.next" "$installed_pub"
+  pub_changed=1
 fi
 install -m 0644 "$here/mag-bots-publish.service" "$systemd_dir/mag-bots-publish.service"
 conf=$nginx_confd/mag-bots.conf
@@ -118,6 +122,9 @@ publish_up=0
 if [[ $test_mode == 1 ]]; then
   echo "bot publish listener skipped (test)"
 elif ip -4 -o addr show | grep -Fq ' 192.168.122.1/'; then
+  if (( pub_changed )) && systemctl is-active --quiet mag-bots-publish.service; then
+    systemctl restart mag-bots-publish.service || :
+  fi
   if systemctl enable --now mag-bots-publish.service \
      && systemctl is-active --quiet mag-bots-publish.service; then
     publish_up=1
@@ -134,4 +141,4 @@ else
   rm -f "$ready_file"
 fi
 "$lib_dir/site.sh" backfill || echo "WARN: bot site backfill incomplete" >&2
-echo "MAG bot sites ready on the tailnet; mag-llm untouched"
+echo "MAG bot sites ready on the tailnet"

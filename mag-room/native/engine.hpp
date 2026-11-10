@@ -524,6 +524,7 @@ private:
     Val shape = Val::object();
     shape["persona"] = jstr(me, "persona");
     shape["name"] = jstr(me, "name");
+    shape["names"] = [&] { std::string all; for (auto &n : names()) all += n + ","; return all; }(); // a rename of either bot
     shape["vm"] = vm::valid_name(jstr(me, "vm"));
     shape["eyes"] = sees(jstr(me, "id"));
     shape["kw"] = template_kwargs(me);

@@ -22,6 +22,12 @@ public:
 
   void handle(int fd, http::Request &r) {
     if (r.bridge) return bridge(fd, r);
+    // A bot's site, <name>.<zone>: nginx hands these requests over (tailnet
+    // only). They get that bot's published files and nothing of the room.
+    std::string host = lower(r.header("host"));
+    host = host.substr(0, host.find(':'));
+    const std::string zone = "." + site::zone();
+    if (host.size() > zone.size() && ends_with(host, zone)) return bot_site(fd, r, host.substr(0, host.size() - zone.size()));
     const std::string &p = r.path;
     if (p == "/_internal/tailscale/whois") return gate_.whois(fd, r);
     if (p == "/healthz") return http::send(fd, 200, "text/plain; charset=utf-8", "ok\n");
@@ -187,6 +193,7 @@ private:
     features["stt"] = exists(room_.cfg.whisper_cli) && exists(room_.cfg.whisper_model);
     features["push"] = push_.configured();
     v["features"] = features;
+    v["zone"] = site::zone(); // the bots' sites are <name>.<zone>
     http::send_json(fd, 200, v);
   }
 
@@ -345,6 +352,55 @@ private:
     http::send_file(fd, r, path, mime, h);
   }
 
+  // ---- the bots' sites ----------------------------------------------------
+  // Static files of the www folder the bot's VM published, served under the
+  // bot's current name. An earlier name, the bot's id or its VM name redirect
+  // there (temporarily: a name can change again).
+  void bot_site(int fd, const http::Request &r, const std::string &name) {
+    static const http::Headers open = {{"Access-Control-Allow-Origin", "*"}, {"Cache-Control", "no-cache"}};
+    auto missing = [&] {
+      http::send(fd, 404, "text/html; charset=utf-8",
+                 "<!doctype html><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><title>Nicht gefunden</title>"
+                 "<body style='font:16px system-ui;margin:14vh auto;max-width:30em;padding:0 20px'><h1 style='font-size:20px'>Nicht gefunden</h1>"
+                 "<p>Unter dieser Adresse liegt nichts.</p>", open);
+    };
+    if (r.method != "GET" && r.method != "HEAD") return http::send(fd, 405, "text/plain; charset=utf-8", "Nur lesen\n", open);
+    bool current = false;
+    const Val bot = site::resolve(room_.bots(), name, current);
+    const std::string vm = jstr(bot, "vm"), query = r.query.empty() ? "" : "?" + r.query;
+    if (!bot.isObj() || !vm::valid_name(vm)) return missing();
+    auto moved = [&](int code, const std::string &where) {
+      http::Headers h = open;
+      h.push_back({"Location", where});
+      http::send(fd, code, "text/plain; charset=utf-8", "Umgezogen\n", h);
+    };
+    if (!current) return moved(302, site::base_url(bot) + r.path + query);
+    const std::string rel = url_decode(r.path);
+    // No way up, no dot files, nothing odd.
+    if (rel.empty() || rel[0] != '/' || rel.find('\0') != std::string::npos || rel.find('\\') != std::string::npos ||
+        rel.find("/.") != std::string::npos)
+      return missing();
+    const std::string root = site::www_root() + "/" + vm;
+    std::string path = root + rel;
+    struct stat st{};
+    if (stat(path.c_str(), &st) != 0) return missing();
+    if (S_ISDIR(st.st_mode)) {
+      if (rel.back() != '/') return moved(301, r.path + "/" + query);
+      path += "index.html";
+      if (stat(path.c_str(), &st) != 0) return missing();
+    }
+    // A link inside the folder must not lead out of it.
+    char real[PATH_MAX], real_root[PATH_MAX];
+    if (!S_ISREG(st.st_mode) || !realpath(path.c_str(), real) || !realpath(root.c_str(), real_root) ||
+        !starts_with(real, std::string(real_root) + "/"))
+      return missing();
+    http::Headers h = open;
+    const std::string etag = "\"" + std::to_string((long long)st.st_mtime) + "-" + std::to_string((long long)st.st_size) + "\"";
+    h.push_back({"ETag", etag});
+    if (r.header("if-none-match") == etag) return http::send(fd, 304, "", "", h);
+    http::send_file(fd, r, path, mime_for(path), h);
+  }
+
   // ---- settings and bots --------------------------------------------------
   void put_settings(int fd, const http::Request &r) {
     const Val in = jparse(r.body);
@@ -368,14 +424,52 @@ private:
     const Val in = jparse(r.body);
     const std::string id = bot_of(r.path);
     if (!in.isObj()) return http::send_error(fd, 400, "JSON erwartet");
-    bool disabled = false;
+    // The name is the one source of truth: the address of the bot's site
+    // follows it, and what it was called before keeps leading there.
+    std::string rename, slug;
+    if (const Val *v = in.find("name"); v && v->type == Val::STR) {
+      rename = trim(v->str);
+      slug = lower(rename);
+      const std::string problem = site::name_problem(rename);
+      if (!problem.empty()) return http::send_error(fd, 400, problem);
+      const Val all = room_.bots();
+      for (auto &o : all.asArr())
+        if (jstr(o, "id") != id && (site::slug_of(o) == slug || jstr(o, "id") == slug))
+          return http::send_error(fd, 409, "Diesen Namen trägt schon ein anderer Bot.");
+    }
+    bool disabled = false, renamed = false;
     const bool ok = room_.update_bot(id, [&](Val &b) {
+      if (!rename.empty() && rename != jstr(b, "name")) {
+        const std::string before = site::slug_of(b);
+        b["name"] = rename;
+        if (before != slug) {
+          Val keep = Val::array();
+          if (const Val *old = b.find("aliases"); old && old->isArr())
+            for (auto &a : old->asArr())
+              if (a.asStr() != slug && a.asStr() != before) keep.push(a);
+          keep.push(before);
+          while (keep.arr->size() > 16) keep.arr->erase(keep.arr->begin());
+          b["aliases"] = keep;
+          renamed = true;
+        }
+      }
       if (const Val *v = in.find("enabled"); v && v->type == Val::BOOL) { b["enabled"] = v->b; disabled = !v->b; }
       if (const Val *v = in.find("thinking"); v && v->type == Val::BOOL) b["thinking"] = v->b;
       if (const Val *v = in.find("effort"); v && (v->asStr() == "low" || v->asStr() == "medium" || v->asStr() == "high")) b["effort"] = v->asStr();
       if (const Val *v = in.find("persona"); v && v->type == Val::STR) b["persona"] = clip(v->str, 2000);
     });
     if (!ok) return http::send_error(fd, 404, "Bot nicht gefunden");
+    if (renamed) {
+      // A name in use belongs to its bot alone, not to another one's past.
+      const Val all = room_.bots();
+      for (auto &o : all.asArr())
+        if (jstr(o, "id") != id)
+          room_.update_bot(jstr(o, "id"), [&](Val &b) {
+            Val *old = b.find("aliases");
+            if (!old || !old->isArr()) return;
+            old->arr->erase(std::remove_if(old->arr->begin(), old->arr->end(), [&](const Val &a) { return a.asStr() == slug; }), old->arr->end());
+          });
+    }
     if (disabled) engine_.stop(id);
     engine_.settings_changed();
     http::send_ok(fd);

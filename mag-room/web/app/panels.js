@@ -84,6 +84,7 @@
       sheet.refresh = () => {
         const b = MAG.bot(id);
         if (!b) return;
+        sheet.querySelector('header h2').textContent = b.name;
         const m = b.model || {}, f = m.model || {};
         const info = el('dl', { class: 'kv' });
         const add = (k, v) => { if (v !== undefined && v !== null && v !== '') info.append(el('dt', { text: k }), v instanceof Node ? el('dd', {}, v) : el('dd', { text: String(v) })); };
@@ -122,7 +123,18 @@
       sheet.refresh();
 
       if (owner()) {
+        // The name is the address: the site follows it, earlier names lead there.
+        const zone = S.zone ? '.' + S.zone : '';
+        const name = el('input', { type: 'text', value: b.name, maxLength: 24, autocapitalize: 'words', autocomplete: 'off', spellcheck: false, 'aria-label': 'Name' });
+        const rename = () => {
+          const wanted = name.value.trim();
+          if (!wanted || wanted === MAG.bot(id)?.name) return;
+          call('PUT', '/api/bot/' + id, { name: wanted }).then(() => MAG.toast('Heißt jetzt ' + wanted)).catch(() => { name.value = MAG.bot(id)?.name || ''; });
+        };
+        name.addEventListener('change', rename);
+        name.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); name.blur(); } });
         content.append(el('h3', { text: 'Verhalten' }), el('div', { class: 'card' },
+          row('Name', 'Buchstaben, Ziffern, Bindestrich. Die Website folgt dem Namen (name' + zone + '), frühere Namen leiten weiter.', name),
           row('Im Raum aktiv', 'Antwortet und liest mit', toggle(b.enabled, (v) => call('PUT', '/api/bot/' + id, { enabled: v }))),
           id === 'lena'
             ? row('Nachdenken', 'Denkt vor der Antwort; gründlicher, langsamer', toggle(b.thinking, (v) => call('PUT', '/api/bot/' + id, { thinking: v })))

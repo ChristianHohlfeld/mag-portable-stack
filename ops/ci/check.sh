@@ -18,6 +18,10 @@ if jq -r '.bots[] | (.args + (.draft.args // []))[]' ops/models/models.json | gr
   echo 'models.json: GPU flags are not allowed (CPU-only bots)' >&2; exit 1
 fi
 grep -Fq -- '--device none --n-gpu-layers 0' ops/models/run.sh
+# The bots' sites stay inside the tailnet and are read-only.
+grep -Fq 'deny all;' ops/bots/mag-bots.nginx.in
+grep -Fq 'limit_except GET { deny all; }' ops/bots/mag-bots.nginx.in
+! grep -Eq '^[[:space:]]*listen[[:space:]]+(0\.0\.0\.0|\[::\]|100\.)' ops/bots/mag-bots.nginx.in
 # The vision projector stays on the CPU as well.
 grep -Fq -- '--mmproj "$mmproj" --no-mmproj-offload' ops/models/run.sh
 # A deploy never probes, starts, stops or waits for a model, and never drains.

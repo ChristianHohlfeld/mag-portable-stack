@@ -4,6 +4,7 @@ addressing, bounded bot dialogue and PASS, cancellation, live steps,
 single-owner tool continuation, the trash button and message deletion.
 The fixture proves the room's logic; it does not prove that a real model, a
 real VM or the deployed browser work."""
+import http.client
 import json
 import os
 import pathlib
@@ -51,6 +52,7 @@ class Room:
                         MAG_ROOM_NO_SUDO="1", MAG_ROOM_GUEST_RUN=str(HERE / "fake_guest_run"),
                         MAG_ROOM_AGENT_CTL="/bin/false", MAG_ROOM_NETMODE="/bin/true",
                         FAKE_GUEST_HOME=str(self.tmp / "guests"), MAG_ROOM_GUEST_HOME=str(self.tmp / "guests" / "agent1"),
+                        MAG_BOTS_WWW=str(self.tmp / "www"),
                         MAG_ROOM_BRAVE_KEY="", BRAVE_API_KEY="")
         self.env.update({k: str(v) for k, v in env.items()})
         (self.tmp / "control").mkdir()
@@ -301,7 +303,7 @@ class RoomContract(unittest.TestCase):
         home.mkdir(parents=True)
         (home / "publish-site").write_text("ls www > published.txt\n")  # stands in for the VM's publisher script
         lena = [b for b in r.state()["bots"] if b["id"] == "lena"][0]
-        self.assertEqual(lena["site"], "https://agent1.bot.stardenburg.de")
+        self.assertEqual(lena["site"], "https://lena.bot.stardenburg.de")  # the address is the name
         doc = ("<!doctype html>\n<html>\n<head><title>Sonnen System</title></head>\n<body>\n"
                "<script type=\"module\">import * as THREE from 'three';</script>\n</body>\n</html>")
         r.lena.reply = lambda body: "Hier ist sie:\n\n```html\n" + doc + "\n```\n\nViel Spaß."
@@ -324,7 +326,7 @@ class RoomContract(unittest.TestCase):
         r.idle()
         last = [m for m in r.messages() if m["from"] == "lena"][-1]
         self.assertEqual([(p["path"], p["title"], p["part"]) for p in last["pages"]], [("demo.html", "Demo", 0)])
-        self.assertIn("Veröffentlicht: https://agent1.bot.stardenburg.de/demo.html", r.lena.chats()[-1]["messages"][-1]["content"])
+        self.assertIn("Veröffentlicht: https://lena.bot.stardenburg.de/demo.html", r.lena.chats()[-1]["messages"][-1]["content"])
         self.assertIn("demo.html", (home / "published.txt").read_text())
         # Screenshots in the chat are gone; the room may frame the bots' sites and nothing else.
         self.assertNotIn("browser_screenshot", [t["function"]["name"] for t in r.lena.chats()[-1]["tools"]])
@@ -332,6 +334,58 @@ class RoomContract(unittest.TestCase):
             policy = res.headers["Content-Security-Policy"]
             self.assertIsNone(res.headers["Cross-Origin-Embedder-Policy"])
         self.assertIn("frame-src 'self' https://*.bot.stardenburg.de;", policy)
+
+    def test_bot_sites_follow_the_name_and_old_addresses_redirect(self):
+        r = self.room
+        www = pathlib.Path(r.env["MAG_BOTS_WWW"]) / "agent1"   # what Lena's VM published
+        (www / "spiel").mkdir(parents=True)
+        (www / "index.html").write_text("<!doctype html><title>Start</title>")
+        (www / "spiel" / "index.html").write_text("<!doctype html><p>Spiel</p>")
+        (www / ".geheim").write_text("x")
+
+        def site(name, path, method="GET", **headers):
+            conn = http.client.HTTPConnection("127.0.0.1", r.port, timeout=5)
+            conn.request(method, path, headers=dict(headers, Host=name + ".bot.stardenburg.de"))
+            res = conn.getresponse()
+            body = res.read()
+            conn.close()
+            return res.status, {k.lower(): v for k, v in res.getheaders()}, body
+
+        code, headers, body = site("lena", "/")
+        self.assertEqual((code, body), (200, b"<!doctype html><title>Start</title>"))
+        self.assertEqual((headers["content-type"], headers["access-control-allow-origin"]), ("text/html; charset=utf-8", "*"))
+        self.assertEqual(site("lena", "/", **{"If-None-Match": headers["etag"]})[0], 304)
+        self.assertEqual((site("lena", "/spiel")[0], site("lena", "/spiel")[1]["location"]), (301, "/spiel/"))
+        self.assertEqual(site("lena", "/spiel/")[2], b"<!doctype html><p>Spiel</p>")
+        # Nothing outside the folder, no dot files, nothing of the room, read only.
+        for path in ("/../../etc/passwd", "/%2e%2e/%2e%2e/etc/passwd", "/.geheim", "/api/state", "/nix.html"):
+            self.assertEqual(site("lena", path)[0], 404, path)
+        self.assertEqual(site("lena", "/", "POST")[0], 405)
+        # The VM's name is an old address: it leads to the bot's name. No VM, no site.
+        code, headers, _ = site("agent1", "/spiel/?x=1")
+        self.assertEqual((code, headers["location"]), (302, "https://lena.bot.stardenburg.de/spiel/?x=1"))
+        self.assertEqual((site("noah", "/")[0], site("niemand", "/")[0]), (404, 404))
+        # A rename moves the address; the earlier name redirects.
+        self.assertEqual(r.api("PUT", "/api/bot/lena", {"name": "Mia"})[0], 200)
+        lena = [b for b in r.state()["bots"] if b["id"] == "lena"][0]
+        self.assertEqual((lena["name"], lena["site"]), ("Mia", "https://mia.bot.stardenburg.de"))
+        self.assertEqual(site("mia", "/")[0], 200)
+        code, headers, _ = site("lena", "/spiel/")
+        self.assertEqual((code, headers["location"]), (302, "https://mia.bot.stardenburg.de/spiel/"))
+        # Names are host names and unique; another bot's id stays its own.
+        self.assertEqual((r.api("PUT", "/api/bot/noah", {"name": "mia"})[0], r.api("PUT", "/api/bot/noah", {"name": "lena"})[0]), (409, 409))
+        for bad in ("M", "Mia!", "agent7", "Chris", "-mia", "Mia Müller"):
+            self.assertEqual(r.api("PUT", "/api/bot/noah", {"name": bad})[0], 400, bad)
+        # The room knows the bot by its new name.
+        r.say("@Mia hallo")
+        r.idle()
+        self.assertEqual([m["from"] for m in r.messages()], ["chris", "lena"])
+        self.assertIn("Du bist Mia", r.lena.chats()[-1]["messages"][0]["content"])
+        # Taking the old name back makes it the address again, and "mia" the earlier one.
+        self.assertEqual(r.api("PUT", "/api/bot/lena", {"name": "Lena"})[0], 200)
+        code, headers, _ = site("mia", "/")
+        self.assertEqual((code, headers["location"]), (302, "https://lena.bot.stardenburg.de/"))
+        self.assertEqual(site("lena", "/")[0], 200)
 
     def test_tool_work_continues_only_with_marker_success_and_progress(self):
         r = self.room

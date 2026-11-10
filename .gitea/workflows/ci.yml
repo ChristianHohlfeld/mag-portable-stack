@@ -16,7 +16,7 @@ jobs:
         run: |
           source ops/build-targets.sh
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
-          cmake --build build -j 8 --target "${MAG_BUILD_TARGETS[@]}" test-group-dispatcher
+          cmake --build build -j 8 --target "${MAG_BUILD_TARGETS[@]}" mag-stt test-group-dispatcher
       - name: Shell syntax
         run: bash ops/ci/check.sh
       - name: Model supervisor

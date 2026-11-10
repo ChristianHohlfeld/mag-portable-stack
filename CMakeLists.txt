@@ -47,6 +47,25 @@ target_link_libraries(mag-browser PRIVATE Threads::Threads OpenSSL::Crypto icuuc
 add_executable(mag-bots-publish ops/bots/publishd.cpp)
 target_compile_options(mag-bots-publish PRIVATE ${WARN})
 
+# Speech to text for the room (ops/stt). The recognizer is transcribe.cpp,
+# built outside this tree by ops/stt/bootstrap.sh; without it (CI) the daemon
+# still builds and runs its protocol on a fake engine.
+add_executable(mag-stt mag-room/native/mag_stt.cpp)
+target_compile_options(mag-stt PRIVATE ${WARN})
+target_link_libraries(mag-stt PRIVATE Threads::Threads OpenSSL::Crypto CURL::libcurl icuuc)
+set(MAG_TRANSCRIBE_SRC "" CACHE PATH "transcribe.cpp checkout (ops/stt/bootstrap.sh)")
+set(MAG_TRANSCRIBE_BUILD "" CACHE PATH "its CMake build directory")
+if(MAG_TRANSCRIBE_SRC AND MAG_TRANSCRIBE_BUILD)
+  target_compile_definitions(mag-stt PRIVATE MAG_STT_TRANSCRIBE=1)
+  target_include_directories(mag-stt PRIVATE ${MAG_TRANSCRIBE_SRC}/include)
+  target_link_libraries(mag-stt PRIVATE
+    ${MAG_TRANSCRIBE_BUILD}/src/libtranscribe.a
+    ${MAG_TRANSCRIBE_BUILD}/ggml/src/libggml.a
+    ${MAG_TRANSCRIBE_BUILD}/ggml/src/libggml-cpu.a
+    ${MAG_TRANSCRIBE_BUILD}/ggml/src/libggml-base.a
+    ${CMAKE_DL_LIBS} m)
+endif()
+
 add_executable(test-group-dispatcher mag-room/tests/test_group_dispatcher.cpp)
 
 install(TARGETS magroom mag-browser magbot-native mag-audit-gateway mag-bots-publish mag-modeld RUNTIME DESTINATION bin)

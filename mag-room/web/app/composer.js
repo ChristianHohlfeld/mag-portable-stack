@@ -1,9 +1,10 @@
-// The composer: text, attachments, photo-to-3D with its quality, dictation.
+// The composer: text, attachments, photo-to-3D with its quality. Dictation
+// writes into the same field (dictate.js).
 'use strict';
 (function () {
   const { MAG } = window, { el, $ } = MAG;
   const coarse = matchMedia('(pointer: coarse)').matches;
-  let input, sendBtn, stagedBox, micBtn;
+  let input, sendBtn, stagedBox;
   let staged = [];           // {att, url} uploaded, not sent yet
   let uploading = 0, sending = false;
   let mode3d = false;
@@ -69,6 +70,8 @@
 
   async function send() {
     if (sendBtn.disabled) return;
+    // A dictation that is still running ends here, with its last words.
+    if (MAG.dictation?.active()) await MAG.dictation.finish();
     const text = input.value.trim(), body = { text, attachments: staged.map((s) => s.att.file), client_id: crypto.randomUUID?.() || String(Math.random()) };
     if (mode3d) Object.assign(body, { mode: '3d', quality, text: '' });
     sending = true;
@@ -88,37 +91,8 @@
     paintStaged();
   }
 
-  // ---- dictation: record, transcribe on the server (whisper) --------------
-  let recorder = null, chunks = [];
-  async function toggleMic() {
-    if (recorder) return recorder.stop();
-    if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) return MAG.toast('Dieses Gerät kann hier nicht aufnehmen', true);
-    let stream;
-    try { stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } }); }
-    catch { return MAG.toast('Kein Zugriff auf das Mikrofon', true); }
-    chunks = [];
-    recorder = new MediaRecorder(stream);
-    recorder.ondataavailable = (e) => e.data.size && chunks.push(e.data);
-    recorder.onstop = async () => {
-      stream.getTracks().forEach((t) => t.stop());
-      const blob = new Blob(chunks, { type: recorder.mimeType || 'audio/webm' });
-      recorder = null;
-      micBtn.classList.remove('rec');
-      if (blob.size < 800) return;
-      micBtn.disabled = true;
-      try {
-        const out = await MAG.api('POST', '/api/stt', blob);
-        if (out.text) { input.value = (input.value ? input.value.replace(/\s*$/, ' ') : '') + out.text; resize(); refresh(); }
-        else MAG.toast('Nichts verstanden');
-      } catch (err) { MAG.toast(err.message, true); }
-      micBtn.disabled = false;
-    };
-    recorder.start();
-    micBtn.classList.add('rec');
-  }
-
   document.addEventListener('DOMContentLoaded', () => {
-    input = $('#input'); sendBtn = $('#send'); stagedBox = $('#staged'); micBtn = $('#mic');
+    input = $('#input'); sendBtn = $('#send'); stagedBox = $('#staged');
     input.value = sessionStorage.getItem('mag-draft') || '';
     input.addEventListener('input', () => { resize(); refresh(); sessionStorage.setItem('mag-draft', input.value); });
     input.addEventListener('keydown', (e) => {
@@ -129,7 +103,6 @@
       if (files.length) { e.preventDefault(); addFiles(files); }
     });
     sendBtn.addEventListener('click', send);
-    micBtn.addEventListener('click', toggleMic);
     $('#attach').addEventListener('click', (e) => MAG.menu(e.currentTarget, [
       { icon: 'image', label: 'Datei oder Foto', run: () => pick('', false) },
       coarse ? { icon: 'camera', label: 'Kamera', run: () => pick('image/*', true) } : null,
@@ -141,5 +114,4 @@
     resize();
     paintStaged();
   });
-  MAG.on('settings', () => { if (micBtn) micBtn.hidden = !MAG.state.features.stt; });
 })();

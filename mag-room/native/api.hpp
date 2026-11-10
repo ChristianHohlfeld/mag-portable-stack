@@ -65,6 +65,7 @@ public:
     if (r.method == "POST" && p == "/api/stop") return post_stop(fd, r);
     if (r.method == "POST" && p == "/api/upload") return upload(fd, r);
     if (r.method == "POST" && p == "/api/stt") return stt(fd, r);
+    if ((r.method == "POST" || r.method == "DELETE") && p == "/api/stt/live") return stt_live(fd, r);
     if (r.method == "POST" && starts_with(p, "/api/3d/") && ends_with(p, "/cancel")) {
       idol_.cancel(p.substr(8, p.size() - 8 - 7));
       return http::send_ok(fd);
@@ -198,7 +199,7 @@ private:
     v["you"] = you;
     Val features = Val::object();
     features["search"] = !room_.cfg.brave_key.empty();
-    features["stt"] = exists(room_.cfg.whisper_cli) && exists(room_.cfg.whisper_model);
+    features["stt"] = stt_ready();
     features["push"] = push_.configured();
     v["features"] = features;
     v["zone"] = site::zone(); // the bots' sites are <name>.<zone>
@@ -701,28 +702,65 @@ private:
     http::send(fd, 200, "application/json; charset=utf-8", res.body);
   }
 
-  // ---- speech to text (whisper.cpp on the host) ---------------------------
+  // ---- speech to text (mag-stt, the recognizer service on this host) ------
+  // Is the speech service there? Asked at most every few seconds.
+  bool stt_ready() {
+    static std::mutex mu;
+    static int64_t asked = 0;
+    static bool ready = false;
+    std::lock_guard<std::mutex> lk(mu);
+    if (!asked || mono_ms() - asked > 5000) {
+      http::ClientOptions opt;
+      opt.timeout_s = 2;
+      opt.connect_timeout_s = 1;
+      ready = http::fetch(room_.cfg.stt_url + "/health", opt).ok();
+      asked = mono_ms();
+    }
+    return ready;
+  }
+  void stt_answer(int fd, const http::ClientResult &res) {
+    if (!res.error.empty() || !res.status) return http::send_error(fd, 503, "Spracherkennung ist nicht erreichbar");
+    http::send(fd, (int)res.status, "application/json; charset=utf-8", res.body);
+  }
+
+  // A dictation while it is spoken: the page sends 16 kHz PCM chunk by chunk
+  // and reads the text so far from every answer.
+  void stt_live(int fd, const http::Request &r) {
+    const std::string sid = r.param("sid");
+    if (sid.size() < 8 || sid.size() > 64 || !std::all_of(sid.begin(), sid.end(), [](unsigned char c) { return isalnum(c); }))
+      return http::send_error(fd, 400, "Ungültige Diktat-Kennung");
+    http::ClientOptions opt;
+    opt.method = r.method;
+    opt.timeout_s = 100;
+    std::string url = room_.cfg.stt_url + "/v1/stream/" + sid;
+    if (r.method == "POST") {
+      if (r.body.size() > (8u << 20)) return http::send_error(fd, 413, "Zu viel Audio in einem Stück");
+      opt.body = r.body;
+      opt.headers.push_back({"Content-Type", "application/octet-stream"});
+      url += "?seq=" + std::to_string(atoi(r.param("seq").c_str())) + "&lang=" + url_encode(r.param("lang")) + (r.param("end") == "1" ? "&end=1" : "");
+    }
+    stt_answer(fd, http::fetch(url, opt));
+  }
+
+  // A finished recording in any format ffmpeg reads.
   void stt(int fd, const http::Request &r) {
     if (r.body.size() < 200) return http::send_error(fd, 400, "Keine Aufnahme");
-    if (!exists(room_.cfg.whisper_cli) || !exists(room_.cfg.whisper_model)) return http::send_error(fd, 503, "Spracherkennung ist nicht installiert");
     const std::string base = room_.cfg.state_dir + "/uploads/stt-" + random_hex(8);
     struct Cleanup {
       std::string base;
-      ~Cleanup() { for (const char *ext : {".audio", ".wav", ".txt"}) unlink((base + ext).c_str()); }
+      ~Cleanup() { for (const char *ext : {".audio", ".pcm"}) unlink((base + ext).c_str()); }
     } cleanup{base};
     if (!write_atomic(base + ".audio", r.body, 0600)) return http::send_error(fd, 500, "Aufnahme konnte nicht gespeichert werden");
-    RunOptions opt;
-    opt.timeout_s = 60;
-    if (run({"ffmpeg", "-nostdin", "-v", "error", "-y", "-i", base + ".audio", "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", base + ".wav"}, opt).code != 0)
+    RunOptions run_opt;
+    run_opt.timeout_s = 120;
+    if (run({"ffmpeg", "-nostdin", "-v", "error", "-y", "-i", base + ".audio", "-ar", "16000", "-ac", "1", "-f", "s16le", base + ".pcm"}, run_opt).code != 0)
       return http::send_error(fd, 415, "Aufnahmeformat wird nicht unterstützt");
-    opt.timeout_s = 300;
-    std::string lang = r.param("lang");
-    if (lang != "en" && lang != "auto") lang = "de";
-    const RunResult res = run({room_.cfg.whisper_cli, "-m", room_.cfg.whisper_model, "-f", base + ".wav", "-l", lang, "-t", "8", "-otxt", "-of", base, "-nt"}, opt);
-    if (res.code != 0) return http::send_error(fd, 500, "Spracherkennung fehlgeschlagen");
-    Val v = Val::object();
-    v["text"] = trim(slurp(base + ".txt"));
-    http::send_json(fd, 200, v);
+    http::ClientOptions opt;
+    opt.method = "POST";
+    opt.timeout_s = 600;
+    opt.headers.push_back({"Content-Type", "application/octet-stream"});
+    if (!read_file(base + ".pcm", opt.body, 40u << 20)) return http::send_error(fd, 413, "Die Aufnahme ist zu lang");
+    stt_answer(fd, http::fetch(room_.cfg.stt_url + "/v1/transcribe?lang=" + url_encode(r.param("lang")), opt));
   }
 
   // ---- bridge (192.168.122.1:8767): only for the bot VMs -----------------

@@ -21,8 +21,7 @@ Environment=MAG_ROOM_WEB=/opt/mag-stack/current/web
 Environment=MAG_ROOM_BIND=127.0.0.1
 Environment=MAG_ROOM_GATEWAY=http://127.0.0.1:8080
 Environment=MAG_BROWSER_BINARY=/opt/mag-stack/current/bin/mag-browser
-Environment=MAG_WHISPER_CLI=/opt/mag-stack/current/bin/whisper-cli
-Environment=MAG_WHISPER_MODEL=/var/lib/mag-stack/models/ggml-large-v3-turbo.bin
+Environment=MAG_STT_URL=http://127.0.0.1:8194
 # The room's own web requests (search, push) go through the audit proxy;
 # loopback and the VM network are reached directly.
 Environment=http_proxy=http://127.0.0.1:8888
@@ -36,7 +35,7 @@ RestartSec=2
 TimeoutStopSec=15
 LimitNOFILE=65536
 UMask=0027
-# Helpers started by the room (ffmpeg, whisper, OCR, the sudo wrappers) stay
+# Helpers started by the room (ffmpeg, OCR, the sudo wrappers) stay
 # off the model cores 0-27.
 CPUAffinity=28-55
 # Secrets never reach the journal.

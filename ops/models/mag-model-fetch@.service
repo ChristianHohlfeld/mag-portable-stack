@@ -1,4 +1,4 @@
-# Resumable download of one GGUF (instance: <bot>-model or <bot>-draft);
+# Resumable download of one GGUF (instance: <bot>-model, <bot>-draft or <bot>-mmproj);
 # started on demand by mag-modeld, one writer per file.
 [Unit]
 Description=MAG model download (%i)

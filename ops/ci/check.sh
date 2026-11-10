@@ -16,6 +16,8 @@ if jq -r '.bots[] | (.args + (.draft.args // []))[]' ops/models/models.json | gr
   echo 'models.json: GPU flags are not allowed (CPU-only bots)' >&2; exit 1
 fi
 grep -Fq -- '--device none --n-gpu-layers 0' ops/models/run.sh
+# The vision projector stays on the CPU as well.
+grep -Fq -- '--mmproj "$mmproj" --no-mmproj-offload' ops/models/run.sh
 # A deploy never probes, starts, stops or waits for a model, and never drains.
 if grep -nE '819[12]|mag-model@|drain_room|/api/state' ops/deploy.sh; then
   echo 'deploy.sh must not depend on model or room-busy state' >&2; exit 1

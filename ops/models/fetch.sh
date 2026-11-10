@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # Resume the download of ONE file of one bot:
-#   fetch.sh <bot>-<model|draft>   (mag-model-fetch@<bot>-<kind>.service, user chris)
+#   fetch.sh <bot>-<model|draft|mmproj>   (mag-model-fetch@<bot>-<kind>.service, user chris)
 # Started by mag-modeld only when no process has the file open. wget -c
 # appends to what is there, so exactly one writer per file is essential: this
 # script refuses to start when anything else holds the file.
 set -uo pipefail
-arg=${1:?usage: fetch.sh <bot>-<model|draft>}
+arg=${1:?usage: fetch.sh <bot>-<model|draft|mmproj>}
 bot=${arg%-*}; kind=${arg##*-}
-[[ $bot =~ ^[a-z][a-z0-9]{1,15}$ && ($kind == model || $kind == draft) ]] || { echo "fetch: bad argument $arg" >&2; exit 64; }
+[[ $bot =~ ^[a-z][a-z0-9]{1,15}$ && ($kind == model || $kind == draft || $kind == mmproj) ]] || { echo "fetch: bad argument $arg" >&2; exit 64; }
 CONF=${MAG_MODELS_CONF:-/usr/local/lib/mag-models/models.json}
 path=$(jq -r --arg b "$bot" --arg k "$kind" '.bots[$b][$k].path // empty' "$CONF")
 url=$(jq -r --arg b "$bot" --arg k "$kind" '.bots[$b][$k].url // empty' "$CONF")

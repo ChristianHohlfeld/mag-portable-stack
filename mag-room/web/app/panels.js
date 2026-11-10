@@ -193,7 +193,7 @@
     else document.documentElement.dataset.theme = theme;
     document.documentElement.style.setProperty('--size', (localStorage.getItem('mag-size') || '16') + 'px');
     const dark = theme === 'dark' || (theme === 'auto' && !matchMedia('(prefers-color-scheme: light)').matches);
-    document.querySelector('meta[name="theme-color"]')?.setAttribute('content', dark ? '#0c0d10' : '#f6f7f9');
+    document.querySelector('meta[name="theme-color"]')?.setAttribute('content', dark ? '#17181b' : '#ffffff');
   }
   applyLook();
 

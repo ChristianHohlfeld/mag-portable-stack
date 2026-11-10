@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
-<meta name="theme-color" content="#0c0d10">
+<meta name="theme-color" content="#17181b">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="MAG">
@@ -41,12 +41,14 @@
   <div id="dock">
     <button id="jump" aria-label="Nach unten" title="Nach unten" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12l7 7 7-7"/></svg><span></span></button>
     <footer id="composer">
-      <div id="staged"></div>
-      <div class="row">
-        <button id="attach" class="icon-btn" aria-label="Anhängen"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button>
-        <textarea id="input" rows="1" placeholder="Nachricht" autocomplete="off" enterkeyhint="enter" aria-label="Nachricht"></textarea>
-        <button id="mic" class="icon-btn" aria-label="Diktieren" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg></button>
-        <button id="send" aria-label="Senden" disabled></button>
+      <div class="field">
+        <div id="staged"></div>
+        <div class="row">
+          <button id="attach" class="icon-btn" aria-label="Anhängen"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button>
+          <textarea id="input" rows="1" placeholder="Nachricht" autocomplete="off" enterkeyhint="enter" aria-label="Nachricht"></textarea>
+          <button id="mic" class="icon-btn" aria-label="Diktieren" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg></button>
+          <button id="send" aria-label="Senden" disabled></button>
+        </div>
       </div>
     </footer>
   </div>

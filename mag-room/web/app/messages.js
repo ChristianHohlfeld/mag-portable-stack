@@ -10,7 +10,9 @@
 
   // ---- markdown -----------------------------------------------------------
   if (window.marked) marked.setOptions({ gfm: true, breaks: true });
-  function markdown(text) {
+  // `live`: the text is still being written. Long code is then left plain
+  // and coloured once at the end, so a phone keeps up with the stream.
+  function markdown(text, live) {
     if (!window.marked || !window.DOMPurify) return el('div', { class: 'md', text });
     const html = DOMPurify.sanitize(marked.parse(text || ''), { FORBID_TAGS: ['style', 'form', 'input', 'iframe', 'object', 'embed'], FORBID_ATTR: ['style', 'onerror', 'onclick'] });
     const box = el('div', { class: 'md', html });
@@ -18,8 +20,14 @@
     box.querySelectorAll('img').forEach((img) => { img.loading = 'lazy'; });
     box.querySelectorAll('pre').forEach((pre) => {
       const code = pre.querySelector('code');
-      if (code && window.hljs && code.textContent.length < 40000) { try { hljs.highlightElement(code); } catch {} }
-      pre.append(el('button', { class: 'copy', text: 'Kopieren', onclick: (e) => copy(code ? code.textContent : pre.textContent, e.target) }));
+      const lang = ((code?.className || '').match(/language-([\w+#.-]+)/) || [])[1] || '';
+      const known = lang && window.hljs?.getLanguage(lang);
+      if (code && known && code.textContent.length < (live ? 6000 : 60000)) { try { hljs.highlightElement(code); } catch {} }
+      // Language and copy in a quiet head, the code below.
+      const block = el('div', { class: 'codeblock' });
+      pre.replaceWith(block);
+      block.append(el('div', { class: 'head' }, el('span', { text: lang || 'Code' }),
+        el('button', { class: 'copy', text: 'Kopieren', onclick: (e) => copy(code ? code.textContent : pre.textContent, e.target) })), pre);
     });
     return box;
   }
@@ -167,7 +175,12 @@
         stage.replaceChildren();
       } else if (card._visible) mount(card);
     }
-    if (pre) { pre.before(card); code.append(pre); }
+    if (pre) {
+      const block = pre.closest('.codeblock') || pre;
+      block.before(card);
+      code.append(pre);
+      if (block !== pre) block.remove();
+    }
     show('preview');
     watch(card);
     return card;
@@ -366,7 +379,7 @@
   function buildPart(m, index) {
     const p = m.parts[index];
     if (p.k === 'step') return buildStep(m, index);
-    const node = markdown(p.text);
+    const node = markdown(p.text, m.state === 'streaming');
     node.dataset.part = index;
     return node;
   }
@@ -383,6 +396,23 @@
     const last = parts[parts.length - 1];
     const lastPart = (m.parts || [])[m.parts.length - 1];
     if (last && lastPart && lastPart.k === 'text') (last.lastElementChild || last).classList.add('cursor');
+  }
+
+  // The first message of a day carries the day (shown above it).
+  function dayOf(ms) {
+    const d = new Date(ms), now = new Date(), key = (x) => x.getFullYear() * 10000 + x.getMonth() * 100 + x.getDate();
+    if (key(d) === key(now)) return 'Heute';
+    if (key(d) === key(new Date(now.getTime() - 86400000))) return 'Gestern';
+    return d.toLocaleDateString('de-DE', { weekday: 'long', day: 'numeric', month: 'long' });
+  }
+  function paintDays() {
+    let last = '';
+    for (const node of list.children) {
+      const m = S.messages.get(node.dataset.id), day = m ? dayOf(m.ts) : '';
+      if (day && day !== last) node.dataset.day = day;
+      else delete node.dataset.day;
+      if (day) last = day;
+    }
   }
 
   function upsert(m, fresh) {
@@ -406,6 +436,7 @@
     }
     nodes.set(m.id, node);
     empty.hidden = S.messages.size > 0;
+    paintDays();
   }
 
   function renderAll() {
@@ -416,6 +447,7 @@
     for (const m of ordered) { const node = build(m); nodes.set(m.id, node); list.append(node); }
     empty.hidden = ordered.length > 0;
     olderBtn.hidden = !S.more;
+    paintDays();
     toBottom();
   }
 
@@ -433,11 +465,17 @@
     }
     dirty.clear();
   }
-  let scheduled = false;
+  let scheduled = false, cost = 0;
   function schedule() {
     if (scheduled) return;
     scheduled = true;
-    setTimeout(() => { scheduled = false; flush(); }, 60);
+    // A long answer takes longer to render: leave the phone time to breathe.
+    setTimeout(() => {
+      scheduled = false;
+      const t0 = performance.now();
+      flush();
+      cost = performance.now() - t0;
+    }, Math.max(60, Math.min(700, cost * 4)));
   }
 
   // ---- activity row: who is doing what right now --------------------------
@@ -480,7 +518,7 @@
   });
   MAG.on('reset', renderAll);
   MAG.on('message', (m) => upsert(m, !nodes.has(m.id)));
-  MAG.on('gone', (id) => { nodes.get(id)?.remove(); nodes.delete(id); empty.hidden = S.messages.size > 0; });
+  MAG.on('gone', (id) => { nodes.get(id)?.remove(); nodes.delete(id); empty.hidden = S.messages.size > 0; paintDays(); });
   MAG.on('delta', (m, part) => { dirty.add(m.id + ':' + part); schedule(); });
   MAG.on('reasoning', (m) => {
     const node = nodes.get(m.id);
@@ -517,6 +555,7 @@
     nodes.clear();
     for (const m of ordered) { const node = build(m); nodes.set(m.id, node); list.append(node); }
     olderBtn.hidden = !S.more;
+    paintDays();
     scroller.scrollTop += scroller.scrollHeight - before; // stay on the same message
   });
 })();

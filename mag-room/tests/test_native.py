@@ -654,13 +654,17 @@ class RoomContract(unittest.TestCase):
             # Without saying which figure of the model is meant: the worker refuses, and says why.
             {"content": "", "tool_calls": [build(actors=[{"name": "Fuchs", "model": model["name"]}], actions=[])]},
             {"content": "", "tool_calls": [build(actors=cast, actions=walk, ground="snow")]},
+            # Not content with it and at it again in the same answer: one scene per answer.
+            {"content": "", "tool_calls": [build(title="Zweiter Versuch", actors=cast, actions=walk)]},
             "Der Fuchs läuft jetzt zum Gnom."])
         r.lena.reply = lambda body: next(script)
         r.scene.hold = True
         r.say("@Lena lass den Fuchs zum Gnom laufen")
         r.idle()
         steps = [p for m in r.messages() if m["from"] == "lena" for p in m["parts"] if p["k"] == "step"]
-        self.assertEqual([(s["tool"], s["state"]) for s in steps], [("models_3d", "ok"), ("scene_3d", "error"), ("scene_3d", "ok")])
+        self.assertEqual([(s["tool"], s["state"]) for s in steps], [("models_3d", "ok"), ("scene_3d", "error"), ("scene_3d", "ok"), ("scene_3d", "error")])
+        self.assertIn("In dieser Antwort hast du schon eine Szene gebaut", steps.pop()["output"])
+        self.assertEqual(len(r.scene.specs), 2)   # the worker was not asked again
         self.assertEqual(steps[2]["title"], "Baut die 3D-Szene Fuchs besucht Gnom")
         # The bot is told what there is: the model, where it comes from, and what each of its figures is.
         self.assertIn("1. %s (aus dem Foto wald.png) zeigt 2 Figuren" % model["name"], steps[0]["output"])
@@ -672,7 +676,7 @@ class RoomContract(unittest.TestCase):
         self.assertEqual([(a["name"], a["file"], a["model"], a["part"]) for a in spec["actors"]],
                          [("Gnom", model["file"], model["name"], 1), ("Fuchs", model["file"], model["name"], 2)])
         self.assertEqual((spec["ground"], spec["actions"]), ("snow", walk))
-        told = r.lena.chats()[-1]["messages"][-1]
+        told = r.lena.chats()[-2]["messages"][-1]
         self.assertEqual(told["role"], "tool")
         self.assertIn("steht jetzt im Chat (4.5 Sekunden; Darsteller: Gnom (Zweibeiner: 2 Beine, Rumpf, Kopf); Fuchs (Vierbeiner: 4 Beine, Kopf und Schwanz))", told["content"])
         # The scene is a message of its own and can be played at once; its film is still being rendered.

@@ -2,9 +2,13 @@
 // A bot describes a scene: which 3D models from the chat play in it and what
 // they do. The scene worker builds it while the call waits, so a wrong
 // description comes back as words the bot can act on. The built scene is a
-// message of its own right away (an animated GLB the chat plays); its film is
-// rendered afterwards and joins the same message. Like a 3D result the
-// message is stored, deletable and survives restarts on both sides.
+// message of its own right away (an animated GLB the chat plays). Its film is
+// rendered when the owner asks for it at the scene and joins the same
+// message; the file for Blender is fetched when he wants it. Like a 3D result
+// the message is stored, deletable and survives restarts on both sides.
+// What should happen next is said at the scene or the model itself: such a
+// message is "about" it, and the bot that reads it is told how the scene was
+// made, so a new version has the same figures.
 #pragma once
 #include "http.hpp"
 #include "room.hpp"
@@ -76,6 +80,8 @@ public:
       actor["file"] = jstr(file, "file");
       actor["model"] = jstr(file, "name");
     }
+    const Val told = recipe_of(spec);
+    spec["film"] = false; // its film is rendered when Chris asks for it
     http::ClientOptions opt = options("POST");
     opt.body = mj::dump(spec);
     opt.headers.push_back({"Content-Type", "application/json"});
@@ -105,7 +111,7 @@ public:
     Val m = Val::object();
     m["from"] = "idol";
     m["role"] = "service";
-    m["state"] = "streaming"; // until its film is there
+    m["state"] = "done";
     m["text"] = "3D-Szene: " + title;
     Val atts = Val::array();
     atts.push(glb);
@@ -113,46 +119,108 @@ public:
     Val m3 = Val::object();
     m3["kind"] = "scene";
     m3["job"] = id;
-    m3["state"] = "queued";
-    m3["stage"] = "Film wartet";
-    m3["progress"] = 0;
+    m3["state"] = "ready"; // plays in the chat; no film was asked for
+    m3["stage"] = "Bereit";
     m3["title"] = title;
     m3["seconds"] = jnum(job, "seconds");
     m3["cast"] = cast;
     m3["kinds"] = kinds;
     m3["by"] = by;
     m3["glb"] = jstr(glb, "file");
-    m3["started"] = jnum(job, "started");
     m3["phases"] = jnum(job, "phases", 3);
+    m3["spec"] = told;
+    m3["prompt"] = wish();
     m["model3d"] = m3;
-    watch(jstr(room_.add(m), "id"), id);
+    room_.add(m);
     ok = true;
     char seconds[32];
     snprintf(seconds, sizeof seconds, "%.1f", jnum(job, "seconds"));
     return "Die Szene „" + title + "“ steht jetzt im Chat (" + seconds + " Sekunden; Darsteller: " + names +
-           "). Chris kann sie dort von allen Seiten ansehen und abspielen; ihr Film wird noch gerendert und erscheint in derselben Nachricht. "
+           "). Chris kann sie dort von allen Seiten ansehen und abspielen. Einen Film (MP4) davon lässt er bei Bedarf selbst an der Szene rendern. "
            "Baue sie nicht noch einmal, außer Chris möchte etwas anders haben.";
   }
 
   void cancel(const Val &message) {
     if (is_scene(message)) http::fetch(room_.cfg.scene_url + "/api/scene/jobs/" + jstr(*message.find("model3d"), "job") + "/cancel", options("POST"));
   }
-  // The film failed or was cancelled: render it again (what was rendered stays).
-  bool retry(const Val &message) {
-    if (!is_scene(message) || jstr(message, "state") == "streaming") return false;
-    const std::string job = jstr(*message.find("model3d"), "job");
-    const auto res = http::fetch(room_.cfg.scene_url + "/api/scene/jobs/" + job + "/retry", options("POST"));
-    if (res.status != 200 || !jbool(jparse(res.body), "queued")) return false;
+  // The owner asks for the film of a scene (or for it again, when it failed
+  // or was cancelled: what was rendered stays). "" or why there will be none.
+  std::string film(const Val &message) {
+    if (!is_scene(message)) return "Das ist keine Szene.";
+    const Val &m3 = *message.find("model3d");
+    if (jstr(message, "state") == "streaming") return "Der Film wird schon gerendert.";
+    if (!jstr(m3, "film").empty()) return "Den Film gibt es schon.";
+    const std::string job = jstr(m3, "job");
+    const auto res = http::fetch(room_.cfg.scene_url + "/api/scene/jobs/" + job + "/film", options("POST"));
+    const Val out = jparse(res.body);
+    if (!res.error.empty() || !res.status) return "Der Szenen-Dienst (Blender) ist nicht erreichbar.";
+    if (res.status != 200 || !jbool(out, "queued")) {
+      // The worker may have the film already (the room could not take it over): then it is taken now.
+      http::ClientOptions opt = options("GET");
+      opt.timeout_s = 5;
+      if (jstr(jparse(http::fetch(room_.cfg.scene_url + "/api/scene/jobs/" + job, opt).body), "state") != "done")
+        return jstr(out, "error", "Der Film lässt sich nicht rendern.");
+    }
     room_.update(jstr(message, "id"), [&](Val &msg) {
       msg["state"] = "streaming";
-      Val &m3 = msg["model3d"];
-      m3["state"] = "queued";
-      m3["stage"] = "Film wartet";
-      m3["started"] = (double)now_s();
-      m3.obj->erase(std::remove_if(m3.obj->begin(), m3.obj->end(), [](const auto &kv) { return kv.first == "error" || kv.first == "eta"; }), m3.obj->end());
+      Val &now = msg["model3d"];
+      now["state"] = "queued";
+      now["stage"] = "Film wartet";
+      now["started"] = (double)now_s();
+      now.obj->erase(std::remove_if(now.obj->begin(), now.obj->end(), [](const auto &kv) { return kv.first == "error" || kv.first == "eta"; }), now.obj->end());
     });
     watch(jstr(message, "id"), job);
-    return true;
+    return "";
+  }
+  // The scene as a file for Blender, fetched when the owner wants it.
+  Val blend(const Val &message) {
+    if (!is_scene(message)) return Val();
+    if (const Val *atts = message.find("attachments"); atts && atts->isArr())
+      for (auto &a : atts->asArr())
+        if (ends_with(jstr(a, "name"), ".blend")) return a;
+    std::lock_guard<std::mutex> lk(blend_mu_); // two taps fetch it once
+    Val now;
+    if (!room_.get(jstr(message, "id"), now)) return Val();
+    if (const Val *atts = now.find("attachments"); atts && atts->isArr())
+      for (auto &a : atts->asArr())
+        if (ends_with(jstr(a, "name"), ".blend")) return a;
+    const std::string job = jstr(*message.find("model3d"), "job");
+    const Val file = fetch_result(job, "scene.blend", "szene-" + job.substr(0, 6) + ".blend");
+    if (file.isObj()) room_.update(jstr(message, "id"), [&](Val &msg) { msg["attachments"].push(file); });
+    return file;
+  }
+  // How a scene was made, for a new version of it. Scenes from before this
+  // was kept with the message get it from the worker, once.
+  void recipe(const Val &message) {
+    if (!is_scene(message) || message.find("model3d")->find("spec")) return;
+    http::ClientOptions opt = options("GET");
+    opt.timeout_s = 5;
+    const auto res = http::fetch(room_.cfg.scene_url + "/api/scene/jobs/" + jstr(*message.find("model3d"), "job") + "/spec", opt);
+    const Val out = jparse(res.body);
+    const Val *spec = out.find("spec");
+    if (res.status != 200 || !spec || !spec->isObj()) return;
+    const Val told = recipe_of(*spec);
+    room_.update(jstr(message, "id"), [&](Val &msg) { msg["model3d"]["spec"] = told; });
+  }
+  // What a bot reads below a message that is about a scene or a model.
+  static std::string about(const Val &ref) {
+    const Val *m3 = ref.find("model3d");
+    if (!m3 || !m3->isObj()) return "";
+    if (!is_scene(ref)) {
+      std::string name;
+      if (const Val *atts = ref.find("attachments"); atts && atts->isArr())
+        for (auto &a : atts->asArr())
+          if (name.empty() && ends_with(lower(jstr(a, "name")), ".glb")) name = jstr(a, "name");
+      if (name.empty()) return "";
+      return "[Chris schreibt das zum 3D-Modell " + name + ": Er möchte es animiert sehen. Sieh mit models_3d nach, welche Figuren es zeigt, und baue die Szene mit scene_3d.]";
+    }
+    const std::string head = "[Chris schreibt das zur 3D-Szene \"" + jstr(*m3, "title", "Szene") + "\": Er möchte eine neue Fassung mit denselben Figuren. ";
+    if (const Val *spec = m3->find("spec"); spec && spec->isObj())
+      return head + "So wurde sie mit scene_3d gebaut: " + clip(mj::dump(*spec), 6000, "…") + " Baue die neue mit scene_3d: dieselben actors, die actions nach seinem Wunsch.]";
+    std::string cast;
+    if (const Val *list = m3->find("cast"); list && list->isArr())
+      for (auto &name : list->asArr()) cast += (cast.empty() ? "" : ", ") + name.asStr();
+    return head + "Darsteller: " + cast + ". Sieh mit models_3d nach, aus welchen Modellen sie sind, und baue die neue mit scene_3d.]";
   }
   // The message is gone: remove what the worker keeps for it.
   void forget(const Val &removed) {
@@ -172,6 +240,35 @@ public:
 
 private:
   Room &room_;
+  std::mutex blend_mu_;
+
+  // A scene as its bot described it, without what the room added for the worker.
+  static Val recipe_of(const Val &spec) {
+    Val out = Val::object();
+    for (const char *key : {"title", "actors", "actions", "ground", "light", "seconds"})
+      if (const Val *v = spec.find(key); v && v->type != Val::NUL) out[key] = *v;
+    if (Val *actors = out.find("actors"); actors && actors->isArr())
+      for (auto &actor : *actors->arr)
+        if (actor.isObj())
+          actor.obj->erase(std::remove_if(actor.obj->begin(), actor.obj->end(), [](const auto &kv) { return kv.first == "file"; }), actor.obj->end());
+    return out;
+  }
+  // What Chris asked for when the scene was built: his last words in the
+  // chat, without the name he called. The scene shows them as its request,
+  // ready to be changed.
+  std::string wish() {
+    const auto all = room_.all();
+    for (auto it = all.rbegin(); it != all.rend(); ++it) {
+      if (jstr(*it, "role") != "user" || jbool(*it, "silent")) continue;
+      std::string text = trim(jstr(*it, "text"));
+      while (!text.empty() && text[0] == '@') {
+        const size_t end = text.find_first_of(" \t\n");
+        text = end == std::string::npos ? "" : trim(text.substr(end));
+      }
+      return clip(text, 400, "…");
+    }
+    return "";
+  }
 
   static http::ClientOptions options(const std::string &method) {
     http::ClientOptions opt;
@@ -301,10 +398,8 @@ private:
           const std::string base = "szene-" + job.substr(0, 6);
           const Val film = fetch_result(job, "scene.mp4", base + ".mp4");
           if (!film.isObj()) { finish(message_id, "error", "Der Film konnte nicht übernommen werden."); return; }
-          const Val blend = fetch_result(job, "scene.blend", base + ".blend");
           room_.update(message_id, [&](Val &msg) {
             msg["attachments"].push(film);
-            if (blend.isObj()) msg["attachments"].push(blend);
             msg["state"] = "done";
             Val &m3 = msg["model3d"];
             m3["state"] = "done";

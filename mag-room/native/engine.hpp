@@ -547,7 +547,9 @@ private:
          "und speichere, was sich bewährt hat. Ein Skill beschreibt Arbeit; er erlaubt nichts, was Chris nicht freigegeben hat.\n";
     s += "\n3D-Szenen\n"
          "- Möchte Chris eine Szene oder Animation mit 3D-Modellen aus dem Chat (zum Beispiel \"lass den Fuchs zum Gnom laufen\"), siehst du mit models_3d nach, "
-         "welche Modelle und Figuren es gibt, und baust sie mit scene_3d. Die Szene erscheint von selbst im Chat; sag danach in einem Satz, was sie zeigt.\n";
+         "welche Modelle und Figuren es gibt, und baust sie mit scene_3d. Die Szene erscheint von selbst im Chat; sag danach in einem Satz, was sie zeigt. "
+         "Einen Film davon lässt Chris selbst an der Szene rendern.\n"
+         "- Schreibt Chris etwas zu einer Szene, die es schon gibt, steht bei seiner Nachricht, wie sie gebaut wurde: Nimm dieselben actors und ändere nur, was er sich wünscht.\n";
     const std::string persona = trim(jstr(me, "persona"));
     if (!persona.empty()) s += "\nDeine Art: " + clip(persona, 1200) + "\n";
     if (const Val *mem = me.find("memory"); mem && mem->isArr() && !mem->asArr().empty()) {
@@ -953,7 +955,8 @@ private:
         if (jstr(o, "id") == by) by = jstr(o, "name");
       body = "\"" + jstr(m3, "title", "Szene") + "\" (" + seconds + " Sekunden; Darsteller: " + cast + ")" + (by.empty() ? "" : ", gebaut von " + by) +
              ". Chris kann sie im Chat drehen und abspielen. ";
-      body += st == "done" ? "Ihr Film ist fertig." : st == "cancelled" ? "Ihr Film wurde abgebrochen." : "Ihr Film ist fehlgeschlagen: " + jstr(m3, "error", "Fehler");
+      body += st == "ready" ? "Einen Film davon gibt es, wenn Chris ihn an der Szene rendern lässt."
+              : st == "done" ? "Ihr Film ist fertig." : st == "cancelled" ? "Ihr Film wurde abgebrochen." : "Ihr Film ist fehlgeschlagen: " + jstr(m3, "error", "Fehler");
       if (atts && atts->isArr() && !atts->asArr().empty()) {
         body += " Dateien:";
         for (auto &a : atts->asArr()) body += " " + jstr(a, "name") + " (" + kb(a) + ")";
@@ -1017,6 +1020,12 @@ private:
           body += "[Datei " + meta + "]";
         }
       }
+    // Written at a scene or a 3D model in the chat: what it is about, and how that scene was made.
+    if (const std::string about = jstr(m, "about"); !about.empty()) {
+      Val ref;
+      const std::string note = room_.get(about, ref) ? Scenes::about(ref) : "";
+      if (!note.empty()) body += (body.empty() ? "" : "\n") + note;
+    }
     return head + clip(body, 40000, "\n…[gekürzt]");
   }
 

@@ -264,11 +264,45 @@
     return '';
   }
   MAG.lightbox = lightbox;
-  // A model is animated by saying what should happen: the request to a bot
-  // that is there starts in the message field, with the model named.
-  const askBot = () => (S.bots.find((b) => b.enabled !== false && b.model?.state === 'ready') || S.bots.find((b) => b.enabled !== false) || S.bots[0])?.name || '';
-  const animate = (label, words) => el('button', { class: 'pill go', title: 'Sag, was passieren soll: ein Bot baut daraus eine animierte Szene',
-    onclick: () => MAG.compose('@' + askBot() + ' ' + words) }, MAG.icon('film'), el('b', { text: label }));
+  // What a model or a scene should do is said right below it. The line goes
+  // into the chat as a message about it, to the bot that built the scene if
+  // it is there, else to one that is. A scene shows the request it was made
+  // from, ready to be changed.
+  const askBot = (id) => {
+    const there = (b) => b.enabled !== false, ready = (b) => there(b) && b.model?.state === 'ready';
+    const own = MAG.bot(id);
+    return (own && ready(own) ? own : S.bots.find(ready) || S.bots.find(there) || S.bots[0])?.name || '';
+  };
+  function wish(m, label, hint, words) {
+    const input = el('input', { type: 'text', value: words || '', placeholder: hint, 'aria-label': label, maxLength: 400, autocomplete: 'off', enterKeyHint: 'send' });
+    const clear = el('button', { type: 'button', class: 'clear', 'aria-label': 'Feld leeren', title: 'Feld leeren', html: MAG.icons.x });
+    const go = el('button', { class: 'go', 'aria-label': 'An einen Bot senden', title: 'An einen Bot senden', html: MAG.icons.send });
+    const form = el('form', { class: 'wish' }, el('small', { text: label }), el('label', {}, MAG.icon('film'), input, clear), go);
+    const paint = () => { clear.hidden = !input.value; go.disabled = !input.value.trim() || form.classList.contains('busy'); };
+    clear.addEventListener('click', () => { input.value = ''; paint(); input.focus(); });
+    input.addEventListener('input', paint);
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const text = input.value.trim(), bot = askBot(m.model3d.by);
+      if (go.disabled) return;
+      form.classList.add('busy');
+      paint();
+      try {
+        await MAG.api('POST', '/api/message', { text: (bot ? '@' + bot + ' ' : '') + text, about: m.id, client_id: crypto.randomUUID?.() || String(Math.random()) });
+        input.value = words || '';
+        input.blur();
+        MAG.scrollToEnd();
+      } catch (err) {
+        MAG.toast(err.message, true);
+      }
+      form.classList.remove('busy');
+      paint();
+    });
+    paint();
+    return form;
+  }
+  // The view and the line below it stay while the card around them changes (see upsert).
+  const play = (key, stage, line) => el('div', { class: 'play', dataset: { keep: key } }, stage, line);
   const quality = { fast: 'Schnell', normal: 'Normal', high: 'Hoch' };
   const kinds = { glb: 'Modell mit Textur', stl: 'für den 3D-Druck', ply: 'Punktwolke (Gaussian Splat)' };
   // Runtime, and what the sampler itself expects to remain for its step.
@@ -317,9 +351,9 @@
         el('div', { class: 'tools' },
           el('button', { 'aria-label': 'Ansicht zurücksetzen', title: 'Ansicht zurücksetzen', html: MAG.icons.reset, onclick: () => MAG.viewer3d.reset(canvas) }),
           el('button', { class: 'full', 'aria-label': 'Vollbild', title: 'Vollbild', html: MAG.icons.full + MAG.icons.x, onclick: () => MAG.viewer3d.fullscreen(stage) })));
-      card.append(stage);
+      card.append(play(glb.file, stage, wish(m, 'Dieses Modell animieren', 'z. B. „läuft im Kreis und winkt“')));
       MAG.viewer3d.attach(canvas, fileUrl(glb));
-      card.append(el('div', { class: 'links' }, animate('Animieren', 'animiere ' + glb.name + ': '), (m.attachments || []).map((a) => {
+      card.append(el('div', { class: 'links' }, (m.attachments || []).map((a) => {
         const ext = a.name.split('.').pop().toLowerCase();
         return el('a', { class: 'pill', href: fileUrl(a, '?download=1'), download: a.name, title: (kinds[ext] || a.name) + ' herunterladen' },
           MAG.icon('down'), el('b', { text: ext.toUpperCase() }), el('small', { text: (kinds[ext] ? kinds[ext] + ' · ' : '') + MAG.bytes(a.size) }));
@@ -328,8 +362,20 @@
     return card;
   }
   // A scene a bot built from 3D models: it plays in the chat at once, from
-  // every side; its film is rendered meanwhile and joins the card.
+  // every side. Its film is rendered when it is asked for and joins the card,
+  // and so is its file for Blender.
   const sceneFiles = { glb: 'Szene mit Animation', mp4: 'Film', blend: 'für Blender' };
+  async function fetchBlend(m, button) {
+    if (button.disabled) return;
+    button.disabled = true;
+    try {
+      const { file } = await MAG.api('POST', '/api/3d/' + m.id + '/blend');
+      el('a', { href: fileUrl(file, '?download=1'), download: file.name }).click();
+    } catch (err) {
+      MAG.toast(err.message, true);
+    }
+    button.disabled = false;
+  }
   function buildScene(m) {
     const m3 = m.model3d, card = el('div', { class: 'm3 scene ' + m3.state });
     const running = m3.state === 'queued' || m3.state === 'running';
@@ -337,29 +383,34 @@
     const by = MAG.bot(m3.by)?.name;
     const facts = [m3.seconds ? String(Math.round(m3.seconds * 10) / 10).replace('.', ',') + ' s' : '', (m3.cast || []).join(', '), by ? 'von ' + by : ''].filter(Boolean).join(' · ');
     const sub = m3.state === 'error' ? 'Kein Film: ' + (m3.error || 'Fehler') : m3.state === 'cancelled' ? facts + ' · Film abgebrochen' : facts;
+    const order = (path) => MAG.api('POST', '/api/3d/' + m.id + path).catch((x) => MAG.toast(x.message, true));
     card.append(el('div', { class: 'head' }, el('span', { class: 'src' }, MAG.icon('film')),
       el('div', { class: 'txt' }, el('b', { text: m3.title || '3D-Szene' }), el('small', { text: sub })),
-      running ? el('button', { class: 'pill danger', text: 'Film abbrechen', onclick: () => MAG.api('POST', '/api/3d/' + m.id + '/cancel').catch((x) => MAG.toast(x.message, true)) })
-        // No film (it failed or was cancelled): what was rendered stays, the rest is rendered.
-        : !film && glb ? el('button', { class: 'pill', text: 'Film rendern', onclick: () => MAG.api('POST', '/api/3d/' + m.id + '/retry').catch((x) => MAG.toast(x.message, true)) }) : null));
+      running ? el('button', { class: 'pill danger', text: 'Film abbrechen', onclick: () => order('/cancel') })
+        // No film yet: it is rendered when it is asked for (of one that failed, what was rendered stays).
+        : !film && glb ? el('button', { class: 'pill', title: 'Rendert die Szene als Video (MP4)', onclick: async (e) => { const b = e.currentTarget; b.disabled = true; await order('/film'); b.disabled = false; } },
+            MAG.icon('film'), el('b', { text: 'Film rendern' })) : null));
     if (glb) {
       const canvas = el('canvas', {});
-      // The view stays while the card around it changes (see upsert).
-      const stage = el('div', { class: 'stage', dataset: { keep: glb.file } }, canvas, el('span', { class: 'wait', text: 'Szene wird geladen …' }), el('span', { class: 'hint' }),
+      const stage = el('div', { class: 'stage' }, canvas, el('span', { class: 'wait', text: 'Szene wird geladen …' }), el('span', { class: 'hint' }),
         el('div', { class: 'tools' },
           el('button', { class: 'play', 'aria-label': 'Abspielen oder anhalten', title: 'Abspielen oder anhalten', html: MAG.icons.pause + MAG.icons.play, onclick: () => MAG.viewer3d.toggle(canvas) }),
           el('button', { 'aria-label': 'Von vorn', title: 'Von vorn', html: MAG.icons.reset, onclick: () => MAG.viewer3d.reset(canvas) }),
           el('button', { class: 'full', 'aria-label': 'Vollbild', title: 'Vollbild', html: MAG.icons.full + MAG.icons.x, onclick: () => MAG.viewer3d.fullscreen(stage) })));
-      card.append(stage);
+      card.append(play(glb.file, stage, wish(m, 'Neue Bewegung für diese Szene', 'z. B. „Der Fuchs springt hoch“', m3.prompt)));
       MAG.viewer3d.attach(canvas, fileUrl(glb));
     }
     if (running) card.append(progress3d(m3));
     if (film) card.append(el('video', { class: 'film', controls: true, loop: true, preload: 'metadata', playsInline: true, src: fileUrl(film) }));
-    card.append(el('div', { class: 'links' }, animate('Neue Fassung', 'ändere die Szene „' + (m3.title || 'Szene') + '“: '), files.map((a) => {
+    const link = (a) => {
       const ext = a.name.split('.').pop().toLowerCase();
       return el('a', { class: 'pill', href: fileUrl(a, '?download=1'), download: a.name, title: (sceneFiles[ext] || a.name) + ' herunterladen' },
         MAG.icon('down'), el('b', { text: ext.toUpperCase() }), el('small', { text: (sceneFiles[ext] ? sceneFiles[ext] + ' · ' : '') + MAG.bytes(a.size) }));
-    })));
+    };
+    card.append(el('div', { class: 'links' }, files.map(link),
+      glb && !files.some((a) => a.name.endsWith('.blend'))
+        ? el('button', { class: 'pill', title: 'Die Szene als Datei für Blender holen und herunterladen', onclick: (e) => fetchBlend(m, e.currentTarget) },
+            MAG.icon('down'), el('b', { text: 'BLEND' }), el('small', { text: sceneFiles.blend })) : null));
     return card;
   }
   // A part of a message that must live on while the message changes (a 3D
@@ -411,6 +462,15 @@
     ])));
     return row.children.length ? row : null;
   }
+  // A message written at a scene or a 3D model says so; a tap leads there.
+  function aboutChip(m) {
+    const ref = m.about && S.messages.get(m.about), m3 = ref?.model3d;
+    if (!m3) return null;
+    const scene = m3.kind === 'scene', glb = (ref.attachments || []).find((a) => a.name.endsWith('.glb'));
+    return el('button', { class: 'about', title: 'Zur ' + (scene ? 'Szene' : 'Vorlage') + ' springen',
+      onclick: () => nodes.get(ref.id)?.scrollIntoView({ block: 'center', behavior: 'smooth' }) },
+      MAG.icon(scene ? 'film' : 'cube'), el('span', { text: scene ? 'zur Szene „' + (m3.title || 'Szene') + '“' : 'zum 3D-Modell ' + (glb?.name || '') }));
+  }
   function build(m) {
     const user = m.role === 'user';
     const node = el('article', { class: 'msg ' + (user ? 'user' : m.role === 'service' ? 'service' : 'bot'), dataset: { id: m.id, from: m.from } });
@@ -419,7 +479,7 @@
     if (user) {
       // The bubble, what was attached, and (on tap or hover) the actions.
       const bubble = m.text ? el('div', { class: 'bubble' }, markdown(m.text)) : null;
-      const col = el('div', { class: 'col' }, bubble, atts);
+      const col = el('div', { class: 'col' }, aboutChip(m), bubble, atts);
       col.addEventListener('click', (e) => {
         if (e.target.closest('a, button, video, audio') || String(window.getSelection() || '')) return;
         node.classList.toggle('show-acts');

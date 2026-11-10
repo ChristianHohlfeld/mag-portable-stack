@@ -77,10 +77,20 @@ public:
       }
       return http::send_ok(fd);
     }
-    if (r.method == "POST" && starts_with(p, "/api/3d/") && ends_with(p, "/retry")) {
+    if (r.method == "POST" && starts_with(p, "/api/3d/") && (ends_with(p, "/film") || ends_with(p, "/blend"))) {
+      // Of a scene, when the owner asks: its film is rendered, its file for Blender fetched.
+      const size_t cut = p.rfind('/');
       Val m;
-      if (!room_.get(p.substr(8, p.size() - 8 - 6), m) || !scenes_.retry(m)) return http::send_error(fd, 409, "Der Film lässt sich nicht noch einmal rendern");
-      return http::send_ok(fd);
+      if (!room_.get(p.substr(8, cut - 8), m) || !Scenes::is_scene(m)) return http::send_error(fd, 404, "Szene nicht gefunden");
+      if (p.substr(cut) == "/film") {
+        const std::string why = scenes_.film(m);
+        return why.empty() ? http::send_ok(fd) : http::send_error(fd, 409, why);
+      }
+      const Val file = scenes_.blend(m);
+      if (!file.isObj()) return http::send_error(fd, 502, "Die Datei für Blender ließ sich nicht holen");
+      Val out = Val::object();
+      out["file"] = file;
+      return http::send_json(fd, 200, out);
     }
     if (r.method == "POST" && p == "/api/browser-live/offer") return live_offer(fd, r);
     if (r.method == "POST" && starts_with(p, "/api/browser/")) return browser_action(fd, r);
@@ -331,6 +341,13 @@ private:
       // A 3D order is for the worker: the bots read it as context, it asks them nothing.
       m["silent"] = true;
       m["order3d"] = jstr(in, "quality", "normal");
+    } else if (const std::string about = jstr(in, "about"); is_id(about)) {
+      // Written at a scene or a 3D model in the chat: the message says what it is about.
+      Val ref;
+      if (room_.get(about, ref) && !Scenes::about(ref).empty()) {
+        scenes_.recipe(ref);
+        m["about"] = about;
+      }
     }
     const Val stored = room_.add(m);
     Val out = Val::object();

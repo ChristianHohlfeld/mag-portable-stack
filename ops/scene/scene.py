@@ -11,7 +11,7 @@ model or one of its parts. What a figure is, is read from its shape (rig.py):
 an animal and somebody on two legs get a skeleton and move their limbs, only
 a thing moves as a whole. `build` writes the animated scene as scene.glb
 (what the chat plays) and scene.blend, lit for its film; `render` renders
-scene.blend to frames with Cycles.
+scene.blend to frames with Cycles when the film is asked for.
 Nothing here takes code from a request: a scene is data, the motion is ours.
 """
 import json

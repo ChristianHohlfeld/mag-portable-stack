@@ -345,8 +345,30 @@ audio, video { max-width: 100%; border-radius: 12px; }
 .m3 .links .pill:hover { background: var(--surface-2); }
 .m3 .links .pill svg { width: 15px; height: 15px; color: var(--muted); }
 .m3 .links .pill small { color: var(--muted); font-size: 12.5px; }
-.m3 .links .pill.go { color: var(--idol); border-color: currentColor; }
-.m3 .links .pill.go svg { color: inherit; }
+.m3 .head .pill { display: inline-flex; align-items: center; gap: 6px; flex: none; }
+.m3 .head .pill svg { width: 15px; height: 15px; color: var(--idol); }
+.m3 .head .pill:disabled, .m3 .links .pill:disabled { opacity: .5; }
+/* What the model or the scene should do next: a line right below the view. */
+.m3 .wish { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 5px 6px; padding: 7px 10px 9px; border-top: 1px solid var(--line); }
+.m3 .wish small { grid-column: 1 / -1; padding-left: 2px; font-size: 12.5px; color: var(--muted); }
+.m3 .wish label {
+  min-width: 0; display: flex; align-items: center; gap: 7px; padding: 0 4px 0 11px; border: 1px solid var(--line); border-radius: 19px;
+  background: var(--bg); transition: border-color .15s, box-shadow .15s;
+}
+.m3 .wish label:focus-within { border-color: color-mix(in srgb, var(--idol) 60%, var(--line)); box-shadow: 0 0 0 3px color-mix(in srgb, var(--idol) 14%, transparent); }
+.m3 .wish label > svg { width: 16px; height: 16px; flex: none; color: var(--idol); }
+.m3 .wish input { flex: 1; min-width: 0; height: 36px; padding: 0; border: 0; background: transparent; outline: none; font-size: 16px; /* no zoom on iOS */ text-overflow: ellipsis; }
+.m3 .wish .clear { width: 28px; height: 28px; flex: none; border-radius: 50%; display: grid; place-items: center; color: var(--muted); }
+.m3 .wish .clear svg { width: 14px; height: 14px; }
+.m3 .wish .go { width: 36px; height: 36px; flex: none; border-radius: 50%; display: grid; place-items: center; background: var(--text); color: var(--bg); transition: background .12s, transform .08s; }
+.m3 .wish .go:active { transform: scale(.94); }
+.m3 .wish .go:disabled { background: var(--surface-2); color: var(--faint); }
+.m3 .wish .go svg { width: 19px; height: 19px; stroke-width: 2.2; }
+.m3 .wish.busy .go { animation: pulse 1.2s ease-in-out infinite; }
+/* A message written there says what it is about. */
+.msg.user .about { display: inline-flex; align-items: center; gap: 5px; max-width: 100%; margin-bottom: 4px; padding: 2px 4px; font-size: 12.5px; color: var(--muted); border-radius: 7px; }
+.msg.user .about svg { width: 13px; height: 13px; flex: none; color: var(--idol); }
+.msg.user .about span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pill { font-size: 13px; padding: 5px 11px; border-radius: 10px; border: 1px solid var(--line); background: var(--surface-2); color: var(--text); text-decoration: none; }
 .pill.danger { color: var(--bad); }
 /* fullscreen: every axis, pinch zoom, two-finger pan */

@@ -124,7 +124,7 @@
 
       if (owner()) {
         // The name is the address: the site follows it, earlier names lead there.
-        const zone = (b.site || 'https://name.bot.stardenburg.de').replace(/^https?:\/\/[^.]+/, '');
+        const zone = S.zone ? '.' + S.zone : '';
         const name = el('input', { type: 'text', value: b.name, maxLength: 24, autocapitalize: 'words', autocomplete: 'off', spellcheck: false, 'aria-label': 'Name' });
         const rename = () => {
           const wanted = name.value.trim();

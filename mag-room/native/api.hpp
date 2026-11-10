@@ -193,6 +193,7 @@ private:
     features["stt"] = exists(room_.cfg.whisper_cli) && exists(room_.cfg.whisper_model);
     features["push"] = push_.configured();
     v["features"] = features;
+    v["zone"] = site::zone(); // the bots' sites are <name>.<zone>
     http::send_json(fd, 200, v);
   }
 

@@ -227,7 +227,7 @@
       const snap = await MAG.api('GET', '/api/state?limit=150');
       if (snap.version && MAG.version && snap.version !== MAG.version) return location.reload();
       S.messages = new Map(snap.messages.map((m) => [m.id, m]));
-      Object.assign(S, { bots: snap.bots, settings: snap.settings, you: snap.you, features: snap.features, seq: snap.seq, more: snap.more, ready: true });
+      Object.assign(S, { bots: snap.bots, settings: snap.settings, you: snap.you, features: snap.features, zone: snap.zone, seq: snap.seq, more: snap.more, ready: true });
       emit('reset');
       emit('bots');
       emit('settings');

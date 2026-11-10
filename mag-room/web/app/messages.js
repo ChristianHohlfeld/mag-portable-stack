@@ -35,8 +35,11 @@
   const nearBottom = () => scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 70;
   function toBottom() { scroller.scrollTop = scroller.scrollHeight; pinned = true; unread = 0; paintJump(); }
   function paintJump() {
+    // A small round arrow above the composer; it carries words only when
+    // something new arrived below.
     jump.hidden = pinned;
-    jump.lastChild.textContent = unread > 0 ? (unread === 1 ? 'Neue Nachricht' : unread + ' neue Nachrichten') : 'Nach unten';
+    jump.classList.toggle('news', unread > 0);
+    jump.lastChild.textContent = unread > 0 ? (unread === 1 ? 'Neue Nachricht' : unread + ' neue Nachrichten') : '';
   }
   // Run a change to the timeline; follow it only when the reader was at the end.
   function grow(change, isNewMessage) {

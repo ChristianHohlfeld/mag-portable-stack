@@ -313,13 +313,18 @@ audio, video { max-width: 100%; border-radius: 12px; }
 .dots i { display: inline-block; width: 5px; height: 5px; border-radius: 50%; background: currentColor; margin-right: 3px; animation: pulse 1.2s infinite; }
 .dots i:nth-child(2) { animation-delay: .2s; } .dots i:nth-child(3) { animation-delay: .4s; }
 
+/* Floats above the composer, never on it: anchored to the top edge of the
+   dock, so it moves up when the input grows. */
 #jump {
-  position: absolute; left: 50%; transform: translateX(-50%); bottom: calc(100% + 8px); z-index: 5;
-  background: var(--accent); color: var(--accent-ink); font-size: 14px; font-weight: 600;
-  padding: 7px 14px; border-radius: 18px; box-shadow: 0 6px 20px rgba(0,0,0,.35);
-  display: flex; align-items: center; gap: 6px; white-space: nowrap;
+  position: absolute; left: 50%; transform: translateX(-50%); bottom: calc(100% + 12px); z-index: 5;
+  height: 38px; min-width: 38px; padding: 0 10px; border-radius: 19px;
+  background: var(--surface); color: var(--text); border: 1px solid var(--line);
+  font-size: 14px; font-weight: 600; box-shadow: 0 6px 20px rgba(0,0,0,.28);
+  display: flex; align-items: center; justify-content: center; gap: 6px; white-space: nowrap;
 }
-#jump svg { width: 16px; height: 16px; }
+#jump.news { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); padding: 0 14px 0 11px; }
+#jump span:empty { display: none; }
+#jump svg { width: 17px; height: 17px; }
 #dock { position: relative; }
 
 /* ---- composer ------------------------------------------------------------ */

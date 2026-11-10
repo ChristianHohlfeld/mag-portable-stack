@@ -87,6 +87,15 @@ The UI is mobile first: streamed answers appear below the user message in the
 order they are produced, the view follows only while the reader is at the
 end, and a running step is a live card with the real command, output,
 runtime and a cancel button. All settings live in one sheet.
+Dictation is local and live: the microphone button sends 16 kHz PCM to the
+room while Chris speaks (`/api/stt/live`), `mag-stt` recognizes it and the
+text grows in the message field; a sentence followed by a pause is final.
+`mag-stt` is its own service (transcribe.cpp with primeLine's German Parakeet
+TDT as GGUF, pinned in `ops/stt`), CPU only on cores 28-55, with the model
+always loaded. No cloud recognizer, no stored recording, and the journal gets
+numbers, never what was said. The microphone is asked for when the button
+goes down and stays open for a minute after a dictation, so nothing waits.
+The retired whisper model stays on disk like every other model.
 
 Access: only the owner logins in `access.json`, attested per request by the
 Tailscale whois subrequest of nginx. There are no guests.

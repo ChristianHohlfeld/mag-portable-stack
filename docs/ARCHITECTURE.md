@@ -11,6 +11,7 @@ phone/desktop ── Tailscale :443 ── nginx (TLS, whois auth_request) ─�
                     mag-modeld (download, verify, start)   /run/mag-models/status.json
                     mag-idol :8793 (photo to 3D on the MI50)
                     mag-browser-webrtc :18784 (live view of the VM browsers)
+                    mag-stt :8194 (speech to text, cores 28-55)
 ```
 
 ## Room (`mag-room/native`, C++17, one process)
@@ -116,6 +117,34 @@ the frames on a canvas and runs xterm.js (vendored in `web/static`) on the PTY.
 Where UDP cannot get through, the browser view falls back to pictures over
 HTTPS (`/api/screen`) and the terminal offers single commands
 (`/api/vm/<bot>/run`); the file view always goes through the wrappers.
+
+### Dictation
+
+The page captures the microphone in an AudioWorklet (`web/app/capture.js`:
+any device rate to 16 kHz mono PCM, 100 ms frames, the last 400 ms kept while
+the microphone is open but idle) and `web/app/dictate.js` posts what has been
+spoken since the last request to `POST /api/stt/live?sid=&seq=`, one request
+after the other; `end=1` closes the dictation. The room only checks the
+caller and passes the chunk on to `mag-stt` (`native/mag_stt.cpp`).
+
+`mag-stt` keeps one recognizer loaded (transcribe.cpp, Parakeet TDT 0.6B in
+primeLine's German fine-tune, Q8 GGUF, 16 threads on cores 28-55). The model
+hears a recording as a whole in about 1/20 of its length, so live text comes
+from decoding the open part of the recording again whenever at least 200 ms
+of new audio are there. Every answer carries `committed` and `partial`:
+
+- shown while speaking: words heard to their end (the newest one once two
+  decodes agree on it), a full stop once silence follows it;
+- committed, and the audio dropped: a sentence both of the last two decodes
+  have and that is followed by 0.9 s of silence (2.5 s without a full stop),
+  or that lies at least 1.5 s back once more than 12 s are open;
+- chunks are numbered, so one that is sent again is not heard twice.
+
+`POST /api/stt` takes a finished recording in any format ffmpeg reads and
+answers with its text. `ops/stt/bootstrap.sh` builds the pinned recognizer
+and fetches the pinned model once; `ops/stt/install.sh` is the deploy layer.
+CI builds `mag-stt` without the recognizer and runs its protocol on a fake
+engine whose "speech" spells its own transcript.
 
 ### Bot sites
 

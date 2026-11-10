@@ -119,18 +119,6 @@ install -d -m 0755 "$RELEASE/bin" "$RELEASE/web" "$RELEASE/ops"
 for binary in "${MAG_RELEASE_BINARIES[@]}" mag-browser-webrtc; do
   install -m 0755 "$SOURCE/build/$binary" "$RELEASE/bin/"
 done
-# Speech-to-text is optional: without whisper the mic button reports it.
-WHISPER_CLI="${MAG_WHISPER_SOURCE:-/home/chris/.cache/mag-stack/whisper-build/bin/whisper-cli}"
-WHISPER_MODEL="${MAG_WHISPER_SOURCE_MODEL:-/home/chris/models/whisper/ggml-large-v3-turbo.bin}"
-if [[ -x $WHISPER_CLI && -r $WHISPER_MODEL ]]; then
-  install -m 0755 "$WHISPER_CLI" "$RELEASE/bin/whisper-cli"
-  install -d -o magbot -g magbot -m 0750 /var/lib/mag-stack/models
-  installed=/var/lib/mag-stack/models/ggml-large-v3-turbo.bin
-  [[ -f $installed && $(stat -c %s "$installed") == $(stat -c %s "$WHISPER_MODEL") ]] ||
-    install -o magbot -g magbot -m 0640 "$WHISPER_MODEL" "$installed"
-else
-  warn 'whisper missing: speech-to-text disabled (ops/bootstrap-voice.sh)'
-fi
 # The page, its scripts and the few vendored libraries are all in the repo:
 # a release works offline and never depends on a CDN or a download.
 cp -a "$SOURCE/mag-room/web/." "$RELEASE/web/"
@@ -236,6 +224,9 @@ log "release $RELEASE_ID is live"
 # Model layer: installs/refreshes the supervisor only. It never restarts a
 # running model; a changed launch spec is reported as "restart pending".
 soft bash "$SOURCE/ops/models/install.sh"
+# Speech to text (mag-stt): built against the pinned recognizer when it is
+# there, restarted only when its binary, model or unit changed.
+soft bash "$SOURCE/ops/stt/install.sh"
 # Optional Idol worker (photo to 3D on the MI50).
 if [[ -x /home/chris/idol-mi50/venv/bin/python && -d /home/chris/idol-mi50/weights/idol ]]; then
   soft bash "$SOURCE/ops/idol/install.sh"

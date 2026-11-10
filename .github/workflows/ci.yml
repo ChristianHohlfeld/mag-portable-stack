@@ -29,7 +29,7 @@ jobs:
         run: |
           source ops/build-targets.sh
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
-          cmake --build build -j "$(nproc)" --target "${MAG_BUILD_TARGETS[@]}" test-group-dispatcher
+          cmake --build build -j "$(nproc)" --target "${MAG_BUILD_TARGETS[@]}" mag-stt test-group-dispatcher
       - name: Shell syntax
         run: bash ops/ci/check.sh
       - name: Model supervisor

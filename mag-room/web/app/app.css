@@ -398,7 +398,13 @@ audio, video { max-width: 100%; border-radius: 12px; }
 #send:active { transform: scale(.94); }
 #send:disabled { background: var(--surface-2); color: var(--faint); opacity: 1; }
 #send svg { width: 19px; height: 19px; stroke-width: 2.2; }
-#mic.rec { color: var(--bad); background: color-mix(in srgb, var(--bad) 16%, transparent); }
+/* dictation: red while it listens, a ring that follows the voice */
+#mic { position: relative; transition: color .12s, background .12s; }
+#mic.rec { color: #fff; background: var(--bad); box-shadow: 0 0 0 calc(2px + 7px * var(--level, 0)) color-mix(in srgb, var(--bad) 30%, transparent); transition: box-shadow .09s linear; }
+#mic.arm { animation: mic-arm .9s ease-in-out infinite; }
+#mic.busy { color: var(--muted); background: var(--surface-2); pointer-events: none; }
+#mic.busy svg { animation: mic-arm .7s ease-in-out infinite; }
+@keyframes mic-arm { 50% { opacity: .55; } }
 
 /* ---- menus, sheets, toasts ------------------------------------------------ */
 .menu {

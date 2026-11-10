@@ -12,8 +12,8 @@ namespace mag {
 
 struct Config {
   std::string state_dir, files_dir, web_dir, bind_host, bridge_ip, gateway, models_status,
-      models_control, idol_url, rtc_url, guest_run, agent_ctl, brave_key, whisper_cli,
-      whisper_model, browser_binary, version, access_file;
+      models_control, idol_url, rtc_url, stt_url, guest_run, agent_ctl, brave_key, browser_binary,
+      version, access_file;
   bool sudo = true; // the guest wrappers run through sudo (off only for the test fixture)
   int port = 8766, bridge_port = 8767, max_steps = 48, turn_budget_s = 3600, tool_timeout_s = 900,
       max_tokens = 4096, bot_rounds = 0;
@@ -37,8 +37,7 @@ struct Config {
     c.agent_ctl = env("MAG_ROOM_AGENT_CTL", "/usr/local/sbin/magbot-agent-ctl");
     c.sudo = env("MAG_ROOM_NO_SUDO") != "1";
     c.brave_key = env("BRAVE_API_KEY", env("MAG_ROOM_BRAVE_KEY"));
-    c.whisper_cli = env("MAG_WHISPER_CLI", "/opt/mag-stack/current/bin/whisper-cli");
-    c.whisper_model = env("MAG_WHISPER_MODEL", "/var/lib/mag-stack/models/ggml-large-v3-turbo.bin");
+    c.stt_url = env("MAG_STT_URL", "http://127.0.0.1:8194");
     c.browser_binary = env("MAG_BROWSER_BINARY", "/opt/mag-stack/current/bin/mag-browser");
     c.access_file = env("MAG_ROOM_ACCESS", c.state_dir + "/access.json");
     c.max_steps = (int)envl("MAG_ROOM_MAX_STEPS", 48);

@@ -1,0 +1,47 @@
+# Speech to text for the room: one process that keeps the recognizer loaded
+# and answers the room on loopback. CPU only, on the cores that are not the
+# models'.
+[Unit]
+Description=MAG speech to text
+After=network.target
+
+[Service]
+Type=simple
+User=magbot
+Group=magbot
+Environment=MAG_STT_BIND=127.0.0.1
+Environment=MAG_STT_PORT=8194
+Environment=MAG_STT_MODEL=/var/lib/mag-stack/models/parakeet-primeline-Q8_0.gguf
+Environment=MAG_STT_THREADS=16
+ExecStart=/opt/mag-stt/bin/mag-stt
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=10
+# The physical cores 0-27 belong to Lena and Noah.
+CPUAffinity=28-55
+Nice=-2
+MemoryMax=6G
+UMask=0027
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+LockPersonality=true
+RestrictRealtime=true
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_INET AF_UNIX
+IPAddressDeny=any
+IPAddressAllow=localhost
+
+[Install]
+WantedBy=multi-user.target

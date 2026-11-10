@@ -623,6 +623,50 @@ class RoomContract(unittest.TestCase):
         roles = [m["role"] for m in r.noah.chats()[before]["messages"]]
         self.assertEqual(roles[:4], ["system", "user", "assistant", "user"])  # the prompt log is append-only
 
+    def test_dictation_shows_text_while_it_is_spoken(self):
+        """The page sends audio chunk by chunk; every answer carries the text
+        so far, a sentence followed by a pause is final, and nothing is heard
+        twice. mag-stt runs its real protocol here on its fake engine, whose
+        "speech" spells its own transcript (see mag_stt.cpp)."""
+        daemon = ROOT / "build/mag-stt"
+        if not daemon.exists():
+            self.skipTest("mag-stt is not built")
+        port = free_port()
+        stt = subprocess.Popen([str(daemon)], env=dict(os.environ, MAG_STT_FAKE="1", MAG_STT_PORT=str(port)), stderr=subprocess.DEVNULL)
+        self.addCleanup(lambda: (stt.terminate(), stt.wait(5)))
+        r = Room(MAG_STT_URL="http://127.0.0.1:%d" % port)
+        self.addCleanup(r.close)
+        r.wait(lambda: r.state()["features"]["stt"], "speech service")
+
+        def slot(word):  # 400 ms at 16 kHz: a level of word * 100, or silence
+            return (word * 100).to_bytes(2, "little", signed=True) * 6400
+
+        def chunk(sid, seq, data, end=False):
+            code, out = r.api("POST", "/api/stt/live?sid=%s&seq=%d%s" % (sid, seq, "&end=1" if end else ""), raw=data)
+            self.assertEqual(code, 200, out)
+            return out
+
+        audio = slot(1) + slot(2) + slot(3) + slot(0) * 5 + slot(4) + slot(5)
+        sid, seen = "a1b2c3d4e5f60718", []
+        pieces = [audio[i:i + 6400] for i in range(0, len(audio), 6400)]  # 200 ms each
+        for seq, data in enumerate(pieces):
+            seen.append(chunk(sid, seq, data))
+            if seq == 3:  # an answer got lost and the page asks again: not heard twice
+                seen.append(chunk(sid, seq, data))
+        self.assertTrue(any(o["partial"].startswith("w1") for o in seen), seen)  # text while it is spoken
+        self.assertTrue(any(o["committed"] == "w1 w2 w3." for o in seen), seen)  # the sentence before the pause is final
+        final = chunk(sid, len(pieces), b"", end=True)
+        self.assertEqual((final["committed"], final["partial"], final["final"]), ("w1 w2 w3. w4 w5", "", True))
+        # The dictation is over; one that the service does not know is refused, not invented.
+        self.assertEqual(r.api("POST", "/api/stt/live?sid=%s&seq=7" % sid, raw=b"\0\0")[0], 410)
+        self.assertEqual(r.api("POST", "/api/stt/live?sid=x&seq=0", raw=b"\0\0")[0], 400)
+        if shutil.which("ffmpeg"):  # a finished recording in a container format
+            wav = b"RIFF" + (36 + len(audio)).to_bytes(4, "little") + b"WAVEfmt " + (16).to_bytes(4, "little") + (1).to_bytes(2, "little") + \
+                (1).to_bytes(2, "little") + (16000).to_bytes(4, "little") + (32000).to_bytes(4, "little") + (2).to_bytes(2, "little") + \
+                (16).to_bytes(2, "little") + b"data" + len(audio).to_bytes(4, "little") + audio
+            code, out = r.api("POST", "/api/stt", raw=wav)
+            self.assertEqual((code, out.get("text")), (200, "w1 w2 w3. w4 w5"), out)
+
     def test_whois_and_csrf_guard(self):
         r = self.room
         req = urllib.request.Request(r.url("/_internal/tailscale/whois"), headers={"X-Mag-Remote": "192.0.2.1:34567"})

@@ -290,7 +290,8 @@
       ? el('button', { class: 'src', 'aria-label': 'Ausgangsbild ansehen', title: 'Ausgangsbild', onclick: () => lightbox(src, m3.source, captionOf(m3.image)) },
           el('img', { src, alt: '', loading: 'lazy', onerror: (e) => e.target.closest('.src')?.replaceWith(el('span', { class: 'src' }, MAG.icon('cube'))) }))
       : el('span', { class: 'src' }, MAG.icon('cube'));
-    const label = 'Qualität ' + (quality[m3.quality] || m3.quality);
+    // "fortgesetzt": the job went on after a restart of the room or the worker.
+    const label = 'Qualität ' + (quality[m3.quality] || m3.quality) + (m3.resumed && m3.state !== 'done' ? ' · fortgesetzt' : '');
     const sub = m3.state === 'done' ? label + (m3.took ? ' · ' + MAG.dur(m3.took * 1000) : '')
       : m3.state === 'error' ? (m3.error || 'Fehler') : m3.state === 'cancelled' ? 'Abgebrochen' : label;
     card.append(el('div', { class: 'head' }, thumb, el('div', { class: 'txt' }, el('b', { text: 'Foto zu 3D' }), el('small', { text: sub })),

@@ -421,6 +421,39 @@ class RoomContract(unittest.TestCase):
         r.api("POST", "/api/room/clear", {})
         r.wait(lambda: r.idol.purges == 1, "idol purge")
 
+    def test_3d_job_goes_on_when_the_room_restarts(self):
+        r = self.room
+        png = b"\x89PNG\r\n\x1a\n" + b"x" * 64
+
+        def order():
+            photo = r.api("POST", "/api/upload?name=foto.png", raw=png)[1]
+            return r.api("POST", "/api/message", {"text": "", "attachments": [photo["file"]], "mode": "3d", "quality": "normal"})[1]["model3d"]
+
+        def message(model_id):
+            return [m for m in r.messages() if m["id"] == model_id][0]
+        # The job runs in the worker; a room restart (every deploy is one) must not end it.
+        first = order()
+        r.wait(lambda: message(first)["model3d"]["state"] == "running", "3D job running")
+        r.stop()
+        r.start()
+        self.assertEqual((message(first)["state"], message(first)["model3d"].get("error")), ("streaming", None))
+        r.wait(lambda: message(first)["state"] == "done", "3D job done after the restart")
+        self.assertTrue(message(first)["model3d"]["resumed"])        # shown as "fortgesetzt"
+        self.assertEqual(len(message(first)["attachments"]), 3)
+        # A message that an earlier room version wrote off at its restart is taken up again as well.
+        second = order()
+        r.wait(lambda: message(second)["model3d"]["state"] == "running", "second 3D job running")
+        r.stop()
+        path = pathlib.Path(r.env["MAG_ROOM_STATE"]) / "messages" / (second + ".json")
+        broken = json.loads(path.read_text())
+        broken["state"] = "stopped"
+        broken["model3d"].update(state="error", error="Dienst neu gestartet")
+        path.write_text(json.dumps(broken))
+        r.start()
+        r.wait(lambda: message(second)["state"] == "done", "written-off 3D job done")
+        self.assertEqual((message(second)["model3d"]["state"], message(second)["model3d"].get("error")), ("done", None))
+        self.assertEqual(len(r.idol.jobs), 2)   # nothing was ordered twice
+
     def test_bots_read_the_whole_chat_images_files_and_3d_jobs(self):
         # Lena's model takes images, Noah's does not.
         r = Room(MAG_ROOM_VISION="lena", MAG_ROOM_SIGHT_WAIT_S="30")

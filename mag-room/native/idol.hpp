@@ -72,10 +72,19 @@ public:
     std::thread([this] { http::fetch(room_.cfg.idol_url + "/api/idol/purge", options("POST")); }).detach();
   }
 
-  // Jobs that were still running when the room restarted are watched again.
+  // The room restarted (a deploy, a crash, a reboot); the worker's jobs did
+  // not. Every job that was under way is watched again and its message goes
+  // on where the job is now. This also brings back a message that an earlier
+  // room version declared failed just because the room itself restarted.
   void resume() {
-    for (auto &m : room_.all())
-      if (const Val *m3 = m.find("model3d"); m3 && jstr(m, "state") == "streaming") watch(jstr(m, "id"), jstr(*m3, "job"));
+    for (auto &m : room_.all()) {
+      const Val *m3 = m.find("model3d");
+      if (!m3 || jstr(*m3, "job").empty()) continue;
+      const std::string state = jstr(*m3, "state");
+      const bool under_way = jstr(m, "state") == "streaming" || state == "queued" || state == "running";
+      const bool written_off = state == "error" && jstr(*m3, "error") == "Dienst neu gestartet";
+      if (under_way || written_off) watch(jstr(m, "id"), jstr(*m3, "job"), true);
+    }
   }
 
   bool available() {
@@ -115,25 +124,54 @@ private:
     return room_.adopt_file(tmp, name, "idol");
   }
 
-  void watch(const std::string &message_id, const std::string &job) {
-    std::thread([this, message_id, job] {
+  // Follows one job of the worker and mirrors it into its message.
+  // `picked_up`: the room is taking a job up again after its own restart.
+  void watch(const std::string &message_id, const std::string &job, bool picked_up = false) {
+    std::thread([this, message_id, job, picked_up] {
       std::string last;
       int failures = 0;
+      bool revive = picked_up;
       for (;;) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+        std::this_thread::sleep_for(std::chrono::milliseconds(picked_up && last.empty() && !failures ? 200 : 1500));
         Val m;
         if (!room_.get(message_id, m)) return; // deleted: forget() cleans up
         http::ClientOptions opt = options("GET");
         opt.timeout_s = 10;
         const auto res = http::fetch(room_.cfg.idol_url + "/api/idol/jobs/" + job, opt);
         const Val st = jparse(res.body);
-        if (res.status == 404) { finish(message_id, "error", "Der 3D-Auftrag existiert nicht mehr."); return; }
+        if (res.status == 404) {
+          // The worker has no such job (any more). A message that was already
+          // written off stays as it was.
+          if (jstr(m, "state") == "streaming") finish(message_id, "error", "Der 3D-Auftrag existiert nicht mehr.");
+          return;
+        }
         if (res.status != 200 || !st.isObj()) {
-          if (++failures > 80) { finish(message_id, "error", "3D-Dienst antwortet nicht mehr."); return; }
+          // The worker is restarting or briefly away: its jobs are on disk
+          // and go on, so the message waits with it. Half an hour of silence
+          // is a real failure.
+          if (++failures == 8 && jstr(m, "state") == "streaming")
+            room_.update(message_id, [&](Val &msg) { msg["model3d"]["stage"] = "Wartet auf den 3D-Dienst"; }, false);
+          if (failures > 1200) {
+            if (jstr(m, "state") == "streaming") finish(message_id, "error", "3D-Dienst antwortet nicht mehr.");
+            return;
+          }
           continue;
         }
         failures = 0;
         const std::string state = jstr(st, "state");
+        if (revive) {
+          revive = false;
+          const bool alive = state == "queued" || state == "running" || state == "done";
+          if (!alive && jstr(m, "state") != "streaming") return; // it really ended back then
+          if (alive)
+            room_.update(message_id, [&](Val &msg) {
+              msg["state"] = "streaming";
+              Val &m3 = msg["model3d"];
+              m3["state"] = state == "done" ? "running" : state;
+              m3["resumed"] = true; // shown as "fortgesetzt"
+              m3.obj->erase(std::remove_if(m3.obj->begin(), m3.obj->end(), [](const auto &kv) { return kv.first == "error"; }), m3.obj->end());
+            });
+        }
         const std::string now = state + "|" + jstr(st, "stage") + "|" + std::to_string((int)jnum(st, "phase")) + "|" +
                                 std::to_string((int)jnum(st, "step"));
         if (now != last && (state == "queued" || state == "running")) {
@@ -153,6 +191,7 @@ private:
             m3["started"] = jnum(st, "started");
             m3["eta"] = jnum(st, "eta");
             m3["eta_at"] = (double)now_s();
+            if (jnum(st, "resumed") > 0) m3["resumed"] = true; // the worker took it up again after its own restart
           }, false);
         }
         if (state == "done") {

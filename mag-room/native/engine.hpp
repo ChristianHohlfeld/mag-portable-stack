@@ -91,6 +91,21 @@ public:
       if (to.empty())
         for (auto &b : roster) to.push_back(b.id);
     }
+    // A paused bot does not answer. Say so when it was asked by name, or when
+    // nobody is left to answer.
+    {
+      std::string paused;
+      size_t active = 0;
+      for (auto &b : bots.asArr()) {
+        if (jbool(b, "enabled", true)) { ++active; continue; }
+        if (std::find(to.begin(), to.end(), jstr(b, "id")) != to.end()) paused += (paused.empty() ? "" : " und ") + jstr(b, "name");
+      }
+      if (!paused.empty() || !active) {
+        Val ev = Val::object();
+        ev["text"] = !active ? "Alle Bots sind pausiert. Niemand antwortet." : paused + (paused.find(" und ") == std::string::npos ? " ist" : " sind") + " pausiert und antwortet nicht.";
+        room_.bus.publish("notice", ev);
+      }
+    }
     const long limit = (long)jnum(room_.settings(), "bot_rounds", room_.cfg.bot_rounds);
     std::lock_guard<std::mutex> lk(mu_);
     round_limit_ = limit;
@@ -465,7 +480,7 @@ private:
     std::string other = "der andere Bot";
     const Val all = room_.bots();
     for (auto &b : all.asArr())
-      if (jstr(b, "id") != id && jbool(b, "enabled", true)) other = jstr(b, "name");
+      if (jstr(b, "id") != id) other = jstr(b, "name"); // also while it is paused: a pause changes no prompt
     const bool has_vm = vm::valid_name(jstr(me, "vm"));
     std::string s =
         "Du bist " + name + ", einer von zwei KI-Assistenten im privaten Chatraum MAG von Chris. Der andere heißt " + other +

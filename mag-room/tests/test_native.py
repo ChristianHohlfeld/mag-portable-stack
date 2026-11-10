@@ -235,6 +235,31 @@ class RoomContract(unittest.TestCase):
         self.assertEqual(len(r.noah.chats()), before[1])
         self.assertEqual([b["aliases"] for b in r.state()["bots"] if b["id"] == "lena"], [["lena"]])
 
+    def test_paused_bot_stays_out_until_it_is_resumed(self):
+        r = self.room
+        self.assertEqual(r.api("PUT", "/api/bot/noah", {"enabled": False})[0], 200)
+        r.say("Hi beide")
+        r.idle()
+        time.sleep(1.0)
+        # Only Lena answers; Noah makes no model request while he is paused.
+        self.assertEqual([m["from"] for m in r.messages()], ["chris", "lena"])
+        self.assertEqual(len(r.noah.chats()), 0)
+        # Asked by name he still does not answer, and Chris is told why.
+        r.say("@Noah bist du da?")
+        r.idle()
+        self.assertTrue(any(e.get("t") == "notice" and "Noah ist pausiert" in e.get("text", "") for e in r.events), [e for e in r.events if e.get("t") == "notice"])
+        self.assertEqual(len(r.noah.chats()), 0)
+        # The pause outlives a restart of the room (a deploy).
+        r.stop()
+        r.start()
+        self.assertEqual([b["enabled"] for b in r.state()["bots"] if b["id"] == "noah"], [False])
+        # Back in: he answers the next message and has read what he missed.
+        self.assertEqual(r.api("PUT", "/api/bot/noah", {"enabled": True})[0], 200)
+        r.say("und jetzt alle zusammen")
+        r.idle()
+        self.assertIn("noah", [m["from"] for m in r.messages()])
+        self.assertIn("Hi beide", json.dumps(r.noah.chats()[0]["messages"], ensure_ascii=False))
+
     def test_speaker_labels_are_plain_and_copied_tags_are_cleaned(self):
         r = self.room
         r.lena.reply = lambda body: "Hallo [Chris], [Noah · Di 10.11. 01:51] meinte das auch. Siehe [Doku](https://example.org)."

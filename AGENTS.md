@@ -121,7 +121,14 @@ PASS; he reads the message as context (`Chris an Lena: …`) and never treats
 it as his task. Several mentions or `@alle` mean all of them; a name without
 @ addresses as before. A mention is stored with the message as the bot's id,
 so the page's chip and the meaning follow a rename; earlier names keep
-working. The message field suggests the bots after `@`. Per-backend model turns remain serial
+working. The message field suggests the bots after `@`.
+Chris can take a bot out in two ways, and both hold across reloads, deploys
+and reboots. Paused (the dot in front of its name in the header, or its
+sheet): the bot gets no turn and makes no model request, its model stays
+loaded, and when it is back it reads what it missed. Switched off (its sheet,
+`mag-modeld ctl <bot> stop`): the model server stops and frees its memory;
+the weights stay on disk. A paused bot that is asked by name does not answer,
+and the room says so. A pause changes no prompt. Per-backend model turns remain serial
 (one request per -np 1 slot).
 This permission is for room conversation, not unrestricted autonomous tool work.
 Outside room dialogue, continue tools only on a successful tool result, distinct

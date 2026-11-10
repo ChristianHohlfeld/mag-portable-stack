@@ -16,7 +16,7 @@
       case 'verifying': return 'wird geprüft' + (f.verified ? ' ' + Math.floor(f.verified * 100) + ' %' : '');
       case 'loading': return 'lädt ins RAM';
       case 'paused': return 'pausiert';
-      case 'stopped': return 'gestoppt';
+      case 'stopped': return 'abgeschaltet';
       case 'failed': return 'Start fehlgeschlagen';
       case 'corrupt': return 'Datei beschädigt';
       default: return 'nicht erreichbar';
@@ -27,8 +27,9 @@
   const modelName = (b) => (b.model?.file ? b.model.file.replace(/-([A-Za-z0-9_]+)$/, ' $1') : b.model?.label || '');
   const siteLink = (b) => (b.site ? el('a', { href: b.site + '/', target: '_blank', rel: 'noopener', text: b.site.replace(/^https?:\/\//, '') }) : null);
   function chipState(b) {
-    if (!b.enabled) return ['off', 'aus'];
     const st = b.model?.state;
+    if (st === 'stopped') return ['off', 'aus'];
+    if (!b.enabled) return ['off paused', 'pausiert'];
     if (st !== 'ready') {
       // The chip stays short; the sheet has the details.
       const f = b.model?.model || {};
@@ -39,14 +40,30 @@
     return ['ready', 'bereit'];
   }
   const nudged = {}; // bot -> until when its chip moves
+  // Pause: the bot stops answering, its model stays in memory, so it is back
+  // at once. The room remembers it across reloads and deploys.
+  const pause = (b, on) => MAG.api('PUT', '/api/bot/' + b.id, { enabled: !on })
+    .then(() => MAG.toast(on ? b.name + ' pausiert. Antwortet nicht, bis du fortsetzt.' : b.name + ' ist wieder dabei.'), (err) => MAG.toast(err.message, true));
   function paintTop() {
     const box = $('#chips');
     if (!box) return;
     box.replaceChildren(...S.bots.map((b) => {
       const [cls, text] = chipState(b);
-      // Ready is just the green dot; every other state says what it is.
-      return el('button', { class: 'chip ' + cls + (nudged[b.id] > Date.now() ? ' nudge' : ''), dataset: { bot: b.id }, 'aria-label': b.name + ': ' + text, title: b.name + ': ' + text, onclick: () => botSheet(b.id) },
-        el('span', { class: 'dot' }), el('span', { class: 'name', text: b.name }), cls === 'ready' ? null : el('span', { class: 'state', text }));
+      // The name opens the bot's sheet; the dot in front of it pauses the bot
+      // and brings it back. Ready is just the green dot; every other state
+      // says what it is.
+      const stopped = b.model?.state === 'stopped';
+      const tip = stopped ? b.name + ' ist abgeschaltet. Einschalten im Bot-Menü.'
+        : b.enabled ? b.name + ' pausieren: antwortet dann nicht mehr, das Modell bleibt geladen' : b.name + ' fortsetzen';
+      let held = 0, explained = false;
+      const dot = el('button', { class: 'tog', disabled: !owner(), 'aria-label': tip, title: tip, 'aria-pressed': String(!b.enabled),
+        // A long press explains instead of switching.
+        onpointerdown: () => { explained = false; held = setTimeout(() => { explained = true; MAG.toast(tip); }, 550); },
+        onpointerup: () => clearTimeout(held), onpointerleave: () => clearTimeout(held), oncontextmenu: (e) => e.preventDefault(),
+        onclick: () => { if (explained) return; if (stopped) return botSheet(b.id); pause(b, b.enabled); } }, el('span', { class: 'dot' }));
+      return el('div', { class: 'chip ' + cls + (nudged[b.id] > Date.now() ? ' nudge' : ''), dataset: { bot: b.id } }, dot,
+        el('button', { class: 'open', 'aria-label': b.name + ': ' + text, title: b.name + ': ' + text, onclick: () => botSheet(b.id) },
+          el('span', { class: 'name', text: b.name }), cls === 'ready' ? null : el('span', { class: 'state', text })));
     }));
     $('#clear').hidden = !owner();
     document.querySelector('.sheet')?.refresh?.();
@@ -80,6 +97,7 @@
       const b = MAG.bot(id);
       if (!b) return;
       const status = el('div', { class: 'card' }), acts = el('div', { class: 'btns' }), actsTitle = el('h3', { text: 'Steuerung' });
+      const actsHint = el('p', { class: 'fine', text: 'Pausiert: antwortet nicht mehr, das Modell bleibt im Arbeitsspeicher und ist sofort zurück. Abgeschaltet: das Modell ist entladen und der Arbeitsspeicher frei; Einschalten lädt es neu. Beides bleibt über Neuladen und Updates hinweg so.' });
       // Status and controls follow the live state; the rest is built once.
       sheet.refresh = () => {
         const b = MAG.bot(id);
@@ -91,7 +109,7 @@
         add('Name', b.name);
         add('Modell', modelName(b));
         add('Website', siteLink(b));
-        add('Zustand', modelText(b));
+        add('Zustand', modelText(b) + (!b.enabled && m.state !== 'stopped' ? ' · pausiert, antwortet nicht' : ''));
         if (m.state === 'downloading' && f.total) add('Download', MAG.bytes(f.bytes) + ' von ' + MAG.bytes(f.total) + (f.rate > 1 ? ' · ' + MAG.bytes(f.rate) + '/s' : ''));
         if (m.detail && m.state !== 'downloading') add('Hinweis', m.detail);
         if (m.draft) add('Drafter (MTP)', m.draft.active ? 'aktiv' : m.draft.ok ? 'bereit, aktiv nach Neustart' : 'nicht vorhanden');
@@ -111,15 +129,25 @@
         if (owner()) {
           if (b.busy) acts.append(el('button', { class: 'btn', text: 'Antwort stoppen', onclick: () => call('POST', '/api/stop', { bot: id }) }));
           const model = (action, label, danger) => el('button', { class: 'btn' + (danger ? ' danger' : ''), text: label, onclick: () => call('POST', '/api/bot/' + id + '/model', { action }).then(() => MAG.toast(label + ' angefordert')) });
-          if (m.state === 'ready') acts.append(model('freeze', 'Pausieren'), model('restart', 'Modell neu laden'), model('stop', 'Entladen', true));
-          if (m.state === 'paused') acts.append(model('thaw', 'Fortsetzen'));
-          if (m.state === 'stopped' || m.state === 'failed') acts.append(model('start', 'Starten'));
+          // Two ways to take a bot out. Paused: it stops answering, its model
+          // stays in memory. Switched off: the model server stops and frees its
+          // memory; the weights stay on disk.
+          if (m.state !== 'stopped') acts.append(el('button', { class: 'btn', text: b.enabled ? 'Pausieren' : 'Fortsetzen', onclick: () => pause(b, b.enabled) }));
+          if (m.state === 'paused') acts.append(model('thaw', 'Modell auftauen'));
+          if (m.state === 'stopped' || m.state === 'failed') acts.append(model('start', 'Einschalten'));
+          else {
+            if (m.state === 'ready') acts.append(model('restart', 'Modell neu laden'));
+            acts.append(el('button', { class: 'btn danger', text: 'Abschalten', onclick: async () => {
+              if (await MAG.confirm(b.name + ' abschalten?', 'Das Modell wird aus dem Arbeitsspeicher entladen und antwortet nicht mehr. Die Modelldatei bleibt. Einschalten lädt es neu, das dauert je nach Modell einige Minuten.', 'Abschalten', true))
+                call('POST', '/api/bot/' + id + '/model', { action: 'stop' }).then(() => MAG.toast(b.name + ' wird abgeschaltet'));
+            } }));
+          }
           if (!b.vm && b.vm_note !== 'creating')
             acts.append(el('button', { class: 'btn', text: 'VM erstellen', onclick: () => call('POST', '/api/bot/' + id + '/vm').then(() => MAG.toast('VM wird erstellt (einige Minuten)')) }));
         }
-        actsTitle.hidden = acts.hidden = !acts.children.length;
+        actsTitle.hidden = acts.hidden = actsHint.hidden = !acts.children.length;
       };
-      content.append(el('h3', { text: 'Status' }), status, actsTitle, acts);
+      content.append(el('h3', { text: 'Status' }), status, actsTitle, acts, actsHint);
       sheet.refresh();
 
       if (owner()) {
@@ -135,7 +163,6 @@
         name.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); name.blur(); } });
         content.append(el('h3', { text: 'Verhalten' }), el('div', { class: 'card' },
           row('Name', 'Buchstaben, Ziffern, Bindestrich. Die Website folgt dem Namen (name' + zone + '), frühere Namen leiten weiter.', name),
-          row('Im Raum aktiv', 'Antwortet und liest mit', toggle(b.enabled, (v) => call('PUT', '/api/bot/' + id, { enabled: v }))),
           id === 'lena'
             ? row('Nachdenken', 'Denkt vor der Antwort; gründlicher, langsamer', toggle(b.thinking, (v) => call('PUT', '/api/bot/' + id, { thinking: v })))
             : row('Denktiefe', 'Wie lange vor der Antwort überlegt wird', select(b.effort, [['low', 'Kurz'], ['medium', 'Mittel'], ['high', 'Gründlich']], (v) => call('PUT', '/api/bot/' + id, { effort: v }))),
@@ -276,5 +303,5 @@
   MAG.on('online', (on) => { $('#offline').hidden = on; });
   // A bot that cannot answer right now: its chip in the header says why and
   // moves once. Nothing covers the chat.
-  MAG.on('notice', (ev) => { nudged[ev.bot] = Date.now() + 1200; paintTop(); });
+  MAG.on('notice', (ev) => { if (ev.bot) nudged[ev.bot] = Date.now() + 1200; if (ev.text) MAG.toast(ev.text); paintTop(); });
 })();

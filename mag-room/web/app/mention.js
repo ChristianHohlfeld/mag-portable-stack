@@ -103,7 +103,7 @@
     if (!m) return close();
     const typed = m[2].toLowerCase(), items = [];
     for (const bot of MAG.state.bots)
-      if (bot.name.toLowerCase().startsWith(typed)) items.push({ name: bot.name, bot, hint: bot.enabled === false ? 'aus' : 'antwortet allein' });
+      if (bot.name.toLowerCase().startsWith(typed)) items.push({ name: bot.name, bot, hint: bot.model?.state === 'stopped' ? 'abgeschaltet' : bot.enabled === false ? 'pausiert' : 'antwortet allein' });
     if (MAG.state.bots.length > 1 && 'alle'.startsWith(typed)) items.push({ name: 'alle', bot: null, hint: 'alle antworten' });
     // The whole name is there already: nothing left to suggest.
     if (!items.length || items.some((item) => item.name.toLowerCase() === typed)) return close();

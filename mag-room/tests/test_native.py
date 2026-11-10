@@ -432,15 +432,18 @@ class RoomContract(unittest.TestCase):
         def message(model_id):
             return [m for m in r.messages() if m["id"] == model_id][0]
         # The job runs in the worker; a room restart (every deploy is one) must not end it.
+        r.idol.hold = True
         first = order()
         r.wait(lambda: message(first)["model3d"]["state"] == "running", "3D job running")
         r.stop()
         r.start()
         self.assertEqual((message(first)["state"], message(first)["model3d"].get("error")), ("streaming", None))
+        r.idol.hold = False
         r.wait(lambda: message(first)["state"] == "done", "3D job done after the restart")
         self.assertTrue(message(first)["model3d"]["resumed"])        # shown as "fortgesetzt"
         self.assertEqual(len(message(first)["attachments"]), 3)
         # A message that an earlier room version wrote off at its restart is taken up again as well.
+        r.idol.hold = True
         second = order()
         r.wait(lambda: message(second)["model3d"]["state"] == "running", "second 3D job running")
         r.stop()
@@ -450,6 +453,8 @@ class RoomContract(unittest.TestCase):
         broken["model3d"].update(state="error", error="Dienst neu gestartet")
         path.write_text(json.dumps(broken))
         r.start()
+        r.wait(lambda: message(second)["model3d"]["state"] == "running" and message(second)["state"] == "streaming", "written-off job taken up again")
+        r.idol.hold = False
         r.wait(lambda: message(second)["state"] == "done", "written-off 3D job done")
         self.assertEqual((message(second)["model3d"]["state"], message(second)["model3d"].get("error")), ("done", None))
         self.assertEqual(len(r.idol.jobs), 2)   # nothing was ordered twice

@@ -10,6 +10,7 @@ class FakeIdol:
     def __init__(self, glb=b"glTF-fake"):
         self.jobs, self.deleted, self.purges, self.cancelled = {}, [], 0, []
         self.glb = glb
+        self.hold = False  # True: jobs stay "running" until a test lets go
         fake = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -35,7 +36,7 @@ class FakeIdol:
                     return self.reply(200, None, raw=fake.glb)
                 job["polls"] += 1
                 if job["state"] != "cancelled":
-                    job["state"] = "queued" if job["polls"] < 2 else "running" if job["polls"] < 4 else "done"
+                    job["state"] = "queued" if job["polls"] < 2 else "running" if job["polls"] < 4 or fake.hold else "done"
                 step = min(50, job["polls"] * 15)
                 self.reply(200, {"id": parts[3], "state": job["state"], "stage": "3D-Form berechnen", "phase": 2, "phases": 5,
                                  "step": step, "total_steps": 50, "progress": step / 50, "eta": 90, "started": 1000,

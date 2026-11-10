@@ -202,6 +202,20 @@ order at every start. The room mirrors the job into its message (phase k of
 n, the sampler's step and its own estimate) and picks jobs up again after its
 own restart.
 
+## Reading aloud (`ops/tts`)
+
+Runs in the browser, not on the server. `web/app/speak.js` drives a Web Worker
+(`ops/tts/tts-worker.js`): espeak-ng phonemes from piper-wasm and a Piper VITS
+voice in onnxruntime-web, one thread (the page is not cross-origin isolated).
+German text is cut into sentences; the first one plays while the next is
+synthesised. Each speaker has a voice and a tempo (Piper's length scale), kept
+on the device. `ops/tts/assets.lock` pins all fifteen files by SHA256;
+`bootstrap.sh` fetches them once, `install.sh` (deploy) puts them into
+`/opt/mag-tts/v-<hash of the lock>/` and writes `config.json`; the room hands
+them out under `/tts/` (immutable, except the config). The worker keeps a
+voice in Cache Storage, so it is downloaded once per device. Without the
+voices, or for text that is clearly English, the device's own voice reads.
+
 ## Scenes (`ops/scene`)
 
 The bots' tools `models_3d` and `scene_3d` turn 3D models from the chat into

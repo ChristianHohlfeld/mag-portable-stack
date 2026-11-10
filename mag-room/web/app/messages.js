@@ -401,7 +401,11 @@
         setTimeout(() => { b.innerHTML = MAG.icons.copy; }, 1300);
       } catch { MAG.toast('Kopieren nicht möglich', true); }
     }));
-    if (words && !user && MAG.speak) row.append(button('speak', 'Vorlesen', (e) => MAG.speak(m, e.currentTarget)));
+    if (words && !user && MAG.speak) {
+      const speak = button('speak', 'Vorlesen', (e) => MAG.speak(m, e.currentTarget));
+      speak.dataset.speak = m.id; // the one that is being read shows it (speak.js)
+      row.append(speak);
+    }
     if (S.you.role === 'owner') row.append(button('dots', 'Mehr', (e) => MAG.menu(e.currentTarget, [
       { icon: 'trash', label: 'Nachricht löschen', danger: true, run: () => MAG.api('DELETE', '/api/message/' + m.id).catch((x) => MAG.toast(x.message, true)) },
     ])));
@@ -507,6 +511,7 @@
     nodes.set(m.id, node);
     empty.hidden = S.messages.size > 0;
     paintDays();
+    MAG.speaking?.paint();
   }
 
   function renderAll() {

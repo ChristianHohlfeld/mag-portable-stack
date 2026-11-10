@@ -5,7 +5,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 scripts=(ops/deploy.sh ops/rollback.sh ops/health.sh ops/build-targets.sh ops/prune-releases.sh
-  ops/boot/ensure-boot.sh ops/models/*.sh ops/idol/*.sh ops/stt/*.sh ops/scene/*.sh ops/private-access/deploy-nginx.sh
+  ops/boot/ensure-boot.sh ops/models/*.sh ops/idol/*.sh ops/stt/*.sh ops/scene/*.sh ops/tts/*.sh ops/private-access/deploy-nginx.sh
   ops/magbot-guest-run ops/magbot-agent-ctl ops/ci/check.sh)
 for f in "${scripts[@]}"; do bash -n "$f"; done
 python3 -m py_compile ops/idol/worker.py ops/idol/runner.py ops/idol/mesh.py ops/scene/worker.py ops/scene/scene.py ops/scene/rig.py
@@ -61,4 +61,8 @@ sha256sum --quiet -c <<'SUMS'
 ba8e6985669488981ccf40c0cefe3aba80722cb6c92de7ad628b0bd717faf2b6  mag-room/web/static/xterm.css
 bdaefa370b1bfc42ee88d46fe6072400902a4d4b2d45cd93438dda9b23c97089  mag-room/web/static/xterm-addon-fit.js
 SUMS
+# Reading aloud happens in the browser with the pinned voices: the worker in
+# the repository is the one the lock names, and no speech is made on the server.
+(cd ops/tts && grep ' tts-worker.js$' assets.lock | sha256sum --quiet -c -)
+[[ $(wc -l < ops/tts/assets.lock) == 15 ]]
 echo 'static checks ok'

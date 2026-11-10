@@ -109,6 +109,11 @@ The UI is mobile first: streamed answers appear below the user message in the
 order they are produced, the view follows only while the reader is at the
 end, and a running step is a live card with the real command, output,
 runtime and a cancel button. All settings live in one sheet.
+Reading aloud is local as well, and happens on the device: Piper voices run
+in the browser (a Web Worker with onnxruntime-web and espeak-ng phonemes;
+pinned in `ops/tts`, handed out by the room under `/tts/`), one voice and
+tempo per speaker. Nothing plays by itself and no speech is made on the
+server; where the voices are not installed the device's own voice reads.
 Dictation is local and live: the microphone button sends 16 kHz PCM to the
 room while Chris speaks (`/api/stt/live`), `mag-stt` recognizes it and the
 text grows in the message field; a sentence followed by a pause is final.

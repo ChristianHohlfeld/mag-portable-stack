@@ -109,6 +109,14 @@
       coarse ? { icon: 'camera', label: 'Kamera', run: () => pick('image/*', true) } : null,
       { icon: 'cube', label: 'Foto zu 3D', run: () => { mode3d = true; paintStaged(); if (!staged.some((s) => s.att.kind === 'image')) pick('image/png,image/jpeg,image/webp', false, paintStaged); } },
     ]));
+    // Something on the page starts a message (a 3D model asks to be animated):
+    // the words are in the field, the caret behind them, and the rest is typed or spoken.
+    MAG.compose = (text) => {
+      input.value = text;
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.focus();
+      input.setSelectionRange(text.length, text.length);
+    };
     // Files dropped anywhere on the page are attachments, never a navigation.
     window.addEventListener('dragover', (e) => e.preventDefault());
     window.addEventListener('drop', (e) => { e.preventDefault(); if (e.dataTransfer?.files?.length) addFiles([...e.dataTransfer.files]); });

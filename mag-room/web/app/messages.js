@@ -258,6 +258,11 @@
     return '';
   }
   MAG.lightbox = lightbox;
+  // A model is animated by saying what should happen: the request to a bot
+  // that is there starts in the message field, with the model named.
+  const askBot = () => (S.bots.find((b) => b.enabled !== false && b.model?.state === 'ready') || S.bots.find((b) => b.enabled !== false) || S.bots[0])?.name || '';
+  const animate = (label, words) => el('button', { class: 'pill go', title: 'Sag, was passieren soll: ein Bot baut daraus eine animierte Szene',
+    onclick: () => MAG.compose('@' + askBot() + ' ' + words) }, MAG.icon('film'), el('b', { text: label }));
   const quality = { fast: 'Schnell', normal: 'Normal', high: 'Hoch' };
   const kinds = { glb: 'Modell mit Textur', stl: 'für den 3D-Druck', ply: 'Punktwolke (Gaussian Splat)' };
   // Runtime, and what the sampler itself expects to remain for its step.
@@ -308,7 +313,7 @@
           el('button', { class: 'full', 'aria-label': 'Vollbild', title: 'Vollbild', html: MAG.icons.full + MAG.icons.x, onclick: () => MAG.viewer3d.fullscreen(stage) })));
       card.append(stage);
       MAG.viewer3d.attach(canvas, fileUrl(glb));
-      card.append(el('div', { class: 'links' }, (m.attachments || []).map((a) => {
+      card.append(el('div', { class: 'links' }, animate('Animieren', 'animiere ' + glb.name + ': '), (m.attachments || []).map((a) => {
         const ext = a.name.split('.').pop().toLowerCase();
         return el('a', { class: 'pill', href: fileUrl(a, '?download=1'), download: a.name, title: (kinds[ext] || a.name) + ' herunterladen' },
           MAG.icon('down'), el('b', { text: ext.toUpperCase() }), el('small', { text: (kinds[ext] ? kinds[ext] + ' · ' : '') + MAG.bytes(a.size) }));
@@ -342,7 +347,7 @@
     }
     if (running) card.append(progress3d(m3));
     if (film) card.append(el('video', { class: 'film', controls: true, loop: true, preload: 'metadata', playsInline: true, src: fileUrl(film) }));
-    card.append(el('div', { class: 'links' }, files.map((a) => {
+    card.append(el('div', { class: 'links' }, animate('Neue Fassung', 'ändere die Szene „' + (m3.title || 'Szene') + '“: '), files.map((a) => {
       const ext = a.name.split('.').pop().toLowerCase();
       return el('a', { class: 'pill', href: fileUrl(a, '?download=1'), download: a.name, title: (sceneFiles[ext] || a.name) + ' herunterladen' },
         MAG.icon('down'), el('b', { text: ext.toUpperCase() }), el('small', { text: (sceneFiles[ext] ? sceneFiles[ext] + ' · ' : '') + MAG.bytes(a.size) }));

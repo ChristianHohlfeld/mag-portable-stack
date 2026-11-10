@@ -4,7 +4,7 @@
 Description=MAG audit firewall rules (enforce central LLM/web interface)
 After=network-pre.target libvirtd.service
 Wants=network-pre.target
-Before=mag-llm.service mag-120.service mag-audit-gateway.service
+Before=mag-120.service mag-audit-gateway.service
 RefuseManualStop=yes
 
 [Service]

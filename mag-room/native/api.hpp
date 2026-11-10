@@ -12,8 +12,11 @@ class Api {
 public:
   Api(Room &room, Engine &engine, vm::Guests &guests, Idol &idol, auth::Gate &gate, Push &push)
       : room_(room), engine_(engine), guests_(guests), idol_(idol), gate_(gate), push_(push) {
-    version_ = env("MAG_ROOM_VERSION");
-    if (version_.empty()) version_ = trim(slurp(room_.cfg.web_dir + "/../SOURCE_COMMIT")).substr(0, 12);
+    // The version is the cache key of every asset: it must change with each
+    // release. A release carries its commit; outside a release (tests,
+    // development) the environment or the start time stands in.
+    version_ = trim(slurp(room_.cfg.web_dir + "/../SOURCE_COMMIT")).substr(0, 12);
+    if (version_.empty()) version_ = env("MAG_ROOM_VERSION");
     if (version_.empty()) version_ = "dev" + std::to_string(now_s());
   }
 

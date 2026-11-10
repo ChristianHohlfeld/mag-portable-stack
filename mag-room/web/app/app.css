@@ -95,6 +95,7 @@ svg { width: 20px; height: 20px; flex: none; fill: none; stroke: currentColor; s
   align-items: center;
   gap: 7px;
   min-width: 0;
+  flex: 0 1 auto;
   height: 36px;
   padding: 0 11px 0 9px;
   border-radius: 18px;

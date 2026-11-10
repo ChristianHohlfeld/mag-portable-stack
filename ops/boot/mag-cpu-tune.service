@@ -1,4 +1,4 @@
-# CPU hints for the CPU-only models (installed and enabled by ops/deploy.sh).
+# CPU hints for the CPU-only models (installed by ops/deploy.sh).
 # - performance governor, frequency range 1.2-3.3 GHz: turbo stays dynamic.
 #   A fixed 2.4 GHz clock was measured 6-14 % slower (2026-10-21).
 # - EPB 0: the kernel boots with energy_perf_bias 6 ("normal"); 0 lets
@@ -15,8 +15,7 @@
 [Unit]
 Description=MAG CPU tuning for local LLM inference
 After=systemd-modules-load.service
-Before=mag-llm-coding@0.service mag-llm-coding@1.service
-Before=mag-llm-ornith-node@0.service mag-llm-ornith-node@1.service mag-llm-qwen.service
+Before=mag-modeld.service mag-model@lena.service mag-model@noah.service
 
 [Service]
 Type=oneshot

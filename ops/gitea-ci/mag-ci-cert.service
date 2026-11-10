@@ -1,7 +1,0 @@
-[Unit]
-Description=Retired public Git lego renewal; Funnel owns this certificate
-After=network-online.target
-[Service]
-Type=oneshot
-ExecStart=/usr/local/lib/mag-ci/certificate.sh
-UMask=0077

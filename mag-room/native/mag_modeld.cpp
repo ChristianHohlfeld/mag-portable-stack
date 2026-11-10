@@ -646,10 +646,13 @@ static void prune_prefix_files(const std::string &bot) {
   const time_t now = time(nullptr);
   while (auto *e = readdir(d)) {
     const std::string name = e->d_name;
-    if (name.compare(0, 7, "prefix-") != 0 || name.size() < 12 || name.compare(name.size() - 4, 4, ".bin") != 0) continue;
+    if (name.size() < 12 || name.compare(name.size() - 4, 4, ".bin") != 0) continue;
     struct stat st{};
     const std::string path = dir + "/" + name;
-    if (stat(path.c_str(), &st) == 0 && S_ISREG(st.st_mode) && now - st.st_mtime > 2 * 86400) unlink(path.c_str());
+    if (stat(path.c_str(), &st) != 0 || !S_ISREG(st.st_mode)) continue;
+    // Slot files of the previous room version could hold a conversation.
+    if (name.compare(0, 11, "mag-prefix-") == 0) unlink(path.c_str());
+    else if (name.compare(0, 7, "prefix-") == 0 && now - st.st_mtime > 2 * 86400) unlink(path.c_str());
   }
   closedir(d);
 }
@@ -747,7 +750,9 @@ int main(int argc, char **argv) {
   const Val *runtime = conf.find("runtime");
   const std::string rev = runtime && runtime->find("rev") ? runtime->find("rev")->asStr() : "";
   // Identity of a bot's launch configuration; run.sh records it at start.
-  auto spec_hash = [&](const Val &bot) { return sha256_hex(mj::dump(bot) + "\n" + rev); };
+  // The launcher is part of that identity: changed flags need a restart too.
+  const std::string launcher = read_file(config.substr(0, config.find_last_of('/') + 1) + "run.sh");
+  auto spec_hash = [&](const Val &bot) { return sha256_hex(mj::dump(bot) + "\n" + rev + "\n" + launcher); };
   if (!args.empty() && args[0] == "spec-hash") {
     const Val *bot = args.size() == 2 && list ? list->find(args[1]) : nullptr;
     if (!bot) return usage();

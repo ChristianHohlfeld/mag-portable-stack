@@ -26,7 +26,12 @@
   function chipState(b) {
     if (!b.enabled) return ['off', 'aus'];
     const st = b.model?.state;
-    if (st !== 'ready') return [st === 'failed' || st === 'corrupt' ? 'bad' : st === 'unknown' || !st ? 'off' : 'wait', modelText(b)];
+    if (st !== 'ready') {
+      // The chip stays short; the sheet has the details.
+      const f = b.model?.model || {};
+      const short = st === 'downloading' && f.total && f.bytes < f.total ? 'lädt ' + Math.floor((f.bytes / f.total) * 100) + ' %' : modelText(b);
+      return [st === 'failed' || st === 'corrupt' ? 'bad' : st === 'unknown' || !st ? 'off' : 'wait', short];
+    }
     if (b.busy || b.phase !== 'idle') return ['busy', phases[b.phase] || 'arbeitet'];
     return ['ready', 'bereit'];
   }
@@ -146,7 +151,7 @@
           owner() ? toggle(b.enabled, (v) => call('PUT', '/api/bot/' + b.id, { enabled: v })) : null))));
 
       content.append(el('h3', { text: 'Gespräch' }), el('div', { class: 'card' },
-        row('Bots untereinander', 'Wie oft sich Lena und Noah nach einer Nachricht von dir gegenseitig antworten dürfen',
+        row('Bots untereinander', 'Wie oft sich Lena und Noah nach einer Nachricht von dir gegenseitig antworten dürfen. Unbegrenzt ruht nach 24 Antworten ohne dich.',
           select(s.bot_rounds ?? 0, [[0, 'Unbegrenzt'], [1, '1 Runde'], [2, '2 Runden'], [3, '3 Runden'], [5, '5 Runden'], [10, '10 Runden']], (v) => call('PUT', '/api/settings', { bot_rounds: +v }), !owner())),
         row('Internet für Bots', 'Websuche und Browser dürfen ins Netz', toggle(s.web !== false, (v) => call('PUT', '/api/settings', { web: v }), !owner()))));
 

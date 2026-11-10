@@ -73,7 +73,21 @@
   function stepTime(step) { return MAG.stopwatch((step.t1 || Date.now()) - (step.t0 || Date.now())); }
   function buildStep(m, index) {
     const step = m.parts[index];
-    const node = el('details', { class: 'step ' + step.state, dataset: { part: index } });
+    // A plugin call that changes something waits here for a yes or a no (not one a restart ended).
+    const ask = step.state === 'running' ? step.approval : null;
+    const node = el('details', { class: 'step ' + step.state + (ask ? ' asking' : ''), dataset: { part: index } });
+    const decide = (decision) => (e) => {
+      e.preventDefault();
+      e.currentTarget.parentNode.querySelectorAll('button').forEach((b) => { b.disabled = true; });
+      MAG.api('POST', '/api/approval/' + ask.id, { decision }).catch((x) => MAG.toast(x.message, true));
+    };
+    const asking = ask ? el('span', { class: 'ask' },
+      el('b', { text: MAG.name(m.from) + ' möchte bei ' + ask.server + ' „' + ask.tool + '“ ausführen.' }),
+      el('code', { text: ask.args }),
+      S.you.role === 'owner' ? el('span', { class: 'btns' },
+        el('button', { class: 'yes', text: 'Erlauben', onclick: decide('allow') }),
+        el('button', { text: 'Immer erlauben', title: 'Dieses Werkzeug darf ' + MAG.name(m.from) + ' künftig ohne Nachfrage nutzen', onclick: decide('always') }),
+        el('button', { class: 'no', text: 'Ablehnen', onclick: decide('deny') })) : null) : null;
     const cancel = step.state === 'running'
       ? el('button', { class: 'cancel', text: 'Abbrechen', onclick: (e) => { e.preventDefault(); MAG.api('POST', '/api/stop', { bot: m.from }).catch((x) => MAG.toast(x.message, true)); } })
       : null;
@@ -84,7 +98,8 @@
       el('span', { class: 'time', text: stepTime(step) + (step.exit ? ' · Exit ' + step.exit : '') }),
       cancel,
       el('span', { class: 'chev', html: MAG.icons.chev }),
-      step.state === 'running' ? el('span', { class: 'peek', text: lastLines(step.output || '') }) : null));
+      asking,
+      step.state === 'running' && !ask ? el('span', { class: 'peek', text: lastLines(step.output || '') }) : null));
     const out = el('pre', { class: 'out', text: step.output || '' });
     const input = stepInput(step);
     node.append(el('div', { class: 'body' },
@@ -614,7 +629,7 @@
   }
 
   // ---- activity row: who is doing what right now --------------------------
-  const phases = { reading: 'liest', thinking: 'denkt nach', writing: 'schreibt', tool: 'arbeitet', warming: 'bereitet sich vor', resetting: 'leert den Kontext' };
+  const phases = { reading: 'liest', thinking: 'denkt nach', writing: 'schreibt', tool: 'arbeitet', approval: 'wartet auf deine Freigabe', warming: 'bereitet sich vor', resetting: 'leert den Kontext' };
   function paintActivity() {
     const rows = [];
     for (const b of S.bots) {

@@ -37,8 +37,9 @@ class FakeIdol:
                 if job["state"] != "cancelled":
                     job["state"] = "queued" if job["polls"] < 2 else "running" if job["polls"] < 4 else "done"
                 step = min(50, job["polls"] * 15)
-                self.reply(200, {"id": parts[3], "state": job["state"], "stage": "Idol · Schritt %d/50" % step, "step": step,
-                                 "total_steps": 50, "progress": step / 50, "quality": job["quality"]})
+                self.reply(200, {"id": parts[3], "state": job["state"], "stage": "3D-Form berechnen", "phase": 2, "phases": 5,
+                                 "step": step, "total_steps": 50, "progress": step / 50, "eta": 90, "started": 1000,
+                                 "finished": 1420, "quality": job["quality"]})
 
             def do_POST(self):
                 if self.headers.get("X-Mag-Idol-UI") != "1":

@@ -45,6 +45,7 @@ public:
     m3["progress"] = 0;
     m3["quality"] = quality;
     m3["source"] = jstr(image, "name");
+    m3["image"] = jstr(image, "file"); // the photo it is made from (a room file)
     m["model3d"] = m3;
     const std::string id = jstr(room_.add(m), "id");
     watch(id, jstr(job, "id"));
@@ -133,16 +134,25 @@ private:
         }
         failures = 0;
         const std::string state = jstr(st, "state");
-        const std::string now = state + "|" + jstr(st, "stage") + "|" + std::to_string((int)jnum(st, "step"));
+        const std::string now = state + "|" + jstr(st, "stage") + "|" + std::to_string((int)jnum(st, "phase")) + "|" +
+                                std::to_string((int)jnum(st, "step"));
         if (now != last && (state == "queued" || state == "running")) {
           last = now;
+          // What the worker reports, as it reports it: the phase of the
+          // pipeline (k of n, with its name), the sampler's step counter and
+          // the sampler's own estimate of the time left.
           room_.update(message_id, [&](Val &msg) {
             Val &m3 = msg["model3d"];
             m3["state"] = state;
             m3["stage"] = jstr(st, "stage");
+            m3["phase"] = jnum(st, "phase");
+            m3["phases"] = jnum(st, "phases");
             m3["step"] = jnum(st, "step");
             m3["steps"] = jnum(st, "total_steps", 50);
             m3["progress"] = jnum(st, "progress");
+            m3["started"] = jnum(st, "started");
+            m3["eta"] = jnum(st, "eta");
+            m3["eta_at"] = (double)now_s();
           }, false);
         }
         if (state == "done") {
@@ -165,6 +175,7 @@ private:
             m3["stage"] = "Fertig";
             m3["progress"] = 1;
             m3["glb"] = jstr(glb, "file");
+            if (jnum(st, "started") > 0 && jnum(st, "finished") >= jnum(st, "started")) m3["took"] = jnum(st, "finished") - jnum(st, "started");
           });
           return;
         }

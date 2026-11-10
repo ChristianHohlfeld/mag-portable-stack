@@ -35,8 +35,11 @@
   const nearBottom = () => scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 70;
   function toBottom() { scroller.scrollTop = scroller.scrollHeight; pinned = true; unread = 0; paintJump(); }
   function paintJump() {
+    // A small round arrow above the composer; it carries words only when
+    // something new arrived below.
     jump.hidden = pinned;
-    jump.lastChild.textContent = unread > 0 ? (unread === 1 ? 'Neue Nachricht' : unread + ' neue Nachrichten') : 'Nach unten';
+    jump.classList.toggle('news', unread > 0);
+    jump.lastChild.textContent = unread > 0 ? (unread === 1 ? 'Neue Nachricht' : unread + ' neue Nachrichten') : '';
   }
   // Run a change to the timeline; follow it only when the reader was at the end.
   function grow(change, isNewMessage) {
@@ -189,39 +192,102 @@
   // ---- attachments and 3D -------------------------------------------------
   const fileUrl = (a, extra) => '/api/file/' + encodeURIComponent(a.file) + (extra || '');
   function buildAttachment(a) {
-    if (a.kind === 'image') return el('button', { class: 'att-img', onclick: () => lightbox(fileUrl(a)) }, el('img', { src: fileUrl(a), alt: a.name, loading: 'lazy' }));
+    if (a.kind === 'image') return el('button', { class: 'att-img', onclick: () => lightbox(fileUrl(a), a.name) }, el('img', { src: fileUrl(a), alt: a.name, loading: 'lazy' }));
     if (a.kind === 'audio') return el('audio', { controls: true, preload: 'none', src: fileUrl(a) });
     if (a.kind === 'video') return el('video', { controls: true, preload: 'metadata', src: fileUrl(a), playsInline: true });
     return el('a', { class: 'att-file', href: fileUrl(a, '?download=1'), download: a.name }, MAG.icon(a.kind === 'model' ? 'cube' : 'file'),
       el('span', { text: a.name }), el('small', { text: MAG.bytes(a.size) }));
   }
-  function lightbox(src) {
-    const close = () => { box.remove(); document.removeEventListener('keydown', key); };
+  // A picture over the chat: Esc, the back gesture, a swipe or the X close it.
+  function lightbox(src, name) {
+    const img = el('img', { src, alt: name || '' });
+    const leave = () => {
+      box.remove();
+      document.removeEventListener('keydown', key);
+      window.removeEventListener('popstate', leave);
+    };
+    const close = () => (history.state?.magbox ? history.back() : leave());
     const key = (e) => e.key === 'Escape' && close();
-    const box = el('div', { id: 'lightbox', onclick: (e) => e.target === box && close() }, el('img', { src }),
+    const box = el('div', { id: 'lightbox', onclick: (e) => e.target === box && close() }, img,
+      el('div', { class: 'bar' },
+        el('a', { class: 'pill', href: src, target: '_blank', rel: 'noopener' }, MAG.icon('open'), 'In neuem Tab öffnen'),
+        el('a', { class: 'pill', href: src + '?download=1', download: name || '' }, MAG.icon('down'), 'Herunterladen')),
       el('button', { class: 'icon-btn', 'aria-label': 'Schließen', html: MAG.icons.x, onclick: close }));
+    let from = null;
+    box.addEventListener('touchstart', (e) => { from = e.touches.length === 1 ? e.touches[0].clientY : null; }, { passive: true });
+    box.addEventListener('touchmove', (e) => {
+      if (from === null || e.touches.length !== 1) return;
+      const dy = e.touches[0].clientY - from;
+      img.style.transform = 'translateY(' + dy + 'px)';
+      box.style.setProperty('--fade', String(Math.max(0.35, 1 - Math.abs(dy) / 400)));
+    }, { passive: true });
+    box.addEventListener('touchend', (e) => {
+      if (from === null) return;
+      const dy = e.changedTouches[0].clientY - from;
+      from = null;
+      if (Math.abs(dy) > 90) return close();
+      img.style.transform = '';
+      box.style.removeProperty('--fade');
+    });
+    history.pushState({ magbox: true }, '');
+    window.addEventListener('popstate', leave);
     document.addEventListener('keydown', key);
     document.body.append(box);
   }
   const quality = { fast: 'Schnell', normal: 'Normal', high: 'Hoch' };
+  const kinds = { glb: 'Modell mit Textur', stl: 'für den 3D-Druck', ply: 'Punktwolke (Gaussian Splat)' };
+  // Runtime, and what the sampler itself expects to remain for its step.
+  function clock3d(d) {
+    const now = Date.now() / 1000;
+    let text = +d.since ? 'Läuft seit ' + MAG.stopwatch((now - d.since) * 1000) : 'Wartet auf die Grafikkarte';
+    const left = +d.eta ? d.eta - (now - d.etaAt) : 0;
+    if (left > 20) text += ' · dieser Schritt noch etwa ' + (left < 90 ? Math.round(left / 10) * 10 + ' s' : Math.round(left / 60) + ' min');
+    return text;
+  }
+  // "Schritt 2 von 5" with the step's real name; one segment per step. Only
+  // the sampler counts its work (n/50), so only its segment fills gradually.
+  function progress3d(m3) {
+    const n = m3.phases || 0, k = m3.state === 'running' ? m3.phase || 0 : 0;
+    const counted = k === 2 && m3.steps > 0;
+    const title = k ? 'Schritt ' + k + ' von ' + n + ' · ' + m3.stage + (counted ? ' · ' + (m3.step || 0) + '/' + m3.steps : '') : 'In der Warteschlange';
+    const segs = el('div', { class: 'segs', role: 'progressbar', 'aria-valuemin': 0, 'aria-valuemax': n || 1, 'aria-valuenow': k, 'aria-valuetext': title });
+    for (let i = 1; i <= (n || 1); i++) {
+      const fill = i < k ? 1 : i === k && counted ? (m3.step || 0) / m3.steps : 0;
+      segs.append(el('i', { class: (i === 2 ? 'long' : '') + (i === k && !counted ? ' busy' : '') }, el('b', { style: 'width:' + Math.round(fill * 100) + '%' })));
+    }
+    const clock = el('span', { class: 'clock', dataset: { since: m3.started || 0, eta: m3.eta || 0, etaAt: m3.eta_at || 0 } });
+    clock.textContent = clock3d(clock.dataset);
+    return el('div', { class: 'prog' }, el('div', { class: 'what', text: title }), segs, clock);
+  }
   function build3d(m) {
-    const m3 = m.model3d, card = el('div', { class: 'm3' });
+    const m3 = m.model3d, card = el('div', { class: 'm3 ' + m3.state });
     const running = m3.state === 'queued' || m3.state === 'running';
-    const label = m3.state === 'done' ? 'Qualität ' + (quality[m3.quality] || m3.quality)
-      : m3.state === 'error' ? (m3.error || 'Fehler') : m3.state === 'cancelled' ? 'Abgebrochen'
-      : (m3.stage || 'Warteschlange') + (m3.source ? ' · ' + m3.source : '');
-    card.append(el('div', { class: 'head' }, MAG.icon('cube'), el('b', { text: 'Foto zu 3D' }), el('span', { class: 'grow', text: label }),
+    const src = m3.image ? '/api/file/' + encodeURIComponent(m3.image) : '';
+    // The photo it is made from: a thumbnail that opens over the chat.
+    const thumb = src
+      ? el('button', { class: 'src', 'aria-label': 'Ausgangsbild ansehen', title: 'Ausgangsbild', onclick: () => lightbox(src, m3.source) },
+          el('img', { src, alt: '', loading: 'lazy', onerror: (e) => e.target.closest('.src')?.replaceWith(el('span', { class: 'src' }, MAG.icon('cube'))) }))
+      : el('span', { class: 'src' }, MAG.icon('cube'));
+    const label = 'Qualität ' + (quality[m3.quality] || m3.quality);
+    const sub = m3.state === 'done' ? label + (m3.took ? ' · ' + MAG.dur(m3.took * 1000) : '')
+      : m3.state === 'error' ? (m3.error || 'Fehler') : m3.state === 'cancelled' ? 'Abgebrochen' : label;
+    card.append(el('div', { class: 'head' }, thumb, el('div', { class: 'txt' }, el('b', { text: 'Foto zu 3D' }), el('small', { text: sub })),
       running ? el('button', { class: 'pill danger', text: 'Abbrechen', onclick: () => MAG.api('POST', '/api/3d/' + m.id + '/cancel').catch((x) => MAG.toast(x.message, true)) }) : null));
-    if (running) card.append(el('div', { class: 'bar' }, el('i', { style: 'width:' + Math.round((m3.progress || 0) * 100) + '%' })));
+    if (running) card.append(progress3d(m3));
     const glb = (m.attachments || []).find((a) => a.name.endsWith('.glb'));
     if (m3.state === 'done' && glb) {
       const canvas = el('canvas', {});
-      const stage = el('div', { class: 'stage' }, canvas, el('span', { class: 'hint', text: 'Ziehen dreht · zwei Finger zoomen' }),
-        el('button', { class: 'full', 'aria-label': 'Vollbild', html: MAG.icons.full, onclick: () => MAG.viewer3d.fullscreen(stage) }));
+      const stage = el('div', { class: 'stage' }, canvas, el('span', { class: 'wait', text: 'Modell wird geladen …' }), el('span', { class: 'hint' }),
+        el('div', { class: 'tools' },
+          el('button', { 'aria-label': 'Ansicht zurücksetzen', title: 'Ansicht zurücksetzen', html: MAG.icons.reset, onclick: () => MAG.viewer3d.reset(canvas) }),
+          el('button', { class: 'full', 'aria-label': 'Vollbild', title: 'Vollbild', html: MAG.icons.full + MAG.icons.x, onclick: () => MAG.viewer3d.fullscreen(stage) })));
       card.append(stage);
       MAG.viewer3d.attach(canvas, fileUrl(glb));
-      card.append(el('div', { class: 'links' }, (m.attachments || []).map((a) =>
-        el('a', { class: 'pill', href: fileUrl(a, '?download=1'), download: a.name, text: a.name.split('.').pop().toUpperCase() + ' · ' + MAG.bytes(a.size) }))));
+      card.append(el('div', { class: 'links' }, (m.attachments || []).map((a) => {
+        const ext = a.name.split('.').pop().toLowerCase();
+        return el('a', { class: 'pill', href: fileUrl(a, '?download=1'), download: a.name, title: (kinds[ext] || a.name) + ' herunterladen' },
+          MAG.icon('down'), el('b', { text: ext.toUpperCase() }), el('small', { text: (kinds[ext] ? kinds[ext] + ' · ' : '') + MAG.bytes(a.size) }));
+      })));
     }
     return card;
   }
@@ -234,7 +300,8 @@
     const user = m.role === 'user', row = el('div', { class: 'acts' });
     const button = (icon, label, run) => el('button', { class: 'act', 'aria-label': label, title: label, html: MAG.icons[icon], onclick: run });
     if (user) row.append(el('span', { class: 'time', text: MAG.clock(m.ts), title: MAG.day(m.ts) }));
-    if (m.text) row.append(button('copy', 'Kopieren', async (e) => {
+    const words = m.model3d ? '' : m.text; // a 3D result has nothing to copy or read aloud
+    if (words) row.append(button('copy', 'Kopieren', async (e) => {
       const b = e.currentTarget;
       try {
         await navigator.clipboard.writeText(m.text);
@@ -242,7 +309,7 @@
         setTimeout(() => { b.innerHTML = MAG.icons.copy; }, 1300);
       } catch { MAG.toast('Kopieren nicht möglich', true); }
     }));
-    if (m.text && !user && MAG.speak) row.append(button('speak', 'Vorlesen', (e) => MAG.speak(m, e.currentTarget)));
+    if (words && !user && MAG.speak) row.append(button('speak', 'Vorlesen', (e) => MAG.speak(m, e.currentTarget)));
     if (S.you.role === 'owner') row.append(button('dots', 'Mehr', (e) => MAG.menu(e.currentTarget, [
       { icon: 'trash', label: 'Nachricht löschen', danger: true, run: () => MAG.api('DELETE', '/api/message/' + m.id).catch((x) => MAG.toast(x.message, true)) },
     ])));
@@ -382,6 +449,7 @@
   setInterval(() => {
     if (!activity) return;
     activity.querySelectorAll('.act').forEach((row) => { row.querySelector('.t').textContent = MAG.stopwatch(Date.now() - +row.dataset.since); });
+    list.querySelectorAll('.m3 .clock').forEach((node) => { node.textContent = clock3d(node.dataset); });
     list.querySelectorAll('.step.running').forEach((node) => {
       const article = node.closest('.msg'), m = S.messages.get(article?.dataset.id);
       const step = m?.parts?.[+node.dataset.part];

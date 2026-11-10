@@ -25,6 +25,7 @@ phone/desktop ── Tailscale :443 ── nginx (TLS, whois auth_request) ─�
 | `engine.hpp` | who answers when: turns, append-only prompt log, context budget, PASS |
 | `tools.hpp` | tool schemas and dispatch |
 | `vm.hpp` | guest exec with live output, file writes, browser controller, VM tokens |
+| `site.hpp` | bot web pages: HTML blocks and `www` files published on the bot's site, shown as live previews |
 | `idol.hpp` | photo-to-3D jobs as room messages |
 | `push.hpp` | Web Push (VAPID) |
 | `api.hpp` | HTTP routes, event stream, VM bridge |

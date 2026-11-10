@@ -50,7 +50,8 @@ class Room:
                         MAG_IDOL_URL="http://127.0.0.1:%d" % self.idol.port, MAG_TEST_ALLOW_LOCAL_OWNER="1", MAG_ROOM_VERSION="test",
                         MAG_ROOM_NO_SUDO="1", MAG_ROOM_GUEST_RUN=str(HERE / "fake_guest_run"),
                         MAG_ROOM_AGENT_CTL="/bin/false", MAG_ROOM_NETMODE="/bin/true",
-                        FAKE_GUEST_HOME=str(self.tmp / "guests"), MAG_ROOM_BRAVE_KEY="", BRAVE_API_KEY="")
+                        FAKE_GUEST_HOME=str(self.tmp / "guests"), MAG_ROOM_GUEST_HOME=str(self.tmp / "guests" / "agent1"),
+                        MAG_ROOM_BRAVE_KEY="", BRAVE_API_KEY="")
         self.env.update({k: str(v) for k, v in env.items()})
         (self.tmp / "control").mkdir()
         (self.tmp / "state").mkdir()
@@ -282,6 +283,44 @@ class RoomContract(unittest.TestCase):
         last = [m for m in r.messages() if m["from"] == "lena"][-1]
         self.assertEqual((last["parts"][0]["state"], last["parts"][0]["exit"]), ("error", 3))
         self.assertEqual(r.lena.chats()[-1]["messages"][-1]["content"], "exit=3\nhallo\n")
+
+    def test_finished_html_becomes_a_live_page_on_the_bots_site(self):
+        r = self.room
+        home = r.tmp / "guests" / "agent1"
+        home.mkdir(parents=True)
+        (home / "publish-site").write_text("ls www > published.txt\n")  # stands in for the VM's publisher script
+        lena = [b for b in r.state()["bots"] if b["id"] == "lena"][0]
+        self.assertEqual(lena["site"], "https://agent1.bot.stardenburg.de")
+        doc = ("<!doctype html>\n<html>\n<head><title>Sonnen System</title></head>\n<body>\n"
+               "<script type=\"module\">import * as THREE from 'three';</script>\n</body>\n</html>")
+        r.lena.reply = lambda body: "Hier ist sie:\n\n```html\n" + doc + "\n```\n\nViel Spaß."
+        r.say("@Lena bau mir eine Seite")
+        r.wait(lambda: [m for m in r.messages() if m.get("pages")], "page of the code block")
+        page = [m for m in r.messages() if m.get("pages")][0]["pages"][0]
+        self.assertRegex(page["path"], r"^sonnen-system-[0-9a-f]{6}\.html$")
+        self.assertEqual((page["bot"], page["title"]), ("lena", "Sonnen System"))
+        self.assertEqual(len(page["sig"]), 8)                 # lets the page find the code block it replaces
+        published = (home / "www" / page["path"]).read_text()
+        self.assertIn(doc.split("<body>")[1], published)
+        self.assertIn('<script type="importmap">', published)  # a bare "three" import works in the browser
+        self.assertIn(page["path"], (home / "published.txt").read_text())
+        # A page written with a tool is published the same way and shown below its step.
+        r.idle()
+        script = iter([{"content": "", "tool_calls": [{"name": "write_file", "arguments": {
+            "path": "www/demo.html", "content": "<!doctype html><title>Demo</title><p>hi</p>"}}]}, "Fertig."])
+        r.lena.reply = lambda body: next(script)
+        r.say("@Lena und eine Datei")
+        r.idle()
+        last = [m for m in r.messages() if m["from"] == "lena"][-1]
+        self.assertEqual([(p["path"], p["title"], p["part"]) for p in last["pages"]], [("demo.html", "Demo", 0)])
+        self.assertIn("Veröffentlicht: https://agent1.bot.stardenburg.de/demo.html", r.lena.chats()[-1]["messages"][-1]["content"])
+        self.assertIn("demo.html", (home / "published.txt").read_text())
+        # Screenshots in the chat are gone; the room may frame the bots' sites and nothing else.
+        self.assertNotIn("browser_screenshot", [t["function"]["name"] for t in r.lena.chats()[-1]["tools"]])
+        with urllib.request.urlopen(r.url("/"), timeout=5) as res:
+            policy = res.headers["Content-Security-Policy"]
+            self.assertIsNone(res.headers["Cross-Origin-Embedder-Policy"])
+        self.assertIn("frame-src 'self' https://*.bot.stardenburg.de;", policy)
 
     def test_tool_work_continues_only_with_marker_success_and_progress(self):
         r = self.room

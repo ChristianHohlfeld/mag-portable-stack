@@ -402,6 +402,7 @@ struct Bot {
   Clock::time_point last_start{};
   bool started_once = false;
   time_t ready_since = 0;
+  long long process_us = 0;      // when the unit of the server that is ready became active (monotonic)
   bool restart_pending = false, draft_active = false, mmproj_active = false;
 };
 
@@ -589,6 +590,7 @@ static void step(Bot &b) {
         if (b.state != "ready") b.ready_since = time(nullptr);
         b.state = "ready";
         b.ever_ready = true;
+        b.process_us = u.since_us;
       } else {
         b.state = "loading";
       }
@@ -713,7 +715,14 @@ static void write_status(const std::map<std::string, Bot> &bots) {
       d["active"] = b.mmproj_active;
       v["mmproj"] = d;
     }
-    if (b.state == "ready") v["since"] = (double)b.ready_since;
+    // `since` tells the room which server process a slot belongs to: the
+    // moment its unit became active. It stays the same while that process
+    // lives, also across a restart of this supervisor (every deploy is one)
+    // and a freeze, and it differs for every new process. The room brings a
+    // slot back to its prefix when `since` changes; a value that changed
+    // with every start of the supervisor made each bot read its whole
+    // conversation again after every deploy.
+    if (b.state == "ready") v["since"] = (double)(b.process_us > 0 ? b.process_us : (long long)b.ready_since);
     v["restart_pending"] = b.restart_pending;
     list[kv.first] = v;
   }

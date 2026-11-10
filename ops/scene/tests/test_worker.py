@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """The scene worker's promises: a scene that cannot be built is refused in
-words and leaves nothing behind; a built scene can be fetched at once while
-its film renders; the film survives a restart of the worker (the render keeps
-running and is followed again) and a reboot (it goes on with the first frame
-that is missing). Blender and ffmpeg are scripted stand-ins: this proves the
-worker's bookkeeping, not the pictures."""
+words and leaves nothing behind; a built scene can be fetched at once, and
+its film is rendered only when it is asked for; the film survives a restart
+of the worker (the render keeps running and is followed again) and a reboot
+(it goes on with the first frame that is missing). Blender and ffmpeg are
+scripted stand-ins: this proves the worker's bookkeeping, not the pictures."""
 import json
 import os
 import pathlib
@@ -123,9 +123,15 @@ def main():
         except OSError:
             return False
 
-    def scene(name="Fuchs"):
-        return {"title": "Probe", "actors": [{"name": name, "file": "01ab_3d-fuchs.glb", "model": "3d-fuchs.glb"}],
-                "actions": [{"actor": name, "do": "jump"}]}
+    def scene(name="Fuchs", **more):
+        return dict({"title": "Probe", "actors": [{"name": name, "file": "01ab_3d-fuchs.glb", "model": "3d-fuchs.glb", "part": 1}],
+                     "actions": [{"actor": name, "do": "jump"}], "ground": "snow", "film": False}, **more)
+
+    def filmed(**more):
+        """A scene whose film was asked for."""
+        job = call("POST", "/api/scene/jobs", scene(**more))[1]["id"]
+        assert call("POST", "/api/scene/jobs/%s/film" % job) == (200, {"queued": True})
+        return job
 
     try:
         start()
@@ -142,13 +148,25 @@ def main():
         assert (code, out) == (400, {"error": "Aktion für unbekannten Darsteller: Niemand."}), out
         assert call("POST", "/api/scene/jobs", {"actors": []})[0] == 400
         assert not [p for p in root.iterdir() if p.is_dir()], "a refused scene must not leave a folder"
-        # 1. A built scene is there at once; its film follows. The worker
-        #    restarts while it renders: the render keeps running, the new
-        #    worker follows it, no frame is rendered twice.
+        # 1. A built scene is there at once and stays as it is: no film is
+        #    rendered that nobody asked for. How it was described can be read
+        #    again (for a new version of it), without the room's file paths.
         code, job = call("POST", "/api/scene/jobs", scene())
-        assert code == 201 and (job["state"], job["frames"], job["actors"][0]["kind"], job["phases"]) == ("queued", 12, "Vierbeiner", 3), job
+        assert code == 201 and (job["state"], job["frames"], job["actors"][0]["kind"], job["phases"]) == ("built", 12, "Vierbeiner", 3), job
         a = job["id"]
         assert call("GET", "/api/scene/jobs/%s/scene.glb" % a, raw=True) == (200, b"glTF-scene")
+        assert call("GET", "/api/scene/jobs/%s/scene.blend" % a, raw=True) == (200, b"BLENDER")
+        assert call("GET", "/api/scene/jobs/%s/scene.mp4" % a)[0] == 404
+        assert call("GET", "/api/scene/jobs/%s/spec" % a) == (200, {"spec": {"title": "Probe", "actors": [{"name": "Fuchs", "model": "3d-fuchs.glb", "part": 1}],
+                                                                     "actions": [{"actor": "Fuchs", "do": "jump"}], "ground": "snow"}})
+        assert call("POST", "/api/scene/jobs/%s/cancel" % a) == (200, {"cancelled": False})    # nothing runs
+        time.sleep(0.5)
+        assert status(a)["state"] == "built" and calls.read_text().split() == ["parts", "build", "build"] and call("GET", "/api/scene/health")[1]["active"] == 0
+        # The film is asked for. The worker restarts while it renders: the
+        # render keeps running, the new worker follows it, no frame is
+        # rendered twice.
+        assert call("POST", "/api/scene/jobs/%s/film" % a) == (200, {"queued": True})
+        assert call("POST", "/api/scene/jobs/%s/film" % a) == (200, {"queued": False, "error": "Der Film wird schon gerendert."})
         assert call("GET", "/api/scene/jobs/%s/scene.mp4" % a)[0] == 404        # not before it is finished
         s = wait(a, lambda s: s["state"] == "running" and s.get("step", 0) >= 3, "rendering")
         assert (s["phase"], s["stage"], s["total_steps"]) == (2, "Film rendern", 12), s
@@ -163,9 +181,23 @@ def main():
         assert call("GET", "/api/scene/jobs/%s/scene.mp4" % a, raw=True) == (200, b"film")
         assert (root / a / "render.log").read_text().count("MAG-FRAME 2/12") == 1
         assert not (root / a / "frames").exists()                                # the stills go once the film is written
+        assert call("POST", "/api/scene/jobs/%s/film" % a) == (200, {"queued": False, "error": "Den Film gibt es schon."})
+        # A built scene that waits for nothing survives a restart as it is.
+        idle = call("POST", "/api/scene/jobs", scene())[1]["id"]
+        stop()
+        start()
+        assert status(idle)["state"] == "built" and call("GET", "/api/scene/health")[1]["active"] == 0
+        # A room from before films on request does not say `film`: it gets the film at once, and may ask for it again by the old name.
+        code, job = call("POST", "/api/scene/jobs", {k: v for k, v in scene().items() if k != "film"})
+        assert code == 201 and job["state"] == "queued", job
+        old = job["id"]
+        wait(old, lambda s: s["state"] == "running" and s.get("step", 0) >= 2, "rendering at once")
+        assert call("POST", "/api/scene/jobs/%s/cancel" % old) == (200, {"cancelled": True})
+        assert call("POST", "/api/scene/jobs/%s/retry" % old) == (200, {"queued": True})
+        wait(old, lambda s: s["state"] == "done", "film by the old name")
         # 2. Worker and render both die (a reboot): the film goes on with the
         #    first frame that is missing.
-        b = call("POST", "/api/scene/jobs", scene())[1]["id"]
+        b = filmed()
         s = wait(b, lambda s: s["state"] == "running" and s.get("step", 0) >= 5, "rendering")
         stop()
         os.killpg(s["pid"], signal.SIGKILL)
@@ -177,29 +209,28 @@ def main():
         log = (root / b / "render.log").read_text()
         assert log.count("MAG-FRAME 2/12") == 1 and log.count("MAG-FRAME 12/12") == 1, log   # early frames once, all of them in the end
         # 3. Cancelling ends the film, not the scene; deleting removes the folder.
-        c = call("POST", "/api/scene/jobs", scene())[1]["id"]
+        c = filmed()
         s = wait(c, lambda s: s["state"] == "running" and s.get("step", 0) >= 2, "rendering")
         assert call("POST", "/api/scene/jobs/%s/cancel" % c) == (200, {"cancelled": True})
         assert status(c)["state"] == "cancelled" and not alive(s["pid"])
         assert call("GET", "/api/scene/jobs/%s/scene.glb" % c, raw=True)[0] == 200
         # A film that was cancelled (or failed) can be rendered after all: what was rendered stays.
         before = (root / c / "render.log").read_text().count("MAG-FRAME 1/12")
-        assert call("POST", "/api/scene/jobs/%s/retry" % c) == (200, {"queued": True})
-        s = wait(c, lambda s: s["state"] == "done", "film after a retry")
+        assert call("POST", "/api/scene/jobs/%s/film" % c) == (200, {"queued": True})
+        s = wait(c, lambda s: s["state"] == "done", "film after all")
         assert "error" not in s and (root / c / "render.log").read_text().count("MAG-FRAME 1/12") == before
-        assert call("POST", "/api/scene/jobs/%s/retry" % c) == (200, {"queued": False})      # there is a film
-        c = call("POST", "/api/scene/jobs", scene())[1]["id"]
+        c = filmed()
         wait(c, lambda s: s["state"] == "running" and s.get("step", 0) >= 2, "rendering")
         assert call("POST", "/api/scene/jobs/%s/cancel" % c) == (200, {"cancelled": True})
         assert call("DELETE", "/api/scene/jobs/" + c) == (200, {"deleted": True}) and not (root / c).exists()
         assert call("GET", "/api/scene/jobs/" + c)[0] == 404
         # 4. A render that fails halfway (the denoiser got no thread) is started
         #    again and goes on; one that gets nowhere is an error, in words.
-        d = call("POST", "/api/scene/jobs", dict(scene(), title="Stolpert"))[1]["id"]
+        d = filmed(title="Stolpert")
         s = wait(d, lambda s: s["state"] == "done", "film after a render that stumbled")
         log = (root / d / "render.log").read_text()
         assert s["resumed"] == 1 and log.count("OpenImageDenoise error") == 1 and log.count("MAG-FRAME 3/12") == 1, (s, log)
-        e = call("POST", "/api/scene/jobs", dict(scene(), title="Kaputt"))[1]["id"]
+        e = filmed(title="Kaputt")
         end = time.time() + 20
         while status(e)["state"] not in ("error", "done") and time.time() < end:
             time.sleep(0.05)
@@ -207,7 +238,7 @@ def main():
         assert call("GET", "/api/scene/jobs/%s/scene.glb" % e, raw=True)[0] == 200              # the scene itself is there
         # What Blender said about a scene it could not build is kept.
         assert len(list((tmp / "failed").glob("*.log"))) == 1 and "Niemand" in next((tmp / "failed").glob("*.log")).read_text()
-        assert call("POST", "/api/scene/purge")[1]["deleted"] == 5 and not [p for p in root.iterdir() if p.is_dir()]
+        assert call("POST", "/api/scene/purge")[1]["deleted"] == 7 and not [p for p in root.iterdir() if p.is_dir()]
         # Only the room may ask.
         req = urllib.request.Request("http://127.0.0.1:%d/api/scene/purge" % port, data=b"", method="POST")
         try:

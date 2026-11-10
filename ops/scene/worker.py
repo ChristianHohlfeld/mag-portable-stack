@@ -3,11 +3,13 @@
 
 A scene is a job folder. Building it (scene.py build: what every figure is,
 its skeleton, the motion) takes seconds and happens while the request waits,
-so a bot that describes a scene wrongly is told at once what is wrong. The film is rendered afterwards, frame by frame
-on the CPU; that stage runs on its own (own session, log file, exit code in a
-file), exactly like the stages of the photo-to-3D worker: a restart of this
-worker (a deploy) finds it running and follows it again, and after a reboot
-the render goes on with the first frame that is missing.
+so a bot that describes a scene wrongly is told at once what is wrong. The
+built scene plays in the chat as it is. Its film is rendered only when it is
+asked for, frame by frame on the CPU; that stage runs on its own (own
+session, log file, exit code in a file), exactly like the stages of the
+photo-to-3D worker: a restart of this worker (a deploy) finds it running and
+follows it again, and after a reboot the render goes on with the first frame
+that is missing.
 CPU only: the MI50 belongs to photo-to-3D.
 """
 import json
@@ -64,7 +66,7 @@ def save(job):
 def update(job_id, **fields):
     with lock:
         item = jobs.get(job_id)  # None: discarded while it ran
-        if item is None or item["state"] in ("cancelled", "error", "done"):
+        if item is None or item["state"] in ("built", "cancelled", "error", "done"):
             return False
         item.update(fields)
         if (ROOT / job_id).is_dir():
@@ -122,7 +124,7 @@ def cancel(job_id):
         item = jobs.get(job_id)
         if item is None:
             return None
-        if item["state"] in ("done", "error", "cancelled"):
+        if item["state"] in ("built", "done", "error", "cancelled"):
             return False
         abort.add(job_id)
         item["state"] = "cancelled"
@@ -134,15 +136,22 @@ def cancel(job_id):
     return True
 
 
-def retry(job_id):
-    """Renders the film of a scene again whose film failed or was cancelled:
-    what was rendered stays, the rest is rendered. None: no such job."""
+def film(job_id):
+    """Renders the film of a scene: when it is asked for, or again when it
+    failed or was cancelled (what was rendered stays, the rest is rendered).
+    True, or why not; None: no such job."""
     with lock:
         item = jobs.get(job_id)
         if item is None:
             return None
-        if item["state"] not in ("error", "cancelled") or not (ROOT / job_id / "scene.blend").is_file():
-            return False
+        if item["state"] in ("queued", "running"):
+            return "Der Film wird schon gerendert."
+        if item["state"] == "done":
+            return "Den Film gibt es schon."
+        if not (ROOT / job_id / "scene.blend").is_file():
+            return "Die Szene ist nicht mehr vollständig."
+        if pending.qsize() >= MAX_PENDING:
+            return "Es warten schon zu viele Filme."
         abort.discard(job_id)
         item.update(state="queued", stage="Film wartet", pid=None, eta=None, started=int(time.time()))
         item.pop("error", None)
@@ -150,6 +159,18 @@ def retry(job_id):
         save(item)
         pending.put_nowait(job_id)
     return True
+
+
+def recipe(job_id):
+    """The scene as it was described, for a new version of it: who plays and
+    what happens (not where the files are). None: not known any more."""
+    try:
+        spec = json.loads((ROOT / job_id / "spec.json").read_text())
+    except (OSError, ValueError):
+        return None
+    for actor in spec.get("actors") or []:
+        actor.pop("file", None)
+    return {key: value for key, value in spec.items() if value is not None}
 
 
 def discard(job_id):
@@ -410,7 +431,8 @@ def keep_log(folder):
 
 
 def create(spec):
-    """Builds the scene now and queues its film. Returns the job."""
+    """Builds the scene now. Returns the job; its film is rendered on request
+    (a room from before that, which does not say `film: false`, gets it at once)."""
     if not isinstance(spec, dict) or not isinstance(spec.get("actors"), list) or not spec["actors"]:
         raise Refused("Eine Szene braucht Darsteller (actors).")
     actors = []
@@ -424,8 +446,9 @@ def create(spec):
     clean = {"title": str(spec.get("title") or "Szene")[:80], "actors": actors,
              "actions": [a for a in (spec.get("actions") or []) if isinstance(a, dict)][:40],
              "ground": spec.get("ground"), "light": spec.get("light"), "seconds": spec.get("seconds")}
+    at_once = spec.get("film") is not False
     with lock:
-        if pending.qsize() >= MAX_PENDING:
+        if at_once and pending.qsize() >= MAX_PENDING:
             raise Refused("Es warten schon zu viele Szenen.")
     identity = uuid4().hex
     folder = ROOT / identity
@@ -442,14 +465,17 @@ def create(spec):
         keep_log(folder)
         shutil.rmtree(folder, ignore_errors=True)
         raise Refused("Die Szene wurde nicht vollständig gebaut.")
-    item = {"id": identity, "state": "queued", "stage": "Film wartet", "quality": quality, "created": int(time.time()),
-            "started": int(time.time()), "title": facts.get("title"), "seconds": facts.get("seconds"), "frames": facts.get("frames"),
+    item = {"id": identity, "state": "built", "stage": "Bereit", "quality": quality, "created": int(time.time()),
+            "title": facts.get("title"), "seconds": facts.get("seconds"), "frames": facts.get("frames"),
             "fps": facts.get("fps"), "actors": facts.get("actors"), "phase": 1, "phases": len(PHASES), "step": 0,
             "total_steps": facts.get("frames"), "progress": 0.0, "files": ["scene.glb", "scene.blend"]}
     with lock:
         jobs[identity] = item
         save(item)
-        pending.put_nowait(identity)
+    if at_once:
+        film(identity)
+        with lock:
+            item = dict(jobs[identity])
     return item
 
 
@@ -477,10 +503,13 @@ class API(BaseHTTPRequestHandler):
         parts = url.path.strip("/").split("/")
         if not self.allowed():
             return None
-        if len(parts) == 5 and parts[:3] == ["api", "scene", "jobs"] and VALID_ID.fullmatch(parts[3]) and parts[4] in ("cancel", "retry"):
-            outcome = cancel(parts[3]) if parts[4] == "cancel" else retry(parts[3])
-            what = "cancelled" if parts[4] == "cancel" else "queued"
-            return self.reply(404, {"error": "Job nicht gefunden"}) if outcome is None else self.reply(200, {what: outcome})
+        if len(parts) == 5 and parts[:3] == ["api", "scene", "jobs"] and VALID_ID.fullmatch(parts[3]) and parts[4] in ("cancel", "film", "retry"):
+            outcome = cancel(parts[3]) if parts[4] == "cancel" else film(parts[3])
+            if outcome is None:
+                return self.reply(404, {"error": "Job nicht gefunden"})
+            if parts[4] == "cancel":
+                return self.reply(200, {"cancelled": outcome})
+            return self.reply(200, {"queued": True} if outcome is True else {"queued": False, "error": outcome})
         if url.path == "/api/scene/purge":
             with lock:
                 known = list(jobs)
@@ -522,6 +551,9 @@ class API(BaseHTTPRequestHandler):
             return self.reply(404, {"error": "Job nicht gefunden"})
         if len(parts) == 4:
             return self.reply(200, item)
+        if len(parts) == 5 and parts[4] == "spec":
+            spec = recipe(parts[3])
+            return self.reply(200, {"spec": spec}) if spec else self.reply(404, {"error": "Die Beschreibung der Szene gibt es nicht mehr"})
         file = ROOT / parts[3] / parts[4] if len(parts) == 5 and parts[4] in RESULTS else None
         if file is None or not file.is_file() or (parts[4] == "scene.mp4" and item["state"] != "done"):
             return self.reply(404, {"error": "Ergebnis nicht vorhanden"})

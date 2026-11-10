@@ -84,8 +84,8 @@ inline Val schemas(bool has_vm) {
   list.push(fn("scene_3d",
                "Build an animated 3D scene from 3D models in the chat (Blender). Every figure gets a skeleton by itself: an animal walks on its "
                "four legs and moves head and tail, somebody on two legs walks, nods and waves; a thing moves as a whole. The scene appears in the "
-               "chat at once, where Chris turns and plays it; its film follows in the same message. The actions happen one after another in the "
-               "order you give them.",
+               "chat at once, where Chris turns and plays it; he has a film of it rendered there when he wants one. The actions happen one after "
+               "another in the order you give them.",
                R"j({"type":"object","properties":{)j"
                R"j("title":{"type":"string","description":"short German title"},)j"
                R"j("actors":{"type":"array","maxItems":8,"description":"who is in the scene","items":{"type":"object","properties":{)j"

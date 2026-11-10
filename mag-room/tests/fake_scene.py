@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Stand-in for the scene worker (ops/scene/worker.py): same routes. A scene
-is built at once or refused in the worker's words; its film is done after a
-few polls. Records what was asked for, deletes and purges."""
+is built at once or refused in the worker's words; its film is rendered when
+it is asked for and done after a few polls. Records what was asked for,
+films, deletes and purges."""
 import json
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -14,7 +15,7 @@ KINDS = {1: ("Zweibeiner", "Zweibeiner: 2 Beine, Rumpf, Kopf"), 2: ("Vierbeiner"
 
 class FakeScene:
     def __init__(self):
-        self.jobs, self.specs, self.asked, self.deleted, self.purges, self.cancelled = {}, [], [], [], 0, []
+        self.jobs, self.specs, self.asked, self.deleted, self.purges, self.cancelled, self.films, self.fetched = {}, [], [], [], 0, [], [], []
         self.hold = False  # True: films stay "running" until a test lets go
         fake = self
 
@@ -37,10 +38,17 @@ class FakeScene:
                 job = fake.jobs.get(parts[3]) if len(parts) >= 4 else None
                 if not job:
                     return self.reply(404, {"error": "Job nicht gefunden"})
+                if len(parts) == 5 and parts[4] == "spec":
+                    spec = {k: v for k, v in job["spec"].items() if k != "film"}
+                    spec["actors"] = [{k: v for k, v in actor.items() if k != "file"} for actor in spec["actors"]]
+                    return self.reply(200, {"spec": spec})
                 if len(parts) == 5:
                     if parts[4] == "scene.mp4" and job["state"] != "done":
                         return self.reply(404, {"error": "Ergebnis nicht vorhanden"})
+                    fake.fetched.append(parts[4])
                     return self.reply(200, None, raw={"scene.glb": b"glTF-scene", "scene.mp4": b"film", "scene.blend": b"BLENDER"}[parts[4]])
+                if job["state"] == "built":
+                    return self.reply(200, {"id": parts[3], "state": "built", "stage": "Bereit", "phase": 1, "phases": 3})
                 job["polls"] += 1
                 if job["state"] != "cancelled":
                     job["state"] = "queued" if job["polls"] < 2 else "running" if job["polls"] < 4 or fake.hold else "done"
@@ -65,10 +73,11 @@ class FakeScene:
                     fake.cancelled.append(parts[3])
                     fake.jobs[parts[3]]["state"] = "cancelled"
                     return self.reply(200, {"cancelled": True})
-                if len(parts) == 5 and parts[4] == "retry":
+                if len(parts) == 5 and parts[4] == "film":
                     job = fake.jobs.get(parts[3])
-                    if not job or job["state"] not in ("cancelled", "error"):
-                        return self.reply(200, {"queued": False})
+                    if not job or job["state"] not in ("built", "cancelled", "error"):
+                        return self.reply(200, {"queued": False, "error": "Den Film gibt es schon."})
+                    fake.films.append(parts[3])
                     job.update(state="queued", polls=0)
                     return self.reply(200, {"queued": True})
                 spec = json.loads(body)
@@ -83,9 +92,9 @@ class FakeScene:
                     if action.get("actor") not in names:
                         return self.reply(400, {"error": "Aktion für unbekannten Darsteller: %s." % action.get("actor")})
                 job_id = "%032x" % (len(fake.jobs) + 0xabc001)
-                fake.jobs[job_id] = {"state": "queued", "polls": 0}
-                self.reply(201, {"id": job_id, "state": "queued", "stage": "Film wartet", "title": spec.get("title") or "Szene", "seconds": 4.5,
-                                 "frames": 109, "fps": 24, "phase": 1, "phases": 3, "started": 1000,
+                fake.jobs[job_id] = {"state": "built", "polls": 0, "spec": spec}
+                self.reply(201, {"id": job_id, "state": "built", "stage": "Bereit", "title": spec.get("title") or "Szene", "seconds": 4.5,
+                                 "frames": 109, "fps": 24, "phase": 1, "phases": 3,
                                  "actors": [{"name": a.get("name"), "kind": KINDS.get(a.get("part"), ("Gegenstand", ""))[0],
                                              "notes": KINDS.get(a.get("part"), ("Gegenstand", ""))[1]} for a in spec.get("actors", [])]})
 

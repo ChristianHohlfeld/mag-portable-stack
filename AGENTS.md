@@ -60,8 +60,12 @@ Blender on the CPU (cores 28-55, no device access, never the MI50), reads
 what each figure is, gives animals and two-legged figures a skeleton and
 moves their limbs; only a thing moves as a whole. A scene is described, never
 scripted: no code of a bot or a request runs in Blender. The scene is a normal
-message that plays in the chat at once; its film is rendered as a stage of
-its own, survives restarts like a 3D job and joins the message.
+message that plays in the chat at once. Its film is rendered only when the
+owner asks for it at the scene ("Film rendern"), as a stage of its own that
+survives restarts like a 3D job and joins the message; the `.blend` is
+fetched on request too. What a model or a scene should do next is written in
+the line right below its view: that message is about it (`about`), and the
+bot reads how the scene was made, so a new version has the same figures.
 The film is lit to look like the scene in the chat: key, fill and rim, and
 figures that show their own colours; never ship a preset that renders dark.
 A 3D job survives everything short of being deleted: its state and the result

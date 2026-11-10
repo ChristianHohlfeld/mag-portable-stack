@@ -50,7 +50,13 @@ progress, quality) and its GLB/STL/PLY as attachments. Attachments live in
 `STATE/files/` and belong to exactly one message: deleting the message
 deletes them, and for a 3D message also the worker's job directory. A scene
 is such a message too (`model3d.kind = "scene"`, from `mag-scene`): its
-animated GLB is there from the start, its film joins it.
+animated GLB is there from the start; its film joins it when the owner asks
+for one (`POST /api/3d/<id>/film`), its `.blend` likewise
+(`POST /api/3d/<id>/blend`). The message keeps how the scene was described
+(`model3d.spec`) and what was asked for (`model3d.prompt`). A user message
+written in the line below a scene or a 3D model carries `about` (that
+message's id): the page shows where it belongs, and the bot that reads it is
+told how the scene was made (or which model is meant).
 
 ### Events
 
@@ -239,10 +245,11 @@ device access) runs the pinned Blender (`blender.lock`, fetched once by
   head, tail and arms do their part; a thing moves as a whole. It writes
   `scene.glb` (skinned, animated), which the room posts at once and the page
   plays in its own viewer, and `scene.blend`.
-- `render` (a stage on its own, like the Idol stages): Cycles on the CPU,
-  frame by frame, then ffmpeg. A restart of the worker follows the running
-  render again; after a reboot it goes on with the first missing frame. The
-  film and the `.blend` join the scene's message when they are done.
+- `render` (only when the film is asked for; a stage on its own, like the
+  Idol stages): Cycles on the CPU, frame by frame, then ffmpeg. A restart of
+  the worker follows the running render again; after a reboot it goes on with
+  the first missing frame. The film joins the scene's message when it is
+  done. A built scene without a film costs nothing but its folder.
 
 The film is lit like the chat shows the scene (`LIGHTS` in `scene.py`): a key
 light over the camera's left shoulder casts the one shadow, a fill and a rim

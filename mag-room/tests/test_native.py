@@ -697,7 +697,6 @@ class RoomContract(unittest.TestCase):
             {"content": "", "tool_calls": [build(title="Zweiter Versuch", actors=cast, actions=walk)]},
             "Der Fuchs läuft jetzt zum Gnom."])
         r.lena.reply = lambda body: next(script)
-        r.scene.hold = True
         r.say("@Lena lass den Fuchs zum Gnom laufen")
         r.idle()
         steps = [p for m in r.messages() if m["from"] == "lena" for p in m["parts"] if p["k"] == "step"]
@@ -710,25 +709,35 @@ class RoomContract(unittest.TestCase):
         self.assertIn("part 2: Vierbeiner, länglich und niedrig (länger als hoch), 0.18 hoch, 0.50 lang, steht im Bild rechts", steps[0]["output"])
         self.assertIn("Die Szene wurde nicht gebaut: Das Modell %s zeigt 2 Figuren." % model["name"], steps[1]["output"])
         self.assertEqual(r.scene.asked, [model["file"]])
-        # The worker gets the room's file for the name the bot used (with or without its ending).
+        # The worker gets the room's file for the name the bot used (with or without its ending), and no order for a film.
         spec = r.scene.specs[-1]
         self.assertEqual([(a["name"], a["file"], a["model"], a["part"]) for a in spec["actors"]],
                          [("Gnom", model["file"], model["name"], 1), ("Fuchs", model["file"], model["name"], 2)])
-        self.assertEqual((spec["ground"], spec["actions"]), ("snow", walk))
+        self.assertEqual((spec["ground"], spec["actions"], spec["film"]), ("snow", walk, False))
         told = r.lena.chats()[-2]["messages"][-1]
         self.assertEqual(told["role"], "tool")
         self.assertIn("steht jetzt im Chat (4.5 Sekunden; Darsteller: Gnom (Zweibeiner: 2 Beine, Rumpf, Kopf); Fuchs (Vierbeiner: 4 Beine, Kopf und Schwanz))", told["content"])
-        # The scene is a message of its own and can be played at once; its film is still being rendered.
+        self.assertIn("Einen Film (MP4) davon lässt er bei Bedarf selbst an der Szene rendern.", told["content"])
+        # The scene is a finished message of its own and plays at once. It keeps how it was made and what was asked for.
         self.assertEqual(len(scenes()), 1)       # the refused call left nothing in the chat
         scene = scenes()[0]
         m3 = scene["model3d"]
-        self.assertEqual((scene["from"], scene["state"], m3["by"], m3["cast"], m3["kinds"], m3["title"]),
-                         ("idol", "streaming", "lena", ["Gnom", "Fuchs"], ["Zweibeiner", "Vierbeiner"], "Fuchs besucht Gnom"))
+        self.assertEqual((scene["from"], scene["state"], m3["state"], m3["by"], m3["cast"], m3["kinds"], m3["title"]),
+                         ("idol", "done", "ready", "lena", ["Gnom", "Fuchs"], ["Zweibeiner", "Vierbeiner"], "Fuchs besucht Gnom"))
+        recipe = {"title": "Fuchs besucht Gnom", "actors": [{"name": "Gnom", "model": model["name"], "part": 1}, {"name": "Fuchs", "model": model["name"], "part": 2}],
+                  "actions": walk, "ground": "snow"}
+        self.assertEqual((m3["spec"], m3["prompt"]), (recipe, "lass den Fuchs zum Gnom laufen"))
         self.assertEqual([a["name"] for a in scene["attachments"]], ["szene-000000.glb"])
         self.assertEqual(r.api("GET", "/api/file/" + scene["attachments"][0]["file"])[1], b"glTF-scene")
         self.assertGreater(scene["id"], [m for m in r.messages() if m["from"] == "lena"][0]["id"])   # below the answer that made it
+        # No film is rendered that nobody asked for. Chris asks for it at the scene.
+        time.sleep(0.5)
+        self.assertEqual((r.scene.films, r.scene.jobs[m3["job"]]["state"], r.scene.fetched), ([], "built", ["scene.glb"]))
+        r.scene.hold = True
+        self.assertEqual(r.api("POST", "/api/3d/%s/film" % scene["id"])[0], 200)
+        self.assertEqual(r.api("POST", "/api/3d/%s/film" % scene["id"]), (409, {"error": "Der Film wird schon gerendert."}))
         r.wait(lambda: message(scene["id"])["model3d"].get("steps") == 109, "film rendering")
-        self.assertEqual((message(scene["id"])["model3d"]["phase"], message(scene["id"])["model3d"]["stage"]), (2, "Film rendern"))
+        self.assertEqual((message(scene["id"])["state"], message(scene["id"])["model3d"]["phase"], message(scene["id"])["model3d"]["stage"]), ("streaming", 2, "Film rendern"))
         # The film is rendered by the worker: a restart of the room (every deploy is one) does not end it.
         r.stop()
         r.start()
@@ -737,10 +746,17 @@ class RoomContract(unittest.TestCase):
         r.scene.hold = False
         r.wait(lambda: message(scene["id"])["state"] == "done", "film done after the restart")
         done = message(scene["id"])
-        self.assertEqual([(a["name"], a["kind"]) for a in done["attachments"]],
-                         [("szene-000000.glb", "model"), ("szene-000000.mp4", "video"), ("szene-000000.blend", "file")])
+        self.assertEqual([(a["name"], a["kind"]) for a in done["attachments"]], [("szene-000000.glb", "model"), ("szene-000000.mp4", "video")])
         self.assertEqual((done["model3d"]["state"], done["model3d"]["film"], done["model3d"]["took"]), ("done", done["attachments"][1]["file"], 90))
         self.assertEqual(r.api("GET", "/api/file/" + done["attachments"][1]["file"])[1], b"film")
+        self.assertEqual((r.api("POST", "/api/3d/%s/film" % scene["id"]), r.scene.films), ((409, {"error": "Den Film gibt es schon."}), [m3["job"]]))
+        # The file for Blender is fetched when Chris wants it, once.
+        code, got = r.api("POST", "/api/3d/%s/blend" % scene["id"])
+        self.assertEqual((code, got["file"]["name"], r.api("GET", "/api/file/" + got["file"]["file"])[1]), (200, "szene-000000.blend", b"BLENDER"))
+        self.assertEqual(r.api("POST", "/api/3d/%s/blend" % scene["id"])[1], got)
+        done = message(scene["id"])
+        self.assertEqual(([a["name"] for a in done["attachments"]], r.scene.fetched.count("scene.blend")), (["szene-000000.glb", "szene-000000.mp4", "szene-000000.blend"], 1))
+        self.assertEqual(r.api("POST", "/api/3d/%s/film" % out["model3d"])[0], 404)     # a 3D model is not a scene
         # The other bot reads what was built (it asks him nothing); every bot has the tools, also one without a VM.
         r.lena.reply = None
         before = len(r.noah.chats())
@@ -750,8 +766,51 @@ class RoomContract(unittest.TestCase):
         self.assertIn('3D-Szene: "Fuchs besucht Gnom" (4.5 Sekunden; Darsteller: Gnom, Fuchs), gebaut von Lena. Chris kann sie im Chat drehen und abspielen. '
                       "Ihr Film ist fertig. Dateien: szene-000000.glb", text_of(asked["messages"][-1]["content"]))
         self.assertLessEqual({"models_3d", "scene_3d"}, {t["function"]["name"] for t in asked["tools"]})
+        # A new movement is written right at the scene. The bot reads how the scene was made, so the new one has the same figures.
+        leap = [{"actor": "Fuchs", "do": "jump"}]
+        script = iter([{"content": "", "tool_calls": [build(title="Fuchs springt", actors=cast, actions=leap, ground="snow")]}, "Jetzt springt er."])
+        r.lena.reply = lambda body: next(script)
+        before, noahs = len(r.lena.chats()), len(r.noah.chats())
+        code, sent = r.api("POST", "/api/message", {"text": "@Lena Der Fuchs springt über den Gnom", "about": scene["id"]})
+        self.assertEqual((code, sent["message"]["about"], sent["message"]["mentions"]), (201, scene["id"], ["lena"]))
+        r.idle()
+        asked = text_of(r.lena.chats()[before]["messages"][-1]["content"])
+        note = ('Chris: @Lena Der Fuchs springt über den Gnom\n[Chris schreibt das zur 3D-Szene "Fuchs besucht Gnom": Er möchte eine neue Fassung mit denselben Figuren. '
+                "So wurde sie mit scene_3d gebaut: " + json.dumps(recipe, ensure_ascii=False, separators=(",", ":")) +
+                " Baue die neue mit scene_3d: dieselben actors, die actions nach seinem Wunsch.]")
+        self.assertIn(note, asked)
+        self.assertEqual(len(r.noah.chats()), noahs)                                    # it asks Noah nothing
+        again = scenes()[-1]
+        self.assertEqual((again["model3d"]["title"], again["model3d"]["prompt"], again["model3d"]["spec"]["actions"], again["state"]),
+                         ("Fuchs springt", "Der Fuchs springt über den Gnom", leap, "done"))
+        self.assertEqual(r.scene.films, [m3["job"]])                                     # and no film of it either
+        # A scene from before its recipe was kept with the message: the worker still knows it.
+        r.stop()
+        path = pathlib.Path(r.env["MAG_ROOM_STATE"]) / "messages" / (again["id"] + ".json")
+        old = json.loads(path.read_text())
+        del old["model3d"]["spec"]
+        path.write_text(json.dumps(old))
+        r.start()
+        script = iter(["Mache ich."])
+        before = len(r.lena.chats())
+        r.api("POST", "/api/message", {"text": "@Lena und jetzt rückwärts", "about": again["id"]})
+        r.idle()
+        self.assertEqual(message(again["id"])["model3d"]["spec"]["actions"], leap)
+        asked = text_of(r.lena.chats()[before]["messages"][-1]["content"])
+        self.assertIn('"actions":[{"actor":"Fuchs","do":"jump"}]', asked)
+        # The bots read a scene without a film as what it is.
+        self.assertIn('3D-Szene: "Fuchs springt" (4.5 Sekunden; Darsteller: Gnom, Fuchs), gebaut von Lena. Chris kann sie im Chat drehen und abspielen. '
+                      "Einen Film davon gibt es, wenn Chris ihn an der Szene rendern lässt. Dateien: szene-", asked)
+        # At a 3D model the same line asks for its animation; a message about anything else is an ordinary message.
+        script = iter(["Gern.", "Hm."])
+        before = len(r.lena.chats())
+        r.api("POST", "/api/message", {"text": "@Lena lass ihn tanzen", "about": out["model3d"]})
+        r.idle()
+        self.assertIn("Chris: @Lena lass ihn tanzen\n[Chris schreibt das zum 3D-Modell %s: Er möchte es animiert sehen. Sieh mit models_3d nach, welche Figuren es zeigt, "
+                      "und baue die Szene mit scene_3d.]" % model["name"], text_of(r.lena.chats()[before]["messages"][-1]["content"]))
+        self.assertNotIn("about", r.api("POST", "/api/message", {"text": "@Lena danke", "about": sent["message"]["id"]})[1]["message"])
+        r.idle()
         # A scene is not a model: the next scene is made of the model again, not of the first scene.
-        r.scene.hold = True
         script = iter([{"content": "", "tool_calls": [{"name": "models_3d", "arguments": {}}]},
                        {"content": "", "tool_calls": [build(actors=[{"name": "Fuchs", "model": "", "part": 2}], actions=[{"actor": "Fuchs", "do": "jump"}])]},
                        "Noch eine."])
@@ -763,19 +822,21 @@ class RoomContract(unittest.TestCase):
         self.assertEqual(r.scene.specs[-1]["actors"][0]["file"], model["file"])   # no name: the newest model
         # Its film is cancelled: the scene stays in its message. Photo to 3D is not asked about any of this.
         second = scenes()[-1]
+        r.scene.hold = True
+        self.assertEqual(r.api("POST", "/api/3d/%s/film" % second["id"])[0], 200)
+        r.wait(lambda: message(second["id"])["model3d"].get("steps") == 109, "second film rendering")
         self.assertEqual(r.api("POST", "/api/3d/%s/cancel" % second["id"])[0], 200)
         r.wait(lambda: message(second["id"])["state"] == "stopped", "film cancelled")
         self.assertEqual((message(second["id"])["model3d"]["state"], len(message(second["id"])["attachments"])), ("cancelled", 1))
         self.assertEqual((r.scene.cancelled, r.idol.cancelled), ([second["model3d"]["job"]], []))
-        # A film that did not come about can be rendered again; one that is there cannot.
+        # A film that did not come about can be rendered after all.
         r.scene.hold = False
-        self.assertEqual(r.api("POST", "/api/3d/%s/retry" % second["id"])[0], 200)
+        self.assertEqual(r.api("POST", "/api/3d/%s/film" % second["id"])[0], 200)
         r.wait(lambda: message(second["id"])["state"] == "done", "film rendered after all")
-        self.assertEqual(([a["kind"] for a in message(second["id"])["attachments"]], message(second["id"])["model3d"].get("error")), (["model", "video", "file"], None))
-        self.assertEqual(r.api("POST", "/api/3d/%s/retry" % second["id"])[0], 409)
+        self.assertEqual(([a["kind"] for a in message(second["id"])["attachments"]], message(second["id"])["model3d"].get("error")), (["model", "video"], None))
         # Deleting a scene removes its files and the worker's folder.
         stored = [files / a["file"] for a in done["attachments"]]
-        self.assertTrue(all(p.exists() for p in stored))
+        self.assertTrue(len(stored) == 3 and all(p.exists() for p in stored))
         self.assertEqual(r.api("DELETE", "/api/message/" + scene["id"])[0], 200)
         self.assertFalse(any(p.exists() for p in stored))
         r.wait(lambda: r.scene.deleted == [done["model3d"]["job"]], "scene folder removed")

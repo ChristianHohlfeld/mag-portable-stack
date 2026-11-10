@@ -340,6 +340,8 @@ audio, video { max-width: 100%; border-radius: 12px; }
 .m3 .links .pill:hover { background: var(--surface-2); }
 .m3 .links .pill svg { width: 15px; height: 15px; color: var(--muted); }
 .m3 .links .pill small { color: var(--muted); font-size: 12.5px; }
+.m3 .links .pill.go { color: var(--idol); border-color: currentColor; }
+.m3 .links .pill.go svg { color: inherit; }
 .pill { font-size: 13px; padding: 5px 11px; border-radius: 10px; border: 1px solid var(--line); background: var(--surface-2); color: var(--text); text-decoration: none; }
 .pill.danger { color: var(--bad); }
 /* fullscreen: every axis, pinch zoom, two-finger pan */

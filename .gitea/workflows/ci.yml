@@ -21,6 +21,8 @@ jobs:
         run: bash ops/ci/check.sh
       - name: Model supervisor
         run: python3 ops/models/tests/test_modeld.py
+      - name: Idol worker (jobs survive restarts)
+        run: python3 ops/idol/tests/test_worker.py
       - name: Room contract (fake models, fake guest)
         run: |
           ./build/test-group-dispatcher

@@ -54,6 +54,12 @@ system-prefix state; no conversation is ever saved to or restored from disk.
 Everything in the timeline is one message type (text, bot work with its
 steps, files, 3D results), stored one JSON file per message. A 3D result is a
 normal message; deleting it also deletes its files and its Idol job directory.
+A 3D job survives everything short of being deleted: its state and the result
+of every finished stage are on disk, a stage runs on its own
+(`KillMode=process`) and is followed again after a restart of the worker, a
+lost stage starts again after a reboot, and the room picks a job up again
+after its own restart. Nothing writes a job off as "interrupted"; never make
+a deploy or a restart cost a running 3D job.
 A finished HTML page of a bot (an `html` code block of its answer, or a file
 it writes below `/home/bot/www`) is published on the bot's own tailnet site
 and runs in the chat as a live preview framed from that site, with Code/

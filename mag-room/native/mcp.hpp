@@ -259,7 +259,7 @@ public:
     if (sep == std::string::npos) return "Nutzt ein Plugin";
     std::lock_guard<std::mutex> lk(mu_);
     const Val *srv = find_locked(rest.substr(0, sep));
-    return (srv ? jstr(*srv, "name") : rest.substr(0, sep)) + " · " + rest.substr(sep + 2);
+    return rest.substr(sep + 2) + " · " + (srv ? jstr(*srv, "name") : rest.substr(0, sep)); // the tool first: a narrow card cuts the end
   }
 
   struct Outcome {

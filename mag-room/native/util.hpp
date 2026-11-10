@@ -281,6 +281,51 @@ inline std::string safe_name(const std::string &name, size_t max = 80) {
   while (!out.empty() && out[0] == '.') out.erase(0, 1);
   return out.empty() ? "datei" : out;
 }
+// Does an image file end in the middle of its picture? A photo that was
+// picked while the camera was still writing it, or cut off on its way, has
+// no end: a JPEG must reach its end mark after the picture data, a PNG its
+// IEND chunk, a WebP the size its header announces. Anything else, and any
+// file this cannot follow, is not judged.
+inline bool image_cut(const std::string &d) {
+  const auto u = [&](size_t i) { return (unsigned char)d[i]; };
+  if (d.size() >= 3 && u(0) == 0xFF && u(1) == 0xD8 && u(2) == 0xFF) {
+    size_t i = 2;
+    for (;;) {
+      if (i + 2 > d.size()) return true;
+      if (u(i) != 0xFF) return false;              // not a marker where one belongs: not for us to judge
+      const unsigned marker = u(i + 1);
+      if (marker == 0xFF) { ++i; continue; }       // padding
+      if (marker == 0xD9) return false;            // the end mark
+      if ((marker >= 0xD0 && marker <= 0xD7) || marker == 0x01) { i += 2; continue; }
+      if (i + 4 > d.size()) return true;
+      const size_t length = ((size_t)u(i + 2) << 8) | u(i + 3);
+      if (length < 2) return false;
+      i += 2 + length;
+      if (marker != 0xDA) continue;
+      // Picture data: it runs until a marker that is neither a stuffed FF nor a restart.
+      for (;;) {
+        const void *hit = i < d.size() ? memchr(d.data() + i, 0xFF, d.size() - i) : nullptr;
+        if (!hit) return true;
+        i = (size_t)((const char *)hit - d.data());
+        if (i + 2 > d.size()) return true;
+        const unsigned next = u(i + 1);
+        if (next == 0x00 || (next >= 0xD0 && next <= 0xD7)) { i += 2; continue; }
+        break;
+      }
+    }
+  }
+  if (d.size() >= 8 && d.compare(0, 8, "\x89PNG\r\n\x1a\n", 8) == 0) {
+    for (size_t i = 8; i + 12 <= d.size();) {
+      if (d.compare(i + 4, 4, "IEND") == 0) return false;
+      i += 12 + (((size_t)u(i) << 24) | ((size_t)u(i + 1) << 16) | ((size_t)u(i + 2) << 8) | u(i + 3));
+    }
+    return true;
+  }
+  if (d.size() >= 12 && d.compare(0, 4, "RIFF") == 0 && d.compare(8, 4, "WEBP") == 0)
+    return (((size_t)u(7) << 24) | ((size_t)u(6) << 16) | ((size_t)u(5) << 8) | u(4)) + 8 > d.size();
+  return false;
+}
+
 inline std::string mime_for(const std::string &name) {
   static const std::map<std::string, std::string> types = {
       {"html", "text/html; charset=utf-8"}, {"htm", "text/html; charset=utf-8"},

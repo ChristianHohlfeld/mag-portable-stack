@@ -207,7 +207,7 @@
   const fileUrl = (a, extra) => '/api/file/' + encodeURIComponent(a.file) + (extra || '');
   function buildAttachment(a) {
     // What the bots were told about a picture is its caption (and its alt text).
-    if (a.kind === 'image') return el('button', { class: 'att-img', title: a.description || a.name, onclick: () => lightbox(fileUrl(a), a.name, a.description) },
+    if (a.kind === 'image') return el('button', { class: 'att-img', title: a.description || a.name, onclick: () => lightbox(fileUrl(a), a.name, a.description, a.file) },
       el('img', { src: fileUrl(a), alt: a.description || a.name, loading: 'lazy' }));
     if (a.kind === 'audio') return el('audio', { controls: true, preload: 'none', src: fileUrl(a) });
     if (a.kind === 'video') return el('video', { controls: true, preload: 'metadata', src: fileUrl(a), playsInline: true });
@@ -215,8 +215,14 @@
       el('span', { text: a.name }), el('small', { text: MAG.bytes(a.size) }));
   }
   // A picture over the chat: Esc, the back gesture, a swipe or the X close it.
-  function lightbox(src, name, caption) {
+  function lightbox(src, name, caption, file) {
     const img = el('img', { src, alt: caption || name || '' });
+    // What the bots were told the picture shows. If that is wrong, the owner has it looked at again.
+    const again = file && caption && S.you.role === 'owner'
+      ? el('button', { class: 'pill', title: 'Die Beschreibung stimmt nicht: ein Bot sieht das Bild noch einmal an', onclick: () =>
+          MAG.api('POST', '/api/file/' + encodeURIComponent(file) + '/describe').then(() => { MAG.toast('Das Bild wird neu beschrieben'); close(); }, (x) => MAG.toast(x.message, true)) },
+          MAG.icon('reset'), 'Neu beschreiben')
+      : null;
     const leave = () => {
       box.remove();
       document.removeEventListener('keydown', key);
@@ -226,7 +232,7 @@
     const key = (e) => e.key === 'Escape' && close();
     const box = el('div', { id: 'lightbox', onclick: (e) => e.target === box && close() }, img,
       el('div', { class: 'bar' },
-        caption ? el('p', { class: 'cap', text: caption }) : null,
+        caption ? el('p', { class: 'cap', text: caption }) : null, again,
         el('a', { class: 'pill', href: src, target: '_blank', rel: 'noopener' }, MAG.icon('open'), 'In neuem Tab öffnen'),
         el('a', { class: 'pill', href: src + '?download=1', download: name || '' }, MAG.icon('down'), 'Herunterladen')),
       el('button', { class: 'icon-btn', 'aria-label': 'Schließen', html: MAG.icons.x, onclick: close }));
@@ -295,7 +301,7 @@
     const src = m3.image ? '/api/file/' + encodeURIComponent(m3.image) : '';
     // The photo it is made from: a thumbnail that opens over the chat.
     const thumb = src
-      ? el('button', { class: 'src', 'aria-label': 'Ausgangsbild ansehen', title: 'Ausgangsbild', onclick: () => lightbox(src, m3.source, captionOf(m3.image)) },
+      ? el('button', { class: 'src', 'aria-label': 'Ausgangsbild ansehen', title: 'Ausgangsbild', onclick: () => lightbox(src, m3.source, captionOf(m3.image), m3.image) },
           el('img', { src, alt: '', loading: 'lazy', onerror: (e) => e.target.closest('.src')?.replaceWith(el('span', { class: 'src' }, MAG.icon('cube'))) }))
       : el('span', { class: 'src' }, MAG.icon('cube'));
     const label = 'Qualität ' + (quality[m3.quality] || m3.quality);

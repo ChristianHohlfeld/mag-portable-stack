@@ -10,7 +10,48 @@ import runpy
 import sys
 from pathlib import Path
 
+
+def check_photo(path):
+    """A photo whose file ends in the middle of the picture (cut off on its
+    way, or picked while the phone was still writing it): a little missing at
+    the bottom is tolerated, more than that is no model worth 20 minutes on
+    the GPU. Says so in words (MAG-ERROR) and ends the stage."""
+    from PIL import Image, ImageFile, UnidentifiedImageError
+    try:
+        with Image.open(path) as image:
+            image.load()
+        return
+    except UnidentifiedImageError:
+        print("MAG-ERROR Das ist kein Bild, das sich lesen lässt (JPEG, PNG oder WebP).", flush=True)
+        sys.exit(2)
+    except OSError:
+        pass
+    ImageFile.LOAD_TRUNCATED_IMAGES = True   # stays on for the pipeline in this process
+    try:
+        with Image.open(path) as image:
+            image.load()
+            grey = image.convert("L")
+    except Exception:
+        print("MAG-ERROR Das Bild ist beschädigt und lässt sich nicht lesen. Bitte noch einmal hochladen.", flush=True)
+        sys.exit(2)
+    # What was never decoded is one flat colour at the bottom.
+    width, height = grey.size
+    step, missing = max(1, height // 200), 0
+    while missing < height:
+        low, high = grey.crop((0, height - missing - step, width, height - missing)).getextrema()
+        if low != high:
+            break
+        missing += step
+    if missing > 0.02 * height:
+        print("MAG-ERROR Das Foto ist unvollständig angekommen: unten fehlen etwa %d %% des Bildes. Bitte noch einmal aufnehmen oder auswählen und senden."
+              % round(100 * missing / height), flush=True)
+        sys.exit(2)
+    print("MAG-IDOL: photo ends a little early; the missing rows are tolerated", flush=True)
+
+
 def main():
+    if "--image" in sys.argv:
+        check_photo(sys.argv[sys.argv.index("--image") + 1])
     os.environ["HF_HUB_OFFLINE"] = "1"
     os.environ["TRANSFORMERS_OFFLINE"] = "1"
     os.environ["ATTN_BACKEND"] = "sdpa"

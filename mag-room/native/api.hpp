@@ -83,6 +83,11 @@ public:
     // Destructive or configuring: the owner only.
     if (!who.owner()) return http::send_error(fd, 403, "Nur für den Besitzer");
     if (r.method == "POST" && p == "/api/room/clear") return clear(fd);
+    if (r.method == "POST" && starts_with(p, "/api/file/") && ends_with(p, "/describe")) {
+      // A fresh look at a picture whose description is wrong.
+      if (!engine_.redescribe(url_decode(p.substr(10, p.size() - 10 - 9)))) return http::send_error(fd, 404, "Bild nicht gefunden");
+      return http::send_ok(fd);
+    }
     if (r.method == "DELETE" && starts_with(p, "/api/message/")) return remove(fd, p.substr(13));
     if (r.method == "PUT" && p == "/api/settings") return put_settings(fd, r);
     if (r.method == "PUT" && starts_with(p, "/api/bot/")) return put_bot(fd, r);
@@ -365,8 +370,19 @@ private:
     if (r.body.empty()) return http::send_error(fd, 400, "Leere Datei");
     std::string name = r.param("name");
     if (name.empty()) name = "datei";
-    const Val att = room_.store_file(name, r.body, "chris");
+    // A picture whose file ends in the middle of the picture is not taken as
+    // it is: the page reads the file again in a moment (a phone may still be
+    // writing a photo it has just taken) and only then insists on it.
+    const bool cut = image_cut(r.body);
+    if (cut && r.param("force") != "1") {
+      Val v = Val::object();
+      v["error"] = "Das Bild ist unvollständig angekommen: seine Datei endet mitten im Bild.";
+      v["code"] = "truncated";
+      return http::send_json(fd, 422, v);
+    }
+    Val att = room_.store_file(name, r.body, "chris");
     if (!att.isObj()) return http::send_error(fd, 500, "Datei konnte nicht gespeichert werden");
+    if (cut) att["cut"] = true;
     room_.stage(att);
     http::send_json(fd, 201, att);
   }

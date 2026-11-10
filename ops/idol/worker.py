@@ -250,7 +250,26 @@ def follow(job_id, key, timeout, on_line):
                 raise Lost(key)
         time.sleep(0.5)
     if code:
-        raise RuntimeError(f"Prozess Exit {code}; Details im privaten {log_path.name}")
+        raise RuntimeError(why_failed(log_path, code))
+
+
+def why_failed(log_path, code):
+    """What a failed stage says about itself, in words for the chat: its own
+    MAG-ERROR line, a cause this worker knows, or at least which step it was."""
+    try:
+        with log_path.open("rb") as log:
+            log.seek(max(0, log_path.stat().st_size - 20000))
+            tail = log.read().decode("utf-8", errors="replace")
+    except OSError:
+        tail = ""
+    said = [line[len("MAG-ERROR "):].strip() for line in tail.splitlines() if line.startswith("MAG-ERROR ")]
+    if said:
+        return said[-1]
+    if "image file is truncated" in tail or "cannot identify image file" in tail:
+        return "Das Bild ist unvollständig oder beschädigt angekommen. Bitte noch einmal hochladen."
+    if "out of memory" in tail.lower():
+        return "Der Grafikkarte ist der Speicher ausgegangen. Bitte mit einer niedrigeren Qualität noch einmal versuchen."
+    return f"Die Berechnung ist abgebrochen (Prozess Exit {code}); Details im privaten {log_path.name}"
 
 def run_stage(job_id, key, command, timeout, on_line, fresh):
     """Run a stage to its end. A stage that is still running from before a

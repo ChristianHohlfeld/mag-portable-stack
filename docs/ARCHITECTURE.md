@@ -173,9 +173,20 @@ chat. The room page's policy allows frames from that zone and nothing else.
 
 Every finished message of the others, with what belongs to it: small text
 files inline, 3D orders and results, images. A bot with a vision projector
-gets the image itself (a 1280 px copy, images in front of the text); once per
-image it writes down what it shows, asked on a branch of its prompt log that
-is not appended. A bot without eyes waits briefly for that description.
+gets the image itself (a 1280 px copy, each image right in front of its own
+`[Bild …]` line); once per picture it writes down what it shows, asked on a
+branch of its prompt log that is not appended, with the picture again in
+front of the question. Pictures are told apart by their content (SHA256): a
+picture posted twice has one description, and `POST /api/file/<f>/describe`
+(owner) has it made anew for every copy. A bot without eyes waits briefly
+for the description and gets a renewed one as an addendum.
+
+`POST /api/upload` follows a JPEG, PNG or WebP to its end; one that ends in
+its picture data is answered with 422 `truncated`. The page reads the file
+again twice (a phone may still be writing a photo it has just taken) and
+then sends it with `force=1`, which stores it marked `cut`. Before the GPU
+stage the Idol runner measures how much of such a photo is missing and
+refuses it in words (`MAG-ERROR`), which is what the 3D message then shows.
 
 ## Photo to 3D (`ops/idol`)
 

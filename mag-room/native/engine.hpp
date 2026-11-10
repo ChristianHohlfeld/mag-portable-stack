@@ -179,6 +179,35 @@ public:
     cv_.notify_all();
   }
 
+  // The owner asks for a fresh look at a picture (its description was wrong):
+  // what was written down about it goes, for every copy of the picture in the
+  // chat, and a bot with eyes describes it anew. The bots without eyes are
+  // told the new description as an addendum. False: no such picture.
+  bool redescribe(const std::string &stored) {
+    const std::string print = fingerprint(stored);
+    if (print.empty()) return false;
+    std::vector<std::pair<std::string, std::string>> again; // message, file
+    for (auto &m : room_.all())
+      if (const Val *atts = m.find("attachments"); atts && atts->isArr())
+        for (auto &a : atts->asArr())
+          if (jstr(a, "kind") == "image" && fingerprint(jstr(a, "file")) == print) again.push_back({jstr(m, "id"), jstr(a, "file")});
+    if (again.empty()) return false;
+    for (auto &[message, file] : again)
+      room_.update(message, [&, file = file](Val &m) {
+        for (auto &a : *m["attachments"].arr) {
+          if (jstr(a, "file") != file) continue;
+          a.obj->erase(std::remove_if(a.obj->begin(), a.obj->end(), [](const auto &kv) { return kv.first == "description" || kv.first == "seen"; }), a.obj->end());
+        }
+      });
+    std::lock_guard<std::mutex> lk(mu_);
+    for (auto &b : bots_) {
+      for (auto &entry : again) b->renewed.push_back(entry);
+      b->see_pending = true;
+    }
+    cv_.notify_all();
+    return true;
+  }
+
   void settings_changed() { publish_bots(true); }
 
   // Called when a bot's answer is complete: (bot name, text, seconds, failed).
@@ -332,6 +361,7 @@ private:
     std::vector<std::string> said; // own replies since the last human message (normalised)
     bool warm_pending = false;
     bool see_pending = false;    // another bot waits for this one to describe new images
+    std::vector<std::pair<std::string, std::string>> renewed; // (message, file): pictures that are described anew
     // --- owned by the worker thread ---
     Val wire;                    // {prefix, cursor, pending[], pushed[], messages[], model_since}
     std::string last_tool_sig;
@@ -355,6 +385,8 @@ private:
   std::string last_bots_event_;
   int64_t last_bots_ms_ = 0;
   std::map<std::string, std::string> vm_notes_; // bot -> "creating" | "error: ..." | ""
+  std::mutex prints_mu_;
+  std::map<std::string, std::string> prints_;   // chat file -> SHA256 of its content
 
   static std::string upper(std::string s) {
     for (auto &c : s) c = (char)toupper((unsigned char)c);
@@ -678,9 +710,27 @@ private:
   // the first changed message; the server re-evaluates from there.
   void apply_forget(Bot &b) {
     std::vector<std::string> ids;
+    std::vector<std::pair<std::string, std::string>> renewed;
     {
       std::lock_guard<std::mutex> lk(mu_);
       ids.swap(b.forget);
+      renewed.swap(b.renewed);
+    }
+    // A picture is described anew: a bot that only read about it gets the new
+    // description as an addendum to its log once it is there.
+    if (!renewed.empty() && b.wire.isObj() && !sees(b.id)) {
+      Val &blind = b.wire["blind"];
+      if (!blind.isArr()) blind = Val::array();
+      for (auto &[message, file] : renewed) {
+        bool known = false;
+        for (auto &entry : blind.asArr()) known = known || jstr(entry, "file") == file;
+        if (known) continue;
+        Val entry = Val::object();
+        entry["id"] = message;
+        entry["file"] = file;
+        blind.push(entry);
+      }
+      save_wire(b);
     }
     if (ids.empty() || !b.wire.isObj() || !b.wire.find("messages")) return;
     Val &msgs = b.wire["messages"];
@@ -1087,9 +1137,11 @@ private:
       if (atts && atts->isArr())
         for (auto &a : atts->asArr()) {
           if (jstr(a, "file") != jstr(entry, "file")) continue;
-          if (!jstr(a, "description").empty())
-            late += (late.empty() ? "" : "\n") + std::string("(Nachtrag zum Bild ") + jstr(a, "name") + ". Zu sehen: " + clip(jstr(a, "description"), 700) + ")";
-          else open = !jbool(a, "seen");
+          if (!jstr(a, "description").empty()) {
+            // One picture posted several times is one addendum.
+            const std::string line = std::string("(Nachtrag zum Bild ") + jstr(a, "name") + ". Zu sehen: " + clip(jstr(a, "description"), 700) + ")";
+            if (late.find(line) == std::string::npos) late += (late.empty() ? "" : "\n") + line;
+          } else open = !jbool(a, "seen");
         }
       if (open) still_blind.push(entry);
     }
@@ -1123,9 +1175,30 @@ private:
     return true;
   }
 
-  // The request never carries the bookkeeping keys. For a bot that sees, a
-  // message with images becomes "images, then the text": the same bytes in
-  // the same order every time, so the server evaluates each image once.
+  // An image of the chat as a part of a request ("": it cannot be read).
+  Val image_part(const std::string &stored) {
+    const std::string path = vision_copy(stored);
+    std::string bytes;
+    if (path.empty() || !read_file(path, bytes, 8u << 20) || bytes.empty()) return Val();
+    Val url = Val::object(), part = Val::object();
+    url["url"] = "data:" + mime_for(path) + ";base64," + b64_encode(bytes);
+    part["type"] = "image_url";
+    part["image_url"] = url;
+    return part;
+  }
+  static Val text_part(const std::string &text) {
+    Val part = Val::object();
+    part["type"] = "text";
+    part["text"] = text;
+    return part;
+  }
+
+  // The request never carries the bookkeeping keys. For a bot that sees, every
+  // image stands in the text exactly where its message names it: right in
+  // front of its own "[Bild …]" line. A model that finds an image at the head
+  // of a bundle of messages, with other people's words between the picture
+  // and the question about it, answers about some other picture it remembers.
+  // The same bytes in the same order every time, so each image is evaluated once.
   Val request_messages(const Bot &b, const Val &wire_messages) {
     const bool eyes = sees(b.id);
     Val out = Val::array();
@@ -1136,23 +1209,38 @@ private:
       const Val *items = eyes ? m.find("_items") : nullptr;
       if (items && items->isArr()) {
         Val parts = Val::array();
-        for (auto &it : items->asArr())
+        std::string text; // what was said since the last image
+        bool any = false, first = true;
+        for (auto &it : items->asArr()) {
+          if (!first) text += "\n\n";
+          first = false;
+          const std::string own = jstr(it, "text");
+          size_t at = 0;
           if (const Val *images = it.find("images"); images && images->isArr())
             for (auto &stored : images->asArr()) {
-              const std::string path = vision_copy(stored.asStr());
-              std::string bytes;
-              if (path.empty() || !read_file(path, bytes, 8u << 20) || bytes.empty()) continue;
-              Val url = Val::object(), part = Val::object();
-              url["url"] = "data:" + mime_for(path) + ";base64," + b64_encode(bytes);
-              part["type"] = "image_url";
-              part["image_url"] = url;
-              parts.push(part);
+              // Its line in the message; an image without one stands in front of what is left.
+              size_t line = own.find("[Bild ", at);
+              if (line == std::string::npos) line = at;
+              const Val image = image_part(stored.asStr());
+              if (image.isObj()) {
+                text += own.substr(at, line - at);
+                if (!text.empty()) parts.push(text_part(text));
+                text.clear();
+                parts.push(image);
+                any = true;
+                at = line;
+              }
+              // The next image belongs to the next line.
+              const size_t after = own.find('\n', line);
+              text += own.substr(at, after == std::string::npos ? std::string::npos : after - at);
+              at = after == std::string::npos ? own.size() : after;
             }
-        if (!parts.asArr().empty()) {
-          Val text = Val::object();
-          text["type"] = "text";
-          text["text"] = jstr(m, "content");
-          parts.push(text);
+          text += own.substr(at);
+        }
+        if (any) {
+          const std::string note = jstr(m, "_note");
+          if (!note.empty()) text += (text.empty() ? "" : "\n\n") + note;
+          if (!text.empty()) parts.push(text_part(text));
           clean["content"] = parts;
         }
       }
@@ -1161,10 +1249,39 @@ private:
     return out;
   }
 
+  // The content of a chat file as a fingerprint: the same picture posted
+  // twice is one picture.
+  std::string fingerprint(const std::string &stored) {
+    {
+      std::lock_guard<std::mutex> lk(prints_mu_);
+      if (const auto it = prints_.find(stored); it != prints_.end()) return it->second;
+    }
+    std::string bytes;
+    if (!read_file(room_.file_path(stored), bytes, 80u << 20) || bytes.empty()) return "";
+    const std::string print = sha256_hex(bytes);
+    std::lock_guard<std::mutex> lk(prints_mu_);
+    return prints_[stored] = print;
+  }
+  // What was already written down about this very picture (posted before).
+  std::string described_before(const std::string &stored) {
+    const std::string print = fingerprint(stored);
+    if (print.empty()) return "";
+    for (auto &m : room_.all())
+      if (const Val *atts = m.find("attachments"); atts && atts->isArr())
+        for (auto &a : atts->asArr())
+          if (jstr(a, "kind") == "image" && jstr(a, "file") != stored && !jstr(a, "description").empty() && fingerprint(jstr(a, "file")) == print)
+            return jstr(a, "description");
+    return "";
+  }
+
   // What this bot sees in new images is written down once, so the bots
-  // without eyes can read it. The question shares the whole prompt log as its
-  // prefix and is not appended to it: the server keeps the log's state and
-  // evaluates only this short branch, which the next real request drops.
+  // without eyes can read it. The picture is asked about with the picture:
+  // it stands again right in front of the question, so the answer cannot be
+  // about another image of the conversation that happens to have the same
+  // name or was talked about before. The question shares the whole prompt
+  // log as its prefix and is not appended to it: the server keeps the log's
+  // state and evaluates only this short branch, which the next real request
+  // drops.
   void describe_images(Bot &b, const Val &me) {
     if (!sees(b.id)) return;
     struct Todo { std::string message, file, name; };
@@ -1190,21 +1307,41 @@ private:
     const Val tools = tools::schemas(vm::valid_name(jstr(me, "vm")));
     for (auto &job : todo) {
       if (cancel && cancel->stopped()) return;
+      // The same picture was posted and described before: it is the same description.
+      const std::string known = described_before(job.file);
+      if (!known.empty()) {
+        room_.describe(job.message, job.file, known);
+        continue;
+      }
+      const Val image = image_part(job.file);
+      if (!image.isObj()) {
+        room_.describe(job.message, job.file, ""); // not an image a model can read: nobody asks again
+        continue;
+      }
       set_phase(b, "tool", "Sieht sich " + job.name + " an");
       const std::string ask = "(Notiz des Raums, nicht von Chris: Beschreibe das Bild " + job.name +
-                              " in zwei bis vier sachlichen Sätzen für jemanden, der es nicht sehen kann: was zu sehen ist, lesbarer Text, "
+                              ", das direkt vor dieser Notiz steht, und nur dieses, kein anderes Bild aus dem Gespräch. "
+                              "Zwei bis vier sachliche Sätze für jemanden, der es nicht sehen kann: was zu sehen ist, lesbarer Text, "
                               "auffällige Details. Antworte nur mit der Beschreibung, ohne Werkzeug.)";
       Val msgs = request_messages(b, b.wire["messages"]);
       Val &last = msgs.arr->back();
       if (jstr(last, "role") == "user") {
-        if (last["content"].isArr()) {
+        if (!last["content"].isArr()) {
+          Val parts = Val::array();
+          parts.push(text_part(jstr(last, "content") + "\n\n"));
+          last["content"] = parts;
+        } else {
           Val &text = last["content"].arr->back();
-          text["text"] = jstr(text, "text") + "\n\n" + ask;
-        } else last["content"] = jstr(last, "content") + "\n\n" + ask;
+          if (jstr(text, "type") == "text") text["text"] = jstr(text, "text") + "\n\n";
+        }
+        last["content"].push(image);
+        last["content"].push(text_part(ask));
       } else {
-        Val user = Val::object();
+        Val user = Val::object(), parts = Val::array();
+        parts.push(image);
+        parts.push(text_part(ask));
         user["role"] = "user";
-        user["content"] = ask;
+        user["content"] = parts;
         msgs.push(user);
       }
       Val body = Val::object();

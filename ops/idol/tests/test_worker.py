@@ -25,6 +25,10 @@ import os, pathlib, sys, time
 script, args = pathlib.Path(sys.argv[1]).name, sys.argv[2:]
 delay = float(os.environ.get("FAKE_DELAY", "0.1"))
 if script == "runner.py":
+    if b"CUT" in pathlib.Path(args[args.index("--image") + 1]).read_bytes():
+        print("Traceback (most recent call last):\nOSError: something long and technical", flush=True)
+        print("MAG-ERROR Das Foto ist unvollständig angekommen: unten fehlen etwa 40 % des Bildes.", flush=True)
+        sys.exit(2)
     out = pathlib.Path(args[args.index("--out") + 1])
     sys.stderr.write("Sampling:   0%|          | 0/50 [00:00<?, ?it/s]")
     sys.stderr.flush()
@@ -177,6 +181,14 @@ def main():
         wait(f, lambda s: s["state"] == "running", "second job starts after the cancel")
         assert call("DELETE", "/api/idol/jobs/" + f)[1] == {"deleted": True}
         assert not (root / f).exists() and call("GET", "/api/idol/jobs/" + f)[0] == 404
+        # 6. A stage that fails says why in words; that, not "Exit 2", is what the chat shows.
+        code, job = call("POST", "/api/idol/jobs?quality=fast", PNG + b"CUT")
+        assert code == 202, job
+        end = time.time() + 20
+        while status(job["id"])["state"] not in ("error", "done") and time.time() < end:
+            time.sleep(0.05)
+        s = status(job["id"])
+        assert (s["state"], s["error"]) == ("error", "Das Foto ist unvollständig angekommen: unten fehlen etwa 40 % des Bildes."), s
         print("ok")
     finally:
         if worker[0] and worker[0].poll() is None:

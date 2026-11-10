@@ -46,6 +46,7 @@
     speak: svg('<path d="M4 10v4h4l5 4V6L8 10zM16 9a4 4 0 0 1 0 6M18.5 6.5a8 8 0 0 1 0 11"/>'),
     reset: svg('<path d="M4.5 12a7.5 7.5 0 1 0 2.4-5.5M4.5 4.5v4.6h4.6"/>'),
     open: svg('<path d="M14 5h5v5M19 5l-8 8M11 7H6.5A1.5 1.5 0 0 0 5 8.5v9A1.5 1.5 0 0 0 6.5 19h9a1.5 1.5 0 0 0 1.5-1.5V13"/>'),
+    folder: svg('<path d="M3 7.5A1.5 1.5 0 0 1 4.5 6h4.2l2 2.2h8.8A1.5 1.5 0 0 1 21 9.7v7.8a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 17.5z"/>'),
     globe: svg('<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/>'),
   };
   MAG.icon = (name) => MAG.el('span', { class: 'ico', html: MAG.icons[name] }).firstChild;
@@ -91,6 +92,9 @@
     if (!res.ok) throw Object.assign(new Error((data && data.error) || 'Fehler ' + res.status), { status: res.status, data });
     return data;
   };
+
+  // A plain fetch with the page token, for responses that are read as a stream.
+  MAG.fetch = (path, init) => fetch(path, { credentials: 'same-origin', ...init, headers: { ...(init?.headers || {}), 'X-MAG-Token': token } });
 
   // ---- small UI pieces ----------------------------------------------------
   const toasts = MAG.el('div', { id: 'toasts' });

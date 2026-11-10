@@ -71,6 +71,10 @@ hosts to the room, which serves the folder the bot's VM published). Bots are
 renamed in the settings; earlier names, the bot id and the VM name
 (`agentN`) redirect to the current address. The ids `lena`/`noah` and the
 VM binding never change with a name.
+Each bot has its own closed VM (browser, shell, files), bound to the bot's
+id. In the bot's panel the owner sees that browser live, has a terminal in
+the VM (one command at a time as user `bot`) and browses, opens, downloads
+and deletes the bot's files; nothing there reaches outside the VM.
 The bots read the whole chat: text files inline, 3D orders and their
 results, and images. A bot whose model has a vision projector gets the image
 itself; it also writes down once what the image shows (a short branch off

@@ -52,6 +52,11 @@ public:
       if (p == "/api/push/vapid") return http::send_json(fd, 200, push_.vapid());
       if (starts_with(p, "/api/bot/") && ends_with(p, "/memory")) return memory_get(fd, r);
       if (p == "/api/system") return system_info(fd);
+      if (starts_with(p, "/api/vm/")) {
+        if (!who.owner()) return http::send_error(fd, 403, "Nur für den Besitzer");
+        if (ends_with(p, "/files")) return vm_files(fd, r);
+        if (ends_with(p, "/file")) return vm_file(fd, r);
+      }
       return http::send_error(fd, 404, "Nicht gefunden");
     }
 
@@ -84,6 +89,9 @@ public:
       return http::send_ok(fd);
     }
     if (r.method == "DELETE" && starts_with(p, "/api/bot/") && p.find("/memory/") != std::string::npos) return memory_delete(fd, r);
+    // The owner's own look into a bot's VM: a terminal and its files.
+    if (r.method == "POST" && starts_with(p, "/api/vm/") && ends_with(p, "/run")) return vm_run(fd, r);
+    if (r.method == "DELETE" && starts_with(p, "/api/vm/") && ends_with(p, "/file")) return vm_delete(fd, r);
     return http::send_error(fd, 404, "Nicht gefunden");
   }
 
@@ -544,6 +552,136 @@ private:
     const auto res = guests_.browser(vm, "POST", "/" + action, r.body.empty() ? "{}" : r.body, 45);
     if (!res.error.empty()) return http::send_error(fd, 503, res.error);
     http::send(fd, (int)res.status, "application/json; charset=utf-8", res.body);
+  }
+
+  // ---- the owner's terminal and file view of a bot's VM -------------------
+  std::string vm_of_path(const std::string &path) { // /api/vm/<bot>/<what>
+    const std::string rest = path.substr(8);
+    const std::string vm = vm_of(rest.substr(0, rest.find('/')));
+    return vm::valid_name(vm) ? vm : "";
+  }
+
+  // One command as user bot, its output streamed as it comes. The last line
+  // is a record (0x1e + JSON): exit code and the directory the shell ended
+  // in, so the next command starts there. Closing the request stops it.
+  void vm_run(int fd, const http::Request &r) {
+    const std::string vm = vm_of_path(r.path);
+    const Val in = jparse(r.body);
+    const std::string command = jstr(in, "command");
+    std::string cwd = jstr(in, "cwd");
+    if (vm.empty()) return http::send_error(fd, 404, "Dieser Bot hat keine VM");
+    if (trim(command).empty() || command.size() > 16000) return http::send_error(fd, 400, "Befehl fehlt oder ist zu lang");
+    if (cwd.empty() || cwd[0] != '/' || cwd.size() > 2000) cwd = "~";
+    if (!http::write_all(fd, "HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=utf-8\r\nCache-Control: no-store\r\n"
+                             "X-Accel-Buffering: no\r\nX-Content-Type-Options: nosniff\r\nConnection: close\r\n\r\n"))
+      return;
+    Cancel cancel;
+    std::atomic<bool> finished{false};
+    // The reader left (Stop, closed sheet): end the command in the VM.
+    std::thread watcher([&] {
+      while (!finished) {
+        pollfd p{fd, POLLIN | POLLRDHUP, 0};
+        char byte;
+        if (poll(&p, 1, 300) > 0 && ((p.revents & (POLLHUP | POLLRDHUP | POLLERR)) || recv(fd, &byte, 1, MSG_PEEK | MSG_DONTWAIT) == 0)) {
+          cancel.stop();
+          return;
+        }
+      }
+    });
+    std::string where = cwd;
+    const std::string script = "trap 'printf \"\\036cwd %s\\n\" \"$PWD\"' EXIT\ncd " + (cwd == "~" ? cwd : shell_quote(cwd)) + " 2>/dev/null || cd ~\n" + command + "\n";
+    const auto res = guests_.exec(vm, script, 900, &cancel, [&](const std::string &chunk) {
+      std::string text = chunk;
+      // The shell's own last word: where it ended. Not part of the output.
+      for (size_t at = text.find("\x1e" "cwd "); at != std::string::npos; at = text.find("\x1e" "cwd ")) {
+        const size_t end = text.find('\n', at);
+        where = trim(text.substr(at + 5, end == std::string::npos ? std::string::npos : end - at - 5));
+        text.erase(at, end == std::string::npos ? std::string::npos : end - at + 1);
+      }
+      if (!text.empty() && !http::write_all(fd, mj::utf8_fix(text))) cancel.stop();
+    });
+    finished = true;
+    watcher.join();
+    Val tail = Val::object();
+    tail["exit"] = res.code;
+    tail["cwd"] = where;
+    if (res.cancelled) tail["cancelled"] = true;
+    if (res.timed_out) tail["timeout"] = true;
+    if (res.failed_to_start) tail["error"] = res.out;
+    http::write_all(fd, "\x1e" + mj::dump(tail) + "\n");
+  }
+
+  // A script in the VM that prints one JSON document about a path below the
+  // bot's home; anything outside is refused there.
+  http::ClientResult vm_python(const std::string &vm, const std::string &code, const std::string &path, int timeout_s, size_t cap) {
+    http::ClientResult out;
+    const std::string script = "exec python3 -c " + shell_quote(
+        "import json,os,sys\nhome=os.path.realpath(os.path.expanduser('~'))\np=os.path.realpath(os.path.join(home,sys.argv[1]))\n"
+        "if p!=home and not p.startswith(home+os.sep): print(json.dumps({'error':'Außerhalb des Bot-Verzeichnisses'})); sys.exit(0)\n" + code) +
+        " " + shell_quote(path);
+    const auto res = guests_.exec(vm, script, timeout_s, nullptr, [&](const std::string &chunk) {
+      if (out.body.size() + chunk.size() <= cap) out.body += chunk;
+      else out.error = "zu groß";
+    });
+    if (res.failed_to_start || res.timed_out) out.error = res.timed_out ? "Zeitlimit" : res.out;
+    else if (res.code != 0 && out.error.empty()) out.error = clip(trim(out.body), 300);
+    out.status = out.error.empty() ? 200 : 502;
+    return out;
+  }
+
+  void vm_files(int fd, const http::Request &r) {
+    const std::string vm = vm_of_path(r.path);
+    if (vm.empty()) return http::send_error(fd, 404, "Dieser Bot hat keine VM");
+    const auto res = vm_python(vm,
+        "if not os.path.isdir(p): print(json.dumps({'error':'Kein Verzeichnis'})); sys.exit(0)\n"
+        "rows=[]\n"
+        "for n in sorted(os.listdir(p), key=str.lower)[:3000]:\n"
+        "    try:\n"
+        "        st=os.lstat(os.path.join(p,n)); d=os.path.isdir(os.path.join(p,n))\n"
+        "        rows.append({'name':n,'dir':d,'size':0 if d else st.st_size,'mtime':int(st.st_mtime)})\n"
+        "    except OSError: pass\n"
+        "print(json.dumps({'path':p,'home':home,'entries':rows}))\n", r.param("path").empty() ? "." : r.param("path"), 30, 4u << 20);
+    if (!res.error.empty()) return http::send_error(fd, 502, "VM: " + res.error);
+    const Val v = jparse(res.body);
+    if (!v.isObj()) return http::send_error(fd, 502, "VM antwortet nicht verständlich");
+    if (!jstr(v, "error").empty()) return http::send_error(fd, 400, jstr(v, "error"));
+    http::send_json(fd, 200, v);
+  }
+
+  // One file of the VM (at most 48 MB), to look at or to download. It is
+  // never run as a page of this origin.
+  void vm_file(int fd, const http::Request &r) {
+    const std::string vm = vm_of_path(r.path), path = r.param("path");
+    if (vm.empty() || path.empty()) return http::send_error(fd, 404, "Datei nicht gefunden");
+    const auto res = vm_python(vm,
+        "import base64\n"
+        "if not os.path.isfile(p): print(json.dumps({'error':'Keine Datei'})); sys.exit(0)\n"
+        "if os.path.getsize(p)>48*1024*1024: print(json.dumps({'error':'Größer als 48 MB'})); sys.exit(0)\n"
+        "sys.stdout.write('ok\\n'); sys.stdout.flush()\n"
+        "with open(p,'rb') as f: sys.stdout.write(base64.b64encode(f.read()).decode())\n", path, 300, 70u << 20);
+    if (!res.error.empty()) return http::send_error(fd, 502, "VM: " + res.error);
+    if (!starts_with(res.body, "ok\n")) return http::send_error(fd, 400, jstr(jparse(res.body), "error", "Datei nicht lesbar"));
+    const std::string bytes = b64_decode(res.body.substr(3));
+    const std::string name = path.substr(path.find_last_of('/') == std::string::npos ? 0 : path.find_last_of('/') + 1), mime = mime_for(name);
+    const bool show = r.param("download") != "1" && (starts_with(mime, "image/") || starts_with(mime, "text/plain") || mime == "application/pdf");
+    http::Headers h = {{"Content-Security-Policy", "sandbox"},
+                       {"Content-Disposition", std::string(show ? "inline" : "attachment") + "; filename*=UTF-8''" + url_encode(name)}};
+    http::send(fd, 200, r.param("text") == "1" ? "text/plain; charset=utf-8" : mime, r.param("text") == "1" ? mj::utf8_fix(bytes) : bytes, h);
+  }
+
+  void vm_delete(int fd, const http::Request &r) {
+    const std::string vm = vm_of_path(r.path), path = r.param("path");
+    if (vm.empty() || path.empty()) return http::send_error(fd, 404, "Datei nicht gefunden");
+    const auto res = vm_python(vm,
+        "import shutil\n"
+        "if p==home: print(json.dumps({'error':'Das Home-Verzeichnis bleibt'})); sys.exit(0)\n"
+        "if os.path.isdir(p) and not os.path.islink(p): shutil.rmtree(p)\n"
+        "else: os.remove(p)\n"
+        "print(json.dumps({'ok':True}))\n", path, 60, 1 << 16);
+    if (!res.error.empty()) return http::send_error(fd, 502, "VM: " + res.error);
+    const Val v = jparse(res.body);
+    if (!jbool(v, "ok")) return http::send_error(fd, 400, jstr(v, "error", "Löschen fehlgeschlagen"));
+    http::send_ok(fd);
   }
 
   void live_offer(int fd, const http::Request &r) {

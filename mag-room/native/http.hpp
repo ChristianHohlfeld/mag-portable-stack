@@ -281,10 +281,12 @@ struct ClientOptions {
   size_t cap = 64u << 20;
   // Streaming consumer; when set the body is not collected. Return false to abort.
   std::function<bool(const char *, size_t)> on_data;
+  std::string want_header;           // a response header to keep, e.g. "Mcp-Session-Id"
 };
 struct ClientResult {
   long status = 0;
   std::string body, error, content_type;
+  std::string header;                // the value of ClientOptions::want_header, if the response had it
   bool cancelled = false;
   bool ok() const { return error.empty() && status >= 200 && status < 300; }
 };
@@ -308,6 +310,13 @@ inline size_t on_write(char *data, size_t size, size_t n, void *user) {
   }
   return len;
 }
+inline size_t on_header(char *data, size_t size, size_t n, void *user) {
+  auto *c = static_cast<Ctx *>(user);
+  const std::string line(data, size * n);
+  const size_t colon = line.find(':');
+  if (colon != std::string::npos && lower(line.substr(0, colon)) == lower(c->opt->want_header)) c->res->header = trim(line.substr(colon + 1));
+  return size * n;
+}
 inline int on_progress(void *user, curl_off_t, curl_off_t, curl_off_t, curl_off_t) {
   auto *c = static_cast<Ctx *>(user);
   return c->opt->cancel && c->opt->cancel->stopped() ? 1 : 0;
@@ -329,6 +338,10 @@ inline ClientResult fetch(const std::string &url, const ClientOptions &opt = {})
   curl_easy_setopt(h, CURLOPT_TIMEOUT, (long)opt.timeout_s);
   curl_easy_setopt(h, CURLOPT_WRITEFUNCTION, detail::on_write);
   curl_easy_setopt(h, CURLOPT_WRITEDATA, &ctx);
+  if (!opt.want_header.empty()) {
+    curl_easy_setopt(h, CURLOPT_HEADERFUNCTION, detail::on_header);
+    curl_easy_setopt(h, CURLOPT_HEADERDATA, &ctx);
+  }
   curl_easy_setopt(h, CURLOPT_XFERINFOFUNCTION, detail::on_progress);
   curl_easy_setopt(h, CURLOPT_XFERINFODATA, &ctx);
   curl_easy_setopt(h, CURLOPT_NOPROGRESS, 0L);

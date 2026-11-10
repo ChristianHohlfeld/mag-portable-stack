@@ -39,8 +39,8 @@ self.addEventListener('push', (event) => {
   try { note = event.data.json(); } catch {}
   event.waitUntil((async () => {
     const windows = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
-    // An answer you are already looking at needs no notification.
-    if (note.kind === 'run' && windows.some((w) => w.visibilityState === 'visible')) return;
+    // An answer you are already looking at needs no notification, nor does a question that waits in front of you.
+    if ((note.kind === 'run' || note.kind === 'approval') && windows.some((w) => w.visibilityState === 'visible')) return;
     await self.registration.showNotification(note.title || 'MAG', {
       body: note.body || '', tag: note.tag || 'mag', icon: '/static/icon-192.png?v=' + VERSION, data: { url: note.url || '/' } });
   })());

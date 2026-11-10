@@ -27,6 +27,7 @@ ROOT = HERE.parents[1]
 sys.path.insert(0, str(HERE))
 from fake_idol import FakeIdol  # noqa: E402
 from fake_llama import FakeLlama, text_of  # noqa: E402
+from fake_mcp import FakeMcp  # noqa: E402
 from fake_scene import FakeScene  # noqa: E402
 
 BIN = pathlib.Path(os.environ.get("MAGROOM_BIN", ROOT / "build/magroom"))
@@ -843,6 +844,157 @@ class RoomContract(unittest.TestCase):
         self.assertEqual(r.idol.deleted, [])
         r.api("POST", "/api/room/clear", {})
         r.wait(lambda: r.scene.purges == 1, "scene purge")
+
+    def test_plugins_are_remote_tools_the_owner_binds_and_approves(self):
+        r = self.room
+        mcp = FakeMcp(token="s3cr3t-token-1")
+        self.addCleanup(mcp.close)
+        state = pathlib.Path(r.env["MAG_ROOM_STATE"])
+
+        def lena():
+            return [b for b in r.state()["bots"] if b["id"] == "lena"][0]
+
+        def steps():
+            return [p for m in r.messages() if m["from"] == "lena" for p in m["parts"] if p["k"] == "step"]
+
+        def call(tool, **args):
+            return {"content": "", "tool_calls": [{"name": "mcp__notizen__" + tool, "arguments": args}]}
+
+        def ask(*script):
+            """Chris asks Lena, who answers by the script; returns once she is working."""
+            replies = iter(script)
+            r.lena.reply = lambda body: next(replies)
+            before = len(steps())
+            r.say("@Lena bitte")
+            r.wait(lambda: len(steps()) > before, "a new step")
+
+        def pending():
+            r.wait(lambda: steps()[-1].get("approval"), "an approval that waits")
+            return steps()[-1]["approval"]
+        # Only what is safe to reach: https, or plain http on this machine and the tailnet.
+        self.assertEqual(r.api("POST", "/api/plugins", {"name": "Fern", "url": "http://example.org/mcp"}),
+                         (400, {"error": "Nur https:// (http:// nur für diesen Rechner und das Tailnet)."}))
+        self.assertEqual(r.api("POST", "/api/plugins", {"name": "Notizen", "url": mcp.url, "auth": "bearer"})[0], 400)   # a token is needed
+        # The owner connects a server: the room reads its tools. The token is kept apart and never handed out.
+        code, out = r.api("POST", "/api/plugins", {"name": "Notizen", "url": mcp.url, "auth": "bearer", "secret": "s3cr3t-token-1", "guide": "Für Chris' Notizen."})
+        self.assertEqual((code, out["plugin"]["id"], out["plugin"]["status"]), (200, "notizen", "ok"))
+        self.assertEqual([(t["name"], t["read_only"]) for t in out["plugin"]["tools"]], [("lookup", True), ("write_note", False), ("boom", True)])
+        listed = r.api("GET", "/api/plugins")[1]["plugins"]
+        self.assertEqual([(p["id"], p["name"], p["auth"], p["guide"], len(p["tools"])) for p in listed], [("notizen", "Notizen", "bearer", "Für Chris' Notizen.", 3)])
+        self.assertNotIn("s3cr3t", json.dumps(listed) + (state / "mcp" / "servers.json").read_text())
+        secret = state / "mcp" / "notizen.secret"
+        self.assertEqual((secret.read_text(), secret.stat().st_mode & 0o777), ("s3cr3t-token-1", 0o600))
+        # Nobody has it until the owner gives it to a bot.
+        r.say("@Lena hallo")
+        r.idle()
+        self.assertFalse([t for t in r.lena.chats()[-1]["tools"] if t["function"]["name"].startswith("mcp__")])
+        self.assertEqual(r.api("PUT", "/api/bot/lena", {"plugins": {"gibtsnicht": {}}})[0], 400)
+        room = lena()["ctx_budget"]
+        self.assertEqual(r.api("PUT", "/api/bot/lena", {"plugins": {"notizen": {"approval": "ask"}}})[0], 200)
+        self.assertEqual(lena()["plugins"], {"notizen": {"approval": "ask", "off": [], "always": []}})
+        # What the plugin takes at the head of the prompt is not taken from the conversation; the owner is told roughly how much it is.
+        self.assertTrue(100 < lena()["ctx_budget"] - room < 1000 and all(t["tokens"] > 30 for t in listed[0]["tools"]), lena()["ctx_budget"])
+        # Reading needs no approval. The bot has the tools under the plugin's name, and is told what the plugin is.
+        ask(call("lookup", key="farbe"), "Blau.")
+        r.idle()
+        asked = r.lena.chats()[-1]
+        tools = {t["function"]["name"]: t["function"] for t in asked["tools"]}
+        self.assertEqual([n for n in tools if n.startswith("mcp__")], ["mcp__notizen__lookup", "mcp__notizen__write_note", "mcp__notizen__boom"])
+        self.assertEqual((tools["mcp__notizen__lookup"]["description"], tools["mcp__notizen__lookup"]["parameters"]["required"]),
+                         ("[Plugin Notizen] Looks a note up by its key.", ["key"]))
+        self.assertIn("- Plugin Notizen: Für Chris' Notizen. Hinweise des Dienstes: Notes live here. Look a note up before you write it.", asked["messages"][0]["content"])
+        r.lena.reply = None
+        r.say("@Noah und du?")
+        r.idle()
+        self.assertFalse([t for t in r.noah.chats()[-1]["tools"] if t["function"]["name"].startswith("mcp__")])     # Noah was not given it
+        step = steps()[-1]
+        self.assertEqual((step["title"], step["state"], step["output"], step.get("approval")), ("Notizen · lookup", "ok", "blau", None))
+        self.assertEqual((mcp.calls[-1]["tool"], mcp.calls[-1]["args"], mcp.calls[-1]["protocol"], mcp.refused), ("lookup", {"key": "farbe"}, "2025-06-18", 0))
+        self.assertEqual(asked["messages"][-1]["content"], "blau")
+        # Writing waits for Chris: the step says what is asked, nothing has happened yet.
+        ask(call("write_note", key="farbe", text="grün"), "Notiert.")
+        waiting = pending()
+        self.assertEqual((waiting["tool"], waiting["server"], waiting["bot"], json.loads(waiting["args"])), ("write_note", "Notizen", "lena", {"key": "farbe", "text": "grün"}))
+        self.assertEqual((lena()["phase"], steps()[-1]["state"], mcp.notes["farbe"], len(mcp.calls)), ("approval", "running", "blau", 1))
+        self.assertEqual(r.api("POST", "/api/approval/" + waiting["id"], {"decision": "vielleicht"})[0], 409)
+        self.assertEqual(r.api("POST", "/api/approval/" + waiting["id"], {"decision": "allow"})[0], 200)
+        r.idle()
+        self.assertEqual((steps()[-1]["state"], steps()[-1]["output"], steps()[-1].get("approval"), mcp.notes["farbe"]), ("ok", "gespeichert", None, "grün"))
+        self.assertEqual(r.api("POST", "/api/approval/" + waiting["id"], {"decision": "allow"})[0], 409)       # answered
+        # No: it does not happen, and the bot is told so.
+        ask(call("write_note", key="farbe", text="rot"), "Dann nicht.")
+        self.assertEqual(r.api("POST", "/api/approval/" + pending()["id"], {"decision": "deny"})[0], 200)
+        r.idle()
+        self.assertEqual((steps()[-1]["state"], mcp.notes["farbe"]), ("error", "grün"))
+        self.assertIn("Chris hat den Aufruf von write_note abgelehnt.", r.lena.chats()[-1]["messages"][-1]["content"])
+        # Stop while it waits: nothing happens either.
+        ask(call("write_note", key="farbe", text="rot"), "Hm.")
+        pending()
+        r.api("POST", "/api/stop", {"bot": "lena"})
+        r.idle()
+        self.assertEqual((steps()[-1]["state"], steps()[-1].get("approval"), mcp.notes["farbe"]), ("cancelled", None, "grün"))
+        # "Always" is remembered for this tool of this bot: the next call runs without asking. It survives a restart.
+        ask(call("write_note", key="farbe", text="gelb"), "Notiert.")
+        self.assertEqual(r.api("POST", "/api/approval/" + pending()["id"], {"decision": "always"})[0], 200)
+        r.idle()
+        self.assertEqual((mcp.notes["farbe"], lena()["plugins"]["notizen"]["always"]), ("gelb", ["write_note"]))
+        r.stop()
+        r.start()
+        self.assertEqual((lena()["plugins"]["notizen"]["always"], [p["id"] for p in r.api("GET", "/api/plugins")[1]["plugins"]]), (["write_note"], ["notizen"]))
+        mcp.stream = True          # this server answers as an event stream from now on
+        ask(call("write_note", key="farbe", text="lila"), "Notiert.")
+        r.idle()
+        self.assertEqual((steps()[-1]["state"], steps()[-1].get("approval"), mcp.notes["farbe"]), ("ok", None, "lila"))
+        # A session the server forgot is opened again; a tool that reports an error has failed, in its words.
+        mcp.expire = True
+        inits = mcp.inits
+        ask(call("lookup", key="farbe"), call("boom"), "Das ging schief.")
+        r.idle()
+        self.assertEqual([(s["state"], s["output"]) for s in steps()[-2:]], [("ok", "lila"), ("error", "Fehler: das ging schief")])
+        self.assertEqual(mcp.inits, inits + 1)
+        # A tool the owner switched off is not there, and cannot be called.
+        self.assertEqual(r.api("PUT", "/api/bot/lena", {"plugins": {"notizen": {"approval": "ask", "off": ["boom"], "always": ["write_note"]}}})[0], 200)
+        ask(call("boom"), "Gibt es nicht.")
+        r.idle()
+        self.assertNotIn("mcp__notizen__boom", [t["function"]["name"] for t in r.lena.chats()[-1]["tools"]])
+        self.assertIn("nicht eingeschaltet", steps()[-1]["output"])
+        # The server got a new tool: the owner reads its tools again.
+        mcp.tools.append({"name": "count", "description": "Counts notes.", "annotations": {"readOnlyHint": True}, "inputSchema": {"type": "object", "properties": {}}})
+        code, out = r.api("POST", "/api/plugins/notizen/refresh")
+        self.assertEqual((code, [t["name"] for t in out["plugin"]["tools"]]), (200, ["lookup", "write_note", "boom", "count"]))
+        # A wrong token: the plugin says so and keeps the tools it knew.
+        mcp.token = "ein-anderes"
+        out = r.api("POST", "/api/plugins/notizen/refresh")[1]["plugin"]
+        self.assertEqual((out["status"], out["error"], len(out["tools"])), ("error", "Anmeldung abgelehnt (HTTP 401). Token oder Rechte prüfen.", 4))
+        # Removed: gone from the bot, and its token with it.
+        self.assertEqual(r.api("DELETE", "/api/plugins/notizen")[0], 200)
+        self.assertEqual((lena()["plugins"], secret.exists(), r.api("GET", "/api/plugins")[1]["plugins"]), ({}, False, []))
+        r.lena.reply = None
+        r.say("@Lena noch da?")
+        r.idle()
+        self.assertFalse([t for t in r.lena.chats()[-1]["tools"] if t["function"]["name"].startswith("mcp__")])
+
+    def test_an_approval_nobody_gives_runs_out(self):
+        r = Room(MAG_MCP_APPROVAL_S="2")
+        self.addCleanup(r.close)
+        mcp = FakeMcp()
+        self.addCleanup(mcp.close)
+        self.assertEqual(r.api("POST", "/api/plugins", {"name": "Notizen", "url": mcp.url})[0], 200)
+        # "auto": the owner lets this bot use everything of the plugin without asking.
+        self.assertEqual(r.api("PUT", "/api/bot/noah", {"plugins": {"notizen": {"approval": "auto"}}})[0], 200)
+        self.assertEqual(r.api("PUT", "/api/bot/lena", {"plugins": {"notizen": {}}})[0], 200)
+        write = {"content": "", "tool_calls": [{"name": "mcp__notizen__write_note", "arguments": {"key": "a", "text": "b"}}]}
+        for bot in (r.noah, r.lena):
+            replies = iter([write, "Gut."])
+            bot.reply = lambda body, replies=replies: next(replies)
+        r.say("@Noah bitte")
+        r.idle()
+        self.assertEqual((mcp.notes.get("a"), len(mcp.calls)), ("b", 1))
+        r.say("@Lena bitte")
+        r.idle(30)
+        step = [p for m in r.messages() if m["from"] == "lena" for p in m["parts"] if p["k"] == "step"][-1]
+        self.assertEqual((step["state"], step.get("approval"), len(mcp.calls)), ("error", None, 1))
+        self.assertIn("nicht freigegeben", step["output"])
 
     def test_bots_read_the_whole_chat_images_files_and_3d_jobs(self):
         # Lena's model takes images, Noah's does not.

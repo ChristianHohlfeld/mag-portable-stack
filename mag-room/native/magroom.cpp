@@ -20,13 +20,18 @@ int main() {
   Push push(room.cfg);
   Idol idol(room);
   Scenes scenes(room);
-  Engine engine(room, guests, scenes);
-  Api api(room, engine, guests, idol, scenes, gate, push);
+  Plugins plugins(room);
+  Engine engine(room, guests, scenes, plugins);
+  Api api(room, engine, guests, idol, scenes, plugins, gate, push);
   // A notification when an answer took a while (you probably looked away) or failed.
   const int64_t slow_s = envl("MAG_ROOM_PUSH_RUN_S", 20);
   engine.on_answer = [&](const std::string &bot, const std::string &text, int64_t seconds, bool failed) {
     if (failed) push.notify("error", bot, text, "error-" + bot);
     else if (seconds >= slow_s) push.notify("run", bot, text, "run-" + bot);
+  };
+  // A bot that waits for a yes or no should not wait unseen.
+  engine.on_approval = [&](const std::string &bot, const std::string &what) {
+    push.notify("approval", bot, "Wartet auf deine Freigabe: " + what, "approval-" + bot);
   };
 
   const int main_fd = http::listen_on(room.cfg.bind_host, room.cfg.port);

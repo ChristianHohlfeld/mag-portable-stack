@@ -22,7 +22,7 @@
       default: return 'nicht erreichbar';
     }
   }
-  const phases = { reading: 'liest', thinking: 'denkt nach', writing: 'schreibt', tool: 'arbeitet', warming: 'wärmt auf', resetting: 'leert Kontext' };
+  const phases = { reading: 'liest', thinking: 'denkt nach', writing: 'schreibt', tool: 'arbeitet', approval: 'wartet auf dich', warming: 'wärmt auf', resetting: 'leert Kontext' };
   // The exact weights, e.g. "gpt-oss-120b-heretic-v2 MXFP4".
   const modelName = (b) => (b.model?.file ? b.model.file.replace(/-([A-Za-z0-9_]+)$/, ' $1') : b.model?.label || '');
   const siteLink = (b) => (b.site ? el('a', { href: b.site + '/', target: '_blank', rel: 'noopener', text: b.site.replace(/^https?:\/\//, '') }) : null);
@@ -169,6 +169,36 @@
           el('div', { class: 'set col' }, el('div', { class: 'txt' }, 'Art und Auftrag', el('small', { text: 'Persönlichkeit und feste Vorgaben, in eigenen Worten' })),
             el('textarea', { value: b.persona || '', placeholder: 'z. B. Antworte knapp und direkt.', onchange: (e) => call('PUT', '/api/bot/' + id, { persona: e.target.value }).then(() => MAG.toast('Gespeichert')) }))));
 
+        // Plugins: which of the connected services this bot may use, and how freely.
+        const plug = el('div', { class: 'card' });
+        const plugTitle = el('h3', { text: 'Plugins', hidden: true });
+        content.append(plugTitle, plug);
+        const loadPlugins = () => MAG.api('GET', '/api/plugins').then((out) => {
+          const mine = MAG.bot(id)?.plugins || {};
+          const save = (next) => call('PUT', '/api/bot/' + id, { plugins: next }).then(loadPlugins, loadPlugins);
+          plugTitle.hidden = plug.hidden = !out.plugins.length;
+          plug.replaceChildren(...out.plugins.map((p) => {
+            const b = mine[p.id], off = new Set(b?.off || []), always = new Set(b?.always || []);
+            const change = (patch) => save({ ...mine, [p.id]: { approval: b.approval, off: [...off], always: [...always], ...patch } });
+            const head = row(p.name, p.status === 'ok' ? p.tools.length + ' Werkzeuge' : 'nicht erreichbar: ' + (p.error || ''),
+              toggle(!!b, (on) => { const next = { ...mine }; if (on) next[p.id] = { approval: 'ask' }; else delete next[p.id]; save(next); }));
+            if (!b) return head;
+            // With the owner's own account behind it, nothing is changed unasked, whatever is chosen here.
+            const how = p.auth === 'connector' ? el('small', { text: 'Änderungen immer mit Nachfrage' })
+              : select(b.approval, [['ask', 'Änderungen: nachfragen'], ['auto', 'Änderungen: ohne Nachfrage']], (v) => change({ approval: v }));
+            // Every tool that is on stands at the head of the bot's prompt and is read once after each change.
+            const cost = p.tools.reduce((sum, t) => sum + (off.has(t.name) ? 0 : t.tokens || 0), 0);
+            const tools = el('details', { class: 'mem tools' },
+              el('summary', {}, el('small', { text: 'Werkzeuge (' + (p.tools.length - off.size) + ' von ' + p.tools.length + ' an · etwa ' + (Math.round(cost / 100) * 100).toLocaleString('de-DE') + ' Tokens im Kontext)' })),
+              p.tools.map((t) => el('label', { class: 'tool' },
+                el('input', { type: 'checkbox', checked: !off.has(t.name), onchange: (e) => { if (e.target.checked) off.delete(t.name); else off.add(t.name); change({}); } }),
+                el('span', {}, el('b', { text: t.title || t.name }), el('small', { text: (t.read_only ? 'liest nur' : always.has(t.name) ? 'ändert etwas · immer erlaubt' : 'ändert etwas') + (t.description ? ' · ' + t.description : '') })),
+                always.has(t.name) ? el('button', { class: 'pill', text: 'Wieder nachfragen', onclick: (e) => { e.preventDefault(); always.delete(t.name); change({}); } }) : null)));
+            return el('div', { class: 'plugin' }, head, el('div', { class: 'set' }, el('div', { class: 'txt' }, how)), tools);
+          }));
+        }).catch(() => { plugTitle.hidden = plug.hidden = true; });
+        loadPlugins();
+
         const mem = el('div', { class: 'card' }, el('div', { class: 'set' }, el('div', { class: 'txt' }, el('small', { text: 'Lädt …' }))));
         content.append(el('h3', { text: 'Erinnerungen' }), mem);
         const loadMemory = () => MAG.api('GET', '/api/bot/' + id + '/memory').then((out) => {
@@ -237,6 +267,45 @@
             owner() ? el('button', { class: 'pill danger', text: 'Löschen', onclick: () => call('DELETE', '/api/skills/' + encodeURIComponent(skill.name)).then(loadSkills) }) : null));
       }).catch(() => {});
       loadSkills();
+      // Plugins: remote services (MCP servers) the bots may use. Which bot gets which is set in the bot's sheet.
+      if (owner()) {
+        const plugins = el('div', { class: 'card' }, el('div', { class: 'set' }, el('div', { class: 'txt' }, el('small', { text: 'wird geladen …' }))));
+        content.append(el('h3', { text: 'Plugins' }), plugins);
+        const field = (label, props) => { const input = el(props.rows ? 'textarea' : 'input', { 'aria-label': label, placeholder: label, autocomplete: 'off', spellcheck: false, ...props }); return input; };
+        const loadPlugins = () => MAG.api('GET', '/api/plugins').then((out) => {
+          plugins.replaceChildren();
+          if (!out.plugins.length) plugins.append(el('div', { class: 'set' }, el('div', { class: 'txt' }, el('small', { text: 'Noch keines. Ein Plugin ist ein Dienst im Netz, der den Bots Werkzeuge gibt (MCP).' }))));
+          for (const p of out.plugins) {
+            const users = S.bots.filter((b) => b.plugins?.[p.id]).map((b) => b.name);
+            const busy = (button, work) => { button.disabled = true; return work().then(loadPlugins, loadPlugins); };
+            plugins.append(el('details', { class: 'mem skill' },
+              el('summary', {}, el('b', { text: p.name }), el('small', { class: p.status === 'ok' ? '' : 'bad', text: ' · ' + (p.status === 'ok' ? p.tools.length + ' Werkzeuge' : 'nicht erreichbar') + (users.length ? ' · ' + users.join(', ') : ' · keinem Bot gegeben') })),
+              el('p', {}, el('b', { text: 'Adresse: ' }), p.url),
+              p.status === 'ok' ? null : el('p', { class: 'bad' }, el('b', { text: 'Fehler: ' }), p.error || 'unbekannt'),
+              p.guide ? el('p', {}, el('b', { text: 'Hinweis für die Bots: ' }), p.guide) : null,
+              el('p', {}, el('b', { text: 'Werkzeuge: ' }), p.tools.map((t) => t.name + (t.read_only ? '' : ' (ändert etwas)')).join(', ') || 'keine'),
+              el('span', { class: 'pair' },
+                el('button', { class: 'pill', text: 'Werkzeuge neu lesen', onclick: (e) => busy(e.currentTarget, () => call('POST', '/api/plugins/' + p.id + '/refresh')) }),
+                el('button', { class: 'pill danger', text: 'Entfernen', onclick: async (e) => {
+                  const button = e.currentTarget;
+                  if (await MAG.confirm(p.name + ' entfernen?', 'Die Bots verlieren seine Werkzeuge. Ein gespeichertes Token wird gelöscht.', 'Entfernen', true)) busy(button, () => call('DELETE', '/api/plugins/' + p.id));
+                } }))));
+          }
+          const name = field('Name', { type: 'text', maxLength: 60 }), url = field('Adresse (https://…/mcp)', { type: 'url', inputMode: 'url' });
+          const secret = field('Token', { type: 'password', hidden: true }), header = field('Name des Headers', { type: 'text', hidden: true });
+          const guide = field('Hinweis für die Bots (wofür das Plugin da ist)', { rows: 2, maxLength: 4000 });
+          const auth = select('none', [['none', 'Ohne Anmeldung'], ['bearer', 'Mit Token (Bearer)'], ['header', 'Mit eigenem Header']], (v) => { secret.hidden = v === 'none'; header.hidden = v !== 'header'; });
+          const connect = el('button', { class: 'btn', text: 'Verbinden', onclick: () => {
+            connect.disabled = true;
+            call('POST', '/api/plugins', { name: name.value, url: url.value, auth: auth.value, header: header.value, secret: secret.value, guide: guide.value })
+              .then((out) => { MAG.toast(out.plugin.status === 'ok' ? out.plugin.name + ' verbunden: ' + out.plugin.tools.length + ' Werkzeuge' : out.plugin.name + ' gespeichert, aber nicht erreichbar', out.plugin.status !== 'ok'); loadPlugins(); },
+                () => { connect.disabled = false; });
+          } });
+          plugins.append(el('details', { class: 'mem skill add' }, el('summary', {}, el('b', { text: 'Plugin verbinden' })), el('div', { class: 'form' }, name, url, auth, header, secret, guide, connect),
+            el('p', {}, el('small', { text: 'Der Raum spricht den Dienst von diesem Rechner aus an. Ein Token bleibt auf dem Server und erreicht weder die Seite noch einen Bot. Welcher Bot das Plugin nutzen darf, stellst du bei ihm ein.' }))));
+        }).catch(() => {});
+        loadPlugins();
+      }
       // Read aloud: a voice and a tempo for every bot, on this device.
       if (MAG.voices) {
         const voices = el('div', { class: 'card' });

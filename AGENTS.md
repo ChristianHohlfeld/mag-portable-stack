@@ -111,6 +111,16 @@ The bots share a notebook of skills (`skill`: list, read, save; `skills.json`
 in the room state): how they do recurring work, with the steps, how to check
 the result and what needs Chris's approval. A skill describes work and grants
 nothing; credentials are refused. Chris reads and removes them in the settings.
+Plugins are remote MCP servers Chris connects in the settings and gives to a
+bot in its sheet (`plugins` of the bot; `STATE/mcp/servers.json`, a token in
+`STATE/mcp/<id>.secret`, never in a prompt, a log or the page). The room
+speaks Streamable HTTP from the host: nothing is installed, no server process
+is started, and nothing of it runs in a VM. A plugin's tools belong to the
+bot's prompt prefix and change only when Chris connects, refreshes or binds.
+A tool that is not marked read-only waits in the chat for his yes (allow,
+always, deny; it runs out after 15 minutes) unless he set that binding to
+"ohne Nachfrage"; with his own account behind a plugin (`connector`) nothing
+is ever changed unasked. The scene tools are the room's own, not a plugin.
 The UI is mobile first: streamed answers appear below the user message in the
 order they are produced, the view follows only while the reader is at the
 end, and a running step is a live card with the real command, output,

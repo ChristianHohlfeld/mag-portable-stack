@@ -30,6 +30,7 @@ phone/desktop ── Tailscale :443 ── nginx (TLS, whois auth_request) ─�
 | `site.hpp` | bot web pages: HTML blocks and `www` files published on the bot's site, shown as live previews |
 | `idol.hpp` | photo-to-3D jobs as room messages |
 | `scene.hpp` | scenes the bots build from 3D models, as room messages |
+| `mcp.hpp` | plugins: remote MCP servers, their tools per bot, approvals |
 | `push.hpp` | Web Push (VAPID) |
 | `api.hpp` | HTTP routes, event stream, VM bridge |
 | `magroom.cpp` | wiring |
@@ -193,6 +194,33 @@ again twice (a phone may still be writing a photo it has just taken) and
 then sends it with `force=1`, which stores it marked `cut`. Before the GPU
 stage the Idol runner measures how much of such a photo is missing and
 refuses it in words (`MAG-ERROR`), which is what the 3D message then shows.
+
+### Plugins (MCP)
+
+A plugin is a remote MCP server (Streamable HTTP, protocol 2025-06-18; JSON
+or event-stream answers). The owner connects it in the settings
+(`POST /api/plugins`: the room initializes a session, reads `tools/list` and
+keeps name, description, schema and the read-only hint of every tool in
+`STATE/mcp/servers.json`) and gives it to a bot in the bot's sheet
+(`PUT /api/bot/<id>` with `plugins: {<server>: {approval, off[], always[]}}`).
+Only `https://` is accepted, or `http://` on this machine and the tailnet;
+everything else leaves through the audit proxy, and "Internet für Bots" off
+means no plugin outside is reached. A token lives in `STATE/mcp/<id>.secret`
+(0600) and is sent as `Authorization: Bearer` or a header of the owner's
+choice; it never reaches the page, a prompt or a log.
+
+A bot's plugin tools are named `mcp__<server>__<tool>` and follow the room's
+own in its tool list (at most 64); what the owner wrote about a plugin and
+what the server says about itself stand in the system prompt. Both are part
+of the prompt prefix, so they change only with a binding or a refresh. Every
+bot has its own session per server. A call of a tool that is not read-only
+holds the bot's turn: its step carries `approval` (`id`, tool, arguments),
+the page shows "Erlauben / Immer erlauben / Ablehnen"
+(`POST /api/approval/<id>`), a push goes out, and without an answer it runs
+out (`MAG_MCP_APPROVAL_S`, 15 minutes). "Immer" is kept in the binding; a
+binding set to `auto` asks nothing. A server that works with the owner's own
+connector token (`auth: connector`) is sent `X-MCP-Readonly` and never
+changes anything unasked.
 
 ## Photo to 3D (`ops/idol`)
 

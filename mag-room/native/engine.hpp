@@ -12,6 +12,7 @@
 #pragma once
 #include "group_dispatcher.hpp"
 #include "llm.hpp"
+#include "mcp.hpp"
 #include "room.hpp"
 #include "tools.hpp"
 #include "vm.hpp"
@@ -26,7 +27,7 @@ inline const char *kEnd = "[[MAG:ENDE]]";
 
 class Engine {
 public:
-  Engine(Room &room, vm::Guests &guests, Scenes &scenes) : room_(room), guests_(guests), scenes_(scenes) {}
+  Engine(Room &room, vm::Guests &guests, Scenes &scenes, Plugins &plugins) : room_(room), guests_(guests), scenes_(scenes), plugins_(plugins) {}
   ~Engine() { shutdown(); }
 
   void start() {
@@ -212,6 +213,8 @@ public:
 
   // Called when a bot's answer is complete: (bot name, text, seconds, failed).
   std::function<void(const std::string &, const std::string &, int64_t, bool)> on_answer;
+  // Called when a bot waits for the owner's approval: (bot name, what it wants to do).
+  std::function<void(const std::string &, const std::string &)> on_approval;
 
   // Gives a bot without a VM a fresh one (in the background, minutes).
   bool create_vm(const std::string &bot) {
@@ -308,6 +311,7 @@ public:
       v["site"] = site::base_url(conf);
       if (const auto it = vm_notes_.find(b->id); it != vm_notes_.end() && !it->second.empty()) v["vm_note"] = it->second;
       v["memory"] = conf.find("memory") ? (double)conf.find("memory")->size() : 0.0;
+      v["plugins"] = conf.find("plugins") && conf.find("plugins")->isObj() ? *conf.find("plugins") : Val::object();
       const Val *m = models.find(b->id);
       v["model"] = m ? *m : offline_model();
       v["vision"] = vision_of(b->id, m);
@@ -321,7 +325,7 @@ public:
       }
       v["message"] = b->message;
       v["ctx_tokens"] = (double)b->ctx_tokens;
-      v["ctx_budget"] = (double)b->budget;
+      v["ctx_budget"] = (double)(b->budget + plugins_.weight(conf));
       v["tps"] = b->tps;
       v["kv"] = b->kv;
       out.push(v);
@@ -370,6 +374,7 @@ private:
   Room &room_;
   vm::Guests &guests_;
   Scenes &scenes_;
+  Plugins &plugins_;
   std::vector<std::unique_ptr<Bot>> bots_;
   std::mutex mu_;
   std::condition_variable cv_;
@@ -550,6 +555,7 @@ private:
          "welche Modelle und Figuren es gibt, und baust sie mit scene_3d. Die Szene erscheint von selbst im Chat; sag danach in einem Satz, was sie zeigt. "
          "Einen Film davon lässt Chris selbst an der Szene rendern.\n"
          "- Schreibt Chris etwas zu einer Szene, die es schon gibt, steht bei seiner Nachricht, wie sie gebaut wurde: Nimm dieselben actors und ändere nur, was er sich wünscht.\n";
+    s += plugins_.notes(me);
     const std::string persona = trim(jstr(me, "persona"));
     if (!persona.empty()) s += "\nDeine Art: " + clip(persona, 1200) + "\n";
     if (const Val *mem = me.find("memory"); mem && mem->isArr() && !mem->asArr().empty()) {
@@ -561,6 +567,16 @@ private:
       }
     }
     return s;
+  }
+
+  // Every tool this bot has: the room's own, then those of the plugins the
+  // owner bound to it. The list is part of the prompt prefix, so it changes
+  // only when the owner changes a binding or refreshes a plugin.
+  Val tools_for(const Val &me) {
+    Val list = tools::schemas(vm::valid_name(jstr(me, "vm")));
+    const Val more = plugins_.schemas(me);
+    for (auto &def : more.asArr()) list.push(def);
+    return list;
   }
 
   Val template_kwargs(const Val &me) {
@@ -583,7 +599,7 @@ private:
   // empty log, so `remember` never costs a re-evaluation.
   bool ensure_wire(Bot &b, const Val &me, bool fresh) {
     const std::string system = system_prompt(me);
-    const Val tools = tools::schemas(vm::valid_name(jstr(me, "vm")));
+    const Val tools = tools_for(me);
     const std::string hash = prefix_hash(me, system, tools);
     Val shape = Val::object();
     shape["persona"] = jstr(me, "persona");
@@ -592,6 +608,7 @@ private:
     shape["vm"] = vm::valid_name(jstr(me, "vm"));
     shape["eyes"] = sees(jstr(me, "id"));
     shape["kw"] = template_kwargs(me);
+    if (const std::string notes = plugins_.notes(me); !notes.empty()) shape["plugins"] = notes; // a binding is a setting of the bot
     const std::string sig = sha256_hex(mj::dump(shape)).substr(0, 16);
     const bool has = b.wire.isObj() && b.wire.find("messages") && b.wire["messages"].isArr() && !b.wire["messages"].asArr().empty();
     if (has && !fresh) {
@@ -644,7 +661,7 @@ private:
     user["content"] = ".";
     msgs.push(user);
     body["messages"] = msgs;
-    const Val tools = tools::schemas(vm::valid_name(jstr(me, "vm")));
+    const Val tools = tools_for(me);
     if (!tools.asArr().empty()) body["tools"] = tools;
     body["chat_template_kwargs"] = template_kwargs(me);
     body["max_tokens"] = 1;
@@ -1325,7 +1342,7 @@ private:
       cancel = b.cancel;
     }
     Cancel never;
-    const Val tools = tools::schemas(vm::valid_name(jstr(me, "vm")));
+    const Val tools = tools_for(me);
     for (auto &job : todo) {
       if (cancel && cancel->stopped()) return;
       // The same picture was posted and described before (or a moment ago, in this pass): it is the same description.
@@ -1664,8 +1681,9 @@ private:
       t.epoch = clear_epoch_;
     }
     const std::string name = jstr(me, "name");
-    const bool has_vm = vm::valid_name(jstr(me, "vm"));
-    const Val tools = tools::schemas(has_vm);
+    const Val tools = tools_for(me);
+    // What the plugins take at the head of the prompt is not taken from the conversation.
+    const long budget = b.budget + plugins_.weight(me);
     const Val settings = room_.settings();
     ensure_wire(b, me, false);
 
@@ -1704,7 +1722,7 @@ private:
     for (int step = 0; step <= room_.cfg.max_steps; ++step) {
       if (cancel->stopped()) { cancelled = true; break; }
       if (step > 0 && append_unseen(b, me, true, "")) describe_images(b, me); // Chris wrote while the bot was working
-      if (b.ctx_tokens > b.budget) compact(b, 0.55);
+      if (b.ctx_tokens > budget) compact(b, 0.55);
       Val body = Val::object();
       body["messages"] = request_messages(b, b.wire["messages"]);
       if (!tools.asArr().empty()) body["tools"] = tools;
@@ -1793,13 +1811,14 @@ private:
         part["k"] = "step";
         part["id"] = c.id;
         part["tool"] = c.name;
-        part["title"] = tools::title(c.name, args);
+        const std::string title = Plugins::is_tool(c.name) ? plugins_.label(c.name) : tools::title(c.name, args);
+        part["title"] = title;
         part["input"] = args;
         part["output"] = "";
         part["state"] = "running";
         part["t0"] = (double)now_ms();
         const int index = room_.add_step(t.id, part);
-        set_phase(b, "tool", tools::title(c.name, args));
+        set_phase(b, "tool", title);
         tools::Result result;
         if (cancel->stopped()) {
           result = {"abgebrochen (Stop)", false};
@@ -1815,7 +1834,21 @@ private:
             room_.update(t.id, [&](Val &m) { add_page(m, page); });
           };
           try {
-            result = tools::call(c.name, args, ctx);
+            if (Plugins::is_tool(c.name)) {
+              // A tool that changes something waits for Chris: the step shows
+              // what is asked, and his answer comes back through /api/approval.
+              const auto out = plugins_.call(b.id, c.name, args, cancel.get(), ctx.web, [&](const Val &ask) {
+                room_.update_step(t.id, index, [&](Val &s) {
+                  if (ask.isObj()) s["approval"] = ask;
+                  else s.obj->erase(std::remove_if(s.obj->begin(), s.obj->end(), [](const auto &kv) { return kv.first == "approval"; }), s.obj->end());
+                });
+                set_phase(b, ask.isObj() ? "approval" : "tool", title);
+                if (ask.isObj() && on_approval) on_approval(name, title);
+              });
+              result = {out.text, out.ok};
+            } else {
+              result = tools::call(c.name, args, ctx);
+            }
           } catch (const std::exception &e) {
             result = tools::fail(e.what());
           }

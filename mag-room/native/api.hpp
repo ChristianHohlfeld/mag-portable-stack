@@ -10,8 +10,8 @@ namespace mag {
 
 class Api {
 public:
-  Api(Room &room, Engine &engine, vm::Guests &guests, Idol &idol, Scenes &scenes, auth::Gate &gate, Push &push)
-      : room_(room), engine_(engine), guests_(guests), idol_(idol), scenes_(scenes), gate_(gate), push_(push) {
+  Api(Room &room, Engine &engine, vm::Guests &guests, Idol &idol, Scenes &scenes, Plugins &plugins, auth::Gate &gate, Push &push)
+      : room_(room), engine_(engine), guests_(guests), idol_(idol), scenes_(scenes), plugins_(plugins), gate_(gate), push_(push) {
     // The version is the cache key of every asset: it must change with each
     // release. A release carries its commit; outside a release (tests,
     // development) the environment or the start time stands in.
@@ -53,6 +53,12 @@ public:
       if (p == "/api/push/vapid") return http::send_json(fd, 200, push_.vapid());
       if (starts_with(p, "/api/bot/") && ends_with(p, "/memory")) return memory_get(fd, r);
       if (p == "/api/skills") { Val v = Val::object(); v["skills"] = room_.skills(); return http::send_json(fd, 200, v); }
+      if (p == "/api/plugins") {
+        if (!who.owner()) return http::send_error(fd, 403, "Nur für den Besitzer");
+        Val v = Val::object();
+        v["plugins"] = plugins_.list();
+        return http::send_json(fd, 200, v);
+      }
       if (p == "/api/system") return system_info(fd);
       if (starts_with(p, "/api/vm/")) {
         if (!who.owner()) return http::send_error(fd, 403, "Nur für den Besitzer");
@@ -117,6 +123,12 @@ public:
       return http::send_ok(fd);
     }
     if (r.method == "DELETE" && starts_with(p, "/api/bot/") && p.find("/memory/") != std::string::npos) return memory_delete(fd, r);
+    if (starts_with(p, "/api/plugins")) return plugins(fd, r);
+    if (r.method == "POST" && starts_with(p, "/api/approval/")) {
+      // Chris's answer to a plugin call that waits for him: allow, always or deny.
+      if (!plugins_.decide(p.substr(14), jstr(jparse(r.body), "decision"))) return http::send_error(fd, 409, "Diese Freigabe wartet nicht mehr");
+      return http::send_ok(fd);
+    }
     if (r.method == "DELETE" && starts_with(p, "/api/skills/"))
       return room_.remove_skill(url_decode(p.substr(12))) ? http::send_ok(fd) : http::send_error(fd, 404, "Skill nicht gefunden");
     // The owner's own look into a bot's VM: a terminal and its files.
@@ -133,6 +145,7 @@ private:
   vm::Guests &guests_;
   Idol &idol_;
   Scenes &scenes_;
+  Plugins &plugins_;
   auth::Gate &gate_;
   Push &push_;
   std::string version_;
@@ -531,6 +544,11 @@ private:
         if (jstr(o, "id") != id && (site::slug_of(o) == slug || jstr(o, "id") == slug))
           return http::send_error(fd, 409, "Diesen Namen trägt schon ein anderer Bot.");
     }
+    // Which plugins the bot may use, and how freely.
+    if (const Val *v = in.find("plugins")) {
+      const std::string problem = plugins_.bind(id, *v);
+      if (!problem.empty()) return http::send_error(fd, 400, problem);
+    }
     bool disabled = false, renamed = false;
     const bool ok = room_.update_bot(id, [&](Val &b) {
       if (!rename.empty() && rename != jstr(b, "name")) {
@@ -567,6 +585,28 @@ private:
     if (disabled) engine_.stop(id);
     engine_.settings_changed();
     http::send_ok(fd);
+  }
+
+  // The owner's plugins (remote MCP servers): connect one, read its tools again, remove it.
+  void plugins(int fd, const http::Request &r) {
+    const std::string rest = r.path.size() > 13 ? r.path.substr(13) : ""; // after "/api/plugins/"
+    Val out = Val::object();
+    if (r.method == "POST" && rest.empty()) {
+      Val saved;
+      const std::string problem = plugins_.save(jparse(r.body), saved);
+      if (!problem.empty()) return http::send_error(fd, 400, problem);
+      out["plugin"] = saved;
+    } else if (r.method == "POST" && ends_with(rest, "/refresh")) {
+      Val now;
+      if (!plugins_.refresh(rest.substr(0, rest.size() - 8), now)) return http::send_error(fd, 404, "Plugin nicht gefunden");
+      out["plugin"] = now;
+    } else if (r.method == "DELETE" && !rest.empty()) {
+      if (!plugins_.remove(rest)) return http::send_error(fd, 404, "Plugin nicht gefunden");
+    } else {
+      return http::send_error(fd, 404, "Nicht gefunden");
+    }
+    engine_.settings_changed(); // the bots' tools follow at their next turn
+    http::send_json(fd, 200, out);
   }
 
   void model_control(int fd, const http::Request &r) {

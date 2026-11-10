@@ -79,8 +79,9 @@ public:
 
   // ---- triggers -----------------------------------------------------------
   // A human message arrived. `to` lists the addressed bot ids (empty = decide
-  // from the text; nobody named = all active bots).
-  void on_human(const Val &message, std::vector<std::string> to = {}) {
+  // from the text; nobody named = all active bots). `only` is an explicit
+  // @mention: until Chris writes again, nobody else joins in.
+  void on_human(const Val &message, std::vector<std::string> to = {}, bool only = false) {
     const Val bots = room_.bots();
     if (to.empty()) {
       std::vector<group_chat::Bot> roster;
@@ -95,6 +96,8 @@ public:
     round_limit_ = limit;
     bot_turns_ = 0;
     passes_ = 0;
+    audience_.clear();
+    if (only) audience_.insert(to.begin(), to.end());
     for (auto &b : bots_) {
       // Bot rounds and self-continuations yield to the human at once.
       if (b->cancel && b->running != "human") b->cancel->stop();
@@ -251,6 +254,8 @@ public:
         if (jstr(c, "id") == b->id) conf = c;
       v["id"] = b->id;
       v["name"] = jstr(conf, "name", b->id);
+      // Earlier names: an old "@Lena" still shows as the bot it meant.
+      v["aliases"] = conf.find("aliases") && conf.find("aliases")->isArr() ? *conf.find("aliases") : Val::array();
       v["enabled"] = jbool(conf, "enabled", true);
       v["thinking"] = jbool(conf, "thinking", false);
       v["effort"] = jstr(conf, "effort", "low");
@@ -326,6 +331,7 @@ private:
   uint64_t clear_epoch_ = 0;
   int bot_turns_ = 0, passes_ = 0;
   long round_limit_ = 0;
+  std::set<std::string> audience_; // bots Chris mentioned with @ (empty = everybody)
   const long fuse_ = envl("MAG_ROOM_BOT_FUSE", 24);
   std::thread status_thread_;
   std::mutex models_mu_;
@@ -467,6 +473,8 @@ private:
         "Gespräch\n"
         "- Fremde Nachrichten beginnen mit dem Namen des Absenders und einem Doppelpunkt, zum Beispiel \"Chris: …\" oder \"" + other +
         ": …\". Das zeigt nur, wer spricht. Schreibe selbst ohne Namenspräfix und nur für dich; Chris sprichst du einfach mit Chris an.\n"
+        "- Mit @" + name + " spricht Chris dich allein an. Steht vor einer Nachricht \"Chris an " + other + ": …\", hat er nur " + other +
+        " gefragt: Das liest du als Hintergrund, es ist keine Aufgabe für dich und du antwortest nicht darauf.\n"
         "- Antworte auf Deutsch, natürlich und knapp, das Ergebnis zuerst. Markdown ist erlaubt.\n"
         "- " + other + " liest mit und darf auch antworten. Wiederhole nicht, was schon gesagt wurde; ergänze, widersprich oder frage nach, wenn es dem Gespräch dient.\n"
         "- Wenn du nichts Neues beizutragen hast, antworte exakt mit dem einen Wort PASS. PASS bleibt unsichtbar.\n"
@@ -749,6 +757,19 @@ private:
       const Val all = room_.bots();
       for (auto &o : all.asArr())
         if (jstr(o, "id") == from) who = jstr(o, "name");
+    }
+    // A message Chris sent to the other bot by @mention says so: it is context
+    // for this one, not a task.
+    if (const Val *to = m.find("mentions"); from == "chris" && to && to->isArr() && !to->asArr().empty()) {
+      bool me = false;
+      std::string others;
+      const Val all = room_.bots();
+      for (auto &id : to->asArr()) {
+        if (id.asStr() == b.id) me = true;
+        for (auto &o : all.asArr())
+          if (jstr(o, "id") == id.asStr()) others += (others.empty() ? "" : " und ") + jstr(o, "name");
+      }
+      if (!me && !others.empty()) who += " an " + others;
     }
     std::string head;
     if (jstr(m, "role") == "user") head = "(" + clock_label((int64_t)jnum(m, "ts")) + ")\n";
@@ -1678,6 +1699,7 @@ private:
     if (limit > 0 && bot_turns_ >= limit) return;
     for (auto &o : bots_) {
       if (o->id == b.id) continue;
+      if (!audience_.empty() && !audience_.count(o->id)) continue; // Chris asked someone else by name
       bool enabled = false;
       for (auto &c : bots.asArr())
         if (jstr(c, "id") == o->id) enabled = jbool(c, "enabled", true);

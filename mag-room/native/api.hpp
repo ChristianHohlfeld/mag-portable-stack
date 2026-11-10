@@ -272,6 +272,26 @@ private:
     std::vector<std::string> to;
     if (const Val *list = in.find("to"); list && list->isArr())
       for (auto &b : list->asArr()) to.push_back(b.asStr());
+    // "@Lena" asks Lena and nobody else. Who is meant is settled now and kept
+    // with the message, so a later rename changes neither the past nor a chip.
+    bool mentions = false;
+    if (to.empty() && mode != "3d") {
+      std::vector<group_chat::Named> roster;
+      const Val bots = room_.bots();
+      for (auto &b : bots.asArr()) {
+        group_chat::Named n{jstr(b, "id"), {lower(jstr(b, "name")), jstr(b, "id")}};
+        if (const Val *old = b.find("aliases"); old && old->isArr())
+          for (auto &a : old->asArr()) n.names.push_back(a.asStr());
+        roster.push_back(n);
+      }
+      to = group_chat::mentioned(text, roster);
+      if (!to.empty()) {
+        mentions = true;
+        Val ids = Val::array();
+        for (auto &id : to) ids.push(id);
+        m["mentions"] = ids;
+      }
+    }
     if (mode == "3d") {
       // A 3D order is for the worker: the bots read it as context, it asks them nothing.
       m["silent"] = true;
@@ -302,7 +322,7 @@ private:
         room_.add(note);
       }
     } else {
-      engine_.on_human(stored, to);
+      engine_.on_human(stored, to, mentions);
     }
     http::send_json(fd, 201, out);
   }

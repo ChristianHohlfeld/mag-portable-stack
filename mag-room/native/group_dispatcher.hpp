@@ -121,6 +121,41 @@ inline std::vector<std::string> addressed(const std::string &text,
   return out;
 }
 
+// Explicit mentions: "@Lena", "@noah", an earlier name or the id of a bot,
+// and "@alle"/"@beide" for everybody. Unlike a name in a sentence, a mention
+// decides who is asked: only the mentioned bots answer. `names` are all names
+// a bot answers to, lower-case. `everyone` reports an "@alle".
+struct Named {
+  std::string id;
+  std::vector<std::string> names;
+};
+inline std::vector<std::string> mentioned(const std::string &text, const std::vector<Named> &roster, bool *everyone = nullptr) {
+  const std::string t = lower(text);
+  std::vector<bool> hit(roster.size(), false);
+  bool all = false;
+  for (size_t at = t.find('@'); at != std::string::npos; at = t.find('@', at + 1)) {
+    if (at > 0 && word_char((unsigned char)t[at - 1])) continue; // part of an address, not a mention
+    const auto is = [&](const std::string &name) {
+      const size_t end = at + 1 + name.size();
+      if (name.empty() || t.compare(at + 1, name.size(), name) != 0) return false;
+      if (end >= t.size()) return true;
+      const unsigned char next = (unsigned char)t[end];
+      // "@max" is not "@max-2" and not "@maxi".
+      return !word_char(next) && !(next == '-' && end + 1 < t.size() && std::isalnum((unsigned char)t[end + 1]));
+    };
+    for (const char *word : {"alle", "all", "beide", "everyone"})
+      if (is(word)) all = true;
+    for (size_t i = 0; i < roster.size(); ++i)
+      for (const auto &name : roster[i].names)
+        if (is(name)) hit[i] = true;
+  }
+  if (everyone) *everyone = all;
+  std::vector<std::string> out;
+  for (size_t i = 0; i < roster.size(); ++i)
+    if (all || hit[i]) out.push_back(roster[i].id);
+  return out;
+}
+
 inline bool looks_like_code(const std::string &text) {
   const std::string t = lower(text);
   if (t.find("```") != std::string::npos) return true;

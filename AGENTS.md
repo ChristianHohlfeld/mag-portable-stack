@@ -114,7 +114,14 @@ unlimited; as a safety net the room rests after MAG_ROOM_BOT_FUSE = 24 bot
 turns in a row without a word from Chris). PASS is each bot's own choice and
 invisible; a repeated answer or a bare acknowledgement counts as PASS; when
 every bot PASSes in a row the chat rests until the next message. New human input and Stop
-immediately preempt these bot rounds. Per-backend model turns remain serial
+immediately preempt these bot rounds.
+An explicit @mention decides who is asked: after `@Lena …` only Lena answers
+and takes part until Chris writes again. Noah gets no turn, not even one to
+PASS; he reads the message as context (`Chris an Lena: …`) and never treats
+it as his task. Several mentions or `@alle` mean all of them; a name without
+@ addresses as before. A mention is stored with the message as the bot's id,
+so the page's chip and the meaning follow a rename; earlier names keep
+working. The message field suggests the bots after `@`. Per-backend model turns remain serial
 (one request per -np 1 slot).
 This permission is for room conversation, not unrestricted autonomous tool work.
 Outside room dialogue, continue tools only on a successful tool result, distinct

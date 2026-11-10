@@ -14,7 +14,12 @@
 set -euo pipefail
 HERE="$(cd -- "$(dirname -- "$(readlink -f "$0")")" && pwd)"
 OUT="${MAG_TTS_CACHE:-$HOME/.cache/mag-stack/tts}/voices"
-verified() { [[ -d $OUT ]] && (cd "$OUT" && sha256sum --quiet -c "$HERE/assets.lock" >/dev/null 2>&1); }
+# The worker is ours and comes from the repository; everything else is fetched.
+verified() {
+  [[ -d $OUT ]] || return 1
+  cmp -s "$HERE/tts-worker.js" "$OUT/tts-worker.js" || install -m 0644 "$HERE/tts-worker.js" "$OUT/tts-worker.js"
+  (cd "$OUT" && sha256sum --quiet -c "$HERE/assets.lock" >/dev/null 2>&1)
+}
 if verified; then
   echo "voices already fetched and verified in $OUT"
   exit 0

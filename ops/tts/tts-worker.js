@@ -130,6 +130,21 @@ function level(audio, rate) {
   }
   return audio;
 }
+// A voice knows only the sounds it was taught. The phonemizer speaks a larger
+// alphabet (marks for nasal and syllabic sounds, foreign ones) than the small
+// voices have: a sound a voice does not know is left out together with its
+// pause. Passed on, it is an index beyond the voice's table and the whole
+// part fails ("indices element out of data bounds").
+function known(ids, config) {
+  const limit = config.num_symbols || 0;
+  if (!limit) return ids;
+  const out = [];
+  for (let i = 0; i < ids.length; i++) {
+    if (ids[i] < limit) out.push(ids[i]);
+    else if (ids[i + 1] === 0) i++;
+  }
+  return out;
+}
 async function synth(text, model, id, speaker, rate) {
   const {config, session} = await loadVoice(model, id);
   const ph = await getPhonemizer();
@@ -142,7 +157,7 @@ async function synth(text, model, id, speaker, rate) {
   const gap = Math.round(sampleRate * 0.06);
   const parts = [];
   for (let i = 0; i < batch.length; i++) {
-    parts.push(await runIds(session, config, batch[i], speaker, rate));
+    parts.push(await runIds(session, config, known(batch[i], config), speaker, rate));
     if (i + 1 < batch.length) parts.push(new Float32Array(gap));
   }
   let n = 0;

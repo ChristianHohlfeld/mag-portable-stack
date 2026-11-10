@@ -500,16 +500,15 @@ private:
       Val m = read_json(entry.path().string());
       const std::string id = jstr(m, "id");
       if (!m.isObj() || id.empty()) continue;
-      // A message that was still streaming when the process ended is final now.
-      if (jstr(m, "state") == "streaming") {
+      // A bot answer that was still streaming when the process ended is final
+      // now. A 3D job is not: it runs in the Idol worker, which neither knows
+      // nor cares that the room restarted. Its message stays as it is and the
+      // room picks the job up again (Idol::resume).
+      if (jstr(m, "state") == "streaming" && !m.find("model3d")) {
         m["state"] = "stopped";
         if (Val *parts = m.find("parts"); parts && parts->isArr())
           for (auto &p : *parts->arr)
             if (jstr(p, "k") == "step" && jstr(p, "state") == "running") p["state"] = "cancelled";
-        if (Val *m3 = m.find("model3d"); m3 && m3->isObj()) {
-          const std::string st = jstr(*m3, "state");
-          if (st == "queued" || st == "running") (*m3)["state"] = "error", (*m3)["error"] = "Dienst neu gestartet";
-        }
         write_json(entry.path().string(), m);
       }
       messages_[id] = m;

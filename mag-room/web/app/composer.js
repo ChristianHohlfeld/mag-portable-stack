@@ -9,9 +9,13 @@
   let mode3d = false;
   let quality = localStorage.getItem('mag-3d-quality') || 'normal';
 
+  // One line to about seven; beyond that the text scrolls (without a bar).
   function resize() {
+    const style = getComputedStyle(input);
+    const frame = parseFloat(style.borderTopWidth) + parseFloat(style.borderBottomWidth);
+    const max = Math.round((parseFloat(style.lineHeight) || 22) * 7 + parseFloat(style.paddingTop) + parseFloat(style.paddingBottom) + frame);
     input.style.height = 'auto';
-    input.style.height = Math.min(input.scrollHeight, window.innerHeight * 0.34) + 'px';
+    input.style.height = Math.min(input.scrollHeight + frame, max) + 'px';
   }
   function refresh() {
     const has3dImage = staged.some((s) => s.att.kind === 'image');

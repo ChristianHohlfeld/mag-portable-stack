@@ -23,6 +23,9 @@
     }
   }
   const phases = { reading: 'liest', thinking: 'denkt nach', writing: 'schreibt', tool: 'arbeitet', warming: 'wärmt auf', resetting: 'leert Kontext' };
+  // The exact weights, e.g. "gpt-oss-120b-heretic-v2 MXFP4".
+  const modelName = (b) => (b.model?.file ? b.model.file.replace(/-([A-Za-z0-9_]+)$/, ' $1') : b.model?.label || '');
+  const siteLink = (b) => (b.site ? el('a', { href: b.site + '/', target: '_blank', rel: 'noopener', text: b.site.replace(/^https?:\/\//, '') }) : null);
   function chipState(b) {
     if (!b.enabled) return ['off', 'aus'];
     const st = b.model?.state;
@@ -35,13 +38,15 @@
     if (b.busy || b.phase !== 'idle') return ['busy', phases[b.phase] || 'arbeitet'];
     return ['ready', 'bereit'];
   }
+  const nudged = {}; // bot -> until when its chip moves
   function paintTop() {
     const box = $('#chips');
     if (!box) return;
     box.replaceChildren(...S.bots.map((b) => {
       const [cls, text] = chipState(b);
-      return el('button', { class: 'chip ' + cls, dataset: { bot: b.id }, 'aria-label': b.name + ': ' + text, onclick: () => botSheet(b.id) },
-        el('span', { class: 'dot' }), el('span', { class: 'name', text: b.name }), el('span', { class: 'state', text }));
+      // Ready is just the green dot; every other state says what it is.
+      return el('button', { class: 'chip ' + cls + (nudged[b.id] > Date.now() ? ' nudge' : ''), dataset: { bot: b.id }, 'aria-label': b.name + ': ' + text, title: b.name + ': ' + text, onclick: () => botSheet(b.id) },
+        el('span', { class: 'dot' }), el('span', { class: 'name', text: b.name }), cls === 'ready' ? null : el('span', { class: 'state', text }));
     }));
     $('#clear').hidden = !owner();
     document.querySelector('.sheet')?.refresh?.();
@@ -81,8 +86,10 @@
         if (!b) return;
         const m = b.model || {}, f = m.model || {};
         const info = el('dl', { class: 'kv' });
-        const add = (k, v) => { if (v !== undefined && v !== null && v !== '') info.append(el('dt', { text: k }), el('dd', { text: String(v) })); };
-        add('Modell', m.label);
+        const add = (k, v) => { if (v !== undefined && v !== null && v !== '') info.append(el('dt', { text: k }), v instanceof Node ? el('dd', {}, v) : el('dd', { text: String(v) })); };
+        add('Name', b.name);
+        add('Modell', modelName(b));
+        add('Website', siteLink(b));
         add('Zustand', modelText(b));
         if (m.state === 'downloading' && f.total) add('Download', MAG.bytes(f.bytes) + ' von ' + MAG.bytes(f.total) + (f.rate > 1 ? ' · ' + MAG.bytes(f.rate) + '/s' : ''));
         if (m.detail && m.state !== 'downloading') add('Hinweis', m.detail);
@@ -146,8 +153,8 @@
     MAG.sheet('Einstellungen', (content, sheet) => {
       const s = S.settings;
       content.append(el('h3', { text: 'Bots' }), el('div', { class: 'card' }, S.bots.map((b) =>
-        el('div', { class: 'set', onclick: (e) => { if (!e.target.closest('label')) botSheet(b.id); }, style: 'cursor:pointer' },
-          el('div', { class: 'txt' }, b.name, el('small', { text: (b.model?.label || '') + ' · ' + modelText(b) })),
+        el('div', { class: 'set', onclick: (e) => { if (!e.target.closest('label, a')) botSheet(b.id); }, style: 'cursor:pointer' },
+          el('div', { class: 'txt' }, b.name, el('small', { text: modelName(b) + ' · ' + modelText(b) }), b.site ? el('small', {}, siteLink(b)) : null),
           owner() ? toggle(b.enabled, (v) => call('PUT', '/api/bot/' + b.id, { enabled: v })) : null))));
 
       content.append(el('h3', { text: 'Gespräch' }), el('div', { class: 'card' },
@@ -211,15 +218,22 @@
 
   // ---- read aloud (device voice) ------------------------------------------
   if ('speechSynthesis' in window) {
-    MAG.speak = function (m) {
+    let reading = null; // message id being read
+    MAG.speak = function (m, button) {
+      const again = reading === m.id && speechSynthesis.speaking;
       speechSynthesis.cancel();
+      document.querySelectorAll('.act.on').forEach((b) => b.classList.remove('on'));
+      reading = null;
+      if (again) return; // a second tap stops it
       const text = (m.text || '').replace(/```[\s\S]*?```/g, ' Codeblock. ').replace(/[#*_`>|]/g, ' ').slice(0, 6000);
       const u = new SpeechSynthesisUtterance(text);
       u.lang = 'de-DE';
       const voice = speechSynthesis.getVoices().filter((v) => v.lang.startsWith('de')).sort((a, b) => (b.localService ? 1 : 0) - (a.localService ? 1 : 0))[0];
       if (voice) u.voice = voice;
+      u.onend = u.onerror = () => { if (reading === m.id) reading = null; button?.classList.remove('on'); };
+      reading = m.id;
+      button?.classList.add('on');
       speechSynthesis.speak(u);
-      MAG.toast('Liest vor – zum Beenden erneut tippen');
     };
   }
 
@@ -237,4 +251,7 @@
   MAG.on('bots', paintTop);
   MAG.on('settings', paintTop);
   MAG.on('online', (on) => { $('#offline').hidden = on; });
+  // A bot that cannot answer right now: its chip in the header says why and
+  // moves once. Nothing covers the chat.
+  MAG.on('notice', (ev) => { nudged[ev.bot] = Date.now() + 1200; paintTop(); });
 })();

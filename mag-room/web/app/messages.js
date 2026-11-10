@@ -227,22 +227,46 @@
   }
 
   // ---- one message --------------------------------------------------------
-  function menuFor(m, anchor) {
-    MAG.menu(anchor, [
-      m.text ? { icon: 'copy', label: 'Kopieren', run: () => copy(m.text) } : null,
-      m.text && MAG.speak ? { icon: 'speak', label: 'Vorlesen', run: () => MAG.speak(m) } : null,
-      S.you.role === 'owner' ? { icon: 'trash', label: 'Löschen', danger: true, run: () => MAG.api('DELETE', '/api/message/' + m.id).catch((x) => MAG.toast(x.message, true)) } : null,
-    ]);
+  // Actions come after the text, like everywhere else: copy, read aloud, and
+  // a menu for what must not happen by accident.
+  function actions(m) {
+    if (m.state === 'streaming') return null;
+    const user = m.role === 'user', row = el('div', { class: 'acts' });
+    const button = (icon, label, run) => el('button', { class: 'act', 'aria-label': label, title: label, html: MAG.icons[icon], onclick: run });
+    if (user) row.append(el('span', { class: 'time', text: MAG.clock(m.ts), title: MAG.day(m.ts) }));
+    if (m.text) row.append(button('copy', 'Kopieren', async (e) => {
+      const b = e.currentTarget;
+      try {
+        await navigator.clipboard.writeText(m.text);
+        b.innerHTML = MAG.icons.check;
+        setTimeout(() => { b.innerHTML = MAG.icons.copy; }, 1300);
+      } catch { MAG.toast('Kopieren nicht möglich', true); }
+    }));
+    if (m.text && !user && MAG.speak) row.append(button('speak', 'Vorlesen', (e) => MAG.speak(m, e.currentTarget)));
+    if (S.you.role === 'owner') row.append(button('dots', 'Mehr', (e) => MAG.menu(e.currentTarget, [
+      { icon: 'trash', label: 'Nachricht löschen', danger: true, run: () => MAG.api('DELETE', '/api/message/' + m.id).catch((x) => MAG.toast(x.message, true)) },
+    ])));
+    return row.children.length ? row : null;
   }
   function build(m) {
     const user = m.role === 'user';
     const node = el('article', { class: 'msg ' + (user ? 'user' : m.role === 'service' ? 'service' : 'bot'), dataset: { id: m.id, from: m.from } });
-    const more = el('button', { class: 'more', 'aria-label': 'Aktionen', html: MAG.icons.dots, onclick: (e) => menuFor(S.messages.get(m.id) || m, e.currentTarget) });
-    node.append(el('div', { class: 'meta' }, user ? null : el('span', { class: 'who', text: MAG.name(m.from) }),
-      el('span', { class: 'time', text: MAG.clock(m.ts), title: MAG.day(m.ts) }), more));
+    const files = m.model3d ? [] : m.attachments || [];
+    const atts = files.length ? el('div', { class: 'atts' }, files.map(buildAttachment)) : null;
     if (user) {
-      if (m.text) node.append(el('div', { class: 'bubble' }, markdown(m.text)));
-    } else if (m.model3d) {
+      // The bubble, what was attached, and (on tap or hover) the actions.
+      const bubble = m.text ? el('div', { class: 'bubble' }, markdown(m.text)) : null;
+      const col = el('div', { class: 'col' }, bubble, atts);
+      col.addEventListener('click', (e) => {
+        if (e.target.closest('a, button, video, audio') || String(window.getSelection() || '')) return;
+        node.classList.toggle('show-acts');
+      });
+      node.append(el('div', { class: 'line' }, actions(m), col));
+      return node;
+    }
+    node.append(el('div', { class: 'meta' }, el('span', { class: 'who', text: MAG.name(m.from) }),
+      el('span', { class: 'time', text: MAG.clock(m.ts), title: MAG.day(m.ts) })));
+    if (m.model3d) {
       node.append(build3d(m));
     } else {
       if (m.reasoning) node.append(buildThoughts(m));
@@ -252,10 +276,11 @@
       node.append(body);
       placePages(m, body);
     }
-    const files = (m.attachments || []).filter((a) => !m.model3d);
-    if (files.length) node.append(el('div', { class: 'atts' }, files.map(buildAttachment)));
+    if (atts) node.append(atts);
     const note = footer(m);
     if (note) node.append(note);
+    const acts = actions(m);
+    if (acts) node.append(acts);
     markStreaming(node, m);
     return node;
   }
@@ -291,6 +316,7 @@
     const node = build(m);
     if (old) {
       // Keep what the reader opened.
+      if (old.classList.contains('show-acts')) node.classList.add('show-acts');
       old.querySelectorAll('details[open]').forEach((d) => {
         const twin = d.classList.contains('think') ? node.querySelector('.think') : node.querySelector('details[data-part="' + d.dataset.part + '"]');
         if (twin) twin.open = true;

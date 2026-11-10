@@ -180,8 +180,8 @@ class RoomContract(unittest.TestCase):
         self.assertNotIn("PASS", " ".join(r.texts()))
         self.assertEqual(len(r.lena.chats()), 2)
         self.assertEqual(len(r.noah.chats()), 2)
-        self.assertIn("[Chris", r.lena.chats()[0]["messages"][-1]["content"])
-        self.assertIn("[Noah] Hallo von Noah.", r.lena.chats()[1]["messages"][-1]["content"])
+        self.assertIn("Chris: Hi beide", r.lena.chats()[0]["messages"][-1]["content"])
+        self.assertIn("Noah: Hallo von Noah.", r.lena.chats()[1]["messages"][-1]["content"])
         time.sleep(1.0)
         self.assertEqual(len(r.lena.chats()) + len(r.noah.chats()), 4)
 
@@ -193,6 +193,17 @@ class RoomContract(unittest.TestCase):
         # Noah was not asked; he reads Lena's answer and may pass.
         self.assertEqual(len(r.lena.chats()), 1)
         self.assertEqual(len(r.noah.chats()), 1)
+
+    def test_speaker_labels_are_plain_and_copied_tags_are_cleaned(self):
+        r = self.room
+        r.lena.reply = lambda body: "Hallo [Chris], [Noah · Di 10.11. 01:51] meinte das auch. Siehe [Doku](https://example.org)."
+        r.say("@Lena hallo")
+        r.idle()
+        # A bracketed speaker tag the model copies never reaches the chat; links stay links.
+        self.assertEqual(r.texts("lena"), ["Hallo Chris, Noah meinte das auch. Siehe [Doku](https://example.org)."])
+        sent = r.lena.chats()[0]["messages"]
+        self.assertRegex(sent[-1]["content"], r"^\(\w\w \d\d\.\d\d\. \d\d:\d\d\)\nChris: @Lena hallo$")
+        self.assertNotIn("[Chris", json.dumps(sent, ensure_ascii=False))
 
     def test_bot_dialogue_is_bounded_by_bot_rounds(self):
         r = self.room

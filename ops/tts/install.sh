@@ -13,16 +13,21 @@ CACHED="${MAG_TTS_CACHE:-$home/.cache/mag-stack/tts}/voices"
 LOCK="$SOURCE/ops/tts/assets.lock"
 name="v-$(sha256sum < "$LOCK" | cut -c1-12)"
 if [[ ! -f /opt/mag-tts/$name/tts-worker.js ]]; then
-  if [[ ! -d $CACHED ]] || ! (cd "$CACHED" && sha256sum --quiet -c "$LOCK" >/dev/null 2>&1); then
+  # The worker is ours and comes with the release; the runtime and the voices were fetched.
+  if [[ ! -d $CACHED ]] || ! (cd "$CACHED" && grep -v ' tts-worker.js$' "$LOCK" | sha256sum --quiet -c - >/dev/null 2>&1); then
     echo 'voices: not fetched; "Vorlesen" uses the device voice (run ops/tts/bootstrap.sh)' >&2
     exit 0
   fi
   install -d -m 0755 /opt/mag-tts
   rm -rf -- "/opt/mag-tts/.$name.next"
   install -d -m 0755 "/opt/mag-tts/.$name.next"
-  while read -r _ file; do install -m 0644 "$CACHED/$file" "/opt/mag-tts/.$name.next/$file"; done < "$LOCK"
+  while read -r _ file; do
+    if [[ $file == tts-worker.js ]]; then from="$SOURCE/ops/tts/$file"; else from="$CACHED/$file"; fi
+    install -m 0644 "$from" "/opt/mag-tts/.$name.next/$file"
+  done < "$LOCK"
   (cd "/opt/mag-tts/.$name.next" && sha256sum --quiet -c "$LOCK")
   mv "/opt/mag-tts/.$name.next" "/opt/mag-tts/$name"
+  # Folders of earlier versions stay: voice models are never deleted.
 fi
 cat > /opt/mag-tts/.config.next <<JSON
 {"dir":"$name","voices":[

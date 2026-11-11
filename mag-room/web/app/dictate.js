@@ -114,7 +114,7 @@
       // The audio context has to start inside the tap (iOS); the microphone may already be on its way.
       ctx ||= new (window.AudioContext || window.webkitAudioContext)({ latencyHint: 'interactive' });
       const running = ctx.state === 'running' ? null : ctx.resume();
-      module ||= ctx.audioWorklet.addModule('/app/capture.js?v=' + encodeURIComponent(MAG.version)).catch((err) => { module = null; throw err; });
+      module ||= ctx.audioWorklet.addModule('/app/capture.js?v=' + encodeURIComponent(MAG.assets)).catch((err) => { module = null; throw err; });
       const [media] = await Promise.all([ask(), module, running]);
       // Stopped before the microphone was there: do not leave it open.
       if (current !== s) { if (!current && !warm) release(); return; }

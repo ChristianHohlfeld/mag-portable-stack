@@ -21,6 +21,40 @@ public:
     version_ = trim(slurp(room_.cfg.web_dir + "/../SOURCE_COMMIT")).substr(0, 12);
     if (version_.empty()) version_ = env("MAG_ROOM_VERSION");
     if (version_.empty()) version_ = "dev" + std::to_string(now_s());
+    // The assets' cache key is what they are, not the release: a release that
+    // changes nothing of the page (most change a service behind it) leaves
+    // the page and its voice where they are, and an open page is not
+    // reloaded for it (a reload costs the phone a minute to make its voice
+    // ready again).
+    web_ = content_key(room_.cfg.web_dir);
+    if (web_.empty()) web_ = version_;
+  }
+
+  // FNV-1a over the names and contents of every file below a folder, in order.
+  static std::string content_key(const std::string &dir) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    std::vector<std::string> files;
+    for (fs::recursive_directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec))
+      if (it->is_regular_file(ec)) files.push_back(it->path().string());
+    if (files.empty()) return "";
+    std::sort(files.begin(), files.end());
+    uint64_t h = 1469598103934665603ull;
+    auto mix = [&h](const std::string &s) { for (unsigned char c : s) { h ^= c; h *= 1099511628211ull; } h ^= 0xff; h *= 1099511628211ull; };
+    for (const auto &f : files) { mix(f.substr(dir.size())); mix(slurp(f)); }
+    char out[17];
+    snprintf(out, sizeof out, "%016llx", (unsigned long long)h);
+    return std::string(out, 12);
+  }
+  // What an open page must reload for: its own files, or the voice the room hands out (ops/tts).
+  std::string ui_key() const {
+    const std::string tts = slurp(room_.cfg.tts_dir + "/config.json");
+    if (tts.empty()) return web_;
+    uint64_t h = 1469598103934665603ull;
+    for (unsigned char c : tts) { h ^= c; h *= 1099511628211ull; }
+    char out[9];
+    snprintf(out, sizeof out, "%08llx", (unsigned long long)(h & 0xffffffffull));
+    return web_ + "-" + out;
   }
 
   void handle(int fd, http::Request &r) {
@@ -187,7 +221,7 @@ private:
   Plugins &plugins_;
   auth::Gate &gate_;
   Push &push_;
-  std::string version_;
+  std::string version_, web_;
 
   static constexpr const char *kNoAccess =
       "<!doctype html><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'>"
@@ -213,8 +247,9 @@ private:
   void page(int fd) {
     std::string html = slurp(room_.cfg.web_dir + "/index.html");
     if (html.empty()) return http::send_error(fd, 500, "Oberfläche fehlt in diesem Release");
-    replace_all(html, "{{V}}", version_);
-    const std::string meta = "<meta name=\"mag-token\" content=\"" + gate_.ui_token() + "\">\n<meta name=\"mag-version\" content=\"" + version_ + "\">";
+    replace_all(html, "{{V}}", web_);
+    const std::string meta = "<meta name=\"mag-token\" content=\"" + gate_.ui_token() + "\">\n<meta name=\"mag-version\" content=\"" + version_ +
+                             "\">\n<meta name=\"mag-ui\" content=\"" + ui_key() + "\">\n<meta name=\"mag-assets\" content=\"" + web_ + "\">";
     const size_t head = html.find("<head>");
     if (head != std::string::npos) html.insert(head + 6, "\n" + meta);
     http::send(fd, 200, "text/html; charset=utf-8", html, page_headers());
@@ -225,10 +260,10 @@ private:
     if (templated) {
       std::string body = slurp(path);
       if (body.empty()) return http::send_error(fd, 404, "Nicht gefunden");
-      replace_all(body, "{{V}}", version_);
+      replace_all(body, "{{V}}", web_);
       return http::send(fd, 200, mime_for(path), body, extra);
     }
-    extra.push_back({"Cache-Control", r.param("v") == version_ ? "public, max-age=31536000, immutable" : "no-cache"});
+    extra.push_back({"Cache-Control", r.param("v") == web_ ? "public, max-age=31536000, immutable" : "no-cache"});
     http::send_file(fd, r, path, mime_for(path), extra);
   }
 
@@ -254,7 +289,7 @@ private:
   }
 
   void manifest(int fd) {
-    const std::string v = "?v=" + version_;
+    const std::string v = "?v=" + web_;
     const std::string body =
         "{\"name\":\"MAG\",\"short_name\":\"MAG\",\"start_url\":\"/\",\"scope\":\"/\",\"display\":\"standalone\","
         "\"background_color\":\"#17181b\",\"theme_color\":\"#17181b\",\"lang\":\"de\",\"icons\":["
@@ -289,6 +324,8 @@ private:
     v["seq"] = (double)seq;
     v["more"] = more;
     v["version"] = version_;
+    v["ui"] = ui_key();
+    v["token"] = gate_.ui_token();      // a page that outlives a restart of the room keeps working with the new one
     v["bots"] = engine_.status();
     v["settings"] = room_.settings();
     Val you = Val::object();

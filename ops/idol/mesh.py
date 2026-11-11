@@ -19,7 +19,7 @@ import trimesh
 
 from unwrap import unwrap
 
-# Single source of truth for mesh preset parameters; worker mirrors timeouts.
+# Single source of truth for mesh preset parameters.
 QUALITY_PRESETS = {
     "fast": {"resolution": 128, "max_points": 150000, "max_faces": 150000,
              "texture": 1024, "smooth": 2, "percentile": 52, "floor": 0.035,
@@ -32,7 +32,7 @@ QUALITY_PRESETS = {
              "crop": 0.02, "neighbors": 16, "unwrap": 720},
 }
 # "unwrap": seconds xatlas gets for the UVs before the surface is laid out
-# plainly instead. The worker gives the whole stage 5, 15 and 30 minutes.
+# plainly instead.
 
 
 def splat_density(xyz, alpha, radii, lo, spacing, resolution):

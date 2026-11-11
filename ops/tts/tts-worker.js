@@ -1,14 +1,19 @@
 // Read-aloud worker: Supertonic 3 in onnxruntime-web (classic Worker, handed
-// out by the room under /tts/<folder>/). The speech is made on the device:
+// out by the room under /tts/<folder>/). The speech is made on the device,
 // in WASM, on several threads where the page is isolated. The model (four
-// networks, about 400 MB) is fetched once and stays in Cache Storage; a
-// voice is a small style file. The page asks for the model in the
-// background right after it has loaded, so the first "Vorlesen" does not
-// wait for a download. Nothing is sent to a server.
+// networks, their weights in float16: about 200 MB) is fetched once and
+// stays in Cache Storage; a voice is a small style file. The page asks for
+// the model in the background right after it has loaded, so the first
+// "Vorlesen" does not wait for a download. Nothing is sent to a server.
+// Where the page allows it (?gpu=1) the networks run on the device's GPU
+// (WebGPU), many times faster; where that fails, is silent or takes too long
+// (the page then ends this worker), they run in WASM.
 /* global ort */
 const inWorker = typeof importScripts === 'function';   // not so in the test of the text rules
 let base = '', home = '';     // where the runtime lies, and where the model does
+let gpuWanted = false;
 if (inWorker) {
+  gpuWanted = new URL(self.location.href).searchParams.get('gpu') === '1' && !!(self.navigator && self.navigator.gpu);
   importScripts('ort.webgpu.min.js');
   base = self.location.href.replace(/[?#].*$/, '').replace(/[^/]*$/, '');
   // The model has a folder of its own (?m=...), so it stays in the browser when this worker changes.
@@ -24,108 +29,163 @@ if (inWorker) {
     } catch (e) { return 1; }
   })();
 }
-const CACHE = 'mag-tts-s3';
-const NETWORKS = ['duration_predictor.onnx', 'text_encoder.onnx', 'vector_estimator.onnx', 'vocoder.onnx'];
+const CACHE = 'mag-tts-s3h';
+// Each network is its graph (<name>.onnx, small) and its weights (<name>.f16.data, float16; ops/tts/pack.py).
+const NETWORKS = ['duration_predictor', 'text_encoder', 'vector_estimator', 'vocoder'];
 const LANGS = ['en', 'ko', 'ja', 'ar', 'bg', 'cs', 'da', 'de', 'el', 'es', 'et', 'fi', 'fr', 'hi', 'hr', 'hu', 'id', 'it', 'lt', 'lv', 'nl', 'pl', 'pt', 'ro', 'ru', 'sk', 'sl', 'sv', 'tr', 'uk', 'vi'];
 // How many steps the sound is refined in: more is cleaner and takes longer.
 const STEPS = {webgpu: 5, wasm: 5};
 let engine = null;            // promise of {cfg, indexer, dp, enc, est, voc, provider}
 const styles = new Map();     // voice file -> promise of {ttl, dp}
 
-// The voices of the reader before this one are not needed any more.
-if (inWorker) { try { caches.delete('mag-tts-v1'); } catch (e) { /* no Cache Storage */ } }
+// The readers before this one are not needed any more: their files leave the device (about 400 MB).
+if (inWorker) { for (const old of ['mag-tts-v1', 'mag-tts-s3']) { try { caches.delete(old); } catch (e) { /* no Cache Storage */ } } }
 
-// A file from Cache Storage, or fetched and kept there. A large one (the
-// networks are up to 256 MB) is fetched in pieces of 8 MB, each kept as soon
-// as it is there: a download that breaks off (a phone that sleeps, a weak
-// connection, the page reloaded by a deploy) goes on where it stopped, the
-// next time, instead of starting from nothing. A piece that fails is asked
-// for again after a pause, for as long as the page is open.
-const PIECE = 8 << 20;
-// (A piece is kept under an address of its own: Cache Storage does not tell addresses apart by their #part.)
-const pieceKey = (url, n) => url + (url.includes('?') ? '&' : '?') + 'piece=' + n;
-const pause = (ms) => new Promise((go) => setTimeout(go, ms));
-async function cachedFetch(url, progress) {
-  let cache = null;
-  try { cache = await caches.open(CACHE); } catch (e) { /* private mode / quota */ }
+let store = null;             // Cache Storage, or false where there is none (then the pieces stay in memory)
+const memory = new Map();
+async function opened() {
+  if (store === null) { try { store = await caches.open(CACHE); } catch (e) { store = false; } }
+  return store;
+}
+// A small file from Cache Storage, or fetched and kept there.
+async function cachedFetch(url) {
+  const cache = await opened();
   if (cache) {
     const hit = await cache.match(url);
     if (hit) return hit;
   }
-  if (!progress || !cache) {
-    const net = await fetch(url);
-    if (!net.ok) throw new Error('HTTP ' + net.status + ' ' + url);
-    if (cache) { try { await cache.put(url, net.clone()); } catch (e) { /* still use it from memory */ } }
-    return net;
-  }
-  const piece = async (n) => {
-    const key = pieceKey(url, n);
-    const kept = await cache.match(key);
-    if (kept) return {bytes: await kept.arrayBuffer(), total: +kept.headers.get('x-total') || 0};
-    for (let tries = 0; ; tries++) {
-      try {
-        const net = await fetch(url, {headers: {Range: 'bytes=' + n * PIECE + '-' + ((n + 1) * PIECE - 1)}});
-        if (net.status !== 206 && net.status !== 200) throw new Error('HTTP ' + net.status);
-        const bytes = await net.arrayBuffer();
-        const total = net.status === 200 ? bytes.byteLength : +((net.headers.get('content-range') || '').split('/')[1]) || 0;
-        if (net.status === 200) return {bytes, total, whole: true};
-        try { await cache.put(key, new Response(bytes, {headers: {'x-total': String(total)}})); } catch (e) { /* kept in memory only */ }
-        return {bytes, total};
-      } catch (e) {
-        await pause(Math.min(30000, 1000 * 2 ** Math.min(tries, 5)));
+  const net = await fetch(url);
+  if (!net.ok) throw new Error('HTTP ' + net.status + ' ' + url);
+  if (cache) { try { await cache.put(url, net.clone()); } catch (e) { /* still use it from memory */ } }
+  return net;
+}
+
+// The weights are fetched in pieces of 8 MB, and every piece is kept as soon
+// as it is there: a download that breaks off (a phone that sleeps, a weak
+// connection, the page reloaded by a deploy) goes on where it stopped, the
+// next time, instead of starting from nothing. A piece that fails is asked
+// for again after a pause, for as long as the page is open. The pieces are
+// what is kept: they are never put together into one large file, which a
+// phone has to hold in memory and write a second time.
+const PIECE = 8 << 20;
+// (A piece is kept under an address of its own: Cache Storage does not tell addresses apart by their #part.)
+const pieceKey = (url, n) => url + (url.includes('?') ? '&' : '?') + 'piece=' + n;
+const pause = (ms) => new Promise((go) => setTimeout(go, ms));
+const pieceSize = (total, n) => Math.max(0, Math.min(PIECE, total - n * PIECE));
+async function keepPiece(url, n, bytes, total) {
+  const cache = await opened();
+  if (!cache) { memory.set(pieceKey(url, n), {bytes, total}); return; }
+  try { await cache.put(pieceKey(url, n), new Response(bytes, {headers: {'x-total': String(total)}})); }
+  catch (e) { memory.set(pieceKey(url, n), {bytes, total}); }   // a full device: kept for as long as the page is open
+}
+// The size of the whole file if piece n is kept, else 0 (the piece is not read).
+async function kept(url, n) {
+  const key = pieceKey(url, n);
+  if (memory.has(key)) return memory.get(key).total;
+  const cache = await opened();
+  const hit = cache ? await cache.match(key) : null;
+  return hit ? +hit.headers.get('x-total') || 0 : 0;
+}
+async function readPiece(url, n) {
+  const key = pieceKey(url, n);
+  if (memory.has(key)) return memory.get(key).bytes;
+  const cache = await opened();
+  const hit = cache ? await cache.match(key) : null;
+  return hit ? hit.arrayBuffer() : null;
+}
+async function dropPiece(url, n) {
+  memory.delete(pieceKey(url, n));
+  const cache = await opened();
+  if (cache) { try { await cache.delete(pieceKey(url, n)); } catch (e) { /* gone */ } }
+}
+// Fetches piece n and keeps it; the size of the whole file.
+async function fetchPiece(url, n) {
+  for (let tries = 0; ; tries++) {
+    try {
+      const net = await fetch(url, {headers: {Range: 'bytes=' + n * PIECE + '-' + ((n + 1) * PIECE - 1)}});
+      if (net.status !== 206 && net.status !== 200) throw new Error('HTTP ' + net.status);
+      const bytes = await net.arrayBuffer();
+      if (net.status === 200) {          // the whole file at once: kept in pieces like the rest
+        const total = bytes.byteLength;
+        for (let k = 0; k * PIECE < total; k++) await keepPiece(url, k, bytes.slice(k * PIECE, (k + 1) * PIECE), total);
+        return total;
       }
+      const total = +((net.headers.get('content-range') || '').split('/')[1]) || 0;
+      if (!total || bytes.byteLength !== pieceSize(total, n)) throw new Error('short piece');
+      await keepPiece(url, n, bytes, total);
+      return total;
+    } catch (e) {
+      await pause(Math.min(30000, 1000 * 2 ** Math.min(tries, 5)));
     }
-  };
-  const first = await piece(0);
-  if (first.whole) {
-    const r = new Response(first.bytes, {headers: {'content-type': 'application/octet-stream'}});
-    try { await cache.put(url, r.clone()); } catch (e) { /* still use it */ }
-    return r;
   }
-  const total = first.total, count = Math.max(1, Math.ceil(total / PIECE)), parts = [first.bytes];
-  let got = first.bytes.byteLength;
-  progress(got, total);
-  for (let n = 1; n < count; n++) {
-    const next = await piece(n);
-    parts.push(next.bytes); got += next.bytes.byteLength;
-    progress(got, total);
+}
+// The size of a file of weights, its first piece fetched if it is not kept yet.
+async function sizeOf(url) { return (await kept(url, 0)) || fetchPiece(url, 0); }
+// Every piece of a file of weights kept; progress(bytes there).
+async function keepAll(url, progress) {
+  const total = await sizeOf(url);
+  let got = 0;
+  for (let n = 0; n * PIECE < total; n++) {
+    if (!(await kept(url, n))) await fetchPiece(url, n);
+    got += pieceSize(total, n);
+    if (progress) progress(got);
   }
-  const whole = new Blob(parts, {type: 'application/octet-stream'});
-  if (whole.size !== total) {             // a piece came back short: ask for all of it again next time
-    for (let n = 0; n < count; n++) { try { await cache.delete(pieceKey(url, n)); } catch (e) { /* gone */ } }
-    throw new Error('incomplete ' + url);
+  return total;
+}
+// float16 -> float32, for every one of the 65536 values.
+let HALF = null;
+function halfTable() {
+  const t = new Float32Array(65536);
+  for (let h = 0; h < 65536; h++) {
+    const sign = h & 0x8000 ? -1 : 1, e = (h >> 10) & 31, m = h & 1023;
+    t[h] = e === 0 ? sign * m * 2 ** -24 : e === 31 ? (m ? NaN : sign * Infinity) : sign * (1 + m / 1024) * 2 ** (e - 15);
   }
-  const r = new Response(whole, {headers: {'content-type': 'application/octet-stream'}});
-  try {
-    await cache.put(url, r.clone());
-    for (let n = 0; n < count; n++) await cache.delete(pieceKey(url, n));
-  } catch (e) { /* the pieces stay; they are found next time */ }
-  return r;
+  return t;
+}
+// The weights of a network as float32, read piece by piece into one array.
+async function widened(url) {
+  const total = await keepAll(url);
+  const out = new Float32Array(total >> 1);
+  HALF = HALF || halfTable();
+  for (let n = 0; n * PIECE < total; n++) {
+    const bytes = await readPiece(url, n);
+    if (!bytes || bytes.byteLength !== pieceSize(total, n)) {   // lost or broken: fetched again next time
+      await dropPiece(url, n);
+      throw new Error('piece ' + n + ' of ' + url);
+    }
+    const half = new Uint16Array(bytes), at = (n * PIECE) >> 1;
+    for (let i = 0; i < half.length; i++) out[at + i] = HALF[half[i]];
+  }
+  return out;
 }
 
 // Everything the model needs, fetched (and kept); the page shows how far it is.
 async function fetchAll(id) {
-  const got = new Array(NETWORKS.length).fill(0), size = new Array(NETWORKS.length).fill(0);
+  await Promise.all(['tts.json', 'unicode_indexer.json', ...NETWORKS.map((n) => n + '.onnx')].map((f) => cachedFetch(home + f)));
+  const files = NETWORKS.map((n) => home + n + '.f16.data');
+  // The sizes first (the first piece of each), so the line of the page fills evenly.
+  const size = [];
+  for (const f of files) size.push(await sizeOf(f));
+  const all = size.reduce((a, b) => a + b, 0), got = size.map(() => 0);
   let shown = -1;
   const say = () => {
-    const all = size.reduce((a, b) => a + b, 0);
-    if (!all || id === undefined) return;
-    const p = Math.min(99, Math.round(100 * got.reduce((a, b) => a + b, 0) / all));
-    if (p !== shown) { shown = p; postMessage({type: 'progress', id, progress: p}); }
+    const p = Math.min(99, Math.floor(100 * got.reduce((a, b) => a + b, 0) / all));
+    if (p !== shown && id !== undefined) { shown = p; postMessage({type: 'progress', id, progress: p}); }
   };
-  await Promise.all([cachedFetch(home + 'tts.json'), cachedFetch(home + 'unicode_indexer.json')]);
   // One after the other: four parallel downloads of this size starve a phone.
-  for (let i = 0; i < NETWORKS.length; i++)
-    await cachedFetch(home + NETWORKS[i], (g, t) => { got[i] = g; size[i] = t; say(); });
+  for (let i = 0; i < files.length; i++) await keepAll(files[i], (g) => { got[i] = g; say(); });
 }
 
-async function sessions(provider) {
+async function sessions(provider, alive) {
   const made = [];
   try {
     for (const name of NETWORKS) {
       // A network is handed over and let go before the next is read: all four at once would not fit a phone.
-      const buf = await (await cachedFetch(home + name)).arrayBuffer();
-      made.push(await ort.InferenceSession.create(buf, {executionProviders: [provider], graphOptimizationLevel: 'all'}));
+      const graph = await (await cachedFetch(home + name + '.onnx')).arrayBuffer();
+      const weights = await widened(home + name + '.f16.data');
+      made.push(await ort.InferenceSession.create(graph, {executionProviders: [provider], graphOptimizationLevel: 'all',
+        externalData: [{path: name + '.data', data: new Uint8Array(weights.buffer)}]}));
+      alive();
     }
   } catch (e) {
     for (const s of made) { try { await s.release(); } catch (_) { /* gone */ } }
@@ -136,25 +196,35 @@ async function sessions(provider) {
 
 async function build(id) {
   await fetchAll(id);
+  // From here on nothing is fetched, but it takes a while on a phone: the page
+  // hears that the worker is alive after every step, or it would take it for stuck.
+  const alive = () => { if (id !== undefined) postMessage({type: 'progress', id, progress: 100}); };
+  alive();
   const cfg = await (await cachedFetch(home + 'tts.json')).json();
   const indexer = await (await cachedFetch(home + 'unicode_indexer.json')).json();
-  // In WASM, on several threads where the page is isolated. WebGPU is not
-  // tried: on a phone, making the networks for its GPU can take minutes or
-  // never end, and nobody can hear a model that is still getting ready.
-  const tries = ['wasm'];
+  // On the GPU where there is one (the page gives that a time limit), else in
+  // WASM, on several threads where the page is isolated.
+  const tries = gpuWanted ? ['webgpu', 'wasm'] : ['wasm'];
   let last = null;
   for (const provider of tries) {
     let made = null;
     try {
-      if (provider === 'wasm' && last) ort.env.wasm.numThreads = Math.min(ort.env.wasm.numThreads, 4);
-      made = await sessions(provider);
-      const e = {cfg, indexer, dp: made[0], enc: made[1], est: made[2], voc: made[3], provider};
+      if (provider === 'webgpu') {
+        if (!(await self.navigator.gpu.requestAdapter())) throw new Error('no GPU adapter');
+        if (id !== undefined) postMessage({type: 'progress', id, progress: 100, trying: 'webgpu'});
+      }
+      const t0 = Date.now();
+      made = await sessions(provider, alive);
+      const e = {cfg, indexer, dp: made[0], enc: made[1], est: made[2], voc: made[3], provider, makeMs: Date.now() - t0};
       // A provider that takes the networks but speaks nonsense (or nothing) is no provider: one word decides.
       const style = await loadStyle('F1.json');
+      const t1 = Date.now();
       const probe = await infer(e, 'Hallo, guten Tag.', 'de', style, STEPS[provider] || 5, 1.05);
+      e.probeMs = Date.now() - t1;
       let energy = 0, sound = true;
       for (let i = 0; i < probe.length; i++) { if (!Number.isFinite(probe[i])) { sound = false; break; } energy += probe[i] * probe[i]; }
       if (!sound || probe.length < 2000 || energy / probe.length < 1e-7) throw new Error('silent or broken output');
+      alive();
       // The first runs of a network are its slowest (the browser is still making its code fast).
       // They happen here, in the background, not when somebody taps "Vorlesen".
       await infer(e, 'Das ist ein etwas längerer Satz, damit alles warm ist.', 'de', style, 3, 1.05);
@@ -162,6 +232,7 @@ async function build(id) {
     } catch (err) {
       last = err;
       if (made) for (const s of made) { try { await s.release(); } catch (_) { /* gone */ } }
+      if (provider === 'webgpu' && id !== undefined) postMessage({type: 'nogpu', id});
       if (provider === 'wasm' && ort.env.wasm.numThreads > 1) {
         // Threads need an isolated page; one thread always works.
         ort.env.wasm.numThreads = 1;
@@ -414,7 +485,7 @@ async function handle({type, id, text, model, rate, lang, steps}) {
     if (type === 'warm') {
       const e = await getEngine(id);
       await loadStyle(model);
-      postMessage({type: 'ready', id, threads: ort.env.wasm.numThreads, provider: e.provider});
+      postMessage({type: 'ready', id, threads: ort.env.wasm.numThreads, provider: e.provider, makeMs: e.makeMs, probeMs: e.probeMs});
       return;
     }
     if (type === 'speak') {

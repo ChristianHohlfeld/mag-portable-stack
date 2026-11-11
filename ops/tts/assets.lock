@@ -1,4 +1,4 @@
 3d1c85995364bb643302fc6fd877a0c3ba5ae72401815e0f24828a53d9191e28  ort-wasm-simd-threaded.asyncify.mjs
 39f9f0894d478800487ed9f7dbe92618498db320cf55c8e3d89adff8dce658da  ort-wasm-simd-threaded.asyncify.wasm
 7d65dad7eb4564ad98db9924a259af2e2c68ebfbdbf254fa5d728f1c5736e07a  ort.webgpu.min.js
-de85a68e435d38ab5b7e8f062e3f78025244bf9b5680a2428df59f7dacdd4c5a  tts-worker.js
+3d6cd3fb457811162f122e7ff6ccff8ab7b056dcb5266468c85a171c443e2717  tts-worker.js

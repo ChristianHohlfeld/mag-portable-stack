@@ -63,7 +63,7 @@ STRIDES = {"walk": (26.0, 0.6, 40.0, 1.7, 0.012), "run": (36.0, 0.45, 62.0, 2.8,
 # What a caller may say a figure is, and what that tells the reading of its shape
 # (None: read it from the shape). A vehicle has no skeleton: it drives as a whole.
 KINDS = {"animal": "quadruped", "human": "biped", "object": "object", "bird": "bird", "insect": None, "spider": None,
-         "snake": None, "fish": None, "vehicle": "object"}
+         "snake": None, "fish": None, "vehicle": "vehicle"}
 # A model made from a photo stands as the photo shows it: the photographer is
 # at -X and looks along +X, so the left of the picture is +Y. `faces` says
 # where a figure looks in that picture.
@@ -301,6 +301,9 @@ class Rig:
             self.legs.append({"upper": b["name"], "lower": shin["name"], "fore": b["fore"], "left": b["left"], "length": b["length"],
                               "reach": Vector(shin["tail"]) - Vector(b["head"])})
         self.leg = max((leg["length"] for leg in self.legs), default=0.0)
+        # A vehicle's wheels: they turn about the line across its way as it rolls.
+        self.wheels = [{"name": b["name"], "radius": b.get("radius", 0.1)} for b in found["bones"] if b["role"] == "wheel"]
+        self.along = Vector((*found.get("along", (1.0, 0.0)), 0.0)).normalized()
         self.wings = []
         for i, b in enumerate(found["bones"]):
             if b["role"] == "wing":
@@ -443,8 +446,12 @@ class Rig:
             obj.pose.bones[name].rotation_mode = "QUATERNION"
             rest = self.rest[name]
             values, before = np.empty((last + 1, 4)), None
+            keeps = any(w["name"] == name for w in self.wheels)   # a wheel stays turned as far as it rolled
             for frame in range(last + 1):
                 turned = self.frames.get(frame, {}).get(name)
+                if turned is None and keeps and before is not None:
+                    values[frame] = values[frame - 1]
+                    continue
                 q = Quaternion() if turned is None else rest.conjugated() @ turned @ rest
                 if before is not None and before.dot(q) < 0:   # the same turn, written the near way
                     q.negate()
@@ -1265,6 +1272,8 @@ def play(actor, action, actors, fps, start):
         total = len(path)
         frames = max(int(round(number(action, "seconds", 0.0, 0.0, 20.0) * fps)), int(total * 1.25) + 2)
         yaw0, look0 = actor.yaw, math.atan2(front.y, front.x)
+        wheels = actor.rig.wheels if actor.rig else []
+        rolled, before = 0.0, actor.pos.copy()
         for i in range(1, frames + 1):
             u = ease(i / frames)                                # how far along the way, slow at both ends
             k = min(total - 1, int(u * (total - 1)))
@@ -1274,6 +1283,14 @@ def play(actor, action, actors, fps, start):
             ahead = ahead_of(heading)
             bob = 0.006 * actor.height * math.sin(2 * math.pi * 1.7 * i / fps)
             actor.key(first + i, z=bob, pitch=pitch * ahead.y, roll=-pitch * ahead.x)
+            if wheels:                                          # as far as it went along its own length, its wheels turn
+                gone = actor.pos - before
+                before = actor.pos.copy()
+                c, s_ = math.cos(-actor.yaw), math.sin(-actor.yaw)
+                rolled += Vector((gone.x * c - gone.y * s_, gone.x * s_ + gone.y * c, 0.0)).dot(actor.rig.along) / max(actor.scale, 1e-6)
+                spin_axis = Vector((0.0, 0.0, 1.0)).cross(actor.rig.along)
+                for wheel in wheels:
+                    actor.rig.turn(first + i, wheel["name"], spin_axis, rolled / max(wheel["radius"], 1e-4))
         end = first + frames
     elif kind == "roll_to":
         # A thing rolls like a ball: it turns over as far as it goes, about its middle.

@@ -64,7 +64,8 @@ what each figure is, gives animals and two-legged figures a skeleton and
 moves their limbs; a long body without legs (a snake, a fish) gets a chain
 of bones and slithers in a wave; a bird (two legs under a long body) walks,
 pecks and flies with beating wings; an insect or spider walks on all its legs
-in alternating sets; a vehicle (`kind: vehicle`) drives along a curve; only a
+in alternating sets; a vehicle (found by its wheels, or `kind: vehicle`) drives
+along a curve and its wheels turn as it rolls; only a
 thing moves as a whole. A part of a thing or vehicle (a lid, a door, a turret)
 is cut out at the seam on its side (`open`, `close`, `turn_part`), both cuts
 closed, and turns about a hinge on the seam's edge; PartField is not used (its

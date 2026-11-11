@@ -81,7 +81,10 @@
         if (m[0][0] === '.' && (token.includes('.') || ABBREV.test(token))) continue;
         if (at >= 8) { cut = at; break; }
       }
-      const most = first && out.length === 1 ? 70 : max;      // the second part is still short: it is made while the first few words play
+      // On a device that makes speech about as fast as it plays, the next parts are short as well, each
+      // about twice the one before: every part is made while the one before it plays.
+      const slow = !(piper.perStep > 0 && piper.perStep * 3 < 0.2);
+      const most = first && out.length === 1 ? (slow ? 36 : 70) : first && out.length === 2 && slow ? 72 : max;
       if (cut > most) {
         const word = rest.lastIndexOf(' ', most);
         cut = word >= Math.floor(most / 3) ? word + 1 : most;
@@ -230,7 +233,7 @@
     if (piper.loading.has(v.model)) return piper.loading.get(v.model);
     const began = performance.now();
     const p = ask({type: 'warm', model: v.model}, WARM_TIMEOUT_MS)
-      .then((m) => { piper.ready.add(v.model); if (m?.provider) report({ warm_ms: Math.round(performance.now() - began), provider: m.provider, threads: m.threads | 0, isolated: self.crossOriginIsolated ? 1 : 0 }); return true; })
+      .then((m) => { piper.ready.add(v.model); setTimeout(paint, 0); if (m?.provider) report({ warm_ms: Math.round(performance.now() - began), provider: m.provider, threads: m.threads | 0, isolated: self.crossOriginIsolated ? 1 : 0 }); return true; })
       .catch(() => { piper.failed.set(v.model, Date.now() + 20000); return false; })
       .finally(() => piper.loading.delete(v.model));
     piper.loading.set(v.model, p);
@@ -252,15 +255,24 @@
     piper.pending.clear();
   }
   // In how many steps a part is made. The model refines its sound in steps:
-  // five is its full quality, three is heard a little. A device that makes
-  // speech much faster than it plays always takes five. A slower one makes
-  // the first parts of a reading in fewer, so the sound starts at once and
-  // does not stop before the full ones are ready. How fast the device is, is
-  // measured on every part (work per second of speech and step) and kept.
-  function stepsFor(pb) {
-    const n = pb.asked++;
-    if (piper.perStep > 0 && piper.perStep * 5 < 0.4) return undefined;
-    return n < 2 ? 3 : n < 3 ? 4 : undefined;
+  // five is its full quality, four and three are heard a little. A part gets
+  // as many as there is time for: it must be made by the moment the reading
+  // gets to it, or the reading would stop there. So the first words of a
+  // reading are made in three (the sound starts at once), and what follows
+  // in five as soon as what is ready covers the time it takes to make. How
+  // fast the device is, is measured on every part (work per second of
+  // speech and step) and kept.
+  function stepsFor(pb, text) {
+    const length = Math.max(0.4, text.length / 14);                     // seconds of speech, about
+    const per = piper.perStep > 0 ? piper.perStep : 0.2;                // not measured yet: taken as slow
+    const now = performance.now() / 1000;
+    let reached = Math.max(now, pb.until || now), made = now;           // when the reading gets here, when the parts before it are made
+    for (const part of pb.waiting) { reached += part.length; made += part.work; }
+    let steps = 5;
+    while (steps > 3 && made + per * steps * length + 0.1 > reached) steps--;
+    const part = { length, work: per * steps * length + 0.1 };
+    pb.waiting.push(part);
+    return [steps, part];
   }
   function measured(res) {
     if (!(res.synthMs > 0) || !(res.audio.length > res.rate / 2) || !(res.steps > 0)) return;
@@ -268,10 +280,27 @@
     piper.perStep = piper.perStep > 0 ? 0.6 * piper.perStep + 0.4 * now : now;
     try { localStorage.setItem('mag-tts-speed', String(piper.perStep)); } catch {}
   }
+  // The first words of the newest answer are made before anybody asks for
+  // them (see prepare): a tap on "Vorlesen" then speaks at once.
+  const prepared = new Map();           // what is asked -> its sound, in the making or made
+  const asked = (model, rate, lang, text) => model + '|' + rate + '|' + lang + '|' + text;
   async function synthPart(pb, text, rate) {
-    const msg = {type: 'speak', text, model: pb.voice.model, rate, lang: (pb.lang || 'de').slice(0, 2), steps: stepsFor(pb)};
-    try { const res = await ask(msg, SPEAK_TIMEOUT_MS); measured(res); return res; }
+    const lang = (pb.lang || 'de').slice(0, 2);
+    const early = prepared.get(asked(pb.voice.model, rate, lang, text));
+    if (early) {
+      try { const res = await early; if (res?.audio?.length) { pb.until = Math.max(performance.now() / 1000, pb.until || 0) + res.audio.length / res.rate; return { ...res, audio: res.audio.slice() }; } }
+      catch { /* made anew below */ }
+    }
+    const [steps, part] = stepsFor(pb, text);
+    const msg = {type: 'speak', text, model: pb.voice.model, rate, lang, steps};
+    const done = (res) => {
+      pb.waiting = pb.waiting.filter((p) => p !== part);
+      if (res) { measured(res); pb.until = Math.max(performance.now() / 1000, pb.until || 0) + res.audio.length / res.rate; }
+      return res;
+    };
+    try { return done(await ask(msg, SPEAK_TIMEOUT_MS)); }
     catch (e) {
+      done(null);
       if (current !== pb) throw e;
       // Nothing speakable (only symbols/emoji): skip this part, keep reading.
       if (/Phonemisierung/.test(e.message)) return {audio: new Float32Array(0), rate: 16000};
@@ -417,6 +446,7 @@
     try { synth.speak(utterance); } catch (_) { finish(pb); }
   }
 
+  let told = false;      // that the model is still loading was said once
   function toggle(key, text, who) {
     if (!systemOk && !piperPossible) return false;
     const wasPlaying = !!current && current.key === key;
@@ -427,9 +457,13 @@
     const lang = textLocale(normalized);
     const prof = profile(who);
     const de = piperPossible && !!S.features?.tts && prof.voiceId !== 'system';   // the model reads German and English alike
-    const pb = { key, who, speaker: prof.key, lang, de, parts: [], at: 0, queued: 0, text, live: false, wake: null, spoken: false, voice: prof.voice, t0: performance.now(), asked: 0 };
+    const pb = { key, who, speaker: prof.key, lang, de, parts: [], at: 0, queued: 0, text, live: false, wake: null, spoken: false, voice: prof.voice, t0: performance.now(), waiting: [], until: 0 };
     feed(pb, text, false);
     if (!pb.parts.length) return false;
+    // What was being made ready for another message must not hold this one up.
+    if (de && pb.voice && !prepared.has(asked(pb.voice.model, prof.rate, lang.slice(0, 2), pb.parts[0])) && prepared.size && piper.worker) {
+      try { piper.worker.postMessage({type: 'cancel', before: piper.seq}); } catch (_) {}
+    }
     current = pb;
     setButtons();
     if (!de) {
@@ -442,8 +476,17 @@
     try { piper.ctx = piper.ctx && piper.ctx.state !== 'closed' ? piper.ctx : new AudioCtx(); resume(piper.ctx); }
     catch { return fallback(pb); }
     const start = () => piperPlay(pb).catch(() => fallback(pb));
-    if (piper.config && pb.voice && piper.ready.has(pb.voice.model)) { start(); return true; }
-    // Not loaded yet: the button shows that, instead of a robot voice standing in.
+    // The model is one for all voices (a voice is a small file the worker fetches by itself): loaded once, every voice speaks.
+    if (piper.config && pb.voice && piper.ready.size) { start(); return true; }
+    // Not loaded yet. A tap on "Vorlesen" is answered with sound, not with a
+    // wait: the device's own voice reads this one, and the model goes on
+    // loading behind it for the next. Only a device without a voice of its
+    // own waits for the model.
+    if (systemOk) {
+      loadConfig().then((cfg) => { if (cfg) { const v = profile(who).voice || pb.voice; if (v) warm(v); } }).catch(() => {});
+      if (!told) { told = true; MAG.toast('Die neue Stimme lädt noch im Hintergrund. Solange liest die Stimme des Geräts.'); }
+      return fallback(pb);
+    }
     pb.loading = true;
     setButtons();
     loadConfig().then((cfg) => {
@@ -485,7 +528,38 @@
     if (button && !button.dataset.speak) button.dataset.speak = m.id;
     toggle(m.id, m.text, m.role === 'user' ? 'chris' : m.from);
   };
-  MAG.speaking = { paint: setButtons, stop };
+  // Makes the first words of a message ready, in full quality, while nothing
+  // else is read: for the newest answer in the chat, so the tap that most
+  // often comes finds its sound already there. Only with the model loaded
+  // and the page in view; a few messages are kept.
+  function prepare(m) {
+    if (!m || current || !piperPossible || !S.features?.tts || document.visibilityState !== 'visible' || !piper.config) return;
+    const who = m.role === 'user' ? 'chris' : m.from, prof = profile(who);
+    if (!prof.voice || !piper.ready.size) return;
+    const text = normalize(m.text || '');
+    if (!text) return;
+    const lang = textLocale(text).slice(0, 2);
+    for (const part of piperParts(text, 120, true).slice(0, 2)) {
+      const key = asked(prof.voice.model, prof.rate, lang, part);
+      if (prepared.has(key)) continue;
+      const sound = ask({type: 'speak', text: part, model: prof.voice.model, rate: prof.rate, lang, steps: 5}, SPEAK_TIMEOUT_MS);
+      sound.then(measured, () => prepared.delete(key));
+      prepared.set(key, sound);
+      while (prepared.size > 8) prepared.delete(prepared.keys().next().value);
+    }
+  }
+  let preparing = 0;
+  function paint() {
+    setButtons();
+    // The newest message that can be read, once it is whole.
+    clearTimeout(preparing);
+    preparing = setTimeout(() => {
+      const buttons = document.querySelectorAll('.act[data-speak]');
+      const m = buttons.length ? S.messages.get(buttons[buttons.length - 1].dataset.speak) : null;
+      if (m && m.state === 'done' && m.role !== 'user') prepare(m);
+    }, 400);
+  }
+  MAG.speaking = { paint, stop };
   // Voices and tempo for the settings: [{ who, name, voice, rate }], the choices, and a setter.
   MAG.voices = {
     possible: () => piperPossible && !!S.features?.tts,

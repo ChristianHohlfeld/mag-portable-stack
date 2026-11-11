@@ -89,6 +89,18 @@ def main():
     assert top.shape == (20, 2) and np.allclose(weights.sum(axis=1), 1.0)   # at most four bones, here there are two
     assert weights[0, 0] > 0.98 and top[0, 0] == 0 and top[19, 0] == 1
     assert 0.3 < weights[9, 0] < 0.7 and top[9, 0] == 0 and top[9, 1] == 1 and weights[9, 1] > 0.3
+    # A long body without legs (a snake, a fish) is a chain of bones along its length.
+    rng = np.random.default_rng(5)
+    t = rng.uniform(0, 1, 20000)
+    a = rng.uniform(0, 2 * np.pi, 20000)
+    r = 0.04 * (1.0 - 0.6 * t)
+    snake = np.stack([1.2 * t, 0.1 * np.sin(5 * t) + r * np.cos(a), 0.04 + r * np.sin(a)], axis=1)
+    found = rig.analyse(snake)
+    assert found["kind"] == "serpent" and len(found["bones"]) == rig.SEGMENTS, found["notes"]
+    assert [b["parent"] for b in found["bones"]] == list(range(-1, rig.SEGMENTS - 1)) and set(found["labels"].tolist()) == set(range(rig.SEGMENTS))
+    # A ball is no snake.
+    sphere = rng.normal(size=(5000, 3)); sphere /= np.linalg.norm(sphere, axis=1, keepdims=True)
+    assert rig.analyse(sphere * 0.3 + [0, 0, 0.3])["kind"] == "object"
     print("rig ok")
 
 

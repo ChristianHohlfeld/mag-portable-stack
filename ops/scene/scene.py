@@ -1618,8 +1618,13 @@ def animate(actor, last):
             actor.rig.frames[frame] = {name: Quaternion(turn) for name, turn in turns.items()}
             if moves:
                 actor.rig.moves[frame] = moves[0]
-        if actor.face is not None:                   # what its face does is laid over the head
-            for frame, (turns, moves) in enumerate(actor.face.frames(last)):
+        try:
+            moving = actor.face.frames(last) if actor.face is not None else []
+        except Exception as exc:
+            print("MAG-NOTE %s: face does not move (%s)" % (actor.name, type(exc).__name__), flush=True)
+            moving = []
+        if moving:                                   # what its face does is laid over the head
+            for frame, (turns, moves) in enumerate(moving):
                 actor.rig.frames.setdefault(frame, {}).update(turns)
                 if moves:
                     actor.rig.moves.setdefault(frame, {}).update(moves)
@@ -1907,9 +1912,12 @@ def build(spec_path, out):
         actor = Actor(name, obj, studied[(entry["file"], index)], weigh=not copies)
         made = studied[(entry["file"], index)].get("face")
         if made and actor.rig is not None:
-            if not copies:
-                face.weigh(actor.part, *made)
-            actor.face = face.Face(made[1], made[0], made[2], FPS, seed=i)
+            try:                                      # a face that cannot be made never costs the scene
+                if not copies:
+                    face.weigh(actor.part, *made)
+                actor.face = face.Face(made[1], made[0], made[2], FPS, seed=i)
+            except Exception as exc:
+                print("MAG-NOTE %s: face not weighed (%s)" % (name, type(exc).__name__), flush=True)
         if entry.get("kind") == "vehicle":           # it drives: no legs, never a skeleton
             actor.kind = "vehicle"
         actor.scale = number(entry, "size", 1.0, 0.2, 5.0)

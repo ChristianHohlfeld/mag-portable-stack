@@ -1180,6 +1180,29 @@ def linear(obj):
                 point.interpolation = "LINEAR"
 
 
+def slither(actor, last):
+    """A body without legs moves as a snake or a fish does: a wave runs along
+    its chain of bones from head to tail, as fast as it goes forward, and a
+    little even when it rests. The wave's sideways swing grows towards the
+    tail."""
+    names = actor.rig.names
+    frames = sorted(actor.keys)
+    fps = bpy.context.scene.render.fps or FPS
+    phase, at, before = 0.0, 0, actor.keys[frames[0]]
+    up = Vector((0.0, 0.0, 1.0))
+    for frame in range(0, last + 1):
+        while at < len(frames) and frames[at] <= frame:
+            at += 1
+        state = actor.keys[frames[max(0, at - 1)]]
+        moved = math.hypot(state[0] - before[0], state[1] - before[1]) if frame else 0.0
+        before = state
+        length = max(actor.length, 1e-6)
+        phase += 2 * math.pi * (moved / (0.6 * length) + 0.25 / fps)       # one wave per 0.6 of its length gone, and a slow sway at rest
+        for i, name in enumerate(names):
+            swing = math.radians(9.0 + 14.0 * i / max(1, len(names) - 1))
+            actor.rig.turn(frame, name, up, swing * math.sin(phase - 1.1 * i) * (1.0 if moved > 1e-5 else 0.35))
+
+
 def animate(actor, last):
     """Writes the samples of an actor as keyframes, one per frame."""
     obj = actor.obj
@@ -1198,6 +1221,8 @@ def animate(actor, last):
                 for frame in range(hit["start"], min(last, hit["start"] + hit["air"] + hit["lie"] + hit["rise"]) + 1):
                     actor.keys.setdefault(frame, actor.keys[max(k for k in known if k <= frame)] if any(k <= frame for k in known) else actor.keys[known[0]])
         thrown(actor, last)
+    if actor.kind == "serpent" and actor.rig:
+        slither(actor, last)
     frames = sorted(actor.keys)
     state = actor.keys[frames[0]]
     at = 0

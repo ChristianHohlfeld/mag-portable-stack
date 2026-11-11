@@ -20,7 +20,8 @@ import numpy as np
 CELLS = 44            # cubes along the longest side of the figure
 NEAR = [(dx, dy, dz) for dx in (-1, 0, 1) for dy in (-1, 0, 1) for dz in (-1, 0, 1) if (dx, dy, dz) != (0, 0, 0)]
 FLAT = [(dx, dy) for dx in (-1, 0, 1) for dy in (-1, 0, 1) if (dx, dy) != (0, 0)]
-KINDS = {"quadruped": "Vierbeiner", "biped": "Zweibeiner", "object": "Gegenstand"}
+KINDS = {"quadruped": "Vierbeiner", "biped": "Zweibeiner", "serpent": "Schlange oder Fisch", "object": "Gegenstand"}
+SEGMENTS = 8           # the bones of a body that is long and has no legs
 
 
 class Solid:
@@ -211,6 +212,31 @@ def joins_at(slices, step):
     return None
 
 
+def serpent(co, height):
+    """A body that is long, low and has no legs (a snake, a fish, a worm, an
+    eel): a chain of bones along its length, each owning the slice of the
+    body around it, so it can bend in a wave. None when the body is not so."""
+    flat = co[:, :2] - co[:, :2].mean(axis=0)
+    _, _, vt = np.linalg.svd(flat[:: max(1, len(flat) // 20000)], full_matrices=False)
+    along = vt[0]
+    t = flat @ along
+    across = flat @ vt[1]
+    length, width = float(np.ptp(t)), float(np.ptp(across))
+    if length < 2.2 * height or length < 1.8 * width:
+        return None
+    edges = np.linspace(t.min(), t.max(), SEGMENTS + 1)
+    middle = []
+    for i in range(SEGMENTS + 1):
+        near = np.abs(t - edges[i]) <= 0.6 * (edges[1] - edges[0])
+        pick = co[near] if near.any() else co
+        middle.append(np.array([*(co[:, :2].mean(axis=0) + along * edges[i]), float(np.median(pick[:, 2]))]))
+    bones = [{"name": "Glied %d" % (i + 1), "head": middle[i].tolist(), "tail": middle[i + 1].tolist(), "parent": i - 1, "role": "spine"}
+             for i in range(SEGMENTS)]
+    labels = np.clip(((t - t.min()) / max(length, 1e-9) * SEGMENTS).astype(np.int64), 0, SEGMENTS - 1)
+    return {"kind": "serpent", "bones": bones, "labels": labels, "front": None, "sure": False,
+            "notes": ["Schlange oder Fisch: lang, ohne Beine, %d Glieder" % SEGMENTS]}
+
+
 def segment_distance(points, a, b):
     """How far points are from the stretch a-b."""
     ab = b - a
@@ -220,7 +246,7 @@ def segment_distance(points, a, b):
 
 def analyse(co, edges=None, axis=None, kind=None):
     """Reads a figure. Returns
-        kind    "quadruped", "biped" or "object"
+        kind    "quadruped", "biped", "serpent" (long, no legs) or "object"
         bones   [{name, head, tail, parent, role}], parents first (empty for an object)
         labels  for every vertex the index of the bone it belongs to
         front   the direction it looks in on the ground, or None
@@ -246,6 +272,10 @@ def analyse(co, edges=None, axis=None, kind=None):
     elif 3 <= len(legs) <= 4 and (not upright or kind == "quadruped"):
         found = "quadruped"
     else:
+        if len(legs) <= 1 and kind != "object":                # (one "leg" under a long body is its lowest bend)
+            long = serpent(co, height)
+            if long is not None:
+                return long
         plain["notes"].append("kein Skelett: %s" % ("keine Beine zu erkennen" if not legs else "%d Beine" % len(legs)))
         return plain
 

@@ -198,6 +198,10 @@ def again(job_id, remesh=False):
         if pending.qsize() >= MAX_PENDING:
             return "Idol-Warteschlange voll"
         abort.discard(job_id)
+        # A whole shape that could not be made before is tried once more: without
+        # it the model is only the splat's relief.
+        if not (ROOT / job_id / "shape.ply").is_file() and read_exit(ROOT / job_id / "shape.exit") not in (None, 0):
+            (ROOT / job_id / "shape.exit").unlink(missing_ok=True)
         item.pop("error", None)
         item.pop("started", None)                         # its time counts from now
         item.update(state="queued", stage="Wird fortgesetzt", pid=None, stage_key=None, step=0, progress=0.0,

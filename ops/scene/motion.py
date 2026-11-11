@@ -571,12 +571,14 @@ class Performer:
         self.pace = np.zeros(3)                           # forwards, to its left (leg lengths), turning: a second
         self.feet = [Foot(), Foot()]
         self.drop = 0.0
+        self.ground = 0.0                                 # how high what it stands on is (on a box, a wall it climbed)
         self.air = body.air                               # how much higher than recorded it leaves the ground
         self.gives = {}                                   # how much an arm that holds something has given its hold up for a gesture
         self.sways, self.looks, self.heads = [], [], []   # what is laid over the motion: swaying, looking at something, nodding
         self.reaches = []                                 # a hand that is to be somewhere: (side, start, end, target)
         self.flails = []                                  # thrown through the air: (start, air, lie, rise) frames, see flail()
         self.grips = []                                   # how a hand is held: (side, start, end, shape), see grip()
+        self.climbs = []                                  # off its feet, climbing or vaulting: (start, end, tuck), see climb()
         self.watch = False                                # keep the joints of every frame, to look at them
         self.frames = []                                  # per frame: where the model's origin is, where it looks, its pose
 
@@ -633,10 +635,10 @@ class Performer:
         self.heading += turned
         # where hips, knees and feet are, as the motion has them
         heading = qz(self.heading)
-        root = np.array([self.xy[0], self.xy[1], (pose.height + (self.air - 1.0) * pose.lift) * body.leg - self.drop])
+        root = np.array([self.xy[0], self.xy[1], (pose.height + (self.air - 1.0) * pose.lift) * body.leg - self.drop + self.ground])
         limbs = self._arms(pose.limbs.copy())
         f = len(self.frames)
-        thrown = self._thrown(f, pose, limbs)
+        thrown = self._thrown(f, pose, limbs) or self._climbing(f, limbs)
         for side, start, end, target in self.reaches:
             if not start <= f <= end + int(0.4 * self.fps):
                 continue
@@ -665,7 +667,7 @@ class Performer:
             if held[k][0]:
                 far = 0.995 * (body.length[upper] + body.length[shin])
                 flat = float(np.hypot(*(held[k][1][:2] - hip[k][:2])))
-                need = max(need, hip[k][2] + self.drop - held[k][1][2] - math.sqrt(max(0.0, far * far - flat * flat)))
+                need = max(need, hip[k][2] + self.drop - held[k][1][2] - self.ground - math.sqrt(max(0.0, far * far - flat * flat)))
         need = min(need, self.DEEP * body.leg)
         lower = (need - self.drop) * (0.6 if need > self.drop else 0.15)
         self.drop += lower
@@ -679,11 +681,11 @@ class Performer:
             bears = int(pose.contact[k]) == 1 and int(pose.contact[1 - k]) != 2
             self.feet[k].bears = min(1.0, max(0.0, self.feet[k].bears + (dt if bears else -dt) / 0.09))
             if held[k][0]:
-                goal = held[k][1]
+                goal = held[k][1] + np.array([0.0, 0.0, self.ground])    # on what it stands on
             else:
                 goal = foot[k] + held[k][1]
-                goal[2] *= 1.0 - fade(self.feet[k].bears)
-            goal[2] = max(goal[2], 0.0)
+                goal[2] = self.ground + (goal[2] - self.ground) * (1.0 - fade(self.feet[k].bears))
+            goal[2] = max(goal[2], self.ground)
             if np.linalg.norm(goal - foot[k]) > 1e-9:
                 a, b = reach(hip[k], goal, knee[k], body.length[upper], body.length[shin], fore)
                 limbs[2 * k], limbs[2 * k + 1] = qrot(back, a), qrot(back, b)
@@ -738,6 +740,72 @@ class Performer:
             return i < air + lie + 0.75 * rise
         return False
 
+    def _climbing(self, f, limbs):
+        """The legs of a figure that climbs or vaults are drawn up (the arms
+        do what reach_to has them do). True while its feet are off the ground."""
+        for start, end, tuck in self.climbs:
+            if start <= f < end:
+                w = tuck * swell(f - start, end - start, 0.15 * self.fps)
+                for k in range(4):
+                    limbs[k] = qrot(qpart(qarc(limbs[k], unit(np.asarray(self.TUCK[k], dtype=float))), w), limbs[k])
+                return True
+        return False
+
+    def _off(self, frames, way, ground, tuck=1.0):
+        """Frames off its feet: `way(u)` where it is over the ground and
+        `ground(u)` how high it is carried (u: 0..1 through the frames)."""
+        start = len(self.frames)
+        self.climbs.append((start, start + frames, tuck))
+        for i in range(1, frames + 1):
+            u = i / frames
+            self.xy = np.asarray(way(u), dtype=float)
+            self.ground = float(ground(u))
+            self.tick()
+        return len(self.frames)
+
+    def climb(self, edge, top, height):
+        """Climbs onto something `height` high in front of it: the hands take
+        the edge (at `edge`, x, y), and up it goes: on something low with one
+        pull and a knee drawn up, up a high wall hand over hand. It stands on
+        top at `top`. Returns the frame it stands at."""
+        body, fps = self.body, self.fps
+        base, at = self.ground, self.xy.copy()
+        edge, top = np.asarray(edge, dtype=float), np.asarray(top, dtype=float)
+        across = unit(np.array([-(edge - at)[1], (edge - at)[0], 0.0])) if np.linalg.norm(edge - at) > 1e-6 else np.array([0.0, 1.0, 0.0])
+        tall = body.height
+        start = len(self.frames)
+
+        def hand(side, high):
+            off = (0.13 if side == "l" else -0.13) * tall
+            return lambda f, high=high: (edge[0] + across[0] * off, edge[1] + across[1] * off, high(f))
+        rungs = max(0, int(math.ceil((height - 0.9 * tall) / (0.4 * tall))))
+        reach = int(0.4 * fps)
+        for side in ("l", "r"):                           # it takes the edge, or reaches as high as it can
+            self.reach_to(side, hand(side, lambda f: base + min(height, self.ground - base + 1.15 * tall)), start, start + reach + int((0.7 * rungs + 0.9) * fps))
+        self.wait(start + reach)
+        for n in range(rungs):                            # up a wall, hand over hand, the body close to it
+            low, high = base + 0.4 * tall * n, base + 0.4 * tall * (n + 1)
+            self._off(int(0.7 * fps), lambda u: at + (edge - at) * 0.55, lambda u, low=low, high=high: low + (high - low) * fade(u), 0.8)
+        lift = self.ground
+        # ... the pull: the body comes up over the edge, a knee goes onto it, and it stands up on top
+        self._off(int(0.9 * fps), lambda u: at + (edge - at) * (0.55 * min(1.0, rungs)) * (1 - fade(u)) + (top - at) * fade(u) if rungs else at + (top - at) * fade(u),
+                  lambda u: lift + (base + height - lift) * fade(min(1.0, 1.3 * u)))
+        self.ground = base + height
+        return self.wait(len(self.frames) + int(0.35 * fps))
+
+    def drop_to(self, goal, ground=0.0, over=0.0):
+        """Jumps down (or over something, `over` high) to `goal` (x, y) and
+        lands on `ground`. Returns the frame it stands at."""
+        body = self.body
+        a, b = self.xy.copy(), np.asarray(goal, dtype=float)
+        high = max(self.ground, ground, over) + 0.25 * body.height
+        start_h, end_h = self.ground, ground
+        frames = max(8, int(round(self.fps * 1.2 * math.sqrt(2.0 * max(0.1, high - min(start_h, end_h)) / 9.81) * 1.6)))
+        self._off(frames, lambda u: a + (b - a) * u,
+                  lambda u: start_h + (end_h - start_h) * u + 4.0 * (high - max(start_h, end_h)) * u * (1 - u), 0.9)
+        self.ground = ground
+        return self.wait(len(self.frames) + int(0.3 * self.fps))
+
     def _arms(self, limbs):
         """The arms as this figure does them (see Body.free)."""
         body, neutral = self.body, self.lib.neutral
@@ -775,7 +843,7 @@ class Performer:
             return True, np.array([xy[0], xy[1], 0.12 * leg * math.sin(math.pi * u)])
         if foot.at is not None:
             if not down:                                  # it lifts off: it lets go of the ground, gently
-                foot.slip, foot.slip_t, foot.at = np.array([foot.at[0] - free[0], foot.at[1] - free[1], -free[2]]), 0.0, None
+                foot.slip, foot.slip_t, foot.at = np.array([foot.at[0] - free[0], foot.at[1] - free[1], self.ground - free[2]]), 0.0, None
             else:
                 other = self.feet[1 - k]
                 off = float(np.hypot(*(foot.at - free[:2])))
@@ -791,7 +859,7 @@ class Performer:
                 if float(np.hypot(*flat)) > most:
                     foot.at = hip[:2] + flat * (most / float(np.hypot(*flat)))
                 return True, np.array([foot.at[0], foot.at[1], 0.0])
-        if down and free[2] <= self.TOUCH * leg:
+        if down and free[2] - self.ground <= self.TOUCH * leg:
             foot.at, foot.looked = free[:2].copy(), self.heading   # it comes down: from now on it stands here
             return True, np.array([free[0], free[1], 0.0])
         if foot.slip_t < 1.0:

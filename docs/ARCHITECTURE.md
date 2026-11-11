@@ -276,6 +276,15 @@ order at every start. The room mirrors the job into its message (phase k of
 n, the sampler's step and its own estimate) and picks jobs up again after its
 own restart.
 
+The mesh stage (`mesh.py`, CPU) has a time limit, and no step in it may take
+all of it. The UVs for the texture come from xatlas, which is done within a
+minute on most models; on a rough, porous surface it does not come to an end
+(a job once failed in it at the stage's limit, after half an hour of work).
+So xatlas runs in a process of its own for a limited time (`unwrap.py`), and
+when that is over the surface is unwrapped the plain way: faces that look the
+same way and hang together are laid flat as one chart, the charts side by
+side. That takes a second, and every job gets its texture.
+
 ## Reading aloud (`ops/tts`)
 
 Runs in the browser, not on the server. `web/app/speak.js` drives a Web Worker

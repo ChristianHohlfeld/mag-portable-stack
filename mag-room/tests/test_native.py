@@ -996,6 +996,102 @@ class RoomContract(unittest.TestCase):
         self.assertEqual((step["state"], step.get("approval"), len(mcp.calls)), ("error", None, 1))
         self.assertIn("nicht freigegeben", step["output"])
 
+    def test_a_model_that_loses_its_way_is_ended_and_leaves_no_mess(self):
+        r = self.room
+        state = pathlib.Path(r.env["MAG_ROOM_STATE"])
+        markup = ("<|channel>", "<channel|>", "<tool_call|>", "<|tool_call>", "<|channel|>", "<|message|>", "<|start|>", "<|end|>", "\\n")
+
+        def answer(bot="lena"):
+            return [m for m in r.messages() if m["from"] == bot][-1]
+
+        def clean(message):
+            text = json.dumps(message, ensure_ascii=False)
+            return not any(tag in text for tag in markup)
+
+        def ask(bot, *script, text="bitte"):
+            replies = iter(script)
+            getattr(r, bot).reply = lambda body: next(replies)
+            r.say("@%s %s" % (bot.capitalize(), text))
+            r.idle(40)
+            return answer(bot)
+        # 1. A tool call runs away (Lena, 2026-11-11): the model closes a string
+        #    with a plain quote, the server keeps reading it as that string,
+        #    and the model writes its markup and its answer again and again
+        #    until its tokens run out. The room ends the generation at the
+        #    first tag, calls what was meant, and the log stays readable.
+        circle = "\\n<|channel>thought\\n<channel|>Die neue Szene ist bereit! Ich habe eine längere Abfolge eingebaut. 🦊✨|"
+        away = '{"fact":"Chris mag längere Szenen\\"}<tool_call|><tool_call|>' + circle * 80
+        r.lena.delay = 0.004
+        m = ask("lena", {"content": "", "raw_tool_calls": [{"name": "remember", "arguments": away}]}, "Notiert.")
+        step = [p for p in m["parts"] if p["k"] == "step"][0]
+        self.assertEqual((m["state"], m["text"], m.get("error"), step["tool"], step["state"], step["input"]),
+                         ("done", "Notiert.", None, "remember", "ok", {"fact": "Chris mag längere Szenen"}))
+        self.assertEqual([e["text"] for e in r.api("GET", "/api/bot/lena/memory")[1]["memory"]], ["Chris mag längere Szenen"])
+        self.assertTrue(clean(m), m)
+        sent = r.lena.chats()[-1]["messages"]
+        self.assertEqual([c["function"]["arguments"] for x in sent for c in x.get("tool_calls") or []], ['{"fact":"Chris mag längere Szenen"}'])
+        self.assertEqual((r.lena.hung_up, r.lena.refused), (1, 0))
+        # 2. Arguments beyond repair: the call is not made, the bot is told why, and the log holds {} for it.
+        m = ask("lena", {"content": "", "raw_tool_calls": [{"name": "remember", "arguments": '{"fact":"abgeschnitten'}]}, "Dann eben nicht.")
+        step = [p for p in m["parts"] if p["k"] == "step"][0]
+        self.assertEqual((m["state"], m["text"], step["state"]), ("done", "Dann eben nicht.", "error"))
+        self.assertIn("kein gültiges JSON-Objekt", step["output"])
+        self.assertEqual([c["function"]["arguments"] for x in r.lena.chats()[-1]["messages"] for c in x.get("tool_calls") or []][-1], "{}")
+        self.assertEqual((r.lena.refused, len(r.api("GET", "/api/bot/lena/memory")[1]["memory"])), (0, 1))
+        # 3. Raw channel markup in an answer is read, never shown: Gemma's thoughts, gpt-oss's channels.
+        r.lena.delay = 0
+        m = ask("lena", "<|channel>thought\nKurz überlegen.<channel|>Die Antwort ist 4.<channel|>")
+        self.assertEqual((m["text"], m["reasoning"], clean(m)), ("Die Antwort ist 4.", "Kurz überlegen.", True))
+        m = ask("noah", "<|channel|>analysis<|message|>Hm.<|end|><|start|>assistant<|channel|>final<|message|>Passt so.")
+        self.assertEqual((m["text"], m["reasoning"], clean(m)), ("Passt so.", "Hm.", True))
+        m = ask("lena", "Gern.")   # and the bot's own log holds what was shown
+        self.assertEqual([x["content"] for x in r.lena.chats()[-1]["messages"] if x["role"] == "assistant" and x["content"]][-1], "Die Antwort ist 4.")
+        # 4. An answer in circles is ended and kept once.
+        passage = "Die neue Szene ist bereit! Ich habe eine längere Abfolge an Bewegungen eingebaut, damit es lebhafter zugeht. 🦊✨\n\n"
+        r.lena.delay = 0.002
+        hung = r.lena.hung_up
+        m = ask("lena", "Hier ist sie:\n\n" + passage * 60)
+        self.assertEqual((m["state"], m["text"], m.get("error")), ("done", ("Hier ist sie:\n\n" + passage).strip(), None))
+        self.assertEqual(r.lena.hung_up, hung + 1)
+        self.assertLess(r.lena.pieces, len(passage) * 12 // 6)                # ended after a few rounds, not sixty
+        self.assertEqual(r.lena.chats()[-1]["messages"][-1]["role"], "user")   # nothing was asked again
+        r.lena.delay = 0
+        # Code may repeat itself: a page with sixty equal cells is not cut.
+        page = "```html\n<div class=\"grid\">\n" + "  <div class=\"cell\"></div>\n" * 60 + "</div>\n```"
+        m = ask("lena", "Bitte:\n\n" + page)
+        self.assertEqual((m["state"], m["text"].count('<div class="cell">')), ("done", 60))
+        # 5. Thoughts in circles: once more from the start; twice, and the bot says so in one line.
+        thought = "Ich muss prüfen, ob der Fuchs schon läuft, und dann noch einmal prüfen, ob er wirklich läuft. " * 40
+        m = ask("lena", {"reasoning": thought, "content": ""}, {"reasoning": "Kurz.", "content": "Jetzt klar."})
+        self.assertEqual((m["state"], m["text"], m["reasoning"]), ("done", "Jetzt klar.", "Kurz."))
+        m = ask("lena", {"reasoning": thought, "content": ""}, {"reasoning": thought, "content": ""})
+        self.assertEqual((m["state"], m["text"], m.get("reasoning", "")), ("error", "", ""))
+        self.assertIn("beim Nachdenken im Kreis gedreht", m["error"])
+        # 6. A server error that quotes what the model wrote is one short line in the chat.
+        m = ask("noah", {"http_error": "Failed to parse input at pos 0: <|channel>thought\\n<channel|>" + "Die neue Szene ist bereit!\\n" * 200})
+        self.assertEqual((m["state"], m["error"], clean(m)), ("error", "Failed to parse input at pos 0:", True))
+        # 7. A log and a message from before all this: the log is repaired when
+        #    it is read (the server would refuse every request), the message's
+        #    error is cut down.
+        r.stop()
+        wire = state / "wire" / "lena.json"
+        log = json.loads(wire.read_text())
+        log["messages"] += [{"role": "assistant", "content": "", "tool_calls": [{"id": "call_old", "type": "function",
+                                                                                 "function": {"name": "remember", "arguments": away}}]},
+                            {"role": "tool", "tool_call_id": "call_old", "name": "remember", "content": "Fehler: Die Argumente sind kein gültiges JSON-Objekt."}]
+        wire.write_text(json.dumps(log))
+        old = state / "messages" / (m["id"] + ".json")
+        stored = json.loads(old.read_text())
+        stored["error"] = ("Failed to parse tool call arguments as JSON: [json.exception.parse_error.101] parse error at line 1, column 12345: "
+                           "syntax error while parsing value - invalid string: missing closing quote; last read: '" + away + "'")
+        old.write_text(json.dumps(stored))
+        r.start()
+        self.assertEqual(answer("noah")["error"], "Ein Werkzeugaufruf im Verlauf war nicht lesbar; der Modell-Server hat die Anfrage abgelehnt.")
+        m = ask("lena", "Ja, ich bin da.", text="noch da?")
+        self.assertEqual((m["state"], m["text"], r.lena.refused), ("done", "Ja, ich bin da.", 0))
+        self.assertEqual([c["function"]["arguments"] for x in r.lena.chats()[-1]["messages"] for c in x.get("tool_calls") or []][-1],
+                         '{"fact":"Chris mag längere Szenen"}')
+
     def test_the_phone_tools_exist_only_with_its_control_service(self):
         # No control daemon set up (as on the host until Chris starts it): the bots have no phone tools.
         self.room.say("Hi beide")

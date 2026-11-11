@@ -187,6 +187,38 @@ public:
     bus.publish("delta", ev);
   }
 
+  // How long the text is that a bot's answer is being written into right now
+  // (its last part, when that is text), and how long its thoughts are.
+  size_t text_len(const std::string &id) {
+    std::lock_guard<std::mutex> lk(mu_);
+    const auto it = messages_.find(id);
+    if (it == messages_.end()) return 0;
+    const Val *parts = it->second.find("parts");
+    return parts && parts->isArr() && !parts->asArr().empty() && jstr(parts->asArr().back(), "k") == "text" ? jstr(parts->asArr().back(), "text").size() : 0;
+  }
+  size_t reasoning_len(const std::string &id) {
+    std::lock_guard<std::mutex> lk(mu_);
+    const auto it = messages_.find(id);
+    return it == messages_.end() ? 0 : jstr(it->second, "reasoning").size();
+  }
+  // Takes back what was streamed into that text beyond `keep` bytes and puts
+  // `text` there instead: a model that ran in circles keeps its first round.
+  void retake_text(const std::string &id, size_t keep, const std::string &text) {
+    update(id, [&](Val &m) {
+      Val &parts = m["parts"];
+      if (!parts.isArr()) parts = Val::array();
+      if (parts.arr->empty() || jstr(parts.arr->back(), "k") != "text") {
+        if (text.empty()) return;
+        Val part = Val::object();
+        part["k"] = "text";
+        part["text"] = "";
+        parts.push(part);
+      }
+      Val &last = parts.arr->back();
+      last["text"] = mj::utf8_cut(jstr(last, "text"), keep) + text;
+    }, false);
+  }
+
   void append_reasoning(const std::string &id, const std::string &delta) {
     if (delta.empty()) return;
     std::lock_guard<std::mutex> lk(mu_);

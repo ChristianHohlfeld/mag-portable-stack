@@ -16,7 +16,7 @@ jobs:
         run: |
           source ops/build-targets.sh
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
-          cmake --build build -j 8 --target "${MAG_BUILD_TARGETS[@]}" mag-stt test-group-dispatcher s23ctl
+          cmake --build build -j 8 --target "${MAG_BUILD_TARGETS[@]}" mag-stt test-group-dispatcher test-model-text s23ctl
       - name: Shell syntax
         run: bash ops/ci/check.sh
       - name: Model supervisor
@@ -26,4 +26,5 @@ jobs:
       - name: Room contract (fake models, fake guest)
         run: |
           ./build/test-group-dispatcher
+          ./build/test-model-text
           python3 mag-room/tests/test_native.py

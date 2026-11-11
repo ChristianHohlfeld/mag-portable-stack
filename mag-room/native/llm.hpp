@@ -25,13 +25,18 @@ struct Backend {
 };
 
 struct ToolCall {
-  std::string id, name, arguments; // arguments: JSON text as produced by the model
+  std::string id, name, arguments; // arguments: a JSON object as text ("{}" when the model's were beyond repair)
+  bool valid = true;               // false: what the model wrote as arguments was no JSON object
 };
 
 struct ChatResult {
   std::string content, reasoning, finish, error;
   std::vector<ToolCall> calls;
   bool cancelled = false;
+  // Why the room ended the generation itself: "repeat" (the answer ran in
+  // circles and is cut to its first round), "thinking" (the thoughts did) or
+  // "call" (a tool call ran away into raw model markup).
+  std::string guard;
   long prompt_tokens = 0, completion_tokens = 0, cached_tokens = 0;
   double prompt_ms = 0, gen_ms = 0, tps = 0;
   int64_t first_token_ms = 0; // wall time until the first generated token
@@ -43,6 +48,211 @@ struct ChatCallbacks {
   std::function<void(int index, const std::string &name)> on_tool_start;
   std::function<void(long processed, long total, long cached)> on_progress;
 };
+
+// ---- what a model wrote, made fit for the chat ------------------------------
+// Control tokens of the two model families (Gemma 4, gpt-oss). The server
+// reads them and hands on text, thoughts and tool calls. They reach the room
+// raw when its parser gives up, when a tool call runs away (see `chat`), or
+// inside an error that quotes what the model wrote. None of them is ever text
+// for the chat.
+inline const std::vector<std::string> &control_tags() {
+  static const std::vector<std::string> tags = {
+      "<|channel>", "<channel|>", "<|tool_call>", "<tool_call|>", "<|tool_response>", "<tool_response|>", "<|turn>", "<turn|>",
+      "<|\"|>", "<start_of_turn>", "<end_of_turn>", "<bos>", "<eos>",
+      "<|start|>", "<|end|>", "<|message|>", "<|channel|>", "<|constrain|>", "<|return|>", "<|call|>"};
+  return tags;
+}
+// Where the first control tag stands in a text, at or after `from`.
+inline size_t find_tag(const std::string &text, size_t from = 0) {
+  for (size_t at = text.find('<', from); at != std::string::npos; at = text.find('<', at + 1))
+    for (auto &tag : control_tags())
+      if (text.compare(at, tag.size(), tag) == 0) return at;
+  return std::string::npos;
+}
+
+// What went wrong, for the chat: one short line. A server's error can quote
+// everything a model wrote, markup and all, with its line ends spelled out.
+inline std::string short_error(std::string text) {
+  if (text.find("Failed to parse tool call arguments") != std::string::npos)
+    return "Ein Werkzeugaufruf im Verlauf war nicht lesbar; der Modell-Server hat die Anfrage abgelehnt.";
+  const size_t tag = find_tag(text);
+  if (tag != std::string::npos) text.erase(tag);
+  replace_all(text, "\\n", " ");
+  for (char &c : text)
+    if (c == '\n' || c == '\r' || c == '\t') c = ' ';
+  while (text.find("  ") != std::string::npos) replace_all(text, "  ", " ");
+  return clip(trim(text), 240, "…");
+}
+
+// Takes a model's content as it streams and tells text from thinking. Raw
+// channel markup is read for what it means: Gemma's <|channel>thought …
+// <channel|> and gpt-oss's <|channel|>analysis<|message|> … <|end|> are
+// thoughts, a raw tool call and a turn the model made up for somebody else
+// are dropped, every other tag just disappears. A tag that is still arriving
+// is held back until it is whole. Inside code (a fenced block, an inline
+// span) nothing is markup: a bot may well explain a prompt format.
+class Clean {
+public:
+  void feed(const std::string &delta, std::string &text, std::string &thought) {
+    pend_ += delta;
+    size_t i = 0;
+    while (i < pend_.size()) {
+      const size_t lt = pend_.find('<', i);
+      if (mode_ == HEAD && kind_ != 'h') {
+        // Gemma: the name of a channel or the role of a turn, up to the end of its line.
+        const size_t nl = pend_.find('\n', i), end = std::min(nl, lt);
+        head_ += pend_.substr(i, end == std::string::npos ? std::string::npos : end - i);
+        if (end == std::string::npos && head_.size() < 40) { i = pend_.size(); break; }
+        open(false);
+        i = end == std::string::npos ? pend_.size() : end + (end == nl ? 1 : 0);
+        continue;
+      }
+      put(pend_.substr(i, lt == std::string::npos ? std::string::npos : lt - i), text, thought);
+      if (lt == std::string::npos) { i = pend_.size(); break; }
+      std::string tag;
+      bool partial = false;
+      if (mode_ != TEXT || !code())
+        for (auto &t : control_tags()) {
+          if (pend_.compare(lt, t.size(), t) == 0) { tag = t; break; }
+          if (pend_.size() - lt < t.size() && t.compare(0, pend_.size() - lt, pend_, lt, std::string::npos) == 0) partial = true;
+        }
+      if (tag.empty()) {
+        if (partial) { pend_.erase(0, lt); return; } // the rest of the tag is still to come
+        put("<", text, thought);
+        i = lt + 1;
+        continue;
+      }
+      i = lt + tag.size();
+      take(tag, text, thought);
+    }
+    pend_.clear();
+  }
+  // The stream is over. The beginning of a tag that never arrived is no text.
+  void flush(std::string &text, std::string &thought) {
+    const std::string rest = pend_;
+    pend_.clear();
+    if (mode_ != HEAD && rest.size() < 2) put(rest, text, thought);
+  }
+
+private:
+  enum Mode { TEXT, THOUGHT, DROP, HEAD } mode_ = TEXT;
+  char kind_ = 0; // of a head: 'c' Gemma channel, 't' turn role, 'h' gpt-oss message header
+  std::string pend_, head_;
+  bool fence_ = false, inline_ = false; // the text is inside a code block / an inline code span
+  size_t ticks_ = 0;                    // backticks in a row, so far
+
+  // Is the text inside code right now? Backticks that just arrived count already.
+  bool code() const {
+    const bool fence = ticks_ >= 3 ? !fence_ : fence_;
+    return fence || (ticks_ > 0 && ticks_ < 3 ? !inline_ : inline_);
+  }
+
+  void put(const std::string &piece, std::string &text, std::string &thought) {
+    if (mode_ == HEAD) head_ += piece; // gpt-oss: channel and recipient of the message that follows
+    else if (mode_ == THOUGHT) thought += piece;
+    else if (mode_ == TEXT) {
+      text += piece;
+      for (const char c : piece) {
+        if (c == '`') { ++ticks_; continue; }
+        if (ticks_ >= 3) fence_ = !fence_;
+        else if (ticks_ > 0 && !fence_) inline_ = !inline_;
+        ticks_ = 0;
+        if (c == '\n') inline_ = false;
+      }
+    }
+  }
+  // The head is complete: what follows it?
+  void open(bool message) {
+    const std::string head = trim(head_);
+    head_.clear();
+    if (kind_ == 'c') mode_ = THOUGHT;                                  // "thought"; no other channel is known
+    else if (kind_ == 't') mode_ = starts_with(head, "model") || starts_with(head, "assistant") ? TEXT : DROP;
+    else if (!message) mode_ = TEXT;
+    else if (head.find("to=") != std::string::npos) mode_ = DROP;      // a raw tool call
+    else mode_ = head.find("analysis") != std::string::npos ? THOUGHT : TEXT;
+  }
+  void take(const std::string &tag, std::string &text, std::string &thought) {
+    if (mode_ == HEAD) { // gpt-oss, inside a header
+      if (tag == "<|message|>") return open(true);
+      if (tag == "<|channel|>" || tag == "<|constrain|>") { head_ += " "; return; }
+      open(false);
+    }
+    if (tag == "<|channel>") { mode_ = HEAD; kind_ = 'c'; }
+    else if (tag == "<|turn>" || tag == "<start_of_turn>") { mode_ = HEAD; kind_ = 't'; }
+    else if (tag == "<|start|>" || tag == "<|channel|>") { mode_ = HEAD; kind_ = 'h'; }
+    else if (tag == "<|tool_call>" || tag == "<|tool_response>") mode_ = DROP;
+    else if (tag == "<|\"|>") put("\"", text, thought);
+    else if (tag != "<|constrain|>" && tag != "<bos>" && tag != "<eos>") mode_ = TEXT; // a closing tag ends what it closed
+  }
+};
+
+// Where a text starts to run in circles, or npos. A model that lost its way
+// writes the same passage again and again until its tokens run out. Prose
+// does not say a long passage three times in a row, or a sentence four
+// times; code and the arguments of a tool call may repeat themselves (a grid
+// of equal cells, a list of equal actions), so they must be far over the top
+// before they count (`strict`). The text is to be cut at the returned
+// length: what came before the circles, and one round.
+inline size_t circles(const std::string &s, bool strict) {
+  const size_t n = s.size(), probe = 32, npos = std::string::npos;
+  if (n < 180) return npos;
+  // Never in the middle of a character.
+  auto whole = [&](size_t keep) {
+    while (keep < n && ((unsigned char)s[keep] & 0xC0) == 0x80) ++keep;
+    return keep;
+  };
+  // The distance to where the end of the text stood before is the length of
+  // a round; the circle began where the text first repeats at that distance.
+  const size_t before = s.rfind(s.substr(n - probe), n - probe - 1);
+  if (before != npos) {
+    const size_t p = n - probe - before;
+    size_t start = n - p;
+    while (start > 0 && s[start - 1] == s[start - 1 + p]) --start;
+    const size_t run = n - start;
+    const bool loop = strict ? run >= 8 * p && run >= 6000 : run >= 3 * p && (p >= 150 || run >= 2000 || (p >= 60 && run >= 4 * p));
+    if (loop) return whole(start + p);
+  }
+  if (strict || n < 480) return npos;
+  // The same long passage for the fourth time, whatever stood between: circles with a little variation.
+  const std::string passage = s.substr(n - 120);
+  size_t first = npos, seen = 0;
+  for (size_t at = s.find(passage); at != npos; at = s.find(passage, at + passage.size())) {
+    if (first == npos) first = at;
+    ++seen;
+  }
+  return seen >= 4 ? whole(first + passage.size()) : npos;
+}
+// Inside a code block that is still open, the text is code: equal lines are normal there.
+inline bool in_code(const std::string &s) {
+  size_t fences = 0;
+  for (size_t at = s.find("```"); at != std::string::npos; at = s.find("```", at + 3)) ++fences;
+  return fences % 2 == 1;
+}
+
+// The arguments of a tool call as a JSON object. A call that ran away
+// carries, behind what was meant, the model's raw markup and whatever it
+// wrote after it: that is cut off, and a string the model closed with a plain
+// quote where its own quote token belonged (the server then escapes the
+// quote and reads on) is closed. What is no JSON object after that is "{}",
+// and the call is marked: such arguments must never enter a prompt log, the
+// server refuses every later request that contains them.
+inline void mend(ToolCall &call) {
+  std::string text = call.arguments;
+  const size_t tag = find_tag(text);
+  if (tag != std::string::npos) text.erase(tag);
+  text = trim(text);
+  if (text.empty()) text = "{}";
+  if (jparse(text).isObj()) { call.arguments = text; return; }
+  // …\"} : the escaped quote was the end of the string, and only closers follow it.
+  const size_t quote = text.rfind("\\\"");
+  if (quote != std::string::npos && text.find_first_not_of("}] \n\t", quote + 2) == std::string::npos) {
+    std::string closed = text;
+    closed.erase(quote, 1);
+    if (jparse(closed).isObj()) { call.arguments = closed; return; }
+  }
+  call.arguments = "{}";
+  call.valid = false;
+}
 
 inline std::string error_text(const http::ClientResult &r) {
   if (!r.error.empty()) return r.error;
@@ -73,6 +283,37 @@ inline ChatResult chat(const Backend &be, Val body, const Cancel *cancel, const 
   std::string buffer, http_body;
   std::map<int, ToolCall> calls;
   bool done = false;
+  Clean clean, clean_thoughts;
+  size_t checked_content = 0, checked_reasoning = 0;
+  // The room ends a generation that lost its way instead of waiting for its
+  // tokens to run out: the server stops when the connection closes.
+  auto halt = [&](const char *why) { if (out.guard.empty()) out.guard = why; };
+  auto take = [&](const std::string &text, const std::string &thought) {
+    if (!thought.empty()) {
+      out.reasoning += thought;
+      if (cb.on_reasoning) cb.on_reasoning(thought);
+      if (out.reasoning.size() >= checked_reasoning + 48) {
+        checked_reasoning = out.reasoning.size();
+        const size_t keep = circles(out.reasoning, false);
+        if (keep != std::string::npos) {
+          out.reasoning.resize(keep);
+          halt("thinking");
+        }
+      }
+    }
+    if (!text.empty()) {
+      out.content += text;
+      if (cb.on_content) cb.on_content(text);
+      if (out.content.size() >= checked_content + 48) {
+        checked_content = out.content.size();
+        const size_t keep = circles(out.content, in_code(out.content));
+        if (keep != std::string::npos) {
+          out.content.resize(keep);
+          halt("repeat");
+        }
+      }
+    }
+  };
   auto handle = [&](const std::string &data) {
     if (data == "[DONE]") { done = true; return; }
     Val ev;
@@ -108,15 +349,17 @@ inline ChatResult chat(const Backend &be, Val body, const Cancel *cancel, const 
       const std::string r = jstr(*delta, key);
       if (r.empty()) continue;
       first();
-      out.reasoning += r;
-      if (cb.on_reasoning) cb.on_reasoning(r);
+      std::string text, thought; // thoughts stay thoughts, whatever markup they carry
+      clean_thoughts.feed(r, text, thought);
+      take("", text + thought);
       break;
     }
     const std::string c = jstr(*delta, "content");
     if (!c.empty()) {
       first();
-      out.content += c;
-      if (cb.on_content) cb.on_content(c);
+      std::string text, thought;
+      clean.feed(c, text, thought);
+      take(text, thought);
     }
     if (const Val *tcs = delta->find("tool_calls"); tcs && tcs->isArr()) {
       first();
@@ -129,7 +372,15 @@ inline ChatResult chat(const Backend &be, Val body, const Cancel *cancel, const 
         if (const Val *fn = tc.find("function"); fn && fn->isObj()) {
           const std::string name = jstr(*fn, "name");
           if (!name.empty()) call.name = name;
-          call.arguments += jstr(*fn, "arguments");
+          const std::string more = jstr(*fn, "arguments");
+          const size_t had = call.arguments.size();
+          call.arguments += more;
+          // Raw markup inside the arguments: the model closed a string its
+          // own way, the server's grammar still holds it inside that string,
+          // and it would now write on (its answer, again and again) until
+          // its tokens run out. What it meant stands before the first tag.
+          if (!more.empty() && (find_tag(call.arguments, had > 24 ? had - 24 : 0) != std::string::npos || circles(call.arguments, true) != std::string::npos))
+            halt("call");
         }
         if (fresh && !call.name.empty() && cb.on_tool_start) cb.on_tool_start(index, call.name);
       }
@@ -158,11 +409,17 @@ inline ChatResult chat(const Backend &be, Val body, const Cancel *cancel, const 
       if (!line.empty() && line.back() == '\r') line.pop_back();
       if (starts_with(line, "data:")) handle(trim(line.substr(5)));
     }
-    return !done && out.error.empty();
+    return !done && out.error.empty() && out.guard.empty();
   };
   const http::ClientResult res = http::fetch(be.url("/v1/chat/completions"), opt);
   out.cancelled = res.cancelled;
-  if (!out.cancelled && out.error.empty()) {
+  if (out.guard.empty()) {
+    std::string text, thought, more;
+    clean_thoughts.flush(more, more);
+    clean.flush(text, thought);
+    take(text, more + thought);
+  }
+  if (!out.cancelled && out.error.empty() && out.guard.empty()) {
     if (!res.error.empty()) out.error = "Modell nicht erreichbar: " + res.error;
     else if (res.status != 200) {
       http::ClientResult shaped = res;
@@ -173,6 +430,7 @@ inline ChatResult chat(const Backend &be, Val body, const Cancel *cancel, const 
   for (auto &kv : calls) {
     if (kv.second.name.empty()) continue;
     if (kv.second.id.empty()) kv.second.id = "call_" + random_hex(6);
+    mend(kv.second);
     out.calls.push_back(kv.second);
   }
   return out;

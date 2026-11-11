@@ -39,6 +39,9 @@ if script == "runner.py":
     (out / "input.ply").write_bytes(b"ply")
 else:
     folder = pathlib.Path(args[1])
+    if (folder.parent.parent / "mesh-fails").exists():
+        print("MAG-ERROR Das Netz ließ sich nicht bauen.", flush=True)
+        sys.exit(3)
     time.sleep(delay * 8)
     print("MAG-STEP texture", flush=True)
     time.sleep(delay * 8)
@@ -154,6 +157,29 @@ def main():
         s = wait(c, lambda s: s["state"] == "done", "done after a lost mesh stage")
         assert (root / c / "idol.log").read_bytes().count(b" 1/50 ") == 1, "sampling must not run again"
         assert s["phase"] == 5 and s["resumed"] >= 1, s
+        # 3b. A job whose mesh stage failed is taken up again when it is asked for:
+        #     what sampling left is still there, and only meshing is done again.
+        (tmp / "mesh-fails").write_text("")
+        f = order()
+        s = wait(f, lambda s: s["state"] == "error", "a failed mesh stage")
+        assert s["error"] == "Das Netz ließ sich nicht bauen." and (root / f / "splat.ply").is_file(), s
+        assert call("POST", "/api/idol/jobs/%s/retry" % f) == (200, {"queued": True})     # (it fails the same way while the cause is there)
+        s = wait(f, lambda s: s["state"] == "error" and s["resumed"] == 1, "failed again")
+        (tmp / "mesh-fails").unlink()
+        assert call("POST", "/api/idol/jobs/%s/retry" % f) == (200, {"queued": True})
+        s = wait(f, lambda s: s["state"] == "done", "done after it was taken up again")
+        assert "error" not in s and s["resumed"] == 2 and (root / f / "mesh.glb").read_bytes() == b"glTF", s
+        assert (root / f / "idol.log").read_bytes().count(b" 1/50 ") == 1, "sampling must not run again"
+        assert call("POST", "/api/idol/jobs/%s/retry" % f) == (200, {"queued": True}) and status(f)["state"] == "done"   # nothing to take up
+        assert call("POST", "/api/idol/jobs/%s/retry" % ("0" * 32))[0] == 404
+        # A job that was cancelled while it sampled starts again, from the beginning.
+        g = order()
+        wait(g, lambda s: s["state"] == "running" and s.get("phase") == 2 and s["step"] >= 3, "sampling")
+        assert call("POST", "/api/idol/jobs/%s/cancel" % g) == (200, {"cancelled": True})
+        wait(g, lambda s: s["state"] == "cancelled", "cancelled")
+        assert call("POST", "/api/idol/jobs/%s/retry" % g) == (200, {"queued": True})
+        s = wait(g, lambda s: s["state"] == "done", "done after a cancelled job was taken up again")
+        assert "error" not in s and (root / g / "idol.log").read_bytes().count(b" 1/50 ") == 2
         # 4. A job an earlier worker wrote off as interrupted is taken up again.
         stop()
         d = "d" * 32

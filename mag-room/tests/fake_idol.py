@@ -11,6 +11,8 @@ class FakeIdol:
         self.jobs, self.deleted, self.purges, self.cancelled = {}, [], 0, []
         self.glb = glb
         self.hold = False  # True: jobs stay "running" until a test lets go
+        self.fails = ""    # not empty: jobs end as an error with these words
+        self.retried = []
         fake = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -35,12 +37,16 @@ class FakeIdol:
                 if len(parts) == 5:
                     return self.reply(200, None, raw=fake.glb)
                 job["polls"] += 1
-                if job["state"] != "cancelled":
-                    job["state"] = "queued" if job["polls"] < 2 else "running" if job["polls"] < 4 or fake.hold else "done"
+                if job["state"] not in ("cancelled", "error"):
+                    job["state"] = "queued" if job["polls"] < 2 else "running" if job["polls"] < 4 or fake.hold else "error" if fake.fails else "done"
                 step = min(50, job["polls"] * 15)
-                self.reply(200, {"id": parts[3], "state": job["state"], "stage": "3D-Form berechnen", "phase": 2, "phases": 5,
-                                 "step": step, "total_steps": 50, "progress": step / 50, "eta": 90, "started": 1000,
-                                 "finished": 1420, "quality": job["quality"]})
+                out = {"id": parts[3], "state": job["state"], "stage": "3D-Form berechnen", "phase": 2, "phases": 5,
+                       "step": step, "total_steps": 50, "progress": step / 50, "eta": 90, "started": 1000,
+                       "finished": 1420, "quality": job["quality"], "resumed": job.get("resumed", 0)}
+                if job["state"] == "error":
+                    out["error"] = fake.fails or job.get("error", "Fehler")
+                    job["error"] = out["error"]
+                self.reply(200, out)
 
             def do_POST(self):
                 if self.headers.get("X-Mag-Idol-UI") != "1":
@@ -56,6 +62,14 @@ class FakeIdol:
                     fake.cancelled.append(parts[3])
                     fake.jobs[parts[3]]["state"] = "cancelled"
                     return self.reply(200, {"cancelled": True})
+                if len(parts) == 5 and parts[4] == "retry":
+                    job = fake.jobs.get(parts[3])
+                    if not job:
+                        return self.reply(404, {"error": "Job nicht gefunden"})
+                    fake.retried.append(parts[3])
+                    if job["state"] in ("error", "cancelled"):
+                        job.update(state="queued", polls=0, resumed=job.get("resumed", 0) + 1)
+                    return self.reply(200, {"queued": True})
                 if not body:
                     return self.reply(413, {"error": "empty"})
                 job_id = "%032x" % (len(fake.jobs) + 1)

@@ -429,14 +429,14 @@ def is_picture(data):
 
 
 def select(data, query):
-    """The objects of a photo (select.py: SAM 2 on the CPU, never the MI50):
+    """The objects of a photo (objects.py: SAM 2 on the CPU, never the MI50):
     the one at a place, or all of them. Returns (status, answer); every mask
     is a PNG as large as the photo, white where the object is."""
     here = Path(__file__).resolve()
     tmp = Path(tempfile.mkdtemp(prefix="select-", dir=ROOT))
     try:
         (tmp / "photo").write_bytes(data)
-        command = [PYTHON, str(here.with_name("select.py")), str(tmp / "photo"), str(tmp / "out")]
+        command = [PYTHON, str(here.with_name("objects.py")), str(tmp / "photo"), str(tmp / "out")]
         if "x" in query and "y" in query:
             try:
                 x, y = float(query["x"][0]), float(query["y"][0])
@@ -449,7 +449,9 @@ def select(data, query):
             command += ["--all"]
         if CPUS:
             command = ["taskset", "-c", CPUS] + command
-        env = dict(os.environ, CUDA_VISIBLE_DEVICES="", HIP_VISIBLE_DEVICES="", HF_HUB_OFFLINE="1", TMPDIR=str(tmp))
+        # Few threads: the unit counts tasks, and a stage of a job may be running beside it.
+        env = dict(os.environ, CUDA_VISIBLE_DEVICES="", HIP_VISIBLE_DEVICES="", HF_HUB_OFFLINE="1", TMPDIR=str(tmp),
+                   OMP_NUM_THREADS="12", MKL_NUM_THREADS="12", OPENBLAS_NUM_THREADS="1", NUMEXPR_NUM_THREADS="1")
         with selecting:
             done = subprocess.run(command, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=600)
         listing = tmp / "out" / "masks.json"

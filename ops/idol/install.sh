@@ -38,7 +38,7 @@ import torch, tensordict, idol, scipy, skimage, trimesh, plyfile, xatlas, PIL, f
 assert torch.__version__.startswith("2.7.1+") and torch.version.hip
 assert tensordict.__version__.split("+")[0] == "0.9.1"
 PY
-# SAM 2 finds the object of a photo that is meant (select.py, on the CPU).
+# SAM 2 finds the object of a photo that is meant (objects.py, on the CPU).
 # Its weights are fetched once, pinned; without them the page says so in
 # words and photo to 3D works as before.
 if [[ ! -s $BASE/weights/sam2/model.safetensors ]]; then

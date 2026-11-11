@@ -37,7 +37,7 @@ if script == "runner.py":
         sys.stderr.write("\rSampling: %3d%%|#| %d/50 [00:01<00:%02d,  1.00s/it]" % (i * 2, i, 50 - i))
         sys.stderr.flush()
     (out / "input.ply").write_bytes(b"ply")
-elif script == "select.py":
+elif script == "objects.py":
     import json
     out = pathlib.Path(args[1])
     out.mkdir()

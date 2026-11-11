@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Which object of a photo is meant: SAM 2 on the CPU.
 
-    select.py IMAGE OUT --point X Y     the object at a place (0..1 across, 0..1 down)
-    select.py IMAGE OUT --all           every object of the photo, each by itself
+    objects.py IMAGE OUT --point X Y     the object at a place (0..1 across, 0..1 down)
+    objects.py IMAGE OUT --all           every object of the photo, each by itself
 
 Writes OUT/mask-<n>.png (white where the object is, as large as the photo)
 and OUT/masks.json: for every mask its file, its box (left, top, right,
@@ -78,7 +78,8 @@ def main():
     ap.add_argument("--point", nargs=2, type=float)
     ap.add_argument("--all", action="store_true")
     args = ap.parse_args()
-    torch.set_num_threads(max(1, len(os.sched_getaffinity(0))))
+    torch.set_num_threads(min(12, len(os.sched_getaffinity(0))))
+    torch.set_num_interop_threads(1)
     photo = ImageOps.exif_transpose(Image.open(args.image))      # as a browser shows it
     size = photo.size
     image = photo.convert("RGB")

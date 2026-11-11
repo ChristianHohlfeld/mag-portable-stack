@@ -309,9 +309,8 @@ device access) runs the pinned Blender (`blender.lock`, fetched once by
 - `build` (while the tool call waits, so a wrong description comes back in
   words): every figure gets its skeleton and weights (each vertex follows the
   bone of its cube, softened along the surface), the actions become
-  keyframes. A figure on two legs moves as people do (see below); an animal's
-  gaits swing its legs from an even stance, the body rides along, head and
-  tail do their part; a thing moves as a whole. It writes `scene.glb`
+  keyframes. A figure on two legs moves as people do and an animal as
+  animals do (see below); a thing moves as a whole. It writes `scene.glb`
   (skinned, animated), which the room posts at once and the page plays in
   its own viewer, and `scene.blend`.
 - `render` (only when the film is asked for; a stage on its own, like the
@@ -346,6 +345,35 @@ and breathing:
 - on its way it is steered towards where it goes, in whole strides; before a
   leap the run-up is taken as far as the leap itself runs;
 - who has nothing to do looks at who does something.
+
+For an animal on four legs there are no recorded motions that may be passed
+on, so `animal.py` works its motion out, as the body does it (numpy only as
+well). An `Animal` is in a scene what a `Performer` is:
+
+- the feet take turns in the order of the gait (walk and stalking one after
+  the other, trot in pairs across the body, gallop and bounds with all four
+  in the air); each stands where it was put down until its turn comes, and
+  swings to where the body will be over it;
+- the body rides on the legs that carry it: at a walk it vaults over them, in
+  the springing gaits it gives; hips and shoulders turn and sink with the
+  legs, the back flexes and stretches at a gallop, the head stays level, the
+  tail follows late;
+- a leg is carried at the length the model was made with, so standing it is
+  itself; its joint to the body slides under the skin towards the foot (a
+  shoulder blade does), which is what gives a short-legged model a stride;
+  hips and shoulders come down to a foot that would be out of reach, and no
+  leg whips round faster than a leg can;
+- sitting, lying, sleeping, crouching, a bow and begging are poses the body
+  eases into: an end that goes down has its feet put where they belong
+  first, one that comes up after; paws whose end is lifted out of reach hang;
+- a leap gathers, takes off, tucks, and lands with the legs giving; over
+  somebody it is as long and as high as it takes to clear them, and out of a
+  run it lands running. It also turns on the spot stepping round, lifts a
+  paw, wags, shakes itself, sniffs, eats, howls, digs and pounces.
+
+Limbs are turned to where they point from frame to frame (`motion.Swings`):
+the least turn is anybody's guess when a bone points nearly opposite to
+where it came from, and a limb must not spin about itself there.
 
 The film is lit like the chat shows the scene (`LIGHTS` in `scene.py`): a key
 light over the camera's left shoulder casts the one shadow, a fill and a rim

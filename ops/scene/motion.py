@@ -151,6 +151,32 @@ def qmatrix(m):
     return q / np.linalg.norm(q)
 
 
+class Swings:
+    """Limbs turned to where they point, frame after frame, without spinning
+    about themselves. The least turn that takes a bone to a direction is
+    anybody's guess when that is nearly the opposite of where it came from
+    (an arm straight up, a thigh folded up): there the bone keeps the turn
+    it had and only follows; everywhere else it settles on the least turn."""
+
+    def __init__(self):
+        self.before = {}
+
+    def turn(self, key, carried, direction):
+        """The turn that takes a bone from where its parent carries it (`carried`) to where it is to point."""
+        least = qarc(carried, direction)
+        was = self.before.get(key)
+        turn = least
+        if was is not None:
+            followed = qmul(qarc(was[1], direction), qmul(was[2], qarc(carried, was[0])))
+            more = qmul(followed, qinv(least))               # what it is turned about itself beyond the least turn
+            about = 2.0 * math.atan2(float(more[1:] @ direction), float(more[0]))
+            about = (about + math.pi) % (2 * math.pi) - math.pi
+            apart = math.acos(max(-1.0, min(1.0, float(carried @ direction))))
+            turn = qmul(qaxis(direction, about * (0.75 + 0.25 * fade((apart - 2.4) / 0.5))), least)
+        self.before[key] = (carried, direction, turn)
+        return turn
+
+
 def turn2(angle, v):
     """A point on the ground, turned about the vertical."""
     c, s = math.cos(angle), math.sin(angle)
@@ -351,16 +377,17 @@ class Body:
         reach = self.length[self.arms[wanted][0]] + self.length[self.arms[wanted][1]]
         return other if up[other] > up[wanted] + 0.25 * reach else wanted
 
-    def turns(self, hips, chest, head, limbs):
+    def turns(self, hips, chest, head, limbs, swings=None):
         """The bones' turns (as rig poses take them: each from its rest, seen
         from the model, a child's after its parent's) for a pose given as
-        turns of hips, chest and head and directions of the limbs."""
+        turns of hips, chest and head and directions of the limbs.
+        `swings`: what turns the limbs frame after frame (see Swings)."""
         out = {self.hips: hips, self.chest: qmul(qinv(hips), chest), self.skull: qmul(qinv(chest), head)}
         whole = {self.hips: hips, self.chest: chest, self.skull: head}
 
         def swing(i, parent, direction):
             carried = qrot(whole[parent], self.dir[i])
-            whole[i] = qmul(qarc(carried, direction), whole[parent])
+            whole[i] = qmul(swings.turn(i, carried, direction) if swings else qarc(carried, direction), whole[parent])
             out[i] = qmul(qinv(whole[parent]), whole[i])
 
         for k, (upper, shin) in enumerate(self.legs):
@@ -384,15 +411,15 @@ class Body:
         return at
 
 
-def reach(hip, foot, knee, upper, lower, fore):
+def reach(hip, foot, knee, upper, lower, fore, soft=0.9):
     """A leg solved for where its foot is to be: the directions of thigh and
     shin. The knee stays on the side it was on (`knee`: where it was); a
     leg that was straight bends the way the figure looks (`fore`)."""
     way = foot - hip
     d = float(np.linalg.norm(way))
     along = way / d if d > 1e-9 else np.array([0.0, 0.0, -1.0])
-    # Near its full length a leg does not snap straight: the last tenth it gives way softly.
-    whole, soft = upper + lower, 0.9 * (upper + lower)
+    # Near its full length a leg does not snap straight: the last part (from `soft` on) it gives way softly.
+    whole, soft = upper + lower, soft * (upper + lower)
     if d > soft:
         d = soft + (whole - soft) * (1.0 - math.exp(-(d - soft) / (whole - soft)))
     d = min(max(d, abs(upper - lower) + 1e-6), 0.999 * whole)
@@ -790,11 +817,11 @@ class Performer:
         model's origin is, how far the model is turned, how large it is and
         the turns of its bones."""
         self.wait(last + 1)
-        out = []
+        out, swings = [], Swings()
         for f, frame in enumerate(self.frames[:last + 1]):
             body = frame["body"]
             chest, head = self._head(f, frame)
-            turns, whole = body.turns(frame["hips"], chest, head, frame["limbs"])
+            turns, whole = body.turns(frame["hips"], chest, head, frame["limbs"], swings)
             out.append((frame["origin"], frame["heading"] - body.facing, body.scale, turns))
             if self.watch:
                 turn = qz(frame["heading"])

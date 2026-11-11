@@ -10,7 +10,8 @@ fox from one picture): `parts` tells them apart, and an actor of a scene is a
 model or one of its parts. What a figure is, is read from its shape (rig.py):
 an animal and somebody on two legs get a skeleton and move their limbs, only
 a thing moves as a whole. Somebody on two legs moves with recorded motions
-(motion.py). `build` writes the animated scene as scene.glb
+(motion.py), an animal's motion is worked out (animal.py). `build` writes
+the animated scene as scene.glb
 (what the chat plays) and scene.blend, lit for its film; `render` renders
 scene.blend to frames with Cycles when the film is asked for.
 Nothing here takes code from a request: a scene is data, the motion is ours.
@@ -26,6 +27,7 @@ import numpy as np
 from mathutils import Matrix, Quaternion, Vector
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import animal  # noqa: E402  (how an animal on four legs moves)
 import motion  # noqa: E402  (how a figure on two legs moves)
 import rig  # noqa: E402  (what a figure is, and its skeleton)
 
@@ -303,6 +305,7 @@ class Rig:
                 self.arms.append({"upper": b["name"], "lower": lower["name"], "left": b["left"], "reach": reach, "out": Vector((b["out"][0], b["out"][1], 0.0)),
                                   "hangs": -reach.z > 0.75 * reach.length})
         self.frames = {}                  # frame -> {bone: how it is turned from rest, seen from the figure}
+        self.moves = {}                   # frame -> {bone: how far it is moved from its place, seen from the figure as it stands}
 
     def turn(self, frame, name, axis, angle):
         self.apply(frame, name, Quaternion(axis, angle))
@@ -414,14 +417,20 @@ class Rig:
                     q.negate()
                 values[frame] = (q.w, q.x, q.y, q.z)
                 before = q
-            if np.allclose(values, values[0]) and np.allclose(values[0], (1, 0, 0, 0)):
-                continue                                       # a bone that never moves needs no keys
-            for index in range(4):
-                curve = curves.new('pose.bones["%s"].rotation_quaternion' % name, index=index, action_group=name)
-                curve.keyframe_points.add(last + 1)
-                curve.keyframe_points.foreach_set("co", np.stack([frames, values[:, index]], axis=1).ravel())
-                curve.keyframe_points.foreach_set("interpolation", np.ones(last + 1, dtype=np.int32))   # linear
-                curve.update()
+            moved = np.zeros((last + 1, 3))
+            for frame in range(last + 1):
+                by = self.moves.get(frame, {}).get(name)
+                if by is not None:
+                    moved[frame] = rest.conjugated() @ Vector(by)       # in the bone's own axes
+            for path, data in (("rotation_quaternion", values), ("location", moved)):
+                if np.allclose(data, data[0]) and np.allclose(data[0], (1, 0, 0, 0) if path == "rotation_quaternion" else (0, 0, 0)):
+                    continue                                   # a bone that never moves needs no keys
+                for index in range(data.shape[1]):
+                    curve = curves.new('pose.bones["%s"].%s' % (name, path), index=index, action_group=name)
+                    curve.keyframe_points.add(last + 1)
+                    curve.keyframe_points.foreach_set("co", np.stack([frames, data[:, index]], axis=1).ravel())
+                    curve.keyframe_points.foreach_set("interpolation", np.ones(last + 1, dtype=np.int32))   # linear
+                    curve.update()
 
 
 # ---- motion ------------------------------------------------------------------
@@ -523,21 +532,46 @@ class Actor:
 
 
 def stage(actor, library, fps, seed):
-    """Somebody on two legs moves as people do (motion.py): from now on the
-    figure is somewhere and does something in every frame."""
-    if library is None or actor.kind != "biped" or actor.rig is None or actor.performer is not None:
+    """Somebody on two legs moves as people do (motion.py), an animal as
+    animals do (animal.py): from now on the figure is somewhere and does
+    something in every frame. A build that fits neither moves the old way."""
+    if actor.rig is None or actor.performer is not None:
         return
     front = actor.axis if actor.axis is not None else Vector(FACES["camera"])
+
+    def made():
+        if actor.kind == "biped" and library is not None:
+            body = motion.Body(actor.found["bones"], (front.x, front.y), actor.scale, library.neutral)
+            at = motion.turn2(actor.yaw + body.facing, body.mid[:2])
+            return motion.Performer(body, library, fps, (actor.pos.x + at[0], actor.pos.y + at[1]), actor.yaw + body.facing, seed)
+        if actor.kind == "quadruped":
+            build = animal.Build(actor.found["bones"], (front.x, front.y), actor.scale)
+            at = motion.turn2(actor.yaw + build.facing, (build.rear[:2] + build.fore[:2]) / 2)
+            return animal.Animal(build, fps, (actor.pos.x + at[0], actor.pos.y + at[1]), actor.yaw + build.facing, seed)
+        return None
+
     try:
-        body = motion.Body(actor.found["bones"], (front.x, front.y), actor.scale, library.neutral)
-        heading = actor.yaw + body.facing
-        at = motion.turn2(heading, body.mid[:2])
-        trial = motion.Performer(body, library, fps, (actor.pos.x + at[0], actor.pos.y + at[1]), heading, seed)
-        trial.wait(2)
-        trial.finish(1)
-        actor.performer = motion.Performer(body, library, fps, (actor.pos.x + at[0], actor.pos.y + at[1]), heading, seed)
-    except Exception as exc:                          # a build the motions do not fit: it moves as before
-        print("MAG-NOTE %s: recorded motions do not fit (%s)" % (actor.name, type(exc).__name__), flush=True)
+        trial = made()
+        if trial is not None:
+            trial.wait(2)
+            trial.finish(1)
+            actor.performer = made()
+    except Exception as exc:
+        print("MAG-NOTE %s: moves the old way (%s)" % (actor.name, type(exc).__name__), flush=True)
+
+
+# What an animal does besides going somewhere and its poses (animal.POSES): each takes the seconds asked for (0: as long as it takes).
+BEAST = {
+    "wave": lambda p, s: p.greet(s or 2.4), "shake": lambda p, s: p.shakes(s or 1.4), "sniff": lambda p, s: p.sniffs(s or 2.2),
+    "eat": lambda p, s: p.sniffs(s or 2.6, eats=True), "howl": lambda p, s: p.howls(s or 2.4), "dig": lambda p, s: p.digs(s or 2.4), "pounce": None,
+}
+
+
+def across(actor, direction):
+    """How far a figure reaches from its middle in a direction on the ground: a fox is long one way and narrow the other."""
+    c, s = math.cos(-actor.yaw), math.sin(-actor.yaw)
+    x, y = c * direction.x - s * direction.y, s * direction.x + c * direction.y      # as the model lies
+    return 0.5 * (abs(x) * actor.size[0] + abs(y) * actor.size[1]) * actor.scale
 
 
 def eyes(actor):
@@ -583,7 +617,7 @@ def watch(actors, spans, last, fps):
 
 
 def perform(actor, action, actors, fps, start):
-    """One action of somebody on two legs. Returns its last frame."""
+    """One action of a figure that moves by itself (on two legs or on four). Returns its last frame."""
     kind = action.get("do", "")
     p = actor.performer
     first = p.wait(max(len(p.frames), int(round(max(0.0, start) * fps))))
@@ -611,25 +645,33 @@ def perform(actor, action, actors, fps, start):
             actor.pos = there
         actor.placed = True
 
+    beast = isinstance(p, animal.Animal)
     if kind in ("walk_to", "run_to", "sneak_to", "hop_to"):
         goal, room = target_point()
         if (goal - actor.pos).length < 1e-6:
             fail(actor.name + " steht schon am Ziel.")
         apart = number(action, "distance", room + 0.55 * actor.length + 0.04 * actor.height, 0.0, 100.0)
         from_afar(goal, (goal - actor.pos).normalized(), apart)
-        end = p.go({"walk_to": "walk", "run_to": "run", "sneak_to": "sneak", "hop_to": "hop"}[kind], lambda frame: (goal.x, goal.y), stop=apart, seconds=seconds(0.0, 0.0, 20.0) or None)
+        gait = ({"walk_to": "walk", "run_to": "gallop", "sneak_to": "stalk", "hop_to": "bound"} if beast else
+                {"walk_to": "walk", "run_to": "run", "sneak_to": "sneak", "hop_to": "hop"})[kind]
+        end = p.go(gait, lambda frame: (goal.x, goal.y), stop=apart, seconds=seconds(0.0, 0.0, 20.0) or None)
     elif kind == "jump_over":
         # A run-up, a leap over the other, a landing behind it.
         goal, room = target_point()
         if (goal - actor.pos).length < 1e-6:
             fail(actor.name + " steht schon am Ziel.")
         heading = (goal - actor.pos).normalized()
-        leap, body = p.lib["leap"], p.body
-        clear = room + 0.6 * actor.length
-        before = float(np.linalg.norm(leap.place(leap.air[0])[:2])) * body.leg     # what the leap itself runs before it takes off
+        # The leap is an arc: so long that the other fits under it, and so high in the
+        # middle that it is high enough where the other begins and ends.
+        room = across(other, heading) if other else room
+        edge = room + 0.35 * actor.length                # their middles are this far apart while one is still over the other
+        clear = max(room + 0.6 * actor.length, 1.7 * edge)
+        over = ((other.height + 0.04 * actor.height) / (1.0 - (edge / clear) ** 2)) if other else 0.0
+        # what the leap itself runs before it takes off
+        before = p.GATHER * animal.GAITS["gallop"]["pace"] * p.build.leg if beast else float(np.linalg.norm(p.lib["leap"].place(p.lib["leap"].air[0])[:2])) * p.body.leg
         from_afar(goal, heading, clear + before)
-        p.go("run", lambda frame: (goal.x, goal.y), stop=clear + before, on=True)
-        end = p.leap("leap", (heading.x, heading.y), other.height if other else 0.0, 2 * clear)
+        p.go("gallop" if beast else "run", lambda frame: (goal.x, goal.y), stop=clear + before, on=True)
+        end = p.leap((heading.x, heading.y), over, 2 * clear) if beast else p.leap("leap", (heading.x, heading.y), over, 2 * clear)
     elif kind in ("turn_to", "turn", "spin"):
         if kind == "turn_to":
             goal, _ = target_point()
@@ -637,6 +679,8 @@ def perform(actor, action, actors, fps, start):
             end = p.face(math.atan2(way.y, way.x), seconds(0.0, 0.0, 10.0) or None)
         elif kind == "turn":
             end = p.face(p.heading + math.radians(number(action, "degrees", 180.0, -1080.0, 1080.0)), seconds(0.0, 0.0, 10.0) or None)
+        elif beast:                                  # round after its own tail
+            end = p.face(p.heading + 2 * math.pi * int(number(action, "times", 1, 1, 6)), seconds(0.0, 0.0, 12.0) or None)
         else:
             end = p.perform("spin", times=int(number(action, "times", 1, 1, 6)))
     elif kind == "look_at":
@@ -649,6 +693,8 @@ def perform(actor, action, actors, fps, start):
         frames = max(6, int(round(seconds((0.55 if kind == "nod" else 0.5) * times, 0.3, 12.0) * fps)))
         p.nod(kind, first, frames, times)
         end = p.wait(first + frames)
+    elif kind == "wag_tail" and beast:
+        end = p.wags(seconds(1.5, 0.3, 12.0))
     elif kind in ("wobble", "wag_tail"):
         end = p.sway(seconds(1.2 if kind == "wobble" else 1.5, 0.3, 10.0), 0.16 if kind == "wobble" else 0.07)
     elif kind in ("grow", "shrink"):
@@ -664,19 +710,31 @@ def perform(actor, action, actors, fps, start):
     elif kind == "wait":
         end = p.wait(first + max(1, int(round(seconds(1.0, 0.1, 20.0) * fps))))
     elif kind == "jump":
-        end = p.perform("jump", times=int(number(action, "times", 1, 1, 8)))
-    elif kind in p.lib:
+        if beast:
+            for _ in range(int(number(action, "times", 1, 1, 8))):
+                end = p.hop()
+        else:
+            end = p.perform("jump", times=int(number(action, "times", 1, 1, 8)))
+    elif (kind in animal.POSES or kind in BEAST) if beast else kind in p.lib:
         if other:                                    # done to somebody: it turns there if it has to, and looks there
             way = other.pos - actor.pos
             if way.length > 1e-6 and abs(motion.wrap(math.atan2(way.y, way.x) - p.heading)) > 0.6:
                 first = p.face(math.atan2(way.y, way.x))
-            p.look(eyes(other), first, first + int(p.lib[kind].seconds * fps), 0.8)
-        end = p.perform(kind, seconds=seconds(0.0, 0.0, 20.0) or None, times=int(number(action, "times", 1, 1, 8)))
+            if kind not in ("sniff", "eat", "dig", "howl", "sleep"):
+                p.look(eyes(other), first, first + int(2.5 * fps), 0.8)
+        if not beast:
+            end = p.perform(kind, seconds=seconds(0.0, 0.0, 20.0) or None, times=int(number(action, "times", 1, 1, 8)))
+        elif kind == "pounce":                       # onto what it is told to, or a good leap ahead
+            end = p.pounce(max(0.5 * actor.length, (other.pos - actor.pos).length - other.radius - 0.35 * actor.length) if other else None)
+        elif kind in BEAST:
+            end = BEAST[kind](p, seconds(0.0, 0.0, 12.0))
+        else:
+            end = p.ease(kind, seconds(1.5, 0.0, 20.0))
     else:
         fail("Unbekannte Aktion: " + str(kind) + ". Es gibt walk_to, run_to, hop_to, sneak_to, jump_over, turn_to, look_at, turn, spin, jump, wave, nod, "
              "shake_head, wag_tail, wobble, grow, shrink, wait.")
     at = p.origin
-    actor.pos, actor.yaw = Vector((at[0], at[1])), p.heading - p.body.facing
+    actor.pos, actor.yaw = Vector((at[0], at[1])), p.heading - (p.build if beast else p.body).facing
     actor.clock = end / fps
     return end
 
@@ -932,9 +990,11 @@ def animate(actor, last):
     obj.rotation_mode = "XYZ"
     if actor.performer is not None:                  # it was somewhere in every frame: these are its keys
         actor.keys = {}
-        for frame, (origin, yaw, scale, turns) in enumerate(actor.performer.finish(last)):
+        for frame, (origin, yaw, scale, turns, *moves) in enumerate(actor.performer.finish(last)):
             actor.keys[frame] = (origin[0], origin[1], origin[2], 0.0, 0.0, yaw, 1.0, scale)
             actor.rig.frames[frame] = {name: Quaternion(turn) for name, turn in turns.items()}
+            if moves:
+                actor.rig.moves[frame] = moves[0]
     frames = sorted(actor.keys)
     state = actor.keys[frames[0]]
     at = 0
@@ -1180,7 +1240,7 @@ def build(spec_path, out):
         bpy.data.objects.remove(obj)  # figures of a model that play no part
     try:
         library = motion.Library()
-    except Exception as exc:                          # without the recorded motions two-legged figures move as animals do
+    except Exception as exc:                          # without the recorded motions two-legged figures move the old way
         print("MAG-NOTE no recorded motions (%s)" % type(exc).__name__, flush=True)
         library = None
     for seed, actor in enumerate(actors.values()):

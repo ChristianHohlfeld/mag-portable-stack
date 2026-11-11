@@ -66,7 +66,10 @@ with recorded motions (`ops/scene/motions.npz`, made by
 `ops/scene/mocap/build.py` from motion capture that is free to use and to
 pass on, credited in `ops/scene/MOTIONS.md`): its bones take the recorded
 directions, its way follows its own legs, a foot that stands stays where it
-stands, and nobody in a scene stands like a statue. This repository is
+stands, and nobody in a scene stands like a statue. An animal's motion is
+worked out (`ops/scene/animal.py`): its feet take turns in the order of its
+gait and stand where they were put down, the body rides on the legs that
+carry it, and it sits, lies, leaps and lands on the same ground. This repository is
 public: never add motion data whose terms forbid commercial use or passing
 it on. A scene is described, never
 scripted: no code of a bot or a request runs in Blender. The scene is a normal

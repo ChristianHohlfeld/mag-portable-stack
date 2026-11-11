@@ -561,6 +561,7 @@ class Performer:
         self.gives = {}                                   # how much an arm that holds something has given its hold up for a gesture
         self.sways, self.looks, self.heads = [], [], []   # what is laid over the motion: swaying, looking at something, nodding
         self.reaches = []                                 # a hand that is to be somewhere: (side, start, end, target)
+        self.flails = []                                  # thrown through the air: (start, air, lie, rise) frames, see flail()
         self.watch = False                                # keep the joints of every frame, to look at them
         self.frames = []                                  # per frame: where the model's origin is, where it looks, its pose
 
@@ -619,6 +620,7 @@ class Performer:
         root = np.array([self.xy[0], self.xy[1], (pose.height + (self.air - 1.0) * pose.lift) * body.leg - self.drop])
         limbs = self._arms(pose.limbs.copy())
         f = len(self.frames)
+        thrown = self._thrown(f, pose, limbs)
         for side, start, end, target in self.reaches:
             if not start <= f <= end + int(0.4 * self.fps):
                 continue
@@ -640,7 +642,7 @@ class Performer:
             hip.append(h)
             knee.append(n)
             foot.append(n + qrot(heading, limbs[2 * k + 1]) * body.length[shin])
-        held = [self._foot(k, foot[k], int(pose.contact[k]), hip[k], turned / dt) for k in range(2)]
+        held = [self._foot(k, foot[k], 0 if thrown else int(pose.contact[k]), hip[k], turned / dt) for k in range(2)]
         # A foot that stands must be within reach: the hips come down to it, and up again slowly.
         need = 0.0
         for k, (upper, shin) in enumerate(body.legs):
@@ -675,6 +677,50 @@ class Performer:
             frame["stands"] = [None if foot.at is None else foot.at.copy() for foot in self.feet]
             frame["doing"] = (self.clip.name, round(self.t, 3), [foot.step is not None for foot in self.feet], round(self.drop / body.leg, 3))
         self.frames.append(frame)
+
+    # Where the limbs point while a figure is thrown (seen from itself, x ahead, y its left):
+    # in the air it reaches forward, its knees drawn up; lying it is spread out on its back;
+    # getting up it draws its legs in and pushes itself up with its arms.
+    FLY = ((0.55, 0.15, -0.82), (-0.2, 0.08, -0.98), (0.55, -0.15, -0.82), (-0.2, -0.08, -0.98),
+           (0.55, 0.5, 0.67), (0.8, 0.3, 0.52), (0.55, -0.5, 0.67), (0.8, -0.3, 0.52))
+    LIE = ((0.05, 0.22, -0.97), (0.0, 0.12, -0.99), (0.05, -0.22, -0.97), (0.0, -0.12, -0.99),
+           (0.05, 0.92, 0.38), (0.0, 0.9, 0.44), (0.05, -0.92, 0.38), (0.0, -0.9, 0.44))
+    TUCK = ((0.75, 0.2, -0.63), (-0.65, 0.08, -0.76), (0.75, -0.2, -0.63), (-0.65, -0.08, -0.76),
+            (0.55, 0.3, -0.78), (0.75, 0.1, -0.66), (0.55, -0.3, -0.78), (0.75, -0.1, -0.66))
+
+    def flail(self, start, air, lie, rise):
+        """It is thrown from frame `start`: `air` frames in the air, `lie`
+        on the ground, `rise` getting up (scene.knock turns the whole figure)."""
+        self.flails.append((int(start), int(air), int(lie), int(rise)))
+
+    def _thrown(self, f, pose, limbs):
+        """Lays the pose of a thrown figure over the motion (see flail).
+        True while its feet are not on the ground."""
+        for start, air, lie, rise in self.flails:
+            i = f - start
+            if not 0 <= i < air + lie + rise:
+                continue
+            edge = max(2.0, 0.12 * self.fps)
+            if i < air:                                   # it is hit: limbs fly forward, the body curls
+                target, w = self.FLY, fade(i / edge)
+                curl = 0.35 * w
+                if i > air - edge:                        # ... and spreads out as it comes down
+                    target = [unit(np.asarray(a) + (np.asarray(b) - np.asarray(a)) * fade((i - air + edge) / edge)) for a, b in zip(self.FLY, self.LIE)]
+                    curl *= 1.0 - fade((i - air + edge) / edge)
+            elif i < air + lie:
+                target, w, curl = self.LIE, 1.0, 0.0
+            else:                                         # up: the legs come in, then it stands as the motion has it
+                u = (i - air - lie) / max(1, rise)
+                tuck = math.sin(math.pi * min(1.0, 1.4 * u))
+                target = [unit(np.asarray(a) + (np.asarray(b) - np.asarray(a)) * max(0.0, tuck)) for a, b in zip(self.LIE, self.TUCK)]
+                w, curl = 1.0 - fade((u - 0.6) / 0.4), 0.3 * max(0.0, tuck)
+            for k in range(len(LIMBS)):
+                want = unit(np.asarray(target[k], dtype=float))
+                limbs[k] = qrot(qpart(qarc(limbs[k], want), w), limbs[k])
+            bend = qaxis([0.0, 1.0, 0.0], curl)
+            pose.chest, pose.head = qmul(bend, pose.chest), qmul(qpart(bend, 1.5), pose.head)
+            return i < air + lie + 0.75 * rise
+        return False
 
     def _arms(self, limbs):
         """The arms as this figure does them (see Body.free)."""

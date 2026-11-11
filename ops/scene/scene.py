@@ -642,6 +642,10 @@ def knock(victim, way, frame, far, fps):
     q = victim.performer
     if q is not None:
         start = q.wait(max(len(q.frames), frame))
+        if isinstance(q, animal.Animal):
+            q.tumble(air)                              # legs flung out, down on all four
+        else:
+            q.flail(start, air, lie, rise)             # limbs flung forward in the air, spread out on the ground
         q.wait(start + air)
         q.move((by.x, by.y), past=False)             # from here on it is where it landed
         if isinstance(q, animal.Animal):
@@ -1397,17 +1401,30 @@ def calm(values, fps):
 
 
 def film(actors, last, fps, side):
-    """The camera of the film. It keeps everybody in the frame (so it comes
-    closer when they do) and drifts a little."""
-    cx, cy, wide, tall = (np.empty(last + 1) for _ in range(4))
+    """The camera of the film. It keeps everybody in the frame, as close as
+    the figures allow from where it looks (so it comes closer when they do),
+    and drifts a little."""
+    cx, cy, tall = (np.empty(last + 1) for _ in range(3))
     for frame in range(last + 1):
         spots = [a.track[frame] for a in actors.values()]
         lo = (min(x - r for x, _, r, _ in spots), min(y - r for _, y, r, _ in spots))
         hi = (max(x + r for x, _, r, _ in spots), max(y + r for _, y, r, _ in spots))
         cx[frame], cy[frame] = (lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2
-        wide[frame] = 0.5 * math.hypot(hi[0] - lo[0], hi[1] - lo[1])
         tall[frame] = max(h for _, _, _, h in spots)
-    cx, cy, wide, tall = calm(cx, fps), calm(cy, fps), calm(wide, fps), calm(tall, fps)
+    cx, cy, tall = calm(cx, fps), calm(cy, fps), calm(tall, fps)
+    across, upright = 18 / 50, 18 / 50 * 9 / 16     # half the angle of view (50 mm lens, 36 mm film, 16:9), as tangents
+    angles = [side + math.radians(-11 + 22 * frame / max(1, last)) for frame in range(last + 1)]
+    distance = np.empty(last + 1)
+    for frame in range(last + 1):
+        # Every figure as the camera sees it: how far to the side of the middle, how far nearer.
+        c, s = math.cos(angles[frame]), math.sin(angles[frame])
+        need = 0.0
+        for x, y, r, h in (a.track[frame] for a in actors.values()):
+            dx, dy = x - cx[frame], y - cy[frame]
+            aside, nearer = abs(-s * dx + c * dy) + r, c * dx + s * dy + r
+            need = max(need, nearer + 1.12 * aside / across, nearer + 1.12 * 0.6 * h / upright)
+        distance[frame] = max(need, 1.5 * tall[frame])
+    distance = calm(distance, fps)
     bpy.ops.object.camera_add()
     camera = bpy.context.active_object
     camera.name = "Kamera"
@@ -1419,13 +1436,11 @@ def film(actors, last, fps, side):
     track = camera.constraints.new("TRACK_TO")
     track.target = aim
     track.track_axis, track.up_axis = "TRACK_NEGATIVE_Z", "UP_Y"
-    across, upright = 18 / 50, 18 / 50 * 9 / 16     # half the angle of view (50 mm lens, 36 mm film, 16:9), as tangents
     for frame in range(last + 1):
-        distance = max(1.25 * wide[frame] / across, 0.85 * tall[frame] / upright)
-        angle = side + math.radians(-11 + 22 * frame / max(1, last))
+        angle, d = angles[frame], distance[frame]
         aim.location = (cx[frame], cy[frame], 0.45 * tall[frame])
         # Low enough that the horizon and the sky behind it are in the picture.
-        camera.location = (cx[frame] + math.cos(angle) * distance, cy[frame] + math.sin(angle) * distance, 0.45 * tall[frame] + 0.12 * distance)
+        camera.location = (cx[frame] + math.cos(angle) * d, cy[frame] + math.sin(angle) * d, 0.45 * tall[frame] + 0.12 * d)
         aim.keyframe_insert(data_path="location", frame=frame)
         camera.keyframe_insert(data_path="location", frame=frame)
     linear(aim)

@@ -264,21 +264,26 @@
     for (let k = 0; k < stops; k++) {
       pose(playable ? (scene.duration * k) / (stops - 1) : 0);
       const { lo, hi } = bounds(cast);
-      track.push({ c: lo.map((v, i) => (v + hi[i]) / 2), r: Math.max(playable ? 0.3 : 0.5, (Math.hypot(...hi.map((v, i) => v - lo[i])) / 2) * unit) });
+      track.push({ c: lo.map((v, i) => (v + hi[i]) / 2), r: Math.max(playable ? 0.3 : 0.5, (Math.hypot(...hi.map((v, i) => v - lo[i])) / 2) * unit),
+        h: hi.map((v, i) => Math.max(0.12, ((v - lo[i]) / 2) * unit)) });
       if (playable && (k === 0 || k === stops - 1))
         for (const item of actors) { const m = item.at(); travel[0] += (k ? 1 : -1) * m[12]; travel[1] += (k ? 1 : -1) * m[14]; }
     }
     // A calm camera: each moment is the average of about a second around it.
     const calm = track.map((_, k) => {
-      const c = [0, 0, 0];
+      const c = [0, 0, 0], h = [0, 0, 0];
       let r = 0, n = 0;
-      for (let j = Math.max(0, k - 7); j <= Math.min(stops - 1, k + 7); j++, n++) { r += track[j].r; for (let i = 0; i < 3; i++) c[i] += track[j].c[i]; }
-      return { c: c.map((v) => v / n), r: r / n };
+      for (let j = Math.max(0, k - 7); j <= Math.min(stops - 1, k + 7); j++, n++) {
+        r += track[j].r;
+        for (let i = 0; i < 3; i++) { c[i] += track[j].c[i]; h[i] = Math.max(h[i], track[j].h[i]); }
+      }
+      return { c: c.map((v) => v / n), r: r / n, h };
     });
     const focus = (time) => {
       if (stops === 1) return calm[0];
       const at = clamp(time / scene.duration, 0, 1) * (stops - 1), k = Math.min(stops - 2, Math.floor(at)), f = at - k;
-      return { c: calm[k].c.map((v, i) => v * (1 - f) + calm[k + 1].c[i] * f), r: calm[k].r * (1 - f) + calm[k + 1].r * f };
+      return { c: calm[k].c.map((v, i) => v * (1 - f) + calm[k + 1].c[i] * f), r: calm[k].r * (1 - f) + calm[k + 1].r * f,
+        h: calm[k].h.map((v, i) => v * (1 - f) + calm[k + 1].h[i] * f) };
     };
 
     // A scene is seen from the side its figures move along, from where the
@@ -305,12 +310,25 @@
       gl.enable(gl.DEPTH_TEST);
       const time = playable ? Math.min(scene.duration, clock % (scene.duration + rest)) : 0;
       if (playable) pose(time);
-      const { c: center, r: radius } = focus(time);
+      const { c: center, r: radius, h: box } = focus(time);
       const aspect = w / h, f = 1 / Math.tan((34 * Math.PI) / 360);
-      // Far enough to hold the whole model at any angle, also in a narrow portrait frame.
-      const half = Math.atan(Math.min(1, aspect) / f);
-      const dist = (cam.zoom * 1.06 * radius) / Math.sin(half), near = Math.max(0.03, dist - 2.5 * reach), far = dist + 2.5 * reach;
       const cy = Math.cos(cam.yaw), sy = Math.sin(cam.yaw), cx = Math.cos(cam.pitch), sx = Math.sin(cam.pitch);
+      let fit;
+      if (playable) {
+        // A scene: as close as the figures allow from where it is seen, so they fill the frame
+        // (also in a narrow portrait frame); the corners of their box as the camera sees them.
+        fit = 0;
+        for (let corner = 0; corner < 8; corner++) {
+          const x = corner & 1 ? box[0] : -box[0], y = corner & 2 ? box[1] : -box[1], z = corner & 4 ? box[2] : -box[2];
+          const vx = cy * x + sy * z, t = -sy * x + cy * z, vy = cx * y - sx * t, vz = sx * y + cx * t;
+          fit = Math.max(fit, vz + (1.1 * Math.abs(vx) * f) / aspect, vz + 1.1 * Math.abs(vy) * f);
+        }
+        fit = Math.max(fit, 1.2 * radius);
+      } else {
+        // A model: far enough to hold it at any angle, also in a narrow portrait frame.
+        fit = (1.06 * radius) / Math.sin(Math.atan(Math.min(1, aspect) / f));
+      }
+      const dist = cam.zoom * fit, near = Math.max(0.03, dist - 2.5 * reach), far = dist + 2.5 * reach;
       const model = new Float32Array([unit, 0, 0, 0, 0, unit, 0, 0, 0, 0, unit, 0, -center[0] * unit, -center[1] * unit, -center[2] * unit, 1]);
       const ry = new Float32Array([cy, 0, -sy, 0, 0, 1, 0, 0, sy, 0, cy, 0, 0, 0, 0, 1]);
       const rx = new Float32Array([1, 0, 0, 0, 0, cx, sx, 0, 0, -sx, cx, 0, 0, 0, 0, 1]);

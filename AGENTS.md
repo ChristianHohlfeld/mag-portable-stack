@@ -156,7 +156,8 @@ the same picture (one description); the owner can have a wrong one made anew.
 A picture whose file ends in its middle is not taken as it is: the page reads
 the file again first, and photo to 3D refuses it in words.
 Photo to 3D makes one model of one object, its whole shape from TripoSG
-(MIT, on the MI50 in Idol's queue) placed by Idol's splat; the side the
+(MIT, on the MI50 in Idol's queue), made from the shape and the photo alone
+(Idol's splat is sampled only where that does not do); the side the
 photo shows wears the photo itself, the rest its colours carried around. A photo that is ordered is ordered as it is, one job, nothing
 split or looked at unasked (Chris, 2026-11-11). In a photo with several things
 Chris can say which is meant ("Objekt wählen": he taps it or names it and sees

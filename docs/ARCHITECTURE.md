@@ -349,7 +349,16 @@ still (for ten minutes it neither writes to its log nor uses the processor)
 and starts it again; after three standstills the job fails in words and can
 be taken up again like any failed job.
 
-Between sampling and meshing, the shape stage (`shape.py`, on the MI50, in
+The shape stage comes first. Where it made a shape whose picture it covers
+(`front_of`), the model is made from the shape and the photo alone
+(`mesh.py --alone`, `reconstruct_shape`): no splat is sampled, which saves
+the MI50 about a quarter of an hour per job; the model is scaled to about
+one unit at its largest like Idol's, and seen from +z. Only where that does
+not do (`alone.failed`), or for a job that was already sampling when the
+worker started, Idol samples and the mesh is made from splat and shape as
+described next. "Netz neu" makes a model anew from whichever it has.
+
+The shape stage (`shape.py`, on the MI50, in
 its own environment `~/idol-mi50/triposg/venv` that reuses Idol's ROCm torch)
 asks TripoSG (VAST-AI, MIT, code and weights pinned) for the whole, closed
 shape of the thing from the same cut-out picture: Idol's splat is a relief

@@ -8,7 +8,9 @@ in its own session, writes its output to a log file and its exit code to a
 file, so it does not need this process: when the worker restarts (a deploy,
 a crash) it finds the stage still running and follows it again, and after a
 reboot it starts the job again at the first stage whose result is missing.
-Nothing is ever written off as "interrupted".
+Nothing is ever written off as "interrupted". A job that failed or was
+cancelled is taken up again when it is asked for (retry), at the first stage
+whose result is missing: sampling that is done is not done again.
 """
 import json
 import os
@@ -131,6 +133,29 @@ def cancel(job_id):
         save(item)
         snapshot = dict(item)
     kill_stage(snapshot)
+    return True
+
+def again(job_id):
+    """Take a failed or cancelled job up again. What its finished stages
+    left is still there (after sampling, the splat), so only what did not
+    get done is done. Returns True, or why not in words; None: no such job."""
+    with lock:
+        item = jobs.get(job_id)
+        if item is None:
+            return None
+        if item["state"] in ("queued", "running", "done"):
+            return True                                   # under way, or done: there is nothing to take up
+        if not (ROOT / job_id / "input.png").is_file():
+            return "Das Foto dieses Auftrags gibt es nicht mehr."
+        if pending.qsize() >= MAX_PENDING:
+            return "Idol-Warteschlange voll"
+        abort.discard(job_id)
+        item.pop("error", None)
+        item.pop("started", None)                         # its time counts from now
+        item.update(state="queued", stage="Wird fortgesetzt", pid=None, stage_key=None, step=0, progress=0.0,
+                    eta=None, resumed=int(item.get("resumed", 0)) + 1)
+        save(item)
+        pending.put_nowait(job_id)
     return True
 
 def discard(job_id):
@@ -378,11 +403,13 @@ class API(BaseHTTPRequestHandler):
             return self.reply(403, {"error": "MAG-Idol-Header fehlt"})
         parts = path.strip("/").split("/")
         if (len(parts) == 5 and parts[:3] == ["api", "idol", "jobs"] and
-                VALID_ID.fullmatch(parts[3]) and parts[4] == "cancel"):
-            outcome = cancel(parts[3])
+                VALID_ID.fullmatch(parts[3]) and parts[4] in ("cancel", "retry")):
+            outcome = cancel(parts[3]) if parts[4] == "cancel" else again(parts[3])
             if outcome is None:
                 return self.reply(404, {"error": "Job nicht gefunden"})
-            return self.reply(200, {"cancelled": outcome})
+            if parts[4] == "cancel":
+                return self.reply(200, {"cancelled": outcome})
+            return self.reply(200, {"queued": True}) if outcome is True else self.reply(409, {"error": outcome})
         if path == "/api/idol/purge":
             # The room was emptied: no job has a message any more.
             with lock:

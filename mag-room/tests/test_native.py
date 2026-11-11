@@ -670,6 +670,51 @@ class RoomContract(unittest.TestCase):
         self.assertEqual((message(second)["model3d"]["state"], message(second)["model3d"].get("error")), ("done", None))
         self.assertEqual(len(r.idol.jobs), 2)   # nothing was ordered twice
 
+    def test_a_failed_3d_job_is_taken_up_again_where_it_stopped(self):
+        r = self.room
+
+        def order():
+            photo = r.api("POST", "/api/upload?name=foto.png", raw=PNG)[1]
+            return r.api("POST", "/api/message", {"text": "", "attachments": [photo["file"]], "mode": "3d", "quality": "normal"})[1]["model3d"]
+
+        def message(model_id):
+            return [m for m in r.messages() if m["id"] == model_id][0]
+        # The job fails in the worker (as one did in its mesh stage, at the stage's time limit).
+        r.idol.fails = "Zeitlimit 15 Minuten überschritten"
+        first = order()
+        r.wait(lambda: message(first)["state"] == "error", "3D job failed")
+        m3 = message(first)["model3d"]
+        self.assertEqual((m3["state"], m3["error"], len(r.idol.jobs)), ("error", "Zeitlimit 15 Minuten überschritten", 1))
+        self.assertEqual(r.api("POST", "/api/3d/%s/retry" % "nope")[0], 404)
+        # Chris asks for it again: the same job goes on, no photo is sent a second time.
+        r.idol.fails = ""
+        self.assertEqual(r.api("POST", "/api/3d/%s/retry" % first)[0], 200)
+        r.wait(lambda: message(first)["state"] == "streaming" and "error" not in message(first)["model3d"], "taken up again")
+        self.assertEqual(r.api("POST", "/api/3d/%s/retry" % first), (409, {"error": "Der Auftrag läuft noch."}))
+        r.wait(lambda: message(first)["state"] == "done", "done after it was taken up again")
+        m3 = message(first)["model3d"]
+        self.assertEqual((m3["state"], m3["resumed"], m3.get("error"), len(message(first)["attachments"])), ("done", True, None, 3))
+        self.assertEqual((len(r.idol.jobs), r.idol.retried, [m["from"] for m in r.messages()]), (1, [m3["job"]], ["chris", "idol"]))
+        self.assertEqual(r.api("POST", "/api/3d/%s/retry" % first), (409, {"error": "Das Modell ist schon fertig."}))
+        # A job that was cancelled is taken up again the same way.
+        r.idol.hold = True
+        second = order()
+        r.wait(lambda: message(second)["model3d"]["state"] == "running", "second 3D job running")
+        self.assertEqual(r.api("POST", "/api/3d/%s/cancel" % second)[0], 200)
+        r.wait(lambda: message(second)["state"] == "stopped", "cancelled")
+        r.idol.hold = False
+        self.assertEqual(r.api("POST", "/api/3d/%s/retry" % second)[0], 200)
+        r.wait(lambda: message(second)["state"] == "done", "the cancelled job done")
+        # A job the worker no longer has cannot be taken up; the room says what to do instead.
+        r.idol.fails = "Fehler"
+        third = order()
+        r.wait(lambda: message(third)["state"] == "error", "third 3D job failed")
+        r.idol.jobs.pop(message(third)["model3d"]["job"])
+        code, why = r.api("POST", "/api/3d/%s/retry" % third)
+        self.assertEqual((code, why["error"], message(third)["state"]), (409, "Den 3D-Auftrag gibt es nicht mehr. Bitte das Foto noch einmal schicken.", "error"))
+        photo = [m for m in r.messages() if m["from"] == "chris"][0]             # the message with the photo is no job
+        self.assertEqual(r.api("POST", "/api/3d/%s/retry" % photo["id"]), (409, {"error": "Das ist kein 3D-Auftrag."}))
+
     def test_bots_build_a_3d_scene_from_the_models_in_the_chat(self):
         r = self.room
         files = pathlib.Path(r.env["MAG_ROOM_STATE"]) / "files"

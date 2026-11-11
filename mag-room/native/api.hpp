@@ -83,6 +83,13 @@ public:
       }
       return http::send_ok(fd);
     }
+    if (r.method == "POST" && starts_with(p, "/api/3d/") && ends_with(p, "/retry")) {
+      // A 3D job that failed or was cancelled, taken up again where it stopped.
+      Val m;
+      if (!room_.get(p.substr(8, p.size() - 8 - 6), m)) return http::send_error(fd, 404, "Nachricht nicht gefunden");
+      const std::string why = idol_.retry(m);
+      return why.empty() ? http::send_ok(fd) : http::send_error(fd, 409, why);
+    }
     if (r.method == "POST" && starts_with(p, "/api/3d/") && (ends_with(p, "/film") || ends_with(p, "/blend"))) {
       // Of a scene, when the owner asks: its film is rendered, its file for Blender fetched.
       const size_t cut = p.rfind('/');

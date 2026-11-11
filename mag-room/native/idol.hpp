@@ -63,6 +63,23 @@ public:
       http::fetch(room_.cfg.idol_url + "/api/idol/jobs/" + jstr(*m3, "job") + "/cancel", options("POST"));
   }
 
+  // A job that failed or was cancelled is taken up again where it stopped:
+  // what its finished stages left is still with the worker (after sampling,
+  // the splat), so only what did not get done is done. Returns "" or why
+  // not, in words.
+  std::string retry(const Val &message) {
+    const Val *m3 = job_of(message);
+    if (!m3) return "Das ist kein 3D-Auftrag.";
+    if (jstr(message, "state") == "streaming") return "Der Auftrag läuft noch.";
+    if (jstr(*m3, "state") == "done") return "Das Modell ist schon fertig.";
+    const std::string job = jstr(*m3, "job");
+    const auto res = http::fetch(room_.cfg.idol_url + "/api/idol/jobs/" + job + "/retry", options("POST"));
+    if (res.status == 404) return "Den 3D-Auftrag gibt es nicht mehr. Bitte das Foto noch einmal schicken.";
+    if (res.status != 200) return res.error.empty() ? jstr(jparse(res.body), "error", "Der 3D-Dienst hat abgelehnt.") : "3D-Dienst nicht erreichbar.";
+    watch(jstr(message, "id"), job, true);   // it finds the job under way and takes the message along
+    return "";
+  }
+
   // The message is gone: remove what the worker keeps for it.
   void forget(const Val &removed) {
     const Val *m3 = job_of(removed);

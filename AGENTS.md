@@ -74,7 +74,9 @@ on the CPU and MediaPipe's face landmarker (Apache-2.0, pinned in
 `ops/scene/face`, installed for Blender's Python) finds mouth, eyes and brows,
 else the head's proportions place them; small bones (jaw, mouth corners, lids,
 brows) carry the skin, speech goes from the letters to mouth shapes, and it
-blinks now and then. A figure on two legs moves
+blinks now and then. Its film speaks what was said: when Chris asks for the
+film, the page makes the voices on the device (Supertonic, one voice per
+figure) and sends them as the film's sound; nothing is spoken on the server. A figure on two legs moves
 with recorded motions (`ops/scene/motions.npz`, made by
 `ops/scene/mocap/build.py` from motion capture that is free to use and to
 pass on, credited in `ops/scene/MOTIONS.md`): its bones take the recorded

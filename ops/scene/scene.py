@@ -476,6 +476,7 @@ ACTIONS = ("walk_to, run_to, sneak_to, hop_to, jump_over, turn_to, look_at, turn
            "say (text: its mouth speaks the words), face (expression: smile/laugh/sad/frown/angry/surprised/blink); "
            "somebody on two legs also: " + "%s; an animal also: sit, lie, sleep, crouch, bow, beg, stand, shake, sniff, eat, howl, dig, pounce")
 RECORDED = []   # the recorded motions of the library, by name (filled when it is read)
+SPOKEN = []     # what is said in the scene, for the voices of its film: {actor, text, start, seconds}
 # When in a recorded motion the blow lands (part of its length).
 HIT = {"kick": 0.30, "punch": 0.48}
 # Recorded motions that are made with fists, and with open hands (words of their names).
@@ -935,6 +936,8 @@ def perform(actor, action, actors, fps, start):
             if not beast:
                 p.grip("both", first, first + frames, "relaxed")
             p.nod("talk" if not beast else "nod", first, frames, max(1, face.words(text) // 3))
+            if text.strip():
+                SPOKEN.append({"actor": actor.name, "voice": list(actors).index(actor.name), "text": text, "start": round(first / fps, 2), "seconds": round(frames / fps, 2)})
         else:
             expression = str(action.get("expression") or "smile").lower() if kind == "face" else kind
             expression = {"talk": "smile", "speak": "smile"}.get(expression, expression)
@@ -1969,7 +1972,8 @@ def build(spec_path, out):
     glow([a.part for a in actors.values()], LIGHTS[name]["glow"])
     bpy.ops.wm.save_as_mainfile(filepath=os.path.join(out, "scene.blend"), compress=True)
     facts = {"title": str(spec.get("title") or "Szene")[:80], "seconds": round(last / fps, 2), "frames": last + 1, "fps": fps,
-             "actors": [{"name": a.name, "height": round(a.height, 3), "kind": rig.KINDS[a.kind], "notes": "; ".join(a.notes)} for a in actors.values()]}
+             "actors": [{"name": a.name, "height": round(a.height, 3), "kind": rig.KINDS[a.kind], "notes": "; ".join(a.notes)} for a in actors.values()],
+             "speech": SPOKEN[:40]}
     json.dump(facts, open(os.path.join(out, "scene.json"), "w"), ensure_ascii=False)
     print("MAG-BUILT " + json.dumps(facts, ensure_ascii=False), flush=True)
 

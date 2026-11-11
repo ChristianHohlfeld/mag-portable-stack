@@ -12,6 +12,8 @@ follows it again, and after a reboot the render goes on with the first frame
 that is missing.
 CPU only: the MI50 belongs to photo-to-3D.
 """
+import base64
+import binascii
 import json
 import os
 from pathlib import Path
@@ -136,9 +138,11 @@ def cancel(job_id):
     return True
 
 
-def film(job_id):
+def film(job_id, voice=None):
     """Renders the film of a scene: when it is asked for, or again when it
     failed or was cancelled (what was rendered stays, the rest is rendered).
+    `voice`: what its figures say, as a WAV the page made (the voices are
+    made on the device, never here); it is the film's sound.
     True, or why not; None: no such job."""
     with lock:
         item = jobs.get(job_id)
@@ -153,6 +157,8 @@ def film(job_id):
         if pending.qsize() >= MAX_PENDING:
             return "Es warten schon zu viele Filme."
         abort.discard(job_id)
+        if voice:
+            (ROOT / job_id / "voice.wav").write_bytes(voice)
         item.update(state="queued", stage="Film wartet", pid=None, eta=None, started=int(time.time()))
         item.pop("error", None)
         item.pop("finished", None)
@@ -338,8 +344,10 @@ def process(job_id):
                 with lock:
                     again = int(jobs[job_id].get("resumed") or 0) + 1 if job_id in jobs else 1
                 update(job_id, pid=None, resumed=again)
-        encode = [FFMPEG, "-nostdin", "-v", "error", "-y", "-framerate", str(int(item.get("fps") or 24)), "-i", str(stills / "f%04d.png"),
-                  "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "20", "-preset", "medium", "-movflags", "+faststart", str(folder / "scene.part.mp4")]
+        encode = [FFMPEG, "-nostdin", "-v", "error", "-y", "-framerate", str(int(item.get("fps") or 24)), "-i", str(stills / "f%04d.png")]
+        if (folder / "voice.wav").is_file():            # what the figures say: as long as the film, silent where nobody speaks
+            encode += ["-i", str(folder / "voice.wav"), "-map", "0:v", "-map", "1:a", "-af", "apad", "-shortest", "-c:a", "aac", "-b:a", "128k"]
+        encode += ["-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "20", "-preset", "medium", "-movflags", "+faststart", str(folder / "scene.part.mp4")]
         if CPUS:
             encode = ["taskset", "-c", CPUS] + encode
         run_stage(job_id, "encode", encode, 600, lambda *_: None, dict(phase=3, stage=PHASES[2], eta=None), quality)
@@ -468,7 +476,7 @@ def create(spec):
         raise Refused("Die Szene wurde nicht vollständig gebaut.")
     item = {"id": identity, "state": "built", "stage": "Bereit", "quality": quality, "created": int(time.time()),
             "title": facts.get("title"), "seconds": facts.get("seconds"), "frames": facts.get("frames"),
-            "fps": facts.get("fps"), "actors": facts.get("actors"), "phase": 1, "phases": len(PHASES), "step": 0,
+            "fps": facts.get("fps"), "actors": facts.get("actors"), "speech": facts.get("speech") or [], "phase": 1, "phases": len(PHASES), "step": 0,
             "total_steps": facts.get("frames"), "progress": 0.0, "files": ["scene.glb", "scene.blend"]}
     with lock:
         jobs[identity] = item
@@ -505,7 +513,17 @@ class API(BaseHTTPRequestHandler):
         if not self.allowed():
             return None
         if len(parts) == 5 and parts[:3] == ["api", "scene", "jobs"] and VALID_ID.fullmatch(parts[3]) and parts[4] in ("cancel", "film", "retry"):
-            outcome = cancel(parts[3]) if parts[4] == "cancel" else film(parts[3])
+            voice = None
+            length = int(self.headers.get("Content-Length", "0") or 0)
+            if parts[4] == "film" and 2 <= length <= 40_000_000:
+                try:
+                    told = json.loads(self.rfile.read(length))
+                    voice = base64.b64decode(str(told.get("voice") or ""), validate=True) if isinstance(told, dict) else None
+                except (ValueError, binascii.Error):
+                    voice = None
+                if voice and not (voice[:4] == b"RIFF" and voice[8:12] == b"WAVE"):
+                    voice = None                      # only a WAV is the film's sound
+            outcome = cancel(parts[3]) if parts[4] == "cancel" else film(parts[3], voice) if parts[4] == "film" else film(parts[3])
             if outcome is None:
                 return self.reply(404, {"error": "Job nicht gefunden"})
             if parts[4] == "cancel":

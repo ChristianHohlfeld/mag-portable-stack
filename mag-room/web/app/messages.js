@@ -398,6 +398,37 @@
     }
     button.disabled = false;
   }
+  // The sound of a scene's film: what its figures say, each in a voice of its
+  // own, made on this device and laid where it is said; a WAV as base64, or ''
+  // (the film is silent) where no voice can be made here.
+  async function sceneVoices(m3) {
+    const said = (m3.speech || []).filter((s) => s && s.text);
+    if (!said.length || !MAG.voices?.make) return '';
+    let rate = 0, parts = [];
+    for (const s of said) {
+      const made = await MAG.voices.make(s.text, s.voice).catch(() => null);
+      if (!made) continue;
+      rate = rate || made.rate;
+      parts.push({ at: Math.max(0, +s.start || 0), audio: made.audio });
+    }
+    if (!rate || !parts.length) return '';
+    const total = Math.ceil(rate * Math.max(+m3.seconds || 0, ...parts.map((p) => p.at + p.audio.length / rate)));
+    const mix = new Float32Array(total);
+    for (const p of parts) {
+      const from = Math.round(p.at * rate);
+      for (let i = 0; i < p.audio.length && from + i < total; i++) mix[from + i] += p.audio[i];
+    }
+    const bytes = new DataView(new ArrayBuffer(44 + 2 * total));
+    const text = (at, word) => { for (let i = 0; i < word.length; i++) bytes.setUint8(at + i, word.charCodeAt(i)); };
+    text(0, 'RIFF'); bytes.setUint32(4, 36 + 2 * total, true); text(8, 'WAVE'); text(12, 'fmt ');
+    bytes.setUint32(16, 16, true); bytes.setUint16(20, 1, true); bytes.setUint16(22, 1, true); bytes.setUint32(24, rate, true);
+    bytes.setUint32(28, 2 * rate, true); bytes.setUint16(32, 2, true); bytes.setUint16(34, 16, true); text(36, 'data'); bytes.setUint32(40, 2 * total, true);
+    for (let i = 0; i < total; i++) bytes.setInt16(44 + 2 * i, Math.max(-1, Math.min(1, mix[i])) * 32767, true);
+    const raw = new Uint8Array(bytes.buffer);
+    let bin = '';
+    for (let i = 0; i < raw.length; i += 0x8000) bin += String.fromCharCode.apply(null, raw.subarray(i, i + 0x8000));
+    return btoa(bin);
+  }
   function buildScene(m) {
     const m3 = m.model3d, card = el('div', { class: 'm3 scene ' + m3.state });
     const running = m3.state === 'queued' || m3.state === 'running';
@@ -405,12 +436,20 @@
     const by = MAG.bot(m3.by)?.name;
     const facts = [m3.seconds ? String(Math.round(m3.seconds * 10) / 10).replace('.', ',') + ' s' : '', (m3.cast || []).join(', '), by ? 'von ' + by : ''].filter(Boolean).join(' · ');
     const sub = m3.state === 'error' ? 'Kein Film: ' + (m3.error || 'Fehler') : m3.state === 'cancelled' ? facts + ' · Film abgebrochen' : facts;
-    const order = (path) => MAG.api('POST', '/api/3d/' + m.id + path).catch((x) => MAG.toast(x.message, true));
+    const order = (path, body) => MAG.api('POST', '/api/3d/' + m.id + path, body).catch((x) => MAG.toast(x.message, true));
     card.append(el('div', { class: 'head' }, el('span', { class: 'src' }, MAG.icon('film')),
       el('div', { class: 'txt' }, el('b', { text: m3.title || '3D-Szene' }), el('small', { text: sub })),
       running ? el('button', { class: 'pill danger', text: 'Film abbrechen', onclick: () => order('/cancel') })
         // No film yet: it is rendered when it is asked for (of one that failed, what was rendered stays).
-        : !film && glb ? el('button', { class: 'pill', title: 'Rendert die Szene als Video (MP4)', onclick: async (e) => { const b = e.currentTarget; b.disabled = true; await order('/film'); b.disabled = false; } },
+        : !film && glb ? el('button', { class: 'pill', title: 'Rendert die Szene als Video (MP4)', onclick: async (e) => {
+            const b = e.currentTarget, label = b.querySelector('b');
+            b.disabled = true;
+            // What the figures say is spoken in the film, in voices made here first.
+            if (m3.speech?.length && label) label.textContent = 'Stimmen …';
+            const voice = m3.speech?.length ? await sceneVoices(m3).catch(() => '') : '';
+            await order('/film', voice ? { voice } : undefined);
+            if (label) label.textContent = 'Film rendern';
+            b.disabled = false; } },
             MAG.icon('film'), el('b', { text: 'Film rendern' })) : null));
     if (glb) {
       const canvas = el('canvas', {});

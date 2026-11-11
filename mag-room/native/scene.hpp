@@ -124,6 +124,8 @@ public:
     m3["title"] = title;
     m3["seconds"] = jnum(job, "seconds");
     m3["cast"] = cast;
+    // What its figures say: the page makes their voices for the film.
+    if (const Val *said = job.find("speech"); said && said->isArr() && !said->asArr().empty()) m3["speech"] = *said;
     m3["kinds"] = kinds;
     m3["by"] = by;
     m3["glb"] = jstr(glb, "file");
@@ -146,13 +148,21 @@ public:
   }
   // The owner asks for the film of a scene (or for it again, when it failed
   // or was cancelled: what was rendered stays). "" or why there will be none.
-  std::string film(const Val &message) {
+  std::string film(const Val &message, const std::string &voice = "") {
     if (!is_scene(message)) return "Das ist keine Szene.";
     const Val &m3 = *message.find("model3d");
     if (jstr(message, "state") == "streaming") return "Der Film wird schon gerendert.";
     if (!jstr(m3, "film").empty()) return "Den Film gibt es schon.";
     const std::string job = jstr(m3, "job");
-    const auto res = http::fetch(room_.cfg.scene_url + "/api/scene/jobs/" + job + "/film", options("POST"));
+    http::ClientOptions ask = options("POST");
+    if (!voice.empty()) { // the voices the page made, the film's sound (base64 WAV)
+      Val body = Val::object();
+      body["voice"] = voice;
+      ask.body = mj::dump(body);
+      ask.headers.push_back({"Content-Type", "application/json"});
+      ask.timeout_s = 60;
+    }
+    const auto res = http::fetch(room_.cfg.scene_url + "/api/scene/jobs/" + job + "/film", ask);
     const Val out = jparse(res.body);
     if (!res.error.empty() || !res.status) return "Der Szenen-Dienst (Blender) ist nicht erreichbar.";
     if (res.status != 200 || !jbool(out, "queued")) {

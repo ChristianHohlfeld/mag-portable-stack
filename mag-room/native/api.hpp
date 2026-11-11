@@ -121,7 +121,7 @@ public:
       Val m;
       if (!room_.get(p.substr(8, cut - 8), m) || !Scenes::is_scene(m)) return http::send_error(fd, 404, "Szene nicht gefunden");
       if (p.substr(cut) == "/film") {
-        const std::string why = scenes_.film(m);
+        const std::string why = scenes_.film(m, jstr(jparse(r.body), "voice"));
         return why.empty() ? http::send_ok(fd) : http::send_error(fd, 409, why);
       }
       const Val file = scenes_.blend(m);

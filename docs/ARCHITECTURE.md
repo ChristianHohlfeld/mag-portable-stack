@@ -369,9 +369,11 @@ shows takes the photo's own colours (`shape_photo.png`, the cut-out as fine
 as the photo was taken, up to 4096 px), not the splat's blur with a little
 detail on it; glasses, eyes and letters are as sharp as the photo. What the
 photo did not see takes its colours carried over the surface (`carried`:
-every corner the colour of the nearest seen one along the surface,
-softened), so the back of a head is the hair's colour and the back of a
-shirt the shirt's. Without a shape the colours come from the splat and the
+every corner the colour of the nearest seen one along the surface, a step
+sideways in the photo counted three times, softened), so the back of a head
+is the hair's colour, reached over the crown rather than around from the
+cheeks, and the back of a shirt the shirt's. A shape TripoSG's grid left
+open somewhere is closed (`mended`) before it is used. Without a shape the colours come from the splat and the
 photo's fine detail as below. A person (or anything) the photo cuts off at its
 lower edge stands on a clean, flat base there (`based`: `shape.py` notes in
 `shape_cut.json` where the photo ends below the thing, the shape is cut

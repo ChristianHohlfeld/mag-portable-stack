@@ -162,7 +162,13 @@ def carried(verts, faces, camera, fine, outline):
     the mesh the photo saw well takes the photo's colour there, every other
     one the colour of the nearest such corner along the surface (the back of
     a head the hair's, the back of a shirt the shirt's), softened so that
-    no edge runs where two of them meet. None: the photo saw too little."""
+    no edge runs where two of them meet. None: the photo saw too little.
+
+    "Nearest" counts a step sideways (along the photo's left-right) three
+    times: what is behind a thing is mostly what was above it, carried over
+    the top, rather than what was beside it. The back of a head is reached
+    over the crown from the hair, not around from the cheeks and ears; the
+    back of a shirt is still the shirt's, from its shoulders and sides."""
     from scipy.sparse import coo_matrix
     from scipy.sparse.csgraph import dijkstra
     mesh = trimesh.Trimesh(np.asarray(verts, np.float64), np.asarray(faces, np.int64), process=False)
@@ -171,7 +177,9 @@ def carried(verts, faces, camera, fine, outline):
     if len(seen) < 50:
         return None
     edges = mesh.edges_unique
-    length = mesh.edges_unique_length
+    pts = np.asarray(mesh.vertices, np.float64)
+    side = np.asarray(camera.right, np.float64) / max(float(np.linalg.norm(camera.right)), 1e-12)
+    length = mesh.edges_unique_length + 2.0 * np.abs((pts[edges[:, 1]] - pts[edges[:, 0]]) @ side)
     n = len(mesh.vertices)
     graph = coo_matrix((np.concatenate([length, length]), (np.concatenate([edges[:, 0], edges[:, 1]]), np.concatenate([edges[:, 1], edges[:, 0]]))), shape=(n, n)).tocsr()
     _, _, source = dijkstra(graph, directed=False, indices=seen, min_only=True, return_predecessors=True)
@@ -784,6 +792,10 @@ def reconstruct(input_path: Path, output_dir: Path, quality="normal"):
             fitted, front = None, None
     if fitted is not None:
         geometry = fitted
+        for _ in range(5):                                # closed, whatever TripoSG's grid left open
+            if solid(geometry):
+                break
+            geometry = mended(geometry)
     else:
         geometry = shell_of(xyz, alpha, scales, turns, lo, spacing, resolution)
     if geometry.volume < 0:

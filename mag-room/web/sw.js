@@ -6,7 +6,9 @@ const CACHE = 'mag-' + VERSION;
 self.addEventListener('install', () => self.skipWaiting());
 self.addEventListener('activate', (event) => {
   event.waitUntil((async () => {
-    for (const key of await caches.keys()) if (key.startsWith('mag-') && key !== CACHE) await caches.delete(key);
+    // Only the page's own earlier caches: the voice model (Cache Storage 'mag-tts-…', about 200 MB, kept by
+    // the reading worker) is not the page's and must survive a new release.
+    for (const key of await caches.keys()) if (key.startsWith('mag-') && !key.startsWith('mag-tts') && key !== CACHE) await caches.delete(key);
     await self.clients.claim();
   })());
 });

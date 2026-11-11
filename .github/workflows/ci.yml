@@ -37,10 +37,11 @@ jobs:
       - name: Idol worker (jobs survive restarts, a cut-off photo is refused in words, every model gets its UVs)
         run: |
           python3 ops/idol/tests/test_worker.py
-          python3 ops/idol/tests/test_photo.py
           python3 ops/idol/tests/test_unwrap.py
           python3 ops/idol/tests/test_surface.py
           python3 ops/idol/tests/test_photo.py
+      - name: Reading aloud (text is written as it is spoken before it goes to the model)
+        run: node ops/tts/tests/test_text.js
       - name: Scenes (figures get the right skeleton; films survive restarts)
         run: |
           python3 ops/scene/tests/test_rig.py

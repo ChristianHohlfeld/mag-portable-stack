@@ -132,6 +132,27 @@ public:
       }
       return http::send_ok(fd);
     }
+    if (r.method == "POST" && p == "/api/image/act") {
+      // A picture of the chat (uploaded, painted or a bot's) goes on: to a 3D
+      // model ({"do": "3d", "quality"}) or to a video ({"do": "video",
+      // "prompt": what should happen}). Each is a job of the MI50's one line.
+      const Val in = jparse(r.body);
+      const std::string file = jstr(in, "file"), what = jstr(in, "do");
+      Val image;
+      for (auto &m : room_.all())
+        if (const Val *atts = m.find("attachments"); atts && atts->isArr() && !image.isObj())
+          for (auto &a : atts->asArr())
+            if (jstr(a, "file") == file && jstr(a, "kind") == "image") { image = a; break; }
+      if (!image.isObj()) return http::send_error(fd, 404, "Bild nicht gefunden");
+      std::string error, id;
+      if (what == "3d") id = idol_.start(image, jstr(in, "quality", "normal"), error);
+      else if (what == "video") id = idol_.film(image, jstr(in, "prompt"), "chris", error);
+      else return http::send_error(fd, 400, "3d oder video");
+      if (id.empty()) return http::send_error(fd, 409, error.empty() ? "Der Auftrag wurde abgelehnt." : error);
+      Val out = Val::object();
+      out["model3d"] = id;
+      return http::send_json(fd, 200, out);
+    }
     if (r.method == "POST" && p == "/api/3d/select") {
       // Which object of a photo is meant: the one at a place, the one with a name, or every one by itself.
       const Val in = jparse(r.body);

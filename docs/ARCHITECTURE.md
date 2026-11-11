@@ -455,6 +455,31 @@ ordinary image of the chat, which the bots see and which can go on to
 photo to 3D; cancel and "Noch einmal" work as for 3D jobs. The weights are
 fetched once by `ops/imagegen/fetch.sh` (pinned revision, resumable).
 
+## Videos from pictures (`ops/idol/videogen.py`)
+
+Every picture of the chat (uploaded, painted, a bot's) has "3D" and "Video"
+below it (`POST /api/image/act`, `{"file", "do": "3d"|"video", "quality",
+"prompt"}`). "3D" orders photo to 3D for that picture as it is; the model
+can then be animated at its message. "Video" asks what should happen and
+orders a video: Wan 2.2 I2V-A14B (Wan-AI, Apache-2.0), its two experts
+(high noise, then low noise) as GGUF Q6_K (QuantStack) with the Lightning
+4-step LoRA (lightx2v), four steps without guidance, 81 frames at 16 fps,
+about 480p in the picture's shape, H.264 by ffmpeg. The card has no bf16
+and no fast attention: the experts compute in fp16, attention is exact but
+built a block of queries at a time, UMT5 reads the words in fp32 and leaves
+the card before the experts come. It runs in `~/idol-mi50/video/venv`
+(Idol's torch and diffusers through a .pth file, plus gguf, peft, ftfy);
+the weights come from `ops/video/fetch.sh` (pinned, resumable, SHA256, one
+writer) and until `.complete` is there the worker refuses a video in words
+(`POST /api/idol/videos`, `kind: video`, result `video.mp4`). The room's
+message (`model3d.kind = "video"`) shows the picture it comes from, the
+stage and the steps, and becomes an ordinary video of the chat.
+
+The MI50's one line: 3D, pictures and videos are jobs of the one worker,
+which runs one at a time; a GPU stage also holds the lock file, and a lock
+file that cannot be opened never fails a job. A queued job shows how many
+jobs are before it (`ahead`, from the worker); up to 32 wait.
+
 ## Reading aloud (`ops/tts`)
 
 Runs in the browser, not on the server. `web/app/speak.js` drives a Web Worker

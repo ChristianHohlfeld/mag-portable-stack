@@ -221,10 +221,37 @@
 
   // ---- attachments and 3D -------------------------------------------------
   const fileUrl = (a, extra) => '/api/file/' + encodeURIComponent(a.file) + (extra || '');
+  // A picture of the chat goes on: to a 3D model (which can then be animated)
+  // or to a video. Both are jobs of the MI50's one line.
+  function makeModel(a) {
+    MAG.api('POST', '/api/image/act', { file: a.file, do: '3d', quality: localStorage.getItem('mag-3d-quality') || 'normal' })
+      .then(() => MAG.scrollToEnd(), (x) => MAG.toast(x.message, true));
+  }
+  function makeVideo(a) {
+    MAG.sheet('Video aus dem Bild', (content, _, close) => {
+      const words = el('textarea', { rows: 3, placeholder: 'Was soll passieren? z. B. „dreht sich lächelnd zur Kamera und winkt“' });
+      const go = el('button', { class: 'pill on', type: 'submit' }, MAG.icon('play'), el('b', { text: 'Video erzeugen' }));
+      const form = el('form', { class: 'video-ask', onsubmit: (e) => {
+        e.preventDefault();
+        go.disabled = true;
+        MAG.api('POST', '/api/image/act', { file: a.file, do: 'video', prompt: words.value.trim() })
+          .then(() => { close(); MAG.scrollToEnd(); }, (x) => { go.disabled = false; MAG.toast(x.message, true); });
+      } }, el('img', { src: fileUrl(a), alt: '' }), words,
+        el('p', { class: 'hint', text: 'Etwa fünf Sekunden, 480p. Läuft auf der Grafikkarte, wenn sie frei ist.' }), go);
+      content.append(form);
+      setTimeout(() => words.focus(), 50);
+    });
+  }
   function buildAttachment(a) {
     // What the bots were told about a picture is its caption (and its alt text).
-    if (a.kind === 'image') return el('button', { class: 'att-img', title: a.description || a.name, onclick: () => lightbox(fileUrl(a), a.name, a.description, a.file) },
-      el('img', { src: fileUrl(a), alt: a.description || a.name, loading: 'lazy' }));
+    if (a.kind === 'image') {
+      const pic = el('button', { class: 'att-img', title: a.description || a.name, onclick: () => lightbox(fileUrl(a), a.name, a.description, a.file) },
+        el('img', { src: fileUrl(a), alt: a.description || a.name, loading: 'lazy' }));
+      if (S.you?.role !== 'owner') return pic;
+      return el('div', { class: 'att-pic' }, pic, el('div', { class: 'pic-acts' },
+        el('button', { class: 'pill', title: '3D-Modell aus diesem Bild (danach animierbar)', onclick: () => makeModel(a) }, MAG.icon('cube'), el('b', { text: '3D' })),
+        el('button', { class: 'pill', title: 'Video aus diesem Bild', onclick: () => makeVideo(a) }, MAG.icon('play'), el('b', { text: 'Video' }))));
+    }
     if (a.kind === 'audio') return el('audio', { controls: true, preload: 'none', src: fileUrl(a) });
     if (a.kind === 'video') return el('video', { controls: true, preload: 'metadata', src: fileUrl(a), playsInline: true });
     return el('a', { class: 'att-file', href: fileUrl(a, '?download=1'), download: a.name }, MAG.icon(a.kind === 'model' ? 'cube' : 'file'),
@@ -335,7 +362,7 @@
   function progress3d(m3) {
     const n = m3.phases || 0, k = m3.state === 'running' ? m3.phase || 0 : 0;
     const counted = k === 2 && m3.steps > 0;
-    const title = k ? 'Schritt ' + k + ' von ' + n + ' · ' + m3.stage + (counted ? ' · ' + (m3.step || 0) + '/' + m3.steps : '') : 'In der Warteschlange';
+    const title = k ? 'Schritt ' + k + ' von ' + n + ' · ' + m3.stage + (counted ? ' · ' + (m3.step || 0) + '/' + m3.steps : '') : waiting(m3);
     const segs = el('div', { class: 'segs', role: 'progressbar', 'aria-valuemin': 0, 'aria-valuemax': n || 1, 'aria-valuenow': k, 'aria-valuetext': title });
     for (let i = 1; i <= (n || 1); i++) {
       const fill = i < k ? 1 : i === k && counted ? (m3.step || 0) / m3.steps : 0;
@@ -345,15 +372,21 @@
     clock.textContent = clock3d(clock.dataset);
     return el('div', { class: 'prog' }, el('div', { class: 'what', text: title }), segs, clock);
   }
+  // Its place in the MI50's one line: whoever has the card has it alone.
+  const waiting = (m3) => 'In der Warteschlange' + (m3.ahead > 0 ? ' · ' + (m3.ahead === 1 ? '1 Auftrag' : m3.ahead + ' Aufträge') + ' davor' : '');
   // A picture being painted from words: what was asked, how far it is, and
   // a way to stop it or try again. The picture itself is the message's image.
   function buildPicture(m) {
     const m3 = m.model3d, card = el('div', { class: 'm3 image ' + m3.state });
     const running = m3.state === 'queued' || m3.state === 'running';
-    const sub = m3.state === 'done' ? (m3.took ? 'FLUX.2 klein · ' + MAG.dur(m3.took * 1000) : 'FLUX.2 klein')
-      : m3.state === 'error' ? (m3.error || 'Fehler') : m3.state === 'cancelled' ? 'Abgebrochen' : m3.state === 'queued' ? 'In der Warteschlange' : m3.stage || 'Malt';
-    card.append(el('div', { class: 'head' }, el('span', { class: 'src' }, MAG.icon('image')),
-      el('div', { class: 'txt' }, el('b', { text: m3.prompt || 'Bild' }), el('small', { text: sub })),
+    const video = m3.kind === 'video', model = video ? 'Wan 2.2' : 'FLUX.2 klein';
+    const sub = m3.state === 'done' ? (m3.took ? model + ' · ' + MAG.dur(m3.took * 1000) : model)
+      : m3.state === 'error' ? (m3.error || 'Fehler') : m3.state === 'cancelled' ? 'Abgebrochen' : m3.state === 'queued' ? waiting(m3) : m3.stage || 'Malt';
+    // A video shows the picture it comes from.
+    const src = video && m3.image ? el('span', { class: 'src' }, el('img', { src: '/api/file/' + encodeURIComponent(m3.image), alt: '', loading: 'lazy' }))
+      : el('span', { class: 'src' }, MAG.icon(video ? 'play' : 'image'));
+    card.append(el('div', { class: 'head' }, src,
+      el('div', { class: 'txt' }, el('b', { text: m3.prompt || (video ? 'Video' : 'Bild') }), el('small', { text: sub })),
       running ? el('button', { class: 'pill danger', text: 'Abbrechen', onclick: () => MAG.api('POST', '/api/3d/' + m.id + '/cancel').catch((x) => MAG.toast(x.message, true)) })
         : m3.state === 'error' || m3.state === 'cancelled' ? el('button', { class: 'pill', text: 'Noch einmal', onclick: (e) => { e.currentTarget.disabled = true; MAG.api('POST', '/api/3d/' + m.id + '/retry').catch((x) => MAG.toast(x.message, true)); } }) : null));
     if (running) {
@@ -552,7 +585,7 @@
   function build(m) {
     const user = m.role === 'user';
     const node = el('article', { class: 'msg ' + (user ? 'user' : m.role === 'service' ? 'service' : 'bot'), dataset: { id: m.id, from: m.from } });
-    const picture = m.model3d?.kind === 'image';       // a picture from words: its result is an ordinary image
+    const picture = m.model3d?.kind === 'image' || m.model3d?.kind === 'video';   // its result is an ordinary image or video
     const files = m.model3d && !picture ? [] : m.attachments || [];
     const atts = files.length ? el('div', { class: 'atts' }, files.map(buildAttachment)) : null;
     if (user) {
@@ -566,7 +599,7 @@
       node.append(el('div', { class: 'line' }, actions(m), col));
       return node;
     }
-    node.append(el('div', { class: 'meta' }, el('span', { class: 'who', text: picture ? 'Bild' : MAG.name(m.from) }),
+    node.append(el('div', { class: 'meta' }, el('span', { class: 'who', text: picture ? (m.model3d.kind === 'video' ? 'Video' : 'Bild') : MAG.name(m.from) }),
       el('span', { class: 'time', text: MAG.clock(m.ts), title: MAG.day(m.ts) })));
     if (picture) {
       node.append(buildPicture(m));

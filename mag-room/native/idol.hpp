@@ -61,11 +61,55 @@ public:
     return id;
   }
 
-  // A job of this worker: a model, or a picture from words (kind "image").
-  // (A scene is a 3D message too; it belongs to Scenes.)
+  // A job of this worker: a model, a picture from words (kind "image") or a
+  // video from a picture (kind "video"). (A scene is a 3D message too; it
+  // belongs to Scenes.)
   static const Val *job_of(const Val &message) {
     const Val *m3 = message.find("model3d");
-    return m3 && !jstr(*m3, "job").empty() && (jstr(*m3, "kind").empty() || jstr(*m3, "kind") == "image") ? m3 : nullptr;
+    const std::string kind = m3 ? jstr(*m3, "kind") : "";
+    return m3 && !jstr(*m3, "job").empty() && (kind.empty() || kind == "image" || kind == "video") ? m3 : nullptr;
+  }
+
+  // A video from a picture of the chat (Wan 2.2 I2V on the MI50, in the
+  // worker's one queue): about five seconds of what the picture shows,
+  // moving as `prompt` says. The message is there at once with its place in
+  // the line and its progress, and becomes the video. Returns the message
+  // id, or "" with `error`.
+  std::string film(const Val &image, const std::string &prompt, const std::string &by, std::string &error) {
+    const std::string path = room_.file_path(jstr(image, "file"));
+    std::string bytes;
+    if (path.empty() || !read_file(path, bytes, 20u << 20) || bytes.size() < 8) { error = "Bild fehlt oder ist größer als 20 MB."; return ""; }
+    const std::string said = clip(trim(prompt), 1500, "");
+    http::ClientOptions opt = options("POST");
+    opt.body = bytes;
+    opt.headers.push_back({"Content-Type", "application/octet-stream"});
+    opt.timeout_s = 60;
+    const auto res = http::fetch(room_.cfg.idol_url + "/api/idol/videos?prompt=" + url_encode(said) + "&seed=" +
+                                     std::to_string(random_bytes(2)[0] * 256 + random_bytes(2)[1] + 1), opt);
+    const Val job = jparse(res.body);
+    if (res.status != 202 || jstr(job, "id").empty()) {
+      error = res.error.empty() ? jstr(job, "error", "Der Videodienst hat den Auftrag abgelehnt.") : "3D-Dienst nicht erreichbar.";
+      return "";
+    }
+    Val m = Val::object(), m3 = Val::object();
+    m["from"] = "idol";
+    m["role"] = "service";
+    m["state"] = "streaming";
+    m["text"] = "";
+    m["attachments"] = Val::array();
+    m3["kind"] = "video";
+    m3["job"] = jstr(job, "id");
+    m3["state"] = "queued";
+    m3["stage"] = "Warteschlange";
+    m3["progress"] = 0;
+    m3["prompt"] = said;
+    m3["source"] = jstr(image, "name");
+    m3["image"] = jstr(image, "file"); // the picture it is made from (a room file)
+    m3["by"] = by;
+    m["model3d"] = m3;
+    const std::string id = jstr(room_.add(m), "id");
+    watch(id, jstr(job, "id"));
+    return id;
   }
 
   // A picture from words (FLUX.2 klein on the MI50, in the worker's one
@@ -321,7 +365,7 @@ private:
             });
         }
         const std::string now = state + "|" + jstr(st, "stage") + "|" + std::to_string((int)jnum(st, "phase")) + "|" +
-                                std::to_string((int)jnum(st, "step"));
+                                std::to_string((int)jnum(st, "step")) + "|" + std::to_string((int)jnum(st, "ahead"));
         if (now != last && (state == "queued" || state == "running")) {
           last = now;
           // What the worker reports, as it reports it: the phase of the
@@ -339,8 +383,26 @@ private:
             m3["started"] = jnum(st, "started");
             m3["eta"] = jnum(st, "eta");
             m3["eta_at"] = (double)now_s();
+            m3["ahead"] = state == "queued" ? jnum(st, "ahead") : 0; // jobs before it on the card
             if (jnum(st, "resumed") > 0) m3["resumed"] = true; // the worker took it up again after its own restart
           }, false);
+        }
+        if (state == "done" && jstr(m["model3d"], "kind") == "video") {
+          Val mp4 = fetch_result(job, "video.mp4", "video-" + job.substr(0, 6) + ".mp4");
+          if (!mp4.isObj()) { finish(message_id, "error", "Das Video konnte nicht übernommen werden."); return; }
+          room_.update(message_id, [&](Val &msg) {
+            Val atts = Val::array();
+            atts.push(mp4);
+            msg["attachments"] = atts;
+            msg["state"] = "done";
+            msg["text"] = "Video: " + jstr(msg["model3d"], "prompt", jstr(msg["model3d"], "source"));
+            Val &m3 = msg["model3d"];
+            m3["state"] = "done";
+            m3["stage"] = "Fertig";
+            m3["progress"] = 1;
+            if (jnum(st, "started") > 0 && jnum(st, "finished") >= jnum(st, "started")) m3["took"] = jnum(st, "finished") - jnum(st, "started");
+          });
+          return;
         }
         if (state == "done" && jstr(m["model3d"], "kind") == "image") {
           Val png = fetch_result(job, "image.png", "bild-" + job.substr(0, 6) + ".png");

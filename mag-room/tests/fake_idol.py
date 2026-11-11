@@ -43,7 +43,7 @@ class FakeIdol:
                 step = min(50, job["polls"] * 15)
                 out = {"id": parts[3], "state": job["state"], "stage": "3D-Form berechnen", "phase": 2, "phases": 5,
                        "step": step, "total_steps": 50, "progress": step / 50, "eta": 90, "started": 1000,
-                       "finished": 1420, "quality": job["quality"], "resumed": job.get("resumed", 0)}
+                       "finished": 1420, "quality": job["quality"], "resumed": job.get("resumed", 0), "seen_from": [0.6, 0.3, 0.74]}
                 if job["state"] == "error":
                     out["error"] = fake.fails or job.get("error", "Fehler")
                     job["error"] = out["error"]

@@ -489,6 +489,7 @@ class Actor:
         part.name = name if self.obj is part else name + " Körper"
         self.obj.name = name
         self.scale = 1.0
+        self.lift = 0.0                   # how high its foot is above the ground
         self.clock = 0.0                  # until when it is busy (seconds)
         self.placed = False               # put somewhere on purpose, or moved already
         self.keys = {}                    # frame -> (x, y, z, pitch, roll, yaw, squash, scale)
@@ -1052,15 +1053,53 @@ def lamp(name, around, height, energy, colour, only=None):
     return light
 
 
+def shell(room):
+    """The room a photo showed, as its camera saw it: the floor, the wall at
+    the back and the two at the sides, in the photo's colours. No wall where
+    the camera stood and no ceiling, so the room is looked into. The camera
+    stood at (0, 0) and looked along x; its left is y."""
+    def of(key, otherwise, lo, hi):
+        try:
+            return min(hi, max(lo, float(room.get(key, otherwise))))
+        except (TypeError, ValueError):
+            return otherwise
+
+    def colour(key, otherwise):
+        value = room.get(key)
+        try:
+            return tuple(min(1.0, max(0.0, float(c))) ** 2.2 for c in value) if len(value) == 3 else otherwise
+        except (TypeError, ValueError):
+            return otherwise
+    back, height = of("back", 4.0, 0.5, 40.0) + 0.15, of("height", 2.5, 2.0, 6.0)
+    left, right = of("left", -2.0, -30.0, 0.0) - 0.15, of("right", 2.0, 0.0, 30.0) + 0.15      # as the camera saw it: right is -y
+    near = -0.3
+    corners = [(near, -right, 0), (back, -right, 0), (back, -left, 0), (near, -left, 0),
+               (near, -right, height), (back, -right, height), (back, -left, height), (near, -left, height)]
+    mesh = bpy.data.meshes.new("Boden")
+    mesh.from_pydata(corners, [], [(0, 1, 2, 3), (1, 5, 6, 2), (0, 4, 5, 1), (3, 2, 6, 7)])
+    mesh.materials.append(principled("Boden", colour("floor", (0.3, 0.3, 0.3)), 0.8))
+    mesh.materials.append(principled("Wand", colour("wall", (0.7, 0.7, 0.7)), 0.9))
+    for face, material in zip(mesh.polygons, (0, 1, 1, 1)):
+        face.material_index = material
+    mesh.update()
+    ground = bpy.data.objects.new("Boden", mesh)
+    bpy.context.collection.objects.link(ground)
+    return ground
+
+
 def dress(spec, centre, radius, side, figures):
     """Ground, sky and the lights."""
     name = spec.get("light") if spec.get("light") in LIGHTS else "day"
     light = LIGHTS[name]
     colour, roughness = GROUNDS.get(spec.get("ground"), GROUNDS["studio" if name == "studio" else "grass"])
-    bpy.ops.mesh.primitive_circle_add(vertices=72, radius=radius, fill_type="NGON", location=(centre.x, centre.y, 0))
-    ground = bpy.context.active_object
-    ground.name = "Boden"
-    ground.data.materials.append(principled("Boden", colour, roughness))
+    room = spec.get("room") if isinstance(spec.get("room"), dict) else None
+    if room:
+        ground = shell(room)
+    else:
+        bpy.ops.mesh.primitive_circle_add(vertices=72, radius=radius, fill_type="NGON", location=(centre.x, centre.y, 0))
+        ground = bpy.context.active_object
+        ground.name = "Boden"
+        ground.data.materials.append(principled("Boden", colour, roughness))
     scene = bpy.context.scene
     world = bpy.data.worlds.new("Welt")
     scene.world = world
@@ -1182,6 +1221,9 @@ def build(spec_path, out):
         entry["name"] = str(entry.get("name") or "Darsteller %d" % (i + 1))[:40]
         parts = loaded[entry["file"]]
         index = int(number(entry, "part", 0, 0, 99)) or None
+        if index is None and len(parts) > 1 and "tall" in entry:
+            # One object cut out of a photo of a room: the model is that object, and a loose bit beside it is none.
+            index = 1 + max(range(len(parts)), key=lambda i: len(parts[i].data.vertices))
         if index is None and len(parts) > 1:
             which = "; ".join("part %d: %s, %s%s" % (d["part"], d["kind"], d["shape"], ", steht im Bild " + d["side"] if d["side"] else "") for d in describe(parts))
             fail("Das Modell %s zeigt %d Figuren. Gib bei jedem Darsteller part an (%s)." % (entry.get("model", "?"), len(parts), which))
@@ -1205,6 +1247,11 @@ def build(spec_path, out):
             fail("Zwei Darsteller heißen " + name + ".")
         actor = Actor(name, obj, studied[(entry["file"], index)], weigh=not copies)
         actor.scale = number(entry, "size", 1.0, 0.2, 5.0)
+        # A thing out of a photo of a room is as tall as it stood there (metres).
+        tall = number(entry, "tall", 0.0, 0.0, 20.0)
+        if tall > 0:
+            actor.scale = min(200.0, max(0.005, tall / max(actor.size[2], 1e-6)))
+        actor.lift = number(entry, "lift", 0.0, 0.0, 10.0)
         if entry.get("faces") in FACES and not actor.headed:
             # Where it looks in its picture, as the caller sees it. Of a figure
             # whose body already says "this way or the opposite", it picks one.
@@ -1235,6 +1282,18 @@ def build(spec_path, out):
         if at:
             actor.pos = Vector(at)
             actor.placed = True
+        # ... and turned the way the photo saw it: the side the photo showed looks at the
+        # photo's camera, which stands where the room begins (at 0, 0). `seen_from` is
+        # that direction in the model's own file (y up), from the model to the camera.
+        seen = entry.get("seen_from")
+        if isinstance(seen, (list, tuple)) and len(seen) == 3 and at:
+            try:
+                shown = Vector((float(seen[0]), -float(seen[2])))
+            except (TypeError, ValueError):
+                shown = Vector((0.0, 0.0))
+            back = -actor.pos
+            if shown.length > 0.2 and back.length > 1e-6:
+                actor.yaw = math.atan2(back.y, back.x) - math.atan2(shown.y, shown.x)
     cast = [a.part for a in actors.values()]
     for obj in [o for parts in loaded.values() for o in parts if not any(o == c for c in cast)]:
         bpy.data.objects.remove(obj)  # figures of a model that play no part
@@ -1267,6 +1326,8 @@ def build(spec_path, out):
     watch(actors, spans, last, fps)
     for actor in actors.values():
         animate(actor, last)
+        if actor.lift > 0:                 # it hangs on a wall or stands on something: its foot is that high
+            actor.obj.delta_location.z = actor.lift
     # The stage: everything every actor ever touches, with a margin.
     points = [Vector((k[0], k[1])) for a in actors.values() for k in a.keys.values()]
     lo = Vector((min(p.x for p in points), min(p.y for p in points)))
@@ -1326,7 +1387,7 @@ def render(out):
     scene.cycles.adaptive_threshold = 0.05
     # In the chat the ground is a round stage; in the film it reaches the horizon.
     ground = bpy.data.objects.get("Boden")
-    if ground:
+    if ground and len(ground.data.materials) < 2:      # a room keeps its walls where they are
         ground.scale = (12, 12, 1)
     total = scene.frame_end - scene.frame_start + 1
 

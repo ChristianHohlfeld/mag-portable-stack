@@ -3,6 +3,7 @@
 
     objects.py IMAGE OUT --point X Y     the object at a place (0..1 across, 0..1 down)
     objects.py IMAGE OUT --all           every object of the photo, each by itself
+    objects.py IMAGE OUT --scene         ... and where each stands in the room the photo shows
 
 Writes OUT/mask-<n>.png (white where the object is, as large as the photo)
 and OUT/masks.json: for every mask its file, its box (left, top, right,
@@ -21,6 +22,7 @@ from PIL import Image, ImageOps
 from transformers import Sam2Model, Sam2Processor
 
 WEIGHTS = os.environ.get("MAG_IDOL_SAM2", "/home/chris/idol-mi50/weights/sam2")
+DEPTH = os.environ.get("MAG_IDOL_DEPTH", "/home/chris/idol-mi50/weights/depth")
 SIDE = 1536          # the photo is looked at no larger than this
 GRID = 12            # --all asks at GRID x GRID places
 MOST = 12            # ... and keeps at most this many objects
@@ -71,16 +73,76 @@ def every(masks, sure):
     return sorted(kept, key=lambda m: -int(m.sum()))[:MOST]
 
 
+def far_of(image):
+    """How far away every pixel of the photo is, in metres (Depth Anything V2,
+    the small one for rooms): h x w."""
+    from transformers import AutoImageProcessor, AutoModelForDepthEstimation
+    processor = AutoImageProcessor.from_pretrained(DEPTH)
+    model = AutoModelForDepthEstimation.from_pretrained(DEPTH).eval()
+    inputs = processor(images=image, return_tensors="pt")
+    with torch.no_grad():
+        out = model(**inputs)
+    return processor.post_process_depth_estimation(out, target_sizes=[(image.height, image.width)])[0]["predicted_depth"].numpy().astype(np.float32)
+
+
+def focal_of(photo, width, height):
+    """The focal length in pixels: from what the camera wrote into the photo,
+    else that of a phone's main camera (26 mm on a 36 mm film)."""
+    film = 26.0
+    try:
+        told = float(photo.getexif().get_ifd(0x8769).get(0xA405) or 0)        # FocalLengthIn35mmFilm
+        if 10.0 <= told <= 200.0:
+            film = told
+    except Exception:
+        pass
+    return max(width, height) * film / 36.0
+
+
+def room_of(image, far, masks, focal):
+    """The room a photo shows, as seen from its camera, in metres: where every
+    object stands (x to the right, z away from the camera, its foot's height
+    above the floor), how tall and wide it is, and the room around them all."""
+    h, w = far.shape
+    us, vs = np.meshgrid(np.arange(w, dtype=np.float32), np.arange(h, dtype=np.float32))
+    right = (us - w / 2) * far / focal
+    below = (vs - h / 2) * far / focal                                  # downwards from the camera's height
+    pixels = np.asarray(image, np.float32) / 255.0
+    things = np.zeros((h, w), bool)
+    for mask in masks:
+        things |= mask
+    floor = float(np.percentile(below, 98))                             # the lowest the photo shows
+    placed = []
+    for mask in masks:
+        deep = float(np.median(far[mask]))
+        ys, xs = np.nonzero(mask)
+        left_px, right_px, top_px, bottom_px = xs.min(), xs.max() + 1, ys.min(), ys.max() + 1
+        placed.append({"x": round(float(((left_px + right_px) / 2 - w / 2) * deep / focal), 3), "z": round(deep, 3),
+                       "tall": round(float((bottom_px - top_px) * deep / focal), 3), "wide": round(float((right_px - left_px) * deep / focal), 3),
+                       "lift": round(max(0.0, floor - float((bottom_px - h / 2) * deep / focal)), 3)})
+    free = ~things
+    ground = free & (below > floor - 0.12)
+    wall = free & (below < floor - 0.8)
+    def colour(where, otherwise):
+        return [round(float(c), 3) for c in (np.median(pixels[where], axis=0) if where.sum() > 200 else otherwise)]
+    back = float(np.percentile(far, 98))
+    room = {"left": round(float(np.percentile(right, 1)), 3), "right": round(float(np.percentile(right, 99)), 3), "back": round(back, 3),
+            "height": round(float(np.clip(floor - np.percentile(below, 1), 2.2, 3.5)), 3), "camera": round(float(np.clip(floor, 0.3, 2.5)), 3),
+            "floor": colour(ground, (0.55, 0.52, 0.48)), "wall": colour(wall, (0.85, 0.84, 0.82))}
+    return placed, room
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("image", type=Path)
     ap.add_argument("out", type=Path)
     ap.add_argument("--point", nargs=2, type=float)
     ap.add_argument("--all", action="store_true")
+    ap.add_argument("--scene", action="store_true")
     args = ap.parse_args()
     torch.set_num_threads(min(12, len(os.sched_getaffinity(0))))
     torch.set_num_interop_threads(1)
-    photo = ImageOps.exif_transpose(Image.open(args.image))      # as a browser shows it
+    raw = Image.open(args.image)
+    photo = ImageOps.exif_transpose(raw)                         # as a browser shows it
     size = photo.size
     image = photo.convert("RGB")
     if max(size) > SIDE:
@@ -96,15 +158,22 @@ def main():
         places = [((i + 0.5) * w / GRID, (j + 0.5) * h / GRID) for j in range(GRID) for i in range(GRID)]
         picked = every(*masks_at(model, processor, image, places))
     args.out.mkdir(parents=True, exist_ok=True)
+    picked = [mask for mask in picked if mask.any()]
+    placed, room = (None, None)
+    if args.scene and picked:
+        placed, room = room_of(image, far_of(image), picked, focal_of(raw, w, h))
     listed = []
     for n, mask in enumerate(picked):
-        if not mask.any():
-            continue
         picture = Image.fromarray(mask.astype(np.uint8) * 255, mode="L").resize(size, Image.NEAREST)
         picture.save(args.out / f"mask-{n}.png", optimize=True)
         ys, xs = np.nonzero(np.asarray(picture))
         listed.append({"file": f"mask-{n}.png", "box": [int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1], "share": round(float(mask.mean()), 4)})
-    (args.out / "masks.json").write_text(json.dumps({"width": size[0], "height": size[1], "masks": listed}))
+        if placed:
+            listed[-1]["place"] = placed[n]
+    found = {"width": size[0], "height": size[1], "masks": listed}
+    if room:
+        found["room"] = room
+    (args.out / "masks.json").write_text(json.dumps(found))
     print(f"MAG-MASKS {len(listed)}", flush=True)
 
 

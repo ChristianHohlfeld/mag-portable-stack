@@ -86,7 +86,7 @@ class FakeScene:
                 for actor in spec.get("actors", []):
                     if not actor.get("file"):
                         return self.reply(400, {"error": "Ungültiger Dateiname."})
-                    if "part" not in actor:
+                    if "part" not in actor and "tall" not in actor:   # a thing out of a photo's room is its largest figure
                         return self.reply(400, {"error": "Das Modell %s zeigt 2 Figuren. Gib bei jedem Darsteller part an." % actor.get("model")})
                 for action in spec.get("actions", []):
                     if action.get("actor") not in names:

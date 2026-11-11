@@ -128,6 +128,7 @@ public:
     m3["by"] = by;
     m3["glb"] = jstr(glb, "file");
     m3["phases"] = jnum(job, "phases", 3);
+    if (!jstr(spec, "group").empty()) m3["group"] = jstr(spec, "group"); // the room of one photo, put together from its models
     m3["spec"] = told;
     m3["prompt"] = wish();
     m["model3d"] = m3;
@@ -245,7 +246,7 @@ private:
   // A scene as its bot described it, without what the room added for the worker.
   static Val recipe_of(const Val &spec) {
     Val out = Val::object();
-    for (const char *key : {"title", "actors", "actions", "ground", "light", "seconds"})
+    for (const char *key : {"title", "actors", "actions", "ground", "light", "seconds", "room"})
       if (const Val *v = spec.find(key); v && v->type != Val::NUL) out[key] = *v;
     if (Val *actors = out.find("actors"); actors && actors->isArr())
       for (auto &actor : *actors->arr)

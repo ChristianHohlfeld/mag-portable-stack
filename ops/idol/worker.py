@@ -278,8 +278,11 @@ def launch(job_id, key, command):
     if CPUS:
         command = ["taskset", "-c", CPUS] + command
     if key in GPU_STAGES and GPU_LOCK:
-        command = ["/bin/sh", "-c", 'exec 9>>"$0"; w=; until flock -n 9; do w=1; echo "' + GPU_WAIT + ' Die Grafikkarte ist belegt"; sleep 20; done; '
-                   '[ -z "$w" ] || echo "' + GPU_WAIT + '-END"; exec "$@"',
+        # A lock file that cannot be opened never costs a job: the stage runs
+        # without it (this queue still runs one job at a time) and says so.
+        command = ["/bin/sh", "-c", 'if (: >>"$0") 2>/dev/null; then exec 9>>"$0"; w=; '
+                   'until flock -n 9; do w=1; echo "' + GPU_WAIT + ' Die Grafikkarte ist belegt"; sleep 20; done; '
+                   '[ -z "$w" ] || echo "' + GPU_WAIT + '-END"; else echo "MAG-NOTE no GPU lock: $0 cannot be opened"; fi; exec "$@"',
                    GPU_LOCK] + command
     wrapper = ["/bin/sh", "-c", '"$@"; rc=$?; echo "$rc" > "$0.part"; mv "$0.part" "$0"', str(exit_path)] + command
     with log_path.open("ab") as log:

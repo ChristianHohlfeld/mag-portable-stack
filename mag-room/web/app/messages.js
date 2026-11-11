@@ -531,8 +531,11 @@
   function buildThoughts(m) {
     const box = markdown((m.reasoning || '').split('\n').filter((line) => !/^\s*([*+\-•–]|\d{1,3}[.)])\s*$/.test(line)).join('\n'));
     for (let bare; (bare = [...box.querySelectorAll('li, ul, ol, p')].find((n) => !n.textContent.trim() && !n.querySelector('img')));) bare.remove();
-    if (!box.textContent.trim()) return null;
-    return el('details', { class: 'think' }, el('summary', {}, el('span', { text: 'Gedanken' })), box);
+    // The folded line never stands there as a bare heading: it begins with what was thought,
+    // and thoughts of a word or two are no block at all.
+    const words = box.textContent.replace(/\s+/g, ' ').trim();
+    if ((words.match(/\p{L}/gu) || []).length < 20) return null;
+    return el('details', { class: 'think' }, el('summary', {}, el('span', { text: 'Gedanken' }), el('span', { class: 'first', text: words.slice(0, 140) })), box);
   }
   function buildPart(m, index) {
     const p = m.parts[index];

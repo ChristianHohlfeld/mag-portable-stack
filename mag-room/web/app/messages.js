@@ -470,7 +470,7 @@
         setTimeout(() => { b.innerHTML = MAG.icons.copy; }, 1300);
       } catch { MAG.toast('Kopieren nicht möglich', true); }
     }));
-    if (words && !user && MAG.speak) {
+    if (words && MAG.speak) {
       const speak = button('speak', 'Vorlesen', (e) => MAG.speak(m, e.currentTarget));
       speak.dataset.speak = m.id; // the one that is being read shows it (speak.js)
       row.append(speak);

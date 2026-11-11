@@ -40,6 +40,7 @@ jobs:
           python3 ops/idol/tests/test_photo.py
           python3 ops/idol/tests/test_unwrap.py
           python3 ops/idol/tests/test_surface.py
+          python3 ops/idol/tests/test_photo.py
       - name: Scenes (figures get the right skeleton; films survive restarts)
         run: |
           python3 ops/scene/tests/test_rig.py

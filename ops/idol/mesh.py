@@ -20,7 +20,9 @@ The model is made from them the way they are:
    no bubble inside, no corner where two sheets only touch.
 4. That small mesh is unwrapped, and the texture is baked for it from the
    splat itself: the colours are as fine as the Gaussians, whatever the
-   faces. The STL keeps the finer mesh.
+   faces. The side the photo shows takes its colours from the photo, which
+   is finer still (photo.py finds the photo's camera again). The STL keeps
+   the finer mesh.
 
 The original splat.ply is never modified.
 """
@@ -36,6 +38,7 @@ from scipy.spatial import cKDTree
 from skimage.measure import marching_cubes
 import trimesh
 
+import photo as photo_of
 from surface import OWN, PORE, body_of, opacity_field
 from unwrap import unwrap
 
@@ -90,7 +93,39 @@ def gaussian_albedo(points, tree, centers, colors, alpha, radii, spacing, neighb
     return np.clip(rgb, 0.0, 1.0)
 
 
-def bake_texture(verts, faces, xyz, alpha, radii, colors, spacing, size, neighbors, seconds):
+def the_photo(job):
+    """What the model was made from, for its colours: the square of the photo
+    the model was shown (as fine as the photo was taken, when the sampling
+    stage noted its cut), and its outline. None: this job has none."""
+    import json
+    shown = job / "outputs" / "input_input.png"
+    if not shown.is_file():
+        return None
+    try:
+        prepared = np.asarray(Image.open(shown).convert("RGB"), np.float32) / 255.0
+        outline = prepared.max(axis=2) > 0.04
+        fine = prepared
+        note, original = job / "outputs" / "input_crop.json", job / "input.png"
+        if note.is_file() and original.is_file():
+            cut = json.loads(note.read_text())
+            picture = Image.open(original)
+            if list(picture.size) == cut["photo"]:
+                kx, ky = cut["photo"][0] / cut["resized"][0], cut["photo"][1] / cut["resized"][1]
+                left, top, right, bottom = cut["box"]
+                side = int(min(4096, max(prepared.shape[0], round((right - left) * kx))))
+                if side > prepared.shape[0]:
+                    part = picture.convert("RGB").crop((int(round(left * kx)), int(round(top * ky)), int(round(right * kx)), int(round(bottom * ky))))
+                    fine = np.asarray(part.resize((side, side), Image.LANCZOS), np.float32) / 255.0
+        distance = None
+        hint = job / "outputs" / "input_camera.json"
+        if hint.is_file():
+            distance = float(json.loads(hint.read_text()).get("radius", 0)) or None
+        return {"prepared": prepared, "fine": fine, "outline": outline, "distance": distance}
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def bake_texture(verts, faces, xyz, alpha, radii, colors, spacing, size, neighbors, seconds, source=None):
     """Unwrap, rasterize UV triangle IDs and bake at each texel.
 
     UVs sample the actual 3D surface, not interpolated per-vertex colors.
@@ -115,6 +150,19 @@ def bake_texture(verts, faces, xyz, alpha, radii, colors, spacing, size, neighbo
         raise RuntimeError("Kein UV-Texel abgedeckt")
     tex_flat = np.zeros((size*size, 3), dtype=np.uint8)
     all_pixels = np.flatnonzero(covered)
+    # The side the photo shows takes its colours from the photo: find the photo's camera again.
+    camera = None
+    if source is not None:
+        strong = alpha > 0.3
+        camera = photo_of.fit(xyz[strong], colors[strong], source["prepared"], distance=source["distance"])
+        print("Photo: " + ("its camera was not found again; colours from the splat alone" if camera is None else
+                           f"camera found again (outline {camera.cover:.2f}, colours apart {camera.colour:.3f}); {source['fine'].shape[0]} px across"), flush=True)
+    where = np.zeros((len(all_pixels), 3), np.float32) if camera is not None else None
+    facing = np.zeros((len(all_pixels), 3), np.float32) if camera is not None else None
+    corners = np.asarray(verts, np.float32)[vmapping][uv_faces]
+    outward = np.cross(corners[:, 1] - corners[:, 0], corners[:, 2] - corners[:, 0])
+    outward /= np.maximum(np.linalg.norm(outward, axis=1, keepdims=True), 1e-12)
+    del corners
     tree = cKDTree(xyz)
     # A Gaussian colours as far as it is wide, and at least half the way to the next one.
     radii = np.maximum(radii, 0.5 * tree.query(xyz, k=2, workers=8)[0][:, 1]).astype(np.float32)
@@ -148,6 +196,16 @@ def bake_texture(verts, faces, xyz, alpha, radii, colors, spacing, size, neighbo
         rgb = gaussian_albedo(positions, tree, xyz, colors, alpha, radii,
                               spacing, neighbors)
         tex_flat[samples] = np.rint(rgb*255).astype(np.uint8)
+        if camera is not None:
+            where[start:start+len(samples)] = positions
+            facing[start:start+len(samples)] = outward[fi]
+    if camera is not None:
+        rgb, trust = photo_of.colours(camera, where, facing, source["fine"], source["outline"])
+        mixed = tex_flat[all_pixels].astype(np.float32) / 255.0
+        mixed += trust[:, None] * (rgb - mixed)
+        tex_flat[all_pixels] = np.rint(np.clip(mixed, 0, 1) * 255).astype(np.uint8)
+        print(f"Photo: {100.0 * float((trust > 0.5).mean()):.0f} % of the surface takes its colours from it", flush=True)
+        del where, facing, rgb, trust, mixed
     texture = tex_flat.reshape(size, size, 3)
     # Extend colors 8 pixels beyond UV islands to avoid bilinear seam bleed.
     filled = covered.reshape(size, size)
@@ -423,7 +481,7 @@ def reconstruct(input_path: Path, output_dir: Path, quality="normal"):
     vmapping, uv_faces, uvs, texture = bake_texture(
         shown.vertices, shown.faces, xyz, alpha, gaussian_radius, colors,
         spacing, settings["texture"], settings["neighbors"],
-        float(os.environ.get("MAG_IDOL_UNWRAP_S", settings["unwrap"])))
+        float(os.environ.get("MAG_IDOL_UNWRAP_S", settings["unwrap"])), the_photo(input_path.parent))
     print("MAG-STEP export", flush=True)
 
     material = trimesh.visual.material.PBRMaterial(

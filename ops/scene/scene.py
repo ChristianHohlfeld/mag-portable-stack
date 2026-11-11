@@ -864,8 +864,28 @@ def perform(actor, action, actors, fps, start):
             end = BEAST[kind](p, seconds(0.0, 0.0, 12.0))
         else:
             end = p.ease(kind, seconds(1.5, 0.0, 20.0))
+    elif not beast and (kind == "motion" or p.lib.find(kind)):
+        # One of the recorded motions, found by its description: "motion" with
+        # a query ("boxing", "drunk walk", "tanzt Salsa"), or such words as
+        # the action itself. It is joined at the pose nearest the one before.
+        name = p.lib.find(action.get("query") or kind) if kind == "motion" else p.lib.find(kind)
+        if not name:
+            fail("Keine Aufnahme passt zu „" + str(action.get("query") or kind) + "“. Beschreibe die Bewegung mit anderen Worten (englisch: boxing, salsa dance, crawl, drunk walk …).")
+        if other:
+            way = other.pos - actor.pos
+            if way.length > 1e-6 and abs(motion.wrap(math.atan2(way.y, way.x) - p.heading)) > 0.6:
+                p.face(math.atan2(way.y, way.x))
+            p.look(eyes(other), len(p.frames), len(p.frames) + int(2.0 * fps), 0.8)
+        clip = p.lib[name]
+        mirror = bool(clip.hand) and p.body.hand(clip.hand) != clip.hand
+        p.change(name, at=p.entry(clip, mirror), mirror=mirror, span=0.35)
+        length = seconds(0.0, 0.0, 20.0) or max(1.0, clip.seconds - p.t)
+        for _ in range(max(1, int(round(length * fps)))):
+            p.tick()
+        p.rest()
+        end = len(p.frames)
     else:
-        fail("Unbekannte Aktion: " + str(kind) + ". Es gibt " + ACTIONS % ", ".join(RECORDED) + ".")
+        fail("Unbekannte Aktion: " + str(kind) + ". Es gibt " + ACTIONS % "motion mit query (eine von %d Aufnahmen, gesucht nach ihrer Beschreibung)" % len(RECORDED) + ".")
     at = p.origin
     actor.pos, actor.yaw = Vector((at[0], at[1])), p.heading - (p.build if beast else p.body).facing
     actor.clock = end / fps
@@ -1108,7 +1128,7 @@ def play(actor, action, actors, fps, start):
         if kind != "look_at" or frames:
             end = first + frames
     else:
-        fail("Unbekannte Aktion: " + str(kind) + ". Es gibt " + ACTIONS % ", ".join(RECORDED) + ". " + actor.name +
+        fail("Unbekannte Aktion: " + str(kind) + ". Es gibt " + ACTIONS % "motion mit query (eine von %d Aufnahmen, gesucht nach ihrer Beschreibung)" % len(RECORDED) + ". " + actor.name +
              " ist ein Gegenstand ohne Skelett: er kann gehen, springen, sich drehen, wackeln, wachsen und wegfliegen.")
     actor.key(end)
     actor.clock = end / fps

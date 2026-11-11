@@ -32,3 +32,8 @@ passing it on: this repository is public.
 wave and the spin it has, since Nachtrag 39: `kick` (135_04, a front kick
 with a step into it), `punch` (143_23) and `fall` (90_18, pulled off the
 feet). When in a blow the hit lands is written in `scene.py` (`HIT`).
+
+Since Nachtrag 29 the list has about 150 recordings, each with the CMU
+description as its `label`; `Library.find` looks a motion up by a few words
+(English, or German words it knows), and `Performer.entry` joins it at the
+moment whose pose is nearest the one before (the feet that stand standing).

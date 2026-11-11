@@ -64,6 +64,12 @@ def main():
     # ---- the motions ----------------------------------------------------------
     for name in ("idle", "walk", "run", "sneak", "hop", "leap", "jump", "wave", "spin", "kick", "punch", "fall"):
         assert name in lib, name
+    # About 150 recorded motions, each with its description, found by a few words (German too).
+    assert len(lib.clips) >= 140 and all(lib.labels[n] for n in lib.clips)
+    for words, part in (("boxing", "boxing"), ("tanzt Salsa", "salsa"), ("betrunken", "drunk"), ("kriecht", "crawl"), ("verbeugt sich", "bow")):
+        assert part in (lib.find(words) or ""), (words, lib.find(words))
+    assert lib.find("xyzzy quux") is None
+    # A motion is joined where its pose is nearest: a walk round is not begun at its start when the feet say otherwise.
     # A blow carries its maker forwards (it steps into it), and somebody who falls ends low.
     assert lib["kick"].place(0.3 * lib["kick"].seconds)[0] > 0.2 and not lib["kick"].loop and not lib["punch"].loop
     assert lib["fall"].root[-1, 2] < 0.45 * lib["fall"].root[0, 2], (lib["fall"].root[0, 2], lib["fall"].root[-1, 2])

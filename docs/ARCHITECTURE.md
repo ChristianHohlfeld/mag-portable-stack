@@ -362,7 +362,12 @@ photo did not see takes its colours carried over the surface (`carried`:
 every corner the colour of the nearest seen one along the surface,
 softened), so the back of a head is the hair's colour and the back of a
 shirt the shirt's. Without a shape the colours come from the splat and the
-photo's fine detail as below.
+photo's fine detail as below. A person (or anything) the photo cuts off at its
+lower edge stands on a clean, flat base there (`based`: `shape.py` notes in
+`shape_cut.json` where the photo ends below the thing, the shape is cut
+level a hair below that line and the cut closed with a flat face), not on
+a ragged edge or a body TripoSG made up beneath it; a cut that would not
+leave a solid is not made.
 
 The mesh stage (`mesh.py`, CPU) makes the model from the splat, a cloud of
 small flat Gaussians lying on what the photo showed:

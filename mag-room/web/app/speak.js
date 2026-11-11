@@ -69,17 +69,32 @@
   const ABBREV = /^(dr|nr|bzw|ca|ggf|usw|etc|prof|dipl|ing|str|tel|fax|abs|vgl)$/i;
   // The very first part of a playback is short (`first`): a clause, not a
   // whole sentence. The sound starts after what a few words take to make,
-  // and the rest is made while they play.
-  function piperParts(text, max = 120, first = false) {
+  // and the rest is made while they play. How long the first parts are
+  // follows from how fast this device makes speech (see line()): each is as
+  // long as can be made while what is ready plays, and never so short that
+  // it plays for less time than it takes to make (a GPU spends about a
+  // second on every part, however short): then the reading runs on without
+  // a pause from the first word.
+  function piperParts(text, max = partMax(), first = false) {
     const out = [];
     let rest = String(text || '').trim();
+    const { a, b } = line();
+    // Letters below which a part in `steps` plays for less time than it takes to make.
+    const least = (steps) => (b * steps < 0.95 ? 14 * a / (1 - b * steps) : 14 * a * 20);
+    let planning = first, ahead = 0;     // seconds of sound that are ready ahead of what is being made
+    const advance = (piece) => {
+      if (!planning) return;
+      const sec = piece.length / 14;
+      ahead = out.length === 1 ? sec : Math.max(0, ahead + sec - (a + b * 2 * sec));
+    };
     if (first && rest.length > 40) {
-      const head = rest.slice(0, 44);
+      const lo = Math.min(60, Math.max(8, Math.ceil(1.3 * least(3))));
+      const head = rest.slice(0, Math.max(44, lo + 30));
       let cut = -1;
       for (const m of head.matchAll(/[,;:–—]\s|[.!?]\s|\s(?=(?:und|oder|aber|denn|weil|dass|wenn|als|wie)\s)/g))
-        if (m.index >= 8 && cut < 0) cut = m.index + (/\s/.test(m[0][0]) ? 0 : 1);       // the first place a speaker would breathe
-      if (cut < 0) cut = head.lastIndexOf(' ', 30);
-      if (cut >= 8) { out.push(rest.slice(0, cut).trim()); rest = rest.slice(cut).trimStart(); }
+        if (m.index >= lo && cut < 0) cut = m.index + (/\s/.test(m[0][0]) ? 0 : 1);       // the first place a speaker would breathe
+      if (cut < 0) cut = head.lastIndexOf(' ', Math.max(30, lo + 16));
+      if (cut >= lo) { out.push(rest.slice(0, cut).trim()); advance(out[0]); rest = rest.slice(cut).trimStart(); }
     }
     while (rest) {
       let cut = rest.length;
@@ -91,10 +106,14 @@
         if (m[0][0] === '.' && (token.includes('.') || ABBREV.test(token))) continue;
         if (at >= 8) { cut = at; break; }
       }
-      // On a device that makes speech about as fast as it plays, the next parts are short as well, each
-      // about twice the one before: every part is made while the one before it plays.
-      const slow = !(piper.perStep > 0 && piper.perStep * 3 < 0.2);
-      const most = first && out.length === 1 ? (slow ? 36 : 70) : first && out.length === 2 && slow ? 72 : max;
+      let most = max;
+      if (planning) {
+        if (!out.length) most = Math.min(max, Math.max(36, Math.ceil(1.3 * least(3))));
+        else {
+          const lo = Math.ceil(1.3 * least(2)), can = Math.floor(14 * (0.85 * ahead - a) / (b * 2));
+          most = Math.min(max, Math.max(24, can >= lo ? can : lo));
+        }
+      }
       if (cut > most) {
         const word = rest.lastIndexOf(' ', most);
         cut = word >= Math.floor(most / 3) ? word + 1 : most;
@@ -102,6 +121,8 @@
       const piece = rest.slice(0, cut).trim();
       if (!piece) break;
       out.push(piece);
+      advance(piece);
+      if (planning && most >= max) planning = false;
       rest = rest.slice(cut).trimStart();
     }
     return out;
@@ -184,7 +205,7 @@
 
   // ---- Piper (worker) ---------------------------------------------------------
   const piper = { config: null, configP: null, failed: new Map(), worker: null, ready: new Set(), loading: new Map(), ctx: null, seq: 0, pending: new Map(), sources: new Set(),
-                  perStep: +(localStorage.getItem('mag-tts-speed') || 0) || 0 };
+                };
   function loadConfig() {
     if (!S.features?.tts) return Promise.resolve(null);
     if (!piper.configP) piper.configP = (async () => {
@@ -327,6 +348,7 @@
     for (const p of piper.pending.values()) { clearTimeout(p.timer); p.reject(new Error('worker reset')); }
     piper.pending.clear();
   }
+  // ---- how fast this device makes speech, and in how many steps --------------
   // In how many steps a part is made. The model refines its sound in steps:
   // five is its usual quality, four and three are heard a little, two more;
   // a device that makes eight in a quarter of the time they play (a GPU)
@@ -339,25 +361,50 @@
   // rather than stop between sentences. How
   // fast the device is, is measured on every part (work per second of
   // speech and step) and kept.
-  const topSteps = () => (piper.perStep > 0 && piper.perStep * 8 < 0.25 ? 8 : 5);
+  //
+  // A part takes a fixed time (four networks are started; on a GPU every
+  // run costs its dispatch, about a second for a part on Chris's phone) and
+  // a time that grows with its length and its steps:
+  //   seconds to make = a + b * steps * seconds of speech.
+  // a and b are a line through what this device took for its parts (older
+  // ones weigh less), one for the GPU and one for the CPU, kept on the
+  // device; what a phone usually takes holds the line until there is more.
+  const PRIOR = { webgpu: [1.0, 0.06], wasm: [0.3, 0.3] };
+  let fits = {};
+  try { fits = JSON.parse(localStorage.getItem('mag-tts-fit') || '{}') || {}; } catch { fits = {}; }
+  function line(provider) {
+    const p = provider || voiceState.provider || (gpuOk() ? 'webgpu' : 'wasm');
+    const [pa, pb] = PRIOR[p] || PRIOR.wasm, f = fits[p] || {};
+    // The prior is two points (at 3 and 24) of half a weight each, so a line stands even when all parts were alike.
+    let n = 1, x = 13.5, y = pa + 13.5 * pb, xx = 0.5 * (9 + 576), xy = 0.5 * (3 * (pa + 3 * pb) + 24 * (pa + 24 * pb));
+    if (f.n > 0) { n += f.n; x += f.x; y += f.y; xx += f.xx; xy += f.xy; }
+    const d = n * xx - x * x;
+    const b = Math.max(0.005, d > 1e-6 ? (n * xy - x * y) / d : pb);
+    const a = Math.min(3, Math.max(0, (y - b * x) / n));
+    return { a, b };
+  }
+  const cost = (steps, sec) => { const { a, b } = line(); return a + b * steps * sec; };
+  const partMax = () => (line().a > 0.5 ? 200 : 120);   // where every part costs much, parts are longer
+  const topSteps = () => (cost(8, 8) / 8 < 0.25 ? 8 : 5);
   function stepsFor(pb, text) {
     const length = Math.max(0.4, text.length / 14);                     // seconds of speech, about
-    const per = piper.perStep > 0 ? piper.perStep : 0.2;                // not measured yet: taken as slow
     const now = performance.now() / 1000;
     let reached = Math.max(now, pb.until || now), made = now;           // when the reading gets here, when the parts before it are made
     for (const part of pb.waiting) { reached += part.length; made += part.work; }
     let steps = topSteps();
     const least = pb.until || pb.waiting.length ? 2 : 3;
-    while (steps > least && made + per * steps * length + 0.1 > reached) steps--;
-    const part = { length, work: per * steps * length + 0.1 };
+    while (steps > least && made + cost(steps, length) + 0.05 > reached) steps--;
+    const part = { length, work: cost(steps, length) + 0.05 };
     pb.waiting.push(part);
     return [steps, part];
   }
   function measured(res) {
-    if (!(res.synthMs > 0) || !(res.audio.length > res.rate / 2) || !(res.steps > 0)) return;
-    const now = res.synthMs / (1000 * res.audio.length / res.rate) / res.steps;
-    piper.perStep = piper.perStep > 0 ? 0.6 * piper.perStep + 0.4 * now : now;
-    try { localStorage.setItem('mag-tts-speed', String(piper.perStep)); } catch {}
+    if (!(res.synthMs > 0) || !(res.audio.length > res.rate / 4) || !(res.steps > 0)) return;
+    const p = res.provider === 'webgpu' ? 'webgpu' : 'wasm', f = fits[p] || (fits[p] = { n: 0, x: 0, y: 0, xx: 0, xy: 0 });
+    const x = res.steps * res.audio.length / res.rate, y = res.synthMs / 1000;
+    for (const k of ['n', 'x', 'y', 'xx', 'xy']) f[k] *= 0.92;
+    f.n += 1; f.x += x; f.y += y; f.xx += x * x; f.xy += x * y;
+    try { localStorage.setItem('mag-tts-fit', JSON.stringify(fits)); } catch {}
   }
   // The first words of the newest answer are made before anybody asks for
   // them (see prepare): a tap on "Vorlesen" then speaks at once.
@@ -485,7 +532,7 @@
       const take = pb.live ? completeLength(rest) : rest.length;
       if (take > 0) {
         const piece = rest.slice(0, take);
-        pb.parts.push(...(pb.de ? piperParts(piece, 120, !pb.queued) : split(piece)));
+        pb.parts.push(...(pb.de ? piperParts(piece, partMax(), !pb.queued) : split(piece)));
         pb.queued += take;
       }
     }
@@ -551,8 +598,9 @@
     const pb = { key, who, speaker: prof.key, lang, de, parts: [], at: 0, queued: 0, text, live: false, wake: null, spoken: false, voice: prof.voice, t0: performance.now(), waiting: [], until: 0 };
     feed(pb, text, false);
     if (!pb.parts.length) return false;
-    // What was being made ready for another message must not hold this one up.
-    if (de && pb.voice && !prepared.has(asked(pb.voice.model, prof.rate, lang.slice(0, 2), pb.parts[0])) && prepared.size && piper.worker) {
+    // What still waits to be made ahead (for this or another message) must not hold this reading up: it is
+    // dropped, what is made stays, and this reading asks for its own parts in its own order.
+    if (de && pb.voice && prepared.size && piper.worker) {
       try { piper.worker.postMessage({type: 'cancel', before: piper.seq}); } catch (_) {}
     }
     current = pb;
@@ -634,10 +682,10 @@
     const take = growing ? completeLength(rest) : rest.length;
     if (take > 0) {
       const piece = rest.slice(0, take);
-      cut = { text: cut.text + piece, parts: [...cut.parts, ...piperParts(piece, 120, !cut.text)] };
+      cut = { text: cut.text + piece, parts: [...cut.parts, ...piperParts(piece, partMax(), !cut.text)] };
     }
     cuts.delete(id); cuts.set(id, cut);
-    while (cuts.size > 6) cuts.delete(cuts.keys().next().value);
+    while (cuts.size > 10) cuts.delete(cuts.keys().next().value);
     return cut;
   }
   const keptFor = new Map();            // what is asked -> seconds of sound it holds
@@ -654,24 +702,25 @@
   }
   // As many steps as the device makes in the time the sound plays (two at least).
   function keepUpSteps() {
-    const per = piper.perStep > 0 ? piper.perStep : 0.2;
     let steps = topSteps();
-    while (steps > 2 && per * steps > 0.85) steps--;
+    while (steps > 2 && cost(steps, 8) / 8 > 0.85) steps--;
     return steps;
   }
   let preparedFor = '';                 // the newest message being made ready
-  function prepare(m) {
+  function prepare(m, head = false) {
     if (!m || current || !piperPossible || !S.features?.tts || document.visibilityState !== 'visible' || !piper.config) return;
     const who = m.role === 'user' ? 'chris' : m.from, prof = profile(who);
     if (!prof.voice || !piper.ready.size) return;
     const text = normalize(m.text || '');
     if (!text) return;
     // A newer answer comes first: what is still waiting to be made for an older one is dropped (what is made stays).
-    if (preparedFor && preparedFor !== m.id && piper.worker) { try { piper.worker.postMessage({type: 'cancel', before: piper.seq}); } catch (_) {} }
-    preparedFor = m.id;
+    if (!head) {
+      if (preparedFor && preparedFor !== m.id && piper.worker) { try { piper.worker.postMessage({type: 'cancel', before: piper.seq}); } catch (_) {} }
+      preparedFor = m.id;
+    }
     const lang = textLocale(text).slice(0, 2);
     const parts = cutFor(m.id, text, m.state !== 'done').parts;
-    parts.forEach((part, i) => {
+    (head ? parts.slice(0, 1) : parts).forEach((part, i) => {
       const key = asked(prof.voice.model, prof.rate, lang, part);
       if (prepared.has(key)) return;
       const sound = ask({type: 'speak', text: part, model: prof.voice.model, rate: prof.rate, lang, steps: i < 2 ? topSteps() : keepUpSteps()}, SPEAK_TIMEOUT_MS);
@@ -687,9 +736,13 @@
     if (preparing) return;
     preparing = setTimeout(() => {
       preparing = 0;
-      let m = null;
-      for (const x of S.messages.values()) if (x.role !== 'user' && x.text && !x.model3d && MAG.bot?.(x.from)) m = x;
-      if (m) prepare(m);
+      const answers = [];
+      for (const x of S.messages.values()) if (x.role !== 'user' && x.text && !x.model3d && MAG.bot?.(x.from)) answers.push(x);
+      // The newest whole; of the five before it the first words (a tap there starts at once too), once they are complete.
+      const newest = answers.pop();
+      if (!newest) return;
+      prepare(newest);
+      for (const m of answers.slice(-5).reverse()) if (m.state === 'done') prepare(m, true);
     }, 400);
   }
   MAG.speaking = { paint, stop, busy: () => !!current };

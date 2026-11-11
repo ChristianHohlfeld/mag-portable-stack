@@ -545,6 +545,25 @@ class Animal:
                 break
         return len(self.frames)
 
+    def tumble(self, frames):
+        """Thrown through the air (scene.knock carries and turns the body):
+        its legs are flung out and paddle, the back is bent, and it comes
+        down on all four. Returns the frame it is down at."""
+        b, n = self.build, max(2, int(frames))
+        for i in range(1, n + 1):
+            u = i / n
+            self.arch = math.radians(18.0) * math.sin(math.pi * u)
+            for k in range(4):
+                fore_leg, kick = k >= 2, math.sin(2 * math.pi * (2.2 * u + 0.25 * k))
+                out = (0.55 if fore_leg else -0.5) + 0.15 * kick
+                self.carried[k] = np.array([b.reach[k] * out, 0.0, -b.reach[k] * (0.7 + 0.1 * kick)])
+            self.tick()
+        self.arch = 0.0
+        for k in range(4):
+            self.carried[k], self.paws[k].since = None, 0.0
+            self.paws[k].at, self.paws[k].down = np.append(self._home(k), 0.0), True
+        return len(self.frames)
+
     def greet(self, seconds=2.4):
         """Lifts a fore paw and waves it. Returns the frame it stands on four feet again."""
         b, k = self.build, FR

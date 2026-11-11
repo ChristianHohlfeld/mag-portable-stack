@@ -421,12 +421,12 @@ def front_of(shape, outline):
     frame. TripoSG sees its picture straight from +z without perspective, the
     square from -1 to 1 a little larger than the picture; how much larger
     (and how far off the middle) is found where the shape's outline covers the
-    thing's outline best. None: they do not cover each other."""
+    thing's outline best. (How well they cover each other, the camera.)"""
     from PIL import Image as Img
     side = 256
     want = np.asarray(Img.fromarray(outline).resize((side, side), Img.BILINEAR), bool)
     if want.sum() < 64:
-        return None
+        return 0.0, None
     pts = np.asarray(shape.sample(200000), np.float64)
     pts = pts[np.argsort(-pts[:, 2])]
 
@@ -439,19 +439,38 @@ def front_of(shape, outline):
         got = binary_closing(got, iterations=2)                           # closed between the points, not grown
         return (got & want).sum() / max(1, (got | want).sum())
 
-    best = max((cover(s, 0, 0), s, 0.0, 0.0) for s in np.linspace(0.8, 1.12, 33))
+    best = max((cover(s, 0, 0), s, 0.0, 0.0) for s in np.linspace(0.6, 1.4, 41))
     for step in (0.02, 0.008, 0.003):                                 # then nudged into place
         for _ in range(4):
             _, s, dx, dy = best
             best = max([best] + [(cover(s + a * step, dx + b * step, dy + c * step), s + a * step, dx + b * step, dy + c * step)
                                  for a, b, c in ((1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1))])
     found, s, dx, dy = best
-    print(f"Shape: its picture's outline covered at {100 * found:.0f} %", flush=True)
-    if found < 0.75:
-        return None
     far = 1000.0                                                      # so far that it sees without perspective
-    return photo_of.Camera(np.array([0.0, 0.0, far]), np.array([1.0, 0.0, 0.0]), np.array([0.0, 1.0, 0.0]),
-                           np.array([0.0, 0.0, -1.0]), (far * s / 2, far * s / 2), (0.5 + dx, 0.5 + dy))
+    return found, photo_of.Camera(np.array([0.0, 0.0, far]), np.array([1.0, 0.0, 0.0]), np.array([0.0, 1.0, 0.0]),
+                                  np.array([0.0, 0.0, -1.0]), (far * s / 2, far * s / 2), (0.5 + dx, 0.5 + dy))
+
+
+def facing(shape, outline):
+    """The shape turned so that it looks at the camera of its picture, and
+    that camera (front_of); (None, shape): its outline does not cover the
+    picture's. TripoSG mostly sees its picture from +z, but it turns some
+    things its own way (a car or an animal seen from the side lies along
+    another axis), so the four turns about the upright axis are tried; +z
+    wins a tie."""
+    best = None
+    for quarter in range(4):
+        turned = shape.copy()
+        if quarter:
+            turned.apply_transform(trimesh.transformations.rotation_matrix(quarter * np.pi / 2, [0.0, 1.0, 0.0]))
+        found, camera = front_of(turned, outline)
+        if best is None or found + (0.02 if quarter == 0 else 0.0) > best[0]:
+            best = (found + (0.02 if quarter == 0 else 0.0), found, camera, turned, quarter)
+    _, found, camera, turned, quarter = best
+    print(f"Shape: its picture's outline covered at {100 * found:.0f} %" + (f", turned by {90 * quarter}°" if quarter else ""), flush=True)
+    if found < 0.75 or camera is None:
+        return None, shape
+    return camera, turned
 
 
 def moved(camera, r, t):
@@ -776,7 +795,7 @@ def reconstruct(input_path: Path, output_dir: Path, quality="normal"):
             whole = trimesh.load(output_dir / "shape.ply", force="mesh", process=True)
             # The camera of the picture it was made from, in its own frame: the photo is laid on with it.
             picture = shape_picture(output_dir)
-            own = front_of(whole, picture[1]) if picture is not None else None
+            own, whole = facing(whole, picture[1]) if picture is not None else (None, whole)
             if own is not None:
                 whole = based(whole, own, output_dir)
             strong = alpha > 0.3
@@ -876,7 +895,7 @@ def reconstruct_shape(output_dir: Path, quality="normal"):
     picture = shape_picture(output_dir)
     if picture is None:
         raise RuntimeError("Das Bild der Form fehlt")
-    own = front_of(whole, picture[1])
+    own, whole = facing(whole, picture[1])
     if own is None:
         raise RuntimeError("Die Form deckt ihr Bild nicht")
     own.cover, own.colour = 1.0, 0.0

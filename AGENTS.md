@@ -105,6 +105,13 @@ Each bot has its own closed VM (browser, shell, files), bound to the bot's
 id. In the bot's panel the owner sees that browser live and works in it, has
 a real terminal in the VM (a PTY as user `bot`, xterm.js) and browses, opens,
 downloads and deletes the bot's files; nothing there reaches outside the VM.
+Chris can reset a bot to its first day (its sheet, "Zurücksetzen", one
+question): its turn ends at once, its memories, prompt log and slot are
+emptied, and its VM is deleted and made anew from the golden image under the
+same name, with its files and its published site (`magbot reset`, nothing is
+archived). Name, address, model and a pause stay as they were. The reset is
+in the bot's record and goes on after a restart of the room; it works from
+every state of the VM, and asking twice is asking once.
 Browser and terminal run over the VM's realtime link: `mag-browser` in the
 VM, authenticated UDP to `mag-browser-webrtc` on the host, WebRTC data
 channels to the page. Pictures over HTTPS and single commands are only the

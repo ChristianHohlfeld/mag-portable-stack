@@ -149,6 +149,13 @@ public:
     if (r.method == "DELETE" && starts_with(p, "/api/skills/"))
       return room_.remove_skill(url_decode(p.substr(12))) ? http::send_ok(fd) : http::send_error(fd, 404, "Skill nicht gefunden");
     // The owner's own look into a bot's VM: a terminal and its files.
+    if (r.method == "POST" && starts_with(p, "/api/vm/") && ends_with(p, "/reset")) {
+      // The bot back to its first day: a fresh VM, nothing remembered.
+      const std::string bot = p.substr(8, p.size() - 8 - 6);
+      if (!room_.bot(bot).isObj()) return http::send_error(fd, 404, "Bot nicht gefunden");
+      const std::string why = engine_.reset_vm(bot);
+      return why.empty() ? http::send_ok(fd) : http::send_error(fd, 409, why);
+    }
     if (r.method == "POST" && starts_with(p, "/api/vm/") && ends_with(p, "/run")) return vm_run(fd, r);
     if (r.method == "DELETE" && starts_with(p, "/api/vm/") && ends_with(p, "/file")) return vm_delete(fd, r);
     return http::send_error(fd, 404, "Nicht gefunden");

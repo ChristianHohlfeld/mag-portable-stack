@@ -174,6 +174,26 @@ public:
     opt.timeout_s = 1200;
     return mag::run(wrapper({cfg_.agent_ctl, "spawn", vm}), opt);
   }
+  // The owner's reset: the VM is thrown away with everything in it and made
+  // anew from the golden image under the same name (minutes). It does not
+  // matter what state the old one is in, or whether there is one at all.
+  RunResult reset(const std::string &vm) {
+    forget(vm);
+    RunOptions opt;
+    opt.timeout_s = 2700; // another bot's reset may be ahead of it
+    const RunResult r = mag::run(wrapper({cfg_.agent_ctl, "reset", vm}), opt);
+    forget(vm);
+    return r;
+  }
+  // Nothing the room knew about this VM holds any more (its address, its
+  // browser controller, its proxy settings).
+  void forget(const std::string &vm) {
+    std::lock_guard<std::mutex> lk(mu_);
+    ips_.erase(vm);
+    states_.erase(vm);
+    starts_.erase(vm);
+    proxied_.erase(vm);
+  }
   // Host firewall switch for all bot VMs: no internet at all when offline.
   bool netmode(bool online) {
     RunOptions opt;

@@ -561,6 +561,9 @@ private:
       a["name"] = jstr(b, "name");
       a["vm"] = jstr(b, "vm");
       a["enabled"] = jbool(b, "enabled", true);
+      // A VM that is being made anew is this bot's already: the host's
+      // clean-up of unreferenced VMs (agent-drift) must leave it alone.
+      if (const Val *reset = b.find("reset")) a["pending_vm"] = jstr(*reset, "vm");
       agents.push(a);
     }
     write_json(cfg.state_dir + "/agents.json", agents);

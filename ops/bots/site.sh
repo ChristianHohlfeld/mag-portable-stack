@@ -150,6 +150,25 @@ remove_site() {
   echo "removed ${id}.${zone}"
 }
 
+# The owner reset the bot: what it published is gone (deleted, not archived)
+# and the site starts again with its first page. Name and address stay.
+reset_site() {
+  local id=$1 dest token real
+  dest=$(www_dir "$id")
+  token=$(token_file "$id")
+  if [[ -e $dest ]]; then
+    real=$(realpath "$dest")
+    [[ $real == "$dest" ]] || die "Refusing to remove $dest"
+    rm -rf -- "$dest"
+  fi
+  if [[ -e $token ]]; then
+    real=$(realpath "$token")
+    [[ $real == "$token" ]] || die "Refusing to remove $token"
+    rm -f -- "$token"
+  fi
+  assign_site "$id"
+}
+
 backfill() {
   local ids id
   [[ -x $magbot ]] || { echo "bot site backfill skipped (magbot missing)"; return 0; }
@@ -166,6 +185,7 @@ backfill() {
 case "${1:-}" in
   assign) [[ $# == 2 ]] || die "Usage: site.sh assign ID"; assign_site "$2" ;;
   remove) [[ $# == 2 ]] || die "Usage: site.sh remove ID"; remove_site "$2" ;;
+  reset) [[ $# == 2 ]] || die "Usage: site.sh reset ID"; reset_site "$2" ;;
   backfill) [[ $# == 1 ]] || die "Usage: site.sh backfill"; backfill ;;
-  *) die "Usage: site.sh assign|remove|backfill" ;;
+  *) die "Usage: site.sh assign|remove|reset|backfill" ;;
 esac

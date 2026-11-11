@@ -460,7 +460,7 @@ static std::string state(const std::string &n) {
   }
 }
 static void admission(const Val &c, const std::vector<Val> &rows, int cpu,
-                      int ram, int disk) {
+                      int ram, int disk, bool memory = true) {
   if (cpu < 1 || ram < 2 || disk < 12)
     throw std::runtime_error("Minimum VM size: 1 CPU, 2 GiB RAM, 12 GiB disk");
   if (cpu > num(c, "max_bot_vcpus") || ram > num(c, "max_bot_ram_gib") ||
@@ -482,7 +482,7 @@ static void admission(const Val &c, const std::vector<Val> &rows, int cpu,
     if (line.rfind("MemAvailable:", 0) == 0)
       available = std::stoull(line.substr(13)) * 1024ULL;
   constexpr uint64_t G = 1024ULL * 1024 * 1024;
-  if (available < (ram + num(c, "min_host_available_ram_gib")) * G)
+  if (memory && available < (ram + num(c, "min_host_available_ram_gib")) * G)
     throw std::runtime_error("Host memory reserve");
   struct statvfs st {};
   if (statvfs(root.c_str(), &st))
@@ -551,9 +551,11 @@ static void provision_git(const std::string &n) {
 static void undefine_domain(const std::string &n) {
   if (!exists(n))
     return;
+  // Whatever it is doing (running, paused, hanging in a shutdown, crashed):
+  // only a domain that is off can be undefined for good.
   auto s = trim(virsh({"domstate", domain(n)}));
-  if (s == "running" || s == "paused" || s == "idle")
-    virsh({"destroy", domain(n)});
+  if (s != "shut off")
+    run({"/usr/bin/virsh", "-c", "qemu:///system", "destroy", domain(n)});
   auto r = run({"/usr/bin/virsh", "-c", "qemu:///system", "undefine",
                 domain(n), "--nvram"});
   if (r.code && exists(n))
@@ -940,7 +942,7 @@ int main(int argc, char **argv) {
       throw std::runtime_error("Run with sudo");
     if (argc < 2)
       throw std::runtime_error(
-          "Usage: magbot status|inspect|exec|spawn|despawn|doctor|preflight|audit-proxy "
+          "Usage: magbot status|inspect|exec|spawn|despawn|reset|doctor|preflight|audit-proxy "
           "[ID]");
     auto c = cfg();
     std::string action = argv[1], n = argc > 2 ? argv[2] : "";
@@ -1091,6 +1093,42 @@ int main(int argc, char **argv) {
       }
       teardown(n, true);
       std::cout << "Removed only target bot VM; workspace archived\n";
+    } else if (action == "reset") {
+      // The owner's reset of one bot: its VM as it was on its first day. The
+      // overlay (everything the bot ever did in it) is deleted, not kept, and
+      // a new one is made on the golden image, under the same name and with
+      // the same size. It does not matter what is left of the old VM: a
+      // running, stopped or hanging domain, a directory without a disk, a
+      // spawn that was cut off half way, or nothing at all. So a reset that
+      // was interrupted is simply run again.
+      int cpu = num(c, "default_vcpus"), ram = num(c, "default_ram_gib"),
+          disk = num(c, "default_disk_gib");
+      if (fs::exists(dir(n) / "metadata.json")) {
+        try {
+          const auto owned = marker(n);
+          if (num(owned, "vcpus") > 0 && num(owned, "ram_gib") > 0 && num(owned, "disk_gib") > 0) {
+            cpu = num(owned, "vcpus");
+            ram = num(owned, "ram_gib");
+            disk = num(owned, "disk_gib");
+          }
+        } catch (const std::exception &) {
+          // A record that cannot be read (cut off, damaged) must not keep a
+          // broken VM alive: the directory is this bot's by its name, the
+          // record goes and the VM gets the default size.
+          fs::remove(dir(n) / "metadata.json");
+        }
+      }
+      // Would the host take the new VM? Asked before the old one goes, so a
+      // refusal leaves the bot what it has. (The memory its running VM holds
+      // comes back with the teardown; spawn asks about memory itself.)
+      {
+        auto others = registry();
+        others.erase(std::remove_if(others.begin(), others.end(), [&](const Val &r) { return str(r, "id") == n; }), others.end());
+        admission(c, others, cpu, ram, disk, !exists(n));
+      }
+      teardown(n, false);
+      spawn(n, cpu, ram, disk, c);
+      std::cout << "Reset " << domain(n) << ": fresh overlay on the golden image\n";
     } else if (action == "spawn") {
       int cpu = num(c, "default_vcpus"), ram = num(c, "default_ram_gib"),
           disk = num(c, "default_disk_gib");

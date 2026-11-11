@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# Stand-in for magbot-agent-ctl in the room tests: a "VM" is a temp dir (see
+# fake_guest_run). A reset throws the dir away and makes it anew; the test
+# holds it in the middle ($FAKE_CTL/hold) or lets it fail ($FAKE_CTL/fail).
+set -uo pipefail
+ctl=${FAKE_CTL:?}; home="${FAKE_GUEST_HOME:?}/${2:?}"
+case $1 in
+  verify) [[ $2 == agent1 || -d $home ]] && exit 0 || exit 3 ;;
+  reset)
+    echo "$2" >> "$ctl/resets"
+    exec 9> "$ctl/lock"; flock 9            # one lifecycle action at a time, like magbot
+    rm -rf "$home"
+    while [[ -e $ctl/hold ]]; do sleep 0.05; done
+    if [[ -e $ctl/fail ]]; then echo "magbot: Host load too high" >&2; exit 1; fi
+    mkdir -p "$home"; echo "Reset magbot-$2" ;;
+  *) exit 1 ;;
+esac

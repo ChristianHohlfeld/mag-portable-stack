@@ -493,8 +493,8 @@ the page never ends the worker while it downloads. After the download it
 tells the page after every step that it is still at work, so a slow phone
 is not taken for a stuck one and started anew (time out of view does not
 count). Shortly after the page has loaded it
-fetches and loads the model in the background (not over a mobile
-connection or with data saving on), so the first "Vorlesen" speaks at once.
+fetches and loads the model in the background (over a mobile connection
+too; not with data saving on), so the first "Vorlesen" speaks at once.
 While it loads, a thin line under every "Vorlesen" fills up (and breathes
 while the model is made ready); the settings say it in words. No toast.
 Without the model the device's own voice reads. The Piper voices of before stay on disk.

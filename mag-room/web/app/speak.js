@@ -673,13 +673,13 @@
   // Shortly after the page is there, the model and the voices of the bots are
   // made ready in the background: fetched into Cache Storage once (about
   // 200 MB, then never again) and loaded, so the first tap speaks at once.
-  // Not over a mobile connection or with data saving on: there the first
-  // tap loads it.
+  // Over a mobile connection too (it is fetched once, and Chris wants the
+  // first tap to speak); only with data saving on the first tap loads it.
   function warmUp() {
     // What is downloaded once must stay: the browser is asked not to clear it when space runs short.
     try { navigator.storage?.persist?.().catch(() => {}); } catch {}
     const link = navigator.connection;
-    if (link && (link.saveData || link.type === 'cellular')) return;
+    if (link && link.saveData) return;
     loadConfig().then((cfg) => {
       if (!cfg) return;
       const models = [...new Set(S.bots.map((b) => profile(b.id).voice?.model).filter(Boolean))];

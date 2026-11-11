@@ -468,7 +468,7 @@ def facing(shape, outline):
             best = (found + (0.02 if quarter == 0 else 0.0), found, camera, turned, quarter)
     _, found, camera, turned, quarter = best
     print(f"Shape: its picture's outline covered at {100 * found:.0f} %" + (f", turned by {90 * quarter}°" if quarter else ""), flush=True)
-    if found < 0.75 or camera is None:
+    if found < float(os.environ.get("MAG_SHAPE_COVER", "0.65")) or camera is None:
         return None, shape
     return camera, turned
 

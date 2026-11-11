@@ -313,17 +313,10 @@ that place. The page shows the mask, cuts the photo with it
 foreground and does not guess one. "Alle einzeln" orders one normal job per
 object Chris leaves marked. Nothing of a selection is kept on the worker.
 
-A photo ordered whole (no object chosen) is looked at before it becomes a
-job (`Idol::look`): `objects.py --pieces` finds the foreground with the
-SDK's own BiRefNet (on the CPU) and cuts it where it does not hang
-together. Two or more pieces: each is cut out of the photo as it was taken
-and ordered by itself as a part of one scene group, so each fills the
-picture the model is shown (two people side by side used to become one lump,
-each a third as large as it could be); when all are through they are put
-together like "Ganze Szene". One piece: the order goes on as it is. The
-message of the order is there at once ("Sieht nach, was im Foto ist") and
-becomes the first job's message; a room that restarts while it looks, looks
-again. What Chris chose himself (`chosen`) is not looked at again.
+A photo ordered for 3D is one job of the photo as it is, with Idol's own
+foreground; nothing is split or looked at unasked (Chris found the automatic
+splitting too much). Several things of one photo are what "Objekt wählen" is
+for: one tapped or named, every one by itself, or the whole room.
 
 "Ganze Szene" is the same with places: `objects.py --scene` also estimates
 how far away every pixel is (Depth Anything V2, the small model for rooms,

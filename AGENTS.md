@@ -139,11 +139,9 @@ A picture whose file ends in its middle is not taken as it is: the page reads
 the file again first, and photo to 3D refuses it in words.
 Photo to 3D makes one model of one object, its whole shape from TripoSG
 (MIT, on the MI50 in Idol's queue) fitted onto Idol's splat, which gives
-the colours. A photo that is ordered whole is
-looked at first: what stands apart in its foreground (two people, a gnome
-and a fox) is told apart and ordered each by itself, filling its picture,
-and together they become the photo's scene. In a photo with several things
-Chris can also say which is meant ("Objekt wählen": he taps it or names it and sees
+the colours. A photo that is ordered is ordered as it is, one job, nothing
+split or looked at unasked (Chris, 2026-11-11). In a photo with several things
+Chris can say which is meant ("Objekt wählen": he taps it or names it and sees
 the mask, or has all of them found and orders each by itself; a named thing
 is found by a bot that sees, on a branch off its prompt log); SAM 2 looks on the CPU
 (cores 28-55, never the MI50), and the cut photo is an ordinary order.

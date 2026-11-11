@@ -41,6 +41,11 @@
         seg.append(el('button', { class: key === quality ? 'on' : '', text: label, onclick: () => { quality = key; localStorage.setItem('mag-3d-quality', key); paintStaged(); } }));
       stagedBox.append(el('div', { class: 'staged' }, MAG.icon('cube'), el('span', { text: 'Foto zu 3D' }), seg,
         el('button', { class: 'x', 'aria-label': '3D abbrechen', html: MAG.icons.x, onclick: () => { mode3d = false; paintStaged(); } })));
+      // The photo comes from the gallery or straight from the camera.
+      if (!staged.some((s) => s.att.kind === 'image') && !uploading)
+        stagedBox.append(el('div', { class: 'staged source' },
+          el('button', { class: 'pill', onclick: () => pick('image/png,image/jpeg,image/webp', false, paintStaged) }, MAG.icon('image'), el('b', { text: 'Galerie' })),
+          el('button', { class: 'pill', onclick: () => shoot(paintStaged) }, MAG.icon('camera'), el('b', { text: 'Kamera' }))));
     }
     refresh();
   }
@@ -75,6 +80,34 @@
     chooser.addEventListener('change', async () => { await addFiles([...chooser.files]); chooser.remove(); then?.(); });
     document.body.append(chooser);
     chooser.click();
+  }
+
+  // A photo from the camera. A phone opens its own camera; a desktop shows the
+  // webcam with a release button. Where neither works, a file is chosen.
+  async function shoot(then) {
+    if (coarse || !navigator.mediaDevices?.getUserMedia) return pick('image/*', true, then);
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment', width: { ideal: 1920 }, height: { ideal: 1080 } } });
+    } catch {
+      return pick('image/png,image/jpeg,image/webp', false, then);
+    }
+    const video = el('video', { autoplay: true, playsinline: true, muted: true });
+    video.srcObject = stream;
+    const sheet = MAG.sheet('Kamera', (content, _, close) => {
+      content.append(el('div', { class: 'shoot' }, video,
+        el('button', { class: 'pill', onclick: () => {
+          if (!video.videoWidth) return;
+          const canvas = el('canvas', { width: video.videoWidth, height: video.videoHeight });
+          canvas.getContext('2d').drawImage(video, 0, 0);
+          canvas.toBlob(async (blob) => {
+            close();
+            if (blob) await addFiles([new File([blob], 'kamera-' + new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-') + '.jpg', { type: 'image/jpeg' })]);
+            then?.();
+          }, 'image/jpeg', 0.92);
+        } }, MAG.icon('camera'), el('b', { text: 'Auslösen' }))));
+    });
+    sheet.addEventListener('closed', () => stream.getTracks().forEach((t) => t.stop()));
   }
 
   async function send() {
@@ -114,8 +147,8 @@
     sendBtn.addEventListener('click', send);
     $('#attach').addEventListener('click', (e) => MAG.menu(e.currentTarget, [
       { icon: 'image', label: 'Datei oder Foto', run: () => pick('', false) },
-      coarse ? { icon: 'camera', label: 'Kamera', run: () => pick('image/*', true) } : null,
-      { icon: 'cube', label: 'Foto zu 3D', run: () => { mode3d = true; paintStaged(); if (!staged.some((s) => s.att.kind === 'image')) pick('image/png,image/jpeg,image/webp', false, paintStaged); } },
+      { icon: 'camera', label: 'Kamera', run: () => shoot() },
+      { icon: 'cube', label: 'Foto zu 3D', run: () => { mode3d = true; paintStaged(); } },
     ]));
     // Files dropped anywhere on the page are attachments, never a navigation.
     window.addEventListener('dragover', (e) => e.preventDefault());

@@ -176,7 +176,8 @@ one queue, never beside a 3D job, and the result is an ordinary image.
 Every picture of the chat (uploaded, painted, a bot's) goes on from its own
 place: "3D" (a model, which can then be animated at its message) or "Video"
 (Wan 2.2 I2V-A14B, Apache-2.0, GGUF Q6_K with the Lightning 4-step LoRA,
-about five seconds at 480p). 3D, pictures and videos are jobs of one line
+about five seconds at 480p; a bot's `video_generate` names the picture as
+the chat shows it). 3D, pictures and videos are jobs of one line
 on the MI50: whoever has the card has it alone (at 72 W), the others wait
 with their place shown and run after it by themselves; a lock file that
 cannot be taken never fails a job. MiniMax H3/HyperFlow and Hunyuan models

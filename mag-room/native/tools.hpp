@@ -20,6 +20,7 @@ struct Ctx {
   std::function<void(const Val &)> attach;               // add a file to the bot message
   std::function<void(const Val &)> page;                 // show a published page in the bot message
   Scenes *scenes = nullptr;                              // 3D scenes from the models in the chat
+  size_t asked_at = 0;                                   // parts of the bot message that were there when Chris last wrote
 };
 
 struct Result {
@@ -449,16 +450,19 @@ inline Result call(const std::string &name, const Val &args, Ctx &ctx) {
   if (name == "models_3d" || name == "scene_3d") {
     if (!ctx.scenes) return fail("3D-Szenen sind hier nicht eingerichtet.");
     if (name == "models_3d") return {ctx.scenes->models_text(ctx.cancel), true};
-    // One scene per answer: a bot that is not content with its scene says so
-    // and lets Chris decide, instead of filling the chat with versions (and
-    // the machine with their films).
+    // One scene per request: a bot that is not content with its scene says so
+    // and lets Chris decide, instead of filling the chat with versions. When
+    // Chris writes again while the bot is still at work, that is a new
+    // request: he may well want another version right away.
     Val own;
     if (ctx.room.get(ctx.message_id, own))
       if (const Val *parts = own.find("parts"); parts && parts->isArr())
-        for (auto &p : parts->asArr())
+        for (size_t i = ctx.asked_at; i < parts->asArr().size(); ++i) {
+          const Val &p = parts->asArr()[i];
           if (jstr(p, "tool") == "scene_3d" && jstr(p, "state") == "ok")
-            return fail("In dieser Antwort hast du schon eine Szene gebaut; sie steht im Chat. Sag Chris, was sie zeigt und was daran noch nicht passt. "
+            return fail("Auf diese Bitte hin hast du schon eine Szene gebaut; sie steht im Chat. Sag Chris, was sie zeigt und was daran noch nicht passt. "
                         "Eine neue Fassung baust du erst, wenn er sie möchte.");
+        }
     bool ok = false;
     const std::string text = ctx.scenes->start(args, jstr(ctx.bot, "id"), ok, ctx.cancel);
     return ok ? Result{text, true} : fail(text);

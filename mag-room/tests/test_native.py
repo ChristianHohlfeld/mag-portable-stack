@@ -694,7 +694,7 @@ class RoomContract(unittest.TestCase):
             # Without saying which figure of the model is meant: the worker refuses, and says why.
             {"content": "", "tool_calls": [build(actors=[{"name": "Fuchs", "model": model["name"]}], actions=[])]},
             {"content": "", "tool_calls": [build(actors=cast, actions=walk, ground="snow")]},
-            # Not content with it and at it again in the same answer: one scene per answer.
+            # Not content with it and at it again in the same answer: one scene per request.
             {"content": "", "tool_calls": [build(title="Zweiter Versuch", actors=cast, actions=walk)]},
             "Der Fuchs läuft jetzt zum Gnom."])
         r.lena.reply = lambda body: next(script)
@@ -702,7 +702,7 @@ class RoomContract(unittest.TestCase):
         r.idle()
         steps = [p for m in r.messages() if m["from"] == "lena" for p in m["parts"] if p["k"] == "step"]
         self.assertEqual([(s["tool"], s["state"]) for s in steps], [("models_3d", "ok"), ("scene_3d", "error"), ("scene_3d", "ok"), ("scene_3d", "error")])
-        self.assertIn("In dieser Antwort hast du schon eine Szene gebaut", steps.pop()["output"])
+        self.assertIn("Auf diese Bitte hin hast du schon eine Szene gebaut", steps.pop()["output"])
         self.assertEqual(len(r.scene.specs), 2)   # the worker was not asked again
         self.assertEqual(steps[2]["title"], "Baut die 3D-Szene Fuchs besucht Gnom")
         # The bot is told what there is: the model, where it comes from, and what each of its figures is.
@@ -835,6 +835,23 @@ class RoomContract(unittest.TestCase):
         self.assertEqual(r.api("POST", "/api/3d/%s/film" % second["id"])[0], 200)
         r.wait(lambda: message(second["id"])["state"] == "done", "film rendered after all")
         self.assertEqual(([a["kind"] for a in message(second["id"])["attachments"]], message(second["id"])["model3d"].get("error")), (["model", "video"], None))
+        # Chris writes again while the bot is still at work: that is a new
+        # request, and it may be answered with another scene. What the bot
+        # wrote before it had read him is still the old request.
+        def meanwhile(body):
+            r.api("POST", "/api/message", {"text": "@Lena mach sie bitte länger"})
+            return {"content": "", "tool_calls": [build(title="Zu früh", actors=cast, actions=walk)]}
+        script = iter([{"content": "", "tool_calls": [build(title="Erste", actors=cast, actions=walk)]}, meanwhile,
+                       {"content": "", "tool_calls": [build(title="Länger", actors=cast, actions=walk + walk)]}, "Jetzt ist sie länger."])
+        r.lena.reply = lambda body: (lambda reply: reply(body) if callable(reply) else reply)(next(script))
+        r.say("@Lena noch eine Szene mit beiden")
+        r.idle()
+        steps = [p for m in r.messages() if m["from"] == "lena" for p in m["parts"] if p["k"] == "step"][-3:]
+        self.assertEqual([(s["title"], s["state"]) for s in steps],
+                         [("Baut die 3D-Szene Erste", "ok"), ("Baut die 3D-Szene Zu früh", "error"), ("Baut die 3D-Szene Länger", "ok")])
+        self.assertEqual([m["model3d"]["title"] for m in scenes()][-2:], ["Erste", "Länger"])
+        # His second message was answered in that turn: it does not get a turn of its own on top.
+        self.assertEqual(([m for m in r.messages() if m["from"] == "lena"][-1]["text"], next(script, None)), ("Jetzt ist sie länger.", None))
         # Deleting a scene removes its files and the worker's folder.
         stored = [files / a["file"] for a in done["attachments"]]
         self.assertTrue(len(stored) == 3 and all(p.exists() for p in stored))

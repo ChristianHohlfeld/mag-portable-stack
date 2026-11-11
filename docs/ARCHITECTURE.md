@@ -132,7 +132,9 @@ the bot rounds; new human input and Stop preempt bot rounds at once; one
 request per llama-server at a time; tool work continues on its own only after
 a successful tool result with distinct progress and `[[MAG:WEITER]]`.
 A message Chris sends while a bot is working on his earlier request is handed
-to that bot at its next step.
+to that bot at its next step. It counts as a new request there (a bot builds
+one scene per request, so it may build another one now), and the turn the
+message queued does not answer it a second time.
 
 ### Bot VMs
 

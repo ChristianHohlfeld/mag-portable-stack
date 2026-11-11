@@ -233,7 +233,9 @@ svg { width: 20px; height: 20px; flex: none; fill: none; stroke: currentColor; s
 
 /* thoughts */
 .think { margin: 0 0 6px; font-size: 14px; color: var(--muted); }
-.think summary { cursor: pointer; list-style: none; display: inline-flex; gap: 5px; align-items: center; padding: 2px 0; }
+.think summary { cursor: pointer; list-style: none; display: flex; gap: 5px; align-items: center; padding: 2px 0; min-width: 0; }
+.think summary .first { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; opacity: .75; }
+.think[open] summary .first { display: none; }
 .think summary::-webkit-details-marker { display: none; }
 .think summary::after { content: "›"; display: inline-block; transition: transform .15s; }
 .think[open] summary::after { transform: rotate(90deg); }

@@ -62,6 +62,15 @@ LOGS = {"sample": "idol.log", "shape": "shape.log", "mesh": "mesh.log"}
 # where it is not installed, the mesh is made from the splat alone.
 SHAPE_PYTHON = os.environ.get("MAG_TRIPOSG_PYTHON", "/home/chris/idol-mi50/triposg/venv/bin/python")
 SHAPE_WEIGHTS = os.environ.get("MAG_TRIPOSG_WEIGHTS", "/home/chris/idol-mi50/weights/triposg")
+# The MI50 does one thing at a time. Jobs of this queue already run one after
+# the other; a stage that uses the card also holds this lock for as long as it
+# runs (it is the stage's process that holds it, so it holds across a restart
+# of the worker), and anything else that wants the card takes it too. A stage
+# that finds the card taken waits and says so ("MAG-WAIT"), which counts as
+# getting on: waiting is no standstill.
+GPU_LOCK = os.environ.get("MAG_GPU_LOCK", str(ROOT.parent / "gpu.lock"))
+GPU_STAGES = ("sample", "shape", "image")
+GPU_WAIT = "MAG-WAIT"
 jobs = {}
 lock = threading.Lock()
 pending = queue.Queue()
@@ -259,6 +268,10 @@ def launch(job_id, key, command):
     offset = log_path.stat().st_size if log_path.exists() else 0
     if CPUS:
         command = ["taskset", "-c", CPUS] + command
+    if key in GPU_STAGES and GPU_LOCK:
+        command = ["/bin/sh", "-c", 'exec 9>>"$0"; w=; until flock -n 9; do w=1; echo "' + GPU_WAIT + ' Die Grafikkarte ist belegt"; sleep 20; done; '
+                   '[ -z "$w" ] || echo "' + GPU_WAIT + '-END"; exec "$@"',
+                   GPU_LOCK] + command
     wrapper = ["/bin/sh", "-c", '"$@"; rc=$?; echo "$rc" > "$0.part"; mv "$0.part" "$0"', str(exit_path)] + command
     with log_path.open("ab") as log:
         proc = subprocess.Popen(wrapper, env=stage_env(folder), stdin=subprocess.DEVNULL, stdout=log,
@@ -296,7 +309,11 @@ def follow(job_id, key, on_line):
             parts = re.split(b"[\r\n]", (linebuf + data)[-8192:])
             linebuf = parts[-1]
             for part in parts:
-                if part:
+                if part.startswith((GPU_WAIT + "-END").encode()):
+                    update(job_id, stage=item.get("stage"))            # the card is its own now
+                elif part.startswith(GPU_WAIT.encode()):
+                    update(job_id, stage="Wartet auf die Grafikkarte")
+                elif part:
                     on_line(job_id, part.decode("utf-8", errors="replace"))
             update(job_id, log_offset=offset - len(linebuf))
             moved = time.monotonic()

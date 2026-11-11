@@ -25,3 +25,10 @@ the folder is fetched from the mirror and checked against it.
 
 Other motion data may only be added if its terms allow commercial use and
 passing it on: this repository is public.
+
+## Which recording is which motion
+
+`mocap/clips.json` is the list. Beyond standing, the gaits, the leaps, the
+wave and the spin it has, since Nachtrag 39: `kick` (135_04, a front kick
+with a step into it), `punch` (143_23) and `fall` (90_18, pulled off the
+feet). When in a blow the hit lands is written in `scene.py` (`HIT`).

@@ -62,12 +62,16 @@ def feet_of(p, frame):
 def main():
     lib = motion.Library()
     # ---- the motions ----------------------------------------------------------
-    for name in ("idle", "walk", "run", "sneak", "hop", "leap", "jump", "wave", "spin"):
+    for name in ("idle", "walk", "run", "sneak", "hop", "leap", "jump", "wave", "spin", "kick", "punch", "fall"):
         assert name in lib, name
+    # A blow carries its maker forwards (it steps into it), and somebody who falls ends low.
+    assert lib["kick"].place(0.3 * lib["kick"].seconds)[0] > 0.2 and not lib["kick"].loop and not lib["punch"].loop
+    assert lib["fall"].root[-1, 2] < 0.45 * lib["fall"].root[0, 2], (lib["fall"].root[0, 2], lib["fall"].root[-1, 2])
     for name, clip in lib.clips.items():
         assert np.isfinite(clip.root).all() and clip.frames >= 10, name
         assert np.allclose(np.linalg.norm(clip.limbs, axis=-1), 1.0, atol=1e-3) and np.allclose(np.linalg.norm(clip.hips, axis=-1), 1.0, atol=1e-3), name
-        assert 0.0 <= clip.root[:, 2].min() and clip.root[:, 2].max() < 2.6, (name, clip.root[:, 2].min(), clip.root[:, 2].max())
+        # (somebody lying has the hips a little under where the ankles stood)
+        assert -0.1 <= clip.root[:, 2].min() and clip.root[:, 2].max() < 2.6, (name, clip.root[:, 2].min(), clip.root[:, 2].max())
         if clip.loop:                                 # a round ends where and as it began
             first, again = clip.pose(0.0), clip.pose(clip.seconds - 1e-4)
             assert (first.limbs * again.limbs).sum(axis=1).min() > math.cos(math.radians(12.0)), name
@@ -235,6 +239,18 @@ def main():
 
     p, out = played(stout, lib, story)
     assert out[0][2] == 1.0 and out[-1][2] == 2.0 and abs(out[0][0][0] - 1.0) < 0.1 and abs(out[0][0][1] + 2.0) < 0.1
+
+    # Carried somewhere (hit and thrown): only from now on. What it did so far stays where it was done.
+    def carried(p):
+        p.wait(6)
+        at = p.origin.copy()
+        p.move((0.0, 3.0), past=False)
+        p.wait(14)
+        assert np.allclose(p.origin, at + [0.0, 3.0], atol=0.05 * stout.leg)
+        p.perform("kick")
+
+    p, out = played(stout, lib, carried)
+    assert abs(out[2][0][1] - out[0][0][1]) < 0.05 and abs(out[12][0][1] - out[0][0][1] - 3.0) < 0.1, (out[0][0], out[2][0], out[12][0])
     print("motion ok")
 
 

@@ -264,6 +264,18 @@ def main():
 
     a, out = played(low, story)
     assert out[0][2] == 1.0 and out[-1][2] == 2.0 and abs(out[0][0][0] - 1.0) < 0.2 and abs(out[0][0][1] + 2.0) < 0.2
+
+    # Thrown somewhere: from now on it is there, lies down and gets up; before, it was where it was.
+    def carried(a):
+        a.wait(6)
+        at = a.origin.copy()
+        a.move((0.0, 3.0), past=False)
+        a.ease("lie", -0.4)
+        a.up()
+        assert np.allclose(a.origin, at + [0.0, 3.0], atol=0.6 * low.leg), (a.origin, at)
+
+    a, out = played(low, carried)
+    assert abs(out[2][0][1] - out[0][0][1]) < 0.05 and abs(out[-1][0][1] - out[0][0][1] - 3.0) < 0.1, (out[0][0], out[-1][0])
     print("animal ok")
 
 

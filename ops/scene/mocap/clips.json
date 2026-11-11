@@ -9,6 +9,9 @@
   {"name": "leap", "trial": "127_25", "frames": [0, 56]},
   {"name": "jump", "trial": "143_06", "frames": [26, 58]},
   {"name": "wave", "trial": "143_25", "frames": [8, 96]},
-  {"name": "spin", "trial": "105_60", "frames": [18, 70]}
+  {"name": "spin", "trial": "105_60", "frames": [18, 70]},
+  {"name": "kick", "trial": "135_04", "frames": [78, 146], "air": false},
+  {"name": "punch", "trial": "143_23", "frames": [58, 100], "air": false},
+  {"name": "fall", "trial": "90_18", "frames": [10, 72], "air": false}
  ]
 }

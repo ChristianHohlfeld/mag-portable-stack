@@ -24,7 +24,7 @@ import sys
 import bmesh
 import bpy
 import numpy as np
-from mathutils import Matrix, Quaternion, Vector
+from mathutils import Euler, Matrix, Quaternion, Vector
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import animal  # noqa: E402  (how an animal on four legs moves)
@@ -434,6 +434,15 @@ class Rig:
 
 
 # ---- motion ------------------------------------------------------------------
+# Every action there is, for the message when one is asked for that is not among them.
+ACTIONS = ("walk_to, run_to, sneak_to, hop_to, jump_over, turn_to, look_at, turn, spin, jump, wave, nod, shake_head, wag_tail, wobble, grow, shrink, wait; "
+           "kick, punch (with target: the one who is hit flies away; force 0..1), attack, fly_away (from, far), fall; "
+           "somebody on two legs also: " + "%s; an animal also: sit, lie, sleep, crouch, bow, beg, stand, shake, sniff, eat, howl, dig, pounce")
+RECORDED = []   # the recorded motions of the library, by name (filled when it is read)
+# When in a recorded motion the blow lands (part of its length).
+HIT = {"kick": 0.30, "punch": 0.48}
+
+
 def ease(t):
     t = min(1.0, max(0.0, t))
     return t * t * (3 - 2 * t)
@@ -490,6 +499,7 @@ class Actor:
         self.obj.name = name
         self.scale = 1.0
         self.lift = 0.0                   # how high its foot is above the ground
+        self.thrown = []                  # when it was hit and flew: see knock()
         self.clock = 0.0                  # until when it is busy (seconds)
         self.placed = False               # put somewhere on purpose, or moved already
         self.keys = {}                    # frame -> (x, y, z, pitch, roll, yaw, squash, scale)
@@ -617,6 +627,77 @@ def watch(actors, spans, last, fps):
 
 
 
+def knock(victim, way, frame, far, fps):
+    """Somebody is hit and flies: away along `way`, `far` metres, in an arc,
+    turning over as it goes; it lands, lies for a moment and gets up again.
+    It begins at `frame`, or as soon as the victim has done what it was
+    doing. Returns the frame it is on its feet again."""
+    way = way.normalized() if way.length > 1e-6 else Vector((1.0, 0.0))
+    far = max(0.0, far)
+    high = max(0.3 * far, 0.5 * victim.height)
+    air = max(8, int(round(1.3 * fps * 2.0 * math.sqrt(2.0 * high / 9.81))))   # a little slower than in life, so it can be seen
+    lie, rise = int(round(0.8 * fps)), int(round(0.7 * fps))
+    by = way * far
+    q = victim.performer
+    if q is not None:
+        start = q.wait(max(len(q.frames), frame))
+        q.wait(start + air)
+        q.move((by.x, by.y), past=False)             # from here on it is where it landed
+        if isinstance(q, animal.Animal):
+            end = q.ease("lie", lie / fps - 1.2)     # down on its belly ...
+            q.up()                                   # ... and up again
+            end = len(q.frames)
+            lie = rise = 0
+        else:
+            end = q.wait(start + air + lie + rise)
+    else:
+        start = max(frame, int(round(victim.clock * fps)))
+        victim.key(max(0, start - 1))
+        end = start + air + lie + rise
+    victim.thrown.append({"start": start, "air": air, "by": by, "high": high, "turns": 1 if far > 2.0 * victim.length else 0,
+                          "lie": lie, "rise": rise, "carried": q is not None})
+    victim.pos = victim.pos + by
+    if q is None:
+        victim.key(end)
+    victim.clock = end / fps
+    return end
+
+
+def thrown(actor, last):
+    """Writes what knock() said into the actor's samples: the arc, the
+    turning over (about its middle, not its feet), the lying and the getting up."""
+    for hit in actor.thrown:
+        start, air, by, high = hit["start"], hit["air"], hit["by"], hit["high"]
+        before = actor.keys.get(start) or actor.keys[max(k for k in actor.keys if k <= start)]
+        for i in range(0, air + hit["lie"] + hit["rise"] + 1):
+            frame = start + i
+            if frame > last:
+                break
+            x, y, z, pitch, roll, yaw, squash, scale = actor.keys.get(frame, before)
+            if not hit["carried"]:                       # a thing has no samples of its own in between
+                x, y, z, pitch, roll, yaw, squash, scale = before
+            tall, thick = actor.size[2] * scale, min(actor.size[0], actor.size[1]) * scale
+            if i < air:
+                t = i / air
+                off, up = by * t, 4.0 * high * t * (1.0 - t)
+                tilt = 2.0 * math.pi * hit["turns"] * t + (0.5 * math.pi * ease(t) if hit["lie"] else 0.0)
+            else:
+                off = Vector((0.0, 0.0)) if hit["carried"] else by
+                up = 0.0
+                j = i - air
+                tilt = 0.5 * math.pi * (1.0 if j < hit["lie"] else 1.0 - ease((j - hit["lie"]) / max(1, hit["rise"]))) if hit["lie"] else 0.0
+            # It turns over backwards, away from the blow: about the line across its way, seen from itself.
+            c, s_ = math.cos(-yaw), math.sin(-yaw)
+            along = Vector((by.x * c - by.y * s_, by.x * s_ + by.y * c))
+            along = along.normalized() if along.length > 1e-6 else Vector((1.0, 0.0))
+            pitch, roll = pitch - tilt * along.y, roll + tilt * along.x
+            middle = Vector((0.0, 0.0, 0.5 * tall))
+            turned = Euler((pitch, roll, yaw), "XYZ").to_matrix() @ middle
+            flat = abs(math.sin(tilt))                   # lying, its middle is half its thickness above the ground
+            centre = middle.z + (0.5 * thick - middle.z) * flat
+            actor.keys[frame] = (x + off.x - turned.x, y + off.y - turned.y, z + up + centre - turned.z, pitch, roll, yaw, squash, scale)
+
+
 def perform(actor, action, actors, fps, start):
     """One action of a figure that moves by itself (on two legs or on four). Returns its last frame."""
     kind = action.get("do", "")
@@ -716,6 +797,58 @@ def perform(actor, action, actors, fps, start):
                 end = p.hop()
         else:
             end = p.perform("jump", times=int(number(action, "times", 1, 1, 8)))
+    elif kind in ("kick", "punch", "attack"):
+        # A blow: it goes up to the other, turns to it and strikes. Who is hit flies away
+        # (far: metres; else by the force, 0..1). Without a target it strikes the air.
+        force = number(action, "force", 0.6, 0.0, 1.0)
+        if kind == "attack" and not beast:
+            kind = "kick"
+        if other:
+            way = other.pos - actor.pos
+            if way.length < 1e-6:
+                fail(actor.name + " steht auf " + other.name + ".")
+            heading = way.normalized()
+            if beast:
+                reach = across(other, heading) + 0.6 * actor.length
+                if way.length > reach + 1.2 * actor.length:
+                    from_afar(other.pos, heading, reach + 1.0 * actor.length)
+                    p.go("gallop", lambda frame: (other.pos.x, other.pos.y), stop=reach + 1.0 * actor.length, on=True)
+                p.face(math.atan2(heading.y, heading.x))
+                p.look(eyes(other), len(p.frames), len(p.frames) + int(1.5 * fps), 0.8)
+                end = p.pounce(max(0.5 * actor.length, (other.pos - Vector(p.origin[:2])).length - across(other, heading) - 0.3 * actor.length))
+                hit = end - int(0.25 * fps)
+            else:
+                clip = p.lib[kind]
+                lunge = float(clip.place(HIT[kind] * clip.seconds)[0]) * p.body.leg       # how far the blow carries its maker
+                reach = across(other, heading) + 0.45 * actor.length + max(0.0, lunge)
+                if way.length > reach + 0.15 * actor.height:
+                    from_afar(other.pos, heading, reach)
+                    p.go("run", lambda frame: (other.pos.x, other.pos.y), stop=reach)
+                p.face(math.atan2(heading.y, heading.x))
+                p.look(eyes(other), len(p.frames), len(p.frames) + int(1.5 * fps), 0.8)
+                begun = len(p.frames)
+                end = p.perform(kind)
+                hit = begun + int(round(HIT[kind] * clip.seconds * fps))
+            far = number(action, "far", (1.5 + 6.0 * force) * max(actor.height, 0.6 * actor.length), 0.0, 60.0)
+            knock(other, other.pos - Vector(p.origin[:2]), hit, far, fps)
+        elif beast:
+            end = p.pounce(None)
+        else:
+            end = p.perform(kind)
+    elif kind == "fly_away":
+        # It is thrown: away from somebody or some place (from), or backwards.
+        source = find(actors, action.get("from")) or other
+        point = source.pos if source else (Vector(pair(action.get("from"))) if pair(action.get("from")) else None)
+        way = (actor.pos - point) if point is not None else Vector((-math.cos(p.heading), -math.sin(p.heading)))
+        end = knock(actor, way, first, number(action, "far", 6.0 * max(actor.height, 0.6 * actor.length), 0.0, 60.0), fps)
+        actor.clock = end / fps
+        return end
+    elif kind == "fall":
+        if beast:
+            end = p.ease("lie", seconds(1.0, 0.0, 20.0))
+        else:
+            end = p.perform("fall")
+            end = p.wait(end + int(round(seconds(0.6, 0.0, 20.0) * fps)))
     elif (kind in animal.POSES or kind in BEAST) if beast else kind in p.lib:
         if other:                                    # done to somebody: it turns there if it has to, and looks there
             way = other.pos - actor.pos
@@ -732,8 +865,7 @@ def perform(actor, action, actors, fps, start):
         else:
             end = p.ease(kind, seconds(1.5, 0.0, 20.0))
     else:
-        fail("Unbekannte Aktion: " + str(kind) + ". Es gibt walk_to, run_to, hop_to, sneak_to, jump_over, turn_to, look_at, turn, spin, jump, wave, nod, "
-             "shake_head, wag_tail, wobble, grow, shrink, wait.")
+        fail("Unbekannte Aktion: " + str(kind) + ". Es gibt " + ACTIONS % ", ".join(RECORDED) + ".")
     at = p.origin
     actor.pos, actor.yaw = Vector((at[0], at[1])), p.heading - (p.build if beast else p.body).facing
     actor.clock = end / fps
@@ -747,6 +879,11 @@ def play(actor, action, actors, fps, start):
     kind = action.get("do", "")
     first = int(round(max(0.0, start) * fps))
     actor.key(max(0, first - 1))
+    if kind == "fly_away":                           # a thing is thrown like anybody else
+        source = find(actors, action.get("from")) or find(actors, action.get("target"))
+        point = source.pos if source else (Vector(pair(action.get("from"))) if pair(action.get("from")) else None)
+        way = (actor.pos - point) if point is not None else Vector((1.0, 0.0))
+        return knock(actor, way, first, number(action, "far", 6.0 * max(actor.height, 0.6 * actor.length), 0.0, 60.0), fps)
 
     def target_point():
         target = action.get("target")
@@ -971,8 +1108,8 @@ def play(actor, action, actors, fps, start):
         if kind != "look_at" or frames:
             end = first + frames
     else:
-        fail("Unbekannte Aktion: " + str(kind) + ". Es gibt walk_to, run_to, hop_to, sneak_to, jump_over, turn_to, look_at, turn, spin, jump, wave, nod, "
-             "shake_head, wag_tail, wobble, grow, shrink, wait.")
+        fail("Unbekannte Aktion: " + str(kind) + ". Es gibt " + ACTIONS % ", ".join(RECORDED) + ". " + actor.name +
+             " ist ein Gegenstand ohne Skelett: er kann gehen, springen, sich drehen, wackeln, wachsen und wegfliegen.")
     actor.key(end)
     actor.clock = end / fps
     return end
@@ -996,6 +1133,13 @@ def animate(actor, last):
             actor.rig.frames[frame] = {name: Quaternion(turn) for name, turn in turns.items()}
             if moves:
                 actor.rig.moves[frame] = moves[0]
+    if actor.thrown:
+        if actor.performer is None:                  # a thing has keys only where something changes: one for every frame of its flight
+            known = sorted(actor.keys)
+            for hit in actor.thrown:
+                for frame in range(hit["start"], min(last, hit["start"] + hit["air"] + hit["lie"] + hit["rise"]) + 1):
+                    actor.keys.setdefault(frame, actor.keys[max(k for k in known if k <= frame)] if any(k <= frame for k in known) else actor.keys[known[0]])
+        thrown(actor, last)
     frames = sorted(actor.keys)
     state = actor.keys[frames[0]]
     at = 0
@@ -1299,6 +1443,7 @@ def build(spec_path, out):
         bpy.data.objects.remove(obj)  # figures of a model that play no part
     try:
         library = motion.Library()
+        RECORDED[:] = sorted(name for name in library.clips if name != "idle")
     except Exception as exc:                          # without the recorded motions two-legged figures move the old way
         print("MAG-NOTE no recorded motions (%s)" % type(exc).__name__, flush=True)
         library = None
@@ -1320,6 +1465,7 @@ def build(spec_path, out):
         if action.get("do") != "wait":
             spans.append((actor, int(round(start * fps)), end))
         began, clock, last = start, max(clock, end / fps + 0.15), max(last, end)
+        last = max(last, int(round(max(a.clock for a in actors.values()) * fps)))   # ... and who was hit is back on its feet
     if last > MAX_SECONDS * fps:
         fail("Die Szene wäre %d Sekunden lang, höchstens %d sind möglich. Nimm weniger Aktionen oder gib ihnen kürzere seconds." % (last // fps + 1, MAX_SECONDS))
     last = min(MAX_SECONDS * fps, max(last + int(0.8 * fps), int(2.5 * fps), int(number(spec, "seconds", 0.0, 0.0, MAX_SECONDS) * fps)))

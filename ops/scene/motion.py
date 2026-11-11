@@ -791,8 +791,10 @@ class Performer:
             if foot.at is not None:
                 foot.at = at + (foot.at - at) * ratio
 
-    def move(self, by):
-        """Puts the figure, and all it did so far, somewhere else on the ground."""
+    def move(self, by, past=True):
+        """Puts the figure, and all it did so far, somewhere else on the
+        ground. Not `past`: only from now on (it was carried there, see
+        scene.knock; what it did so far stays where it was done)."""
         by = np.asarray(by, dtype=float)
         self.xy = self.xy + by
         for foot in self.feet:
@@ -800,7 +802,7 @@ class Performer:
                 foot.at = foot.at + by
             if foot.step is not None:
                 foot.step[0] = foot.step[0] + by
-        for frame in self.frames:
+        for frame in self.frames if past else ():
             for key in ("origin", "root"):
                 frame[key] = frame[key] + np.array([by[0], by[1], 0.0])
             if "stands" in frame:

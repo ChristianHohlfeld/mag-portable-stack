@@ -1,8 +1,23 @@
 #!/usr/bin/env python3
-"""Bounded, CPU-only Idol splat -> coloured UV/GLB and printable STL conversion.
+"""Idol splat -> a closed, coloured model (GLB) and a printable one (STL). CPU only.
 
-Approximate surface reconstruction: high quality reduces aliasing, but an Idol
-splat does not guarantee watertight geometry or accurate hidden surfaces.
+A splat is a cloud of small flat Gaussians that lie on what the photo showed.
+The surface is made from them the way they are:
+
+1. Every Gaussian with its own size and its own turn (none left out) is
+   written into a grid as opacity: a cell is as opaque as the Gaussians in
+   it together.
+2. Where that is half opaque is the shell. The grid is flooded from outside:
+   what the flood does not reach is the body, so it is closed, and shells
+   and bubbles inside it are gone. Pores the size of a cell or two are
+   closed before the flood. Loose bits fall away; what is big enough to be
+   a figure of its own (a photo may show two) stays.
+3. The surface is taken anew from that body (uniform triangles, no holes),
+   smoothed, and brought down to the number of faces a model needs.
+4. That small mesh is unwrapped, and the texture is baked for it from the
+   splat itself: the colours are as fine as the atlas, whatever the faces.
+   The STL keeps the finer mesh.
+
 The original splat.ply is never modified.
 """
 import argparse
@@ -12,74 +27,23 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw
 from plyfile import PlyData
-from scipy.ndimage import gaussian_filter, binary_dilation, distance_transform_edt
+from scipy.ndimage import binary_dilation, distance_transform_edt, gaussian_filter
 from scipy.spatial import cKDTree
 from skimage.measure import marching_cubes
 import trimesh
 
+from surface import PORE, body_of, opacity_field
 from unwrap import unwrap
 
-# Single source of truth for mesh preset parameters.
+# Single source of truth for mesh preset parameters. "resolution": cells of
+# the grid along its longest side. "faces": of the model that is shown,
+# "print_faces": of the STL. "unwrap": seconds xatlas gets for the UVs of the
+# small mesh before it is laid out plainly instead (see unwrap.py).
 QUALITY_PRESETS = {
-    "fast": {"resolution": 128, "max_points": 150000, "max_faces": 150000,
-             "texture": 1024, "smooth": 2, "percentile": 52, "floor": 0.035,
-             "crop": 0.5, "neighbors": 8, "unwrap": 90},
-    "normal": {"resolution": 224, "max_points": 400000, "max_faces": 400000,
-               "texture": 2048, "smooth": 3, "percentile": 43, "floor": 0.03,
-               "crop": 0.1, "neighbors": 12, "unwrap": 330},
-    "high": {"resolution": 320, "max_points": 1000000, "max_faces": 800000,
-             "texture": 4096, "smooth": 2, "percentile": 30, "floor": 0.02,
-             "crop": 0.02, "neighbors": 16, "unwrap": 720},
+    "fast": {"resolution": 128, "faces": 40000, "print_faces": 150000, "texture": 1024, "smooth": 2, "crop": 0.5, "neighbors": 8, "unwrap": 30},
+    "normal": {"resolution": 224, "faces": 80000, "print_faces": 400000, "texture": 2048, "smooth": 3, "crop": 0.1, "neighbors": 12, "unwrap": 60},
+    "high": {"resolution": 320, "faces": 160000, "print_faces": 800000, "texture": 4096, "smooth": 2, "crop": 0.02, "neighbors": 16, "unwrap": 120},
 }
-# "unwrap": seconds xatlas gets for the UVs before the surface is laid out
-# plainly instead.
-
-
-def splat_density(xyz, alpha, radii, lo, spacing, resolution):
-    """Float32 density, Gaussian-filtered in X slabs with a 4-sigma halo.
-
-    Does not allocate three full resolution^3 impulse volumes. Slab halos
-    give the same values as full-volume Gaussian filtering at each output
-    voxel; peak buffers remain bounded even at the 320^3 high preset.
-    """
-    field = np.zeros((resolution,) * 3, dtype=np.float32)
-    ijk = np.rint((xyz - lo) / spacing).astype(np.int32)
-    valid = np.all((ijk >= 0) & (ijk < resolution), axis=1)
-    ijk = ijk[valid]
-    alpha = alpha[valid]
-    radii = radii[valid]
-    if len(ijk) < 32:
-        raise ValueError("Zu wenige Gaussians innerhalb des Dichtegitters")
-
-    # Use three scale bands, retaining small Gaussians that form handles/knobs.
-    edges = np.quantile(radii, [0, 1/3, 2/3, 1])
-    for group in range(3):
-        selected = (radii >= edges[group]) & (
-            (radii <= edges[group+1]) if group == 2 else (radii < edges[group+1])
-        )
-        if not np.any(selected):
-            continue
-        vox = ijk[selected]
-        weights = alpha[selected]
-        sigma = float(np.median(radii[selected]))
-        halo = int(np.ceil(4.0 * sigma))
-        for first in range(0, resolution, 32):
-            last = min(resolution, first + 32)
-            start = max(0, first - halo)
-            end = min(resolution, last + halo)
-            contributing = (vox[:, 0] >= start) & (vox[:, 0] < end)
-            if not np.any(contributing):
-                continue
-            local = np.zeros((end-start, resolution, resolution), np.float32)
-            points = vox[contributing]
-            np.add.at(local, (points[:, 0] - start, points[:, 1], points[:, 2]),
-                      weights[contributing])
-            smoothed = gaussian_filter(local, sigma=sigma, mode="constant",
-                                       output=np.float32, truncate=4.0)
-            field[first:last] += smoothed[first-start:last-start]
-    return field
-
-
 def opacity_colors(vertices, names, indices):
     if all("f_dc_" + str(i) in names for i in range(3)):
         colors = np.column_stack([
@@ -189,7 +153,6 @@ def reconstruct(input_path: Path, output_dir: Path, quality="normal"):
         raise ValueError(f"Ungültige Qualitätsstufe: {quality}")
     settings = QUALITY_PRESETS[quality]
     resolution = settings["resolution"]
-    max_points = settings["max_points"]
     output_dir.mkdir(parents=True, exist_ok=True)
     ply = PlyData.read(str(input_path))
     vertices = ply["vertex"].data
@@ -201,28 +164,25 @@ def reconstruct(input_path: Path, output_dir: Path, quality="normal"):
     if "opacity" in names:
         op = vertices["opacity"].astype(np.float32)
         alpha = 1.0 / (1.0 + np.exp(-np.clip(op, -15, 15)))
-        mask &= alpha > (0.04 if quality == "high" else 0.06)
+        mask &= alpha > 0.02                              # what cannot be seen is not there
     else:
         alpha = np.ones(len(xyz), dtype=np.float32)
-    original_ids = np.flatnonzero(mask)
-    if len(original_ids) < 32:
+    kept = np.flatnonzero(mask)                           # every Gaussian that can be seen: none is left out
+    if len(kept) < 32:
         raise ValueError("Keine gültigen Gaussians")
-    if len(original_ids) > max_points:
-        # Deterministic uniform sample, never accidentally dropping a whole range.
-        chosen = np.linspace(0, len(original_ids)-1, max_points, dtype=np.int64)
-        original_ids = original_ids[chosen]
-    xyz = xyz[original_ids]
-    alpha = alpha[original_ids]
-    colors = opacity_colors(vertices, names, original_ids)
-
-    # Keep each splat's geometric-mean radius, but never erase thin Gaussians.
+    xyz = xyz[kept]
+    alpha = alpha[kept]
+    colors = opacity_colors(vertices, names, kept)
+    # Every Gaussian has its own three widths and its own turn; a file without them has small balls.
     if all("scale_" + str(i) in names for i in range(3)):
-        log_scale = np.column_stack([
-            vertices["scale_" + str(i)][original_ids] for i in range(3)
-        ])
-        gaussian_radius = np.exp(np.clip(log_scale.mean(axis=1), -12, 3))
+        scales = np.exp(np.clip(np.column_stack([vertices["scale_" + str(i)][kept] for i in range(3)]), -12, 3)).astype(np.float32)
     else:
-        gaussian_radius = np.full(len(xyz), 0.01, np.float32)
+        scales = np.full((len(xyz), 3), 0.01, np.float32)
+    if all("rot_" + str(i) in names for i in range(4)):
+        turns = np.column_stack([vertices["rot_" + str(i)][kept] for i in range(4)]).astype(np.float32)
+    else:
+        turns = np.tile(np.array([1.0, 0.0, 0.0, 0.0], np.float32), (len(xyz), 1))
+    gaussian_radius = np.exp(np.log(scales).mean(axis=1))   # for the colours: how far a Gaussian's colour reaches
 
     lo = np.percentile(xyz, settings["crop"], axis=0)
     hi = np.percentile(xyz, 100-settings["crop"], axis=0)
@@ -231,23 +191,18 @@ def reconstruct(input_path: Path, output_dir: Path, quality="normal"):
     lo -= pad
     hi += pad
     spacing = float(np.max(hi-lo)) / (resolution-1)
-    radii_vox = np.clip(gaussian_radius / spacing, 0.7, 5.0)
-    print(f"Idol mesh {quality}: {len(xyz)} Gaussians; {resolution}³ float32", flush=True)
-    density = splat_density(xyz, alpha, radii_vox, lo, spacing, resolution)
-    maximum = float(density.max())
-    if maximum <= 0:
-        raise ValueError("Leeres Dichtefeld")
-    positive = density[density > maximum*0.005]
-    if not len(positive):
-        raise ValueError("Kein positives Dichtefeld")
-    threshold = max(
-        float(np.percentile(positive, settings["percentile"])),
-        maximum*settings["floor"])
-    if threshold >= maximum:
-        threshold = maximum*0.5
-    verts, faces, _, _ = marching_cubes(
-        density, level=threshold, spacing=(spacing,)*3, allow_degenerate=False)
-    del density
+    lo -= (PORE + 3) * spacing                            # room around it for the flood
+    resolution += 2 * (PORE + 3)
+    print(f"Idol mesh {quality}: {len(xyz)} Gaussians; {resolution}³ cells", flush=True)
+    opaque = opacity_field(xyz, alpha, scales, turns, lo, spacing, resolution)
+    body = body_of(opaque)
+    # The surface runs where the Gaussians are half opaque; where the body was
+    # closed or filled it runs along the body.
+    field = np.where(body, np.maximum(opaque, 0.62), np.minimum(opaque, 0.38))
+    del opaque, body
+    field = gaussian_filter(field, sigma=0.6, output=np.float32)
+    verts, faces, _, _ = marching_cubes(field, level=0.5, spacing=(spacing,)*3, allow_degenerate=False)
+    del field
     verts += lo
     if not len(faces):
         raise ValueError("Marching Cubes hat keine Oberfläche erzeugt")
@@ -255,18 +210,17 @@ def reconstruct(input_path: Path, output_dir: Path, quality="normal"):
     # Taubin lambda/mu smoothing (non-shrinking); fewer passes for thin details.
     trimesh.smoothing.filter_taubin(
         geometry, lamb=0.45, nu=0.48, iterations=settings["smooth"])
-    if len(geometry.faces) > settings["max_faces"]:
-        geometry = geometry.simplify_quadric_decimation(
-            face_count=settings["max_faces"])
-        if len(geometry.faces) > settings["max_faces"]:
-            raise RuntimeError("Dezimierung konnte Face-Limit nicht einhalten")
-
-    # Preserve full colour resolution: bake using Gaussian neighborhoods at
-    # each UV texel on the unrotated surface, before GLB/STL transforms.
+    if len(geometry.faces) > settings["print_faces"]:
+        geometry = geometry.simplify_quadric_decimation(face_count=settings["print_faces"])
+    # The model that is shown has as many faces as a model needs. Its colours
+    # do not come from its faces: they are baked from the splat at every texel.
+    shown = geometry
+    if len(shown.faces) > settings["faces"]:
+        shown = geometry.simplify_quadric_decimation(face_count=settings["faces"])
     # The worker reads the two MAG-STEP lines to show where the job is.
     print("MAG-STEP texture", flush=True)
     vmapping, uv_faces, uvs, texture = bake_texture(
-        geometry.vertices, geometry.faces, xyz, alpha, gaussian_radius, colors,
+        shown.vertices, shown.faces, xyz, alpha, gaussian_radius, colors,
         spacing, settings["texture"], settings["neighbors"],
         float(os.environ.get("MAG_IDOL_UNWRAP_S", settings["unwrap"])))
     print("MAG-STEP export", flush=True)
@@ -274,7 +228,7 @@ def reconstruct(input_path: Path, output_dir: Path, quality="normal"):
     material = trimesh.visual.material.PBRMaterial(
         baseColorTexture=texture, metallicFactor=0.0, roughnessFactor=1.0)
     mesh = trimesh.Trimesh(
-        vertices=np.asarray(geometry.vertices)[vmapping], faces=uv_faces,
+        vertices=np.asarray(shown.vertices)[vmapping], faces=uv_faces,
         visual=trimesh.visual.TextureVisuals(uv=uvs, material=material),
         process=False)
     # Idol Y-down -> GLB Y-up. Verified on the teapot: rotate about camera Z.
@@ -296,8 +250,8 @@ def reconstruct(input_path: Path, output_dir: Path, quality="normal"):
     stl.apply_scale(target_height / measured_height)
     stl.apply_translation([0.0, 0.0, -float(stl.bounds[0, 2])])
     stl.export(output_dir / "mesh.stl", file_type="stl")
-    print(f"Mesh: {len(geometry.vertices)} vertices, {len(geometry.faces)} faces; "
-          f"{settings['texture']}² PNG in GLB; STL height {target_height:g} mm",
+    print(f"Mesh: {len(shown.vertices)} vertices, {len(shown.faces)} faces (STL {len(geometry.faces)}), "
+          f"{'closed' if geometry.is_watertight else 'open'}; {settings['texture']}² PNG in GLB; STL height {target_height:g} mm",
           flush=True)
 
 

@@ -238,6 +238,66 @@ def serpent(co, height):
             "notes": ["Schlange oder Fisch: lang, ohne Beine, %d Glieder" % SEGMENTS]}
 
 
+def wheels(body, legs):
+    """What a vehicle stands on: discs, not legs. A wheel seen from the
+    ground is as long along the way as it is high (a leg is thin both ways)
+    and much narrower across; the wheels of a bicycle stand one behind the
+    other, not side by side. Returns the wheels (centre, radius, across, the
+    way the vehicle goes) or None when what it stands on is not wheels."""
+    if not 2 <= len(legs) <= 8:
+        return None
+    cells = np.array(sorted(body.cubes))
+    flat = body.where(cells)[:, :2]
+    flat = flat - flat.mean(axis=0)
+    along = np.linalg.eigh(flat.T @ flat)[1][:, 1]
+    across = np.array([-along[1], along[0]])
+    out = []
+    for leg in legs:
+        cubes = list(leg["low"]) + [c for level in leg["levels"] for c in level[3]]
+        p = body.where(cubes)
+        long, wide = float(np.ptp(p[:, :2] @ along)), float(np.ptp(p[:, :2] @ across))
+        high = float(p[:, 2].max() - body.where([(0, 0, body.ground)])[0, 2]) + body.step
+        if long < 0.7 * high or long < 1.5 * (wide + body.step):
+            return None
+        r = 0.5 * long + 0.5 * body.step
+        middle = p.mean(axis=0)
+        centre = np.array([middle[0], middle[1], body.origin[2] + (body.ground - 0.5) * body.step + r])
+        out.append({"centre": centre, "radius": r, "half": 0.5 * wide + body.step, "across": across, "along": along})
+    if len(out) == 2:                                    # two wheels: one behind the other
+        apart = out[1]["centre"][:2] - out[0]["centre"][:2]
+        if abs(float(apart @ along)) < 2.0 * abs(float(apart @ across)):
+            return None
+    return out
+
+
+def vehicle(body, co, found):
+    """The skeleton of a vehicle: its body, and a bone for every wheel that
+    owns the disc of it (also the part above where the wheel meets the body),
+    so the wheel turns as it rolls."""
+    cells = np.array(sorted(body.cubes))
+    points = body.where(cells)
+    along = np.array([found[0]["along"][0], found[0]["along"][1], 0.0])
+    middle = points.mean(axis=0)
+    size = float(np.ptp(points @ along))
+    bones = [{"name": "Karosserie", "head": middle.tolist(), "tail": (middle + along * 0.3 * size).tolist(), "parent": -1, "role": "body"}]
+    owner = np.zeros(len(cells), dtype=np.int64)
+    for n, w in enumerate(found, 1):
+        across = np.array([w["across"][0], w["across"][1], 0.0])
+        rel = points - w["centre"]
+        side = rel @ across
+        disc = (rel @ along) ** 2 + rel[:, 2] ** 2 <= (1.08 * w["radius"]) ** 2
+        owner[disc & (np.abs(side) <= w["half"])] = n
+        out = across if float((w["centre"] - middle) @ across) >= 0 else -across
+        bones.append({"name": "Rad %d" % n, "head": w["centre"].tolist(), "tail": (w["centre"] + out * max(w["half"], 0.3 * w["radius"])).tolist(),
+                      "parent": 0, "role": "wheel", "radius": float(w["radius"])})
+    grid = np.full(body.shape, -1, dtype=np.int64)
+    grid[cells[:, 0], cells[:, 1], cells[:, 2]] = owner
+    labels = grid[body.cell_of[:, 0], body.cell_of[:, 1], body.cell_of[:, 2]]
+    labels[labels < 0] = 0
+    return {"kind": "vehicle", "bones": bones, "labels": labels, "front": [float(along[0]), float(along[1])], "sure": False,
+            "along": [float(along[0]), float(along[1])], "notes": ["Fahrzeug: %d Räder" % len(found)]}
+
+
 def segment_distance(points, a, b):
     """How far points are from the stretch a-b."""
     ab = b - a
@@ -268,6 +328,13 @@ def analyse(co, edges=None, axis=None, kind=None):
     # unless the figure is taller than long: four feet under something
     # upright are two people, or a chair (the caller may know better).
     upright = height > 1.15 * length
+    # What stands on discs is a vehicle; what is said to be one and has none moves as a whole.
+    rolls = wheels(body, legs) if kind in (None, "vehicle") and not upright else None
+    if rolls:
+        return vehicle(body, co, rolls)
+    if kind == "vehicle":
+        plain["notes"].append("Fahrzeug ohne erkennbare Räder")
+        return plain
     if len(legs) == 2:
         found = "biped"
     elif 3 <= len(legs) <= 4 and (not upright or kind == "quadruped"):

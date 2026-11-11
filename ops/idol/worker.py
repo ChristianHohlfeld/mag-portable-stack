@@ -57,7 +57,11 @@ REMAINING = re.compile(r"<(\d+(?::\d+){1,2})[,\]]")
 # 3-5 are the sections of mesh.py, which announces them ("MAG-STEP ...").
 PHASES = ("Modell laden", "3D-Form berechnen", "Mesh rekonstruieren", "Textur backen", "Dateien exportieren")
 MESH_MARKS = {"MAG-STEP texture": 4, "MAG-STEP export": 5}
-LOGS = {"sample": "idol.log", "mesh": "mesh.log"}
+LOGS = {"sample": "idol.log", "shape": "shape.log", "mesh": "mesh.log"}
+# The whole shape (shape.py, TripoSG on the MI50) in an environment of its own;
+# where it is not installed, the mesh is made from the splat alone.
+SHAPE_PYTHON = os.environ.get("MAG_TRIPOSG_PYTHON", "/home/chris/idol-mi50/triposg/venv/bin/python")
+SHAPE_WEIGHTS = os.environ.get("MAG_TRIPOSG_WEIGHTS", "/home/chris/idol-mi50/weights/triposg")
 jobs = {}
 lock = threading.Lock()
 pending = queue.Queue()
@@ -387,7 +391,19 @@ def process(job_id):
         if not source.is_file():
             raise RuntimeError("Idol hat keine PLY-Datei erzeugt")
         source.rename(splat)
-    # Stage 2: mesh, texture, export. Done only when mesh.py itself said so.
+    # Stage 2: the whole shape (TripoSG), where it is installed. Its result is
+    # shape.ply; without it (not installed, or it failed) the mesh is made
+    # from the splat alone, as before: this stage never costs a job.
+    shape, tried = folder / "shape.ply", folder / "shape.exit"
+    weights = Path(SHAPE_WEIGHTS) / "transformer" / "diffusion_pytorch_model.safetensors"
+    if not shape.is_file() and not tried.is_file() and Path(SHAPE_PYTHON).is_file() and weights.is_file():
+        command = [SHAPE_PYTHON, str(here.with_name("shape.py")), str(folder)]
+        try:
+            run_stage(job_id, "shape", command, lambda job, line: None,
+                      dict(phase=3, stage="Ganze Form berechnen", step=50, progress=1.0, eta=None))
+        except Exception as exc:
+            print(f"shape of {job_id[:8]} not made: {type(exc).__name__}", flush=True)
+    # Stage 3: mesh, texture, export. Done only when mesh.py itself said so.
     def meshed():
         return read_exit(folder / "mesh.exit") == 0 and all((folder / name).is_file() for name in RESULTS)
     if not meshed():

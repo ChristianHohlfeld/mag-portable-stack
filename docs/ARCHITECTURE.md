@@ -346,6 +346,19 @@ still (for ten minutes it neither writes to its log nor uses the processor)
 and starts it again; after three standstills the job fails in words and can
 be taken up again like any failed job.
 
+Between sampling and meshing, the shape stage (`shape.py`, on the MI50, in
+its own environment `~/idol-mi50/triposg/venv` that reuses Idol's ROCm torch)
+asks TripoSG (VAST-AI, MIT, code and weights pinned) for the whole, closed
+shape of the thing from the same cut-out picture: Idol's splat is a relief
+seen from the side, TripoSG's shape is a head from every side. It writes
+`shape.ply`; it never costs a job (not installed, failed: the mesh is made
+from the splat as below, and the stage is not tried again for that job).
+`mesh.py` fits the shape onto the splat (`fit_shape`: the 24 ways a box can
+lie, each started with the splat's front on either end of the shape,
+trimmed nearest-point fitting with scale, the splat asked from its side
+only) and uses it when at least half of the splat's points lie on it (a splat has loose flaps at its sides); else the splat's own shell. The colours come from the splat and the
+photo either way.
+
 The mesh stage (`mesh.py`, CPU) makes the model from the splat, a cloud of
 small flat Gaussians lying on what the photo showed:
 

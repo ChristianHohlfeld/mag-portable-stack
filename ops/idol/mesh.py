@@ -240,6 +240,97 @@ def bake_texture(verts, faces, xyz, alpha, shapes, colors, spacing, size, neighb
     return vmapping, uv_faces, uvs, Image.fromarray(texture, mode="RGB")
 
 
+def shell_of(xyz, alpha, scales, turns, lo, spacing, resolution):
+    """The closed body the splat stands for (see the top of this file), as a mesh."""
+    opaque = opacity_field(xyz, alpha, scales, turns, lo, spacing, resolution)
+    body = body_of(opaque, down=3)                        # Idol's y points down: the thing stands on its higher y
+    # The surface runs where the Gaussians are half opaque; where the body was
+    # closed or filled it runs along the body.
+    field = np.where(body, np.maximum(opaque, 0.62), np.minimum(opaque, 0.38))
+    del opaque, body
+    field = gaussian_filter(field, sigma=0.6, output=np.float32)
+    verts, faces, _, _ = marching_cubes(field, level=0.5, spacing=(spacing,)*3, allow_degenerate=False)
+    del field
+    verts += lo
+    if not len(faces):
+        raise ValueError("Marching Cubes hat keine Oberfläche erzeugt")
+    geometry = trimesh.Trimesh(vertices=verts, faces=faces, process=False)
+    # A solid has an outside and nothing else: a bubble inside it is no part
+    # of it, and neither is a crumb beside it.
+    pieces = geometry.split(only_watertight=False)
+    if len(pieces) > 1:
+        largest = max(pieces, key=lambda piece: abs(piece.volume))
+        kept = [piece for piece in pieces if piece.volume * largest.volume > 0 and abs(piece.volume) >= OWN * abs(largest.volume)]
+        geometry = kept[0] if len(kept) == 1 else trimesh.util.concatenate(kept)
+    return geometry
+
+
+def fit_shape(shape, points):
+    """The whole shape (shape.py, in TripoSG's frame) put where the splat is:
+    turned, scaled and moved so that the splat's points lie on its surface.
+    The splat covers the side the photo shows, so it is asked from the
+    splat's side only (each point to the nearest place of the shape). All 24
+    ways a box can lie are tried, each refined; the best is taken if most of
+    the splat lies on it, else None: the splat's own shell is used."""
+    from scipy.spatial import cKDTree
+    rng = np.random.default_rng(3)
+    pts = points[rng.choice(len(points), min(len(points), 20000), replace=False)].astype(np.float64)
+    surface = shape.sample(40000).astype(np.float64)
+    pc, size = np.median(pts, axis=0), float(np.linalg.norm(np.percentile(pts, 98, axis=0) - np.percentile(pts, 2, axis=0)))
+    turns = []
+    for perm in ((0, 1, 2), (0, 2, 1), (1, 0, 2), (1, 2, 0), (2, 0, 1), (2, 1, 0)):
+        for signs in ((1, 1, 1), (1, 1, -1), (1, -1, 1), (1, -1, -1), (-1, 1, 1), (-1, 1, -1), (-1, -1, 1), (-1, -1, -1)):
+            m = np.zeros((3, 3))
+            for i, (j, sg) in enumerate(zip(perm, signs)):
+                m[i, j] = sg
+            if np.linalg.det(m) > 0:
+                turns.append(m)
+    def refine(r, t, rounds):
+        for _ in range(rounds):                                       # trimmed nearest-point fitting, with scale
+            placed = surface @ r.T + t
+            dist, idx = cKDTree(placed).query(pts, workers=8)
+            keep = dist <= np.percentile(dist, 85)
+            a, b = pts[keep], placed[idx[keep]]
+            ma, mb = a.mean(axis=0), b.mean(axis=0)
+            u, sv, vt = np.linalg.svd((b - mb).T @ (a - ma))
+            d = np.eye(3); d[2, 2] = np.sign(np.linalg.det(vt.T @ u.T))
+            rot = vt.T @ d @ u.T
+            grow = float(np.clip(np.sum(sv * np.diag(d)) / max(np.sum((b - mb) ** 2), 1e-12), 0.8, 1.25))
+            # a ≈ grow·rot·(b − mb) + ma, so the shape's new place is that applied to where it was
+            r, t = grow * rot @ r, grow * rot @ (t - mb) + ma
+        dist, _ = cKDTree(surface @ r.T + t).query(pts, workers=8)
+        return float(np.mean(dist < 0.02 * size)), r, t
+
+    theirs = np.percentile(pts, 98, axis=0) - np.percentile(pts, 2, axis=0)
+    wide, thin = np.argsort(-theirs)[:2], int(np.argmin(theirs))
+    tries = []
+    for turn in turns:
+        cloud = surface @ turn.T
+        span = np.percentile(cloud, 98, axis=0) - np.percentile(cloud, 2, axis=0)
+        # The splat is flat where the photo looked from; the two widest of its sides say the size.
+        scale = float(np.median(theirs[wide] / np.maximum(span[wide], 1e-9)))
+        cloud = cloud * scale
+        middle = (np.percentile(pts, 98, axis=0) + np.percentile(pts, 2, axis=0)) / 2 - (np.percentile(cloud, 98, axis=0) + np.percentile(cloud, 2, axis=0)) / 2
+        # ... and it is the near half of the thing: its front lies on one end of the shape along that side.
+        for end in (98, 2):
+            t = middle.copy()
+            t[thin] = np.percentile(pts[:, thin], end) - np.percentile(cloud[:, thin], end)
+            tries.append((refine(turn * scale, t, 4), turn, scale, t))
+    tries.sort(key=lambda x: -x[0][0])
+    best = None
+    for (near, r, t), *_ in tries[:4]:                                # the most promising, fitted to the end
+        found = refine(r, t, 30)
+        if best is None or found[0] > best[0]:
+            best = found
+    near, r, t = best
+    print(f"Shape: fits the splat at {100 * near:.0f} % of its points", flush=True)
+    if near < float(os.environ.get("MAG_SHAPE_FIT", "0.5")):
+        return None
+    out = shape.copy()
+    out.vertices = np.asarray(shape.vertices, np.float64) @ r.T + t
+    return out
+
+
 def solid(mesh):
     """Is this a solid: closed, every edge between exactly two faces that
     agree on which side is outside?"""
@@ -406,31 +497,24 @@ def reconstruct(input_path: Path, output_dir: Path, quality="normal"):
     lo -= (PORE + 3) * spacing                            # room around it for the flood
     resolution += 2 * (PORE + 3)
     print(f"Idol mesh {quality}: {len(xyz)} Gaussians; {resolution}³ cells", flush=True)
-    opaque = opacity_field(xyz, alpha, scales, turns, lo, spacing, resolution)
-    body = body_of(opaque, down=3)                        # Idol's y points down: the thing stands on its higher y
-    # The surface runs where the Gaussians are half opaque; where the body was
-    # closed or filled it runs along the body.
-    field = np.where(body, np.maximum(opaque, 0.62), np.minimum(opaque, 0.38))
-    del opaque, body
-    field = gaussian_filter(field, sigma=0.6, output=np.float32)
-    verts, faces, _, _ = marching_cubes(field, level=0.5, spacing=(spacing,)*3, allow_degenerate=False)
-    del field
-    verts += lo
-    if not len(faces):
-        raise ValueError("Marching Cubes hat keine Oberfläche erzeugt")
-    geometry = trimesh.Trimesh(vertices=verts, faces=faces, process=False)
-    # A solid has an outside and nothing else: a bubble inside it is no part
-    # of it, and neither is a crumb beside it.
-    pieces = geometry.split(only_watertight=False)
-    if len(pieces) > 1:
-        largest = max(pieces, key=lambda piece: abs(piece.volume))
-        kept = [piece for piece in pieces if piece.volume * largest.volume > 0 and abs(piece.volume) >= OWN * abs(largest.volume)]
-        geometry = kept[0] if len(kept) == 1 else trimesh.util.concatenate(kept)
+    # The whole shape, where the shape stage made one (shape.py): fitted onto
+    # the splat, it takes the place of the shell the splat stands for.
+    fitted = None
+    if (output_dir / "shape.ply").is_file():
+        try:
+            fitted = fit_shape(trimesh.load(output_dir / "shape.ply", force="mesh", process=True), xyz[alpha > 0.3])
+        except Exception as exc:
+            print(f"Shape: not used ({type(exc).__name__})", flush=True)
+    if fitted is not None:
+        geometry = fitted
+    else:
+        geometry = shell_of(xyz, alpha, scales, turns, lo, spacing, resolution)
     if geometry.volume < 0:
         geometry.invert()                                 # its faces look outwards
-    # Taubin lambda/mu smoothing (non-shrinking); fewer passes for thin details.
-    trimesh.smoothing.filter_taubin(
-        geometry, lamb=0.45, nu=0.48, iterations=settings["smooth"])
+    if fitted is None:
+        # Taubin lambda/mu smoothing (non-shrinking); fewer passes for thin details.
+        trimesh.smoothing.filter_taubin(
+            geometry, lamb=0.45, nu=0.48, iterations=settings["smooth"])
     geometry = unpinched(fewer(geometry, settings["print_faces"]))
     # The model that is shown has as many faces as a model needs. Its colours
     # do not come from its faces: they are baked from the splat at every texel.

@@ -134,7 +134,9 @@ answers about another picture it remembers. The same picture posted again is
 the same picture (one description); the owner can have a wrong one made anew.
 A picture whose file ends in its middle is not taken as it is: the page reads
 the file again first, and photo to 3D refuses it in words.
-Photo to 3D makes one model of one object. A photo that is ordered whole is
+Photo to 3D makes one model of one object, its whole shape from TripoSG
+(MIT, on the MI50 in Idol's queue) fitted onto Idol's splat, which gives
+the colours. A photo that is ordered whole is
 looked at first: what stands apart in its foreground (two people, a gnome
 and a fox) is told apart and ordered each by itself, filling its picture,
 and together they become the photo's scene. In a photo with several things

@@ -73,7 +73,8 @@ def main():
     stage.chmod(0o755)
     port = free_port()
     env = dict(os.environ, MAG_IDOL_JOB_ROOT=str(root), MAG_IDOL_PORT=str(port), MAG_IDOL_PYTHON=str(stage),
-               MAG_IDOL_CPUS="", FAKE_DELAY="0.1", MAG_IDOL_STALL_S="2")
+               MAG_IDOL_CPUS="", FAKE_DELAY="0.1", MAG_IDOL_STALL_S="2",
+               MAG_TRIPOSG_PYTHON=str(tmp / "no-shape-python"))      # the whole shape stage is not installed here
     worker = [None]
 
     def call(method, path, body=None):

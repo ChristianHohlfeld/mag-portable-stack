@@ -309,15 +309,43 @@ device access) runs the pinned Blender (`blender.lock`, fetched once by
 - `build` (while the tool call waits, so a wrong description comes back in
   words): every figure gets its skeleton and weights (each vertex follows the
   bone of its cube, softened along the surface), the actions become
-  keyframes: gaits swing the legs from an even stance, the body rides along,
-  head, tail and arms do their part; a thing moves as a whole. It writes
-  `scene.glb` (skinned, animated), which the room posts at once and the page
-  plays in its own viewer, and `scene.blend`.
+  keyframes. A figure on two legs moves as people do (see below); an animal's
+  gaits swing its legs from an even stance, the body rides along, head and
+  tail do their part; a thing moves as a whole. It writes `scene.glb`
+  (skinned, animated), which the room posts at once and the page plays in
+  its own viewer, and `scene.blend`.
 - `render` (only when the film is asked for; a stage on its own, like the
   Idol stages): Cycles on the CPU, frame by frame, then ffmpeg. A restart of
   the worker follows the running render again; after a reboot it goes on with
   the first missing frame. The film joins the scene's message when it is
   done. A built scene without a film costs nothing but its folder.
+
+Somebody on two legs moves with recorded motions (`motion.py`, numpy only,
+so the tests run it without Blender). `motions.npz` holds them as a figure
+of any build can take them over: for every frame, seen from the body itself,
+how hips, chest and head are turned from standing straight, where thighs,
+shins and arms point, how high the hips are in leg lengths, and what each
+foot does (in the air, on its toes, standing). `mocap/build.py` makes the
+file from the recordings `mocap/clips.json` names (`sources.lock` pins them;
+`MOTIONS.md` has their terms and the credit they ask for); a gait is cut to a
+round that ends as it begins. In a scene every such figure is a `Performer`
+that does something in every frame, a motion that was asked for or standing
+and breathing:
+
+- its bones point where the recorded ones did; the way it covers follows the
+  length of its own legs, short legs step quicker, and a jump is as high as
+  the figure is tall;
+- a foot that stands is held where it stands and the leg is solved for it,
+  the hips come down when it would be out of reach; a foot that ends up far
+  from where it belongs (after a turn on the spot, a stop) takes a step;
+- one motion goes over into the next without the two being mixed: what is
+  left of the old one fades out on top of the new one (inertialization);
+- an arm that hangs does what the recorded arm does, one that is held up or
+  bent keeps its hold and only moves along; a gesture is made with the hand
+  that is free;
+- on its way it is steered towards where it goes, in whole strides; before a
+  leap the run-up is taken as far as the leap itself runs;
+- who has nothing to do looks at who does something.
 
 The film is lit like the chat shows the scene (`LIGHTS` in `scene.py`): a key
 light over the camera's left shoulder casts the one shadow, a fill and a rim

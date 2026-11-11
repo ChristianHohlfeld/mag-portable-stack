@@ -9,7 +9,8 @@ A generated model is one mesh. Often it shows several figures (a gnome and a
 fox from one picture): `parts` tells them apart, and an actor of a scene is a
 model or one of its parts. What a figure is, is read from its shape (rig.py):
 an animal and somebody on two legs get a skeleton and move their limbs, only
-a thing moves as a whole. `build` writes the animated scene as scene.glb
+a thing moves as a whole. Somebody on two legs moves with recorded motions
+(motion.py). `build` writes the animated scene as scene.glb
 (what the chat plays) and scene.blend, lit for its film; `render` renders
 scene.blend to frames with Cycles when the film is asked for.
 Nothing here takes code from a request: a scene is data, the motion is ours.
@@ -25,6 +26,7 @@ import numpy as np
 from mathutils import Matrix, Quaternion, Vector
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import motion  # noqa: E402  (how a figure on two legs moves)
 import rig  # noqa: E402  (what a figure is, and its skeleton)
 
 FPS = 24
@@ -465,6 +467,7 @@ class Actor:
         self.axis = Vector(part["mag_axis"]) if part["mag_long"] > 1.3 else None
         self.headed = bool(part["mag_head"])   # the axis points to the head, not just along the body
         self.rig, self.kind, self.notes = None, "object", list(found["notes"]) if found else []
+        self.found, self.performer = found, None
         if found and found["bones"]:
             try:
                 self.obj = skeleton(part, found, name, weigh)
@@ -519,8 +522,169 @@ class Actor:
         return angle
 
 
+def stage(actor, library, fps, seed):
+    """Somebody on two legs moves as people do (motion.py): from now on the
+    figure is somewhere and does something in every frame."""
+    if library is None or actor.kind != "biped" or actor.rig is None or actor.performer is not None:
+        return
+    front = actor.axis if actor.axis is not None else Vector(FACES["camera"])
+    try:
+        body = motion.Body(actor.found["bones"], (front.x, front.y), actor.scale, library.neutral)
+        heading = actor.yaw + body.facing
+        at = motion.turn2(heading, body.mid[:2])
+        trial = motion.Performer(body, library, fps, (actor.pos.x + at[0], actor.pos.y + at[1]), heading, seed)
+        trial.wait(2)
+        trial.finish(1)
+        actor.performer = motion.Performer(body, library, fps, (actor.pos.x + at[0], actor.pos.y + at[1]), heading, seed)
+    except Exception as exc:                          # a build the motions do not fit: it moves as before
+        print("MAG-NOTE %s: recorded motions do not fit (%s)" % (actor.name, type(exc).__name__), flush=True)
+
+
+def eyes(actor):
+    """Where to look to look at somebody: asked for a frame, the place of its head."""
+    def at(frame):
+        if actor.performer is not None:
+            if frame < len(actor.performer.frames):
+                origin = actor.performer.frames[frame]["origin"]
+                return (origin[0], origin[1], origin[2] + 0.85 * actor.height)
+            return (actor.pos.x, actor.pos.y, 0.85 * actor.height)
+        frames = [f for f in actor.keys if f <= frame]     # as far as it has been told what to do
+        x, y, z = actor.keys[max(frames)][:3] if frames else (actor.pos.x, actor.pos.y, 0.0)
+        return (x, y, z + 0.85 * actor.height)
+    return at
+
+
+def watch(actors, spans, last, fps):
+    """Who has nothing to do looks at who does something: nobody in a scene
+    is a statue. `spans`: who acts from which frame to which."""
+    for actor in actors.values():
+        p = actor.performer
+        if p is None:
+            continue
+        seen = [None] * (last + 1)
+        for who, a, z in spans:                       # what begins later is more interesting
+            if who is not actor and z - a >= int(0.6 * fps):
+                for f in range(min(last, a + int(0.3 * fps)), min(last, z + int(0.5 * fps)) + 1):
+                    seen[f] = who
+        for who, a, z in spans:                       # ... but not while it is busy itself
+            if who is actor:
+                for f in range(max(0, a - int(0.2 * fps)), min(last, z + int(0.2 * fps)) + 1):
+                    seen[f] = None
+        f = 0
+        while f <= last:
+            g = f
+            while g <= last and seen[g] is seen[f]:
+                g += 1
+            if seen[f] is not None and g - f >= int(0.7 * fps):
+                p.look(eyes(seen[f]), f, g, 0.85)
+            f = g
+
+
+
+
+def perform(actor, action, actors, fps, start):
+    """One action of somebody on two legs. Returns its last frame."""
+    kind = action.get("do", "")
+    p = actor.performer
+    first = p.wait(max(len(p.frames), int(round(max(0.0, start) * fps))))
+    other = find(actors, action.get("target"))
+
+    def target_point():
+        if other is actor:
+            fail("Aktion " + kind + ": " + actor.name + " kann nicht sein eigenes Ziel sein.")
+        if other:
+            return other.pos.copy(), other.radius
+        point = pair(action.get("target"))
+        if point:
+            return Vector(point), 0.0
+        fail("Aktion " + kind + " von " + actor.name + ": target fehlt oder ist unbekannt. Darsteller sind: " + ", ".join(actors))
+
+    def seconds(default, lo, hi):
+        return number(action, "seconds", default, lo, hi)
+
+    def from_afar(goal, heading, near):
+        """Figures of one picture stand side by side: somebody who is to come over starts from further away."""
+        needed = 2.4 * actor.length
+        if (goal - actor.pos).length - near < needed and not actor.placed:
+            there = goal - heading * (near + needed)
+            p.move((there.x - actor.pos.x, there.y - actor.pos.y))
+            actor.pos = there
+        actor.placed = True
+
+    if kind in ("walk_to", "run_to", "sneak_to", "hop_to"):
+        goal, room = target_point()
+        if (goal - actor.pos).length < 1e-6:
+            fail(actor.name + " steht schon am Ziel.")
+        apart = number(action, "distance", room + 0.55 * actor.length + 0.04 * actor.height, 0.0, 100.0)
+        from_afar(goal, (goal - actor.pos).normalized(), apart)
+        end = p.go({"walk_to": "walk", "run_to": "run", "sneak_to": "sneak", "hop_to": "hop"}[kind], lambda frame: (goal.x, goal.y), stop=apart, seconds=seconds(0.0, 0.0, 20.0) or None)
+    elif kind == "jump_over":
+        # A run-up, a leap over the other, a landing behind it.
+        goal, room = target_point()
+        if (goal - actor.pos).length < 1e-6:
+            fail(actor.name + " steht schon am Ziel.")
+        heading = (goal - actor.pos).normalized()
+        leap, body = p.lib["leap"], p.body
+        clear = room + 0.6 * actor.length
+        before = float(np.linalg.norm(leap.place(leap.air[0])[:2])) * body.leg     # what the leap itself runs before it takes off
+        from_afar(goal, heading, clear + before)
+        p.go("run", lambda frame: (goal.x, goal.y), stop=clear + before, on=True)
+        end = p.leap("leap", (heading.x, heading.y), other.height if other else 0.0, 2 * clear)
+    elif kind in ("turn_to", "turn", "spin"):
+        if kind == "turn_to":
+            goal, _ = target_point()
+            way = goal - actor.pos
+            end = p.face(math.atan2(way.y, way.x), seconds(0.0, 0.0, 10.0) or None)
+        elif kind == "turn":
+            end = p.face(p.heading + math.radians(number(action, "degrees", 180.0, -1080.0, 1080.0)), seconds(0.0, 0.0, 10.0) or None)
+        else:
+            end = p.perform("spin", times=int(number(action, "times", 1, 1, 6)))
+    elif kind == "look_at":
+        goal, _ = target_point()
+        end = first + max(8, int(round(seconds(1.8, 0.5, 12.0) * fps)))
+        p.look(eyes(other) if other else (lambda frame: (goal.x, goal.y, 0.5 * actor.height)), first, end)
+        p.wait(end)
+    elif kind in ("nod", "shake_head"):
+        times = int(number(action, "times", 2, 1, 12))
+        frames = max(6, int(round(seconds((0.55 if kind == "nod" else 0.5) * times, 0.3, 12.0) * fps)))
+        p.nod(kind, first, frames, times)
+        end = p.wait(first + frames)
+    elif kind in ("wobble", "wag_tail"):
+        end = p.sway(seconds(1.2 if kind == "wobble" else 1.5, 0.3, 10.0), 0.16 if kind == "wobble" else 0.07)
+    elif kind in ("grow", "shrink"):
+        factor = number(action, "factor", 1.5 if kind == "grow" else 0.6, 0.05, 20.0)
+        factor = min(4.0, max(0.2, factor if kind == "grow" or factor < 1 else 1 / factor))
+        frames = max(4, int(round(seconds(0.8, 0.2, 10.0) * fps)))
+        scale0 = actor.scale
+        for i in range(1, frames + 1):
+            actor.scale = scale0 * (1 + (factor - 1) * ease(i / frames))
+            p.resize(actor.scale)
+            p.tick()
+        end = len(p.frames)
+    elif kind == "wait":
+        end = p.wait(first + max(1, int(round(seconds(1.0, 0.1, 20.0) * fps))))
+    elif kind == "jump":
+        end = p.perform("jump", times=int(number(action, "times", 1, 1, 8)))
+    elif kind in p.lib:
+        if other:                                    # done to somebody: it turns there if it has to, and looks there
+            way = other.pos - actor.pos
+            if way.length > 1e-6 and abs(motion.wrap(math.atan2(way.y, way.x) - p.heading)) > 0.6:
+                first = p.face(math.atan2(way.y, way.x))
+            p.look(eyes(other), first, first + int(p.lib[kind].seconds * fps), 0.8)
+        end = p.perform(kind, seconds=seconds(0.0, 0.0, 20.0) or None, times=int(number(action, "times", 1, 1, 8)))
+    else:
+        fail("Unbekannte Aktion: " + str(kind) + ". Es gibt walk_to, run_to, hop_to, sneak_to, jump_over, turn_to, look_at, turn, spin, jump, wave, nod, "
+             "shake_head, wag_tail, wobble, grow, shrink, wait.")
+    at = p.origin
+    actor.pos, actor.yaw = Vector((at[0], at[1])), p.heading - p.body.facing
+    actor.clock = end / fps
+    return end
+
+
 def play(actor, action, actors, fps, start):
     """Writes one action of an actor, beginning at `start` seconds. Returns its last frame."""
+    if actor.performer is not None:
+        return perform(actor, action, actors, fps, start)
     kind = action.get("do", "")
     first = int(round(max(0.0, start) * fps))
     actor.key(max(0, first - 1))
@@ -766,6 +930,11 @@ def animate(actor, last):
     """Writes the samples of an actor as keyframes, one per frame."""
     obj = actor.obj
     obj.rotation_mode = "XYZ"
+    if actor.performer is not None:                  # it was somewhere in every frame: these are its keys
+        actor.keys = {}
+        for frame, (origin, yaw, scale, turns) in enumerate(actor.performer.finish(last)):
+            actor.keys[frame] = (origin[0], origin[1], origin[2], 0.0, 0.0, yaw, 1.0, scale)
+            actor.rig.frames[frame] = {name: Quaternion(turn) for name, turn in turns.items()}
     frames = sorted(actor.keys)
     state = actor.keys[frames[0]]
     at = 0
@@ -1009,11 +1178,18 @@ def build(spec_path, out):
     cast = [a.part for a in actors.values()]
     for obj in [o for parts in loaded.values() for o in parts if not any(o == c for c in cast)]:
         bpy.data.objects.remove(obj)  # figures of a model that play no part
+    try:
+        library = motion.Library()
+    except Exception as exc:                          # without the recorded motions two-legged figures move as animals do
+        print("MAG-NOTE no recorded motions (%s)" % type(exc).__name__, flush=True)
+        library = None
+    for seed, actor in enumerate(actors.values()):
+        stage(actor, library, fps, seed)
     for actor in actors.values():
         actor.key(0)
     # The actions are a story: one after the other in the order given, unless
     # an action says that it starts together with the one before it (or when).
-    last, clock, began = 0, 0.3, 0.3
+    last, clock, began, spans = 0, 0.3, 0.3, []
     for action in spec.get("actions") or []:
         actor = find(actors, action.get("actor"))
         if not actor:
@@ -1022,10 +1198,13 @@ def build(spec_path, out):
         if start < 0:
             start = max(began if action.get("together") is True else clock, actor.clock)
         end = play(actor, action, actors, fps, start)
+        if action.get("do") != "wait":
+            spans.append((actor, int(round(start * fps)), end))
         began, clock, last = start, max(clock, end / fps + 0.15), max(last, end)
     if last > MAX_SECONDS * fps:
         fail("Die Szene wäre %d Sekunden lang, höchstens %d sind möglich. Nimm weniger Aktionen oder gib ihnen kürzere seconds." % (last // fps + 1, MAX_SECONDS))
     last = min(MAX_SECONDS * fps, max(last + int(0.8 * fps), int(2.5 * fps), int(number(spec, "seconds", 0.0, 0.0, MAX_SECONDS) * fps)))
+    watch(actors, spans, last, fps)
     for actor in actors.values():
         animate(actor, last)
     # The stage: everything every actor ever touches, with a margin.

@@ -3,7 +3,8 @@
 
 A job survives everything short of being deleted. It is a folder: status.json
 says where the job is, and every stage of the pipeline leaves its result
-there (sampling -> splat.ply, meshing -> mesh.glb and mesh.stl). A stage runs
+there (the whole shape -> shape.ply, meshing -> mesh.glb and mesh.stl; Idol's
+sampling -> splat.ply only where the shape alone does not do). A stage runs
 in its own session, writes its output to a log file and its exit code to a
 file, so it does not need this process: when the worker restarts (a deploy,
 a crash) it finds the stage still running and follows it again, and after a
@@ -190,8 +191,8 @@ def again(job_id, remesh=False):
         item = jobs.get(job_id)
         if item is None:
             return None
-        if item["state"] == "done" and remesh and (ROOT / job_id / "splat.ply").is_file():
-            for name in ("mesh.glb", "mesh.stl", "mesh.exit", "mesh.json"):
+        if item["state"] == "done" and remesh and any((ROOT / job_id / name).is_file() for name in ("splat.ply", "shape.ply")):
+            for name in ("mesh.glb", "mesh.stl", "mesh.exit", "mesh.json", "alone.failed"):
                 (ROOT / job_id / name).unlink(missing_ok=True)
             item.pop("finished", None)
             item.pop("seen_from", None)
@@ -422,10 +423,16 @@ def process(job_id):
     if quality not in QUALITIES:
         raise ValueError("Ungültige gespeicherte Idol-Qualität")
     here = Path(__file__)
-    # Stage 1: the Idol process loads its weights and samples. Its result is
-    # splat.ply; a job that already has it does not sample again.
     splat = folder / "splat.ply"
-    if not splat.is_file():
+    shape, tried = folder / "shape.ply", folder / "shape.exit"
+    with lock:
+        sampling = jobs[job_id].get("stage_key") == "sample"   # a worker before this one began with the splat
+
+    def sample():
+        """The Idol process loads its weights and samples. Its result is
+        splat.ply; a job that already has it does not sample again."""
+        if splat.is_file():
+            return
         command = [PYTHON, str(here.with_name("runner.py")),
                    "--image", str(folder / "input.png"),
                    "--out", str(out), "--mode", "real",
@@ -437,34 +444,56 @@ def process(job_id):
         if not source.is_file():
             raise RuntimeError("Idol hat keine PLY-Datei erzeugt")
         source.rename(splat)
-    # Stage 2: the whole shape (TripoSG), where it is installed. Its result is
-    # shape.ply; without it (not installed, or it failed) the mesh is made
-    # from the splat alone, as before: this stage never costs a job.
-    shape, tried = folder / "shape.ply", folder / "shape.exit"
+
+    def meshed():
+        return read_exit(folder / "mesh.exit") == 0 and all((folder / name).is_file() for name in ("mesh.glb", "mesh.stl"))
+
+    if sampling:
+        sample()
+    # The whole shape first (TripoSG, a few minutes on the MI50), where it is
+    # installed. Its result is shape.ply; it never costs a job (not installed,
+    # or it failed: the splat is sampled and the mesh made from it as before).
     weights = Path(SHAPE_WEIGHTS) / "transformer" / "diffusion_pytorch_model.safetensors"
     if not shape.is_file() and not tried.is_file() and Path(SHAPE_PYTHON).is_file() and weights.is_file():
         command = [SHAPE_PYTHON, str(here.with_name("shape.py")), str(folder)]
         try:
-            run_stage(job_id, "shape", command, lambda job, line: None,
-                      dict(phase=3, stage="Ganze Form berechnen", step=50, progress=1.0, eta=None))
+            run_stage(job_id, "shape", command, sampling_line,
+                      dict(phase=2, stage=PHASES[1], step=0, total_steps=50, progress=0.0, eta=None))
+        except InterruptedError:
+            raise                                         # cancelled: nothing more is done
         except Exception as exc:
             print(f"shape of {job_id[:8]} not made: {type(exc).__name__}", flush=True)
-    # Stage 3: mesh, texture, export. Done only when mesh.py itself said so.
-    def meshed():
-        return read_exit(folder / "mesh.exit") == 0 and all((folder / name).is_file() for name in RESULTS)
+    # With the shape, the model is made from it and the photo alone: the splat
+    # would only say where it stands, and sampling it takes a quarter of an
+    # hour. Where that does not do (alone.failed), the splat is sampled.
+    alone_failed = folder / "alone.failed"
+    if shape.is_file() and not splat.is_file() and not meshed() and not alone_failed.is_file():
+        command = [PYTHON, str(here.with_name("mesh.py")), str(splat), str(folder), "--quality", quality, "--alone"]
+        try:
+            run_stage(job_id, "mesh", command, mesh_line,
+                      dict(phase=3, stage=PHASES[2], step=50, progress=1.0, eta=None))
+        except InterruptedError:
+            raise
+        except Exception as exc:
+            print(f"model of {job_id[:8]} not made from its shape alone: {type(exc).__name__}", flush=True)
+        if not meshed():
+            alone_failed.touch()
+    # Mesh, texture, export from the splat (and the shape, where there is one).
+    # Done only when mesh.py itself said so.
     if not meshed():
+        sample()
         command = [PYTHON, str(here.with_name("mesh.py")), str(splat), str(folder), "--quality", quality]
         run_stage(job_id, "mesh", command, mesh_line,
                   dict(phase=3, stage=PHASES[2], step=50, progress=1.0, eta=None))
         if not meshed():
-            raise RuntimeError("Mesh-Export unvollständig (PLY/GLB/STL)")
+            raise RuntimeError("Mesh-Export unvollständig (GLB/STL)")
     shutil.rmtree(folder / "tmp", ignore_errors=True)
     seen = None
     try:
         seen = json.loads((folder / "mesh.json").read_text()).get("seen_from")
     except (OSError, ValueError, AttributeError):
         pass
-    update(job_id, state="done", stage="Fertig", phase=len(PHASES), files=list(RESULTS),
+    update(job_id, state="done", stage="Fertig", phase=len(PHASES), files=[name for name in RESULTS if (folder / name).is_file()],
            finished=int(time.time()), pid=None, **({"seen_from": seen} if isinstance(seen, list) and len(seen) == 3 else {}))
 
 def execute():

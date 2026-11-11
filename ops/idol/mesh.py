@@ -239,9 +239,11 @@ def bake_texture(verts, faces, xyz, alpha, shapes, colors, spacing, size, neighb
     outward = np.cross(corners[:, 1] - corners[:, 0], corners[:, 2] - corners[:, 0])
     outward /= np.maximum(np.linalg.norm(outward, axis=1, keepdims=True), 1e-12)
     del corners
-    tree = cKDTree(xyz)
+    tree = cKDTree(xyz) if xyz is not None else None                 # (no splat: the shape alone)
     if front is not None:
         spread = carried(verts, faces, camera, front["fine"], front["outline"])
+        if spread is None and xyz is None:
+            raise RuntimeError("Das Foto zeigt zu wenig von der Form")
         spread = spread[vmapping] if spread is not None else None
         beyond = np.zeros((len(all_pixels), 3), np.float32)            # the photo carried there
     verts = np.asarray(verts, np.float32)[vmapping]
@@ -271,7 +273,7 @@ def bake_texture(verts, faces, xyz, alpha, shapes, colors, spacing, size, neighb
         tri_verts = verts[tri]
         positions = (w[:, None]*tri_verts[:, 0] + u[:, None]*tri_verts[:, 1]
                      + v[:, None]*tri_verts[:, 2])
-        rgb = gaussian_albedo(positions, tree, colors, alpha, shapes, spacing, neighbors)
+        rgb = gaussian_albedo(positions, tree, colors, alpha, shapes, spacing, neighbors) if tree is not None else np.full((len(samples), 3), 0.5)
         tex_flat[samples] = np.rint(rgb*255).astype(np.uint8)
         if camera is not None:
             where[start:start+len(samples)] = positions
@@ -814,8 +816,16 @@ def reconstruct(input_path: Path, output_dir: Path, quality="normal"):
         shown.vertices, shown.faces, xyz, alpha, footprints(scales, turns, 0.35 * float(np.median(gap))), colors,
         spacing, settings["texture"], settings["neighbors"],
         float(os.environ.get("MAG_IDOL_UNWRAP_S", settings["unwrap"])), the_photo(input_path.parent), front)
-    print("MAG-STEP export", flush=True)
+    export(shown, geometry, vmapping, uv_faces, uvs, texture, output_dir, settings, idol_frame=True)
 
+
+def export(shown, geometry, vmapping, uv_faces, uvs, texture, output_dir, settings, idol_frame):
+    """mesh.glb (the shown mesh with its texture, y up, standing on y = 0),
+    mesh.json (from where the photo looked, in the GLB's axes) and mesh.stl
+    (the finer mesh, z up, 120 mm tall). `idol_frame`: the meshes are in
+    Idol's frame (y down), else in TripoSG's (y up)."""
+    print("MAG-STEP export", flush=True)
+    turn = trimesh.transformations.rotation_matrix(np.pi, [0.0, 0.0, 1.0]) if idol_frame else np.eye(4)
     material = trimesh.visual.material.PBRMaterial(
         baseColorTexture=texture, metallicFactor=0.0, roughnessFactor=1.0)
     mesh = trimesh.Trimesh(
@@ -823,19 +833,19 @@ def reconstruct(input_path: Path, output_dir: Path, quality="normal"):
         visual=trimesh.visual.TextureVisuals(uv=uvs, material=material),
         process=False)
     # Idol Y-down -> GLB Y-up. Verified on the teapot: rotate about camera Z.
-    mesh.apply_transform(trimesh.transformations.rotation_matrix(np.pi, [0.0, 0.0, 1.0]))
+    mesh.apply_transform(turn)
     mesh.apply_translation([0.0, -float(mesh.bounds[0, 1]), 0.0])
     mesh.export(output_dir / "mesh.glb", file_type="glb")
     # From where the photo looked at the model, in the axes of the GLB (y up): a
     # scene made of several models of one photo turns each the way it stood.
     if "from" in SEEN:
         import json
-        towards = trimesh.transformations.rotation_matrix(np.pi, [0.0, 0.0, 1.0])[:3, :3] @ np.asarray(SEEN["from"], np.float64)
+        towards = turn[:3, :3] @ np.asarray(SEEN["from"], np.float64)
         (output_dir / "mesh.json").write_text(json.dumps({"seen_from": [round(float(v), 4) for v in towards]}))
 
     # Print STL, without colors: +90° X rotates Y-up to Z-up, then scale to mm.
     stl = geometry.copy()
-    stl.apply_transform(trimesh.transformations.rotation_matrix(np.pi, [0.0, 0.0, 1.0]))
+    stl.apply_transform(turn)
     stl.apply_translation([0.0, -float(stl.bounds[0, 1]), 0.0])
     stl.apply_transform(trimesh.transformations.rotation_matrix(np.pi / 2, [1.0, 0.0, 0.0]))
     target_height = float(os.environ.get("MAG_IDOL_STL_HEIGHT_MM", "120"))
@@ -852,10 +862,56 @@ def reconstruct(input_path: Path, output_dir: Path, quality="normal"):
           flush=True)
 
 
+def reconstruct_shape(output_dir: Path, quality="normal"):
+    """The model from the whole shape and the photo alone, without Idol's
+    splat: TripoSG's shape lies exactly under the picture it was made from
+    (front_of), so the side the photo shows takes the photo and the rest its
+    colours carried over the surface. The splat would only say where the
+    shape stands, and sampling it takes the MI50 a quarter of an hour. Raises
+    when the shape or its picture does not do (the worker then samples)."""
+    if quality not in QUALITY_PRESETS:
+        raise ValueError(f"Ungültige Qualitätsstufe: {quality}")
+    settings = QUALITY_PRESETS[quality]
+    whole = trimesh.load(output_dir / "shape.ply", force="mesh", process=True)
+    picture = shape_picture(output_dir)
+    if picture is None:
+        raise RuntimeError("Das Bild der Form fehlt")
+    own = front_of(whole, picture[1])
+    if own is None:
+        raise RuntimeError("Die Form deckt ihr Bild nicht")
+    own.cover, own.colour = 1.0, 0.0
+    geometry = based(whole, own, output_dir)
+    for _ in range(5):                                    # closed, whatever TripoSG's grid left open
+        if solid(geometry):
+            break
+        geometry = mended(geometry)
+    if not solid(geometry):
+        raise RuntimeError("Die Form ist nicht geschlossen")
+    if geometry.volume < 0:
+        geometry.invert()
+    print(f"Shape alone: {len(geometry.faces)} faces, no splat", flush=True)
+    geometry = unpinched(fewer(geometry, settings["print_faces"]))
+    shown = unpinched(fewer(geometry, settings["faces"]))
+    print("MAG-STEP texture", flush=True)
+    vmapping, uv_faces, uvs, texture = bake_texture(
+        shown.vertices, shown.faces, None, None, None, None, 1.0, settings["texture"], settings["neighbors"],
+        float(os.environ.get("MAG_IDOL_UNWRAP_S", settings["unwrap"])), None,
+        {"camera": own, "fine": picture[0], "outline": picture[1]})
+    # As large as Idol's models are (about one unit at its largest), so it stands among them in a scene.
+    grow = 1.0 / max(float(np.max(geometry.extents)), 1e-9)
+    shown = trimesh.Trimesh(np.asarray(shown.vertices) * grow, shown.faces, process=False)
+    geometry = trimesh.Trimesh(np.asarray(geometry.vertices) * grow, geometry.faces, process=False)
+    export(shown, geometry, vmapping, uv_faces, uvs, texture, output_dir, settings, idol_frame=False)
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("ply", type=Path)
     parser.add_argument("out", type=Path)
     parser.add_argument("--quality", choices=tuple(QUALITY_PRESETS), default="normal")
+    parser.add_argument("--alone", action="store_true", help="from shape.ply and its picture, without the splat")
     args = parser.parse_args()
-    reconstruct(args.ply, args.out, args.quality)
+    if args.alone:
+        reconstruct_shape(args.out, args.quality)
+    else:
+        reconstruct(args.ply, args.out, args.quality)

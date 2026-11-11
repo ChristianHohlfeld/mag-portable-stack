@@ -8,7 +8,9 @@ in its own session, writes its output to a log file and its exit code to a
 file, so it does not need this process: when the worker restarts (a deploy,
 a crash) it finds the stage still running and follows it again, and after a
 reboot it starts the job again at the first stage whose result is missing.
-Nothing is ever written off as "interrupted". A job that failed or was
+Nothing is ever written off as "interrupted", and nothing has a time limit:
+a stage is ended only when it stands still (it neither writes nor uses the
+processor for ten minutes), and then it is started again. A job that failed or was
 cancelled is taken up again when it is asked for (retry), at the first stage
 whose result is missing: sampling that is done is not done again.
 """
@@ -33,10 +35,13 @@ DINO = os.environ.get("IDOL_DINOV3", "/home/chris/idol-mi50/weights/dinov3-timm"
 VAE = os.environ.get("IDOL_FLUX2_VAE", "/home/chris/idol-mi50/weights/flux2vae")
 PORT = int(os.environ.get("MAG_IDOL_PORT", "8793"))
 CPUS = os.environ.get("MAG_IDOL_CPUS", "28-55")  # never the models' cores
-RUN_TIMEOUT = max(3600, int(os.environ.get("MAG_IDOL_TIMEOUT_S", "4200")))
+# A stage has no time limit: sampling on the MI50 at its 72 W takes as long
+# as it takes. A stage is only ended when it has come to a standstill: for
+# this long it has neither written a line nor used the processor.
+STALL = max(1, int(os.environ.get("MAG_IDOL_STALL_S", "600")))
 MAX_UPLOAD = 20 * 1024 * 1024
 MAX_PENDING = 8
-MESH_TIMEOUTS = {"fast": 300, "normal": 900, "high": 1800}
+QUALITIES = ("fast", "normal", "high")
 RESULTS = {"splat.ply": "application/octet-stream", "mesh.glb": "model/gltf-binary",
            "mesh.stl": "model/stl"}
 VALID_ID = re.compile(r"^[a-f0-9]{32}$")
@@ -59,6 +64,10 @@ abort = set()
 
 class Lost(Exception):
     """A stage vanished without leaving its exit code (killed, reboot)."""
+
+
+class Stalled(Exception):
+    """A stage came to a standstill and was ended."""
 
 def save(job):
     folder = ROOT / job["id"]
@@ -89,6 +98,22 @@ def proc_start(pid):
 def stage_alive(item):
     pid = item.get("pid")
     return bool(pid) and proc_start(pid) is not None and proc_start(pid) == item.get("pid_start")
+
+def worked(pid):
+    """How much processor time everything in a stage's session has used so
+    far (clock ticks). A stage that is alive but hangs uses none."""
+    total = 0
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit():
+            continue
+        try:
+            stat = Path("/proc", entry, "stat").read_text()
+            fields = stat[stat.rindex(")") + 2:].split()
+            if int(fields[3]) == pid:
+                total += int(fields[11]) + int(fields[12])
+        except (OSError, ValueError, IndexError):
+            continue
+    return total
 
 def reap():
     """Collect finished stages this process started itself."""
@@ -227,14 +252,16 @@ def launch(job_id, key, command):
     update(job_id, stage_key=key, pid=proc.pid, pid_start=proc_start(proc.pid),
            stage_started=int(time.time()), log_offset=offset)
 
-def follow(job_id, key, timeout, on_line):
+def follow(job_id, key, on_line):
     """Read a stage's log as it grows until its exit code is on disk. Works
-    the same for a stage this process started and for one it found running."""
+    the same for a stage this process started and for one it found running.
+    However long it takes: only a stage that stands still is ended."""
     folder = ROOT / job_id
     log_path, exit_path = folder / LOGS[key], folder / f"{key}.exit"
     with lock:
         item = dict(jobs[job_id])
     offset, linebuf, gone = int(item.get("log_offset") or 0), b"", None
+    moved, looked, used = time.monotonic(), 0.0, -1      # when it last got on, when its processor time was last read, and what it was
     while True:
         reap()
         code = read_exit(exit_path)
@@ -258,17 +285,23 @@ def follow(job_id, key, timeout, on_line):
                 if part:
                     on_line(job_id, part.decode("utf-8", errors="replace"))
             update(job_id, log_offset=offset - len(linebuf))
+            moved = time.monotonic()
             continue
         if code is not None:
             break
         if job_id in abort:
             kill_stage(item)
             raise InterruptedError("Job abgebrochen")
-        if time.time() - float(item.get("stage_started") or time.time()) > timeout:
-            kill_stage(item)
-            raise TimeoutError(f"Zeitlimit {timeout//60} Minuten überschritten")
         if stage_alive(item):
             gone = None
+            now = time.monotonic()
+            if now - looked >= min(5.0, STALL / 4):       # it writes nothing: is it working?
+                looked, before, used = now, used, worked(item["pid"])
+                if used != before:
+                    moved = now
+            if now - moved > STALL:
+                kill_stage(item)
+                raise Stalled(key)
         else:
             gone = gone or time.monotonic()
             if time.monotonic() - gone > 3:  # no process and still no exit code
@@ -296,10 +329,11 @@ def why_failed(log_path, code):
         return "Der Grafikkarte ist der Speicher ausgegangen. Bitte mit einer niedrigeren Qualität noch einmal versuchen."
     return f"Die Berechnung ist abgebrochen (Prozess Exit {code}); Details im privaten {log_path.name}"
 
-def run_stage(job_id, key, command, timeout, on_line, fresh):
+def run_stage(job_id, key, command, on_line, fresh):
     """Run a stage to its end. A stage that is still running from before a
     restart of this worker (or finished meanwhile) is taken over as it is; one
-    that was lost is started again."""
+    that was lost, or that came to a standstill and was ended, is started
+    again."""
     for attempt in range(3):
         with lock:
             item = dict(jobs[job_id])
@@ -309,11 +343,14 @@ def run_stage(job_id, key, command, timeout, on_line, fresh):
             update(job_id, **fresh)
             launch(job_id, key, command)
         try:
-            return follow(job_id, key, timeout, on_line)
-        except Lost:
+            return follow(job_id, key, on_line)
+        except (Lost, Stalled) as why:
+            stalled = isinstance(why, Stalled)
             with lock:
                 again = int(jobs[job_id].get("resumed", 0)) + 1 if job_id in jobs else 1
             update(job_id, pid=None, resumed=again)
+    if stalled:
+        raise TimeoutError(f"Kein Fortschritt mehr: der Schritt stand dreimal länger als {max(1, STALL // 60)} Minuten still")
     raise RuntimeError("Der Schritt wurde mehrfach unterbrochen")
 
 def process(job_id):
@@ -322,7 +359,7 @@ def process(job_id):
     out.mkdir(exist_ok=True)
     with lock:
         quality = jobs[job_id].get("quality", "normal")
-    if quality not in MESH_TIMEOUTS:
+    if quality not in QUALITIES:
         raise ValueError("Ungültige gespeicherte Idol-Qualität")
     here = Path(__file__)
     # Stage 1: the Idol process loads its weights and samples. Its result is
@@ -334,7 +371,7 @@ def process(job_id):
                    "--out", str(out), "--mode", "real",
                    "--weights", WEIGHTS, "--steps", "50",
                    "--dinov3_dtype", "fp16", "--no_optimize"]
-        run_stage(job_id, "sample", command, RUN_TIMEOUT, sampling_line,
+        run_stage(job_id, "sample", command, sampling_line,
                   dict(phase=1, stage=PHASES[0], step=0, total_steps=50, progress=0.0, eta=None))
         source = out / "input.ply"
         if not source.is_file():
@@ -345,7 +382,7 @@ def process(job_id):
         return read_exit(folder / "mesh.exit") == 0 and all((folder / name).is_file() for name in RESULTS)
     if not meshed():
         command = [PYTHON, str(here.with_name("mesh.py")), str(splat), str(folder), "--quality", quality]
-        run_stage(job_id, "mesh", command, MESH_TIMEOUTS[quality], mesh_line,
+        run_stage(job_id, "mesh", command, mesh_line,
                   dict(phase=3, stage=PHASES[2], step=50, progress=1.0, eta=None))
         if not meshed():
             raise RuntimeError("Mesh-Export unvollständig (PLY/GLB/STL)")
@@ -375,7 +412,7 @@ def execute():
         except InterruptedError:
             pass
         except TimeoutError as exc:
-            update(job_id, state="error", stage="Timeout", error=str(exc))
+            update(job_id, state="error", stage="Stillstand", error=str(exc))
         except Exception as exc:
             update(job_id, state="error", stage="Fehler", error=str(exc)[:500])
         finally:
@@ -420,7 +457,7 @@ class API(BaseHTTPRequestHandler):
             return self.reply(404, {"error": "Nicht gefunden"})
         supplied = parse_qs(url.query, keep_blank_values=True)
         quality_values = supplied.get("quality", ["normal"])
-        if len(quality_values) != 1 or quality_values[0] not in MESH_TIMEOUTS:
+        if len(quality_values) != 1 or quality_values[0] not in QUALITIES:
             return self.reply(400, {"error": "Qualität muss fast, normal oder high sein"})
         quality = quality_values[0]
         try:
@@ -497,9 +534,10 @@ def main():
             item = json.loads(path.read_text())
             if not VALID_ID.fullmatch(item["id"]):
                 continue
-            # Written off by an earlier version of this worker when it was
-            # restarted: such a job is taken up again like any unfinished one.
-            interrupted = item["state"] == "error" and item.get("stage") == "Unterbrochen"
+            # Written off by an earlier version of this worker, when it was
+            # restarted or at the time limit a stage had then: such a job is
+            # taken up again like any unfinished one.
+            interrupted = item["state"] == "error" and item.get("stage") in ("Unterbrochen", "Timeout")
             if item["state"] in ("running", "queued") or interrupted:
                 if item["state"] == "running" or interrupted:
                     item["resumed"] = int(item.get("resumed", 0)) + 1

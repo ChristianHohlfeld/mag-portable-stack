@@ -42,6 +42,8 @@ else:
     if (folder.parent.parent / "mesh-fails").exists():
         print("MAG-ERROR Das Netz ließ sich nicht bauen.", flush=True)
         sys.exit(3)
+    if (folder.parent.parent / "mesh-hangs").exists():
+        time.sleep(600)                       # alive, and neither writing nor working
     time.sleep(delay * 8)
     print("MAG-STEP texture", flush=True)
     time.sleep(delay * 8)
@@ -65,7 +67,7 @@ def main():
     stage.chmod(0o755)
     port = free_port()
     env = dict(os.environ, MAG_IDOL_JOB_ROOT=str(root), MAG_IDOL_PORT=str(port), MAG_IDOL_PYTHON=str(stage),
-               MAG_IDOL_CPUS="", FAKE_DELAY="0.1")
+               MAG_IDOL_CPUS="", FAKE_DELAY="0.1", MAG_IDOL_STALL_S="2")
     worker = [None]
 
     def call(method, path, body=None):
@@ -188,9 +190,33 @@ def main():
         (root / d / "status.json").write_text(json.dumps({
             "id": d, "state": "error", "stage": "Unterbrochen", "error": "Dienst neu gestartet; bitte erneut senden",
             "quality": "fast", "created": int(time.time()), "started": int(time.time()), "step": 21, "total_steps": 50}))
+        # ... and so is one that an earlier worker ended at the time limit a stage had then.
+        t = "e" * 32
+        (root / t).mkdir()
+        (root / t / "input.png").write_bytes(PNG)
+        (root / t / "splat.ply").write_bytes(b"ply")
+        (root / t / "status.json").write_text(json.dumps({
+            "id": t, "state": "error", "stage": "Timeout", "error": "Zeitlimit 15 Minuten überschritten", "stage_key": "mesh", "pid": 1,
+            "quality": "fast", "created": int(time.time()), "started": int(time.time()), "step": 50, "total_steps": 50}))
         start()
         s = wait(d, lambda s: s["state"] == "done", "written-off job done")
         assert s["resumed"] == 1 and "error" not in s, s
+        s = wait(t, lambda s: s["state"] == "done", "the job from the time limit done")
+        assert s["resumed"] == 1 and "error" not in s and not (root / t / "idol.log").exists(), s    # from its mesh stage: it did not sample again
+        # 4b. No stage has a time limit (every job here takes longer than the two
+        #     seconds a standstill is in this test). A stage that stands still is
+        #     ended and started again; one that never gets on fails, in words.
+        (tmp / "mesh-hangs").write_text("")
+        h = order()
+        s = wait(h, lambda s: s["state"] == "running" and s.get("stage_key") == "mesh" and s.get("resumed", 0) >= 1, "a stage that stood still started again", 60)
+        (tmp / "mesh-hangs").unlink()
+        s = wait(h, lambda s: s["state"] == "done", "done after a standstill")
+        assert s["resumed"] >= 1 and (root / h / "idol.log").read_bytes().count(b" 1/50 ") == 1, s
+        (tmp / "mesh-hangs").write_text("")
+        i = order()
+        s = wait(i, lambda s: s["state"] == "error", "a stage that never gets on", 90)
+        assert s["stage"] == "Stillstand" and s["error"].startswith("Kein Fortschritt mehr") and s["resumed"] == 3, s
+        (tmp / "mesh-hangs").unlink()
         # 5. Two jobs queue up; a restart keeps both and their order. Cancel
         #    ends a stage for real, delete removes the folder.
         e, f = order(), order()

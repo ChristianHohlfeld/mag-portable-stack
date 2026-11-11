@@ -520,6 +520,20 @@ def number(source, key, default, lo, hi):
     return default if value != value else min(hi, max(lo, value))
 
 
+def waypoints(action, actors, actor):
+    """The places a way goes through first (`via`: points [x, y] or names of
+    actors, at most eight), as points on the ground."""
+    out = []
+    for item in (action.get("via") or [])[:8] if isinstance(action.get("via"), list) else []:
+        other = find(actors, item) if isinstance(item, str) else None
+        if other is actor:
+            continue
+        point = Vector((other.pos.x, other.pos.y)) if other else (Vector(pair(item)) if pair(item) else None)
+        if point is not None:
+            out.append((point, other.radius + 0.4 * actor.length if other else 0.0))
+    return out
+
+
 def pair(value):
     """A point on the ground: [x, y] or "x, y"."""
     if isinstance(value, str):
@@ -798,6 +812,8 @@ def perform(actor, action, actors, fps, start):
         from_afar(goal, (goal - actor.pos).normalized(), apart)
         gait = ({"walk_to": "walk", "run_to": "gallop", "sneak_to": "stalk", "hop_to": "bound"} if beast else
                 {"walk_to": "walk", "run_to": "run", "sneak_to": "sneak", "hop_to": "hop"})[kind]
+        for point, near in waypoints(action, actors, actor):   # a way through places first, in one going
+            p.go(gait, lambda frame, point=point: (point.x, point.y), stop=near, on=True)
         end = p.go(gait, lambda frame: (goal.x, goal.y), stop=apart, seconds=seconds(0.0, 0.0, 20.0) or None)
     elif kind == "jump_over":
         # A run-up, a leap over the other, a landing behind it.
@@ -1504,6 +1520,13 @@ def play(actor, action, actors, fps, start):
             if not (actor.rig and actor.rig.flap(first + i, math.sin(2 * math.pi * 3.0 * i / fps), on)):
                 actor.key(first + i, z=0.03 * actor.height * on * abs(math.sin(2 * math.pi * 3.0 * i / fps)))
         end = first + frames
+    elif kind in ("walk_to", "run_to", "hop_to", "sneak_to") and waypoints(action, actors, actor):
+        # A way through places: one stretch after the other.
+        end = first
+        for point, near in waypoints(action, actors, actor):
+            end = play(actor, {"do": kind, "target": [point.x, point.y], "distance": near}, actors, fps, end / fps)
+        rest = {k: v for k, v in action.items() if k != "via"}
+        return play(actor, rest, actors, fps, end / fps)
     elif kind in ("walk_to", "run_to", "hop_to", "sneak_to"):
         stride, bounce, speed, sway = GAITS[kind[:-3]]
         goal, room = target_point()

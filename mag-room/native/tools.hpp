@@ -129,6 +129,7 @@ inline Val schemas(bool has_vm, bool phone = false) {
                R"j("hand":{"type":"string","enum":["fist","open","point"],"description":"pose, motion: the shape of the hand"},)j"
                R"j("height":{"type":"number","description":"fly_to, fly: how high in metres"},)j"
                R"j("text":{"type":"string","description":"say: the words, in German, as spoken"},)j"
+               R"j("via":{"type":"array","items":{"type":"string"},"description":"walk_to, run_to, sneak_to, hop_to: names of actors (or \"x, y\") the way goes past first, in order"},)j"
                R"j("expression":{"type":"string","enum":["smile","laugh","sad","frown","angry","surprised","blink"],"description":"face: what the face shows"},)j"
                R"j("query":{"type":"string","description":"motion: what somebody on two legs does, in a few English words; it is found among about 150 recorded motions (boxing, salsa dance, drunk walk, crawl, climb ladder, yoga, bow, gorilla, swordplay, throw, laugh, cry ...)"},)j"
                R"j("force":{"type":"number","description":"kick, punch, attack: 0 (a nudge) to 1 (with all its might: the target flies far)"},)j"

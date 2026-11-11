@@ -471,6 +471,7 @@ ACTIONS = ("walk_to, run_to, sneak_to, hop_to, jump_over, turn_to, look_at, turn
            "kick, punch (with target: the one who is hit flies away; force 0..1), attack, fly_away (from, far), fall; "
            "pose (part: left_hand/right_hand/both_hands, where: at/touch/point/head/up/forward/side, hand: fist/open/point, target, seconds); "
            "fly_to, fly (up into the air and round), flap, peck (birds; anything can fly); drive_to (a vehicle; it also drives on walk_to/run_to); roll_to (a thing rolls like a ball); "
+           "open, close, turn_part (a thing or vehicle: part top/front/back/left/right, degrees); "
            "somebody on two legs also: " + "%s; an animal also: sit, lie, sleep, crouch, bow, beg, stand, shake, sniff, eat, howl, dig, pounce")
 RECORDED = []   # the recorded motions of the library, by name (filled when it is read)
 # When in a recorded motion the blow lands (part of its length).
@@ -546,6 +547,7 @@ class Actor:
         self.clock = 0.0                  # until when it is busy (seconds)
         self.placed = False               # put somewhere on purpose, or moved already
         self.keys = {}                    # frame -> (x, y, z, pitch, roll, yaw, squash, scale)
+        self.pieces = {}                  # a part that opens or turns: side -> its object, hinge and keys (see piece())
 
     @property
     def height(self):
@@ -994,6 +996,102 @@ def perform(actor, action, actors, fps, start):
     return end
 
 
+# ---- moving parts ------------------------------------------------------------
+SIDES = ("top", "front", "back", "left", "right")
+
+
+def seam(co, d, size):
+    """Where a part of a thing begins, seen along a direction from its middle
+    out (`d`): at a groove or a step of its cross-section in the outer part
+    (a lid sits on a box at its rim, a door in its frame), else a fifth of the
+    way in. Returns how far along `d` the cut is."""
+    t = co @ d
+    lo, hi = float(t.min()), float(t.max())
+    span = max(hi - lo, 1e-6)
+    bins = np.histogram(t, bins=60, range=(lo, hi))[0].astype(float)
+    best, at = 0.72, None
+    for b in range(int(60 * 0.6), int(60 * 0.93)):           # in the outer 40 % (but not the very edge)
+        around = np.concatenate([bins[max(0, b - 4):b - 1], bins[b + 2:b + 5]])
+        if around.size and around.mean() > 0:
+            score = bins[b] / around.mean()
+            if score < best:
+                best, at = score, b
+    return lo + span * ((at + 0.5) / 60 if at is not None else 0.8)
+
+
+def piece(actor, side):
+    """Cuts the part of a thing on one side (a lid on top, a door in front,
+    at the back or a side) out of its surface at its seam, closes both cuts,
+    and hangs it on a hinge along the seam's edge (the back edge of a lid,
+    the left edge of a front door, the front edge of a side door, the top
+    edge at the back). Returns the part; it opens by turning about the hinge."""
+    if side in actor.pieces:
+        return actor.pieces[side]
+    if actor.rig is not None:
+        fail(actor.name + " hat ein Skelett; Teile öffnen und drehen geht nur bei Dingen und Fahrzeugen (kind: object oder vehicle).")
+    mesh = actor.part.data
+    co = np.empty(len(mesh.vertices) * 3)
+    mesh.vertices.foreach_get("co", co)
+    co = co.reshape(-1, 3)
+    centre = (co.min(axis=0) + co.max(axis=0)) / 2
+    flat = actor.axis if actor.axis is not None and actor.headed else Vector(FACES["camera"])
+    front = Vector((flat.x, flat.y, 0.0)).normalized()
+    up = Vector((0.0, 0.0, 1.0))
+    left = up.cross(front)
+    d = {"top": up, "front": front, "back": -front, "left": left, "right": -left}[side]
+    dn = np.array(d)
+    cut = seam(co - centre, dn, actor.size)
+    plane = Vector(centre) + d * cut
+    bm = bmesh.new()
+    bm.from_mesh(mesh)
+    rest = bm.copy()
+    # The part: what is beyond the seam; the rest keeps what is before it. Both cuts are closed.
+    bmesh.ops.bisect_plane(bm, geom=bm.verts[:] + bm.edges[:] + bm.faces[:], plane_co=plane, plane_no=d, clear_inner=True)
+    bmesh.ops.holes_fill(bm, edges=bm.edges[:], sides=0)
+    bmesh.ops.bisect_plane(rest, geom=rest.verts[:] + rest.edges[:] + rest.faces[:], plane_co=plane, plane_no=d, clear_outer=True)
+    bmesh.ops.holes_fill(rest, edges=rest.edges[:], sides=0)
+    if len(bm.verts) < 8 or len(rest.verts) < 8:
+        bm.free()
+        rest.free()
+        fail(actor.name + " hat " + {"top": "oben", "front": "vorn", "back": "hinten", "left": "links", "right": "rechts"}[side] + " kein Teil, das sich lösen lässt.")
+    near = 1e-4 * max(actor.size)
+    rim = np.array([v.co[:] for v in bm.verts if abs((v.co - plane).dot(d)) < near] or [v.co[:] for v in bm.verts])
+    # The hinge: along the edge of the seam the part turns away from.
+    edge, axis = {"top": (-front, front.cross(up)), "front": (left, up), "back": (up, d.cross(up)),
+                  "left": (front, -up), "right": (front, up)}[side]
+    middle = rim.mean(axis=0)
+    reach = float(((rim - middle) @ np.array(edge)).max())
+    hinge = Vector(middle) + edge * reach
+    data = bpy.data.meshes.new(actor.name + " " + side)
+    bmesh.ops.translate(bm, verts=bm.verts[:], vec=-hinge)    # the part turns about its hinge
+    bm.to_mesh(data)
+    bm.free()
+    rest.to_mesh(mesh)
+    rest.free()
+    for material in mesh.materials:
+        data.materials.append(material)
+    data.shade_smooth()
+    obj = bpy.data.objects.new(actor.name + " Teil " + side, data)
+    bpy.context.collection.objects.link(obj)
+    obj.parent = actor.obj
+    obj.matrix_parent_inverse = Matrix.Identity(4)
+    obj.location = hinge
+    obj.rotation_mode = "QUATERNION"
+    actor.pieces[side] = {"obj": obj, "axis": axis.normalized(), "keys": {0: 0.0}, "angle": 0.0}
+    return actor.pieces[side]
+
+
+def pieces(actor, last):
+    """Writes how the parts of an actor are turned, frame by frame."""
+    for side, p in actor.pieces.items():
+        known = sorted(p["keys"])
+        values = np.interp(np.arange(last + 1), known, [p["keys"][k] for k in known])
+        for frame in range(last + 1):
+            p["obj"].rotation_quaternion = Quaternion(p["axis"], float(values[frame]))
+            p["obj"].keyframe_insert(data_path="rotation_quaternion", frame=frame)
+        linear(p["obj"])
+
+
 def play(actor, action, actors, fps, start):
     """Writes one action of an actor, beginning at `start` seconds. Returns its last frame."""
     if actor.performer is not None:
@@ -1031,7 +1129,31 @@ def play(actor, action, actors, fps, start):
         """A direction on the ground as the figure sees it."""
         return Vector((heading.x * math.cos(actor.yaw) + heading.y * math.sin(actor.yaw), heading.y * math.cos(actor.yaw) - heading.x * math.sin(actor.yaw)))
 
-    if kind == "drive_to" or (actor.kind == "vehicle" and kind in ("walk_to", "run_to", "sneak_to", "hop_to")):
+    if kind in ("open", "close", "turn_part"):
+        # A part of a thing moves on its own: a lid opens, a door, a turret turns.
+        side = str(action.get("part") or "top").lower()
+        side = {"lid": "top", "deckel": "top", "door": "front", "tür": "front", "oben": "top", "vorn": "front", "hinten": "back",
+                "links": "left", "rechts": "right", "trunk": "back", "kofferraum": "back", "hood": "front", "motorhaube": "front"}.get(side, side)
+        if side not in SIDES:
+            fail("Aktion " + kind + ": part ist eine Seite (" + ", ".join(SIDES) + ").")
+        p = piece(actor, side)
+        frames = max(4, int(round(number(action, "seconds", 1.0 if kind != "turn_part" else 2.0, 0.2, 20.0) * fps)))
+        was = p["angle"]
+        if kind == "open":
+            goal = math.radians(number(action, "degrees", 100.0, -180.0, 180.0))
+        elif kind == "close":
+            goal = 0.0
+        else:
+            goal = was + math.radians(number(action, "degrees", 360.0 * number(action, "times", 1, 1, 12), -3600.0, 3600.0))
+        p["keys"][first] = was
+        for i in range(1, frames + 1):
+            u = i / frames
+            # A lid or door swings and settles; a part that turns starts and stops gently.
+            shape = ease(u) if kind == "turn_part" else 1.0 - (1.0 - u) ** 3 + (0.06 * math.sin(math.pi * u) if kind == "open" else 0.0)
+            p["keys"][first + i] = was + (goal - was) * shape
+        p["angle"] = goal
+        end = first + frames
+    elif kind == "drive_to" or (actor.kind == "vehicle" and kind in ("walk_to", "run_to", "sneak_to", "hop_to")):
         # A vehicle drives: it sets off and brakes gently, turns along a curve
         # (it never turns on the spot), its body leans back as it speeds up
         # and dips forward as it brakes, and rocks a little on its springs.
@@ -1364,7 +1486,7 @@ def play(actor, action, actors, fps, start):
             end = first + frames
     else:
         fail("Unbekannte Aktion: " + str(kind) + ". Es gibt " + ACTIONS % "motion mit query (eine von %d Aufnahmen, gesucht nach ihrer Beschreibung)" % len(RECORDED) + ". " + actor.name +
-             " (%s) bewegt sich ohne aufgenommene Bewegungen: gehen, rennen, springen, fliegen (fly_to, fly), drehen, wackeln, wachsen, rollen (roll_to), fahren (drive_to), nicken, picken und wegfliegen." % rig.KINDS.get(actor.kind, actor.kind))
+             " (%s) bewegt sich ohne aufgenommene Bewegungen: gehen, rennen, springen, fliegen (fly_to, fly), drehen, wackeln, wachsen, rollen (roll_to), fahren (drive_to), Teile öffnen, schließen und drehen (open, close, turn_part), nicken, picken und wegfliegen." % rig.KINDS.get(actor.kind, actor.kind))
     actor.key(end)
     actor.clock = end / fps
     return end
@@ -1439,6 +1561,7 @@ def animate(actor, last):
     linear(obj)
     if actor.rig:
         actor.rig.write(last)
+    pieces(actor, last)
 
 
 # ---- the scene around the actors ---------------------------------------------
@@ -1778,13 +1901,15 @@ def build(spec_path, out):
     scene.frame_start, scene.frame_end = 0, last
     scene.render.fps = fps
     side = side_of(actors)
-    ground = dress(spec, centre, radius * 1.25, side, [a.part for a in actors.values()])
+    ground = dress(spec, centre, radius * 1.25, side, [a.part for a in actors.values()] + [p["obj"] for a in actors.values() for p in a.pieces.values()])
     film(actors, last, fps, side)
     os.makedirs(out, exist_ok=True)
     bpy.ops.object.select_all(action="DESELECT")
     for actor in actors.values():
         actor.obj.select_set(True)
         actor.part.select_set(True)
+        for p in actor.pieces.values():
+            p["obj"].select_set(True)
     ground.select_set(True)
     bpy.ops.export_scene.gltf(filepath=os.path.join(out, "scene.glb"), export_format="GLB", use_selection=True, export_yup=True,
                               export_animations=True, export_animation_mode="SCENE", export_anim_scene_split_object=False,

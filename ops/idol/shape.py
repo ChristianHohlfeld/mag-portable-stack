@@ -8,8 +8,10 @@ relief, and the back is a guess of a few Gaussians. TripoSG is trained to
 give the complete, closed shape of one object from one picture: a head is a
 head from every side. It is given the same picture Idol was given (the
 thing cut out, on white, with a margin) and writes `shape.ply` into the job
-folder: a closed mesh in TripoSG's own frame (about -1..1). mesh.py fits it
-onto the splat and takes the colours from there and from the photo.
+folder: a closed mesh in TripoSG's own frame (about -1..1, y up), which
+sees the picture straight from +z without perspective. mesh.py fits it onto
+the splat; the side the picture shows takes the photo itself (shape_photo.png,
+as fine as the photo), the rest the splat's colours.
 
 Runs in its own environment (~/idol-mi50/triposg/venv, which uses Idol's
 ROCm torch without changing it). Prints MAG-STEP lines like the other
@@ -55,7 +57,9 @@ def cut_out(job):
 
 
 def framed(image, margin=0.1, side=1024):
-    """On white, square, the thing in the middle with `margin` around it."""
+    """On white, square, the thing in the middle with `margin` around it; and
+    the same square as fine as the photo has it (at most 4096 px), with the
+    thing's outline as alpha: mesh.py lays it onto the shape."""
     alpha = np.asarray(image.getchannel(3))
     ys, xs = np.nonzero(alpha > 127)
     if len(xs) == 0:
@@ -63,20 +67,26 @@ def framed(image, margin=0.1, side=1024):
     box = image.crop((xs.min(), ys.min(), xs.max() + 1, ys.max() + 1))
     long = max(box.size)
     square = int(round(long * (1 + 2 * margin)))
+    at = ((square - box.width) // 2, (square - box.height) // 2)
     white = Image.new("RGB", (square, square), (255, 255, 255))
-    white.paste(box, ((square - box.width) // 2, (square - box.height) // 2), box.getchannel(3))
-    return white.resize((side, side), Image.LANCZOS)
+    white.paste(box, at, box.getchannel(3))
+    fine = Image.new("RGBA", (square, square), (0, 0, 0, 0))
+    fine.paste(box.convert("RGBA"), at)
+    if square > 4096:
+        fine = fine.resize((4096, 4096), Image.LANCZOS)
+    return white.resize((side, side), Image.LANCZOS), fine
 
 
 def main():
     torch.set_num_threads(16)                                 # the unit counts its tasks
     job = Path(sys.argv[1])
     try:
-        picture = framed(cut_out(job))
+        picture, fine = framed(cut_out(job))
     except Exception as exc:
         print("MAG-ERROR Im Foto ist kein Ding zu finden (%s)." % type(exc).__name__, flush=True)
         sys.exit(2)
     picture.save(job / "outputs" / "shape_input.png")
+    fine.save(job / "outputs" / "shape_photo.png")
     # The mesh is taken with marching cubes on the CPU; the CUDA-only extractor is never imported.
     sys.modules.setdefault("diso", types.SimpleNamespace(DiffDMC=None))
     sys.path.insert(0, SOURCE)

@@ -25,6 +25,14 @@ The model is made from them the way they are:
    finds the photo's camera again). The STL keeps
    the finer mesh.
 
+Where the shape stage made the whole shape (shape.py), it takes the place
+of the splat's shell, and the side the photo shows takes the photo's own
+colours, as fine as it was taken: the shape was made from that picture and
+lies exactly under it (front_of), so nothing has to be guessed there. The
+sides it did not see take its colours carried over the surface (carried):
+the back of a head the hair's, the back of a shirt the shirt's. The splat
+only says where the model stands and from where the photo saw it.
+
 The original splat.ply is never modified.
 """
 import argparse
@@ -34,7 +42,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw
 from plyfile import PlyData
-from scipy.ndimage import binary_dilation, distance_transform_edt, gaussian_filter
+from scipy.ndimage import binary_closing, binary_dilation, distance_transform_edt, gaussian_filter
 from scipy.spatial import cKDTree
 from skimage.measure import marching_cubes
 import trimesh
@@ -149,7 +157,36 @@ def the_photo(job):
         return None
 
 
-def bake_texture(verts, faces, xyz, alpha, shapes, colors, spacing, size, neighbors, seconds, source=None):
+def carried(verts, faces, camera, fine, outline):
+    """The photo's colours carried over the whole surface: every corner of
+    the mesh the photo saw well takes the photo's colour there, every other
+    one the colour of the nearest such corner along the surface (the back of
+    a head the hair's, the back of a shirt the shirt's), softened so that
+    no edge runs where two of them meet. None: the photo saw too little."""
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.csgraph import dijkstra
+    mesh = trimesh.Trimesh(np.asarray(verts, np.float64), np.asarray(faces, np.int64), process=False)
+    rgb, trust = photo_of.colours(camera, np.asarray(mesh.vertices, np.float32), np.asarray(mesh.vertex_normals, np.float32), fine, outline)
+    seen = np.flatnonzero(trust > 0.6)
+    if len(seen) < 50:
+        return None
+    edges = mesh.edges_unique
+    length = mesh.edges_unique_length
+    n = len(mesh.vertices)
+    graph = coo_matrix((np.concatenate([length, length]), (np.concatenate([edges[:, 0], edges[:, 1]]), np.concatenate([edges[:, 1], edges[:, 0]]))), shape=(n, n)).tocsr()
+    _, _, source = dijkstra(graph, directed=False, indices=seen, min_only=True, return_predecessors=True)
+    out = rgb[:, :3].copy()
+    reached = source >= 0
+    out[reached] = rgb[source[reached], :3]
+    free = trust <= 0.6
+    neighbours = coo_matrix((np.ones(2 * len(edges)), (np.concatenate([edges[:, 0], edges[:, 1]]), np.concatenate([edges[:, 1], edges[:, 0]]))), shape=(n, n)).tocsr()
+    count = np.maximum(np.asarray(neighbours.sum(axis=1)).ravel(), 1)[:, None]
+    for _ in range(40):                                       # softened where it was not seen; what was seen stays
+        out[free] = (neighbours @ out / count)[free]
+    return out.astype(np.float32)
+
+
+def bake_texture(verts, faces, xyz, alpha, shapes, colors, spacing, size, neighbors, seconds, source=None, front=None):
     """Unwrap, rasterize UV triangle IDs and bake at each texel.
 
     UVs sample the actual 3D surface, not interpolated per-vertex colors.
@@ -176,7 +213,12 @@ def bake_texture(verts, faces, xyz, alpha, shapes, colors, spacing, size, neighb
     all_pixels = np.flatnonzero(covered)
     # The side the photo shows takes its colours from the photo: find the photo's camera again.
     camera = None
-    if source is not None:
+    if front is not None:
+        # The shape's own picture, laid on it the way TripoSG saw it: no camera to look for.
+        camera = front["camera"]
+        SEEN["from"] = camera.forward * -1.0
+        print(f"Photo: laid onto the shape as it was made from it; {front['fine'].shape[0]} px across", flush=True)
+    elif source is not None:
         strong = alpha > 0.3
         camera = photo_of.fit(xyz[strong], colors[strong], source["prepared"], distance=source["distance"])
         if camera is not None:
@@ -190,6 +232,10 @@ def bake_texture(verts, faces, xyz, alpha, shapes, colors, spacing, size, neighb
     outward /= np.maximum(np.linalg.norm(outward, axis=1, keepdims=True), 1e-12)
     del corners
     tree = cKDTree(xyz)
+    if front is not None:
+        spread = carried(verts, faces, camera, front["fine"], front["outline"])
+        spread = spread[vmapping] if spread is not None else None
+        beyond = np.zeros((len(all_pixels), 3), np.float32)            # the photo carried there
     verts = np.asarray(verts, np.float32)[vmapping]
     total = len(all_pixels)
     for start in range(0, total, 32768):
@@ -222,7 +268,28 @@ def bake_texture(verts, faces, xyz, alpha, shapes, colors, spacing, size, neighb
         if camera is not None:
             where[start:start+len(samples)] = positions
             facing[start:start+len(samples)] = outward[fi]
-    if camera is not None:
+        if front is not None and spread is not None:
+            beyond[start:start+len(samples)] = w[:, None]*spread[tri[:, 0]] + u[:, None]*spread[tri[:, 1]] + v[:, None]*spread[tri[:, 2]]
+    if camera is not None and front is not None:
+        # The shape lies where the photo saw it, so what the photo saw takes the
+        # photo's own colours (glasses, eyes, letters as sharp as they were
+        # taken). What it did not see takes the photo's colours carried over
+        # the surface: Idol's splat is often only the front, and where it
+        # guessed a back its colours are smeared from the front.
+        rgb, trust = photo_of.colours(camera, where, facing, front["fine"], front["outline"])
+        splat = tex_flat[all_pixels].astype(np.float32) / 255.0
+        sure = trust > 0.8
+        if sure.sum() > 1000:
+            ms, mp = splat[sure].mean(axis=0), rgb[sure].mean(axis=0)
+            gain = np.clip(rgb[sure].std(axis=0) / np.maximum(splat[sure].std(axis=0), 1e-3), 0.7, 1.4)
+            splat = (splat - ms) * gain + mp
+        if spread is not None:
+            splat = beyond                                             # (the splat only where the photo saw too little)
+        mixed = splat * (1 - trust[:, None]) + rgb * trust[:, None]
+        tex_flat[all_pixels] = np.rint(np.clip(mixed, 0, 1) * 255).astype(np.uint8)
+        print(f"Photo: {100.0 * float((trust > 0.5).mean()):.0f} % of the surface takes its colours from it", flush=True)
+        del where, facing, rgb, trust, mixed, splat, beyond
+    elif camera is not None:
         rgb, trust = photo_of.colours(camera, where, facing, source["fine"], source["outline"])
         mixed = tex_flat[all_pixels].astype(np.float32) / 255.0
         mixed += trust[:, None] * np.clip(rgb[:, :3] - rgb[:, 3:], -0.3, 0.3)      # the photo's detail on the splat's colours
@@ -265,13 +332,15 @@ def shell_of(xyz, alpha, scales, turns, lo, spacing, resolution):
     return geometry
 
 
-def fit_shape(shape, points):
+def fit_shape(shape, points, start=None):
     """The whole shape (shape.py, in TripoSG's frame) put where the splat is:
     turned, scaled and moved so that the splat's points lie on its surface.
     The splat covers the side the photo shows, so it is asked from the
     splat's side only (each point to the nearest place of the shape). All 24
     ways a box can lie are tried, each refined; the best is taken if most of
-    the splat lies on it, else None: the splat's own shell is used."""
+    the splat lies on it. Else, with a `start` (r, t: where the photo's
+    camera puts it), it stands there; else None: the splat's own shell is
+    used. The placed shape keeps its placement (r, t) in metadata["placed"]."""
     from scipy.spatial import cKDTree
     rng = np.random.default_rng(3)
     pts = points[rng.choice(len(points), min(len(points), 20000), replace=False)].astype(np.float64)
@@ -316,6 +385,8 @@ def fit_shape(shape, points):
             t = middle.copy()
             t[thin] = np.percentile(pts[:, thin], end) - np.percentile(cloud[:, thin], end)
             tries.append((refine(turn * scale, t, 4), turn, scale, t))
+    if start is not None:
+        tries.append((refine(start[0], start[1], 4), None, None, None))
     tries.sort(key=lambda x: -x[0][0])
     best = None
     for (near, r, t), *_ in tries[:4]:                                # the most promising, fitted to the end
@@ -325,10 +396,104 @@ def fit_shape(shape, points):
     near, r, t = best
     print(f"Shape: fits the splat at {100 * near:.0f} % of its points", flush=True)
     if near < float(os.environ.get("MAG_SHAPE_FIT", "0.5")):
-        return None
+        if start is None:
+            return None
+        print("Shape: placed where the photo's camera saw it", flush=True)
+        r, t = start
     out = shape.copy()
     out.vertices = np.asarray(shape.vertices, np.float64) @ r.T + t
+    out.metadata["placed"] = (np.asarray(r, np.float64), np.asarray(t, np.float64))
     return out
+
+
+def front_of(shape, outline):
+    """The camera of the picture the shape was made from, in the shape's own
+    frame. TripoSG sees its picture straight from +z without perspective, the
+    square from -1 to 1 a little larger than the picture; how much larger
+    (and how far off the middle) is found where the shape's outline covers the
+    thing's outline best. None: they do not cover each other."""
+    from PIL import Image as Img
+    side = 256
+    want = np.asarray(Img.fromarray(outline).resize((side, side), Img.BILINEAR), bool)
+    if want.sum() < 64:
+        return None
+    pts = np.asarray(shape.sample(200000), np.float64)
+    pts = pts[np.argsort(-pts[:, 2])]
+
+    def cover(s, dx, dy):
+        px = np.rint(((pts[:, 0] * s + 1) / 2 + dx) * side - 0.5).astype(np.int64)
+        py = np.rint(((-pts[:, 1] * s + 1) / 2 + dy) * side - 0.5).astype(np.int64)
+        ok = (px >= 0) & (px < side) & (py >= 0) & (py < side)
+        got = np.zeros((side, side), bool)
+        got[py[ok], px[ok]] = True
+        got = binary_closing(got, iterations=2)                           # closed between the points, not grown
+        return (got & want).sum() / max(1, (got | want).sum())
+
+    best = max((cover(s, 0, 0), s, 0.0, 0.0) for s in np.linspace(0.8, 1.12, 33))
+    for step in (0.02, 0.008, 0.003):                                 # then nudged into place
+        for _ in range(4):
+            _, s, dx, dy = best
+            best = max([best] + [(cover(s + a * step, dx + b * step, dy + c * step), s + a * step, dx + b * step, dy + c * step)
+                                 for a, b, c in ((1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1))])
+    found, s, dx, dy = best
+    print(f"Shape: its picture's outline covered at {100 * found:.0f} %", flush=True)
+    if found < 0.75:
+        return None
+    far = 1000.0                                                      # so far that it sees without perspective
+    return photo_of.Camera(np.array([0.0, 0.0, far]), np.array([1.0, 0.0, 0.0]), np.array([0.0, 1.0, 0.0]),
+                           np.array([0.0, 0.0, -1.0]), (far * s / 2, far * s / 2), (0.5 + dx, 0.5 + dy))
+
+
+def moved(camera, r, t):
+    """The camera of the shape's frame where the shape was placed (r, t)."""
+    grow = float(np.cbrt(np.linalg.det(r)))
+    turn = r / grow
+    out = photo_of.Camera(r @ camera.eye + t, turn @ camera.right, turn @ camera.upward, turn @ camera.forward,
+                          camera.scale, camera.shift)
+    out.cover, out.colour = 1.0, 0.0
+    return out
+
+
+def by_camera(shape, points, camera):
+    """Where the shape stands when the photo's camera (found from the splat)
+    sees it as TripoSG's picture saw it: its +z towards the camera, its +y up
+    in the photo, as large as the splat across the view, its front where the
+    splat's front is. (r, t), or None."""
+    turn = np.column_stack([camera.right, camera.upward, -camera.forward]).astype(np.float64)
+    pts = np.asarray(points, np.float64)
+    local = (pts - pts.mean(axis=0)) @ turn                              # the splat in the camera's axes
+    own = np.asarray(shape.vertices, np.float64)
+    theirs = np.percentile(local, 98, axis=0) - np.percentile(local, 2, axis=0)
+    mine = np.percentile(own, 98, axis=0) - np.percentile(own, 2, axis=0)
+    grow = float(np.median(theirs[:2] / np.maximum(mine[:2], 1e-9)))
+    if not np.isfinite(grow) or grow <= 0:
+        return None
+    middle = (np.percentile(local, 98, axis=0) + np.percentile(local, 2, axis=0)) / 2
+    mid = (np.percentile(own, 98, axis=0) + np.percentile(own, 2, axis=0)) / 2 * grow
+    shift = middle - mid
+    shift[2] = np.percentile(local[:, 2], 98) - np.percentile(own[:, 2], 98) * grow    # front on front
+    r = grow * turn
+    return r, turn @ shift + pts.mean(axis=0)
+
+
+def shape_picture(job):
+    """The picture the shape was made from, as fine as the photo has it, and
+    the thing's outline in it; None: the shape stage left none."""
+    fine, plain = job / "outputs" / "shape_photo.png", job / "outputs" / "shape_input.png"
+    try:
+        if fine.is_file():
+            picture = Image.open(fine).convert("RGBA")
+            rgba = np.asarray(picture, np.float32) / 255.0
+            return rgba[..., :3].copy(), rgba[..., 3] > 0.5
+        if plain.is_file():                                         # made before the fine one was kept: on white
+            from scipy.ndimage import label
+            rgb = np.asarray(Image.open(plain).convert("RGB"), np.float32) / 255.0
+            white, _ = label(rgb.min(axis=2) >= 0.97)
+            around = np.unique(np.concatenate([white[0], white[-1], white[:, 0], white[:, -1]]))
+            return rgb, ~np.isin(white, around[around > 0])           # white within the thing is the thing
+    except (OSError, ValueError):
+        pass
+    return None
 
 
 def solid(mesh):
@@ -499,12 +664,26 @@ def reconstruct(input_path: Path, output_dir: Path, quality="normal"):
     print(f"Idol mesh {quality}: {len(xyz)} Gaussians; {resolution}³ cells", flush=True)
     # The whole shape, where the shape stage made one (shape.py): fitted onto
     # the splat, it takes the place of the shell the splat stands for.
-    fitted = None
+    fitted, front = None, None
     if (output_dir / "shape.ply").is_file():
         try:
-            fitted = fit_shape(trimesh.load(output_dir / "shape.ply", force="mesh", process=True), xyz[alpha > 0.3])
+            whole = trimesh.load(output_dir / "shape.ply", force="mesh", process=True)
+            strong = alpha > 0.3
+            fitted = fit_shape(whole, xyz[strong])
+            source = the_photo(input_path.parent) if fitted is None else None
+            if source is not None:                                # does not fit: where the photo's camera saw it
+                camera = photo_of.fit(xyz[strong], colors[strong], source["prepared"], distance=source["distance"])
+                start = by_camera(whole, xyz[strong], camera) if camera is not None else None
+                if start is not None:
+                    fitted = fit_shape(whole, xyz[strong], start=start)
+            picture = shape_picture(output_dir) if fitted is not None else None
+            if picture is not None:
+                camera = front_of(whole, picture[1])
+                if camera is not None:
+                    front = {"camera": moved(camera, *fitted.metadata["placed"]), "fine": picture[0], "outline": picture[1]}
         except Exception as exc:
             print(f"Shape: not used ({type(exc).__name__})", flush=True)
+            fitted, front = None, None
     if fitted is not None:
         geometry = fitted
     else:
@@ -524,7 +703,7 @@ def reconstruct(input_path: Path, output_dir: Path, quality="normal"):
     vmapping, uv_faces, uvs, texture = bake_texture(
         shown.vertices, shown.faces, xyz, alpha, footprints(scales, turns, 0.35 * float(np.median(gap))), colors,
         spacing, settings["texture"], settings["neighbors"],
-        float(os.environ.get("MAG_IDOL_UNWRAP_S", settings["unwrap"])), the_photo(input_path.parent))
+        float(os.environ.get("MAG_IDOL_UNWRAP_S", settings["unwrap"])), the_photo(input_path.parent), front)
     print("MAG-STEP export", flush=True)
 
     material = trimesh.visual.material.PBRMaterial(

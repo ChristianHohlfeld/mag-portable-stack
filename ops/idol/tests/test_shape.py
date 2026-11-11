@@ -18,3 +18,15 @@ assert out is not None, "the shape is used"
 far = float(cKDTree(out.sample(20000)).query(truth.sample(20000))[0].mean())
 assert far < 0.01 * 3.9, far
 print("shape ok")
+
+# The picture the shape was made from lies on it as TripoSG saw it: straight from +z, a little smaller than -1..1.
+side, s = 512, 0.93
+pts = shape.sample(200000)
+outline = np.zeros((side, side), bool)
+outline[np.clip(((-pts[:, 1] * s + 1) / 2 * side).astype(int), 0, side - 1), np.clip(((pts[:, 0] * s + 1) / 2 * side).astype(int), 0, side - 1)] = True
+from scipy.ndimage import binary_closing
+camera = M.front_of(shape, binary_closing(outline, iterations=3))
+assert camera is not None and abs(2 * camera.scale[0] / 1000.0 - s) < 0.02, camera.scale
+x, y, _ = camera.see(np.array([[0.3, 0.4, 0.0]]))
+assert abs(x[0] - (0.3 * s + 1) / 2) < 0.01 and abs(y[0] - (-0.4 * s + 1) / 2) < 0.01, (x, y)
+print("front ok")

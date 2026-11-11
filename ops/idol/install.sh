@@ -60,6 +60,19 @@ snapshot_download("depth-anything/Depth-Anything-V2-Metric-Indoor-Small-hf", rev
                   allow_patterns=["config.json", "model.safetensors", "preprocessor_config.json"])
 PY
 fi
+# The whole shape (shape.py): TripoSG (VAST-AI, MIT) in an environment of its
+# own that reuses Idol's ROCm torch through a .pth file and changes nothing in
+# it. Code and weights are pinned; ~/idol-mi50/triposg/fetch.sh fetches the
+# weights (8 GB, resumable). Without them the mesh is made from the splat.
+TRIPO=$BASE/triposg
+if [[ -d $TRIPO/src && ! -x $TRIPO/venv/bin/python ]]; then
+  sudo -u chris python3 -m venv "$TRIPO/venv"
+  site=$("$PY" -c 'import site; print(site.getsitepackages()[0])')
+  mine=$("$TRIPO/venv/bin/python" -c 'import site; print(site.getsitepackages()[0])')
+  echo "$site" > "$mine/zz-idol-venv.pth"
+  sudo -u chris "$TRIPO/venv/bin/pip" install -q --no-deps einops jaxtyping typeguard wadler-lindig peft omegaconf 'antlr4-python3-runtime==4.9.3' accelerate psutil \
+    || echo 'TripoSG environment incomplete; the mesh is made from the splat' >&2
+fi
 install -d -o chris -g chris -m 0700 /var/lib/mag-idol/jobs /var/lib/mag-idol/tmp
 install -m 0644 /opt/mag-stack/current/ops/idol/mag-idol.tmpfiles.conf /etc/tmpfiles.d/mag-idol.conf
 systemd-tmpfiles --create /etc/tmpfiles.d/mag-idol.conf

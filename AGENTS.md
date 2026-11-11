@@ -68,7 +68,8 @@ in alternating sets; a vehicle (found by its wheels, or `kind: vehicle`) drives
 along a curve and its wheels turn as it rolls; only a
 thing moves as a whole. A part of a thing or vehicle (a lid, a door, a turret)
 is cut out at the seam on its side (`open`, `close`, `turn_part`), both cuts
-closed, and turns about a hinge on the seam's edge; PartField is not used (its
+closed with an inside of their own (the seam's colours, darker, as a small
+texture), and turns about a hinge on the seam's edge; PartField is not used (its
 licence forbids commercial use). A figure on two legs that is to speak or
 show a feeling (`say`, `face`) gets a face: the front of its head is rendered
 on the CPU and MediaPipe's face landmarker (Apache-2.0, pinned in

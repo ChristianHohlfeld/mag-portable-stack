@@ -476,10 +476,12 @@ def by_camera(shape, points, camera):
     return r, turn @ shift + pts.mean(axis=0)
 
 
-def capped(mesh):
-    """The open rims of a mesh that was cut by a plane, each closed with a
-    flat face (ear clipping in the plane, winding against the rim so it looks
-    outwards). None: a rim is not a simple loop."""
+def capped(mesh, level):
+    """The open rims of a mesh that was cut by the level plane at `level`,
+    each closed with a flat face (ear clipping in the plane, winding against
+    the rim so it looks outwards). None: a rim is not a simple loop, or it
+    does not lie in that plane (a hole the mesh had before is not closed
+    with a flat lid somewhere else)."""
     faces = np.asarray(mesh.faces, np.int64)
     directed = faces[:, [0, 1, 1, 2, 2, 0]].reshape(-1, 2)
     key = directed[:, 0] * len(mesh.vertices) + directed[:, 1]
@@ -502,7 +504,7 @@ def capped(mesh):
                 return None
             loop.append(at)
             at = after.pop(at)
-        if len(loop) < 3:
+        if len(loop) < 3 or np.abs(pts[loop][:, 1] - level).max() > 1e-6 * max(1.0, float(np.ptp(pts[:, 1]))) + 1e-7:
             return None
         flat = pts[loop][:, [0, 2]]                               # the plane is level: x and z
         area = 0.5 * float(np.sum(flat[:, 0] * np.roll(flat[:, 1], -1) - np.roll(flat[:, 0], -1) * flat[:, 1]))
@@ -559,7 +561,7 @@ def based(shape, camera, job):
     try:
         part = trimesh.intersections.slice_mesh_plane(shape, plane_normal=[0.0, 1.0, 0.0], plane_origin=[0.0, level, 0.0], cap=False)
         part = trimesh.Trimesh(part.vertices, part.faces, process=True)
-        out = capped(part)
+        out = capped(part, level)
     except Exception as exc:
         print(f"Shape: no base ({type(exc).__name__})", flush=True)
         return shape

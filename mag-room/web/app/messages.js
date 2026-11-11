@@ -507,7 +507,8 @@
     if (m.model3d) {
       node.append(m.model3d.kind === 'scene' ? buildScene(m) : build3d(m));
     } else {
-      if (m.reasoning) node.append(buildThoughts(m));
+      const thoughts = m.reasoning && buildThoughts(m);
+      if (thoughts) node.append(thoughts);
       const body = el('div', { class: 'body' });
       (m.parts || []).forEach((p, i) => body.append(buildPart(m, i)));
       if (!(m.parts || []).length && m.text) body.append(markdown(m.text));
@@ -522,8 +523,13 @@
     markStreaming(node, m);
     return node;
   }
+  // A bot's thoughts, folded away. A list entry without words is not shown
+  // (a model's outline has them), and thoughts without words are no block.
   function buildThoughts(m) {
-    return el('details', { class: 'think' }, el('summary', {}, el('span', { text: 'Gedanken' })), markdown(m.reasoning));
+    const box = markdown((m.reasoning || '').split('\n').filter((line) => !/^\s*([*+\-•–]|\d{1,3}[.)])\s*$/.test(line)).join('\n'));
+    for (let bare; (bare = [...box.querySelectorAll('li, ul, ol, p')].find((n) => !n.textContent.trim() && !n.querySelector('img')));) bare.remove();
+    if (!box.textContent.trim()) return null;
+    return el('details', { class: 'think' }, el('summary', {}, el('span', { text: 'Gedanken' })), box);
   }
   function buildPart(m, index) {
     const p = m.parts[index];
@@ -674,6 +680,7 @@
     const node = nodes.get(m.id);
     if (!node) return;
     const old = node.querySelector('.think'), fresh = buildThoughts(m);
+    if (!fresh) return old?.remove();
     if (old) { fresh.open = old.open; grow(() => old.replaceWith(fresh)); }
     else grow(() => node.querySelector('.meta').after(fresh));
   });

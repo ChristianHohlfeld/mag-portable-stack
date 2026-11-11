@@ -186,6 +186,45 @@ private:
   }
 };
 
+// A model's thoughts as text for the chat. Gemma thinks in an indented
+// outline: every line a sub-item, the headings left out, the first line
+// already stripped of its indent by the server, and now and then an item
+// with nothing behind its bullet. Rendered as it comes that is a list inside
+// a list with empty entries. The indent all lines share goes, an item
+// without words goes, and so do runs of empty lines.
+inline std::string tidy_thoughts(const std::string &raw) {
+  std::vector<std::string> lines;
+  std::istringstream in(raw);
+  for (std::string line; std::getline(in, line);) {
+    while (!line.empty() && (line.back() == ' ' || line.back() == '\t' || line.back() == '\r')) line.pop_back();
+    lines.push_back(line);
+  }
+  auto indent = [](const std::string &line) { return line.find_first_not_of(' '); };
+  // What all lines but the first are indented by; the first has lost its own.
+  size_t shared = std::string::npos, first = std::string::npos;
+  for (size_t i = 0; i < lines.size(); ++i) {
+    if (lines[i].empty()) continue;
+    if (first == std::string::npos) first = i;
+    else shared = std::min(shared, indent(lines[i]));
+  }
+  if (shared == std::string::npos) shared = 0;
+  std::string out;
+  size_t blank = 0;
+  for (size_t i = 0; i < lines.size(); ++i) {
+    std::string line = lines[i].empty() ? "" : lines[i].substr(std::min(shared, indent(lines[i])));
+    // A bullet or a number with nothing behind it.
+    const std::string bare = trim(line);
+    const bool marker = bare == "*" || bare == "-" || bare == "+" || bare == "•" || bare == "–" ||
+                        (bare.size() >= 2 && bare.size() <= 4 && (bare.back() == '.' || bare.back() == ')') &&
+                         bare.find_first_not_of("0123456789") == bare.size() - 1);
+    if (marker) continue;
+    blank = line.empty() ? blank + 1 : 0;
+    if (blank > 1 || (line.empty() && out.empty())) continue;
+    out += line + "\n";
+  }
+  return trim(out);
+}
+
 // Where a text starts to run in circles, or npos. A model that lost its way
 // writes the same passage again and again until its tokens run out. Prose
 // does not say a long passage three times in a row, or a sentence four

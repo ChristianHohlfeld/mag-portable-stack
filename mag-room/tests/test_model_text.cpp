@@ -110,6 +110,21 @@ int main() {
     CHECK(std::string(broken) == "{\"a\":1}<tool_call|>{\"b\":" ? call.valid && call.arguments == "{\"a\":1}" : !call.valid && call.arguments == "{}");
   }
 
+  // ---- thoughts --------------------------------------------------------------
+  // Gemma's outline as the server hands it on (Lena, 2026-11-11): the first
+  // line without its indent, the rest indented, groups without headings, and
+  // an entry with nothing behind its bullet.
+  const std::string outline = "*   Current Status: Lena is back.\n    *   Context: 3D scenes.\n    *   Goal: answer.\n\n"
+                              "    *   The model is simple.\n    *   \n\n\n    *   Be concise.\n";
+  CHECK(tidy_thoughts(outline) == "*   Current Status: Lena is back.\n*   Context: 3D scenes.\n*   Goal: answer.\n\n*   The model is simple.\n\n*   Be concise.");
+  CHECK(tidy_thoughts("*   \n*   \n-\n1.\n  2)\n•\n") == "");
+  CHECK(tidy_thoughts("\n\n  \n") == "");
+  CHECK(tidy_thoughts("Plan:\n- Respond \"ok\".\n") == "Plan:\n- Respond \"ok\".");
+  CHECK(tidy_thoughts("Total: 2+2 = 4.\n1. a\n10. b") == "Total: 2+2 = 4.\n1. a\n10. b");
+  // What is nested stays nested, and code keeps its shape.
+  CHECK(tidy_thoughts("    1.  Steps:\n        *   first\n        *   second\n    ```\n      x = 1\n    ```") ==
+        "1.  Steps:\n    *   first\n    *   second\n```\n  x = 1\n```");
+
   // ---- errors ----------------------------------------------------------------
   const std::string quoted = "Failed to parse tool call arguments as JSON: [json.exception.parse_error.101] parse error at line 1, column 12345: "
                              "syntax error while parsing value - invalid string: missing closing quote; last read: '\"Das große Abenteuer\\\"}<tool_call|>\\n" +

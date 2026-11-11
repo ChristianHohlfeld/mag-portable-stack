@@ -633,3 +633,8 @@ audio, video { max-width: 100%; border-radius: 12px; }
   #dock { padding-bottom: calc(14px + env(safe-area-inset-bottom)); }
 }
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+
+/* photo to 3D: where the photo comes from, and the webcam of a desktop */
+.staged.source { gap: 8px; padding: 4px; }
+.shoot { display: grid; gap: 12px; justify-items: center; }
+.shoot video { width: 100%; max-height: 62vh; border-radius: 12px; background: #000; }

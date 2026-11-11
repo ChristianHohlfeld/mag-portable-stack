@@ -65,7 +65,10 @@ moves their limbs; a long body without legs (a snake, a fish) gets a chain
 of bones and slithers in a wave; a bird (two legs under a long body) walks,
 pecks and flies with beating wings; an insect or spider walks on all its legs
 in alternating sets; a vehicle (`kind: vehicle`) drives along a curve; only a
-thing moves as a whole. A figure on two legs moves
+thing moves as a whole. A part of a thing or vehicle (a lid, a door, a turret)
+is cut out at the seam on its side (`open`, `close`, `turn_part`), both cuts
+closed, and turns about a hinge on the seam's edge; PartField is not used (its
+licence forbids commercial use). A figure on two legs moves
 with recorded motions (`ops/scene/motions.npz`, made by
 `ops/scene/mocap/build.py` from motion capture that is free to use and to
 pass on, credited in `ops/scene/MOTIONS.md`): its bones take the recorded

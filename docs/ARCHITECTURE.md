@@ -517,10 +517,13 @@ the worker widens it to float32 again before it hands it to onnxruntime, so
 the model computes as before. `source.lock` pins the model as published,
 `models.lock` what browsers fetch, `assets.lock` the runtime and our
 worker, all by SHA256; `bootstrap.sh` fetches and packs them once,
-`install.sh` (deploy) puts them into `/opt/mag-tts/m-<hash>/` and
-`/opt/mag-tts/v-<hash>/` and writes `config.json`; the room hands them out
-under `/tts/` (immutable, except the config). The model has a folder of its
-own, so a change of the worker costs no browser a new download. The worker
+`install.sh` (deploy) puts them into `/opt/mag-tts/m-<hash>/` (the model),
+`/opt/mag-tts/r-<hash>/` (the runtime, about 27 MB) and
+`/opt/mag-tts/v-<hash>/` (the worker) and writes `config.json`; the room
+hands them out under `/tts/` (immutable, except the config). Model and
+runtime have folders of their own, so a change of the worker costs no
+browser a new download. A new release of the page never touches the
+voice's Cache Storage (`sw.js` clears only its own caches). The worker
 keeps everything in Cache Storage (asked to persist), the weights in
 pieces of 8 MB, three coming in at once, that are kept as they come (a
 download that breaks off goes on where it stopped) and never put together

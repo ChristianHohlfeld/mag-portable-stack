@@ -458,7 +458,7 @@ def select(data, query):
                 return 400, {"error": "x und y liegen zwischen 0 und 1"}
             command += ["--point", str(x), str(y)]
         else:
-            command += ["--scene" if "scene" in query else "--all"]
+            command += ["--pieces" if "pieces" in query else "--scene" if "scene" in query else "--all"]
         if CPUS:
             command = ["taskset", "-c", CPUS] + command
         # Few threads: the unit counts tasks, and a stage of a job may be running beside it.
@@ -472,6 +472,8 @@ def select(data, query):
         found = json.loads(listing.read_text())
         for mask in found["masks"]:
             mask["png"] = base64.b64encode((tmp / "out" / mask.pop("file")).read_bytes()).decode()
+            if "cut" in mask:                        # the piece itself, cut out of the photo
+                mask["cut"] = base64.b64encode((tmp / "out" / mask["cut"]).read_bytes()).decode()
         return 200, found
     except subprocess.TimeoutExpired:
         return 500, {"error": "Die Objekte im Foto ließen sich nicht finden."}

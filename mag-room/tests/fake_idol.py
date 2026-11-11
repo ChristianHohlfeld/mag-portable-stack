@@ -14,6 +14,7 @@ class FakeIdol:
         self.fails = ""    # not empty: jobs end as an error with these words
         self.retried = []
         self.selected = []  # what was asked about the objects of a photo
+        self.pieces = 0     # how many things stand apart in a photo (asked with pieces=1); 0: one, nothing to tell apart
         fake = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -61,6 +62,12 @@ class FakeIdol:
                     return self.reply(200, {"deleted": 0})
                 if parts == ["api", "idol", "select"]:
                     fake.selected.append(self.path.partition("?")[2])
+                    if "pieces" in self.path:
+                        import base64
+                        cut = base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"c" * 80).decode()
+                        return self.reply(200, {"width": 4, "height": 3, "room": {"left": -1, "right": 1, "back": 3, "height": 2.4, "floor": [0.5, 0.5, 0.5], "wall": [0.8, 0.8, 0.8]},
+                                                "masks": [{"box": [i, 0, i + 1, 2], "share": 0.2, "png": "bWFzaw==", "cut": cut,
+                                                           "place": {"x": i - 0.5, "z": 1.5, "tall": 0.6, "wide": 0.4, "lift": 0.0}} for i in range(fake.pieces)]})
                     return self.reply(200, {"width": 4, "height": 3, "masks": [{"box": [0, 0, 2, 2], "share": 0.3, "png": "bWFzaw=="}]})
                 if len(parts) == 5 and parts[4] == "cancel":
                     fake.cancelled.append(parts[3])

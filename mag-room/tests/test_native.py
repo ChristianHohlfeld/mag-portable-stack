@@ -690,6 +690,32 @@ class RoomContract(unittest.TestCase):
         self.assertEqual(r.api("POST", "/api/3d/select", {"file": "nope", "x": 0.5, "y": 0.5}), (409, {"error": "Bild fehlt oder ist größer als 20 MB."}))
         self.assertEqual(len(r.idol.jobs), 0)   # looking orders nothing
 
+    def test_a_photo_of_several_things_is_one_model_each_without_being_asked(self):
+        r = self.room
+        scenes = lambda: [m for m in r.messages() if (m.get("model3d") or {}).get("kind") == "scene"]
+        jobs = lambda: [m for m in r.messages() if (m.get("model3d") or {}).get("job") and not (m.get("model3d") or {}).get("kind")]
+        # Two people side by side, ordered like any photo: the room looks first, and each gets a model of its own.
+        r.idol.pieces = 2
+        photo = r.api("POST", "/api/upload?name=wir.png", raw=PNG)[1]
+        first = r.api("POST", "/api/message", {"text": "", "attachments": [photo["file"]], "mode": "3d", "quality": "fast"})[1]["model3d"]
+        r.wait(lambda: len(jobs()) == 2 and all(m["state"] == "done" for m in jobs()) and scenes(), "both made, and put together", 40)
+        self.assertEqual(r.idol.selected[-1], "pieces=1")
+        parts = [m["model3d"] for m in jobs()]
+        self.assertEqual((jobs()[0]["id"], [p["scene"]["index"] for p in parts], [p["scene"]["x"] for p in parts], [p["source"] for p in parts], len(r.idol.jobs)),
+                         (first, [0, 1], [-0.5, 0.5], ["wir-1.png", "wir-2.png"], 2))
+        self.assertEqual(([a["at"] for a in r.scene.specs[-1]["actors"]], r.scene.specs[-1]["room"]["back"]), ([[1.5, 0.5], [1.5, -0.5]], 3))
+        # One thing: the order as it always was. And what Chris chose himself is not looked at again.
+        r.idol.pieces = 1
+        photo = r.api("POST", "/api/upload?name=maus.png", raw=PNG)[1]
+        one = r.api("POST", "/api/message", {"text": "", "attachments": [photo["file"]], "mode": "3d", "quality": "fast"})[1]["model3d"]
+        r.wait(lambda: [m for m in r.messages() if m["id"] == one][0]["state"] == "done", "one model")
+        self.assertEqual((len(r.idol.jobs), "scene" in [m for m in r.messages() if m["id"] == one][0]["model3d"], len(scenes())), (3, False, 1))
+        asked = len(r.idol.selected)
+        photo = r.api("POST", "/api/upload?name=gewaehlt.png", raw=PNG)[1]
+        r.api("POST", "/api/message", {"text": "", "attachments": [photo["file"]], "mode": "3d", "quality": "fast", "chosen": True})
+        r.wait(lambda: len(r.idol.jobs) == 4, "ordered as it is")
+        self.assertEqual(len(r.idol.selected), asked)
+
     def test_the_whole_room_of_a_photo_becomes_one_scene_of_its_objects(self):
         r = self.room
         place = [dict(x=-0.4, z=1.5, tall=0.8, lift=0.0), dict(x=0.6, z=2.5, tall=0.4, lift=0.9), dict(x=0.0, z=2.0, tall=1.0, lift=0.0)]

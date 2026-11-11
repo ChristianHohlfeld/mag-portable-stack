@@ -4,6 +4,8 @@
     objects.py IMAGE OUT --point X Y     the object at a place (0..1 across, 0..1 down)
     objects.py IMAGE OUT --all           every object of the photo, each by itself
     objects.py IMAGE OUT --scene         ... and where each stands in the room the photo shows
+    objects.py IMAGE OUT --pieces        what stands apart in the photo's foreground (two people, a gnome
+                                         and a fox), each cut out; one piece only: nothing to tell apart
 
 Writes OUT/mask-<n>.png (white where the object is, as large as the photo)
 and OUT/masks.json: for every mask its file, its box (left, top, right,
@@ -23,6 +25,7 @@ from transformers import Sam2Model, Sam2Processor
 
 WEIGHTS = os.environ.get("MAG_IDOL_SAM2", "/home/chris/idol-mi50/weights/sam2")
 DEPTH = os.environ.get("MAG_IDOL_DEPTH", "/home/chris/idol-mi50/weights/depth")
+IDOL = os.environ.get("MAG_IDOL_WEIGHTS", "/home/chris/idol-mi50/weights/idol")
 SIDE = 1536          # the photo is looked at no larger than this
 GRID = 12            # --all asks at GRID x GRID places
 MOST = 12            # ... and keeps at most this many objects
@@ -71,6 +74,41 @@ def every(masks, sure):
             continue
         kept.append(m)
     return sorted(kept, key=lambda m: -int(m.sum()))[:MOST]
+
+
+def pieces_of(image):
+    """What stands apart in the foreground of a photo: the foreground as Idol
+    itself finds it (its BiRefNet, here on the CPU), cut where it does not
+    hang together. Idol makes one model of one thing; shown two people in
+    one picture it makes one lump of both, each a third as large as it could
+    be. Returns the masks (h x w, bool), the largest first; a piece much
+    smaller than the largest is a crumb and no thing."""
+    from scipy.ndimage import binary_fill_holes, binary_opening, label
+    from safetensors.torch import load_file
+    from idol.models import BiRefNet
+    net = BiRefNet()
+    net.load_state_dict(load_file(os.path.join(IDOL, "birefnet.safetensors")), strict=True)
+    net.eval().requires_grad_(False)
+    with torch.no_grad():
+        alpha = np.asarray(net.remove_background(image.convert("RGB")).getchannel(3).resize(image.size, Image.BILINEAR), np.float32) / 255.0
+    front = binary_opening(alpha > 0.5, iterations=max(1, min(image.size) // 400))      # a thread between two things is no bond
+    found, count = label(front)
+    if count == 0:
+        return []
+    sizes = np.bincount(found.ravel())
+    sizes[0] = 0
+    kept = [binary_fill_holes(found == i) for i in np.argsort(-sizes)[:MOST] if sizes[i] >= max(0.12 * sizes.max(), 0.004 * front.size)]
+    # Each piece takes back the soft rim the opening took (hair, fingers), where it is nearest.
+    if len(kept) > 1:
+        from scipy.ndimage import distance_transform_edt
+        nearest = np.argmin(np.stack([distance_transform_edt(~piece) for piece in kept]), axis=0)
+        kept = [(alpha > 0.5) & (nearest == i) & binary_dilation_of(piece, max(2, min(image.size) // 200)) | piece for i, piece in enumerate(kept)]
+    return kept
+
+
+def binary_dilation_of(mask, steps):
+    from scipy.ndimage import binary_dilation
+    return binary_dilation(mask, iterations=steps)
 
 
 def far_of(image):
@@ -138,6 +176,7 @@ def main():
     ap.add_argument("--point", nargs=2, type=float)
     ap.add_argument("--all", action="store_true")
     ap.add_argument("--scene", action="store_true")
+    ap.add_argument("--pieces", action="store_true")
     args = ap.parse_args()
     torch.set_num_threads(min(12, len(os.sched_getaffinity(0))))
     torch.set_num_interop_threads(1)
@@ -147,20 +186,25 @@ def main():
     image = photo.convert("RGB")
     if max(size) > SIDE:
         image.thumbnail((SIDE, SIDE), Image.LANCZOS)
-    model = Sam2Model.from_pretrained(WEIGHTS).eval()
-    processor = Sam2Processor.from_pretrained(WEIGHTS)
     w, h = image.size
+    if not args.pieces:
+        model = Sam2Model.from_pretrained(WEIGHTS).eval()
+        processor = Sam2Processor.from_pretrained(WEIGHTS)
     if args.point:
         x, y = (min(1.0, max(0.0, v)) for v in args.point)
         masks, sure = masks_at(model, processor, image, [(x * w, y * h)])
         picked = [whole(masks[0])]
+    elif args.pieces:
+        picked = pieces_of(image)
+        if len(picked) < 2:
+            picked = []                                # one thing: there is nothing to tell apart
     else:
         places = [((i + 0.5) * w / GRID, (j + 0.5) * h / GRID) for j in range(GRID) for i in range(GRID)]
         picked = every(*masks_at(model, processor, image, places))
     args.out.mkdir(parents=True, exist_ok=True)
     picked = [mask for mask in picked if mask.any()]
     placed, room = (None, None)
-    if args.scene and picked:
+    if (args.scene or args.pieces) and picked:
         placed, room = room_of(image, far_of(image), picked, focal_of(raw, w, h))
     listed = []
     for n, mask in enumerate(picked):
@@ -168,6 +212,14 @@ def main():
         picture.save(args.out / f"mask-{n}.png", optimize=True)
         ys, xs = np.nonzero(np.asarray(picture))
         listed.append({"file": f"mask-{n}.png", "box": [int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1], "share": round(float(mask.mean()), 4)})
+        if args.pieces:
+            # ... and the piece itself, cut out of the photo as it was taken: what Idol is shown.
+            cut = photo.convert("RGB")
+            cut.putalpha(picture)
+            pad = int(0.03 * max(size))
+            box = (max(0, int(xs.min()) - pad), max(0, int(ys.min()) - pad), min(size[0], int(xs.max()) + 1 + pad), min(size[1], int(ys.max()) + 1 + pad))
+            cut.crop(box).save(args.out / f"cut-{n}.png")
+            listed[-1]["cut"] = f"cut-{n}.png"
         if placed:
             listed[-1]["place"] = placed[n]
     found = {"width": size[0], "height": size[1], "masks": listed}

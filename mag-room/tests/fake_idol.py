@@ -13,6 +13,7 @@ class FakeIdol:
         self.hold = False  # True: jobs stay "running" until a test lets go
         self.fails = ""    # not empty: jobs end as an error with these words
         self.retried = []
+        self.images = []    # what was asked to be painted
         self.selected = []  # what was asked about the objects of a photo
         self.pieces = 0     # how many things stand apart in a photo (asked with pieces=1); 0: one, nothing to tell apart
         fake = self
@@ -37,7 +38,7 @@ class FakeIdol:
                 if not job:
                     return self.reply(404, {"error": "Job nicht gefunden"})
                 if len(parts) == 5:
-                    return self.reply(200, None, raw=fake.glb)
+                    return self.reply(200, None, raw=b"\x89PNG\r\n\x1a\n" + b"p" * 40 if parts[4] == "image.png" else fake.glb)
                 job["polls"] += 1
                 if job["state"] not in ("cancelled", "error"):
                     job["state"] = "queued" if job["polls"] < 2 else "running" if job["polls"] < 4 or fake.hold else "error" if fake.fails else "done"
@@ -56,6 +57,14 @@ class FakeIdol:
                 length = int(self.headers.get("Content-Length", "0"))
                 body = self.rfile.read(length)
                 parts = self.path.split("?")[0].strip("/").split("/")
+                if parts == ["api", "idol", "images"]:
+                    asked = json.loads(body or b"{}")
+                    if not asked.get("prompt"):
+                        return self.reply(400, {"error": "Die Beschreibung fehlt"})
+                    fake.images.append(asked)
+                    job_id = "%032x" % (len(fake.jobs) + 1)
+                    fake.jobs[job_id] = {"state": "queued", "polls": 0, "quality": "normal", "size": 0, "kind": "image"}
+                    return self.reply(202, {"id": job_id, "state": "queued", "kind": "image"})
                 if parts == ["api", "idol", "purge"]:
                     fake.purges += 1
                     fake.jobs.clear()

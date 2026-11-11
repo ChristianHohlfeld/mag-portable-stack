@@ -395,6 +395,10 @@ private:
       // A 3D order is for the worker: the bots read it as context, it asks them nothing.
       m["silent"] = true;
       m["order3d"] = jstr(in, "quality", "normal");
+    } else if (mode == "image") {
+      // A picture from words: for the worker, like a 3D order.
+      m["silent"] = true;
+      m["order_image"] = true;
     } else if (const std::string about = jstr(in, "about"); is_id(about)) {
       // Written at a scene or a 3D model in the chat: the message says what it is about.
       Val ref;
@@ -406,6 +410,26 @@ private:
     const Val stored = room_.add(m);
     Val out = Val::object();
     out["message"] = stored;
+    if (mode == "image") {
+      std::string error;
+      const std::string shape = jstr(in, "shape", "square");
+      const int w = shape == "wide" ? 1344 : shape == "tall" ? 768 : 1024, h = shape == "wide" ? 768 : shape == "tall" ? 1344 : 1024;
+      out["model3d"] = idol_.imagine(jstr(in, "text"), w, h, "chris", error);
+      if (!error.empty()) {
+        Val note = Val::object(), m3 = Val::object();
+        note["from"] = "idol";
+        note["role"] = "service";
+        note["state"] = "error";
+        note["silent"] = true;
+        note["text"] = "";
+        m3["kind"] = "image";
+        m3["state"] = "error";
+        m3["error"] = error;
+        m3["stage"] = "Fehler";
+        note["model3d"] = m3;
+        room_.add(note);
+      }
+    }
     if (mode == "3d") {
       const Val *image = nullptr;
       for (auto &a : atts.asArr())

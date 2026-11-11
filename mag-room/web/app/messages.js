@@ -345,6 +345,23 @@
     clock.textContent = clock3d(clock.dataset);
     return el('div', { class: 'prog' }, el('div', { class: 'what', text: title }), segs, clock);
   }
+  // A picture being painted from words: what was asked, how far it is, and
+  // a way to stop it or try again. The picture itself is the message's image.
+  function buildPicture(m) {
+    const m3 = m.model3d, card = el('div', { class: 'm3 image ' + m3.state });
+    const running = m3.state === 'queued' || m3.state === 'running';
+    const sub = m3.state === 'done' ? (m3.took ? 'FLUX.2 klein · ' + MAG.dur(m3.took * 1000) : 'FLUX.2 klein')
+      : m3.state === 'error' ? (m3.error || 'Fehler') : m3.state === 'cancelled' ? 'Abgebrochen' : m3.state === 'queued' ? 'In der Warteschlange' : m3.stage || 'Malt';
+    card.append(el('div', { class: 'head' }, el('span', { class: 'src' }, MAG.icon('image')),
+      el('div', { class: 'txt' }, el('b', { text: m3.prompt || 'Bild' }), el('small', { text: sub })),
+      running ? el('button', { class: 'pill danger', text: 'Abbrechen', onclick: () => MAG.api('POST', '/api/3d/' + m.id + '/cancel').catch((x) => MAG.toast(x.message, true)) })
+        : m3.state === 'error' || m3.state === 'cancelled' ? el('button', { class: 'pill', text: 'Noch einmal', onclick: (e) => { e.currentTarget.disabled = true; MAG.api('POST', '/api/3d/' + m.id + '/retry').catch((x) => MAG.toast(x.message, true)); } }) : null));
+    if (running) {
+      const part = m3.state === 'running' && m3.steps ? (m3.phase === 2 ? (m3.step || 0) / m3.steps : 0.05) : 0;
+      card.append(el('div', { class: 'prog' }, el('div', { class: 'segs' }, el('i', { style: 'width:' + Math.round(100 * part) + '%' }))));
+    }
+    return card;
+  }
   function build3d(m) {
     const m3 = m.model3d, card = el('div', { class: 'm3 ' + m3.state });
     const running = m3.state === 'queued' || m3.state === 'running';
@@ -535,7 +552,8 @@
   function build(m) {
     const user = m.role === 'user';
     const node = el('article', { class: 'msg ' + (user ? 'user' : m.role === 'service' ? 'service' : 'bot'), dataset: { id: m.id, from: m.from } });
-    const files = m.model3d ? [] : m.attachments || [];
+    const picture = m.model3d?.kind === 'image';       // a picture from words: its result is an ordinary image
+    const files = m.model3d && !picture ? [] : m.attachments || [];
     const atts = files.length ? el('div', { class: 'atts' }, files.map(buildAttachment)) : null;
     if (user) {
       // The bubble, what was attached, and (on tap or hover) the actions.
@@ -550,7 +568,10 @@
     }
     node.append(el('div', { class: 'meta' }, el('span', { class: 'who', text: MAG.name(m.from) }),
       el('span', { class: 'time', text: MAG.clock(m.ts), title: MAG.day(m.ts) })));
-    if (m.model3d) {
+    if (picture) {
+      node.append(buildPicture(m));
+      if (atts) node.append(atts);
+    } else if (m.model3d) {
       node.append(m.model3d.kind === 'scene' ? buildScene(m) : build3d(m));
     } else {
       const thoughts = m.reasoning && buildThoughts(m);

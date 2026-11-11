@@ -8,6 +8,8 @@
   let staged = [];           // {att, url} uploaded, not sent yet
   let uploading = 0, sending = false;
   let mode3d = false;
+  let modeImage = false;      // a picture from words (FLUX.2 klein on the MI50)
+  let shape = localStorage.getItem('mag-image-shape') || 'square';
   let quality = localStorage.getItem('mag-3d-quality') || 'normal';
 
   // One line to about seven; beyond that the text scrolls (without a bar).
@@ -21,10 +23,10 @@
   }
   function refresh() {
     const has3dImage = staged.some((s) => s.att.kind === 'image');
-    sendBtn.disabled = sending || uploading > 0 || (mode3d ? !has3dImage : !input.value.trim() && !staged.length);
-    sendBtn.setAttribute('aria-label', mode3d ? '3D-Modell erstellen' : 'Senden');
-    sendBtn.innerHTML = mode3d ? MAG.icons.cube : MAG.icons.send;
-    input.placeholder = mode3d ? 'Foto zu 3D' : 'Nachricht';
+    sendBtn.disabled = sending || uploading > 0 || (mode3d ? !has3dImage : modeImage ? !input.value.trim() : !input.value.trim() && !staged.length);
+    sendBtn.setAttribute('aria-label', mode3d ? '3D-Modell erstellen' : modeImage ? 'Bild erzeugen' : 'Senden');
+    sendBtn.innerHTML = mode3d ? MAG.icons.cube : modeImage ? MAG.icons.image : MAG.icons.send;
+    input.placeholder = mode3d ? 'Foto zu 3D' : modeImage ? 'Was soll auf dem Bild sein?' : 'Nachricht';
   }
   function paintStaged() {
     stagedBox.replaceChildren();
@@ -35,6 +37,13 @@
         el('button', { class: 'x', 'aria-label': 'Entfernen', html: MAG.icons.x, onclick: () => { staged = staged.filter((x) => x !== s); paintStaged(); } })));
     }
     if (uploading) stagedBox.append(el('div', { class: 'staged' }, el('span', { class: 'spin' }), el('span', { class: 'nm', text: 'Lädt hoch …' })));
+    if (modeImage) {
+      const seg = el('div', { class: 'seg', role: 'group', 'aria-label': 'Format' });
+      for (const [key, label] of [['square', 'Quadrat'], ['wide', 'Quer'], ['tall', 'Hoch']])
+        seg.append(el('button', { class: key === shape ? 'on' : '', text: label, onclick: () => { shape = key; localStorage.setItem('mag-image-shape', key); paintStaged(); } }));
+      stagedBox.append(el('div', { class: 'staged' }, MAG.icon('image'), el('span', { text: 'Bild erzeugen' }), seg,
+        el('button', { class: 'x', 'aria-label': 'Bild abbrechen', html: MAG.icons.x, onclick: () => { modeImage = false; paintStaged(); } })));
+    }
     if (mode3d) {
       const seg = el('div', { class: 'seg', role: 'group', 'aria-label': 'Qualität' });
       for (const [key, label] of [['fast', 'Schnell'], ['normal', 'Normal'], ['high', 'Hoch']])
@@ -259,11 +268,13 @@
     if (MAG.dictation?.active()) await MAG.dictation.finish();
     const text = input.value.trim(), body = { text, attachments: staged.map((s) => s.att.file), client_id: crypto.randomUUID?.() || String(Math.random()) };
     if (mode3d) Object.assign(body, { mode: '3d', quality, text: '' });
+    else if (modeImage) Object.assign(body, { mode: 'image', shape, attachments: [] });
     sending = true;
     refresh();
     try {
       await MAG.api('POST', '/api/message', body);
       if (!mode3d) { input.value = ''; sessionStorage.removeItem('mag-draft'); }
+      modeImage = false;
       staged = [];
       mode3d = false;
       resize();
@@ -291,7 +302,8 @@
     $('#attach').addEventListener('click', (e) => MAG.menu(e.currentTarget, [
       { icon: 'image', label: 'Datei oder Foto', run: () => pick('', false) },
       { icon: 'camera', label: 'Kamera', run: () => shoot() },
-      { icon: 'cube', label: 'Foto zu 3D', run: () => { mode3d = true; paintStaged(); } },
+      { icon: 'cube', label: 'Foto zu 3D', run: () => { mode3d = true; modeImage = false; paintStaged(); } },
+      { icon: 'image', label: 'Bild erzeugen', run: () => { modeImage = true; mode3d = false; paintStaged(); input.focus(); } },
     ]));
     // Files dropped anywhere on the page are attachments, never a navigation.
     window.addEventListener('dragover', (e) => e.preventDefault());

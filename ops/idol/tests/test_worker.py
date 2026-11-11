@@ -43,6 +43,14 @@ elif script == "objects.py":
     out.mkdir()
     (out / "mask-0.png").write_bytes(b"\x89PNG mask " + " ".join(args[2:]).encode())
     (out / "masks.json").write_text(json.dumps({"width": 4, "height": 3, "masks": [{"file": "mask-0.png", "box": [0, 0, 2, 2], "share": 0.3}]}))
+elif script == "imagegen.py":
+    import json
+    folder = pathlib.Path(args[0])
+    asked = json.loads((folder / "prompt.json").read_text())
+    for i in range(1, 5):
+        time.sleep(delay)
+        print("MAG-IMAGE %d/4" % i, flush=True)
+    (folder / "image.png").write_bytes(b"\x89PNG " + asked["prompt"].encode())
 else:
     folder = pathlib.Path(args[1])
     if (folder.parent.parent / "mesh-fails").exists():
@@ -128,6 +136,15 @@ def main():
 
     try:
         start()
+        # A picture from words is a job of the same queue, with its own result.
+        code, image = call("POST", "/api/idol/images", json.dumps({"prompt": "ein Fuchs im Schnee", "width": 768, "height": 512}).encode())
+        assert code == 202 and image["kind"] == "image", image
+        s = wait(image["id"], lambda s: s["state"] == "done", "picture made")
+        assert (s["files"], s["phases"]) == (["image.png"], 2), s
+        with urllib.request.urlopen(urllib.request.Request("http://127.0.0.1:%d/api/idol/jobs/%s/image.png" % (port, image["id"]), headers={"X-Mag-Idol-UI": "1"}), timeout=5) as res:
+            assert res.headers["Content-Type"] == "image/png" and res.read() == b"\x89PNG " + "ein Fuchs im Schnee".encode()
+        assert call("GET", "/api/idol/jobs/%s/mesh.glb" % image["id"])[0] == 404
+        assert call("POST", "/api/idol/images", b'{"prompt": ""}')[0] == 400
         # The objects of a photo: the one at a place, or all; nothing of it stays behind.
         code, found = call("POST", "/api/idol/select?x=0.25&y=0.5", PNG)
         assert code == 200 and found["width"] == 4 and len(found["masks"]) == 1, found
@@ -137,7 +154,7 @@ def main():
         assert base64.b64decode(call("POST", "/api/idol/select?scene=1", PNG)[1]["masks"][0]["png"]).endswith(b"--scene")
         assert base64.b64decode(call("POST", "/api/idol/select?pieces=1", PNG)[1]["masks"][0]["png"]).endswith(b"--pieces")
         assert call("POST", "/api/idol/select?x=2&y=0", PNG)[0] == 400 and call("POST", "/api/idol/select", b"not a picture")[0] == 415
-        assert list(root.iterdir()) == [], list(root.iterdir())
+        assert [p for p in root.iterdir() if p.name != image["id"]] == [], list(root.iterdir())
         assert call("GET", "/api/idol/health")[1]["resumable"] is True
         # 1. The worker restarts while a job samples: the stage keeps running,
         #    the new worker follows it, nothing starts twice.

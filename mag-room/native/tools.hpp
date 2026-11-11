@@ -20,6 +20,8 @@ struct Ctx {
   std::function<void(const Val &)> attach;               // add a file to the bot message
   std::function<void(const Val &)> page;                 // show a published page in the bot message
   Scenes *scenes = nullptr;                              // 3D scenes from the models in the chat
+  // A picture from words (the Idol worker's FLUX.2 klein): (prompt, width, height, by, error) -> message id.
+  std::function<std::string(const std::string &, int, int, const std::string &, std::string &)> imagine;
   size_t asked_at = 0;                                   // parts of the bot message that were there when Chris last wrote
 };
 
@@ -91,6 +93,13 @@ inline Val schemas(bool has_vm, bool phone = false) {
                "List the 3D models in the chat (results of photo to 3D, uploaded .glb files) and the figures each one shows. "
                "Call it before scene_3d.",
                R"({"type":"object","properties":{}})"));
+  list.push(fn("image_generate",
+               "Paint a picture from words (FLUX.2 klein, on the server's graphics card). Use it when Chris asks for a picture, a drawing, an "
+               "illustration or a photo of something that does not exist yet. Write the prompt in English, detailed: subject, style, light, "
+               "composition; text that is to appear in the picture stays German, in quotes. The picture appears in the chat as its own "
+               "message; it can then become a 3D model.",
+               R"j({"type":"object","properties":{"prompt":{"type":"string","description":"what the picture shows, in English, detailed"},)j"
+               R"j("shape":{"type":"string","enum":["square","wide","tall"],"description":"default square"}},"required":["prompt"]})j"));
   list.push(fn("scene_3d",
                "Build an animated 3D scene from 3D models in the chat (Blender). Every figure gets a skeleton by itself: an animal walks on its "
                "four legs and moves head and tail, somebody on two legs walks, nods and waves, a bird walks, pecks and flies, an insect or spider "
@@ -172,6 +181,7 @@ inline std::string title(const std::string &name, const Val &args) {
   }
   if (name == "models_3d") return "Sieht die 3D-Modelle durch";
   if (name == "scene_3d") return "Baut die 3D-Szene " + one(jstr(args, "title", "ohne Titel"), 80);
+  if (name == "image_generate") return "Malt ein Bild: " + one(jstr(args, "prompt"), 80);
   if (name == "s23_status") return "S23: Zustand";
   if (name == "s23_tap") return "S23: tippt auf " + std::to_string((long)jnum(args, "x")) + ", " + std::to_string((long)jnum(args, "y"));
   if (name == "s23_swipe") return "S23: wischt";
@@ -462,6 +472,16 @@ inline Result call(const std::string &name, const Val &args, Ctx &ctx) {
     skill["by"] = jstr(ctx.bot, "id");
     const std::string why = ctx.room.save_skill(skill);
     return why.empty() ? Result{"Skill gespeichert: " + wanted + ". Er beschreibt Arbeit und erlaubt nichts: Freigaben gelten wie immer.", true} : fail(why);
+  }
+  if (name == "image_generate") {
+    if (!ctx.imagine) return fail("Bilder malen ist hier nicht eingerichtet.");
+    const std::string shape = jstr(args, "shape", "square");
+    const int w = shape == "wide" ? 1344 : shape == "tall" ? 768 : 1024, h = shape == "wide" ? 768 : shape == "tall" ? 1344 : 1024;
+    std::string error;
+    const std::string id = ctx.imagine(jstr(args, "prompt"), w, h, jstr(ctx.bot, "id"), error);
+    if (id.empty()) return fail(error.empty() ? "Das Bild wurde nicht in Auftrag gegeben." : error);
+    return {"Das Bild wird gemalt (FLUX.2 klein auf der MI50, meist unter einer Minute, hinter laufenden 3D-Aufträgen). "
+            "Es erscheint im Chat als eigene Nachricht; warte nicht darauf und beschreibe es nicht, bevor du es gesehen hast.", true};
   }
   if (name == "models_3d" || name == "scene_3d") {
     if (!ctx.scenes) return fail("3D-Szenen sind hier nicht eingerichtet.");

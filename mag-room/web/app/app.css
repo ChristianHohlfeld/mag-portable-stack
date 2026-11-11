@@ -661,3 +661,7 @@ html[data-voice="loading"] .act[data-speak]::after, html[data-voice="making"] .a
 html[data-voice="making"] .act[data-speak]::after { animation: voice-making 1.6s ease-in-out infinite; }
 @keyframes voice-making { 50% { opacity: .3; } }
 @media (prefers-reduced-motion: reduce) { html[data-voice="making"] .act[data-speak]::after { animation: none; } }
+.m3.image .head b { font-weight: 600; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.m3.image .prog .segs { height: 4px; border-radius: 2px; background: var(--line); overflow: hidden; display: block; }
+.m3.image .prog .segs i { display: block; height: 100%; background: var(--accent); transition: width .4s; }
+.m3.image.done + .atts, .msg.service .atts { margin-top: 4px; }

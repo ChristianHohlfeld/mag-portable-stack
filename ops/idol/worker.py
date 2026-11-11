@@ -46,6 +46,10 @@ MAX_PENDING = 8
 QUALITIES = ("fast", "normal", "high")
 RESULTS = {"splat.ply": "application/octet-stream", "mesh.glb": "model/gltf-binary",
            "mesh.stl": "model/stl"}
+# A picture from words (imagegen.py, FLUX.2 klein on the MI50) is a job of the
+# same queue: the card does one thing at a time.
+IMAGE_RESULTS = {"image.png": "image/png"}
+IMAGE_STEP = re.compile(r"MAG-IMAGE (\d+)/(\d+)")
 VALID_ID = re.compile(r"^[a-f0-9]{32}$")
 STEP = re.compile(r"(?<!\d)(\d{1,2})\s*/\s*50(?!\d)")
 STEP_ALT = re.compile(r"\b(?:step|schritt)\s*(\d{1,2})\s*(?:of|/|von)\s*50\b", re.I)
@@ -57,7 +61,7 @@ REMAINING = re.compile(r"<(\d+(?::\d+){1,2})[,\]]")
 # 3-5 are the sections of mesh.py, which announces them ("MAG-STEP ...").
 PHASES = ("Modell laden", "3D-Form berechnen", "Mesh rekonstruieren", "Textur backen", "Dateien exportieren")
 MESH_MARKS = {"MAG-STEP texture": 4, "MAG-STEP export": 5}
-LOGS = {"sample": "idol.log", "shape": "shape.log", "mesh": "mesh.log"}
+LOGS = {"sample": "idol.log", "shape": "shape.log", "mesh": "mesh.log", "image": "image.log"}
 # The whole shape (shape.py, TripoSG on the MI50) in an environment of its own;
 # where it is not installed, the mesh is made from the splat alone.
 SHAPE_PYTHON = os.environ.get("MAG_TRIPOSG_PYTHON", "/home/chris/idol-mi50/triposg/venv/bin/python")
@@ -193,7 +197,7 @@ def again(job_id, remesh=False):
             item.pop("seen_from", None)
         elif item["state"] in ("queued", "running", "done"):
             return True                                   # under way, or done: there is nothing to take up
-        if not (ROOT / job_id / "input.png").is_file():
+        if not ((ROOT / job_id / "input.png").is_file() or (ROOT / job_id / "prompt.json").is_file()):
             return "Das Foto dieses Auftrags gibt es nicht mehr."
         if pending.qsize() >= MAX_PENDING:
             return "Idol-Warteschlange voll"
@@ -388,12 +392,33 @@ def run_stage(job_id, key, command, on_line, fresh):
         raise TimeoutError(f"Kein Fortschritt mehr: der Schritt stand dreimal länger als {max(1, STALL // 60)} Minuten still")
     raise RuntimeError("Der Schritt wurde mehrfach unterbrochen")
 
+def image_line(job_id, value):
+    """One line of imagegen.py: the step the model is at."""
+    found = IMAGE_STEP.search(value)
+    if found:
+        k, n = int(found.group(1)), max(1, int(found.group(2)))
+        update(job_id, phase=2, stage="Bild malen", step=k, total_steps=n, progress=k / n)
+
+
+def process_image(job_id):
+    folder = ROOT / job_id
+    if not (folder / "image.png").is_file():
+        command = [PYTHON, str(Path(__file__).with_name("imagegen.py")), str(folder)]
+        run_stage(job_id, "image", command, image_line, dict(phase=1, phases=2, stage="Modell laden", step=0, total_steps=4, progress=0.0, eta=None))
+        if not (folder / "image.png").is_file():
+            raise RuntimeError("Das Bild wurde nicht fertig")
+    update(job_id, state="done", stage="Fertig", phase=2, files=list(IMAGE_RESULTS), finished=int(time.time()), pid=None)
+
+
 def process(job_id):
     folder = ROOT / job_id
     out = folder / "outputs"
     out.mkdir(exist_ok=True)
     with lock:
         quality = jobs[job_id].get("quality", "normal")
+        kind = jobs[job_id].get("kind", "model")
+    if kind == "image":
+        return process_image(job_id)
     if quality not in QUALITIES:
         raise ValueError("Ungültige gespeicherte Idol-Qualität")
     here = Path(__file__)
@@ -454,8 +479,11 @@ def execute():
                 continue
             # The MI50 belongs to Idol alone (both bots run CPU-only), so a
             # job never pauses or restarts a model.
-            fields = dict(state="running", phases=len(PHASES))
-            if not begun:
+            image = bool(item) and item.get("kind") == "image"
+            fields = dict(state="running", phases=2 if image else len(PHASES))
+            if not begun and image:
+                fields.update(started=int(time.time()), phase=1, stage="Modell laden", step=0, total_steps=4, progress=0.0, eta=None)
+            elif not begun:
                 fields.update(started=int(time.time()), phase=1, stage=PHASES[0],
                               step=0, total_steps=50, progress=0.0, eta=None)
             if not update(job_id, **fields):
@@ -562,6 +590,31 @@ class API(BaseHTTPRequestHandler):
             if not is_picture(data):
                 return self.reply(415, {"error": "Nur PNG, JPEG oder WebP erlaubt"})
             return self.reply(*select(data, parse_qs(url.query)))
+        if path == "/api/idol/images":
+            # A picture from words: {"prompt", "width", "height", "seed"}.
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                asked = json.loads(self.rfile.read(min(length, 65536)) or b"{}")
+                prompt = str(asked.get("prompt", "")).strip()
+                width, height = int(asked.get("width", 1024)), int(asked.get("height", 1024))
+                seed = int(asked.get("seed", 0))
+            except (ValueError, TypeError, AttributeError):
+                return self.reply(400, {"error": "Ungültiger Bildauftrag"})
+            if not 1 <= len(prompt) <= 2000:
+                return self.reply(400, {"error": "Die Beschreibung fehlt oder ist zu lang"})
+            with lock:
+                if pending.qsize() >= MAX_PENDING:
+                    return self.reply(429, {"error": "Idol-Warteschlange voll"})
+                identity = uuid4().hex
+                folder = ROOT / identity
+                folder.mkdir(mode=0o700, parents=True)
+                (folder / "prompt.json").write_text(json.dumps({"prompt": prompt, "width": width, "height": height, "seed": seed}))
+                item = {"id": identity, "kind": "image", "state": "queued", "stage": "Warteschlange", "quality": "normal",
+                        "created": int(time.time()), "step": 0, "total_steps": 4, "phase": 0, "phases": 2}
+                jobs[identity] = item
+                save(item)
+                pending.put_nowait(identity)
+            return self.reply(202, item)
         if path != "/api/idol/jobs":
             return self.reply(404, {"error": "Nicht gefunden"})
         supplied = parse_qs(url.query, keep_blank_values=True)
@@ -617,13 +670,14 @@ class API(BaseHTTPRequestHandler):
             return self.reply(404, {"error": "Job nicht gefunden"})
         if len(parts) == 4:
             return self.reply(200, item)
-        if len(parts) != 5 or parts[4] not in RESULTS or item["state"] != "done":
+        results = IMAGE_RESULTS if item.get("kind") == "image" else RESULTS
+        if len(parts) != 5 or parts[4] not in results or item["state"] != "done":
             return self.reply(404, {"error": "Ergebnis nicht vorhanden"})
         file = ROOT / parts[3] / parts[4]
         if not file.is_file():
             return self.reply(404, {"error": "Datei fehlt"})
         self.send_response(200)
-        self.send_header("Content-Type", RESULTS[parts[4]])
+        self.send_header("Content-Type", results[parts[4]])
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Content-Disposition", f'attachment; filename="{parts[4]}"')
         self.send_header("Content-Length", str(file.stat().st_size))

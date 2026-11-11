@@ -742,6 +742,20 @@ class RoomContract(unittest.TestCase):
         r.wait(lambda: all(m["state"] != "streaming" for m in r.messages()), "plain job done")
         self.assertEqual(len(r.scene.specs), 1)
 
+    def test_a_picture_from_words_becomes_an_ordinary_image_of_the_chat(self):
+        r = self.room
+        sent = r.api("POST", "/api/message", {"text": "ein Fuchs mit Laterne im Schnee, Aquarell", "mode": "image", "shape": "wide"})[1]
+        self.assertEqual((sent["message"]["text"], sent["message"].get("silent")), ("ein Fuchs mit Laterne im Schnee, Aquarell", True))
+        made = lambda: [m for m in r.messages() if m["id"] == sent["model3d"]][0]
+        r.wait(lambda: made()["state"] == "done", "picture made")
+        m = made()
+        self.assertEqual((m["model3d"]["kind"], m["text"], [a["kind"] for a in m["attachments"]], m["attachments"][0]["name"][-4:]),
+                         ("image", "Bild: ein Fuchs mit Laterne im Schnee, Aquarell", ["image"], ".png"))
+        self.assertEqual((r.idol.images[-1]["prompt"], r.idol.images[-1]["width"], r.idol.images[-1]["height"]), ("ein Fuchs mit Laterne im Schnee, Aquarell", 1344, 768))
+        # Nothing to paint is said in words, and nothing is ordered.
+        r.api("POST", "/api/message", {"text": "", "mode": "image"})
+        self.assertEqual(len(r.idol.images), 1)
+
     def test_a_failed_3d_job_is_taken_up_again_where_it_stopped(self):
         r = self.room
 

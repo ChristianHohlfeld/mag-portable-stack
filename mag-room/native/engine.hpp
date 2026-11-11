@@ -30,6 +30,8 @@ public:
   Engine(Room &room, vm::Guests &guests, Scenes &scenes, Plugins &plugins)
       : room_(room), guests_(guests), scenes_(scenes), plugins_(plugins), phone_(!tools::phone_token(room.cfg).empty()) {}
   ~Engine() { shutdown(); }
+  // Set by main: how a bot's picture from words is ordered (Idol::imagine).
+  std::function<std::string(const std::string &, int, int, const std::string &, std::string &)> imagine;
 
   void start() {
     int index = 0;
@@ -2267,6 +2269,7 @@ private:
         } else {
           tools::Ctx ctx{room_, guests_, me, t.id, cancel.get(), jbool(settings, "web", true), {}, {}, {}};
           ctx.scenes = &scenes_;
+          ctx.imagine = imagine;
           ctx.asked_at = t.asked_at;
           ctx.output = [&](const std::string &chunk) { room_.step_output(t.id, index, chunk); };
           ctx.attach = [&](const Val &att) { room_.update(t.id, [&](Val &m) { m["attachments"].push(att); }); };

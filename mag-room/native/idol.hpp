@@ -61,10 +61,50 @@ public:
     return id;
   }
 
-  // A job of this worker. (A scene is a 3D message too; it belongs to Scenes.)
+  // A job of this worker: a model, or a picture from words (kind "image").
+  // (A scene is a 3D message too; it belongs to Scenes.)
   static const Val *job_of(const Val &message) {
     const Val *m3 = message.find("model3d");
-    return m3 && !jstr(*m3, "job").empty() && jstr(*m3, "kind").empty() ? m3 : nullptr;
+    return m3 && !jstr(*m3, "job").empty() && (jstr(*m3, "kind").empty() || jstr(*m3, "kind") == "image") ? m3 : nullptr;
+  }
+
+  // A picture from words (FLUX.2 klein on the MI50, in the worker's one
+  // queue). The message is there at once with its progress and becomes the
+  // picture: an ordinary image of the chat, which the bots see and which can
+  // go on to photo to 3D. Returns the message id, or "" with `error`.
+  std::string imagine(const std::string &prompt, int width, int height, const std::string &by, std::string &error) {
+    if (trim(prompt).empty()) { error = "Was soll auf dem Bild sein?"; return ""; }
+    http::ClientOptions opt = options("POST");
+    Val ask = Val::object();
+    ask["prompt"] = clip(trim(prompt), 2000, "");
+    ask["width"] = (double)std::max(256, std::min(1536, width));
+    ask["height"] = (double)std::max(256, std::min(1536, height));
+    ask["seed"] = (double)(random_bytes(2)[0] * 256 + random_bytes(2)[1] + 1);
+    opt.body = mj::dump(ask);
+    opt.headers.push_back({"Content-Type", "application/json"});
+    const auto res = http::fetch(room_.cfg.idol_url + "/api/idol/images", opt);
+    const Val job = jparse(res.body);
+    if (res.status != 202 || jstr(job, "id").empty()) {
+      error = res.error.empty() ? jstr(job, "error", "Der Bilddienst hat den Auftrag abgelehnt.") : "3D-Dienst nicht erreichbar.";
+      return "";
+    }
+    Val m = Val::object(), m3 = Val::object();
+    m["from"] = "idol";
+    m["role"] = "service";
+    m["state"] = "streaming";
+    m["text"] = "";
+    m["attachments"] = Val::array();
+    m3["kind"] = "image";
+    m3["job"] = jstr(job, "id");
+    m3["state"] = "queued";
+    m3["stage"] = "Warteschlange";
+    m3["progress"] = 0;
+    m3["prompt"] = jstr(ask, "prompt");
+    m3["by"] = by;
+    m["model3d"] = m3;
+    const std::string id = jstr(room_.add(m), "id");
+    watch(id, jstr(job, "id"));
+    return id;
   }
 
   void cancel(const Val &message) {
@@ -301,6 +341,23 @@ private:
             m3["eta_at"] = (double)now_s();
             if (jnum(st, "resumed") > 0) m3["resumed"] = true; // the worker took it up again after its own restart
           }, false);
+        }
+        if (state == "done" && jstr(m["model3d"], "kind") == "image") {
+          Val png = fetch_result(job, "image.png", "bild-" + job.substr(0, 6) + ".png");
+          if (!png.isObj()) { finish(message_id, "error", "Das Bild konnte nicht übernommen werden."); return; }
+          room_.update(message_id, [&](Val &msg) {
+            Val atts = Val::array();
+            atts.push(png);
+            msg["attachments"] = atts;
+            msg["state"] = "done";
+            msg["text"] = "Bild: " + jstr(msg["model3d"], "prompt");
+            Val &m3 = msg["model3d"];
+            m3["state"] = "done";
+            m3["stage"] = "Fertig";
+            m3["progress"] = 1;
+            if (jnum(st, "started") > 0 && jnum(st, "finished") >= jnum(st, "started")) m3["took"] = jnum(st, "finished") - jnum(st, "started");
+          });
+          return;
         }
         if (state == "done") {
           room_.update(message_id, [&](Val &msg) { msg["model3d"]["stage"] = "Ergebnisse werden übernommen"; }, false);

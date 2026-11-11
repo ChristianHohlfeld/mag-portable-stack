@@ -390,8 +390,13 @@ def process(job_id):
         if not meshed():
             raise RuntimeError("Mesh-Export unvollständig (PLY/GLB/STL)")
     shutil.rmtree(folder / "tmp", ignore_errors=True)
+    seen = None
+    try:
+        seen = json.loads((folder / "mesh.json").read_text()).get("seen_from")
+    except (OSError, ValueError, AttributeError):
+        pass
     update(job_id, state="done", stage="Fertig", phase=len(PHASES), files=list(RESULTS),
-           finished=int(time.time()), pid=None)
+           finished=int(time.time()), pid=None, **({"seen_from": seen} if isinstance(seen, list) and len(seen) == 3 else {}))
 
 def execute():
     while True:
@@ -446,7 +451,7 @@ def select(data, query):
                 return 400, {"error": "x und y liegen zwischen 0 und 1"}
             command += ["--point", str(x), str(y)]
         else:
-            command += ["--all"]
+            command += ["--scene" if "scene" in query else "--all"]
         if CPUS:
             command = ["taskset", "-c", CPUS] + command
         # Few threads: the unit counts tasks, and a stage of a job may be running beside it.

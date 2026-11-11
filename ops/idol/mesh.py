@@ -93,6 +93,9 @@ def gaussian_albedo(points, tree, centers, colors, alpha, radii, spacing, neighb
     return np.clip(rgb, 0.0, 1.0)
 
 
+SEEN = {}   # "from": the direction from the model to the photo's camera, once it was found
+
+
 def the_photo(job):
     """What the model was made from, for its colours: the square of the photo
     the model was shown (as fine as the photo was taken, when the sampling
@@ -155,6 +158,8 @@ def bake_texture(verts, faces, xyz, alpha, radii, colors, spacing, size, neighbo
     if source is not None:
         strong = alpha > 0.3
         camera = photo_of.fit(xyz[strong], colors[strong], source["prepared"], distance=source["distance"])
+        if camera is not None:
+            SEEN["from"] = camera.forward * -1.0
         print("Photo: " + ("its camera was not found again; colours from the splat alone" if camera is None else
                            f"camera found again (outline {camera.cover:.2f}, colours apart {camera.colour:.3f}); {source['fine'].shape[0]} px across"), flush=True)
     where = np.zeros((len(all_pixels), 3), np.float32) if camera is not None else None
@@ -494,6 +499,12 @@ def reconstruct(input_path: Path, output_dir: Path, quality="normal"):
     mesh.apply_transform(trimesh.transformations.rotation_matrix(np.pi, [0.0, 0.0, 1.0]))
     mesh.apply_translation([0.0, -float(mesh.bounds[0, 1]), 0.0])
     mesh.export(output_dir / "mesh.glb", file_type="glb")
+    # From where the photo looked at the model, in the axes of the GLB (y up): a
+    # scene made of several models of one photo turns each the way it stood.
+    if "from" in SEEN:
+        import json
+        towards = trimesh.transformations.rotation_matrix(np.pi, [0.0, 0.0, 1.0])[:3, :3] @ np.asarray(SEEN["from"], np.float64)
+        (output_dir / "mesh.json").write_text(json.dumps({"seen_from": [round(float(v), 4) for v in towards]}))
 
     # Print STL, without colors: +90° X rotates Y-up to Z-up, then scale to mm.
     stl = geometry.copy()

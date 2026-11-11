@@ -12,6 +12,9 @@ class Api {
 public:
   Api(Room &room, Engine &engine, vm::Guests &guests, Idol &idol, Scenes &scenes, Plugins &plugins, auth::Gate &gate, Push &push)
       : room_(room), engine_(engine), guests_(guests), idol_(idol), scenes_(scenes), plugins_(plugins), gate_(gate), push_(push) {
+    // A photo's whole room: when the last of its models is through, they become one scene.
+    idol_.on_scene_part = [this](const std::string &group) { assemble(group); };
+    std::thread([this] { idol_.settle_scenes(); }).detach();
     // The version is the cache key of every asset: it must change with each
     // release. A release carries its commit; outside a release (tests,
     // development) the environment or the start time stands in.
@@ -90,7 +93,7 @@ public:
       double x = in.find("x") ? jnum(in, "x") : -1, y = jnum(in, "y");
       // Named instead of tapped: a bot that sees says where it is.
       std::string why = jstr(in, "name").empty() ? "" : engine_.locate(jstr(in, "file"), jstr(in, "name"), x, y);
-      if (why.empty()) why = idol_.select(jstr(in, "file"), x, y, found);
+      if (why.empty()) why = idol_.select(jstr(in, "file"), x, y, found, jbool(in, "scene", false));
       return why.empty() ? http::send_json(fd, 200, found) : http::send_error(fd, 409, why);
     }
     if (r.method == "POST" && starts_with(p, "/api/3d/") && ends_with(p, "/retry")) {
@@ -395,7 +398,7 @@ private:
         if (jstr(a, "kind") == "image") { image = &a; break; }
       std::string error;
       if (!image) error = "Für Foto zu 3D wird ein Bild gebraucht.";
-      else out["model3d"] = idol_.start(*image, jstr(in, "quality", "normal"), error);
+      else out["model3d"] = idol_.start(*image, jstr(in, "quality", "normal"), error, Idol::scene_part(in));
       if (!error.empty()) {
         Val note = Val::object();
         note["from"] = "idol";
@@ -442,6 +445,71 @@ private:
     v["bots"] = report;
     http::send_json(fd, 200, v);
   }
+
+  // A photo's whole room ("Ganze Szene"): every object of the photo was
+  // ordered as a model of its own, each with where it stood. When none of
+  // them is under way any more, those that were made are put together as
+  // one scene: each as tall as it was, where it stood, turned the way the
+  // photo saw it, with the floor and the walls around them. Each stays a
+  // figure of its own in that scene. Once per group; a restart in between
+  // changes nothing.
+  void assemble(const std::string &group) {
+    if (group.empty()) return;
+    std::lock_guard<std::mutex> lk(assemble_mu_);
+    Val actors = Val::array(), walls;
+    for (auto &m : room_.all()) {
+      const Val *m3 = m.find("model3d");
+      if (!m3) continue;
+      if (jstr(*m3, "kind") == "scene" && jstr(*m3, "group") == group) return; // it stands already
+      const Val *part = m3->find("scene");
+      if (!part || jstr(*part, "group") != group) continue;
+      const std::string state = jstr(*m3, "state");
+      if (jstr(m, "state") == "streaming" || state == "queued" || state == "running") return; // not all through yet
+      if (state != "done" || actors.asArr().size() >= 8) continue;
+      std::string glb;
+      if (const Val *atts = m.find("attachments"); atts && atts->isArr())
+        for (auto &a : atts->asArr())
+          if (glb.empty() && ends_with(lower(jstr(a, "name")), ".glb")) glb = jstr(a, "name");
+      if (glb.empty()) continue;
+      Val actor = Val::object(), at = Val::array();
+      actor["name"] = "Objekt " + std::to_string((int)jnum(*part, "index") + 1);
+      actor["model"] = glb;
+      at.push(jnum(*part, "z"));   // away from the camera
+      at.push(-jnum(*part, "x"));  // the camera's right is the scene's -y
+      actor["at"] = at;
+      actor["tall"] = jnum(*part, "tall");
+      actor["lift"] = jnum(*part, "lift");
+      if (const Val *seen = m3->find("seen_from")) actor["seen_from"] = *seen;
+      actors.push(actor);
+      if (const Val *r = part->find("room")) walls = *r;
+    }
+    if (actors.asArr().empty()) return;
+    Val spec = Val::object();
+    spec["title"] = "Raum aus dem Foto";
+    spec["actors"] = actors;
+    spec["light"] = "studio";
+    spec["seconds"] = 4;
+    spec["group"] = group;
+    if (walls.isObj()) spec["room"] = walls;
+    bool ok = false;
+    const std::string said = scenes_.start(spec, "idol", ok);
+    if (ok) return;
+    logf("api: the room of a photo was not put together: " + clip(said, 400));
+    Val note = Val::object(), m3 = Val::object();
+    note["from"] = "idol";
+    note["role"] = "service";
+    note["state"] = "error";
+    note["silent"] = true;
+    note["text"] = "";
+    m3["kind"] = "scene";
+    m3["group"] = group; // so it is not tried again and again
+    m3["state"] = "error";
+    m3["error"] = clip(said, 300, "…");
+    m3["stage"] = "Fehler";
+    note["model3d"] = m3;
+    room_.add(note);
+  }
+  std::mutex assemble_mu_;
 
   // ---- files --------------------------------------------------------------
   void upload(int fd, const http::Request &r) {

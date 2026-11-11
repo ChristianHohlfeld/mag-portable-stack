@@ -49,6 +49,17 @@ snapshot_download("facebook/sam2.1-hiera-small", revision="ee5bba1d82bb8749febdf
                   allow_patterns=["config.json", "model.safetensors", "preprocessor_config.json", "processor_config.json"])
 PY
 fi
+# Depth Anything V2 (the small one for rooms, in metres) says how far away the
+# objects of a photo stand, for a scene of the photo's whole room. Fetched
+# once, pinned; without it "Ganze Szene" says so in words.
+if [[ ! -s $BASE/weights/depth/model.safetensors ]]; then
+  sudo -u chris env HF_HUB_OFFLINE=0 "$PY" - "$BASE/weights/depth" <<'PY' || echo 'Depth weights not fetched; whole-room scenes stay off' >&2
+import sys
+from huggingface_hub import snapshot_download
+snapshot_download("depth-anything/Depth-Anything-V2-Metric-Indoor-Small-hf", revision="8078d68a9c75a972131914f6afd0c1723be0da7f", local_dir=sys.argv[1],
+                  allow_patterns=["config.json", "model.safetensors", "preprocessor_config.json"])
+PY
+fi
 install -d -o chris -g chris -m 0700 /var/lib/mag-idol/jobs /var/lib/mag-idol/tmp
 install -m 0644 /opt/mag-stack/current/ops/idol/mag-idol.tmpfiles.conf /etc/tmpfiles.d/mag-idol.conf
 systemd-tmpfiles --create /etc/tmpfiles.d/mag-idol.conf

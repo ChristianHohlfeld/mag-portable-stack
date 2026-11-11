@@ -439,13 +439,14 @@ def create(spec):
     for entry in spec["actors"][:8]:
         if not isinstance(entry, dict):
             raise Refused("Ein Darsteller ist ein Objekt mit name und file.")
-        actor = {k: entry[k] for k in ("name", "model", "part", "kind", "size", "at", "faces") if k in entry}
+        actor = {k: entry[k] for k in ("name", "model", "part", "kind", "size", "at", "faces", "tall", "lift", "seen_from") if k in entry}
         actor["file"] = str(room_file(entry.get("file")))
         actors.append(actor)
     quality = spec.get("quality") if spec.get("quality") in ("fast", "normal") else "normal"
     clean = {"title": str(spec.get("title") or "Szene")[:80], "actors": actors,
              "actions": [a for a in (spec.get("actions") or []) if isinstance(a, dict)][:40],
-             "ground": spec.get("ground"), "light": spec.get("light"), "seconds": spec.get("seconds")}
+             "ground": spec.get("ground"), "light": spec.get("light"), "seconds": spec.get("seconds"),
+             "room": spec.get("room") if isinstance(spec.get("room"), dict) else None}
     at_once = spec.get("film") is not False
     with lock:
         if at_once and pending.qsize() >= MAX_PENDING:

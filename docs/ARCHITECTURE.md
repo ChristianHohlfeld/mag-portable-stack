@@ -313,6 +313,22 @@ that place. The page shows the mask, cuts the photo with it
 foreground and does not guess one. "Alle einzeln" orders one normal job per
 object Chris leaves marked. Nothing of a selection is kept on the worker.
 
+"Ganze Szene" is the same with places: `objects.py --scene` also estimates
+how far away every pixel is (Depth Anything V2, the small model for rooms,
+in metres; pinned in `install.sh`; the focal length from the photo's EXIF,
+else a phone's main camera) and gives every object where it stands (x to
+the right of the camera, z away from it, its foot's height above the floor),
+how tall it is, and the room (left, right, back, height, the colours of
+floor and wall). The page orders each object with that (`scene` of the
+order, kept as numbers in `model3d.scene` with a group id). The mesh stage
+notes from where the photo looked at each model (`mesh.json`, the direction
+of the camera `photo.py` found). When no model of a group is under way any
+more (`Api::assemble`, also after a restart, once per group), the models
+that were made become one scene: `tall`, `lift`, `seen_from` and `at` of
+each actor and `room` of the scene are what `scene.py` builds it from. The
+photo is assumed to be taken about level; a camera that looks steeply down
+puts the floor too low.
+
 No stage has a time limit. The worker ends a stage only when it stands
 still (for ten minutes it neither writes to its log nor uses the processor)
 and starts it again; after three standstills the job fails in words and can

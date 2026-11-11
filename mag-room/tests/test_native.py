@@ -681,6 +681,48 @@ class RoomContract(unittest.TestCase):
         self.assertEqual(r.api("POST", "/api/3d/select", {"file": "nope", "x": 0.5, "y": 0.5}), (409, {"error": "Bild fehlt oder ist größer als 20 MB."}))
         self.assertEqual(len(r.idol.jobs), 0)   # looking orders nothing
 
+    def test_the_whole_room_of_a_photo_becomes_one_scene_of_its_objects(self):
+        r = self.room
+        place = [dict(x=-0.4, z=1.5, tall=0.8, lift=0.0), dict(x=0.6, z=2.5, tall=0.4, lift=0.9), dict(x=0.0, z=2.0, tall=1.0, lift=0.0)]
+        walls = dict(left=-1.5, right=1.8, back=3.2, height=2.5, floor=[0.5, 0.4, 0.3], wall=[0.8, 0.8, 0.8])
+
+        def order(index, group="0123456789abcdef"):
+            photo = r.api("POST", "/api/upload?name=objekt-%d.png" % index, raw=PNG)[1]
+            scene = dict(group=group, index=index, count=3, room=walls, **place[index])
+            return r.api("POST", "/api/message", {"text": "", "attachments": [photo["file"]], "mode": "3d", "quality": "fast", "scene": scene})[1]["model3d"]
+
+        scenes = lambda: [m for m in r.messages() if (m.get("model3d") or {}).get("kind") == "scene"]
+        # The page asked where every object stands (the worker's scene mode), then orders each by itself.
+        photo = r.api("POST", "/api/upload?name=bad.png", raw=PNG)[1]
+        self.assertEqual((r.api("POST", "/api/3d/select", {"file": photo["file"], "scene": True})[0], r.idol.selected[-1]), (200, "scene=1"))
+        r.idol.hold = True
+        first, second, third = order(0), order(1), order(2)
+        message = lambda i: [m for m in r.messages() if m["id"] == i][0]
+        self.assertEqual(message(second)["model3d"]["scene"]["lift"], 0.9)
+        # The first is finished: no scene yet, the others are still under way.
+        r.wait(lambda: message(first)["model3d"]["state"] == "running", "first running")
+        r.idol.hold = False
+        r.wait(lambda: message(first)["state"] == "done", "first done")
+        self.assertEqual((scenes(), r.scene.specs), ([], []))
+        r.wait(lambda: message(third)["state"] == "done" and scenes(), "the room is put together", 40)
+        # All are through: the room is one scene, each object where it stood, as tall as it was, turned as the photo saw it.
+        spec = r.scene.specs[-1]
+        self.assertEqual((len(r.scene.specs), spec["title"], spec["room"]["back"], spec["light"]), (1, "Raum aus dem Foto", 3.2, "studio"))
+        self.assertEqual([(a["name"], a["at"], a["tall"], a["lift"], a["seen_from"]) for a in spec["actors"]],
+                         [("Objekt 1", [1.5, 0.4], 0.8, 0, [0.6, 0.3, 0.74]), ("Objekt 2", [2.5, -0.6], 0.4, 0.9, [0.6, 0.3, 0.74]), ("Objekt 3", [2, 0], 1, 0, [0.6, 0.3, 0.74])])
+        scene = scenes()[0]["model3d"]
+        self.assertEqual((scene["group"], scene["state"], scene["spec"]["room"]["height"], [a["name"] for a in scene["spec"]["actors"]]),
+                         ("0123456789abcdef", "ready", 2.5, ["Objekt 1", "Objekt 2", "Objekt 3"]))
+        # Once: a restart of the room does not build it again, and what is no scene part builds none.
+        r.stop()
+        r.start()
+        time.sleep(1.0)
+        self.assertEqual((len(scenes()), len(r.scene.specs)), (1, 1))
+        photo = r.api("POST", "/api/upload?name=allein.png", raw=PNG)[1]
+        self.assertEqual(r.api("POST", "/api/message", {"text": "", "attachments": [photo["file"]], "mode": "3d", "quality": "fast", "scene": {"group": "x"}})[0], 201)
+        r.wait(lambda: all(m["state"] != "streaming" for m in r.messages()), "plain job done")
+        self.assertEqual(len(r.scene.specs), 1)
+
     def test_a_failed_3d_job_is_taken_up_again_where_it_stopped(self):
         r = self.room
 

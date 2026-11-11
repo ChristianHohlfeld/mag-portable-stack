@@ -7,6 +7,9 @@
 #include "http.hpp"
 #include "room.hpp"
 
+#include <cmath>
+#include <functional>
+#include <set>
 #include <thread>
 
 namespace mag {
@@ -17,7 +20,9 @@ public:
 
   // Starts a job for an image that is already a room file. Returns the id of
   // the 3D message, or "" with `error`.
-  std::string start(const Val &image, const std::string &quality, std::string &error) {
+  // `scene`: the photo's whole room is being made, one model per object;
+  // this is one of them, with where it stands (see scene_part()).
+  std::string start(const Val &image, const std::string &quality, std::string &error, const Val &scene = Val()) {
     if (quality != "fast" && quality != "normal" && quality != "high") { error = "Qualität muss fast, normal oder high sein."; return ""; }
     const std::string path = room_.file_path(jstr(image, "file"));
     std::string bytes;
@@ -46,6 +51,7 @@ public:
     m3["quality"] = quality;
     m3["source"] = jstr(image, "name");
     m3["image"] = jstr(image, "file"); // the photo it is made from (a room file)
+    if (scene.isObj()) m3["scene"] = scene;
     m["model3d"] = m3;
     const std::string id = jstr(room_.add(m), "id");
     watch(id, jstr(job, "id"));
@@ -83,7 +89,7 @@ public:
   // The objects of a photo (a room file): the one at a place (x across and
   // y down, 0..1), or with x < 0 every one by itself. `found` gets a mask per
   // object, as large as the photo. Returns "" or why not, in words.
-  std::string select(const std::string &file, double x, double y, Val &found) {
+  std::string select(const std::string &file, double x, double y, Val &found, bool scene = false) {
     const std::string path = room_.file_path(file);
     std::string bytes;
     if (path.empty() || !read_file(path, bytes, 20u << 20) || bytes.size() < 8) return "Bild fehlt oder ist größer als 20 MB.";
@@ -91,11 +97,55 @@ public:
     opt.body = bytes;
     opt.headers.push_back({"Content-Type", "application/octet-stream"});
     opt.timeout_s = 600;
-    const std::string at = x < 0 ? "" : "?x=" + std::to_string(std::min(1.0, x)) + "&y=" + std::to_string(std::min(1.0, std::max(0.0, y)));
+    const std::string at = x < 0 ? (scene ? "?scene=1" : "") : "?x=" + std::to_string(std::min(1.0, x)) + "&y=" + std::to_string(std::min(1.0, std::max(0.0, y)));
     const auto res = http::fetch(room_.cfg.idol_url + "/api/idol/select" + at, opt);
     found = jparse(res.body);
     if (res.status != 200 || !found.isObj()) return res.error.empty() ? jstr(found, "error", "Der 3D-Dienst hat abgelehnt.") : "3D-Dienst nicht erreichbar.";
     return "";
+  }
+
+  // What the page says about one object of a photo's room, taken as numbers
+  // only: the group it belongs to, where it stands (metres from the camera:
+  // x to the right, z away, lift above the floor), how tall it is, and the
+  // room itself. Null: this is no part of a scene.
+  static Val scene_part(const Val &in) {
+    const Val *s = in.find("scene");
+    const std::string group = s && s->isObj() ? jstr(*s, "group") : "";
+    if (group.size() < 8 || group.size() > 40 || group.find_first_not_of("0123456789abcdefABCDEF-") != std::string::npos) return Val();
+    auto within = [](double v, double lo, double hi) { return std::isfinite(v) ? std::min(hi, std::max(lo, v)) : lo; };
+    Val out = Val::object();
+    out["group"] = group;
+    out["count"] = within(jnum(*s, "count"), 1, 12);
+    out["index"] = within(jnum(*s, "index"), 0, 11);
+    for (const char *key : {"x", "z"}) out[key] = within(jnum(*s, key), -30, 30);
+    out["tall"] = within(jnum(*s, "tall"), 0.02, 10);
+    out["lift"] = within(jnum(*s, "lift"), 0, 5);
+    if (const Val *r = s->find("room"); r && r->isObj()) {
+      Val room = Val::object();
+      room["left"] = within(jnum(*r, "left"), -30, 0);
+      room["right"] = within(jnum(*r, "right"), 0, 30);
+      room["back"] = within(jnum(*r, "back"), 0.5, 40);
+      room["height"] = within(jnum(*r, "height"), 2, 6);
+      for (const char *key : {"floor", "wall"}) {
+        Val colour = Val::array();
+        const Val *c = r->find(key);
+        for (size_t i = 0; i < 3; ++i) colour.push(within(c && c->isArr() && c->asArr().size() == 3 ? c->asArr()[i].asNum() : 0.7, 0, 1));
+        room[key] = colour;
+      }
+      out["room"] = room;
+    }
+    return out;
+  }
+  // Called when a model of a photo's room is finished or has failed: (group).
+  std::function<void(const std::string &)> on_scene_part;
+  // The groups whose models are all through (done, failed, cancelled, deleted).
+  void settle_scenes() {
+    std::set<std::string> groups;
+    for (auto &m : room_.all())
+      if (const Val *m3 = job_of(m))
+        if (const Val *s = m3->find("scene")) groups.insert(jstr(*s, "group"));
+    for (auto &group : groups)
+      if (on_scene_part) on_scene_part(group);
   }
 
   // The message is gone: remove what the worker keeps for it.
@@ -103,6 +153,9 @@ public:
     const Val *m3 = job_of(removed);
     if (!m3) return;
     const std::string job = jstr(*m3, "job");
+    // One object of a photo's room is gone: the others may be all there are now.
+    if (const Val *part = m3->find("scene"); part && on_scene_part)
+      std::thread([this, group = jstr(*part, "group")] { on_scene_part(group); }).detach();
     std::thread([this, job] { http::fetch(room_.cfg.idol_url + "/api/idol/jobs/" + job, options("DELETE")); }).detach();
   }
   // The room was emptied: no job has a message any more.
@@ -252,16 +305,27 @@ private:
             m3["stage"] = "Fertig";
             m3["progress"] = 1;
             m3["glb"] = jstr(glb, "file");
+            if (const Val *seen = st.find("seen_from"); seen && seen->isArr() && seen->asArr().size() == 3) m3["seen_from"] = *seen;
             if (jnum(st, "started") > 0 && jnum(st, "finished") >= jnum(st, "started")) m3["took"] = jnum(st, "finished") - jnum(st, "started");
           });
+          part_done(message_id);
           return;
         }
         if (state == "error" || state == "cancelled") {
           finish(message_id, state, jstr(st, "error", state == "cancelled" ? "Abgebrochen" : "Fehler"));
+          part_done(message_id);
           return;
         }
       }
     }).detach();
+  }
+
+  // A job is through. If it was one object of a photo's room, the room may be complete now.
+  void part_done(const std::string &message_id) {
+    Val m;
+    if (!room_.get(message_id, m) || !on_scene_part) return;
+    if (const Val *m3 = job_of(m))
+      if (const Val *s = m3->find("scene")) on_scene_part(jstr(*s, "group"));
   }
 
   void finish(const std::string &message_id, const std::string &state, const std::string &error) {

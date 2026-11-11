@@ -135,6 +135,12 @@ Chris says which is meant ("Objekt wählen": he taps it or names it and sees
 the mask, or has all of them found and orders each by itself; a named thing
 is found by a bot that sees, on a branch off its prompt log); SAM 2 looks on the CPU
 (cores 28-55, never the MI50), and the cut photo is an ordinary order.
+"Ganze Szene" makes the photo's whole room: every object is ordered as a
+model of its own with where it stood (a depth estimate of the photo, on the
+CPU), and when the last of them is through the room puts them together as
+one scene, each as tall as it was, where it stood, turned as the photo saw
+it, with the floor and the walls around them. Each stays a figure of its
+own there, so the bots can move it like any figure of a scene.
 The bots share a notebook of skills (`skill`: list, read, save; `skills.json`
 in the room state): how they do recurring work, with the steps, how to check
 the result and what needs Chris's approval. A skill describes work and grants

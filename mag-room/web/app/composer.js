@@ -157,15 +157,17 @@
         named, el('button', { class: 'pill', type: 'submit' }, el('b', { text: 'Suchen' })));
       view.append(img, over);
       content.append(hint, view, byName, bar, list);
-      let busy = false, one = null, many = [];
+      let busy = false, one = null, many = [], room = null;   // room: the photo's whole room is wanted, as one scene
       const say = (text) => { hint.textContent = text; };
       const paint = () => {
         bar.replaceChildren();
         if (busy) return bar.append(el('span', { class: 'spin' }));
         if (one) bar.append(el('button', { class: 'pill on', onclick: take }, MAG.icon('cube'), el('b', { text: 'Dieses Objekt' })));
         const wanted = many.filter((o) => o.on).length;
-        if (wanted) bar.append(el('button', { class: 'pill on', onclick: takeAll }, MAG.icon('cube'), el('b', { text: wanted === 1 ? '1 Modell erstellen' : wanted + ' Modelle erstellen' })));
-        bar.append(el('button', { class: 'pill', onclick: all }, el('b', { text: 'Alle einzeln' })));
+        if (wanted) bar.append(el('button', { class: 'pill on', onclick: takeAll }, MAG.icon('cube'),
+          el('b', { text: room ? 'Szene aus ' + wanted + (wanted === 1 ? ' Objekt' : ' Objekten') + ' erstellen' : wanted === 1 ? '1 Modell erstellen' : wanted + ' Modelle erstellen' })));
+        bar.append(el('button', { class: 'pill', onclick: () => all(false) }, el('b', { text: 'Alle einzeln' })));
+        bar.append(el('button', { class: 'pill', onclick: () => all(true) }, el('b', { text: 'Ganze Szene' })));
       };
       const ask = async (body, wait) => {
         busy = true; paint(); say(wait);
@@ -195,13 +197,16 @@
         const l = Math.max(0, mask.box[0] - pad), t = Math.max(0, mask.box[1] - pad), r = Math.min(found.width, mask.box[2] + pad), b = Math.min(found.height, mask.box[3] + pad);
         return `left:${100 * l / found.width}%;top:${100 * t / found.height}%;width:${100 * (r - l) / found.width}%;height:${100 * (b - t) / found.height}%`;
       }
-      async function all() {
-        const found = await ask({}, 'Alle Objekte werden gesucht. Das dauert etwa eine halbe Minute …');
+      // Every object by itself; with `whole` also where each stands, for one scene of the photo's room.
+      async function all(whole) {
+        const found = await ask(whole ? { scene: true } : {}, 'Alle Objekte werden gesucht. Das dauert etwa eine halbe Minute …');
         if (!found) return;
         if (!found.masks.length) return say('Im Foto ist kein einzelnes Objekt zu erkennen.');
         const image = await picture(photo.url);
         many = [];
-        for (const mask of masks(found)) many.push({ canvas: await cutOut(image, mask), on: true });
+        room = whole && found.room ? found.room : null;
+        // A scene has room for eight figures: the eight largest.
+        for (const mask of masks(found).slice(0, room ? 8 : 99)) many.push({ canvas: await cutOut(image, mask), on: true, place: mask.place });
         one = null;
         over.replaceChildren();
         view.classList.remove('picked');
@@ -209,7 +214,8 @@
           const b = el('button', { class: 'object on', onclick: () => { o.on = !o.on; b.classList.toggle('on', o.on); paint(); } }, el('img', { src: o.canvas.toDataURL(), alt: '' }));
           return b;
         }));
-        say('Aus jedem markierten Objekt wird ein eigenes Modell. Tippe ab, was nicht gebraucht wird.');
+        say(room ? 'Aus jedem markierten Objekt wird ein Modell, und alle zusammen werden der Raum aus dem Foto: jedes dort, wo es stand, einzeln beweglich. Tippe ab, was nicht dazugehört.'
+          : 'Aus jedem markierten Objekt wird ein eigenes Modell. Tippe ab, was nicht gebraucht wird.');
         paint();
       }
       async function take() {
@@ -225,9 +231,13 @@
         busy = true; paint();
         try {
           let n = 0;
-          for (const o of many.filter((o) => o.on)) {
+          const wanted = many.filter((o) => o.on);
+          const group = [...crypto.getRandomValues(new Uint8Array(8))].map((b) => b.toString(16).padStart(2, '0')).join('');
+          for (const o of wanted) {
             const cut = await uploadCut(o.canvas, base + '-objekt-' + (++n) + '.png');
-            await MAG.api('POST', '/api/message', { text: '', attachments: [cut.att.file], mode: '3d', quality, client_id: crypto.randomUUID?.() || String(Math.random()) });
+            const order = { text: '', attachments: [cut.att.file], mode: '3d', quality, client_id: crypto.randomUUID?.() || String(Math.random()) };
+            if (room && o.place) order.scene = Object.assign({ group, index: n - 1, count: wanted.length, room }, o.place);
+            await MAG.api('POST', '/api/message', order);
           }
           staged = staged.filter((s) => s !== photo);
           mode3d = false;

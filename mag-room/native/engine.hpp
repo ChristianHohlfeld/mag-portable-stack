@@ -374,6 +374,7 @@ private:
     std::vector<std::string> said; // own replies since the last human message (normalised)
     bool warm_pending = false;
     bool see_pending = false;    // another bot waits for this one to describe new images
+    bool read_at_work = false;   // a message of Chris's was handed to the bot in the middle of its last turn
     std::vector<std::pair<std::string, std::string>> renewed; // (message, file): pictures that are described anew
     // --- owned by the worker thread ---
     Val wire;                    // {prefix, cursor, pending[], pushed[], messages[], model_since}
@@ -1159,8 +1160,11 @@ private:
 
   // Appends what the bot has not read as one user message. Returns false when
   // there is nothing new.
-  bool append_unseen(Bot &b, const Val &me, bool humans_only, const std::string &note) {
+  bool append_unseen(Bot &b, const Val &me, bool humans_only, const std::string &note, bool *from_chris = nullptr) {
     std::vector<Val> fresh = unseen(b, humans_only);
+    if (from_chris)
+      for (auto &m : fresh)
+        if (jstr(m, "role") == "user") *from_chris = true;
     const bool eyes = sees(b.id);
     if (!eyes) fresh = with_descriptions(b, fresh);
     // A description that came too late for an earlier turn is handed in now.
@@ -1583,6 +1587,7 @@ private:
     bool ok_tool = false;
     std::string tool_sig;
     int steps = 0;
+    size_t asked_at = 0;     // parts of the message that were there when Chris last wrote into this turn
     llm::ChatResult last;
     int64_t started = now_ms();
     long completion = 0;
@@ -1730,10 +1735,18 @@ private:
     set_phase(b, "reading");
     // Something to answer: new messages now, or ones this bot already read
     // while it described an image for the other bot.
-    const bool appended = append_unseen(b, me, false, reason == "continue" ? note : "");
+    bool from_chris = false;
+    const bool appended = append_unseen(b, me, false, reason == "continue" ? note : "", &from_chris);
     const bool read_before = jbool(b.wire, "fresh");
     b.wire["fresh"] = false;
     if (!appended && !read_before && reason != "continue") return;
+    // What Chris wrote while this bot was at work was handed to it in that
+    // turn, and it wrote on knowing it. The turn his message queued has
+    // nothing left to answer then; what else arrived meanwhile (a scene, a 3D
+    // result) is read, not answered a second time.
+    const bool answered = b.read_at_work && !from_chris && !read_before;
+    b.read_at_work = false;
+    if (reason == "human" && answered) return;
     if (reason == "bot") {
       // The gate belongs to the message that was just appended.
       Val &last = b.wire["messages"].arr->back();
@@ -1756,7 +1769,11 @@ private:
     const int64_t deadline = mono_ms() + (int64_t)room_.cfg.turn_budget_s * 1000;
     for (int step = 0; step <= room_.cfg.max_steps; ++step) {
       if (cancel->stopped()) { cancelled = true; break; }
-      if (step > 0 && append_unseen(b, me, true, "")) describe_images(b, me); // Chris wrote while the bot was working
+      if (step > 0 && append_unseen(b, me, true, "")) { // Chris wrote while the bot was working
+        b.read_at_work = true;
+        t.asked_at = t.id.empty() ? 0 : room_.parts(t.id);
+        describe_images(b, me);
+      }
       if (b.ctx_tokens > budget) compact(b, 0.55);
       Val body = Val::object();
       body["messages"] = request_messages(b, b.wire["messages"]);
@@ -1898,6 +1915,7 @@ private:
         } else {
           tools::Ctx ctx{room_, guests_, me, t.id, cancel.get(), jbool(settings, "web", true), {}, {}, {}};
           ctx.scenes = &scenes_;
+          ctx.asked_at = t.asked_at;
           ctx.output = [&](const std::string &chunk) { room_.step_output(t.id, index, chunk); };
           ctx.attach = [&](const Val &att) { room_.update(t.id, [&](Val &m) { m["attachments"].push(att); }); };
           ctx.page = [&](Val page) {

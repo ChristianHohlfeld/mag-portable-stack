@@ -196,6 +196,13 @@ public:
     const Val *parts = it->second.find("parts");
     return parts && parts->isArr() && !parts->asArr().empty() && jstr(parts->asArr().back(), "k") == "text" ? jstr(parts->asArr().back(), "text").size() : 0;
   }
+  // How many parts (texts and steps) a bot's answer has so far.
+  size_t parts(const std::string &id) {
+    std::lock_guard<std::mutex> lk(mu_);
+    const auto it = messages_.find(id);
+    const Val *list = it == messages_.end() ? nullptr : it->second.find("parts");
+    return list ? list->size() : 0;
+  }
   size_t reasoning_len(const std::string &id) {
     std::lock_guard<std::mutex> lk(mu_);
     const auto it = messages_.find(id);

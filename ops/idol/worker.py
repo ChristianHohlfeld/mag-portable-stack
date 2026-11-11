@@ -182,6 +182,31 @@ def proc_start(pid):
     fields = stat[stat.rindex(")") + 2:].split()
     return None if fields[0] == "Z" else int(fields[19])
 
+def adopt(item):
+    """The stage of a job that is running now, found from the stages' own pid
+    files (a stage writes its pid when it starts): status.json may not say so
+    when the worker was restarted right as it started the stage. The one
+    that started first wins (it holds the card; a later one waits for it)."""
+    folder = ROOT / item["id"]
+    found = []
+    for key in LOGS:
+        if (folder / f"{key}.exit").exists():
+            continue
+        try:
+            pid = int((folder / f"{key}.exit.pid").read_text().strip())
+        except (OSError, ValueError):
+            continue
+        began = proc_start(pid)
+        if began is not None:
+            found.append((began, key, pid))
+    if found:
+        began, key, pid = min(found)
+        if (item.get("stage_key"), item.get("pid"), item.get("pid_start")) != (key, pid, began):
+            print(f"stage {key} of {item['id'][:8]} found running (pid {pid})", flush=True)
+            offset = item.get("log_offset") if item.get("stage_key") == key else 0
+            item.update(stage_key=key, pid=pid, pid_start=began, log_offset=offset or 0)
+
+
 def stage_alive(item):
     pid = item.get("pid")
     return bool(pid) and proc_start(pid) is not None and proc_start(pid) == item.get("pid_start")
@@ -351,7 +376,9 @@ def launch(job_id, key, command):
                    'until flock -n 9; do w=1; echo "' + GPU_WAIT + ' Die Grafikkarte ist belegt"; sleep 20; done; '
                    '[ -z "$w" ] || echo "' + GPU_WAIT + '-END"; else echo "MAG-NOTE no GPU lock: $0 cannot be opened"; fi; exec "$@"',
                    GPU_LOCK] + command
-    wrapper = ["/bin/sh", "-c", '"$@"; rc=$?; echo "$rc" > "$0.part"; mv "$0.part" "$0"', str(exit_path)] + command
+    # The stage writes its own pid next to where its exit code will be: a
+    # worker that starts while this one is still saying so finds it anyway.
+    wrapper = ["/bin/sh", "-c", 'echo $$ > "$0.pid"; "$@"; rc=$?; echo "$rc" > "$0.part"; mv "$0.part" "$0"', str(exit_path)] + command
     with log_path.open("ab") as log:
         proc = subprocess.Popen(wrapper, env=stage_env(folder), stdin=subprocess.DEVNULL, stdout=log,
                                 stderr=subprocess.STDOUT, start_new_session=True)
@@ -869,6 +896,7 @@ def main():
             # taken up again like any unfinished one.
             interrupted = item["state"] == "error" and item.get("stage") in ("Unterbrochen", "Timeout")
             if item["state"] in ("running", "queued") or interrupted:
+                adopt(item)
                 if item["state"] == "running" or interrupted:
                     item["resumed"] = int(item.get("resumed", 0)) + 1
                 item.pop("error", None)
@@ -880,12 +908,16 @@ def main():
             jobs[item["id"]] = item
         except (ValueError, OSError, KeyError):
             continue
-    # The job whose stage is still running comes first (it has the GPU), then
-    # the line as it was (each job keeps its place in its status.json).
-    for item in sorted(resume, key=lambda job: (not stage_alive(job), place_of(job))):
-        if stage_alive(item):
-            item["order"] = min([place_of(job) for job in resume] + [time.time()]) - 1.0
-            save(item)
+    # Jobs whose stage is still running come first, the one that started its
+    # stage first at the head (it holds the card, a later one waits for it and
+    # would hide its progress), then the line as it was (each job keeps its
+    # place in its status.json).
+    alive = sorted((job for job in resume if stage_alive(job)), key=lambda job: job.get("pid_start") or 0)
+    head = min([place_of(job) for job in resume] + [time.time()])
+    for n, item in enumerate(alive):
+        item["order"] = head - len(alive) + n
+        save(item)
+    for item in sorted(resume, key=place_of):
         pending.put_nowait(item["id"])
     threading.Thread(target=execute, daemon=True).start()
     server = ThreadingHTTPServer(("127.0.0.1", PORT), API)

@@ -343,22 +343,19 @@ small flat Gaussians lying on what the photo showed:
    through), so the shell is where that is one half, wherever many or few
    Gaussians lie.
 2. `surface.body_of`: pores of a cell or two are closed, the grid is flooded
-   from outside, and what the flood does not reach is the body. A photo
-   shows one side: where the Gaussians of the other sides leave a gap the
-   flood gets in and would hollow the thing out. So a room the flood reached
-   is body all the same when it is walled in on all six sides, or on all
-   but the one the thing stands on (its underside is closed flat), and the
-   tear the flood came in by is closed out to where the shell would run. A
-   bowl stays open (upwards, and wide); a hollow in the surface that leads
-   into no room stays a hollow. Loose bits fall away; a piece that is big
-   enough is a figure of its own and stays (one photo may show a gnome and a
-   fox).
-3. `surface_field` in `mesh.py`: the surface is taken from that body by
-   marching cubes, and placed between the cells by the Gaussians themselves
-   (each is a small disc that knows its plane; a cell next to the body's
-   edge takes its distance from the sheet they form), so it has no steps as
-   high as a cell. Where the body was closed there are no Gaussians; there
-   its edge is taken, rounded. Then it is decimated twice: to the faces a
+   from outside, and what the flood does not reach is the body: closed, with
+   no shells or bubbles inside. That leaves the thing as it is: legs apart,
+   arms off its sides, a bowl open. One case it gets wrong: where the
+   Gaussians of a side the photo did not show leave a gap wider than a
+   pore, the flood runs into the thing and leaves only its skin. That is
+   known by what it leaves behind: large rooms walled in by the shell on
+   all six sides (or on all but the underside). Only then are those rooms
+   added, and the tear out to where the shell would run. A thing the flood
+   did not get into is not touched at all. Loose bits fall away; a piece
+   that is big enough is a figure of its own and stays (one photo may show
+   a gnome and a fox).
+3. The surface is taken anew from that body by marching cubes (uniform
+   triangles, no holes), smoothed, and decimated twice: to the faces a
    printed model may have (the STL), and to the far fewer a shown model
    needs (the GLB). Both stay solids: closed, every edge between exactly
    two faces (what decimation breaks is mended, or fewer faces are taken
@@ -368,9 +365,8 @@ small flat Gaussians lying on what the photo showed:
    for a limited time, and if it is not done by then the plain way (faces
    that look the same way and hang together are one chart, laid flat, the
    charts side by side; a second of work). The texture (2048² for "fast",
-   4096² otherwise) is baked from the splat at every texel: each Gaussian
-   colours as far as it is wide itself, so the colours are as fine as the
-   Gaussians, not as coarse as the grid of the mesh.
+   4096² otherwise) is baked from the splat at every texel, so the colours
+   are as fine as the atlas however few faces the model has.
 5. The side the photo shows takes its colours from the photo itself
    (`photo.py`). The photo's camera is found again from the splat alone:
    the view of the Gaussians that covers the photo's outline and has its
@@ -382,7 +378,8 @@ small flat Gaussians lying on what the photo showed:
    was shown (`outputs/input_crop.json`, written by `runner.py` around the
    SDK's unchanged preparation), so the colours come from the photo as fine
    as it was taken, not from the 1024² copy the model saw. If no view looks
-   like the photo, the photo is not used, and the log line says so.
+   like the photo closely (its outline covered to nine tenths, its colours
+   nearly the same), the photo is not used, and the log line says so.
 
 ## Reading aloud (`ops/tts`)
 

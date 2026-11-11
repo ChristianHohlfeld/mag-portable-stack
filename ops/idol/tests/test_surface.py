@@ -90,6 +90,15 @@ def main():
     dent[33:, 21:28, 21:28] = 0.0
     body = surface.body_of(dent, down=3)
     assert not body[36, 24, 24] and body[31, 24, 24], "a dent is no tear"
+    # What the flood did not get into is not touched: a thing on four legs keeps
+    # the room under its belly and between its legs, though nobody saw it from below.
+    beast = np.zeros((n, n, n), np.float32)
+    beast[14:50, 20:27, 18:36] = 1.0                              # a body (y grows downwards: its belly is at 27)
+    for x in (15, 44):
+        for z in (19, 31):
+            beast[x:x + 5, 27:44, z:z + 4] = 1.0                  # four legs
+    body, added = surface.body_of(beast, down=3, parts=True)
+    assert not added.any() and not body[32, 35, 27] and not body[17, 35, 27] and not body[32, 35, 21], "legs stay apart"
     try:
         surface.body_of(np.zeros((8, 8, 8), np.float32))
         raise AssertionError("nothing there")

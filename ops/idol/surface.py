@@ -14,6 +14,7 @@ REACH = 2.5     # a Gaussian is written out to this many of its widths
 WIDEST = 8      # ... and at most this many cells far
 PORE = 2        # holes in the shell up to about twice this many cells are closed
 LEAK = 0.1      # a gap in the shell up to about twice this part of the grid is a tear, not an opening
+ROOM = 0.05     # a room inside the thing is at least this large against its skin, or it is none
 OWN = 0.03      # a piece this large against the largest is a figure of its own, not a loose bit
 
 
@@ -75,54 +76,54 @@ def walled(solid):
 
 def body_of(opaque, down=None, parts=False):
     """The solid body the shell stands for (see the top of this file): True
-    where a cell belongs to it. `down` is the side the thing stands on, as in
-    walled() (3: towards higher y); None: it is not known. With `parts`
-    also returns which cells were added as rooms and ways into them.
+    where a cell belongs to it. With `parts` also returns which cells were
+    added as rooms and ways into them. `down` is the side the thing stands
+    on, as in walled() (3: towards higher y); None: it is not known.
 
-    A photo shows one side. On the others the Gaussians are thin, and where
-    they leave a gap the flood runs into the thing and hollows it out. So a
-    room the flood reached is still part of the body when it is walled in on
-    all six sides, or on all but the one the thing stands on (nobody saw it
-    from below: its underside is closed flat). The tear the flood came in by
-    is closed as well, out to where the shell would run. A bowl stays a
-    bowl (it is open upwards, and wide), and a hollow in the surface that
-    leads into no room stays a hollow."""
+    The flood leaves the thing as it is: its legs apart, its arms off its
+    sides, a bowl open. One case it gets wrong. A photo shows one side; on
+    the others the Gaussians are thin, and where they leave a gap wider than
+    a pore the flood runs into the thing and leaves only its skin. That is
+    known by what it leaves behind: large rooms walled in by the shell on
+    all six sides (or on all but the one the thing stands on: nobody saw it
+    from below), which no way around the thing leads to. Only then is something
+    added: those rooms, and the way into them (the tear), out to where the
+    shell would run. A thing the flood did not get into is not touched, and
+    neither is any hollow that leads into no room: the space between legs,
+    under a belly, an eye socket."""
     shell = opaque >= 0.5
     if not shell.any():
         raise ValueError("Der Splat ergibt keine Oberfläche")
     walls = np.ones((3, 3, 3), dtype=bool)
     body = ~flooded(shell, PORE) | shell
-    torn = ~flooded(shell, max(PORE + 1, int(round(LEAK * max(opaque.shape)))))        # also behind a tear
-    wide = ~flooded(shell, max(PORE + 1, int(round(2 * LEAK * max(opaque.shape)))))    # ... and a wide one
-    up = None if down is None else down ^ 1
     first = body.copy()
-    for _ in range(6):
-        sides = walled(body)
-        count = np.sum(sides, axis=0, dtype=np.uint8)
-        room = count == 6
-        if down is not None:
-            room |= (count == 5) & ~sides[down]
-        room &= ~body
-        if not room.any():
-            break
-        body |= room
-    # The way into such a room, out to where the shell would run: it is
-    # walled on three sides (on four where the tear is wide), and it leads
-    # into the room. (A hollow in the surface that leads nowhere, an eye
-    # socket, stays as it is.)
-    for _ in range(6):
-        rooms = body & ~first
-        if not rooms.any():
-            break
-        sides = walled(body)
-        count = np.sum(sides, axis=0, dtype=np.uint8)
-        way = ~body & ((torn & (count >= 3)) | (wide & (count >= 4)))
-        joined, _ = label(way | rooms)
-        leads = np.unique(joined[rooms])
-        way &= np.isin(joined, leads[leads > 0])
-        if not way.any():
-            break
-        body |= way
+    sides = walled(first)
+    count = np.sum(sides, axis=0, dtype=np.uint8)
+    rooms = count == 6
+    if down is not None:                 # nobody saw the thing from below: a room without a floor is a room too
+        rooms |= (count == 5) & ~sides[down]
+    rooms &= ~first
+    del sides, count
+    # A room is a room when it is large: a cell or two between folds of the skin is none.
+    pieces, count = label(rooms)
+    if count:
+        sizes = np.bincount(pieces.ravel())
+        sizes[0] = 0
+        rooms = np.isin(pieces, np.flatnonzero(sizes >= max(64, ROOM * first.sum())))
+    if rooms.any():
+        body |= rooms
+        torn = ~flooded(shell, max(PORE + 1, int(round(LEAK * max(opaque.shape)))))        # also behind a tear
+        wide = ~flooded(shell, max(PORE + 1, int(round(2 * LEAK * max(opaque.shape)))))    # ... and a wide one
+        for _ in range(6):
+            count = np.sum(walled(body), axis=0, dtype=np.uint8)
+            way = ~body & (torn | wide) & (count >= 4)
+            joined, _ = label(way | rooms)
+            leads = np.unique(joined[rooms])
+            way &= np.isin(joined, leads[leads > 0])
+            if not way.any():
+                break
+            body |= way
+            rooms |= way
     # Loose bits fall away; what is big enough is a figure of its own.
     pieces, count = label(body, structure=walls)
     if count > 1:

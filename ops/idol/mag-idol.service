@@ -27,7 +27,8 @@ Environment=MAG_IDOL_TIMEOUT_S=4200
 Environment=PYTHONUNBUFFERED=1
 CPUAccounting=yes
 AllowedCPUs=28-55
-MemoryMax=20G
+# A video's two experts and its text encoder pass through memory on their way to the card.
+MemoryMax=56G
 TasksMax=512
 Restart=on-failure
 RestartSec=5

@@ -43,7 +43,7 @@ CPUS = os.environ.get("MAG_IDOL_CPUS", "28-55")  # never the models' cores
 # this long it has neither written a line nor used the processor.
 STALL = max(1, int(os.environ.get("MAG_IDOL_STALL_S", "600")))
 MAX_UPLOAD = 20 * 1024 * 1024
-MAX_PENDING = 8
+MAX_PENDING = 32   # a whole room of objects, pictures and videos wait in one line
 QUALITIES = ("fast", "normal", "high")
 RESULTS = {"splat.ply": "application/octet-stream", "mesh.glb": "model/gltf-binary",
            "mesh.stl": "model/stl"}
@@ -51,6 +51,14 @@ RESULTS = {"splat.ply": "application/octet-stream", "mesh.glb": "model/gltf-bina
 # same queue: the card does one thing at a time.
 IMAGE_RESULTS = {"image.png": "image/png"}
 IMAGE_STEP = re.compile(r"MAG-IMAGE (\d+)/(\d+)")
+# A video from a picture (videogen.py, Wan 2.2 I2V-A14B on the MI50), the same
+# queue again. Its own environment reuses Idol's torch; without its weights
+# (~/idol-mi50/video/fetch.sh) the room is told so before anything is queued.
+VIDEO_RESULTS = {"video.mp4": "video/mp4"}
+VIDEO_STEP = re.compile(r"MAG-VIDEO (\d+)/(\d+)")
+VIDEO_STAGE = re.compile(r"MAG-VIDEO-STAGE (.+)")
+VIDEO_PYTHON = os.environ.get("MAG_VIDEO_PYTHON", "/home/chris/idol-mi50/video/venv/bin/python")
+VIDEO_WEIGHTS = Path(os.environ.get("MAG_VIDEO_WEIGHTS", "/home/chris/idol-mi50/weights/wan22-i2v"))
 VALID_ID = re.compile(r"^[a-f0-9]{32}$")
 STEP = re.compile(r"(?<!\d)(\d{1,2})\s*/\s*50(?!\d)")
 STEP_ALT = re.compile(r"\b(?:step|schritt)\s*(\d{1,2})\s*(?:of|/|von)\s*50\b", re.I)
@@ -62,7 +70,7 @@ REMAINING = re.compile(r"<(\d+(?::\d+){1,2})[,\]]")
 # 3-5 are the sections of mesh.py, which announces them ("MAG-STEP ...").
 PHASES = ("Modell laden", "3D-Form berechnen", "Mesh rekonstruieren", "Textur backen", "Dateien exportieren")
 MESH_MARKS = {"MAG-STEP texture": 4, "MAG-STEP export": 5}
-LOGS = {"sample": "idol.log", "shape": "shape.log", "mesh": "mesh.log", "image": "image.log"}
+LOGS = {"sample": "idol.log", "shape": "shape.log", "mesh": "mesh.log", "image": "image.log", "video": "video.log"}
 # The whole shape (shape.py, TripoSG on the MI50) in an environment of its own;
 # where it is not installed, the mesh is made from the splat alone.
 SHAPE_PYTHON = os.environ.get("MAG_TRIPOSG_PYTHON", "/home/chris/idol-mi50/triposg/venv/bin/python")
@@ -74,7 +82,7 @@ SHAPE_WEIGHTS = os.environ.get("MAG_TRIPOSG_WEIGHTS", "/home/chris/idol-mi50/wei
 # that finds the card taken waits and says so ("MAG-WAIT"), which counts as
 # getting on: waiting is no standstill.
 GPU_LOCK = os.environ.get("MAG_GPU_LOCK", str(ROOT.parent / "gpu.lock"))
-GPU_STAGES = ("sample", "shape", "image")
+GPU_STAGES = ("sample", "shape", "image", "video")
 GPU_WAIT = "MAG-WAIT"
 jobs = {}
 lock = threading.Lock()
@@ -209,6 +217,7 @@ def again(job_id, remesh=False):
             (ROOT / job_id / "shape.exit").unlink(missing_ok=True)
         item.pop("error", None)
         item.pop("started", None)                         # its time counts from now
+        item["queued_at"] = int(time.time())              # at the end of the line
         item.update(state="queued", stage="Wird fortgesetzt", pid=None, stage_key=None, step=0, progress=0.0,
                     eta=None, resumed=int(item.get("resumed", 0)) + 1)
         save(item)
@@ -404,6 +413,28 @@ def image_line(job_id, value):
         update(job_id, phase=2, stage="Bild malen", step=k, total_steps=n, progress=k / n)
 
 
+def video_line(job_id, value):
+    """One line of videogen.py: which part it is in, how far it got."""
+    found = VIDEO_STEP.search(value)
+    if found:
+        k, n = int(found.group(1)), max(1, int(found.group(2)))
+        update(job_id, phase=2, stage="Video rechnen", step=k, total_steps=n, progress=k / n)
+        return
+    found = VIDEO_STAGE.search(value)
+    if found:
+        update(job_id, stage=found.group(1).strip()[:60])
+
+
+def process_video(job_id):
+    folder = ROOT / job_id
+    if not (folder / "video.mp4").is_file():
+        command = [VIDEO_PYTHON, str(Path(__file__).with_name("videogen.py")), str(folder)]
+        run_stage(job_id, "video", command, video_line, dict(phase=1, phases=2, stage="Modell laden", step=0, total_steps=160, progress=0.0, eta=None))
+        if not (folder / "video.mp4").is_file():
+            raise RuntimeError("Das Video wurde nicht fertig")
+    update(job_id, state="done", stage="Fertig", phase=2, files=list(VIDEO_RESULTS), finished=int(time.time()), pid=None)
+
+
 def process_image(job_id):
     folder = ROOT / job_id
     if not (folder / "image.png").is_file():
@@ -423,6 +454,8 @@ def process(job_id):
         kind = jobs[job_id].get("kind", "model")
     if kind == "image":
         return process_image(job_id)
+    if kind == "video":
+        return process_video(job_id)
     if quality not in QUALITIES:
         raise ValueError("Ungültige gespeicherte Idol-Qualität")
     here = Path(__file__)
@@ -511,7 +544,7 @@ def execute():
                 continue
             # The MI50 belongs to Idol alone (both bots run CPU-only), so a
             # job never pauses or restarts a model.
-            image = bool(item) and item.get("kind") == "image"
+            image = bool(item) and item.get("kind") in ("image", "video")
             fields = dict(state="running", phases=2 if image else len(PHASES))
             if not begun and image:
                 fields.update(started=int(time.time()), phase=1, stage="Modell laden", step=0, total_steps=4, progress=0.0, eta=None)
@@ -647,6 +680,36 @@ class API(BaseHTTPRequestHandler):
                 save(item)
                 pending.put_nowait(identity)
             return self.reply(202, item)
+        if path == "/api/idol/videos":
+            # A video from a picture: the picture as the body, ?prompt= what should happen.
+            if not (VIDEO_WEIGHTS / ".complete").is_file() or not Path(VIDEO_PYTHON).is_file():
+                return self.reply(503, {"error": "Das Videomodell (Wan 2.2) ist noch nicht ganz heruntergeladen."})
+            asked = parse_qs(url.query)
+            prompt = asked.get("prompt", [""])[0].strip()[:1500]
+            try:
+                seed = int(asked.get("seed", ["0"])[0])
+                length = int(self.headers.get("Content-Length", "0"))
+            except ValueError:
+                return self.reply(400, {"error": "Ungültiger Videoauftrag"})
+            if not 8 <= length <= MAX_UPLOAD:
+                return self.reply(413, {"error": "Bild muss zwischen 8 Byte und 20 MB groß sein"})
+            data = self.rfile.read(length)
+            if not is_picture(data):
+                return self.reply(415, {"error": "Nur PNG, JPEG oder WebP erlaubt"})
+            with lock:
+                if pending.qsize() >= MAX_PENDING:
+                    return self.reply(429, {"error": "Idol-Warteschlange voll"})
+                identity = uuid4().hex
+                folder = ROOT / identity
+                folder.mkdir(mode=0o700, parents=True)
+                (folder / "input.png").write_bytes(data)
+                (folder / "prompt.json").write_text(json.dumps({"prompt": prompt, "seed": seed}))
+                item = {"id": identity, "kind": "video", "state": "queued", "stage": "Warteschlange", "quality": "normal",
+                        "created": int(time.time()), "step": 0, "total_steps": 160, "phase": 0, "phases": 2}
+                jobs[identity] = item
+                save(item)
+                pending.put_nowait(identity)
+            return self.reply(202, item)
         if path != "/api/idol/jobs":
             return self.reply(404, {"error": "Nicht gefunden"})
         supplied = parse_qs(url.query, keep_blank_values=True)
@@ -701,8 +764,14 @@ class API(BaseHTTPRequestHandler):
         if not item:
             return self.reply(404, {"error": "Job nicht gefunden"})
         if len(parts) == 4:
+            if item.get("state") == "queued":
+                # Its place in the one line: how many jobs go before it on the card.
+                with lock:
+                    mine = (item.get("queued_at") or item.get("created") or 0, parts[3])
+                    item["ahead"] = sum(1 for key, other in jobs.items() if other.get("state") == "running" or (
+                        other.get("state") == "queued" and (other.get("queued_at") or other.get("created") or 0, key) < mine))
             return self.reply(200, item)
-        results = IMAGE_RESULTS if item.get("kind") == "image" else RESULTS
+        results = {"image": IMAGE_RESULTS, "video": VIDEO_RESULTS}.get(item.get("kind"), RESULTS)
         if len(parts) != 5 or parts[4] not in results or item["state"] != "done":
             return self.reply(404, {"error": "Ergebnis nicht vorhanden"})
         file = ROOT / parts[3] / parts[4]

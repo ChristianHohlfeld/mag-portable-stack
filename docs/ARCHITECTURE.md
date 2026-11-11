@@ -424,7 +424,8 @@ The model is about 400 MB. `models.lock` pins its files by SHA256,
 `/opt/mag-tts/v-<hash>/` and writes `config.json`; the room hands them out
 under `/tts/` (immutable, except the config). The model has a folder of its
 own, so a change of the worker costs no browser a new download. The worker
-keeps everything in Cache Storage; shortly after the page has loaded it
+keeps everything in Cache Storage, a large file in pieces of 8 MB that are
+kept as they come (a download that breaks off goes on where it stopped); shortly after the page has loaded it
 fetches and loads the model in the background (not over a mobile
 connection or with data saving on), so the first "Vorlesen" speaks at once.
 Loading has no fixed time limit, only one for standing still. Without the

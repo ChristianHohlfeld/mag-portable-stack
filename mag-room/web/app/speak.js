@@ -196,6 +196,8 @@
         if (m.type === 'progress') {     // the model is coming in: that is not standing still
           const loading = piper.pending.get(m.id);
           if (loading?.again) { clearTimeout(loading.timer); loading.timer = setTimeout(loading.again, WARM_TIMEOUT_MS); }
+          if (loading?.again) shown('loading', m.progress / 100);
+          if (m.progress >= next) { report({ load_pct: m.progress }); next = 25 * (Math.floor(m.progress / 25) + 1); }
           return;
         }
         const p = piper.pending.get(m.id);
@@ -227,14 +229,31 @@
   // Resolves true once the model is usable, false if Piper failed for it. A
   // failure is retried after a short pause instead of disabling the voice
   // until reload (mobile networks drop).
+  // Whether the voice is there, shown without taking room: while the model
+  // loads, a thin line under every "Vorlesen" button fills up (its title
+  // says how far); once it is there, nothing is shown.
+  let next = 25;                         // the next quarter of the download that is reported
+  function shown(state, part) {
+    const root = document.documentElement;
+    root.dataset.voice = state;
+    if (part !== undefined) root.style.setProperty('--voice-p', String(Math.max(0, Math.min(1, part))));
+    const title = state === 'loading' ? 'Vorlesen (Stimme lädt' + (part ? ' ' + Math.round(100 * part) + ' %' : '') + ', solange liest die Gerätestimme)' : 'Vorlesen';
+    document.querySelectorAll('.act[data-speak][aria-pressed="false"]').forEach((b) => { b.title = title; });
+  }
   function warm(v) {
     if (piper.ready.has(v.model)) return Promise.resolve(true);
+    if (!piper.ready.size) shown('loading');
     if ((piper.failed.get(v.model) || 0) > Date.now()) return Promise.resolve(false);
     if (piper.loading.has(v.model)) return piper.loading.get(v.model);
     const began = performance.now();
     const p = ask({type: 'warm', model: v.model}, WARM_TIMEOUT_MS)
-      .then((m) => { piper.ready.add(v.model); setTimeout(paint, 0); if (m?.provider) report({ warm_ms: Math.round(performance.now() - began), provider: m.provider, threads: m.threads | 0, isolated: self.crossOriginIsolated ? 1 : 0 }); return true; })
-      .catch(() => { piper.failed.set(v.model, Date.now() + 20000); return false; })
+      .then((m) => { piper.ready.add(v.model); shown('ready'); setTimeout(paint, 0); if (m?.provider) report({ warm_ms: Math.round(performance.now() - began), provider: m.provider, threads: m.threads | 0, isolated: self.crossOriginIsolated ? 1 : 0 }); return true; })
+      .catch(() => {
+        // Not there yet (a broken connection, a full device): it is tried again in a while, by itself.
+        piper.failed.set(v.model, Date.now() + 20000);
+        setTimeout(() => { if (!piper.ready.size) warm(v); }, 21000);
+        return false;
+      })
       .finally(() => piper.loading.delete(v.model));
     piper.loading.set(v.model, p);
     return p;
@@ -446,7 +465,6 @@
     try { synth.speak(utterance); } catch (_) { finish(pb); }
   }
 
-  let told = false;      // that the model is still loading was said once
   function toggle(key, text, who) {
     if (!systemOk && !piperPossible) return false;
     const wasPlaying = !!current && current.key === key;
@@ -484,7 +502,6 @@
     // own waits for the model.
     if (systemOk) {
       loadConfig().then((cfg) => { if (cfg) { const v = profile(who).voice || pb.voice; if (v) warm(v); } }).catch(() => {});
-      if (!told) { told = true; MAG.toast('Die neue Stimme lädt noch im Hintergrund. Solange liest die Stimme des Geräts.'); }
       return fallback(pb);
     }
     pb.loading = true;

@@ -32,6 +32,8 @@ public:
   ~Engine() { shutdown(); }
   // Set by main: how a bot's picture from words is ordered (Idol::imagine).
   std::function<std::string(const std::string &, int, int, const std::string &, std::string &)> imagine;
+  // Set by main: how a bot's video from a picture is ordered (Idol::film).
+  std::function<std::string(const std::string &, const std::string &, const std::string &, std::string &)> film;
 
   void start() {
     int index = 0;
@@ -1095,6 +1097,17 @@ private:
       return "3D-Szene: " + clip(body, 2000, "…");
     }
     const Val *painted = m.find("model3d");
+    if (painted && painted->isObj() && jstr(*painted, "kind") == "video") {
+      // A video from a picture of the chat: what it shows and how it ended.
+      const std::string st = jstr(*painted, "state"), asked = "\"" + clip(jstr(*painted, "prompt"), 600, "…") + "\"";
+      body = "Video aus dem Bild " + jstr(*painted, "source") + " mit der Bewegung " + asked + " (Wan 2.2): ";
+      if (st == "done") {
+        body += "fertig. Chris spielt es im Chat ab. Dateien:";
+        if (atts && atts->isArr())
+          for (auto &a : atts->asArr()) body += " " + jstr(a, "name") + " (" + kb(a) + ")";
+      } else body += st == "error" ? "fehlgeschlagen: " + jstr(*painted, "error", "Fehler") : st == "cancelled" ? "abgebrochen." : "läuft.";
+      return "Video: " + clip(body, 2000, "…");
+    }
     if (painted && painted->isObj() && jstr(*painted, "kind") == "image") {
       // A picture painted from words: once it is there, an ordinary image of the chat.
       const std::string st = jstr(*painted, "state"), asked = "\"" + clip(jstr(*painted, "prompt"), 600, "…") + "\"";
@@ -2280,6 +2293,7 @@ private:
           tools::Ctx ctx{room_, guests_, me, t.id, cancel.get(), jbool(settings, "web", true), {}, {}, {}};
           ctx.scenes = &scenes_;
           ctx.imagine = imagine;
+          ctx.film = film;
           ctx.asked_at = t.asked_at;
           ctx.output = [&](const std::string &chunk) { room_.step_output(t.id, index, chunk); };
           ctx.attach = [&](const Val &att) { room_.update(t.id, [&](Val &m) { m["attachments"].push(att); }); };

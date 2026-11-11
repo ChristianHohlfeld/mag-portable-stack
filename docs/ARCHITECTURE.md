@@ -473,7 +473,10 @@ the weights come from `ops/video/fetch.sh` (pinned, resumable, SHA256, one
 writer) and until `.complete` is there the worker refuses a video in words
 (`POST /api/idol/videos`, `kind: video`, result `video.mp4`). The room's
 message (`model3d.kind = "video"`) shows the picture it comes from, the
-stage and the steps, and becomes an ordinary video of the chat.
+stage and the steps, and becomes an ordinary video of the chat. A bot orders
+one with `video_generate` (`image`: the picture's name as the chat shows it,
+else the newest picture; `prompt`: the motion), and reads the video message
+as "Video aus dem Bild …" with how it ended.
 
 The MI50's one line: 3D, pictures and videos are jobs of the one worker,
 which runs one at a time; a GPU stage also holds the lock file, and a lock

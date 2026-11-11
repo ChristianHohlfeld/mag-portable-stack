@@ -23,6 +23,16 @@ int main() {
   Plugins plugins(room);
   Engine engine(room, guests, scenes, plugins);
   engine.imagine = [&idol](const std::string &prompt, int w, int h, const std::string &by, std::string &error) { return idol.imagine(prompt, w, h, by, error); };
+  // A bot names a picture as the chat shows it; without a name the newest picture.
+  engine.film = [&idol, &room](const std::string &name, const std::string &prompt, const std::string &by, std::string &error) {
+    Val image;
+    for (auto &m : room.all())
+      if (const Val *atts = m.find("attachments"); atts && atts->isArr())
+        for (auto &a : atts->asArr())
+          if (jstr(a, "kind") == "image" && (name.empty() || jstr(a, "name") == name || jstr(a, "file") == name)) image = a;
+    if (!image.isObj()) { error = name.empty() ? "Im Chat ist kein Bild." : "Im Chat gibt es kein Bild " + name + "."; return std::string(); }
+    return idol.film(image, prompt, by, error);
+  };
   Api api(room, engine, guests, idol, scenes, plugins, gate, push);
   // A notification when an answer took a while (you probably looked away) or failed.
   const int64_t slow_s = envl("MAG_ROOM_PUSH_RUN_S", 20);

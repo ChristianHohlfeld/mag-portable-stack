@@ -1948,7 +1948,10 @@ def calm(values, fps):
     return np.convolve(padded, window / window.sum(), mode="valid")
 
 
-def film(actors, last, fps, side):
+SHOTS = ("follow", "orbit", "high", "low", "wide", "close")   # how the camera moves (spec "camera")
+
+
+def film(actors, last, fps, side, shot="follow"):
     """The camera of the film. It keeps everybody in the frame, as close as
     the figures allow from where it looks (so it comes closer when they do),
     and drifts a little."""
@@ -1961,7 +1964,12 @@ def film(actors, last, fps, side):
         tall[frame] = max(h for _, _, _, h in spots)
     cx, cy, tall = calm(cx, fps), calm(cy, fps), calm(tall, fps)
     across, upright = 18 / 50, 18 / 50 * 9 / 16     # half the angle of view (50 mm lens, 36 mm film, 16:9), as tangents
-    angles = [side + math.radians(-11 + 22 * frame / max(1, last)) for frame in range(last + 1)]
+    if shot == "orbit":                              # once round the scene while it plays
+        angles = [side + 2 * math.pi * ease(frame / max(1, last)) for frame in range(last + 1)]
+    else:
+        angles = [side + math.radians(-11 + 22 * frame / max(1, last)) for frame in range(last + 1)]
+    far = {"wide": 1.55, "close": 0.72}.get(shot, 1.0)
+    rise = 0.75 if shot == "high" else 0.12          # how far above the figures, for its distance ("low": from below)
     distance = np.empty(last + 1)
     for frame in range(last + 1):
         # Every figure as the camera sees it: how far to the side of the middle, how far nearer.
@@ -1971,7 +1979,7 @@ def film(actors, last, fps, side):
             dx, dy = x - cx[frame], y - cy[frame]
             aside, nearer = abs(-s * dx + c * dy) + r, c * dx + s * dy + r
             need = max(need, nearer + 1.12 * aside / across, nearer + 1.12 * 0.6 * h / upright)
-        distance[frame] = max(need, 1.5 * tall[frame])
+        distance[frame] = far * max(need, 1.5 * tall[frame])
     distance = calm(distance, fps)
     bpy.ops.object.camera_add()
     camera = bpy.context.active_object
@@ -1988,7 +1996,7 @@ def film(actors, last, fps, side):
         angle, d = angles[frame], distance[frame]
         aim.location = (cx[frame], cy[frame], 0.45 * tall[frame])
         # Low enough that the horizon and the sky behind it are in the picture.
-        camera.location = (cx[frame] + math.cos(angle) * d, cy[frame] + math.sin(angle) * d, 0.45 * tall[frame] + 0.12 * d)
+        camera.location = (cx[frame] + math.cos(angle) * d, cy[frame] + math.sin(angle) * d, 0.1 * tall[frame] if shot == "low" else 0.45 * tall[frame] + rise * d)
         aim.keyframe_insert(data_path="location", frame=frame)
         camera.keyframe_insert(data_path="location", frame=frame)
     linear(aim)
@@ -2153,7 +2161,10 @@ def build(spec_path, out):
     scene.render.fps = fps
     side = side_of(actors)
     ground = dress(spec, centre, radius * 1.25, side, [a.part for a in actors.values()] + [p["obj"] for a in actors.values() for p in a.pieces.values()])
-    film(actors, last, fps, side)
+    shot = str(spec.get("camera") or "follow").lower()
+    shot = shot if shot in SHOTS else "follow"
+    film(actors, last, fps, side, shot)
+    scene["mag_camera"] = shot                        # the chat's viewer moves the same way
     os.makedirs(out, exist_ok=True)
     bpy.ops.object.select_all(action="DESELECT")
     for actor in actors.values():
@@ -2165,7 +2176,7 @@ def build(spec_path, out):
     bpy.ops.export_scene.gltf(filepath=os.path.join(out, "scene.glb"), export_format="GLB", use_selection=True, export_yup=True,
                               export_animations=True, export_animation_mode="SCENE", export_anim_scene_split_object=False,
                               export_frame_range=True, export_force_sampling=True,
-                              export_image_format="JPEG", export_jpeg_quality=88, export_cameras=False, export_lights=False)
+                              export_image_format="JPEG", export_jpeg_quality=88, export_cameras=False, export_lights=False, export_extras=True)
     # The chat shows the figures unlit; in the film they keep a part of that.
     name = spec.get("light") if spec.get("light") in LIGHTS else "day"
     glow([a.part for a in actors.values()], LIGHTS[name]["glow"])

@@ -140,7 +140,8 @@ inline Val schemas(bool has_vm, bool phone = false) {
                R"j("degrees":{"type":"number","description":"turn: angle, positive turns left; open: how far (default 100); turn_part: how far it turns (default 360)"},)j"
                R"j("factor":{"type":"number","description":"grow, shrink: by how much"}},"required":["actor","do"]}},)j"
                R"j("ground":{"type":"string","enum":["snow","grass","sand","stone","studio"]},)j"
-               R"j("light":{"type":"string","enum":["day","evening","night","studio"]}},)j"
+               R"j("light":{"type":"string","enum":["day","evening","night","studio"]},)j"
+               R"j("camera":{"type":"string","enum":["follow","orbit","high","low","wide","close"],"description":"how the camera moves: follows the figures (default), goes once round, from above, from below, from afar, close up"}},)j"
                R"j("required":["actors","actions"]})j"));
   if (phone) {
     list.push(fn("s23_status", "Chris's phone (Samsung S23): whether it is connected and how large its display is.", R"({"type":"object","properties":{}})"));

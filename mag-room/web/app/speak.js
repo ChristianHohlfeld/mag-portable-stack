@@ -19,7 +19,10 @@
   const GOOD_VOICE = /natural|premium|siri|enhanced|neural|online/i;
   const ROBOT_VOICE = /espeak|mbrola|festival|flite|pico|ekho/i;
   const LIVE_IDLE_MS = 30000;
-  const SPEAK_TIMEOUT_MS = 45000, WARM_TIMEOUT_MS = 180000;
+  // A part may take a while on a phone without WebGPU. Loading the model is a
+  // download of about 400 MB the first time: it has no fixed limit, only one
+  // for standing still (the worker reports its progress).
+  const SPEAK_TIMEOUT_MS = 120000, WARM_TIMEOUT_MS = 180000;
   let current = null;
 
   function normalize(text) {
@@ -119,12 +122,9 @@
 
   // ---- who speaks with which voice, how fast --------------------------------
   const RATES = [0.75, 0.85, 1, 1.15, 1.3, 1.5, 1.75, 2];
-  const DEFAULT_VOICE = { user: 'thorsten', lena: 'kerstin', noah: 'karlsson' };
+  const DEFAULT_VOICE = { user: 'm1', lena: 'f1', noah: 'm2' };
   const FALLBACK_VOICES = [
-    { id: 'thorsten', label: 'Thorsten (männlich)', model: 'de_DE-thorsten-medium.onnx' },
-    { id: 'kerstin', label: 'Kerstin (weiblich)', model: 'de_DE-kerstin-low.onnx' },
-    { id: 'ramona', label: 'Ramona (weiblich)', model: 'de_DE-ramona-low.onnx' },
-    { id: 'karlsson', label: 'Karlsson (männlich)', model: 'de_DE-karlsson-low.onnx' }];
+    { id: 'f1', label: 'Frau 1', model: 'F1.json' }, { id: 'm1', label: 'Mann 1', model: 'M1.json' }, { id: 'm2', label: 'Mann 2', model: 'M2.json' }];
   // A speaker is a bot (by its id, which a rename does not change) or Chris.
   const speakerKey = (who) => (who === 'chris' || who === 'user' ? 'user' : 'bot:' + who);
   function prefs() { try { return JSON.parse(localStorage.getItem('mag-tts-speakers') || '{}') || {}; } catch { return {}; } }
@@ -136,8 +136,10 @@
   function voiceList() { return piper.config?.voices?.length ? piper.config.voices : FALLBACK_VOICES; }
   function profile(who) {
     const key = speakerKey(who), saved = prefs()[key] || {}, voices = voiceList();
-    const wanted = saved.voice || piper.config?.defaults?.[key === 'user' ? 'user' : who] || DEFAULT_VOICE[key === 'user' ? 'user' : who] || 'thorsten';
-    const voice = wanted === 'system' ? null : (voices.find((v) => v.id === wanted) || voices.find((v) => v.id === 'thorsten') || voices[0]);
+    // A voice that was chosen from an earlier set of voices is gone: the speaker's own default takes its place.
+    const usual = piper.config?.defaults?.[key === 'user' ? 'user' : who] || DEFAULT_VOICE[key === 'user' ? 'user' : who] || 'm1';
+    const wanted = saved.voice === 'system' || voices.some((v) => v.id === saved.voice) ? saved.voice : usual;
+    const voice = wanted === 'system' ? null : (voices.find((v) => v.id === wanted) || voices.find((v) => v.id === usual) || voices[0]);
     return { key, voiceId: voice ? voice.id : 'system', voice, rate: RATES.includes(+saved.rate) ? +saved.rate : 1 };
   }
   function rateFor(key) { const r = +(prefs()[key] || {}).rate; return RATES.includes(r) ? r : 1; }
@@ -171,10 +173,15 @@
   }
   function worker() {
     if (!piper.worker) {
-      piper.worker = new Worker('/tts/' + piper.config.dir + '/tts-worker.js');
+      // The model lies in a folder of its own, so it stays in the browser when the worker changes.
+      piper.worker = new Worker('/tts/' + piper.config.dir + '/tts-worker.js' + (piper.config.models ? '?m=' + encodeURIComponent(piper.config.models) : ''));
       piper.worker.onmessage = (ev) => {
         const m = ev.data || {};
-        if (m.type === 'progress') return;
+        if (m.type === 'progress') {     // the model is coming in: that is not standing still
+          const loading = piper.pending.get(m.id);
+          if (loading?.again) { clearTimeout(loading.timer); loading.timer = setTimeout(loading.again, WARM_TIMEOUT_MS); }
+          return;
+        }
         const p = piper.pending.get(m.id);
         if (!p) return;
         piper.pending.delete(m.id);
@@ -190,13 +197,14 @@
   function ask(msg, timeout) {
     const id = ++piper.seq;
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
+      const late = () => {
         if (!piper.pending.has(id)) return;
         // A slow background download is not a stuck worker.
         if (msg.type === 'prefetch') piper.pending.delete(id); else resetWorker();
         reject(new Error('Zeitüberschreitung der Stimme'));
-      }, timeout);
-      piper.pending.set(id, {resolve, reject, timer});
+      };
+      const timer = setTimeout(late, timeout);
+      piper.pending.set(id, {resolve, reject, timer, again: msg.type === 'warm' ? late : null});
       try { worker().postMessage({...msg, id}); } catch (e) { piper.pending.delete(id); clearTimeout(timer); reject(e); }
     });
   }
@@ -222,7 +230,7 @@
     piper.pending.clear();
   }
   async function synthPart(pb, text, rate) {
-    const msg = {type: 'speak', text, model: pb.voice.model, speaker: 0, rate};
+    const msg = {type: 'speak', text, model: pb.voice.model, rate, lang: (pb.lang || 'de').slice(0, 2)};
     try { return await ask(msg, SPEAK_TIMEOUT_MS); }
     catch (e) {
       if (current !== pb) throw e;
@@ -365,7 +373,7 @@
     if (!normalized) return false;
     const lang = textLocale(normalized);
     const prof = profile(who);
-    const de = lang.startsWith('de') && piperPossible && !!S.features?.tts && prof.voiceId !== 'system';
+    const de = piperPossible && !!S.features?.tts && prof.voiceId !== 'system';   // the model reads German and English alike
     const pb = { key, who, speaker: prof.key, lang, de, parts: [], at: 0, queued: 0, text, live: false, wake: null, spoken: false, voice: prof.voice };
     feed(pb, text, false);
     if (!pb.parts.length) return false;
@@ -440,9 +448,14 @@
       if (v) loadConfig().then((cfg) => cfg && warm(v));
     },
   };
-  // Shortly after the page is there, the voices of the bots are fetched into
-  // Cache Storage once, so the first tap does not wait for a download.
+  // Shortly after the page is there, the model and the voices of the bots are
+  // made ready in the background: fetched into Cache Storage once (about
+  // 400 MB, then never again) and loaded, so the first tap speaks at once.
+  // Not over a mobile connection or with data saving on: there the first
+  // tap loads it.
   function warmUp() {
+    const link = navigator.connection;
+    if (link && (link.saveData || link.type === 'cellular')) return;
     loadConfig().then((cfg) => {
       if (!cfg) return;
       const models = [...new Set(S.bots.map((b) => profile(b.id).voice?.model).filter(Boolean))];

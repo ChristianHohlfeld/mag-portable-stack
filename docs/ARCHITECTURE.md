@@ -384,16 +384,29 @@ small flat Gaussians lying on what the photo showed:
 ## Reading aloud (`ops/tts`)
 
 Runs in the browser, not on the server. `web/app/speak.js` drives a Web Worker
-(`ops/tts/tts-worker.js`): espeak-ng phonemes from piper-wasm and a Piper VITS
-voice in onnxruntime-web, one thread (the page is not cross-origin isolated).
-German text is cut into sentences; the first one plays while the next is
-synthesised. Each speaker has a voice and a tempo (Piper's length scale), kept
-on the device. `ops/tts/assets.lock` pins all fifteen files by SHA256;
-`bootstrap.sh` fetches them once, `install.sh` (deploy) puts them into
-`/opt/mag-tts/v-<hash of the lock>/` and writes `config.json`; the room hands
-them out under `/tts/` (immutable, except the config). The worker keeps a
-voice in Cache Storage, so it is downloaded once per device. Without the
-voices, or for text that is clearly English, the device's own voice reads.
+(`ops/tts/tts-worker.js`): Supertonic 3 (Supertone; a duration predictor, a
+text encoder, a flow-matching estimator and a vocoder as ONNX, 44.1 kHz) in
+onnxruntime-web, on the device's GPU (WebGPU) where that works and in WASM
+otherwise (one thread: the page is not cross-origin isolated). A provider
+is taken only after it has spoken one word that is sound. A voice is a
+style file (five female, five male); each speaker has a voice and a tempo,
+kept on the device. The text is cut into sentences; the first plays while
+the next is made. Before a sentence goes to the model it is written as it
+is spoken (`german()` in the worker: numbers, dates, times, units,
+abbreviations), and it is given decomposed (the model's table knows "a" and
+the two dots, not "ä"). German and English are read by the same voices.
+
+The model is about 400 MB. `models.lock` pins its files by SHA256,
+`assets.lock` the runtime and our worker; `bootstrap.sh` fetches them once,
+`install.sh` (deploy) puts them into `/opt/mag-tts/m-<hash>/` and
+`/opt/mag-tts/v-<hash>/` and writes `config.json`; the room hands them out
+under `/tts/` (immutable, except the config). The model has a folder of its
+own, so a change of the worker costs no browser a new download. The worker
+keeps everything in Cache Storage; shortly after the page has loaded it
+fetches and loads the model in the background (not over a mobile
+connection or with data saving on), so the first "Vorlesen" speaks at once.
+Loading has no fixed time limit, only one for standing still. Without the
+model the device's own voice reads. The Piper voices of before stay on disk.
 
 ## Scenes (`ops/scene`)
 

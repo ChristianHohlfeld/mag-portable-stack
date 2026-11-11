@@ -330,7 +330,7 @@
               select(now.voice, options.map((o) => [o.id, o.label]), (v) => MAG.voices.set(b.id, { voice: v })),
               select(String(now.rate), MAG.voices.rates.map((r) => [String(r), String(r).replace('.', ',') + '×']), (v) => MAG.voices.set(b.id, { rate: +v })))));
           }
-          voices.append(el('div', { class: 'set' }, el('div', { class: 'txt' }, el('small', { text: 'Die Stimmen laufen in diesem Browser. Jede wird einmal geladen (rund 60 MB) und bleibt dann auf dem Gerät.' }))));
+          voices.append(el('div', { class: 'set' }, el('div', { class: 'txt' }, el('small', { text: 'Die Stimmen laufen in diesem Browser. Das Sprachmodell wird einmal im Hintergrund geladen (rund 400 MB) und bleibt dann auf dem Gerät.' }))));
         });
       }
 

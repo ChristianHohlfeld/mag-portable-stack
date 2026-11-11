@@ -188,6 +188,12 @@ def main():
         assert "error" not in s and s["resumed"] == 2 and (root / f / "mesh.glb").read_bytes() == b"glTF", s
         assert (root / f / "idol.log").read_bytes().count(b" 1/50 ") == 1, "sampling must not run again"
         assert call("POST", "/api/idol/jobs/%s/retry" % f) == (200, {"queued": True}) and status(f)["state"] == "done"   # nothing to take up
+        # A finished model is made anew from its splat when that is asked for: the mesh stage alone.
+        splat = (root / f / "splat.ply").stat().st_mtime_ns
+        (root / f / "mesh.glb").write_bytes(b"old")
+        assert call("POST", "/api/idol/jobs/%s/retry?remesh=1" % f) == (200, {"queued": True})
+        s = wait(f, lambda s: s["state"] == "done" and s.get("finished"), "made anew")
+        assert (root / f / "mesh.glb").read_bytes() == b"glTF" and (root / f / "splat.ply").stat().st_mtime_ns == splat, "sampled once"
         assert call("POST", "/api/idol/jobs/%s/retry" % ("0" * 32))[0] == 404
         # A job that was cancelled while it sampled starts again, from the beginning.
         g = order()

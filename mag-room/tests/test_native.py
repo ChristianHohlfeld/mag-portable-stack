@@ -749,6 +749,14 @@ class RoomContract(unittest.TestCase):
         self.assertEqual((m3["state"], m3["resumed"], m3.get("error"), len(message(first)["attachments"])), ("done", True, None, 3))
         self.assertEqual((len(r.idol.jobs), r.idol.retried, [m["from"] for m in r.messages()]), (1, [m3["job"]], ["chris", "idol"]))
         self.assertEqual(r.api("POST", "/api/3d/%s/retry" % first), (409, {"error": "Das Modell ist schon fertig."}))
+        # A finished model is made anew from what was sampled when Chris asks for that: the same job, the same message.
+        before = [a["file"] for a in message(first)["attachments"]]
+        self.assertEqual(r.api("POST", "/api/3d/%s/retry" % first, {"remesh": True})[0], 200)
+        r.wait(lambda: message(first)["state"] == "streaming", "being made anew")
+        r.wait(lambda: message(first)["state"] == "done", "made anew")
+        after = [a["file"] for a in message(first)["attachments"]]
+        self.assertEqual((len(after), set(after) & set(before), len(r.idol.jobs), r.idol.retried[-1]), (3, set(), 1, m3["job"] + "?remesh=1"))
+        r.idol.retried.pop()
         # A job that was cancelled is taken up again the same way.
         r.idol.hold = True
         second = order()

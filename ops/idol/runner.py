@@ -80,7 +80,43 @@ def main():
     # installed patched package must accept --dinov3_dtype fp16 and the two
     # IDOL_* variables. --no_optimize disables compile and cuDNN path.
     sys.argv = [sys.argv[0]] + sys.argv[1:]
+    remember_crop()
     runpy.run_module("idol.sample", run_name="__main__")
+
+
+def remember_crop():
+    """Which square of the photo the model was shown is written next to its
+    results (<name>_crop.json): the mesh stage takes the colours of the side
+    the photo shows from the photo itself, as fine as it was taken. The
+    SDK's own preparation runs unchanged; only its cut is noted."""
+    if "--image" not in sys.argv or "--out" not in sys.argv:
+        return
+    import json
+    from PIL import Image
+    import idol.pipeline as pipeline
+    prepare = pipeline.preprocess_image
+    note = Path(sys.argv[sys.argv.index("--out") + 1]) / (Path(sys.argv[sys.argv.index("--image") + 1]).stem + "_crop.json")
+
+    def prepared(image, *args, **kwargs):
+        seen = {"photo": list(image.size)}
+        cut = Image.Image.crop
+
+        def watched(self, box=None):
+            if box is not None and "box" not in seen:
+                seen["box"], seen["resized"] = [float(v) for v in box], list(self.size)
+            return cut(self, box)
+        Image.Image.crop = watched
+        try:
+            return prepare(image, *args, **kwargs)
+        finally:
+            Image.Image.crop = cut
+            try:
+                if "box" in seen:
+                    note.parent.mkdir(parents=True, exist_ok=True)
+                    note.write_text(json.dumps(seen))
+            except OSError:
+                pass
+    pipeline.preprocess_image = prepared
 
 if __name__ == "__main__":
     main()

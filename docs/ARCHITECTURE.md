@@ -355,6 +355,18 @@ small flat Gaussians lying on what the photo showed:
    4096² otherwise) is baked from the splat at every texel: each Gaussian
    colours as far as it is wide itself, so the colours are as fine as the
    Gaussians, not as coarse as the grid of the mesh.
+5. The side the photo shows takes its colours from the photo itself
+   (`photo.py`). The photo's camera is found again from the splat alone:
+   the view of the Gaussians that covers the photo's outline and has its
+   colours (from everywhere around first, then closer from the best places;
+   about half a minute). Every texel that camera sees (turned towards it,
+   nothing in front of it, inside the outline but not at its rim) takes the
+   photo's colour, the more the straighter it is seen; the rest keeps the
+   splat's. The sampling stage notes which square of the photo the model
+   was shown (`outputs/input_crop.json`, written by `runner.py` around the
+   SDK's unchanged preparation), so the colours come from the photo as fine
+   as it was taken, not from the 1024² copy the model saw. If no view looks
+   like the photo, the photo is not used, and the log line says so.
 
 ## Reading aloud (`ops/tts`)
 

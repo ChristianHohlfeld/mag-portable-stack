@@ -453,7 +453,13 @@ the background, because their first runs are the slowest. A voice is a
 style file (five female, five male); each speaker has a voice and a tempo,
 kept on the device. The text is cut into sentences, and they are made ahead
 of what plays (up to three at a time), so the reading does not stop
-between them. The first part of a reading is a few words only, and on a
+between them. How long a part takes is learned on the device as a line, a fixed
+time per part plus a time per step and second of speech (on Chris's
+phone's GPU the fixed time is about a second, so a part of a few words
+plays for less time than it takes to make); the first parts are as long
+as that allows, so each is made while the ones before it play, and where
+the fixed time is large the later parts are longer (200 letters instead
+of 120). The first part of a reading is a few words only, and on a
 device that is not much faster than real time the first parts are made in
 three or four of the model's five steps: the sound starts within a second
 or two instead of after the first whole sentence; a device that cannot
@@ -466,7 +472,8 @@ answer in the chat is made whole before anybody asks, already while it
 comes in (while nothing is read and the page is in view, cut as the tap
 will cut it; the first two parts in the device's best quality, the rest in
 as many steps as the device makes in the time they play; about four
-minutes of sound are kept), so the tap that most often comes speaks at
+minutes of sound are kept; of the five answers before it the first
+words), so the tap that most often comes speaks at
 once and plays to the end without a pause even on a phone that makes
 speech slower than it plays. A new release reloads the page only after a
 reading has ended. And a tap never

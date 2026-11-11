@@ -491,7 +491,9 @@ or backwards at its message ("Nach vorn", "Nach hinten": `POST
 /api/3d/<id>/move`, the worker's `/api/idol/jobs/<id>/move?to=up|down`) and
 cancels it there. A stage survives a restart of the worker and is followed
 again; after a reboot a 3D job goes on at its first missing stage (shape,
-splat, mesh), a picture or a video starts its one stage again.
+splat, mesh), a picture starts its one stage again, and a video goes on
+after its last finished step (`state.pt` in its folder: the words as read,
+the picture's latent, the latents and the scheduler with its history).
 
 The bots take part in the same flow: `image_generate` paints, `photo_to_3d`
 and `video_generate` take a picture of the chat by its name (or the newest),

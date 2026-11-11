@@ -12,7 +12,8 @@ changing them).
 
 The two experts of A14B (high noise, then low noise) are GGUF Q6_K
 (QuantStack), each with the Lightning 4-step LoRA (lightx2v): four steps,
-no classifier-free guidance. The card has no bf16 and no fast attention:
+no classifier-free guidance; every finished step is kept (state.pt), so an
+interrupted stage goes on after its last step. The card has no bf16 and no fast attention:
 the experts compute in fp16, attention is exact but built for a block of
 queries at a time, and the text encoder (UMT5) reads the words in fp32
 first and leaves the card again. Prints "MAG-VIDEO k/n" as it gets on and
@@ -89,60 +90,103 @@ def main():
     from diffusers import AutoencoderKLWan, GGUFQuantizationConfig, WanImageToVideoPipeline, WanTransformer3DModel
     from transformers import UMT5EncoderModel
 
-    # 1. The words, read by UMT5 in fp32 (its states outgrow fp16), then it leaves the card.
-    say("Beschreibung lesen")
+    # Every step leaves its result in the job folder (state.pt: the words as
+    # read, the picture's latent, the latents so far and the scheduler with
+    # its history), so a stage that was interrupted (a reboot) goes on after
+    # the last finished step instead of from the start.
+    saved = job / "state.pt"
+    state = None
+    if saved.is_file():
+        try:
+            state = torch.load(saved, map_location="cuda", weights_only=False)
+            if (state.get("width"), state.get("height")) != (width, height):
+                state = None
+        except Exception as exc:                               # a half-written one: from the start
+            print("MAG-NOTE state not read (%s)" % type(exc).__name__, flush=True)
+            state = None
+
+    def keep(**fields):
+        part = job / "state.part.pt"
+        torch.save(fields, part)
+        part.rename(saved)
+
     pipe = WanImageToVideoPipeline.from_pretrained(str(WEIGHTS), transformer=None, transformer_2=None, text_encoder=None,
                                                    vae=None, torch_dtype=torch.float16)
-    encoder = UMT5EncoderModel.from_pretrained(str(WEIGHTS), subfolder="text_encoder", dtype=torch.bfloat16)
-    pipe.text_encoder = encoder.to("cuda", torch.float32).eval()
-    with torch.no_grad():
-        embeds, _ = pipe.encode_prompt(prompt, do_classifier_free_guidance=False, device=torch.device("cuda"), dtype=torch.float32)
-    pipe.text_encoder = None
-    del encoder
-    torch.cuda.empty_cache()
-    limit = torch.finfo(torch.float16).max
-    embeds = embeds.clamp(-limit, limit).half()
+    pipe.vae = AutoencoderKLWan.from_pretrained(str(WEIGHTS), subfolder="vae", torch_dtype=torch.float32).to("cuda")
 
-    # 2. The two experts, each with its Lightning LoRA, in fp16 on the card.
+    if state is None:
+        # 1. The words, read by UMT5 in fp32 (its states outgrow fp16), then it leaves the card.
+        say("Beschreibung lesen")
+        encoder = UMT5EncoderModel.from_pretrained(str(WEIGHTS), subfolder="text_encoder", dtype=torch.bfloat16)
+        pipe.text_encoder = encoder.to("cuda", torch.float32).eval()
+        with torch.no_grad():
+            embeds, _ = pipe.encode_prompt(prompt, do_classifier_free_guidance=False, device=torch.device("cuda"), dtype=torch.float32)
+        pipe.text_encoder = None
+        del encoder
+        torch.cuda.empty_cache()
+        limit = torch.finfo(torch.float16).max
+        embeds = embeds.clamp(-limit, limit).half()
+        # The picture as the experts see it, and the noise they start from.
+        generator = torch.Generator(device="cuda").manual_seed(int(asked.get("seed", 0)) or 1)
+        pipe.scheduler.set_timesteps(STEPS, device="cuda")
+        with torch.no_grad():
+            image = pipe.video_processor.preprocess(picture, height=height, width=width).to("cuda", dtype=torch.float32)
+            latents, condition = pipe.prepare_latents(image, 1, pipe.vae.config.z_dim, height, width, FRAMES,
+                                                      torch.float32, torch.device("cuda"), generator, None, None)[:2]
+        state = dict(width=width, height=height, embeds=embeds, condition=condition, latents=latents,
+                     scheduler=pipe.scheduler, done=0)
+        keep(**state)
+    else:
+        print("MAG-NOTE going on after step %d of %d" % (state["done"], STEPS), flush=True)
+    embeds, condition, latents, scheduler = state["embeds"], state["condition"], state["latents"], state["scheduler"]
+    timesteps = scheduler.timesteps
+    boundary = pipe.config.boundary_ratio * scheduler.config.num_train_timesteps
+
+    # 2. Only the experts that still have steps to make, each with its
+    # Lightning LoRA, in fp16 on the card.
     say("Videomodell laden")
     quant = GGUFQuantizationConfig(compute_dtype=torch.float16)
-    experts = []
-    for name, folder in (("high.gguf", "transformer"), ("low.gguf", "transformer_2")):
+    needed = {("high" if float(t) >= boundary else "low") for t in timesteps[state["done"]:]}
+    experts = {}
+    for key, name, folder, lora in (("high", "high.gguf", "transformer", "high_noise_model"), ("low", "low.gguf", "transformer_2", "low_noise_model")):
+        if key not in needed:
+            continue
         expert = WanTransformer3DModel.from_single_file(str(WEIGHTS / "gguf" / name), quantization_config=quant,
-                                                        config=str(WEIGHTS), subfolder=folder, torch_dtype=torch.float16)
-        experts.append(expert.to("cuda"))
-    pipe.transformer, pipe.transformer_2 = experts
-    pipe.vae = AutoencoderKLWan.from_pretrained(str(WEIGHTS), subfolder="vae", torch_dtype=torch.float32).to("cuda")
-    pipe.load_lora_weights(str(WEIGHTS / "lora" / "high_noise_model.safetensors"), adapter_name="lightning")
-    pipe.load_lora_weights(str(WEIGHTS / "lora" / "low_noise_model.safetensors"), adapter_name="lightning_2",
-                           load_into_transformer_2=True)
-    for expert in experts:                                     # the card has no bf16
-        for key, param in expert.named_parameters():
-            if "lora_" in key and param.dtype != torch.float16:
+                                                        config=str(WEIGHTS), subfolder=folder, torch_dtype=torch.float16).to("cuda")
+        pipe.transformer = expert                                # the LoRA is loaded into "the" transformer
+        pipe.load_lora_weights(str(WEIGHTS / "lora" / (lora + ".safetensors")), adapter_name="lightning_" + key)
+        for name_, param in expert.named_parameters():           # the card has no bf16
+            if "lora_" in name_ and param.dtype != torch.float16:
                 param.data = param.data.to(torch.float16)
+        experts[key] = expert
+    pipe.transformer = None
 
     # Progress from the blocks themselves: every expert call runs all of them.
-    blocks = sum(len(e.blocks) for e in experts[:1])
-    total, done = STEPS * blocks, [0]
+    blocks = len(next(iter(experts.values())).blocks) if experts else 40
+    total, ran_blocks = STEPS * blocks, [state["done"] * blocks]
 
     def ran(*_):
-        done[0] += 1
-        if done[0] % 4 == 0 or done[0] == total:
-            print("MAG-VIDEO %d/%d" % (min(done[0], total), total), flush=True)
+        ran_blocks[0] += 1
+        if ran_blocks[0] % 4 == 0 or ran_blocks[0] == total:
+            print("MAG-VIDEO %d/%d" % (min(ran_blocks[0], total), total), flush=True)
 
-    for expert in experts:
+    for expert in experts.values():
         for block in expert.blocks:
             block.register_forward_hook(ran)
 
-    # 3. Four steps, without guidance.
+    # 3. Four steps, without guidance; each one kept when it is done.
     say("Video rechnen")
-    print("MAG-VIDEO 0/%d" % total, flush=True)
-    generator = torch.Generator(device="cuda").manual_seed(int(asked.get("seed", 0)) or 1)
+    print("MAG-VIDEO %d/%d" % (ran_blocks[0], total), flush=True)
     with torch.no_grad():
-        latents = pipe(image=picture, prompt_embeds=embeds, height=height, width=width, num_frames=FRAMES,
-                       num_inference_steps=STEPS, guidance_scale=1.0, guidance_scale_2=1.0, generator=generator,
-                       output_type="latent").frames
-    pipe.transformer = pipe.transformer_2 = None
+        for i in range(state["done"], len(timesteps)):
+            t = timesteps[i]
+            expert = experts["high" if float(t) >= boundary else "low"]
+            model_input = torch.cat([latents, condition], dim=1).to(torch.float16)
+            with expert.cache_context("cond"):
+                noise = expert(hidden_states=model_input, timestep=t.expand(latents.shape[0]), encoder_hidden_states=embeds,
+                               encoder_hidden_states_image=None, return_dict=False)[0]
+            latents = scheduler.step(noise, t, latents, return_dict=False)[0]
+            keep(width=width, height=height, embeds=embeds, condition=condition, latents=latents, scheduler=scheduler, done=i + 1)
     del experts
     torch.cuda.empty_cache()
 

@@ -670,6 +670,17 @@ class RoomContract(unittest.TestCase):
         self.assertEqual((message(second)["model3d"]["state"], message(second)["model3d"].get("error")), ("done", None))
         self.assertEqual(len(r.idol.jobs), 2)   # nothing was ordered twice
 
+    def test_the_objects_of_a_photo_are_found_for_photo_to_3d(self):
+        r = self.room
+        photo = r.api("POST", "/api/upload?name=foto.png", raw=PNG)[1]
+        # The one Chris tapped, and every one by itself: the worker looks, the room hands it on.
+        code, found = r.api("POST", "/api/3d/select", {"file": photo["file"], "x": 0.25, "y": 0.5})
+        self.assertEqual((code, found["width"], len(found["masks"]), found["masks"][0]["png"]), (200, 4, 1, "bWFzaw=="))
+        self.assertEqual(r.api("POST", "/api/3d/select", {"file": photo["file"]})[0], 200)
+        self.assertEqual(r.idol.selected, ["x=0.250000&y=0.500000", ""])
+        self.assertEqual(r.api("POST", "/api/3d/select", {"file": "nope", "x": 0.5, "y": 0.5}), (409, {"error": "Bild fehlt oder ist größer als 20 MB."}))
+        self.assertEqual(len(r.idol.jobs), 0)   # looking orders nothing
+
     def test_a_failed_3d_job_is_taken_up_again_where_it_stopped(self):
         r = self.room
 

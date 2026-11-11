@@ -279,6 +279,16 @@ einmal" at its message (`POST /api/3d/<id>/retry`, the worker's
 `/api/idol/jobs/<id>/retry`) queues it again, and it goes on at the first
 stage whose result is missing, like after a reboot.
 
+A photo with several things in it: before the order, the page asks which
+object is meant ("Objekt wählen": `POST /api/3d/select`, the worker's
+`/api/idol/select`). `select.py` runs SAM 2 (`facebook/sam2.1-hiera-small`,
+pinned in `install.sh`) on the CPU, cores 28-55, never the MI50: the object
+at the place Chris tapped, or every object by itself (a grid of places, no
+background, nothing twice). The page shows the mask, cuts the photo with it
+(a PNG with alpha) and orders with that: Idol takes the alpha as the
+foreground and does not guess one. "Alle einzeln" orders one normal job per
+object Chris leaves marked. Nothing of a selection is kept on the worker.
+
 No stage has a time limit. The worker ends a stage only when it stands
 still (for ten minutes it neither writes to its log nor uses the processor)
 and starts it again; after three standstills the job fails in words and can

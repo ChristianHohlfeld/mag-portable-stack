@@ -80,6 +80,24 @@ public:
     return "";
   }
 
+  // The objects of a photo (a room file): the one at a place (x across and
+  // y down, 0..1), or with x < 0 every one by itself. `found` gets a mask per
+  // object, as large as the photo. Returns "" or why not, in words.
+  std::string select(const std::string &file, double x, double y, Val &found) {
+    const std::string path = room_.file_path(file);
+    std::string bytes;
+    if (path.empty() || !read_file(path, bytes, 20u << 20) || bytes.size() < 8) return "Bild fehlt oder ist größer als 20 MB.";
+    http::ClientOptions opt = options("POST");
+    opt.body = bytes;
+    opt.headers.push_back({"Content-Type", "application/octet-stream"});
+    opt.timeout_s = 600;
+    const std::string at = x < 0 ? "" : "?x=" + std::to_string(std::min(1.0, x)) + "&y=" + std::to_string(std::min(1.0, std::max(0.0, y)));
+    const auto res = http::fetch(room_.cfg.idol_url + "/api/idol/select" + at, opt);
+    found = jparse(res.body);
+    if (res.status != 200 || !found.isObj()) return res.error.empty() ? jstr(found, "error", "Der 3D-Dienst hat abgelehnt.") : "3D-Dienst nicht erreichbar.";
+    return "";
+  }
+
   // The message is gone: remove what the worker keeps for it.
   void forget(const Val &removed) {
     const Val *m3 = job_of(removed);

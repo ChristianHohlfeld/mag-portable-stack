@@ -123,6 +123,10 @@ answers about another picture it remembers. The same picture posted again is
 the same picture (one description); the owner can have a wrong one made anew.
 A picture whose file ends in its middle is not taken as it is: the page reads
 the file again first, and photo to 3D refuses it in words.
+Photo to 3D makes one model of one object. In a photo with several things
+Chris says which is meant ("Objekt wählen": he taps it and sees the mask, or
+has all of them found and orders each by itself); SAM 2 looks on the CPU
+(cores 28-55, never the MI50), and the cut photo is an ordinary order.
 The bots share a notebook of skills (`skill`: list, read, save; `skills.json`
 in the room state): how they do recurring work, with the steps, how to check
 the result and what needs Chris's approval. A skill describes work and grants

@@ -3,8 +3,11 @@
 'use strict';
 (function () {
   const MAG = (window.MAG = {});
-  const token = document.querySelector('meta[name="mag-token"]')?.content || '';
+  let token = document.querySelector('meta[name="mag-token"]')?.content || '';
   MAG.version = document.querySelector('meta[name="mag-version"]')?.content || '';
+  // What the page reloads for: its own files or the voice changed (not every release does).
+  const ui = document.querySelector('meta[name="mag-ui"]')?.content || '';
+  MAG.assets = document.querySelector('meta[name="mag-assets"]')?.content || MAG.version;   // the cache key of the page's files
 
   // ---- DOM helpers --------------------------------------------------------
   MAG.$ = (sel, root) => (root || document).querySelector(sel);
@@ -232,7 +235,9 @@
   async function sync() {
     try {
       const snap = await MAG.api('GET', '/api/state?limit=150');
-      if (snap.version && MAG.version && snap.version !== MAG.version) {
+      if (snap.token) token = snap.token;
+      if (snap.version) MAG.version = snap.version;
+      if (ui && snap.ui && snap.ui !== ui) {
         // A new release: the page loads it, but not in the middle of a reading aloud (that ends first).
         if (!MAG.speaking?.busy?.()) return location.reload();
         if (!sync.later) sync.later = setInterval(() => { if (!MAG.speaking?.busy?.()) { clearInterval(sync.later); location.reload(); } }, 1000);

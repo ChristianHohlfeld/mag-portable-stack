@@ -511,7 +511,7 @@
   function loadXterm() {
     if (window.Terminal && window.FitAddon?.FitAddon) return Promise.resolve();
     xterm ||= new Promise((resolve, reject) => {
-      const v = '?v=' + encodeURIComponent(MAG.version);
+      const v = '?v=' + encodeURIComponent(MAG.assets);
       const load = (src) => new Promise((ok, bad) => document.head.append(el('script', { src: src + v, onload: ok, onerror: () => bad(new Error(src + ' fehlt')) })));
       document.head.append(el('link', { rel: 'stylesheet', href: '/static/xterm.css' + v }));
       load('/static/xterm.js').then(() => load('/static/xterm-addon-fit.js')).then(resolve, (err) => { xterm = null; reject(err); });

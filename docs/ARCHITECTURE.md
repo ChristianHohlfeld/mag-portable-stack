@@ -496,8 +496,12 @@ as many steps as the device makes in the time they play; about four
 minutes of sound are kept; of the five answers before it the first
 words), so the tap that most often comes speaks at
 once and plays to the end without a pause even on a phone that makes
-speech slower than it plays. A new release reloads the page only after a
-reading has ended. And a tap never
+speech slower than it plays. An open page reloads only for a release
+that changes its own files or the voice (their content is the cache key
+of the assets, `mag-ui` and `ui` in `/api/state`; a release of a service
+behind it does not cost the phone the minute its voice needs to be made
+ready again), and only after a reading has ended; it takes the room's new
+token from `/api/state`. And a tap never
 waits for the model: while it is still loading, the device's own voice
 reads that message. The page tells the room's journal how a reading
 went, as numbers (`POST /api/tts/stat`: provider, threads, steps, time to

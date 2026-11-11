@@ -262,6 +262,27 @@ binding set to `auto` asks nothing. A server that works with the owner's own
 connector token (`auth: connector`) is sent `X-MCP-Readonly` and never
 changes anything unasked.
 
+### Resetting a bot
+
+`POST /api/vm/<bot>/reset` (`Engine::reset_vm`) puts a bot back to its first
+day. The steps, each of which can be done again: `stop` (the turn is
+cancelled, nothing waits for it), `memory` (the bot's memories, its prompt
+log, which starts again behind the last message, and its slot), `vm`
+(`magbot-agent-ctl reset agentN`). The state is the `reset` object of the
+bot's record (`state` running or failed, `step`, `vm`, `error`): a room that
+starts with a running reset goes through it again from the top, and the VM
+check at start-up leaves such a bot its VM name. While it runs the bot gets
+no turn; what was written to it meanwhile is answered afterwards. A pause
+and a stopped model are not touched.
+
+`magbot reset` holds the lifecycle lock, asks the host's admission first
+(so a refusal costs nothing), then tears down whatever is there (a domain in
+any state, a directory with or without a disk, a damaged record, the rest of
+a spawn that was cut off) without archiving, and spawns under the same name
+with the same size. `site.sh reset` deletes what the bot published and gives
+it its first page again. The Gitea account of the VM name stays (its
+credential is issued anew), as do its repositories.
+
 ## Photo to 3D (`ops/idol`)
 
 `worker.py` keeps one job at a time on the MI50. A job is a folder below

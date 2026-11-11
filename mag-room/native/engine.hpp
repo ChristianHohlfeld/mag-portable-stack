@@ -56,13 +56,20 @@ public:
       if (error.size() > 300 || llm::find_tag(error) != std::string::npos)
         room_.update(jstr(m, "id"), [&](Val &stored) { stored["error"] = llm::short_error(error); });
     }
+    // A reset the room was restarted in the middle of goes on to its end.
+    for (auto &b : configured.asArr())
+      if (const Val *reset = b.find("reset"); reset && jstr(*reset, "state") == "running")
+        if (Bot *rt = find(jstr(b, "id"))) rt->resetting = true;
     for (auto &b : bots_) b->worker = std::thread([this, bot = b.get()] { work(*bot); });
+    for (auto &b : bots_)
+      if (b->resetting) std::thread([this, bot = b->id] { run_reset(bot); }).detach();
     status_thread_ = std::thread([this] { watch_models(); });
     // A VM that was removed on the host must not stay assigned: the bot is
     // chat-only until it gets a new one. Unknown answers change nothing.
     std::thread([this, configured] {
       for (auto &b : configured.asArr()) {
         const std::string vm = jstr(b, "vm");
+        if (b.find("reset")) continue; // its VM is being made anew (see reset_vm)
         if (vm::valid_name(vm) && guests_.verify(vm) == 3) {
           logf("engine: VM " + vm + " of " + jstr(b, "id") + " no longer exists; bot continues without VM");
           room_.update_bot(jstr(b, "id"), [&](Val &c) { c["vm"] = ""; c["vm_lost"] = vm; });
@@ -255,11 +262,59 @@ public:
   // Called when a bot waits for the owner's approval: (bot name, what it wants to do).
   std::function<void(const std::string &, const std::string &)> on_approval;
 
+  // The owner resets one bot: completely back to its first day. Its turn is
+  // cut off at once, its prompt log, its slot in the model server and its
+  // memories are emptied, and its VM is thrown away and made anew from the
+  // golden image, with everything it ever wrote or published. What stays:
+  // its name, its address, its VM name, its model (loaded or not) and
+  // whether it is paused. The state is in the bot's record, so a restart of
+  // the room in the middle goes on with it; asking twice is asking once.
+  // Returns "" or why not, in words.
+  std::string reset_vm(const std::string &bot) {
+    {
+      std::lock_guard<std::mutex> lk(mu_);
+      Bot *b = find(bot);
+      if (!b) return "Bot nicht gefunden";
+      if (vm_notes_[bot] == "creating") return "Die VM wird gerade erstellt.";
+      if (b->resetting) return ""; // already under way
+      b->resetting = true;
+    }
+    // Which VM: its own; one it lost; else the first free name.
+    std::string vm = jstr(room_.bot(bot), "vm");
+    if (!vm::valid_name(vm)) vm = jstr(room_.bot(bot), "vm_lost");
+    if (!vm::valid_name(vm)) {
+      std::set<std::string> used;
+      for (auto &o : room_.bots().asArr()) {
+        used.insert(jstr(o, "vm"));
+        if (const Val *reset = o.find("reset")) used.insert(jstr(*reset, "vm"));
+      }
+      vm.clear();
+      for (int n = 1; n <= 16 && vm.empty(); ++n)
+        if (const std::string name = "agent" + std::to_string(n); !used.count(name) && guests_.verify(name) == 3) vm = name;
+      if (vm.empty()) {
+        std::lock_guard<std::mutex> lk(mu_);
+        find(bot)->resetting = false;
+        return "Kein VM-Name ist frei.";
+      }
+    }
+    room_.update_bot(bot, [&](Val &b) {
+      Val reset = Val::object();
+      reset["state"] = "running";
+      reset["step"] = "stop";
+      reset["vm"] = vm;
+      reset["since"] = (double)now_s();
+      b["reset"] = reset;
+    });
+    publish_bots(true);
+    std::thread([this, bot] { run_reset(bot); }).detach();
+    return "";
+  }
+
   // Gives a bot without a VM a fresh one (in the background, minutes).
   bool create_vm(const std::string &bot) {
     {
       std::lock_guard<std::mutex> lk(mu_);
-      if (!find(bot) || vm_notes_[bot] == "creating") return false;
+      if (!find(bot) || vm_notes_[bot] == "creating" || find(bot)->resetting) return false;
       vm_notes_[bot] = "creating";
     }
     publish_bots(true);
@@ -349,6 +404,7 @@ public:
       v["vm"] = jstr(conf, "vm");
       v["site"] = site::base_url(conf);
       if (const auto it = vm_notes_.find(b->id); it != vm_notes_.end() && !it->second.empty()) v["vm_note"] = it->second;
+      if (const Val *reset = conf.find("reset")) v["reset"] = *reset;
       v["memory"] = conf.find("memory") ? (double)conf.find("memory")->size() : 0.0;
       v["plugins"] = conf.find("plugins") && conf.find("plugins")->isObj() ? *conf.find("plugins") : Val::object();
       const Val *m = models.find(b->id);
@@ -414,6 +470,9 @@ private:
     int cut_off = 0;             // > 0: a restart of the room cut this bot's answer off before any of it could be seen (how often)
     std::vector<std::pair<std::string, std::string>> renewed; // (message, file): pictures that are described anew
     std::vector<std::shared_ptr<Look>> looks; // things Chris named in a photo: where are they?
+    bool resetting = false;      // the owner resets this bot (reset_vm): it gets no turn until that is done
+    bool wipe_pending = false;   // ... and its prompt log and slot are to be emptied
+    uint64_t wipes = 0;
     // --- owned by the worker thread ---
     Val wire;                    // {prefix, cursor, pending[], pushed[], messages[], model_since}
     std::string last_tool_sig;
@@ -1462,6 +1521,102 @@ private:
     }
   }
 
+  // One reset from its beginning to its end (reset_vm). Every step can be
+  // done again, so this is also how a reset goes on after a restart.
+  void run_reset(const std::string &bot) {
+    const std::string vm = [&] { const Val me = room_.bot(bot); const Val *r = me.find("reset"); return r ? jstr(*r, "vm") : std::string(); }();
+    auto step = [&](const std::string &name) {
+      room_.update_bot(bot, [&](Val &b) { if (b.find("reset")) b["reset"]["step"] = name; });
+      publish_bots(true);
+    };
+    auto end = [&](const std::string &error) {
+      room_.update_bot(bot, [&](Val &b) {
+        if (error.empty()) {
+          b.obj->erase(std::remove_if(b.obj->begin(), b.obj->end(), [](const auto &kv) { return kv.first == "reset"; }), b.obj->end());
+          b["vm"] = vm;
+          b["vm_lost"] = "";
+        } else {
+          b["reset"]["state"] = "failed";
+          b["reset"]["error"] = error;
+        }
+      });
+      {
+        std::lock_guard<std::mutex> lk(mu_);
+        if (Bot *b = find(bot)) b->resetting = false;
+        vm_notes_[bot].clear();
+      }
+      cv_.notify_all(); // what Chris wrote meanwhile is answered now
+      publish_bots(true);
+    };
+    if (!vm::valid_name(vm)) return end("Der Name der VM ist verloren gegangen.");
+    // 1. The turn ends now, whatever it is doing; nothing waits for it.
+    step("stop");
+    {
+      std::unique_lock<std::mutex> lk(mu_);
+      Bot *b = find(bot);
+      if (!b) return;
+      b->continues = 0;
+      if (b->cancel) b->cancel->stop();
+      cv_.notify_all();
+      cv_.wait_for(lk, std::chrono::seconds(20), [&] { return stop_ || b->running.empty(); });
+      if (stop_) return; // the room is going down: the next one goes on
+    }
+    // 2. What the bot remembers: its memories, its prompt log, its slot.
+    step("memory");
+    room_.update_bot(bot, [&](Val &b) { b["memory"] = Val::array(); });
+    {
+      std::unique_lock<std::mutex> lk(mu_);
+      Bot *b = find(bot);
+      const uint64_t before = b->wipes;
+      b->wipe_pending = true;
+      if (b->cancel) b->cancel->stop();
+      cv_.notify_all();
+      cv_.wait_for(lk, std::chrono::seconds(90), [&] { return stop_ || b->wipes > before; });
+      if (stop_) return;
+    }
+    // 3. The VM: thrown away and made anew from the golden image.
+    step("vm");
+    const RunResult r = guests_.reset(vm);
+    {
+      std::lock_guard<std::mutex> lk(mu_);
+      if (stop_) return; // cut off with the room: done again from the start
+    }
+    if (r.code != 0) {
+      logf("engine: reset of " + vm + " for " + bot + " failed: " + clip(trim(r.out), 600));
+      std::string why = trim(r.out);
+      if (const size_t line = why.find_last_of('\n'); line != std::string::npos) why = why.substr(line + 1);
+      return end("Die VM ließ sich nicht neu erstellen" + (why.empty() ? std::string(".") : ": " + clip(why, 240)));
+    }
+    end("");
+  }
+
+  // Empties what a bot remembers of the conversation: its prompt log starts
+  // again behind the last message, and its slot holds the prefix only.
+  void wipe(Bot &b) {
+    const Val me = room_.bot(b.id);
+    b.wire = Val();
+    ensure_wire(b, me, true);
+    b.last_tool_sig.clear();
+    {
+      std::lock_guard<std::mutex> lk(mu_);
+      b.ctx_tokens = 0;
+      b.forget.clear();
+      b.said.clear();
+    }
+    double since = 0;
+    if (model_state(b.id, &since) == "ready") {
+      b.wire["model_since"] = since;
+      save_wire(b);
+      set_phase(b, "resetting", "KV-Cache leeren");
+      std::string err;
+      if (llm::slot_erase(b.backend, &err)) {
+        set_kv(b, "empty");
+        warm_prefix(b, me, true);
+      }
+    }
+    set_phase(b, "idle");
+  }
+
   // Chris named a thing in a photo: the bot looks at the photo and says where
   // it is. Asked on a branch off the log, with the image itself in front of
   // the question; nothing of it is appended.
@@ -1641,18 +1796,22 @@ private:
     while (true) {
       std::string reason;
       uint64_t reset_epoch = 0;
-      bool warm = false, see = false;
+      bool warm = false, see = false, wiping = false;
       std::vector<std::shared_ptr<Look>> looks;
       {
         std::unique_lock<std::mutex> lk(mu_);
-        cv_.wait(lk, [&] { return stop_ || b.want || b.reset_pending || b.warm_pending || b.see_pending || !b.looks.empty() || !b.forget.empty(); });
+        cv_.wait(lk, [&] { return stop_ || (b.want && !b.resetting) || b.wipe_pending || b.reset_pending || b.warm_pending || b.see_pending || !b.looks.empty() || !b.forget.empty(); });
         if (stop_) return;
         if (b.reset_pending) {
           b.reset_pending = false;
           b.warm_pending = false;
           reset_epoch = clear_epoch_;
           b.cancel = std::make_shared<Cancel>();
-        } else if (b.want) {
+        } else if (b.wipe_pending) {
+          b.wipe_pending = false;
+          wiping = true;
+          b.cancel = std::make_shared<Cancel>();
+        } else if (b.want && !b.resetting) {
           b.want = false;
           reason = b.reason;
           // A bot round takes one of the allowed rounds when it starts, so
@@ -1681,6 +1840,14 @@ private:
       }
       if (reset_epoch) {
         reset_slot(b, reset_epoch);
+      } else if (wiping) {
+        try {
+          wipe(b);
+        } catch (const std::exception &e) {
+          logf("engine: " + b.id + " wipe failed: " + e.what());
+        }
+        std::lock_guard<std::mutex> lk(mu_);
+        ++b.wipes;
       } else if (!reason.empty()) {
         apply_forget(b);
         try {
@@ -1739,6 +1906,7 @@ private:
         b.message.clear();
         b.cancel.reset();
       }
+      cv_.notify_all(); // a reset waits for the turn to be over
       publish_bots(true);
     }
   }

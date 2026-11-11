@@ -122,6 +122,11 @@
         if (m.numa !== undefined) add('Rechner', 'NUMA ' + m.numa + ' · nur CPU');
         add('VM', b.vm_note === 'creating' ? 'wird erstellt …' : b.vm || 'keine (nur Chat)');
         if (b.vm_note && b.vm_note !== 'creating') add('VM-Fehler', b.vm_note.replace(/^error: /, ''));
+        // A reset of the bot, step by step, and in words if it did not work.
+        const reset = b.reset;
+        if (reset?.state === 'running')
+          add('Zurücksetzen', el('span', {}, el('span', { class: 'spin' }), ' ' + ({ stop: 'Antwort wird beendet …', memory: 'Gedächtnis wird geleert …', vm: 'VM ' + reset.vm + ' wird neu erstellt, das dauert einige Minuten …' }[reset.step] || 'läuft …')));
+        if (reset?.state === 'failed') add('Zurücksetzen', 'nicht gelungen: ' + (reset.error || 'unbekannter Fehler'));
         if (m.restart_pending) add('Neustart', 'neue Startparameter warten auf einen Neustart');
         status.replaceChildren(info);
         if (m.state === 'downloading' && f.total) status.append(el('div', { class: 'set' }, el('div', { class: 'txt' }, el('div', { class: 'progress' }, el('i', { style: 'width:' + (f.bytes / f.total) * 100 + '%' })))));
@@ -142,7 +147,13 @@
                 call('POST', '/api/bot/' + id + '/model', { action: 'stop' }).then(() => MAG.toast(b.name + ' wird abgeschaltet'));
             } }));
           }
-          if (!b.vm && b.vm_note !== 'creating')
+          // Back to its first day: a new VM from the golden image, nothing remembered.
+          if (reset?.state !== 'running' && b.vm_note !== 'creating')
+            acts.append(el('button', { class: 'btn danger', text: reset?.state === 'failed' ? 'Noch einmal zurücksetzen' : 'Zurücksetzen', onclick: async () => {
+              if (await MAG.confirm(b.name + ' zurücksetzen?', 'Die VM wird gelöscht und neu erstellt: alle Dateien, Programme, Browser-Daten und die veröffentlichte Website sind weg, ebenso das Gedächtnis und der Gesprächskontext von ' + b.name + '. Eine laufende Antwort bricht sofort ab. Name, Adresse und Modell bleiben. Das lässt sich nicht rückgängig machen.', 'Zurücksetzen', true))
+                call('POST', '/api/vm/' + id + '/reset').then(() => MAG.toast(b.name + ' wird zurückgesetzt'));
+            } }));
+          if (!b.vm && b.vm_note !== 'creating' && !reset)
             acts.append(el('button', { class: 'btn', text: 'VM erstellen', onclick: () => call('POST', '/api/bot/' + id + '/vm').then(() => MAG.toast('VM wird erstellt (einige Minuten)')) }));
         }
         actsTitle.hidden = acts.hidden = actsHint.hidden = !acts.children.length;

@@ -1170,6 +1170,65 @@ class RoomContract(unittest.TestCase):
         self.assertEqual([c["function"]["arguments"] for x in r.lena.chats()[-1]["messages"] for c in x.get("tool_calls") or []][-1],
                          '{"fact":"Chris mag längere Szenen"}')
 
+    def test_a_bot_is_reset_to_its_first_day_whatever_state_it_is_in(self):
+        ctl = pathlib.Path(tempfile.mkdtemp(prefix="magctl-"))
+        self.addCleanup(shutil.rmtree, ctl, True)
+        r = Room(MAG_ROOM_AGENT_CTL=str(HERE / "fake_agent_ctl"), FAKE_CTL=str(ctl))
+        self.addCleanup(r.close)
+        state, guests = pathlib.Path(r.env["MAG_ROOM_STATE"]), pathlib.Path(r.env["FAKE_GUEST_HOME"])
+        bot = lambda name: [b for b in r.state()["bots"] if b["id"] == name][0]
+        resets = lambda: (ctl / "resets").read_text().split() if (ctl / "resets").exists() else []
+        log = lambda name: json.loads((state / "wire" / (name + ".json")).read_text())["messages"]
+        go = threading.Event()
+        r.lena.reply = lambda body: (go.wait(20), "Zu spät.")[1] if "Erzähl" in json.dumps(body["messages"][-1], ensure_ascii=False) else "Frisch."
+        r.noah.reply = lambda body: "PASS"
+        (guests / "agent1").mkdir(parents=True, exist_ok=True)
+        (guests / "agent1" / "notiz.txt").write_text("von gestern")
+        # Lena is in the middle of an answer. Chris resets her: the turn ends at once, nothing waits for it.
+        r.say("@Lena Erzähl etwas Langes.")
+        r.wait(lambda: bot("lena")["busy"], "Lena answering")
+        (ctl / "hold").touch()
+        self.assertEqual(r.api("POST", "/api/vm/nobody/reset")[0], 404)
+        self.assertEqual(r.api("POST", "/api/vm/lena/reset")[0], 200)
+        self.assertEqual(r.api("POST", "/api/vm/lena/reset")[0], 200)      # asked twice: one reset
+        r.wait(lambda: bot("lena").get("reset", {}).get("step") == "vm" and resets() == ["agent1"], "the VM is being made anew")
+        go.set()
+        self.assertEqual((bot("lena")["busy"], bot("lena")["vm"], len(log("lena")), (guests / "agent1").exists()), (False, "agent1", 1, False))
+        self.assertIn("erase", [a for a, _ in r.lena.slot_actions])
+        self.assertEqual(r.api("POST", "/api/bot/lena/vm")[0], 409)        # no second VM beside it
+        # The host's clean-up of unreferenced VMs is told that this one is spoken for.
+        self.assertEqual([a.get("pending_vm") for a in json.loads((state / "agents.json").read_text())], ["agent1", None])
+        # What Chris writes meanwhile waits for her; she takes no turn while she has no VM.
+        asked, before = r.say("@Lena bist du da?"), len(r.lena.chats())
+        time.sleep(0.6)
+        self.assertEqual((len(r.lena.chats()), resets()), (before, ["agent1"]))
+        (ctl / "hold").unlink()
+        r.wait(lambda: "reset" not in bot("lena"), "reset done")
+        r.idle()
+        self.assertEqual([m["text"] for m in r.messages() if m["id"] > asked["id"]], ["Frisch."])
+        self.assertEqual((bot("lena")["vm"], bot("lena")["enabled"], list((guests / "agent1").iterdir())), ("agent1", True, []))
+        self.assertNotIn("Langes", json.dumps(log("lena"), ensure_ascii=False))   # she remembers nothing from before
+        self.assertNotIn("erase", [a for a, _ in r.noah.slot_actions])           # Noah was not touched
+        # The room is restarted in the middle of a reset (a deploy): it goes on, and a failure is said in words.
+        (ctl / "hold").touch()
+        self.assertEqual(r.api("POST", "/api/vm/lena/reset")[0], 200)
+        r.wait(lambda: bot("lena").get("reset", {}).get("step") == "vm" and len(resets()) == 2, "second reset under way")
+        r.stop()
+        r.start()
+        r.wait(lambda: len(resets()) == 3 and bot("lena").get("reset", {}).get("state") == "running", "taken up after the restart")
+        self.assertEqual(bot("lena")["vm"], "agent1")                      # a VM that is gone for the moment stays hers
+        (ctl / "fail").touch()
+        (ctl / "hold").unlink()
+        r.wait(lambda: bot("lena").get("reset", {}).get("state") == "failed", "failure shown")
+        self.assertEqual((bot("lena")["reset"]["error"], bot("lena")["vm"]), ("Die VM ließ sich nicht neu erstellen: magbot: Host load too high", "agent1"))
+        (ctl / "fail").unlink()
+        # Again, now with Lena paused and Noah (who never had a VM) at the same time.
+        self.assertEqual(r.api("PUT", "/api/bot/lena", {"enabled": False})[0], 200)
+        self.assertEqual((r.api("POST", "/api/vm/lena/reset")[0], r.api("POST", "/api/vm/noah/reset")[0]), (200, 200))
+        r.wait(lambda: "reset" not in bot("lena") and "reset" not in bot("noah"), "both reset")
+        self.assertEqual((bot("lena")["vm"], bot("lena")["enabled"], bot("noah")["vm"], bot("noah")["enabled"]), ("agent1", False, "agent2", True))
+        self.assertEqual((sorted(resets()[3:]), (guests / "agent1").is_dir(), (guests / "agent2").is_dir()), (["agent1", "agent2"], True, True))
+
     def test_an_answer_a_restart_cut_off_unseen_is_given_after_it(self):
         r = self.room
         state = pathlib.Path(r.env["MAG_ROOM_STATE"])

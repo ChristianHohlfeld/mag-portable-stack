@@ -323,7 +323,10 @@ object Chris leaves marked. Nothing of a selection is kept on the worker.
 A photo ordered for 3D is one job of the photo as it is, with Idol's own
 foreground; nothing is split or looked at unasked (Chris found the automatic
 splitting too much). Several things of one photo are what "Objekt wählen" is
-for: one tapped or named, every one by itself, or the whole room.
+for: one tapped or named, every one by itself, or the whole room. Both are
+offered beside the photo before it is sent ("Objekt wählen", "Ganze
+Szene"); "Ganze Szene" opens the same sheet and looks for the room's objects
+at once, so Chris only takes off what does not belong and orders.
 
 "Ganze Szene" is the same with places: `objects.py --scene` also estimates
 how far away every pixel is (Depth Anything V2, the small model for rooms,

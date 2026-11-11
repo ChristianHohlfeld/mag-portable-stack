@@ -327,20 +327,34 @@ small flat Gaussians lying on what the photo showed:
    through), so the shell is where that is one half, wherever many or few
    Gaussians lie.
 2. `surface.body_of`: pores of a cell or two are closed, the grid is flooded
-   from outside, and what the flood does not reach is the body: closed, with
-   no shells or bubbles inside. Loose bits fall away; a piece that is big
+   from outside, and what the flood does not reach is the body. A photo
+   shows one side: where the Gaussians of the other sides leave a gap the
+   flood gets in and would hollow the thing out. So a room the flood reached
+   is body all the same when it is walled in on all six sides, or on all
+   but the one the thing stands on (its underside is closed flat), and the
+   tear the flood came in by is closed out to where the shell would run. A
+   bowl stays open (upwards, and wide); a hollow in the surface that leads
+   into no room stays a hollow. Loose bits fall away; a piece that is big
    enough is a figure of its own and stays (one photo may show a gnome and a
    fox).
-3. The surface is taken anew from that body by marching cubes (uniform
-   triangles, no holes), smoothed, and decimated twice: to the faces a
+3. `surface_field` in `mesh.py`: the surface is taken from that body by
+   marching cubes, and placed between the cells by the Gaussians themselves
+   (each is a small disc that knows its plane; a cell next to the body's
+   edge takes its distance from the sheet they form), so it has no steps as
+   high as a cell. Where the body was closed there are no Gaussians; there
+   its edge is taken, rounded. Then it is decimated twice: to the faces a
    printed model may have (the STL), and to the far fewer a shown model
-   needs (the GLB).
+   needs (the GLB). Both stay solids: closed, every edge between exactly
+   two faces (what decimation breaks is mended, or fewer faces are taken
+   out), faces outwards, no bubble inside, no corner where two sheets only
+   touch. The log line of the stage says `solid`.
 4. The small mesh is unwrapped (`unwrap.py`): xatlas in a process of its own
    for a limited time, and if it is not done by then the plain way (faces
    that look the same way and hang together are one chart, laid flat, the
-   charts side by side; a second of work). The texture is baked from the
-   splat at every texel, so the colours are as fine as the atlas however few
-   faces the model has.
+   charts side by side; a second of work). The texture (2048² for "fast",
+   4096² otherwise) is baked from the splat at every texel: each Gaussian
+   colours as far as it is wide itself, so the colours are as fine as the
+   Gaussians, not as coarse as the grid of the mesh.
 
 ## Reading aloud (`ops/tts`)
 

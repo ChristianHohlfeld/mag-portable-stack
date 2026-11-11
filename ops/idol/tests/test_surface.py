@@ -66,6 +66,30 @@ def main():
     bowl = ((far > 12.0) & (far < 14.5) & (at[..., 2] < 30.0)).astype(np.float32)
     body = surface.body_of(bowl)
     assert not body[24, 24, 24] and body[24, 24, 11]
+    # ---- a solid, whatever the photo did not show -------------------------------
+    # The thing stands on its higher y (down=3). Nobody saw it from below: a
+    # dome without a floor is closed flat, and filled.
+    ball = (far > 12.0) & (far < 14.5)
+    dome = (ball & (at[..., 1] < 30.0)).astype(np.float32)
+    body, added = surface.body_of(dome, down=3, parts=True)
+    assert body[24, 24, 24] and body[24, 28, 24] and added[24, 24, 24] and not body[24, 34, 24], "the dome is solid down to its rim"
+    # The same shape the other way up is a bowl, and stays one.
+    cup = (ball & (at[..., 1] > 18.0)).astype(np.float32)
+    body = surface.body_of(cup, down=3)
+    assert not body[24, 24, 24] and body[24, 37, 24], "a bowl stays open upwards"
+    # A tear in the side, far too wide for a pore: the flood runs in and hollows
+    # the ball out. It is filled all the same, and the tear is closed out to where the shell would run.
+    torn = ball.astype(np.float32)
+    torn[30:, 19:30, 19:30] = 0.0
+    assert not (~surface.flooded(torn >= 0.5, surface.PORE))[24, 24, 24], "the flood got in"
+    body = surface.body_of(torn, down=3)
+    assert body[24, 24, 24] and body[32, 24, 24] and body[35, 24, 24] and not body[40, 24, 24], "hollow and tear are filled, no further"
+    assert abs(body.sum() / (4 / 3 * math.pi * 14.5 ** 3) - 1.0) < 0.08, body.sum()
+    # A hollow in the surface that leads nowhere stays: a solid ball with a dent keeps its dent.
+    dent = (far < 14.5).astype(np.float32)
+    dent[33:, 21:28, 21:28] = 0.0
+    body = surface.body_of(dent, down=3)
+    assert not body[36, 24, 24] and body[31, 24, 24], "a dent is no tear"
     try:
         surface.body_of(np.zeros((8, 8, 8), np.float32))
         raise AssertionError("nothing there")

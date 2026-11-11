@@ -412,12 +412,8 @@ private:
         if (jstr(a, "kind") == "image") { image = &a; break; }
       std::string error;
       if (!image) error = "Für Foto zu 3D wird ein Bild gebraucht.";
-      else {
-        // An object Chris chose (or a part of a scene he ordered) is ordered as it is; a whole photo is looked at first.
-        const Val part = Idol::scene_part(in);
-        const bool chosen = part.isObj() || jbool(in, "chosen", false);
-        out["model3d"] = chosen ? idol_.start(*image, jstr(in, "quality", "normal"), error, part) : idol_.look(*image, jstr(in, "quality", "normal"), error);
-      }
+      // The photo is ordered as it is (Chris: no splitting unasked); what he chose in "Objekt wählen" is a photo of its own.
+      else out["model3d"] = idol_.start(*image, jstr(in, "quality", "normal"), error, Idol::scene_part(in));
       if (!error.empty()) {
         Val note = Val::object();
         note["from"] = "idol";

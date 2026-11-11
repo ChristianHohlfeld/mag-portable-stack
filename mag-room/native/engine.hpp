@@ -375,6 +375,7 @@ private:
     bool warm_pending = false;
     bool see_pending = false;    // another bot waits for this one to describe new images
     bool read_at_work = false;   // a message of Chris's was handed to the bot in the middle of its last turn
+    int cut_off = 0;             // > 0: a restart of the room cut this bot's answer off before any of it could be seen (how often)
     std::vector<std::pair<std::string, std::string>> renewed; // (message, file): pictures that are described anew
     // --- owned by the worker thread ---
     Val wire;                    // {prefix, cursor, pending[], pushed[], messages[], model_since}
@@ -493,6 +494,10 @@ private:
           if (ready && since != b->model_since) {
             b->model_since = since;
             b->warm_pending = true;
+          }
+          if (ready && b->cut_off > 0 && !b->want && b->running.empty()) {
+            b->want = true;
+            b->reason = "human";
           }
           if (!ready) b->kv = "unknown";
         }
@@ -1484,10 +1489,64 @@ private:
     logf("engine: " + b.id + " prompt log: " + std::to_string(mended) + " tool call(s) with unreadable arguments repaired");
   }
 
+  // While a turn runs, the bot's log says that it is at work. The mark goes
+  // when the turn ends, however it ends, except when the room itself is
+  // going down: then it stays for the room that starts next.
+  struct AtWork {
+    Engine &engine;
+    Bot &bot;
+    AtWork(Engine &e, Bot &b, const std::string &reason, int tries) : engine(e), bot(b) {
+      Val mark = Val::object();
+      mark["reason"] = reason;
+      mark["tries"] = (double)tries;
+      b.wire["at_work"] = mark;
+      e.save_wire(b);
+    }
+    ~AtWork() {
+      {
+        std::lock_guard<std::mutex> lk(engine.mu_);
+        if (engine.stop_) return;
+      }
+      if (bot.wire.isObj() && bot.wire.obj)
+        bot.wire.obj->erase(std::remove_if(bot.wire.obj->begin(), bot.wire.obj->end(), [](const auto &kv) { return kv.first == "at_work"; }), bot.wire.obj->end());
+      engine.save_wire(bot);
+    }
+  };
+  // The room started and finds a bot's log marked "at work": a restart cut
+  // its turn off. If Chris had asked and nothing of the answer could be seen
+  // yet (the bot was reading or thinking), he would be left without one and
+  // without a word why: the bot answers now. An answer that was cut off in
+  // view stays as it is ("Gestoppt"), and a round among the bots just rests.
+  void take_up(Bot &b) {
+    const Val *found = b.wire.find("at_work");
+    if (!found || !found->isObj()) return;
+    const Val mark = *found;
+    b.wire.obj->erase(std::remove_if(b.wire.obj->begin(), b.wire.obj->end(), [](const auto &kv) { return kv.first == "at_work"; }), b.wire.obj->end());
+    const int tries = (int)jnum(mark, "tries");
+    const bool again = jstr(mark, "reason") == "human" && !jbool(mark, "seen") && tries < 3;
+    if (again) b.wire["fresh"] = true; // read, not answered
+    save_wire(b);
+    if (!again) return;
+    logf("engine: " + b.id + " was cut off by a restart before its answer could be seen; it answers now");
+    // Whom Chris had asked is with his message.
+    std::vector<std::string> only;
+    const auto all = room_.all();
+    for (auto it = all.rbegin(); it != all.rend(); ++it) {
+      if (jstr(*it, "role") != "user") continue;
+      if (const Val *to = it->find("mentions"); to && to->isArr())
+        for (auto &id : to->asArr()) only.push_back(id.asStr());
+      break;
+    }
+    std::lock_guard<std::mutex> lk(mu_);
+    if (!only.empty()) audience_.insert(only.begin(), only.end());
+    b.cut_off = tries + 1; // the turn starts once the model is known to be ready (watch_models)
+  }
+
   // ---- worker -------------------------------------------------------------
   void work(Bot &b) {
     b.wire = read_json(wire_path(b));
     heal_wire(b);
+    take_up(b);
     while (true) {
       std::string reason;
       uint64_t reset_epoch = 0;
@@ -1651,6 +1710,10 @@ private:
     m["reason"] = reason;
     if (const std::string thoughts = llm::tidy_thoughts(t.reasoning); !thoughts.empty()) m["reasoning"] = thoughts;
     t.id = jstr(room_.add(m), "id");
+    if (Val *mark = b.wire.find("at_work"); mark && mark->isObj()) {
+      (*mark)["seen"] = true; // something of this turn can be seen now: cut off, it stays as it is ("Gestoppt")
+      save_wire(b);
+    }
     std::lock_guard<std::mutex> lk(mu_);
     b.message = t.id;
   }
@@ -1747,6 +1810,8 @@ private:
     const bool appended = append_unseen(b, me, false, reason == "continue" ? note : "", &from_chris);
     const bool read_before = jbool(b.wire, "fresh");
     b.wire["fresh"] = false;
+    const int tries = b.cut_off;
+    b.cut_off = 0;
     if (!appended && !read_before && reason != "continue") return;
     // What Chris wrote while this bot was at work was handed to it in that
     // turn, and it wrote on knowing it. The turn his message queued has
@@ -1755,6 +1820,10 @@ private:
     const bool answered = b.read_at_work && !from_chris && !read_before;
     b.read_at_work = false;
     if (reason == "human" && answered) return;
+    // From here the bot is at work, and the log says so. A restart of the
+    // room (every deploy is one) that cuts the turn off leaves the mark, and
+    // the room that starts takes the turn up again (see work()).
+    AtWork at_work(*this, b, reason, tries);
     if (reason == "bot") {
       // The gate belongs to the message that was just appended.
       Val &last = b.wire["messages"].arr->back();

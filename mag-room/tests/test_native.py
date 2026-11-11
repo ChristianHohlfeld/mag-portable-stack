@@ -1114,6 +1114,63 @@ class RoomContract(unittest.TestCase):
         self.assertEqual([c["function"]["arguments"] for x in r.lena.chats()[-1]["messages"] for c in x.get("tool_calls") or []][-1],
                          '{"fact":"Chris mag längere Szenen"}')
 
+    def test_an_answer_a_restart_cut_off_unseen_is_given_after_it(self):
+        r = self.room
+        state = pathlib.Path(r.env["MAG_ROOM_STATE"])
+        calls, go = [], threading.Event()
+
+        def thinking(body):
+            calls.append(len(body["messages"]))
+            if len(calls) in (1, 3, 5):
+                go.wait(20)                  # still thinking when the room goes down
+                return "Zu spät."            # nobody reads this: the room that asked is gone
+            return "Da bin ich wieder."
+        r.lena.reply = thinking
+        asked = r.say("@Lena bist du da?")
+        r.wait(lambda: len(calls) == 1, "Lena thinking")
+        self.assertEqual(json.loads((state / "wire" / "lena.json").read_text())["at_work"]["reason"], "human")
+        # A deploy restarts the room while she thinks. Nothing of her answer was to be seen: she answers after it.
+        r.stop()
+        go.set()
+        r.start()
+        r.idle(30)
+        self.assertEqual([m["text"] for m in r.messages() if m["id"] > asked["id"]], ["Da bin ich wieder."])
+        self.assertEqual((calls[1], len(calls)), (calls[0], 2))               # the same question again, once
+        self.assertEqual(r.noah.chats(), [])                                    # Chris had asked Lena alone; that still holds
+        self.assertNotIn("at_work", json.loads((state / "wire" / "lena.json").read_text()))
+        # The same when the room dies without a goodbye.
+        go.clear()
+        r.say("@Lena und jetzt?")
+        r.wait(lambda: len(calls) == 3, "Lena thinking again")
+        r.proc.kill()
+        r.stop()
+        go.set()
+        r.start()
+        r.idle(30)
+        self.assertEqual(([m["text"] for m in r.messages() if m["from"] == "lena"], len(calls)), (["Da bin ich wieder."] * 2, 4))
+        # Stopped by Chris is stopped: a later restart does not bring that answer back.
+        go.clear()
+        r.say("@Lena noch etwas")
+        r.wait(lambda: len(calls) == 5, "Lena thinking a third time")
+        r.api("POST", "/api/stop", {"bot": "lena"})
+        go.set()
+        r.idle()
+        r.stop()
+        r.start()
+        r.idle()
+        self.assertEqual((len([m for m in r.messages() if m["from"] == "lena"]), len(calls)), (2, 5))
+        # An answer that was cut off in view stays as it is, marked as stopped; it is not written a second time.
+        r.lena.reply = lambda body: calls.append(0) or "Ein langer Satz, der Stück für Stück erscheint und nie fertig wird. " * 20
+        r.lena.delay = 0.05
+        r.say("@Lena erzähl")
+        r.wait(lambda: [m for m in r.messages() if m["from"] == "lena" and m["state"] == "streaming" and m["text"] == "" and m["parts"]], "an answer in view")
+        r.stop()
+        r.lena.delay = 0
+        r.start()
+        r.idle()
+        last = [m for m in r.messages() if m["from"] == "lena"][-1]
+        self.assertEqual((last["state"], len(calls)), ("stopped", 6))
+
     def test_the_phone_tools_exist_only_with_its_control_service(self):
         # No control daemon set up (as on the host until Chris starts it): the bots have no phone tools.
         self.room.say("Hi beide")

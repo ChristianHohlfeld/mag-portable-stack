@@ -18,7 +18,10 @@ dependency locally. Builds and jobs run on CPUs 28-55 only
 Production is `mag-120.service` -> `/opt/mag-stack/current/bin/magroom`.
 Deploy versioned releases through `ops/deploy.sh`; `ops/rollback.sh` reverts
 executables. A deploy never drains, never waits for a model and never fails
-because a bot is downloading, loading, paused or stopped. Runtime state, VM
+because a bot is downloading, loading, paused or stopped. It may fall into a
+bot's turn: an answer Chris asked for and of which nothing could be seen yet
+(the bot was reading or thinking) is given after the restart; one that was
+cut off in view stays as it is ("Gestoppt"). Runtime state, VM
 overlays, models and credentials live outside Git. Preserve existing room
 data and immutable backing disks through deployments. nginx stays the ingress.
 

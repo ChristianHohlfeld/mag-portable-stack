@@ -15,8 +15,8 @@ from scipy.ndimage import binary_dilation, binary_erosion
 from scipy.optimize import minimize
 
 SIDE = 160          # the photo and the views of the splat are compared this many pixels wide
-GOOD = 0.80         # the view must cover this much of the photo's outline (and little else) ...
-ALIKE = 0.14        # ... and its colours may differ by this much at most, or the photo is not used
+GOOD = 0.90         # the view must cover this much of the photo's outline (and little else) ...
+ALIKE = 0.08        # ... and its colours may differ by this much at most, or the photo is not used
 
 
 class Camera:

@@ -96,7 +96,8 @@ inline Val schemas(bool has_vm, bool phone = false) {
                "four legs and moves head and tail, somebody on two legs walks, nods and waves; a thing moves as a whole. The scene appears in the "
                "chat at once, where Chris turns and plays it; he has a film of it rendered there when he wants one. The actions happen one after "
                "another in the order you give them. A fight is told with kick, punch or attack and a target: the one who is hit flies away, "
-               "lands and gets up again. Tell what Chris asked for with the actions that say it; do not replace a kick by a jump.",
+               "lands and gets up again. Anything else somebody on two legs does is do: motion with a query (about 150 recorded motions). "
+               "Tell what Chris asked for with the actions that say it; do not replace a kick by a jump.",
                R"j({"type":"object","properties":{)j"
                R"j("title":{"type":"string","description":"short German title"},)j"
                R"j("actors":{"type":"array","maxItems":8,"description":"who is in the scene","items":{"type":"object","properties":{)j"
@@ -109,9 +110,10 @@ inline Val schemas(bool has_vm, bool phone = false) {
                R"j("actions":{"type":"array","maxItems":12,"description":"what happens, in order; a short story of a few actions","items":{"type":"object","properties":{)j"
                R"j("actor":{"type":"string","description":"name of the actor"},)j"
                R"j("do":{"type":"string","enum":["walk_to","run_to","sneak_to","hop_to","jump_over","turn_to","look_at","turn","spin","jump","wave","nod","shake_head","wag_tail","wobble","grow","shrink","wait",)j"
-               R"j("kick","punch","attack","fly_away","fall","sit","lie","sleep","crouch","bow","beg","stand","shake","sniff","eat","howl","dig","pounce"],)j"
+               R"j("kick","punch","attack","fly_away","fall","sit","lie","sleep","crouch","bow","beg","stand","shake","sniff","eat","howl","dig","pounce","motion"],)j"
                R"j("description":"kick, punch: somebody on two legs strikes (an animal: attack, pounce); with a target it goes there first and the target is thrown back. fly_away: the actor itself is thrown. fall: it falls down. sit ... pounce: animals only"},)j"
                R"j("target":{"type":"string","description":"for walk_to, run_to, sneak_to, hop_to, jump_over (a run-up and a leap over the other), turn_to, look_at, kick, punch, attack, pounce: name of the other actor"},)j"
+               R"j("query":{"type":"string","description":"motion: what somebody on two legs does, in a few English words; it is found among about 150 recorded motions (boxing, salsa dance, drunk walk, crawl, climb ladder, yoga, bow, gorilla, swordplay, throw, laugh, cry ...)"},)j"
                R"j("force":{"type":"number","description":"kick, punch, attack: 0 (a nudge) to 1 (with all its might: the target flies far)"},)j"
                R"j("far":{"type":"number","description":"kick, punch, attack, fly_away: how many metres the one who is hit flies, instead of force"},)j"
                R"j("from":{"type":"string","description":"fly_away: name of the actor it is thrown away from"},)j"

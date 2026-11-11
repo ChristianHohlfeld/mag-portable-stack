@@ -15,6 +15,7 @@ in the tests. Everything here happens in the figure's own frame: x is where
 it looks, y its left, z up, lengths in leg lengths until the last step.
 """
 import json
+import re
 import math
 import os
 
@@ -264,6 +265,20 @@ class Clip:
         return out * np.array([1.0, -1.0, -1.0]) if mirror else out
 
 
+# German words for motions, as Chris and the bots say them, in the words of the recordings' descriptions.
+GERMAN = {"tanzt": "dance", "tanzen": "dance", "tanz": "dance", "boxen": "boxing", "boxt": "boxing", "treten": "kick", "tritt": "kick", "kickt": "kick",
+          "schlagen": "punch", "schlag": "punch", "rennen": "run", "rennt": "run", "sprint": "run", "sprintet": "run", "laufen": "walk", "geht": "walk",
+          "gehen": "walk", "springen": "jump", "springt": "jump", "sitzen": "sits", "setzt": "sits", "liegen": "lay", "hinlegen": "lay", "aufstehen": "get",
+          "kriechen": "crawling", "kriecht": "crawling", "werfen": "throwing", "wirft": "throwing", "fangen": "catch", "winken": "wave", "winkt": "wave",
+          "betrunken": "drunk", "traurig": "sad", "fröhlich": "happy", "lachen": "laughing", "lacht": "laughing", "weinen": "crying", "weint": "crying",
+          "angst": "scared", "verbeugen": "bow", "verbeugt": "bow", "klettern": "climb", "klettert": "climb", "balancieren": "balance", "schwimmen": "swim",
+          "fechten": "swordplay", "schwert": "swordplay", "fußball": "soccer", "basketball": "basketball", "golf": "golf", "yoga": "yoga",
+          "strecken": "stretch", "dehnen": "stretch", "marschieren": "marching", "marschiert": "marching", "hinken": "limp", "humpeln": "limp",
+          "stolpern": "stumble", "stolpert": "stumble", "fallen": "fall", "fällt": "fall", "rollen": "roll", "rollt": "roll", "aufheben": "pick",
+          "zeigen": "point", "zeigt": "point", "klatschen": "clap", "klatscht": "clap", "jubeln": "cheer", "jubelt": "cheer", "drehen": "turn", "dreht": "turn",
+          "schleichen": "sneak", "hüpfen": "hop", "hüpft": "hop", "affe": "monkey", "gorilla": "gorilla", "huhn": "chicken", "zombie": "zombie"}
+
+
 class Library:
     """All recorded motions (motions.npz)."""
 
@@ -272,17 +287,32 @@ class Library:
         data = np.load(os.path.join(folder, "motions.npz"))
         index = json.loads(bytes(data["index"]).decode("utf-8"))
         scale = 1.0 / 32767.0
-        self.clips = {}
+        self.clips, self.labels = {}, {}
         for entry in index["clips"]:
             a, z = entry["start"], entry["start"] + entry["frames"]
             arrays = {"root": data["root"][a:z].astype(np.float64), "contact": data["contact"][a:z].astype(np.int8), "lift": data["lift"][a:z].astype(np.float64) / 1000.0}
             for key in ("hips", "chest", "head", "limbs"):
                 arrays[key] = unit(data[key][a:z].astype(np.float64) * scale)
             self.clips[entry["name"]] = Clip(entry["name"], arrays, bool(entry.get("loop")), entry.get("stride"), entry.get("hand", ""), entry.get("air"))
+            self.labels[entry["name"]] = entry.get("label", entry["name"])
         self.neutral = np.asarray(index["neutral"], dtype=float)      # where the limbs point when somebody just stands
 
     def __getitem__(self, name):
         return self.clips[name]
+
+    def find(self, words):
+        """The recorded motion whose description fits these words best (English
+        or German, a few words: "boxing", "tanzt Salsa", "drunk walk"), or None."""
+        asked = [w for w in re.findall(r"[a-zäöüß]+", str(words).lower()) if len(w) > 2]
+        asked = [GERMAN.get(w, w) for w in asked]
+        best, score = None, 0.0
+        for name, label in self.labels.items():
+            said = set(re.findall(r"[a-z]+", (label + " " + name).lower()))
+            hit = sum(1.0 if w in said else 0.6 if any(s.startswith(w[:5]) or w.startswith(s[:5]) for s in said if len(s) > 4) else 0.0 for w in asked)
+            hit /= max(1.0, len(said) ** 0.3)
+            if hit > score:
+                best, score = name, hit
+        return best if score >= 0.5 else None
 
     def __contains__(self, name):
         return name in self.clips
@@ -300,6 +330,8 @@ def pack(clips, neutral, path):
             entry["stride"] = [round(float(v), 5) for v in more["stride"]]
         if more.get("hand"):
             entry["hand"] = more["hand"]
+        if more.get("label"):
+            entry["label"] = more["label"]
         if more.get("air"):
             entry["air"] = [round(float(v), 4) for v in more["air"]]
         index["clips"].append(entry)
@@ -532,6 +564,24 @@ class Performer:
         self.frames = []                                  # per frame: where the model's origin is, where it looks, its pose
 
     # -- one frame --
+    def entry(self, clip, mirror=False, within=0.35):
+        """Where in a motion to come in: the moment in its first part (`within`
+        of it) whose pose is nearest the one the figure has now, the feet that
+        stand standing (so a step goes on with the foot that is free, and a
+        loop is joined at its matching phase, not at its start)."""
+        if not hasattr(self, "last") or clip.frames < 8:
+            return 0.0
+        best, at = None, 0.0
+        for f in range(0, max(1, int(clip.frames * (1.0 if clip.loop else within))), 2):
+            t = f / FPS
+            pose = clip.pose(t, mirror)
+            far = float(np.sum(1.0 - np.sum(pose.limbs * self.last.limbs, axis=1)))
+            far += 2.0 * float(np.sum((np.asarray(pose.contact) > 0) != (np.asarray(self.last.contact) > 0)))
+            far += 3.0 * abs(pose.height - self.last.height)
+            if best is None or far < best:
+                best, at = far, t
+        return at
+
     def change(self, name, at=0.0, mirror=False, rate=1.0, span=0.3):
         """Goes over to another motion, smoothly."""
         clip = self.lib[name]

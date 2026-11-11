@@ -363,6 +363,7 @@ def main():
             a, z = stride_of(rec, a, z, int(clip.get("rounds", 1)))
         arrays, stride = cut(rec, a, z, loop)
         more = {"loop": bool(loop), "stride": stride, "hand": clip.get("hand", hand_of(arrays)), "air": None if loop or clip.get("air") is False else leap_of(arrays)}
+        more["label"] = clip.get("label", clip["name"])
         clips.append((clip["name"], arrays, more))
         n = len(arrays["root"])
         print("%-18s %-7s %4d-%-4d %5.2fs%s%s%s" % (

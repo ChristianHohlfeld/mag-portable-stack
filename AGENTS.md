@@ -69,7 +69,9 @@ directions, its way follows its own legs, a foot that stands stays where it
 stands, and nobody in a scene stands like a statue. An animal's motion is
 worked out (`ops/scene/animal.py`): its feet take turns in the order of its
 gait and stand where they were put down, the body rides on the legs that
-carry it, and it sits, lies, leaps and lands on the same ground. A fight is told with kick, punch or
+carry it, and it sits, lies, leaps and lands on the same ground. About 150 recorded motions are
+found by their description (`do: motion`, `query`) and joined at the pose
+nearest the one before. A fight is told with kick, punch or
 attack and a target: the one who is hit flies away in an arc, lands, lies
 and gets up again (`knock` in `scene.py`). This repository is
 public: never add motion data whose terms forbid commercial use or passing

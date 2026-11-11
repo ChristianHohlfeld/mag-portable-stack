@@ -987,6 +987,22 @@ def perform(actor, action, actors, fps, start):
                     aside = Vector((-heading.y, heading.x)) * off * actor.height
                     p.reach_to(side, lambda f, a=aside: (edge.x + a.x, edge.y + a.y, other.height), now, now + int(0.35 * fps))
                 end = p.drop_to((far.x, far.y), 0.0, over=other.height)
+    elif kind == "pose" and beast:
+        # An animal's free pose: a fore paw lifted (to somebody, or up) or its head turned to it, held for a while.
+        part = str(action.get("part") or "").lower()
+        frames = max(6, int(round(seconds(1.5, 0.3, 12.0) * fps)))
+        if other:
+            way = other.pos - actor.pos
+            if way.length > 1e-6 and abs(motion.wrap(math.atan2(way.y, way.x) - p.heading)) > 0.6:
+                first = p.face(math.atan2(way.y, way.x))
+            p.look(eyes(other), first, first + frames, 0.9)
+        where = str(action.get("where") or "").lower()
+        if "head" in part or where in ("head", "kopf") and not part:
+            end = p.wait(first + frames)
+        elif where == "up" and not other:
+            end = p.ease("beg", frames / fps)
+        else:
+            end = p.greet(frames / fps)
     elif kind == "pose" and not beast:
         # A free pose: a hand (or both) to a place, held for a while: points at
         # somebody, touches its head, holds its arms up. Worked out with IK on
@@ -1602,8 +1618,13 @@ def animate(actor, last):
             actor.rig.frames[frame] = {name: Quaternion(turn) for name, turn in turns.items()}
             if moves:
                 actor.rig.moves[frame] = moves[0]
-        if actor.face is not None:                   # what its face does is laid over the head
-            for frame, (turns, moves) in enumerate(actor.face.frames(last)):
+        try:
+            moving = actor.face.frames(last) if actor.face is not None else []
+        except Exception as exc:
+            print("MAG-NOTE %s: face does not move (%s)" % (actor.name, type(exc).__name__), flush=True)
+            moving = []
+        if moving:                                   # what its face does is laid over the head
+            for frame, (turns, moves) in enumerate(moving):
                 actor.rig.frames.setdefault(frame, {}).update(turns)
                 if moves:
                     actor.rig.moves.setdefault(frame, {}).update(moves)
@@ -1891,9 +1912,12 @@ def build(spec_path, out):
         actor = Actor(name, obj, studied[(entry["file"], index)], weigh=not copies)
         made = studied[(entry["file"], index)].get("face")
         if made and actor.rig is not None:
-            if not copies:
-                face.weigh(actor.part, *made)
-            actor.face = face.Face(made[1], made[0], made[2], FPS, seed=i)
+            try:                                      # a face that cannot be made never costs the scene
+                if not copies:
+                    face.weigh(actor.part, *made)
+                actor.face = face.Face(made[1], made[0], made[2], FPS, seed=i)
+            except Exception as exc:
+                print("MAG-NOTE %s: face not weighed (%s)" % (name, type(exc).__name__), flush=True)
         if entry.get("kind") == "vehicle":           # it drives: no legs, never a skeleton
             actor.kind = "vehicle"
         actor.scale = number(entry, "size", 1.0, 0.2, 5.0)

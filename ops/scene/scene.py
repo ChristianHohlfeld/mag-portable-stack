@@ -59,7 +59,10 @@ GAITS = {  # stride (body lengths), bounce (heights), speed (body lengths per se
 # on the ground, how far the knee bends in the air (degrees), strides per
 # second, bounce (heights).
 STRIDES = {"walk": (26.0, 0.6, 40.0, 1.7, 0.012), "run": (36.0, 0.45, 62.0, 2.8, 0.03), "sneak": (18.0, 0.7, 30.0, 1.0, 0.006)}
-KINDS = {"animal": "quadruped", "human": "biped", "object": "object"}   # what a caller may say a figure is
+# What a caller may say a figure is, and what that tells the reading of its shape
+# (None: read it from the shape). A vehicle has no skeleton: it drives as a whole.
+KINDS = {"animal": "quadruped", "human": "biped", "object": "object", "bird": "bird", "insect": None, "spider": None,
+         "snake": None, "fish": None, "vehicle": "object"}
 # A model made from a photo stands as the photo shows it: the photographer is
 # at -X and looks along +X, so the left of the picture is +Y. `faces` says
 # where a figure looks in that picture.
@@ -297,6 +300,11 @@ class Rig:
             self.legs.append({"upper": b["name"], "lower": shin["name"], "fore": b["fore"], "left": b["left"], "length": b["length"],
                               "reach": Vector(shin["tail"]) - Vector(b["head"])})
         self.leg = max((leg["length"] for leg in self.legs), default=0.0)
+        self.wings = []
+        for i, b in enumerate(found["bones"]):
+            if b["role"] == "wing":
+                tip = next((c["name"] for c in found["bones"] if c["parent"] == i), None)
+                self.wings.append({"upper": b["name"], "tip": tip, "left": b.get("left", True), "out": Vector((b["out"][0], b["out"][1], 0.0))})
         self.arms = []
         for i, b in enumerate(found["bones"]):
             if b["role"] == "arm":
@@ -317,8 +325,10 @@ class Rig:
     def beat(self, leg, gait):
         """When in a stride a leg leaves the ground: an animal walks one foot
         after the other and trots in diagonal pairs; on two legs they take turns."""
-        if self.kind == "biped":
+        if self.kind in ("biped", "bird"):
             return 0.0 if leg["left"] else 0.5
+        if self.kind == "many":                  # legs in two sets of every other one, as an insect walks (a tripod of six)
+            return 0.5 * ((leg.get("rank", 0) + (0 if leg["left"] else 1)) % 2) + 0.06 * leg.get("rank", 0)
         if gait == "run":
             return 0.0 if leg["fore"] == leg["left"] else 0.5
         return (0.0 if leg["left"] else 0.5) + (0.25 if leg["fore"] else 0.0)
@@ -344,7 +354,13 @@ class Rig:
             self.turn(frame, leg["upper"], across, on * (angle - caught))
             self.turn(frame, leg["lower"], across, -on * bend * lift)
         wave = math.sin(2 * math.pi * cycle)
-        if self.kind == "quadruped":
+        if self.kind == "bird":                  # the head bobs with every step, the tail rocks
+            for name in self.role.get("head", []):
+                self.turn(frame, name, across, -on * math.radians(9.0) * math.sin(4 * math.pi * cycle))
+            for name in self.role.get("hips", []):
+                self.turn(frame, name, ahead, on * math.radians(4.0) * wave)
+            return
+        if self.kind in ("quadruped", "many"):
             for name in self.role.get("hips", []):
                 self.turn(frame, name, up, on * math.radians(3.0) * wave)
             for name in self.role.get("chest", []):
@@ -392,6 +408,22 @@ class Rig:
             return True
         return False
 
+    def flap(self, frame, beat, on=1.0):
+        """Wings beat: up and down about the line along the body (`beat`:
+        -1 down .. 1 up), the tips trailing behind. False: no wings."""
+        if not self.wings:
+            return False
+        for wing in self.wings:
+            ahead = Vector((wing["out"].y, -wing["out"].x, 0.0)) if wing["left"] else Vector((-wing["out"].y, wing["out"].x, 0.0))
+            if ahead.length < 1e-6:
+                ahead = Vector((1.0, 0.0, 0.0))
+            ahead.normalize()
+            sign = 1.0 if wing["left"] else -1.0
+            self.turn(frame, wing["upper"], ahead, sign * on * math.radians(55.0) * beat)
+            if wing["tip"]:
+                self.turn(frame, wing["tip"], ahead, sign * on * math.radians(25.0) * math.sin(math.asin(max(-1.0, min(1.0, beat))) - 0.8))
+        return True
+
     def tuck(self, frame, air):
         """Legs drawn up in a jump (`air`: 0 on the ground, 1 at the top)."""
         for leg in self.legs:
@@ -437,7 +469,8 @@ class Rig:
 # Every action there is, for the message when one is asked for that is not among them.
 ACTIONS = ("walk_to, run_to, sneak_to, hop_to, jump_over, turn_to, look_at, turn, spin, jump, wave, nod, shake_head, wag_tail, wobble, grow, shrink, wait; "
            "kick, punch (with target: the one who is hit flies away; force 0..1), attack, fly_away (from, far), fall; "
-           "pose (part: left_hand/right_hand/both_hands, where: at/touch/point/head/up/forward/side, target, seconds); "
+           "pose (part: left_hand/right_hand/both_hands, where: at/touch/point/head/up/forward/side, hand: fist/open/point, target, seconds); "
+           "fly_to, fly (up into the air and round), flap, peck (birds; anything can fly); drive_to (a vehicle; it also drives on walk_to/run_to); roll_to (a thing rolls like a ball); "
            "somebody on two legs also: " + "%s; an animal also: sit, lie, sleep, crouch, bow, beg, stand, shake, sniff, eat, howl, dig, pounce")
 RECORDED = []   # the recorded motions of the library, by name (filled when it is read)
 # When in a recorded motion the blow lands (part of its length).
@@ -994,7 +1027,140 @@ def play(actor, action, actors, fps, start):
             actor.key(first + i)
         return frames
 
-    if kind in ("walk_to", "run_to", "hop_to", "sneak_to"):
+    def ahead_of(heading):
+        """A direction on the ground as the figure sees it."""
+        return Vector((heading.x * math.cos(actor.yaw) + heading.y * math.sin(actor.yaw), heading.y * math.cos(actor.yaw) - heading.x * math.sin(actor.yaw)))
+
+    if kind == "drive_to" or (actor.kind == "vehicle" and kind in ("walk_to", "run_to", "sneak_to", "hop_to")):
+        # A vehicle drives: it sets off and brakes gently, turns along a curve
+        # (it never turns on the spot), its body leans back as it speeds up
+        # and dips forward as it brakes, and rocks a little on its springs.
+        goal, room = target_point()
+        apart = number(action, "distance", room + 0.55 * actor.length, 0.0, 100.0)
+        if (goal - actor.pos).length - apart < 1e-3:
+            fail(actor.name + " steht schon am Ziel.")
+        speed = number(action, "speed", (9.0 if kind == "run_to" else 4.0) * max(0.3, actor.length / 4.0), 0.1, 60.0)
+        front = actor.front() or Vector((1.0, 0.0))
+        heading, pos, path = front.normalized(), actor.pos.copy(), []
+        turning = speed / max(0.6 * actor.length, 1e-3)         # radians a second: a curve about as wide as it is long
+        dt = 1.0 / fps
+        for _ in range(int(MAX_SECONDS * fps)):                 # the way: it steers to the goal at full speed
+            way = goal - pos
+            if way.length <= apart:
+                break
+            off = math.atan2(heading.x * way.y - heading.y * way.x, heading.dot(way))
+            step = max(-turning * dt, min(turning * dt, off))
+            heading = Matrix.Rotation(step, 2) @ heading
+            pos = pos + heading * (speed * dt * max(0.35, math.cos(min(abs(off), 1.2))))
+            path.append((pos.copy(), heading.copy()))
+        if not path:
+            fail(actor.name + " steht schon am Ziel.")
+        total = len(path)
+        frames = max(int(round(number(action, "seconds", 0.0, 0.0, 20.0) * fps)), int(total * 1.25) + 2)
+        yaw0, look0 = actor.yaw, math.atan2(front.y, front.x)
+        for i in range(1, frames + 1):
+            u = ease(i / frames)                                # how far along the way, slow at both ends
+            k = min(total - 1, int(u * (total - 1)))
+            actor.pos, heading = path[k]
+            actor.yaw = yaw0 + motion.wrap(math.atan2(heading.y, heading.x) - look0)
+            pitch = math.radians(2.5) * (1.0 - 2.0 * i / frames)  # it speeds up in the first half and brakes in the second
+            ahead = ahead_of(heading)
+            bob = 0.006 * actor.height * math.sin(2 * math.pi * 1.7 * i / fps)
+            actor.key(first + i, z=bob, pitch=pitch * ahead.y, roll=-pitch * ahead.x)
+        end = first + frames
+    elif kind == "roll_to":
+        # A thing rolls like a ball: it turns over as far as it goes, about its middle.
+        goal, room = target_point()
+        way = goal - actor.pos
+        apart = number(action, "distance", room + actor.radius, 0.0, 100.0)
+        distance = way.length - apart
+        if distance < 1e-3:
+            fail(actor.name + " steht schon am Ziel.")
+        heading = way.normalized()
+        frames = max(4, int(round(number(action, "seconds", distance / max(0.4, 1.5 * actor.height) + 0.4, 0.4, 20.0) * fps)))
+        origin, r = actor.pos.copy(), 0.5 * actor.height
+        for i in range(1, frames + 1):
+            gone = distance * ease(i / frames)
+            actor.pos = origin + heading * gone
+            angle = gone / max(r, 1e-3)
+            tilt = Matrix.Rotation(angle, 3, Vector((-heading.y, heading.x, 0.0)))
+            middle = Vector((0.0, 0.0, r))
+            turned = tilt @ (Euler((0.0, 0.0, actor.yaw), "XYZ").to_matrix() @ middle)
+            euler = (tilt @ Euler((0.0, 0.0, actor.yaw), "XYZ").to_matrix()).to_euler("XYZ")
+            actor.keys[first + i] = (actor.pos.x + middle.x - turned.x, actor.pos.y + middle.y - turned.y, middle.z - turned.z,
+                                     euler.x, euler.y, euler.z, 1.0, actor.scale)
+        end = first + frames
+        actor.key(end)
+    elif kind in ("fly_to", "fly"):
+        # Up into the air, across, and down again; wings beat (fast going up, slower
+        # across, held out to glide in between), the legs are drawn up. A thing floats.
+        if kind == "fly_to":
+            goal, room = target_point()
+        else:                                            # up and round in a wide circle, back to where it was
+            goal, room = actor.pos.copy(), 0.0
+        start_at = actor.pos.copy()
+        way = goal - start_at
+        apart = number(action, "distance", room + 0.5 * actor.length if kind == "fly_to" else 0.0, 0.0, 100.0)
+        distance = max(0.0, way.length - apart)
+        heading = way.normalized() if way.length > 1e-6 else (actor.front() or Vector((1.0, 0.0)))
+        high = number(action, "height", max(1.5 * actor.height, 0.25 * distance), 0.1, 40.0)
+        seconds = number(action, "seconds", max(2.0, 1.2 + distance / max(0.8, 4.0 * actor.length) + high / 3.0), 0.8, 20.0)
+        frames = max(12, int(round(seconds * fps)))
+        offset = turn(actor.turn_towards(heading), 0.3) if kind == "fly_to" and abs(actor.turn_towards(heading)) > 0.03 else 0
+        wide = max(1.5 * actor.length, 0.6 * high)
+        phase = 0.0
+        for i in range(1, frames + 1):
+            u = i / frames
+            if kind == "fly_to":
+                actor.pos = start_at + heading * (distance * ease(u))
+                along = heading
+            else:
+                a = 2 * math.pi * ease(u)
+                centre = start_at + Vector((-heading.y, heading.x)) * wide
+                actor.pos = centre + (start_at - centre) * math.cos(a) + Vector((heading.x, heading.y)) * wide * math.sin(a)
+                along = Vector((math.cos(a) * heading.x - math.sin(a) * heading.y, math.sin(a) * heading.x + math.cos(a) * heading.y))
+                actor.yaw += actor.turn_towards(along)          # it looks where it flies
+            lift = high * (ease(min(1.0, u / 0.3)) - ease(max(0.0, (u - 0.7) / 0.3)))     # up, across, down
+            climbing = u < 0.3 or u > 0.7
+            glide = (not climbing) and math.sin(2 * math.pi * 0.5 * u * seconds) > 0.4
+            phase += 2 * math.pi * (3.2 if climbing else 2.2) / fps
+            on = 0.0 if glide else 1.0
+            beat = math.sin(phase)
+            frame = first + offset + i
+            pitch = math.radians(14.0) * (1.0 if u < 0.3 else -0.6 if u > 0.7 else 0.0) * min(1.0, 4 * min(u, 1 - u))
+            ahead = ahead_of(along)
+            if actor.rig:
+                actor.rig.flap(frame, beat * on + (1.0 - on) * 0.15, 1.0)
+                actor.rig.tuck(frame, min(1.0, 4 * min(u, 1 - u)))
+            bob = 0.04 * actor.height * beat * on
+            actor.key(frame, z=lift + bob, pitch=pitch * ahead.y, roll=-pitch * ahead.x)
+        end = first + offset + frames
+    elif kind == "peck":
+        # A bird pecks: the head goes down quickly and up again, a few times. Anything else nods.
+        times = int(number(action, "times", 3, 1, 12))
+        per = max(6, int(round(0.45 * fps)))
+        bones = actor.rig.role if actor.rig else {}
+        front = actor.axis if actor.axis is not None and actor.headed else Vector(FACES["camera"])
+        across = Vector((front.y, -front.x, 0.0))
+        for n in range(times):
+            for i in range(1, per + 1):
+                dip = math.sin(math.pi * i / per) ** 0.6
+                frame = first + n * per + i
+                if bones.get("head"):
+                    actor.rig.turn(frame, bones["head"][0], across, -math.radians(55.0) * dip)
+                    for name in bones.get("chest", []) + bones.get("neck", []):
+                        actor.rig.turn(frame, name, across, -math.radians(14.0) * dip)
+                else:
+                    actor.key(frame, pitch=-0.25 * dip * front.y, roll=0.25 * dip * front.x)
+        end = first + times * per
+    elif kind == "flap":
+        frames = max(6, int(round(number(action, "seconds", 1.5, 0.3, 12.0) * fps)))
+        for i in range(1, frames + 1):
+            on = min(1.0, 5 * min(i, frames - i) / frames)
+            if not (actor.rig and actor.rig.flap(first + i, math.sin(2 * math.pi * 3.0 * i / fps), on)):
+                actor.key(first + i, z=0.03 * actor.height * on * abs(math.sin(2 * math.pi * 3.0 * i / fps)))
+        end = first + frames
+    elif kind in ("walk_to", "run_to", "hop_to", "sneak_to"):
         stride, bounce, speed, sway = GAITS[kind[:-3]]
         goal, room = target_point()
         way = goal - actor.pos
@@ -1198,7 +1364,7 @@ def play(actor, action, actors, fps, start):
             end = first + frames
     else:
         fail("Unbekannte Aktion: " + str(kind) + ". Es gibt " + ACTIONS % "motion mit query (eine von %d Aufnahmen, gesucht nach ihrer Beschreibung)" % len(RECORDED) + ". " + actor.name +
-             " ist ein Gegenstand ohne Skelett: er kann gehen, springen, sich drehen, wackeln, wachsen und wegfliegen.")
+             " (%s) bewegt sich ohne aufgenommene Bewegungen: gehen, rennen, springen, fliegen (fly_to, fly), drehen, wackeln, wachsen, rollen (roll_to), fahren (drive_to), nicken, picken und wegfliegen." % rig.KINDS.get(actor.kind, actor.kind))
     actor.key(end)
     actor.clock = end / fps
     return end
@@ -1515,6 +1681,8 @@ def build(spec_path, out):
         if find(actors, name):
             fail("Zwei Darsteller heißen " + name + ".")
         actor = Actor(name, obj, studied[(entry["file"], index)], weigh=not copies)
+        if entry.get("kind") == "vehicle":           # it drives: no legs, never a skeleton
+            actor.kind = "vehicle"
         actor.scale = number(entry, "size", 1.0, 0.2, 5.0)
         # A thing out of a photo of a room is as tall as it stood there (metres).
         tall = number(entry, "tall", 0.0, 0.0, 20.0)

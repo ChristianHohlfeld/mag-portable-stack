@@ -20,7 +20,8 @@ import numpy as np
 CELLS = 44            # cubes along the longest side of the figure
 NEAR = [(dx, dy, dz) for dx in (-1, 0, 1) for dy in (-1, 0, 1) for dz in (-1, 0, 1) if (dx, dy, dz) != (0, 0, 0)]
 FLAT = [(dx, dy) for dx in (-1, 0, 1) for dy in (-1, 0, 1) if (dx, dy) != (0, 0)]
-KINDS = {"quadruped": "Vierbeiner", "biped": "Zweibeiner", "serpent": "Schlange oder Fisch", "object": "Gegenstand"}
+KINDS = {"quadruped": "Vierbeiner", "biped": "Zweibeiner", "bird": "Vogel", "many": "Vielbeiner (Insekt, Spinne)", "serpent": "Schlange oder Fisch",
+         "vehicle": "Fahrzeug", "object": "Gegenstand"}
 SEGMENTS = 8           # the bones of a body that is long and has no legs
 
 
@@ -271,6 +272,8 @@ def analyse(co, edges=None, axis=None, kind=None):
         found = "biped"
     elif 3 <= len(legs) <= 4 and (not upright or kind == "quadruped"):
         found = "quadruped"
+    elif 5 <= len(legs) <= 10 and not upright:           # an insect, a spider, a centipede: legs along a long body
+        found = "many"
     else:
         if len(legs) <= 1 and kind != "object":                # (one "leg" under a long body is its lowest bend)
             long = serpent(co, height)
@@ -313,7 +316,7 @@ def analyse(co, edges=None, axis=None, kind=None):
         low = body.where(leg["low"])[:, :2].mean(axis=0)
         leg["toes"] = low - np.array([levels[0][1], levels[0][2]])
 
-    if found == "quadruped":
+    if found in ("quadruped", "many"):
         # Along the body: the direction the feet are spread in.
         feet = np.array([leg["foot"][:2] for leg in legs])
         if axis is None:
@@ -382,22 +385,28 @@ def analyse(co, edges=None, axis=None, kind=None):
             second = bone("Schwanz 2", half, tail_limb[0]["centre"], first, "tail")
             for k in range(tail_join):
                 claim(tail_limb[k]["cells"], second if k < tail_join // 2 else first)
+        middle = float(np.mean([l["hip"][:2] @ side for l in legs]))
         for group, parent, where in ((hind, pelvis, "hinten"), (fore, ribs, "vorn")):
             for leg in group:
-                left = float(leg["hip"][:2] @ side) >= float(np.mean([l["hip"][:2] @ side for l in group]))
+                left = float(leg["hip"][:2] @ side) >= (middle if found == "many" else float(np.mean([l["hip"][:2] @ side for l in group])))
                 name = "Bein %s %s" % (where, "links" if left else "rechts")
                 if any(b["name"] == name + " oben" for b in bones):
                     name += " 2"
                 upper = bone(name + " oben", leg["hip"], leg["knee"], parent, "leg")
                 lower = bone(name + " unten", leg["knee"], leg["foot"], upper, "shin")
-                bones[upper].update(fore=where == "vorn", left=left, length=leg["length"])
+                # Its place along the body among the legs of its side, from the back (the order a gait goes through them).
+                rank = sum(1 for l in legs if (float(l["hip"][:2] @ side) >= middle) == left and float(l["hip"][:2] @ axis) < float(leg["hip"][:2] @ axis))
+                bones[upper].update(fore=where == "vorn", left=left, length=leg["length"], rank=rank)
                 claim(leg["low"], lower)
                 for z, _, _, cubes in leg["levels"]:
                     claim(cubes, lower if z <= leg["knee_z"] else upper)
                 thighs.append(upper)
         front = axis
         trunk = [pelvis, ribs, neck]
-        notes = ["Vierbeiner: %d Beine, Kopf%s" % (len(legs), " und Schwanz" if any(b["role"] == "tail" for b in bones) else "")]
+        if found == "many":
+            notes = ["Vielbeiner: %d Beine, Kopf" % len(legs)]
+        else:
+            notes = ["Vierbeiner: %d Beine, Kopf%s" % (len(legs), " und Schwanz" if any(b["role"] == "tail" for b in bones) else "")]
     else:
         # On two legs: the body rises from between the hips to the top of the head.
         top = points[int(points[:, 2].argmax())]
@@ -515,6 +524,18 @@ def analyse(co, edges=None, axis=None, kind=None):
             bones[skull_bone]["head"] = neck_at
         trunk = [pelvis, ribs, skull_bone]
         notes = ["Zweibeiner: 2 Beine, Rumpf, Kopf" + (" und %d Arm%s" % (arms, "e" if arms > 1 else "") if arms else "; Arme liegen am Körper an und bewegen sich mit ihm")]
+        # On two legs with a body that reaches far ahead and behind them, as long as it is
+        # tall (or the caller knows): a bird. What sticks out at its sides are wings.
+        deep = float(np.ptp(points[:, :2] @ front)) if front is not None else float(min(size[0], size[1]))
+        if kind == "bird" or (kind != "biped" and deep > 0.75 * height):
+            found = "bird"
+            for b in bones:
+                if b["role"] in ("arm", "forearm"):
+                    b["role"] = "wing" if b["role"] == "arm" else "wingtip"
+                    b["name"] = b["name"].replace("Arm", "Flügel")
+                elif b["role"] == "hand":
+                    b["role"], b["name"] = "wingtip", b["name"].replace("Hand", "Flügelspitze")
+            notes = ["Vogel: 2 Beine, Körper, Kopf" + (" und %d Flügel" % arms if arms else "; Flügel liegen am Körper an")]
 
     # What is no limb belongs to the nearest stretch of the trunk, or, below
     # the hips and next to a leg, to the thigh that reaches up into the body.
@@ -531,7 +552,7 @@ def analyse(co, edges=None, axis=None, kind=None):
     labels = grid[body.cell_of[:, 0], body.cell_of[:, 1], body.cell_of[:, 2]]
     labels[labels < 0] = trunk[0]
     return {"kind": found, "bones": bones, "labels": labels, "front": None if front is None else [float(front[0]), float(front[1])],
-            "sure": found == "quadruped" or sure, "notes": notes}
+            "sure": found in ("quadruped", "many") or sure, "notes": notes}
 
 
 def blend(labels, count, edges, rounds=12):

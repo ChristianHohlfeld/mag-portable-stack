@@ -392,8 +392,9 @@ small flat Gaussians lying on what the photo showed:
 Runs in the browser, not on the server. `web/app/speak.js` drives a Web Worker
 (`ops/tts/tts-worker.js`): Supertonic 3 (Supertone; a duration predictor, a
 text encoder, a flow-matching estimator and a vocoder as ONNX, 44.1 kHz) in
-onnxruntime-web, on the device's GPU (WebGPU) where that works and in WASM
-otherwise, on several threads: the page is cross-origin isolated for that
+onnxruntime-web, in WASM on several threads (WebGPU is not tried: on a
+phone, making the networks for its GPU can take minutes or never end): the
+page is cross-origin isolated for that
 (`Cross-Origin-Opener-Policy: same-origin` on the page,
 `Cross-Origin-Embedder-Policy: credentialless` on every response, so the
 bots' pages still run in their frames). A provider is taken only after it
@@ -406,7 +407,11 @@ between them. The first part of a reading is a few words only, and on a
 device that is not much faster than real time the first parts are made in
 three or four of the model's five steps: the sound starts within a second
 or two instead of after the first whole sentence. How fast the device is,
-is measured on every part. The page tells the room's journal how a reading
+is measured on every part. The first words of the newest answer in the
+chat are made before anybody asks (in full quality, while nothing is
+read), so the tap that most often comes speaks at once. And a tap never
+waits for the model: while it is still loading, the device's own voice
+reads that message. The page tells the room's journal how a reading
 went, as numbers (`POST /api/tts/stat`: provider, threads, steps, time to
 the first sound, work against length), never what was read. Before a sentence goes to the model it is written as it
 is spoken (`german()` in the worker: numbers, dates, times, units,

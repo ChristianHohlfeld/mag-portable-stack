@@ -1,6 +1,6 @@
 // Read-aloud worker: Supertonic 3 in onnxruntime-web (classic Worker, handed
 // out by the room under /tts/<folder>/). The speech is made on the device:
-// on its GPU (WebGPU) where that works, else in WASM. The model (four
+// in WASM, on several threads where the page is isolated. The model (four
 // networks, about 400 MB) is fetched once and stays in Cache Storage; a
 // voice is a small style file. The page asks for the model in the
 // background right after it has loaded, so the first "Vorlesen" does not
@@ -20,7 +20,7 @@ if (inWorker) {
     try {
       if (!self.crossOriginIsolated) return 1;
       const n = (self.navigator && self.navigator.hardwareConcurrency) || 1;
-      return Math.max(1, Math.min(6, n - 2));   // the big cores, and two left for the page
+      return Math.max(1, Math.min(4, n - 2));   // the big cores, and two left for the page
     } catch (e) { return 1; }
   })();
 }
@@ -98,9 +98,10 @@ async function build(id) {
   await fetchAll(id);
   const cfg = await (await cachedFetch(home + 'tts.json')).json();
   const indexer = await (await cachedFetch(home + 'unicode_indexer.json')).json();
-  const tries = [];
-  if (self.navigator && self.navigator.gpu) tries.push('webgpu');
-  tries.push('wasm');
+  // In WASM, on several threads where the page is isolated. WebGPU is not
+  // tried: on a phone, making the networks for its GPU can take minutes or
+  // never end, and nobody can hear a model that is still getting ready.
+  const tries = ['wasm'];
   let last = null;
   for (const provider of tries) {
     let made = null;
@@ -116,7 +117,7 @@ async function build(id) {
       if (!sound || probe.length < 2000 || energy / probe.length < 1e-7) throw new Error('silent or broken output');
       // The first runs of a network are its slowest (the browser is still making its code fast).
       // They happen here, in the background, not when somebody taps "Vorlesen".
-      for (let i = 0; i < 2; i++) await infer(e, 'Das ist ein etwas längerer Satz, damit alles warm ist, bevor jemand zuhört.', 'de', style, 3, 1.05);
+      await infer(e, 'Das ist ein etwas längerer Satz, damit alles warm ist.', 'de', style, 3, 1.05);
       return e;
     } catch (err) {
       last = err;

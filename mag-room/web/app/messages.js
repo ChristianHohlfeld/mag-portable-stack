@@ -360,7 +360,10 @@
     const again = (e) => { e.currentTarget.disabled = true; MAG.api('POST', '/api/3d/' + m.id + '/retry').catch((x) => { e.target.disabled = false; MAG.toast(x.message, true); }); };
     card.append(el('div', { class: 'head' }, thumb, el('div', { class: 'txt' }, el('b', { text: 'Foto zu 3D' }), el('small', { text: sub })),
       running ? el('button', { class: 'pill danger', text: 'Abbrechen', onclick: () => MAG.api('POST', '/api/3d/' + m.id + '/cancel').catch((x) => MAG.toast(x.message, true)) })
-        : m3.state === 'error' || m3.state === 'cancelled' ? el('button', { class: 'pill', text: 'Noch einmal', title: 'Geht dort weiter, wo es aufgehört hat', onclick: again }) : null));
+        : m3.state === 'error' || m3.state === 'cancelled' ? el('button', { class: 'pill', text: 'Noch einmal', title: 'Geht dort weiter, wo es aufgehört hat', onclick: again })
+        // A finished model, made anew from what was sampled: a couple of minutes, nothing is sampled again.
+        : m3.state === 'done' && S.you.role === 'owner' ? el('button', { class: 'pill', text: 'Netz neu', title: 'Baut das Modell aus dem vorhandenen Ergebnis neu, ohne neues Sampling',
+          onclick: (e) => { e.currentTarget.disabled = true; MAG.api('POST', '/api/3d/' + m.id + '/retry', { remesh: true }).catch((x) => { e.target.disabled = false; MAG.toast(x.message, true); }); } }) : null));
     if (running) card.append(progress3d(m3));
     const glb = (m.attachments || []).find((a) => a.name.endsWith('.glb'));
     if (m3.state === 'done' && glb) {

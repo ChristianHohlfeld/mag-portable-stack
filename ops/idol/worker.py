@@ -163,15 +163,22 @@ def cancel(job_id):
     kill_stage(snapshot)
     return True
 
-def again(job_id):
+def again(job_id, remesh=False):
     """Take a failed or cancelled job up again. What its finished stages
     left is still there (after sampling, the splat), so only what did not
-    get done is done. Returns True, or why not in words; None: no such job."""
+    get done is done. With `remesh` a finished job's model is made anew
+    from its splat (the mesh stage alone, on the CPU: nothing is sampled
+    again). Returns True, or why not in words; None: no such job."""
     with lock:
         item = jobs.get(job_id)
         if item is None:
             return None
-        if item["state"] in ("queued", "running", "done"):
+        if item["state"] == "done" and remesh and (ROOT / job_id / "splat.ply").is_file():
+            for name in ("mesh.glb", "mesh.stl", "mesh.exit", "mesh.json"):
+                (ROOT / job_id / name).unlink(missing_ok=True)
+            item.pop("finished", None)
+            item.pop("seen_from", None)
+        elif item["state"] in ("queued", "running", "done"):
             return True                                   # under way, or done: there is nothing to take up
         if not (ROOT / job_id / "input.png").is_file():
             return "Das Foto dieses Auftrags gibt es nicht mehr."
@@ -493,7 +500,7 @@ class API(BaseHTTPRequestHandler):
         parts = path.strip("/").split("/")
         if (len(parts) == 5 and parts[:3] == ["api", "idol", "jobs"] and
                 VALID_ID.fullmatch(parts[3]) and parts[4] in ("cancel", "retry")):
-            outcome = cancel(parts[3]) if parts[4] == "cancel" else again(parts[3])
+            outcome = cancel(parts[3]) if parts[4] == "cancel" else again(parts[3], "remesh" in parse_qs(url.query))
             if outcome is None:
                 return self.reply(404, {"error": "Job nicht gefunden"})
             if parts[4] == "cancel":

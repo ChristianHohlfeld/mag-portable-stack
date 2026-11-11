@@ -70,8 +70,8 @@ class FakeIdol:
                     job = fake.jobs.get(parts[3])
                     if not job:
                         return self.reply(404, {"error": "Job nicht gefunden"})
-                    fake.retried.append(parts[3])
-                    if job["state"] in ("error", "cancelled"):
+                    fake.retried.append(parts[3] + ("?" + self.path.partition("?")[2] if "?" in self.path else ""))
+                    if job["state"] in ("error", "cancelled") or (job["state"] == "done" and "remesh" in self.path):
                         job.update(state="queued", polls=0, resumed=job.get("resumed", 0) + 1)
                     return self.reply(200, {"queued": True})
                 if not body:

@@ -16,6 +16,12 @@ LOCK="$SOURCE/ops/tts/assets.lock"
 MODELS="$SOURCE/ops/tts/models.lock"
 name="v-$(sha256sum < "$LOCK" | cut -c1-12)"
 model="m-$(sha256sum < "$MODELS" | cut -c1-12)"
+# The runtime (onnxruntime-web, ~27 MB) without our worker: a folder of its own, so a change of the
+# worker does not send it to every browser again.
+RUNTIME_LOCK=$(mktemp)
+trap 'rm -f "$RUNTIME_LOCK"' EXIT
+grep -v ' tts-worker.js$' "$LOCK" > "$RUNTIME_LOCK"
+runtime="r-$(sha256sum < "$RUNTIME_LOCK" | cut -c1-12)"
 if [[ ! -d $CACHED ]] || ! (cd "$CACHED" && sha256sum --quiet -c "$MODELS" >/dev/null 2>&1 && grep -v ' tts-worker.js$' "$LOCK" | sha256sum --quiet -c - >/dev/null 2>&1); then
   if [[ ! -f /opt/mag-tts/$name/tts-worker.js || ! -f /opt/mag-tts/$model/vocoder.f16.data ]]; then
     echo 'voices: model not fetched; "Vorlesen" keeps what it has (run ops/tts/bootstrap.sh)' >&2
@@ -30,6 +36,7 @@ place() { # folder lock
   install -d -m 0755 "/opt/mag-tts/.$1.next"
   while read -r _ file; do
     if [[ $file == tts-worker.js ]]; then from="$SOURCE/ops/tts/$file"; else from="$CACHED/$file"; fi
+    [[ -f $from ]] || from="/opt/mag-tts/$name/$file"     # the runtime, from the worker's folder
     install -m 0644 "$from" "/opt/mag-tts/.$1.next/$file"
   done < "$2"
   (cd "/opt/mag-tts/.$1.next" && sha256sum --quiet -c "$2")
@@ -39,9 +46,10 @@ place() { # folder lock
 }
 place "$model" "$MODELS"
 place "$name" "$LOCK"
+place "$runtime" "$RUNTIME_LOCK"
 # Folders of earlier versions stay: voice models are never deleted.
 cat > /opt/mag-tts/.config.next <<JSON
-{"dir":"$name","models":"$model","voices":[
+{"dir":"$name","models":"$model","runtime":"$runtime","voices":[
  {"id":"f1","label":"Frau 1","model":"F1.json"},{"id":"f2","label":"Frau 2","model":"F2.json"},
  {"id":"f3","label":"Frau 3","model":"F3.json"},{"id":"f4","label":"Frau 4","model":"F4.json"},
  {"id":"f5","label":"Frau 5","model":"F5.json"},{"id":"m1","label":"Mann 1","model":"M1.json"},

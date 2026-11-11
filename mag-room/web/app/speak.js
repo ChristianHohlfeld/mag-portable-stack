@@ -223,6 +223,7 @@
       // The model lies in a folder of its own, so it stays in the browser when the worker changes.
       const query = new URLSearchParams();
       if (piper.config.models) query.set('m', piper.config.models);
+      if (piper.config.runtime) query.set('r', piper.config.runtime);
       if (gpuOk()) query.set('gpu', '1');
       const w = piper.worker = new Worker('/tts/' + piper.config.dir + '/tts-worker.js?' + query);
       piper.worker.onmessage = (ev) => {

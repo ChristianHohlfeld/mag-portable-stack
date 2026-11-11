@@ -14,12 +14,14 @@ let base = '', home = '';     // where the runtime lies, and where the model doe
 let gpuWanted = false;
 if (inWorker) {
   gpuWanted = new URL(self.location.href).searchParams.get('gpu') === '1' && !!(self.navigator && self.navigator.gpu);
-  importScripts('ort.webgpu.min.js');
   base = self.location.href.replace(/[?#].*$/, '').replace(/[^/]*$/, '');
-  // The model has a folder of its own (?m=...), so it stays in the browser when this worker changes.
-  const folder = new URL(self.location.href).searchParams.get('m') || '';
-  home = /^[\w.-]+$/.test(folder) ? base + '../' + folder + '/' : base;
-  ort.env.wasm.wasmPaths = base;
+  // The model (?m=...) and the runtime (?r=..., onnxruntime-web, about 27 MB) have folders of their
+  // own, so they stay in the browser when this worker changes.
+  const folder = (key) => { const f = new URL(self.location.href).searchParams.get(key) || ''; return /^[\w.-]+$/.test(f) ? base + '../' + f + '/' : base; };
+  home = folder('m');
+  const runtime = folder('r');
+  importScripts(runtime + 'ort.webgpu.min.js');
+  ort.env.wasm.wasmPaths = runtime;
   ort.env.wasm.proxy = false;
   ort.env.wasm.numThreads = (function () {
     try {

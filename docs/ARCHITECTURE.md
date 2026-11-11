@@ -393,13 +393,24 @@ Runs in the browser, not on the server. `web/app/speak.js` drives a Web Worker
 (`ops/tts/tts-worker.js`): Supertonic 3 (Supertone; a duration predictor, a
 text encoder, a flow-matching estimator and a vocoder as ONNX, 44.1 kHz) in
 onnxruntime-web, on the device's GPU (WebGPU) where that works and in WASM
-otherwise (one thread: the page is not cross-origin isolated). A provider
-is taken only after it has spoken one word that is sound. A voice is a
+otherwise, on several threads: the page is cross-origin isolated for that
+(`Cross-Origin-Opener-Policy: same-origin` on the page,
+`Cross-Origin-Embedder-Policy: credentialless` on every response, so the
+bots' pages still run in their frames). A provider is taken only after it
+has spoken one word that is sound, and the networks are run a few times in
+the background, because their first runs are the slowest. A voice is a
 style file (five female, five male); each speaker has a voice and a tempo,
-kept on the device. The text is cut into sentences; the first plays while
-the next is made. Before a sentence goes to the model it is written as it
+kept on the device. The text is cut into sentences, and they are made ahead
+of what plays (up to three at a time), so the reading does not stop
+between them. The first part of a reading is a few words only, and on a
+device that is not much faster than real time the first parts are made in
+three or four of the model's five steps: the sound starts within a second
+or two instead of after the first whole sentence. How fast the device is,
+is measured on every part. The page tells the room's journal how a reading
+went, as numbers (`POST /api/tts/stat`: provider, threads, steps, time to
+the first sound, work against length), never what was read. Before a sentence goes to the model it is written as it
 is spoken (`german()` in the worker: numbers, dates, times, units,
-abbreviations), and it is given decomposed (the model's table knows "a" and
+abbreviations, and what is spelled out: "3D" is "drei De"), and it is given decomposed (the model's table knows "a" and
 the two dots, not "ä"). German and English are read by the same voices.
 
 The model is about 400 MB. `models.lock` pins its files by SHA256,

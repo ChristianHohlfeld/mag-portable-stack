@@ -20,7 +20,7 @@ if (inWorker) {
     try {
       if (!self.crossOriginIsolated) return 1;
       const n = (self.navigator && self.navigator.hardwareConcurrency) || 1;
-      return Math.max(1, Math.min(4, n));
+      return Math.max(1, Math.min(6, n - 2));   // the big cores, and two left for the page
     } catch (e) { return 1; }
   })();
 }
@@ -28,7 +28,7 @@ const CACHE = 'mag-tts-s3';
 const NETWORKS = ['duration_predictor.onnx', 'text_encoder.onnx', 'vector_estimator.onnx', 'vocoder.onnx'];
 const LANGS = ['en', 'ko', 'ja', 'ar', 'bg', 'cs', 'da', 'de', 'el', 'es', 'et', 'fi', 'fr', 'hi', 'hr', 'hu', 'id', 'it', 'lt', 'lv', 'nl', 'pl', 'pt', 'ro', 'ru', 'sk', 'sl', 'sv', 'tr', 'uk', 'vi'];
 // How many steps the sound is refined in: more is cleaner and takes longer.
-const STEPS = {webgpu: 10, wasm: 5};
+const STEPS = {webgpu: 5, wasm: 5};
 let engine = null;            // promise of {cfg, indexer, dp, enc, est, voc, provider}
 const styles = new Map();     // voice file -> promise of {ttl, dp}
 
@@ -110,10 +110,13 @@ async function build(id) {
       const e = {cfg, indexer, dp: made[0], enc: made[1], est: made[2], voc: made[3], provider};
       // A provider that takes the networks but speaks nonsense (or nothing) is no provider: one word decides.
       const style = await loadStyle('F1.json');
-      const probe = await infer(e, 'Hallo.', 'de', style, 2, 1.05);
+      const probe = await infer(e, 'Hallo, guten Tag.', 'de', style, STEPS[provider] || 5, 1.05);
       let energy = 0, sound = true;
       for (let i = 0; i < probe.length; i++) { if (!Number.isFinite(probe[i])) { sound = false; break; } energy += probe[i] * probe[i]; }
       if (!sound || probe.length < 2000 || energy / probe.length < 1e-7) throw new Error('silent or broken output');
+      // The first runs of a network are its slowest (the browser is still making its code fast).
+      // They happen here, in the background, not when somebody taps "Vorlesen".
+      for (let i = 0; i < 2; i++) await infer(e, 'Das ist ein etwas längerer Satz, damit alles warm ist, bevor jemand zuhört.', 'de', style, 3, 1.05);
       return e;
     } catch (err) {
       last = err;
@@ -175,10 +178,22 @@ function ordinal(n) {
   return word + (n < 20 ? 'te' : 'ste');
 }
 const MONTHS = 'Januar|Februar|März|April|Mai|Juni|Juli|August|September|Oktober|November|Dezember';
+// Letters as they are named in German, for what is spelled out.
+const NAMED = {A: 'A', B: 'Be', C: 'Ce', D: 'De', E: 'E', F: 'Eff', G: 'Ge', H: 'Ha', I: 'I', J: 'Jott', K: 'Ka', L: 'Ell', M: 'Emm', N: 'Enn', O: 'O', P: 'Pe',
+               Q: 'Ku', R: 'Err', S: 'Ess', T: 'Te', U: 'U', V: 'Vau', W: 'We', X: 'Ix', Y: 'Ypsilon', Z: 'Zett'};
+const spelled = (letters) => letters.split('').map((c) => NAMED[c] || c).join(' ');
+// Short words in capitals that are spelled out, not read as a word.
+const SPELLED = new Set(('KI VM GPU CPU PDF URL USB API UI PR SSH HTML CSS GLB STL PLY UV TTS STT LLM RAM SSD PC TV DVD CD EU USA BRD DDR ZDF ARD LKW PKW ICE WC SMS ' +
+                         'DNS VPN IP TCP UDP HTTP HTTPS JSON XML SQL PNG JPG GIF MP WLAN LAN NUMA ONNX WASM GGUF CMU IK FPS KVM QR OCR MCP').split(' '));
 // German as it is said: numbers, times, dates and the signs around them in
 // words. The model reads letters; left alone it guesses at digits.
 function german(text) {
   let t = text;
+  // "3D" is "drei De", "MP3" is "Emm Pe drei", "KI" is "Ka I".
+  t = t.replace(/\b(\d{1,4})([A-Z]{1,3})(?![a-zäöüß])/g, (_, n, letters) => n + ' ' + spelled(letters) + ' ')
+       .replace(/\b([A-Z]{1,3})(\d{1,4})\b/g, (_, letters, n) => spelled(letters) + ' ' + n)
+       .replace(/\b[A-Z]{2,5}\b/g, (word) => (SPELLED.has(word) ? spelled(word) : word))
+       .replace(/ -(?=[A-Za-zÄÖÜäöü])/g, ' ');
   t = t.replace(/\bz\.\s?B\./g, 'zum Beispiel').replace(/\bd\.\s?h\./g, 'das heißt').replace(/\bu\.\s?a\./g, 'unter anderem')
        .replace(/\busw\./g, 'und so weiter').replace(/\bbzw\./g, 'beziehungsweise').replace(/\bca\./g, 'circa').replace(/\bggf\./g, 'gegebenenfalls')
        .replace(/\bNr\./g, 'Nummer').replace(/\bDr\./g, 'Doktor').replace(/\bProf\./g, 'Professor').replace(/\bevtl\./g, 'eventuell');
@@ -298,7 +313,7 @@ function level(audio, rate) {
   }
   return audio;
 }
-async function synth(text, model, id, rate, lang) {
+async function synth(text, model, id, rate, lang, steps) {
   const e = await getEngine(id);
   const style = await loadStyle(model);
   const tongue = LANGS.includes(lang) ? lang : 'de';
@@ -309,8 +324,9 @@ async function synth(text, model, id, rate, lang) {
   const speed = 1.05 * (rate >= 0.5 && rate <= 2.5 ? rate : 1);
   const parts = [], gap = Math.round(sampleRate * 0.12);
   const list = pieces(said, tongue === 'ko' || tongue === 'ja' ? 120 : 280);
+  const taken = steps >= 2 && steps <= 12 ? Math.round(steps) : STEPS[e.provider] || 5;
   for (let i = 0; i < list.length; i++) {
-    parts.push(await infer(e, list[i], tongue, style, STEPS[e.provider] || 5, speed));
+    parts.push(await infer(e, list[i], tongue, style, taken, speed));
     if (i + 1 < list.length) parts.push(new Float32Array(gap));
   }
   let n = 0;
@@ -318,7 +334,23 @@ async function synth(text, model, id, rate, lang) {
   const audio = new Float32Array(n);
   let o = 0;
   for (const p of parts) { audio.set(p, o); o += p.length; }
-  return {audio: level(audio, sampleRate), rate: sampleRate, synthMs: Date.now() - t0, provider: e.provider};
+  return {audio: level(trimmed(audio, sampleRate, /[.!?…]["')\]]?$/.test(said)), sampleRate), rate: sampleRate, synthMs: Date.now() - t0, provider: e.provider, steps: taken};
+}
+// The model leaves silence before and after what it says, sometimes much.
+// Between the parts of one reading that would be a pause where nobody
+// pauses: a part keeps a breath after the end of a sentence and next to
+// nothing after a clause.
+function trimmed(audio, rate, sentence) {
+  let peak = 0;
+  for (let i = 0; i < audio.length; i++) { const a = Math.abs(audio[i]); if (a > peak) peak = a; }
+  if (peak < 1e-4) return audio;
+  const quiet = peak * 0.02;
+  let from = 0, to = audio.length - 1;
+  while (from < to && Math.abs(audio[from]) < quiet) from++;
+  while (to > from && Math.abs(audio[to]) < quiet) to--;
+  from = Math.max(0, from - Math.round(rate * 0.02));
+  to = Math.min(audio.length, to + 1 + Math.round(rate * (sentence ? 0.22 : 0.05)));
+  return from === 0 && to === audio.length ? audio : audio.slice(from, to);
 }
 // One request at a time: a stopped playback may still have a part in flight,
 // and two overlapping runs of one session can fail. 'cancel' is handled at
@@ -336,7 +368,7 @@ if (inWorker) self.onmessage = ev => {
   }
   chain = chain.then(() => handle(data));
 };
-async function handle({type, id, text, model, rate, lang}) {
+async function handle({type, id, text, model, rate, lang, steps}) {
   try {
     if (type === 'warm') {
       const e = await getEngine(id);
@@ -346,8 +378,8 @@ async function handle({type, id, text, model, rate, lang}) {
     }
     if (type === 'speak') {
       if (id <= cancelledBefore) { postMessage({type: 'error', id, error: 'cancelled'}); return; }
-      const out = await synth(text, model, id, rate, lang);
-      postMessage({type: 'audio', id, audio: out.audio, rate: out.rate, synthMs: out.synthMs, provider: out.provider}, [out.audio.buffer]);
+      const out = await synth(text, model, id, rate, lang, steps);
+      postMessage({type: 'audio', id, audio: out.audio, rate: out.rate, synthMs: out.synthMs, provider: out.provider, threads: ort.env.wasm.numThreads, steps: out.steps}, [out.audio.buffer]);
     }
   } catch (e) { postMessage({type: 'error', id, error: String(e && e.message || e)}); }
 }

@@ -524,10 +524,11 @@ def analyse(co, edges=None, axis=None, kind=None):
             bones[skull_bone]["head"] = neck_at
         trunk = [pelvis, ribs, skull_bone]
         notes = ["Zweibeiner: 2 Beine, Rumpf, Kopf" + (" und %d Arm%s" % (arms, "e" if arms > 1 else "") if arms else "; Arme liegen am Körper an und bewegen sich mit ihm")]
-        # On two legs with a body that reaches far ahead and behind them, as long as it is
-        # tall (or the caller knows): a bird. What sticks out at its sides are wings.
+        # On two legs with a body that reaches far ahead and behind them, about as long as
+        # it is tall (or the caller knows): a bird. What sticks out at its sides are wings.
+        # Somebody who sits, or holds something out in front, is not as deep as that.
         deep = float(np.ptp(points[:, :2] @ front)) if front is not None else float(min(size[0], size[1]))
-        if kind == "bird" or (kind != "biped" and deep > 0.75 * height):
+        if kind == "bird" or (kind != "biped" and deep > 0.9 * height):
             found = "bird"
             for b in bones:
                 if b["role"] in ("arm", "forearm"):

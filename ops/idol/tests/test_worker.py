@@ -37,6 +37,12 @@ if script == "runner.py":
         sys.stderr.write("\rSampling: %3d%%|#| %d/50 [00:01<00:%02d,  1.00s/it]" % (i * 2, i, 50 - i))
         sys.stderr.flush()
     (out / "input.ply").write_bytes(b"ply")
+elif script == "select.py":
+    import json
+    out = pathlib.Path(args[1])
+    out.mkdir()
+    (out / "mask-0.png").write_bytes(b"\x89PNG mask " + " ".join(args[2:]).encode())
+    (out / "masks.json").write_text(json.dumps({"width": 4, "height": 3, "masks": [{"file": "mask-0.png", "box": [0, 0, 2, 2], "share": 0.3}]}))
 else:
     folder = pathlib.Path(args[1])
     if (folder.parent.parent / "mesh-fails").exists():
@@ -121,6 +127,14 @@ def main():
 
     try:
         start()
+        # The objects of a photo: the one at a place, or all; nothing of it stays behind.
+        code, found = call("POST", "/api/idol/select?x=0.25&y=0.5", PNG)
+        assert code == 200 and found["width"] == 4 and len(found["masks"]) == 1, found
+        import base64
+        assert base64.b64decode(found["masks"][0]["png"]) == b"\x89PNG mask --point 0.25 0.5" and "file" not in found["masks"][0], found
+        assert base64.b64decode(call("POST", "/api/idol/select", PNG)[1]["masks"][0]["png"]).endswith(b"--all")
+        assert call("POST", "/api/idol/select?x=2&y=0", PNG)[0] == 400 and call("POST", "/api/idol/select", b"not a picture")[0] == 415
+        assert list(root.iterdir()) == [], list(root.iterdir())
         assert call("GET", "/api/idol/health")[1]["resumable"] is True
         # 1. The worker restarts while a job samples: the stage keeps running,
         #    the new worker follows it, nothing starts twice.

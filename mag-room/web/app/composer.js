@@ -46,6 +46,11 @@
         stagedBox.append(el('div', { class: 'staged source' },
           el('button', { class: 'pill', onclick: () => pick('image/png,image/jpeg,image/webp', false, paintStaged) }, MAG.icon('image'), el('b', { text: 'Galerie' })),
           el('button', { class: 'pill', onclick: () => shoot(paintStaged) }, MAG.icon('camera'), el('b', { text: 'Kamera' }))));
+      // A photo with several things in it: Chris says which one is meant.
+      const photo = staged.find((s) => s.att.kind === 'image');
+      if (photo && !photo.cut && !uploading)
+        stagedBox.append(el('div', { class: 'staged source' },
+          el('button', { class: 'pill', onclick: () => choose(photo) }, MAG.icon('cube'), el('b', { text: 'Objekt wählen' }))));
     }
     refresh();
   }
@@ -108,6 +113,124 @@
         } }, MAG.icon('camera'), el('b', { text: 'Auslösen' }))));
     });
     sheet.addEventListener('closed', () => stream.getTracks().forEach((t) => t.stop()));
+  }
+
+  // ---- which object of the photo ------------------------------------------
+  const picture = (src) => new Promise((done, fail) => { const i = new Image(); i.onload = () => done(i); i.onerror = () => fail(new Error('Bild lässt sich nicht lesen')); i.src = src; });
+  // The photo with everything but one object cut away (transparent), no
+  // larger than the object: a canvas.
+  async function cutOut(image, mask) {
+    const scale = Math.min(1, 2048 / Math.max(image.naturalWidth, image.naturalHeight));
+    const w = Math.round(image.naturalWidth * scale), h = Math.round(image.naturalHeight * scale);
+    const shape = el('canvas', { width: w, height: h }), sc = shape.getContext('2d', { willReadFrequently: true });
+    sc.drawImage(await picture('data:image/png;base64,' + mask.png), 0, 0, w, h);
+    const px = sc.getImageData(0, 0, w, h);
+    for (let i = 0; i < px.data.length; i += 4) px.data[i + 3] = px.data[i];
+    sc.putImageData(px, 0, 0);
+    const whole = el('canvas', { width: w, height: h }), wc = whole.getContext('2d');
+    wc.drawImage(image, 0, 0, w, h);
+    wc.globalCompositeOperation = 'destination-in';
+    wc.drawImage(shape, 0, 0);
+    const k = w / mask.width, pad = Math.round(0.04 * Math.max(w, h));
+    const [l, t, r, b] = [Math.max(0, Math.floor(mask.box[0] * k) - pad), Math.max(0, Math.floor(mask.box[1] * k) - pad), Math.min(w, Math.ceil(mask.box[2] * k) + pad), Math.min(h, Math.ceil(mask.box[3] * k) + pad)];
+    const out = el('canvas', { width: Math.max(1, r - l), height: Math.max(1, b - t) });
+    out.getContext('2d').drawImage(whole, l, t, r - l, b - t, 0, 0, r - l, b - t);
+    return out;
+  }
+  async function uploadCut(canvas, name) {
+    const blob = await new Promise((done) => canvas.toBlob(done, 'image/png'));
+    if (!blob) throw new Error('Das Objekt ließ sich nicht ausschneiden');
+    const att = await MAG.api('POST', '/api/upload?name=' + encodeURIComponent(name), blob);
+    return { att, url: '/api/file/' + encodeURIComponent(att.file), cut: true };
+  }
+  // The sheet: tap an object and see what was understood, or have every
+  // object found and take those that are wanted, each as a model of its own.
+  function choose(photo) {
+    const base = (photo.att.name || 'foto').replace(/\.[a-z0-9]+$/i, '');
+    MAG.sheet('Objekt wählen', async (content, _, close) => {
+      const view = el('div', { class: 'choose' }), img = el('img', { src: photo.url, alt: '' }), over = el('div', { class: 'cut' });
+      const hint = el('p', { class: 'hint', text: 'Tippe auf das Objekt, aus dem das Modell werden soll.' });
+      const bar = el('div', { class: 'row' }), list = el('div', { class: 'objects' });
+      view.append(img, over);
+      content.append(hint, view, bar, list);
+      let busy = false, one = null, many = [];
+      const say = (text) => { hint.textContent = text; };
+      const paint = () => {
+        bar.replaceChildren();
+        if (busy) return bar.append(el('span', { class: 'spin' }));
+        if (one) bar.append(el('button', { class: 'pill on', onclick: take }, MAG.icon('cube'), el('b', { text: 'Dieses Objekt' })));
+        const wanted = many.filter((o) => o.on).length;
+        if (wanted) bar.append(el('button', { class: 'pill on', onclick: takeAll }, MAG.icon('cube'), el('b', { text: wanted === 1 ? '1 Modell erstellen' : wanted + ' Modelle erstellen' })));
+        bar.append(el('button', { class: 'pill', onclick: all }, el('b', { text: 'Alle einzeln' })));
+      };
+      const ask = async (body, wait) => {
+        busy = true; paint(); say(wait);
+        try { return await MAG.api('POST', '/api/3d/select', Object.assign({ file: photo.att.file }, body)); }
+        catch (err) { say(err.message); return null; }
+        finally { busy = false; paint(); }
+      };
+      const masks = (found) => found.masks.map((m) => Object.assign(m, { width: found.width }));
+      img.addEventListener('click', async (e) => {
+        if (busy) return;
+        const box = img.getBoundingClientRect();
+        const found = await ask({ x: (e.clientX - box.left) / box.width, y: (e.clientY - box.top) / box.height }, 'Das Objekt wird gesucht …');
+        if (!found) return;
+        if (!found.masks.length) return say('Dort ist kein Objekt zu erkennen. Tippe noch einmal.');
+        one = await cutOut(await picture(photo.url), masks(found)[0]);
+        over.replaceChildren(el('img', { src: one.toDataURL(), alt: '', style: place(masks(found)[0], found) }));
+        view.classList.add('picked');
+        say('Das wird das Modell. Tippe woanders hin, wenn etwas anderes gemeint ist.');
+        paint();
+      });
+      // Where the cut lies on the photo, in per cent of it.
+      function place(mask, found) {
+        const pad = 0.04 * Math.max(found.width, found.height);
+        const l = Math.max(0, mask.box[0] - pad), t = Math.max(0, mask.box[1] - pad), r = Math.min(found.width, mask.box[2] + pad), b = Math.min(found.height, mask.box[3] + pad);
+        return `left:${100 * l / found.width}%;top:${100 * t / found.height}%;width:${100 * (r - l) / found.width}%;height:${100 * (b - t) / found.height}%`;
+      }
+      async function all() {
+        const found = await ask({}, 'Alle Objekte werden gesucht. Das dauert etwa eine halbe Minute …');
+        if (!found) return;
+        if (!found.masks.length) return say('Im Foto ist kein einzelnes Objekt zu erkennen.');
+        const image = await picture(photo.url);
+        many = [];
+        for (const mask of masks(found)) many.push({ canvas: await cutOut(image, mask), on: true });
+        one = null;
+        over.replaceChildren();
+        view.classList.remove('picked');
+        list.replaceChildren(...many.map((o) => {
+          const b = el('button', { class: 'object on', onclick: () => { o.on = !o.on; b.classList.toggle('on', o.on); paint(); } }, el('img', { src: o.canvas.toDataURL(), alt: '' }));
+          return b;
+        }));
+        say('Aus jedem markierten Objekt wird ein eigenes Modell. Tippe ab, was nicht gebraucht wird.');
+        paint();
+      }
+      async function take() {
+        busy = true; paint();
+        try {
+          const cut = await uploadCut(one, base + '-objekt.png');
+          staged = staged.map((s) => s === photo ? cut : s);
+          close();
+          paintStaged();
+        } catch (err) { busy = false; paint(); say(err.message); }
+      }
+      async function takeAll() {
+        busy = true; paint();
+        try {
+          let n = 0;
+          for (const o of many.filter((o) => o.on)) {
+            const cut = await uploadCut(o.canvas, base + '-objekt-' + (++n) + '.png');
+            await MAG.api('POST', '/api/message', { text: '', attachments: [cut.att.file], mode: '3d', quality, client_id: crypto.randomUUID?.() || String(Math.random()) });
+          }
+          staged = staged.filter((s) => s !== photo);
+          mode3d = false;
+          close();
+          paintStaged();
+          MAG.scrollToEnd();
+        } catch (err) { busy = false; paint(); say(err.message); }
+      }
+      paint();
+    });
   }
 
   async function send() {

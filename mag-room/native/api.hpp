@@ -83,6 +83,13 @@ public:
       }
       return http::send_ok(fd);
     }
+    if (r.method == "POST" && p == "/api/3d/select") {
+      // Which object of a photo is meant: the one at a place, or every one by itself.
+      const Val in = jparse(r.body);
+      Val found;
+      const std::string why = idol_.select(jstr(in, "file"), in.find("x") ? jnum(in, "x") : -1, jnum(in, "y"), found);
+      return why.empty() ? http::send_json(fd, 200, found) : http::send_error(fd, 409, why);
+    }
     if (r.method == "POST" && starts_with(p, "/api/3d/") && ends_with(p, "/retry")) {
       // A 3D job that failed or was cancelled, taken up again where it stopped.
       Val m;

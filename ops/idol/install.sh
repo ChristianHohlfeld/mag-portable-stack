@@ -38,6 +38,17 @@ import torch, tensordict, idol, scipy, skimage, trimesh, plyfile, xatlas, PIL, f
 assert torch.__version__.startswith("2.7.1+") and torch.version.hip
 assert tensordict.__version__.split("+")[0] == "0.9.1"
 PY
+# SAM 2 finds the object of a photo that is meant (select.py, on the CPU).
+# Its weights are fetched once, pinned; without them the page says so in
+# words and photo to 3D works as before.
+if [[ ! -s $BASE/weights/sam2/model.safetensors ]]; then
+  sudo -u chris env HF_HUB_OFFLINE=0 "$PY" - "$BASE/weights/sam2" <<'PY' || echo 'SAM 2 weights not fetched; object selection stays off' >&2
+import sys
+from huggingface_hub import snapshot_download
+snapshot_download("facebook/sam2.1-hiera-small", revision="ee5bba1d82bb8749febdf90f45e84b687142ba03", local_dir=sys.argv[1],
+                  allow_patterns=["config.json", "model.safetensors", "preprocessor_config.json", "processor_config.json"])
+PY
+fi
 install -d -o chris -g chris -m 0700 /var/lib/mag-idol/jobs /var/lib/mag-idol/tmp
 install -m 0644 /opt/mag-stack/current/ops/idol/mag-idol.tmpfiles.conf /etc/tmpfiles.d/mag-idol.conf
 systemd-tmpfiles --create /etc/tmpfiles.d/mag-idol.conf

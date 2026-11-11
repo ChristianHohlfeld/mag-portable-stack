@@ -14,6 +14,7 @@ processor for ten minutes), and then it is started again. A job that failed or w
 cancelled is taken up again when it is asked for (retry), at the first stage
 whose result is missing: sampling that is done is not done again.
 """
+import base64
 import json
 import os
 from pathlib import Path
@@ -22,6 +23,7 @@ import re
 import shutil
 import signal
 import subprocess
+import tempfile
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -59,6 +61,7 @@ LOGS = {"sample": "idol.log", "mesh": "mesh.log"}
 jobs = {}
 lock = threading.Lock()
 pending = queue.Queue()
+selecting = threading.Lock()   # one photo is looked at at a time
 abort = set()
 
 
@@ -420,6 +423,48 @@ def execute():
                 abort.discard(job_id)
             pending.task_done()
 
+def is_picture(data):
+    return (data.startswith(b"\x89PNG\r\n\x1a\n") or data.startswith(b"\xff\xd8\xff") or
+            (data.startswith(b"RIFF") and data[8:12] == b"WEBP"))
+
+
+def select(data, query):
+    """The objects of a photo (select.py: SAM 2 on the CPU, never the MI50):
+    the one at a place, or all of them. Returns (status, answer); every mask
+    is a PNG as large as the photo, white where the object is."""
+    here = Path(__file__).resolve()
+    tmp = Path(tempfile.mkdtemp(prefix="select-", dir=ROOT))
+    try:
+        (tmp / "photo").write_bytes(data)
+        command = [PYTHON, str(here.with_name("select.py")), str(tmp / "photo"), str(tmp / "out")]
+        if "x" in query and "y" in query:
+            try:
+                x, y = float(query["x"][0]), float(query["y"][0])
+            except ValueError:
+                return 400, {"error": "x und y müssen Zahlen sein"}
+            if not (0 <= x <= 1 and 0 <= y <= 1):
+                return 400, {"error": "x und y liegen zwischen 0 und 1"}
+            command += ["--point", str(x), str(y)]
+        else:
+            command += ["--all"]
+        if CPUS:
+            command = ["taskset", "-c", CPUS] + command
+        env = dict(os.environ, CUDA_VISIBLE_DEVICES="", HIP_VISIBLE_DEVICES="", HF_HUB_OFFLINE="1", TMPDIR=str(tmp))
+        with selecting:
+            done = subprocess.run(command, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=600)
+        listing = tmp / "out" / "masks.json"
+        if done.returncode != 0 or not listing.is_file():
+            return 500, {"error": "Die Objekte im Foto ließen sich nicht finden."}
+        found = json.loads(listing.read_text())
+        for mask in found["masks"]:
+            mask["png"] = base64.b64encode((tmp / "out" / mask.pop("file")).read_bytes()).decode()
+        return 200, found
+    except subprocess.TimeoutExpired:
+        return 500, {"error": "Die Objekte im Foto ließen sich nicht finden."}
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 class API(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         pass
@@ -453,6 +498,17 @@ class API(BaseHTTPRequestHandler):
                 known = list(jobs)
             stray = [p.name for p in ROOT.iterdir() if p.is_dir() and VALID_ID.fullmatch(p.name)]
             return self.reply(200, {"deleted": sum(discard(i) for i in set(known + stray))})
+        if path == "/api/idol/select":
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+            except ValueError:
+                length = 0
+            if not 8 <= length <= MAX_UPLOAD:
+                return self.reply(413, {"error": "Bild muss zwischen 8 Byte und 20 MB groß sein"})
+            data = self.rfile.read(length)
+            if not is_picture(data):
+                return self.reply(415, {"error": "Nur PNG, JPEG oder WebP erlaubt"})
+            return self.reply(*select(data, parse_qs(url.query)))
         if path != "/api/idol/jobs":
             return self.reply(404, {"error": "Nicht gefunden"})
         supplied = parse_qs(url.query, keep_blank_values=True)
@@ -467,8 +523,7 @@ class API(BaseHTTPRequestHandler):
         if not 8 <= length <= MAX_UPLOAD:
             return self.reply(413, {"error": "Bild muss zwischen 8 Byte und 20 MB groß sein"})
         data = self.rfile.read(length)
-        if not (data.startswith(b"\x89PNG\r\n\x1a\n") or data.startswith(b"\xff\xd8\xff") or
-                (data.startswith(b"RIFF") and data[8:12] == b"WEBP")):
+        if not is_picture(data):
             return self.reply(415, {"error": "Nur PNG, JPEG oder WebP erlaubt"})
         with lock:
             if pending.qsize() >= MAX_PENDING:

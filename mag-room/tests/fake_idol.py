@@ -13,6 +13,7 @@ class FakeIdol:
         self.hold = False  # True: jobs stay "running" until a test lets go
         self.fails = ""    # not empty: jobs end as an error with these words
         self.retried = []
+        self.selected = []  # what was asked about the objects of a photo
         fake = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -58,6 +59,9 @@ class FakeIdol:
                     fake.purges += 1
                     fake.jobs.clear()
                     return self.reply(200, {"deleted": 0})
+                if parts == ["api", "idol", "select"]:
+                    fake.selected.append(self.path.partition("?")[2])
+                    return self.reply(200, {"width": 4, "height": 3, "masks": [{"box": [0, 0, 2, 2], "share": 0.3, "png": "bWFzaw=="}]})
                 if len(parts) == 5 and parts[4] == "cancel":
                     fake.cancelled.append(parts[3])
                     fake.jobs[parts[3]]["state"] = "cancelled"

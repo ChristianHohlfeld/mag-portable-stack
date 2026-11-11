@@ -51,7 +51,7 @@ def main():
     print("MAG-IMAGE 0/%d" % STEPS, flush=True)
     embeds = embed(prompt)
     pipe = Flux2KleinPipeline.from_pretrained(WEIGHTS, text_encoder=None, tokenizer=None,
-                                              torch_dtype=torch.float16).to("cuda")
+                                              dtype=torch.float16).to("cuda")
 
     def step(_pipe, i, _t, kwargs):
         print("MAG-IMAGE %d/%d" % (i + 1, STEPS), flush=True)

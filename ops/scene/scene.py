@@ -28,6 +28,7 @@ from mathutils import Euler, Matrix, Quaternion, Vector
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import animal  # noqa: E402  (how an animal on four legs moves)
+import face  # noqa: E402  (a face that moves: jaw, mouth, lids, brows)
 import motion  # noqa: E402  (how a figure on two legs moves)
 import rig  # noqa: E402  (what a figure is, and its skeleton)
 
@@ -472,6 +473,7 @@ ACTIONS = ("walk_to, run_to, sneak_to, hop_to, jump_over, turn_to, look_at, turn
            "pose (part: left_hand/right_hand/both_hands, where: at/touch/point/head/up/forward/side, hand: fist/open/point, target, seconds); "
            "fly_to, fly (up into the air and round), flap, peck (birds; anything can fly); drive_to (a vehicle; it also drives on walk_to/run_to); roll_to (a thing rolls like a ball); "
            "open, close, turn_part (a thing or vehicle: part top/front/back/left/right, degrees); "
+           "say (text: its mouth speaks the words), face (expression: smile/laugh/sad/frown/angry/surprised/blink); "
            "somebody on two legs also: " + "%s; an animal also: sit, lie, sleep, crouch, bow, beg, stand, shake, sniff, eat, howl, dig, pounce")
 RECORDED = []   # the recorded motions of the library, by name (filled when it is read)
 # When in a recorded motion the blow lands (part of its length).
@@ -548,6 +550,7 @@ class Actor:
         self.placed = False               # put somewhere on purpose, or moved already
         self.keys = {}                    # frame -> (x, y, z, pitch, roll, yaw, squash, scale)
         self.pieces = {}                  # a part that opens or turns: side -> its object, hinge and keys (see piece())
+        self.face = None                  # its face, when it shows one (face.py)
 
     @property
     def height(self):
@@ -918,6 +921,31 @@ def perform(actor, action, actors, fps, start):
             end = BEAST[kind](p, seconds(0.0, 0.0, 12.0))
         else:
             end = p.ease(kind, seconds(1.5, 0.0, 20.0))
+    elif kind in face.FACIAL:
+        # It speaks (its mouth shapes the words, its head nods with them) or shows a feeling on its face.
+        f = actor.face if not beast else None
+        if other:
+            way = other.pos - actor.pos
+            if way.length > 1e-6 and abs(motion.wrap(math.atan2(way.y, way.x) - p.heading)) > 0.6:
+                first = p.face(math.atan2(way.y, way.x))
+        if kind in ("say", "talk", "speak"):
+            text = str(action.get("text") or action.get("query") or "")[:600]
+            frames = f.say(text, first, seconds(0.0, 0.0, 30.0) or None) if f else 0
+            frames = max(frames, int(round((seconds(0.0, 0.0, 30.0) or 0.075 * max(8, len(text))) * fps)))
+            if not beast:
+                p.grip("both", first, first + frames, "relaxed")
+            p.nod("talk" if not beast else "nod", first, frames, max(1, face.words(text) // 3))
+        else:
+            expression = str(action.get("expression") or "smile").lower() if kind == "face" else kind
+            expression = {"talk": "smile", "speak": "smile"}.get(expression, expression)
+            frames = max(6, int(round(seconds(0.4 if expression == "blink" else 1.8, 0.2, 12.0) * fps)))
+            if f:
+                f.show(expression, first, frames)
+            elif expression in ("smile", "laugh"):
+                p.nod("nod", first, frames, 2)
+        if other:
+            p.look(eyes(other), first, first + frames, 0.85)
+        end = p.wait(first + frames)
     elif kind == "pose" and not beast:
         # A free pose: a hand (or both) to a place, held for a while: points at
         # somebody, touches its head, holds its arms up. Worked out with IK on
@@ -1533,6 +1561,11 @@ def animate(actor, last):
             actor.rig.frames[frame] = {name: Quaternion(turn) for name, turn in turns.items()}
             if moves:
                 actor.rig.moves[frame] = moves[0]
+        if actor.face is not None:                   # what its face does is laid over the head
+            for frame, (turns, moves) in enumerate(actor.face.frames(last)):
+                actor.rig.frames.setdefault(frame, {}).update(turns)
+                if moves:
+                    actor.rig.moves.setdefault(frame, {}).update(moves)
     if actor.thrown:
         if actor.performer is None:                  # a thing has keys only where something changes: one for every frame of its flight
             known = sorted(actor.keys)
@@ -1775,6 +1808,7 @@ def build(spec_path, out):
         if entry["file"] not in loaded:
             loaded[entry["file"]] = load_model(entry["file"])
     used, studied = {}, {}
+    facial = face.wanted(spec)                        # who shows its face: its mouth, eyes and brows get bones
     for i, entry in enumerate(wanted):
         entry["name"] = str(entry.get("name") or "Darsteller %d" % (i + 1))[:40]
         parts = loaded[entry["file"]]
@@ -1791,7 +1825,17 @@ def build(spec_path, out):
         obj = parts[index - 1]
         copies = used.get((entry["file"], index), 0)
         if not copies:  # what it is: an animal, somebody on two legs, a thing
-            studied[(entry["file"], index)] = study(obj, KINDS.get(entry.get("kind")))
+            found = studied[(entry["file"], index)] = study(obj, KINDS.get(entry.get("kind")))
+            if str(entry.get("name") or "").strip().lower() in facial and found["kind"] == "biped":
+                try:
+                    front = found["front"] or list(FACES.get(entry.get("faces"), FACES["camera"]))
+                    points, how = face.find(obj, found["bones"], front)
+                    named = face.rig(points, found["bones"], front)
+                    if named:
+                        found["face"] = (points, named, front)
+                        found["notes"].append("Gesicht (%s): %s" % (how, ", ".join(sorted(named.values()))))
+                except Exception as exc:              # without a face it still speaks with its head and hands
+                    print("MAG-NOTE %s: no face (%s)" % (entry.get("name"), type(exc).__name__), flush=True)
         else:           # the same figure again: a twin
             twin = obj.copy()
             twin.data = obj.data
@@ -1804,6 +1848,11 @@ def build(spec_path, out):
         if find(actors, name):
             fail("Zwei Darsteller heißen " + name + ".")
         actor = Actor(name, obj, studied[(entry["file"], index)], weigh=not copies)
+        made = studied[(entry["file"], index)].get("face")
+        if made and actor.rig is not None:
+            if not copies:
+                face.weigh(actor.part, *made)
+            actor.face = face.Face(made[1], made[0], made[2], FPS, seed=i)
         if entry.get("kind") == "vehicle":           # it drives: no legs, never a skeleton
             actor.kind = "vehicle"
         actor.scale = number(entry, "size", 1.0, 0.2, 5.0)

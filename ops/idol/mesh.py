@@ -1,22 +1,26 @@
 #!/usr/bin/env python3
-"""Idol splat -> a closed, coloured model (GLB) and a printable one (STL). CPU only.
+"""Idol splat -> a solid, coloured model (GLB) and a printable one (STL). CPU only.
 
 A splat is a cloud of small flat Gaussians that lie on what the photo showed.
-The surface is made from them the way they are:
+The model is made from them the way they are:
 
 1. Every Gaussian with its own size and its own turn (none left out) is
    written into a grid as opacity: a cell is as opaque as the Gaussians in
    it together.
 2. Where that is half opaque is the shell. The grid is flooded from outside:
-   what the flood does not reach is the body, so it is closed, and shells
-   and bubbles inside it are gone. Pores the size of a cell or two are
-   closed before the flood. Loose bits fall away; what is big enough to be
-   a figure of its own (a photo may show two) stays.
-3. The surface is taken anew from that body (uniform triangles, no holes),
-   smoothed, and brought down to the number of faces a model needs.
+   what the flood does not reach is the body. A photo shows one side; where
+   the Gaussians of the other sides leave a gap, the flood gets in. So what
+   is walled in is body all the same, the tear is closed, and the underside
+   nobody saw is closed flat (surface.py). Loose bits fall away; what is
+   big enough to be a figure of its own (a photo may show two) stays.
+3. The surface is taken from that body, placed between the cells by the
+   Gaussians themselves (each knows its plane), so it has no steps. Then it
+   is brought down to the number of faces a model needs, and it stays a
+   solid through that: closed, every edge between two faces, faces outwards,
+   no bubble inside, no corner where two sheets only touch.
 4. That small mesh is unwrapped, and the texture is baked for it from the
-   splat itself: the colours are as fine as the atlas, whatever the faces.
-   The STL keeps the finer mesh.
+   splat itself: the colours are as fine as the Gaussians, whatever the
+   faces. The STL keeps the finer mesh.
 
 The original splat.ply is never modified.
 """
@@ -27,12 +31,12 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw
 from plyfile import PlyData
-from scipy.ndimage import binary_dilation, distance_transform_edt, gaussian_filter
+from scipy.ndimage import binary_dilation, binary_erosion, distance_transform_edt, gaussian_filter
 from scipy.spatial import cKDTree
 from skimage.measure import marching_cubes
 import trimesh
 
-from surface import PORE, body_of, opacity_field
+from surface import OWN, PORE, body_of, opacity_field
 from unwrap import unwrap
 
 # Single source of truth for mesh preset parameters. "resolution": cells of
@@ -40,9 +44,9 @@ from unwrap import unwrap
 # "print_faces": of the STL. "unwrap": seconds xatlas gets for the UVs of the
 # small mesh before it is laid out plainly instead (see unwrap.py).
 QUALITY_PRESETS = {
-    "fast": {"resolution": 128, "faces": 40000, "print_faces": 150000, "texture": 1024, "smooth": 2, "crop": 0.5, "neighbors": 8, "unwrap": 30},
-    "normal": {"resolution": 224, "faces": 80000, "print_faces": 400000, "texture": 2048, "smooth": 3, "crop": 0.1, "neighbors": 12, "unwrap": 60},
-    "high": {"resolution": 320, "faces": 160000, "print_faces": 800000, "texture": 4096, "smooth": 2, "crop": 0.02, "neighbors": 16, "unwrap": 120},
+    "fast": {"resolution": 128, "faces": 40000, "print_faces": 150000, "texture": 2048, "smooth": 5, "crop": 0.5, "neighbors": 8, "unwrap": 30},
+    "normal": {"resolution": 224, "faces": 80000, "print_faces": 400000, "texture": 4096, "smooth": 5, "crop": 0.1, "neighbors": 12, "unwrap": 60},
+    "high": {"resolution": 320, "faces": 160000, "print_faces": 800000, "texture": 4096, "smooth": 4, "crop": 0.02, "neighbors": 16, "unwrap": 120},
 }
 def opacity_colors(vertices, names, indices):
     if all("f_dc_" + str(i) in names for i in range(3)):
@@ -57,14 +61,18 @@ def opacity_colors(vertices, names, indices):
 
 
 def gaussian_albedo(points, tree, centers, colors, alpha, radii, spacing, neighbors):
-    """Gather multiple nearby splats per surface sample; opacity * Gaussian weight.
+    """The colour of the splat at points of the surface: the Gaussians around
+    a point, each as far as it reaches itself (`radii`: its own width, and
+    never less than half the way to its neighbour, so no gaps show). The
+    colours are as fine as the Gaussians are, not as coarse as the grid the
+    surface was taken from.
 
     Chunking is handled by the caller, including 4K UV texel baking.
     """
     distances, ids = tree.query(points, k=min(neighbors, len(centers)), workers=8)
     if np.ndim(ids) == 1:
         ids, distances = ids[:, None], distances[:, None]
-    width = np.maximum(radii[ids]*1.5, spacing * 1.25)
+    width = radii[ids]
     weight = alpha[ids] * np.exp(
         -0.5 * np.minimum((distances / width)**2, 80.0))
     # Prefer high-confidence near splats while blending neighbours.
@@ -75,6 +83,7 @@ def gaussian_albedo(points, tree, centers, colors, alpha, radii, spacing, neighb
     weak = total < 1e-10
     if np.any(weak):
         # Never turn weak areas into nearest-neighbour vertex colours.
+        # Far from every Gaussian (an underside that was closed, a filled room): the colours around it, softly.
         fallback = alpha[ids[weak]] / np.maximum(distances[weak], spacing*0.25)**2
         fallback /= np.maximum(fallback.sum(axis=1, keepdims=True), 1e-12)
         rgb[weak] = (fallback[..., None] * colors[ids[weak]]).sum(axis=1)
@@ -107,6 +116,8 @@ def bake_texture(verts, faces, xyz, alpha, radii, colors, spacing, size, neighbo
     tex_flat = np.zeros((size*size, 3), dtype=np.uint8)
     all_pixels = np.flatnonzero(covered)
     tree = cKDTree(xyz)
+    # A Gaussian colours as far as it is wide, and at least half the way to the next one.
+    radii = np.maximum(radii, 0.5 * tree.query(xyz, k=2, workers=8)[0][:, 1]).astype(np.float32)
     verts = np.asarray(verts, np.float32)[vmapping]
     total = len(all_pixels)
     for start in range(0, total, 32768):
@@ -146,6 +157,192 @@ def bake_texture(verts, faces, xyz, alpha, radii, colors, spacing, size, neighbo
                                          return_indices=True)
         texture[rim] = texture[nearest[0][rim], nearest[1][rim]]
     return vmapping, uv_faces, uvs, Image.fromarray(texture, mode="RGB")
+
+
+def surface_field(body, added, xyz, alpha, scales, turns, lo, spacing):
+    """How far every cell is inside the body (in cells, negative: outside),
+    exact to a fraction of a cell where it matters: next to the surface.
+
+    The cells only know inside from outside, and a surface taken from that
+    has steps as high as a cell. But the Gaussians lie on the surface, each
+    a small flat disc that knows its own plane. So next to the body's edge a
+    cell asks the Gaussians around it where their sheet runs, and takes its
+    distance from that. Where the body was closed or filled (`added`) there
+    are no Gaussians to ask; there the edge of the body is taken, rounded."""
+    far = np.clip(distance_transform_edt(body) - distance_transform_edt(~body), -4.0, 4.0).astype(np.float32)
+    far -= np.where(far > 0, 0.5, -0.5).astype(np.float32)     # the edge runs between the cells
+    rounded = gaussian_filter(far, sigma=1.5)
+    # The layers the surface runs in: the shell is a few cells thick around its sheet.
+    edge = binary_dilation(body) & ~binary_erosion(body, iterations=3)
+    if added.any():
+        edge &= ~binary_dilation(added, iterations=2)
+    cells = np.argwhere(edge)
+    shift = 1.0
+    deep = None
+    # Only the Gaussians of the outer sheet are asked: below a gap in it the
+    # nearest ones would be those of a sheet inside.
+    home = np.clip(np.rint((xyz - lo) / spacing).astype(np.int64), 0, np.array(body.shape) - 1)
+    outer = edge[home[:, 0], home[:, 1], home[:, 2]]
+    xyz, alpha, scales, turns = xyz[outer], alpha[outer], scales[outer], turns[outer]
+    if len(cells) and len(xyz) >= 16:
+        points = (lo + cells * spacing).astype(np.float32)
+        tree = cKDTree(xyz)
+        apart, ids = tree.query(points, k=min(12, len(xyz)), workers=8, distance_upper_bound=3.0 * spacing)
+        near = np.isfinite(apart[:, 0])
+        cells, points, apart, ids = cells[near], points[near], apart[near], ids[near]
+        found = np.isfinite(apart)
+        ids = np.where(found, ids, 0)
+        weight = np.where(found, alpha[ids] * np.exp(-0.5 * (np.where(found, apart, 0.0) / spacing) ** 2), 0.0).astype(np.float32)
+        total = np.maximum(weight.sum(axis=1, keepdims=True), 1e-12)
+        middle = (weight[..., None] * xyz[ids]).sum(axis=1) / total
+        # A Gaussian's plane is across its thinnest width. Which way is in: where the body gets deeper.
+        q = turns / np.maximum(np.linalg.norm(turns, axis=1, keepdims=True), 1e-12)
+        w, x, y, z = q[:, 0], q[:, 1], q[:, 2], q[:, 3]
+        axes = np.stack([np.stack([1 - 2 * (y * y + z * z), 2 * (x * y - w * z), 2 * (x * z + w * y)], axis=1),
+                         np.stack([2 * (x * y + w * z), 1 - 2 * (x * x + z * z), 2 * (y * z - w * x)], axis=1),
+                         np.stack([2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y)], axis=1)], axis=1)
+        normal = axes[np.arange(len(xyz)), :, np.argmin(scales, axis=1)].astype(np.float32)
+        inward = np.stack(np.gradient(rounded), axis=-1)[cells[:, 0], cells[:, 1], cells[:, 2]]
+        inward /= np.maximum(np.linalg.norm(inward, axis=1, keepdims=True), 1e-9)
+        each = normal[ids]
+        each = each * np.sign((each * inward[:, None, :]).sum(axis=2, keepdims=True))
+        plane = (weight[..., None] * each).sum(axis=1)
+        length = np.linalg.norm(plane, axis=1)
+        plane /= np.maximum(length, 1e-9)[:, None]
+        # Where the Gaussians do not agree on a plane (an edge, a groove), the body says which way is in.
+        sure = (length / total[:, 0] > 0.5) & ((plane * inward).sum(axis=1) > 0.3)
+        plane = np.where(sure[:, None], plane, inward)
+        deep = ((points - middle) * plane).sum(axis=1) / spacing
+        # The sheet runs a little inside the body's edge, everywhere about as far. Where a cell's
+        # answer is far from that (the Gaussians around it are few, or not of this surface), the
+        # body's edge is taken, as far inside as the sheet runs elsewhere.
+        here = rounded[cells[:, 0], cells[:, 1], cells[:, 2]]
+        if sure.any():
+            shift = float(np.clip(np.median((here - deep)[sure]), 0.0, 2.5))
+        deep = np.where(np.abs(here - deep - shift) <= 0.75, deep, here - shift)
+    field = np.clip(rounded - shift, -2.0, 2.0)
+    if deep is not None:
+        field[cells[:, 0], cells[:, 1], cells[:, 2]] = np.clip(deep, -2.0, 2.0)
+    return gaussian_filter(field, sigma=0.5, output=np.float32)
+
+
+def solid(mesh):
+    """Is this a solid: closed, every edge between exactly two faces that
+    agree on which side is outside?"""
+    return len(mesh.faces) > 0 and mesh.is_watertight and mesh.is_winding_consistent
+
+
+def mended(mesh):
+    """A mesh that lost its soundness when faces were taken out (an edge with
+    three faces, a sliver, a loose flake): those go, and every gap they leave
+    is closed again with a fan of faces around its middle."""
+    whole = trimesh.Trimesh(np.asarray(mesh.vertices, np.float64), np.asarray(mesh.faces, np.int64), process=False)
+    whole.merge_vertices()                       # two corners at one place are one corner
+    faces = np.asarray(whole.faces, np.int64)
+    verts = np.asarray(whole.vertices, np.float64)
+    for _ in range(4):
+        faces = faces[(faces[:, 0] != faces[:, 1]) & (faces[:, 1] != faces[:, 2]) & (faces[:, 0] != faces[:, 2])]
+        faces = faces[np.unique(np.sort(faces, axis=1), axis=0, return_index=True)[1]]
+        edges = np.sort(faces[:, [0, 1, 1, 2, 2, 0]].reshape(-1, 2), axis=1)
+        _, where, count = np.unique(edges, axis=0, return_inverse=True, return_counts=True)
+        crowded = (count[where.ravel()] > 2).reshape(-1, 3).any(axis=1)
+        if not crowded.any():
+            break
+        faces = faces[~crowded]
+    # The open edges, each in the direction its face runs; a gap is a ring of them.
+    directed = faces[:, [0, 1, 1, 2, 2, 0]].reshape(-1, 2)
+    key = np.sort(directed, axis=1)
+    _, where, count = np.unique(key, axis=0, return_inverse=True, return_counts=True)
+    open_edges = directed[count[where.ravel()] == 1]
+    after = {}
+    for start, end in open_edges:
+        after.setdefault(int(end), []).append(int(start))            # a filling face runs the other way round
+    extra_verts, extra_faces = [], []
+    while after:
+        first = next(iter(after))
+        ring, at = [first], first
+        while True:
+            nexts = after.get(at)
+            if not nexts:
+                break
+            at = nexts.pop()
+            if not after[ring[-1]]:
+                del after[ring[-1]]
+            if at == first:
+                break
+            ring.append(at)
+        if at != first or len(ring) < 3:
+            continue
+        if len(ring) == 3:
+            extra_faces.append(ring)
+            continue
+        middle = len(verts) + len(extra_verts)
+        extra_verts.append(verts[ring].mean(axis=0))
+        extra_faces += [[ring[i], ring[(i + 1) % len(ring)], middle] for i in range(len(ring))]
+    if extra_verts:
+        verts = np.vstack([verts, np.asarray(extra_verts)])
+    if extra_faces:
+        faces = np.vstack([faces, np.asarray(extra_faces, np.int64)])
+    out = trimesh.Trimesh(verts, faces, process=False)
+    out.remove_unreferenced_vertices()
+    # Flakes that hang on nothing are no part of the thing.
+    parts = out.split(only_watertight=False)
+    if len(parts) > 1:
+        most = max(len(part.faces) for part in parts)
+        out = trimesh.util.concatenate([part for part in parts if len(part.faces) >= 0.03 * most])
+    return out
+
+
+def unpinched(mesh):
+    """The mesh without corners where two sheets of it only touch (a pinch:
+    closed edge by edge, but no solid a printer or a rig can take). Every
+    fan of faces around a corner gets a corner of its own."""
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.csgraph import connected_components
+    faces = np.asarray(mesh.faces, np.int64)
+    count = len(faces)
+    corner = np.arange(3 * count).reshape(count, 3)
+    first, second = faces[:, [0, 1, 2]].ravel(), faces[:, [1, 2, 0]].ravel()
+    here, there = corner[:, [0, 1, 2]].ravel(), corner[:, [1, 2, 0]].ravel()
+    key = np.minimum(first, second) * (int(faces.max()) + 1) + np.maximum(first, second)
+    order = np.argsort(key, kind="stable")
+    pos = np.flatnonzero(key[order][:-1] == key[order][1:])
+    one, two = order[pos], order[pos + 1]
+    # At a shared edge a-b the two faces run opposite ways: one's a is the other's b.
+    same = first[one] == first[two]
+    a = np.concatenate([here[one], there[one]])
+    b = np.concatenate([np.where(same, here[two], there[two]), np.where(same, there[two], here[two])])
+    fans, label = connected_components(coo_matrix((np.ones(len(a), bool), (a, b)), shape=(3 * count, 3 * count)), directed=False)
+    if fans == len(mesh.vertices):
+        return mesh
+    place = np.zeros(fans, np.int64)
+    place[label] = faces.ravel()
+    return trimesh.Trimesh(np.asarray(mesh.vertices)[place], label.reshape(count, 3), process=False)
+
+
+def fewer(mesh, faces):
+    """The mesh with about `faces` faces, and still a solid. Taking faces out
+    can break one; then it is mended, and if that does not make it whole,
+    fewer faces are taken out."""
+    if len(mesh.faces) <= faces:
+        return mesh
+    # The tool that takes faces out measures its errors in plain numbers: a
+    # thing one unit large is to it a speck, and it breaks it. So it gets
+    # the thing a thousand units large.
+    scale = 1000.0 / max(float(np.max(mesh.extents)), 1e-9)
+    large = trimesh.Trimesh(np.asarray(mesh.vertices) * scale, mesh.faces, process=False)
+    count = faces
+    while count < len(mesh.faces):
+        small = large.simplify_quadric_decimation(face_count=count)
+        small = trimesh.Trimesh(np.asarray(small.vertices) / scale, small.faces, process=False)
+        for _ in range(5):                       # closing a gap can crowd an edge again
+            if solid(small):
+                break
+            small = mended(small)
+        if solid(small):
+            return small
+        count = int(count * 1.3)
+    return mesh
 
 
 def reconstruct(input_path: Path, output_dir: Path, quality="normal"):
@@ -195,28 +392,32 @@ def reconstruct(input_path: Path, output_dir: Path, quality="normal"):
     resolution += 2 * (PORE + 3)
     print(f"Idol mesh {quality}: {len(xyz)} Gaussians; {resolution}³ cells", flush=True)
     opaque = opacity_field(xyz, alpha, scales, turns, lo, spacing, resolution)
-    body = body_of(opaque)
-    # The surface runs where the Gaussians are half opaque; where the body was
-    # closed or filled it runs along the body.
-    field = np.where(body, np.maximum(opaque, 0.62), np.minimum(opaque, 0.38))
-    del opaque, body
-    field = gaussian_filter(field, sigma=0.6, output=np.float32)
-    verts, faces, _, _ = marching_cubes(field, level=0.5, spacing=(spacing,)*3, allow_degenerate=False)
+    body, added = body_of(opaque, down=3, parts=True)     # Idol's y points down: the thing stands on its higher y
+    del opaque
+    field = surface_field(body, added, xyz, alpha, scales, turns, lo, spacing)
+    del body, added
+    verts, faces, _, _ = marching_cubes(field, level=0.0, spacing=(spacing,)*3, allow_degenerate=False)
     del field
     verts += lo
     if not len(faces):
         raise ValueError("Marching Cubes hat keine Oberfläche erzeugt")
     geometry = trimesh.Trimesh(vertices=verts, faces=faces, process=False)
+    # A solid has an outside and nothing else: a bubble inside it is no part
+    # of it, and neither is a crumb beside it.
+    pieces = geometry.split(only_watertight=False)
+    if len(pieces) > 1:
+        largest = max(pieces, key=lambda piece: abs(piece.volume))
+        kept = [piece for piece in pieces if piece.volume * largest.volume > 0 and abs(piece.volume) >= OWN * abs(largest.volume)]
+        geometry = kept[0] if len(kept) == 1 else trimesh.util.concatenate(kept)
+    if geometry.volume < 0:
+        geometry.invert()                                 # its faces look outwards
     # Taubin lambda/mu smoothing (non-shrinking); fewer passes for thin details.
     trimesh.smoothing.filter_taubin(
         geometry, lamb=0.45, nu=0.48, iterations=settings["smooth"])
-    if len(geometry.faces) > settings["print_faces"]:
-        geometry = geometry.simplify_quadric_decimation(face_count=settings["print_faces"])
+    geometry = unpinched(fewer(geometry, settings["print_faces"]))
     # The model that is shown has as many faces as a model needs. Its colours
     # do not come from its faces: they are baked from the splat at every texel.
-    shown = geometry
-    if len(shown.faces) > settings["faces"]:
-        shown = geometry.simplify_quadric_decimation(face_count=settings["faces"])
+    shown = unpinched(fewer(geometry, settings["faces"]))
     # The worker reads the two MAG-STEP lines to show where the job is.
     print("MAG-STEP texture", flush=True)
     vmapping, uv_faces, uvs, texture = bake_texture(
@@ -251,7 +452,7 @@ def reconstruct(input_path: Path, output_dir: Path, quality="normal"):
     stl.apply_translation([0.0, 0.0, -float(stl.bounds[0, 2])])
     stl.export(output_dir / "mesh.stl", file_type="stl")
     print(f"Mesh: {len(shown.vertices)} vertices, {len(shown.faces)} faces (STL {len(geometry.faces)}), "
-          f"{'closed' if geometry.is_watertight else 'open'}; {settings['texture']}² PNG in GLB; STL height {target_height:g} mm",
+          f"{'solid' if solid(shown) and solid(geometry) else 'NOT SOLID'}; {settings['texture']}² PNG in GLB; STL height {target_height:g} mm",
           flush=True)
 
 

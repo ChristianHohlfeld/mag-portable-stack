@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """A scripted stand-in for llama-server: health, streaming chat completions
 with tool calls, and the slot actions. It records every request so the room
-tests can assert what the bots were actually sent. It proves the room's
-logic, not that a real model or a real VM works."""
+tests can assert what the bots were actually sent. Like the real server it
+refuses a request whose history holds a tool call with arguments that are no
+JSON, and it can play a model that lost its way: raw arguments streamed piece
+by piece, an error that quotes them. It proves the room's logic, not that a
+real model or a real VM works."""
 import json
 import threading
 import time
@@ -24,6 +27,9 @@ class FakeLlama:
         self.saved = set()
         self.delay = 0.0        # seconds between streamed pieces
         self.reply = None       # callable(body) -> str | dict, see _answer
+        self.pieces = 0         # pieces of the last answer that went out
+        self.hung_up = 0        # answers the room ended before they were complete
+        self.refused = 0        # requests refused for unreadable tool-call arguments
         self.lock = threading.Lock()
         fake = self
 
@@ -67,7 +73,25 @@ class FakeLlama:
                 body = json.loads(raw)
                 with fake.lock:
                     fake.requests.append(body)
+                # The real server reads the arguments of every tool call in the
+                # history and refuses the request when one is no JSON, quoting it.
+                for message in body.get("messages", []):
+                    for call in message.get("tool_calls") or []:
+                        text = call["function"]["arguments"]
+                        try:
+                            readable = isinstance(json.loads(text), dict)
+                        except ValueError:
+                            readable = False
+                        if not readable:
+                            fake.refused += 1
+                            return self._json(500, {"error": {"code": 500, "type": "server_error", "message": (
+                                "Failed to parse tool call arguments as JSON: [json.exception.parse_error.101] parse error at line 1, column %d: "
+                                "syntax error while parsing value - invalid string: missing closing quote; last read: '%s'"
+                                % (len(text), text.replace("\n", "\\n")))}})
                 answer = fake._answer(body)
+                if isinstance(answer, dict) and answer.get("http_error"):
+                    return self._json(500, {"error": {"code": 500, "type": "server_error", "message": answer["http_error"]}})
+                fake.pieces = 0
                 self.send_response(200)
                 self.send_header("Content-Type", "text/event-stream")
                 self.send_header("Transfer-Encoding", "chunked")
@@ -89,11 +113,24 @@ class FakeLlama:
                         if fake.delay:
                             time.sleep(fake.delay)
                         emit({"choices": [{"index": 0, "delta": {"content": piece}}]})
+                        fake.pieces += 1
                     calls = answer.get("tool_calls", []) if isinstance(answer, dict) else []
                     for index, call in enumerate(calls):
                         emit({"choices": [{"index": 0, "delta": {"tool_calls": [{
                             "index": index, "id": "call_%d_%d" % (len(fake.requests), index), "type": "function",
                             "function": {"name": call["name"], "arguments": json.dumps(call.get("arguments", {}))}}]}}]})
+                    # Arguments as the server streams them while the model writes: text, piece by piece.
+                    raw = answer.get("raw_tool_calls", []) if isinstance(answer, dict) else []
+                    for index, call in enumerate(raw, len(calls)):
+                        emit({"choices": [{"index": 0, "delta": {"tool_calls": [{
+                            "index": index, "id": "call_%d_%d" % (len(fake.requests), index), "type": "function",
+                            "function": {"name": call["name"], "arguments": ""}}]}}]})
+                        for at in range(0, len(call["arguments"]), 40):
+                            if fake.delay:
+                                time.sleep(fake.delay)
+                            emit({"choices": [{"index": 0, "delta": {"tool_calls": [{"index": index, "function": {"arguments": call["arguments"][at:at + 40]}}]}}]})
+                            fake.pieces += 1
+                    calls = calls + raw
                     emit({"choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls" if calls else "stop"}],
                           "timings": {"prompt_n": 5, "cache_n": 100, "predicted_n": len(pieces), "predicted_per_second": 20.0}})
                     emit({"choices": [], "usage": {"prompt_tokens": 105, "completion_tokens": len(pieces)}})
@@ -101,7 +138,7 @@ class FakeLlama:
                     self.wfile.write(b"0\r\n\r\n")
                     self.close_connection = True
                 except (BrokenPipeError, ConnectionResetError):
-                    pass  # the room cancelled the turn
+                    fake.hung_up += 1  # the room ended the answer (Stop, or it had lost its way)
 
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         self.server.daemon_threads = True

@@ -48,6 +48,14 @@ public:
       bots_.push_back(std::move(rt));
       ++index;
     }
+    // The error an answer ended with is one short line. An answer from before
+    // that was so may carry everything a server quoted, a whole run-away
+    // generation with its markup: it is cut down once.
+    for (auto &m : room_.all()) {
+      const std::string error = jstr(m, "error");
+      if (error.size() > 300 || llm::find_tag(error) != std::string::npos)
+        room_.update(jstr(m, "id"), [&](Val &stored) { stored["error"] = llm::short_error(error); });
+    }
     for (auto &b : bots_) b->worker = std::thread([this, bot = b.get()] { work(*bot); });
     status_thread_ = std::thread([this] { watch_models(); });
     // A VM that was removed on the host must not stay assigned: the bot is
@@ -1448,9 +1456,34 @@ private:
     logf("engine: " + b.id + " context compacted, dropped " + std::to_string(cut - 1) + " messages");
   }
 
+  // A tool call whose arguments are no JSON object must not stand in a prompt
+  // log: the server refuses every request that contains it, and the bot would
+  // answer nothing but that error until the room is emptied. New ones never
+  // get in (llm::mend); a log written before that is repaired when it is read.
+  void heal_wire(Bot &b) {
+    Val *msgs = b.wire.find("messages");
+    if (!msgs || !msgs->isArr()) return;
+    int mended = 0;
+    for (auto &m : *msgs->arr)
+      if (Val *calls = m.find("tool_calls"); calls && calls->isArr())
+        for (auto &c : *calls->arr) {
+          Val *fn = c.find("function");
+          if (!fn || !fn->isObj() || jparse(jstr(*fn, "arguments")).isObj()) continue;
+          llm::ToolCall call;
+          call.arguments = jstr(*fn, "arguments");
+          llm::mend(call);
+          (*fn)["arguments"] = call.arguments;
+          ++mended;
+        }
+    if (!mended) return;
+    save_wire(b);
+    logf("engine: " + b.id + " prompt log: " + std::to_string(mended) + " tool call(s) with unreadable arguments repaired");
+  }
+
   // ---- worker -------------------------------------------------------------
   void work(Bot &b) {
     b.wire = read_json(wire_path(b));
+    heal_wire(b);
     while (true) {
       std::string reason;
       uint64_t reset_epoch = 0;
@@ -1718,7 +1751,7 @@ private:
     if (!jbool(me, "thinking", false)) describe_images(b, me);
 
     b.wire["model_since"] = since;
-    bool cancelled = false, failed = false, retried = false;
+    bool cancelled = false, failed = false, retried = false, rethought = false;
     std::string error;
     const int64_t deadline = mono_ms() + (int64_t)room_.cfg.turn_budget_s * 1000;
     for (int step = 0; step <= room_.cfg.max_steps; ++step) {
@@ -1753,6 +1786,10 @@ private:
       cb.on_tool_start = [&](int, const std::string &tool) { set_phase(b, "tool", tool); };
       set_phase(b, "reading");
       const int budget_s = (int)std::max<int64_t>(30, (deadline - mono_ms()) / 1000);
+      // Where this call's text and thoughts begin, should some of them have to be taken back.
+      const size_t text0 = t.id.empty() ? 0 : room_.text_len(t.id);
+      const size_t thought0 = t.id.empty() ? t.reasoning.size() : room_.reasoning_len(t.id);
+      const bool shown0 = t.visible;
       llm::ChatResult res = llm::chat(b.backend, body, cancel.get(), cb, budget_s);
       t.last = res;
       t.completion += res.completion_tokens;
@@ -1771,8 +1808,39 @@ private:
           continue;
         }
         failed = true;
-        error = res.error;
+        error = llm::short_error(res.error);
         break;
+      }
+      if (!res.guard.empty()) {
+        // The model lost its way and the room ended the generation: it ran
+        // in circles, or a tool call ran away into raw markup. What it wrote
+        // stays once; what it meant to call is called.
+        logf("engine: " + b.id + " generation ended by the room (" + res.guard + ")");
+        auto thoughts = [&](const std::string &now) {
+          if (t.id.empty()) t.reasoning = mj::utf8_cut(t.reasoning, thought0) + now;
+          else room_.update(t.id, [&](Val &m) { m["reasoning"] = mj::utf8_cut(jstr(m, "reasoning"), thought0) + now; }, false);
+        };
+        if (res.guard == "repeat") {
+          t.tail.clear();
+          std::string once = plain_names(res.content, names());
+          if (!shown0) once = strip_self(once, name);
+          if (t.id.empty()) t.held = once;
+          else room_.retake_text(t.id, text0, once);
+        } else if (res.guard == "thinking") {
+          if (res.content.empty() && res.calls.empty()) {
+            // Nothing but thoughts in circles: once more from the start, then give up in words.
+            thoughts("");
+            if (!rethought) {
+              rethought = true;
+              --step;
+              continue;
+            }
+            failed = true;
+            error = name + " hat sich beim Nachdenken im Kreis gedreht; ich habe abgebrochen. Frag bitte noch einmal.";
+            break;
+          }
+          thoughts(res.reasoning);
+        }
       }
       // What the model produced is part of the log, also when it was cut off.
       const std::string content = strip_markers(res.content);
@@ -1807,7 +1875,7 @@ private:
       for (size_t i = 0; i < res.calls.size(); ++i) {
         const auto &c = res.calls[i];
         Val args = jparse(c.arguments.empty() ? "{}" : c.arguments);
-        const bool bad_args = !args.isObj();
+        const bool bad_args = !c.valid || !args.isObj();
         if (bad_args) args = Val::object();
         Val part = Val::object();
         part["k"] = "step";
@@ -1825,7 +1893,8 @@ private:
         if (cancel->stopped()) {
           result = {"abgebrochen (Stop)", false};
         } else if (bad_args) {
-          result = tools::fail("Die Argumente sind kein gültiges JSON-Objekt.");
+          result = tools::fail("Die Argumente dieses Aufrufs waren kein gültiges JSON-Objekt (unvollständig oder falsch geschlossen); er wurde nicht ausgeführt. "
+                               "Rufe das Werkzeug noch einmal mit vollständigen Argumenten auf, wenn du es noch brauchst.");
         } else {
           tools::Ctx ctx{room_, guests_, me, t.id, cancel.get(), jbool(settings, "web", true), {}, {}, {}};
           ctx.scenes = &scenes_;

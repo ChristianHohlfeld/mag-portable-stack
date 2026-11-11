@@ -67,6 +67,10 @@ if(MAG_TRANSCRIBE_SRC AND MAG_TRANSCRIBE_BUILD)
 endif()
 
 add_executable(test-group-dispatcher mag-room/tests/test_group_dispatcher.cpp)
+# What a model wrote, made fit for the chat (llm.hpp): markup, circles, tool-call arguments.
+add_executable(test-model-text mag-room/tests/test_model_text.cpp)
+target_compile_options(test-model-text PRIVATE ${WARN})
+target_link_libraries(test-model-text PRIVATE Threads::Threads OpenSSL::Crypto CURL::libcurl icuuc)
 
 install(TARGETS magroom mag-browser magbot-native mag-audit-gateway mag-bots-publish mag-modeld RUNTIME DESTINATION bin)
 install(DIRECTORY mag-room/web/ DESTINATION web)

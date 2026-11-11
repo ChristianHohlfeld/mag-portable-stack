@@ -176,6 +176,14 @@ loaded, and when it is back it reads what it missed. Switched off (its sheet,
 the weights stay on disk. A paused bot that is asked by name does not answer,
 and the room says so. A pause changes no prompt. Per-backend model turns remain serial
 (one request per -np 1 slot).
+What a model writes is never shown raw, and never trusted to be well formed:
+the room reads channel markup itself (thoughts are thoughts, no tag reaches
+the chat), ends a generation that runs in circles or whose tool call runs
+away into markup and keeps such an answer once, and gives a tool only
+arguments that are a JSON object. Arguments that are not are stored as `{}`:
+they must never enter a prompt log, the server refuses every later request
+that holds them. An error in the chat is one short line, never a server's
+quote of what a model wrote.
 This permission is for room conversation, not unrestricted autonomous tool work.
 Outside room dialogue, continue tools only on a successful tool result, distinct
 progress and [[MAG:WEITER]]; otherwise remain idle.

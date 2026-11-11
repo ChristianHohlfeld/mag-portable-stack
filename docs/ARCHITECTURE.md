@@ -23,7 +23,7 @@ phone/desktop ── Tailscale :443 ── nginx (TLS, whois auth_request) ─�
 | `http.hpp` | thread-per-connection HTTP/1.1 server, file ranges, libcurl client |
 | `auth.hpp` | Tailscale LocalAPI whois for nginx, HMAC proof, owner check, CSRF |
 | `room.hpp` | configuration, event bus, the message store, bots, settings |
-| `llm.hpp` | llama-server client through the audit gateway: chat stream, slot actions |
+| `llm.hpp` | llama-server client through the audit gateway: chat stream, slot actions; what a model wrote made fit for the chat |
 | `engine.hpp` | who answers when: turns, append-only prompt log, context budget, PASS |
 | `tools.hpp` | tool schemas and dispatch |
 | `vm.hpp` | guest exec with live output, file writes, browser controller, VM tokens |
@@ -82,6 +82,37 @@ instead of evaluating it again.
 Each llama-server has one slot, no host prompt cache and no context
 checkpoints. The only slot state ever written to disk is the evaluated system
 prefix of the day (`prefix-<hash>-<date>.bin`).
+
+### What a model wrote
+
+The server parses a model's output into text, thoughts and tool calls. The
+room does not rely on that going well (`llm.hpp`):
+
+- **Markup.** The control tokens of both families are read for what they
+  mean when they arrive raw in the content: Gemma's `<|channel>thought …
+  <channel|>` and gpt-oss's `<|channel|>analysis<|message|> … <|end|>` are
+  thoughts, a raw tool call and a turn made up for somebody else are dropped,
+  every other tag disappears (`Clean`; code blocks and inline code are left
+  alone). No tag reaches the chat, a thought, or the bot's own log.
+- **Circles.** A text whose end is the same passage three times over (or the
+  same long passage a fourth time) is a model that lost its way: the room
+  closes the connection, which ends the generation, and keeps the text up to
+  the end of the first round (`circles`). Inside an open code block and in
+  tool-call arguments equal lines are normal, so the bar is far higher there.
+  Thoughts in circles are asked once more from the start, then the answer
+  ends with one line saying so.
+- **Tool calls.** With Gemma the server's grammar reads a string argument up
+  to the model's own quote token. A model that closes a string with a plain
+  quote stays inside that string for the grammar: it cannot end its turn and
+  writes markup and its answer into the arguments until its tokens run out.
+  The room ends the generation at the first tag inside arguments; what the
+  model meant stands in front of it and is called (`mend`). Arguments that are
+  no JSON object after that are stored as `{}` and the tool is not run, the
+  model is told why. Invalid arguments never enter a prompt log: the server
+  refuses every later request whose history holds them. A log from before is
+  repaired when it is read.
+- **Errors.** What an answer ended with is one short line (`short_error`); a
+  server error may quote a whole generation.
 
 ### Trash button
 

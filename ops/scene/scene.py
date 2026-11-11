@@ -923,6 +923,9 @@ def perform(actor, action, actors, fps, start):
         p.change(name, at=p.entry(clip, mirror), mirror=mirror, span=0.35)
         length = seconds(0.0, 0.0, 20.0) or max(1.0, clip.seconds - p.t)
         for _ in range(max(1, int(round(length * fps)))):
+            if not clip.loop and p.t >= clip.seconds - 0.2:
+                # Asked for longer than it was recorded: it goes on from the moment nearest where it is.
+                p.change(name, at=p.entry(clip, mirror, within=0.5), mirror=mirror, span=0.5)
             p.tick()
         p.rest()
         end = len(p.frames)

@@ -1484,6 +1484,16 @@ class RoomContract(unittest.TestCase):
         self.assertIn("Auftrag an Foto zu 3D", told)
         self.assertIn("[Bild figur.png (image/png, 1 KB). Zu sehen: Eine rote Tasse auf einem Holztisch.]", told)
         self.assertIn("Foto zu 3D: 3D-Modell aus dem Foto figur.png (Qualität schnell) ist fertig", told)
+        # A picture painted from words is an ordinary image for them, with the words it was painted from.
+        out = r.api("POST", "/api/message", {"text": "ein Fuchs im Schnee", "mode": "image"})[1]
+        r.wait(lambda: [m for m in r.messages() if m["id"] == out["model3d"]][0]["state"] == "done", "picture made")
+        r.say("@Noah und jetzt?")
+        r.idle()
+        chat = [c["messages"] for c in r.noah.chats() if "und jetzt?" in text_of(c["messages"][-1]["content"])][0]
+        told = "\n".join(text_of(m["content"]) for m in chat)
+        self.assertIn("Auftrag an Bild erzeugen, kein Auftrag an die Bots", told)
+        self.assertIn('Bild erzeugen: Bild, gemalt aus den Worten "ein Fuchs im Schnee" (FLUX.2 klein):\n[Bild bild-', told)
+        self.assertNotIn("3D-Modell aus dem Foto  ", told)
         # A bot that thinks before every answer answers first and describes afterwards
         # (describing would cost it a whole thinking pass per image up front).
         self.assertEqual(r.api("PUT", "/api/bot/lena", {"thinking": True})[0], 200)

@@ -566,7 +566,7 @@
       node.append(el('div', { class: 'line' }, actions(m), col));
       return node;
     }
-    node.append(el('div', { class: 'meta' }, el('span', { class: 'who', text: MAG.name(m.from) }),
+    node.append(el('div', { class: 'meta' }, el('span', { class: 'who', text: picture ? 'Bild' : MAG.name(m.from) }),
       el('span', { class: 'time', text: MAG.clock(m.ts), title: MAG.day(m.ts) })));
     if (picture) {
       node.append(buildPicture(m));

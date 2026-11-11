@@ -1094,7 +1094,15 @@ private:
       }
       return "3D-Szene: " + clip(body, 2000, "…");
     }
-    if (const Val *m3 = m.find("model3d"); m3 && m3->isObj()) {
+    const Val *painted = m.find("model3d");
+    if (painted && painted->isObj() && jstr(*painted, "kind") == "image") {
+      // A picture painted from words: once it is there, an ordinary image of the chat.
+      const std::string st = jstr(*painted, "state"), asked = "\"" + clip(jstr(*painted, "prompt"), 600, "…") + "\"";
+      if (st != "done")
+        return "Bild erzeugen: Bild aus den Worten " + asked + (st == "cancelled" ? " wurde abgebrochen." : " ist fehlgeschlagen: " + jstr(*painted, "error", "Fehler"));
+      body = "Bild, gemalt aus den Worten " + asked + " (FLUX.2 klein):";
+      head = "Bild erzeugen: ";
+    } else if (const Val *m3 = painted; m3 && m3->isObj()) {
       // A 3D job: what it was made from, how it ended, what came out.
       const std::string st = jstr(*m3, "state"), q = jstr(*m3, "quality");
       const std::string made = "3D-Modell aus dem Foto " + jstr(*m3, "source") + " (Qualität " + (q == "fast" ? "schnell" : q == "high" ? "hoch" : "normal") + ")";
@@ -1116,6 +1124,8 @@ private:
     }
     if (!jstr(m, "order3d").empty())
       body = "(Auftrag an Foto zu 3D, kein Auftrag an die Bots: aus diesem Foto wird ein 3D-Modell erstellt.)";
+    if (jbool(m, "order_image"))
+      body = "(Auftrag an Bild erzeugen, kein Auftrag an die Bots: daraus wird ein Bild gemalt.) " + body;
     const bool eyes = sees(b.id);
     size_t index = 0, inlined = 0;
     if (atts && atts->isArr())

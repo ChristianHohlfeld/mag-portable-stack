@@ -659,13 +659,15 @@ class Animal:
             paw.at[:2] = at + (paw.at[:2] - at) * ratio
             paw.start, paw.goal = paw.start * ratio, paw.goal * ratio
 
-    def move(self, by):
+    def move(self, by, past=True):
+        """Puts the animal, and all it did so far, somewhere else on the
+        ground. Not `past`: only from now on (it was carried there)."""
         by = np.asarray(by, dtype=float)
         self.xy = self.xy + by
         shift = np.array([by[0], by[1], 0.0])
         for paw in self.paws:
             paw.at = paw.at + shift
-        for frame in self.frames:
+        for frame in self.frames if past else ():
             frame["origin"], frame["root"] = frame["origin"] + shift, frame["root"] + shift
             if "paws" in frame:
                 frame["paws"] = [(at + shift, down, held) for at, down, held in frame["paws"]]

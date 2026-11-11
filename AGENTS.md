@@ -69,7 +69,9 @@ directions, its way follows its own legs, a foot that stands stays where it
 stands, and nobody in a scene stands like a statue. An animal's motion is
 worked out (`ops/scene/animal.py`): its feet take turns in the order of its
 gait and stand where they were put down, the body rides on the legs that
-carry it, and it sits, lies, leaps and lands on the same ground. This repository is
+carry it, and it sits, lies, leaps and lands on the same ground. A fight is told with kick, punch or
+attack and a target: the one who is hit flies away in an arc, lands, lies
+and gets up again (`knock` in `scene.py`). This repository is
 public: never add motion data whose terms forbid commercial use or passing
 it on. A scene is described, never
 scripted: no code of a bot or a request runs in Blender. The scene is a normal

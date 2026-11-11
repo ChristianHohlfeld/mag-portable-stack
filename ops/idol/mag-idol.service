@@ -28,7 +28,7 @@ Environment=PYTHONUNBUFFERED=1
 CPUAccounting=yes
 AllowedCPUs=28-55
 MemoryMax=20G
-TasksMax=128
+TasksMax=512
 Restart=on-failure
 RestartSec=5
 # A restart or stop of the worker ends the worker only. A stage that is

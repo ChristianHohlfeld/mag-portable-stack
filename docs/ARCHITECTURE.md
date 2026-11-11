@@ -281,7 +281,7 @@ stage whose result is missing, like after a reboot.
 
 A photo with several things in it: before the order, the page asks which
 object is meant ("Objekt wählen": `POST /api/3d/select`, the worker's
-`/api/idol/select`). `select.py` runs SAM 2 (`facebook/sam2.1-hiera-small`,
+`/api/idol/select`). `objects.py` runs SAM 2 (`facebook/sam2.1-hiera-small`,
 pinned in `install.sh`) on the CPU, cores 28-55, never the MI50: the object
 at the place Chris tapped, or every object by itself (a grid of places, no
 background, nothing twice). The page shows the mask, cuts the photo with it

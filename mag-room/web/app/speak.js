@@ -1,14 +1,15 @@
 // Read aloud, on the device: every answer can be spoken with a local voice.
-// German text is spoken by Piper voices that run in the browser (a Web Worker
-// with onnxruntime-web and espeak-ng phonemes; ops/tts): each voice downloads
-// once into Cache Storage and after that a playback touches no server.
-// Playback starts with the first sentence while the next one is prepared.
-// Nothing plays by itself, and no speech is ever made on the server.
+// Supertonic 3 runs in the browser (a Web Worker with onnxruntime-web; ops/tts;
+// the names below still say "piper", the voice this replaced): the model
+// downloads once into Cache Storage and after that a playback touches no
+// server. Playback starts with the first words while the next parts are made,
+// laid end to end on the audio clock. Nothing plays by itself, and no speech
+// is ever made on the server.
 //
 // Every speaker has a voice and a tempo of their own (Lena, Noah, Chris), kept
-// on this device. The tempo is Piper's own length scale, so the pitch stays.
-// Where Piper is not installed or fails, the best system voice reads instead,
-// but never in the middle of a message that Piper has begun.
+// on this device. Until the model is there, or where it fails, the best
+// system voice reads instead, but never in the middle of a message that the
+// model has begun.
 'use strict';
 (function () {
   const { MAG } = window, S = MAG.state;
@@ -182,7 +183,7 @@
   function setButtons() { document.querySelectorAll('.act[data-speak]').forEach(setButton); }
 
   // ---- Piper (worker) ---------------------------------------------------------
-  const piper = { config: null, configP: null, failed: new Map(), worker: null, ready: new Set(), loading: new Map(), ctx: null, seq: 0, pending: new Map(), source: null,
+  const piper = { config: null, configP: null, failed: new Map(), worker: null, ready: new Set(), loading: new Map(), ctx: null, seq: 0, pending: new Map(), sources: new Set(),
                   perStep: +(localStorage.getItem('mag-tts-speed') || 0) || 0 };
   function loadConfig() {
     if (!S.features?.tts) return Promise.resolve(null);
@@ -389,37 +390,42 @@
     p.catch(() => {}); // awaited later; avoid an unhandled rejection
     return {text, rate, p};
   }
-  // Plays one buffer. onended can get lost (iOS audio interruptions, a
-  // suspended context), so a watchdog follows the context clock and ends
-  // playback cleanly if audio cannot resume.
-  function playBuffer(pb, res) {
-    return new Promise(done => {
+  // The parts of a reading are laid end to end on the audio clock: a part
+  // that is ready while the one before it still plays starts on the very
+  // sample where that one ends, without a gap of the page's own timers.
+  function schedule(pb, res) {
+    const ctx = piper.ctx;
+    const buf = ctx.createBuffer(1, Math.max(1, res.audio.length), res.rate);
+    if (res.audio.length) buf.copyToChannel(res.audio, 0);
+    const src = ctx.createBufferSource();
+    src.buffer = buf; src.connect(ctx.destination);
+    const at = Math.max(ctx.currentTime + 0.03, pb.end || 0);
+    piper.sources.add(src);
+    src.onended = () => piper.sources.delete(src);
+    try { src.start(at); } catch (_) { piper.sources.delete(src); return ctx.currentTime; }
+    pb.end = at + buf.duration;
+    return at;
+  }
+  // Resolves true once the audio clock reaches t, false if the reading ended
+  // first. The clock stands while the context is suspended (iOS audio
+  // interruptions): it is woken, and a reading that cannot go on is stopped.
+  function reach(pb, t) {
+    return new Promise((done) => {
       const ctx = piper.ctx;
-      const buf = ctx.createBuffer(1, Math.max(1, res.audio.length), res.rate);
-      if (res.audio.length) buf.copyToChannel(res.audio, 0);
-      const src = ctx.createBufferSource();
-      src.buffer = buf; src.connect(ctx.destination);
-      let finished = false, startAt = ctx.currentTime, suspendedSince = 0;
-      const end = () => {
-        if (finished) return;
-        finished = true; clearInterval(watch);
-        if (piper.source === src) piper.source = null;
-        done();
-      };
-      const watch = setInterval(() => {
-        if (current !== pb) return end();
+      let since = 0;
+      const tick = () => {
+        if (current !== pb) return done(false);
         if (ctx.state !== 'running') {
-          suspendedSince = suspendedSince || Date.now();
+          since = since || Date.now();
           resume(ctx);
-          if (Date.now() - suspendedSince > 8000) { stop(); end(); }
-          return;
+          if (Date.now() - since > 8000) { stop(); return done(false); }
+        } else {
+          since = 0;
+          if (ctx.currentTime >= t) return done(true);
         }
-        suspendedSince = 0;
-        if (ctx.currentTime > startAt + buf.duration + 0.5) end();
-      }, 250);
-      src.onended = end;
-      piper.source = src;
-      try { src.start(); startAt = ctx.currentTime; } catch (_) { end(); }
+        setTimeout(tick, Math.max(15, Math.min(250, 1000 * (t - ctx.currentTime) - 10)));
+      };
+      tick();
     });
   }
   // Old WebKit returns undefined instead of a promise.
@@ -445,7 +451,10 @@
     for (;;) {
       while (!ahead.length && more && current === pb) await new Promise((go) => { pb.have = go; });
       if (current !== pb) return;
-      if (!ahead.length) return finish(pb);
+      if (!ahead.length) {
+        if (pb.end && !(await reach(pb, pb.end))) return;
+        return finish(pb);
+      }
       let cur = ahead.shift();
       pb.room?.();
       // Tempo changed while this part was prepared: synthesise it again.
@@ -454,8 +463,8 @@
       if (current !== pb) return;
       if (!pb.spoken) report({ first_ms: Math.round(performance.now() - pb.t0), synth_ms: res.synthMs | 0, audio_ms: Math.round(1000 * res.audio.length / res.rate), provider: res.provider, threads: res.threads | 0, steps: res.steps | 0 });
       pb.spoken = true;
-      await playBuffer(pb, res);
-      if (current !== pb) return;
+      // Laid behind what plays; the next part is awaited while this one begins and plays.
+      if (!(await reach(pb, schedule(pb, res)))) return;
     }
   }
 
@@ -495,8 +504,8 @@
     current = null; // make pending callbacks and loops harmless
     if (pb) { const w = pb.wake; pb.wake = null; w?.(); }
     if (systemOk) synth.cancel();
-    try { piper.source?.stop(); } catch (_) {}
-    piper.source = null;
+    for (const src of piper.sources) { try { src.stop(); } catch (_) {} }
+    piper.sources.clear();
     // Drop synthesis that is queued for the stopped playback.
     if (piper.worker && pb) { try { piper.worker.postMessage({type: 'cancel', before: piper.seq}); } catch (_) {} }
     setButtons();
@@ -632,7 +641,7 @@
       if (m && m.state === 'done' && m.role !== 'user') prepare(m);
     }, 400);
   }
-  MAG.speaking = { paint, stop };
+  MAG.speaking = { paint, stop, busy: () => !!current };
   // Voices and tempo for the settings: [{ who, name, voice, rate }], the choices, and a setter.
   MAG.voices = {
     possible: () => piperPossible && !!S.features?.tts,

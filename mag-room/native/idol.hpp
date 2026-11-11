@@ -151,6 +151,17 @@ public:
     return id;
   }
 
+  // A waiting job one place forwards ("up") or backwards ("down") in the
+  // MI50's one line. "" or why not, in words.
+  std::string move(const Val &message, const std::string &to) {
+    const Val *m3 = job_of(message);
+    if (!m3) return "Das ist kein Auftrag der Grafikkarte.";
+    if (to != "up" && to != "down") return "Nach vorn oder nach hinten?";
+    const auto res = http::fetch(room_.cfg.idol_url + "/api/idol/jobs/" + jstr(*m3, "job") + "/move?to=" + to, options("POST"));
+    if (res.status != 200) return res.error.empty() ? jstr(jparse(res.body), "error", "Ließ sich nicht verschieben.") : "3D-Dienst nicht erreichbar.";
+    return "";
+  }
+
   void cancel(const Val &message) {
     if (const Val *m3 = job_of(message))
       http::fetch(room_.cfg.idol_url + "/api/idol/jobs/" + jstr(*m3, "job") + "/cancel", options("POST"));

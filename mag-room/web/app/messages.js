@@ -372,6 +372,13 @@
     clock.textContent = clock3d(clock.dataset);
     return el('div', { class: 'prog' }, el('div', { class: 'what', text: title }), segs, clock);
   }
+  // A waiting job of the MI50's line, moved where Chris wants it (cancelling is beside it).
+  function lineActs(m) {
+    const move = (to) => (e) => { e.currentTarget.disabled = true; MAG.api('POST', '/api/3d/' + m.id + '/move', { to }).catch((x) => MAG.toast(x.message, true)); };
+    return el('div', { class: 'line-acts' },
+      el('button', { class: 'pill', title: 'Einen Platz nach vorn in der Warteschlange', disabled: !(m.model3d.ahead > 0), onclick: move('up') }, el('b', { text: '↑ Nach vorn' })),
+      el('button', { class: 'pill', title: 'Einen Platz nach hinten in der Warteschlange', onclick: move('down') }, el('b', { text: '↓ Nach hinten' })));
+  }
   // Its place in the MI50's one line: whoever has the card has it alone.
   const waiting = (m3) => 'In der Warteschlange' + (m3.ahead > 0 ? ' · ' + (m3.ahead === 1 ? '1 Auftrag' : m3.ahead + ' Aufträge') + ' davor' : '');
   // A picture being painted from words: what was asked, how far it is, and
@@ -393,6 +400,7 @@
       const part = m3.state === 'running' && m3.steps ? (m3.phase === 2 ? (m3.step || 0) / m3.steps : 0.05) : 0;
       card.append(el('div', { class: 'prog' }, el('div', { class: 'segs' }, el('i', { style: 'width:' + Math.round(100 * part) + '%' }))));
     }
+    if (m3.state === 'queued') card.append(lineActs(m));
     return card;
   }
   function build3d(m) {
@@ -416,6 +424,7 @@
         : m3.state === 'done' && S.you.role === 'owner' ? el('button', { class: 'pill', text: 'Netz neu', title: 'Baut das Modell aus dem vorhandenen Ergebnis neu, ohne neues Sampling',
           onclick: (e) => { e.currentTarget.disabled = true; MAG.api('POST', '/api/3d/' + m.id + '/retry', { remesh: true }).catch((x) => { e.target.disabled = false; MAG.toast(x.message, true); }); } }) : null));
     if (running) card.append(progress3d(m3));
+    if (m3.state === 'queued') card.append(lineActs(m));
     const glb = (m.attachments || []).find((a) => a.name.endsWith('.glb'));
     if (m3.state === 'done' && glb) {
       const canvas = el('canvas', {});

@@ -481,7 +481,20 @@ as "Video aus dem Bild …" with how it ended.
 The MI50's one line: 3D, pictures and videos are jobs of the one worker,
 which runs one at a time; a GPU stage also holds the lock file, and a lock
 file that cannot be opened never fails a job. A queued job shows how many
-jobs are before it (`ahead`, from the worker); up to 32 wait.
+jobs are before it (`ahead`, from the worker); up to 32 wait. Each job's
+place is its `order` in its own status.json, so the line is the same after a
+restart of the worker or a reboot: the job whose stage still runs comes
+first, then the line as it was. Chris moves a waiting job one place forwards
+or backwards at its message ("Nach vorn", "Nach hinten": `POST
+/api/3d/<id>/move`, the worker's `/api/idol/jobs/<id>/move?to=up|down`) and
+cancels it there. A stage survives a restart of the worker and is followed
+again; after a reboot a 3D job goes on at its first missing stage (shape,
+splat, mesh), a picture or a video starts its one stage again.
+
+The bots take part in the same flow: `image_generate` paints, `photo_to_3d`
+and `video_generate` take a picture of the chat by its name (or the newest),
+and `scene_3d` animates the models; every result is an ordinary message of
+the chat that goes on from there.
 
 ## Reading aloud (`ops/tts`)
 

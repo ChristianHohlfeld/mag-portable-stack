@@ -678,3 +678,5 @@ html[data-voice="making"] .act[data-speak]::after { animation: voice-making 1.6s
   border: 1px solid var(--line); background: var(--surface); color: inherit; }
 .video-ask .pill { align-self: flex-end; }
 .m3 .src img { width: 100%; height: 100%; object-fit: cover; border-radius: inherit; }
+.line-acts { display: flex; gap: 6px; margin-top: 8px; }
+.line-acts .pill { padding: 4px 10px; font-size: 12.5px; min-height: 0; }

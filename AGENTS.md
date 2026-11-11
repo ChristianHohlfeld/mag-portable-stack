@@ -179,7 +179,10 @@ place: "3D" (a model, which can then be animated at its message) or "Video"
 about five seconds at 480p; a bot's `video_generate` names the picture as
 the chat shows it). 3D, pictures and videos are jobs of one line
 on the MI50: whoever has the card has it alone (at 72 W), the others wait
-with their place shown and run after it by themselves; a lock file that
+with their place shown (Chris moves them forwards or backwards, or cancels
+them, at their message; the line survives restarts and reboots) and run
+after it by themselves; the bots order 3D and videos from a picture too
+(`photo_to_3d`, `video_generate`); a lock file that
 cannot be taken never fails a job. MiniMax H3/HyperFlow and Hunyuan models
 are not to be fetched (licence).
 The bots share a notebook of skills (`skill`: list, read, save; `skills.json`

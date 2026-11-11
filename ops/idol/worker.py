@@ -19,7 +19,6 @@ import base64
 import json
 import os
 from pathlib import Path
-import queue
 import re
 import shutil
 import signal
@@ -86,7 +85,66 @@ GPU_STAGES = ("sample", "shape", "image", "video")
 GPU_WAIT = "MAG-WAIT"
 jobs = {}
 lock = threading.Lock()
-pending = queue.Queue()
+class Line:
+    """The MI50's one line of jobs (3D, pictures, videos). A job's place is
+    its "order", kept in its status.json, so the line is the same after a
+    restart or a reboot; Chris moves a job forwards or backwards in it from
+    the chat (move). The next job is always the queued one first in line."""
+
+    def __init__(self):
+        self.ids, self.cv = [], threading.Condition()
+
+    def qsize(self):
+        with self.cv:
+            return len(self.ids)
+
+    def put_nowait(self, job_id):
+        with self.cv:
+            if job_id not in self.ids:
+                self.ids.append(job_id)
+            self.cv.notify()
+
+    def get(self):
+        with self.cv:
+            while not self.ids:
+                self.cv.wait()
+            first = min(self.ids, key=lambda i: (float(jobs.get(i, {}).get("order", 0) or 0), i))
+            self.ids.remove(first)
+            return first
+
+    def task_done(self):
+        pass
+
+
+def place_of(item):
+    return float(item.get("order") or item.get("created") or 0)
+
+
+def move(job_id, to):
+    """A queued job one place forwards ("up") or backwards ("down") in the
+    line. True, False (it is not waiting, or already there), None: no job."""
+    with lock:
+        item = jobs.get(job_id)
+        if item is None:
+            return None
+        if item.get("state") != "queued":
+            return False
+        line = sorted((other for other in jobs.values() if other.get("state") == "queued"), key=lambda o: (place_of(o), o["id"]))
+        at = next(i for i, other in enumerate(line) if other["id"] == job_id)
+        there = at - 1 if to == "up" else at + 1
+        if not 0 <= there < len(line):
+            return False
+        other = line[there]
+        mine, theirs = place_of(item), place_of(other)
+        if mine == theirs:
+            theirs += -1e-3 if to == "up" else 1e-3
+        item["order"], other["order"] = theirs, mine
+        save(item)
+        save(other)
+    return True
+
+
+pending = Line()
 selecting = threading.Lock()   # one photo is looked at at a time
 abort = set()
 
@@ -217,7 +275,7 @@ def again(job_id, remesh=False):
             (ROOT / job_id / "shape.exit").unlink(missing_ok=True)
         item.pop("error", None)
         item.pop("started", None)                         # its time counts from now
-        item["queued_at"] = int(time.time())              # at the end of the line
+        item["order"] = time.time()                       # at the end of the line
         item.update(state="queued", stage="Wird fortgesetzt", pid=None, stage_key=None, step=0, progress=0.0,
                     eta=None, resumed=int(item.get("resumed", 0)) + 1)
         save(item)
@@ -631,6 +689,15 @@ class API(BaseHTTPRequestHandler):
             return self.reply(403, {"error": "MAG-Idol-Header fehlt"})
         parts = path.strip("/").split("/")
         if (len(parts) == 5 and parts[:3] == ["api", "idol", "jobs"] and
+                VALID_ID.fullmatch(parts[3]) and parts[4] == "move"):
+            to = parse_qs(url.query).get("to", [""])[0]
+            if to not in ("up", "down"):
+                return self.reply(400, {"error": "up oder down"})
+            moved = move(parts[3], to)
+            if moved is None:
+                return self.reply(404, {"error": "Job nicht gefunden"})
+            return self.reply(200, {"moved": moved})
+        if (len(parts) == 5 and parts[:3] == ["api", "idol", "jobs"] and
                 VALID_ID.fullmatch(parts[3]) and parts[4] in ("cancel", "retry")):
             outcome = cancel(parts[3]) if parts[4] == "cancel" else again(parts[3], "remesh" in parse_qs(url.query))
             if outcome is None:
@@ -675,7 +742,7 @@ class API(BaseHTTPRequestHandler):
                 folder.mkdir(mode=0o700, parents=True)
                 (folder / "prompt.json").write_text(json.dumps({"prompt": prompt, "width": width, "height": height, "seed": seed}))
                 item = {"id": identity, "kind": "image", "state": "queued", "stage": "Warteschlange", "quality": "normal",
-                        "created": int(time.time()), "step": 0, "total_steps": 4, "phase": 0, "phases": 2}
+                        "created": int(time.time()), "order": time.time(), "step": 0, "total_steps": 4, "phase": 0, "phases": 2}
                 jobs[identity] = item
                 save(item)
                 pending.put_nowait(identity)
@@ -705,7 +772,7 @@ class API(BaseHTTPRequestHandler):
                 (folder / "input.png").write_bytes(data)
                 (folder / "prompt.json").write_text(json.dumps({"prompt": prompt, "seed": seed}))
                 item = {"id": identity, "kind": "video", "state": "queued", "stage": "Warteschlange", "quality": "normal",
-                        "created": int(time.time()), "step": 0, "total_steps": 160, "phase": 0, "phases": 2}
+                        "created": int(time.time()), "order": time.time(), "step": 0, "total_steps": 160, "phase": 0, "phases": 2}
                 jobs[identity] = item
                 save(item)
                 pending.put_nowait(identity)
@@ -734,7 +801,7 @@ class API(BaseHTTPRequestHandler):
             folder.mkdir(mode=0o700, parents=True)
             (folder / "input.png").write_bytes(data)
             item = {"id": identity, "state": "queued", "stage": "Warteschlange",
-                    "quality": quality, "created": int(time.time()),
+                    "quality": quality, "created": int(time.time()), "order": time.time(),
                     "step": 0, "total_steps": 50, "phase": 0, "phases": len(PHASES)}
             jobs[identity] = item
             save(item)
@@ -767,9 +834,9 @@ class API(BaseHTTPRequestHandler):
             if item.get("state") == "queued":
                 # Its place in the one line: how many jobs go before it on the card.
                 with lock:
-                    mine = (item.get("queued_at") or item.get("created") or 0, parts[3])
+                    mine = (place_of(item), parts[3])
                     item["ahead"] = sum(1 for key, other in jobs.items() if other.get("state") == "running" or (
-                        other.get("state") == "queued" and (other.get("queued_at") or other.get("created") or 0, key) < mine))
+                        other.get("state") == "queued" and (place_of(other), key) < mine))
             return self.reply(200, item)
         results = {"image": IMAGE_RESULTS, "video": VIDEO_RESULTS}.get(item.get("kind"), RESULTS)
         if len(parts) != 5 or parts[4] not in results or item["state"] != "done":
@@ -813,8 +880,12 @@ def main():
             jobs[item["id"]] = item
         except (ValueError, OSError, KeyError):
             continue
-    # The job whose stage is still running comes first (it has the GPU), then by age.
-    for item in sorted(resume, key=lambda job: (not stage_alive(job), job.get("created", 0))):
+    # The job whose stage is still running comes first (it has the GPU), then
+    # the line as it was (each job keeps its place in its status.json).
+    for item in sorted(resume, key=lambda job: (not stage_alive(job), place_of(job))):
+        if stage_alive(item):
+            item["order"] = min([place_of(job) for job in resume] + [time.time()]) - 1.0
+            save(item)
         pending.put_nowait(item["id"])
     threading.Thread(target=execute, daemon=True).start()
     server = ThreadingHTTPServer(("127.0.0.1", PORT), API)

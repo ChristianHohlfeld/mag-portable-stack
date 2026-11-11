@@ -163,6 +163,13 @@ public:
       if (why.empty()) why = idol_.select(jstr(in, "file"), x, y, found, jbool(in, "scene", false));
       return why.empty() ? http::send_json(fd, 200, found) : http::send_error(fd, 409, why);
     }
+    if (r.method == "POST" && starts_with(p, "/api/3d/") && ends_with(p, "/move")) {
+      // A waiting job of the MI50's line, one place forwards or backwards.
+      Val m;
+      if (!room_.get(p.substr(8, p.size() - 8 - 5), m)) return http::send_error(fd, 404, "Nachricht nicht gefunden");
+      const std::string why = idol_.move(m, jstr(jparse(r.body), "to"));
+      return why.empty() ? http::send_ok(fd) : http::send_error(fd, 409, why);
+    }
     if (r.method == "POST" && starts_with(p, "/api/3d/") && ends_with(p, "/retry")) {
       // A 3D job that failed or was cancelled, taken up again where it stopped.
       Val m;

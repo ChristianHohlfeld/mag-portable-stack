@@ -34,6 +34,8 @@ public:
   std::function<std::string(const std::string &, int, int, const std::string &, std::string &)> imagine;
   // Set by main: how a bot's video from a picture is ordered (Idol::film).
   std::function<std::string(const std::string &, const std::string &, const std::string &, std::string &)> film;
+  // Set by main: how a bot's 3D model from a picture is ordered (Idol::start).
+  std::function<std::string(const std::string &, const std::string &, std::string &)> model;
 
   void start() {
     int index = 0;
@@ -2294,6 +2296,7 @@ private:
           ctx.scenes = &scenes_;
           ctx.imagine = imagine;
           ctx.film = film;
+          ctx.model = model;
           ctx.asked_at = t.asked_at;
           ctx.output = [&](const std::string &chunk) { room_.step_output(t.id, index, chunk); };
           ctx.attach = [&](const Val &att) { room_.update(t.id, [&](Val &m) { m["attachments"].push(att); }); };

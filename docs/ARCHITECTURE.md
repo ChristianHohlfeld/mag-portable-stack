@@ -79,6 +79,13 @@ the log exceeds the bot's token budget the oldest turns are dropped in front
 of a user message; `--cache-reuse` lets the server shift the kept tail
 instead of evaluating it again.
 
+While a turn runs, the log carries `at_work` (why the bot was asked, and
+whether a message of the turn exists yet). The mark goes when the turn ends,
+unless the room itself is going down. A room that starts and finds it knows
+that a restart cut the turn off: if Chris had asked and nothing of the
+answer could be seen yet, the turn runs again once the model is ready (at
+most three times for one turn), for the bots his message had named.
+
 Each llama-server has one slot, no host prompt cache and no context
 checkpoints. The only slot state ever written to disk is the evaluated system
 prefix of the day (`prefix-<hash>-<date>.bin`).

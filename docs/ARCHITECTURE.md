@@ -456,10 +456,15 @@ device that is not much faster than real time the first parts are made in
 three or four of the model's five steps: the sound starts within a second
 or two instead of after the first whole sentence; a device that cannot
 keep up even so (WASM on a phone) reads on in two rather than stop
-between sentences. How fast the device is,
-is measured on every part. The first words of the newest answer in the
-chat are made before anybody asks (in full quality, while nothing is
-read), so the tap that most often comes speaks at once. And a tap never
+between sentences; one that makes eight steps in a quarter of the time
+they play (a GPU) gets eight. How fast the device is,
+is measured on every part. The parts are laid end to end on the audio
+clock (each starts on the sample where the one before ends). The first
+four parts of the newest answer in the chat are made before anybody asks
+(in full quality, while nothing is read, cut as the tap will cut them),
+so the tap that most often comes speaks at once and the parts after them
+have time to be made. A new release reloads the page only after a
+reading has ended. And a tap never
 waits for the model: while it is still loading, the device's own voice
 reads that message. The page tells the room's journal how a reading
 went, as numbers (`POST /api/tts/stat`: provider, threads, steps, time to
@@ -479,16 +484,20 @@ worker, all by SHA256; `bootstrap.sh` fetches and packs them once,
 `/opt/mag-tts/v-<hash>/` and writes `config.json`; the room hands them out
 under `/tts/` (immutable, except the config). The model has a folder of its
 own, so a change of the worker costs no browser a new download. The worker
-keeps everything in Cache Storage, the weights in pieces of 8 MB that are
-kept as they come (a download that breaks off goes on where it stopped) and
-never put together into one file; it reads them piece by piece into the
-network it makes. After the download it tells the page after every step
-that it is still at work, so a slow phone is not taken for a stuck one and
-started anew. Shortly after the page has loaded it
+keeps everything in Cache Storage (asked to persist), the weights in
+pieces of 8 MB, three coming in at once, that are kept as they come (a
+download that breaks off goes on where it stopped) and never put together
+into one file; it reads them piece by piece into the network it makes. A
+piece that gets no byte for 25 s is asked for again by the worker itself;
+the page never ends the worker while it downloads. After the download it
+tells the page after every step that it is still at work, so a slow phone
+is not taken for a stuck one and started anew (time out of view does not
+count). Shortly after the page has loaded it
 fetches and loads the model in the background (not over a mobile
 connection or with data saving on), so the first "Vorlesen" speaks at once.
-Loading has no fixed time limit, only one for standing still. Without the
-model the device's own voice reads. The Piper voices of before stay on disk.
+While it loads, a thin line under every "Vorlesen" fills up (and breathes
+while the model is made ready); the settings say it in words. No toast.
+Without the model the device's own voice reads. The Piper voices of before stay on disk.
 
 ## Scenes (`ops/scene`)
 

@@ -328,7 +328,9 @@
     piper.pending.clear();
   }
   // In how many steps a part is made. The model refines its sound in steps:
-  // five is its full quality, four and three are heard a little, two more. A
+  // five is its usual quality, four and three are heard a little, two more;
+  // a device that makes eight in a quarter of the time they play (a GPU)
+  // gets eight, the cleanest. A
   // part gets as many as there is time for: it must be made by the moment the
   // reading gets to it, or the reading would stop there. So the first words of
   // a reading are made in three (the sound starts at once), and what follows
@@ -337,13 +339,14 @@
   // rather than stop between sentences. How
   // fast the device is, is measured on every part (work per second of
   // speech and step) and kept.
+  const topSteps = () => (piper.perStep > 0 && piper.perStep * 8 < 0.25 ? 8 : 5);
   function stepsFor(pb, text) {
     const length = Math.max(0.4, text.length / 14);                     // seconds of speech, about
     const per = piper.perStep > 0 ? piper.perStep : 0.2;                // not measured yet: taken as slow
     const now = performance.now() / 1000;
     let reached = Math.max(now, pb.until || now), made = now;           // when the reading gets here, when the parts before it are made
     for (const part of pb.waiting) { reached += part.length; made += part.work; }
-    let steps = 5;
+    let steps = topSteps();
     const least = pb.until || pb.waiting.length ? 2 : 3;
     while (steps > least && made + per * steps * length + 0.1 > reached) steps--;
     const part = { length, work: per * steps * length + 0.1 };
@@ -477,7 +480,9 @@
       const take = pb.live ? completeLength(rest) : rest.length;
       if (take > 0) {
         const piece = rest.slice(0, take);
-        pb.parts.push(...(pb.de ? piperParts(piece, 120, !pb.queued) : split(piece)));
+        // A message whose first parts were made ahead is cut as it was then, so the tap finds them.
+        const early = pb.de && !pb.queued && !pb.live ? preparedParts.get(piece) : null;
+        pb.parts.push(...(early || (pb.de ? piperParts(piece, 120, !pb.queued) : split(piece))));
         pb.queued += take;
       }
     }
@@ -610,10 +615,13 @@
     if (button && !button.dataset.speak) button.dataset.speak = m.id;
     toggle(m.id, m.text, m.role === 'user' ? 'chris' : m.from);
   };
-  // Makes the first words of a message ready, in full quality, while nothing
+  // Makes the first parts of a message ready, in full quality, while nothing
   // else is read: for the newest answer in the chat, so the tap that most
-  // often comes finds its sound already there. Only with the model loaded
-  // and the page in view; a few messages are kept.
+  // often comes finds its sound already there, and the parts after them have
+  // the time these play to be made (a slow device does not stop between
+  // them). Only with the model loaded and the page in view; a few messages
+  // are kept.
+  const preparedParts = new Map();      // a message's text -> how it was cut into parts
   function prepare(m) {
     if (!m || current || !piperPossible || !S.features?.tts || document.visibilityState !== 'visible' || !piper.config) return;
     const who = m.role === 'user' ? 'chris' : m.from, prof = profile(who);
@@ -621,13 +629,16 @@
     const text = normalize(m.text || '');
     if (!text) return;
     const lang = textLocale(text).slice(0, 2);
-    for (const part of piperParts(text, 120, true).slice(0, 2)) {
+    const parts = preparedParts.get(text) || piperParts(text, 120, true);
+    preparedParts.set(text, parts);
+    while (preparedParts.size > 4) preparedParts.delete(preparedParts.keys().next().value);
+    for (const part of parts.slice(0, 4)) {
       const key = asked(prof.voice.model, prof.rate, lang, part);
       if (prepared.has(key)) continue;
-      const sound = ask({type: 'speak', text: part, model: prof.voice.model, rate: prof.rate, lang, steps: 5}, SPEAK_TIMEOUT_MS);
+      const sound = ask({type: 'speak', text: part, model: prof.voice.model, rate: prof.rate, lang, steps: topSteps()}, SPEAK_TIMEOUT_MS);
       sound.then(measured, () => prepared.delete(key));
       prepared.set(key, sound);
-      while (prepared.size > 8) prepared.delete(prepared.keys().next().value);
+      while (prepared.size > 16) prepared.delete(prepared.keys().next().value);
     }
   }
   let preparing = 0;

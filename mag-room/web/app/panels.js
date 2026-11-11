@@ -312,7 +312,8 @@
         content.append(el('h3', { text: 'Vorlesen' }), voices);
         if (!MAG.voices.possible()) voices.append(el('div', { class: 'set' }, el('div', { class: 'txt' }, 'Stimme des Geräts', el('small', { text: 'Die lokalen Stimmen sind auf diesem Server nicht eingerichtet.' }))));
         else MAG.voices.options().then((options) => {
-          for (const b of S.bots) {
+          // Chris's own messages are read too, with a voice of his choice.
+          for (const b of [{ id: 'chris', name: 'Chris' }, ...S.bots]) {
             const now = MAG.voices.of(b.id);
             voices.append(row(b.name, null, el('span', { class: 'pair' },
               select(now.voice, options.map((o) => [o.id, o.label]), (v) => MAG.voices.set(b.id, { voice: v })),

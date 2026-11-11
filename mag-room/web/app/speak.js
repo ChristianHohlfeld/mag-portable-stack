@@ -475,14 +475,17 @@
   function feed(pb, text, live) {
     const norm = normalize(text);
     pb.live = !!live;
+    // A message whose parts were made ahead is cut as it was then, so the tap finds them; the rest after it as usual.
+    if (pb.de && !pb.queued && !pb.live) {
+      const cut = cuts.get(pb.key);
+      if (cut && cut.text && norm.startsWith(cut.text)) { pb.parts.push(...cut.parts); pb.queued = cut.text.length; }
+    }
     if (norm.length > pb.queued) {
       const rest = norm.slice(pb.queued);
       const take = pb.live ? completeLength(rest) : rest.length;
       if (take > 0) {
         const piece = rest.slice(0, take);
-        // A message whose first parts were made ahead is cut as it was then, so the tap finds them.
-        const early = pb.de && !pb.queued && !pb.live ? preparedParts.get(piece) : null;
-        pb.parts.push(...(early || (pb.de ? piperParts(piece, 120, !pb.queued) : split(piece))));
+        pb.parts.push(...(pb.de ? piperParts(piece, 120, !pb.queued) : split(piece)));
         pb.queued += take;
       }
     }
@@ -615,41 +618,78 @@
     if (button && !button.dataset.speak) button.dataset.speak = m.id;
     toggle(m.id, m.text, m.role === 'user' ? 'chris' : m.from);
   };
-  // Makes the first parts of a message ready, in full quality, while nothing
-  // else is read: for the newest answer in the chat, so the tap that most
-  // often comes finds its sound already there, and the parts after them have
-  // the time these play to be made (a slow device does not stop between
-  // them). Only with the model loaded and the page in view; a few messages
-  // are kept.
-  const preparedParts = new Map();      // a message's text -> how it was cut into parts
+  // The newest answers are made ready before anybody asks for them, whole,
+  // while they come in and nothing else is read: the tap that most often
+  // comes finds its sound there, from the first word to the last, and plays
+  // it without a pause on a phone that makes speech slower than it plays.
+  // The first two parts get the device's best quality; the rest as many
+  // steps as the device makes in the time they play (so a tap while they are
+  // still being made does not catch up with them). Only with the model
+  // loaded and the page in view; about four minutes of sound are kept.
+  const cuts = new Map();               // message id -> {text: how far it is cut, parts}
+  function cutFor(id, text, growing) {
+    let cut = cuts.get(id);
+    if (!cut || !text.startsWith(cut.text)) cut = { text: '', parts: [] };
+    const rest = text.slice(cut.text.length);
+    const take = growing ? completeLength(rest) : rest.length;
+    if (take > 0) {
+      const piece = rest.slice(0, take);
+      cut = { text: cut.text + piece, parts: [...cut.parts, ...piperParts(piece, 120, !cut.text)] };
+    }
+    cuts.delete(id); cuts.set(id, cut);
+    while (cuts.size > 6) cuts.delete(cuts.keys().next().value);
+    return cut;
+  }
+  const keptFor = new Map();            // what is asked -> seconds of sound it holds
+  const KEEP_S = 240;
+  function keep(key, res) {
+    keptFor.set(key, res?.audio?.length ? res.audio.length / res.rate : 0);
+    let sum = 0;
+    for (const v of keptFor.values()) sum += v;
+    for (const [k, v] of keptFor) {
+      if (sum <= KEEP_S) break;
+      if (k === key) continue;
+      keptFor.delete(k); prepared.delete(k); sum -= v;
+    }
+  }
+  // As many steps as the device makes in the time the sound plays (two at least).
+  function keepUpSteps() {
+    const per = piper.perStep > 0 ? piper.perStep : 0.2;
+    let steps = topSteps();
+    while (steps > 2 && per * steps > 0.85) steps--;
+    return steps;
+  }
+  let preparedFor = '';                 // the newest message being made ready
   function prepare(m) {
     if (!m || current || !piperPossible || !S.features?.tts || document.visibilityState !== 'visible' || !piper.config) return;
     const who = m.role === 'user' ? 'chris' : m.from, prof = profile(who);
     if (!prof.voice || !piper.ready.size) return;
     const text = normalize(m.text || '');
     if (!text) return;
+    // A newer answer comes first: what is still waiting to be made for an older one is dropped (what is made stays).
+    if (preparedFor && preparedFor !== m.id && piper.worker) { try { piper.worker.postMessage({type: 'cancel', before: piper.seq}); } catch (_) {} }
+    preparedFor = m.id;
     const lang = textLocale(text).slice(0, 2);
-    const parts = preparedParts.get(text) || piperParts(text, 120, true);
-    preparedParts.set(text, parts);
-    while (preparedParts.size > 4) preparedParts.delete(preparedParts.keys().next().value);
-    for (const part of parts.slice(0, 4)) {
+    const parts = cutFor(m.id, text, m.state !== 'done').parts;
+    parts.forEach((part, i) => {
       const key = asked(prof.voice.model, prof.rate, lang, part);
-      if (prepared.has(key)) continue;
-      const sound = ask({type: 'speak', text: part, model: prof.voice.model, rate: prof.rate, lang, steps: topSteps()}, SPEAK_TIMEOUT_MS);
-      sound.then(measured, () => prepared.delete(key));
+      if (prepared.has(key)) return;
+      const sound = ask({type: 'speak', text: part, model: prof.voice.model, rate: prof.rate, lang, steps: i < 2 ? topSteps() : keepUpSteps()}, SPEAK_TIMEOUT_MS);
+      sound.then((res) => { measured(res); keep(key, res); }, () => { prepared.delete(key); keptFor.delete(key); });
       prepared.set(key, sound);
-      while (prepared.size > 16) prepared.delete(prepared.keys().next().value);
-    }
+      keptFor.set(key, 0);
+    });
   }
   let preparing = 0;
   function paint() {
     setButtons();
-    // The newest message that can be read, once it is whole.
-    clearTimeout(preparing);
+    // The newest answer, also while it still comes in (what of it is complete); at most every 400 ms.
+    if (preparing) return;
     preparing = setTimeout(() => {
-      const buttons = document.querySelectorAll('.act[data-speak]');
-      const m = buttons.length ? S.messages.get(buttons[buttons.length - 1].dataset.speak) : null;
-      if (m && m.state === 'done' && m.role !== 'user') prepare(m);
+      preparing = 0;
+      let m = null;
+      for (const x of S.messages.values()) if (x.role !== 'user' && x.text && !x.model3d && MAG.bot?.(x.from)) m = x;
+      if (m) prepare(m);
     }, 400);
   }
   MAG.speaking = { paint, stop, busy: () => !!current };

@@ -461,11 +461,14 @@ keep up even so (WASM on a phone) reads on in two rather than stop
 between sentences; one that makes eight steps in a quarter of the time
 they play (a GPU) gets eight. How fast the device is,
 is measured on every part. The parts are laid end to end on the audio
-clock (each starts on the sample where the one before ends). The first
-four parts of the newest answer in the chat are made before anybody asks
-(in full quality, while nothing is read, cut as the tap will cut them),
-so the tap that most often comes speaks at once and the parts after them
-have time to be made. A new release reloads the page only after a
+clock (each starts on the sample where the one before ends). The newest
+answer in the chat is made whole before anybody asks, already while it
+comes in (while nothing is read and the page is in view, cut as the tap
+will cut it; the first two parts in the device's best quality, the rest in
+as many steps as the device makes in the time they play; about four
+minutes of sound are kept), so the tap that most often comes speaks at
+once and plays to the end without a pause even on a phone that makes
+speech slower than it plays. A new release reloads the page only after a
 reading has ended. And a tap never
 waits for the model: while it is still loading, the device's own voice
 reads that message. The page tells the room's journal how a reading

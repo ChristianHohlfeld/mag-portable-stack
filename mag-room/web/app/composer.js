@@ -46,11 +46,13 @@
         stagedBox.append(el('div', { class: 'staged source' },
           el('button', { class: 'pill', onclick: () => pick('image/png,image/jpeg,image/webp', false, paintStaged) }, MAG.icon('image'), el('b', { text: 'Galerie' })),
           el('button', { class: 'pill', onclick: () => shoot(paintStaged) }, MAG.icon('camera'), el('b', { text: 'Kamera' }))));
-      // A photo with several things in it: Chris says which one is meant.
+      // Sent as it is, the photo is one model. When Chris wants more: which
+      // thing of it is meant, or the photo's whole room as one scene.
       const photo = staged.find((s) => s.att.kind === 'image');
       if (photo && !photo.cut && !uploading)
         stagedBox.append(el('div', { class: 'staged source' },
-          el('button', { class: 'pill', onclick: () => choose(photo) }, MAG.icon('cube'), el('b', { text: 'Objekt wählen' }))));
+          el('button', { class: 'pill', onclick: () => choose(photo) }, MAG.icon('cube'), el('b', { text: 'Objekt wählen' })),
+          el('button', { class: 'pill', onclick: () => choose(photo, true) }, MAG.icon('cube'), el('b', { text: 'Ganze Szene' }))));
     }
     refresh();
   }
@@ -145,9 +147,9 @@
   }
   // The sheet: tap an object and see what was understood, or have every
   // object found and take those that are wanted, each as a model of its own.
-  function choose(photo) {
+  function choose(photo, scene = false) {
     const base = (photo.att.name || 'foto').replace(/\.[a-z0-9]+$/i, '');
-    MAG.sheet('Objekt wählen', async (content, _, close) => {
+    MAG.sheet(scene ? 'Ganze Szene' : 'Objekt wählen', async (content, _, close) => {
       const view = el('div', { class: 'choose' }), img = el('img', { src: photo.url, alt: '' }), over = el('div', { class: 'cut' });
       const hint = el('p', { class: 'hint', text: 'Tippe auf das Objekt, aus dem das Modell werden soll, oder nenne es.' });
       const bar = el('div', { class: 'row' }), list = el('div', { class: 'objects' });
@@ -247,6 +249,7 @@
         } catch (err) { busy = false; paint(); say(err.message); }
       }
       paint();
+      if (scene) all(true);        // straight to the room's objects, each to be ticked off
     });
   }
 

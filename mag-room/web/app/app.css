@@ -654,7 +654,10 @@ audio, video { max-width: 100%; border-radius: 12px; }
 .pill.on { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
 .sheet form.name { display: flex; gap: 8px; margin: 12px 0 0; }
 .sheet form.name input { flex: 1; min-width: 0; font: inherit; padding: 8px 11px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); color: var(--text); }
-/* While the voice model loads: a thin line under "Vorlesen" fills up; nothing once it is there. */
+/* While the voice model loads: a thin line under "Vorlesen" fills up, and breathes while the model is made ready; nothing once it is there. */
 .act[data-speak] { position: relative; }
-html[data-voice="loading"] .act[data-speak]::after { content: ''; position: absolute; left: 9px; right: 9px; bottom: 3px; height: 2px; border-radius: 1px;
+html[data-voice="loading"] .act[data-speak]::after, html[data-voice="making"] .act[data-speak]::after { content: ''; position: absolute; left: 9px; right: 9px; bottom: 3px; height: 2px; border-radius: 1px;
   background: linear-gradient(to right, var(--accent) calc(var(--voice-p, 0) * 100%), var(--line) 0); opacity: .85; }
+html[data-voice="making"] .act[data-speak]::after { animation: voice-making 1.6s ease-in-out infinite; }
+@keyframes voice-making { 50% { opacity: .3; } }
+@media (prefers-reduced-motion: reduce) { html[data-voice="making"] .act[data-speak]::after { animation: none; } }

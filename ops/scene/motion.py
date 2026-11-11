@@ -373,9 +373,11 @@ class Body:
 
         legs = sorted(role["leg"], key=lambda i: not bones[i]["left"])          # left, right
         self.legs = [(i, lower(i, "shin")) for i in legs]
-        self.arms = {}
+        self.arms, self.hands = {}, {}
         for i in role.get("arm", []):
             self.arms["l" if bones[i]["left"] else "r"] = (i, lower(i, "forearm"))
+        for i in role.get("hand", []):
+            self.hands["l" if bones[i].get("left") else "r"] = i
         self.pelvis = self.head[self.hips]
         self.mid = (self.head[self.legs[0][0]] + self.head[self.legs[1][0]]) / 2      # between the hip joints
         self.leg = float(np.mean([self.length[u] + self.length[s] for u, s in self.legs]))
@@ -409,11 +411,13 @@ class Body:
         reach = self.length[self.arms[wanted][0]] + self.length[self.arms[wanted][1]]
         return other if up[other] > up[wanted] + 0.25 * reach else wanted
 
-    def turns(self, hips, chest, head, limbs, swings=None):
+    def turns(self, hips, chest, head, limbs, swings=None, hands=None):
         """The bones' turns (as rig poses take them: each from its rest, seen
         from the model, a child's after its parent's) for a pose given as
         turns of hips, chest and head and directions of the limbs.
-        `swings`: what turns the limbs frame after frame (see Swings)."""
+        `swings`: what turns the limbs frame after frame (see Swings).
+        `hands`: how far each hand is bent at the wrist (radians, "l"/"r"):
+        curled in for a fist, back for an open hand."""
         out = {self.hips: hips, self.chest: qmul(qinv(hips), chest), self.skull: qmul(qinv(chest), head)}
         whole = {self.hips: hips, self.chest: chest, self.skull: head}
 
@@ -430,6 +434,16 @@ class Body:
                 upper, fore = self.arms[side]
                 swing(upper, self.chest, limbs[k])
                 swing(fore, upper, limbs[k + 1])
+                bend = (hands or {}).get(side, 0.0)
+                if side in self.hands and abs(bend) > 1e-4:
+                    # The hand turns in towards the body (its palm), about the line across the forearm.
+                    i = self.hands[side]
+                    along = qrot(whole[fore], self.dir[fore])
+                    axis = cross(np.array([0.0, 1.0 if side == "l" else -1.0, 0.0]), along)
+                    if np.linalg.norm(axis) < 1e-6:
+                        axis = np.array([1.0, 0.0, 0.0])
+                    whole[i] = qmul(qaxis(unit(axis), bend), whole[fore])
+                    out[i] = qmul(qinv(whole[fore]), whole[i])
         to_model, back = qz(self.facing), qz(-self.facing)
         return {self.names[i]: qmul(qmul(to_model, q), back) for i, q in out.items()}, whole
 
@@ -562,6 +576,7 @@ class Performer:
         self.sways, self.looks, self.heads = [], [], []   # what is laid over the motion: swaying, looking at something, nodding
         self.reaches = []                                 # a hand that is to be somewhere: (side, start, end, target)
         self.flails = []                                  # thrown through the air: (start, air, lie, rise) frames, see flail()
+        self.grips = []                                   # how a hand is held: (side, start, end, shape), see grip()
         self.watch = False                                # keep the joints of every frame, to look at them
         self.frames = []                                  # per frame: where the model's origin is, where it looks, its pose
 
@@ -899,6 +914,31 @@ class Performer:
         if side in self.body.arms:
             self.reaches.append((side, int(start), int(end), target))
 
+    # How far a hand bends at the wrist for each shape (radians; in, towards the palm).
+    # Fingers that a model made from a photo has grown together cannot close one by
+    # one: the hand as a whole curls into a fist, stretches out or opens back.
+    GRIPS = {"fist": 0.8, "point": 0.0, "open": -0.35, "relaxed": 0.2}
+
+    def grip(self, side, start, end, shape):
+        """Holds a hand ("l", "r" or "both") in a shape from frame to frame
+        (see GRIPS); it goes into it and out of it gently."""
+        if shape in self.GRIPS:
+            for one in (("l", "r") if side == "both" else (side,)):
+                self.grips.append((one, int(start), int(end), shape))
+
+    def _hands(self, f):
+        """How each hand is bent in a frame: the shape held most firmly then."""
+        out = {}
+        for side in self.body.hands:
+            best, value = 0.0, 0.0
+            for one, start, end, shape in self.grips:
+                if one == side and start <= f < end:
+                    w = swell(f - start, end - start, 0.2 * self.fps)
+                    if w > best:
+                        best, value = w, self.GRIPS[shape] * w
+            out[side] = value
+        return out
+
     def look(self, target, start, end, part=1.0):
         """Looks at something from frame to frame. `target`: asked every frame for the place (x, y, z)."""
         self.looks.append((int(start), int(end), target, part))
@@ -948,7 +988,7 @@ class Performer:
         for f, frame in enumerate(self.frames[:last + 1]):
             body = frame["body"]
             chest, head = self._head(f, frame)
-            turns, whole = body.turns(frame["hips"], chest, head, frame["limbs"], swings)
+            turns, whole = body.turns(frame["hips"], chest, head, frame["limbs"], swings, self._hands(f) if self.grips else None)
             out.append((frame["origin"], frame["heading"] - body.facing, body.scale, turns))
             if self.watch:
                 turn = qz(frame["heading"])

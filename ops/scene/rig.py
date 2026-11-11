@@ -489,11 +489,17 @@ def analyse(co, edges=None, axis=None, kind=None):
                 name = "Arm %d" % (arms + 1)
             shoulder = root + 0.35 * (np.array([spine[0], spine[1], root[2]]) - root)
             elbow, hand = limb[join // 2]["centre"], limb[0]["centre"]
+            # The hand is the last part of the forearm: about a fifth of the arm, from the wrist to the tip.
+            palm = max(1, int(round(0.2 * join)))
+            wrist = limb[palm]["centre"] if palm < join // 2 else hand
             upper = bone(name + " oben", shoulder, elbow, ribs, "arm")
-            lower = bone(name + " unten", elbow, hand, upper, "forearm")
+            lower = bone(name + " unten", elbow, wrist, upper, "forearm")
             bones[upper].update(left=left, out=[float(out[0]), float(out[1])], reach=(hand - shoulder).tolist())
+            fist = bone(name.replace("Arm", "Hand"), wrist, hand, lower, "hand") if palm < join // 2 else None
+            if fist is not None:
+                bones[fist].update(left=left)
             for k in range(join):
-                claim(limb[k]["cells"], lower if k < join // 2 else upper)
+                claim(limb[k]["cells"], fist if fist is not None and k < palm else lower if k < join // 2 else upper)
             arms += 1
             if arms == 2:
                 break

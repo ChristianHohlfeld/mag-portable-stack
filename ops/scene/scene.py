@@ -442,6 +442,15 @@ ACTIONS = ("walk_to, run_to, sneak_to, hop_to, jump_over, turn_to, look_at, turn
 RECORDED = []   # the recorded motions of the library, by name (filled when it is read)
 # When in a recorded motion the blow lands (part of its length).
 HIT = {"kick": 0.30, "punch": 0.48}
+# Recorded motions that are made with fists, and with open hands (words of their names).
+FISTS = ("kick", "punch", "box", "fight", "karate", "geri", "bassai", "block", "violence", "superhero", "strong")
+OPEN = ("wave", "hello", "clap", "cheer", "dance", "salsa", "lambada", "macarena", "directions", "traffic", "shrug", "elated", "joy", "airplane", "spell", "conducting", "surprised", "scared", "high_five", "peek")
+
+
+def hands_for(name):
+    """The shape the hands take in a recorded motion, or None: as the motion has them."""
+    name = name.lower()
+    return "fist" if any(w in name for w in FISTS) else "open" if any(w in name for w in OPEN) else None
 
 
 def ease(t):
@@ -833,6 +842,7 @@ def perform(actor, action, actors, fps, start):
                 p.look(eyes(other), len(p.frames), len(p.frames) + int(1.5 * fps), 0.8)
                 begun = len(p.frames)
                 end = p.perform(kind)
+                p.grip("both", begun - int(0.3 * fps), end, "fist")
                 hit = begun + int(round(HIT[kind] * clip.seconds * fps))
             far = number(action, "far", (1.5 + 6.0 * force) * max(actor.height, 0.6 * actor.length), 0.0, 60.0)
             knock(other, other.pos - Vector(p.origin[:2]), hit, far, fps)
@@ -840,6 +850,7 @@ def perform(actor, action, actors, fps, start):
             end = p.pounce(None)
         else:
             end = p.perform(kind)
+            p.grip("both", first, end, "fist")
     elif kind == "fly_away":
         # It is thrown: away from somebody or some place (from), or backwards.
         source = find(actors, action.get("from")) or other
@@ -862,7 +873,10 @@ def perform(actor, action, actors, fps, start):
             if kind not in ("sniff", "eat", "dig", "howl", "sleep"):
                 p.look(eyes(other), first, first + int(2.5 * fps), 0.8)
         if not beast:
+            begun = len(p.frames)
             end = p.perform(kind, seconds=seconds(0.0, 0.0, 20.0) or None, times=int(number(action, "times", 1, 1, 8)))
+            if hands_for(kind):
+                p.grip("both", begun, end, hands_for(kind))
         elif kind == "pounce":                       # onto what it is told to, or a good leap ahead
             end = p.pounce(max(0.5 * actor.length, (other.pos - actor.pos).length - other.radius - 0.35 * actor.length) if other else None)
         elif kind in BEAST:
@@ -901,8 +915,13 @@ def perform(actor, action, actors, fps, start):
                 return (me.x + 0.15 * tall * side_x, me.y + 0.15 * tall * side_y, 1.6 * tall)  # up
             return at
 
+        # The hand takes a shape: it points with a stretched hand, touches and holds up an open one.
+        shape = str(action.get("hand") or "").lower()
+        if shape not in p.GRIPS:
+            shape = "point" if where == "point" or (where == "at" and other) else "open"
         for side in sides:
             p.reach_to(side, place(side), first, first + frames)
+            p.grip(side, first, first + frames + int(0.3 * fps), shape)
         if other:
             p.look(eyes(other), first, first + frames, 0.8)
         end = p.wait(first + frames)
@@ -920,6 +939,7 @@ def perform(actor, action, actors, fps, start):
             p.look(eyes(other), len(p.frames), len(p.frames) + int(2.0 * fps), 0.8)
         clip = p.lib[name]
         mirror = bool(clip.hand) and p.body.hand(clip.hand) != clip.hand
+        begun = len(p.frames)
         p.change(name, at=p.entry(clip, mirror), mirror=mirror, span=0.35)
         length = seconds(0.0, 0.0, 20.0) or max(1.0, clip.seconds - p.t)
         for _ in range(max(1, int(round(length * fps)))):
@@ -929,6 +949,10 @@ def perform(actor, action, actors, fps, start):
             p.tick()
         p.rest()
         end = len(p.frames)
+        shape = str(action.get("hand") or "").lower()
+        shape = shape if shape in p.GRIPS else hands_for(name + " " + p.lib.labels.get(name, ""))
+        if shape:
+            p.grip("both", begun, end, shape)
     else:
         fail("Unbekannte Aktion: " + str(kind) + ". Es gibt " + ACTIONS % "motion mit query (eine von %d Aufnahmen, gesucht nach ihrer Beschreibung)" % len(RECORDED) + ".")
     at = p.origin

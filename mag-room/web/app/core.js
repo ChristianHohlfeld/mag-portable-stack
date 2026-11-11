@@ -232,7 +232,11 @@
   async function sync() {
     try {
       const snap = await MAG.api('GET', '/api/state?limit=150');
-      if (snap.version && MAG.version && snap.version !== MAG.version) return location.reload();
+      if (snap.version && MAG.version && snap.version !== MAG.version) {
+        // A new release: the page loads it, but not in the middle of a reading aloud (that ends first).
+        if (!MAG.speaking?.busy?.()) return location.reload();
+        if (!sync.later) sync.later = setInterval(() => { if (!MAG.speaking?.busy?.()) { clearInterval(sync.later); location.reload(); } }, 1000);
+      }
       S.messages = new Map(snap.messages.map((m) => [m.id, m]));
       Object.assign(S, { bots: snap.bots, settings: snap.settings, you: snap.you, features: snap.features, zone: snap.zone, seq: snap.seq, more: snap.more, ready: true });
       emit('reset');

@@ -365,21 +365,27 @@ small flat Gaussians lying on what the photo showed:
    for a limited time, and if it is not done by then the plain way (faces
    that look the same way and hang together are one chart, laid flat, the
    charts side by side; a second of work). The texture (2048² for "fast",
-   4096² otherwise) is baked from the splat at every texel, so the colours
-   are as fine as the atlas however few faces the model has.
-5. The side the photo shows takes its colours from the photo itself
+   4096² otherwise) is baked from the splat at every texel the way a splat
+   is drawn: every Gaussian near the texel counts by how much of it lies
+   there, with its own three widths and its own turn. So the colours are
+   as sharp as the splat, however few faces the model has.
+5. The side the photo shows takes its fine detail from the photo itself
    (`photo.py`). The photo's camera is found again from the splat alone:
    the view of the Gaussians that covers the photo's outline and has its
-   colours (from everywhere around first, then closer from the best places;
-   about half a minute). Every texel that camera sees (turned towards it,
-   nothing in front of it, inside the outline but not at its rim) takes the
-   photo's colour, the more the straighter it is seen; the rest keeps the
-   splat's. The sampling stage notes which square of the photo the model
-   was shown (`outputs/input_crop.json`, written by `runner.py` around the
-   SDK's unchanged preparation), so the colours come from the photo as fine
-   as it was taken, not from the 1024² copy the model saw. If no view looks
-   like the photo closely (its outline covered to nine tenths, its colours
-   nearly the same), the photo is not used, and the log line says so.
+   colours, judged on the square around the thing (from everywhere around
+   first, then closer from the best places; about a minute). The splat
+   keeps its colours, which are of one piece around the whole thing; what
+   the photo has more is added: the photo minus the photo blurred (within
+   the thing's outline). Every texel that camera sees straight enough, with
+   nothing in front of it, inside the outline but not at its rim, gets
+   that, the more the straighter it is seen. So there is no seam of tone
+   between the side the photo shows and the others, and a photo that does
+   not sit exactly on the model misplaces only fine detail. The sampling
+   stage notes which square of the photo the model was shown
+   (`outputs/input_crop.json`, written by `runner.py` around the SDK's
+   unchanged preparation), so the detail comes from the photo as fine as it
+   was taken, not from the 1024² copy the model saw. If no view looks like
+   the photo, the photo is not used, and the log line says so.
 
 ## Reading aloud (`ops/tts`)
 

@@ -142,6 +142,7 @@
     frame.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-forms allow-modals allow-popups allow-popups-to-escape-sandbox allow-pointer-lock allow-downloads');
     frame.setAttribute('allow', 'fullscreen; autoplay; clipboard-write; accelerometer; gyroscope; gamepad; xr-spatial-tracking');
     frame.setAttribute('referrerpolicy', 'no-referrer');
+    frame.setAttribute('credentialless', '');   // a bot's page may load from anywhere, without anybody's cookies
     card._frame = frame;
     card._stage.replaceChildren(frame);
     framed.push(card);

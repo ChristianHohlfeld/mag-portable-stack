@@ -423,8 +423,17 @@ class RoomContract(unittest.TestCase):
         self.assertNotIn("browser_screenshot", [t["function"]["name"] for t in r.lena.chats()[-1]["tools"]])
         with urllib.request.urlopen(r.url("/"), timeout=5) as res:
             policy = res.headers["Content-Security-Policy"]
-            self.assertIsNone(res.headers["Cross-Origin-Embedder-Policy"])
+            # The page is cross-origin isolated (threads for the speech model), in the way that leaves frames of other origins possible.
+            self.assertEqual((res.headers["Cross-Origin-Embedder-Policy"], res.headers["Cross-Origin-Opener-Policy"]), ("credentialless", "same-origin"))
         self.assertIn("frame-src 'self' https://*.bot.stardenburg.de;", policy)
+        # ... and a bot's page says that it may run in such a frame.
+        site = urllib.request.Request(r.url("/"), headers={"Host": "lena.bot.stardenburg.de"})
+        try:
+            with urllib.request.urlopen(site, timeout=5) as res:
+                said = res.headers
+        except urllib.error.HTTPError as err:        # whatever lies there: the headers are what counts here
+            said = err.headers
+        self.assertEqual((said["Cross-Origin-Embedder-Policy"], said["Cross-Origin-Resource-Policy"]), ("credentialless", "cross-origin"))
 
     def test_bot_sites_follow_the_name_and_old_addresses_redirect(self):
         r = self.room

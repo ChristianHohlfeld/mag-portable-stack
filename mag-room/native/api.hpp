@@ -76,6 +76,18 @@ public:
     if (r.method == "POST" && p == "/api/stop") return post_stop(fd, r);
     if (r.method == "POST" && p == "/api/upload") return upload(fd, r);
     if (r.method == "POST" && p == "/api/stt") return stt(fd, r);
+    if (r.method == "POST" && p == "/api/tts/stat") {
+      // How reading aloud goes on the device, for the journal: numbers and the
+      // name of the provider, never what was read.
+      const Val in = jparse(r.body);
+      std::string provider = jstr(in, "provider"), line = "tts:";
+      if (provider.size() > 12 || provider.find_first_not_of("abcdefghijklmnopqrstuvwxyz") != std::string::npos) provider = "?";
+      if (!provider.empty()) line += " provider=" + provider;
+      for (const char *key : {"threads", "isolated", "steps", "warm_ms", "first_ms", "synth_ms", "audio_ms"})
+        if (in.find(key)) line += " " + std::string(key) + "=" + std::to_string((long)std::min(1e9, std::max(0.0, jnum(in, key))));
+      logf(line);
+      return http::send_ok(fd);
+    }
     if ((r.method == "POST" || r.method == "DELETE") && p == "/api/stt/live") return stt_live(fd, r);
     if (r.method == "POST" && starts_with(p, "/api/3d/") && ends_with(p, "/cancel")) {
       // A 3D job or the film of a scene: each is cancelled where it runs.
@@ -188,6 +200,8 @@ private:
     // bots run in frames from their own sites (another origin, tailnet only).
     static const http::Headers h = {
         {"Referrer-Policy", "no-referrer"},
+        // Isolated from other origins: shared memory for the threads of the speech model.
+        {"Cross-Origin-Opener-Policy", "same-origin"},
         {"Content-Security-Policy",
          "default-src 'self'; img-src 'self' blob: data:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; "
          "script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self'; frame-src 'self' https://*." +
@@ -556,7 +570,8 @@ private:
   // bot's current name. An earlier name, the bot's id or its VM name redirect
   // there (temporarily: a name can change again).
   void bot_site(int fd, const http::Request &r, const std::string &name) {
-    static const http::Headers open = {{"Access-Control-Allow-Origin", "*"}, {"Cache-Control", "no-cache"}};
+    // A bot's page runs in a frame of the room's page, which is cross-origin isolated: it says that it may.
+    static const http::Headers open = {{"Access-Control-Allow-Origin", "*"}, {"Cache-Control", "no-cache"}, {"Cross-Origin-Resource-Policy", "cross-origin"}};
     auto missing = [&] {
       http::send(fd, 404, "text/html; charset=utf-8",
                  "<!doctype html><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><title>Nicht gefunden</title>"

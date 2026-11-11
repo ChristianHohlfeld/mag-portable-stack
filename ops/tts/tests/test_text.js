@@ -13,6 +13,10 @@ assert.strictEqual(de('1989 waren es 1.250 € (ca. 15 %)'), 'neunzehnhundertneu
 assert.strictEqual(de('Kerne 28-55, z. B. bei 21 °C und 100 km/h'), 'Kerne achtundzwanzig bis fünfundfünfzig, zum Beispiel bei einundzwanzig Grad Celsius und einhundert Kilometer pro Stunde.');
 assert.strictEqual(de('1 Hund, 101 Dalmatiner, 1000000 Sterne, 0 Fehler'), 'ein Hund, einhunderteins Dalmatiner, eine Million Sterne, null Fehler.');
 assert.strictEqual(de('Lena & Noah – „schön“ 😀'), 'Lena und Noah - "schön"');
+// What is spelled out is spelled out: "3D" is not "dritte D".
+assert.strictEqual(de('Foto zu 3D ist fertig, das 3D-Modell auch'), 'Foto zu drei De ist fertig, das drei De Modell auch.');
+assert.strictEqual(de('Die KI in der VM nutzt die GPU, als MP3 in 4K'), 'Die Ka I in der Vau Emm nutzt die Ge Pe U, als Emm Pe drei in vier Ka.');
+assert.strictEqual(de('WICHTIG: MAG bleibt MAG'), 'WICHTIG: MAG bleibt MAG.');
 // The model's table has no "ä": it gets "a" and the two dots.
 assert.ok(spoken('Über Öl', 'de').includes('Über Öl'));
 assert.ok(!/[äöüÄÖÜ]/.test(spoken('Über Öl und Übung', 'de')));

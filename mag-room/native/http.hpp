@@ -81,12 +81,20 @@ inline std::string head(int code, const std::string &ctype, long long length, co
   if (!ctype.empty()) h += "Content-Type: " + ctype + "\r\n";
   if (length >= 0) h += "Content-Length: " + std::to_string(length) + "\r\n";
   h += "X-Content-Type-Options: nosniff\r\n";
-  bool cache = false;
+  bool cache = false, embedder = false, resource = false;
   for (auto &kv : extra) {
-    if (lower(kv.first) == "cache-control") cache = true;
+    const std::string key = lower(kv.first);
+    if (key == "cache-control") cache = true;
+    if (key == "cross-origin-embedder-policy") embedder = true;
+    if (key == "cross-origin-resource-policy") resource = true;
     h += kv.first + ": " + kv.second + "\r\n";
   }
   if (!cache) h += "Cache-Control: no-store\r\n";
+  // The page is cross-origin isolated (its speech model runs on several
+  // threads only then), so every document, worker and frame says that it may
+  // be part of such a page, and whose resource it is.
+  if (!embedder) h += "Cross-Origin-Embedder-Policy: credentialless\r\n";
+  if (!resource) h += "Cross-Origin-Resource-Policy: same-origin\r\n";
   h += "Connection: close\r\n\r\n";
   return h;
 }

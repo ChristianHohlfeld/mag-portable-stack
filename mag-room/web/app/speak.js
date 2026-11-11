@@ -57,9 +57,20 @@
   // One sentence per Piper call, capped so a long sentence still starts soon.
   // Abbreviations (z.B., Dr.) are not treated as sentence ends.
   const ABBREV = /^(dr|nr|bzw|ca|ggf|usw|etc|prof|dipl|ing|str|tel|fax|abs|vgl)$/i;
-  function piperParts(text, max = 120) {
+  // The very first part of a playback is short (`first`): a clause, not a
+  // whole sentence. The sound starts after what a few words take to make,
+  // and the rest is made while they play.
+  function piperParts(text, max = 120, first = false) {
     const out = [];
     let rest = String(text || '').trim();
+    if (first && rest.length > 40) {
+      const head = rest.slice(0, 44);
+      let cut = -1;
+      for (const m of head.matchAll(/[,;:–—]\s|[.!?]\s|\s(?=(?:und|oder|aber|denn|weil|dass|wenn|als|wie)\s)/g))
+        if (m.index >= 8 && cut < 0) cut = m.index + (/\s/.test(m[0][0]) ? 0 : 1);       // the first place a speaker would breathe
+      if (cut < 0) cut = head.lastIndexOf(' ', 30);
+      if (cut >= 8) { out.push(rest.slice(0, cut).trim()); rest = rest.slice(cut).trimStart(); }
+    }
     while (rest) {
       let cut = rest.length;
       const re = /[.!?](?:\s+|$)/g;
@@ -70,9 +81,10 @@
         if (m[0][0] === '.' && (token.includes('.') || ABBREV.test(token))) continue;
         if (at >= 8) { cut = at; break; }
       }
-      if (cut > max) {
-        const word = rest.lastIndexOf(' ', max);
-        cut = word >= Math.floor(max / 3) ? word + 1 : max;
+      const most = first && out.length === 1 ? 70 : max;      // the second part is still short: it is made while the first few words play
+      if (cut > most) {
+        const word = rest.lastIndexOf(' ', most);
+        cut = word >= Math.floor(most / 3) ? word + 1 : most;
       }
       const piece = rest.slice(0, cut).trim();
       if (!piece) break;
@@ -158,7 +170,8 @@
   function setButtons() { document.querySelectorAll('.act[data-speak]').forEach(setButton); }
 
   // ---- Piper (worker) ---------------------------------------------------------
-  const piper = { config: null, configP: null, failed: new Map(), worker: null, ready: new Set(), loading: new Map(), ctx: null, seq: 0, pending: new Map(), source: null };
+  const piper = { config: null, configP: null, failed: new Map(), worker: null, ready: new Set(), loading: new Map(), ctx: null, seq: 0, pending: new Map(), source: null,
+                  perStep: +(localStorage.getItem('mag-tts-speed') || 0) || 0 };
   function loadConfig() {
     if (!S.features?.tts) return Promise.resolve(null);
     if (!piper.configP) piper.configP = (async () => {
@@ -215,12 +228,21 @@
     if (piper.ready.has(v.model)) return Promise.resolve(true);
     if ((piper.failed.get(v.model) || 0) > Date.now()) return Promise.resolve(false);
     if (piper.loading.has(v.model)) return piper.loading.get(v.model);
+    const began = performance.now();
     const p = ask({type: 'warm', model: v.model}, WARM_TIMEOUT_MS)
-      .then(() => { piper.ready.add(v.model); return true; })
+      .then((m) => { piper.ready.add(v.model); if (m?.provider) report({ warm_ms: Math.round(performance.now() - began), provider: m.provider, threads: m.threads | 0, isolated: self.crossOriginIsolated ? 1 : 0 }); return true; })
       .catch(() => { piper.failed.set(v.model, Date.now() + 20000); return false; })
       .finally(() => piper.loading.delete(v.model));
     piper.loading.set(v.model, p);
     return p;
+  }
+  // How the reading went on this device, as numbers for the room's journal
+  // (which provider, how long until the first sound, how long a part took to
+  // make against how long it plays): never what was read.
+  let reports = 0;
+  function report(numbers) {
+    if (++reports > 12) return;
+    MAG.api('POST', '/api/tts/stat', numbers).catch(() => {});
   }
   // A crashed or stuck worker is replaced and the part is synthesised again.
   function resetWorker() {
@@ -229,9 +251,26 @@
     for (const p of piper.pending.values()) { clearTimeout(p.timer); p.reject(new Error('worker reset')); }
     piper.pending.clear();
   }
+  // In how many steps a part is made. The model refines its sound in steps:
+  // five is its full quality, three is heard a little. A device that makes
+  // speech much faster than it plays always takes five. A slower one makes
+  // the first parts of a reading in fewer, so the sound starts at once and
+  // does not stop before the full ones are ready. How fast the device is, is
+  // measured on every part (work per second of speech and step) and kept.
+  function stepsFor(pb) {
+    const n = pb.asked++;
+    if (piper.perStep > 0 && piper.perStep * 5 < 0.4) return undefined;
+    return n < 2 ? 3 : n < 3 ? 4 : undefined;
+  }
+  function measured(res) {
+    if (!(res.synthMs > 0) || !(res.audio.length > res.rate / 2) || !(res.steps > 0)) return;
+    const now = res.synthMs / (1000 * res.audio.length / res.rate) / res.steps;
+    piper.perStep = piper.perStep > 0 ? 0.6 * piper.perStep + 0.4 * now : now;
+    try { localStorage.setItem('mag-tts-speed', String(piper.perStep)); } catch {}
+  }
   async function synthPart(pb, text, rate) {
-    const msg = {type: 'speak', text, model: pb.voice.model, rate, lang: (pb.lang || 'de').slice(0, 2)};
-    try { return await ask(msg, SPEAK_TIMEOUT_MS); }
+    const msg = {type: 'speak', text, model: pb.voice.model, rate, lang: (pb.lang || 'de').slice(0, 2), steps: stepsFor(pb)};
+    try { const res = await ask(msg, SPEAK_TIMEOUT_MS); measured(res); return res; }
     catch (e) {
       if (current !== pb) throw e;
       // Nothing speakable (only symbols/emoji): skip this part, keep reading.
@@ -281,24 +320,38 @@
   }
   // Old WebKit returns undefined instead of a promise.
   function resume(ctx) { try { Promise.resolve(ctx.resume?.()).catch(() => {}); } catch (_) {} }
+  // Parts are made ahead of what plays: up to three are ready or being made
+  // at any time, in order. So a part that takes longer to make than the one
+  // before it takes to play costs no pause, and the reading does not stop
+  // between sentences.
   async function piperPlay(pb) {
-    let text = await nextText(pb);
-    if (text == null) return finish(pb);
-    let cur = request(pb, text);
+    const ahead = [];
+    let more = true;
+    (async () => {
+      while (current === pb && more) {
+        if (ahead.length >= 3) { await new Promise((go) => { pb.room = go; }); continue; }
+        const text = await nextText(pb);
+        if (text == null || current !== pb) break;
+        ahead.push(request(pb, text));
+        pb.have?.();
+      }
+      more = false;
+      pb.have?.();
+    })();
     for (;;) {
+      while (!ahead.length && more && current === pb) await new Promise((go) => { pb.have = go; });
+      if (current !== pb) return;
+      if (!ahead.length) return finish(pb);
+      let cur = ahead.shift();
+      pb.room?.();
       // Tempo changed while this part was prepared: synthesise it again.
       if (cur.rate !== rateFor(pb.speaker)) cur = request(pb, cur.text);
       const res = await cur.p;
       if (current !== pb) return;
+      if (!pb.spoken) report({ first_ms: Math.round(performance.now() - pb.t0), synth_ms: res.synthMs | 0, audio_ms: Math.round(1000 * res.audio.length / res.rate), provider: res.provider, threads: res.threads | 0, steps: res.steps | 0 });
       pb.spoken = true;
-      // The next part is requested as soon as its text exists, so its
-      // synthesis overlaps the playback of this one.
-      const following = nextText(pb).then(t => (t == null || current !== pb) ? null : request(pb, t));
       await playBuffer(pb, res);
       if (current !== pb) return;
-      cur = await following;
-      if (current !== pb) return;
-      if (!cur) return finish(pb);
     }
   }
 
@@ -311,7 +364,7 @@
       const take = pb.live ? completeLength(rest) : rest.length;
       if (take > 0) {
         const piece = rest.slice(0, take);
-        pb.parts.push(...(pb.de ? piperParts(piece) : split(piece)));
+        pb.parts.push(...(pb.de ? piperParts(piece, 120, !pb.queued) : split(piece)));
         pb.queued += take;
       }
     }
@@ -374,7 +427,7 @@
     const lang = textLocale(normalized);
     const prof = profile(who);
     const de = piperPossible && !!S.features?.tts && prof.voiceId !== 'system';   // the model reads German and English alike
-    const pb = { key, who, speaker: prof.key, lang, de, parts: [], at: 0, queued: 0, text, live: false, wake: null, spoken: false, voice: prof.voice };
+    const pb = { key, who, speaker: prof.key, lang, de, parts: [], at: 0, queued: 0, text, live: false, wake: null, spoken: false, voice: prof.voice, t0: performance.now(), asked: 0 };
     feed(pb, text, false);
     if (!pb.parts.length) return false;
     current = pb;

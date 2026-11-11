@@ -274,7 +274,10 @@ worker follows it again; after a reboot the job starts again at the first
 stage whose result is missing; queued and running jobs are taken up again in
 order at every start. The room mirrors the job into its message (phase k of
 n, the sampler's step and its own estimate) and picks jobs up again after its
-own restart.
+own restart. A job that failed or was cancelled keeps its folder; "Noch
+einmal" at its message (`POST /api/3d/<id>/retry`, the worker's
+`/api/idol/jobs/<id>/retry`) queues it again, and it goes on at the first
+stage whose result is missing, like after a reboot.
 
 The mesh stage (`mesh.py`, CPU) has a time limit, and no step in it may take
 all of it. The UVs for the texture come from xatlas, which is done within a

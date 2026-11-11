@@ -86,7 +86,10 @@ of every finished stage are on disk, a stage runs on its own
 (`KillMode=process`) and is followed again after a restart of the worker, a
 lost stage starts again after a reboot, and the room picks a job up again
 after its own restart. Nothing writes a job off as "interrupted"; never make
-a deploy or a restart cost a running 3D job.
+a deploy or a restart cost a running 3D job. A job that failed or was
+cancelled is taken up again when the owner asks for it at its message ("Noch
+einmal"), at the first stage whose result is missing: sampling that is done
+is never done twice.
 A finished HTML page of a bot (an `html` code block of its answer, or a file
 it writes below `/home/bot/www`) is published on the bot's own tailnet site
 and runs in the chat as a live preview framed from that site, with Code/

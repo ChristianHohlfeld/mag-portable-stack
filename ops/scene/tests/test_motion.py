@@ -69,6 +69,16 @@ def main():
     for words, part in (("boxing", "boxing"), ("tanzt Salsa", "salsa"), ("betrunken", "drunk"), ("kriecht", "crawl"), ("verbeugt sich", "bow")):
         assert part in (lib.find(words) or ""), (words, lib.find(words))
     assert lib.find("xyzzy quux") is None
+    # A free pose: both hands up, worked out on the figure's own arms, also the one that holds something.
+    bones, front = gnome()
+    g = motion.Body(bones, front, 1.0, lib.neutral)
+    q = motion.Performer(g, lib, FPS, (0.0, 0.0), 0.0)
+    q.wait(5)
+    for side in ("l", "r"):
+        q.reach_to(side, lambda f: (q.xy[0], q.xy[1], 2.0 * g.height), 5, 40)
+    q.wait(60)
+    assert q.frames[25]["limbs"][5][2] > 0.9 and q.frames[25]["limbs"][7][2] > 0.9, (q.frames[25]["limbs"][5], q.frames[25]["limbs"][7])
+    assert q.frames[59]["limbs"][7][2] < 0.5                     # and they come down again
     # A motion is joined where its pose is nearest: a walk round is not begun at its start when the feet say otherwise.
     # A blow carries its maker forwards (it steps into it), and somebody who falls ends low.
     assert lib["kick"].place(0.3 * lib["kick"].seconds)[0] > 0.2 and not lib["kick"].loop and not lib["punch"].loop

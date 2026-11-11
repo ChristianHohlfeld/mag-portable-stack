@@ -22,7 +22,9 @@ public:
   // the 3D message, or "" with `error`.
   // `scene`: the photo's whole room is being made, one model per object;
   // this is one of them, with where it stands (see scene_part()).
-  std::string start(const Val &image, const std::string &quality, std::string &error, const Val &scene = Val()) {
+  // `into`: the message that stood for the order while the photo was looked
+  // at (see look()); it becomes the job's message instead of a new one.
+  std::string start(const Val &image, const std::string &quality, std::string &error, const Val &scene = Val(), const std::string &into = "") {
     if (quality != "fast" && quality != "normal" && quality != "high") { error = "Qualität muss fast, normal oder high sein."; return ""; }
     const std::string path = room_.file_path(jstr(image, "file"));
     std::string bytes;
@@ -53,8 +55,39 @@ public:
     m3["image"] = jstr(image, "file"); // the photo it is made from (a room file)
     if (scene.isObj()) m3["scene"] = scene;
     m["model3d"] = m3;
-    const std::string id = jstr(room_.add(m), "id");
+    std::string id = into;
+    if (into.empty() || !room_.update(into, [&](Val &msg) { msg["model3d"] = m3; msg["state"] = "streaming"; })) id = jstr(room_.add(m), "id");
     watch(id, jstr(job, "id"));
+    return id;
+  }
+
+  // A plain order (no object chosen): the photo is looked at first. Idol
+  // makes one model of one thing; a photo of two people side by side became
+  // one lump of both, each a third as large as it could be. So what stands
+  // apart in the foreground is told apart (the worker's own foreground
+  // model, on the CPU, half a minute), and each piece is ordered by itself,
+  // filling its picture, as a part of the photo's scene. One thing only: the
+  // order goes on as it is. The message of the order is there at once and
+  // says what happens; a room that restarts while it looks, looks again.
+  std::string look(const Val &image, const std::string &quality, std::string &error) {
+    if (quality != "fast" && quality != "normal" && quality != "high") { error = "Qualität muss fast, normal oder high sein."; return ""; }
+    if (room_.file_path(jstr(image, "file")).empty()) { error = "Bild fehlt oder ist größer als 20 MB."; return ""; }
+    Val m = Val::object(), m3 = Val::object();
+    m["from"] = "idol";
+    m["role"] = "service";
+    m["state"] = "streaming";
+    m["text"] = "";
+    m["attachments"] = Val::array();
+    m3["state"] = "queued";
+    m3["stage"] = "Sieht nach, was im Foto ist";
+    m3["progress"] = 0;
+    m3["quality"] = quality;
+    m3["source"] = jstr(image, "name");
+    m3["image"] = jstr(image, "file");
+    m3["look"] = true;                   // no job yet: the photo is being looked at
+    m["model3d"] = m3;
+    const std::string id = jstr(room_.add(m), "id");
+    std::thread([this, id, image, quality] { looked(id, image, quality); }).detach();
     return id;
   }
 
@@ -92,7 +125,7 @@ public:
   // The objects of a photo (a room file): the one at a place (x across and
   // y down, 0..1), or with x < 0 every one by itself. `found` gets a mask per
   // object, as large as the photo. Returns "" or why not, in words.
-  std::string select(const std::string &file, double x, double y, Val &found, bool scene = false) {
+  std::string select(const std::string &file, double x, double y, Val &found, bool scene = false, bool pieces = false) {
     const std::string path = room_.file_path(file);
     std::string bytes;
     if (path.empty() || !read_file(path, bytes, 20u << 20) || bytes.size() < 8) return "Bild fehlt oder ist größer als 20 MB.";
@@ -100,11 +133,48 @@ public:
     opt.body = bytes;
     opt.headers.push_back({"Content-Type", "application/octet-stream"});
     opt.timeout_s = 600;
-    const std::string at = x < 0 ? (scene ? "?scene=1" : "") : "?x=" + std::to_string(std::min(1.0, x)) + "&y=" + std::to_string(std::min(1.0, std::max(0.0, y)));
+    const std::string at = x < 0 ? (pieces ? "?pieces=1" : scene ? "?scene=1" : "") : "?x=" + std::to_string(std::min(1.0, x)) + "&y=" + std::to_string(std::min(1.0, std::max(0.0, y)));
     const auto res = http::fetch(room_.cfg.idol_url + "/api/idol/select" + at, opt);
     found = jparse(res.body);
     if (res.status != 200 || !found.isObj()) return res.error.empty() ? jstr(found, "error", "Der 3D-Dienst hat abgelehnt.") : "3D-Dienst nicht erreichbar.";
     return "";
+  }
+
+  void looked(const std::string &id, const Val &image, const std::string &quality) {
+    Val found;
+    const std::string why = select(jstr(image, "file"), -1, 0, found, false, true);
+    Val still;
+    if (!room_.get(id, still)) return;   // deleted meanwhile
+    const Val *masks = why.empty() ? found.find("masks") : nullptr;
+    std::string error;
+    if (!masks || !masks->isArr() || masks->asArr().size() < 2) {
+      // One thing (or nobody could look): the order as it was.
+      if (start(image, quality, error, Val(), id).empty()) finish(id, "error", error);
+      return;
+    }
+    const std::string group = random_hex(8);
+    const std::string name = jstr(image, "name");
+    const std::string base = name.substr(0, name.rfind('.') == std::string::npos ? name.size() : name.rfind('.'));
+    size_t index = 0, begun = 0;
+    const size_t count = std::min<size_t>(8, masks->asArr().size());
+    for (auto &mask : masks->asArr()) {
+      if (index >= count) break;
+      const std::string cut = b64_decode(jstr(mask, "cut"));
+      Val part = Val::object(), wrapped = Val::object();
+      part["group"] = group;
+      part["index"] = (double)index;
+      part["count"] = (double)count;
+      if (const Val *place = mask.find("place"); place && place->isObj())
+        for (auto &kv : *place->obj) part[kv.first] = kv.second;
+      if (const Val *walls = found.find("room")) part["room"] = *walls;
+      wrapped["scene"] = part;
+      const Val att = cut.size() < 64 ? Val() : room_.store_file(base + "-" + std::to_string(index + 1) + ".png", cut, "chris");
+      if (att.isObj() && !start(att, quality, error, scene_part(wrapped), index == 0 ? id : "").empty()) ++begun;
+      ++index;
+    }
+    if (!begun) {
+      if (start(image, quality, error, Val(), id).empty()) finish(id, "error", error.empty() ? "Der 3D-Dienst hat den Auftrag abgelehnt." : error);
+    }
   }
 
   // What the page says about one object of a photo's room, taken as numbers
@@ -172,6 +242,14 @@ public:
   // room version declared failed just because the room itself restarted.
   void resume() {
     for (auto &m : room_.all()) {
+      // An order whose photo was being looked at when the room went down: it is looked at again.
+      if (const Val *waiting = m.find("model3d"); waiting && jbool(*waiting, "look", false) && jstr(*waiting, "job").empty() && jstr(m, "state") == "streaming") {
+        Val image = Val::object();
+        image["file"] = jstr(*waiting, "image");
+        image["name"] = jstr(*waiting, "source");
+        std::thread([this, id = jstr(m, "id"), image, quality = jstr(*waiting, "quality", "normal")] { looked(id, image, quality); }).detach();
+        continue;
+      }
       const Val *m3 = job_of(m);
       if (!m3) continue;
       const std::string state = jstr(*m3, "state");

@@ -235,7 +235,7 @@
           const group = [...crypto.getRandomValues(new Uint8Array(8))].map((b) => b.toString(16).padStart(2, '0')).join('');
           for (const o of wanted) {
             const cut = await uploadCut(o.canvas, base + '-objekt-' + (++n) + '.png');
-            const order = { text: '', attachments: [cut.att.file], mode: '3d', quality, client_id: crypto.randomUUID?.() || String(Math.random()) };
+            const order = { text: '', attachments: [cut.att.file], mode: '3d', quality, chosen: true, client_id: crypto.randomUUID?.() || String(Math.random()) };
             if (room && o.place) order.scene = Object.assign({ group, index: n - 1, count: wanted.length, room }, o.place);
             await MAG.api('POST', '/api/message', order);
           }
@@ -255,7 +255,8 @@
     // A dictation that is still running ends here, with its last words.
     if (MAG.dictation?.active()) await MAG.dictation.finish();
     const text = input.value.trim(), body = { text, attachments: staged.map((s) => s.att.file), client_id: crypto.randomUUID?.() || String(Math.random()) };
-    if (mode3d) Object.assign(body, { mode: '3d', quality, text: '' });
+    // An object Chris chose himself is ordered as it is; a whole photo is looked at first (several things in it: one model each).
+    if (mode3d) Object.assign(body, { mode: '3d', quality, text: '', chosen: staged.some((s) => s.cut) });
     sending = true;
     refresh();
     try {

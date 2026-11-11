@@ -134,6 +134,7 @@ def main():
         assert base64.b64decode(found["masks"][0]["png"]) == b"\x89PNG mask --point 0.25 0.5" and "file" not in found["masks"][0], found
         assert base64.b64decode(call("POST", "/api/idol/select", PNG)[1]["masks"][0]["png"]).endswith(b"--all")
         assert base64.b64decode(call("POST", "/api/idol/select?scene=1", PNG)[1]["masks"][0]["png"]).endswith(b"--scene")
+        assert base64.b64decode(call("POST", "/api/idol/select?pieces=1", PNG)[1]["masks"][0]["png"]).endswith(b"--pieces")
         assert call("POST", "/api/idol/select?x=2&y=0", PNG)[0] == 400 and call("POST", "/api/idol/select", b"not a picture")[0] == 415
         assert list(root.iterdir()) == [], list(root.iterdir())
         assert call("GET", "/api/idol/health")[1]["resumable"] is True

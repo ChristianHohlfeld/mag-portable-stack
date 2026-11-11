@@ -497,6 +497,16 @@ def analyse(co, edges=None, axis=None, kind=None):
             arms += 1
             if arms == 2:
                 break
+        # A head sits right above the shoulders. A figure whose head and hat
+        # (or beard) narrow without a neck would otherwise have its face on the
+        # chest and only its hat on the head, and the hat bends when it looks.
+        shoulders = [bones[b]["head"][2] for b in range(len(bones)) if bones[b]["role"] == "arm"]
+        if shoulders and neck_z > max(shoulders) + 0.25 * (top[2] - max(shoulders)):
+            neck_z = max(shoulders) + 0.25 * (top[2] - max(shoulders))
+            neck_at = centre_at(neck_z)
+            neck_at[2] = neck_z
+            bones[ribs]["tail"] = neck_at
+            bones[skull_bone]["head"] = neck_at
         trunk = [pelvis, ribs, skull_bone]
         notes = ["Zweibeiner: 2 Beine, Rumpf, Kopf" + (" und %d Arm%s" % (arms, "e" if arms > 1 else "") if arms else "; Arme liegen am Körper an und bewegen sich mit ihm")]
 

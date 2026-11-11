@@ -45,6 +45,17 @@ def person():
     return np.concatenate(parts)
 
 
+def gnome():
+    """No neck: a round head sits on the body and wears a tall pointed hat."""
+    parts = [tube((0, 0, 0.45), (0, 0, 0.62), 0.15), ball((0, 0, 0.74), 0.12)]
+    parts += [ball((0, 0, 0.82 + 0.25 * t), 0.12 * (1 - t) + 0.01) for t in np.linspace(0, 1, 16)]
+    for x in (-0.08, 0.08):
+        parts += [tube((x, 0, 0.45), (x, 0, 0.05), 0.05), tube((x, 0, 0.045), (x, -0.12, 0.045), 0.04)]
+    for x in (-1, 1):
+        parts.append(tube((0.16 * x, 0, 0.6), (0.34 * x, 0, 0.36), 0.04))
+    return np.concatenate(parts)
+
+
 def main():
     found = rig.analyse(dog())
     roles = [b["role"] for b in found["bones"]]
@@ -75,6 +86,16 @@ def main():
     arms = [b for b in found["bones"] if b["role"] == "arm"]
     assert sorted(b["left"] for b in arms) == [False, True] and all(b["reach"][2] < -0.2 for b in arms), arms
     assert [b["name"] for b in arms if b["left"]][0] == "Arm links oben" and [b for b in arms if b["left"]][0]["head"][0] > 0   # its left, as it looks towards -y, is +x
+    head = [b for b in found["bones"] if b["role"] == "head"][0]
+    assert 0.95 <= head["head"][2] <= 1.1, head                           # the neck stays where it is narrow
+
+    # Without a neck the head (face and hat) starts right above the shoulders, so the hat does not bend when it looks.
+    co = gnome()
+    found = rig.analyse(co)
+    roles = [b["role"] for b in found["bones"]]
+    assert found["kind"] == "biped" and roles.count("arm") == 2, found["notes"]
+    face = (co[:, 2] > 0.68) & (co[:, 2] < 0.78)
+    assert {roles[i] for i in set(found["labels"][face])} == {"head"}, {roles[i] for i in set(found["labels"][face])}
 
     for thing in (ball((0, 0, 0.5), 0.5, 0.03), tube((0, 0, 0.1), (0, 0, 0.9), 0.1)):
         found = rig.analyse(thing)

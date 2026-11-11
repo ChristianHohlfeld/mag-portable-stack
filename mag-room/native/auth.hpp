@@ -89,7 +89,13 @@ public:
     in_addr parsed{};
     if (given.size() != 64 || inet_pton(AF_INET, ip.c_str(), &parsed) != 1) return a;
     const int64_t minute = now_s() / 60;
-    if (!ct_equal(given, proof(login, ip, minute)) && !ct_equal(given, proof(login, ip, minute - 1))) return a;
+    // nginx asks who it is when a request begins and hands the body over when
+    // it has all of it: a photo from a phone on a slow line (maybe while it
+    // also loads the voice model) arrives minutes later. So the proof holds
+    // for a quarter of an hour; it is made by nginx alone, on this host.
+    bool proven = false;
+    for (int64_t back = 0; back <= 15 && !proven; ++back) proven = ct_equal(given, proof(login, ip, minute - back));
+    if (!proven) return a;
     if (!is_owner(login)) return a;
     a.ok = true;
     a.role = "owner";

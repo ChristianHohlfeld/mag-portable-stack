@@ -17,18 +17,22 @@ from scipy.spatial import cKDTree
 from skimage.measure import marching_cubes
 import trimesh
 
+from unwrap import unwrap
+
 # Single source of truth for mesh preset parameters; worker mirrors timeouts.
 QUALITY_PRESETS = {
     "fast": {"resolution": 128, "max_points": 150000, "max_faces": 150000,
              "texture": 1024, "smooth": 2, "percentile": 52, "floor": 0.035,
-             "crop": 0.5, "neighbors": 8},
+             "crop": 0.5, "neighbors": 8, "unwrap": 90},
     "normal": {"resolution": 224, "max_points": 400000, "max_faces": 400000,
                "texture": 2048, "smooth": 3, "percentile": 43, "floor": 0.03,
-               "crop": 0.1, "neighbors": 12},
+               "crop": 0.1, "neighbors": 12, "unwrap": 330},
     "high": {"resolution": 320, "max_points": 1000000, "max_faces": 800000,
              "texture": 4096, "smooth": 2, "percentile": 30, "floor": 0.02,
-             "crop": 0.02, "neighbors": 16},
+             "crop": 0.02, "neighbors": 16, "unwrap": 720},
 }
+# "unwrap": seconds xatlas gets for the UVs before the surface is laid out
+# plainly instead. The worker gives the whole stage 5, 15 and 30 minutes.
 
 
 def splat_density(xyz, alpha, radii, lo, spacing, resolution):
@@ -113,24 +117,14 @@ def gaussian_albedo(points, tree, centers, colors, alpha, radii, spacing, neighb
     return np.clip(rgb, 0.0, 1.0)
 
 
-def bake_texture(verts, faces, xyz, alpha, radii, colors, spacing, size, neighbors):
-    """Unwrap with xatlas, rasterize UV triangle IDs and bake at each texel.
+def bake_texture(verts, faces, xyz, alpha, radii, colors, spacing, size, neighbors, seconds):
+    """Unwrap, rasterize UV triangle IDs and bake at each texel.
 
     UVs sample the actual 3D surface, not interpolated per-vertex colors.
     Face IDs are rasterized using Pillow's C implementation. Barycentric
     interpolation and neighbourhood colour sampling run in bounded chunks.
     """
-    import xatlas
-
-    print(f"UV unwrap: {len(faces)} faces -> {size}² atlas", flush=True)
-    vmapping, uv_faces, uvs = xatlas.parametrize(
-        np.ascontiguousarray(verts, np.float32),
-        np.ascontiguousarray(faces, np.uint32))
-    vmapping = np.asarray(vmapping, np.int64)
-    uv_faces = np.asarray(uv_faces, np.int32)
-    uvs = np.asarray(uvs, np.float32)
-    if not len(uv_faces) or not np.isfinite(uvs).all():
-        raise ValueError("xatlas UV-Unwrap fehlgeschlagen")
+    vmapping, uv_faces, uvs = unwrap(verts, faces, size, seconds)
 
     uv_px = np.column_stack((
         uvs[:, 0] * (size-1),
@@ -273,7 +267,8 @@ def reconstruct(input_path: Path, output_dir: Path, quality="normal"):
     print("MAG-STEP texture", flush=True)
     vmapping, uv_faces, uvs, texture = bake_texture(
         geometry.vertices, geometry.faces, xyz, alpha, gaussian_radius, colors,
-        spacing, settings["texture"], settings["neighbors"])
+        spacing, settings["texture"], settings["neighbors"],
+        float(os.environ.get("MAG_IDOL_UNWRAP_S", settings["unwrap"])))
     print("MAG-STEP export", flush=True)
 
     material = trimesh.visual.material.PBRMaterial(

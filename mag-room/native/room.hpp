@@ -188,7 +188,7 @@ public:
   }
 
   // How long the text is that a bot's answer is being written into right now
-  // (its last part, when that is text), and how long its thoughts are.
+  // (its last part, when that is text).
   size_t text_len(const std::string &id) {
     std::lock_guard<std::mutex> lk(mu_);
     const auto it = messages_.find(id);
@@ -202,11 +202,6 @@ public:
     const auto it = messages_.find(id);
     const Val *list = it == messages_.end() ? nullptr : it->second.find("parts");
     return list ? list->size() : 0;
-  }
-  size_t reasoning_len(const std::string &id) {
-    std::lock_guard<std::mutex> lk(mu_);
-    const auto it = messages_.find(id);
-    return it == messages_.end() ? 0 : jstr(it->second, "reasoning").size();
   }
   // Takes back what was streamed into that text beyond `keep` bytes and puts
   // `text` there instead: a model that ran in circles keeps its first round.

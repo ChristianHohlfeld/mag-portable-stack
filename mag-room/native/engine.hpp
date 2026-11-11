@@ -1582,7 +1582,7 @@ private:
     std::string id;          // room message, created on first visible output
     std::string held;        // text not shown yet (could still become PASS)
     std::string tail;        // possible start of a control marker
-    std::string reasoning;   // thoughts before the message exists
+    std::string reasoning;   // the turn's thoughts as the model wrote them; the message shows them tidied
     bool visible = false;
     bool ok_tool = false;
     std::string tool_sig;
@@ -1649,11 +1649,19 @@ private:
     m["parts"] = Val::array();
     m["attachments"] = Val::array();
     m["reason"] = reason;
-    if (!t.reasoning.empty()) m["reasoning"] = t.reasoning;
+    if (const std::string thoughts = llm::tidy_thoughts(t.reasoning); !thoughts.empty()) m["reasoning"] = thoughts;
     t.id = jstr(room_.add(m), "id");
-    t.reasoning.clear();
     std::lock_guard<std::mutex> lk(mu_);
     b.message = t.id;
+  }
+
+  // The message's thoughts are the turn's, tidied; none when nothing is left of them.
+  void show_thoughts(const TurnState &t) {
+    const std::string thoughts = llm::tidy_thoughts(t.reasoning);
+    room_.update(t.id, [&](Val &m) {
+      if (!thoughts.empty()) m["reasoning"] = thoughts;
+      else if (m.obj) m.obj->erase(std::remove_if(m.obj->begin(), m.obj->end(), [](const auto &kv) { return kv.first == "reasoning"; }), m.obj->end());
+    }, false);
   }
 
   // Streams text into the message. Text stays hidden while it could still be
@@ -1793,8 +1801,8 @@ private:
       };
       cb.on_reasoning = [&](const std::string &d) {
         set_phase(b, "thinking");
-        if (t.id.empty()) t.reasoning += d;
-        else room_.append_reasoning(t.id, d);
+        t.reasoning += d;
+        if (!t.id.empty()) room_.append_reasoning(t.id, d);
       };
       cb.on_content = [&](const std::string &d) {
         set_phase(b, "writing");
@@ -1805,7 +1813,7 @@ private:
       const int budget_s = (int)std::max<int64_t>(30, (deadline - mono_ms()) / 1000);
       // Where this call's text and thoughts begin, should some of them have to be taken back.
       const size_t text0 = t.id.empty() ? 0 : room_.text_len(t.id);
-      const size_t thought0 = t.id.empty() ? t.reasoning.size() : room_.reasoning_len(t.id);
+      const size_t thought0 = t.reasoning.size();
       const bool shown0 = t.visible;
       llm::ChatResult res = llm::chat(b.backend, body, cancel.get(), cb, budget_s);
       t.last = res;
@@ -1833,10 +1841,7 @@ private:
         // in circles, or a tool call ran away into raw markup. What it wrote
         // stays once; what it meant to call is called.
         logf("engine: " + b.id + " generation ended by the room (" + res.guard + ")");
-        auto thoughts = [&](const std::string &now) {
-          if (t.id.empty()) t.reasoning = mj::utf8_cut(t.reasoning, thought0) + now;
-          else room_.update(t.id, [&](Val &m) { m["reasoning"] = mj::utf8_cut(jstr(m, "reasoning"), thought0) + now; }, false);
-        };
+        auto thoughts = [&](const std::string &now) { t.reasoning = mj::utf8_cut(t.reasoning, thought0) + now; };
         if (res.guard == "repeat") {
           t.tail.clear();
           std::string once = plain_names(res.content, names());
@@ -1859,6 +1864,8 @@ private:
           thoughts(res.reasoning);
         }
       }
+      // The thoughts of this call are complete: the message shows them tidied (they streamed in raw).
+      if (!t.id.empty() && t.reasoning.size() != thought0) show_thoughts(t);
       // What the model produced is part of the log, also when it was cut off.
       const std::string content = strip_markers(res.content);
       if (!res.content.empty() || !res.calls.empty()) {
@@ -2000,6 +2007,7 @@ private:
     emit_text(b, t, "", name, reason, true);
     ensure_message(b, t, reason);
     if (t.id.empty()) return;
+    show_thoughts(t);
     std::string text;
     bool wants_more = false;
     room_.update(t.id, [&](Val &m) {

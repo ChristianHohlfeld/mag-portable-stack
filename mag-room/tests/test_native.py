@@ -1061,8 +1061,13 @@ class RoomContract(unittest.TestCase):
         self.assertEqual((m["text"], m["reasoning"], clean(m)), ("Die Antwort ist 4.", "Kurz überlegen.", True))
         m = ask("noah", "<|channel|>analysis<|message|>Hm.<|end|><|start|>assistant<|channel|>final<|message|>Passt so.")
         self.assertEqual((m["text"], m["reasoning"], clean(m)), ("Passt so.", "Hm.", True))
+        # Thoughts are shown as an outline without its shared indent and without empty entries, or not at all.
+        m = ask("lena", {"reasoning": "*   Status: Lena ist da.\n    *   Ziel: antworten.\n    *   \n\n\n    *   Kurz bleiben.\n", "content": "Fertig."})
+        self.assertEqual((m["text"], m["reasoning"]), ("Fertig.", "*   Status: Lena ist da.\n*   Ziel: antworten.\n\n*   Kurz bleiben."))
+        m = ask("lena", {"reasoning": "*   \n    *   \n    *   \n", "content": "Nichts gedacht."})
+        self.assertEqual((m["text"], "reasoning" in m), ("Nichts gedacht.", False))
         m = ask("lena", "Gern.")   # and the bot's own log holds what was shown
-        self.assertEqual([x["content"] for x in r.lena.chats()[-1]["messages"] if x["role"] == "assistant" and x["content"]][-1], "Die Antwort ist 4.")
+        self.assertEqual([x["content"] for x in r.lena.chats()[-1]["messages"] if x["role"] == "assistant" and x["content"]][-3], "Die Antwort ist 4.")
         # 4. An answer in circles is ended and kept once.
         passage = "Die neue Szene ist bereit! Ich habe eine längere Abfolge an Bewegungen eingebaut, damit es lebhafter zugeht. 🦊✨\n\n"
         r.lena.delay = 0.002

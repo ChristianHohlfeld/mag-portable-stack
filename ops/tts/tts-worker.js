@@ -98,13 +98,48 @@ async function dropPiece(url, n) {
   const cache = await opened();
   if (cache) { try { await cache.delete(pieceKey(url, n)); } catch (e) { /* gone */ } }
 }
+// The worker says it is alive while bytes come in (at most every few
+// seconds): the page then knows a slow download from a stuck one.
+let lastSign = 0;
+function sign() {
+  const now = Date.now();
+  if (now - lastSign < 4000 || current === undefined) return;
+  lastSign = now;
+  postMessage({type: 'progress', id: current, progress: -1});
+}
+let current;                  // the id of the 'warm' that the download belongs to
+// A piece that gets no byte for this long is given up and asked for again: a
+// connection that silently died (a phone that slept, a network that changed)
+// must not hold the download forever.
+const SILENT_MS = 25000;
+async function piece(url, n) {
+  const quiet = new AbortController();
+  let watch = setTimeout(() => quiet.abort(), SILENT_MS);
+  const awake = () => { clearTimeout(watch); watch = setTimeout(() => quiet.abort(), SILENT_MS); sign(); };
+  try {
+    const net = await fetch(url, {headers: {Range: 'bytes=' + n * PIECE + '-' + ((n + 1) * PIECE - 1)}, signal: quiet.signal});
+    if (net.status !== 206 && net.status !== 200) throw new Error('HTTP ' + net.status);
+    awake();
+    if (!net.body || !net.body.getReader) return {net, bytes: await net.arrayBuffer()};
+    const reader = net.body.getReader(), chunks = [];
+    let size = 0;
+    for (;;) {
+      const {done, value} = await reader.read();
+      if (done) break;
+      chunks.push(value); size += value.byteLength;
+      awake();
+    }
+    const bytes = new Uint8Array(size);
+    let at = 0;
+    for (const c of chunks) { bytes.set(c, at); at += c.byteLength; }
+    return {net, bytes: bytes.buffer};
+  } finally { clearTimeout(watch); }
+}
 // Fetches piece n and keeps it; the size of the whole file.
 async function fetchPiece(url, n) {
   for (let tries = 0; ; tries++) {
     try {
-      const net = await fetch(url, {headers: {Range: 'bytes=' + n * PIECE + '-' + ((n + 1) * PIECE - 1)}});
-      if (net.status !== 206 && net.status !== 200) throw new Error('HTTP ' + net.status);
-      const bytes = await net.arrayBuffer();
+      const {net, bytes} = await piece(url, n);
       if (net.status === 200) {          // the whole file at once: kept in pieces like the rest
         const total = bytes.byteLength;
         for (let k = 0; k * PIECE < total; k++) await keepPiece(url, k, bytes.slice(k * PIECE, (k + 1) * PIECE), total);
@@ -115,21 +150,29 @@ async function fetchPiece(url, n) {
       await keepPiece(url, n, bytes, total);
       return total;
     } catch (e) {
-      await pause(Math.min(30000, 1000 * 2 ** Math.min(tries, 5)));
+      await pause(Math.min(15000, 1000 * 2 ** Math.min(tries, 4)));
     }
   }
 }
 // The size of a file of weights, its first piece fetched if it is not kept yet.
 async function sizeOf(url) { return (await kept(url, 0)) || fetchPiece(url, 0); }
-// Every piece of a file of weights kept; progress(bytes there).
+// Every piece of a file of weights kept; progress(bytes there). Three pieces
+// come in at once: one connection over a slow or relayed link is slower
+// than three, and three pieces of 8 MB are little to hold.
+const LANES = 3;
 async function keepAll(url, progress) {
   const total = await sizeOf(url);
-  let got = 0;
-  for (let n = 0; n * PIECE < total; n++) {
-    if (!(await kept(url, n))) await fetchPiece(url, n);
-    got += pieceSize(total, n);
-    if (progress) progress(got);
-  }
+  const count = Math.ceil(total / PIECE);
+  let got = 0, next = 0;
+  const lane = async () => {
+    while (next < count) {
+      const n = next++;
+      if (!(await kept(url, n))) await fetchPiece(url, n);
+      got += pieceSize(total, n);
+      if (progress) progress(got);
+    }
+  };
+  await Promise.all(Array.from({length: Math.min(LANES, count)}, lane));
   return total;
 }
 // float16 -> float32, for every one of the 65536 values.
@@ -161,6 +204,7 @@ async function widened(url) {
 
 // Everything the model needs, fetched (and kept); the page shows how far it is.
 async function fetchAll(id) {
+  current = id;
   await Promise.all(['tts.json', 'unicode_indexer.json', ...NETWORKS.map((n) => n + '.onnx')].map((f) => cachedFetch(home + f)));
   const files = NETWORKS.map((n) => home + n + '.f16.data');
   // The sizes first (the first piece of each), so the line of the page fills evenly.
@@ -172,7 +216,7 @@ async function fetchAll(id) {
     const p = Math.min(99, Math.floor(100 * got.reduce((a, b) => a + b, 0) / all));
     if (p !== shown && id !== undefined) { shown = p; postMessage({type: 'progress', id, progress: p}); }
   };
-  // One after the other: four parallel downloads of this size starve a phone.
+  // One file after the other (each in its lanes): four at once starve a phone.
   for (let i = 0; i < files.length; i++) await keepAll(files[i], (g) => { got[i] = g; say(); });
 }
 
@@ -196,9 +240,10 @@ async function sessions(provider, alive) {
 
 async function build(id) {
   await fetchAll(id);
+  current = undefined;
   // From here on nothing is fetched, but it takes a while on a phone: the page
   // hears that the worker is alive after every step, or it would take it for stuck.
-  const alive = () => { if (id !== undefined) postMessage({type: 'progress', id, progress: 100}); };
+  const alive = () => { if (id !== undefined) postMessage({type: 'progress', id, progress: 100, making: true}); };
   alive();
   const cfg = await (await cachedFetch(home + 'tts.json')).json();
   const indexer = await (await cachedFetch(home + 'unicode_indexer.json')).json();

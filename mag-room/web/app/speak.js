@@ -20,9 +20,11 @@
   const ROBOT_VOICE = /espeak|mbrola|festival|flite|pico|ekho/i;
   const LIVE_IDLE_MS = 30000;
   // A part may take a while on a phone without WebGPU. Loading the model is a
-  // download of about 200 MB the first time: it has no fixed limit, only one
-  // for standing still (the worker reports its progress, and after the
-  // download every step of making the model ready).
+  // download of about 200 MB the first time: it has no limit at all (the
+  // worker asks again for what does not come, by itself, for as long as the
+  // page is open), and making the model ready after it has one for standing
+  // still (the worker reports every step). Time in which the page was not
+  // in view does not count: a phone holds a page in the background.
   const SPEAK_TIMEOUT_MS = 120000, WARM_TIMEOUT_MS = 180000;
   // The device's GPU gets this long to make the model ready and speak its
   // first word; a GPU that does not is not asked again on this device, and
@@ -172,7 +174,7 @@
     const busy = playing && !!current.loading;
     button.setAttribute('aria-pressed', String(playing));
     button.setAttribute('aria-busy', String(busy));
-    const label = busy ? 'Stimme wird geladen' : playing ? 'Vorlesen stoppen' : 'Vorlesen';
+    const label = busy ? 'Stimme wird geladen' : playing ? 'Vorlesen stoppen' : voiceState.state && voiceState.state !== 'ready' ? 'Vorlesen (' + stateText() + ')' : 'Vorlesen';
     button.setAttribute('aria-label', label);
     button.title = label;
     button.innerHTML = busy ? '<span class="spin"></span>' : playing ? MAG.icons.stop : MAG.icons.speak;
@@ -216,9 +218,16 @@
           }, GPU_LIMIT_MS);
         }
         if (m.type === 'progress') {     // the model is coming in: that is not standing still
-          const loading = piper.pending.get(m.id);
-          if (loading?.again) { clearTimeout(loading.timer); loading.timer = setTimeout(loading.again, WARM_TIMEOUT_MS); }
-          if (loading?.again) shown('loading', m.progress / 100);
+          for (const loading of piper.pending.values()) {
+            if (!loading.again) continue;
+            clearTimeout(loading.timer);
+            // While it downloads, the worker itself asks again for what does not come; after that, a step must not take forever.
+            loading.timer = m.making ? setTimeout(loading.again, WARM_TIMEOUT_MS) : 0;
+          }
+          if (!piper.ready.size) {
+            if (m.making) shown('making', 1);
+            else if (m.progress >= 0) shown('loading', m.progress / 100);
+          }
           if (m.progress >= next) { report({ load_pct: m.progress }); next = 25 * (Math.floor(m.progress / 25) + 1); }
           return;
         }
@@ -240,6 +249,12 @@
     return new Promise((resolve, reject) => {
       const late = () => {
         if (!piper.pending.has(id)) return;
+        // A page out of view is held by the phone: that is no reason to give up on the worker.
+        if (document.visibilityState !== 'visible' || performance.now() - seen < 20000) {
+          const p = piper.pending.get(id);
+          p.timer = setTimeout(late, 20000);
+          return;
+        }
         // A slow background download is not a stuck worker.
         if (msg.type === 'prefetch') piper.pending.delete(id); else resetWorker();
         reject(new Error('Zeitüberschreitung der Stimme'));
@@ -249,19 +264,32 @@
       try { worker().postMessage({...msg, id}); } catch (e) { piper.pending.delete(id); clearTimeout(timer); reject(e); }
     });
   }
+  let seen = performance.now();          // when the page came into view last
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') seen = performance.now(); });
   // Resolves true once the model is usable, false if Piper failed for it. A
   // failure is retried after a short pause instead of disabling the voice
   // until reload (mobile networks drop).
   // Whether the voice is there, shown without taking room: while the model
   // loads, a thin line under every "Vorlesen" button fills up (its title
-  // says how far); once it is there, nothing is shown.
+  // says how far), and it breathes while the model is made ready; once it is
+  // there, nothing is shown in the chat. The settings say it in words.
   let next = 25;                         // the next quarter of the download that is reported
+  const voiceState = { state: '', part: 0, provider: '' };
+  function stateText() {
+    const { state, part, provider } = voiceState;
+    if (state === 'ready') return 'Stimme bereit' + (provider === 'webgpu' ? ' (Grafikchip)' : provider === 'wasm' ? ' (Prozessor)' : '');
+    if (state === 'making') return 'Stimme wird bereit gemacht … solange liest die Gerätestimme';
+    if (state === 'loading') return 'Stimme lädt' + (part ? ' ' + Math.round(100 * part) + ' %' : '') + ' … solange liest die Gerätestimme';
+    return 'Stimme noch nicht geladen; solange liest die Gerätestimme';
+  }
   function shown(state, part) {
     const root = document.documentElement;
-    root.dataset.voice = state;
-    if (part !== undefined) root.style.setProperty('--voice-p', String(Math.max(0, Math.min(1, part))));
-    const title = state === 'loading' ? 'Vorlesen (Stimme lädt' + (part ? ' ' + Math.round(100 * part) + ' %' : '') + ', solange liest die Gerätestimme)' : 'Vorlesen';
+    if (root.dataset.voice !== state) root.dataset.voice = state;
+    voiceState.state = state;
+    if (part !== undefined) { voiceState.part = Math.max(0, Math.min(1, part)); root.style.setProperty('--voice-p', String(voiceState.part)); }
+    const title = state === 'ready' ? 'Vorlesen' : 'Vorlesen (' + stateText() + ')';
     document.querySelectorAll('.act[data-speak][aria-pressed="false"]').forEach((b) => { b.title = title; });
+    document.querySelectorAll('.voice-state').forEach((n) => { n.textContent = stateText(); });
   }
   function warm(v) {
     if (piper.ready.has(v.model)) return Promise.resolve(true);
@@ -270,7 +298,7 @@
     if (piper.loading.has(v.model)) return piper.loading.get(v.model);
     const began = performance.now();
     const p = ask({type: 'warm', model: v.model}, WARM_TIMEOUT_MS)
-      .then((m) => { piper.ready.add(v.model); shown('ready'); setTimeout(paint, 0); if (m?.provider) report({ warm_ms: Math.round(performance.now() - began), make_ms: m.makeMs | 0, probe_ms: m.probeMs | 0, provider: m.provider, threads: m.threads | 0, isolated: self.crossOriginIsolated ? 1 : 0 }); return true; })
+      .then((m) => { piper.ready.add(v.model); voiceState.provider = m?.provider || voiceState.provider; shown('ready'); setTimeout(paint, 0); if (m?.provider) report({ warm_ms: Math.round(performance.now() - began), make_ms: m.makeMs | 0, probe_ms: m.probeMs | 0, provider: m.provider, threads: m.threads | 0, isolated: self.crossOriginIsolated ? 1 : 0 }); return true; })
       .catch(() => {
         report({ warm_fail: 1, warm_ms: Math.round(performance.now() - began) });
         // Not there yet (a broken connection, a full device): it is tried again in a while, by itself.
@@ -613,6 +641,8 @@
       await loadConfig();
       return [...voiceList().map((v) => ({ id: v.id, label: v.label })), { id: 'system', label: 'Systemstimme' }];
     },
+    // Whether the model is there, in words, for the settings (kept up to date while they are open).
+    state: () => stateText(),
     of: (who) => { const p = profile(who); return { voice: p.voiceId, rate: p.rate }; },
     set(who, entry) {
       savePref(speakerKey(who), entry);
@@ -626,6 +656,8 @@
   // Not over a mobile connection or with data saving on: there the first
   // tap loads it.
   function warmUp() {
+    // What is downloaded once must stay: the browser is asked not to clear it when space runs short.
+    try { navigator.storage?.persist?.().catch(() => {}); } catch {}
     const link = navigator.connection;
     if (link && (link.saveData || link.type === 'cellular')) return;
     loadConfig().then((cfg) => {

@@ -1017,7 +1017,10 @@ class Performer:
         for start, n, kind, times in self.heads:
             if start <= f < start + n:
                 u = (f - start) / n
-                if kind == "nod":
+                if kind == "talk":                    # who speaks nods a little with what it says
+                    head = qmul(head, qaxis([0.0, 1.0, 0.0], math.radians(6.0) * (0.5 - 0.5 * math.cos(2 * math.pi * times * u))))
+                    head = qmul(head, qz(math.radians(4.0) * math.sin(math.pi * times * u * 0.7)))
+                elif kind == "nod":
                     head = qmul(head, qaxis([0.0, 1.0, 0.0], math.radians(22.0) * (0.5 - 0.5 * math.cos(2 * math.pi * times * u))))
                     chest = qmul(chest, qaxis([0.0, 1.0, 0.0], math.radians(5.0) * (0.5 - 0.5 * math.cos(2 * math.pi * times * u))))
                 else:

@@ -27,6 +27,20 @@ if [[ ! -x /opt/mag-scene/$NAME/blender ]]; then
   mv "/opt/mag-scene/.$NAME.next" "/opt/mag-scene/$NAME"
 fi
 ln -sfn "$NAME" /opt/mag-scene/blender
+# MediaPipe's face landmarker (ops/scene/face/bootstrap.sh fetched it), a
+# read-only copy of root's. Without it faces are found from the head's shape.
+FACE="${MAG_SCENE_CACHE:-$home/.cache/mag-stack}/face"
+face_sum=$(sha256sum "$SOURCE/ops/scene/face/face.lock" | cut -d' ' -f1)
+if [[ "$(cat /opt/mag-scene/face/.mag-verified 2>/dev/null)" != "$face_sum" && "$(cat "$FACE/.mag-verified" 2>/dev/null)" == "$face_sum" ]]; then
+  rm -rf -- /opt/mag-scene/.face.next
+  install -d -m 0755 /opt/mag-scene/.face.next
+  cp -a --no-preserve=ownership "$FACE/site" "$FACE/face_landmarker.task" "$FACE/.mag-verified" /opt/mag-scene/.face.next/
+  chown -R root:root /opt/mag-scene/.face.next
+  chmod -R go-w,a+rX /opt/mag-scene/.face.next
+  rm -rf -- /opt/mag-scene/face
+  mv /opt/mag-scene/.face.next /opt/mag-scene/face
+  echo 'scenes: face landmarker installed'
+fi
 install -d -o magbot -g magbot -m 0700 /var/lib/mag-scene /var/lib/mag-scene/jobs
 changed=0
 if ! cmp -s "$SOURCE/ops/scene/mag-scene.service" "$UNIT"; then

@@ -410,9 +410,12 @@ small flat Gaussians lying on what the photo showed:
 Runs in the browser, not on the server. `web/app/speak.js` drives a Web Worker
 (`ops/tts/tts-worker.js`): Supertonic 3 (Supertone; a duration predictor, a
 text encoder, a flow-matching estimator and a vocoder as ONNX, 44.1 kHz) in
-onnxruntime-web, in WASM on several threads (WebGPU is not tried: on a
-phone, making the networks for its GPU can take minutes or never end): the
-page is cross-origin isolated for that
+onnxruntime-web, on the device's GPU (WebGPU) where there is one, else in
+WASM on several threads. The GPU gets 90 s to make the model ready and
+speak its first word; a GPU that fails, is silent or takes longer is not
+asked again on that device (`mag-tts-gpu` in its storage), and the worker
+makes the model in WASM. For the threads the
+page is cross-origin isolated
 (`Cross-Origin-Opener-Policy: same-origin` on the page,
 `Cross-Origin-Embedder-Policy: credentialless` on every response, so the
 bots' pages still run in their frames). A provider is taken only after it
@@ -424,7 +427,9 @@ of what plays (up to three at a time), so the reading does not stop
 between them. The first part of a reading is a few words only, and on a
 device that is not much faster than real time the first parts are made in
 three or four of the model's five steps: the sound starts within a second
-or two instead of after the first whole sentence. How fast the device is,
+or two instead of after the first whole sentence; a device that cannot
+keep up even so (WASM on a phone) reads on in two rather than stop
+between sentences. How fast the device is,
 is measured on every part. The first words of the newest answer in the
 chat are made before anybody asks (in full quality, while nothing is
 read), so the tap that most often comes speaks at once. And a tap never
@@ -436,14 +441,23 @@ is spoken (`german()` in the worker: numbers, dates, times, units,
 abbreviations, and what is spelled out: "3D" is "drei De"), and it is given decomposed (the model's table knows "a" and
 the two dots, not "ä"). German and English are read by the same voices.
 
-The model is about 400 MB. `models.lock` pins its files by SHA256,
-`assets.lock` the runtime and our worker; `bootstrap.sh` fetches them once,
+Browsers get the model with its weights in float16, about 200 MB instead of
+400: `pack.py` moves every large weight out of its network's `.onnx` into
+`<network>.f16.data` (the graph refers to it as float32 external data), and
+the worker widens it to float32 again before it hands it to onnxruntime, so
+the model computes as before. `source.lock` pins the model as published,
+`models.lock` what browsers fetch, `assets.lock` the runtime and our
+worker, all by SHA256; `bootstrap.sh` fetches and packs them once,
 `install.sh` (deploy) puts them into `/opt/mag-tts/m-<hash>/` and
 `/opt/mag-tts/v-<hash>/` and writes `config.json`; the room hands them out
 under `/tts/` (immutable, except the config). The model has a folder of its
 own, so a change of the worker costs no browser a new download. The worker
-keeps everything in Cache Storage, a large file in pieces of 8 MB that are
-kept as they come (a download that breaks off goes on where it stopped); shortly after the page has loaded it
+keeps everything in Cache Storage, the weights in pieces of 8 MB that are
+kept as they come (a download that breaks off goes on where it stopped) and
+never put together into one file; it reads them piece by piece into the
+network it makes. After the download it tells the page after every step
+that it is still at work, so a slow phone is not taken for a stuck one and
+started anew. Shortly after the page has loaded it
 fetches and loads the model in the background (not over a mobile
 connection or with data saving on), so the first "Vorlesen" speaks at once.
 Loading has no fixed time limit, only one for standing still. Without the

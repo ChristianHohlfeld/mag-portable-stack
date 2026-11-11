@@ -2,7 +2,7 @@
 # Voice layer of a deploy: puts what ops/tts/bootstrap.sh fetched under
 # /opt/mag-tts, in folders named after their content, so browsers keep them
 # for good, and says in config.json which folders they are. The model (about
-# 400 MB) has a folder of its own: it stays the same when the worker
+# 200 MB, weights in float16) has a folder of its own: it stays the same when the worker
 # changes, so no browser fetches it twice. Nothing runs on the server: the
 # room only hands the files out. Optional: without the model "Vorlesen" uses
 # the voice of the device.
@@ -11,13 +11,13 @@ set -euo pipefail
 SOURCE="$(cd -- "$(dirname -- "$(readlink -f "$0")")/../.." && pwd)"
 owner=$(stat -c %U "$SOURCE")
 home=$(getent passwd "$owner" | cut -d: -f6)
-CACHED="${MAG_TTS_CACHE:-$home/.cache/mag-stack/tts}/supertonic3"
+CACHED="${MAG_TTS_CACHE:-$home/.cache/mag-stack/tts}/supertonic3-f16"
 LOCK="$SOURCE/ops/tts/assets.lock"
 MODELS="$SOURCE/ops/tts/models.lock"
 name="v-$(sha256sum < "$LOCK" | cut -c1-12)"
 model="m-$(sha256sum < "$MODELS" | cut -c1-12)"
 if [[ ! -d $CACHED ]] || ! (cd "$CACHED" && sha256sum --quiet -c "$MODELS" >/dev/null 2>&1 && grep -v ' tts-worker.js$' "$LOCK" | sha256sum --quiet -c - >/dev/null 2>&1); then
-  if [[ ! -f /opt/mag-tts/$name/tts-worker.js || ! -f /opt/mag-tts/$model/vocoder.onnx ]]; then
+  if [[ ! -f /opt/mag-tts/$name/tts-worker.js || ! -f /opt/mag-tts/$model/vocoder.f16.data ]]; then
     echo 'voices: model not fetched; "Vorlesen" keeps what it has (run ops/tts/bootstrap.sh)' >&2
     exit 0
   fi

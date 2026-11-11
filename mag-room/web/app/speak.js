@@ -20,9 +20,16 @@
   const ROBOT_VOICE = /espeak|mbrola|festival|flite|pico|ekho/i;
   const LIVE_IDLE_MS = 30000;
   // A part may take a while on a phone without WebGPU. Loading the model is a
-  // download of about 400 MB the first time: it has no fixed limit, only one
-  // for standing still (the worker reports its progress).
+  // download of about 200 MB the first time: it has no fixed limit, only one
+  // for standing still (the worker reports its progress, and after the
+  // download every step of making the model ready).
   const SPEAK_TIMEOUT_MS = 120000, WARM_TIMEOUT_MS = 180000;
+  // The device's GPU gets this long to make the model ready and speak its
+  // first word; a GPU that does not is not asked again on this device, and
+  // the model is made in WASM instead (it is already downloaded).
+  const GPU_LIMIT_MS = 90000;
+  const gpuOk = () => !!navigator.gpu && localStorage.getItem('mag-tts-gpu') !== 'no';
+  function noGpu() { try { localStorage.setItem('mag-tts-gpu', 'no'); } catch {} }
   let current = null;
 
   function normalize(text) {
@@ -190,9 +197,24 @@
   function worker() {
     if (!piper.worker) {
       // The model lies in a folder of its own, so it stays in the browser when the worker changes.
-      piper.worker = new Worker('/tts/' + piper.config.dir + '/tts-worker.js' + (piper.config.models ? '?m=' + encodeURIComponent(piper.config.models) : ''));
+      const query = new URLSearchParams();
+      if (piper.config.models) query.set('m', piper.config.models);
+      if (gpuOk()) query.set('gpu', '1');
+      const w = piper.worker = new Worker('/tts/' + piper.config.dir + '/tts-worker.js?' + query);
       piper.worker.onmessage = (ev) => {
         const m = ev.data || {};
+        if (m.type === 'nogpu') { clearTimeout(piper.gpuTimer); noGpu(); report({ gpu_fail: 1 }); return; }
+        if (m.trying === 'webgpu') {
+          clearTimeout(piper.gpuTimer);
+          piper.gpuTimer = setTimeout(() => {
+            if (piper.worker !== w || piper.ready.size) return;
+            // The GPU is still at it: this worker ends, and the next makes the model in WASM.
+            noGpu(); report({ gpu_fail: 2 });
+            const again = [...piper.loading.keys()];
+            resetWorker();
+            setTimeout(() => again.forEach((model) => { piper.failed.delete(model); warm({ model }); }), 0);
+          }, GPU_LIMIT_MS);
+        }
         if (m.type === 'progress') {     // the model is coming in: that is not standing still
           const loading = piper.pending.get(m.id);
           if (loading?.again) { clearTimeout(loading.timer); loading.timer = setTimeout(loading.again, WARM_TIMEOUT_MS); }
@@ -204,6 +226,7 @@
         if (!p) return;
         piper.pending.delete(m.id);
         clearTimeout(p.timer);
+        if (m.type === 'ready') clearTimeout(piper.gpuTimer);
         if (m.type === 'error') p.reject(new Error(m.error)); else p.resolve(m);
       };
       piper.worker.onerror = () => resetWorker();
@@ -247,8 +270,9 @@
     if (piper.loading.has(v.model)) return piper.loading.get(v.model);
     const began = performance.now();
     const p = ask({type: 'warm', model: v.model}, WARM_TIMEOUT_MS)
-      .then((m) => { piper.ready.add(v.model); shown('ready'); setTimeout(paint, 0); if (m?.provider) report({ warm_ms: Math.round(performance.now() - began), provider: m.provider, threads: m.threads | 0, isolated: self.crossOriginIsolated ? 1 : 0 }); return true; })
+      .then((m) => { piper.ready.add(v.model); shown('ready'); setTimeout(paint, 0); if (m?.provider) report({ warm_ms: Math.round(performance.now() - began), make_ms: m.makeMs | 0, probe_ms: m.probeMs | 0, provider: m.provider, threads: m.threads | 0, isolated: self.crossOriginIsolated ? 1 : 0 }); return true; })
       .catch(() => {
+        report({ warm_fail: 1, warm_ms: Math.round(performance.now() - began) });
         // Not there yet (a broken connection, a full device): it is tried again in a while, by itself.
         piper.failed.set(v.model, Date.now() + 20000);
         setTimeout(() => { if (!piper.ready.size) warm(v); }, 21000);
@@ -268,17 +292,20 @@
   }
   // A crashed or stuck worker is replaced and the part is synthesised again.
   function resetWorker() {
+    clearTimeout(piper.gpuTimer);
     try { piper.worker?.terminate(); } catch (_) {}
     piper.worker = null; piper.ready.clear(); piper.loading.clear();
     for (const p of piper.pending.values()) { clearTimeout(p.timer); p.reject(new Error('worker reset')); }
     piper.pending.clear();
   }
   // In how many steps a part is made. The model refines its sound in steps:
-  // five is its full quality, four and three are heard a little. A part gets
-  // as many as there is time for: it must be made by the moment the reading
-  // gets to it, or the reading would stop there. So the first words of a
-  // reading are made in three (the sound starts at once), and what follows
-  // in five as soon as what is ready covers the time it takes to make. How
+  // five is its full quality, four and three are heard a little, two more. A
+  // part gets as many as there is time for: it must be made by the moment the
+  // reading gets to it, or the reading would stop there. So the first words of
+  // a reading are made in three (the sound starts at once), and what follows
+  // in five as soon as what is ready covers the time it takes to make; a
+  // device that cannot keep up even so (WASM on a phone) reads on in two
+  // rather than stop between sentences. How
   // fast the device is, is measured on every part (work per second of
   // speech and step) and kept.
   function stepsFor(pb, text) {
@@ -288,7 +315,8 @@
     let reached = Math.max(now, pb.until || now), made = now;           // when the reading gets here, when the parts before it are made
     for (const part of pb.waiting) { reached += part.length; made += part.work; }
     let steps = 5;
-    while (steps > 3 && made + per * steps * length + 0.1 > reached) steps--;
+    const least = pb.until || pb.waiting.length ? 2 : 3;
+    while (steps > least && made + per * steps * length + 0.1 > reached) steps--;
     const part = { length, work: per * steps * length + 0.1 };
     pb.waiting.push(part);
     return [steps, part];
@@ -594,7 +622,7 @@
   };
   // Shortly after the page is there, the model and the voices of the bots are
   // made ready in the background: fetched into Cache Storage once (about
-  // 400 MB, then never again) and loaded, so the first tap speaks at once.
+  // 200 MB, then never again) and loaded, so the first tap speaks at once.
   // Not over a mobile connection or with data saving on: there the first
   // tap loads it.
   function warmUp() {

@@ -145,7 +145,8 @@ def main():
         assert (root / b / "idol.log").read_bytes().count(b" 1/50 ") == 2   # sampling had to start again
         # 3. The same during meshing: the finished sampling is not repeated.
         c = order()
-        s = wait(c, lambda s: s["state"] == "running" and s.get("phase", 0) >= 3, "meshing")
+        # (the job is in phase 3 a moment before the mesh stage has its process: wait for that)
+        s = wait(c, lambda s: s["state"] == "running" and s.get("phase", 0) >= 3 and s.get("stage_key") == "mesh", "meshing")
         stop()
         os.killpg(s["pid"], signal.SIGKILL)
         time.sleep(0.3)

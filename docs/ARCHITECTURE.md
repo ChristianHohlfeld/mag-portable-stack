@@ -285,7 +285,14 @@ credential is issued anew), as do its repositories.
 
 ## Photo to 3D (`ops/idol`)
 
-`worker.py` keeps one job at a time on the MI50. A job is a folder below
+`worker.py` keeps one job at a time on the MI50: it is the one queue of
+every job that needs the card (3D, and pictures from words), and the card
+belongs wholly to the job whose turn it is (at its 72 W; "wholly" never means
+more power). A stage that uses the card (`sample`, `shape`, `image`) also
+holds `/var/lib/mag-idol/gpu.lock` (flock) for as long as its process runs,
+across a restart of the worker; anything else that would use the card takes
+the same lock. A stage that finds it taken waits, says "Wartet auf die
+Grafikkarte" in the chat, and is not taken for standing still. A job is a folder below
 `/var/lib/mag-idol/jobs`: `status.json` (state, phase, the running stage's
 process) and the result of every finished stage (`splat.ply` after sampling,
 `mesh.glb`/`mesh.stl` after meshing). A stage runs in its own session with its

@@ -580,6 +580,7 @@ class Performer:
             far = float(np.sum(1.0 - np.sum(pose.limbs * self.last.limbs, axis=1)))
             far += 2.0 * float(np.sum((np.asarray(pose.contact) > 0) != (np.asarray(self.last.contact) > 0)))
             far += 3.0 * abs(pose.height - self.last.height)
+            far += 0.5 * t                                # what it skips is missed: earlier is better
             if best is None or far < best:
                 best, at = far, t
         return at
@@ -791,9 +792,14 @@ class Performer:
         return len(self.frames)
 
     def rest(self, span=0.35):
-        """Back to standing."""
-        if self.clip is not self.lib["idle"]:
-            self.change("idle", at=(len(self.frames) * 0.37) % self.lib["idle"].seconds, span=span)
+        """Back to standing: at the moment of standing nearest the pose it
+        is in, and the further that is, the more time it takes."""
+        idle = self.lib["idle"]
+        if self.clip is not idle:
+            at = self.entry(idle)
+            new = idle.pose(at)
+            far = float(np.sum(1.0 - np.sum(new.limbs * self.last.limbs, axis=1))) + 3.0 * abs(new.height - self.last.height)
+            self.change("idle", at=at, span=max(span, min(0.9, span + 0.25 * far)))
 
     def perform(self, name, seconds=None, times=1, rate=1.0, span=0.3):
         """Does a motion: once (or `times`), a round for `seconds`. A

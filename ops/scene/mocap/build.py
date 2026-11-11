@@ -321,6 +321,33 @@ def cut(rec, a, z, loop=False, fade=8):
     return arrays, stride
 
 
+def calm_of(rec):
+    """How far from at rest the figure is in every frame: limbs away from
+    hanging straight down, the body leaning, moving, a foot off the ground."""
+    down = np.array([0.0, 0.0, -1.0])
+    away = np.linalg.norm(rec.limbs - down, axis=-1).sum(axis=1)
+    lean = np.linalg.norm(rec.turns["hips"][:, 1:3], axis=1) + np.linalg.norm(rec.turns["chest"][:, 1:3], axis=1)
+    off = (rec.contact == 0).sum(axis=1)
+    return away + 4.0 * lean + 0.6 * rec.speed + 1.5 * off
+
+
+def seams(rec, a, z):
+    """Where a recorded motion is best cut: it begins and ends near rest,
+    not in the middle of a movement. The beginning is looked for in its first
+    part (earlier is better), the end around where it was to end, up to three
+    seconds later. Returns the frames."""
+    score = calm_of(rec)
+    last = rec.frames - 1
+    z = min(z, last)
+    lo, hi = a, min(a + int(2.5 * FPS), a + int(0.3 * (z - a)))
+    start = min(range(lo, max(lo, hi) + 1), key=lambda i: score[i] + 0.4 * (i - a) / FPS)
+    lo, hi = max(start + int(1.0 * FPS), z - int(0.3 * (z - start))), min(last, z + int(3.0 * FPS))
+    if hi <= lo:
+        return start, z
+    end = min(range(lo, hi + 1), key=lambda i: score[i] + 0.2 * abs(i - z) / FPS)
+    return start, end
+
+
 def hand_of(arrays):
     """The arm a motion is made with: the one that moves much more than the other."""
     way = [float(np.linalg.norm(np.diff(arrays["limbs"][:, k:k + 2], axis=0), axis=-1).sum()) for k in (4, 6)]
@@ -361,6 +388,8 @@ def main():
         loop = clip.get("loop", False)
         if loop == "stride":
             a, z = stride_of(rec, a, z, int(clip.get("rounds", 1)))
+        elif not loop and clip.get("seams"):
+            a, z = seams(rec, a, z)
         arrays, stride = cut(rec, a, z, loop)
         more = {"loop": bool(loop), "stride": stride, "hand": clip.get("hand", hand_of(arrays)), "air": None if loop or clip.get("air") is False else leap_of(arrays)}
         more["label"] = clip.get("label", clip["name"])

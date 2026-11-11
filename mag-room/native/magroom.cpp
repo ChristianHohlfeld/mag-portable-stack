@@ -22,6 +22,7 @@ int main() {
   Scenes scenes(room);
   Plugins plugins(room);
   Engine engine(room, guests, scenes, plugins);
+  engine.imagine = [&idol](const std::string &prompt, int w, int h, const std::string &by, std::string &error) { return idol.imagine(prompt, w, h, by, error); };
   Api api(room, engine, guests, idol, scenes, plugins, gate, push);
   // A notification when an answer took a while (you probably looked away) or failed.
   const int64_t slow_s = envl("MAG_ROOM_PUSH_RUN_S", 20);

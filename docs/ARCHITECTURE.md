@@ -434,6 +434,18 @@ small flat Gaussians lying on what the photo showed:
    was taken, not from the 1024² copy the model saw. If no view looks like
    the photo, the photo is not used, and the log line says so.
 
+## Pictures from words (`ops/idol/imagegen.py`)
+
+"Bild erzeugen" in the plus menu, or a bot's `image_generate` tool, orders a
+picture: FLUX.2 klein 4B (Black Forest Labs, Apache-2.0, four steps, fp16 on
+the MI50) in Idol's environment. It is a job of the Idol worker's one queue
+(`POST /api/idol/images`, `kind: image`, result `image.png`), so the card
+does one thing at a time and a picture waits behind a running 3D job. The
+room's message (`model3d.kind = "image"`) shows the progress and becomes an
+ordinary image of the chat, which the bots see and which can go on to
+photo to 3D; cancel and "Noch einmal" work as for 3D jobs. The weights are
+fetched once by `ops/imagegen/fetch.sh` (pinned revision, resumable).
+
 ## Reading aloud (`ops/tts`)
 
 Runs in the browser, not on the server. `web/app/speak.js` drives a Web Worker

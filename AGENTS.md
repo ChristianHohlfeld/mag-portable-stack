@@ -168,6 +168,9 @@ CPU), and when the last of them is through the room puts them together as
 one scene, each as tall as it was, where it stood, turned as the photo saw
 it, with the floor and the walls around them. Each stays a figure of its
 own there, so the bots can move it like any figure of a scene.
+Pictures are painted from words on the MI50 (FLUX.2 klein 4B, Apache-2.0):
+"Bild erzeugen" in the plus menu or a bot's `image_generate`; a job of Idol's
+one queue, never beside a 3D job, and the result is an ordinary image.
 The bots share a notebook of skills (`skill`: list, read, save; `skills.json`
 in the room state): how they do recurring work, with the steps, how to check
 the result and what needs Chris's approval. A skill describes work and grants

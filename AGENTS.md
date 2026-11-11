@@ -62,7 +62,10 @@ The bots build scenes from the 3D models in the chat (`models_3d`,
 Blender on the CPU (cores 28-55, no device access, never the MI50), reads
 what each figure is, gives animals and two-legged figures a skeleton and
 moves their limbs; a long body without legs (a snake, a fish) gets a chain
-of bones and slithers in a wave; only a thing moves as a whole. A figure on two legs moves
+of bones and slithers in a wave; a bird (two legs under a long body) walks,
+pecks and flies with beating wings; an insect or spider walks on all its legs
+in alternating sets; a vehicle (`kind: vehicle`) drives along a curve; only a
+thing moves as a whole. A figure on two legs moves
 with recorded motions (`ops/scene/motions.npz`, made by
 `ops/scene/mocap/build.py` from motion capture that is free to use and to
 pass on, credited in `ops/scene/MOTIONS.md`): its bones take the recorded
